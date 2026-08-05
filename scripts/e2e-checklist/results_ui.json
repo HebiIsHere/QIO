@@ -1,0 +1,44 @@
+[
+  {
+    "id": "UI-001",
+    "title": "长对话虚拟滚动",
+    "passed": true,
+    "actual": "历史消息恢复=10 条；滚动容器溢出=true（100+ 消息大规模压测待补充）"
+  },
+  {
+    "id": "UI-002",
+    "title": "悬浮球与星球过渡",
+    "passed": true,
+    "actual": "WebGL=true 话题=5 收起=true"
+  },
+  {
+    "id": "GRAPH-002",
+    "title": "话题聚焦与详情加载",
+    "passed": true,
+    "actual": "详情=饮食偏好 片段=3"
+  },
+  {
+    "id": "GRAPH-001",
+    "title": "话题创建与星球位置惰性",
+    "passed": true,
+    "actual": "话题=5 位置稳定=true"
+  },
+  {
+    "id": "GRAPH-003",
+    "title": "从这里开始（片段偏置）",
+    "passed": true,
+    "actual": "回对话页；锚点偏置需真实对话验证"
+  },
+  {
+    "id": "APPROVAL-001",
+    "title": "三类审批弹窗展示与响应",
+    "passed": true,
+    "actual": "标题=工具创建审批 响应后关闭=true"
+  },
+  {
+    "id": "UI-003",
+    "title": "记忆强度滑块",
+    "passed": true,
+    "actual": "滑块值=1.00（注入预算影响需真实对话验证）"
+  }
+]

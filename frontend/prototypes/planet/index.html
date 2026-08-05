@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Agent · 话题星球原型</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #0b1020; color: #dde4f5; overflow: hidden; }
+      #app { width: 100vw; height: 100vh; position: relative; }
+      #planet-canvas { width: 100%; height: 100%; display: block; }
+      #panel { position: absolute; top: 0; right: 0; width: 300px; height: 100%; background: rgba(15, 22, 44, 0.92); border-left: 1px solid rgba(120, 160, 255, 0.15); padding: 16px; overflow-y: auto; }
+      #panel h2 { font-size: 14px; color: #8fa8e0; margin-bottom: 10px; letter-spacing: 1px; }
+      #panel ul { list-style: none; }
+      #panel li { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; gap: 8px; }
+      #panel li:hover { background: rgba(80, 120, 220, 0.18); }
+      #panel li.active { background: rgba(90, 140, 255, 0.32); }
+      #panel li .meta { font-size: 11px; color: #6a7ba8; white-space: nowrap; }
+      #hud { position: absolute; top: 12px; left: 12px; font-size: 12px; color: #8fa8e0; line-height: 1.8; pointer-events: none; }
+      #hud b { color: #cfe0ff; }
+      #controls { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+      #controls button { background: rgba(60, 90, 170, 0.35); border: 1px solid rgba(130, 170, 255, 0.35); color: #dde4f5; padding: 7px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; }
+      #controls button:hover { background: rgba(80, 120, 220, 0.4); }
+      #controls button.active { background: rgba(100, 150, 255, 0.55); }
+      #detail { position: absolute; left: 16px; bottom: 60px; width: 260px; background: rgba(15, 22, 44, 0.92); border: 1px solid rgba(120, 160, 255, 0.2); border-radius: 12px; padding: 14px; display: none; }
+      #detail h3 { font-size: 14px; margin-bottom: 6px; }
+      #detail p { font-size: 12px; color: #9fb2d8; margin-bottom: 4px; }
+      #detail .hint { font-size: 11px; color: #6a7ba8; margin-top: 8px; }
+      #status { position: absolute; top: 12px; right: 316px; font-size: 12px; color: #8fa8e0; }
+      #status.warn { color: #e0a06a; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="planet-canvas"></canvas>
+      <div id="hud">
+        <b>话题星球原型</b><br />
+        拖动：旋转浏览（探索）<br />
+        点击地点 / 列表项：自动旋转聚焦（意图导航）<br />
+        双击空白：回到星球全景
+      </div>
+      <div id="status"></div>
+      <div id="detail">
+        <h3 id="d-title"></h3>
+        <p id="d-desc"></p>
+        <p id="d-related"></p>
+        <div class="hint">设计验证：自动旋转聚焦 + 相关性呈现</div>
+      </div>
+      <div id="panel">
+        <h2>话题列表（查询通道）</h2>
+        <ul id="topic-list"></ul>
+      </div>
+      <div id="controls">
+        <button id="btn-overview" class="active">悬浮球视角（远景）</button>
+        <button id="btn-planet">星球全景（近景）</button>
+        <button id="btn-reset">重置视角</button>
+      </div>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

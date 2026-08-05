@@ -1,0 +1,145 @@
+"""Tool creation lifecycle: explain -> test -> approve (x2) -> register.
+
+Segments:
+1. proposal with explanation (main model);
+2. deterministic cross-testing in the sandbox;
+3. approval segment 1: tool creation;
+4. approval segment 2 (only when a credential is referenced): credential
+   grant, which narrows the key scope to this tool;
+5. registration side-by-side with builtin tools.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from agent.adapters.base import BaseAdapter
+from agent.credentials.store import CredentialStore
+from agent.tools.approval import ApprovalService
+from agent.tools.creator import ToolCreator
+from agent.tools.registry import ToolRegistry
+from agent.tools.runtime_tools import CodeTool, SubagentStubTool
+from agent.tools.sandbox import SandboxExecutor
+from agent.tools.spec import ToolDefinition, ToolProposal
+from agent.tools.tester import ToolTester
+
+logger = logging.getLogger(__name__)
+
+APPROVAL_KIND_CREATE = "tool_create"
+APPROVAL_KIND_CREDENTIAL = "credential_grant"
+
+
+@dataclass
+class ToolOutcome:
+    ok: bool
+    tool_name: str | None
+    step: str
+    detail: str
+
+
+class ToolLifecycle:
+    def __init__(
+        self,
+        *,
+        adapter: BaseAdapter,
+        approvals: ApprovalService,
+        sandbox: SandboxExecutor | None = None,
+        registry: ToolRegistry,
+        credentials: CredentialStore | None = None,
+    ) -> None:
+        self.creator = ToolCreator(adapter)
+        self.approvals = approvals
+        self.sandbox = sandbox or SandboxExecutor()
+        self.tester = ToolTester(self.sandbox)
+        self.registry = registry
+        self.credentials = credentials
+
+    async def create_from_request(
+        self, user_request: str, *, context: str | None = None
+    ) -> ToolOutcome:
+        # 1. proposal with explanation
+        proposal, error = await self.creator.propose(user_request, context)
+        if proposal is None:
+            return ToolOutcome(False, None, "propose", error or "proposal failed")
+        definition = proposal.tool
+
+        # 2. deterministic cross-testing (function tools only; subagent
+        #    tools have a separate contract in v1.5)
+        report = None
+        if definition.tool_type == "function":
+            report = await self.tester.run(definition)
+            if not report.passed:
+                return ToolOutcome(
+                    False,
+                    definition.name,
+                    "test",
+                    f"cross-test failed: {report.summary}",
+                )
+
+        # 3. approval segment 1: tool creation
+        approval = await self.approvals.request(
+            APPROVAL_KIND_CREATE,
+            {
+                "name": definition.name,
+                "description": definition.description,
+                "explanation": proposal.explanation,
+                "tool_type": definition.tool_type,
+                "credential_ref": definition.credential_ref,
+                "test_summary": report.summary if report else "n/a (subagent)",
+                "test_details": (
+                    [
+                        {"name": o.name, "passed": o.passed, "detail": o.detail}
+                        for o in report.outcomes
+                    ]
+                    if report
+                    else []
+                ),
+            },
+        )
+        if approval.decision != "approved":
+            return ToolOutcome(
+                False, definition.name, "approve", f"creation {approval.decision}"
+            )
+
+        # 4. approval segment 2: credential grant (only when referenced)
+        if definition.credential_ref:
+            if self.credentials is None:
+                return ToolOutcome(
+                    False, definition.name, "credential",
+                    "tool references a credential but no credential store is wired",
+                )
+            meta = self.credentials.get_metadata(definition.credential_ref)
+            if meta is None or meta["status"] != "active":
+                return ToolOutcome(
+                    False, definition.name, "credential",
+                    f"referenced credential unavailable: {definition.credential_ref}",
+                )
+            grant = await self.approvals.request(
+                APPROVAL_KIND_CREDENTIAL,
+                {"key_id": definition.credential_ref, "tool_name": definition.name},
+            )
+            if grant.decision != "approved":
+                return ToolOutcome(
+                    False, definition.name, "credential",
+                    f"credential grant {grant.decision}",
+                )
+            self.credentials.grant_tool_scope(definition.credential_ref, definition.name)
+
+        # 5. register side-by-side
+        try:
+            self._register(definition)
+        except ValueError as exc:
+            return ToolOutcome(False, definition.name, "register", str(exc))
+        logger.info("tool created and registered: %s", definition.name)
+        return ToolOutcome(True, definition.name, "registered", "ok")
+
+    def _register(self, definition: ToolDefinition) -> None:
+        if definition.tool_type == "subagent":
+            self.registry.register(
+                SubagentStubTool(definition, credentials=self.credentials)
+            )
+        else:
+            self.registry.register(
+                CodeTool(definition, self.sandbox, credentials=self.credentials)
+            )

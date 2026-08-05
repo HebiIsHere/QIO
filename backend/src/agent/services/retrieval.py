@@ -1,0 +1,154 @@
+"""Cross-session retrieval with the three-weight ranking.
+
+Pipeline:
+1. first hop: topic fingerprints (session-level meta summaries) match the
+   query — topics that score get an affinity bonus;
+2. global recall: the M5 selector over memory_index fragments (relevance);
+3. ranking: relevance (BM25, normalized) x relevance_weight +
+   recency decay x recency_weight + topic affinity x affinity_weight.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from agent.graph.topics import TopicService
+from agent.selector.base import IndexedDoc
+from agent.selector.selector import Selector
+from agent.selector.tokenize import tokenize
+
+DEFAULT_RECENCY_HALF_LIFE_DAYS = 30.0
+
+
+@dataclass
+class RetrievalConfig:
+    relevance_weight: float = 0.4
+    recency_weight: float = 0.25
+    affinity_weight: float = 0.35
+    recency_half_life_days: float = DEFAULT_RECENCY_HALF_LIFE_DAYS
+    fingerprint_top: int = 3
+
+
+@dataclass
+class RetrievalHit:
+    doc_id: str
+    topic_id: str | None
+    title: str | None
+    preview: str
+    score: float
+    sources: tuple[str, ...]
+    token_estimate: int
+    created_at: str | None
+
+    @property
+    def age_days(self) -> float:
+        if not self.created_at:
+            return float("inf")
+        try:
+            created = datetime.fromisoformat(self.created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - created).total_seconds() / 86400.0)
+        except ValueError:
+            return float("inf")
+
+
+class Retriever:
+    def __init__(
+        self,
+        selector: Selector,
+        topics: TopicService,
+        config: RetrievalConfig | None = None,
+    ) -> None:
+        self.selector = selector
+        self.topics = topics
+        self.config = config or RetrievalConfig()
+
+    # -- first hop: topic fingerprints ------------------------------------
+
+    def _fingerprint_scores(self, query: str) -> dict[str, float]:
+        query_tokens = set(tokenize(query))
+        scores: dict[str, float] = {}
+        if not query_tokens:
+            return scores
+        for fingerprint in self.topics.list_with_fingerprints():
+            overlap = query_tokens & set(fingerprint.keywords)
+            if overlap:
+                scores[fingerprint.topic_id] = len(overlap) / len(query_tokens)
+        return scores
+
+    # -- main search ------------------------------------------------------
+
+    def search(
+        self,
+        query: str,
+        *,
+        anchor_topic_id: str | None = None,
+        top_k: int = 6,
+    ) -> list[RetrievalHit]:
+        candidates = self.selector.select(
+            query,
+            top_k=top_k * 2,
+            anchor_topic_id=anchor_topic_id,
+        )
+        if not candidates:
+            return []
+        fingerprint_scores = self._fingerprint_scores(query)
+        max_relevance = max((c.score for c in candidates), default=1.0) or 1.0
+
+        ranked: list[tuple[float, RetrievalHit]] = []
+        for candidate in candidates:
+            relevance_norm = candidate.score / max_relevance
+            recency = 0.0
+            created_at = self._created_at(candidate.doc_id)
+            if created_at is not None:
+                age_days = self._age_days(created_at)
+                if math.isfinite(age_days):
+                    recency = math.exp(-age_days / self.config.recency_half_life_days)
+            affinity = 0.0
+            if candidate.topic_id is not None:
+                if anchor_topic_id and candidate.topic_id == anchor_topic_id:
+                    affinity = 1.0
+                elif candidate.topic_id in fingerprint_scores:
+                    affinity = fingerprint_scores[candidate.topic_id]
+            score = (
+                self.config.relevance_weight * relevance_norm
+                + self.config.recency_weight * recency
+                + self.config.affinity_weight * affinity
+            )
+            ranked.append(
+                (
+                    score,
+                    RetrievalHit(
+                        doc_id=candidate.doc_id,
+                        topic_id=candidate.topic_id,
+                        title=candidate.title,
+                        preview=self._preview(candidate.doc_id, candidate.title),
+                        score=score,
+                        sources=candidate.sources,
+                        token_estimate=candidate.token_estimate,
+                        created_at=created_at,
+                    ),
+                )
+            )
+        ranked.sort(key=lambda pair: (-pair[0], pair[1].doc_id))
+        return [hit for _, hit in ranked[:top_k]]
+
+    # -- internals --------------------------------------------------------
+
+    def _created_at(self, doc_id: str) -> str | None:
+        return self.selector.created_at(doc_id)
+
+    def _preview(self, doc_id: str, title: str | None) -> str:
+        return title or doc_id
+
+    def _age_days(self, iso: str) -> float:
+        try:
+            created = datetime.fromisoformat(iso)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - created).total_seconds() / 86400.0)
+        except ValueError:
+            return float("inf")

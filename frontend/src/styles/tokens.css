@@ -1,0 +1,46 @@
+/**
+ * 设计令牌：全应用唯一的颜色来源。
+ * 主题色为洋红 #C51B7D，暗色底带轻微紫调。
+ * 组件内一律使用 var(--*)，禁止硬编码色值。
+ */
+:root {
+  /* ---------- 主题色 ---------- */
+  --accent: #c51b7d;
+  --accent-hover: #dd3399;
+  --accent-soft: rgba(197, 27, 125, 0.16);
+  --accent-softer: rgba(197, 27, 125, 0.32);
+  --accent-veil: rgba(197, 27, 125, 0.55);
+  --on-accent: #ffeef8;
+
+  /* ---------- 背景层级 ---------- */
+  --bg-base: #0f0a10;            /* 应用底色 */
+  --bg-surface: #171019;         /* 卡片 / 状态栏 / 输入区 */
+  --bg-elevated: #1e1420;        /* 弹窗 / 消息气泡 / 代码块 */
+  --bg-inset: #120c13;           /* 输入框 */
+  --bg-overlay: rgba(10, 5, 10, 0.7);
+  --bg-panel: rgba(23, 16, 25, 0.95);
+  --bg-accent-subtle: #2b1226;   /* 用户气泡 / 标签 / 悬浮球 */
+
+  /* ---------- 边框 ---------- */
+  --border-subtle: #2c1a2b;
+  --border-strong: #57304f;
+  --border-danger: #5a2c2c;
+
+  /* ---------- 文字 ---------- */
+  --text-strong: #fbeff7;        /* 标题、强调 */
+  --text-primary: #efe2ee;       /* 正文 */
+  --text-secondary: #c0a3bd;     /* 次要信息 */
+  --text-muted: #82657f;         /* 提示、弱化 */
+
+  /* ---------- 链接 ---------- */
+  --link: #e878bd;
+
+  /* ---------- 语义色 ---------- */
+  --success: #48c78e;
+  --success-soft: rgba(72, 199, 142, 0.15);
+  --danger: #e06a6a;
+  --danger-soft: rgba(224, 106, 106, 0.15);
+  --warning: #e0c06a;
+  --approve-bg: #2a6e4f;
+  --reject-bg: #6e2a2a;
+}

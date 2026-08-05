@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+frontend/src-tauri/target/
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+archive/
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+# Volar / vue-tsc 编辑器生成物（源码目录下勿提交 .js）
+frontend/src/**/*.js
+
+# 构建产物 / sidecar 二进制
+backend/build-sidecar/
+backend/dist-sidecar/
+frontend/src-tauri/binaries/
+frontend/src-tauri/gen/
+frontend/e2e-shots/
+
+# 检查清单生成物
+*.inspect.ndjson

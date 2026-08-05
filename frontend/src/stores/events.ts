@@ -1,0 +1,88 @@
+import { defineStore } from "pinia";
+import { connectEvents, publishTestEvent, type AgentEvent, type EventType } from "../services/events";
+import { useSessionStore } from "./session";
+import { useApprovalsStore } from "./approvals";
+
+export const useEventStore = defineStore("events", {
+  state: () => ({
+    connected: false,
+    events: [] as AgentEvent[],
+    error: null as string | null,
+    _source: null as EventSource | null,
+  }),
+  actions: {
+    connect() {
+      this.disconnect();
+      const source = connectEvents((event) => {
+        this.events.push(event);
+        if (this.events.length > 300) this.events.shift();
+        this.error = null;
+        this.route(event);
+      });
+      source.onopen = () => {
+        this.connected = true;
+      };
+      source.onerror = () => {
+        this.connected = false;
+        this.error = "SSE 连接断开，请确认后端已启动";
+      };
+      this._source = source;
+    },
+    disconnect() {
+      this._source?.close();
+      this._source = null;
+      this.connected = false;
+    },
+    route(event: AgentEvent) {
+      const session = useSessionStore();
+      switch (event.type) {
+        case "TURN_START":
+          session.turnStarted();
+          break;
+        case "TURN_END": {
+          session.turnEnded();
+          const final = (event.data as Record<string, unknown>).final_content;
+          if (typeof final === "string" && final.trim()) {
+            session.pushAssistant(final);
+          }
+          break;
+        }
+        case "TOOL_END": {
+          const d = event.data as Record<string, unknown>;
+          session.pushTool(
+            String(d.tool ?? "?"),
+            Boolean(d.ok),
+            (d.error as string | null) ?? null,
+            String(d.content_preview ?? ""),
+          );
+          break;
+        }
+        case "ERROR": {
+          session.turnEnded();
+          const d = event.data as Record<string, unknown>;
+          session.lastError = String(d.message ?? "agent error");
+          break;
+        }
+        case "APPROVAL_REQUIRED": {
+          const d = event.data as Record<string, unknown>;
+          const approval = (d.approval ?? d) as Record<string, unknown>;
+          const id = String(approval.approval_id ?? "");
+          if (id) {
+            useApprovalsStore().enqueue(
+              id,
+              String(approval.kind ?? "unknown"),
+              (approval.payload ?? {}) as Record<string, unknown>,
+            );
+          }
+          break;
+        }
+      }
+    },
+    async sendTest(type: EventType) {
+      await publishTestEvent(type, { smoke: Date.now() });
+    },
+    clear() {
+      this.events = [];
+    },
+  },
+});

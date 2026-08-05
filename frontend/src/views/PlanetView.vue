@@ -1,0 +1,209 @@
+<script setup lang="ts">
+/**
+ * 星球页（全屏覆盖层）：3D 球体（左/中）+ 右侧面板（列表/详情/从这里开始）。
+ * 与对话页共用场景数据；相机从悬浮球远景推进到全景。
+ */
+import { onMounted, onUnmounted, ref, watch } from "vue";
+import { usePlanetScene } from "../composables/usePlanetScene";
+import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
+import { useSessionStore } from "../stores/session";
+import MarkdownContent from "../components/MarkdownContent.vue";
+
+const emit = defineEmits<{ close: [] }>();
+const session = useSessionStore();
+
+const canvasRef = ref<HTMLCanvasElement | null>(null);
+const planet = usePlanetScene(canvasRef);
+const topics = ref<TopicFingerprint[]>([]);
+const positions = ref<TopicPosition[]>([]);
+const detail = ref<TopicDetail | null>(null);
+const detailLoading = ref(false);
+const search = ref("");
+const selectedFragmentId = ref<string | null>(null);
+
+onMounted(async () => {
+  planet.init();
+  await loadData();
+});
+
+onUnmounted(() => {});
+
+async function loadData() {
+  const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
+  topics.value = t.topics;
+  positions.value = p.topics;
+  planet.setTopics(p.topics);
+  planet.loadTopics(p.topics);
+  // 若已有锚点话题，聚焦它
+  if (session.currentTopicId) {
+    planet.focusTopic(session.currentTopicId, positions.value);
+    await loadDetail(session.currentTopicId);
+  } else {
+    planet.go("planet");
+  }
+}
+
+const filteredTopics = ref<TopicFingerprint[]>([]);
+watch([topics, search], () => {
+  const q = search.value.trim().toLowerCase();
+  filteredTopics.value = q
+    ? topics.value.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
+    : topics.value;
+}, { immediate: true });
+
+async function loadDetail(topicId: string) {
+  detailLoading.value = true;
+  selectedFragmentId.value = null;
+  try {
+    detail.value = await api.getTopicDetail(topicId);
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+function selectTopic(topicId: string) {
+  planet.focusTopic(topicId, positions.value);
+  loadDetail(topicId);
+}
+
+function onCanvasClick(e: MouseEvent) {
+  planet.handleClick(e.clientX, e.clientY);
+}
+
+watch(() => planet.selectedTopicId.value, (id) => {
+  if (id && id !== detail.value?.topic_id) loadDetail(id);
+});
+
+function startHere() {
+  if (!detail.value) return;
+  session.setAnchor(detail.value.topic_id, selectedFragmentId.value);
+  emit("close");
+}
+
+function close() {
+  emit("close");
+}
+</script>
+
+<template>
+  <div class="planet-view">
+    <canvas ref="canvasRef" class="planet-canvas" @click="onCanvasClick" @dblclick="planet.go('planet')"></canvas>
+    <button class="close-btn" @click="close">✕ 收起星球</button>
+    <div class="hud">
+      <span v-if="planet.webglOK">WebGL · {{ planet.fps }} fps · 视角: {{ planet.cameraState }}</span>
+      <span v-else>WebGL 不可用</span>
+    </div>
+
+    <aside class="panel">
+      <div class="panel-head">
+        <h2>话题</h2>
+        <input v-model="search" placeholder="搜索话题…" />
+      </div>
+      <ul class="topic-list">
+        <li
+          v-for="t in filteredTopics"
+          :key="t.topic_id"
+          :class="{ active: t.topic_id === planet.selectedTopicId.value }"
+          @click="selectTopic(t.topic_id)"
+        >
+          <span class="name">{{ t.title }}</span>
+          <span class="meta">{{ t.fragment_count }} 片段</span>
+        </li>
+      </ul>
+
+      <div v-if="detailLoading" class="detail-loading">加载中…</div>
+      <div v-else-if="detail" class="detail">
+        <h3>{{ detail.name }}</h3>
+
+        <div class="detail-section">
+          <div class="section-title">片段（点击选择起点）</div>
+          <div
+            v-for="f in detail.fragments"
+            :key="f.fragment_id"
+            class="fragment-item"
+            :class="{ selected: f.fragment_id === selectedFragmentId }"
+            @click="selectedFragmentId = f.fragment_id"
+          >
+            <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
+            <div class="fragment-meta">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
+          </div>
+          <p v-if="!detail.fragments.length" class="hint">暂无片段。</p>
+        </div>
+
+        <div class="detail-section">
+          <div class="section-title">实体</div>
+          <div class="entity-tags">
+            <span v-for="e in detail.entities" :key="e.id" class="entity-tag">{{ e.name }}</span>
+            <span v-if="!detail.entities.length" class="hint">无</span>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="section-title">知识</div>
+          <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
+            <span class="k-state" :class="k.state">{{ k.state }}</span>
+            <span class="k-content">{{ k.content }}</span>
+          </div>
+          <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
+        </div>
+
+        <button class="start-btn" @click="startHere">
+          从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
+        </button>
+      </div>
+    </aside>
+  </div>
+</template>
+
+<style scoped>
+.planet-view { position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex; }
+.planet-canvas { flex: 1 1 auto; min-width: 0; cursor: grab; }
+.close-btn {
+  position: absolute; top: 14px; left: 14px; z-index: 60;
+  background: var(--accent-veil); border: 1px solid var(--border-strong); color: var(--on-accent);
+  border-radius: 18px; padding: 6px 16px; cursor: pointer; font-size: 13px;
+}
+.hud { position: absolute; bottom: 14px; left: 14px; font-size: 12px; color: var(--text-muted); }
+.panel {
+  flex: 0 0 340px; width: 340px; height: 100%; background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle); display: flex; flex-direction: column; overflow-y: auto;
+}
+.panel-head { padding: 14px 14px 8px; }
+.panel-head h2 { font-size: 15px; color: var(--text-primary); margin: 0 0 8px; }
+.panel-head input {
+  width: 100%; background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: 8px;
+  padding: 7px 10px; color: var(--text-primary); font-size: 13px;
+}
+.topic-list { list-style: none; padding: 0 14px; margin: 6px 0; }
+.topic-list li {
+  display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.topic-list li:hover { background: var(--accent-soft); }
+.topic-list li.active { background: var(--accent-softer); }
+.topic-list .meta { color: var(--text-muted); font-size: 11px; }
+.detail { padding: 0 14px 20px; border-top: 1px solid var(--border-subtle); }
+.detail h3 { font-size: 15px; color: var(--text-strong); margin: 12px 0 8px; }
+.detail-section { margin: 10px 0; }
+.section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.fragment-item {
+  border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px;
+  cursor: pointer; background: var(--bg-inset);
+}
+.fragment-item.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
+.fragment-summary { font-size: 13px; color: var(--text-primary); }
+.fragment-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.entity-tag { background: var(--bg-accent-subtle); border-radius: 10px; padding: 2px 10px; font-size: 12px; color: var(--text-secondary); }
+.knowledge-item { display: flex; gap: 8px; align-items: baseline; margin-bottom: 5px; font-size: 12px; }
+.k-state { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--border-subtle); color: var(--text-secondary); }
+.k-state.active { background: var(--success-soft); color: var(--success); }
+.k-content { color: var(--text-primary); }
+.start-btn {
+  width: 100%; margin-top: 12px; background: var(--accent); color: var(--on-accent); border: none;
+  border-radius: 10px; padding: 10px; cursor: pointer; font-size: 14px;
+}
+.start-btn:hover { background: var(--accent-hover); }
+.hint { font-size: 12px; color: var(--text-muted); }
+.detail-loading { padding: 14px; color: var(--text-muted); font-size: 13px; }
+</style>

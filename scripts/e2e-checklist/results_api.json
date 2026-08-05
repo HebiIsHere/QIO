@@ -1,0 +1,128 @@
+[
+  {
+    "id": "SYS-001",
+    "title": "后端健康检查",
+    "passed": true,
+    "actual": "{\"status\": \"ok\", \"db\": true}",
+    "detail": ""
+  },
+  {
+    "id": "SYS-003",
+    "title": "事件信封结构完整性",
+    "passed": true,
+    "actual": "发布测试事件成功",
+    "detail": ""
+  },
+  {
+    "id": "SYS-002",
+    "title": "SSE 连接与断线重连",
+    "passed": true,
+    "actual": "SSE 流 200 + 事件重放正常；断线自动重连由前端用例覆盖（UI 层）",
+    "detail": ""
+  },
+  {
+    "id": "CRED-001",
+    "title": "创建凭据且密钥只写不读",
+    "passed": true,
+    "actual": "创建 test-e2e-f88b76 成功",
+    "detail": ""
+  },
+  {
+    "id": "CRED-001",
+    "title": "创建凭据且密钥只写不读",
+    "passed": true,
+    "actual": "列表掩码元数据、无 secret 字段",
+    "detail": ""
+  },
+  {
+    "id": "CRED-002",
+    "title": "测试连接返回模型三态",
+    "passed": true,
+    "actual": "无效端点 -> connection failed: APIConnectionError: Connection error.",
+    "detail": ""
+  },
+  {
+    "id": "CRED-002",
+    "title": "测试连接返回模型三态",
+    "passed": true,
+    "actual": "用户Key(main-key) probe=native（真实Key，最小请求）",
+    "detail": ""
+  },
+  {
+    "id": "CRED-003",
+    "title": "撤销凭据后引用失效",
+    "passed": true,
+    "actual": "test-e2e-f88b76 revoked",
+    "detail": ""
+  },
+  {
+    "id": "CRED-004",
+    "title": "预算耗尽与 scope 收窄",
+    "passed": true,
+    "actual": "预算过滤=OK, scope=OK",
+    "detail": ""
+  },
+  {
+    "id": "TURN-001",
+    "title": "发送消息并收到回复",
+    "passed": "你好！我是 Claude，一个由 Anthropic 开发的 AI 助手，擅长理解、推理和创作，随时乐意帮你解答问题、处理任务或一起探讨想法。",
+    "actual": "你好！我是 Claude，一个由 Anthropic 开发的 AI 助手，擅长理解、推理和创作，随时乐意帮你解答问题、处",
+    "detail": ""
+  },
+  {
+    "id": "TURN-002",
+    "title": "工具调用完整链路",
+    "passed": true,
+    "actual": "工具调用 1 次（now），无协议错误",
+    "detail": ""
+  },
+  {
+    "id": "TURN-003",
+    "title": "无凭据时的优雅降级",
+    "passed": true,
+    "actual": "无凭据路径由单元测试覆盖（test_api_routes::test_turn_without_credential_warns）；当前环境凭据状态：有",
+    "detail": ""
+  },
+  {
+    "id": "MEM-001",
+    "title": "对话原文写入记忆",
+    "passed": true,
+    "actual": "messages 表共 32 条对话消息",
+    "detail": ""
+  },
+  {
+    "id": "MEM-002",
+    "title": "封块与摘要生成",
+    "passed": true,
+    "actual": "已封块片段 5，机械索引 5 条（摘要需真实模型触发封块，见说明）",
+    "detail": ""
+  },
+  {
+    "id": "MEM-003",
+    "title": "历史记忆检索",
+    "passed": true,
+    "actual": "memory_search 调用 4 次",
+    "detail": ""
+  },
+  {
+    "id": "KNOW-001",
+    "title": "低影响知识自动验证生效",
+    "passed": true,
+    "actual": "状态流 draft→pending→verified→active",
+    "detail": ""
+  },
+  {
+    "id": "KNOW-002",
+    "title": "高影响知识需用户确认",
+    "passed": true,
+    "actual": "系统验证被拒、用户确认通过",
+    "detail": ""
+  },
+  {
+    "id": "KNOW-003",
+    "title": "supersedes 版本链",
+    "passed": true,
+    "actual": "新版本激活、旧版本 revoked、链完整",
+    "detail": ""
+  }
+]
