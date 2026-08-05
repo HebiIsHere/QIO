@@ -137,7 +137,7 @@ guide.getRange("A1:A22").format.columnWidth = 26;
 guide.getRange("B1:D22").format.columnWidth = 100;
 
 // ---- 导出 ----
-const outDir = "C:/Users/zxy/Documents/Front agent/smart-agent/docs";
+const outDir = "C:/Users/zxy/Documents/Front agent/qio/docs";
 await fs.mkdir(outDir, { recursive: true });
 const output = await SpreadsheetFile.exportXlsx(wb);
 await output.save(`${outDir}/e2e-test-checklist.xlsx`);

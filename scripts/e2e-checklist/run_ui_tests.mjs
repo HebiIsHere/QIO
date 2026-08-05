@@ -120,4 +120,4 @@ try {
 } finally {
   await browser.close();
 }
-writeFileSync("C:/Users/zxy/Documents/Front agent/smart-agent/scripts/e2e-checklist/results_ui.json", JSON.stringify(RESULTS, null, 2), "utf8");
+writeFileSync("C:/Users/zxy/Documents/Front agent/qio/scripts/e2e-checklist/results_ui.json", JSON.stringify(RESULTS, null, 2), "utf8");
