@@ -22,7 +22,7 @@ from agent.services.app import AppContext
 
 
 def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
-    app = FastAPI(title="smart-agent", version="0.1.0")
+    app = FastAPI(title="QIO", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # local desktop app: frontend dev origin

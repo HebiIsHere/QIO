@@ -33,3 +33,6 @@ frontend/e2e-shots/
 
 # 检查清单生成物
 *.inspect.ndjson
+
+# 运行期 pid 文件
+scripts/.e2e-pids

@@ -227,7 +227,7 @@ async def test_lifecycle_credential_grant(db_conn: sqlite3.Connection):
         GOOD_PROPOSAL["tool"],
         name="weather_fetch",
         credential_ref="weather-key",
-        code="def run(**kwargs):\n    import os\n    return {'has_key': bool(os.environ.get('SMART_AGENT_KEY_WEATHER_KEY'))}",
+        code="def run(**kwargs):\n    import os\n    return {'has_key': bool(os.environ.get('QIO_KEY_WEATHER_KEY'))}",
         tests=[{"name": "no_key_in_sandbox", "input": {}, "expect": {"has_key": False}}],
     )
     bus = EventBus()

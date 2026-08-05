@@ -39,11 +39,11 @@ def wait_healthy(base: str, timeout_s: float = 15.0) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="sa-sse-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="qio-sse-") as tmp:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(SRC)
-        env["SMART_AGENT_PORT"] = str(PORT)
-        env["SMART_AGENT_DATA_DIR"] = tmp
+        env["QIO_PORT"] = str(PORT)
+        env["QIO_DATA_DIR"] = tmp
 
         proc = subprocess.Popen(
             [

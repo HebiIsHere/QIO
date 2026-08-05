@@ -38,7 +38,7 @@ class CodeTool(Tool):
             if secret is None:
                 return ToolResult(ok=False, error="referenced credential unavailable")
             key = self.definition.credential_ref.upper().replace("-", "_")
-            extra_env[f"SMART_AGENT_KEY_{key}"] = secret
+            extra_env[f"QIO_KEY_{key}"] = secret
         result = await self.sandbox.execute(
             self.definition.code, kwargs, extra_env=extra_env
         )

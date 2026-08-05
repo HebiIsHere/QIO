@@ -103,7 +103,7 @@ def test_snapshot_env_injection(store: CredentialStore, policy: CredentialPolicy
     store.create("main-key", "sk-real", tags=["main-loop"])
     snap = policy.snapshot("main-loop", ["main-loop"])
     env = snap.env({"main-key": store.get_secret("main-key") or ""})
-    assert env["SMART_AGENT_KEY_MAIN_KEY"] == "sk-real"
+    assert env["QIO_KEY_MAIN_KEY"] == "sk-real"
 
 
 def test_duplicate_create_rejected(store: CredentialStore):

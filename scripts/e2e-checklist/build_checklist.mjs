@@ -17,14 +17,14 @@ const sheet = wb.worksheets.add("端到端测试清单");
 wb.worksheets.add("使用说明");
 
 // ---- 标题区 ----
-sheet.getRange("A1:M1").values = [["Smart Agent 端到端测试清单"]];
+sheet.getRange("A1:M1").values = [["QIO 端到端测试清单"]];
 sheet.getRange("A1:M1").merge?.();
 sheet.getRange("A1").format.font = { bold: true, size: 16, color: "#FFFFFF" };
 sheet.getRange("A1").format.fill = "#1c2c55";
 sheet.getRange("A1").format.rowHeight = 30;
 
 sheet.getRange("A2:M2").values = [[
-  `项目：Smart Agent · 版本 v0.7 · 用例总数 ${CASES.length} · 生成日期 2026-08-03`,
+  `项目：QIO · 版本 v0.7 · 用例总数 ${CASES.length} · 生成日期 2026-08-03`,
   "", "", "", "", "", "", "", "", "", "", "", "",
 ]];
 sheet.getRange("A2").format.font = { italic: true, size: 10, color: "#8fa8e0" };
@@ -97,7 +97,7 @@ sheet.getRange(`A3:M${lastRow}`).autoFilter = true;
 // ---- 使用说明 sheet ----
 const guide = wb.worksheets.getItem("使用说明");
 const guideRows = [
-  ["Smart Agent 端到端测试清单 · 使用说明", "", "", ""],
+  ["QIO 端到端测试清单 · 使用说明", "", "", ""],
   ["", "", "", ""],
   ["一、编号规则", "", "", ""],
   ["1. 编号格式：模块前缀-三位序号，如 SYS-001、CRED-001、TURN-001。", "", "", ""],

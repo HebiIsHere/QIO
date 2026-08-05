@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_NAME = "smart-agent"
+APP_NAME = "qio"
 DEFAULT_PORT = 8734
 
 
@@ -24,25 +24,25 @@ def _env_path(name: str, default: Path) -> Path:
 
 @dataclass
 class Settings:
-    """Runtime settings. Data lives in APPDATA/smart-agent by default."""
+    """Runtime settings. Data lives in APPDATA/qio by default."""
 
     data_dir: Path = field(default_factory=default_data_dir)
-    host: str = field(default_factory=lambda: os.environ.get("SMART_AGENT_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.environ.get("SMART_AGENT_PORT", DEFAULT_PORT)))
-    log_level: str = field(default_factory=lambda: os.environ.get("SMART_AGENT_LOG", "INFO"))
+    host: str = field(default_factory=lambda: os.environ.get("QIO_HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: int(os.environ.get("QIO_PORT", DEFAULT_PORT)))
+    log_level: str = field(default_factory=lambda: os.environ.get("QIO_LOG", "INFO"))
 
     def __post_init__(self) -> None:
-        override = os.environ.get("SMART_AGENT_DATA_DIR")
+        override = os.environ.get("QIO_DATA_DIR")
         if override:
             self.data_dir = Path(override)
 
     @property
     def db_path(self) -> Path:
-        return _env_path("SMART_AGENT_DB", self.data_dir / "app.db")
+        return _env_path("QIO_DB", self.data_dir / "app.db")
 
     @property
     def archive_dir(self) -> Path:
-        return _env_path("SMART_AGENT_ARCHIVE", self.data_dir / "archive")
+        return _env_path("QIO_ARCHIVE", self.data_dir / "archive")
 
     @property
     def config_path(self) -> Path:

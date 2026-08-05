@@ -1,7 +1,7 @@
 [package]
-name = "smart-agent"
+name = "qio"
 version = "0.1.0"
-description = "Smart Agent desktop shell"
+description = "QIO desktop shell"
 edition = "2021"
 
 [build-dependencies]

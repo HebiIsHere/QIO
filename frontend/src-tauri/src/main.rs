@@ -1,11 +1,11 @@
-//! Smart Agent desktop shell.
+//! QIO desktop shell.
 //!
 //! Architecture: this Rust process is a thin shell. It launches the Python
 //! backend (uvicorn + SSE) as a child process and renders the Vue UI in a
 //! WebView. The frontend talks to the backend over localhost HTTP/SSE.
 //!
 //! - Debug builds: spawn the Python backend directly from the repo layout.
-//! - Release builds: spawn the bundled sidecar (smart-agent-backend).
+//! - Release builds: spawn the bundled sidecar (qio-backend).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -50,7 +50,7 @@ fn backend_launch(app: &tauri::AppHandle) -> Result<CommandChild, String> {
     } else {
         let (mut rx, child) = app
             .shell()
-            .sidecar("smart-agent-backend")
+            .sidecar("qio-backend")
             .map_err(|e| format!("sidecar setup failed: {e}"))?
             .spawn()
             .map_err(|e| format!("sidecar spawn failed: {e}"))?;

@@ -11,8 +11,8 @@ NODE = r"C:\Program Files\nodejs\node.exe"
 
 backend_env = dict(os.environ)
 backend_env["PYTHONPATH"] = str(ROOT / "backend" / "src")
-backend_env["SMART_AGENT_PORT"] = "8734"
-backend_env["SMART_AGENT_DATA_DIR"] = str(Path(os.environ.get("TEMP", ".")) / "sa-e2e")
+backend_env["QIO_PORT"] = "8734"
+backend_env["QIO_DATA_DIR"] = str(Path(os.environ.get("TEMP", ".")) / "qio-e2e")
 
 backend = subprocess.Popen(
     [PY, "-m", "uvicorn", "agent.main:create_app", "--factory",

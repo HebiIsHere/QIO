@@ -66,7 +66,7 @@ class Snapshot:
         for ref in self.refs:
             secret = secrets.get(ref.key_id)
             if secret is not None:
-                env[f"SMART_AGENT_KEY_{ref.key_id.upper().replace('-', '_')}"] = secret
+                env[f"QIO_KEY_{ref.key_id.upper().replace('-', '_')}"] = secret
         return env
 
 

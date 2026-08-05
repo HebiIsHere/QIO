@@ -18,7 +18,7 @@ from typing import Any
 import keyring
 from keyring.backends.fail import Keyring as FailKeyring
 
-SERVICE_NAME = "smart-agent"
+SERVICE_NAME = "qio"
 
 
 def _now() -> str:

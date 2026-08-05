@@ -1,4 +1,4 @@
-# Smart Agent 架构文档
+# QIO 架构文档
 
 版本：v0.7（M0–M11 完成，2026-08-03）
 状态：M0–M11 已实现并验证；M12 离线任务 v1.5 只设计
@@ -7,7 +7,7 @@
 
 ## 1. 项目定位
 
-Smart Agent 是一个本地优先、长对话场景的 agent 应用。核心目标：
+QIO 是一个本地优先、长对话场景的 agent 应用。核心目标：
 
 - 用户能在同一个地方长时间对话，对话以网状话题结构组织，而非线性会话列表
 - agent 拥有记忆域与知识域双基础架构，记忆由主模型写入、小模型只做判断
@@ -66,7 +66,7 @@ Smart Agent 是一个本地优先、长对话场景的 agent 应用。核心目�
 ### 4.1 项目结构
 
 ```
-smart-agent/
+qio/
 ├── backend/
 │   ├── pyproject.toml
 │   ├── src/agent/
@@ -133,7 +133,7 @@ EventBus：订阅者扇出 + 50 条重放缓冲，断线重连后补齐最近状
 
 ### 4.4 凭据体系（BYOK）
 
-- 密钥只进 keyring（service=smart-agent, username=key_id），元数据进 SQLite，密钥永不出现在日志/事件/API 响应
+- 密钥只进 keyring（service=qio, username=key_id），元数据进 SQLite，密钥永不出现在日志/事件/API 响应
 - 能力标签：main-loop / subagent / vision / video / audio / research / embedding + 自定义
 - 授权（方案 C）：请求方能力标签 ∩ Key.tags → 候选；Key.scope 为空（类别默认）或包含请求方 → 通过；取最严格交集
 - 多 Key 命中：剩余预算优先，用户可固定单 Key
@@ -160,8 +160,8 @@ EventBus：订阅者扇出 + 50 条重放缓冲，断线重连后补齐最近状
 ### 4.7 前端与 Tauri 壳
 
 - Vue 空壳：SSE 连接（14 类型监听）、事件流展示、测试发布按钮
-- Tauri 壳（Rust）：setup 时启动 Python sidecar，退出时 kill；debug 直接跑 python 命令，release 跑打包 sidecar（externalBin 已启用，binaries/smart-agent-backend-x86_64-pc-windows-msvc.exe，56.7 MB）
-- 数据目录：`%APPDATA%/smart-agent/`（app.db、archive/、config.toml、logs/），后端独占管理
+- Tauri 壳（Rust）：setup 时启动 Python sidecar，退出时 kill；debug 直接跑 python 命令，release 跑打包 sidecar（externalBin 已启用，binaries/qio-backend-x86_64-pc-windows-msvc.exe，56.7 MB）
+- 数据目录：`%APPDATA%/qio/`（app.db、archive/、config.toml、logs/），后端独占管理
 
 ### 4.8 选择器（M5）
 
@@ -205,7 +205,7 @@ EventBus：订阅者扇出 + 50 条重放缓冲，断线重连后补齐最近状
 - 生命周期：主模型提案（解释 + 工具定义 JSON 契约）→ 本地 schema 校验 → 确定性交叉测试（沙箱执行 + 断言比对）→ 审批段 1（工具创建）→ 审批段 2（凭据授权，仅当引用凭据）→ 并列注册
 - 工具定义契约：name（snake_case）/ description / parameters（JSON Schema）/ code（纯函数，沙箱执行）/ tool_type（function | subagent）/ credential_ref / tests（≥1 确定性用例）
 - 沙箱：默认受限子进程（临时目录、最小环境变量、超时、输出捕获）；Docker 可选（--network none），auto 自检选档
-- 函数型工具：CodeTool 沙箱执行；引用凭据时授权后运行时注入环境变量（SMART_AGENT_KEY_*）
+- 函数型工具：CodeTool 沙箱执行；引用凭据时授权后运行时注入环境变量（QIO_KEY_*）
 - 子 agent 型工具：注册契约完整（模型/Key 引用），独立循环执行 v1.5 提供（v1 为 Stub，执行报明确错误）
 - 凭据授权：授权后 scope 收窄为 [tool_name]（方案 C 最严格交集）
 - 审批服务：APPROVAL_REQUIRED 发布 → 前端 POST /api/approvals/{id}/respond → APPROVAL_RESULT；超时默认 300s

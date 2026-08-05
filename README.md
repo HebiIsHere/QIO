@@ -1,4 +1,4 @@
-# Smart Agent
+# QIO
 
 一个长对话场景的本地优先 agent：agentloop 主循环 + 记忆/知识双域 + 网状话题导航 + 可自主创建工具。
 
@@ -8,7 +8,7 @@
 
 - 后端：Python 3.11+ / FastAPI / openai SDK，本地 HTTP + SSE 服务（sidecar）
 - 前端：Tauri 2 壳 + Vue 3 + Vite + TypeScript + Pinia
-- 存储：SQLite（WAL），数据目录默认 `%APPDATA%/smart-agent`
+- 存储：SQLite（WAL），数据目录默认 `%APPDATA%/qio`
 
 ## 目录
 

@@ -1,5 +1,5 @@
 [project]
-name = "smart-agent"
+name = "qio"
 version = "0.1.0"
 description = "Agent with agentloop, dual memory-knowledge domains, self-created tools"
 requires-python = ">=3.11"

@@ -5,7 +5,7 @@ $backend = Join-Path $root 'backend'
 $binaries = Join-Path $root 'frontend\src-tauri\binaries'
 
 Set-Location $backend
-& $py -m PyInstaller --noconfirm --onefile --name smart-agent-backend `
+& $py -m PyInstaller --noconfirm --onefile --name qio-backend `
   --collect-all tiktoken `
   --hidden-import keyring.backends.Windows `
   --hidden-import uvicorn.logging `
@@ -18,6 +18,6 @@ Set-Location $backend
 if ($LASTEXITCODE -ne 0) { Write-Host "PyInstaller failed: $LASTEXITCODE"; exit 1 }
 
 New-Item -ItemType Directory -Force -Path $binaries | Out-Null
-$target = Join-Path $binaries 'smart-agent-backend-x86_64-pc-windows-msvc.exe'
-Copy-Item (Join-Path $backend 'dist-sidecar\smart-agent-backend.exe') $target -Force
+$target = Join-Path $binaries 'qio-backend-x86_64-pc-windows-msvc.exe'
+Copy-Item (Join-Path $backend 'dist-sidecar\qio-backend.exe') $target -Force
 Write-Host "sidecar written: $target ($([math]::Round((Get-Item $target).Length / 1MB, 1)) MB)"
