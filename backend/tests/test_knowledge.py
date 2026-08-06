@@ -118,20 +118,30 @@ def test_revoke_and_expire_leave_injection_surface(
 def test_injection_filter_and_grouping(
     knowledge: KnowledgeService, db_conn: sqlite3.Connection
 ):
+    from datetime import datetime, timezone
+    from agent.knowledge.inject import InjectionSource
+
+    now = datetime.now(timezone.utc).isoformat()
+    db_conn.execute(
+        "INSERT OR IGNORE INTO nodes (id, type, name, meta, created_at, updated_at) "
+        "VALUES ('t1', 'topic', '测试话题', '{}', ?, ?)",
+        (now, now),
+    )
     source = InjectionSource(db_conn)
     for category, content in (
         ("general_fact", "事实"),
         ("tool_experience", "经验"),
         ("user_profile", "画像"),
     ):
-        item = knowledge.create(category=category, content=content)
+        item = knowledge.create(category=category, content=content, node_ids=["t1"])
         knowledge.submit(item.id)
         knowledge.verify(item.id, verified_by="user" if category == "user_profile" else "system")
         knowledge.activate(item.id)
     assert len(source.list_active(category="general_fact")) == 1
-    grouped = source.by_category()
-    assert set(grouped.keys()) == {"general_fact", "tool_experience", "user_profile"}
-    excluded = source.list_active(exclude_ids={grouped["user_profile"][0]["id"]})
+    # node attachment filtering (v3)
+    topic_items = source.list_active_for_node("t1")
+    assert len(topic_items) >= 1
+    excluded = source.list_active(exclude_ids={topic_items[0]["id"]})
     assert len(excluded) == 2
 
 

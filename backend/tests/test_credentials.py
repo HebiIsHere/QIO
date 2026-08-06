@@ -110,3 +110,8 @@ def test_duplicate_create_rejected(store: CredentialStore):
     store.create("k1", "s1", tags=["main-loop"])
     with pytest.raises(ValueError):
         store.create("k1", "s2", tags=["main-loop"])
+def test_create_rejects_empty_key_id(store: CredentialStore):
+    with pytest.raises(ValueError):
+        store.create("", "sk-secret", tags=["main-loop"])
+    with pytest.raises(ValueError):
+        store.create("   ", "sk-secret", tags=["main-loop"])

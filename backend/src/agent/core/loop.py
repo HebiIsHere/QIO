@@ -14,7 +14,7 @@ from enum import Enum
 
 from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completion
 from agent.api.events import EventType, make_event
-from agent.api.server import EventBus
+from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
 from agent.tools.registry import ToolRegistry
 
@@ -49,6 +49,8 @@ class AgentLoop:
         max_iterations: int | None = None,
         token_budget: int | None = None,
         force_continue: bool = False,
+        tool_trace=None,
+        tool_selector=None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -62,6 +64,13 @@ class AgentLoop:
         )
         self.force_continue = force_continue
         self._warnings: list[str] = []
+        self._notices: list[str] = []
+        self.tool_trace = tool_trace
+        self.tool_selector = tool_selector
+
+    def push_notice(self, text: str) -> None:
+        """Queue a system notice; injected before the next PLANNING step."""
+        self._notices.append(text)
 
     # -- event helpers ----------------------------------------------------
 
@@ -90,6 +99,12 @@ class AgentLoop:
             if self.budget.exhausted and not self.force_continue:
                 phase = LoopPhase.STOPPED
                 break
+
+            if self._notices:
+                messages.append(
+                    ChatMessage(role="system", content="\n".join(self._notices))
+                )
+                self._notices.clear()
 
             # PLANNING
             completion = await self._plan(messages)
@@ -122,6 +137,16 @@ class AgentLoop:
                         "content_preview": result.content[:200],
                     },
                 )
+                if self.tool_trace is not None:
+                    try:
+                        self.tool_trace({
+                            "tool_name": call.name,
+                            "arguments": call.arguments,
+                            "ok": result.ok,
+                            "result": result.content,
+                        })
+                    except Exception:  # noqa: BLE001 - tracing must not break the loop
+                        logger.warning("tool trace failed for %s", call.name, exc_info=True)
                 if not result.ok:
                     self._warn(f"tool {call.name} failed: {result.error}")
                 messages.append(
@@ -151,8 +176,25 @@ class AgentLoop:
     # -- steps ------------------------------------------------------------
 
     async def _plan(self, messages: list[ChatMessage]) -> Completion:
+        tools = self.registry.specs()
+        if self.tool_selector is not None:
+            # route tools by the current query context (last user + tool message)
+            query_parts: list[str] = []
+            for m in reversed(messages):
+                if m.role == "user" and m.content:
+                    query_parts.append(m.content)
+                    break
+            for m in reversed(messages):
+                if m.role == "tool" and m.content:
+                    query_parts.append(m.content[:200])
+                    break
+            query = "\n".join(reversed(query_parts))[:500]
+            try:
+                tools = self.tool_selector(query)
+            except Exception:  # noqa: BLE001 - routing must never break planning
+                logger.warning("tool routing failed; falling back to full set", exc_info=True)
         try:
-            return await self.adapter.complete(messages, self.registry.specs())
+            return await self.adapter.complete(messages, tools)
         except Exception as exc:  # adapter-level failure ends the turn
             self._warn(f"planning failed: {exc}")
             await self._emit(

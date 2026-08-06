@@ -48,15 +48,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, topic_id: topicId ?? null }),
     }),
-  respondApproval: (approvalId: string, decision: string) =>
+  respondApproval: (approvalId: string, decision: string, overrides?: Record<string, unknown>) =>
     request<{ ok: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
       method: "POST",
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify(overrides ? { decision, overrides } : { decision }),
+    }),
+  setAnchor: (topicId: string, fragmentId?: string | null) =>
+    request<{ ok: boolean; topic_id: string; fragment_id: string | null }>("/api/anchor", {
+      method: "POST",
+      body: JSON.stringify({ topic_id: topicId, fragment_id: fragmentId ?? null }),
     }),
   getSessionContext: () =>
     request<{
       topic_id: string;
       topic_name: string;
+      anchor_fragment: { id: string; title: string | null } | null;
       messages: {
         id: string;
         role: string;
@@ -70,6 +76,31 @@ export const api = {
   getTopicDetail: (topicId: string) =>
     request<TopicDetail>(`/api/graph/topics/${encodeURIComponent(topicId)}`),
   getPositions: () => request<{ topics: TopicPosition[] }>("/api/graph/positions"),
+  reviseKnowledge: (knowledgeId: string, content: string) =>
+    request<{ ok: boolean; knowledge_id: string }>(
+      `/api/knowledge/${encodeURIComponent(knowledgeId)}/revise`,
+      { method: "POST", body: JSON.stringify({ content }) },
+    ),
+  revokeKnowledge: (knowledgeId: string) =>
+    request<{ ok: boolean }>(`/api/knowledge/${encodeURIComponent(knowledgeId)}/revoke`, {
+      method: "POST",
+    }),
+  getMemorySettings: () =>
+    request<{ fragment_max_messages: number }>("/api/settings/memory"),
+  runMaintenance: () =>
+    request<{ ok: boolean; started: boolean }>("/api/maintenance/run", { method: "POST" }),
+  getMaintenanceSettings: () =>
+    request<{ enabled: boolean; interval_hours: number }>("/api/settings/maintenance"),
+  updateMaintenanceSettings: (body: { enabled?: boolean; interval_hours?: number }) =>
+    request<{ enabled: boolean; interval_hours: number }>("/api/settings/maintenance", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  updateMemorySettings: (fragmentMaxMessages: number) =>
+    request<{ ok: boolean; fragment_max_messages: number }>("/api/settings/memory", {
+      method: "PUT",
+      body: JSON.stringify({ fragment_max_messages: fragmentMaxMessages }),
+    }),
 };
 
 export interface TopicFingerprint {

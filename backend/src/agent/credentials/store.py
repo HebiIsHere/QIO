@@ -93,6 +93,8 @@ class CredentialStore:
         note: str | None = None,
         triggered_by: str = "user",
     ) -> int:
+        if not key_id or not key_id.strip():
+            raise ValueError("key_id must not be empty")
         if self._row(key_id) is not None:
             raise ValueError(f"credential already exists: {key_id}")
         now = _now()

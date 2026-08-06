@@ -1,0 +1,135 @@
+[
+  {
+    "id": "MEM-A1",
+    "title": "冷启动注入降级",
+    "passed": true,
+    "actual": "无短期块=True text='【长期记忆注入】\\n[记忆·用户因师哥开门指导失误而愤怒] 对话开始于用户问候，助'",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A1b",
+    "title": "锚点建立",
+    "passed": true,
+    "actual": "active=topic_d4e6fe46ad30",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A2",
+    "title": "短期记忆原文注入",
+    "passed": true,
+    "actual": "注入含短期块=True 含原文=True",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A3",
+    "title": "话题预判主话题",
+    "passed": true,
+    "actual": "main=topic_02945f7060bd backend=onnx scores={'topic_86c8b603cd65': 0.246, 'topic_02945f7060bd': 0.84, 'topic_a8aec9ff02c0': 0.219, 'topic_04eb6a0a6593': 0.602, 'topic_91c441e06b7e': 0.244, 'topic_f01251f7c773': 0.244, 'topic_d365a597ba14': 0.197, 'topic_8b3d8aa56979': 0.616, 'topic_7044e6a94b8b': 0.47}",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A3b",
+    "title": "疑似新话题标记",
+    "passed": true,
+    "actual": "is_new=True main=None",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A4",
+    "title": "分档 5 条触发封块",
+    "passed": true,
+    "actual": "4条时=False 5条时=True",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A5",
+    "title": "switch_topic 锚点+related边",
+    "passed": true,
+    "actual": "ok=True active=topic_beea3bdb73b8 edge=1.0",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A5b",
+    "title": "related 边权重累加",
+    "passed": true,
+    "actual": "weight=2.0",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A5c",
+    "title": "create_topic 创建并切换",
+    "passed": true,
+    "actual": "ok=True active=topic_51e67385a455",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A6",
+    "title": "封块：摘要+索引+实体",
+    "passed": true,
+    "actual": "closed=True idx=1 entity=有",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A6b",
+    "title": "知识分层验证",
+    "passed": true,
+    "actual": "states={'agent_self': 'pending_review', 'general_fact': 'active', 'user_profile': 'pending_review'}",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A6c",
+    "title": "话题向量刷新",
+    "passed": true,
+    "actual": "topic_vector=有",
+    "detail": ""
+  },
+  {
+    "id": "MEM-A7",
+    "title": "向量后端加载",
+    "passed": true,
+    "actual": "embedding=True backend=onnx",
+    "detail": ""
+  },
+  {
+    "id": "MEM-B0",
+    "title": "后端可达性",
+    "passed": true,
+    "actual": "http://127.0.0.1:8734 可达",
+    "detail": ""
+  },
+  {
+    "id": "MEM-B0",
+    "title": "真实模型凭据",
+    "passed": true,
+    "actual": "main-loop key 就绪",
+    "detail": ""
+  },
+  {
+    "id": "MEM-B1",
+    "title": "短期连续性：引用近期细节",
+    "passed": true,
+    "actual": "回复命中 ['清淡', '不吃辣', '辣']（尝试 2 次），回复长度 170",
+    "detail": "最终回复: 根据你刚才说的，你的饮食习惯有两个主要变化：\n\n1. **口味变清淡了**：你开始吃清淡饮食，完全不吃辣了\n2. **讨厌喝牛奶**：明确表示最讨厌喝牛奶\n\n这两个变化都挺明显的，特别是不吃辣这个——我记得你以前很喜欢火锅，还特别喜欢吃大份的肥羊，现在完全不吃辣了，这个转变真的很大呢！\n\n是最近身体在调整，还是发现了清淡饮食的美味之处？😊"
+  },
+  {
+    "id": "MEM-B2",
+    "title": "模型自主话题切换",
+    "passed": true,
+    "actual": "观察完成: 工具调用=['switch_topic'] 锚点变化=True（已切换）",
+    "detail": "工具调用=['switch_topic'] 锚点变化=True（已切换）"
+  },
+  {
+    "id": "MEM-B3",
+    "title": "模型自主创建话题",
+    "passed": true,
+    "actual": "观察完成: 工具调用=['create_topic'] 新话题节点=有",
+    "detail": "工具调用=['create_topic'] 新话题节点=有"
+  },
+  {
+    "id": "MEM-B4",
+    "title": "跨轮次记忆引用",
+    "passed": true,
+    "actual": "命中牛奶=True（尝试 2 次）",
+    "detail": "最终回复: 当然记得啦！你最讨厌喝**牛奶** 🥛🚫\n\n而且你最近开始吃清淡饮食，完全不吃辣了。口味变化还挺大的呢～是身体在调整还是发现了清淡饮食的好处呀？😊"
+  }
+]

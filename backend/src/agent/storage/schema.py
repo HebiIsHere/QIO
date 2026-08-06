@@ -1,4 +1,4 @@
-"""Schema definitions and ordered migrations.
+﻿"""Schema definitions and ordered migrations.
 
 Schema version 1 covers the 9 tables agreed in design review:
 nodes / edges / fragments / messages / memory_index / knowledge /
@@ -156,6 +156,79 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_entity_mentions_name ON entity_mentions(entity_name)",
+        ],
+    ),
+    (
+        3,
+        [
+            # knowledge entries attach to any graph node (topic/entity/user)
+            "ALTER TABLE knowledge ADD COLUMN node_ids TEXT NOT NULL DEFAULT '[]'",
+            # migrate existing topic_id values into node_ids (json_array -> valid JSON)
+            "UPDATE knowledge SET node_ids = json_array(topic_id) WHERE topic_id IS NOT NULL AND node_ids = '[]'",
+
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_node ON knowledge(node_ids)",
+        ],
+    ),
+    (
+        4,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS embeddings (
+                id         TEXT PRIMARY KEY,
+                doc_type   TEXT NOT NULL CHECK (doc_type IN ('memory_index','topic')),
+                ref_id     TEXT NOT NULL,
+                model      TEXT NOT NULL,
+                dims       INTEGER NOT NULL,
+                vector     BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (doc_type, ref_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_ref ON embeddings(doc_type, ref_id)",
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
+    (
+        5,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS tools (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL UNIQUE,
+                definition TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'active'
+                           CHECK (status IN ('active','removed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_tools_status ON tools(status)",
+        ],
+    ),
+
+    (
+        6,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id         TEXT PRIMARY KEY,
+                topic_id   TEXT,
+                tool_name  TEXT NOT NULL,
+                arguments  TEXT NOT NULL DEFAULT '{}',
+                result     TEXT NOT NULL DEFAULT '',
+                ok         INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_topic ON tool_calls(topic_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at)",
         ],
     ),
 ]

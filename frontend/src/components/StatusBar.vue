@@ -10,6 +10,9 @@ const session = useSessionStore();
   <div class="status-bar">
     <span class="dot" :class="{ on: events.connected }"></span>
     <span class="text">{{ events.connected ? "已连接" : "连接中…" }}</span>
+    <span v-if="session.anchorFragment?.title" class="focus" :title="'聚焦片段: ' + session.anchorFragment.id">
+      聚焦：{{ session.anchorFragment.title }}
+    </span>
     <span v-if="session.turnRunning" class="running">agent 运行中…</span>
     <span v-if="session.lastError" class="error" :title="session.lastError">出错</span>
     <router-link to="/settings" class="settings-link">设置</router-link>
@@ -26,6 +29,7 @@ const session = useSessionStore();
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .dot.on { background: var(--success); }
 .running { color: var(--warning); }
+.focus { color: var(--accent); font-weight: 600; }
 .error { color: var(--danger); }
 .settings-link { margin-left: auto; color: var(--link); text-decoration: none; cursor: pointer; }
 </style>

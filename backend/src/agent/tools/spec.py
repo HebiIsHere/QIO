@@ -22,6 +22,14 @@ class TestCase(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
 
 
+class SubagentBudget(BaseModel):
+    """Execution budget for subagent tools (independent of the main loop)."""
+
+    max_iterations: int = Field(default=5, ge=1, le=50)
+    max_tokens: int = Field(default=100_000, ge=1_000)
+    output_limit_chars: int = Field(default=2000, ge=100, le=50_000)
+
+
 class ToolDefinition(BaseModel):
     name: str
     description: str = Field(min_length=1, max_length=500)
@@ -32,11 +40,19 @@ class ToolDefinition(BaseModel):
     credential_ref: str | None = None
     model: str | None = None  # subagent tools: which model to run
     tests: list[TestCase] = Field(default_factory=list, max_length=20)
+    subagent_budget: SubagentBudget | None = None
 
     @model_validator(mode="after")
     def _require_code_for_functions(self) -> "ToolDefinition":
         if self.tool_type == "function" and not self.code.strip():
             raise ValueError("function tools require code")
+        if self.tool_type == "subagent":
+            if not self.credential_ref:
+                raise ValueError("subagent tools require credential_ref")
+            if not self.model:
+                raise ValueError("subagent tools require model")
+            if self.subagent_budget is None:
+                self.subagent_budget = SubagentBudget()
         return self
 
 

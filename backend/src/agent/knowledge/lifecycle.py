@@ -67,6 +67,7 @@ class KnowledgeItem:
     content: str
     supersedes_id: str | None
     topic_id: str | None
+    node_ids: list[str]
     entity_ids: list[str]
     provenance: dict
     confidence: float | None
@@ -89,6 +90,7 @@ class KnowledgeService:
         category: str,
         content: str,
         topic_id: str | None = None,
+        node_ids: list[str] | None = None,
         entity_ids: list[str] | None = None,
         provenance: dict | None = None,
         export: bool = False,
@@ -102,16 +104,21 @@ class KnowledgeService:
             raise ValueError(f"supersedes target not found: {supersedes_id}")
         now = _now()
         knowledge_id = new_id()
+        # node_ids is the source of truth; topic_id remains for compatibility
+        resolved_nodes = list(node_ids or [])
+        if topic_id is not None and topic_id not in resolved_nodes:
+            resolved_nodes.append(topic_id)
         self.conn.execute(
             "INSERT INTO knowledge (id, category, state, content, supersedes_id, "
-            "topic_id, entity_ids, provenance, created_at, updated_at, export) "
-            "VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "topic_id, node_ids, entity_ids, provenance, created_at, updated_at, export) "
+            "VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 knowledge_id,
                 category,
                 content,
                 supersedes_id,
                 topic_id,
+                json.dumps(resolved_nodes, ensure_ascii=False),
                 json.dumps(entity_ids or [], ensure_ascii=False),
                 json.dumps(provenance or {}, ensure_ascii=False),
                 now,
@@ -256,6 +263,7 @@ class KnowledgeService:
             content=row["content"],
             supersedes_id=row["supersedes_id"],
             topic_id=row["topic_id"],
+            node_ids=json.loads(row["node_ids"] or "[]"),
             entity_ids=json.loads(row["entity_ids"] or "[]"),
             provenance=json.loads(row["provenance"] or "{}"),
             confidence=row["confidence"],

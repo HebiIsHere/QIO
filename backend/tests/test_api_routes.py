@@ -108,3 +108,33 @@ def test_topic_detail(client):
     data = resp.json()
     assert data["name"] == "话题A"
     assert "fragments" in data and "entities" in data and "knowledge" in data
+def test_create_auto_generates_key_id_when_empty(client):
+    resp = client.post(
+        "/api/credentials",
+        json={"key_id": "", "secret": "sk-test", "tags": ["main-loop"]},
+    )
+    assert resp.status_code == 200
+    generated = resp.json()["key_id"]
+    assert generated.startswith("key_")
+    listing = client.get("/api/credentials").json()["credentials"]
+    assert listing[0]["key_id"] == generated
+def test_memory_settings_roundtrip(client):
+    resp = client.get("/api/settings/memory")
+    assert resp.status_code == 200
+    assert resp.json()["fragment_max_messages"] == 10
+
+    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 5})
+    assert resp.status_code == 200
+    assert resp.json()["fragment_max_messages"] == 5
+
+    resp = client.get("/api/settings/memory")
+    assert resp.json()["fragment_max_messages"] == 5
+
+    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 99})
+    assert resp.status_code == 400
+
+    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 0})
+    assert resp.status_code == 400
+
+    resp = client.put("/api/settings/memory", json={"fragment_max_messages": "abc"})
+    assert resp.status_code == 400

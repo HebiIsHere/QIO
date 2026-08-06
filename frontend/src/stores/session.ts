@@ -16,7 +16,7 @@ export const useSessionStore = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
     anchorFragmentId: null as string | null,
-    memoryStrength: 0.5,
+    anchorFragment: null as { id: string; title: string | null } | null,
     messages: [] as StreamMessage[],
     turnRunning: false,
     lastError: null as string | null,
@@ -61,6 +61,8 @@ export const useSessionStore = defineStore("session", {
       try {
         const ctx = await api.getSessionContext();
         this.currentTopicId = ctx.topic_id;
+        this.anchorFragment = ctx.anchor_fragment ?? null;
+        this.anchorFragmentId = ctx.anchor_fragment?.id ?? null;
         this.messages = ctx.messages.map((m) => ({
           id: m.id,
           role: m.role as StreamMessage["role"],

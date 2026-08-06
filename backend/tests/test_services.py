@@ -6,10 +6,17 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agent.graph.topics import TopicService
+from agent.knowledge.inject import InjectionSource
 from agent.memory.index import estimate_tokens
 from agent.selector.base import IndexedDoc
 from agent.selector.selector import Selector
-from agent.services.injection import BudgetConfig, InjectionAssembler, InjectionBudget
+from agent.services.injection import (
+    BudgetConfig,
+    Candidate,
+    InjectionAssembler,
+    InjectionBudget,
+    knowledge_score,
+)
 from agent.services.retrieval import Retriever
 from agent.tools.memory_search import MemorySearchTool
 
@@ -45,7 +52,6 @@ def _docs():
 
 
 def _make_retriever(db_conn: sqlite3.Connection) -> Retriever:
-    # topic nodes + fingerprint rows (fragments + memory_index)
     now = _iso(0)
     for topic_id, name in (("t_diet", "饮食偏好"), ("t_sql", "存储设计")):
         db_conn.execute(
@@ -80,58 +86,76 @@ def _make_retriever(db_conn: sqlite3.Connection) -> Retriever:
     return Retriever(selector, TopicService(db_conn))
 
 
-def test_budget_knowledge_first_and_hard_cap():
-    config = BudgetConfig(context_window=40_000, hard_cap_ratio=0.1, memory_strength=0.5)
-    assert config.hard_cap == 4000
+def test_budget_dynamic_ratio_and_unified_truncation():
+    config = BudgetConfig(context_window=40_000, budget_ratio=0.25)
+    assert config.hard_cap == 10_000
     budget = InjectionBudget(config)
-    knowledge = [
-        {"id": "k1", "category": "general_fact", "content": "事实" * 50},
-        {"id": "k2", "category": "goal", "content": "目标" * 50},
+    candidates = [
+        Candidate("knowledge", "topic", "k1", "事实" * 10, 0.9),
+        Candidate("memory", "memory", "m1", "记忆" * 5, 0.8),
+        Candidate("knowledge", "user", "k2", "画像" * 3, 0.3),
     ]
-    plan = budget.plan(knowledge, [])
-    assert len(plan.knowledge) >= 1
+    plan = budget.plan(candidates, min_score=0.05)
+    assert [i.item_id for i in plan.knowledge] == ["k1", "k2"]
+    assert [i.item_id for i in plan.memory] == ["m1"]
     assert plan.total_tokens <= config.hard_cap
-    # tiny cap truncates
-    tiny = InjectionBudget(BudgetConfig(context_window=1_000, memory_strength=1.0))
-    plan2 = tiny.plan(knowledge, [])
+    # tiny cap truncates lowest score first
+    tiny = InjectionBudget(BudgetConfig(context_window=1_000, budget_ratio=0.1))
+    plan2 = tiny.plan(candidates, min_score=0.05)
     assert plan2.total_tokens <= tiny.config.hard_cap
 
 
-def test_budget_strength_slider():
-    weak = BudgetConfig(memory_strength=0.0)
-    strong = BudgetConfig(memory_strength=1.0)
-    assert weak.knowledge_budget() == weak.knowledge_min_tokens
-    assert strong.knowledge_budget() == strong.knowledge_max_tokens
+def test_knowledge_score_surfaces():
+    query = "用户 饮食 偏好"
+    assert knowledge_score("用户偏好清淡饮食", query, "user") > knowledge_score(
+        "用户偏好清淡饮食", query, "topic"
+    )
+    assert knowledge_score("SQLite 表设计", query, "topic") < knowledge_score(
+        "用户偏好清淡饮食", query, "topic"
+    )
 
 
 def test_retriever_three_weight_ranking(db_conn: sqlite3.Connection):
     retriever = _make_retriever(db_conn)
     hits = retriever.search("用户 饮食 清淡", anchor_topic_id="t_diet", top_k=3)
     assert hits, "expected hits"
-    # fresh + anchor-topic doc ranks first despite age of the other
     assert hits[0].doc_id == "f_new"
     assert all(h.topic_id in ("t_diet", "t_sql") for h in hits)
 
 
-def test_retriever_recency_alone():
-    config = BudgetConfig.__new__(BudgetConfig)
-    # not used directly; verified via hits order in db-backed test above
-    assert True
+def test_assembler_three_surfaces(db_conn: sqlite3.Connection):
+    from agent.knowledge.lifecycle import KnowledgeService
 
-
-def test_assembler_builds_payload(db_conn: sqlite3.Connection):
-    retriever = _make_retriever(db_conn)
-    budget = InjectionBudget(BudgetConfig(context_window=100_000, memory_strength=0.5))
-    assembler = InjectionAssembler(
-        budget,
-        retriever,
-        knowledge_items=[
-            {"id": "k1", "category": "user_profile", "content": "用户偏好清淡饮食"},
-        ],
+    now = _iso(0)
+    db_conn.execute(
+        "INSERT OR IGNORE INTO nodes (id, type, name, meta, created_at, updated_at) "
+        "VALUES ('u1', 'user', '用户', '{}', ?, ?)",
+        (now, now),
     )
-    payload = assembler.build("用户 饮食 偏好", anchor_topic_id="t_diet", top_k=3)
+    ks = KnowledgeService(db_conn)
+    for content, nodes in (
+        ("用户偏好清淡饮食", ["u1"]),
+        ("饮食话题相关事实", ["t_diet"]),
+        ("牛奶相关实体知识", ["e_milk"]),
+    ):
+        item = ks.create(category="general_fact", content=content, node_ids=nodes)
+        ks.submit(item.id)
+        ks.verify(item.id, verified_by="system")
+        ks.activate(item.id)
+
+    retriever = _make_retriever(db_conn)
+    budget = InjectionBudget(BudgetConfig(context_window=100_000, budget_ratio=0.25))
+    assembler = InjectionAssembler(budget, retriever, InjectionSource(db_conn))
+    payload = assembler.build(
+        "用户 饮食 偏好",
+        topic_id="t_diet",
+        entity_ids=["e_milk"],
+        user_node_id="u1",
+        top_k=3,
+    )
     assert "长期记忆注入" in payload.text
-    assert "k1" in [i.item_id for i in payload.plan.knowledge]
+    surfaces = {i.surface for i in payload.plan.knowledge}
+    assert surfaces >= {"user", "topic"}  # entity/topic/user surfaces aggregated
     assert payload.plan.memory, "memory hits expected"
     assert payload.plan.total_tokens <= budget.config.hard_cap
 

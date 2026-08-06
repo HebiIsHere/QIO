@@ -57,6 +57,18 @@ export const useEventStore = defineStore("events", {
           );
           break;
         }
+        case "SUBAGENT_STATUS": {
+          const d = event.data as Record<string, unknown>;
+          const status = String(d.status ?? "?");
+          if (status === "started") break; // 启动不重复入列
+          session.pushTool(
+            `子任务 · ${String(d.tool ?? "?")}`,
+            Boolean(d.ok),
+            (d.error as string | null) ?? null,
+            String(d.content_preview ?? ""),
+          );
+          break;
+        }
         case "ERROR": {
           session.turnEnded();
           const d = event.data as Record<string, unknown>;

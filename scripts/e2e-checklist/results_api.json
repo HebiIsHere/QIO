@@ -24,7 +24,7 @@
     "id": "CRED-001",
     "title": "创建凭据且密钥只写不读",
     "passed": true,
-    "actual": "创建 test-e2e-f88b76 成功",
+    "actual": "创建 test-e2e-4d7f0a 成功",
     "detail": ""
   },
   {
@@ -44,15 +44,15 @@
   {
     "id": "CRED-002",
     "title": "测试连接返回模型三态",
-    "passed": true,
-    "actual": "用户Key(main-key) probe=native（真实Key，最小请求）",
+    "passed": false,
+    "actual": "{\"detail\":\"credential unavailable\"}（真实Key，最小请求）",
     "detail": ""
   },
   {
     "id": "CRED-003",
     "title": "撤销凭据后引用失效",
     "passed": true,
-    "actual": "test-e2e-f88b76 revoked",
+    "actual": "test-e2e-4d7f0a revoked",
     "detail": ""
   },
   {
@@ -65,43 +65,43 @@
   {
     "id": "TURN-001",
     "title": "发送消息并收到回复",
-    "passed": "你好！我是 Claude，一个由 Anthropic 开发的 AI 助手，擅长理解、推理和创作，随时乐意帮你解答问题、处理任务或一起探讨想法。",
-    "actual": "你好！我是 Claude，一个由 Anthropic 开发的 AI 助手，擅长理解、推理和创作，随时乐意帮你解答问题、处",
+    "passed": false,
+    "actual": "前置缺失：无活动凭据（需在设置页配置 Key 后重跑）",
     "detail": ""
   },
   {
     "id": "TURN-002",
     "title": "工具调用完整链路",
-    "passed": true,
-    "actual": "工具调用 1 次（now），无协议错误",
+    "passed": false,
+    "actual": "前置缺失：无活动凭据",
     "detail": ""
   },
   {
     "id": "TURN-003",
     "title": "无凭据时的优雅降级",
     "passed": true,
-    "actual": "无凭据路径由单元测试覆盖（test_api_routes::test_turn_without_credential_warns）；当前环境凭据状态：有",
+    "actual": "无凭据路径由单元测试覆盖（test_api_routes::test_turn_without_credential_warns）；当前环境凭据状态：无",
     "detail": ""
   },
   {
     "id": "MEM-001",
     "title": "对话原文写入记忆",
-    "passed": true,
-    "actual": "messages 表共 32 条对话消息",
+    "passed": false,
+    "actual": "messages 表共 0 条对话消息",
     "detail": ""
   },
   {
     "id": "MEM-002",
     "title": "封块与摘要生成",
-    "passed": true,
-    "actual": "已封块片段 5，机械索引 5 条（摘要需真实模型触发封块，见说明）",
+    "passed": false,
+    "actual": "已封块片段 0，机械索引 0 条（摘要需真实模型触发封块，见说明）",
     "detail": ""
   },
   {
     "id": "MEM-003",
     "title": "历史记忆检索",
-    "passed": true,
-    "actual": "memory_search 调用 4 次",
+    "passed": false,
+    "actual": "前置缺失：无活动凭据",
     "detail": ""
   },
   {

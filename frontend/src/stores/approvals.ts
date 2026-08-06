@@ -20,12 +20,12 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.queue.some((a) => a.approval_id === approvalId)) return;
       this.queue.push({ approval_id: approvalId, kind, payload });
     },
-    async respond(decision: "approved" | "rejected") {
+    async respond(decision: "approved" | "rejected", overrides?: Record<string, unknown>) {
       const item = this.current;
       if (!item) return;
       this.responding = item.approval_id;
       try {
-        await api.respondApproval(item.approval_id, decision);
+        await api.respondApproval(item.approval_id, decision, overrides);
       } finally {
         this.responding = null;
         this.queue.shift();

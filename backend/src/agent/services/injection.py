@@ -1,10 +1,10 @@
-"""Injection budget and assembly.
+"""Injection: dynamic budget, three-surface aggregation, unified truncation.
 
-Agreed design:
-- knowledge domain: 2-4K token budget (relaxed), filled first;
-- memory domain: relevance-threshold driven, uses the remaining budget;
-- hard cap: context_window x 10% (dynamic);
-- frontend memory-strength slider maps to the knowledge budget point.
+Design (per plan):
+- budget = model context window x ratio (default 25%), resolved dynamically;
+- knowledge candidates are gathered from three surfaces: topic / entity / user;
+- memory candidates come from the retriever (topic affinity weighted);
+- all candidates are merged, ranked by score, and truncated by the budget.
 """
 
 from __future__ import annotations
@@ -14,32 +14,34 @@ from dataclasses import dataclass, field
 from agent.knowledge.inject import InjectionSource
 from agent.memory.index import estimate_tokens
 from agent.services.retrieval import RetrievalHit, Retriever
+from agent.selector.tokenize import tokenize
+
+DEFAULT_BUDGET_RATIO = 0.25
 
 
 @dataclass
 class BudgetConfig:
     context_window: int = 1_000_000
-    hard_cap_ratio: float = 0.1
-    knowledge_min_tokens: int = 2000
-    knowledge_max_tokens: int = 4000
-    memory_strength: float = 0.5  # frontend slider 0..1
+    budget_ratio: float = DEFAULT_BUDGET_RATIO
 
     @property
     def hard_cap(self) -> int:
-        return int(self.context_window * self.hard_cap_ratio)
+        return max(1, int(self.context_window * self.budget_ratio))
 
-    def knowledge_budget(self) -> int:
-        """Linear interpolation between min and max by memory strength."""
-        return int(
-            self.knowledge_min_tokens
-            + (self.knowledge_max_tokens - self.knowledge_min_tokens)
-            * max(0.0, min(1.0, self.memory_strength))
-        )
+
+@dataclass
+class Candidate:
+    source: str  # knowledge | memory
+    surface: str  # topic | entity | user | memory
+    item_id: str
+    text: str
+    score: float
 
 
 @dataclass
 class PlannedItem:
-    source: str  # knowledge | memory
+    source: str
+    surface: str
     item_id: str
     text: str
     tokens: int
@@ -50,13 +52,15 @@ class PlannedItem:
 class InjectionPlan:
     knowledge: list[PlannedItem] = field(default_factory=list)
     memory: list[PlannedItem] = field(default_factory=list)
+    short_term: list[PlannedItem] = field(default_factory=list)
     total_tokens: int = 0
     hard_cap: int = 0
     truncated: bool = False
+    needs_consolidation: bool = False
 
     @property
     def all_items(self) -> list[PlannedItem]:
-        return self.knowledge + self.memory
+        return self.short_term + self.knowledge + self.memory
 
 
 class InjectionBudget:
@@ -65,49 +69,49 @@ class InjectionBudget:
 
     def plan(
         self,
-        knowledge_items: list[dict],
-        memory_hits: list[RetrievalHit],
+        candidates: list[Candidate],
         *,
-        min_relevance: float = 0.05,
+        min_score: float = 0.0,
+        reserved: list[PlannedItem] | None = None,
     ) -> InjectionPlan:
+        """Unified ranking + truncation; short-term items are reserved first."""
         plan = InjectionPlan(hard_cap=self.config.hard_cap)
         remaining = self.config.hard_cap
-
-        # knowledge first (relaxed, fixed band)
-        knowledge_band = self.config.knowledge_budget()
-        for item in knowledge_items:
+        for item in reserved or []:
+            if remaining <= 0:
+                break
+            plan.short_term.append(item)
+            plan.total_tokens += item.tokens
+            remaining -= item.tokens
+        ordered = sorted(candidates, key=lambda c: (-c.score, c.item_id))
+        ranked_tokens = 0
+        for cand in ordered:
             if remaining <= 0:
                 plan.truncated = True
                 break
-            text = f"[知识·{item['category']}] {item['content']}"
-            tokens = estimate_tokens(text)
-            if tokens > remaining:
-                plan.truncated = True
-                break
-            plan.knowledge.append(PlannedItem("knowledge", item["id"], text, tokens))
-            plan.total_tokens += tokens
-            remaining -= tokens
-        if knowledge_band < self.config.knowledge_max_tokens and plan.total_tokens >= knowledge_band:
-            # band is a soft guide for the knowledge domain only; memory takes the rest
-            pass
-
-        # memory next: relevance-threshold driven
-        for hit in memory_hits:
-            if remaining <= 0:
-                plan.truncated = True
-                break
-            if hit.score < min_relevance:
-                break
-            text = f"[记忆·{hit.title or hit.topic_id}] {hit.preview}"
-            tokens = estimate_tokens(text)
+            if cand.score < min_score:
+                continue
+            tokens = estimate_tokens(cand.text)
             if tokens > remaining:
                 plan.truncated = True
                 continue
-            plan.memory.append(
-                PlannedItem("memory", hit.doc_id, text, tokens, score=hit.score)
+            item = PlannedItem(
+                source=cand.source,
+                surface=cand.surface,
+                item_id=cand.item_id,
+                text=cand.text,
+                tokens=tokens,
+                score=cand.score,
             )
+            if cand.source == "knowledge":
+                plan.knowledge.append(item)
+            else:
+                plan.memory.append(item)
             plan.total_tokens += tokens
+            ranked_tokens += tokens
             remaining -= tokens
+        if len(ordered) > 0 and ranked_tokens >= self.config.hard_cap * 0.9:
+            plan.needs_consolidation = True
         return plan
 
 
@@ -117,42 +121,149 @@ class InjectionPayload:
     plan: InjectionPlan
 
 
-class InjectionAssembler:
-    """Builds the injection text fed to the main loop before each turn."""
+# surface base scores: user profile is the most stable, topic the least
+SURFACE_BASE = {"user": 1.0, "entity": 0.7, "topic": 0.5, "aux_topic": 0.45}
+KEYWORD_WEIGHT = 0.5
 
+
+def knowledge_score(content: str, query: str, surface: str) -> float:
+    base = SURFACE_BASE.get(surface, 0.5)
+    query_tokens = set(tokenize(query))
+    content_tokens = set(tokenize(content))
+    if not query_tokens:
+        return base
+    overlap = len(query_tokens & content_tokens) / len(query_tokens)
+    return base + KEYWORD_WEIGHT * overlap
+
+
+class InjectionAssembler:
     def __init__(
         self,
         budget: InjectionBudget,
         retriever: Retriever,
         knowledge_source: InjectionSource | None = None,
-        knowledge_items: list[dict] | None = None,
     ) -> None:
         self.budget = budget
         self.retriever = retriever
         self.knowledge_source = knowledge_source
-        self._knowledge_items = knowledge_items
 
     def build(
         self,
         query: str,
         *,
-        anchor_topic_id: str | None = None,
+        topic_id: str | None = None,
+        aux_topic_ids: list[str] | None = None,
+        entity_ids: list[str] | None = None,
+        user_node_id: str | None = None,
         top_k: int = 6,
-        min_relevance: float = 0.05,
+        short_term: list[PlannedItem] | None = None,
+        new_topic_candidate: bool = False,
+        new_topic_reason: str = "",
+        topic_note: str = "",
+        focus_block: str = "",
     ) -> InjectionPayload:
-        knowledge_items = self._knowledge_items
-        if knowledge_items is None:
-            assert self.knowledge_source is not None
-            knowledge_items = self.knowledge_source.list_active()
-        hits = self.retriever.search(
-            query, anchor_topic_id=anchor_topic_id, top_k=top_k
-        )
-        plan = self.budget.plan(
-            knowledge_items, hits, min_relevance=min_relevance
-        )
+        assert self.knowledge_source is not None
+        candidates: list[Candidate] = []
+        aux_topic_ids = aux_topic_ids or []
+
+        # main topic knowledge surface
+        if topic_id:
+            for item in self.knowledge_source.list_active_for_node(topic_id, limit=5):
+                score = knowledge_score(item["content"], query, "topic")
+                candidates.append(
+                    Candidate(
+                        source="knowledge",
+                        surface="topic",
+                        item_id=item["id"],
+                        text=f"[知识·{item['category']}] {item['content']}",
+                        score=score,
+                    )
+                )
+
+        # auxiliary topic surfaces: knowledge + recent fragment summaries
+        for aux_id in aux_topic_ids:
+            for item in self.knowledge_source.list_active_for_node(aux_id, limit=3):
+                score = knowledge_score(item["content"], query, "aux_topic")
+                candidates.append(
+                    Candidate(
+                        source="knowledge",
+                        surface="aux_topic",
+                        item_id=item["id"],
+                        text=f"[相关话题知识·{item['category']}] {item['content']}",
+                        score=score,
+                    )
+                )
+            for frag in self.knowledge_source.recent_fragment_summaries(aux_id, limit=2):
+                candidates.append(
+                    Candidate(
+                        source="memory",
+                        surface="aux_topic",
+                        item_id=frag["id"],
+                        text=f"[相关话题记忆·{frag['title']}] {frag['summary']}",
+                        score=0.4,
+                    )
+                )
+
+        # entity / user knowledge surfaces
+        for surface, node_id in [
+            *[("entity", eid) for eid in (entity_ids or [])],
+            ("user", user_node_id),
+        ]:
+            if not node_id:
+                continue
+            for item in self.knowledge_source.list_active_for_node(node_id, limit=5):
+                score = knowledge_score(item["content"], query, surface)
+                candidates.append(
+                    Candidate(
+                        source="knowledge",
+                        surface=surface,
+                        item_id=item["id"],
+                        text=f"[知识·{item['category']}] {item['content']}",
+                        score=score,
+                    )
+                )
+
+        # memory surface: retriever with topic affinity
+        hits = self.retriever.search(query, anchor_topic_id=topic_id, top_k=top_k)
+        for hit in hits:
+            candidates.append(
+                Candidate(
+                    source="memory",
+                    surface="memory",
+                    item_id=hit.doc_id,
+                    text=f"[记忆·{hit.title or hit.topic_id}] {hit.preview}",
+                    score=hit.score,
+                )
+            )
+
+        reserved: list[PlannedItem] = []
+        if focus_block:
+            reserved.append(
+                PlannedItem(
+                    source="memory",
+                    surface="focus",
+                    item_id="focus",
+                    text=focus_block,
+                    tokens=estimate_tokens(focus_block),
+                )
+            )
+        reserved.extend(short_term or [])
+        plan = self.budget.plan(candidates, min_score=0.05, reserved=reserved)
         if not plan.all_items:
             return InjectionPayload(text="", plan=plan)
         sections = ["【长期记忆注入】"]
+        if topic_note:
+            sections.append(f"【话题】{topic_note}")
+        if focus_block:
+            sections.append(focus_block)
+        if new_topic_candidate:
+            reason = new_topic_reason or "与现有话题都不匹配"
+            sections.append(
+                f"【话题建议】当前消息可能与现有话题都不匹配（{reason}）。"
+                "如需创建新话题，请调用 create_topic 工具。"
+            )
+        for item in plan.short_term:
+            sections.append(item.text)
         for item in plan.knowledge:
             sections.append(item.text)
         for item in plan.memory:

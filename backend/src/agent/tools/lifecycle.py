@@ -47,6 +47,11 @@ class ToolLifecycle:
         sandbox: SandboxExecutor | None = None,
         registry: ToolRegistry,
         credentials: CredentialStore | None = None,
+        task_manager=None,
+        retriever=None,
+        adapter_factory=None,
+        bus=None,
+        tool_store=None,
     ) -> None:
         self.creator = ToolCreator(adapter)
         self.approvals = approvals
@@ -54,6 +59,11 @@ class ToolLifecycle:
         self.tester = ToolTester(self.sandbox)
         self.registry = registry
         self.credentials = credentials
+        self.task_manager = task_manager
+        self.retriever = retriever
+        self.adapter_factory = adapter_factory
+        self.bus = bus
+        self.tool_store = tool_store
 
     async def create_from_request(
         self, user_request: str, *, context: str | None = None
@@ -77,13 +87,46 @@ class ToolLifecycle:
                     f"cross-test failed: {report.summary}",
                 )
 
-        # 3. approval segment 1: tool creation
+        # 3-5. approval (x2) + registration (shared with submit_definition)
+        return await self._approve_and_register(definition, proposal.explanation, report)
+
+    async def submit_definition(
+        self,
+        definition: ToolDefinition,
+        explanation: str,
+        *,
+        skip_tests: bool = False,
+    ) -> ToolOutcome:
+        """Direct-submit path (dev workflow): test -> approve -> register.
+
+        The deterministic cross-test is re-run as a double check (the
+        submitting agent may have run tests itself). subagent tools skip it.
+        """
+        report = None
+        if not skip_tests and definition.tool_type == "function":
+            report = await self.tester.run(definition)
+            if not report.passed:
+                return ToolOutcome(
+                    False,
+                    definition.name,
+                    "test",
+                    f"cross-test failed: {report.summary}",
+                )
+        return await self._approve_and_register(definition, explanation, report)
+
+    async def _approve_and_register(
+        self,
+        definition: ToolDefinition,
+        explanation: str,
+        report,
+    ) -> ToolOutcome:
+        """Approval segment 1 (create) + segment 2 (credential) + registration."""
         approval = await self.approvals.request(
             APPROVAL_KIND_CREATE,
             {
                 "name": definition.name,
                 "description": definition.description,
-                "explanation": proposal.explanation,
+                "explanation": explanation,
                 "tool_type": definition.tool_type,
                 "credential_ref": definition.credential_ref,
                 "test_summary": report.summary if report else "n/a (subagent)",
@@ -101,8 +144,12 @@ class ToolLifecycle:
             return ToolOutcome(
                 False, definition.name, "approve", f"creation {approval.decision}"
             )
+        if approval.overrides and "subagent_budget" in approval.overrides:
+            from agent.tools.spec import SubagentBudget
 
-        # 4. approval segment 2: credential grant (only when referenced)
+            definition.subagent_budget = SubagentBudget(**approval.overrides["subagent_budget"])
+
+        # approval segment 2: credential grant (only when referenced)
         if definition.credential_ref:
             if self.credentials is None:
                 return ToolOutcome(
@@ -126,9 +173,11 @@ class ToolLifecycle:
                 )
             self.credentials.grant_tool_scope(definition.credential_ref, definition.name)
 
-        # 5. register side-by-side
+        # register side-by-side + persist
         try:
             self._register(definition)
+            if self.tool_store is not None:
+                self.tool_store.save(definition)
         except ValueError as exc:
             return ToolOutcome(False, definition.name, "register", str(exc))
         logger.info("tool created and registered: %s", definition.name)
@@ -136,8 +185,23 @@ class ToolLifecycle:
 
     def _register(self, definition: ToolDefinition) -> None:
         if definition.tool_type == "subagent":
+            from agent.tools.subagent_tool import SubagentTool
+
+            if self.task_manager is None or self.adapter_factory is None:
+                # 未接线时保持 Stub 降级（不产生半成品注册）
+                self.registry.register(
+                    SubagentStubTool(definition, credentials=self.credentials)
+                )
+                return
             self.registry.register(
-                SubagentStubTool(definition, credentials=self.credentials)
+                SubagentTool(
+                    definition,
+                    credentials=self.credentials,
+                    task_manager=self.task_manager,
+                    retriever=self.retriever,
+                    adapter_factory=self.adapter_factory,
+                    bus=self.bus,
+                )
             )
         else:
             self.registry.register(

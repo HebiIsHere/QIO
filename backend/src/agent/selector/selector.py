@@ -25,13 +25,16 @@ class Selector:
         self,
         recall: RecallBackend | None = None,
         rerank: RerankFn | None = None,
+        fallback_recall: RecallBackend | None = None,
     ) -> None:
         self.recall = recall or BM25Backend()
         self.rerank = rerank
+        self.fallback_recall = fallback_recall
         self._docs: list[IndexedDoc] = []
         self._titles: dict[str, str] = {}
         self._token_estimates: dict[str, int] = {}
         self._created_at: dict[str, str | None] = {}
+        self._texts: dict[str, str] = {}
 
     # -- indexing ---------------------------------------------------------
 
@@ -46,6 +49,7 @@ class Selector:
         self._titles = titles or {}
         self._token_estimates = token_estimates or {}
         self._created_at = {d.doc_id: d.created_at for d in self._docs}
+        self._texts = {d.doc_id: d.text for d in self._docs}
         if self.recall.available():
             self.recall.index(self._docs)
             logger.info(
@@ -53,11 +57,22 @@ class Selector:
                 self.recall.name,
                 len(self._docs),
             )
+        elif self.fallback_recall is not None and self.fallback_recall.available():
+            self.fallback_recall.index(self._docs)
+            logger.info(
+                "selector: recall '%s' unavailable; fallback '%s' indexed %d docs",
+                self.recall.name,
+                self.fallback_recall.name,
+                len(self._docs),
+            )
         else:
             logger.warning(
                 "selector: recall backend '%s' unavailable; rule layer only",
                 self.recall.name,
             )
+
+    def text_of(self, doc_id: str) -> str | None:
+        return self._texts.get(doc_id)
 
     def created_at(self, doc_id: str) -> str | None:
         return self._created_at.get(doc_id)
@@ -83,8 +98,11 @@ class Selector:
         )
         scored: dict[str, list] = {}
 
-        if self.recall.available():
-            for hit in self.recall.search(query, top_k=top_k * 3):
+        recall = self.recall
+        if not recall.available() and self.fallback_recall is not None and self.fallback_recall.available():
+            recall = self.fallback_recall
+        if recall.available():
+            for hit in recall.search(query, top_k=top_k * 3):
                 entry = scored.setdefault(hit.doc_id, [0.0, set()])
                 entry[0] += hit.score
                 entry[1].add(hit.source)

@@ -142,6 +142,10 @@ class Retriever:
         return self.selector.created_at(doc_id)
 
     def _preview(self, doc_id: str, title: str | None) -> str:
+        # inject summary content (index doc text) instead of just the title
+        text = self.selector.text_of(doc_id)
+        if text and text.strip():
+            return text
         return title or doc_id
 
     def _age_days(self, iso: str) -> float:

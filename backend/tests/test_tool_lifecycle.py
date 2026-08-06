@@ -256,12 +256,24 @@ async def test_lifecycle_credential_grant(db_conn: sqlite3.Connection):
     assert result.ok and json.loads(result.content) == {"has_key": True}
 
 
-async def test_subagent_tool_stub(db_conn: sqlite3.Connection):
+class _FakeCreds:
+    def __init__(self) -> None:
+        self.scope: dict[str, str] = {}
+
+    def get_metadata(self, ref: str):
+        return {"status": "active", "id": ref}
+
+    def grant_tool_scope(self, ref: str, tool: str) -> None:
+        self.scope[ref] = tool
+
+
+async def test_subagent_tool_stub_fallback_without_wiring(db_conn: sqlite3.Connection):
     proposal = dict(GOOD_PROPOSAL)
     proposal["tool"] = dict(
         GOOD_PROPOSAL["tool"],
         name="deep_researcher",
         tool_type="subagent",
+        credential_ref="key_sub",
         model="deepseek-v4-flash",
         code="",
     )
@@ -273,6 +285,7 @@ async def test_subagent_tool_stub(db_conn: sqlite3.Connection):
         approvals=approvals,
         sandbox=SandboxExecutor(executor="subprocess"),
         registry=registry,
+        credentials=_FakeCreds(),
     )
     task = asyncio.create_task(_auto_approve(bus, approvals))
     await asyncio.sleep(0.05)
@@ -284,5 +297,49 @@ async def test_subagent_tool_stub(db_conn: sqlite3.Connection):
         pass
     assert outcome.ok
     tool = registry.get("deep_researcher")
+    # 未接线（无 task_manager/adapter_factory）→ Stub 降级
+    from agent.tools.runtime_tools import SubagentStubTool
+
+    assert isinstance(tool, SubagentStubTool)
     result = await tool.run(query="x")
     assert not result.ok and "v1.5" in result.error
+
+
+async def test_subagent_tool_registers_runtime_when_wired(db_conn: sqlite3.Connection):
+    from agent.tools.subagent_tool import SubagentTool
+    from agent.tools.task_manager import TaskManager
+
+    proposal = dict(GOOD_PROPOSAL)
+    proposal["tool"] = dict(
+        GOOD_PROPOSAL["tool"],
+        name="deep_researcher2",
+        tool_type="subagent",
+        credential_ref="key_sub",
+        model="deepseek-v4-flash",
+        code="",
+        subagent_budget={"max_iterations": 3, "max_tokens": 50000, "output_limit_chars": 1000},
+    )
+    bus = EventBus()
+    approvals = ApprovalService(bus, timeout_seconds=5)
+    registry = ToolRegistry()
+    lifecycle = ToolLifecycle(
+        adapter=ScriptedAdapter(json.dumps(proposal, ensure_ascii=False)),
+        approvals=approvals,
+        sandbox=SandboxExecutor(executor="subprocess"),
+        registry=registry,
+        credentials=_FakeCreds(),
+        task_manager=TaskManager(bus, max_concurrent=2),
+        adapter_factory=lambda ref, model: None,
+    )
+    task = asyncio.create_task(_auto_approve(bus, approvals))
+    await asyncio.sleep(0.05)
+    outcome = await lifecycle.create_from_request("研究工具")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert outcome.ok
+    tool = registry.get("deep_researcher2")
+    assert isinstance(tool, SubagentTool)
+    assert tool.definition.subagent_budget.max_iterations == 3

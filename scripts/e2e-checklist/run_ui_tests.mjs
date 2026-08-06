@@ -107,15 +107,12 @@ try {
     record("APPROVAL-001", "三类审批弹窗展示与响应", false, e.message.slice(0, 120));
   }
 
-  // UI-003 记忆强度滑块
+  // UI-003 记忆强度滑块已移除（注入量由系统决定）
   try {
-    const slider = page.locator(".strength input");
-    await slider.waitFor({ state: "visible", timeout: 8000 });
-    await slider.fill("1");
-    const val = await page.locator(".strength .value").textContent();
-    record("UI-003", "记忆强度滑块", val === "1.00" || val === "1", `滑块值=${val}（注入预算影响需真实对话验证）`);
+    const sliderCount = await page.locator(".strength input").count();
+    record("UI-003", "记忆强度滑块移除", sliderCount === 0, `滑块元素数=${sliderCount}（设计确认：注入量由系统决定）`);
   } catch (e) {
-    record("UI-003", "记忆强度滑块", false, e.message.slice(0, 120));
+    record("UI-003", "记忆强度滑块移除", false, e.message.slice(0, 120));
   }
 } finally {
   await browser.close();

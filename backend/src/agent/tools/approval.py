@@ -30,6 +30,7 @@ class ApprovalResult:
     approval_id: str
     decision: str  # approved / rejected / timeout
     scope: dict | None = None
+    overrides: dict | None = None
 
 
 class ApprovalService:
@@ -54,14 +55,20 @@ class ApprovalService:
         finally:
             self._waiters.pop(approval_id, None)
 
-    async def respond(self, approval_id: str, decision: str, scope: dict | None = None) -> bool:
+    async def respond(
+        self,
+        approval_id: str,
+        decision: str,
+        scope: dict | None = None,
+        overrides: dict | None = None,
+    ) -> bool:
         """Called by the API layer when the frontend answers."""
         future = self._waiters.get(approval_id)
         if future is None or future.done():
             return False
         if decision not in ("approved", "rejected"):
             raise ValueError(f"invalid decision: {decision}")
-        result = ApprovalResult(approval_id, decision, scope)
+        result = ApprovalResult(approval_id, decision, scope, overrides)
         future.set_result(result)
         await self.bus.publish(
             make_event(

@@ -74,8 +74,44 @@ watch(() => planet.selectedTopicId.value, (id) => {
   if (id && id !== detail.value?.topic_id) loadDetail(id);
 });
 
-function startHere() {
+// 知识纠错：修正/删除
+const knowledgeEditingId = ref<string | null>(null);
+const knowledgeDraft = ref("");
+
+function startEditKnowledge(k: { id: string; content: string }) {
+  knowledgeEditingId.value = k.id;
+  knowledgeDraft.value = k.content;
+}
+
+async function saveKnowledgeEdit(k: { id: string }) {
+  const content = knowledgeDraft.value.trim();
+  if (!content) return;
+  try {
+    await api.reviseKnowledge(k.id, content);
+    knowledgeEditingId.value = null;
+    if (detail.value) await loadDetail(detail.value.topic_id);
+  } catch (e) {
+    console.error("[planet] revise knowledge failed:", e);
+  }
+}
+
+async function deleteKnowledge(k: { id: string; content: string }) {
+  if (!window.confirm(`删除知识条目？\n${k.content.slice(0, 60)}`)) return;
+  try {
+    await api.revokeKnowledge(k.id);
+    if (detail.value) await loadDetail(detail.value.topic_id);
+  } catch (e) {
+    console.error("[planet] revoke knowledge failed:", e);
+  }
+}
+
+async function startHere() {
   if (!detail.value) return;
+  try {
+    await api.setAnchor(detail.value.topic_id, selectedFragmentId.value);
+  } catch (e) {
+    console.error("[planet] set anchor failed:", e);
+  }
   session.setAnchor(detail.value.topic_id, selectedFragmentId.value);
   emit("close");
 }
@@ -142,7 +178,20 @@ function close() {
           <div class="section-title">知识</div>
           <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
             <span class="k-state" :class="k.state">{{ k.state }}</span>
-            <span class="k-content">{{ k.content }}</span>
+            <template v-if="knowledgeEditingId === k.id">
+              <input
+                v-model="knowledgeDraft"
+                class="knowledge-edit"
+                @keyup.enter="saveKnowledgeEdit(k)"
+              />
+              <button class="mini" @click="saveKnowledgeEdit(k)">保存</button>
+              <button class="mini" @click="knowledgeEditingId = null">取消</button>
+            </template>
+            <template v-else>
+              <span class="k-content">{{ k.content }}</span>
+              <button class="mini" @click="startEditKnowledge(k)">修正</button>
+              <button class="mini danger" @click="deleteKnowledge(k)">删除</button>
+            </template>
           </div>
           <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
         </div>
@@ -195,7 +244,10 @@ function close() {
 .fragment-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .entity-tag { background: var(--bg-accent-subtle); border-radius: 10px; padding: 2px 10px; font-size: 12px; color: var(--text-secondary); }
-.knowledge-item { display: flex; gap: 8px; align-items: baseline; margin-bottom: 5px; font-size: 12px; }
+.knowledge-item { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; font-size: 12px; flex-wrap: wrap; }
+.knowledge-edit { flex: 1; min-width: 160px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-base); color: var(--text-primary); }
+.mini { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; background: var(--bg-elevated); color: var(--text-secondary); }
+.mini.danger { color: var(--danger); border-color: var(--border-danger); }
 .k-state { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--border-subtle); color: var(--text-secondary); }
 .k-state.active { background: var(--success-soft); color: var(--success); }
 .k-content { color: var(--text-primary); }

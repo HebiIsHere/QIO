@@ -12,7 +12,7 @@ import httpx
 
 BASE = "http://127.0.0.1:8734"
 ROOT = Path(__file__).resolve().parents[2]
-DB = Path(r"C:\Users\zxy\AppData\Local\Temp\sa-e2e\app.db")
+DB = Path(r"C:\Users\zxy\AppData\Local\Temp\qio-e2e\app.db")
 RESULTS = []
 
 
@@ -41,7 +41,7 @@ def wait_turn(message, timeout=120):
                         if not ready.is_set():
                             continue   # 重放阶段：忽略
                         events.append(json.loads(line[6:]))
-                        if events[-1]["type"] in ("TURN_END", "ERROR"):
+                        if events[-1]["type"] in ("TURN_END", "ERROR", "WARNING"):
                             stop.set()
                             return
 
@@ -56,7 +56,10 @@ def wait_turn(message, timeout=120):
 
 def has_real_credential():
     listing = httpx.get(f"{BASE}/api/credentials", timeout=5).json()["credentials"]
-    return any(c["status"] == "active" for c in listing)
+    return any(
+        c["status"] == "active" and "main-loop" in c.get("tags", [])
+        for c in listing
+    )
 
 
 # ---------- SYS ----------

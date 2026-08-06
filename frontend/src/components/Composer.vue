@@ -36,14 +36,7 @@ function autosize() {
       <span class="topic" :title="session.currentTopicId ?? undefined">
         话题：{{ session.currentTopicId ? "当前话题" : "默认话题" }}
       </span>
-      <label class="strength">
-        记忆强度
-        <input
-          type="range" min="0" max="1" step="0.05"
-          v-model.number="session.memoryStrength"
-        />
-        <span class="value">{{ session.memoryStrength.toFixed(2) }}</span>
-      </label>
+
     </div>
     <textarea
       ref="inputRef"
