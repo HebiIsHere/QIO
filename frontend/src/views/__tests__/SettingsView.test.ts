@@ -21,4 +21,12 @@ describe("SettingsView", () => {
     expect(w.find(".qio-switch").exists()).toBe(true);
     w.unmount();
   });
+  it("空密钥创建被拦截并提示", async () => {
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await nextTick();
+    await w.find(".create").trigger("click");
+    await nextTick();
+    expect(w.find(".msg.err").text()).toContain("请先粘贴 API Key");
+    w.unmount();
+  });
 });

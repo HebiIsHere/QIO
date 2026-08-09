@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import QInput from "../QInput.vue";
 
@@ -23,5 +23,10 @@ describe("QInput", () => {
   it("error 时设置 aria-invalid", () => {
     const w = mount(QInput, { props: { error: true } });
     expect(w.find("input").attributes("aria-invalid")).toBe("true");
+  });
+  it("change 事件透传", async () => {
+    const w = mount(QInput, { props: { modelValue: "1" } });
+    await w.find("input").trigger("change");
+    expect(w.emitted("change")).toHaveLength(1);
   });
 });

@@ -1,6 +1,6 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 defineProps<{ modelValue?: string; placeholder?: string; error?: boolean; mono?: boolean; disabled?: boolean; type?: string }>();
-defineEmits<{ "update:modelValue": [string] }>();
+defineEmits<{ "update:modelValue": [string]; change: [Event] }>();
 </script>
 <template>
   <input
@@ -8,5 +8,6 @@ defineEmits<{ "update:modelValue": [string] }>();
     :value="modelValue" :placeholder="placeholder" :disabled="disabled"
     :aria-invalid="error || undefined"
     @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+    @change="$emit('change', $event)"
   />
 </template>

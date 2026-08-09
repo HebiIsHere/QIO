@@ -73,6 +73,7 @@ const identifyText = computed(() =>
         ? "未能自动识别，请手动填写"
         : "",
 );
+const submitLabel = computed(() => (editTarget.value ? "以此换钥（新建）" : "创建凭据"));
 
 const activeTab = ref<"cred" | "pref">("cred");
 const error = ref("");
@@ -82,6 +83,8 @@ const settingsNotice = ref("");
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
 const formEl = ref<HTMLElement | null>(null);
+const editTarget = ref<string | null>(null);
+const tierPresets = ["5", "10", "15"];
 
 async function loadMaintenanceSettings() {
   try {
@@ -131,8 +134,13 @@ const tierOptions = [
 async function loadMemorySettings() {
   try {
     const s = await api.getMemorySettings();
-    fragmentTier.value = String(s.fragment_max_messages);
-    customCount.value = s.fragment_max_messages;
+    const saved = String(s.fragment_max_messages);
+    if (tierPresets.includes(saved)) {
+      fragmentTier.value = saved;
+    } else {
+      fragmentTier.value = "custom";
+      customCount.value = s.fragment_max_messages;
+    }
   } catch (e) {
     console.error("[settings] load memory settings failed:", e);
   }
@@ -148,8 +156,13 @@ async function saveMemorySettings() {
   try {
     const r = await api.updateMemorySettings(value);
     settingsNotice.value = `已保存：${r.fragment_max_messages} 轮封块`;
-    fragmentTier.value = String(r.fragment_max_messages);
-    customCount.value = r.fragment_max_messages;
+    const saved = String(r.fragment_max_messages);
+    if (tierPresets.includes(saved)) {
+      fragmentTier.value = saved;
+    } else {
+      fragmentTier.value = "custom";
+      customCount.value = r.fragment_max_messages;
+    }
   } catch (e) {
     settingsNotice.value = `保存失败：${(e as Error).message}`;
   }
@@ -181,6 +194,7 @@ function buildTags(): string[] {
 }
 
 function resetForm() {
+  editTarget.value = null;
   form.value = {
     key_id: "",
     secret: "",
@@ -199,6 +213,10 @@ function resetForm() {
 async function create() {
   error.value = "";
   notice.value = "";
+  if (!form.value.secret.trim()) {
+    error.value = "请先粘贴 API Key";
+    return;
+  }
   try {
     const payload: Record<string, unknown> = {
       key_id: form.value.key_id.trim(),
@@ -207,10 +225,13 @@ async function create() {
     };
     if (form.value.endpoint.trim()) payload.endpoint = form.value.endpoint.trim();
     if (form.value.default_model.trim()) payload.default_model = form.value.default_model.trim();
-    if (form.value.budget != null) payload.budget = form.value.budget;
+    if (form.value.budget && form.value.budget > 0) payload.budget = form.value.budget;
     if (form.value.scope.trim()) payload.scope = form.value.scope.split(",").map((s) => s.trim()).filter(Boolean);
+    const editedKey = editTarget.value;
     await api.createCredential(payload);
-    notice.value = "凭据已创建";
+    notice.value = editedKey
+      ? `凭据已创建。请撤销旧凭据「${editedKey}」，避免双 key 并存（预算各计）。`
+      : "凭据已创建";
     resetForm();
     await load();
   } catch (e) {
@@ -220,6 +241,7 @@ async function create() {
 
 function edit(c: CredentialMeta) {
   activeTab.value = "cred";
+  editTarget.value = c.key_id;
   form.value = {
     key_id: c.key_id,
     secret: "",
@@ -233,7 +255,7 @@ function edit(c: CredentialMeta) {
   modelOptions.value = [];
   identifyState.value = "idle";
   identifiedProvider.value = "";
-  notice.value = `已载入「${c.key_id}」的配置：密钥只写不读，粘贴新密钥后创建（同名会提示已存在，可改名）。`;
+  notice.value = `编辑「${c.key_id}」：密钥只写不读，粘贴新密钥后「以此换钥（新建）」；保存后请撤销旧凭据，避免双 key 并存。`;
   formEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -315,8 +337,9 @@ onMounted(() => {
       </section>
 
       <section class="sec">
-        <h2>新建凭据</h2>
+        <h2>{{ editTarget ? "编辑凭据（换钥）" : "新建凭据" }}</h2>
         <p class="desc">粘贴 API Key 后自动识别端点与模型；类别标签 + scope 授权控制工具访问。</p>
+        <p v-if="editTarget" class="edit-hint mono">编辑态：保存将新建凭据（key_id 同名会提示已存在，可改名），旧凭据需手动撤销。</p>
         <div ref="formEl" class="form">
           <div class="field">
             <span class="label">名称</span>
@@ -351,12 +374,12 @@ onMounted(() => {
               @update:model-value="onBudgetInput"
             />
           </div>
-          <div class="field">
+          <div class="field span2">
             <span class="label">Scope 授权</span>
             <QInput v-model="form.scope" placeholder="default, tools, memory（逗号分隔，可选）" />
           </div>
           <p class="identify mono" :class="identifyState">{{ identifyText }}</p>
-          <button type="button" class="qio-btn primary create" @click="create">创建凭据</button>
+          <button type="button" class="qio-btn primary create" @click="create">{{ submitLabel }}</button>
         </div>
       </section>
     </div>
@@ -462,6 +485,8 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .identify { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); min-height: 16px; }
 .identify.done { color: var(--success); }
 .identify.failed { color: var(--warning); }
+.span2 { grid-column: 1 / -1; }
+.edit-hint { font-size: 11px; color: var(--warning); margin: 0 0 10px; }
 .create { grid-column: 1 / -1; justify-self: start; padding: 0 24px; }
 
 /* preferences */
