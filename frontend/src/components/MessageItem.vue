@@ -2,10 +2,15 @@
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import { useSessionStore } from "../stores/session";
+import { useEventStore } from "../stores/events";
 import type { StreamMessage } from "../stores/session";
 
 const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
 const session = useSessionStore();
+const events = useEventStore();
+
+/** token 用量下缀：USAGE 事件累计值（单条消息粒度未接，统一显示当前累计） */
+const tokText = computed(() => `tok ${events.usageTokens.toLocaleString("en-US")}`);
 
 const open = ref(false);
 
@@ -30,7 +35,7 @@ const topicLine = computed(() => {
       <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
       </div>
-      <div class="ts mono">{{ formatTime(message.createdAt) }}</div>
+      <div class="ts mono">{{ formatTime(message.createdAt) }} · {{ tokText }}</div>
     </template>
 
     <template v-else-if="message.role === 'tool'">
@@ -46,7 +51,7 @@ const topicLine = computed(() => {
             {{ message.toolOk === false ? "✕" : "✓" }}
           </span>
           <span class="tool-name mono">{{ message.toolName || "工具调用" }}</span>
-          <span class="tool-time mono">{{ formatTime(message.createdAt) }}</span>
+          <span class="tool-time mono">{{ formatTime(message.createdAt) }} · {{ tokText }}</span>
           <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
         </button>
         <div v-show="open" class="tool-detail">
@@ -62,7 +67,7 @@ const topicLine = computed(() => {
         <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
         <MarkdownContent :source="message.content" />
       </div>
-      <div class="ts mono">{{ formatTime(message.createdAt) }}</div>
+      <div class="ts mono">{{ formatTime(message.createdAt) }} · {{ tokText }}</div>
     </template>
   </div>
 </template>

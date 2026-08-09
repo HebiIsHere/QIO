@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { defineAsyncComponent, onMounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
-import StatusBar from "../components/StatusBar.vue";
 import MessageStream from "../components/MessageStream.vue";
 import Composer from "../components/Composer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
@@ -18,7 +17,11 @@ onMounted(() => {
 
 <template>
   <div class="conversation">
-    <StatusBar />
+    <!-- 异常提示条：仅在出错时出现（lastError），可跳设置页排查 -->
+    <div v-if="session.lastError" class="err-hint" role="alert">
+      <span class="err-text mono">{{ session.lastError }}</span>
+      <router-link to="/settings" class="err-link">前往设置</router-link>
+    </div>
     <MessageStream />
     <Composer />
     <PlanetDock @open="planetOpen = true" />
@@ -27,7 +30,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 分层：状态条/消息流/Composer 依次铺在 --bg-base 上，条与输入区用 --bg-surface */
+/* 分层：消息流/Composer 依次铺在 --bg-base 上，输入区用 --bg-surface；顶部无状态条 */
 .conversation {
   display: flex;
   flex-direction: column;
@@ -35,5 +38,31 @@ onMounted(() => {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--sans);
+}
+.err-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-danger);
+  color: var(--danger);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.err-hint .err-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.err-hint .err-link {
+  color: var(--link);
+  text-decoration: none;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+.err-hint .err-link:hover {
+  text-decoration: underline;
 }
 </style>
