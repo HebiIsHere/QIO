@@ -10,7 +10,6 @@ import { onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
 import { useSessionStore } from "../stores/session";
-import MarkdownContent from "../components/MarkdownContent.vue";
 import QInput from "../components/ui/QInput.vue";
 
 const emit = defineEmits<{ close: [] }>();
@@ -38,7 +37,10 @@ onUnmounted(() => {
 });
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") close();
+  if (e.key !== "Escape") return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+  close();
 }
 
 async function loadData() {
@@ -75,12 +77,18 @@ async function loadDetail(topicId: string) {
 }
 
 function selectTopic(topicId: string) {
+  if (closing.value) return;
   planet.focusTopic(topicId, positions.value);
   loadDetail(topicId);
 }
 
 function onCanvasClick(e: MouseEvent) {
+  if (closing.value) return;
   planet.handleClick(e.clientX, e.clientY);
+}
+
+function onCanvasDblClick() {
+  if (!closing.value) planet.go("planet");
 }
 
 watch(() => planet.selectedTopicId.value, (id) => {
@@ -140,7 +148,7 @@ async function close() {
 
 <template>
   <div class="planet-view" :class="{ closing }">
-    <canvas ref="canvasRef" class="planet-canvas" @click="onCanvasClick" @dblclick="planet.go('planet')"></canvas>
+    <canvas ref="canvasRef" class="planet-canvas" @click="onCanvasClick" @dblclick="onCanvasDblClick"></canvas>
     <button class="close-btn qio-btn" :disabled="closing" @click="close">
       {{ closing ? "收起中…" : "✕ 收起星球" }}
     </button>

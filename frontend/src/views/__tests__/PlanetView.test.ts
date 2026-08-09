@@ -53,8 +53,8 @@ const TOPICS: TopicFingerprint[] = [{ topic_id: "t1", title: "话题 A", keyword
 const POSITIONS: TopicPosition[] = [{ topic_id: "t1", name: "话题 A", position: [0, 0, 1], activity: 1, updated_at: "" }];
 const DETAIL: TopicDetail = { topic_id: "t1", name: "话题 A", fragments: [], entities: [], knowledge: [] };
 
-function mountView(pinia: Pinia) {
-  return mount(PlanetView, { global: { plugins: [pinia], stubs: { MarkdownContent: true } } });
+function mountView(pinia: Pinia, attach = false) {
+  return mount(PlanetView, { attachTo: attach ? document.body : undefined, global: { plugins: [pinia] } });
 }
 
 function newPinia() {
@@ -65,6 +65,7 @@ function newPinia() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.goMock.mockImplementation(() => Promise.resolve());
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
   mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS });
   mocks.apiMock.getTopicDetail.mockResolvedValue(DETAIL);
@@ -96,6 +97,46 @@ describe("PlanetView 相机联动", () => {
     const w = mountView(newPinia());
     await flushPromises();
     await w.find(".close-btn").trigger("click");
+    await flushPromises();
+    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(w.emitted("close")).toBeTruthy();
+    w.unmount();
+  });
+
+  it("关闭动画进行中：话题列表/画布单击/双击不打断拉回，拉回结束后才 emit close", async () => {
+    const resolvers: (() => void)[] = [];
+    mocks.goMock.mockImplementation(() => new Promise<void>((r) => { resolvers.push(r); }));
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(resolvers.length).toBe(1); // 打开时 go("planet") 已发起（挂起）
+
+    await w.find(".close-btn").trigger("click");
+    expect(resolvers.length).toBe(2); // 关闭拉回 go("overview") 已发起（挂起）
+    expect(w.classes()).toContain("closing");
+
+    // 关闭动画窗口内：话题点击不聚焦、画布单击不命中、双击不切回 planet
+    await w.find(".topic-list li").trigger("click");
+    await w.find("canvas").trigger("click", { clientX: 5, clientY: 5 });
+    await w.find("canvas").trigger("dblclick");
+    expect(mocks.focusTopicMock).not.toHaveBeenCalled();
+    expect(mocks.handleClickMock).not.toHaveBeenCalled();
+    expect(mocks.goMock).toHaveBeenCalledTimes(2);
+
+    resolvers[1](); // 拉回完成 → 才 emit close
+    await flushPromises();
+    expect(w.emitted("close")).toBeTruthy();
+    w.unmount();
+  });
+
+  it("Esc：焦点在输入框内不收起；焦点在外收起并拉回 overview", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    const searchInput = w.find(".panel-head input").element;
+    searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(w.emitted("close")).toBeFalsy();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
     expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
     expect(w.emitted("close")).toBeTruthy();
