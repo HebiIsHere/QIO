@@ -53,4 +53,20 @@ describe("QSelect", () => {
     expect(w.find(".qio-select").classes()).not.toContain("open");
     w.unmount();
   });
+  it("空 options 点击不崩溃且不展开", async () => {
+    const w = mount(QSelect, { props: { options: [], modelValue: "" } });
+    await w.find(".qio-select").trigger("click");
+    expect(w.find(".qio-select").classes()).not.toContain("open");
+    expect(w.findAll(".opt").length).toBe(0);
+    await w.find(".qio-select").trigger("keydown", { key: "ArrowDown" });
+    expect(w.find(".qio-select").classes()).not.toContain("open");
+    w.unmount();
+  });
+  it("aria-selected 反映真实选中项", () => {
+    const w = mount(QSelect, { props: { options: opts, modelValue: "a" } });
+    const els = w.findAll(".opt");
+    expect(els[0].attributes("aria-selected")).toBe("true");
+    expect(els[1].attributes("aria-selected")).toBe("false");
+    w.unmount();
+  });
 });
