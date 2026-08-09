@@ -8,6 +8,9 @@ describe("sdfRings", () => {
   it("smin 在近距离产生融合（小于两者）", () => {
     expect(smin(0.01, 0.01, 0.16)).toBeLessThan(0.01);
   });
+  it("smin 精确融合深度（锁死 IQ 公式常数）", () => {
+    expect(smin(0.1, 0.1, 0.16)).toBeCloseTo(0.06, 10);
+  });
   it("levelField：单话题在环上为 0，远离为正", () => {
     const topics = [{ pos: new THREE.Vector3(0, 0, 1), w: 1 }];
     const onRing = new THREE.Vector3(Math.sin(0.14), 0, Math.cos(0.14)).normalize();
