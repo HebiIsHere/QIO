@@ -4,6 +4,7 @@ import { useSessionStore } from "../stores/session";
 import MessageStream from "../components/MessageStream.vue";
 import Composer from "../components/Composer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
+import SettingsFloat from "../components/SettingsFloat.vue";
 
 // 星球页懒加载：three.js 不进首屏 chunk
 const PlanetView = defineAsyncComponent(() => import("./PlanetView.vue"));
@@ -24,6 +25,7 @@ onMounted(() => {
     </div>
     <MessageStream />
     <Composer />
+    <SettingsFloat />
     <PlanetDock @open="planetOpen = true" />
     <PlanetView v-if="planetOpen" @close="planetOpen = false" />
   </div>

@@ -45,6 +45,7 @@ describe("ConversationView 状态条移除与异常提示", () => {
     const w = mountView(pinia, makeRouter());
     await flushPromises();
     expect(w.find(".status-bar").exists()).toBe(false);
+    expect(w.find(".settings-float").exists()).toBe(true);
     w.unmount();
   });
 
