@@ -54,3 +54,6 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-select-menu .opt:hover{background:var(--accent-soft);color:var(--text-strong);}
 .qio-select-menu .opt.sel{color:var(--link);font-weight:600;}
 .qio-select-menu .opt.sel::after{content:'✓';font-family:var(--mono);color:var(--accent);}
+
+.qio-select.disabled{opacity:.5;cursor:not-allowed;}
+.qio-select-menu .opt.hl{background:var(--accent-soft);color:var(--text-strong);}
