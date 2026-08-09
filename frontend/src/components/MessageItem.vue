@@ -1,59 +1,196 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import { useSessionStore } from "../stores/session";
 import type { StreamMessage } from "../stores/session";
 
-defineProps<{ message: StreamMessage }>();
-const showToolDetail = (id: string) => {
-  const el = document.getElementById(`tool-${id}`);
-  if (el) el.hidden = !el.hidden;
-};
+const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
+const session = useSessionStore();
+
+const open = ref(false);
+
+function formatTime(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const topicLine = computed(() => {
+  const name = session.topicName || "默认话题";
+  const id = session.currentTopicId;
+  return id ? `${name} · 话题 #${id.slice(-4)}` : name;
+});
 </script>
 
 <template>
   <div class="message" :class="message.role">
-    <div class="bubble">
-      <template v-if="message.role === 'user'">
+    <template v-if="message.role === 'user'">
+      <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
-      </template>
-      <template v-else-if="message.role === 'tool'">
-        <div class="tool-card" :class="{ fail: !message.toolOk }">
-          <div class="tool-head" @click="showToolDetail(message.id)">
-            <span class="tool-icon">⚙</span>
-            <span class="tool-name">{{ message.toolName || "工具调用" }}</span>
-            <span class="tool-status" :class="{ ok: message.toolOk !== false, fail: message.toolOk === false }">
-              {{ message.toolOk === false ? "失败" : "成功" }}
-            </span>
-          </div>
-          <div :id="`tool-${message.id}`" class="tool-detail" hidden>
-            <pre>{{ message.content }}</pre>
-            <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
-          </div>
+      </div>
+      <div class="ts mono">{{ formatTime(message.createdAt) }}</div>
+    </template>
+
+    <template v-else-if="message.role === 'tool'">
+      <div class="tool-card" :class="{ fail: message.toolOk === false }">
+        <button
+          class="tool-head"
+          type="button"
+          @click="open = !open"
+          :aria-expanded="open"
+          :title="open ? '收起' : '展开 JSON'"
+        >
+          <span class="tool-mark" :class="message.toolOk === false ? 'fail' : 'ok'">
+            {{ message.toolOk === false ? "✕" : "✓" }}
+          </span>
+          <span class="tool-name mono">{{ message.toolName || "工具调用" }}</span>
+          <span class="tool-time mono">{{ formatTime(message.createdAt) }}</span>
+          <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
+        </button>
+        <div v-show="open" class="tool-detail">
+          <pre>{{ message.content }}</pre>
+          <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
         </div>
-      </template>
-      <template v-else>
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="bubble assist-bubble">
+        <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
+        <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
         <MarkdownContent :source="message.content" />
-      </template>
-    </div>
+      </div>
+      <div class="ts mono">{{ formatTime(message.createdAt) }}</div>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.message { display: flex; margin: 10px 0; }
-.message.user { justify-content: flex-end; }
-.bubble {
-  max-width: 78%; padding: 10px 14px; border-radius: 12px;
-  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+.message {
+  display: flex;
+  flex-direction: column;
+  max-width: 640px;
+  margin: 6px 0;
+  font-size: 14.5px;
+  line-height: 1.75;
 }
-.message.user .bubble { background: var(--bg-accent-subtle); border-color: var(--border-strong); }
-.plain { white-space: pre-wrap; font-size: 14px; }
-.tool-card { border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden; }
-.tool-card.fail { border-color: var(--border-danger); }
-.tool-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
-.tool-icon { color: var(--text-secondary); }
-.tool-name { font-weight: 600; color: var(--text-primary); }
-.tool-status.ok { color: var(--success); }
-.tool-status.fail { color: var(--danger); }
-.tool-detail { border-top: 1px solid var(--border-subtle); padding: 8px 10px; }
-.tool-detail pre { font-size: 12px; white-space: pre-wrap; color: var(--text-secondary); margin: 0; }
-.tool-error { color: var(--danger); font-size: 12px; margin: 4px 0 0; }
+.message.user {
+  margin-left: auto;
+  align-items: flex-end;
+}
+.message.assistant {
+  margin-right: auto;
+  align-items: flex-start;
+}
+.bubble {
+  padding: 10px 16px;
+}
+.user-bubble {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 14px 14px 4px 14px;
+  text-align: left;
+}
+.user-bubble .plain {
+  white-space: pre-wrap;
+}
+.assist-bubble {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px 14px 14px 4px;
+}
+.tname {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 6px;
+}
+.inject-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 8px;
+  padding: 3px 10px;
+  border: 1px dashed var(--link);
+  color: var(--link);
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.ts {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  letter-spacing: 0.05em;
+}
+/* ---- 工具卡 ---- */
+.tool-card {
+  margin: 4px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  font-size: 12.5px;
+}
+.tool-card.fail {
+  border-color: var(--border-danger);
+}
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.tool-head:hover {
+  background: var(--accent-soft);
+}
+.tool-mark {
+  font-size: 12px;
+}
+.tool-mark.ok {
+  color: var(--success);
+}
+.tool-mark.fail {
+  color: var(--danger);
+}
+.tool-name {
+  color: var(--text-strong);
+  letter-spacing: 0.02em;
+}
+.tool-time {
+  margin-left: auto;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+.tool-chev {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.tool-detail {
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 12px;
+  background: var(--bg-inset);
+}
+.tool-detail pre {
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  margin: 0;
+  font-family: var(--mono);
+}
+.tool-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 4px 0 0;
+}
 </style>

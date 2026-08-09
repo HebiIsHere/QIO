@@ -27,5 +27,13 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.conversation { display: flex; flex-direction: column; height: 100%; }
+/* 分层：状态条/消息流/Composer 依次铺在 --bg-base 上，条与输入区用 --bg-surface */
+.conversation {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--sans);
+}
 </style>

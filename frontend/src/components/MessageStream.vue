@@ -1,11 +1,21 @@
 <script setup lang="ts">
 /**
  * 消息流：@tanstack/vue-virtual 虚拟滚动 + 底部跟随。
+ * 按「用户消息开新轮次」把消息分组为 turn，虚拟化单位是轮次块；
+ * 每轮渲染 TURN 分隔头（等宽）+ 消息项（MessageItem）。
  */
 import { computed, nextTick, ref, watch } from "vue";
 import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
+import type { StreamMessage } from "../stores/session";
 import MessageItem from "./MessageItem.vue";
+
+interface Turn {
+  id: string;
+  index: number;
+  startedAt: string;
+  items: StreamMessage[];
+}
 
 const session = useSessionStore();
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -13,10 +23,25 @@ const followBottom = ref(true);
 
 const messages = computed(() => session.messages);
 
-// options 整体作为 computed：count 依赖消息数变化时自动 setOptions
+const turns = computed<Turn[]>(() => {
+  const out: Turn[] = [];
+  let cur: Turn | null = null;
+  let n = 0;
+  for (const m of messages.value) {
+    if (!cur || m.role === "user" || m.role === "system") {
+      n += 1;
+      cur = { id: `turn_${n}`, index: n, startedAt: m.createdAt, items: [] };
+      out.push(cur);
+    }
+    cur.items.push(m);
+  }
+  return out;
+});
+
+// options 整体作为 computed：count 依赖轮次数变化时自动 setOptions
 const virtualizer = useVirtualizer(
   computed(() => ({
-    count: messages.value.length,
+    count: turns.value.length,
     getScrollElement: () => containerRef.value,
     estimateSize: () => 120,
     overscan: 6,
@@ -34,12 +59,14 @@ function measureItem(el: unknown) {
   if (el instanceof Element) virtualizer.value.measureElement(el);
 }
 
+// 每次新消息都触发跟随（轮次内可能连续追加 tool/assistant）；
+// 滚动目标始终是最后一轮
 watch(
   () => session.messages.length,
   async () => {
-    if (followBottom.value) {
+    if (followBottom.value && turns.value.length > 0) {
       await nextTick();
-      virtualizer.value.scrollToIndex(messages.value.length - 1, { align: "end" });
+      virtualizer.value.scrollToIndex(turns.value.length - 1, { align: "end" });
     }
   },
 );
@@ -50,6 +77,23 @@ watch(
     if (running) followBottom.value = true;
   },
 );
+
+function turnLabel(t: Turn): string {
+  if (session.turnRunning && t.index === turns.value.length) return "NOW";
+  return `TURN ${String(t.index).padStart(2, "0")}`;
+}
+
+function formatTime(iso?: string): string {
+  if (!iso) return "──";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "──";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function firstAssistantIdx(t: Turn): number {
+  return t.items.findIndex((m) => m.role === "assistant");
+}
 </script>
 
 <template>
@@ -72,17 +116,97 @@ watch(
           transform: `translateY(${item.start}px)`,
         }"
       >
-        <MessageItem :message="messages[item.index]" />
+        <div class="turn" :data-turn="turns[item.index].id">
+          <div class="turn-meta">
+            <span class="who">{{ turnLabel(turns[item.index]) }}</span>
+            <span class="bar"></span>
+            <span class="ts">{{ formatTime(turns[item.index].startedAt) }}</span>
+          </div>
+          <MessageItem
+            v-for="(m, i) in turns[item.index].items"
+            :key="m.id"
+            :message="m"
+            :show-topic="i === firstAssistantIdx(turns[item.index])"
+          />
+        </div>
       </div>
     </div>
     <div v-if="!messages.length" class="empty">
-      开始对话吧。话题星球在右下角。
+      <div class="greet serif">今天想聊点什么？</div>
+      <div class="sub mono">你的星球在右下角等待 · 点击悬浮球查看话题大陆</div>
+      <div class="chip"><span class="pd"></span>打开话题星球</div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.stream { flex: 1; overflow-y: auto; padding: 0 16px; }
-.spacer { width: 100%; }
-.empty { text-align: center; color: var(--text-muted); margin-top: 80px; font-size: 14px; }
+.stream {
+  flex: 1;
+  overflow-y: auto;
+  padding: 34px 44px 20px;
+  scrollbar-width: thin;
+  background: var(--bg-base);
+}
+.spacer {
+  width: 100%;
+}
+.turn {
+  margin-bottom: 26px;
+}
+.turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+.turn-meta .who {
+  color: var(--text-secondary);
+}
+.turn-meta .bar {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+/* ---- 空状态 ---- */
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.empty .greet {
+  font-size: 34px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.empty .sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+.empty .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.empty .chip .pd {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
 </style>

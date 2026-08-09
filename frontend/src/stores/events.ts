@@ -3,11 +3,18 @@ import { connectEvents, publishTestEvent, type AgentEvent, type EventType } from
 import { useSessionStore } from "./session";
 import { useApprovalsStore } from "./approvals";
 
+export type ModelMode = "native" | "text" | "unsupported";
+
 export const useEventStore = defineStore("events", {
   state: () => ({
     connected: false,
     events: [] as AgentEvent[],
     error: null as string | null,
+    /** 模型三态适配（CAPABILITY 事件更新，默认 native） */
+    modelMode: "native" as ModelMode,
+    /** 累计 token 用量（USAGE 事件更新） */
+    usageTokens: 0,
+    _pendingMemoryInject: null as { label: string } | null,
     _source: null as EventSource | null,
   }),
   actions: {
@@ -43,8 +50,33 @@ export const useEventStore = defineStore("events", {
           session.turnEnded();
           const final = (event.data as Record<string, unknown>).final_content;
           if (typeof final === "string" && final.trim()) {
-            session.pushAssistant(final);
+            const inject = this._pendingMemoryInject;
+            this._pendingMemoryInject = null;
+            session.pushAssistant(final, inject ?? undefined);
           }
+          break;
+        }
+        case "CAPABILITY": {
+          const d = event.data as Record<string, unknown>;
+          const mode = String(d.mode ?? "");
+          if (mode === "native" || mode === "text" || mode === "unsupported") {
+            this.modelMode = mode;
+          }
+          break;
+        }
+        case "USAGE": {
+          const d = event.data as Record<string, unknown>;
+          const tokens = Number(d.tokens ?? 0);
+          if (Number.isFinite(tokens) && tokens >= 0) {
+            this.usageTokens = tokens;
+          }
+          break;
+        }
+        case "MEMORY_INJECT": {
+          const d = event.data as Record<string, unknown>;
+          const count = Number(d.count ?? 0);
+          const kind = String(d.kind ?? d.category ?? "记忆注入");
+          this._pendingMemoryInject = { label: `${kind} · ${count} 条` };
           break;
         }
         case "TOOL_END": {

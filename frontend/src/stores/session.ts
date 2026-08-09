@@ -10,11 +10,14 @@ export interface StreamMessage {
   toolName?: string;
   toolOk?: boolean;
   toolError?: string | null;
+  /** 记忆注入摘要（MEMORY_INJECT 事件附带，助手消息展示玫红虚线胶囊） */
+  memoryInject?: { label: string } | null;
 }
 
 export const useSessionStore = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
+    topicName: null as string | null,
     anchorFragmentId: null as string | null,
     anchorFragment: null as { id: string; title: string | null } | null,
     messages: [] as StreamMessage[],
@@ -41,8 +44,8 @@ export const useSessionStore = defineStore("session", {
     pushUser(text: string) {
       this.pushMessage({ role: "user", content: text, contentType: "text" });
     },
-    pushAssistant(text: string) {
-      this.pushMessage({ role: "assistant", content: text, contentType: "text" });
+    pushAssistant(text: string, memoryInject?: StreamMessage["memoryInject"]) {
+      this.pushMessage({ role: "assistant", content: text, contentType: "text", memoryInject });
     },
     pushTool(name: string, ok: boolean, error: string | null, preview: string) {
       this.pushMessage({
@@ -61,6 +64,7 @@ export const useSessionStore = defineStore("session", {
       try {
         const ctx = await api.getSessionContext();
         this.currentTopicId = ctx.topic_id;
+        this.topicName = ctx.topic_name ?? null;
         this.anchorFragment = ctx.anchor_fragment ?? null;
         this.anchorFragmentId = ctx.anchor_fragment?.id ?? null;
         this.messages = ctx.messages.map((m) => ({

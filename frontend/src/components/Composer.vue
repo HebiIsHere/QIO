@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 
 const session = useSessionStore();
 const text = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+const memoryStrength = ref(0.38);
+
+const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
+
+const anchorText = computed(() => {
+  const f = session.anchorFragment;
+  if (f?.title) return `anchor · ${f.title}`;
+  if (session.anchorFragmentId) return `anchor · 片段 #${session.anchorFragmentId.slice(-4)}`;
+  return "";
+});
 
 function submit() {
   const value = text.value.trim();
@@ -32,45 +42,147 @@ function autosize() {
 
 <template>
   <div class="composer">
-    <div class="meta-row">
-      <span class="topic" :title="session.currentTopicId ?? undefined">
-        话题：{{ session.currentTopicId ? "当前话题" : "默认话题" }}
-      </span>
-
+    <div class="topicbar">
+      <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
+      <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
+      <span class="spacer"></span>
+      <span class="slash mono">/tool /topic /memory</span>
     </div>
-    <textarea
-      ref="inputRef"
-      v-model="text"
-      placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-      :disabled="session.turnRunning"
-      @keydown="onKeydown"
-      @input="autosize"
-    ></textarea>
-    <div class="actions">
-      <button :disabled="!text.trim() || session.turnRunning" @click="submit">
-        {{ session.turnRunning ? "运行中…" : "发送" }}
+
+    <div class="input-row">
+      <textarea
+        ref="inputRef"
+        v-model="text"
+        class="qio-input"
+        placeholder="和 QIO 说点什么…"
+        :disabled="session.turnRunning"
+        @keydown="onKeydown"
+        @input="autosize"
+      ></textarea>
+      <button
+        class="send-btn"
+        type="button"
+        :disabled="!text.trim() || session.turnRunning"
+        :aria-label="session.turnRunning ? '运行中' : '发送'"
+        :title="session.turnRunning ? '运行中' : '发送（Enter）'"
+        @click="submit"
+      >
+        <span v-if="session.turnRunning">…</span>
+        <span v-else>↑</span>
       </button>
+    </div>
+
+    <div class="mem-row">
+      <span class="mem-label mono">记忆强度</span>
+      <input
+        v-model.number="memoryStrength"
+        class="strength-slider"
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        aria-label="记忆强度"
+      />
+      <span class="mem-val mono">{{ memoryStrength.toFixed(2) }}</span>
     </div>
   </div>
 </template>
 
 <style scoped>
-.composer { border-top: 1px solid var(--border-subtle); padding: 10px 14px; background: var(--bg-surface); }
-.meta-row { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
-.strength { display: flex; align-items: center; gap: 6px; }
-.strength input { width: 120px; accent-color: var(--accent); }
-.strength .value { min-width: 32px; color: var(--text-primary); }
-textarea {
-  width: 100%; min-height: 44px; max-height: 160px; resize: none;
-  background: var(--bg-inset); color: var(--text-primary); border: 1px solid var(--border-subtle);
-  border-radius: 10px; padding: 10px 12px; font-size: 14px; font-family: inherit;
+.composer {
+  border-top: 1px solid var(--border-subtle);
+  padding: 12px 44px 18px;
+  background: var(--bg-surface);
+  flex-shrink: 0;
 }
-textarea:focus { outline: none; border-color: var(--accent); }
-.actions { display: flex; justify-content: flex-end; margin-top: 8px; }
-.actions button {
-  background: var(--accent); color: var(--on-accent); border: none; border-radius: 18px;
-  padding: 7px 22px; cursor: pointer; font-size: 13px;
+.topicbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
 }
-.actions button:hover:not(:disabled) { background: var(--accent-hover); }
-.actions button:disabled { opacity: 0.45; cursor: default; }
+.tname {
+  font-weight: 600;
+  color: var(--text-strong);
+  font-size: 15px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anchor {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1;
+}
+.slash {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.input-row textarea.qio-input {
+  flex: 1;
+  min-height: 46px;
+  max-height: 160px;
+  resize: none;
+}
+.send-btn {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s, transform 0.15s;
+}
+.send-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+.send-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mem-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+.mem-label {
+  white-space: nowrap;
+}
+.strength-slider {
+  flex: 1;
+  max-width: 220px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.mem-val {
+  min-width: 34px;
+  color: var(--text-secondary);
+  text-align: right;
+}
 </style>
