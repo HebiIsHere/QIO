@@ -118,7 +118,10 @@ const html = computed(() => {
 <style scoped>
 .markdown-body { line-height: 1.65; font-size: 14px; overflow-wrap: anywhere; }
 .markdown-body :deep(p) { margin: 0.4em 0; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 0.4em 0; padding-left: 1.4em; }
+.markdown-body :deep(li) { margin: 0.2em 0; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 0.8em 0 0.4em; }
+.markdown-body :deep(h4), .markdown-body :deep(h5), .markdown-body :deep(h6) { margin: 1em 0 0.4em; }
 .markdown-body :deep(pre) { background: var(--bg-elevated); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
 .markdown-body :deep(a) { color: var(--link); }
