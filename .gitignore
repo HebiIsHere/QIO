@@ -36,3 +36,6 @@ frontend/e2e-shots/
 
 # 运行期 pid 文件
 scripts/.e2e-pids
+
+# brainstorm 原型会话（可视化伴侣）
+.superpowers/
