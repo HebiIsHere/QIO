@@ -27,7 +27,7 @@ const selectedFragmentId = ref<string | null>(null);
 /** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
 const closing = ref(false);
 
-/* ---- 主题同步：StatusBar 切换写 html[data-theme]，planet.setTheme 换 WebGL 配色 ---- */
+/* ---- 主题同步：utils/theme.ts 写 html[data-theme]，planet.setTheme 换 WebGL 配色 ---- */
 /** 读取当前主题：tokens.css 依据 data-theme 切变量，缺省按 dark */
 function readTheme(): "dark" | "light" {
   return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
