@@ -1,13 +1,17 @@
 <script setup lang="ts">
 /**
  * 星球页（全屏覆盖层）：3D 球体（左/中）+ 右侧面板（列表/详情/从这里开始）。
- * 与对话页共用场景数据；相机从悬浮球远景推进到全景。
+ * 与对话页悬浮球共享 usePlanetScene 单一 3D 场景与相机状态机
+ * （overview=悬浮球远景 / planet=全屏近景 / focus=话题聚焦）：
+ * - 打开（悬浮球点击）：场景推进到 planet（有锚点时直接聚焦话题）；
+ * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层。
  */
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
 import { useSessionStore } from "../stores/session";
 import MarkdownContent from "../components/MarkdownContent.vue";
+import QInput from "../components/ui/QInput.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const session = useSessionStore();
@@ -20,13 +24,22 @@ const detail = ref<TopicDetail | null>(null);
 const detailLoading = ref(false);
 const search = ref("");
 const selectedFragmentId = ref<string | null>(null);
+/** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
+const closing = ref(false);
 
 onMounted(async () => {
+  window.addEventListener("keydown", onKeydown);
   planet.init();
   await loadData();
 });
 
-onUnmounted(() => {});
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKeydown);
+});
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") close();
+}
 
 async function loadData() {
   const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
@@ -113,27 +126,33 @@ async function startHere() {
     console.error("[planet] set anchor failed:", e);
   }
   session.setAnchor(detail.value.topic_id, selectedFragmentId.value, detail.value.name);
-  emit("close");
+  await close();
 }
 
-function close() {
+/** 关闭：相机先拉回悬浮球远景（overview），动画结束后收起覆盖层 */
+async function close() {
+  if (closing.value) return;
+  closing.value = true;
+  await planet.go("overview");
   emit("close");
 }
 </script>
 
 <template>
-  <div class="planet-view">
+  <div class="planet-view" :class="{ closing }">
     <canvas ref="canvasRef" class="planet-canvas" @click="onCanvasClick" @dblclick="planet.go('planet')"></canvas>
-    <button class="close-btn" @click="close">✕ 收起星球</button>
-    <div class="hud">
+    <button class="close-btn qio-btn" :disabled="closing" @click="close">
+      {{ closing ? "收起中…" : "✕ 收起星球" }}
+    </button>
+    <div class="hud mono">
       <span v-if="planet.webglOK">WebGL · {{ planet.fps }} fps · 视角: {{ planet.cameraState }}</span>
       <span v-else>WebGL 不可用</span>
     </div>
 
     <aside class="panel">
       <div class="panel-head">
-        <h2>话题</h2>
-        <input v-model="search" placeholder="搜索话题…" />
+        <h2 class="serif">话题</h2>
+        <QInput v-model="search" placeholder="搜索话题…" />
       </div>
       <ul class="topic-list">
         <li
@@ -142,17 +161,17 @@ function close() {
           :class="{ active: t.topic_id === planet.selectedTopicId.value }"
           @click="selectTopic(t.topic_id)"
         >
-          <span class="name">{{ t.title }}</span>
-          <span class="meta">{{ t.fragment_count }} 片段</span>
+          <span class="name serif">{{ t.title }}</span>
+          <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
         </li>
       </ul>
 
       <div v-if="detailLoading" class="detail-loading">加载中…</div>
       <div v-else-if="detail" class="detail">
-        <h3>{{ detail.name }}</h3>
+        <h3 class="serif">{{ detail.name }}</h3>
 
         <div class="detail-section">
-          <div class="section-title">片段（点击选择起点）</div>
+          <div class="section-title serif">片段（点击选择起点）</div>
           <div
             v-for="f in detail.fragments"
             :key="f.fragment_id"
@@ -161,13 +180,13 @@ function close() {
             @click="selectedFragmentId = f.fragment_id"
           >
             <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
-            <div class="fragment-meta">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
+            <div class="fragment-meta mono">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
           </div>
           <p v-if="!detail.fragments.length" class="hint">暂无片段。</p>
         </div>
 
         <div class="detail-section">
-          <div class="section-title">实体</div>
+          <div class="section-title serif">实体</div>
           <div class="entity-tags">
             <span v-for="e in detail.entities" :key="e.id" class="entity-tag">{{ e.name }}</span>
             <span v-if="!detail.entities.length" class="hint">无</span>
@@ -175,28 +194,28 @@ function close() {
         </div>
 
         <div class="detail-section">
-          <div class="section-title">知识</div>
+          <div class="section-title serif">知识</div>
           <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
-            <span class="k-state" :class="k.state">{{ k.state }}</span>
+            <span class="k-state qio-badge" :class="k.state">{{ k.state }}</span>
             <template v-if="knowledgeEditingId === k.id">
               <input
                 v-model="knowledgeDraft"
-                class="knowledge-edit"
+                class="qio-input knowledge-edit"
                 @keyup.enter="saveKnowledgeEdit(k)"
               />
-              <button class="mini" @click="saveKnowledgeEdit(k)">保存</button>
-              <button class="mini" @click="knowledgeEditingId = null">取消</button>
+              <button class="qio-btn mini" @click="saveKnowledgeEdit(k)">保存</button>
+              <button class="qio-btn mini" @click="knowledgeEditingId = null">取消</button>
             </template>
             <template v-else>
               <span class="k-content">{{ k.content }}</span>
-              <button class="mini" @click="startEditKnowledge(k)">修正</button>
-              <button class="mini danger" @click="deleteKnowledge(k)">删除</button>
+              <button class="qio-btn mini" @click="startEditKnowledge(k)">修正</button>
+              <button class="qio-btn mini danger" @click="deleteKnowledge(k)">删除</button>
             </template>
           </div>
           <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
         </div>
 
-        <button class="start-btn" @click="startHere">
+        <button class="start-btn qio-btn primary" :disabled="closing" @click="startHere">
           从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
         </button>
       </div>
@@ -205,57 +224,62 @@ function close() {
 </template>
 
 <style scoped>
-.planet-view { position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex; }
+.planet-view {
+  position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex;
+  transition: opacity 0.5s ease;
+}
+.planet-view.closing { opacity: 0; }
 .planet-canvas { flex: 1 1 auto; min-width: 0; cursor: grab; }
 .close-btn {
   position: absolute; top: 14px; left: 14px; z-index: 60;
-  background: var(--accent-veil); border: 1px solid var(--border-strong); color: var(--on-accent);
-  border-radius: 18px; padding: 6px 16px; cursor: pointer; font-size: 13px;
+  background: var(--accent-soft); border-color: var(--border-strong); color: var(--text-strong);
+  border-radius: 20px;
 }
-.hud { position: absolute; bottom: 14px; left: 14px; font-size: 12px; color: var(--text-muted); }
+.close-btn:hover { border-color: var(--accent); color: var(--accent); }
+.close-btn:disabled { opacity: 0.6; cursor: default; }
+.hud {
+  position: absolute; bottom: 14px; left: 14px; font-size: 12px; color: var(--text-muted);
+  background: var(--bg-overlay); border: 1px solid var(--border-subtle); border-radius: 20px;
+  padding: 6px 12px; backdrop-filter: blur(6px);
+}
 .panel {
   flex: 0 0 340px; width: 340px; height: 100%; background: var(--bg-panel);
   border-left: 1px solid var(--border-subtle); display: flex; flex-direction: column; overflow-y: auto;
 }
 .panel-head { padding: 14px 14px 8px; }
-.panel-head h2 { font-size: 15px; color: var(--text-primary); margin: 0 0 8px; }
-.panel-head input {
-  width: 100%; background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: 8px;
-  padding: 7px 10px; color: var(--text-primary); font-size: 13px;
-}
+.panel-head h2 { font-size: 16px; color: var(--text-strong); margin: 0 0 8px; }
 .topic-list { list-style: none; padding: 0 14px; margin: 6px 0; }
 .topic-list li {
-  display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px;
-  border-radius: 8px; cursor: pointer; font-size: 13px;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: 10px; cursor: pointer; font-size: 13px;
 }
 .topic-list li:hover { background: var(--accent-soft); }
 .topic-list li.active { background: var(--accent-softer); }
-.topic-list .meta { color: var(--text-muted); font-size: 11px; }
+.topic-list .name { font-size: 14px; color: var(--text-primary); }
+.topic-list .meta { flex-shrink: 0; }
 .detail { padding: 0 14px 20px; border-top: 1px solid var(--border-subtle); }
-.detail h3 { font-size: 15px; color: var(--text-strong); margin: 12px 0 8px; }
+.detail h3 { font-size: 16px; color: var(--text-strong); margin: 12px 0 8px; }
 .detail-section { margin: 10px 0; }
-.section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.02em; }
 .fragment-item {
-  border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px;
+  border: 1px solid var(--border-subtle); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px;
   cursor: pointer; background: var(--bg-inset);
 }
+.fragment-item:hover { border-color: var(--border-strong); }
 .fragment-item.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
 .fragment-summary { font-size: 13px; color: var(--text-primary); }
 .fragment-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.entity-tag { background: var(--bg-accent-subtle); border-radius: 10px; padding: 2px 10px; font-size: 12px; color: var(--text-secondary); }
+.entity-tag { background: var(--bg-accent-subtle); border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary); }
 .knowledge-item { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; font-size: 12px; flex-wrap: wrap; }
-.knowledge-edit { flex: 1; min-width: 160px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-base); color: var(--text-primary); }
-.mini { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; background: var(--bg-elevated); color: var(--text-secondary); }
-.mini.danger { color: var(--danger); border-color: var(--border-danger); }
-.k-state { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--border-subtle); color: var(--text-secondary); }
-.k-state.active { background: var(--success-soft); color: var(--success); }
+.knowledge-edit { flex: 1; min-width: 160px; height: auto; padding: 5px 10px; font-size: 12px; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
+.k-state { background: var(--border-subtle); color: var(--text-secondary); border-color: var(--border-subtle); }
+.k-state.active { background: var(--success-soft); color: var(--success); border-color: var(--success-soft); }
 .k-content { color: var(--text-primary); }
-.start-btn {
-  width: 100%; margin-top: 12px; background: var(--accent); color: var(--on-accent); border: none;
-  border-radius: 10px; padding: 10px; cursor: pointer; font-size: 14px;
-}
-.start-btn:hover { background: var(--accent-hover); }
+.start-btn { width: 100%; height: 40px; margin-top: 12px; font-size: 14px; }
+.start-btn:disabled { opacity: 0.6; cursor: default; }
 .hint { font-size: 12px; color: var(--text-muted); }
 .detail-loading { padding: 14px; color: var(--text-muted); font-size: 13px; }
 </style>
