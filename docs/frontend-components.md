@@ -13,11 +13,8 @@
 ```
 ConversationView（对话页）
 ├── PlanetDock            悬浮球（微缩星球 + 位置指示 + 展开入口）
-├── StatusBar             状态条
-│   ├── ConnectionDot     SSE 连接状态
-│   ├── CapabilityBadge   模型三态（native/text/unsupported）
-│   ├── FallbackBanner    降级横幅（FALLBACK 事件驱动）
-│   └── CredentialAlert   凭据异常提示（点击跳设置页）
+├── SettingsFloat         设置入口（右上角浮动 ⚙，点击打开整页设置）
+├── ErrorHint             异常提示条（仅 lastError 时出现，可跳设置页）
 ├── MessageStream         消息流（虚拟滚动）
 │   ├── TurnMarker        轮次分隔（TURN_START/END）
 │   ├── MessageItem       消息项
@@ -38,7 +35,8 @@ ConversationView（对话页）
 ### 1.1 关键组件职责
 
 - **PlanetDock**：渲染微缩星球（远景相机视图）；当前话题位置高亮；点击 → 相机推进全屏；可拖动、贴边收纳。低帧率模式（静态帧 + 交互动画）
-- **StatusBar**：只读状态呈现，不承载操作（凭据异常提示除外——它是跳转入口）
+- **SettingsFloat**：右上角浮动设置入口（⚙），点击打开整页设置页
+- **ErrorHint**：对话页顶部异常提示条，仅在有 lastError 时出现（如凭据/后端异常），可跳设置页
 - **ToolCard**：折叠态显示工具名 + 结果摘要（ok/error 色标）；展开显示参数、耗时、完整输出；WARNING 关联显示
 - **InjectionTag**：消息流中显示"本次注入的知识条目/记忆片段"来源标记，可展开查看原文引用
 

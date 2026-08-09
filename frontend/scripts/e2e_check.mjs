@@ -15,12 +15,18 @@ try {
   await page.goto("http://127.0.0.1:5199/", { waitUntil: "networkidle", timeout: 30000 });
   await page.waitForTimeout(2500);
 
-  const status = await page.textContent(".status-bar");
-  console.log("status-bar:", status.replace(/\s+/g, " ").trim());
+  // 状态条已移除（v2.1）：仅在异常时出现 .err-hint，无异常则打印 none
+  const hintCount = await page.locator(".err-hint").count();
+  if (hintCount > 0) {
+    const hint = await page.textContent(".err-hint");
+    console.log("err-hint:", hint.replace(/\s+/g, " ").trim());
+  } else {
+    console.log("err-hint: none");
+  }
 
   // 发送消息（无凭据 → 后端 WARNING）
   await page.fill("textarea", "你好，介绍一下自己");
-  await page.click(".actions button");
+  await page.click(".send-btn");
   await page.waitForTimeout(3000);
   const msgs = await page.locator(".message").count();
   console.log("messages after send:", msgs);
@@ -29,15 +35,15 @@ try {
   await page.screenshot({ path: outDir + "conversation.png" });
 
   // 设置页
-  await page.click(".settings-link");
+  await page.click(".settings-float");
   await page.waitForTimeout(1200);
   const h1 = await page.textContent("header h1");
   console.log("settings title:", h1);
-  await page.fill('input[placeholder="key_id（如 main-key）"]', "main-key");
-  await page.fill('input[placeholder="API Key"]', "sk-e2e-test");
+  await page.fill('input[placeholder="留空自动生成"]', "main-key");
+  await page.fill('input[placeholder="sk-…（粘贴后自动识别）"]', "sk-e2e-test");
   await page.click(".form button");
   await page.waitForTimeout(1500);
-  const creds = await page.locator(".cred-list li").count();
+  const creds = await page.locator(".cred-card").count();
   console.log("credentials after create:", creds);
   await page.screenshot({ path: outDir + "settings.png" });
 } finally {

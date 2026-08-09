@@ -45,7 +45,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 20px;
+  /* 右侧留白避开右上角浮动 ⚙（44px 按钮 + 26px 边距） */
+  padding: 8px 84px 8px 20px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-danger);
   color: var(--danger);
