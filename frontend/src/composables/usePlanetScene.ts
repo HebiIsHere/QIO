@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 星球 3D 场景组合式函数：透明球 + 球面 SDF 融合环 + 聚焦/环波交互。
  * 移植自参考原型 .superpowers/brainstorm/vs-1786250923/content/planet3d.html，
  * 数据源改为后端 API（按位置聚簇 → buildTopics 生成话题点）。
@@ -114,9 +114,19 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   }
 
   function applyRingUniforms(data: TopicData[]) {
-    if (!ringMat) return;
-    ringUniforms = makeRingUniforms(data, currentTheme);
-    ringMat.uniforms = ringUniforms;
+    if (!ringMat || !ringUniforms) return;
+    // 原地更新 uniform 值（不能整体替换 ringMat.uniforms：
+    // three 在编译时缓存 uniform 绑定，替换对象后环不会随数据更新）。
+    const u = makeRingUniforms(data, currentTheme);
+    const d = ringUniforms;
+    d.uTopics.value = u.uTopics.value;
+    d.uWeights.value = u.uWeights.value;
+    d.uCount.value = u.uCount.value;
+    d.uRingColor.value.copy(u.uRingColor.value as THREE.Color);
+    d.uR0.value = u.uR0.value; d.uR1.value = u.uR1.value; d.uR2.value = u.uR2.value;
+    d.uA0.value = u.uA0.value; d.uA1.value = u.uA1.value; d.uA2.value = u.uA2.value;
+    d.uK.value = u.uK.value;
+    d.uHW0.value = u.uHW0.value; d.uHW1.value = u.uHW1.value; d.uHW2.value = u.uHW2.value;
   }
 
   function init() {
