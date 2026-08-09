@@ -9,6 +9,7 @@ import type { TopicDetail, TopicFingerprint, TopicPosition } from "../../service
 const mocks = vi.hoisted(() => ({
   goMock: vi.fn(() => Promise.resolve()),
   focusTopicMock: vi.fn(),
+  setThemeMock: vi.fn(),
   initMock: vi.fn(),
   loadTopicsMock: vi.fn(),
   setTopicsMock: vi.fn(),
@@ -43,7 +44,7 @@ function createFakePlanet() {
     handleClick: mocks.handleClickMock,
     cancelAnimation: vi.fn(),
     resize: vi.fn(),
-    setTheme: vi.fn(),
+    setTheme: mocks.setThemeMock,
     setTopics: mocks.setTopicsMock,
   };
 }
@@ -70,6 +71,7 @@ function newPinia() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  document.documentElement.removeAttribute("data-theme");
   mocks.goMock.mockImplementation(() => Promise.resolve());
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
   mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS });
@@ -220,5 +222,47 @@ describe("PlanetView 相机联动", () => {
     await flushPromises();
     expect(w.emitted("close")).toBeTruthy();
     w.unmount();
+  });
+});
+
+describe("PlanetView 主题同步", () => {
+  it("light 主题挂载：场景初始化后应用 setTheme('light')", async () => {
+    document.documentElement.setAttribute("data-theme", "light");
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(mocks.setThemeMock).toHaveBeenCalledWith("light");
+    w.unmount();
+  });
+
+  it("dark 主题挂载：应用 setTheme('dark')", async () => {
+    document.documentElement.setAttribute("data-theme", "dark");
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(mocks.setThemeMock).toHaveBeenCalledWith("dark");
+    w.unmount();
+  });
+
+  it("data-theme 变化：MutationObserver 同步再次调用 setTheme", async () => {
+    document.documentElement.setAttribute("data-theme", "light");
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(mocks.setThemeMock).toHaveBeenLastCalledWith("light");
+
+    document.documentElement.setAttribute("data-theme", "dark");
+    await flushPromises();
+    expect(mocks.setThemeMock).toHaveBeenLastCalledWith("dark");
+    expect(mocks.setThemeMock).toHaveBeenCalledTimes(2);
+    w.unmount();
+  });
+
+  it("卸载后断开 observer：data-theme 变化不再调用 setTheme", async () => {
+    document.documentElement.setAttribute("data-theme", "light");
+    const w = mountView(newPinia());
+    await flushPromises();
+    const callsAfterMount = mocks.setThemeMock.mock.calls.length;
+    w.unmount();
+    document.documentElement.setAttribute("data-theme", "dark");
+    await flushPromises();
+    expect(mocks.setThemeMock).toHaveBeenCalledTimes(callsAfterMount);
   });
 });

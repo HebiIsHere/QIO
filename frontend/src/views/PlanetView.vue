@@ -27,14 +27,44 @@ const selectedFragmentId = ref<string | null>(null);
 /** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
 const closing = ref(false);
 
+/* ---- 主题同步：StatusBar 切换写 html[data-theme]，planet.setTheme 换 WebGL 配色 ---- */
+/** 读取当前主题：tokens.css 依据 data-theme 切变量，缺省按 dark */
+function readTheme(): "dark" | "light" {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+
+/** 场景是否已初始化（init 之后才有 scene/材质可换色，observer 回调前守卫） */
+let planetReady = false;
+let themeObserver: MutationObserver | null = null;
+
+function applyPlanetTheme() {
+  if (!planetReady) return;
+  planet.setTheme(readTheme());
+}
+
+function startThemeObserver() {
+  if (themeObserver) return;
+  themeObserver = new MutationObserver(applyPlanetTheme);
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+}
+
+function stopThemeObserver() {
+  themeObserver?.disconnect();
+  themeObserver = null;
+}
+
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   planet.init();
+  planetReady = true;
+  applyPlanetTheme();
+  startThemeObserver();
   await loadData();
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
+  stopThemeObserver();
 });
 
 function onKeydown(e: KeyboardEvent) {
