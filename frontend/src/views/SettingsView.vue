@@ -5,6 +5,7 @@ import { identifyCredential } from "../services/identify";
 import QInput from "../components/ui/QInput.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import CredentialCard from "./settings/CredentialCard.vue";
+import { getTheme, toggleTheme } from "../utils/theme";
 
 const credentials = ref<CredentialMeta[]>([]);
 const form = ref({
@@ -76,6 +77,11 @@ const identifyText = computed(() =>
 const submitLabel = computed(() => (editTarget.value ? "以此换钥（新建）" : "创建凭据"));
 
 const activeTab = ref<"cred" | "pref">("cred");
+/** 主题：偏好页开关（暗紫晶/净白），读写 html[data-theme] + localStorage qio-theme */
+const isLight = ref(getTheme() === "light");
+function toggleThemePref() {
+  isLight.value = toggleTheme() === "light";
+}
 const error = ref("");
 const fragmentTier = ref("10");
 const customCount = ref(10);
@@ -386,6 +392,25 @@ onMounted(() => {
 
     <!-- 偏好 -->
     <div v-show="activeTab === 'pref'" class="panel">
+      <section class="sec">
+        <h2>主题</h2>
+        <p class="desc">界面配色：暗色「暗紫晶」/ 亮色「净白」，即时生效。</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">主题</div>
+            <div class="d">{{ isLight ? "亮色（净白）" : "暗色（暗紫晶）" }}</div>
+          </div>
+          <div class="ctl">
+            <button
+              type="button" class="qio-switch theme-switch" :class="{ on: isLight }"
+              role="switch" :aria-checked="isLight" aria-label="主题开关"
+              @click="toggleThemePref"
+            ></button>
+            <span class="mono">{{ isLight ? "净白" : "暗紫晶" }}</span>
+          </div>
+        </div>
+      </section>
+
       <section class="sec">
         <h2>记忆</h2>
         <p class="desc">每个片段的消息数上限：达到后封块并生成摘要。</p>

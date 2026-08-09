@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import SettingsView from "../SettingsView.vue";
+import { getTheme, setTheme } from "../../utils/theme";
+
+beforeEach(() => {
+  localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
+});
 
 describe("SettingsView", () => {
   it("渲染凭据/偏好两个 tab 与表单控件（QInput/QSelect）", async () => {
@@ -27,6 +33,23 @@ describe("SettingsView", () => {
     await w.find(".create").trigger("click");
     await nextTick();
     expect(w.find(".msg.err").text()).toContain("请先粘贴 API Key");
+    w.unmount();
+  });
+  it("偏好页主题开关切换主题并持久化 data-theme/qio-theme", async () => {
+    // 模拟 main.ts 启动时应用持久化主题（组件不再兜底写 data-theme）
+    setTheme(getTheme());
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await w.findAll(".tab")[1].trigger("click");
+    const sw = w.find(".theme-switch");
+    expect(sw.exists()).toBe(true);
+    // 默认暗色
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    await sw.trigger("click");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(localStorage.getItem("qio-theme")).toBe("light");
+    await sw.trigger("click");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("qio-theme")).toBe("dark");
     w.unmount();
   });
 });
