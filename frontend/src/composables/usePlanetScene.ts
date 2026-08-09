@@ -20,6 +20,8 @@ const DOT_RADIUS = 1.004;
 const CLUSTER_ANG = 0.5;
 const RADII: Record<CameraState, number> = { overview: 5.5, planet: 2.6, focus: 2.25 };
 const THEME_LINE: Record<"dark" | "light", number> = { dark: 0xe878bd, light: 0xb0136a };
+/** 话题点兜底材质：Canvas 贴图不可用时复用（模块级单例，避免反复创建/泄漏） */
+const DOT_FALLBACK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
 
 export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   const webglOK = ref(false);
@@ -54,8 +56,11 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let targetQuat: THREE.Quaternion | null = null;
   let focusedDot: THREE.Mesh | null = null;
   let waveStart = -1e9;
+  /** pointerdown 坐标/时间；pointerup 判定后立即消费清空，避免陈旧状态吞掉后续点击 */
   let lastDown: { x: number; y: number; t: number } | null = null;
-  let pointerDownHandler: ((e: PointerEvent) => void) | null = null;
+  /** pointerup 判定为“有效点击”（位移小 + 时长短）后才允许 handleClick 触发聚焦 */
+  let pendingClick = false;
+  let pointerHandlers: { down: (e: PointerEvent) => void; up: (e: PointerEvent) => void; cancel: () => void } | null = null;
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -115,6 +120,7 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   }
 
   function init() {
+    if (renderer) return; // 幂等：已初始化则直接跳过
     if (!canvas.value) return;
     try {
       renderer = new THREE.WebGLRenderer({ canvas: canvas.value, antialias: true });
@@ -199,18 +205,35 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     ringSphere.renderOrder = 2;
     planetGroup.add(ringSphere);
 
-    // 点击 vs 拖拽判定
-    pointerDownHandler = (e: PointerEvent) => { lastDown = { x: e.clientX, y: e.clientY, t: performance.now() }; };
-    canvas.value.addEventListener("pointerdown", pointerDownHandler);
+    // 点击 vs 拖拽判定：pointerup 判定并消费 lastDown（陈旧状态不吞点击），pointercancel 清空
+    const onPointerDown = (e: PointerEvent) => { lastDown = { x: e.clientX, y: e.clientY, t: performance.now() }; pendingClick = false; };
+    const onPointerUp = (e: PointerEvent) => {
+      if (lastDown) {
+        const dx = e.clientX - lastDown.x, dy = e.clientY - lastDown.y;
+        const dt = performance.now() - lastDown.t;
+        lastDown = null;
+        pendingClick = dx * dx + dy * dy < 36 && dt < 450;
+      }
+    };
+    const onPointerCancel = () => { lastDown = null; pendingClick = false; };
+    pointerHandlers = { down: onPointerDown, up: onPointerUp, cancel: onPointerCancel };
+    canvas.value.addEventListener("pointerdown", onPointerDown);
+    canvas.value.addEventListener("pointerup", onPointerUp);
+    canvas.value.addEventListener("pointercancel", onPointerCancel);
 
     animate();
   }
 
+  /**
+   * 加载话题位置并重建星球话题点（圆点 + 融合环 uniforms）。
+   * v1 限制：星球仅渲染前 MAX_TOPICS(16) 个话题（球面融合环 uniform 数组上限），
+   * 超出部分不生成圆点，但侧栏话题列表仍展示全部话题。
+   */
   function loadTopics(topics: TopicPosition[]) {
     const pg = planetGroup;
     if (!pg) return;
     topicsRef.value = topics;
-    dotMeshes.forEach((m) => pg.remove(m));
+    dotMeshes.forEach((m) => { pg.remove(m); m.geometry.dispose(); });
     dotMeshes = [];
     dotByTopicId.clear();
     focusedDot = null;
@@ -226,11 +249,10 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     clusters.forEach((cl) => cl.members.forEach((id) => orderedIds.push(id)));
     currentData = buildTopics(clusters.map((cl) => ({ center: cl.center, n: cl.n }))).slice(0, MAX_TOPICS);
     applyRingUniforms(currentData);
-    const fallbackMat = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
     currentData.forEach((td, i) => {
       const topicId = orderedIds[i];
       const base = 0.028 * td.w;
-      const dot = new THREE.Mesh(new THREE.CircleGeometry(base, 48), dotMat ?? fallbackMat);
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(base, 48), dotMat ?? DOT_FALLBACK_MATERIAL);
       dot.position.copy(td.pos).multiplyScalar(DOT_RADIUS);
       dot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), td.pos.clone().normalize());
       dot.userData = { topicId, ci: td.ci, base };
@@ -290,21 +312,23 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     waveStart = performance.now(); // 环波
   }
 
+  /**
+   * 画布点击：仅接受 pointerup 判定为有效点击的命中（拖拽/长按/指针取消不触发聚焦）。
+   * Raycaster 不检查 object.visible，背面（半球剔除后 visible=false）的话题点会
+   * 在透明球上被误命中，因此这里只取 visible === true 的命中。
+   */
   function handleClick(clientX: number, clientY: number) {
     if (!camera || !renderer || !canvas.value) return;
-    if (lastDown) {
-      const dx = clientX - lastDown.x, dy = clientY - lastDown.y;
-      const dt = performance.now() - lastDown.t;
-      lastDown = null;
-      if (dx * dx + dy * dy >= 36 || dt >= 450) return; // 拖拽/长按不算点击
-    }
+    if (!pendingClick) return;
+    pendingClick = false;
     const rect = canvas.value.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects(dotMeshes, true);
-    if (hits.length > 0) {
-      const topicId = hits[0].object.userData.topicId as string | undefined;
+    const hit = hits.find((h) => h.object.visible === true);
+    if (hit) {
+      const topicId = hit.object.userData.topicId as string | undefined;
       if (topicId) focusTopic(topicId, topicsRef.value);
     }
   }
@@ -391,7 +415,11 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
 
   onScopeDispose(() => {
     cancelAnimationFrame(raf);
-    if (pointerDownHandler && canvas.value) canvas.value.removeEventListener("pointerdown", pointerDownHandler);
+    if (pointerHandlers && canvas.value) {
+      canvas.value.removeEventListener("pointerdown", pointerHandlers.down);
+      canvas.value.removeEventListener("pointerup", pointerHandlers.up);
+      canvas.value.removeEventListener("pointercancel", pointerHandlers.cancel);
+    }
     renderer?.dispose();
     renderer = null;
     scene = null;
@@ -403,6 +431,9 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   return {
     webglOK, fps, cameraState, selectedTopicId, markers,
     init, loadTopics, go, focusTopic, handleClick, cancelAnimation, resize, setTheme,
-    setTopics: (list: TopicPosition[]) => { topicsRef.value = list; },
+    setTopics: (list: TopicPosition[]) => {
+      // 仅暂存列表供 handleClick/focusTopic 查找；星球渲染上限见 loadTopics（MAX_TOPICS=16）
+      topicsRef.value = list;
+    },
   };
 }
