@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useSessionStore } from "../stores/session";
+import { useFloatingWindow } from "../composables/useFloatingWindow";
 
 const session = useSessionStore();
 const text = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+const elRef = ref<HTMLElement | null>(null);
+const headerRef = ref<HTMLElement | null>(null);
 // 记忆强度：视觉占位（默认 0.38），待偏好设置接线
 const memoryStrength = ref(0.38);
+
+// 浮动窗口：贴边（默认底部居中），header（topicbar）为拖拽把手
+useFloatingWindow(elRef, {
+  id: "composer",
+  dockMode: "edge",
+  defaultPos: (el, vp) => ({
+    x: Math.max(4, Math.round((vp.width - el.offsetWidth) / 2)),
+    y: vp.height - el.offsetHeight - 18,
+  }),
+  dragHandle: headerRef,
+});
 
 const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
 
@@ -42,8 +56,8 @@ function autosize() {
 </script>
 
 <template>
-  <div class="composer">
-    <div class="topicbar">
+  <div ref="elRef" class="composer">
+    <div ref="headerRef" class="topicbar fw-handle">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
       <span class="spacer"></span>
@@ -90,11 +104,21 @@ function autosize() {
 </template>
 
 <style scoped>
+/* 浮动窗口卡片（Task B）：定位由 useFloatingWindow 用 left/top 像素控制 */
 .composer {
-  border-top: 1px solid var(--border-subtle);
-  padding: 12px 44px 18px;
+  position: fixed;
+  z-index: 12;
+  width: min(560px, calc(100vw - 32px));
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 10px 18px 16px;
   background: var(--bg-surface);
-  flex-shrink: 0;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+/* 贴靠隐藏：整体收起为底部细边（mouseenter 展开） */
+.composer.fw-hidden {
+  transform: translateY(calc(100% - 10px));
 }
 .topicbar {
   display: flex;
@@ -102,6 +126,16 @@ function autosize() {
   gap: 10px;
   margin-bottom: 8px;
   font-size: 12px;
+}
+/* 拖拽把手 */
+.fw-handle {
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.fw-handle:active {
+  cursor: grabbing;
 }
 .tname {
   font-weight: 600;
