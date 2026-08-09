@@ -1,16 +1,25 @@
 /**
- * 星球 3D 场景组合式函数：场景创建、话题标记、相机状态、交互。
- * 移植自 prototypes/planet，数据源改为后端 API。
+ * 星球 3D 场景组合式函数：透明球 + 球面 SDF 融合环 + 聚焦/环波交互。
+ * 移植自参考原型 .superpowers/brainstorm/vs-1786250923/content/planet3d.html，
+ * 数据源改为后端 API（按位置聚簇 → buildTopics 生成话题点）。
+ * 对外接口（cameraState/selectedTopicId/fps/webglOK/markers 与 init/loadTopics/go/
+ * focusTopic/handleClick/cancelAnimation/resize/setTopics）保持不变，新增 setTheme。
  */
 import { onScopeDispose, ref, shallowRef } from "vue";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { TopicPosition } from "../services/api";
+import { buildTopics, type TopicData } from "../planet/topicData";
+import { MAX_TOPICS, RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
 
 export type CameraState = "overview" | "planet" | "focus";
 
 const RADIUS = 1.0;
-const PALETTE = [0x5b8def, 0x48c78e, 0xe0a06a, 0xb07ae0, 0x5fc9d6, 0xd96a8a, 0xa8c85b, 0x7a9ec2];
+const DOT_RADIUS = 1.004;
+/** 话题位置聚簇合并阈值（球面角距离，弧度） */
+const CLUSTER_ANG = 0.5;
+const RADII: Record<CameraState, number> = { overview: 5.5, planet: 2.6, focus: 2.25 };
+const THEME_LINE: Record<"dark" | "light", number> = { dark: 0xe878bd, light: 0xb0136a };
 
 export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   const webglOK = ref(false);
@@ -23,31 +32,86 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let scene: THREE.Scene | null = null;
   let camera: THREE.PerspectiveCamera | null = null;
   let controls: OrbitControls | null = null;
-  let markerMeshes: THREE.Mesh[] = [];
-  let labelSprites: THREE.Sprite[] = [];
+  let planetGroup: THREE.Group | null = null;
+  let ringMat: THREE.ShaderMaterial | null = null;
+  let ringUniforms: ReturnType<typeof makeRingUniforms> | null = null;
+  let contour: THREE.LineLoop | null = null;
+  let fillMat: THREE.MeshBasicMaterial | null = null;
+  let gridMats: THREE.LineBasicMaterial[] = [];
+  let dotMat: THREE.MeshBasicMaterial | null = null;
+  let currentData: TopicData[] = [];
+  let currentTheme: "dark" | "light" = "dark";
+
+  let dotMeshes: THREE.Mesh[] = [];
+  let dotByTopicId = new Map<string, THREE.Mesh>();
   let raf = 0;
   let frameCount = 0;
   let lastFpsTime = performance.now();
-  let animatingCamera = false;
+  let lastNow = performance.now();
+
+  // 交互状态（计时一律 performance.now()）
+  let tween: { from: THREE.Vector3; to: THREE.Vector3; t: number; dur: number; done?: () => void } | null = null;
+  let targetQuat: THREE.Quaternion | null = null;
+  let focusedDot: THREE.Mesh | null = null;
+  let waveStart = -1e9;
+  let lastDown: { x: number; y: number; t: number } | null = null;
+  let pointerDownHandler: ((e: PointerEvent) => void) | null = null;
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
+  const _q = new THREE.Quaternion();
+  const _worldDir = new THREE.Vector3();
+  const _centerV = new THREE.Vector3();
+  const _camDirV = new THREE.Vector3();
+  const tmpV = new THREE.Vector3();
 
-  function makeLabel(text: string): THREE.Sprite {
+  const topicsRef = ref<TopicPosition[]>([]);
+
+  const easeInOutCubic = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+
+  function makeDotTexture(): THREE.CanvasTexture | null {
     const c = document.createElement("canvas");
-    c.width = 256; c.height = 64;
-    const ctx = c.getContext("2d");
-    if (ctx) {
-      ctx.font = "bold 26px system-ui, sans-serif";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillStyle = "#efe2ee";
-      ctx.fillText(text, 128, 32);
-    }
+    c.width = 256; c.height = 256;
+    const g = c.getContext("2d");
+    if (!g) return null;
+    g.clearRect(0, 0, 256, 256);
+    g.fillStyle = "#c51b7d";
+    g.beginPath(); g.arc(128, 128, 64, 0, Math.PI * 2); g.fill();
     const tex = new THREE.CanvasTexture(c);
-    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-    const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.5, 0.125, 1);
-    return sprite;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.anisotropy = renderer ? renderer.capabilities.getMaxAnisotropy() : 1;
+    return tex;
+  }
+
+  /** 将真实话题位置按球面角距离贪心聚簇，返回簇（中心 + 数量 + 成员 topic_id）。 */
+  function buildClusters(topics: TopicPosition[]) {
+    interface Cluster { center: THREE.Vector3; n: number; members: string[]; }
+    const clusters: Cluster[] = [];
+    for (const t of topics) {
+      const p = new THREE.Vector3(...t.position).normalize();
+      let best: Cluster | null = null;
+      let bestAng = Infinity;
+      for (const cl of clusters) {
+        const ang = Math.acos(Math.max(-1, Math.min(1, p.dot(cl.center))));
+        if (ang < bestAng) { bestAng = ang; best = cl; }
+      }
+      if (best && bestAng < CLUSTER_ANG) {
+        best.members.push(t.topic_id);
+        best.n += 1;
+        best.center.add(p).normalize();
+      } else {
+        clusters.push({ center: p.clone(), n: 1, members: [t.topic_id] });
+      }
+    }
+    return clusters;
+  }
+
+  function applyRingUniforms(data: TopicData[]) {
+    if (!ringMat) return;
+    ringUniforms = makeRingUniforms(data, currentTheme);
+    ringMat.uniforms = ringUniforms;
   }
 
   function init() {
@@ -74,134 +138,247 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     controls.minDistance = 0.9;
     controls.maxDistance = 8;
 
-    scene.add(new THREE.AmbientLight(0xcc99bb, 0.6));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-    dir.position.set(3, 2, 4);
-    scene.add(dir);
+    planetGroup = new THREE.Group();
+    scene.add(planetGroup);
 
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(RADIUS, 48, 48),
-      new THREE.MeshPhongMaterial({ color: 0x521f45, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+    // 透明球
+    fillMat = new THREE.MeshBasicMaterial({ color: 0x2a2130, transparent: true, opacity: 0.05, depthWrite: false });
+    const fill = new THREE.Mesh(new THREE.SphereGeometry(RADIUS, 64, 48), fillMat);
+    fill.renderOrder = 1;
+    planetGroup.add(fill);
+
+    // 轮廓圆：始终面向相机的圆环线（每帧 quaternion.copy(camera.quaternion)）
+    const contourPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 128; i++) { const a = (i / 128) * Math.PI * 2; contourPts.push(new THREE.Vector3(Math.cos(a), Math.sin(a), 0)); }
+    contour = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(contourPts),
+      new THREE.LineBasicMaterial({ color: THEME_LINE[currentTheme], transparent: true, opacity: 0.8, depthWrite: false }),
     );
-    scene.add(sphere);
-    const wire = new THREE.LineSegments(
-      new THREE.WireframeGeometry(new THREE.SphereGeometry(RADIUS * 1.001, 24, 24)),
-      new THREE.LineBasicMaterial({ color: 0x8a2f6b, transparent: true, opacity: 0.35 }),
-    );
-    scene.add(wire);
+    contour.renderOrder = 4;
+    scene.add(contour);
+
+    // 极淡经纬线（lat -60..60 步 30；lon 0..330 步 45）
+    const gridGroup = new THREE.Group();
+    planetGroup.add(gridGroup);
+    const gridMat = () => new THREE.LineBasicMaterial({ color: THEME_LINE[currentTheme], transparent: true, opacity: 0.2, depthWrite: false });
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const r = Math.cos((lat * Math.PI) / 180), y = Math.sin((lat * Math.PI) / 180);
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i <= 96; i++) { const a = (i / 96) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r)); }
+      const m = gridMat();
+      m.opacity = lat === 0 ? 0.35 : 0.18;
+      gridMats.push(m);
+      gridGroup.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), m));
+    }
+    for (let lon = 0; lon < 360; lon += 45) {
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i <= 64; i++) { const a = (i / 64) * Math.PI; pts.push(new THREE.Vector3(Math.cos(a), Math.sin(a), 0)); }
+      const m = gridMat();
+      m.opacity = 0.13;
+      gridMats.push(m);
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m);
+      line.rotation.y = (lon * Math.PI) / 180;
+      gridGroup.add(line);
+    }
+
+    // 环球：球面 SDF 融合环
+    dotMat = (() => {
+      const tex = makeDotTexture();
+      if (!tex) return null;
+      return new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    })();
+    ringUniforms = makeRingUniforms([], currentTheme);
+    ringMat = new THREE.ShaderMaterial({
+      uniforms: ringUniforms,
+      vertexShader: RING_VERT,
+      fragmentShader: RING_FRAG,
+      transparent: true,
+      depthWrite: false,
+    });
+    const ringSphere = new THREE.Mesh(new THREE.SphereGeometry(RADIUS * 1.006, 128, 96), ringMat);
+    ringSphere.renderOrder = 2;
+    planetGroup.add(ringSphere);
+
+    // 点击 vs 拖拽判定
+    pointerDownHandler = (e: PointerEvent) => { lastDown = { x: e.clientX, y: e.clientY, t: performance.now() }; };
+    canvas.value.addEventListener("pointerdown", pointerDownHandler);
 
     animate();
   }
 
   function loadTopics(topics: TopicPosition[]) {
-    const sc = scene;
-    if (!sc) return;
-    markerMeshes.forEach((m) => sc.remove(m));
-    markerMeshes = [];
-    labelSprites.forEach((s) => sc.remove(s));
-    labelSprites = [];
-    const labels: THREE.Sprite[] = [];
-    topics.forEach((topic, i) => {
-      const pos = new THREE.Vector3(...topic.position);
-      const color = PALETTE[i % PALETTE.length];
-      const mat = new THREE.MeshPhongMaterial({ color, emissive: new THREE.Color(color).multiplyScalar(topic.activity > 0.5 ? 0.25 : 0.05) });
-      const marker = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 12), mat);
-      marker.position.copy(pos);
-      marker.userData = { topicId: topic.topic_id, index: i };
-      sc.add(marker);
-      markerMeshes.push(marker);
-      const label = makeLabel(topic.name);
-      label.position.copy(pos.clone().multiplyScalar(1.08));
-      label.userData = { topicId: topic.topic_id, index: i };
-      sc.add(label);
-      labels.push(label);
-      labelSprites.push(label);
+    const pg = planetGroup;
+    if (!pg) return;
+    topicsRef.value = topics;
+    dotMeshes.forEach((m) => pg.remove(m));
+    dotMeshes = [];
+    dotByTopicId.clear();
+    focusedDot = null;
+    targetQuat = null;
+    if (!topics.length) {
+      currentData = [];
+      applyRingUniforms(currentData);
+      markers.value = [];
+      return;
+    }
+    const clusters = buildClusters(topics);
+    const orderedIds: string[] = [];
+    clusters.forEach((cl) => cl.members.forEach((id) => orderedIds.push(id)));
+    currentData = buildTopics(clusters.map((cl) => ({ center: cl.center, n: cl.n }))).slice(0, MAX_TOPICS);
+    applyRingUniforms(currentData);
+    const fallbackMat = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
+    currentData.forEach((td, i) => {
+      const topicId = orderedIds[i];
+      const base = 0.028 * td.w;
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(base, 48), dotMat ?? fallbackMat);
+      dot.position.copy(td.pos).multiplyScalar(DOT_RADIUS);
+      dot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), td.pos.clone().normalize());
+      dot.userData = { topicId, ci: td.ci, base };
+      dot.renderOrder = 5;
+      pg.add(dot);
+      dotMeshes.push(dot);
+      if (topicId) dotByTopicId.set(topicId, dot);
     });
-    markers.value = markerMeshes;
+    markers.value = dotMeshes;
   }
 
-  async function go(state: CameraState, target?: THREE.Vector3 | null, duration = 650) {
-    if (!camera) return;
-    animatingCamera = true;
-    const radii: Record<CameraState, number> = { overview: 5.5, planet: 2.6, focus: 1.6 };
-    const endTarget = target?.clone().normalize() ?? new THREE.Vector3(0, 0, 1);
-    const endPos = endTarget.clone().multiplyScalar(radii[state]);
-    const startPos = camera.position.clone();
-    const t0 = performance.now();
-    await new Promise<void>((resolve) => {
-      const step = (now: number) => {
-        if (!camera) { resolve(); return; }
-        let t = (now - t0) / duration;
-        if (t >= 1) t = 1;
-        const e = 1 - Math.pow(1 - t, 3);
-        camera.position.lerpVectors(startPos, endPos, e);
-        camera.lookAt(endTarget);
-        if (t < 1) {
-          requestAnimationFrame(step);
-        } else {
-          animatingCamera = false;
-          cameraState.value = state;
-          resolve();
-        }
-      };
-      requestAnimationFrame(step);
+  function beginTween(from: THREE.Vector3, to: THREE.Vector3, dur: number, done?: () => void) {
+    if (controls) controls.enabled = false;
+    tween = { from, to, t: 0, dur, done };
+  }
+
+  function go(state: CameraState, target?: THREE.Vector3 | null, duration = 700): Promise<void> {
+    return new Promise((resolve) => {
+      if (!camera) { resolve(); return; }
+      const endTarget = target?.clone().normalize() ?? new THREE.Vector3(0, 0, 1);
+      const endPos = endTarget.clone().multiplyScalar(RADII[state]);
+      focusedDot = null;
+      targetQuat = null;
+      beginTween(camera.position.clone(), endPos, duration, () => {
+        cameraState.value = state;
+        controls?.update();
+        resolve();
+      });
     });
   }
 
   function cancelAnimation() {
-    animatingCamera = false;
+    tween = null;
+    targetQuat = null;
+    if (controls) controls.enabled = true;
   }
 
+  /** 聚焦话题：相机 tween 到 方向*2.25（easeInOutCubic）+ 星球 slerp 使点居中 + 环波。 */
   function focusTopic(topicId: string, topics: TopicPosition[]) {
-    const topic = topics.find((t) => t.topic_id === topicId);
-    if (!topic || !camera) return;
+    if (!camera || !planetGroup) return;
+    const dot = dotByTopicId.get(topicId);
+    if (!dot) {
+      const topic = topics.find((t) => t.topic_id === topicId);
+      if (topic) go("focus", new THREE.Vector3(...topic.position));
+      return;
+    }
     selectedTopicId.value = topicId;
-    markerMeshes.forEach((m, i) => {
-      const isSelected = topics[i]?.topic_id === topicId;
-      const mat = m.material as THREE.MeshPhongMaterial;
-      // 选中标记用自身颜色发光，避免白色自发光糊成白球
-      mat.emissive.copy(isSelected ? mat.color : new THREE.Color(0x000000));
-      mat.emissiveIntensity = isSelected ? 0.8 : 0;
-    });
-    go("focus", new THREE.Vector3(...topic.position));
+    focusedDot = dot;
+    cameraState.value = "focus";
+    planetGroup.updateMatrixWorld(true);
+    planetGroup.getWorldPosition(_centerV);
+    _worldDir.copy(dot.position).normalize().applyQuaternion(planetGroup.quaternion);
+    _camDirV.subVectors(camera.position, _centerV).normalize();
+    _q.setFromUnitVectors(_worldDir, _camDirV);
+    targetQuat = _q.multiply(planetGroup.quaternion.clone());
+    beginTween(camera.position.clone(), _camDirV.clone().multiplyScalar(RADII.focus), 800);
+    waveStart = performance.now(); // 环波
   }
 
   function handleClick(clientX: number, clientY: number) {
     if (!camera || !renderer || !canvas.value) return;
+    if (lastDown) {
+      const dx = clientX - lastDown.x, dy = clientY - lastDown.y;
+      const dt = performance.now() - lastDown.t;
+      lastDown = null;
+      if (dx * dx + dy * dy >= 36 || dt >= 450) return; // 拖拽/长按不算点击
+    }
     const rect = canvas.value.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObjects(markerMeshes);
+    const hits = raycaster.intersectObjects(dotMeshes, true);
     if (hits.length > 0) {
-      const topicId = hits[0].object.userData.topicId as string;
-      focusTopic(topicId, topicsRef.value);
+      const topicId = hits[0].object.userData.topicId as string | undefined;
+      if (topicId) focusTopic(topicId, topicsRef.value);
     }
   }
 
-  const topicsRef = ref<TopicPosition[]>([]);
+  /** 环波：uDimL = 1 - 0.75*exp(-((dt - L*0.16)/0.10)^2)，dt<1.2s 后恢复 1。 */
+  function applyWave(now: number) {
+    if (!ringUniforms) return;
+    const dt = (now - waveStart) / 1000;
+    if (dt < 1.2) {
+      ringUniforms.uDim0.value = 1 - 0.75 * Math.exp(-Math.pow((dt - 0 * 0.16) / 0.10, 2));
+      ringUniforms.uDim1.value = 1 - 0.75 * Math.exp(-Math.pow((dt - 1 * 0.16) / 0.10, 2));
+      ringUniforms.uDim2.value = 1 - 0.75 * Math.exp(-Math.pow((dt - 2 * 0.16) / 0.10, 2));
+    } else {
+      ringUniforms.uDim0.value = ringUniforms.uDim1.value = ringUniforms.uDim2.value = 1;
+    }
+  }
+
+  /** 主题切换：融合环/轮廓/经纬线换色，透明球与背景随主题。 */
+  function setTheme(theme: "dark" | "light") {
+    currentTheme = theme;
+    const line = THEME_LINE[theme];
+    if (contour) (contour.material as THREE.LineBasicMaterial).color.setHex(line);
+    gridMats.forEach((m) => m.color.setHex(line));
+    if (fillMat) fillMat.color.setHex(theme === "dark" ? 0x2a2130 : 0xffffff);
+    if (ringMat) applyRingUniforms(currentData);
+    if (scene) scene.background = new THREE.Color(theme === "dark" ? 0x0f0a10 : 0xf4f1ec);
+  }
 
   function animate() {
     raf = requestAnimationFrame(animate);
-    if (renderer && scene && camera && controls) {
-      controls.update();
-      // 标签保持恒定屏幕尺寸：按相机距离缩放
-      for (const label of labelSprites) {
-        const d = camera.position.distanceTo(label.position);
-        const s = Math.max(d * 0.09, 0.02);
-        label.scale.set(s, s * 0.25, 1);
+    if (!renderer || !scene || !camera || !controls || !planetGroup) return;
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastNow) / 1000);
+    lastNow = now;
+
+    if (tween) {
+      tween.t += dt * 1000;
+      const k = Math.min(1, tween.t / tween.dur);
+      camera.position.lerpVectors(tween.from, tween.to, easeInOutCubic(k));
+      if (k >= 1) {
+        const done = tween.done;
+        tween = null;
+        targetQuat = null;
+        controls.enabled = true;
+        controls.update();
+        done?.();
       }
-      if (!animatingCamera && cameraState.value === "focus") {
-        // keep looking at selected target while idle in focus mode
-      }
-      renderer.render(scene, camera);
-      frameCount++;
-      const now = performance.now();
-      if (now - lastFpsTime >= 2000) {
-        fps.value = Math.round((frameCount * 1000) / (now - lastFpsTime));
-        frameCount = 0;
-        lastFpsTime = now;
-      }
+    }
+    // 聚焦补间期间 slerp 使点居中；空闲自转
+    if (focusedDot && targetQuat && tween) {
+      planetGroup.quaternion.slerp(targetQuat, Math.min(1, dt * 7));
+    } else if (!focusedDot) {
+      planetGroup.rotation.y += dt * 0.1;
+    }
+    if (contour) contour.quaternion.copy(camera.quaternion);
+
+    // 半球剔除：点在星球背面则隐藏
+    planetGroup.updateMatrixWorld(true);
+    planetGroup.getWorldPosition(_centerV);
+    _camDirV.subVectors(camera.position, _centerV);
+    for (const dot of dotMeshes) {
+      dot.getWorldPosition(tmpV);
+      dot.visible = tmpV.sub(_centerV).dot(_camDirV) >= 0;
+    }
+
+    applyWave(now);
+    controls.update();
+    renderer.render(scene, camera);
+
+    frameCount++;
+    if (now - lastFpsTime >= 2000) {
+      fps.value = Math.round((frameCount * 1000) / (now - lastFpsTime));
+      frameCount = 0;
+      lastFpsTime = now;
     }
   }
 
@@ -214,16 +391,18 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
 
   onScopeDispose(() => {
     cancelAnimationFrame(raf);
+    if (pointerDownHandler && canvas.value) canvas.value.removeEventListener("pointerdown", pointerDownHandler);
     renderer?.dispose();
     renderer = null;
     scene = null;
     camera = null;
     controls = null;
+    planetGroup = null;
   });
 
   return {
-    webglOK, fps, cameraState, selectedTopicId,
-    init, loadTopics, go, focusTopic, handleClick, cancelAnimation, resize,
+    webglOK, fps, cameraState, selectedTopicId, markers,
+    init, loadTopics, go, focusTopic, handleClick, cancelAnimation, resize, setTheme,
     setTopics: (list: TopicPosition[]) => { topicsRef.value = list; },
   };
 }
