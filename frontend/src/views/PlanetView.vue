@@ -26,6 +26,12 @@ const search = ref("");
 const selectedFragmentId = ref<string | null>(null);
 /** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
 const closing = ref(false);
+/** 右侧话题边栏：默认收起；点击话题点/展开按钮展开，点击收起按钮收起 */
+const panelOpen = ref(false);
+/** 画布尺寸观察器：边栏开合/窗口缩放时同步 WebGL 渲染尺寸 */
+let canvasObserver: ResizeObserver | null = null;
+/** 边栏开合导致画布中心偏移后的重对焦定时器 */
+let recenterTimer = 0;
 
 /* ---- 主题同步：utils/theme.ts 写 html[data-theme]，planet.setTheme 换 WebGL 配色 ---- */
 /** 读取当前主题：tokens.css 依据 data-theme 切变量，缺省按 dark */
@@ -53,18 +59,52 @@ function stopThemeObserver() {
   themeObserver = null;
 }
 
+/* ---- 右侧话题边栏：画布尺寸同步 + 开合后重对焦 ---- */
+function startCanvasObserver() {
+  if (typeof ResizeObserver === "undefined" || !canvasRef.value) return;
+  canvasObserver = new ResizeObserver(() => planet.resize());
+  canvasObserver.observe(canvasRef.value);
+}
+
+function stopCanvasObserver() {
+  canvasObserver?.disconnect();
+  canvasObserver = null;
+}
+
+/** 展开/收起右侧边栏（收起为细边 + 展开钮，展开为 340px 面板）。 */
+function togglePanel() {
+  if (closing.value) return;
+  panelOpen.value = !panelOpen.value;
+  // 画布宽度随边栏动画变化，结束后若仍有焦点话题，重对焦到新画布中心
+  const focused = planet.selectedTopicId.value;
+  if (focused) scheduleRecenter(focused);
+}
+
+/** 边栏开合动画结束后（~380ms）微调：把焦点话题重新居中到新画布中心。 */
+function scheduleRecenter(topicId: string, delay = 380) {
+  window.clearTimeout(recenterTimer);
+  recenterTimer = window.setTimeout(() => {
+    if (closing.value) return;
+    if (planet.selectedTopicId.value !== topicId) return;
+    planet.focusTopic(topicId, positions.value, { duration: 360, wave: false });
+  }, delay);
+}
+
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   planet.init();
   planetReady = true;
   applyPlanetTheme();
   startThemeObserver();
+  startCanvasObserver();
   await loadData();
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
   stopThemeObserver();
+  stopCanvasObserver();
+  window.clearTimeout(recenterTimer);
 });
 
 function onKeydown(e: KeyboardEvent) {
@@ -117,7 +157,13 @@ function selectTopic(topicId: string) {
 
 function onCanvasClick(e: MouseEvent) {
   if (closing.value) return;
-  planet.handleClick(e.clientX, e.clientY);
+  const focused = planet.handleClick(e.clientX, e.clientY);
+  if (focused) {
+    // 收起态点击话题点：同时展开边栏，画布中心左移 → 动画结束后重对焦
+    const wasCollapsed = !panelOpen.value;
+    panelOpen.value = true;
+    if (wasCollapsed) scheduleRecenter(planet.selectedTopicId.value ?? "");
+  }
 }
 
 function onCanvasDblClick() {
@@ -191,7 +237,19 @@ async function close() {
       <span v-else>WebGL 不可用</span>
     </div>
 
-    <aside class="panel">
+    <aside class="panel" :class="{ open: panelOpen }">
+      <button
+        class="panel-toggle"
+        :title="panelOpen ? '收起话题列表' : '展开话题列表'"
+        :aria-label="panelOpen ? '收起话题列表' : '展开话题列表'"
+        :aria-expanded="panelOpen"
+        @click="togglePanel"
+      >
+        <svg class="chev" :class="{ flip: !panelOpen }" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <div class="panel-inner">
       <div class="panel-head">
         <h2 class="serif">话题</h2>
         <QInput v-model="search" placeholder="搜索话题…" />
@@ -261,6 +319,7 @@ async function close() {
           从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
         </button>
       </div>
+      </div>
     </aside>
   </div>
 </template>
@@ -268,6 +327,7 @@ async function close() {
 <style scoped>
 .planet-view {
   position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex;
+  overflow: hidden;
   transition: opacity 0.5s ease;
 }
 .planet-view.closing { opacity: 0; }
@@ -285,8 +345,56 @@ async function close() {
   padding: 6px 12px; backdrop-filter: blur(6px);
 }
 .panel {
-  flex: 0 0 340px; width: 340px; height: 100%; background: var(--bg-panel);
-  border-left: 1px solid var(--border-subtle); display: flex; flex-direction: column; overflow-y: auto;
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 0;
+  height: 100%;
+  background: var(--bg-panel);
+  border-left: 1px solid transparent;
+  transition: width 0.32s cubic-bezier(0.22, 0.8, 0.24, 1), border-color 0.32s ease;
+}
+.panel.open {
+  width: 340px;
+  border-left-color: var(--border-subtle);
+}
+.panel-inner {
+  width: 340px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.panel-toggle {
+  position: absolute;
+  top: 50%;
+  left: -30px;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 30px;
+  height: 78px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.panel-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.panel-toggle .chev {
+  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.panel-toggle .chev.flip {
+  transform: rotate(180deg);
 }
 .panel-head { padding: 14px 14px 8px; }
 .panel-head h2 { font-size: 16px; color: var(--text-strong); margin: 0 0 8px; }

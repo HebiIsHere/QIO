@@ -303,8 +303,9 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     if (controls) controls.enabled = true;
   }
 
-  /** 聚焦话题：相机 tween 到 方向*2.25（easeInOutCubic）+ 星球 slerp 使点居中 + 环波。 */
-  function focusTopic(topicId: string, topics: TopicPosition[]) {
+  /** 聚焦话题：相机 tween 到 方向*2.25（easeInOutCubic）+ 星球 slerp 使点居中 + 环波。
+   * opts.duration 覆盖补间时长（重对焦/边栏开合后微调用短时长）；opts.wave=false 抑制环波。 */
+  function focusTopic(topicId: string, topics: TopicPosition[], opts?: { duration?: number; wave?: boolean }) {
     if (!camera || !planetGroup) return;
     const dot = dotByTopicId.get(topicId);
     if (!dot) {
@@ -321,8 +322,8 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     _camDirV.subVectors(camera.position, _centerV).normalize();
     _q.setFromUnitVectors(_worldDir, _camDirV);
     targetQuat = _q.multiply(planetGroup.quaternion.clone());
-    beginTween(camera.position.clone(), _camDirV.clone().multiplyScalar(RADII.focus), 800);
-    waveStart = performance.now(); // 环波
+    beginTween(camera.position.clone(), _camDirV.clone().multiplyScalar(RADII.focus), opts?.duration ?? 800);
+    if (opts?.wave !== false) waveStart = performance.now(); // 环波
   }
 
   /**
@@ -330,9 +331,9 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
    * Raycaster 不检查 object.visible，背面（半球剔除后 visible=false）的话题点会
    * 在透明球上被误命中，因此这里只取 visible === true 的命中。
    */
-  function handleClick(clientX: number, clientY: number) {
-    if (!camera || !renderer || !canvas.value) return;
-    if (!pendingClick) return;
+  function handleClick(clientX: number, clientY: number): boolean {
+    if (!camera || !renderer || !canvas.value) return false;
+    if (!pendingClick) return false;
     pendingClick = false;
     const rect = canvas.value.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -342,8 +343,9 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     const hit = hits.find((h) => h.object.visible === true);
     if (hit) {
       const topicId = hit.object.userData.topicId as string | undefined;
-      if (topicId) focusTopic(topicId, topicsRef.value);
+      if (topicId) { focusTopic(topicId, topicsRef.value); return true; }
     }
+    return false;
   }
 
   /** 环波：uDimL = 1 - 0.75*exp(-((dt - L*0.16)/0.10)^2)，dt<1.2s 后恢复 1。 */
@@ -450,3 +452,4 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
     },
   };
 }
+

@@ -72,6 +72,7 @@ function newPinia() {
 beforeEach(() => {
   vi.clearAllMocks();
   document.documentElement.removeAttribute("data-theme");
+  mocks.handleClickMock.mockReturnValue(false);
   mocks.goMock.mockImplementation(() => Promise.resolve());
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
   mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS });
@@ -264,5 +265,110 @@ describe("PlanetView 主题同步", () => {
     document.documentElement.setAttribute("data-theme", "dark");
     await flushPromises();
     expect(mocks.setThemeMock).toHaveBeenCalledTimes(callsAfterMount);
+  });
+});
+
+describe("PlanetView 右侧话题边栏", () => {
+  it("默认收起：panel 无 open class，存在展开按钮（aria-expanded=false）", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    const panel = w.find(".panel");
+    expect(panel.exists()).toBe(true);
+    expect(panel.classes()).not.toContain("open");
+    const toggle = w.find(".panel-toggle");
+    expect(toggle.exists()).toBe(true);
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    w.unmount();
+  });
+
+  it("点击展开按钮：panel 展开（open class + aria-expanded=true）", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    expect(w.find(".panel").classes()).toContain("open");
+    expect(w.find(".panel-toggle").attributes("aria-expanded")).toBe("true");
+    w.unmount();
+  });
+
+  it("再次点击收起按钮：panel 收起", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    expect(w.find(".panel").classes()).not.toContain("open");
+    w.unmount();
+  });
+
+  it("画布点击命中话题点：展开边栏并委托场景聚焦", async () => {
+    mocks.handleClickMock.mockReturnValue(true);
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
+    await nextTick();
+    expect(mocks.handleClickMock).toHaveBeenCalledWith(10, 20);
+    expect(w.find(".panel").classes()).toContain("open");
+    w.unmount();
+  });
+
+  it("画布点击未命中话题点：边栏保持收起", async () => {
+    mocks.handleClickMock.mockReturnValue(false);
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
+    await nextTick();
+    expect(w.find(".panel").classes()).not.toContain("open");
+    w.unmount();
+  });
+
+  it("收起态点击话题点：展开边栏，动画结束后重对焦焦点话题", async () => {
+    mocks.handleClickMock.mockReturnValue(true);
+    const w = mountView(newPinia());
+    await flushPromises();
+    currentFake!.selectedTopicId.value = "t1";
+    vi.useFakeTimers();
+    await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
+    await nextTick();
+    expect(w.find(".panel").classes()).toContain("open");
+    const callsBefore = mocks.focusTopicMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore + 1);
+    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", POSITIONS);
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it("已展开时点击话题点：画布中心未变，不触发额外重对焦", async () => {
+    mocks.handleClickMock.mockReturnValue(true);
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    expect(w.find(".panel").classes()).toContain("open");
+    currentFake!.selectedTopicId.value = "t1";
+    vi.useFakeTimers();
+    const callsBefore = mocks.focusTopicMock.mock.calls.length;
+    await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore);
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it("焦点话题存在时切换边栏开合：动画结束后重对焦", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    currentFake!.selectedTopicId.value = "t1";
+    vi.useFakeTimers();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    const callsBefore = mocks.focusTopicMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore + 1);
+    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", POSITIONS);
+    vi.useRealTimers();
+    w.unmount();
   });
 });

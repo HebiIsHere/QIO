@@ -22,6 +22,12 @@ try {
   await dock.click({ timeout: 15000 });
   await page.waitForTimeout(3500); // 场景初始化 + 数据加载
 
+  // 边栏默认收起：先点展开按钮再操作列表
+  const toggle = page.locator(".panel-toggle");
+  await toggle.waitFor({ state: "visible", timeout: 5000 });
+  await toggle.click();
+  await page.waitForTimeout(700); // 展开动画
+
   const hud = await page.textContent(".hud");
   console.log("hud:", hud?.replace(/\s+/g, " ").trim());
   const topicCount = await page.locator(".topic-list li").count();
