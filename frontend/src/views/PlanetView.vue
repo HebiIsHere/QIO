@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
  * 星球页（全屏覆盖层）：3D 球体（左/中）+ 右侧面板（列表/详情/从这里开始）。
- * 与对话页悬浮球共享 usePlanetScene 单一 3D 场景与相机状态机
- * （overview=悬浮球远景 / planet=全屏近景 / focus=话题聚焦）：
+ * usePlanetScene 在本页内实例化渲染全屏星球（悬浮球为 SVG 微缩星球，不共享同一
+ * WebGL 场景）；相机状态机 overview|planet|focus 语义与悬浮球保持一致：
  * - 打开（悬浮球点击）：场景推进到 planet（有锚点时直接聚焦话题）；
- * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层。
+ * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层，
+ *   拉回窗口内交互一律禁用。
  */
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
@@ -45,14 +46,16 @@ function onKeydown(e: KeyboardEvent) {
 
 async function loadData() {
   const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
+  // 等待期间用户已发起关闭：不再推进相机/加载详情，避免打断拉回 tween
+  if (closing.value) return;
   topics.value = t.topics;
   positions.value = p.topics;
   planet.setTopics(p.topics);
   planet.loadTopics(p.topics);
-  // 若已有锚点话题，聚焦它
+  // 若已有锚点话题，聚焦它（详情由 selectedTopicId watcher 单一来源加载）
   if (session.currentTopicId) {
+    planet.selectedTopicId.value = session.currentTopicId;
     planet.focusTopic(session.currentTopicId, positions.value);
-    await loadDetail(session.currentTopicId);
   } else {
     planet.go("planet");
   }
@@ -78,8 +81,8 @@ async function loadDetail(topicId: string) {
 
 function selectTopic(topicId: string) {
   if (closing.value) return;
+  planet.selectedTopicId.value = topicId;
   planet.focusTopic(topicId, positions.value);
-  loadDetail(topicId);
 }
 
 function onCanvasClick(e: MouseEvent) {
@@ -127,6 +130,7 @@ async function deleteKnowledge(k: { id: string; content: string }) {
 }
 
 async function startHere() {
+  if (closing.value) return;
   if (!detail.value) return;
   try {
     await api.setAnchor(detail.value.topic_id, selectedFragmentId.value);

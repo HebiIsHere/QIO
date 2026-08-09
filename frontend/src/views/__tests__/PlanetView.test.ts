@@ -25,16 +25,21 @@ const mocks = vi.hoisted(() => ({
 
 let currentFake: ReturnType<typeof createFakePlanet> | null = null;
 function createFakePlanet() {
+  const selectedTopicId = ref<string | null>(null);
   return {
     webglOK: ref(true),
     fps: ref(60),
     cameraState: ref<"overview" | "planet" | "focus">("overview"),
-    selectedTopicId: ref<string | null>(null),
+    selectedTopicId,
     markers: shallowRef([]),
     init: mocks.initMock,
     loadTopics: mocks.loadTopicsMock,
     go: mocks.goMock,
-    focusTopic: mocks.focusTopicMock,
+    // 模拟真实 focusTopic：同步设置 selectedTopicId（触发详情 watcher）
+    focusTopic: (topicId: string, topics: unknown) => {
+      selectedTopicId.value = topicId;
+      mocks.focusTopicMock(topicId, topics);
+    },
     handleClick: mocks.handleClickMock,
     cancelAnimation: vi.fn(),
     resize: vi.fn(),
@@ -172,6 +177,47 @@ describe("PlanetView 相机联动", () => {
     expect(session.currentTopicId).toBe("t1");
     expect(session.topicName).toBe("话题 A");
     expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(w.emitted("close")).toBeTruthy();
+    w.unmount();
+  });
+
+  it("列表点击话题：详情只请求一次（watcher 单一来源，慢 API 下不重复）", async () => {
+    let resolveDetail!: (d: TopicDetail) => void;
+    mocks.apiMock.getTopicDetail.mockImplementation(() => new Promise<TopicDetail>((r) => { resolveDetail = r; }));
+    const w = mountView(newPinia());
+    await flushPromises();
+    await w.find(".topic-list li").trigger("click");
+    await flushPromises();
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS);
+    // 显式 loadDetail 已移除：watcher 是唯一详情来源，慢 API 下也只请求一次
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledTimes(1);
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledWith("t1");
+    resolveDetail(DETAIL);
+    await flushPromises();
+    w.unmount();
+  });
+
+  it("挂载时 API pending → 关闭 → API resolve 后 close 仍 emit（loadData 不打断拉回）", async () => {
+    const resolvers: (() => void)[] = [];
+    let resolveList!: () => void;
+    let resolvePos!: () => void;
+    mocks.goMock.mockImplementation(() => new Promise<void>((r) => { resolvers.push(r); }));
+    mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
+    mocks.apiMock.getPositions.mockImplementation(() => new Promise((r) => { resolvePos = () => r({ topics: POSITIONS }); }));
+    const w = mountView(newPinia());
+    // loadData 的 API 尚未 resolve 时先关闭
+    await w.find(".close-btn").trigger("click");
+    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(resolvers.length).toBe(1);
+    // 随后 API resolve → loadData 继续，但不得再推进 planet / 聚焦话题
+    resolveList();
+    resolvePos();
+    await flushPromises();
+    expect(mocks.goMock).toHaveBeenCalledTimes(1);
+    expect(mocks.focusTopicMock).not.toHaveBeenCalled();
+    // 拉回完成 → close 仍正常 emit
+    resolvers[0]();
+    await flushPromises();
     expect(w.emitted("close")).toBeTruthy();
     w.unmount();
   });

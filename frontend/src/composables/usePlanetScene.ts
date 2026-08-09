@@ -266,6 +266,9 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
 
   function beginTween(from: THREE.Vector3, to: THREE.Vector3, dur: number, done?: () => void) {
     if (controls) controls.enabled = false;
+    // 覆盖旧补间时先完成旧 done 回调：go/focusTopic 被打断时其 promise 仍能 resolve，
+    // 避免 close() 的 await planet.go(...) 因 tween 被覆盖而永不完成（界面卡死）。
+    if (tween?.done) tween.done();
     tween = { from, to, t: 0, dur, done };
   }
 
