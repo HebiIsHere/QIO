@@ -57,3 +57,16 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 .qio-select.disabled{opacity:.5;cursor:not-allowed;}
 .qio-select-menu .opt.hl{background:var(--accent-soft);color:var(--text-strong);}
+
+/* ---- 浮动窗口（Task B · §12.2）---- */
+/* 贴靠平滑过渡：由 useFloatingWindow 临时添加（left/top .3s cubic-bezier(.22,.8,.24,1)） */
+.fw-snapping {
+  transition:
+    left 0.3s cubic-bezier(0.22, 0.8, 0.24, 1),
+    top 0.3s cubic-bezier(0.22, 0.8, 0.24, 1) !important;
+}
+/* 拖动中禁止文本选择，避免误选页面内容 */
+.fw-dragging {
+  user-select: none;
+  -webkit-user-select: none;
+}
