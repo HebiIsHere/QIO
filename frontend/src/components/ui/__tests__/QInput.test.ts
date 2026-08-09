@@ -15,4 +15,13 @@ describe("QInput", () => {
     const w = mount(QInput, { props: { mono: true } });
     expect(w.find("input").classes()).toContain("mono");
   });
+  it("输入时触发 update:modelValue", async () => {
+    const w = mount(QInput, { props: { modelValue: "" } });
+    await w.find("input").setValue("hi");
+    expect(w.emitted("update:modelValue")?.[0]).toEqual(["hi"]);
+  });
+  it("error 时设置 aria-invalid", () => {
+    const w = mount(QInput, { props: { error: true } });
+    expect(w.find("input").attributes("aria-invalid")).toBe("true");
+  });
 });
