@@ -2,16 +2,21 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { api, type CredentialMeta } from "../services/api";
 import { identifyCredential } from "../services/identify";
+import QInput from "../components/ui/QInput.vue";
+import QSelect from "../components/ui/QSelect.vue";
+import CredentialCard from "./settings/CredentialCard.vue";
 
 const credentials = ref<CredentialMeta[]>([]);
 const form = ref({
   key_id: "",
   secret: "",
-  tags: "main-loop",
+  tags: "", // 附加标签（逗号分隔）
   endpoint: "",
   default_model: "",
   budget: null as number | null,
+  scope: "", // scope 授权（逗号分隔，可选）
 });
+const formCategory = ref("main-loop");
 const notice = ref("");
 const identifyState = ref("idle" as "idle" | "working" | "done" | "failed");
 const identifiedProvider = ref("");
@@ -51,12 +56,32 @@ watch(
 );
 // 只显示 active 凭据；撤销后卡片立即消失
 const activeCredentials = computed(() => credentials.value.filter((c) => c.status === "active"));
+
+const CATEGORY_PRESETS = ["chat", "code", "embed", "main-loop", "subagent", "vision", "research", "embedding"];
+const categoryOptions = computed(() => {
+  const set = new Set(CATEGORY_PRESETS);
+  if (formCategory.value.trim()) set.add(formCategory.value.trim());
+  return Array.from(set).map((v) => ({ value: v, label: v }));
+});
+const modelSelectOptions = computed(() => modelOptions.value.map((m) => ({ value: m, label: m })));
+const identifyText = computed(() =>
+  identifyState.value === "working"
+    ? "识别中…"
+    : identifyState.value === "done"
+      ? `已识别：${identifiedProvider.value}`
+      : identifyState.value === "failed"
+        ? "未能自动识别，请手动填写"
+        : "",
+);
+
+const activeTab = ref<"cred" | "pref">("cred");
 const error = ref("");
 const fragmentTier = ref("10");
 const customCount = ref(10);
 const settingsNotice = ref("");
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
+const formEl = ref<HTMLElement | null>(null);
 
 async function loadMaintenanceSettings() {
   try {
@@ -82,6 +107,11 @@ async function saveMaintenance() {
   }
 }
 
+function toggleMaintenance() {
+  maintenanceEnabled.value = !maintenanceEnabled.value;
+  void saveMaintenance();
+}
+
 async function runMaintenanceNow() {
   try {
     const r = await api.runMaintenance();
@@ -90,10 +120,12 @@ async function runMaintenanceNow() {
     settingsNotice.value = `启动失败：${(e as Error).message}`;
   }
 }
-const tiers = [
+
+const tierOptions = [
   { value: "5", label: "短（5 轮）" },
   { value: "10", label: "标准（10 轮）" },
   { value: "15", label: "长（15 轮）" },
+  { value: "custom", label: "自定义" },
 ];
 
 async function loadMemorySettings() {
@@ -123,8 +155,9 @@ async function saveMemorySettings() {
   }
 }
 
-function onTierChange() {
-  if (fragmentTier.value !== "custom") {
+function onTierSelect(v: string) {
+  fragmentTier.value = v;
+  if (v !== "custom") {
     void saveMemorySettings();
   }
 }
@@ -137,6 +170,32 @@ async function load() {
   }
 }
 
+function buildTags(): string[] {
+  return Array.from(
+    new Set(
+      [formCategory.value, ...form.value.tags.split(",").map((t) => t.trim()).filter(Boolean)]
+        .map((t) => t.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function resetForm() {
+  form.value = {
+    key_id: "",
+    secret: "",
+    tags: "",
+    endpoint: "",
+    default_model: "",
+    budget: null,
+    scope: "",
+  };
+  formCategory.value = "main-loop";
+  modelOptions.value = [];
+  identifyState.value = "idle";
+  identifiedProvider.value = "";
+}
+
 async function create() {
   error.value = "";
   notice.value = "";
@@ -144,18 +203,38 @@ async function create() {
     const payload: Record<string, unknown> = {
       key_id: form.value.key_id.trim(),
       secret: form.value.secret,
-      tags: form.value.tags.split(",").map((t) => t.trim()).filter(Boolean),
+      tags: buildTags(),
     };
     if (form.value.endpoint.trim()) payload.endpoint = form.value.endpoint.trim();
     if (form.value.default_model.trim()) payload.default_model = form.value.default_model.trim();
     if (form.value.budget != null) payload.budget = form.value.budget;
+    if (form.value.scope.trim()) payload.scope = form.value.scope.split(",").map((s) => s.trim()).filter(Boolean);
     await api.createCredential(payload);
     notice.value = "凭据已创建";
-    form.value = { key_id: "", secret: "", tags: "main-loop", endpoint: "", default_model: "", budget: null };
+    resetForm();
     await load();
   } catch (e) {
     error.value = (e as Error).message;
   }
+}
+
+function edit(c: CredentialMeta) {
+  activeTab.value = "cred";
+  form.value = {
+    key_id: c.key_id,
+    secret: "",
+    tags: (c.tags ?? []).slice(1).join(", "),
+    endpoint: c.endpoint ?? "",
+    default_model: c.default_model ?? "",
+    budget: c.budget,
+    scope: (c.scope ?? []).join(", "),
+  };
+  formCategory.value = (c.tags ?? [])[0] ?? "main-loop";
+  modelOptions.value = [];
+  identifyState.value = "idle";
+  identifiedProvider.value = "";
+  notice.value = `已载入「${c.key_id}」的配置：密钥只写不读，粘贴新密钥后创建（同名会提示已存在，可改名）。`;
+  formEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function revoke(keyId: string) {
@@ -177,6 +256,16 @@ async function test(keyId: string) {
   }
 }
 
+function onBudgetInput(v: string) {
+  form.value.budget = v === "" ? null : Number(v);
+}
+function onCustomCountInput(v: string) {
+  customCount.value = v === "" ? 0 : Number(v);
+}
+function onIntervalInput(v: string) {
+  maintenanceInterval.value = v === "" ? 0 : Number(v);
+}
+
 onMounted(() => {
   void load();
   void loadMemorySettings();
@@ -188,133 +277,202 @@ onMounted(() => {
   <div class="settings">
     <header>
       <h1>设置</h1>
-      <router-link to="/">← 返回对话</router-link>
+      <span class="sub mono">settings · qio</span>
+      <span class="spacer"></span>
+      <router-link to="/" class="back">← 返回对话</router-link>
     </header>
 
-    <section class="card">
-      <h2>凭据（BYOK）</h2>
-      <p class="hint">密钥只写不读：保存后不再显示明文。标签用逗号分隔（main-loop/subagent/vision/research/embedding 等）。</p>
-      <div class="form">
-        <input v-model="form.key_id" placeholder="key_id（留空自动生成）" />
-        <div class="secret-wrap">
-            <input v-model="form.secret" type="password" placeholder="API Key（粘贴后自动识别）" />
-            <span class="identify" :class="identifyState">
-              {{ identifyState === 'working' ? '识别中…' : identifyState === 'done' ? '已识别：' + identifiedProvider : identifyState === 'failed' ? '未能自动识别，请手动填写' : '' }}
-            </span>
-          </div>
-        <input v-model="form.tags" placeholder="标签，逗号分隔" />
-        <input v-model="form.endpoint" placeholder="endpoint（可选）" />
-        <template v-if="modelOptions.length">
-            <select v-model="form.default_model" class="model-select">
-              <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-            </select>
-          </template>
-          <input v-else v-model="form.default_model" placeholder="默认模型（可选）" />
-        <input v-model.number="form.budget" type="number" placeholder="预算 token（可选）" />
-        <button @click="create">创建</button>
-      </div>
-      <p v-if="notice" class="ok">{{ notice }}</p>
-      <p v-if="error" class="err">{{ error }}</p>
+    <div class="tabs" role="tablist">
+      <button
+        type="button"
+        class="tab" :class="{ active: activeTab === 'cred' }" role="tab"
+        :aria-selected="activeTab === 'cred'" @click="activeTab = 'cred'"
+      >凭据</button>
+      <button
+        type="button"
+        class="tab" :class="{ active: activeTab === 'pref' }" role="tab"
+        :aria-selected="activeTab === 'pref'" @click="activeTab = 'pref'"
+      >偏好</button>
+    </div>
 
-      <ul class="cred-list">
-        <li v-for="c in activeCredentials" :key="c.key_id">
-          <div class="cred-head">
-            <span class="name">{{ c.key_id }}</span>
-            <span class="status" :class="c.status">{{ c.status }}</span>
-            <span class="version">#{{ c.version }}</span>
-          </div>
-          <div class="cred-meta">
-            tags: {{ c.tags.join(", ") }} · {{ c.default_model || "无模型" }} ·
-            预算 {{ c.budget ?? "∞" }}（已用 {{ c.budget_used }}）
-          </div>
-          <div class="cred-actions">
-            <button @click="test(c.key_id)">测试连接</button>
-            <button class="danger" @click="revoke(c.key_id)">撤销</button>
-          </div>
-        </li>
-      </ul>
-      <p v-if="!credentials.length" class="hint">尚无凭据。</p>
-    </section>
+    <!-- 凭据 -->
+    <div v-show="activeTab === 'cred'" class="panel">
+      <section class="sec">
+        <h2>凭据</h2>
+        <p class="desc">密钥只写不读：保存后不再显示明文，仅本地写入 keyring，服务器不落盘。</p>
+        <p v-if="error" class="msg err">{{ error }}</p>
+        <p v-if="notice" class="msg ok">{{ notice }}</p>
 
-    <section class="card">
-      <h2>偏好</h2>
-      <div class="pref-row">
-        <span class="pref-label">记忆封块分档</span>
-        <div class="tier-options">
-          <label v-for="t in tiers" :key="t.value" class="tier-option">
-            <input type="radio" :value="t.value" v-model="fragmentTier" @change="onTierChange" />
-            <span>{{ t.label }}</span>
-          </label>
-          <label class="tier-option">
-            <input type="radio" value="custom" v-model="fragmentTier" @change="onTierChange" />
-            <span>自定义</span>
-            <input
-              class="custom-count"
-              type="number"
-              min="1"
-              max="30"
-              v-model.number="customCount"
-              :disabled="fragmentTier !== 'custom'"
-              @change="fragmentTier === 'custom' && saveMemorySettings()"
+        <CredentialCard
+          v-for="c in activeCredentials"
+          :key="c.key_id"
+          :credential="c"
+          @test="test(c.key_id)"
+          @edit="edit(c)"
+          @remove="revoke(c.key_id)"
+        />
+        <p v-if="!activeCredentials.length" class="empty mono">尚无凭据。</p>
+      </section>
+
+      <section class="sec">
+        <h2>新建凭据</h2>
+        <p class="desc">粘贴 API Key 后自动识别端点与模型；类别标签 + scope 授权控制工具访问。</p>
+        <div ref="formEl" class="form">
+          <div class="field">
+            <span class="label">名称</span>
+            <QInput v-model="form.key_id" placeholder="留空自动生成" />
+          </div>
+          <div class="field">
+            <span class="label">模型端点（base_url）</span>
+            <QInput v-model="form.endpoint" mono placeholder="https://api.openai.com/v1" />
+          </div>
+          <div class="field">
+            <span class="label">API Key（只写不读）</span>
+            <QInput v-model="form.secret" type="password" mono placeholder="sk-…（粘贴后自动识别）" />
+          </div>
+          <div class="field">
+            <span class="label">类别标签</span>
+            <QSelect :options="categoryOptions" v-model="formCategory" />
+          </div>
+          <div class="field">
+            <span class="label">附加标签</span>
+            <QInput v-model="form.tags" placeholder="逗号分隔，可选（如 vision, research）" />
+          </div>
+          <div class="field">
+            <span class="label">默认模型</span>
+            <QSelect v-if="modelOptions.length" :options="modelSelectOptions" v-model="form.default_model" />
+            <QInput v-else v-model="form.default_model" mono placeholder="自动识别或手动填写" />
+          </div>
+          <div class="field">
+            <span class="label">预算 token</span>
+            <QInput
+              :model-value="form.budget == null ? '' : String(form.budget)"
+              type="number" mono placeholder="可选"
+              @update:model-value="onBudgetInput"
             />
-          </label>
+          </div>
+          <div class="field">
+            <span class="label">Scope 授权</span>
+            <QInput v-model="form.scope" placeholder="default, tools, memory（逗号分隔，可选）" />
+          </div>
+          <p class="identify mono" :class="identifyState">{{ identifyText }}</p>
+          <button type="button" class="qio-btn primary create" @click="create">创建凭据</button>
         </div>
-        <p class="hint">每个片段的消息数上限：达到后封块并生成摘要。短=5 / 标准=10 / 长=15 / 自定义 1-30。</p>
-      </div>
-      <div class="pref-row maintenance-row">
-        <span class="pref-label">离线维护</span>
-        <label class="tier-option">
-          <input type="checkbox" v-model="maintenanceEnabled" @change="saveMaintenance" />
-          <span>启用（后台整理记忆与知识）</span>
-        </label>
-        <label class="tier-option">
-          <span>间隔（小时）</span>
-          <input
-            class="custom-count"
-            type="number"
-            min="1"
-            max="720"
-            v-model.number="maintenanceInterval"
-            @change="saveMaintenance"
-          />
-        </label>
-        <button class="maintenance-run" @click="runMaintenanceNow">立即运行</button>
-      </div>
-      <p v-if="settingsNotice" class="ok">{{ settingsNotice }}</p>
-    </section>
+      </section>
+    </div>
+
+    <!-- 偏好 -->
+    <div v-show="activeTab === 'pref'" class="panel">
+      <section class="sec">
+        <h2>记忆</h2>
+        <p class="desc">每个片段的消息数上限：达到后封块并生成摘要。</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">记忆封块分档</div>
+            <div class="d">短 5 / 标准 10 / 长 15 / 自定义 1-30 轮</div>
+          </div>
+          <div class="ctl">
+            <QSelect
+              :options="tierOptions"
+              :model-value="fragmentTier"
+              @update:model-value="onTierSelect"
+            />
+            <QInput
+              v-if="fragmentTier === 'custom'"
+              class="num" :model-value="String(customCount)"
+              type="number" mono min="1" max="30"
+              @update:model-value="onCustomCountInput"
+              @change="saveMemorySettings"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>维护</h2>
+        <p class="desc">离线整理记忆与知识（后台执行）。</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">离线维护</div>
+            <div class="d">启用后台整理；间隔 1-720 小时可调</div>
+          </div>
+          <div class="ctl">
+            <button
+              type="button" class="qio-switch" :class="{ on: maintenanceEnabled }"
+              role="switch" :aria-checked="maintenanceEnabled" aria-label="离线维护开关"
+              @click="toggleMaintenance"
+            ></button>
+            <QInput
+              class="num" :model-value="String(maintenanceInterval)"
+              type="number" mono min="1" max="720"
+              @update:model-value="onIntervalInput"
+              @change="saveMaintenance"
+            />
+            <button type="button" class="qio-btn" @click="runMaintenanceNow">立即运行</button>
+          </div>
+        </div>
+        <p v-if="settingsNotice" class="msg ok">{{ settingsNotice }}</p>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.settings { max-width: 760px; margin: 0 auto; padding: 24px; height: 100%; overflow-y: auto; }
-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
-header h1 { font-size: 20px; color: var(--text-strong); }
-header a { color: var(--link); text-decoration: none; font-size: 13px; }
-.card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
-.card h2 { font-size: 15px; color: var(--text-primary); margin: 0 0 8px; }
-.hint { font-size: 12px; color: var(--text-muted); }
-.form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
-.form input { background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font-size: 13px; }
-.form input:focus { outline: none; border-color: var(--accent); }
-.secret-wrap { display: contents; }
-.identify { font-size: 11px; color: var(--text-muted); grid-column: span 2; }
+/* 分层：--bg-base 底，卡片/输入区用 --bg-elevated / --bg-inset，全部走令牌 */
+.settings {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--sans);
+}
+header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 22px; }
+header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color: var(--text-strong); }
+.sub { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
+.spacer { flex: 1; }
+.back { color: var(--link); text-decoration: none; font-size: 13px; }
+.back:hover { text-decoration: underline; }
+
+/* tabs */
+.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 24px; }
+.tab {
+  font-size: 14px; padding: 9px 18px; color: var(--text-secondary); cursor: pointer;
+  background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans);
+}
+.tab:hover { color: var(--text-strong); }
+.tab.active { color: var(--text-strong); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* section */
+.sec { margin-bottom: 26px; }
+.sec h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+.desc { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+
+.msg { font-size: 13px; margin-bottom: 10px; }
+.msg.ok { color: var(--success); }
+.msg.err { color: var(--danger); }
+.empty { font-size: 12px; color: var(--text-muted); }
+
+/* form */
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0; }
+.field { display: block; }
+.field .label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.identify { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); min-height: 16px; }
 .identify.done { color: var(--success); }
 .identify.failed { color: var(--warning); }
-.model-select { background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font-size: 13px; }
-.form button { grid-column: 1 / -1; background: var(--accent); border: none; border-radius: 8px; color: var(--on-accent); cursor: pointer; padding: 8px 10px; }
-.form button:hover { background: var(--accent-hover); }
-.ok { color: var(--success); font-size: 13px; }
-.err { color: var(--danger); font-size: 13px; }
-.cred-list { list-style: none; padding: 0; }
-.cred-list li { border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
-.cred-head { display: flex; gap: 10px; align-items: center; }
-.name { font-weight: 600; color: var(--text-strong); }
-.status { font-size: 11px; padding: 1px 8px; border-radius: 10px; }
-.status.active { background: var(--success-soft); color: var(--success); }
-.status.revoked { background: var(--danger-soft); color: var(--danger); }
-.version { color: var(--text-muted); font-size: 12px; }
-.cred-meta { font-size: 12px; color: var(--text-secondary); margin: 6px 0; }
-.cred-actions { display: flex; gap: 8px; }
-.cred-actions button { background: var(--bg-accent-subtle); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-primary); font-size: 12px; padding: 4px 12px; cursor: pointer; }
-.cred-actions .danger { border-color: var(--border-danger); color: var(--danger); }
+.create { grid-column: 1 / -1; justify-self: start; padding: 0 24px; }
+
+/* preferences */
+.pref {
+  display: flex; align-items: center; gap: 14px; padding: 13px 4px;
+  border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap;
+}
+.pref .txt { flex: 1; min-width: 200px; }
+.pref .txt .t { font-size: 13.5px; color: var(--text-strong); }
+.pref .txt .d { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+.pref .ctl { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; }
+.num { width: 90px; }
 </style>
+
