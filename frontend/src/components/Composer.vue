@@ -5,6 +5,7 @@ import { useSessionStore } from "../stores/session";
 const session = useSessionStore();
 const text = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+// 记忆强度：视觉占位（默认 0.38），待偏好设置接线
 const memoryStrength = ref(0.38);
 
 const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));

@@ -30,9 +30,20 @@ export const useSessionStore = defineStore("session", {
       this._msgSeq += 1;
       return `local_${Date.now()}_${this._msgSeq}`;
     },
-    setAnchor(topicId: string, fragmentId?: string | null) {
+    /**
+     * 设置锚点话题。name/fragment 可选：传入则刷新话题名与锚点片段，
+     * 未传则保留现有值（向后兼容）。
+     */
+    setAnchor(
+      topicId: string,
+      fragmentId?: string | null,
+      name?: string | null,
+      fragment?: { id: string; title: string | null } | null,
+    ) {
       this.currentTopicId = topicId;
+      this.topicName = name !== undefined ? name : this.topicName;
       this.anchorFragmentId = fragmentId ?? null;
+      this.anchorFragment = fragment !== undefined ? fragment : this.anchorFragment;
     },
     turnStarted() {
       this.turnRunning = true;

@@ -112,7 +112,7 @@ async function startHere() {
   } catch (e) {
     console.error("[planet] set anchor failed:", e);
   }
-  session.setAnchor(detail.value.topic_id, selectedFragmentId.value);
+  session.setAnchor(detail.value.topic_id, selectedFragmentId.value, detail.value.name);
   emit("close");
 }
 

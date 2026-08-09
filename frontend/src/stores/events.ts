@@ -49,16 +49,18 @@ export const useEventStore = defineStore("events", {
         case "TURN_END": {
           session.turnEnded();
           const final = (event.data as Record<string, unknown>).final_content;
+          // 无论 final 是否为空都清空 pending，避免残留注入挂到下一轮
+          const inject = this._pendingMemoryInject;
+          this._pendingMemoryInject = null;
           if (typeof final === "string" && final.trim()) {
-            const inject = this._pendingMemoryInject;
-            this._pendingMemoryInject = null;
             session.pushAssistant(final, inject ?? undefined);
           }
           break;
         }
         case "CAPABILITY": {
+          // 后端协议用 data.adapter 传三态模式（见 backend/tests/test_events.py），mode 作兜底
           const d = event.data as Record<string, unknown>;
-          const mode = String(d.mode ?? "");
+          const mode = String(d.adapter ?? d.mode ?? "");
           if (mode === "native" || mode === "text" || mode === "unsupported") {
             this.modelMode = mode;
           }
@@ -76,7 +78,8 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const count = Number(d.count ?? 0);
           const kind = String(d.kind ?? d.category ?? "记忆注入");
-          this._pendingMemoryInject = { label: `${kind} · ${count} 条` };
+          const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
+          this._pendingMemoryInject = { label: `${kind} · ${safeCount} 条` };
           break;
         }
         case "TOOL_END": {
@@ -103,6 +106,7 @@ export const useEventStore = defineStore("events", {
         }
         case "ERROR": {
           session.turnEnded();
+          this._pendingMemoryInject = null;
           const d = event.data as Record<string, unknown>;
           session.lastError = String(d.message ?? "agent error");
           break;

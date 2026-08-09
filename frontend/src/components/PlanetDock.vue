@@ -36,6 +36,7 @@ const emit = defineEmits<{ open: [] }>();
 .dock {
   position: fixed;
   right: 28px;
+  /* bottom 取 mockup 单行输入态：悬浮于输入区上方 */
   bottom: 172px;
   width: 96px;
   height: 96px;
