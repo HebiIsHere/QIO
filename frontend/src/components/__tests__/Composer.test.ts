@@ -92,20 +92,17 @@ describe("Composer 输入框（浮动窗口）", () => {
     w.unmount();
   });
 
-  it("贴靠隐藏：hidden 时挂 fw-hidden + 贴靠方向类（hover 展开由 CSS :hover 处理）", async () => {
+  it("贴边隐藏已移除：hidden 状态不影响输入框显示（无 fw-hidden）", async () => {
     const { floatingState } = await import("../../composables/floatingState");
     const { w } = await mountComposer();
-    const el = w.find(".composer");
-    floatingState.composer.dockedTo = "top";
     floatingState.composer.hidden = true;
+    floatingState.composer.dockedTo = "top";
     await nextTick();
-    expect(el.classes()).toContain("fw-hidden");
-    expect(el.classes()).toContain("dock-top");
-    // 还原状态避免影响后续用例
+    const el = w.find(".composer");
+    expect(el.classes()).not.toContain("fw-hidden");
     floatingState.composer.hidden = false;
     floatingState.composer.dockedTo = null;
     await nextTick();
-    expect(el.classes()).not.toContain("fw-hidden");
     w.unmount();
   });
 });

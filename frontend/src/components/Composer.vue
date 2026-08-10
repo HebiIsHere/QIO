@@ -74,7 +74,6 @@ function autosize() {
     ref="elRef"
     class="composer"
     :class="[
-      { 'fw-hidden': float.entry.hidden },
       float.entry.dockedTo ? 'dock-' + float.entry.dockedTo : '',
     ]"
   >
@@ -123,22 +122,6 @@ function autosize() {
   background: var(--bg-surface);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
   transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
-}
-/* 贴靠隐藏：收起为贴靠边 10px 细边；hover 展开、移出再隐藏（CSS :hover 逐帧几何命中） */
-.composer.fw-hidden {
-  transform: translateY(calc(100% - 10px));
-}
-.composer.fw-hidden.dock-top {
-  transform: translateY(calc(-100% + 10px));
-}
-.composer.fw-hidden.dock-left {
-  transform: translateX(calc(-100% + 10px));
-}
-.composer.fw-hidden.dock-right {
-  transform: translateX(calc(100% - 10px));
-}
-.composer.fw-hidden:hover {
-  transform: none;
 }
 .topicbar {
   display: flex;
