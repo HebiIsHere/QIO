@@ -62,7 +62,8 @@ const topicLine = computed(() => {
     </template>
 
     <template v-else>
-      <div class="bubble assist-bubble">
+      <div class="bubble assist-bubble" :class="{ interim: message.interim }">
+        <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
         <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
         <MarkdownContent :source="message.content" />
@@ -111,6 +112,18 @@ const topicLine = computed(() => {
   font-weight: 600;
   color: var(--text-strong);
   margin-bottom: 6px;
+}
+.assist-bubble.interim {
+  background: transparent;
+  border-style: dashed;
+}
+.interim-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
 }
 .inject-tag {
   display: inline-flex;

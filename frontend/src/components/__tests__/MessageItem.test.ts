@@ -69,3 +69,15 @@ describe("MessageItem token 下缀", () => {
     w.unmount();
   });
 });
+
+  it("interim 助手消息渲染「过程」标签与弱化气泡", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({ role: "assistant", content: "我先查一下仓库", interim: true }),
+      pinia,
+    );
+    expect(w.find(".interim-tag").exists()).toBe(true);
+    expect(w.find(".assist-bubble.interim").exists()).toBe(true);
+    w.unmount();
+  });
