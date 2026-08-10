@@ -12,6 +12,8 @@ export interface StreamMessage {
   toolError?: string | null;
   /** 记忆注入摘要（MEMORY_INJECT 事件附带，助手消息展示玫红虚线胶囊） */
   memoryInject?: { label: string } | null;
+  /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
+  interim?: boolean;
 }
 
 export const useSessionStore = defineStore("session", {
@@ -55,8 +57,14 @@ export const useSessionStore = defineStore("session", {
     pushUser(text: string) {
       this.pushMessage({ role: "user", content: text, contentType: "text" });
     },
-    pushAssistant(text: string, memoryInject?: StreamMessage["memoryInject"]) {
-      this.pushMessage({ role: "assistant", content: text, contentType: "text", memoryInject });
+    pushAssistant(text: string, memoryInject?: StreamMessage["memoryInject"], interim = false) {
+      this.pushMessage({
+        role: "assistant",
+        content: text,
+        contentType: "text",
+        memoryInject,
+        ...(interim ? { interim: true } : {}),
+      });
     },
     pushTool(name: string, ok: boolean, error: string | null, preview: string) {
       this.pushMessage({

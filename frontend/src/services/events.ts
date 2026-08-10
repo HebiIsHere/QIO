@@ -24,6 +24,7 @@ export const EVENT_TYPES = [
   "TURN_END",
   "TOOL_START",
   "TOOL_END",
+  "ASSISTANT",
   "WARNING",
   "ERROR",
 ] as const;

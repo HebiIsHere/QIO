@@ -74,6 +74,14 @@ export const useEventStore = defineStore("events", {
           }
           break;
         }
+        case "ASSISTANT": {
+          const d = event.data as Record<string, unknown>;
+          const content = String(d.content ?? "");
+          if (content.trim()) {
+            session.pushAssistant(content, undefined, true);
+          }
+          break;
+        }
         case "MEMORY_INJECT": {
           const d = event.data as Record<string, unknown>;
           const count = Number(d.count ?? 0);
