@@ -64,17 +64,23 @@ function measureItem(el: unknown) {
 watch(
   () => session.messages.length,
   async () => {
-    if (followBottom.value && turns.value.length > 0) {
+    if (followBottom.value) {
       await nextTick();
-      virtualizer.value.scrollToIndex(turns.value.length - 1, { align: "end" });
+      const el = containerRef.value;
+      if (el) el.scrollTop = el.scrollHeight;
     }
   },
 );
 
 watch(
   () => session.turnRunning,
-  (running) => {
-    if (running) followBottom.value = true;
+  async (running) => {
+    if (running) {
+      followBottom.value = true;
+      await nextTick();
+      const el = containerRef.value;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
   },
 );
 
@@ -94,6 +100,14 @@ function formatTime(iso?: string): string {
 function firstAssistantIdx(t: Turn): number {
   return t.items.findIndex((m) => m.role === "assistant");
 }
+
+/** 打字指示器：turn 运行中且当前轮次尚无助手消息时显示三圆点 */
+const showTyping = computed(() => {
+  if (!session.turnRunning) return false;
+  const last = turns.value[turns.value.length - 1];
+  if (!last) return false;
+  return !last.items.some((m) => m.role === "assistant");
+});
 </script>
 
 <template>
@@ -129,6 +143,11 @@ function firstAssistantIdx(t: Turn): number {
             :show-topic="i === firstAssistantIdx(turns[item.index])"
           />
         </div>
+      </div>
+    </div>
+    <div v-if="showTyping" class="typing" role="status" aria-label="QIO 正在回复">
+      <div class="typing-bubble">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       </div>
     </div>
     <div v-if="!messages.length" class="empty">
@@ -208,5 +227,43 @@ function firstAssistantIdx(t: Turn): number {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
+}
+/* ---- 打字指示器：三圆点来回跳动 ---- */
+.typing {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
+}
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 16px;
+  border-radius: 14px 14px 14px 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.typing-bubble .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-bubble .dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-bubble .dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
 }
 </style>
