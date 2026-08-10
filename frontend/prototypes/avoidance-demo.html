@@ -1,0 +1,278 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QIO 消息流避让 · 交互示例</title>
+<style>
+  :root {
+    --bg: #f4f1ec;
+    --surface: #ffffff;
+    --elevated: #faf8f5;
+    --line: #e6e1d8;
+    --line-strong: #d8d0c4;
+    --text: #2b2523;
+    --text-2: #6f655d;
+    --text-3: #a0958b;
+    --accent: #c51b7d;
+    --accent-soft: rgba(197, 27, 125, 0.08);
+    --mono: "SFMono-Regular", Consolas, "Roboto Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  /* 顶部说明条 */
+  .topbar {
+    position: fixed; inset: 0 0 auto 0; z-index: 30;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--text-2);
+  }
+  .topbar b { color: var(--accent); font-weight: 600; }
+  .topbar .hint { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+
+  /* 消息流：避让通过 padding 实现（核心） */
+  .stream {
+    position: fixed; inset: 0;
+    overflow-y: auto;
+    padding: 74px 44px 24px;
+    transition: padding 0.28s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+  .turn {
+    max-width: 640px;
+    margin: 0 auto 22px;
+  }
+  .turn-meta {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-3);
+    letter-spacing: 0.06em; margin-bottom: 8px;
+  }
+  .msg { margin: 8px 0; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .msg .bubble {
+    max-width: 76%;
+    padding: 10px 16px;
+    border-radius: 14px;
+    font-size: 14px; line-height: 1.7;
+  }
+  .msg.user .bubble { background: var(--accent); color: #fff; border-radius: 14px 14px 4px 14px; }
+  .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 14px 14px 14px 4px; }
+
+  /* 输入框：可拖动，贴边后完整显示（不做细边隐藏） */
+  .composer {
+    position: fixed;
+    left: 280px; top: 560px;
+    width: 560px;
+    z-index: 20;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 12px 34px rgba(0,0,0,0.10);
+    padding: 0 16px 14px;
+    transition: left 0.28s cubic-bezier(0.22, 0.8, 0.24, 1), top 0.28s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+  .composer.dragging { transition: none; cursor: grabbing; }
+  .topicbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 0;
+    cursor: grab; user-select: none;
+    font-size: 13px; font-weight: 600;
+  }
+  .topicbar .grip { color: var(--text-3); font-size: 11px; letter-spacing: 0.2em; }
+  .input-row { display: flex; gap: 10px; }
+  .input-row textarea {
+    flex: 1; min-height: 46px; max-height: 140px; resize: none;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: inherit; font-size: 14px;
+    background: var(--elevated);
+    outline: none;
+  }
+  .input-row textarea:focus { border-color: var(--accent); }
+  .send {
+    width: 42px; height: 42px; border: none; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 18px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  /* 状态 HUD */
+  .hud {
+    position: fixed; left: 16px; bottom: 14px; z-index: 30;
+    font-family: var(--mono); font-size: 11px; color: var(--text-3);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 8px 12px;
+    pointer-events: none;
+  }
+  .hud b { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <b>QIO 消息流避让示例</b>
+  <span>拖动下方输入框贴到四边，消息流会自动让出空间，消息不被遮挡。</span>
+  <span class="hint">state: <span id="state">bottom</span></span>
+</div>
+
+<div class="stream" id="stream">
+  <div class="turn">
+    <div class="turn-meta">TURN 01 · 12:01</div>
+    <div class="msg user"><div class="bubble">帮我看看这个项目的星球界面设计</div></div>
+    <div class="msg assistant"><div class="bubble">好的，我先梳理一下当前星球界面的组成：透明球体 + 球面话题点 + 右侧话题边栏。</div></div>
+  </div>
+  <div class="turn">
+    <div class="turn-meta">TURN 02 · 12:03</div>
+    <div class="msg user"><div class="bubble">边栏展开的时候，左侧星球好像会闪一下？</div></div>
+    <div class="msg assistant"><div class="bubble">是 WebGL 画布在 ResizeObserver 回调里被 setSize 清空了缓冲，我加了一帧立即重绘，现在过渡是平滑的。</div></div>
+  </div>
+  <div class="turn">
+    <div class="turn-meta">TURN 03 · 12:05</div>
+    <div class="msg user"><div class="bubble">那输入框拖来拖去会挡消息，这个能解决吗？</div></div>
+    <div class="msg assistant"><div class="bubble">可以——输入框贴到哪条边，消息流就让出哪条边。你拖动下面这个输入框试试，注意看左侧消息区域的右侧/底部 padding 变化。</div></div>
+  </div>
+</div>
+
+<div class="composer" id="composer">
+  <div class="topicbar" id="handle"><span class="grip">⠿ 按住拖动</span>&nbsp;·&nbsp;当前话题</div>
+  <div class="input-row">
+    <textarea placeholder="和 QIO 说点什么…"></textarea>
+    <button class="send" title="发送">↑</button>
+  </div>
+</div>
+
+<div class="hud">避让状态：<b id="state2">bottom</b> · padding: <b id="padinfo">24px</b></div>
+
+<script>
+(function () {
+  const stream = document.getElementById("stream");
+  const composer = document.getElementById("composer");
+  const handle = document.getElementById("handle");
+  const stateEl = document.getElementById("state");
+  const state2El = document.getElementById("state2");
+  const padEl = document.getElementById("padinfo");
+
+  const GAP = 12;
+  const BASE = { top: 74, right: 44, bottom: 24, left: 44 }; // 与 .stream 默认 padding 一致
+
+  let dockedTo = "bottom";
+  let dragging = false, moved = false;
+  let sx = 0, sy = 0, ox = 0, oy = 0;
+  let snapTimer = null;
+
+  // ---- 避让计算（与 qio computeAvoidance 相同逻辑）----
+  function rect() {
+    const r = composer.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+  function computeAvoidance() {
+    const r = rect();
+    if (!r.w || !r.h) return { top: 0, right: 0, bottom: 0, left: 0 };
+    if (dockedTo === "bottom") return { top: 0, right: 0, bottom: r.h + GAP, left: 0 };
+    if (dockedTo === "right")  return { top: 0, right: r.w + GAP, bottom: 0, left: 0 };
+    if (dockedTo === "left")   return { top: 0, right: 0, bottom: 0, left: r.w + GAP };
+    if (dockedTo === "top")    return { top: r.h + GAP, right: 0, bottom: 0, left: 0 };
+    // 未贴靠：按最近边估算
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    const dTop = cy, dBottom = innerHeight - cy, dLeft = cx, dRight = innerWidth - cx;
+    const near = Math.min(dTop, dBottom, dLeft, dRight);
+    if (near === dBottom) return { top: 0, right: 0, bottom: r.h + GAP, left: 0 };
+    if (near === dRight)  return { top: 0, right: r.w + GAP, bottom: 0, left: 0 };
+    if (near === dLeft)   return { top: 0, right: 0, bottom: 0, left: r.w + GAP };
+    return { top: r.h + GAP, right: 0, bottom: 0, left: 0 };
+  }
+  function applyAvoidance() {
+    const a = computeAvoidance();
+    stream.style.paddingTop = (BASE.top + a.top) + "px";
+    stream.style.paddingRight = (BASE.right + a.right) + "px";
+    stream.style.paddingBottom = (BASE.bottom + a.bottom) + "px";
+    stream.style.paddingLeft = (BASE.left + a.left) + "px";
+    const r = rect();
+    const active = a.bottom ? "bottom " + (BASE.bottom + a.bottom) + "px" : a.right ? "right " + (BASE.right + a.right) + "px" : a.left ? "left " + (BASE.left + a.left) + "px" : a.top ? "top " + (BASE.top + a.top) + "px" : "-";
+    stateEl.textContent = dockedTo || "free";
+    state2El.textContent = dockedTo || "free";
+    padEl.textContent = active;
+  }
+  window.addEventListener("resize", () => { keepInViewport(); applyAvoidance(); });
+
+  // ---- 贴靠（edge：吸附最近边）----
+  function snap() {
+    const r = rect();
+    const vp = { w: innerWidth, h: innerHeight };
+    const pad = 4;
+    const margins = {
+      bottom: vp.h - (r.y + r.h),
+      right: vp.w - (r.x + r.w),
+      left: r.x,
+      top: r.y,
+    };
+    let best = "bottom", bestD = margins.bottom;
+    for (const k of ["right", "left", "top"]) {
+      if (margins[k] < bestD) { best = k; bestD = margins[k]; }
+    }
+    dockedTo = best;
+    composer.classList.add("snapping");
+    // 吸附到边
+    const nw = Math.min(r.w, vp.w - pad * 2), nh = Math.min(r.h, vp.h - pad * 2);
+    let nx = r.x, ny = r.y;
+    if (best === "bottom") { nx = Math.max(pad, Math.min(vp.w - nw - pad, (vp.w - nw) / 2)); ny = vp.h - nh - pad; }
+    if (best === "right")  { nx = vp.w - nw - pad; ny = Math.max(pad, Math.min(vp.h - nh - pad, (vp.h - nh) / 2)); }
+    if (best === "left")   { nx = pad; ny = Math.max(pad, Math.min(vp.h - nh - pad, (vp.h - nh) / 2)); }
+    if (best === "top")    { nx = Math.max(pad, Math.min(vp.w - nw - pad, (vp.w - nw) / 2)); ny = pad; }
+    composer.style.left = nx + "px";
+    composer.style.top = ny + "px";
+    clearTimeout(snapTimer);
+    snapTimer = setTimeout(() => composer.classList.remove("snapping"), 300);
+    applyAvoidance();
+  }
+  function keepInViewport() {
+    const r = rect();
+    const pad = 4;
+    const x = Math.max(pad, Math.min(innerWidth - r.w - pad, r.x));
+    const y = Math.max(pad, Math.min(innerHeight - r.h - pad, r.y));
+    composer.style.left = x + "px";
+    composer.style.top = y + "px";
+  }
+
+  // ---- 拖拽 ----
+  handle.addEventListener("pointerdown", (e) => {
+    if (dragging) return;
+    e.preventDefault();
+    dragging = true; moved = false;
+    sx = e.clientX; sy = e.clientY;
+    const r = rect();
+    ox = r.x; oy = r.y;
+    composer.classList.add("dragging");
+    composer.style.left = ox + "px";
+    composer.style.top = oy + "px";
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    if (!moved && (Math.abs(e.clientX - sx) > 3 || Math.abs(e.clientY - sy) > 3)) moved = true;
+    if (!moved) return;
+    const r = rect();
+    const x = Math.max(4, Math.min(innerWidth - r.w - 4, ox + (e.clientX - sx)));
+    const y = Math.max(4, Math.min(innerHeight - r.h - 4, oy + (e.clientY - sy)));
+    composer.style.left = x + "px";
+    composer.style.top = y + "px";
+    // 拖动中：按最近边实时避让，避免瞬间遮挡
+    dockedTo = null;
+    applyAvoidance();
+  });
+  document.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = false;
+    composer.classList.remove("dragging");
+    snap();
+  });
+
+  applyAvoidance();
+})();
+</script>
+</body>
+</html>
