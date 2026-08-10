@@ -9,6 +9,8 @@ import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
 import type { StreamMessage } from "../stores/session";
 import MessageItem from "./MessageItem.vue";
+import { computeAvoidance } from "../composables/dockAvoidance";
+import { floatingState } from "../composables/floatingState";
 
 interface Turn {
   id: string;
@@ -108,10 +110,31 @@ const showTyping = computed(() => {
   if (!last) return false;
   return !last.items.some((m) => m.role === "assistant");
 });
+/** 消息流默认内边距（与 .stream CSS 一致）；避让量叠加在其上 */
+const DEFAULT_PADDING = { top: 34, right: 44, bottom: 20, left: 44 };
+const streamStyle = computed(() => {
+  const a = computeAvoidance(
+    {
+      dockedTo: floatingState.composer.dockedTo,
+      x: floatingState.composer.x,
+      y: floatingState.composer.y,
+      width: floatingState.composer.width,
+      height: floatingState.composer.height,
+    },
+    { width: window.innerWidth, height: window.innerHeight },
+  );
+  return {
+    paddingTop: `${DEFAULT_PADDING.top + a.top}px`,
+    paddingRight: `${DEFAULT_PADDING.right + a.right}px`,
+    paddingBottom: `${DEFAULT_PADDING.bottom + a.bottom}px`,
+    paddingLeft: `${DEFAULT_PADDING.left + a.left}px`,
+  };
+});
+
 </script>
 
 <template>
-  <div ref="containerRef" class="stream" @scroll.passive="onScroll">
+  <div ref="containerRef" class="stream" :style="streamStyle" @scroll.passive="onScroll">
     <div
       class="spacer"
       :style="{ height: virtualizer.getTotalSize() + 'px', position: 'relative' }"
@@ -163,6 +186,7 @@ const showTyping = computed(() => {
   flex: 1;
   overflow-y: auto;
   padding: 34px 44px 20px;
+  transition: padding 0.25s cubic-bezier(0.22, 0.8, 0.24, 1);
   scrollbar-width: thin;
   background: var(--bg-base);
 }
