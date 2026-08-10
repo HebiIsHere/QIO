@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { effectScope, nextTick, ref } from "vue";
 import { useFloatingWindow, type UseFloatingWindowOptions } from "../useFloatingWindow";
-import { floatingState, resetFloatPositions, FLOAT_STORAGE_KEY } from "../floatingState";
+import { floatingState, resetFloatPositions, FLOAT_HIDE_KEY, FLOAT_STORAGE_KEY } from "../floatingState";
 
 /** 创建带几何尺寸的浮动元素；getBoundingClientRect 反映当前 style.left/top */
 function makeEl(id: string, init: { left: number; top: number; width: number; height: number }): HTMLElement {
@@ -341,7 +341,7 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
     dispose();
   });
 
-  it("允许隐藏时：贴靠后淡化为 fw-hidden；拖起还原（hover 展开/移出再隐藏由组件 CSS :hover 实现）", async () => {
+  it("允许隐藏时：开启开关立即隐藏；拖起还原；贴靠后保持隐藏", async () => {
     vi.useFakeTimers();
     const el = makeEl("settings-float", { left: 900, top: 50, width: 44, height: 44 });
     const { dispose } = await mountFloat(el, {
@@ -350,17 +350,37 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
       defaultPos: { x: 900, y: 50 },
     });
     floatingState["settings-float"].hideEnabled = true;
-    el.dispatchEvent(mouse("mousedown", 922, 72));
-    document.dispatchEvent(mouse("mouseup", 922, 72));
-    vi.advanceTimersByTime(400);
+    await nextTick(); // watcher → maybeHide
     expect(el.classList.contains("fw-hidden")).toBe(true);
     expect(floatingState["settings-float"].hidden).toBe(true);
 
-    // 拖起：restore 立即解除隐藏态（hover 展开不再由 JS 处理，交给组件 CSS :hover）
+    // 拖起：restore 立即解除隐藏态（hover 展开由组件 CSS :hover 实现）
     el.dispatchEvent(mouse("mousedown", 922, 72));
     expect(el.classList.contains("fw-hidden")).toBe(false);
     expect(floatingState["settings-float"].hidden).toBe(false);
     document.dispatchEvent(mouse("mouseup", 922, 72));
+    vi.advanceTimersByTime(400); // snap 后再次隐藏
+    expect(el.classList.contains("fw-hidden")).toBe(true);
+    expect(floatingState["settings-float"].hidden).toBe(true);
+    dispose();
+  });
+
+  it("初始化：hideEnabled 开启时挂载即隐藏（初始状态与开关一致，无需先贴靠）", async () => {
+    localStorage.setItem(FLOAT_HIDE_KEY, JSON.stringify({ composer: true }));
+    const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
+    const { api, dispose } = await mountFloat(el, composerOpts());
+    expect(api.entry.hideEnabled).toBe(true);
+    expect(el.classList.contains("fw-hidden")).toBe(true);
+    expect(floatingState.composer.hidden).toBe(true);
+    dispose();
+  });
+
+  it("初始化：hideEnabled 关闭时挂载不隐藏", async () => {
+    localStorage.setItem(FLOAT_HIDE_KEY, JSON.stringify({ composer: false }));
+    const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
+    const { api, dispose } = await mountFloat(el, composerOpts());
+    expect(api.entry.hideEnabled).toBe(false);
+    expect(el.classList.contains("fw-hidden")).toBe(false);
     dispose();
   });
 

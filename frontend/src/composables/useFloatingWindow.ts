@@ -122,6 +122,8 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       delete el.dataset.fwDocked;
       delete el.dataset.fwTarget;
     }
+    // 初始状态跟随开关：允许隐藏 → 挂载即进入隐藏态（hover 展开/移出再隐藏）
+    if (entry.hideEnabled) maybeHide(el);
   }
 
   /** 拖起即释放占用：清除贴靠标记，其它组件不再避让本组件 */
@@ -140,7 +142,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
   }
 
   function maybeHide(el: HTMLElement) {
-    if (!entry.hideEnabled || !entry.docked) return;
+    if (!entry.hideEnabled) return;
     entry.hidden = true;
     el.classList.add("fw-hidden");
   }
@@ -412,14 +414,14 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     { flush: "post", immediate: true },
   );
 
-  // 设置页关闭「允许隐藏」时立即解除隐藏态
+  // 开关状态变化时立即同步视觉：开启 → 隐藏，关闭 → 解除隐藏态
   watch(
     () => entry.hideEnabled,
     (enabled) => {
-      if (!enabled) {
-        const el = elRef.value;
-        if (el && entry.hidden) restore(el);
-      }
+      const el = elRef.value;
+      if (!el) return;
+      if (enabled) maybeHide(el);
+      else if (entry.hidden) restore(el);
     },
   );
 
