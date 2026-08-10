@@ -2,15 +2,12 @@
 import { computed, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
-import QSlider from "./ui/QSlider.vue";
 
 const session = useSessionStore();
 const text = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const elRef = ref<HTMLElement | null>(null);
 const headerRef = ref<HTMLElement | null>(null);
-// 记忆强度：视觉占位（默认 0.38），待偏好设置接线
-const memoryStrength = ref(0.38);
 
 // 浮动窗口：贴边（默认底部居中），header（topicbar）为拖拽把手
 const float = useFloatingWindow(elRef, {
@@ -111,18 +108,6 @@ function autosize() {
       </button>
     </div>
 
-    <div class="mem-row">
-      <span class="mem-label mono">记忆强度</span>
-      <QSlider
-        class="strength-slider"
-        v-model="memoryStrength"
-        :min="0"
-        :max="1"
-        :step="0.01"
-        label="记忆强度"
-      />
-      <span class="mem-val mono">{{ memoryStrength.toFixed(2) }}</span>
-    </div>
   </div>
 </template>
 
@@ -230,26 +215,5 @@ function autosize() {
 .send-btn:disabled {
   opacity: 0.45;
   cursor: default;
-}
-.mem-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 10px;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-.mem-label {
-  white-space: nowrap;
-}
-.strength-slider {
-  flex: 1;
-  max-width: 220px;
-}
-.mem-val {
-  min-width: 34px;
-  color: var(--text-secondary);
-  text-align: right;
 }
 </style>

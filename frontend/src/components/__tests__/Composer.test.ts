@@ -27,13 +27,13 @@ beforeEach(() => {
 });
 
 describe("Composer 输入框（浮动窗口）", () => {
-  it("渲染：header 拖拽把手 + textarea + 发送按钮 + 记忆滑块", async () => {
+  it("渲染：header 拖拽把手 + textarea + 发送按钮（记忆滑块已移除）", async () => {
     const { w } = await mountComposer();
     expect(w.find(".composer").exists()).toBe(true);
     expect(w.find(".topicbar.fw-handle").exists()).toBe(true);
     expect(w.find("textarea.qio-input").exists()).toBe(true);
     expect(w.find(".send-btn").exists()).toBe(true);
-    expect(w.find(".strength-slider").exists()).toBe(true);
+    expect(w.find(".strength-slider").exists()).toBe(false);
     w.unmount();
   });
 
