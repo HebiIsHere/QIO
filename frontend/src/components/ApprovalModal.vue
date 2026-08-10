@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useApprovalsStore } from "../stores/approvals";
+import QNumber from "./ui/QNumber.vue";
 
 const approvals = useApprovalsStore();
 const item = computed(() => approvals.current);
@@ -39,9 +40,9 @@ watch(
 function approveWithBudget() {
   approvals.respond("approved", {
     subagent_budget: {
-      max_iterations: budgetForm.value.max_iterations,
-      max_tokens: budgetForm.value.max_tokens,
-      output_limit_chars: budgetForm.value.output_limit_chars,
+      max_iterations: budgetForm.value.max_iterations ?? 5,
+      max_tokens: budgetForm.value.max_tokens ?? 100000,
+      output_limit_chars: budgetForm.value.output_limit_chars ?? 2000,
     },
   });
 }
@@ -83,11 +84,11 @@ const payloadView = computed(() => {
           <div class="budget-title">子 agent 执行预算（可修改后批准）</div>
           <div class="budget-row">
             <label>最大迭代</label>
-            <input v-model.number="budgetForm.max_iterations" type="number" min="1" max="50" />
+            <QNumber v-model="budgetForm.max_iterations" :min="1" :max="50" mono label="最大迭代" />
             <label>最大 token</label>
-            <input v-model.number="budgetForm.max_tokens" type="number" min="1000" step="1000" />
+            <QNumber v-model="budgetForm.max_tokens" :min="1000" :step="1000" mono label="最大 token" />
             <label>输出上限(字)</label>
-            <input v-model.number="budgetForm.output_limit_chars" type="number" min="100" />
+            <QNumber v-model="budgetForm.output_limit_chars" :min="100" mono label="输出上限" />
           </div>
         </div>
       </div>
@@ -130,7 +131,7 @@ const payloadView = computed(() => {
 .budget-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
 .budget-row { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
 .budget-row label { color: var(--text-secondary); }
-.budget-row input { width: 90px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-base); color: var(--text-primary); }
+.budget-row .q-number { width: 108px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .actions button { border: none; border-radius: 18px; padding: 8px 26px; cursor: pointer; font-size: 13px; }
 .approve { background: var(--approve-bg); color: var(--on-accent); }

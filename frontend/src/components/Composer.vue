@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
+import QSlider from "./ui/QSlider.vue";
 
 const session = useSessionStore();
 const text = ref("");
@@ -49,13 +50,25 @@ function onKeydown(e: KeyboardEvent) {
 
 function autosize() {
   const el = inputRef.value;
-  if (el) {
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
-    // 尺寸变化同步到共享状态，互斥避让用实时高度
-    float.entry.height = elRef.value?.offsetHeight ?? float.entry.height;
-    float.entry.width = elRef.value?.offsetWidth ?? float.entry.width;
+  const root = elRef.value;
+  if (!el || !root) return;
+  // 记录增高前的底边（布局 top + 当前高度）
+  const prevTop = parseFloat(root.style.top) || 0;
+  const prevBottom = prevTop + root.offsetHeight;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  const newH = root.offsetHeight;
+  // 顶部贴靠保持顶边（向下生长）；其余情况保持底边不动（向上生长），并钳制在视口内
+  if (float.entry.dockedTo !== "top") {
+    const top = Math.max(4, prevBottom - newH);
+    if (top !== prevTop) {
+      root.style.top = `${top}px`;
+      float.entry.y = top; // 同步共享状态（互斥避让用实时位置）
+    }
   }
+  // 尺寸变化同步到共享状态，互斥避让用实时高度
+  float.entry.height = newH;
+  float.entry.width = root.offsetWidth;
 }
 </script>
 
@@ -100,14 +113,13 @@ function autosize() {
 
     <div class="mem-row">
       <span class="mem-label mono">记忆强度</span>
-      <input
-        v-model.number="memoryStrength"
+      <QSlider
         class="strength-slider"
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        aria-label="记忆强度"
+        v-model="memoryStrength"
+        :min="0"
+        :max="1"
+        :step="0.01"
+        label="记忆强度"
       />
       <span class="mem-val mono">{{ memoryStrength.toFixed(2) }}</span>
     </div>
@@ -234,9 +246,6 @@ function autosize() {
 .strength-slider {
   flex: 1;
   max-width: 220px;
-  height: 4px;
-  accent-color: var(--accent);
-  cursor: pointer;
 }
 .mem-val {
   min-width: 34px;

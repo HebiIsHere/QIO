@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api, type CredentialMeta } from "../services/api";
 import { identifyCredential } from "../services/identify";
 import QInput from "../components/ui/QInput.vue";
+import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import CredentialCard from "./settings/CredentialCard.vue";
 import { getTheme, toggleTheme } from "../utils/theme";
@@ -304,14 +305,14 @@ async function test(keyId: string) {
   }
 }
 
-function onBudgetInput(v: string) {
-  form.value.budget = v === "" ? null : Number(v);
+function onBudgetInput(v: number | null) {
+  form.value.budget = v;
 }
-function onCustomCountInput(v: string) {
-  customCount.value = v === "" ? 0 : Number(v);
+function onCustomCountInput(v: number | null) {
+  customCount.value = v ?? 0;
 }
-function onIntervalInput(v: string) {
-  maintenanceInterval.value = v === "" ? 0 : Number(v);
+function onIntervalInput(v: number | null) {
+  maintenanceInterval.value = v ?? 0;
 }
 
 onMounted(() => {
@@ -399,9 +400,9 @@ onMounted(() => {
           </div>
           <div class="field">
             <span class="label">预算 token</span>
-            <QInput
-              :model-value="form.budget == null ? '' : String(form.budget)"
-              type="number" mono placeholder="可选"
+            <QNumber
+              :model-value="form.budget"
+              :min="1" mono placeholder="可选" label="预算 token"
               @update:model-value="onBudgetInput"
             />
           </div>
@@ -450,10 +451,10 @@ onMounted(() => {
               :model-value="fragmentTier"
               @update:model-value="onTierSelect"
             />
-            <QInput
+            <QNumber
               v-if="fragmentTier === 'custom'"
-              class="num" :model-value="String(customCount)"
-              type="number" mono min="1" max="30"
+              class="num" :model-value="customCount"
+              :min="1" :max="30" mono label="自定义轮数"
               @update:model-value="onCustomCountInput"
               @change="saveMemorySettings"
             />
@@ -475,9 +476,9 @@ onMounted(() => {
               role="switch" :aria-checked="maintenanceEnabled" aria-label="离线维护开关"
               @click="toggleMaintenance"
             ></button>
-            <QInput
-              class="num" :model-value="String(maintenanceInterval)"
-              type="number" mono min="1" max="720"
+            <QNumber
+              class="num" :model-value="maintenanceInterval"
+              :min="1" :max="720" mono label="维护间隔（小时）"
               @update:model-value="onIntervalInput"
               @change="saveMaintenance"
             />

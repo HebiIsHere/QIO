@@ -58,6 +58,40 @@ describe("Composer 输入框（浮动窗口）", () => {
     expect(el.style.top).toMatch(/^\d+px$/);
     w.unmount();
   });
+  it("增高时向上生长：保持底边不动（非顶部贴靠）", async () => {
+    const { w } = await mountComposer();
+    const root = w.find(".composer").element as HTMLElement;
+    const ta = w.find("textarea").element as HTMLTextAreaElement;
+    root.style.top = "500px";
+    // 模拟布局：offsetHeight 随 textarea 高度级联（jsdom 无布局，用 getter 模拟）
+    Object.defineProperty(ta, "scrollHeight", { value: 160, configurable: true });
+    Object.defineProperty(root, "offsetHeight", {
+      get: () => parseInt(ta.style.height, 10) || 120,
+      configurable: true,
+    });
+    await w.find("textarea").setValue("多行\n内容\n内容");
+    expect(root.style.top).toBe("460px"); // 底边 500+120=620 保持，向上生长 160-120=40
+    w.unmount();
+  });
+
+  it("顶部贴靠时增高向下生长（保持顶边不动）", async () => {
+    const { floatingState } = await import("../../composables/floatingState");
+    const { w } = await mountComposer();
+    floatingState.composer.dockedTo = "top";
+    const root = w.find(".composer").element as HTMLElement;
+    const ta = w.find("textarea").element as HTMLTextAreaElement;
+    root.style.top = "10px";
+    Object.defineProperty(ta, "scrollHeight", { value: 160, configurable: true });
+    Object.defineProperty(root, "offsetHeight", {
+      get: () => parseInt(ta.style.height, 10) || 120,
+      configurable: true,
+    });
+    await w.find("textarea").setValue("多行\n内容\n内容");
+    expect(root.style.top).toBe("10px");
+    floatingState.composer.dockedTo = null;
+    w.unmount();
+  });
+
   it("贴靠隐藏：hidden 时挂 fw-hidden + 贴靠方向类（hover 展开由 CSS :hover 处理）", async () => {
     const { floatingState } = await import("../../composables/floatingState");
     const { w } = await mountComposer();
