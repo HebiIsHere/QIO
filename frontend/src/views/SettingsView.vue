@@ -88,7 +88,6 @@ const activeTab = ref<"cred" | "pref" | "win">("cred");
 const WINDOW_ITEMS: { id: DockId; title: string; desc: string }[] = [
   { id: "planet-dock", title: "话题星球入口", desc: "贴靠后淡化隐藏，悬停展开、移出再隐藏" },
   { id: "settings-float", title: "设置入口", desc: "贴角后淡化隐藏，悬停展开、移出再隐藏" },
-  { id: "composer", title: "输入框", desc: "贴边后收起为 10px 细边，悬停展开、移出再隐藏" },
 ];
 const windowNotice = ref("");
 function toggleWindowHide(id: DockId) {
