@@ -75,9 +75,12 @@ function onClick() {
 .dock:hover {
   transform: scale(1.06);
 }
-/* 贴靠隐藏：淡化（mouseenter 展开） */
+/* 贴靠隐藏：淡化；hover 展开、移出再隐藏（CSS :hover） */
 .dock.fw-hidden {
   opacity: 0.08;
+}
+.dock.fw-hidden:hover {
+  opacity: 1;
 }
 .g0 {
   stop-color: var(--accent-soft);

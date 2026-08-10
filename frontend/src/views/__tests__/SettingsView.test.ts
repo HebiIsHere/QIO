@@ -3,17 +3,20 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import SettingsView from "../SettingsView.vue";
 import { getTheme, setTheme } from "../../utils/theme";
+import { floatingState, resetFloatPositions } from "../../composables/floatingState";
 
 beforeEach(() => {
   localStorage.clear();
+  resetFloatPositions();
   document.documentElement.removeAttribute("data-theme");
 });
 
 describe("SettingsView", () => {
-  it("渲染凭据/偏好两个 tab 与表单控件（QInput/QSelect）", async () => {
+  it("渲染凭据/偏好/窗口三个 tab 与表单控件（QInput/QSelect）", async () => {
     const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
     await nextTick();
-    expect(w.findAll(".tab").length).toBe(2);
+    expect(w.findAll(".tab").length).toBe(3);
+    expect(w.findAll(".tab").map((b) => b.text())).toEqual(["凭据", "偏好", "窗口"]);
     expect(w.find(".tab.active").text()).toBe("凭据");
     expect(w.find(".qio-input").exists()).toBe(true);
     expect(w.find(".qio-select").exists()).toBe(true);
@@ -50,6 +53,54 @@ describe("SettingsView", () => {
     await sw.trigger("click");
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(localStorage.getItem("qio-theme")).toBe("dark");
+    w.unmount();
+  });
+});
+
+describe("SettingsView 窗口 Tab", () => {
+  it("窗口 tab 展示三个贴靠隐藏开关与还原布局按钮", async () => {
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await w.findAll(".tab")[2].trigger("click");
+    await nextTick();
+    expect(w.find(".tab.active").text()).toBe("窗口");
+    const switches = w.findAll(".panel:not([style*='display: none']) .qio-switch");
+    expect(switches.length).toBe(3);
+    expect(w.find(".panel:not([style*='display: none']) .qio-btn").text()).toContain("还原默认布局");
+    w.unmount();
+  });
+
+  it("切换「输入框」贴靠隐藏：写入 shared state 并持久化 localStorage", async () => {
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await w.findAll(".tab")[2].trigger("click");
+    await nextTick();
+    expect(floatingState.composer.hideEnabled).toBe(false);
+    // 第三个开关 = 输入框（WINDOW_ITEMS 顺序：planet-dock / settings-float / composer）
+    const sw = w.findAll(".panel:not([style*='display: none']) .qio-switch")[2];
+    await sw.trigger("click");
+    await nextTick();
+    expect(floatingState.composer.hideEnabled).toBe(true);
+    expect(sw.attributes("aria-checked")).toBe("true");
+    const saved = JSON.parse(localStorage.getItem("qio-float-hide") || "{}");
+    expect(saved.composer).toBe(true);
+    w.unmount();
+  });
+
+  it("还原默认布局：关闭全部贴靠隐藏并清除持久化", async () => {
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await w.findAll(".tab")[2].trigger("click");
+    await nextTick();
+    const switches = w.findAll(".panel:not([style*='display: none']) .qio-switch");
+    for (const s of switches) await s.trigger("click");
+    await nextTick();
+    expect(floatingState["planet-dock"].hideEnabled).toBe(true);
+    expect(localStorage.getItem("qio-float-hide")).toBeTruthy();
+    await w.find(".panel:not([style*='display: none']) .qio-btn").trigger("click");
+    await nextTick();
+    expect(floatingState.composer.hideEnabled).toBe(false);
+    expect(floatingState["settings-float"].hideEnabled).toBe(false);
+    expect(localStorage.getItem("qio-float-positions")).toBeNull();
+    expect(localStorage.getItem("qio-float-hide")).toBeNull();
+    expect(w.find(".msg.ok").text()).toContain("已还原默认布局");
     w.unmount();
   });
 });

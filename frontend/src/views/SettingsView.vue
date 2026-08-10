@@ -6,6 +6,12 @@ import QInput from "../components/ui/QInput.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import CredentialCard from "./settings/CredentialCard.vue";
 import { getTheme, toggleTheme } from "../utils/theme";
+import {
+  floatingState,
+  resetFloatPositions,
+  setHideEnabled,
+  type DockId,
+} from "../composables/floatingState";
 
 const credentials = ref<CredentialMeta[]>([]);
 const form = ref({
@@ -76,7 +82,21 @@ const identifyText = computed(() =>
 );
 const submitLabel = computed(() => (editTarget.value ? "以此换钥（新建）" : "创建凭据"));
 
-const activeTab = ref<"cred" | "pref">("cred");
+const activeTab = ref<"cred" | "pref" | "win">("cred");
+/** 窗口管理：三个浮动组件的贴靠隐藏开关（读写共享 floatingState） */
+const WINDOW_ITEMS: { id: DockId; title: string; desc: string }[] = [
+  { id: "planet-dock", title: "话题星球入口", desc: "贴靠后淡化隐藏，悬停展开、移出再隐藏" },
+  { id: "settings-float", title: "设置入口", desc: "贴角后淡化隐藏，悬停展开、移出再隐藏" },
+  { id: "composer", title: "输入框", desc: "贴边后收起为 10px 细边，悬停展开、移出再隐藏" },
+];
+const windowNotice = ref("");
+function toggleWindowHide(id: DockId) {
+  setHideEnabled(id, !floatingState[id].hideEnabled);
+}
+function resetWindowLayout() {
+  resetFloatPositions();
+  windowNotice.value = "已还原默认布局（贴靠隐藏关闭、位置回到默认）";
+}
 /** 主题：偏好页开关（暗紫晶/净白），读写 html[data-theme] + localStorage qio-theme */
 const isLight = ref(getTheme() === "light");
 function toggleThemePref() {
@@ -321,6 +341,11 @@ onMounted(() => {
         class="tab" :class="{ active: activeTab === 'pref' }" role="tab"
         :aria-selected="activeTab === 'pref'" @click="activeTab = 'pref'"
       >偏好</button>
+      <button
+        type="button"
+        class="tab" :class="{ active: activeTab === 'win' }" role="tab"
+        :aria-selected="activeTab === 'win'" @click="activeTab = 'win'"
+      >窗口</button>
     </div>
 
     <!-- 凭据 -->
@@ -460,6 +485,38 @@ onMounted(() => {
           </div>
         </div>
         <p v-if="settingsNotice" class="msg ok">{{ settingsNotice }}</p>
+      </section>
+    </div>
+
+    <!-- 窗口 -->
+    <div v-show="activeTab === 'win'" class="panel">
+      <section class="sec">
+        <h2>窗口</h2>
+        <p class="desc">对话页的输入框、话题星球入口与设置入口均为可拖动浮动组件：松手自动贴靠（输入框/星球贴边，设置入口贴角）。开启「贴靠隐藏」后，贴靠完成的组件会自动隐藏为细边或淡化，鼠标悬停展开、移出再隐藏。</p>
+        <div class="pref" v-for="item in WINDOW_ITEMS" :key="item.id">
+          <div class="txt">
+            <div class="t">{{ item.title }}</div>
+            <div class="d">{{ item.desc }}</div>
+          </div>
+          <div class="ctl">
+            <button
+              type="button" class="qio-switch" :class="{ on: floatingState[item.id].hideEnabled }"
+              role="switch" :aria-checked="floatingState[item.id].hideEnabled"
+              :aria-label="item.title + '贴靠隐藏'" @click="toggleWindowHide(item.id)"
+            ></button>
+            <span class="mono">{{ floatingState[item.id].hideEnabled ? "隐藏" : "常显" }}</span>
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">布局</div>
+            <div class="d">将所有浮动组件还原到默认位置并关闭贴靠隐藏</div>
+          </div>
+          <div class="ctl">
+            <button type="button" class="qio-btn" @click="resetWindowLayout">还原默认布局</button>
+          </div>
+        </div>
+        <p v-if="windowNotice" class="msg ok">{{ windowNotice }}</p>
       </section>
     </div>
   </div>

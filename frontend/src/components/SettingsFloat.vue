@@ -66,8 +66,11 @@ function openSettings() {
   color: var(--text-strong);
   background: var(--bg-elevated);
 }
-/* 贴靠隐藏：淡化（mouseenter 展开） */
+/* 贴靠隐藏：淡化；hover 展开、移出再隐藏（CSS :hover） */
 .settings-float.fw-hidden {
   opacity: 0.15;
+}
+.settings-float.fw-hidden:hover {
+  opacity: 1;
 }
 </style>

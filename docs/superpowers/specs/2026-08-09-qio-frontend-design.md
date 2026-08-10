@@ -176,6 +176,8 @@
 - 拖拽：pointer + mouse 双事件 + document 级 move/up（兼容 WebView/桌面）；位移 >3px 判定为拖动（避免与点击冲突）；贴靠按钮不触发拖动。
 - 互斥贴靠：矩形相交检测 + 候选位置（边/角）按优先级选取。
 - 组件状态：`dataset.edge/corner/docked` 记录贴靠状态；拖起时释放占用。
+- **贴靠隐藏实现**：隐藏态由 `fw-hidden` 类 + 各组件 CSS 控制；**hover 展开 / 移出再隐藏由组件 CSS `:hover` 实现**（浏览器按真实几何逐帧命中，无 JS 事件时序问题）；输入框收起方向按贴靠边（top/left/right/bottom）各写一条 transform，只留 10px 细边，其余组件用 opacity 淡化。
+- **窗口管理（设置页 → 窗口）**：三个浮动组件（话题星球入口/设置入口/输入框）的贴靠隐藏开关，读写共享 `floatingState[id].hideEnabled`；偏好独立持久化到 `qio-float-hide`（组件未挂载时也能保存），「还原默认布局」调用 `resetFloatPositions()`（清空位置 + 关闭全部隐藏）。
 
 ### 12.5 星球页话题边栏（2026-08-10，用户确认）
 - **默认收起**：星球页右侧 340px 话题边栏初始为收起态，仅在最右缘保留一枚竖向展开钮（圆角胶囊 + 箭头，hover 玫红柔光）。

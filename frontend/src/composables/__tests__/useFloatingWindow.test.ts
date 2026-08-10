@@ -138,6 +138,44 @@ describe("useFloatingWindow 拖拽", () => {
     dispose();
   });
 
+  it("拖动结束：moved 在下一 tick 复位（后续键盘激活不被吞）", async () => {
+    const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
+    const { api, dispose } = await mountFloat(el, composerOpts());
+    el.dispatchEvent(mouse("mousedown", 150, 130));
+    document.dispatchEvent(mouse("mousemove", 200, 180));
+    expect(api.moved.value).toBe(true);
+    document.dispatchEvent(mouse("mouseup", 200, 180));
+    // drag 自身的 click（若有）仍在 moved=true 期间被抑制
+    expect(api.moved.value).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(api.moved.value).toBe(false);
+    dispose();
+  });
+
+  it("snap 后共享尺寸刷新为实时宽高（自动增高/缩放后避让不用过期值）", async () => {
+    const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts());
+    // 模拟 Composer 自动增高：实时几何变化，共享 entry 尚未刷新
+    const grow = () => {
+      Object.defineProperty(el, "offsetWidth", { value: 260, configurable: true });
+      Object.defineProperty(el, "offsetHeight", { value: 120, configurable: true });
+      el.getBoundingClientRect = (() => {
+        const left = parseInt(el.style.left, 10) || 100;
+        const top = parseInt(el.style.top, 10) || 100;
+        return { left, top, width: 260, height: 120, right: left + 260, bottom: top + 120, x: left, y: top, toJSON: () => ({}) } as DOMRect;
+      }) as typeof el.getBoundingClientRect;
+    };
+    grow();
+    expect(floatingState.composer.width).toBe(200); // 尚未刷新
+    // 拖起→松手触发 snap → 用实时几何刷新共享尺寸
+    el.dispatchEvent(mouse("mousedown", 150, 130));
+    document.dispatchEvent(mouse("mousemove", 160, 140));
+    document.dispatchEvent(mouse("mouseup", 160, 140));
+    expect(floatingState.composer.width).toBe(260);
+    expect(floatingState.composer.height).toBe(120);
+    dispose();
+  });
+
   it("拖动：位移 ≤3px 不算拖动（不误触发点击）", async () => {
     const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
     const { api, dispose } = await mountFloat(el, composerOpts());
@@ -303,7 +341,7 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
     dispose();
   });
 
-  it("允许隐藏时：贴靠后淡化为 fw-hidden；mouseenter 展开、mouseleave 再隐藏", async () => {
+  it("允许隐藏时：贴靠后淡化为 fw-hidden；拖起还原（hover 展开/移出再隐藏由组件 CSS :hover 实现）", async () => {
     vi.useFakeTimers();
     const el = makeEl("settings-float", { left: 900, top: 50, width: 44, height: 44 });
     const { dispose } = await mountFloat(el, {
@@ -318,13 +356,11 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
     expect(el.classList.contains("fw-hidden")).toBe(true);
     expect(floatingState["settings-float"].hidden).toBe(true);
 
-    el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+    // 拖起：restore 立即解除隐藏态（hover 展开不再由 JS 处理，交给组件 CSS :hover）
+    el.dispatchEvent(mouse("mousedown", 922, 72));
     expect(el.classList.contains("fw-hidden")).toBe(false);
     expect(floatingState["settings-float"].hidden).toBe(false);
-
-    el.dispatchEvent(new MouseEvent("mouseleave", { bubbles: false }));
-    expect(el.classList.contains("fw-hidden")).toBe(true);
-    expect(floatingState["settings-float"].hidden).toBe(true);
+    document.dispatchEvent(mouse("mouseup", 922, 72));
     dispose();
   });
 

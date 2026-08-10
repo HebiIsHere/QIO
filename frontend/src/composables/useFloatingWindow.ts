@@ -12,6 +12,7 @@
 import { computed, onScopeDispose, ref, watch, type Ref } from "vue";
 import {
   floatingState,
+  loadHidePrefs,
   loadPositions,
   savePositions,
   type DockId,
@@ -86,6 +87,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const r = rectOf(el);
     const saved = loadPositions()[options.id];
+    const hidePref = loadHidePrefs()[options.id];
     let x: number;
     let y: number;
     if (saved) {
@@ -93,7 +95,6 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       y = saved.y;
       entry.docked = saved.docked;
       entry.dockedTo = saved.dockedTo;
-      entry.hideEnabled = saved.hideEnabled;
     } else {
       const def = typeof options.defaultPos === "function" ? options.defaultPos(el, vp) : options.defaultPos;
       x = def.x;
@@ -101,6 +102,8 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       entry.docked = false;
       entry.dockedTo = null;
     }
+    // 贴靠隐藏偏好独立持久化：设置页开关优先于位置键里的旧值
+    entry.hideEnabled = hidePref ?? saved?.hideEnabled ?? false;
     const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
     const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
     x = clamp(x, SNAP_PAD, maxX);
@@ -168,6 +171,9 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     const r = rectOf(el);
     const w = r.width;
     const h = r.height;
+    // 用实时尺寸刷新共享 entry（避免 Composer 自动增高后互斥避让用过期的宽高）
+    entry.width = w;
+    entry.height = h;
     const cx = r.left + w / 2;
     const cy = r.top + h / 2;
     const clampV = (v: number, max: number) => clamp(v, SNAP_PAD, max);
@@ -322,21 +328,22 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
   function onPointerUp() {
     if (!dragging) return;
     dragging = false;
+    const wasMoved = moved.value;
     const el = elRef.value;
     if (!el) return;
     el.classList.remove("fw-dragging");
     snap(el);
+    // 拖动结束后的 click（若有）在 mouseup 之后同步触发，这里已用 moved 抑制；
+    // 延迟到下一 tick 重置 moved，避免之后键盘激活（Enter/Space）被误吞。
+    if (wasMoved) {
+      setTimeout(() => {
+        moved.value = false;
+      }, 0);
+    }
   }
 
-  function onMouseEnter() {
-    const el = elRef.value;
-    if (el) restore(el);
-  }
-
-  function onMouseLeave() {
-    const el = elRef.value;
-    if (el && entry.hideEnabled && entry.docked) maybeHide(el);
-  }
+  // 贴靠隐藏的「hover 展开、移出再隐藏」由各组件 CSS :hover 实现
+  // （浏览器按真实几何逐帧命中，无 JS 事件时序问题）；这里只维护 hidden 状态。
 
   function onResize() {
     if (dragging) return;
@@ -344,6 +351,8 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     if (!el) return;
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const r = rectOf(el);
+    entry.width = r.width;
+    entry.height = r.height;
     const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
     const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
     const x = clamp(r.left, SNAP_PAD, maxX);
@@ -361,8 +370,6 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     boundEl = el;
     handle.addEventListener("pointerdown", onPointerDown);
     handle.addEventListener("mousedown", onPointerDown);
-    el.addEventListener("mouseenter", onMouseEnter);
-    el.addEventListener("mouseleave", onMouseLeave);
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("mousemove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
@@ -376,11 +383,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       boundHandle.removeEventListener("mousedown", onPointerDown);
       boundHandle = null;
     }
-    if (boundEl) {
-      boundEl.removeEventListener("mouseenter", onMouseEnter);
-      boundEl.removeEventListener("mouseleave", onMouseLeave);
-      boundEl = null;
-    }
+    if (boundEl) boundEl = null;
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("mousemove", onPointerMove);
     document.removeEventListener("pointerup", onPointerUp);

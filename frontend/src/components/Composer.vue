@@ -12,7 +12,7 @@ const headerRef = ref<HTMLElement | null>(null);
 const memoryStrength = ref(0.38);
 
 // 浮动窗口：贴边（默认底部居中），header（topicbar）为拖拽把手
-useFloatingWindow(elRef, {
+const float = useFloatingWindow(elRef, {
   id: "composer",
   dockMode: "edge",
   defaultPos: (el, vp) => ({
@@ -21,6 +21,7 @@ useFloatingWindow(elRef, {
   }),
   dragHandle: headerRef,
 });
+
 
 const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
 
@@ -51,12 +52,22 @@ function autosize() {
   if (el) {
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    // 尺寸变化同步到共享状态，互斥避让用实时高度
+    float.entry.height = elRef.value?.offsetHeight ?? float.entry.height;
+    float.entry.width = elRef.value?.offsetWidth ?? float.entry.width;
   }
 }
 </script>
 
 <template>
-  <div ref="elRef" class="composer">
+  <div
+    ref="elRef"
+    class="composer"
+    :class="[
+      { 'fw-hidden': float.entry.hidden },
+      float.entry.dockedTo ? 'dock-' + float.entry.dockedTo : '',
+    ]"
+  >
     <div ref="headerRef" class="topicbar fw-handle">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
@@ -116,9 +127,21 @@ function autosize() {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
   transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
 }
-/* 贴靠隐藏：整体收起为底部细边（mouseenter 展开） */
+/* 贴靠隐藏：收起为贴靠边 10px 细边；hover 展开、移出再隐藏（CSS :hover 逐帧几何命中） */
 .composer.fw-hidden {
   transform: translateY(calc(100% - 10px));
+}
+.composer.fw-hidden.dock-top {
+  transform: translateY(calc(-100% + 10px));
+}
+.composer.fw-hidden.dock-left {
+  transform: translateX(calc(-100% + 10px));
+}
+.composer.fw-hidden.dock-right {
+  transform: translateX(calc(100% - 10px));
+}
+.composer.fw-hidden:hover {
+  transform: none;
 }
 .topicbar {
   display: flex;

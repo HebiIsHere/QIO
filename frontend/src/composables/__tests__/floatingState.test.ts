@@ -1,10 +1,12 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   floatingState,
+  loadHidePrefs,
   loadPositions,
   resetFloatPositions,
   savePositions,
   setHideEnabled,
+  FLOAT_HIDE_KEY,
   FLOAT_STORAGE_KEY,
   type DockId,
 } from "../floatingState";
@@ -38,6 +40,19 @@ describe("floatingState 共享状态", () => {
     expect(raw.composer.hideEnabled).toBe(false);
   });
 
+
+  it("未初始化组件（width=0）的贴靠隐藏偏好走独立键持久化（设置页可先保存）", () => {
+    setHideEnabled("composer", true);
+    expect(floatingState.composer.hideEnabled).toBe(true);
+    // 位置键跳过未初始化组件（避免 0,0 占位被当作真实位置恢复）
+    expect(JSON.parse(localStorage.getItem(FLOAT_STORAGE_KEY) ?? "{}").composer).toBeUndefined();
+    // 隐藏偏好独立持久化
+    expect(JSON.parse(localStorage.getItem(FLOAT_HIDE_KEY) ?? "{}").composer).toBe(true);
+    expect(loadHidePrefs().composer).toBe(true);
+    resetFloatPositions();
+    expect(localStorage.getItem(FLOAT_HIDE_KEY)).toBeNull();
+    expect(loadHidePrefs().composer).toBeUndefined();
+  });
   it("savePositions / loadPositions 往返一致", () => {
     floatingState.composer.width = 200; // 已初始化组件才参与持久化
     floatingState.composer.x = 120;
@@ -72,6 +87,7 @@ describe("floatingState 共享状态", () => {
       expect(floatingState[id].hideEnabled).toBe(false);
     }
     expect(localStorage.getItem(FLOAT_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(FLOAT_HIDE_KEY)).toBeNull();
   });
 });
 

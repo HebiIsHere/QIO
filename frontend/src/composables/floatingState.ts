@@ -22,6 +22,8 @@ export interface FloatingEntry {
 
 export const FLOAT_IDS: DockId[] = ["composer", "planet-dock", "settings-float"];
 export const FLOAT_STORAGE_KEY = "qio-float-positions";
+/** 贴靠隐藏偏好的独立持久化键：组件未挂载（设置页）时也能保存开关 */
+export const FLOAT_HIDE_KEY = "qio-float-hide";
 
 function makeEntry(): FloatingEntry {
   return { x: 0, y: 0, width: 0, height: 0, docked: false, dockedTo: null, hideEnabled: false, hidden: false };
@@ -84,11 +86,37 @@ export function loadPositions(): PersistedMap {
   }
 }
 
+/** 持久化贴靠隐藏偏好（独立键：组件未挂载时也能保存开关，位置键跳过未初始化组件） */
+export function saveHidePrefs(): void {
+  try {
+    const data: Partial<Record<DockId, boolean>> = {};
+    for (const id of FLOAT_IDS) data[id] = floatingState[id].hideEnabled;
+    localStorage.setItem(FLOAT_HIDE_KEY, JSON.stringify(data));
+  } catch {
+    // localStorage 不可用：仅本次会话生效
+  }
+}
+
+/** 读取贴靠隐藏偏好；无数据/解析失败返回空表 */
+export function loadHidePrefs(): Partial<Record<DockId, boolean>> {
+  try {
+    const raw = localStorage.getItem(FLOAT_HIDE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<Record<DockId, boolean>>;
+    const out: Partial<Record<DockId, boolean>> = {};
+    for (const id of FLOAT_IDS) if (typeof parsed[id] === "boolean") out[id] = parsed[id];
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** 设置某组件是否允许贴靠隐藏；关闭时立即解除隐藏态（组件 watcher 负责视觉还原） */
 export function setHideEnabled(id: DockId, enabled: boolean): void {
   floatingState[id].hideEnabled = enabled;
   if (!enabled) floatingState[id].hidden = false;
   savePositions();
+  saveHidePrefs();
 }
 
 /** 重置全部浮动状态（测试隔离用；设置页也可提供「还原默认布局」入口） */
@@ -106,6 +134,7 @@ export function resetFloatPositions(): void {
   }
   try {
     localStorage.removeItem(FLOAT_STORAGE_KEY);
+    localStorage.removeItem(FLOAT_HIDE_KEY);
   } catch {
     // ignore
   }
