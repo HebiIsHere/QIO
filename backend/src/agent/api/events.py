@@ -1,4 +1,4 @@
-"""SSE event protocol (agreed event set).
+﻿"""SSE event protocol (agreed event set).
 
 Envelope: { "type": str, "id": str, "ts": str, "data": object }
 Wire format: "event: <TYPE>\\ndata: <json>\\n\\n"
@@ -26,6 +26,7 @@ class EventType(str, Enum):
     TURN_END = "TURN_END"
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
+    ASSISTANT = "ASSISTANT"
     WARNING = "WARNING"
     ERROR = "ERROR"
 

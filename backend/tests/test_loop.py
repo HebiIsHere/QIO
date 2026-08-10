@@ -154,3 +154,52 @@ async def test_turn_events_emitted():
     assert "TURN_START" in joined
     assert "TURN_END" in joined
     assert "USAGE" in joined
+async def test_interim_assistant_event_emitted_for_native_commentary():
+    client = ScriptedClient(
+        [FakeCompletion([FakeChoice(FakeMessage("我先查一下仓库", [_tc("c1", "echo", '{"text": "hi"}')]))])]
+    )
+    loop, bus = _make_loop(client)
+
+    collected: list[str] = []
+
+    async def consumer():
+        async for chunk in bus.stream():
+            collected.append(chunk)
+
+    task = asyncio.create_task(consumer())
+    await asyncio.sleep(0.05)
+    await loop.run("查一下仓库")
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    joined = "\n".join(collected)
+    assert "event: ASSISTANT" in joined
+    assert "我先查一下仓库" in joined
+    assert joined.index("我先查一下仓库") < joined.index("TURN_END")
+
+
+async def test_plain_text_turn_no_interim_assistant_event():
+    client = ScriptedClient([])
+    loop, bus = _make_loop(client)
+
+    collected: list[str] = []
+
+    async def consumer():
+        async for chunk in bus.stream():
+            collected.append(chunk)
+
+    task = asyncio.create_task(consumer())
+    await asyncio.sleep(0.05)
+    await loop.run("hello")
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert "event: ASSISTANT" not in "\n".join(collected)

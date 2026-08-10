@@ -111,6 +111,18 @@ class AgentLoop:
             self.budget.consume_tokens(self._tokens_of(completion))
             self.budget.consume_iteration()
 
+            # ???????native ????????????????????????????
+            if (
+                self.adapter.mode == AdapterMode.NATIVE
+                and completion.tool_calls
+                and completion.message.content
+                and completion.message.content.strip()
+            ):
+                await self._emit(
+                    EventType.ASSISTANT,
+                    {"content": completion.message.content, "interim": True},
+                )
+
             if not completion.tool_calls:
                 phase = LoopPhase.DONE
                 final_content = completion.message.content
