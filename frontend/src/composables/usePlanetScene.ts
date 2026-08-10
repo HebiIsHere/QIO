@@ -422,10 +422,13 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   }
 
   function resize() {
-    if (!camera || !renderer || !canvas.value) return;
+    if (!camera || !renderer || !scene || !canvas.value) return;
     camera.aspect = canvas.value.clientWidth / canvas.value.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(canvas.value.clientWidth, canvas.value.clientHeight);
+    // 立即重绘：ResizeObserver 回调在 rAF 渲染之后、paint 之前触发，setSize 会清空
+    // WebGL 绘图缓冲；若不在同一回调内补一帧，过渡动画期间每一帧画布都是空帧（闪屏）。
+    renderer.render(scene, camera);
   }
 
   onScopeDispose(() => {
