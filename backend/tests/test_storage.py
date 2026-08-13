@@ -14,6 +14,31 @@ def _iso(days_ago: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
 
 
+def test_entity_cards_table_and_flexible_edge_types(db_conn: sqlite3.Connection):
+    """实体卡表存在；edges 支持任意关系类型；embeddings 支持 entity_card。"""
+    tables = {r[0] for r in db_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "entity_cards" in tables
+
+    now = "2026-08-13T00:00:00+00:00"
+    db_conn.execute("INSERT INTO nodes VALUES ('n1','entity','鹅','{}',?,?)", (now, now))
+    db_conn.execute("INSERT INTO nodes VALUES ('n2','user','用户','{}',?,?)", (now, now))
+    # 任意关系类型（如「属于」）不被 CHECK 拦截
+    db_conn.execute(
+        "INSERT INTO edges (id,src,dst,type,weight,created_at,updated_at) "
+        "VALUES ('e1','n1','n2','属于',1.0,?,?)",
+        (now, now),
+    )
+    assert db_conn.execute("SELECT type FROM edges WHERE id='e1'").fetchone()["type"] == "属于"
+
+    # embeddings 支持 doc_type=entity_card
+    db_conn.execute(
+        "INSERT INTO embeddings (id,doc_type,ref_id,model,dims,vector,created_at,updated_at) "
+        "VALUES ('emb1','entity_card','c1','m',512,?,?,?)",
+        (b"x", now, now),
+    )
+    assert db_conn.execute("SELECT doc_type FROM embeddings WHERE id='emb1'").fetchone()["doc_type"] == "entity_card"
+
+
 def test_migrations_apply_and_idempotent(db_conn: sqlite3.Connection):
     assert current_version(db_conn) == SCHEMA_VERSION
     apply_migrations(db_conn)  # second run is a no-op

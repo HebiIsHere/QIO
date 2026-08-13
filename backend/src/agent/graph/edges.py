@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+# 内置关系类型（mention/related/owns）；同时允许任意自定义关系类型（母子/属于/饲养…）
 EDGE_TYPES = {"mention", "related", "owns"}
 
 
@@ -30,8 +31,8 @@ class EdgeService:
         self.conn = conn
 
     def add(self, src: str, dst: str, edge_type: str, weight: float = 1.0) -> None:
-        if edge_type not in EDGE_TYPES:
-            raise ValueError(f"unknown edge type: {edge_type}")
+        if not edge_type:
+            raise ValueError("edge type required")
         now = _now()
         existing = self.conn.execute(
             "SELECT * FROM edges WHERE src = ? AND dst = ? AND type = ?",

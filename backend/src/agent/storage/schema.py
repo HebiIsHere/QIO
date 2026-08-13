@@ -231,6 +231,63 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at)",
         ],
     ),
+    (
+        7,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS entity_cards (
+                id         TEXT PRIMARY KEY,
+                node_id    TEXT REFERENCES nodes(id),
+                name       TEXT NOT NULL,
+                aliases    TEXT NOT NULL DEFAULT '[]',
+                kind       TEXT,
+                summary    TEXT,
+                attributes TEXT NOT NULL DEFAULT '[]',
+                state      TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_entity_cards_node ON entity_cards(node_id)",
+            # 重建 edges：放开 type 的 CHECK，支持任意关系类型（母子/属于/饲养…）
+            """
+            CREATE TABLE IF NOT EXISTS edges_v2 (
+                id         TEXT PRIMARY KEY,
+                src        TEXT NOT NULL REFERENCES nodes(id),
+                dst        TEXT NOT NULL REFERENCES nodes(id),
+                type       TEXT NOT NULL,
+                weight     REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (src, dst, type)
+            )
+            """,
+            "INSERT INTO edges_v2 (id, src, dst, type, weight, created_at, updated_at) "
+            "SELECT id, src, dst, type, weight, created_at, updated_at FROM edges",
+            "DROP TABLE edges",
+            "ALTER TABLE edges_v2 RENAME TO edges",
+            "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
+            "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
+            # 重建 embeddings：doc_type 支持 entity_card
+            """
+            CREATE TABLE IF NOT EXISTS embeddings_v2 (
+                id         TEXT PRIMARY KEY,
+                doc_type   TEXT NOT NULL CHECK (doc_type IN ('memory_index','topic','entity_card')),
+                ref_id     TEXT NOT NULL,
+                model      TEXT NOT NULL,
+                dims       INTEGER NOT NULL,
+                vector     BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (doc_type, ref_id)
+            )
+            """,
+            "INSERT INTO embeddings_v2 (id, doc_type, ref_id, model, dims, vector, created_at, updated_at) "
+            "SELECT id, doc_type, ref_id, model, dims, vector, created_at, updated_at FROM embeddings",
+            "DROP TABLE embeddings",
+            "ALTER TABLE embeddings_v2 RENAME TO embeddings",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
