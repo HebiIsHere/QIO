@@ -77,9 +77,12 @@ function autosize() {
    浅色表面 + 玫红描边 + 右下小圆角，不可拖动；
    增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */
 .composer {
-  flex-shrink: 0;
-  align-self: flex-end;
-  margin: 0 16px 16px;
+  /* 独立悬浮于消息流之上（右下角），不参与消息流布局；
+     消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方 */
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 12;
   width: min(560px, calc(100vw - 32px));
   border: 1.5px solid var(--accent);
   border-radius: 18px 18px 4px 18px;

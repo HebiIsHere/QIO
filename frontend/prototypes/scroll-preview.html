@@ -1,0 +1,131 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QIO 消息流滚动预览 · 最新消息不被输入框遮挡</title>
+<style>
+  :root {
+    --bg:#fcfcfb; --surface:#ffffff; --line:#e7e7e4; --text:#30302d; --muted:#94938e;
+    --accent:#c51b7d; --on-accent:#ffeef8; --assist:#ffffff;
+  }
+  * { box-sizing:border-box; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;}
+  .stream{position:fixed;inset:0;overflow-y:auto;padding:24px 44px 0;/* 底部滚动缓冲由 JS 按输入框高度动态设置 */}
+  .turn{max-width:760px;margin:0 0 22px;}
+  .meta{font:12px/1 monospace;color:var(--muted);margin-bottom:8px;letter-spacing:.05em;}
+  .msg{display:flex;margin:8px 0;}
+  .msg.user{justify-content:flex-end;}
+  .msg .bubble{max-width:76%;padding:10px 16px;border-radius:14px;font-size:14px;line-height:1.7;}
+  .msg.user .bubble{background:var(--accent);color:var(--on-accent);border-radius:14px 14px 4px 14px;}
+  .msg.assistant .bubble{background:var(--assist);border:1px solid var(--line);border-radius:14px 14px 14px 4px;}
+  .composer{position:fixed;right:16px;bottom:16px;width:560px;z-index:20;background:var(--surface);
+    border:1.5px solid var(--accent);border-radius:18px 18px 4px 18px;padding:10px 18px 14px;
+    box-shadow:0 12px 34px rgba(0,0,0,.12);}
+  .composer .tbar{font-size:12px;color:var(--muted);margin-bottom:8px;letter-spacing:.04em;}
+  .composer .row{display:flex;gap:10px;}
+  .composer textarea{flex:1;min-height:46px;max-height:160px;resize:none;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font:inherit;font-size:14px;outline:none;background:#faf9f7;}
+  .composer .send{width:42px;height:42px;border:none;border-radius:50%;background:var(--accent);color:#fff;font-size:18px;flex-shrink:0;}
+  .hud{position:fixed;left:16px;bottom:14px;z-index:30;font:11px/1.5 monospace;color:var(--muted);
+    background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px;pointer-events:none;}
+  .hud b{color:var(--accent);}
+</style>
+</head>
+<body>
+
+<div class="stream" id="stream">
+  <!-- 消息由 JS 生成 -->
+</div>
+
+<div class="composer">
+  <div class="tbar">当前话题 · /tool /topic /memory</div>
+  <div class="row">
+    <textarea id="ta" placeholder="和 QIO 说点什么…"></textarea>
+    <button class="send">↑</button>
+  </div>
+</div>
+
+<div class="hud">
+  滚动到底时：最后一条消息应停在输入框上方。<br>
+  当前 <b id="pos">-</b> · 输入框高 <b id="ch">-</b>px · 底部吸附 <b id="snap">-</b>px
+</div>
+
+<script>
+const stream = document.getElementById("stream");
+const ta = document.getElementById("ta");
+const posEl = document.getElementById("pos");
+const chEl = document.getElementById("ch");
+const snapEl = document.getElementById("snap");
+
+// 生成消息（保证可滚动）
+const turns = [
+  [["assistant","好的，我先梳理一下这个需求的要点，然后一起确认方案。"],
+   ["user","我想让最新消息不被右下角的输入框遮住。"]],
+  [["assistant","明白。关键是：输入框悬浮，消息流全屏可滚动；滚动到底时，最后一条消息自动停在输入框上方。"],
+   ["user","对，滑动过程中消息可以进到底部，但最新一条要能露出来。"]],
+  [["assistant","这就是滚动位置控制：滚动到底 = 最后消息底部对齐输入框顶部，而不是贴住视口底部。"]],
+  [["user","那消息不满一屏的时候呢？"],
+   ["assistant","不满一屏时没有多余留白，消息正常显示，滚动逻辑不会触发。"],
+   ["user","好的，那做一个预览我看看效果。"]],
+  [["assistant","这是第 5 轮……前面放一些内容让页面可以滚动。这里写一段较长的说明文字，模拟真实对话里比较长的助手回复：涉及到多行文本、换行、以及可能出现的代码或列表。滚动这条消息时，你会看到消息流可以自由滚动，最后一条消息滚动到底时会停在输入框上方，而不是被它遮住。"],
+   ["user","收到，我再往下滑一点。"]],
+  [["assistant","这一轮是最新的消息：你现在看到的就是滚动到底后的效果——这条消息的底部正好贴着输入框气泡的顶部，输入框悬浮在它上方，没有被遮挡。"],
+   ["user","看起来不错，最新消息完整可见。"]],
+];
+const frag = document.createDocumentFragment();
+turns.forEach((items, i) => {
+  const turn = document.createElement("div");
+  turn.className = "turn";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = `TURN ${String(i+1).padStart(2,"0")} · 12:0${i}`;
+  turn.appendChild(meta);
+  for (const [role, text] of items) {
+    const m = document.createElement("div");
+    m.className = "msg " + role;
+    const b = document.createElement("div");
+    b.className = "bubble";
+    b.textContent = text;
+    m.appendChild(b);
+    turn.appendChild(m);
+  }
+  frag.appendChild(turn);
+});
+stream.appendChild(frag);
+
+function composerHeight() {
+  const c = document.querySelector(".composer");
+  return c.getBoundingClientRect().height;
+}
+// 滚动缓冲：消息流底部动态让出输入框高度（消息可滚进底部，但滚到底时最后消息停在输入框上方）
+function applyPad() {
+  stream.style.paddingBottom = (composerHeight() + 16) + "px";
+}
+// 滚动到底 = 最后消息停在输入框上方（scrollTop 取最大即可，缓冲由 padding 提供）
+function onScroll() {
+  const max = stream.scrollHeight - stream.clientHeight;
+  // 用户滚到接近最底部时，吸附到最底（最后消息恰好停在 padding 之上 = 输入框上方）
+  if (stream.scrollTop >= max - 24) {
+    stream.scrollTop = max;
+  }
+  posEl.textContent = stream.scrollTop.toFixed(0);
+  chEl.textContent = composerHeight().toFixed(0);
+  snapEl.textContent = max.toFixed(0);
+}
+stream.addEventListener("scroll", onScroll, { passive: true });
+
+// textarea autosize（输入框增高时缓冲自适应）
+ta.addEventListener("input", () => {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  applyPad();
+});
+
+applyPad();
+// 初始：直接滚到最底，展示「最新消息停在输入框上方」
+stream.scrollTop = stream.scrollHeight;
+onScroll();
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
  * 按「用户消息开新轮次」把消息分组为 turn，虚拟化单位是轮次块；
  * 每轮渲染 TURN 分隔头（等宽）+ 消息项（MessageItem）。
  */
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
 import type { StreamMessage } from "../stores/session";
@@ -52,7 +52,41 @@ function onScroll() {
   const el = containerRef.value;
   if (!el) return;
   followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  // 接近底部时吸附到底：最新消息停在输入框上方（由底部滚动缓冲保证）
+  const max = el.scrollHeight - el.clientHeight;
+  if (el.scrollTop >= max - 24) el.scrollTop = max;
 }
+
+/** 右下角输入框高度观察：消息流底部滚动缓冲 = 输入框高 + 间距，
+ *  滚动到底时最新消息恰好停在浮动气泡上方（消息少时无额外留白）。 */
+let composerObserver: ResizeObserver | null = null;
+function composerHeight(): number {
+  const el = document.querySelector<HTMLElement>(".composer");
+  return el ? el.getBoundingClientRect().height : 0;
+}
+function applyComposerPad() {
+  const el = containerRef.value;
+  if (!el) return;
+  el.style.paddingBottom = `${Math.round(composerHeight()) + 16}px`;
+}
+onMounted(() => {
+  if (typeof ResizeObserver === "undefined") {
+    applyComposerPad();
+    return;
+  }
+  composerObserver = new ResizeObserver(applyComposerPad);
+  const tryObserve = () => {
+    const c = document.querySelector<HTMLElement>(".composer");
+    if (c) composerObserver?.observe(c);
+    else requestAnimationFrame(tryObserve);
+  };
+  tryObserve();
+  applyComposerPad();
+});
+onUnmounted(() => {
+  composerObserver?.disconnect();
+  composerObserver = null;
+});
 
 // 动态测量列表项真实高度（替代固定 estimateSize），避免长消息重叠
 function measureItem(el: unknown) {
@@ -67,7 +101,7 @@ watch(
     if (followBottom.value) {
       await nextTick();
       const el = containerRef.value;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
     }
   },
 );
@@ -79,7 +113,7 @@ watch(
       followBottom.value = true;
       await nextTick();
       const el = containerRef.value;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
     }
   },
 );
@@ -165,13 +199,6 @@ const showTyping = computed(() => {
   padding: 34px 44px 20px;
   scrollbar-width: thin;
   background: var(--bg-base);
-}
-/* 宽屏：右侧让出右下角输入框（560px 气泡 + 边距 + 呼吸间距），
-   消息（含靠右的用户消息）停在输入框左缘之前，不重叠、完整显示在左半边 */
-@media (min-width: 1280px) {
-  .stream {
-    padding-right: 640px;
-  }
 }
 .spacer {
   width: 100%;
