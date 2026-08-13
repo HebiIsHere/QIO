@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from agent.graph.topics import TopicService
 from agent.selector.tokenize import tokenize
 
-NEW_TOPIC_THRESHOLD = 0.45  # 真实 bge-small-zh 余弦分布：不相关约 0.23-0.35，相关 0.40+
+NEW_TOPIC_THRESHOLD = 0.7  # 2026-08-13 调高：真实 bge-small-zh 对闲聊类消息也常算出 0.4-0.5 的余弦，旧阈值 0.45 会把“玩原神/鹅病”这类偏离内容误判为命中已有话题；0.7 更保守，宁可把中度相似（0.5-0.7）也判为新话题候选，由主模型决定是否 create_topic。
 AUX_TOPIC_THRESHOLD = 0.3  # 辅助话题低门槛：只需「有点相关」（onnx 余弦）
 RULES_NEW_TOPIC_THRESHOLD = 0.2  # 规则重叠率分布：典型命中 0.2-0.5
 RULES_AUX_TOPIC_THRESHOLD = 0.1

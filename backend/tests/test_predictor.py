@@ -77,14 +77,14 @@ def _topics(db_conn: sqlite3.Connection) -> None:
         )
 
 
-def _make_predictor(db_conn: sqlite3.Connection, embedding) -> TopicPredictor:
-    return TopicPredictor(db_conn, embedding, TopicService(db_conn))
+def _make_predictor(db_conn: sqlite3.Connection, embedding, **kwargs) -> TopicPredictor:
+    return TopicPredictor(db_conn, embedding, TopicService(db_conn), **kwargs)
 
 
 def test_main_topic_ranking_and_aux(db_conn: sqlite3.Connection):
     _topics(db_conn)
     emb = FakeEmbedding()
-    pred = _make_predictor(db_conn, emb).predict(
+    pred = _make_predictor(db_conn, emb, new_topic_threshold=0.45).predict(
         "饮食 清淡 吃辣 健身 跑步", current_topic_id="t_diet"
     )
     assert pred.main_topic_id == "t_diet"
@@ -98,10 +98,10 @@ def test_main_topic_ranking_and_aux(db_conn: sqlite3.Connection):
 def test_suggested_switch_requires_delta(db_conn: sqlite3.Connection):
     _topics(db_conn)
     emb = FakeEmbedding()
-    pred = _make_predictor(db_conn, emb).predict("健身 跑步 力量", current_topic_id="t_fit")
+    pred = _make_predictor(db_conn, emb, new_topic_threshold=0.45).predict("健身 跑步 力量", current_topic_id="t_fit")
     assert pred.main_topic_id == "t_fit"
     assert pred.suggested_switch is False
-    pred2 = _make_predictor(db_conn, emb).predict("饮食 清淡 吃辣", current_topic_id="t_fit")
+    pred2 = _make_predictor(db_conn, emb, new_topic_threshold=0.45).predict("饮食 清淡 吃辣", current_topic_id="t_fit")
     assert pred2.main_topic_id == "t_diet"
     assert pred2.suggested_switch is True
     assert pred2.scores["t_diet"] - pred2.scores["t_fit"] >= SWITCH_DELTA
@@ -119,9 +119,20 @@ def test_cold_start_generates_topic_vectors(db_conn: sqlite3.Connection):
     _topics(db_conn)
     emb = FakeEmbedding()
     assert emb.topic_vector("t_diet") is None
-    pred = _make_predictor(db_conn, emb).predict("饮食 清淡", current_topic_id="t_diet")
+    pred = _make_predictor(db_conn, emb, new_topic_threshold=0.45).predict("饮食 清淡", current_topic_id="t_diet")
     assert emb.topic_vector("t_diet") is not None
     assert pred.main_topic_id == "t_diet"
+
+
+def test_default_threshold_0_7_marks_moderate_similarity_as_new_topic(db_conn: sqlite3.Connection):
+    """默认阈值 0.7：中度相关（~0.56-0.6）也判为新话题候选，交给主模型决定。"""
+    _topics(db_conn)
+    emb = FakeEmbedding()
+    pred = _make_predictor(db_conn, emb).predict(
+        "饮食 清淡 吃辣 健身 跑步", current_topic_id="t_diet"
+    )
+    assert pred.is_new_topic_candidate is True
+    assert pred.main_topic_id is None
 
 
 def test_rules_fallback_without_embedding(db_conn: sqlite3.Connection):
