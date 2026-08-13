@@ -77,7 +77,8 @@ const topicLine = computed(() => {
 .message {
   display: flex;
   flex-direction: column;
-  max-width: 640px;
+  /* 左半边完整显示：比原 640px 更宽，宽屏下消息占左侧更充分 */
+  max-width: min(760px, 100%);
   margin: 6px 0;
   font-size: 14.5px;
   line-height: 1.75;

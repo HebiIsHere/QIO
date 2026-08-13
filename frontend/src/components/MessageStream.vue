@@ -166,6 +166,13 @@ const showTyping = computed(() => {
   scrollbar-width: thin;
   background: var(--bg-base);
 }
+/* 宽屏：右侧让出右下角输入框（560px 气泡 + 边距 + 呼吸间距），
+   消息（含靠右的用户消息）停在输入框左缘之前，不重叠、完整显示在左半边 */
+@media (min-width: 1280px) {
+  .stream {
+    padding-right: 640px;
+  }
+}
 .spacer {
   width: 100%;
 }
