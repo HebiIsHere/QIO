@@ -98,6 +98,19 @@ class EntityCardService:
         ).fetchone()
         return self._row_to_card(row) if row else None
 
+    def match_cards(self, message: str) -> list[EntityCard]:
+        """消息命中实体的 name 或任一 alias 时返回该卡（交流锚点命中）。"""
+        message = (message or "").strip()
+        if not message:
+            return []
+        hits = []
+        for card in self.list_active():
+            if message.find(card.name) >= 0 or any(
+                a and message.find(a) >= 0 for a in card.aliases
+            ):
+                hits.append(card)
+        return hits
+
     def list_active(self) -> list[EntityCard]:
         rows = self.conn.execute(
             "SELECT * FROM entity_cards WHERE state = 'active' ORDER BY updated_at DESC"

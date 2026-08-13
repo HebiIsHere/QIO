@@ -169,6 +169,7 @@ class InjectionAssembler:
         new_topic_reason: str = "",
         topic_note: str = "",
         focus_block: str = "",
+        entity_cards: list[str] | None = None,
     ) -> InjectionPayload:
         assert self.knowledge_source is not None
         candidates: list[Candidate] = []
@@ -245,6 +246,18 @@ class InjectionAssembler:
             )
 
         reserved: list[PlannedItem] = []
+        # 实体卡命中（交流锚点）：高优保留，与 focus_block 同级
+        for card_text in entity_cards or []:
+            if card_text.strip():
+                reserved.append(
+                    PlannedItem(
+                        source="memory",
+                        surface="entity_card",
+                        item_id="entity_card",
+                        text=card_text,
+                        tokens=estimate_tokens(card_text),
+                    )
+                )
         if focus_block:
             reserved.append(
                 PlannedItem(

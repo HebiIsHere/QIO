@@ -540,6 +540,7 @@ class AppContext:
         new_topic_reason: str = "",
         topic_note: str = "",
         focus_block: str = "",
+        entity_cards: list[str] | None = None,
     ) -> InjectionPayload:
         from agent.knowledge.inject import InjectionSource
 
@@ -564,6 +565,7 @@ class AppContext:
             new_topic_reason=new_topic_reason,
             topic_note=topic_note,
             focus_block=focus_block,
+            entity_cards=entity_cards,
         )
 
     # -- turn -------------------------------------------------------------
@@ -610,6 +612,11 @@ class AppContext:
         if prediction.is_new_topic_candidate:
             top = max(prediction.scores.values(), default=0.0)
             reason = TOPIC_NOTE_NEW_REASON.format(top=top)
+        # 实体卡命中（交流锚点）：消息提到经验性实体 → 高优注入卡文本
+        from agent.entities.cards import EntityCardService
+
+        card_svc = EntityCardService(self.conn)
+        entity_cards = [card_svc.format_card(c) for c in card_svc.match_cards(message)]
         payload = self.build_injection(
             message,
             topic_id=topic,
@@ -622,6 +629,7 @@ class AppContext:
             new_topic_reason=reason,
             topic_note=topic_note,
             focus_block=focus_block,
+            entity_cards=entity_cards,
         )
         self._knowledge_snapshot = [
             {
