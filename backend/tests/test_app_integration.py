@@ -64,6 +64,8 @@ async def test_extraction_chain_low_impact_auto_activates(ctx: AppContext, topic
     adapter = FakeSequenceAdapter([
         # fragment summary
         '{"title": "饮食", "summary": "用户偏好清淡饮食", "entities": ["牛奶"], "keywords": ["清淡"]}',
+        # entity extraction (?????)
+        '{"entities": []}',
         # knowledge extraction
         '{"candidates": ['
         '{"content": "用户偏好清淡饮食", "category": "user_profile", "attach": "user", "entity": null},'

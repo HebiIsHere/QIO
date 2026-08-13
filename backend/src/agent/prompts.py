@@ -239,3 +239,27 @@ TOOL_AUTOMATION_PROMPT = (
     "只输出 JSON：{\"name\": \"snake_case 工具名\", \"description\": \"人话说明\", "
     "\"parameters\": {\"type\": \"object\", \"properties\": {}}}\n请求：\n"
 )
+
+
+# ============================================================================
+# 六、实体卡（Entity Card）——经验性实体提炼与注入
+# ============================================================================
+
+# 实体提炼指令。定义于 agent/services/app.py _close_fragment 扩展；
+# 作用：封块时让主模型从对话提炼「经验性实体卡」候选（name/aliases/kind/summary/attributes/relations），
+# 本地 JSON Schema 校验后写入 entity_cards；只收私人化、带个人属性的对象，不收通用概念。
+ENTITY_EXTRACT_PROMPT = (
+    "你是实体提炼器。从这段对话里，找出用户私人世界里反复提及、带有个人属性的对象"
+    "（如「我家的鹅」「我师哥」「我爱吃的五里关火锅」）。"
+    "只输出 JSON：{\"entities\": [{\"name\": \"实体名\", \"aliases\": [\"别名\"], "
+    "\"kind\": \"类型(可选)\", \"summary\": \"一句话(可选)\", "
+    "\"attributes\": [{\"key\": \"属性名\", \"value\": \"属性值\"}], "
+    "\"relations\": [{\"target\": \"关联实体名\", \"type\": \"关系类型\"}]}]}\n"
+    "规则：不收通用概念（人/火锅/电脑）；属性必须是对话中明确提到的个人化信息；"
+    "关系是实体间的真实联系（属于/母子/饲养…）。\n对话：\n{messages}"
+)
+
+# 实体卡注入模板。定义于 agent/entities/cards.py format_card；
+# 作用：对话命中实体时高优注入的卡文本（【实体·名称】+ 属性 + 关系），
+# 占位符 {name}、{summary}、{attrs}、{rels}。
+ENTITY_CARD_INJECT = "【实体·{name}】{summary}\n属性：{attrs}\n关系：{rels}"

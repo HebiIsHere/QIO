@@ -708,6 +708,18 @@ class AppContext:
                 entity_ids.append(entity.id)
                 edges.add(topic_id, entity.id, "mention")
 
+        # 实体卡提炼：主模型从对话提炼经验性实体卡（属性/关系/别名），失败静默降级
+        from agent.entities.cards import EntityCardService
+        from agent.entities.extract import extract_entity_cards
+
+        try:
+            candidates = await extract_entity_cards(adapter, [dict(m) for m in messages])
+            card_svc = EntityCardService(self.conn)
+            for cand in candidates:
+                card_svc.upsert(cand)
+        except Exception:
+            logger.warning("entity card extraction failed", exc_info=True)
+
         self.fragments.close(
             fragment.id,
             summary.summary,
