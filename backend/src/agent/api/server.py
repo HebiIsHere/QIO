@@ -283,6 +283,55 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         ks.activate(new_item.id)
         return {"ok": True, "knowledge_id": new_item.id, "supersedes": item.id}
 
+    # -- entity cards ---------------------------------------------------------
+
+    @app.get("/api/entities")
+    async def list_entities() -> dict:
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(ctx.conn)
+        return {"entities": [svc.format_card(c) for c in svc.list_active()]}
+
+    @app.get("/api/entities/{entity_id}")
+    async def get_entity(entity_id: str) -> dict:
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(ctx.conn)
+        card = svc.get(entity_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        return {"entity": svc.format_card(card)}
+
+    @app.post("/api/entities/{entity_id}/revise")
+    async def revise_entity(entity_id: str, body: dict) -> dict:
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(ctx.conn)
+        card = svc.get(entity_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        attributes = body.get("attributes")
+        aliases = body.get("aliases")
+        summary = body.get("summary")
+        kind = body.get("kind")
+        updated = svc.revise(
+            entity_id,
+            attributes=attributes,
+            aliases=aliases,
+            summary=summary,
+            kind=kind,
+        )
+        return {"ok": True, "entity": svc.format_card(updated) if updated else None}
+
+    @app.post("/api/entities/{entity_id}/revoke")
+    async def revoke_entity(entity_id: str) -> dict:
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(ctx.conn)
+        if not svc.revoke(entity_id):
+            raise HTTPException(status_code=404, detail="entity not found or already archived")
+        return {"ok": True, "entity_id": entity_id}
+
     @app.post("/api/knowledge/{knowledge_id}/revoke")
     async def revoke_knowledge(knowledge_id: str) -> dict:
         from agent.knowledge.lifecycle import KnowledgeService

@@ -91,8 +91,8 @@ class EntityCardService:
         if not name:
             return None
         row = self.conn.execute(
-            "SELECT * FROM entity_cards WHERE name = ? OR "
-            "EXISTS (SELECT 1 FROM json_each(aliases) WHERE json_each.value = ?) "
+            "SELECT * FROM entity_cards WHERE state = 'active' AND (name = ? OR "
+            "EXISTS (SELECT 1 FROM json_each(aliases) WHERE json_each.value = ?)) "
             "ORDER BY updated_at DESC LIMIT 1",
             (name, name),
         ).fetchone()
@@ -187,6 +187,94 @@ class EntityCardService:
         if cand.relations:
             self._sync_relations(card.node_id or node_id, cand.relations)
         return card
+
+    def revise(
+        self,
+        card_id: str,
+        *,
+        attributes: list[dict] | None = None,
+        aliases: list[str] | None = None,
+        summary: str | None = None,
+        kind: str | None = None,
+    ) -> EntityCard | None:
+        """整体修订：属性/别名/摘要/类型任一可更新；None 表示保持原值。"""
+        card = self.get(card_id)
+        if card is None:
+            return None
+        if attributes is not None:
+            attrs = [
+                {"key": str(a.get("key", "")), "value": str(a.get("value", "")),
+                 "confidence": float(a.get("confidence", 0.8))}
+                if isinstance(a, dict) else {"key": "", "value": ""}
+                for a in attributes
+            ]
+        else:
+            attrs = card.attributes
+        new_aliases = card.aliases if aliases is None else [str(a) for a in aliases]
+        new_summary = card.summary if summary is None else str(summary)
+        new_kind = card.kind if kind is None else (str(kind) if kind else None)
+        self.conn.execute(
+            "UPDATE entity_cards SET attributes = ?, aliases = ?, summary = ?, kind = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                json.dumps(attrs, ensure_ascii=False),
+                json.dumps(new_aliases, ensure_ascii=False),
+                new_summary,
+                new_kind,
+                _now(),
+                card_id,
+            ),
+        )
+        return self.get(card_id)
+
+    def set_attribute(self, card_id: str, key: str, value: str) -> EntityCard | None:
+        card = self.get(card_id)
+        if card is None:
+            return None
+        attrs = [dict(a) for a in card.attributes]
+        hit = next((a for a in attrs if a.get("key") == key), None)
+        if hit is not None:
+            hit["value"] = value
+        else:
+            attrs.append({"key": key, "value": value, "confidence": 0.8})
+        self.conn.execute(
+            "UPDATE entity_cards SET attributes = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(attrs, ensure_ascii=False), _now(), card_id),
+        )
+        return self.get(card_id)
+
+    def remove_attribute(self, card_id: str, key: str) -> EntityCard | None:
+        card = self.get(card_id)
+        if card is None:
+            return None
+        attrs = [dict(a) for a in card.attributes if a.get("key") != key]
+        self.conn.execute(
+            "UPDATE entity_cards SET attributes = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(attrs, ensure_ascii=False), _now(), card_id),
+        )
+        return self.get(card_id)
+
+    def add_relation(self, card_id: str, target: str, rel_type: str) -> EntityCard | None:
+        card = self.get(card_id)
+        if card is None or not card.node_id:
+            return None
+        self._sync_relations(card.node_id, [EntityRelation(target=target, type=rel_type)])
+        return self.get(card_id)
+
+    def remove_relation(self, card_id: str, target: str, rel_type: str) -> EntityCard | None:
+        card = self.get(card_id)
+        if card is None or not card.node_id:
+            return None
+        from agent.graph.nodes import NodeService
+
+        other = NodeService(self.conn).get_entity_by_name(target)
+        if other is not None:
+            self.conn.execute(
+                "DELETE FROM edges WHERE type = ? AND "
+                "((src = ? AND dst = ?) OR (src = ? AND dst = ?))",
+                (rel_type, card.node_id, other.id, other.id, card.node_id),
+            )
+        return self.get(card_id)
 
     def revoke(self, card_id: str) -> bool:
         row = self.conn.execute(

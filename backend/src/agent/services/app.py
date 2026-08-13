@@ -124,6 +124,9 @@ class AppContext:
                 lifecycle_builder=self._build_tool_lifecycle,
             )
         )
+        from agent.tools.entity_tools import CorrectEntityTool
+
+        self.registry.register(CorrectEntityTool(conn))
         from agent.tools.knowledge_correction import CorrectKnowledgeTool
 
         self._knowledge_snapshot: list[dict] = []
