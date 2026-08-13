@@ -600,8 +600,9 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 /* 测试凭据提示：浮现又消失的 toast 气泡 */
 .toast {
   position: fixed;
+  top: 20px;
   right: 20px;
-  bottom: 20px;
+  bottom: auto;
   z-index: 60;
   max-width: 340px;
   padding: 10px 16px;
