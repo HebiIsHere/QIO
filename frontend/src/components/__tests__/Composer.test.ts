@@ -49,7 +49,7 @@ describe("Composer 输入框（右下角大气泡）", () => {
     void pinia;
   });
 
-  it("固定气泡：无拖拽把手、无浮动系统内联定位（left/top）", async () => {
+  it("大气泡：无拖拽把手、无浮动系统内联定位（融入对话页布局）", async () => {
     const { w } = await mountComposer();
     const el = w.find(".composer").element as HTMLElement;
     expect(el.classList.contains("bubble")).toBe(true);

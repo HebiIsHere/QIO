@@ -73,12 +73,13 @@ function autosize() {
 </template>
 
 <style scoped>
-/* 贴右下角大气泡：浅色表面 + 玫红描边 + 右下小圆角，固定不可拖动 */
+/* 右下角大气泡：融入对话页 flex 布局（消息流下方、靠右），
+   浅色表面 + 玫红描边 + 右下小圆角，不可拖动；
+   增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */
 .composer {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 12;
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin: 0 16px 16px;
   width: min(560px, calc(100vw - 32px));
   border: 1.5px solid var(--accent);
   border-radius: 18px 18px 4px 18px;
