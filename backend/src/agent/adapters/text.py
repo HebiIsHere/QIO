@@ -21,6 +21,11 @@ from agent.adapters.base import (
     ToolCall,
     ToolSpec,
 )
+from agent.prompts import (
+    SYSTEM_PROMPT_TEXT_MODE,
+    SYSTEM_PROMPT_TOOLS_HEADER,
+    TEXT_TOOL_ENTRY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,21 +68,19 @@ class TextAdapter(BaseAdapter):
         lines = []
         for t in tools:
             lines.append(
-                f"- {t.name}: {t.description}\n"
-                f"  parameters (JSON Schema): {json.dumps(t.parameters, ensure_ascii=False)}"
+                TEXT_TOOL_ENTRY.format(
+                    name=t.name,
+                    description=t.description,
+                    schema=json.dumps(t.parameters, ensure_ascii=False),
+                )
             )
         return "\n".join(lines)
 
     def build_system_prompt(self, tools: list[ToolSpec]) -> str:
-        return (
-            "You are a tool-calling assistant without a native tool API. "
-            "You MUST respond with a single JSON object in a ```json block "
-            "using exactly this shape when you want to call a tool:\n"
-            '{"tool_calls": [{"name": "<tool>", "arguments": {}}]}\n'
-            "If no tool is needed, respond with plain text only.\n\n"
-            "Available tools:\n"
-            f"{self.build_text_tools(tools)}"
-        )
+        tools_block = self.build_text_tools(tools)
+        if tools_block:
+            tools_block = f"{SYSTEM_PROMPT_TOOLS_HEADER}\n{tools_block}"
+        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{tools_block}"
 
     # -- completion -------------------------------------------------------
 

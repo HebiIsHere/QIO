@@ -12,6 +12,7 @@ import sqlite3
 from agent.graph.anchors import AnchorService
 from agent.graph.edges import EdgeService
 from agent.graph.nodes import NodeService
+from agent.prompts import TOOL_CREATE_TOPIC_DESC, TOOL_SWITCH_TOPIC_DESC
 from agent.tools.base import Tool, ToolResult
 
 
@@ -25,10 +26,7 @@ def _relate(conn: sqlite3.Connection, a: str, b: str) -> None:
 
 class SwitchTopicTool(Tool):
     name = "switch_topic"
-    description = (
-        "把当前对话的主话题切换到指定话题。topic_id 必须是已存在的话题。"
-        "切换后后续对话将记录到新话题，并在新旧话题间建立相关关系。"
-    )
+    description = TOOL_SWITCH_TOPIC_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -62,10 +60,7 @@ class SwitchTopicTool(Tool):
 
 class CreateTopicTool(Tool):
     name = "create_topic"
-    description = (
-        "创建新话题并切换为当前主话题。适用于当前消息与所有现有话题都不匹配时。"
-        "新话题与当前话题自动建立相关关系。"
-    )
+    description = TOOL_CREATE_TOPIC_DESC
     parameters = {
         "type": "object",
         "properties": {

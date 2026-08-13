@@ -11,24 +11,23 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable
 
+from agent.prompts import (
+    DEV_GUIDE,
+    TOOL_CREATE_TOOL_DESC,
+    TOOL_DEV_READ_FILE_DESC,
+    TOOL_DEV_RUN_TESTS_DESC,
+    TOOL_DEV_SUBMIT_DESC,
+    TOOL_DEV_WRITE_FILE_DESC,
+)
 from agent.tools.base import Tool, ToolResult
 from agent.tools.sandbox import SandboxExecutor
 from agent.tools.spec import ToolDefinition
 from agent.tools.tester import ToolTester
 
-DEV_GUIDE = """工具开发指南：
-1. 开发范式：理解需求 → 在 tool.json 写工具定义（name/description/parameters/tool_type/sync/code/tests）→ 运行测试 → 失败则读取错误、修改定义、重跑，直至全部通过 → 提交审批。
-2. 需求规格必填项：工具用途（一句话）、输入输出、使用场景、是否需要凭据（访问外部服务时）、类型（function/subagent）、同步/异步。需求不完整时，先与用户澄清再开始开发。
-3. 契约约束：纯函数、单文件实现、测试用例 ≥1 条且确定性断言；subagent 型需 model 与 credential_ref，可跳过确定性测试。
-4. 提交时用通俗语言说明工具用途（用户不接触代码）。"""
-
 
 class CreateToolTool(Tool):
     name = "create_tool"
-    description = (
-        "创建新工具的开发任务。当用户要求开发新工具、现有工具无法满足需求时使用。"
-        "需求不完整时先向用户澄清，再调用本工具创建开发任务。"
-    )
+    description = TOOL_CREATE_TOOL_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -53,7 +52,7 @@ class CreateToolTool(Tool):
 
 class DevWriteFileTool(Tool):
     name = "dev_write_file"
-    description = "在工作区写入或修改文件（tool.json / tool.py / tests.json 等）。"
+    description = TOOL_DEV_WRITE_FILE_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -82,7 +81,7 @@ class DevWriteFileTool(Tool):
 
 class DevReadFileTool(Tool):
     name = "dev_read_file"
-    description = "读取工作区文件内容（查看当前实现或测试）。"
+    description = TOOL_DEV_READ_FILE_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -108,7 +107,7 @@ class DevReadFileTool(Tool):
 
 class DevRunTestsTool(Tool):
     name = "dev_run_tests"
-    description = "在工作区运行工具测试（读取 tool.json 的定义与测试，沙箱执行），返回逐条结果。失败时根据错误输出修改后重跑。"
+    description = TOOL_DEV_RUN_TESTS_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -144,10 +143,7 @@ class DevRunTestsTool(Tool):
 
 class DevSubmitTool(Tool):
     name = "dev_submit_tool"
-    description = (
-        "提交工具开发成果进入审批。definition 为工具定义 JSON（含 name/description/parameters/工具类型/实现/测试），"
-        "explanation 用通俗语言说明工具用途（用户会看到）。审批通过后工具注册，工作区清理。"
-    )
+    description = TOOL_DEV_SUBMIT_DESC
     parameters = {
         "type": "object",
         "properties": {

@@ -13,6 +13,14 @@ from dataclasses import dataclass, field
 
 from agent.knowledge.inject import InjectionSource
 from agent.memory.index import estimate_tokens
+from agent.prompts import (
+    INJECT_HEADER,
+    INJECT_MEMORY_ITEM,
+    INJECT_NEW_TOPIC_DEFAULT_REASON,
+    INJECT_NEW_TOPIC_SECTION,
+    INJECT_RELATED_MEMORY_ITEM,
+    INJECT_TOPIC_SECTION,
+)
 from agent.services.retrieval import RetrievalHit, Retriever
 from agent.selector.tokenize import tokenize
 
@@ -199,7 +207,7 @@ class InjectionAssembler:
                         source="memory",
                         surface="aux_topic",
                         item_id=frag["id"],
-                        text=f"[相关话题记忆·{frag['title']}] {frag['summary']}",
+                        text=INJECT_RELATED_MEMORY_ITEM.format(title=frag["title"], summary=frag["summary"]),
                         score=0.4,
                     )
                 )
@@ -231,7 +239,7 @@ class InjectionAssembler:
                     source="memory",
                     surface="memory",
                     item_id=hit.doc_id,
-                    text=f"[记忆·{hit.title or hit.topic_id}] {hit.preview}",
+                    text=INJECT_MEMORY_ITEM.format(title=hit.title or hit.topic_id, preview=hit.preview),
                     score=hit.score,
                 )
             )
@@ -251,17 +259,14 @@ class InjectionAssembler:
         plan = self.budget.plan(candidates, min_score=0.05, reserved=reserved)
         if not plan.all_items:
             return InjectionPayload(text="", plan=plan)
-        sections = ["【长期记忆注入】"]
+        sections = [INJECT_HEADER]
         if topic_note:
-            sections.append(f"【话题】{topic_note}")
+            sections.append(INJECT_TOPIC_SECTION.format(topic_note=topic_note))
         if focus_block:
             sections.append(focus_block)
         if new_topic_candidate:
-            reason = new_topic_reason or "与现有话题都不匹配"
-            sections.append(
-                f"【话题建议】当前消息可能与现有话题都不匹配（{reason}）。"
-                "如需创建新话题，请调用 create_topic 工具。"
-            )
+            reason = new_topic_reason or INJECT_NEW_TOPIC_DEFAULT_REASON
+            sections.append(INJECT_NEW_TOPIC_SECTION.format(reason=reason))
         for item in plan.short_term:
             sections.append(item.text)
         for item in plan.knowledge:

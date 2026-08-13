@@ -13,6 +13,7 @@ from typing import Any
 
 from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
 from agent.selector.tokenize import tokenize
+from agent.prompts import DREAMING_PROMPT, TOOL_AUTOMATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +24,6 @@ CLUSTER_MIN_SIZE = 3
 EMBED_SIMILARITY_THRESHOLD = 0.85
 TOKEN_OVERLAP_THRESHOLD = 0.6
 SCAN_LIMIT = 500
-
-DREAMING_PROMPT = """你是记忆维护分析器。分析以下知识与记忆摘录，找出：
-1. correct：内容冲突或已过时（给出修正后的新内容）；
-2. merge：内容高度重复（合并后内容）；
-3. expire：长期无价值/矛盾（直接过期）。
-只输出 JSON：{{"candidates": [{{"action": "correct|merge|expire", "knowledge_id": "<id>", "new_content": "<修正/合并后内容，expire 可省略>", "reason": "<原因>"}}]}}
-最多 10 条。没有需要处理的项目时输出 {{"candidates": []}}。
-
-知识条目：
-{knowledge}
-
-最近片段摘要：
-{summaries}"""
 
 
 def _token_overlap(a: str, b: str) -> float:
@@ -295,12 +283,7 @@ async def _generate_draft(ctx, cluster: list[str]) -> dict:
     from agent.core.loop import AgentLoop
     from agent.tools.registry import ToolRegistry
 
-    prompt = (
-        "以下是用户多次提出的相似请求，请生成一个工具定义草案（帮助用户自动化这类任务）。"
-        "只输出 JSON：{\"name\": \"snake_case 工具名\", \"description\": \"人话说明\", "
-        "\"parameters\": {\"type\": \"object\", \"properties\": {}}}\n请求：\n"
-        + "\n".join(f"- {c[:200]}" for c in cluster)
-    )
+    prompt = TOOL_AUTOMATION_PROMPT + "\n".join(f"- {c[:200]}" for c in cluster)
     loop = AgentLoop(adapter, ToolRegistry(), ctx.bus, max_iterations=1, token_budget=20_000)
     result = await loop.run(prompt)
     import re

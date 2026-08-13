@@ -12,6 +12,13 @@ import json
 import uuid
 from typing import Any, Awaitable, Callable
 
+from agent.prompts import (
+    SUBAGENT_PROMPT,
+    SUBAGENT_RESULT_LONG,
+    SUBAGENT_STARTED,
+    TOOL_AWAIT_TASK_DESC,
+    TOOL_READ_TASK_RESULT_DESC,
+)
 from agent.tools.base import Tool, ToolResult
 from agent.tools.memory_search import MemorySearchTool
 from agent.tools.registry import ToolRegistry
@@ -67,11 +74,7 @@ class SubagentTool(Tool):
             return res if res is not None else ToolResult(ok=False, error="subagent task failed")
         return ToolResult(
             ok=True,
-            content=(
-                f"子任务已启动，task_id={task_id}。"
-                "可调用 await_task(task_id=..., notify=false) 取回结果，"
-                "或 await_task(task_id=..., notify=true) 在完成时自动唤起。"
-            ),
+            content=SUBAGENT_STARTED.format(task_id=task_id),
         )
 
     async def _execute(self, task_id: str, adapter, kwargs: dict) -> ToolResult:
@@ -81,11 +84,10 @@ class SubagentTool(Tool):
         sub_registry = ToolRegistry()
         if self.retriever is not None and "memory_search" in self.toolset:
             sub_registry.register(MemorySearchTool(self.retriever))
-        prompt = (
-            f"任务：{self.definition.description}\n"
-            f"参数：{json.dumps(kwargs, ensure_ascii=False)}\n\n"
-            f"输出要求：最终回复不超过 {budget.output_limit_chars} 字，"
-            "直接给出结论与要点，不要复述任务或参数。"
+        prompt = SUBAGENT_PROMPT.format(
+            description=self.definition.description,
+            kwargs=json.dumps(kwargs, ensure_ascii=False),
+            limit=budget.output_limit_chars,
         )
         loop = AgentLoop(
             adapter,
@@ -109,21 +111,15 @@ class SubagentTool(Tool):
         preview = content[:DEFAULT_RESULT_PREVIEW_CHARS]
         return ToolResult(
             ok=True,
-            content=(
-                f"【子任务结果较长（共 {len(content)} 字符）】\n"
-                f"预览：{preview}\n"
-                f'完整内容请调用 read_task_result(task_id="{task_id}", offset=0, limit=4000) 分段读取。'
+            content=SUBAGENT_RESULT_LONG.format(
+                length=len(content), preview=preview, task_id=task_id
             ),
         )
 
 
 class AwaitTaskTool(Tool):
     name = "await_task"
-    description = (
-        "等待或取回异步子任务的结果。task_id 来自子工具调用的返回。"
-        "notify=true 时：任务完成会自动唤起主 agent（若本轮已结束，主 agent 会主动回复你任务结果）；"
-        "notify=false 时：阻塞等待直到任务完成或超时。"
-    )
+    description = TOOL_AWAIT_TASK_DESC
     parameters = {
         "type": "object",
         "properties": {
@@ -168,11 +164,7 @@ class AwaitTaskTool(Tool):
 
 class ReadTaskResultTool(Tool):
     name = "read_task_result"
-    description = (
-        "分段读取超长子任务结果的完整内容。"
-        "当 await_task 返回的结果包含「子任务结果较长」提示时使用；"
-        "offset/limit 控制读取区间，单次最多读取 4000 字符。"
-    )
+    description = TOOL_READ_TASK_RESULT_DESC
     parameters = {
         "type": "object",
         "properties": {

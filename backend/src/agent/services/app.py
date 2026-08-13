@@ -32,6 +32,15 @@ from agent.memory.index import IndexBuilder
 from agent.memory.ingest import MemoryWriter
 from agent.selector.selector import Selector
 from agent.storage.settings import SettingsStore
+from agent.prompts import (
+    INJECT_FOCUS_SECTION,
+    INJECT_SHORT_TERM_SECTION,
+    NOTIFY_SUBTASK_DONE,
+    TOPIC_NOTE_CURRENT,
+    TOPIC_NOTE_NEW_REASON,
+    TOPIC_NOTE_RELATED,
+    TOPIC_NOTE_SWITCH,
+)
 from agent.services.injection import BudgetConfig, InjectionAssembler, InjectionBudget, InjectionPayload
 from agent.services.retrieval import Retriever
 from agent.tools.builtin import EchoTool, NowTool
@@ -328,9 +337,8 @@ class AppContext:
         result = record.result
         preview = (result.content or "")[:300] if result else ""
         status = "完成" if (result and result.ok) else "失败"
-        return (
-            f"【子任务完成】工具 {record.tool}（{task_id}）已{status}。\n"
-            f"结果预览：{preview}"
+        return NOTIFY_SUBTASK_DONE.format(
+            tool=record.tool, task_id=task_id, status=status, preview=preview
         )
 
     async def _handle_subagent_notify(self, task_id: str, record) -> None:
@@ -415,7 +423,7 @@ class AppContext:
                 title = "当前片段"
             else:
                 title = (frag.summary or "")[:20] or "历史片段"
-        parts = [f"【聚焦片段·{title}】"]
+        parts = [INJECT_FOCUS_SECTION.format(title=title)]
         if frag.summary:
             parts.append(frag.summary)
         for m in self.fragments.messages(fragment_id)[:3]:
@@ -455,7 +463,7 @@ class AppContext:
                         source="memory",
                         surface="topic_short",
                         item_id=frag.id,
-                        text=f"【短期·当前话题】\n{text}",
+                        text=INJECT_SHORT_TERM_SECTION.format(text=text),
                         tokens=estimate_tokens(text),
                     )
                 )
@@ -476,19 +484,24 @@ class AppContext:
         """Human-readable topic context injected so the main model can act on it."""
         parts: list[str] = []
         node = self.topics.nodes.get_topic(topic_id)
-        parts.append(f"当前话题：{node.name if node else topic_id}（{topic_id}）")
+        parts.append(
+            TOPIC_NOTE_CURRENT.format(name=node.name if node else topic_id, topic_id=topic_id)
+        )
         if prediction.aux_topic_ids:
             names = []
             for tid in prediction.aux_topic_ids:
                 n = self.topics.nodes.get_topic(tid)
                 names.append(f"「{n.name if n else tid}」（{tid}）")
-            parts.append("相关话题：" + "、".join(names))
+            parts.append(TOPIC_NOTE_RELATED.format(names="、".join(names)))
         if prediction.suggested_switch and prediction.main_topic_id:
             n = self.topics.nodes.get_topic(prediction.main_topic_id)
             score = prediction.scores.get(prediction.main_topic_id, 0.0)
             parts.append(
-                f"建议切换到「{n.name if n else prediction.main_topic_id}」"
-                f"（{prediction.main_topic_id}，相似度 {score:.2f}），可调用 switch_topic"
+                TOPIC_NOTE_SWITCH.format(
+                    name=n.name if n else prediction.main_topic_id,
+                    topic_id=prediction.main_topic_id,
+                    score=score,
+                )
             )
         return "；".join(parts)
 
@@ -596,7 +609,7 @@ class AppContext:
         reason = ""
         if prediction.is_new_topic_candidate:
             top = max(prediction.scores.values(), default=0.0)
-            reason = f"最高话题相似度 {top:.2f} 低于阈值，无匹配话题"
+            reason = TOPIC_NOTE_NEW_REASON.format(top=top)
         payload = self.build_injection(
             message,
             topic_id=topic,

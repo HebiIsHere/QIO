@@ -12,6 +12,7 @@ import sqlite3
 from typing import Callable
 
 from agent.knowledge.lifecycle import KnowledgeService
+from agent.prompts import TOOL_CORRECT_KNOWLEDGE_DESC
 from agent.tools.base import Tool, ToolResult
 
 MAX_CANDIDATES = 8
@@ -19,12 +20,7 @@ MAX_CANDIDATES = 8
 
 class CorrectKnowledgeTool(Tool):
     name = "correct_knowledge"
-    description = (
-        "纠正或删除知识条目。当用户明确否定、修正之前的事实/偏好/决定时调用。"
-        "content 填用户纠正所涉及的知识内容（可从注入的记忆中引用）；"
-        "修正用 new_content 给出新内容；否定该知识用 delete=true；"
-        "返回多个候选时用 candidate_index 选择。"
-    )
+    description = TOOL_CORRECT_KNOWLEDGE_DESC
     parameters = {
         "type": "object",
         "properties": {

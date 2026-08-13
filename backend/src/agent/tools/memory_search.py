@@ -4,16 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.prompts import TOOL_MEMORY_SEARCH_DESC
 from agent.services.retrieval import Retriever
 from agent.tools.base import Tool, ToolResult
 
 
 class MemorySearchTool(Tool):
     name = "memory_search"
-    description = (
-        "检索历史记忆。当需要回忆之前的对话、用户偏好、决定或事实时使用；"
-        "返回相关记忆片段及其来源话题。"
-    )
+    description = TOOL_MEMORY_SEARCH_DESC
     parameters = {
         "type": "object",
         "properties": {
