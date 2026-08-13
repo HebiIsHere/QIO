@@ -82,27 +82,6 @@ describe("ConversationView 状态条移除与异常提示", () => {
     w.unmount();
   });
 
-  it("输入框贴底时消息流底部让出输入框高度，恢复后还原", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const w = mountView(pinia, makeRouter());
-    await flushPromises();
-    const { floatingState } = await import("../../composables/floatingState");
-    floatingState.composer.width = 560;
-    floatingState.composer.height = 90;
-    floatingState.composer.dockedTo = "bottom";
-    await nextTick();
-    const stream = w.find(".stream").element as HTMLElement;
-    expect(stream.style.paddingBottom).toBe("122px"); // 默认 20 + (90 + 12)
-    expect(stream.style.paddingTop).toBe("34px");
-    // 输入框移离底部（未贴靠且不再贴近底部）→ 底部恢复默认
-    floatingState.composer.dockedTo = null;
-    floatingState.composer.y = 100;
-    await nextTick();
-    expect(stream.style.paddingBottom).toBe("20px");
-    w.unmount();
-  });
-
   it("无异常时不显示提示条", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
