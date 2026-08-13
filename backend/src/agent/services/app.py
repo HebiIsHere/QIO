@@ -84,7 +84,7 @@ class AppContext:
             ),
             fallback_recall=BM25Backend(),
         )
-        self.retriever = Retriever(self.selector, self.topics)
+        self.retriever = Retriever(self.selector, self.topics, conn=conn)
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
         self.registry = ToolRegistry()
         self.registry.register(EchoTool())
@@ -724,7 +724,15 @@ class AppContext:
             candidates = await extract_entity_cards(adapter, [dict(m) for m in messages])
             card_svc = EntityCardService(self.conn)
             for cand in candidates:
-                card_svc.upsert(cand)
+                card = card_svc.upsert(cand)
+                # 实体卡向量（供向量检索）；embedding 不可用时静默跳过
+                try:
+                    if self.embedding is not None and hasattr(self.embedding, "save_entity_card_vector"):
+                        self.embedding.save_entity_card_vector(
+                            card.id, f"{card.name}：{card.summary or ''}"
+                        )
+                except Exception:
+                    pass
         except Exception:
             logger.warning("entity card extraction failed", exc_info=True)
 

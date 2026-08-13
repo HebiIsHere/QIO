@@ -185,6 +185,38 @@ class OnnxEmbeddingBackend(RecallBackend):
 
     # -- topic vectors ----------------------------------------------------
 
+    def save_entity_card_vector(self, card_id: str, text: str) -> None:
+        """Embed an entity card (summary/name) into embeddings doc_type=entity_card."""
+        if not self.available():
+            return
+        vectors = self.embed_texts([text])
+        if vectors is None:
+            return
+        self._save("entity_card", [card_id], vectors)
+
+    def entity_card_search(self, query: str, top_k: int = 3) -> list[tuple[str, float]]:
+        """检索与查询最相似的实体卡向量；返回 [(card_id, score)]，低于阈值过滤。"""
+        if not self.available():
+            return []
+        rows = self.conn.execute(
+            "SELECT ref_id, vector FROM embeddings WHERE doc_type = 'entity_card'"
+        ).fetchall()
+        if not rows:
+            return []
+        q = self.embed_texts([query])
+        if q is None:
+            return []
+        ids = [r["ref_id"] for r in rows]
+        matrix = np.stack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
+        scores = cosine_similarity(q[0], matrix)
+        order = np.argsort(-scores)
+        out: list[tuple[str, float]] = []
+        for i in order[:top_k]:
+            s = float(scores[i])
+            if s >= 0.25:
+                out.append((ids[i], s))
+        return out
+
     def update_topic_vector(self, topic_id: str, text: str) -> None:
         """Embed a topic's fingerprint text and persist it (cold-start refresh)."""
         if not self.available():

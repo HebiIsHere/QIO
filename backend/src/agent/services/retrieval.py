@@ -61,10 +61,12 @@ class Retriever:
         selector: Selector,
         topics: TopicService,
         config: RetrievalConfig | None = None,
+        conn=None,
     ) -> None:
         self.selector = selector
         self.topics = topics
         self.config = config or RetrievalConfig()
+        self.conn = conn
 
     # -- first hop: topic fingerprints ------------------------------------
 
@@ -94,7 +96,9 @@ class Retriever:
             anchor_topic_id=anchor_topic_id,
         )
         if not candidates:
-            return []
+            # 无记忆候选时仍允许实体卡命中（交流锚点）
+            entity_hits = self._entity_card_hits(query, top_k=top_k)
+            return [hit for _, hit in entity_hits[:top_k]]
         fingerprint_scores = self._fingerprint_scores(query)
         max_relevance = max((c.score for c in candidates), default=1.0) or 1.0
 
@@ -133,8 +137,65 @@ class Retriever:
                     ),
                 )
             )
+        # 实体卡检索（交流锚点）：名称命中（强）+ 向量命中（增强）
+        entity_hits = self._entity_card_hits(query, top_k=top_k)
+        ranked = ranked + entity_hits
         ranked.sort(key=lambda pair: (-pair[0], pair[1].doc_id))
         return [hit for _, hit in ranked[:top_k]]
+
+    def _entity_card_hits(self, query: str, top_k: int) -> list[tuple[float, RetrievalHit]]:
+        """消息命中实体卡（名称/别名，或向量相似）→ 返回卡内容作为检索命中。"""
+        if self.conn is None:
+            return []
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(self.conn)
+        hits: list[tuple[float, RetrievalHit]] = []
+        seen: set[str] = set()
+        # 名称命中（强信号）
+        for card in svc.match_cards(query):
+            seen.add(card.id)
+            hits.append(
+                (
+                    1.0,
+                    RetrievalHit(
+                        doc_id=card.id,
+                        topic_id=None,
+                        title=card.name,
+                        preview=card.summary or "",
+                        score=1.0,
+                        sources=("entity_card",),
+                        token_estimate=0,
+                        created_at=None,
+                    ),
+                )
+            )
+        # 向量命中（增强；无向量/embedding 时跳过）
+        recall = self.selector.recall
+        if recall is not None and hasattr(recall, "entity_card_search") and recall.available():
+            for card_id, score in recall.entity_card_search(query, top_k=top_k):
+                if card_id in seen:
+                    continue
+                card = svc.get(card_id)
+                if card is None:
+                    continue
+                seen.add(card_id)
+                hits.append(
+                    (
+                        score,
+                        RetrievalHit(
+                            doc_id=card.id,
+                            topic_id=None,
+                            title=card.name,
+                            preview=card.summary or "",
+                            score=score,
+                            sources=("entity_card",),
+                            token_estimate=0,
+                            created_at=None,
+                        ),
+                    )
+                )
+        return hits[:top_k]
 
     # -- internals --------------------------------------------------------
 
