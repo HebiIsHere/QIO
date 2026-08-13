@@ -52,9 +52,8 @@ function onScroll() {
   const el = containerRef.value;
   if (!el) return;
   followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  // 接近底部时吸附到底：最新消息停在输入框上方（由底部滚动缓冲保证）
-  const max = el.scrollHeight - el.clientHeight;
-  if (el.scrollTop >= max - 24) el.scrollTop = max;
+  // 不吸附：滚动到底自然停在最底（底部滚动缓冲保证最新消息停在输入框上方），
+  // 轻微滚动不会被拉回原位。
 }
 
 /** 右下角输入框高度观察：消息流底部滚动缓冲 = 输入框高 + 间距，
