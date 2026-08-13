@@ -1,25 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useSessionStore } from "../stores/session";
-import { useFloatingWindow } from "../composables/useFloatingWindow";
 
 const session = useSessionStore();
 const text = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
-const elRef = ref<HTMLElement | null>(null);
-const headerRef = ref<HTMLElement | null>(null);
-
-// 浮动窗口：贴边（默认底部居中），header（topicbar）为拖拽把手
-const float = useFloatingWindow(elRef, {
-  id: "composer",
-  dockMode: "edge",
-  defaultPos: (el, vp) => ({
-    x: Math.max(4, Math.round((vp.width - el.offsetWidth) / 2)),
-    y: vp.height - el.offsetHeight - 18,
-  }),
-  dragHandle: headerRef,
-});
-
 
 const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
 
@@ -47,37 +32,15 @@ function onKeydown(e: KeyboardEvent) {
 
 function autosize() {
   const el = inputRef.value;
-  const root = elRef.value;
-  if (!el || !root) return;
-  // 记录增高前的底边（布局 top + 当前高度）
-  const prevTop = parseFloat(root.style.top) || 0;
-  const prevBottom = prevTop + root.offsetHeight;
+  if (!el) return;
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
-  const newH = root.offsetHeight;
-  // 顶部贴靠保持顶边（向下生长）；其余情况保持底边不动（向上生长），并钳制在视口内
-  if (float.entry.dockedTo !== "top") {
-    const top = Math.max(4, prevBottom - newH);
-    if (top !== prevTop) {
-      root.style.top = `${top}px`;
-      float.entry.y = top; // 同步共享状态（互斥避让用实时位置）
-    }
-  }
-  // 尺寸变化同步到共享状态，互斥避让用实时高度
-  float.entry.height = newH;
-  float.entry.width = root.offsetWidth;
 }
 </script>
 
 <template>
-  <div
-    ref="elRef"
-    class="composer"
-    :class="[
-      float.entry.dockedTo ? 'dock-' + float.entry.dockedTo : '',
-    ]"
-  >
-    <div ref="headerRef" class="topicbar fw-handle">
+  <div class="composer bubble">
+    <div class="topicbar">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
       <span class="spacer"></span>
@@ -106,22 +69,22 @@ function autosize() {
         <span v-else>↑</span>
       </button>
     </div>
-
   </div>
 </template>
 
 <style scoped>
-/* 浮动窗口卡片（Task B）：定位由 useFloatingWindow 用 left/top 像素控制 */
+/* 贴右下角大气泡：浅色表面 + 玫红描边 + 右下小圆角，固定不可拖动 */
 .composer {
   position: fixed;
+  right: 16px;
+  bottom: 16px;
   z-index: 12;
   width: min(560px, calc(100vw - 32px));
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
+  border: 1.5px solid var(--accent);
+  border-radius: 18px 18px 4px 18px;
   padding: 10px 18px 16px;
   background: var(--bg-surface);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
-  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
 }
 .topicbar {
   display: flex;
@@ -129,16 +92,6 @@ function autosize() {
   gap: 10px;
   margin-bottom: 8px;
   font-size: 12px;
-}
-/* 拖拽把手 */
-.fw-handle {
-  cursor: grab;
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: none;
-}
-.fw-handle:active {
-  cursor: grabbing;
 }
 .tname {
   font-weight: 600;

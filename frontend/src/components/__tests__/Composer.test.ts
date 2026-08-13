@@ -26,14 +26,13 @@ beforeEach(() => {
   mocks.sendTurn.mockClear();
 });
 
-describe("Composer 输入框（浮动窗口）", () => {
-  it("渲染：header 拖拽把手 + textarea + 发送按钮（记忆滑块已移除）", async () => {
+describe("Composer 输入框（右下角大气泡）", () => {
+  it("渲染：气泡 + textarea + 发送按钮（无拖拽把手）", async () => {
     const { w } = await mountComposer();
     expect(w.find(".composer").exists()).toBe(true);
-    expect(w.find(".topicbar.fw-handle").exists()).toBe(true);
+    expect(w.find(".topicbar.fw-handle").exists()).toBe(false);
     expect(w.find("textarea.qio-input").exists()).toBe(true);
     expect(w.find(".send-btn").exists()).toBe(true);
-    expect(w.find(".strength-slider").exists()).toBe(false);
     w.unmount();
   });
 
@@ -50,59 +49,21 @@ describe("Composer 输入框（浮动窗口）", () => {
     void pinia;
   });
 
-  it("贴边：初始位置为底部居中（像素 left/top，position fixed）", async () => {
+  it("固定气泡：无拖拽把手、无浮动系统内联定位（left/top）", async () => {
     const { w } = await mountComposer();
     const el = w.find(".composer").element as HTMLElement;
-    expect(el.style.position).toBe("fixed");
-    expect(el.style.left).toMatch(/^\d+px$/);
-    expect(el.style.top).toMatch(/^\d+px$/);
-    w.unmount();
-  });
-  it("增高时向上生长：保持底边不动（非顶部贴靠）", async () => {
-    const { w } = await mountComposer();
-    const root = w.find(".composer").element as HTMLElement;
-    const ta = w.find("textarea").element as HTMLTextAreaElement;
-    root.style.top = "500px";
-    // 模拟布局：offsetHeight 随 textarea 高度级联（jsdom 无布局，用 getter 模拟）
-    Object.defineProperty(ta, "scrollHeight", { value: 160, configurable: true });
-    Object.defineProperty(root, "offsetHeight", {
-      get: () => parseInt(ta.style.height, 10) || 120,
-      configurable: true,
-    });
-    await w.find("textarea").setValue("多行\n内容\n内容");
-    expect(root.style.top).toBe("460px"); // 底边 500+120=620 保持，向上生长 160-120=40
+    expect(el.classList.contains("bubble")).toBe(true);
+    expect(el.getAttribute("style")).toBeNull(); // 不再由 useFloatingWindow 写 left/top 内联定位
+    expect(w.find(".topicbar.fw-handle").exists()).toBe(false);
     w.unmount();
   });
 
-  it("顶部贴靠时增高向下生长（保持顶边不动）", async () => {
-    const { floatingState } = await import("../../composables/floatingState");
+  it("增高时设置 textarea 高度（bottom 定位自然向上生长）", async () => {
     const { w } = await mountComposer();
-    floatingState.composer.dockedTo = "top";
-    const root = w.find(".composer").element as HTMLElement;
     const ta = w.find("textarea").element as HTMLTextAreaElement;
-    root.style.top = "10px";
     Object.defineProperty(ta, "scrollHeight", { value: 160, configurable: true });
-    Object.defineProperty(root, "offsetHeight", {
-      get: () => parseInt(ta.style.height, 10) || 120,
-      configurable: true,
-    });
     await w.find("textarea").setValue("多行\n内容\n内容");
-    expect(root.style.top).toBe("10px");
-    floatingState.composer.dockedTo = null;
-    w.unmount();
-  });
-
-  it("贴边隐藏已移除：hidden 状态不影响输入框显示（无 fw-hidden）", async () => {
-    const { floatingState } = await import("../../composables/floatingState");
-    const { w } = await mountComposer();
-    floatingState.composer.hidden = true;
-    floatingState.composer.dockedTo = "top";
-    await nextTick();
-    const el = w.find(".composer");
-    expect(el.classes()).not.toContain("fw-hidden");
-    floatingState.composer.hidden = false;
-    floatingState.composer.dockedTo = null;
-    await nextTick();
+    expect(ta.style.height).toBe("160px");
     w.unmount();
   });
 });
