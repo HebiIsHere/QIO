@@ -298,10 +298,22 @@ async function revoke(keyId: string) {
 async function test(keyId: string) {
   try {
     const result = await api.testCredential(keyId);
-    notice.value = `${keyId}: ${result.probe.mode} (${result.probe.detail.slice(0, 80)})`;
+    showToast(`${keyId}: ${result.probe.mode}（${result.probe.detail.slice(0, 60)}）`, "ok");
   } catch (e) {
-    error.value = (e as Error).message;
+    showToast((e as Error).message, "err");
   }
+}
+
+/** 测试凭据结果：以浮现又消失的 toast 气泡展示 */
+const toast = ref<{ text: string; kind: "ok" | "err" } | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+function showToast(text: string, kind: "ok" | "err") {
+  if (toastTimer) clearTimeout(toastTimer);
+  toast.value = { text, kind };
+  toastTimer = setTimeout(() => {
+    toast.value = null;
+    toastTimer = null;
+  }, 2600);
 }
 
 function onBudgetInput(v: number | null) {
@@ -519,6 +531,10 @@ onMounted(() => {
         <p v-if="windowNotice" class="msg ok">{{ windowNotice }}</p>
       </section>
     </div>
+
+    <transition name="toast">
+      <div v-if="toast" class="toast" :class="toast.kind" role="status">{{ toast.text }}</div>
+    </transition>
   </div>
 </template>
 
@@ -581,5 +597,32 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .pref .txt .d { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
 .pref .ctl { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; }
 .num { width: 90px; }
+/* 测试凭据提示：浮现又消失的 toast 气泡 */
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  max-width: 340px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  color: var(--text-primary);
+}
+.toast.ok { border-color: var(--success); color: var(--success); }
+.toast.err { border-color: var(--danger); color: var(--danger); }
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
 </style>
 

@@ -1,9 +1,37 @@
-import { describe, expect, it, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
 import SettingsView from "../SettingsView.vue";
 import { getTheme, setTheme } from "../../utils/theme";
 import { floatingState, resetFloatPositions } from "../../composables/floatingState";
+
+vi.mock("../../services/api", () => ({
+  api: {
+    listCredentials: vi.fn(async () => ({ credentials: [] })),
+    createCredential: vi.fn(async () => ({ ok: true, key_id: "k1", version: 2 })),
+    revokeCredential: vi.fn(async () => ({ ok: true })),
+    testCredential: vi.fn(async () => ({ key_id: "k1", probe: { mode: "native", detail: "连接正常" } })),
+    getMemorySettings: vi.fn(async () => ({ fragment_max_messages: 10 })),
+    updateMemorySettings: vi.fn(async () => ({ fragment_max_messages: 10 })),
+    getMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
+    updateMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
+    runMaintenance: vi.fn(async () => ({ started: false })),
+    openai: {},
+  },
+}));
+
+const CRED = {
+  key_id: "k1",
+  version: 2,
+  tags: ["chat"],
+  endpoint: "https://api.openai.com/v1",
+  default_model: "gpt-4o-mini",
+  scope: ["default"],
+  budget: 40,
+  budget_used: 12,
+  status: "active",
+  note: "测试",
+};
 
 beforeEach(() => {
   localStorage.clear();
@@ -36,6 +64,21 @@ describe("SettingsView", () => {
     await w.find(".create").trigger("click");
     await nextTick();
     expect(w.find(".msg.err").text()).toContain("请先粘贴 API Key");
+    w.unmount();
+  });
+
+  it("测试凭据：结果以一闪而过的 toast 气泡展示（成功）", async () => {
+    const { api } = await import("../../services/api");
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
+    const w = mount(SettingsView, { global: { stubs: { RouterLink: true } } });
+    await flushPromises();
+    const testBtn = w.findAll(".cred-card .qio-btn")[0];
+    await testBtn.trigger("click");
+    await flushPromises();
+    const toast = w.find(".toast");
+    expect(toast.exists()).toBe(true);
+    expect(toast.classes()).toContain("ok");
+    expect(toast.text()).toContain("native");
     w.unmount();
   });
   it("偏好页主题开关切换主题并持久化 data-theme/qio-theme", async () => {
