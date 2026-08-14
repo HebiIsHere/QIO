@@ -441,6 +441,8 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
 
         rel_type = str(body.get("type") or "").strip()
         target = str(body.get("target") or "").strip()
+        if not rel_type or not target:
+            raise HTTPException(status_code=400, detail="type and target required")
         svc = EntityCardService(ctx.conn)
         card = svc.get(entity_id)
         if card is None:

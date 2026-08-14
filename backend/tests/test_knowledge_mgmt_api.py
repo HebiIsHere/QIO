@@ -88,3 +88,6 @@ def test_entity_manage_api(tmp_path):
     r = client.post(f"/api/entities/{card.id}/revise", json={"summary": "我妈妈，退休教师，住成都"})
     assert r.status_code == 200
     assert r.json()["entity"]["summary"] == "我妈妈，退休教师，住成都"
+
+    assert client.post(f"/api/entities/{card.id}/relations", json={"type": "", "target": "x"}).status_code == 400
+    assert client.request("DELETE", f"/api/entities/{card.id}/relations", json={"type": "", "target": "x"}).status_code == 400
