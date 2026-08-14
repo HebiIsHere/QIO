@@ -16,6 +16,7 @@ from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 from agent.credentials.store import MemoryKeyring
 from agent.tools.base import Tool, ToolResult
+from agent.tools.registry import ToolRegistry
 
 
 @pytest.fixture()
@@ -66,7 +67,8 @@ def test_migration_v6_tool_calls_table(db_conn: sqlite3.Connection):
 def test_agent_loop_records_tool_trace(db_conn: sqlite3.Connection):
     traces: list[dict] = []
     bus = EventBus()
-    registry = type("R", (), {"specs": lambda self: [], "execute": lambda self, c: EchoTool2().run()})()
+    registry = ToolRegistry()
+    registry.register(EchoTool2())
 
     loop = AgentLoop(
         ScriptedAdapter(), registry, bus,

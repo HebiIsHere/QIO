@@ -1,9 +1,13 @@
-"""Agent loop state machine.
+﻿"""Agent loop state machine.
 
 States: PLANNING -> (TOOL_EXEC -> OBSERVING -> PLANNING) | DONE
 Termination: no tool calls requested, or budget exhausted (STOPPED unless
 force_continue). Tool failures are isolated per call (WARNING events).
 Memory hooks are placeholders until M6/M7.
+
+工具执行走 ToolRegistry 的执行管线（tool/start → pre/execute/post → tool/result
+→ tool/end）：本循环在构造时把内部事件转发为 SSE 的 TOOL_START/TOOL_END，
+并在 tool/result 监听器里执行 tool_trace 审计；turn 结束时卸载监听器。
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any, Callable
 
 from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completion
 from agent.api.events import EventType, make_event
@@ -67,6 +72,61 @@ class AgentLoop:
         self._notices: list[str] = []
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
+        self._disposers: list[Callable[[], None]] = []
+        self._bind_pipeline()
+
+    # -- pipeline wiring ---------------------------------------------------
+
+    def _bind_pipeline(self) -> None:
+        """把内部工具事件转发到 SSE，并在 tool/result 上做审计。"""
+        register = getattr(self.registry, "register_policy", None)
+        if register is None:
+            return
+        self._disposers.append(register("tool/start", self._on_pipeline_start))
+        self._disposers.append(register("tool/end", self._on_pipeline_end))
+        if self.tool_trace is not None:
+            self._disposers.append(register("tool/result", self._on_pipeline_result))
+
+    def dispose(self) -> None:
+        """卸载本轮注册的管线监听器。"""
+        for disposer in self._disposers:
+            try:
+                disposer()
+            except Exception:  # noqa: BLE001 - cleanup must never break the turn
+                logger.warning("pipeline disposer failed", exc_info=True)
+        self._disposers.clear()
+
+    async def _on_pipeline_start(self, data: dict) -> None:
+        await self._emit(
+            EventType.TOOL_START,
+            {"tool": data.get("tool"), "arguments": data.get("arguments", {})},
+        )
+
+    async def _on_pipeline_end(self, data: dict) -> None:
+        await self._emit(
+            EventType.TOOL_END,
+            {
+                "tool": data.get("tool"),
+                "ok": data.get("ok"),
+                "error": data.get("error"),
+                "content_preview": data.get("content_preview", ""),
+            },
+        )
+
+    async def _on_pipeline_result(self, data: dict) -> None:
+        result = data.get("result")
+        if self.tool_trace is None or result is None:
+            return
+        call = data.get("call")
+        try:
+            self.tool_trace({
+                "tool_name": data.get("tool"),
+                "arguments": getattr(call, "arguments", {}),
+                "ok": result.ok,
+                "result": result.content,
+            })
+        except Exception:  # noqa: BLE001 - tracing must not break the loop
+            logger.warning("tool trace failed for %s", data.get("tool"), exc_info=True)
 
     def push_notice(self, text: str) -> None:
         """Queue a system notice; injected before the next PLANNING step."""
@@ -84,6 +144,12 @@ class AgentLoop:
     # -- main entry -------------------------------------------------------
 
     async def run(self, user_message: str) -> TurnResult:
+        try:
+            return await self._run(user_message)
+        finally:
+            self.dispose()
+
+    async def _run(self, user_message: str) -> TurnResult:
         messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
         self._warnings = []
         await self._emit(
@@ -111,7 +177,7 @@ class AgentLoop:
             self.budget.consume_tokens(self._tokens_of(completion))
             self.budget.consume_iteration()
 
-            # ???????native ????????????????????????????
+            # native 模式：模型在工具调用前先说话时，把内容作为 interim 事件推给前端
             if (
                 self.adapter.mode == AdapterMode.NATIVE
                 and completion.tool_calls
@@ -128,37 +194,12 @@ class AgentLoop:
                 final_content = completion.message.content
                 break
 
-            # TOOL_EXEC + OBSERVING
+            # TOOL_EXEC + OBSERVING（执行走 registry 管线，事件由监听器转发）
             phase = LoopPhase.TOOL_EXEC
-            # append the assistant message (with tool_calls) so the
-            # following tool messages are valid per the API contract
             messages.append(completion.message)
             for call in completion.tool_calls:
                 tool_calls_made += 1
-                await self._emit(
-                    EventType.TOOL_START,
-                    {"tool": call.name, "arguments": call.arguments},
-                )
                 result = await self.registry.execute(call)
-                await self._emit(
-                    EventType.TOOL_END,
-                    {
-                        "tool": call.name,
-                        "ok": result.ok,
-                        "error": result.error,
-                        "content_preview": result.content[:200],
-                    },
-                )
-                if self.tool_trace is not None:
-                    try:
-                        self.tool_trace({
-                            "tool_name": call.name,
-                            "arguments": call.arguments,
-                            "ok": result.ok,
-                            "result": result.content,
-                        })
-                    except Exception:  # noqa: BLE001 - tracing must not break the loop
-                        logger.warning("tool trace failed for %s", call.name, exc_info=True)
                 if not result.ok:
                     self._warn(f"tool {call.name} failed: {result.error}")
                 messages.append(

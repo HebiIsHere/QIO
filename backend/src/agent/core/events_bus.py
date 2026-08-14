@@ -24,14 +24,28 @@ class InternalEventBus:
     def __init__(self) -> None:
         self._listeners: dict[str, list[Handler]] = {}
 
-    def on(self, event: str, handler: Handler) -> Callable[[], None]:
-        """注册监听器；返回可逆卸载函数。"""
-        self._listeners.setdefault(event, []).append(handler)
+    def on(
+        self,
+        event: str,
+        handler: Handler,
+        *,
+        before: Handler | None = None,
+    ) -> Callable[[], None]:
+        """注册监听器；返回可逆卸载函数。
+
+        before：若提供，把 handler 插入到该既有监听器之前（用于让策略包住
+        默认执行器等 terminal 处理）。
+        """
+        listeners = self._listeners.setdefault(event, [])
+        if before is not None and before in listeners:
+            listeners.insert(listeners.index(before), handler)
+        else:
+            listeners.append(handler)
 
         def dispose() -> None:
-            listeners = self._listeners.get(event)
-            if listeners and handler in listeners:
-                listeners.remove(handler)
+            current = self._listeners.get(event)
+            if current and handler in current:
+                current.remove(handler)
 
         return dispose
 
@@ -41,7 +55,7 @@ class InternalEventBus:
             await _maybe_await(handler(*args, **kwargs))
 
     # -- waterfall：顺序中间件，有返回值，可短路 ----------------------------
-    async def waterfall(self, event: str, value: Any, *args: Any) -> Any:
+    async def waterfall(self, event: str, value: Any, *args: Any, **kwargs: Any) -> Any:
         handlers = list(self._listeners.get(event, []))
 
         async def dispatch(index: int, current: Any) -> Any:
@@ -57,7 +71,9 @@ class InternalEventBus:
                 box["v"] = result
                 return result
 
-            outcome = await _maybe_await(handlers[index](current, *args, next=next_value))
+            outcome = await _maybe_await(
+                handlers[index](current, *args, next=next_value, **kwargs)
+            )
             if delegated:
                 return box.get("v", current)
             return outcome  # 未调 next → 短路
@@ -75,8 +91,8 @@ class InternalEventBus:
             await asyncio.gather(*(_run(h) for h in handlers))
 
     # -- serial：顺序等待，值依次传递 ----------------------------------------
-    async def serial(self, event: str, value: Any, *args: Any) -> Any:
+    async def serial(self, event: str, value: Any, *args: Any, **kwargs: Any) -> Any:
         current = value
         for handler in list(self._listeners.get(event, [])):
-            current = await _maybe_await(handler(current, *args))
+            current = await _maybe_await(handler(current, *args, **kwargs))
         return current
