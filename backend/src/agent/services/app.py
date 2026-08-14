@@ -483,6 +483,23 @@ class AppContext:
             )
         return items
 
+    def _entity_card_topics(self, message: str) -> list[str]:
+        """消息命中的实体卡，其关联话题（mention 边 topic→entity，软信号用）。"""
+        from agent.entities.cards import EntityCardService
+
+        svc = EntityCardService(self.conn)
+        topics: set[str] = set()
+        for card in svc.match_cards(message):
+            if not card.node_id:
+                continue
+            rows = self.conn.execute(
+                "SELECT src FROM edges WHERE dst = ? AND type = 'mention'",
+                (card.node_id,),
+            ).fetchall()
+            for r in rows:
+                topics.add(r["src"])
+        return list(topics)
+
     def _topic_note(self, topic_id: str, prediction) -> str:
         """Human-readable topic context injected so the main model can act on it."""
         parts: list[str] = []
@@ -594,6 +611,41 @@ class AppContext:
 
         # topic prediction (embedding judgement; execution stays with main model)
         prediction = self.predictor.predict(message, current_topic_id=topic)
+        # 归属分类（联想激活/抑制 + 实体软信号）
+        from agent.services.affinity import (
+            NEW_TOPIC_STRICT,
+            TopicMode,
+            classify,
+            related_topics,
+        )
+
+        decision = classify(message, prediction, topic, self._entity_card_topics(message))
+        if decision.mode == TopicMode.IN_TOPIC:
+            aux_topic_ids = related_topics(self.conn, topic, top_n=2)
+        elif decision.mode == TopicMode.SWITCH and decision.switch_to:
+            aux_topic_ids = [decision.switch_to]
+        else:
+            aux_topic_ids = []
+        new_topic_candidate = False
+        reason = ""
+        if decision.mode == TopicMode.NEW_TOPIC:
+            if decision.closest_score < NEW_TOPIC_STRICT or prediction.is_new_topic_candidate:
+                new_topic_candidate = True
+                reason = f"最高话题相似度 {decision.closest_score:.2f} 低于阈值，无匹配话题"
+        # 软提示：最相似话题引导切换 + 实体关联话题
+        extra_note = ""
+        if decision.mode == TopicMode.NEW_TOPIC and decision.closest_topic and decision.closest_score >= NEW_TOPIC_STRICT:
+            n = self.topics.nodes.get_topic(decision.closest_topic)
+            extra_note += (
+                f"；最相似话题「{n.name if n else decision.closest_topic}」"
+                f"（相似度 {decision.closest_score:.2f}），如确属新话题需人工确认"
+            )
+        if decision.entity_hints:
+            names = []
+            for tid in decision.entity_hints:
+                n = self.topics.nodes.get_topic(tid)
+                names.append(n.name if n else tid)
+            extra_note += "；提及实体关联话题：" + "、".join(names)
 
         # write user message into memory domain first
         msg_id, _ = self.memory.append_message(
@@ -611,10 +663,8 @@ class AppContext:
         # short-term memory of the current topic (open fragment + recent summaries)
         short_term = self._short_term_items(topic)
         topic_note = self._topic_note(topic, prediction)
-        reason = ""
-        if prediction.is_new_topic_candidate:
-            top = max(prediction.scores.values(), default=0.0)
-            reason = TOPIC_NOTE_NEW_REASON.format(top=top)
+        if extra_note:
+            topic_note = topic_note + extra_note
         # 实体卡命中（交流锚点）：消息提到经验性实体 → 高优注入卡文本
         from agent.entities.cards import EntityCardService
 
@@ -623,12 +673,12 @@ class AppContext:
         payload = self.build_injection(
             message,
             topic_id=topic,
-            aux_topic_ids=prediction.aux_topic_ids,
+            aux_topic_ids=aux_topic_ids,
             entity_ids=self._topic_entity_ids(topic),
             user_node_id=self._user_root_id(),
             model=adapter.model,
             short_term=short_term,
-            new_topic_candidate=prediction.is_new_topic_candidate,
+            new_topic_candidate=new_topic_candidate,
             new_topic_reason=reason,
             topic_note=topic_note,
             focus_block=focus_block,
