@@ -101,6 +101,21 @@ export const useEventStore = defineStore("events", {
           );
           break;
         }
+        case "ANCHOR": {
+          // agent 切换/创建话题后实时更新锚点（输入框/消息流话题行随之切换）
+          const d = event.data as Record<string, unknown>;
+          const topicId = String(d.topic_id ?? "");
+          if (!topicId) break;
+          const fragmentId = (d.fragment_id as string | null) ?? null;
+          const fragmentTitle = (d.fragment_title as string | null) ?? null;
+          session.setAnchor(
+            topicId,
+            fragmentId,
+            (d.topic_name as string | null) ?? null,
+            fragmentId ? { id: fragmentId, title: fragmentTitle } : undefined,
+          );
+          break;
+        }
         case "SUBAGENT_STATUS": {
           const d = event.data as Record<string, unknown>;
           const status = String(d.status ?? "?");

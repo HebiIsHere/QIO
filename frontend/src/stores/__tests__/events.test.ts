@@ -69,6 +69,42 @@ describe("events store 路由", () => {
     expect(last?.presentation).toEqual({ title: "检索记忆", status: "ok", summary: "命中 3 条" });
   });
 
+  it("ANCHOR 事件 → 实时更新会话锚点（话题名/片段）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "ANCHOR",
+      id: "e5",
+      ts: "2026-08-10T00:00:00Z",
+      data: {
+        topic_id: "topic_new",
+        topic_name: "养鹅",
+        fragment_id: "frag_1",
+        fragment_title: "鹅的日常",
+      },
+    });
+    expect(session.currentTopicId).toBe("topic_new");
+    expect(session.topicName).toBe("养鹅");
+    expect(session.anchorFragmentId).toBe("frag_1");
+    expect(session.anchorFragment?.title).toBe("鹅的日常");
+  });
+
+  it("ANCHOR 事件空 topic_id 不更新", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "ANCHOR",
+      id: "e6",
+      ts: "2026-08-10T00:00:00Z",
+      data: { topic_id: "", topic_name: "x" },
+    });
+    expect(session.currentTopicId).toBeNull();
+  });
+
   it("TOOL_END 无 presentation → 工具消息 presentation 为 null", () => {
     const pinia = createPinia();
     setActivePinia(pinia);

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SSE event protocol client.
  * Wire format: event: <TYPE>\ndata: {json}\n\n
  */
@@ -25,6 +25,7 @@ export const EVENT_TYPES = [
   "TOOL_START",
   "TOOL_END",
   "ASSISTANT",
+  "ANCHOR",
   "WARNING",
   "ERROR",
 ] as const;

@@ -97,6 +97,8 @@ class AppContext:
         self.services.register("approvals", self.approvals)
         self.services.register("embedding", self.embedding)
         self.registry = ToolRegistry(approvals=self.approvals, services=self.services)
+        # agent 切换/创建话题后，实时把新锚点广播给前端（ANCHOR SSE 事件）
+        self.registry.register_policy("tool/result", self._on_tool_anchor_result)
         self.registry.register(EchoTool())
         self.registry.register(NowTool())
         self.registry.register(MemorySearchTool(self.retriever))
@@ -158,6 +160,43 @@ class AppContext:
         self.tool_router = ToolRouter(embedding=self.embedding)
         self.maintenance = MaintenanceScheduler(self)
         self._refresh_selector()
+
+    # -- anchor 事件广播 --------------------------------------------------
+
+    async def _on_tool_anchor_result(self, data: dict) -> None:
+        """switch_topic / create_topic 成功后广播新锚点（tool/result 策略）。"""
+        tool_name = data.get("tool")
+        result = data.get("result")
+        if tool_name not in ("switch_topic", "create_topic"):
+            return
+        if result is None or not getattr(result, "ok", False):
+            return
+        await self._publish_anchor_event()
+
+    async def _publish_anchor_event(self) -> None:
+        """把当前 active 锚点（话题 + 片段）以 ANCHOR 事件推给前端。"""
+        from agent.api.events import EventType, make_event
+
+        anchor = AnchorService(self.conn).get_active()
+        if anchor is None or not anchor.topic_id:
+            return
+        node = self.topics.nodes.get_topic(anchor.topic_id)
+        topic_name = node.name if node is not None else anchor.topic_id
+        fragment_title = None
+        if anchor.fragment_id:
+            frag = self.fragments.get(anchor.fragment_id)
+            fragment_title = frag.title if frag is not None else None
+        await self.bus.publish(
+            make_event(
+                EventType.ANCHOR,
+                {
+                    "topic_id": anchor.topic_id,
+                    "topic_name": topic_name,
+                    "fragment_id": anchor.fragment_id,
+                    "fragment_title": fragment_title,
+                },
+            )
+        )
 
     def _build_embedding_backend(self):
         """Pick the recall backend: remote embeddings (BYOK) > local ONNX > None."""
@@ -621,6 +660,7 @@ class AppContext:
         active_anchor = AnchorService(self.conn).get_active()
         if active_anchor is None or active_anchor.topic_id != topic:
             AnchorService(self.conn).set_active(topic)
+            await self._publish_anchor_event()
 
         # topic prediction (embedding judgement; execution stays with main model)
         prediction = self.predictor.predict(message, current_topic_id=topic)

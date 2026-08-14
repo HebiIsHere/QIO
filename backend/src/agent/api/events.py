@@ -27,6 +27,7 @@ class EventType(str, Enum):
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
     ASSISTANT = "ASSISTANT"
+    ANCHOR = "ANCHOR"
     WARNING = "WARNING"
     ERROR = "ERROR"
 
