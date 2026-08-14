@@ -1,4 +1,4 @@
-﻿/* QIO 设计令牌 v2（2026-08-09 规范）——全应用唯一颜色来源 */
+/* QIO 设计令牌 v2（2026-08-09 规范）——全应用唯一颜色来源 */
 :root {
   /* 暗色「暗紫晶」默认 */
   --bg-base:#171015; --bg-surface:#1e161c; --bg-elevated:#261d24; --bg-inset:#130d12;
@@ -29,4 +29,3 @@
   --border-danger:#d14f4f; --success-soft:rgba(47,158,110,.15); --danger-soft:rgba(209,79,79,.15); --warning-soft:rgba(176,137,47,.15);
   --approve-bg:#2a6e4f; --reject-bg:#6e2a2a;
 }
-

@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import KnowledgePanel from "../KnowledgePanel.vue";
@@ -81,12 +81,12 @@ describe("KnowledgePanel", () => {
     await flushPromises();
     await w.find(".k-create-open").trigger("click");
     await w.find(".k-category").trigger("click");
-    await w.findAll(".k-category .opt").find((o) => o.text() === "常识")!.trigger("click");
-    await w.find(".k-content").setValue("SQLite 支持 WAL");
+    await w.findAll(".k-category .opt").find((o) => o.text() === "目标")!.trigger("click");
+    await w.find(".create-form textarea").setValue("SQLite 支持 WAL");
     await w.find(".create-form").trigger("submit");
     await flushPromises();
     expect(mocks.apiMock.createKnowledge).toHaveBeenCalledWith({
-      category: "general_fact",
+      category: "goal",
       content: "SQLite 支持 WAL",
       topic_id: null,
     });
@@ -101,5 +101,3 @@ describe("KnowledgePanel", () => {
     w.unmount();
   });
 });
-
-

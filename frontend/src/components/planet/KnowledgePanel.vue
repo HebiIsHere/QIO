@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { api, type KnowledgeItem } from "../../services/api";
 import QInput from "../ui/QInput.vue";
@@ -199,7 +199,9 @@ onMounted(load);
 <style scoped>
 .kpanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; }
 .row { display: flex; align-items: center; gap: 8px; }
-.row.grow > * { flex: 1; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
+.grow { flex: 1; }
 .filters { margin-bottom: 4px; }
 .create-form { border: 1px dashed var(--accent); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .k-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -211,5 +213,6 @@ onMounted(load);
 .link:hover { text-decoration: underline; }
 .k-state.pending_review { background: var(--warning-soft); color: var(--warning); }
 .k-state.active { background: var(--success-soft); color: var(--success); }
+.hint { font-size: 12px; color: var(--text-muted); }
 .toast { position: fixed; top: 20px; right: 20px; z-index: 60; padding: 10px 16px; border-radius: 12px; font-size: 12.5px; background: var(--bg-surface); border: 1px solid var(--border-strong); color: var(--text-primary); }
 </style>
