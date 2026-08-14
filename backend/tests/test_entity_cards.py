@@ -60,3 +60,27 @@ def test_format_card_includes_template(db_conn: sqlite3.Connection):
     assert "【实体·我家的鹅】" in text
     assert "健康状况" in text
     assert "属于" in text
+
+def test_to_dict_structured_with_relations(db_conn):
+    from agent.entities.cards import (
+        EntityAttribute,
+        EntityCardCandidate,
+        EntityCardService,
+        EntityRelation,
+    )
+
+    svc = EntityCardService(db_conn)
+    card = svc.upsert(EntityCardCandidate(
+        name="王翠华",
+        aliases=["我妈"],
+        kind="家人",
+        summary="我妈妈，退休教师",
+        attributes=[EntityAttribute(key="职业", value="退休教师", confidence=0.9)],
+        relations=[EntityRelation(target="王翠华的弟弟", type="属于")],
+    ))
+    d = svc.to_dict(card)
+    assert d["name"] == "王翠华"
+    assert d["aliases"] == ["我妈"]
+    assert d["attributes"] == [{"key": "职业", "value": "退休教师", "confidence": 0.9}]
+    assert d["relations"] == [{"type": "属于", "target": "王翠华的弟弟"}]
+    assert d["node_id"] == card.node_id

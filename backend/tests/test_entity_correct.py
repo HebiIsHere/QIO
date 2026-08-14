@@ -62,7 +62,7 @@ def test_api_list_revise_revoke(db_conn: sqlite3.Connection, settings):
     with TestClient(app) as client:
         listed = client.get("/api/entities")
         assert listed.status_code == 200
-        assert any("我家的鹅" in e for e in listed.json()["entities"])
+        assert any(e["name"] == "我家的鹅" for e in listed.json()["entities"])
 
         card = EntityCardService(db_conn).find_by_name("我家的鹅")
         resp = client.post(
@@ -70,7 +70,7 @@ def test_api_list_revise_revoke(db_conn: sqlite3.Connection, settings):
             json={"summary": "嘴巴已康复"},
         )
         assert resp.status_code == 200
-        assert "嘴巴已康复" in resp.json()["entity"]
+        assert resp.json()["entity"]["summary"] == "嘴巴已康复"
 
         revoke = client.post(f"/api/entities/{card.id}/revoke")
         assert revoke.status_code == 200

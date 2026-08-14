@@ -305,3 +305,28 @@ class EntityCardService:
             (card.node_id, card.node_id, card.node_id),
         ).fetchall()
         return "；".join(f"{r['type']}→{r['name']}" for r in rows)
+
+    def to_dict(self, card: EntityCard) -> dict:
+        """结构化输出：管理页/API 用（含属性、关系、node_id）。"""
+        relations: list[dict] = []
+        if card.node_id:
+            rows = self.conn.execute(
+                "SELECT e.type, n.name FROM edges e JOIN nodes n ON "
+                "n.id = CASE WHEN e.dst = ? THEN e.src ELSE e.dst END "
+                "WHERE (e.src = ? OR e.dst = ?) AND e.type NOT IN ('mention')",
+                (card.node_id, card.node_id, card.node_id),
+            ).fetchall()
+            relations = [{"type": r["type"], "target": r["name"]} for r in rows]
+        return {
+            "id": card.id,
+            "node_id": card.node_id,
+            "name": card.name,
+            "aliases": card.aliases,
+            "kind": card.kind,
+            "summary": card.summary,
+            "attributes": card.attributes,
+            "relations": relations,
+            "state": card.state,
+            "created_at": card.created_at,
+            "updated_at": card.updated_at,
+        }

@@ -51,3 +51,40 @@ def test_knowledge_manage_flow(tmp_path):
     assert client.post("/api/knowledge", json={"category": "nope", "content": "x"}).status_code == 400
     assert client.post("/api/knowledge", json={"category": "goal", "content": "  "}).status_code == 400
     assert client.post("/api/knowledge/ghost/verify").status_code == 404
+
+def test_entity_manage_api(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from agent.api.server import create_app
+    from agent.config import Settings
+    from agent.entities.cards import EntityAttribute, EntityCardCandidate, EntityCardService
+    from agent.storage.db import connect
+    from agent.storage.migrate import apply_migrations
+
+    conn = connect(tmp_path / "app.db")
+    apply_migrations(conn)
+    svc = EntityCardService(conn)
+    card = svc.upsert(EntityCardCandidate(
+        name="王翠华",
+        attributes=[EntityAttribute(key="职业", value="退休教师")],
+    ))
+    app = create_app(Settings(data_dir=tmp_path), conn)
+    client = TestClient(app)
+
+    r = client.get("/api/entities")
+    assert r.status_code == 200
+    row = r.json()["entities"][0]
+    assert row["id"] == card.id and row["name"] == "王翠华"
+    assert isinstance(row["attributes"], list)
+
+    r = client.post(f"/api/entities/{card.id}/relations", json={"type": "属于", "target": "王翠华的弟弟"})
+    assert r.status_code == 200
+    assert any(x["type"] == "属于" and x["target"] == "王翠华的弟弟" for x in r.json()["entity"]["relations"])
+
+    r = client.request("DELETE", f"/api/entities/{card.id}/relations", json={"type": "属于", "target": "王翠华的弟弟"})
+    assert r.status_code == 200
+    assert all(x["type"] != "属于" for x in r.json()["entity"]["relations"])
+
+    r = client.post(f"/api/entities/{card.id}/revise", json={"summary": "我妈妈，退休教师，住成都"})
+    assert r.status_code == 200
+    assert r.json()["entity"]["summary"] == "我妈妈，退休教师，住成都"

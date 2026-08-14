@@ -378,7 +378,7 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         from agent.entities.cards import EntityCardService
 
         svc = EntityCardService(ctx.conn)
-        return {"entities": [svc.format_card(c) for c in svc.list_active()]}
+        return {"entities": [svc.to_dict(c) for c in svc.list_active()]}
 
     @app.get("/api/entities/{entity_id}")
     async def get_entity(entity_id: str) -> dict:
@@ -388,7 +388,7 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         card = svc.get(entity_id)
         if card is None:
             raise HTTPException(status_code=404, detail="entity not found")
-        return {"entity": svc.format_card(card)}
+        return {"entity": svc.to_dict(card)}
 
     @app.post("/api/entities/{entity_id}/revise")
     async def revise_entity(entity_id: str, body: dict) -> dict:
@@ -409,7 +409,7 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             summary=summary,
             kind=kind,
         )
-        return {"ok": True, "entity": svc.format_card(updated) if updated else None}
+        return {"ok": True, "entity": svc.to_dict(updated) if updated else None}
 
     @app.post("/api/entities/{entity_id}/revoke")
     async def revoke_entity(entity_id: str) -> dict:
@@ -419,6 +419,34 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         if not svc.revoke(entity_id):
             raise HTTPException(status_code=404, detail="entity not found or already archived")
         return {"ok": True, "entity_id": entity_id}
+
+    @app.post("/api/entities/{entity_id}/relations")
+    async def add_entity_relation(entity_id: str, body: dict) -> dict:
+        from agent.entities.cards import EntityCardService
+
+        rel_type = str(body.get("type") or "").strip()
+        target = str(body.get("target") or "").strip()
+        if not rel_type or not target:
+            raise HTTPException(status_code=400, detail="type and target required")
+        svc = EntityCardService(ctx.conn)
+        card = svc.get(entity_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        updated = svc.add_relation(entity_id, target, rel_type)
+        return {"ok": True, "entity": svc.to_dict(updated) if updated else None}
+
+    @app.delete("/api/entities/{entity_id}/relations")
+    async def remove_entity_relation(entity_id: str, body: dict) -> dict:
+        from agent.entities.cards import EntityCardService
+
+        rel_type = str(body.get("type") or "").strip()
+        target = str(body.get("target") or "").strip()
+        svc = EntityCardService(ctx.conn)
+        card = svc.get(entity_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        updated = svc.remove_relation(entity_id, target, rel_type)
+        return {"ok": True, "entity": svc.to_dict(updated) if updated else None}
 
     @app.post("/api/knowledge/{knowledge_id}/revoke")
     async def revoke_knowledge(knowledge_id: str) -> dict:
