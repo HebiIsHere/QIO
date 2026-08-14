@@ -250,6 +250,8 @@ function focusTopicFromPanel(topicId: string) {
   planet.focusTopic(topicId, positions.value);
   panelOpen.value = true;
   switchTab("topic");
+  // 同话题时 watcher 会跳过 reload，这里强制刷新以拿到面板编辑后的最新数据
+  if (detail.value?.topic_id === topicId) loadDetail(topicId);
 }
 
 /** 话题详情实体标签 → 打开实体页签并自动展开该实体卡（按 node_id 匹配） */

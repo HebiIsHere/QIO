@@ -391,6 +391,30 @@ describe("星球记忆中心面板", () => {
     w.unmount();
   });
 
+  it("同话题 focusTopicFromPanel：知识面板点击关联话题强制刷新详情", async () => {
+    mocks.apiMock.listKnowledge.mockResolvedValue({
+      knowledge: [{
+        id: "kn_1", category: "goal", state: "active", content: "测试知识",
+        confidence: null, topic_id: "t1", topic_name: "话题 A", created_at: "", updated_at: "",
+      }],
+    });
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1"; // 锚点 → 挂载即加载 t1 详情
+    const w = mountView(pinia, true);
+    await flushPromises();
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledTimes(1);
+    // 切到知识页签，点击与当前详情同话题的关联话题链接
+    await w.find(".tab-knowledge").trigger("click");
+    await flushPromises();
+    await w.find(".k-topic-link").trigger("click");
+    await flushPromises();
+    // watcher 会跳过同话题 reload，这里应强制刷新 → 再次请求详情
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledTimes(2);
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenLastCalledWith("t1");
+    w.unmount();
+  });
+
   it("实体标签可点击 → 打开实体页签", async () => {
     mocks.apiMock.getTopicDetail.mockResolvedValue({
       ...DETAIL,

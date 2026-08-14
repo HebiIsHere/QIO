@@ -2,11 +2,12 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import KnowledgePanel from "../KnowledgePanel.vue";
-import type { KnowledgeItem } from "../../../services/api";
+import type { KnowledgeItem, TopicFingerprint } from "../../../services/api";
 
 const mocks = vi.hoisted(() => ({
   apiMock: {
     listKnowledge: vi.fn<() => Promise<{ knowledge: KnowledgeItem[] }>>(async () => ({ knowledge: [] })),
+    listTopics: vi.fn<() => Promise<{ topics: TopicFingerprint[] }>>(async () => ({ topics: [] })),
     createKnowledge: vi.fn(async () => ({ ok: true, knowledge: {} as KnowledgeItem })),
     verifyKnowledge: vi.fn(async () => ({ ok: true, knowledge: { id: "", state: "active" } })),
     rejectKnowledge: vi.fn(async () => ({ ok: true, knowledge: { id: "", state: "draft" } })),
@@ -32,6 +33,7 @@ function mountPanel() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.apiMock.listKnowledge.mockResolvedValue({ knowledge: [K] });
+  mocks.apiMock.listTopics.mockResolvedValue({ topics: [] });
 });
 
 describe("KnowledgePanel", () => {
@@ -76,18 +78,38 @@ describe("KnowledgePanel", () => {
     w.unmount();
   });
 
-  it("手动新建调用 createKnowledge", async () => {
+  it("手动新建调用 createKnowledge（可选关联话题）", async () => {
+    mocks.apiMock.listTopics.mockResolvedValue({
+      topics: [{ topic_id: "t9", title: "测试话题", keywords: [], fragment_count: 0, last_activity: null, summary_preview: null }],
+    });
     const w = mountPanel();
     await flushPromises();
     await w.find(".k-create-open").trigger("click");
     await w.find(".k-category").trigger("click");
     await w.findAll(".k-category .opt").find((o) => o.text() === "目标")!.trigger("click");
+    await w.find(".k-topic").trigger("click");
+    await w.findAll(".k-topic .opt").find((o) => o.text() === "测试话题")!.trigger("click");
     await w.find(".create-form textarea").setValue("SQLite 支持 WAL");
     await w.find(".create-form").trigger("submit");
     await flushPromises();
     expect(mocks.apiMock.createKnowledge).toHaveBeenCalledWith({
       category: "goal",
       content: "SQLite 支持 WAL",
+      topic_id: "t9",
+    });
+    w.unmount();
+  });
+
+  it("手动新建不选话题：topic_id 为 null", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    await w.find(".k-create-open").trigger("click");
+    await w.find(".create-form textarea").setValue("无话题知识");
+    await w.find(".create-form").trigger("submit");
+    await flushPromises();
+    expect(mocks.apiMock.createKnowledge).toHaveBeenCalledWith({
+      category: "general_fact",
+      content: "无话题知识",
       topic_id: null,
     });
     w.unmount();

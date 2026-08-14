@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { api, type KnowledgeItem } from "../../services/api";
+import { api, type KnowledgeItem, type TopicFingerprint } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 import QSelect from "../ui/QSelect.vue";
 
@@ -23,18 +23,23 @@ const STATE_LABELS: Record<string, string> = {
 };
 
 const items = ref<KnowledgeItem[]>([]);
+const topics = ref<TopicFingerprint[]>([]);
 const q = ref("");
 const category = ref("");
 const state = ref("");
 const loading = ref(false);
 const toast = ref("");
 const creating = ref(false);
-const createForm = ref({ category: "general_fact", content: "", topic_id: null as string | null });
+const createForm = ref({ category: "general_fact", content: "", topic_id: "" });
 const editingId = ref<string | null>(null);
 const editDraft = ref("");
 
 const categoryOptions = Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }));
 const stateOptions = Object.entries(STATE_LABELS).map(([value, label]) => ({ value, label }));
+const topicOptions = computed(() => [
+  { value: "", label: "不关联话题" },
+  ...topics.value.map((t) => ({ value: t.topic_id, label: t.title })),
+]);
 
 const filtered = computed(() => {
   const query = q.value.trim().toLowerCase();
@@ -61,6 +66,15 @@ async function load() {
     showToast("加载知识失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadTopics() {
+  try {
+    const r = await api.listTopics();
+    topics.value = r.topics;
+  } catch (e) {
+    console.error("[knowledge] load topics failed:", e);
   }
 }
 
@@ -119,14 +133,14 @@ async function saveEdit(k: KnowledgeItem) {
 
 function openCreate() {
   creating.value = true;
-  createForm.value = { category: "general_fact", content: "", topic_id: null };
+  createForm.value = { category: "general_fact", content: "", topic_id: "" };
 }
 
 async function submitCreate() {
   const content = createForm.value.content.trim();
   if (!content) return;
   try {
-    await api.createKnowledge({ category: createForm.value.category, content, topic_id: createForm.value.topic_id });
+    await api.createKnowledge({ category: createForm.value.category, content, topic_id: createForm.value.topic_id || null });
     creating.value = false;
     showToast("已创建并生效");
     await load();
@@ -136,7 +150,10 @@ async function submitCreate() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadTopics();
+});
 </script>
 
 <template>
@@ -152,6 +169,7 @@ onMounted(load);
 
     <form v-if="creating" class="create-form" @submit.prevent="submitCreate">
       <QSelect v-model="createForm.category" :options="categoryOptions" class="k-category" />
+      <QSelect v-model="createForm.topic_id" :options="topicOptions" class="k-topic" />
       <textarea v-model="createForm.content" class="qio-input k-content" placeholder="知识内容…"></textarea>
       <div class="row">
         <button class="qio-btn mini" type="button" @click="creating = false">取消</button>
