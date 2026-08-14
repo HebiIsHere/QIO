@@ -30,6 +30,9 @@ class Tool(ABC):
     # 为 True 时可在同一轮 tool_calls 中与其他并发安全工具并行执行
     # （AgentLoop 以 max_parallel_tools 分组 asyncio.gather）；默认 False 串行。
     is_concurrency_safe: bool = False
+    # 声明的服务依赖名列表；ToolRegistry.register 时经 ServiceRegistry.attach
+    # 自动注入到实例属性（缺省忽略，不报错）。
+    inject: list[str] = []
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:

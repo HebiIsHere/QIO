@@ -1,4 +1,4 @@
-"""Application context: wires storage, credentials, adapters, tools, loop.
+﻿"""Application context: wires storage, credentials, adapters, tools, loop.
 
 Built once per process; the HTTP layer pulls what it needs from it.
 """
@@ -89,7 +89,14 @@ class AppContext:
         from agent.tools.approval import ApprovalService
 
         self.approvals = ApprovalService(bus)
-        self.registry = ToolRegistry()
+        from agent.tools.services import ServiceRegistry
+
+        self.services = ServiceRegistry()
+        self.services.register("retriever", self.retriever)
+        self.services.register("predictor", self.predictor)
+        self.services.register("approvals", self.approvals)
+        self.services.register("embedding", self.embedding)
+        self.registry = ToolRegistry(approvals=self.approvals, services=self.services)
         self.registry.register(EchoTool())
         self.registry.register(NowTool())
         self.registry.register(MemorySearchTool(self.retriever))
@@ -103,6 +110,7 @@ class AppContext:
         from agent.tools.task_manager import TaskManager
 
         self.task_manager = TaskManager(bus)
+        self.services.register("task_manager", self.task_manager)
         self.registry.register(
             AwaitTaskTool(self.task_manager, notify_handler=self._handle_subagent_notify)
         )
@@ -140,6 +148,7 @@ class AppContext:
         from agent.storage.tool_store import ToolStore
 
         self.tool_store = ToolStore(conn)
+        self.services.register("tool_store", self.tool_store)
         self._restore_tools()
         self._active_loop = None
         self._notify_turn = False

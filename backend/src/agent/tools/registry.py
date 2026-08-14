@@ -32,7 +32,7 @@ EVENT_UNREGISTERED = "tool/unregistered"
 
 
 class ToolRegistry:
-    def __init__(self, approvals=None, internal_bus: Any = None) -> None:
+    def __init__(self, approvals=None, internal_bus: Any = None, services: Any = None) -> None:
         # 惰性导入：agent.core.events_bus 会触发 agent.core 包初始化（含 loop），
         # 顶层导入会造成 registry ↔ core 循环。
         from agent.core.events_bus import InternalEventBus
@@ -40,6 +40,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self.events = internal_bus or InternalEventBus()
         self._approvals = approvals
+        self.services = services
         # 默认执行器是 execute 管线的 terminal；策略经 register_policy 插到它之前。
         self._executor = self._default_execute
         self.events.on(EVENT_EXECUTE, self._executor)
@@ -53,6 +54,8 @@ class ToolRegistry:
         if tool.name in self._tools:
             raise ValueError(f"tool already registered: {tool.name}")
         self._tools[tool.name] = tool
+        if self.services is not None:
+            self.services.attach(tool)
 
         def dispose() -> None:
             self.unregister(tool.name)
