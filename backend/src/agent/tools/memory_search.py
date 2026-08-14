@@ -1,4 +1,4 @@
-"""memory_search tool: lets the main loop query historical memory."""
+﻿"""memory_search tool: lets the main loop query historical memory."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ class MemorySearchTool(Tool):
         },
         "required": ["query"],
     }
+    # 只读检索：可与其他并发安全工具并行执行
+    is_concurrency_safe = True
 
     def __init__(self, retriever: Retriever) -> None:
         self.retriever = retriever

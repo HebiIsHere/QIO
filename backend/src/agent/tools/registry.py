@@ -101,7 +101,11 @@ class ToolRegistry:
     # -- pipeline -----------------------------------------------------------
 
     async def execute(self, call: ToolCall) -> ToolResult:
-        """Run one tool call through the pipeline; never raises."""
+        """Run one tool call through the pipeline; never raises.
+
+        外部取消（Task.cancel）会把 CancelledError 转成 aborted 失败结果，
+        保证 per-call 隔离，并让 TOOL_END(ok=false, aborted) 照常发出。
+        """
         tool = self._tools.get(call.name)
         if tool is None:
             result = ToolResult(
@@ -116,22 +120,25 @@ class ToolRegistry:
             "arguments": dict(call.arguments),
             "call": call,
         }
-        await self.events.emit(EVENT_START, {"tool": call.name, "arguments": call.arguments})
+        try:
+            await self.events.emit(EVENT_START, {"tool": call.name, "arguments": call.arguments})
 
-        outcome = await self.events.waterfall(EVENT_PRE_EXECUTE, ctx)
-        if isinstance(outcome, ToolResult):
-            result = outcome
-        else:
-            ctx = outcome if isinstance(outcome, dict) else ctx
-            result = await self.events.waterfall(EVENT_EXECUTE, ctx)
-            if isinstance(result, ToolResult):
-                result = await self.events.waterfall(EVENT_POST_EXECUTE, result)
-                result = self._validate_output(tool, result)
+            outcome = await self.events.waterfall(EVENT_PRE_EXECUTE, ctx)
+            if isinstance(outcome, ToolResult):
+                result = outcome
             else:
-                result = ToolResult(
-                    ok=False,
-                    error=f"tool/execute produced unexpected value: {type(result).__name__}",
-                )
+                ctx = outcome if isinstance(outcome, dict) else ctx
+                result = await self.events.waterfall(EVENT_EXECUTE, ctx)
+                if isinstance(result, ToolResult):
+                    result = await self.events.waterfall(EVENT_POST_EXECUTE, result)
+                    result = self._validate_output(tool, result)
+                else:
+                    result = ToolResult(
+                        ok=False,
+                        error=f"tool/execute produced unexpected value: {type(result).__name__}",
+                    )
+        except asyncio.CancelledError:
+            result = ToolResult(ok=False, error=f"tool '{call.name}' aborted (cancelled)")
         await self._finish(call, tool, result)
         return result
 

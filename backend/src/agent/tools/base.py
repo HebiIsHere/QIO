@@ -27,6 +27,9 @@ class Tool(ABC):
     # 输出 JSON Schema（轻量子集：object/string/number/integer/boolean/array/
     # required/properties/items）。执行后校验失败会返回失败结果。
     output_schema: dict[str, Any] | None = None
+    # 为 True 时可在同一轮 tool_calls 中与其他并发安全工具并行执行
+    # （AgentLoop 以 max_parallel_tools 分组 asyncio.gather）；默认 False 串行。
+    is_concurrency_safe: bool = False
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:

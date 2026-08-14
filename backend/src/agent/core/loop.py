@@ -12,6 +12,7 @@ Memory hooks are placeholders until M6/M7.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
@@ -56,6 +57,7 @@ class AgentLoop:
         force_continue: bool = False,
         tool_trace=None,
         tool_selector=None,
+        max_parallel_tools: int = 4,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -72,6 +74,8 @@ class AgentLoop:
         self._notices: list[str] = []
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
+        self.max_parallel_tools = max(1, max_parallel_tools)
+        self._active_tool_tasks: set[asyncio.Task] = set()
         self._disposers: list[Callable[[], None]] = []
         self._bind_pipeline()
 
@@ -128,6 +132,53 @@ class AgentLoop:
             })
         except Exception:  # noqa: BLE001 - tracing must not break the loop
             logger.warning("tool trace failed for %s", data.get("tool"), exc_info=True)
+
+    # -- parallel dispatch & cancellation -----------------------------------
+
+    async def _dispatch_tool_calls(self, calls) -> dict[str, Any]:
+        """并发安全工具并行（受 max_parallel_tools 限制），其余串行。
+
+        返回 {call.id: ToolResult}，顺序无关（调用方按原始顺序回填）。
+        """
+        safe_calls = [
+            c for c in calls
+            if getattr(self.registry.get(c.name), "is_concurrency_safe", False)
+        ]
+        safe_ids = {c.id for c in safe_calls}
+        unsafe_calls = [c for c in calls if c.id not in safe_ids]
+        results: dict[str, Any] = {}
+
+        # 非安全：严格串行（保持顺序）
+        for call in unsafe_calls:
+            results[call.id] = await self._guarded_execute(call)
+
+        if safe_calls:
+            semaphore = asyncio.Semaphore(self.max_parallel_tools)
+
+            async def _run_safe(call):
+                async with semaphore:
+                    return call.id, await self._guarded_execute(call)
+
+            gathered = await asyncio.gather(*(_run_safe(c) for c in safe_calls))
+            for call_id, result in gathered:
+                results[call_id] = result
+        return results
+
+    async def _guarded_execute(self, call) -> Any:
+        """在独立 task 中执行，登记到 _active_tool_tasks 以便 cancel()。"""
+        task = asyncio.current_task()
+        if task is not None:
+            self._active_tool_tasks.add(task)
+        try:
+            return await self.registry.execute(call)
+        finally:
+            if task is not None:
+                self._active_tool_tasks.discard(task)
+
+    def cancel(self) -> None:
+        """取消本轮所有在途工具调用；registry 会把 CancelledError 转成 aborted。"""
+        for task in list(self._active_tool_tasks):
+            task.cancel()
 
     def push_notice(self, text: str) -> None:
         """Queue a system notice; injected before the next PLANNING step."""
@@ -195,12 +246,14 @@ class AgentLoop:
                 final_content = completion.message.content
                 break
 
-            # TOOL_EXEC + OBSERVING（执行走 registry 管线，事件由监听器转发）
+            # TOOL_EXEC + OBSERVING（执行走 registry 管线，事件由监听器转发；
+            # 并发安全工具分组并行，其余串行，结果按原始顺序回填）
             phase = LoopPhase.TOOL_EXEC
             messages.append(completion.message)
+            results = await self._dispatch_tool_calls(completion.tool_calls)
             for call in completion.tool_calls:
                 tool_calls_made += 1
-                result = await self.registry.execute(call)
+                result = results[call.id]
                 if not result.ok:
                     self._warn(f"tool {call.name} failed: {result.error}")
                 messages.append(
