@@ -86,6 +86,9 @@ class AppContext:
         )
         self.retriever = Retriever(self.selector, self.topics, conn=conn)
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
+        from agent.tools.approval import ApprovalService
+
+        self.approvals = ApprovalService(bus)
         self.registry = ToolRegistry()
         self.registry.register(EchoTool())
         self.registry.register(NowTool())
@@ -93,7 +96,9 @@ class AppContext:
         from agent.tools.topic_tools import CreateTopicTool, SwitchTopicTool
 
         self.registry.register(SwitchTopicTool(conn))
-        self.registry.register(CreateTopicTool(conn))
+        self.registry.register(
+            CreateTopicTool(conn, approvals=self.approvals, predictor=self.predictor)
+        )
         from agent.tools.subagent_tool import AwaitTaskTool, ReadTaskResultTool
         from agent.tools.task_manager import TaskManager
 
@@ -112,7 +117,6 @@ class AppContext:
         )
         from agent.tools.dev_workspace import DevWorkspace
 
-        self.approvals = ApprovalService(bus)
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
         self.registry.register(CreateToolTool(self.dev_workspaces))
         self.registry.register(DevWriteFileTool(self.dev_workspaces))

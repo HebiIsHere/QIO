@@ -60,7 +60,7 @@ def test_create_topic_makes_node_anchor_edge(db_conn: sqlite3.Connection):
     anchors = AnchorService(db_conn)
     anchors.set_active(t_a)
     tool = CreateTopicTool(db_conn)
-    result = tool.run_sync(name="量子物理", reason="新话题")
+    result = __import__("asyncio").run(tool.run(name="量子物理", reason="新话题"))
     assert result.ok
     node = db_conn.execute(
         "SELECT id, type, name FROM nodes WHERE type = 'topic' AND name = '量子物理'"
@@ -72,7 +72,7 @@ def test_create_topic_makes_node_anchor_edge(db_conn: sqlite3.Connection):
 
 def test_create_topic_without_anchor(db_conn: sqlite3.Connection):
     tool = CreateTopicTool(db_conn)
-    result = tool.run_sync(name="初始话题", reason="无锚点")
+    result = __import__("asyncio").run(tool.run(name="初始话题", reason="无锚点"))
     assert result.ok
     node = db_conn.execute(
         "SELECT id FROM nodes WHERE type = 'topic' AND name = '初始话题'"
