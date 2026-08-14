@@ -1,6 +1,6 @@
-import { defineStore } from "pinia";
+﻿import { defineStore } from "pinia";
 import { connectEvents, publishTestEvent, type AgentEvent, type EventType } from "../services/events";
-import { useSessionStore } from "./session";
+import { useSessionStore, type ToolPresentation } from "./session";
 import { useApprovalsStore } from "./approvals";
 
 export type ModelMode = "native" | "text" | "unsupported";
@@ -97,6 +97,7 @@ export const useEventStore = defineStore("events", {
             Boolean(d.ok),
             (d.error as string | null) ?? null,
             String(d.content_preview ?? ""),
+            (d.presentation as ToolPresentation | null) ?? null,
           );
           break;
         }

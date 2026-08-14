@@ -24,7 +24,18 @@ class Tool(ABC):
     timeout_ms: int | None = None
     # 为 True 时，执行前会先发起用户审批（approval policy，pre 阶段短路）。
     requires_approval: bool = False
+    # 输出 JSON Schema（轻量子集：object/string/number/integer/boolean/array/
+    # required/properties/items）。执行后校验失败会返回失败结果。
+    output_schema: dict[str, Any] | None = None
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:
         raise NotImplementedError
+
+    # -- 呈现（可选）------------------------------------------------------
+    # 返回 {"title"?, "status"?, "summary"?}；None = 使用默认模板。
+    def present_call(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        return None
+
+    def present_result(self, result: ToolResult) -> dict[str, Any] | None:
+        return None

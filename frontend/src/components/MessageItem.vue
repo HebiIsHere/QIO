@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import { useSessionStore } from "../stores/session";
@@ -13,6 +13,19 @@ const events = useEventStore();
 const tokText = computed(() => `tok ${events.usageTokens.toLocaleString("en-US")}`);
 
 const open = ref(false);
+
+/** 呈现优先：title 兜底工具名 */
+const toolTitle = computed(
+  () => props.message.presentation?.title || props.message.toolName || "工具调用",
+);
+
+/** 呈现优先：status 作为语义状态徽标 */
+const toolStatus = computed(() => props.message.presentation?.status || "");
+
+/** 呈现优先：summary 兜底原始内容预览 */
+const toolSummary = computed(
+  () => props.message.presentation?.summary || props.message.content || "",
+);
 
 function formatTime(iso?: string): string {
   if (!iso) return "";
@@ -45,17 +58,20 @@ const topicLine = computed(() => {
           type="button"
           @click="open = !open"
           :aria-expanded="open"
-          :title="open ? '收起' : '展开 JSON'"
+          :title="open ? '收起' : '展开'"
         >
           <span class="tool-mark" :class="message.toolOk === false ? 'fail' : 'ok'">
             {{ message.toolOk === false ? "✕" : "✓" }}
           </span>
-          <span class="tool-name mono">{{ message.toolName || "工具调用" }}</span>
+          <span class="tool-name mono">{{ toolTitle }}</span>
+          <span v-if="toolStatus" class="tool-status" :class="message.toolOk === false ? 'fail' : 'ok'">
+            {{ toolStatus }}
+          </span>
           <span class="tool-time mono">{{ formatTime(message.createdAt) }} · {{ tokText }}</span>
           <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
         </button>
         <div v-show="open" class="tool-detail">
-          <pre>{{ message.content }}</pre>
+          <pre>{{ toolSummary }}</pre>
           <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
         </div>
       </div>
@@ -185,6 +201,20 @@ const topicLine = computed(() => {
 .tool-name {
   color: var(--text-strong);
   letter-spacing: 0.02em;
+}
+.tool-status {
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+}
+.tool-status.ok {
+  color: var(--success);
+}
+.tool-status.fail {
+  color: var(--danger);
 }
 .tool-time {
   margin-left: auto;

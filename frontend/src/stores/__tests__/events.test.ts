@@ -46,4 +46,41 @@ describe("events store 路由", () => {
     });
     expect(session.messages.length).toBe(0);
   });
+
+  it("TOOL_END 携带 presentation → 工具消息保存呈现", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "TOOL_END",
+      id: "e3",
+      ts: "2026-08-10T00:00:00Z",
+      data: {
+        tool: "memory_search",
+        ok: true,
+        error: null,
+        content_preview: "raw",
+        presentation: { title: "检索记忆", status: "ok", summary: "命中 3 条" },
+      },
+    });
+    const last = session.messages[session.messages.length - 1];
+    expect(last?.role).toBe("tool");
+    expect(last?.presentation).toEqual({ title: "检索记忆", status: "ok", summary: "命中 3 条" });
+  });
+
+  it("TOOL_END 无 presentation → 工具消息 presentation 为 null", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "TOOL_END",
+      id: "e4",
+      ts: "2026-08-10T00:00:00Z",
+      data: { tool: "echo", ok: true, error: null, content_preview: "hi" },
+    });
+    const last = session.messages[session.messages.length - 1];
+    expect(last?.presentation).toBeNull();
+  });
 });

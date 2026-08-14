@@ -1,5 +1,11 @@
-import { defineStore } from "pinia";
+﻿import { defineStore } from "pinia";
 import { api } from "../services/api";
+
+export interface ToolPresentation {
+  title?: string;
+  status?: string;
+  summary?: string;
+}
 
 export interface StreamMessage {
   id: string;
@@ -10,6 +16,8 @@ export interface StreamMessage {
   toolName?: string;
   toolOk?: boolean;
   toolError?: string | null;
+  /** 工具卡呈现（present_call/present_result 合并结果，缺省回退默认模板） */
+  presentation?: ToolPresentation | null;
   /** 记忆注入摘要（MEMORY_INJECT 事件附带，助手消息展示玫红虚线胶囊） */
   memoryInject?: { label: string } | null;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
@@ -66,7 +74,13 @@ export const useSessionStore = defineStore("session", {
         ...(interim ? { interim: true } : {}),
       });
     },
-    pushTool(name: string, ok: boolean, error: string | null, preview: string) {
+    pushTool(
+      name: string,
+      ok: boolean,
+      error: string | null,
+      preview: string,
+      presentation?: ToolPresentation | null,
+    ) {
       this.pushMessage({
         role: "tool",
         content: preview,
@@ -74,6 +88,7 @@ export const useSessionStore = defineStore("session", {
         toolName: name,
         toolOk: ok,
         toolError: error,
+        presentation,
       });
     },
     turnEnded() {

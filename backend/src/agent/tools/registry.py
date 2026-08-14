@@ -6,8 +6,9 @@
     tool/post-execute (waterfall，可处理结果) →
     tool/result (emit，观察/审计) → tool/end (emit)
 
-SSE 事件（TOOL_START/TOOL_END）与审计由 register_policy(...) 注册的监听器
-转发（见 AgentLoop / AppContext）。错误按调用隔离，绝不向上抛出。
+执行后按 tool.output_schema 轻量校验，失败返回失败结果；tool/end 事件携带
+presentation（present_call/present_result 的合并结果）。SSE 事件与审计由
+register_policy(...) 注册的监听器转发（见 AgentLoop / AppContext）。
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ class ToolRegistry:
                 ok=False,
                 error=f"unknown tool '{call.name}' (registered: {sorted(self._tools)})",
             )
-            await self._finish(call, result)
+            await self._finish(call, None, result)
             return result
 
         ctx: dict[str, Any] = {
@@ -107,15 +108,16 @@ class ToolRegistry:
             result = await self.events.waterfall(EVENT_EXECUTE, ctx)
             if isinstance(result, ToolResult):
                 result = await self.events.waterfall(EVENT_POST_EXECUTE, result)
+                result = self._validate_output(tool, result)
             else:
                 result = ToolResult(
                     ok=False,
                     error=f"tool/execute produced unexpected value: {type(result).__name__}",
                 )
-        await self._finish(call, result)
+        await self._finish(call, tool, result)
         return result
 
-    async def _finish(self, call: ToolCall, result: ToolResult) -> None:
+    async def _finish(self, call: ToolCall, tool: Tool | None, result: ToolResult) -> None:
         await self.events.emit(EVENT_RESULT, {"tool": call.name, "call": call, "result": result})
         await self.events.emit(
             EVENT_END,
@@ -124,8 +126,56 @@ class ToolRegistry:
                 "ok": result.ok,
                 "error": result.error,
                 "content_preview": result.content[:200],
+                "presentation": self._present(tool, call, result),
             },
         )
+
+    # -- validation & presentation ------------------------------------------
+
+    def _validate_output(self, tool: Tool, result: ToolResult) -> ToolResult:
+        schema = getattr(tool, "output_schema", None)
+        if not schema:
+            return result
+        if not result.ok:
+            return result
+        try:
+            value = result.content
+            parsed = value
+            if isinstance(value, str):
+                try:
+                    import json
+
+                    parsed = json.loads(value)
+                except (ValueError, TypeError):
+                    parsed = value
+            from agent.tools.schema import validate
+
+            errors = validate(parsed, schema)
+        except Exception as exc:  # noqa: BLE001 - validation must never break the loop
+            logger.warning("output schema validation failed for %s: %s", tool.name, exc)
+            return ToolResult(
+                ok=False,
+                error=f"output schema validation error: {type(exc).__name__}: {exc}",
+            )
+        if errors:
+            return ToolResult(ok=False, error="output schema mismatch: " + "; ".join(errors))
+        return result
+
+    def _present(self, tool: Tool | None, call: ToolCall, result: ToolResult) -> dict[str, Any] | None:
+        if tool is None:
+            return None
+        presentation: dict[str, Any] = {}
+        try:
+            call_present = tool.present_call(dict(call.arguments))
+            if call_present:
+                presentation.update(call_present)
+            result_present = tool.present_result(result)
+            if result_present:
+                presentation.update(result_present)
+        except Exception:  # noqa: BLE001 - presentation must never break execution
+            logger.warning("tool presentation failed for %s", tool.name, exc_info=True)
+            return None
+        return presentation or None
 
     # -- built-in policies --------------------------------------------------
 

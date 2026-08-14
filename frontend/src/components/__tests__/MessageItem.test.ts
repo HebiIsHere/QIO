@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+﻿import { describe, expect, it, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import MessageItem from "../MessageItem.vue";
@@ -70,14 +70,59 @@ describe("MessageItem token 下缀", () => {
   });
 });
 
-  it("interim 助手消息渲染「过程」标签与弱化气泡", () => {
+describe("MessageItem 工具卡呈现", () => {
+  it("无 presentation 时回退默认模板（工具名 + 原始内容）", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const w = mountItem(
-      makeMessage({ role: "assistant", content: "我先查一下仓库", interim: true }),
+      makeMessage({ role: "tool", toolName: "shell", content: "{}", toolOk: true }),
       pinia,
     );
-    expect(w.find(".interim-tag").exists()).toBe(true);
-    expect(w.find(".assist-bubble.interim").exists()).toBe(true);
+    expect(w.find(".tool-name").text()).toBe("shell");
+    expect(w.find(".tool-status").exists()).toBe(false);
+    w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-detail pre").text()).toBe("{}");
     w.unmount();
   });
+
+  it("有 presentation 时优先渲染 title/status/summary", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "memory_search",
+        content: "raw preview",
+        toolOk: true,
+        presentation: { title: "检索记忆", status: "ok", summary: "命中 3 条" },
+      }),
+      pinia,
+    );
+    expect(w.find(".tool-name").text()).toBe("检索记忆");
+    expect(w.find(".tool-status").text()).toBe("ok");
+    w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-detail pre").text()).toBe("命中 3 条");
+    w.unmount();
+  });
+
+  it("失败工具卡呈现 status 标记为 fail 并显示错误", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "ghost",
+        content: "",
+        toolOk: false,
+        toolError: "unknown tool",
+        presentation: { title: "失败工具", status: "fail" },
+      }),
+      pinia,
+    );
+    expect(w.find(".tool-name").text()).toBe("失败工具");
+    expect(w.find(".tool-status.fail").exists()).toBe(true);
+    w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-error").text()).toBe("unknown tool");
+    w.unmount();
+  });
+});

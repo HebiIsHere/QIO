@@ -110,6 +110,7 @@ class AgentLoop:
                 "ok": data.get("ok"),
                 "error": data.get("error"),
                 "content_preview": data.get("content_preview", ""),
+                "presentation": data.get("presentation"),
             },
         )
 
