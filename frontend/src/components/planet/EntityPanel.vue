@@ -70,7 +70,7 @@ async function saveCard() {
   try {
     const r = await api.reviseEntity(opened.value.id, {
       summary: draft.value.summary.trim(),
-      kind: draft.value.kind.trim() || undefined,
+      kind: draft.value.kind.trim(),
       aliases: draft.value.aliases,
       attributes: draft.value.attributes,
     });
@@ -206,7 +206,7 @@ onMounted(async () => {
           <textarea v-model="draft.summary" class="qio-input e-summary"></textarea>
         </label>
         <label class="field"><span class="label">类型</span>
-          <input v-model="draft.kind" class="qio-input" />
+          <input v-model="draft.kind" class="qio-input e-kind" />
         </label>
 
         <div class="field"><span class="label">别名</span>

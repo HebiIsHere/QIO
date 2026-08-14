@@ -118,4 +118,19 @@ describe("EntityPanel", () => {
     expect(w.text()).toContain("退休教师");
     w.unmount();
   });
+
+  it("清空类型可持久化（空串清空 kind）", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    await w.find(".e-item").trigger("click");
+    await flushPromises();
+    await w.find(".e-kind").setValue("");
+    await w.find(".e-save").trigger("click");
+    await flushPromises();
+    expect(mocks.apiMock.reviseEntity).toHaveBeenCalledWith(
+      "ec_1",
+      expect.objectContaining({ kind: "" }),
+    );
+    w.unmount();
+  });
 });
