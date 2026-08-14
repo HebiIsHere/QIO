@@ -411,6 +411,8 @@ describe("星球记忆中心面板", () => {
     await w.find(".entity-tag").trigger("click");
     await flushPromises();
     expect(w.find(".tab-entity").classes()).toContain("active");
+    // openByNodeId 按 node_id 命中 → 实体卡详情已展开
+    expect(w.find(".e-title").text()).toContain("王翠华");
     w.unmount();
   });
 });

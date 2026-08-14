@@ -97,6 +97,12 @@ function scheduleRecenter(topicId: string, delay = 380) {
   }, delay);
 }
 
+/** 面板宽度变化（管理模式开合/页签切换/实体联动）后，把焦点话题重对焦到新画布中心。 */
+function onPanelWidthChange() {
+  const focused = planet.selectedTopicId.value;
+  if (focused) scheduleRecenter(focused);
+}
+
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   planet.init();
@@ -229,15 +235,21 @@ function switchTab(tab: "topic" | "knowledge" | "entity") {
   activeTab.value = tab;
   manageMode.value = tab !== "topic";
   entityOpenId.value = "";
+  onPanelWidthChange();
 }
 
-/** 知识面板「聚焦话题」→ 切回话题页签并聚焦/加载该话题 */
+/** 「管理模式」按钮：手动切换面板宽度并重对焦 */
+function toggleManageMode() {
+  manageMode.value = !manageMode.value;
+  onPanelWidthChange();
+}
+
+/** 知识面板「聚焦话题」→ 切回话题页签并聚焦/加载该话题（详情由 selectedTopicId watcher 单一来源加载） */
 function focusTopicFromPanel(topicId: string) {
   planet.selectedTopicId.value = topicId;
   planet.focusTopic(topicId, positions.value);
   panelOpen.value = true;
   switchTab("topic");
-  loadDetail(topicId);
 }
 
 /** 话题详情实体标签 → 打开实体页签并自动展开该实体卡（按 node_id 匹配） */
@@ -245,6 +257,7 @@ function openEntityByNode(nodeId: string) {
   activeTab.value = "entity";
   manageMode.value = true;
   entityOpenId.value = nodeId;
+  onPanelWidthChange();
 }
 
 /** 关闭：相机先拉回悬浮球远景（overview），动画结束后收起覆盖层 */
@@ -285,7 +298,7 @@ async function close() {
           <button class="tab tab-knowledge" :class="{ active: activeTab === 'knowledge' }" @click="switchTab('knowledge')">知识</button>
           <button class="tab tab-entity" :class="{ active: activeTab === 'entity' }" @click="switchTab('entity')">实体</button>
           <span class="spacer"></span>
-          <button class="mode-btn" @click="manageMode = !manageMode">{{ manageMode ? "✕ 管理模式" : "管理模式" }}</button>
+          <button class="mode-btn" @click="toggleManageMode">{{ manageMode ? "✕ 管理模式" : "管理模式" }}</button>
         </div>
 
         <template v-if="activeTab === 'topic'">
@@ -407,8 +420,8 @@ async function close() {
   flex-direction: column;
   overflow-y: auto;
 }
-.panel.manage { width: 640px; }
-.panel.manage .panel-inner { width: 640px; }
+.panel.open.manage { width: 640px; }
+.panel.open.manage .panel-inner { width: 640px; }
 .tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); }
 .tab { font-size: 13px; padding: 6px 12px; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
 .tab:hover { color: var(--text-strong); }
