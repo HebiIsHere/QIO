@@ -26,6 +26,43 @@ export interface CredentialMeta {
   note: string | null;
 }
 
+export interface KnowledgeItem {
+  id: string;
+  category: string;
+  state: string;
+  content: string;
+  confidence: number | null;
+  topic_id: string | null;
+  topic_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityAttribute {
+  key: string;
+  value: string;
+  confidence: number;
+}
+
+export interface EntityRelation {
+  type: string;
+  target: string;
+}
+
+export interface EntityCard {
+  id: string;
+  node_id: string | null;
+  name: string;
+  aliases: string[];
+  kind: string | null;
+  summary: string;
+  attributes: EntityAttribute[];
+  relations: EntityRelation[];
+  state: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const api = {
   listCredentials: () =>
     request<{ credentials: CredentialMeta[] }>("/api/credentials"),
@@ -85,6 +122,54 @@ export const api = {
     request<{ ok: boolean }>(`/api/knowledge/${encodeURIComponent(knowledgeId)}/revoke`, {
       method: "POST",
     }),
+  listKnowledge: () => request<{ knowledge: KnowledgeItem[] }>("/api/knowledge"),
+  createKnowledge: (payload: { category: string; content: string; topic_id?: string | null }) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>("/api/knowledge", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  verifyKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: { id: string; state: string } }>(
+      `/api/knowledge/${encodeURIComponent(id)}/verify`,
+      { method: "POST" },
+    ),
+  rejectKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: { id: string; state: string } }>(
+      `/api/knowledge/${encodeURIComponent(id)}/reject`,
+      { method: "POST" },
+    ),
+  listEntities: () => request<{ entities: EntityCard[] }>("/api/entities"),
+  getEntity: (id: string) =>
+    request<{ entity: EntityCard }>(`/api/entities/${encodeURIComponent(id)}`),
+  reviseEntity: (
+    id: string,
+    payload: {
+      attributes?: EntityAttribute[];
+      aliases?: string[];
+      summary?: string;
+      kind?: string;
+    },
+  ) =>
+    request<{ ok: boolean; entity: EntityCard | null }>(
+      `/api/entities/${encodeURIComponent(id)}/revise`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  revokeEntity: (id: string) =>
+    request<{ ok: boolean; entity_id: string }>(
+      `/api/entities/${encodeURIComponent(id)}/revoke`,
+      { method: "POST" },
+    ),
+  addEntityRelation: (id: string, payload: { type: string; target: string }) =>
+    request<{ ok: boolean; entity: EntityCard | null }>(
+      `/api/entities/${encodeURIComponent(id)}/relations`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  removeEntityRelation: (id: string, payload: { type: string; target: string }) =>
+    request<{ ok: boolean; entity: EntityCard | null }>(
+      `/api/entities/${encodeURIComponent(id)}/relations`,
+      { method: "DELETE", body: JSON.stringify(payload) },
+    ),
+
   getMemorySettings: () =>
     request<{ fragment_max_messages: number }>("/api/settings/memory"),
   runMaintenance: () =>
