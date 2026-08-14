@@ -168,3 +168,21 @@ def test_verification_service_cross_validator(
     result = verify.review(knowledge.get(item.id), cross_validator=lambda i: False)
     assert not result.accepted and "cross-validation" in result.reason
     assert knowledge.get(item.id).state == KnowledgeState.PENDING_REVIEW
+
+
+def test_list_items_filters_and_orders(db_conn):
+    from agent.knowledge.lifecycle import KnowledgeService
+
+    ks = KnowledgeService(db_conn)
+    a = ks.create(category="general_fact", content="SQLite 是嵌入式数据库")
+    b = ks.create(category="user_profile", content="用户喜欢清淡饮食")
+    c = ks.create(category="general_fact", content="SQLite 支持 WAL 模式")
+    ks.submit(a.id); ks.verify(a.id, verified_by="user"); ks.activate(a.id)
+    ks.submit(b.id); ks.verify(b.id, verified_by="user"); ks.activate(b.id)
+
+    all_items = ks.list_items()
+    # 生命周期流转（submit/verify/activate）会刷新 updated_at：b 最后激活、a 次之、c 仅创建即未再更新 → 倒序 b, a, c
+    assert [i.id for i in all_items] == [b.id, a.id, c.id]
+    assert {i.id for i in ks.list_items(category="general_fact")} == {a.id, c.id}
+    assert {i.id for i in ks.list_items(state="active")} == {a.id, b.id}
+    assert {i.id for i in ks.list_items(q="WAL")} == {c.id}

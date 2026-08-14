@@ -214,6 +214,28 @@ class KnowledgeService:
         chain.reverse()
         return chain
 
+    def list_items(
+        self,
+        category: str | None = None,
+        state: str | None = None,
+        q: str | None = None,
+    ) -> list[KnowledgeItem]:
+        """列出知识条目，支持分类/状态/关键词过滤，按 updated_at 倒序。"""
+        sql = "SELECT * FROM knowledge WHERE 1=1"
+        params: list[Any] = []
+        if category:
+            sql += " AND category = ?"
+            params.append(category)
+        if state:
+            sql += " AND state = ?"
+            params.append(state)
+        if q:
+            sql += " AND content LIKE ?"
+            params.append(f"%{q}%")
+        sql += " ORDER BY updated_at DESC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [self._from_row(r) for r in rows]
+
     # -- internals --------------------------------------------------------
 
     def _transition(
