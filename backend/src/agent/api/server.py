@@ -26,6 +26,25 @@ FRAGMENT_MAX_MESSAGES = 30
 DEFAULT_FRAGMENT_MAX_MESSAGES = 10
 
 
+def _knowledge_payload(ctx, item) -> dict:
+    """知识条目的结构化载荷（列表与新建共用）。"""
+    topic_name = None
+    if item.topic_id:
+        node = ctx.topics.nodes.get_topic(item.topic_id)
+        topic_name = node.name if node is not None else None
+    return {
+        "id": item.id,
+        "category": item.category,
+        "state": item.state.value,
+        "content": item.content,
+        "confidence": item.confidence,
+        "topic_id": item.topic_id,
+        "topic_name": topic_name,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
 def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     app = FastAPI(title="QIO", version="0.1.0")
     app.add_middleware(
@@ -272,21 +291,7 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         items = ks.list_items(category=category, state=state, q=q)
         out = []
         for it in items:
-            topic_name = None
-            if it.topic_id:
-                node = ctx.topics.nodes.get_topic(it.topic_id)
-                topic_name = node.name if node is not None else None
-            out.append({
-                "id": it.id,
-                "category": it.category,
-                "state": it.state.value,
-                "content": it.content,
-                "confidence": it.confidence,
-                "topic_id": it.topic_id,
-                "topic_name": topic_name,
-                "created_at": it.created_at,
-                "updated_at": it.updated_at,
-            })
+            out.append(_knowledge_payload(ctx, it))
         return {"knowledge": out}
 
     @app.post("/api/knowledge")
@@ -308,13 +313,7 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             active = ks.activate(item.id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        node = ctx.topics.nodes.get_topic(active.topic_id) if active.topic_id else None
-        return {"ok": True, "knowledge": {
-            "id": active.id, "category": active.category, "state": active.state.value,
-            "content": active.content, "confidence": active.confidence,
-            "topic_id": active.topic_id, "topic_name": node.name if node else None,
-            "created_at": active.created_at, "updated_at": active.updated_at,
-        }}
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, active)}
 
     @app.post("/api/knowledge/{knowledge_id}/verify")
     async def verify_knowledge(knowledge_id: str) -> dict:

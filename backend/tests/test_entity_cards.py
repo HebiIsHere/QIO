@@ -61,6 +61,26 @@ def test_format_card_includes_template(db_conn: sqlite3.Connection):
     assert "健康状况" in text
     assert "属于" in text
 
+def test_relations_empty_without_node_id(db_conn):
+    from agent.entities.cards import EntityCard
+
+    svc = EntityCardService(db_conn)
+    card = EntityCard(
+        id="card_no_node",
+        node_id=None,
+        name="无节点卡",
+        aliases=[],
+        kind=None,
+        summary="",
+        attributes=[],
+        state="active",
+        created_at="",
+        updated_at="",
+    )
+    assert svc._format_relations(card) == ""
+    assert svc.to_dict(card)["relations"] == []
+
+
 def test_to_dict_structured_with_relations(db_conn):
     from agent.entities.cards import (
         EntityAttribute,

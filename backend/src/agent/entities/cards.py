@@ -295,28 +295,24 @@ class EntityCardService:
             rels=rels or "—",
         )
 
-    def _format_relations(self, card: EntityCard) -> str:
+    def _relation_rows(self, card: EntityCard) -> list[sqlite3.Row]:
+        """实体卡的关系边行（排除 mention），_format_relations 与 to_dict 共用。"""
         if not card.node_id:
-            return ""
-        rows = self.conn.execute(
+            return []
+        return self.conn.execute(
             "SELECT e.type, n.name FROM edges e JOIN nodes n ON "
             "n.id = CASE WHEN e.dst = ? THEN e.src ELSE e.dst END "
             "WHERE (e.src = ? OR e.dst = ?) AND e.type NOT IN ('mention')",
             (card.node_id, card.node_id, card.node_id),
         ).fetchall()
+
+    def _format_relations(self, card: EntityCard) -> str:
+        rows = self._relation_rows(card)
         return "；".join(f"{r['type']}→{r['name']}" for r in rows)
 
     def to_dict(self, card: EntityCard) -> dict:
         """结构化输出：管理页/API 用（含属性、关系、node_id）。"""
-        relations: list[dict] = []
-        if card.node_id:
-            rows = self.conn.execute(
-                "SELECT e.type, n.name FROM edges e JOIN nodes n ON "
-                "n.id = CASE WHEN e.dst = ? THEN e.src ELSE e.dst END "
-                "WHERE (e.src = ? OR e.dst = ?) AND e.type NOT IN ('mention')",
-                (card.node_id, card.node_id, card.node_id),
-            ).fetchall()
-            relations = [{"type": r["type"], "target": r["name"]} for r in rows]
+        relations = [{"type": r["type"], "target": r["name"]} for r in self._relation_rows(card)]
         return {
             "id": card.id,
             "node_id": card.node_id,
