@@ -12,6 +12,8 @@ import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
 import { useSessionStore } from "../stores/session";
 import QInput from "../components/ui/QInput.vue";
+import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
+import EntityPanel from "../components/planet/EntityPanel.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const session = useSessionStore();
@@ -28,6 +30,11 @@ const selectedFragmentId = ref<string | null>(null);
 const closing = ref(false);
 /** 右侧话题边栏：默认收起；点击话题点/展开按钮展开，点击收起按钮收起 */
 const panelOpen = ref(false);
+/** 面板页签：话题 / 知识 / 实体；知识/实体页签自动进入管理模式（面板 640px 宽） */
+const activeTab = ref<"topic" | "knowledge" | "entity">("topic");
+const manageMode = ref(false);
+/** 实体页签挂载后按 node_id 自动打开的实体卡 */
+const entityOpenId = ref("");
 /** 画布尺寸观察器：边栏开合/窗口缩放时同步 WebGL 渲染尺寸 */
 let canvasObserver: ResizeObserver | null = null;
 /** 边栏开合导致画布中心偏移后的重对焦定时器 */
@@ -217,6 +224,29 @@ async function startHere() {
   await close();
 }
 
+/* ---- 星球记忆中心：三页签 + 管理模式 + 与知识/实体面板联动 ---- */
+function switchTab(tab: "topic" | "knowledge" | "entity") {
+  activeTab.value = tab;
+  manageMode.value = tab !== "topic";
+  entityOpenId.value = "";
+}
+
+/** 知识面板「聚焦话题」→ 切回话题页签并聚焦/加载该话题 */
+function focusTopicFromPanel(topicId: string) {
+  planet.selectedTopicId.value = topicId;
+  planet.focusTopic(topicId, positions.value);
+  panelOpen.value = true;
+  switchTab("topic");
+  loadDetail(topicId);
+}
+
+/** 话题详情实体标签 → 打开实体页签并自动展开该实体卡（按 node_id 匹配） */
+function openEntityByNode(nodeId: string) {
+  activeTab.value = "entity";
+  manageMode.value = true;
+  entityOpenId.value = nodeId;
+}
+
 /** 关闭：相机先拉回悬浮球远景（overview），动画结束后收起覆盖层 */
 async function close() {
   if (closing.value) return;
@@ -237,7 +267,7 @@ async function close() {
       <span v-else>WebGL 不可用</span>
     </div>
 
-    <aside class="panel" :class="{ open: panelOpen }">
+    <aside class="panel" :class="{ open: panelOpen, manage: manageMode }">
       <button
         class="panel-toggle"
         :title="panelOpen ? '收起话题列表' : '展开话题列表'"
@@ -250,75 +280,87 @@ async function close() {
         </svg>
       </button>
       <div class="panel-inner">
-      <div class="panel-head">
-        <h2 class="serif">话题</h2>
-        <QInput v-model="search" placeholder="搜索话题…" />
-      </div>
-      <ul class="topic-list">
-        <li
-          v-for="t in filteredTopics"
-          :key="t.topic_id"
-          :class="{ active: t.topic_id === planet.selectedTopicId.value }"
-          @click="selectTopic(t.topic_id)"
-        >
-          <span class="name serif">{{ t.title }}</span>
-          <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-        </li>
-      </ul>
-
-      <div v-if="detailLoading" class="detail-loading">加载中…</div>
-      <div v-else-if="detail" class="detail">
-        <h3 class="serif">{{ detail.name }}</h3>
-
-        <div class="detail-section">
-          <div class="section-title serif">片段（点击选择起点）</div>
-          <div
-            v-for="f in detail.fragments"
-            :key="f.fragment_id"
-            class="fragment-item"
-            :class="{ selected: f.fragment_id === selectedFragmentId }"
-            @click="selectedFragmentId = f.fragment_id"
-          >
-            <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
-            <div class="fragment-meta mono">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
-          </div>
-          <p v-if="!detail.fragments.length" class="hint">暂无片段。</p>
+        <div class="tabs">
+          <button class="tab tab-topic" :class="{ active: activeTab === 'topic' }" @click="switchTab('topic')">话题</button>
+          <button class="tab tab-knowledge" :class="{ active: activeTab === 'knowledge' }" @click="switchTab('knowledge')">知识</button>
+          <button class="tab tab-entity" :class="{ active: activeTab === 'entity' }" @click="switchTab('entity')">实体</button>
+          <span class="spacer"></span>
+          <button class="mode-btn" @click="manageMode = !manageMode">{{ manageMode ? "✕ 管理模式" : "管理模式" }}</button>
         </div>
 
-        <div class="detail-section">
-          <div class="section-title serif">实体</div>
-          <div class="entity-tags">
-            <span v-for="e in detail.entities" :key="e.id" class="entity-tag">{{ e.name }}</span>
-            <span v-if="!detail.entities.length" class="hint">无</span>
+        <template v-if="activeTab === 'topic'">
+          <div class="panel-head">
+            <h2 class="serif">话题</h2>
+            <QInput v-model="search" placeholder="搜索话题…" />
           </div>
-        </div>
+          <ul class="topic-list">
+            <li
+              v-for="t in filteredTopics"
+              :key="t.topic_id"
+              :class="{ active: t.topic_id === planet.selectedTopicId.value }"
+              @click="selectTopic(t.topic_id)"
+            >
+              <span class="name serif">{{ t.title }}</span>
+              <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
+            </li>
+          </ul>
 
-        <div class="detail-section">
-          <div class="section-title serif">知识</div>
-          <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
-            <span class="k-state qio-badge" :class="k.state">{{ k.state }}</span>
-            <template v-if="knowledgeEditingId === k.id">
-              <input
-                v-model="knowledgeDraft"
-                class="qio-input knowledge-edit"
-                @keyup.enter="saveKnowledgeEdit(k)"
-              />
-              <button class="qio-btn mini" @click="saveKnowledgeEdit(k)">保存</button>
-              <button class="qio-btn mini" @click="knowledgeEditingId = null">取消</button>
-            </template>
-            <template v-else>
-              <span class="k-content">{{ k.content }}</span>
-              <button class="qio-btn mini" @click="startEditKnowledge(k)">修正</button>
-              <button class="qio-btn mini danger" @click="deleteKnowledge(k)">删除</button>
-            </template>
+          <div v-if="detailLoading" class="detail-loading">加载中…</div>
+          <div v-else-if="detail" class="detail">
+            <h3 class="serif">{{ detail.name }}</h3>
+
+            <div class="detail-section">
+              <div class="section-title serif">片段（点击选择起点）</div>
+              <div
+                v-for="f in detail.fragments"
+                :key="f.fragment_id"
+                class="fragment-item"
+                :class="{ selected: f.fragment_id === selectedFragmentId }"
+                @click="selectedFragmentId = f.fragment_id"
+              >
+                <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
+                <div class="fragment-meta mono">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
+              </div>
+              <p v-if="!detail.fragments.length" class="hint">暂无片段。</p>
+            </div>
+
+            <div class="detail-section">
+              <div class="section-title serif">实体</div>
+              <div class="entity-tags">
+                <span v-for="e in detail.entities" :key="e.id" class="entity-tag" @click="openEntityByNode(e.id)">{{ e.name }}</span>
+                <span v-if="!detail.entities.length" class="hint">无</span>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <div class="section-title serif">知识</div>
+              <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
+                <span class="k-state qio-badge" :class="k.state">{{ k.state }}</span>
+                <template v-if="knowledgeEditingId === k.id">
+                  <input
+                    v-model="knowledgeDraft"
+                    class="qio-input knowledge-edit"
+                    @keyup.enter="saveKnowledgeEdit(k)"
+                  />
+                  <button class="qio-btn mini" @click="saveKnowledgeEdit(k)">保存</button>
+                  <button class="qio-btn mini" @click="knowledgeEditingId = null">取消</button>
+                </template>
+                <template v-else>
+                  <span class="k-content">{{ k.content }}</span>
+                  <button class="qio-btn mini" @click="startEditKnowledge(k)">修正</button>
+                  <button class="qio-btn mini danger" @click="deleteKnowledge(k)">删除</button>
+                </template>
+              </div>
+              <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
+            </div>
+
+            <button class="start-btn qio-btn primary" :disabled="closing" @click="startHere">
+              从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
+            </button>
           </div>
-          <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
-        </div>
-
-        <button class="start-btn qio-btn primary" :disabled="closing" @click="startHere">
-          从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
-        </button>
-      </div>
+        </template>
+        <KnowledgePanel v-else-if="activeTab === 'knowledge'" @focus-topic="focusTopicFromPanel" />
+        <EntityPanel v-else :open-by-node-id="entityOpenId" />
       </div>
     </aside>
   </div>
@@ -365,6 +407,15 @@ async function close() {
   flex-direction: column;
   overflow-y: auto;
 }
+.panel.manage { width: 640px; }
+.panel.manage .panel-inner { width: 640px; }
+.tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); }
+.tab { font-size: 13px; padding: 6px 12px; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
+.tab:hover { color: var(--text-strong); }
+.tab.active { color: var(--text-strong); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .spacer { flex: 1; }
+.mode-btn { font-size: 11px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); background: none; color: var(--text-secondary); cursor: pointer; }
+.mode-btn:hover { color: var(--accent); border-color: var(--accent); }
 .panel-toggle {
   position: absolute;
   top: 50%;
@@ -420,7 +471,7 @@ async function close() {
 .fragment-summary { font-size: 13px; color: var(--text-primary); }
 .fragment-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.entity-tag { background: var(--bg-accent-subtle); border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary); }
+.entity-tag { background: var(--bg-accent-subtle); border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .knowledge-item { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; font-size: 12px; flex-wrap: wrap; }
 .knowledge-edit { flex: 1; min-width: 160px; height: auto; padding: 5px 10px; font-size: 12px; }
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }

@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api, type EntityAttribute, type EntityCard } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 
-const props = defineProps<{ openCardId?: string }>();
+const props = defineProps<{ openCardId?: string; openByNodeId?: string }>();
 
 const cards = ref<EntityCard[]>([]);
 const q = ref("");
@@ -168,10 +168,23 @@ watch(
   },
 );
 
+watch(
+  () => props.openByNodeId,
+  (id) => {
+    if (!id) return;
+    const card = cards.value.find((c) => c.node_id === id);
+    if (card) openCard(card);
+  },
+);
+
 onMounted(async () => {
   await load();
   if (props.openCardId) {
     const card = cards.value.find((c) => c.id === props.openCardId);
+    if (card) openCard(card);
+  }
+  if (props.openByNodeId) {
+    const card = cards.value.find((c) => c.node_id === props.openByNodeId);
     if (card) openCard(card);
   }
 });

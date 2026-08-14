@@ -4,7 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { ref, shallowRef, nextTick } from "vue";
 import PlanetView from "../PlanetView.vue";
 import { useSessionStore } from "../../stores/session";
-import type { TopicDetail, TopicFingerprint, TopicPosition } from "../../services/api";
+import type { EntityCard, KnowledgeItem, TopicDetail, TopicFingerprint, TopicPosition } from "../../services/api";
 
 const mocks = vi.hoisted(() => ({
   goMock: vi.fn(() => Promise.resolve()),
@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
     setAnchor: vi.fn<() => Promise<{ ok: boolean; topic_id: string; fragment_id: string | null }>>(
       async () => ({ ok: true, topic_id: "", fragment_id: null }),
     ),
+    listKnowledge: vi.fn<() => Promise<{ knowledge: KnowledgeItem[] }>>(async () => ({ knowledge: [] })),
+    listEntities: vi.fn<() => Promise<{ entities: EntityCard[] }>>(async () => ({ entities: [] })),
   },
 }));
 
@@ -77,6 +79,8 @@ beforeEach(() => {
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
   mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS });
   mocks.apiMock.getTopicDetail.mockResolvedValue(DETAIL);
+  mocks.apiMock.listKnowledge.mockResolvedValue({ knowledge: [] });
+  mocks.apiMock.listEntities.mockResolvedValue({ entities: [] });
 });
 
 describe("PlanetView 相机联动", () => {
@@ -369,6 +373,44 @@ describe("PlanetView 右侧话题边栏", () => {
     expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore + 1);
     expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", POSITIONS);
     vi.useRealTimers();
+    w.unmount();
+  });
+});
+
+describe("星球记忆中心面板", () => {
+  it("三页签可切换，管理模式加宽面板", async () => {
+    const pinia = newPinia();
+    const w = mountView(pinia, true);
+    await flushPromises();
+    expect(w.find(".tab-knowledge").exists()).toBe(true);
+    await w.find(".tab-knowledge").trigger("click");
+    await flushPromises();
+    expect(w.find(".panel").classes()).toContain("manage");
+    await w.find(".tab-topic").trigger("click");
+    await flushPromises();
+    w.unmount();
+  });
+
+  it("实体标签可点击 → 打开实体页签", async () => {
+    mocks.apiMock.getTopicDetail.mockResolvedValue({
+      ...DETAIL,
+      entities: [{ id: "n1", name: "王翠华" }],
+    });
+    mocks.apiMock.listEntities.mockResolvedValue({
+      entities: [{
+        id: "ec_1", node_id: "n1", name: "王翠华", aliases: [], kind: "家人",
+        summary: "我妈妈", attributes: [], relations: [], state: "active",
+        created_at: "", updated_at: "",
+      }],
+    });
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    const w = mountView(pinia, true);
+    await flushPromises();
+    await w.find(".entity-tag").trigger("click");
+    await flushPromises();
+    expect(w.find(".tab-entity").classes()).toContain("active");
     w.unmount();
   });
 });
