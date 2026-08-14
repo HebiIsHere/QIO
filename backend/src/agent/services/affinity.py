@@ -57,3 +57,38 @@ def classify(
         closest_score=top_score,
         entity_hints=hints,
     )
+
+
+def related_topics(conn, topic_id: str, top_n: int = 2) -> list[str]:
+    """沿 related 边取当前话题的一跳邻话题（按权重降序，供联想激活）。"""
+    rows = conn.execute(
+        "SELECT src, dst FROM edges WHERE type = 'related' AND (src = ? OR dst = ?) "
+        "ORDER BY weight DESC",
+        (topic_id, topic_id),
+    ).fetchall()
+    out: list[str] = []
+    for r in rows:
+        other = r["dst"] if r["src"] == topic_id else r["src"]
+        if other != topic_id and other not in out:
+            out.append(other)
+            if len(out) >= top_n:
+                break
+    return out
+
+
+def relate_shared_entities(conn, topic_id: str, entity_ids: list[str]) -> None:
+    """同一实体出现在多个话题 → 这些话题对加 related 边（实体是话题间的桥梁）。"""
+    from agent.graph.edges import EdgeService
+
+    edges = EdgeService(conn)
+    for entity_id in entity_ids:
+        rows = conn.execute(
+            "SELECT src FROM edges WHERE dst = ? AND type = 'mention'",
+            (entity_id,),
+        ).fetchall()
+        for r in rows:
+            other = r["src"]
+            if other == topic_id:
+                continue
+            a, b = sorted([topic_id, other])
+            edges.add(a, b, "related")

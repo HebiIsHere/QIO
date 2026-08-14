@@ -44,3 +44,25 @@ def test_entity_hints_are_soft_only():
                  entity_topics=["t_goose"])
     assert d.mode == TopicMode.IN_TOPIC
     assert d.entity_hints == ["t_goose"]
+
+def test_related_topics_orders_by_weight(db_conn):
+    now = "2026-08-14T00:00:00+00:00"
+    for tid, name in [("t_a", "A"), ("t_b", "B"), ("t_c", "C")]:
+        db_conn.execute("INSERT INTO nodes VALUES (?, 'topic', ?, '{}', ?, ?)", (tid, name, now, now))
+    # A-B 权重 3（跳转多），A-C 权重 1
+    db_conn.execute("INSERT INTO edges (id,src,dst,type,weight,created_at,updated_at) VALUES ('e1','t_a','t_b','related',3,?,?)", (now, now))
+    db_conn.execute("INSERT INTO edges (id,src,dst,type,weight,created_at,updated_at) VALUES ('e2','t_c','t_a','related',1,?,?)", (now, now))
+    from agent.services.affinity import related_topics
+    assert related_topics(db_conn, "t_a", top_n=2) == ["t_b", "t_c"]
+    assert related_topics(db_conn, "t_a", top_n=1) == ["t_b"]
+
+def test_relate_shared_entities_builds_topic_edges(db_conn):
+    now = "2026-08-14T00:00:00+00:00"
+    for nid, typ, name in [("t_a", "topic", "A"), ("t_b", "topic", "B"), ("e1", "entity", "鹅")]:
+        db_conn.execute("INSERT INTO nodes VALUES (?, ?, ?, '{}', ?, ?)", (nid, typ, name, now, now))
+    db_conn.execute("INSERT INTO edges (id,src,dst,type,weight,created_at,updated_at) VALUES ('m1','t_a','e1','mention',1,?,?)", (now, now))
+    db_conn.execute("INSERT INTO edges (id,src,dst,type,weight,created_at,updated_at) VALUES ('m2','t_b','e1','mention',1,?,?)", (now, now))
+    from agent.services.affinity import relate_shared_entities
+    relate_shared_entities(db_conn, "t_a", ["e1"])
+    row = db_conn.execute("SELECT type FROM edges WHERE type='related' AND src='t_a' AND dst='t_b'").fetchone()
+    assert row is not None and row["type"] == "related"

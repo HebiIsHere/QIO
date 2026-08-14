@@ -769,6 +769,11 @@ class AppContext:
                 entity_ids.append(entity.id)
                 edges.add(topic_id, entity.id, "mention")
 
+        # 共同实体 → 话题相关边（实体作为话题间桥梁）
+        from agent.services.affinity import relate_shared_entities
+
+        relate_shared_entities(self.conn, topic_id, entity_ids)
+
         # 实体卡提炼：主模型从对话提炼经验性实体卡（属性/关系/别名），失败静默降级
         from agent.entities.cards import EntityCardService
         from agent.entities.extract import extract_entity_cards
