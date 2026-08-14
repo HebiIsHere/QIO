@@ -258,6 +258,94 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     async def graph_positions() -> dict:
         return {"topics": assign_positions(ctx.conn)}
 
+    # -- knowledge management --------------------------------------------
+
+    @app.get("/api/knowledge")
+    async def list_knowledge(
+        category: str | None = None,
+        state: str | None = None,
+        q: str | None = None,
+    ) -> dict:
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        items = ks.list_items(category=category, state=state, q=q)
+        out = []
+        for it in items:
+            topic_name = None
+            if it.topic_id:
+                node = ctx.topics.nodes.get_topic(it.topic_id)
+                topic_name = node.name if node is not None else None
+            out.append({
+                "id": it.id,
+                "category": it.category,
+                "state": it.state.value,
+                "content": it.content,
+                "confidence": it.confidence,
+                "topic_id": it.topic_id,
+                "topic_name": topic_name,
+                "created_at": it.created_at,
+                "updated_at": it.updated_at,
+            })
+        return {"knowledge": out}
+
+    @app.post("/api/knowledge")
+    async def create_knowledge(body: dict) -> dict:
+        from agent.knowledge.lifecycle import CATEGORIES, KnowledgeService
+
+        category = str(body.get("category") or "").strip()
+        content = str(body.get("content") or "").strip()
+        if category not in CATEGORIES:
+            raise HTTPException(status_code=400, detail=f"unknown category: {category}")
+        if not content:
+            raise HTTPException(status_code=400, detail="content required")
+        topic_id = body.get("topic_id") or None
+        ks = KnowledgeService(ctx.conn)
+        try:
+            item = ks.create(category=category, content=content, topic_id=topic_id)
+            ks.submit(item.id)
+            ks.verify(item.id, verified_by="user")
+            active = ks.activate(item.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        node = ctx.topics.nodes.get_topic(active.topic_id) if active.topic_id else None
+        return {"ok": True, "knowledge": {
+            "id": active.id, "category": active.category, "state": active.state.value,
+            "content": active.content, "confidence": active.confidence,
+            "topic_id": active.topic_id, "topic_name": node.name if node else None,
+            "created_at": active.created_at, "updated_at": active.updated_at,
+        }}
+
+    @app.post("/api/knowledge/{knowledge_id}/verify")
+    async def verify_knowledge(knowledge_id: str) -> dict:
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        item = ks.get(knowledge_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="knowledge not found")
+        if item.state.value != "pending_review":
+            raise HTTPException(status_code=400, detail="only pending_review can be verified")
+        try:
+            ks.verify(knowledge_id, verified_by="user")
+            active = ks.activate(knowledge_id)
+        except (ValueError, PermissionError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "knowledge": {"id": active.id, "state": active.state.value}}
+
+    @app.post("/api/knowledge/{knowledge_id}/reject")
+    async def reject_knowledge(knowledge_id: str) -> dict:
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        item = ks.get(knowledge_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="knowledge not found")
+        if item.state.value != "pending_review":
+            raise HTTPException(status_code=400, detail="only pending_review can be rejected")
+        draft = ks.reject(knowledge_id)
+        return {"ok": True, "knowledge": {"id": draft.id, "state": draft.state.value}}
+
     # -- knowledge correction ----------------------------------------------
 
     @app.post("/api/knowledge/{knowledge_id}/revise")
