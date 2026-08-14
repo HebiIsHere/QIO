@@ -28,6 +28,7 @@ EVENT_EXECUTE = "tool/execute"
 EVENT_POST_EXECUTE = "tool/post-execute"
 EVENT_RESULT = "tool/result"
 EVENT_END = "tool/end"
+EVENT_UNREGISTERED = "tool/unregistered"
 
 
 class ToolRegistry:
@@ -47,13 +48,30 @@ class ToolRegistry:
 
     # -- registration ------------------------------------------------------
 
-    def register(self, tool: Tool) -> None:
+    def register(self, tool: Tool) -> Callable[[], None]:
+        """注册工具；返回可逆 disposer（幂等：重复调用只生效一次）。"""
         if tool.name in self._tools:
             raise ValueError(f"tool already registered: {tool.name}")
         self._tools[tool.name] = tool
 
+        def dispose() -> None:
+            self.unregister(tool.name)
+
+        return dispose
+
     def unregister(self, name: str) -> None:
-        self._tools.pop(name, None)
+        """从注册表移除工具，并广播 tool/unregistered（尽力而为）。"""
+        tool = self._tools.pop(name, None)
+        if tool is not None:
+            self._schedule_emit(EVENT_UNREGISTERED, {"tool": name})
+
+    def _schedule_emit(self, event: str, data: dict) -> None:
+        """disposer 是同步回调；在事件循环存在时调度异步广播。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self.events.emit(event, data))
 
     def register_policy(self, event: str, handler: Callable[..., Any]) -> Callable[[], None]:
         """注册管线策略；返回可逆 disposer。

@@ -1,4 +1,4 @@
-"""Tool creation lifecycle: explain -> test -> approve (x2) -> register.
+﻿"""Tool creation lifecycle: explain -> test -> approve (x2) -> register.
 
 Segments:
 1. proposal with explanation (main model);
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from agent.adapters.base import BaseAdapter
 from agent.credentials.store import CredentialStore
@@ -64,6 +65,8 @@ class ToolLifecycle:
         self.adapter_factory = adapter_factory
         self.bus = bus
         self.tool_store = tool_store
+        # 已注册工具的 disposer，撤销时真正从注册表移除
+        self._registry_disposers: dict[str, Callable[[], None]] = {}
 
     async def create_from_request(
         self, user_request: str, *, context: str | None = None
@@ -189,12 +192,9 @@ class ToolLifecycle:
 
             if self.task_manager is None or self.adapter_factory is None:
                 # 未接线时保持 Stub 降级（不产生半成品注册）
-                self.registry.register(
-                    SubagentStubTool(definition, credentials=self.credentials)
-                )
-                return
-            self.registry.register(
-                SubagentTool(
+                tool = SubagentStubTool(definition, credentials=self.credentials)
+            else:
+                tool = SubagentTool(
                     definition,
                     credentials=self.credentials,
                     task_manager=self.task_manager,
@@ -202,8 +202,19 @@ class ToolLifecycle:
                     adapter_factory=self.adapter_factory,
                     bus=self.bus,
                 )
-            )
         else:
-            self.registry.register(
-                CodeTool(definition, self.sandbox, credentials=self.credentials)
-            )
+            tool = CodeTool(definition, self.sandbox, credentials=self.credentials)
+        self._registry_disposers[definition.name] = self.registry.register(tool)
+
+    def revoke_tool(self, name: str) -> bool:
+        """撤销工具：真正从注册表移除（disposer），并在持久层标记 removed。"""
+        disposer = self._registry_disposers.pop(name, None)
+        if disposer is None:
+            if self.registry.get(name) is None:
+                return False
+            disposer = lambda: self.registry.unregister(name)  # noqa: E731
+        disposer()
+        if self.tool_store is not None:
+            self.tool_store.remove(name)
+        logger.info("tool revoked: %s", name)
+        return True
