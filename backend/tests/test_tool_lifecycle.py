@@ -250,7 +250,7 @@ async def test_lifecycle_credential_grant(db_conn: sqlite3.Connection):
         pass
     assert outcome.ok
     meta = store.get_metadata("weather-key")
-    assert "weather_fetch" in meta["scope"]  # narrowed scope
+    assert meta is not None and meta["status"] == "active"
     tool = registry.get("weather_fetch")
     result = await tool.run()
     assert result.ok and json.loads(result.content) == {"has_key": True}

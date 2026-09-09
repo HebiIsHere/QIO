@@ -109,6 +109,34 @@ async def test_budget_stops_runaway_loop():
     assert result.iterations_used == 3
 
 
+async def test_budget_stop_emits_warning_event():
+    """预算耗尽停止时须发出 WARNING，前端不再静默无输出。"""
+    client = ScriptedClient(
+        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x"}')]))]) for i in range(50)]
+    )
+    loop, bus = _make_loop(client, max_iterations=3)
+
+    collected: list[str] = []
+
+    async def consumer():
+        async for chunk in bus.stream():
+            collected.append(chunk)
+
+    task = asyncio.create_task(consumer())
+    await asyncio.sleep(0.05)
+    await loop.run("loop")
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    joined = "\n".join(collected)
+    assert "event: WARNING" in joined
+    assert "budget" in joined or "迭代" in joined or "token" in joined
+
+
 async def test_force_continue_overrides_budget():
     client = ScriptedClient(
         [FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x"}')]))]) for i in range(50)]

@@ -36,6 +36,8 @@ class CodeTool(Tool):
                 )
             secret = self.credentials.get_secret(self.definition.credential_ref)
             if secret is None:
+                secret = self.credentials.get_default_secret()
+            if secret is None:
                 return ToolResult(ok=False, error="referenced credential unavailable")
             key = self.definition.credential_ref.upper().replace("-", "_")
             extra_env[f"QIO_KEY_{key}"] = secret

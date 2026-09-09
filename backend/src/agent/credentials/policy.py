@@ -1,12 +1,8 @@
 """Authorization policy (scheme C) and credential snapshots.
 
-Scheme C: category-default authorization narrowed by per-key scope, taking
-the strictest intersection. Resolution order:
+Resolution:
 1. candidate keys: status active AND tags intersect required_tags;
-2. scope filter: key scope is null (category default) OR contains requestor;
-3. ordering: budget remaining desc, then created_at asc (stable tie-break);
-4. a key whose scope is a non-empty list is treated as "pinned" to those
-   requestors only.
+2. ordering: budget remaining desc, then created_at asc (stable tie-break).
 """
 
 from __future__ import annotations
@@ -37,12 +33,7 @@ class CredentialRef:
     endpoint: str | None
     default_model: str | None
     tags: tuple[str, ...]
-    scope: tuple[str, ...] | None
     budget_left: float | None
-
-    @property
-    def pinned(self) -> bool:
-        return self.scope is not None
 
 
 @dataclass
@@ -82,10 +73,9 @@ class CredentialPolicy:
         for meta in self.store.list_credentials():
             if meta["status"] != "active":
                 continue
-            if not (set(meta["tags"]) & required):
+            if not meta.get("enabled", 1):
                 continue
-            scope = tuple(meta["scope"]) if meta["scope"] else None
-            if scope is not None and requestor not in scope:
+            if not (set(meta["tags"]) & required):
                 continue
             budget_left = self.store.budget_left(meta["id"])
             if budget_left is not None and budget_left <= 0:
@@ -97,13 +87,14 @@ class CredentialPolicy:
                     endpoint=meta.get("endpoint"),
                     default_model=meta.get("default_model"),
                     tags=tuple(meta["tags"]),
-                    scope=scope,
                     budget_left=budget_left,
                 )
             )
-        # budget remaining desc, then created_at asc for stability
+        # Purpose keys (non-main-loop) first by budget, then the main-loop
+        # credential as a last-resort fallback, then key_id for stability.
         candidates.sort(
             key=lambda r: (
+                1 if "main-loop" in r.tags else 0,
                 -(r.budget_left if r.budget_left is not None else float("inf")),
                 r.key_id,
             )

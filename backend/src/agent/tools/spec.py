@@ -47,10 +47,6 @@ class ToolDefinition(BaseModel):
         if self.tool_type == "function" and not self.code.strip():
             raise ValueError("function tools require code")
         if self.tool_type == "subagent":
-            if not self.credential_ref:
-                raise ValueError("subagent tools require credential_ref")
-            if not self.model:
-                raise ValueError("subagent tools require model")
             if self.subagent_budget is None:
                 self.subagent_budget = SubagentBudget()
         return self
@@ -85,21 +81,19 @@ def validate_tool_proposal(text: str) -> tuple[ToolProposal | None, str | None]:
 
 
 TOOL_PROPOSAL_PROMPT = (
-    "You are designing a new tool for an agent. The user wants a tool that "
-    "does something concrete. Respond with a single JSON object only:\n"
+    "You are designing a new tool for an agent. The user wants a concrete capability. "
+    "Return only a single JSON object, no prose or Markdown fences:\n"
     "{\n"
     '  "explanation": "<why this tool is needed and what it does, for the user review>",\n'
     '  "tool": {\n'
     '    "name": "<snake_case name>",\n'
     '    "description": "<one-line description for the agent>",\n'
     '    "parameters": {<JSON Schema object>},\n'
-    '    "code": "<python function body: def run(**kwargs) -> dict, pure and deterministic, '
-    'no network, no secrets>",\n'
+    '    "code": "<python function body: def run(**kwargs) -> dict, pure, deterministic, no network, no secrets>",\n'
     '    "tool_type": "function",\n'
     '    "sync": true,\n'
     '    "tests": [{"name": "<case name>", "input": {...}, "expect": {...}}]\n'
     "  }\n"
     "}\n"
-    "Rules: the code must be deterministic, side-effect free, and safe to run "
-    "in a sandbox; tests must cover representative inputs."
+    "Rules: code must be deterministic, side-effect free, and safe in a sandbox; tests must cover representative inputs."
 )

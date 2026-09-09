@@ -19,11 +19,23 @@ export interface CredentialMeta {
   tags: string[];
   endpoint: string | null;
   default_model: string | null;
-  scope: string[] | null;
   budget: number | null;
   budget_used: number;
   status: string;
+  enabled: boolean;
   note: string | null;
+}
+
+export interface SearchSettings {
+  searxng_url: string;
+  bocha_has_key: boolean;
+  top_k_default: number;
+  max_fetch_chars: number;
+}
+
+export interface ComputerSettings {
+  root_dir: string;
+  permission_mode: string;
 }
 
 export interface KnowledgeItem {
@@ -75,6 +87,25 @@ export const api = {
     request<{ ok: boolean }>(`/api/credentials/${encodeURIComponent(keyId)}/revoke`, {
       method: "POST",
     }),
+  deleteCredential: (keyId: string) =>
+    request<{ ok: boolean; key_id: string }>(
+      `/api/credentials/${encodeURIComponent(keyId)}`,
+      { method: "DELETE" },
+    ),
+  updateCredentialMeta: (keyId: string, payload: Record<string, unknown>) =>
+    request<{ ok: boolean; credential: CredentialMeta }>(
+      `/api/credentials/${encodeURIComponent(keyId)}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
+    ),
+  setCredentialEnabled: (keyId: string, enabled: boolean) =>
+    request<{ ok: boolean; credential: CredentialMeta }>(
+      `/api/credentials/${encodeURIComponent(keyId)}/${enabled ? "enable" : "disable"}`,
+      { method: "POST" },
+    ),
+  getCredentialAudit: (keyId: string) =>
+    request<{ ok: boolean; audit: { id: string; action: string; from_version: number | null; to_version: number | null; triggered_by: string | null; created_at: string }[] }>(
+      `/api/credentials/${encodeURIComponent(keyId)}/audit`,
+    ),
   testCredential: (keyId: string) =>
     request<{ key_id: string; probe: { mode: string; detail: string } }>(
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
@@ -185,6 +216,27 @@ export const api = {
     request<{ ok: boolean; fragment_max_messages: number }>("/api/settings/memory", {
       method: "PUT",
       body: JSON.stringify({ fragment_max_messages: fragmentMaxMessages }),
+    }),
+  getUISettings: () =>
+    request<{ typewriter_cps: number }>("/api/settings/ui"),
+  updateUISettings: (typewriterCps: number) =>
+    request<{ ok: boolean; typewriter_cps: number }>("/api/settings/ui", {
+      method: "PUT",
+      body: JSON.stringify({ typewriter_cps: typewriterCps }),
+    }),
+  getComputerSettings: () =>
+    request<ComputerSettings>("/api/settings/computer"),
+  updateComputerSettings: (body: Record<string, unknown>) =>
+    request<ComputerSettings>("/api/settings/computer", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  getSearchSettings: () =>
+    request<SearchSettings>("/api/settings/search"),
+  updateSearchSettings: (body: Record<string, unknown>) =>
+    request<SearchSettings>("/api/settings/search", {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
 };
 

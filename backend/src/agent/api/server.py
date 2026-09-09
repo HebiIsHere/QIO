@@ -86,7 +86,6 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
                 tags=body.get("tags", []),
                 endpoint=body.get("endpoint"),
                 default_model=body.get("default_model"),
-                scope=body.get("scope"),
                 budget=body.get("budget"),
                 note=body.get("note"),
             )
@@ -144,6 +143,69 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         )
         return {"ok": True, "key_id": key_id}
 
+    def _credential_payload(meta: dict) -> dict:
+        payload = dict(meta)
+        payload["key_id"] = payload.pop("id")
+        return payload
+
+    @app.patch("/api/credentials/{key_id}")
+    async def update_credential_meta(key_id: str, body: dict) -> dict:
+        kwargs: dict = {}
+        if "tags" in body:
+            kwargs["tags"] = body["tags"]
+        if "endpoint" in body:
+            kwargs["endpoint"] = body["endpoint"]
+        if "default_model" in body:
+            kwargs["default_model"] = body["default_model"]
+        if "budget" in body:
+            kwargs["budget"] = body["budget"]
+        if "note" in body:
+            kwargs["note"] = body["note"]
+        try:
+            meta = ctx.credentials.update_metadata(key_id, **kwargs)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True, "credential": _credential_payload(meta)}
+
+    @app.post("/api/credentials/{key_id}/enable")
+    async def enable_credential(key_id: str) -> dict:
+        try:
+            meta = ctx.credentials.set_enabled(key_id, True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await bus.publish(
+            make_event(EventType.CREDENTIAL_STATUS, {"key_id": key_id, "status": "active"})
+        )
+        return {"ok": True, "credential": _credential_payload(meta)}
+
+    @app.post("/api/credentials/{key_id}/disable")
+    async def disable_credential(key_id: str) -> dict:
+        try:
+            meta = ctx.credentials.set_enabled(key_id, False)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await bus.publish(
+            make_event(EventType.CREDENTIAL_STATUS, {"key_id": key_id, "status": "paused"})
+        )
+        return {"ok": True, "credential": _credential_payload(meta)}
+
+    @app.get("/api/credentials/{key_id}/audit")
+    async def credential_audit(key_id: str) -> dict:
+        logs = ctx.credentials.audit_log(key_id)
+        return {"ok": True, "audit": logs}
+
+    @app.delete("/api/credentials/{key_id}")
+    async def delete_credential(key_id: str) -> dict:
+        try:
+            ctx.credentials.delete(key_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await bus.publish(
+            make_event(EventType.CREDENTIAL_STATUS, {"key_id": key_id, "status": "deleted"})
+        )
+        return {"ok": True, "key_id": key_id}
+
+
     # -- settings -----------------------------------------------------------
 
     @app.get("/api/settings/memory")
@@ -168,6 +230,96 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             )
         ctx.settings_store.set("fragment.max_messages", str(value))
         return {"ok": True, "fragment_max_messages": value}
+
+    # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
+
+    TYPEWRITER_SPEEDS = (25, 50, 75)
+    DEFAULT_TYPEWRITER_CPS = 50
+
+    @app.get("/api/settings/ui")
+    async def get_ui_settings() -> dict:
+        return {
+            "typewriter_cps": ctx.settings_store.get_int(
+                "ui.typewriter_cps", DEFAULT_TYPEWRITER_CPS
+            )
+        }
+
+    @app.put("/api/settings/ui")
+    async def update_ui_settings(body: dict) -> dict:
+        raw = body.get("typewriter_cps")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="typewriter_cps must be an integer")
+        if value not in TYPEWRITER_SPEEDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"typewriter_cps must be one of {list(TYPEWRITER_SPEEDS)}",
+            )
+        ctx.settings_store.set("ui.typewriter_cps", str(value))
+        return {"ok": True, "typewriter_cps": value}
+
+    @app.get("/api/settings/search")
+    async def get_search_settings() -> dict:
+        store = ctx.settings_store
+        bocha_key = store.get("search.bocha_api_key", "") or ""
+        return {
+            "searxng_url": store.get("search.searxng_url", "") or "",
+            "bocha_has_key": bool(bocha_key),
+            "top_k_default": store.get_int("search.top_k_default", 5),
+            "max_fetch_chars": store.get_int("search.max_fetch_chars", 15000),
+        }
+
+    @app.put("/api/settings/search")
+    async def update_search_settings(body: dict) -> dict:
+        store = ctx.settings_store
+        if "searxng_url" in body:
+            store.set("search.searxng_url", str(body.get("searxng_url") or ""))
+        if "bocha_api_key" in body:
+            store.set("search.bocha_api_key", str(body.get("bocha_api_key") or ""))
+        if "top_k_default" in body:
+            try:
+                v = int(body["top_k_default"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="top_k_default must be an integer"
+                )
+            store.set("search.top_k_default", str(max(1, min(v, 20))))
+        if "max_fetch_chars" in body:
+            try:
+                v = int(body["max_fetch_chars"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail="max_fetch_chars must be an integer",
+                )
+            store.set("search.max_fetch_chars", str(max(1000, min(v, 40000))))
+        return await get_search_settings()
+
+    # -- computer control settings -----------------------------------------
+
+    PERMISSION_MODES = ("default", "plan", "accept-edits", "bypass")
+
+    @app.get("/api/settings/computer")
+    async def get_computer_settings() -> dict:
+        store = ctx.settings_store
+        mode = store.get("computer.permission_mode", "default") or "default"
+        return {
+            "root_dir": store.get("computer.root_dir", "") or "",
+            "permission_mode": mode if mode in PERMISSION_MODES else "default",
+        }
+
+    @app.put("/api/settings/computer")
+    async def update_computer_settings(body: dict) -> dict:
+        store = ctx.settings_store
+        if "root_dir" in body:
+            store.set("computer.root_dir", str(body.get("root_dir") or ""))
+        if "permission_mode" in body:
+            mode = str(body["permission_mode"])
+            if mode not in PERMISSION_MODES:
+                raise HTTPException(status_code=400, detail="invalid permission_mode")
+            store.set("computer.permission_mode", mode)
+        return await get_computer_settings()
 
     # -- anchor -------------------------------------------------------------
 

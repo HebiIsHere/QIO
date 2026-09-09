@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from agent.prompts import (
     DEV_GUIDE,
     TOOL_CREATE_TOOL_DESC,
+    TOOL_DEV_LIST_FILES_DESC,
     TOOL_DEV_READ_FILE_DESC,
     TOOL_DEV_RUN_TESTS_DESC,
     TOOL_DEV_SUBMIT_DESC,
@@ -44,9 +45,41 @@ class CreateToolTool(Tool):
         if not request:
             return ToolResult(ok=False, error="request required")
         task = self.workspaces.create(request)
+        files = self.workspaces.list_files(task.id)
         return ToolResult(
             ok=True,
-            content=f"开发任务已创建，工作区 id={task.id}。\n\n{DEV_GUIDE}",
+            content=(
+                f"开发任务已创建，工作区 id={task.id}。"
+                f"工作区已有文件：{', '.join(files) or '(空)'}。\n"
+                f"按以下指南继续开发：\n\n{DEV_GUIDE}"
+            ),
+        )
+
+
+class DevListFilesTool(Tool):
+    name = "dev_list_files"
+    description = TOOL_DEV_LIST_FILES_DESC
+    parameters = {
+        "type": "object",
+        "properties": {
+            "workspace": {"type": "string", "description": "工作区 id"},
+        },
+        "required": ["workspace"],
+    }
+
+    def __init__(self, workspaces) -> None:
+        self.workspaces = workspaces
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        workspace = str(kwargs.get("workspace") or "")
+        if self.workspaces.task(workspace) is None:
+            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+        files = self.workspaces.list_files(workspace)
+        if not files:
+            return ToolResult(ok=True, content="工作区为空，尚无文件。")
+        return ToolResult(
+            ok=True,
+            content="工作区文件：\n" + "\n".join(f"- {name}" for name in files),
         )
 
 

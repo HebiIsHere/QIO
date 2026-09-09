@@ -17,11 +17,11 @@ CORE_TOOLS = [
     "create_topic",
     "await_task",
     "read_task_result",
+    "web_search",
 ]
 
 DEFAULT_TOP_N = 20
 DEV_HINT_WORDS = {"工具", "开发", "创建工具", "写一个", "做一个工具", "自动化"}
-
 
 class ToolRouter:
     def __init__(self, top_n: int = DEFAULT_TOP_N, embedding=None) -> None:
@@ -60,6 +60,7 @@ class ToolRouter:
             # 开发意图提示词：确保开发工具链可见
             if any(w in query for w in DEV_HINT_WORDS) and spec.name in (
                 "create_tool",
+                "dev_list_files",
                 "dev_write_file",
                 "dev_read_file",
                 "dev_run_tests",

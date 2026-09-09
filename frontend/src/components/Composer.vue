@@ -11,7 +11,8 @@ const topicText = computed(() => session.topicName || (session.currentTopicId ? 
 const anchorText = computed(() => {
   const f = session.anchorFragment;
   if (f?.title) return `anchor · ${f.title}`;
-  if (session.anchorFragmentId) return `anchor · 片段 #${session.anchorFragmentId.slice(-4)}`;
+  // 不暴露内部片段 ID（此前 slice(-4) 显示"片段 #xxxx"）
+  if (session.anchorFragmentId) return "anchor · 当前片段";
   return "";
 });
 

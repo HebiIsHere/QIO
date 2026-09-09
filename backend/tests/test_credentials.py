@@ -61,24 +61,6 @@ def test_revoke_removes_secret_and_hides_from_resolution(store: CredentialStore,
     assert refs == []
 
 
-def test_scope_restricts_requestors(store: CredentialStore, policy: CredentialPolicy):
-    store.create("main-key", "s1", tags=["main-loop"])
-    store.create(
-        "subagent-key",
-        "s2",
-        tags=["subagent"],
-        scope=["subagent-alpha"],
-    )
-    assert [r.key_id for r in policy.resolve("subagent-alpha", ["subagent"])] == ["subagent-key"]
-    assert policy.resolve("main-loop", ["subagent"]) == []
-
-
-def test_category_default_when_scope_null(store: CredentialStore, policy: CredentialPolicy):
-    store.create("vision-key", "s1", tags=["vision"])
-    assert [r.key_id for r in policy.resolve("main-loop", ["vision"])] == ["vision-key"]
-    assert [r.key_id for r in policy.resolve("subagent-beta", ["vision"])] == ["vision-key"]
-
-
 def test_budget_ordering_and_exhaustion(store: CredentialStore, policy: CredentialPolicy):
     store.create("key-a", "sa", tags=["vision"], budget=100)
     store.create("key-b", "sb", tags=["vision"], budget=1000)
@@ -115,3 +97,98 @@ def test_create_rejects_empty_key_id(store: CredentialStore):
         store.create("", "sk-secret", tags=["main-loop"])
     with pytest.raises(ValueError):
         store.create("   ", "sk-secret", tags=["main-loop"])
+
+
+def test_update_metadata_keeps_secret_and_version(store: CredentialStore):
+    store.create("k1", "sk-hush", tags=["main-loop"], note="old", budget=100)
+    meta = store.update_metadata(
+        "k1", tags=["main-loop", "vision"], note="new", budget=500
+    )
+    assert meta["tags"] == ["main-loop", "vision"]
+    assert meta["note"] == "new"
+    assert meta["budget"] == 500
+    assert meta["version"] == 1  # metadata change must not bump the secret version
+    assert store.get_secret("k1") == "sk-hush"
+    log = store.audit_log("k1")
+    assert [e["action"] for e in log] == ["create", "update"]
+
+
+def test_update_metadata_resets_budget_used_when_budget_changes(store: CredentialStore):
+    store.create("k1", "s", tags=["main-loop"], budget=100)
+    store.record_usage("k1", tokens=60)
+    assert store.budget_left("k1") == 40
+    store.update_metadata("k1", budget=1000)
+    assert store.budget_left("k1") == 1000
+
+
+def test_disable_hides_from_policy_and_get_secret(store: CredentialStore, policy: CredentialPolicy):
+    store.create("k1", "sec", tags=["main-loop"])
+    store.set_enabled("k1", False)
+    assert store.get_metadata("k1")["enabled"] is False
+    assert store.get_secret("k1") is None
+    assert policy.resolve("main-loop", ["main-loop"]) == []
+
+
+def test_enable_restores_access(store: CredentialStore, policy: CredentialPolicy):
+    store.create("k1", "sec", tags=["main-loop"])
+    store.set_enabled("k1", False)
+    store.set_enabled("k1", True)
+    assert store.get_secret("k1") == "sec"
+    assert [r.key_id for r in policy.resolve("main-loop", ["main-loop"])] == ["k1"]
+
+
+def test_delete_removes_record_secret_and_audit(store: CredentialStore, policy: CredentialPolicy):
+    store.create("k1", "sec", tags=["main-loop"], note="to remove")
+    store.delete("k1")
+    assert store.get_metadata("k1") is None
+    assert store.get_secret("k1") is None
+    assert store.audit_log("k1") == []
+    assert policy.resolve("main-loop", ["main-loop"]) == []
+    with pytest.raises(KeyError):
+        store.delete("k1")
+
+
+def test_resolve_prefers_purpose_key_then_main_loop_fallback(
+    store: CredentialStore, policy: CredentialPolicy
+):
+    store.create("main-key", "sm", tags=["main-loop"], budget=1000)
+    store.create("vision-key", "sv", tags=["vision"], budget=10)
+    refs = policy.resolve("main-loop", ["main-loop", "vision"])
+    # purpose key wins even with less budget; main-loop is the last resort
+    assert [r.key_id for r in refs] == ["vision-key", "main-key"]
+
+
+def test_resolve_uses_main_loop_when_no_purpose_key(store: CredentialStore, policy: CredentialPolicy):
+    store.create("main-key", "sm", tags=["main-loop"], budget=100)
+    refs = policy.resolve("main-loop", ["main-loop", "vision"])
+    assert [r.key_id for r in refs] == ["main-key"]
+
+
+def test_get_default_secret_returns_main_loop_credential(store: CredentialStore):
+    store.create("main-key", "sm", tags=["main-loop"], budget=100)
+    store.create("vision-key", "sv", tags=["vision"])
+    assert store.get_default_secret() == "sm"
+    store.set_enabled("main-key", False)
+    assert store.get_default_secret() is None
+
+
+def test_get_default_secret_ignores_exhausted_budget(store: CredentialStore):
+    store.create("main-key", "sm", tags=["main-loop"], budget=100)
+    store.record_usage("main-key", tokens=150)
+    assert store.get_default_secret() is None
+
+
+def test_list_tagged_filters_by_tag_and_budget(store: CredentialStore):
+    store.create("sub-key", "ss", tags=["subagent"], budget=100)
+    store.create("main-key", "sm", tags=["main-loop"], budget=50)
+    store.record_usage("sub-key", tokens=150)
+    assert [c["id"] for c in store.list_tagged("subagent")] == []
+    store.create("sub-key2", "ss2", tags=["subagent"], budget=100)
+    assert [c["id"] for c in store.list_tagged("subagent")] == ["sub-key2"]
+
+
+def test_get_default_meta_returns_main_loop(store: CredentialStore):
+    store.create("main-key", "sm", tags=["main-loop"], budget=100)
+    store.create("sub-key", "ss", tags=["subagent"])
+    meta = store.get_default_meta()
+    assert meta is not None and meta["id"] == "main-key"

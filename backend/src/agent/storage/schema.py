@@ -288,6 +288,23 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE embeddings_v2 RENAME TO embeddings",
         ],
     ),
+    (
+        8,
+        [
+            # Soft enable/disable without conflating with `revoked`/`expired`.
+            # Policy and secret reads treat `enabled = 0` as unusable.
+            "ALTER TABLE credentials ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        ],
+    ),
+    (
+        9,
+        [
+            # Authorization is now expressed by tags (+ resolve required_tags),
+            # the enabled flag, and a tool's credential_ref binding. The per-key
+            # requestor whitelist (`scope`) is removed.
+            "ALTER TABLE credentials DROP COLUMN scope",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

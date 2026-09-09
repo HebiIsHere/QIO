@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useEventStore } from "./stores/events";
+import { useUiStore } from "./stores/ui";
 import ApprovalModal from "./components/ApprovalModal.vue";
 
 const events = useEventStore();
-onMounted(() => events.connect());
+const ui = useUiStore();
+onMounted(() => {
+  events.connect();
+  void ui.load();
+});
 </script>
 
 <template>

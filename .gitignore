@@ -37,5 +37,11 @@ frontend/e2e-shots/
 # 运行期 pid 文件
 scripts/.e2e-pids
 
+# 本地/探索临时产物（不入库）
+backend/.pytest_tmp/
+vite.err.log
+vite.log
+spike_search/
+
 # brainstorm 原型会话（可视化伴侣）
 .superpowers/

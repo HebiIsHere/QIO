@@ -216,6 +216,17 @@ class AgentLoop:
         while True:
             if self.budget.exhausted and not self.force_continue:
                 phase = LoopPhase.STOPPED
+                # 预算耗尽也要让用户知道为什么没有继续（而不是静默停止）
+                reason = (
+                    f"迭代次数达到上限（{self.budget.used_iterations}/{self.budget.max_iterations}）"
+                    if self.budget.used_iterations >= self.budget.max_iterations
+                    else f"token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
+                )
+                self._warn(f"turn stopped: {reason}")
+                await self._emit(
+                    EventType.WARNING,
+                    {"code": "budget_exhausted", "message": reason, "recoverable": True},
+                )
                 break
 
             if self._notices:

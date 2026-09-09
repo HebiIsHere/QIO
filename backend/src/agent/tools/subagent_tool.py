@@ -52,15 +52,30 @@ class SubagentTool(Tool):
         self.toolset = toolset or ["memory_search"]
 
     async def run(self, **kwargs: Any) -> ToolResult:
-        ref = self.definition.credential_ref
-        if not ref:
-            return ToolResult(ok=False, error="subagent tool requires credential_ref")
-        secret = self.credentials.get_secret(ref)
-        if secret is None:
-            return ToolResult(ok=False, error=f"referenced credential unavailable: {ref}")
         if self.adapter_factory is None:
             return ToolResult(ok=False, error="no adapter factory wired for subagent")
-        adapter = await self.adapter_factory(ref, self.definition.model)
+
+        # 主 agent 只能在 subagent tag 里选；不指定则自动挑；没有则静默用 main-loop。
+        candidates = self.credentials.list_tagged("subagent")
+        requested = str(kwargs.get("credential_key") or "").strip() or None
+        if requested:
+            if not any(c["id"] == requested for c in candidates):
+                return ToolResult(ok=False, error="credential_key 不在 subagent 用途内")
+            chosen = requested
+        elif candidates:
+            chosen = candidates[0]["id"]
+        else:
+            default = self.credentials.get_default_meta()
+            if default is None:
+                return ToolResult(
+                    ok=False,
+                    error="no subagent credential and no main-loop fallback",
+                )
+            chosen = default["id"]
+
+        meta = self.credentials.get_metadata(chosen)
+        model = (meta.get("default_model") if meta else None) or self.definition.model
+        adapter = await self.adapter_factory(chosen, model)
         if adapter is None:
             return ToolResult(ok=False, error="failed to build adapter for subagent")
         task_id = f"task_{uuid.uuid4().hex[:12]}"

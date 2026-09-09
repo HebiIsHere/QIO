@@ -19,6 +19,7 @@ import keyring
 from keyring.backends.fail import Keyring as FailKeyring
 
 SERVICE_NAME = "qio"
+_UNSET = object()
 
 
 def _now() -> str:
@@ -88,7 +89,6 @@ class CredentialStore:
         tags: list[str],
         endpoint: str | None = None,
         default_model: str | None = None,
-        scope: list[str] | None = None,
         budget: float | None = None,
         note: str | None = None,
         triggered_by: str = "user",
@@ -99,15 +99,14 @@ class CredentialStore:
             raise ValueError(f"credential already exists: {key_id}")
         now = _now()
         self.conn.execute(
-            "INSERT INTO credentials (id, version, tags, endpoint, default_model, scope, "
+            "INSERT INTO credentials (id, version, tags, endpoint, default_model, "
             "budget, budget_used, status, created_at, updated_at, note) "
-            "VALUES (?, 1, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)",
+            "VALUES (?, 1, ?, ?, ?, ?, 0, 'active', ?, ?, ?)",
             (
                 key_id,
                 json.dumps(tags, ensure_ascii=False),
                 endpoint,
                 default_model,
-                "null" if scope is None else json.dumps(scope, ensure_ascii=False),
                 budget,
                 now,
                 now,
@@ -145,13 +144,144 @@ class CredentialStore:
             pass
         self._audit(key_id, "revoke", row["version"], row["version"], triggered_by)
 
+    def update_metadata(
+        self,
+        key_id: str,
+        *,
+        tags: Any = _UNSET,
+        endpoint: Any = _UNSET,
+        default_model: Any = _UNSET,
+        budget: Any = _UNSET,
+        note: Any = _UNSET,
+        triggered_by: str = "user",
+    ) -> dict[str, Any]:
+        """Update credential metadata only (never the secret/version)."""
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        sets: list[str] = []
+        params: list[Any] = []
+        if tags is not _UNSET:
+            sets.append("tags = ?")
+            params.append(json.dumps(tags or [], ensure_ascii=False))
+        if endpoint is not _UNSET:
+            sets.append("endpoint = ?")
+            params.append(endpoint)
+        if default_model is not _UNSET:
+            sets.append("default_model = ?")
+            params.append(default_model)
+        if budget is not _UNSET:
+            sets.append("budget = ?")
+            params.append(budget)
+            sets.append("budget_used = 0")
+        if note is not _UNSET:
+            sets.append("note = ?")
+            params.append(note)
+        if not sets:
+            return self.get_metadata(key_id) or {}
+        sets.append("updated_at = ?")
+        params.append(_now())
+        params.append(key_id)
+        self.conn.execute(
+            f"UPDATE credentials SET {', '.join(sets)} WHERE id = ?", params
+        )
+        self._audit(key_id, "update", row["version"], row["version"], triggered_by)
+        return self.get_metadata(key_id) or {}
+
+    def set_enabled(
+        self, key_id: str, enabled: bool, triggered_by: str = "user"
+    ) -> dict[str, Any]:
+        """Soft pause/resume. A disabled credential is not resolvable and its
+        secret is not returned, but it is not revoked/removed."""
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        self.conn.execute(
+            "UPDATE credentials SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, _now(), key_id),
+        )
+        self._audit(key_id, "update", row["version"], row["version"], triggered_by)
+        return self.get_metadata(key_id) or {}
+
+    def delete(self, key_id: str) -> None:
+        """Permanently remove a credential (secret, metadata, and audit history).
+
+        Unlike revoke (which only marks status='revoked' and keeps history),
+        this is a hard delete so the key can never reappear in listings.
+        """
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        try:
+            self._kr.delete_password(self.service, key_id)
+        except Exception:
+            pass
+        self.conn.execute(
+            "DELETE FROM credential_audit WHERE credential_id = ?", (key_id,)
+        )
+        self.conn.execute("DELETE FROM credentials WHERE id = ?", (key_id,))
+
     # -- reading ----------------------------------------------------------
 
     def get_secret(self, key_id: str) -> str | None:
+        """Return the secret only when the credential is active and enabled."""
         row = self._row(key_id)
-        if row is None or row["status"] != "active":
+        if row is None or row["status"] != "active" or not row["enabled"]:
             return None
         return self._kr.get_password(self.service, key_id)
+
+    def get_default_secret(self) -> str | None:
+        """Fallback secret: the enabled/active `main-loop` credential with budget."""
+        rows = self.conn.execute(
+            "SELECT * FROM credentials WHERE status = 'active' AND enabled = 1 ORDER BY created_at"
+        ).fetchall()
+        best: sqlite3.Row | None = None
+        best_left: float | None = None
+        for row in rows:
+            if "main-loop" not in json.loads(row["tags"] or "[]"):
+                continue
+            budget = row["budget"]
+            used = float(row["budget_used"] or 0)
+            left = None if budget is None else float(budget) - used
+            if left is not None and left <= 0:
+                continue
+            if best is None or (left is None and best_left is not None) or (left is not None and (best_left is None or left > best_left)):
+                best = row
+                best_left = left
+        if best is None:
+            return None
+        return self._kr.get_password(self.service, best["id"])
+
+    def list_tagged(self, tag: str) -> list[dict[str, Any]]:
+        """Active/enabled credentials carrying `tag`, with budget available,
+        sorted by budget remaining descending (then key_id for stability)."""
+        rows = self.conn.execute(
+            "SELECT * FROM credentials WHERE status = 'active' AND enabled = 1"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if tag not in json.loads(row["tags"] or "[]"):
+                continue
+            meta = self._serialize(row)
+            budget = meta["budget"]
+            used = float(meta["budget_used"] or 0)
+            left = None if budget is None else float(budget) - used
+            if left is not None and left <= 0:
+                continue
+            meta["_budget_left"] = left
+            out.append(meta)
+        out.sort(
+            key=lambda m: (
+                -(m["_budget_left"] if m["_budget_left"] is not None else float("inf")),
+                m["id"],
+            )
+        )
+        return out
+
+    def get_default_meta(self) -> dict[str, Any] | None:
+        """Best active/enabled `main-loop` credential metadata (fallback target)."""
+        tagged = self.list_tagged("main-loop")
+        return tagged[0] if tagged else None
 
     def get_metadata(self, key_id: str) -> dict[str, Any] | None:
         row = self._row(key_id)
@@ -171,25 +301,6 @@ class CredentialStore:
             (key_id,),
         ).fetchall()
         return [dict(r) for r in rows]
-
-    def grant_tool_scope(self, key_id: str, tool_id: str) -> None:
-        """Narrow a key scope to a specific tool (scheme C, strictest intersection).
-
-        scope null (category default) becomes [tool_id]; otherwise tool_id is
-        appended. Other requestors lose access once narrowed.
-        """
-        row = self._row(key_id)
-        if row is None:
-            raise KeyError(f"credential not found: {key_id}")
-        scope = json.loads(row["scope"] or "null")
-        if scope is None:
-            scope = [tool_id]
-        elif tool_id not in scope:
-            scope.append(tool_id)
-        self.conn.execute(
-            "UPDATE credentials SET scope = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(scope, ensure_ascii=False), _now(), key_id),
-        )
 
     def record_usage(self, key_id: str, tokens: int, usd: float | None = None) -> None:
         row = self._row(key_id)
@@ -219,7 +330,7 @@ class CredentialStore:
         """Metadata only; the secret is never serialized."""
         data = dict(row)
         data["tags"] = json.loads(data.get("tags") or "[]")
-        data["scope"] = json.loads(data.get("scope") or "null")
+        data["enabled"] = bool(data.get("enabled", 1))
         return data
 
 

@@ -70,6 +70,18 @@ async def _register_subagent(ctx: AppContext, *, sync: bool = False, content: st
         def get_secret(self, ref):
             return "sk-sub"
 
+        def get_default_secret(self):
+            return "sk-sub"
+
+        def get_default_meta(self):
+            return {"id": "key_sub", "default_model": "m1"}
+
+        def get_metadata(self, ref):
+            return {"id": ref, "default_model": "m1"}
+
+        def list_tagged(self, tag):
+            return [{"id": "key_sub", "tags": [tag], "budget": None, "budget_used": 0}]
+
     definition = ToolDefinition(
         name="research_x",
         description="研究任务",

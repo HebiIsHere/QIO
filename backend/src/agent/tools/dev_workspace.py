@@ -52,6 +52,20 @@ class DevWorkspace:
         (task_dir / "request.md").write_text(
             f"# 开发需求\n\n{request}\n", encoding="utf-8"
         )
+        # 写入 tool.json 空模板：让模型一进工作区就知道契约长什么样，
+        # 直接改写该文件即可（避免模型卡在"先看一下模板结构"无法继续）。
+        (task_dir / "tool.json").write_text(
+            "{\n"
+            '  "name": "",\n'
+            '  "description": "",\n'
+            '  "tool_type": "function",\n'
+            '  "sync": true,\n'
+            '  "parameters": {},\n'
+            '  "code": "",\n'
+            '  "tests": []\n'
+            "}\n",
+            encoding="utf-8",
+        )
         task = DevTask(id=task_id, request=request, dir=task_dir)
         self._tasks[task_id] = task
         return task

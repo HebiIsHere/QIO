@@ -9,26 +9,28 @@ const base: CredentialMeta = {
   tags: ["chat", "code"],
   endpoint: "https://api.openai.com/v1",
   default_model: "gpt-4o-mini",
-  scope: ["default", "tools"],
   budget: 40,
   budget_used: 12,
   status: "active",
+  enabled: true,
   note: null,
 };
 
 describe("CredentialCard", () => {
-  it("渲染名称、类别标签与 scope 徽标", () => {
+  it("渲染名称与类别标签", () => {
     const w = mount(CredentialCard, { props: { credential: { ...base, note: "GPT-5 Studio" } } });
     expect(w.find(".name").text()).toBe("GPT-5 Studio");
     const badges = w.findAll(".qio-badge").map((b) => b.text());
     expect(badges).toContain("chat");
     expect(badges).toContain("code");
-    expect(badges).toContain("scope: default");
   });
-  it("active 显示 ✓ 已连接（ok），非 active 显示 ✕ 未连接（err）", () => {
+  it("active+enabled 显示 ✓ 已启用（ok），停用显示 已停用（paused），revoked 显示 ✕ 已撤销（err）", () => {
     const ok = mount(CredentialCard, { props: { credential: { ...base } } });
     expect(ok.find(".status").text()).toContain("✓");
     expect(ok.find(".status").classes()).toContain("ok");
+    const paused = mount(CredentialCard, { props: { credential: { ...base, enabled: false } } });
+    expect(paused.find(".status").text()).toBe("已停用");
+    expect(paused.find(".status").classes()).toContain("paused");
     const err = mount(CredentialCard, { props: { credential: { ...base, status: "revoked" } } });
     expect(err.find(".status").text()).toContain("✕");
     expect(err.find(".status").classes()).toContain("err");
@@ -51,14 +53,17 @@ describe("CredentialCard", () => {
     expect(w.find(".meta").text()).toContain("预算 ∞");
     expect(w.find(".budget").exists()).toBe(false);
   });
-  it("测试/编辑/删除按钮发出对应事件", async () => {
+  it("测试/编辑/换钥/启停/删除按钮发出对应事件", async () => {
     const w = mount(CredentialCard, { props: { credential: { ...base } } });
-    await w.findAll(".qio-btn")[0].trigger("click");
-    await w.findAll(".qio-btn")[1].trigger("click");
-    await w.findAll(".qio-btn.danger")[0].trigger("click");
+    await w.find(".btn-test").trigger("click");
+    await w.find(".btn-meta").trigger("click");
+    await w.find(".btn-rotate").trigger("click");
+    await w.find(".btn-toggle").trigger("click");
+    await w.find(".btn-danger").trigger("click");
     expect(w.emitted("test")).toHaveLength(1);
-    expect(w.emitted("edit")).toHaveLength(1);
+    expect(w.emitted("edit-meta")).toHaveLength(1);
+    expect(w.emitted("rotate")).toHaveLength(1);
+    expect(w.emitted("toggle-enabled")).toHaveLength(1);
     expect(w.emitted("remove")).toHaveLength(1);
   });
 });
-

@@ -53,6 +53,7 @@ from agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 MAIN_LOOP_TAG = "main-loop"
+MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
 BUDGET_RATIO = 0.25
 DEFAULT_FRAGMENT_MAX_MESSAGES = 10
 CONSOLIDATION_COOLDOWN_SECONDS = 600
@@ -96,12 +97,59 @@ class AppContext:
         self.services.register("predictor", self.predictor)
         self.services.register("approvals", self.approvals)
         self.services.register("embedding", self.embedding)
+        from agent.services.search import SearchService
+
+        self.search_service = SearchService(
+            searxng_url=self.settings_store.get("search.searxng_url") or None,
+            bocha_api_key=self.settings_store.get("search.bocha_api_key") or None,
+        )
+        self.services.register("search_service", self.search_service)
         self.registry = ToolRegistry(approvals=self.approvals, services=self.services)
         # agent 切换/创建话题后，实时把新锚点广播给前端（ANCHOR SSE 事件）
         self.registry.register_policy("tool/result", self._on_tool_anchor_result)
         self.registry.register(EchoTool())
         self.registry.register(NowTool())
         self.registry.register(MemorySearchTool(self.retriever))
+        from agent.tools.web_search import WebSearchTool
+        from agent.tools.web_fetch import WebFetchTool
+
+        self.registry.register(WebSearchTool(self.search_service))
+        self.registry.register(WebFetchTool())
+        # 电脑操控：共享沙箱 + 文件系统/命令/进程工具（分级授权，走 ComputerSandbox）
+        from agent.services.computer import ComputerSandbox, DEFAULT_MODE
+        from agent.tools.fs_tools import (
+            FsReadTool,
+            FsWriteTool,
+            FsPatchTool,
+            FsListTool,
+            FsFindTool,
+            FsInfoTool,
+        )
+        from agent.tools.cmd_tools import RunCmdTool, SysInfoTool, ProcListTool, ProcKillTool
+
+        def _computer_root() -> str:
+            return self.settings_store.get("computer.root_dir", "") or str(
+                self.settings.data_dir / "workspace"
+            )
+
+        def _computer_mode() -> str:
+            return self.settings_store.get("computer.permission_mode", DEFAULT_MODE) or DEFAULT_MODE
+
+        self.computer = ComputerSandbox(resolve_root=_computer_root, permission_mode=_computer_mode)
+        self.services.register("computer", self.computer)
+        for _tool in (
+            FsReadTool(),
+            FsWriteTool(),
+            FsPatchTool(),
+            FsListTool(),
+            FsFindTool(),
+            FsInfoTool(),
+            RunCmdTool(),
+            SysInfoTool(),
+            ProcListTool(),
+            ProcKillTool(),
+        ):
+            self.registry.register(_tool)
         from agent.tools.topic_tools import CreateTopicTool, SwitchTopicTool
 
         self.registry.register(SwitchTopicTool(conn))
@@ -120,6 +168,7 @@ class AppContext:
         from agent.tools.approval import ApprovalService
         from agent.tools.dev_tools import (
             CreateToolTool,
+            DevListFilesTool,
             DevReadFileTool,
             DevRunTestsTool,
             DevSubmitTool,
@@ -129,6 +178,7 @@ class AppContext:
 
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
         self.registry.register(CreateToolTool(self.dev_workspaces))
+        self.registry.register(DevListFilesTool(self.dev_workspaces))
         self.registry.register(DevWriteFileTool(self.dev_workspaces))
         self.registry.register(DevReadFileTool(self.dev_workspaces))
         self.registry.register(DevRunTestsTool(self.dev_workspaces))
@@ -199,30 +249,14 @@ class AppContext:
         )
 
     def _build_embedding_backend(self):
-        """Pick the recall backend: remote embeddings (BYOK) > local ONNX > None."""
+        """Pick the local embedding backend (ONNX model or None). Vector recall
+        never uses a remote/cloud credential."""
         from agent.selector.onnx import OnnxEmbeddingBackend
-        from agent.selector.remote import DEFAULT_REMOTE_MODEL, RemoteEmbeddingBackend
 
         models_dir = Path(os.environ.get("QIO_MODELS_DIR") or (self.settings.data_dir / "models"))
         onnx = OnnxEmbeddingBackend(
             self.conn, model_dir=models_dir / "bge-small-zh-v1.5"
         )
-        refs = self.policy.resolve("embedding", ["embedding"])
-        if refs:
-            secret = self.credentials.get_secret(refs[0].key_id)
-            if secret is not None:
-                model = (
-                    self.settings_store.get("embedding.model")
-                    or refs[0].default_model
-                    or DEFAULT_REMOTE_MODEL
-                )
-                base_url = refs[0].endpoint or "https://api.openai.com/v1"
-                remote = RemoteEmbeddingBackend(
-                    self.conn, api_key=secret, base_url=base_url, model=model
-                )
-                if remote.available():
-                    logger.info("embedding backend: remote (%s)", model)
-                    return remote
         if onnx.available():
             return onnx
         return None
@@ -255,7 +289,7 @@ class AppContext:
     # -- adapter ----------------------------------------------------------
 
     def resolve_main_ref(self) -> CredentialRef | None:
-        refs = self.policy.resolve("main-loop", [MAIN_LOOP_TAG])
+        refs = self.policy.resolve("main-loop", MAIN_LOOP_USAGE_TAGS)
         return refs[0] if refs else None
 
     async def build_adapter_for_credential(
@@ -428,7 +462,7 @@ class AppContext:
             )
             prompt = notice
             if payload.text:
-                prompt = f"{payload.text}\n\n{notice}"
+                prompt = f"{payload.text}\n\n【系统通知】\n{notice}"
             loop = AgentLoop(
                 adapter, self.registry, self.bus,
                 tool_trace=self._record_tool_call,
@@ -498,7 +532,11 @@ class AppContext:
         return {"id": active.fragment_id, "title": row["title"] if row else None}
 
     def _short_term_items(self, topic_id: str) -> list:
-        """Deterministic short-term memory: open fragment transcript + recent summaries."""
+        """Deterministic short-term memory: open fragment transcript + recent summaries.
+
+        转录按 token 上限截断（只保留最近消息），避免多轮对话后整段转录无限
+        膨胀、单轮 token 消耗突破循环预算导致对话被 STOPPED。
+        """
         from agent.knowledge.inject import InjectionSource
         from agent.memory.index import estimate_tokens
         from agent.services.injection import PlannedItem
@@ -506,13 +544,28 @@ class AppContext:
         items: list = []
         frag = self.fragments.get_or_create_open(topic_id)
         if frag.start_message_id is not None:
+            # 只取最近 N 条消息，且整体不超过 ~2.5k token（约 1/6 迭代预算）
+            SHORT_TERM_MAX_MESSAGES = 12
+            SHORT_TERM_MAX_TOKENS = 2_500
+            rows = self.fragments.messages(frag.id)
             lines = [
                 f"[{m['role']}] {m['content']}"
-                for m in self.fragments.messages(frag.id)
+                for m in rows[-SHORT_TERM_MAX_MESSAGES:]
                 if m["content"]
             ]
             if lines:
                 text = "\n".join(lines)
+                if estimate_tokens(text) > SHORT_TERM_MAX_TOKENS:
+                    # 从后往前保留，直到接近上限（保持最近上下文）
+                    kept: list[str] = []
+                    used = 0
+                    for line in reversed(lines):
+                        t = estimate_tokens(line)
+                        if used + t > SHORT_TERM_MAX_TOKENS and kept:
+                            break
+                        kept.append(line)
+                        used += t
+                    text = "\n".join(reversed(kept))
                 items.append(
                     PlannedItem(
                         source="memory",
@@ -746,7 +799,7 @@ class AppContext:
         ]
         prompt = message
         if payload.text:
-            prompt = f"{payload.text}\n\n用户消息：{message}"
+            prompt = f"{payload.text}\n\n【用户消息】\n{message}"
 
         loop = AgentLoop(
             adapter, self.registry, self.bus,

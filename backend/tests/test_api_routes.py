@@ -56,6 +56,46 @@ def test_credential_test_endpoint_no_secret(client):
     assert resp.status_code == 404
 
 
+def test_credential_update_metadata_enable_disable_audit(client):
+    resp = client.post(
+        "/api/credentials",
+        json={"key_id": "k1", "secret": "sk-1", "tags": ["main-loop"]},
+    )
+    assert resp.status_code == 200
+
+    resp = client.patch(
+        "/api/credentials/k1",
+        json={"note": "hello", "budget": 500},
+    )
+    assert resp.status_code == 200
+    meta = resp.json()["credential"]
+    assert meta["note"] == "hello"
+    assert meta["budget"] == 500
+    assert meta["version"] == 1
+
+    assert client.post("/api/credentials/k1/disable").json()["credential"]["enabled"] is False
+    assert client.app.state.ctx.credentials.get_secret("k1") is None
+    assert client.post("/api/credentials/k1/enable").json()["credential"]["enabled"] is True
+    assert client.app.state.ctx.credentials.get_secret("k1") == "sk-1"
+
+    audit = client.get("/api/credentials/k1/audit").json()["audit"]
+    assert [e["action"] for e in audit] == ["create", "update", "update", "update"]
+
+
+def test_credential_delete_removes_record(client):
+    client.post(
+        "/api/credentials",
+        json={"key_id": "todelete", "secret": "s", "tags": ["main-loop"]},
+    )
+    resp = client.delete("/api/credentials/todelete")
+    assert resp.status_code == 200
+    listing = client.get("/api/credentials").json()["credentials"]
+    assert all(c["key_id"] != "todelete" for c in listing)
+    assert client.delete("/api/credentials/todelete").status_code == 404
+
+
+
+
 async def test_turn_without_credential_warns(client):
     ctx = client.app.state.ctx
     collected: list[str] = []

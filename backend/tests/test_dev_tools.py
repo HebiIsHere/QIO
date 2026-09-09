@@ -55,6 +55,7 @@ def test_workspace_write_definition(tmp_path):
 from agent.api.bus import EventBus
 from agent.tools.dev_tools import (
     CreateToolTool,
+    DevListFilesTool,
     DevReadFileTool,
     DevRunTestsTool,
     DevSubmitTool,
@@ -68,6 +69,35 @@ async def test_create_tool_returns_guide():
     result = await tool.run(request="帮我做一个计算工具")
     assert result.ok and "ws_" in result.content
     assert "需求规格" in result.content  # 指南含必填项
+
+
+async def test_create_tool_reports_initial_files():
+    """create_tool 返回应告知模型工作区初始文件（request.md + tool.json 模板）。"""
+    ws = DevWorkspace(Path_factory())
+    tool = CreateToolTool(ws)
+    result = await tool.run(request="帮我做一个查找文献的工具")
+    assert result.ok
+    assert "request.md" in result.content
+    assert "tool.json" in result.content
+    # 工作区确实预置了 tool.json 空模板（模型可直接改写，无需"看模板"卡住）
+    import re
+
+    task_id = re.search(r"ws_[a-f0-9]+", result.content).group(0)
+    files = ws.list_files(task_id)
+    assert "tool.json" in files
+    assert "request.md" in files
+
+
+async def test_dev_list_files_lists_and_validates():
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("x")
+    tool = DevListFilesTool(ws)
+    r = await tool.run(workspace=task.id)
+    assert r.ok
+    assert "request.md" in r.content and "tool.json" in r.content
+    # 无效工作区
+    r2 = await tool.run(workspace="ghost")
+    assert r2.ok is False
 
 
 def Path_factory():

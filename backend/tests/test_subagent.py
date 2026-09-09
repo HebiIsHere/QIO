@@ -13,11 +13,14 @@ from agent.tools.spec import SubagentBudget, ToolDefinition, validate_tool_propo
 
 # ---------- spec ----------
 
-def test_subagent_definition_requires_ref_and_model():
-    with pytest.raises(Exception):
-        ToolDefinition(name="t", description="d", tool_type="subagent")
-    with pytest.raises(Exception):
-        ToolDefinition(name="t", description="d", tool_type="subagent", credential_ref="k1")
+def test_subagent_definition_defaults_budget_without_ref_or_model():
+    # 子任务不再要求 credential_ref/model：改由 subagent tag 在运行时选钥。
+    d = ToolDefinition(name="t", description="d", tool_type="subagent")
+    assert d.credential_ref is None
+    assert d.model is None
+    assert d.subagent_budget is not None
+    assert d.subagent_budget.max_iterations == 5
+    assert d.subagent_budget.max_tokens == 100_000
     d = ToolDefinition(
         name="research_x",
         description="d",
@@ -189,6 +192,20 @@ def _make_tool(
     class FakeCreds:
         def get_secret(self, ref):
             return secret
+
+        def get_default_secret(self):
+            return None
+
+        def get_default_meta(self):
+            return None
+
+        def get_metadata(self, ref):
+            return {"id": ref, "default_model": "m1"} if secret else None
+
+        def list_tagged(self, tag):
+            if not secret:
+                return []
+            return [{"id": "key_sub", "tags": [tag], "budget": None, "budget_used": 0}]
 
     tm = TaskManager(bus, max_concurrent=4)
     definition = ToolDefinition(

@@ -31,13 +31,10 @@ class FragmentSummary(BaseModel):
 
 
 SUMMARY_PROMPT = (
-    "You are writing the summary for a closed conversation fragment. "
-    "Respond with a single JSON object only (no prose):\n"
-    '{"title": "<short title, <=60 chars>", "summary": "<condensed record of facts, '
-    'decisions, preferences, and commitments, <=2000 chars>", '
-    '"entities": ["<mentioned people/objects, exact names>"], '
-    '"keywords": ["<searchable keywords>"]}\n'
-    "Keep the summary faithful to the transcript; do not add or infer facts."
+    "You are summarizing a closed conversation fragment. "
+    "Return only a single JSON object, no prose or Markdown fences:\n"
+    '{"title": "<short title, <=60 chars>", "summary": "<condensed record of facts, decisions, preferences, and commitments, <=2000 chars>", "entities": ["<mentioned people/objects, exact names>"], "keywords": ["<searchable keywords>"]}\n'
+    "Keep the summary faithful to the transcript; do not add or infer facts. entities and keywords may be empty arrays when none."
 )
 
 
@@ -111,18 +108,12 @@ class KnowledgeExtraction(BaseModel):
 
 KNOWLEDGE_EXTRACTION_PROMPT = (
     "You are extracting durable knowledge from a conversation fragment summary. "
-    "Respond with a single JSON object only:\n"
-    '{"candidates": [{"content": "<stable fact, one sentence>", '
-    '"category": "user_profile|agent_self|goal|general_fact|tool_experience", '
-    '"attach": "user|topic|entity|null", '
-    '"entity": "<exact entity name when attach=entity, else null>"}]}\n'
-    "Rules: only extract facts that remain true over time (preferences, decisions, "
-    "commitments, reusable knowledge). Do not extract transient statements.\n"
-    "user_profile = facts about the user; agent_self = facts about the assistant; "
-    "goal = user objectives; general_fact = general knowledge; "
-    "tool_experience = reusable tool/technique experience.\n"
-    "attach=user for user facts, attach=topic for topic-specific knowledge, "
-    "attach=entity for facts about a named entity.\n"
+    "Return only a single JSON object, no prose or Markdown fences:\n"
+    '{"candidates": [{"content": "<stable fact, one sentence>", "category": "user_profile|agent_self|goal|general_fact|tool_experience", "attach": "user|topic|entity|null", "entity": "<exact entity name when attach=entity, else null>"}]}\n'
+    "Extract only facts that remain true over time: preferences, decisions, commitments, reusable knowledge. Do not extract transient statements.\n"
+    "category: user_profile=facts about the user; agent_self=facts about the assistant; goal=user objectives; general_fact=general knowledge; tool_experience=reusable tool/technique experience.\n"
+    "attach: user for user facts, topic for topic-specific knowledge, entity for facts about a named entity. entity must match the attach=entity value exactly.\n"
+    "Return an empty candidates array when nothing is durable."
 )
 
 
@@ -171,12 +162,12 @@ async def extract_knowledge_candidates(
 # ---------------------------------------------------------------------------
 
 ROLLING_SUMMARY_PROMPT = (
-    "You are updating a rolling summary of an ongoing conversation fragment. "
+    "You are updating the rolling summary of an ongoing conversation fragment. "
     "Merge the previous summary with the new messages into one consolidated summary. "
     "Keep durable facts (preferences, decisions, commitments) and drop transient details. "
-    "Respond with a single JSON object only:\n"
-    '{"title": "<short title, <=60 chars>", "summary": "<consolidated, <=2000 chars>", '
-    '"entities": ["<names>"], "keywords": ["<searchable>"]}\n'
+    "Return only a single JSON object, no prose or Markdown fences:\n"
+    '{"title": "<short title, <=60 chars>", "summary": "<consolidated, <=2000 chars>", "entities": ["<names>"], "keywords": ["<searchable>"]}\n'
+    "If no change is needed, return the previous summary unchanged."
 )
 
 

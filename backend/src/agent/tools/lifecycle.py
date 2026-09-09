@@ -174,7 +174,6 @@ class ToolLifecycle:
                     False, definition.name, "credential",
                     f"credential grant {grant.decision}",
                 )
-            self.credentials.grant_tool_scope(definition.credential_ref, definition.name)
 
         # register side-by-side + persist
         try:

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api, type CredentialMeta } from "../services/api";
-import { identifyCredential } from "../services/identify";
-import QInput from "../components/ui/QInput.vue";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
+import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
 import CredentialCard from "./settings/CredentialCard.vue";
+import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
 import { getTheme, toggleTheme } from "../utils/theme";
 import {
   floatingState,
@@ -15,73 +15,53 @@ import {
 } from "../composables/floatingState";
 
 const credentials = ref<CredentialMeta[]>([]);
-const form = ref({
-  key_id: "",
-  secret: "",
-  tags: "", // 附加标签（逗号分隔）
-  endpoint: "",
-  default_model: "",
-  budget: null as number | null,
-  scope: "", // scope 授权（逗号分隔，可选）
-});
-const formCategory = ref("main-loop");
+const ui = useUiStore();
 const notice = ref("");
-const identifyState = ref("idle" as "idle" | "working" | "done" | "failed");
-const identifiedProvider = ref("");
-const modelOptions = ref<string[]>([]);
-let identifyTimer: ReturnType<typeof setTimeout> | null = null;
+// 默认只显示可用凭据；被撤销/过期/停用的需手动切换到对应筛选，避免旧数据突然出现。
+const credFilter = ref<"all" | "enabled" | "disabled" | "revoked" | "expired">("enabled");
+const modal = ref<{
+  open: boolean;
+  mode: CredentialModalMode;
+  initial: Record<string, unknown> | null;
+}>({ open: false, mode: "create", initial: null });
 
-watch(
-  () => form.value.secret,
-  (secret) => {
-    if (identifyTimer) clearTimeout(identifyTimer);
-    if (!secret.trim()) {
-      identifyState.value = "idle";
-      modelOptions.value = [];
-      return;
-    }
-    identifyTimer = setTimeout(async () => {
-      identifyState.value = "working";
-      try {
-        const result = await identifyCredential(secret.trim());
-        if (result.identified) {
-          identifiedProvider.value = result.provider ?? "";
-          form.value.endpoint = result.base_url ?? form.value.endpoint;
-          form.value.default_model = result.default_model ?? form.value.default_model;
-          modelOptions.value = result.models ?? [];
-          identifyState.value = "done";
-        } else {
-          identifyState.value = "failed";
-          modelOptions.value = [];
-        }
-      } catch (e) {
-        console.error("[identify] failed:", e);
-        identifyState.value = "failed";
-        modelOptions.value = [];
-      }
-    }, 800);
-  },
-);
-// 只显示 active 凭据；撤销后卡片立即消失
-const activeCredentials = computed(() => credentials.value.filter((c) => c.status === "active"));
-
-const CATEGORY_PRESETS = ["chat", "code", "embed", "main-loop", "subagent", "vision", "research", "embedding"];
-const categoryOptions = computed(() => {
-  const set = new Set(CATEGORY_PRESETS);
-  if (formCategory.value.trim()) set.add(formCategory.value.trim());
-  return Array.from(set).map((v) => ({ value: v, label: v }));
+const filteredCredentials = computed(() => {
+  const list = credentials.value;
+  switch (credFilter.value) {
+    case "enabled":
+      return list.filter((c) => c.status === "active" && c.enabled);
+    case "disabled":
+      return list.filter((c) => c.status === "active" && !c.enabled);
+    case "revoked":
+      return list.filter((c) => c.status === "revoked");
+    case "expired":
+      return list.filter((c) => c.status === "expired");
+    default:
+      return list;
+  }
 });
-const modelSelectOptions = computed(() => modelOptions.value.map((m) => ({ value: m, label: m })));
-const identifyText = computed(() =>
-  identifyState.value === "working"
-    ? "识别中…"
-    : identifyState.value === "done"
-      ? `已识别：${identifiedProvider.value}`
-      : identifyState.value === "failed"
-        ? "未能自动识别，请手动填写"
-        : "",
-);
-const submitLabel = computed(() => (editTarget.value ? "以此换钥（新建）" : "创建凭据"));
+
+const FILTERS = [
+  { value: "all", label: "全部" },
+  { value: "enabled", label: "已启用" },
+  { value: "disabled", label: "已停用" },
+  { value: "revoked", label: "已撤销" },
+  { value: "expired", label: "已过期" },
+] as const;
+
+function openCreate() {
+  modal.value = { open: true, mode: "create", initial: null };
+}
+function openMeta(c: CredentialMeta) {
+  modal.value = { open: true, mode: "meta", initial: { ...c } };
+}
+function openRotate(c: CredentialMeta) {
+  modal.value = {
+    open: true,
+    mode: "rotate",
+    initial: { ...c, key_id: `${c.key_id}_new` },
+  };
+}
 
 const activeTab = ref<"cred" | "pref" | "win">("cred");
 /** 窗口管理：三个浮动组件的贴靠隐藏开关（读写共享 floatingState） */
@@ -108,9 +88,62 @@ const customCount = ref(10);
 const settingsNotice = ref("");
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
-const formEl = ref<HTMLElement | null>(null);
-const editTarget = ref<string | null>(null);
 const tierPresets = ["5", "10", "15"];
+const searchTopK = ref(5);
+const searchMaxChars = ref(15000);
+const searchSearxngUrl = ref("");
+const searchBochaKey = ref("");
+const searchBochaHasKey = ref(false);
+
+async function loadSearchSettings() {
+  try {
+    const s = await api.getSearchSettings();
+    searchTopK.value = s.top_k_default;
+    searchMaxChars.value = s.max_fetch_chars;
+    searchSearxngUrl.value = s.searxng_url;
+    searchBochaHasKey.value = s.bocha_has_key;
+  } catch (e) {
+    console.error("[settings] load search settings failed:", e);
+  }
+}
+
+async function saveSearchSettings() {
+  if (!Number.isInteger(searchTopK.value) || searchTopK.value < 1 || searchTopK.value > 20) {
+    settingsNotice.value = "默认返回条数需在 1-20 之间";
+    return;
+  }
+  if (
+    !Number.isInteger(searchMaxChars.value) ||
+    searchMaxChars.value < 1000 ||
+    searchMaxChars.value > 40000
+  ) {
+    settingsNotice.value = "读正文字符预算需在 1000-40000 之间";
+    return;
+  }
+  try {
+    const r = await api.updateSearchSettings({
+      top_k_default: searchTopK.value,
+      max_fetch_chars: searchMaxChars.value,
+      searxng_url: searchSearxngUrl.value.trim(),
+      bocha_api_key: searchBochaKey.value.trim(),
+    });
+    searchTopK.value = r.top_k_default;
+    searchMaxChars.value = r.max_fetch_chars;
+    searchSearxngUrl.value = r.searxng_url;
+    searchBochaHasKey.value = r.bocha_has_key;
+    searchBochaKey.value = "";
+    settingsNotice.value = "已保存搜索配置";
+  } catch (e) {
+    settingsNotice.value = `保存失败：${(e as Error).message}`;
+  }
+}
+
+function onSearchTopKInput(v: number | null) {
+  searchTopK.value = v ?? 0;
+}
+function onSearchMaxCharsInput(v: number | null) {
+  searchMaxChars.value = v ?? 0;
+}
 
 async function loadMaintenanceSettings() {
   try {
@@ -201,6 +234,59 @@ function onTierSelect(v: string) {
   }
 }
 
+const speedOptions = TYPEWRITER_SPEEDS.map((cps) => ({
+  value: String(cps),
+  label: cps === 25 ? "慢（25 字/秒）" : cps === 50 ? "中（50 字/秒）" : "快（75 字/秒）",
+}));
+
+function onSpeedSelect(v: string) {
+  const cps = Number(v);
+  if (TYPEWRITER_SPEEDS.includes(cps as (typeof TYPEWRITER_SPEEDS)[number])) {
+    void ui.setCps(cps);
+    settingsNotice.value = `已保存：输出速度 ${cps} 字/秒`;
+  }
+}
+
+const computerRootDir = ref("");
+const computerPermissionMode = ref("default");
+const computerNotice = ref("");
+
+const permissionModeOptions = [
+  { value: "default", label: "默认（低危自动，高危审批）" },
+  { value: "plan", label: "只读规划（不写不执行）" },
+  { value: "accept-edits", label: "接受编辑（文件编辑自动，命令仍审批）" },
+  { value: "bypass", label: "全放行（危险，仅信任环境）" },
+];
+
+async function loadComputerSettings() {
+  try {
+    const s = await api.getComputerSettings();
+    computerRootDir.value = s.root_dir || "";
+    computerPermissionMode.value = s.permission_mode || "default";
+  } catch (e) {
+    console.error("[settings] load computer settings failed:", e);
+  }
+}
+
+async function saveComputerSettings() {
+  try {
+    const r = await api.updateComputerSettings({
+      root_dir: computerRootDir.value.trim(),
+      permission_mode: computerPermissionMode.value,
+    });
+    computerRootDir.value = r.root_dir || "";
+    computerPermissionMode.value = r.permission_mode || "default";
+    computerNotice.value = "已保存电脑操控配置";
+  } catch (e) {
+    computerNotice.value = `保存失败：${(e as Error).message}`;
+  }
+}
+
+function onPermissionModeSelect(v: string) {
+  computerPermissionMode.value = v;
+  void saveComputerSettings();
+}
+
 async function load() {
   try {
     credentials.value = (await api.listCredentials()).credentials;
@@ -209,90 +295,52 @@ async function load() {
   }
 }
 
-function buildTags(): string[] {
-  return Array.from(
-    new Set(
-      [formCategory.value, ...form.value.tags.split(",").map((t) => t.trim()).filter(Boolean)]
-        .map((t) => t.trim())
-        .filter(Boolean),
-    ),
-  );
-}
-
-function resetForm() {
-  editTarget.value = null;
-  form.value = {
-    key_id: "",
-    secret: "",
-    tags: "",
-    endpoint: "",
-    default_model: "",
-    budget: null,
-    scope: "",
-  };
-  formCategory.value = "main-loop";
-  modelOptions.value = [];
-  identifyState.value = "idle";
-  identifiedProvider.value = "";
-}
-
-async function create() {
+async function onModalSave(payload: Record<string, unknown>) {
   error.value = "";
   notice.value = "";
-  if (!form.value.secret.trim()) {
-    error.value = "请先粘贴 API Key";
-    return;
-  }
+  const mode = modal.value.mode;
+  const target = modal.value.initial?.key_id;
   try {
-    const payload: Record<string, unknown> = {
-      key_id: form.value.key_id.trim(),
-      secret: form.value.secret,
-      tags: buildTags(),
-    };
-    if (form.value.endpoint.trim()) payload.endpoint = form.value.endpoint.trim();
-    if (form.value.default_model.trim()) payload.default_model = form.value.default_model.trim();
-    if (form.value.budget && form.value.budget > 0) payload.budget = form.value.budget;
-    if (form.value.scope.trim()) payload.scope = form.value.scope.split(",").map((s) => s.trim()).filter(Boolean);
-    const editedKey = editTarget.value;
-    await api.createCredential(payload);
-    notice.value = editedKey
-      ? `凭据已创建。请撤销旧凭据「${editedKey}」，避免双 key 并存（预算各计）。`
-      : "凭据已创建";
-    resetForm();
+    if (mode === "meta" && target) {
+      await api.updateCredentialMeta(String(target), payload);
+      notice.value = "凭据已更新（密钥未变）";
+    } else {
+      await api.createCredential(payload);
+      notice.value =
+        mode === "rotate" && target
+          ? `新凭据已创建。请撤销旧凭据「${target}」，避免双 key 并存（预算各计）。`
+          : "凭据已创建";
+    }
+    modal.value.open = false;
     await load();
   } catch (e) {
     error.value = (e as Error).message;
   }
 }
 
-function edit(c: CredentialMeta) {
-  activeTab.value = "cred";
-  editTarget.value = c.key_id;
-  form.value = {
-    key_id: c.key_id,
-    secret: "",
-    tags: (c.tags ?? []).slice(1).join(", "),
-    endpoint: c.endpoint ?? "",
-    default_model: c.default_model ?? "",
-    budget: c.budget,
-    scope: (c.scope ?? []).join(", "),
-  };
-  formCategory.value = (c.tags ?? [])[0] ?? "main-loop";
-  modelOptions.value = [];
-  identifyState.value = "idle";
-  identifiedProvider.value = "";
-  notice.value = `编辑「${c.key_id}」：密钥只写不读，粘贴新密钥后「以此换钥（新建）」；保存后请撤销旧凭据，避免双 key 并存。`;
-  formEl.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+function toggleEnabled(c: CredentialMeta) {
+  void (async () => {
+    error.value = "";
+    try {
+      await api.setCredentialEnabled(c.key_id, !c.enabled);
+      await load();
+    } catch (e) {
+      error.value = (e as Error).message;
+    }
+  })();
 }
 
-async function revoke(keyId: string) {
-  try {
-    await api.revokeCredential(keyId);
-    // revoked cards disappear from the list immediately
-    credentials.value = credentials.value.filter((c) => c.key_id !== keyId);
-  } catch (e) {
-    error.value = (e as Error).message;
-  }
+function remove(keyId: string) {
+  if (!window.confirm(`确定彻底删除凭据「${keyId}」？将删除密钥与全部记录，不可恢复。`)) return;
+  void (async () => {
+    error.value = "";
+    try {
+      await api.deleteCredential(keyId);
+      credentials.value = credentials.value.filter((c) => c.key_id !== keyId);
+    } catch (e) {
+      error.value = (e as Error).message;
+    }
+  })();
 }
 
 async function test(keyId: string) {
@@ -316,9 +364,6 @@ function showToast(text: string, kind: "ok" | "err") {
   }, 2600);
 }
 
-function onBudgetInput(v: number | null) {
-  form.value.budget = v;
-}
 function onCustomCountInput(v: number | null) {
   customCount.value = v ?? 0;
 }
@@ -330,6 +375,9 @@ onMounted(() => {
   void load();
   void loadMemorySettings();
   void loadMaintenanceSettings();
+  void loadSearchSettings();
+  void loadComputerSettings();
+  void ui.load();
 });
 </script>
 
@@ -363,69 +411,45 @@ onMounted(() => {
     <!-- 凭据 -->
     <div v-show="activeTab === 'cred'" class="panel">
       <section class="sec">
-        <h2>凭据</h2>
+        <div class="sec-head">
+          <h2>凭据</h2>
+          <button type="button" class="qio-btn primary new-cred" @click="openCreate">＋ 新建凭据</button>
+        </div>
         <p class="desc">密钥只写不读：保存后不再显示明文，仅本地写入 keyring，服务器不落盘。</p>
         <p v-if="error" class="msg err">{{ error }}</p>
         <p v-if="notice" class="msg ok">{{ notice }}</p>
 
+        <div class="filters">
+          <button
+            v-for="f in FILTERS" :key="f.value" type="button"
+            class="qio-btn filter" :class="{ active: credFilter === f.value }"
+            @click="credFilter = f.value"
+          >{{ f.label }}</button>
+        </div>
+
         <CredentialCard
-          v-for="c in activeCredentials"
+          v-for="c in filteredCredentials"
           :key="c.key_id"
           :credential="c"
           @test="test(c.key_id)"
-          @edit="edit(c)"
-          @remove="revoke(c.key_id)"
+          @edit-meta="openMeta(c)"
+          @rotate="openRotate(c)"
+          @toggle-enabled="toggleEnabled(c)"
+          @remove="remove(c.key_id)"
         />
-        <p v-if="!activeCredentials.length" class="empty mono">尚无凭据。</p>
-      </section>
-
-      <section class="sec">
-        <h2>{{ editTarget ? "编辑凭据（换钥）" : "新建凭据" }}</h2>
-        <p class="desc">粘贴 API Key 后自动识别端点与模型；类别标签 + scope 授权控制工具访问。</p>
-        <p v-if="editTarget" class="edit-hint mono">编辑态：保存将新建凭据（key_id 同名会提示已存在，可改名），旧凭据需手动撤销。</p>
-        <div ref="formEl" class="form">
-          <div class="field">
-            <span class="label">名称</span>
-            <QInput v-model="form.key_id" placeholder="留空自动生成" />
-          </div>
-          <div class="field">
-            <span class="label">模型端点（base_url）</span>
-            <QInput v-model="form.endpoint" mono placeholder="https://api.openai.com/v1" />
-          </div>
-          <div class="field">
-            <span class="label">API Key（只写不读）</span>
-            <QInput v-model="form.secret" type="password" mono placeholder="sk-…（粘贴后自动识别）" />
-          </div>
-          <div class="field">
-            <span class="label">类别标签</span>
-            <QSelect :options="categoryOptions" v-model="formCategory" />
-          </div>
-          <div class="field">
-            <span class="label">附加标签</span>
-            <QInput v-model="form.tags" placeholder="逗号分隔，可选（如 vision, research）" />
-          </div>
-          <div class="field">
-            <span class="label">默认模型</span>
-            <QSelect v-if="modelOptions.length" :options="modelSelectOptions" v-model="form.default_model" />
-            <QInput v-else v-model="form.default_model" mono placeholder="自动识别或手动填写" />
-          </div>
-          <div class="field">
-            <span class="label">预算 token</span>
-            <QNumber
-              :model-value="form.budget"
-              :min="1" mono placeholder="可选" label="预算 token"
-              @update:model-value="onBudgetInput"
-            />
-          </div>
-          <div class="field span2">
-            <span class="label">Scope 授权</span>
-            <QInput v-model="form.scope" placeholder="default, tools, memory（逗号分隔，可选）" />
-          </div>
-          <p class="identify mono" :class="identifyState">{{ identifyText }}</p>
-          <button type="button" class="qio-btn primary create" @click="create">{{ submitLabel }}</button>
-        </div>
+        <p v-if="!filteredCredentials.length" class="empty mono">
+          {{ credFilter === "all" ? "尚无凭据。" : "该筛选下无凭据。" }}
+        </p>
       </section>
     </div>
+
+    <CredentialModal
+      v-if="modal.open"
+      :mode="modal.mode"
+      :initial="modal.initial"
+      @save="onModalSave"
+      @cancel="modal.open = false"
+    />
 
     <!-- 偏好 -->
     <div v-show="activeTab === 'pref'" class="panel">
@@ -474,6 +498,58 @@ onMounted(() => {
       </section>
 
       <section class="sec">
+        <h2>输出</h2>
+        <p class="desc">助手回答的打字机显示速度：逐字输出，结构完整。</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">输出速度</div>
+            <div class="d">慢 25 字/秒 · 中 50 字/秒 · 快 75 字/秒</div>
+          </div>
+          <div class="ctl">
+            <QSelect
+              :options="speedOptions"
+              :model-value="String(ui.typewriterCps)"
+              @update:model-value="onSpeedSelect"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>电脑操控</h2>
+        <p class="desc">允许 qio 读写文件、执行命令、查看进程。分级授权，高危操作会触发审批。</p>
+        <p v-if="computerNotice" class="msg ok">{{ computerNotice }}</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">工作区根目录</div>
+            <div class="d">qio 默认可访问的目录；之外默认要审批</div>
+          </div>
+          <div class="ctl">
+            <input
+              v-model="computerRootDir"
+              class="qio-input mono computer-root"
+              type="text"
+              placeholder="留空则用默认工作区"
+              @change="saveComputerSettings"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">权限模式</div>
+            <div class="d">决定动作是否需要人工确认</div>
+          </div>
+          <div class="ctl">
+            <QSelect
+              :options="permissionModeOptions"
+              :model-value="computerPermissionMode"
+              @update:model-value="onPermissionModeSelect"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="sec">
         <h2>维护</h2>
         <p class="desc">离线整理记忆与知识（后台执行）。</p>
         <div class="pref">
@@ -494,6 +570,74 @@ onMounted(() => {
               @change="saveMaintenance"
             />
             <button type="button" class="qio-btn" @click="runMaintenanceNow">立即运行</button>
+          </div>
+        </div>
+        <p v-if="settingsNotice" class="msg ok">{{ settingsNotice }}</p>
+      </section>
+
+      <section class="sec">
+        <h2>联网搜索</h2>
+        <p class="desc">让 agent 能联网检索实时资讯并读取网页正文。未配置密钥时默认走必应/百度免密钥；填写博查密钥后可获得更稳定的结果。</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">默认返回条数</div>
+            <div class="d">每次搜索返回的结果数（1-20）</div>
+          </div>
+          <div class="ctl">
+            <QNumber
+              class="num" :model-value="searchTopK" :min="1" :max="20" mono label="返回条数"
+              @update:model-value="onSearchTopKInput"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">读正文字符预算</div>
+            <div class="d">抓取网页正文的字符上限（1000-40000）</div>
+          </div>
+          <div class="ctl">
+            <QNumber
+              class="num" :model-value="searchMaxChars" :min="1000" :max="40000" mono label="字符预算"
+              @update:model-value="onSearchMaxCharsInput"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">博查 API Key</div>
+            <div class="d">
+              {{ searchBochaHasKey ? "已配置（留空保存将清除）" : "可选，留空使用免密钥兜底" }}
+            </div>
+          </div>
+          <div class="ctl">
+            <input
+              v-model="searchBochaKey"
+              class="qio-input mono"
+              type="password"
+              :placeholder="searchBochaHasKey ? '••••••••' : '输入博查 API Key'"
+              autocomplete="off"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">SearXNG 实例 URL</div>
+            <div class="d">可选，需自建或自备可达实例</div>
+          </div>
+          <div class="ctl">
+            <input
+              v-model="searchSearxngUrl"
+              class="qio-input mono"
+              type="text"
+              placeholder="https://your-searxng.example"
+              autocomplete="off"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt"></div>
+          <div class="ctl">
+            <button type="button" class="qio-btn" @click="saveSearchSettings">保存搜索配置</button>
           </div>
         </div>
         <p v-if="settingsNotice" class="msg ok">{{ settingsNotice }}</p>
@@ -625,5 +769,22 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
   opacity: 0;
   transform: translateY(10px);
 }
+.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sec-head h2 { margin: 0; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+.filter { font-size: 12px; padding: 4px 12px; }
+.filter.active { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); }
+.pref .ctl .qio-input {
+  min-width: 240px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+.pref .ctl .qio-input::placeholder { color: var(--text-muted); }
+.pref .ctl .qio-input:focus { border-color: var(--accent); }
 </style>
-

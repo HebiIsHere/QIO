@@ -15,8 +15,11 @@ def _specs() -> list[ToolSpec]:
         ToolSpec("create_topic", "创建话题", {"type": "object", "properties": {}}),
         ToolSpec("await_task", "等待子任务", {"type": "object", "properties": {}}),
         ToolSpec("read_task_result", "读取子任务结果", {"type": "object", "properties": {}}),
+        ToolSpec("web_search", "联网搜索", {"type": "object", "properties": {}}),
         ToolSpec("create_tool", "创建工具开发任务", {"type": "object", "properties": {}}),
+        ToolSpec("dev_list_files", "列出工作区文件", {"type": "object", "properties": {}}),
         ToolSpec("dev_write_file", "写入工作区文件", {"type": "object", "properties": {}}),
+        ToolSpec("dev_read_file", "读取工作区文件", {"type": "object", "properties": {}}),
         ToolSpec("weather_query", "查询天气", {"type": "object", "properties": {}}),
         ToolSpec("translate_text", "翻译文本", {"type": "object", "properties": {}}),
     ]
@@ -63,6 +66,32 @@ def test_route_no_embedding_uses_token_overlap(tmp_path):
     assert names.index("create_tool") < names.index("translate_text")
 
 
+def test_dev_toolchain_visible_on_dev_intent():
+    """开发意图下，完整 dev 工具链（含 dev_list_files）必须全部可见。"""
+    router = ToolRouter()
+    specs = router.route("帮我开发一个查找文献的工具", _specs())
+    names = [s.name for s in specs]
+    for dev in ("create_tool", "dev_list_files", "dev_write_file", "dev_read_file"):
+        assert dev in names, f"{dev} should be routed on dev intent"
+
+
+def test_computer_tools_surface_by_similarity():
+    """电脑操控工具通过相似度路由可见（非核心依赖），确保 agent 能调用。"""
+    from agent.services.tool_router import ToolSpec  # noqa: F401
+
+    computer_specs = _specs() + [
+        ToolSpec("fs_read", "读取文件", {"type": "object", "properties": {}}),
+        ToolSpec("fs_write", "写入文件", {"type": "object", "properties": {}}),
+        ToolSpec("run_cmd", "执行命令", {"type": "object", "properties": {}}),
+        ToolSpec("sys_info", "系统信息", {"type": "object", "properties": {}}),
+        ToolSpec("proc_list", "进程列表", {"type": "object", "properties": {}}),
+    ]
+    router = ToolRouter()
+    names = [s.name for s in router.route("读取一个文件并查看系统信息", computer_specs)]
+    assert "fs_read" in names
+    assert "sys_info" in names
+
+
 async def test_agent_loop_uses_tool_selector():
     import asyncio
 
@@ -87,7 +116,7 @@ async def test_agent_loop_uses_tool_selector():
         async def execute(self, call):
             raise AssertionError("no tool calls expected")
 
-    router = ToolRouter(top_n=6)
+    router = ToolRouter(top_n=8)
     loop = AgentLoop(
         Adapter(), Registry(), EventBus(),
         tool_selector=lambda q: router.route(q, Registry().specs()),
@@ -96,6 +125,6 @@ async def test_agent_loop_uses_tool_selector():
     assert seen, "tools should be delivered"
     routed = seen[0]
     assert "weather_query" in routed
-    assert len(routed) <= 6 < len(_specs())  # 子集
+    assert len(routed) <= 8 < len(_specs())  # 子集
     for core in CORE_TOOLS:
         assert core in routed
