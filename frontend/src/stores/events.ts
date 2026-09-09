@@ -49,11 +49,17 @@ export const useEventStore = defineStore("events", {
         case "TURN_END": {
           session.turnEnded();
           const final = (event.data as Record<string, unknown>).final_content;
+          // 落定正在流式输出的助手消息（打字机结束，变为静态）
+          session.finalizeAssistant();
           // 无论 final 是否为空都清空 pending，避免残留注入挂到下一轮
           const inject = this._pendingMemoryInject;
           this._pendingMemoryInject = null;
           if (typeof final === "string" && final.trim()) {
-            session.pushAssistant(final, inject ?? undefined);
+            // 若最后一条已是流式消息，则 finalize 已落定；final 仅用于补充
+            const last = session.messages[session.messages.length - 1];
+            if (!(last && last.role === "assistant" && !last.streaming)) {
+              session.pushAssistant(final, inject ?? undefined);
+            }
           }
           break;
         }
@@ -78,7 +84,7 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const content = String(d.content ?? "");
           if (content.trim()) {
-            session.pushAssistant(content, undefined, true);
+            session.pushAssistant(content, undefined, true, true);
           }
           break;
         }
@@ -133,6 +139,16 @@ export const useEventStore = defineStore("events", {
           this._pendingMemoryInject = null;
           const d = event.data as Record<string, unknown>;
           session.lastError = String(d.message ?? "agent error");
+          break;
+        }
+        case "WARNING": {
+          // 非致命警告（如预算耗尽）：结束输入态并展示提示，但不打断会话
+          const d = event.data as Record<string, unknown>;
+          const msg = String(d.message ?? "agent warning");
+          session.turnEnded();
+          if (msg.trim()) {
+            session.lastError = msg;
+          }
           break;
         }
         case "APPROVAL_REQUIRED": {

@@ -3,7 +3,7 @@
  * Markdown 渲染（remark 管线 → 自定义 mdast → HTML 渲染器）。
  * directive 节点 v1 渲染为行内文本，后续扩展为内联组件。
  */
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -24,7 +24,53 @@ hljs.registerLanguage("bash", bash);
 hljs.registerLanguage("css", css);
 hljs.registerLanguage("xml", xml);
 
-const props = defineProps<{ source: string }>();
+const props = defineProps<{
+  source: string;
+  /** 逐字打字机：完整结构先渲染，再按文档顺序逐字符点亮 */
+  reveal?: boolean;
+  /** 字符/秒（三档 25/50/75），null 时按 3 秒封顶自适应 */
+  cps?: number | null;
+}>();
+
+/** 增量渲染：reveal 时按已产出字符量喂给 Markdown，气泡随内容增长 */
+const shown = ref(0);
+let raf = 0;
+
+const renderSource = computed(() =>
+  props.reveal ? props.source.slice(0, shown.value) : props.source,
+);
+
+// 计算 html 时使用 renderSource（下述 html 定义处改为引用 renderSource）
+function animate(cps: number) {
+  cancelAnimationFrame(raf);
+  const total = props.source.length;
+  if (total === 0) { shown.value = 0; return; }
+  const capMs = 3000;
+  const naturalMs = (total / cps) * 1000;
+  const durMs = Math.min(naturalMs, capMs);
+  const t0 = performance.now();
+  const step = (now: number) => {
+    const p = Math.min(1, (now - t0) / durMs);
+    shown.value = Math.round(p * total);
+    if (p < 1) raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
+}
+
+watch(
+  () => props.source,
+  () => {
+    if (props.reveal) {
+      shown.value = 0;
+      animate(props.cps ?? 50);
+    } else {
+      shown.value = props.source.length;
+    }
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => cancelAnimationFrame(raf));
 
 function escapeHtml(text: string): string {
   return text
@@ -105,18 +151,19 @@ const html = computed(() => {
     .use(remarkParse)
     .use(remarkGfm)
     .use(remarkDirective);
-  const tree = processor.parse(props.source);
+  const tree = processor.parse(renderSource.value);
   processor.runSync(tree);
   return renderBlock(tree);
 });
 </script>
 
 <template>
-  <div class="markdown-body" v-html="html"></div>
+<div class="markdown-body" v-html="html"></div>
 </template>
 
 <style scoped>
 .markdown-body { line-height: 1.65; font-size: 14px; overflow-wrap: anywhere; }
+.markdown-body .tw-char { visibility: hidden; }
 .markdown-body :deep(p) { margin: 0.4em 0; }
 .markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 0.4em 0; padding-left: 1.4em; }
 .markdown-body :deep(li) { margin: 0.2em 0; }

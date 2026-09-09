@@ -119,4 +119,44 @@ describe("events store 路由", () => {
     const last = session.messages[session.messages.length - 1];
     expect(last?.presentation).toBeNull();
   });
+
+  it("连续 ASSISTANT 事件就地更新同一条流式消息，不新建（问题1）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({ type: "TURN_START", id: "t1", ts: "2026-08-10T00:00:00Z", data: {} });
+    events.route({ type: "ASSISTANT", id: "a1", ts: "2026-08-10T00:00:00Z", data: { content: "你好" } });
+    events.route({ type: "ASSISTANT", id: "a2", ts: "2026-08-10T00:00:00Z", data: { content: "你好，世界" } });
+    expect(session.messages.length).toBe(1);
+    const last = session.messages[0];
+    expect(last?.content).toBe("你好，世界");
+    expect(last?.streaming).toBe(true);
+  });
+
+  it("TURN_END 落定流式消息：streaming 清除、interim 为 false（问题1）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({ type: "ASSISTANT", id: "a1", ts: "2026-08-10T00:00:00Z", data: { content: "回答" } });
+    events.route({ type: "TURN_END", id: "t1", ts: "2026-08-10T00:00:00Z", data: { final_content: "回答" } });
+    const last = session.messages[session.messages.length - 1];
+    expect(last?.streaming).toBeUndefined();
+    expect(last?.interim).toBe(false);
+    // 不应再新建第二条 final（同一条落定）
+    expect(session.messages.length).toBe(1);
+  });
+
+  it("消息快照产生时的话题名（问题3）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    session.setAnchor("topic_a", null, "话题A");
+    session.pushUser("你好");
+    expect(session.messages[0]?.topicName).toBe("话题A");
+    // 切换话题后，旧消息快照不变
+    session.setAnchor("topic_b", null, "话题B");
+    expect(session.messages[0]?.topicName).toBe("话题A");
+  });
 });

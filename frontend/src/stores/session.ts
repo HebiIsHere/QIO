@@ -22,6 +22,10 @@ export interface StreamMessage {
   memoryInject?: { label: string } | null;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
+  /** 正在流式输出（打字机逐字）的消息；落定后为 undefined */
+  streaming?: boolean;
+  /** 消息产生时所属话题名（快照，避免切换话题后显示串） */
+  topicName?: string | null;
 }
 
 export const useSessionStore = defineStore("session", {
@@ -60,19 +64,45 @@ export const useSessionStore = defineStore("session", {
       this.lastError = null;
     },
     pushMessage(msg: Omit<StreamMessage, "id" | "createdAt">) {
-      this.messages.push({ id: this._nextId(), createdAt: new Date().toISOString(), ...msg });
+      this.messages.push({
+        id: this._nextId(),
+        createdAt: new Date().toISOString(),
+        topicName: this.topicName,
+        ...msg,
+      });
     },
     pushUser(text: string) {
       this.pushMessage({ role: "user", content: text, contentType: "text" });
     },
-    pushAssistant(text: string, memoryInject?: StreamMessage["memoryInject"], interim = false) {
+    pushAssistant(
+      text: string,
+      memoryInject?: StreamMessage["memoryInject"],
+      interim = false,
+      streaming = false,
+    ) {
+      // 若本轮正在产出且最后一条是流式助手消息，则就地更新（避免"过程+最终"两条）
+      const last = this.messages[this.messages.length - 1];
+      if (streaming && last && last.role === "assistant" && last.streaming) {
+        last.content = text;
+        last.memoryInject = memoryInject ?? last.memoryInject;
+        last.interim = true;
+        return;
+      }
       this.pushMessage({
         role: "assistant",
         content: text,
         contentType: "text",
         memoryInject,
         ...(interim ? { interim: true } : {}),
+        ...(streaming ? { streaming: true } : {}),
       });
+    },
+    finalizeAssistant() {
+      const last = this.messages[this.messages.length - 1];
+      if (last && last.role === "assistant" && last.streaming) {
+        delete last.streaming;
+        last.interim = false;
+      }
     },
     pushTool(
       name: string,
@@ -107,6 +137,7 @@ export const useSessionStore = defineStore("session", {
           content: m.content,
           contentType: m.content_type,
           createdAt: m.created_at,
+          topicName: this.topicName,
           ...(m.role === "tool"
             ? { toolName: "tool", toolOk: true, toolError: null }
             : {}),

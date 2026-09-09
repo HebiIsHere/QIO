@@ -3,11 +3,13 @@ import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
+import { useUiStore } from "../stores/ui";
 import type { StreamMessage } from "../stores/session";
 
 const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
 const session = useSessionStore();
 const events = useEventStore();
+const ui = useUiStore();
 
 /** token 用量下缀：USAGE 事件累计值（单条消息粒度未接，统一显示当前累计） */
 const tokText = computed(() => `tok ${events.usageTokens.toLocaleString("en-US")}`);
@@ -36,9 +38,9 @@ function formatTime(iso?: string): string {
 }
 
 const topicLine = computed(() => {
-  const name = session.topicName || "默认话题";
-  const id = session.currentTopicId;
-  return id ? `${name} · 话题 #${id.slice(-4)}` : name;
+  // 只展示话题名，不暴露内部话题 ID（此前 slice(-4) 会显示"话题 #5320"这类编号，
+  // 用户误以为是回答内容）
+  return props.message.topicName || session.topicName || "默认话题";
 });
 </script>
 
@@ -82,7 +84,7 @@ const topicLine = computed(() => {
         <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
         <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
-        <MarkdownContent :source="message.content" />
+        <MarkdownContent :source="message.content" :reveal="!!message.streaming" :cps="ui.typewriterCps" />
       </div>
       <div class="ts mono">{{ formatTime(message.createdAt) }} · {{ tokText }}</div>
     </template>
