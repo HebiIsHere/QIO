@@ -43,6 +43,27 @@ export interface LoopSettings {
   output_token_budget: number;
 }
 
+export interface TraceSummary {
+  turn_id: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  initial_topic: string | null;
+  final_topic: string | null;
+  error: string | null;
+}
+
+export interface TraceDetail extends TraceSummary {
+  topic: Record<string, unknown> | null;
+  injection: Record<string, unknown> | null;
+  model_calls: Record<string, unknown>[] | null;
+  tool_runs: Record<string, unknown>[] | null;
+  writes: Record<string, unknown> | null;
+  warnings: Record<string, unknown>[] | null;
+  final_preview: string;
+}
+
 export interface KnowledgeItem {
   id: string;
   category: string;
@@ -131,6 +152,19 @@ export const api = {
       `/api/turns/${encodeURIComponent(turnId)}/cancel`,
       { method: "POST" },
     ),
+  listTraces: (limit = 50, offset = 0) =>
+    request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
+      `/api/traces?limit=${limit}&offset=${offset}`,
+    ),
+  getTrace: (turnId: string) =>
+    request<TraceDetail>(`/api/traces/${encodeURIComponent(turnId)}`),
+  getTraceSettings: () =>
+    request<{ enabled: boolean }>("/api/settings/trace"),
+  updateTraceSettings: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/api/settings/trace", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   setAnchor: (topicId: string, fragmentId?: string | null) =>
     request<{ ok: boolean; topic_id: string; fragment_id: string | null }>("/api/anchor", {
       method: "POST",
