@@ -50,10 +50,16 @@ class TurnContext:
 class TurnManager:
     """Single-flight main-turn scheduler with a FIFO queue."""
 
-    def __init__(self, runner: TurnRunner | None = None) -> None:
+    def __init__(
+        self,
+        runner: TurnRunner | None = None,
+        publisher: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> None:
         self._runner = runner
+        self._publisher = publisher
         self._queue: asyncio.Queue[TurnContext] = asyncio.Queue()
         self._active: TurnContext | None = None
+        self._pending: list[TurnContext] = []
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -62,6 +68,42 @@ class TurnManager:
 
     def set_runner(self, runner: TurnRunner) -> None:
         self._runner = runner
+
+    def set_publisher(self, publisher: Callable[[dict], Awaitable[None]]) -> None:
+        self._publisher = publisher
+
+    # -- queue snapshot ---------------------------------------------------
+
+    def snapshot(self) -> dict:
+        active = self._active
+        return {
+            "running": (
+                {"turn_id": active.turn_id, "message": active.message[:120]}
+                if active is not None
+                else None
+            ),
+            "queued": [
+                {"turn_id": c.turn_id, "message": c.message[:120]}
+                for c in self._pending
+            ],
+        }
+
+    def _schedule_emit(self) -> None:
+        if self._publisher is None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        asyncio.create_task(self._emit_queue())
+
+    async def _emit_queue(self) -> None:
+        if self._publisher is None:
+            return
+        try:
+            await self._publisher(self.snapshot())
+        except Exception:  # noqa: BLE001 - queue broadcast must not break turns
+            pass
 
     # -- submission -------------------------------------------------------
 
@@ -80,8 +122,10 @@ class TurnManager:
             self._futures[ctx.turn_id] = loop.create_future()
         except RuntimeError:
             pass  # no running loop: enqueue without an awaitable result
+        self._pending.append(ctx)
         self._queue.put_nowait(ctx)
         self._ensure_worker()
+        self._schedule_emit()
         return ctx
 
     async def wait(self, turn_id: str, timeout: float | None = None) -> dict | None:
@@ -104,8 +148,11 @@ class TurnManager:
     async def _work(self) -> None:
         while not self._closed:
             ctx = await self._queue.get()
+            if ctx in self._pending:
+                self._pending.remove(ctx)
             self._active = ctx
             ctx.status = "running"
+            self._schedule_emit()
             try:
                 if ctx.cancelled:
                     ctx.status = "cancelled"
@@ -127,6 +174,7 @@ class TurnManager:
                 fut = self._futures.pop(ctx.turn_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(ctx.result)
+                self._schedule_emit()
 
     # -- introspection / control -----------------------------------------
 
@@ -153,10 +201,25 @@ class TurnManager:
         ctx.cancelled = True
         if ctx.loop is not None:
             ctx.loop.cancel()
+        self._schedule_emit()
         return True
 
+    def cancel(self, turn_id: str) -> bool:
+        """Cancel a specific turn — active or still queued."""
+        active = self._active
+        if active is not None and active.turn_id == turn_id:
+            return self.cancel_active()
+        for i, c in enumerate(self._pending):
+            if c.turn_id == turn_id:
+                c.cancelled = True
+                c.status = "cancelled"
+                self._pending.pop(i)
+                self._schedule_emit()
+                return True
+        return False
+
     def queued_count(self) -> int:
-        return self._queue.qsize()
+        return len(self._pending)
 
     async def shutdown(self) -> None:
         self._closed = True

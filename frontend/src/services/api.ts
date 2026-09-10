@@ -126,6 +126,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(overrides ? { decision, overrides } : { decision }),
     }),
+  cancelTurn: (turnId: string) =>
+    request<{ ok: boolean; cancelled: boolean; turn_id: string }>(
+      `/api/turns/${encodeURIComponent(turnId)}/cancel`,
+      { method: "POST" },
+    ),
   setAnchor: (topicId: string, fragmentId?: string | null) =>
     request<{ ok: boolean; topic_id: string; fragment_id: string | null }>("/api/anchor", {
       method: "POST",

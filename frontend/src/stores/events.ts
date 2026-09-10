@@ -69,6 +69,14 @@ export const useEventStore = defineStore("events", {
           session.activeTurnId = null;
           break;
         }
+        case "TURN_QUEUE": {
+          const d = event.data as Record<string, unknown>;
+          session.turnQueue = {
+            running: (d.running as { turn_id: string; message: string } | null) ?? null,
+            queued: (d.queued as { turn_id: string; message: string }[] | undefined) ?? [],
+          };
+          break;
+        }
         case "CAPABILITY": {
           // 后端协议用 data.adapter 传三态模式（见 backend/tests/test_events.py），mode 作兜底
           const d = event.data as Record<string, unknown>;

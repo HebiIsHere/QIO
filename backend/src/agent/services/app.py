@@ -199,6 +199,7 @@ class AppContext:
 
         self.turns = TurnManager()
         self.turns.set_runner(self._execute_turn)
+        self.turns.set_publisher(self._publish_turn_queue)
         self.registry.register(
             CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )
@@ -433,6 +434,12 @@ class AppContext:
         return self.tool_router.route(query, self.registry.specs())
 
     # -- subagent notify (strategy 3: completion wakes the main agent) -----
+
+    async def _publish_turn_queue(self, snapshot: dict) -> None:
+        """广播当前 turn 队列快照（运行中 + 排队中），供前端折叠气泡展示。"""
+        from agent.api.events import EventType, make_event
+
+        await self.bus.publish(make_event(EventType.TURN_QUEUE, snapshot))
 
     def _format_notice(self, task_id: str, record) -> str:
         result = record.result

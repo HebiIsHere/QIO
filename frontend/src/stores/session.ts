@@ -7,6 +7,16 @@ export interface ToolPresentation {
   summary?: string;
 }
 
+export interface QueueItem {
+  turn_id: string;
+  message: string;
+}
+
+export interface TurnQueueState {
+  running: QueueItem | null;
+  queued: QueueItem[];
+}
+
 export interface StreamMessage {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
@@ -41,6 +51,8 @@ export const useSessionStore = defineStore("session", {
     lastError: null as string | null,
     /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
     activeTurnId: null as string | null,
+    /** 主 turn 队列快照（TURN_QUEUE 事件更新）：运行中 + 排队中 */
+    turnQueue: { running: null, queued: [] } as TurnQueueState,
     /** 迭代/输出预算耗尽，等待用户决定是否继续 */
     pendingContinue: null as { id: string; used: number; max: number } | null,
     _msgSeq: 0,

@@ -407,6 +407,12 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             "turn_id": active.turn_id if active is not None else None,
         }
 
+    @app.post("/api/turns/{turn_id}/cancel")
+    async def cancel_turn_by_id(turn_id: str) -> dict:
+        """按 turn_id 取消 —— 运行中或仍在排队中的都可。"""
+        ok = ctx.turns.cancel(turn_id)
+        return {"ok": ok, "cancelled": ok, "turn_id": turn_id}
+
     # -- graph -------------------------------------------------------------
 
     @app.get("/api/session/context")

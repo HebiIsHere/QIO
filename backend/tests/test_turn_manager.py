@@ -115,3 +115,49 @@ async def test_runner_exception_marks_failed_not_crash():
     assert a.status == "failed"
     assert "boom" in (a.error or "")
     await tm.shutdown()
+
+
+async def test_snapshot_reflects_running_and_queued():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def runner(ctx):
+        started.set()
+        await release.wait()
+
+    tm = TurnManager(runner)
+    a = tm.submit("A")
+    b = tm.submit("B")
+    c = tm.submit("C")
+    await started.wait()
+    snap = tm.snapshot()
+    assert snap["running"]["turn_id"] == a.turn_id
+    assert [q["turn_id"] for q in snap["queued"]] == [b.turn_id, c.turn_id]
+    release.set()
+    await tm.wait(a.turn_id)
+    await tm.shutdown()
+
+
+async def test_cancel_queued_turn_removes_it():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ran: list[str] = []
+
+    async def runner(ctx):
+        ran.append(ctx.message)
+        if ctx.message == "A":
+            started.set()
+            await release.wait()
+
+    tm = TurnManager(runner)
+    a = tm.submit("A")
+    b = tm.submit("B")
+    await started.wait()
+    assert tm.cancel(b.turn_id) is True
+    assert tm.queued_count() == 0
+    release.set()
+    await tm.wait(a.turn_id)
+    await tm.wait(b.turn_id)
+    assert "B" not in ran  # 被取消的排队 turn 不会执行
+    assert b.status == "cancelled"
+    await tm.shutdown()

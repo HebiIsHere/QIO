@@ -24,6 +24,7 @@ class EventType(str, Enum):
     USAGE = "USAGE"
     TURN_START = "TURN_START"
     TURN_END = "TURN_END"
+    TURN_QUEUE = "TURN_QUEUE"
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
     ASSISTANT = "ASSISTANT"

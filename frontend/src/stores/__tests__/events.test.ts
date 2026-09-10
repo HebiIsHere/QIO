@@ -194,4 +194,22 @@ describe("events store 路由", () => {
     events.route({ type: "TURN_END", id: "t2", ts: "2026-09-10T00:00:00Z", data: { final_content: "回答", turn_id: "turn_x" } });
     expect(session.activeTurnId).toBeNull();
   });
+
+  it("TURN_QUEUE 事件 → 更新 turnQueue 快照", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q1",
+      ts: "2026-09-10T00:00:00Z",
+      data: {
+        running: { turn_id: "turn_a", message: "A" },
+        queued: [{ turn_id: "turn_b", message: "B" }],
+      },
+    });
+    expect(session.turnQueue.running?.turn_id).toBe("turn_a");
+    expect(session.turnQueue.queued.map((q) => q.turn_id)).toEqual(["turn_b"]);
+  });
 });
