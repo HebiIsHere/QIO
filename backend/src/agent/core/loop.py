@@ -22,7 +22,9 @@ from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completio
 from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
+from agent.core.guard import GuardVerdict, RunawayGuard
 from agent.tools.registry import ToolRegistry
+from agent.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,10 @@ class AgentLoop:
         max_iterations: int | None = None,
         token_budget: int | None = None,
         force_continue: bool = False,
+        approvals=None,
+        guard: RunawayGuard | None = None,
+        continue_batch_iterations: int = 32,
+        continue_batch_tokens: int = 12800,
         tool_trace=None,
         tool_selector=None,
         max_parallel_tools: int = 4,
@@ -70,6 +76,11 @@ class AgentLoop:
             max_iterations=max_iterations or default_iterations(mode),
         )
         self.force_continue = force_continue
+        self.approvals = approvals
+        self.guard = guard
+        self.continue_batch_iterations = continue_batch_iterations
+        self.continue_batch_tokens = continue_batch_tokens
+        self._halted = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
         self.tool_trace = tool_trace
@@ -170,7 +181,17 @@ class AgentLoop:
         if task is not None:
             self._active_tool_tasks.add(task)
         try:
-            return await self.registry.execute(call)
+            result = await self.registry.execute(call)
+            if self.guard is not None:
+                verdict = self.guard.observe(call.name, dict(call.arguments), result.ok)
+                if verdict == GuardVerdict.BLOCK:
+                    return ToolResult(ok=False, error="guard: 重复失败已被拦截")
+                if verdict == GuardVerdict.HALT:
+                    self._halted = True
+                    self._warn("guard: 同一工具反复失败，终止本轮")
+                elif verdict == GuardVerdict.WARN:
+                    self._warn(f"guard: {call.name} 反复失败，建议换方法")
+            return result
         finally:
             if task is not None:
                 self._active_tool_tasks.discard(task)
@@ -214,19 +235,47 @@ class AgentLoop:
         final_content: str | None = None
 
         while True:
-            if self.budget.exhausted and not self.force_continue:
+            if self._halted:
                 phase = LoopPhase.STOPPED
-                # 预算耗尽也要让用户知道为什么没有继续（而不是静默停止）
-                reason = (
-                    f"迭代次数达到上限（{self.budget.used_iterations}/{self.budget.max_iterations}）"
-                    if self.budget.used_iterations >= self.budget.max_iterations
-                    else f"token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
-                )
-                self._warn(f"turn stopped: {reason}")
+                self._warn("guard halt: 同一工具反复失败，已终止本轮")
                 await self._emit(
                     EventType.WARNING,
-                    {"code": "budget_exhausted", "message": reason, "recoverable": True},
+                    {"code": "guard_halt", "message": "同一工具反复失败，已终止本轮", "recoverable": True},
                 )
+                break
+
+            if self.budget.exhausted and not self.force_continue:
+                if self.approvals is None:
+                    # 无审批服务：旧的静默停止行为
+                    phase = LoopPhase.STOPPED
+                    reason = (
+                        f"迭代次数达到上限（{self.budget.used_iterations}/{self.budget.max_iterations}）"
+                        if self.budget.used_iterations >= self.budget.max_iterations
+                        else f"输出 token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
+                    )
+                    self._warn(f"turn stopped: {reason}")
+                    await self._emit(
+                        EventType.WARNING,
+                        {"code": "budget_exhausted", "message": reason, "recoverable": True},
+                    )
+                    break
+                # 有审批服务：挂起等用户决定「继续/停止」
+                decision = await self.approvals.request(
+                    "continue",
+                    {
+                        "used_iterations": self.budget.used_iterations,
+                        "max_iterations": self.budget.max_iterations,
+                        "used_tokens": self.budget.used_tokens,
+                        "token_budget": self.budget.token_budget,
+                    },
+                )
+                if decision.decision == "approved":
+                    self.budget.raise_limits(
+                        self.continue_batch_iterations, self.continue_batch_tokens
+                    )
+                    continue
+                phase = LoopPhase.STOPPED
+                self._warn("预算耗尽，用户选择停止")
                 break
 
             if self._notices:
@@ -237,7 +286,7 @@ class AgentLoop:
 
             # PLANNING
             completion = await self._plan(messages)
-            self.budget.consume_tokens(self._tokens_of(completion))
+            self.budget.consume_output_tokens(self._tokens_of(completion))
             self.budget.consume_iteration()
 
             # native 模式：模型在工具调用前先说话时，把内容作为 interim 事件推给前端
@@ -323,4 +372,5 @@ class AgentLoop:
 
     def _tokens_of(self, completion: Completion) -> int:
         usage = completion.usage or {}
-        return int(usage.get("total_tokens", 0) or 0)
+        # 输出 token 闸：优先 completion_tokens；缺失时回退 total_tokens
+        return int(usage.get("completion_tokens", usage.get("total_tokens", 0)) or 0)
