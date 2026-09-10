@@ -194,16 +194,19 @@ class AppContext:
         self.registry.register(CorrectEntityTool(conn))
         from agent.tools.knowledge_correction import CorrectKnowledgeTool
 
-        self._knowledge_snapshot: list[dict] = []
+        # turn runtime boundary：进程级服务在此，单轮状态在 TurnContext
+        from agent.core.turn import TurnManager
+
+        self.turns = TurnManager()
+        self.turns.set_runner(self._execute_turn)
         self.registry.register(
-            CorrectKnowledgeTool(conn, snapshot_provider=lambda: self._knowledge_snapshot)
+            CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )
         from agent.storage.tool_store import ToolStore
 
         self.tool_store = ToolStore(conn)
         self.services.register("tool_store", self.tool_store)
         self._restore_tools()
-        self._active_loop = None
         self._notify_turn = False
         from agent.services.maintenance import MaintenanceScheduler
         from agent.services.tool_router import ToolRouter
@@ -444,12 +447,12 @@ class AppContext:
         if self._notify_turn:
             return  # no recursive notify turns
         notice = self._format_notice(task_id, record)
-        if self._active_loop is not None:
-            self._active_loop.push_notice(notice)
+        # single-flight：唯一 active turn 就是正确归属；找不到才排队一个系统 turn
+        if self.turns.push_notice(notice):
             return
-        asyncio.create_task(self._run_notify_turn(task_id, record))
+        self.turns.submit(notice, None, notify=True)
 
-    async def _run_notify_turn(self, task_id: str, record) -> None:
+    async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""
         from agent.core.loop import AgentLoop
 
@@ -457,9 +460,11 @@ class AppContext:
         try:
             adapter = await self.build_adapter()
             if adapter is None:
+                ctx.result = {"ok": False, "reason": "no_credential"}
                 return
             topic = self.current_topic()
-            notice = self._format_notice(task_id, record)
+            ctx.current_topic = topic
+            notice = ctx.message
             prediction = self.predictor.predict(notice, current_topic_id=topic)
             payload = self.build_injection(
                 notice,
@@ -481,11 +486,11 @@ class AppContext:
                 approvals=self.approvals,
                 guard=RunawayGuard(),
             )
-            self._active_loop = loop
+            ctx.loop = loop
             try:
                 result = await loop.run(prompt)
             finally:
-                self._active_loop = None
+                ctx.loop = None
             # feedback enters memory (assistant message; no user message)
             self.memory.append_message(
                 topic_id=topic,
@@ -494,6 +499,8 @@ class AppContext:
                 content_type="text",
                 model=adapter.model,
             )
+            ctx.final_content = result.final_content
+            ctx.result = {"ok": True, "turn": result.__dict__}
             fragment = self.fragments.get_or_create_open(topic)
             if self.fragments.should_close(fragment):
                 closed = await self._close_fragment(topic, adapter)
@@ -502,6 +509,7 @@ class AppContext:
                     self.predictor.refresh_topic_vector(topic)
         except Exception as exc:  # noqa: BLE001 - notify turn must not crash
             logger.warning("notify turn failed: %s", exc)
+            ctx.result = {"ok": False, "reason": "notify_failed"}
         finally:
             self._notify_turn = False
 
@@ -708,20 +716,41 @@ class AppContext:
 
     # -- turn -------------------------------------------------------------
 
+    def _knowledge_snapshot_provider(self) -> list[dict]:
+        """当前 active turn 的知识快照（供 correct_knowledge 使用）。"""
+        active = self.turns.active
+        return active.knowledge_snapshot if active is not None else []
+
     async def run_turn(self, message: str, topic_id: str | None = None) -> dict:
+        """提交一个 turn 并等待结果（单飞由 TurnManager 保证）。"""
+        ctx = self.turns.submit(message, topic_id)
+        result = await self.turns.wait(ctx.turn_id)
+        return result or {"ok": False, "reason": "no_result"}
+
+    async def _execute_turn(self, ctx) -> None:
         from agent.core.loop import AgentLoop
+
+        if ctx.notify:
+            await self._execute_notify_turn(ctx)
+            return
+
+        message = ctx.message
+        topic_id = ctx.initial_topic
 
         adapter = await self.build_adapter()
         if adapter is None:
             await self.bus.publish(
                 make_warning("no main-loop credential configured; add one in Settings")
             )
-            return {"ok": False, "reason": "no_credential"}
+            ctx.result = {"ok": False, "reason": "no_credential"}
+            ctx.status = "done"
+            return
 
         self.fragments.max_messages = self.settings_store.get_int(
             "fragment.max_messages", DEFAULT_FRAGMENT_MAX_MESSAGES
         )
         topic = topic_id or self.current_topic()
+        ctx.current_topic = topic
         # speaking in a topic anchors it (if the anchor is absent or stale)
         active_anchor = AnchorService(self.conn).get_active()
         if active_anchor is None or active_anchor.topic_id != topic:
@@ -774,6 +803,7 @@ class AppContext:
             content_type="text",
             model=adapter.model,
         )
+        ctx.user_message_id = msg_id
         # anchored fragment focus (从这里开始)
         active_anchor = AnchorService(self.conn).get_active()
         focus_block = ""
@@ -803,7 +833,7 @@ class AppContext:
             focus_block=focus_block,
             entity_cards=entity_cards,
         )
-        self._knowledge_snapshot = [
+        ctx.knowledge_snapshot = [
             {
                 "item_id": item.item_id,
                 "content": (item.text.split("] ", 1)[-1] if "] " in item.text else item.text),
@@ -823,7 +853,7 @@ class AppContext:
             approvals=self.approvals,
             guard=RunawayGuard(),
         )
-        self._active_loop = loop
+        ctx.loop = loop
         try:
             result = await loop.run(prompt)
         except Exception as exc:
@@ -831,9 +861,11 @@ class AppContext:
             await self.bus.publish(
                 make_error("turn_failed", str(exc)[:200], recoverable=True)
             )
-            return {"ok": False, "reason": "turn_failed"}
+            ctx.result = {"ok": False, "reason": "turn_failed"}
+            ctx.status = "done"
+            return
         finally:
-            self._active_loop = None
+            ctx.loop = None
 
         # the main model may have switched/created a topic via tools this turn
         final_topic = topic
@@ -859,7 +891,8 @@ class AppContext:
         # budget-pressure memory consolidation (rolling summary)
         if payload.plan.needs_consolidation:
             await self.consolidate(final_topic, adapter)
-        return {"ok": True, "turn": result.__dict__}
+        ctx.final_content = result.final_content
+        ctx.result = {"ok": True, "turn": result.__dict__}
 
     # -- fragment close: summary + entities + knowledge extraction --------
 

@@ -129,10 +129,12 @@ async def test_main_loop_async_subagent_pending_then_await(ctx: AppContext):
 
 async def test_notify_injected_into_running_loop(ctx: AppContext):
     from agent.core.loop import AgentLoop
+    from agent.core.turn import TurnContext
 
     main = FakeMainAdapter([None, None])
     loop = AgentLoop(main, ctx.registry, ctx.bus)
-    ctx._active_loop = loop
+    # 模拟"有一个 active turn 正在跑，其 loop 是这个 loop"
+    ctx.turns._active = TurnContext(turn_id="turn_test", message="x", loop=loop)
     try:
         # 模拟子任务完成回调
         async def work():
@@ -147,7 +149,7 @@ async def test_notify_injected_into_running_loop(ctx: AppContext):
         assert loop._notices, "notice should be queued"
         await ctx._handle_subagent_notify("task_notify_test", ctx.task_manager.record_info("task_notify_test"))
     finally:
-        ctx._active_loop = None
+        ctx.turns._active = None
     # 再次运行一轮验证 system 注入
     await loop.run("继续")
     joined = "\n".join(main.seen_messages)
