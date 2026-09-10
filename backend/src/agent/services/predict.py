@@ -16,12 +16,16 @@ from dataclasses import dataclass, field
 from agent.graph.topics import TopicService
 from agent.selector.tokenize import tokenize
 
-NEW_TOPIC_THRESHOLD = 0.7  # 2026-08-13 调高：真实 bge-small-zh 对闲聊类消息也常算出 0.4-0.5 的余弦，旧阈值 0.45 会把“玩原神/鹅病”这类偏离内容误判为命中已有话题；0.7 更保守，宁可把中度相似（0.5-0.7）也判为新话题候选，由主模型决定是否 create_topic。
-AUX_TOPIC_THRESHOLD = 0.3  # 辅助话题低门槛：只需「有点相关」（onnx 余弦）
-RULES_NEW_TOPIC_THRESHOLD = 0.2  # 规则重叠率分布：典型命中 0.2-0.5
-RULES_AUX_TOPIC_THRESHOLD = 0.1
-SWITCH_DELTA = 0.1
-AUX_TOP_COUNT = 2
+# 阈值集中管理（语义/默认来源/对应 eval 见 agent/services/params.py 与
+# agent/eval/topic_eval.py）。此处仅做别名，禁止在此新增散落的 magic number。
+from agent.services.params import TOPIC as _TOPIC
+
+NEW_TOPIC_THRESHOLD = _TOPIC.new_topic_threshold
+AUX_TOPIC_THRESHOLD = _TOPIC.aux_topic_threshold
+RULES_NEW_TOPIC_THRESHOLD = _TOPIC.rules_new_topic_threshold
+RULES_AUX_TOPIC_THRESHOLD = _TOPIC.rules_aux_topic_threshold
+SWITCH_DELTA = _TOPIC.switch_delta
+AUX_TOP_COUNT = _TOPIC.aux_top_count
 
 
 @dataclass(frozen=True)

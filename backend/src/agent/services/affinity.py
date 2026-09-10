@@ -18,10 +18,13 @@ class TopicMode(str, Enum):
     NEW_TOPIC = "new_topic"
 
 
+# 阈值集中管理（见 agent/services/params.py 与 agent/eval/topic_eval.py）
+from agent.services.params import TOPIC as _TOPIC
+
 # 切换到其他已有话题的预测分数门槛
-SWITCH_THRESHOLD = 0.55
+SWITCH_THRESHOLD = _TOPIC.switch_threshold
 # 真正「新建」的严格上限：top score < 该值才允许 create_topic；[strict, switch) 引导 switch
-NEW_TOPIC_STRICT = 0.5
+NEW_TOPIC_STRICT = _TOPIC.new_topic_strict
 
 
 @dataclass

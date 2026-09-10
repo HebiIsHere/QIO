@@ -1,0 +1,19 @@
+{
+  "topic_prediction": {
+    "n": 12,
+    "in_topic_accuracy": 0.75,
+    "switch_accuracy": 1.0,
+    "new_topic_precision": 0.8571,
+    "new_topic_recall": 1.0,
+    "false_new_rate": 0.1667,
+    "false_switch_rate": 0.0
+  },
+  "retrieval": {
+    "n": 8,
+    "recall@1": 0.75,
+    "recall@5": 0.875,
+    "mrr": 0.8125,
+    "wrong_memory_injection_rate": 0.25,
+    "stale_knowledge_injection_rate": 0.125
+  }
+}
