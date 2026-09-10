@@ -85,6 +85,8 @@ class AgentLoop:
         self._halted = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
+        # 本 loop 派发的工具调用 id；用于过滤 registry 上的跨 loop 事件
+        self._dispatched_call_ids: set[str] = set()
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
         self.max_parallel_tools = max(1, max_parallel_tools)
@@ -114,12 +116,16 @@ class AgentLoop:
         self._disposers.clear()
 
     async def _on_pipeline_start(self, data: dict) -> None:
+        if data.get("call_id") not in self._dispatched_call_ids:
+            return  # 非本 loop 的调用，忽略（跨 loop 隔离）
         await self._emit(
             EventType.TOOL_START,
             {"tool": data.get("tool"), "arguments": data.get("arguments", {})},
         )
 
     async def _on_pipeline_end(self, data: dict) -> None:
+        if data.get("call_id") not in self._dispatched_call_ids:
+            return
         await self._emit(
             EventType.TOOL_END,
             {
@@ -136,6 +142,8 @@ class AgentLoop:
         if self.tool_trace is None or result is None:
             return
         call = data.get("call")
+        if call is None or getattr(call, "id", None) not in self._dispatched_call_ids:
+            return
         try:
             self.tool_trace({
                 "tool_name": data.get("tool"),
@@ -153,6 +161,8 @@ class AgentLoop:
 
         返回 {call.id: ToolResult}，顺序无关（调用方按原始顺序回填）。
         """
+        for c in calls:
+            self._dispatched_call_ids.add(c.id)
         safe_calls = [
             c for c in calls
             if getattr(self.registry.get(c.name), "is_concurrency_safe", False)

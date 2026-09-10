@@ -124,7 +124,10 @@ class ToolRegistry:
             "call": call,
         }
         try:
-            await self.events.emit(EVENT_START, {"tool": call.name, "arguments": call.arguments})
+            await self.events.emit(
+                EVENT_START,
+                {"tool": call.name, "arguments": call.arguments, "call_id": call.id},
+            )
 
             outcome = await self.events.waterfall(EVENT_PRE_EXECUTE, ctx)
             if isinstance(outcome, ToolResult):
@@ -151,6 +154,7 @@ class ToolRegistry:
             EVENT_END,
             {
                 "tool": call.name,
+                "call_id": call.id,
                 "ok": result.ok,
                 "error": result.error,
                 "content_preview": result.content[:200],
