@@ -44,6 +44,11 @@ export const useEventStore = defineStore("events", {
       const session = useSessionStore();
       switch (event.type) {
         case "TURN_START":
+          {
+            const d = event.data as Record<string, unknown>;
+            const tid = String(d.turn_id ?? "");
+            session.activeTurnId = tid || null;
+          }
           session.turnStarted();
           break;
         case "TURN_END": {
@@ -61,6 +66,7 @@ export const useEventStore = defineStore("events", {
               session.pushAssistant(final, inject ?? undefined);
             }
           }
+          session.activeTurnId = null;
           break;
         }
         case "CAPABILITY": {

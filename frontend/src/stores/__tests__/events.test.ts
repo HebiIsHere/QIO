@@ -180,4 +180,18 @@ describe("events store 路由", () => {
     expect(session.pendingContinue?.id).toBe("appr_1");
     expect(session.pendingContinue?.used).toBe(128);
   });
+
+  it("TURN_START 记录 activeTurnId，消息归属该 turn，TURN_END 清除", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({ type: "TURN_START", id: "t1", ts: "2026-09-10T00:00:00Z", data: { turn_id: "turn_x" } });
+    expect(session.activeTurnId).toBe("turn_x");
+    events.route({ type: "ASSISTANT", id: "a1", ts: "2026-09-10T00:00:00Z", data: { content: "回答", turn_id: "turn_x" } });
+    const last = session.messages[session.messages.length - 1];
+    expect(last?.turnId).toBe("turn_x");
+    events.route({ type: "TURN_END", id: "t2", ts: "2026-09-10T00:00:00Z", data: { final_content: "回答", turn_id: "turn_x" } });
+    expect(session.activeTurnId).toBeNull();
+  });
 });

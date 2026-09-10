@@ -26,6 +26,8 @@ export interface StreamMessage {
   streaming?: boolean;
   /** 消息产生时所属话题名（快照，避免切换话题后显示串） */
   topicName?: string | null;
+  /** 该消息所属 turn_id（SSE 事件归属） */
+  turnId?: string | null;
 }
 
 export const useSessionStore = defineStore("session", {
@@ -37,6 +39,8 @@ export const useSessionStore = defineStore("session", {
     messages: [] as StreamMessage[],
     turnRunning: false,
     lastError: null as string | null,
+    /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
+    activeTurnId: null as string | null,
     /** 迭代/输出预算耗尽，等待用户决定是否继续 */
     pendingContinue: null as { id: string; used: number; max: number } | null,
     _msgSeq: 0,
@@ -70,6 +74,7 @@ export const useSessionStore = defineStore("session", {
         id: this._nextId(),
         createdAt: new Date().toISOString(),
         topicName: this.topicName,
+        turnId: this.activeTurnId,
         ...msg,
       });
     },
