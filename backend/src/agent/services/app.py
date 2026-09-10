@@ -552,7 +552,9 @@ class AppContext:
         ).fetchone()
         return {"id": active.fragment_id, "title": row["title"] if row else None}
 
-    def _short_term_items(self, topic_id: str) -> list:
+    def _short_term_items(
+        self, topic_id: str, exclude_message_id: str | None = None
+    ) -> list:
         """Deterministic short-term memory: open fragment transcript + recent summaries.
 
         转录按 token 上限截断（只保留最近消息），避免多轮对话后整段转录无限
@@ -569,6 +571,11 @@ class AppContext:
             SHORT_TERM_MAX_MESSAGES = 12
             SHORT_TERM_MAX_TOKENS = 2_500
             rows = self.fragments.messages(frag.id)
+            # invariant：current query 不属于 historical injected transcript，
+            # 当前 user message 已先写入 fragment（供 topic 迁移），这里必须排除，
+            # 否则它会同时出现在短期转录与显式当前消息里 → 重复注入。
+            if exclude_message_id is not None:
+                rows = [m for m in rows if m["id"] != exclude_message_id]
             lines = [
                 f"[{m['role']}] {m['content']}"
                 for m in rows[-SHORT_TERM_MAX_MESSAGES:]
@@ -810,7 +817,7 @@ class AppContext:
         if active_anchor is not None and active_anchor.fragment_id:
             focus_block = self._focus_block(topic, active_anchor.fragment_id)
         # short-term memory of the current topic (open fragment + recent summaries)
-        short_term = self._short_term_items(topic)
+        short_term = self._short_term_items(topic, exclude_message_id=ctx.user_message_id)
         topic_note = self._topic_note(topic, prediction)
         if extra_note:
             topic_note = topic_note + extra_note
