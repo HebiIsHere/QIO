@@ -396,6 +396,17 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         task = asyncio.create_task(_safe_run_turn(ctx, message, topic_id))
         return {"ok": True, "message": message, "topic_id": topic_id, "task": task.get_name()}
 
+    @app.post("/api/turns/cancel")
+    async def cancel_turn() -> dict:
+        """取消当前 active 主 turn（single-flight：唯一目标）。"""
+        cancelled = ctx.turns.cancel_active()
+        active = ctx.turns.active
+        return {
+            "ok": cancelled,
+            "cancelled": cancelled,
+            "turn_id": active.turn_id if active is not None else None,
+        }
+
     # -- graph -------------------------------------------------------------
 
     @app.get("/api/session/context")
