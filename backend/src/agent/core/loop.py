@@ -61,6 +61,7 @@ class AgentLoop:
         guard: RunawayGuard | None = None,
         continue_batch_iterations: int = 32,
         continue_batch_tokens: int = 12800,
+        turn_id: str | None = None,
         tool_trace=None,
         tool_selector=None,
         max_parallel_tools: int = 4,
@@ -80,6 +81,7 @@ class AgentLoop:
         self.guard = guard
         self.continue_batch_iterations = continue_batch_iterations
         self.continue_batch_tokens = continue_batch_tokens
+        self.turn_id = turn_id
         self._halted = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
@@ -208,6 +210,8 @@ class AgentLoop:
     # -- event helpers ----------------------------------------------------
 
     async def _emit(self, event_type: EventType, data: dict) -> None:
+        if self.turn_id:
+            data = {**data, "turn_id": self.turn_id}
         await self.bus.publish(make_event(event_type, data))
 
     def _warn(self, message: str) -> None:

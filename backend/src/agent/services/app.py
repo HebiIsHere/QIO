@@ -485,6 +485,7 @@ class AppContext:
                 token_budget=self._loop_token_budget() or None,
                 approvals=self.approvals,
                 guard=RunawayGuard(),
+                turn_id=ctx.turn_id,
             )
             ctx.loop = loop
             try:
@@ -859,6 +860,7 @@ class AppContext:
             token_budget=self._loop_token_budget() or None,
             approvals=self.approvals,
             guard=RunawayGuard(),
+            turn_id=ctx.turn_id,
         )
         ctx.loop = loop
         try:
