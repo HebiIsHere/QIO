@@ -61,3 +61,16 @@ def test_disabled_store_is_noop(db_conn: sqlite3.Connection):
     s.record_tool_run("turn_x", {"call_id": "c", "tool": "t"})
     assert s.get("turn_x") is None
     assert s.count() == 0
+
+
+def test_recording_overhead_is_small(db_conn: sqlite3.Connection):
+    import time
+
+    s = TraceStore(db_conn)
+    s.begin("turn_perf")
+    t0 = time.perf_counter()
+    for i in range(200):
+        s.record_model_call("turn_perf", {"seq": i, "output_tokens": i})
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0  # 200 次写入远低于 1s（非阻塞）
+    assert len(s.get("turn_perf")["model_calls"]) == 200
