@@ -413,6 +413,37 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         ok = ctx.turns.cancel(turn_id)
         return {"ok": ok, "cancelled": ok, "turn_id": turn_id}
 
+    # -- agent trace (read-only debug) -------------------------------------
+
+    @app.get("/api/traces")
+    async def list_traces(limit: int = 50, offset: int = 0) -> dict:
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        return {
+            "traces": ctx.trace_store.list(limit=limit, offset=offset),
+            "total": ctx.trace_store.count(),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/traces/{turn_id}")
+    async def get_trace(turn_id: str) -> dict:
+        trace = ctx.trace_store.get(turn_id)
+        if trace is None:
+            raise HTTPException(status_code=404, detail="trace not found")
+        return trace
+
+    @app.get("/api/settings/trace")
+    async def get_trace_settings() -> dict:
+        return {"enabled": ctx.trace_store.enabled}
+
+    @app.put("/api/settings/trace")
+    async def update_trace_settings(body: dict) -> dict:
+        enabled = bool(body.get("enabled", True))
+        ctx.settings_store.set("trace.enabled", "true" if enabled else "false")
+        ctx.trace_store.enabled = enabled
+        return {"enabled": enabled}
+
     # -- graph -------------------------------------------------------------
 
     @app.get("/api/session/context")
