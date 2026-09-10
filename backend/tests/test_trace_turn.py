@@ -84,3 +84,63 @@ async def test_turn_records_trace_without_secret(ctx: AppContext):
     row = ctx.conn.execute("SELECT * FROM turn_traces").fetchone()
     blob = json.dumps(dict(row), ensure_ascii=False, default=str)
     assert secret not in blob
+
+
+class _AnswerAdapter:
+    mode = "native"
+    model = "deepseek-v4-flash"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def complete(self, messages, tools, **kwargs):
+        return Completion(
+            message=ChatMessage(role="assistant", content=self.text),
+            usage={"prompt_tokens": 12, "completion_tokens": 4},
+        )
+
+
+async def test_subagent_loop_records_trace(ctx: AppContext):
+    from agent.tools.subagent_tool import SubagentTool
+    from agent.tools.spec import ToolDefinition
+
+    definition = ToolDefinition(
+        name="sub1",
+        description="d",
+        tool_type="subagent",
+        subagent_budget={"max_iterations": 2, "max_tokens": 1000, "output_limit_chars": 500},
+    )
+
+    class _TM:
+        def record_info(self, tid):
+            return None
+
+    tool = SubagentTool(
+        definition,
+        credentials=None,
+        task_manager=_TM(),
+        trace_store=ctx.trace_store,
+    )
+    tool.bus = EventBus()
+    res = await tool._execute("task_x", _AnswerAdapter("子任务结果"), {"x": 1})
+    assert res.ok
+    trace = ctx.trace_store.get("subagent:task_x")
+    assert trace is not None
+    assert trace["status"] == "done"
+    assert len(trace["model_calls"]) >= 1
+
+
+async def test_notify_turn_records_trace(ctx: AppContext):
+    from agent.core.turn import TurnContext
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ctx, "build_adapter", AsyncMock(return_value=_AnswerAdapter("收到")))
+    tctx = TurnContext(turn_id="turn_notify", message="子任务完成：结果 X", notify=True)
+    await ctx._execute_notify_turn(tctx)
+    monkeypatch.undo()
+
+    trace = ctx.trace_store.get("turn_notify")
+    assert trace is not None
+    assert trace["status"] == "done"
+    assert len(trace["model_calls"]) >= 1
+    assert trace["writes"].get("messages")

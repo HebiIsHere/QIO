@@ -39,6 +39,7 @@ class SubagentTool(Tool):
         adapter_factory: Callable[[str, str | None], Awaitable[Any]] | None = None,
         bus=None,
         toolset: list[str] | None = None,
+        trace_store=None,
     ) -> None:
         self.definition = definition
         self.name = definition.name
@@ -50,6 +51,7 @@ class SubagentTool(Tool):
         self.adapter_factory = adapter_factory
         self.bus = bus
         self.toolset = toolset or ["memory_search"]
+        self.trace_store = trace_store
 
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
@@ -93,6 +95,26 @@ class SubagentTool(Tool):
         )
 
     async def _execute(self, task_id: str, adapter, kwargs: dict) -> ToolResult:
+        tid = f"subagent:{task_id}"
+        tracer = None
+        if self.trace_store is not None:
+            from agent.trace.recorder import TurnTracer
+
+            tracer = TurnTracer(self.trace_store, tid)
+            self.trace_store.begin(tid)
+        try:
+            result = await self._run_subagent(task_id, adapter, kwargs, tid, tracer)
+        except Exception:
+            if self.trace_store is not None:
+                self.trace_store.finish(tid, "failed")
+            raise
+        if self.trace_store is not None:
+            self.trace_store.finish(
+                tid, "done", final_preview=result.content or ""
+            )
+        return result
+
+    async def _run_subagent(self, task_id: str, adapter, kwargs: dict, tid: str, tracer):
         from agent.core.loop import AgentLoop
 
         budget = self.definition.subagent_budget or SubagentBudget()
@@ -110,6 +132,8 @@ class SubagentTool(Tool):
             self.bus,
             max_iterations=budget.max_iterations,
             token_budget=budget.max_tokens,
+            turn_id=tid,
+            trace=tracer,
         )
         result = await loop.run(prompt)
         record = self.task_manager.record_info(task_id)

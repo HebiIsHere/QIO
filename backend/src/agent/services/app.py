@@ -305,6 +305,7 @@ class AppContext:
                         retriever=self.retriever,
                         adapter_factory=self.build_adapter_for_credential,
                         bus=self.bus,
+                        trace_store=self.trace_store,
                     )
                 else:
                     tool = CodeTool(definition, sandbox, credentials=self.credentials)
@@ -375,6 +376,7 @@ class AppContext:
             adapter_factory=self.build_adapter_for_credential,
             bus=self.bus,
             tool_store=self.tool_store,
+            trace_store=self.trace_store,
         )
 
     # -- selector refresh -------------------------------------------------
@@ -493,6 +495,11 @@ class AppContext:
                 return
             topic = self.current_topic()
             ctx.current_topic = topic
+            from agent.trace.recorder import TurnTracer
+
+            tracer = TurnTracer(self.trace_store, ctx.turn_id)
+            ctx.trace = tracer
+            self.trace_store.begin(ctx.turn_id, initial_topic=topic)
             notice = ctx.message
             prediction = self.predictor.predict(notice, current_topic_id=topic)
             payload = self.build_injection(
@@ -502,6 +509,25 @@ class AppContext:
                 entity_ids=self._topic_entity_ids(topic),
                 user_node_id=self._user_root_id(),
                 model=adapter.model,
+            )
+            tracer.injection(
+                items=[
+                    {
+                        "surface": it.surface,
+                        "item_id": it.item_id,
+                        "tokens": it.tokens,
+                        "score": round(it.score, 4),
+                        "preview": (it.text or "")[:160],
+                    }
+                    for it in payload.plan.all_items
+                ],
+                total_tokens=payload.plan.total_tokens,
+                budget={
+                    "hard_cap": payload.plan.hard_cap,
+                    "truncated": payload.plan.truncated,
+                    "needs_consolidation": payload.plan.needs_consolidation,
+                },
+                dropped=[],
             )
             prompt = notice
             if payload.text:
@@ -515,6 +541,7 @@ class AppContext:
                 approvals=self.approvals,
                 guard=RunawayGuard(),
                 turn_id=ctx.turn_id,
+                trace=tracer,
             )
             ctx.loop = loop
             try:
@@ -522,23 +549,28 @@ class AppContext:
             finally:
                 ctx.loop = None
             # feedback enters memory (assistant message; no user message)
-            self.memory.append_message(
+            notify_msg_id, _ = self.memory.append_message(
                 topic_id=topic,
                 role="assistant",
                 content=result.final_content or "",
                 content_type="text",
                 model=adapter.model,
             )
+            tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
             ctx.result = {"ok": True, "turn": result.__dict__}
             fragment = self.fragments.get_or_create_open(topic)
             if self.fragments.should_close(fragment):
-                closed = await self._close_fragment(topic, adapter)
+                closed = await self._close_fragment(topic, adapter, tracer=tracer)
                 if closed is not None:
                     self._refresh_selector()
                     self.predictor.refresh_topic_vector(topic)
+            self.trace_store.finish(
+                ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
+            )
         except Exception as exc:  # noqa: BLE001 - notify turn must not crash
             logger.warning("notify turn failed: %s", exc)
+            self.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
             ctx.result = {"ok": False, "reason": "notify_failed"}
         finally:
             self._notify_turn = False

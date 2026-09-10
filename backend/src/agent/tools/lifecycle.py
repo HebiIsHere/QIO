@@ -53,6 +53,7 @@ class ToolLifecycle:
         adapter_factory=None,
         bus=None,
         tool_store=None,
+        trace_store=None,
     ) -> None:
         self.creator = ToolCreator(adapter)
         self.approvals = approvals
@@ -65,6 +66,7 @@ class ToolLifecycle:
         self.adapter_factory = adapter_factory
         self.bus = bus
         self.tool_store = tool_store
+        self.trace_store = trace_store
         # 已注册工具的 disposer，撤销时真正从注册表移除
         self._registry_disposers: dict[str, Callable[[], None]] = {}
 
@@ -200,6 +202,7 @@ class ToolLifecycle:
                     retriever=self.retriever,
                     adapter_factory=self.adapter_factory,
                     bus=self.bus,
+                    trace_store=self.trace_store,
                 )
         else:
             tool = CodeTool(definition, self.sandbox, credentials=self.credentials)
