@@ -23,6 +23,7 @@ from agent.adapters.native import NativeAdapter
 from agent.adapters.probe import ProbeCache, probe_adapter
 from agent.adapters.text import TextAdapter
 from agent.config import Settings
+from agent.core.guard import RunawayGuard
 from agent.credentials.policy import CredentialPolicy, CredentialRef
 from agent.credentials.store import CredentialStore
 from agent.graph.anchors import AnchorService
@@ -292,6 +293,14 @@ class AppContext:
         refs = self.policy.resolve("main-loop", MAIN_LOOP_USAGE_TAGS)
         return refs[0] if refs else None
 
+    def _loop_max_iterations(self) -> int:
+        """用户配置的迭代上限；0 表示未配置（用模式默认值）。"""
+        return self.settings_store.get_int("loop.max_iterations", 0)
+
+    def _loop_token_budget(self) -> int:
+        """用户配置的输出 token 预算；0 表示未配置（用模式默认值）。"""
+        return self.settings_store.get_int("loop.output_token_budget", 0)
+
     async def build_adapter_for_credential(
         self, key_id: str, model: str | None = None
     ) -> BaseAdapter | None:
@@ -467,6 +476,10 @@ class AppContext:
                 adapter, self.registry, self.bus,
                 tool_trace=self._record_tool_call,
                 tool_selector=self._route_tools,
+                max_iterations=self._loop_max_iterations() or None,
+                token_budget=self._loop_token_budget() or None,
+                approvals=self.approvals,
+                guard=RunawayGuard(),
             )
             self._active_loop = loop
             try:
@@ -805,6 +818,10 @@ class AppContext:
             adapter, self.registry, self.bus,
             tool_trace=self._record_tool_call,
             tool_selector=self._route_tools,
+            max_iterations=self._loop_max_iterations() or None,
+            token_budget=self._loop_token_budget() or None,
+            approvals=self.approvals,
+            guard=RunawayGuard(),
         )
         self._active_loop = loop
         try:

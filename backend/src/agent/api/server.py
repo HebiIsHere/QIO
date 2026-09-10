@@ -259,6 +259,50 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         ctx.settings_store.set("ui.typewriter_cps", str(value))
         return {"ok": True, "typewriter_cps": value}
 
+    # -- 对话深度：迭代上限 / 输出 token 预算 -------------------------------
+
+    LOOP_MAX_ITERATIONS_LIMIT = 1000
+    LOOP_DEFAULT_ITERATIONS = 128
+    LOOP_DEFAULT_OUTPUT_TOKENS = 51200
+
+    @app.get("/api/settings/loop")
+    async def get_loop_settings() -> dict:
+        store = ctx.settings_store
+        return {
+            "max_iterations": store.get_int("loop.max_iterations", LOOP_DEFAULT_ITERATIONS),
+            "output_token_budget": store.get_int(
+                "loop.output_token_budget", LOOP_DEFAULT_OUTPUT_TOKENS
+            ),
+        }
+
+    @app.put("/api/settings/loop")
+    async def update_loop_settings(body: dict) -> dict:
+        store = ctx.settings_store
+        if "max_iterations" in body:
+            try:
+                v = int(body["max_iterations"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="max_iterations must be an integer")
+            if not (1 <= v <= LOOP_MAX_ITERATIONS_LIMIT):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"max_iterations must be in [1, {LOOP_MAX_ITERATIONS_LIMIT}]",
+                )
+            store.set("loop.max_iterations", str(v))
+        if "output_token_budget" in body:
+            try:
+                v = int(body["output_token_budget"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="output_token_budget must be an integer"
+                )
+            if v < 0:
+                raise HTTPException(
+                    status_code=400, detail="output_token_budget must be >= 0"
+                )
+            store.set("loop.output_token_budget", str(v))
+        return await get_loop_settings()
+
     @app.get("/api/settings/search")
     async def get_search_settings() -> dict:
         store = ctx.settings_store
