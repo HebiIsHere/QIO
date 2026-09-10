@@ -43,6 +43,7 @@ async function decide(decision: "approved" | "rejected") {
   align-items: center;
   gap: 12px;
   margin: 8px 0;
+  max-width: min(760px, 100%);
   padding: 10px 16px;
   border: 1px solid var(--accent);
   border-radius: 12px;
