@@ -40,6 +40,11 @@ vi.mock("../../services/api", () => ({
       root_dir: String(body.root_dir ?? ""),
       permission_mode: String(body.permission_mode ?? "default"),
     })),
+    getLoopSettings: vi.fn(async () => ({ max_iterations: 128, output_token_budget: 51200 })),
+    updateLoopSettings: vi.fn(async (body: Record<string, unknown>) => ({
+      max_iterations: Number(body.max_iterations ?? 128),
+      output_token_budget: Number(body.output_token_budget ?? 51200),
+    })),
     openai: {},
   },
 }));
@@ -237,6 +242,22 @@ describe("SettingsView", () => {
     expect(panel.text()).toContain("电脑操控");
     expect(panel.text()).toContain("工作区根目录");
     expect(api.getComputerSettings).toHaveBeenCalled();
+    w.unmount();
+  });
+
+  it("偏好页渲染对话深度卡片并拉取当前配置", async () => {
+    const { api } = await import("../../services/api");
+    (api.getLoopSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      max_iterations: 200,
+      output_token_budget: 90000,
+    });
+    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
+    await w.findAll(".tab")[1].trigger("click");
+    await flushPromises();
+    const panel = w.find(".panel:not([style*='display: none'])");
+    expect(panel.text()).toContain("对话深度");
+    expect(panel.text()).toContain("单轮迭代上限");
+    expect(api.getLoopSettings).toHaveBeenCalled();
     w.unmount();
   });
 });

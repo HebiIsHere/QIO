@@ -38,6 +38,11 @@ export interface ComputerSettings {
   permission_mode: string;
 }
 
+export interface LoopSettings {
+  max_iterations: number;
+  output_token_budget: number;
+}
+
 export interface KnowledgeItem {
   id: string;
   category: string;
@@ -228,6 +233,13 @@ export const api = {
     request<ComputerSettings>("/api/settings/computer"),
   updateComputerSettings: (body: Record<string, unknown>) =>
     request<ComputerSettings>("/api/settings/computer", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  getLoopSettings: () =>
+    request<LoopSettings>("/api/settings/loop"),
+  updateLoopSettings: (body: Record<string, unknown>) =>
+    request<LoopSettings>("/api/settings/loop", {
       method: "PUT",
       body: JSON.stringify(body),
     }),

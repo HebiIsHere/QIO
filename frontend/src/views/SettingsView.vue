@@ -287,6 +287,49 @@ function onPermissionModeSelect(v: string) {
   void saveComputerSettings();
 }
 
+const loopMaxIterations = ref(128);
+const loopTokenBudget = ref(51200);
+const loopNotice = ref("");
+
+async function loadLoopSettings() {
+  try {
+    const s = await api.getLoopSettings();
+    loopMaxIterations.value = s.max_iterations;
+    loopTokenBudget.value = s.output_token_budget;
+  } catch (e) {
+    console.error("[settings] load loop settings failed:", e);
+  }
+}
+
+async function saveLoopSettings() {
+  if (!Number.isInteger(loopMaxIterations.value) || loopMaxIterations.value < 1 || loopMaxIterations.value > 1000) {
+    loopNotice.value = "迭代上限需在 1-1000 之间";
+    return;
+  }
+  if (!Number.isInteger(loopTokenBudget.value) || loopTokenBudget.value < 0) {
+    loopNotice.value = "输出预算需为不小于 0 的整数";
+    return;
+  }
+  try {
+    const r = await api.updateLoopSettings({
+      max_iterations: loopMaxIterations.value,
+      output_token_budget: loopTokenBudget.value,
+    });
+    loopMaxIterations.value = r.max_iterations;
+    loopTokenBudget.value = r.output_token_budget;
+    loopNotice.value = "已保存对话深度";
+  } catch (e) {
+    loopNotice.value = `保存失败：${(e as Error).message}`;
+  }
+}
+
+function onLoopIterationsInput(v: number | null) {
+  loopMaxIterations.value = v ?? 0;
+}
+function onLoopTokensInput(v: number | null) {
+  loopTokenBudget.value = v ?? 0;
+}
+
 async function load() {
   try {
     credentials.value = (await api.listCredentials()).credentials;
@@ -377,6 +420,7 @@ onMounted(() => {
   void loadMaintenanceSettings();
   void loadSearchSettings();
   void loadComputerSettings();
+  void loadLoopSettings();
   void ui.load();
 });
 </script>
@@ -544,6 +588,40 @@ onMounted(() => {
               :options="permissionModeOptions"
               :model-value="computerPermissionMode"
               @update:model-value="onPermissionModeSelect"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>对话深度</h2>
+        <p class="desc">agent 单轮最多迭代次数与输出 token 预算；达上限时可选择继续。</p>
+        <p v-if="loopNotice" class="msg ok">{{ loopNotice }}</p>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">单轮迭代上限</div>
+            <div class="d">每轮任务最多重新决策的次数（1-1000）</div>
+          </div>
+          <div class="ctl">
+            <QNumber
+              class="num" :model-value="loopMaxIterations"
+              :min="1" :max="1000" mono label="迭代上限"
+              @update:model-value="onLoopIterationsInput"
+              @change="saveLoopSettings"
+            />
+          </div>
+        </div>
+        <div class="pref">
+          <div class="txt">
+            <div class="t">输出 token 预算</div>
+            <div class="d">单轮模型输出累计上限（0 表示不限）</div>
+          </div>
+          <div class="ctl">
+            <QNumber
+              class="num" :model-value="loopTokenBudget"
+              :min="0" :max="500000" mono label="输出预算"
+              @update:model-value="onLoopTokensInput"
+              @change="saveLoopSettings"
             />
           </div>
         </div>
