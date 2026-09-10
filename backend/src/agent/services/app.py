@@ -34,15 +34,9 @@ from agent.memory.ingest import MemoryWriter
 from agent.selector.selector import Selector
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
-    INJECT_FOCUS_SECTION,
-    INJECT_SHORT_TERM_SECTION,
     NOTIFY_SUBTASK_DONE,
-    TOPIC_NOTE_CURRENT,
-    TOPIC_NOTE_NEW_REASON,
-    TOPIC_NOTE_RELATED,
-    TOPIC_NOTE_SWITCH,
 )
-from agent.services.injection import BudgetConfig, InjectionAssembler, InjectionBudget, InjectionPayload
+from agent.services.injection import InjectionPayload
 from agent.services.retrieval import Retriever
 from agent.tools.builtin import EchoTool, NowTool
 
@@ -92,6 +86,16 @@ class AppContext:
             fallback_recall=BM25Backend(),
         )
         self.retriever = Retriever(self.selector, self.topics, conn=conn)
+        from agent.services.context import ContextAssembler
+
+        self.context_assembler = ContextAssembler(
+            conn,
+            fragments=self.fragments,
+            topics=self.topics,
+            retriever=self.retriever,
+            context_registry=self.context_registry,
+            budget_ratio=BUDGET_RATIO,
+        )
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
         from agent.tools.approval import ApprovalService
 
@@ -529,147 +533,28 @@ class AppContext:
     # -- short-term memory & topic helpers ---------------------------------
 
     def _focus_block(self, topic_id: str, fragment_id: str | None) -> str:
-        """Build the focus block for the anchored fragment (empty when invalid)."""
-        if not fragment_id:
-            return ""
-        frag = self.fragments.get(fragment_id)
-        if frag is None or frag.topic_id != topic_id:
-            return ""
-        title = None
-        row = self.conn.execute(
-            "SELECT title FROM memory_index WHERE fragment_id = ?", (fragment_id,)
-        ).fetchone()
-        if row is not None and row["title"]:
-            title = row["title"]
-        if not title:
-            if frag.closed_at is None:
-                title = "当前片段"
-            else:
-                title = (frag.summary or "")[:20] or "历史片段"
-        parts = [INJECT_FOCUS_SECTION.format(title=title)]
-        if frag.summary:
-            parts.append(frag.summary)
-        for m in self.fragments.messages(fragment_id)[:3]:
-            content = m["content"] or ""
-            parts.append(f"[{m['role']}] {content}")
-        return "\n".join(parts)
+        """委派给 ContextAssembler（见 agent/services/context.py）。"""
+        return self.context_assembler.focus_block(topic_id, fragment_id)
 
     def anchor_fragment_info(self) -> dict | None:
-        """Anchor fragment metadata for the session context (id + title)."""
-        active = AnchorService(self.conn).get_active()
-        if active is None or not active.fragment_id:
-            return None
-        row = self.conn.execute(
-            "SELECT title FROM memory_index WHERE fragment_id = ?",
-            (active.fragment_id,),
-        ).fetchone()
-        return {"id": active.fragment_id, "title": row["title"] if row else None}
+        """委派给 ContextAssembler。"""
+        return self.context_assembler.anchor_fragment_info()
 
     def _short_term_items(
         self, topic_id: str, exclude_message_id: str | None = None
     ) -> list:
-        """Deterministic short-term memory: open fragment transcript + recent summaries.
-
-        转录按 token 上限截断（只保留最近消息），避免多轮对话后整段转录无限
-        膨胀、单轮 token 消耗突破循环预算导致对话被 STOPPED。
-        """
-        from agent.knowledge.inject import InjectionSource
-        from agent.memory.index import estimate_tokens
-        from agent.services.injection import PlannedItem
-
-        items: list = []
-        frag = self.fragments.get_or_create_open(topic_id)
-        if frag.start_message_id is not None:
-            # 只取最近 N 条消息，且整体不超过 ~2.5k token（约 1/6 迭代预算）
-            SHORT_TERM_MAX_MESSAGES = 12
-            SHORT_TERM_MAX_TOKENS = 2_500
-            rows = self.fragments.messages(frag.id)
-            # invariant：current query 不属于 historical injected transcript，
-            # 当前 user message 已先写入 fragment（供 topic 迁移），这里必须排除，
-            # 否则它会同时出现在短期转录与显式当前消息里 → 重复注入。
-            if exclude_message_id is not None:
-                rows = [m for m in rows if m["id"] != exclude_message_id]
-            lines = [
-                f"[{m['role']}] {m['content']}"
-                for m in rows[-SHORT_TERM_MAX_MESSAGES:]
-                if m["content"]
-            ]
-            if lines:
-                text = "\n".join(lines)
-                if estimate_tokens(text) > SHORT_TERM_MAX_TOKENS:
-                    # 从后往前保留，直到接近上限（保持最近上下文）
-                    kept: list[str] = []
-                    used = 0
-                    for line in reversed(lines):
-                        t = estimate_tokens(line)
-                        if used + t > SHORT_TERM_MAX_TOKENS and kept:
-                            break
-                        kept.append(line)
-                        used += t
-                    text = "\n".join(reversed(kept))
-                items.append(
-                    PlannedItem(
-                        source="memory",
-                        surface="topic_short",
-                        item_id=frag.id,
-                        text=INJECT_SHORT_TERM_SECTION.format(text=text),
-                        tokens=estimate_tokens(text),
-                    )
-                )
-        for s in InjectionSource(self.conn).recent_fragment_summaries(topic_id, limit=2):
-            text = f"【短期摘要·{s['title']}】\n{s['summary']}"
-            items.append(
-                PlannedItem(
-                    source="memory",
-                    surface="topic_short",
-                    item_id=s["id"],
-                    text=text,
-                    tokens=estimate_tokens(text),
-                )
-            )
-        return items
+        """委派给 ContextAssembler。"""
+        return self.context_assembler.short_term_items(
+            topic_id, exclude_message_id=exclude_message_id
+        )
 
     def _entity_card_topics(self, message: str) -> list[str]:
-        """消息命中的实体卡，其关联话题（mention 边 topic→entity，软信号用）。"""
-        from agent.entities.cards import EntityCardService
-
-        svc = EntityCardService(self.conn)
-        topics: set[str] = set()
-        for card in svc.match_cards(message):
-            if not card.node_id:
-                continue
-            rows = self.conn.execute(
-                "SELECT src FROM edges WHERE dst = ? AND type = 'mention'",
-                (card.node_id,),
-            ).fetchall()
-            for r in rows:
-                topics.add(r["src"])
-        return list(topics)
+        """委派给 ContextAssembler。"""
+        return self.context_assembler.entity_card_topics(message)
 
     def _topic_note(self, topic_id: str, prediction) -> str:
-        """Human-readable topic context injected so the main model can act on it."""
-        parts: list[str] = []
-        node = self.topics.nodes.get_topic(topic_id)
-        parts.append(
-            TOPIC_NOTE_CURRENT.format(name=node.name if node else topic_id, topic_id=topic_id)
-        )
-        if prediction.aux_topic_ids:
-            names = []
-            for tid in prediction.aux_topic_ids:
-                n = self.topics.nodes.get_topic(tid)
-                names.append(f"「{n.name if n else tid}」（{tid}）")
-            parts.append(TOPIC_NOTE_RELATED.format(names="、".join(names)))
-        if prediction.suggested_switch and prediction.main_topic_id:
-            n = self.topics.nodes.get_topic(prediction.main_topic_id)
-            score = prediction.scores.get(prediction.main_topic_id, 0.0)
-            parts.append(
-                TOPIC_NOTE_SWITCH.format(
-                    name=n.name if n else prediction.main_topic_id,
-                    topic_id=prediction.main_topic_id,
-                    score=score,
-                )
-            )
-        return "；".join(parts)
+        """委派给 ContextAssembler。"""
+        return self.context_assembler.topic_note(topic_id, prediction)
 
     def _move_message(self, message_id: str, old_topic: str, new_topic: str) -> None:
         """Move the user message to the new topic's open fragment after a switch."""
@@ -708,24 +593,14 @@ class AppContext:
         focus_block: str = "",
         entity_cards: list[str] | None = None,
     ) -> InjectionPayload:
-        from agent.knowledge.inject import InjectionSource
-
-        context_window = self.context_registry.get(None, model or "unknown")
-        budget = InjectionBudget(
-            BudgetConfig(context_window=context_window, budget_ratio=BUDGET_RATIO)
-        )
-        assembler = InjectionAssembler(
-            budget,
-            self.retriever,
-            knowledge_source=InjectionSource(self.conn),
-        )
-        return assembler.build(
+        """委派给 ContextAssembler。"""
+        return self.context_assembler.build_injection(
             query,
             topic_id=topic_id,
             aux_topic_ids=aux_topic_ids,
-            entity_ids=entity_ids or [],
+            entity_ids=entity_ids,
             user_node_id=user_node_id,
-            top_k=6,
+            model=model,
             short_term=short_term,
             new_topic_candidate=new_topic_candidate,
             new_topic_reason=new_topic_reason,
