@@ -9,6 +9,7 @@ import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
 import type { StreamMessage } from "../stores/session";
 import MessageItem from "./MessageItem.vue";
+import ContinueBar from "./ContinueBar.vue";
 
 interface Turn {
   id: string;
@@ -183,6 +184,7 @@ const showTyping = computed(() => {
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       </div>
     </div>
+    <ContinueBar />
     <div v-if="!messages.length" class="empty">
       <div class="greet serif">今天想聊点什么？</div>
       <div class="sub mono">你的星球在右下角等待 · 点击悬浮球查看话题大陆</div>

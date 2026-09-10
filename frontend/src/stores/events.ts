@@ -155,10 +155,21 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const approval = (d.approval ?? d) as Record<string, unknown>;
           const id = String(approval.approval_id ?? "");
+          const kind = String(approval.kind ?? "");
+          if (kind === "continue") {
+            // 迭代/输出预算耗尽：进入「继续/停止」操作条，不进入审批队列
+            const payload = (approval.payload ?? {}) as Record<string, unknown>;
+            session.pendingContinue = {
+              id,
+              used: Number(payload.used_iterations ?? 0),
+              max: Number(payload.max_iterations ?? 0),
+            };
+            break;
+          }
           if (id) {
             useApprovalsStore().enqueue(
               id,
-              String(approval.kind ?? "unknown"),
+              kind || "unknown",
               (approval.payload ?? {}) as Record<string, unknown>,
             );
           }

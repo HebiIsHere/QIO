@@ -37,6 +37,8 @@ export const useSessionStore = defineStore("session", {
     messages: [] as StreamMessage[],
     turnRunning: false,
     lastError: null as string | null,
+    /** 迭代/输出预算耗尽，等待用户决定是否继续 */
+    pendingContinue: null as { id: string; used: number; max: number } | null,
     _msgSeq: 0,
   }),
   actions: {

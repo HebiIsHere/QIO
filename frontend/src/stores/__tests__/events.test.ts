@@ -159,4 +159,25 @@ describe("events store 路由", () => {
     session.setAnchor("topic_b", null, "话题B");
     expect(session.messages[0]?.topicName).toBe("话题A");
   });
+
+  it("kind=continue 的审批事件 → 进入 pendingContinue 而非审批队列", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "APPROVAL_REQUIRED",
+      id: "c1",
+      ts: "2026-09-10T00:00:00Z",
+      data: {
+        approval: {
+          approval_id: "appr_1",
+          kind: "continue",
+          payload: { used_iterations: 128, max_iterations: 128 },
+        },
+      },
+    });
+    expect(session.pendingContinue?.id).toBe("appr_1");
+    expect(session.pendingContinue?.used).toBe(128);
+  });
 });
