@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from agent.graph.topics import TopicService
+from agent.services.decay import EPHEMERAL, DecayPolicy
 from agent.selector.base import IndexedDoc
 from agent.selector.selector import Selector
 from agent.selector.tokenize import tokenize
@@ -62,11 +63,22 @@ class Retriever:
         topics: TopicService,
         config: RetrievalConfig | None = None,
         conn=None,
+        decay: DecayPolicy | None = None,
     ) -> None:
         self.selector = selector
         self.topics = topics
         self.config = config or RetrievalConfig()
         self.conn = conn
+        # 默认策略与旧行为一致（ephemeral half-life == recency_half_life_days）
+        self.decay = decay or DecayPolicy({EPHEMERAL: self.config.recency_half_life_days})
+
+    def kind_of(self, doc_id: str) -> str:
+        """信息种类（供差异化衰减）。当前 memory_index 无可信分类 → ephemeral。
+
+        未来若有可靠 category metadata，可在此按 doc_id 返回对应 kind，
+        无需改动排序主逻辑（见 agent/services/decay.py）。
+        """
+        return EPHEMERAL
 
     # -- first hop: topic fingerprints ------------------------------------
 
@@ -110,7 +122,7 @@ class Retriever:
             if created_at is not None:
                 age_days = self._age_days(created_at)
                 if math.isfinite(age_days):
-                    recency = math.exp(-age_days / self.config.recency_half_life_days)
+                    recency = self.decay.weight(age_days, self.kind_of(candidate.doc_id))
             affinity = 0.0
             if candidate.topic_id is not None:
                 if anchor_topic_id and candidate.topic_id == anchor_topic_id:
