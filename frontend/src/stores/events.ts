@@ -74,6 +74,7 @@ export const useEventStore = defineStore("events", {
           session.turnQueue = {
             running: (d.running as { turn_id: string; message: string } | null) ?? null,
             queued: (d.queued as { turn_id: string; message: string }[] | undefined) ?? [],
+            cancelled: (d.cancelled as { turn_id: string; message: string }[] | undefined) ?? [],
           };
           break;
         }

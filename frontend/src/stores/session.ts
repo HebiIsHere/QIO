@@ -15,6 +15,7 @@ export interface QueueItem {
 export interface TurnQueueState {
   running: QueueItem | null;
   queued: QueueItem[];
+  cancelled: QueueItem[];
 }
 
 export interface StreamMessage {
@@ -52,7 +53,7 @@ export const useSessionStore = defineStore("session", {
     /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
     activeTurnId: null as string | null,
     /** 主 turn 队列快照（TURN_QUEUE 事件更新）：运行中 + 排队中 */
-    turnQueue: { running: null, queued: [] } as TurnQueueState,
+    turnQueue: { running: null, queued: [], cancelled: [] } as TurnQueueState,
     /** 迭代/输出预算耗尽，等待用户决定是否继续 */
     pendingContinue: null as { id: string; used: number; max: number } | null,
     _msgSeq: 0,

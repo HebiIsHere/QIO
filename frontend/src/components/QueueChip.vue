@@ -9,7 +9,10 @@ const open = ref(false);
 
 const running = computed(() => session.turnQueue.running);
 const queued = computed(() => session.turnQueue.queued);
-const visible = computed(() => !!running.value || queued.value.length > 0);
+const cancelled = computed(() => session.turnQueue.cancelled);
+const visible = computed(
+  () => !!running.value || queued.value.length > 0 || cancelled.value.length > 0,
+);
 
 async function cancelTurn(turnId: string) {
   try {
@@ -33,6 +36,8 @@ async function cancelTurn(turnId: string) {
       <b v-if="running">1 运行中</b>
       <span v-if="running && queued.length">·</span>
       <span v-if="queued.length">{{ queued.length }} 排队中</span>
+      <span v-if="(running || queued.length) && cancelled.length">·</span>
+      <span v-if="cancelled.length">{{ cancelled.length }} 已取消</span>
       <span class="chev">{{ open ? "▾" : "▸" }}</span>
     </button>
     <div v-show="open" class="list">
@@ -45,6 +50,10 @@ async function cancelTurn(turnId: string) {
         <span class="txt">{{ q.message }}</span>
         <span class="badge mono">排队中 · 第 {{ i + 1 }} 位</span>
         <button class="qbtn" type="button" @click="cancelTurn(q.turn_id)">移除</button>
+      </div>
+      <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled">
+        <span class="txt">{{ c.message }}</span>
+        <span class="badge mono">已取消</span>
       </div>
     </div>
   </div>
@@ -103,6 +112,9 @@ async function cancelTurn(turnId: string) {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.row.cancelled { opacity: 0.55; }
+.row.cancelled .txt { text-decoration: line-through; color: var(--text-muted); }
+.row.cancelled .badge { color: var(--text-muted); }
 .txt {
   flex: 1;
   min-width: 0;

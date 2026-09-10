@@ -22,6 +22,7 @@ export const EVENT_TYPES = [
   "USAGE",
   "TURN_START",
   "TURN_END",
+  "TURN_QUEUE",
   "TOOL_START",
   "TOOL_END",
   "ASSISTANT",

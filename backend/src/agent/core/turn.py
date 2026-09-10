@@ -60,6 +60,7 @@ class TurnManager:
         self._queue: asyncio.Queue[TurnContext] = asyncio.Queue()
         self._active: TurnContext | None = None
         self._pending: list[TurnContext] = []
+        self._cancelled: list[dict] = []  # 最近被取消的 turn（有界）
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -86,7 +87,12 @@ class TurnManager:
                 {"turn_id": c.turn_id, "message": c.message[:120]}
                 for c in self._pending
             ],
+            "cancelled": list(self._cancelled),
         }
+
+    def _record_cancelled(self, ctx: TurnContext) -> None:
+        self._cancelled.append({"turn_id": ctx.turn_id, "message": ctx.message[:120]})
+        del self._cancelled[:-5]  # 只保留最近 5 条
 
     def _schedule_emit(self) -> None:
         if self._publisher is None:
@@ -201,6 +207,7 @@ class TurnManager:
         ctx.cancelled = True
         if ctx.loop is not None:
             ctx.loop.cancel()
+        self._record_cancelled(ctx)
         self._schedule_emit()
         return True
 
@@ -214,6 +221,7 @@ class TurnManager:
                 c.cancelled = True
                 c.status = "cancelled"
                 self._pending.pop(i)
+                self._record_cancelled(c)
                 self._schedule_emit()
                 return True
         return False

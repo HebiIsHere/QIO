@@ -155,6 +155,7 @@ async def test_cancel_queued_turn_removes_it():
     await started.wait()
     assert tm.cancel(b.turn_id) is True
     assert tm.queued_count() == 0
+    assert [c["turn_id"] for c in tm.snapshot()["cancelled"]] == [b.turn_id]
     release.set()
     await tm.wait(a.turn_id)
     await tm.wait(b.turn_id)
