@@ -24,6 +24,7 @@ from agent.services.injection import (
     InjectionBudget,
     InjectionPayload,
 )
+from agent.services.token_budget import TokenBudgetPlanner
 
 DEFAULT_BUDGET_RATIO = 0.25
 
@@ -38,6 +39,7 @@ class ContextAssembler:
         retriever,
         context_registry,
         budget_ratio: float = DEFAULT_BUDGET_RATIO,
+        budget_planner: TokenBudgetPlanner | None = None,
     ) -> None:
         self.conn = conn
         self.fragments = fragments
@@ -45,6 +47,7 @@ class ContextAssembler:
         self.retriever = retriever
         self.context_registry = context_registry
         self.budget_ratio = budget_ratio
+        self.budget_planner = budget_planner or TokenBudgetPlanner()
 
     # -- focus / anchor ---------------------------------------------------
 
@@ -211,19 +214,37 @@ class ContextAssembler:
         topic_note: str = "",
         focus_block: str = "",
         entity_cards: list[str] | None = None,
+        system_prompt_tokens: int = 0,
+        adapter_overhead_tokens: int = 0,
+        tool_definitions_tokens: int = 0,
+        completion_reserve: int | None = None,
     ) -> InjectionPayload:
         from agent.knowledge.inject import InjectionSource
+        from agent.memory.index import estimate_tokens
 
         context_window = self.context_registry.get(None, model or "unknown")
+        breakdown = self.budget_planner.plan(
+            context_window=context_window,
+            system_prompt_tokens=system_prompt_tokens,
+            adapter_overhead_tokens=adapter_overhead_tokens,
+            tool_definitions_tokens=tool_definitions_tokens,
+            user_query_tokens=estimate_tokens(query),
+            completion_reserve=completion_reserve,
+            injection_ratio=self.budget_ratio,
+        )
         budget = InjectionBudget(
-            BudgetConfig(context_window=context_window, budget_ratio=self.budget_ratio)
+            BudgetConfig(
+                context_window=context_window,
+                budget_ratio=self.budget_ratio,
+                hard_cap_override=breakdown.injection_hard_cap,
+            )
         )
         assembler = InjectionAssembler(
             budget,
             self.retriever,
             knowledge_source=InjectionSource(self.conn),
         )
-        return assembler.build(
+        payload = assembler.build(
             query,
             topic_id=topic_id,
             aux_topic_ids=aux_topic_ids,
@@ -237,3 +258,5 @@ class ContextAssembler:
             focus_block=focus_block,
             entity_cards=entity_cards,
         )
+        payload.plan.budget_breakdown = breakdown.as_dict()
+        return payload

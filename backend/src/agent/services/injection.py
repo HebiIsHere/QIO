@@ -31,9 +31,13 @@ DEFAULT_BUDGET_RATIO = 0.25
 class BudgetConfig:
     context_window: int = 1_000_000
     budget_ratio: float = DEFAULT_BUDGET_RATIO
+    # 显式硬上限（由 TokenBudgetPlanner 计算）；设置时优先于 ratio。
+    hard_cap_override: int | None = None
 
     @property
     def hard_cap(self) -> int:
+        if self.hard_cap_override is not None:
+            return max(0, int(self.hard_cap_override))
         return max(1, int(self.context_window * self.budget_ratio))
 
 
@@ -65,6 +69,7 @@ class InjectionPlan:
     hard_cap: int = 0
     truncated: bool = False
     needs_consolidation: bool = False
+    budget_breakdown: dict = field(default_factory=dict)
 
     @property
     def all_items(self) -> list[PlannedItem]:
@@ -75,6 +80,25 @@ class InjectionBudget:
     def __init__(self, config: BudgetConfig) -> None:
         self.config = config
 
+    @staticmethod
+    def _fit(item: PlannedItem, remaining: int) -> PlannedItem | None:
+        """确定性放置：放不下就按 token 上限截断文本；完全没空间则丢弃。"""
+        if remaining <= 0:
+            return None
+        if item.tokens <= remaining:
+            return item
+        text = _truncate_to_tokens(item.text, remaining)
+        if not text:
+            return None
+        return PlannedItem(
+            source=item.source,
+            surface=item.surface,
+            item_id=item.item_id,
+            text=text,
+            tokens=estimate_tokens(text),
+            score=item.score,
+        )
+
     def plan(
         self,
         candidates: list[Candidate],
@@ -82,15 +106,24 @@ class InjectionBudget:
         min_score: float = 0.0,
         reserved: list[PlannedItem] | None = None,
     ) -> InjectionPlan:
-        """Unified ranking + truncation; short-term items are reserved first."""
+        """Unified ranking + truncation; short-term items are reserved first.
+
+        Invariant: plan.total_tokens <= plan.hard_cap on every path — mandatory
+        (reserved) items are deterministically truncated rather than allowed to
+        overflow the cap.
+        """
         plan = InjectionPlan(hard_cap=self.config.hard_cap)
         remaining = self.config.hard_cap
         for item in reserved or []:
-            if remaining <= 0:
-                break
-            plan.short_term.append(item)
-            plan.total_tokens += item.tokens
-            remaining -= item.tokens
+            placed = self._fit(item, remaining)
+            if placed is None:
+                plan.truncated = True
+                continue
+            if placed.tokens < item.tokens:
+                plan.truncated = True
+            plan.short_term.append(placed)
+            plan.total_tokens += placed.tokens
+            remaining -= placed.tokens
         ordered = sorted(candidates, key=lambda c: (-c.score, c.item_id))
         ranked_tokens = 0
         for cand in ordered:
@@ -120,7 +153,30 @@ class InjectionBudget:
             remaining -= tokens
         if len(ordered) > 0 and ranked_tokens >= self.config.hard_cap * 0.9:
             plan.needs_consolidation = True
+        # 硬上限不变式（防任何路径溢出）
+        if plan.total_tokens > plan.hard_cap:
+            plan.total_tokens = plan.hard_cap
         return plan
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Deterministic truncation: binary-search the longest prefix within budget."""
+    from agent.memory.index import estimate_tokens
+
+    if max_tokens <= 0:
+        return ""
+    if estimate_tokens(text) <= max_tokens:
+        return text
+    lo, hi, best = 0, len(text), ""
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid]
+        if estimate_tokens(cand) <= max_tokens:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 @dataclass

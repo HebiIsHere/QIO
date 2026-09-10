@@ -163,6 +163,7 @@ class TurnOrchestrator:
             topic_note=topic_note,
             focus_block=focus_block,
             entity_cards=entity_cards,
+            tool_definitions_tokens=_tool_spec_tokens(app.registry),
         )
         ctx.knowledge_snapshot = [
             {
@@ -292,3 +293,23 @@ class TurnOrchestrator:
         )
         ctx.final_content = result.final_content
         ctx.result = {"ok": True, "turn": result.__dict__}
+
+
+def _tool_spec_tokens(registry) -> int:
+    """估算 tool definitions 占用的 token（供预算扣除）。"""
+    import json
+
+    from agent.memory.index import estimate_tokens
+
+    try:
+        specs = registry.specs()
+        blob = json.dumps(
+            [
+                {"name": s.name, "description": s.description, "parameters": s.parameters}
+                for s in specs
+            ],
+            ensure_ascii=False,
+        )
+        return estimate_tokens(blob)
+    except Exception:  # noqa: BLE001 - budget estimate must never break a turn
+        return 0

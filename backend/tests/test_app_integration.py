@@ -157,8 +157,13 @@ async def test_three_surface_injection(ctx: AppContext, topic: str, monkeypatch)
     assert "测试话题相关事实" in payload.text
     surfaces = {i.surface for i in payload.plan.knowledge}
     assert {"user", "topic"} <= surfaces
-    # dynamic budget: 1M window x 25% = 250K
-    assert payload.plan.hard_cap == 250_000
+    # 新预算模型：先扣 completion reserve / 当前 query 等，再乘比例。
+    # 1M 窗口 - 4k reserve - query → ~248.9K（不再是裸露的 250K）
+    assert 240_000 <= payload.plan.hard_cap < 250_000
+    bd = payload.plan.budget_breakdown
+    assert bd["context_window"] == 1_000_000
+    assert bd["completion_reserve"] > 0
+    assert payload.plan.hard_cap == bd["injection_hard_cap"]
 
 
 async def test_run_turn_end_to_end_with_injection(ctx: AppContext, topic: str, monkeypatch):

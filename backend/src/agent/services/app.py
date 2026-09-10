@@ -637,6 +637,10 @@ class AppContext:
         topic_note: str = "",
         focus_block: str = "",
         entity_cards: list[str] | None = None,
+        system_prompt_tokens: int = 0,
+        adapter_overhead_tokens: int = 0,
+        tool_definitions_tokens: int = 0,
+        completion_reserve: int | None = None,
     ) -> InjectionPayload:
         """委派给 ContextAssembler。"""
         return self.context_assembler.build_injection(
@@ -652,6 +656,10 @@ class AppContext:
             topic_note=topic_note,
             focus_block=focus_block,
             entity_cards=entity_cards,
+            system_prompt_tokens=system_prompt_tokens,
+            adapter_overhead_tokens=adapter_overhead_tokens,
+            tool_definitions_tokens=tool_definitions_tokens,
+            completion_reserve=completion_reserve,
         )
 
     # -- turn -------------------------------------------------------------
