@@ -62,6 +62,7 @@ class AgentLoop:
         continue_batch_iterations: int = 32,
         continue_batch_tokens: int = 12800,
         turn_id: str | None = None,
+        trace=None,
         tool_trace=None,
         tool_selector=None,
         max_parallel_tools: int = 4,
@@ -82,6 +83,8 @@ class AgentLoop:
         self.continue_batch_iterations = continue_batch_iterations
         self.continue_batch_tokens = continue_batch_tokens
         self.turn_id = turn_id
+        self.trace = trace
+        self._model_seq = 0
         self._halted = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
@@ -189,20 +192,38 @@ class AgentLoop:
 
     async def _guarded_execute(self, call) -> Any:
         """在独立 task 中执行，登记到 _active_tool_tasks 以便 cancel()。"""
+        import time as _time
+
         task = asyncio.current_task()
         if task is not None:
             self._active_tool_tasks.add(task)
+        _t0 = _time.perf_counter()
+        policy: str | None = None
         try:
             result = await self.registry.execute(call)
             if self.guard is not None:
                 verdict = self.guard.observe(call.name, dict(call.arguments), result.ok)
                 if verdict == GuardVerdict.BLOCK:
-                    return ToolResult(ok=False, error="guard: 重复失败已被拦截")
-                if verdict == GuardVerdict.HALT:
+                    policy = "block"
+                    result = ToolResult(ok=False, error="guard: 重复失败已被拦截")
+                elif verdict == GuardVerdict.HALT:
+                    policy = "halt"
                     self._halted = True
                     self._warn("guard: 同一工具反复失败，终止本轮")
                 elif verdict == GuardVerdict.WARN:
+                    policy = "warn"
                     self._warn(f"guard: {call.name} 反复失败，建议换方法")
+            if self.trace is not None:
+                self.trace.tool_run(
+                    call_id=call.id,
+                    tool=call.name,
+                    arguments=dict(call.arguments),
+                    ok=result.ok,
+                    error=result.error,
+                    duration_ms=int((_time.perf_counter() - _t0) * 1000),
+                    policy=policy,
+                    result=result.content,
+                )
             return result
         finally:
             if task is not None:
@@ -227,6 +248,8 @@ class AgentLoop:
     def _warn(self, message: str) -> None:
         self._warnings.append(message)
         logger.warning(message)
+        if self.trace is not None:
+            self.trace.warning("loop", message)
 
     # -- main entry -------------------------------------------------------
 
@@ -374,9 +397,33 @@ class AgentLoop:
                 tools = self.tool_selector(query)
             except Exception:  # noqa: BLE001 - routing must never break planning
                 logger.warning("tool routing failed; falling back to full set", exc_info=True)
+        import time as _time
+
+        self._model_seq += 1
+        _t0 = _time.perf_counter()
         try:
-            return await self.adapter.complete(messages, tools)
+            completion = await self.adapter.complete(messages, tools)
+            if self.trace is not None:
+                usage = completion.usage or {}
+                self.trace.model_call(
+                    seq=self._model_seq,
+                    adapter_mode=str(getattr(self.adapter, "mode", "")),
+                    model=getattr(self.adapter, "model", None),
+                    input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                    output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                    latency_ms=int((_time.perf_counter() - _t0) * 1000),
+                    tool_calls=len(completion.tool_calls or []),
+                )
+            return completion
         except Exception as exc:  # adapter-level failure ends the turn
+            if self.trace is not None:
+                self.trace.model_call(
+                    seq=self._model_seq,
+                    adapter_mode=str(getattr(self.adapter, "mode", "")),
+                    model=getattr(self.adapter, "model", None),
+                    latency_ms=int((_time.perf_counter() - _t0) * 1000),
+                    error=f"{type(exc).__name__}: {exc}"[:200],
+                )
             self._warn(f"planning failed: {exc}")
             await self._emit(
                 EventType.ERROR,

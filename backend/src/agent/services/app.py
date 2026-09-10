@@ -67,6 +67,11 @@ class AppContext:
         self.bus = bus
         self.credentials = CredentialStore(conn)
         self.settings_store = SettingsStore(conn)
+        from agent.trace.store import TraceStore
+
+        self.trace_store = TraceStore(
+            conn, enabled=self.settings_store.get("trace.enabled", "true") != "false"
+        )
         self.policy = CredentialPolicy(self.credentials)
         self.probe_cache = ProbeCache()
         self.context_registry = ContextLengthRegistry()
@@ -766,6 +771,11 @@ class AppContext:
         )
         topic = topic_id or self.current_topic()
         ctx.current_topic = topic
+        from agent.trace.recorder import TurnTracer
+
+        tracer = TurnTracer(self.trace_store, ctx.turn_id)
+        ctx.trace = tracer
+        self.trace_store.begin(ctx.turn_id, initial_topic=topic)
         # speaking in a topic anchors it (if the anchor is absent or stale)
         active_anchor = AnchorService(self.conn).get_active()
         if active_anchor is None or active_anchor.topic_id != topic:
@@ -819,6 +829,7 @@ class AppContext:
             model=adapter.model,
         )
         ctx.user_message_id = msg_id
+        tracer.write("messages", msg_id)
         # anchored fragment focus (从这里开始)
         active_anchor = AnchorService(self.conn).get_active()
         focus_block = ""
@@ -855,6 +866,27 @@ class AppContext:
             }
             for item in payload.plan.knowledge
         ]
+        from agent.trace.redact import preview as _preview
+
+        tracer.injection(
+            items=[
+                {
+                    "surface": it.surface,
+                    "item_id": it.item_id,
+                    "tokens": it.tokens,
+                    "score": round(it.score, 4),
+                    "preview": _preview(it.text, 160),
+                }
+                for it in payload.plan.all_items
+            ],
+            total_tokens=payload.plan.total_tokens,
+            budget={
+                "hard_cap": payload.plan.hard_cap,
+                "truncated": payload.plan.truncated,
+                "needs_consolidation": payload.plan.needs_consolidation,
+            },
+            dropped=[],
+        )
         prompt = message
         if payload.text:
             prompt = f"{payload.text}\n\n【用户消息】\n{message}"
@@ -868,6 +900,7 @@ class AppContext:
             approvals=self.approvals,
             guard=RunawayGuard(),
             turn_id=ctx.turn_id,
+            trace=tracer,
         )
         ctx.loop = loop
         try:
@@ -877,6 +910,7 @@ class AppContext:
             await self.bus.publish(
                 make_error("turn_failed", str(exc)[:200], recoverable=True)
             )
+            self.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
             ctx.result = {"ok": False, "reason": "turn_failed"}
             ctx.status = "done"
             return
@@ -890,29 +924,46 @@ class AppContext:
             final_topic = active.topic_id
             self._move_message(msg_id, topic, final_topic)
 
-        self.memory.append_message(
+        assistant_msg_id, _ = self.memory.append_message(
             topic_id=final_topic,
             role="assistant",
             content=result.final_content or "",
             content_type="text",
             model=adapter.model,
         )
+        tracer.write("messages", assistant_msg_id)
         # chunk close -> summary + extraction + indexing + topic vector refresh
         fragment = self.fragments.get_or_create_open(final_topic)
         if self.fragments.should_close(fragment):
-            closed = await self._close_fragment(final_topic, adapter)
+            closed = await self._close_fragment(final_topic, adapter, tracer=tracer)
             if closed is not None:
                 self._refresh_selector()
                 self.predictor.refresh_topic_vector(final_topic)
         # budget-pressure memory consolidation (rolling summary)
         if payload.plan.needs_consolidation:
             await self.consolidate(final_topic, adapter)
+        tracer.topic(
+            initial=topic,
+            predictor_backend=getattr(prediction, "backend_used", None),
+            scores={k: round(v, 4) for k, v in dict(prediction.scores or {}).items()},
+            suspected_new=new_topic_candidate,
+            operation="switch" if final_topic != topic else getattr(decision.mode, "value", "none"),
+            final=final_topic,
+        )
+        self.trace_store.finish(
+            ctx.turn_id,
+            "done",
+            final_topic=final_topic,
+            final_preview=result.final_content or "",
+        )
         ctx.final_content = result.final_content
         ctx.result = {"ok": True, "turn": result.__dict__}
 
     # -- fragment close: summary + entities + knowledge extraction --------
 
-    async def _close_fragment(self, topic_id: str, adapter: BaseAdapter) -> Any | None:
+    async def _close_fragment(
+        self, topic_id: str, adapter: BaseAdapter, tracer=None
+    ) -> Any | None:
         from agent.knowledge.lifecycle import KnowledgeService
         from agent.knowledge.verify import VerificationService
         from agent.memory.summary import extract_knowledge_candidates, summarize_fragment
@@ -983,7 +1034,12 @@ class AppContext:
         )
 
         # knowledge extraction: draft -> tiered verification -> attach
-        await self._extract_knowledge(adapter, summary, topic_id, entity_ids, fragment.id)
+        if tracer is not None:
+            tracer.write("fragments_closed", fragment.id)
+            tracer.write("summaries", f"{fragment.id}:{summary.title or ''}")
+        await self._extract_knowledge(
+            adapter, summary, topic_id, entity_ids, fragment.id, tracer=tracer
+        )
         return self.fragments.get(fragment.id)
 
     async def _extract_knowledge(
@@ -993,6 +1049,7 @@ class AppContext:
         topic_id: str,
         entity_ids: list[str],
         fragment_id: str,
+        tracer=None,
     ) -> None:
         from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
         from agent.knowledge.verify import VerificationService
@@ -1021,6 +1078,8 @@ class AppContext:
                     node_ids=node_ids,
                     provenance={"fragment_id": fragment_id},
                 )
+                if tracer is not None:
+                    tracer.write("knowledge", item.id)
                 ks.submit(item.id)
                 if cand.category in HIGH_IMPACT_CATEGORIES:
                     # stays draft; user confirmation required before activation
