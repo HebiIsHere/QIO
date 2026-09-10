@@ -305,6 +305,33 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE credentials DROP COLUMN scope",
         ],
     ),
+    (
+        10,
+        [
+            # Agent Trace：单轮 turn 的可观测性文档（JSON 列，避免保存大段原文）。
+            """
+            CREATE TABLE IF NOT EXISTS turn_traces (
+                turn_id       TEXT PRIMARY KEY,
+                status        TEXT NOT NULL DEFAULT 'running',
+                started_at    TEXT NOT NULL,
+                ended_at      TEXT,
+                duration_ms   INTEGER,
+                initial_topic TEXT,
+                final_topic   TEXT,
+                topic         TEXT NOT NULL DEFAULT '{}',
+                injection     TEXT NOT NULL DEFAULT '{}',
+                model_calls   TEXT NOT NULL DEFAULT '[]',
+                tool_runs     TEXT NOT NULL DEFAULT '[]',
+                writes        TEXT NOT NULL DEFAULT '{}',
+                warnings      TEXT NOT NULL DEFAULT '[]',
+                error         TEXT,
+                final_preview TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_turn_traces_started ON turn_traces(started_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_turn_traces_status ON turn_traces(status)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
