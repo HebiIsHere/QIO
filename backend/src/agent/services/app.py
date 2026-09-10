@@ -51,7 +51,6 @@ MAIN_LOOP_TAG = "main-loop"
 MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
 BUDGET_RATIO = 0.25
 DEFAULT_FRAGMENT_MAX_MESSAGES = 10
-CONSOLIDATION_COOLDOWN_SECONDS = 600
 
 
 class AppContext:

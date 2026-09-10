@@ -44,7 +44,12 @@ AgentLoop                      —— planning/tool/observing 状态机（已实
 
 理想 `run_turn`：`begin turn → build context → execute loop → persist/commit → post-turn lifecycle → finish turn`。
 
-**执行状态**：`TurnManager` 与 `AgentLoop` 已完成；`TurnOrchestrator`/`ContextAssembler`/`MemoryLifecycle` 的抽取为**待执行**（Trace 优先落地，见下）。
+**执行状态**：
+- ✅ `TurnManager`、`AgentLoop`（已有）
+- ✅ `ContextAssembler`（`agent/services/context.py`）：focus / short-term / topic note / entity / injection 已迁出，AppContext 保留薄封装
+- ✅ `MemoryLifecycle`（`agent/services/memory_lifecycle.py`）：fragment close / knowledge extraction / consolidation 已迁出
+- ⏳ `TurnOrchestrator`：`_execute_turn` 仍是一段较长函数，待下一步抽取为 begin→context→loop→persist→post-turn→finish
+- AppContext 从 1124 行降到 ~918 行
 
 ## 3. 第三～七阶段：Agent Trace（已实现）
 
