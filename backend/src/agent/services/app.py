@@ -96,6 +96,17 @@ class AppContext:
             context_registry=self.context_registry,
             budget_ratio=BUDGET_RATIO,
         )
+        from agent.services.memory_lifecycle import MemoryLifecycle
+
+        self.memory_lifecycle = MemoryLifecycle(
+            conn,
+            fragments=self.fragments,
+            topics=self.topics,
+            index_builder=self.index_builder,
+            embedding=self.embedding,
+            user_root_id=self._user_root_id,
+            refresh_selector=self._refresh_selector,
+        )
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
         from agent.tools.approval import ApprovalService
 
@@ -839,83 +850,10 @@ class AppContext:
     async def _close_fragment(
         self, topic_id: str, adapter: BaseAdapter, tracer=None
     ) -> Any | None:
-        from agent.knowledge.lifecycle import KnowledgeService
-        from agent.knowledge.verify import VerificationService
-        from agent.memory.summary import extract_knowledge_candidates, summarize_fragment
-
-        fragment = self.fragments.get_or_create_open(topic_id)
-        if fragment.start_message_id is None:
-            return None
-        messages = self.fragments.messages(fragment.id)
-        summary, error = await summarize_fragment(
-            adapter, [dict(m) for m in messages]
+        """委派给 MemoryLifecycle。"""
+        return await self.memory_lifecycle.close_fragment(
+            topic_id, adapter, tracer=tracer
         )
-        if summary is None:
-            self.fragments.close(fragment.id, "", summary_model=None, summary_version=0)
-            return None
-
-        # entities: lazy-create nodes + mention edges (attachment surface)
-        entity_ids: list[str] = []
-        from agent.graph.edges import EdgeService
-        from agent.graph.nodes import NodeService
-
-        nodes = NodeService(self.conn)
-        edges = EdgeService(self.conn)
-        for name in summary.entities:
-            entity, created = nodes.mention(name, topic_id, force=False)
-            if entity is not None:
-                entity_ids.append(entity.id)
-                edges.add(topic_id, entity.id, "mention")
-
-        # 共同实体 → 话题相关边（实体作为话题间桥梁）
-        from agent.services.affinity import relate_shared_entities
-
-        relate_shared_entities(self.conn, topic_id, entity_ids)
-
-        # 实体卡提炼：主模型从对话提炼经验性实体卡（属性/关系/别名），失败静默降级
-        from agent.entities.cards import EntityCardService
-        from agent.entities.extract import extract_entity_cards
-
-        try:
-            candidates = await extract_entity_cards(adapter, [dict(m) for m in messages])
-            card_svc = EntityCardService(self.conn)
-            for cand in candidates:
-                card = card_svc.upsert(cand)
-                # 实体卡向量（供向量检索）；embedding 不可用时静默跳过
-                try:
-                    if self.embedding is not None and hasattr(self.embedding, "save_entity_card_vector"):
-                        self.embedding.save_entity_card_vector(
-                            card.id, f"{card.name}：{card.summary or ''}"
-                        )
-                except Exception:
-                    pass
-        except Exception:
-            logger.warning("entity card extraction failed", exc_info=True)
-
-        self.fragments.close(
-            fragment.id,
-            summary.summary,
-            summary_model=adapter.model,
-            summary_version=1,
-        )
-        self.index_builder.build(
-            fragment_id=fragment.id,
-            topic_id=topic_id,
-            title=summary.title,
-            summary_text=summary.summary,
-            entities=summary.entities,
-            keywords=summary.keywords,
-            message_texts=[m["content"] for m in messages],
-        )
-
-        # knowledge extraction: draft -> tiered verification -> attach
-        if tracer is not None:
-            tracer.write("fragments_closed", fragment.id)
-            tracer.write("summaries", f"{fragment.id}:{summary.title or ''}")
-        await self._extract_knowledge(
-            adapter, summary, topic_id, entity_ids, fragment.id, tracer=tracer
-        )
-        return self.fragments.get(fragment.id)
 
     async def _extract_knowledge(
         self,
@@ -926,93 +864,16 @@ class AppContext:
         fragment_id: str,
         tracer=None,
     ) -> None:
-        from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
-        from agent.knowledge.verify import VerificationService
-        from agent.memory.summary import extract_knowledge_candidates
-
-        extraction, error = await extract_knowledge_candidates(adapter, summary)
-        if extraction is None:
-            logger.info("knowledge extraction skipped: %s", error)
-            return
-        ks = KnowledgeService(self.conn)
-        vs = VerificationService(self.conn, ks)
-        for cand in extraction.candidates:
-            node_ids: list[str] = []
-            if cand.attach == "user":
-                node_ids = [self._user_root_id()]
-            elif cand.attach == "entity" and cand.entity:
-                node, _ = self.topics.nodes.mention(cand.entity, topic_id, force=False)
-                if node is not None:
-                    node_ids = [node.id]
-            else:
-                node_ids = [topic_id]
-            try:
-                item = ks.create(
-                    category=cand.category,
-                    content=cand.content,
-                    node_ids=node_ids,
-                    provenance={"fragment_id": fragment_id},
-                )
-                if tracer is not None:
-                    tracer.write("knowledge", item.id)
-                ks.submit(item.id)
-                if cand.category in HIGH_IMPACT_CATEGORIES:
-                    # stays draft; user confirmation required before activation
-                    continue
-                result = vs.review(ks.get(item.id), verified_by="system")
-                if result.accepted:
-                    ks.activate(item.id)
-            except Exception as exc:  # extraction must not break the fragment close
-                logger.warning("knowledge candidate failed: %s", exc)
+        """委派给 MemoryLifecycle。"""
+        await self.memory_lifecycle.extract_knowledge(
+            adapter, summary, topic_id, entity_ids, fragment_id, tracer=tracer
+        )
 
     # -- budget-pressure consolidation ------------------------------------
 
     async def consolidate(self, topic_id: str, adapter: BaseAdapter) -> bool:
-        """Rolling summary of the open fragment under budget pressure."""
-        from agent.memory.summary import summarize_rolling
-
-        fragment = self.fragments.get_or_create_open(topic_id)
-        if fragment.start_message_id is None:
-            return False
-        meta = dict(fragment.meta)
-        last = meta.get("consolidated_at")
-        if last:
-            try:
-                last_ts = datetime.fromisoformat(last)
-                if last_ts.tzinfo is None:
-                    last_ts = last_ts.replace(tzinfo=timezone.utc)
-                age = (datetime.now(timezone.utc) - last_ts).total_seconds()
-                if age < CONSOLIDATION_COOLDOWN_SECONDS:
-                    return False
-            except ValueError:
-                pass
-        messages = self.fragments.messages(fragment.id)
-        summary, error = await summarize_rolling(
-            adapter, fragment.summary, [dict(m) for m in messages]
-        )
-        if summary is None:
-            logger.info("consolidation skipped: %s", error)
-            return False
-        now = datetime.now(timezone.utc).isoformat()
-        meta["consolidated"] = True
-        meta["consolidated_at"] = now
-        meta["consolidation_count"] = int(meta.get("consolidation_count", 0)) + 1
-        self.conn.execute(
-            "UPDATE fragments SET summary = ?, summary_model = ?, summary_version = summary_version + 1, meta = ? "
-            "WHERE id = ?",
-            (summary.summary, adapter.model, json.dumps(meta, ensure_ascii=False), fragment.id),
-        )
-        self.index_builder.build(
-            fragment_id=fragment.id,
-            topic_id=topic_id,
-            title=summary.title,
-            summary_text=summary.summary,
-            entities=summary.entities,
-            keywords=summary.keywords,
-            message_texts=[m["content"] for m in messages],
-        )
-        self._refresh_selector()
-        return True
+        """委派给 MemoryLifecycle。"""
+        return await self.memory_lifecycle.consolidate(topic_id, adapter)
 
     # -- topics -----------------------------------------------------------
 
