@@ -68,6 +68,14 @@ const payloadView = computed(() => {
   // 技术明细（代码/测试细节）默认不展示，用户只需看用途与测试摘要
   return lines;
 });
+
+/** 该工具会访问什么（人话能力清单，来自后端 policy.describe()）。 */
+const capabilities = computed<string[]>(() => {
+  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
+  const raw = p.capabilities;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((x) => String(x));
+});
 </script>
 
 <template>
@@ -80,6 +88,12 @@ const payloadView = computed(() => {
           <span class="value">{{ line.value }}</span>
         </div>
         <p v-if="!payloadView.length" class="hint">无附加信息</p>
+        <div v-if="capabilities.length" class="cap-box">
+          <div class="cap-title">该工具的能力</div>
+          <ul class="cap-list">
+            <li v-for="c in capabilities" :key="c">{{ c }}</li>
+          </ul>
+        </div>
         <div v-if="isSubagentCreate" class="budget-box">
           <div class="budget-title">子 agent 执行预算（可修改后批准）</div>
           <div class="budget-row">
@@ -128,6 +142,10 @@ const payloadView = computed(() => {
 .value { color: var(--text-primary); }
 .hint { color: var(--text-muted); font-size: 12px; }
 .budget-box { margin-top: 10px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; }
+.cap-box { margin-top: 10px; padding: 10px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.cap-title { font-size: 12.5px; color: var(--text-strong); margin-bottom: 6px; }
+.cap-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
+.cap-list li { margin: 2px 0; }
 .budget-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
 .budget-row { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
 .budget-row label { color: var(--text-secondary); }
