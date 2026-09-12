@@ -166,10 +166,13 @@ class AgentLoop:
         """
         for c in calls:
             self._dispatched_call_ids.add(c.id)
-        safe_calls = [
-            c for c in calls
-            if getattr(self.registry.get(c.name), "is_concurrency_safe", False)
-        ]
+        from agent.tools.policy import Concurrency, effective_concurrency
+
+        safe_calls = []
+        for c in calls:
+            tool = self.registry.get(c.name)
+            if tool is not None and effective_concurrency(tool) == Concurrency.PARALLEL:
+                safe_calls.append(c)
         safe_ids = {c.id for c in safe_calls}
         unsafe_calls = [c for c in calls if c.id not in safe_ids]
         results: dict[str, Any] = {}

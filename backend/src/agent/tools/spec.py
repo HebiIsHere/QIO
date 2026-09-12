@@ -39,6 +39,8 @@ class ToolDefinition(BaseModel):
     sync: bool = True
     credential_ref: str | None = None
     model: str | None = None  # subagent tools: which model to run
+    # 批准时的能力指纹；恢复时若与当前推导不一致 → 需重新批准
+    approved_policy_fingerprint: str | None = None
     tests: list[TestCase] = Field(default_factory=list, max_length=20)
     subagent_budget: SubagentBudget | None = None
 

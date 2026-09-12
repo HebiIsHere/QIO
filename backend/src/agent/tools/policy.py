@@ -115,6 +115,46 @@ def default_policy_for(definition: Any) -> ToolExecutionPolicy:
     return ToolExecutionPolicy()
 
 
+def policy_fingerprint(policy: ToolExecutionPolicy) -> str:
+    """Stable hash of the capability-relevant fields.
+
+    Used to detect "policy changed" so a widened policy forces re-approval
+    instead of silently inheriting an old grant.
+    """
+    import hashlib
+    import json
+
+    payload = {
+        "level": int(policy.level),
+        "isolation": policy.isolation.value,
+        "network": policy.network,
+        "network_allow": list(policy.network_allow),
+        "filesystem": list(policy.filesystem),
+        "shell": policy.shell,
+        "process": policy.process,
+        "credentials": list(policy.credentials),
+        "side_effect": policy.side_effect.value,
+        "concurrency": policy.concurrency.value,
+        "resource_scope": policy.resource_scope,
+    }
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def effective_concurrency(tool: Any) -> Concurrency:
+    """Adapter: rich policy if declared, else legacy `is_concurrency_safe` bool."""
+    raw = getattr(tool, "execution_policy", None)
+    if isinstance(raw, ToolExecutionPolicy):
+        return raw.concurrency
+    if isinstance(raw, dict) and raw.get("concurrency"):
+        return Concurrency(raw["concurrency"])
+    return (
+        Concurrency.PARALLEL
+        if getattr(tool, "is_concurrency_safe", False)
+        else Concurrency.SERIALIZED
+    )
+
+
 # 声明式覆盖：工具可携带 `execution_policy` 属性（dict 或实例）
 def resolve_policy(tool: Any) -> ToolExecutionPolicy:
     """Resolve a tool's effective policy.

@@ -297,6 +297,20 @@ class AppContext:
         sandbox = SandboxExecutor()
         for definition in self.tool_store.load_all():
             try:
+                # 能力指纹变化 → 不得沿用旧授权，需重新批准
+                from agent.tools.policy import default_policy_for, policy_fingerprint
+
+                current_fp = policy_fingerprint(default_policy_for(definition))
+                if (
+                    definition.approved_policy_fingerprint
+                    and definition.approved_policy_fingerprint != current_fp
+                ):
+                    logger.warning(
+                        "tool %s capability policy changed since approval; "
+                        "skipping restore (needs re-approval)",
+                        definition.name,
+                    )
+                    continue
                 if definition.tool_type == "subagent":
                     tool = SubagentTool(
                         definition,

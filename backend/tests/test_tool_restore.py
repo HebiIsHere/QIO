@@ -60,3 +60,23 @@ def test_restore_subagent_tool_after_restart(tmp_path):
     assert isinstance(tool, SubagentTool)
     assert tool.definition.subagent_budget.max_iterations == 3
     conn2.close()
+
+
+def test_restore_skipped_when_policy_changed_since_approval(tmp_path):
+    """能力指纹不一致 → 不恢复（需重新批准）。"""
+    db_path = tmp_path / "app.db"
+    ctx1, conn1 = _make_ctx(db_path, tmp_path / "data")
+    definition = ToolDefinition(
+        name="widened_fn",
+        description="曾批准过、但现在能力已变化",
+        tool_type="function",
+        code="def run(**kwargs):\n    return {}",
+        # 伪造一个“旧的批准指纹”（与当前推导不一致）
+        approved_policy_fingerprint="deadbeefdeadbeef",
+    )
+    ctx1.tool_store.save(definition)
+    conn1.close()
+
+    ctx2, conn2 = _make_ctx(db_path, tmp_path / "data")
+    assert ctx2.registry.get("widened_fn") is None  # 未恢复
+    conn2.close()

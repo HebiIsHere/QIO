@@ -126,6 +126,10 @@ class ToolLifecycle:
         report,
     ) -> ToolOutcome:
         """Approval segment 1 (create) + segment 2 (credential) + registration."""
+        from agent.tools.policy import default_policy_for, policy_fingerprint
+
+        policy = default_policy_for(definition)
+        definition.approved_policy_fingerprint = policy_fingerprint(policy)
         approval = await self.approvals.request(
             APPROVAL_KIND_CREATE,
             {
@@ -134,6 +138,9 @@ class ToolLifecycle:
                 "explanation": explanation,
                 "tool_type": definition.tool_type,
                 "credential_ref": definition.credential_ref,
+                # 让用户看懂“这个工具会访问什么”，而非内部枚举
+                "capabilities": policy.describe(),
+                "policy_fingerprint": policy_fingerprint(policy),
                 "test_summary": report.summary if report else "n/a (subagent)",
                 "test_details": (
                     [
@@ -169,7 +176,11 @@ class ToolLifecycle:
                 )
             grant = await self.approvals.request(
                 APPROVAL_KIND_CREDENTIAL,
-                {"key_id": definition.credential_ref, "tool_name": definition.name},
+                {
+                    "key_id": definition.credential_ref,
+                    "tool_name": definition.name,
+                    "capabilities": policy.describe(),
+                },
             )
             if grant.decision != "approved":
                 return ToolOutcome(

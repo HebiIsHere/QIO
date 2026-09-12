@@ -80,3 +80,25 @@ def test_docker_command_policy_flags():
     assert "--cpus" in pure and "--pids-limit" in pure and "--read-only" in pure
     net = sb._docker_command("script", ToolExecutionPolicy(network=True))
     assert net[net.index("--network") + 1] == "bridge"
+
+
+def test_policy_fingerprint_changes_when_capability_widens():
+    from agent.tools.policy import policy_fingerprint
+
+    base = ToolExecutionPolicy()
+    widened = ToolExecutionPolicy(network=True)
+    assert policy_fingerprint(base) == policy_fingerprint(ToolExecutionPolicy())
+    assert policy_fingerprint(base) != policy_fingerprint(widened)
+
+
+def test_effective_concurrency_legacy_and_policy():
+    from agent.tools.policy import Concurrency, effective_concurrency
+
+    class Legacy:
+        is_concurrency_safe = False
+
+    class PolicyParallel:
+        execution_policy = ToolExecutionPolicy(concurrency=Concurrency.PARALLEL)
+
+    assert effective_concurrency(Legacy()) == Concurrency.SERIALIZED
+    assert effective_concurrency(PolicyParallel()) == Concurrency.PARALLEL
