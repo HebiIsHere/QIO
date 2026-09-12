@@ -33,6 +33,7 @@ OTHER_DOCS = [
     ROOT / "docs" / "frontend-requirements.md",
     ROOT / "docs" / "frontend-design.md",
     ROOT / "docs" / "frontend-components.md",
+    ROOT / "docs" / "release-qualification.md",
 ]
 
 VALID_STATUS = {"completed", "partial", "active", "planned"}

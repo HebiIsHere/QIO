@@ -9,6 +9,7 @@ fallback.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -93,7 +94,11 @@ class SandboxExecutor:
             "result = namespace['run'](**ARGS)\n"
             "print(json.dumps(result, ensure_ascii=False))\n"
         )
-        with tempfile.TemporaryDirectory(prefix="sa-tool-") as tmp:
+        # ignore_cleanup_errors：Windows 上被终止的子进程可能短暂占住作为 cwd 的
+        # 临时目录，清理失败不应该让工具执行以异常收场（错误信息本身已经返回）。
+        with tempfile.TemporaryDirectory(
+            prefix="sa-tool-", ignore_cleanup_errors=True
+        ) as tmp:
             env = {
                 "PATH": os.environ.get("PATH", ""),
                 "TEMP": os.environ.get("TEMP", tmp),
@@ -116,6 +121,12 @@ class SandboxExecutor:
                     process.communicate(), timeout=self.timeout_seconds
                 )
             except asyncio.TimeoutError:
+                # 必须真正终止子进程：wait_for 只取消了读取，进程会继续运行并
+                # 持有临时目录（资源泄漏 + 后续清理失败）。
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(Exception):
+                    await process.wait()
                 return SandboxResult(
                     ok=False, value=None, stdout="", stderr="",
                     error=f"timeout after {self.timeout_seconds}s",

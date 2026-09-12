@@ -115,7 +115,7 @@
 - **Status：** completed
 - **Implementation：** `tools/creator.py`、`tools/lifecycle.py`、`tools/dev_tools.py`、`tools/dev_workspace.py`、`tools/tester.py`、`tools/sandbox.py`、`tools/policy.py`、`tools/approval.py`、`tools/subagent_tool.py`、`tools/task_manager.py`、`storage/tool_store.py`
 - **Tests：** `backend/tests/test_tool_lifecycle.py`、`test_dev_tools.py`、`test_dev_workflow_integration.py`、`test_tool_policy.py`、`test_computer_sandbox.py`、`test_subagent.py`、`test_subagent_integration.py`、`test_tool_parallel_cancel.py`、`test_tool_registry_reversible.py`、`test_tool_restore.py`、`test_tool_store.py`、`test_tool_schema_present.py`、`test_tool_pipeline.py`、`test_tool_event_isolation.py`
-- **Known limitations：** 受限子进程不是强安全隔离；高风险能力（联网、写用户文件、起进程）在没有可用 Docker 时直接拒绝执行，不做静默降级。子 agent 异步并行上限见 `tools/task_manager.py`。
+- **Known limitations：** 受限子进程不是强安全隔离，而且**不强制**文件/网络隔离——实测声明为 PURE 的工具仍可读取用户目录。当前强制力只来自「按声明拒绝高风险」+「剥离环境变量」，谎报能力的工具拦不住。高风险能力在没有可用 Docker 时直接拒绝执行，不做静默降级。子 agent 异步并行上限见 `tools/task_manager.py`。
 - **后续依赖：** 无下游。
 
 ### M11 — 前端
@@ -180,6 +180,14 @@
 - **Known limitations：** 后端本地只在 Python 3.12 验证过，3.11 由 CI 矩阵验证；CI 只对 Rust 做 `cargo check`，不产出完整 Tauri 安装包。
 - **后续依赖：** 无下游。
 
+### P7 — 集成验收（Dogfooding / E2E / 视觉）
+
+- **Status：** completed
+- **Implementation：** 无新增产品功能；本阶段以验证为主，产出 4 个修复：`agent/tools/sandbox.py`（超时终止子进程 + 清理不再抛异常）、`agent/tools/runtime_tools.py`（输出按策略截断）、`frontend/src/components/MessageStream.vue`（悬浮星球不再遮挡消息）、`scripts/e2e-checklist/run_memory_tests.py`（陈旧 API / 缺判空 / 断言污染 / 陈旧 fixture / 外键清理）。
+- **Tests：** `backend/tests/test_p7_*.py`（8 个文件），其中两个沙箱回归做了红绿验证；端到端见 `scripts/e2e-checklist/run_memory_tests.py`。
+- **Known limitations：** 完整报告与未修项见 `docs/release-qualification.md`。
+- **后续依赖：** 无下游；结论供后续迭代参考。
+
 ---
 
 ## 尚未完成
@@ -190,6 +198,12 @@
 - **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里。
 - **片段级检索偏置**：从星球页「从这里开始」选中片段，目前只改变提示词（注意力偏置），
   不改变记忆检索的排序权重；检索侧只实现了话题级亲和（`anchor_topic_id`）。
+- **取消不中断进行中的模型请求**：取消只取消在途工具调用并把 turn 标记为 cancelled，
+  正在等待的模型 HTTP 请求会跑完。
+- **Trace 时长归因缺口**：极端情况下 turn 总时长与已记录的模型/工具耗时差距很大
+  （实测一次 51.5 秒的 turn 只记录了 1.7 秒模型耗时），无法从 Trace 解释时间去向。
+- **无嵌入模型时话题预判变弱**：缺本地 ONNX 模型时降级到规则层，关键词重叠分数被 1-gram/2-gram
+  分词稀释；阈值调整需要 eval 支撑（见 P3）。
 - **记忆的类别化衰减**：只对已有可靠元数据（知识条目 vs 片段）做差异化；未引入模型生成的记忆分类字段。
 - **多用户/多会话并发 Agent Server**：明确不做。当前是单机、单用户的 single-flight 主 turn。
 - **非 Windows 平台**：keyring 与桌面壳只在 Windows 验证，Linux/macOS 未验证。

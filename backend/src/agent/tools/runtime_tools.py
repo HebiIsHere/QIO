@@ -51,9 +51,16 @@ class CodeTool(Tool):
         )
         if not result.ok:
             return ToolResult(ok=False, error=result.error or "sandbox failure")
-        return ToolResult(
-            ok=True, content=json.dumps(result.value, ensure_ascii=False)
-        )
+        content = json.dumps(result.value, ensure_ascii=False)
+        # policy.output_limit_chars 之前只是声明，没有真正生效；这里显式截断并
+        # 标注，避免超大输出直接灌进模型上下文（截断是可见的，不静默）。
+        limit = getattr(policy, "output_limit_chars", 0) or 0
+        if limit and len(content) > limit:
+            content = (
+                content[:limit]
+                + f"\n...[输出已截断：{len(content)} 字符超过上限 {limit}]"
+            )
+        return ToolResult(ok=True, content=content)
 
 
 class SubagentStubTool(Tool):

@@ -34,6 +34,7 @@ Agent 可以在对话中创建自己的工具，与内置工具并列注册，�
 | --- | --- |
 | 现在真的做到哪了、有哪些已知限制 | [`docs/status.md`](docs/status.md) |
 | 分层结构、并发契约、沙箱安全契约 | [`docs/architecture.md`](docs/architecture.md) |
+| 最近一次验收结果与遗留问题 | [`docs/release-qualification.md`](docs/release-qualification.md) |
 | 安装与运行 | [`docs/SETUP.md`](docs/SETUP.md) |
 | 前端设计规范与组件 | [`docs/frontend-design.md`](docs/frontend-design.md)、[`docs/frontend-components.md`](docs/frontend-components.md) |
 | 协作约定（含 AI 助手约定） | [`AGENTS.md`](AGENTS.md) |

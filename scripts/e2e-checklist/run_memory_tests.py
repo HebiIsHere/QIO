@@ -165,7 +165,9 @@ def channel_a(ctx, conn) -> None:
         conn.commit()
         ctx._refresh_selector()
         # 预置干净的话题向量（话题名是测试前缀，会污染冷启动向量，故直接写向量）
-        if ctx.embedding.available():
+        # embedding 后端可能为 None（本地 ONNX 模型文件缺失时降级为 BM25，
+        # 产品代码全程按 embedding is not None 处理，脚本也必须一致）
+        if ctx.embedding is not None and ctx.embedding.available():
             ctx.embedding.update_topic_vector(t_a, "饮食偏好 清淡 不吃辣 用户喜欢清淡饮食")
             ctx.embedding.update_topic_vector(t_b, "健身计划 跑步 力量 每周三次健身")
         pred = ctx.predictor.predict("我最近饮食清淡不吃辣", current_topic_id=t_a)
@@ -228,8 +230,11 @@ def channel_a(ctx, conn) -> None:
         ).fetchone()
         record("MEM-A5b", "related 边权重累加", edge2 is not None and edge2["weight"] >= 2.0,
                f"weight={edge2['weight'] if edge2 else None}")
-        # create_topic
-        r2 = CreateTopicTool(conn).run_sync(name=PREFIX + "A-新建", reason="验证")
+        # create_topic（CreateTopicTool 只有 async run：走 asyncio.run，
+        # 脚本此前调用已不存在的 run_sync 会直接抛 AttributeError）
+        r2 = asyncio.run(
+            CreateTopicTool(conn).run(name=PREFIX + "A-新建", reason="验证")
+        )
         node = conn.execute(
             "SELECT id FROM nodes WHERE type='topic' AND name=?", (PREFIX + "A-新建",)
         ).fetchone()
@@ -254,16 +259,26 @@ def channel_a(ctx, conn) -> None:
             )
         adapter = FakeAdapter([
             '{"title": "饮食", "summary": "用户偏好清淡饮食", "entities": ["牛奶"], "keywords": ["清淡"]}',
+            # 封块顺序：摘要 → 实体卡提炼 → 知识提炼。实体卡这一步是后加的，
+            # 旧 fixture 少了它，导致知识提炼拿到空回复、一条知识都不产生。
+            '{"entities": [{"name": "牛奶", "aliases": [], "kind": "food", '
+            '"summary": "用户常提到的食物", "attributes": [], "relations": []}]}',
             '{"candidates": ['
             '{"content": "用户偏好清淡饮食", "category": "user_profile", "attach": "user", "entity": null},'
             '{"content": "该话题讨论了清淡饮食", "category": "general_fact", "attach": "topic", "entity": null}'
             "]}",
         ])
+        # 只统计本次封块新产生的知识，避免读到库里其它会话的历史条目
+        before_ids = {r["id"] for r in conn.execute("SELECT id FROM knowledge")}
         closed = asyncio.run(ctx._close_fragment(t_a, adapter))
         ok_close = closed is not None and closed.closed_at is not None
-        rows = conn.execute(
-            "SELECT category, state FROM knowledge ORDER BY category"
-        ).fetchall()
+        rows = [
+            r
+            for r in conn.execute(
+                "SELECT id, category, state FROM knowledge ORDER BY category"
+            ).fetchall()
+            if r["id"] not in before_ids
+        ]
         states = {r["category"]: r["state"] for r in rows}
         ok_know = states.get("user_profile") == "pending_review" and states.get("general_fact") == "active"
         idx = conn.execute(
@@ -277,17 +292,40 @@ def channel_a(ctx, conn) -> None:
         record("MEM-A6b", "知识分层验证", ok_know, f"states={states}")
         # 话题向量刷新（嵌入可用时）
         ctx.predictor.refresh_topic_vector(t_a)
-        vec = ctx.embedding.topic_vector(t_a) if ctx.embedding.available() else None
+        vec = (
+            ctx.embedding.topic_vector(t_a)
+            if ctx.embedding is not None and ctx.embedding.available()
+            else None
+        )
         record("MEM-A6c", "话题向量刷新", vec is not None,
                f"topic_vector={'有' if vec is not None else '无(嵌入不可用)'}")
     finally:
         clean_topic(ctx, conn, t_a)
-        conn.execute("DELETE FROM nodes WHERE type='entity' AND name='牛奶'")
+        # 实体节点现在可能挂了实体卡/提及/边：先删依赖行，否则外键约束会失败
+        entity = conn.execute(
+            "SELECT id FROM nodes WHERE type='entity' AND name='牛奶'"
+        ).fetchone()
+        if entity is not None:
+            card_ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM entity_cards WHERE node_id = ?", (entity["id"],)
+                ).fetchall()
+            ]
+            for cid in card_ids:
+                conn.execute("DELETE FROM embeddings WHERE ref_id = ?", (cid,))
+            conn.execute("DELETE FROM entity_cards WHERE node_id = ?", (entity["id"],))
+            conn.execute(
+                "DELETE FROM edges WHERE src = ? OR dst = ?", (entity["id"], entity["id"])
+            )
+            conn.execute("DELETE FROM entity_mentions WHERE entity_name = '牛奶'")
+            conn.execute("DELETE FROM nodes WHERE id = ?", (entity["id"],))
         conn.commit()
 
     # ---- A7 向量后端状态 ----
+    embedding_ready = ctx.embedding is not None and ctx.embedding.available()
     record("MEM-A7", "向量后端加载", True,
-           f"embedding={ctx.embedding.available()} backend={ctx.selector.backend_name}")
+           f"embedding={embedding_ready} backend={ctx.selector.backend_name}")
 
 
 # ---------------------------------------------------------------- 通道 B

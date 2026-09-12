@@ -203,6 +203,13 @@ const showTyping = computed(() => {
   scrollbar-width: thin;
   background: var(--bg-base);
 }
+/* 话题星球停靠球是 fixed 悬浮元素（96px）；窄窗口下会压住靠右的气泡与时间戳。
+   这里为它留出通道，避免遮挡正文。宽屏下气泡自身有 max-width，不受影响。 */
+@media (max-width: 1400px) {
+  .stream {
+    padding-right: 132px;
+  }
+}
 .spacer {
   width: 100%;
 }
