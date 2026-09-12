@@ -121,6 +121,43 @@ context_window
 
 在这个空间内再按用途分配。注入总量受硬上限约束；强制项超预算时走确定性截断，不允许静默突破。
 
+### 4.4.1 Anchor 生命周期（2026-09-12 定稿）
+
+先固定语义（`docs/status.md` 与前端都以此为准）：
+
+| 概念 | 含义 | 不是什么 |
+| --- | --- | --- |
+| Topic | 长期存在的讨论主题（QIO、某门课、某个项目） | 不是「一个局部问题的容器」 |
+| Fragment | 记忆域的分块单位：存消息、封块、生成摘要、建立索引、控制上下文规模 | 本轮**不**引入 fragment 树 / 分支 / 讨论发展节点 |
+| Anchor | 当前用户在某个 Topic 中明确关注或恢复到的历史位置 | 不是「该 Topic 最新 Fragment」的别名，不是检索结果，不是 Agent 读历史的副作用 |
+| Memory Search | 只读检索：哪些过去的信息可能对当前问题有帮助 | 绝不改变 Anchor（调用多少次都一样） |
+| StartHere | 用户在 Planet 明确选择历史位置 →「从这里继续」 | 不是「重置到最新位置」 |
+| Agent Continue | `continue_from_fragment` 工具：Agent 在用户明确意图下显式改变讨论位置 | 与检索分离的独立动作；不是 `set_anchor` 这类数据库动作 |
+
+位置存在 `cursor` 表（`active` 行 = 当前话题的位置；离开话题时旧位置写入 `history` 行），
+**没有新增表、没有新增迁移**。优先级：用户当前明确选择 > Agent 显式 continue > Topic 历史保存位置 > Topic 默认位置。
+
+一轮的 Focus 规则：只有「历史位置」（不是当前开放片段）才注入 Focus 块；
+当前开放片段已经由短期转录覆盖，重复注入只是噪声。Focus 块结构是
+`标题 + 摘要 + 开头少量消息 + （省略标记）+ 结尾少量消息`，受 `services/params.py::FOCUS.max_tokens` 硬上限
+与 `TokenBudgetPlanner` 双重约束。
+
+状态转换表（唯一事实，模糊描述（如「可能持续几轮，视情况而定」）不允许出现在实现或文档里）：
+
+| 输入状态 | 动作 | 新状态 | 下一轮 Focus |
+| --- | --- | --- | --- |
+| active=(A, None) 或 (A, F27) | 用户 StartHere A13 | active=(A, F13) | F13（若 F13 不是当前开放片段） |
+| active=(A, F13)（历史位置） | 一轮**成功** | active=(A, 本轮消息所在片段) | 不再重复 F13 |
+| active=(A, F13)（历史位置） | 一轮失败 / 取消 | 不变 (A, F13) | 仍是 F13（重试不丢用户选择） |
+| active=(A, F13) | switch_topic(B) | active=(B, B 的历史位置或 None)；A 的位置写入 history | B 的历史位置（若有，且不是当前开放片段） |
+| active=(B, …) | switch_topic(A) | active=(A, A 的历史位置)；无效/跨话题片段降级为 None | A 的历史位置（若有） |
+| active=(A, F13) | Agent `continue_from_fragment(F18)`（F18 ∈ B） | active=(B, F18) | F18 |
+| active=(A, F13) | Agent `memory_search(...)` | 不变 | 不变 |
+| active=(A, 无有效片段) | 任意话题内对话 | active=(A, …)（begin 只补默认话题，不猜片段） | 无 Focus |
+
+安全降级：位置指向不存在 / 不属于该话题的片段时，一律当作「无位置」（返回 None），
+既不注入错误片段，也不因为坏数据让切换抛错。
+
 ### 4.5 Capability Engine
 
 | 组成 | 位置 |
@@ -231,10 +268,11 @@ backend/evals/*.jsonl  →  agent/eval/run.py  →  指标 JSON  →  与 backen
   → TURN_START（带 turn_id）
   → 凭据快照 → CAPABILITY 校验
   → 话题预判 → 记忆写入（当前消息绑定到开放片段）
-  → 上下文组装（短期记忆 / 知识 / 检索 / 预算截断）→ MEMORY_INJECT
+  → 上下文组装（Focus（仅历史位置）/ 短期记忆 / 知识 / 检索 / 身份去重 / 预算截断）→ MEMORY_INJECT
   → AgentLoop：PLANNING → TOOL_START/TOOL_END → OBSERVING → … → 终答
   → 话题切换时迁移当前消息 → 写入助手消息
   → 片段封块 / 摘要 / 知识提炼（阈值触发）
+  → 成功：位置推进到本轮片段并广播 ANCHOR（historic=false）
   → TURN_END + USAGE → Trace 收尾
 ```
 

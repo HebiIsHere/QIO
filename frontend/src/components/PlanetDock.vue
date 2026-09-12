@@ -75,12 +75,18 @@ function onClick() {
 .dock:hover {
   transform: scale(1.06);
 }
-/* 贴靠隐藏：淡化；hover 展开、移出再隐藏（CSS :hover） */
+/* 贴靠隐藏：淡化但保留轮廓与环，用户始终知道星球在哪；hover 展开、移出再隐藏 */
 .dock.fw-hidden {
-  opacity: 0.08;
+  opacity: 0.35;
 }
 .dock.fw-hidden:hover {
   opacity: 1;
+}
+.dock.fw-hidden .globe {
+  filter: drop-shadow(0 0 6px var(--accent-soft));
+}
+.dock.fw-hidden .lbl {
+  opacity: 0.75;
 }
 .g0 {
   stop-color: var(--accent-soft);

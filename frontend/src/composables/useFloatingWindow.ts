@@ -59,6 +59,8 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
   let startY = 0;
   let originX = 0;
   let originY = 0;
+  /** 是否已越过阈值、进入真实拖动（单击永不改变位置/贴靠状态） */
+  let dragStarted = false;
   let snapTimer: ReturnType<typeof setTimeout> | null = null;
 
   function getHandle(): HTMLElement | null {
@@ -296,6 +298,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     e.preventDefault();
     dragging = true;
     moved.value = false;
+    dragStarted = false;
     startX = ev.clientX;
     startY = ev.clientY;
     const el = elRef.value;
@@ -303,6 +306,13 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     const r = rectOf(el);
     originX = r.left;
     originY = r.top;
+    // 这里不释放贴靠、不取消过渡：pointerdown 也可能是一次普通点击
+  }
+
+  /** 越过拖动阈值才真正「拖起」：取消过渡、释放贴靠占用、解除隐藏 */
+  function beginDrag(el: HTMLElement) {
+    if (dragStarted) return;
+    dragStarted = true;
     cancelSnap();
     releaseDocked(el);
     restore(el); // 拖起时若处于隐藏态先还原
@@ -318,6 +328,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       moved.value = true;
     }
     if (!moved.value) return; // 未超过阈值不移动（点击/微抖动不触发拖动）
+    beginDrag(el);
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const r = rectOf(el);
     const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
@@ -334,14 +345,18 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     const el = elRef.value;
     if (!el) return;
     el.classList.remove("fw-dragging");
+    dragStarted = false;
+    if (!wasMoved) {
+      // 单击：不贴靠、不写位置，保持原状态
+      moved.value = false;
+      return;
+    }
     snap(el);
     // 拖动结束后的 click（若有）在 mouseup 之后同步触发，这里已用 moved 抑制；
     // 延迟到下一 tick 重置 moved，避免之后键盘激活（Enter/Space）被误吞。
-    if (wasMoved) {
-      setTimeout(() => {
-        moved.value = false;
-      }, 0);
-    }
+    setTimeout(() => {
+      moved.value = false;
+    }, 0);
   }
 
   // 贴靠隐藏的「hover 展开、移出再隐藏」由各组件 CSS :hover 实现
@@ -357,8 +372,44 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     entry.height = r.height;
     const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
     const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
-    const x = clamp(r.left, SNAP_PAD, maxX);
-    const y = clamp(r.top, SNAP_PAD, maxY);
+    // 贴靠关系随窗口尺寸保持：right/bottom 距新边缘仍是同一个 margin，
+    // 而不是留在旧的 absolute x/y；未贴靠的组件也被钳制回可视区。
+    let x = r.left;
+    let y = r.top;
+    switch (entry.dockedTo) {
+      case "left":
+        x = SNAP_PAD;
+        break;
+      case "right":
+        x = maxX;
+        break;
+      case "top":
+        y = SNAP_PAD;
+        break;
+      case "bottom":
+        y = maxY;
+        break;
+      case "tl":
+        x = SNAP_PAD;
+        y = SNAP_PAD;
+        break;
+      case "tr":
+        x = maxX;
+        y = SNAP_PAD;
+        break;
+      case "bl":
+        x = SNAP_PAD;
+        y = maxY;
+        break;
+      case "br":
+        x = maxX;
+        y = maxY;
+        break;
+      default:
+        break;
+    }
+    x = clamp(x, SNAP_PAD, maxX);
+    y = clamp(y, SNAP_PAD, maxY);
     if (x !== r.left || y !== r.top) {
       place(el, x, y);
       entry.x = x;
@@ -432,4 +483,3 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
 
   return { entry, moved };
 }
-

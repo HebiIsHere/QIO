@@ -113,7 +113,7 @@ async def test_output_schema_invalid_fails():
     reg.register(JsonTool({"name": "a"}))  # 缺 age
     result = await reg.execute(make_call("json_out"))
     assert not result.ok
-    assert "output schema mismatch" in result.error
+    assert "不符合 schema" in result.error
     assert "age" in result.error
 
 
@@ -131,7 +131,7 @@ async def test_output_schema_non_json_content_fails():
     reg.register(PlainTool())
     result = await reg.execute(make_call("plain"))
     assert not result.ok
-    assert "schema mismatch" in result.error
+    assert "不符合 schema" in result.error
 
 
 async def test_presentation_reaches_tool_end():
@@ -144,14 +144,16 @@ async def test_presentation_reaches_tool_end():
 
     reg.register_policy("tool/end", on_end)
     await reg.execute(make_call("present", {"q": "鹅"}))
-    assert seen[0]["presentation"] == {
-        "title": "查询「鹅」",
-        "status": "ok",
-        "summary": "已找到 3 条相关记忆",
-    }
+    presentation = seen[0]["presentation"]
+    # 工具自定义的展示信息优先保留；registry 只补中文标题与原始工具名
+    assert presentation["title"] == "查询「鹅」"
+    assert presentation["status"] == "ok"
+    assert presentation["summary"] == "已找到 3 条相关记忆"
+    assert presentation["tool"] == "present"
 
 
-async def test_presentation_none_when_absent():
+async def test_presentation_always_carries_display_title():
+    """界面文案统一中文：即使工具没提供 presentation，也要带上展示标题与原始工具名。"""
     reg = ToolRegistry()
     reg.register(JsonTool({"name": "a", "age": 1}))
     seen: list[dict] = []
@@ -161,7 +163,10 @@ async def test_presentation_none_when_absent():
 
     reg.register_policy("tool/end", on_end)
     await reg.execute(make_call("json_out"))
-    assert seen[0]["presentation"] is None
+    presentation = seen[0]["presentation"]
+    assert presentation is not None
+    assert presentation["title"]  # 已登记工具是中文名，未登记回落原始名
+    assert presentation["tool"] == "json_out"
 
 
 async def test_sse_tool_end_carries_presentation():

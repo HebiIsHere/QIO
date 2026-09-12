@@ -33,6 +33,13 @@ class SettingsStore:
         except (TypeError, ValueError):
             return default
 
+    def get_bool(self, key: str, default: bool) -> bool:
+        """布尔设置：存 "0"/"1"（也容忍 true/false/yes/no 这类写法）。"""
+        raw = self.get(key)
+        if raw is None:
+            return default
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
     def set(self, key: str, value: str) -> None:
         now = _now()
         self.conn.execute(

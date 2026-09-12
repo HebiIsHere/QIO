@@ -1,8 +1,9 @@
-﻿import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import MessageItem from "../MessageItem.vue";
 import { useEventStore } from "../../stores/events";
+import { useUiStore } from "../../stores/ui";
 import type { StreamMessage } from "../../stores/session";
 
 function makeMessage(over: Partial<StreamMessage> & { role: StreamMessage["role"] }): StreamMessage {
@@ -27,50 +28,98 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe("MessageItem token 下缀", () => {
-  it("用户消息下缀与时间戳同一行显示累计 tok", () => {
+describe("MessageItem 用量归属（问题3）", () => {
+  it("正常模式不显示 token（宁可隐藏，也不显示错误数字）", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const events = useEventStore();
-    events.usageTokens = 1204;
-    const w = mountItem(makeMessage({ role: "user" }), pinia);
-    expect(w.find(".ts").text()).toMatch(/^\d{2}:\d{2}:\d{2} · tok 1,204$/);
+    events.usageByTurn = { turn_1: { tokens: 100 } };
+    const w = mountItem(makeMessage({ role: "assistant", content: "好的", turnId: "turn_1" }), pinia);
+    expect(w.find(".meta").text()).not.toContain("tok");
     w.unmount();
   });
 
-  it("助手消息下缀显示当前累计 tok", () => {
+  it("开发者模式：助手消息显示自己 turn 的 token，而不是最近一次的累计值", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const events = useEventStore();
-    events.usageTokens = 2340;
-    const w = mountItem(makeMessage({ role: "assistant", content: "好的" }), pinia);
-    expect(w.find(".ts").text()).toMatch(/^\d{2}:\d{2}:\d{2} · tok 2,340$/);
+    const ui = useUiStore();
+    ui.developerMode = true;
+    events.usageByTurn = { turn_1: { tokens: 100 }, turn_2: { tokens: 200 } };
+    const w = mountItem(makeMessage({ role: "assistant", content: "A", turnId: "turn_1" }), pinia);
+    expect(w.find(".meta").text()).toContain("token 100");
     w.unmount();
   });
 
-  it("无 USAGE 事件时仍保留下缀（tok 0）", () => {
+  it("用户消息与无归属消息不带 token", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
-    const w = mountItem(makeMessage({ role: "assistant", content: "好的" }), pinia);
-    expect(w.find(".ts").text()).toContain("tok 0");
+    useUiStore().developerMode = true;
+    useEventStore().usageByTurn = { turn_1: { tokens: 100 } };
+    const user = mountItem(makeMessage({ role: "user", content: "问", turnId: "turn_1" }), pinia);
+    expect(user.find(".meta").text()).not.toContain("tok");
+    user.unmount();
+    const orphan = mountItem(makeMessage({ role: "assistant", content: "A", turnId: null }), pinia);
+    expect(orphan.find(".meta").text()).not.toContain("tok");
+    orphan.unmount();
+  });
+});
+
+describe("MessageItem 消息信息层级与状态", () => {
+  it("等待中的消息只给一行轻量 metadata（等待中）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "user", content: "下一条", queued: true }), pinia);
+    expect(w.find(".queued-tag").text()).toContain("等待中");
     w.unmount();
   });
 
-  it("工具卡时间行附带 tok（与时间戳同一行）", () => {
+  it("复制按钮：点击复制内容并给出短暂成功反馈", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
-    const events = useEventStore();
-    events.usageTokens = 999;
-    const w = mountItem(
-      makeMessage({ role: "tool", toolName: "shell", content: "{}", toolOk: true }),
-      pinia,
-    );
-    expect(w.find(".tool-time").text()).toMatch(/^\d{2}:\d{2}:\d{2} · tok 999$/);
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const w = mountItem(makeMessage({ role: "assistant", content: "复制我" }), pinia);
+    await w.find(".copy-btn").trigger("click");
+    expect(writeText).toHaveBeenCalledWith("复制我");
+    expect(w.find(".copy-btn").text()).toContain("已复制");
     w.unmount();
   });
 });
 
 describe("MessageItem 工具卡呈现", () => {
+  it("工具卡标题用中文展示名，原始工具名只放在悬停提示里", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "web_search",
+        content: "…",
+        toolOk: false,
+        presentation: { title: "网络搜索", tool: "web_search", summary: "联网搜索暂不可用" },
+      }),
+      pinia,
+    );
+    expect(w.find(".tool-name").text()).toBe("网络搜索");
+    expect(w.find(".tool-card").attributes("title")).toBe("web_search");
+    expect(w.find(".tool-name").text()).not.toContain("web_search");
+    w.unmount();
+  });
+
+  it("开发者模式下 token 单位用完整单词（中文界面不留 tok 缩写）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const ui = useUiStore();
+    ui.developerMode = true;
+    const events = useEventStore();
+    events.usageByTurn = { turn_1: { tokens: 1204 } };
+    const w = mountItem(makeMessage({ role: "assistant", content: "答", turnId: "turn_1" }), pinia);
+    expect(w.find(".meta").text()).toContain("token 1,204");
+    expect(w.find(".meta").text()).not.toContain("tok 1,204");
+    w.unmount();
+  });
+
   it("无 presentation 时回退默认模板（工具名 + 原始内容）", () => {
     const pinia = createPinia();
     setActivePinia(pinia);

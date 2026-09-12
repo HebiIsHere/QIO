@@ -11,6 +11,7 @@ import type { StreamMessage } from "../stores/session";
 import MessageItem from "./MessageItem.vue";
 import ContinueBar from "./ContinueBar.vue";
 import QueueChip from "./QueueChip.vue";
+import { turnLabel } from "../utils/turnLabel";
 
 interface Turn {
   id: string;
@@ -21,7 +22,11 @@ interface Turn {
 
 const session = useSessionStore();
 const containerRef = ref<HTMLDivElement | null>(null);
+const spacerRef = ref<HTMLDivElement | null>(null);
 const followBottom = ref(true);
+
+/** 距底部多少像素内算「跟随中」 */
+const NEAR_BOTTOM_PX = 120;
 
 const messages = computed(() => session.messages);
 
@@ -53,14 +58,21 @@ const virtualizer = useVirtualizer(
 function onScroll() {
   const el = containerRef.value;
   if (!el) return;
-  followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  // 不吸附：滚动到底自然停在最底（底部滚动缓冲保证最新消息停在输入框上方），
-  // 轻微滚动不会被拉回原位。
+  // 只按「距底部距离」判定是否跟随：用户向上滚 → 立刻停止跟随，不再强行拉回
+  followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function scrollToBottom() {
+  const el = containerRef.value;
+  if (!el) return;
+  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
 /** 右下角输入框高度观察：消息流底部滚动缓冲 = 输入框高 + 间距，
  *  滚动到底时最新消息恰好停在浮动气泡上方（消息少时无额外留白）。 */
 let composerObserver: ResizeObserver | null = null;
+/** 内容高度观察器：assistant 流式正文变高（不换条）时也要跟随底部 */
+let streamObserver: ResizeObserver | null = null;
 function composerHeight(): number {
   const el = document.querySelector<HTMLElement>(".composer");
   return el ? el.getBoundingClientRect().height : 0;
@@ -71,6 +83,13 @@ function applyComposerPad() {
   el.style.paddingBottom = `${Math.round(composerHeight()) + 16}px`;
 }
 onMounted(() => {
+  // 内容增高（同一条流式消息变长 / markdown 布局变化）时，若仍在跟随就贴底
+  if (typeof ResizeObserver !== "undefined") {
+    streamObserver = new ResizeObserver(() => {
+      if (followBottom.value) scrollToBottom();
+    });
+    if (spacerRef.value) streamObserver.observe(spacerRef.value);
+  }
   if (typeof ResizeObserver === "undefined") {
     applyComposerPad();
     return;
@@ -87,6 +106,8 @@ onMounted(() => {
 onUnmounted(() => {
   composerObserver?.disconnect();
   composerObserver = null;
+  streamObserver?.disconnect();
+  streamObserver = null;
 });
 
 // 动态测量列表项真实高度（替代固定 estimateSize），避免长消息重叠
@@ -94,15 +115,17 @@ function measureItem(el: unknown) {
   if (el instanceof Element) virtualizer.value.measureElement(el);
 }
 
-// 每次新消息都触发跟随（轮次内可能连续追加 tool/assistant）；
-// 滚动目标始终是最后一轮
+// 新消息 / 末尾消息内容增长（流式）/ turn 开始时都触发跟随检查；
+// 只有处于 follow 状态才贴底，用户上翻时绝不强行拉回。
 watch(
-  () => session.messages.length,
+  () => {
+    const last = session.messages[session.messages.length - 1];
+    return [session.messages.length, last?.content.length ?? 0, session.turnRunning] as const;
+  },
   async () => {
     if (followBottom.value) {
       await nextTick();
-      const el = containerRef.value;
-      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
+      scrollToBottom();
     }
   },
 );
@@ -110,18 +133,17 @@ watch(
 watch(
   () => session.turnRunning,
   async (running) => {
+    // 用户刚发起一轮：回到跟随模式（主动发送意味着想看结果）
     if (running) {
       followBottom.value = true;
       await nextTick();
-      const el = containerRef.value;
-      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
+      scrollToBottom();
     }
   },
 );
 
-function turnLabel(t: Turn): string {
-  if (session.turnRunning && t.index === turns.value.length) return "NOW";
-  return `TURN ${String(t.index).padStart(2, "0")}`;
+function labelOf(t: Turn): string {
+  return turnLabel(t.index, session.turnRunning && t.index === turns.value.length);
 }
 
 function formatTime(iso?: string): string {
@@ -148,6 +170,7 @@ const showTyping = computed(() => {
 <template>
   <div ref="containerRef" class="stream" @scroll.passive="onScroll">
     <div
+      ref="spacerRef"
       class="spacer"
       :style="{ height: virtualizer.getTotalSize() + 'px', position: 'relative' }"
     >
@@ -167,7 +190,7 @@ const showTyping = computed(() => {
       >
         <div class="turn" :data-turn="turns[item.index].id">
           <div class="turn-meta">
-            <span class="who">{{ turnLabel(turns[item.index]) }}</span>
+            <span class="who">{{ labelOf(turns[item.index]) }}</span>
             <span class="bar"></span>
             <span class="ts">{{ formatTime(turns[item.index].startedAt) }}</span>
           </div>
@@ -225,6 +248,12 @@ const showTyping = computed(() => {
   font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.05em;
+  /* 轮次索引属于次要信息：默认淡，hover 才完全显形（减少仪表盘感） */
+  opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.turn:hover .turn-meta {
+  opacity: 1;
 }
 .turn-meta .who {
   color: var(--text-secondary);

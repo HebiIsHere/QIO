@@ -49,6 +49,7 @@ class TurnOrchestrator:
             return
         final_topic = await self.persist(ctx, adapter, plan, result)
         await self.post_turn(ctx, adapter, plan, final_topic)
+        await self.advance_anchor(ctx, final_topic)
         self.finish(ctx, plan, result, final_topic)
 
     # -- stages -----------------------------------------------------------
@@ -62,7 +63,9 @@ class TurnOrchestrator:
         adapter = await app.build_adapter()
         if adapter is None:
             await app.bus.publish(
-                make_warning("no main-loop credential configured; add one in Settings")
+                make_warning(
+                    "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话"
+                )
             )
             ctx.result = {"ok": False, "reason": "no_credential"}
             ctx.status = "done"
@@ -76,9 +79,14 @@ class TurnOrchestrator:
         ctx.trace = tracer
         app.trace_store.begin(ctx.turn_id, initial_topic=topic)
         # speaking in a topic anchors it (if the anchor is absent or stale)
-        active_anchor = AnchorService(app.conn).get_active()
-        if active_anchor is None or active_anchor.topic_id != topic:
-            AnchorService(app.conn).set_active(topic)
+        anchors = AnchorService(app.conn)
+        active_anchor = anchors.get_active()
+        if active_anchor is None:
+            anchors.set_active(topic)
+            await app._publish_anchor_event()
+        elif active_anchor.topic_id != topic:
+            # 进入另一个话题：恢复该话题保存的位置，而不是静默清空片段位置
+            anchors.restore_position(topic)
             await app._publish_anchor_event()
         return adapter
 
@@ -140,10 +148,10 @@ class TurnOrchestrator:
         )
         ctx.user_message_id = msg_id
         tracer.write("messages", msg_id)
-        active_anchor = AnchorService(app.conn).get_active()
-        focus_block = ""
-        if active_anchor is not None and active_anchor.fragment_id:
-            focus_block = app._focus_block(topic, active_anchor.fragment_id)
+        # Focus 只服务「用户选中的历史位置」：一旦本轮消息写进当前开放片段，
+        # 位置推进后就不再重复强调同一个历史片段（见 advance_anchor）。
+        focus_fragment = AnchorService(app.conn).focus_fragment(topic)
+        focus_block = app._focus_block(topic, focus_fragment) if focus_fragment else ""
         short_term = app._short_term_items(topic, exclude_message_id=ctx.user_message_id)
         topic_note = app._topic_note(topic, prediction)
         if extra_note:
@@ -162,6 +170,7 @@ class TurnOrchestrator:
             new_topic_reason=reason,
             topic_note=topic_note,
             focus_block=focus_block,
+            focus_item_id=focus_fragment,
             entity_cards=entity_cards,
             tool_definitions_tokens=_tool_spec_tokens(app.registry),
         )
@@ -232,7 +241,7 @@ class TurnOrchestrator:
         except Exception as exc:
             logging.getLogger(__name__).exception("turn failed")
             await app.bus.publish(
-                make_error("turn_failed", str(exc)[:200], recoverable=True)
+                make_error("turn_failed", f"本轮执行失败：{str(exc)[:180]}", recoverable=True)
             )
             app.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
             ctx.result = {"ok": False, "reason": "turn_failed"}
@@ -258,6 +267,11 @@ class TurnOrchestrator:
             model=adapter.model,
         )
         ctx.trace.write("messages", assistant_msg_id)
+        # 本轮消息真正写入的片段 = 成功之后的「当前位置」
+        row = app.conn.execute(
+            "SELECT fragment_id FROM messages WHERE id = ?", (assistant_msg_id,)
+        ).fetchone()
+        ctx.position_fragment_id = row["fragment_id"] if row is not None else None
         return final_topic
 
     async def post_turn(self, ctx, adapter, plan: _Plan, final_topic: str) -> None:
@@ -270,6 +284,31 @@ class TurnOrchestrator:
                 app.predictor.refresh_topic_vector(final_topic)
         if plan.payload.plan.needs_consolidation:
             await app.consolidate(final_topic, adapter)
+
+    async def advance_anchor(self, ctx, final_topic: str) -> None:
+        """成功一轮：把当前位置推进到本轮真实片段（用户的历史选择就此消费）。
+
+        失败 / 取消 / 没写出消息的轮次不推进 —— 用户「从这里开始」的选择必须
+        留给下一次重试，而不是因为一次失败就被静默丢弃。
+        """
+        from agent.graph.anchors import AnchorService
+
+        if getattr(ctx, "cancelled", False):
+            return
+        fragment_id = getattr(ctx, "position_fragment_id", None)
+        if not fragment_id:
+            return
+        app = self.app
+        anchors = AnchorService(app.conn)
+        active = anchors.get_active()
+        if (
+            active is not None
+            and active.topic_id == final_topic
+            and active.fragment_id == fragment_id
+        ):
+            return
+        anchors.set_active(final_topic, fragment_id)
+        await app._publish_anchor_event()
 
     def finish(self, ctx, plan: _Plan, result, final_topic: str) -> None:
         app = self.app

@@ -122,10 +122,8 @@ class AppContext:
         self.services.register("embedding", self.embedding)
         from agent.services.search import SearchService
 
-        self.search_service = SearchService(
-            searxng_url=self.settings_store.get("search.searxng_url") or None,
-            bocha_api_key=self.settings_store.get("search.bocha_api_key") or None,
-        )
+        self.search_service = SearchService()
+        self.apply_search_settings()
         self.services.register("search_service", self.search_service)
         self.registry = ToolRegistry(approvals=self.approvals, services=self.services)
         # agent 切换/创建话题后，实时把新锚点广播给前端（ANCHOR SSE 事件）
@@ -179,6 +177,9 @@ class AppContext:
         self.registry.register(
             CreateTopicTool(conn, approvals=self.approvals, predictor=self.predictor)
         )
+        from agent.tools.continue_tool import ContinueFromFragmentTool
+
+        self.registry.register(ContinueFromFragmentTool(conn))
         from agent.tools.subagent_tool import AwaitTaskTool, ReadTaskResultTool
         from agent.tools.task_manager import TaskManager
 
@@ -244,25 +245,28 @@ class AppContext:
         """switch_topic / create_topic 成功后广播新锚点（tool/result 策略）。"""
         tool_name = data.get("tool")
         result = data.get("result")
-        if tool_name not in ("switch_topic", "create_topic"):
+        if tool_name not in ("switch_topic", "create_topic", "continue_from_fragment"):
             return
         if result is None or not getattr(result, "ok", False):
             return
         await self._publish_anchor_event()
 
     async def _publish_anchor_event(self) -> None:
-        """把当前 active 锚点（话题 + 片段）以 ANCHOR 事件推给前端。"""
+        """把当前 active 锚点（话题 + 片段 + 是否历史位置）以 ANCHOR 事件推给前端。
+
+        前端据此更新话题行与「当前从历史位置继续」提示：位置推进到当前片段后
+        historic=false，提示自然消失（不会几十轮后还显示旧片段）。
+        """
         from agent.api.events import EventType, make_event
 
-        anchor = AnchorService(self.conn).get_active()
+        anchors = AnchorService(self.conn)
+        anchor = anchors.get_active()
         if anchor is None or not anchor.topic_id:
             return
         node = self.topics.nodes.get_topic(anchor.topic_id)
         topic_name = node.name if node is not None else anchor.topic_id
-        fragment_title = None
-        if anchor.fragment_id:
-            frag = self.fragments.get(anchor.fragment_id)
-            fragment_title = frag.title if frag is not None else None
+        historic = anchors.is_historic_position(anchor.topic_id)
+        fragment_title = self._fragment_title(anchor.fragment_id)
         await self.bus.publish(
             make_event(
                 EventType.ANCHOR,
@@ -271,8 +275,37 @@ class AppContext:
                     "topic_name": topic_name,
                     "fragment_id": anchor.fragment_id,
                     "fragment_title": fragment_title,
+                    "historic": historic,
                 },
             )
+        )
+
+    def _fragment_title(self, fragment_id: str | None) -> str | None:
+        """片段标题：优先 memory_index（已封块摘要的标题），否则用摘要首句。"""
+        if not fragment_id:
+            return None
+        row = self.conn.execute(
+            "SELECT title FROM memory_index WHERE fragment_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (fragment_id,),
+        ).fetchone()
+        if row is not None and row["title"]:
+            return str(row["title"])
+        frag = self.fragments.get(fragment_id)
+        if frag is not None and frag.summary:
+            return frag.summary.strip().splitlines()[0][:40]
+        return None
+
+    def apply_search_settings(self) -> None:
+        """把搜索设置套用到运行中的 SearchService。
+
+        保存设置必须立刻生效：此前只写 settings 表，运行中的 SearchService 仍是
+        旧配置（改了 SearXNG/博查要重启后端才生效）。
+        """
+        self.search_service.set_config(
+            searxng_url=self.settings_store.get("search.searxng_url") or None,
+            bocha_api_key=self.settings_store.get("search.bocha_api_key") or None,
+            keyless_fallback=self.settings_store.get_bool("search.keyless_fallback", True),
         )
 
     def _build_embedding_backend(self):
@@ -663,6 +696,7 @@ class AppContext:
         new_topic_reason: str = "",
         topic_note: str = "",
         focus_block: str = "",
+        focus_item_id: str | None = None,
         entity_cards: list[str] | None = None,
         system_prompt_tokens: int = 0,
         adapter_overhead_tokens: int = 0,
@@ -682,6 +716,7 @@ class AppContext:
             new_topic_reason=new_topic_reason,
             topic_note=topic_note,
             focus_block=focus_block,
+            focus_item_id=focus_item_id,
             entity_cards=entity_cards,
             system_prompt_tokens=system_prompt_tokens,
             adapter_overhead_tokens=adapter_overhead_tokens,

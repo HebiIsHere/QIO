@@ -279,7 +279,7 @@ async def test_subagent_tool_missing_credential():
     tool, tm, _ = _make_tool(bus, secret=None)
     result = await tool.run(query="x")
     assert result.ok is False
-    assert "credential" in (result.error or "").lower()
+    assert "凭据" in (result.error or "")
 
 
 async def test_await_task_tool_notify_and_timeout():

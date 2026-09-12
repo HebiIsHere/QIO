@@ -277,7 +277,7 @@ class AgentLoop:
         while True:
             if self._halted:
                 phase = LoopPhase.STOPPED
-                self._warn("guard halt: 同一工具反复失败，已终止本轮")
+                self._warn("护栏终止：同一工具反复失败，已终止本轮")
                 await self._emit(
                     EventType.WARNING,
                     {"code": "guard_halt", "message": "同一工具反复失败，已终止本轮", "recoverable": True},
@@ -293,7 +293,7 @@ class AgentLoop:
                         if self.budget.used_iterations >= self.budget.max_iterations
                         else f"输出 token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
                     )
-                    self._warn(f"turn stopped: {reason}")
+                    self._warn(f"本轮提前结束：{reason}")
                     await self._emit(
                         EventType.WARNING,
                         {"code": "budget_exhausted", "message": reason, "recoverable": True},

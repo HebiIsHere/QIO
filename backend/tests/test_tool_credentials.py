@@ -57,7 +57,7 @@ async def test_revoked_credential_fails_loudly():
     tool = CodeTool(d, sb, credentials=_Creds(secret=None, default=None))
     res = await tool.run()
     assert res.ok is False
-    assert "unavailable" in (res.error or "")
+    assert "不可用" in (res.error or "")
 
 
 async def test_policy_passed_to_sandbox():

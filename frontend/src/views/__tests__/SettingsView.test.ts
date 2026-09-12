@@ -3,8 +3,9 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import SettingsView from "../SettingsView.vue";
-import { getTheme, setTheme } from "../../utils/theme";
+import { getTheme, getThemePreference, setTheme } from "../../utils/theme";
 import { floatingState, resetFloatPositions } from "../../composables/floatingState";
+import { useUiStore } from "../../stores/ui";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -30,6 +31,7 @@ vi.mock("../../services/api", () => ({
     updateSearchSettings: vi.fn(async (body: Record<string, unknown>) => ({
       searxng_url: String(body.searxng_url ?? ""),
       bocha_has_key: Boolean(body.bocha_api_key),
+      keyless_fallback: body.keyless_fallback === undefined ? true : Boolean(body.keyless_fallback),
       top_k_default: Number(body.top_k_default ?? 5),
       max_fetch_chars: Number(body.max_fetch_chars ?? 15000),
     })),
@@ -62,53 +64,143 @@ const CRED = {
   note: "测试",
 };
 
+const NAV_LABELS = ["外观", "对话与记忆", "模型与联网", "工具与权限", "数据与维护", "凭据", "高级"];
+
 function makePinia(): Pinia {
   const pinia = createPinia();
   setActivePinia(pinia);
   return pinia;
 }
 
+async function mountSettings() {
+  const w = mount(SettingsView, {
+    attachTo: document.body,
+    global: { plugins: [makePinia()], stubs: { RouterLink: true } },
+  });
+  await flushPromises();
+  return w;
+}
+
+async function openTab(w: Awaited<ReturnType<typeof mountSettings>>, label: string) {
+  const tab = w.findAll(".tab").find((b) => b.text().includes(label));
+  expect(tab, `找不到分区「${label}」`).toBeTruthy();
+  await tab!.trigger("click");
+  await nextTick();
+}
+
+/** 当前可见面板（v-show 隐藏的面板不参与断言） */
+function visiblePanel(w: Awaited<ReturnType<typeof mountSettings>>) {
+  return w.findAll(".panel").find((p) => (p.element as HTMLElement).style.display !== "none")!;
+}
+
 beforeEach(() => {
+  vi.clearAllMocks();
   localStorage.clear();
   resetFloatPositions();
   document.documentElement.removeAttribute("data-theme");
+  document.body.innerHTML = "";
 });
 
-describe("SettingsView", () => {
-  it("渲染凭据/偏好/窗口三个 tab 与「新建凭据」入口按钮", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await nextTick();
-    expect(w.findAll(".tab").length).toBe(3);
-    expect(w.findAll(".tab").map((b) => b.text())).toEqual(["凭据", "偏好", "窗口"]);
-    expect(w.find(".tab.active").text()).toBe("凭据");
-    expect(w.find(".new-cred").exists()).toBe(true);
-    expect(w.find(".new-cred").text()).toContain("新建凭据");
-    w.unmount();
-  });
-  it("点击偏好 tab 显示偏好分区", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
-    expect(w.find(".tab.active").text()).toBe("偏好");
-    expect(w.find(".qio-switch").exists()).toBe(true);
-    w.unmount();
-  });
-  it("点击「新建凭据」打开创建模态框", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await nextTick();
-    expect(w.find(".modal-mask").exists()).toBe(false);
-    await w.find(".new-cred").trigger("click");
-    await nextTick();
-    expect(w.find(".modal-mask").exists()).toBe(true);
+describe("SettingsView 信息架构", () => {
+  it("按用户心智分为七个一级分区，默认停在「外观」", async () => {
+    const w = await mountSettings();
+    expect(w.findAll(".tab").map((b) => b.text())).toEqual(NAV_LABELS);
+    expect(w.find(".tab.active").text()).toBe("外观");
+    expect(visiblePanel(w).text()).toContain("主题");
     w.unmount();
   });
 
+  it("凭据分区保留「新建凭据」入口，服务端 tuning 收进「高级」", async () => {
+    const w = await mountSettings();
+    expect(w.find(".new-cred").exists()).toBe(true);
+    await openTab(w, "高级");
+    const panel = visiblePanel(w);
+    expect(panel.text()).toContain("开发者模式");
+    expect(panel.text()).toContain("SearXNG");
+    w.unmount();
+  });
+
+  it("主题：System / Dark / Light 三选项，选择 system 存偏好而非解析结果", async () => {
+    setTheme("dark");
+    const w = await mountSettings();
+    const opts = w.findAll(".theme-opt");
+    expect(opts.map((o) => o.text())).toEqual(["系统", "暗紫晶", "净白"]);
+    await opts[0].trigger("click");
+    expect(getThemePreference()).toBe("system");
+    expect(localStorage.getItem("qio-theme")).toBe("system");
+    await opts[2].trigger("click");
+    expect(getThemePreference()).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    await opts[1].trigger("click");
+    expect(getTheme()).toBe("dark");
+    w.unmount();
+  });
+
+  it("窗口行为并入「外观」：两个贴靠隐藏开关 + 还原布局", async () => {
+    const w = await mountSettings();
+    const switches = visiblePanel(w).findAll(".qio-switch");
+    expect(switches.length).toBe(2);
+    expect(visiblePanel(w).text()).toContain("还原默认布局");
+    w.unmount();
+  });
+});
+
+describe("SettingsView 分区反馈不串台（问题5/6）", () => {
+  it("记忆保存失败：错误只出现在记忆区，且用错误语义而非成功色", async () => {
+    const { api } = await import("../../services/api");
+    (api.updateMemorySettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("PUT /api/settings/memory -> 500: boom"),
+    );
+    const w = await mountSettings();
+    await openTab(w, "对话与记忆");
+
+    // 通过自定义轮数触发保存（失焦 commit）
+    const tierSelect = visiblePanel(w).find(".qio-select");
+    await tierSelect.trigger("click");
+    await nextTick();
+    const custom = visiblePanel(w).findAll(".qio-select-menu .opt").find((o) => o.text().includes("自定义"));
+    await custom!.trigger("click");
+    await nextTick();
+    const input = visiblePanel(w).find(".q-number-input");
+    await input.setValue("12");
+    await input.trigger("blur");
+    await flushPromises();
+
+    const memoryMsg = visiblePanel(w).find(".msg");
+    expect(memoryMsg.exists()).toBe(true);
+    expect(memoryMsg.classes()).toContain("err");
+    expect(memoryMsg.classes()).not.toContain("ok");
+    expect(memoryMsg.text()).toContain("记忆");
+    expect(memoryMsg.text()).toContain("失败");
+
+    // 切到联网分区：不应看到记忆分区的错误
+    await openTab(w, "模型与联网");
+    expect(visiblePanel(w).text()).not.toContain("记忆");
+    w.unmount();
+  });
+
+  it("维护保存成功：只在维护分区显示成功提示（带来源说明）", async () => {
+    const { api } = await import("../../services/api");
+    (api.runMaintenance as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, started: true });
+    const w = await mountSettings();
+    await openTab(w, "数据与维护");
+    const btn = visiblePanel(w).findAll(".qio-btn").find((b) => b.text().includes("立即运行"));
+    await btn!.trigger("click");
+    await flushPromises();
+    const msg = visiblePanel(w).find(".msg");
+    expect(msg.classes()).toContain("ok");
+    expect(msg.text()).toContain("维护");
+    w.unmount();
+  });
+});
+
+describe("SettingsView 凭据分区", () => {
   it("点击卡片「停用」调用 setCredentialEnabled(false)", async () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       credentials: [{ ...CRED, enabled: true }],
     });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await flushPromises();
+    const w = await mountSettings();
     await w.find(".btn-toggle").trigger("click");
     await flushPromises();
     expect(api.setCredentialEnabled).toHaveBeenCalledWith("k1", false);
@@ -120,13 +212,9 @@ describe("SettingsView", () => {
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       credentials: [CRED, { ...CRED, key_id: "k_old", status: "revoked", note: null }],
     });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await flushPromises();
-    // 默认只显示 active+enabled 的一条
+    const w = await mountSettings();
     expect(w.findAll(".cred-card").length).toBe(1);
-    // 切到「已撤销」才出现被撤销那条
     const revokedBtn = w.findAll(".filter").find((b) => b.text() === "已撤销");
-    expect(revokedBtn).toBeTruthy();
     await revokedBtn!.trigger("click");
     await nextTick();
     expect(w.findAll(".cred-card").length).toBe(1);
@@ -136,12 +224,9 @@ describe("SettingsView", () => {
 
   it("点击卡片「删除」确认后调用 deleteCredential 并移出列表", async () => {
     const { api } = await import("../../services/api");
-    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      credentials: [CRED],
-    });
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await flushPromises();
+    const w = await mountSettings();
     await w.find(".btn-danger").trigger("click");
     await flushPromises();
     expect(api.deleteCredential).toHaveBeenCalledWith("k1");
@@ -150,13 +235,20 @@ describe("SettingsView", () => {
     w.unmount();
   });
 
+  it("新建凭据打开模态框", async () => {
+    const w = await mountSettings();
+    expect(w.find(".modal-mask").exists()).toBe(false);
+    await w.find(".new-cred").trigger("click");
+    await nextTick();
+    expect(w.find(".modal-mask").exists()).toBe(true);
+    w.unmount();
+  });
+
   it("测试凭据：结果以一闪而过的 toast 气泡展示（成功）", async () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await flushPromises();
-    const testBtn = w.findAll(".cred-card .qio-btn")[0];
-    await testBtn.trigger("click");
+    const w = await mountSettings();
+    await w.findAll(".cred-card .qio-btn")[0].trigger("click");
     await flushPromises();
     const toast = w.find(".toast");
     expect(toast.exists()).toBe(true);
@@ -164,25 +256,10 @@ describe("SettingsView", () => {
     expect(toast.text()).toContain("native");
     w.unmount();
   });
-  it("偏好页主题开关切换主题并持久化 data-theme/qio-theme", async () => {
-    // 模拟 main.ts 启动时应用持久化主题（组件不再兜底写 data-theme）
-    setTheme(getTheme());
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
-    const sw = w.find(".theme-switch");
-    expect(sw.exists()).toBe(true);
-    // 默认暗色
-    expect(document.documentElement.dataset.theme).toBe("dark");
-    await sw.trigger("click");
-    expect(document.documentElement.dataset.theme).toBe("light");
-    expect(localStorage.getItem("qio-theme")).toBe("light");
-    await sw.trigger("click");
-    expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(localStorage.getItem("qio-theme")).toBe("dark");
-    w.unmount();
-  });
+});
 
-  it("偏好页渲染联网搜索卡片并拉取当前配置", async () => {
+describe("SettingsView 联网搜索凭据语义（问题7）", () => {
+  it("已配置时留空保存：不发送 bocha_api_key，凭据不被清除", async () => {
     const { api } = await import("../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "http://127.0.0.1:8080",
@@ -190,123 +267,149 @@ describe("SettingsView", () => {
       top_k_default: 8,
       max_fetch_chars: 20000,
     });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
-    await flushPromises();
-    const panel = w.find(".panel:not([style*='display: none'])");
-    expect(panel.text()).toContain("联网搜索");
-    // 已配置状态出现在博查 API Key 旁
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const panel = visiblePanel(w);
     expect(panel.text()).toContain("已配置");
-    expect(api.getSearchSettings).toHaveBeenCalled();
+
+    const saveBtn = panel.findAll(".qio-btn").find((b) => b.text().includes("保存搜索配置"));
+    await saveBtn!.trigger("click");
+    await flushPromises();
+
+    const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body).not.toHaveProperty("bocha_api_key");
+    expect(visiblePanel(w).text()).toContain("已保存搜索配置");
     w.unmount();
   });
 
-  it("保存搜索配置调用 updateSearchSettings 并显示成功提示", async () => {
+  it("「替换」输入新 Key 后保存才发送 bocha_api_key", async () => {
+    const { api } = await import("../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "",
+      bocha_has_key: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const panel = () => visiblePanel(w);
+    const replaceBtn = panel().findAll(".qio-btn").find((b) => b.text().includes("替换"));
+    await replaceBtn!.trigger("click");
+    await nextTick();
+    await panel().find(".bocha-key-input").setValue("sk-new-key");
+    const saveBtn = panel().findAll(".qio-btn").find((b) => b.text().includes("保存搜索配置"));
+    await saveBtn!.trigger("click");
+    await flushPromises();
+
+    const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.bocha_api_key).toBe("sk-new-key");
+    w.unmount();
+  });
+
+  it("「清除」是独立的危险动作，需要确认，且明确发送空值", async () => {
+    const { api } = await import("../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "",
+      bocha_has_key: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const clearBtn = visiblePanel(w).findAll(".qio-btn").find((b) => b.text().includes("清除"));
+    expect(clearBtn).toBeTruthy();
+    await clearBtn!.trigger("click");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalled();
+    const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body).toEqual({ bocha_api_key: "" });
+    confirmSpy.mockRestore();
+    w.unmount();
+  });
+
+  it("免密钥联网搜索开关：默认开启，点击后立即保存到后端", async () => {
     const { api } = await import("../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "",
       bocha_has_key: false,
+      keyless_fallback: true,
       top_k_default: 5,
       max_fetch_chars: 15000,
     });
-    (api.updateSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      searxng_url: "",
-      bocha_has_key: false,
-      top_k_default: 5,
-      max_fetch_chars: 15000,
-    });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const sw = visiblePanel(w).find(".keyless-switch");
+    expect(sw.exists()).toBe(true);
+    expect(sw.attributes("aria-checked")).toBe("true");
+
+    await sw.trigger("click");
     await flushPromises();
-    const buttons = w.findAll(".panel:not([style*='display: none']) .qio-btn");
-    const saveBtn = buttons.find((b) => b.text().includes("保存搜索配置"));
-    expect(saveBtn).toBeTruthy();
-    await saveBtn!.trigger("click");
-    await flushPromises();
-    expect(api.updateSearchSettings).toHaveBeenCalled();
-    const panel = w.find(".panel:not([style*='display: none'])");
-    expect(panel.text()).toContain("已保存搜索配置");
+
+    const calls = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls;
+    const body = calls[calls.length - 1]?.[0];
+    expect(body).toEqual({ keyless_fallback: false });
+    expect(visiblePanel(w).find(".keyless-switch").attributes("aria-checked")).toBe("false");
+    expect(visiblePanel(w).text()).toContain("免密钥");
     w.unmount();
   });
 
-  it("偏好页渲染电脑操控卡片并拉取当前配置", async () => {
+  it("保存失败：错误用错误语义显示", async () => {
+    const { api } = await import("../../services/api");
+    (api.updateSearchSettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("PUT /api/settings/search -> 500: boom"),
+    );
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const saveBtn = visiblePanel(w).findAll(".qio-btn").find((b) => b.text().includes("保存搜索配置"));
+    await saveBtn!.trigger("click");
+    await flushPromises();
+    const msg = visiblePanel(w).find(".msg");
+    expect(msg.classes()).toContain("err");
+    expect(msg.text()).toContain("保存搜索配置失败");
+    w.unmount();
+  });
+});
+
+describe("SettingsView 工具与高级", () => {
+  it("工具与权限：渲染电脑操控配置", async () => {
     const { api } = await import("../../services/api");
     (api.getComputerSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       root_dir: "C:/work",
       permission_mode: "accept-edits",
     });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
-    await flushPromises();
-    const panel = w.find(".panel:not([style*='display: none'])");
+    const w = await mountSettings();
+    await openTab(w, "工具与权限");
+    const panel = visiblePanel(w);
     expect(panel.text()).toContain("电脑操控");
     expect(panel.text()).toContain("工作区根目录");
-    expect(api.getComputerSettings).toHaveBeenCalled();
     w.unmount();
   });
 
-  it("偏好页渲染对话深度卡片并拉取当前配置", async () => {
+  it("开发者模式默认关闭，可在高级分区打开并持久化", async () => {
+    const w = await mountSettings();
+    const ui = useUiStore();
+    expect(ui.developerMode).toBe(false);
+    await openTab(w, "高级");
+    const sw = visiblePanel(w).find(".qio-switch");
+    await sw.trigger("click");
+    await nextTick();
+    expect(ui.developerMode).toBe(true);
+    expect(localStorage.getItem("qio-developer-mode")).toBe("1");
+    w.unmount();
+  });
+
+  it("对话深度在「对话与记忆」分区并拉取当前配置", async () => {
     const { api } = await import("../../services/api");
     (api.getLoopSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       max_iterations: 200,
       output_token_budget: 90000,
     });
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[1].trigger("click");
-    await flushPromises();
-    const panel = w.find(".panel:not([style*='display: none'])");
+    const w = await mountSettings();
+    await openTab(w, "对话与记忆");
+    const panel = visiblePanel(w);
     expect(panel.text()).toContain("对话深度");
     expect(panel.text()).toContain("单轮迭代上限");
-    expect(api.getLoopSettings).toHaveBeenCalled();
     w.unmount();
   });
 });
-
-describe("SettingsView 窗口 Tab", () => {
-  it("窗口 tab 展示两个贴靠隐藏开关（星球/设置）与还原布局按钮", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[2].trigger("click");
-    await nextTick();
-    expect(w.find(".tab.active").text()).toBe("窗口");
-    const switches = w.findAll(".panel:not([style*='display: none']) .qio-switch");
-    expect(switches.length).toBe(2);
-    expect(w.find(".panel:not([style*='display: none']) .qio-btn").text()).toContain("还原默认布局");
-    w.unmount();
-  });
-
-  it("切换「话题星球入口」贴靠隐藏：写入 shared state 并持久化 localStorage", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[2].trigger("click");
-    await nextTick();
-    expect(floatingState["planet-dock"].hideEnabled).toBe(false);
-    // 第一个开关 = 话题星球入口（WINDOW_ITEMS 顺序：planet-dock / settings-float）
-    const sw = w.findAll(".panel:not([style*='display: none']) .qio-switch")[0];
-    await sw.trigger("click");
-    await nextTick();
-    expect(floatingState["planet-dock"].hideEnabled).toBe(true);
-    expect(sw.attributes("aria-checked")).toBe("true");
-    const saved = JSON.parse(localStorage.getItem("qio-float-hide") || "{}");
-    expect(saved["planet-dock"]).toBe(true);
-    w.unmount();
-  });
-
-  it("还原默认布局：关闭全部贴靠隐藏并清除持久化", async () => {
-    const w = mount(SettingsView, { global: { plugins: [makePinia()], stubs: { RouterLink: true } } });
-    await w.findAll(".tab")[2].trigger("click");
-    await nextTick();
-    const switches = w.findAll(".panel:not([style*='display: none']) .qio-switch");
-    for (const s of switches) await s.trigger("click");
-    await nextTick();
-    expect(floatingState["planet-dock"].hideEnabled).toBe(true);
-    expect(localStorage.getItem("qio-float-hide")).toBeTruthy();
-    await w.find(".panel:not([style*='display: none']) .qio-btn").trigger("click");
-    await nextTick();
-    expect(floatingState.composer.hideEnabled).toBe(false);
-    expect(floatingState["settings-float"].hideEnabled).toBe(false);
-    expect(localStorage.getItem("qio-float-positions")).toBeNull();
-    expect(localStorage.getItem("qio-float-hide")).toBeNull();
-    expect(w.find(".msg.ok").text()).toContain("已还原默认布局");
-    w.unmount();
-  });
-});
-

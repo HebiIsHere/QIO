@@ -37,11 +37,26 @@ TOOL_CREATE_TOPIC_DESC = (
 # 记忆检索工具 memory_search 的描述。定义于 agent/tools/memory_search.py；
 # 作用：告诉模型「需要回忆之前的对话/偏好/决定/事实时调用」，返回相关记忆片段及来源话题。
 TOOL_MEMORY_SEARCH_DESC = (
-    "检索长期记忆，返回与当前问题相关的历史片段及来源话题。"
+    "检索长期记忆，返回与当前问题相关的历史片段：每条结果都带 Fragment id、Topic id、"
+    "标题、时间、预览与相关性分数。"
     "调用时机：当前注入的短期/话题记忆不足，或用户明确询问过去信息（如“之前/上次/我的偏好”）。"
     "不要调用：当前上下文已足够、用户没有询问历史信息时。"
     "query 必填，用自然语言描述要检索的内容。"
+    "本工具是只读的：检索不会改变当前对话的历史位置；"
+    "用户明确要求「从某一段继续」时才改用 continue_from_fragment。"
     "若没有可信匹配，明确说明未找到，禁止编造记忆。"
+)
+
+# 片段接续工具 continue_from_fragment 的描述。定义于 agent/tools/continue_tool.py；
+# 作用：告诉模型「用户明确要求回到某段历史并从那里接着聊」时，显式改变讨论位置。
+TOOL_CONTINUE_FROM_FRAGMENT_DESC = (
+    "把接下来的讨论位置移到某个历史片段（先 memory_search 找到它，再用这里的 fragment_id）。"
+    "调用时机：用户明确要求改变历史讨论位置，例如「从这里继续」「回到我们之前讨论 X 的那一段」"
+    "「找到那个讨论，然后从那里接着聊」「切回那一段」。"
+    "不要调用：用户只是在查询历史（「我们以前讨论过什么？」「帮我查一下」「之前有没有提过？」）——"
+    "这些情况只用 memory_search 回答即可，不要改变讨论位置。"
+    "fragment_id 必填，必须来自 memory_search 的结果；reason 可选，用一句话说明原因。"
+    "本工具只改变接下来持续讨论的位置，不重建当前这一轮的上下文；本轮要引用细节继续用 memory_search。"
 )
 
 # 知识纠正工具 correct_knowledge 的描述。定义于 agent/tools/knowledge_correction.py；

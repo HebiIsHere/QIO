@@ -15,5 +15,44 @@
     "mrr": 0.8125,
     "wrong_memory_injection_rate": 0.25,
     "stale_knowledge_injection_rate": 0.125
+  },
+  "anchor_continuation": {
+    "n": 5,
+    "baseline": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6667,
+      "wrong_memory_injection_rate": 0.2,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.3333
+    },
+    "focus_only": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6667,
+      "wrong_memory_injection_rate": 0.2,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.3333
+    },
+    "anchor_distance": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6333,
+      "wrong_memory_injection_rate": 0.4,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.6667
+    },
+    "decision": {
+      "recall5_delta": 0.0,
+      "wrong_rate_delta": 0.2,
+      "anchor_distraction_rate": 0.6667,
+      "verdict": "skip"
+    }
   }
 }

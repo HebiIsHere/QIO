@@ -22,10 +22,17 @@ const props = withDefaults(
 const emit = defineEmits<{ "update:modelValue": [value: number | null]; change: [] }>();
 
 const draft = ref(props.modelValue == null ? "" : String(props.modelValue));
+/**
+ * 最近一次已交付给父级的值。change 只在「值真的变了」时发出：
+ * 点击 + → commit（一次保存）→ 失焦不再重复；纯聚焦点击也不触发保存。
+ */
+let committed: number | null = props.modelValue ?? null;
 watch(
   () => props.modelValue,
   (v) => {
     if (draft.value !== String(v ?? "")) draft.value = v == null ? "" : String(v);
+    // 父级/服务端回填的值视为已提交，不重复触发保存
+    committed = v ?? null;
   },
 );
 
@@ -37,22 +44,41 @@ function toStep(v: number): number {
   const r = Math.round(v / s) * s;
   return Number(r.toFixed(10)); // 去浮点误差（0.30000000000000004）
 }
-function commit() {
+/** 把当前 draft 收口成提交值（空 → null；非法 → null；否则 step + clamp） */
+function normalize(): number | null {
   const raw = draft.value.trim();
-  if (raw === "") {
-    emit("update:modelValue", null);
-  } else {
-    const n = Number(raw);
-    emit("update:modelValue", Number.isFinite(n) ? clamp(toStep(n)) : null);
-  }
+  if (raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? clamp(toStep(n)) : null;
+}
+function commit() {
+  const next = normalize();
+  draft.value = next == null ? "" : String(next);
+  if (next === committed) return;
+  committed = next;
+  emit("update:modelValue", next);
   emit("change");
 }
 function stepBy(dir: 1 | -1) {
   if (props.disabled) return;
-  const base = props.modelValue ?? (Number.isFinite(props.min) ? props.min : 0);
+  // 以「输入框当前显示的值」为步进基准：父级 prop 回填是异步的，
+  // 连续点击 +/- 必须累加（否则第二次点击会从旧值重新计算）。
+  const base = stepBase();
   const next = clamp(toStep(base + dir * props.step));
   draft.value = String(next);
   emit("update:modelValue", next);
+  // +/- 与 Enter/blur 用同一套 commit 语义：确实变化才算一次提交
+  if (next !== committed) {
+    committed = next;
+    emit("change");
+  }
+}
+function stepBase(): number {
+  const raw = draft.value.trim();
+  const n = Number(raw);
+  if (raw !== "" && Number.isFinite(n)) return n;
+  if (props.modelValue != null) return props.modelValue;
+  return Number.isFinite(props.min) ? props.min : 0;
 }
 function onInput(e: Event) {
   draft.value = (e.target as HTMLInputElement).value;

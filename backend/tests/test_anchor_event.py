@@ -93,3 +93,52 @@ async def test_failed_switch_does_not_publish(ctx: AppContext):
     )
     await finish()
     assert collected == []
+
+
+async def test_anchor_api_publishes_authoritative_anchor(ctx: AppContext):
+    """用户「从这里继续」（POST /api/anchor）也要广播 ANCHOR：
+
+    前端不应该自己用摘要拼一个「标题」，权威标题与 historic 标记只能有一个来源（后端）。
+    """
+    from datetime import datetime, timezone
+
+    import httpx
+
+    from agent.api.server import create_app
+    from agent.memory.fragment import new_id
+
+    node = ctx.topics.nodes.create_topic("从这里继续")
+    now = datetime.now(timezone.utc).isoformat()
+    frag = new_id("frag")
+    ctx.conn.execute(
+        "INSERT INTO fragments (id, topic_id, summary, summary_version, created_at, closed_at) "
+        "VALUES (?, ?, '历史片段摘要', 1, ?, ?)",
+        (frag, node.id, now, now),
+    )
+    ctx.conn.execute(
+        "INSERT INTO memory_index (id, fragment_id, topic_id, entity_ids, keywords, title, "
+        "token_estimate, created_at) VALUES (?, ?, ?, '[]', '[]', '权威标题', 10, ?)",
+        (new_id("idx"), frag, node.id, now),
+    )
+    ctx.conn.commit()
+
+    # /api/anchor 走真实 HTTP 路由（ASGITransport：与订阅者在同一个事件循环里）
+    app = create_app(ctx.settings, ctx.conn)
+    app_ctx = app.state.ctx
+    collected, finish = await _collect_anchor(app_ctx)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/anchor", json={"topic_id": node.id, "fragment_id": frag}
+        )
+    assert resp.status_code == 200
+    # 响应直接给出权威标题与 historic：前端不需要用摘要自己拼标题，也不受事件到达顺序影响
+    body = resp.json()
+    assert body["fragment_title"] == "权威标题"
+    assert body["historic"] is True
+
+    await finish()
+    assert collected, "POST /api/anchor 必须广播 ANCHOR"
+    assert collected[-1]["fragment_id"] == frag
+    assert collected[-1]["fragment_title"] == "权威标题"
+    assert collected[-1]["historic"] is True

@@ -7,6 +7,9 @@ from agent.eval.retrieval_eval import evaluate as eval_retrieval
 from agent.eval.retrieval_eval import load_cases as load_retrieval
 from agent.eval.topic_eval import evaluate as eval_topic
 from agent.eval.topic_eval import load_cases as load_topic
+from agent.eval.anchor_eval import evaluate as eval_anchor
+from agent.eval.anchor_eval import load_cases as load_anchor
+from agent.eval.anchor_eval import public_metrics as anchor_public
 
 EVALS = Path(__file__).resolve().parents[1] / "evals"
 BASELINE = json.loads((EVALS / "baseline.json").read_text(encoding="utf-8"))
@@ -56,3 +59,16 @@ def test_topic_eval_is_deterministic():
     assert {k: v for k, v in a.items() if k != "rows"} == {
         k: v for k, v in b.items() if k != "rows"
     }
+
+
+def test_anchor_continuation_does_not_regress_baseline():
+    """Anchor Continuation：生产方案（Focus + 语义检索 + 身份去重）不得退化。"""
+    metrics = anchor_public(eval_anchor(load_anchor(EVALS / "anchor_continuation" / "cases.jsonl")))
+    base = metrics["baseline"]
+    saved = BASELINE["anchor_continuation"]["baseline"]
+    assert base["recall@5"] >= saved["recall@5"]
+    assert base["mrr"] >= saved["mrr"]
+    assert base["wrong_memory_injection_rate"] <= saved["wrong_memory_injection_rate"]
+    assert base["duplicate_injection_rate"] == 0.0
+    # 距离偏置的结论（实现与否）必须与 baseline 里记录的一致
+    assert metrics["decision"]["verdict"] == BASELINE["anchor_continuation"]["decision"]["verdict"]

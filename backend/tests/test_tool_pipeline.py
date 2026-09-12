@@ -163,7 +163,7 @@ async def test_timeout_marks_failure():
     reg.register(SleepTool())
     result = await reg.execute(make_call("sleep"))
     assert not result.ok
-    assert "timed out" in result.error
+    assert "超时" in result.error
 
 
 async def test_approval_approved_proceeds():
@@ -182,7 +182,7 @@ async def test_approval_rejected_short_circuits():
     reg.register(ApprovalTool())
     result = await reg.execute(make_call("approve_me"))
     assert not result.ok
-    assert "rejected" in result.error
+    assert "拒绝" in result.error
 
 
 async def test_approval_timeout_fails_closed():
@@ -191,7 +191,7 @@ async def test_approval_timeout_fails_closed():
     reg.register(ApprovalTool())
     result = await reg.execute(make_call("approve_me"))
     assert not result.ok
-    assert "timed out" in result.error
+    assert "超时" in result.error
 
 
 async def test_non_approval_tool_skips_approval():

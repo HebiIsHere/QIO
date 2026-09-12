@@ -3,13 +3,34 @@
   /* 暗色「暗紫晶」默认 */
   --bg-base:#171015; --bg-surface:#1e161c; --bg-elevated:#261d24; --bg-inset:#130d12;
   --border-subtle:#302430; --border-strong:#463846;
-  --text-strong:#f5eef2; --text-primary:#e6dbe2; --text-secondary:#a393a0; --text-muted:#6f636c;
+  /* 文本四级：正文 / 次要（需阅读）/ muted（元数据，仍须可读）/ faint（纯装饰）
+     muted 由 #6f636c（3.3:1）提到 5.4:1，小的状态/时间戳不再糊成一团 */
+  --text-strong:#f5eef2; --text-primary:#e6dbe2; --text-secondary:#a393a0;
+  --text-muted:#948690; --text-faint:#6f636c;
   --accent:#c51b7d; --accent-hover:#dd3399; --link:#e878bd; --on-accent:#ffeef8;
   --accent-soft:rgba(197,27,125,.16);
   --success:#5fbf8f; --danger:#e06a6a; --warning:#d9b25c;
-  --serif:Georgia,'Songti SC','SimSun',serif;
-  --sans:system-ui,'PingFang SC','Microsoft YaHei',sans-serif;
-  --mono:Consolas,'Cascadia Mono',monospace;
+  /* 三声部字体：衬线（人声/topic）、无衬线（UI）、等宽（数据）。
+     中文衬线优先高质量本地字面（思源宋体/苹方宋），SimSun 仅作最后兜底，
+     避免整屏「办公软件宋体」感；不引入网络字体，保持 Tauri 离线可用。 */
+  --serif:'Noto Serif SC','Source Han Serif SC','Noto Serif CJK SC','Songti SC','STSong',Georgia,'Times New Roman',serif;
+  --sans:system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei UI','Microsoft YaHei',sans-serif;
+  --mono:'Cascadia Mono',Consolas,'SFMono-Regular',ui-monospace,monospace;
+  /* 字号 / 行高 / 行宽（editorial 阅读） */
+  --fs-xs:11px; --fs-sm:12.5px; --fs-base:14.5px; --fs-md:16px; --fs-lg:19px; --fs-xl:24px; --fs-2xl:32px;
+  --lh-tight:1.35; --lh-base:1.7; --lh-loose:1.85;
+  --measure:68ch;
+  /* 间距 / 圆角 */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
+  --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;
+  /* 动效：UI 100-180ms，面板 180-300ms，星球更慢 */
+  --dur-fast:140ms; --dur-base:200ms; --dur-slow:280ms;
+  --ease:cubic-bezier(.22,.8,.24,1);
+  /* 键盘焦点环（玫红品牌色，仅 focus-visible 使用） */
+  --focus-ring:#e878bd;
+  --shadow-1:0 2px 8px rgba(0,0,0,.28);
+  --shadow-2:0 10px 28px rgba(0,0,0,.34);
+  --shadow-3:0 24px 60px rgba(0,0,0,.45);
   /* 遗留兼容令牌（既有组件仍引用，保持可用） */
   --bg-overlay:rgba(23,16,21,.7); --bg-panel:rgba(30,22,28,.95);
   --bg-accent-subtle:#2b1326; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.32);
@@ -19,10 +40,15 @@
 :root[data-theme="light"] {
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;
   --border-subtle:#e7e7e4; --border-strong:#cbcbc6;
-  --text-strong:#201f1d; --text-primary:#30302d; --text-secondary:#656460; --text-muted:#94938e;
+  --text-strong:#201f1d; --text-primary:#30302d; --text-secondary:#5f5e59;
+  --text-muted:#75736c; --text-faint:#94938e;
   --accent:#c51b7d; --accent-hover:#dd3399; --link:#b0136a; --on-accent:#ffeef8;
   --accent-soft:rgba(197,27,125,.12);
   --success:#2f9e6e; --danger:#d14f4f; --warning:#b0892f;
+  --focus-ring:#b0136a;
+  --shadow-1:0 1px 3px rgba(32,31,29,.10);
+  --shadow-2:0 10px 26px rgba(32,31,29,.12);
+  --shadow-3:0 24px 56px rgba(32,31,29,.16);
   /* 遗留兼容令牌（既有组件仍引用，保持可用） */
   --bg-overlay:rgba(252,252,251,.7); --bg-panel:rgba(255,255,255,.95);
   --bg-accent-subtle:#fbeaf4; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.2);

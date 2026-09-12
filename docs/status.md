@@ -97,16 +97,16 @@
 ### M8 — 图导航层
 
 - **Status：** completed
-- **Implementation：** `graph/nodes.py`、`graph/edges.py`、`graph/anchors.py`、`graph/topics.py`、`graph/layout.py`、`entities/`（识别、抽取、卡片）、`tools/topic_tools.py`、`tools/entity_tools.py`
-- **Tests：** `backend/tests/test_graph.py`、`test_anchor_event.py`、`test_entities_recognizer.py`、`test_entity_cards.py`、`test_entity_correct.py`、`test_entity_extract.py`、`test_entity_inject.py`、`test_entity_retrieval.py`、`test_topic_tools.py`、`test_topic_dedup.py`
+- **Implementation：** `graph/nodes.py`、`graph/edges.py`、`graph/anchors.py`（Anchor 生命周期：位置校验/恢复/推进）、`graph/topics.py`、`graph/layout.py`、`entities/`（识别、抽取、卡片）、`tools/topic_tools.py`、`tools/continue_tool.py`（Agent 显式 `continue_from_fragment`）、`tools/entity_tools.py`
+- **Tests：** `backend/tests/test_graph.py`、`test_anchor_event.py`、`test_anchor_lifecycle.py`、`test_continue_fragment.py`、`test_entities_recognizer.py`、`test_entity_cards.py`、`test_entity_correct.py`、`test_entity_extract.py`、`test_entity_inject.py`、`test_entity_retrieval.py`、`test_topic_tools.py`、`test_topic_dedup.py`
 - **Known limitations：** 实体懒创建依赖提及计数阈值；星球视图的布局计算在前端完成，后端只提供数据。
 - **后续依赖：** M9 的亲和度与 M10 的 `switch_topic` / `create_topic` 都依赖锚点。
 
 ### M9 — 注入与检索
 
 - **Status：** completed
-- **Implementation：** `services/context.py`（ContextAssembler）、`services/injection.py`、`services/retrieval.py`、`services/affinity.py`、`services/token_budget.py`（TokenBudgetPlanner + completion reserve + 预算分解）、`services/decay.py`（分类型时间衰减）、`services/params.py`（集中阈值）
-- **Tests：** `backend/tests/test_service_injection.py`、`test_injection_short_term.py`、`test_token_budget.py`、`test_decay.py`、`test_affinity.py`、`test_focus.py`、`test_turn_no_duplicate_query.py`
+- **Implementation：** `services/context.py`（ContextAssembler：Focus 块 `标题 + 摘要 + 开头 2 条 + 省略标记 + 结尾 3 条`，受 `FOCUS.max_tokens` 硬上限）、`services/injection.py`（三面聚合 + **按稳定身份去重**：Focus / 短期记忆已给的片段不再从检索重复注入）、`services/retrieval.py`（命中携带 `fragment_id`）、`services/affinity.py`、`services/token_budget.py`（TokenBudgetPlanner + completion reserve + 预算分解）、`services/decay.py`（分类型时间衰减）、`services/params.py`（集中阈值，含 `FOCUS`）
+- **Tests：** `backend/tests/test_service_injection.py`、`test_injection_short_term.py`、`test_token_budget.py`、`test_decay.py`、`test_affinity.py`、`test_focus.py`（含 Focus 尾部结论、Token 上限、开放片段、去重）、`test_turn_no_duplicate_query.py`
 - **Known limitations：** 注入上限是硬约束，强制项超预算时走确定性截断；阈值集中在 `services/params.py`，改动需要 eval 支撑（见 P3）。
 - **后续依赖：** 无下游；被 P1/P2 的 turn 流水线调用。
 
@@ -121,9 +121,9 @@
 ### M11 — 前端
 
 - **Status：** completed
-- **Implementation：** `frontend/src/views/`（对话页、星球页、设置页、调试页）、`frontend/src/components/`、`frontend/src/stores/`、`frontend/src/planet/`、`frontend/src-tauri/`（桌面壳）
+- **Implementation：** `frontend/src/views/`（对话页、星球页、设置页、调试页）、`frontend/src/components/`、`frontend/src/stores/`、`frontend/src/planet/`、`frontend/src-tauri/`（桌面壳）。2026-09-12 稳定化：审批失败保留待审批项并可重试（失败 ≠ 已授权）、锚点切换以后端成功为准、token 用量按 `turn_id` 归属、流式 Markdown 增量渲染、流式自动跟随（上翻即停）、QNumber 统一 commit 语义、设置页分区反馈与凭据留空不清除、星球详情竞态防护、浮动组件单击不贴靠且 resize 保持贴靠关系。
 - **Tests：** `frontend/src/**/__tests__/*.test.ts`、`frontend/src/smoke.test.ts`、`frontend/src/styles/tokens.test.ts`
-- **Known limitations：** 桌面壳只在 Windows 上验证过；应用内浏览器有模块缓存，改前端后需带 `?fresh=N` 强刷。斜杠命令体系未实现。
+- **Known limitations：** 桌面壳只在 Windows 上验证过；应用内浏览器有模块缓存，改前端后需带 `?fresh=N` 强刷。斜杠命令体系未实现。代码块复制依赖 `navigator.clipboard`（受限 WebView 下只给反馈，不保证写入）。
 - **后续依赖：** 无下游。
 
 ### M12 — 离线维护任务
@@ -196,8 +196,15 @@
 
 - **斜杠命令体系**：未实现（工具创建入口在设置页与对话输入区）。
 - **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里。
-- **片段级检索偏置**：从星球页「从这里开始」选中片段，目前只改变提示词（注意力偏置），
-  不改变记忆检索的排序权重；检索侧只实现了话题级亲和（`anchor_topic_id`）。
+- **片段级检索偏置（已评测，决定不实现）**：Planet「从这里开始」/ Agent
+  `continue_from_fragment` 只改变 Focus 与当前位置，**不**改变记忆检索的排序权重
+  （检索侧只有话题级亲和 `anchor_topic_id`）。离线 Anchor Continuation Eval
+  （`agent/eval/anchor_eval.py` + `backend/evals/anchor_continuation/` 下的 case 集）对比了
+  baseline（Focus + 语义检索 + 身份去重）、focus_only 与 anchor_distance（按序数距离加权）：
+  距离偏置 recall@5 无提升（1.00 → 1.00）、MRR 反而下降（0.667 → 0.633）、
+  wrong-memory injection 翻倍（0.20 → 0.40）、anchor distraction 上升（0.333 → 0.667），
+  因此**不实现**距离偏置。基线数字与结论存于 `backend/evals/baseline.json`，
+  `tests/test_anchor_eval.py` 会守住这个决策（哪天评测翻盘会直接测试失败，强制重新决策）。
 - **取消不中断进行中的模型请求**：取消只取消在途工具调用并把 turn 标记为 cancelled，
   正在等待的模型 HTTP 请求会跑完。
 - **Trace 时长归因缺口**：极端情况下 turn 总时长与已记录的模型/工具耗时差距很大
@@ -207,6 +214,22 @@
 - **记忆的类别化衰减**：只对已有可靠元数据（知识条目 vs 片段）做差异化；未引入模型生成的记忆分类字段。
 - **多用户/多会话并发 Agent Server**：明确不做。当前是单机、单用户的 single-flight 主 turn。
 - **非 Windows 平台**：keyring 与桌面壳只在 Windows 验证，Linux/macOS 未验证。
+- **联网搜索通道（2026-09-12 重做）**：免密钥搜索改为「Exa / Parallel 免费 MCP +
+  DuckDuckGo HTML」，实测可用（前者返回结构化结果，后者中文结果正常但会限流）；
+  必应/百度降级为最后兜底，并保留两道闸门（解析抓 `h2 > a`、相关性闸门、反爬通道
+  冷却 10 分钟，见 `services/params.py::SEARCH`）。公共 SearXNG 实例实测全部被
+  Anubis/Substation 拦截，故只支持自建实例（设置 → 高级 填 URL）；博查 Key 仍然最稳。
+  免密钥开关在「设置 → 模型与联网」，默认开启、保存即生效。
+- **搜索设置的即时生效**：此前保存 SearXNG/博查只写 settings 表，运行中的
+  `SearchService` 不更新（要重启后端才生效）——已修为保存时调用
+  `AppContext.apply_search_settings()`。
+- **单 turn token 只有总量**：后端 `USAGE` / `TURN_END` 只给该 turn 的输出 token 累计，
+  没有 input/output 分解；前端因此只在开发者模式显示单 turn 总 token，不编造分解数字。
+- **审批成功路径未做端到端注入**：approvals 的失败/404/网络断开（保留待审批项 + 可重试 +
+  「未做出任何授权」提示）已用真实后端无头浏览器验证；成功出队路径目前只有前端单测覆盖
+  （后端没有可用的「造一个待审批项」测试注入口）。
+- **无障碍只做了自动化抽样**：Tab 顺序、focus-visible、对比度（暗/亮）已用无头浏览器脚本检查，
+  未做完整 WCAG 审计，也未做屏幕阅读器实测。
 
 ---
 

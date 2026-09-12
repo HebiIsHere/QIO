@@ -113,7 +113,7 @@ class ToolRegistry:
         if tool is None:
             result = ToolResult(
                 ok=False,
-                error=f"unknown tool '{call.name}' (registered: {sorted(self._tools)})",
+                error=f"未注册的工具「{call.name}」（已注册：{sorted(self._tools)}）",
             )
             await self._finish(call, None, result)
             return result
@@ -141,10 +141,10 @@ class ToolRegistry:
                 else:
                     result = ToolResult(
                         ok=False,
-                        error=f"tool/execute produced unexpected value: {type(result).__name__}",
+                        error=f"工具执行返回了非预期类型：{type(result).__name__}",
                     )
         except asyncio.CancelledError:
-            result = ToolResult(ok=False, error=f"tool '{call.name}' aborted (cancelled)")
+            result = ToolResult(ok=False, error=f"工具「{call.name}」已被取消")
         await self._finish(call, tool, result)
         return result
 
@@ -187,15 +187,17 @@ class ToolRegistry:
             logger.warning("output schema validation failed for %s: %s", tool.name, exc)
             return ToolResult(
                 ok=False,
-                error=f"output schema validation error: {type(exc).__name__}: {exc}",
+                error=f"工具输出不符合 schema：{type(exc).__name__}: {exc}",
             )
         if errors:
-            return ToolResult(ok=False, error="output schema mismatch: " + "; ".join(errors))
+            return ToolResult(ok=False, error="工具输出不符合 schema：" + "；".join(errors))
         return result
 
     def _present(self, tool: Tool | None, call: ToolCall, result: ToolResult) -> dict[str, Any] | None:
         if tool is None:
             return None
+        from agent.tools.display import tool_label
+
         presentation: dict[str, Any] = {}
         try:
             call_present = tool.present_call(dict(call.arguments))
@@ -207,7 +209,12 @@ class ToolRegistry:
         except Exception:  # noqa: BLE001 - presentation must never break execution
             logger.warning("tool presentation failed for %s", tool.name, exc_info=True)
             return None
-        return presentation or None
+        # 界面文案统一中文：标题给中文展示名；原始工具名作为附加字段（前端只在
+        # 悬停 title 里用）。状态不在这里补默认值：卡片本身已有 ✓/✕ 表达成败，
+        # 再挂一个「成功」徽标只是噪声；需要语义状态的工具可以自己设置（中文）。
+        presentation.setdefault("title", tool_label(tool.name))
+        presentation.setdefault("tool", tool.name)
+        return presentation
 
     # -- built-in policies --------------------------------------------------
 
@@ -221,8 +228,8 @@ class ToolRegistry:
         )
         if decision.decision == "approved":
             return await next(ctx)
-        reason = "rejected by user" if decision.decision == "rejected" else "approval timed out"
-        return ToolResult(ok=False, error=f"tool '{tool.name}' not executed ({reason})")
+        reason = "用户已拒绝" if decision.decision == "rejected" else "审批等待超时"
+        return ToolResult(ok=False, error=f"工具「{tool.name}」未执行（{reason}）")
 
     async def _default_execute(self, ctx: dict, *, next: Callable[..., Any]) -> ToolResult:
         tool = ctx["tool"]
@@ -236,7 +243,7 @@ class ToolRegistry:
             logger.warning("tool %s timed out after %sms", tool.name, tool.timeout_ms)
             return ToolResult(
                 ok=False,
-                error=f"tool '{tool.name}' timed out after {tool.timeout_ms}ms",
+                error=f"工具「{tool.name}」超时（{tool.timeout_ms} 毫秒）",
             )
         except asyncio.CancelledError:
             raise

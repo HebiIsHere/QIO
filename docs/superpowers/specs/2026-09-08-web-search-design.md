@@ -54,15 +54,26 @@ class SearchOutcome:
 
 提供三个实现（全部为「免密钥 + 国内可达」优先，实测可达性见 §5）：
 
-- **`BingProvider`（默认第一优先，免密钥）**：请求 `cn.bing.com` 的搜索结果页，解析结果转成 `SearchHit` 列表。实测可达且结果页完整（HTTP 200，~0.5s）。
-- **`BaiduProvider`（默认第二优先，免密钥）**：请求百度搜索结果页，解析结果。实测可达，但常出现「安全验证页」，需识别验证页并跳过。
+- **`BingProvider`（免密钥，排在用户自带通道之后）**：请求 `https://www.bing.com/search`（带 `mkt=zh-CN`），解析 `h2 > a` 结果（不要再取 `li` 里的第一个 `a`：那是站点引用锚点）；HTML 解析不到时用 `&format=rss` 再兜底一次。
+  **2026-09-12 修订**：`cn.bing.com/search` 现在会 302 到 bing 首页（14KB、0 个结果容器），旧写法会得到「HTTP 200 + 0 结果」的假象；另外必应在匿名/无 Cookie 时可能返回「标题匹配 query、内容却是热门站点」的诱饵页，必须用「结果与 query 有没有词交集」做相关性闸门，判定无关时按通道异常上报而不是当搜索结果。
+- **`BaiduProvider`（免密钥，最后兜底）**：请求百度搜索结果页。实测常年「安全验证页」（反爬）；识别到反爬后该通道会**冷却 10 分钟**，避免每次搜索都去撞同一堵墙（用户可见症状就是「agent 反复试百度、每次被拒」）。
 - **`BochaProvider`（可选，需密钥，国内最稳）**：接博查 AI，返回结构化结果。密钥来自 `search.bocha_api_key`。
 - **`SearxngProvider`（可选，需用户自建实例）**：指向用户自建的 SearXNG 实例 URL（`search.searxng_url`）。公共实例实测不可达，故不作为默认。
 
 选择逻辑（`SearchProviderResolver`，按「稳定可达」优先级）：
 
 1. 若配置了 `bocha_api_key` → 用博查（最稳、结果规范）。
-2. 否则 → 依次尝试 `BingProvider` → `BaiduProvider`（必应挂了用百度，百度挂了用必应，互相兜底）。
+2. 否则 → 依次尝试 用户配置的 `SearxngProvider`（如有，仅自建实例）→
+   **免密钥通道** `ExaMcpProvider` → `ParallelMcpProvider` → `DuckDuckGoProvider`
+   → `BingProvider` → `BaiduProvider`（最后兜底 + 反爬冷却）。
+
+**2026-09-12 修订（实测）**：免密钥搜索改用两条已实测可用的路线 —— Exa / Parallel 的
+**免费 MCP**（`https://mcp.exa.ai/mcp` 的 `web_search_exa`、`https://search.parallel.ai/mcp`
+的 `web_search`，无需 API Key，返回结构化结果）与 **DuckDuckGo HTML 端点**
+（`html.duckduckgo.com/html`，会限流 → 挑战页按通道异常处理）。公共 SearXNG 实例
+全部被 Anubis/Substation 拦截，所以 SearXNG 只支持自建实例；必应会返回与查询无关的
+诱饵页、百度常年安全验证，故降级为最后兜底。免密钥通道可用设置项
+`search.keyless_fallback`（默认开）整体关闭。
 3. `SearxngProvider` 仅在用户显式配置了自建实例 URL 时参与。
 4. **DuckDuckGo 不参与默认兜底**：实测在大陆不可达（连接超时），仅对境外/已翻墙环境有意义，本轮不实现。
 

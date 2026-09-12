@@ -205,6 +205,7 @@ describe("useFloatingWindow 贴靠", () => {
     const el = makeEl("composer", { left: 150, top: 150, width: 200, height: 80 });
     const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 150, y: 150 } }));
     el.dispatchEvent(mouse("mousedown", 250, 190));
+    document.dispatchEvent(mouse("mousemove", 250, 196)); // 真正拖动（>3px）才允许贴靠
     document.dispatchEvent(mouse("mouseup", 250, 190));
     expect(el.style.left).toBe("150px");
     expect(el.style.top).toBe("4px");
@@ -223,6 +224,7 @@ describe("useFloatingWindow 贴靠", () => {
       defaultPos: { x: 900, y: 50 },
     });
     el.dispatchEvent(mouse("mousedown", 922, 72));
+    document.dispatchEvent(mouse("mousemove", 922, 78));
     document.dispatchEvent(mouse("mouseup", 922, 72));
     expect(el.style.left).toBe("976px"); // 1024-44-4
     expect(el.style.top).toBe("4px");
@@ -235,6 +237,7 @@ describe("useFloatingWindow 贴靠", () => {
     const comp = makeEl("composer", { left: 4, top: 4, width: 200, height: 80 });
     const c1 = await mountFloat(comp, composerOpts({ defaultPos: { x: 4, y: 4 } }));
     comp.dispatchEvent(mouse("mousedown", 104, 44));
+    document.dispatchEvent(mouse("mousemove", 104, 50));
     document.dispatchEvent(mouse("mouseup", 104, 44));
     expect(floatingState.composer.docked).toBe(true);
 
@@ -246,6 +249,7 @@ describe("useFloatingWindow 贴靠", () => {
       defaultPos: { x: 200, y: 200 },
     });
     sbtn.dispatchEvent(mouse("mousedown", 222, 222));
+    document.dispatchEvent(mouse("mousemove", 222, 228));
     document.dispatchEvent(mouse("mouseup", 222, 222));
     expect(sbtn.style.left).toBe("4px");
     expect(sbtn.style.top).toBe("720px");
@@ -259,6 +263,7 @@ describe("useFloatingWindow 贴靠", () => {
     const comp = makeEl("composer", { left: 4, top: 4, width: 200, height: 80 });
     const c1 = await mountFloat(comp, composerOpts({ defaultPos: { x: 4, y: 4 } }));
     comp.dispatchEvent(mouse("mousedown", 104, 44));
+    document.dispatchEvent(mouse("mousemove", 104, 50));
     document.dispatchEvent(mouse("mouseup", 104, 44));
 
     // dock 中心靠近 top 边，但 top 候选位与 composer 重叠 → 微调到不重叠位置
@@ -269,10 +274,11 @@ describe("useFloatingWindow 贴靠", () => {
       defaultPos: { x: 200, y: 20 },
     });
     dock.dispatchEvent(mouse("mousedown", 248, 68));
+    document.dispatchEvent(mouse("mousemove", 248, 74));
     document.dispatchEvent(mouse("mouseup", 248, 68));
 
     const dockRect = { left: parseFloat(dock.style.left), top: parseFloat(dock.style.top), right: parseFloat(dock.style.left) + 96, bottom: parseFloat(dock.style.top) + 96 };
-    const compRect = { left: 4, top: 4, right: 204, bottom: 84 };
+    const compRect = { left: 4, top: 10, right: 204, bottom: 90 };
     const overlap = !(dockRect.right <= compRect.left || dockRect.left >= compRect.right || dockRect.bottom <= compRect.top || dockRect.top >= compRect.bottom);
     expect(overlap).toBe(false);
     expect(dock.dataset.fwTarget).toBe("top");
@@ -296,16 +302,19 @@ describe("useFloatingWindow 贴靠", () => {
 
     // composer 贴靠到 top-left
     comp.dispatchEvent(mouse("mousedown", 104, 44));
+    document.dispatchEvent(mouse("mousemove", 104, 50));
     document.dispatchEvent(mouse("mouseup", 104, 44));
     expect(floatingState.composer.docked).toBe(true);
 
-    // 拖起 composer（未释放）→ 立即释放占用
-    comp.dispatchEvent(mouse("mousedown", 104, 44));
+    // 真正拖起 composer（超过阈值，未松手）→ 立即释放占用
+    comp.dispatchEvent(mouse("mousedown", 104, 50));
+    document.dispatchEvent(mouse("mousemove", 104, 56));
     expect(floatingState.composer.docked).toBe(false);
     expect(comp.dataset.fwDocked).toBeUndefined();
 
     // sbtn 贴靠：其 document mouseup 先触发，此时 composer 已释放 → 可落 tl
     sbtn.dispatchEvent(mouse("mousedown", 222, 222));
+    document.dispatchEvent(mouse("mousemove", 222, 228));
     document.dispatchEvent(mouse("mouseup", 222, 222));
     expect(sbtn.style.left).toBe("4px");
     expect(sbtn.style.top).toBe("4px");
@@ -334,6 +343,7 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
       defaultPos: { x: 900, y: 50 },
     });
     el.dispatchEvent(mouse("mousedown", 922, 72));
+    document.dispatchEvent(mouse("mousemove", 922, 78));
     document.dispatchEvent(mouse("mouseup", 922, 72));
     vi.advanceTimersByTime(400);
     expect(el.classList.contains("fw-hidden")).toBe(false);
@@ -356,6 +366,7 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
 
     // 拖起：restore 立即解除隐藏态（hover 展开由组件 CSS :hover 实现）
     el.dispatchEvent(mouse("mousedown", 922, 72));
+    document.dispatchEvent(mouse("mousemove", 922, 78));
     expect(el.classList.contains("fw-hidden")).toBe(false);
     expect(floatingState["settings-float"].hidden).toBe(false);
     document.dispatchEvent(mouse("mouseup", 922, 72));
@@ -393,6 +404,7 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
     });
     floatingState["settings-float"].hideEnabled = true;
     el.dispatchEvent(mouse("mousedown", 922, 72));
+    document.dispatchEvent(mouse("mousemove", 922, 78));
     document.dispatchEvent(mouse("mouseup", 922, 72));
     await new Promise((r) => setTimeout(r, 400)); // 等贴靠隐藏定时器（真实定时器）
     expect(el.classList.contains("fw-hidden")).toBe(true);
@@ -414,6 +426,7 @@ describe("useFloatingWindow 位置持久化", () => {
       defaultPos: { x: 900, y: 50 },
     });
     el.dispatchEvent(mouse("mousedown", 922, 72));
+    document.dispatchEvent(mouse("mousemove", 922, 78));
     document.dispatchEvent(mouse("mouseup", 922, 72));
     const raw = JSON.parse(localStorage.getItem(FLOAT_STORAGE_KEY) ?? "{}");
     expect(raw["settings-float"].x).toBe(976);
@@ -431,5 +444,136 @@ describe("useFloatingWindow 位置持久化", () => {
     expect(el2.style.left).toBe("976px");
     expect(el2.style.top).toBe("4px");
     c2.dispose();
+  });
+});
+
+describe("useFloatingWindow 点击不触发贴靠（问题9）", () => {
+  it("0px 单击：位置不变、不贴靠、不写持久化、不加过渡类", async () => {
+    const el = makeEl("composer", { left: 300, top: 300, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 300, y: 300 } }));
+    localStorage.removeItem(FLOAT_STORAGE_KEY);
+
+    el.dispatchEvent(mouse("mousedown", 400, 340));
+    document.dispatchEvent(mouse("mouseup", 400, 340));
+
+    expect(el.style.left).toBe("300px");
+    expect(el.style.top).toBe("300px");
+    expect(floatingState.composer.docked).toBe(false);
+    expect(el.dataset.fwDocked).toBeUndefined();
+    expect(el.classList.contains("fw-snapping")).toBe(false);
+    expect(localStorage.getItem(FLOAT_STORAGE_KEY)).toBeNull();
+    dispose();
+  });
+
+  it("2px 抖动（阈值内）：同样不贴靠、位置不变", async () => {
+    const el = makeEl("composer", { left: 300, top: 300, width: 200, height: 80 });
+    const { api, dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 300, y: 300 } }));
+
+    el.dispatchEvent(mouse("mousedown", 400, 340));
+    document.dispatchEvent(mouse("mousemove", 402, 341));
+    document.dispatchEvent(mouse("mouseup", 402, 341));
+
+    expect(api.moved.value).toBe(false);
+    expect(el.style.left).toBe("300px");
+    expect(floatingState.composer.docked).toBe(false);
+    dispose();
+  });
+
+  it("4px 拖动（超过阈值）松手后才贴靠并保存位置", async () => {
+    const el = makeEl("composer", { left: 300, top: 300, width: 200, height: 80 });
+    const { api, dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 300, y: 300 } }));
+    localStorage.removeItem(FLOAT_STORAGE_KEY);
+
+    el.dispatchEvent(mouse("mousedown", 400, 340));
+    document.dispatchEvent(mouse("mousemove", 404, 344));
+    expect(api.moved.value).toBe(true);
+    document.dispatchEvent(mouse("mouseup", 404, 344));
+
+    expect(floatingState.composer.docked).toBe(true);
+    expect(el.dataset.fwDocked).toBe("1");
+    expect(localStorage.getItem(FLOAT_STORAGE_KEY)).not.toBeNull();
+    dispose();
+  });
+
+  it("已贴靠组件单击：贴靠状态与位置保持不变", async () => {
+    localStorage.setItem(
+      FLOAT_STORAGE_KEY,
+      JSON.stringify({ composer: { x: 820, y: 300, docked: true, dockedTo: "right", hideEnabled: false } }),
+    );
+    const el = makeEl("composer", { left: 0, top: 0, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts());
+    expect(el.style.left).toBe("820px");
+
+    el.dispatchEvent(mouse("mousedown", 920, 340));
+    document.dispatchEvent(mouse("mouseup", 920, 340));
+
+    expect(el.style.left).toBe("820px");
+    expect(el.style.top).toBe("300px");
+    expect(floatingState.composer.docked).toBe(true);
+    expect(floatingState.composer.dockedTo).toBe("right");
+    expect(el.dataset.fwTarget).toBe("right");
+    dispose();
+  });
+});
+
+describe("useFloatingWindow 窗口 resize 保持贴靠关系（问题10）", () => {
+  const origWidth = window.innerWidth;
+  const origHeight = window.innerHeight;
+
+  function setViewport(width: number, height: number) {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+  }
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: origWidth, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: origHeight, configurable: true });
+  });
+
+  it("right 贴靠：窗口放大/缩小后仍保持相同的右边距", async () => {
+    const el = makeEl("composer", { left: 820, top: 300, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 820, y: 300 } }));
+    el.dispatchEvent(mouse("mousedown", 920, 340));
+    document.dispatchEvent(mouse("mousemove", 924, 340));
+    document.dispatchEvent(mouse("mouseup", 924, 340));
+    expect(floatingState.composer.dockedTo).toBe("right");
+    expect(el.style.left).toBe("820px"); // 1024 - 200 - 4
+
+    setViewport(1400, 900);
+    expect(el.style.left).toBe("1196px"); // 1400 - 200 - 4：距右边缘仍是 4
+    expect(el.style.top).toBe("300px"); // 垂直位置不动
+
+    setViewport(600, 400);
+    expect(el.style.left).toBe("396px"); // 600 - 200 - 4：缩小后仍在可视区
+    expect(parseFloat(el.style.left)).toBeLessThanOrEqual(600 - 200);
+    dispose();
+  });
+
+  it("bottom 贴靠：窗口高度变化后保持下边距，且不跑出可视区", async () => {
+    const el = makeEl("composer", { left: 300, top: 684, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 300, y: 684 } }));
+    el.dispatchEvent(mouse("mousedown", 400, 724));
+    document.dispatchEvent(mouse("mousemove", 400, 728));
+    document.dispatchEvent(mouse("mouseup", 400, 728));
+    expect(floatingState.composer.dockedTo).toBe("bottom");
+    expect(el.style.top).toBe("684px"); // 768 - 80 - 4
+
+    setViewport(1024, 1000);
+    expect(el.style.top).toBe("916px"); // 1000 - 80 - 4
+
+    setViewport(1024, 300);
+    expect(el.style.top).toBe("216px"); // 300 - 80 - 4
+    expect(parseFloat(el.style.top)).toBeLessThanOrEqual(300 - 80);
+    dispose();
+  });
+
+  it("未贴靠的浮动元素在窗口缩小时被钳制回可视区", async () => {
+    const el = makeEl("composer", { left: 800, top: 600, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 800, y: 600 } }));
+    setViewport(500, 300);
+    expect(parseFloat(el.style.left)).toBeLessThanOrEqual(500 - 200);
+    expect(parseFloat(el.style.top)).toBeLessThanOrEqual(300 - 80);
+    dispose();
   });
 });

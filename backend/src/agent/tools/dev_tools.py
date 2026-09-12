@@ -43,7 +43,7 @@ class CreateToolTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         request = str(kwargs.get("request") or "").strip()
         if not request:
-            return ToolResult(ok=False, error="request required")
+            return ToolResult(ok=False, error="request 必填")
         task = self.workspaces.create(request)
         files = self.workspaces.list_files(task.id)
         return ToolResult(
@@ -73,7 +73,7 @@ class DevListFilesTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         workspace = str(kwargs.get("workspace") or "")
         if self.workspaces.task(workspace) is None:
-            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+            return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         files = self.workspaces.list_files(workspace)
         if not files:
             return ToolResult(ok=True, content="工作区为空，尚无文件。")
@@ -104,7 +104,7 @@ class DevWriteFileTool(Tool):
         name = str(kwargs.get("name") or "")
         content = str(kwargs.get("content") or "")
         if self.workspaces.task(workspace) is None:
-            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+            return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         try:
             self.workspaces.write_file(workspace, name, content)
         except (ValueError, KeyError) as exc:
@@ -131,10 +131,10 @@ class DevReadFileTool(Tool):
         workspace = str(kwargs.get("workspace") or "")
         name = str(kwargs.get("name") or "")
         if self.workspaces.task(workspace) is None:
-            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+            return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         content = self.workspaces.read_file(workspace, name)
         if content is None:
-            return ToolResult(ok=False, error=f"file not found: {name}")
+            return ToolResult(ok=False, error=f"找不到文件：{name}")
         return ToolResult(ok=True, content=content)
 
 
@@ -157,7 +157,7 @@ class DevRunTestsTool(Tool):
         workspace = str(kwargs.get("workspace") or "")
         task = self.workspaces.task(workspace)
         if task is None:
-            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+            return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         definition = self.workspaces.read_definition(workspace)
         if definition is None:
             return ToolResult(ok=False, error="tool.json 缺失或无效，请先写入工具定义")
@@ -196,20 +196,20 @@ class DevSubmitTool(Tool):
         explanation = str(kwargs.get("explanation") or "").strip()
         raw = kwargs.get("definition")
         if self.workspaces.task(workspace) is None:
-            return ToolResult(ok=False, error=f"workspace not found: {workspace}")
+            return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         if not explanation:
-            return ToolResult(ok=False, error="explanation required")
+            return ToolResult(ok=False, error="explanation 必填")
         if not isinstance(raw, dict):
-            return ToolResult(ok=False, error="definition must be an object")
+            return ToolResult(ok=False, error="definition 必须是对象")
         try:
             definition = ToolDefinition(**raw)
         except Exception as exc:  # noqa: BLE001 - pydantic validation
-            return ToolResult(ok=False, error=f"definition invalid: {exc}")
+            return ToolResult(ok=False, error=f"definition 不合法：{exc}")
         try:
             lifecycle = await self.lifecycle_builder()
             outcome = await lifecycle.submit_definition(definition, explanation)
         except Exception as exc:  # noqa: BLE001 - isolation
-            return ToolResult(ok=False, error=f"submit failed: {type(exc).__name__}: {exc}")
+            return ToolResult(ok=False, error=f"提交失败：{type(exc).__name__}: {exc}")
         if outcome.ok:
             self.workspaces.cleanup(workspace)
             return ToolResult(ok=True, content=f"工具 {definition.name} 已注册。")

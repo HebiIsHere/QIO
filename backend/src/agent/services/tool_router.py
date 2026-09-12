@@ -21,6 +21,7 @@ from agent.selector.tokenize import tokenize
 # 真正 runtime core：长期存在
 CORE_TOOLS = [
     "memory_search",
+    "continue_from_fragment",
     "switch_topic",
     "create_topic",
 ]

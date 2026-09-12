@@ -49,7 +49,14 @@ async function cancelTurn(turnId: string) {
       <div v-for="(q, i) in queued" :key="q.turn_id" class="row queued">
         <span class="txt">{{ q.message }}</span>
         <span class="badge mono">排队中 · 第 {{ i + 1 }} 位</span>
-        <button class="qbtn" type="button" @click="cancelTurn(q.turn_id)">移除</button>
+        <button
+          class="qbtn"
+          type="button"
+          :aria-label="`取消排队：${q.message}`"
+          @click="cancelTurn(q.turn_id)"
+        >
+          取消排队
+        </button>
       </div>
       <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled">
         <span class="txt">{{ c.message }}</span>

@@ -56,9 +56,9 @@ class WebFetchTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         url = str(kwargs.get("url", "") or "").strip()
         if not url:
-            return ToolResult(ok=False, error="url is required")
+            return ToolResult(ok=False, error="url 必填")
         if not url.lower().startswith(("http://", "https://")):
-            return ToolResult(ok=False, error="url must be http(s)")
+            return ToolResult(ok=False, error="url 必须是 http(s) 地址")
         code, html = await self.fetch_html(url)
         if code != 200:
             return ToolResult(ok=False, error=f"无法读取正文（HTTP {code}）")

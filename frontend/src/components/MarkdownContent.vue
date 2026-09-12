@@ -33,39 +33,63 @@ const props = defineProps<{
 }>();
 
 /** 增量渲染：reveal 时按已产出字符量喂给 Markdown，气泡随内容增长 */
-const shown = ref(0);
+const shown = ref(props.reveal ? 0 : props.source.length);
 let raf = 0;
 
 const renderSource = computed(() =>
   props.reveal ? props.source.slice(0, shown.value) : props.source,
 );
 
-// 计算 html 时使用 renderSource（下述 html 定义处改为引用 renderSource）
-function animate(cps: number) {
+/**
+ * 从 fromLen 继续点亮到 total：不回到 0，只推进新增部分。
+ * 已有内容保持不动（不闪、不跳、不重播动画）。
+ */
+function animateFrom(fromLen: number, total: number, cps: number) {
   cancelAnimationFrame(raf);
-  const total = props.source.length;
-  if (total === 0) { shown.value = 0; return; }
+  if (fromLen >= total) {
+    shown.value = total;
+    return;
+  }
   const capMs = 3000;
-  const naturalMs = (total / cps) * 1000;
+  const naturalMs = ((total - fromLen) / Math.max(1, cps)) * 1000;
   const durMs = Math.min(naturalMs, capMs);
+  if (!(durMs > 0)) {
+    shown.value = total;
+    return;
+  }
   const t0 = performance.now();
   const step = (now: number) => {
     const p = Math.min(1, (now - t0) / durMs);
-    shown.value = Math.round(p * total);
+    shown.value = Math.round(fromLen + p * (total - fromLen));
     if (p < 1) raf = requestAnimationFrame(step);
   };
   raf = requestAnimationFrame(step);
 }
 
 watch(
-  () => props.source,
-  () => {
-    if (props.reveal) {
-      shown.value = 0;
-      animate(props.cps ?? 50);
-    } else {
-      shown.value = props.source.length;
+  () => [props.source, props.reveal] as const,
+  ([source, reveal], prev) => {
+    const [prevSource, prevReveal] = prev ?? (["", false] as const);
+    const cps = props.cps ?? 50;
+    if (!reveal) {
+      cancelAnimationFrame(raf);
+      shown.value = source.length;
+      return;
     }
+    // 刚切到 reveal：从头点亮
+    if (!prevReveal) {
+      shown.value = 0;
+      animateFrom(0, source.length, cps);
+      return;
+    }
+    if (source === prevSource) return;
+    // 追加：从已点亮位置继续；被替换（非追加）：重新开始
+    if (!source.startsWith(prevSource)) {
+      shown.value = 0;
+      animateFrom(0, source.length, cps);
+      return;
+    }
+    animateFrom(Math.min(shown.value, source.length), source.length, cps);
   },
   { immediate: true },
 );
@@ -130,7 +154,14 @@ function renderBlock(node: any): string {
       if (lang && hljs.getLanguage(lang)) {
         html = hljs.highlight(node.value ?? "", { language: lang }).value;
       }
-      return `<pre><code class="hljs">${html}</code></pre>`;
+      // 代码块带 hover 复制按钮（长代码不用手动选择）
+      const label = escapeHtml(lang || "code");
+      return (
+        `<div class="code-block" data-lang="${label}">` +
+        `<button class="code-copy" type="button" aria-label="复制代码">复制</button>` +
+        `<pre><code class="hljs">${html}</code></pre>` +
+        `</div>`
+      );
     }
     case "thematicBreak":
       return "<hr />";
@@ -139,7 +170,8 @@ function renderBlock(node: any): string {
       const body = (node.children?.slice(1) ?? []).map((row: any) =>
         `<tr>${row.children.map((c: any) => `<td>${renderInline(c.children)}</td>`).join("")}</tr>`
       ).join("");
-      return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      // 表格放进可横向滚动容器：窄窗口下滚动而不是撑破气泡
+      return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
     }
     default:
       return renderInline(node.children ?? []);
@@ -155,24 +187,69 @@ const html = computed(() => {
   processor.runSync(tree);
   return renderBlock(tree);
 });
+
+/** 复制状态（对代码块按钮的短期反馈） */
+const copiedCode = ref<HTMLElement | null>(null);
+let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 事件委托：v-html 内的复制按钮由容器统一处理 */
+async function onClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null;
+  const btn = target?.closest?.(".code-copy") as HTMLElement | null;
+  if (!btn) return;
+  const code = btn.parentElement?.querySelector("pre code")?.textContent ?? "";
+  try {
+    await navigator.clipboard?.writeText(code);
+  } catch {
+    // 剪贴板不可用：仍给出反馈
+  }
+  btn.textContent = "已复制";
+  copiedCode.value = btn;
+  if (copyTimer) clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => {
+    if (copiedCode.value) copiedCode.value.textContent = "复制";
+    copiedCode.value = null;
+    copyTimer = null;
+  }, 1600);
+}
+
+onBeforeUnmount(() => {
+  if (copyTimer) clearTimeout(copyTimer);
+});
 </script>
 
 <template>
-<div class="markdown-body" v-html="html"></div>
+<div class="markdown-body" v-html="html" @click="onClick"></div>
 </template>
 
 <style scoped>
 .markdown-body { line-height: 1.65; font-size: 14px; overflow-wrap: anywhere; }
 .markdown-body .tw-char { visibility: hidden; }
+/* 阅读行宽：长文不铺满整屏 */
+.markdown-body :deep(p), .markdown-body :deep(li), .markdown-body :deep(blockquote) { max-width: var(--measure); }
 .markdown-body :deep(p) { margin: 0.4em 0; }
 .markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 0.4em 0; padding-left: 1.4em; }
 .markdown-body :deep(li) { margin: 0.2em 0; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 0.8em 0 0.4em; }
 .markdown-body :deep(h4), .markdown-body :deep(h5), .markdown-body :deep(h6) { margin: 1em 0 0.4em; }
-.markdown-body :deep(pre) { background: var(--bg-elevated); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.markdown-body :deep(pre) { background: var(--bg-elevated); border-radius: 8px; padding: 10px 12px; overflow-x: auto; max-width: 100%; }
+.markdown-body :deep(pre code) { font-family: var(--mono); font-size: 12.5px; }
+.markdown-body :deep(.code-block) { position: relative; margin: 0.5em 0; }
+.markdown-body :deep(.code-copy) {
+  position: absolute; top: 6px; right: 8px; z-index: 1;
+  font-family: var(--sans); font-size: 11px; line-height: 1;
+  padding: 5px 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  color: var(--text-secondary); cursor: pointer;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.markdown-body :deep(.code-block:hover .code-copy),
+.markdown-body :deep(.code-copy:focus-visible) { opacity: 1; }
+.markdown-body :deep(.code-copy:hover) { color: var(--accent); border-color: var(--accent); }
+.markdown-body :deep(.table-wrap) { max-width: 100%; overflow-x: auto; }
 .markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
 .markdown-body :deep(a) { color: var(--link); }
 .markdown-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 0.4em 0; padding-left: 10px; color: var(--text-secondary); }
-.markdown-body :deep(table) { border-collapse: collapse; margin: 0.5em 0; }
+.markdown-body :deep(table) { border-collapse: collapse; margin: 0.5em 0; min-width: max-content; }
 .markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid var(--border-subtle); padding: 4px 10px; }
 </style>

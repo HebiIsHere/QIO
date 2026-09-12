@@ -5,6 +5,13 @@ import { useApprovalsStore } from "./approvals";
 
 export type ModelMode = "native" | "text" | "unsupported";
 
+export interface TurnUsage {
+  /** 该 turn 的模型输出 token 累计（后端 USAGE/TURN_END 事件，按 turn_id 归属） */
+  tokens: number;
+  iterations?: number;
+  toolCalls?: number;
+}
+
 export const useEventStore = defineStore("events", {
   state: () => ({
     connected: false,
@@ -12,11 +19,17 @@ export const useEventStore = defineStore("events", {
     error: null as string | null,
     /** 模型三态适配（CAPABILITY 事件更新，默认 native） */
     modelMode: "native" as ModelMode,
-    /** 累计 token 用量（USAGE 事件更新） */
-    usageTokens: 0,
+    /** 按 turn_id 归属的用量（不再把累计值显示成单条消息用量） */
+    usageByTurn: {} as Record<string, TurnUsage>,
+    /** 最近结束/开始的 turn_id：USAGE 事件紧随 TURN_END，用它归属 */
+    lastTurnId: null as string | null,
     _pendingMemoryInject: null as { label: string } | null,
     _source: null as EventSource | null,
   }),
+  getters: {
+    turnUsageFor: (state) => (turnId?: string | null): TurnUsage | undefined =>
+      turnId ? state.usageByTurn[turnId] : undefined,
+  },
   actions: {
     connect() {
       this.disconnect();
@@ -48,12 +61,16 @@ export const useEventStore = defineStore("events", {
             const d = event.data as Record<string, unknown>;
             const tid = String(d.turn_id ?? "");
             session.activeTurnId = tid || null;
+            if (tid) this.lastTurnId = tid;
           }
           session.turnStarted();
           break;
         case "TURN_END": {
+          const d = event.data as Record<string, unknown>;
+          const tid = String(d.turn_id ?? session.activeTurnId ?? this.lastTurnId ?? "");
+          this.recordUsage(tid, d);
           session.turnEnded();
-          const final = (event.data as Record<string, unknown>).final_content;
+          const final = d.final_content;
           // 落定正在流式输出的助手消息（打字机结束，变为静态）
           session.finalizeAssistant();
           // 无论 final 是否为空都清空 pending，避免残留注入挂到下一轮
@@ -71,11 +88,14 @@ export const useEventStore = defineStore("events", {
         }
         case "TURN_QUEUE": {
           const d = event.data as Record<string, unknown>;
+          const queuedList = (d.queued as { turn_id: string; message: string }[] | undefined) ?? [];
           session.turnQueue = {
             running: (d.running as { turn_id: string; message: string } | null) ?? null,
-            queued: (d.queued as { turn_id: string; message: string }[] | undefined) ?? [],
+            queued: queuedList,
             cancelled: (d.cancelled as { turn_id: string; message: string }[] | undefined) ?? [],
           };
+          // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
+          if (!queuedList.length) session.clearQueuedFlags();
           break;
         }
         case "CAPABILITY": {
@@ -89,10 +109,8 @@ export const useEventStore = defineStore("events", {
         }
         case "USAGE": {
           const d = event.data as Record<string, unknown>;
-          const tokens = Number(d.tokens ?? 0);
-          if (Number.isFinite(tokens) && tokens >= 0) {
-            this.usageTokens = tokens;
-          }
+          // USAGE 紧跟在 TURN_END 之后，归属当前（或最近结束的）turn
+          this.recordUsage(session.activeTurnId ?? this.lastTurnId ?? "", d);
           break;
         }
         case "ASSISTANT": {
@@ -134,6 +152,8 @@ export const useEventStore = defineStore("events", {
             fragmentId,
             (d.topic_name as string | null) ?? null,
             fragmentId ? { id: fragmentId, title: fragmentTitle } : undefined,
+            // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
+            Boolean(d.historic),
           );
           break;
         }
@@ -157,12 +177,11 @@ export const useEventStore = defineStore("events", {
           break;
         }
         case "WARNING": {
-          // 非致命警告（如预算耗尽）：结束输入态并展示提示，但不打断会话
+          // 非致命警告：只记提示，不代表 turn 结束（terminal 事件是 TURN_END/ERROR/取消）
           const d = event.data as Record<string, unknown>;
           const msg = String(d.message ?? "agent warning");
-          session.turnEnded();
           if (msg.trim()) {
-            session.lastError = msg;
+            session.warning = msg;
           }
           break;
         }
@@ -191,6 +210,32 @@ export const useEventStore = defineStore("events", {
           break;
         }
       }
+    },
+    /** 把用量记到指定 turn（tokens 缺失时保留已有值，避免被空 USAGE 清零） */
+    recordUsage(turnId: string, d: Record<string, unknown>) {
+      if (!turnId) return;
+      const tokens = Number(d.tokens ?? NaN);
+      const prev = this.usageByTurn[turnId];
+      if (!Number.isFinite(tokens) && !prev) return;
+      const iterations = Number(d.iterations ?? NaN);
+      const toolCalls = Number(d.tool_calls ?? NaN);
+      this.usageByTurn = {
+        ...this.usageByTurn,
+        [turnId]: {
+          tokens: Number.isFinite(tokens) && tokens >= 0 ? tokens : (prev?.tokens ?? 0),
+          ...(Number.isFinite(iterations)
+            ? { iterations }
+            : prev?.iterations !== undefined
+              ? { iterations: prev.iterations }
+              : {}),
+          ...(Number.isFinite(toolCalls)
+            ? { toolCalls }
+            : prev?.toolCalls !== undefined
+              ? { toolCalls: prev.toolCalls }
+              : {}),
+        },
+      };
+      this.lastTurnId = turnId;
     },
     async sendTest(type: EventType) {
       await publishTestEvent(type, { smoke: Date.now() });

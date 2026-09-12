@@ -7,23 +7,32 @@
  * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层，
  *   拉回窗口内交互一律禁用。
  */
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
 import { useSessionStore } from "../stores/session";
 import QInput from "../components/ui/QInput.vue";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
 import EntityPanel from "../components/planet/EntityPanel.vue";
+import { useUiStore } from "../stores/ui";
 
 const emit = defineEmits<{ close: [] }>();
 const session = useSessionStore();
+const ui = useUiStore();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const planet = usePlanetScene(canvasRef);
+// 场景返回的是 ref 容器对象（普通对象里的 ref 在模板中不会自动解包），
+// 这里显式取值：否则 HUD 会渲染出 ref 对象本身。
+const webglOK = computed(() => planet.webglOK.value);
+const fpsText = computed(() => planet.fps.value);
+const cameraStateText = computed(() => planet.cameraState.value);
 const topics = ref<TopicFingerprint[]>([]);
 const positions = ref<TopicPosition[]>([]);
 const detail = ref<TopicDetail | null>(null);
 const detailLoading = ref(false);
+/** 详情请求序号：只接受「最后一次点击」的结果，慢请求返回不得覆盖（竞态防护） */
+let detailSeq = 0;
 const search = ref("");
 const selectedFragmentId = ref<string | null>(null);
 /** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
@@ -153,12 +162,22 @@ watch([topics, search], () => {
 }, { immediate: true });
 
 async function loadDetail(topicId: string) {
+  const seq = ++detailSeq;
   detailLoading.value = true;
+  anchorError.value = "";
   selectedFragmentId.value = null;
   try {
-    detail.value = await api.getTopicDetail(topicId);
+    const d = await api.getTopicDetail(topicId);
+    // 期间用户已切到别的话题：丢弃过期响应
+    if (seq !== detailSeq || planet.selectedTopicId.value !== topicId) return;
+    detail.value = d;
+  } catch (e) {
+    if (seq === detailSeq) {
+      detail.value = null;
+      anchorError.value = `加载话题详情失败：${(e as Error).message}`;
+    }
   } finally {
-    detailLoading.value = false;
+    if (seq === detailSeq) detailLoading.value = false;
   }
 }
 
@@ -218,15 +237,61 @@ async function deleteKnowledge(k: { id: string; content: string }) {
   }
 }
 
+/** 锚点设置进行中 / 失败原因（失败必须可见、可重试，且不得假装已切换） */
+const anchorBusy = ref(false);
+const anchorError = ref("");
+
+/** 用户当前选中的历史片段（用于「已选择历史位置」提示，不暴露内部 id） */
+const selectedFragmentSummary = computed(() => {
+  if (!selectedFragmentId.value) return "";
+  const frag = detail.value?.fragments.find((f) => f.fragment_id === selectedFragmentId.value);
+  const text = (frag?.summary || "").trim().replace(/\s+/g, " ");
+  if (!text) return "（该片段暂无摘要）";
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+});
+
+/**
+ * 选中的是不是「历史位置」：已封块的片段才是历史；当前开放片段是对话的最新位置，
+ * 不该显示成「从这里继续（历史位置）」（与后端 AnchorService.focus_fragment 同一规则）。
+ */
+const selectedIsHistoric = computed(() => {
+  if (!selectedFragmentId.value) return false;
+  const frag = detail.value?.fragments.find((f) => f.fragment_id === selectedFragmentId.value);
+  return Boolean(frag?.closed_at);
+});
+const selectedPositionLabel = computed(() =>
+  selectedIsHistoric.value ? "已选择历史位置" : "已选择当前片段",
+);
+const selectedButtonHint = computed(() => {
+  if (!selectedFragmentId.value) return "（整个话题）";
+  return selectedIsHistoric.value ? "（这个历史位置）" : "（当前片段）";
+});
+
 async function startHere() {
-  if (closing.value) return;
+  if (closing.value || anchorBusy.value) return;
   if (!detail.value) return;
+  const target = detail.value;
+  const fragmentId = selectedFragmentId.value;
+  anchorBusy.value = true;
+  anchorError.value = "";
   try {
-    await api.setAnchor(detail.value.topic_id, selectedFragmentId.value);
+    // 只用后端返回的权威结果更新本地（标题 / 是否历史位置），
+    // 避免与同一动作触发的 SSE ANCHOR 事件互相覆盖
+    const res = await api.setAnchor(target.topic_id, fragmentId);
+    session.setAnchor(
+      res.topic_id || target.topic_id,
+      res.fragment_id,
+      target.name,
+      res.fragment_id ? { id: res.fragment_id, title: res.fragment_title } : undefined,
+      res.historic,
+    );
   } catch (e) {
-    console.error("[planet] set anchor failed:", e);
+    // 失败：本地锚点不变、不关闭，用户可重试
+    anchorError.value = `切换失败，未切换话题：${(e as Error).message}`;
+    anchorBusy.value = false;
+    return;
   }
-  session.setAnchor(detail.value.topic_id, selectedFragmentId.value, detail.value.name);
+  anchorBusy.value = false;
   await close();
 }
 
@@ -277,9 +342,17 @@ async function close() {
     <button class="close-btn qio-btn" :disabled="closing" @click="close">
       {{ closing ? "收起中…" : "✕ 收起星球" }}
     </button>
-    <div class="hud mono">
-      <span v-if="planet.webglOK">WebGL · {{ planet.fps }} fps · 视角: {{ planet.cameraState }}</span>
+    <!-- 图形诊断只在开发者模式出现：正常模式保持「像产品，不像 debugger」 -->
+    <div v-if="ui.developerMode" class="hud mono">
+      <span v-if="webglOK">WebGL · {{ fpsText }} fps · 视角: {{ cameraStateText }}</span>
       <span v-else>WebGL 不可用</span>
+    </div>
+    <!-- WebGL 不可用时不白屏/黑屏：给一段可读的降级说明，管理功能仍可用 -->
+    <div v-if="!webglOK" class="webgl-fallback" role="alert">
+      <div class="wf-title serif">无法启用 3D 星球</div>
+      <p class="wf-text">
+        当前环境不支持 WebGL（或显卡驱动不可用）。话题数据不受影响，仍可在右侧面板查看与管理。
+      </p>
     </div>
 
     <aside class="panel" :class="{ open: panelOpen, manage: manageMode }">
@@ -325,7 +398,7 @@ async function close() {
             <h3 class="serif">{{ detail.name }}</h3>
 
             <div class="detail-section">
-              <div class="section-title serif">片段（点击选择起点）</div>
+              <div class="section-title serif">片段（选择要接续的历史位置）</div>
               <div
                 v-for="f in detail.fragments"
                 :key="f.fragment_id"
@@ -369,8 +442,19 @@ async function close() {
               <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
             </div>
 
-            <button class="start-btn qio-btn primary" :disabled="closing" @click="startHere">
-              从这里开始{{ selectedFragmentId ? "（选中片段）" : "（整个话题）" }}
+            <p v-if="selectedFragmentId" class="selected-position">
+              {{ selectedPositionLabel }}：{{ selectedFragmentSummary }}
+            </p>
+            <p v-else class="selected-position muted">
+              未选片段：将从「{{ detail.name }}」的最新位置继续
+            </p>
+            <p v-if="anchorError" class="anchor-error" role="alert">{{ anchorError }}</p>
+            <button class="start-btn qio-btn primary" :disabled="closing || anchorBusy" @click="startHere">
+              {{
+                anchorBusy
+                  ? "切换中…"
+                  : `从这里继续${selectedButtonHint}`
+              }}
             </button>
           </div>
         </template>
@@ -401,6 +485,13 @@ async function close() {
   background: var(--bg-overlay); border: 1px solid var(--border-subtle); border-radius: 20px;
   padding: 6px 12px; backdrop-filter: blur(6px);
 }
+.webgl-fallback {
+  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
+  align-items: center; justify-content: center; text-align: center; padding: 0 24px;
+  pointer-events: none;
+}
+.webgl-fallback .wf-title { font-size: 20px; color: var(--text-strong); }
+.webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); max-width: 46ch; line-height: 1.7; }
 .panel {
   position: relative;
   flex: 0 0 auto;
@@ -412,18 +503,36 @@ async function close() {
   transition: width 0.32s cubic-bezier(0.22, 0.8, 0.24, 1), border-color 0.32s ease;
 }
 .panel.open {
-  width: 340px;
+  width: clamp(340px, 32vw, 480px);
   border-left-color: var(--border-subtle);
 }
 .panel-inner {
-  width: 340px;
+  width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
 }
-.panel.open.manage { width: 640px; }
-.panel.open.manage .panel-inner { width: 640px; }
+.panel.open.manage { width: clamp(360px, 46vw, 640px); }
+/* 中等窗口：面板按视口比例收窄，别把星球挤成一条 */
+@media (max-width: 1199px) {
+  .panel.open { width: 46vw; }
+  .panel.open.manage { width: 50vw; }
+}
+/* 窄窗口（接近 Tauri 最小尺寸）：面板变成覆盖式抽屉，星球保持可用 */
+@media (max-width: 899px) {
+  .panel.open,
+  .panel.open.manage {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(92vw, 520px);
+    z-index: 55;
+    border-left: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-3);
+  }
+}
 .tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); }
 .tab { font-size: 13px; padding: 6px 12px; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
 .tab:hover { color: var(--text-strong); }
@@ -496,6 +605,16 @@ async function close() {
 .k-content { color: var(--text-primary); }
 .start-btn { width: 100%; height: 40px; margin-top: 12px; font-size: 14px; }
 .start-btn:disabled { opacity: 0.6; cursor: default; }
+.anchor-error {
+  margin-top: 12px; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid var(--danger); background: var(--danger-soft);
+  color: var(--danger); font-size: 12px; line-height: 1.5;
+}
+.selected-position {
+  margin-top: 12px; font-size: 12px; line-height: 1.6;
+  color: var(--text-secondary);
+}
+.selected-position.muted { color: var(--text-muted); }
 .hint { font-size: 12px; color: var(--text-muted); }
 .detail-loading { padding: 14px; color: var(--text-muted); font-size: 13px; }
 </style>

@@ -111,6 +111,10 @@ async def test_turn_without_credential_warns(client):
     result = await ctx.run_turn("你好")
     assert result["ok"] is False
     assert result["reason"] == "no_credential"
+    # 界面文案统一中文：无凭据提示必须是中文（用户会看到这条 WARNING）
+    warning = "".join(collected)
+    assert "还没有配置可用的模型凭据" in warning
+    assert "no main-loop credential" not in warning
     await asyncio.sleep(0.05)
     task.cancel()
     try:

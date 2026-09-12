@@ -11,6 +11,11 @@ from agent.services.tool_router import CORE_TOOLS, ToolRouter
 def _specs() -> list[ToolSpec]:
     return [
         ToolSpec("memory_search", "检索历史记忆", {"type": "object", "properties": {}}),
+        ToolSpec(
+            "continue_from_fragment",
+            "从某个历史片段继续讨论",
+            {"type": "object", "properties": {}},
+        ),
         ToolSpec("switch_topic", "切换话题", {"type": "object", "properties": {}}),
         ToolSpec("create_topic", "创建话题", {"type": "object", "properties": {}}),
         ToolSpec("await_task", "等待子任务", {"type": "object", "properties": {}}),

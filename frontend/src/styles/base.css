@@ -1,57 +1,79 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 html,body{height:100%;}
-body{background:var(--bg-base);color:var(--text-primary);font-family:var(--sans);transition:background .4s,color .4s;}
+body{background:var(--bg-base);color:var(--text-primary);font-family:var(--sans);
+  font-size:var(--fs-base);line-height:var(--lh-base);
+  transition:background var(--dur-slow) var(--ease),color var(--dur-slow) var(--ease);}
 h1,h2,h3,.serif{font-family:var(--serif);}
 .mono{font-family:var(--mono);}
 
+/* ---- 键盘焦点：所有可聚焦控件都要有可见焦点环（不用 outline:none 抹掉） ---- */
+:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;border-radius:var(--r-xs);}
+
+/* ---- 动效：尊重 prefers-reduced-motion，关闭非必要 motion ---- */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
 /* ---- 输入 ---- */
 .qio-input{display:block;width:100%;height:38px;background:var(--bg-inset);border:1px solid var(--border-subtle);
-  border-radius:10px;padding:10px 14px;font-size:14px;line-height:1.5;color:var(--text-strong);outline:none;
-  font-family:var(--sans);transition:border-color .18s,box-shadow .18s,background .18s;}
+  border-radius:var(--r-md);padding:10px 14px;font-size:14px;line-height:1.5;color:var(--text-strong);outline:none;
+  font-family:var(--sans);transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease);}
 .qio-input::placeholder{color:var(--text-muted);}
 .qio-input:hover{border-color:var(--border-strong);}
 .qio-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--bg-surface);}
+.qio-input:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 .qio-input:disabled{opacity:.5;cursor:not-allowed;}
 .qio-input.err{border-color:var(--danger);}
 .qio-input.mono{font-family:var(--mono);font-size:13px;letter-spacing:.02em;}
 textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 按钮 ---- */
-.qio-btn{height:34px;padding:0 16px;border-radius:10px;border:1px solid var(--border-subtle);
+.qio-btn{height:34px;padding:0 16px;border-radius:var(--r-md);border:1px solid var(--border-subtle);
   background:var(--bg-inset);color:var(--text-secondary);font-size:13px;cursor:pointer;font-family:var(--sans);
-  transition:all .18s;}
+  transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);}
 .qio-btn:hover{border-color:var(--border-strong);color:var(--text-strong);}
+.qio-btn:active{background:var(--accent-soft);}
+.qio-btn:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;}
+.qio-btn:disabled{opacity:.5;cursor:default;}
 .qio-btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);}
 .qio-btn.primary:hover{background:var(--accent-hover);}
 .qio-btn.danger{color:var(--danger);border-color:var(--danger);}
 
 /* ---- 卡片 ---- */
-.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:14px;padding:16px 18px;}
+.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:16px 18px;}
 
 /* ---- 徽标 ---- */
-.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:20px;border:1px solid var(--border-strong);color:var(--text-secondary);}
+.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:var(--r-pill);border:1px solid var(--border-strong);color:var(--text-secondary);}
 .qio-badge.link{color:var(--link);border-color:var(--link);}
 
 /* ---- 开关 ---- */
-.qio-switch{width:38px;height:22px;border-radius:20px;background:var(--border-strong);position:relative;cursor:pointer;border:none;transition:background .2s;}
+.qio-switch{width:38px;height:22px;border-radius:var(--r-pill);background:var(--border-strong);position:relative;cursor:pointer;border:none;transition:background var(--dur-base) var(--ease);}
 .qio-switch.on{background:var(--accent);}
-.qio-switch::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .2s;}
+.qio-switch::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left var(--dur-base) var(--ease);}
 .qio-switch.on::after{left:19px;}
+.qio-switch:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;}
 
 /* ---- 下拉 ---- */
 .qio-select{position:relative;display:flex;align-items:center;justify-content:space-between;gap:8px;height:38px;
-  background:var(--bg-inset);border:1px solid var(--border-subtle);border-radius:10px;padding:0 14px;font-size:14px;
-  color:var(--text-strong);cursor:pointer;outline:none;user-select:none;transition:border-color .18s,box-shadow .18s,background .18s;}
+  background:var(--bg-inset);border:1px solid var(--border-subtle);border-radius:var(--r-md);padding:0 14px;font-size:14px;
+  color:var(--text-strong);cursor:pointer;outline:none;user-select:none;transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease);}
 .qio-select:hover{border-color:var(--border-strong);}
 .qio-select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--bg-surface);}
+.qio-select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 .qio-select .chev{color:var(--text-muted);transition:transform .2s;flex-shrink:0;}
 .qio-select.open .chev{transform:rotate(180deg);color:var(--accent);}
 .qio-select-menu{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:30;background:var(--bg-elevated);
-  border:1px solid var(--border-subtle);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);padding:5px;display:none;min-width:max-content;}
+  border:1px solid var(--border-subtle);border-radius:var(--r-md);box-shadow:var(--shadow-2);padding:5px;display:none;min-width:max-content;}
 .qio-select.open .qio-select-menu{display:block;}
-.qio-select-menu .opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:8px;
+.qio-select-menu .opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:var(--r-sm);
   font-size:13px;color:var(--text-primary);cursor:pointer;white-space:nowrap;}
 .qio-select-menu .opt:hover{background:var(--accent-soft);color:var(--text-strong);}
+.qio-select-menu .opt:focus-visible{outline:2px solid var(--focus-ring);outline-offset:-2px;}
 .qio-select-menu .opt.sel{color:var(--link);font-weight:600;}
 .qio-select-menu .opt.sel::after{content:'✓';font-family:var(--mono);color:var(--accent);}
 
@@ -70,3 +92,10 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* ---- 统一反馈语义：success / warning / error / info 全部来自令牌 ---- */
+.qio-feedback{font-size:12.5px;line-height:1.55;display:flex;gap:8px;align-items:flex-start;}
+.qio-feedback.ok{color:var(--success);}
+.qio-feedback.warn{color:var(--warning);}
+.qio-feedback.err{color:var(--danger);}
+.qio-feedback.info{color:var(--text-secondary);}

@@ -36,21 +36,21 @@ class CodeTool(Tool):
         if policy.credentials:
             if self.credentials is None:
                 return ToolResult(
-                    ok=False, error="tool references a credential but none is wired"
+                    ok=False, error="该工具引用了凭据，但当前没有可用凭据"
                 )
             ref = self.definition.credential_ref
             secret = self.credentials.get_secret(ref) if ref else None
             if secret is None:
                 secret = self.credentials.get_default_secret()
             if secret is None:
-                return ToolResult(ok=False, error="referenced credential unavailable")
+                return ToolResult(ok=False, error="引用的凭据不可用")
             key = (ref or "default").upper().replace("-", "_")
             extra_env[f"QIO_KEY_{key}"] = secret
         result = await self.sandbox.execute(
             self.definition.code, kwargs, extra_env=extra_env, policy=policy
         )
         if not result.ok:
-            return ToolResult(ok=False, error=result.error or "sandbox failure")
+            return ToolResult(ok=False, error=result.error or "沙箱执行失败")
         content = json.dumps(result.value, ensure_ascii=False)
         # policy.output_limit_chars 之前只是声明，没有真正生效；这里显式截断并
         # 标注，避免超大输出直接灌进模型上下文（截断是可见的，不静默）。

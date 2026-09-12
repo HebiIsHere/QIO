@@ -23,7 +23,7 @@ ConversationView（对话页）
 │   │   └── InjectionTag  记忆注入标记（MEMORY_INJECT 来源：知识/记忆）
 │   └── EmptyState        空状态（引导）
 ├── Composer              输入区
-│   ├── TopicIndicator    当前话题名 + 锚点片段
+│   ├── TopicIndicator    当前话题名（+ 仅在历史位置时显示「从「XXX」继续」）
 │   ├── TextInput         文本输入
 │   └── MemorySlider      记忆强度滑块（0-1，注入预算）
 └── ModalLayer            全局模态层
@@ -105,7 +105,18 @@ SettingsView
 PlanetDock 点击 → 相机推进（650ms 缓动）→ PlanetView 接管交互 → 收起：CloseButton/双击空白 → 相机拉回原悬浮球位置与朝向 → 对话页浮现
 
 ### 5.3 "从这里开始"
-TopicDetail 选中片段（或整话题）→ StartHereButton → session store 更新 anchor_fragment_id → 相机收起 → 对话页重新注入（MEMORY_INJECT 偏置该片段）→ 用户继续对话
+TopicDetail 选中片段（或整话题）→ 面板显示「已选择历史位置：<片段摘要>」→ StartHereButton（「从这里继续」）
+→ POST /api/anchor(topic_id, fragment_id) → 成功后 session store 记下 `anchorHistoric=true` → 相机收起
+→ 对话页 TopicIndicator 显示「从「…」继续」，下一轮该片段进入 Focus。
+
+语义（与 `docs/architecture.md` 的 Anchor 生命周期一致，不要只当成 UI 文案）：
+
+- 「从这里继续」= 用户明确改变历史讨论位置，优先级高于自动恢复与检索；
+- **成功一轮之后**后端把位置推进到当前片段并广播 `ANCHOR(historic=false)`，
+  提示随之消失（不允许几十轮后仍显示同一个旧片段）；
+- `memory_search` 只是只读检索，不会改动这里的显示；
+- 只有 Agent 显式调用 `continue_from_fragment` 才会产生新的历史位置提示；
+- 界面不暴露 `anchor_fragment_id` 这类内部术语，只说「历史位置 / 从这里继续 / 从「XXX」继续」。
 
 ### 5.4 工具创建向导（4 步）
 1. 提案展示：解释 + 工具定义（名称/描述/参数）

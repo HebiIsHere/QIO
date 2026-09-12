@@ -64,9 +64,11 @@ class CorrectKnowledgeTool(Tool):
         delete = bool(kwargs.get("delete", False))
         candidate_index = kwargs.get("candidate_index")
         if not content:
-            return ToolResult(ok=False, error="content required")
+            return ToolResult(ok=False, error="content 必填")
         if not delete and not new_content:
-            return ToolResult(ok=False, error="new_content required unless delete=true")
+            return ToolResult(
+                ok=False, error="new_content 必填（除非 delete=true 表示删除）"
+            )
         candidates = self._match(content)
         if not candidates:
             return ToolResult(ok=False, error=f"未找到匹配的知识条目：{content}")

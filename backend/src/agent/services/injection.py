@@ -48,6 +48,9 @@ class Candidate:
     item_id: str
     text: str
     score: float
+    # 稳定身份（去重用）：同一片段/条目无论从哪个 surface 进来都算同一个；
+    # 缺省时退回 item_id。
+    identity: str | None = None
 
 
 @dataclass
@@ -58,6 +61,7 @@ class PlannedItem:
     text: str
     tokens: int
     score: float = 0.0
+    identity: str | None = None
 
 
 @dataclass
@@ -200,6 +204,23 @@ def knowledge_score(content: str, query: str, surface: str) -> float:
     return base + KEYWORD_WEIGHT * overlap
 
 
+def dedupe_candidates(
+    candidates: list[Candidate], blocked: set[str]
+) -> list[Candidate]:
+    """按稳定身份去重：已被更高优先级 surface（Focus / 短期记忆）注入的条目跳过，
+    候选之间同一身份只保留分数最高的一条。供注入组装与离线 eval 复用，
+    避免两处各写一套「什么算重复」的规则。"""
+    seen: dict[str, Candidate] = {}
+    for cand in candidates:
+        key = cand.identity or cand.item_id
+        if key in blocked:
+            continue
+        prev = seen.get(key)
+        if prev is None or cand.score > prev.score:
+            seen[key] = cand
+    return list(seen.values())
+
+
 class InjectionAssembler:
     def __init__(
         self,
@@ -225,6 +246,7 @@ class InjectionAssembler:
         new_topic_reason: str = "",
         topic_note: str = "",
         focus_block: str = "",
+        focus_item_id: str | None = None,
         entity_cards: list[str] | None = None,
     ) -> InjectionPayload:
         assert self.knowledge_source is not None
@@ -298,45 +320,59 @@ class InjectionAssembler:
                     item_id=hit.doc_id,
                     text=INJECT_MEMORY_ITEM.format(title=hit.title or hit.topic_id, preview=hit.preview),
                     score=hit.score,
+                    identity=hit.fragment_id or hit.doc_id,
                 )
             )
 
         reserved: list[PlannedItem] = []
-        # 实体卡命中（交流锚点）：高优保留，与 focus_block 同级
-        for card_text in entity_cards or []:
+        # 顺序即优先级：Focus（用户明确位置）> 实体卡 > 短期记忆
+        if focus_block:
+            focus_id = focus_item_id or "focus"
+            reserved.append(
+                PlannedItem(
+                    source="memory",
+                    surface="focus",
+                    item_id=focus_id,
+                    text=focus_block,
+                    tokens=estimate_tokens(focus_block),
+                    identity=focus_id,
+                )
+            )
+        # 实体卡命中（交流锚点）：高优保留
+        for idx, card_text in enumerate(entity_cards or []):
             if card_text.strip():
                 reserved.append(
                     PlannedItem(
                         source="memory",
                         surface="entity_card",
-                        item_id="entity_card",
+                        item_id=f"entity_card_{idx}",
                         text=card_text,
                         tokens=estimate_tokens(card_text),
+                        identity=f"entity_card_{idx}",
                     )
                 )
-        if focus_block:
-            reserved.append(
-                PlannedItem(
-                    source="memory",
-                    surface="focus",
-                    item_id="focus",
-                    text=focus_block,
-                    tokens=estimate_tokens(focus_block),
-                )
-            )
         reserved.extend(short_term or [])
-        plan = self.budget.plan(candidates, min_score=0.05, reserved=reserved)
+        # 身份去重（先于预算）：同一片段已被 Focus/短期注入，就不再从检索重复注入；
+        # 候选之间也按身份去重，保留分数最高的一条。
+        blocked: set[str] = {(item.identity or item.item_id) for item in reserved}
+        deduped = dedupe_candidates(candidates, blocked)
+        plan = self.budget.plan(deduped, min_score=0.05, reserved=reserved)
         if not plan.all_items:
             return InjectionPayload(text="", plan=plan)
         sections = [INJECT_HEADER]
         if topic_note:
             sections.append(INJECT_TOPIC_SECTION.format(topic_note=topic_note))
-        if focus_block:
-            sections.append(focus_block)
+        # Focus 由 plan.short_term 统一渲染（同一份预算截断结果），
+        # 不再额外 append 一次 —— 否则每轮会注入两份几乎相同的 Focus。
+        focus_item = next((i for i in plan.short_term if i.surface == "focus"), None)
+        if focus_item is not None:
+            sections.append(focus_item.text)
         if new_topic_candidate:
             reason = new_topic_reason or INJECT_NEW_TOPIC_DEFAULT_REASON
             sections.append(INJECT_NEW_TOPIC_SECTION.format(reason=reason))
         for item in plan.short_term:
+            if item.surface == "focus":
+                continue
             sections.append(item.text)
         for item in plan.knowledge:
             sections.append(item.text)

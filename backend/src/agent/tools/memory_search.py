@@ -30,7 +30,7 @@ class MemorySearchTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         query = str(kwargs.get("query", "")).strip()
         if not query:
-            return ToolResult(ok=False, error="query is required")
+            return ToolResult(ok=False, error="query 必填：请描述要检索的内容")
         top_k = int(kwargs.get("top_k", 5))
         topic_id = kwargs.get("topic_id")
         hits = self.retriever.search(
@@ -38,9 +38,21 @@ class MemorySearchTool(Tool):
         )
         if not hits:
             return ToolResult(ok=True, content="未找到相关记忆")
-        lines = [
-            f"- [{h.title or h.topic_id or '?'}] {h.preview} "
-            f"(score={h.score:.2f}, sources={','.join(h.sources)})"
-            for h in hits
-        ]
+        lines: list[str] = []
+        for i, h in enumerate(hits, start=1):
+            # Agent 必须知道「找到的是哪一个具体历史片段」，才能 continue_from_fragment
+            preview = " ".join((h.preview or "").split())[:240]
+            when = (h.created_at or "")[:19] or "（未知时间）"
+            lines.append(
+                f"[{i}] Fragment: {h.fragment_id or '（非片段来源，无法 continue）'}\n"
+                f"    Topic: {h.topic_id or '-'}\n"
+                f"    Title: {h.title or h.topic_id or '-'}\n"
+                f"    Time: {when}\n"
+                f"    Score: {h.score:.2f}（sources={','.join(h.sources) or '-'}）\n"
+                f"    Preview: {preview}"
+            )
+        lines.append(
+            "（以上为只读检索结果，不会改变当前对话位置；"
+            "只有用户明确要求从这里继续时，才调用 continue_from_fragment）"
+        )
         return ToolResult(ok=True, content="\n".join(lines))

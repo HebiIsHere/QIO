@@ -1,5 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { getTheme, setTheme, toggleTheme, THEME_KEY } from "../theme";
+import {
+  getTheme,
+  getThemePreference,
+  setTheme,
+  setThemePreference,
+  toggleTheme,
+  watchSystemTheme,
+  THEME_KEY,
+} from "../theme";
 
 beforeEach(() => {
   localStorage.clear();
@@ -55,5 +63,65 @@ describe("theme util", () => {
     expect(getTheme()).toBe("light"); // 内存兜底（localStorage 不可用）
     expect(toggleTheme()).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+});
+
+describe("theme 偏好（system / dark / light）", () => {
+  function mockMatchMedia(initialDark: boolean) {
+    const listeners: (() => void)[] = [];
+    let dark = initialDark;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: dark,
+        media: query,
+        addEventListener: (_t: string, cb: () => void) => listeners.push(cb),
+        removeEventListener: () => {},
+      }),
+    });
+    return {
+      listeners,
+      setDark(v: boolean) {
+        dark = v;
+      },
+    };
+  }
+
+  it("默认偏好是 system：跟随系统主题解析", () => {
+    const mm = mockMatchMedia(true);
+    expect(getThemePreference()).toBe("system");
+    expect(getTheme()).toBe("dark");
+    mm.setDark(false);
+    expect(getTheme()).toBe("light");
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("setThemePreference 持久化偏好并立即应用", () => {
+    setThemePreference("light");
+    expect(getThemePreference()).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    setThemePreference("system");
+    expect(getThemePreference()).toBe("system");
+    expect(localStorage.getItem(THEME_KEY)).toBe("system");
+  });
+
+  it("watchSystemTheme：偏好为 system 时跟随系统切换；显式 dark/light 时不跟随", () => {
+    const mm = mockMatchMedia(true);
+    setThemePreference("system");
+    const stop = watchSystemTheme();
+
+    mm.setDark(false);
+    mm.listeners.forEach((cb) => cb());
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(getThemePreference()).toBe("system"); // 系统变化不覆盖偏好
+
+    setThemePreference("dark");
+    mm.setDark(false);
+    mm.listeners.forEach((cb) => cb());
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    stop();
+    Reflect.deleteProperty(window, "matchMedia");
   });
 });

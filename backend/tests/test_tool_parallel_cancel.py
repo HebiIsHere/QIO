@@ -120,9 +120,9 @@ async def test_registry_cancel_aborts_tool():
     task.cancel()
     result = await task  # 不抛异常，转成 aborted 失败结果
     assert not result.ok
-    assert "aborted" in result.error
+    assert "取消" in result.error
     assert seen_end and seen_end[0]["ok"] is False
-    assert "aborted" in (seen_end[0]["error"] or "")
+    assert "取消" in (seen_end[0]["error"] or "")
 
 
 async def test_loop_cancel_aborts_in_flight_unsafe():
@@ -135,4 +135,4 @@ async def test_loop_cancel_aborts_in_flight_unsafe():
     loop.cancel()
     results = await task
     assert not results[call.id].ok
-    assert "aborted" in results[call.id].error
+    assert "取消" in results[call.id].error

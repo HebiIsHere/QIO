@@ -42,6 +42,9 @@ class RetrievalHit:
     sources: tuple[str, ...]
     token_estimate: int
     created_at: str | None
+    # 片段身份：memory_index 的 doc_id 是索引行 id，Agent 需要的是它对应的
+    # fragment_id（才能 continue_from_fragment / 去重）。实体卡等非片段命中为 None。
+    fragment_id: str | None = None
 
     @property
     def age_days(self) -> float:
@@ -71,6 +74,20 @@ class Retriever:
         self.conn = conn
         # 默认策略与旧行为一致（ephemeral half-life == recency_half_life_days）
         self.decay = decay or DecayPolicy({EPHEMERAL: self.config.recency_half_life_days})
+        self._fragment_cache: dict[str, str | None] = {}
+
+    def fragment_of(self, doc_id: str) -> str | None:
+        """索引行 → 片段 id（没有 DB 连接时返回 None，例如离线 eval）。"""
+        if self.conn is None:
+            return None
+        if doc_id in self._fragment_cache:
+            return self._fragment_cache[doc_id]
+        row = self.conn.execute(
+            "SELECT fragment_id FROM memory_index WHERE id = ?", (doc_id,)
+        ).fetchone()
+        value = row["fragment_id"] if row is not None else None
+        self._fragment_cache[doc_id] = value
+        return value
 
     def kind_of(self, doc_id: str) -> str:
         """信息种类（供差异化衰减）。当前 memory_index 无可信分类 → ephemeral。
@@ -146,6 +163,7 @@ class Retriever:
                         sources=candidate.sources,
                         token_estimate=candidate.token_estimate,
                         created_at=created_at,
+                        fragment_id=self.fragment_of(candidate.doc_id),
                     ),
                 )
             )

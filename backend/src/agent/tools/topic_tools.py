@@ -49,9 +49,19 @@ class SwitchTopicTool(Tool):
             return ToolResult(ok=False, error=f"话题不存在: {topic_id}")
         anchors = AnchorService(self.conn)
         old = anchors.get_active()
-        anchors.set_active(topic_id)
+        # 切回已有话题时恢复它保存的位置（不覆盖用户明确选择：用户选择本身
+        # 就是 active，因此在同一话题内它永远优先）
+        restored = anchors.restore_position(topic_id)
         if old is not None and old.topic_id != topic_id:
             _relate(self.conn, old.topic_id, topic_id)
+        if restored.fragment_id:
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"已切换到话题「{node.name}」（{topic_id}）；"
+                    "已回到该话题上次讨论的位置，下一轮会带上那段历史。"
+                ),
+            )
         return ToolResult(ok=True, content=f"已切换到话题「{node.name}」（{topic_id}）")
 
     async def run(self, **kwargs) -> ToolResult:

@@ -23,7 +23,8 @@ describe("QNumber", () => {
     await w.find(".step.up").trigger("click");
     expect(lastVal(w)).toEqual([50]);
     await w.find(".step.down").trigger("click");
-    expect(lastVal(w)).toEqual([48]);
+    // 以输入框当前显示值（50）为基准回退一步
+    expect(lastVal(w)).toEqual([49]);
     // 已在 max：再 + 保持 50
     const w2 = mount(QNumber, { props: { modelValue: 50, min: 1, max: 50 } });
     await w2.find(".step.up").trigger("click");
@@ -57,7 +58,64 @@ describe("QNumber", () => {
     await w.find("input").trigger("keydown", { key: "ArrowUp" });
     expect(lastVal(w)).toEqual([6]);
     await w.find("input").trigger("keydown", { key: "ArrowDown" });
-    expect(lastVal(w)).toEqual([4]); // 静态 prop 仍为 5：5-1
+    // 以输入框当前显示值为基准（prop 回填是异步的）：6 → 5
+    expect(lastVal(w)).toEqual([5]);
+    w.unmount();
+  });
+});
+
+describe("QNumber commit 语义（问题4）", () => {
+  it("+ 同时触发 update:modelValue 与 change（设置页依赖 change 保存）", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    await w.find(".step.up").trigger("click");
+    expect(lastVal(w)).toEqual([6]);
+    expect(w.emitted("change")?.length).toBe(1);
+    w.unmount();
+  });
+
+  it("- 同时触发 update:modelValue 与 change", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    await w.find(".step.down").trigger("click");
+    expect(lastVal(w)).toEqual([4]);
+    expect(w.emitted("change")?.length).toBe(1);
+    w.unmount();
+  });
+
+  it("+ 之后失焦不重复 change（避免一次点击发两次保存请求）", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    await w.find(".step.up").trigger("click");
+    await w.find("input").trigger("blur");
+    expect(w.emitted("change")?.length).toBe(1);
+    w.unmount();
+  });
+
+  it("+ 两次再失焦：每次步进各一次 change，共两次", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    await w.find(".step.up").trigger("click");
+    await w.find(".step.up").trigger("click");
+    await w.find("input").trigger("blur");
+    expect(w.emitted("change")?.length).toBe(2);
+    w.unmount();
+  });
+
+  it("值未变化时失焦/回车不 emit change（纯聚焦点击不触发保存）", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    await w.find("input").trigger("focus");
+    await w.find("input").trigger("blur");
+    await w.find("input").trigger("keydown", { key: "Enter" });
+    expect(w.emitted("change")).toBeUndefined();
+    w.unmount();
+  });
+
+  it("手输新值：失焦 clamp 后 emit change 一次；再次失焦不重复", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 10 } });
+    const input = w.find("input");
+    await input.setValue("99");
+    await input.trigger("blur");
+    expect(lastVal(w)).toEqual([10]);
+    expect(w.emitted("change")?.length).toBe(1);
+    await input.trigger("blur");
+    expect(w.emitted("change")?.length).toBe(1);
     w.unmount();
   });
 });

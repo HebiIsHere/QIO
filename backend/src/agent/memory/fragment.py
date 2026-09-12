@@ -79,6 +79,15 @@ class FragmentManager:
             meta={},
         )
 
+    def open_fragment(self, topic_id: str) -> Fragment | None:
+        """当前开放片段（只读；不存在时返回 None，不创建）。"""
+        row = self.conn.execute(
+            "SELECT * FROM fragments WHERE topic_id = ? AND closed_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            (topic_id,),
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def get(self, fragment_id: str) -> Fragment | None:
         row = self.conn.execute(
             "SELECT * FROM fragments WHERE id = ?", (fragment_id,)

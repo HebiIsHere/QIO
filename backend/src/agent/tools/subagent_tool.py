@@ -55,7 +55,7 @@ class SubagentTool(Tool):
 
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
-            return ToolResult(ok=False, error="no adapter factory wired for subagent")
+            return ToolResult(ok=False, error="子任务没有可用的适配器工厂")
 
         # 主 agent 只能在 subagent tag 里选；不指定则自动挑；没有则静默用 main-loop。
         candidates = self.credentials.list_tagged("subagent")
@@ -71,7 +71,7 @@ class SubagentTool(Tool):
             if default is None:
                 return ToolResult(
                     ok=False,
-                    error="no subagent credential and no main-loop fallback",
+                    error="子任务没有专属凭据，也没有可回落的主循环凭据",
                 )
             chosen = default["id"]
 
@@ -79,7 +79,7 @@ class SubagentTool(Tool):
         model = (meta.get("default_model") if meta else None) or self.definition.model
         adapter = await self.adapter_factory(chosen, model)
         if adapter is None:
-            return ToolResult(ok=False, error="failed to build adapter for subagent")
+            return ToolResult(ok=False, error="为子任务构建适配器失败")
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         self.task_manager.submit(
             self.name,
@@ -88,7 +88,7 @@ class SubagentTool(Tool):
         )
         if self.definition.sync:
             _, res = await self.task_manager.await_result(task_id, timeout=None)
-            return res if res is not None else ToolResult(ok=False, error="subagent task failed")
+            return res if res is not None else ToolResult(ok=False, error="子任务执行失败")
         return ToolResult(
             ok=True,
             content=SUBAGENT_STARTED.format(task_id=task_id),
@@ -176,12 +176,12 @@ class AwaitTaskTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         task_id = str(kwargs.get("task_id") or "").strip()
         if not task_id:
-            return ToolResult(ok=False, error="task_id required")
+            return ToolResult(ok=False, error="task_id 必填")
         notify = bool(kwargs.get("notify", False))
         timeout = int(kwargs.get("timeout", 120) or 120)
         if notify:
             if self.notify_handler is None:
-                return ToolResult(ok=False, error="notify unsupported in this environment")
+                return ToolResult(ok=False, error="当前环境不支持完成通知")
             if self.task_manager.register_notify(task_id, self.notify_handler):
                 return ToolResult(
                     ok=True,
@@ -190,14 +190,14 @@ class AwaitTaskTool(Tool):
             # 已完成的直接取回
         status, res = await self.task_manager.await_result(task_id, timeout=timeout)
         if status == "not_found":
-            return ToolResult(ok=False, error=f"task not found: {task_id}")
+            return ToolResult(ok=False, error=f"找不到子任务：{task_id}")
         if res is None:
             return ToolResult(
                 ok=True,
                 content=f"任务 {task_id} 仍在运行（{status}），可稍后再次 await_task 取回。",
             )
         if not res.ok:
-            return ToolResult(ok=False, error=res.error or "task failed")
+            return ToolResult(ok=False, error=res.error or "子任务失败")
         return ToolResult(ok=True, content=res.content)
 
 
@@ -220,12 +220,12 @@ class ReadTaskResultTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         task_id = str(kwargs.get("task_id") or "").strip()
         if not task_id:
-            return ToolResult(ok=False, error="task_id required")
+            return ToolResult(ok=False, error="task_id 必填")
         offset = max(0, int(kwargs.get("offset", 0) or 0))
         limit = max(1, min(int(kwargs.get("limit", READ_CHUNK_LIMIT) or READ_CHUNK_LIMIT), READ_CHUNK_LIMIT))
         record = self.task_manager.record_info(task_id)
         if record is None or record.result is None or not record.result.ok:
-            return ToolResult(ok=False, error="task result unavailable")
+            return ToolResult(ok=False, error="子任务结果暂不可用")
         content = (
             record.full_content
             if record.full_content is not None

@@ -31,13 +31,18 @@ def test_resolver_prefers_bocha_when_key_present():
     assert isinstance(providers[0], BochaProvider)
 
 
-def test_resolver_chains_bing_then_baidu_without_key():
+def test_resolver_keyless_before_scrapers_without_key():
+    """无 key：先走免密钥通道（Exa / Parallel / DuckDuckGo），必应/百度仅兜底。"""
     resolver = SearchProviderResolver(bocha_api_key=None)
     names = [type(p).__name__ for p in resolver.providers()]
-    # 无 key：Bing → Baidu 互兜底，不应包含 DuckDuckGo
-    assert names[0] == "BingProvider"
-    assert "BaiduProvider" in names
-    assert "DuckDuckGoProvider" not in names
+    assert names[:3] == ["ExaMcpProvider", "ParallelMcpProvider", "DuckDuckGoProvider"]
+    assert names[-2:] == ["BingProvider", "BaiduProvider"]
+
+
+def test_resolver_without_keyless_falls_back_to_scrapers():
+    resolver = SearchProviderResolver(bocha_api_key=None, keyless=False)
+    names = [type(p).__name__ for p in resolver.providers()]
+    assert names == ["BingProvider", "BaiduProvider"]
 
 
 def test_resolver_includes_searxng_only_when_url_set():

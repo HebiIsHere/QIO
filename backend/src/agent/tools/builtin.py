@@ -10,7 +10,7 @@ from agent.tools.base import Tool, ToolResult
 
 class EchoTool(Tool):
     name = "echo"
-    description = "Echoes back the provided text. Useful for smoke tests."
+    description = "原样回显输入文本，用于连通性/冒烟自检。"
     parameters = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
 
     async def run(self, **kwargs):
@@ -19,7 +19,7 @@ class EchoTool(Tool):
 
 class NowTool(Tool):
     name = "now"
-    description = "Returns the current UTC time."
+    description = "返回当前 UTC 时间。"
     parameters = {"type": "object", "properties": {}}
 
     async def run(self, **kwargs):

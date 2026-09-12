@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useApprovalsStore } from "../stores/approvals";
 import QNumber from "./ui/QNumber.vue";
 
 const approvals = useApprovalsStore();
 const item = computed(() => approvals.current);
+const dialogRef = ref<HTMLElement | null>(null);
+/** 提交中的 approval_id（与 store.responding 同步；用于按钮文案/禁用） */
+const submitting = computed(() => !!item.value && approvals.responding === item.value.approval_id);
 
 const KIND_LABELS: Record<string, string> = {
   tool_create: "工具创建审批",
@@ -76,20 +79,102 @@ const capabilities = computed<string[]>(() => {
   if (!Array.isArray(raw)) return [];
   return raw.map((x) => String(x));
 });
+
+/** 它想做什么：一句人类语言（解释优先，其次工具名/授权工具，最后退回 kind 标签）。 */
+const intent = computed(() => {
+  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
+  const first = [p.explanation, p.description, p.tool_name, p.name]
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .find((v) => v.length > 0);
+  return first ?? "该操作需要你的授权";
+});
+
+/** 风险描述：不用 Low/Medium/High，用具体行为描述（来自后端能力清单）。 */
+const risks = computed<string[]>(() => {
+  const out: string[] = [];
+  const has = (prefix: string) => capabilities.value.some((c) => c.startsWith(prefix));
+  const yes = (prefix: string) => capabilities.value.some((c) => c.startsWith(prefix) && c.includes("是"));
+  if (yes("联网：")) out.push("会联网");
+  if (yes("写入文件：")) out.push("会修改文件");
+  if (capabilities.value.some((c) => /读取文件：是/.test(c))) out.push("会读取文件");
+  if (yes("启动进程：")) out.push("会执行命令");
+  if (capabilities.value.some((c) => c.startsWith("使用凭据：") && !c.endsWith("无"))) {
+    out.push("会使用凭据");
+  }
+  if (!out.length && capabilities.value.length) out.push("只读");
+  return out;
+});
+
+/** 审批失败后必须让焦点回到对话框，方便直接重试。 */
+watch(
+  () => item.value?.approval_id,
+  async (id) => {
+    if (!id) return;
+    await nextTick();
+    dialogRef.value?.focus();
+  },
+  { immediate: true },
+);
+
+onMounted(async () => {
+  await nextTick();
+  dialogRef.value?.focus();
+});
+
+/**
+ * 键盘行为：Tab 在对话框内循环；Esc 不做决定（关闭对话框会留下一个不可见的待审批项）。
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const root = dialogRef.value;
+  if (!root) return;
+  const focusables = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && (active === first || active === root)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 </script>
 
 <template>
   <div v-if="item" class="modal-mask">
-    <div class="modal">
-      <h3>{{ KIND_LABELS[item.kind] ?? item.kind }}</h3>
+    <div
+      ref="dialogRef"
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="'approval-title'"
+      tabindex="-1"
+      @keydown="onKeydown"
+    >
+      <h3 id="approval-title">{{ KIND_LABELS[item.kind] ?? item.kind }}</h3>
       <div class="body">
+        <p class="intent">{{ intent }}</p>
+        <div v-if="risks.length" class="risk-row">
+          <span v-for="r in risks" :key="r" class="risk">{{ r }}</span>
+        </div>
         <div v-for="line in payloadView" :key="line.label" class="row">
           <span class="label">{{ line.label }}</span>
           <span class="value">{{ line.value }}</span>
         </div>
-        <p v-if="!payloadView.length" class="hint">无附加信息</p>
+        <p v-if="!payloadView.length && !capabilities.length" class="hint">无附加信息</p>
         <div v-if="capabilities.length" class="cap-box">
-          <div class="cap-title">该工具的能力</div>
+          <div class="cap-title">它会访问什么</div>
           <ul class="cap-list">
             <li v-for="c in capabilities" :key="c">{{ c }}</li>
           </ul>
@@ -106,20 +191,21 @@ const capabilities = computed<string[]>(() => {
           </div>
         </div>
       </div>
+      <p v-if="approvals.error" class="approval-error" role="alert">{{ approvals.error }}</p>
       <div class="actions">
-        <button class="reject" :disabled="!!approvals.responding" @click="approvals.respond('rejected')">
+        <button class="reject" :disabled="submitting" @click="approvals.respond('rejected')">
           拒绝
         </button>
         <button
           v-if="isSubagentCreate"
           class="approve"
-          :disabled="!!approvals.responding"
+          :disabled="submitting"
           @click="approveWithBudget"
         >
-          批准（含预算）
+          {{ submitting ? "提交中…" : "允许此次操作（含预算）" }}
         </button>
-        <button v-else class="approve" :disabled="!!approvals.responding" @click="approvals.respond('approved')">
-          批准
+        <button v-else class="approve" :disabled="submitting" @click="approvals.respond('approved')">
+          {{ submitting ? "提交中…" : "允许此次操作" }}
         </button>
       </div>
     </div>
@@ -133,16 +219,26 @@ const capabilities = computed<string[]>(() => {
 }
 .modal {
   width: 480px; max-width: 90vw; background: var(--bg-elevated); border: 1px solid var(--border-strong);
-  border-radius: 14px; padding: 18px 20px; color: var(--text-primary);
+  border-radius: var(--r-lg); padding: 18px 20px; color: var(--text-primary);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
-.modal h3 { margin: 0 0 12px; font-size: 16px; color: var(--text-strong); }
+.modal:focus { outline: none; }
+.modal:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--text-strong); }
 .body { max-height: 320px; overflow-y: auto; }
+.intent { font-size: 13.5px; line-height: 1.6; color: var(--text-primary); margin-bottom: 8px; }
+.risk-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.risk {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em;
+  padding: 2px 9px; border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong); color: var(--text-secondary);
+}
 .row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13px; }
 .label { color: var(--text-secondary); min-width: 64px; flex-shrink: 0; }
 .value { color: var(--text-primary); }
 .hint { color: var(--text-muted); font-size: 12px; }
 .budget-box { margin-top: 10px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; }
-.cap-box { margin-top: 10px; padding: 10px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.cap-box { margin-top: 10px; padding: 10px; border: 1px solid var(--border-subtle); background: var(--bg-inset); border-radius: 8px; }
 .cap-title { font-size: 12.5px; color: var(--text-strong); margin-bottom: 6px; }
 .cap-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
 .cap-list li { margin: 2px 0; }
@@ -155,4 +251,15 @@ const capabilities = computed<string[]>(() => {
 .approve { background: var(--approve-bg); color: var(--on-accent); }
 .reject { background: var(--reject-bg); color: var(--on-accent); }
 .actions button:disabled { opacity: 0.5; }
+.actions button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.approval-error {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
 </style>

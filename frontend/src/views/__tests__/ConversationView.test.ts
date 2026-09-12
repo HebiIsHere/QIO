@@ -50,17 +50,32 @@ describe("ConversationView 状态条移除与异常提示", () => {
     w.unmount();
   });
 
-  it("有 lastError 时顶部显示异常提示条并可跳设置", async () => {
+  it("有 lastError 时顶部显示错误条：可看详情、可跳设置", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const session = useSessionStore();
     session.lastError = "credential missing";
     const w = mountView(pinia, makeRouter());
     await flushPromises();
-    const hint = w.find(".err-hint");
+    const hint = w.find(".notice.err");
     expect(hint.exists()).toBe(true);
     expect(hint.text()).toContain("credential missing");
     expect(hint.text()).toContain("前往设置");
+    expect(hint.text()).toContain("查看详情");
+    w.unmount();
+  });
+
+  it("非致命警告用 warning 语义显示，不与错误混用", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    session.warning = "工具失败了一次";
+    const w = mountView(pinia, makeRouter());
+    await flushPromises();
+    expect(w.find(".notice.err").exists()).toBe(false);
+    const warn = w.find(".notice.warn");
+    expect(warn.exists()).toBe(true);
+    expect(warn.text()).toContain("工具失败了一次");
     w.unmount();
   });
 
@@ -87,7 +102,7 @@ describe("ConversationView 状态条移除与异常提示", () => {
     setActivePinia(pinia);
     const w = mountView(pinia, makeRouter());
     await flushPromises();
-    expect(w.find(".err-hint").exists()).toBe(false);
+    expect(w.find(".notice").exists()).toBe(false);
     w.unmount();
   });
 });

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { ref, shallowRef, nextTick } from "vue";
 import PlanetView from "../PlanetView.vue";
 import { useSessionStore } from "../../stores/session";
+import { useUiStore } from "../../stores/ui";
 import type { EntityCard, KnowledgeItem, TopicDetail, TopicFingerprint, TopicPosition } from "../../services/api";
 
 const mocks = vi.hoisted(() => ({
@@ -18,9 +19,14 @@ const mocks = vi.hoisted(() => ({
     listTopics: vi.fn<() => Promise<{ topics: TopicFingerprint[] }>>(async () => ({ topics: [] })),
     getPositions: vi.fn<() => Promise<{ topics: TopicPosition[] }>>(async () => ({ topics: [] })),
     getTopicDetail: vi.fn<() => Promise<TopicDetail>>(async () => ({}) as TopicDetail),
-    setAnchor: vi.fn<() => Promise<{ ok: boolean; topic_id: string; fragment_id: string | null }>>(
-      async () => ({ ok: true, topic_id: "", fragment_id: null }),
-    ),
+    // 与真实后端契约一致：返回权威 fragment_title / historic（historic=false 表示当前开放片段）
+    setAnchor: vi.fn(async (_topicId: string, fragmentId: string | null) => ({
+      ok: true,
+      topic_id: "t1",
+      fragment_id: fragmentId,
+      fragment_title: fragmentId === "f13" ? "Anchor 生命周期" : null,
+      historic: Boolean(fragmentId) && fragmentId !== "f20",
+    })),
     listKnowledge: vi.fn<() => Promise<{ knowledge: KnowledgeItem[] }>>(async () => ({ knowledge: [] })),
     listEntities: vi.fn<() => Promise<{ entities: EntityCard[] }>>(async () => ({ entities: [] })),
   },
@@ -378,6 +384,134 @@ describe("PlanetView 右侧话题边栏", () => {
 });
 
 describe("星球记忆中心面板", () => {
+  it("选中片段后：明示「已选择历史位置」+「从这里继续」，并提交 topic+fragment（任务05 A）", async () => {
+    mocks.apiMock.getTopicDetail.mockResolvedValue({
+      ...DETAIL,
+      fragments: [
+        {
+          fragment_id: "f13",
+          summary: "Anchor 生命周期：为什么 anchor 不等于最新片段",
+          closed_at: "2026-09-12T00:00:00Z",
+          message_count: 12,
+          messages: [],
+        },
+      ],
+    });
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    expect(w.find(".section-title").text()).toContain("选择要接续的历史位置");
+    await w.find(".fragment-item").trigger("click");
+    await nextTick();
+    const hint = w.find(".selected-position");
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain("Anchor 生命周期");
+    expect(w.find(".start-btn").text()).toContain("从这里继续");
+    expect(w.find(".start-btn").text()).toContain("这个历史位置");
+
+    await w.find(".start-btn").trigger("click");
+    await flushPromises();
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", "f13");
+    expect(session.anchorHistoric).toBe(true);
+    // 标题用后端返回的权威值（不是前端从摘要里截的 40 字）
+    expect(session.anchorFragment?.title).toBe("Anchor 生命周期");
+    expect(session.anchorFragmentId).toBe("f13");
+    w.unmount();
+  });
+
+  it("选中「当前开放片段」不算历史位置：不显示「从…继续」，文案区分当前片段（任务05 B）", async () => {
+    mocks.apiMock.getTopicDetail.mockResolvedValue({
+      ...DETAIL,
+      fragments: [
+        {
+          fragment_id: "f20",
+          summary: null,
+          closed_at: null,
+          message_count: 2,
+          messages: [],
+        },
+      ],
+    });
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    await w.find(".fragment-item").trigger("click");
+    await nextTick();
+    expect(w.find(".selected-position").text()).toContain("当前片段");
+    expect(w.find(".start-btn").text()).toContain("当前片段");
+
+    await w.find(".start-btn").trigger("click");
+    await flushPromises();
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", "f20");
+    // 当前开放片段不是「历史位置」：对话页不应出现「从…继续」
+    expect(session.anchorHistoric).toBe(false);
+    w.unmount();
+  });
+
+  it("快速点击 A→B：慢的 A 后返回也不覆盖 B 的详情（问题8）", async () => {
+    const A_DETAIL: TopicDetail = { topic_id: "tA", name: "话题 A", fragments: [], entities: [], knowledge: [] };
+    const B_DETAIL: TopicDetail = { topic_id: "tB", name: "话题 B", fragments: [], entities: [], knowledge: [] };
+    const pending = new Map<string, (d: TopicDetail) => void>();
+    const getDetail = mocks.apiMock.getTopicDetail as unknown as ReturnType<typeof vi.fn>;
+    getDetail.mockImplementation(
+      (id: string) => new Promise<TopicDetail>((r) => { pending.set(id, r); }),
+    );
+
+    const w = mountView(newPinia());
+    await flushPromises();
+    // A latency 200ms（后返回），B latency 20ms（先返回）
+    currentFake!.selectedTopicId.value = "tA";
+    await nextTick();
+    currentFake!.selectedTopicId.value = "tB";
+    await nextTick();
+
+    pending.get("tB")!(B_DETAIL);
+    await flushPromises();
+    expect(w.find(".detail h3").text()).toBe("话题 B");
+
+    pending.get("tA")!(A_DETAIL);
+    await flushPromises();
+    expect(w.find(".detail h3").text()).toBe("话题 B");
+    expect(w.find(".detail h3").text()).not.toBe("话题 A");
+    w.unmount();
+  });
+
+  it("从这里开始：API 失败不改本地锚点、不自动关闭、显示错误，重试成功才生效（问题2）", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    session.topicName = "旧话题";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    const setAnchor = mocks.apiMock.setAnchor as unknown as ReturnType<typeof vi.fn>;
+    setAnchor.mockRejectedValueOnce(new Error("POST /api/anchor -> 500: boom"));
+
+    await w.find(".start-btn").trigger("click");
+    await flushPromises();
+
+    // 失败：本地锚点不变、不拉回、不关闭；错误可见
+    expect(session.currentTopicId).toBe("t1");
+    expect(session.topicName).toBe("旧话题");
+    expect(mocks.goMock).not.toHaveBeenCalledWith("overview");
+    expect(w.emitted("close")).toBeFalsy();
+    expect(w.find(".anchor-error").text()).toContain("未切换");
+
+    // 重试成功 → 本地锚点更新 + 关闭
+    await w.find(".start-btn").trigger("click");
+    await flushPromises();
+    expect(session.topicName).toBe("话题 A");
+    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(w.emitted("close")).toBeTruthy();
+    w.unmount();
+  });
+
   it("三页签可切换，管理模式加宽面板", async () => {
     const pinia = newPinia();
     const w = mountView(pinia, true);
@@ -437,6 +571,35 @@ describe("星球记忆中心面板", () => {
     expect(w.find(".tab-entity").classes()).toContain("active");
     // openByNodeId 按 node_id 命中 → 实体卡详情已展开
     expect(w.find(".e-title").text()).toContain("王翠华");
+    w.unmount();
+  });
+});
+
+describe("PlanetView 图形诊断可见性（任务04 A1/A7）", () => {
+  it("正常模式不显示 WebGL / FPS HUD", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(w.find(".hud").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("开发者模式才显示 HUD", async () => {
+    const pinia = newPinia();
+    useUiStore().setDeveloperMode(true);
+    const w = mountView(pinia);
+    await flushPromises();
+    expect(w.find(".hud").text()).toContain("WebGL · 60 fps");
+    useUiStore().setDeveloperMode(false);
+    w.unmount();
+  });
+
+  it("WebGL 不可用：给出可读降级说明，而不是只 console.error", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    currentFake!.webglOK.value = false;
+    await nextTick();
+    expect(w.find(".webgl-fallback").exists()).toBe(true);
+    expect(w.find(".webgl-fallback").text()).toContain("无法启用 3D 星球");
     w.unmount();
   });
 });

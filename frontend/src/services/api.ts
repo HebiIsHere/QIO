@@ -29,6 +29,8 @@ export interface CredentialMeta {
 export interface SearchSettings {
   searxng_url: string;
   bocha_has_key: boolean;
+  /** 免密钥通道（Exa / Parallel 免费 MCP + DuckDuckGo HTML），默认开启 */
+  keyless_fallback?: boolean;
   top_k_default: number;
   max_fetch_chars: number;
 }
@@ -166,7 +168,15 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
   setAnchor: (topicId: string, fragmentId?: string | null) =>
-    request<{ ok: boolean; topic_id: string; fragment_id: string | null }>("/api/anchor", {
+    request<{
+      ok: boolean;
+      topic_id: string;
+      fragment_id: string | null;
+      /** 权威标题（memory_index / 摘要首句）；前端不用摘要自己拼 */
+      fragment_title: string | null;
+      /** 是否是「历史位置」（不是当前开放片段） */
+      historic: boolean;
+    }>("/api/anchor", {
       method: "POST",
       body: JSON.stringify({ topic_id: topicId, fragment_id: fragmentId ?? null }),
     }),
@@ -174,7 +184,7 @@ export const api = {
     request<{
       topic_id: string;
       topic_name: string;
-      anchor_fragment: { id: string; title: string | null } | null;
+      anchor_fragment: { id: string; title: string | null; historic?: boolean } | null;
       messages: {
         id: string;
         role: string;

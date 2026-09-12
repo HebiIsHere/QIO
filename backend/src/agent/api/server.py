@@ -310,6 +310,8 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         return {
             "searxng_url": store.get("search.searxng_url", "") or "",
             "bocha_has_key": bool(bocha_key),
+            # 免密钥通道（Exa / Parallel 免费 MCP + DuckDuckGo HTML）默认开启
+            "keyless_fallback": store.get_bool("search.keyless_fallback", True),
             "top_k_default": store.get_int("search.top_k_default", 5),
             "max_fetch_chars": store.get_int("search.max_fetch_chars", 15000),
         }
@@ -321,6 +323,8 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             store.set("search.searxng_url", str(body.get("searxng_url") or ""))
         if "bocha_api_key" in body:
             store.set("search.bocha_api_key", str(body.get("bocha_api_key") or ""))
+        if "keyless_fallback" in body:
+            store.set("search.keyless_fallback", "1" if body.get("keyless_fallback") else "0")
         if "top_k_default" in body:
             try:
                 v = int(body["top_k_default"])
@@ -338,6 +342,9 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
                     detail="max_fetch_chars must be an integer",
                 )
             store.set("search.max_fetch_chars", str(max(1000, min(v, 40000))))
+        # 保存即生效：把设置套用到运行中的 SearchService（改 SearXNG/博查/免密钥开关
+        # 不需要重启后端）
+        ctx.apply_search_settings()
         return await get_search_settings()
 
     # -- computer control settings -----------------------------------------
@@ -382,8 +389,18 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             frag = ctx.fragments.get(fragment_id)
             if frag is None or frag.topic_id != topic_id:
                 raise HTTPException(status_code=400, detail="fragment not found in topic")
-        AnchorService(ctx.conn).set_active(topic_id, fragment_id or None)
-        return {"ok": True, "topic_id": topic_id, "fragment_id": fragment_id}
+        anchors = AnchorService(ctx.conn)
+        anchors.set_active(topic_id, fragment_id or None)
+        # 广播权威锚点：标题 / historic 只能有一个来源（后端），
+        # 前端不用摘要自己拼标题，也不会在位置推进后继续显示旧提示。
+        await ctx._publish_anchor_event()
+        return {
+            "ok": True,
+            "topic_id": topic_id,
+            "fragment_id": fragment_id or None,
+            "fragment_title": ctx._fragment_title(fragment_id or None),
+            "historic": anchors.is_historic_position(topic_id),
+        }
 
     # -- turns -------------------------------------------------------------
 

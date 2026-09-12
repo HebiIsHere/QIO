@@ -94,7 +94,7 @@ onMounted(() => {
 <template>
   <div class="debug">
     <header class="head">
-      <span class="title serif">Agent Trace</span>
+      <span class="title serif">运行追踪</span>
       <span class="sub mono">只读调试视图 · 回答“这一轮为什么这样做”</span>
       <span class="spacer"></span>
       <button class="qio-btn" type="button" @click="toggleEnabled">
@@ -148,11 +148,11 @@ onMounted(() => {
           </p>
 
           <details open>
-            <summary>Topic 决策</summary>
+            <summary>话题决策</summary>
             <pre class="json mono">{{ pretty(selected.topic) }}</pre>
           </details>
           <details>
-            <summary>Context 注入</summary>
+            <summary>上下文注入</summary>
             <pre class="json mono">{{ pretty(selected.injection) }}</pre>
           </details>
           <details>
@@ -172,7 +172,7 @@ onMounted(() => {
             <pre class="json mono">{{ pretty(selected.warnings) }}</pre>
           </details>
           <details>
-            <summary>Output</summary>
+            <summary>输出</summary>
             <pre class="json mono">{{ selected.final_preview }}</pre>
           </details>
         </template>

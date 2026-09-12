@@ -87,7 +87,7 @@ async function toggleExpand() {
       <span>· v{{ credential.version }}</span>
     </div>
     <div v-if="expanded" class="detail mono">
-      <div><span class="k">key_id</span><span class="v">{{ credential.key_id }}</span></div>
+      <div><span class="k">标识</span><span class="v">{{ credential.key_id }}</span></div>
       <div><span class="k">端点</span><span class="v">{{ credential.endpoint || "—" }}</span></div>
       <div><span class="k">模型</span><span class="v">{{ credential.default_model || "—" }}</span></div>
       <div><span class="k">标签</span><span class="v">{{ credential.tags.join(", ") }}</span></div>
