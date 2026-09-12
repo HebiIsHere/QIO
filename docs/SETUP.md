@@ -103,6 +103,9 @@ npm run dev      # Vite 端口见 vite.config.ts（默认 1420；e2e 用 5199）
 ## 8. 验证
 
 ```powershell
+# 文档一致性（里程碑状态、被引用的路径与命令、与 CI 的命令对齐）
+python scripts/check_docs.py
+
 # 后端测试
 cd backend
 uv run --frozen pytest -q

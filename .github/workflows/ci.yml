@@ -11,6 +11,18 @@ env:
   PYTHONHASHSEED: "0"
 
 jobs:
+  docs:
+    name: docs consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # stdlib only: no dependencies to install
+      - name: Check docs against code
+        run: python scripts/check_docs.py
+
   backend:
     name: backend (py${{ matrix.python-version }})
     runs-on: ubuntu-latest

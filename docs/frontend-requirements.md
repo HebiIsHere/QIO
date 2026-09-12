@@ -1,23 +1,21 @@
 # 前端硬要求（设计约束基准）
 
-版本：v1（2026-08-02，用户确认）
-状态：设计期基准文档；后端实现以 docs/architecture.md 为准
+版本：v1.1（2026-09-12 校订）
+状态：设计期基准文档；后端实现以 docs/architecture.md 为准，实现进度见 docs/status.md
 
 本文档定义前端设计的不可妥协约束。前端设计只能在边界内发挥；
 E 节为自由区，不受约束。
 
 ## A. 协议与接口（不可改）
 
-1. 通信只走 localhost HTTP + SSE；14 类事件：
-   CAPABILITY / FALLBACK / MEMORY_INJECT / APPROVAL_REQUIRED /
-   APPROVAL_RESULT / CREDENTIAL_STATUS / SUBAGENT_STATUS / USAGE /
-   TURN_START / TURN_END / TOOL_START / TOOL_END / WARNING / ERROR
+1. 通信只走 localhost HTTP + SSE。事件类型以 `backend/src/agent/api/events.py`
+   为准（本文不写死数量与清单，避免漂移）；事件信封见下条。
 2. 事件信封固定：{ "type": str, "id": str, "ts": str, "data": object }
 3. 前端必须消费的后端端点：
    - GET /api/events（SSE 流）
    - POST /api/approvals/{id}/respond（审批响应）
-   - 凭据 CRUD 与测试连接（M2 设计，实现中）
-   - 对话与注入端点（M9 设计接入，实现中）
+   - 凭据 CRUD 与测试连接（已实现）
+   - 对话与注入端点（已实现）
 4. 前端是薄壳：不直接读写 SQLite、不直接访问系统凭据库；
    一切数据经后端 API
 
@@ -25,9 +23,10 @@ E 节为自由区，不受约束。
 
 5. 密钥只写不读：输入表单可填，展示永远掩码，不允许"显示明文"入口
 6. 密钥不参与任何导出/导入
-7. 凭据类别标签：main-loop / subagent / vision / video / audio /
-   research / embedding + 自定义；授权范围（scope）需可展示；
-   子 agent 的 Key 可改可重填
+7. 凭据按类别标签组织：main-loop / subagent / vision / video / audio /
+   research / embedding（定义见 `backend/src/agent/credentials/policy.py`）。
+   凭据不设单独的调用方白名单字段；「谁能用这把钥匙」由标签决定，
+   界面必须让用户能直接看懂这一点。子 agent 的 Key 可改可重填
 8. 审批流必经（三类）：
    - 工具创建（tool_create）
    - 凭据授权（credential_grant）
