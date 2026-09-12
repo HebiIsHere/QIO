@@ -4,6 +4,8 @@ QIO 是一个本地优先、长对话场景的 agent：Python(FastAPI) 后端 + 
 
 > 适用：Windows 10/11（keyring 依赖 Windows 凭据库；Linux/macOS 未验证）。
 > 一键安装依赖：`powershell -ExecutionPolicy Bypass -File scripts/setup_env.ps1`（或按下面分步装）。
+> 依赖锁定：后端用 **uv**（`backend/uv.lock`），前端用 **npm ci**（`frontend/package-lock.json`）——
+> 安装命令与 CI 完全一致，换机器不会解析出另一组版本。
 
 ---
 
@@ -16,9 +18,14 @@ QIO 是一个本地优先、长对话场景的 agent：Python(FastAPI) 后端 + 
 ## 2. 后端（Python 3.11+，实测 3.12）
 
 ```powershell
+python -m pip install uv          # 只需一次；已有 uv 可跳过
 cd backend
-python -m pip install -e ".[dev]"
+uv sync --frozen --extra dev      # 按 uv.lock 精确安装（CI 同款命令）
 ```
+
+`uv sync` 会在 `backend/.venv` 建好隔离环境（已 gitignore），无需手动激活；
+后续命令统一用 `uv run --frozen <cmd>` 执行，自动指向该环境。
+应急替代（不推荐长期使用）：`python -m pip install -e ".[dev]"`——能跑，但版本解析可能与 CI 不一致。
 
 依赖（已完整声明在 `backend/pyproject.toml`）：
 
@@ -38,7 +45,7 @@ dev 额外：`pytest`、`pytest-asyncio`。
 
 ```powershell
 cd frontend
-npm install
+npm ci
 ```
 
 依赖见 `frontend/package.json`：Vue 3 / Pinia / Vue Router / Vite / Vitest / three.js（星球）/ @tanstack/vue-virtual / remark 系等。
@@ -74,16 +81,15 @@ cargo check
 | `QIO_DATA_DIR` | `%APPDATA%\qio` | 数据目录（app.db / models / logs） |
 | `QIO_MODELS_DIR` | `<data_dir>/models` | 模型目录（覆盖默认） |
 | `QIO_PORT` / `QIO_HOST` | `8734` / `127.0.0.1` | 后端监听 |
-| `PYTHONPATH` | — | 跑后端/测试时需指向 `backend/src` |
+| `PYTHONPATH` | — | 仅裸解释器运行时需要指向 `backend/src`；`uv run` 已自动处理 |
 
 ## 7. 启动
 
 ```powershell
-# 后端（PowerShell）
-$env:PYTHONPATH = "backend/src"
+# 后端（PowerShell，已 uv sync 过）
 $env:QIO_DATA_DIR = "$env:TEMP\qio-dev"      # 或任意数据目录
 cd backend
-python -m uvicorn agent.main:create_app --factory --host 127.0.0.1 --port 8734
+uv run --frozen uvicorn agent.main:create_app --factory --host 127.0.0.1 --port 8734
 
 # 前端 dev（另开终端）
 cd frontend
@@ -92,22 +98,27 @@ npm run dev      # Vite 端口见 vite.config.ts（默认 1420；e2e 用 5199）
 
 参考脚本：`scripts/e2e_up.py`（一键拉起后端 + 前端，pid 写入 `scripts/.e2e-pids`）。
 
+> 不用 uv、直接跑裸解释器时才需要 `$env:PYTHONPATH = "backend/src"`（或 `src`，视当前目录而定）。
+
 ## 8. 验证
 
 ```powershell
 # 后端测试
 cd backend
-$env:PYTHONPATH = "src"
-python -m pytest -q
+uv run --frozen pytest -q
 
-# 前端测试 / 类型 / 构建
+# 前端测试 / 类型 / 构建（与 CI 顺序一致）
 cd frontend
-npm run test
+npm ci
+npx vue-tsc --noEmit
+npm test
 npm run build
 
 # 健康检查
 curl http://127.0.0.1:8734/api/health   # -> {"status":"ok"}
 ```
+
+同一条流水线在 CI 上运行，见 `.github/workflows/ci.yml`。
 
 ## 9. 常见问题
 

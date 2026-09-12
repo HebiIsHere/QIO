@@ -23,24 +23,29 @@
 
 ## 运行
 
+前置：安装 [uv](https://docs.astral.sh/uv/)（`python -m pip install uv`）。后端依赖由
+`backend/uv.lock` 锁定，CI 与本地使用同一条命令安装，避免「本地任意解析、CI 另一组版本」。
+
 后端（开发）：
 
 ```
 cd backend
-python -m uvicorn agent.main:create_app --factory --port 8734
+uv sync --frozen --extra dev
+uv run --frozen uvicorn agent.main:create_app --factory --port 8734
 ```
 
 SSE 冒烟验证：
 
 ```
-python backend/scripts/verify_sse.py
+cd backend
+uv run --frozen python scripts/verify_sse.py
 ```
 
 前端（开发，需 Rust 工具链）：
 
 ```
 cd frontend
-npm install
+npm ci
 npm run tauri dev
 ```
 
@@ -48,8 +53,15 @@ npm run tauri dev
 
 ```
 cd backend
-python -m pytest
+uv run --frozen pytest
+
+cd frontend
+npm ci
+npm test
 ```
+
+CI（`.github/workflows/ci.yml`）在 push / PR 上跑：后端 py3.11 + py3.12 全量 pytest、
+前端 typecheck + test + build、Rust `cargo check`；不需要任何真实 API Key。
 
 ## 已冻结设计（摘要）
 

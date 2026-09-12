@@ -9,7 +9,16 @@ Write-Host "================ QIO 环境安装 ================" -ForegroundColor
 # 1. 后端 Python 依赖
 Write-Host "[1/4] 安装后端 Python 依赖..." -ForegroundColor Cyan
 Push-Location (Join-Path $root "backend")
-python -m pip install -e ".[dev]"
+$uvOk = $true
+python -m uv --version *> $null
+if ($LASTEXITCODE -ne 0) { $uvOk = $false }
+if ($uvOk) {
+  # 与 CI 一致：按 uv.lock 精确安装，保证换机器版本相同
+  python -m uv sync --frozen --extra dev
+} else {
+  Write-Warning "未检测到 uv，回退到 pip（版本解析可能与 CI 不一致）。建议：python -m pip install uv"
+  python -m pip install -e ".[dev]"
+}
 if ($LASTEXITCODE -ne 0) { throw "后端依赖安装失败" }
 Pop-Location
 Write-Host "  后端依赖 OK" -ForegroundColor Green
@@ -20,7 +29,11 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
   Write-Warning "未检测到 npm，请先安装 Node.js >= 20（https://nodejs.org）后重跑本脚本。"
 } else {
   Push-Location (Join-Path $root "frontend")
-  npm install
+  if (Test-Path (Join-Path $root "frontend/package-lock.json")) {
+    npm ci          # 与 CI 一致：严格按 lockfile 安装
+  } else {
+    npm install
+  }
   if ($LASTEXITCODE -ne 0) { throw "前端依赖安装失败" }
   Pop-Location
   Write-Host "  前端依赖 OK" -ForegroundColor Green
@@ -47,5 +60,5 @@ if (Test-Path (Join-Path $modelDir "model_quantized.onnx")) {
 }
 
 Write-Host "================ 完成 ================" -ForegroundColor Cyan
-Write-Host "启动后端: cd backend; python -m uvicorn agent.main:create_app --factory --host 127.0.0.1 --port 8734"
+Write-Host "启动后端: cd backend; uv run --frozen uvicorn agent.main:create_app --factory --host 127.0.0.1 --port 8734"
 Write-Host "启动前端: cd frontend; npm run dev"
