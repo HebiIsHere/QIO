@@ -455,7 +455,20 @@ class AppContext:
 
     def _route_tools(self, query: str):
         """Route the tool set for one PLANNING step (core + ranked subset)."""
-        return self.tool_router.route(query, self.registry.specs())
+        specs = self.registry.specs()
+        # 工具定义变化 → 失效 embedding 缓存
+        sig = tuple((s.name, s.description) for s in specs)
+        if sig != getattr(self, "_router_sig", None):
+            self.tool_router.invalidate()
+            self._router_sig = sig
+        pending = False
+        try:
+            pending = any(not r.done for r in self.task_manager._records.values())
+        except Exception:  # noqa: BLE001 - routing must never break planning
+            pending = False
+        return self.tool_router.route(
+            query, specs, pending_tasks=pending, web_allowed=True
+        )
 
     # -- subagent notify (strategy 3: completion wakes the main agent) -----
 

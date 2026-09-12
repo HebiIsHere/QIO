@@ -17,6 +17,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
+from agent.tools.policy import CapabilityLevel, ToolExecutionPolicy
+
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 
@@ -52,10 +54,26 @@ class SandboxExecutor:
         code: str,
         arguments: dict[str, Any],
         extra_env: dict[str, str] | None = None,
+        policy: ToolExecutionPolicy | None = None,
     ) -> SandboxResult:
+        policy = policy or ToolExecutionPolicy()
+        executor = self.effective_executor
+        # restricted subprocess 不是安全沙箱：高风险能力若无法可靠隔离，
+        # 拒绝执行（或需经过 Trusted 显式批准），绝不静默降级安全等级。
+        if executor != "docker" and policy.is_high_risk() and policy.level != CapabilityLevel.TRUSTED:
+            return SandboxResult(
+                ok=False,
+                value=None,
+                stdout="",
+                stderr="",
+                error=(
+                    "该工具申请了需要隔离的能力（联网/文件/进程/凭据），"
+                    "但当前没有可用的容器隔离；已拒绝执行。"
+                ),
+            )
         if self.effective_executor == "docker":
-            return await self._execute_docker(code, arguments)
-        return await self._execute_subprocess(code, arguments, extra_env or {})
+            return await self._execute_docker(code, arguments, policy)
+        return await self._execute_subprocess(code, arguments, extra_env or {}, policy)
 
     # -- subprocess executor ----------------------------------------------
 
@@ -64,6 +82,7 @@ class SandboxExecutor:
         code: str,
         arguments: dict[str, Any],
         extra_env: dict[str, str] | None = None,
+        policy: ToolExecutionPolicy | None = None,
     ) -> SandboxResult:
         script = (
             "import json, sys\n"
@@ -119,7 +138,13 @@ class SandboxExecutor:
 
     # -- docker executor (optional) --------------------------------------
 
-    async def _execute_docker(self, code: str, arguments: dict[str, Any]) -> SandboxResult:
+    async def _execute_docker(
+        self,
+        code: str,
+        arguments: dict[str, Any],
+        policy: ToolExecutionPolicy | None = None,
+    ) -> SandboxResult:
+        policy = policy or ToolExecutionPolicy()
         if not self._docker_available():
             return SandboxResult(
                 ok=False, value=None, stdout="", stderr="",
@@ -133,10 +158,7 @@ class SandboxExecutor:
             "exec(compile(CODE, '<tool>', 'exec'), namespace)\n"
             "print(json.dumps(namespace['run'](**ARGS), ensure_ascii=False))\n"
         )
-        command = [
-            "docker", "run", "--rm", "--network", "none", "--memory", "256m",
-            "-i", "python:3.12-slim", "python", "-c", script,
-        ]
+        command = self._docker_command(script, policy)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -167,3 +189,23 @@ class SandboxExecutor:
                 error="tool did not print a JSON result",
             )
         return SandboxResult(ok=True, value=value, stdout=out_text, stderr=err_text)
+
+    def _docker_command(self, script: str, policy: ToolExecutionPolicy) -> list[str]:
+        """Build the docker run command from the execution policy."""
+        command = [
+            "docker", "run", "--rm",
+            "--network", "bridge" if policy.network else "none",
+            "--memory", "256m",
+            "--cpus", "1",
+            "--pids-limit", "64",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,size=64m",
+            "--security-opt", "no-new-privileges",
+        ]
+        for path in policy.filesystem:
+            import hashlib
+
+            tag = int(hashlib.md5(path.encode("utf-8")).hexdigest(), 16) % 10000
+            command += ["-v", f"{path}:/mnt/{tag}:ro"]
+        command += ["-i", "python:3.12-slim", "python", "-c", script]
+        return command

@@ -28,21 +28,26 @@ class CodeTool(Tool):
         self.credentials = credentials
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        from agent.tools.policy import resolve_policy
+
+        policy = resolve_policy(self)
         extra_env: dict[str, str] = {}
-        if self.definition.credential_ref:
+        # 只有在 policy 明确授权了凭据类别时才注入；否则工具环境里没有凭据。
+        if policy.credentials:
             if self.credentials is None:
                 return ToolResult(
                     ok=False, error="tool references a credential but none is wired"
                 )
-            secret = self.credentials.get_secret(self.definition.credential_ref)
+            ref = self.definition.credential_ref
+            secret = self.credentials.get_secret(ref) if ref else None
             if secret is None:
                 secret = self.credentials.get_default_secret()
             if secret is None:
                 return ToolResult(ok=False, error="referenced credential unavailable")
-            key = self.definition.credential_ref.upper().replace("-", "_")
+            key = (ref or "default").upper().replace("-", "_")
             extra_env[f"QIO_KEY_{key}"] = secret
         result = await self.sandbox.execute(
-            self.definition.code, kwargs, extra_env=extra_env
+            self.definition.code, kwargs, extra_env=extra_env, policy=policy
         )
         if not result.ok:
             return ToolResult(ok=False, error=result.error or "sandbox failure")
