@@ -42,6 +42,8 @@ class Completion:
     message: ChatMessage
     raw: Any = None
     usage: dict[str, Any] | None = None
+    # 归一化的结束原因（stop / tool_calls / length / content_filter / None）
+    finish_reason: str | None = None
 
     @property
     def tool_calls(self) -> list[ToolCall] | None:

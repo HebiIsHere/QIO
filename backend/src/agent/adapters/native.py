@@ -99,7 +99,12 @@ class NativeAdapter(BaseAdapter):
 
         attempt = 0
         while True:
-            raw = await self._client.chat.completions.create(**kwargs)
+            try:
+                raw = await self._client.chat.completions.create(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - normalize provider errors
+                from agent.adapters.errors import normalize_error
+
+                raise normalize_error(exc) from exc
             try:
                 return self._to_completion(raw)
             except ToolCallParseError as parse_error:
@@ -160,4 +165,5 @@ class NativeAdapter(BaseAdapter):
             ),
             raw=raw,
             usage=usage,
+            finish_reason=getattr(raw.choices[0], "finish_reason", None),
         )

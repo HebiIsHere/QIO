@@ -101,7 +101,12 @@ class TextAdapter(BaseAdapter):
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        raw = await self._client.chat.completions.create(**kwargs)
+        try:
+            raw = await self._client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - normalize provider errors
+            from agent.adapters.errors import normalize_error
+
+            raise normalize_error(exc) from exc
         content = raw.choices[0].message.content or ""
         parsed = self._parse(content)
         ok = parsed is not None

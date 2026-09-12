@@ -187,10 +187,21 @@ class AnthropicAdapter(BaseAdapter):
                 logger.warning("anthropic tool parse retry %d/%d", attempt, self.parse_retries)
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._client.post(f"{self.endpoint}/messages", json=payload)
+        from agent.adapters import errors as e
+
+        try:
+            resp = await self._client.post(f"{self.endpoint}/messages", json=payload)
+        except Exception as exc:  # noqa: BLE001 - normalize transport errors
+            raise e.NetworkError(str(exc)[:300]) from exc
         if resp.status_code >= 400:
             body = resp.text[:500]
-            raise RuntimeError(f"anthropic api {resp.status_code}: {body}")
+            if resp.status_code in (401, 403):
+                raise e.AuthenticationError(f"anthropic {resp.status_code}: {body}")
+            if resp.status_code == 429:
+                raise e.RateLimitError(f"anthropic 429: {body}")
+            if 400 <= resp.status_code < 500:
+                raise e.InvalidToolCall(f"anthropic {resp.status_code}: {body}")
+            raise e.ProviderInternalError(f"anthropic {resp.status_code}: {body}")
         return resp.json()
 
     def _to_completion(self, raw: dict[str, Any]) -> Completion:
@@ -225,6 +236,7 @@ class AnthropicAdapter(BaseAdapter):
                 tool_calls=tool_calls,
             ),
             raw=raw,
+            finish_reason=raw.get("stop_reason"),
             usage={
                 "total_tokens": (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0),
                 "input_tokens": usage.get("input_tokens") or 0,

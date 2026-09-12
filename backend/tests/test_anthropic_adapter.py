@@ -163,7 +163,10 @@ async def test_http_error_raises():
         return httpx.Response(401, text="invalid x-api-key")
 
     adapter = _make_adapter(handler)
-    with pytest.raises(RuntimeError, match="401"):
+    from agent.adapters.errors import AuthenticationError
+
+    # provider-specific HTTP error 现已归一化为内部异常
+    with pytest.raises(AuthenticationError, match="401"):
         await adapter.complete([ChatMessage(role="user", content="hi")], [])
     await adapter.close()
 
