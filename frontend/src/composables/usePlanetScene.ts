@@ -1,16 +1,24 @@
 ﻿/**
  * 星球 3D 场景组合式函数：透明球 + 球面 SDF 融合环 + 聚焦/环波交互。
- * 移植自参考原型 .superpowers/brainstorm/vs-1786250923/content/planet3d.html，
- * 数据源改为后端 API（按位置聚簇 → buildTopics 生成话题点）。
- * 对外接口（cameraState/selectedTopicId/fps/webglOK/markers 与 init/loadTopics/go/
- * focusTopic/handleClick/cancelAnimation/resize/setTopics）保持不变，新增 setTheme。
+ * 移植自参考原型 .superpowers/brainstorm/vs-1786250923/content/planet3d.html。
+ *
+ * 第二阶段职责划分（见 docs/architecture.md 的 Planet 一节）：
+ *   话题数据 → 浏览调度（PlanetBrowseSession）→ 展示窗口 → 临时布局（layoutSlots）
+ *   → Three.js 表现（本文件）。
+ * 渲染循环只负责「怎么画」：谁应该在窗口里由浏览会话决定，本文件不自己挑话题。
+ * 话题点用固定容量的对象池承载，进出只换数据，不 new / dispose。
  */
 import { onScopeDispose, ref, shallowRef } from "vue";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { TopicPosition } from "../services/api";
-import { buildTopics, type TopicData } from "../planet/topicData";
-import { MAX_TOPICS, RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
+import type { TopicData } from "../planet/topicData";
+import { RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
+import { backSlotOrder, slotPositions } from "../planet/layoutSlots";
+import { DotPool } from "../planet/dotPool";
+import { BrowseFlowDriver } from "../planet/browseFlow";
+import type { BrowseTopic } from "../planet/browseSession";
+import { PlanetBrowseSession } from "../planet/browseSession";
 
 export type CameraState = "overview" | "planet" | "focus";
 
@@ -22,6 +30,15 @@ const RADII: Record<CameraState, number> = { overview: 5.5, planet: 2.6, focus: 
 const THEME_LINE: Record<"dark" | "light", number> = { dark: 0xe878bd, light: 0xb0136a };
 /** 话题点兜底材质：Canvas 贴图不可用时复用（模块级单例，避免反复创建/泄漏） */
 const DOT_FALLBACK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
+
+/** 新话题进入的淡入时长（毫秒） */
+const ENTER_FADE_MS = 420;
+
+/** 话题点的稳定大小档位：由 visual_seed 决定，同一个话题每次出现一样大 */
+function dotSizeOf(topic: BrowseTopic): number {
+  const seed = topic.visual_seed ?? 0;
+  return 0.85 + ((seed % 100) / 100) * 0.45;
+}
 
 export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   const webglOK = ref(false);
@@ -46,13 +63,23 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let fillMat: THREE.MeshBasicMaterial | null = null;
   let gridMats: THREE.LineBasicMaterial[] = [];
   let dotMat: THREE.MeshBasicMaterial | null = null;
+  /** 话题点对象池：数量固定 = 可见容量，进出只换数据（见 planet/dotPool.ts） */
+  let dotPool: DotPool | null = null;
+  /** 当前槽位的球面方向（单位球面，由 layoutSlots 按会话种子确定） */
+  let slotDirs: THREE.Vector3[] = [];
+  /** 浏览会话：序列 / 游标 / 展示窗口（见 planet/browseSession.ts） */
+  let browseSession: PlanetBrowseSession | null = null;
+  /** 旋转 → 话题流 的节流器 */
+  let flowDriver = new BrowseFlowDriver();
+  let lastAzimuth: number | null = null;
+  /** 窗口话题集合变化时的回调（调用方刷新标签 / 选中态） */
+  let windowChanged: (() => void) | null = null;
   /** 选中话题的持续标记：跟随选中点的圆环（不依赖短暂的环线动画） */
   let selRing: THREE.Mesh | null = null;
   let currentData: TopicData[] = [];
   let currentTheme: "dark" | "light" = "dark";
 
   let dotMeshes: THREE.Mesh[] = [];
-  let dotByTopicId = new Map<string, THREE.Mesh>();
   let raf = 0;
   /** 渲染循环是否在跑（隐藏/暂停时停掉，避免不可见时仍然绘帧） */
   let loopActive = false;
@@ -136,29 +163,6 @@ function motionDuration(ms: number): number {
     tex.generateMipmaps = false;
     tex.anisotropy = renderer ? renderer.capabilities.getMaxAnisotropy() : 1;
     return tex;
-  }
-
-  /** 将真实话题位置按球面角距离贪心聚簇，返回簇（中心 + 数量 + 成员 topic_id）。 */
-  function buildClusters(topics: TopicPosition[]) {
-    interface Cluster { center: THREE.Vector3; n: number; members: string[]; }
-    const clusters: Cluster[] = [];
-    for (const t of topics) {
-      const p = new THREE.Vector3(...t.position).normalize();
-      let best: Cluster | null = null;
-      let bestAng = Infinity;
-      for (const cl of clusters) {
-        const ang = Math.acos(Math.max(-1, Math.min(1, p.dot(cl.center))));
-        if (ang < bestAng) { bestAng = ang; best = cl; }
-      }
-      if (best && bestAng < CLUSTER_ANG) {
-        best.members.push(t.topic_id);
-        best.n += 1;
-        best.center.add(p).normalize();
-      } else {
-        clusters.push({ center: p.clone(), n: 1, members: [t.topic_id] });
-      }
-    }
-    return clusters;
   }
 
   function applyRingUniforms(data: TopicData[]) {
@@ -341,48 +345,85 @@ function motionDuration(ms: number): number {
   }
 
   /**
-   * 加载话题位置并重建星球话题点（圆点 + 融合环 uniforms）。
-   * v1 限制：星球仅渲染前 MAX_TOPICS(16) 个话题（球面融合环 uniform 数组上限），
-   * 超出部分不生成圆点，但侧栏话题列表仍展示全部话题。
+   * 建立本次浏览的展示窗口（第二阶段）：
+   *
+   * - 槽位来自 `layoutSlots`（当前展示布局，不写进数据库，也不是永久坐标）；
+   * - 渲染对象来自对象池（数量固定 = 可见容量，进出只换数据）；
+   * - 窗口内容由 `PlanetBrowseSession` 决定，渲染循环只负责怎么画。
    */
-  function loadTopics(topics: TopicPosition[]) {
+  function attachBrowse(
+    session: PlanetBrowseSession,
+    options: { seed?: number; onWindowChange?: () => void } = {},
+  ): void {
     const pg = planetGroup;
     if (!pg) return;
-    topicsRef.value = topics;
-    clearHover();
-    lastSelectedLabel = null;
-    selectedLabel.value = null;
-    if (selRing) selRing.visible = false;
-    dotMeshes.forEach((m) => { pg.remove(m); m.geometry.dispose(); });
-    dotMeshes = [];
-    dotByTopicId.clear();
-    focusedDot = null;
-    targetQuat = null;
-    if (!topics.length) {
-      currentData = [];
-      applyRingUniforms(currentData);
-      markers.value = [];
-      return;
+    browseSession = session;
+    windowChanged = options.onWindowChange ?? null;
+    slotDirs = slotPositions(session.capacity, options.seed ?? 1);
+    const material = dotMat ?? DOT_FALLBACK_MATERIAL;
+
+    if (!dotPool || dotPool.capacity !== session.capacity) {
+      dotPool?.all().forEach((m) => pg.remove(m));
+      dotPool = new DotPool({
+        capacity: session.capacity,
+        radius: DOT_RADIUS,
+        sizeOf: dotSizeOf,
+        createMesh: () => {
+          const mesh = new THREE.Mesh(
+            new THREE.CircleGeometry(0.028, 32),
+            material.clone(),
+          );
+          mesh.renderOrder = 5;
+          pg.add(mesh);
+          return mesh;
+        },
+      });
     }
-    const clusters = buildClusters(topics);
-    const titleById = new Map(topics.map((t) => [t.topic_id, t.name]));
-    const orderedIds: string[] = [];
-    clusters.forEach((cl) => cl.members.forEach((id) => orderedIds.push(id)));
-    currentData = buildTopics(clusters.map((cl) => ({ center: cl.center, n: cl.n }))).slice(0, MAX_TOPICS);
+    dotMeshes = dotPool.all();
+    currentData = slotDirs.map((dir, i) => ({ id: `slot-${i}`, ci: i % 3, pos: dir, w: 1 }));
     applyRingUniforms(currentData);
-    currentData.forEach((td, i) => {
-      const topicId = orderedIds[i];
-      const base = 0.028 * td.w;
-      const dot = new THREE.Mesh(new THREE.CircleGeometry(base, 48), dotMat ?? DOT_FALLBACK_MATERIAL);
-      dot.position.copy(td.pos).multiplyScalar(DOT_RADIUS);
-      dot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), td.pos.clone().normalize());
-      dot.userData = { topicId, ci: td.ci, base, title: titleById.get(topicId) ?? "" };
-      dot.renderOrder = 5;
-      pg.add(dot);
-      dotMeshes.push(dot);
-      if (topicId) dotByTopicId.set(topicId, dot);
-    });
     markers.value = dotMeshes;
+    refreshWindow(performance.now());
+    flowDriver.reset();
+    lastAzimuth = null;
+  }
+
+  /** 把浏览会话当前的展示窗口画出来（整窗同步一次）。 */
+  function refreshWindow(now: number) {
+    const session = browseSession;
+    if (!session || !dotPool) return;
+    const items = session.windowSlots();
+    dotPool.applyWindow(items, slotDirs);
+    dotPool.all().forEach((mesh, slot) => {
+      // 已经在窗口里的话题不再重播淡入：只有真正换进来的才做进入动画
+      const changed = (mesh.userData.windowTopicId as string | null) !== (items[slot]?.topic_id ?? null);
+      if (changed) {
+        mesh.userData.enterAt = now;
+        mesh.userData.windowTopicId = items[slot]?.topic_id ?? null;
+      }
+    });
+    applyRingUniforms(currentData);
+    windowChanged?.();
+  }
+
+  /** 单个槽位替换（旋转推动话题流时使用）。 */
+  function applySwap(slot: number, topic: BrowseTopic | null, now: number) {
+    if (!dotPool) return;
+    const mesh = dotPool.place(slot, topic, slotDirs[slot] ?? new THREE.Vector3(0, 0, 1));
+    mesh.userData.enterAt = now;
+    mesh.userData.windowTopicId = topic?.topic_id ?? null;
+    windowChanged?.();
+  }
+
+  /** 当前哪些槽位在球体背面（用户看不见），按最背面优先排序。 */
+  function backSlots(): number[] {
+    if (!camera || !planetGroup || !slotDirs.length) return [];
+    planetGroup.getWorldPosition(_centerV);
+    _camDirV.subVectors(camera.position, _centerV).normalize();
+    const worldDirs = slotDirs.map((dir) =>
+      dir.clone().applyQuaternion(planetGroup!.quaternion).normalize(),
+    );
+    return backSlotOrder(worldDirs, _camDirV);
   }
 
   function beginTween(from: THREE.Vector3, to: THREE.Vector3, dur: number, done?: () => void) {
@@ -452,7 +493,7 @@ function motionDuration(ms: number): number {
    * opts.duration 覆盖补间时长（重对焦/边栏开合后微调用短时长）；opts.wave=false 抑制环波。 */
   function focusTopic(topicId: string, topics: TopicPosition[], opts?: { duration?: number; wave?: boolean }) {
     if (!camera || !planetGroup) return;
-    const dot = dotByTopicId.get(topicId);
+    const dot = dotPool?.meshOfTopic(topicId) ?? null;
     if (!dot) {
       const topic = topics.find((t) => t.topic_id === topicId);
       if (topic) go("focus", new THREE.Vector3(...topic.position));
@@ -605,13 +646,42 @@ function motionDuration(ms: number): number {
     }
     if (contour) contour.quaternion.copy(camera.quaternion);
 
-    // 半球剔除：点在星球背面则隐藏
+    // 旋转推动话题流：方位角累计够一步就换掉一个背面槽位。
+    // 只统计用户真实操作镜头产生的方位角变化（补间期间 controls 关闭，不参与流动）。
+    {
+      const azimuth = controls.getAzimuthalAngle();
+      if (lastAzimuth === null) {
+        lastAzimuth = azimuth;
+      } else {
+        let delta = azimuth - lastAzimuth;
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        else if (delta < -Math.PI) delta += Math.PI * 2;
+        lastAzimuth = azimuth;
+        const interacting = controls.enabled && !tween;
+        const step = flowDriver.feed(delta, now, interacting);
+        if (step !== 0 && browseSession) {
+          const swap = browseSession.takeSwap(step > 0 ? 1 : -1, backSlots(), now);
+          if (swap) applySwap(swap.slot, swap.topic, now);
+        }
+      }
+    }
+
+    // 半球剔除 + 进入淡入：新话题从「远处低透明」自然进入（spec 第 81 条）
+    // 数据替换只发生在背面（不可见）槽位，用户看到的是连续世界。
     planetGroup.updateMatrixWorld(true);
     planetGroup.getWorldPosition(_centerV);
     _camDirV.subVectors(camera.position, _centerV);
     for (const dot of dotMeshes) {
       dot.getWorldPosition(tmpV);
-      dot.visible = tmpV.sub(_centerV).dot(_camDirV) >= 0;
+      const active = dot.userData.active === true;
+      dot.visible = active && tmpV.sub(_centerV).dot(_camDirV) >= 0;
+      const mat = dot.material as THREE.MeshBasicMaterial;
+      if (!mat.transparent) continue;
+      const enterAt = (dot.userData.enterAt as number) ?? 0;
+      const k = Math.min(1, Math.max(0, (now - enterAt) / ENTER_FADE_MS));
+      mat.opacity = k;
+      const base = (dot.userData.base as number) ?? 0.028;
+      dot.scale.setScalar((0.7 + 0.3 * k) * (base / 0.028));
     }
 
     // 选中标记跟随选中点（圆环始终正对相机；点转到背面时一并隐藏）
@@ -704,11 +774,15 @@ function motionDuration(ms: number): number {
 
   return {
     webglOK, fps, cameraState, selectedTopicId, markers, hoverTopicId, hoverLabel, selectedLabel,
-    init, loadTopics, go, focusTopic, handleClick, cancelAnimation, resize, setTheme,
+    init, attachBrowse, go, focusTopic, handleClick, cancelAnimation, resize, setTheme,
     setPaused,
     primeCamera, pullBack,
+    /** 当前展示窗口里的 topic_id（按槽位顺序，空位为 null）。 */
+    windowTopicIds: () => dotPool?.windowTopicIds() ?? [],
+    /** 把浏览会话的展示窗口同步到画布（窗口内容变化后调用）。 */
+    refreshWindow,
     setTopics: (list: TopicPosition[]) => {
-      // 仅暂存列表供 handleClick/focusTopic 查找；星球渲染上限见 loadTopics（MAX_TOPICS=16）
+      // 仅暂存列表：星球的话题点由展示窗口决定（见 attachBrowse / PlanetBrowseSession）
       topicsRef.value = list;
     },
   };

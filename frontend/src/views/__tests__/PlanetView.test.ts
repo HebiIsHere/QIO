@@ -6,7 +6,14 @@ import PlanetView from "../PlanetView.vue";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
 import { resetPlanetSession } from "../../composables/planetSession";
-import type { EntityCard, KnowledgeItem, TopicDetail, TopicFingerprint, TopicPosition } from "../../services/api";
+import type {
+  EntityCard,
+  KnowledgeItem,
+  PlanetTopicSummary,
+  TopicDetail,
+  TopicFingerprint,
+} from "../../services/api";
+import type { PlanetBrowseSession } from "../../planet/browseSession";
 
 const mocks = vi.hoisted(() => ({
   goMock: vi.fn(() => Promise.resolve()),
@@ -16,12 +23,14 @@ const mocks = vi.hoisted(() => ({
   setPausedMock: vi.fn(),
   setThemeMock: vi.fn(),
   initMock: vi.fn(),
-  loadTopicsMock: vi.fn(),
+  attachBrowseMock: vi.fn(),
   setTopicsMock: vi.fn(),
+  refreshWindowMock: vi.fn(),
   handleClickMock: vi.fn(),
   apiMock: {
     listTopics: vi.fn<() => Promise<{ topics: TopicFingerprint[] }>>(async () => ({ topics: [] })),
-    getPositions: vi.fn<() => Promise<{ topics: TopicPosition[] }>>(async () => ({ topics: [] })),
+    planetOverview: vi.fn(async () => ({ topics: [] as PlanetTopicSummary[], total: 0, visible_capacity: 12 })),
+    planetBrowse: vi.fn(async (_body?: { current_topic_id?: string | null }) => browsePage([])),
     getTopicDetail: vi.fn<() => Promise<TopicDetail>>(async () => ({}) as TopicDetail),
     // 与真实后端契约一致：返回权威 fragment_title / historic（historic=false 表示当前开放片段）
     setAnchor: vi.fn(async (_topicId: string, fragmentId: string | null) => ({
@@ -31,12 +40,36 @@ const mocks = vi.hoisted(() => ({
       fragment_title: fragmentId === "f13" ? "Anchor 生命周期" : null,
       historic: Boolean(fragmentId) && fragmentId !== "f20",
     })),
+    // 与真实后端契约一致：来源是开放片段时不开新片段（historic=false）
+    continueFromHistory: vi.fn(async (topicId: string, fragmentId: string) =>
+      fragmentId === "f20"
+        ? {
+            ok: true,
+            topic_id: topicId,
+            fragment_id: "f20",
+            fragment_title: null,
+            historic: false,
+            created_fragment_id: null,
+            source_fragment_id: null,
+          }
+        : {
+            ok: true,
+            topic_id: topicId,
+            fragment_id: "frag_new",
+            fragment_title: "Anchor 生命周期",
+            historic: true,
+            created_fragment_id: "frag_new",
+            source_fragment_id: fragmentId,
+          },
+    ),
     listKnowledge: vi.fn<() => Promise<{ knowledge: KnowledgeItem[] }>>(async () => ({ knowledge: [] })),
     listEntities: vi.fn<() => Promise<{ entities: EntityCard[] }>>(async () => ({ entities: [] })),
   },
 }));
 
 let currentFake: ReturnType<typeof createFakePlanet> | null = null;
+/** 最近一次 attachBrowse 传入的浏览会话（测试用它断言展示窗口） */
+let attachedSession: PlanetBrowseSession | null = null;
 function createFakePlanet() {
   const selectedTopicId = ref<string | null>(null);
   return {
@@ -46,7 +79,13 @@ function createFakePlanet() {
     selectedTopicId,
     markers: shallowRef([]),
     init: mocks.initMock,
-    loadTopics: mocks.loadTopicsMock,
+    attachBrowse: (session: PlanetBrowseSession, options?: { onWindowChange?: () => void }) => {
+      attachedSession = session;
+      mocks.attachBrowseMock(session, options);
+      options?.onWindowChange?.();
+    },
+    windowTopicIds: () => attachedSession?.windowSlots().map((s) => s?.topic_id ?? null) ?? [],
+    refreshWindow: mocks.refreshWindowMock,
     go: mocks.goMock,
     // 模拟真实 focusTopic：同步设置 selectedTopicId（触发详情 watcher）
     focusTopic: (topicId: string, topics: unknown) => {
@@ -74,17 +113,43 @@ vi.mock("../../composables/usePlanetScene", () => ({
 vi.mock("../../services/api", () => ({ api: mocks.apiMock }));
 
 const TOPICS: TopicFingerprint[] = [{ topic_id: "t1", title: "话题 A", keywords: [], fragment_count: 3, last_activity: null, summary_preview: null }];
-const POSITIONS: TopicPosition[] = [{ topic_id: "t1", name: "话题 A", position: [0, 0, 1], activity: 1, updated_at: "" }];
+const SUMMARIES: PlanetTopicSummary[] = [
+  { topic_id: "t1", title: "话题 A", fragment_count: 3, last_activity: null, summary_preview: null, visual_seed: 1 },
+];
 const DETAIL: TopicDetail = { topic_id: "t1", name: "话题 A", fragments: [], entities: [], knowledge: [] };
 
 const TOPICS2: TopicFingerprint[] = [
   ...TOPICS,
   { topic_id: "t2", title: "话题 B", keywords: [], fragment_count: 1, last_activity: null, summary_preview: null },
 ];
-const POSITIONS2: TopicPosition[] = [
-  ...POSITIONS,
-  { topic_id: "t2", name: "话题 B", position: [1, 0, 0], activity: 1, updated_at: "" },
+const SUMMARIES2: PlanetTopicSummary[] = [
+  ...SUMMARIES,
+  { topic_id: "t2", title: "话题 B", fragment_count: 1, last_activity: null, summary_preview: null, visual_seed: 2 },
 ];
+
+/** 后端浏览接口的响应形状（游标可前进可后退） */
+function browsePage(items: PlanetTopicSummary[], cursor = "7.0.0") {
+  return {
+    seed: 7,
+    pass_index: 0,
+    cursor,
+    prev_cursor: cursor,
+    next_cursor: "7.0.12",
+    has_more: false,
+    pass_changed: false,
+    total: items.length,
+    visible_capacity: 12,
+    items,
+  };
+}
+
+/** 后端契约：第一批永远把「当前所在话题」放在首位 */
+function browseFor(currentTopicId: string | null | undefined, items: PlanetTopicSummary[]) {
+  if (!currentTopicId) return browsePage(items);
+  const anchor = items.find((item) => item.topic_id === currentTopicId);
+  if (!anchor) return browsePage(items);
+  return browsePage([anchor, ...items.filter((item) => item.topic_id !== currentTopicId)]);
+}
 
 function mountView(pinia: Pinia, attach = false) {
   return mount(PlanetView, { attachTo: attach ? document.body : undefined, global: { plugins: [pinia] } });
@@ -98,12 +163,16 @@ function newPinia() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  attachedSession = null;
   resetPlanetSession();
   document.documentElement.removeAttribute("data-theme");
   mocks.handleClickMock.mockReturnValue(false);
   mocks.goMock.mockImplementation(() => Promise.resolve());
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
-  mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS });
+  mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES, total: SUMMARIES.length, visible_capacity: 12 });
+  mocks.apiMock.planetBrowse.mockImplementation(async (body?: { current_topic_id?: string | null }) =>
+    browseFor(body?.current_topic_id, SUMMARIES),
+  );
   mocks.apiMock.getTopicDetail.mockResolvedValue(DETAIL);
   mocks.apiMock.listKnowledge.mockResolvedValue({ knowledge: [] });
   mocks.apiMock.listEntities.mockResolvedValue({ entities: [] });
@@ -114,8 +183,8 @@ describe("PlanetView 相机联动", () => {
     const w = mountView(newPinia());
     await flushPromises();
     expect(mocks.initMock).toHaveBeenCalled();
-    expect(mocks.setTopicsMock).toHaveBeenCalledWith(POSITIONS);
-    expect(mocks.loadTopicsMock).toHaveBeenCalledWith(POSITIONS);
+    expect(mocks.attachBrowseMock).toHaveBeenCalled();
+    expect(attachedSession?.windowSlots().filter(Boolean).map((s) => s!.topic_id)).toEqual(["t1"]);
     expect(mocks.goMock).toHaveBeenLastCalledWith("planet", null, 420);
     w.unmount();
   });
@@ -126,7 +195,7 @@ describe("PlanetView 相机联动", () => {
     session.currentTopicId = "t1";
     const w = mountView(pinia);
     await flushPromises();
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS);
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", []);
     expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledWith("t1");
     w.unmount();
   });
@@ -234,7 +303,7 @@ describe("PlanetView 相机联动", () => {
     await flushPromises();
     await w.find(".topic-list li").trigger("click");
     await flushPromises();
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS);
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", []);
     // 显式 loadDetail 已移除：watcher 是唯一详情来源，慢 API 下也只请求一次
     expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledTimes(1);
     expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledWith("t1");
@@ -250,7 +319,7 @@ describe("PlanetView 相机联动", () => {
     let resolvePos!: () => void;
     mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
-    mocks.apiMock.getPositions.mockImplementation(() => new Promise((r) => { resolvePos = () => r({ topics: POSITIONS }); }));
+    mocks.apiMock.planetBrowse.mockImplementation(() => new Promise((r) => { resolvePos = () => r(browsePage(SUMMARIES)); }));
     const w = mountView(newPinia());
     // loadData 的 API 尚未 resolve 时先关闭
     await w.find(".close-btn").trigger("click");
@@ -258,7 +327,6 @@ describe("PlanetView 相机联动", () => {
     expect(resolvers.length).toBe(1);
     // 随后 API resolve → loadData 继续，但不得再推进 planet / 聚焦话题
     resolveList();
-    resolvePos();
     await flushPromises();
     expect(mocks.goMock).not.toHaveBeenCalled();
     expect(mocks.focusTopicMock).not.toHaveBeenCalled();
@@ -381,7 +449,7 @@ describe("PlanetView 右侧话题边栏", () => {
     const callsBefore = mocks.focusTopicMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(400);
     expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore + 1);
-    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", POSITIONS);
+    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", []);
     vi.useRealTimers();
     w.unmount();
   });
@@ -413,7 +481,7 @@ describe("PlanetView 右侧话题边栏", () => {
     const callsBefore = mocks.focusTopicMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(400);
     expect(mocks.focusTopicMock).toHaveBeenCalledTimes(callsBefore + 1);
-    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", POSITIONS);
+    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t1", []);
     vi.useRealTimers();
     w.unmount();
   });
@@ -506,11 +574,13 @@ describe("星球记忆中心面板", () => {
 
     await w.find(".start-btn").trigger("click");
     await flushPromises();
-    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", "f13");
+    // 第二阶段：从历史继续 = 新建接续片段（旧片段不变），不是直接把位置钉在旧片段上
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f13");
     expect(session.anchorHistoric).toBe(true);
     // 标题用后端返回的权威值（不是前端从摘要里截的 40 字）
     expect(session.anchorFragment?.title).toBe("Anchor 生命周期");
-    expect(session.anchorFragmentId).toBe("f13");
+    // 位置落在新建的接续片段上，来源历史留在后端 source_fragment_id
+    expect(session.anchorFragmentId).toBe("frag_new");
     w.unmount();
   });
 
@@ -540,7 +610,8 @@ describe("星球记忆中心面板", () => {
 
     await w.find(".start-btn").trigger("click");
     await flushPromises();
-    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", "f20");
+    // 选中的就是当前开放片段：后端不会另开一段，位置仍停在这个片段上
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f20");
     // 当前开放片段不是「历史位置」：对话页不应出现「从…继续」
     expect(session.anchorHistoric).toBe(false);
     w.unmount();
@@ -701,17 +772,21 @@ describe("PlanetView 图形诊断可见性（任务04 A1/A7）", () => {
 
 describe("任务05 收尾：加载提示、详情布局、选择可达性与浏览状态", () => {
   it("首次数据加载中显示加载提示，加载完成后消失（不以空球冒充完整内容）", async () => {
-    let resolveList!: () => void;
+    let resolveOverview!: () => void;
     let resolvePos!: () => void;
-    mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
-    mocks.apiMock.getPositions.mockImplementation(() => new Promise((r) => { resolvePos = () => r({ topics: POSITIONS }); }));
+    mocks.apiMock.planetOverview.mockImplementation(
+      () => new Promise((r) => { resolveOverview = () => r({ topics: SUMMARIES, total: 1, visible_capacity: 12 }); }),
+    );
+    mocks.apiMock.planetBrowse.mockImplementation(() => new Promise((r) => { resolvePos = () => r(browsePage(SUMMARIES)); }));
     const w = mountView(newPinia());
     await nextTick();
     const loading = w.find(".planet-loading");
     expect(loading.exists()).toBe(true);
     expect(loading.text()).toContain("正在加载");
 
-    resolveList();
+    resolveOverview();
+    // 概览之后才会请求第一批窗口（两层接口顺序调用）
+    await flushPromises();
     resolvePos();
     await flushPromises();
     expect(w.find(".planet-loading").exists()).toBe(false);
@@ -760,7 +835,7 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     expect(li.attributes("tabindex")).toBe("0");
     expect(li.attributes("role")).toBe("option");
     await li.trigger("keydown.enter");
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS);
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", []);
     w.unmount();
   });
 
@@ -790,7 +865,8 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     const pinia = newPinia();
     useSessionStore().currentTopicId = "t1";
     mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
-    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+    mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES2, total: 2, visible_capacity: 12 });
+    mocks.apiMock.planetBrowse.mockImplementation(async (body?: { current_topic_id?: string | null }) => browseFor(body?.current_topic_id, SUMMARIES2));
 
     const first = mountView(pinia);
     await flushPromises();
@@ -803,7 +879,7 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     setActivePinia(pinia);
     const second = mountView(pinia);
     await flushPromises();
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t2", POSITIONS2);
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t2", []);
     second.unmount();
   });
 
@@ -811,7 +887,8 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     const pinia = newPinia();
     useSessionStore().currentTopicId = "t1";
     mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
-    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+    mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES2, total: 2, visible_capacity: 12 });
+    mocks.apiMock.planetBrowse.mockImplementation(async (body?: { current_topic_id?: string | null }) => browseFor(body?.current_topic_id, SUMMARIES2));
 
     const first = mountView(pinia);
     await flushPromises();
@@ -825,7 +902,7 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     setActivePinia(pinia);
     const second = mountView(pinia);
     await flushPromises();
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS2);
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", []);
     second.unmount();
   });
 
@@ -848,7 +925,8 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     getDetail.mockImplementation((id: string) => new Promise<TopicDetail>((r) => { pending.set(id, r); }));
 
     mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
-    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+    mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES2, total: 2, visible_capacity: 12 });
+    mocks.apiMock.planetBrowse.mockImplementation(async (body?: { current_topic_id?: string | null }) => browseFor(body?.current_topic_id, SUMMARIES2));
     const w = mountView(newPinia());
     await flushPromises();
 
@@ -953,5 +1031,74 @@ describe("PlanetView 实例复用（性能：不再每次重建 WebGL 场景）"
     expect(w.classes()).not.toContain("settling");
     vi.useRealTimers();
     w.unmount();
+  });
+});
+
+describe("第二阶段：浏览 ≠ 进入话题", () => {
+  beforeEach(() => {
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
+    mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES2, total: 2, visible_capacity: 12 });
+    mocks.apiMock.planetBrowse.mockImplementation(async (body?: { current_topic_id?: string | null }) =>
+      browseFor(body?.current_topic_id, SUMMARIES2),
+    );
+  });
+
+  it("选中话题只是查看：不调用 setAnchor，也不新建接续片段", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    await w.findAll(".topic-list li")[1].trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiMock.setAnchor).not.toHaveBeenCalled();
+    expect(mocks.apiMock.continueFromHistory).not.toHaveBeenCalled();
+    expect(useSessionStore().currentTopicId).toBe("t1");
+  });
+
+  it("窗口里没有的话题被选中时进入展示窗口（搜索/列表都能让它出现）", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    // 第一批只带当前话题：t2 不在窗口里，只能靠「列表/搜索命中 → 注入窗口」出现
+    mocks.apiMock.planetBrowse.mockImplementation(async () => browsePage([SUMMARIES[0]]));
+    const w = mountView(pinia);
+    await flushPromises();
+    expect(attachedSession?.windowSlots().some((s) => s?.topic_id === "t2")).toBe(false);
+
+    await w.findAll(".topic-list li")[1].trigger("click");
+    await flushPromises();
+
+    expect(attachedSession?.windowSlots().some((s) => s?.topic_id === "t2")).toBe(true);
+    expect(mocks.focusTopicMock).toHaveBeenLastCalledWith("t2", []);
+  });
+
+  it("未选片段时按钮是「进入这个话题」，按下才提交新的起点", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    expect(w.find(".start-btn").text()).toContain("进入「话题 A」");
+    await w.find(".start-btn").trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null);
+    expect(mocks.apiMock.continueFromHistory).not.toHaveBeenCalled();
+  });
+
+  it("浏览会话里选中的话题被锁定：查看期间不会被回收", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    await w.findAll(".topic-list li")[1].trigger("click");
+    await flushPromises();
+    const slot = attachedSession!.windowSlots().findIndex((s) => s?.topic_id === "t2");
+
+    attachedSession!.takeSwap(1, [slot], performance.now() + 10_000);
+
+    expect(attachedSession!.windowSlots()[slot]?.topic_id).toBe("t2");
   });
 });

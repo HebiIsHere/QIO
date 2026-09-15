@@ -1,14 +1,35 @@
-/** 后端 API 客户端（localhost HTTP）。 */
-import { BACKEND_BASE } from "./events_const";
+/** 后端 API 客户端（本机 HTTP + 会话令牌）。 */
+import { authHeaders, resolveBackend } from "./backend";
+
+/** API 错误：带上状态码，调用方才能区分「没权限」和「真的坏了」。 */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+    detail: string,
+  ) {
+    super(
+      status === 401 || status === 403
+        ? `${path} -> ${status}: 本机 API 拒绝了这次请求（会话令牌缺失或已失效）`
+        : `${path} -> ${status}: ${detail}`,
+    );
+    this.name = "ApiError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${BACKEND_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+  const { base, token } = await resolveBackend();
+  const resp = await fetch(`${base}${path}`, {
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+      ...((init?.headers as Record<string, string> | undefined) ?? {}),
+    },
   });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`${path} -> ${resp.status}: ${text.slice(0, 200)}`);
+    throw new ApiError(resp.status, path, text.slice(0, 200));
   }
   return resp.json() as Promise<T>;
 }
@@ -140,10 +161,21 @@ export const api = {
       { method: "POST" },
     ),
   sendTurn: (message: string, topicId?: string | null) =>
-    request<{ ok: boolean; topic_id: string | null }>("/api/turns", {
+    request<{
+      ok: boolean;
+      accepted: boolean;
+      /** 受理时就有：乐观消息关联与「停止」都直接用它，不必等 TURN_START */
+      turn_id: string;
+      status: string;
+      topic_id: string | null;
+    }>("/api/turns", {
       method: "POST",
       body: JSON.stringify({ message, topic_id: topicId ?? null }),
     }),
+  getInstance: () =>
+    request<{ instance_id: string; pid: number; auth_required: boolean; version: string }>(
+      "/api/instance",
+    ),
   respondApproval: (approvalId: string, decision: string, overrides?: Record<string, unknown>) =>
     request<{ ok: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
       method: "POST",
@@ -180,6 +212,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ topic_id: topicId, fragment_id: fragmentId ?? null }),
     }),
+  /**
+   * 从某段历史继续（spec 第 34 / 54 条）：旧片段保持不变，
+   * 后端新建接续片段并把 Anchor 落到新片段上。
+   */
+  continueFromHistory: (topicId: string, fragmentId: string) =>
+    request<{
+      ok: boolean;
+      topic_id: string;
+      fragment_id: string | null;
+      fragment_title: string | null;
+      historic: boolean;
+      created_fragment_id: string | null;
+      source_fragment_id: string | null;
+    }>("/api/anchor", {
+      method: "POST",
+      body: JSON.stringify({
+        topic_id: topicId,
+        fragment_id: fragmentId,
+        continue_from_history: true,
+      }),
+    }),
+  /** 待确认切换：确认「转到这里」。 */
+  confirmTopicSwitch: () =>
+    request<{
+      ok: boolean;
+      topic_id: string | null;
+      fragment_id?: string | null;
+      fragment_title?: string | null;
+      historic?: boolean;
+    }>("/api/topic-switch/confirm", { method: "POST" }),
+  /** 待确认切换：保留当前话题。 */
+  rejectTopicSwitch: () =>
+    request<{ ok: boolean }>("/api/topic-switch/reject", { method: "POST" }),
   getSessionContext: () =>
     request<{
       topic_id: string;
@@ -198,6 +263,44 @@ export const api = {
   getTopicDetail: (topicId: string) =>
     request<TopicDetail>(`/api/graph/topics/${encodeURIComponent(topicId)}`),
   getPositions: () => request<{ topics: TopicPosition[] }>("/api/graph/positions"),
+  /** 星球第一层数据：有哪些话题可以展示（轻量、不含原文）。 */
+  planetOverview: () =>
+    request<{ topics: PlanetTopicSummary[]; total: number; visible_capacity: number }>(
+      "/api/planet/overview",
+    ),
+  /** 星球第二层调用：接下来该展示哪一批（游标可前进可后退）。 */
+  planetBrowse: (body: {
+    cursor?: string | null;
+    direction?: "forward" | "backward";
+    count?: number;
+    exclude?: string[];
+    current_topic_id?: string | null;
+    seed?: number | null;
+  }) =>
+    request<{
+      seed: number;
+      pass_index: number;
+      cursor: string;
+      prev_cursor: string;
+      next_cursor: string;
+      has_more: boolean;
+      pass_changed: boolean;
+      total: number;
+      visible_capacity: number;
+      items: PlanetTopicSummary[];
+    }>("/api/planet/browse", { method: "POST", body: JSON.stringify(body) }),
+  /** 第三层：只有真正展开某段历史时才按页取原文。 */
+  fragmentMessages: (fragmentId: string, offset = 0, limit = 50) =>
+    request<{
+      fragment_id: string;
+      topic_id: string;
+      total: number;
+      offset: number;
+      limit: number;
+      messages: { id: string; role: string; content: string; content_type: string; created_at: string }[];
+    }>(
+      `/api/fragments/${encodeURIComponent(fragmentId)}/messages?offset=${offset}&limit=${limit}`,
+    ),
   reviseKnowledge: (knowledgeId: string, content: string) =>
     request<{ ok: boolean; knowledge_id: string }>(
       `/api/knowledge/${encodeURIComponent(knowledgeId)}/revise`,
@@ -318,12 +421,25 @@ export interface TopicPosition {
   updated_at: string;
 }
 
+/** 星球浏览用的话题摘要（三层接口的第一层 / 浏览批次）。 */
+export interface PlanetTopicSummary {
+  topic_id: string;
+  title: string;
+  fragment_count: number;
+  last_activity: string | null;
+  summary_preview?: string | null;
+  /** 稳定视觉身份种子（本阶段只携带，不消费） */
+  visual_seed?: number;
+}
+
 export interface TopicDetailFragment {
   fragment_id: string;
   summary: string | null;
   closed_at: string | null;
   message_count: number;
-  messages: { id: string; role: string; content: string; content_type: string; created_at: string }[];
+  created_at?: string;
+  /** 第二层不再内联原文；原文由 fragmentMessages 按需分页读取（spec 第 42~43 条） */
+  messages?: { id: string; role: string; content: string; content_type: string; created_at: string }[];
 }
 
 export interface TopicDetail {

@@ -9,7 +9,8 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
-import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
+import { api, type PlanetTopicSummary, type TopicDetail, type TopicFingerprint } from "../services/api";
+import { PlanetBrowseSession, VISIBLE_CAPACITY } from "../planet/browseSession";
 import { useSessionStore } from "../stores/session";
 import QInput from "../components/ui/QInput.vue";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
@@ -71,7 +72,18 @@ const selectedLabelStyle = computed(() =>
   selectedLabel.value ? { left: selectedLabel.value.x + "px", top: selectedLabel.value.y + "px" } : undefined,
 );
 const topics = ref<TopicFingerprint[]>([]);
-const positions = ref<TopicPosition[]>([]);
+/**
+ * 浏览会话：序列 / 游标 / 展示窗口（见 planet/browseSession.ts）。
+ * 星球上「同时显示哪些话题」由它决定，渲染层只负责画；总话题数无上限，
+ * 同屏数量固定 ≤ VISIBLE_CAPACITY（融合环 shader 的 uniform 上限是 16）。
+ */
+const browse = new PlanetBrowseSession({ capacity: VISIBLE_CAPACITY });
+/** 当前展示窗口里的 topic_id（用于断言 / 调试，也用于判断话题是否已经可见） */
+const windowTopicIds = ref<(string | null)[]>([]);
+/** 后端浏览游标：只有它知道「下一批」是什么、以及是否已经绕完一圈 */
+let nextCursor: string | null = null;
+let sessionSeed: number | null = null;
+let prefetching = false;
 const detail = ref<TopicDetail | null>(null);
 const detailLoading = ref(false);
 /** 详情加载失败原因。与「从这里继续」的 anchorError 分开：两者来源不同，不能互相覆盖 */
@@ -163,7 +175,7 @@ function scheduleRecenter(topicId: string, delay = 0) {
   recenterTimer = window.setTimeout(() => {
     if (isClosing.value) return;
     if (planet.selectedTopicId.value !== topicId) return;
-    planet.focusTopic(topicId, positions.value, { duration: 210, wave: false });
+    planet.focusTopic(topicId, [], { duration: 210, wave: false });
   }, delay);
 }
 
@@ -251,19 +263,74 @@ async function loadData() {
   loadError.value = "";
   dataLoading.value = true;
   try {
-    const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
+    // 侧栏列表仍然走准确导航（List/Search 的职责），星球本体只取轻量概览 + 第一批窗口。
+    const [t, overview] = await Promise.all([api.listTopics(), api.planetOverview()]);
     // 等待期间用户已发起关闭：不再推进相机/加载详情，避免打断拉回 tween
     if (isClosing.value) return;
     topics.value = t.topics;
-    positions.value = p.topics;
-    planet.setTopics(p.topics);
-    planet.loadTopics(p.topics);
+    const page = await api.planetBrowse({
+      direction: "forward",
+      count: VISIBLE_CAPACITY,
+      current_topic_id: session.currentTopicId ?? null,
+    });
+    if (isClosing.value) return;
+    nextCursor = page.next_cursor;
+    sessionSeed = page.seed;
+    browse.setSequence(page.items);
+    browse.fill(performance.now());
+    // 起点话题必须能被看见：后端已经把它排在第一批首位；
+    // 万一它不在这一批（话题刚被创建/被过滤），这里显式注入窗口。
+    const anchorTopic = pickTopicSummary(overview.topics, session.currentTopicId);
+    if (anchorTopic && !browse.windowSlots().some((item) => item?.topic_id === anchorTopic.topic_id)) {
+      browse.pinTopic(anchorTopic);
+    }
+    planet.attachBrowse(browse, { seed: page.seed, onWindowChange: syncWindow });
+    planet.setTopics([]);
+    syncWindow();
     focusInitialTopic();
   } catch (e) {
     if (isClosing.value) return;
     loadError.value = `星球数据加载失败：${(e as Error).message}`;
   } finally {
     dataLoading.value = false;
+  }
+}
+
+function pickTopicSummary(
+  list: PlanetTopicSummary[],
+  topicId: string | null | undefined,
+): PlanetTopicSummary | null {
+  if (!topicId) return null;
+  return list.find((item) => item.topic_id === topicId) ?? null;
+}
+
+/**
+ * 展示窗口变化后：同步可见话题、预取下一页、把选中态锁在窗口里。
+ * 视觉连续性优先于严格数据顺序——这里的顺序不代表任何「相关性」。
+ */
+function syncWindow() {
+  windowTopicIds.value = planet.windowTopicIds();
+  if (!prefetching && browse.needsMore() && nextCursor) void prefetchMore();
+}
+
+async function prefetchMore() {
+  if (prefetching || !nextCursor) return;
+  prefetching = true;
+  try {
+    const page = await api.planetBrowse({
+      cursor: nextCursor,
+      direction: "forward",
+      count: VISIBLE_CAPACITY,
+      exclude: browse.windowSlots().filter(Boolean).map((item) => item!.topic_id),
+      seed: sessionSeed,
+    });
+    nextCursor = page.next_cursor;
+    browse.appendSequence(page.items);
+  } catch (e) {
+    // 预取失败不影响已经看到的窗口：下一次滚动会再试
+    console.warn("[planet] 预取下一批话题失败：", e);
+  } finally {
+    prefetching = false;
   }
 }
 
@@ -278,12 +345,13 @@ function focusInitialTopic() {
   planetSession.anchorSignature = signature;
 
   const browsed = planetSession.browsedTopicId;
-  const has = (id: string | null) => Boolean(id) && positions.value.some((t) => t.topic_id === id);
+  const has = (id: string | null) => Boolean(id) && browse.windowSlots().some((t) => t?.topic_id === id);
   const target = !anchorChanged && has(browsed) ? browsed : anchorId;
 
   if (has(target)) {
     planet.selectedTopicId.value = target;
-    planet.focusTopic(target!, positions.value, { duration: OPEN_MS });
+    browse.lock(target);
+    planet.focusTopic(target!, [], { duration: OPEN_MS });
   } else {
     planet.go("planet", null, OPEN_MS);
   }
@@ -341,7 +409,28 @@ function retryDetail() {
 function selectTopic(topicId: string) {
   if (isClosing.value) return;
   planet.selectedTopicId.value = topicId;
-  planet.focusTopic(topicId, positions.value);
+  ensureTopicInWindow(topicId);
+  planet.focusTopic(topicId, []);
+}
+
+/**
+ * 保证某个话题在展示窗口里（搜索命中 / 列表点击）。
+ * 这正是 spec 第 24 条：搜索找到的话题「加入当前/下一组展示窗口」，
+ * 而不是要求它本来就待在某个固定地点。
+ */
+function ensureTopicInWindow(topicId: string) {
+  if (browse.windowSlots().some((item) => item?.topic_id === topicId)) return;
+  const summary = topics.value.find((item) => item.topic_id === topicId);
+  if (!summary) return;
+  browse.pinTopic({
+    topic_id: summary.topic_id,
+    title: summary.title,
+    fragment_count: summary.fragment_count,
+    last_activity: summary.last_activity,
+    summary_preview: summary.summary_preview,
+  });
+  planet.refreshWindow(performance.now());
+  syncWindow();
 }
 
 function onCanvasClick(e: MouseEvent) {
@@ -362,6 +451,8 @@ function onCanvasDblClick() {
 watch(() => planet.selectedTopicId.value, (id) => {
   // 浏览记忆：重开星球时用它回到上次看的地方（见 planetSession 注释）
   if (id) planetSession.browsedTopicId = id;
+  // 选中 = 正在查看：查看期间这个槽位不会被回收（spec 第 52 条）
+  browse.lock(id ?? null);
   if (id && id !== detail.value?.topic_id) loadDetail(id);
 });
 
@@ -425,6 +516,15 @@ const selectedButtonHint = computed(() => {
   if (!selectedFragmentId.value) return "（整个话题）";
   return selectedIsHistoric.value ? "（这个历史位置）" : "（当前片段）";
 });
+/**
+ * 「查看 → 进入」的分界（spec 第 22 / 53 / 54 条）：
+ * 选中话题只是浏览，按这个按钮才是真正改变对话位置的动作。
+ */
+const startButtonLabel = computed(() => {
+  if (anchorBusy.value) return "切换中…";
+  if (!selectedFragmentId.value) return `进入「${detail.value?.name ?? "这个话题"}」`;
+  return `从这里继续${selectedButtonHint.value}`;
+});
 
 /**
  * 面板里三个概念必须分开写清（任务05 D）：
@@ -460,7 +560,13 @@ async function startHere() {
   try {
     // 只用后端返回的权威结果更新本地（标题 / 是否历史位置），
     // 避免与同一动作触发的 SSE ANCHOR 事件互相覆盖
-    const res = await api.setAnchor(target.topic_id, fragmentId);
+    //
+    // 两个明确不同的动作（spec 第 53 / 54 条）：
+    //  - 选中了历史片段 → 从这里继续：旧片段保持不变，后端新建接续片段；
+    //  - 没选片段 → 进入这个话题：从最新位置继续。
+    const res = fragmentId
+      ? await api.continueFromHistory(target.topic_id, fragmentId)
+      : await api.setAnchor(target.topic_id, null);
     // setAnchorAndSync：起点真的变了就重新拉取可见消息。
     // 否则「从这里继续」到别的话题后，对话页还停在上一个话题的对话上。
     await session.setAnchorAndSync(
@@ -499,7 +605,8 @@ function toggleManageMode() {
 /** 知识面板「聚焦话题」→ 切回话题页签并聚焦/加载该话题（详情由 selectedTopicId watcher 单一来源加载） */
 function focusTopicFromPanel(topicId: string) {
   planet.selectedTopicId.value = topicId;
-  planet.focusTopic(topicId, positions.value);
+  ensureTopicInWindow(topicId);
+  planet.focusTopic(topicId, []);
   panelOpen.value = true;
   switchTab("topic");
   // 同话题时 watcher 会跳过 reload，这里强制刷新以拿到面板编辑后的最新数据
@@ -710,7 +817,7 @@ async function close() {
             </p>
             <p v-if="anchorError" class="anchor-error" role="alert">{{ anchorError }}</p>
             <button class="start-btn qio-btn primary" :disabled="closing || anchorBusy" @click="startHere">
-              {{ anchorBusy ? "切换中…" : `从这里继续${selectedButtonHint}` }}
+              {{ startButtonLabel }}
             </button>
           </div>
         </template>
