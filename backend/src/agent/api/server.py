@@ -475,30 +475,41 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
 
     @app.post("/api/anchor")
     async def set_anchor(body: dict) -> dict:
-        from agent.graph.anchors import AnchorService
+        from agent.services.navigation import FragmentNotInTopic, TopicNotFound
 
         topic_id = str(body.get("topic_id") or "").strip()
         if not topic_id:
             raise HTTPException(status_code=400, detail="topic_id required")
-        node = ctx.topics.nodes.get_topic(topic_id)
-        if node is None:
-            raise HTTPException(status_code=404, detail="topic not found")
         fragment_id = body.get("fragment_id")
-        if fragment_id:
-            frag = ctx.fragments.get(fragment_id)
-            if frag is None or frag.topic_id != topic_id:
-                raise HTTPException(status_code=400, detail="fragment not found in topic")
-        anchors = AnchorService(ctx.conn)
-        anchors.set_active(topic_id, fragment_id or None)
+        # 两个明确不同的动作：进入话题（最新位置）与从历史继续（新建接续片段）。
+        # 具体规则都在 TopicNavigationService 里，路由不自己写 anchor。
+        try:
+            if body.get("continue_from_history"):
+                if not fragment_id:
+                    raise HTTPException(status_code=400, detail="fragment_id required to continue")
+                result = ctx.navigation.continue_from_history(topic_id, str(fragment_id))
+            else:
+                # 用户明确点「进入这个话题」＝从最新位置继续，不恢复旧位置。
+                result = ctx.navigation.enter_topic(
+                    topic_id,
+                    fragment_id=str(fragment_id) if fragment_id else None,
+                    restore_position=False,
+                )
+        except TopicNotFound:
+            raise HTTPException(status_code=404, detail="topic not found") from None
+        except FragmentNotInTopic:
+            raise HTTPException(status_code=400, detail="fragment not found in topic") from None
         # 广播权威锚点：标题 / historic 只能有一个来源（后端），
         # 前端不用摘要自己拼标题，也不会在位置推进后继续显示旧提示。
         await ctx._publish_anchor_event()
         return {
             "ok": True,
-            "topic_id": topic_id,
-            "fragment_id": fragment_id or None,
-            "fragment_title": ctx._fragment_title(fragment_id or None),
-            "historic": anchors.is_historic_position(topic_id),
+            "topic_id": result.topic_id,
+            "fragment_id": result.fragment_id,
+            "fragment_title": result.fragment_title,
+            "historic": result.historic,
+            "created_fragment_id": result.created_fragment_id,
+            "source_fragment_id": result.source_fragment_id,
         }
 
     # -- turns -------------------------------------------------------------

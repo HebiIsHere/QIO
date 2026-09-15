@@ -9,19 +9,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from agent.graph.anchors import AnchorService
-from agent.graph.edges import EdgeService
 from agent.graph.nodes import NodeService
 from agent.prompts import TOOL_CREATE_TOPIC_DESC, TOOL_SWITCH_TOPIC_DESC
+from agent.services.navigation import TopicNavigationService
 from agent.tools.base import Tool, ToolResult
-
-
-def _relate(conn: sqlite3.Connection, a: str, b: str) -> None:
-    """Related edge is undirected: normalize direction so weights accumulate."""
-    if a == b:
-        return
-    src, dst = sorted([a, b])
-    EdgeService(conn).add(src, dst, "related")
 
 
 class SwitchTopicTool(Tool):
@@ -47,14 +38,10 @@ class SwitchTopicTool(Tool):
         node = nodes.get_topic(topic_id)
         if node is None:
             return ToolResult(ok=False, error=f"话题不存在: {topic_id}")
-        anchors = AnchorService(self.conn)
-        old = anchors.get_active()
         # 切回已有话题时恢复它保存的位置（不覆盖用户明确选择：用户选择本身
-        # 就是 active，因此在同一话题内它永远优先）
-        restored = anchors.restore_position(topic_id)
-        if old is not None and old.topic_id != topic_id:
-            _relate(self.conn, old.topic_id, topic_id)
-        if restored.fragment_id:
+        # 就是 active，因此在同一话题内它永远优先）。写 anchor 只走 Navigator。
+        result = TopicNavigationService(self.conn).enter_topic(topic_id, relate=True)
+        if result.fragment_id:
             return ToolResult(
                 ok=True,
                 content=(
@@ -153,11 +140,5 @@ class CreateTopicTool(Tool):
         return self._create(name)
 
     def _create(self, name: str) -> ToolResult:
-        nodes = NodeService(self.conn)
-        node = nodes.create_topic(name)
-        anchors = AnchorService(self.conn)
-        old = anchors.get_active()
-        anchors.set_active(node.id)
-        if old is not None and old.topic_id != node.id:
-            _relate(self.conn, old.topic_id, node.id)
-        return ToolResult(ok=True, content=f"已创建并切换到话题「{name}」（{node.id}）")
+        result = TopicNavigationService(self.conn).create_topic(name)
+        return ToolResult(ok=True, content=f"已创建并切换到话题「{name}」（{result.topic_id}）")

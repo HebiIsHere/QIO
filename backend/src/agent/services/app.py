@@ -89,6 +89,10 @@ class AppContext:
 
         # 星球浏览景观的数据层：总话题数无上限，可见容量由视觉层决定。
         self.planet = PlanetBrowseService(conn)
+        from agent.services.navigation import TopicNavigationService
+
+        # Topic 导航的唯一入口：Anchor 只由它写入（Planet 选中 / 检索 / 预测都不算导航）。
+        self.navigation = TopicNavigationService(conn)
         from agent.services.context import ContextAssembler
 
         self.context_assembler = ContextAssembler(

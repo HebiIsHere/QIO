@@ -332,6 +332,14 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_turn_traces_status ON turn_traces(status)",
         ],
     ),
+    (
+        11,
+        [
+            # 从历史继续（第二阶段）：新片段记住它接续的是哪一段历史。
+            # 旧片段保持不变（关闭的 Fragment 不得重新修改），分支关系只写在新行上。
+            "ALTER TABLE fragments ADD COLUMN source_fragment_id TEXT",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

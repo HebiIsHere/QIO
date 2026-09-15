@@ -1,4 +1,4 @@
-"""continue_from_fragment：Agent 显式把讨论位置移到某个历史片段。
+"""continue_from_fragment：Agent 显式从某段历史继续。
 
 与 switch_topic / create_topic 同级：这是「改变历史位置」的显式动作，
 不是检索。memory_search 只读，永远不会改 anchor（见 services/injection.py
@@ -6,18 +6,26 @@
 
 为什么要有它：Agent 需要和用户一样的能力 —— 找到历史 → 判断具体片段 →
 明确选择「从这里继续」。仅靠 memory_search 无法表达「接下来持续讨论的位置」。
+
+第二阶段语义（与用户在星球里点「从这里继续」完全一致）：
+历史片段保持不变，**新建一个接续片段**并记下来源，Anchor 落在新片段上；
+下一轮的 Focus 读的是来源片段（接续片段本身是空的）。
+写 anchor 只走 TopicNavigationService。
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-from agent.graph.anchors import AnchorService
 from agent.graph.nodes import NodeService
 from agent.memory.fragment import FragmentManager
 from agent.prompts import TOOL_CONTINUE_FROM_FRAGMENT_DESC
+from agent.services.navigation import (
+    FragmentNotInTopic,
+    TopicNavigationService,
+    TopicNotFound,
+)
 from agent.tools.base import Tool, ToolResult
-from agent.tools.topic_tools import _relate
 
 
 class ContinueFromFragmentTool(Tool):
@@ -59,18 +67,23 @@ class ContinueFromFragmentTool(Tool):
         if not (fragment.summary or "").strip() and not fragments.messages(fragment_id):
             return ToolResult(ok=False, error=f"片段内容不可用（无摘要也无消息）：{fragment_id}")
 
-        anchors = AnchorService(self.conn)
-        old = anchors.get_active()
-        anchors.set_active(fragment.topic_id, fragment_id)
-        if old is not None and old.topic_id and old.topic_id != fragment.topic_id:
-            _relate(self.conn, old.topic_id, fragment.topic_id)
+        try:
+            result = TopicNavigationService(self.conn).continue_from_history(
+                fragment.topic_id, fragment_id
+            )
+        except TopicNotFound as exc:
+            return ToolResult(ok=False, error=str(exc))
+        except FragmentNotInTopic as exc:
+            return ToolResult(ok=False, error=str(exc))
 
         return ToolResult(
             ok=True,
             content=(
                 f"已把讨论位置移到历史片段「{self._title(fragment_id, fragment.summary)}」"
-                f"（fragment_id={fragment_id}，话题「{node.name}」）。"
-                "本轮上下文不会重建；从下一轮开始会带上这段历史。"
+                f"（fragment_id={fragment_id}，话题「{node.name}」）之后。"
+                "那段历史保持原样，新的接续片段会记下它的来源（source_fragment_id="
+                f"{result.source_fragment_id or fragment_id}）；"
+                "本轮上下文不会重建，从下一轮开始会带上这段历史。"
                 "如果本轮还需要那段讨论的细节，用 memory_search 继续查。"
             ),
         )

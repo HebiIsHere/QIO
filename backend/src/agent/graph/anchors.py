@@ -132,12 +132,22 @@ class AnchorService:
         当前开放片段已经通过短期转录进入上下文，再注入一份就是重复噪声；
         只有用户指向历史片段（从这里开始 / Agent 显式 continue 到历史片段）时，
         才需要把那段历史显式抬进本轮 Focus。
+
+        从历史继续（第二阶段）：位置落在「接续片段」上时，接续片段本身是空的，
+        真正要读的是它的来源片段。来源只是一个只读引用，不构成新的导航。
         """
         fragment_id = self.position_fragment(topic_id)
         if fragment_id is None:
             return None
-        if fragment_id == self.open_fragment_id(topic_id):
-            return None
+        row = self.conn.execute(
+            "SELECT closed_at, source_fragment_id FROM fragments WHERE id = ?", (fragment_id,)
+        ).fetchone()
+        if row is not None and row["closed_at"] is None:
+            source = row["source_fragment_id"]
+            if source:
+                return str(source)
+            if fragment_id == self.open_fragment_id(topic_id):
+                return None
         return fragment_id
 
     def is_historic_position(self, topic_id: str) -> bool:

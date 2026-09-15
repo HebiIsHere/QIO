@@ -36,26 +36,67 @@ class TurnOrchestrator:
         self.app = app
 
     async def execute(self, ctx) -> None:
+        """一轮的完整流水线。
+
+        `TurnManager` 负责 turn 的终态与唯一的 TURN_END；本方法只负责推进阶段，
+        并在每个阶段之间检查取消（用户点「停止」= 停止这个 turn 的后续一切）。
+        """
         app = self.app
         if ctx.notify:
             await app._execute_notify_turn(ctx)
             return
+        # 本轮产生的审批绑定到本 turn（工具不需要各自传参）
+        app.approvals.set_context(turn_id=ctx.turn_id)
+        try:
+            await self._execute_turn(ctx)
+        finally:
+            app.approvals.set_context(turn_id=None)
+
+    async def _execute_turn(self, ctx) -> None:
+        app = self.app
+        if ctx.cancelled:
+            return
         adapter = await self.begin(ctx)
         if adapter is None:
             return
+        if ctx.cancelled:
+            return
         plan = await self.build_context(ctx, adapter)
+        if ctx.cancelled:
+            return
         result = await self.execute_loop(ctx, adapter, plan)
         if result is None:
             return
+        # 取消检查点：不得把取消后产生的内容保存成正常最终回答
+        if ctx.cancelled or result.cancelled:
+            ctx.cancelled = True
+            app.trace_store.finish(ctx.turn_id, "cancelled")
+            return
         final_topic = await self.persist(ctx, adapter, plan, result)
+        ctx.final_content = result.final_content
+        ctx.usage = {
+            "iterations": result.iterations_used,
+            "tokens": result.tokens_used,
+            "tool_calls": result.tool_calls_made,
+        }
+        if ctx.cancelled:
+            # 答案已经落库（用户能看见），但不再做收尾记忆处理
+            app.trace_store.finish(
+                ctx.turn_id, "cancelled", final_topic=final_topic, final_preview=ctx.final_content or ""
+            )
+            return
         await self.post_turn(ctx, adapter, plan, final_topic)
+        if ctx.cancelled:
+            app.trace_store.finish(
+                ctx.turn_id, "cancelled", final_topic=final_topic, final_preview=ctx.final_content or ""
+            )
+            return
         await self.advance_anchor(ctx, final_topic)
         self.finish(ctx, plan, result, final_topic)
 
     # -- stages -----------------------------------------------------------
 
     async def begin(self, ctx):
-        from agent.graph.anchors import AnchorService
         from agent.services.app import DEFAULT_FRAGMENT_MAX_MESSAGES, make_warning
         from agent.trace.recorder import TurnTracer
 
@@ -64,11 +105,15 @@ class TurnOrchestrator:
         if adapter is None:
             await app.bus.publish(
                 make_warning(
-                    "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话"
+                    "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话",
+                    turn_id=ctx.turn_id,
                 )
             )
             ctx.result = {"ok": False, "reason": "no_credential"}
-            ctx.status = "done"
+            # 终态由 TurnManager 收口：没有凭据也必须产生 TURN_END(unavailable)，
+            # 否则前端会永远停在 running。
+            ctx.status = "unavailable"
+            ctx.error = "no_credential"
             return None
         app.fragments.max_messages = app.settings_store.get_int(
             "fragment.max_messages", DEFAULT_FRAGMENT_MAX_MESSAGES
@@ -78,15 +123,11 @@ class TurnOrchestrator:
         tracer = TurnTracer(app.trace_store, ctx.turn_id)
         ctx.trace = tracer
         app.trace_store.begin(ctx.turn_id, initial_topic=topic)
-        # speaking in a topic anchors it (if the anchor is absent or stale)
-        anchors = AnchorService(app.conn)
-        active_anchor = anchors.get_active()
-        if active_anchor is None:
-            anchors.set_active(topic)
-            await app._publish_anchor_event()
-        elif active_anchor.topic_id != topic:
-            # 进入另一个话题：恢复该话题保存的位置，而不是静默清空片段位置
-            anchors.restore_position(topic)
+        # speaking in a topic anchors it (if the anchor is absent or stale)。
+        # 写入只走 Navigator：会话起点变化也是「进入话题」这一种导航。
+        active_anchor = app.navigation.anchors.get_active()
+        if active_anchor is None or active_anchor.topic_id != topic:
+            app.navigation.enter_topic(topic)
             await app._publish_anchor_event()
         return adapter
 
@@ -234,6 +275,8 @@ class TurnOrchestrator:
             guard=RunawayGuard(),
             turn_id=ctx.turn_id,
             trace=ctx.trace,
+            # 取消检查点：本 turn 被取消后循环不再发起新的模型/工具调用
+            is_cancelled=lambda: ctx.cancelled,
         )
         ctx.loop = loop
         try:
@@ -241,11 +284,18 @@ class TurnOrchestrator:
         except Exception as exc:
             logging.getLogger(__name__).exception("turn failed")
             await app.bus.publish(
-                make_error("turn_failed", f"本轮执行失败：{str(exc)[:180]}", recoverable=True)
+                make_error(
+                    "turn_failed",
+                    f"本轮执行失败：{str(exc)[:180]}",
+                    recoverable=True,
+                    turn_id=ctx.turn_id,
+                )
             )
             app.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
             ctx.result = {"ok": False, "reason": "turn_failed"}
-            ctx.status = "done"
+            # 终态 + ERROR 事件：ERROR 只说明「出错了」，结束 turn 的只有 TURN_END
+            ctx.status = "failed"
+            ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
             return None
         finally:
             ctx.loop = None
@@ -291,15 +341,13 @@ class TurnOrchestrator:
         失败 / 取消 / 没写出消息的轮次不推进 —— 用户「从这里开始」的选择必须
         留给下一次重试，而不是因为一次失败就被静默丢弃。
         """
-        from agent.graph.anchors import AnchorService
-
         if getattr(ctx, "cancelled", False):
             return
         fragment_id = getattr(ctx, "position_fragment_id", None)
         if not fragment_id:
             return
         app = self.app
-        anchors = AnchorService(app.conn)
+        anchors = app.navigation.anchors
         active = anchors.get_active()
         if (
             active is not None
@@ -307,7 +355,9 @@ class TurnOrchestrator:
             and active.fragment_id == fragment_id
         ):
             return
-        anchors.set_active(final_topic, fragment_id)
+        app.navigation.enter_topic(
+            final_topic, fragment_id=fragment_id, relate=False
+        )
         await app._publish_anchor_event()
 
     def finish(self, ctx, plan: _Plan, result, final_topic: str) -> None:

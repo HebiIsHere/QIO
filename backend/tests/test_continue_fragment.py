@@ -130,6 +130,16 @@ def _continue_tool(ctx: AppContext):
     return ContinueFromFragmentTool(ctx.conn)
 
 
+def _continuation_source(ctx: AppContext, fragment_id: str | None) -> str | None:
+    """当前位置的来源片段（第二阶段：从历史继续 = 新建片段 + 记来源）。"""
+    if not fragment_id:
+        return None
+    row = ctx.conn.execute(
+        "SELECT source_fragment_id FROM fragments WHERE id = ?", (fragment_id,)
+    ).fetchone()
+    return row["source_fragment_id"] if row is not None else None
+
+
 def test_continue_from_fragment_sets_topic_and_position(ctx: AppContext):
     a = _topic(ctx, "话题A")
     b = _topic(ctx, "话题B")
@@ -141,7 +151,10 @@ def test_continue_from_fragment_sets_topic_and_position(ctx: AppContext):
     assert result.ok is True
     active = AnchorService(ctx.conn).get_active()
     assert active.topic_id == b, "跨话题 continue 必须同时切换话题"
-    assert active.fragment_id == frag
+    # 第二阶段：历史片段保持不变，位置落在新建的接续片段上，并记下来源
+    assert active.fragment_id != frag
+    assert _continuation_source(ctx, active.fragment_id) == frag
+    assert AnchorService(ctx.conn).focus_fragment(b) == frag, "Focus 仍然读那段历史"
     assert "继续" in result.content or "已" in result.content
     # 与 switch_topic 一致：建立相关关系，便于后续话题亲和
     row = ctx.conn.execute(
@@ -159,7 +172,10 @@ def test_continue_from_fragment_same_topic_position(ctx: AppContext):
     result = _continue_tool(ctx).run_sync(fragment_id=frag)
 
     assert result.ok is True
-    assert AnchorService(ctx.conn).get_active().fragment_id == frag
+    active = AnchorService(ctx.conn).get_active()
+    assert active.fragment_id != frag
+    assert _continuation_source(ctx, active.fragment_id) == frag
+    assert AnchorService(ctx.conn).focus_fragment(a) == frag
 
 
 def test_continue_from_fragment_rejects_unknown_without_state_change(ctx: AppContext):
@@ -213,7 +229,8 @@ def test_agent_search_then_continue_flow(ctx: AppContext):
     result = _continue_tool(ctx).run_sync(fragment_id=frag, reason="从那次讨论继续")
     assert result.ok is True
     active = AnchorService(ctx.conn).get_active()
-    assert (active.topic_id, active.fragment_id) == (b, frag)
+    assert active.topic_id == b
+    assert _continuation_source(ctx, active.fragment_id) == frag
 
 
 # -- 工具 schema 与事件广播 ------------------------------------------------
