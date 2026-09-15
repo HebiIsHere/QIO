@@ -26,7 +26,14 @@ const RADIUS = 1.0;
 const DOT_RADIUS = 1.004;
 /** 话题位置聚簇合并阈值（球面角距离，弧度） */
 const CLUSTER_ANG = 0.5;
-const RADII: Record<CameraState, number> = { overview: 5.5, planet: 2.6, focus: 2.25 };
+/**
+ * 相机距离。
+ *
+ * 第二阶段把 planet / focus 各后撤一点：原来 focus=2.25 时球体（半径 1）
+ * 的角半径约 24°，已经超过 45° 视角的一半，星球边缘被画面裁掉，
+ * 与「始终保持足够留白」冲突。后撤到 2.6 / 2.9 后球体完整落在画面内。
+ */
+const RADII: Record<CameraState, number> = { overview: 5.5, planet: 2.9, focus: 2.6 };
 const THEME_LINE: Record<"dark" | "light", number> = { dark: 0xe878bd, light: 0xb0136a };
 /** 话题点兜底材质：Canvas 贴图不可用时复用（模块级单例，避免反复创建/泄漏） */
 const DOT_FALLBACK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
@@ -72,6 +79,16 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   /** 旋转 → 话题流 的节流器 */
   let flowDriver = new BrowseFlowDriver();
   let lastAzimuth: number | null = null;
+  /** 最近一次槽位替换的时间（仅用于诊断「旋转有没有真的推动话题流」） */
+  let lastSwapAt = 0;
+  let swapCount = 0;
+  let feedCount = 0;
+  let stepCount = 0;
+  let lastDelta = 0;
+  /** 诊断：这个闭包的实例号（用于确认「不是两个 usePlanetScene 实例在打架」） */
+  const instanceId = Math.random().toString(36).slice(2, 8);
+  /** 当前正面槽位数量（仅供开发构建的诊断钩子读取） */
+  let frontFacing = 0;
   /** 窗口话题集合变化时的回调（调用方刷新标签 / 选中态） */
   let windowChanged: (() => void) | null = null;
   /** 选中话题的持续标记：跟随选中点的圆环（不依赖短暂的环线动画） */
@@ -412,6 +429,8 @@ function motionDuration(ms: number): number {
     const mesh = dotPool.place(slot, topic, slotDirs[slot] ?? new THREE.Vector3(0, 0, 1));
     mesh.userData.enterAt = now;
     mesh.userData.windowTopicId = topic?.topic_id ?? null;
+    lastSwapAt = now;
+    swapCount += 1;
     windowChanged?.();
   }
 
@@ -658,7 +677,10 @@ function motionDuration(ms: number): number {
         else if (delta < -Math.PI) delta += Math.PI * 2;
         lastAzimuth = azimuth;
         const interacting = controls.enabled && !tween;
+        feedCount += 1;
+        lastDelta = delta;
         const step = flowDriver.feed(delta, now, interacting);
+        if (step !== 0) stepCount += 1;
         if (step !== 0 && browseSession) {
           const swap = browseSession.takeSwap(step > 0 ? 1 : -1, backSlots(), now);
           if (swap) applySwap(swap.slot, swap.topic, now);
@@ -671,10 +693,12 @@ function motionDuration(ms: number): number {
     planetGroup.updateMatrixWorld(true);
     planetGroup.getWorldPosition(_centerV);
     _camDirV.subVectors(camera.position, _centerV);
+    frontFacing = 0;
     for (const dot of dotMeshes) {
       dot.getWorldPosition(tmpV);
       const active = dot.userData.active === true;
       dot.visible = active && tmpV.sub(_centerV).dot(_camDirV) >= 0;
+      if (dot.visible) frontFacing += 1;
       const mat = dot.material as THREE.MeshBasicMaterial;
       if (!mat.transparent) continue;
       const enterAt = (dot.userData.enterAt as number) ?? 0;
@@ -779,6 +803,21 @@ function motionDuration(ms: number): number {
     primeCamera, pullBack,
     /** 当前展示窗口里的 topic_id（按槽位顺序，空位为 null）。 */
     windowTopicIds: () => dotPool?.windowTopicIds() ?? [],
+    /** 诊断信息（开发构建用：确认旋转是否真的在推动话题流）。 */
+    debugState: () => ({
+      azimuth: controls ? controls.getAzimuthalAngle() : 0,
+      interacting: Boolean(controls?.enabled) && tween === null,
+      frontFacing,
+      backSlots: slotDirs.length ? backSlots().length : 0,
+      swaps: swapCount,
+      feeds: feedCount,
+      steps: stepCount,
+      lastDelta,
+      lastSwapAgo: lastSwapAt ? Math.round(performance.now() - lastSwapAt) : -1,
+      windowSize: dotPool?.windowTopicIds().filter(Boolean).length ?? 0,
+      id: instanceId,
+      hasSession: browseSession !== null,
+    }),
     /** 把浏览会话的展示窗口同步到画布（窗口内容变化后调用）。 */
     refreshWindow,
     setTopics: (list: TopicPosition[]) => {

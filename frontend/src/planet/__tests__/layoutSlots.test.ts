@@ -39,6 +39,15 @@ describe("slotPositions", () => {
     }
   });
 
+  it("满容量（16）时同样不重叠", () => {
+    const positions = slotPositions(16, 31);
+    for (let i = 0; i < positions.length; i++) {
+      for (let j = i + 1; j < positions.length; j++) {
+        expect(angleBetween(positions[i], positions[j])).toBeGreaterThanOrEqual(0.18);
+      }
+    }
+  });
+
   it("不集中在极区，也不机械平均", () => {
     const positions = slotPositions(12, 7);
     const polars = positions.map((p) => Math.acos(Math.max(-1, Math.min(1, p.y))));

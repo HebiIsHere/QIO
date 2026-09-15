@@ -24,10 +24,11 @@ import random
 import sqlite3
 from dataclasses import asdict, dataclass
 
-# 视觉层容量：同屏最多出现多少个话题点。
-# 上限同时受融合环 shader 的 uniform 数组约束（frontend planetShader.MAX_TOPICS = 16），
-# 所以这里必须 ≤ 16。
-VISIBLE_CAPACITY = 12
+# 视觉层容量：星球表面同时承载多少个话题点。
+# 上半球只看得见一半，所以「正面可见」大约是它的一半（8 个左右），
+# 落在 spec 要求的 8~16 个区间里。上限受融合环 shader 的 uniform 数组约束
+# （frontend planetShader.MAX_TOPICS = 16），所以这里必须 ≤ 16。
+VISIBLE_CAPACITY = 16
 
 # 单次请求最多返回多少个话题（防止前端一次把全部话题拉走再自己洗牌）。
 MAX_BATCH = 32

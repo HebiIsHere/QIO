@@ -58,7 +58,7 @@ def test_planet_overview_is_lightweight(client):
     body = client.get("/api/planet/overview").json()
 
     assert body["total"] == 2
-    assert body["visible_capacity"] == 12
+    assert body["visible_capacity"] == 16
     first = body["topics"][0]
     assert first["title"] == "甲"
     assert first["fragment_count"] == 2

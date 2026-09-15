@@ -18,10 +18,16 @@
  * 本模块不依赖 Three.js，也不依赖 Vue：渲染层只负责「哪个槽位在背面」。
  */
 
-/** 视觉层容量：与后端 services/planet.py 的 VISIBLE_CAPACITY 保持一致。 */
-export const VISIBLE_CAPACITY = 12;
-/** 一个话题至少被展示多久才可能被回收（毫秒）。 */
-export const DEFAULT_MIN_LIFETIME_MS = 1200;
+/**
+ * 视觉层容量：与后端 services/planet.py 的 VISIBLE_CAPACITY 保持一致。
+ * 星球背面看不到，所以正面可见大约是它的一半（8 个左右）。
+ */
+export const VISIBLE_CAPACITY = 16;
+/**
+ * 一个话题至少被展示多久才可能被回收（毫秒）。
+ * 这是「星球不是老虎机」的硬约束：变化速度必须跟得上看清、hover、点击。
+ */
+export const DEFAULT_MIN_LIFETIME_MS = 720;
 /** 近期展示记录长度：太长会让小数据集转不动，太短会察觉重复。 */
 export const DEFAULT_COOLDOWN = 24;
 
@@ -68,6 +74,10 @@ export class PlanetBrowseSession {
   private protectedIds = new Set<string>();
   private lockedId: string | null = null;
   private lastSwapAt = Number.NEGATIVE_INFINITY;
+  /** 上一次真正生效的流向：用来判断「这一步是继续往前走，还是真的掉头」 */
+  private lastDirection: 1 | -1 | 0 = 0;
+  /** 诊断计数（只用于开发构建的读取钩子） */
+  private diag = { calls: 0, noSlot: 0, noTopic: 0, throttle: 0 };
 
   constructor(options: BrowseSessionOptions = {}) {
     this.capacity = Math.max(1, options.capacity ?? VISIBLE_CAPACITY);
@@ -133,16 +143,37 @@ export class PlanetBrowseSession {
    * 数据替换只发生在低感知区域，用户看到的是话题自然地从远处进入。
    */
   takeSwap(direction: 1 | -1, backSlots: number[], nowMs: number): SwapPlan | null {
-    if (direction === 1) return this.swapForward(backSlots, nowMs);
-    return this.swapBackward(nowMs);
+    this.diag.calls += 1;
+    // 真的掉头（相对上一次流向）才还原刚离开的话题，这是「短距离反向的连续性」；
+    // 继续朝同一方向旋转则一律引入新话题 —— 否则会一进一退，看起来像原地打转。
+    const reversing = this.lastDirection !== 0 && direction !== this.lastDirection;
+    if (reversing) {
+      const restored = this.swapBackward(nowMs);
+      if (restored) {
+        this.lastDirection = direction;
+        return restored;
+      }
+    }
+    const plan = this.swapForward(backSlots, nowMs);
+    if (plan) this.lastDirection = direction;
+    return plan;
   }
 
   private swapForward(backSlots: number[], nowMs: number): SwapPlan | null {
-    if (nowMs - this.lastSwapAt < this.minLifetimeMs) return null;
+    if (nowMs - this.lastSwapAt < this.minLifetimeMs) {
+      this.diag.throttle += 1;
+      return null;
+    }
     const slot = this.pickRecycleSlot(backSlots, nowMs);
-    if (slot === null) return null;
+    if (slot === null) {
+      this.diag.noSlot += 1;
+      return null;
+    }
     const next = this.pickNext();
-    if (!next) return null;
+    if (!next) {
+      this.diag.noTopic += 1;
+      return null;
+    }
 
     const displaced = this.slots[slot];
     this.slots[slot] = next;
@@ -280,6 +311,20 @@ export class PlanetBrowseSession {
   }
 
   // -- 内部工具 ---------------------------------------------------------
+
+  /** 诊断快照（开发构建用：确认窗口为什么没有换话题）。 */
+  debugSnapshot() {
+    return {
+      queue: this.queue.length,
+      pool: this.pool.length,
+      recent: this.recent.length,
+      locked: this.lockedId,
+      protected: this.protectedIds.size,
+      filled: this.slots.filter(Boolean).length,
+      lastSwapAt: Number.isFinite(this.lastSwapAt) ? Math.round(this.lastSwapAt) : -1,
+      diag: { ...this.diag },
+    };
+  }
 
   private markShown(topicId: string, nowMs: number): void {
     this.shownAt.set(topicId, nowMs);

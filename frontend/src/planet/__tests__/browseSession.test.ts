@@ -79,6 +79,32 @@ describe("PlanetBrowseSession", () => {
     expect(session.windowSlots().map((t) => t?.topic_id)).toEqual(before);
   });
 
+  it("还没有可还原记录时，反向旋转同样带来新话题（世界在两侧延伸）", () => {
+    const session = openSession(40, 8);
+    const before = session.windowSlots().map((t) => t?.topic_id);
+
+    const swap = session.takeSwap(-1, [1], 10_000);
+
+    expect(swap).not.toBeNull();
+    const after = session.windowSlots().map((t) => t?.topic_id);
+    expect(after).not.toEqual(before);
+    expect(after.filter(Boolean)).toHaveLength(8);
+    // 不能把当前窗口里已经有的话题再塞一遍
+    expect(new Set(after).size).toBe(8);
+  });
+
+  it("持续往同一方向旋转：每一步都真的换进新话题（不能一进一退原地打转）", () => {
+    const session = openSession(40, 8);
+    const snapshots: string[] = [];
+
+    for (let i = 0; i < 6; i++) {
+      session.takeSwap(-1, [i % 8], 10_000 + i * 2_000);
+      snapshots.push(session.windowSlots().map((t) => t?.topic_id).join(","));
+    }
+
+    expect(new Set(snapshots).size).toBe(snapshots.length);
+  });
+
   it("被选中的话题在用户查看期间不会被回收", () => {
     const session = openSession(40, 8);
     const selected = session.windowSlots()[2]!;

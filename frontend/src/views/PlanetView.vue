@@ -187,6 +187,20 @@ function onPanelWidthChange() {
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
+  // 仅开发构建：给本地视觉验收脚本一个只读窗口快照（生产构建里这段不存在）。
+  // 不改任何状态，也不暴露任何写入口。
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>).__qioPlanetWindow = () => ({
+      // 直接读渲染层与浏览会话：即使视图层状态没刷新，也能看出数据是否真的换了
+      ids: planet.windowTopicIds(),
+      refIds: windowTopicIds.value,
+      visible: windowTopicIds.value.filter(Boolean).length,
+      capacity: VISIBLE_CAPACITY,
+      debug: planet.debugState(),
+      session: browse.debugSnapshot(),
+      sessionIds: browse.windowSlots().map((s) => s?.topic_id ?? null),
+    });
+  }
   planet.init();
   // 一开始就接近最终构图：不再出现「远景小球 → 明显放大」这一段
   planet.primeCamera("planet");
@@ -241,6 +255,9 @@ async function reopen() {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
+  if (import.meta.env.DEV) {
+    delete (window as unknown as Record<string, unknown>).__qioPlanetWindow;
+  }
   stopThemeObserver();
   stopCanvasObserver();
   window.clearTimeout(recenterTimer);
