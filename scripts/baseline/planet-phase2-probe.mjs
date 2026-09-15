@@ -96,6 +96,37 @@ try {
     `可见 ${initial?.visible}/${initial?.capacity}，打开耗时 ${openMs}ms，截图 ${initialShot}`,
   );
 
+  // 打开时是「球面随机铺开」，不是赤道环带
+  {
+    const ys = (initial?.debug?.localDirs ?? []).filter(Boolean).map((d) => Math.abs(d[1]));
+    rec(
+      "P2-SPREAD",
+      "打开星球时的话题在整个球面上铺开（不是一条环带）",
+      ys.length > 0 && Math.max(...ys) > 0.6 && Math.min(...ys) < 0.3,
+      `|y| 范围 ${Math.min(...ys).toFixed(2)} ~ ${Math.max(...ys).toFixed(2)}（环带布局不会超过 0.6）`,
+    );
+  }
+
+  // 相机纵向限位：用力往纵向拖，极角也不会贴到极点
+  {
+    await drag(0, 700);
+    const polars = await Promise.all(
+      [0, 1, 2].map(async () => {
+        const info = await windowInfo();
+        const cam = info.debug.cameraDir;
+        return Math.acos(Math.min(1, Math.max(-1, cam[1])));
+      }),
+    );
+    const polar = polars[0];
+    const limit = (35 * Math.PI) / 180;
+    rec(
+      "P2-POLAR",
+      "纵向拖动有极角限位（不会拖到极点再看不清方向）",
+      polar >= limit - 0.02 && polar <= Math.PI - limit + 0.02,
+      `用力纵向拖动后相机极角 ${((polar * 180) / Math.PI).toFixed(1)}°（限位 35°~145°）`,
+    );
+  }
+
   // 转动一小段：正面看到的话题必须发生变化（不是一直同一批）
   const frontBefore = frontIds(await windowInfo());
   await drag(700, 0);
@@ -139,8 +170,14 @@ try {
   );
 
   // 拖动停止后位置必须完全不动（稳定性只要求「不拖动时不动」）
-  // 注意：松手后的惯性尾巴仍然算「用户驱动的转动」，要等它衰减完再采样
-  await wait(1500);
+  // 注意：松手后的惯性尾巴仍然算「用户驱动的转动」，先等它收敛再采样
+  let stable = "";
+  for (let i = 0; i < 24; i++) {
+    await wait(250);
+    const cur = JSON.stringify((await windowInfo())?.debug?.localDirs);
+    if (cur === stable) break;
+    stable = cur;
+  }
   const idleBefore = await windowInfo();
   await wait(2000);
   const idleAfter = await windowInfo();

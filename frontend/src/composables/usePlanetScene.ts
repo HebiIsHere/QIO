@@ -14,8 +14,12 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { TopicPosition } from "../services/api";
 import type { TopicData } from "../planet/topicData";
 import { RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
-import { backSlotOrder, slotPositions } from "../planet/layoutSlots";
-import { randomBackPosition } from "../planet/layoutSlots";
+import {
+  backSlotOrder,
+  clampPolar,
+  POLAR_LIMIT,
+  randomBackPosition,
+} from "../planet/layoutSlots";
 import { DotPool } from "../planet/dotPool";
 import { BrowseFlowDriver } from "../planet/browseFlow";
 import type { BrowseTopic, Dir } from "../planet/browseSession";
@@ -237,6 +241,10 @@ function motionDuration(ms: number): number {
     controls.enablePan = false;
     controls.minDistance = 0.9;
     controls.maxDistance = 8;
+    // 纵向限位：离南北极至少 35°。太靠近极点时横向拖动会退化（方位角失去意义），
+    // 用户会觉得「怎么拖都不动」；这条限位同时也是「不集中于极区」的相机侧保证。
+    controls.minPolarAngle = POLAR_LIMIT;
+    controls.maxPolarAngle = Math.PI - POLAR_LIMIT;
 
     planetGroup = new THREE.Group();
     scene.add(planetGroup);
@@ -484,7 +492,8 @@ function motionDuration(ms: number): number {
     return new Promise((resolve) => {
       if (!camera) { resolve(); return; }
       const endTarget = target?.clone().normalize() ?? new THREE.Vector3(0, 0, 1);
-      const endPos = endTarget.clone().multiplyScalar(RADII[state]);
+      // 程序性移动也遵守同一条纵向限位，避免补间结束后被 OrbitControls 拽一下
+      const endPos = clampPolar(endTarget).multiplyScalar(RADII[state]);
       focusedDot = null;
       targetQuat = null;
       // 已经在目标构图：直接落状态，不空跑一段「不动」的补间锁住拖动

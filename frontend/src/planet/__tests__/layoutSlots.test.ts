@@ -8,7 +8,15 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 
-import { backSlotOrder, randomBackPosition, slotPositions, MIN_SEP } from "../layoutSlots";
+import {
+  backSlotOrder,
+  clampPolar,
+  POLAR_LIMIT,
+  randomBackPosition,
+  slotPositions,
+  spreadPositions,
+  MIN_SEP,
+} from "../layoutSlots";
 
 function angleBetween(a: THREE.Vector3, b: THREE.Vector3): number {
   return Math.acos(Math.max(-1, Math.min(1, a.clone().normalize().dot(b.clone().normalize()))));
@@ -48,16 +56,14 @@ describe("slotPositions", () => {
     }
   });
 
-  it("不集中在极区，也不机械平均", () => {
+  it("不集中在极区（球面随机铺开，不贴正南北极）", () => {
     const positions = slotPositions(12, 7);
     const polars = positions.map((p) => Math.acos(Math.max(-1, Math.min(1, p.y))));
 
     for (const polar of polars) {
-      expect(polar).toBeGreaterThan(THREE.MathUtils.degToRad(50));
-      expect(polar).toBeLessThan(THREE.MathUtils.degToRad(130));
+      expect(polar).toBeGreaterThan(THREE.MathUtils.degToRad(18));
+      expect(polar).toBeLessThan(THREE.MathUtils.degToRad(162));
     }
-    const gaps = polars.map((p, i) => (i === 0 ? 0 : p - polars[i - 1]));
-    expect(Math.max(...gaps.slice(1)) - Math.min(...gaps.slice(1))).toBeGreaterThan(0.01);
   });
 });
 
@@ -129,5 +135,53 @@ describe("randomBackPosition", () => {
     const last = randomBackPosition(occupied, cameraDir, rng(999));
 
     expect(last.dot(cameraDir)).toBeLessThan(0);
+  });
+});
+
+describe("spreadPositions（打开星球时的随机铺开）", () => {
+  it("随机铺开：同 seed 稳定，不同 seed 有差异", () => {
+    const a = spreadPositions(16, 21).map((p) => p.toArray());
+    const b = spreadPositions(16, 21).map((p) => p.toArray());
+    const c = spreadPositions(16, 22).map((p) => p.toArray());
+
+    expect(a).toEqual(b);
+    expect(a).not.toEqual(c);
+  });
+
+  it("随机铺开仍然不重叠，且都在单位球面上", () => {
+    const positions = spreadPositions(16, 5);
+    expect(positions).toHaveLength(16);
+    for (const p of positions) expect(p.length()).toBeCloseTo(1, 5);
+    for (let i = 0; i < positions.length; i++) {
+      for (let j = i + 1; j < positions.length; j++) {
+        expect(angleBetween(positions[i], positions[j])).toBeGreaterThanOrEqual(MIN_SEP - 1e-6);
+      }
+    }
+  });
+
+  it("随机铺开是「球面分布」，不再集中在一条环带上", () => {
+    for (const seed of [1, 7, 21, 99]) {
+      const ys = spreadPositions(16, seed).map((p) => p.y);
+      const spread = Math.max(...ys) - Math.min(...ys);
+      // 环带布局的 y 幅度最多 ~1.15；球面随机铺开应该明显更宽
+      expect(spread).toBeGreaterThan(1.3);
+      // 既不集中赤道，也不堆在极点（保留一点极冠留白）
+      expect(Math.max(...ys.map(Math.abs))).toBeLessThanOrEqual(0.95);
+    }
+  });
+});
+
+describe("clampPolar（相机纵向限位）", () => {
+  it("把极点方向压回限位边缘", () => {
+    const top = clampPolar(new THREE.Vector3(0, 1, 0));
+    const bottom = clampPolar(new THREE.Vector3(0, -1, 0));
+
+    expect(Math.acos(top.y)).toBeCloseTo(POLAR_LIMIT, 5);
+    expect(Math.acos(bottom.y)).toBeCloseTo(Math.PI - POLAR_LIMIT, 5);
+  });
+
+  it("限位以内的方向原样保留", () => {
+    const dir = new THREE.Vector3(1, 0, 0);
+    expect(clampPolar(dir).toArray()).toEqual(dir.toArray());
   });
 });

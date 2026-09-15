@@ -13,13 +13,14 @@
  */
 import * as THREE from "three";
 
-/** 环形带内缘 / 外缘的极角（弧度）：50°~130°，两端各留 50° 空出来。 */
-const POLAR_MIN = THREE.MathUtils.degToRad(55);
-const POLAR_MAX = THREE.MathUtils.degToRad(125);
-/** 极角抖动幅度（弧度，约 4°）。 */
-const POLAR_JITTER = THREE.MathUtils.degToRad(4);
-/** 黄金角：相邻槽位的方位角间隔天然分散。 */
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** 极冠留白：|y| 不超过这个值（约 18°），避免话题堆在正南北极。 */
+const POLAR_CAP = 0.95;
+/**
+ * 相机纵向限位（弧度）：离极点至少 35°。
+ * 太靠近极点时横向拖动会退化（OrbitControls 的 azimuth 在那里没有意义），
+ * 拖起来会「怎么拖都不动」。
+ */
+export const POLAR_LIMIT = THREE.MathUtils.degToRad(35);
 /** 同屏话题之间的最小角间距（弧度，约 10.3°）：不重叠、点得中。 */
 export const MIN_SEP = 0.18;
 /**
@@ -48,23 +49,93 @@ function jitter(seed: number, index: number, amount: number): number {
  * @param capacity 槽位数量（= 星球可见容量）
  * @param sessionSeed 浏览会话种子：同一次打开期间保持不变
  */
-export function slotPositions(capacity: number, sessionSeed: number): THREE.Vector3[] {
+/** 确定性随机源（同一个 seed 同一串数）。 */
+export function seededRng(seed: number): () => number {
+  let state = (seed >>> 0) || 1;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * 打开星球时把展示窗口**随机铺开在整个球面上**。
+ *
+ * 之前用的是环形带（所有话题挤在赤道附近），视觉上更像一条项链而不是星球。
+ * 现在按球面均匀随机取点，同时保持最小角间距（不重叠、点得中），
+ * 并且不把话题堆到正南北极（`POLAR_CAP`）。
+ */
+export function spreadPositions(capacity: number, seed: number): THREE.Vector3[] {
   const count = Math.max(1, Math.floor(capacity));
+  const rng = seededRng(seed);
+  return spreadWithRng(count, rng);
+}
+
+function spreadWithRng(count: number, rng: () => number): THREE.Vector3[] {
   const out: THREE.Vector3[] = [];
+  let relax = 1;
   for (let i = 0; i < count; i++) {
-    const t = (i + 0.5) / count;
-    const polar = THREE.MathUtils.lerp(POLAR_MIN, POLAR_MAX, t) + jitter(sessionSeed, i, POLAR_JITTER);
-    const bounded = Math.min(POLAR_MAX + POLAR_JITTER, Math.max(POLAR_MIN - POLAR_JITTER, polar));
-    const azimuth = i * GOLDEN_ANGLE + jitter(sessionSeed, i + 1000, 0.06);
-    out.push(
-      new THREE.Vector3(
-        Math.sin(bounded) * Math.cos(azimuth),
-        Math.cos(bounded),
-        Math.sin(bounded) * Math.sin(azimuth),
-      ).normalize(),
-    );
+    let best: THREE.Vector3 | null = null;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const dir = unitVector(rng);
+      if (Math.abs(dir.y) > POLAR_CAP) continue;
+      best = best ?? dir;
+      const minSep = MIN_SEP * relax;
+      const ok = out.every(
+        (other) => Math.acos(Math.min(1, Math.max(-1, dir.dot(other)))) >= minSep,
+      );
+      if (ok) {
+        best = dir;
+        break;
+      }
+      // 后半程逐步放宽：宁可稍近一点，也不能死循环或返回极点
+      if (attempt > 80) relax = Math.max(0.6, relax * 0.995);
+    }
+    out.push(best ?? unitVector(rng));
   }
   return out;
+}
+
+/** 球面均匀方向（先均匀取 z，再取方位角）。 */
+function unitVector(rng: () => number): THREE.Vector3 {
+  const z = rng() * 2 - 1;
+  const phi = rng() * Math.PI * 2;
+  const r = Math.sqrt(Math.max(0, 1 - z * z));
+  return new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)).normalize();
+}
+
+/**
+ * 保留兼容：旧调用方（与部分测试）用「环形带槽位」的名字。
+ * 第二阶段位置不再是固定槽位，这里直接给出球面随机铺开的结果。
+ */
+export function slotPositions(capacity: number, sessionSeed: number): THREE.Vector3[] {
+  return spreadPositions(capacity, sessionSeed);
+}
+
+/** 把方向压进相机的纵向限位范围内（程序性移动也要遵守同一条限位）。 */
+export function clampPolar(dir: THREE.Vector3, limit: number = POLAR_LIMIT): THREE.Vector3 {
+  const v = dir.clone().normalize();
+  const polar = Math.acos(Math.min(1, Math.max(-1, v.y)));
+  if (polar <= Math.PI / 2 && polar < limit) {
+    const phi = Math.atan2(v.z, v.x);
+    return new THREE.Vector3(
+      Math.sin(limit) * Math.cos(phi),
+      Math.cos(limit),
+      Math.sin(limit) * Math.sin(phi),
+    ).normalize();
+  }
+  if (polar > Math.PI / 2 && polar > Math.PI - limit) {
+    const phi = Math.atan2(v.z, v.x);
+    return new THREE.Vector3(
+      Math.sin(limit) * Math.cos(phi),
+      -Math.cos(limit),
+      Math.sin(limit) * Math.sin(phi),
+    ).normalize();
+  }
+  return v;
 }
 
 /**
