@@ -15,7 +15,7 @@ Fragment 与 Anchor / API 改动 / 测试 / 视觉验证 / 性能 / 剩余问题
 | Anchor | 明确「Anchor = 当前对话真实继续发生的位置」；Planet 选中、检索命中、Predictor 判断都不再触碰 Anchor；失败与取消不推进 Anchor（补了专门测试） |
 | Planet 浏览流 | 新增 `frontend/src/planet/browseSession.ts`：浏览序列 + 展示窗口 + 槽位回收 + 反向还原 + 冷却 + 选中锁定 + 最小展示寿命；旋转按方位角累计推动话题流（`planet/browseFlow.ts`） |
 | 展示窗口 | 同屏容量固定为 16（`VISIBLE_CAPACITY`），总话题数无上限；100+ 话题下同屏仍是 16 个点 |
-| 临时布局 | 新增 `frontend/src/planet/layoutSlots.ts`：按「话题 + 浏览会话」稳定种子确定性生成环形带槽位；`nodes.meta.layout` 旧坐标保留兼容但不再是核心语义 |
+| 临时布局 | 新增 `frontend/src/planet/layoutSlots.ts`：打开时用稳定种子生成环形带布局；**拖动摇动期间新话题在球体背面随机落点**（`randomBackPosition`，避开已有方向）；静止时位置完全不动。`nodes.meta.layout` 旧坐标保留兼容但不再是核心语义 |
 | Fragment | 迁移 11 增加 `fragments.source_fragment_id`；「从历史继续」创建**新片段**并记来源，旧片段零改动；`focus_fragment` 会把来源片段抬进本轮 Focus |
 | Memory | 检索仍然只读（新增测试固定这一点）；接续片段的 Focus 读的是来源片段，不读空的接续片段 |
 | 数据接口 | 新增 `GET /api/planet/overview`、`POST /api/planet/browse`、`GET /api/fragments/{id}/messages`；Topic Detail 不再内联 Message 原文且 `message_count` 变成真实总数 |
@@ -27,7 +27,8 @@ Fragment 与 Anchor / API 改动 / 测试 / 视觉验证 / 性能 / 剩余问题
 | 问题 | 原因 | 修改方式 |
 | --- | --- | --- |
 | 第 17 个以后的话题进不了星球 | `usePlanetScene.loadTopics` 里 `buildTopics(...).slice(0, MAX_TOPICS)`：前端把「渲染上限」当成「数据上限」，超出的点根本不生成 | 数据层改成 `overview + browse` 游标分页（无上限），视觉层容量固定 16，槽位轮流承载不同话题 |
-| 星球是「固定坐标 + 转 360° 看完全部」 | 话题位置持久化在 `nodes.meta.layout`，前端按位置聚簇并渲染，旋转只是换视角 | 位置改为「当前展示布局」（确定性临时槽位）；旋转推动话题流，槽位转到背面才换数据 |
+| 星球是「固定坐标 + 转 360° 看完全部」 | 话题位置持久化在 `nodes.meta.layout`，前端按位置聚簇并渲染，旋转只是换视角 | 位置改为「当前展示布局」：开局确定性环形带、拖动时新话题在背面随机落点、静止不动；旋转推动话题流 |
+| 转了半天正面还是那批点 | 新话题只会顶替「正背面」那个槽位，而且沿用被顶替者的位置，要再转约半圈才露头 | 新话题在**背面任意位置**随机生成（且与已有方向保持角间距），转一小段就能转进视野；实测一次拖动正面新出现 6–8 个话题 |
 | 点击话题可能被误当成「进入话题」 | 选中态与 Anchor 的边界靠约定维持，没有统一入口 | 选中只写前端状态并锁定该槽位；只有「进入这个话题 / 从这里继续」调用 Navigator |
 | 「从历史继续」会重新打开旧片段 | `continue_from_fragment` 直接把 Anchor 指向旧片段，语义上等于「继续写那一段」 | 新建接续片段（`source_fragment_id` = 来源），Anchor 指向新片段；Focus 读来源片段；旧片段零改动 |
 | Topic Detail 一次带回所有片段的前 50 条消息 | 详情接口把 `messages` 内联在片段里，`message_count` 还是被 LIMIT 截断的值 | 详情只给目录与真实计数；原文走 `GET /api/fragments/{id}/messages` 按页取 |
@@ -36,8 +37,8 @@ Fragment 与 Anchor / API 改动 / 测试 / 视觉验证 / 性能 / 剩余问题
 
 ## 3. Planet 最终工作方式
 
-- **Topic 如何进入展示**：后端 `_sequence()` 用「稳定哈希打底 + 少量近期活跃加权」生成确定性顺序，第一圈把当前所在话题排到首位；前端按游标取批，填进窗口空位。
-- **Topic 如何离开**：只有当某个槽位转到球体背面（用户看不见）、且它已经展示够 `minLifetimeMs = 720ms`、且没被用户锁定时，才把这个槽位换成队列里的下一个话题。
+- **Topic 如何进入展示**：后端 `_sequence()` 用「稳定哈希打底 + 少量近期活跃加权」生成确定性顺序，第一圈把当前所在话题排到首位；前端按游标取批，打开时用环形带布局铺满窗口，之后进入的话题在**球体背面随机落点**（与窗口里已有话题保持最小角间距）。
+- **Topic 如何离开**：只有当某个话题转到球体背面（用户看不见）、且它已经展示够 `minLifetimeMs = 720ms`、且没被用户锁定时，才把它换成队列里的下一个话题（顶替它的位置随之重新生成）。**不拖动时窗口里的话题位置完全不动**。
 - **旋转如何推动话题流**：渲染循环读 `OrbitControls.getAzimuthalAngle()`，累计到 0.4 rad（约 23°）推进一步；快速甩动最多只有一步残量，真正的节奏由「最小展示寿命」兜底。
 - **反向旋转如何处理**：只有**真的掉头**（相对上一次流向）才把刚离开的话题放回原槽位；继续同向旋转一律引入新话题。刚打开就反向时没有可还原记录，同样引入新话题 —— 世界在两侧延伸，不会出现「反向什么都不发生」。
 - **如何避免频繁重复**：一次会话内序列本身是排列（同一圈不重复）；换圈时换种子重排；近期展示过的话题进冷却队列（默认 24），队列见底后从「离开过的话题」池里按 FIFO 取，因此长时间浏览后旧话题会自然重新出现，但不会马上从另一侧回来。
@@ -86,7 +87,8 @@ Fragment 与 Anchor / API 改动 / 测试 / 视觉验证 / 性能 / 剩余问题
 | `backend/tests/test_anchor_no_advance.py` | 失败/取消不推进 Anchor、不吞掉待确认切换 | 通过 |
 | `backend/tests/test_api_auth.py` | 新接口仍要求会话令牌 | 通过 |
 | `frontend/src/planet/__tests__/browseSession.test.ts` | 同屏上限、单槽位替换、反向还原、同向旋转不原地打转、选中锁定、最小寿命、冷却、预取、搜索注入 | 通过 |
-| `frontend/src/planet/__tests__/layoutSlots.test.ts` | 同 seed 稳定、不同 seed 有差异、不重叠（12 与 16 两档）、不集中极区、背面排序 | 通过 |
+| `frontend/src/planet/__tests__/browseSession.test.ts`（新增用例） | 新进入的话题使用 `place()` 给的背面位置、其它成员位置不动、`place` 拿到「除离开者之外」的占用方向、反向还原把话题连同位置一起放回 | 通过 |
+| `frontend/src/planet/__tests__/layoutSlots.test.ts` | 同 seed 稳定、不同 seed 有差异、不重叠（12 与 16 两档）、不集中极区、背面排序、`randomBackPosition` 只落背面 / 保持角间距 / 确定性 / 挤满也不死循环 | 通过 |
 | `frontend/src/planet/__tests__/dotPool.test.ts` | 对象池数量固定、复用不 dispose、离开窗口只隐藏、单槽位替换、朝向正确 | 通过 |
 | `frontend/src/planet/__tests__/browseFlow.test.ts` | 拖动量不足不动、够一步动一格、甩动不连跳、程序性移动不留残量 | 通过 |
 | `frontend/src/views/__tests__/PlanetView.test.ts` | 原有相机/面板/竞态用例 + 选中不改 Anchor、进入话题才改、搜索命中注入窗口、选中锁定 | 通过 |
@@ -103,13 +105,14 @@ Fragment 与 Anchor / API 改动 / 测试 / 视觉验证 / 性能 / 剩余问题
 | 场景 | 判断 | 结果 |
 | --- | --- | --- |
 | 1 星球初始打开 | 是否保持足够留白 | 运行。球体完整落在画面内、四边有留白；同屏 16 个槽位（正面可见约 8 个），打开耗时约 0.83–0.94 s。截图 `%TEMP%\qio-baseline\phase2\shots\planet-initial.png` |
-| 2 持续滚动/拖动 | 是否不断出现新 Topic | 运行。14 次拖动累计遇到 **31–33 个不同话题**（初始窗口 16 个），不是转同一批点 |
+| 2 持续滚动/拖动 | 是否不断出现新 Topic | 运行。**转动一段后正面新出现 6–8 个话题**；14 次拖动累计遇到 **34–40 个不同话题**（初始窗口 16 个），不是转同一批点 |
 | 3 多周期旋转 | 是否仍有探索感 | 部分运行。同一会话内累计遇到 33 个话题、跨圈后顺序重排；未做「长时间连续旋转」的疲劳观察 |
-| 4 Topic 进入/离开 | 是否连续自然、看不到数据替换 | 部分运行。替换只发生在背面槽位（代码约束 + 结构测试），淡入 420ms；**没有逐帧录屏**，肉眼只看了静帧 |
+| 4 Topic 进入/离开 | 是否连续自然、看不到数据替换 | 部分运行。替换只发生在背面（新落点由 `randomBackPosition` 强制落在背面半球，并有结构测试），淡入 420ms；**没有逐帧录屏**，肉眼只看了静帧 |
 | 5 快速拖动后松手 | 惯性是否自然、无回弹 | 未运行（没有做惯性曲线测量；拖动沿用 OrbitControls damping，无弹簧回弹） |
 | 6 悬停/选择 Topic | 信息是否足够但克制 | 运行。悬停只显示标题、选中有一个聚焦环 + 标题，无数据可视化叠加。截图 `planet-panel.png` |
 | 7 100 Topic 数据集 | 星球是否仍然简单 | 运行。123 个话题下同屏仍是 16 个点、侧栏列表 123 条可滚动，画面没有变成点云。截图 `planet-mid.png` / `planet-panel.png` |
 | 控制台 | 过程中有没有报错 | 运行。无控制台错误 |
+| 静止稳定性 | 不拖动时话题位置会不会漂移 | 运行。松手并等惯性衰减后静置 2s，窗口内 16 个话题的位置字节级一致（星球自身慢速自转不计入） |
 
 截图目录：`%TEMP%\qio-baseline\phase2\shots\`；机读报告：`%TEMP%\qio-baseline\phase2\report.json`。
 

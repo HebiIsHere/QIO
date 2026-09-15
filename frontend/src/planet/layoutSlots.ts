@@ -20,6 +20,13 @@ const POLAR_MAX = THREE.MathUtils.degToRad(125);
 const POLAR_JITTER = THREE.MathUtils.degToRad(4);
 /** 黄金角：相邻槽位的方位角间隔天然分散。 */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** 同屏话题之间的最小角间距（弧度，约 10.3°）：不重叠、点得中。 */
+export const MIN_SEP = 0.18;
+/**
+ * 新话题落点必须离「轮廓线」至少这么远（弧度）。
+ * 太小的话用户会在数据替换的半路上看到它突然出现。
+ */
+const BACK_MARGIN = 0.12;
 
 /** 32 位确定性哈希：同一个 (seed, index) 永远得到同一个 [0,1) 值。 */
 function unitHash(seed: number, index: number): number {
@@ -72,4 +79,49 @@ export function backSlotOrder(dirs: THREE.Vector3[], camDir: THREE.Vector3): num
     .map((dir, index) => ({ index, dot: dir.clone().normalize().dot(normalizedCam) }))
     .sort((a, b) => (a.dot === b.dot ? a.index - b.index : a.dot - b.dot))
     .map((entry) => entry.index);
+}
+
+/**
+ * 给一个**新进入窗口**的话题挑位置：在球体背面随机取点。
+ *
+ * 这是第二阶段的核心规则 —— 稳定性只要求「不拖动时窗口内的话题不乱动」，
+ * 而不是「每个话题永远固定在某个槽位」。新话题出现在用户此刻看不见的
+ * 背面任意位置，随着继续旋转自然转到正面。
+ *
+ * 约束：离相机方向至少 BACK_MARGIN（保证真的在看不见的那一侧）、
+ * 与窗口里已有话题保持 MIN_SEP 角间距（不重叠）；实在挤不下时
+ * 放宽间距也不返回正面的位置，最多重试若干次，绝不死循环。
+ */
+export function randomBackPosition(
+  occupied: THREE.Vector3[],
+  cameraDir: THREE.Vector3,
+  rng: () => number,
+): THREE.Vector3 {
+  const cam = cameraDir.clone().normalize();
+  const used = occupied.map((dir) => dir.clone().normalize());
+  const threshold = -BACK_MARGIN;
+  let fallback: THREE.Vector3 | null = null;
+  const attempts = 160;
+  for (let i = 0; i < attempts; i++) {
+    // 先在整球均匀采样，再拒绝掉正面与太近的点
+    const z = rng() * 2 - 1;
+    const phi = rng() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - z * z));
+    const dir = new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi));
+    if (dir.dot(cam) > threshold) continue;
+    fallback = fallback ?? dir;
+    const tooClose = used.some(
+      (other) => Math.acos(Math.min(1, Math.max(-1, dir.dot(other)))) < MIN_SEP,
+    );
+    if (!tooClose) return dir;
+    if (i > attempts * 0.6) {
+      // 后半程开始放宽间距要求：宁可稍近一点，也不返回正面位置
+      const relaxed = MIN_SEP * 0.6;
+      const stillClose = used.some(
+        (other) => Math.acos(Math.min(1, Math.max(-1, dir.dot(other)))) < relaxed,
+      );
+      if (!stillClose) return dir;
+    }
+  }
+  return fallback ?? cam.clone().multiplyScalar(-1);
 }

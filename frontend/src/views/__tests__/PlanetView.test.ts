@@ -1097,7 +1097,7 @@ describe("第二阶段：浏览 ≠ 进入话题", () => {
     await flushPromises();
     const slot = attachedSession!.windowSlots().findIndex((s) => s?.topic_id === "t2");
 
-    attachedSession!.takeSwap(1, [slot], performance.now() + 10_000);
+    attachedSession!.takeSwap(1, { backSlots: [slot] }, performance.now() + 10_000);
 
     expect(attachedSession!.windowSlots()[slot]?.topic_id).toBe("t2");
   });

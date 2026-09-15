@@ -50,6 +50,17 @@ page.on("pageerror", (e) => consoleErrors.push("pageerror: " + String(e.message)
 
 const windowInfo = () => page.evaluate(() => window.__qioPlanetWindow?.() ?? null);
 
+/** 当前「正面可见」的 topic_id：用窗口方向与相机方向的内积判断 */
+const frontIds = (info) => {
+  const cam = info?.debug?.cameraDir ?? [0, 0, 1];
+  const out = [];
+  (info?.debug?.dirs ?? []).forEach((dir, i) => {
+    if (!dir) return;
+    if (dir[0] * cam[0] + dir[1] * cam[1] + dir[2] * cam[2] > 0) out.push(info.ids[i]);
+  });
+  return out;
+};
+
 const drag = async (dx, dy, steps = 12) => {
   const box = await page.locator("canvas").boundingBox();
   if (!box) return;
@@ -85,12 +96,26 @@ try {
     `可见 ${initial?.visible}/${initial?.capacity}，打开耗时 ${openMs}ms，截图 ${initialShot}`,
   );
 
-  // 持续旋转：每转一小段看一次窗口内容，累计采样
+  // 转动一小段：正面看到的话题必须发生变化（不是一直同一批）
+  const frontBefore = frontIds(await windowInfo());
+  await drag(700, 0);
+  const frontAfterInfo = await windowInfo();
+  const frontAfter = frontIds(frontAfterInfo);
+  const enteredFront = frontAfter.filter((id) => !frontBefore.includes(id)).length;
+  rec(
+    "P2-FRONT",
+    "转动一段之后，正面看到的话题确实换了（不是一直同一批）",
+    enteredFront > 0,
+    `正面 ${frontBefore.length} → ${frontAfter.length}，其中新出现 ${enteredFront} 个`,
+  );
+
+  // 持续旋转：每转一小段看一次窗口内容，累计采样（只用水平拖动，
+  // 否则相机会被推到极点，横向旋转在那里退化，测不出真实行为）
   const seen = new Set(initial?.ids?.filter(Boolean) ?? []);
   let maxVisible = initial?.visible ?? 0;
   const samples = [];
   for (let round = 0; round < 14; round++) {
-    await drag(260, 40);
+    await drag(260, 0);
     const info = await windowInfo();
     if (!info) break;
     info.ids.filter(Boolean).forEach((id) => seen.add(id));
@@ -111,6 +136,32 @@ try {
     "无论转多久，同屏可见数量不超过容量",
     maxVisible <= (initial?.capacity ?? 12),
     `采样期间最大可见 ${maxVisible}（容量 ${initial?.capacity}），每轮可见 ${samples.join("/")}`,
+  );
+
+  // 拖动停止后位置必须完全不动（稳定性只要求「不拖动时不动」）
+  // 注意：松手后的惯性尾巴仍然算「用户驱动的转动」，要等它衰减完再采样
+  await wait(1500);
+  const idleBefore = await windowInfo();
+  await wait(2000);
+  const idleAfter = await windowInfo();
+  rec(
+    "P2-IDLE",
+    "停止拖动后，窗口里的话题位置不再变化（不漂移）",
+    JSON.stringify(idleBefore?.debug?.localDirs) === JSON.stringify(idleAfter?.debug?.localDirs),
+    `静置 2s 前后话题位置是否一致 = ${JSON.stringify(idleBefore?.debug?.localDirs) === JSON.stringify(idleAfter?.debug?.localDirs)}（星球自身的慢速自转不计入）`,
+  );
+
+  // 新话题落在背面（用户在它转出来之前看不到这次替换）
+  const afterDrag = await windowInfo();
+  const cam = afterDrag?.debug?.cameraDir ?? [0, 0, 1];
+  const behind = (afterDrag?.debug?.dirs ?? []).filter(
+    (dir) => dir && dir[0] * cam[0] + dir[1] * cam[1] + dir[2] * cam[2] < 0,
+  ).length;
+  rec(
+    "P2-BACK",
+    "窗口里始终有一部分话题在球体背面（新话题从这里转到正面）",
+    behind > 0 && behind < (afterDrag?.debug?.dirs ?? []).length,
+    `窗口 ${afterDrag?.debug?.dirs?.filter(Boolean).length} 个点，其中背面 ${behind} 个`,
   );
 
   // 反向旋转：应该能拿回刚看到过的话题（连续感），而不是全新一批

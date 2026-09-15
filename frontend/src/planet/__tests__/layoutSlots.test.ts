@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 
-import { backSlotOrder, slotPositions } from "../layoutSlots";
+import { backSlotOrder, randomBackPosition, slotPositions, MIN_SEP } from "../layoutSlots";
 
 function angleBetween(a: THREE.Vector3, b: THREE.Vector3): number {
   return Math.acos(Math.max(-1, Math.min(1, a.clone().normalize().dot(b.clone().normalize()))));
@@ -78,5 +78,56 @@ describe("backSlotOrder", () => {
     expect(order[0]).toBe(2);
     expect(order[order.length - 1]).toBe(0);
     expect(order).toHaveLength(positions.length);
+  });
+});
+
+describe("randomBackPosition", () => {
+  const cameraDir = new THREE.Vector3(0, 0, 1);
+  const rng = (seed: number) => {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  };
+
+  it("新话题只落在球体背面（用户此刻看不见的那一半）", () => {
+    const occupied = slotPositions(8, 3);
+    for (let i = 0; i < 40; i++) {
+      const dir = randomBackPosition(occupied, cameraDir, rng(i));
+      expect(dir.length()).toBeCloseTo(1, 5);
+      expect(dir.dot(cameraDir)).toBeLessThan(0);
+    }
+  });
+
+  it("与窗口里已有的话题保持最小角间距", () => {
+    const occupied = slotPositions(12, 5);
+    for (let i = 0; i < 20; i++) {
+      const dir = randomBackPosition(occupied, cameraDir, rng(100 + i));
+      for (const other of occupied) {
+        expect(angleBetween(dir, other)).toBeGreaterThanOrEqual(MIN_SEP - 1e-6);
+      }
+    }
+  });
+
+  it("同一个随机数序列结果一致，不同序列有差异", () => {
+    const occupied = slotPositions(6, 9);
+    const a = randomBackPosition(occupied, cameraDir, rng(7)).toArray();
+    const b = randomBackPosition(occupied, cameraDir, rng(7)).toArray();
+    const c = randomBackPosition(occupied, cameraDir, rng(8)).toArray();
+
+    expect(a).toEqual(b);
+    expect(a).not.toEqual(c);
+  });
+
+  it("球面被占得很满时仍然返回一个背面位置（不会死循环）", () => {
+    const occupied: THREE.Vector3[] = [];
+    for (let i = 0; i < 60; i++) {
+      const dir = randomBackPosition(occupied, cameraDir, rng(i));
+      occupied.push(dir);
+    }
+    const last = randomBackPosition(occupied, cameraDir, rng(999));
+
+    expect(last.dot(cameraDir)).toBeLessThan(0);
   });
 });

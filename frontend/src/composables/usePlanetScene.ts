@@ -15,9 +15,10 @@ import type { TopicPosition } from "../services/api";
 import type { TopicData } from "../planet/topicData";
 import { RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
 import { backSlotOrder, slotPositions } from "../planet/layoutSlots";
+import { randomBackPosition } from "../planet/layoutSlots";
 import { DotPool } from "../planet/dotPool";
 import { BrowseFlowDriver } from "../planet/browseFlow";
-import type { BrowseTopic } from "../planet/browseSession";
+import type { BrowseTopic, Dir } from "../planet/browseSession";
 import { PlanetBrowseSession } from "../planet/browseSession";
 
 export type CameraState = "overview" | "planet" | "focus";
@@ -47,6 +48,18 @@ function dotSizeOf(topic: BrowseTopic): number {
   return 0.85 + ((seed % 100) / 100) * 0.45;
 }
 
+/** 确定性随机源：给「新话题落在背面哪个位置」用，同一个浏览会话可复现。 */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   const webglOK = ref(false);
   const fps = ref(0);
@@ -74,6 +87,8 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let dotPool: DotPool | null = null;
   /** 当前槽位的球面方向（单位球面，由 layoutSlots 按会话种子确定） */
   let slotDirs: THREE.Vector3[] = [];
+  /** 新话题落点用的确定性随机源（同一个浏览会话可复现） */
+  let placeRng: () => number = Math.random;
   /** 浏览会话：序列 / 游标 / 展示窗口（见 planet/browseSession.ts） */
   let browseSession: PlanetBrowseSession | null = null;
   /** 旋转 → 话题流 的节流器 */
@@ -376,7 +391,10 @@ function motionDuration(ms: number): number {
     if (!pg) return;
     browseSession = session;
     windowChanged = options.onWindowChange ?? null;
-    slotDirs = slotPositions(session.capacity, options.seed ?? 1);
+    placeRng = mulberry32((options.seed ?? 1) >>> 0);
+    slotDirs = session
+      .windowMembers()
+      .map((m) => (m ? new THREE.Vector3(...m.dir) : new THREE.Vector3(0, 1, 0)));
     const material = dotMat ?? DOT_FALLBACK_MATERIAL;
 
     if (!dotPool || dotPool.capacity !== session.capacity) {
@@ -409,26 +427,35 @@ function motionDuration(ms: number): number {
   function refreshWindow(now: number) {
     const session = browseSession;
     if (!session || !dotPool) return;
-    const items = session.windowSlots();
-    dotPool.applyWindow(items, slotDirs);
+    const members = session.windowMembers();
+    slotDirs = members.map((m) => (m ? new THREE.Vector3(...m.dir) : new THREE.Vector3(0, 1, 0)));
+    dotPool.applyWindow(
+      members.map((m) => m?.topic ?? null),
+      slotDirs,
+    );
     dotPool.all().forEach((mesh, slot) => {
       // 已经在窗口里的话题不再重播淡入：只有真正换进来的才做进入动画
-      const changed = (mesh.userData.windowTopicId as string | null) !== (items[slot]?.topic_id ?? null);
+      const changed =
+        (mesh.userData.windowTopicId as string | null) !== (members[slot]?.topic.topic_id ?? null);
       if (changed) {
         mesh.userData.enterAt = now;
-        mesh.userData.windowTopicId = items[slot]?.topic_id ?? null;
+        mesh.userData.windowTopicId = members[slot]?.topic.topic_id ?? null;
       }
     });
+    currentData = slotDirs.map((dir, i) => ({ id: `slot-${i}`, ci: i % 3, pos: dir, w: 1 }));
     applyRingUniforms(currentData);
     windowChanged?.();
   }
 
   /** 单个槽位替换（旋转推动话题流时使用）。 */
-  function applySwap(slot: number, topic: BrowseTopic | null, now: number) {
+  function applySwap(slot: number, topic: BrowseTopic | null, dir: THREE.Vector3, now: number) {
     if (!dotPool) return;
-    const mesh = dotPool.place(slot, topic, slotDirs[slot] ?? new THREE.Vector3(0, 0, 1));
+    slotDirs[slot] = dir.clone().normalize();
+    currentData[slot] = { id: `slot-${slot}`, ci: slot % 3, pos: slotDirs[slot], w: 1 };
+    const mesh = dotPool.place(slot, topic, slotDirs[slot]);
     mesh.userData.enterAt = now;
     mesh.userData.windowTopicId = topic?.topic_id ?? null;
+    applyRingUniforms(currentData);
     lastSwapAt = now;
     swapCount += 1;
     windowChanged?.();
@@ -682,8 +709,24 @@ function motionDuration(ms: number): number {
         const step = flowDriver.feed(delta, now, interacting);
         if (step !== 0) stepCount += 1;
         if (step !== 0 && browseSession) {
-          const swap = browseSession.takeSwap(step > 0 ? 1 : -1, backSlots(), now);
-          if (swap) applySwap(swap.slot, swap.topic, now);
+          planetGroup.getWorldPosition(_centerV);
+          _camDirV.subVectors(camera.position, _centerV).normalize();
+          const camDir = _camDirV.clone();
+          const swap = browseSession.takeSwap(
+            step > 0 ? 1 : -1,
+            {
+              backSlots: backSlots(),
+              // 新话题落在球体背面任意位置：不是继承旧位置，也不是永久槽位
+              place: (occupied: Dir[]) =>
+                randomBackPosition(
+                  occupied.map((d) => new THREE.Vector3(...d)),
+                  camDir,
+                  placeRng,
+                ).toArray() as Dir,
+            },
+            now,
+          );
+          if (swap) applySwap(swap.slot, swap.topic, new THREE.Vector3(...swap.dir), now);
         }
       }
     }
@@ -817,6 +860,28 @@ function motionDuration(ms: number): number {
       windowSize: dotPool?.windowTopicIds().filter(Boolean).length ?? 0,
       id: instanceId,
       hasSession: browseSession !== null,
+      /**
+       * 当前窗口每个槽位的方向，**已换算到世界坐标**（带着星球自身的朝向），
+       * 开发构建的验收脚本据此算「此刻正面看得见的是谁」。
+       */
+      dirs: (browseSession?.windowMembers() ?? []).map((m) => {
+        if (!m) return null;
+        const v = new THREE.Vector3(...m.dir).applyQuaternion(planetGroup!.quaternion).normalize();
+        return [v.x, v.y, v.z].map((n) => Math.round(n * 1000) / 1000);
+      }),
+      /** 话题在星球自身坐标系里的位置（判断「不拖动时位置有没有变」用这个） */
+      localDirs: (browseSession?.windowMembers() ?? []).map((m) =>
+        m ? m.dir.map((v) => Math.round(v * 1000) / 1000) : null,
+      ),
+      cameraDir: (() => {
+        if (!camera || !planetGroup) return [0, 0, 1];
+        planetGroup.getWorldPosition(_centerV);
+        return _camDirV
+          .subVectors(camera.position, _centerV)
+          .normalize()
+          .toArray()
+          .map((v) => Math.round(v * 1000) / 1000);
+      })(),
     }),
     /** 把浏览会话的展示窗口同步到画布（窗口内容变化后调用）。 */
     refreshWindow,

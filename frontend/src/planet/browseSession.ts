@@ -40,20 +40,46 @@ export interface BrowseTopic {
   visual_seed?: number;
 }
 
+/** 单位球面上的方向（不依赖 Three.js，便于纯逻辑测试） */
+export type Dir = [number, number, number];
+
+/** 展示窗口里的一员：话题 + 它当前的位置 */
+export interface WindowMember {
+  topic: BrowseTopic;
+  dir: Dir;
+}
+
+export interface SwapContext {
+  /** 球体背面的槽位，最背的排在前面（渲染层每帧算好） */
+  backSlots: number[];
+  /**
+   * 给**新进入窗口**的话题挑一个背面位置。
+   *
+   * 稳定性只要求「不拖动时窗口内的话题不乱动」，而不是「每个话题永远
+   * 固定在某个槽位」；新话题出现在用户此刻看不见的背面任意位置，
+   * 继续旋转时自然转到正面（见 layoutSlots.randomBackPosition）。
+   */
+  place?: (occupied: Dir[]) => Dir;
+}
+
 export interface SwapPlan {
   slot: number;
   topic: BrowseTopic | null;
+  /** 这个话题在球面上的新位置（新进入时是背面随机落点；反向还原时是它原来的位置） */
+  dir: Dir;
 }
 
 export interface BrowseSessionOptions {
   capacity?: number;
   minLifetimeMs?: number;
   cooldownSize?: number;
+  /** 初始填充时每个槽位的方向（缺省用一圈等分方位；由 layoutSlots 提供实际布局） */
+  initialDirs?: Dir[];
 }
 
 interface ExitEntry {
   slot: number;
-  topic: BrowseTopic | null;
+  member: WindowMember | null;
 }
 
 export class PlanetBrowseSession {
@@ -65,7 +91,7 @@ export class PlanetBrowseSession {
   private queue: BrowseTopic[] = [];
   /** 已经离开窗口、可以再次被取用的话题（FIFO，保证重新遇见有间隔）。 */
   private pool: BrowseTopic[] = [];
-  private slots: (BrowseTopic | null)[];
+  private slots: (WindowMember | null)[];
   /** 最近几次「槽位被换掉」的记录，供反向浏览原样还原。 */
   private exitStack: ExitEntry[] = [];
   /** 近期展示过的 topic_id（冻结窗口里的旧记录）。 */
@@ -84,7 +110,10 @@ export class PlanetBrowseSession {
     this.minLifetimeMs = Math.max(0, options.minLifetimeMs ?? DEFAULT_MIN_LIFETIME_MS);
     this.cooldownSize = Math.max(0, options.cooldownSize ?? DEFAULT_COOLDOWN);
     this.slots = new Array(this.capacity).fill(null);
+    this.initialDirs = options.initialDirs ?? null;
   }
+
+  private initialDirs: Dir[] | null = null;
 
   // -- 序列 -------------------------------------------------------------
 
@@ -102,7 +131,7 @@ export class PlanetBrowseSession {
     const known = new Set<string>([
       ...this.queue.map((t) => t.topic_id),
       ...this.pool.map((t) => t.topic_id),
-      ...this.slots.filter((t): t is BrowseTopic => t !== null).map((t) => t.topic_id),
+      ...this.slots.filter((m): m is WindowMember => m !== null).map((m) => m.topic.topic_id),
     ]);
     const out: BrowseTopic[] = [];
     for (const item of items) {
@@ -122,18 +151,50 @@ export class PlanetBrowseSession {
 
   /** 当前展示窗口（长度固定 = capacity，空位为 null）。 */
   windowSlots(): (BrowseTopic | null)[] {
-    return [...this.slots];
+    return this.slots.map((m) => m?.topic ?? null);
   }
 
-  /** 初始填充：把第一批话题放进空槽位。 */
-  fill(nowMs: number): void {
+  /** 当前展示窗口的成员（话题 + 位置）。 */
+  windowMembers(): (WindowMember | null)[] {
+    return this.slots.map((m) => (m ? { topic: m.topic, dir: [...m.dir] as Dir } : null));
+  }
+
+  /** 窗口里已占用的方向（交给 place 采样时避开）。 */
+  occupiedDirs(): Dir[] {
+    return this.slots.filter((m): m is WindowMember => m !== null).map((m) => [...m.dir] as Dir);
+  }
+
+  /**
+   * 初始填充：把第一批话题放进空槽位。
+   *
+   * `dirs` 是打开星球时用的布局（`layoutSlots.slotPositions` 的环形带）——
+   * 开局要好看、留白稳定；之后随旋转换进来的话题才用背面随机落点。
+   */
+  fill(nowMs: number, dirs?: Dir[]): void {
+    if (dirs && dirs.length) this.initialDirs = dirs.map((d) => [...d] as Dir);
     for (let slot = 0; slot < this.capacity; slot++) {
       if (this.slots[slot]) continue;
       const next = this.queue.shift();
       if (!next) break;
-      this.slots[slot] = next;
+      this.slots[slot] = { topic: next, dir: this.defaultDir(slot) };
       this.markShown(next.topic_id, nowMs);
     }
+  }
+
+  /**
+   * 初始位置：优先用调用方给的布局（`layoutSlots.slotPositions`，打开星球时的
+   * 环形带布局）。没有给时退化成等分方位，保证纯逻辑测试与降级路径也能工作。
+   */
+  private defaultDir(slot: number): Dir {
+    const fromLayout = this.initialDirs?.[slot];
+    if (fromLayout) return [...fromLayout] as Dir;
+    const angle = (slot / this.capacity) * Math.PI * 2;
+    const polar = Math.PI / 2 + ((slot % 3) - 1) * 0.35;
+    return [
+      Math.sin(polar) * Math.cos(angle),
+      Math.cos(polar),
+      Math.sin(polar) * Math.sin(angle),
+    ];
   }
 
   /**
@@ -142,7 +203,7 @@ export class PlanetBrowseSession {
    * `backSlots` 是渲染层给出的「当前在星球背面（用户看不见）」的槽位顺序：
    * 数据替换只发生在低感知区域，用户看到的是话题自然地从远处进入。
    */
-  takeSwap(direction: 1 | -1, backSlots: number[], nowMs: number): SwapPlan | null {
+  takeSwap(direction: 1 | -1, context: SwapContext, nowMs: number): SwapPlan | null {
     this.diag.calls += 1;
     // 真的掉头（相对上一次流向）才还原刚离开的话题，这是「短距离反向的连续性」；
     // 继续朝同一方向旋转则一律引入新话题 —— 否则会一进一退，看起来像原地打转。
@@ -154,17 +215,17 @@ export class PlanetBrowseSession {
         return restored;
       }
     }
-    const plan = this.swapForward(backSlots, nowMs);
+    const plan = this.swapForward(context, nowMs);
     if (plan) this.lastDirection = direction;
     return plan;
   }
 
-  private swapForward(backSlots: number[], nowMs: number): SwapPlan | null {
+  private swapForward(context: SwapContext, nowMs: number): SwapPlan | null {
     if (nowMs - this.lastSwapAt < this.minLifetimeMs) {
       this.diag.throttle += 1;
       return null;
     }
-    const slot = this.pickRecycleSlot(backSlots, nowMs);
+    const slot = this.pickRecycleSlot(context.backSlots, nowMs);
     if (slot === null) {
       this.diag.noSlot += 1;
       return null;
@@ -176,30 +237,49 @@ export class PlanetBrowseSession {
     }
 
     const displaced = this.slots[slot];
-    this.slots[slot] = next;
+    // 新话题的位置在背面随机生成：既不是「继承被顶替者」，也不是「永久槽位」
+    const occupied = this.occupiedDirs().filter((_d, i) => i !== this.occupiedIndex(slot));
+    const dir = context.place ? context.place(occupied) : (displaced?.dir ?? this.defaultDir(slot));
+    this.slots[slot] = { topic: next, dir: [...dir] as Dir };
     if (displaced) {
-      this.exitStack.push({ slot, topic: displaced });
-      this.pool.push(displaced);
+      this.exitStack.push({ slot, member: displaced });
+      this.pool.push(displaced.topic);
       if (this.exitStack.length > this.capacity * 4) this.exitStack.shift();
       if (this.pool.length > this.capacity * 4) this.pool.shift();
     }
     this.markShown(next.topic_id, nowMs);
     this.lastSwapAt = nowMs;
-    return { slot, topic: next };
+    return { slot, topic: next, dir: [...dir] as Dir };
+  }
+
+  /** 已占用列表里的第几个 = 这个槽位（用于把「即将离开的点」从 occupied 里排除） */
+  private occupiedIndex(slot: number): number {
+    let index = 0;
+    for (let i = 0; i < slot; i++) {
+      if (this.slots[i]) index += 1;
+    }
+    return index;
   }
 
   private swapBackward(nowMs: number): SwapPlan | null {
     while (this.exitStack.length) {
       const entry = this.exitStack.pop() as ExitEntry;
-      if (!entry.topic) continue;
-      if (this.isInWindow(entry.topic.topic_id)) continue; // 已经在别的槽位显示中，跳过
-      this.removeFromPool(entry.topic.topic_id);
+      const member = entry.member;
+      if (!member) continue;
       const current = this.slots[entry.slot];
-      this.slots[entry.slot] = entry.topic;
-      if (current) this.queue.unshift(current);
-      this.markShown(entry.topic.topic_id, nowMs);
+      // 被用户锁定（正在查看）的点不能被撤销掉
+      if (current && this.isProtected(current.topic.topic_id)) {
+        this.exitStack.push(entry);
+        break;
+      }
+      if (this.isInWindow(member.topic.topic_id)) continue; // 已经在别的槽位显示中，跳过
+      this.removeFromPool(member.topic.topic_id);
+      // 位置也一起还原：反向浏览要回到「刚才那一屏」，不是换个地方重新放
+      this.slots[entry.slot] = { topic: member.topic, dir: [...member.dir] as Dir };
+      if (current) this.queue.unshift(current.topic);
+      this.markShown(member.topic.topic_id, nowMs);
       this.lastSwapAt = nowMs;
-      return { slot: entry.slot, topic: entry.topic };
+      return { slot: entry.slot, topic: member.topic, dir: [...member.dir] as Dir };
     }
     return null;
   }
@@ -213,9 +293,8 @@ export class PlanetBrowseSession {
       if (!Number.isInteger(slot) || slot < 0 || slot >= this.capacity) continue;
       const occupant = this.slots[slot];
       if (!occupant) return slot;
-      if (this.isProtected(occupant.topic_id)) continue;
-      if (this.isInWindow(occupant.topic_id) === false) continue;
-      const shown = this.shownAt.get(occupant.topic_id) ?? 0;
+      if (this.isProtected(occupant.topic.topic_id)) continue;
+      const shown = this.shownAt.get(occupant.topic.topic_id) ?? 0;
       if (nowMs - shown < this.minLifetimeMs) continue;
       return slot;
     }
@@ -277,21 +356,21 @@ export class PlanetBrowseSession {
    * 把某个话题（搜索结果 / 当前所在话题）放进窗口并返回槽位。
    * 已经在窗口里就返回原槽位；否则占用一个「没被锁定的最旧槽位」。
    */
-  pinTopic(topic: BrowseTopic): number {
-    const existing = this.slots.findIndex((t) => t?.topic_id === topic.topic_id);
+  pinTopic(topic: BrowseTopic, dir?: Dir): number {
+    const existing = this.slots.findIndex((m) => m?.topic.topic_id === topic.topic_id);
     if (existing >= 0) return existing;
 
     this.protectedIds.add(topic.topic_id);
     this.removeFromPool(topic.topic_id);
     this.queue = this.queue.filter((t) => t.topic_id !== topic.topic_id);
 
-    let target = this.slots.findIndex((t) => t === null);
+    let target = this.slots.findIndex((m) => m === null);
     if (target < 0) {
       let oldest = Number.POSITIVE_INFINITY;
       for (let slot = 0; slot < this.capacity; slot++) {
         const occupant = this.slots[slot];
-        if (!occupant || this.isLocked(occupant.topic_id)) continue;
-        const shown = this.shownAt.get(occupant.topic_id) ?? 0;
+        if (!occupant || this.isProtected(occupant.topic.topic_id)) continue;
+        const shown = this.shownAt.get(occupant.topic.topic_id) ?? 0;
         if (shown < oldest) {
           oldest = shown;
           target = slot;
@@ -301,11 +380,11 @@ export class PlanetBrowseSession {
     if (target < 0) target = 0; // 理论上到不了：容量 ≥ 1 且锁定项最多 1 个
 
     const displaced = this.slots[target];
-    if (displaced && displaced.topic_id !== topic.topic_id) {
-      this.exitStack.push({ slot: target, topic: displaced });
-      this.pool.push(displaced);
+    if (displaced && displaced.topic.topic_id !== topic.topic_id) {
+      this.exitStack.push({ slot: target, member: displaced });
+      this.pool.push(displaced.topic);
     }
-    this.slots[target] = topic;
+    this.slots[target] = { topic, dir: [...(dir ?? this.defaultDir(target))] as Dir };
     this.markShown(topic.topic_id, Date.now());
     return target;
   }
@@ -333,7 +412,7 @@ export class PlanetBrowseSession {
   }
 
   private isInWindow(topicId: string): boolean {
-    return this.slots.some((t) => t?.topic_id === topicId);
+    return this.slots.some((m) => m?.topic.topic_id === topicId);
   }
 
   private isLocked(topicId: string): boolean {

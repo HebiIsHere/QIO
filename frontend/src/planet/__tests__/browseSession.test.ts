@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { PlanetBrowseSession, VISIBLE_CAPACITY, type BrowseTopic } from "../browseSession";
+import { PlanetBrowseSession, VISIBLE_CAPACITY, type BrowseTopic, type SwapContext } from "../browseSession";
 
 function topic(n: number): BrowseTopic {
   return {
@@ -31,6 +31,17 @@ function openSession(count = 40, capacity = 8): PlanetBrowseSession {
   return session;
 }
 
+/** 每次都给一个「背面」位置：用序号造一批互不相同的确定性方向 */
+function placer(offset = 0) {
+  let n = offset;
+  return (occupied: [number, number, number][]) => {
+    n += 1;
+    return [-0.4 - (n % 5) * 0.05, 0.2, -0.8] as [number, number, number];
+  };
+}
+
+const ctx = (backSlots: number[], place?: SwapContext["place"]): SwapContext => ({ backSlots, place });
+
 describe("PlanetBrowseSession", () => {
   it("同屏话题数永远不超过容量", () => {
     const session = openSession(40, 8);
@@ -39,7 +50,7 @@ describe("PlanetBrowseSession", () => {
     expect(session.windowSlots().filter(Boolean)).toHaveLength(8);
 
     for (let i = 0; i < 30; i++) {
-      session.takeSwap(1, [i % 8], i * 1000);
+      session.takeSwap(1, ctx([i % 8]), i * 1000);
     }
 
     expect(session.windowSlots()).toHaveLength(8);
@@ -54,7 +65,7 @@ describe("PlanetBrowseSession", () => {
     const session = openSession(40, 8);
     const before = session.windowSlots().map((t) => t?.topic_id);
 
-    const swap = session.takeSwap(1, [3], 10_000);
+    const swap = session.takeSwap(1, ctx([3]), 10_000);
 
     expect(swap).not.toBeNull();
     expect(swap!.slot).toBe(3);
@@ -69,11 +80,11 @@ describe("PlanetBrowseSession", () => {
   it("短距离反向能把刚离开的话题放回原来的槽位", () => {
     const session = openSession(40, 8);
     const before = session.windowSlots().map((t) => t?.topic_id);
-    session.takeSwap(1, [5], 10_000);
+    session.takeSwap(1, ctx([5]), 10_000);
     const afterForward = session.windowSlots().map((t) => t?.topic_id);
     expect(afterForward[5]).not.toBe(before[5]);
 
-    const back = session.takeSwap(-1, [], 10_500);
+    const back = session.takeSwap(-1, ctx([]), 10_500);
 
     expect(back!.slot).toBe(5);
     expect(session.windowSlots().map((t) => t?.topic_id)).toEqual(before);
@@ -83,7 +94,7 @@ describe("PlanetBrowseSession", () => {
     const session = openSession(40, 8);
     const before = session.windowSlots().map((t) => t?.topic_id);
 
-    const swap = session.takeSwap(-1, [1], 10_000);
+    const swap = session.takeSwap(-1, ctx([1]), 10_000);
 
     expect(swap).not.toBeNull();
     const after = session.windowSlots().map((t) => t?.topic_id);
@@ -98,11 +109,54 @@ describe("PlanetBrowseSession", () => {
     const snapshots: string[] = [];
 
     for (let i = 0; i < 6; i++) {
-      session.takeSwap(-1, [i % 8], 10_000 + i * 2_000);
+      session.takeSwap(-1, ctx([i % 8]), 10_000 + i * 2_000);
       snapshots.push(session.windowSlots().map((t) => t?.topic_id).join(","));
     }
 
     expect(new Set(snapshots).size).toBe(snapshots.length);
+  });
+
+  it("新进入的话题使用 place 给出的背面位置，其它成员的位置一概不动", () => {
+    const session = openSession(40, 8);
+    const dirsBefore = session.windowMembers().map((m) => m?.dir);
+    const place = placer();
+    const backDir = [-0.4 - 0.05, 0.2, -0.8] as [number, number, number];
+
+    const swap = session.takeSwap(1, ctx([4], place), 10_000);
+
+    expect(swap?.slot).toBe(4);
+    expect(session.windowMembers()[4]?.dir).toEqual(backDir);
+    for (let i = 0; i < 8; i++) {
+      if (i === 4) continue;
+      expect(session.windowMembers()[i]?.dir).toEqual(dirsBefore[i]);
+    }
+  });
+
+  it("place 拿到的是「除了要离开的那个点之外」已占用的位置", () => {
+    const session = openSession(40, 8);
+    let seen: number[] = [];
+    const place = (occupied: [number, number, number][]) => {
+      seen = occupied.map((d) => d[1]);
+      return [0, 0.1, -1] as [number, number, number];
+    };
+
+    session.takeSwap(1, ctx([3], place), 10_000);
+
+    expect(seen).toHaveLength(7);
+    expect(seen).not.toContain(session.windowMembers()[3]?.dir[1]);
+  });
+
+  it("反向还原时话题连同它的位置一起回到原槽位", () => {
+    const session = openSession(40, 8);
+    const original = session.windowMembers()[2]!;
+
+    session.takeSwap(1, ctx([2], placer()), 10_000);
+    expect(session.windowMembers()[2]?.dir).not.toEqual(original.dir);
+
+    session.takeSwap(-1, ctx([]), 10_500);
+
+    expect(session.windowMembers()[2]?.topic.topic_id).toBe(original.topic.topic_id);
+    expect(session.windowMembers()[2]?.dir).toEqual(original.dir);
   });
 
   it("被选中的话题在用户查看期间不会被回收", () => {
@@ -111,7 +165,7 @@ describe("PlanetBrowseSession", () => {
     session.lock(selected.topic_id);
 
     for (let i = 0; i < 10; i++) {
-      session.takeSwap(1, [2], 20_000 + i * 5_000);
+      session.takeSwap(1, ctx([2]), 20_000 + i * 5_000);
     }
 
     expect(session.windowSlots()[2]?.topic_id).toBe(selected.topic_id);
@@ -121,11 +175,11 @@ describe("PlanetBrowseSession", () => {
     const session = openSession(40, 8);
     const selected = session.windowSlots()[2]!;
     session.lock(selected.topic_id);
-    session.takeSwap(1, [2], 20_000);
+    session.takeSwap(1, ctx([2]), 20_000);
     expect(session.windowSlots()[2]?.topic_id).toBe(selected.topic_id);
 
     session.lock(null);
-    const swap = session.takeSwap(1, [2], 40_000);
+    const swap = session.takeSwap(1, ctx([2]), 40_000);
 
     expect(swap?.slot).toBe(2);
     expect(session.windowSlots()[2]?.topic_id).not.toBe(selected.topic_id);
@@ -136,8 +190,8 @@ describe("PlanetBrowseSession", () => {
     session.setSequence(topics(20));
     session.fill(0);
 
-    expect(session.takeSwap(1, [0], 300)).toBeNull();
-    expect(session.takeSwap(1, [0], 1300)).not.toBeNull();
+    expect(session.takeSwap(1, ctx([0]), 300)).toBeNull();
+    expect(session.takeSwap(1, ctx([0]), 1300)).not.toBeNull();
   });
 
   it("冷却窗口内的话题不会立刻从另一侧重新出现", () => {
@@ -148,7 +202,7 @@ describe("PlanetBrowseSession", () => {
 
     const seen: string[] = [];
     for (let i = 0; i < 8; i++) {
-      const swap = session.takeSwap(1, [0], 5_000 + i * 1_000);
+      const swap = session.takeSwap(1, ctx([0]), 5_000 + i * 1_000);
       if (swap?.topic) seen.push(swap.topic.topic_id);
     }
 
@@ -165,7 +219,7 @@ describe("PlanetBrowseSession", () => {
 
     session.appendSequence(topics(10).slice(4));
 
-    const swap = session.takeSwap(1, [0], 9_000);
+    const swap = session.takeSwap(1, ctx([0]), 9_000);
     expect(swap?.topic?.topic_id).toBeDefined();
   });
 

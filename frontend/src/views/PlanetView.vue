@@ -11,6 +11,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type PlanetTopicSummary, type TopicDetail, type TopicFingerprint } from "../services/api";
 import { PlanetBrowseSession, VISIBLE_CAPACITY } from "../planet/browseSession";
+import { slotPositions } from "../planet/layoutSlots";
 import { useSessionStore } from "../stores/session";
 import QInput from "../components/ui/QInput.vue";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
@@ -294,7 +295,14 @@ async function loadData() {
     nextCursor = page.next_cursor;
     sessionSeed = page.seed;
     browse.setSequence(page.items);
-    browse.fill(performance.now());
+    // 打开时的布局：确定性环形带槽位（保证开局好看、留白稳定）。
+    // 之后随着旋转换进来的话题，位置由「背面随机落点」决定（见 swap 时的 place）。
+    browse.fill(
+      performance.now(),
+      slotPositions(VISIBLE_CAPACITY, page.seed).map(
+        (dir) => [dir.x, dir.y, dir.z] as [number, number, number],
+      ),
+    );
     // 起点话题必须能被看见：后端已经把它排在第一批首位；
     // 万一它不在这一批（话题刚被创建/被过滤），这里显式注入窗口。
     const anchorTopic = pickTopicSummary(overview.topics, session.currentTopicId);
