@@ -29,6 +29,8 @@ class EventType(str, Enum):
     TOOL_END = "TOOL_END"
     ASSISTANT = "ASSISTANT"
     ANCHOR = "ANCHOR"
+    # 推测切换：只表示「可能属于另一个话题，等你确认」，Anchor 没变（见 spec 第 29~30 条）
+    TOPIC_SWITCH_SUGGESTED = "TOPIC_SWITCH_SUGGESTED"
     WARNING = "WARNING"
     ERROR = "ERROR"
 
@@ -45,4 +47,6 @@ def make_event(event_type: EventType, data: dict | None = None) -> AgentEvent:
 
 
 def sse_format(event: AgentEvent) -> str:
-    return f"event: {event.type.value}\ndata: {event.model_dump_json()}\n\n"
+    # `id:` 是标准 SSE 的 replay cursor：断线重连时客户端带上最后一个已处理的
+    # event_id，服务端只补发之后的事件（见 api/bus.py::stream）。
+    return f"id: {event.id}\nevent: {event.type.value}\ndata: {event.model_dump_json()}\n\n"

@@ -549,6 +549,29 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         ok = ctx.turns.cancel(turn_id)
         return {"ok": ok, "cancelled": ok, "turn_id": turn_id}
 
+    # -- topic switch（待确认切换） ----------------------------------------
+    #
+    # Predictor 可以提建议，但不能自行移动用户：真正的切换由这两个动作决定。
+
+    @app.post("/api/topic-switch/confirm")
+    async def confirm_topic_switch() -> dict:
+        result = ctx.navigation.confirm_switch()
+        if result is None:
+            return {"ok": False, "topic_id": None}
+        await ctx._publish_anchor_event()
+        return {
+            "ok": True,
+            "topic_id": result.topic_id,
+            "fragment_id": result.fragment_id,
+            "fragment_title": result.fragment_title,
+            "historic": result.historic,
+        }
+
+    @app.post("/api/topic-switch/reject")
+    async def reject_topic_switch() -> dict:
+        ctx.navigation.reject_switch()
+        return {"ok": True}
+
     # -- agent trace (read-only debug) -------------------------------------
 
     @app.get("/api/traces")

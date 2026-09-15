@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent.api.events import EventType, make_event
+
 
 @dataclass
 class _Plan:
@@ -140,12 +142,24 @@ class TurnOrchestrator:
             classify,
             related_topics,
         )
+        from agent.services.navigation import detect_explicit_navigation
         from agent.trace.redact import preview as _preview
 
         app = self.app
         topic = ctx.current_topic
         message = ctx.message
         tracer = ctx.trace
+
+        # 用户明确要求切换（「切到 QIO 前端」「回到橡胶实验」）：
+        # 这是明确的导航意图，直接执行、不再确认（spec 第 28 条）。
+        explicit_target = detect_explicit_navigation(
+            message, [(n.id, n.name) for n in app.topics.nodes.list_topics()]
+        )
+        if explicit_target and explicit_target != topic:
+            app.navigation.enter_topic(explicit_target, relate=True)
+            topic = explicit_target
+            ctx.current_topic = topic
+            await app._publish_anchor_event()
 
         prediction = app.predictor.predict(message, current_topic_id=topic)
         decision = classify(message, prediction, topic, app._entity_card_topics(message))
@@ -178,6 +192,31 @@ class TurnOrchestrator:
                 n = app.topics.nodes.get_topic(tid)
                 names.append(n.name if n else tid)
             extra_note += "；提及实体关联话题：" + "、".join(names)
+
+        # 推测切换（spec 第 29~30 条）：内容明显属于另一个话题，但用户没有说要切。
+        # 只登记「待确认」，Anchor 留在原地 —— 由用户点「转到这里」才真的切。
+        if not explicit_target:
+            suggested = (
+                decision.switch_to
+                if decision.mode == TopicMode.SWITCH and decision.switch_to
+                else (prediction.main_topic_id if prediction.suggested_switch else None)
+            )
+            if suggested and suggested != topic:
+                suggestion = app.navigation.request_switch(
+                    suggested, reason="这段内容看起来属于另一个话题"
+                )
+                await app.bus.publish(
+                    make_event(
+                        EventType.TOPIC_SWITCH_SUGGESTED,
+                        {
+                            "from_topic_id": topic,
+                            "topic_id": suggestion["topic_id"],
+                            "topic_name": suggestion["topic_name"],
+                            "reason": suggestion["reason"],
+                            "turn_id": ctx.turn_id,
+                        },
+                    )
+                )
 
         # write user message into memory domain first
         msg_id, _ = app.memory.append_message(

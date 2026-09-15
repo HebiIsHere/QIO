@@ -60,6 +60,50 @@ def relate_topics(conn: sqlite3.Connection, a: str, b: str) -> None:
     EdgeService(conn).add(src, dst, "related")
 
 
+# 明确的导航动词。只有「动词 + 已知话题名」同时命中才算明确切换：
+# 单纯提到某个话题名（「顺丁橡胶降解的数据不错」）不是导航意图。
+_NAV_VERBS = (
+    "切换到",
+    "切到",
+    "转到",
+    "换到",
+    "回到",
+    "返回",
+    "继续之前的",
+    "接着之前的",
+    "继续之前",
+)
+
+
+def detect_explicit_navigation(
+    message: str, topics: list[tuple[str, str]] | tuple[tuple[str, str], ...]
+) -> str | None:
+    """识别「用户明确要求切换话题」的指令，返回目标 topic_id。
+
+    `topics` 是 [(topic_id, title)]。命中条件：句子里出现导航动词，
+    动词之后的部分能匹配到一个**已知话题名**（最长匹配优先）。
+    """
+    if not message:
+        return None
+    for verb in _NAV_VERBS:
+        idx = message.find(verb)
+        if idx < 0:
+            continue
+        tail = message[idx + len(verb):].strip(" 　「」《》\"'：:，,。.?!~～、")
+        if not tail:
+            continue
+        best: tuple[str, int] | None = None
+        for topic_id, title in topics:
+            if not title:
+                continue
+            matched = title in tail or (len(tail) >= 2 and tail in title)
+            if matched and (best is None or len(title) > best[1]):
+                best = (topic_id, len(title))
+        if best is not None:
+            return best[0]
+    return None
+
+
 class TopicNavigationService:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
