@@ -6,6 +6,7 @@ import Composer from "../components/Composer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
 import SettingsFloat from "../components/SettingsFloat.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
+import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -50,6 +51,10 @@ function focusComposer(e: MouseEvent) {
   (el as HTMLTextAreaElement).focus();
 }
 
+function retryHistory() {
+  void session.retryHistory();
+}
+
 onMounted(() => {
   session.loadHistory();
 });
@@ -58,6 +63,11 @@ onMounted(() => {
 <template>
   <div class="conversation">
     <a class="skip-link" href="#composer-input" @click="focusComposer">跳到输入框</a>
+    <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
+    <div v-if="session.history.status === 'error'" class="notice quiet" role="status">
+      <span class="text">历史记录暂时无法读取</span>
+      <button class="link" type="button" @click="retryHistory">重试</button>
+    </div>
     <!-- 错误 / 警告分开表达：错误要查，警告只需知道 -->
     <div v-if="session.lastError" class="notice err" role="alert">
       <span class="kind mono">错误</span>
@@ -69,7 +79,24 @@ onMounted(() => {
       <span class="kind mono">提示</span>
       <span class="text">{{ session.warning }}</span>
     </div>
+    <!-- 取消是正常结局：安静地说一声，不当错误 -->
+    <div
+      v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
+      class="notice quiet"
+      role="status"
+    >
+      <span class="kind mono">已停止</span>
+      <span class="text">这一轮已按你的要求停止，可以继续输入</span>
+    </div>
     <MessageStream />
+    <!-- 推测切换：低干扰地问一句，不遮罩、不抢焦点；Anchor 在用户表态前一动不动 -->
+    <TopicSwitchPrompt
+      v-if="session.pendingSwitch"
+      :topic-name="session.pendingSwitch.topicName"
+      :busy="session.pendingSwitchBusy"
+      @confirm="session.confirmPendingSwitch()"
+      @keep="session.rejectPendingSwitch()"
+    />
     <Composer />
     <SettingsFloat />
     <PlanetDock @open="openPlanet" />
@@ -119,6 +146,21 @@ onMounted(() => {
 .notice.warn {
   border-bottom: 1px solid var(--warning);
   color: var(--warning);
+}
+/* 安静的状态行：不抢注意力，也不显得像故障 */
+.notice.quiet {
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.notice.quiet .kind {
+  color: var(--text-secondary);
+}
+.notice button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
 }
 .notice .kind {
   font-size: 10.5px;

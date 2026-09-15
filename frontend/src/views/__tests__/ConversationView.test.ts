@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import ConversationView from "../ConversationView.vue";
+import { useSessionStore } from "../../stores/session";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -38,6 +39,26 @@ function mountView() {
     },
   });
 }
+
+describe("待确认切换条（spec 第 29~30 条）", () => {
+  it("没有建议时不出现", () => {
+    const w = mountView();
+    expect(w.find(".topic-switch").exists()).toBe(false);
+  });
+
+  it("有建议时出现在输入区附近，并显示目标话题名", async () => {
+    const w = mountView();
+    const session = useSessionStore();
+    session.setPendingSwitch({ topicId: "t2", topicName: "顺丁橡胶降解" });
+
+    await w.vm.$nextTick();
+
+    const prompt = w.find(".topic-switch");
+    expect(prompt.exists()).toBe(true);
+    expect(prompt.text()).toContain("顺丁橡胶降解");
+    expect(prompt.text()).toContain("保留当前");
+  });
+});
 
 describe("ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面）", () => {
   it("关闭动画期间的旧 close 回调不会关掉后来重新打开的星球", async () => {

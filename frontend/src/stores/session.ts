@@ -20,6 +20,15 @@ export interface TurnQueueState {
   cancelled: QueueItem[];
 }
 
+/**
+ * 历史读取状态。
+ * 「没有历史」和「读不到历史」是完全不同的产品状态，不能都表现为空列表。
+ */
+export interface HistoryState {
+  status: "idle" | "loading" | "ready" | "error";
+  error: string | null;
+}
+
 export interface StreamMessage {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
@@ -88,10 +97,24 @@ export const useSessionStore = defineStore("session", {
     warning: null as string | null,
     /** 正在「取消中」的 turn_id（停止按钮反馈，避免假装已停止） */
     cancelling: null as string | null,
+    /** 历史读取状态（失败时保留已有消息，只标记失败） */
+    history: { status: "idle", error: null } as HistoryState,
     /** 本地排队中的用户消息 id（FIFO；TURN_START 到来时清除最早的一条） */
     queuedMessageIds: [] as string[],
-  /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
-  activeTurnId: null as string | null,
+    /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
+    activeTurnId: null as string | null,
+    /**
+     * 最近一轮的结局。界面用它安静地表达「已停止」这类状态：
+     * 成功由回答本身表达，失败进 lastError，无凭据进 warning。
+     */
+    lastTurnOutcome: null as { turnId: string; status: string } | null,
+    /**
+     * 待确认切换（spec 第 29~30 条）：内容看起来属于另一个话题时的建议。
+     * 它只是「建议」—— Anchor 没有被改，用户点「转到这里」才真的切。
+     */
+    pendingSwitch: null as { topicId: string; topicName: string; reason?: string } | null,
+    /** 待确认切换正在提交（按钮防重复） */
+    pendingSwitchBusy: false,
   /**
    * 一轮的可观察阶段（不猜测后台在干什么）：
    * idle 未在跑 / waiting 已提交但还没有任何助手内容 / generating 已有增量内容到达
@@ -149,12 +172,60 @@ export const useSessionStore = defineStore("session", {
       const after = `${this.currentTopicId ?? ""}|${this.anchorFragmentId ?? ""}|${this.anchorHistoric}`;
       if (before !== after) await this.loadHistory();
     },
+    /**
+     * 登记「待确认切换」建议：只记录，不动 Anchor（spec 第 29 条）。
+     * 新一轮用户消息开始时清掉旧建议（TURN_START 处理），避免跨轮堆积。
+     */
+    setPendingSwitch(payload: { topicId: string; topicName: string; reason?: string } | null) {
+      this.pendingSwitch = payload;
+    },
+    /** 用户点「转到这里」：只有这一步会真的改变 Anchor。 */
+    async confirmPendingSwitch() {
+      const pending = this.pendingSwitch;
+      if (!pending || this.pendingSwitchBusy) return;
+      this.pendingSwitchBusy = true;
+      try {
+        const res = await api.confirmTopicSwitch();
+        if (!res.ok || !res.topic_id) {
+          this.lastError = "后端没有确认这次切换，未切换话题";
+          return;
+        }
+        await this.setAnchorAndSync(
+          res.topic_id,
+          res.fragment_id ?? null,
+          pending.topicName,
+          res.fragment_id ? { id: res.fragment_id, title: res.fragment_title ?? null } : undefined,
+          Boolean(res.historic),
+        );
+        this.pendingSwitch = null;
+      } catch (e) {
+        // 失败必须如实说「未切换」，不能留下一个看起来已经生效的状态
+        this.lastError = `切换失败，未切换话题：${(e as Error).message}`;
+      } finally {
+        this.pendingSwitchBusy = false;
+      }
+    },
+    /** 用户点「保留当前」：拒绝建议，Anchor 一动不动。 */
+    async rejectPendingSwitch() {
+      if (!this.pendingSwitch || this.pendingSwitchBusy) return;
+      this.pendingSwitchBusy = true;
+      this.pendingSwitch = null;
+      try {
+        await api.rejectTopicSwitch();
+      } catch (e) {
+        this.lastError = `未能通知后端保留当前话题：${(e as Error).message}`;
+      } finally {
+        this.pendingSwitchBusy = false;
+      }
+    },
     turnStarted() {
       this.turnRunning = true;
       this.turnPhase = "waiting";
       this.lastError = null;
       this.warning = null;
       this.cancelling = null;
+      // 新一轮开始：上一轮的切换建议不再相关，避免跨轮堆积
+      this.pendingSwitch = null;
       // 队列中的最早一条开始执行：清除「等待中」标记（后端 TURN_QUEUE 事件负责其余展示）
       const nextQueued = this.queuedMessageIds.shift();
       if (nextQueued) {
@@ -218,9 +289,34 @@ export const useSessionStore = defineStore("session", {
     finalizeAssistant() {
       const last = this.messages[this.messages.length - 1];
       if (last && last.role === "assistant" && last.streaming) {
+        // 落定（停止逐字），但保留 interim 标记：中间话不是最终答案
         delete last.streaming;
-        last.interim = false;
       }
+    },
+    /**
+     * TURN_END.final_content 是最终回答的唯一权威来源。
+     * 只有当最后一条助手消息**内容就是它**时才复用，否则单独追加一条 —— 
+     * 绝不能因为「最后一条已经是 assistant」就把最终回答丢掉，
+     * 也不能把工具前的中间话当成最终答案。
+     */
+    applyFinalAnswer(text: string, memoryInject?: StreamMessage["memoryInject"]) {
+      const last = this.messages[this.messages.length - 1];
+      if (
+        last &&
+        last.role === "assistant" &&
+        !last.streaming &&
+        last.content.trim() === text.trim()
+      ) {
+        last.interim = false;
+        last.memoryInject = memoryInject ?? last.memoryInject;
+        return;
+      }
+      this.pushAssistant(text, memoryInject);
+    },
+    /** 没有最终回答（失败/取消）时，别把中间话留在「已落定的最终回答」位置 */
+    markLastAssistantInterim() {
+      const last = this.messages[this.messages.length - 1];
+      if (last && last.role === "assistant" && !last.streaming) last.interim = true;
     },
     pushTool(
       name: string,
@@ -245,6 +341,7 @@ export const useSessionStore = defineStore("session", {
       this.cancelling = null;
     },
     async loadHistory() {
+      this.history = { status: "loading", error: null };
       try {
         const ctx = await api.getSessionContext();
         this.currentTopicId = ctx.topic_id;
@@ -263,9 +360,16 @@ export const useSessionStore = defineStore("session", {
             ? { toolName: "tool", toolOk: true, toolError: null }
             : {}),
         }));
-      } catch {
-        // 后端未启动时保持空状态
+        this.history = { status: "ready", error: null };
+      } catch (e) {
+        // 读不到 ≠ 没有：保留已经加载过的消息，只把失败状态交给界面显示与重试
+        this.history = { status: "error", error: (e as Error).message };
       }
+    },
+    /** 顶部提示里的「重试」：同一份状态机再跑一次 */
+    async retryHistory() {
+      if (this.history.status === "loading") return;
+      await this.loadHistory();
     },
     /**
      * 发送一轮消息。turnRunning 时后端会排队（TURN_QUEUE 事件回执），
@@ -286,7 +390,16 @@ export const useSessionStore = defineStore("session", {
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
       try {
-        await api.sendTurn(message, this.currentTopicId);
+        const res = await api.sendTurn(message, this.currentTopicId);
+        // 受理即拿到 turn_id：停止按钮不必等 SSE 的 TURN_START 才能用
+        if (res && res.turn_id) {
+          this.activeTurnId = res.turn_id;
+          optimistic.turnId = res.turn_id;
+          if (!queued) {
+            this.turnRunning = true;
+            this.turnPhase = "waiting";
+          }
+        }
         return true;
       } catch (e) {
         this.lastError = (e as Error).message;

@@ -1,5 +1,11 @@
 ﻿import { defineStore } from "pinia";
-import { connectEvents, publishTestEvent, type AgentEvent, type EventType } from "../services/events";
+import {
+  connectEvents,
+  publishTestEvent,
+  type AgentEvent,
+  type EventStreamHandle,
+  type EventType,
+} from "../services/events";
 import { useSessionStore, type ToolPresentation } from "./session";
 import { useApprovalsStore } from "./approvals";
 
@@ -35,7 +41,9 @@ export const useEventStore = defineStore("events", {
     /** 最近结束/开始的 turn_id：USAGE 事件紧随 TURN_END，用它归属 */
     lastTurnId: null as string | null,
     _pendingMemoryInject: null as { label: string } | null,
-    _source: null as EventSource | null,
+    _source: null as EventStreamHandle | null,
+    /** 已结束的 turn（防重连重放重复生效），有界 */
+    endedTurns: [] as string[],
   }),
   getters: {
     turnUsageFor: (state) => (turnId?: string | null): TurnUsage | undefined =>
@@ -87,20 +95,35 @@ export const useEventStore = defineStore("events", {
           if (session.activeTurnId && tid && tid !== session.activeTurnId) {
             break;
           }
+          // 重连重放：同一个 turn 的 TURN_END 只能生效一次
+          if (tid && this.endedTurns.includes(tid)) break;
+          if (tid) {
+            this.endedTurns.push(tid);
+            if (this.endedTurns.length > 200) this.endedTurns.shift();
+          }
           this.recordUsage(tid, d);
-          session.turnEnded();
-          const final = d.final_content;
-          // 落定正在流式输出的助手消息（打字机结束，变为静态）
-          session.finalizeAssistant();
+          const status = String(d.status ?? "completed");
+          const final = typeof d.final_content === "string" ? d.final_content : "";
           // 无论 final 是否为空都清空 pending，避免残留注入挂到下一轮
           const inject = this._pendingMemoryInject;
           this._pendingMemoryInject = null;
-          if (typeof final === "string" && final.trim()) {
-            // 若最后一条已是流式消息，则 finalize 已落定；final 仅用于补充
-            const last = session.messages[session.messages.length - 1];
-            if (!(last && last.role === "assistant" && !last.streaming)) {
-              session.pushAssistant(final, inject ?? undefined);
-            }
+          // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
+          session.finalizeAssistant();
+          if (final.trim()) {
+            session.applyFinalAnswer(final, inject ?? undefined);
+          } else if (status === "completed") {
+            // 正常的空回答：不动内容
+          } else {
+            // 失败 / 取消：不得把中间话当成最终答案
+            session.markLastAssistantInterim();
+          }
+          session.turnEnded();
+          session.lastTurnOutcome = { turnId: tid, status };
+          if (status === "failed") {
+            session.lastError = String(d.error ?? d.message ?? "本轮执行失败");
+          } else if (status === "unavailable" && !session.warning) {
+            // 后端通常已经先发了一条人话 WARNING；兜底也不直接把错误码丢给用户
+            session.warning = "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key";
           }
           session.activeTurnId = null;
           break;
@@ -188,6 +211,20 @@ export const useEventStore = defineStore("events", {
           }
           break;
         }
+        case "TOPIC_SWITCH_SUGGESTED": {
+          // 推测切换（spec 第 29~30 条）：内容看起来属于另一个话题。
+          // 只登记建议、亮出低干扰的确认条；Anchor 必须留在原处，
+          // 用户点「转到这里」时才由 confirmPendingSwitch 真正切换。
+          const d = event.data as Record<string, unknown>;
+          const topicId = String(d.topic_id ?? "");
+          if (!topicId || topicId === session.currentTopicId) break;
+          session.setPendingSwitch({
+            topicId,
+            topicName: String(d.topic_name ?? "另一个话题"),
+            reason: (d.reason as string | undefined) ?? undefined,
+          });
+          break;
+        }
         case "SUBAGENT_STATUS": {
           const d = event.data as Record<string, unknown>;
           const status = String(d.status ?? "?");
@@ -201,9 +238,12 @@ export const useEventStore = defineStore("events", {
           break;
         }
         case "ERROR": {
-          session.turnEnded();
-          this._pendingMemoryInject = null;
+          // ERROR 只代表「出错了」：显示错误、记在对应的 turn 上，
+          // 但绝不结束当前 turn —— 结束只认 TURN_END。
           const d = event.data as Record<string, unknown>;
+          const tid = String(d.turn_id ?? "");
+          if (tid && session.activeTurnId && tid !== session.activeTurnId) break;
+          this._pendingMemoryInject = null;
           session.lastError = String(d.message ?? "agent error");
           break;
         }
