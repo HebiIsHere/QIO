@@ -35,7 +35,7 @@
 - **Status：** completed
 - **Implementation：** `backend/src/agent/main.py`（`create_app` 工厂）、`api/server.py`（路由）、`api/events.py`（事件信封与类型）、`api/bus.py`（订阅扇出 + 重放缓冲）
 - **Tests：** `backend/tests/test_events.py`、`test_events_bus.py`、`test_api_routes.py`
-- **Known limitations：** `POST /api/events/test` 是开发用途的注入口，不构成产品功能；事件类型集合会随功能增长，数量不写死在文档里。
+- **Known limitations：** `POST /api/events/test` 只在开发模式（`QIO_DEV_INSECURE=1` 或 `QIO_ENABLE_TEST_EVENTS=1`）注册，生产构建里这条路由根本不存在，且同样要求会话认证；事件类型集合会随功能增长，数量不写死在文档里。
 - **后续依赖：** 无（其余里程碑都建立在这一层上）。
 
 ### M1 — 存储层
@@ -50,7 +50,9 @@
 
 - **Status：** completed
 - **Implementation：** `credentials/store.py`（密钥进 keyring，元数据进 SQLite）、`credentials/policy.py`（按标签解析 + 快照）、`services/identify.py`（Key 识别与端点探测）
+- **Implementation（2026-09-15 身份边界）：** `endpoint` 视为凭据的**安全身份**而不是普通元数据：变化必须重新输入 secret 并显式确认（`confirm_reconfigure=true`），否则 HTTP 层与 store 双层拒绝；默认只允许 HTTPS，明文 HTTP 仅限 loopback 本地 provider。主 Agent Loop 的凭据解析改为 **`main-loop` 标签优先**（以前排序把专项凭据排在前面，一个 `vision` Key 会被主循环静默拿去用），专项标签只在没有 main-loop 可用时回落。
 - **Tests：** `backend/tests/test_credentials.py`、`test_identify.py`、`test_tool_credentials.py`
+- **Tests（2026-09-15 追加）：** `test_credential_identity.py`（只改 endpoint 必须被拒、https 默认、loopback 例外）、`test_credential_routing.py`（main-loop 优先、专项凭据只作回落、无匹配用途不得拿别的标签顶上）、`test_credential_endpoint_api.py`（HTTP 层同一套规则）
 - **Known limitations：** 只在 Windows 凭据库上验证过；预算以 token 计数为主。
 - **后续依赖：** M3 适配层、M10 子 agent、embedding 选档都从这里取 Key。
 
@@ -98,8 +100,11 @@
 
 - **Status：** completed
 - **Implementation：** `graph/nodes.py`、`graph/edges.py`、`graph/anchors.py`（Anchor 生命周期：位置校验/恢复/推进）、`graph/topics.py`、`graph/layout.py`、`entities/`（识别、抽取、卡片）、`tools/topic_tools.py`、`tools/continue_tool.py`（Agent 显式 `continue_from_fragment`）、`tools/entity_tools.py`
+- **Implementation（2026-09-15 第二阶段 · 话题导航与 Planet 浏览景观）：** 新增 `services/navigation.py::TopicNavigationService` 作为 Anchor 的**唯一写入者**（进入话题 / 创建话题 / 确认切换 / 从历史继续），`/api/anchor`、`switch_topic` / `create_topic` / `continue_from_fragment` 与 turn 编排全部改走它；`tests/test_topic_navigation.py` 里有一条源码扫描守卫测试，任何绕过 Navigator 直接写 anchor 的模块都会让它失败。
+  「从历史继续」语义修正为**新建接续片段**（迁移 11 增加 `fragments.source_fragment_id`），旧片段零改动，Focus 读来源片段；新增「待确认切换」：用户明确说「切到 X」直接执行，预测器推测只发 `TOPIC_SWITCH_SUGGESTED` 事件并等用户表态。Planet 侧新增 `services/planet.py`（轻量概览 + 确定性浏览序列 / 可前进可后退的游标）与三层数据接口 `GET /api/planet/overview`、`POST /api/planet/browse`、`GET /api/fragments/{id}/messages`；`GET /api/graph/topics/{id}` 不再内联 Message 原文，`message_count` 改为真实计数。星球不再是「固定球面坐标 + 前 16 个话题」，而是「数据层无上限、视觉层固定 16 个槽位、旋转推动话题流」的浏览景观（前端 `planet/browseSession.ts`、`planet/layoutSlots.ts`、`planet/dotPool.ts`、`planet/browseFlow.ts`）。
 - **Tests：** `backend/tests/test_graph.py`、`test_anchor_event.py`、`test_anchor_lifecycle.py`、`test_continue_fragment.py`、`test_entities_recognizer.py`、`test_entity_cards.py`、`test_entity_correct.py`、`test_entity_extract.py`、`test_entity_inject.py`、`test_entity_retrieval.py`、`test_topic_tools.py`、`test_topic_dedup.py`
-- **Known limitations：** 实体懒创建依赖提及计数阈值；星球视图的布局计算在前端完成，后端只提供数据。
+- **Tests（2026-09-15 追加）：** `test_planet_browse.py`、`test_planet_api_layers.py`、`test_topic_navigation.py`、`test_topic_switch_policy.py`、`test_anchor_no_advance.py`；前端 `planet/__tests__/browseSession.test.ts`、`layoutSlots.test.ts`、`dotPool.test.ts`、`browseFlow.test.ts`、`stores/__tests__/topicSwitch.test.ts`
+- **Known limitations：** 实体懒创建依赖提及计数阈值；星球视图的**当前展示布局**在前端按稳定种子临时生成（后端不再为渲染提供永久坐标，`nodes.meta.layout` 仅保留兼容）；浏览排序（哈希 + 近期活跃加权 + 曝光抑制）没有做过体验评估与调参；触控板手势与真机 GPU 帧率未验证。详见 `docs/release-planet-phase2.md`。
 - **后续依赖：** M9 的亲和度与 M10 的 `switch_topic` / `create_topic` 都依赖锚点。
 
 ### M9 — 注入与检索
@@ -146,11 +151,14 @@
   验收脚本同步校准：`A5` 断言恢复为「阅读位置不变」，测试事件的 `turn_id` 每次运行唯一（后端会重放最近事件，固定 id 会让上一轮的 `TURN_END` 混进来），
   `A3/A5` 发送前 `Esc` 收起重放出来的「等待确认」窗口。综合验收 19/19 通过。
 - **Tests：** `frontend/src/**/__tests__/*.test.ts`、`frontend/src/smoke.test.ts`、`frontend/src/styles/tokens.test.ts`
+- **Implementation（2026-09-15 状态真实性）：** 最终回答的唯一权威来源是 `TURN_END.final_content`：最后一条是「工具前说的中间话」时不再被当成最终答案，`TURN_END` 没有内容时也不会把中间话升级成答案（`stores/events.ts` + `stores/session.ts::applyFinalAnswer` / `markLastAssistantInterim`，中间话始终带 `interim` 并以「◈ 过程」呈现）。`ERROR` 只显示错误、不再结束界面上的 turn（结束只认 `TURN_END`），同一 turn 的重复 `TURN_END`（重连重放）只生效一次。历史读取有 `idle/loading/ready/error` 状态：失败时保留已加载的消息并在对话顶部给「历史记录暂时无法读取 + 重试」（安静的一行，不是错误横幅）。提交后立即用 POST 返回的 `turn_id` 打开停止能力。取消的结局在顶部安静地写「已停止」，不当错误。
+- **Implementation（2026-09-15 桌面边界）：** Markdown 链接按协议白名单渲染（只允许 `https/http/mailto`；`javascript:`、`data:`、`file:`、`vbscript:`、协议相对地址、含控制字符的伪装一律退化成纯文本，见 `frontend/src/utils/externalLink.ts`），点击外链不再让 WebView 自己导航而是走 Tauri 官方 open（`plugin:shell|open`），打开失败有可见反馈；`tauri.conf.json` 的 `csp` 从 `null` 换成生产最小权限策略 + 独立的 `devCsp`（字体/图标是 `self` + `data:`，本机后端与 SSE 走 `connect-src http://127.0.0.1:*`）。
 - **Known limitations：** 桌面壳只在 Windows 上验证过；应用内浏览器有模块缓存，改前端后需带 `?fresh=N` 强刷。斜杠命令体系未实现。代码块复制仍依赖 `navigator.clipboard`：受限 WebView 下写不进去时现在会显示「复制失败」并选中代码留出手动复制退路，但不保证写入。草稿、阅读位置、设置分类与**非敏感表单草稿**只活在**当前运行期内存**里（刷新页面不保留，也不跨设备）；凭据密钥一类敏感输入不进这份草稿。星球帧率未做过真实设备采样（只测量了状态变化与过渡时长）；聊天区的流畅度同样只有状态与时长测量，没有帧率曲线。后台审批的调度已按任务 04 重做：用户正在输入时不自动弹出（只亮出「有 N 项操作等待确认」入口，由用户主动打开），打开后可按 Esc／「稍后处理」收起并保留待办，焦点回到被打断的表单（实测凭据表单 `INPUT.qio-input`，未提交内容不丢）。仍未验证的是**后端确认成功出队**的端到端路径：假 `approval_id` 不被后端受理，成功出队后的焦点归还只有前端单测覆盖。「停止当前回答 / 取消运行条目」已统一为同一个对象（当前运行的任务），「取消排队」是不同对象、文案保持区分；三种取消的**事件顺序**仍未逐条实测。迟到 `TURN_END` 已加防护并有单测，但真实的取消与完成同时到达仍未在运行中的应用里复现。输入区改为与内容列对齐属于**默认布局变化**：输入区本身不可拖动、没有用户保存位置（星球/设置入口的浮动位置与贴靠未被覆盖，「还原默认布局」照旧）。
 - **性能测量口径（2026-09-14 补测）：** 用页面内 rAF 采样记录帧间隔，环境是 **headless Edge + SwiftShader 软件渲染**，只用于发现卡顿、不代表真机 GPU。三段实测：滚动长对话 120.7fps（p95 8.4ms、>50ms 的帧 0）、长回复增量到达 105fps（p95 16.7ms、>50ms 的帧 0）、**星球打开/拖动/关闭 40.5fps（p95 91.8ms、>50ms 的帧 28）**。结论：目前唯一出现长帧的是星球 3D 场景，且处于软件渲染下；真机结论待任务 06 复测（可先评估把环球网格 128×96 降到 96×64，环宽按像素算，不受影响）。
 - **触屏与键盘（2026-09-14 补测）：** 触屏用 CDP 合成触摸事件验证（非真机）：直接点复制入口得到「已复制」；向下滑动消息区后停止跟随并出现「回到最新消息」。消息区加了 `tabindex` + `aria-label`，键盘 PageUp 能滚动并停止跟随、End 回到最新；真机手势未验证。
 - **星球展开/收起（2026-09-14 演示版）：** 用户反馈原时长「过快、过渡不连贯」，改为两段式：展开＝140ms 铺底 + 420ms 内容淡入/相机收敛（相机一开始就在接近最终构图，不再从远景小球放大）；收起＝180ms 收势（沿视线轻微后撤 + 星球降到 25% + 面板退场）+ 280ms 整体淡出后卸载。实测关闭 531–541ms（原 225ms）、减少动画下 9ms 直接卸载。演示开关 `?planetdemo=slow`（时间线 ×3）用于逐帧观察；**这组时长比任务 02 记录的动画参数更长，是按用户直接反馈调整的（规则同步在设计规范里）**。
 - **Implementation（2026-09-14 任务05 星球：加载、选择与管理）：** 打开时按「起点未变就回到上次浏览的话题、起点变了以起点为准」定位（浏览记忆只在运行期内存，`composables/planetSession.ts`）；数据未回来显示「正在加载话题…」、失败显示原因 + 重试，懒加载 chunk 期间 `PlanetBoot` 立即铺底显示「正在打开星球…」，入口按下即 `scale(0.96)`。详情区改为三段式：顶部固定（页签/标题/搜索）、中部可滚动（话题列表自身滚动且高度封顶 42%，详情正文与它各自滚动）、底部固定操作区，浏览器实测操作区不随滚动移动、不覆盖正文（y 793.8 → 793.8，中部底边 794）。面板固定显示「浏览的话题 / 选中的片段 / 已生效的起点」三行，起点取自服务端返回的会话状态。话题点：悬停显示简短名称（移开即消失）、选中话题有持续可见的选中环（修掉了「用世界坐标写局部位置，环跑到球面别处」的坐标错误）、命中范围放大到屏幕 16px/14px、列表项可聚焦并用 Enter/Space 选择、Esc 先收边栏再收星球；辅助网格减弱（经线 45°→60°，透明度 0.35/0.18→0.22/0.1、0.13→0.07），球体结构/融合环/聚焦距离 2.25 未动。收起阶段整层 `pointer-events: none`，父级用「打开序号 + key + seq」保证关闭动画中的迟到回调不会关掉新打开的一层；知识/实体面板把「读取失败」「暂无记录」「没有匹配」分开，并提供重试与清除筛选。
+- **Implementation（2026-09-15 第二阶段 · Planet 浏览景观）：** 星球改成窗口驱动：`VISIBLE_CAPACITY = 16`（正面可见约 8 个），数据层不再有「只显示前 16 个话题」的上限；`loadTopics()`（把全部话题聚簇后切前 16 个）被 `attachBrowse(session)` 取代，话题点来自固定容量对象池 `planet/dotPool.ts`，进出只改数据、不 new / dispose。旋转按方位角累计（0.4 rad 一步）推动话题流，替换只发生在球体背面槽位；真的掉头才把刚离开的话题放回原槽位，继续同向旋转一律引入新话题。选中话题在查看期间锁定、不会被回收；搜索或列表命中的话题会注入展示窗口。相机后撤（planet 2.6→2.9、focus 2.25→2.6），球体完整落在画面内、四边留白。开发构建里提供只读调试钩子 `window.__qioPlanetWindow()`（生产构建不注册）。
 - **后续依赖：** 无下游。
 
 - **任务 04/05 追加（2026-09-14）：** 审批弹窗改为按「它想做什么 → 会访问什么 → 会改变什么 → 为什么需要 → 验证了吗（已验证/未验证）→
@@ -182,8 +190,9 @@
 ### P1 — Turn Runtime 边界与并发契约
 
 - **Status：** completed
-- **Implementation：** `core/turn.py`（`TurnContext` + `TurnManager`：主 turn single-flight、FIFO 排队、可取消）、`services/turn_orchestrator.py`（单轮流水线）、`POST /api/turns/cancel`
-- **Tests：** `backend/tests/test_turn_manager.py`、`test_turn_concurrency.py`、`test_turn_identity_events.py`、`test_turn_cancel_api.py`、`test_turn_no_duplicate_query.py`、`test_tool_event_isolation.py`
+- **Implementation：** `core/turn.py`（`TurnContext` + `TurnManager`：主 turn single-flight、FIFO 排队、可取消，**并且是 turn 生命周期的唯一事实源**）、`services/turn_orchestrator.py`（单轮流水线）、`POST /api/turns`（受理即返回 `turn_id`）、`POST /api/turns/cancel`
+- **Implementation（2026-09-15 生命周期协议）：** 一个被受理的 turn **恰好**产生一次 `TURN_START` 与一次 `TURN_END`（终态 `completed / failed / cancelled / unavailable`，由 `TurnManager` 在 `finally` 里收口），任何异常路径都不会再让界面停在 running；`POST /api/turns` 不再只回 `accepted`，而是同步返回 `{turn_id, status}`，前端不必从 SSE 里猜请求身份。`AgentLoop` 不再发 `TURN_START` / `TURN_END` —— 它同时被 subagent、维护任务、工具开发流水线复用，以前一个子 agent 的 `TURN_END` 会把用户的主 turn 提前结束。取消（`TurnContext.cancelled`）在「模型调用前后 / 工具调用前后 / 下一次迭代前 / 持久化最终回答前 / 收尾记忆处理前」逐点检查：取消后不再发起新的模型或工具调用、不保存后续内容为正常最终回答、不推进锚点、不做记忆整理，`TURN_END.status = cancelled`；底层 HTTP 请求无法物理中断，但返回值会被丢弃。
+- **Tests：** `backend/tests/test_turn_manager.py`、`test_turn_concurrency.py`、`test_turn_identity_events.py`、`test_turn_cancel_api.py`、`test_turn_no_duplicate_query.py`、`test_tool_event_isolation.py`、`test_turn_lifecycle_protocol.py`（四种终态各恰好一个 `TURN_END`、无凭据 → `unavailable`、收尾阶段抛错仍收口、取消不落库）
 - **Known limitations：** 这是「可靠的单飞主 Agent + 明确排队」，不是多用户并发 Agent Server。契约细节见 `architecture.md` 的并发契约一节。
 - **后续依赖：** P2 的 Trace 以 `turn_id` 为主键。
 
@@ -206,8 +215,10 @@
 ### P4 — 工具能力安全、沙箱与执行策略
 
 - **Status：** completed
-- **Implementation：** `tools/policy.py`（能力分级 + 指纹）、`tools/sandbox.py`（按策略收紧）、`tools/approval.py`（能力展示）、`services/tool_router.py`（缓存与条件暴露）
+- **Implementation：** `tools/policy.py`（能力分级 + 指纹）、`tools/sandbox.py`（按策略收紧）、`tools/approval.py`（能力展示；审批绑定 turn/session + 过期 + 摘要 + 单次使用）、`services/tool_router.py`（缓存与条件暴露）
+- **Implementation（2026-09-15 命令与文件边界）：** 命令模型拆成两个工具：`run_program`（`program + argv`、`shell=False`、只读程序白名单 + 参数校验，白名单内可自动执行）与 `run_shell`（交给系统 shell 的自由命令，**每次都要审批**，`plan` 模式直接拒绝）。`ComputerSandbox` 新增 `classify_argv` / `shell_verdict` / `command_verdict_for_program`：含 `| > && ; $(` 等元字符的命令至少 DANGER，修掉「按字符串前缀判安全、却把整条字符串交给 shell」的错配。文件工具统一 `resolve → containment(ComputerSandbox.root()) → 权限判定 → 执行`：相对路径与省略参数以工作区根为基准（不再用 `process.cwd()`），`..`、根外绝对路径、指向根外的 symlink/junction（含嵌套）都只能走审批；`fs_find` 不再沿符号链接目录走出根外。
 - **Tests：** `backend/tests/test_tool_policy.py`、`test_computer_sandbox.py`、`test_tool_router_cache.py`、`test_tool_router.py`
+- **Tests（2026-09-15 追加）：** `test_shell_boundary.py`（链式命令不得判低危自动执行、`run_shell` 永远要审批、`run_program` 参数校验）、`test_fs_containment.py`（默认根不是 cwd、`..`/根外绝对路径/symlink-junction 逃逸）、`test_approval_binding.py`（单次使用、过期、错 turn/session、摘要不符）
 - **Known limitations：** 见 `architecture.md` 的沙箱安全契约；扩大能力必须重新审批，不能沿用旧授权。
 - **后续依赖：** M10 的工具创建流程依赖这一层的策略判定。
 
@@ -227,6 +238,14 @@
 - **Known limitations：** 完整报告与未修项见 `docs/release-qualification.md`。
 - **后续依赖：** 无下游；结论供后续迭代参考。
 
+### P8 — 本机 API 边界与 turn 生命周期协议
+
+- **Status：** completed
+- **Implementation：** `api/auth.py`（`SessionAuth`：会话令牌校验 + origin/Host 策略 + 一次性 SSE ticket）、`api/server.py`（认证中间件、CORS 白名单、`/api/instance`、`/api/events/ticket`；`/api/events/test` 只在开发模式注册）、`config.py`（`QIO_SESSION_TOKEN` / `QIO_SESSION_TOKEN_FILE` / `QIO_DEV_INSECURE` / `QIO_ENABLE_TEST_EVENTS` 与 origin 白名单）、`frontend/src-tauri/src/main.rs`（随机空闲端口 + 后端生成会话令牌写入用户私有临时文件 + `qio_backend_info` 命令把 `{port, token}` 交给自己的 WebView）、`frontend/src/services/backend.ts`（地址与令牌解析，不再硬编码端口）、`api/bus.py` + `api/events.py`（线上 `id:` 行与 cursor 重放）
+- **Tests：** `backend/tests/test_api_auth.py`、`test_sse_replay.py`、`test_credential_endpoint_api.py`
+- **Known limitations：** 桌面壳的随机端口与令牌交接只在 Windows 上验证过；未在真实打包产物里跑过完整验收。开发脚本 `scripts/e2e_up.py` 默认仍以显式开发豁免（`QIO_DEV_INSECURE=1`）启动，并用 `--secure` 提供带令牌的口径；直接 `uvicorn agent.main:create_app --factory` 且不设任何环境变量时后端会自建令牌并拒绝所有未带令牌的请求（fail-closed，日志里只打印提示、不打印令牌）。
+- **后续依赖：** 无下游。
+
 ---
 
 ## 尚未完成
@@ -245,7 +264,8 @@
   因此**不实现**距离偏置。基线数字与结论存于 `backend/evals/baseline.json`，
   `tests/test_anchor_eval.py` 会守住这个决策（哪天评测翻盘会直接测试失败，强制重新决策）。
 - **取消不中断进行中的模型请求**：取消只取消在途工具调用并把 turn 标记为 cancelled，
-  正在等待的模型 HTTP 请求会跑完。
+  正在等待的模型 HTTP 请求会跑完 —— 但它的返回值会被丢弃，agent 循环不会继续，
+  turn 以 `cancelled` 结束，也不会保存任何后续内容为最终回答。
 - **Trace 时长归因缺口**：极端情况下 turn 总时长与已记录的模型/工具耗时差距很大
   （实测一次 51.5 秒的 turn 只记录了 1.7 秒模型耗时），无法从 Trace 解释时间去向。
 - **无嵌入模型时话题预判变弱**：缺本地 ONNX 模型时降级到规则层，关键词重叠分数被 1-gram/2-gram
@@ -269,6 +289,10 @@
   （后端没有可用的「造一个待审批项」测试注入口）。
 - **无障碍只做了自动化抽样**：Tab 顺序、focus-visible、对比度（暗/亮）已用无头浏览器脚本检查，
   未做完整 WCAG 审计，也未做屏幕阅读器实测。
+- **星球浏览体验只做了结构 + 静帧验证**：同屏上限、旋转推动话题流、反向连续性、对象池复用
+  都有自动化测试与真实运行证据（`scripts/baseline/planet-phase2-probe.mjs`），
+  但惯性曲线、触控板手势、逐帧「看不到数据替换」与真机 GPU 帧率**未验证**；
+  完整清单见 `docs/release-planet-phase2.md` 的「剩余问题」。
 
 ---
 

@@ -62,6 +62,13 @@ Context Engine   Capability Engine   Model Adapters
 - FastAPI 路由 + `EventBus`：订阅者扇出、断线重连后的重放缓冲
 - SSE 信封：`{ type, id, ts, data }`；事件类型集合以 `agent/api/events.py` 为准，文档不写死数量
 - 事件里带 `turn_id`，前端据此把工具事件、警告、用量归属到具体一轮
+- 本机 API 边界（2026-09-15 定稿）：`agent/api/auth.py` 的 `SessionAuth` 要求会话令牌
+  （`Authorization: Bearer` / `X-QIO-Session`，由桌面壳或开发脚本注入 `QIO_SESSION_TOKEN`），
+  CORS 只信任 QIO WebView origin（`http://tauri.localhost` / `tauri://localhost`）与显式开启的
+  开发 origin，Host 必须是回环地址；SSE 因为不能带 header，改用一次性、短 TTL、
+  `scope=events` 的 ticket（`POST /api/events/ticket`），主令牌不进 URL。
+  `GET /api/instance` 返回 `instance_id`/`pid` 供身份确认；`POST /api/events/test`
+  只在开发模式注册（生产构建里路由不存在）。
 
 ### 4.2 TurnManager（单轮边界）
 
@@ -71,6 +78,25 @@ Context Engine   Capability Engine   Model Adapters
 - `TurnManager`：负责创建 turn_id、维护 active turn、排队、取消、关闭清理、以及把通知投递到正确的 turn
 
 原则：**进程级服务挂在 AppContext / RuntimeServices；单轮状态挂在 TurnContext。** 不允许再把「当前 turn」的状态放在长生命周期对象上。
+
+**生命周期协议（唯一事实源）**：TurnManager 负责发出全部 turn 事件——
+
+```
+accepted ──▶ running ──┬──▶ completed
+                       ├──▶ failed
+                       ├──▶ cancelled
+                       └──▶ unavailable
+```
+
+- 每个被受理的 turn **恰好**一个 `TURN_START` 与**恰好**一个 `TURN_END`
+  （后者在 `finally` 里收口，异常路径也不例外）；
+- `TURN_END` 带 `{turn_id, status, final_content, error}`，`final_content` 是最终回答的
+  唯一权威来源；`ERROR` 只表示「出错了」，永远不承担结束 turn 的职责；
+- `AgentLoop` 只负责 planning/act/observe，不发 turn 事件 —— 它同时被 subagent、
+  维护任务、工具开发流水线复用，这些都不是 turn；
+- `POST /api/turns` 在受理时就返回 `{turn_id, status}`，前端不必从 SSE 里猜请求身份；
+- 取消检查点覆盖模型调用前后、工具调用前后、下一次迭代前、持久化最终回答前、
+  收尾记忆处理前：取消后不再发起新的模型/工具调用，也不把后续内容保存成正常最终回答。
 
 ### 4.3 TurnOrchestrator / Agent Runtime
 
@@ -129,10 +155,13 @@ context_window
 | --- | --- | --- |
 | Topic | 长期存在的讨论主题（QIO、某门课、某个项目） | 不是「一个局部问题的容器」 |
 | Fragment | 记忆域的分块单位：存消息、封块、生成摘要、建立索引、控制上下文规模 | 本轮**不**引入 fragment 树 / 分支 / 讨论发展节点 |
-| Anchor | 当前用户在某个 Topic 中明确关注或恢复到的历史位置 | 不是「该 Topic 最新 Fragment」的别名，不是检索结果，不是 Agent 读历史的副作用 |
+| Anchor | 当前对话**真实继续发生的位置**（话题 + 片段） | 不是「该 Topic 最新 Fragment」的别名，不是检索结果，不是 Agent 读历史的副作用，不是 Planet 的选中态 |
 | Memory Search | 只读检索：哪些过去的信息可能对当前问题有帮助 | 绝不改变 Anchor（调用多少次都一样） |
-| StartHere | 用户在 Planet 明确选择历史位置 →「从这里继续」 | 不是「重置到最新位置」 |
-| Agent Continue | `continue_from_fragment` 工具：Agent 在用户明确意图下显式改变讨论位置 | 与检索分离的独立动作；不是 `set_anchor` 这类数据库动作 |
+| StartHere | 用户在 Planet 明确选择历史位置 →「从这里继续」（**新建接续片段**，来源片段只读） | 不是「重置到最新位置」，也不是「重新打开旧片段继续写」 |
+| Agent Continue | `continue_from_fragment` 工具：Agent 在用户明确意图下显式改变讨论位置（与 StartHere 同一套语义） | 与检索分离的独立动作；不是 `set_anchor` 这类数据库动作 |
+| Selected Topic | 用户在 Planet 上**正在浏览**的话题（纯前端状态） | 不是 Anchor，选中什么都不会改变当前对话位置 |
+| Reference Topic | 为回答当前问题**临时读取**的另一个话题（检索 / Focus / 实体卡） | 不是导航，不改变 Anchor，也不改变选中态 |
+| Pending Switch | 预测器认为「这段内容可能属于另一个话题」时给出的**建议** | 不是切换本身；用户确认前 Anchor 一动不动 |
 
 位置存在 `cursor` 表（`active` 行 = 当前话题的位置；离开话题时旧位置写入 `history` 行），
 **没有新增表、没有新增迁移**。优先级：用户当前明确选择 > Agent 显式 continue > Topic 历史保存位置 > Topic 默认位置。
@@ -151,12 +180,53 @@ context_window
 | active=(A, F13)（历史位置） | 一轮失败 / 取消 | 不变 (A, F13) | 仍是 F13（重试不丢用户选择） |
 | active=(A, F13) | switch_topic(B) | active=(B, B 的历史位置或 None)；A 的位置写入 history | B 的历史位置（若有，且不是当前开放片段） |
 | active=(B, …) | switch_topic(A) | active=(A, A 的历史位置)；无效/跨话题片段降级为 None | A 的历史位置（若有） |
-| active=(A, F13) | Agent `continue_from_fragment(F18)`（F18 ∈ B） | active=(B, F18) | F18 |
+| active=(A, F13) | Agent `continue_from_fragment(F18)`（F18 ∈ B） | 新建接续片段 F19（`source_fragment_id=F18`），active=(B, F19) | F18（接续片段本身是空的） |
 | active=(A, F13) | Agent `memory_search(...)` | 不变 | 不变 |
 | active=(A, 无有效片段) | 任意话题内对话 | active=(A, …)（begin 只补默认话题，不猜片段） | 无 Focus |
 
 安全降级：位置指向不存在 / 不属于该话题的片段时，一律当作「无位置」（返回 None），
 既不注入错误片段，也不因为坏数据让切换抛错。
+
+**Anchor 只有一个写入者（第二阶段）**：所有改变对话位置的动作都必须经过
+`services/navigation.py::TopicNavigationService`（进入话题 / 创建话题 / 确认切换 /
+从历史继续）。Planet 选中、检索命中、Predictor 判断、API 直连都**不允许**直接写
+`cursor` 表；`tests/test_topic_navigation.py::test_anchor_writes_are_centralized_in_the_navigator`
+是一条架构守卫测试，用源码扫描强迫这条规则。
+
+### 4.4.2 Planet（长期话题的浏览景观）
+
+**定位**：星球是**长期话题的空间化浏览与导航景观**，不是认知地图、不是语义地图、
+不是知识图谱、不是全量数据可视化工具，也不承诺「两个话题在认知空间中有多接近」。
+
+三个必须分开的概念：
+
+| 概念 | 含义 | 上限 |
+| --- | --- | --- |
+| 总话题数 | 数据库里真实存在的话题 | 无上限 |
+| 可见容量 `VISIBLE_CAPACITY` | 星球表面同时承载多少个话题点（`services/planet.py` 与 `frontend/src/planet/browseSession.ts` 必须一致） | 固定值，且 ≤ 融合环 shader 的 uniform 上限 `MAX_TOPICS` |
+| 展示窗口 | 此刻窗口里具体是哪几个话题（由浏览会话维护） | 长度 = 可见容量 |
+
+**旋转 = 推动话题流**：用户视觉上在转一个星球，产品逻辑上旋转同时在推进话题流。
+槽位在世界空间里固定不动，只有转到**球体背面（用户看不见）**的槽位才会被换成
+下一个话题 —— 数据替换发生在低感知区域，用户看到的是话题自然从远处进入。
+持续同向旋转会不断遇见新话题；短距离掉头会把刚离开的话题放回原槽位。
+
+**没有永久球面坐标**：`nodes.meta.layout`（旧的斐波那契球面位置）保留兼容，但不再
+是核心语义；当前展示用的临时布局由 `frontend/src/planet/layoutSlots.ts` 按
+「话题 + 浏览会话」的稳定种子确定性生成，用户不需要记住「橡胶实验在东北侧」。
+
+**三层数据接口**（打开星球绝不读全量原文）：
+
+| 层 | 接口 | 内容 |
+| --- | --- | --- |
+| 第一层 Planet Overview | `GET /api/planet/overview` | 有哪些话题可以展示：id / 标题 / 片段数 / 最近活动 / 摘要预览 / `visual_seed` |
+| 第一层续 浏览批次 | `POST /api/planet/browse` | 接下来展示哪一批：确定性浏览序列 + 可前进可后退的游标（不返回原文） |
+| 第二层 Topic Detail | `GET /api/graph/topics/{id}` | 选中话题后才读：片段目录（含真实 `message_count`）、实体、知识；**不内联 Message** |
+| 第三层 Fragment Raw | `GET /api/fragments/{id}/messages?offset&limit` | 只有真正展开某段历史时才按页取原文 |
+
+Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇见；List/Search 负责
+准确寻找、快速进入。搜索命中的话题会被**注入当前展示窗口**，而不是要求它本来就
+待在某个固定地点。
 
 ### 4.5 Capability Engine
 
@@ -267,7 +337,9 @@ backend/evals/*.jsonl  →  agent/eval/run.py  →  指标 JSON  →  与 backen
   → TurnManager：创建 turn_id；若已有活跃主 turn 则排队（TURN_QUEUE）
   → TURN_START（带 turn_id）
   → 凭据快照 → CAPABILITY 校验
-  → 话题预判 → 记忆写入（当前消息绑定到开放片段）
+  → 话题预判 → 明确切换命令（切到 / 回到 + 已知话题名）直接进入话题；
+    推测切换只发 TOPIC_SWITCH_SUGGESTED 与「待确认切换」，Anchor 一动不动
+  → 记忆写入（当前消息绑定到开放片段）
   → 上下文组装（Focus（仅历史位置）/ 短期记忆 / 知识 / 检索 / 身份去重 / 预算截断）→ MEMORY_INJECT
   → AgentLoop：PLANNING → TOOL_START/TOOL_END → OBSERVING → … → 终答
   → 话题切换时迁移当前消息 → 写入助手消息
