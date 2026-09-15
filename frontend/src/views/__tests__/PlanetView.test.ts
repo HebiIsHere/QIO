@@ -5,11 +5,15 @@ import { ref, shallowRef, nextTick } from "vue";
 import PlanetView from "../PlanetView.vue";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
+import { resetPlanetSession } from "../../composables/planetSession";
 import type { EntityCard, KnowledgeItem, TopicDetail, TopicFingerprint, TopicPosition } from "../../services/api";
 
 const mocks = vi.hoisted(() => ({
   goMock: vi.fn(() => Promise.resolve()),
   focusTopicMock: vi.fn(),
+  pullBackMock: vi.fn(() => Promise.resolve()),
+  primeCameraMock: vi.fn(),
+  setPausedMock: vi.fn(),
   setThemeMock: vi.fn(),
   initMock: vi.fn(),
   loadTopicsMock: vi.fn(),
@@ -50,6 +54,12 @@ function createFakePlanet() {
       mocks.focusTopicMock(topicId, topics);
     },
     handleClick: mocks.handleClickMock,
+    primeCamera: mocks.primeCameraMock,
+    pullBack: mocks.pullBackMock,
+    setPaused: mocks.setPausedMock,
+    hoverTopicId: ref<string | null>(null),
+    hoverLabel: ref<{ x: number; y: number; title: string } | null>(null),
+    selectedLabel: ref<{ x: number; y: number; title: string } | null>(null),
     cancelAnimation: vi.fn(),
     resize: vi.fn(),
     setTheme: mocks.setThemeMock,
@@ -67,6 +77,15 @@ const TOPICS: TopicFingerprint[] = [{ topic_id: "t1", title: "话题 A", keyword
 const POSITIONS: TopicPosition[] = [{ topic_id: "t1", name: "话题 A", position: [0, 0, 1], activity: 1, updated_at: "" }];
 const DETAIL: TopicDetail = { topic_id: "t1", name: "话题 A", fragments: [], entities: [], knowledge: [] };
 
+const TOPICS2: TopicFingerprint[] = [
+  ...TOPICS,
+  { topic_id: "t2", title: "话题 B", keywords: [], fragment_count: 1, last_activity: null, summary_preview: null },
+];
+const POSITIONS2: TopicPosition[] = [
+  ...POSITIONS,
+  { topic_id: "t2", name: "话题 B", position: [1, 0, 0], activity: 1, updated_at: "" },
+];
+
 function mountView(pinia: Pinia, attach = false) {
   return mount(PlanetView, { attachTo: attach ? document.body : undefined, global: { plugins: [pinia] } });
 }
@@ -79,6 +98,7 @@ function newPinia() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetPlanetSession();
   document.documentElement.removeAttribute("data-theme");
   mocks.handleClickMock.mockReturnValue(false);
   mocks.goMock.mockImplementation(() => Promise.resolve());
@@ -96,7 +116,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.initMock).toHaveBeenCalled();
     expect(mocks.setTopicsMock).toHaveBeenCalledWith(POSITIONS);
     expect(mocks.loadTopicsMock).toHaveBeenCalledWith(POSITIONS);
-    expect(mocks.goMock).toHaveBeenLastCalledWith("planet");
+    expect(mocks.goMock).toHaveBeenLastCalledWith("planet", null, 420);
     w.unmount();
   });
 
@@ -111,42 +131,50 @@ describe("PlanetView 相机联动", () => {
     w.unmount();
   });
 
-  it("点击收起：相机先拉回 overview 再 emit close", async () => {
+  it("点击收起：先收势（轻微后撤）→ 再整体淡出 → 最后 emit close", async () => {
+    vi.useFakeTimers();
     const w = mountView(newPinia());
     await flushPromises();
     await w.find(".close-btn").trigger("click");
     await flushPromises();
-    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(mocks.pullBackMock).toHaveBeenCalledWith(0.45, 180); // 收势（不是缩回远景）
+    expect(w.classes()).toContain("settling");
+    expect(w.emitted("close")).toBeFalsy(); // 还没结束，不提前卸载
+    await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 
-  it("关闭动画进行中：话题列表/画布单击/双击不打断拉回，拉回结束后才 emit close", async () => {
+  it("收势进行中：话题列表/画布单击/双击不打断，收势结束后才 emit close", async () => {
     const resolvers: (() => void)[] = [];
-    mocks.goMock.mockImplementation(() => new Promise<void>((r) => { resolvers.push(r); }));
+    vi.useFakeTimers();
+    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     const w = mountView(newPinia());
     await flushPromises();
-    expect(resolvers.length).toBe(1); // 打开时 go("planet") 已发起（挂起）
 
     await w.find(".close-btn").trigger("click");
-    expect(resolvers.length).toBe(2); // 关闭拉回 go("overview") 已发起（挂起）
-    expect(w.classes()).toContain("closing");
+    expect(resolvers.length).toBe(1); // 收势已发起（挂起）
+    expect(w.classes()).toContain("settling");
 
-    // 关闭动画窗口内：话题点击不聚焦、画布单击不命中、双击不切回 planet
+    // 收势窗口内：话题点击不聚焦、画布单击不命中、双击不切回 planet
     await w.find(".topic-list li").trigger("click");
     await w.find("canvas").trigger("click", { clientX: 5, clientY: 5 });
     await w.find("canvas").trigger("dblclick");
     expect(mocks.focusTopicMock).not.toHaveBeenCalled();
     expect(mocks.handleClickMock).not.toHaveBeenCalled();
-    expect(mocks.goMock).toHaveBeenCalledTimes(2);
+    expect(mocks.goMock).toHaveBeenCalledTimes(1); // 只有挂载时那一次 go("planet")，收起不再拉回 overview
 
-    resolvers[1](); // 拉回完成 → 才 emit close
+    resolvers[0](); // 收势完成
     await flushPromises();
+    await vi.advanceTimersByTimeAsync(620); // 收势 180ms + 淡出 280ms → 才 emit close
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 
-  it("Esc：焦点在输入框内不收起；焦点在外收起并拉回 overview", async () => {
+  it("Esc：焦点在输入框内不收起；焦点在外收起（走收势+淡出）", async () => {
+    vi.useFakeTimers();
     const w = mountView(newPinia(), true);
     await flushPromises();
     const searchInput = w.find(".panel-head input").element;
@@ -156,8 +184,10 @@ describe("PlanetView 相机联动", () => {
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
-    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(mocks.pullBackMock).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 
@@ -178,7 +208,8 @@ describe("PlanetView 相机联动", () => {
     w.unmount();
   });
 
-  it("「从这里开始」：保留 setAnchor 数据流，关闭前拉回 overview", async () => {
+  it("「从这里开始」：保留 setAnchor 数据流，成功后走收势再关闭", async () => {
+    vi.useFakeTimers();
     const pinia = newPinia();
     const session = useSessionStore();
     session.currentTopicId = "t1";
@@ -189,8 +220,10 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null);
     expect(session.currentTopicId).toBe("t1");
     expect(session.topicName).toBe("话题 A");
-    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(mocks.pullBackMock).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 
@@ -210,28 +243,31 @@ describe("PlanetView 相机联动", () => {
     w.unmount();
   });
 
-  it("挂载时 API pending → 关闭 → API resolve 后 close 仍 emit（loadData 不打断拉回）", async () => {
+  it("挂载时 API pending → 先收起 → API resolve 后不再推进/聚焦，且 close 仍 emit", async () => {
     const resolvers: (() => void)[] = [];
+    vi.useFakeTimers();
     let resolveList!: () => void;
     let resolvePos!: () => void;
-    mocks.goMock.mockImplementation(() => new Promise<void>((r) => { resolvers.push(r); }));
+    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
     mocks.apiMock.getPositions.mockImplementation(() => new Promise((r) => { resolvePos = () => r({ topics: POSITIONS }); }));
     const w = mountView(newPinia());
     // loadData 的 API 尚未 resolve 时先关闭
     await w.find(".close-btn").trigger("click");
-    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(w.classes()).toContain("settling");
     expect(resolvers.length).toBe(1);
     // 随后 API resolve → loadData 继续，但不得再推进 planet / 聚焦话题
     resolveList();
     resolvePos();
     await flushPromises();
-    expect(mocks.goMock).toHaveBeenCalledTimes(1);
+    expect(mocks.goMock).not.toHaveBeenCalled();
     expect(mocks.focusTopicMock).not.toHaveBeenCalled();
-    // 拉回完成 → close 仍正常 emit
+    // 收势 + 淡出完成 → close 仍正常 emit
     resolvers[0]();
     await flushPromises();
+    await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 });
@@ -383,6 +419,62 @@ describe("PlanetView 右侧话题边栏", () => {
   });
 });
 
+describe("PlanetView 详情加载失败（P0：失败必须自己可见且可重试）", () => {
+  it("详情 500：没有详情也要显示失败原因与重试入口", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    mocks.apiMock.getTopicDetail.mockRejectedValueOnce(new Error("boom"));
+    const w = mountView(pinia);
+    await flushPromises();
+    await nextTick();
+
+    expect(w.find(".detail").exists()).toBe(false);
+    const err = w.find(".detail-error");
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("boom");
+    expect(err.find("button").text()).toContain("重试");
+    w.unmount();
+  });
+
+  it("点重试：重新请求同一话题并在成功后显示详情", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    mocks.apiMock.getTopicDetail.mockRejectedValueOnce(new Error("boom"));
+    const w = mountView(pinia);
+    await flushPromises();
+    await nextTick();
+    mocks.apiMock.getTopicDetail.mockResolvedValueOnce(DETAIL);
+
+    await w.find(".detail-error button").trigger("click");
+    await flushPromises();
+    await nextTick();
+
+    expect(mocks.apiMock.getTopicDetail).toHaveBeenCalledTimes(2);
+    expect(w.find(".detail-error").exists()).toBe(false);
+    expect(w.find(".detail").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("首次数据加载失败：显示可见失败说明与重试入口（不能拿空球冒充完整内容）", async () => {
+    mocks.apiMock.listTopics.mockRejectedValueOnce(new Error("offline"));
+    const w = mountView(newPinia());
+    await flushPromises();
+    const banner = w.find(".load-error");
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("offline");
+    expect(banner.find("button").text()).toContain("重试");
+
+    mocks.apiMock.listTopics.mockResolvedValueOnce({ topics: TOPICS });
+    await banner.find("button").trigger("click");
+    await flushPromises();
+    expect(w.find(".load-error").exists()).toBe(false);
+    expect(w.findAll(".topic-list li").length).toBe(1);
+    w.unmount();
+  });
+});
+
 describe("星球记忆中心面板", () => {
   it("选中片段后：明示「已选择历史位置」+「从这里继续」，并提交 topic+fragment（任务05 A）", async () => {
     mocks.apiMock.getTopicDetail.mockResolvedValue({
@@ -483,6 +575,7 @@ describe("星球记忆中心面板", () => {
   });
 
   it("从这里开始：API 失败不改本地锚点、不自动关闭、显示错误，重试成功才生效（问题2）", async () => {
+    vi.useFakeTimers();
     const pinia = newPinia();
     const session = useSessionStore();
     session.currentTopicId = "t1";
@@ -499,7 +592,7 @@ describe("星球记忆中心面板", () => {
     // 失败：本地锚点不变、不拉回、不关闭；错误可见
     expect(session.currentTopicId).toBe("t1");
     expect(session.topicName).toBe("旧话题");
-    expect(mocks.goMock).not.toHaveBeenCalledWith("overview");
+    expect(mocks.pullBackMock).not.toHaveBeenCalled();
     expect(w.emitted("close")).toBeFalsy();
     expect(w.find(".anchor-error").text()).toContain("未切换");
 
@@ -507,8 +600,10 @@ describe("星球记忆中心面板", () => {
     await w.find(".start-btn").trigger("click");
     await flushPromises();
     expect(session.topicName).toBe("话题 A");
-    expect(mocks.goMock).toHaveBeenLastCalledWith("overview");
+    expect(mocks.pullBackMock).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
     w.unmount();
   });
 
@@ -600,6 +695,263 @@ describe("PlanetView 图形诊断可见性（任务04 A1/A7）", () => {
     await nextTick();
     expect(w.find(".webgl-fallback").exists()).toBe(true);
     expect(w.find(".webgl-fallback").text()).toContain("无法启用 3D 星球");
+    w.unmount();
+  });
+});
+
+describe("任务05 收尾：加载提示、详情布局、选择可达性与浏览状态", () => {
+  it("首次数据加载中显示加载提示，加载完成后消失（不以空球冒充完整内容）", async () => {
+    let resolveList!: () => void;
+    let resolvePos!: () => void;
+    mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
+    mocks.apiMock.getPositions.mockImplementation(() => new Promise((r) => { resolvePos = () => r({ topics: POSITIONS }); }));
+    const w = mountView(newPinia());
+    await nextTick();
+    const loading = w.find(".planet-loading");
+    expect(loading.exists()).toBe(true);
+    expect(loading.text()).toContain("正在加载");
+
+    resolveList();
+    resolvePos();
+    await flushPromises();
+    expect(w.find(".planet-loading").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("详情区：可滚动中部 + 固定底部操作区，操作按钮不在滚动容器内（底部不覆盖内容）", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    const w = mountView(pinia);
+    await flushPromises();
+
+    const body = w.find(".panel-body");
+    expect(body.exists()).toBe(true);
+    const actions = w.find(".detail-actions");
+    expect(actions.exists()).toBe(true);
+    expect(actions.find(".start-btn").exists()).toBe(true);
+    // 操作按钮属于固定底部区，不属于滚动中部
+    expect(body.find(".start-btn").exists()).toBe(false);
+    // 可滚动中部含列表与详情正文
+    expect(body.find(".topic-list").exists()).toBe(true);
+    expect(body.find(".detail").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("三者区分：明确显示「浏览的话题」「选中的片段」「已生效的起点」", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.setAnchor("t1", "f13", "话题 A", { id: "f13", title: "Anchor 生命周期" }, true);
+    const w = mountView(pinia);
+    await flushPromises();
+
+    const text = w.find(".detail-identity").text();
+    expect(text).toContain("浏览的话题");
+    expect(text).toContain("话题 A");
+    expect(text).toContain("选中的片段");
+    expect(text).toContain("已生效的起点");
+    expect(text).toContain("Anchor 生命周期");
+    w.unmount();
+  });
+
+  it("话题列表可键盘选择：li 可聚焦，Enter 触发聚焦（列表键盘可达）", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    const li = w.find(".topic-list li");
+    expect(li.attributes("tabindex")).toBe("0");
+    expect(li.attributes("role")).toBe("option");
+    await li.trigger("keydown.enter");
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS);
+    w.unmount();
+  });
+
+  it("Esc 分层：面板打开时先收面板不关星球；面板已收起才收起星球", async () => {
+    vi.useFakeTimers();
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    expect(w.find(".panel").classes()).toContain("open");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await nextTick();
+    expect(w.find(".panel").classes()).not.toContain("open");
+    expect(mocks.pullBackMock).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(mocks.pullBackMock).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(620);
+    expect(w.emitted("close")).toBeTruthy();
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it("重开保留本次浏览的话题：起点未变化时不无条件回到起点", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
+    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+
+    const first = mountView(pinia);
+    await flushPromises();
+    // 浏览到另一个话题（星球选中态是唯一来源）
+    currentFake!.selectedTopicId.value = "t2";
+    await flushPromises();
+    first.unmount();
+
+    mocks.focusTopicMock.mockClear();
+    setActivePinia(pinia);
+    const second = mountView(pinia);
+    await flushPromises();
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t2", POSITIONS2);
+    second.unmount();
+  });
+
+  it("起点已变化时按新起点定位（浏览记忆不覆盖明确的新起点）", async () => {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
+    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+
+    const first = mountView(pinia);
+    await flushPromises();
+    currentFake!.selectedTopicId.value = "t2";
+    await flushPromises();
+    first.unmount();
+
+    // 起点明确变化（同话题、指定了历史片段）→ 以新起点为准
+    useSessionStore().setAnchor("t1", "f13", "话题 A", { id: "f13", title: "Anchor 生命周期" }, true);
+    mocks.focusTopicMock.mockClear();
+    setActivePinia(pinia);
+    const second = mountView(pinia);
+    await flushPromises();
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", POSITIONS2);
+    second.unmount();
+  });
+
+  it("WebGL 不可用时管理入口仍可用：面板可展开并列出话题", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    currentFake!.webglOK.value = false;
+    await nextTick();
+    await w.find(".panel-toggle").trigger("click");
+    await nextTick();
+    expect(w.find(".panel").classes()).toContain("open");
+    expect(w.findAll(".topic-list li").length).toBe(1);
+    w.unmount();
+  });
+
+  it("A→B→C 连续选择：无论返回顺序如何，最后选中的 C 一定胜出", async () => {
+    const detailOf = (id: string, name: string): TopicDetail => ({ topic_id: id, name, fragments: [], entities: [], knowledge: [] });
+    const pending = new Map<string, (d: TopicDetail) => void>();
+    const getDetail = mocks.apiMock.getTopicDetail as unknown as ReturnType<typeof vi.fn>;
+    getDetail.mockImplementation((id: string) => new Promise<TopicDetail>((r) => { pending.set(id, r); }));
+
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
+    mocks.apiMock.getPositions.mockResolvedValue({ topics: POSITIONS2 });
+    const w = mountView(newPinia());
+    await flushPromises();
+
+    currentFake!.selectedTopicId.value = "t1";
+    await nextTick();
+    currentFake!.selectedTopicId.value = "t2";
+    await nextTick();
+    currentFake!.selectedTopicId.value = "t1"; // 回到 A 作为「C」
+    await nextTick();
+
+    // 乱序返回：过期的 B 先到 → 不得显示出来
+    pending.get("t2")!(detailOf("t2", "话题 B"));
+    await flushPromises();
+    expect(w.find(".detail").exists()).toBe(false);
+    expect(w.find(".detail-loading").exists()).toBe(true); // 仍在等当前这一次
+    expect(w.find(".panel-body .detail h3").exists()).toBe(false);
+    // 当前的 A 后到 → 显示 A
+    pending.get("t1")!(detailOf("t1", "话题 A"));
+    await flushPromises();
+    expect(w.find(".detail h3").text()).toBe("话题 A");
+    w.unmount();
+  });
+
+  it("悬停话题点：显示简短名称，移开后不再常驻", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(w.find(".topic-hint").exists()).toBe(false);
+
+    currentFake!.hoverTopicId.value = "t1";
+    currentFake!.hoverLabel.value = { x: 120, y: 80, title: "话题 A" };
+    await nextTick();
+    const hint = w.find(".topic-hint");
+    expect(hint.text()).toBe("话题 A");
+    expect(hint.attributes("style")).toContain("left: 120px");
+
+    currentFake!.hoverTopicId.value = null;
+    currentFake!.hoverLabel.value = null;
+    await nextTick();
+    expect(w.find(".topic-hint").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("选中话题的名称常驻在点旁边，悬停其它点时让位", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    currentFake!.selectedLabel.value = { x: 200, y: 150, title: "话题 A" };
+    await nextTick();
+    const label = w.find(".topic-hint.selected");
+    expect(label.exists()).toBe(true);
+    expect(label.text()).toBe("话题 A");
+    expect(label.attributes("style")).toContain("left: 200px");
+
+    // 悬停标签出现时，选中标签让位（同一个位置不叠两层文字）
+    currentFake!.hoverTopicId.value = "t2";
+    currentFake!.hoverLabel.value = { x: 300, y: 200, title: "话题 B" };
+    await nextTick();
+    expect(w.find(".topic-hint.selected").exists()).toBe(false);
+    expect(w.find(".topic-hint").text()).toBe("话题 B");
+    w.unmount();
+  });
+});
+
+describe("PlanetView 实例复用（性能：不再每次重建 WebGL 场景）", () => {
+  it("open 从 false 变回 true 时复用同一场景：不再 init、会重新拉数据并恢复渲染", async () => {
+    const w = mountView(newPinia());
+    await flushPromises();
+    expect(mocks.initMock).toHaveBeenCalledTimes(1);
+    const listCallsAfterMount = mocks.apiMock.listTopics.mock.calls.length;
+
+    // 关闭（父级只隐藏，不卸载）
+    await w.setProps({ open: false });
+    await flushPromises();
+    expect(mocks.setPausedMock).toHaveBeenLastCalledWith(true);
+
+    // 重新打开
+    await w.setProps({ open: true });
+    await flushPromises();
+    expect(mocks.initMock).toHaveBeenCalledTimes(1); // 复用：没有重建场景
+    expect(mocks.setPausedMock).toHaveBeenLastCalledWith(false);
+    expect(mocks.apiMock.listTopics.mock.calls.length).toBeGreaterThan(listCallsAfterMount); // 数据仍然刷新
+    w.unmount();
+  });
+
+  it("关闭过程中又打开一次：放弃这次收尾（不 emit、不把新层变成收起中）", async () => {
+    vi.useFakeTimers();
+    const resolvers: (() => void)[] = [];
+    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
+    const w = mountView(newPinia());
+    w.setProps({ seq: 7 });
+    await flushPromises();
+
+    await w.find(".close-btn").trigger("click");
+    expect(resolvers.length).toBe(1);
+    // 关闭动画还没结束，用户又打开了一次（序号变成 8）
+    await w.setProps({ seq: 8 });
+    resolvers[0]();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(620);
+
+    expect(w.emitted("close")).toBeUndefined(); // 旧收尾被放弃：既不 emit，也不结束新的一次打开
+    expect(w.classes()).not.toContain("closing");
+    expect(w.classes()).not.toContain("settling");
+    vi.useRealTimers();
     w.unmount();
   });
 });

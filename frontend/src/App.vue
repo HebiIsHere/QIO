@@ -3,6 +3,7 @@ import { onMounted } from "vue";
 import { useEventStore } from "./stores/events";
 import { useUiStore } from "./stores/ui";
 import ApprovalModal from "./components/ApprovalModal.vue";
+import ApprovalEntry from "./components/ApprovalEntry.vue";
 
 const events = useEventStore();
 const ui = useUiStore();
@@ -15,6 +16,7 @@ onMounted(() => {
 <template>
   <div class="app-shell">
     <router-view />
+    <ApprovalEntry />
     <ApprovalModal />
   </div>
 </template>

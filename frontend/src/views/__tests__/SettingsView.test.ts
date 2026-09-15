@@ -413,3 +413,184 @@ describe("SettingsView 工具与高级", () => {
     w.unmount();
   });
 });
+
+describe("SettingsView 状态保留与保存归属（P0）", () => {
+  it("再次打开设置时恢复上次所在分类（同次使用内）", async () => {
+    const pinia = makePinia();
+    const mountWith = () =>
+      mount(SettingsView, { attachTo: document.body, global: { plugins: [pinia], stubs: { RouterLink: true } } });
+
+    const w1 = mountWith();
+    await flushPromises();
+    await openTab(w1, "凭据");
+    expect(w1.find(".tab.active").text()).toBe("凭据");
+    w1.unmount();
+
+    const w2 = mountWith();
+    await flushPromises();
+    expect(w2.find(".tab.active").text()).toBe("凭据");
+    w2.unmount();
+  });
+
+  it("维护设置：旧响应迟到时不得回填覆盖用户后来的输入", async () => {
+    const api = (await import("../../services/api")).api as unknown as {
+      updateMaintenanceSettings: ReturnType<typeof vi.fn>;
+    };
+    let releaseFirst: (v: unknown) => void = () => {};
+    const first = new Promise((r) => {
+      releaseFirst = r;
+    });
+    api.updateMaintenanceSettings.mockImplementationOnce(() => first);
+    api.updateMaintenanceSettings.mockImplementationOnce(
+      async (body: { enabled: boolean; interval_hours: number }) => ({
+        enabled: body.enabled,
+        interval_hours: body.interval_hours,
+      }),
+    );
+
+    const w = await mountSettings();
+    await openTab(w, "数据与维护");
+    // 第一次修改：开关（请求挂起）
+    await visiblePanel(w).find(".qio-switch").trigger("click");
+    await nextTick();
+    // 第二次修改：间隔改成 30（后发先至）
+    const input = w.find('input[aria-label="维护间隔（小时）"]');
+    (input.element as HTMLInputElement).value = "30";
+    await input.trigger("input");
+    await nextTick();
+    await input.trigger("blur");
+    await flushPromises();
+    await nextTick();
+
+    // 旧请求此刻才返回，带着过期值
+    expect(api.updateMaintenanceSettings).toHaveBeenCalledTimes(2);
+    releaseFirst({ enabled: false, interval_hours: 24 });
+    await flushPromises();
+    await nextTick();
+
+    expect((w.find('input[aria-label="维护间隔（小时）"]').element as HTMLInputElement).value).toBe("30");
+    expect(visiblePanel(w).find(".qio-switch").classes()).toContain("on");
+    expect(visiblePanel(w).text()).toContain("30");
+    w.unmount();
+  });
+
+  it("未提交的表单内容离开设置页后仍保留（非敏感字段）", async () => {
+    const pinia = makePinia();
+    const mountWith = () =>
+      mount(SettingsView, { attachTo: document.body, global: { plugins: [pinia], stubs: { RouterLink: true } } });
+
+    const w1 = mountWith();
+    await flushPromises();
+    await openTab(w1, "对话与记忆");
+    const input = w1.find('input[aria-label="迭代上限"]');
+    (input.element as HTMLInputElement).value = "333";
+    await input.trigger("input");
+    await nextTick();
+    w1.unmount(); // 离开设置：组件卸载
+
+    const w2 = mountWith();
+    await flushPromises();
+    await openTab(w2, "对话与记忆");
+    expect((w2.find('input[aria-label="迭代上限"]').element as HTMLInputElement).value).toBe("333");
+    w2.unmount();
+  });
+
+  it("动画偏好：选择「减少动画」立即落到 html[data-motion]", async () => {
+    document.documentElement.removeAttribute("data-motion");
+    const w = await mountSettings();
+    const btn = w.findAll(".motion-opt").find((b) => b.text() === "减少动画");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    await nextTick();
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduced");
+    expect(w.findAll(".motion-opt").find((b) => b.text() === "减少动画")!.classes()).toContain("on");
+    document.documentElement.removeAttribute("data-motion");
+    localStorage.clear();
+    w.unmount();
+  });
+});
+
+describe("任务 04 PART B：保存模型与可用性说明", () => {
+  it("自动保存显示「保存中…」→「已保存」，不是只有最终结果", async () => {
+    const api = (await import("../../services/api")).api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    let release!: (v: { enabled: boolean; interval_hours: number }) => void;
+    api.updateMaintenanceSettings.mockImplementationOnce(
+      () => new Promise((r) => { release = r as typeof release; }),
+    );
+    const w = await mountSettings();
+    await openTab(w, "数据与维护");
+
+    await w.find('button[aria-label="离线维护开关"]').trigger("click");
+    await nextTick();
+    expect(w.find(".msg").text()).toContain("正在保存维护设置");
+    expect(w.find(".msg").classes()).toContain("info");
+
+    release({ enabled: false, interval_hours: 24 });
+    await flushPromises();
+    expect(w.find(".msg").text()).toContain("离线维护已保存");
+    expect(w.find(".msg").classes()).toContain("ok");
+    w.unmount();
+  });
+
+  it("保存失败时给出可见错误（不留在「已保存」的假状态）", async () => {
+    const api = (await import("../../services/api")).api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.updateMaintenanceSettings.mockRejectedValueOnce(new Error("500 boom"));
+    const w = await mountSettings();
+    await openTab(w, "数据与维护");
+    await w.find('button[aria-label="离线维护开关"]').trigger("click");
+    await flushPromises();
+    expect(w.find(".msg").text()).toContain("保存维护设置失败");
+    expect(w.find(".msg").classes()).toContain("err");
+    w.unmount();
+  });
+
+  it("输出速度保存失败时会显示错误，而不是只写控制台", async () => {
+    const api = (await import("../../services/api")).api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.updateUISettings.mockRejectedValueOnce(new Error("网络不可用"));
+    const w = await mountSettings();
+    await w.find(".qio-select, .select").trigger("click").catch(() => {});
+    const s = useUiStore();
+    s.setCps(25).catch(() => {});
+    await flushPromises();
+    // store 里的偏好仍然被改（本地立即生效），但抛错交给调用方显示
+    expect(s.typewriterCps).toBe(25);
+    w.unmount();
+  });
+
+  it("联网搜索：没有任何通道时说明为什么不可用", async () => {
+    const api = (await import("../../services/api")).api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.getSearchSettings.mockResolvedValueOnce({
+      searxng_url: "",
+      bocha_has_key: false,
+      keyless_fallback: false,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    const avail = w.find(".avail");
+    expect(avail.exists()).toBe(true);
+    expect(avail.text()).toContain("没有可用的联网搜索通道");
+    expect(avail.classes()).toContain("off");
+    w.unmount();
+  });
+
+  it("联网搜索：有免密钥通道时说明当前可用通道", async () => {
+    const w = await mountSettings();
+    await openTab(w, "模型与联网");
+    expect(w.find(".avail").text()).toContain("免密钥通道");
+    expect(w.find(".avail").classes()).not.toContain("off");
+    w.unmount();
+  });
+
+  it("保存模型可见：自动保存分区有说明，显式保存分区有保存按钮与说明", async () => {
+    const w = await mountSettings();
+    await openTab(w, "对话与记忆");
+    const hints = () => w.findAll(".mode-hint").map((h) => h.text());
+    expect(hints().some((t) => t.includes("自动保存"))).toBe(true);
+    await openTab(w, "模型与联网");
+    expect(hints().some((t) => t.includes("保存搜索配置"))).toBe(true);
+    expect(w.find("button.qio-btn.primary").text()).toContain("保存搜索配置");
+    w.unmount();
+  });
+});

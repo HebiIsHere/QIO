@@ -16,8 +16,10 @@ const props = withDefaults(
     mono?: boolean;
     label?: string;
     disabled?: boolean;
+    /** 数值单位（如「小时」）。显示在数值右侧，让用户不必回头找标题里的单位 */
+    unit?: string;
   }>(),
-  { min: -Infinity, max: Infinity, step: 1, placeholder: "", mono: false, label: "", disabled: false },
+  { min: -Infinity, max: Infinity, step: 1, placeholder: "", mono: false, label: "", disabled: false, unit: "" },
 );
 const emit = defineEmits<{ "update:modelValue": [value: number | null]; change: [] }>();
 
@@ -27,11 +29,22 @@ const draft = ref(props.modelValue == null ? "" : String(props.modelValue));
  * 点击 + → commit（一次保存）→ 失焦不再重复；纯聚焦点击也不触发保存。
  */
 let committed: number | null = props.modelValue ?? null;
+/**
+ * 最近一次由本组件输入框 emit 出去的值。
+ * 父组件回填（`:model-value` + `@update:model-value` 的真实双向绑定）会带着
+ * 这个值回到 props；它只是「用户正在打的字」的回显，不代表已经提交，
+ * 否则失焦时的 commit 会判定「没变化」而发不出 change，父级就不会保存。
+ */
+let echoed: number | null | undefined;
 watch(
   () => props.modelValue,
   (v) => {
     if (draft.value !== String(v ?? "")) draft.value = v == null ? "" : String(v);
-    // 父级/服务端回填的值视为已提交，不重复触发保存
+    if (v === echoed) {
+      echoed = undefined; // 自己的回显：不改变 committed
+      return;
+    }
+    // 父级/服务端真正回填的值视为已提交，不重复触发保存
     committed = v ?? null;
   },
 );
@@ -56,6 +69,7 @@ function commit() {
   draft.value = next == null ? "" : String(next);
   if (next === committed) return;
   committed = next;
+  echoed = undefined;
   emit("update:modelValue", next);
   emit("change");
 }
@@ -66,6 +80,7 @@ function stepBy(dir: 1 | -1) {
   const base = stepBase();
   const next = clamp(toStep(base + dir * props.step));
   draft.value = String(next);
+  echoed = undefined;
   emit("update:modelValue", next);
   // +/- 与 Enter/blur 用同一套 commit 语义：确实变化才算一次提交
   if (next !== committed) {
@@ -83,10 +98,16 @@ function stepBase(): number {
 function onInput(e: Event) {
   draft.value = (e.target as HTMLInputElement).value;
   const raw = draft.value.trim();
-  if (raw === "") emit("update:modelValue", null);
+  if (raw === "") {
+    echoed = null;
+    emit("update:modelValue", null);
+  }
   else {
     const n = Number(raw);
-    if (Number.isFinite(n)) emit("update:modelValue", n); // 输入过程不 clamp，失焦/change 再收口
+    if (Number.isFinite(n)) {
+      echoed = n;
+      emit("update:modelValue", n); // 输入过程不 clamp，失焦/change 再收口
+    }
   }
 }
 </script>
@@ -107,6 +128,7 @@ function onInput(e: Event) {
       @blur="commit"
       @change="commit"
     />
+    <span v-if="unit" class="q-number-unit">{{ unit }}</span>
     <div class="q-number-steps">
       <button type="button" class="step up" :disabled="disabled" aria-label="增加" @click="stepBy(1)">＋</button>
       <button type="button" class="step down" :disabled="disabled" aria-label="减少" @click="stepBy(-1)">−</button>
@@ -158,9 +180,19 @@ function onInput(e: Event) {
   flex-direction: column;
   border-left: 1px solid var(--border-subtle);
 }
+/* 单位紧贴数值右侧：读「24 小时」不用回头看分区标题 */
+.q-number-unit {
+  display: inline-flex;
+  align-items: center;
+  padding-right: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
 .step {
   flex: 1;
-  width: 22px;
+  /* 触屏命中：22px 太窄（手指点不准），放宽到 30px；键盘操作不受影响 */
+  width: 30px;
   padding: 0;
   border: none;
   background: transparent;
@@ -168,6 +200,7 @@ function onInput(e: Event) {
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
+  touch-action: manipulation;
   transition: background 0.15s, color 0.15s;
 }
 .step:hover:not(:disabled) {

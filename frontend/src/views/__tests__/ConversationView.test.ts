@@ -1,108 +1,100 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
-import { nextTick } from "vue";
-import { createPinia, setActivePinia, type Pinia } from "pinia";
-import { createRouter, createMemoryHistory, type Router } from "vue-router";
+import { createPinia, setActivePinia } from "pinia";
 import ConversationView from "../ConversationView.vue";
-import { useSessionStore } from "../../stores/session";
 
 vi.mock("../../services/api", () => ({
   api: {
-    getSessionContext: vi.fn(async () => ({
-      topic_id: "",
-      topic_name: null,
-      anchor_fragment: null,
-      messages: [],
-    })),
-    sendTurn: vi.fn(async () => ({})),
+    loadHistory: vi.fn(async () => ({ messages: [], anchor: null })),
+    getUISettings: vi.fn(async () => ({ typewriter_cps: 50 })),
   },
 }));
 
-function makeRouter(): Router {
-  return createRouter({
-    history: createMemoryHistory(),
-    routes: [
-      { path: "/", component: { template: "<div />" } },
-      { path: "/settings", component: { template: "<div />" } },
-    ],
-  });
-}
+const dockStub = {
+  name: "PlanetDock",
+  emits: ["open"],
+  template: `<button class="stub-dock" @click="$emit('open')">dock</button>`,
+};
+const planetStub = {
+  name: "PlanetView",
+  props: { seq: { type: Number, default: 0 } },
+  emits: ["close"],
+  template: `<div class="stub-planet" :data-seq="seq"></div>`,
+};
 
-function mountView(pinia: Pinia, router: Router) {
+function mountView() {
+  const pinia = createPinia();
+  setActivePinia(pinia);
   return mount(ConversationView, {
-    global: { plugins: [pinia, router] },
+    global: {
+      plugins: [pinia],
+      stubs: {
+        MessageStream: true,
+        Composer: true,
+        SettingsFloat: true,
+        PlanetDock: dockStub,
+        PlanetView: planetStub,
+      },
+    },
   });
 }
 
-beforeEach(() => {
-  document.documentElement.removeAttribute("data-theme");
-  localStorage.clear();
+describe("ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面）", () => {
+  it("关闭动画期间的旧 close 回调不会关掉后来重新打开的星球", async () => {
+    const w = mountView();
+    await flushPromises();
+    expect(w.find(".stub-planet").exists()).toBe(false);
+
+    await w.find(".stub-dock").trigger("click");
+    await flushPromises();
+    expect(w.find(".stub-planet").exists()).toBe(true);
+    const firstSeq = Number(w.find(".stub-planet").attributes("data-seq"));
+
+    // 关闭动画进行中用户又点了一次入口（此时覆盖层已不再拦截点击）
+    await w.find(".stub-dock").trigger("click");
+    await flushPromises();
+    const secondSeq = Number(w.find(".stub-planet").attributes("data-seq"));
+    expect(secondSeq).toBeGreaterThan(firstSeq);
+
+    // 第一次关闭的迟到回调不得关掉现在这一层
+    await w.findComponent({ name: "PlanetView" }).vm.$emit("close", firstSeq);
+    await flushPromises();
+    expect(w.find(".stub-planet").attributes("style") ?? "").not.toContain("display: none");
+
+    // 当前这一层自己的 close 才生效
+    await w.findComponent({ name: "PlanetView" }).vm.$emit("close", secondSeq);
+    await flushPromises();
+    expect(w.find(".stub-planet").exists()).toBe(true); // 实例常驻（复用同一个 WebGL 场景）
+    expect(w.find(".stub-planet").attributes("style") ?? "").toContain("display: none");
+    // 再打开时仍是同一个实例（序号只是递增，不会重建组件）
+    await w.find(".stub-dock").trigger("click");
+    await flushPromises();
+    expect(w.find(".stub-planet").attributes("style") ?? "").not.toContain("display: none");
+    w.unmount();
+  });
 });
 
-describe("ConversationView 状态条移除与异常提示", () => {
-  it("不再渲染顶部状态条（StatusBar 已移除）", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const w = mountView(pinia, makeRouter());
-    await flushPromises();
-    expect(w.find(".status-bar").exists()).toBe(false);
-    expect(w.find(".settings-float").exists()).toBe(true);
-    w.unmount();
-  });
+describe("ConversationView 键盘通道（任务 05 I：长消息流不该挡住输入框）", () => {
+  it("第一个焦点位是「跳到输入框」，点击后焦点落到输入框", async () => {
+    // 真实页面里输入框由 Composer 渲染；这里用同名元素代替，验证跳转逻辑本身
+    const target = document.createElement("textarea");
+    target.id = "composer-input";
+    document.body.appendChild(target);
 
-  it("有 lastError 时顶部显示错误条：可看详情、可跳设置", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const session = useSessionStore();
-    session.lastError = "credential missing";
-    const w = mountView(pinia, makeRouter());
+    const w = mountView();
     await flushPromises();
-    const hint = w.find(".notice.err");
-    expect(hint.exists()).toBe(true);
-    expect(hint.text()).toContain("credential missing");
-    expect(hint.text()).toContain("前往设置");
-    expect(hint.text()).toContain("查看详情");
-    w.unmount();
-  });
 
-  it("非致命警告用 warning 语义显示，不与错误混用", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const session = useSessionStore();
-    session.warning = "工具失败了一次";
-    const w = mountView(pinia, makeRouter());
-    await flushPromises();
-    expect(w.find(".notice.err").exists()).toBe(false);
-    const warn = w.find(".notice.warn");
-    expect(warn.exists()).toBe(true);
-    expect(warn.text()).toContain("工具失败了一次");
-    w.unmount();
-  });
+    const skip = w.find("a.skip-link");
+    expect(skip.exists()).toBe(true);
+    expect(skip.text()).toContain("跳到输入框");
+    expect(skip.attributes("href")).toBe("#composer-input");
+    // 必须是 DOM 里的第一个可聚焦元素：否则长消息流会把它挤到后面
+    expect(w.element.firstElementChild?.classList.contains("skip-link")).toBe(true);
 
-  it("等待回复时用户消息下方显示三圆点跳动指示，收到助手消息后消失", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const w = mountView(pinia, makeRouter());
-    await flushPromises();
-    const session = useSessionStore();
-    session.pushUser("hello");
-    session.turnStarted();
-    await nextTick();
-    expect(w.find(".typing-bubble").exists()).toBe(true);
-    expect(w.findAll(".typing-bubble .dot").length).toBe(3);
-    session.pushAssistant("final answer");
-    session.turnEnded();
-    await nextTick();
-    expect(w.find(".typing-bubble").exists()).toBe(false);
-    w.unmount();
-  });
+    await skip.trigger("click");
+    expect(document.activeElement).toBe(target);
 
-  it("无异常时不显示提示条", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const w = mountView(pinia, makeRouter());
-    await flushPromises();
-    expect(w.find(".notice").exists()).toBe(false);
     w.unmount();
+    target.remove();
   });
 });

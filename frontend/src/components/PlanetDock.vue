@@ -75,6 +75,11 @@ function onClick() {
 .dock:hover {
   transform: scale(1.06);
 }
+/* 按下立即反馈：不等页面加载完成，用户马上知道点到了 */
+.dock:active {
+  transform: scale(0.96);
+  transition-duration: var(--dur-press);
+}
 /* 贴靠隐藏：淡化但保留轮廓与环，用户始终知道星球在哪；hover 展开、移出再隐藏 */
 .dock.fw-hidden {
   opacity: 0.35;

@@ -12,6 +12,8 @@ import QSelect from "../../components/ui/QSelect.vue";
 const props = defineProps<{
   mode: CredentialModalMode;
   initial?: Record<string, unknown> | null;
+  /** 正在播退出动画：仍拦截点击（避免落到下层危险操作），但内容已经不可交互 */
+  leaving?: boolean;
 }>();
 const emit = defineEmits<{ save: [payload: Record<string, unknown>]; cancel: [] }>();
 
@@ -159,7 +161,7 @@ onMounted(resetFromInitial);
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('cancel')">
+  <div class="modal-mask" :class="{ leaving: props.leaving }" @click.self="emit('cancel')">
     <div class="modal qio-card" role="dialog" aria-modal="true">
       <header class="modal-head">
         <h3>{{ title }}</h3>
@@ -225,8 +227,23 @@ onMounted(resetFromInitial);
 </template>
 
 <style scoped>
-.modal-mask { position: fixed; inset: 0; z-index: 200; background: var(--bg-overlay); display: flex; align-items: center; justify-content: center; }
-.modal { width: min(540px, 92vw); max-height: 88vh; overflow: auto; background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px 20px; color: var(--text-primary); }
+.modal-mask {
+  position: fixed; inset: 0; z-index: 200; background: var(--bg-overlay);
+  display: flex; align-items: center; justify-content: center;
+  /* 出现：立即可见随后减速；退出：短淡出 + 微收，结束后由父级卸载 */
+  animation: cred-mask-in var(--dur-menu) var(--ease-out) both;
+  transition: opacity var(--dur-exit) var(--ease-in);
+}
+.modal-mask.leaving { opacity: 0; }
+.modal {
+  width: min(540px, 92vw); max-height: 88vh; overflow: auto; background: var(--bg-elevated);
+  border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px 20px; color: var(--text-primary);
+  animation: cred-modal-in var(--dur-menu) var(--ease-out) both;
+  transition: transform var(--dur-exit) var(--ease-in), opacity var(--dur-exit) var(--ease-in);
+}
+.modal-mask.leaving .modal { transform: translateY(2px) scale(.995); opacity: 0; }
+@keyframes cred-mask-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cred-modal-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .modal-head h3 { margin: 0; font-size: 16px; color: var(--text-strong); }
 .close { border: none; background: transparent; color: var(--text-muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 8px; }
@@ -237,7 +254,11 @@ onMounted(resetFromInitial);
 .field .label { font-size: 11px; color: var(--text-secondary); }
 .field.span2 { grid-column: 1 / -1; }
 .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.tag-chip { font-family: var(--mono); font-size: 11px; padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-secondary); cursor: pointer; transition: all .18s; }
+.tag-chip { font-family: var(--mono); font-size: 11px; padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-secondary); cursor: pointer;
+  /* 收窄过渡：只做颜色与按下位移，不做全属性 */
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease), transform var(--dur-press) var(--ease-out); }
+.tag-chip:active { transform: translateY(var(--press-shift)); }
 .tag-chip:hover { border-color: var(--border-strong); color: var(--text-strong); }
 .tag-chip.on { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); }
 .tag-chip.sel { font-size: 11px; }

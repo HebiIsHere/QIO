@@ -28,14 +28,24 @@ const q = ref("");
 const category = ref("");
 const state = ref("");
 const loading = ref(false);
+/** 读取失败原因：失败必须自己可见，不能只留在 console 里、更不能显示成「无数据」 */
+const loadError = ref("");
 const toast = ref("");
 const creating = ref(false);
 const createForm = ref({ category: "general_fact", content: "", topic_id: "" });
 const editingId = ref<string | null>(null);
 const editDraft = ref("");
 
-const categoryOptions = Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }));
-const stateOptions = Object.entries(STATE_LABELS).map(([value, label]) => ({ value, label }));
+// 第一项是「全部」：既是关闭态可见的标签（否则用户只看到两个空白方块），
+// 也是筛过之后唯一的回退路径（不再有「选了就回不到全部」的死角）。
+const categoryOptions = [
+  { value: "", label: "全部分类" },
+  ...Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label })),
+];
+const stateOptions = [
+  { value: "", label: "全部状态" },
+  ...Object.entries(STATE_LABELS).map(([value, label]) => ({ value, label })),
+];
 const topicOptions = computed(() => [
   { value: "", label: "不关联话题" },
   ...topics.value.map((t) => ({ value: t.topic_id, label: t.title })),
@@ -51,6 +61,15 @@ const filtered = computed(() => {
   });
 });
 
+/** 当前是否有生效的筛选条件（用于区分「暂无记录」和「没有匹配」） */
+const hasFilters = computed(() => Boolean(q.value.trim() || category.value || state.value));
+
+function clearFilters() {
+  q.value = "";
+  category.value = "";
+  state.value = "";
+}
+
 function showToast(text: string) {
   toast.value = text;
   window.setTimeout(() => (toast.value = ""), 2200);
@@ -58,12 +77,13 @@ function showToast(text: string) {
 
 async function load() {
   loading.value = true;
+  loadError.value = "";
   try {
     const r = await api.listKnowledge();
     items.value = r.knowledge;
   } catch (e) {
     console.error("[knowledge] load failed:", e);
-    showToast("加载知识失败");
+    loadError.value = `加载知识失败：${(e as Error).message}`;
   } finally {
     loading.value = false;
   }
@@ -178,6 +198,11 @@ onMounted(() => {
     </form>
 
     <div v-if="loading" class="hint">加载中…</div>
+    <!-- 失败与「没有数据」必须区分：失败给原因和重试，不伪装成空集合 -->
+    <div v-else-if="loadError" class="k-load-error" role="alert">
+      <span>{{ loadError }}</span>
+      <button class="qio-btn mini" type="button" @click="load">重试</button>
+    </div>
     <ul v-else class="k-list">
       <li v-for="k in filtered" :key="k.id" class="k-item">
         <div class="k-head">
@@ -207,7 +232,11 @@ onMounted(() => {
           </div>
         </template>
       </li>
-      <li v-if="!filtered.length && !loading" class="hint">无知识条目。</li>
+      <li v-if="!filtered.length" class="hint k-empty">
+        <template v-if="items.length">没有匹配「{{ q.trim() || '当前筛选' }}」的知识记录。</template>
+        <template v-else>暂无知识记录。</template>
+        <button v-if="items.length" class="link k-clear-filters" type="button" @click="clearFilters">清除筛选</button>
+      </li>
     </ul>
 
     <div v-if="toast" class="toast" role="status">{{ toast }}</div>
@@ -215,7 +244,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.kpanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; }
+.kpanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .row { display: flex; align-items: center; gap: 8px; }
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
@@ -232,5 +261,11 @@ onMounted(() => {
 .k-state.pending_review { background: var(--warning-soft); color: var(--warning); }
 .k-state.active { background: var(--success-soft); color: var(--success); }
 .hint { font-size: 12px; color: var(--text-muted); }
+.k-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.k-load-error {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  border: 1px solid var(--danger); background: var(--danger-soft); color: var(--danger);
+}
 .toast { position: fixed; top: 20px; right: 20px; z-index: 60; padding: 10px 16px; border-radius: 12px; font-size: 12.5px; background: var(--bg-surface); border: 1px solid var(--border-strong); color: var(--text-primary); }
 </style>

@@ -4,18 +4,20 @@
  * 反馈按分区独立（notices），成功 / 失败 / 警告 / 信息用不同语义类，颜色全部来自令牌。
  * 服务端 tuning（SearXNG、原始阈值、图形诊断）收进「高级」，默认不打扰普通用户。
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, type Ref } from "vue";
 import { api, type CredentialMeta } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
+import { usePresence } from "../composables/usePresence";
 import {
   getThemePreference,
   setThemePreference,
   type ThemePreference,
 } from "../utils/theme";
+import { getMotionPreference, setMotionPreference, type MotionPreference } from "../utils/motion";
 import {
   floatingState,
   resetFloatPositions,
@@ -41,8 +43,18 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "advanced", label: "高级" },
 ];
 
-const activeTab = ref<SectionId>("appearance");
 const ui = useUiStore();
+/**
+ * 打开设置时恢复上次所在分类（录像：从凭据返回后再次进入会跳回外观）。
+ * 记忆放在 ui store 里，属于「同次使用」范围，不落盘、不跨重启。
+ */
+const activeTab = ref<SectionId>(
+  SECTIONS.some((s) => s.id === ui.settingsSection) ? (ui.settingsSection as SectionId) : "appearance",
+);
+const navRef = ref<HTMLElement | null>(null);
+watch(activeTab, (v) => {
+  ui.settingsSection = v;
+});
 
 /** 每个设置组自己的反馈：不共用一个 notice，避免「看起来是搜索保存了，其实是记忆报错」 */
 const notices = reactive<Record<NoticeKey, Notice | null>>({
@@ -67,6 +79,30 @@ function errText(action: string, e: unknown): string {
   return `${action}失败：${(e as Error).message}`;
 }
 
+/**
+ * 保存请求的归属序号。同一分区的多次修改并发时，只有最后一次请求
+ * 允许回填服务端返回值并给出反馈：否则旧响应会把用户后来改的值覆盖回去，
+ * 或者用一条过期的「已保存」盖掉更新的失败。
+ */
+const saveSeq = new Map<string, number>();
+function nextSaveSeq(key: string): number {
+  const next = (saveSeq.get(key) ?? 0) + 1;
+  saveSeq.set(key, next);
+  return next;
+}
+function isLatestSave(key: string, seq: number): boolean {
+  return saveSeq.get(key) === seq;
+}
+
+/**
+ * 自动保存的等待态（任务 04 PART B2）：
+ * 自动保存和显式保存必须能被看出来 —— 请求一发出就先显示「保存中…」，
+ * 成功/失败再覆盖它。等待态是纯状态，不依赖任何动画或计时器。
+ */
+function beginSave(key: NoticeKey, text = "保存中…"): void {
+  setNotice(key, "info", text);
+}
+
 /* ---------------- 凭据 ---------------- */
 const credentials = ref<CredentialMeta[]>([]);
 const credFilter = ref<"all" | "enabled" | "disabled" | "revoked" | "expired">("enabled");
@@ -75,6 +111,8 @@ const modal = ref<{
   mode: CredentialModalMode;
   initial: Record<string, unknown> | null;
 }>({ open: false, mode: "create", initial: null });
+/** 凭据弹窗的退出动画：关闭时先淡出再卸载，功能完成不依赖动画事件 */
+const credModal = usePresence(() => modal.value.open, 150);
 
 const filteredCredentials = computed(() => {
   const list = credentials.value;
@@ -206,6 +244,24 @@ function chooseTheme(p: ThemePreference) {
   setNotice("appearance", "ok", `主题已切换：${THEME_OPTIONS.find((o) => o.value === p)?.label}`);
 }
 
+/* 动画偏好：跟随系统 / 标准 / 减少动画。落成 html[data-motion]，
+   CSS 与星球脚本动画读同一份结果，运行中切换立即生效。 */
+const motionPref = ref<MotionPreference>(getMotionPreference());
+const MOTION_OPTIONS: { value: MotionPreference; label: string }[] = [
+  { value: "system", label: "跟随系统" },
+  { value: "standard", label: "标准" },
+  { value: "reduced", label: "减少动画" },
+];
+function chooseMotion(p: MotionPreference) {
+  motionPref.value = p;
+  const mode = setMotionPreference(p);
+  setNotice(
+    "appearance",
+    "ok",
+    `动画已切换：${MOTION_OPTIONS.find((o) => o.value === p)?.label}（当前生效：${mode === "reduced" ? "减少动画" : "标准"}）`,
+  );
+}
+
 const speedOptions = TYPEWRITER_SPEEDS.map((cps) => ({
   value: String(cps),
   label: cps === 25 ? "慢（25 字/秒）" : cps === 50 ? "中（50 字/秒）" : "快（75 字/秒）",
@@ -214,14 +270,25 @@ const speedOptions = TYPEWRITER_SPEEDS.map((cps) => ({
 function onSpeedSelect(v: string) {
   const cps = Number(v);
   if (!TYPEWRITER_SPEEDS.includes(cps as (typeof TYPEWRITER_SPEEDS)[number])) return;
-  void ui.setCps(cps);
-  setNotice("appearance", "ok", `输出速度已保存：${cps} 字/秒`);
+  beginSave("appearance", `正在保存输出速度：${cps} 字/秒…`);
+  void ui.setCps(cps).then(
+    () => setNotice("appearance", "ok", `输出速度已保存：${cps} 字/秒`),
+    (e: unknown) => setNotice("appearance", "err", errText("保存输出速度", e)),
+  );
 }
 
 /* ---------------- 窗口行为 ---------------- */
 const WINDOW_ITEMS: { id: DockId; title: string; desc: string }[] = [
-  { id: "planet-dock", title: "话题星球入口", desc: "贴靠后淡化隐藏，悬停展开、移出再隐藏" },
-  { id: "settings-float", title: "设置入口", desc: "贴角后淡化隐藏，悬停展开、移出再隐藏" },
+  {
+    id: "planet-dock",
+    title: "星球入口贴边后自动隐藏",
+    desc: "关闭＝入口常显（不是禁用）。开启后贴靠完成时淡化，悬停展开、移出再隐藏",
+  },
+  {
+    id: "settings-float",
+    title: "设置入口贴边后自动隐藏",
+    desc: "关闭＝入口常显（不是禁用）。开启后贴角完成时淡化，悬停展开、移出再隐藏",
+  },
 ];
 function toggleWindowHide(id: DockId) {
   setHideEnabled(id, !floatingState[id].hideEnabled);
@@ -264,8 +331,11 @@ async function saveMemorySettings() {
     setNotice("chat", "err", "自定义轮数需在 1-30 之间");
     return;
   }
+  const seq = nextSaveSeq("chat");
+  beginSave("chat", "正在保存记忆封块…");
   try {
     const r = await api.updateMemorySettings(value);
+    if (!isLatestSave("chat", seq)) return; // 已有更新的修改：不回填、不报成功
     setNotice("chat", "ok", `记忆封块已保存：${r.fragment_max_messages} 轮`);
     const saved = String(r.fragment_max_messages);
     if (tierPresets.includes(saved)) {
@@ -275,6 +345,7 @@ async function saveMemorySettings() {
       customCount.value = r.fragment_max_messages;
     }
   } catch (e) {
+    if (!isLatestSave("chat", seq)) return;
     setNotice("chat", "err", errText("保存记忆设置", e));
   }
 }
@@ -310,15 +381,19 @@ async function saveLoopSettings() {
     setNotice("loop", "err", "输出预算需为不小于 0 的整数");
     return;
   }
+  const seq = nextSaveSeq("loop");
+  beginSave("loop", "正在保存对话深度…");
   try {
     const r = await api.updateLoopSettings({
       max_iterations: loopMaxIterations.value,
       output_token_budget: loopTokenBudget.value,
     });
+    if (!isLatestSave("loop", seq)) return;
     loopMaxIterations.value = r.max_iterations;
     loopTokenBudget.value = r.output_token_budget;
     setNotice("loop", "ok", "对话深度已保存");
   } catch (e) {
+    if (!isLatestSave("loop", seq)) return;
     setNotice("loop", "err", errText("保存对话深度", e));
   }
 }
@@ -341,6 +416,27 @@ const bochaKeyDraft = ref("");
 /** 免密钥通道（Exa / Parallel 免费 MCP + DuckDuckGo HTML）：默认开启 */
 const searchKeyless = ref(true);
 
+/**
+ * 「不可用时解释为什么」（任务 04 PART B5）：
+ * 联网搜索可能一条通道都没有 —— 这时不能只把开关摆在那里，
+ * 要说清当前有没有可用通道、缺哪一步。
+ */
+const searchAvailability = computed(() => {
+  if (searchKeyless.value) {
+    return { ok: true, text: "当前可用：免密钥通道（Exa / Parallel，失败回退 DuckDuckGo）" };
+  }
+  if (bochaConfigured.value) {
+    return { ok: true, text: "当前可用：博查 API Key（免密钥通道已关闭）" };
+  }
+  if (searchSearxngUrl.value.trim()) {
+    return { ok: true, text: `当前可用：自建 SearXNG 实例（${searchSearxngUrl.value.trim()}）` };
+  }
+  return {
+    ok: false,
+    text: "当前没有可用的联网搜索通道：请开启免密钥搜索，或配置博查密钥 / 自建 SearXNG 实例。在此之前，联网搜索不可用。",
+  };
+});
+
 async function loadSearchSettings() {
   try {
     const s = await api.getSearchSettings();
@@ -358,7 +454,7 @@ async function loadSearchSettings() {
 async function toggleKeyless() {
   const next = !searchKeyless.value;
   searchKeyless.value = next;
-  clearNotice("model");
+  beginSave("model", "正在保存免密钥搜索开关…");
   try {
     const r = await api.updateSearchSettings({ keyless_fallback: next });
     searchKeyless.value = r.keyless_fallback ?? next;
@@ -402,8 +498,11 @@ async function saveSearchSettings() {
     setNotice("model", "err", "请输入新的博查 API Key，或取消替换");
     return;
   }
+  const seq = nextSaveSeq("model");
+  beginSave("model", "正在保存搜索配置…");
   try {
     const r = await api.updateSearchSettings(searchPayload());
+    if (!isLatestSave("model", seq)) return;
     searchTopK.value = r.top_k_default;
     searchMaxChars.value = r.max_fetch_chars;
     searchSearxngUrl.value = r.searxng_url;
@@ -412,6 +511,7 @@ async function saveSearchSettings() {
     bochaKeyDraft.value = "";
     setNotice("model", "ok", "已保存搜索配置");
   } catch (e) {
+    if (!isLatestSave("model", seq)) return;
     setNotice("model", "err", errText("保存搜索配置", e));
   }
 }
@@ -460,6 +560,7 @@ async function loadComputerSettings() {
 
 async function saveComputerSettings() {
   clearNotice("tools");
+  beginSave("tools", "正在保存电脑操控配置…");
   try {
     const r = await api.updateComputerSettings({
       root_dir: computerRootDir.value.trim(),
@@ -494,11 +595,15 @@ async function loadMaintenanceSettings() {
 
 async function saveMaintenance() {
   clearNotice("data");
+  const seq = nextSaveSeq("data");
+  beginSave("data", "正在保存维护设置…");
   try {
     const r = await api.updateMaintenanceSettings({
       enabled: maintenanceEnabled.value,
       interval_hours: maintenanceInterval.value,
     });
+    // 旧响应不回填：用户可能已经在等待期间改了间隔或开关
+    if (!isLatestSave("data", seq)) return;
     maintenanceEnabled.value = r.enabled;
     maintenanceInterval.value = r.interval_hours;
     setNotice(
@@ -507,6 +612,7 @@ async function saveMaintenance() {
       `离线维护已保存：${r.enabled ? "开启" : "关闭"}（每 ${r.interval_hours} 小时）`,
     );
   } catch (e) {
+    if (!isLatestSave("data", seq)) return;
     setNotice("data", "err", errText("保存维护设置", e));
   }
 }
@@ -540,14 +646,80 @@ function toggleDeveloperMode() {
   );
 }
 
-onMounted(() => {
-  void load();
-  void loadMemorySettings();
-  void loadMaintenanceSettings();
-  void loadSearchSettings();
-  void loadComputerSettings();
-  void loadLoopSettings();
-  void ui.load();
+/**
+ * 非敏感表单草稿：离开设置页后仍然保留用户改到一半的值。
+ * 敏感字段（凭据密钥、博查 Key 草稿）故意不在这个表里——它们只活在表单自身的内存状态中。
+ */
+const draftFields = {
+  fragmentTier,
+  customCount,
+  loopMaxIterations,
+  loopTokenBudget,
+  searchTopK,
+  searchMaxChars,
+  searchSearxngUrl,
+  searchKeyless,
+  computerRootDir,
+  computerPermissionMode,
+  maintenanceEnabled,
+  maintenanceInterval,
+} as unknown as Record<string, Ref<unknown>>;
+
+/**
+ * 进入页面时先把上一轮的草稿快照下来：加载过程会把服务端值写进这些 ref，
+ * 而 watcher 又会把 ref 写回 store —— 不快照就会在 load 阶段把自己刚读的草稿覆盖掉。
+ */
+const savedDraft: Record<string, unknown> = { ...ui.settingsDraft };
+
+function applyFormDraft() {
+  for (const [key, value] of Object.entries(savedDraft)) {
+    if (key in draftFields) draftFields[key].value = value;
+  }
+}
+
+watch(
+  () => Object.fromEntries(Object.entries(draftFields).map(([k, r]) => [k, r.value])),
+  (v) => {
+    ui.settingsDraft = v;
+  },
+);
+
+onMounted(async () => {
+  ui.settingsSection = activeTab.value;
+  void nextTick(() => {
+    if (navRef.value) navRef.value.scrollTop = ui.settingsNavScroll;
+  });
+  await Promise.all([
+    load(),
+    loadMemorySettings(),
+    loadMaintenanceSettings(),
+    loadSearchSettings(),
+    loadComputerSettings(),
+    loadLoopSettings(),
+    ui.load(),
+  ]);
+  // 服务端值先落地，再覆盖上用户尚未提交的草稿（草稿优先，但不会凭空产生值）
+  applyFormDraft();
+});
+
+onUnmounted(() => {
+  // 记住分类列表的滚动位置：分类多、窗口小时，回来不该又滚到顶部
+  if (navRef.value) ui.settingsNavScroll = navRef.value.scrollTop;
+  ui.settingsSection = activeTab.value;
+});
+
+/**
+ * 切分类时只让右侧内容做一次很短的淡入（左侧分类栏与页头不动）。
+ * 先移除类、下一帧再加回来，这样同一个 CSS 动画才会重新播放；
+ * 面板本身用 v-show 保留，未提交的草稿不会被重建掉。
+ */
+const panelIn = ref(false);
+watch(activeTab, async () => {
+  panelIn.value = false;
+  await nextTick();
+  requestAnimationFrame(() => {
+    panelIn.value = true;
+  });
 });
 </script>
 
@@ -561,7 +733,7 @@ onMounted(() => {
     </header>
 
     <div class="layout">
-      <nav class="nav" role="tablist" aria-label="设置分区">
+      <nav ref="navRef" class="nav" role="tablist" aria-label="设置分区">
         <button
           v-for="s in SECTIONS"
           :key="s.id"
@@ -576,7 +748,7 @@ onMounted(() => {
         </button>
       </nav>
 
-      <div class="panels">
+      <div class="panels" :class="{ 'panel-in': panelIn }">
         <!-- 外观 -->
         <div v-show="activeTab === 'appearance'" class="panel">
           <section class="sec">
@@ -591,6 +763,27 @@ onMounted(() => {
                 :class="{ on: themePref === o.value }"
                 :aria-pressed="themePref === o.value"
                 @click="chooseTheme(o.value)"
+              >
+                {{ o.label }}
+              </button>
+            </div>
+          </section>
+
+          <section class="sec">
+            <h2>动画</h2>
+            <p class="desc">
+              跟随系统，或固定标准 / 减少动画。减少动画会同时作用于页面过渡与星球镜头，
+              切换立即生效，不需要刷新。
+            </p>
+            <div class="seg" role="group" aria-label="动画偏好">
+              <button
+                v-for="o in MOTION_OPTIONS"
+                :key="o.value"
+                type="button"
+                class="motion-opt"
+                :class="{ on: motionPref === o.value }"
+                :aria-pressed="motionPref === o.value"
+                @click="chooseMotion(o.value)"
               >
                 {{ o.label }}
               </button>
@@ -623,7 +816,7 @@ onMounted(() => {
             <h2>窗口行为</h2>
             <p class="desc">
               输入框固定在对话底部；星球入口与设置入口为可拖动浮动组件，松手自动贴靠。
-              开启「贴靠隐藏」后贴靠完成的组件会淡化，悬停展开、移出再隐藏。
+              下面两个开关只控制「贴边后要不要自动隐藏」；关闭不等于禁用入口。
             </p>
             <div class="pref" v-for="item in WINDOW_ITEMS" :key="item.id">
               <div class="txt">
@@ -637,10 +830,10 @@ onMounted(() => {
                   :class="{ on: floatingState[item.id].hideEnabled }"
                   role="switch"
                   :aria-checked="floatingState[item.id].hideEnabled"
-                  :aria-label="item.title + '贴靠隐藏'"
+                  :aria-label="item.title"
                   @click="toggleWindowHide(item.id)"
                 ></button>
-                <span class="mono">{{ floatingState[item.id].hideEnabled ? "隐藏" : "常显" }}</span>
+                <span class="mono">贴边后自动隐藏：{{ floatingState[item.id].hideEnabled ? "开" : "关" }}</span>
               </div>
             </div>
             <div class="pref">
@@ -663,6 +856,7 @@ onMounted(() => {
           <section class="sec">
             <h2>记忆</h2>
             <p class="desc">每个片段的消息数上限：达到后封块并生成摘要。</p>
+            <p class="mode-hint mono">选择后自动保存</p>
             <div class="pref">
               <div class="txt">
                 <div class="t">记忆封块分档</div>
@@ -695,6 +889,7 @@ onMounted(() => {
           <section class="sec">
             <h2>对话深度</h2>
             <p class="desc">agent 单轮最多迭代次数与输出 token 预算；达上限时可选择继续。</p>
+            <p class="mode-hint mono">修改后自动保存（失焦或点步进按钮即提交）</p>
             <div class="pref">
               <div class="txt">
                 <div class="t">单轮迭代上限</div>
@@ -744,6 +939,10 @@ onMounted(() => {
             <p class="desc">
               让 agent 能联网检索实时资讯并读取网页正文。免密钥通道用 Exa / Parallel 的
               免费搜索服务（失败时回退 DuckDuckGo）；填写博查密钥或自建 SearXNG 更稳定。
+            </p>
+            <p class="mode-hint mono">开关即时保存；数字参数在点「保存搜索配置」后一起生效</p>
+            <p class="avail" :class="{ off: !searchAvailability.ok }">
+              {{ searchAvailability.text }}
             </p>
             <div class="pref">
               <div class="txt">
@@ -838,8 +1037,10 @@ onMounted(() => {
 
             <div class="pref">
               <div class="txt">
-                <div class="t">SearXNG 实例</div>
-                <div class="d">自建实例地址在「高级」中配置</div>
+                <div class="t">保存搜索配置</div>
+                <div class="d">
+                  返回条数、读正文字符预算、SearXNG 地址一起提交；SearXNG 实例地址在「高级」中填写
+                </div>
               </div>
               <div class="ctl">
                 <button type="button" class="qio-btn primary" @click="saveSearchSettings">
@@ -858,6 +1059,7 @@ onMounted(() => {
           <section class="sec">
             <h2>电脑操控</h2>
             <p class="desc">允许 qio 读写文件、执行命令、查看进程。分级授权，高危操作会触发审批。</p>
+            <p class="mode-hint mono">修改后自动保存</p>
             <div class="pref">
               <div class="txt">
                 <div class="t">工作区根目录</div>
@@ -897,6 +1099,7 @@ onMounted(() => {
           <section class="sec">
             <h2>维护</h2>
             <p class="desc">离线整理记忆与知识（后台执行）。</p>
+            <p class="mode-hint mono">修改后自动保存</p>
             <div class="pref">
               <div class="txt">
                 <div class="t">离线维护</div>
@@ -919,6 +1122,7 @@ onMounted(() => {
                   :max="720"
                   mono
                   label="维护间隔（小时）"
+                  unit="小时"
                   @update:model-value="onIntervalInput"
                   @change="saveMaintenance"
                 />
@@ -1042,9 +1246,10 @@ onMounted(() => {
     </div>
 
     <CredentialModal
-      v-if="modal.open"
+      v-if="credModal.mounted.value"
       :mode="modal.mode"
       :initial="modal.initial"
+      :leaving="credModal.leaving.value"
       @save="onModalSave"
       @cancel="modal.open = false"
     />
@@ -1065,6 +1270,12 @@ onMounted(() => {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--sans);
+  /* 从对话页进入设置：220ms 淡入 + 2px 上移，不推迟内容（内容同帧可见） */
+  animation: settings-in var(--dur-page-in) var(--ease-out) both;
+}
+@keyframes settings-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 22px; }
 header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color: var(--text-strong); }
@@ -1088,6 +1299,12 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .tab:hover { color: var(--text-strong); background: var(--bg-surface); }
 .tab.active { color: var(--text-strong); border-left-color: var(--accent); font-weight: 600; }
 .panels { flex: 1; min-width: 0; }
+/* 切分类：只对右侧内容做一次很短的淡入，整页与左栏保持不动（任务 04 A） */
+.panels.panel-in { animation: panel-in var(--dur-menu) var(--ease-out) both; }
+@keyframes panel-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 @media (max-width: 860px) {
   .layout { flex-direction: column; gap: 12px; }
   .nav { flex-direction: row; flex-wrap: wrap; min-width: 0; position: static; gap: 6px; }
@@ -1098,6 +1315,17 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .sec { margin-bottom: 26px; }
 .sec h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
 .desc { font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.65; }
+/* 保存模型与可用性提示：让「自动保存 / 显式保存」「能不能用」一眼可见 */
+.mode-hint {
+  font-size: 11px; letter-spacing: 0.02em; color: var(--text-muted);
+  margin: -6px 0 12px; padding-left: 9px; border-left: 2px solid var(--border-strong);
+}
+.avail {
+  font-size: 12px; line-height: 1.6; color: var(--text-secondary);
+  margin: -4px 0 12px; padding: 7px 10px;
+  border: 1px solid var(--border-subtle); border-radius: var(--r-sm); background: var(--bg-inset);
+}
+.avail.off { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }
 
 /* 反馈：成功 / 失败 / 警告 / 信息 语义独立，颜色全部来自令牌 */
 .msg { font-size: 12.5px; margin: 10px 0; line-height: 1.55; }
@@ -1109,13 +1337,23 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 
 /* 主题分段控件 */
 .seg { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-inset); }
-.theme-opt {
+.theme-opt,
+.motion-opt {
   font-family: var(--sans); font-size: 12.5px; padding: 6px 16px; border-radius: var(--r-sm);
   border: none; background: transparent; color: var(--text-secondary); cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-press) var(--ease-out);
 }
-.theme-opt:hover { color: var(--text-strong); }
-.theme-opt.on { background: var(--accent-soft); color: var(--text-strong); font-weight: 600; }
+.theme-opt:hover,
+.motion-opt:hover { color: var(--text-strong); }
+.theme-opt:active,
+.motion-opt:active { transform: translateY(var(--press-shift)); }
+/* 选中用底色 + 字重 + 下划线三重区分，不只靠颜色 */
+.theme-opt.on,
+.motion-opt.on {
+  background: var(--accent-soft); color: var(--text-strong); font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 
 /* preferences */
 .pref {

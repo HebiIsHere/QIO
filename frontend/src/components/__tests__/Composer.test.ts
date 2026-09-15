@@ -233,3 +233,48 @@ describe("Composer 历史位置提示（任务05 A/B/C）", () => {
     w.unmount();
   });
 });
+
+describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而消失）", () => {
+  it("打开设置再返回（组件卸载重建）后草稿仍在", async () => {
+    const { w, pinia } = await mountComposer();
+    await w.find("textarea").setValue("121345");
+    w.unmount(); // 切到设置：对话页组件被卸载
+    const w2 = mount(Composer, { global: { plugins: [pinia] } });
+    await nextTick();
+    expect((w2.find("textarea").element as HTMLTextAreaElement).value).toBe("121345");
+    w2.unmount();
+  });
+
+  it("发送失败：草稿回到输入框，且不留下「已经发出去」的假消息", async () => {
+    mocks.sendTurn.mockRejectedValueOnce(new Error("network down"));
+    const { w } = await mountComposer();
+    await w.find("textarea").setValue("这条会失败");
+    await w.find(".send-btn").trigger("click");
+    await flushPromises();
+    await nextTick();
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("这条会失败");
+    const session = useSessionStore();
+    expect(session.lastError).toContain("network down");
+    expect(session.messages.some((m) => m.content === "这条会失败")).toBe(false);
+    w.unmount();
+  });
+
+  it("已提交但还没拿到运行标识时，停止按钮说「准备中…」而不是灰着的「停止」", async () => {
+    const { w } = await mountComposer();
+    const session = useSessionStore();
+
+    session.turnRunning = true;
+    session.activeTurnId = null;
+    await nextTick();
+    expect(w.find(".stop-btn").text()).toContain("准备中");
+    expect(w.find(".stop-btn").attributes("disabled")).toBeDefined();
+    expect(w.find(".stop-btn").attributes("title")).toContain("启动");
+
+    // 收到 TURN_START（有 turn_id）后才是真正可用的「停止」
+    session.activeTurnId = "turn_1";
+    await nextTick();
+    expect(w.find(".stop-btn").text()).toContain("停止");
+    expect(w.find(".stop-btn").attributes("disabled")).toBeUndefined();
+    w.unmount();
+  });
+});

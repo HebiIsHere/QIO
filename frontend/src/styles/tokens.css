@@ -26,6 +26,18 @@
   /* 动效：UI 100-180ms，面板 180-300ms，星球更慢 */
   --dur-fast:140ms; --dur-base:200ms; --dur-slow:280ms;
   --ease:cubic-bezier(.22,.8,.24,1);
+  /* 任务02 分层时长：按下最快 → 开关/选中 → 菜单/弹窗 → 页面 → 星球。
+     命名沿用上表，只补缺失的档位，不另立一套冲突体系。 */
+  --dur-press:80ms; --dur-toggle:150ms; --dur-menu:170ms; --dur-exit:150ms;
+  --dur-page-in:220ms; --dur-page-out:170ms; --dur-panel:210ms;
+  --dur-planet:300ms; --dur-focus:320ms; --dur-snap:220ms;
+  /* 星球展开/收起（2026-09-14 演示版）：先铺底 → 内容淡入；收起先收势再整体淡出 */
+  --dur-planet-backdrop:140ms; --dur-planet-in:420ms;
+  --dur-planet-settle:180ms; --dur-planet-out:280ms;
+  /* 打开：快速起步后减速；关闭：先慢后快，不拖尾、不回弹 */
+  --ease-out:cubic-bezier(.16,.84,.44,1);
+  --ease-in:cubic-bezier(.4,0,.72,.2);
+  --press-shift:1px;
   /* 键盘焦点环（玫红品牌色，仅 focus-visible 使用） */
   --focus-ring:#e878bd;
   --shadow-1:0 2px 8px rgba(0,0,0,.28);
@@ -41,10 +53,13 @@
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;
   --border-subtle:#e7e7e4; --border-strong:#cbcbc6;
   --text-strong:#201f1d; --text-primary:#30302d; --text-secondary:#5f5e59;
-  --text-muted:#75736c; --text-faint:#94938e;
+  /* faint 是纯装饰级文字，仍要过 3:1：#94938e 实测 2.99:1，压深一档到 3.19:1 */
+  --text-muted:#75736c; --text-faint:#8f8e89;
   --accent:#c51b7d; --accent-hover:#dd3399; --link:#b0136a; --on-accent:#ffeef8;
   --accent-soft:rgba(197,27,125,.12);
-  --success:#2f9e6e; --danger:#d14f4f; --warning:#b0892f;
+  /* 语义色在净白底上必须能当小字读：旧值 #2f9e6e/#d14f4f/#b0892f 实测
+     只有 3.28/4.14/3.16:1，达不到小字 4.5:1；下面三个值实测 4.9-5.1:1。 */
+  --success:#1f7d54; --danger:#c33a3a; --warning:#8a6a1f;
   --focus-ring:#b0136a;
   --shadow-1:0 1px 3px rgba(32,31,29,.10);
   --shadow-2:0 10px 26px rgba(32,31,29,.12);
@@ -52,6 +67,6 @@
   /* 遗留兼容令牌（既有组件仍引用，保持可用） */
   --bg-overlay:rgba(252,252,251,.7); --bg-panel:rgba(255,255,255,.95);
   --bg-accent-subtle:#fbeaf4; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.2);
-  --border-danger:#d14f4f; --success-soft:rgba(47,158,110,.15); --danger-soft:rgba(209,79,79,.15); --warning-soft:rgba(176,137,47,.15);
+  --border-danger:#c33a3a; --success-soft:rgba(31,125,84,.15); --danger-soft:rgba(195,58,58,.15); --warning-soft:rgba(138,106,31,.15);
   --approve-bg:#2a6e4f; --reject-bg:#6e2a2a;
 }

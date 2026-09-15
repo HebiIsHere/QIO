@@ -24,24 +24,38 @@ const tokText = computed(() => {
 });
 
 const open = ref(false);
-const copied = ref(false);
+/** 本次会话新产生的消息：最多一次很短的入场；历史消息不带这个标记 */
+const isFresh = computed(() => session.freshIds.includes(props.message.id));
+/** 复制结果：只有真的写进剪贴板才显示「已复制」 */
+const copyState = ref<"idle" | "ok" | "fail">("idle");
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 复制消息内容（剪贴板不可用时仍给出反馈，用户可手动复制） */
+const copyLabel = computed(() => {
+  if (copyState.value === "ok") return "已复制";
+  if (copyState.value === "fail") return "复制失败";
+  return "复制";
+});
+
+/** 复制消息内容；剪贴板不存在或写入被拒绝时给出失败反馈，由用户手动选择复制 */
 async function copyContent() {
   const text = props.message.content ?? "";
   if (!text) return;
+  let ok = false;
   try {
-    await navigator.clipboard?.writeText(text);
+    const cb = navigator.clipboard;
+    if (cb && typeof cb.writeText === "function") {
+      await cb.writeText(text);
+      ok = true;
+    }
   } catch {
-    // 忽略：无剪贴板权限时不做二次报错
+    ok = false;
   }
-  copied.value = true;
+  copyState.value = ok ? "ok" : "fail";
   if (copyTimer) clearTimeout(copyTimer);
   copyTimer = setTimeout(() => {
-    copied.value = false;
+    copyState.value = "idle";
     copyTimer = null;
-  }, 1600);
+  }, ok ? 1600 : 2400);
 }
 
 /** 呈现优先：title 兜底工具名 */
@@ -84,7 +98,7 @@ const metaText = computed(() => {
 </script>
 
 <template>
-  <div class="message" :class="message.role">
+  <div class="message" :class="[message.role, { fresh: isFresh }]">
     <template v-if="message.role === 'user'">
       <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
@@ -92,8 +106,8 @@ const metaText = computed(() => {
       <div class="meta mono">
         <span v-if="message.queued" class="queued-tag">等待中</span>
         <span class="ts">{{ formatTime(message.createdAt) }}</span>
-        <button v-if="!message.queued" class="copy-btn" type="button" @click="copyContent">
-          {{ copied ? "已复制" : "复制" }}
+        <button v-if="!message.queued" class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
+          {{ copyLabel }}
         </button>
       </div>
     </template>
@@ -129,16 +143,28 @@ const metaText = computed(() => {
     </template>
 
     <template v-else>
-      <div class="bubble assist-bubble" :class="{ interim: message.interim }">
+      <!-- 流式生成中的正文不逐字播报给辅助阅读工具（aria-busy + 不设 live 区域），
+           落定后由正常文档流阅读即可。 -->
+      <div
+        class="bubble assist-bubble"
+        :class="{ interim: message.interim }"
+        :aria-busy="message.streaming ? 'true' : undefined"
+        :aria-live="message.streaming ? 'off' : undefined"
+      >
         <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
         <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
-        <MarkdownContent :source="message.content" :reveal="!!message.streaming" :cps="ui.typewriterCps" />
+        <MarkdownContent
+          :source="message.content"
+          :reveal="!!message.streaming"
+          :cps="ui.typewriterCps"
+          :pace-ms="message.paceMs ?? null"
+        />
       </div>
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
-        <button class="copy-btn" type="button" @click="copyContent">
-          {{ copied ? "已复制" : "复制" }}
+        <button class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
+          {{ copyLabel }}
         </button>
       </div>
     </template>
@@ -154,6 +180,14 @@ const metaText = computed(() => {
   margin: 6px 0;
   font-size: 14.5px;
   line-height: 1.75;
+}
+/* 本次会话新产生的消息最多一次很短的入场；历史消息没有这个类，不会重播 */
+.message.fresh {
+  animation: msg-in var(--dur-menu) var(--ease-out) both;
+}
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
 }
 .message.user {
   margin-left: auto;
@@ -256,8 +290,16 @@ const metaText = computed(() => {
 .copy-btn:focus-visible {
   opacity: 1;
 }
+/* 触屏没有 hover：复制入口必须默认可见 */
+@media (hover: none) {
+  .copy-btn { opacity: 1; }
+}
 .copy-btn:hover {
   color: var(--accent);
+}
+.copy-btn.fail {
+  color: var(--danger);
+  opacity: 1;
 }
 .copy-btn:focus-visible {
   outline: 2px solid var(--focus-ring);

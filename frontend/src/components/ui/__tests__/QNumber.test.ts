@@ -8,6 +8,17 @@ function lastVal(w: ReturnType<typeof mount>) {
 }
 
 describe("QNumber", () => {
+  it("单位显示在数值旁边（如「24 小时」），不传就不渲染", () => {
+    const withUnit = mount(QNumber, { props: { modelValue: 24, label: "维护间隔（小时）", unit: "小时" } });
+    expect(withUnit.find(".q-number-unit").exists()).toBe(true);
+    expect(withUnit.find(".q-number-unit").text()).toBe("小时");
+    withUnit.unmount();
+
+    const withoutUnit = mount(QNumber, { props: { modelValue: 24 } });
+    expect(withoutUnit.find(".q-number-unit").exists()).toBe(false);
+    withoutUnit.unmount();
+  });
+
   it("渲染输入框 + 增减按钮，初始值回填", () => {
     const w = mount(QNumber, { props: { modelValue: 5, min: 1, max: 50, label: "最大迭代" } });
     expect(w.find("input").exists()).toBe(true);

@@ -30,6 +30,8 @@ const props = defineProps<{
   reveal?: boolean;
   /** 字符/秒（三档 25/50/75），null 时按 3 秒封顶自适应 */
   cps?: number | null;
+  /** 观测到的真实增量到达间隔（毫秒）。给了它就以它为准，不再用字/秒估算。 */
+  paceMs?: number | null;
 }>();
 
 /** 增量渲染：reveal 时按已产出字符量喂给 Markdown，气泡随内容增长 */
@@ -44,15 +46,18 @@ const renderSource = computed(() =>
  * 从 fromLen 继续点亮到 total：不回到 0，只推进新增部分。
  * 已有内容保持不动（不闪、不跳、不重播动画）。
  */
-function animateFrom(fromLen: number, total: number, cps: number) {
+function animateFrom(fromLen: number, total: number, cps: number, paceMs: number | null = null) {
   cancelAnimationFrame(raf);
   if (fromLen >= total) {
     shown.value = total;
     return;
   }
-  const capMs = 3000;
-  const naturalMs = ((total - fromLen) / Math.max(1, cps)) * 1000;
-  const durMs = Math.min(naturalMs, capMs);
+  const remaining = total - fromLen;
+  // 有真实到达节奏就按它走（与模型实际速度一致）；没有时退回字/秒估计。
+  const naturalMs = paceMs != null ? paceMs : (remaining / Math.max(1, cps)) * 1000;
+  // 兜底追赶：积压超过 200 字时这一段压到 600ms 内，绝不把「逐字」变成明显落后。
+  const capMs = remaining > 200 ? 600 : 3000;
+  const durMs = Math.max(60, Math.min(naturalMs, capMs));
   if (!(durMs > 0)) {
     shown.value = total;
     return;
@@ -89,7 +94,7 @@ watch(
       animateFrom(0, source.length, cps);
       return;
     }
-    animateFrom(Math.min(shown.value, source.length), source.length, cps);
+    animateFrom(Math.min(shown.value, source.length), source.length, cps, props.paceMs ?? null);
   },
   { immediate: true },
 );
@@ -188,33 +193,77 @@ const html = computed(() => {
   return renderBlock(tree);
 });
 
-/** 复制状态（对代码块按钮的短期反馈） */
-const copiedCode = ref<HTMLElement | null>(null);
-let copyTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * 复制状态（对代码块按钮的短期反馈）。
+ * 每个按钮独立计时：连续复制不同代码块时，各自的「已复制/复制失败」都要能自己复位，
+ * 不能共用一个计时器（否则先点的那个会永久停在「已复制」）。
+ */
+const copyTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+
+function resetCopyButton(btn: HTMLElement) {
+  const timer = copyTimers.get(btn);
+  if (timer) clearTimeout(timer);
+  copyTimers.delete(btn);
+  btn.textContent = "复制";
+  btn.classList.remove("fail");
+  btn.removeAttribute("title");
+}
+
+/**
+ * 写剪贴板。返回是否真的写成功：
+ * 受限 WebView 下 navigator.clipboard 可能不存在，写入也可能被拒绝，
+ * 这两种情况都必须让调用方知道，不能假装成功。
+ */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    const cb = navigator.clipboard;
+    if (!cb || typeof cb.writeText !== "function") return false;
+    await cb.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** 事件委托：v-html 内的复制按钮由容器统一处理 */
 async function onClick(e: MouseEvent) {
   const target = e.target as HTMLElement | null;
   const btn = target?.closest?.(".code-copy") as HTMLElement | null;
   if (!btn) return;
-  const code = btn.parentElement?.querySelector("pre code")?.textContent ?? "";
-  try {
-    await navigator.clipboard?.writeText(code);
-  } catch {
-    // 剪贴板不可用：仍给出反馈
+  const codeEl = btn.parentElement?.querySelector("pre code") as HTMLElement | null;
+  const code = codeEl?.textContent ?? "";
+  resetCopyButton(btn); // 重试/重复点击：本次反馈归零后重新开始
+  const ok = await writeClipboard(code);
+  btn.textContent = ok ? "已复制" : "复制失败";
+  btn.classList.toggle("fail", !ok);
+  if (!ok) {
+    // 失败时把代码选中，用户不必自己拖选；按钮保持可点，方便再试一次
+    btn.title = "复制失败：已选中代码，可按 Ctrl+C 手动复制，或再点一次重试";
+    selectNodeText(codeEl);
   }
-  btn.textContent = "已复制";
-  copiedCode.value = btn;
-  if (copyTimer) clearTimeout(copyTimer);
-  copyTimer = setTimeout(() => {
-    if (copiedCode.value) copiedCode.value.textContent = "复制";
-    copiedCode.value = null;
-    copyTimer = null;
-  }, 1600);
+  copyTimers.set(
+    btn,
+    setTimeout(() => resetCopyButton(btn), ok ? 1600 : 2400),
+  );
+}
+
+/** 选中代码块文本（手动复制退路）。环境不支持 Selection 时静默跳过。 */
+function selectNodeText(el: HTMLElement | null) {
+  if (!el) return;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  } catch {
+    /* 选区不可用时只保留按钮反馈 */
+  }
 }
 
 onBeforeUnmount(() => {
-  if (copyTimer) clearTimeout(copyTimer);
+  for (const timer of copyTimers.values()) clearTimeout(timer);
+  copyTimers.clear();
 });
 </script>
 
@@ -245,7 +294,12 @@ onBeforeUnmount(() => {
 }
 .markdown-body :deep(.code-block:hover .code-copy),
 .markdown-body :deep(.code-copy:focus-visible) { opacity: 1; }
+/* 触屏没有 hover：复制入口必须默认可见，不能只靠鼠标悬停才出现 */
+@media (hover: none) {
+  .markdown-body :deep(.code-copy) { opacity: 1; }
+}
 .markdown-body :deep(.code-copy:hover) { color: var(--accent); border-color: var(--accent); }
+.markdown-body :deep(.code-copy.fail) { color: var(--danger); border-color: var(--danger); opacity: 1; }
 .markdown-body :deep(.table-wrap) { max-width: 100%; overflow-x: auto; }
 .markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
 .markdown-body :deep(a) { color: var(--link); }

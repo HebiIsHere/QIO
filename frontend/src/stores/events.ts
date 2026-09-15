@@ -3,6 +3,17 @@ import { connectEvents, publishTestEvent, type AgentEvent, type EventType } from
 import { useSessionStore, type ToolPresentation } from "./session";
 import { useApprovalsStore } from "./approvals";
 
+/**
+ * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
+ * 后台任务请求确认时用它决定「立即弹出」还是「亮出入口、等用户主动打开」。
+ */
+function isUserEditing(): boolean {
+  if (typeof document === "undefined") return false;
+  const ae = document.activeElement as HTMLElement | null;
+  if (!ae) return false;
+  return ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable === true;
+}
+
 export type ModelMode = "native" | "text" | "unsupported";
 
 export interface TurnUsage {
@@ -68,6 +79,14 @@ export const useEventStore = defineStore("events", {
         case "TURN_END": {
           const d = event.data as Record<string, unknown>;
           const tid = String(d.turn_id ?? session.activeTurnId ?? this.lastTurnId ?? "");
+          /**
+           * 迟到事件防护：只有当结束事件属于「当前活跃的 turn」时才结束界面状态。
+           * 否则一个早先被取消/已结束的 turn 的收尾事件会把后来那次运行标记成已结束，
+           * 让正在跑的任务看起来停了。
+           */
+          if (session.activeTurnId && tid && tid !== session.activeTurnId) {
+            break;
+          }
           this.recordUsage(tid, d);
           session.turnEnded();
           const final = d.final_content;
@@ -117,6 +136,8 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const content = String(d.content ?? "");
           if (content.trim()) {
+            // 已经有真实内容到达：阶段从「等待响应」转为「正在生成」
+            session.turnPhase = "generating";
             session.pushAssistant(content, undefined, true, true);
           }
           break;
@@ -147,6 +168,7 @@ export const useEventStore = defineStore("events", {
           if (!topicId) break;
           const fragmentId = (d.fragment_id as string | null) ?? null;
           const fragmentTitle = (d.fragment_title as string | null) ?? null;
+          const beforeKey = `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}`;
           session.setAnchor(
             topicId,
             fragmentId,
@@ -155,6 +177,15 @@ export const useEventStore = defineStore("events", {
             // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
             Boolean(d.historic),
           );
+          // 起点换了但界面还留在上一条对话上 → 显示与真实起点不一致。
+          // 正在跑任务时不重载（会擦掉正在流式输出的内容），
+          // 这种情况下由任务结束/下次进入时的加载来对齐。
+          if (
+            beforeKey !== `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}` &&
+            !session.turnRunning
+          ) {
+            void session.loadHistory();
+          }
           break;
         }
         case "SUBAGENT_STATUS": {
@@ -205,6 +236,8 @@ export const useEventStore = defineStore("events", {
               id,
               kind || "unknown",
               (approval.payload ?? {}) as Record<string, unknown>,
+              // 用户正在输入（含凭据表单）时不抢焦点：保留待办 + 亮出「有 N 项操作等待确认」入口
+              { autoOpen: !isUserEditing() },
             );
           }
           break;

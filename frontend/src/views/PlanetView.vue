@@ -7,7 +7,7 @@
  * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层，
  *   拉回窗口内交互一律禁用。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
 import { api, type TopicDetail, type TopicFingerprint, type TopicPosition } from "../services/api";
 import { useSessionStore } from "../stores/session";
@@ -15,8 +15,39 @@ import QInput from "../components/ui/QInput.vue";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
 import EntityPanel from "../components/planet/EntityPanel.vue";
 import { useUiStore } from "../stores/ui";
+import { prefersReducedMotion } from "../utils/motion";
+import { anchorSignatureOf, planetSession } from "../composables/planetSession";
 
-const emit = defineEmits<{ close: [] }>();
+/**
+ * 展开/收起的时间线（演示版，比任务02 的表格更慢一点，用户反馈原时长"过快"）：
+ * 展开：先铺底 140ms → 内容淡入与相机小幅收敛同时进行 420ms（不再从小球拉近）
+ * 收起：收势 180ms（轻微后撤 + 星球变淡、面板退场）→ 整体淡出 280ms → 卸载
+ */
+/**
+ * 演示开关：`?planetdemo=slow` 把这条时间线整体放慢 3 倍，
+ * 方便逐帧观察「铺底 → 内容淡入 → 收势 → 淡出」的先后顺序。
+ * 正常访问不带参数，走下面的真实时长。
+ */
+const slowDemo = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("planetdemo") === "slow";
+const SPEED = slowDemo ? 3 : 1;
+const OPEN_MS = 420 * SPEED;
+const SETTLE_MS = 180 * SPEED;
+const FADE_MS = 280 * SPEED;
+const demoStyle = slowDemo
+  ? ({
+      "--dur-planet-backdrop": `${140 * SPEED}ms`,
+      "--dur-planet-in": `${420 * SPEED}ms`,
+      "--dur-planet-settle": `${180 * SPEED}ms`,
+      "--dur-planet-out": `${280 * SPEED}ms`,
+    } as Record<string, string>)
+  : undefined;
+
+/**
+ * `seq` 是父级给的「这次打开」的序号：关闭回调把它带回去，
+ * 父级只认当前序号 —— 关闭动画期间用户又打开一次时，迟到的旧回调不会关掉新层。
+ */
+const props = withDefaults(defineProps<{ seq?: number; open?: boolean }>(), { open: true });
+const emit = defineEmits<{ close: [seq?: number] }>();
 const session = useSessionStore();
 const ui = useUiStore();
 
@@ -27,16 +58,42 @@ const planet = usePlanetScene(canvasRef);
 const webglOK = computed(() => planet.webglOK.value);
 const fpsText = computed(() => planet.fps.value);
 const cameraStateText = computed(() => planet.cameraState.value);
+/** 指针指向的话题点（场景 raycast 结果）与它的简短名称 */
+const hoverTopicId = computed(() => planet.hoverTopicId?.value ?? null);
+const hoverLabel = computed(() => planet.hoverLabel?.value ?? null);
+/** 悬停标签的定位样式（在脚本里算，模板里不写嵌套模板字符串） */
+const hoverLabelStyle = computed(() =>
+  hoverLabel.value ? { left: hoverLabel.value.x + "px", top: hoverLabel.value.y + "px" } : undefined,
+);
+/** 选中话题的固定名称标签（悬停标签优先显示，避免两个标签叠在一起） */
+const selectedLabel = computed(() => planet.selectedLabel?.value ?? null);
+const selectedLabelStyle = computed(() =>
+  selectedLabel.value ? { left: selectedLabel.value.x + "px", top: selectedLabel.value.y + "px" } : undefined,
+);
 const topics = ref<TopicFingerprint[]>([]);
 const positions = ref<TopicPosition[]>([]);
 const detail = ref<TopicDetail | null>(null);
 const detailLoading = ref(false);
+/** 详情加载失败原因。与「从这里继续」的 anchorError 分开：两者来源不同，不能互相覆盖 */
+const detailError = ref("");
 /** 详情请求序号：只接受「最后一次点击」的结果，慢请求返回不得覆盖（竞态防护） */
 let detailSeq = 0;
+/** 收起动作的代号：期间被重新打开时，旧收尾的续行必须放弃写状态与 emit */
+let closeEpoch = 0;
 const search = ref("");
 const selectedFragmentId = ref<string | null>(null);
 /** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
 const closing = ref(false);
+/** 收起第一段「收势」进行中（还没开始整体淡出） */
+const settling = ref(false);
+/** 「正在收起」= 收势或淡出任一阶段：这段时间里画布/列表/起点等交互都要锁住 */
+const isClosing = computed(() => closing.value || settling.value);
+/** 入场：铺底之后内容层淡入（用类切换而不是 keyframes，见样式注释） */
+const entered = ref(false);
+/** 首次数据加载失败原因（话题列表/位置）——不能只留一个空球让用户猜 */
+const loadError = ref("");
+/** 首次数据仍在加载：长等待要有明确提示，不以空球冒充完整内容 */
+const dataLoading = ref(false);
 /** 右侧话题边栏：默认收起；点击话题点/展开按钮展开，点击收起按钮收起 */
 const panelOpen = ref(false);
 /** 面板页签：话题 / 知识 / 实体；知识/实体页签自动进入管理模式（面板 640px 宽） */
@@ -89,20 +146,24 @@ function stopCanvasObserver() {
 
 /** 展开/收起右侧边栏（收起为细边 + 展开钮，展开为 340px 面板）。 */
 function togglePanel() {
-  if (closing.value) return;
+  if (isClosing.value) return;
   panelOpen.value = !panelOpen.value;
   // 画布宽度随边栏动画变化，结束后若仍有焦点话题，重对焦到新画布中心
   const focused = planet.selectedTopicId.value;
   if (focused) scheduleRecenter(focused);
 }
 
-/** 边栏开合动画结束后（~380ms）微调：把焦点话题重新居中到新画布中心。 */
-function scheduleRecenter(topicId: string, delay = 380) {
+/**
+ * 边栏开合后把焦点话题重新居中到新画布中心。
+ * 旧规则是「等 380ms 动画结束再补一次移动」，用户会看到明显两次位移；
+ * 现在改成与 320ms 宽度过渡同时发生的短补间，整个过程只有一次连续移动。
+ */
+function scheduleRecenter(topicId: string, delay = 0) {
   window.clearTimeout(recenterTimer);
   recenterTimer = window.setTimeout(() => {
-    if (closing.value) return;
+    if (isClosing.value) return;
     if (planet.selectedTopicId.value !== topicId) return;
-    planet.focusTopic(topicId, positions.value, { duration: 360, wave: false });
+    planet.focusTopic(topicId, positions.value, { duration: 210, wave: false });
   }, delay);
 }
 
@@ -115,12 +176,56 @@ function onPanelWidthChange() {
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   planet.init();
+  // 一开始就接近最终构图：不再出现「远景小球 → 明显放大」这一段
+  planet.primeCamera("planet");
   planetReady = true;
   applyPlanetTheme();
   startThemeObserver();
   startCanvasObserver();
+  // 下一帧才切到 entered，让「铺底 → 内容淡入」这两步真的有先后
+  requestAnimationFrame(() => {
+    entered.value = true;
+  });
   await loadData();
 });
+
+/**
+ * 复用同一个星球实例：关闭时不卸载（省掉每次重建 WebGL 场景的 1.5–3.4s 冷启动），
+ * 由父级用 v-show 隐藏，`open` 变化时在这里重置状态。
+ */
+watch(
+  // 同时盯 open 与 seq：收起动画中再次点入口时 open 一直是 true，
+  // 只盯 open 会漏掉「打开状态下又打开一次」，界面就会停在上一次的收起状态里。
+  () => [props.open, props.seq] as const,
+  async ([isOpen], prev) => {
+    if (!isOpen) {
+      planet.setPaused(true); // 隐藏时不再绘帧
+      return;
+    }
+    if (prev && prev[0] === isOpen && prev[1] === props.seq) return;
+    await reopen();
+  },
+);
+
+/** 再次打开：重置上一次的收尾状态，重新入场、重新按落点定位 */
+async function reopen() {
+  // 作废「进行中的收起」：它的续行还会写 closing 并 emit，必须让它认到已被取代
+  closeEpoch += 1;
+  closing.value = false;
+  settling.value = false;
+  entered.value = false;
+  anchorError.value = "";
+  detailError.value = "";
+  anchorBusy.value = false;
+  planet.setPaused(false);
+  planet.primeCamera("planet"); // 回到接近最终构图，避免从上一帧残留位置开始
+  await nextTick();
+  planet.resize(true); // 隐藏期间绘图缓冲可能被丢弃：强制重建一次
+  requestAnimationFrame(() => {
+    entered.value = true;
+  });
+  await loadData();
+}
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
@@ -130,26 +235,57 @@ onUnmounted(() => {
 });
 
 function onKeydown(e: KeyboardEvent) {
+  if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc
   if (e.key !== "Escape") return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+  // 最上层优先：边栏是用户刚打开的一层，Esc 先收它，再按才收起整个星球
+  if (panelOpen.value) {
+    panelOpen.value = false;
+    return;
+  }
   close();
 }
 
 async function loadData() {
-  const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
-  // 等待期间用户已发起关闭：不再推进相机/加载详情，避免打断拉回 tween
-  if (closing.value) return;
-  topics.value = t.topics;
-  positions.value = p.topics;
-  planet.setTopics(p.topics);
-  planet.loadTopics(p.topics);
-  // 若已有锚点话题，聚焦它（详情由 selectedTopicId watcher 单一来源加载）
-  if (session.currentTopicId) {
-    planet.selectedTopicId.value = session.currentTopicId;
-    planet.focusTopic(session.currentTopicId, positions.value);
+  loadError.value = "";
+  dataLoading.value = true;
+  try {
+    const [t, p] = await Promise.all([api.listTopics(), api.getPositions()]);
+    // 等待期间用户已发起关闭：不再推进相机/加载详情，避免打断拉回 tween
+    if (isClosing.value) return;
+    topics.value = t.topics;
+    positions.value = p.topics;
+    planet.setTopics(p.topics);
+    planet.loadTopics(p.topics);
+    focusInitialTopic();
+  } catch (e) {
+    if (isClosing.value) return;
+    loadError.value = `星球数据加载失败：${(e as Error).message}`;
+  } finally {
+    dataLoading.value = false;
+  }
+}
+
+/**
+ * 打开时的落点：起点没变就回到上次浏览的话题；起点明确变化则以起点为准。
+ * 有落点时一次到位（相机已按最终构图预备，只做朝向收敛），不再「先总览再聚焦」。
+ */
+function focusInitialTopic() {
+  const anchorId = session.currentTopicId ?? null;
+  const signature = anchorSignatureOf(anchorId, session.anchorFragmentId);
+  const anchorChanged = planetSession.anchorSignature !== signature;
+  planetSession.anchorSignature = signature;
+
+  const browsed = planetSession.browsedTopicId;
+  const has = (id: string | null) => Boolean(id) && positions.value.some((t) => t.topic_id === id);
+  const target = !anchorChanged && has(browsed) ? browsed : anchorId;
+
+  if (has(target)) {
+    planet.selectedTopicId.value = target;
+    planet.focusTopic(target!, positions.value, { duration: OPEN_MS });
   } else {
-    planet.go("planet");
+    planet.go("planet", null, OPEN_MS);
   }
 }
 
@@ -164,7 +300,7 @@ watch([topics, search], () => {
 async function loadDetail(topicId: string) {
   const seq = ++detailSeq;
   detailLoading.value = true;
-  anchorError.value = "";
+  detailError.value = "";
   selectedFragmentId.value = null;
   try {
     const d = await api.getTopicDetail(topicId);
@@ -174,21 +310,42 @@ async function loadDetail(topicId: string) {
   } catch (e) {
     if (seq === detailSeq) {
       detail.value = null;
-      anchorError.value = `加载话题详情失败：${(e as Error).message}`;
+      // 失败必须自己可见：此时没有详情可展示，错误不能挂在「有详情」的分支里
+      detailError.value = `加载话题详情失败：${(e as Error).message}`;
     }
   } finally {
     if (seq === detailSeq) detailLoading.value = false;
   }
+  await revealDetailArea();
+}
+
+/**
+ * 话题列表很长时，详情（或它的错误）会落在列表下方看不见的位置，
+ * 用户点完话题只看到行高亮、不知道结果。这里只把详情区域带回视野：
+ * 已经在视野内时 `block:"nearest"` 不会移动，符合「页面变化尽量少」。
+ */
+async function revealDetailArea() {
+  await nextTick();
+  const el = document.querySelector<HTMLElement>(".detail, .detail-error, .detail-loading");
+  if (!el || typeof el.scrollIntoView !== "function") return;
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  el.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+}
+
+/** 详情加载失败后的重试：重新按当前选中话题拉一次 */
+function retryDetail() {
+  const id = planet.selectedTopicId.value;
+  if (id) void loadDetail(id);
 }
 
 function selectTopic(topicId: string) {
-  if (closing.value) return;
+  if (isClosing.value) return;
   planet.selectedTopicId.value = topicId;
   planet.focusTopic(topicId, positions.value);
 }
 
 function onCanvasClick(e: MouseEvent) {
-  if (closing.value) return;
+  if (isClosing.value) return;
   const focused = planet.handleClick(e.clientX, e.clientY);
   if (focused) {
     // 收起态点击话题点：同时展开边栏，画布中心左移 → 动画结束后重对焦
@@ -199,10 +356,12 @@ function onCanvasClick(e: MouseEvent) {
 }
 
 function onCanvasDblClick() {
-  if (!closing.value) planet.go("planet");
+  if (!isClosing.value) planet.go("planet");
 }
 
 watch(() => planet.selectedTopicId.value, (id) => {
+  // 浏览记忆：重开星球时用它回到上次看的地方（见 planetSession 注释）
+  if (id) planetSession.browsedTopicId = id;
   if (id && id !== detail.value?.topic_id) loadDetail(id);
 });
 
@@ -267,8 +426,32 @@ const selectedButtonHint = computed(() => {
   return selectedIsHistoric.value ? "（这个历史位置）" : "（当前片段）";
 });
 
+/**
+ * 面板里三个概念必须分开写清（任务05 D）：
+ * - 浏览的话题：现在正在看的这个话题（可能只是浏览，不代表起点变了）；
+ * - 选中的片段：用户在片段列表里点的那一个（还没生效）；
+ * - 已生效的起点：服务端已经接受的起点（来自会话状态，不是本地猜测）。
+ */
+const browsedTopicName = computed(() => detail.value?.name ?? "（未选择）");
+const selectedFragmentLabel = computed(() =>
+  selectedFragmentId.value ? selectedFragmentSummary.value : "未选择片段（用这个话题的最新位置）",
+);
+const anchorLabel = computed(() => {
+  const id = session.currentTopicId;
+  if (!id) return "未设置（按最新位置继续）";
+  const name =
+    session.topicName ||
+    topics.value.find((t) => t.topic_id === id)?.title ||
+    id;
+  const fragmentTitle = session.anchorFragment?.title;
+  if (fragmentTitle) {
+    return `${name} · ${fragmentTitle}${session.anchorHistoric ? "（历史位置）" : "（当前片段）"}`;
+  }
+  return `${name} · 最新位置`;
+});
+
 async function startHere() {
-  if (closing.value || anchorBusy.value) return;
+  if (isClosing.value || anchorBusy.value) return;
   if (!detail.value) return;
   const target = detail.value;
   const fragmentId = selectedFragmentId.value;
@@ -278,7 +461,9 @@ async function startHere() {
     // 只用后端返回的权威结果更新本地（标题 / 是否历史位置），
     // 避免与同一动作触发的 SSE ANCHOR 事件互相覆盖
     const res = await api.setAnchor(target.topic_id, fragmentId);
-    session.setAnchor(
+    // setAnchorAndSync：起点真的变了就重新拉取可见消息。
+    // 否则「从这里继续」到别的话题后，对话页还停在上一个话题的对话上。
+    await session.setAnchorAndSync(
       res.topic_id || target.topic_id,
       res.fragment_id,
       target.name,
@@ -289,6 +474,8 @@ async function startHere() {
     // 失败：本地锚点不变、不关闭，用户可重试
     anchorError.value = `切换失败，未切换话题：${(e as Error).message}`;
     anchorBusy.value = false;
+    // 星球已经被收起来了：错误必须回到对话页可见，否则用户以为起点已经切好
+    if (isClosing.value) session.lastError = anchorError.value;
     return;
   }
   anchorBusy.value = false;
@@ -327,20 +514,49 @@ function openEntityByNode(nodeId: string) {
   onPanelWidthChange();
 }
 
-/** 关闭：相机先拉回悬浮球远景（overview），动画结束后收起覆盖层 */
+/**
+ * 收起：两段式，避免「一边缩回全景、一边整体淡出」两条时间线互相打架。
+ * 1) 收势：相机轻微后撤 + 星球变淡、面板退场（180ms）
+ * 2) 整体淡出：连着背景一起淡掉后卸载（280ms）
+ * 减少动画时不拖这两段，直接卸载。
+ */
 async function close() {
-  if (closing.value) return;
+  if (!props.open || closing.value || settling.value) return;
+  // 捕获「这次关闭属于哪一次打开」：实例常驻后 props.seq 会被下一次打开改写，
+  // 若不捕获，迟到的收尾回调会带上新序号、把刚打开的新层关掉。
+  const seqAtClose = props.seq;
+  const epoch = ++closeEpoch;
+  if (prefersReducedMotion()) {
+    closing.value = true;
+    emit("close", seqAtClose);
+    return;
+  }
+  settling.value = true;
+  await Promise.all([planet.pullBack(0.45, SETTLE_MS), new Promise((r) => setTimeout(r, SETTLE_MS))]);
+  // 收势期间用户又打开了：放弃这次收尾，否则会把刚打开的层重新变成「收起中」
+  if (epoch !== closeEpoch) return;
   closing.value = true;
-  await planet.go("overview");
-  emit("close");
+  await new Promise((r) => setTimeout(r, FADE_MS));
+  if (epoch !== closeEpoch) return;
+  emit("close", seqAtClose);
 }
 </script>
 
 <template>
-  <div class="planet-view" :class="{ closing }">
-    <canvas ref="canvasRef" class="planet-canvas" @click="onCanvasClick" @dblclick="onCanvasDblClick"></canvas>
-    <button class="close-btn qio-btn" :disabled="closing" @click="close">
-      {{ closing ? "收起中…" : "✕ 收起星球" }}
+  <div class="planet-view" :class="{ entered, closing, settling }" :style="demoStyle">
+    <canvas
+      ref="canvasRef"
+      class="planet-canvas"
+      :class="{ hovering: hoverTopicId }"
+      @click="onCanvasClick"
+      @dblclick="onCanvasDblClick"
+    ></canvas>
+    <!-- 指向话题点时显示简短名称：只显示当前指到的那一个，不让标签常驻遮挡 -->
+    <div v-if="hoverLabel" class="topic-hint" :style="hoverLabelStyle">{{ hoverLabel.title }}</div>
+    <!-- 选中话题的名称常驻（悬停其它点时让位给悬停标签） -->
+    <div v-else-if="selectedLabel" class="topic-hint selected" :style="selectedLabelStyle">{{ selectedLabel.title }}</div>
+    <button class="close-btn qio-btn" :disabled="closing || settling" @click="close">
+      {{ closing || settling ? "收起中…" : "✕ 收起星球" }}
     </button>
     <!-- 图形诊断只在开发者模式出现：正常模式保持「像产品，不像 debugger」 -->
     <div v-if="ui.developerMode" class="hud mono">
@@ -354,6 +570,13 @@ async function close() {
         当前环境不支持 WebGL（或显卡驱动不可用）。话题数据不受影响，仍可在右侧面板查看与管理。
       </p>
     </div>
+    <!-- 首次数据加载失败：说明 + 重试，不拿空球冒充完整内容 -->
+    <div v-if="loadError" class="load-error" role="alert">
+      <span class="le-text">{{ loadError }}</span>
+      <button class="qio-btn" type="button" @click="loadData">重试</button>
+    </div>
+    <!-- 首次加载中：入口已经响应，长等待要有明确状态 -->
+    <div v-else-if="dataLoading" class="planet-loading" role="status">正在加载话题…</div>
 
     <aside class="panel" :class="{ open: panelOpen, manage: manageMode }">
       <button
@@ -381,67 +604,104 @@ async function close() {
             <h2 class="serif">话题</h2>
             <QInput v-model="search" placeholder="搜索话题…" />
           </div>
-          <ul class="topic-list">
-            <li
-              v-for="t in filteredTopics"
-              :key="t.topic_id"
-              :class="{ active: t.topic_id === planet.selectedTopicId.value }"
-              @click="selectTopic(t.topic_id)"
-            >
-              <span class="name serif">{{ t.title }}</span>
-              <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-            </li>
-          </ul>
-
-          <div v-if="detailLoading" class="detail-loading">加载中…</div>
-          <div v-else-if="detail" class="detail">
-            <h3 class="serif">{{ detail.name }}</h3>
-
-            <div class="detail-section">
-              <div class="section-title serif">片段（选择要接续的历史位置）</div>
-              <div
-                v-for="f in detail.fragments"
-                :key="f.fragment_id"
-                class="fragment-item"
-                :class="{ selected: f.fragment_id === selectedFragmentId }"
-                @click="selectedFragmentId = f.fragment_id"
-              >
-                <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
-                <div class="fragment-meta mono">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
-              </div>
-              <p v-if="!detail.fragments.length" class="hint">暂无片段。</p>
+          <!-- 可滚动中部：话题列表自己滚（高度封顶），详情正文占满剩余空间自己滚；
+               底部操作区在两者之外，始终可见且不覆盖内容 -->
+          <div class="panel-body">
+            <div class="topic-scroll">
+              <ul class="topic-list">
+                <li
+                  v-for="t in filteredTopics"
+                  :key="t.topic_id"
+                  :class="{ active: t.topic_id === planet.selectedTopicId.value }"
+                  tabindex="0"
+                  role="option"
+                  :aria-selected="t.topic_id === planet.selectedTopicId.value"
+                  @click="selectTopic(t.topic_id)"
+                  @keydown.enter.prevent="selectTopic(t.topic_id)"
+                  @keydown.space.prevent="selectTopic(t.topic_id)"
+                >
+                  <span class="name serif">{{ t.title }}</span>
+                  <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
+                </li>
+              </ul>
             </div>
 
-            <div class="detail-section">
-              <div class="section-title serif">实体</div>
-              <div class="entity-tags">
-                <span v-for="e in detail.entities" :key="e.id" class="entity-tag" @click="openEntityByNode(e.id)">{{ e.name }}</span>
-                <span v-if="!detail.entities.length" class="hint">无</span>
+            <div class="detail-scroll">
+              <div v-if="detailLoading" class="detail-loading">加载中…</div>
+              <!-- 加载失败：没有详情也要能看到失败原因并有重试入口 -->
+              <div v-else-if="detailError" class="detail-error" role="alert">
+                <p class="err-text">{{ detailError }}</p>
+                <button class="qio-btn" type="button" @click="retryDetail">重试</button>
+              </div>
+              <div v-else-if="detail" class="detail">
+                <h3 class="serif">{{ detail.name }}</h3>
+
+              <!-- 浏览的话题 / 选中的片段 / 已经生效的起点：三者分开写，不混为一谈 -->
+              <dl class="detail-identity">
+                <div class="id-row">
+                  <dt>浏览的话题</dt>
+                  <dd>{{ browsedTopicName }}</dd>
+                </div>
+                <div class="id-row">
+                  <dt>选中的片段</dt>
+                  <dd>{{ selectedFragmentLabel }}</dd>
+                </div>
+                <div class="id-row">
+                  <dt>已生效的起点</dt>
+                  <dd class="mono">{{ anchorLabel }}</dd>
+                </div>
+              </dl>
+
+              <div class="detail-section">
+                <div class="section-title serif">片段（选择要接续的历史位置）</div>
+                <div
+                  v-for="f in detail.fragments"
+                  :key="f.fragment_id"
+                  class="fragment-item"
+                  :class="{ selected: f.fragment_id === selectedFragmentId }"
+                  @click="selectedFragmentId = f.fragment_id"
+                >
+                  <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
+                  <div class="fragment-meta mono">{{ f.message_count }} 条消息 · {{ f.closed_at ? "已封块" : "开放中" }}</div>
+                </div>
+                <p v-if="!detail.fragments.length" class="hint">暂无片段：这个话题还没有可接续的历史位置。</p>
+              </div>
+
+              <div class="detail-section">
+                <div class="section-title serif">实体</div>
+                <div class="entity-tags">
+                  <span v-for="e in detail.entities" :key="e.id" class="entity-tag" @click="openEntityByNode(e.id)">{{ e.name }}</span>
+                  <span v-if="!detail.entities.length" class="hint">无</span>
+                </div>
+              </div>
+
+              <div class="detail-section">
+                <div class="section-title serif">知识</div>
+                <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
+                  <span class="k-state qio-badge" :class="k.state">{{ k.state }}</span>
+                  <template v-if="knowledgeEditingId === k.id">
+                    <input
+                      v-model="knowledgeDraft"
+                      class="qio-input knowledge-edit"
+                      @keyup.enter="saveKnowledgeEdit(k)"
+                    />
+                    <button class="qio-btn mini" @click="saveKnowledgeEdit(k)">保存</button>
+                    <button class="qio-btn mini" @click="knowledgeEditingId = null">取消</button>
+                  </template>
+                  <template v-else>
+                    <span class="k-content">{{ k.content }}</span>
+                    <button class="qio-btn mini" @click="startEditKnowledge(k)">修正</button>
+                    <button class="qio-btn mini danger" @click="deleteKnowledge(k)">删除</button>
+                  </template>
+                </div>
+                <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
               </div>
             </div>
-
-            <div class="detail-section">
-              <div class="section-title serif">知识</div>
-              <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item">
-                <span class="k-state qio-badge" :class="k.state">{{ k.state }}</span>
-                <template v-if="knowledgeEditingId === k.id">
-                  <input
-                    v-model="knowledgeDraft"
-                    class="qio-input knowledge-edit"
-                    @keyup.enter="saveKnowledgeEdit(k)"
-                  />
-                  <button class="qio-btn mini" @click="saveKnowledgeEdit(k)">保存</button>
-                  <button class="qio-btn mini" @click="knowledgeEditingId = null">取消</button>
-                </template>
-                <template v-else>
-                  <span class="k-content">{{ k.content }}</span>
-                  <button class="qio-btn mini" @click="startEditKnowledge(k)">修正</button>
-                  <button class="qio-btn mini danger" @click="deleteKnowledge(k)">删除</button>
-                </template>
-              </div>
-              <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
             </div>
+          </div>
 
+          <!-- 固定底部操作区：选中的片段、起点失败原因与动作按钮始终可见 -->
+          <div v-if="detail" class="detail-actions">
             <p v-if="selectedFragmentId" class="selected-position">
               {{ selectedPositionLabel }}：{{ selectedFragmentSummary }}
             </p>
@@ -450,11 +710,7 @@ async function close() {
             </p>
             <p v-if="anchorError" class="anchor-error" role="alert">{{ anchorError }}</p>
             <button class="start-btn qio-btn primary" :disabled="closing || anchorBusy" @click="startHere">
-              {{
-                anchorBusy
-                  ? "切换中…"
-                  : `从这里继续${selectedButtonHint}`
-              }}
+              {{ anchorBusy ? "切换中…" : `从这里继续${selectedButtonHint}` }}
             </button>
           </div>
         </template>
@@ -469,10 +725,34 @@ async function close() {
 .planet-view {
   position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex;
   overflow: hidden;
-  transition: opacity 0.5s ease;
+  /* 出现：先铺底 → 内容再淡入（两步有先后，聊天文字不会长时间透出来）；
+     消失：收势后整体淡出，淡出结束时才卸载 */
+  transition: opacity var(--dur-planet-out) var(--ease-in);
+}
+/* 铺底：快速盖住聊天，避免两层内容长时间叠加 */
+.planet-view::before {
+  content: ""; position: absolute; inset: 0; z-index: 1; background: var(--bg-base);
+  animation: planet-backdrop-in var(--dur-planet-backdrop) var(--ease-out) both;
+}
+@keyframes planet-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+/* 内容层压在铺底之上（关闭按钮/诊断/错误条各有自己的 z-index，保持更高） */
+.planet-canvas, .panel { z-index: 2; }
+/* 内容用类切换而不是 keyframes：动画的 fill 会盖住「收势变淡」的过渡，
+   用普通 transition 才能让两次 opacity 变化都生效，也让状态不依赖动画事件。 */
+.planet-canvas {
+  opacity: 0;
+  transition: opacity var(--dur-planet-in) var(--ease-out);
+}
+.planet-view.entered .planet-canvas { opacity: 1; }
+.planet-view.entered.settling .planet-canvas {
+  opacity: 0.25;
+  transition-duration: var(--dur-planet-settle);
 }
 .planet-view.closing { opacity: 0; }
+/* 收起阶段（整体淡出中）：不再拦截点击与焦点 —— 页面已经在消失，不能继续扣着输入 */
+.planet-view.closing { pointer-events: none; }
 .planet-canvas { flex: 1 1 auto; min-width: 0; cursor: grab; }
+.planet-canvas.hovering { cursor: pointer; }
 .close-btn {
   position: absolute; top: 14px; left: 14px; z-index: 60;
   background: var(--accent-soft); border-color: var(--border-strong); color: var(--text-strong);
@@ -492,6 +772,35 @@ async function close() {
 }
 .webgl-fallback .wf-title { font-size: 20px; color: var(--text-strong); }
 .webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); max-width: 46ch; line-height: 1.7; }
+.load-error {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 61; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 200px));
+  padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--danger); background: var(--bg-elevated); color: var(--danger);
+  font-size: 12.5px;
+}
+.load-error .le-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.planet-loading {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 61;
+  padding: 8px 14px; border-radius: 10px; font-size: 12.5px;
+  border: 1px solid var(--border-strong); background: var(--bg-elevated); color: var(--text-secondary);
+}
+/* 悬停标签：跟随指针，避开指针本身；不可交互，不抢焦点 */
+.topic-hint {
+  position: absolute; z-index: 58; transform: translate(14px, -50%);
+  max-width: 240px; padding: 3px 9px; border-radius: 20px;
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--bg-overlay); border: 1px solid var(--border-strong); color: var(--text-strong);
+  pointer-events: none;
+}
+/* 选中话题的名称：与「已选中」状态同一套强调色，和悬停标签区分开 */
+.topic-hint.selected {
+  /* 选中点外面有选中环，标签再往外让一点，避免压在环上 */
+  transform: translate(46px, -50%);
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-accent-subtle);
+}
 .panel {
   position: relative;
   flex: 0 0 auto;
@@ -500,7 +809,18 @@ async function close() {
   height: 100%;
   background: var(--bg-panel);
   border-left: 1px solid transparent;
-  transition: width 0.32s cubic-bezier(0.22, 0.8, 0.24, 1), border-color 0.32s ease;
+  opacity: 0;
+  /* 侧栏开合 210ms，与 210ms 的重定位补间同时发生（不再串联成两次移动）；
+     opacity 负责入场（420ms）与收起时的收势（180ms）。 */
+  transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel) var(--ease-out),
+    opacity var(--dur-planet-in) var(--ease-out);
+}
+.planet-view.entered .panel { opacity: 1; }
+.planet-view.entered.settling .panel {
+  opacity: 0.35;
+  transform: translateX(8px);
+  transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel) var(--ease-out),
+    opacity var(--dur-planet-settle) var(--ease-out), transform var(--dur-planet-settle) var(--ease-out);
 }
 .panel.open {
   width: clamp(340px, 32vw, 480px);
@@ -511,7 +831,51 @@ async function close() {
   height: 100%;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+/* 可滚动中部：顶部标题与底部操作区保持稳定，只有这两个区域各自滚动 */
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 话题多时列表自己滚，且高度封顶：详情永远留在可见区域，不用先滚过整份列表 */
+.topic-scroll {
+  flex: 0 1 auto;
+  max-height: 42%;
+  min-height: 0;
   overflow-y: auto;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.detail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* 固定底部操作区（在正常流里，不覆盖正文） */
+.detail-actions {
+  flex: 0 0 auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.detail-actions .start-btn { margin-top: 10px; }
+.detail-identity {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+.detail-identity .id-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.7; }
+.detail-identity dt { color: var(--text-muted); flex: 0 0 84px; margin: 0; }
+.detail-identity dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
+.topic-list li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .panel.open.manage { width: clamp(360px, 46vw, 640px); }
 /* 中等窗口：面板按视口比例收窄，别把星球挤成一条 */
@@ -617,4 +981,13 @@ async function close() {
 .selected-position.muted { color: var(--text-muted); }
 .hint { font-size: 12px; color: var(--text-muted); }
 .detail-loading { padding: 14px; color: var(--text-muted); font-size: 13px; }
+.detail-error {
+  display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
+  padding: 0 14px 20px; border-top: 1px solid var(--border-subtle);
+}
+.detail-error .err-text {
+  margin-top: 12px; padding: 8px 12px; border-radius: 8px; width: 100%;
+  border: 1px solid var(--danger); background: var(--danger-soft);
+  color: var(--danger); font-size: 12px; line-height: 1.5;
+}
 </style>

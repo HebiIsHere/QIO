@@ -6,6 +6,9 @@ import { api } from "../services/api";
 
 const session = useSessionStore();
 const open = ref(false);
+/** 正在等待后端确认取消的 turn_id（取消请求 ≠ 已经取消） */
+const cancellingId = ref<string | null>(null);
+const cancelError = ref("");
 
 const running = computed(() => session.turnQueue.running);
 const queued = computed(() => session.turnQueue.queued);
@@ -15,10 +18,16 @@ const visible = computed(
 );
 
 async function cancelTurn(turnId: string) {
+  if (cancellingId.value) return; // 防重复提交：同一条只发一次
+  cancellingId.value = turnId;
+  cancelError.value = "";
   try {
     await api.cancelTurn(turnId);
   } catch (e) {
-    console.error("[queue] cancel failed:", e);
+    // 取消失败必须可见：任务可能仍在运行/排队，不能假装已经取消
+    cancelError.value = `取消失败：${(e as Error).message}（任务状态未改变，可重试）`;
+  } finally {
+    cancellingId.value = null;
   }
 }
 </script>
@@ -40,11 +49,24 @@ async function cancelTurn(turnId: string) {
       <span v-if="cancelled.length">{{ cancelled.length }} 已取消</span>
       <span class="chev">{{ open ? "▾" : "▸" }}</span>
     </button>
-    <div v-show="open" class="list">
+    <transition name="queue-list">
+      <div v-show="open" class="list">
       <div v-if="running" class="row running">
-        <span class="dots"><i></i><i></i><i></i></span>
+        <!-- 等待动画只在回答附近播一次；这里用静态标记表达「运行中」 -->
+        <span class="live-mark" aria-hidden="true"></span>
+        <span class="badge mono">运行中</span>
         <span class="txt">{{ running.message }}</span>
-        <button class="qbtn stop" type="button" @click="cancelTurn(running.turn_id)">取消</button>
+        <!-- 与输入区停止按钮指向同一个对象（当前运行的任务），文案统一为「停止」 -->
+        <button
+          class="qbtn stop"
+          type="button"
+          :disabled="!!cancellingId"
+          :aria-busy="cancellingId === running.turn_id"
+          :aria-label="`停止当前任务：${running.message}`"
+          @click="cancelTurn(running.turn_id)"
+        >
+          {{ cancellingId === running.turn_id ? "正在停止…" : "停止" }}
+        </button>
       </div>
       <div v-for="(q, i) in queued" :key="q.turn_id" class="row queued">
         <span class="txt">{{ q.message }}</span>
@@ -52,17 +74,21 @@ async function cancelTurn(turnId: string) {
         <button
           class="qbtn"
           type="button"
+          :disabled="!!cancellingId"
+          :aria-busy="cancellingId === q.turn_id"
           :aria-label="`取消排队：${q.message}`"
           @click="cancelTurn(q.turn_id)"
         >
-          取消排队
+          {{ cancellingId === q.turn_id ? "正在取消…" : "取消排队" }}
         </button>
       </div>
       <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled">
         <span class="txt">{{ c.message }}</span>
         <span class="badge mono">已取消</span>
       </div>
-    </div>
+      <p v-if="cancelError" class="cancel-err" role="alert">{{ cancelError }}</p>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -119,9 +145,24 @@ async function cancelTurn(turnId: string) {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.row.cancelled { opacity: 0.55; }
-.row.cancelled .txt { text-decoration: line-through; color: var(--text-muted); }
+.row.cancelled { opacity: 0.75; }
+.row.cancelled .txt { text-decoration: line-through; color: var(--text-secondary); }
 .row.cancelled .badge { color: var(--text-muted); }
+.cancel-err {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+/* 折叠区域的出现与退出：短淡入 + 2px 位移，退出后不占位、不拦截点击 */
+.queue-list-enter-active,
+.queue-list-leave-active {
+  transition: opacity var(--dur-menu) var(--ease-out), transform var(--dur-menu) var(--ease-out);
+}
+.queue-list-enter-from,
+.queue-list-leave-to {
+  opacity: 0;
+  transform: translateY(-2px);
+}
 .txt {
   flex: 1;
   min-width: 0;
@@ -155,22 +196,18 @@ async function cancelTurn(turnId: string) {
   border-color: var(--accent);
   color: var(--accent);
 }
-.dots {
-  display: inline-flex;
-  gap: 4px;
-  flex: none;
+.qbtn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
-.dots i {
-  width: 5px;
-  height: 5px;
+.qbtn:active:not(:disabled) { transform: translateY(var(--press-shift)); }
+/* 运行中的静态标记：等待动画交给回答附近那一处，避免同一套动画在多处重复播放 */
+.live-mark {
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--accent);
-  animation: qc-bounce 1.2s infinite ease-in-out;
-}
-.dots i:nth-child(2) { animation-delay: 0.15s; }
-.dots i:nth-child(3) { animation-delay: 0.3s; }
-@keyframes qc-bounce {
-  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-3px); }
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 </style>

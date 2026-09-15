@@ -89,3 +89,116 @@ describe("MarkdownContent 长内容与代码块（任务02 §8/§9）", () => {
     w.unmount();
   });
 });
+
+describe("MarkdownContent 复制的诚实反馈（P0）", () => {
+  it("写入被拒绝：显示「复制失败」并带失败样式", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("denied"); }) },
+    });
+    const w = mount(MarkdownContent, { props: { source: "```js\nconst a = 1;\n```" } });
+    await w.find(".code-copy").trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.find(".code-copy").text()).toBe("复制失败");
+    expect(w.find(".code-copy").classes()).toContain("fail");
+    w.unmount();
+  });
+
+  it("剪贴板 API 不存在：显示「复制失败」，不能显示已复制", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const w = mount(MarkdownContent, { props: { source: "```js\nconst a = 1;\n```" } });
+    await w.find(".code-copy").trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.find(".code-copy").text()).toBe("复制失败");
+    w.unmount();
+  });
+
+  it("失败提示会在短暂停留后回到「复制」，避免按钮永久停在失败态", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const w = mount(MarkdownContent, { props: { source: "```js\nconst a = 1;\n```" } });
+    await w.find(".code-copy").trigger("click");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(w.find(".code-copy").text()).toBe("复制");
+    w.unmount();
+  });
+
+  it("连续复制不同代码块：各自反馈独立，先点的那个也会自己复位", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const src = "```js\nconst a = 1;\n```\n\n```js\nconst b = 2;\n```";
+    const w = mount(MarkdownContent, { props: { source: src } });
+    const buttons = w.findAll(".code-copy");
+    expect(buttons.length).toBe(2);
+
+    await buttons[0].trigger("click");
+    await vi.advanceTimersByTimeAsync(50);
+    await buttons[1].trigger("click");
+    // 两块都显示已复制（各自独立）
+    expect(buttons[0].text()).toBe("已复制");
+    expect(buttons[1].text()).toBe("已复制");
+
+    await vi.advanceTimersByTimeAsync(1700);
+    // 第一块的计时器到点后必须自己复位，不能被第二块的状态卡住
+    expect(w.findAll(".code-copy")[0].text()).toBe("复制");
+    expect(w.findAll(".code-copy")[1].text()).toBe("复制");
+    expect(writeText).toHaveBeenCalledTimes(2);
+    w.unmount();
+  });
+
+  it("复制失败后仍可再点一次重试，并在再次失败时继续给出失败反馈", async () => {
+    const writeText = vi.fn(async () => { throw new Error("denied"); });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const w = mount(MarkdownContent, { props: { source: "```js\nconst a = 1;\n```" } });
+    const btn = w.find(".code-copy");
+    await btn.trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(btn.text()).toBe("复制失败");
+    await btn.trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(btn.text()).toBe("复制失败");
+    expect(writeText).toHaveBeenCalledTimes(2);
+    w.unmount();
+  });
+});
+
+describe("MarkdownContent 生成速度与未闭合块（任务03 C）", () => {
+  it("给了真实到达间隔时按它走：paceMs=200 的追加在 200ms 内显示完", async () => {
+    vi.useFakeTimers();
+    const w = mount(MarkdownContent, { props: { source: "开头", reveal: true, cps: 25, paceMs: 200 } });
+    await vi.advanceTimersByTimeAsync(250);
+    await w.setProps({ source: "开头加上新到达的一段文字" });
+    await vi.advanceTimersByTimeAsync(90);
+    // 90ms 时还没走完（说明没有瞬显、确实按 200ms 节奏）
+    expect(w.text()).not.toContain("新到达的一段文字");
+    await vi.advanceTimersByTimeAsync(160);
+    expect(w.text()).toContain("新到达的一段文字");
+    w.unmount();
+  });
+
+  it("长回答及时追上：一次追加 300 字在 600ms 内显示完，不拖成几秒", async () => {
+    vi.useFakeTimers();
+    const w = mount(MarkdownContent, { props: { source: "开头", reveal: true, cps: 25 } });
+    await vi.advanceTimersByTimeAsync(200);
+    const long = "开头" + "长".repeat(300);
+    await w.setProps({ source: long });
+    await vi.advanceTimersByTimeAsync(650);
+    expect(w.text()).toContain("长".repeat(300));
+    w.unmount();
+  });
+
+  it("未闭合的代码块/列表/表格不会把整段内容藏起来", async () => {
+    const cases = [
+      "说明文字\n```python\nprint(1)\n", // 未闭合围栏
+      "步骤：\n- 第一步\n- 第二步\n- 第三", // 未闭合列表
+      "| 列 A | 列 B |\n| --- | --- |\n| 1 | 2 ", // 未闭合表格
+    ];
+    for (const src of cases) {
+      const w = mount(MarkdownContent, { props: { source: src } });
+      expect(w.text().trim().length).toBeGreaterThan(0);
+      expect(w.text()).not.toContain("```");
+      w.unmount();
+    }
+  });
+});

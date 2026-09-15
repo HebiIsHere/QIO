@@ -8,6 +8,8 @@ const props = defineProps<{ openCardId?: string; openByNodeId?: string }>();
 const cards = ref<EntityCard[]>([]);
 const q = ref("");
 const loading = ref(false);
+/** 读取失败原因：失败必须自己可见，不能显示成「没有实体」 */
+const loadError = ref("");
 const opened = ref<EntityCard | null>(null);
 const toast = ref("");
 const draft = ref({
@@ -38,12 +40,13 @@ function showToast(text: string) {
 
 async function load() {
   loading.value = true;
+  loadError.value = "";
   try {
     const r = await api.listEntities();
     cards.value = r.entities;
   } catch (e) {
     console.error("[entity] load failed:", e);
-    showToast("加载实体失败");
+    loadError.value = `加载实体失败：${(e as Error).message}`;
   } finally {
     loading.value = false;
   }
@@ -195,6 +198,11 @@ onMounted(async () => {
     <template v-if="!opened">
       <QInput v-model="q" placeholder="搜索实体（名称/别名）…" />
       <div v-if="loading" class="hint">加载中…</div>
+      <!-- 失败与「没有数据」必须区分：失败给原因和重试，不伪装成空集合 -->
+      <div v-else-if="loadError" class="e-load-error" role="alert">
+        <span>{{ loadError }}</span>
+        <button class="qio-btn mini" type="button" @click="load">重试</button>
+      </div>
       <ul v-else class="e-list">
         <li v-for="c in filtered" :key="c.id" class="e-item" @click="openCard(c)">
           <div class="e-name">{{ c.name }}</div>
@@ -203,7 +211,11 @@ onMounted(async () => {
             {{ c.attributes.length }} 属性 · {{ c.relations.length }} 关系
           </div>
         </li>
-        <li v-if="!filtered.length && !loading" class="hint">无实体卡。</li>
+        <li v-if="!filtered.length" class="hint e-empty">
+          <template v-if="cards.length">没有匹配「{{ q.trim() }}」的实体卡。</template>
+          <template v-else>暂无实体卡。</template>
+          <button v-if="cards.length" class="link e-clear-search" type="button" @click="q = ''">清除搜索</button>
+        </li>
       </ul>
     </template>
 
@@ -276,7 +288,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.epanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; }
+.epanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .e-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .e-item { border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px; cursor: pointer; background: var(--bg-inset); }
 .e-item:hover { border-color: var(--accent); }
@@ -300,5 +312,13 @@ onMounted(async () => {
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
 .hint { font-size: 12px; color: var(--text-muted); }
+.e-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.e-load-error {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  border: 1px solid var(--danger); background: var(--danger-soft); color: var(--danger);
+}
+.link { background: none; border: none; color: var(--link); cursor: pointer; font-size: 12px; padding: 0; }
+.link:hover { text-decoration: underline; }
 .toast { position: fixed; top: 20px; right: 20px; z-index: 60; padding: 10px 16px; border-radius: 12px; font-size: 12.5px; background: var(--bg-surface); border: 1px solid var(--border-strong); color: var(--text-primary); }
 </style>

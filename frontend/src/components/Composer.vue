@@ -4,7 +4,16 @@ import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
 
 const session = useSessionStore();
-const text = ref("");
+/**
+ * 草稿属于会话状态，不属于本组件：`text` 读写 store.draft，
+ * 因此打开设置/星球再返回时草稿仍在（组件会被卸载重建）。
+ */
+const text = computed({
+  get: () => session.draft,
+  set: (v: string) => {
+    session.draft = v;
+  },
+});
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 /** 停止请求进行中（取消是可观察动作，不能假装已停） */
 const stopping = ref(false);
@@ -12,6 +21,25 @@ const cancelError = ref("");
 
 /** 输入框最大高度：不超过 40vh，也不超过 320px（超出后内部滚动） */
 const MAX_INPUT_PX = 320;
+
+/**
+ * 停止按钮的文案。
+ *
+ * 提交之后、服务端 TURN_START 到达之前，界面已经知道「有任务在跑」，
+ * 但还没有可撤销的 turn_id —— 这段时间按钮是禁用的。
+ * 实测：这个窗口里按钮显示「停止」却是灰的，用户会以为坏了。
+ * 所以按真实状态改文案：准备中…（还没法停） → 正在停止 → …
+ */
+const stopLabel = computed(() => {
+  if (stopping.value || session.cancelling) return "正在停止";
+  if (!session.activeTurnId) return "准备中…";
+  return "停止";
+});
+const stopTitle = computed(() => {
+  if (stopping.value || session.cancelling) return "正在停止…";
+  if (!session.activeTurnId) return "任务正在启动，收到运行标识后即可停止";
+  return "停止当前任务";
+});
 
 const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
 
@@ -28,12 +56,20 @@ const anchorText = computed(() => {
 async function submit() {
   const value = text.value.trim();
   if (!value) return;
-  session.send(value);
+  const draftSnapshot = text.value;
+  // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
   text.value = "";
   // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再测量，
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
+  const ok = await session.send(value);
+  // 失败恢复：把草稿放回去，用户不必重写（若期间已输入新内容则不覆盖）
+  if (!ok && !text.value.trim()) {
+    text.value = draftSnapshot;
+    await nextTick();
+    autosize();
+  }
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -87,8 +123,10 @@ async function stopTurn() {
     <div class="input-row">
       <textarea
         ref="inputRef"
+        id="composer-input"
         v-model="text"
         class="qio-input"
+        aria-label="输入消息"
         placeholder="和 QIO 说点什么…"
         @keydown="onKeydown"
         @input="autosize"
@@ -98,12 +136,12 @@ async function stopTurn() {
         class="stop-btn"
         type="button"
         :disabled="stopping || !session.activeTurnId"
-        :aria-label="stopping ? '正在停止' : '停止当前任务'"
-        :title="stopping ? '正在停止…' : '停止当前任务'"
+        :aria-label="stopLabel"
+        :title="stopTitle"
         @click="stopTurn"
       >
         <span class="sq"></span>
-        <span class="stop-label">{{ stopping || session.cancelling ? "正在停止" : "停止" }}</span>
+        <span class="stop-label">{{ stopLabel }}</span>
       </button>
       <button
         class="send-btn"
@@ -125,18 +163,42 @@ async function stopTurn() {
    浅色表面 + 玫红描边 + 右下小圆角，不可拖动；
    增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */
 .composer {
-  /* 独立悬浮于消息流之上（右下角），不参与消息流布局；
+  /* 独立悬浮于消息流之上，与对话内容同一列（居中 860px），不参与消息流布局；
      消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方 */
   position: fixed;
-  right: 16px;
+  left: max(12px, calc(50% - 430px));
+  right: auto;
   bottom: 16px;
   z-index: 12;
-  width: min(560px, calc(100vw - 32px));
-  border: 1.5px solid var(--accent);
-  border-radius: 18px 18px 4px 18px;
-  padding: 10px 18px 16px;
+  width: min(860px, calc(100vw - 24px));
+  /* 默认中性边框 + 较轻阴影：不靠重描边和重阴影抢注意力 */
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 10px 18px 14px;
   background: var(--bg-surface);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-2);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+/* 聚焦时只加强一层：外框变强调色；内层输入框不再同时叠一层边框 + 光晕 */
+.composer:focus-within { border-color: var(--accent); }
+.composer textarea.qio-input:focus {
+  border-color: transparent;
+  box-shadow: none;
+  background: transparent;
+}
+/* 中等窗口：为右侧星球停靠球留出通道，避免气泡压住正文 */
+@media (max-width: 1400px) and (min-width: 900px) {
+  .composer {
+    left: calc(50% - 66px);
+    width: min(860px, calc(100vw - 168px));
+  }
+}
+/* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
+@media (max-width: 899px) {
+  .composer {
+    left: 12px;
+    width: calc(100vw - 24px);
+  }
 }
 .topicbar {
   display: flex;

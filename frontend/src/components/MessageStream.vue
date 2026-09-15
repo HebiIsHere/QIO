@@ -12,6 +12,10 @@ import MessageItem from "./MessageItem.vue";
 import ContinueBar from "./ContinueBar.vue";
 import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
+import { prefersReducedMotion } from "../utils/motion";
+
+/** 对话内容列宽：用户消息与回答共用一个居中列，不分别贴窗口两端 */
+const CONTENT_MAX_PX = 860;
 
 interface Turn {
   id: string;
@@ -22,8 +26,20 @@ interface Turn {
 
 const session = useSessionStore();
 const containerRef = ref<HTMLDivElement | null>(null);
+/** 卸载阶段模板 ref 会被置空，这里留一份引用，保证离开时仍能读到滚动位置 */
+let lastContainer: HTMLDivElement | null = null;
 const spacerRef = ref<HTMLDivElement | null>(null);
 const followBottom = ref(true);
+/** 上翻阅读期间新到的消息数（「回到最新消息」入口上的提示数字） */
+const unseen = ref(0);
+/** 程序化滚动（回到最新/贴底）的 rAF 句柄：用户一操作就中断 */
+let programmaticRaf = 0;
+/** 正在恢复阅读位置（此时到来的 scroll 事件是程序写入造成的，不算用户意图） */
+let restoring = false;
+/** 本机发送前的阅读状态：请求被后端拒绝时要放回原位（没发出去的消息不该留下后遗症） */
+let preSend: { follow: boolean; top: number } | null = null;
+/** 上翻阅读中发送 → 若被拒绝则回到原位；用户中途自己滚过就不再强行放回 */
+let pendingRestoreOnReject = false;
 
 /** 距底部多少像素内算「跟随中」 */
 const NEAR_BOTTOM_PX = 120;
@@ -58,14 +74,82 @@ const virtualizer = useVirtualizer(
 function onScroll() {
   const el = containerRef.value;
   if (!el) return;
+  // 恢复阅读位置期间会触发 scroll 事件：那不是用户意图，不能据此改写跟随状态与位置
+  if (restoring) return;
   // 只按「距底部距离」判定是否跟随：用户向上滚 → 立刻停止跟随，不再强行拉回
   followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  // 同步记住阅读位置：不依赖卸载时的 ref（卸载阶段模板 ref 已经被置空）
+  session.streamScrollTop = el.scrollTop;
+  session.streamFollowing = followBottom.value;
+  if (followBottom.value) unseen.value = 0;
+}
+
+/** 用户一动滚轮/触屏：立刻中断程序化滚动（自动滚动不能和用户抢） */
+function onUserInput() {
+  cancelProgrammaticScroll();
+  // 用户自己接管了滚动：发送失败时不再把位置放回发送前
+  pendingRestoreOnReject = false;
+}
+
+/**
+ * 键盘滚动（PageUp/PageDown/方向键/Home/End/空格）：同属用户意图。
+ * .stream 现在是可聚焦的滚动区域（tabindex=0），否则键盘用户根本滚不动消息列表。
+ */
+function onKeyScroll(e: KeyboardEvent) {
+  const keys = ["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " ", "Spacebar"];
+  if (keys.includes(e.key)) cancelProgrammaticScroll();
 }
 
 function scrollToBottom() {
+  scrollToBottomWith(false);
+}
+
+/**
+ * 贴底 / 回到最新。
+ * smooth 时用 rAF 自己走（不用 scroll-behavior），这样用户一动滚轮或触屏
+ * 就能立刻中断自动滚动——浏览器的平滑滚动是中断不掉的。
+ */
+function scrollToBottomWith(smooth: boolean) {
   const el = containerRef.value;
   if (!el) return;
-  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+  cancelProgrammaticScroll();
+  const target = Math.max(0, el.scrollHeight - el.clientHeight);
+  const start = el.scrollTop;
+  const dist = target - start;
+  if (!smooth || prefersReducedMotion() || Math.abs(dist) < 2) {
+    el.scrollTop = target;
+    return;
+  }
+  const dur = Math.min(320, 140 + Math.abs(dist) * 0.4);
+  const t0 = performance.now();
+  const step = () => {
+    // 目标每帧重算：虚拟列表在滚动过程中会逐条测量真实高度，总高度会比刚开始时的估算更高；
+    // 只按「开始时算出的目标」插值，会在很长的对话里停在半路（实测可差几千像素）。
+    const targetNow = Math.max(0, el.scrollHeight - el.clientHeight);
+    // 统一用 performance.now()：rAF 回调参数的时间基准在部分环境里与它不同，
+    // 混用会让进度算成负数或跳变。进度双向夹住，保证一定会落在目标位置。
+    const p = Math.max(0, Math.min(1, (performance.now() - t0) / dur));
+    const eased = 1 - Math.pow(1 - p, 3);
+    // p 走到 1 时这一步写成当前真实底部，不会留下「差一截」的尾巴
+    el.scrollTop = start + (targetNow - start) * eased;
+    session.streamScrollTop = el.scrollTop;
+    programmaticRaf = p < 1 ? requestAnimationFrame(step) : 0;
+  };
+  programmaticRaf = requestAnimationFrame(step);
+}
+
+function cancelProgrammaticScroll() {
+  if (programmaticRaf) cancelAnimationFrame(programmaticRaf);
+  programmaticRaf = 0;
+}
+
+/** 回到最新：用户明确点击后短暂滚动到最新，并恢复跟随 */
+function backToLatest() {
+  followBottom.value = true;
+  unseen.value = 0;
+  // 主动点击即视为恢复跟随：不依赖浏览器随后补发的 scroll 事件
+  session.streamFollowing = true;
+  scrollToBottomWith(true);
 }
 
 /** 右下角输入框高度观察：消息流底部滚动缓冲 = 输入框高 + 间距，
@@ -83,6 +167,12 @@ function applyComposerPad() {
   el.style.paddingBottom = `${Math.round(composerHeight()) + 16}px`;
 }
 onMounted(() => {
+  lastContainer = containerRef.value;
+  // 触屏与滚轮属于用户意图：中断自动滚动，并把跟随状态交回用户
+  containerRef.value?.addEventListener("wheel", onUserInput, { passive: true });
+  containerRef.value?.addEventListener("touchstart", onUserInput, { passive: true });
+  containerRef.value?.addEventListener("keydown", onKeyScroll);
+  restoreScrollPosition();
   // 内容增高（同一条流式消息变长 / markdown 布局变化）时，若仍在跟随就贴底
   if (typeof ResizeObserver !== "undefined") {
     streamObserver = new ResizeObserver(() => {
@@ -104,11 +194,63 @@ onMounted(() => {
   applyComposerPad();
 });
 onUnmounted(() => {
+  containerRef.value?.removeEventListener("wheel", onUserInput);
+  containerRef.value?.removeEventListener("touchstart", onUserInput);
+  containerRef.value?.removeEventListener("keydown", onKeyScroll);
+  lastContainer?.removeEventListener("wheel", onUserInput);
+  lastContainer?.removeEventListener("touchstart", onUserInput);
+  lastContainer?.removeEventListener("keydown", onKeyScroll);
+  cancelProgrammaticScroll();
+  saveScrollPosition();
   composerObserver?.disconnect();
   composerObserver = null;
   streamObserver?.disconnect();
   streamObserver = null;
 });
+
+/**
+ * 阅读位置：离开（打开设置/星球）时记住滚到哪，回来时按原位置恢复，
+ * 不重播也不把用户甩到最新。历史消息本来就是直接显示，恢复位置即可。
+ */
+function saveScrollPosition() {
+  const el = containerRef.value ?? lastContainer;
+  // 卸载时节点已经脱离文档，浏览器会把 scrollTop 读成 0：这种值不能采信，
+  // 否则会把 onScroll 一直同步着的真实位置覆盖掉。
+  if (!el || !el.isConnected) return;
+  session.streamScrollTop = el.scrollTop;
+  session.streamFollowing = followBottom.value;
+}
+
+function restoreScrollPosition() {
+  followBottom.value = session.streamFollowing;
+  const target = session.streamScrollTop;
+  if (followBottom.value || target <= 0) return;
+  restoring = true;
+  // 虚拟列表首次布局可能晚于 mount：容器还不可滚动就下一帧再试（有上限，不会无限重试）
+  let tries = 0;
+  const attempt = () => {
+    const el = containerRef.value;
+    if (!el) {
+      restoring = false;
+      return;
+    }
+    const max = el.scrollHeight - el.clientHeight;
+    if (max <= 0 && tries < 10) {
+      tries += 1;
+      afterNextPaint(attempt);
+      return;
+    }
+    el.scrollTop = Math.min(target, Math.max(0, max));
+    restoring = false;
+  };
+  afterNextPaint(attempt);
+}
+
+/** 等下一帧（无 rAF 的环境退回 setTimeout，保证恢复逻辑不会因为环境而中断） */
+function afterNextPaint(cb: () => void) {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
+  else setTimeout(cb, 0);
+}
 
 // 动态测量列表项真实高度（替代固定 estimateSize），避免长消息重叠
 function measureItem(el: unknown) {
@@ -122,23 +264,67 @@ watch(
     const last = session.messages[session.messages.length - 1];
     return [session.messages.length, last?.content.length ?? 0, session.turnRunning] as const;
   },
-  async () => {
-    if (followBottom.value) {
-      await nextTick();
-      scrollToBottom();
+  async (now, prev) => {
+    const [count] = now;
+    const [prevCount] = prev ?? [count];
+    if (!followBottom.value) {
+      // 上翻阅读时新到的消息只计数，不主动滚动
+      if (count > prevCount) unseen.value += count - prevCount;
+      return;
     }
+    unseen.value = 0;
+    await nextTick();
+    // 等布局这一帧里用户可能已经上翻：滚动前再确认一次意图，避免把刚上翻的人拉回去
+    if (followBottom.value) scrollToBottom();
   },
 );
 
 watch(
-  () => session.turnRunning,
-  async (running) => {
-    // 用户刚发起一轮：回到跟随模式（主动发送意味着想看结果）
-    if (running) {
-      followBottom.value = true;
-      await nextTick();
-      scrollToBottom();
-    }
+  // 只有「本机发送」才回到跟随。后台/排队任务开始的 TURN_START 也会把
+  // turnRunning 置为 true，但那时用户可能正在往上读，不能被拽回底部。
+  () => session.localSendSeq,
+  async () => {
+    const el = containerRef.value;
+    // 先记住发送前的位置：请求一旦被拒绝，这条消息不存在，阅读位置也不该被改变
+    preSend = el ? { follow: followBottom.value, top: el.scrollTop } : null;
+    pendingRestoreOnReject = !!el && !followBottom.value;
+    followBottom.value = true;
+    await nextTick();
+    scrollToBottom();
+  },
+);
+
+// 本机发送被后端拒绝（草稿会回到输入框）：把阅读位置放回发送前，
+// 别把正在上翻阅读的人留在「一条从未存在过的消息」的底部。
+watch(
+  () => session.sendRejectedSeq,
+  async () => {
+    const remembered = preSend;
+    const shouldRestore = pendingRestoreOnReject && remembered && !remembered.follow;
+    pendingRestoreOnReject = false;
+    preSend = null;
+    if (!shouldRestore || !remembered) return;
+    followBottom.value = false;
+    // 那条「未获受理」的消息连同它的未读计数一起作废
+    unseen.value = 0;
+    session.streamFollowing = false;
+    // 从这里起忽略 scroll 事件：刚才那次贴底还会补送一个 scroll 事件，
+    // 它会依据「还停在底部」把状态重新判成「跟随中」，随后内容高度变化又会把位置冲回底部。
+    restoring = true;
+    await nextTick();
+    // 乐观消息已经被撤掉：等这一帧布局落定后再写位置
+    afterNextPaint(() => {
+      const el = containerRef.value;
+      if (!el) {
+        restoring = false;
+        return;
+      }
+      el.scrollTop = Math.min(remembered.top, Math.max(0, el.scrollHeight - el.clientHeight));
+      session.streamScrollTop = el.scrollTop;
+      afterNextPaint(() => {
+        restoring = false;
+      });
+    });
   },
 );
 
@@ -158,17 +344,32 @@ function firstAssistantIdx(t: Turn): number {
   return t.items.findIndex((m) => m.role === "assistant");
 }
 
-/** 打字指示器：turn 运行中且当前轮次尚无助手消息时显示三圆点 */
-const showTyping = computed(() => {
+/**
+ * 等待指示：只在「已经提交、还没有任何助手内容」时出现三圆点。
+ * 一旦开始有增量内容，就由流式气泡自己表达进度，不再重复播同一套等待动画。
+ */
+const waitingForModel = computed(() => {
   if (!session.turnRunning) return false;
   const last = turns.value[turns.value.length - 1];
   if (!last) return false;
   return !last.items.some((m) => m.role === "assistant");
 });
+/** 诚实的阶段文案：等待响应 / 正在生成，不假装知道后台在做什么 */
+const phaseLabel = computed(() => {
+  if (!session.turnRunning) return "";
+  return session.turnPhase === "generating" ? "正在生成…" : "已提交，等待模型响应…";
+});
 </script>
 
 <template>
-  <div ref="containerRef" class="stream" @scroll.passive="onScroll">
+  <!-- 可聚焦滚动区域：键盘用户也能滚动消息，并且键盘滚动同样会停止自动跟随 -->
+  <div
+    ref="containerRef"
+    class="stream"
+    tabindex="0"
+    aria-label="对话消息"
+    @scroll.passive="onScroll"
+  >
     <div
       ref="spacerRef"
       class="spacer"
@@ -203,11 +404,22 @@ const showTyping = computed(() => {
         </div>
       </div>
     </div>
-    <div v-if="showTyping" class="typing" role="status" aria-label="QIO 正在回复">
+    <div v-if="waitingForModel" class="typing" role="status" aria-live="polite">
       <div class="typing-bubble">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="phase mono">{{ phaseLabel }}</span>
       </div>
     </div>
+    <!-- 回到最新：只有用户主动点才滚动，且用可被滚轮/触屏中断的短滚动 -->
+    <button
+      v-if="!followBottom && messages.length"
+      class="back-latest"
+      type="button"
+      @click="backToLatest"
+    >
+      <span class="arrow">↓</span>
+      回到最新消息<span v-if="unseen > 0" class="count mono">{{ unseen }}</span>
+    </button>
     <ContinueBar />
     <QueueChip />
     <div v-if="!messages.length" class="empty">
@@ -222,9 +434,14 @@ const showTyping = computed(() => {
 .stream {
   flex: 1;
   overflow-y: auto;
-  padding: 34px 44px 20px;
+  padding: 34px 24px 20px;
   scrollbar-width: thin;
   background: var(--bg-base);
+}
+/* 键盘聚焦时才显示焦点环：滚动区域平时不抢视觉焦点 */
+.stream:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 /* 话题星球停靠球是 fixed 悬浮元素（96px）；窄窗口下会压住靠右的气泡与时间戳。
    这里为它留出通道，避免遮挡正文。宽屏下气泡自身有 max-width，不受影响。 */
@@ -237,7 +454,9 @@ const showTyping = computed(() => {
   width: 100%;
 }
 .turn {
-  margin-bottom: 26px;
+  /* 用户消息与回答共用同一内容列（居中），不各自贴窗口两端 */
+  max-width: 860px;
+  margin: 0 auto 26px;
 }
 .turn-meta {
   display: flex;
@@ -328,6 +547,49 @@ const showTyping = computed(() => {
 }
 .typing-bubble .dot:nth-child(3) {
   animation-delay: 0.3s;
+}
+.typing-bubble .phase {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+/* ---- 回到最新消息 ---- */
+.back-latest {
+  position: sticky;
+  bottom: 8px;
+  z-index: 6;
+  margin: 6px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-press) var(--ease-out);
+}
+.back-latest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.back-latest:active {
+  transform: translateY(var(--press-shift));
+}
+.back-latest .count {
+  min-width: 18px;
+  text-align: center;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--text-strong);
+  font-size: 10.5px;
 }
 @keyframes typing-bounce {
   0%, 60%, 100% {

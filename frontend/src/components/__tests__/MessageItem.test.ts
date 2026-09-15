@@ -175,3 +175,66 @@ describe("MessageItem 工具卡呈现", () => {
     w.unmount();
   });
 });
+
+describe("MessageItem 复制反馈（P0：失败不能报成功）", () => {
+  it("剪贴板写入失败：按钮显示「复制失败」，不显示「已复制」", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("denied"); }) },
+    });
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "需要复制的正文" }), pinia);
+    await w.find(".copy-btn").trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.find(".copy-btn").text()).toBe("复制失败");
+    expect(w.find(".copy-btn").classes()).toContain("fail");
+    w.unmount();
+  });
+
+  it("剪贴板 API 不存在：同样显示「复制失败」", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "需要复制的正文" }), pinia);
+    await w.find(".copy-btn").trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.find(".copy-btn").text()).toBe("复制失败");
+    w.unmount();
+  });
+
+  it("写入成功：显示「已复制」", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "需要复制的正文" }), pinia);
+    await w.find(".copy-btn").trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writeText).toHaveBeenCalledWith("需要复制的正文");
+    expect(w.find(".copy-btn").text()).toBe("已复制");
+    w.unmount();
+  });
+});
+
+describe("MessageItem 生成中的可访问性（任务02 D）", () => {
+  it("流式生成中的正文标记 aria-busy，并且不设逐字播报的 live 区域", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "正在生成", streaming: true }), pinia);
+    const bubble = w.find(".assist-bubble");
+    expect(bubble.attributes("aria-busy")).toBe("true");
+    expect(bubble.attributes("aria-live")).toBe("off");
+    w.unmount();
+  });
+
+  it("落定后的正文不再标记 busy（按正常文档流阅读即可）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "已经完成" }), pinia);
+    const bubble = w.find(".assist-bubble");
+    expect(bubble.attributes("aria-busy")).toBeUndefined();
+    expect(bubble.attributes("aria-live")).toBeUndefined();
+    w.unmount();
+  });
+});
