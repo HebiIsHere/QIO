@@ -1,9 +1,20 @@
-"""FastAPI application: health, SSE, credentials, turns, graph, approvals."""
+"""FastAPI application: health, SSE, credentials, turns, graph, approvals.
+
+安全边界（本机 API）：
+
+* 所有 `/api/*`（health 除外）都要求 QIO 会话令牌（Bearer / X-QIO-Session）；
+  令牌由桌面壳生成，只活在这个进程里，不持久化、不进日志。
+* CORS 只信任 QIO 自己的 WebView origin（开发模式额外允许本机 dev server）。
+* Host 必须是回环地址（防 DNS rebinding）。
+* SSE 用一次性、短 TTL、scope=events 的 ticket 认证，主令牌不进 URL。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 import sqlite3
 import uuid
 from collections import deque
@@ -11,19 +22,24 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI
 
+from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
 from agent.api.events import AgentEvent, EventType, make_event
 from agent.adapters.probe import probe_adapter
 from agent.config import Settings
 from agent.graph.layout import assign_positions
 from agent.services.app import AppContext
+from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 
 FRAGMENT_MIN_MESSAGES = 1
 FRAGMENT_MAX_MESSAGES = 30
 DEFAULT_FRAGMENT_MAX_MESSAGES = 10
+
+# 开发模式的 CORS 兜底：本机 dev server 任意端口。
+DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
 
 def _knowledge_payload(ctx, item) -> dict:
@@ -47,11 +63,16 @@ def _knowledge_payload(ctx, item) -> dict:
 
 def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     app = FastAPI(title="QIO", version="0.1.0")
+    auth = SessionAuth.from_settings(settings)
+    instance_id = f"qio_{uuid.uuid4().hex[:16]}"
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # local desktop app: frontend dev origin
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # 只信任 QIO 自己的 WebView origin；开发模式额外允许本机 dev server。
+        allow_origins=list(settings.allowed_origins),
+        allow_origin_regex=DEV_ORIGIN_REGEX if settings.dev_insecure else None,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-QIO-Session"],
     )
     bus = EventBus()
     ctx = AppContext(settings, conn, bus)
@@ -59,13 +80,57 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
 
     approvals = ctx.approvals
 
+    @app.middleware("http")
+    async def session_guard(request: Request, call_next):
+        """本机 API 的应用级身份认证（在 CORS 之前拦截）。"""
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        # ticket 只对 SSE 入口有效，且是一次性的
+        ticket = request.query_params.get("ticket") if path == "/api/events" else None
+        allowed, reason = auth.check_request(
+            path=path, method=request.method, headers=headers, ticket=ticket
+        )
+        if not allowed:
+            status = 403 if reason in ("origin_rejected", "host_not_loopback") else 401
+            return JSONResponse({"detail": "unauthorized", "reason": reason}, status_code=status)
+        return await call_next(request)
+
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok", "db": conn.execute("SELECT 1").fetchone()[0] == 1}
 
+    @app.get("/api/instance")
+    async def instance_info() -> dict:
+        """backend 身份确认：前端/壳用它验证连上的是本实例，而不是别的进程。"""
+        return {
+            "instance_id": instance_id,
+            "pid": os.getpid(),
+            "auth_required": auth.enabled,
+            "version": app.version,
+        }
+
+    @app.post("/api/events/ticket")
+    async def create_events_ticket() -> dict:
+        """EventSource 无法带 header：换一张一次性、短生命周期、scope=events 的票。"""
+        if not auth.enabled:
+            return {"ticket": "", "expires_in": 0, "auth_required": False}
+        return {
+            "ticket": auth.issue_ticket(TICKET_SCOPE_EVENTS),
+            "expires_in": auth.ticket_ttl,
+            "auth_required": True,
+        }
+
     @app.get("/api/events")
     async def events(request: Request) -> StreamingResponse:
-        return StreamingResponse(bus.stream(), media_type="text/event-stream")
+        header_cursor = request.headers.get("last-event-id")
+        cursor = header_cursor or request.query_params.get("last_event_id") or None
+        return StreamingResponse(
+            bus.stream(cursor),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     # -- credentials -------------------------------------------------------
 
@@ -153,18 +218,52 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         kwargs: dict = {}
         if "tags" in body:
             kwargs["tags"] = body["tags"]
-        if "endpoint" in body:
-            kwargs["endpoint"] = body["endpoint"]
         if "default_model" in body:
             kwargs["default_model"] = body["default_model"]
         if "budget" in body:
             kwargs["budget"] = body["budget"]
         if "note" in body:
             kwargs["note"] = body["note"]
+
+        # endpoint 属于凭据的安全身份，不是普通元数据：改了 endpoint 就等于换了
+        # 服务提供方，绝不能继续复用 keyring 里的旧 Key 静默发出去。
+        # 必须重新输入 secret（rotation）+ 显式确认重新配置。
+        endpoint_changed = False
+        if "endpoint" in body:
+            new_endpoint = str(body.get("endpoint") or "").strip()
+            current = ctx.credentials.get_metadata(key_id)
+            if current is None:
+                raise HTTPException(status_code=404, detail="credential not found")
+            if new_endpoint != (current.get("endpoint") or ""):
+                from agent.credentials.store import validate_endpoint
+
+                try:
+                    validate_endpoint(new_endpoint)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                secret = str(body.get("secret") or "").strip()
+                if not secret or not body.get("confirm_reconfigure"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "changing endpoint is a credential reconfiguration: "
+                            "re-enter the secret and pass confirm_reconfigure=true"
+                        ),
+                    )
+                endpoint_changed = True
+                ctx.credentials.update_secret(key_id, secret)
+                kwargs["endpoint"] = new_endpoint
         try:
-            meta = ctx.credentials.update_metadata(key_id, **kwargs)
+            meta = ctx.credentials.update_metadata(
+                key_id,
+                **kwargs,
+                secret=body.get("secret") if endpoint_changed else None,
+                confirm_reconfigure=bool(endpoint_changed),
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "credential": _credential_payload(meta)}
 
     @app.post("/api/credentials/{key_id}/enable")
@@ -410,8 +509,17 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         if not message:
             raise HTTPException(status_code=400, detail="message required")
         topic_id = body.get("topic_id")
-        task = asyncio.create_task(_safe_run_turn(ctx, message, topic_id))
-        return {"ok": True, "message": message, "topic_id": topic_id, "task": task.get_name()}
+        # 受理时就已经有 turn_id：前端可以立刻用它做乐观消息关联与取消，
+        # 不必等 SSE 的 TURN_START（SSE 是异步状态通道，不承担请求身份）。
+        turn = ctx.turns.submit(message, topic_id)
+        return {
+            "ok": True,
+            "accepted": True,
+            "turn_id": turn.turn_id,
+            "status": turn.status,
+            "message": message,
+            "topic_id": topic_id,
+        }
 
     @app.post("/api/turns/cancel")
     async def cancel_turn() -> dict:
@@ -496,26 +604,24 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         node = ctx.topics.nodes.get_topic(topic_id)
         if node is None:
             raise HTTPException(status_code=404, detail="topic not found")
-        fragments = ctx.conn.execute(
-            "SELECT * FROM fragments WHERE topic_id = ? ORDER BY created_at",
+        # 第二层（Topic Detail）：只给目录与计数，不内联任何 Message 原文。
+        # 原文属于第三层，由 /api/fragments/{id}/messages 按需分页读取。
+        fragment_rows = ctx.conn.execute(
+            "SELECT f.id AS fragment_id, f.summary, f.closed_at, f.created_at, "
+            "       (SELECT COUNT(*) FROM messages m WHERE m.fragment_id = f.id) AS message_count "
+            "FROM fragments f WHERE f.topic_id = ? ORDER BY f.created_at",
             (topic_id,),
         ).fetchall()
-        fragment_payloads = []
-        for f in fragments:
-            messages = ctx.conn.execute(
-                "SELECT id, role, content, content_type, created_at FROM messages "
-                "WHERE fragment_id = ? ORDER BY created_at LIMIT 50",
-                (f["id"],),
-            ).fetchall()
-            fragment_payloads.append(
-                {
-                    "fragment_id": f["id"],
-                    "summary": f["summary"],
-                    "closed_at": f["closed_at"],
-                    "message_count": len(messages),
-                    "messages": [dict(m) for m in messages],
-                }
-            )
+        fragment_payloads = [
+            {
+                "fragment_id": row["fragment_id"],
+                "summary": row["summary"],
+                "closed_at": row["closed_at"],
+                "created_at": row["created_at"],
+                "message_count": int(row["message_count"] or 0),
+            }
+            for row in fragment_rows
+        ]
         entities = ctx.conn.execute(
             "SELECT n.id, n.name FROM edges e JOIN nodes n ON n.id = e.dst "
             "WHERE e.src = ? AND e.type = 'mention' ORDER BY e.weight DESC",
@@ -537,6 +643,82 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     @app.get("/api/graph/positions")
     async def graph_positions() -> dict:
         return {"topics": assign_positions(ctx.conn)}
+
+    # -- planet（长期话题的浏览景观） --------------------------------------
+    #
+    # 三层接口的第一层与第三层：
+    #   GET  /api/planet/overview          有哪些话题可以展示（轻量，无原文）
+    #   POST /api/planet/browse            接下来该展示哪一批（游标可前进可后退）
+    #   GET  /api/fragments/{id}/messages  真正展开某段历史时才按页取原文
+    # 星球不返回「所有话题 × 所有片段 × 所有消息」，也不在前端洗牌。
+
+    @app.get("/api/planet/overview")
+    async def planet_overview() -> dict:
+        topics = ctx.planet.overview()
+        return {
+            "topics": [
+                {
+                    "topic_id": t.topic_id,
+                    "title": t.title,
+                    "fragment_count": t.fragment_count,
+                    "last_activity": t.last_activity,
+                    "summary_preview": t.summary_preview,
+                    "visual_seed": t.visual_seed,
+                }
+                for t in topics
+            ],
+            "total": len(topics),
+            "visible_capacity": VISIBLE_CAPACITY,
+        }
+
+    @app.post("/api/planet/browse")
+    async def planet_browse(body: dict) -> dict:
+        direction = str(body.get("direction") or "forward")
+        if direction not in ("forward", "backward"):
+            raise HTTPException(status_code=400, detail="invalid direction")
+        raw_count = body.get("count", VISIBLE_CAPACITY)
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid count") from None
+        exclude = body.get("exclude") or []
+        if not isinstance(exclude, list):
+            raise HTTPException(status_code=400, detail="invalid exclude")
+        cursor = body.get("cursor")
+        raw_seed = body.get("seed")
+        try:
+            seed = int(raw_seed) if raw_seed is not None else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid seed") from None
+        return PlanetBrowseService(ctx.conn).browse(
+            cursor=str(cursor) if cursor else None,
+            direction=direction,
+            count=count,
+            exclude=[str(item) for item in exclude],
+            current_topic_id=body.get("current_topic_id") or None,
+            seed=seed,
+        )
+
+    @app.get("/api/fragments/{fragment_id}/messages")
+    async def fragment_messages(fragment_id: str, offset: int = 0, limit: int = 50) -> dict:
+        fragment = ctx.fragments.get(fragment_id)
+        if fragment is None:
+            raise HTTPException(status_code=404, detail="fragment not found")
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), 200))
+        rows = ctx.conn.execute(
+            "SELECT id, role, content, content_type, created_at FROM messages "
+            "WHERE fragment_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?",
+            (fragment_id, limit, offset),
+        ).fetchall()
+        return {
+            "fragment_id": fragment_id,
+            "topic_id": fragment.topic_id,
+            "messages": [dict(row) for row in rows],
+            "total": ctx.fragments.message_count(fragment_id),
+            "offset": offset,
+            "limit": limit,
+        }
 
     # -- knowledge management --------------------------------------------
 
@@ -766,14 +948,18 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         return {"ok": True, "approval_id": approval_id, "decision": decision}
 
     # -- test-only event publish ------------------------------------------
+    # 只在开发模式注册（生产构建里这条路由根本不存在），且同样要求会话认证。
+    if settings.dev_insecure or settings.test_events:
 
-    @app.post("/api/events/test")
-    async def publish_test(event_type: str, data: dict | None = None) -> dict:
-        event = make_event(EventType(event_type), data or {})
-        await bus.publish(event)
-        return {"id": event.id, "type": event.type.value}
+        @app.post("/api/events/test")
+        async def publish_test(event_type: str, data: dict | None = None) -> dict:
+            event = make_event(EventType(event_type), data or {})
+            await bus.publish(event)
+            return {"id": event.id, "type": event.type.value}
 
     app.state.bus = bus
+    app.state.auth = auth
+    app.state.instance_id = instance_id
     app.state.approvals = approvals
     app.state.ctx = ctx
     try:
@@ -781,17 +967,3 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     except RuntimeError:
         pass  # 不在事件循环内（如测试构造）时由手动 API 触发
     return app
-
-
-async def _safe_run_turn(ctx: AppContext, message: str, topic_id: str | None) -> None:
-    try:
-        await ctx.run_turn(message, topic_id)
-    except Exception as exc:  # noqa: BLE001 - background task boundary
-        from agent.api.events import EventType, make_event
-
-        await ctx.bus.publish(
-            make_event(
-                EventType.ERROR,
-                {"code": "turn_task", "message": str(exc)[:200], "recoverable": True},
-            )
-        )

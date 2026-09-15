@@ -85,6 +85,10 @@ class AppContext:
             fallback_recall=BM25Backend(),
         )
         self.retriever = Retriever(self.selector, self.topics, conn=conn)
+        from agent.services.planet import PlanetBrowseService
+
+        # 星球浏览景观的数据层：总话题数无上限，可见容量由视觉层决定。
+        self.planet = PlanetBrowseService(conn)
         from agent.services.context import ContextAssembler
 
         self.context_assembler = ContextAssembler(
@@ -146,7 +150,13 @@ class AppContext:
             FsFindTool,
             FsInfoTool,
         )
-        from agent.tools.cmd_tools import RunCmdTool, SysInfoTool, ProcListTool, ProcKillTool
+        from agent.tools.cmd_tools import (
+            ProcKillTool,
+            ProcListTool,
+            RunCmdTool,
+            RunProgramTool,
+            SysInfoTool,
+        )
 
         def _computer_root() -> str:
             return self.settings_store.get("computer.root_dir", "") or str(
@@ -165,6 +175,7 @@ class AppContext:
             FsListTool(),
             FsFindTool(),
             FsInfoTool(),
+            RunProgramTool(),
             RunCmdTool(),
             SysInfoTool(),
             ProcListTool(),
@@ -223,6 +234,8 @@ class AppContext:
         self.turns = TurnManager()
         self.turns.set_runner(self._execute_turn)
         self.turns.set_publisher(self._publish_turn_queue)
+        # TurnManager 是 turn 生命周期的唯一事实源：TURN_START / TURN_END 只由它发。
+        self.turns.set_emitter(self._publish_turn_event)
         self.registry.register(
             CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )
@@ -525,6 +538,12 @@ class AppContext:
 
         await self.bus.publish(make_event(EventType.TURN_QUEUE, snapshot))
 
+    async def _publish_turn_event(self, name: str, data: dict) -> None:
+        """TurnManager 的 TURN_START / TURN_END 出口（唯一的一处）。"""
+        from agent.api.events import EventType, make_event
+
+        await self.bus.publish(make_event(EventType(name), data))
+
     def _format_notice(self, task_id: str, record) -> str:
         result = record.result
         preview = (result.content or "")[:300] if result else ""
@@ -549,9 +568,12 @@ class AppContext:
 
         self._notify_turn = True
         try:
+            self.approvals.set_context(turn_id=ctx.turn_id)
             adapter = await self.build_adapter()
             if adapter is None:
                 ctx.result = {"ok": False, "reason": "no_credential"}
+                ctx.status = "unavailable"
+                ctx.error = "no_credential"
                 return
             topic = self.current_topic()
             ctx.current_topic = topic
@@ -602,12 +624,17 @@ class AppContext:
                 guard=RunawayGuard(),
                 turn_id=ctx.turn_id,
                 trace=tracer,
+                is_cancelled=lambda: ctx.cancelled,
             )
             ctx.loop = loop
             try:
                 result = await loop.run(prompt)
             finally:
                 ctx.loop = None
+            if ctx.cancelled or result.cancelled:
+                ctx.cancelled = True
+                self.trace_store.finish(ctx.turn_id, "cancelled")
+                return
             # feedback enters memory (assistant message; no user message)
             notify_msg_id, _ = self.memory.append_message(
                 topic_id=topic,
@@ -619,6 +646,11 @@ class AppContext:
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
             ctx.result = {"ok": True, "turn": result.__dict__}
+            ctx.usage = {
+                "iterations": result.iterations_used,
+                "tokens": result.tokens_used,
+                "tool_calls": result.tool_calls_made,
+            }
             fragment = self.fragments.get_or_create_open(topic)
             if self.fragments.should_close(fragment):
                 closed = await self._close_fragment(topic, adapter, tracer=tracer)
@@ -632,8 +664,11 @@ class AppContext:
             logger.warning("notify turn failed: %s", exc)
             self.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
             ctx.result = {"ok": False, "reason": "notify_failed"}
+            ctx.status = "failed"
+            ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
         finally:
             self._notify_turn = False
+            self.approvals.set_context(turn_id=None)
 
     # -- short-term memory & topic helpers ---------------------------------
 
@@ -803,13 +838,19 @@ class AppContext:
         return self._default_topic_id
 
 
-def make_warning(message: str):
+def make_warning(message: str, turn_id: str | None = None):
     from agent.api.events import EventType, make_event
 
-    return make_event(EventType.WARNING, {"code": "app", "message": message})
+    data = {"code": "app", "message": message}
+    if turn_id:
+        data["turn_id"] = turn_id
+    return make_event(EventType.WARNING, data)
 
 
-def make_error(code: str, message: str, recoverable: bool):
+def make_error(code: str, message: str, recoverable: bool, turn_id: str | None = None):
     from agent.api.events import EventType, make_event
 
-    return make_event(EventType.ERROR, {"code": code, "message": message, "recoverable": recoverable})
+    data = {"code": code, "message": message, "recoverable": recoverable}
+    if turn_id:
+        data["turn_id"] = turn_id
+    return make_event(EventType.ERROR, data)
