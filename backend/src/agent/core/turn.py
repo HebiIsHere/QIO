@@ -10,10 +10,22 @@ pipeline listeners, notices or cancellation target.
 
 TurnManager is also the **single source of truth for the turn lifecycle**:
 
-    accepted ──▶ running ──┬──▶ completed
-                           ├──▶ failed
-                           ├──▶ cancelled
-                           └──▶ unavailable
+    accepted ──▶ queued ──▶ running ──┬──▶ completed
+          └──────────────────────────▶├──▶ failed
+                                      ├──▶ cancelled
+                                      └──▶ unavailable
+
+契约（前端与后端共同遵守）：
+
+* `accepted` 只表示「后端已经受理」——它**不是** active；
+* 必须等待前一个主 turn 结束时是 `queued`；
+* 只有真的开始执行才是 `running`，也只有 worker 在真正开跑时才会发
+  `TURN_START`；
+* 终态（`TERMINAL_STATUSES`）单向：进入之后不再变化，更不允许回到 `running`。
+
+被取消的 queued turn 会变成 **tombstone**：它仍然躺在底层 `asyncio.Queue`
+里（`asyncio.Queue` 不支持安全删除），但 worker 取到它时会直接跳过 ——
+既不会被设成 `_active`，也不会发出任何 turn 生命周期事件。
 
 Every accepted turn gets exactly one `TURN_START` and exactly one `TURN_END`
 (the latter in a `finally`), whatever happens inside the runner. Nested loops
@@ -44,6 +56,10 @@ TURN_END = "TURN_END"
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
 
 
+def _terminal(ctx: "TurnContext") -> bool:
+    return ctx.status in TERMINAL_STATUSES
+
+
 @dataclass
 class TurnContext:
     """All state that belongs to exactly one turn."""
@@ -53,7 +69,7 @@ class TurnContext:
     created_at: str = field(default_factory=_now)
     initial_topic: str | None = None
     current_topic: str | None = None
-    # accepted | running | completed | failed | cancelled | unavailable
+    # accepted | queued | running | completed | failed | cancelled | unavailable
     status: str = "accepted"
     user_message_id: str | None = None
     prediction: Any = None
@@ -145,12 +161,15 @@ class TurnManager:
     def submit(
         self, message: str, topic_id: str | None = None, *, notify: bool = False
     ) -> TurnContext:
+        # 提交成功 ≠ 开始执行：前面还有主 turn 或已经排着队时，它就是 queued。
+        waits = self._active is not None or bool(self._pending)
         ctx = TurnContext(
             turn_id=f"turn_{uuid.uuid4().hex[:12]}",
             message=message,
             initial_topic=topic_id,
             current_topic=topic_id,
             notify=notify,
+            status="queued" if waits else "accepted",
         )
         try:
             loop = asyncio.get_running_loop()
@@ -173,6 +192,17 @@ class TurnManager:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
             return None
+        finally:
+            # 超时（或已经被兑现）之后不得把这个 waiter 永久留在表里 ——
+            # 反复 wait/timeout 不能持续累积无效 future。
+            if timeout is not None:
+                self._futures.pop(turn_id, None)
+
+    def _resolve(self, ctx: TurnContext, payload: dict) -> None:
+        """兑现某个 turn 的等待者（幂等：已经兑现过的不再重复设置）。"""
+        fut = self._futures.pop(ctx.turn_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(payload)
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -185,6 +215,12 @@ class TurnManager:
             ctx = await self._queue.get()
             if ctx in self._pending:
                 self._pending.remove(ctx)
+            # tombstone：排队期间被取消（或已进入终态）的 turn 直接跳过。
+            # 它从未开始执行，因此既不能占用 active，也不能发 TURN_START。
+            if ctx.cancelled or _terminal(ctx):
+                self._resolve(ctx, {"ok": False, "reason": "cancelled"})
+                self._schedule_emit()
+                continue
             self._active = ctx
             ctx.status = "running"
             self._schedule_emit()
@@ -208,11 +244,10 @@ class TurnManager:
                 await self._emit_turn_end(ctx)
                 if self._active is ctx:
                     self._active = None
-                fut = self._futures.pop(ctx.turn_id, None)
-                if fut is not None and not fut.done():
-                    fut.set_result(
-                        ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status}
-                    )
+                self._resolve(
+                    ctx,
+                    ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status},
+                )
                 self._schedule_emit()
 
     # -- lifecycle events -------------------------------------------------
@@ -286,10 +321,15 @@ class TurnManager:
             return self.cancel_active()
         for i, c in enumerate(self._pending):
             if c.turn_id == turn_id:
+                if _terminal(c):
+                    return False
                 c.cancelled = True
                 c.status = "cancelled"
                 self._pending.pop(i)
                 self._record_cancelled(c)
+                # 排队项的结局不依赖 worker：立刻兑现等待者，
+                # 之后 worker 取到这个 tombstone 只会跳过。
+                self._resolve(c, {"ok": False, "reason": "cancelled"})
                 self._schedule_emit()
                 return True
         return False
@@ -298,7 +338,21 @@ class TurnManager:
         return len(self._pending)
 
     async def shutdown(self) -> None:
+        """应用关闭：不留下任何永远等不到结果的 wait。
+
+        顺序：停止受理新任务 → 处理排队 turn（置终态 + 兑现等待者）
+        → 取消 worker（active turn 的收尾在 worker 的 finally 里完成）
+        → 清理仍然挂着的等待者与队列对象。
+        """
         self._closed = True
+
+        pending, self._pending = list(self._pending), []
+        for ctx in pending:
+            ctx.cancelled = True
+            if not _terminal(ctx):
+                ctx.status = "cancelled"
+            self._resolve(ctx, {"ok": False, "reason": "shutdown"})
+
         worker = self._worker
         self._worker = None
         if worker is not None:
@@ -309,3 +363,18 @@ class TurnManager:
                 pass
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 pass
+
+        # 兜底：worker 已经不在，任何还挂着的等待者都必须以终态结束，而不是永远等待。
+        for turn_id, fut in list(self._futures.items()):
+            if not fut.done():
+                fut.set_result({"ok": False, "reason": "cancelled"})
+            self._futures.pop(turn_id, None)
+
+        # 丢弃底层队列里剩下的 tombstone / 未执行对象，避免 shutdown 之后仍被引用。
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except asyncio.QueueEmpty:  # pragma: no cover - 竞态兜底
+                break
+        self._active = None

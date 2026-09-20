@@ -196,8 +196,8 @@ describe("历史读取状态（读不到 ≠ 没有历史）", () => {
   });
 });
 
-describe("受理即拿到 turn_id（停止按钮不必等 SSE）", () => {
-  it("send() 用 POST 返回的 turn_id 立即可取消", async () => {
+describe("受理 ≠ 开始执行（SEND 不能把 turn 设为 active）", () => {
+  it("send() 记录 turn_id 到消息上，但不改 activeTurnId", async () => {
     const { session } = setup();
     vi.mocked(api.sendTurn).mockResolvedValueOnce({
       ok: true,
@@ -208,7 +208,12 @@ describe("受理即拿到 turn_id（停止按钮不必等 SSE）", () => {
     });
     const ok = await session.send("你好");
     expect(ok).toBe(true);
-    expect(session.activeTurnId).toBe("turn_abc");
+    // 后端只是「收下了」：真正开始执行要等 TURN_START
+    expect(session.activeTurnId).toBeNull();
     expect(session.turnRunning).toBe(true);
+    // 但受理时拿到的 turn_id 不丢：它挂在乐观消息上
+    expect(session.messages[session.messages.length - 1].turnId).toBe("turn_abc");
+    // 停止按钮不必等 SSE：没有 activeTurnId 时走「取消后端 active」这条路
+    expect(session.canStopTurn).toBe(true);
   });
 });

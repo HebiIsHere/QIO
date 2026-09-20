@@ -25,6 +25,7 @@ DEFAULT_TIMEOUT = 15.0
 
 class RemoteEmbeddingBackend(RecallBackend):
     name = "remote"
+    supports_incremental = True
 
     def __init__(
         self,
@@ -48,6 +49,10 @@ class RemoteEmbeddingBackend(RecallBackend):
         self._degraded = False
         self._dims: int | None = None
         self._vectors: dict[str, np.ndarray] = {}
+        # 检索矩阵缓存：向量集合变化才重建
+        self._matrix: np.ndarray | None = None
+        self._matrix_keys: list[str] = []
+        self._matrix_dirty = True
 
     # -- availability -----------------------------------------------------
 
@@ -128,6 +133,7 @@ class RemoteEmbeddingBackend(RecallBackend):
 
     def index(self, docs: list[IndexedDoc]) -> None:
         self._vectors = {}
+        self._matrix_dirty = True
         if not self.available():
             return
         ref_ids = [d.doc_id for d in docs]
@@ -143,6 +149,34 @@ class RemoteEmbeddingBackend(RecallBackend):
         for doc in docs:
             if doc.doc_id in persisted:
                 self._vectors[doc.doc_id] = persisted[doc.doc_id]
+        self._matrix_dirty = True
+
+    # -- 增量更新 ---------------------------------------------------------
+
+    def upsert(self, doc: IndexedDoc) -> None:
+        if not self.available():
+            return
+        vectors = self.embed_texts([doc.text])
+        if vectors is None:
+            return
+        self._save("memory_index", [doc.doc_id], vectors)
+        self._vectors[doc.doc_id] = vectors[0]
+        self._matrix_dirty = True
+
+    def remove(self, doc_id: str) -> None:
+        if self._vectors.pop(doc_id, None) is not None:
+            self._matrix_dirty = True
+
+    def _search_matrix(self) -> tuple[np.ndarray | None, list[str]]:
+        if self._matrix_dirty or self._matrix is None:
+            self._matrix_keys = list(self._vectors.keys())
+            self._matrix = (
+                np.stack([self._vectors[k] for k in self._matrix_keys]).astype(np.float32)
+                if self._matrix_keys
+                else None
+            )
+            self._matrix_dirty = False
+        return self._matrix, self._matrix_keys
 
     def search(self, query: str, top_k: int) -> list[ScoredDoc]:
         if not self.available() or not self._vectors:
@@ -150,11 +184,12 @@ class RemoteEmbeddingBackend(RecallBackend):
         query_vec = self.embed_texts([query])
         if query_vec is None:
             return []
-        matrix = np.stack(list(self._vectors.values())).astype(np.float32)
+        matrix, keys = self._search_matrix()
+        if matrix is None:
+            return []
         scores = cosine_similarity(query_vec[0], matrix)
         order = np.argsort(-scores)
         hits: list[ScoredDoc] = []
-        keys = list(self._vectors.keys())
         for i in order[:top_k]:
             hits.append(ScoredDoc(doc_id=keys[i], score=float(scores[i]), source=self.name))
         return hits

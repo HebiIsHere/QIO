@@ -20,6 +20,7 @@ from agent.adapters.base import (
     BaseAdapter,
     ChatMessage,
     Completion,
+    ModelUsage,
     ToolCall,
     ToolSpec,
     ToolCallParseError,
@@ -237,11 +238,8 @@ class AnthropicAdapter(BaseAdapter):
             ),
             raw=raw,
             finish_reason=raw.get("stop_reason"),
-            usage={
-                "total_tokens": (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0),
-                "input_tokens": usage.get("input_tokens") or 0,
-                "output_tokens": usage.get("output_tokens") or 0,
-            },
+            # Anthropic 的 input/output 在这里归一化为统一语义
+            usage=ModelUsage.from_provider(usage),
         )
 
 

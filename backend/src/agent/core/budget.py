@@ -1,8 +1,16 @@
-"""Iteration budget: step-count and output-token dual constraint.
+"""Iteration budget: step-count guard + **optional** output-token cap.
 
-Main loop defaults: native 128 iterations, text 64. The token gate counts
-model OUTPUT tokens (completion_tokens), so its budget is estimated as
-`max_iterations x DEFAULT_OUTPUT_TOKENS_PER_ITER`.
+Main loop defaults: native 128 iterations, text 64.
+
+关于整轮输出 token 上限（产品决定，2026-09-20）：
+默认**不再**用「整轮累计输出 token」当强制停止条件 —— 短回答由模型自己收尾，
+长回答可以继续，复杂 Agent 工作不会因为一个固定数字被拦腰截断。
+`token_budget = 0` 表示不限；用户显式配置的预算仍然严格执行。
+
+token 统计本身不因此取消：输入 / 输出 / 总量照常累计，供 UI、Trace、
+成本估算与性能分析使用（见 `ModelUsage`）。
+
+`DEFAULT_OUTPUT_TOKENS_PER_ITER` 仍然保留，用于「继续」时追加一批预算的估值。
 """
 
 from __future__ import annotations
@@ -13,8 +21,8 @@ from agent.adapters.base import AdapterMode
 
 DEFAULT_OUTPUT_TOKENS_PER_ITER = 400
 
-# 兼容旧引用：默认总输出 token 预算 = native 迭代数 x 每轮输出估值。
-DEFAULT_TOKEN_BUDGET = 128 * DEFAULT_OUTPUT_TOKENS_PER_ITER
+# 0 = 不限（默认）。历史名保留，避免破坏引用方。
+DEFAULT_TOKEN_BUDGET = 0
 
 
 def default_iterations(mode: AdapterMode) -> int:
@@ -24,7 +32,7 @@ def default_iterations(mode: AdapterMode) -> int:
 @dataclass
 class IterationBudget:
     max_iterations: int
-    token_budget: int = DEFAULT_TOKEN_BUDGET  # 0 = 不设输出 token 上限
+    token_budget: int = DEFAULT_TOKEN_BUDGET  # 0 = 不设输出 token 上限（默认）
     used_iterations: int = 0
     used_tokens: int = 0  # 累计输出 token（completion_tokens）
 
@@ -50,7 +58,7 @@ class IterationBudget:
         self.consume_output_tokens(tokens)
 
     def raise_limits(self, extra_iterations: int, extra_tokens: int) -> None:
-        """「继续」时追加一批预算。"""
+        """「继续」时追加一批预算。不限（0）时只追加迭代，不会凭空造出上限。"""
         self.max_iterations += extra_iterations
         if self.token_budget > 0:
             self.token_budget += extra_tokens

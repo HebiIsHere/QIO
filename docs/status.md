@@ -325,6 +325,67 @@
 
 ---
 
+### P10 — 全工程稳定性、逻辑一致性与性能修复
+
+- **Status：** completed
+- **Implementation（turn 状态模型）：** `core/turn.py` 的 `TurnContext.status` 明确区分
+  `accepted` / `queued` / `running` 与终态；**只有真正开始执行的 worker 才发 `TURN_START`**。
+  终态单向：进入 `TERMINAL_STATUSES` 之后不再变化。被取消的 queued turn 变成 tombstone ——
+  仍留在底层 `asyncio.Queue` 里，但 worker 取到它会直接跳过（不占用 active、不发任何 turn 事件），
+  并且在取消那一刻就兑现它的等待者。`TurnManager.shutdown()` 按「停止受理 → 处理排队 turn
+  → resolve pending futures → 取消 worker → 清理」的顺序收尾，`wait()` 超时也会摘掉 waiter。
+- **Implementation（前端 turn 状态）：** `frontend/src/stores/session.ts` 拆出
+  `activeTurnId`（**只由 `TURN_START` 或后端 `TURN_QUEUE` 快照里的 running 写入**）与
+  `queuedTurnIds`；`send()` 不再把 POST 返回的 `turn_id` 当成 active。`stopActiveTurn()`
+  已知 active 时精确取消它，还不知道 turn_id 时改为 `POST /api/turns/cancel`（后端只取消 active），
+  绝不误伤排队消息。`TURN_END` 归属规则重新审查为：属于当前 active 的必须生效、属于从未开始的
+  queued turn 只清理排队登记、active 未知时按去重表收敛、其余迟到事件忽略。
+- **Implementation（用量与预算）：** 新增统一内部模型 `ModelUsage(input_tokens / output_tokens /
+  total_tokens)`，供应商差异（OpenAI 的 `prompt_tokens/completion_tokens`、Anthropic 的
+  `input_tokens/output_tokens`、文本兼容档）全部在 Adapter 层归一化，`AgentLoop` 不再读供应商字段。
+  `USAGE` 事件在保留原有 `tokens`（= 输出 token）的同时给出 input / output / total。
+  **默认不再使用整轮累计输出 token 作为强制停止条件**（`DEFAULT_TOKEN_BUDGET = 0` 表示不限），
+  用户显式配置的预算仍然严格执行；迭代上限、重复失败护栏、provider 自身窗口与单次输出上限照旧。
+- **Implementation（上下文预算）：** Adapter 新增 `system_prompt_text()` /
+  `protocol_overhead_tokens()` / `tools_in_prompt`，`services/turn_orchestrator.py` 的
+  `adapter_prompt_costs()` 把 system prompt（text 档含全部工具说明）、协议开销与工具定义
+  真实计入 `TokenBudgetPlanner`，不再恒为 0，也不会把已经拼进 prompt 的工具说明重复计一遍。
+- **Implementation（Adapter 生命周期）：** `AppContext` 缓存 adapter / 底层 HTTP client
+  （键为凭据 id + 版本 + 端点 + 模型），同一凭据不再每个 Turn 重建连接池；Anthropic 能力探测
+  按凭据缓存（默认 1 小时），凭据轮换立即失效；`create_app` 的 lifespan 在关闭时统一 `aclose()`。
+- **Implementation（Subagent / EventBus）：** `tools/task_manager.py` 改为「提交即 queued、
+  **拿到执行名额之后**才 running」，`await_result` 所有出口清理 waiter，任务记录有数量与 TTL 上限
+  并在回收时释放 `full_content`。`api/bus.py` 的订阅者缓冲改为有界：同一 `(类型, turn_id)` 的
+  `ASSISTANT` / `USAGE` 只保留最新（累计语义），溢出时先牺牲这类可合并事件，
+  `TURN_START` / `TURN_END` / 审批 / 工具生命周期等关键事件优先保留。
+- **Implementation（记忆检索与向量）：** `Selector` 新增 `upsert()` / `remove()`，`BM25Backend`
+  实现真正的增量（df / doc_len / avgdl 增量维护，打分公式与排序键一个字未改），
+  ONNX / 远程向量后端改为维护可复用矩阵（脏标记驱动重建），不再每次 `search()` 都 `np.stack` 全量重组；
+  `services/memory_lifecycle.py` 封块后只 `upsert` 新写入的那一条，
+  `turn_orchestrator.post_turn` 不再在增量更新之后又全量重建一次。
+- **Implementation（数据与安全边界）：** 迁移 12 追加「同一 topic 最多一个开放 fragment」的部分唯一索引，
+  迁移前先做**不删数据**的归一化（只归档关闭较早的开放片段），保证旧库仍能启动；
+  `storage/db.py` 新增 `transaction()`，「关闭片段 + 写记忆索引」包成原子操作。
+  `POST /api/approvals/{id}/respond` 现在真正接收并校验 `turn_id` / `session_id` / `request_digest`，
+  前端应答时原样回传，正常审批体验不变。
+- **Implementation（前端体验与性能）：** `MarkdownContent.vue` 把解析与显现动画解耦
+  （解析按批次节拍，与动画帧率无关；`unified` processor 单例、hljs 结果按 `(lang, code)` 记忆化、
+  落定时做一次完整解析）；会话历史改为渐进加载（首屏最近一页 + 向上滚动按游标加载更早，
+  游标是 `created_at|id` 复合键，同一时刻写入的消息也不丢不重，插入旧历史时做滚动锚定保持阅读位置）。
+- **Tests：** `backend/tests/test_turn_manager.py`、`test_turn_state_sequences.py`、`test_budget_defaults.py`、
+  `test_model_usage.py`、`test_context_budget_accuracy.py`、`test_adapter_lifecycle.py`、
+  `test_events_backpressure.py`、`test_selector_incremental.py`、`test_memory_selector_wiring.py`、
+  `test_session_pagination.py`、`test_db_invariants.py`、`test_approval_binding.py`、`test_subagent.py`；
+  前端 `stores/__tests__/turnSequences.test.ts`、`stores/__tests__/historyPagination.test.ts`、
+  `components/__tests__/MarkdownStreaming.test.ts`、`stores/__tests__/approvals.test.ts`
+- **Known limitations：** 取消仍不能物理中断已经发出的模型 HTTP 请求（返回值会被丢弃，turn 以
+  `cancelled` 结束）；流式 Markdown 的单次解析仍是 O(全文长度)，只是频率不再等于动画帧数；
+  增量检索的收益依赖后端支持 `supports_incremental`（不支持时自动回退全量重建，行为正确但没有加速）；
+  本轮未启动真实浏览器做人工视觉复核（改动以「渲染仍是 source 前缀、逐状态 DOM 一致」为前提）。
+- **后续依赖：** 后续新增 turn 状态、用量字段或索引维护路径都应以本节的契约为准。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
@@ -369,8 +430,9 @@
 - **搜索设置的即时生效**：此前保存 SearXNG/博查只写 settings 表，运行中的
   `SearchService` 不更新（要重启后端才生效）——已修为保存时调用
   `AppContext.apply_search_settings()`。
-- **单 turn token 只有总量**：后端 `USAGE` / `TURN_END` 只给该 turn 的输出 token 累计，
-  没有 input/output 分解；前端因此只在开发者模式显示单 turn 总 token，不编造分解数字。
+- **单 turn token 已有输入/输出分解，前端展示仍是总量**：后端 `USAGE` / `TURN_END` 现在给出
+  `input_tokens` / `output_tokens` / `total_tokens`（见 P10 的 `ModelUsage`），但界面目前只显示
+  总量，不展示分解数字（需要界面设计后再开）。
 - **审批成功路径未做端到端注入**：approvals 的失败/404/网络断开（保留待审批项 + 可重试 +
   「未做出任何授权」提示）已用真实后端无头浏览器验证；成功出队路径目前只有前端单测覆盖
   （后端没有可用的「造一个待审批项」测试注入口）。

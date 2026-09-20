@@ -80,11 +80,12 @@ class AgentLoop:
         self.registry = registry
         self.bus = bus
         mode = AdapterMode(adapter.mode)
+        # token_budget 缺省 = 0 = 不限（见 core/budget.py 的产品决定）。
+        # 迭代上限 / guard / provider 自身的上限仍然生效 —— 那是防异常循环，
+        # 不是用来控制正常回答长度的。
         self.budget = IterationBudget(
             max_iterations=max_iterations or default_iterations(mode),
             token_budget=token_budget or 0,
-        ) if token_budget else IterationBudget(
-            max_iterations=max_iterations or default_iterations(mode),
         )
         self.force_continue = force_continue
         self.approvals = approvals
@@ -97,6 +98,10 @@ class AgentLoop:
         self._halted = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
+        # 统一用量累计（输入 / 输出 / 总量）：供应商差异已经在 Adapter 层消掉
+        self._usage_input = 0
+        self._usage_output = 0
+        self._usage_total = 0
         # 本 loop 派发的工具调用 id；用于过滤 registry 上的跨 loop 事件
         self._dispatched_call_ids: set[str] = set()
         # 每次工具调用的开始时刻：TOOL_END 用它给出耗时（前端卡片显示「1.2s」）。
@@ -378,7 +383,7 @@ class AgentLoop:
 
             # PLANNING
             completion = await self._plan(messages)
-            self.budget.consume_output_tokens(self._tokens_of(completion))
+            self._account_usage(completion)
             self.budget.consume_iteration()
 
             # 取消检查点：模型调用之后（无法物理中断已发出的 HTTP 请求，
@@ -432,8 +437,12 @@ class AgentLoop:
             phase = LoopPhase.STOPPED
         usage = {
             "iterations": self.budget.used_iterations,
+            # 向后兼容字段：`tokens` 一直是「输出 token」（而不是总量）
             "tokens": self.budget.used_tokens,
             "tool_calls": tool_calls_made,
+            "input_tokens": self._usage_input,
+            "output_tokens": self._usage_output,
+            "total_tokens": self._usage_total,
         }
         await self._emit(EventType.USAGE, usage)
         return TurnResult(
@@ -478,8 +487,8 @@ class AgentLoop:
                     seq=self._model_seq,
                     adapter_mode=str(getattr(self.adapter, "mode", "")),
                     model=getattr(self.adapter, "model", None),
-                    input_tokens=int(usage.get("prompt_tokens", 0) or 0),
-                    output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                    input_tokens=self._input_tokens_of(completion),
+                    output_tokens=self._output_tokens_of(completion),
                     latency_ms=int((_time.perf_counter() - _t0) * 1000),
                     tool_calls=len(completion.tool_calls or []),
                 )
@@ -501,6 +510,28 @@ class AgentLoop:
             raise
 
     def _tokens_of(self, completion: Completion) -> int:
-        usage = completion.usage or {}
-        # 输出 token 闸：优先 completion_tokens；缺失时回退 total_tokens
-        return int(usage.get("completion_tokens", usage.get("total_tokens", 0)) or 0)
+        """该次模型调用的**输出** token 数。
+
+        只认统一语义里的 output_tokens：以前回退到 total_tokens 会把输入也算进去，
+        导致 Anthropic（只给 input/output）被过早限流。
+        """
+        return self._output_tokens_of(completion)
+
+    @staticmethod
+    def _input_tokens_of(completion: Completion) -> int:
+        usage = completion.usage
+        return int(usage.input_tokens) if usage is not None else 0
+
+    @staticmethod
+    def _output_tokens_of(completion: Completion) -> int:
+        usage = completion.usage
+        return int(usage.output_tokens) if usage is not None else 0
+
+    def _account_usage(self, completion: Completion) -> None:
+        """累计本轮用量：输出闸与 UI/Trace 统计共用同一份归一化数据。"""
+        usage = completion.usage
+        if usage is not None:
+            self._usage_input += int(usage.input_tokens)
+            self._usage_output += int(usage.output_tokens)
+            self._usage_total += int(usage.total_tokens)
+        self.budget.consume_output_tokens(self._tokens_of(completion))

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { useSessionStore } from "../stores/session";
-import { api } from "../services/api";
 
 const session = useSessionStore();
 /**
@@ -25,19 +24,17 @@ const MAX_INPUT_PX = 320;
 /**
  * 停止按钮的文案。
  *
- * 提交之后、服务端 TURN_START 到达之前，界面已经知道「有任务在跑」，
- * 但还没有可撤销的 turn_id —— 这段时间按钮是禁用的。
- * 实测：这个窗口里按钮显示「停止」却是灰的，用户会以为坏了。
- * 所以按真实状态改文案：准备中…（还没法停） → 正在停止 → …
+ * 提交之后、服务端 TURN_START 到达之前，界面知道「有任务在跑」但没有 turn_id。
+ * 这段时间不再是死按钮：停止动作会退化为「取消后端当前的 active turn」，
+ * 它只作用于真正在跑的那一轮，不会误伤排队消息。
  */
 const stopLabel = computed(() => {
   if (stopping.value || session.cancelling) return "正在停止";
-  if (!session.activeTurnId) return "准备中…";
   return "停止";
 });
 const stopTitle = computed(() => {
   if (stopping.value || session.cancelling) return "正在停止…";
-  if (!session.activeTurnId) return "任务正在启动，收到运行标识后即可停止";
+  if (!session.activeTurnId) return "停止当前任务（取消后端正在执行的那一轮）";
   return "停止当前任务";
 });
 
@@ -95,16 +92,18 @@ function autosize() {
 
 /** 停止当前 active turn：显示「正在停止」直到后端真正结束（TURN_END） */
 async function stopTurn() {
-  const turnId = session.activeTurnId;
-  if (!turnId || stopping.value) return;
+  if (stopping.value) return;
+  const target = session.activeTurnId;
   stopping.value = true;
   cancelError.value = "";
-  session.cancelling = turnId;
+  session.cancelling = target ?? "active";
   try {
-    await api.cancelTurn(turnId);
-  } catch (e) {
-    cancelError.value = `停止失败：${(e as Error).message}`;
-    session.cancelling = null;
+    const ok = await session.stopActiveTurn();
+    if (!ok) {
+      cancelError.value = session.lastError ?? "停止失败";
+      // 失败才复位：成功时要一直显示「正在停止」，直到后端真的发出 TURN_END
+      session.cancelling = null;
+    }
   } finally {
     stopping.value = false;
   }
@@ -135,7 +134,7 @@ async function stopTurn() {
         v-if="session.turnRunning"
         class="stop-btn"
         type="button"
-        :disabled="stopping || !session.activeTurnId"
+        :disabled="stopping || !session.canStopTurn"
         :aria-label="stopLabel"
         :title="stopTitle"
         @click="stopTurn"

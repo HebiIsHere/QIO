@@ -69,6 +69,14 @@ export interface HistoryState {
   error: string | null;
 }
 
+/**
+ * 首屏加载的历史条数。
+ *
+ * 进入 Topic 不再一次读全部历史：消息体积（尤其是长回答）会随使用时间增长，
+ * 后端读取、JSON 大小、前端解析与内存都会线性恶化。最近一页足以支撑继续对话。
+ */
+export const HISTORY_PAGE_SIZE = 200;
+
 export interface StreamMessage {
   id: string;
   /**
@@ -160,10 +168,24 @@ export const useSessionStore = defineStore("session", {
     cancelling: null as string | null,
     /** 历史读取状态（失败时保留已有消息，只标记失败） */
     history: { status: "idle", error: null } as HistoryState,
+    /** 是否还有更早的历史可以加载 */
+    historyHasMore: false,
+    /** 上一页的游标（后端给的复合游标） */
+    historyCursor: null as string | null,
+    /** 正在加载更早的历史（滚动会连续触发，需要防重入） */
+    historyOlderLoading: false,
     /** 本地排队中的用户消息 id（FIFO；TURN_START 到来时清除最早的一条） */
     queuedMessageIds: [] as string[],
-    /** 当前 active turn 的 id（TURN_START 记录，TURN_END 清除） */
+    /**
+     * 当前**真正在运行**的主 turn id。
+     *
+     * 只有真实的 `TURN_START`（或后端 `TURN_QUEUE` 快照里明确的 running）
+     * 才能写这个字段。SEND 返回的 turn_id 只代表「后端已经受理」，
+     * 受理 ≠ 正在运行 —— 它绝不能把排队的 turn 变成 active。
+     */
     activeTurnId: null as string | null,
+    /** 已被后端受理、但还没有开始执行的 turn（accepted / queued） */
+    queuedTurnIds: [] as string[],
     /**
      * 最近一轮的结局。界面用它安静地表达「已停止」这类状态：
      * 成功由回答本身表达，失败进 lastError，无凭据进 warning。
@@ -212,6 +234,15 @@ export const useSessionStore = defineStore("session", {
      */
     freshIds: [] as string[],
   }),
+  getters: {
+    /**
+     * 有任务在跑就可以停。
+     *
+     * 不要求 `activeTurnId` 已就位：还没收到 TURN_START 的那一小段时间里，
+     * 停止动作会退化为「取消后端当前的 active turn」，同样不会打到排队项。
+     */
+    canStopTurn: (state): boolean => state.turnRunning,
+  },
   actions: {
     _nextId() {
       this._msgSeq += 1;
@@ -319,6 +350,60 @@ export const useSessionStore = defineStore("session", {
       if (nextQueued) {
         const msg = this.messages.find((m) => m.id === nextQueued);
         if (msg) msg.queued = false;
+      }
+    },
+    /** 真实 TURN_START：唯一允许把某个 turn 设为 active 的入口。 */
+    activateTurn(turnId: string) {
+      if (!turnId) return;
+      this.forgetQueuedTurn(turnId);
+      this.activeTurnId = turnId;
+    },
+    /** SEND 只表示「后端受理了」：登记为排队，不改变 active。 */
+    markTurnQueued(turnId: string) {
+      if (!turnId) return;
+      if (!this.queuedTurnIds.includes(turnId)) {
+        this.queuedTurnIds = [...this.queuedTurnIds, turnId];
+      }
+    },
+    forgetQueuedTurn(turnId: string) {
+      if (!turnId) return;
+      this.queuedTurnIds = this.queuedTurnIds.filter((id) => id !== turnId);
+    },
+    isQueuedTurn(turnId: string) {
+      return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
+    },
+    /**
+     * 用后端的队列快照对齐本地状态（第二真源）。
+     *
+     * 重连 / 丢帧之后，本地可能不知道谁在跑；快照里的 running 是后端自己的
+     * 事实陈述，用它恢复 active，而不是靠猜。
+     */
+    syncTurnQueue(runningTurnId: string | null, queuedTurnIds: string[]) {
+      this.queuedTurnIds = [...queuedTurnIds];
+      if (runningTurnId) {
+        this.activeTurnId = runningTurnId;
+        this.forgetQueuedTurn(runningTurnId);
+        // 重连/丢帧后本地可能还以为空闲，但后端的事实是「有主 turn 在跑」：
+        // 恢复到运行态，否则停止按钮会一直是灰的。
+        this.turnRunning = true;
+        if (this.turnPhase === "idle") this.turnPhase = "waiting";
+      }
+    },
+    /**
+     * 停止「真正在运行的主 turn」。
+     *
+     * 已知 active → 精确取消它；还不知道 turn_id → 让后端取消 active，
+     * 绝不因为用户又发了一条排队消息就取消错对象。
+     */
+    async stopActiveTurn(): Promise<boolean> {
+      const target = this.activeTurnId;
+      try {
+        if (target) await api.cancelTurn(target);
+        else await api.cancelActiveTurn();
+        return true;
+      } catch (e) {
+        this.lastError = `停止失败：${(e as Error).message}`;
+        return false;
       }
     },
     pushMessage(msg: Omit<StreamMessage, "id" | "createdAt">) {
@@ -682,27 +767,70 @@ export const useSessionStore = defineStore("session", {
     async loadHistory() {
       this.history = { status: "loading", error: null };
       try {
-        const ctx = await api.getSessionContext();
+        const ctx = await api.getSessionContext(HISTORY_PAGE_SIZE);
         this.currentTopicId = ctx.topic_id;
         this.topicName = ctx.topic_name ?? null;
         this.anchorFragment = ctx.anchor_fragment ?? null;
         this.anchorFragmentId = ctx.anchor_fragment?.id ?? null;
         this.anchorHistoric = ctx.anchor_fragment?.historic ?? false;
-        this.messages = ctx.messages.map((m) => ({
-          id: m.id,
-          role: m.role as StreamMessage["role"],
-          content: m.content,
-          contentType: m.content_type,
-          createdAt: m.created_at,
-          topicName: this.topicName,
-          ...(m.role === "tool"
-            ? { toolName: "tool", toolOk: true, toolError: null }
-            : {}),
-        }));
+        // 重新进入（或换了 Topic）：分页状态必须一起重置，
+        // 否则会拿上一个话题的游标去翻新话题的历史。
+        this.historyHasMore = Boolean(ctx.has_more);
+        this.historyCursor = ctx.next_before ?? null;
+        this.historyOlderLoading = false;
+        this.messages = ctx.messages.map((m) => this._historyMessage(m));
         this.history = { status: "ready", error: null };
       } catch (e) {
         // 读不到 ≠ 没有：保留已经加载过的消息，只把失败状态交给界面显示与重试
         this.history = { status: "error", error: (e as Error).message };
+      }
+    },
+    /** 历史消息 → 消息流条目（历史不走入场动画，也不带 queued 之类的临时标记） */
+    _historyMessage(m: {
+      id: string;
+      role: string;
+      content: string;
+      content_type: string;
+      created_at: string;
+    }): StreamMessage {
+      return {
+        id: m.id,
+        role: m.role as StreamMessage["role"],
+        content: m.content,
+        contentType: m.content_type,
+        createdAt: m.created_at,
+        topicName: this.topicName,
+        fresh: false,
+        ...(m.role === "tool" ? { toolName: "tool", toolOk: true, toolError: null } : {}),
+      };
+    },
+    /**
+     * 向上读时加载更早的一页。
+     *
+     * 按 id 去重：新消息持续产生时，分页边界处后端可能把本地已有的消息再返回一次，
+     * 直接 concat 会出现重复条目（虚拟列表按 index 渲染，重复 id 会直接报错或串行）。
+     */
+    async loadOlderHistory(): Promise<boolean> {
+      const cursor = this.historyCursor;
+      if (!this.historyHasMore || !cursor || this.historyOlderLoading) return false;
+      this.historyOlderLoading = true;
+      try {
+        const page = await api.getSessionMessagesBefore(
+          this.currentTopicId,
+          cursor,
+          HISTORY_PAGE_SIZE,
+        );
+        const known = new Set(this.messages.map((m) => m.id));
+        const older = page.messages.filter((m) => !known.has(m.id)).map((m) => this._historyMessage(m));
+        this.messages = [...older, ...this.messages];
+        this.historyHasMore = Boolean(page.has_more);
+        this.historyCursor = page.next_before ?? null;
+        return older.length > 0;
+      } catch (e) {
+        this.lastError = `更早的历史没有加载出来：${(e as Error).message}`;
+        return false;
+      } finally {
+        this.historyOlderLoading = false;
       }
     },
     /** 顶部提示里的「重试」：同一份状态机再跑一次 */
@@ -730,11 +858,14 @@ export const useSessionStore = defineStore("session", {
       this.localSendSeq += 1;
       try {
         const res = await api.sendTurn(message, this.currentTopicId);
-        // 受理即拿到 turn_id：停止按钮不必等 SSE 的 TURN_START 才能用
+        // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
+        // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
+        // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
         if (res && res.turn_id) {
-          this.activeTurnId = res.turn_id;
           optimistic.turnId = res.turn_id;
-          if (!queued) {
+          if (queued) {
+            this.markTurnQueued(res.turn_id);
+          } else {
             this.turnRunning = true;
             this.turnPhase = "waiting";
           }

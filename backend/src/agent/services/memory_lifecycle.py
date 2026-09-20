@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from agent.adapters.base import BaseAdapter
+from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class MemoryLifecycle:
         embedding=None,
         user_root_id: Callable[[], str],
         refresh_selector: Callable[[], None],
+        # 增量入口：参数是 memory_index 行的 id。
+        # 只处理变化的那一条，不再「每封一块就重建整个索引」。
+        upsert_selector: Callable[[str], None] | None = None,
+        remove_selector: Callable[[str], None] | None = None,
     ) -> None:
         self.conn = conn
         self.fragments = fragments
@@ -48,6 +53,8 @@ class MemoryLifecycle:
         self.embedding = embedding
         self.user_root_id = user_root_id
         self.refresh_selector = refresh_selector
+        self.upsert_selector = upsert_selector
+        self.remove_selector = remove_selector
         # 本轮新建的高影响候选：等回答完成后再由会话层提示用户
         self._pending_candidates: list[dict] = []
 
@@ -55,6 +62,21 @@ class MemoryLifecycle:
         """取走（并清空）待提示的高影响知识候选。"""
         pending, self._pending_candidates = self._pending_candidates, []
         return pending
+
+    def _index_changed(self, entry: dict | None) -> None:
+        """一条 memory index 记录写入之后的索引维护。
+
+        优先走增量 upsert（只处理这一条）；调用方没有注入增量入口时，
+        回退到旧的全量刷新，保证向后兼容。
+        """
+        if entry is None:
+            self.refresh_selector()
+            return
+        index_id = entry.get("index_id")
+        if self.upsert_selector is not None and index_id:
+            self.upsert_selector(index_id)
+        else:
+            self.refresh_selector()
 
     # -- fragment close ---------------------------------------------------
 
@@ -110,18 +132,22 @@ class MemoryLifecycle:
         except Exception:
             logger.warning("entity card extraction failed", exc_info=True)
 
-        self.fragments.close(
-            fragment.id, summary.summary, summary_model=adapter.model, summary_version=1
-        )
-        self.index_builder.build(
-            fragment_id=fragment.id,
-            topic_id=topic_id,
-            title=summary.title,
-            summary_text=summary.summary,
-            entities=summary.entities,
-            keywords=summary.keywords,
-            message_texts=[m["content"] for m in messages],
-        )
+        # 「关闭片段」+「写入记忆索引」逻辑上是一个动作：
+        # 中途失败不能留下「已关闭但没有记忆」的半截状态。
+        with transaction(self.conn):
+            self.fragments.close(
+                fragment.id, summary.summary, summary_model=adapter.model, summary_version=1
+            )
+            entry = self.index_builder.build(
+                fragment_id=fragment.id,
+                topic_id=topic_id,
+                title=summary.title,
+                summary_text=summary.summary,
+                entities=summary.entities,
+                keywords=summary.keywords,
+                message_texts=[m["content"] for m in messages],
+            )
+        self._index_changed(entry)
 
         if tracer is not None:
             tracer.write("fragments_closed", fragment.id)
@@ -224,19 +250,20 @@ class MemoryLifecycle:
         meta["consolidated"] = True
         meta["consolidated_at"] = now
         meta["consolidation_count"] = int(meta.get("consolidation_count", 0)) + 1
-        self.conn.execute(
-            "UPDATE fragments SET summary = ?, summary_model = ?, "
-            "summary_version = summary_version + 1, meta = ? WHERE id = ?",
-            (summary.summary, adapter.model, json.dumps(meta, ensure_ascii=False), fragment.id),
-        )
-        self.index_builder.build(
-            fragment_id=fragment.id,
-            topic_id=topic_id,
-            title=summary.title,
-            summary_text=summary.summary,
-            entities=summary.entities,
-            keywords=summary.keywords,
-            message_texts=[m["content"] for m in messages],
-        )
-        self.refresh_selector()
+        with transaction(self.conn):
+            self.conn.execute(
+                "UPDATE fragments SET summary = ?, summary_model = ?, "
+                "summary_version = summary_version + 1, meta = ? WHERE id = ?",
+                (summary.summary, adapter.model, json.dumps(meta, ensure_ascii=False), fragment.id),
+            )
+            entry = self.index_builder.build(
+                fragment_id=fragment.id,
+                topic_id=topic_id,
+                title=summary.title,
+                summary_text=summary.summary,
+                entities=summary.entities,
+                keywords=summary.keywords,
+                message_texts=[m["content"] for m in messages],
+            )
+        self._index_changed(entry)
         return True

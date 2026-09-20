@@ -260,7 +260,11 @@ class TurnOrchestrator:
             focus_block=focus_block,
             focus_item_id=focus_fragment,
             entity_cards=entity_cards,
-            tool_definitions_tokens=_tool_spec_tokens(app.registry),
+            # 预算必须贴近 Adapter 真正发出去的内容：system prompt（text 档含
+            # 全部工具说明）与协议开销都要如实扣除，而不是恒为 0。
+            system_prompt_tokens=_system_prompt_tokens(adapter, app.registry),
+            adapter_overhead_tokens=_adapter_overhead_tokens(adapter, app.registry),
+            tool_definitions_tokens=_tool_definitions_tokens(adapter, app.registry),
         )
         ctx.knowledge_snapshot = [
             {
@@ -377,7 +381,8 @@ class TurnOrchestrator:
         if app.fragments.should_close(fragment):
             closed = await app._close_fragment(final_topic, adapter, tracer=ctx.trace)
             if closed is not None:
-                app._refresh_selector()
+                # 索引已由 `close_fragment` 增量维护（只处理新写入的那一条）。
+                # 这里再全量重建一次会把增量收益整个抵消掉。
                 app.predictor.refresh_topic_vector(final_topic)
         if plan.payload.plan.needs_consolidation:
             await app.consolidate(final_topic, adapter)
@@ -449,3 +454,54 @@ def _tool_spec_tokens(registry) -> int:
         return estimate_tokens(blob)
     except Exception:  # noqa: BLE001 - budget estimate must never break a turn
         return 0
+
+
+def adapter_prompt_costs(adapter, registry) -> tuple[int, int, int]:
+    """(system_prompt_tokens, adapter_overhead_tokens, tool_definitions_tokens)。
+
+    供应商差异交给 Adapter：由它回答「我会额外拼多少 prompt、协议本身有多少固定
+    开销、工具定义是走 API 字段还是已经拼进 prompt」，业务层只负责扣减。
+    """
+    return (
+        _system_prompt_tokens(adapter, registry),
+        _adapter_overhead_tokens(adapter, registry),
+        _tool_definitions_tokens(adapter, registry),
+    )
+
+
+def _specs_or_empty(registry) -> list:
+    try:
+        return list(registry.specs())
+    except Exception:  # noqa: BLE001 - 预算估算不得影响本轮
+        return []
+
+
+def _system_prompt_tokens(adapter, registry) -> int:
+    from agent.memory.index import estimate_tokens
+
+    specs = _specs_or_empty(registry)
+    if not specs:
+        return 0
+    try:
+        text = adapter.system_prompt_text(specs)
+    except Exception:  # noqa: BLE001
+        return 0
+    return estimate_tokens(text) if text else 0
+
+
+def _adapter_overhead_tokens(adapter, registry) -> int:
+    specs = _specs_or_empty(registry)
+    try:
+        return max(0, int(adapter.protocol_overhead_tokens(specs)))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _tool_definitions_tokens(adapter, registry) -> int:
+    specs = _specs_or_empty(registry)
+    if not specs:
+        return 0
+    # 工具说明已经拼进 system prompt 的档位不再按 API tools 计一遍
+    if getattr(adapter, "tools_in_prompt", False):
+        return 0
+    return _tool_spec_tokens(registry)

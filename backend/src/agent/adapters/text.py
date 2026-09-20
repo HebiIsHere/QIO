@@ -18,6 +18,7 @@ from agent.adapters.base import (
     BaseAdapter,
     ChatMessage,
     Completion,
+    ModelUsage,
     ToolCall,
     ToolSpec,
 )
@@ -33,9 +34,14 @@ SUCCESS_RATE_THRESHOLD = 0.6
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+# 出现这些迹象说明模型**想**按工具协议回复，但格式坏了 —— 这才是协议失败。
+_PROTOCOL_HINTS = ("tool_calls", "tool_name", '"arguments"')
+
 
 class TextAdapter(BaseAdapter):
     mode = "text"
+    # 没有原生工具协议：工具定义只能拼进 system prompt
+    tools_in_prompt = True
 
     def __init__(
         self,
@@ -82,6 +88,14 @@ class TextAdapter(BaseAdapter):
             tools_block = f"{SYSTEM_PROMPT_TOOLS_HEADER}\n{tools_block}"
         return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{tools_block}"
 
+    def system_prompt_text(self, tools: list[ToolSpec]) -> str:
+        """text 档真正会发出去的 system prompt（含全部工具 schema）。"""
+        return self.build_system_prompt(tools)
+
+    def protocol_overhead_tokens(self, tools: list[ToolSpec]) -> int:
+        # 除了统一的角色标记，text 档还要在提示里保留 JSON 输出格式说明的余量
+        return super().protocol_overhead_tokens(tools) + 32
+
     # -- completion -------------------------------------------------------
 
     async def complete(
@@ -109,12 +123,16 @@ class TextAdapter(BaseAdapter):
             raise normalize_error(exc) from exc
         content = raw.choices[0].message.content or ""
         parsed = self._parse(content)
-        ok = parsed is not None
-        self._record(ok)
+        # 成功统计只反映「协议格式损坏」：
+        # 合法 Tool JSON 与合法普通文本都是成功，只有看起来想按协议回却解析不出来才算失败。
+        # 否则 provider 健康度 / 自动降级会拿一份错误的数据做判断。
+        if parsed is not None:
+            self._record(True)
+        else:
+            self._record(not self._looks_like_protocol_attempt(content))
 
         tool_calls = None
-        if ok:
-            assert parsed is not None
+        if parsed is not None:
             tool_calls = [
                 ToolCall(
                     id=f"tc_{uuid.uuid4().hex[:8]}",
@@ -126,8 +144,22 @@ class TextAdapter(BaseAdapter):
         return Completion(
             message=ChatMessage(role="assistant", content=content, tool_calls=tool_calls),
             raw=raw,
-            usage=None,
+            usage=self._usage_of(raw),
         )
+
+    @staticmethod
+    def _usage_of(raw: Any) -> ModelUsage | None:
+        """文本兼容档同样要有用量：供应商给了 usage 就不能丢。"""
+        raw_usage = getattr(raw, "usage", None)
+        if raw_usage is None:
+            return None
+        if hasattr(raw_usage, "model_dump"):
+            payload = raw_usage.model_dump()
+        elif isinstance(raw_usage, dict):
+            payload = raw_usage
+        else:
+            return None
+        return ModelUsage.from_provider(payload)
 
     def _to_text_messages(
         self, messages: list[ChatMessage], tools: list[ToolSpec]
@@ -155,3 +187,20 @@ class TextAdapter(BaseAdapter):
         ):
             return None
         return data
+
+    @staticmethod
+    def _looks_like_protocol_attempt(content: str) -> bool:
+        """这段文本像是「想做工具调用但格式坏了」吗？"""
+        text = (content or "").strip()
+        if not text:
+            return False  # 空回答是合法结局（例如模型选择不说话），不是协议损坏
+        lowered = text.lower()
+        if any(hint in lowered for hint in _PROTOCOL_HINTS):
+            return True
+        if text.startswith("{") or text.startswith("["):
+            # 整段想作为 JSON 返回，却解析不出合法结构
+            return True
+        match = _JSON_BLOCK.search(text)
+        if match and match.group(1).strip().startswith(("{", "[")):
+            return True
+        return False

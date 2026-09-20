@@ -85,7 +85,8 @@ export const useEventStore = defineStore("events", {
           {
             const d = event.data as Record<string, unknown>;
             const tid = String(d.turn_id ?? "");
-            session.activeTurnId = tid || null;
+            // 只有真实的 TURN_START 能把 turn 设为 active。
+            if (tid) session.activateTurn(tid);
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
@@ -95,12 +96,22 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const tid = String(d.turn_id ?? session.activeTurnId ?? this.lastTurnId ?? "");
           /**
-           * 迟到事件防护：只有当结束事件属于「当前活跃的 turn」时才结束界面状态。
-           * 否则一个早先被取消/已结束的 turn 的收尾事件会把后来那次运行标记成已结束，
-           * 让正在跑的任务看起来停了。
+           * 归属规则（active/queued 模型下重新审查）：
+           *
+           * 1. 属于当前 active turn 的 END **必须生效** —— 它是唯一能结束界面运行
+           *    状态的事件，绝不能因为「本地记错了 active」而被丢掉；
+           * 2. 属于「已受理但从未开始」的 turn：只把它从排队列表里摘掉，不触碰 active；
+           * 3. active 未知（重连后首帧就是 END）：按 lastTurnId / 去重表收敛；
+           * 4. 其余（更早的 turn 迟到的收尾）：忽略，不能让旧事件把新任务标记成已结束。
            */
-          if (session.activeTurnId && tid && tid !== session.activeTurnId) {
-            break;
+          if (tid) {
+            const isActive = tid === session.activeTurnId;
+            if (!isActive && session.isQueuedTurn(tid)) {
+              // 一个从未开始执行的 turn 结束（或被取消）：只清理排队登记
+              session.forgetQueuedTurn(tid);
+              break;
+            }
+            if (!isActive && session.activeTurnId) break;
           }
           // 重连重放：同一个 turn 的 TURN_END 只能生效一次
           if (tid && this.endedTurns.includes(tid)) break;
@@ -131,17 +142,21 @@ export const useEventStore = defineStore("events", {
             // 后端通常已经先发了一条人话 WARNING；兜底也不直接把错误码丢给用户
             session.warning = "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key";
           }
+          if (tid) session.forgetQueuedTurn(tid);
           session.activeTurnId = null;
           break;
         }
         case "TURN_QUEUE": {
           const d = event.data as Record<string, unknown>;
           const queuedList = (d.queued as { turn_id: string; message: string }[] | undefined) ?? [];
+          const running = (d.running as { turn_id: string; message: string } | null) ?? null;
           session.turnQueue = {
-            running: (d.running as { turn_id: string; message: string } | null) ?? null,
+            running,
             queued: queuedList,
             cancelled: (d.cancelled as { turn_id: string; message: string }[] | undefined) ?? [],
           };
+          // 后端的队列快照是第二真源：本地漏掉 TURN_START（重连 / 丢帧）时靠它恢复
+          session.syncTurnQueue(running?.turn_id ?? null, queuedList.map((q) => q.turn_id));
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
           if (!queuedList.length) session.clearQueuedFlags();
           break;
@@ -376,7 +391,13 @@ export const useEventStore = defineStore("events", {
               kind || "unknown",
               (approval.payload ?? {}) as Record<string, unknown>,
               // 用户正在输入（含凭据表单）时不抢焦点：保留待办 + 亮出「有 N 项操作等待确认」入口
-              { autoOpen: !isUserEditing() },
+              {
+                autoOpen: !isUserEditing(),
+                // 绑定信息随待办一起保存：应答时原样回传
+                turnId: (approval.turn_id as string | null) ?? null,
+                sessionId: (approval.session_id as string | null) ?? null,
+                requestDigest: (approval.request_digest as string | null) ?? null,
+              },
             );
             // 需要用户决定：全局状态说「等待确认」（决定本身在审批卡里）
             session.activity = "approval";

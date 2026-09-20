@@ -6,8 +6,10 @@ import asyncio
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from agent.api.bus import EventBus
+from agent.api.server import create_app
 from agent.tools.approval import ApprovalService, request_digest
 
 
@@ -109,3 +111,86 @@ async def test_timeout_returns_timeout_and_is_single_use():
     service = ApprovalService(EventBus(), timeout_seconds=0.05)
     result = await service.request("computer", {"action": "read"})
     assert result.decision == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# 真实 HTTP 路径：绑定校验必须真的执行（而不只是服务层有这段代码）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def client(db_conn, settings):
+    from agent.credentials.store import MemoryKeyring
+
+    app = create_app(settings, db_conn)
+    app.state.ctx.credentials._kr = MemoryKeyring()
+    with TestClient(app) as c:
+        yield c
+
+
+def test_api_forwards_binding_fields_to_service(client, monkeypatch):
+    """HTTP 层必须把 turn_id / session_id / request_digest 真的传给服务。"""
+    approvals = client.app.state.ctx.approvals
+    seen: dict = {}
+
+    async def fake_respond(approval_id, decision, scope=None, overrides=None, **kwargs):
+        seen["approval_id"] = approval_id
+        seen["decision"] = decision
+        seen["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(approvals, "respond", fake_respond)
+    resp = client.post(
+        "/api/approvals/appr_x/respond",
+        json={
+            "decision": "approved",
+            "turn_id": "turn_a",
+            "session_id": "sess_a",
+            "request_digest": "digest_a",
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["approval_id"] == "appr_x"
+    assert seen["kwargs"] == {
+        "turn_id": "turn_a",
+        "session_id": "sess_a",
+        "digest": "digest_a",
+    }
+
+
+def test_api_rejects_mismatched_approval_binding(client):
+    """一次批准只能批准它原本对应的那一次具体请求。"""
+    approvals = client.app.state.ctx.approvals
+
+    async def arm():
+        approvals.set_context(turn_id="turn_a", session_id="sess_a")
+        task = asyncio.create_task(approvals.request("computer", {"action": "read", "path": "x"}))
+        await asyncio.sleep(0.05)
+        return next(iter(approvals._requests)), task
+
+    approval_id, task = client.portal.call(arm)
+    digest = request_digest("computer", {"action": "read", "path": "x"})
+
+    # 别的 turn 拿这次批准 → 拒绝
+    resp = client.post(
+        f"/api/approvals/{approval_id}/respond",
+        json={"decision": "approved", "turn_id": "turn_b"},
+    )
+    assert resp.status_code == 400
+
+    # 请求摘要不一致（批准 A 却想执行 B）→ 拒绝
+    resp = client.post(
+        f"/api/approvals/{approval_id}/respond",
+        json={"decision": "approved", "request_digest": "deadbeef"},
+    )
+    assert resp.status_code == 400
+
+    # 绑定正确 → 正常批准，用户操作方式没有任何变化
+    resp = client.post(
+        f"/api/approvals/{approval_id}/respond",
+        json={"decision": "approved", "turn_id": "turn_a", "request_digest": digest},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    assert client.portal.call(lambda: task)

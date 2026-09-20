@@ -28,7 +28,12 @@ describe("approvals store 状态可信性", () => {
 
     await s.respond("approved");
 
-    expect(respond).toHaveBeenCalledWith("a1", "approved", undefined);
+    expect(respond).toHaveBeenCalledWith(
+      "a1",
+      "approved",
+      undefined,
+      { turnId: null, sessionId: null, requestDigest: null },
+    );
     expect(s.current?.approval_id).toBe("a2");
     expect(s.error).toBeNull();
   });
@@ -60,7 +65,12 @@ describe("approvals store 状态可信性", () => {
     expect(s.current?.approval_id).toBe("a1");
 
     await s.respond("rejected");
-    expect(respond).toHaveBeenLastCalledWith("a1", "rejected", undefined);
+    expect(respond).toHaveBeenLastCalledWith(
+      "a1",
+      "rejected",
+      undefined,
+      { turnId: null, sessionId: null, requestDigest: null },
+    );
     expect(s.current).toBeNull();
   });
 
@@ -95,7 +105,12 @@ describe("approvals store 状态可信性", () => {
     expect(s.queue.length).toBe(1);
 
     await s.respond("approved", { subagent_budget: { max_iterations: 3 } });
-    expect(respond).toHaveBeenCalledWith("a1", "approved", { subagent_budget: { max_iterations: 3 } });
+    expect(respond).toHaveBeenCalledWith(
+      "a1",
+      "approved",
+      { subagent_budget: { max_iterations: 3 } },
+      { turnId: null, sessionId: null, requestDigest: null },
+    );
   });
 
   /**
@@ -140,5 +155,22 @@ describe("approvals store 状态可信性", () => {
     expect(s.current?.approval_id).toBe("a1");
     expect(s.current?.stale).toBeUndefined();
     expect(s.error).toContain("可重试");
+  });
+
+  it("应答时原样回传审批的身份绑定（turn / session / request digest）", async () => {
+    const s = store();
+    s.enqueue("a1", "computer", { action: "read" }, {
+      turnId: "turn_a",
+      sessionId: "sess_a",
+      requestDigest: "digest_a",
+    });
+
+    await s.respond("approved");
+
+    expect(respond).toHaveBeenCalledWith("a1", "approved", undefined, {
+      turnId: "turn_a",
+      sessionId: "sess_a",
+      requestDigest: "digest_a",
+    });
   });
 });

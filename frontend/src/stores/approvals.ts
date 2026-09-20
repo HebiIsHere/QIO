@@ -6,6 +6,14 @@ export interface ApprovalItem {
   kind: string;
   payload: Record<string, unknown>;
   /**
+   * 这次审批原本属于哪一轮 / 哪个会话 / 哪个请求摘要。
+   * 应答时原样回传，后端据此确认「批准的就是这一次请求」——
+   * 用户操作方式不变，只有审批与请求不匹配时才会被拒。
+   */
+  turnId?: string | null;
+  sessionId?: string | null;
+  requestDigest?: string | null;
+  /**
    * 后端已经没有这条审批（别处已应答 / 已过期）。
    * 这时批准与拒绝都会 404，继续保留成一个「可重试」的待办只会把用户卡死 ——
    * 所以标记为失效：界面明确说清楚，并给一个「知道了」把它清掉。
@@ -38,11 +46,23 @@ export const useApprovalsStore = defineStore("approvals", {
       approvalId: string,
       kind: string,
       payload: Record<string, unknown>,
-      opts: { autoOpen?: boolean } = {},
+      opts: {
+        autoOpen?: boolean;
+        turnId?: string | null;
+        sessionId?: string | null;
+        requestDigest?: string | null;
+      } = {},
     ) {
       if (this.queue.some((a) => a.approval_id === approvalId)) return;
       const first = this.queue.length === 0;
-      this.queue.push({ approval_id: approvalId, kind, payload });
+      this.queue.push({
+        approval_id: approvalId,
+        kind,
+        payload,
+        turnId: opts.turnId ?? null,
+        sessionId: opts.sessionId ?? null,
+        requestDigest: opts.requestDigest ?? null,
+      });
       // 编辑中到达的确认不抢焦点：保留待办并亮出可发现的入口，由用户主动打开。
       if (first) this.deferred = opts.autoOpen === false;
       else if (opts.autoOpen !== false) this.deferred = false;
@@ -78,7 +98,11 @@ export const useApprovalsStore = defineStore("approvals", {
       this.responding = item.approval_id;
       this.error = null;
       try {
-        await api.respondApproval(item.approval_id, decision, overrides);
+        await api.respondApproval(item.approval_id, decision, overrides, {
+          turnId: item.turnId,
+          sessionId: item.sessionId,
+          requestDigest: item.requestDigest,
+        });
         // 成功才出队（按 id 过滤，避免并发事件让 shift 移除错项）
         this.queue = this.queue.filter((a) => a.approval_id !== item.approval_id);
         if (!this.queue.length) this.deferred = false;

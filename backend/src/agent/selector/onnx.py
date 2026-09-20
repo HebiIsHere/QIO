@@ -38,6 +38,7 @@ def cosine_similarity(query: np.ndarray, vectors: np.ndarray) -> np.ndarray:
 
 class OnnxEmbeddingBackend(RecallBackend):
     name = "onnx"
+    supports_incremental = True
 
     def __init__(
         self,
@@ -56,6 +57,10 @@ class OnnxEmbeddingBackend(RecallBackend):
         self._session: Any | None = None
         self._tokenizer: Any | None = None
         self._vectors: dict[str, np.ndarray] = {}
+        # 检索矩阵缓存：向量集合变化才重建，避免每次 search 都 np.stack 全量重组
+        self._matrix: np.ndarray | None = None
+        self._matrix_keys: list[str] = []
+        self._matrix_dirty = True
         self._load()
 
     # -- availability -----------------------------------------------------
@@ -152,6 +157,7 @@ class OnnxEmbeddingBackend(RecallBackend):
 
     def index(self, docs: list[IndexedDoc]) -> None:
         self._vectors = {}
+        self._matrix_dirty = True
         if not self.available():
             return
         ref_ids = [d.doc_id for d in docs]
@@ -167,6 +173,36 @@ class OnnxEmbeddingBackend(RecallBackend):
         for doc in docs:
             if doc.doc_id in persisted:
                 self._vectors[doc.doc_id] = persisted[doc.doc_id]
+        self._matrix_dirty = True
+
+    # -- 增量更新 ---------------------------------------------------------
+
+    def upsert(self, doc: IndexedDoc) -> None:
+        """只嵌入新增 / 变化的那一条，不再重建全部向量索引。"""
+        if not self.available():
+            return
+        vectors = self.embed_texts([doc.text])
+        if vectors is None:
+            return
+        self._save("memory_index", [doc.doc_id], vectors)
+        self._vectors[doc.doc_id] = vectors[0]
+        self._matrix_dirty = True
+
+    def remove(self, doc_id: str) -> None:
+        if self._vectors.pop(doc_id, None) is not None:
+            self._matrix_dirty = True
+
+    def _search_matrix(self) -> tuple[np.ndarray | None, list[str]]:
+        """(矩阵, doc_id 顺序)。向量集合没变就直接复用上一份矩阵。"""
+        if self._matrix_dirty or self._matrix is None:
+            self._matrix_keys = list(self._vectors.keys())
+            self._matrix = (
+                np.stack([self._vectors[k] for k in self._matrix_keys]).astype(np.float32)
+                if self._matrix_keys
+                else None
+            )
+            self._matrix_dirty = False
+        return self._matrix, self._matrix_keys
 
     def search(self, query: str, top_k: int) -> list[ScoredDoc]:
         if not self.available() or not self._vectors:
@@ -174,12 +210,14 @@ class OnnxEmbeddingBackend(RecallBackend):
         query_vec = self.embed_texts([query])
         if query_vec is None:
             return []
-        matrix = np.stack(list(self._vectors.values())).astype(np.float32)
+        matrix, keys = self._search_matrix()
+        if matrix is None:
+            return []
         scores = cosine_similarity(query_vec[0], matrix)
         order = np.argsort(-scores)
         hits: list[ScoredDoc] = []
         for i in order[:top_k]:
-            doc_id = list(self._vectors.keys())[i]
+            doc_id = keys[i]
             hits.append(ScoredDoc(doc_id=doc_id, score=float(scores[i]), source=self.name))
         return hits
 
@@ -229,4 +267,3 @@ class OnnxEmbeddingBackend(RecallBackend):
     def topic_vector(self, topic_id: str) -> np.ndarray | None:
         persisted = self._load_persisted("topic", [topic_id])
         return persisted.get(topic_id)
-

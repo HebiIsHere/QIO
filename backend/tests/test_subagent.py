@@ -130,6 +130,152 @@ async def test_task_manager_notify_callback():
     assert notified == [tid]
 
 
+class _RecordingBus:
+    """只记录事件的假总线：用于断言状态事件序列（真 EventBus 另有测试）。"""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def publish(self, event) -> None:
+        self.events.append(event)
+
+    def statuses(self, task_id: str) -> list[str]:
+        return [
+            e.data.get("status") for e in self.events if e.data.get("task_id") == task_id
+        ]
+
+
+async def _ok(content: str) -> ToolResult:
+    return ToolResult(ok=True, content=content)
+
+
+async def test_queued_task_not_marked_running():
+    """并发额度占满时，排队任务必须仍是 queued，且不得发出 running 事件。
+
+    真实缺陷：`_run` 在抢到 semaphore 之前就把状态设成 running 并广播，
+    前端因此看到「排队中的任务已经在跑」。
+    """
+    from agent.tools.task_manager import TaskManager
+
+    bus = _RecordingBus()
+    tm = TaskManager(bus, max_concurrent=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking():
+        started.set()
+        await release.wait()
+        return ToolResult(ok=True, content="first")
+
+    async def quick():
+        return ToolResult(ok=True, content="second")
+
+    first = tm.submit("t", blocking)
+    second = tm.submit("t", quick)
+    await started.wait()
+    await asyncio.sleep(0.01)  # 让第二个任务跑到 semaphore 之前
+
+    assert tm.record_info(first).status == "running"
+    assert tm.record_info(second).status == "queued"
+    assert bus.statuses(second) == ["queued"]
+
+    release.set()
+    await tm.await_result(first, timeout=2)
+    status, result = await tm.await_result(second, timeout=2)
+    assert status == "done" and result is not None and result.content == "second"
+    assert bus.statuses(second) == ["queued", "running", "done"]
+
+
+async def test_wait_timeout_cleans_waiter():
+    """await_result 超时后必须摘掉自己注册的 waiter，否则每次超时都留下永久残留。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=1)
+    release = asyncio.Event()
+
+    async def slow():
+        await release.wait()
+        return ToolResult(ok=True, content="late")
+
+    tid = tm.submit("t", slow)
+    status, result = await tm.await_result(tid, timeout=0.01)
+    assert status == "running" and result is None
+    assert tm._waiters.get(tid, []) == []
+
+    # 摘除 waiter 不能影响后续等待：任务完成后仍要能取回结果
+    release.set()
+    status, result = await tm.await_result(tid, timeout=2)
+    assert status == "done" and result is not None and result.content == "late"
+    assert tm._waiters.get(tid, []) == []
+
+
+async def test_task_records_bounded_and_released():
+    """已完成记录有上限：超出上限的老任务被回收，并真正释放 result / full_content。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=4, max_records=3)
+    records = []
+    ids = []
+    for i in range(6):
+        tid = tm.submit("t", lambda i=i: _ok(f"r{i}"))
+        ids.append(tid)
+        await tm.await_result(tid, timeout=2)
+        record = tm.record_info(tid)
+        record.full_content = f"full-{i}" * 100  # 只有长结果任务才会写这个字段
+        records.append(record)
+
+    assert len(tm._records) <= 3
+    assert tm.record_info(ids[-1]) is not None
+    assert tm.record_info(ids[0]) is None
+    assert records[0].full_content is None and records[0].result is None
+
+
+async def test_finished_records_expire_by_ttl():
+    """TTL 到期后已完成记录不再驻留内存（长期运行的后端不会越跑越大）。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=2, record_ttl_seconds=0.05)
+    tid = tm.submit("t", lambda: _ok("done"))
+    await tm.await_result(tid, timeout=2)
+    record = tm.record_info(tid)
+    record.full_content = "x" * 500
+
+    await asyncio.sleep(0.06)
+    tm.prune()
+
+    assert tm.record_info(tid) is None
+    assert record.full_content is None and record.result is None
+
+
+async def test_bounded_records_never_evict_live_tasks():
+    """记录上限只回收已完成任务：排队 / 运行中的任务永远不能被顶掉。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=1, max_records=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking():
+        started.set()
+        await release.wait()
+        return ToolResult(ok=True, content="first")
+
+    async def quick():
+        return ToolResult(ok=True, content="second")
+
+    running = tm.submit("t", blocking)
+    queued = tm.submit("t", quick)
+    await started.wait()
+    tm.prune()
+
+    assert tm.record_info(running) is not None
+    assert tm.record_info(queued) is not None
+
+    release.set()
+    status, _ = await tm.await_result(queued, timeout=2)
+    assert status == "done"
+
+
 async def test_subagent_status_event_emitted():
     bus = EventBus()
     events, consumer = _collect_events(bus, limit=5)

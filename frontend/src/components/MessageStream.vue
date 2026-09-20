@@ -82,6 +82,48 @@ function onScroll() {
   session.streamScrollTop = el.scrollTop;
   session.streamFollowing = followBottom.value;
   if (followBottom.value) unseen.value = 0;
+  // 读到头了：再往前要更早的历史（渐进式加载，首屏不再读全量）
+  if (el.scrollTop <= NEAR_TOP_PX) void loadOlderHistoryVue();
+}
+
+/** 距顶部多少像素内算「读到头了」 */
+const NEAR_TOP_PX = 80;
+
+/** 正在加载更早历史时做滚动锚定：不能把用户正在读的那一行甩走 */
+let anchoringHeight = 0;
+
+/**
+ * 加载更早的一页，并保持视觉位置不动。
+ *
+ * 旧消息插在列表顶部，虚拟列表的总高度会先按估算值、再按实测值变化，
+ * 所以不能只在 nextTick 里补一次差值：每帧把「高度增量」增量式地补进 scrollTop，
+ * 直到高度稳定。用户读到哪里就还在哪里 —— 不丢位置、不跳。
+ */
+async function loadOlderHistoryVue() {
+  const el = containerRef.value;
+  if (!el || !session.historyHasMore || session.historyOlderLoading) return;
+  anchoringHeight = el.scrollHeight;
+  const loaded = await session.loadOlderHistory();
+  if (!loaded) return;
+  await nextTick();
+  restoring = true;
+  let frames = 0;
+  const anchor = () => {
+    const node = containerRef.value;
+    if (node) {
+      const height = node.scrollHeight;
+      const delta = height - anchoringHeight;
+      if (delta !== 0) {
+        node.scrollTop += delta;
+        anchoringHeight = height;
+        session.streamScrollTop = node.scrollTop;
+      }
+    }
+    frames += 1;
+    if (frames < 8) requestAnimationFrame(anchor);
+    else restoring = false;
+  };
+  requestAnimationFrame(anchor);
 }
 
 /** 用户一动滚轮/触屏：立刻中断程序化滚动（自动滚动不能和用户抢） */
@@ -262,11 +304,20 @@ function measureItem(el: unknown) {
 watch(
   () => {
     const last = session.messages[session.messages.length - 1];
-    return [session.messages.length, last?.content.length ?? 0, session.turnRunning] as const;
+    const first = session.messages[0];
+    return [
+      session.messages.length,
+      last?.content.length ?? 0,
+      session.turnRunning,
+      first?.id ?? "",
+    ] as const;
   },
   async (now, prev) => {
-    const [count] = now;
-    const [prevCount] = prev ?? [count];
+    const [count, , , firstId] = now;
+    const [prevCount, , , prevFirstId] = prev ?? now;
+    // 更早的历史被插到列表顶部（首条变了、总数变多）：这不是「新消息」，
+    // 既不该计入未读数，也不该触发任何滚动 —— 用户的位置由锚定逻辑负责保持。
+    if (prevFirstId && firstId !== prevFirstId && count > prevCount) return;
     if (!followBottom.value) {
       // 上翻阅读时新到的消息只计数，不主动滚动
       if (count > prevCount) unseen.value += count - prevCount;

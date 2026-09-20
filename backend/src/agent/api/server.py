@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import sqlite3
 import uuid
 from collections import Counter, deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
@@ -40,7 +42,7 @@ from agent.memory.fragment import (
     FRAGMENT_TURNS_KEY,
     resolve_max_turns,
 )
-from agent.services.app import AppContext
+from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
@@ -81,7 +83,21 @@ def _knowledge_payload(ctx, item) -> dict:
 
 
 def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
-    app = FastAPI(title="QIO", version="0.1.0")
+    bus = EventBus()
+    ctx = AppContext(settings, conn, bus)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """应用关闭：释放缓存的 adapter / HTTP client，不留悬挂的等待。"""
+        try:
+            yield
+        finally:
+            try:
+                await ctx.aclose()
+            except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
+                logging.getLogger(__name__).warning("app context close failed", exc_info=True)
+
+    app = FastAPI(title="QIO", version="0.1.0", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
     instance_id = f"qio_{uuid.uuid4().hex[:16]}"
     app.add_middleware(
@@ -93,8 +109,6 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-QIO-Session"],
     )
-    bus = EventBus()
-    ctx = AppContext(settings, conn, bus)
     from agent.tools.approval import ApprovalService
 
     approvals = ctx.approvals
@@ -621,15 +635,30 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     # -- graph -------------------------------------------------------------
 
     @app.get("/api/session/context")
-    async def session_context() -> dict:
+    async def session_context(limit: int | None = None) -> dict:
         topic_id = ctx.current_topic()
         node = ctx.topics.nodes.get_topic(topic_id)
+        # 首次只给最近一页（默认 200 条）：不再随历史长度线性增长
+        page = ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
         return {
             "topic_id": topic_id,
             "topic_name": node.name if node else topic_id,
             "anchor_fragment": ctx.anchor_fragment_info(),
-            "messages": ctx.session_messages(topic_id),
+            "messages": page["messages"],
+            "has_more": page["has_more"],
+            "next_before": page["next_before"],
         }
+
+    @app.get("/api/session/messages")
+    async def session_messages_before(
+        topic_id: str | None = None, before: str | None = None, limit: int | None = None
+    ) -> dict:
+        """更早的一页历史（用户向上读时按需加载）。"""
+        target = topic_id or ctx.current_topic()
+        page = ctx.session_messages_page(
+            target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
+        )
+        return {"topic_id": target, **page}
 
     @app.get("/api/graph/topics")
     async def list_topics() -> dict:
@@ -1053,8 +1082,21 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         decision = body.get("decision", "")
         scope = body.get("scope")
         overrides = body.get("overrides")
+        # 审批是「有身份、只能消费一次」的授权对象：这里必须把身份字段真的传下去，
+        # 让服务层校验「这次批准是不是就是为这次请求发的」。
+        turn_id = body.get("turn_id")
+        session_id = body.get("session_id")
+        digest = body.get("request_digest")
         try:
-            handled = await approvals.respond(approval_id, decision, scope, overrides)
+            handled = await approvals.respond(
+                approval_id,
+                decision,
+                scope,
+                overrides,
+                turn_id=turn_id,
+                session_id=session_id,
+                digest=digest,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not handled:

@@ -151,7 +151,10 @@ async def test_text_adapter_parses_json_block():
 async def test_text_adapter_tracks_failure_rate():
     class FlakyClient:
         def __init__(self) -> None:
-            self.responses = ["not json at all", "```json\n{\"tool_calls\": []}\n```"]
+            # 第一条是**协议格式损坏**（想按协议回但 JSON 坏了）→ 失败；
+            # 第二条是合法 Tool JSON → 成功。
+            # 注意：合法普通文本回答不算失败（见 tests/test_text_adapter_health.py）。
+            self.responses = ['{"tool_calls": [}', "```json\n{\"tool_calls\": []}\n```"]
 
         @property
         def chat(self) -> "FlakyClient":

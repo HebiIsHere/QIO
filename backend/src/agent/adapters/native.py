@@ -15,6 +15,7 @@ from agent.adapters.base import (
     BaseAdapter,
     ChatMessage,
     Completion,
+    ModelUsage,
     ToolCall,
     ToolSpec,
     ToolCallParseError,
@@ -156,7 +157,8 @@ class NativeAdapter(BaseAdapter):
                 )
         usage = None
         if getattr(raw, "usage", None) is not None:
-            usage = raw.usage.model_dump()
+            # 供应商字段在这里就归一化，上层只认 ModelUsage
+            usage = ModelUsage.from_provider(raw.usage.model_dump())
         return Completion(
             message=ChatMessage(
                 role="assistant",

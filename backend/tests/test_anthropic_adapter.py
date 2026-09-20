@@ -102,7 +102,10 @@ async def test_complete_parses_tool_use():
     assert completion.tool_calls is not None
     assert completion.tool_calls[0].name == "get_weather"
     assert completion.tool_calls[0].arguments == {"city": "北京"}
-    assert completion.usage["total_tokens"] == 15
+    # 用量走统一语义（ModelUsage），不再暴露供应商形状的 dict
+    assert completion.usage.input_tokens == 10
+    assert completion.usage.output_tokens == 5
+    assert completion.usage.total_tokens == 15
     await adapter.close()
 
 

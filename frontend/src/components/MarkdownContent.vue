@@ -1,15 +1,17 @@
-<script setup lang="ts">
+<script lang="ts">
 /**
  * Markdown 渲染（remark 管线 → 自定义 mdast → HTML 渲染器）。
  * directive 节点 v1 渲染为行内文本，后续扩展为内联组件。
+ *
+ * 这一块是**模块级**：解析管线只建一次、代码高亮结果做记忆化；
+ * 组件实例只负责「显现动画」与交互（复制代码、外链安全）。
  */
-import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkDirective from "remark-directive";
 import hljs from "highlight.js/lib/core";
-import { isSafeExternalUrl, openExternal } from "../utils/externalLink";
+import { isSafeExternalUrl } from "../utils/externalLink";
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
 import python from "highlight.js/lib/languages/python";
@@ -25,82 +27,30 @@ hljs.registerLanguage("bash", bash);
 hljs.registerLanguage("css", css);
 hljs.registerLanguage("xml", xml);
 
-const props = defineProps<{
-  source: string;
-  /** 逐字打字机：完整结构先渲染，再按文档顺序逐字符点亮 */
-  reveal?: boolean;
-  /** 字符/秒（三档 25/50/75），null 时按 3 秒封顶自适应 */
-  cps?: number | null;
-  /** 观测到的真实增量到达间隔（毫秒）。给了它就以它为准，不再用字/秒估算。 */
-  paceMs?: number | null;
-}>();
-
-/** 增量渲染：reveal 时按已产出字符量喂给 Markdown，气泡随内容增长 */
-const shown = ref(props.reveal ? 0 : props.source.length);
-let raf = 0;
-
-const renderSource = computed(() =>
-  props.reveal ? props.source.slice(0, shown.value) : props.source,
-);
+/**
+ * 解析器单例：以前**每次解析**都要新建一个 unified processor（流式期间等于每帧一次），
+ * 现在只在模块加载时建一次。processor 自身无状态，可以安全复用。
+ */
+const processor = unified().use(remarkParse).use(remarkGfm).use(remarkDirective);
 
 /**
- * 从 fromLen 继续点亮到 total：不回到 0，只推进新增部分。
- * 已有内容保持不动（不闪、不跳、不重播动画）。
+ * 代码高亮记忆化：同一 (语言, 代码) 只真正高亮一次。
+ * 流式期间同一代码块会被反复解析（前缀不变时内容也不变），没有缓存就会反复跑 hljs。
+ * 上限到达时整体清空（简单、可预测），避免缓存无界增长。
  */
-function animateFrom(fromLen: number, total: number, cps: number, paceMs: number | null = null) {
-  cancelAnimationFrame(raf);
-  if (fromLen >= total) {
-    shown.value = total;
-    return;
-  }
-  const remaining = total - fromLen;
-  // 有真实到达节奏就按它走（与模型实际速度一致）；没有时退回字/秒估计。
-  const naturalMs = paceMs != null ? paceMs : (remaining / Math.max(1, cps)) * 1000;
-  // 兜底追赶：积压超过 200 字时这一段压到 600ms 内，绝不把「逐字」变成明显落后。
-  const capMs = remaining > 200 ? 600 : 3000;
-  const durMs = Math.max(60, Math.min(naturalMs, capMs));
-  if (!(durMs > 0)) {
-    shown.value = total;
-    return;
-  }
-  const t0 = performance.now();
-  const step = (now: number) => {
-    const p = Math.min(1, (now - t0) / durMs);
-    shown.value = Math.round(fromLen + p * (total - fromLen));
-    if (p < 1) raf = requestAnimationFrame(step);
-  };
-  raf = requestAnimationFrame(step);
+const HIGHLIGHT_CACHE_LIMIT = 200;
+const highlightCache = new Map<string, string>();
+
+function highlightCode(lang: string, value: string): string {
+  if (!lang || !hljs.getLanguage(lang)) return escapeHtml(value);
+  const key = `${lang}\u0000${value}`;
+  const cached = highlightCache.get(key);
+  if (cached !== undefined) return cached;
+  const html = hljs.highlight(value, { language: lang }).value;
+  if (highlightCache.size >= HIGHLIGHT_CACHE_LIMIT) highlightCache.clear();
+  highlightCache.set(key, html);
+  return html;
 }
-
-watch(
-  () => [props.source, props.reveal] as const,
-  ([source, reveal], prev) => {
-    const [prevSource, prevReveal] = prev ?? (["", false] as const);
-    const cps = props.cps ?? 50;
-    if (!reveal) {
-      cancelAnimationFrame(raf);
-      shown.value = source.length;
-      return;
-    }
-    // 刚切到 reveal：从头点亮
-    if (!prevReveal) {
-      shown.value = 0;
-      animateFrom(0, source.length, cps);
-      return;
-    }
-    if (source === prevSource) return;
-    // 追加：从已点亮位置继续；被替换（非追加）：重新开始
-    if (!source.startsWith(prevSource)) {
-      shown.value = 0;
-      animateFrom(0, source.length, cps);
-      return;
-    }
-    animateFrom(Math.min(shown.value, source.length), source.length, cps, props.paceMs ?? null);
-  },
-  { immediate: true },
-);
-
-onBeforeUnmount(() => cancelAnimationFrame(raf));
 
 function escapeHtml(text: string): string {
   return text
@@ -164,10 +114,7 @@ function renderBlock(node: any): string {
       return `<li>${renderInline(node.children ?? [])}</li>`;
     case "code": {
       const lang = node.lang || "";
-      let html = escapeHtml(node.value ?? "");
-      if (lang && hljs.getLanguage(lang)) {
-        html = hljs.highlight(node.value ?? "", { language: lang }).value;
-      }
+      const html = highlightCode(lang, node.value ?? "");
       // 代码块带 hover 复制按钮（长代码不用手动选择）
       const label = escapeHtml(lang || "code");
       return (
@@ -192,15 +139,148 @@ function renderBlock(node: any): string {
   }
 }
 
-const html = computed(() => {
-  const processor = unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkDirective);
-  const tree = processor.parse(renderSource.value);
-  processor.runSync(tree);
-  return renderBlock(tree);
-});
+/**
+ * 解析入口：Markdown 源码 → HTML。
+ * 组件只通过它解析（便于把这个热点单独观测 / 计数），解析结果只取决于入参。
+ */
+export const markdownPipeline = {
+  render(source: string): string {
+    const tree = processor.parse(source);
+    processor.runSync(tree);
+    return renderBlock(tree);
+  },
+};
+</script>
+
+<script setup lang="ts">
+/**
+ * 显现动画：把「解析」与「逐字点亮」解耦。
+ *
+ * - `shown` 不再由 requestAnimationFrame 每帧推进，而是按批次节拍（≥100ms）推进，
+ *   所以解析频率 ≤ 10 次/秒，与帧率无关；
+ * - 渲染的仍然是 source 的**前缀**，任意中间状态的 DOM 与旧实现逐状态一致（不闪、不跳）；
+ * - 落定（reveal 变 false）时立刻推进到 source.length，
+ *   保证最终 DOM 就是「一次完整的 source 解析」。
+ */
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+// isSafeExternalUrl 已由模块级 <script> 块导入（同一模块作用域，不能重复导入）
+import { openExternal } from "../utils/externalLink";
+
+const props = defineProps<{
+  source: string;
+  /** 逐字打字机：完整结构先渲染，再按文档顺序逐字符点亮 */
+  reveal?: boolean;
+  /** 字符/秒（三档 25/50/75），null 时按 3 秒封顶自适应 */
+  cps?: number | null;
+  /** 观测到的真实增量到达间隔（毫秒）。给了它就以它为准，不再用字/秒估算。 */
+  paceMs?: number | null;
+}>();
+
+/** 增量渲染：reveal 时按已产出字符量喂给 Markdown，气泡随内容增长 */
+const shown = ref(props.reveal ? 0 : props.source.length);
+
+/**
+ * 批次节拍下限：100ms ⇒ 解析 ≤ 10 次/秒（spec：解析频率按批次节流）。
+ * 上限 200ms：再慢就会明显落后于模型输出。
+ */
+const MIN_BATCH_MS = 100;
+const MAX_BATCH_MS = 200;
+
+function batchMsOf(paceMs: number | null): number {
+  const base = paceMs ?? MIN_BATCH_MS;
+  return Math.max(MIN_BATCH_MS, Math.min(base, MAX_BATCH_MS));
+}
+
+// 当前动画段落（起点 / 目标 / 时长 / 节拍）与正在跑的批次计时器
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+let animStart = 0;
+let animFrom = 0;
+let animTarget = 0;
+let animDur = 0;
+let animStep = MIN_BATCH_MS;
+
+function stopReveal() {
+  if (batchTimer !== null) {
+    clearTimeout(batchTimer);
+    batchTimer = null;
+  }
+}
+
+/** 落定：立刻显示完整内容（不再按节拍慢慢长）。 */
+function settle(total: number) {
+  stopReveal();
+  shown.value = total;
+}
+
+/**
+ * 批次节拍：每次只推进到「这一拍应该点亮的字符数」。
+ * 注意它不依赖 requestAnimationFrame —— 解析次数因此与帧数无关。
+ */
+function tick() {
+  const p = Math.min(1, (Date.now() - animStart) / animDur);
+  shown.value = Math.round(animFrom + p * (animTarget - animFrom));
+  batchTimer = p < 1 ? setTimeout(tick, animStep) : null;
+}
+
+/**
+ * 从 fromLen 继续点亮到 total：不回到 0，只推进新增部分。
+ * 已有内容保持不动（不闪、不跳、不重播动画）。
+ *
+ * 新内容到达时只**改写当前段落**，不打断已经在跑的节拍链 ——
+ * 否则每来一个增量都重置计时器，持续流式时永远等不到下一拍。
+ */
+function animateFrom(fromLen: number, total: number, cps: number, paceMs: number | null = null) {
+  if (fromLen >= total) {
+    settle(total);
+    return;
+  }
+  const remaining = total - fromLen;
+  // 有真实到达节奏就按它走（与模型实际速度一致）；没有时退回字/秒估计。
+  const naturalMs = paceMs != null ? paceMs : (remaining / Math.max(1, cps)) * 1000;
+  // 兜底追赶：积压超过 200 字时这一段压到 600ms 内，绝不把「逐字」变成明显落后。
+  const capMs = remaining > 200 ? 600 : 3000;
+  const durMs = Math.max(60, Math.min(naturalMs, capMs));
+  animFrom = fromLen;
+  animTarget = total;
+  animDur = durMs;
+  animStart = Date.now();
+  animStep = batchMsOf(paceMs);
+  if (batchTimer === null) batchTimer = setTimeout(tick, animStep);
+}
+
+watch(
+  () => [props.source, props.reveal] as const,
+  ([source, reveal], prev) => {
+    const [prevSource, prevReveal] = prev ?? (["", false] as const);
+    const cps = props.cps ?? 50;
+    if (!reveal) {
+      settle(source.length);
+      return;
+    }
+    // 刚切到 reveal：从头点亮
+    if (!prevReveal) {
+      shown.value = 0;
+      animateFrom(0, source.length, cps);
+      return;
+    }
+    if (source === prevSource) return;
+    // 追加：从已点亮位置继续；被替换（非追加）：重新开始
+    if (!source.startsWith(prevSource)) {
+      shown.value = 0;
+      animateFrom(0, source.length, cps);
+      return;
+    }
+    animateFrom(Math.min(shown.value, source.length), source.length, cps, props.paceMs ?? null);
+  },
+  { immediate: true },
+);
+
+const renderSource = computed(() =>
+  props.reveal ? props.source.slice(0, shown.value) : props.source,
+);
+
+/** 每次 `shown` 推进会重算一次 —— 这正是「每次解析 = 一拍」的落点（≤10 次/秒）。 */
+const html = computed(() => markdownPipeline.render(renderSource.value));
 
 /**
  * 复制状态（对代码块按钮的短期反馈）。
@@ -294,6 +374,7 @@ function selectNodeText(el: HTMLElement | null) {
 }
 
 onBeforeUnmount(() => {
+  stopReveal();
   for (const timer of copyTimers.values()) clearTimeout(timer);
   copyTimers.clear();
 });

@@ -340,6 +340,33 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE fragments ADD COLUMN source_fragment_id TEXT",
         ],
     ),
+    (
+        12,
+        [
+            # 产品规则：「同一个 Topic 同时只能有一个开放 Fragment」。
+            # 只靠 Python 的「先 SELECT 再 INSERT」在并发或中途失败时会破掉它，
+            # 所以把规则交给数据库（部分唯一索引）。
+            #
+            # 但已有用户的库里可能已经存在多个开放片段 —— 直接建索引会让应用启动失败。
+            # 因此先做**不删数据**的归一化：同一 topic 下只保留 (created_at, id) 最大的一条
+            # 为开放，其余的存在时间较早的开放片段按自己的 created_at 归档关闭。
+            """
+            UPDATE fragments
+               SET closed_at = created_at
+             WHERE closed_at IS NULL
+               AND EXISTS (
+                     SELECT 1 FROM fragments AS newer
+                      WHERE newer.topic_id = fragments.topic_id
+                        AND newer.closed_at IS NULL
+                        AND (newer.created_at > fragments.created_at
+                             OR (newer.created_at = fragments.created_at
+                                 AND newer.id > fragments.id))
+                   )
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_fragments_one_open_per_topic "
+            "ON fragments(topic_id) WHERE closed_at IS NULL",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

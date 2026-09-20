@@ -6,10 +6,12 @@ Built once per process; the HTTP layer pulls what it needs from it.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -58,6 +60,13 @@ BUDGET_RATIO = 0.25
 KNOWLEDGE_IGNORE_COOLDOWN_MINUTES = 30
 KNOWLEDGE_IGNORE_KEY_PREFIX = "knowledge.ignored_at."
 
+# Anthropic 能力探测的缓存时长：能力档位不会频繁变化，没必要每个 Turn 实测一次。
+ANTHROPIC_PROBE_TTL_SECONDS = 3600.0
+
+# 会话历史分页：首屏只取最近一页，其余按游标往前翻。
+SESSION_PAGE_DEFAULT_LIMIT = 200
+SESSION_PAGE_MAX_LIMIT = 500
+
 
 class AppContext:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, bus: EventBus) -> None:
@@ -74,6 +83,12 @@ class AppContext:
         self.policy = CredentialPolicy(self.credentials)
         self.probe_cache = ProbeCache()
         self.context_registry = ContextLengthRegistry()
+        # Adapter / 底层 HTTP client 复用：每个 Turn 重新建连接池是没有必要的
+        # （新 TCP/TLS 握手 + 新连接池），能力探测结果也不该每轮重测。
+        # key = (key_id, credential version, endpoint, model)
+        self._adapter_cache: dict[tuple, BaseAdapter] = {}
+        # Anthropic 能力探测的缓存（key 里含凭据版本，换 Key 立即失效）
+        self._anthropic_probe_at: dict[tuple, float] = {}
         self.fragments = FragmentManager(conn)
         self.memory = MemoryWriter(conn, self.fragments)
         self.index_builder = IndexBuilder(conn)
@@ -119,6 +134,8 @@ class AppContext:
             embedding=self.embedding,
             user_root_id=self._user_root_id,
             refresh_selector=self._refresh_selector,
+            upsert_selector=self._upsert_selector,
+            remove_selector=self._remove_selector,
         )
         from agent.services.turn_orchestrator import TurnOrchestrator
 
@@ -424,15 +441,44 @@ class AppContext:
     async def build_adapter_for_credential(
         self, key_id: str, model: str | None = None
     ) -> BaseAdapter | None:
-        """Build an adapter for an explicit credential (shared by main/subagent)."""
+        """Build (or reuse) an adapter for an explicit credential.
+
+        正常 Turn 复用同一个 adapter（等价于复用底层 HTTP client / 连接池）；
+        凭据被轮换、端点或模型变化时缓存键变化 → 自然重建；
+        应用关闭时由 `aclose()` 统一释放。
+        """
         secret = self.credentials.get_secret(key_id)
         if secret is None:
             return None
         meta = self.credentials.get_metadata(key_id)
         base_url = (meta.get("endpoint") if meta else None) or "https://api.openai.com/v1"
         model = model or (meta.get("default_model") if meta else None) or "gpt-4o-mini"
+        cache_key = (
+            key_id,
+            (meta or {}).get("version"),
+            (meta or {}).get("updated_at"),
+            base_url,
+            model,
+        )
+        cached = self._adapter_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        adapter = await self._create_adapter(secret, model, base_url, key_id, meta)
+        if adapter is not None:
+            self._remember_adapter(cache_key, adapter)
+        return adapter
+
+    async def _create_adapter(
+        self,
+        secret: str,
+        model: str,
+        base_url: str,
+        key_id: str,
+        meta: dict | None,
+    ) -> BaseAdapter | None:
         if is_anthropic_endpoint(base_url):
-            await probe_anthropic(secret, model, base_url)
+            await self._ensure_anthropic_capability(secret, model, base_url, key_id, meta)
             return AnthropicAdapter(api_key=secret, model=model, endpoint=base_url)
         client = AsyncOpenAI(api_key=secret, base_url=base_url)
         probe = await probe_adapter(
@@ -443,6 +489,42 @@ class AppContext:
         if probe.mode == AdapterMode.TEXT:
             return TextAdapter(client, model, endpoint=base_url)
         return None
+
+    async def _ensure_anthropic_capability(
+        self,
+        secret: str,
+        model: str,
+        base_url: str,
+        key_id: str,
+        meta: dict | None,
+    ) -> None:
+        """Anthropic 能力探测按 (credential, endpoint, model) 缓存。
+
+        探测失败不写缓存（下一次仍会重试），保证 provider 变化或临时故障后
+        仍能恢复到正确档位。
+        """
+        key = (key_id, (meta or {}).get("version"), (meta or {}).get("updated_at"), base_url, model)
+        probed_at = self._anthropic_probe_at.get(key)
+        if probed_at is not None and (time.time() - probed_at) < ANTHROPIC_PROBE_TTL_SECONDS:
+            return
+        result = await probe_anthropic(secret, model, base_url)
+        self._anthropic_probe_at[key] = time.time()
+        return result
+
+    def _remember_adapter(self, cache_key: tuple, adapter: BaseAdapter) -> None:
+        """记住 adapter，并淘汰同一凭据的旧版本（避免缓存随轮换无限增长）。"""
+        key_id = cache_key[0]
+        for old_key in [k for k in self._adapter_cache if k[0] == key_id and k != cache_key]:
+            stale = self._adapter_cache.pop(old_key)
+            _close_adapter_soon(stale)
+        self._adapter_cache[cache_key] = adapter
+
+    async def aclose(self) -> None:
+        """应用关闭：统一释放所有缓存的 adapter / HTTP client。"""
+        adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
+        self._anthropic_probe_at.clear()
+        for adapter in adapters:
+            await _close_adapter(adapter)
 
     async def build_adapter(self) -> BaseAdapter | None:
         ref = self.resolve_main_ref()
@@ -594,30 +676,39 @@ class AppContext:
 
     # -- selector refresh -------------------------------------------------
 
+    @staticmethod
+    def _indexed_doc_from_row(row) -> dict:
+        """memory_index 一行 → Selector 文档（全量重建与增量更新共用同一套构造）。"""
+        doc_id = row["index_id"]
+        text = " ".join([row["summary"] or "", row["title"] or ""]).strip() or doc_id
+        return {
+            "doc_id": doc_id,
+            "text": text,
+            "topic_id": row["topic_id"],
+            "entity_ids": json.loads(row["entity_ids"] or "[]"),
+            "keywords": json.loads(row["keywords"] or "[]"),
+            "created_at": row["created_at"],
+        }
+
+    _SELECTOR_DOC_SQL = (
+        "SELECT mi.id AS index_id, mi.fragment_id, mi.topic_id, mi.entity_ids, "
+        "mi.keywords, mi.title, mi.token_estimate, mi.created_at, f.summary "
+        "FROM memory_index mi LEFT JOIN fragments f ON f.id = mi.fragment_id"
+    )
+
     def _refresh_selector(self) -> None:
-        rows = self.conn.execute(
-            "SELECT mi.id AS index_id, mi.fragment_id, mi.topic_id, mi.entity_ids, "
-            "mi.keywords, mi.title, mi.token_estimate, mi.created_at, f.summary "
-            "FROM memory_index mi LEFT JOIN fragments f ON f.id = mi.fragment_id"
-        ).fetchall()
+        """全量重建（启动、修复、检索语义校验时用）。
+
+        **正常路径不再走这里**：每封一块就全量重建会让单次新增的成本随历史
+        条数线性增长。正常增量入口是 `_upsert_selector` / `_remove_selector`。
+        """
+        rows = self.conn.execute(self._SELECTOR_DOC_SQL).fetchall()
         docs = []
         titles: dict[str, str] = {}
         tokens: dict[str, int] = {}
         for row in rows:
             doc_id = row["index_id"]
-            text = " ".join(
-                [row["summary"] or "", row["title"] or ""]
-            ).strip() or doc_id
-            docs.append(
-                {
-                    "doc_id": doc_id,
-                    "text": text,
-                    "topic_id": row["topic_id"],
-                    "entity_ids": json.loads(row["entity_ids"] or "[]"),
-                    "keywords": json.loads(row["keywords"] or "[]"),
-                    "created_at": row["created_at"],
-                }
-            )
+            docs.append(self._indexed_doc_from_row(row))
             titles[doc_id] = row["title"] or ""
             tokens[doc_id] = row["token_estimate"] or 0
         from agent.selector.base import IndexedDoc
@@ -625,6 +716,24 @@ class AppContext:
         self.selector.load(
             [IndexedDoc(**d) for d in docs], titles=titles, token_estimates=tokens
         )
+
+    def _upsert_selector(self, index_id: str) -> None:
+        """只处理新写入的那一条 memory index 记录。"""
+        from agent.selector.base import IndexedDoc
+
+        row = self.conn.execute(
+            f"{self._SELECTOR_DOC_SQL} WHERE mi.id = ?", (index_id,)
+        ).fetchone()
+        if row is None:
+            return
+        self.selector.upsert(
+            IndexedDoc(**self._indexed_doc_from_row(row)),
+            title=row["title"] or "",
+            token_estimate=row["token_estimate"] or 0,
+        )
+
+    def _remove_selector(self, index_id: str) -> None:
+        self.selector.remove(index_id)
 
     # -- graph helpers ----------------------------------------------------
 
@@ -808,7 +917,7 @@ class AppContext:
             if self.fragments.should_close(fragment):
                 closed = await self._close_fragment(topic, adapter, tracer=tracer)
                 if closed is not None:
-                    self._refresh_selector()
+                    # 索引在 close_fragment 内部已增量更新（不再全量重建）
                     self.predictor.refresh_topic_vector(topic)
             self.trace_store.finish(
                 ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
@@ -979,6 +1088,41 @@ class AppContext:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def session_messages_page(
+        self, topic_id: str, *, limit: int = SESSION_PAGE_DEFAULT_LIMIT, before: str | None = None
+    ) -> dict:
+        """一页历史消息（从**最近**往前翻）。
+
+        长度不再随机器增长：首次只给最近一页（默认 200 条），用户往上读时
+        再用 `next_before` 游标取更早的一页。
+
+        游标是 `created_at|id` 的复合键。只按 `created_at` 分页时，同一时刻写入的
+        多条消息会被整段跳过或整段重复 —— 复合游标 + `id` 兜底排序才能保证
+        「不丢、不重、顺序正确」。
+        """
+        limit = max(1, min(int(limit or SESSION_PAGE_DEFAULT_LIMIT), SESSION_PAGE_MAX_LIMIT))
+        params: list[Any] = [topic_id]
+        where = "fragment_id IN (SELECT id FROM fragments WHERE topic_id = ?)"
+        cursor = _parse_history_cursor(before)
+        if cursor is not None:
+            created_at, message_id = cursor
+            where += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([created_at, created_at, message_id])
+        params.append(limit + 1)  # 多取一条判断是否还有更早的
+        rows = self.conn.execute(
+            "SELECT id, role, content, content_type, created_at FROM messages "
+            f"WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        page = [dict(r) for r in rows]
+        has_more = len(page) > limit
+        page = page[:limit]
+        page.reverse()  # 页面内部仍按时间升序
+        next_before = (
+            _format_history_cursor(page[0]["created_at"], page[0]["id"]) if has_more and page else None
+        )
+        return {"messages": page, "has_more": has_more, "next_before": next_before}
+
     def _ensure_default_topic(self) -> str:
         if getattr(self, "_default_topic_id", None):
             return self._default_topic_id
@@ -1007,3 +1151,61 @@ def make_error(code: str, message: str, recoverable: bool, turn_id: str | None =
     if turn_id:
         data["turn_id"] = turn_id
     return make_event(EventType.ERROR, data)
+
+
+# ---------------------------------------------------------------------------
+# 历史分页游标
+# ---------------------------------------------------------------------------
+
+
+def _format_history_cursor(created_at: str | None, message_id: str) -> str:
+    """`created_at|id`：同一时刻写入的多条消息也能稳定排序。"""
+    return f"{created_at or ''}|{message_id}"
+
+
+def _parse_history_cursor(cursor: str | None) -> tuple[str, str] | None:
+    """解析历史游标；无法解析（旧格式 / 坏值）时返回 None = 从最新开始。"""
+    if not cursor or "|" not in cursor:
+        return None
+    created_at, _, message_id = cursor.rpartition("|")
+    if not message_id:
+        return None
+    return created_at, message_id
+
+
+# ---------------------------------------------------------------------------
+# Adapter / HTTP client 释放
+# ---------------------------------------------------------------------------
+
+
+async def _close_adapter(adapter: BaseAdapter) -> None:
+    """释放 adapter 持有的网络资源；任何失败都只记日志，不影响关闭流程。"""
+    closer = getattr(adapter, "close", None)
+    if callable(closer):
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+            return
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.warning("failed to close adapter %r", type(adapter).__name__, exc_info=True)
+            return
+    client = getattr(adapter, "_client", None)
+    client_close = getattr(client, "close", None)
+    if not callable(client_close):
+        return
+    try:
+        result = client_close()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.warning("failed to close model client", exc_info=True)
+
+
+def _close_adapter_soon(adapter: BaseAdapter) -> None:
+    """同步上下文里淘汰旧 adapter：交给事件循环异步关闭。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # 没有事件循环（例如测试构造阶段）：交给 GC
+    asyncio.create_task(_close_adapter(adapter))

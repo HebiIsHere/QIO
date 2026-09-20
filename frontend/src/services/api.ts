@@ -176,14 +176,42 @@ export const api = {
     request<{ instance_id: string; pid: number; auth_required: boolean; version: string }>(
       "/api/instance",
     ),
-  respondApproval: (approvalId: string, decision: string, overrides?: Record<string, unknown>) =>
+  /**
+   * 应答一次审批。
+   *
+   * `binding` 带上这次审批原本的身份（turn / session / request digest）：
+   * 后端据此确认「这次批准就是为这次具体请求发的」。正常用户点击允许完全不受影响，
+   * 只有审批与当前请求已经不匹配时才会被拒绝。
+   */
+  respondApproval: (
+    approvalId: string,
+    decision: string,
+    overrides?: Record<string, unknown>,
+    binding?: { turnId?: string | null; sessionId?: string | null; requestDigest?: string | null },
+  ) =>
     request<{ ok: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
       method: "POST",
-      body: JSON.stringify(overrides ? { decision, overrides } : { decision }),
+      body: JSON.stringify({
+        decision,
+        ...(overrides ? { overrides } : {}),
+        ...(binding?.turnId ? { turn_id: binding.turnId } : {}),
+        ...(binding?.sessionId ? { session_id: binding.sessionId } : {}),
+        ...(binding?.requestDigest ? { request_digest: binding.requestDigest } : {}),
+      }),
     }),
   cancelTurn: (turnId: string) =>
     request<{ ok: boolean; cancelled: boolean; turn_id: string }>(
       `/api/turns/${encodeURIComponent(turnId)}/cancel`,
+      { method: "POST" },
+    ),
+  /**
+   * 取消「当前真正在运行的主 turn」。
+   * 用于收到 TURN_START 之前（还不知道 turn_id）的停止动作：后端只会取消 active，
+   * 不会误伤排队中的 turn。
+   */
+  cancelActiveTurn: () =>
+    request<{ ok: boolean; cancelled: boolean; turn_id: string | null }>(
+      "/api/turns/cancel",
       { method: "POST" },
     ),
   listTraces: (limit = 50, offset = 0) =>
@@ -245,7 +273,7 @@ export const api = {
   /** 待确认切换：保留当前话题。 */
   rejectTopicSwitch: () =>
     request<{ ok: boolean }>("/api/topic-switch/reject", { method: "POST" }),
-  getSessionContext: () =>
+  getSessionContext: (limit?: number) =>
     request<{
       topic_id: string;
       topic_name: string;
@@ -257,7 +285,31 @@ export const api = {
         content_type: string;
         created_at: string;
       }[];
-    }>("/api/session/context"),
+      /** 还有更早的历史可以加载 */
+      has_more?: boolean;
+      /** 取更早历史时传回的游标 */
+      next_before?: string | null;
+    }>(`/api/session/context${limit ? `?limit=${limit}` : ""}`),
+  /**
+   * 更早的一页历史（用户向上读时按需加载）。
+   * `before` 是后端给的复合游标（created_at|id）：同一时刻写入的消息也不会丢或重。
+   */
+  getSessionMessagesBefore: (topicId: string | null, before: string, limit = 200) =>
+    request<{
+      topic_id: string;
+      messages: {
+        id: string;
+        role: string;
+        content: string;
+        content_type: string;
+        created_at: string;
+      }[];
+      has_more: boolean;
+      next_before: string | null;
+    }>(
+      `/api/session/messages?before=${encodeURIComponent(before)}&limit=${limit}` +
+        (topicId ? `&topic_id=${encodeURIComponent(topicId)}` : ""),
+    ),
   listTopics: () =>
     request<{ topics: TopicFingerprint[] }>("/api/graph/topics"),
   getTopicDetail: (topicId: string) =>

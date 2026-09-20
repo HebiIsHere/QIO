@@ -55,6 +55,9 @@ class RecallBackend(ABC):
     """A pluggable recall layer over the memory index."""
 
     name: str
+    #: 是否支持**真正的增量** upsert / remove。
+    #: False 时 Selector 会退化为全量重建（行为仍然正确，只是没有性能收益）。
+    supports_incremental: bool = False
 
     @abstractmethod
     def available(self) -> bool:
@@ -67,6 +70,19 @@ class RecallBackend(ABC):
     @abstractmethod
     def search(self, query: str, top_k: int) -> list[ScoredDoc]:
         raise NotImplementedError
+
+    # -- 增量更新（可选能力） --------------------------------------------
+    #
+    # 历史缺陷：每新增一条 memory，业务层都重新读全部 memory_index、
+    # 重新构造全部文档、重建整个 recall 索引 —— 成本随历史条数线性增长。
+    # 支持增量的后端把 `supports_incremental` 置为 True 并实现这两个方法；
+    # 其余后端保持原样即可（Selector 自动回退到全量重建）。
+
+    def upsert(self, doc: IndexedDoc) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support incremental upsert")
+
+    def remove(self, doc_id: str) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support incremental remove")
 
 
 def now_iso() -> str:

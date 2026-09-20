@@ -259,16 +259,18 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
     w.unmount();
   });
 
-  it("已提交但还没拿到运行标识时，停止按钮说「准备中…」而不是灰着的「停止」", async () => {
+  it("已提交但还没拿到运行标识时，停止按钮仍然可用（退化为取消后端 active）", async () => {
     const { w } = await mountComposer();
     const session = useSessionStore();
 
     session.turnRunning = true;
     session.activeTurnId = null;
     await nextTick();
-    expect(w.find(".stop-btn").text()).toContain("准备中");
-    expect(w.find(".stop-btn").attributes("disabled")).toBeDefined();
-    expect(w.find(".stop-btn").attributes("title")).toContain("启动");
+    // 不再是一个灰着的死按钮：后端只会取消真正在跑的那一轮，
+    // 所以没有 turn_id 也可以安全地停止。
+    expect(w.find(".stop-btn").text()).toContain("停止");
+    expect(w.find(".stop-btn").attributes("disabled")).toBeUndefined();
+    expect(w.find(".stop-btn").attributes("title")).toContain("取消后端");
 
     // 收到 TURN_START（有 turn_id）后才是真正可用的「停止」
     session.activeTurnId = "turn_1";

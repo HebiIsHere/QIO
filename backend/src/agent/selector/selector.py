@@ -71,6 +71,58 @@ class Selector:
                 self.recall.name,
             )
 
+    # -- 增量更新 ---------------------------------------------------------
+    #
+    # 每关闭 / 新增一个 Fragment 都全量重建索引，会让单次新增的成本随历史条数
+    # 线性增长。这里只处理变化的那一条；不支持增量的后端由 `_apply` 回退到
+    # 全量重建 —— 正确性永远优先，性能是后端能力决定的。
+
+    def upsert(
+        self, doc: IndexedDoc, *, title: str = "", token_estimate: int = 0
+    ) -> None:
+        replaced = False
+        for i, existing in enumerate(self._docs):
+            if existing.doc_id == doc.doc_id:
+                self._docs[i] = doc
+                replaced = True
+                break
+        if not replaced:
+            self._docs.append(doc)
+        self._titles[doc.doc_id] = title
+        self._token_estimates[doc.doc_id] = token_estimate
+        self._created_at[doc.doc_id] = doc.created_at
+        self._texts[doc.doc_id] = doc.text
+        self._apply(lambda backend: backend.upsert(doc))
+
+    def remove(self, doc_id: str) -> None:
+        self._docs = [d for d in self._docs if d.doc_id != doc_id]
+        self._titles.pop(doc_id, None)
+        self._token_estimates.pop(doc_id, None)
+        self._created_at.pop(doc_id, None)
+        self._texts.pop(doc_id, None)
+        self._apply(lambda backend: backend.remove(doc_id))
+
+    def _active_recall(self) -> RecallBackend | None:
+        """当前真正生效的召回后端（与 `select` 的选择逻辑保持一致）。"""
+        recall = self.recall
+        if (
+            not recall.available()
+            and self.fallback_recall is not None
+            and self.fallback_recall.available()
+        ):
+            recall = self.fallback_recall
+        return recall if recall.available() else None
+
+    def _apply(self, op) -> None:
+        backend = self._active_recall()
+        if backend is None:
+            return
+        if getattr(backend, "supports_incremental", False):
+            op(backend)
+            return
+        # 后端不支持增量：保持正确性，退化为全量重建
+        backend.index(self._docs)
+
     def text_of(self, doc_id: str) -> str | None:
         return self._texts.get(doc_id)
 
