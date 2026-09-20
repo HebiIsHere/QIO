@@ -3,7 +3,9 @@
 版本：v1（2026-08-03，M11 已实现；实现偏差见下）
 
 > 实现偏差记录：
-> - 悬浮球 v1 为 SVG 图标按钮（微缩星球 3D 远景渲染留 v1.5）；
+> - 悬浮球早期为 SVG 图标按钮；2026-09-15 第四阶段改为**全屏 Planet 的压缩态**
+>   （`frontend/src/components/planet/PlanetOrb.vue`，与全屏星球共用同一套距离场数学与颜色令牌），
+>   两者通过「同一个对象连续长大 / 收缩」的方式切换，不再是两个组件的淡入淡出；
 > - 记忆/知识面板在星球页详情已实现，对话页内嵌面板留后续；
 > - 斜杠命令体系 v1 未实现（工具创建入口为设置页凭据 + 对话输入区，斜杠命令留 v1.5）。
 前置：docs/frontend-requirements.md（硬要求）、docs/frontend-design.md（星球架构）
@@ -142,3 +144,31 @@ APPROVAL_REQUIRED 到达 → 队列弹出 → 展示 payload（解释/测试摘�
    知识条目走状态机 revoke/更新）。
 6. 工具创建入口：输入区图标按钮（发现性）+ 斜杠命令体系并存（/tool /topic /memory），
    命令带候选提示。
+
+## 7. v3 组件原语（2026-09-15 第四阶段）
+
+第四阶段的目标不是「再多做几个组件」，而是让**新功能不再自带一套视觉语法**。
+下面这些原语定义在 `frontend/src/styles/base.css`，新增界面优先复用它们；
+组件内的局部规则仍然生效（scoped 优先级更高），所以这是收敛而不是大爆炸重写。
+
+| 原语 | 类 | 关键规则 |
+| --- | --- | --- |
+| Button | `.qio-btn`（`.primary` / `.danger` / `.danger-solid` / `.quiet` / `.success` / `.mini` / `.busy`） | default → hover → pressed → loading → success → failed → disabled 全部连续；disabled 不得看起来可点 |
+| Card | `.qio-card`（`.qio-card--quiet` / `--focus`，状态用 `data-state="running\|waiting\|ready\|failed"`） | 状态推进**原位发生**：不换新卡、不堆卡、完成后内容不突然消失 |
+| List row | `.qio-row`（`.is-active` / `.is-selected` / `[aria-selected]`） | hover 只加一档亮度；selected 必须与 hover 可区分；focus 可见 |
+| Toolbar | `.qio-toolbar` | 分段标题 + 操作区，统一右对齐与间距 |
+| Tag / State badge | `.qio-tag` / `.qio-state`（`.ok` / `.warn` / `.err` / `.info` / `.quiet`） | 全站唯一的状态底色来源，不再各写一套徽章变体 |
+| Inline edit | `.qio-inline-edit` | 默认阅读态；编辑就地进入，退出即恢复 |
+| Feedback | `.qio-feedback`（`.ok` / `.warn` / `.err` / `.info`） | 四级反馈的唯一渲染原语（字段 / 组件 / 任务 / 全局） |
+| Floating / Glass | `.qio-floating` / `.qio-glass`（`--chip` / `--panel`） | 晶体玻璃只用于 Planet 周围浮层、轻量信息卡、关键确认层、少量局部悬浮 UI |
+| Confirm | `.qio-confirm`（`--inline` / `--popover` / `--layer`）+ `.qio-confirm-scrim` | 取代全部浏览器原生 confirm/alert；按危险程度分档；高风险确认按钮不用品牌色 |
+| 过渡 | `.qio-fade-*` / `.qio-rise-*` / `.qio-list-*` / `.qio-collapse-*` / `.qio-swap-*` | 供 `<Transition>` / `<TransitionGroup>` 共用；列表增删与重排不跳变，Tab/面板切换不瞬切 |
+
+卡片家族的共同契约（Approval / Tool Creation / Subagent / Knowledge Candidate / 工具调用）：
+**对象名（标题）→ 状态徽章 → 一行说明 → 可展开详情**，且状态变化只能体现在同一张卡上。
+
+### 7.1 与早先记录的偏差更新
+
+- 悬浮球不再是「SVG 图标按钮」：入口小球现在是**全屏 Planet 的压缩态**（`PlanetOrb`，与全屏星球共用
+  `frontend/src/planet/sdfRings.ts` 的距离场数学），并与全屏星球构成进入/退出连续体。
+- 记忆/知识面板仍在星球页详情与面板内，对话页只在回答完成后显示高影响知识候选卡。

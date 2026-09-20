@@ -17,6 +17,23 @@ class _FakeSandbox:
         self._verdict = verdict
         self._mode = mode
 
+    # 工具统一走「相对路径以 sandbox root 为基准」的解析入口
+    def root(self):
+        from pathlib import Path
+
+        return Path("C:/work").resolve()
+
+    def resolve_in_root(self, path: str):
+        from pathlib import Path
+
+        candidate = Path(str(path or ""))
+        if not candidate.is_absolute():
+            candidate = self.root() / candidate
+        return candidate.resolve()
+
+    def contains(self, path) -> bool:
+        return True
+
     def check_path(self, path: str) -> str:
         return self._verdict
 

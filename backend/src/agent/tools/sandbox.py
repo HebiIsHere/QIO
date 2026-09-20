@@ -1,9 +1,17 @@
 """Sandbox executor for agent-created tools.
 
-Default executor: restricted subprocess (no credentials by default, temp
-cwd, timeout, captured output). Docker is optional and detected at runtime;
-on machines without a usable Docker daemon the subprocess executor is the
-fallback.
+**这不是安全沙箱，必须按「受限子进程」理解**（诚实的边界声明，2026-09-15）：
+
+* 默认执行器是同一个用户权限下的子进程：没有凭据注入、临时工作目录、超时、
+  输出截断、剥离环境变量 —— 这些是**降险措施**，不是隔离；
+* 因此声明为 PURE 的能力只是「策略承诺」，不是「拿不到文件系统/网络」。
+  一个谎报能力的工具仍然能读写用户能读写的任何东西（实测过：声明 PURE 的
+  工具仍可读取用户目录）；
+* Docker 存在时才可能获得真正的隔离，运行期探测；没有 Docker 时不会假装有，
+  高风险能力直接拒绝执行，不做静默降级（见 tools/policy.py 的能力分级与
+  tools/lifecycle.py 的审批流程）；
+* 由此得到的实际结论：**生成工具的执行必须由用户批准**，能力指纹变化后必须
+  重新批准（`services/app.py::_restore_tools` 会跳过指纹不匹配的旧授权）。
 """
 
 from __future__ import annotations

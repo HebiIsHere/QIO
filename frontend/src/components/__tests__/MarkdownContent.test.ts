@@ -5,6 +5,52 @@ import MarkdownContent from "../MarkdownContent.vue";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("Markdown 外链安全（危险 scheme 不可点）", () => {
+  it("https / http / mailto 渲染成可点链接", () => {
+    const w = mount(MarkdownContent, {
+      props: { source: "[站点](https://example.com) [本地](http://127.0.0.1:8734) [邮我](mailto:a@b.com)" },
+    });
+    const links = w.findAll("a.ext-link");
+    expect(links.length).toBe(3);
+    expect(links[0].attributes("href")).toBe("https://example.com");
+    expect(links[0].attributes("rel")).toContain("noopener");
+    w.unmount();
+  });
+
+  it("javascript: / data: / file: 只渲染成纯文本，不带 href", () => {
+    const w = mount(MarkdownContent, {
+      props: {
+        source:
+          "[坏1](javascript:alert(1)) [坏2](data:text/html;base64,PHNjcmlwdD4=) [坏3](file:///C:/secret.txt)",
+      },
+    });
+    expect(w.findAll("a").length).toBe(0);
+    expect(w.findAll(".link-blocked").length).toBe(3);
+    expect(w.html()).not.toContain("javascript:alert");
+    expect(w.text()).toContain("坏1");
+    w.unmount();
+  });
+
+  it("点击链接不导航 WebView，而是交给系统打开", async () => {
+    const open = vi.fn(() => ({}) as Window);
+    vi.stubGlobal("open", open);
+    const w = mount(MarkdownContent, { props: { source: "[站点](https://example.com)" } });
+    await w.find("a.ext-link").trigger("click");
+    expect(open).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+    w.unmount();
+  });
+
+  it("点击被阻止的链接什么都不做", async () => {
+    const open = vi.fn(() => ({}) as Window);
+    vi.stubGlobal("open", open);
+    const w = mount(MarkdownContent, { props: { source: "[坏](javascript:alert(1))" } });
+    await w.find(".link-blocked").trigger("click");
+    expect(open).not.toHaveBeenCalled();
+    w.unmount();
+  });
 });
 
 describe("MarkdownContent 流式增量（问题11）", () => {

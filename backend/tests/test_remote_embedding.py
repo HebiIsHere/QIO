@@ -23,6 +23,8 @@ class FakeEmbeddingsClient:
         self.calls += 1
         if self.fail:
             raise RuntimeError("remote unavailable")
+        import hashlib
+
         from agent.selector.tokenize import tokenize
 
         texts = (json or {}).get("input", [])
@@ -32,7 +34,10 @@ class FakeEmbeddingsClient:
         for i, text in enumerate(texts):
             vec = np.zeros(self.dims, dtype=np.float32)
             for tok in set(tokenize(text)):
-                vec[abs(hash(tok)) % self.dims] += 1.0
+                # 不能用内建 hash()：字符串 hash 每个进程都不同（PYTHONHASHSEED），
+                # 会让「哪条文档更相近」随机翻转，测试随机红绿。
+                digest = hashlib.md5(tok.encode("utf-8")).digest()
+                vec[int.from_bytes(digest[:4], "big") % self.dims] += 1.0
             norm = np.linalg.norm(vec)
             vec = vec / (norm + 1e-9)
             data.append({"object": "embedding", "index": i, "embedding": vec.tolist()})

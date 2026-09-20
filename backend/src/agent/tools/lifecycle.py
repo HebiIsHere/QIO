@@ -19,6 +19,13 @@ from agent.adapters.base import BaseAdapter
 from agent.credentials.store import CredentialStore
 from agent.tools.approval import ApprovalService
 from agent.tools.creator import ToolCreator
+from agent.tools.dev_tools import (
+    PHASE_FAILED,
+    PHASE_READY,
+    PHASE_REGISTERING,
+    PHASE_WAITING_APPROVAL,
+    ToolCreateStatus,
+)
 from agent.tools.registry import ToolRegistry
 from agent.tools.runtime_tools import CodeTool, SubagentStubTool
 from agent.tools.sandbox import SandboxExecutor
@@ -54,6 +61,7 @@ class ToolLifecycle:
         bus=None,
         tool_store=None,
         trace_store=None,
+        turn_id_provider=None,
     ) -> None:
         self.creator = ToolCreator(adapter)
         self.approvals = approvals
@@ -67,6 +75,8 @@ class ToolLifecycle:
         self.bus = bus
         self.tool_store = tool_store
         self.trace_store = trace_store
+        # 工具创建流程的进度出口（同一 group_id 一张卡）
+        self.status = ToolCreateStatus(bus, turn_id_provider)
         # 已注册工具的 disposer，撤销时真正从注册表移除
         self._registry_disposers: dict[str, Callable[[], None]] = {}
 
@@ -101,6 +111,7 @@ class ToolLifecycle:
         explanation: str,
         *,
         skip_tests: bool = False,
+        group_id: str | None = None,
     ) -> ToolOutcome:
         """Direct-submit path (dev workflow): test -> approve -> register.
 
@@ -111,25 +122,44 @@ class ToolLifecycle:
         if not skip_tests and definition.tool_type == "function":
             report = await self.tester.run(definition)
             if not report.passed:
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail="测试没有通过：先让工具把测试跑绿再提交",
+                    ok=False,
+                    tool_name=definition.name,
+                )
                 return ToolOutcome(
                     False,
                     definition.name,
                     "test",
                     f"cross-test failed: {report.summary}",
                 )
-        return await self._approve_and_register(definition, explanation, report)
+        return await self._approve_and_register(
+            definition, explanation, report, group_id=group_id
+        )
 
     async def _approve_and_register(
         self,
         definition: ToolDefinition,
         explanation: str,
         report,
+        *,
+        group_id: str | None = None,
     ) -> ToolOutcome:
         """Approval segment 1 (create) + segment 2 (credential) + registration."""
         from agent.tools.policy import default_policy_for, policy_fingerprint
 
         policy = default_policy_for(definition)
         definition.approved_policy_fingerprint = policy_fingerprint(policy)
+        await self.status.emit(
+            group_id,
+            PHASE_WAITING_APPROVAL,
+            label="等待你确认",
+            detail="工具会做什么、能访问什么，都写在确认卡里",
+            tool_name=definition.name,
+        )
         approval = await self.approvals.request(
             APPROVAL_KIND_CREATE,
             {
@@ -153,6 +183,19 @@ class ToolLifecycle:
             },
         )
         if approval.decision != "approved":
+            detail = (
+                "等待确认超时，这次没有创建"
+                if approval.decision == "timeout"
+                else "你没有同意创建这个工具"
+            )
+            await self.status.emit(
+                group_id,
+                PHASE_FAILED,
+                label="创建失败",
+                detail=detail,
+                ok=False,
+                tool_name=definition.name,
+            )
             return ToolOutcome(
                 False, definition.name, "approve", f"creation {approval.decision}"
             )
@@ -164,12 +207,28 @@ class ToolLifecycle:
         # approval segment 2: credential grant (only when referenced)
         if definition.credential_ref:
             if self.credentials is None:
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail="这个工具需要凭据，但当前环境没有可用的凭据库",
+                    ok=False,
+                    tool_name=definition.name,
+                )
                 return ToolOutcome(
                     False, definition.name, "credential",
                     "tool references a credential but no credential store is wired",
                 )
             meta = self.credentials.get_metadata(definition.credential_ref)
             if meta is None or meta["status"] != "active":
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail="工具引用的凭据现在不可用",
+                    ok=False,
+                    tool_name=definition.name,
+                )
                 return ToolOutcome(
                     False, definition.name, "credential",
                     f"referenced credential unavailable: {definition.credential_ref}",
@@ -183,19 +242,49 @@ class ToolLifecycle:
                 },
             )
             if grant.decision != "approved":
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail="你没有同意这个工具使用该凭据",
+                    ok=False,
+                    tool_name=definition.name,
+                )
                 return ToolOutcome(
                     False, definition.name, "credential",
                     f"credential grant {grant.decision}",
                 )
 
         # register side-by-side + persist
+        await self.status.emit(
+            group_id,
+            PHASE_REGISTERING,
+            label="正在注册",
+            tool_name=definition.name,
+        )
         try:
             self._register(definition)
             if self.tool_store is not None:
                 self.tool_store.save(definition)
         except ValueError as exc:
+            await self.status.emit(
+                group_id,
+                PHASE_FAILED,
+                label="创建失败",
+                detail=str(exc),
+                ok=False,
+                tool_name=definition.name,
+            )
             return ToolOutcome(False, definition.name, "register", str(exc))
         logger.info("tool created and registered: %s", definition.name)
+        await self.status.emit(
+            group_id,
+            PHASE_READY,
+            label="已创建",
+            detail="现在可以使用",
+            ok=True,
+            tool_name=definition.name,
+        )
         return ToolOutcome(True, definition.name, "registered", "ok")
 
     def _register(self, definition: ToolDefinition) -> None:

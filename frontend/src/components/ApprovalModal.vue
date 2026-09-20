@@ -27,6 +27,8 @@ const KIND_LABELS: Record<string, string> = {
   tool_create: "工具创建审批",
   credential_grant: "凭据授权审批",
   high_impact_knowledge: "高影响知识确认",
+  tool_execution: "需要你确认的操作",
+  computer: "电脑操作审批",
 };
 /** 标题一律说人话：后端出现新 kind 时也不要显示英文枚举名给用户 */
 function kindTitle(kind: string): string {
@@ -92,7 +94,9 @@ const payloadView = computed(() => {
   if (p.key_id) lines.push({ label: "凭据", value: String(p.key_id) });
   if (p.tool_name) lines.push({ label: "授权工具", value: String(p.tool_name) });
   if (p.content) lines.push({ label: "知识内容", value: String(p.content) });
-  if (p.action) lines.push({ label: "建议动作", value: String(p.action) });
+  // `action` 是机器可读的动作名（run_shell 这类）。有行为化描述时就不再把它
+  // 当首屏信息展示 —— 它属于高级详情（spec 第 29、69 条）。
+  if (p.action && !p.description) lines.push({ label: "建议动作", value: String(p.action) });
   if (p.example) lines.push({ label: "示例请求", value: String(p.example) });
   if (p.source_count) lines.push({ label: "相似请求数", value: String(p.source_count) });
   // 说明/原因/测试摘要已由上面的结构化行（它想做什么 / 为什么需要 / 验证情况）回答，
@@ -178,6 +182,8 @@ const advanced = computed(() => {
   const p = (item.value?.payload ?? {}) as Record<string, unknown>;
   const lines: string[] = [];
   if (p.policy_fingerprint) lines.push(`策略指纹：${String(p.policy_fingerprint)}`);
+  if (p.action) lines.push(`内部动作名：${String(p.action)}`);
+  if (p.risk) lines.push(`沙箱判定：${String(p.risk)}`);
   const details = Array.isArray(p.test_details) ? (p.test_details as Record<string, unknown>[]) : [];
   for (const d of details) {
     const name = String(d.name ?? "未命名检查");
@@ -221,6 +227,38 @@ const highRisk = computed(() => risks.value.some((r) => r !== "只读" && r !== 
  * 因为「会改变什么」已经用中文回答过了；原始值仍可在高级详情里看到。
  */
 const capabilityList = computed(() => capabilities.value.filter((c) => !c.startsWith("副作用：")));
+
+/**
+ * 「它会访问什么」优先用后端给出的**具体**清单（路径 / 命令 / 网址），
+ * 拿不到才回落到能力枚举的中文串（spec 第 68~69 条：不要只显示
+ * `fs_write path=/xxx`，也不要显示内部枚举名）。
+ */
+const accessList = computed<string[]>(() => {
+  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
+  const raw = p.access;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((x) => String(x)).filter((x) => x.trim().length > 0);
+});
+
+/**
+ * 授权范围：用户必须知道这是一次性授权还是长期生效（spec 第 67 条第 5 问）。
+ *
+ * - 后端给了 `scope` 就用它（工具执行审批现在都会带）；
+ * - 工具注册 / 凭据授权 / 保存长期知识本身就是长期动作，按 kind 判定；
+ * - 都拿不到时按「仅这一次」表达 —— 这是当前系统真实的授权语义
+ *   （审批单次使用、过期即失效），比含糊其辞诚实。
+ */
+const scopeLabel = computed(() => {
+  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
+  const rawScope = typeof p.scope === "string" ? p.scope : "";
+  const kind = item.value?.kind ?? "";
+  const longTerm =
+    rawScope === "long_term" ||
+    (!rawScope && ["tool_create", "credential_grant", "high_impact_knowledge"].includes(kind));
+  return longTerm
+    ? "长期生效：同意后它会一直可用（或一直生效），直到你撤销"
+    : "仅这一次：只对本次操作有效，之后同类操作会再问你";
+});
 
 /**
  * 焦点管理：
@@ -301,8 +339,9 @@ function onKeydown(e: KeyboardEvent) {
   <div v-if="presence.mounted.value && item" class="modal-mask" :class="{ leaving: presence.leaving.value }">
     <div
       ref="dialogRef"
-      class="modal"
+      class="modal qio-card"
       :class="{ 'risk-high': highRisk }"
+      :data-state="submitting ? 'running' : 'waiting'"
       role="dialog"
       aria-modal="true"
       :aria-labelledby="'approval-title'"
@@ -315,7 +354,7 @@ function onKeydown(e: KeyboardEvent) {
         <p class="intent">{{ intent }}</p>
         <!-- 2) 它会访问什么：具体行为，不用 Low/Medium/High -->
         <div v-if="risks.length" class="risk-row">
-          <span v-for="r in risks" :key="r" class="risk">{{ r }}</span>
+          <span v-for="r in risks" :key="r" class="risk qio-state warn">{{ r }}</span>
         </div>
         <!-- 3) 会改变什么 / 为什么需要 / 验证了吗 -->
         <dl v-if="changeSummary || whyNeeded || verification" class="facts">
@@ -327,10 +366,12 @@ function onKeydown(e: KeyboardEvent) {
             <dt>为什么需要</dt>
             <dd>{{ whyNeeded }}</dd>
           </template>
+          <dt>授权范围</dt>
+          <dd>{{ scopeLabel }}</dd>
           <template v-if="verification">
             <dt>验证情况</dt>
             <dd>
-              <span class="verdict" :class="verification.verified ? 'ok' : 'warn'">
+              <span class="verdict qio-state" :class="verification.verified ? 'ok' : 'warn'">
                 {{ verification.label }}
               </span>
               <span v-if="verification.detail" class="verdict-detail">{{ verification.detail }}</span>
@@ -342,10 +383,15 @@ function onKeydown(e: KeyboardEvent) {
           <span class="value">{{ line.value }}</span>
         </div>
         <p v-if="!payloadView.length && !capabilities.length" class="hint">无附加信息</p>
-        <div v-if="capabilityList.length" class="cap-box">
+        <div v-if="accessList.length || capabilityList.length" class="cap-box">
           <div class="cap-title">它会访问什么</div>
           <ul class="cap-list">
-            <li v-for="c in capabilityList" :key="c">{{ c }}</li>
+            <template v-if="accessList.length">
+              <li v-for="a in accessList" :key="a">{{ a }}</li>
+            </template>
+            <template v-else>
+              <li v-for="c in capabilityList" :key="c">{{ c }}</li>
+            </template>
           </ul>
         </div>
         <!-- 4) 高级详情：raw params / 策略指纹 / 逐条测试结果，默认折叠 -->
@@ -370,28 +416,39 @@ function onKeydown(e: KeyboardEvent) {
       </div>
       <p v-if="approvals.error" class="approval-error" role="alert">{{ approvals.error }}</p>
       <div class="actions">
-        <button class="reject" :disabled="submitting" @click="approvals.respond('rejected')">
-          拒绝
-        </button>
+        <!-- 失效的确认（后端已无此审批）：只给一个出口，不再提供批准/拒绝 -->
         <button
-          class="later"
-          :disabled="submitting"
-          title="只收起窗口，保留待审批任务：既不批准也不拒绝"
-          @click="approvals.defer()"
+          v-if="item.stale"
+          class="later approval-stale-ack"
+          type="button"
+          @click="approvals.resolve(item.approval_id)"
         >
-          稍后处理
+          知道了
         </button>
-        <button
-          v-if="isSubagentCreate"
-          class="approve"
-          :disabled="submitting"
-          @click="approveWithBudget"
-        >
-          {{ submitting ? "提交中…" : "允许此次操作（含预算）" }}
-        </button>
-        <button v-else class="approve" :disabled="submitting" @click="approvals.respond('approved')">
-          {{ submitting ? "提交中…" : "允许此次操作" }}
-        </button>
+        <template v-else>
+          <button class="reject" :disabled="submitting" @click="approvals.respond('rejected')">
+            拒绝
+          </button>
+          <button
+            class="later"
+            :disabled="submitting"
+            title="只收起窗口，保留待审批任务：既不批准也不拒绝"
+            @click="approvals.defer()"
+          >
+            稍后处理
+          </button>
+          <button
+            v-if="isSubagentCreate"
+            class="approve"
+            :disabled="submitting"
+            @click="approveWithBudget"
+          >
+            {{ submitting ? "提交中…" : "允许此次操作（含预算）" }}
+          </button>
+          <button v-else class="approve" :disabled="submitting" @click="approvals.respond('approved')">
+            {{ submitting ? "提交中…" : "允许此次操作" }}
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -418,7 +475,7 @@ function onKeydown(e: KeyboardEvent) {
   transition: transform var(--dur-exit) var(--ease-in), opacity var(--dur-exit) var(--ease-in);
 }
 .modal-mask.leaving .modal { transform: translateY(2px) scale(.995); opacity: 0; }
-@keyframes approval-modal-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+@keyframes approval-modal-in { from { opacity: 0; transform: translateY(var(--shift-8)) scale(.99); } to { opacity: 1; transform: none; } }
 .modal:focus { outline: none; }
 .modal:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--text-strong); }
@@ -427,11 +484,9 @@ function onKeydown(e: KeyboardEvent) {
 .body { max-height: min(58vh, 420px); overflow-y: auto; }
 .intent { font-size: 13.5px; line-height: 1.6; color: var(--text-primary); margin-bottom: 8px; }
 .risk-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.risk {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em;
-  padding: 2px 9px; border-radius: var(--r-pill);
-  border: 1px solid var(--border-strong); color: var(--text-secondary);
-}
+/* 「它会访问什么」的行为标签走统一状态徽章（warn 语义 = 需要你留意），
+   不再自己写一套底色与边框。 */
+.risk { font-family: var(--mono); letter-spacing: 0.03em; }
 .row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13px; }
 .label { color: var(--text-secondary); min-width: 64px; flex-shrink: 0; }
 .value { color: var(--text-primary); }
@@ -441,12 +496,8 @@ function onKeydown(e: KeyboardEvent) {
 .facts dt { color: var(--text-secondary); font-size: 12.5px; }
 .facts dd { margin: 0; color: var(--text-primary); font-size: 12.5px; line-height: 1.5; }
 .verdict {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em;
-  padding: 1px 7px; border-radius: var(--r-pill); border: 1px solid var(--border-strong);
-  color: var(--text-secondary);
+  font-family: var(--mono); letter-spacing: 0.03em;
 }
-.verdict.ok { color: var(--success); border-color: var(--success); }
-.verdict.warn { color: var(--warning); border-color: var(--warning); }
 .verdict-detail { color: var(--text-secondary); margin-left: 8px; }
 /* 高级详情：默认折叠，普通用户不第一眼看到 raw params */
 .adv { margin-top: 10px; border-top: 1px solid var(--border-subtle); padding-top: 8px; }
@@ -478,12 +529,16 @@ function onKeydown(e: KeyboardEvent) {
 .budget-row label { color: var(--text-secondary); }
 .budget-row .q-number { width: 108px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+/* 按钮尺寸对齐统一按钮原语（.qio-btn）：高度 34、圆角 r-md、内边距 18。
+   以前这里是 18px 圆角 + 26px 内边距，看起来像另一个产品里的按钮。 */
 .actions button {
-  border: none; border-radius: 18px; padding: 8px 26px; cursor: pointer; font-size: 13px;
-  min-width: 92px; /* 处理中改文案也不会让按钮尺寸跳动 */
-  transition: transform var(--dur-press) var(--ease-out), filter var(--dur-fast) var(--ease);
+  border: none; border-radius: var(--r-md); padding: 0 18px; height: 34px;
+  cursor: pointer; font-size: 13px; font-family: var(--sans);
+  min-width: 96px; /* 处理中改文案也不会让按钮尺寸跳动 */
+  transition: transform var(--dur-press) var(--ease-1-out), filter var(--dur-fast) var(--ease-1);
 }
-.actions button:active:not(:disabled) { transform: translateY(var(--press-shift)); }
+.actions button:active:not(:disabled) { transform: translateY(var(--shift-1)); }
+.actions button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* 「稍后处理」：只收起窗口、保留待审批任务。外观比拒绝更轻，避免看起来像第三种决定 */
 .later {
   background: transparent; color: var(--text-secondary); border: 1px dashed var(--border-strong);

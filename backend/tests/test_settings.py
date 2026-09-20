@@ -23,15 +23,15 @@ def test_migration_v4_tables_exist(db_conn):
 
 def test_settings_roundtrip(db_conn):
     store = SettingsStore(db_conn)
-    assert store.get_int("fragment.max_messages", 10) == 10
-    store.set("fragment.max_messages", "15")
-    assert store.get_int("fragment.max_messages", 10) == 15
-    store.set("fragment.max_messages", "5")
-    assert store.get_int("fragment.max_messages", 10) == 5
+    assert store.get_int("fragment.max_turns", 10) == 10
+    store.set("fragment.max_turns", "15")
+    assert store.get_int("fragment.max_turns", 10) == 15
+    store.set("fragment.max_turns", "5")
+    assert store.get_int("fragment.max_turns", 10) == 5
 
 
 def test_settings_invalid_int_falls_back(db_conn):
     store = SettingsStore(db_conn)
-    store.set("fragment.max_messages", "abc")
-    assert store.get_int("fragment.max_messages", 10) == 10
-    assert store.get("fragment.max_messages") == "abc"
+    store.set("fragment.max_turns", "abc")
+    assert store.get_int("fragment.max_turns", 10) == 10
+    assert store.get("fragment.max_turns") == "abc"

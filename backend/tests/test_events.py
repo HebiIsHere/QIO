@@ -15,7 +15,10 @@ def test_sse_format_envelope():
     payload = json.loads(event.model_dump_json())
     assert set(payload) == {"type", "id", "ts", "data"}
     wire = sse_format(event)
-    assert wire.startswith("event: CAPABILITY\n")
+    # id 行是重连游标（Last-Event-ID）：客户端据此只补发之后的事件
+    assert wire.startswith(f"id: {event.id}\n")
+    assert "\nevent: CAPABILITY\n" in wire
+    assert f'"id":"{event.id}"' in wire
     assert "\n\n" in wire
 
 

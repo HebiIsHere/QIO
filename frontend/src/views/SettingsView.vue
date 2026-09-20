@@ -11,6 +11,7 @@ import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
+import QConfirm from "../components/ui/QConfirm.vue";
 import { usePresence } from "../composables/usePresence";
 import {
   getThemePreference,
@@ -198,16 +199,70 @@ function toggleEnabled(c: CredentialMeta) {
 }
 
 function remove(keyId: string) {
-  if (!window.confirm(`确定彻底删除凭据「${keyId}」？将删除密钥与全部记录，不可恢复。`)) return;
-  void (async () => {
-    clearNotice("cred");
-    try {
-      await api.deleteCredential(keyId);
-      credentials.value = credentials.value.filter((c) => c.key_id !== keyId);
-    } catch (e) {
-      setNotice("cred", "err", errText("删除凭据", e));
-    }
-  })();
+  // 不可恢复的高风险动作：用 QIO 自己的确认层（layer 档），并说清后果。
+  askConfirm({
+    title: `彻底删除凭据「${keyId}」？`,
+    detail: "会删除密钥与这条凭据的全部记录，不可恢复。如果只是想让密钥失效、保留审计历史，请用「撤销」。",
+    confirmText: "删除",
+    tone: "danger",
+    run: async () => {
+      clearNotice("cred");
+      try {
+        await api.deleteCredential(keyId);
+        credentials.value = credentials.value.filter((c) => c.key_id !== keyId);
+      } catch (e) {
+        setNotice("cred", "err", errText("删除凭据", e));
+      }
+    },
+  });
+}
+
+/**
+ * 撤销密钥：让这把密钥立即作废（从密钥库移除），但**保留**这条记录与审计历史。
+ * 以前界面上没有这个入口 —— 「已撤销」筛选与「✕ 已撤销」状态都在，但用户做不到。
+ * 与「删除」的区别要在确认文案里说清：删除会连记录一起清掉，不可恢复。
+ */
+function revoke(keyId: string) {
+  askConfirm({
+    title: `撤销凭据「${keyId}」？`,
+    detail: "密钥会立即作废并从密钥库移除；这条记录与审计历史会保留下来，之后可以恢复或彻底删除。",
+    confirmText: "撤销",
+    tone: "danger",
+    run: async () => {
+      clearNotice("cred");
+      try {
+        await api.revokeCredential(keyId);
+        await load();
+        setNotice("cred", "ok", "已撤销：这把密钥不能再用，记录与审计历史仍保留");
+      } catch (e) {
+        setNotice("cred", "err", errText("撤销凭据", e));
+      }
+    },
+  });
+}
+
+/**
+ * 确认层状态（第四阶段）。
+ *
+ * 这里取代的是三处浏览器原生 `window.confirm`：原生框说不清「动作 + 影响 + 后果」，
+ * 而且它的视觉与 QIO 毫无关系（像是另一个软件的弹窗）。危险动作统一用 layer 档，
+ * 确认按钮是中性实心而不是品牌色 —— 品牌色会让危险动作看起来像被推荐的默认选择。
+ */
+interface PendingConfirm {
+  title: string;
+  detail: string;
+  confirmText: string;
+  tone: "normal" | "danger";
+  run: () => void | Promise<void>;
+}
+const pendingConfirm = ref<PendingConfirm | null>(null);
+function askConfirm(next: PendingConfirm) {
+  pendingConfirm.value = next;
+}
+async function resolveConfirm() {
+  const pending = pendingConfirm.value;
+  pendingConfirm.value = null;
+  if (pending) await pending.run();
 }
 
 async function test(keyId: string) {
@@ -312,12 +367,13 @@ const tierOptions = [
 async function loadMemorySettings() {
   try {
     const s = await api.getMemorySettings();
-    const saved = String(s.fragment_max_messages);
+    // 字段现在是「轮」（用户 + 助手算一轮），与界面文案一致
+    const saved = String(s.fragment_max_turns);
     if (tierPresets.includes(saved)) {
       fragmentTier.value = saved;
     } else {
       fragmentTier.value = "custom";
-      customCount.value = s.fragment_max_messages;
+      customCount.value = s.fragment_max_turns;
     }
   } catch (e) {
     setNotice("chat", "err", errText("加载记忆设置", e));
@@ -336,13 +392,13 @@ async function saveMemorySettings() {
   try {
     const r = await api.updateMemorySettings(value);
     if (!isLatestSave("chat", seq)) return; // 已有更新的修改：不回填、不报成功
-    setNotice("chat", "ok", `记忆封块已保存：${r.fragment_max_messages} 轮`);
-    const saved = String(r.fragment_max_messages);
+    setNotice("chat", "ok", `记忆封块已保存：${r.fragment_max_turns} 轮`);
+    const saved = String(r.fragment_max_turns);
     if (tierPresets.includes(saved)) {
       fragmentTier.value = saved;
     } else {
       fragmentTier.value = "custom";
-      customCount.value = r.fragment_max_messages;
+      customCount.value = r.fragment_max_turns;
     }
   } catch (e) {
     if (!isLatestSave("chat", seq)) return;
@@ -518,17 +574,24 @@ async function saveSearchSettings() {
 
 /** 清除凭据必须是显式动作（二次确认 + 只发送该字段） */
 async function clearBochaKey() {
-  if (!window.confirm("确定清除已保存的博查 API Key？清除后将回退到免密钥搜索。")) return;
-  clearNotice("model");
-  try {
-    const r = await api.updateSearchSettings({ bocha_api_key: "" });
-    bochaConfigured.value = r.bocha_has_key;
-    bochaEditing.value = false;
-    bochaKeyDraft.value = "";
-    setNotice("model", "warn", "博查 API Key 已清除，当前使用免密钥搜索");
-  } catch (e) {
-    setNotice("model", "err", errText("清除博查 API Key", e));
-  }
+  askConfirm({
+    title: "清除已保存的博查 API Key？",
+    detail: "清除后联网搜索会回退到免密钥通道（Exa / DuckDuckGo 等）。需要时可以重新填写。",
+    confirmText: "清除",
+    tone: "danger",
+    run: async () => {
+      clearNotice("model");
+      try {
+        const r = await api.updateSearchSettings({ bocha_api_key: "" });
+        bochaConfigured.value = r.bocha_has_key;
+        bochaEditing.value = false;
+        bochaKeyDraft.value = "";
+        setNotice("model", "warn", "博查 API Key 已清除，当前使用免密钥搜索");
+      } catch (e) {
+        setNotice("model", "err", errText("清除博查 API Key", e));
+      }
+    },
+  });
 }
 
 function onSearchTopKInput(v: number | null) {
@@ -725,6 +788,19 @@ watch(activeTab, async () => {
 
 <template>
   <div class="settings">
+    <!-- 危险动作的确认层（取代原生 confirm）：layer 档 + 中性实心确认按钮 -->
+    <QConfirm
+      :open="!!pendingConfirm"
+      variant="layer"
+      :tone="pendingConfirm?.tone ?? 'danger'"
+      :title="pendingConfirm?.title ?? ''"
+      :detail="pendingConfirm?.detail ?? ''"
+      :confirm-text="pendingConfirm?.confirmText ?? '确定'"
+      cancel-text="取消"
+      title-id="settings-confirm-title"
+      @confirm="resolveConfirm"
+      @cancel="pendingConfirm = null"
+    />
     <header>
       <h1>设置</h1>
       <span class="sub mono">设置 · QIO</span>
@@ -1168,6 +1244,7 @@ watch(activeTab, async () => {
               @edit-meta="openMeta(c)"
               @rotate="openRotate(c)"
               @toggle-enabled="toggleEnabled(c)"
+              @revoke="revoke(c.key_id)"
               @remove="remove(c.key_id)"
             />
             <p v-if="!filteredCredentials.length" class="empty mono">

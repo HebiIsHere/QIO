@@ -82,6 +82,17 @@ cargo check
 | `QIO_MODELS_DIR` | `<data_dir>/models` | 模型目录（覆盖默认） |
 | `QIO_PORT` / `QIO_HOST` | `8734` / `127.0.0.1` | 后端监听 |
 | `PYTHONPATH` | — | 仅裸解释器运行时需要指向 `backend/src`；`uv run` 已自动处理 |
+| `QIO_SESSION_TOKEN` | — | 本机 API 的会话令牌（桌面壳/开发脚本注入）。设置即强制认证 |
+| `QIO_SESSION_TOKEN_FILE` | — | 让后端把自己的令牌写到这个文件（桌面壳用；0600，绝不进日志） |
+| `QIO_DEV_INSECURE` | `0` | `1` = 显式开发豁免：不要求令牌（只允许本机 dev 用） |
+| `QIO_ENABLE_TEST_EVENTS` | `0` | `1` = 注册开发用的 `POST /api/events/test`（生产构建里不注册） |
+| `QIO_ALLOWED_ORIGINS` | — | 追加允许的 WebView origin（逗号分隔） |
+
+> 不设任何令牌变量时后端会**自己生成**一个进程内令牌并拒绝所有未带令牌的请求
+> （fail-closed，日志只提示、不打印令牌）。要连上它，要么设 `QIO_SESSION_TOKEN`，
+> 要么用 `scripts/e2e_up.py`（默认开发豁免口径，`--secure` 为带令牌口径）。
+> QIO 自己的 WebView 走的永远是带令牌路径：桌面壳挑一个随机空闲端口，让后端
+> 生成令牌写到用户私有临时文件，再通过 `qio_backend_info` 命令交给自己的前端。
 
 ## 7. 启动
 
@@ -97,6 +108,13 @@ npm run dev      # Vite 端口见 vite.config.ts（默认 1420；e2e 用 5199）
 ```
 
 参考脚本：`scripts/e2e_up.py`（一键拉起后端 + 前端，pid 写入 `scripts/.e2e-pids`）。
+
+```powershell
+python scripts/e2e_up.py             # 开发豁免口径（QIO_DEV_INSECURE=1 + 测试事件口）
+python scripts/e2e_up.py --secure    # 带令牌口径：令牌只写进文件，终端只打印路径
+python scripts/e2e_down.py           # 停止（按 pid + 真实端口探测确认已停）
+python scripts/verify_stage1.py [--secure --token-file <path>]   # 第一阶段 HTTP 层验收
+```
 
 > 不用 uv、直接跑裸解释器时才需要 `$env:PYTHONPATH = "backend/src"`（或 `src`，视当前目录而定）。
 

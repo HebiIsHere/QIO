@@ -345,19 +345,35 @@ function firstAssistantIdx(t: Turn): number {
 }
 
 /**
- * 等待指示：只在「已经提交、还没有任何助手内容」时出现三圆点。
- * 一旦开始有增量内容，就由流式气泡自己表达进度，不再重复播同一套等待动画。
+ * 整体状态什么时候需要出现：
+ * - 正在生成时，流式正文本身就是进度，不再重复说一遍；
+ * - 等待响应 / 正在使用工具 / 等待确认 / 正在处理独立任务时，说一句就够了。
  */
-const waitingForModel = computed(() => {
-  if (!session.turnRunning) return false;
-  const last = turns.value[turns.value.length - 1];
-  if (!last) return false;
-  return !last.items.some((m) => m.role === "assistant");
-});
-/** 诚实的阶段文案：等待响应 / 正在生成，不假装知道后台在做什么 */
+const showGlobalStatus = computed(
+  () => session.activity !== "idle" && session.activity !== "generating",
+);
+/** 只有「还在等」才播三圆点；其它状态是安静的说明文字 */
+const showWaitingDots = computed(
+  () => session.activity === "waiting" || session.activity === "notify",
+);
+/**
+ * 全局只表达「整体情况」的一句话（spec 第 36~38 条）：
+ * 正在处理 / 正在使用工具 / 等待确认 / 正在处理独立任务 / 正在整理独立任务的结果。
+ *
+ * 绝不出现 `TOOL_RUNNING`、`MODEL_WAIT`、`SUBAGENT_PENDING` 这类内部事件名，
+ * 也不把每种内部状态同时堆在页面上 —— 细节各自留在对应卡片里。
+ */
+const ACTIVITY_LABELS: Record<string, string> = {
+  waiting: "正在处理",
+  generating: "正在生成…",
+  tool: "正在使用工具",
+  approval: "等待你确认",
+  subagent: "正在处理独立任务",
+  notify: "正在整理独立任务的结果",
+};
 const phaseLabel = computed(() => {
-  if (!session.turnRunning) return "";
-  return session.turnPhase === "generating" ? "正在生成…" : "已提交，等待模型响应…";
+  if (!session.turnRunning && session.activity === "idle") return "";
+  return ACTIVITY_LABELS[session.activity] ?? "";
 });
 </script>
 
@@ -404,9 +420,11 @@ const phaseLabel = computed(() => {
         </div>
       </div>
     </div>
-    <div v-if="waitingForModel" class="typing" role="status" aria-live="polite">
+    <div v-if="showGlobalStatus" class="typing" role="status" aria-live="polite">
       <div class="typing-bubble">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <template v-if="showWaitingDots">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </template>
         <span class="phase mono">{{ phaseLabel }}</span>
       </div>
     </div>
@@ -418,7 +436,7 @@ const phaseLabel = computed(() => {
       @click="backToLatest"
     >
       <span class="arrow">↓</span>
-      回到最新消息<span v-if="unseen > 0" class="count mono">{{ unseen }}</span>
+      回到最新消息<span v-if="unseen > 0" class="count mono qio-state info">{{ unseen }}</span>
     </button>
     <ContinueBar />
     <QueueChip />
@@ -583,12 +601,9 @@ const phaseLabel = computed(() => {
   transform: translateY(var(--press-shift));
 }
 .back-latest .count {
+  /* 计数走统一状态徽章原语（info 语义 = 「有新内容」）；这里只保留布局相关属性 */
   min-width: 18px;
   text-align: center;
-  padding: 0 5px;
-  border-radius: var(--r-pill);
-  background: var(--accent-soft);
-  color: var(--text-strong);
   font-size: 10.5px;
 }
 @keyframes typing-bounce {

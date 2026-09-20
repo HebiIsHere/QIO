@@ -222,9 +222,20 @@ class ToolRegistry:
         tool = ctx.get("tool")
         if tool is None or not getattr(tool, "requires_approval", False) or self._approvals is None:
             return await next(ctx)
+        # 审批内容要能被普通用户看懂（spec 第 66~70 条）：把这次具体调用翻译成
+        # 「想做什么 / 会访问什么 / 影响 / 一次性还是长期」，而不是把工具名和
+        # 参数原样丢给用户。原始 tool/arguments 保留给「高级详情」。
+        from agent.tools.approval_present import describe_tool_call
+
+        arguments = ctx.get("arguments", {}) or {}
+        payload: dict[str, Any] = {"tool": tool.name, "arguments": arguments}
+        try:
+            payload.update(describe_tool_call(tool.name, dict(arguments)))
+        except Exception:  # noqa: BLE001 - 描述失败不能让审批本身失效
+            logger.warning("approval description failed for %s", tool.name, exc_info=True)
         decision = await self._approvals.request(
             "tool_execution",
-            {"tool": tool.name, "arguments": ctx.get("arguments", {})},
+            payload,
         )
         if decision.decision == "approved":
             return await next(ctx)

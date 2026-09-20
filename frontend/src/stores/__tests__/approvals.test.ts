@@ -97,4 +97,48 @@ describe("approvals store 状态可信性", () => {
     await s.respond("approved", { subagent_budget: { max_iterations: 3 } });
     expect(respond).toHaveBeenCalledWith("a1", "approved", { subagent_budget: { max_iterations: 3 } });
   });
+
+  /**
+   * 实测遇到的死结：审批在后端已经不存在（别处应答 / 已过期）时，respond 会一直 404，
+   * 队列里那一项既批准不了也拒绝不了 —— 弹窗只能反复重试失败。
+   * 处理原则：不静默消失（用户得知道发生了什么），但要有一个出口。
+   */
+  it("后端说这项审批已经有结局（404）：标记为失效而不是变成点不掉的死结", async () => {
+    const s = store();
+    s.enqueue("a1", "tool_create", { name: "t" });
+    respond.mockRejectedValueOnce(
+      Object.assign(
+        new Error("/api/approvals/a1/respond -> 404: approval not found or already answered"),
+        { status: 404 },
+      ),
+    );
+
+    await s.respond("rejected");
+
+    // 不静默消失：它还在，但被明确标记为失效
+    expect(s.current?.approval_id).toBe("a1");
+    expect(s.current?.stale).toBe(true);
+    expect(s.error).toContain("已经有结局");
+    expect(s.error).toContain("未做出任何授权");
+
+    // 失效之后不再重复发请求
+    await s.respond("approved");
+    expect(respond).toHaveBeenCalledTimes(1);
+
+    // 用户可以把它清掉（UI 上是一个「知道了」）
+    s.resolve("a1");
+    expect(s.current).toBeNull();
+  });
+
+  it("普通失败（非 404）仍然保留待办、可以重试（不能因为这条改动把失败也吞掉）", async () => {
+    const s = store();
+    s.enqueue("a1", "tool_create", { name: "t" });
+    respond.mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 500 }));
+
+    await s.respond("approved");
+
+    expect(s.current?.approval_id).toBe("a1");
+    expect(s.current?.stale).toBeUndefined();
+    expect(s.error).toContain("可重试");
+  });
 });

@@ -1,0 +1,111 @@
+"""审批必须绑定 turn/session、有寿命、只能消费一次。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from agent.api.bus import EventBus
+from agent.tools.approval import ApprovalService, request_digest
+
+
+def _parse(chunks: list[str]) -> list[dict]:
+    events = []
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    return events
+
+
+async def _publish_and_collect(bus: EventBus) -> list[str]:
+    collected: list[str] = []
+
+    async def consume():
+        async for chunk in bus.stream():
+            collected.append(chunk)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    return collected
+
+
+async def test_request_is_bound_and_round_trips_once():
+    bus = EventBus()
+    service = ApprovalService(bus, timeout_seconds=5.0)
+    service.set_context(turn_id="turn_1", session_id="sess_1")
+    collected: list[str] = []
+
+    async def consume():
+        async for chunk in bus.stream():
+            collected.append(chunk)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+
+    pending = asyncio.create_task(service.request("computer", {"action": "read", "path": "x"}))
+    await asyncio.sleep(0.05)
+    events = _parse(collected)
+    required = [e for e in events if e["type"] == "APPROVAL_REQUIRED"]
+    assert len(required) == 1
+    approval = required[0]["data"]["approval"]
+    assert approval["turn_id"] == "turn_1"
+    assert approval["session_id"] == "sess_1"
+    assert approval["expires_at"]
+    assert approval["request_digest"] == request_digest("computer", {"action": "read", "path": "x"})
+
+    assert await service.respond(approval["approval_id"], "approved") is True
+    result = await asyncio.wait_for(pending, timeout=2)
+    assert result.decision == "approved"
+
+    # 单次使用：同一 id 再应答必须失败
+    assert await service.respond(approval["approval_id"], "approved") is False
+    task.cancel()
+
+
+async def test_unknown_approval_id_is_rejected():
+    service = ApprovalService(EventBus(), timeout_seconds=5.0)
+    assert await service.respond("appr_does_not_exist", "approved") is False
+
+
+async def test_expired_approval_cannot_be_answered():
+    service = ApprovalService(EventBus(), timeout_seconds=5.0)
+    service.set_context(turn_id="turn_x")
+    pending = asyncio.create_task(service.request("computer", {"action": "read"}))
+    await asyncio.sleep(0.05)
+    approval_id = next(iter(service._requests))
+    # 直接把寿命推到过去：模拟「用户隔太久才点」的过期路径
+    service._requests[approval_id].expires_at = "2000-01-01T00:00:00+00:00"
+    assert await service.respond(approval_id, "approved") is False
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+
+async def test_wrong_turn_or_session_or_digest_is_rejected():
+    service = ApprovalService(EventBus(), timeout_seconds=5.0)
+    service.set_context(turn_id="turn_a", session_id="sess_a")
+    pending = asyncio.create_task(service.request("computer", {"action": "read"}))
+    await asyncio.sleep(0.05)
+    approval_id = next(iter(service._requests))
+
+    with pytest.raises(ValueError):
+        await service.respond(approval_id, "approved", turn_id="turn_b")
+    with pytest.raises(ValueError):
+        await service.respond(approval_id, "approved", session_id="sess_b")
+    with pytest.raises(ValueError):
+        await service.respond(approval_id, "approved", digest="deadbeef")
+    with pytest.raises(ValueError):
+        await service.respond(approval_id, "maybe")
+
+    # 被拒绝的尝试不能把审批消费掉
+    assert await service.respond(approval_id, "approved", turn_id="turn_a") is True
+    await asyncio.wait_for(pending, timeout=2)
+
+
+async def test_timeout_returns_timeout_and_is_single_use():
+    service = ApprovalService(EventBus(), timeout_seconds=0.05)
+    result = await service.request("computer", {"action": "read"})
+    assert result.decision == "timeout"

@@ -1,15 +1,65 @@
 <script setup lang="ts">
 /**
- * 悬浮球：SVG 微缩星球（透明球径向渐变 + 玫红轮廓 + 三圈融合环 + 圆点），
- * 浮动窗口（贴边，默认右侧居中）；点击展开全屏星球（保留事件，拖动不误触发）。
+ * 悬浮球（第四阶段）：**全屏 Planet 的压缩态**，不是图标按钮。
+ *
+ * 它用 `PlanetOrb` 以 canvas 画同一套融合环距离场（`planet/ringField.ts`），
+ * 因此与全屏 Planet 共享几何、数学、颜色令牌与生命感。点击不是「打开一个页面」，
+ * 而是让这个对象展开：阶段推进由 `planetContinuum` 与 PlanetView 共享，
+ * 所以「小球长大成 Planet」在视觉上真的是同一件东西在变尺度。
+ *
+ * 浮动窗口行为（拖动、贴边、贴边后半隐藏、拖动不误触发展开）保持不变。
  */
-import { ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
+import { planetContinuum } from "../composables/planetContinuum";
+import { prefersReducedMotion } from "../utils/motion";
+import PlanetOrb from "./planet/PlanetOrb.vue";
 
 const session = useSessionStore();
 const emit = defineEmits<{ open: [] }>();
 const elRef = ref<HTMLElement | null>(null);
+
+/** 收到回来的星球时的一次轻微「接收」反馈（不做回弹、不做庆祝） */
+const receiving = ref(false);
+let receiveTimer = 0;
+
+/**
+ * 转场期间小球的状态：
+ * - activating：被激活（细节增强、轻微放大），用户意识到「这个对象即将展开」；
+ * - expanding / ready / collapsing / returning：已经交棒给全屏 Planet，小球让位（不遮挡）。
+ * 让位是**瞬时的**而不是淡出：交棒瞬间全屏 Planet 就压在入口的同一位置上，
+ * 这正是「同一个对象」——任何淡出都会立刻变成「两个东西在交叉」。
+ */
+const handedOff = computed(() =>
+  ["expanding", "ready", "collapsing", "returning"].includes(planetContinuum.phase),
+);
+const activating = computed(() => planetContinuum.phase === "activating");
+/**
+ * 真实星球渲染是否已经在位。
+ *
+ * 在位之后，入口的视觉由星球层（同一个 WebGL 场景缩到入口尺度）承担，
+ * 这里只保留按钮本身：点击、拖动、贴边、隐藏、无障碍标签都还归它管。
+ * 在 three.js 就绪之前（或 WebGL 不可用时）由 `PlanetOrb` 顶着首屏。
+ */
+const ballLive = computed(() => planetContinuum.ballLive);
+
+watch(
+  () => planetContinuum.phase,
+  (phase, prev) => {
+    if (prev === "returning" && phase === "idle") {
+      receiving.value = true;
+      window.clearTimeout(receiveTimer);
+      receiveTimer = window.setTimeout(() => {
+        receiving.value = false;
+      }, prefersReducedMotion() ? 120 : 460);
+    }
+  },
+);
+
+onBeforeUnmount(() => {
+  window.clearTimeout(receiveTimer);
+});
 
 const float = useFloatingWindow(elRef, {
   id: "planet-dock",
@@ -22,30 +72,29 @@ const float = useFloatingWindow(elRef, {
 
 function onClick() {
   if (float.moved.value) return; // 拖动不误触发
+  if (handedOff.value) return; // 转场中不重复触发
   emit("open");
 }
 </script>
 
 <template>
-  <button ref="elRef" class="dock" @click="onClick" title="话题星球" aria-label="打开话题星球">
-    <svg class="globe" viewBox="0 0 96 96" width="84" height="84" aria-hidden="true">
-      <defs>
-        <radialGradient id="qio-dock-g" cx="50%" cy="38%" r="65%">
-          <stop class="g0" offset="0%" />
-          <stop class="g1" offset="55%" />
-          <stop class="g2" offset="100%" />
-        </radialGradient>
-      </defs>
-      <circle class="globe-rim" cx="48" cy="48" r="38" fill="url(#qio-dock-g)" />
-      <ellipse class="ring thin" cx="48" cy="48" rx="30" ry="26" />
-      <ellipse class="ring mid" cx="48" cy="48" rx="22" ry="18" />
-      <ellipse class="ring thick" cx="48" cy="48" rx="14" ry="10" />
-      <circle class="dotp" cx="48" cy="38" r="2.6" />
-      <circle class="dotp" cx="58" cy="50" r="2" />
-      <circle class="dotp" cx="42" cy="56" r="1.6" />
-    </svg>
-    <span class="lbl mono">话题星球</span>
-    <span class="activity" :class="{ on: session.turnRunning }"></span>
+  <button
+    ref="elRef"
+    class="dock"
+    :class="{ activating, handed: handedOff, receiving }"
+    data-planet-entry
+    :aria-expanded="handedOff"
+    title="话题星球"
+    aria-label="打开话题星球"
+    @click="onClick"
+  >
+    <!-- 真实渲染未就位时才显示 2D 压缩态（首屏兜底 / WebGL 不可用） -->
+    <PlanetOrb
+      v-if="!ballLive"
+      :size="84"
+      :detail="activating ? 1 : 0.72"
+      :activity="session.turnRunning"
+    />
   </button>
 </template>
 
@@ -67,18 +116,24 @@ function onClick() {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s ease, opacity 0.3s ease;
+  /* 高频层：hover/按下用短令牌；贴边隐藏的淡入用中频档 */
+  transition: transform var(--dur-fast) var(--ease-1), opacity var(--dur-planet-settle) var(--ease-1);
 }
 .dock:active {
   cursor: grabbing;
 }
 .dock:hover {
-  transform: scale(1.06);
+  transform: scale(1.04);
 }
 /* 按下立即反馈：不等页面加载完成，用户马上知道点到了 */
 .dock:active {
   transform: scale(0.96);
   transition-duration: var(--dur-press);
+}
+/* 阶段 A：入口被激活（细节增强 + 轻微放大），只是「意识到即将展开」，不是动画表演 */
+.dock.activating {
+  transform: scale(1.06);
+  transition: transform var(--mo-3-prepare) var(--ease-3-in);
 }
 /* 贴靠隐藏：淡化但保留轮廓与环，用户始终知道星球在哪；hover 展开、移出再隐藏 */
 .dock.fw-hidden {
@@ -87,70 +142,19 @@ function onClick() {
 .dock.fw-hidden:hover {
   opacity: 1;
 }
-.dock.fw-hidden .globe {
-  filter: drop-shadow(0 0 6px var(--accent-soft));
-}
-.dock.fw-hidden .lbl {
-  opacity: 0.75;
-}
-.g0 {
-  stop-color: var(--accent-soft);
-}
-.g1 {
-  stop-color: var(--bg-elevated);
-  stop-opacity: 0.5;
-}
-.g2 {
-  stop-color: var(--bg-base);
-  stop-opacity: 0;
-}
-.globe-rim {
-  stroke: var(--link);
-  stroke-opacity: 0.85;
-  stroke-width: 1.6;
-}
-.globe .ring {
-  fill: none;
-  stroke: var(--link);
-  stroke-opacity: 0.5;
-}
-.globe .ring.thin {
-  stroke-width: 2;
-}
-.globe .ring.mid {
-  stroke-width: 3.5;
-  stroke-opacity: 0.35;
-}
-.globe .ring.thick {
-  stroke-width: 6;
-  stroke-opacity: 0.2;
-}
-.globe .dotp {
-  fill: var(--accent);
-}
-.lbl {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: -6px;
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
+/* 交棒之后：全屏 Planet 已经压在同一位置上，小球不再参与显示与命中。
+   放在最后并显式覆盖 hover / 贴边隐藏，否则「贴边半隐藏 + hover」会把
+   已经交棒的小球重新点亮（那会在 Planet 上面多出一个球）。 */
+.dock.handed,
+.dock.handed:hover,
+.dock.handed.fw-hidden,
+.dock.handed.fw-hidden:hover {
+  opacity: 0;
   pointer-events: none;
 }
-.activity {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  border: 2px solid var(--bg-base);
-  pointer-events: none;
-}
-.activity.on {
-  background: var(--warning);
-  box-shadow: 0 0 6px var(--warning);
+/* 收到回来的星球：一次很短、幅度极小的「归位」，不是回弹庆祝 */
+.dock.receiving {
+  transform: scale(1.03);
+  transition: transform var(--mo-3-settle) var(--ease-3-settle);
 }
 </style>

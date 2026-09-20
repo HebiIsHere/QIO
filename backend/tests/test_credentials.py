@@ -148,14 +148,15 @@ def test_delete_removes_record_secret_and_audit(store: CredentialStore, policy: 
         store.delete("k1")
 
 
-def test_resolve_prefers_purpose_key_then_main_loop_fallback(
+def test_resolve_prefers_main_loop_key_then_purpose_fallback(
     store: CredentialStore, policy: CredentialPolicy
 ):
     store.create("main-key", "sm", tags=["main-loop"], budget=1000)
     store.create("vision-key", "sv", tags=["vision"], budget=10)
     refs = policy.resolve("main-loop", ["main-loop", "vision"])
-    # purpose key wins even with less budget; main-loop is the last resort
-    assert [r.key_id for r in refs] == ["vision-key", "main-key"]
+    # 主循环优先用 main-loop 标签的凭据：专项（vision）只在没有 main-loop 时回落，
+    # 否则一个打 vision 标签的 Key 会被主 Agent Loop 悄悄拿去用。
+    assert [r.key_id for r in refs] == ["main-key", "vision-key"]
 
 
 def test_resolve_uses_main_loop_when_no_purpose_key(store: CredentialStore, policy: CredentialPolicy):

@@ -2,7 +2,12 @@
 
 Resolution:
 1. candidate keys: status active AND tags intersect required_tags;
-2. ordering: budget remaining desc, then created_at asc (stable tie-break).
+2. ordering: `main-loop` 标签优先，其次预算余额降序，最后 key_id 稳定排序。
+
+第 2 条的次序是安全语义，不是偏好：主 Agent Loop 以前会优先选中「非 main-loop」
+标签的凭据（例如一个打 `vision` 标签的 Key），于是专项凭据被主循环悄悄拿去用。
+主循环优先用 `main-loop`，其它用途（chat/code/vision/research）只在没有
+main-loop 可用时才回落。
 """
 
 from __future__ import annotations
@@ -90,11 +95,10 @@ class CredentialPolicy:
                     budget_left=budget_left,
                 )
             )
-        # Purpose keys (non-main-loop) first by budget, then the main-loop
-        # credential as a last-resort fallback, then key_id for stability.
+        # main-loop 优先；其余按预算余额降序；最后按 key_id，保证结果稳定。
         candidates.sort(
             key=lambda r: (
-                1 if "main-loop" in r.tags else 0,
+                0 if "main-loop" in r.tags else 1,
                 -(r.budget_left if r.budget_left is not None else float("inf")),
                 r.key_id,
             )

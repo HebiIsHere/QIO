@@ -17,7 +17,7 @@ const emit = defineEmits<{ confirm: []; keep: [] }>();
     <span class="text">转到「{{ topicName }}」？</span>
     <span class="hint">这段内容看起来属于另一个话题</span>
     <span class="spacer" />
-    <button class="qio-btn mini" type="button" :disabled="busy" @click="emit('keep')">保留当前</button>
+    <button class="qio-btn mini quiet" type="button" :disabled="busy" @click="emit('keep')">保留当前</button>
     <button class="qio-btn mini primary" type="button" :disabled="busy" @click="emit('confirm')">
       {{ busy ? "切换中…" : "转到这里" }}
     </button>
@@ -32,12 +32,14 @@ const emit = defineEmits<{ confirm: []; keep: [] }>();
   margin: 0 auto 8px;
   max-width: 860px;
   padding: 7px 12px;
-  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.22));
-  border-radius: 10px;
-  background: var(--bg-raised, rgba(127, 127, 127, 0.06));
+  /* 低干扰浮条：与状态徽章同一套原语，不再引用不存在的 --bg-raised/--dur-pop */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
   font-size: 12.5px;
   color: var(--text-muted);
-  animation: topic-switch-in var(--dur-pop, 170ms) var(--ease-out, ease-out);
+  /* 中频进入：短淡入 + 轻位移（reduced-motion 下自动降级为保留淡入、去掉位移） */
+  animation: topic-switch-in var(--mo-2-in) var(--ease-2) both;
 }
 
 .topic-switch .text {
@@ -56,17 +58,11 @@ const emit = defineEmits<{ confirm: []; keep: [] }>();
 @keyframes topic-switch-in {
   from {
     opacity: 0;
-    transform: translateY(3px);
+    transform: translateY(var(--shift-4));
   }
   to {
     opacity: 1;
     transform: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .topic-switch {
-    animation: none;
   }
 }
 </style>

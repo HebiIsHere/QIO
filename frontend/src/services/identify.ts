@@ -1,4 +1,4 @@
-import { BACKEND_BASE } from "./events_const";
+import { authHeaders, resolveBackend } from "./backend";
 
 export interface IdentifyResult {
   identified: boolean;
@@ -11,9 +11,10 @@ export interface IdentifyResult {
 
 // 粘贴 API Key 后自动识别：探测端点、默认模型与可用模型列表。
 export async function identifyCredential(secret: string): Promise<IdentifyResult> {
-  const resp = await fetch(`${BACKEND_BASE}/api/credentials/identify`, {
+  const { base, token } = await resolveBackend();
+  const resp = await fetch(`${base}/api/credentials/identify`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify({ secret }),
   });
   if (!resp.ok) {

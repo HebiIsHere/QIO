@@ -8,10 +8,19 @@ const emit = defineEmits<{
   "edit-meta": [];
   rotate: [];
   "toggle-enabled": [];
+  revoke: [];
   remove: [];
 }>();
 
 const expanded = ref(false);
+/**
+ * 管理动作是否展开（第四阶段：默认阅读、按需管理）。
+ *
+ * 以前一张凭据卡上常驻 7 个按钮，读一行凭据得在按钮堆里找；
+ * 现在默认只给结论 + 两个入口（详情 / 管理），管理动作收起时同时 `inert`——
+ * 否则它们虽然看不见，键盘 Tab 仍会掉进去。
+ */
+const managing = ref(false);
 const audit = ref<{ action: string; from_version: number | null; to_version: number | null; created_at: string }[]>([]);
 const auditState = ref<"idle" | "loading" | "done" | "failed">("idle");
 
@@ -61,18 +70,23 @@ async function toggleExpand() {
     <div class="row">
       <span class="name">{{ credential.note || credential.key_id }}</span>
       <div class="tags">
-        <span v-for="t in credential.tags" :key="'tag-' + t" class="qio-badge">{{ t }}</span>
+        <span v-for="t in credential.tags" :key="'tag-' + t" class="qio-badge qio-tag">{{ t }}</span>
       </div>
-      <span class="status" :class="status.cls">{{ status.text }}</span>
-      <div class="actions">
-        <button type="button" class="qio-btn btn-test" @click="emit('test')">测试</button>
-        <button type="button" class="qio-btn btn-detail" @click="toggleExpand">{{ expanded ? "收起" : "详情" }}</button>
-        <button type="button" class="qio-btn btn-meta" @click="emit('edit-meta')">编辑</button>
-        <button type="button" class="qio-btn btn-rotate" @click="emit('rotate')">换钥</button>
-        <button type="button" class="qio-btn btn-toggle" @click="emit('toggle-enabled')">
-          {{ enabled ? "停用" : "启用" }}
+      <span class="status qio-state" :class="status.cls">{{ status.text }}</span>
+      <!-- 阅读态的两个入口：详情（只读）与管理（动作）。触屏与键盘同样够得到 -->
+      <div class="entries">
+        <button type="button" class="qio-btn mini quiet btn-detail" :aria-expanded="expanded" @click="toggleExpand">
+          {{ expanded ? "收起详情" : "详情" }}
         </button>
-        <button type="button" class="qio-btn danger btn-danger" @click="emit('remove')">删除</button>
+        <button
+          type="button"
+          class="qio-btn mini btn-manage"
+          :aria-expanded="managing"
+          aria-label="管理这把凭据"
+          @click="managing = !managing"
+        >
+          {{ managing ? "收起管理" : "管理" }}
+        </button>
       </div>
     </div>
     <div class="key mono">{{ keyLine }}</div>
@@ -85,6 +99,30 @@ async function toggleExpand() {
       <span v-else>预算 ∞</span>
       <span v-if="credential.default_model">· {{ credential.default_model }}</span>
       <span>· v{{ credential.version }}</span>
+    </div>
+    <!-- 管理动作：默认收起且 inert（不可见也不可聚焦），点「管理」才展开 -->
+    <div class="manage" :class="{ open: managing }" :inert="managing ? undefined : true">
+      <div class="manage-clip">
+        <div class="actions">
+          <button type="button" class="qio-btn mini btn-test" @click="emit('test')">测试连接</button>
+          <button type="button" class="qio-btn mini btn-meta" @click="emit('edit-meta')">编辑信息</button>
+          <button type="button" class="qio-btn mini btn-rotate" @click="emit('rotate')">换钥</button>
+          <button type="button" class="qio-btn mini btn-toggle" @click="emit('toggle-enabled')">
+            {{ enabled ? "停用" : "启用" }}
+          </button>
+          <!-- 撤销 ≠ 删除：撤销让密钥作废但保留记录（可审计），删除是彻底清除 -->
+          <button
+            v-if="credential.status !== 'revoked'"
+            type="button"
+            class="qio-btn mini quiet btn-revoke"
+            title="让这把密钥立即作废，但保留这条记录与审计历史"
+            @click="emit('revoke')"
+          >
+            撤销密钥
+          </button>
+          <button type="button" class="qio-btn mini danger btn-danger" @click="emit('remove')">删除</button>
+        </div>
+      </div>
     </div>
     <div v-if="expanded" class="detail mono">
       <div><span class="k">标识</span><span class="v">{{ credential.key_id }}</span></div>
@@ -111,11 +149,25 @@ async function toggleExpand() {
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .name { font-weight: 600; color: var(--text-strong); font-size: 14px; }
 .tags { display: flex; gap: 6px; flex-wrap: wrap; }
-.status { font-size: 10px; padding: 2px 9px; border-radius: 20px; }
-.status.ok { color: var(--success); border: 1px solid var(--success); }
-.status.err { color: var(--danger); border: 1px solid var(--danger); }
-.status.paused { color: var(--warning); border: 1px solid var(--warning); }
-.actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+/* 状态用统一状态徽章的软底色（描边用自身颜色会显得像警报） */
+.status { font-size: 10px; }
+.status.ok { color: var(--success); background: var(--success-soft); border-color: var(--success-soft); }
+.status.err { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
+.status.paused { color: var(--warning); background: var(--warning-soft); border-color: var(--warning-soft); }
+.entries { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+/* 管理区：真实高度过渡（不是 v-show 瞬切）；收起时不占位、不拦截、不参与 Tab */
+.manage { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--mo-2-in) var(--ease-2); }
+.manage.open { grid-template-rows: 1fr; }
+.manage-clip { overflow: hidden; min-height: 0; opacity: 0; transition: opacity var(--mo-2-in) var(--ease-2); }
+.manage.open .manage-clip { opacity: 1; }
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
 .key { font-size: 12px; color: var(--text-muted); letter-spacing: 0.12em; margin-top: 10px; }
 .meta { display: flex; align-items: center; gap: 14px; margin-top: 12px; font-size: 10.5px; color: var(--text-muted); flex-wrap: wrap; }
 .budget { flex: 1; min-width: 80px; height: 4px; border-radius: 4px; background: var(--border-subtle); position: relative; }

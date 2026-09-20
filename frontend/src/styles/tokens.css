@@ -23,21 +23,63 @@
   /* 间距 / 圆角 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
   --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;
-  /* 动效：UI 100-180ms，面板 180-300ms，星球更慢 */
-  --dur-fast:140ms; --dur-base:200ms; --dur-slow:280ms;
-  --ease:cubic-bezier(.22,.8,.24,1);
-  /* 任务02 分层时长：按下最快 → 开关/选中 → 菜单/弹窗 → 页面 → 星球。
-     命名沿用上表，只补缺失的档位，不另立一套冲突体系。 */
-  --dur-press:80ms; --dur-toggle:150ms; --dur-menu:170ms; --dur-exit:150ms;
-  --dur-page-in:220ms; --dur-page-out:170ms; --dur-panel:210ms;
-  --dur-planet:300ms; --dur-focus:320ms; --dur-snap:220ms;
-  /* 星球展开/收起（2026-09-14 演示版）：先铺底 → 内容淡入；收起先收势再整体淡出 */
-  --dur-planet-backdrop:140ms; --dur-planet-in:420ms;
-  --dur-planet-settle:180ms; --dur-planet-out:280ms;
-  /* 打开：快速起步后减速；关闭：先慢后快，不拖尾、不回弹 */
-  --ease-out:cubic-bezier(.16,.84,.44,1);
-  --ease-in:cubic-bezier(.4,0,.72,.2);
-  --press-shift:1px;
+  /* ===== 动效令牌 v3（2026-09-15 第四阶段）：三层动效 =====
+     高频 --mo-1-*（80–180ms）· 中频 --mo-2-*（200–280ms）· 低频 --mo-3-*（180–520ms）。
+     规范名是唯一事实来源；下面 --dur-* 全部降级为兼容别名（既有组件不改也自动获得新分层），
+     组件里不再允许出现裸时长/裸曲线/裸位移。 */
+  --mo-1-press:80ms; --mo-1-state:150ms; --mo-1-fast:140ms; --mo-1-exit:150ms;
+  --mo-1-menu:170ms; --mo-1-wide:180ms;
+  --mo-2-in:240ms; --mo-2-move:210ms; --mo-2-out:200ms; --mo-2-wide:280ms;
+  --mo-3-prepare:180ms; --mo-3-expand:520ms; --mo-3-settle:220ms; --mo-3-collapse:420ms;
+  /* 曲线集刻意保持少：同一层共享曲线，不为单个组件发明 easing。
+     --ease-3-* 只服务 Planet 这类低频关键转场，不得复制到按钮与列表。 */
+  --ease-1:cubic-bezier(.2,.8,.24,1);
+  --ease-1-out:cubic-bezier(.4,0,.7,.2);
+  --ease-2:cubic-bezier(.32,.72,.24,1);
+  --ease-2-out:cubic-bezier(.42,0,.42,1);
+  --ease-3-in:cubic-bezier(.5,.02,.2,1);
+  /* 约 3% 的单次柔和过冲后收紧：是「有生命感的非线性收束」，不是 bounce（y2 必须 >1 且小） */
+  --ease-3-settle:cubic-bezier(.24,1.04,.32,1);
+  --ease-3-out:cubic-bezier(.5,0,.24,1);
+  /* 位移令牌：reduced-motion 下整体归零，所以组件里不许写裸数值 */
+  --shift-1:1px; --shift-2:2px; --shift-4:4px; --shift-8:8px; --shift-panel:16px;
+  /* ---- 兼容别名（v2 组件继续用这些名字） ---- */
+  --dur-fast:var(--mo-1-fast); --dur-base:var(--mo-1-wide); --dur-slow:var(--mo-2-wide);
+  --dur-press:var(--mo-1-press); --dur-toggle:var(--mo-1-state); --dur-menu:var(--mo-1-menu); --dur-exit:var(--mo-1-exit);
+  --dur-page-in:var(--mo-2-in); --dur-page-out:var(--mo-2-out); --dur-panel:var(--mo-2-move);
+  --dur-planet:var(--mo-3-expand); --dur-focus:var(--mo-2-wide); --dur-snap:var(--mo-2-move);
+  --dur-planet-backdrop:var(--mo-3-settle); --dur-planet-in:var(--mo-3-expand);
+  --dur-planet-settle:var(--mo-3-prepare); --dur-planet-out:var(--mo-3-collapse);
+  --ease:var(--ease-1);
+  --ease-out:var(--ease-1);
+  --ease-in:var(--ease-1-out);
+  --press-shift:var(--shift-1);
+  /* ---- 状态层：hover 只加一档亮度，selected 必须与 hover 可区分 ---- */
+  --layer-hover:rgba(255,255,255,.045);
+  --layer-selected:var(--bg-accent-subtle);
+  /* ---- 技术信息层级：永远不得大过内容字号 ---- */
+  --fs-tech:11.5px;
+  /* ---- 晶体玻璃（高透、低雾；只在高层级空间界面用）----
+     不是「深色毛玻璃 + 一道高光」：靠极淡底色 + 小半径模糊 + 边缘厚度 + 内外亮度差 +
+     极轻冷暖边分离共同成立。 */
+  --glass-bg:linear-gradient(160deg,rgba(255,255,255,.075),rgba(255,255,255,.028) 38%,rgba(232,120,189,.05));
+  --glass-bg-strong:linear-gradient(160deg,rgba(255,255,255,.10),rgba(255,255,255,.04) 42%,rgba(232,120,189,.065));
+  --glass-blur:10px;
+  --glass-sat:118%;
+  --glass-border:rgba(255,255,255,.14);
+  --glass-edge-top:rgba(255,255,255,.22);
+  --glass-inner:rgba(255,255,255,.045);
+  --glass-tint-warm:rgba(232,120,189,.18);
+  --glass-tint-cool:rgba(140,196,255,.14);
+  --glass-shadow:0 18px 44px rgba(0,0,0,.38),0 2px 10px rgba(0,0,0,.24);
+  --shadow-float:var(--glass-shadow);
+  /* 星球的「虚空」底色：行星场景自己的背景色。
+     它同时被 WebGL 场景（scene.background）与星球页铺底使用 ——
+     只有两边完全一致，转场期间「球体外围」才不会出现一块可见的矩形画布。 */
+  --planet-void:#0f0a10;
+  /* ---- 层级（悬浮层统一用这两档，不再各写阴影）---- */
+  --elev-floating:var(--shadow-2);
+  --elev-overlay:var(--shadow-3);
   /* 键盘焦点环（玫红品牌色，仅 focus-visible 使用） */
   --focus-ring:#e878bd;
   --shadow-1:0 2px 8px rgba(0,0,0,.28);
@@ -64,6 +106,24 @@
   --shadow-1:0 1px 3px rgba(32,31,29,.10);
   --shadow-2:0 10px 26px rgba(32,31,29,.12);
   --shadow-3:0 24px 56px rgba(32,31,29,.16);
+  /* 净白主题下晶体玻璃不能靠「加白」制造透明感（背景本来就白），
+     改用高亮边界 + 更弱的暖/冷边分离 + 略强的背景饱和，避免变成塑料片。 */
+  --layer-hover:rgba(32,31,29,.035);
+  --layer-selected:var(--bg-accent-subtle);
+  --glass-bg:linear-gradient(160deg,rgba(255,255,255,.72),rgba(255,255,255,.46) 40%,rgba(197,27,125,.045));
+  --glass-bg-strong:linear-gradient(160deg,rgba(255,255,255,.88),rgba(255,255,255,.62) 44%,rgba(197,27,125,.05));
+  --glass-blur:12px;
+  --glass-sat:132%;
+  --glass-border:rgba(255,255,255,.85);
+  --glass-edge-top:rgba(255,255,255,.95);
+  --glass-inner:rgba(32,31,29,.035);
+  --glass-tint-warm:rgba(197,27,125,.10);
+  --glass-tint-cool:rgba(90,150,220,.12);
+  --glass-shadow:0 16px 40px rgba(32,31,29,.16),0 2px 8px rgba(32,31,29,.08);
+  --shadow-float:var(--glass-shadow);
+  --planet-void:#f4f1ec;
+  --elev-floating:var(--shadow-2);
+  --elev-overlay:var(--shadow-3);
   /* 遗留兼容令牌（既有组件仍引用，保持可用） */
   --bg-overlay:rgba(252,252,251,.7); --bg-panel:rgba(255,255,255,.95);
   --bg-accent-subtle:#fbeaf4; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.2);

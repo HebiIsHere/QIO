@@ -93,18 +93,25 @@ class TurnOrchestrator:
                 ctx.turn_id, "cancelled", final_topic=final_topic, final_preview=ctx.final_content or ""
             )
             return
+        # 高影响知识候选：只有在回答真的完成之后才进协议（前端也只在 TURN_END
+        # 之后才显示），绝不打断正在进行的回答（spec 第 15~16 条）。
+        await app.emit_knowledge_candidates(ctx)
         await self.advance_anchor(ctx, final_topic)
         self.finish(ctx, plan, result, final_topic)
 
     # -- stages -----------------------------------------------------------
 
     async def begin(self, ctx):
-        from agent.services.app import DEFAULT_FRAGMENT_MAX_MESSAGES, make_warning
+        from agent.memory.fragment import resolve_max_turns
+        from agent.services.app import make_warning
         from agent.trace.recorder import TurnTracer
 
         app = self.app
         adapter = await app.build_adapter()
         if adapter is None:
+            # 凭据不可用：状态进协议（前端据此给人话提示），警告负责显示，
+            # 二者职责不同（spec 第 43~46 条）。
+            await app.announce_credential_unavailable(ctx.turn_id)
             await app.bus.publish(
                 make_warning(
                     "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话",
@@ -117,9 +124,10 @@ class TurnOrchestrator:
             ctx.status = "unavailable"
             ctx.error = "no_credential"
             return None
-        app.fragments.max_messages = app.settings_store.get_int(
-            "fragment.max_messages", DEFAULT_FRAGMENT_MAX_MESSAGES
-        )
+        # 能力模式与降级：正常时不显示，降级时用户得到一次性低干扰提示
+        await app.announce_capability(adapter, ctx.turn_id)
+        # 封块阈值是「轮」不是「消息条数」（第三阶段 spec 第 57~60 条）
+        app.fragments.max_turns = resolve_max_turns(app.settings_store)
         topic = ctx.initial_topic or app.current_topic()
         ctx.current_topic = topic
         tracer = TurnTracer(app.trace_store, ctx.turn_id)

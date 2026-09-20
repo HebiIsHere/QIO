@@ -25,6 +25,57 @@ from agent.tools.sandbox import SandboxExecutor
 from agent.tools.spec import ToolDefinition
 from agent.tools.tester import ToolTester
 
+# 工具创建流程的阶段（前端按同一 `group_id` 一张卡原地推进）。
+# 这些值是协议的一部分：改动要同步前端的状态文案表。
+PHASE_PROPOSAL = "proposal"
+PHASE_BUILDING = "building"
+PHASE_TESTING = "testing"
+PHASE_TESTING_PASSED = "testing_passed"
+PHASE_TESTING_FAILED = "testing_failed"
+PHASE_WAITING_APPROVAL = "waiting_approval"
+PHASE_REGISTERING = "registering"
+PHASE_READY = "ready"
+PHASE_FAILED = "failed"
+
+
+class ToolCreateStatus:
+    """工具创建进度的事件出口：同一 `group_id` 就是同一张卡。
+
+    `label` / `detail` 是要给用户看的中文短句：不放源代码、不放内部路径。
+    没有 bus（老装配、或单元测试直接构造工具）时是空实现：不发事件、不抛错。
+    """
+
+    def __init__(self, bus=None, turn_id_provider=None) -> None:
+        self.bus = bus
+        self.turn_id_provider = turn_id_provider
+
+    async def emit(
+        self,
+        group_id: str | None,
+        phase: str,
+        *,
+        label: str,
+        detail: str | None = None,
+        ok: bool | None = None,
+        tool_name: str | None = None,
+    ) -> None:
+        if self.bus is None or not group_id:
+            return
+        from agent.api.events import EventType, make_event
+
+        data: dict[str, Any] = {
+            "group_id": group_id,
+            "phase": phase,
+            "tool_name": tool_name,
+            "label": label,
+            "detail": detail,
+            "ok": ok,
+        }
+        turn_id = self.turn_id_provider() if self.turn_id_provider is not None else None
+        if turn_id:
+            data["turn_id"] = turn_id
+        await self.bus.publish(make_event(EventType.TOOL_CREATE_STATUS, data))
+
 
 class CreateToolTool(Tool):
     name = "create_tool"
@@ -37,14 +88,21 @@ class CreateToolTool(Tool):
         "required": ["request"],
     }
 
-    def __init__(self, workspaces) -> None:
+    def __init__(self, workspaces, bus=None, turn_id_provider=None) -> None:
         self.workspaces = workspaces
+        self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
         request = str(kwargs.get("request") or "").strip()
         if not request:
             return ToolResult(ok=False, error="request 必填")
         task = self.workspaces.create(request)
+        await self.status.emit(
+            task.id,
+            PHASE_PROPOSAL,
+            label="已收到创建需求",
+            detail="正在准备开发工作区",
+        )
         files = self.workspaces.list_files(task.id)
         return ToolResult(
             ok=True,
@@ -96,8 +154,9 @@ class DevWriteFileTool(Tool):
         "required": ["workspace", "name", "content"],
     }
 
-    def __init__(self, workspaces) -> None:
+    def __init__(self, workspaces, bus=None, turn_id_provider=None) -> None:
         self.workspaces = workspaces
+        self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
         workspace = str(kwargs.get("workspace") or "")
@@ -109,6 +168,12 @@ class DevWriteFileTool(Tool):
             self.workspaces.write_file(workspace, name, content)
         except (ValueError, KeyError) as exc:
             return ToolResult(ok=False, error=str(exc))
+        await self.status.emit(
+            workspace,
+            PHASE_BUILDING,
+            label="正在构建",
+            detail=f"已写入 {len(self.workspaces.list_files(workspace))} 个文件",
+        )
         return ToolResult(ok=True, content=f"已写入 {name}（{len(content)} 字符）")
 
 
@@ -149,9 +214,16 @@ class DevRunTestsTool(Tool):
         "required": ["workspace"],
     }
 
-    def __init__(self, workspaces, sandbox: SandboxExecutor | None = None) -> None:
+    def __init__(
+        self,
+        workspaces,
+        sandbox: SandboxExecutor | None = None,
+        bus=None,
+        turn_id_provider=None,
+    ) -> None:
         self.workspaces = workspaces
         self.tester = ToolTester(sandbox or SandboxExecutor())
+        self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
         workspace = str(kwargs.get("workspace") or "")
@@ -163,11 +235,34 @@ class DevRunTestsTool(Tool):
             return ToolResult(ok=False, error="tool.json 缺失或无效，请先写入工具定义")
         task.test_runs += 1
         if definition.tool_type == "subagent":
+            # 子 agent 型工具没有确定性测试，直接进入确认环节
             return ToolResult(ok=True, content="subagent 型工具无需确定性测试，可直接提交审批。")
+        await self.status.emit(
+            workspace,
+            PHASE_TESTING,
+            label="正在测试",
+            tool_name=definition.name,
+        )
         report = await self.tester.run(definition)
         lines = [f"- {o.name}: {'通过' if o.passed else '失败'} {o.detail}" for o in report.outcomes]
         if report.passed:
+            await self.status.emit(
+                workspace,
+                PHASE_TESTING_PASSED,
+                label="测试通过",
+                detail=report.summary,
+                ok=True,
+                tool_name=definition.name,
+            )
             return ToolResult(ok=True, content=f"测试通过 {report.summary}\n" + "\n".join(lines))
+        await self.status.emit(
+            workspace,
+            PHASE_TESTING_FAILED,
+            label="测试失败",
+            detail=report.summary,
+            ok=False,
+            tool_name=definition.name,
+        )
         return ToolResult(
             ok=False,
             error=f"测试失败 {report.summary}\n" + "\n".join(lines),
@@ -187,9 +282,16 @@ class DevSubmitTool(Tool):
         "required": ["workspace", "definition", "explanation"],
     }
 
-    def __init__(self, workspaces, lifecycle_builder: Callable[[], Awaitable[Any]]) -> None:
+    def __init__(
+        self,
+        workspaces,
+        lifecycle_builder: Callable[[], Awaitable[Any]],
+        bus=None,
+        turn_id_provider=None,
+    ) -> None:
         self.workspaces = workspaces
         self.lifecycle_builder = lifecycle_builder
+        self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
         workspace = str(kwargs.get("workspace") or "")
@@ -198,17 +300,39 @@ class DevSubmitTool(Tool):
         if self.workspaces.task(workspace) is None:
             return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         if not explanation:
+            await self.status.emit(
+                workspace, PHASE_FAILED, label="创建失败", detail="缺少用途说明", ok=False
+            )
             return ToolResult(ok=False, error="explanation 必填")
         if not isinstance(raw, dict):
+            await self.status.emit(
+                workspace, PHASE_FAILED, label="创建失败", detail="工具定义不是对象", ok=False
+            )
             return ToolResult(ok=False, error="definition 必须是对象")
         try:
             definition = ToolDefinition(**raw)
         except Exception as exc:  # noqa: BLE001 - pydantic validation
+            await self.status.emit(
+                workspace,
+                PHASE_FAILED,
+                label="创建失败",
+                detail=f"工具定义不合法：{exc}",
+                ok=False,
+            )
             return ToolResult(ok=False, error=f"definition 不合法：{exc}")
         try:
             lifecycle = await self.lifecycle_builder()
-            outcome = await lifecycle.submit_definition(definition, explanation)
+            outcome = await lifecycle.submit_definition(
+                definition, explanation, group_id=workspace
+            )
         except Exception as exc:  # noqa: BLE001 - isolation
+            await self.status.emit(
+                workspace,
+                PHASE_FAILED,
+                label="创建失败",
+                detail="提交时发生错误，请稍后重试",
+                ok=False,
+            )
             return ToolResult(ok=False, error=f"提交失败：{type(exc).__name__}: {exc}")
         if outcome.ok:
             self.workspaces.cleanup(workspace)

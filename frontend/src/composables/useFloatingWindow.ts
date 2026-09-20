@@ -10,6 +10,7 @@
  * - 清理：onScopeDispose 移除 document/window/元素监听与定时器。
  */
 import { computed, onScopeDispose, ref, watch, type Ref } from "vue";
+import { prefersReducedMotion } from "../utils/motion";
 import {
   floatingState,
   loadHidePrefs,
@@ -37,7 +38,28 @@ export interface UseFloatingWindowOptions {
 
 const SNAP_PAD = 4;
 const DRAG_THRESHOLD = 3;
-const SNAP_DURATION = 330;
+const SNAP_FALLBACK_MS = 210;
+
+/**
+ * 贴靠过渡时长：**从 CSS 令牌读**，而不是在 JS 里写死一个数字。
+ *
+ * 为什么必须这样：CSS 侧用的是 `--dur-snap`（三层动效令牌里的中频档），
+ * reduced-motion 下它会被压到 90ms；JS 侧如果继续用 330ms 写死，就会出现
+ * 「动画早就结束了，类名还挂着」或者反过来「位移还没到就判定完成」的错配，
+ * 而且减少动画时用户仍要等 330ms 才看到贴靠收尾。
+ */
+function snapDurationMs(el: HTMLElement): number {
+  if (prefersReducedMotion()) return 0;
+  try {
+    const raw = getComputedStyle(el).getPropertyValue("--dur-snap").trim();
+    if (!raw) return SNAP_FALLBACK_MS;
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value)) return SNAP_FALLBACK_MS;
+    return raw.endsWith("ms") ? value : value * 1000;
+  } catch {
+    return SNAP_FALLBACK_MS;
+  }
+}
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -289,7 +311,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       snapTimer = null;
       el.classList.remove("fw-snapping");
       maybeHide(el);
-    }, SNAP_DURATION);
+    }, snapDurationMs(el));
   }
 
   function onPointerDown(e: Event) {

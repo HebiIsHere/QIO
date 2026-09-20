@@ -50,7 +50,13 @@ logger = logging.getLogger(__name__)
 MAIN_LOOP_TAG = "main-loop"
 MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
 BUDGET_RATIO = 0.25
-DEFAULT_FRAGMENT_MAX_MESSAGES = 10
+
+# 用户忽略过某类高影响知识后，这段时间内不再把同类候选弹到对话里。
+# 为什么按类别而不是按句子：模型每次的说法都不一样（「用户偏好中文回复」/「用户更喜欢
+# 简洁的解释」），只比字符串会让用户刚说完「忽略」又被问一遍近乎同一件事。
+# 被压下的候选仍然留在知识面板的待确认列表里（不丢数据，只是不再打扰）。
+KNOWLEDGE_IGNORE_COOLDOWN_MINUTES = 30
+KNOWLEDGE_IGNORE_KEY_PREFIX = "knowledge.ignored_at."
 
 
 class AppContext:
@@ -216,15 +222,36 @@ class AppContext:
         from agent.tools.dev_workspace import DevWorkspace
 
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
-        self.registry.register(CreateToolTool(self.dev_workspaces))
+        # 建工具是一条流程、一张卡：这些工具把阶段事件发到同一个出口
+        self.registry.register(
+            CreateToolTool(
+                self.dev_workspaces,
+                bus=self.bus,
+                turn_id_provider=self._active_turn_id,
+            )
+        )
         self.registry.register(DevListFilesTool(self.dev_workspaces))
-        self.registry.register(DevWriteFileTool(self.dev_workspaces))
+        self.registry.register(
+            DevWriteFileTool(
+                self.dev_workspaces,
+                bus=self.bus,
+                turn_id_provider=self._active_turn_id,
+            )
+        )
         self.registry.register(DevReadFileTool(self.dev_workspaces))
-        self.registry.register(DevRunTestsTool(self.dev_workspaces))
+        self.registry.register(
+            DevRunTestsTool(
+                self.dev_workspaces,
+                bus=self.bus,
+                turn_id_provider=self._active_turn_id,
+            )
+        )
         self.registry.register(
             DevSubmitTool(
                 self.dev_workspaces,
                 lifecycle_builder=self._build_tool_lifecycle,
+                bus=self.bus,
+                turn_id_provider=self._active_turn_id,
             )
         )
         from agent.tools.entity_tools import CorrectEntityTool
@@ -249,6 +276,8 @@ class AppContext:
         self.services.register("tool_store", self.tool_store)
         self._restore_tools()
         self._notify_turn = False
+        # 上一次宣告过的适配档位：正常状态不制造噪声，只有档位变化才广播
+        self._announced_mode: str | None = None
         from agent.services.maintenance import MaintenanceScheduler
         from agent.services.tool_router import ToolRouter
 
@@ -421,6 +450,120 @@ class AppContext:
             return None
         return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
 
+    # -- 能力与凭据状态广播 ------------------------------------------------
+
+    async def announce_capability(
+        self, adapter: BaseAdapter, turn_id: str | None = None
+    ) -> None:
+        """宣告本轮适配档位（native / text / unsupported）。
+
+        档位没变就什么都不发——正常状态不应该在事件流里刷存在感；
+        只有真的降级到兼容文本模式时，额外发一次 `FALLBACK` 说明原因。
+        """
+        from agent.api.events import EventType, make_event
+
+        mode = getattr(adapter, "mode", None)
+        mode_value = mode.value if isinstance(mode, AdapterMode) else str(mode or "")
+        if mode_value == self._announced_mode:
+            return
+        self._announced_mode = mode_value
+        data: dict = {"adapter": mode_value, "model": getattr(adapter, "model", None)}
+        if turn_id:
+            data["turn_id"] = turn_id
+        await self.bus.publish(make_event(EventType.CAPABILITY, data))
+        if mode_value == AdapterMode.TEXT.value:
+            fallback: dict = {
+                "from": AdapterMode.NATIVE.value,
+                "to": AdapterMode.TEXT.value,
+                "reason": "model_without_native_tool_calls",
+                "message": "当前模型不支持原生工具调用，已使用兼容模式",
+            }
+            if turn_id:
+                fallback["turn_id"] = turn_id
+            await self.bus.publish(make_event(EventType.FALLBACK, fallback))
+
+    async def announce_credential_unavailable(self, turn_id: str | None = None) -> None:
+        """主循环没有可用凭据：只说明「现在用不了 + 去哪里加」，不带内部标识。"""
+        from agent.api.events import EventType, make_event
+
+        data: dict = {
+            "status": "unavailable",
+            "scope": "main_loop",
+            "reason_code": "no_credential",
+            "message": "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key",
+        }
+        if turn_id:
+            data["turn_id"] = turn_id
+        await self.bus.publish(make_event(EventType.CREDENTIAL_STATUS, data))
+
+    # -- 高影响知识候选 ----------------------------------------------------
+
+    def _knowledge_candidate_ignored(self, category: str, content: str) -> bool:
+        """用户忽略过的同一条知识（同类别 + 同内容）不再提示。"""
+        rows = self.conn.execute(
+            "SELECT provenance FROM knowledge "
+            "WHERE category = ? AND content = ? AND state = 'revoked'",
+            (category, content),
+        ).fetchall()
+        for row in rows:
+            try:
+                provenance = json.loads(row["provenance"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(provenance, dict) and provenance.get("ignored_at"):
+                return True
+        return False
+
+    def knowledge_category_cooling_down(self, category: str) -> bool:
+        """这一类高影响知识是不是刚被忽略过（冷却期内不再弹到对话里）。
+
+        忽略时间存在 settings 表里，所以重启后仍然生效 —— 「别再问」是用户的
+        长期表态，不能因为一次重启就忘掉。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        raw = self.settings_store.get(f"{KNOWLEDGE_IGNORE_KEY_PREFIX}{category}")
+        if not raw:
+            return False
+        try:
+            ignored_at = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        if ignored_at.tzinfo is None:
+            ignored_at = ignored_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - ignored_at < timedelta(
+            minutes=KNOWLEDGE_IGNORE_COOLDOWN_MINUTES
+        )
+
+    async def emit_knowledge_candidates(self, ctx: Any = None) -> None:
+        """回答完成后，把本轮新建的高影响知识候选发进对话里确认。
+
+        `ctx` 既可以是 `TurnContext`（从中取 `turn_id`），也可以直接是 turn_id
+        字符串。低影响候选不进这里；发完清空队列，被忽略过的内容不再重复提示。
+        """
+        from agent.api.events import EventType, make_event
+
+        pending = self.memory_lifecycle.take_knowledge_candidates()
+        if not pending:
+            return
+        turn_id = ctx if isinstance(ctx, str) else getattr(ctx, "turn_id", None)
+        for cand in pending:
+            if self._knowledge_candidate_ignored(cand["category"], cand["content"]):
+                continue
+            if self.knowledge_category_cooling_down(cand["category"]):
+                # 刚被忽略过这一类：不再弹到对话里（候选仍留在知识面板待确认）
+                continue
+            data: dict = {
+                "knowledge_id": cand["knowledge_id"],
+                "category": cand["category"],
+                "content": cand["content"],
+                "impact": cand.get("impact", "high"),
+                "reason": cand.get("reason"),
+            }
+            if turn_id:
+                data["turn_id"] = turn_id
+            await self.bus.publish(make_event(EventType.KNOWLEDGE_CANDIDATE, data))
+
     async def _build_tool_lifecycle(self):
         """Build a ToolLifecycle bound to the current main adapter (dev workflow submit)."""
         from agent.tools.lifecycle import ToolLifecycle
@@ -441,7 +584,13 @@ class AppContext:
             bus=self.bus,
             tool_store=self.tool_store,
             trace_store=self.trace_store,
+            turn_id_provider=self._active_turn_id,
         )
+
+    def _active_turn_id(self) -> str | None:
+        """当前轮的 turn_id：工具创建事件靠它归属到某一轮（拿不到就省略）。"""
+        active = self.turns.active
+        return getattr(active, "turn_id", None) if active is not None else None
 
     # -- selector refresh -------------------------------------------------
 

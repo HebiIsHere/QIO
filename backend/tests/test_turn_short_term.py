@@ -111,12 +111,13 @@ async def test_run_turn_create_topic(ctx: AppContext, topic: str, monkeypatch):
 
 
 async def test_fragment_tier_from_settings(ctx: AppContext, topic: str, monkeypatch):
-    ctx.settings_store.set("fragment.max_messages", "5")
+    # 阈值单位是「轮」（用户 + 其后的助手）：设置 5 轮时第 5 轮结束才封块
+    ctx.settings_store.set("fragment.max_turns", "5")
     await _append_messages(ctx, topic, n=4)
     adapter = FakeToolAdapter()
     monkeypatch.setattr(ctx, "build_adapter", AsyncMock(return_value=adapter))
 
-    result = await ctx.run_turn("第 5 条触发封块", topic_id=topic)
+    result = await ctx.run_turn("第 5 轮触发封块", topic_id=topic)
     assert result["ok"]
     closed = ctx.conn.execute(
         "SELECT COUNT(*) c FROM fragments WHERE closed_at IS NOT NULL"

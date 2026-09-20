@@ -163,22 +163,35 @@ def test_create_auto_generates_key_id_when_empty(client):
     listing = client.get("/api/credentials").json()["credentials"]
     assert listing[0]["key_id"] == generated
 def test_memory_settings_roundtrip(client):
+    """设置项是「轮」，不是消息条数：字段名必须和语义一致。"""
     resp = client.get("/api/settings/memory")
     assert resp.status_code == 200
-    assert resp.json()["fragment_max_messages"] == 10
+    assert resp.json()["fragment_max_turns"] == 10
 
-    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 5})
+    resp = client.put("/api/settings/memory", json={"fragment_max_turns": 5})
     assert resp.status_code == 200
-    assert resp.json()["fragment_max_messages"] == 5
+    assert resp.json()["fragment_max_turns"] == 5
 
     resp = client.get("/api/settings/memory")
-    assert resp.json()["fragment_max_messages"] == 5
+    assert resp.json()["fragment_max_turns"] == 5
 
-    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 99})
+    resp = client.put("/api/settings/memory", json={"fragment_max_turns": 99})
     assert resp.status_code == 400
 
-    resp = client.put("/api/settings/memory", json={"fragment_max_messages": 0})
+    resp = client.put("/api/settings/memory", json={"fragment_max_turns": 0})
     assert resp.status_code == 400
 
-    resp = client.put("/api/settings/memory", json={"fragment_max_messages": "abc"})
+    resp = client.put("/api/settings/memory", json={"fragment_max_turns": "abc"})
     assert resp.status_code == 400
+
+
+def test_memory_settings_migrates_the_old_message_based_key(client):
+    """旧键描述的是消息条数：读到它就迁移成新键（旧键保留，不删）。"""
+    ctx = client.app.state.ctx
+    ctx.settings_store.set("fragment.max_messages", "6")
+
+    resp = client.get("/api/settings/memory")
+
+    assert resp.json()["fragment_max_turns"] == 6
+    assert ctx.settings_store.get("fragment.max_turns") == "6"
+    assert ctx.settings_store.get("fragment.max_messages") == "6"

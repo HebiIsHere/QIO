@@ -3,6 +3,11 @@
 A fragment is the chunk boundary of the memory domain. The open fragment
 is where new messages are appended; closing writes the model summary and
 freezes the chunk (append-only).
+
+封块阈值按**对话轮**计算（第三阶段 spec 第 57~59 条）：一轮 = 一条 user 消息
+加上它之后的 assistant 回答；工具消息不构成用户理解中的「一轮」。
+设置页写「标准（10 轮）」时，这里就必须真的封在 10 轮，而不是 10 条消息
+（旧实现数消息条数，所以「10 轮」实际只有 5 轮）。
 """
 
 from __future__ import annotations
@@ -13,8 +18,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-DEFAULT_MAX_MESSAGES = 30
+DEFAULT_MAX_TURNS = 10
 DEFAULT_MAX_TOKENS = 4096
+
+# 记忆封块设置的键与范围：设置页文案一直写「轮」，所以键名也必须说「轮」。
+FRAGMENT_TURNS_KEY = "fragment.max_turns"
+# 旧键记的其实是消息条数（文案却写「轮」，语义错误）。只作为一次性迁移回退读取。
+LEGACY_FRAGMENT_MESSAGES_KEY = "fragment.max_messages"
+FRAGMENT_MIN_TURNS = 1
+FRAGMENT_MAX_TURNS = 30
 
 
 def _now() -> str:
@@ -23,6 +35,25 @@ def _now() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def resolve_max_turns(store, default: int = DEFAULT_MAX_TURNS) -> int:
+    """读取记忆封块阈值（单位：轮）。
+
+    新键优先；只有旧键（历史上按消息条数计）时做一次性迁移：用旧值并写回新键，
+    旧键保留不删（不丢用户数据，回退也仍然读得到）。越界的旧值收敛到合法区间。
+
+    API 层与服务层共用这一处解析，避免「设置页读到旧值、运行时算另一套」这类
+    两处实现漂移。
+    """
+    if store.get(FRAGMENT_TURNS_KEY) is not None:
+        value = store.get_int(FRAGMENT_TURNS_KEY, default)
+    elif store.get(LEGACY_FRAGMENT_MESSAGES_KEY) is not None:
+        value = store.get_int(LEGACY_FRAGMENT_MESSAGES_KEY, default)
+        store.set(FRAGMENT_TURNS_KEY, str(value))
+    else:
+        return default
+    return max(FRAGMENT_MIN_TURNS, min(FRAGMENT_MAX_TURNS, value))
 
 
 @dataclass(frozen=True)
@@ -44,11 +75,11 @@ class FragmentManager:
         self,
         conn: sqlite3.Connection,
         *,
-        max_messages: int = DEFAULT_MAX_MESSAGES,
+        max_turns: int = DEFAULT_MAX_TURNS,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self.conn = conn
-        self.max_messages = max_messages
+        self.max_turns = max_turns
         self.max_tokens = max_tokens
 
     def get_or_create_open(self, topic_id: str) -> Fragment:
@@ -108,13 +139,19 @@ class FragmentManager:
         )
 
     def should_close(self, fragment: Fragment) -> bool:
-        """Chunk-boundary policy: message count or token estimate threshold."""
-        count = self.conn.execute(
-            "SELECT COUNT(*) AS c FROM messages WHERE fragment_id = ?", (fragment.id,)
-        ).fetchone()["c"]
-        if count >= self.max_messages:
-            return True
-        return False
+        """Chunk-boundary policy: 完整的对话轮数达到上限才封块。
+
+        两个条件缺一不可：
+
+        1. 已经开始的轮数（= user 消息数）达到 `max_turns`；
+        2. 当前片段不是停在半轮（最后落下的不是 user 消息）。
+
+        第 2 条保证第 N 轮的助手回答不会因为「刚好数到 N 轮的 user 消息」
+        被写进下一个片段，把一轮对话拆到两个片段里。
+        """
+        if self.turn_count(fragment.id) < self.max_turns:
+            return False
+        return not self._ends_mid_turn(fragment.id)
 
     def message_count(self, fragment_id: str) -> int:
         return int(
@@ -123,6 +160,27 @@ class FragmentManager:
                 (fragment_id,),
             ).fetchone()["c"]
         )
+
+    def turn_count(self, fragment_id: str) -> int:
+        """已开始的对话轮数：一条 user 消息开启一轮。
+
+        工具消息与助手回答都不计入 —— 它们是这一轮的一部分，不是新的一轮。
+        """
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE fragment_id = ? AND role = 'user'",
+                (fragment_id,),
+            ).fetchone()["c"]
+        )
+
+    def _ends_mid_turn(self, fragment_id: str) -> bool:
+        """片段是否停在半轮（最后一条消息是 user）。"""
+        row = self.conn.execute(
+            "SELECT role FROM messages WHERE fragment_id = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (fragment_id,),
+        ).fetchone()
+        return row is not None and row["role"] == "user"
 
     def messages(self, fragment_id: str) -> list[sqlite3.Row]:
         return self.conn.execute(

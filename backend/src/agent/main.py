@@ -21,7 +21,26 @@ def create_app() -> FastAPI:
     apply_migrations(conn)
     app = build_app(settings, conn)
     app.state.settings = settings
+    _announce_auth(app.state.auth, settings)
     return app
+
+
+def _announce_auth(auth, settings: Settings) -> None:
+    """把安全模式讲清楚（绝不打印令牌本身）。"""
+    logger = logging.getLogger("agent.main")
+    if not auth.enabled:
+        logger.warning(
+            "local API authentication is DISABLED (QIO_DEV_INSECURE=1): "
+            "any local process can call the QIO API. Development only."
+        )
+        return
+    if auth.generated:
+        where = f"; token written to {settings.session_token_file}" if settings.session_token_file else ""
+        logger.warning(
+            "no QIO_SESSION_TOKEN configured: generated a per-process session token%s "
+            "(set QIO_SESSION_TOKEN, or run the dev script, to connect a frontend)",
+            where,
+        )
 
 
 def main() -> None:

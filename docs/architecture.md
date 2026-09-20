@@ -404,3 +404,148 @@ npm test
 ```
 
 端到端联调参考脚本：`scripts/e2e_up.py` / `scripts/e2e_down.py`（拉起后端与前端并记录 pid）。
+
+## 12. 状态可见性与能力可达性（第三阶段）
+
+第三阶段的主题不是「显示更多」，而是**让已经存在的能力被完整使用**：用户要知道
+「现在发生了什么 / 要不要我做决定 / 什么时候完成 / 失败后能做什么」，而不是看到
+内部机制。优先级：**能力完整性 > 状态可理解性 > 操作可达性 > 用户控制边界 >
+信息克制 > 视觉精致度**。
+
+### 12.1 事件协议与可见性（唯一事实） <!-- docs-check: ignore —— 分节编号「12.1 事件」会被 HARDCODED 正则当成硬编码事件数，这里不是数量 -->
+
+事件只有三种结论：**保留**（产生 → 传输 → 消费 → 必要呈现）、**内部使用**
+（不进前端协议）、**删除**（没有实际作用）。不允许「后端发、前端完全忽略」或
+「前端写 case、后端从不发」的半协议 —— `backend/tests/test_event_protocol.py`
+是守卫测试：前后端事件集合必须完全相等、每个事件都要有生产者、都必须被前端消费。
+
+| 事件 | 产生方 | 消费方 | 用户可见 | 用途 |
+| --- | --- | --- | --- | --- |
+| `TURN_START` | `core/turn.py::TurnManager` | `stores/events.ts` | 是（全局轻状态） | 一轮开始；`notify=true` 表示系统驱动的轮 |
+| `TURN_END` | 同上（`finally`，恰好一次） | `stores/events.ts` | 是 | 唯一终态 + 最终回答的唯一权威来源 |
+| `TURN_QUEUE` | 同上 | `QueueChip.vue` | 是（有排队时） | 排队 / 取消快照 |
+| `ASSISTANT` | `core/loop.py` | `stores/events.ts` | 是 | 流式正文 / 工具前中间话 |
+| `TOOL_START` | `core/loop.py`（转发 `tool/start`） | 工具卡 | 是 | 工具开始执行（卡片立即进入运行态） |
+| `TOOL_END` | 同上（`tool/end`） | 同一张工具卡（按 `call_id`） | 是 | 结果 / 失败原因 / 耗时，原地更新 |
+| `SUBAGENT_STATUS` | `tools/task_manager.py` | 独立任务卡（按 `task_id`） | 是 | 独立任务 queued/running/done/failed |
+| `TOOL_CREATE_STATUS` | `tools/dev_tools.py`、`tools/lifecycle.py` | 工具创建卡（按 `group_id`） | 是 | 同一张卡的创建阶段推进 |
+| `KNOWLEDGE_CANDIDATE` | `services/memory_lifecycle.py` + turn 收尾 | 对话内确认卡 | 是（回答完成后） | 高影响知识的保存 / 修改 / 忽略 |
+| `APPROVAL_REQUIRED` | `tools/approval.py` | `stores/approvals.ts` | 是 | 需要用户决定的操作 |
+| `APPROVAL_RESULT` | `tools/approval.py` | `stores/approvals.ts` | 是（卡片状态） | 授权的结局（单次使用） |
+| `CAPABILITY` | `services/app.py`（模式变化时） | `stores/events.ts` | 否（正常不显示） | 适配档位（native / text / unsupported） |
+| `FALLBACK` | `services/app.py`（进入兼容文本模式那一次） | 一次性轻提示 | 是（仅降级时） | 能力降级说明，不重复、不阻塞 |
+| `CREDENTIAL_STATUS` | `api/server.py`（凭据增删改）+ `turn_orchestrator` | `stores/events.ts` | 仅当阻止功能 | 凭据可用性（不含内部标识） |
+| `ANCHOR` | `services/app.py::_publish_anchor_event` | `stores/events.ts` | 是（话题行） | 当前位置变化 |
+| `TOPIC_SWITCH_SUGGESTED` | `services/turn_orchestrator.py` | `TopicSwitchPrompt.vue` | 是 | 推测切换待确认 |
+| `USAGE` | `core/loop.py` | `stores/events.ts` | 否（仅 Developer Mode） | 单轮 token / 迭代 / 工具计数 |
+| `WARNING` | `services/app.py::make_warning`、`core/loop.py` | `ConversationView.vue` | 是 | 非致命提示 |
+| `ERROR` | `services/app.py::make_error`、`core/loop.py` | `ConversationView.vue` | 是 | 出错了（不承担结束 turn 的职责） |
+
+`MEMORY_INJECT` 在第三阶段被**删除**：用户不需要每次知道「QIO 注入了 4 条记忆」。
+需要调试时看 Developer Mode 的单轮详情（`GET /api/traces/{turn_id}` 的 `injection`：
+哪些 Fragment / Knowledge / Entity 进入了上下文）。
+
+### 12.2 用户可见状态的层级
+
+反馈层级从局部到全局，**能局部解决就局部解决**：
+
+| 层级 | 例子 | 表达方式 |
+| --- | --- | --- |
+| 字段级 | 凭据格式不对 | 字段附近的错误文字 |
+| 组件级 | Knowledge 保存失败 | 该卡片内的状态行（不弹全局提示） |
+| 任务级 | 工具创建失败 | 工具创建卡内的失败原因 + 可继续修复 |
+| 全局 | 后端连接中断 | 页面级提示条 |
+
+约束：成功的反馈要**短暂**（按钮变「已保存」再恢复、卡片状态在原位收敛），失败的
+反馈要**持久**（用户必须能处理）；Toast 只用于「跨区域、短期、无需进一步处理」
+的信息 —— 本阶段把 Knowledge / Entity 的操作反馈从全局 Toast 收回到卡片内。
+
+普通用户**不会**看到：内部事件名、`capability fingerprint` / `policy hash` /
+`sandbox profile`、credential id / keychain identifier、检索得分、模型调用细节、
+内部状态机，以及任何形式的 Chain of Thought / hidden reasoning / system prompt。
+技术明细统一进 Developer Mode（`/debug`）。
+
+### 12.3 能力可达性（Feature Reachability）
+
+每个用户级能力必须至少属于一种：**直接入口** / **上下文自动出现** /
+**明确内部能力** / **开发者能力**。不允许「存在但无法到达」。
+
+| 能力 | 入口 | 自动触发位置 | 用户能否完成 |
+| --- | --- | --- | --- |
+| 对话 | 输入框 | — | 是 |
+| 排队 / 取消 | 输入区（排队徽标 / 停止） | 主 turn 运行中 | 是 |
+| 工具执行状态 | 工具卡 | Agent 调用工具 | 是 |
+| 审批 | 审批窗口 / 顶部「有 N 项操作等待确认」入口 | 高风险操作 | 是 |
+| 独立任务（subagent） | 独立任务卡 | Agent 派发子任务 | 是 |
+| 工具创建 | 对话里说明需求（Agent 调 `create_tool`）→ 工具创建卡 | Agent 判断需要新工具 | 是 |
+| 话题浏览 / 切换 / 从历史继续 | 星球 + 话题详情 | 明确说「切到 X」 | 是 |
+| 记忆浏览（片段摘要 → 原文） | 星球 → 话题详情 → 片段「查看原文」 | — | 是 |
+| 知识浏览 / 修正 / 归档 | 星球 → 知识页签 + 对话内高影响候选卡 | 高影响候选在回答完成后出现 | 是 |
+| 实体卡浏览 / 修正 | 星球 → 实体页签 | Agent 提取实体卡 | 是 |
+| 凭据管理（新增 / 测试 / 暂停 / 删除 / 审计） | 设置 → 凭据 | 没有可用凭据时的提示指向这里 | 是 |
+| 联网搜索通道 | 设置 → 模型与联网 | Agent 调 `web_search` | 是 |
+| 电脑操控权限 | 设置 → 工具与权限 | 越界操作触发审批 | 是 |
+| 记忆封块大小 | 设置 → 对话与记忆 | — | 是（语义为「轮」） |
+| 离线维护 | 设置 → 数据与维护 | 后台定时 | 是 |
+| Trace / 注入明细 / 原始事件 | Developer Mode（`/debug`） | — | 是（开发者能力） |
+| `POST /api/turns/cancel`（取消当前轮） | — | 前端按 `turn_id` 取消 | 明确内部能力 |
+| `GET /api/graph/positions` | — | 第二阶段后星球改用 overview / browse | 明确内部能力（兼容保留） |
+| `POST /api/credentials/{id}/revoke` | — | 安全侧的吊销动作，保留审计记录 | 明确内部能力（用户入口是「删除」） |
+
+### 12.4 工具创建的产品流程
+
+工具创建不做多步骤向导，而是**当前对话里的一张持续更新的卡**（同一 `group_id`
+原地变化，不产生一串卡）：
+
+```
+提案 → 正在构建 → 正在测试 → （等待你的确认） → 正在启用 → 已创建
+                                ↘ 测试失败 / 创建失败（可继续修复）
+```
+
+默认只显示工具名 + 当前状态 + 一行说明；源代码、文件路径、内部工作区只在
+「查看详情」里。失败时给用户能理解的结论（不显示 `Error`），并在 QIO 还能继续
+修复时提供「继续修复」。审批与创建卡是两件事：卡表达进度，审批表达授权（见 12.5）。
+
+这条流程里的开发工具调用（`create_tool` / `dev_write_file` / `dev_run_tests` /
+`dev_submit_tool` 等）**不再各出一张普通工具卡**：它们的进度汇总到同一张创建卡上，
+失败会把「创建没有完成：<原因>」写回这张卡（信息不丢，也不产生一串卡）。
+
+### 12.5 审批的表达原则
+
+第一阶段解决审批**安全**（绑定 turn / session、单次使用、过期、摘要、能力指纹）；
+第三阶段解决审批**可理解**。审批界面必须回答五个问题：
+
+| 问题 | 字段 |
+| --- | --- |
+| QIO 想做什么 | `description`（行为句，例如「想修改当前项目中的 3 个文件」） |
+| 为什么需要 | `explanation` |
+| 会访问什么 | `access`（具体路径 / 命令 / 网址） |
+| 会造成什么影响 | `capabilities` 的副作用 + 风险标签 |
+| 一次性还是长期 | `scope`（`once` / `long_term`） |
+
+工具名与原始参数仍然保留，但只出现在默认折叠的「高级详情」里；`capability
+fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、结束进程、长期注册
+工具）用更明确的措辞表达，但不用夸张警告，也不把批准按钮做成「推荐你点」。
+
+### 12.6 高影响知识候选的流程
+
+```
+回答完成 → 高影响候选以低干扰卡片出现在对话流
+        → 保存（verify + activate）/ 修改（生成新版本并生效）/ 忽略（记录 ignored）
+```
+
+关键约束：
+
+- 候选**只在回答完成之后**出现，绝不打断正在进行的回答（`KNOWLEDGE_CANDIDATE`
+  由 turn 收尾发出，前端也在 `TURN_END` 之后才显示）；
+- 忽略过一次的内容不再自动重复提示（`knowledge.provenance` 里的 `ignored_at`）；
+- Knowledge Panel 仍然是浏览 / 修正 / 归档 / 审核历史的入口，但**不再**是高影响
+  候选唯一的确认入口。
+
+### 12.7 独立任务（subagent）的产品语义
+
+用户看到的是「QIO 正在单独处理这项任务」，而不是「内部智能体进程」。独立任务
+有独立卡片（开始 / 进行中 / 已完成 / 失败），只显示任务目标、当前状态与最终结果；
+内部 reasoning、chain of thought、system prompt、model messages 一律不显示。
+任务完成后结果自然回到主 Agent：主 Agent 还在跑就继续回答，已经在等就从
+「进行中」变成「已完成」。

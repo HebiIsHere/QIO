@@ -8,7 +8,11 @@ policy below therefore states capabilities explicitly, instead of relying on
 Capability levels:
     PURE (0)       — default for AI-generated tools: no credential, no network,
                      no arbitrary shell, only a controlled scratch/temp dir,
-                     no access to user files, strict timeout + resource limits.
+                     strict timeout + output limit.
+                     ⚠️ 这是**策略声明**，不是 OS 级隔离：没有 Docker 时生成代码跑在
+                     同权限子进程里，谎报能力的工具仍能碰用户文件（见
+                     tools/sandbox.py 的边界声明）。因此执行生成工具本身
+                     必须由用户批准，能力指纹变化后必须重新批准。
     RESTRICTED (1) — the tool explicitly requests capability (network / a
                      filesystem path / a credential category / an endpoint);
                      must be shown to the user at approval time.

@@ -91,14 +91,14 @@ describe("MessageStream 流式跟随（问题12）", () => {
 
   it("助手消息内容持续增长（同一条流式消息）也跟随底部", async () => {
     const { w, session, stream } = await mountStream();
-    session.pushAssistant("第一段", undefined, true, true);
+    session.pushAssistant("第一段", true, true);
     await settle();
     stream.scrollTop = 550;
     stream.dispatchEvent(new Event("scroll"));
     await nextTick();
 
     // 同一条消息增长：messages.length 不变，只有 content 变长
-    session.pushAssistant("第一段 + 第二段", undefined, true, true);
+    session.pushAssistant("第一段 + 第二段", true, true);
     await settle();
 
     expect(stream.scrollTop).toBe(600);
@@ -107,13 +107,13 @@ describe("MessageStream 流式跟随（问题12）", () => {
 
   it("向上滚动后内容增长也不被拉回", async () => {
     const { w, session, stream } = await mountStream();
-    session.pushAssistant("第一段", undefined, true, true);
+    session.pushAssistant("第一段", true, true);
     await settle();
     stream.scrollTop = 100;
     stream.dispatchEvent(new Event("scroll"));
     await nextTick();
 
-    session.pushAssistant("第一段 + 第二段", undefined, true, true);
+    session.pushAssistant("第一段 + 第二段", true, true);
     await settle();
 
     expect(stream.scrollTop).toBe(100);
@@ -255,19 +255,52 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     w.unmount();
   });
 
-  it("等待模型响应时给出诚实的阶段文案；已有助手内容后不再显示等待指示", async () => {
+  it("整体状态只说一句话：等待响应时是「正在处理」，开始生成后不再重复", async () => {
     const { w, session } = await mountStream();
     session.pushUser("问题");
     session.turnStarted();
     session.turnPhase = "waiting";
     await settle();
     expect(w.find(".typing").exists()).toBe(true);
-    expect(w.find(".typing").text()).toContain("等待模型响应");
+    expect(w.find(".typing").text()).toContain("正在处理");
 
     session.turnPhase = "generating";
-    session.pushAssistant("开始回答", undefined, true, true);
+    session.activity = "generating";
+    session.pushAssistant("开始回答", true, true);
     await settle();
     expect(w.find(".typing").exists()).toBe(false);
+    w.unmount();
+  });
+
+  /**
+   * 第三阶段 spec 第 35~38、90 条：用户要知道 QIO 现在在做什么，
+   * 但不能出现内部事件名，也不能把几种状态同时堆在页面上。
+   */
+  it("工具 / 审批 / 独立任务各自映射到一句中文整体状态，且不出现内部事件名", async () => {
+    const { w, session } = await mountStream();
+    session.pushUser("问题");
+    session.turnStarted();
+
+    session.activity = "tool";
+    await settle();
+    expect(w.find(".typing").text()).toContain("正在使用工具");
+
+    session.activity = "approval";
+    await settle();
+    expect(w.find(".typing").text()).toContain("等待你确认");
+
+    session.activity = "subagent";
+    await settle();
+    expect(w.find(".typing").text()).toContain("正在处理独立任务");
+
+    session.activity = "notify";
+    await settle();
+    expect(w.find(".typing").text()).toContain("正在整理独立任务的结果");
+
+    const text = w.find(".stream").text();
+    for (const internal of ["TOOL_RUNNING", "TOOL_START", "MODEL_WAIT", "SUBAGENT_PENDING", "TURN_END"]) {
+      expect(text).not.toContain(internal);
+    }
     w.unmount();
   });
 

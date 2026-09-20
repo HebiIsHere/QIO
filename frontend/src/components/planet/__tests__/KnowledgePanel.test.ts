@@ -188,3 +188,56 @@ describe("KnowledgePanel 空态与失败区分（任务05 E：失败不能显示
     w.unmount();
   });
 });
+
+/**
+ * 第四阶段：默认阅读、局部编辑 + QIO 自己的确认层。
+ *
+ * 1) 阅读态下管理动作（修正/归档）默认退场，只有「待确认」这类当前操作对象常驻；
+ * 2) 归档不再走浏览器原生 confirm，而是就地展开的确认层，并说明真实影响。
+ */
+describe("KnowledgePanel 阅读态与确认层（第四阶段）", () => {
+  it("阅读态：管理动作容器默认收起，内容本身在明处", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    const actions = w.find(".k-item .k-actions");
+    expect(actions.exists()).toBe(true);
+    expect(actions.classes()).not.toContain("open");
+    expect(w.find(".k-item .k-content").text()).toContain("用户最爱五里关火锅");
+    w.unmount();
+  });
+
+  it("进入编辑：就地进入（内联编辑），保存按钮在同一处", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    expect(w.find(".k-item textarea").exists()).toBe(false);
+    await w.find(".k-edit-open").trigger("click");
+    const area = w.find(".k-item textarea");
+    expect(area.exists()).toBe(true);
+    expect(area.classes()).toContain("qio-inline-edit");
+    expect(w.find(".k-save").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("归档展开说明影响的确认层，确认后才调用接口（不用原生 confirm）", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    await w.find(".k-archive").trigger("click");
+    const confirm = w.find(".k-item .qio-confirm");
+    expect(confirm.exists()).toBe(true);
+    expect(confirm.text()).toContain("归档这条知识？");
+    expect(confirm.text()).toContain("不再参与回答");
+    expect(mocks.apiMock.revokeKnowledge).not.toHaveBeenCalled();
+
+    // 取消：什么都不发生，确认层收起
+    await confirm.findAll("button")[0].trigger("click");
+    expect(w.find(".k-item .qio-confirm").exists()).toBe(false);
+    expect(mocks.apiMock.revokeKnowledge).not.toHaveBeenCalled();
+
+    // 确认：才真的归档
+    await w.find(".k-archive").trigger("click");
+    await w.find(".k-item .qio-confirm").findAll("button")[1].trigger("click");
+    await flushPromises();
+    expect(mocks.apiMock.revokeKnowledge).toHaveBeenCalledWith("kn_1");
+    w.unmount();
+  });
+});

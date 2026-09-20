@@ -17,7 +17,8 @@ import os
 import secrets
 import sqlite3
 import uuid
-from collections import deque
+from collections import Counter, deque
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
@@ -31,15 +32,33 @@ from agent.api.events import AgentEvent, EventType, make_event
 from agent.adapters.probe import probe_adapter
 from agent.config import Settings
 from agent.graph.layout import assign_positions
+# 记忆封块设置的键名、范围与旧键迁移：设置读写与运行时（turn_orchestrator）
+# 共用同一处解析，避免两套语义漂移。
+from agent.memory.fragment import (
+    FRAGMENT_MAX_TURNS,
+    FRAGMENT_MIN_TURNS,
+    FRAGMENT_TURNS_KEY,
+    resolve_max_turns,
+)
 from agent.services.app import AppContext
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 
-FRAGMENT_MIN_MESSAGES = 1
-FRAGMENT_MAX_MESSAGES = 30
-DEFAULT_FRAGMENT_MAX_MESSAGES = 10
-
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+# 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
+_SENTENCE_END = "。！？!?\n"
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """取摘要首句；没有内容就不返回，绝不编造。"""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    for idx, char in enumerate(cleaned):
+        if char in _SENTENCE_END:
+            return cleaned[: idx + 1].strip()
+    return cleaned
 
 
 def _knowledge_payload(ctx, item) -> dict:
@@ -309,26 +328,22 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
 
     @app.get("/api/settings/memory")
     async def get_memory_settings() -> dict:
-        return {
-            "fragment_max_messages": ctx.settings_store.get_int(
-                "fragment.max_messages", DEFAULT_FRAGMENT_MAX_MESSAGES
-            )
-        }
+        return {"fragment_max_turns": resolve_max_turns(ctx.settings_store)}
 
     @app.put("/api/settings/memory")
     async def update_memory_settings(body: dict) -> dict:
-        raw = body.get("fragment_max_messages")
+        raw = body.get("fragment_max_turns")
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="fragment_max_messages must be an integer")
-        if not (FRAGMENT_MIN_MESSAGES <= value <= FRAGMENT_MAX_MESSAGES):
+            raise HTTPException(status_code=400, detail="fragment_max_turns must be an integer")
+        if not (FRAGMENT_MIN_TURNS <= value <= FRAGMENT_MAX_TURNS):
             raise HTTPException(
                 status_code=400,
-                detail=f"fragment_max_messages must be in [{FRAGMENT_MIN_MESSAGES}, {FRAGMENT_MAX_MESSAGES}]",
+                detail=f"fragment_max_turns must be in [{FRAGMENT_MIN_TURNS}, {FRAGMENT_MAX_TURNS}]",
             )
-        ctx.settings_store.set("fragment.max_messages", str(value))
-        return {"ok": True, "fragment_max_messages": value}
+        ctx.settings_store.set(FRAGMENT_TURNS_KEY, str(value))
+        return {"ok": True, "fragment_max_turns": value}
 
     # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
 
@@ -666,9 +681,40 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             "WHERE topic_id = ? ORDER BY updated_at DESC",
             (topic_id,),
         ).fetchall()
+        # 目录层的补充信息：一句摘要 / 关键词 / 最近活动 / 真实消息数。
+        # 全部来自已有数据，取不到就是 None 或空，不编造、不内联原文。
+        latest = ctx.conn.execute(
+            "SELECT summary FROM fragments WHERE topic_id = ? "
+            "AND summary IS NOT NULL AND summary <> '' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (topic_id,),
+        ).fetchone()
+        keyword_counter: Counter[str] = Counter()
+        for row in ctx.conn.execute(
+            "SELECT keywords FROM memory_index WHERE topic_id = ? ORDER BY created_at DESC",
+            (topic_id,),
+        ).fetchall():
+            try:
+                indexed = json.loads(row["keywords"] or "[]")
+            except ValueError:
+                continue
+            if isinstance(indexed, list):
+                keyword_counter.update(
+                    str(item).strip() for item in indexed if str(item).strip()
+                )
+        activity = ctx.conn.execute(
+            "SELECT MAX(m.created_at) AS last_activity, COUNT(*) AS message_count "
+            "FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+            "WHERE f.topic_id = ?",
+            (topic_id,),
+        ).fetchone()
         return {
             "topic_id": topic_id,
             "name": node.name,
+            "summary": _first_sentence(latest["summary"]) if latest else None,
+            "keywords": [kw for kw, _ in keyword_counter.most_common(12)],
+            "last_activity": activity["last_activity"] if activity else None,
+            "message_count": int(activity["message_count"] or 0) if activity else 0,
             "fragments": fragment_payloads,
             "entities": [dict(e) for e in entities],
             "knowledge": [dict(k) for k in knowledge],
@@ -821,6 +867,40 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             raise HTTPException(status_code=400, detail="only pending_review can be rejected")
         draft = ks.reject(knowledge_id)
         return {"ok": True, "knowledge": {"id": draft.id, "state": draft.state.value}}
+
+    @app.post("/api/knowledge/{knowledge_id}/ignore")
+    async def ignore_knowledge(knowledge_id: str) -> dict:
+        """用户不要这条长期知识，别再问（对话内候选卡的「忽略」）。
+
+        与 `reject` 不同：reject 是打回草稿、条目仍留在审核列表里等人处理；
+        ignore 表示用户明确不要它 —— 状态转 `revoked`，并在 provenance 里记
+        `ignored_at`，之后同一条内容不再作为知识候选出现在对话里。已经忽略过的
+        条目重复调用是幂等的。
+        """
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        item = ks.get(knowledge_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="knowledge not found")
+        if item.state.value == "revoked":
+            return {"ok": True, "knowledge_id": item.id}
+        ks.revoke(item.id)
+        provenance = dict(item.provenance or {})
+        now = datetime.now(timezone.utc).isoformat()
+        provenance["ignored_at"] = now
+        provenance["reason"] = "user_ignored"
+        ctx.conn.execute(
+            "UPDATE knowledge SET provenance = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(provenance, ensure_ascii=False), now, item.id),
+        )
+        ctx.conn.commit()
+        # 记下「这一类刚被忽略」：同类候选在冷却期内不再弹到对话里。
+        # 模型每次的措辞都不同，只按句子去重挡不住「刚说忽略又被问一遍」。
+        from agent.services.app import KNOWLEDGE_IGNORE_KEY_PREFIX
+
+        ctx.settings_store.set(f"{KNOWLEDGE_IGNORE_KEY_PREFIX}{item.category}", now)
+        return {"ok": True, "knowledge_id": item.id}
 
     # -- knowledge correction ----------------------------------------------
 

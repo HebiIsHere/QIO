@@ -19,25 +19,51 @@ h1,h2,h3,.serif{font-family:var(--serif);}
 }
 .skip-link:focus-visible{top:12px;}
 
-/* ---- 动效：尊重 prefers-reduced-motion，关闭非必要 motion ---- */
+/* ---- 动效降级（2026-09-15 第四阶段重写）----
+   旧实现把所有 duration 归零，结果是「状态变化全部瞬切」：用户看不出刚才发生了什么，
+   与「每一个状态变化都应有连续性」直接冲突。现在改为三段式降级：
+   ① 位移令牌归零、Planet 专用曲线退化为标准曲线（去掉空间位移与弹性）；
+   ② 时长压缩到 90ms —— 仍然是一次看得见的淡入淡出，而不是瞬切；
+   ③ JS 补间（星球相机）读同一份 html[data-motion]，自己走最短路径。
+   系统偏好可以用「标准」显式覆盖（:not([data-motion="standard"])），与设置项语义一致。 */
 @media (prefers-reduced-motion: reduce){
-  *,*::before,*::after{
-    animation-duration:.001ms !important;
+  :root:not([data-motion="standard"]){
+    --shift-1:0px; --shift-2:0px; --shift-4:0px; --shift-8:0px; --shift-panel:0px;
+    --ease-3-in:var(--ease-1); --ease-3-settle:var(--ease-1); --ease-3-out:var(--ease-1-out);
+    --mo-1-press:90ms; --mo-1-state:90ms; --mo-1-fast:90ms; --mo-1-exit:90ms;
+    --mo-1-menu:90ms; --mo-1-wide:90ms;
+    --mo-2-in:90ms; --mo-2-move:90ms; --mo-2-out:90ms; --mo-2-wide:90ms;
+    --mo-3-prepare:90ms; --mo-3-expand:90ms; --mo-3-settle:90ms; --mo-3-collapse:90ms;
+  }
+  :root:not([data-motion="standard"]) *,
+  :root:not([data-motion="standard"]) *::before,
+  :root:not([data-motion="standard"]) *::after{
+    animation-duration:90ms !important;
     animation-iteration-count:1 !important;
-    transition-duration:.001ms !important;
+    transition-duration:90ms !important;
     scroll-behavior:auto !important;
   }
+  .qio-lift:hover{transform:none;}
 }
 /* 设置里显式选择「减少动画」时同样生效（系统没开也能减）。
    注意：这只管 CSS；JS 补间（星球相机）自己读 html[data-motion]，两边读同一份结果。 */
+:root[data-motion="reduced"]{
+  --shift-1:0px; --shift-2:0px; --shift-4:0px; --shift-8:0px; --shift-panel:0px;
+  --ease-3-in:var(--ease-1); --ease-3-settle:var(--ease-1); --ease-3-out:var(--ease-1-out);
+  --mo-1-press:90ms; --mo-1-state:90ms; --mo-1-fast:90ms; --mo-1-exit:90ms;
+  --mo-1-menu:90ms; --mo-1-wide:90ms;
+  --mo-2-in:90ms; --mo-2-move:90ms; --mo-2-out:90ms; --mo-2-wide:90ms;
+  --mo-3-prepare:90ms; --mo-3-expand:90ms; --mo-3-settle:90ms; --mo-3-collapse:90ms;
+}
 :root[data-motion="reduced"] *,
 :root[data-motion="reduced"] *::before,
 :root[data-motion="reduced"] *::after{
-  animation-duration:.001ms !important;
+  animation-duration:90ms !important;
   animation-iteration-count:1 !important;
-  transition-duration:.001ms !important;
+  transition-duration:90ms !important;
   scroll-behavior:auto !important;
 }
+:root[data-motion="reduced"] .qio-lift:hover{transform:none;}
 
 /* ---- 输入 ---- */
 .qio-input{display:block;width:100%;height:38px;background:var(--bg-inset);border:1px solid var(--border-subtle);
@@ -68,6 +94,9 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);}
 .qio-btn.primary:hover{background:var(--accent-hover);}
 .qio-btn.danger{color:var(--danger);border-color:var(--danger);}
+/* 紧凑按钮：多个模块此前各自复制了一份 `height:auto;padding:4px 10px;font-size:11px`，
+   收到这里成为原语。组件里的同名局部规则仍然生效（scoped 优先级更高），不会打架。 */
+.qio-btn.mini{height:auto;padding:4px 10px;font-size:11.5px;border-radius:var(--r-sm);}
 
 /* ---- 卡片 ---- */
 .qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:16px 18px;}
@@ -122,11 +151,12 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-select-menu .opt.hl{background:var(--accent-soft);color:var(--text-strong);}
 
 /* ---- 浮动窗口（Task B · §12.2）---- */
-/* 贴靠平滑过渡：由 useFloatingWindow 临时添加（left/top .3s cubic-bezier(.22,.8,.24,1)） */
+/* 贴靠平滑过渡：由 useFloatingWindow 临时添加。时长走令牌（中频档），
+   这样 reduced-motion 下会被压到 90ms，JS 侧的收尾定时器读的是同一个值。 */
 .fw-snapping {
   transition:
-    left 0.3s cubic-bezier(0.22, 0.8, 0.24, 1),
-    top 0.3s cubic-bezier(0.22, 0.8, 0.24, 1) !important;
+    left var(--dur-snap) var(--ease-2),
+    top var(--dur-snap) var(--ease-2) !important;
 }
 /* 拖动中禁止文本选择，避免误选页面内容 */
 .fw-dragging {
@@ -140,3 +170,122 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-feedback.warn{color:var(--warning);}
 .qio-feedback.err{color:var(--danger);}
 .qio-feedback.info{color:var(--text-secondary);}
+
+/* ======================================================================
+   组件原语 v3（2026-09-15 第四阶段）
+   目的：新增功能不再自带一套视觉语法。新页面优先用这些类，
+   不要在组件里重新写圆角/内边距/状态底色。
+   ====================================================================== */
+
+/* ---- 晶体玻璃：只用于「浮在场景中的信息层」，不用于消息正文与高频表单 ---- */
+.qio-glass{
+  background:var(--glass-bg);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
+  /* 内高光 = 边缘厚度感；极轻冷暖边分离 = 折射暗示（不用彩虹渐变） */
+  box-shadow:var(--glass-shadow),inset 0 1px 0 var(--glass-edge-top),inset 0 0 0 1px var(--glass-inner);
+  backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border-left-color:var(--glass-tint-warm);
+  border-right-color:var(--glass-tint-cool);
+  color:var(--text-primary);
+}
+.qio-glass--chip{border-radius:var(--r-pill);padding:4px 12px;font-size:var(--fs-sm);}
+.qio-glass--panel{border-radius:var(--r-xl);background:var(--glass-bg-strong);}
+
+/* ---- 浮层（非玻璃）：对话框、下拉、抽屉统一这一档阴影与圆角 ---- */
+.qio-floating{background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--r-lg);box-shadow:var(--elev-floating);}
+
+/* ---- 卡片：统一骨架 = 标题 → 状态 → 一行说明 → 可展开详情 ---- */
+.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:var(--sp-4);}
+.qio-card--quiet{background:var(--bg-inset);}
+.qio-card--focus{border-color:var(--border-strong);box-shadow:var(--elev-floating);}
+/* 状态推进必须原位发生：用属性表达状态，而不是换一张新卡片 */
+.qio-card[data-state="running"]{border-color:var(--border-strong);}
+.qio-card[data-state="waiting"]{border-color:var(--accent-soft);}
+.qio-card[data-state="ready"]{border-color:var(--success-soft);}
+.qio-card[data-state="failed"]{border-color:var(--border-danger);}
+.qio-card__title{font-size:var(--fs-base);color:var(--text-strong);}
+.qio-card__meta{font-size:var(--fs-xs);color:var(--text-muted);}
+.qio-card__actions{display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3);}
+
+/* ---- 列表行：hover / active / selected 三档必须可区分 ---- */
+.qio-row{
+  display:flex;align-items:center;gap:var(--sp-2);width:100%;
+  padding:8px 10px;border-radius:var(--r-md);border:1px solid transparent;
+  background:none;color:var(--text-primary);font:inherit;text-align:left;cursor:pointer;
+  transition:background var(--dur-fast) var(--ease-1),border-color var(--dur-fast) var(--ease-1),color var(--dur-fast) var(--ease-1);
+}
+.qio-row:hover{background:var(--layer-hover);}
+.qio-row.is-active{background:var(--accent-soft);border-color:var(--accent-soft);}
+.qio-row.is-selected,.qio-row[aria-selected="true"]{background:var(--layer-selected);border-color:var(--accent);}
+.qio-row:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
+.qio-row:disabled,.qio-row[aria-disabled="true"]{opacity:.5;cursor:not-allowed;}
+
+/* ---- 工具条：分段标题 + 操作区，统一右对齐 ---- */
+.qio-toolbar{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4) var(--sp-2);border-bottom:1px solid var(--border-subtle);}
+.qio-toolbar .spacer{flex:1;}
+
+/* ---- 标签：中性关键词，视觉低于状态徽章 ---- */
+.qio-tag{display:inline-flex;align-items:center;font-size:var(--fs-xs);color:var(--text-secondary);
+  border:1px solid var(--border-subtle);border-radius:var(--r-pill);padding:0 8px;background:none;line-height:1.7;}
+
+/* ---- 状态徽章：全站唯一的状态底色来源（不再各写 k-state / phase / badge 变体）---- */
+.qio-state{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-xs);line-height:1.6;
+  padding:1px 8px;border-radius:var(--r-pill);border:1px solid var(--border-strong);
+  color:var(--text-secondary);background:none;font-variant-numeric:tabular-nums;}
+.qio-state.ok{color:var(--success);border-color:var(--success-soft);background:var(--success-soft);}
+.qio-state.warn{color:var(--warning);border-color:var(--warning-soft);background:var(--warning-soft);}
+.qio-state.err{color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft);}
+.qio-state.info{color:var(--link);border-color:var(--accent-soft);background:var(--accent-soft);}
+.qio-state.quiet{color:var(--text-muted);border-color:var(--border-subtle);}
+
+/* ---- 就地编辑：阅读态默认不可见，进入编辑才出现 ---- */
+.qio-inline-edit{width:100%;background:var(--bg-inset);border:1px solid var(--border-strong);
+  border-radius:var(--r-md);padding:6px 10px;font:inherit;color:var(--text-strong);
+  transition:border-color var(--dur-fast) var(--ease-1),box-shadow var(--dur-fast) var(--ease-1);}
+.qio-inline-edit:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);outline:none;}
+
+/* ---- 可点击卡片的统一 hover：抬 1px，不发光 ---- */
+.qio-lift{transition:transform var(--dur-fast) var(--ease-1),border-color var(--dur-fast) var(--ease-1),background var(--dur-fast) var(--ease-1);}
+.qio-lift:hover{transform:translateY(calc(var(--shift-1) * -1));border-color:var(--border-strong);}
+
+/* ---- 按钮补充态：成功 / 安静（与已有 .primary .danger .busy 同一套尺寸模型）---- */
+.qio-btn.quiet{background:none;border-color:transparent;color:var(--text-secondary);}
+.qio-btn.quiet:hover{background:var(--layer-hover);border-color:transparent;color:var(--text-strong);}
+.qio-btn.success{border-color:var(--success-soft);background:var(--success-soft);color:var(--success);}
+.qio-btn.danger-solid{background:var(--danger);border-color:var(--danger);color:var(--bg-base);}
+
+/* ---- 过渡工具类（供 <Transition> / <TransitionGroup> 使用）----
+   scoped 组件也能命中：这些类在全局样式表里，且 Vue 只给模板元素加 scope 属性，
+   过渡类名由 Vue 写在同一个元素上。 */
+.qio-fade-enter-active,.qio-fade-leave-active{transition:opacity var(--dur-fast) var(--ease-1);}
+.qio-fade-enter-from,.qio-fade-leave-to{opacity:0;}
+/* 中频进入：淡入 + 轻位移；离开更快，不拖尾 */
+.qio-rise-enter-active{transition:opacity var(--mo-2-in) var(--ease-2),transform var(--mo-2-in) var(--ease-2);}
+.qio-rise-leave-active{transition:opacity var(--mo-1-exit) var(--ease-1-out),transform var(--mo-1-exit) var(--ease-1-out);}
+.qio-rise-enter-from{opacity:0;transform:translateY(var(--shift-4));}
+.qio-rise-leave-to{opacity:0;transform:translateY(calc(var(--shift-2) * -1));}
+/* 列表项增删与重排：高度/透明度/轻位移连续，不跳变 */
+.qio-list-move,.qio-list-enter-active,.qio-list-leave-active{
+  transition:transform var(--mo-2-move) var(--ease-2),opacity var(--mo-2-move) var(--ease-2);}
+.qio-list-enter-from,.qio-list-leave-to{opacity:0;transform:translateY(calc(var(--shift-4) * -1));}
+/* 折叠 / 展开（Fragment 原文、详情区） */
+.qio-collapse-enter-active,.qio-collapse-leave-active{
+  overflow:hidden;transition:height var(--mo-2-in) var(--ease-2),opacity var(--mo-2-in) var(--ease-2);}
+.qio-collapse-enter-from,.qio-collapse-leave-to{height:0;opacity:0;}
+/* Tab / 面板内容交叉切换：不做三维翻页 */
+.qio-swap-enter-active{transition:opacity var(--mo-2-in) var(--ease-2),transform var(--mo-2-in) var(--ease-2);}
+.qio-swap-leave-active{transition:opacity var(--mo-1-fast) var(--ease-1-out);}
+.qio-swap-enter-from{opacity:0;transform:translateY(var(--shift-2));}
+.qio-swap-leave-to{opacity:0;}
+
+/* ---- 确认层：三档共用一套视觉语言（inline / popover / layer）---- */
+.qio-confirm{display:flex;flex-direction:column;gap:var(--sp-2);font-size:var(--fs-sm);color:var(--text-primary);}
+.qio-confirm__title{font-size:var(--fs-base);color:var(--text-strong);}
+.qio-confirm__detail{color:var(--text-secondary);line-height:1.6;}
+.qio-confirm__actions{display:flex;justify-content:flex-end;gap:var(--sp-2);}
+.qio-confirm--inline{border:1px solid var(--border-strong);border-radius:var(--r-md);padding:var(--sp-3);background:var(--bg-inset);}
+.qio-confirm--popover,.qio-confirm--layer{padding:var(--sp-4);border-radius:var(--r-lg);}
+.qio-confirm-scrim{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+  background:var(--bg-overlay);padding:var(--sp-6);}

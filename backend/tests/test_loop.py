@@ -179,8 +179,10 @@ async def test_turn_events_emitted():
         pass
 
     joined = "\n".join(collected)
-    assert "TURN_START" in joined
-    assert "TURN_END" in joined
+    # turn 生命周期事件已上移：本循环只发 USAGE / WARNING / ERROR / TOOL_* / ASSISTANT，
+    # TURN_START / TURN_END 由 core/turn.py 的 TurnManager 单独负责（含子 agent 隔离）。
+    assert "TURN_START" not in joined
+    assert "TURN_END" not in joined
     assert "USAGE" in joined
 async def test_interim_assistant_event_emitted_for_native_commentary():
     client = ScriptedClient(
@@ -207,7 +209,8 @@ async def test_interim_assistant_event_emitted_for_native_commentary():
     joined = "\n".join(collected)
     assert "event: ASSISTANT" in joined
     assert "我先查一下仓库" in joined
-    assert joined.index("我先查一下仓库") < joined.index("TURN_END")
+    # interim 文本先到，收尾的 USAGE 后到；TURN_END 不再由本循环发出
+    assert joined.index("我先查一下仓库") < joined.index("USAGE")
 
 
 async def test_plain_text_turn_no_interim_assistant_event():

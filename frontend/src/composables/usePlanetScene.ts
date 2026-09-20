@@ -14,6 +14,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { TopicPosition } from "../services/api";
 import type { TopicData } from "../planet/topicData";
 import { RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
+import { LEVEL_HW } from "../planet/topicData";
 import {
   backSlotOrder,
   clampPolar,
@@ -86,6 +87,8 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let contour: THREE.LineLoop | null = null;
   let fillMat: THREE.MeshBasicMaterial | null = null;
   let gridMats: THREE.LineBasicMaterial[] = [];
+  /** 网格基准透明度：reveal 只做比例缩放，保证「完整 Planet」时与既有取值完全一致 */
+  let gridBase: number[] = [];
   let dotMat: THREE.MeshBasicMaterial | null = null;
   /** 话题点对象池：数量固定 = 可见容量，进出只换数据（见 planet/dotPool.ts） */
   let dotPool: DotPool | null = null;
@@ -110,6 +113,27 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let frontFacing = 0;
   /** 窗口话题集合变化时的回调（调用方刷新标签 / 选中态） */
   let windowChanged: (() => void) | null = null;
+  /**
+   * 低功耗模式（对话页的入口小球）：帧率降到 ~15fps。
+   *
+   * 为什么需要：小球现在是**真实星球场景**渲染的（同一个场景、同一个相机，只是整体缩到入口尺度），
+   * 它会在对话页常驻。全帧率跑一个 84px 的球没有意义，还白白耗电。
+   */
+  let lowPower = false;
+  let lastLowPowerFrame = 0;
+  /**
+   * 空闲自转（入口小球「微微旋转」）。
+   * 平时只有「没有聚焦话题」时才自转；小球状态是特例：它没有明确的焦点，但应当一直慢速转动。
+   */
+  let idleSpin = false;
+  /**
+   * 信息密度（第四阶段 Planet 连续体）：
+   * 0 = 抽象态（只有球体轮廓与融合环，读起来就是入口小球的放大版），
+   * 1 = 完整 Planet（话题点、经纬线、标签齐全）。
+   * 它不是「透明度动画」的别名：转场期间话题点真的按密度出现/退场，
+   * 所以「小球长大成 Planet」是同一个对象在增加信息密度，而不是两层交叉淡入。
+   */
+  let reveal = 1;
   /** 选中话题的持续标记：跟随选中点的圆环（不依赖短暂的环线动画） */
   let selRing: THREE.Mesh | null = null;
   let currentData: TopicData[] = [];
@@ -131,6 +155,15 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   // 交互状态（计时一律 performance.now()）
   let tween: { from: THREE.Vector3; to: THREE.Vector3; t: number; dur: number; done?: () => void } | null = null;
   let targetQuat: THREE.Quaternion | null = null;
+  /**
+   * 「打开前的球体朝向」快照与「转回去」的补间（见 markReturnOrientation / rotateBack）。
+   *
+   * 为什么要单独一套而不是复用 targetQuat：`targetQuat` 是**聚焦**用的指数 slerp
+   * （`slerp(targetQuat, dt*7)`，没有时长概念，还会被 `idleSpin` 的 `rotation.y +=` 抵消）；
+   * 收起要的是「按时长走完一段固定朝向的旋转」，而且必须和球态的自转互斥。
+   */
+  let returnOrientation: THREE.Quaternion | null = null;
+  let orientationTween: { from: THREE.Quaternion; to: THREE.Quaternion; t: number; dur: number } | null = null;
   let focusedDot: THREE.Mesh | null = null;
   let waveStart = -1e9;
   /** pointerdown 坐标/时间；pointerup 判定后立即消费清空，避免陈旧状态吞掉后续点击 */
@@ -221,17 +254,34 @@ function motionDuration(ms: number): number {
     if (renderer) return; // 幂等：已初始化则直接跳过
     if (!canvas.value) return;
     try {
-      renderer = new THREE.WebGLRenderer({ canvas: canvas.value, antialias: true });
+      /**
+       * alpha: true —— 画布本身**不画背景**，球体之外的像素是透明的。
+       *
+       * 为什么必须这样：入口小球长大成 Planet 时，整个星球层会被缩放到小球那个尺度。
+       * 如果画布自己画一块不透明底色，缩放中的画布就会露出一块矩形（颜色只要与页面底色
+       * 有一点差异就看得出来）。所以「虚空」一律交给星球页的铺底（`--planet-void`），
+       * 画布只负责球体本体 —— 这样「同一个对象长大」在任何尺度上都成立。
+       */
+      renderer = new THREE.WebGLRenderer({ canvas: canvas.value, antialias: true, alpha: true });
     } catch {
       webglOK.value = false;
       return;
     }
     webglOK.value = true;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(canvas.value.clientWidth, canvas.value.clientHeight);
+    /**
+     * 第三个参数 false：**不要让 three 写 canvas 的内联 width/height style**。
+     *
+     * three 默认会把 CSS 尺寸写进元素内联样式，而内联样式优先级高于我们的类规则 ——
+     * 结果「球态把画布设成球大小」这类规则永远不生效（实测：规则匹配、变量也解析，
+     * 画布还是 1439px，因为内联 style 是 1439px）。尺寸统一交给 CSS 控制，
+     * 渲染器只负责读 clientWidth/clientHeight 并设置绘图缓冲。
+     */
+    renderer.setSize(canvas.value.clientWidth, canvas.value.clientHeight, false);
+    renderer.setClearAlpha(0);
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0f0a10);
+    // 不设 scene.background：背景由星球页铺底提供（见上面 alpha 的说明）
     camera = new THREE.PerspectiveCamera(45, canvas.value.clientWidth / canvas.value.clientHeight, 0.01, 100);
     camera.position.set(0, 0, 5.5);
 
@@ -278,6 +328,8 @@ function motionDuration(ms: number): number {
       const m = gridMat();
       m.opacity = lat === 0 ? 0.22 : 0.1;
       gridMats.push(m);
+      // 记下基准透明度：信息密度（reveal）按比例缩放它，而不是覆盖它
+      gridBase.push(m.opacity);
       gridGroup.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), m));
     }
     for (let lon = 0; lon < 360; lon += 60) {
@@ -286,6 +338,7 @@ function motionDuration(ms: number): number {
       const m = gridMat();
       m.opacity = 0.07;
       gridMats.push(m);
+      gridBase.push(m.opacity);
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m);
       line.rotation.y = (lon * Math.PI) / 180;
       gridGroup.add(line);
@@ -372,6 +425,44 @@ function motionDuration(ms: number): number {
     paused = next;
     if (next) stopLoop();
     else startLoop();
+  }
+
+  /** 低功耗（入口小球）：~15fps，够表达「活着」，不浪费 GPU/电 */
+  function setLowPower(next: boolean) {
+    lowPower = next;
+  }
+
+  /** 空闲自转（入口小球慢速旋转） */
+  function setIdleSpin(next: boolean) {
+    idleSpin = next;
+  }
+
+  /**
+   * 环在**屏幕上**的目标宽度（像素，按「绘图缓冲像素 → 屏幕像素」的比值折算）。
+   *
+   * 融合环的宽度是按 buffer 像素算的（fwidth 恒定像素宽），整层被缩小时像素宽也跟着被缩掉 ——
+   * 所以要按当前缩放铺回去。但**补偿倍数不能由调用方给**：调用方算它的时候未必拿到了当时
+   * 的几何（实测踩过：尾段刚把画布换成球自己的 108px，补偿倍数还是整层缩放 0.13 时的 ≈2.0，
+   * 于是那一帧的环被画成 12px 宽 —— 用户看到的就是「缩小途中闪现一下」）。
+   * 所以只接受目标屏幕宽度，倍数在**渲染前**用当时的几何现算。
+   */
+  let ringScreenWidthPx = LEVEL_HW[0];
+
+  function setRingScreenWidth(px: number) {
+    ringScreenWidthPx = Math.max(0.5, Math.min(LEVEL_HW[0], Number.isFinite(px) ? px : LEVEL_HW[0]));
+  }
+
+  /**
+   * 渲染前落实环宽补偿：`屏幕像素 / 绘图缓冲像素` 用**画布此刻的真实几何**现算。
+   * 用 `getBoundingClientRect()` 在这里是**对的** —— 要的就是「含层变换之后画布有多宽」；
+   * 布局值（`clientWidth`）与它相除，正好是「一个绘图缓冲像素等于多少屏幕像素」。
+   */
+  function applyRingWidthCompensation() {
+    const el = canvas.value;
+    if (!ringUniforms || !el || !el.clientWidth) return;
+    const layerScale = el.getBoundingClientRect().width / el.clientWidth;
+    const scale = ringScreenWidthPx / (LEVEL_HW[0] * Math.max(1e-4, layerScale));
+    ringUniforms.uWidthScale.value = Math.max(0.2, Math.min(12, scale));
   }
 
   function onVisibilityChange() {
@@ -515,7 +606,35 @@ function motionDuration(ms: number): number {
   function cancelAnimation() {
     tween = null;
     targetQuat = null;
+    orientationTween = null;
     if (controls) controls.enabled = true;
+  }
+
+  /**
+   * 记下「打开前的球体朝向」：收起时要转回它（用户要求：展开与收回都同时有旋转）。
+   * 在展开**聚焦之前**调用 —— 记的是入口小球那一刻的朝向，而不是聚焦之后的。
+   */
+  function markReturnOrientation() {
+    returnOrientation = planetGroup ? planetGroup.quaternion.clone() : null;
+  }
+
+  /**
+   * 与体量收缩**同刻开始**、把球转回 `markReturnOrientation` 记下的朝向。返回实际夹角（度）。
+   *
+   * 时长按夹角缩放，形状与 `focusTopic` 的 `distanceFactor` 一致（完全对齐 0.6×、差 180° 1.4×），
+   * 再**封顶在 maxMs**（= 收起窗口）：超出窗口就会拖到球态，和那里的 `rotation.y +=` 抢同一个四元数。
+   * 曲线用 `easeInOutCubic` —— 它是对称曲线，所以「收起转回去」正好是「展开转过来」的时间倒放。
+   */
+  function rotateBack(maxMs: number): number {
+    if (!planetGroup || !returnOrientation || !Number.isFinite(maxMs) || maxMs <= 0) return 0;
+    const from = planetGroup.quaternion.clone();
+    const to = returnOrientation.clone();
+    const dot = Math.min(1, Math.abs(from.dot(to)));
+    const angle = 2 * Math.acos(dot); // 0..π
+    if (angle < 1e-3) return 0;
+    const factor = 0.6 + 0.4 * (1 - Math.cos(angle));
+    orientationTween = { from, to, t: 0, dur: Math.max(1, Math.min(maxMs, Math.round(maxMs * factor))) };
+    return Math.round((angle * 180) / Math.PI);
   }
 
   /**
@@ -666,7 +785,8 @@ function motionDuration(ms: number): number {
     if (selRing) (selRing.material as THREE.MeshBasicMaterial).color.setHex(line);
     if (fillMat) fillMat.color.setHex(theme === "dark" ? 0x2a2130 : 0xffffff);
     if (ringMat) applyRingUniforms(currentData);
-    if (scene) scene.background = new THREE.Color(theme === "dark" ? 0x0f0a10 : 0xf4f1ec);
+    // 不在这里改背景：画布是透明的（alpha: true），「虚空」由星球页铺底用
+    // `--planet-void` 绘制 —— 转场期间球体外围才不会出现矩形画布。
   }
 
   function animate() {
@@ -677,6 +797,9 @@ function motionDuration(ms: number): number {
     raf = requestAnimationFrame(animate);
     if (!renderer || !scene || !camera || !controls || !planetGroup) return;
     const now = performance.now();
+    // 低功耗：入口小球只需要「活着」，~15fps 足够（跳过的帧连逻辑都不跑）
+    if (lowPower && now - lastLowPowerFrame < 66) return;
+    lastLowPowerFrame = now;
     const dt = Math.min(0.1, (now - lastNow) / 1000);
     lastNow = now;
 
@@ -693,10 +816,23 @@ function motionDuration(ms: number): number {
         done?.();
       }
     }
-    // 聚焦补间期间 slerp 使点居中；空闲自转
-    if (focusedDot && targetQuat && tween) {
+    /**
+     * 朝向补间（收起时转回打开前的朝向）优先，且与下面两条互斥：
+     * 它写的是同一个 `planetGroup.quaternion`，和聚焦 slerp、空闲自转的 `rotation.y +=`
+     * 同时写会互相抵消。
+     */
+    if (orientationTween) {
+      orientationTween.t += dt * 1000;
+      const k = Math.min(1, orientationTween.t / orientationTween.dur);
+      planetGroup.quaternion.slerpQuaternions(orientationTween.from, orientationTween.to, easeInOutCubic(k));
+      if (k >= 1) {
+        planetGroup.quaternion.copy(orientationTween.to);
+        orientationTween = null;
+      }
+    } else if (focusedDot && targetQuat && tween) {
       planetGroup.quaternion.slerp(targetQuat, Math.min(1, dt * 7));
-    } else if (!focusedDot) {
+    } else if (!focusedDot || idleSpin) {
+      // 入口小球状态（idleSpin）即使没有焦点也保持极慢自转 —— 这就是「微微旋转」
       planetGroup.rotation.y += dt * 0.1;
     }
     if (contour) contour.quaternion.copy(camera.quaternion);
@@ -745,6 +881,18 @@ function motionDuration(ms: number): number {
     planetGroup.updateMatrixWorld(true);
     planetGroup.getWorldPosition(_centerV);
     _camDirV.subVectors(camera.position, _centerV);
+    /**
+     * 信息密度曲线（第四阶段 Planet 连续体）：
+     * - reveal <= 0.25：抽象态，话题点几乎不可见（只有球与融合环）
+     * - 0.25 → 0.8：话题点淡入并长大到全尺寸
+     * - >= 0.8：完整 Planet
+     * 网格整体更晚、更克制地回来，避免小尺度上「一坨线」。
+     */
+    const dotDensity = Math.max(0, Math.min(1, (reveal - 0.25) / 0.55));
+    const gridDensity = 0.15 + 0.85 * Math.max(0, Math.min(1, (reveal - 0.45) / 0.55));
+    gridMats.forEach((m, i) => {
+      m.opacity = (gridBase[i] ?? m.opacity) * gridDensity;
+    });
     frontFacing = 0;
     for (const dot of dotMeshes) {
       dot.getWorldPosition(tmpV);
@@ -755,15 +903,17 @@ function motionDuration(ms: number): number {
       if (!mat.transparent) continue;
       const enterAt = (dot.userData.enterAt as number) ?? 0;
       const k = Math.min(1, Math.max(0, (now - enterAt) / ENTER_FADE_MS));
-      mat.opacity = k;
+      // 进入淡入 × 信息密度：转场期间话题点真的按密度出现（不是整体淡入）
+      mat.opacity = k * dotDensity;
       const base = (dot.userData.base as number) ?? 0.028;
-      dot.scale.setScalar((0.7 + 0.3 * k) * (base / 0.028));
+      dot.scale.setScalar((0.7 + 0.3 * k) * (base / 0.028) * (0.55 + 0.45 * reveal));
     }
 
     // 选中标记跟随选中点（圆环始终正对相机；点转到背面时一并隐藏）
     if (selRing) {
       const dot = focusedDot;
-      if (dot && dot.visible) {
+      // 压缩态里不该出现「选中环」这种信息层：密度不够时先收起来
+      if (dot && dot.visible && reveal > 0.7) {
         // 选中环与话题点同属 planetGroup：必须用「局部」坐标，
         // 写世界坐标会被父级旋转再变换一次，环就跑到球面别处去了。
         selRing.position.copy(dot.position);
@@ -779,7 +929,7 @@ function motionDuration(ms: number): number {
     {
       const dot = focusedDot;
       const title = dot ? ((dot.userData.title as string) ?? "") : "";
-      const sp = dot && dot.visible && title ? screenPosOf(dot) : null;
+      const sp = dot && dot.visible && title && reveal > 0.7 ? screenPosOf(dot) : null;
       if (sp && title) {
         const changed =
           !lastSelectedLabel ||
@@ -798,6 +948,7 @@ function motionDuration(ms: number): number {
 
     applyWave(now);
     controls.update();
+    applyRingWidthCompensation(); // 环宽按「此刻」的几何现算（见 setRingScreenWidth）
     renderer.render(scene, camera);
 
     frameCount++;
@@ -821,10 +972,65 @@ function motionDuration(ms: number): number {
     lastCanvasH = h;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
+    renderer.setSize(w, h, false);
     // 立即重绘：ResizeObserver 回调在 rAF 渲染之后、paint 之前触发，setSize 会清空
     // WebGL 绘图缓冲；若不在同一回调内补一帧，过渡动画期间每一帧画布都是空帧（闪屏）。
+    applyRingWidthCompensation();
     renderer.render(scene, camera);
+  }
+
+  /**
+   * 信息密度（第四阶段 Planet 连续体）：0 = 抽象态（球 + 融合环），1 = 完整 Planet。
+   * 只影响话题点/网格/选中环/标签的呈现密度，**不改变**球体结构、融合环参数与聚焦距离。
+   */
+  function setReveal(t: number) {
+    reveal = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 1));
+    // 暂停时（离屏）也补一帧，避免再次显示时停在旧密度上
+    if (paused && renderer && scene && camera) {
+      applyRingWidthCompensation();
+      renderer.render(scene, camera);
+    }
+  }
+
+  /**
+   * 球体此刻在屏幕上的中心与半径（CSS 像素，含画布在页面中的偏移）。
+   * 入口小球与全屏 Planet 的尺度对齐靠它：转场起点必须是「球体真实占多大」，
+   * 而不是一个估算比例 —— 否则放大过程会有一个跳变。
+   * 场景未就绪时返回 null，调用方自己退化成估算值。
+   *
+   * 关键：这里**不能**用 `getBoundingClientRect()`。星球层（`.planet-stage`）上带着
+   * `scale()`，而 canvas 是它的子元素 —— 它的 client rect 已经被缩放过了。
+   * 第二次打开星球时层上还残留着上一次的 `--stage-k`（≈0.14），量出来的画布高度只有真实高度的
+   * 百分之十几，球体屏幕半径跟着变小，起始缩放被算成 ≈1，于是「星球不再从小球长大、
+   * 而是直接出现」（用户实测反馈的回归）。所以尺寸与位置一律用**布局值**
+   * （offsetWidth/offsetHeight + offsetParent 链），它们不受 transform 影响。
+   */
+  function sphereScreenRect(): { cx: number; cy: number; radius: number } | null {
+    const el = canvas.value;
+    if (!camera || !el || !planetGroup) return null;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (!w || !h) return null;
+    let left = 0;
+    let top = 0;
+    let node: HTMLElement | null = el;
+    while (node) {
+      left += node.offsetLeft;
+      top += node.offsetTop;
+      node = node.offsetParent as HTMLElement | null;
+    }
+    planetGroup.updateMatrixWorld(true);
+    camera.updateMatrixWorld();
+    const center = new THREE.Vector3();
+    planetGroup.getWorldPosition(center);
+    const dist = Math.max(RADIUS * 1.001, camera.position.distanceTo(center));
+    // 透视投影下球体轮廓的角半径 = asin(R / d)，换算到屏幕像素用同样的半 FOV 比例
+    const angular = Math.asin(Math.min(1, RADIUS / dist));
+    const halfFov = (camera.fov * Math.PI) / 360;
+    const radius = ((h / 2) * Math.tan(angular)) / Math.tan(halfFov);
+    if (!Number.isFinite(radius) || radius <= 0) return null;
+    const ndc = center.clone().project(camera);
+    return { cx: left + ((ndc.x + 1) / 2) * w, cy: top + ((1 - ndc.y) / 2) * h, radius };
   }
 
   onScopeDispose(() => {
@@ -851,8 +1057,12 @@ function motionDuration(ms: number): number {
   return {
     webglOK, fps, cameraState, selectedTopicId, markers, hoverTopicId, hoverLabel, selectedLabel,
     init, attachBrowse, go, focusTopic, handleClick, cancelAnimation, resize, setTheme,
-    setPaused,
+    setPaused, setLowPower, setIdleSpin,
+    /** 环在屏幕上的目标宽度（像素）；补偿倍数由渲染器按当时几何现算，见 setRingScreenWidth */
+    setRingScreenWidth,
     primeCamera, pullBack,
+    /** 展开时记下「打开前的朝向」、收起时转回它（见 markReturnOrientation / rotateBack） */
+    markReturnOrientation, rotateBack,
     /** 当前展示窗口里的 topic_id（按槽位顺序，空位为 null）。 */
     windowTopicIds: () => dotPool?.windowTopicIds() ?? [],
     /** 诊断信息（开发构建用：确认旋转是否真的在推动话题流）。 */
@@ -866,6 +1076,21 @@ function motionDuration(ms: number): number {
       steps: stepCount,
       lastDelta,
       lastSwapAgo: lastSwapAt ? Math.round(performance.now() - lastSwapAt) : -1,
+      /** 星球自转角（入口小球的「微微旋转」用它确认动画真的在跑） */
+      rotationY: planetGroup ? Math.round(planetGroup.rotation.y * 1000) / 1000 : 0,
+      /**
+       * 球体朝向（四元数，x/y/z/w）。
+       * 给验收用：展开会转到「当前话题正对镜头」，收起要转回**打开前的朝向**——
+       * 只看 rotationY 不够（聚焦用的是任意轴的四元数），要比就得比整段朝向。
+       */
+      quaternion: planetGroup
+        ? [planetGroup.quaternion.x, planetGroup.quaternion.y, planetGroup.quaternion.z, planetGroup.quaternion.w].map(
+            (v) => Math.round(v * 1000) / 1000,
+          )
+        : null,
+      lowPower,
+      /** 环宽补偿的当前值（入口小球上环是否可见，就看它有没有被铺回去） */
+      ringWidthScale: ringUniforms ? Math.round(ringUniforms.uWidthScale.value * 100) / 100 : null,
       windowSize: dotPool?.windowTopicIds().filter(Boolean).length ?? 0,
       id: instanceId,
       hasSession: browseSession !== null,
@@ -894,6 +1119,10 @@ function motionDuration(ms: number): number {
     }),
     /** 把浏览会话的展示窗口同步到画布（窗口内容变化后调用）。 */
     refreshWindow,
+    /** 信息密度：0 = 抽象态（球 + 融合环），1 = 完整 Planet（Planet 连续体用） */
+    setReveal,
+    /** 球体此刻在屏幕上的中心与半径（入口小球与全屏 Planet 的尺度对齐用） */
+    sphereScreenRect,
     setTopics: (list: TopicPosition[]) => {
       // 仅暂存列表：星球的话题点由展示窗口决定（见 attachBrowse / PlanetBrowseSession）
       topicsRef.value = list;

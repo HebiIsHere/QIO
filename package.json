@@ -1,0 +1,24 @@
+{
+  "name": "qio",
+  "version": "1.0.0",
+  "description": "QIO 是一个面向长对话、不会随着会话增长而简单丢失上下文的本地优先 Agent。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HebiIsHere/QIO.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/HebiIsHere/QIO/issues"
+  },
+  "homepage": "https://github.com/HebiIsHere/QIO#readme"
+}

@@ -18,9 +18,10 @@ const dockStub = {
 };
 const planetStub = {
   name: "PlanetView",
-  props: { seq: { type: Number, default: 0 } },
+  props: { seq: { type: Number, default: 0 }, open: { type: Boolean, default: true } },
   emits: ["close"],
-  template: `<div class="stub-planet" :data-seq="seq"></div>`,
+  // 暴露 open：关闭不再是「display:none」，而是切换成入口球态（由星球页自己按 open 决定）
+  template: `<div class="stub-planet" :data-seq="seq" :data-open="String(open)"></div>`,
 };
 
 function mountView() {
@@ -80,17 +81,18 @@ describe("ConversationView 星球层开合（任务05 A：旧回调不得关闭�
     // 第一次关闭的迟到回调不得关掉现在这一层
     await w.findComponent({ name: "PlanetView" }).vm.$emit("close", firstSeq);
     await flushPromises();
-    expect(w.find(".stub-planet").attributes("style") ?? "").not.toContain("display: none");
+    expect(w.find(".stub-planet").attributes("data-open")).toBe("true");
 
     // 当前这一层自己的 close 才生效
     await w.findComponent({ name: "PlanetView" }).vm.$emit("close", secondSeq);
     await flushPromises();
     expect(w.find(".stub-planet").exists()).toBe(true); // 实例常驻（复用同一个 WebGL 场景）
-    expect(w.find(".stub-planet").attributes("style") ?? "").toContain("display: none");
+    // 关掉 = 回到入口球态（星球页自己按 open=false 切），不是把组件卸载
+    expect(w.find(".stub-planet").attributes("data-open")).toBe("false");
     // 再打开时仍是同一个实例（序号只是递增，不会重建组件）
     await w.find(".stub-dock").trigger("click");
     await flushPromises();
-    expect(w.find(".stub-planet").attributes("style") ?? "").not.toContain("display: none");
+    expect(w.find(".stub-planet").attributes("data-open")).toBe("true");
     w.unmount();
   });
 });

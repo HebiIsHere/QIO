@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import ToolCreationCard from "./ToolCreationCard.vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
@@ -66,6 +67,46 @@ const toolTitle = computed(
 /** 呈现优先：status 作为语义状态徽标 */
 const toolStatus = computed(() => props.message.presentation?.status || "");
 
+/**
+ * 工具卡状态：运行中就说运行中，不为「还在跑」画一个 ✓。
+ * 用户必须能分辨「正在执行」与「已完成」（spec 第 32~34 条）。
+ */
+const toolRunning = computed(() => props.message.toolRunning === true);
+const toolFailed = computed(() => !toolRunning.value && props.message.toolOk === false);
+
+/** 耗时：只有拿得到且有意义（≥0.1s）时才显示，不编造数字 */
+const durationText = computed(() => {
+  const ms = props.message.toolDurationMs;
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 100) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+});
+
+/** 工具失败时卡片上的一行结论（完整错误仍在折叠详情里） */
+const toolFailureLine = computed(() => {
+  if (!toolFailed.value) return "";
+  const raw = (props.message.toolError ?? "").trim();
+  if (!raw) return "这次执行没有成功";
+  if (raw.includes("未执行")) return raw;
+  if (raw.includes("取消")) return raw;
+  if (raw.includes("超时")) return raw;
+  return raw && raw.length <= 60 ? raw : "这次执行没有成功，展开可看原因";
+});
+
+/** 独立任务的状态文案（用户看到的是「独立任务」，不是内部智能体进程） */
+const SUBAGENT_LABELS: Record<string, string> = {
+  queued: "开始",
+  running: "进行中",
+  done: "已完成",
+  failed: "失败",
+};
+const subagentLabel = computed(
+  () => SUBAGENT_LABELS[props.message.taskStatus ?? "running"] ?? "进行中",
+);
+const subagentRunning = computed(
+  () => props.message.taskStatus === "queued" || props.message.taskStatus === "running",
+);
+
 /** 原始工具名：只用于悬停提示 / 排查，不作为界面标题（界面标题是中文展示名） */
 const rawToolName = computed(
   () => props.message.presentation?.tool || props.message.toolName || "工具",
@@ -114,8 +155,9 @@ const metaText = computed(() => {
 
     <template v-else-if="message.role === 'tool'">
       <div
-        class="tool-card"
-        :class="{ fail: message.toolOk === false }"
+        class="tool-card qio-card"
+        :class="{ fail: toolFailed, running: toolRunning, open }"
+        :data-state="toolRunning ? 'running' : toolFailed ? 'failed' : 'ready'"
         :title="rawToolName"
       >
         <button
@@ -125,21 +167,68 @@ const metaText = computed(() => {
           :aria-expanded="open"
           :title="open ? '收起' : '展开'"
         >
-          <span class="tool-mark" :class="message.toolOk === false ? 'fail' : 'ok'">
-            {{ message.toolOk === false ? "✕" : "✓" }}
+          <span
+            class="tool-mark"
+            :class="toolRunning ? 'running' : toolFailed ? 'fail' : 'ok'"
+          >
+            {{ toolRunning ? "◌" : toolFailed ? "✕" : "✓" }}
           </span>
           <span class="tool-name mono">{{ toolTitle }}</span>
-          <span v-if="toolStatus" class="tool-status" :class="message.toolOk === false ? 'fail' : 'ok'">
-            {{ toolStatus }}
+          <span
+            v-if="toolRunning || toolStatus"
+            class="tool-status qio-state"
+            :class="toolRunning ? 'running info' : toolFailed ? 'fail err' : 'ok'"
+          >
+            {{ toolRunning ? "运行中" : toolStatus }}
           </span>
+          <span v-if="durationText" class="tool-duration mono">{{ durationText }}</span>
           <span class="tool-time mono">{{ formatTime(message.createdAt) }}</span>
           <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
         </button>
-        <div v-show="open" class="tool-detail">
-          <pre>{{ toolSummary }}</pre>
-          <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
+        <!-- 结论写在卡面上：失败不能只藏在折叠详情里 -->
+        <p v-if="toolFailureLine" class="tool-fail-line" role="status">{{ toolFailureLine }}</p>
+        <!-- 展开/收起必须连续：用 0fr→1fr 网格行做真实高度过渡，
+             不再 v-show 瞬切（detail-wrap 不设内边距，否则收起时会留下细条） -->
+        <div class="tool-detail-wrap" :class="{ open }">
+          <div class="tool-detail-clip">
+            <div class="tool-detail">
+              <pre>{{ toolSummary }}</pre>
+              <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
+            </div>
+          </div>
         </div>
       </div>
+    </template>
+
+    <!-- 独立任务：与「普通工具」明确区分（spec 第 61~65 条） -->
+    <template v-else-if="message.role === 'subagent'">
+      <div
+        class="subagent-card qio-card"
+        :class="{ fail: message.taskStatus === 'failed' }"
+        :data-state="subagentRunning ? 'running' : message.taskStatus === 'failed' ? 'failed' : 'ready'"
+      >
+        <div class="sub-head">
+          <span class="sub-kind qio-tag">独立任务</span>
+          <span class="sub-name serif">{{ message.toolName || "未命名任务" }}</span>
+          <span
+            class="sub-state qio-state"
+            :class="subagentRunning ? 'running info' : message.taskStatus === 'failed' ? 'err' : 'ok'"
+          >{{ subagentLabel }}</span>
+        </div>
+        <p class="sub-line">
+          QIO 正在单独处理这项任务{{ subagentRunning ? "" : "（已完成）" }}
+        </p>
+        <p v-if="message.taskGoal" class="sub-goal">目标：{{ message.taskGoal }}</p>
+        <p v-if="!subagentRunning && message.content" class="sub-result">{{ message.content }}</p>
+        <p v-if="message.taskStatus === 'failed'" class="sub-fail" role="status">
+          这项独立任务没有完成：{{ message.toolError || "展开后可让 QIO 继续处理" }}
+        </p>
+      </div>
+    </template>
+
+    <!-- 工具创建：一条流程一张卡，原地推进 -->
+    <template v-else-if="message.role === 'tool_creation'">
+      <ToolCreationCard :message="message" />
     </template>
 
     <template v-else>
@@ -153,7 +242,6 @@ const metaText = computed(() => {
       >
         <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
-        <div v-if="message.memoryInject" class="inject-tag">◈ {{ message.memoryInject.label }}</div>
         <MarkdownContent
           :source="message.content"
           :reveal="!!message.streaming"
@@ -237,19 +325,6 @@ const metaText = computed(() => {
   color: var(--text-muted);
   letter-spacing: 0.05em;
 }
-.inject-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 2px 0 8px;
-  padding: 3px 10px;
-  border: 1px dashed var(--link);
-  color: var(--link);
-  border-radius: 20px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-}
 /* 元数据：低调存在，hover / focus 时才完全显形（第一眼只看内容） */
 .meta {
   display: flex;
@@ -307,16 +382,21 @@ const metaText = computed(() => {
   border-radius: var(--r-xs);
 }
 /* ---- 工具卡 ---- */
+/* 卡片家族共用契约：`.qio-card`（底/边/圆角/层级）+ `data-state`（running/waiting/ready/failed）。
+   工具卡是紧凑行式卡片，所以在这里覆盖内边距并把圆角对齐到家族值。 */
 .tool-card {
   margin: 4px 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-elevated);
+  padding: 0;
+  border-radius: var(--r-lg);
   overflow: hidden;
   font-size: 12.5px;
 }
 .tool-card.fail {
   border-color: var(--border-danger);
+}
+/* 运行中的卡不抢注意力：只用细边框 + 文字表达「还在跑」 */
+.tool-card.running {
+  border-style: dashed;
 }
 .tool-head {
   display: flex;
@@ -332,7 +412,7 @@ const metaText = computed(() => {
   color: var(--text-secondary);
 }
 .tool-head:hover {
-  background: var(--accent-soft);
+  background: var(--layer-hover);
 }
 .tool-mark {
   font-size: 12px;
@@ -342,6 +422,9 @@ const metaText = computed(() => {
 }
 .tool-mark.fail {
   color: var(--danger);
+}
+.tool-mark.running {
+  color: var(--link);
 }
 .tool-name {
   color: var(--text-strong);
@@ -361,6 +444,20 @@ const metaText = computed(() => {
 .tool-status.fail {
   color: var(--danger);
 }
+.tool-status.running {
+  color: var(--link);
+}
+.tool-duration {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+.tool-fail-line {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--danger);
+  font-size: 12px;
+}
 .tool-time {
   margin-left: auto;
   color: var(--text-muted);
@@ -369,7 +466,23 @@ const metaText = computed(() => {
 .tool-chev {
   color: var(--text-muted);
   flex-shrink: 0;
+  transition: transform var(--mo-1-state) var(--ease-1);
 }
+.tool-card.open .tool-chev { transform: rotate(90deg); }
+/* 展开/收起：真实高度过渡（0fr → 1fr），收起后不占位、不拦截点击 */
+.tool-detail-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--mo-2-in) var(--ease-2);
+}
+.tool-detail-wrap.open { grid-template-rows: 1fr; }
+.tool-detail-clip {
+  overflow: hidden;
+  min-height: 0;
+  opacity: 0;
+  transition: opacity var(--mo-2-in) var(--ease-2);
+}
+.tool-detail-wrap.open .tool-detail-clip { opacity: 1; }
 .tool-detail {
   border-top: 1px solid var(--border-subtle);
   padding: 10px 12px;
@@ -386,5 +499,58 @@ const metaText = computed(() => {
   color: var(--danger);
   font-size: 12px;
   margin: 4px 0 0;
+}
+/* ---- 独立任务卡 ---- */
+.subagent-card {
+  margin: 4px 0;
+  border-left: 2px solid var(--link);
+  border-radius: var(--r-lg);
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+.subagent-card.fail {
+  border-color: var(--border-danger);
+  border-left-color: var(--danger);
+}
+.sub-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sub-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 0 8px;
+}
+.sub-name {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+.sub-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.sub-state.running {
+  color: var(--link);
+}
+.sub-line,
+.sub-goal,
+.sub-result,
+.sub-fail {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.sub-result {
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+.sub-fail {
+  color: var(--danger);
 }
 </style>

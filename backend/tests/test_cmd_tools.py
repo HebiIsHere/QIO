@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from agent.services.computer import CommandRisk
-from agent.tools.cmd_tools import RunCmdTool, SysInfoTool, ProcListTool, ProcKillTool
+from agent.tools.cmd_tools import (
+    ProcKillTool,
+    ProcListTool,
+    RunCmdTool,
+    RunProgramTool,
+    SysInfoTool,
+)
 
 
 class _FakeSandbox:
@@ -14,10 +20,20 @@ class _FakeSandbox:
     def classify_command(self, cmd: str) -> CommandRisk:
         return CommandRisk.LOW if cmd == "echo hi" else CommandRisk.HIGH
 
+    def classify_argv(self, program: str, args=None) -> CommandRisk:
+        return CommandRisk.LOW if program in ("echo", "git") else CommandRisk.HIGH
+
     def command_verdict(self, cmd: str):
         risk = self.classify_command(cmd)
         verdict = self._verdict
         return verdict, risk
+
+    def shell_verdict(self, cmd: str):
+        # run_shell 永远走审批：fake 只在显式 verdict="auto" 时模拟放行
+        return self.command_verdict(cmd)
+
+    def command_verdict_for_program(self, program: str, args=None):
+        return self._verdict, self.classify_argv(program, args)
 
     @property
     def mode(self) -> str:
@@ -35,7 +51,8 @@ class _FakeApproval:
 
 
 @pytest.mark.asyncio
-async def test_run_cmd_low_auto():
+async def test_run_shell_auto_when_sandbox_allows():
+    """sandbox 判 auto 时工具才直接执行（真实 sandbox 下 shell 永远是 approve）。"""
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="auto")
     t.approvals = _FakeApproval()
@@ -45,7 +62,7 @@ async def test_run_cmd_low_auto():
 
 
 @pytest.mark.asyncio
-async def test_run_cmd_high_needs_approval():
+async def test_run_shell_high_needs_approval():
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="approve")
     appr = _FakeApproval()
@@ -57,7 +74,7 @@ async def test_run_cmd_high_needs_approval():
 
 
 @pytest.mark.asyncio
-async def test_run_cmd_rejected():
+async def test_run_shell_rejected():
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="approve")
     t.approvals = _FakeApproval(decision="rejected")
@@ -67,7 +84,7 @@ async def test_run_cmd_rejected():
 
 
 @pytest.mark.asyncio
-async def test_run_cmd_plan_mode_denied():
+async def test_run_shell_plan_mode_denied():
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="deny", mode="plan")
     t.approvals = _FakeApproval()
@@ -76,13 +93,37 @@ async def test_run_cmd_plan_mode_denied():
 
 
 @pytest.mark.asyncio
-async def test_run_cmd_missing_cmd():
+async def test_run_shell_missing_cmd():
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="auto")
     t.approvals = _FakeApproval()
     res = await t.run()
     assert not res.ok
     assert "必填" in res.error
+
+
+@pytest.mark.asyncio
+async def test_run_program_uses_argv_not_shell():
+    t = RunProgramTool()
+    t.computer = _FakeSandbox(verdict="auto")
+    appr = _FakeApproval()
+    t.approvals = appr
+    res = await t.run(program="git", args=["--version"])
+    assert res.ok
+    assert "git" in res.content.lower()
+    assert not appr.calls
+
+
+@pytest.mark.asyncio
+async def test_run_program_needs_approval_for_non_allowlisted_program():
+    t = RunProgramTool()
+    t.computer = _FakeSandbox(verdict="approve")
+    appr = _FakeApproval(decision="rejected")
+    t.approvals = appr
+    res = await t.run(program="curl", args=["http://example.com"])
+    assert not res.ok
+    assert len(appr.calls) == 1
+    assert appr.calls[0][1]["action"] == "run_program"
 
 
 @pytest.mark.asyncio

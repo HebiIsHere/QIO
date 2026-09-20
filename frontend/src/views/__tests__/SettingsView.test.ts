@@ -222,16 +222,29 @@ describe("SettingsView 凭据分区", () => {
     w.unmount();
   });
 
-  it("点击卡片「删除」确认后调用 deleteCredential 并移出列表", async () => {
+  it("点击卡片「删除」：先用 QIO 确认层说明后果，确认后才调用 deleteCredential", async () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const w = await mountSettings();
     await w.find(".btn-danger").trigger("click");
     await flushPromises();
+    // 第四阶段：原生 confirm 已替换为 QIO 自己的确认层（layer 档）
+    const dialog = w.find('[role="dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.text()).toContain("彻底删除凭据「k1」？");
+    expect(dialog.text()).toContain("不可恢复");
+    expect(api.deleteCredential).not.toHaveBeenCalled();
+    // 取消：什么都不发生
+    await dialog.findAll("button")[0].trigger("click");
+    await flushPromises();
+    expect(api.deleteCredential).not.toHaveBeenCalled();
+    // 确认：才真的删除
+    await w.find(".btn-danger").trigger("click");
+    await flushPromises();
+    await w.find('[role="dialog"]').findAll("button")[1].trigger("click");
+    await flushPromises();
     expect(api.deleteCredential).toHaveBeenCalledWith("k1");
     expect(w.findAll(".cred-card").length).toBe(0);
-    confirmSpy.mockRestore();
     w.unmount();
   });
 
@@ -248,7 +261,9 @@ describe("SettingsView 凭据分区", () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
     const w = await mountSettings();
-    await w.findAll(".cred-card .qio-btn")[0].trigger("click");
+    // 第四阶段：管理动作在「管理」区里，先展开再点测试（不再按下标猜按钮）
+    await w.find(".cred-card .btn-manage").trigger("click");
+    await w.find(".cred-card .btn-test").trigger("click");
     await flushPromises();
     const toast = w.find(".toast");
     expect(toast.exists()).toBe(true);
@@ -306,7 +321,7 @@ describe("SettingsView 联网搜索凭据语义（问题7）", () => {
     w.unmount();
   });
 
-  it("「清除」是独立的危险动作，需要确认，且明确发送空值", async () => {
+  it("「清除」是独立的危险动作，走 QIO 确认层，且明确发送空值", async () => {
     const { api } = await import("../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "",
@@ -314,17 +329,20 @@ describe("SettingsView 联网搜索凭据语义（问题7）", () => {
       top_k_default: 5,
       max_fetch_chars: 15000,
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const w = await mountSettings();
     await openTab(w, "模型与联网");
     const clearBtn = visiblePanel(w).findAll(".qio-btn").find((b) => b.text().includes("清除"));
     expect(clearBtn).toBeTruthy();
     await clearBtn!.trigger("click");
     await flushPromises();
-    expect(confirmSpy).toHaveBeenCalled();
+    const dialog = w.find('[role="dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.text()).toContain("清除已保存的博查 API Key？");
+    expect(api.updateSearchSettings).not.toHaveBeenCalled();
+    await dialog.findAll("button")[1].trigger("click");
+    await flushPromises();
     const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(body).toEqual({ bocha_api_key: "" });
-    confirmSpy.mockRestore();
     w.unmount();
   });
 

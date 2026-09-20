@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { defineAsyncComponent, onMounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
+import { useEventStore } from "../stores/events";
 import MessageStream from "../components/MessageStream.vue";
 import Composer from "../components/Composer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
 import SettingsFloat from "../components/SettingsFloat.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
 import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
+import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -15,6 +17,7 @@ const PlanetView = defineAsyncComponent({
   delay: 0,
 });
 const planetOpen = ref(false);
+const events = useEventStore();
 /**
  * 首次打开后才挂载，之后一直保留（关闭只是隐藏）。
  * 这样第二次打开不再重建整个 WebGL 场景（实测每次重建要 1.5–3.4s 冷启动）。
@@ -27,6 +30,30 @@ const planetMounted = ref(false);
  */
 const planetSeq = ref(0);
 const session = useSessionStore();
+
+/**
+ * 空闲时就把星球场景挂上：入口小球从此由**真实星球渲染**承担（同一个场景缩到入口尺度），
+ * 而不是另画一张 2D 图。three.js 仍然是懒加载的 —— 它只是不在首屏 chunk 里，
+ * 页面空闲后再取；在它就绪之前，入口由 `PlanetOrb` 顶着首屏。
+ *
+ * 两个克制的点：
+ * - 正在跑一轮对话时不抢主线程（场景初始化实测 1.5–3.4s）；
+ * - 用 requestIdleCallback，让浏览器自己挑空闲窗口。
+ */
+function mountPlanetWhenIdle() {
+  const start = () => {
+    if (planetMounted.value) return;
+    if (session.turnRunning) {
+      window.setTimeout(start, 1500);
+      return;
+    }
+    planetMounted.value = true;
+  };
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+    .requestIdleCallback;
+  if (typeof ric === "function") ric(start, { timeout: 4000 });
+  else window.setTimeout(start, 2000);
+}
 
 function openPlanet() {
   planetSeq.value += 1;
@@ -57,6 +84,7 @@ function retryHistory() {
 
 onMounted(() => {
   session.loadHistory();
+  mountPlanetWhenIdle();
 });
 </script>
 
@@ -64,31 +92,52 @@ onMounted(() => {
   <div class="conversation">
     <a class="skip-link" href="#composer-input" @click="focusComposer">跳到输入框</a>
     <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
-    <div v-if="session.history.status === 'error'" class="notice quiet" role="status">
-      <span class="text">历史记录暂时无法读取</span>
-      <button class="link" type="button" @click="retryHistory">重试</button>
-    </div>
+    <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->
+    <Transition name="qio-fade">
+      <div v-if="session.history.status === 'error'" class="notice quiet" role="status">
+        <span class="text">历史记录暂时无法读取</span>
+        <button class="link" type="button" @click="retryHistory">重试</button>
+      </div>
+    </Transition>
     <!-- 错误 / 警告分开表达：错误要查，警告只需知道 -->
-    <div v-if="session.lastError" class="notice err" role="alert">
-      <span class="kind mono">错误</span>
-      <span class="text">{{ session.lastError }}</span>
-      <router-link to="/debug" class="link">查看详情</router-link>
-      <router-link to="/settings" class="link">前往设置</router-link>
-    </div>
-    <div v-else-if="session.warning" class="notice warn" role="status">
-      <span class="kind mono">提示</span>
-      <span class="text">{{ session.warning }}</span>
-    </div>
-    <!-- 取消是正常结局：安静地说一声，不当错误 -->
-    <div
-      v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
-      class="notice quiet"
-      role="status"
-    >
-      <span class="kind mono">已停止</span>
-      <span class="text">这一轮已按你的要求停止，可以继续输入</span>
-    </div>
+    <Transition name="qio-fade">
+      <div v-if="session.lastError" class="notice err" role="alert">
+        <span class="kind mono qio-state err">错误</span>
+        <span class="text">{{ session.lastError }}</span>
+        <router-link to="/debug" class="link">查看详情</router-link>
+        <router-link to="/settings" class="link">前往设置</router-link>
+      </div>
+      <div v-else-if="session.warning" class="notice warn" role="status">
+        <span class="kind mono qio-state warn">提示</span>
+        <span class="text">{{ session.warning }}</span>
+      </div>
+      <!-- 取消是正常结局：安静地说一声，不当错误 -->
+      <div
+        v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
+        class="notice quiet"
+        role="status"
+      >
+        <span class="kind mono qio-state quiet">已停止</span>
+        <span class="text">这一轮已按你的要求停止，可以继续输入</span>
+      </div>
+    </Transition>
     <MessageStream />
+    <!-- 高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点 -->
+    <div v-if="session.knowledgeCandidates.length" class="candidates">
+      <KnowledgeCandidateCard
+        v-for="c in session.knowledgeCandidates"
+        :key="c.knowledgeId"
+        :candidate="c"
+      />
+    </div>
+    <!-- 能力降级：一次性、可忽略，不阻塞对话 -->
+    <Transition name="qio-fade">
+      <div v-if="events.fallbackNotice" class="notice quiet fallback" role="status">
+        <span class="kind mono qio-state quiet">兼容模式</span>
+        <span class="text">{{ events.fallbackNotice }}</span>
+        <button class="link" type="button" @click="events.fallbackNotice = null">知道了</button>
+      </div>
+    </Transition>
     <!-- 推测切换：低干扰地问一句，不遮罩、不抢焦点；Anchor 在用户表态前一动不动 -->
     <TopicSwitchPrompt
       v-if="session.pendingSwitch"
@@ -100,11 +149,12 @@ onMounted(() => {
     <Composer />
     <SettingsFloat />
     <PlanetDock @open="openPlanet" />
-    <!-- 常驻复用同一实例：v-show 控制可见性，open 变化由星球页自己重置状态；
+    <!-- 常驻复用同一实例：**不再用 v-show 隐藏** —— 关着的时候它是对话页入口上的那颗小球
+         （同一个 WebGL 场景缩到入口尺度渲染），藏起来就没有小球了。
+         可见性与层级由星球页自己按 open / ball 状态决定；
          旧层的收尾回调带的是它开始关闭时的序号，父级只认当前序号，不会关掉后来打开的新层 -->
     <PlanetView
       v-if="planetMounted"
-      v-show="planetOpen"
       :seq="planetSeq"
       :open="planetOpen"
       @close="closePlanet"
@@ -184,5 +234,19 @@ onMounted(() => {
 }
 .notice .link:hover {
   text-decoration: underline;
+}
+/* 知识候选与降级提示都贴在对话流底部、输入区上方：位置贴近发生的地方 */
+.candidates {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+  /* 候选多时自己滚，不把输入区挤出屏幕 */
+  max-height: 42vh;
+  overflow-y: auto;
+}
+.notice.fallback {
+  padding-right: 84px;
 }
 </style>

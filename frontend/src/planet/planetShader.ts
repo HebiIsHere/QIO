@@ -27,6 +27,9 @@ export const RING_FRAG = `
   uniform float uDim0, uDim1, uDim2;
   uniform float uK;
   uniform float uHW0, uHW1, uHW2;
+  /** 环宽补偿：环宽是**屏幕像素**定的（fwidth），整层被缩小时必须按比例放大回来，
+      否则入口小球上的环会细到看不见（实测：缩到 0.12 倍时三层环几乎消失）。 */
+  uniform float uWidthScale;
   varying vec3 vPos;
 
   float smin(float a, float b, float k){
@@ -53,9 +56,9 @@ export const RING_FRAG = `
     float f0 = levelField(p, uR0);
     float f1 = levelField(p, uR1);
     float f2 = levelField(p, uR2);
-    float a = uA0*uDim0*ringAlpha(f0, uHW0)
-            + uA1*uDim1*ringAlpha(f1, uHW1)
-            + uA2*uDim2*ringAlpha(f2, uHW2);
+    float a = uA0*uDim0*ringAlpha(f0, uHW0*uWidthScale)
+            + uA1*uDim1*ringAlpha(f1, uHW1*uWidthScale)
+            + uA2*uDim2*ringAlpha(f2, uHW2*uWidthScale);
     gl_FragColor = vec4(uRingColor, clamp(a, 0.0, 1.0));
   }
 `;
@@ -79,5 +82,6 @@ export function makeRingUniforms(topics: TopicData[], theme: "dark" | "light") {
     uDim0: { value: 1 }, uDim1: { value: 1 }, uDim2: { value: 1 },
     uK: { value: 0.16 },
     uHW0: { value: LEVEL_HW[0] }, uHW1: { value: LEVEL_HW[1] }, uHW2: { value: LEVEL_HW[2] },
+    uWidthScale: { value: 1 },
   };
 }

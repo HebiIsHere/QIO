@@ -36,11 +36,17 @@ export const useEventStore = defineStore("events", {
     error: null as string | null,
     /** 模型三态适配（CAPABILITY 事件更新，默认 native） */
     modelMode: "native" as ModelMode,
+    /**
+     * 能力降级提示（FALLBACK）：低干扰、一次性、可自动淡出。
+     * 正常模式下永远是 null —— 不制造噪声（spec 第 40~42 条）。
+     */
+    fallbackNotice: null as string | null,
+    /** 凭据状态里**影响当前功能**的那部分（人话，不含内部标识） */
+    credentialNotice: null as string | null,
     /** 按 turn_id 归属的用量（不再把累计值显示成单条消息用量） */
     usageByTurn: {} as Record<string, TurnUsage>,
     /** 最近结束/开始的 turn_id：USAGE 事件紧随 TURN_END，用它归属 */
     lastTurnId: null as string | null,
-    _pendingMemoryInject: null as { label: string } | null,
     _source: null as EventStreamHandle | null,
     /** 已结束的 turn（防重连重放重复生效），有界 */
     endedTurns: [] as string[],
@@ -81,8 +87,9 @@ export const useEventStore = defineStore("events", {
             const tid = String(d.turn_id ?? "");
             session.activeTurnId = tid || null;
             if (tid) this.lastTurnId = tid;
+            // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
+            session.turnStarted(Boolean(d.notify));
           }
-          session.turnStarted();
           break;
         case "TURN_END": {
           const d = event.data as Record<string, unknown>;
@@ -104,19 +111,18 @@ export const useEventStore = defineStore("events", {
           this.recordUsage(tid, d);
           const status = String(d.status ?? "completed");
           const final = typeof d.final_content === "string" ? d.final_content : "";
-          // 无论 final 是否为空都清空 pending，避免残留注入挂到下一轮
-          const inject = this._pendingMemoryInject;
-          this._pendingMemoryInject = null;
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
           session.finalizeAssistant();
           if (final.trim()) {
-            session.applyFinalAnswer(final, inject ?? undefined);
+            session.applyFinalAnswer(final);
           } else if (status === "completed") {
             // 正常的空回答：不动内容
           } else {
             // 失败 / 取消：不得把中间话当成最终答案
             session.markLastAssistantInterim();
           }
+          // 高影响知识候选：只有在回答完成之后才出现（顺序不能反）
+          session.flushKnowledgeCandidates();
           session.turnEnded();
           session.lastTurnOutcome = { turnId: tid, status };
           if (status === "failed") {
@@ -149,6 +155,38 @@ export const useEventStore = defineStore("events", {
           }
           break;
         }
+        case "FALLBACK": {
+          /**
+           * 能力降级：只在真的降级时出现一次（后端也只在模式变化那次发）。
+           * 提示必须低干扰、不阻塞对话，用户知道「功能可能受影响」就够了。
+           */
+          const d = event.data as Record<string, unknown>;
+          const msg = String(d.message ?? "").trim();
+          this.fallbackNotice =
+            msg || "当前模型不支持原生工具调用，已使用兼容模式（功能可能受限）";
+          break;
+        }
+        case "CREDENTIAL_STATUS": {
+          /**
+           * 凭据状态：只把「影响当前功能」的部分告诉用户，并且用人话。
+           * 绝不显示 key_id / keychain 之类的内部标识（spec 第 44~46 条）。
+           */
+          const d = event.data as Record<string, unknown>;
+          const status = String(d.status ?? "");
+          if (status === "unavailable") {
+            const msg = String(d.message ?? "").trim();
+            this.credentialNotice = msg || "当前没有可用的模型凭据，请在「设置 → 凭据」里添加";
+            session.warning = this.credentialNotice;
+          } else if (status === "paused") {
+            this.credentialNotice = "有一项凭据已暂停：依赖它的能力暂时不可用（可在「设置 → 凭据」恢复）";
+          } else if (status === "revoked" || status === "deleted") {
+            this.credentialNotice = "有一项凭据已失效：依赖它的能力暂时不可用（可在「设置 → 凭据」重新添加）";
+          } else if (status === "active") {
+            // 恢复正常：不打扰，清掉旧提示
+            this.credentialNotice = null;
+          }
+          break;
+        }
         case "USAGE": {
           const d = event.data as Record<string, unknown>;
           // USAGE 紧跟在 TURN_END 之后，归属当前（或最近结束的）turn
@@ -161,27 +199,79 @@ export const useEventStore = defineStore("events", {
           if (content.trim()) {
             // 已经有真实内容到达：阶段从「等待响应」转为「正在生成」
             session.turnPhase = "generating";
-            session.pushAssistant(content, undefined, true, true);
+            if (session.activity !== "approval") session.activity = "generating";
+            session.pushAssistant(content, true, true);
           }
           break;
         }
-        case "MEMORY_INJECT": {
+        case "TOOL_START": {
+          // 工具开始执行：立刻出现/更新一张「运行中」的卡（不再等结束才可见）
           const d = event.data as Record<string, unknown>;
-          const count = Number(d.count ?? 0);
-          const kind = String(d.kind ?? d.category ?? "记忆注入");
-          const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
-          this._pendingMemoryInject = { label: `${kind} · ${safeCount} 条` };
+          const callId = String(d.call_id ?? "");
+          session.startTool(
+            callId,
+            String(d.tool ?? "?"),
+            (d.presentation as ToolPresentation | null) ?? null,
+            (d.turn_id as string | null) ?? null,
+            (d.arguments as Record<string, unknown> | undefined) ?? null,
+          );
+          if (session.turnRunning) session.activity = "tool";
           break;
         }
         case "TOOL_END": {
           const d = event.data as Record<string, unknown>;
-          session.pushTool(
+          session.finishTool(
+            String(d.call_id ?? ""),
             String(d.tool ?? "?"),
             Boolean(d.ok),
             (d.error as string | null) ?? null,
             String(d.content_preview ?? ""),
             (d.presentation as ToolPresentation | null) ?? null,
+            typeof d.duration_ms === "number" ? d.duration_ms : undefined,
           );
+          if (session.turnRunning) {
+            session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
+          }
+          break;
+        }
+        case "TOOL_CREATE_STATUS": {
+          // 工具创建是一条流程、一张卡：同一 group_id 原地推进
+          const d = event.data as Record<string, unknown>;
+          const groupId = String(d.group_id ?? "");
+          if (!groupId) break;
+          session.upsertToolCreation(groupId, {
+            phase: String(d.phase ?? "building"),
+            label: (d.label as string | undefined) ?? undefined,
+            detail: (d.detail as string | undefined) ?? undefined,
+            ok: typeof d.ok === "boolean" ? d.ok : undefined,
+            toolName: (d.tool_name as string | undefined) ?? undefined,
+            turnId: (d.turn_id as string | null) ?? null,
+          });
+          if (session.turnRunning) session.activity = "tool";
+          break;
+        }
+        case "KNOWLEDGE_CANDIDATE": {
+          // 先缓冲：回答完成（TURN_END）之后才显示，绝不打断正在生成的回答
+          const d = event.data as Record<string, unknown>;
+          session.queueKnowledgeCandidate({
+            knowledgeId: String(d.knowledge_id ?? ""),
+            category: String(d.category ?? ""),
+            content: String(d.content ?? ""),
+            reason: (d.reason as string | undefined) ?? undefined,
+          });
+          break;
+        }
+        case "APPROVAL_RESULT": {
+          /**
+           * 授权的结局（单次使用）。本地通常已经处理过（是我们自己点的），
+           * 但同一审批也可能由别处应答或与本地状态不一致 —— 按 id 收敛，
+           * 避免留下一个「看不见的待审批项」。
+           */
+          const d = event.data as Record<string, unknown>;
+          const approvalId = String(d.approval_id ?? "");
+          if (!approvalId) break;
+          useApprovalsStore().resolve(approvalId);
+          if (session.pendingContinue?.id === approvalId) session.pendingContinue = null;
           break;
         }
         case "ANCHOR": {
@@ -227,14 +317,24 @@ export const useEventStore = defineStore("events", {
         }
         case "SUBAGENT_STATUS": {
           const d = event.data as Record<string, unknown>;
-          const status = String(d.status ?? "?");
-          if (status === "started") break; // 启动不重复入列
-          session.pushTool(
-            `子任务 · ${String(d.tool ?? "?")}`,
-            Boolean(d.ok),
-            (d.error as string | null) ?? null,
-            String(d.content_preview ?? ""),
-          );
+          const taskId = String(d.task_id ?? "");
+          if (!taskId) break;
+          const raw = String(d.status ?? "running");
+          const status: "queued" | "running" | "done" | "failed" =
+            raw === "queued" || raw === "running" || raw === "done" || raw === "failed"
+              ? raw
+              : "running";
+          session.upsertSubagent(taskId, {
+            status,
+            toolName: (d.display_name as string | undefined) || String(d.tool ?? "独立任务"),
+            goal: (d.goal as string | undefined) ?? undefined,
+            ok: typeof d.ok === "boolean" ? d.ok : null,
+            preview: String(d.content_preview ?? ""),
+            error: (d.error as string | null) ?? null,
+          });
+          // 独立任务在跑：全局只表达「正在处理独立任务」这一句
+          if (status === "queued" || status === "running") session.activity = "subagent";
+          else if (session.turnRunning) session.activity = "waiting";
           break;
         }
         case "ERROR": {
@@ -243,7 +343,6 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const tid = String(d.turn_id ?? "");
           if (tid && session.activeTurnId && tid !== session.activeTurnId) break;
-          this._pendingMemoryInject = null;
           session.lastError = String(d.message ?? "agent error");
           break;
         }
@@ -279,6 +378,8 @@ export const useEventStore = defineStore("events", {
               // 用户正在输入（含凭据表单）时不抢焦点：保留待办 + 亮出「有 N 项操作等待确认」入口
               { autoOpen: !isUserEditing() },
             );
+            // 需要用户决定：全局状态说「等待确认」（决定本身在审批卡里）
+            session.activity = "approval";
           }
           break;
         }

@@ -49,12 +49,13 @@ async function cancelTurn(turnId: string) {
       <span v-if="cancelled.length">{{ cancelled.length }} 已取消</span>
       <span class="chev">{{ open ? "▾" : "▸" }}</span>
     </button>
-    <transition name="queue-list">
+    <!-- 折叠区用全局过渡原语（同一套中频进入/离开曲线），不再自定义一份 -->
+    <transition name="qio-rise">
       <div v-show="open" class="list">
       <div v-if="running" class="row running">
         <!-- 等待动画只在回答附近播一次；这里用静态标记表达「运行中」 -->
         <span class="live-mark" aria-hidden="true"></span>
-        <span class="badge mono">运行中</span>
+        <span class="badge mono qio-state info">运行中</span>
         <span class="txt">{{ running.message }}</span>
         <!-- 与输入区停止按钮指向同一个对象（当前运行的任务），文案统一为「停止」 -->
         <button
@@ -70,7 +71,7 @@ async function cancelTurn(turnId: string) {
       </div>
       <div v-for="(q, i) in queued" :key="q.turn_id" class="row queued">
         <span class="txt">{{ q.message }}</span>
-        <span class="badge mono">排队中 · 第 {{ i + 1 }} 位</span>
+        <span class="badge mono qio-state quiet">排队中 · 第 {{ i + 1 }} 位</span>
         <button
           class="qbtn"
           type="button"
@@ -84,9 +85,9 @@ async function cancelTurn(turnId: string) {
       </div>
       <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled">
         <span class="txt">{{ c.message }}</span>
-        <span class="badge mono">已取消</span>
+        <span class="badge mono qio-state quiet">已取消</span>
       </div>
-      <p v-if="cancelError" class="cancel-err" role="alert">{{ cancelError }}</p>
+      <p v-if="cancelError" class="cancel-err qio-feedback err" role="alert">{{ cancelError }}</p>
       </div>
     </transition>
   </div>
@@ -113,7 +114,11 @@ async function cancelTurn(turnId: string) {
   font-size: 11.5px;
   color: var(--text-muted);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1),
+    color var(--dur-fast) var(--ease-1);
 }
+.chip:hover { border-color: var(--accent); color: var(--text-secondary); }
+.chip:active { transform: translateY(var(--shift-1)); }
 .chip b {
   color: var(--text-strong);
   font-weight: 600;
@@ -137,7 +142,7 @@ async function cancelTurn(turnId: string) {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-inset);
 }
@@ -153,16 +158,6 @@ async function cancelTurn(turnId: string) {
   font-size: 11.5px;
   color: var(--danger);
 }
-/* 折叠区域的出现与退出：短淡入 + 2px 位移，退出后不占位、不拦截点击 */
-.queue-list-enter-active,
-.queue-list-leave-active {
-  transition: opacity var(--dur-menu) var(--ease-out), transform var(--dur-menu) var(--ease-out);
-}
-.queue-list-enter-from,
-.queue-list-leave-to {
-  opacity: 0;
-  transform: translateY(-2px);
-}
 .txt {
   flex: 1;
   min-width: 0;
@@ -176,10 +171,6 @@ async function cancelTurn(turnId: string) {
   flex: none;
   font-size: 10.5px;
   letter-spacing: 0.04em;
-  padding: 2px 8px;
-  border-radius: 20px;
-  border: 1px solid currentColor;
-  color: var(--text-muted);
 }
 .qbtn {
   flex: none;
@@ -191,6 +182,8 @@ async function cancelTurn(turnId: string) {
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1),
+    color var(--dur-fast) var(--ease-1), transform var(--dur-press) var(--ease-1-out);
 }
 .qbtn.stop {
   border-color: var(--accent);

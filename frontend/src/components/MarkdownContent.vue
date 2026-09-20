@@ -9,6 +9,7 @@ import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkDirective from "remark-directive";
 import hljs from "highlight.js/lib/core";
+import { isSafeExternalUrl, openExternal } from "../utils/externalLink";
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
 import python from "highlight.js/lib/languages/python";
@@ -124,8 +125,16 @@ function renderNode(node: any): string {
       return `<del>${renderInline(node.children)}</del>`;
     case "inlineCode":
       return `<code class="inline">${escapeHtml(node.value ?? "")}</code>`;
-    case "link":
-      return `<a href="${escapeHtml(node.url ?? "")}" target="_blank" rel="noreferrer">${renderInline(node.children)}</a>`;
+    case "link": {
+      // 模型给的 URL 不可信：只有白名单 scheme 才渲染成可点链接，
+      // 其余（javascript: / data: / file: / vbscript: …）退化为纯文本。
+      const url = typeof node.url === "string" ? node.url : "";
+      const label = renderInline(node.children);
+      if (!isSafeExternalUrl(url)) {
+        return `<span class="link-blocked" title="已阻止不安全的链接">${label}</span>`;
+      }
+      return `<a href="${escapeHtml(url.trim())}" class="ext-link" rel="noopener noreferrer nofollow" target="_blank">${label}</a>`;
+    }
     case "break":
       return "<br />";
     case "textDirective":
@@ -228,6 +237,24 @@ async function writeClipboard(text: string): Promise<boolean> {
 /** 事件委托：v-html 内的复制按钮由容器统一处理 */
 async function onClick(e: MouseEvent) {
   const target = e.target as HTMLElement | null;
+  // 外链：不让 WebView 自己导航，统一交给系统打开（失败要说出来）
+  const link = target?.closest?.("a.ext-link") as HTMLAnchorElement | null;
+  if (link) {
+    const url = link.getAttribute("href") ?? "";
+    if (!isSafeExternalUrl(url)) return;
+    e.preventDefault();
+    resetLinkHint(link);
+    const ok = await openExternal(url);
+    if (!ok) {
+      link.classList.add("link-failed");
+      link.title = "打开失败：可以复制链接地址后手动打开";
+      window.setTimeout(() => {
+        link.classList.remove("link-failed");
+        if (link.title.startsWith("打开失败")) link.removeAttribute("title");
+      }, 2400);
+    }
+    return;
+  }
   const btn = target?.closest?.(".code-copy") as HTMLElement | null;
   if (!btn) return;
   const codeEl = btn.parentElement?.querySelector("pre code") as HTMLElement | null;
@@ -245,6 +272,11 @@ async function onClick(e: MouseEvent) {
     btn,
     setTimeout(() => resetCopyButton(btn), ok ? 1600 : 2400),
   );
+}
+
+function resetLinkHint(link: HTMLAnchorElement) {
+  link.classList.remove("link-failed");
+  if (link.title.startsWith("打开失败")) link.removeAttribute("title");
 }
 
 /** 选中代码块文本（手动复制退路）。环境不支持 Selection 时静默跳过。 */
@@ -303,6 +335,9 @@ onBeforeUnmount(() => {
 .markdown-body :deep(.table-wrap) { max-width: 100%; overflow-x: auto; }
 .markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
 .markdown-body :deep(a) { color: var(--link); }
+/* 危险 scheme：渲染成普通文本，不给可点链接 */
+.markdown-body :deep(.link-blocked) { color: var(--text-secondary); text-decoration: underline dotted; cursor: help; }
+.markdown-body :deep(a.link-failed) { color: var(--danger); }
 .markdown-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 0.4em 0; padding-left: 10px; color: var(--text-secondary); }
 .markdown-body :deep(table) { border-collapse: collapse; margin: 0.5em 0; min-width: max-content; }
 .markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid var(--border-subtle); padding: 4px 10px; }

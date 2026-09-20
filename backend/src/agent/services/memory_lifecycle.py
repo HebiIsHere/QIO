@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 CONSOLIDATION_COOLDOWN_SECONDS = 600
 
+# 高影响候选是要用户点头的：用一句人话说明「为什么值得你确认」，
+# 而不是把内部类别枚举丢给界面。
+HIGH_IMPACT_REASON = {
+    "user_profile": "这会影响 QIO 对你的长期理解",
+    "agent_self": "这会影响 QIO 对自己的认识",
+    "goal": "这会影响 QIO 对你目标的判断",
+}
+
 
 class MemoryLifecycle:
     def __init__(
@@ -40,6 +48,13 @@ class MemoryLifecycle:
         self.embedding = embedding
         self.user_root_id = user_root_id
         self.refresh_selector = refresh_selector
+        # 本轮新建的高影响候选：等回答完成后再由会话层提示用户
+        self._pending_candidates: list[dict] = []
+
+    def take_knowledge_candidates(self) -> list[dict]:
+        """取走（并清空）待提示的高影响知识候选。"""
+        pending, self._pending_candidates = self._pending_candidates, []
+        return pending
 
     # -- fragment close ---------------------------------------------------
 
@@ -158,6 +173,18 @@ class MemoryLifecycle:
                     tracer.write("knowledge", item.id)
                 ks.submit(item.id)
                 if cand.category in HIGH_IMPACT_CATEGORIES:
+                    # 留在待确认状态，并登记到「回答后在对话里自然确认」的队列
+                    self._pending_candidates.append(
+                        {
+                            "knowledge_id": item.id,
+                            "category": cand.category,
+                            "content": cand.content,
+                            "impact": "high",
+                            "reason": HIGH_IMPACT_REASON.get(
+                                cand.category, "这条知识会长期生效"
+                            ),
+                        }
+                    )
                     continue  # stays draft; user confirmation required
                 result = vs.review(ks.get(item.id), verified_by="system")
                 if result.accepted:

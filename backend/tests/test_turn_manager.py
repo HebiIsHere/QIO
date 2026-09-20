@@ -42,7 +42,7 @@ async def test_single_flight_and_fifo_order():
     assert order == ["A", "B", "C"]
     assert peak == 1  # 主循环最大并发数 = 1
     assert ra == {"ok": True, "msg": "A"}
-    assert a.status == "done"
+    assert a.status == "completed"
     await tm.shutdown()
 
 

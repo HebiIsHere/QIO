@@ -84,7 +84,9 @@
 
 - **Status：** completed
 - **Implementation：** `memory/ingest.py`、`memory/fragment.py`、`memory/summary.py`、`memory/index.py`、`services/memory_lifecycle.py`（封块、滚动摘要、预算压力整理）
+- **Implementation（2026-09-15 第三阶段 · 按轮封块）：** 封块阈值以前数的是**消息条数**，而设置页一直写「标准（10 轮）」—— 一轮 = 用户 + 助手两条消息，所以「10 轮」实际只有 5 轮。现在 `FragmentManager(max_turns=...)` 只数 `role='user'` 的消息（工具消息不计入），并且**最后一条是 user 消息时不封块**（否则第 N 轮的助手回答会被写进下一个片段）。设置键正名为 `fragment.max_turns`（读写与运行时共用 `memory/fragment.py::resolve_max_turns`，旧键 `fragment.max_messages` 只作为一次性迁移回退并写回新键）。
 - **Tests：** `backend/tests/test_memory.py`、`test_injection_short_term.py`、`test_turn_short_term.py`
+- **Tests（2026-09-15 追加）：** `backend/tests/test_fragment_turn_semantics.py`（10 轮 = 20 条消息才封块、工具消息不计轮、半轮不封块）
 - **Known limitations：** 摘要与知识提炼依赖主模型调用，失败时降级为原文直引；索引是机械生成，模型不可写。
 - **后续依赖：** M9 注入以此为素材；M12 维护任务读取片段做整理。
 
@@ -92,7 +94,9 @@
 
 - **Status：** completed
 - **Implementation：** `knowledge/lifecycle.py`（状态机 + supersedes 版本链）、`knowledge/verify.py`（分层验证）、`knowledge/inject.py`、`tools/knowledge_correction.py`（对话式纠错）
+- **Implementation（2026-09-15 第三阶段 · 高影响候选进对话）：** 高影响候选（`user_profile` / `agent_self` / `goal`）不再只留在 `pending_review` 等用户主动去 Knowledge Panel 发现 —— `services/memory_lifecycle.py` 把本轮新建的高影响候选登记下来，turn 收尾（回答完成之后）由 `AppContext.emit_knowledge_candidates()` 发 `KNOWLEDGE_CANDIDATE`，前端在**回答完成后**以低干扰卡片给出「保存 / 修改 / 忽略」。新增 `POST /api/knowledge/{id}/ignore`：状态转 `revoked` 并在 `provenance` 记 `ignored_at`，同一内容不再重复提示；低影响候选仍自动生效、不进对话。Knowledge Panel 保留浏览 / 修正 / 归档 / 审核历史，但不再是高影响候选唯一的确认入口。
 - **Tests：** `backend/tests/test_knowledge.py`、`test_knowledge_correction.py`、`test_knowledge_mgmt_api.py`
+- **Tests（2026-09-15 追加）：** `backend/tests/test_knowledge_candidate_event.py`；前端 `stores/__tests__/phase3Cards.test.ts`（候选只在 `TURN_END` 之后出现、保存 / 修改 / 忽略与失败可重试）
 - **Known limitations：** 高影响类别必须用户确认；隐式反馈与自动整理属后续项，见本文末「尚未完成」。
 - **后续依赖：** M9 只把 `active` 条目纳入注入面。
 
@@ -119,6 +123,8 @@
 
 - **Status：** completed
 - **Implementation：** `tools/creator.py`、`tools/lifecycle.py`、`tools/dev_tools.py`、`tools/dev_workspace.py`、`tools/tester.py`、`tools/sandbox.py`、`tools/policy.py`、`tools/approval.py`、`tools/subagent_tool.py`、`tools/task_manager.py`、`storage/tool_store.py`
+- **Implementation（2026-09-15 第三阶段 · 创建进度与审批表达）：** 工具创建以前在界面上是一串彼此无关的工具卡（`create_tool` → `dev_write_file` → `dev_run_tests` → `dev_submit_tool`），用户看不出走到哪一步。现在 `tools/dev_tools.py` 的 `ToolCreateStatus` 出口按 **`group_id`（开发工作区）** 发 `TOOL_CREATE_STATUS`，phase 为 `proposal / building / testing / testing_passed / testing_failed / waiting_approval / registering / ready / failed`，前端同一张卡原地推进；失败（测试没过 / 用户拒绝 / 超时 / 凭据不可用 / 注册冲突）都带可理解的中文原因。同时 `tools/approval_present.py::describe_tool_call` 把每次工具调用翻译成「想做什么 / 会访问什么 / 影响 / 一次性还是长期」（`description` / `access` / `capabilities` / `scope`），工具执行的审批不再是 `fs_write path=...` 这种只有工程师能读的形式。
+- **Tests（2026-09-15 追加）：** `backend/tests/test_tool_create_events.py`、`test_approval_present.py`；前端 `components/__tests__/ApprovalModal.test.ts`（授权范围与访问清单）、`stores/__tests__/phase3Cards.test.ts`（同一 group_id 一张卡）
 - **Tests：** `backend/tests/test_tool_lifecycle.py`、`test_dev_tools.py`、`test_dev_workflow_integration.py`、`test_tool_policy.py`、`test_computer_sandbox.py`、`test_subagent.py`、`test_subagent_integration.py`、`test_tool_parallel_cancel.py`、`test_tool_registry_reversible.py`、`test_tool_restore.py`、`test_tool_store.py`、`test_tool_schema_present.py`、`test_tool_pipeline.py`、`test_tool_event_isolation.py`
 - **Known limitations：** 受限子进程不是强安全隔离，而且**不强制**文件/网络隔离——实测声明为 PURE 的工具仍可读取用户目录。当前强制力只来自「按声明拒绝高风险」+「剥离环境变量」，谎报能力的工具拦不住。高风险能力在没有可用 Docker 时直接拒绝执行，不做静默降级。子 agent 异步并行上限见 `tools/task_manager.py`。
 - **Implementation（2026-09-14 任务04 确认调度）：** 后台任务请求确认不再无条件抢焦点——用户正在输入（输入框/文本域/可编辑区）时到达的审批
@@ -140,6 +146,8 @@
 
 - **Status：** completed
 - **Implementation：** `frontend/src/views/`（对话页、星球页、设置页、调试页）、`frontend/src/components/`、`frontend/src/stores/`、`frontend/src/planet/`、`frontend/src-tauri/`（桌面壳）。2026-09-12 稳定化：审批失败保留待审批项并可重试（失败 ≠ 已授权）、锚点切换以后端成功为准、token 用量按 `turn_id` 归属、流式 Markdown 增量渲染、流式自动跟随（上翻即停）、QNumber 统一 commit 语义、设置页分区反馈与凭据留空不清除、星球详情竞态防护、浮动组件单击不贴靠且 resize 保持贴靠关系。
+- **Implementation（2026-09-15 第三阶段 · 状态表达与事件收口）：** 事件集合与后端 `EventType` 完全一致（守卫测试 `backend/tests/test_event_protocol.py`：集合相等、每个事件都有生产者、都必须被前端消费）——删掉 `MEMORY_INJECT`（前端写了 case、后端从来不发；普通用户不需要知道「注入了 4 条记忆」，开发者改看 `/debug` 的单轮 `injection`），补上 `TOOL_START` / `TOOL_CREATE_STATUS` / `KNOWLEDGE_CANDIDATE` / `CREDENTIAL_STATUS` / `FALLBACK` / `APPROVAL_RESULT` 的消费分支。工具卡变成「开始时立刻出现运行中、结束时按 `call_id` 原地更新」（不再等结束才可见、不再出现重复卡，并显示耗时与失败结论）；`SUBAGENT_STATUS` 独立成「独立任务」卡（不再混进普通工具卡，按 `task_id` 原地更新）；工具创建是一张卡（`ToolCreationCard.vue`）；高影响知识候选在**回答完成之后**以低干扰卡片出现（`KnowledgeCandidateCard.vue`，保存 / 修改 / 忽略，修改是很轻的内联编辑）；全局只保留一句整体状态（正在处理 / 正在使用工具 / 等待你确认 / 正在处理独立任务 / 正在整理独立任务的结果），不再暴露内部事件名；审批弹窗新增「授权范围：仅这一次 / 长期生效」并优先显示具体访问清单。
+- **Tests（2026-09-15 追加）：** `stores/__tests__/phase3Cards.test.ts`（TOOL_START→TOOL_END 同一张卡、独立任务按 task_id 更新、工具创建按 group_id 推进、候选只在 TURN_END 后出现、凭据/降级提示不含内部标识、notify 轮不清排队标记）、`components/__tests__/MessageStream.test.ts`（整体状态文案与「不出现内部事件名」）
 - **Implementation（续 2026-09-14 体验轮）：** 复制的诚实反馈（剪贴板不存在/写入失败一律显示「复制失败」，不再假装成功）、草稿连续（输入草稿存 `session.draft`，切页不丢；发送失败回填草稿并撤掉未获受理的乐观消息）、排队请求失败不再清除仍在运行的任务状态、只有本机发送才把消息流拉回底部（后台任务开始不打断向上阅读）、星球详情加载失败独立可见且可重试（与「从这里继续」的错误分开）、QNumber 手输在真实父组件绑定下也会在失焦/回车时提交一次、知识页筛选框有可见标签与「全部」回退项。动效：设置与星球出现/消失 170–260ms、星球相机 420–460ms、边栏重新居中和宽度过渡同时发生、脚本相机补间遵守 `prefers-reduced-motion`。设计规则同步在 `docs/superpowers/specs/2026-08-09-qio-frontend-design.md`。
 - **Implementation（2026-09-14 状态一致性补齐）：** 阅读位置随会话保留（上翻阅读 → 设置/星球 → 返回恢复到原位置，恢复期间的程序性 scroll 不参与跟随判定；容器未完成布局时重试有上限）；设置页记住上次分类与分类列表滚动位置（存 ui store，仅同次运行期）；星球首次数据加载失败有可见失败条与重试；四个设置保存路径（记忆/对话深度/搜索/维护）加请求归属序号，旧响应不回填、不用陈旧成功盖住新的失败；起点请求在页面已关闭时失败会回到对话页可见；代码复制按钮每个独立计时（连续复制不同代码块各自复位）、失败时选中代码作为手动复制退路、`@media (hover: none)` 下默认可见（触屏可发现）；审批失败后焦点回到对话框。
 - **Implementation（2026-09-14 动画与反馈统一）：** 动画参数按用途分层落到令牌（按下 80ms / 开关选中 150ms / 菜单弹窗 170ms / 设置打开 220ms / 返回 170ms / 侧栏 210ms / 星球打开 300ms、关闭 200ms / 聚焦 320ms 且短距离 0.6×，曲线 `--ease-out` 打开、`--ease-in` 关闭），并去掉唯一的 `transition: all`；菜单与弹窗补齐出现与退出（退出结束从 DOM 移除，菜单退出期间不拦截点击、模态退出期间保留遮罩拦截），折叠的队列列表也补了短过渡；新增「跟随系统 / 标准 / 减少动画」偏好（`localStorage(qio-motion)` + `html[data-motion]`），CSS 过渡与星球相机补间读同一份结果、运行中切换立即生效，减少动画或时长为零时跳过退出阶段；按钮按下反馈立即开始（`.qio-btn/.qio-select/.opt/.tag-chip/.qio-btn` 独立 80ms 位移），处理中用 `min-width` 固定尺寸避免周围跳动，开关「关闭」与「禁用」视觉上区分；运行中任务与排队项分别用「停止」「取消排队」，取消请求期间显示等待确认、失败留下可见错误；队列项的旧 `TURN_END` 不再结束当前运行状态；流式正文标记 `aria-busy` 且不设 live 区域（不逐字播报）。
@@ -246,14 +254,93 @@
 - **Known limitations：** 桌面壳的随机端口与令牌交接只在 Windows 上验证过；未在真实打包产物里跑过完整验收。开发脚本 `scripts/e2e_up.py` 默认仍以显式开发豁免（`QIO_DEV_INSECURE=1`）启动，并用 `--secure` 提供带令牌的口径；直接 `uvicorn agent.main:create_app --factory` 且不设任何环境变量时后端会自建令牌并拒绝所有未带令牌的请求（fail-closed，日志里只打印提示、不打印令牌）。
 - **后续依赖：** 无下游。
 
+### P9 — 第四阶段：视觉统一、交互收口与动效语言
+
+- **Status：** partial
+- **Implementation：** `docs/superpowers/specs/2026-09-15-visual-language-phase4-design.md`（规范 v3）；
+  `frontend/src/styles/tokens.css`（三层动效 `--mo-1/2/3-*`、曲线集 `--ease-1/2/3-*`、位移 `--shift-*`、晶体玻璃 `--glass-*`）、
+  `frontend/src/styles/base.css`（组件原语 + 过渡工具类 + 重写的 reduced-motion 语义）、
+  `frontend/src/components/planet/PlanetOrb.vue`（入口小球 = 全屏 Planet 的压缩态）、
+  `frontend/src/components/ui/QConfirm.vue`（取代原生确认框的确认层）
+- **Implementation（本阶段改了什么）：** 把前三阶段已建立的能力收敛到同一套视觉/交互/动效语言：
+  ① 动效分三层（高频简洁、中频柔顺、低频优雅），旧 `--dur-*` 全部降级为别名，页面组件不再散落硬编码值；
+  ② Planet 入口小球改成 Planet 本体的压缩态，进入/退出是同一个对象的连续长大与收缩（不再是两个组件淡入淡出）；
+  ③ 晶体玻璃材质只用于高层级空间浮层；
+  ④ 卡片家族（Approval / Tool Creation / Subagent / 知识候选 / 工具调用）统一骨架与状态表达，状态原位推进；
+  ⑤ 原生 `confirm` / `alert` 全部替换为按危险程度分档的确认层；
+  ⑥ Knowledge / Entity / Topic Detail 改为「默认阅读、按需编辑」；
+  ⑦ reduced-motion 从「全部瞬切」改为「保留淡入淡出、去掉位移与弹性」。
+  2026-09-20 追加（用户实测反馈 + 一个死结）：
+  ⑧ 星球「变大」的起点改用布局值计算（此前第二次打开会因为残留缩放把起始尺度算成 ≈1，
+  表现为「星球直接出现、没有变大」）；⑨ 铺底与长大/收拢改成同一刻起止，对话页随星球渐隐渐显；
+  ⑩ 审批在后端已不存在（404）时标记为失效并给一个「知道了」，不再留成永远点不掉的待办
+  （其它失败仍保留待办并可重试）；⑪ `.planet-view` 整层背景改为透明（此前它自带不透明底色，
+  一挂载就把对话页盖死，导致「对话页随星球渐隐」根本不可见 —— 只有铺底这一层负责遮盖）；
+  ⑫ 收起不再做相机后撤（那是旧编排「收势 + 整层淡出」的遗留物，会让收起出现两段缩小：
+  相机后撤一段、星球层缩回入口一段；现在收势只降密度、退浮层，体量收缩只有一段）；
+  ⑬ **入口小球改为真实星球渲染**（用户要求）：关闭星球时把同一个场景缩到入口尺度常驻渲染
+  （慢速自转、低帧率、展开后聚焦当前话题），不再是另画的 2D 压缩态；代价是 three.js 会在对话页
+  懒加载并常驻（空闲挂载、正在对话时不抢主线程），WebGL 不可用时仍退回 2D 压缩态；
+  ⑭ 打开延迟回到设计值：已预热时不再等数据刷新（点击 → 开始长大 1240ms → 391ms，
+  点击 → 场景接管 1891ms → 915ms，设计值约 920ms），展开结束之后才聚焦当前话题；
+  ⑮ 收起星球时右侧话题栏**一起退场**（收势阶段宽度收到 0、透明度 0，球态下不出现）——
+  此前它只由 open/entered 驱动，会留在对话页上（用户实测反馈）；
+  ⑯ 进入星球只剩**一段**动作：聚焦与长大同刻开始、同刻收束，并去掉人为的「激活等待」
+  （此前先放大进入、再回正，用户实测反馈为两段动画）；⑰ 入口小球拖动松手后**本体跟着贴边**
+  （此前只跟随内联 style 变化，而贴边是 CSS 过渡，本体停在原地再闪现），并按用户要求去掉
+  「话题星球」文字标注（保留 title / aria-label）；⑱ 入口小球改为**按自身分辨率渲染**
+  （球态画布 = 108px、scale≈1），不再把全屏渲染缩到 ~10% —— 那会让 1 像素宽的轮廓
+  被打成断续的点。配套 `renderer.setSize(w, h, false)`：不让 three 写内联尺寸样式；
+  ⑲ 球态的**环宽按球体屏幕直径成比例**（0.75%，保底 1.3px）—— 此前为了「看得见」用了固定 1.7px，
+  相对粗度是全屏的 2.7 倍，小球看起来是一圈圈加粗的同心环而不是缩小的星球；
+ ⑳ 收起与球态共用同一个密度常量 `BALL_REVEAL`（此前收起设 0.12、球态 0.55，
+ 交接那一帧点阵与网格会突然冒出来，用户实测「最后一帧和缩小状态完全不同」）。
+  ㉑ **收缩尾段改在球自己的分辨率下渲染**：屏幕上球直径降到入口球的 1.35 倍时，星球层切到
+  入口小球那套布局（画布 108px），并用当前 computed transform 反算球此刻的屏幕几何写回新坐标，
+  之后每帧用**同一条令牌曲线**（新增 `frontend/src/utils/easing.ts` 求值）推进到终点 ——
+  只有「画布 CSS 尺寸 = 屏幕尺寸」才是真 1:1（把绘图缓冲改小只会更糊）。换布局那一帧实测
+  球心偏离应有轨迹 0.01px、半径单帧零回升（新增验收 S2.19）。
+  ㉒ **环宽补偿改为「渲染前按当时几何现算」**：视图只交「环在屏幕上的目标宽度」
+  （`setRingScreenWidth`），补偿倍数由 `usePlanetScene.applyRingWidthCompensation` 用渲染那一刻的
+  `画布 rect 宽 / 布局宽` 现推。起因是用户实测「缩小途中闪一下」——尾段换布局时补偿倍数还是旧约定下的
+  ≈2.0（对应整层缩放 0.13），而画布已变成 1:1，那一帧的环被画成 10px 宽的实心斑；
+  改成现算后这类「几何与补偿错配」结构上不可能再出现（新增验收 S2.20，逐帧画面复核见
+  `scripts/baseline/qa/planet-flash-probe.mjs`）。
+  ㉓ **打开时以「当前在聊的话题」为中心**：定位规则由「起点没变就回到上次浏览的话题」改成
+  「当前话题优先、浏览记忆只兜底」—— 用户要求「打开前它不在最中心，就在打开的过程中转到中心」。
+  旋转本来就在长大过程中发生（实测锚点从偏离 162px 收到 1px，收束点在长大进度 96–99%），
+  缺口只是被浏览记忆顶掉了。新增验收 S2.21（对着修复前规则确认会红）。
+  ㉔ **收起时也转：转回「打开前的朝向」**：`markReturnOrientation()` 在展开聚焦**之前**记下球体四元数，
+  `rotateBack(maxMs)` 在体量收缩段同刻发起，时长按夹角缩放并封顶在 `--mo-3-collapse`
+  （超出会和球态自转抢同一个四元数）；曲线用对称的 `easeInOutCubic`，所以收起正好是展开的时间倒放。
+  新增验收 S2.22（实测展开 159°、收起首帧仍 159°、末帧 4°），单测 +1。
+  代价：大角度会在窗口内转得较快（159°/420ms ≈ 6.6 rad/s）。
+- **Tests：** `frontend/src/styles/tokens.test.ts`、`frontend/src/styles/primitives.test.ts`（令牌与降级语义）、
+  各组件既有 `__tests__` 的家族契约断言；真实界面验收脚本 `scripts/baseline/qa/phase4.mjs`
+- **Known limitations：** 见本文末「尚未完成」里的第四阶段条目。摘要：工具创建卡只做了家族语言统一
+  而没有真实端到端跑通；Planet 关键转场只在无头软件渲染（swiftshader）下逐帧验证过，
+  真机 GPU 帧率与触控板手势未验证；动效手感未经真人评审；首次打开的 WebGL 冷启动耗时未优化。
+  本阶段没有新增后端能力，也没有改变任何状态机。
+- **后续依赖：** 后续新增界面必须复用本阶段的令牌与组件原语，不允许再引入新的视觉语法。
+
 ---
 
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
 
-- **斜杠命令体系**：未实现（工具创建入口在设置页与对话输入区）。
-- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里。
+- **斜杠命令体系**：未实现。工具创建没有独立的「入口页面」——按第三阶段的入口原则，
+  它在对话里发生（说明需求 → Agent 调 `create_tool` → 同一张工具创建卡推进到「已创建」），
+  设置页只放长期配置（电脑操控权限、联网通道），不承担这个动作。
+- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里；对话页只在回答完成后
+  显示高影响知识候选卡（保存 / 修改 / 忽略），不做成常驻面板。
+- **工具创建的真实端到端未跑**：`TOOL_CREATE_STATUS` 的九个阶段、同一 `group_id` 一张卡、
+  失败原因都有自动化测试（进程内 + 真实 subprocess 沙箱），但「真实模型提议 → 真实沙箱测试 →
+  两次审批 → 注册 → 立刻可用」这条完整链路没有在真实运行里走通。
+- **能力降级的真实触发未跑**：`CAPABILITY` / `FALLBACK` 的语义有测试（native 不提示、text 只在
+  模式变化那一次提示、unsupported 不发降级），但没有用真实「不支持原生工具调用」的模型跑过。
+- **子 agent 长任务未验证**：独立任务卡的 queued / running / done / failed 与结果回传有测试，
+  但耗时很久（分钟级）的真实子任务没有跑过。
 - **片段级检索偏置（已评测，决定不实现）**：Planet「从这里开始」/ Agent
   `continue_from_fragment` 只改变 Focus 与当前位置，**不**改变记忆检索的排序权重
   （检索侧只有话题级亲和 `anchor_topic_id`）。离线 Anchor Continuation Eval
@@ -293,6 +380,24 @@
   都有自动化测试与真实运行证据（`scripts/baseline/planet-phase2-probe.mjs`），
   但惯性曲线、触控板手势、逐帧「看不到数据替换」与真机 GPU 帧率**未验证**；
   完整清单见 `docs/release-planet-phase2.md` 的「剩余问题」。
+- **第四阶段（视觉语言）尚未收口的项**（2026-09-20 收口一轮后更新）：
+  - **工具创建卡只统一了语言、没有真实端到端跑通**：家族骨架（`.qio-card` + `data-state` + 状态徽章 +
+    真实高度过渡的展开详情）已在代码与单测层面成立，但验收脚本里「界面上没有工具创建卡」——
+    需要真实模型触发创建流程才能看到它，这条链路仍未在本阶段跑过（与本文档前面 M10 的已知限制同源）。
+  - **Planet 关键转场只在无头软件渲染下逐帧验证**：`scripts/baseline/qa/phase4.mjs` 用
+    swiftshader 采到了 0.13 → 1.00 的长大与 1.00 → 0.18 的收拢，但没有在真机 GPU、120Hz 屏、
+    触控板上重新测量帧率与手感；`?planetdemo=slow` 只能逐帧看，不能替代手感评估。
+  - **首次打开的冷启动耗时没有优化**：实测 WebGL 初始化 + 话题装配要 1.5–3.4s（软件渲染更久）。
+    本阶段只保证「这段时间不会把转场动画吞掉」（等数据与渲染就绪再开始展开），没有缩短它。
+  - **动效手感未经真人评审**：所有判断来自令牌、截图与帧序列，需要真实用户反馈来定
+    「高频弹性是否合适、中频是否偏慢」。
+  - **收缩中途的画质已查清（2026-09-20）**：曾怀疑「中间段间歇性断续」，pilot 用两条独立证据
+    否掉了 —— 冻结渲染下确实能复现（那是栅格化时机造成的假象：画面冻住后浏览器不再按动画尺度
+    重新栅格化），真实动画里「缩放合成层」（现状）与「缩放投影」（候选）的墨迹量逐档相同
+    （40–60px 档 4.6 vs 4.5、350–1000px 档 18.5 vs 18.4）。那条「把缩小搬进渲染器」的路数
+    几何等价性已验证（目标 300px 量到 302px），但它换来的是「主线程一卡动画就卡」
+    （探针轮询下一度 p50 34ms vs 16ms），因此**决定不做**；尾段钉死 1:1 保留作为加固。
+   判断这类问题必须以**真实动画**的逐帧数据为准，冻结渲染的静态对照会放大差异。
 
 ---
 

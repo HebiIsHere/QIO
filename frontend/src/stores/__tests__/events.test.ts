@@ -329,14 +329,30 @@ describe("events store WARNING 语义（问题13）", () => {
     expect(session.warning).toBeNull();
   });
 
-  it("ERROR 才是终止事件：结束 running 并记录错误", () => {
+  it("ERROR 不是终止事件：记录错误但保持 running（结束只认 TURN_END）", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const events = useEventStore();
     const session = useSessionStore();
     events.route({ type: "TURN_START", id: "t1", ts: "x", data: { turn_id: "turn_1" } });
-    events.route({ type: "ERROR", id: "err1", ts: "x", data: { message: "planning failed" } });
-    expect(session.turnRunning).toBe(false);
+    events.route({
+      type: "ERROR",
+      id: "err1",
+      ts: "x",
+      data: { turn_id: "turn_1", message: "planning failed", recoverable: true },
+    });
+    expect(session.turnRunning).toBe(true);
+    expect(session.activeTurnId).toBe("turn_1");
     expect(session.lastError).toBe("planning failed");
+
+    // 真正结束这一轮的仍然是 TURN_END
+    events.route({
+      type: "TURN_END",
+      id: "end1",
+      ts: "x",
+      data: { turn_id: "turn_1", status: "failed", final_content: null, error: "boom" },
+    });
+    expect(session.turnRunning).toBe(false);
+    expect(session.lastError).toBe("boom");
   });
 });

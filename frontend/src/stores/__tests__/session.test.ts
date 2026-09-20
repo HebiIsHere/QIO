@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useSessionStore } from "../session";
 import { useEventStore } from "../events";
+import { api } from "../../services/api";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -19,6 +20,8 @@ vi.mock("../../services/api", () => ({
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.mocked(api.getSessionContext).mockClear();
+  vi.mocked(api.sendTurn).mockClear();
 });
 
 function setup() {
@@ -64,21 +67,21 @@ describe("逐字节奏跟随真实到达间隔（任务03 C）", () => {
     vi.useFakeTimers();
     const { session } = setup();
     session.turnRunning = true;
-    session.pushAssistant("第一段", undefined, true, true);
+    session.pushAssistant("第一段", true, true);
     const msg = session.messages[session.messages.length - 1];
     expect(msg.paceMs).toBeUndefined(); // 第一次到达还没有间隔可算
 
     vi.advanceTimersByTime(200);
-    session.pushAssistant("第一段第二段", undefined, true, true);
+    session.pushAssistant("第一段第二段", true, true);
     expect(msg.paceMs).toBe(200);
 
     // 间隔过短/过长都会被夹住，避免出现「瞬显」或「一个字停一秒」
     vi.advanceTimersByTime(5);
-    session.pushAssistant("第一段第二段第三段", undefined, true, true);
+    session.pushAssistant("第一段第二段第三段", true, true);
     expect(msg.paceMs).toBe(40);
 
     vi.advanceTimersByTime(5000);
-    session.pushAssistant("第一段第二段第三段第四段", undefined, true, true);
+    session.pushAssistant("第一段第二段第三段第四段", true, true);
     expect(msg.paceMs).toBe(400);
   });
 });
@@ -160,5 +163,52 @@ describe("本机发送被拒绝（P0：没发出去的消息不留后遗症）",
     expect(ok).toBe(true);
     expect(session.sendRejectedSeq).toBe(0);
     expect(session.localSendSeq).toBe(1);
+  });
+});
+
+
+describe("历史读取状态（读不到 ≠ 没有历史）", () => {
+  it("成功：loading → ready", async () => {
+    const { session } = setup();
+    await session.loadHistory();
+    expect(session.history.status).toBe("ready");
+    expect(session.messages.length).toBe(1);
+  });
+
+  it("失败：标记 error 且保留已经拿到的消息，不清成空历史", async () => {
+    const { session } = setup();
+    await session.loadHistory();
+    const before = session.messages.length;
+    vi.mocked(api.getSessionContext).mockRejectedValueOnce(new Error("boom"));
+    await session.loadHistory();
+    expect(session.history.status).toBe("error");
+    expect(session.history.error).toContain("boom");
+    expect(session.messages.length).toBe(before);
+  });
+
+  it("重试成功：error → ready", async () => {
+    const { session } = setup();
+    vi.mocked(api.getSessionContext).mockRejectedValueOnce(new Error("boom"));
+    await session.loadHistory();
+    expect(session.history.status).toBe("error");
+    await session.retryHistory();
+    expect(session.history.status).toBe("ready");
+  });
+});
+
+describe("受理即拿到 turn_id（停止按钮不必等 SSE）", () => {
+  it("send() 用 POST 返回的 turn_id 立即可取消", async () => {
+    const { session } = setup();
+    vi.mocked(api.sendTurn).mockResolvedValueOnce({
+      ok: true,
+      accepted: true,
+      turn_id: "turn_abc",
+      status: "accepted",
+      topic_id: null,
+    });
+    const ok = await session.send("你好");
+    expect(ok).toBe(true);
+    expect(session.activeTurnId).toBe("turn_abc");
+    expect(session.turnRunning).toBe(true);
   });
 });

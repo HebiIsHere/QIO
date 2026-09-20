@@ -1,14 +1,18 @@
 """基线测试数据：往隔离数据目录写入确定性的 UI 场景。
 用途：前端体验验收需要「短/长消息、表格、宽代码块、多个话题、长标题、
-有/无片段的话题、有/无知识、有/无实体」这些真实形状的数据，而真实模型调用
+有/无片段的话题、有/无知识、有/无实体、不同状态的凭据卡」这些真实形状的数据，而真实模型调用
 既不稳定也需要密钥。因此这里直接写隔离数据目录（默认 %TEMP%\\qio-e2e），
 不使用任何真实密钥，也不碰用户的正式数据目录。
+
+注意：播进去的凭据只有**元数据**（密钥库里没有对应 secret），所以界面能完整渲染
+凭据卡与状态，但点「测试连接」会失败 —— 那是预期行为，不是 bug。
 用法：
     backend\\.venv\\Scripts\\python.exe scripts\\baseline\\seed_fixtures.py --reset
 """
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import sys
 import uuid
@@ -17,6 +21,8 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("QIO_DATA_DIR") or (Path(os.environ.get("TEMP", ".")) / "qio-e2e"))
 PREFIX = "基线-"
+# 凭据卡验收用：id 前缀，reset 时按它清理
+CRED_PREFIX = "key_baseline_"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -90,6 +96,9 @@ def reset(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM nodes WHERE id=?", (tid,))
     conn.commit()
     print(f"reset: 清除 {len(rows)} 个「基线-」话题")
+    cur = conn.execute("DELETE FROM credentials WHERE id LIKE ?", (CRED_PREFIX + "%",))
+    if cur.rowcount:
+        print(f"reset: 清除 {cur.rowcount} 个基线凭据")
 
 
 def add_topic(conn: sqlite3.Connection, name: str) -> str:
@@ -166,6 +175,48 @@ def add_entity(conn: sqlite3.Connection, topic_id: str, name: str, kind: str, su
     return node_id
 
 
+def add_credential(
+    conn: sqlite3.Connection,
+    slug: str,
+    note: str,
+    tags: list[str],
+    *,
+    endpoint: str = "https://api.openai.com/v1",
+    model: str | None = "gpt-4o-mini",
+    budget: float | None = None,
+    used: float = 0,
+    status: str = "active",
+    enabled: bool = True,
+) -> str:
+    """播一条只有元数据的凭据（密钥库里没有 secret，见文件头的说明）。
+
+    覆盖凭据卡的四种读法：生效中 / 已停用 / 已撤销 / 预算接近上限（进度条转警告色）。
+    """
+    key_id = CRED_PREFIX + slug
+    ts = now()
+    conn.execute(
+        "INSERT INTO credentials (id, version, tags, endpoint, default_model, budget, budget_used, "
+        "status, created_at, updated_at, last_used_at, note, enabled) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            key_id,
+            1,
+            json.dumps(tags, ensure_ascii=False),
+            endpoint,
+            model,
+            budget,
+            used,
+            status,
+            ts,
+            ts,
+            ts if used else None,
+            note,
+            1 if enabled else 0,
+        ),
+    )
+    return key_id
+
+
 def main() -> None:
     conn = connect()
     print(f"data_dir={DATA_DIR}")
@@ -190,7 +241,42 @@ def main() -> None:
     add_index(conn, rich_frag, rich_topic, "知识页与实体页可见性", '["知识","实体","筛选"]')
     add_knowledge(conn, rich_topic, "知识页默认筛选为已启用，但状态为 active 的条目在部分数据下会被筛掉。", "active")
     add_knowledge(conn, rich_topic, "用户偏好：复制失败时必须显式提示，不允许显示成功。", "pending_review", "user_profile")
+    # 知识面板（第四阶段：默认阅读、按需编辑）需要「不同状态 + 不同分类」同时可见
+    add_knowledge(conn, rich_topic, "用户偏好简洁、不啰嗦的解释，不要长篇大论。", "active", "user_profile")
+    add_knowledge(conn, rich_topic, "QIO 自己的长期定位：一个安静的、以话题为单位的记忆型助手。", "active", "agent_self")
+    add_knowledge(conn, rich_topic, "本轮目标：把前三阶段的能力收敛到同一套视觉、交互与动效语言。", "active", "goal")
+    add_knowledge(conn, rich_topic, "候选（未确认）：用户更习惯用中文提出需求，回复也应以中文为主。", "pending_review", "user_profile")
+    add_knowledge(conn, rich_topic, "草稿：待验证的性能结论，先不参与回答。", "draft", "tool_experience")
+    add_knowledge(conn, rich_topic, "已归档：早期关于「用滑动条控制记忆强度」的设想。", "revoked", "general_fact")
     add_entity(conn, rich_topic, "QIO 前端", "项目", "QIO 的 Vue3 前端，含对话页、设置页与星球页。")
+    add_entity(conn, rich_topic, "话题星球", "概念", "把话题做成球面景观的浏览界面：入口小球与全屏星球是同一个对象。")
+    # 凭据卡（第四阶段：默认阅读、按需管理）需要四种状态同时可见
+    add_credential(
+        conn, "main_openai", "生产主钥", ["main-loop", "chat"], budget=40, used=12, model="gpt-4o-mini"
+    )
+    add_credential(
+        conn,
+        "vision_anthropic",
+        "看图用的后备钥",
+        ["vision"],
+        endpoint="https://api.anthropic.com",
+        model="claude-3-5-sonnet",
+        budget=20,
+        used=18,  # 90% → 进度条进入警告态
+    )
+    add_credential(
+        conn, "legacy_disabled", "已停用的旧钥", ["chat"], budget=None, enabled=False, model=None
+    )
+    add_credential(
+        conn,
+        "revoked_kimi",
+        "已撤销（记录与审计保留）",
+        ["main-loop"],
+        endpoint="https://api.moonshot.cn/v1",
+        model="moonshot-v1-8k",
+        status="revoked",
+        enabled=False,
+    )
     plain_topic = add_topic(conn, PREFIX + "只有片段没有知识也没有实体的话题")
     plain_frag = add_fragment(conn, plain_topic, "用于检验空的实体与知识区块", True, -60)
     add_message(conn, plain_frag, "user", "这个话题只用来占位。", -60)

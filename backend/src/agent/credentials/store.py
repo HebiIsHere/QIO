@@ -20,6 +20,25 @@ from keyring.backends.fail import Keyring as FailKeyring
 
 SERVICE_NAME = "qio"
 _UNSET = object()
+# 凭据的安全身份：provider/endpoint/secret 任一变化都不是「普通元数据编辑」。
+_LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def validate_endpoint(endpoint: str | None) -> None:
+    """端点默认必须 HTTPS；只有本机 loopback provider 允许明文 HTTP。
+
+    「HTTP 仅限本地 provider」是刻意的：把对话内容与 API Key 明文发到远端
+    是不应该被一次静默元数据编辑打开的口子。
+    """
+    if not endpoint:
+        return
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(endpoint))
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("endpoint must be an http(s) URL")
+    if parsed.scheme == "http" and (parsed.hostname or "") not in _LOOPBACK:
+        raise ValueError("plain http endpoint is only allowed for a localhost provider")
 
 
 def _now() -> str:
@@ -154,8 +173,16 @@ class CredentialStore:
         budget: Any = _UNSET,
         note: Any = _UNSET,
         triggered_by: str = "user",
+        secret: str | None = None,
+        confirm_reconfigure: bool = False,
     ) -> dict[str, Any]:
-        """Update credential metadata only (never the secret/version)."""
+        """Update credential metadata.
+
+        `endpoint` 属于凭据的安全身份，不是普通元数据：改了端点就等于换了服务
+        提供方。若继续复用 keyring 里的旧 Key，就等于把用户的 Key 悄悄发给
+        新端点（把 `https://api.openai.com` 改成攻击者域名即可命中）。
+        因此 endpoint 变化必须重新输入 secret 并显式确认（= 重新配置）。
+        """
         row = self._row(key_id)
         if row is None:
             raise KeyError(f"credential not found: {key_id}")
@@ -165,8 +192,17 @@ class CredentialStore:
             sets.append("tags = ?")
             params.append(json.dumps(tags or [], ensure_ascii=False))
         if endpoint is not _UNSET:
+            new_endpoint = str(endpoint or "").strip()
+            current_endpoint = (row["endpoint"] or "").strip()
+            if new_endpoint != current_endpoint:
+                if not (secret and confirm_reconfigure):
+                    raise ValueError(
+                        "changing endpoint is a credential reconfiguration: "
+                        "re-enter the secret and pass confirm_reconfigure=true"
+                    )
+                validate_endpoint(new_endpoint)
             sets.append("endpoint = ?")
-            params.append(endpoint)
+            params.append(new_endpoint or None)
         if default_model is not _UNSET:
             sets.append("default_model = ?")
             params.append(default_model)

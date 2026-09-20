@@ -8,6 +8,13 @@ Memory hooks are placeholders until M6/M7.
 工具执行走 ToolRegistry 的执行管线（tool/start → pre/execute/post → tool/result
 → tool/end）：本循环在构造时把内部事件转发为 SSE 的 TOOL_START/TOOL_END，
 并在 tool/result 监听器里执行 tool_trace 审计；turn 结束时卸载监听器。
+
+本循环**不**发 TURN_START / TURN_END：turn 的生命周期由 core/turn.py 的
+TurnManager 单独负责（子 agent、维护任务也复用本循环，它们不是 turn，
+以前会把主 turn 的界面状态提前结束掉）。
+
+取消语义：`is_cancelled` 在每个模型调用 / 工具调用 / 迭代边界被检查；
+一旦取消，本循环立刻停止，不再发起任何新的模型或工具调用。
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ class TurnResult:
     tokens_used: int
     tool_calls_made: int
     warnings: list[str] = field(default_factory=list)
+    cancelled: bool = False
 
 
 class AgentLoop:
@@ -66,6 +74,7 @@ class AgentLoop:
         tool_trace=None,
         tool_selector=None,
         max_parallel_tools: int = 4,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -90,9 +99,13 @@ class AgentLoop:
         self._notices: list[str] = []
         # 本 loop 派发的工具调用 id；用于过滤 registry 上的跨 loop 事件
         self._dispatched_call_ids: set[str] = set()
+        # 每次工具调用的开始时刻：TOOL_END 用它给出耗时（前端卡片显示「1.2s」）。
+        # 放在 loop 上而不是 registry 上：registry 是跨 loop 共享的，计时必须按调用归属。
+        self._tool_started_at: dict[str, float] = {}
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
         self.max_parallel_tools = max(1, max_parallel_tools)
+        self.is_cancelled = is_cancelled or (lambda: False)
         self._active_tool_tasks: set[asyncio.Task] = set()
         self._disposers: list[Callable[[], None]] = []
         self._bind_pipeline()
@@ -119,23 +132,58 @@ class AgentLoop:
         self._disposers.clear()
 
     async def _on_pipeline_start(self, data: dict) -> None:
-        if data.get("call_id") not in self._dispatched_call_ids:
+        call_id = data.get("call_id")
+        if call_id not in self._dispatched_call_ids:
             return  # 非本 loop 的调用，忽略（跨 loop 隔离）
+        import time as _time
+
+        if call_id:
+            self._tool_started_at[call_id] = _time.perf_counter()
+        # 呈现（present_call）在这里也给：工具「开始执行」的卡片要有中文标题，
+        # 而不是等结束才补上（否则运行中的卡显示的是原始工具名）。
+        presentation = None
+        tool = self.registry.get(str(data.get("tool") or ""))
+        if tool is not None:
+            try:
+                call_present = tool.present_call(dict(data.get("arguments") or {}))
+                if call_present:
+                    from agent.tools.display import tool_label
+
+                    presentation = {"title": tool_label(tool.name), "tool": tool.name}
+                    presentation.update(call_present)
+            except Exception:  # noqa: BLE001 - 呈现失败不能影响执行
+                presentation = None
         await self._emit(
             EventType.TOOL_START,
-            {"tool": data.get("tool"), "arguments": data.get("arguments", {})},
+            {
+                "tool": data.get("tool"),
+                # call_id 是前端「原地更新同一张卡」的匹配键：缺了就会被当成两次调用
+                "call_id": call_id,
+                "arguments": data.get("arguments", {}),
+                "presentation": presentation,
+            },
         )
 
     async def _on_pipeline_end(self, data: dict) -> None:
-        if data.get("call_id") not in self._dispatched_call_ids:
+        call_id = data.get("call_id")
+        if call_id not in self._dispatched_call_ids:
             return
+        duration_ms = None
+        if call_id:
+            import time as _time
+
+            started = self._tool_started_at.pop(call_id, None)
+            if started is not None:
+                duration_ms = int((_time.perf_counter() - started) * 1000)
         await self._emit(
             EventType.TOOL_END,
             {
                 "tool": data.get("tool"),
+                "call_id": call_id,
                 "ok": data.get("ok"),
                 "error": data.get("error"),
                 "content_preview": data.get("content_preview", ""),
+                "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
             },
         )
@@ -197,6 +245,9 @@ class AgentLoop:
         """在独立 task 中执行，登记到 _active_tool_tasks 以便 cancel()。"""
         import time as _time
 
+        # 取消检查点：已取消就不再启动这次工具调用
+        if self.is_cancelled():
+            return ToolResult(ok=False, error="turn cancelled")
         task = asyncio.current_task()
         if task is not None:
             self._active_tool_tasks.add(task)
@@ -265,16 +316,17 @@ class AgentLoop:
     async def _run(self, user_message: str) -> TurnResult:
         messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
         self._warnings = []
-        await self._emit(
-            EventType.TURN_START,
-            {"turn": 1, "user_message": user_message[:200]},
-        )
 
         phase = LoopPhase.PLANNING
         tool_calls_made = 0
         final_content: str | None = None
 
         while True:
+            # 取消检查点：下一次模型调用之前
+            if self.is_cancelled():
+                phase = LoopPhase.STOPPED
+                break
+
             if self._halted:
                 phase = LoopPhase.STOPPED
                 self._warn("护栏终止：同一工具反复失败，已终止本轮")
@@ -329,6 +381,12 @@ class AgentLoop:
             self.budget.consume_output_tokens(self._tokens_of(completion))
             self.budget.consume_iteration()
 
+            # 取消检查点：模型调用之后（无法物理中断已发出的 HTTP 请求，
+            # 但返回结果必须被丢弃，绝不重新激活本 turn）
+            if self.is_cancelled():
+                phase = LoopPhase.STOPPED
+                break
+
             # native 模式：模型在工具调用前先说话时，把内容作为 interim 事件推给前端
             if (
                 self.adapter.mode == AdapterMode.NATIVE
@@ -350,7 +408,15 @@ class AgentLoop:
             # 并发安全工具分组并行，其余串行，结果按原始顺序回填）
             phase = LoopPhase.TOOL_EXEC
             messages.append(completion.message)
+            # 取消检查点：不启动新的工具
+            if self.is_cancelled():
+                phase = LoopPhase.STOPPED
+                break
             results = await self._dispatch_tool_calls(completion.tool_calls)
+            # 取消检查点：工具返回之后不再进入推理循环
+            if self.is_cancelled():
+                phase = LoopPhase.STOPPED
+                break
             for call in completion.tool_calls:
                 tool_calls_made += 1
                 result = results[call.id]
@@ -361,15 +427,14 @@ class AgentLoop:
                 )
             phase = LoopPhase.OBSERVING
 
+        cancelled = self.is_cancelled()
+        if cancelled:
+            phase = LoopPhase.STOPPED
         usage = {
             "iterations": self.budget.used_iterations,
             "tokens": self.budget.used_tokens,
             "tool_calls": tool_calls_made,
         }
-        await self._emit(
-            EventType.TURN_END,
-            {"phase": phase.value, "final_content": final_content, **usage},
-        )
         await self._emit(EventType.USAGE, usage)
         return TurnResult(
             final_content=final_content,
@@ -378,6 +443,7 @@ class AgentLoop:
             tokens_used=self.budget.used_tokens,
             tool_calls_made=tool_calls_made,
             warnings=list(self._warnings),
+            cancelled=cancelled,
         )
 
     # -- steps ------------------------------------------------------------

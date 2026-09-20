@@ -20,6 +20,46 @@ export interface TurnQueueState {
   cancelled: QueueItem[];
 }
 
+/** 高影响知识候选（对话内确认卡）。 */
+export interface KnowledgeCandidate {
+  knowledgeId: string;
+  category: string;
+  content: string;
+  reason?: string;
+}
+
+/** 候选卡自己的状态：保存 / 修改 / 忽略都要有进行中、成功、失败。 */
+export type CandidateState = "idle" | "busy" | "ok" | "failed";
+
+/**
+ * 全局状态只表达「整体情况」，不暴露内部事件名（spec 第 36~38 条）：
+ * 正在处理 / 正在使用工具 / 等待确认 / 正在处理独立任务 / 正在整理独立任务的结果。
+ */
+export type Activity =
+  | "idle"
+  | "waiting"
+  | "generating"
+  | "tool"
+  | "approval"
+  | "subagent"
+  | "notify";
+
+/**
+ * 工具创建流程用到的工具名。
+ *
+ * 这些调用**不再各出一张普通工具卡**：它们的进度由 `TOOL_CREATE_STATUS` 汇总成
+ * 同一张创建卡（spec 第 24 条：不要「创建卡 → 测试卡 → 审批卡 → 成功卡」一串卡）。
+ * 失败时会把「创建没有完成：<原因>」写回创建卡，信息不会丢。
+ */
+const TOOL_CREATION_TOOLS = new Set([
+  "create_tool",
+  "dev_list_files",
+  "dev_read_file",
+  "dev_write_file",
+  "dev_run_tests",
+  "dev_submit_tool",
+]);
+
 /**
  * 历史读取状态。
  * 「没有历史」和「读不到历史」是完全不同的产品状态，不能都表现为空列表。
@@ -31,7 +71,12 @@ export interface HistoryState {
 
 export interface StreamMessage {
   id: string;
-  role: "user" | "assistant" | "tool" | "system";
+  /**
+   * 消息角色。`tool` / `subagent` / `tool_creation` 都是「对话流里的卡片」，
+   * 但它们是三种不同的东西：一次工具调用、一个独立任务、一条工具创建流程。
+   * 用户必须能分辨（spec 第 61~65、20~31 条）。
+   */
+  role: "user" | "assistant" | "tool" | "subagent" | "tool_creation" | "system";
   content: string;
   contentType: string;
   createdAt: string;
@@ -40,8 +85,24 @@ export interface StreamMessage {
   toolError?: string | null;
   /** 工具卡呈现（present_call/present_result 合并结果，缺省回退默认模板） */
   presentation?: ToolPresentation | null;
-  /** 记忆注入摘要（MEMORY_INJECT 事件附带，助手消息展示玫红虚线胶囊） */
-  memoryInject?: { label: string } | null;
+  /** 工具调用标识：TOOL_START / TOOL_END 按它更新同一张卡，不再产生第二张 */
+  callId?: string;
+  /** 工具正在执行（卡片显示「运行中」，而不是假装已完成） */
+  toolRunning?: boolean;
+  /** 工具耗时（毫秒）；没有意义时（太快/未知）不显示 */
+  toolDurationMs?: number;
+  /** 独立任务标识：同一 task_id 只有一张卡 */
+  taskId?: string;
+  /** 独立任务状态（用户可见语义：开始 / 进行中 / 已完成 / 失败） */
+  taskStatus?: "queued" | "running" | "done" | "failed";
+  /** 独立任务的目标（来自工具参数，拿不到就不显示，不编造） */
+  taskGoal?: string;
+  /** 工具创建流程标识：同一个开发工作区 = 同一张卡 */
+  groupId?: string;
+  /** 工具创建阶段（TOOL_CREATE_STATUS.phase） */
+  createPhase?: string;
+  /** 这条创建流程在造哪个工具（拿不到就先不显示） */
+  createdToolName?: string;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
   /** 正在流式输出（打字机逐字）的消息；落定后为 undefined */
@@ -120,11 +181,31 @@ export const useSessionStore = defineStore("session", {
    * idle 未在跑 / waiting 已提交但还没有任何助手内容 / generating 已有增量内容到达
    */
   turnPhase: "idle" as "idle" | "waiting" | "generating",
+    /**
+     * 全局整体状态（只表达整体，不堆内部事件名）。
+     * 局部状态（工具卡 / 独立任务卡 / 审批卡）各自表达自己的位置。
+     */
+    activity: "idle" as Activity,
+    /**
+     * 高影响知识候选（spec 第 14~19 条）。
+     * 收到事件先缓冲，TURN_END 之后才显示 —— 顺序必须是「回答完成 → 候选出现」，
+     * 绝不打断正在生成的回答。
+     */
+    knowledgeCandidates: [] as KnowledgeCandidate[],
+    /** 缓冲：回答还没完成时先放这里 */
+    _queuedCandidates: [] as KnowledgeCandidate[],
+    /** 每个候选自己的操作状态（进行中 / 成功 / 失败） */
+    candidateState: {} as Record<string, CandidateState>,
+    candidateError: {} as Record<string, string>,
     /** 主 turn 队列快照（TURN_QUEUE 事件更新）：运行中 + 排队中 */
     turnQueue: { running: null, queued: [], cancelled: [] } as TurnQueueState,
     /** 迭代/输出预算耗尽，等待用户决定是否继续 */
     pendingContinue: null as { id: string; used: number; max: number } | null,
     _msgSeq: 0,
+    /** 被折叠进创建卡的调用：call_id → 开发工作区 id（失败时回写创建卡用） */
+    _creationGroupByCall: {} as Record<string, string>,
+    /** 已折叠的 call_id（这些调用不再单独出工具卡） */
+    _suppressedToolCalls: [] as string[],
     /**
      * 正在播入场的消息 id。放在状态里（而不是给消息对象打标记）：
      * 直接改对象属性不会经过响应式代理，界面不会更新。
@@ -218,14 +299,21 @@ export const useSessionStore = defineStore("session", {
         this.pendingSwitchBusy = false;
       }
     },
-    turnStarted() {
+    /**
+     * 一轮开始。
+     * `notify=true` 是系统驱动的轮（例如独立任务完成后的收尾），
+     * 它**不是**用户发起的消息轮：不能清掉排队消息的「等待中」标记。
+     */
+    turnStarted(notify = false) {
       this.turnRunning = true;
-      this.turnPhase = "waiting";
+      this.turnPhase = notify ? "generating" : "waiting";
+      this.activity = notify ? "notify" : "waiting";
       this.lastError = null;
       this.warning = null;
       this.cancelling = null;
       // 新一轮开始：上一轮的切换建议不再相关，避免跨轮堆积
       this.pendingSwitch = null;
+      if (notify) return;
       // 队列中的最早一条开始执行：清除「等待中」标记（后端 TURN_QUEUE 事件负责其余展示）
       const nextQueued = this.queuedMessageIds.shift();
       if (nextQueued) {
@@ -256,12 +344,7 @@ export const useSessionStore = defineStore("session", {
     pushUser(text: string) {
       this.pushMessage({ role: "user", content: text, contentType: "text" });
     },
-    pushAssistant(
-      text: string,
-      memoryInject?: StreamMessage["memoryInject"],
-      interim = false,
-      streaming = false,
-    ) {
+    pushAssistant(text: string, interim = false, streaming = false) {
       // 若本轮正在产出且最后一条是流式助手消息，则就地更新（避免"过程+最终"两条）
       const last = this.messages[this.messages.length - 1];
       if (streaming && last && last.role === "assistant" && last.streaming) {
@@ -273,7 +356,6 @@ export const useSessionStore = defineStore("session", {
         }
         last.deltaAt = now;
         last.content = text;
-        last.memoryInject = memoryInject ?? last.memoryInject;
         last.interim = true;
         return;
       }
@@ -281,7 +363,6 @@ export const useSessionStore = defineStore("session", {
         role: "assistant",
         content: text,
         contentType: "text",
-        memoryInject,
         ...(interim ? { interim: true } : {}),
         ...(streaming ? { streaming: true } : {}),
       });
@@ -299,7 +380,7 @@ export const useSessionStore = defineStore("session", {
      * 绝不能因为「最后一条已经是 assistant」就把最终回答丢掉，
      * 也不能把工具前的中间话当成最终答案。
      */
-    applyFinalAnswer(text: string, memoryInject?: StreamMessage["memoryInject"]) {
+    applyFinalAnswer(text: string) {
       const last = this.messages[this.messages.length - 1];
       if (
         last &&
@@ -308,10 +389,9 @@ export const useSessionStore = defineStore("session", {
         last.content.trim() === text.trim()
       ) {
         last.interim = false;
-        last.memoryInject = memoryInject ?? last.memoryInject;
         return;
       }
-      this.pushAssistant(text, memoryInject);
+      this.pushAssistant(text);
     },
     /** 没有最终回答（失败/取消）时，别把中间话留在「已落定的最终回答」位置 */
     markLastAssistantInterim() {
@@ -335,9 +415,268 @@ export const useSessionStore = defineStore("session", {
         presentation,
       });
     },
+    /**
+     * 工具开始执行（TOOL_START）。
+     *
+     * 第三阶段的缺陷：前端完全没消费 TOOL_START，用户要等工具跑完才看到一张卡。
+     * 现在开始执行就出现「运行中」的卡片，并在 TOOL_END 时**原地**变成结果。
+     */
+    startTool(
+      callId: string,
+      toolName: string,
+      presentation?: ToolPresentation | null,
+      turnId?: string | null,
+      arguments_?: Record<string, unknown> | null,
+    ) {
+      const key = callId || toolName;
+      // 工具创建流程：折叠进创建卡（进度由 TOOL_CREATE_STATUS 提供）
+      if (TOOL_CREATION_TOOLS.has(toolName)) {
+        const workspace = String((arguments_ ?? {}).workspace ?? "").trim();
+        if (key && workspace) this._creationGroupByCall = { ...this._creationGroupByCall, [key]: workspace };
+        if (key) this._suppressedToolCalls = [...this._suppressedToolCalls, key];
+        return;
+      }
+      const existing = key ? this.messages.find((m) => m.role === "tool" && m.callId === key) : undefined;
+      if (existing) {
+        existing.toolRunning = true;
+        existing.presentation = presentation ?? existing.presentation;
+        return;
+      }
+      this.pushMessage({
+        role: "tool",
+        content: "",
+        contentType: "tool",
+        toolName,
+        presentation: presentation ?? null,
+        toolRunning: true,
+        ...(key ? { callId: key } : {}),
+        ...(turnId ? { turnId } : {}),
+      });
+    },
+    /**
+     * 工具结束（TOOL_END）：按 `call_id` 更新**同一张**卡。
+     * 找不到对应卡（重连重放 / 丢帧）时补一张 —— 结果不能丢。
+     */
+    finishTool(
+      callId: string,
+      toolName: string,
+      ok: boolean,
+      error: string | null,
+      preview: string,
+      presentation?: ToolPresentation | null,
+      durationMs?: number,
+    ) {
+      const key = callId || toolName;
+      // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
+      if (TOOL_CREATION_TOOLS.has(toolName) || this._suppressedToolCalls.includes(key)) {
+        const groupId = this._creationGroupByCall[key];
+        if (!ok && groupId) {
+          this.upsertToolCreation(groupId, {
+            phase: "failed",
+            label: "创建失败",
+            detail: (error ?? "").trim() || "这一步没有完成",
+            ok: false,
+          });
+        }
+        return;
+      }
+      const existing = key ? this.messages.find((m) => m.role === "tool" && m.callId === key) : undefined;
+      const target =
+        existing ?? this.messages.find((m) => m.role === "tool" && !m.callId && m.toolName === toolName && m.toolRunning);
+      if (target) {
+        target.toolRunning = false;
+        target.toolOk = ok;
+        target.toolError = error;
+        if (preview) target.content = preview;
+        target.presentation = presentation ?? target.presentation;
+        if (key && !target.callId) target.callId = key;
+        if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
+          target.toolDurationMs = durationMs;
+        }
+        return;
+      }
+      this.pushMessage({
+        role: "tool",
+        content: preview,
+        contentType: "tool",
+        toolName,
+        toolOk: ok,
+        toolError: error,
+        presentation: presentation ?? null,
+        toolRunning: false,
+        ...(key ? { callId: key } : {}),
+        ...(typeof durationMs === "number" ? { toolDurationMs: durationMs } : {}),
+      });
+    },
+    /**
+     * 独立任务状态（SUBAGENT_STATUS）：同一 `task_id` 只有一张卡。
+     * 用户看到的是「独立任务」，不是普通工具，也不是内部智能体进程。
+     */
+    upsertSubagent(
+      taskId: string,
+      data: {
+        status: "queued" | "running" | "done" | "failed";
+        toolName?: string;
+        goal?: string;
+        ok?: boolean | null;
+        preview?: string;
+        error?: string | null;
+      },
+    ) {
+      const existing = this.messages.find((m) => m.role === "subagent" && m.taskId === taskId);
+      if (existing) {
+        existing.taskStatus = data.status;
+        if (data.goal) existing.taskGoal = data.goal;
+        if (data.toolName) existing.toolName = data.toolName;
+        if (typeof data.preview === "string" && data.preview) existing.content = data.preview;
+        if (data.status === "done" || data.status === "failed") {
+          existing.toolOk = data.status === "done";
+          existing.toolError = data.error ?? null;
+        }
+        return;
+      }
+      this.pushMessage({
+        role: "subagent",
+        content: data.preview ?? "",
+        contentType: "text",
+        toolName: data.toolName ?? "独立任务",
+        taskId,
+        taskStatus: data.status,
+        ...(data.goal ? { taskGoal: data.goal } : {}),
+        ...(data.status === "done" || data.status === "failed"
+          ? { toolOk: data.status === "done", toolError: data.error ?? null }
+          : {}),
+      });
+    },
+    /**
+     * 工具创建进度（TOOL_CREATE_STATUS）：同一 `group_id`（开发工作区）一张卡，
+     * 逐步变化，而不是「创建工具卡 → 测试卡 → 审批卡 → 成功卡」一串卡。
+     */
+    upsertToolCreation(
+      groupId: string,
+      data: {
+        phase: string;
+        label?: string;
+        detail?: string;
+        ok?: boolean | null;
+        toolName?: string;
+        turnId?: string | null;
+      },
+    ) {
+      const existing = this.messages.find(
+        (m) => m.role === "tool_creation" && m.groupId === groupId,
+      );
+      if (existing) {
+        existing.createPhase = data.phase;
+        if (data.label) existing.content = data.label;
+        existing.presentation = {
+          ...(existing.presentation ?? {}),
+          ...(data.label ? { title: data.label } : {}),
+          ...(data.detail ? { summary: data.detail } : {}),
+        };
+        if (typeof data.ok === "boolean") {
+          existing.toolOk = data.ok;
+          existing.toolError = data.ok ? null : (data.detail ?? "创建没有完成");
+        }
+        if (data.toolName) existing.createdToolName = data.toolName;
+        return;
+      }
+      this.pushMessage({
+        role: "tool_creation",
+        content: data.label ?? "正在准备",
+        contentType: "text",
+        groupId,
+        createPhase: data.phase,
+        createdToolName: data.toolName,
+        toolOk: data.ok ?? undefined,
+        toolError: data.ok === false ? (data.detail ?? "创建没有完成") : null,
+        presentation: {
+          ...(data.label ? { title: data.label } : {}),
+          ...(data.detail ? { summary: data.detail } : {}),
+        },
+        ...(data.turnId ? { turnId: data.turnId } : {}),
+      });
+    },
+    // -- 高影响知识候选 -------------------------------------------------
+    /** 收到候选：先缓冲（回答还没完成时不能弹出来打断） */
+    queueKnowledgeCandidate(candidate: KnowledgeCandidate) {
+      if (!candidate.knowledgeId) return;
+      const known = (list: KnowledgeCandidate[]) =>
+        list.some((c) => c.knowledgeId === candidate.knowledgeId);
+      if (known(this._queuedCandidates) || known(this.knowledgeCandidates)) return;
+      this._queuedCandidates.push(candidate);
+    },
+    /** 回答完成（TURN_END）：候选现在才出现在对话里 */
+    flushKnowledgeCandidates() {
+      if (!this._queuedCandidates.length) return;
+      this.knowledgeCandidates = [...this.knowledgeCandidates, ...this._queuedCandidates];
+      this._queuedCandidates = [];
+    },
+    _dropCandidate(knowledgeId: string) {
+      this.knowledgeCandidates = this.knowledgeCandidates.filter(
+        (c) => c.knowledgeId !== knowledgeId,
+      );
+      this._queuedCandidates = this._queuedCandidates.filter(
+        (c) => c.knowledgeId !== knowledgeId,
+      );
+    },
+    /** 保存：批准这条长期知识（让它真正生效） */
+    async saveCandidate(knowledgeId: string) {
+      const key = knowledgeId;
+      if (this.candidateState[key] === "busy") return;
+      this.candidateState = { ...this.candidateState, [key]: "busy" };
+      this.candidateError = { ...this.candidateError, [key]: "" };
+      try {
+        await api.verifyKnowledge(knowledgeId);
+        this._dropCandidate(knowledgeId);
+      } catch (e) {
+        this.candidateState = { ...this.candidateState, [key]: "failed" };
+        this.candidateError = {
+          ...this.candidateError,
+          [key]: `没能保存这条长期信息：${(e as Error).message}（可以重试）`,
+        };
+      }
+    },
+    /** 修改：进入很轻的内联编辑，保存后生成新版本并生效 */
+    async editCandidate(knowledgeId: string, content: string) {
+      const text = content.trim();
+      if (!text) return;
+      const key = knowledgeId;
+      if (this.candidateState[key] === "busy") return;
+      this.candidateState = { ...this.candidateState, [key]: "busy" };
+      this.candidateError = { ...this.candidateError, [key]: "" };
+      try {
+        await api.reviseKnowledge(knowledgeId, text);
+        this._dropCandidate(knowledgeId);
+      } catch (e) {
+        this.candidateState = { ...this.candidateState, [key]: "failed" };
+        this.candidateError = {
+          ...this.candidateError,
+          [key]: `修改没有保存：${(e as Error).message}（可以重试）`,
+        };
+      }
+    },
+    /** 忽略：用户不要这条长期知识 → 记录状态，之后不再重复问 */
+    async ignoreCandidate(knowledgeId: string) {
+      const key = knowledgeId;
+      if (this.candidateState[key] === "busy") return;
+      this.candidateState = { ...this.candidateState, [key]: "busy" };
+      this.candidateError = { ...this.candidateError, [key]: "" };
+      try {
+        await api.ignoreKnowledge(knowledgeId);
+        this._dropCandidate(knowledgeId);
+      } catch (e) {
+        this.candidateState = { ...this.candidateState, [key]: "failed" };
+        this.candidateError = {
+          ...this.candidateError,
+          [key]: `没能记下「忽略」：${(e as Error).message}（可以重试）`,
+        };
+      }
+    },
     turnEnded() {
       this.turnRunning = false;
       this.turnPhase = "idle";
+      this.activity = "idle";
       this.cancelling = null;
     },
     async loadHistory() {

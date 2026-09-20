@@ -238,3 +238,102 @@ describe("MessageItem 生成中的可访问性（任务02 D）", () => {
     w.unmount();
   });
 });
+
+describe("中间话与最终回答在视觉上分开", () => {
+  it("interim 消息带「◈ 过程」标记", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "我先查一下", interim: true }), pinia);
+    expect(w.find(".interim-tag").text()).toContain("过程");
+    expect(w.find(".assist-bubble").classes()).toContain("interim");
+    w.unmount();
+  });
+
+  it("最终回答不带「过程」标记", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "检查完成，真正的问题是…" }), pinia);
+    expect(w.find(".interim-tag").exists()).toBe(false);
+    expect(w.find(".assist-bubble").classes()).not.toContain("interim");
+    w.unmount();
+  });
+});
+
+/**
+ * 第四阶段：卡片家族统一。
+ *
+ * Tool / Subagent / Tool Creation / 知识候选四类卡片的共同契约是
+ * 「.qio-card 骨架 + data-state 状态 + .qio-state 徽章 + 可展开详情」，
+ * 状态推进必须原位发生，所以状态只能体现在 data-state 上，不能靠换一张卡。
+ */
+describe("MessageItem 卡片家族契约（第四阶段）", () => {
+  it("工具卡：家族骨架 + data-state 原位状态 + 状态徽章", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "web_search",
+        content: "…",
+        toolOk: true,
+        presentation: { title: "网络搜索", status: "ok", summary: "命中 3 条" },
+      }),
+      pinia,
+    );
+    const card = w.find(".tool-card");
+    expect(card.classes()).toContain("qio-card");
+    expect(card.attributes("data-state")).toBe("ready");
+    expect(w.find(".tool-status").classes()).toContain("qio-state");
+    w.unmount();
+  });
+
+  it("工具卡：运行中/失败用同一张卡的 data-state 表达，不产生第二张卡", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const running = mountItem(
+      makeMessage({ role: "tool", toolName: "shell", content: "…", toolRunning: true }),
+      pinia,
+    );
+    expect(running.findAll(".tool-card")).toHaveLength(1);
+    expect(running.find(".tool-card").attributes("data-state")).toBe("running");
+    expect(running.find(".tool-status").text()).toBe("运行中");
+    running.unmount();
+
+    const failed = mountItem(
+      makeMessage({ role: "tool", toolName: "ghost", content: "", toolOk: false, toolError: "boom" }),
+      pinia,
+    );
+    expect(failed.findAll(".tool-card")).toHaveLength(1);
+    expect(failed.find(".tool-card").attributes("data-state")).toBe("failed");
+    failed.unmount();
+  });
+
+  it("工具卡展开详情有真实高度过渡（不是 v-show 瞬切）", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "tool", toolName: "shell", content: "{}", toolOk: true }), pinia);
+    const wrap = w.find(".tool-detail-wrap");
+    expect(wrap.exists()).toBe(true);
+    expect(wrap.classes()).not.toContain("open");
+    await w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-detail-wrap").classes()).toContain("open");
+    expect(w.find(".tool-detail-wrap .tool-detail pre").text()).toBe("{}");
+    w.unmount();
+  });
+
+  it("独立任务卡：家族骨架 + 状态徽章（运行中不只是文字变色）", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({ role: "subagent", toolName: "整理资料", taskStatus: "running" }),
+      pinia,
+    );
+    const card = w.find(".subagent-card");
+    expect(card.classes()).toContain("qio-card");
+    expect(card.attributes("data-state")).toBe("running");
+    const state = w.find(".sub-state");
+    expect(state.classes()).toContain("qio-state");
+    expect(w.find(".sub-kind").classes()).toContain("qio-tag");
+    w.unmount();
+  });
+});

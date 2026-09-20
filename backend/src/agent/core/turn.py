@@ -7,6 +7,18 @@ Rule of thumb:
 TurnManager guarantees `active_main_turn <= 1` and keeps the rest in a FIFO
 queue, so overlapping HTTP requests cannot clobber each other's active loop,
 pipeline listeners, notices or cancellation target.
+
+TurnManager is also the **single source of truth for the turn lifecycle**:
+
+    accepted ──▶ running ──┬──▶ completed
+                           ├──▶ failed
+                           ├──▶ cancelled
+                           └──▶ unavailable
+
+Every accepted turn gets exactly one `TURN_START` and exactly one `TURN_END`
+(the latter in a `finally`), whatever happens inside the runner. Nested loops
+(subagents, maintenance, tool development) must never emit turn events — they
+are not turns, and a subagent's `TURN_END` used to end the user's turn.
 """
 
 from __future__ import annotations
@@ -23,6 +35,13 @@ def _now() -> str:
 
 
 TurnRunner = Callable[["TurnContext"], Awaitable[None]]
+EventEmitter = Callable[[str, dict], Awaitable[None]]
+
+TURN_START = "TURN_START"
+TURN_END = "TURN_END"
+
+# 终态：进入其中之一后不再变化。
+TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
 
 
 @dataclass
@@ -34,7 +53,8 @@ class TurnContext:
     created_at: str = field(default_factory=_now)
     initial_topic: str | None = None
     current_topic: str | None = None
-    status: str = "queued"  # queued | running | done | failed | cancelled
+    # accepted | running | completed | failed | cancelled | unavailable
+    status: str = "accepted"
     user_message_id: str | None = None
     prediction: Any = None
     loop: Any = None
@@ -43,8 +63,11 @@ class TurnContext:
     knowledge_snapshot: list[dict] = field(default_factory=list)
     final_content: str | None = None
     error: str | None = None
+    usage: dict | None = None
     result: dict | None = None
     notify: bool = False  # system-driven (e.g. subagent completion) turn
+    turn_start_emitted: bool = False
+    turn_end_emitted: bool = False
 
 
 class TurnManager:
@@ -54,9 +77,11 @@ class TurnManager:
         self,
         runner: TurnRunner | None = None,
         publisher: Callable[[dict], Awaitable[None]] | None = None,
+        emitter: EventEmitter | None = None,
     ) -> None:
         self._runner = runner
         self._publisher = publisher
+        self._emitter = emitter
         self._queue: asyncio.Queue[TurnContext] = asyncio.Queue()
         self._active: TurnContext | None = None
         self._pending: list[TurnContext] = []
@@ -72,6 +97,10 @@ class TurnManager:
 
     def set_publisher(self, publisher: Callable[[dict], Awaitable[None]]) -> None:
         self._publisher = publisher
+
+    def set_emitter(self, emitter: EventEmitter) -> None:
+        """Wire the SSE emitter; kept as a callable so core/ never imports api/."""
+        self._emitter = emitter
 
     # -- queue snapshot ---------------------------------------------------
 
@@ -159,6 +188,7 @@ class TurnManager:
             self._active = ctx
             ctx.status = "running"
             self._schedule_emit()
+            await self._emit_turn_start(ctx)
             try:
                 if ctx.cancelled:
                     ctx.status = "cancelled"
@@ -166,8 +196,8 @@ class TurnManager:
                     await self._runner(ctx)
                     if ctx.cancelled:
                         ctx.status = "cancelled"
-                    elif ctx.status == "running":
-                        ctx.status = "done"
+                    elif ctx.status in ("running", "accepted"):
+                        ctx.status = "completed"
             except asyncio.CancelledError:
                 ctx.status = "cancelled"
                 raise
@@ -175,12 +205,50 @@ class TurnManager:
                 ctx.status = "failed"
                 ctx.error = f"{type(exc).__name__}: {exc}"
             finally:
+                await self._emit_turn_end(ctx)
                 if self._active is ctx:
                     self._active = None
                 fut = self._futures.pop(ctx.turn_id, None)
                 if fut is not None and not fut.done():
-                    fut.set_result(ctx.result)
+                    fut.set_result(
+                        ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status}
+                    )
                 self._schedule_emit()
+
+    # -- lifecycle events -------------------------------------------------
+
+    async def _emit_turn_start(self, ctx: TurnContext) -> None:
+        if ctx.turn_start_emitted:
+            return
+        ctx.turn_start_emitted = True
+        await self._emit_event(
+            TURN_START, {"turn_id": ctx.turn_id, "message": ctx.message[:200]}
+        )
+
+    async def _emit_turn_end(self, ctx: TurnContext) -> None:
+        """一个 accepted turn 必须且只能有一个 TURN_END（含异常路径）。"""
+        if ctx.status not in TERMINAL_STATUSES:
+            ctx.status = "completed"
+        if ctx.turn_end_emitted:
+            return
+        ctx.turn_end_emitted = True
+        payload: dict[str, Any] = {
+            "turn_id": ctx.turn_id,
+            "status": ctx.status,
+            "final_content": ctx.final_content,
+            "error": ctx.error,
+        }
+        if ctx.usage:
+            payload.update(ctx.usage)
+        await self._emit_event(TURN_END, payload)
+
+    async def _emit_event(self, name: str, data: dict) -> None:
+        if self._emitter is None:
+            return
+        try:
+            await self._emitter(name, data)
+        except Exception:  # noqa: BLE001 - 广播失败不能影响 turn 收尾
+            pass
 
     # -- introspection / control -----------------------------------------
 

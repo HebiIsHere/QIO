@@ -55,16 +55,18 @@ def test_fragment_open_and_close(db_conn: sqlite3.Connection, topic: str):
 
 
 def test_append_message_and_chunk_close(db_conn: sqlite3.Connection, topic: str):
-    fm = FragmentManager(db_conn, max_messages=3)
+    # 阈值是「轮」：一轮 = 用户 + 助手（第三阶段 spec 第 57~60 条）
+    fm = FragmentManager(db_conn, max_turns=3)
     writer = MemoryWriter(db_conn, fm)
     closed_seen = None
     for i in range(3):
+        writer.append_message(topic_id=topic, role="user", content=f"问题 {i}")
         _, closed = writer.append_message(
-            topic_id=topic, role="user", content=f"消息 {i}"
+            topic_id=topic, role="assistant", content=f"回答 {i}"
         )
         if closed is not None:
             closed_seen = closed
-    # 3 messages with threshold 3 -> append signals the chunk close
+    # 3 complete turns with threshold 3 -> append signals the chunk close
     assert closed_seen is not None
     closed_id = closed_seen.id
     # two-step close: caller runs the summarizer at turn end
@@ -75,12 +77,13 @@ def test_append_message_and_chunk_close(db_conn: sqlite3.Connection, topic: str)
     _, _ = writer.append_message(topic_id=topic, role="user", content="消息 3")
     open_frag = fm.get_or_create_open(topic)
     assert open_frag.id != closed_id
-    assert fm.message_count(closed_id) == 3
+    assert fm.message_count(closed_id) == 6
+    assert fm.turn_count(closed_id) == 3
     assert fm.message_count(open_frag.id) == 1
 
 
 def test_close_open_fragment_with_summarizer(db_conn: sqlite3.Connection, topic: str):
-    fm = FragmentManager(db_conn, max_messages=100)
+    fm = FragmentManager(db_conn, max_turns=100)
     writer = MemoryWriter(db_conn, fm)
     writer.append_message(topic_id=topic, role="user", content="我喜欢清淡饮食")
     writer.append_message(topic_id=topic, role="assistant", content="记住了")
@@ -96,7 +99,7 @@ def test_close_open_fragment_with_summarizer(db_conn: sqlite3.Connection, topic:
 
 
 def test_close_open_fragment_degraded_when_summarizer_fails(db_conn: sqlite3.Connection, topic: str):
-    fm = FragmentManager(db_conn, max_messages=100)
+    fm = FragmentManager(db_conn, max_turns=100)
     writer = MemoryWriter(db_conn, fm)
     writer.append_message(topic_id=topic, role="user", content="内容")
 

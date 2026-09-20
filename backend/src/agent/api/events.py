@@ -16,11 +16,15 @@ from pydantic import BaseModel, Field
 class EventType(str, Enum):
     CAPABILITY = "CAPABILITY"
     FALLBACK = "FALLBACK"
-    MEMORY_INJECT = "MEMORY_INJECT"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     APPROVAL_RESULT = "APPROVAL_RESULT"
     CREDENTIAL_STATUS = "CREDENTIAL_STATUS"
     SUBAGENT_STATUS = "SUBAGENT_STATUS"
+    # 工具创建是一条流程、一张卡：这些事件让同一张卡原地推进
+    # （提案 / 构建 / 测试 / 等待确认 / 注册 / 已创建），phase 见 tools/dev_tools.py
+    TOOL_CREATE_STATUS = "TOOL_CREATE_STATUS"
+    # 高影响知识候选：回答完成后在对话里自然确认（保存 / 修改 / 忽略）
+    KNOWLEDGE_CANDIDATE = "KNOWLEDGE_CANDIDATE"
     USAGE = "USAGE"
     TURN_START = "TURN_START"
     TURN_END = "TURN_END"

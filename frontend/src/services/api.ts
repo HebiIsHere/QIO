@@ -326,6 +326,16 @@ export const api = {
       `/api/knowledge/${encodeURIComponent(id)}/reject`,
       { method: "POST" },
     ),
+  /**
+   * 忽略一条高影响知识候选（对话内确认卡）。
+   * 语义：用户明确不要这条长期知识 → 后端记为已忽略，同一内容不再重复提示。
+   * 与 `rejectKnowledge`（打回草稿、仍留在审核列表里）不同。
+   */
+  ignoreKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge_id: string }>(
+      `/api/knowledge/${encodeURIComponent(id)}/ignore`,
+      { method: "POST" },
+    ),
   listEntities: () => request<{ entities: EntityCard[] }>("/api/entities"),
   getEntity: (id: string) =>
     request<{ entity: EntityCard }>(`/api/entities/${encodeURIComponent(id)}`),
@@ -358,8 +368,12 @@ export const api = {
       { method: "DELETE", body: JSON.stringify(payload) },
     ),
 
+  /**
+   * 记忆封块设置：字段是「轮」（用户 + 助手算一轮），不是消息条数。
+   * 旧字段名 `fragment_max_messages` 描述的其实是消息数，语义与实现不一致，已由后端正名。
+   */
   getMemorySettings: () =>
-    request<{ fragment_max_messages: number }>("/api/settings/memory"),
+    request<{ fragment_max_turns: number }>("/api/settings/memory"),
   runMaintenance: () =>
     request<{ ok: boolean; started: boolean }>("/api/maintenance/run", { method: "POST" }),
   getMaintenanceSettings: () =>
@@ -369,10 +383,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  updateMemorySettings: (fragmentMaxMessages: number) =>
-    request<{ ok: boolean; fragment_max_messages: number }>("/api/settings/memory", {
+  updateMemorySettings: (fragmentMaxTurns: number) =>
+    request<{ ok: boolean; fragment_max_turns: number }>("/api/settings/memory", {
       method: "PUT",
-      body: JSON.stringify({ fragment_max_messages: fragmentMaxMessages }),
+      body: JSON.stringify({ fragment_max_turns: fragmentMaxTurns }),
     }),
   getUISettings: () =>
     request<{ typewriter_cps: number }>("/api/settings/ui"),
@@ -438,6 +452,8 @@ export interface TopicDetailFragment {
   closed_at: string | null;
   message_count: number;
   created_at?: string;
+  /** 该片段最后一次活动时间（用于「最近活动」这一层信息） */
+  last_activity?: string | null;
   /** 第二层不再内联原文；原文由 fragmentMessages 按需分页读取（spec 第 42~43 条） */
   messages?: { id: string; role: string; content: string; content_type: string; created_at: string }[];
 }
@@ -445,6 +461,14 @@ export interface TopicDetailFragment {
 export interface TopicDetail {
   topic_id: string;
   name: string;
+  /** 一句摘要（memory_index 的片段摘要首句；没有就不显示，不编造） */
+  summary?: string | null;
+  /** 话题关键词（memory_index 聚合） */
+  keywords?: string[];
+  /** 最近活动时间 */
+  last_activity?: string | null;
+  /** 话题总消息数（真实计数） */
+  message_count?: number;
   fragments: TopicDetailFragment[];
   entities: { id: string; name: string }[];
   knowledge: { id: string; category: string; state: string; content: string; confidence: number | null; updated_at: string }[];

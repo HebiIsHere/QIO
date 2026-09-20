@@ -155,7 +155,8 @@ async def test_dev_submit_maps_outcome_and_cleans():
         return ToolOutcome(True, "add_numbers", "registered", "ok")
 
     class FakeLifecycle:
-        async def submit_definition(self, definition, explanation):
+        async def submit_definition(self, definition, explanation, *, group_id=None):
+            calls["group_id"] = group_id
             return await fake_submit(definition, explanation)
 
     async def builder():
@@ -170,6 +171,8 @@ async def test_dev_submit_maps_outcome_and_cleans():
     r = await tool.run(workspace=task.id, definition=definition, explanation="这个工具计算两个数之和")
     assert r.ok
     assert calls["n"] == 1
+    # 同一张卡靠 group_id 串起来：提交时必须把工作区 id 传下去
+    assert calls["group_id"] == task.id
     # 成功后清理
     assert ws.task(task.id) is None
     # 无效工作区

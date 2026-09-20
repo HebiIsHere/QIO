@@ -202,17 +202,27 @@ async def test_cancelled_turn_keeps_anchor(ctx: AppContext, monkeypatch):
     original_persist = ctx.turn_orchestrator.persist
 
     async def cancel_then_persist(turn_ctx, ad, plan, result):
-        turn_ctx.cancelled = True  # 模拟取消：turn 被标记取消后仍走到收尾阶段
+        turn_ctx.cancelled = True  # 模拟取消正好落在「答案已写入、收尾还没做」的窗口
         return await original_persist(turn_ctx, ad, plan, result)
 
     monkeypatch.setattr(ctx.turn_orchestrator, "persist", cancel_then_persist)
     result = await ctx.run_turn("被取消的一轮", topic_id=topic)
-    assert result["ok"] is True
+    # 状态必须诚实：这一轮没有走完收尾（不做记忆整理、不推进位置），
+    # 即使答案已经落库，对外结论也是 cancelled 而不是 ok。
+    assert result["ok"] is False
+    assert result["reason"] == "cancelled"
 
     active = AnchorService(ctx.conn).get_active()
     assert active.topic_id == topic
     assert active.fragment_id == frag, "取消的 turn 不得消费用户的历史位置"
     assert adapter.calls >= 1
+    # 取消发生在 persist 之后：已经写入的助手消息不回滚（用户看得见真实发生的事）
+    rows = ctx.conn.execute(
+        "SELECT m.role FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ? ORDER BY m.created_at",
+        (topic,),
+    ).fetchall()
+    assert [r["role"] for r in rows][-1] == "assistant"
 
 
 # -- Case 5/6/7: Topic 往返位置恢复 + 用户选择优先 ------------------------

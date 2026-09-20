@@ -243,3 +243,129 @@ describe("审批信息顺序：做什么 / 会改变什么 / 为什么需要 / �
     w.unmount();
   });
 });
+
+/**
+ * 第三阶段 spec 第 66~70 条：审批必须回答五个问题，其中第 5 个是
+ * 「这是一次性还是长期授权」。用户看不到这一条时，无法判断自己同意了什么。
+ */
+describe("ApprovalModal 授权范围与访问清单", () => {
+  it("工具执行审批显示「仅这一次」，并展示具体的访问清单", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a-scope-1", "tool_execution", {
+      tool: "fs_write",
+      arguments: { path: "a.txt" },
+      description: "想修改当前项目中的一个文件",
+      access: ["写入：a.txt"],
+      scope: "once",
+      capabilities: ["联网：否", "写入文件：是", "副作用：write"],
+    });
+    await flushPromises();
+    const text = w.find(".modal").text();
+    expect(text).toContain("授权范围");
+    expect(text).toContain("仅这一次");
+    // 具体路径优先于能力枚举（不是只显示 fs_write path=...）
+    expect(text).toContain("写入：a.txt");
+    w.unmount();
+  });
+
+  it("工具注册审批显示「长期生效」", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a-scope-2", "tool_create", {
+      name: "excel2csv",
+      explanation: "把表格转成 CSV",
+      capabilities: ["联网：否", "写入文件：是", "副作用：write"],
+    });
+    await flushPromises();
+    const text = w.find(".modal").text();
+    expect(text).toContain("授权范围");
+    expect(text).toContain("长期生效");
+    w.unmount();
+  });
+
+  it("审批内容里不出现内部术语（指纹 / 策略哈希）", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a-scope-3", "tool_execution", {
+      tool: "run_shell",
+      description: "想运行一条 shell 命令",
+      access: ["启动一个系统命令进程"],
+      scope: "once",
+      risk: "careful",
+      capabilities: ["启动进程：是", "副作用：destructive"],
+      policy_fingerprint: "deadbeef",
+    });
+    await flushPromises();
+    // 指纹只允许出现在默认折叠的高级详情里，首屏正文不得出现
+    const adv = w.find("details.adv");
+    expect(adv.exists()).toBe(true);
+    expect(adv.attributes("open")).toBeUndefined(); // 默认折叠 = 用户第一眼看不到
+    const firstScreen = w.find(".body").text().replace(adv.text(), "");
+    expect(firstScreen).not.toContain("deadbeef");
+    expect(firstScreen).toContain("想运行一条 shell 命令");
+    w.unmount();
+  });
+
+  /**
+   * 文件 / 命令 / 进程类审批走 `kind="computer"`（第一阶段的安全边界就是这条链）。
+   * 第三阶段要求它也说人话：首屏给行为句与具体访问清单，`action` / 沙箱判定
+   * 这些机器可读字段只进高级详情。
+   */
+  it("电脑操作审批：首屏是行为句与访问清单，动作名只进高级详情", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a-comp-1", "computer", {
+      action: "run_shell",
+      cmd: "echo hello",
+      risk: "danger",
+      description: "想运行一条 shell 命令",
+      access: ["启动一个系统命令进程", "命令内容见下方详情"],
+      scope: "once",
+      capabilities: ["启动进程：是", "副作用：destructive"],
+      detail: "实际命令：echo hello",
+    });
+    await flushPromises();
+    const text = w.find(".modal").text();
+    expect(text).toContain("想运行一条 shell 命令");
+    expect(text).toContain("启动一个系统命令进程");
+    expect(text).toContain("仅这一次");
+    // 机器可读的 action 不当作首屏「建议动作」
+    expect(text).not.toContain("建议动作");
+    const firstScreen = w.find(".body").text().replace(w.find("details.adv").text(), "");
+    expect(firstScreen).not.toContain("run_shell");
+    w.unmount();
+  });
+});
+
+/**
+ * 失效的确认（后端已经没有这条审批）必须有一个出口。
+ *
+ * 实测：此时点批准或拒绝都会 404，弹窗只能反复重试失败，用户被卡在一条
+ * 永远处理不掉的待办上。现在的行为：明确说「已经有结局」，并且只留一个「知道了」。
+ */
+describe("ApprovalModal 失效确认的出口", () => {
+  it("审批已有结局：不再给批准/拒绝，只给「知道了」，点掉即清出队列", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a1", "tool_create", { name: "t", explanation: "做一个工具" });
+    await flushPromises();
+    respond.mockRejectedValueOnce(
+      Object.assign(new Error("/api/approvals/a1/respond -> 404: approval not found or already answered"), {
+        status: 404,
+      }),
+    );
+
+    await w.find(".reject").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".approve").exists()).toBe(false);
+    expect(w.find(".reject").exists()).toBe(false);
+    const ack = w.find(".approval-stale-ack");
+    expect(ack.exists()).toBe(true);
+    expect(w.find(".modal").text()).toContain("已经有结局");
+
+    await ack.trigger("click");
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 220));
+    await nextTick();
+    expect(w.find(".modal-mask").exists()).toBe(false);
+    expect(s.pendingCount).toBe(0);
+    w.unmount();
+  });
+});

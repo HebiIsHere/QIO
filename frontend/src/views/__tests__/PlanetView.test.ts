@@ -1,11 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
-import { ref, shallowRef, nextTick } from "vue";
+import { ref, shallowRef, nextTick, watch } from "vue";
 import PlanetView from "../PlanetView.vue";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
 import { resetPlanetSession } from "../../composables/planetSession";
+import { planetContinuum } from "../../composables/planetContinuum";
 import type {
   EntityCard,
   KnowledgeItem,
@@ -19,14 +20,22 @@ const mocks = vi.hoisted(() => ({
   goMock: vi.fn(() => Promise.resolve()),
   focusTopicMock: vi.fn(),
   pullBackMock: vi.fn(() => Promise.resolve()),
+  /** 展开时记下「打开前的球体朝向」；收起时与体量收缩同时转回它（返回实际夹角，0 = 不需要转） */
+  markReturnOrientationMock: vi.fn(),
+  rotateBackMock: vi.fn((_maxMs: number) => 0),
   primeCameraMock: vi.fn(),
   setPausedMock: vi.fn(),
+  setLowPowerMock: vi.fn(),
+  setIdleSpinMock: vi.fn(),
   setThemeMock: vi.fn(),
   initMock: vi.fn(),
   attachBrowseMock: vi.fn(),
   setTopicsMock: vi.fn(),
   refreshWindowMock: vi.fn(),
   handleClickMock: vi.fn(),
+  setRevealMock: vi.fn(),
+  /** 球体屏幕几何：默认 null = 拿不到真实尺寸（走降级路径） */
+  sphereRectMock: vi.fn<() => { cx: number; cy: number; radius: number } | null>(() => null),
   apiMock: {
     listTopics: vi.fn<() => Promise<{ topics: TopicFingerprint[] }>>(async () => ({ topics: [] })),
     planetOverview: vi.fn(async () => ({ topics: [] as PlanetTopicSummary[], total: 0, visible_capacity: 12 })),
@@ -64,6 +73,17 @@ const mocks = vi.hoisted(() => ({
     ),
     listKnowledge: vi.fn<() => Promise<{ knowledge: KnowledgeItem[] }>>(async () => ({ knowledge: [] })),
     listEntities: vi.fn<() => Promise<{ entities: EntityCard[] }>>(async () => ({ entities: [] })),
+    /** 第三层接口：只有真正展开某段历史时才取原文（按页） */
+    fragmentMessages: vi.fn(async (_id: string, offset = 0, limit = 20) => ({
+      fragment_id: _id,
+      topic_id: "t1",
+      total: 0,
+      offset,
+      limit,
+      messages: [] as { id: string; role: string; content: string; content_type: string; created_at: string }[],
+    })),
+    reviseKnowledge: vi.fn(async (_id: string, _content: string) => ({ ok: true, knowledge_id: _id })),
+    revokeKnowledge: vi.fn(async (_id: string) => ({ ok: true })),
   },
 }));
 
@@ -92,10 +112,26 @@ function createFakePlanet() {
       selectedTopicId.value = topicId;
       mocks.focusTopicMock(topicId, topics);
     },
-    handleClick: mocks.handleClickMock,
-    primeCamera: mocks.primeCameraMock,
+  handleClick: mocks.handleClickMock,
+  primeCamera: mocks.primeCameraMock,
     pullBack: mocks.pullBackMock,
+    /** 收起时转回「打开前的朝向」：与体量收缩同时开始（用户要求：两个方向都要有旋转） */
+    markReturnOrientation: mocks.markReturnOrientationMock,
+    rotateBack: mocks.rotateBackMock,
     setPaused: mocks.setPausedMock,
+    /** 入口小球（球态）用的两个开关：低帧率 + 空闲自转 */
+    setLowPower: mocks.setLowPowerMock,
+    setIdleSpin: mocks.setIdleSpinMock,
+    /** 环的目标屏幕宽度（小球上环要看得见）；补偿倍数由渲染器按当时几何现算 */
+    setRingScreenWidth: vi.fn(),
+    /** 第四阶段 Planet 连续体：信息密度（0 = 抽象态，1 = 完整 Planet） */
+    setReveal: mocks.setRevealMock,
+    /**
+     * 球体在屏幕上的几何。测试环境里没有真实 WebGL 球体，返回 null 表示
+     * 「拿不到真实尺寸」——此时转场走降级路径（不做缩放对齐），
+     * 这正是真实环境里 WebGL 不可用时的行为，也保证既有交互测试不受转场几何影响。
+     */
+    sphereScreenRect: mocks.sphereRectMock,
     hoverTopicId: ref<string | null>(null),
     hoverLabel: ref<{ x: number; y: number; title: string } | null>(null),
     selectedLabel: ref<{ x: number; y: number; title: string } | null>(null),
@@ -206,7 +242,14 @@ describe("PlanetView 相机联动", () => {
     await flushPromises();
     await w.find(".close-btn").trigger("click");
     await flushPromises();
-    expect(mocks.pullBackMock).toHaveBeenCalledWith(0.45, 180); // 收势（不是缩回远景）
+    /**
+     * 收势阶段不动相机。
+     *
+     * 这条以前断言 `pullBack(0.45, 180)` —— 那记相机后撤是旧编排的遗留物，
+     * 在新编排（同一个对象收拢回入口）里它会让球体先缩小一次、星球层再缩一次，
+     * 用户实测反馈「收起有两段动画」。现在只保留收势（浮层退场 / 密度回到抽象态）。
+     */
+    expect(mocks.pullBackMock).not.toHaveBeenCalled();
     expect(w.classes()).toContain("settling");
     expect(w.emitted("close")).toBeFalsy(); // 还没结束，不提前卸载
     await vi.advanceTimersByTimeAsync(620);
@@ -215,15 +258,37 @@ describe("PlanetView 相机联动", () => {
     w.unmount();
   });
 
-  it("收势进行中：话题列表/画布单击/双击不打断，收势结束后才 emit close", async () => {
-    const resolvers: (() => void)[] = [];
+  it("展开时记下球体朝向，收起时与体量收缩同时转回去（两个方向都要有旋转）", async () => {
     vi.useFakeTimers();
-    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     const w = mountView(newPinia());
     await flushPromises();
+    // 展开：在聚焦发生之前记下「打开前的朝向」（收起时要转回它）
+    expect(mocks.markReturnOrientationMock).toHaveBeenCalled();
+
+    mocks.rotateBackMock.mockClear();
+    await w.find(".close-btn").trigger("click");
+    await flushPromises();
+    /**
+     * 收起：体量收缩一开始就发起「转回去」，并且**封顶在收起窗口内**
+     * （超出去会和球态的自转抢同一个四元数；见 usePlanetScene.rotateBack）。
+     * 注意要先把收势（180ms）+ 几帧等待走完，才会进入体量收缩段。
+     */
+    await vi.advanceTimersByTimeAsync(320);
+    expect(mocks.rotateBackMock).toHaveBeenCalledTimes(1);
+    expect(mocks.rotateBackMock.mock.calls[0][0]).toBeGreaterThan(100);
+
+    await vi.advanceTimersByTimeAsync(620);
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it("收势进行中：话题列表/画布单击/双击不打断，收势结束后才 emit close", async () => {
+    vi.useFakeTimers();
+    const w = mountView(newPinia());
+    await flushPromises(); // 数据一到位就会落位聚焦（见 runEnter 的冷路径说明）
 
     await w.find(".close-btn").trigger("click");
-    expect(resolvers.length).toBe(1); // 收势已发起（挂起）
+    // 收势阶段（未推进定时器 = 停在收势里）
     expect(w.classes()).toContain("settling");
 
     // 收势窗口内：话题点击不聚焦、画布单击不命中、双击不切回 planet
@@ -234,9 +299,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.handleClickMock).not.toHaveBeenCalled();
     expect(mocks.goMock).toHaveBeenCalledTimes(1); // 只有挂载时那一次 go("planet")，收起不再拉回 overview
 
-    resolvers[0](); // 收势完成
-    await flushPromises();
-    await vi.advanceTimersByTimeAsync(620); // 收势 180ms + 淡出 280ms → 才 emit close
+    await vi.advanceTimersByTimeAsync(620); // 收势 180ms + 收缩 420ms → 才 emit close
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
@@ -253,7 +316,7 @@ describe("PlanetView 相机联动", () => {
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
-    expect(mocks.pullBackMock).toHaveBeenCalled();
+    expect(w.classes()).toContain("settling"); // 收起已经开始
     await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
@@ -289,7 +352,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null);
     expect(session.currentTopicId).toBe("t1");
     expect(session.topicName).toBe("话题 A");
-    expect(mocks.pullBackMock).toHaveBeenCalled();
+    expect(w.classes()).toContain("settling"); // 成功后才走收起
     await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
@@ -313,26 +376,21 @@ describe("PlanetView 相机联动", () => {
   });
 
   it("挂载时 API pending → 先收起 → API resolve 后不再推进/聚焦，且 close 仍 emit", async () => {
-    const resolvers: (() => void)[] = [];
     vi.useFakeTimers();
     let resolveList!: () => void;
     let resolvePos!: () => void;
-    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     mocks.apiMock.listTopics.mockImplementation(() => new Promise((r) => { resolveList = () => r({ topics: TOPICS }); }));
     mocks.apiMock.planetBrowse.mockImplementation(() => new Promise((r) => { resolvePos = () => r(browsePage(SUMMARIES)); }));
     const w = mountView(newPinia());
     // loadData 的 API 尚未 resolve 时先关闭
     await w.find(".close-btn").trigger("click");
     expect(w.classes()).toContain("settling");
-    expect(resolvers.length).toBe(1);
     // 随后 API resolve → loadData 继续，但不得再推进 planet / 聚焦话题
     resolveList();
     await flushPromises();
     expect(mocks.goMock).not.toHaveBeenCalled();
     expect(mocks.focusTopicMock).not.toHaveBeenCalled();
     // 收势 + 淡出完成 → close 仍正常 emit
-    resolvers[0]();
-    await flushPromises();
     await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
@@ -505,6 +563,25 @@ describe("PlanetView 详情加载失败（P0：失败必须自己可见且可重
     w.unmount();
   });
 
+  it("详情加载失败：首行说人话，技术细节折叠可达（同样是普通模式规则）", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    mocks.apiMock.getTopicDetail.mockRejectedValueOnce(
+      new Error('/api/graph/topics/t1 -> 500: {"detail":"boom"}'),
+    );
+    const w = mountView(pinia);
+    await flushPromises();
+    await nextTick();
+    const err = w.find(".detail-error");
+    const first = err.find(".err-text").text();
+    expect(first).toContain("加载话题详情失败");
+    expect(first).not.toContain("/api/");
+    expect(err.text()).toContain("/api/graph/topics/t1");
+    expect(err.find(".err-detail").exists()).toBe(true);
+    w.unmount();
+  });
+
   it("点重试：重新请求同一话题并在成功后显示详情", async () => {
     const pinia = newPinia();
     const session = useSessionStore();
@@ -541,6 +618,30 @@ describe("PlanetView 详情加载失败（P0：失败必须自己可见且可重
     expect(w.findAll(".topic-list li").length).toBe(1);
     w.unmount();
   });
+
+  /**
+   * 第四阶段：普通模式不把内部协议术语甩给用户。
+   *
+   * 实测截图里失败条第一行是「星球数据加载失败：/api/planet/overview -> 500: {...}」——
+   * 那是给排查看的，不是给人读的。规则：首行说人话，技术细节折叠但**仍然可达**
+   * （不是删掉，否则用户和排查都拿不到原因）。
+   */
+  it("数据加载失败：首行是人话，内部接口与状态码只在可展开的技术详情里", async () => {
+    mocks.apiMock.listTopics.mockRejectedValueOnce(
+      new Error('/api/graph/topics -> 500: {"detail":"boom"}'),
+    );
+    const w = mountView(newPinia());
+    await flushPromises();
+    const banner = w.find(".load-error");
+    const first = banner.find(".le-text").text();
+    expect(first).toContain("星球数据加载失败");
+    expect(first).not.toContain("/api/");
+    expect(first).not.toContain("500");
+    // 技术细节仍然可达（折叠）
+    expect(banner.text()).toContain("/api/graph/topics");
+    expect(banner.find(".le-detail").exists()).toBe(true);
+    w.unmount();
+  });
 });
 
 describe("星球记忆中心面板", () => {
@@ -563,7 +664,10 @@ describe("星球记忆中心面板", () => {
     const w = mountView(pinia);
     await flushPromises();
 
-    expect(w.find(".section-title").text()).toContain("选择要接续的历史位置");
+    // 片段列表现在是「摘要 + 消息数 + 查看原文 / 从这里继续」的记忆浏览入口
+    expect(w.find(".section-title").text()).toContain("片段历史");
+    expect(w.find(".fragment-item .raw-toggle").text()).toContain("查看原文");
+    expect(w.find(".fragment-item .frag-continue").text()).toContain("从这里继续");
     await w.find(".fragment-item").trigger("click");
     await nextTick();
     const hint = w.find(".selected-position");
@@ -663,7 +767,7 @@ describe("星球记忆中心面板", () => {
     // 失败：本地锚点不变、不拉回、不关闭；错误可见
     expect(session.currentTopicId).toBe("t1");
     expect(session.topicName).toBe("旧话题");
-    expect(mocks.pullBackMock).not.toHaveBeenCalled();
+    expect(w.classes()).not.toContain("settling"); // 失败不该开始收起
     expect(w.emitted("close")).toBeFalsy();
     expect(w.find(".anchor-error").text()).toContain("未切换");
 
@@ -671,7 +775,7 @@ describe("星球记忆中心面板", () => {
     await w.find(".start-btn").trigger("click");
     await flushPromises();
     expect(session.topicName).toBe("话题 A");
-    expect(mocks.pullBackMock).toHaveBeenCalled();
+    expect(w.classes()).toContain("settling"); // 成功才走收起
     await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
@@ -854,14 +958,14 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
-    expect(mocks.pullBackMock).toHaveBeenCalled();
+    expect(w.classes()).toContain("settling"); // 收起已经开始
     await vi.advanceTimersByTimeAsync(620);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
   });
 
-  it("重开保留本次浏览的话题：起点未变化时不无条件回到起点", async () => {
+  it("重开时以当前在聊的话题为中心（浏览记忆不把它顶掉；用户实测要求）", async () => {
     const pinia = newPinia();
     useSessionStore().currentTopicId = "t1";
     mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS2 });
@@ -879,7 +983,12 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
     setActivePinia(pinia);
     const second = mountView(pinia);
     await flushPromises();
-    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t2", []);
+    /**
+     * 用户实测要求：「打开前当前话题不在最中心，就在打开的过程中转到中心」。
+     * 所以重开时**当前在聊的话题（t1）优先**，浏览记忆（t2）只在它不可见时兜底
+     * —— 这一条覆盖了原来「起点未变就回到上次浏览的话题」的旧规则。
+     */
+    expect(mocks.focusTopicMock).toHaveBeenCalledWith("t1", []);
     second.unmount();
   });
 
@@ -990,39 +1099,44 @@ describe("任务05 收尾：加载提示、详情布局、选择可达性与浏�
 });
 
 describe("PlanetView 实例复用（性能：不再每次重建 WebGL 场景）", () => {
-  it("open 从 false 变回 true 时复用同一场景：不再 init、会重新拉数据并恢复渲染", async () => {
+  it("open 从 false 变回 true 时复用同一场景：不再 init、会重新拉数据并恢复全帧率", async () => {
     const w = mountView(newPinia());
     await flushPromises();
     expect(mocks.initMock).toHaveBeenCalledTimes(1);
     const listCallsAfterMount = mocks.apiMock.listTopics.mock.calls.length;
 
-    // 关闭（父级只隐藏，不卸载）
+    /**
+     * 关闭 = 回到入口小球状态，**不是停止渲染**。
+     * 小球现在由真实星球场景承担（同一个场景缩到入口尺度），所以它会继续以低帧率渲染、
+     * 并保持慢速自转；对应用户要的「入口小球就是真实星球，平常微微旋转」。
+     */
     await w.setProps({ open: false });
     await flushPromises();
-    expect(mocks.setPausedMock).toHaveBeenLastCalledWith(true);
+    expect(w.find(".planet-view").classes()).toContain("ball");
+    expect(mocks.setLowPowerMock).toHaveBeenLastCalledWith(true);
+    expect(mocks.setIdleSpinMock).toHaveBeenLastCalledWith(true);
+    expect(mocks.setPausedMock).not.toHaveBeenLastCalledWith(true);
 
     // 重新打开
     await w.setProps({ open: true });
     await flushPromises();
     expect(mocks.initMock).toHaveBeenCalledTimes(1); // 复用：没有重建场景
-    expect(mocks.setPausedMock).toHaveBeenLastCalledWith(false);
+    expect(mocks.setLowPowerMock).toHaveBeenLastCalledWith(false);
+    expect(mocks.setIdleSpinMock).toHaveBeenLastCalledWith(false);
     expect(mocks.apiMock.listTopics.mock.calls.length).toBeGreaterThan(listCallsAfterMount); // 数据仍然刷新
     w.unmount();
   });
 
   it("关闭过程中又打开一次：放弃这次收尾（不 emit、不把新层变成收起中）", async () => {
     vi.useFakeTimers();
-    const resolvers: (() => void)[] = [];
-    mocks.pullBackMock.mockImplementationOnce(() => new Promise<void>((r) => { resolvers.push(r); }));
     const w = mountView(newPinia());
     w.setProps({ seq: 7 });
     await flushPromises();
 
     await w.find(".close-btn").trigger("click");
-    expect(resolvers.length).toBe(1);
+    expect(w.classes()).toContain("settling"); // 收势进行中
     // 关闭动画还没结束，用户又打开了一次（序号变成 8）
     await w.setProps({ seq: 8 });
-    resolvers[0]();
     await flushPromises();
     await vi.advanceTimersByTimeAsync(620);
 
@@ -1100,5 +1214,238 @@ describe("第二阶段：浏览 ≠ 进入话题", () => {
     attachedSession!.takeSwap(1, { backSlots: [slot] }, performance.now() + 10_000);
 
     expect(attachedSession!.windowSlots()[slot]?.topic_id).toBe("t2");
+  });
+});
+
+/**
+ * 第三阶段 Task 9：Topic Detail 成为完整的记忆浏览链路
+ * 话题 → 片段（摘要 / 时间 / 消息数）→ 原文（按需 + 分页）→ 从这里继续。
+ */
+describe("第三阶段：话题详情的记忆浏览链路", () => {
+  const FRAG = {
+    fragment_id: "f13",
+    summary: "Anchor 生命周期的讨论",
+    closed_at: "2026-09-10T08:00:00Z",
+    created_at: "2026-09-10T07:00:00Z",
+    message_count: 8,
+  };
+  const DETAIL_FULL: TopicDetail = {
+    topic_id: "t1",
+    name: "话题 A",
+    summary: "Anchor 生命周期的讨论。",
+    keywords: ["Anchor", "生命周期"],
+    last_activity: "2026-09-14T09:00:00Z",
+    message_count: 42,
+    fragments: [FRAG],
+    entities: [],
+    knowledge: [
+      { id: "kn_1", category: "user_profile", state: "pending_review", content: "用户偏好简洁", confidence: null, updated_at: "2026-09-14T09:00:00Z" },
+    ],
+  };
+
+  function mountWithDetail() {
+    const pinia = newPinia();
+    useSessionStore().currentTopicId = "t1";
+    mocks.apiMock.getTopicDetail.mockResolvedValue(DETAIL_FULL);
+    return mountView(pinia);
+  }
+
+  it("详情分层：一句摘要 + 最近活动/片段数/消息数 + 关键词", async () => {
+    const w = mountWithDetail();
+    await flushPromises();
+    expect(w.find(".detail-summary").text()).toContain("Anchor 生命周期");
+    const facts = w.find(".detail-facts").text();
+    expect(facts).toContain("1 个片段");
+    expect(facts).toContain("42 条消息");
+    expect(facts).toContain("最近活动");
+    expect(w.find(".detail-keywords").text()).toContain("Anchor");
+    // 片段项：时间 + 摘要 + 消息数
+    const item = w.find(".fragment-item");
+    expect(item.find(".fragment-summary").text()).toContain("Anchor 生命周期的讨论");
+    expect(item.find(".fragment-count").text()).toContain("8 条消息");
+    w.unmount();
+  });
+
+  it("默认不加载原文；点「查看原文」才按需取第一页，并说明这是只读历史", async () => {
+    const fetchRaw = mocks.apiMock.fragmentMessages as unknown as ReturnType<typeof vi.fn>;
+    fetchRaw.mockImplementation(async (id: string, offset = 0, limit = 20) => ({
+      fragment_id: id,
+      topic_id: "t1",
+      total: 30,
+      offset,
+      limit,
+      messages: [
+        { id: `m${offset + 1}`, role: "user", content: `第 ${offset + 1} 条`, content_type: "text", created_at: "2026-09-10T07:00:00Z" },
+        { id: `m${offset + 2}`, role: "assistant", content: "回答", content_type: "text", created_at: "2026-09-10T07:01:00Z" },
+      ],
+    }));
+
+    const w = mountWithDetail();
+    await flushPromises();
+    expect(fetchRaw).not.toHaveBeenCalled(); // 默认只有摘要
+
+    await w.find(".fragment-item .raw-toggle").trigger("click");
+    await flushPromises();
+    expect(fetchRaw).toHaveBeenCalledWith("f13", 0, 20);
+    const note = w.find(".raw-note").text();
+    expect(note).toContain("当时发生过");
+    expect(note).toContain("只读");
+    expect(note).toContain("当前对话没有停在这里");
+    expect(w.findAll(".raw-item").length).toBe(2);
+
+    // 继续读取：追加下一段，不重复第一段
+    await w.find(".raw-more").trigger("click");
+    await flushPromises();
+    expect(fetchRaw).toHaveBeenLastCalledWith("f13", 2, 20);
+    expect(w.findAll(".raw-item").length).toBe(4);
+    w.unmount();
+  });
+
+  it("分页读完后给出收尾提示（不再无限读）", async () => {
+    const fetchRaw = mocks.apiMock.fragmentMessages as unknown as ReturnType<typeof vi.fn>;
+    fetchRaw.mockImplementation(async (id: string, offset = 0, limit = 20) => ({
+      fragment_id: id,
+      topic_id: "t1",
+      total: 1,
+      offset,
+      limit,
+      messages: [{ id: "m1", role: "user", content: "只有一条", content_type: "text", created_at: "2026-09-10T07:00:00Z" }],
+    }));
+    const w = mountWithDetail();
+    await flushPromises();
+    await w.find(".fragment-item .raw-toggle").trigger("click");
+    await flushPromises();
+    expect(w.find(".raw-more").exists()).toBe(false);
+    expect(w.find(".raw-end").text()).toContain("已读完");
+    w.unmount();
+  });
+
+  it("读取原文失败：卡片内可见原因 + 重试（不静默失败）", async () => {
+    const fetchRaw = mocks.apiMock.fragmentMessages as unknown as ReturnType<typeof vi.fn>;
+    fetchRaw.mockRejectedValueOnce(new Error("offline"));
+    const w = mountWithDetail();
+    await flushPromises();
+    await w.find(".fragment-item .raw-toggle").trigger("click");
+    await flushPromises();
+    expect(w.find(".raw-error").text()).toContain("读取原文失败");
+    expect(w.find(".raw-error button").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("片段上的「从这里继续」走 continueFromHistory（旧片段不改）", async () => {
+    const pinia = newPinia();
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    mocks.apiMock.getTopicDetail.mockResolvedValue(DETAIL_FULL);
+    const w = mountView(pinia);
+    await flushPromises();
+    await w.find(".fragment-item .frag-continue").trigger("click");
+    await flushPromises();
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f13");
+    w.unmount();
+  });
+
+  it("知识条目的状态用中文（不把 pending_review 这类内部状态名丢给用户）", async () => {
+    const w = mountWithDetail();
+    await flushPromises();
+    const state = w.find(".knowledge-item .k-state").text();
+    expect(state).toBe("待确认");
+    expect(state).not.toContain("pending_review");
+    w.unmount();
+  });
+
+  it("知识修正失败：错误留在该条目上并可重试（不再只写 console）", async () => {
+    const revise = mocks.apiMock.reviseKnowledge as unknown as ReturnType<typeof vi.fn>;
+    revise.mockRejectedValueOnce(new Error("offline"));
+    const w = mountWithDetail();
+    await flushPromises();
+    await w.find(".knowledge-item .qio-btn.mini").trigger("click"); // 修正
+    await w.find(".knowledge-edit").setValue("用户偏好极简");
+    const saveBtn = w.findAll(".knowledge-item .qio-btn.mini").find((b) => b.text().includes("保存"));
+    await saveBtn!.trigger("click");
+    await flushPromises();
+    expect(revise).toHaveBeenCalled();
+    const err = w.find(".k-feedback.err");
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("修改没有保存");
+    expect(err.text()).toContain("可以重试");
+
+    // 重试成功：错误消失，出现短暂的「已保存」
+    await saveBtn!.trigger("click");
+    await flushPromises();
+    expect(w.find(".k-feedback.err").exists()).toBe(false);
+    expect(w.find(".k-feedback.ok").text()).toContain("已保存");
+    w.unmount();
+  });
+});
+
+/**
+ * 第四阶段：Planet 连续体。
+ *
+ * 入口小球与全屏 Planet 必须是**同一个对象的不同尺度状态**，所以这里守的是编排本身：
+ * 进入分三段推进（激活 → 展开 → 接管），退出严格反向（收势 → 收缩 → 交还），
+ * 而且阶段状态与 PlanetDock 共享（`planetContinuum`），不是各自计时。
+ */
+describe("PlanetView 连续体编排（第四阶段）", () => {
+  it("进入：激活 → 展开 → 场景接管；退出：收势 → 收缩 → 交还", async () => {
+    vi.useFakeTimers();
+    const seen: string[] = [];
+    const stop = watch(() => planetContinuum.phase, (p) => seen.push(p), { immediate: true });
+    const w = mountView(newPinia());
+    await flushPromises();
+
+    // A 入口激活：小球被激活、铺底淡入，此时还不接受交互
+    expect(planetContinuum.phase).toBe("activating");
+    expect(mocks.setRevealMock).toHaveBeenCalledWith(0);
+
+    await vi.advanceTimersByTimeAsync(260);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("expanding");
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("ready");
+    expect(seen).toEqual(expect.arrayContaining(["activating", "expanding", "ready"]));
+
+    // 退出：先降密度/收浮层，再收缩体量，最后交还小球
+    await w.find(".close-btn").trigger("click");
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("collapsing");
+    await vi.advanceTimersByTimeAsync(260);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("returning");
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("idle");
+    expect(w.emitted("close")).toBeTruthy();
+
+    stop();
+    vi.useRealTimers();
+    w.unmount();
+  });
+
+  it("能拿到球体屏幕几何时，星球层从入口小球的尺度开始（同一个对象长大）", async () => {
+    // 入口小球在视口右侧（96×96 → 半径 48），球体屏幕半径 300 → 起始缩放约 0.16
+    const entry = document.createElement("button");
+    entry.setAttribute("data-planet-entry", "");
+    entry.getBoundingClientRect = () =>
+      ({ left: 1200, top: 400, width: 96, height: 96, right: 1296, bottom: 496, x: 1200, y: 400 }) as DOMRect;
+    document.body.appendChild(entry);
+    mocks.sphereRectMock.mockReturnValue({ cx: 700, cy: 400, radius: 300 });
+    vi.useFakeTimers();
+    const w = mountView(newPinia());
+    await flushPromises();
+    const stage = w.find(".planet-stage");
+    // jsdom 的 cssstyle 不保存自定义属性，所以读组件暴露的 data-stage-k
+    const k = Number(stage.attributes("data-stage-k"));
+    expect(k).toBeGreaterThan(0);
+    expect(k).toBeLessThan(0.3); // 远小于 1：确实是「从小球尺度开始」
+    expect(mocks.sphereRectMock).toHaveBeenCalled();
+    // 缩放中间态：画布坐标不再对应真实球面，命中必须锁住
+    await w.find("canvas").trigger("click", { clientX: 10, clientY: 10 });
+    expect(mocks.handleClickMock).not.toHaveBeenCalled();
+    vi.useRealTimers();
+    w.unmount();
+    entry.remove();
   });
 });
