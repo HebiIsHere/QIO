@@ -30,10 +30,21 @@ from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
 from agent.core.guard import GuardVerdict, RunawayGuard
+from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _terminal_tool_status(data: dict) -> str:
+    """管线结束事件 → 工具终态语义。
+
+    取消是独立语义（`cancelled`），不能因为 `ok=False` 就并进 `failed`。
+    """
+    if data.get("cancelled"):
+        return CANCELLED
+    return SUCCESS if data.get("ok") else FAILED
 
 
 class LoopPhase(str, Enum):
@@ -75,6 +86,7 @@ class AgentLoop:
         tool_selector=None,
         max_parallel_tools: int = 4,
         is_cancelled: Callable[[], bool] | None = None,
+        tool_state: ToolExecutionState | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -107,6 +119,10 @@ class AgentLoop:
         # 每次工具调用的开始时刻：TOOL_END 用它给出耗时（前端卡片显示「1.2s」）。
         # 放在 loop 上而不是 registry 上：registry 是跨 loop 共享的，计时必须按调用归属。
         self._tool_started_at: dict[str, float] = {}
+        # 工具执行的**权威事实**（active + recent terminal）。主 Turn 由 AppContext 注入
+        # 进程级实例（这样「刚结束的 Turn」的工具结果在重连后仍查得到）；
+        # 单独构造 loop（子任务 / 测试）时自建一份私有的，行为一致但不外泄。
+        self.tool_state = tool_state or ToolExecutionState()
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
         self.max_parallel_tools = max(1, max_parallel_tools)
@@ -144,6 +160,8 @@ class AgentLoop:
 
         if call_id:
             self._tool_started_at[call_id] = _time.perf_counter()
+        # 先写权威状态，再发实时事件：通知丢了也不影响最终状态可恢复。
+        self.tool_state.start(self.turn_id, str(call_id or ""), str(data.get("tool") or ""))
         # 呈现（present_call）在这里也给：工具「开始执行」的卡片要有中文标题，
         # 而不是等结束才补上（否则运行中的卡显示的是原始工具名）。
         presentation = None
@@ -174,18 +192,30 @@ class AgentLoop:
         if call_id not in self._dispatched_call_ids:
             return
         duration_ms = None
+        tool_name = str(data.get("tool") or "")
+        status = _terminal_tool_status(data)
         if call_id:
             import time as _time
 
             started = self._tool_started_at.pop(call_id, None)
             if started is not None:
                 duration_ms = int((_time.perf_counter() - started) * 1000)
+        self.tool_state.finish(
+            self.turn_id,
+            str(call_id or ""),
+            status,
+            tool_name=tool_name,
+            error=data.get("error"),
+        )
         await self._emit(
             EventType.TOOL_END,
             {
                 "tool": data.get("tool"),
                 "call_id": call_id,
                 "ok": data.get("ok"),
+                # 结局的语义（success / failed / cancelled）随事件一起给，
+                # 前端不必从 ok 反推「取消」还是「失败」。
+                "status": status,
                 "error": data.get("error"),
                 "content_preview": data.get("content_preview", ""),
                 "duration_ms": duration_ms,
@@ -296,6 +326,20 @@ class AgentLoop:
     def push_notice(self, text: str) -> None:
         """Queue a system notice; injected before the next PLANNING step."""
         self._notices.append(text)
+
+    def active_tools(self) -> list[dict]:
+        """此刻真正在执行中的工具（TOOL_START 到了、TOOL_END 还没到）。
+
+        runtime snapshot 用它回答「现在在跑哪些工具」：客户端在 RESYNC 之后
+        把不在这个列表里的「运行中」卡片收口，避免 TOOL_END 丢失后永久转圈。
+        """
+        return [
+            record
+            for record in self.tool_state.snapshot(
+                active_turn_id=self.turn_id, turn_id=self.turn_id
+            )
+            if record["status"] == "running"
+        ]
 
     # -- event helpers ----------------------------------------------------
 

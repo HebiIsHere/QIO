@@ -326,6 +326,8 @@ class TurnOrchestrator:
             guard=RunawayGuard(),
             turn_id=ctx.turn_id,
             trace=ctx.trace,
+            # 进程级权威状态：TOOL_END 丢了，这一轮的最终结果仍然查得到
+            tool_state=app.tool_state,
             # 取消检查点：本 turn 被取消后循环不再发起新的模型/工具调用
             is_cancelled=lambda: ctx.cancelled,
         )

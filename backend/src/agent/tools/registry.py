@@ -145,10 +145,26 @@ class ToolRegistry:
                     )
         except asyncio.CancelledError:
             result = ToolResult(ok=False, error=f"工具「{call.name}」已被取消")
-        await self._finish(call, tool, result)
+            cancelled = True
+        else:
+            cancelled = False
+        await self._finish(call, tool, result, cancelled=cancelled)
         return result
 
-    async def _finish(self, call: ToolCall, tool: Tool | None, result: ToolResult) -> None:
+    async def _finish(
+        self,
+        call: ToolCall,
+        tool: Tool | None,
+        result: ToolResult,
+        *,
+        cancelled: bool = False,
+    ) -> None:
+        """广播一次调用的结果。
+
+        `cancelled` 是显式语义而不是「失败的一种」：下层的权威状态
+        （见 `core/tool_state.py`）据此区分 cancelled 与 failed，
+        界面上「用户取消」不能被说成「执行失败」。
+        """
         await self.events.emit(EVENT_RESULT, {"tool": call.name, "call": call, "result": result})
         await self.events.emit(
             EVENT_END,
@@ -159,6 +175,7 @@ class ToolRegistry:
                 "error": result.error,
                 "content_preview": result.content[:200],
                 "presentation": self._present(tool, call, result),
+                "cancelled": cancelled,
             },
         )
 

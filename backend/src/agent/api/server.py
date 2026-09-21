@@ -273,6 +273,14 @@ def create_app(
 
     @app.patch("/api/credentials/{key_id}")
     async def update_credential_meta(key_id: str, body: dict) -> dict:
+        """一次请求 = 一次完整的凭据重配置。
+
+        endpoint 属于凭据的安全身份：改 endpoint 就等于换了服务提供方，
+        必须重新输入 secret 并显式确认（规则在 store 里强制，服务端说了算）。
+
+        这里刻意**只调用一次** `reconfigure`，而不是「先 update_secret 再 update_metadata」：
+        后者在两步之间失败会留下「secret 已换、endpoint 还是旧的」这种混合状态。
+        """
         kwargs: dict = {}
         if "tags" in body:
             kwargs["tags"] = body["tags"]
@@ -282,41 +290,15 @@ def create_app(
             kwargs["budget"] = body["budget"]
         if "note" in body:
             kwargs["note"] = body["note"]
-
-        # endpoint 属于凭据的安全身份，不是普通元数据：改了 endpoint 就等于换了
-        # 服务提供方，绝不能继续复用 keyring 里的旧 Key 静默发出去。
-        # 必须重新输入 secret（rotation）+ 显式确认重新配置。
-        endpoint_changed = False
         if "endpoint" in body:
-            new_endpoint = str(body.get("endpoint") or "").strip()
-            current = ctx.credentials.get_metadata(key_id)
-            if current is None:
-                raise HTTPException(status_code=404, detail="credential not found")
-            if new_endpoint != (current.get("endpoint") or ""):
-                from agent.credentials.store import validate_endpoint
-
-                try:
-                    validate_endpoint(new_endpoint)
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-                secret = str(body.get("secret") or "").strip()
-                if not secret or not body.get("confirm_reconfigure"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "changing endpoint is a credential reconfiguration: "
-                            "re-enter the secret and pass confirm_reconfigure=true"
-                        ),
-                    )
-                endpoint_changed = True
-                ctx.credentials.update_secret(key_id, secret)
-                kwargs["endpoint"] = new_endpoint
+            kwargs["endpoint"] = body.get("endpoint")
+        secret = str(body.get("secret") or "").strip() or None
         try:
-            meta = ctx.credentials.update_metadata(
+            meta = ctx.credentials.reconfigure(
                 key_id,
                 **kwargs,
-                secret=body.get("secret") if endpoint_changed else None,
-                confirm_reconfigure=bool(endpoint_changed),
+                secret=secret,
+                confirm_reconfigure=bool(body.get("confirm_reconfigure")),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -627,6 +609,11 @@ def create_app(
             "turn_queue": ctx.turns.snapshot(),
             "approvals": ctx.approvals.pending(),
             "tasks": ctx.task_manager.snapshot(),
+            # 工具执行的权威事实（活工具 + 最近结束的工具）：
+            # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，
+            # 客户端据此把「运行中」的卡片恢复成真实的 success / failed / cancelled。
+            # 只有服务器也确认不了（记录已回收 / 进程重启）时才轮到 unknown。
+            "tools": ctx.tool_executions(),
         }
 
     @app.post("/api/turns/{turn_id}/cancel")

@@ -206,6 +206,137 @@ class CredentialStore:
                 "failed to roll back credential secret for %s", key_id, exc_info=True
             )
 
+    # -- combined reconfiguration ------------------------------------------
+
+    def reconfigure(
+        self,
+        key_id: str,
+        *,
+        secret: str | None = None,
+        tags: Any = _UNSET,
+        endpoint: Any = _UNSET,
+        default_model: Any = _UNSET,
+        budget: Any = _UNSET,
+        note: Any = _UNSET,
+        confirm_reconfigure: bool = False,
+        triggered_by: str = "user",
+    ) -> dict[str, Any]:
+        """一次完整的凭据重配置：secret + endpoint + 其他元数据 = **一个**操作。
+
+        keyring 与 SQLite 无法共享事务，所以这里用显式补偿：
+
+        1. 读旧状态（row + 旧 secret）；
+        2. 校验全部输入（endpoint 规则、endpoint 变化必须重新输入 secret 并显式确认）；
+        3. 写新 secret（失败 → 什么都没改，直接抛）；
+        4. 在一个 SQLite 事务里写元数据（+ 需要时推进 version + 审计）；
+        5. 第 4 步失败 → 把 secret 写回旧值、事务回滚元数据；
+           如果**连回滚也失败**：记录 CRITICAL 并抛出一个明确的错误，
+           绝不假装操作成功（这种状态需要人工诊断）。
+
+        这样 API 层「改 secret 顺手改 endpoint」只会得到两种结果：
+        全部成功，或全部回到操作前。
+        """
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+
+        old_secret = self._read_secret(key_id)
+        old_version = int(row["version"])
+        old_endpoint = (row["endpoint"] or "").strip()
+
+        sets: list[str] = []
+        params: list[Any] = []
+        version_bump = False
+
+        if endpoint is not _UNSET:
+            new_endpoint = str(endpoint or "").strip()
+            if new_endpoint != old_endpoint:
+                if not (secret and confirm_reconfigure):
+                    raise ValueError(
+                        "changing endpoint is a credential reconfiguration: "
+                        "re-enter the secret and pass confirm_reconfigure=true"
+                    )
+                validate_endpoint(new_endpoint)
+                version_bump = True
+            sets.append("endpoint = ?")
+            params.append(new_endpoint or None)
+
+        if secret is not None:
+            if not str(secret).strip():
+                raise ValueError("secret must not be empty")
+            version_bump = True
+
+        if tags is not _UNSET:
+            sets.append("tags = ?")
+            params.append(json.dumps(tags or [], ensure_ascii=False))
+        if default_model is not _UNSET:
+            sets.append("default_model = ?")
+            params.append(default_model)
+        if budget is not _UNSET:
+            sets.append("budget = ?")
+            params.append(budget)
+            sets.append("budget_used = 0")
+        if note is not _UNSET:
+            sets.append("note = ?")
+            params.append(note)
+
+        new_version = old_version + 1 if version_bump else old_version
+
+        # 先写密钥：这一步失败时元数据一个字都没动，直接抛即可
+        if secret is not None:
+            self._kr.set_password(self.service, key_id, secret)
+
+        if not sets:
+            return self.get_metadata(key_id) or {}
+
+        if version_bump:
+            sets.append("version = ?")
+            params.append(new_version)
+        sets.append("updated_at = ?")
+        params.append(_now())
+        params.append(key_id)
+
+        try:
+            with transaction(self.conn):
+                self.conn.execute(
+                    f"UPDATE credentials SET {', '.join(sets)} WHERE id = ?", params
+                )
+                self._audit(
+                    key_id,
+                    # 审计表的 action 集合是固定的（create/update/revoke/test）：
+                    # 组合重配置也记为 update，区别体现在 from_version → to_version 上。
+                    "update",
+                    old_version,
+                    new_version,
+                    triggered_by,
+                )
+        except BaseException as exc:
+            if secret is not None:
+                try:
+                    self._restore_secret_strict(key_id, old_secret)
+                except Exception as rollback_error:  # noqa: BLE001
+                    import logging
+
+                    logging.getLogger(__name__).critical(
+                        "credential %s is in an inconsistent state: metadata update failed (%s) "
+                        "and rolling the secret back also failed (%s)",
+                        key_id,
+                        exc,
+                        rollback_error,
+                        exc_info=True,
+                    )
+                    raise CredentialRollbackError(key_id, exc, rollback_error) from exc
+            raise
+        return self.get_metadata(key_id) or {}
+
+    def _restore_secret_strict(self, key_id: str, old_secret: str | None) -> None:
+        """回滚密钥；失败就向上抛（调用方需要知道系统已经不一致）。"""
+        if old_secret is None:
+            self._kr.delete_password(self.service, key_id)
+        else:
+            self._kr.set_password(self.service, key_id, old_secret)
+
+
     def revoke(self, key_id: str, triggered_by: str = "user") -> None:
         row = self._row(key_id)
         if row is None:
@@ -452,3 +583,20 @@ def _default_keyring() -> Any:
             "must be available"
         )
     return kr
+
+
+class CredentialRollbackError(RuntimeError):
+    """元数据提交失败之后，连密钥回滚都失败了 —— 需要人工诊断的状态。
+
+    刻意把两个原因都带出来：只报「更新失败」会让运维以为什么都没变。
+    """
+
+    def __init__(self, key_id: str, original: BaseException, rollback: BaseException) -> None:
+        super().__init__(
+            f"credential {key_id} may be inconsistent: the metadata update failed "
+            f"({original}) and rolling the secret back also failed (rollback error: {rollback}). "
+            "Manual inspection is required."
+        )
+        self.key_id = key_id
+        self.original = original
+        self.rollback = rollback

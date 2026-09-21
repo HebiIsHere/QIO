@@ -145,6 +145,48 @@ describe("主 turn 与 Subagent 的事件归属", () => {
 });
 
 describe("RESYNC 恢复完整运行状态", () => {
+  it("subagent 的 WARNING / ERROR 不污染主 Session", () => {
+    const { session, events } = setup();
+    events.route({
+      type: "TURN_START",
+      id: "s",
+      ts: "",
+      data: { turn_id: "turn_main", revision: 1, instance_id: "i" },
+    });
+
+    events.route({
+      type: "WARNING",
+      id: "w_sub",
+      ts: "",
+      data: { turn_id: "subagent:task_1", message: "子任务的小警告" },
+    });
+    events.route({
+      type: "ERROR",
+      id: "e_sub",
+      ts: "",
+      data: { turn_id: "subagent:task_1", message: "子任务内部报错" },
+    });
+    expect(session.warning).toBeNull();
+    expect(session.lastError).toBeNull();
+
+    // 主 turn 自己的警告 / 错误照常显示
+    events.route({
+      type: "WARNING",
+      id: "w_main",
+      ts: "",
+      data: { turn_id: "turn_main", message: "主循环的提示" },
+    });
+    expect(session.warning).toBe("主循环的提示");
+
+    events.route({
+      type: "ERROR",
+      id: "e_main",
+      ts: "",
+      data: { turn_id: "turn_main", message: "主循环的错误" },
+    });
+    expect(session.lastError).toBe("主循环的错误");
+  });
+
   it("恢复 turn queue + 待审批 + 独立任务，并清掉「正在同步」提示", async () => {
     const { session, events, approvals } = setup();
     vi.mocked(api.getRuntimeState).mockResolvedValueOnce({

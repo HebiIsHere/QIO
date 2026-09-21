@@ -89,6 +89,20 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.queue.length !== before) this.error = null;
       if (!this.queue.length) this.deferred = false;
     },
+    /**
+     * 用服务端的权威快照**替换**待办集合。
+     *
+     * 服务器没有列出来的审批 = 已经不再 pending（被批准/拒绝/过期/取消），
+     * 本地必须移除，否则会出现「后端早已有结局，界面还留着 Allow / Reject」。
+     * 只做移除、不在这里添加：添加要按 kind 决定走哪条 UI（见 events store 的统一入口）。
+     */
+    reconcile(keepIds: string[]) {
+      const keep = new Set(keepIds);
+      const before = this.queue.length;
+      this.queue = this.queue.filter((a) => keep.has(a.approval_id));
+      if (this.queue.length !== before) this.error = null;
+      if (!this.queue.length) this.deferred = false;
+    },
     async respond(decision: "approved" | "rejected", overrides?: Record<string, unknown>) {
       const item = this.current;
       // 双提交防护：请求进行中忽略后续点击（按钮同时 disabled）

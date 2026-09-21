@@ -355,8 +355,12 @@ class MaintenanceScheduler:
     async def _tick(self) -> None:
         if self.ctx.settings_store.get("maintenance.enabled", "true") == "false":
             return
-        # 只在空闲时跑：当前真正的状态来源是 TurnManager（`ctx._active_loop` 早已不存在）
-        if self.ctx.turns.active_loop() is not None:
+        # 只在「完全没有主 Turn」时跑。
+        #
+        # 不能只看 active AgentLoop：Turn 可能正处在上下文准备、结果保存或收尾阶段，
+        # 这时 loop 已经交出/还没建立，但主任务并没有结束 —— 用 active_loop 判断
+        # 会让维护任务和主任务同时跑。
+        if self.ctx.turns.active is not None:
             return
         await self.run_once()
 

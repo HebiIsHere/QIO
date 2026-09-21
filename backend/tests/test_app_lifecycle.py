@@ -112,6 +112,61 @@ async def test_turn_manager_rejects_submit_after_shutdown():
         tm.submit("A")
 
 
+# ---------------------------------------------------------------------------
+# Maintenance 的避让条件：只要还有 active Turn 就不能跑
+# ---------------------------------------------------------------------------
+
+
+async def test_maintenance_waits_for_any_active_turn_not_just_an_active_loop():
+    """Turn 处于「上下文准备 / 结果保存 / 收尾」时没有 active AgentLoop，
+    但主任务并没结束 —— 这时 Maintenance 同样必须避让。"""
+    from agent.api.bus import EventBus
+    from agent.services.app import AppContext
+    from agent.storage.db import connect
+    from agent.storage.migrate import apply_migrations
+    from pathlib import Path
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    conn = connect(tmp / "app.db")
+    apply_migrations(conn)
+    ctx = AppContext(Settings(data_dir=tmp), conn, EventBus())
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def runner(turn_ctx):  # 故意不设置 turn_ctx.loop
+        started.set()
+        await release.wait()
+
+    ctx.turns.set_runner(runner)
+    ctx.turns.submit("A")
+    await started.wait()
+    assert ctx.turns.active is not None
+    assert ctx.turns.active_loop() is None, "前提：这一轮还没有 agent loop"
+
+    ran: list[int] = []
+
+    async def fake_run_once():
+        ran.append(1)
+        return {"ok": True}
+
+    scheduler = ctx.maintenance
+    scheduler.run_once = fake_run_once  # type: ignore[method-assign]
+
+    await scheduler._tick()
+    assert ran == [], "还有 active Turn 时 Maintenance 不得运行"
+
+    release.set()
+    await asyncio.sleep(0.05)
+    assert ctx.turns.active is None
+    await scheduler._tick()
+    assert ran == [1], "没有 active Turn 后 Maintenance 要恢复执行"
+
+    await ctx.turns.shutdown()
+    conn.close()
+
+
 async def test_task_manager_shutdown_cancels_running_and_rejects_new_tasks():
     from agent.tools.base import ToolResult
     from agent.tools.task_manager import TaskManager

@@ -64,15 +64,37 @@ const toolTitle = computed(
   () => props.message.presentation?.title || props.message.toolName || "工具调用",
 );
 
-/** 呈现优先：status 作为语义状态徽标 */
-const toolStatus = computed(() => props.message.presentation?.status || "");
-
 /**
  * 工具卡状态：运行中就说运行中，不为「还在跑」画一个 ✓。
  * 用户必须能分辨「正在执行」与「已完成」（spec 第 32~34 条）。
+ *
+ * 数据模型里区分五种语义（运行中 / 成功 / 失败 / 已取消 / 结果未收到）；
+ * 视觉上沿用既有的卡片状态（取消与未知复用最接近的失败外观），
+ * 但文案必须说出真实状态 —— 「取消」不是「失败」，「结果未收到」也不是。
  */
-const toolRunning = computed(() => props.message.toolRunning === true);
-const toolFailed = computed(() => !toolRunning.value && props.message.toolOk === false);
+const toolState = computed<"running" | "success" | "failed" | "cancelled" | "unknown">(() => {
+  if (props.message.toolStatus) return props.message.toolStatus;
+  // 老数据（历史 / 测试构造的消息）没有 toolStatus：按旧字段兜底
+  if (props.message.toolRunning === true) return "running";
+  return props.message.toolOk === false ? "failed" : "success";
+});
+const toolRunning = computed(() => toolState.value === "running");
+const toolFailed = computed(() => !toolRunning.value && toolState.value !== "success");
+const toolMark = computed(() => {
+  if (toolRunning.value) return "◌";
+  if (toolState.value === "cancelled") return "⊘";
+  if (toolState.value === "unknown") return "?";
+  return toolFailed.value ? "✕" : "✓";
+});
+/**
+ * 卡片上的状态徽标：运行中 / 已取消由语义决定；
+ * 其余（成功、失败）沿用工具自己的呈现文案，没有就不显示（不制造噪声）。
+ */
+const toolStateLabel = computed(() => {
+  if (toolRunning.value) return "运行中";
+  if (toolState.value === "cancelled") return "已取消";
+  return props.message.presentation?.status || "";
+});
 
 /** 耗时：只有拿得到且有意义（≥0.1s）时才显示，不编造数字 */
 const durationText = computed(() => {
@@ -86,11 +108,15 @@ const durationText = computed(() => {
 const toolFailureLine = computed(() => {
   if (!toolFailed.value) return "";
   const raw = (props.message.toolError ?? "").trim();
-  if (!raw) return "这次执行没有成功";
-  if (raw.includes("未执行")) return raw;
-  if (raw.includes("取消")) return raw;
-  if (raw.includes("超时")) return raw;
-  return raw && raw.length <= 60 ? raw : "这次执行没有成功，展开可看原因";
+  if (raw) {
+    if (raw.includes("未执行")) return raw;
+    if (raw.includes("取消")) return raw;
+    if (raw.includes("超时")) return raw;
+    return raw.length <= 60 ? raw : "这次执行没有成功，展开可看原因";
+  }
+  if (toolState.value === "cancelled") return "这次执行已取消";
+  if (toolState.value === "unknown") return "结果未收到";
+  return "这次执行没有成功";
 });
 
 /** 独立任务的状态文案（用户看到的是「独立任务」，不是内部智能体进程） */
@@ -171,15 +197,15 @@ const metaText = computed(() => {
             class="tool-mark"
             :class="toolRunning ? 'running' : toolFailed ? 'fail' : 'ok'"
           >
-            {{ toolRunning ? "◌" : toolFailed ? "✕" : "✓" }}
+            {{ toolMark }}
           </span>
           <span class="tool-name mono">{{ toolTitle }}</span>
           <span
-            v-if="toolRunning || toolStatus"
+            v-if="toolRunning || toolStateLabel"
             class="tool-status qio-state"
             :class="toolRunning ? 'running info' : toolFailed ? 'fail err' : 'ok'"
           >
-            {{ toolRunning ? "运行中" : toolStatus }}
+            {{ toolStateLabel }}
           </span>
           <span v-if="durationText" class="tool-duration mono">{{ durationText }}</span>
           <span class="tool-time mono">{{ formatTime(message.createdAt) }}</span>

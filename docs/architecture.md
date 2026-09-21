@@ -98,6 +98,27 @@ accepted ──▶ running ──┬──▶ completed
 - 取消检查点覆盖模型调用前后、工具调用前后、下一次迭代前、持久化最终回答前、
   收尾记忆处理前：取消后不再发起新的模型/工具调用，也不把后续内容保存成正常最终回答。
 
+### 4.2.1 工具执行状态（终态可恢复）
+
+`EventBus` 是**实时通知**渠道：极端积压下允许丢弃可合并的过程事件（`TOOL_START`、
+`TOOL_END` 也在其中）。但「这次工具调用最终是成功、失败还是取消」是服务器**已经知道的事实**，
+不能因为一条通知没送到就永久变成「未知」。所以工具执行有一份独立于事件流的权威状态：
+`backend/src/agent/core/tool_state.py` 的 `ToolExecutionState`（进程级、纯内存、有界）。
+
+```
+tool/start ──▶ 权威状态 running ──────────────────▶ SSE TOOL_START
+tool/end   ──▶ 权威状态 success / failed / cancelled ──▶ SSE TOOL_END（带 status）
+```
+
+- 写权威状态**先于**发实时事件：事件丢了，终态仍然查得到；
+- `GET /api/runtime/state` 的 `tools` 由它生成（活工具 + 最近结束的工具），
+  这是 RESYNC 的恢复入口。前端按 `tool_call_id` 匹配、用 `turn_id` 校验后把卡片核对成
+  真实终态 —— 「没收到通知」不等于「结果未知」；
+- retention 以恢复需求为准：active Turn 的记录一律保留，其余终态记录按 TTL 与最大条数回收；
+- 它**不是**事件日志、不是工具输出归档，也不落盘：进程重启后为空，此时界面显示
+  「结果未收到」是诚实答案（不接受限制与保证见 `docs/status.md` 的 P13）；
+- Subagent 内部工具不属于主对话：既不返回给前端，也不新增对应 UI（独立任务仍只恢复 Task 级状态）。
+
 ### 4.3 TurnOrchestrator / Agent Runtime
 
 `agent/services/turn_orchestrator.py` 把一轮拆成可读的流水线：

@@ -29,6 +29,38 @@ export interface TurnQueueSnapshot {
   cancelled?: QueueItem[];
 }
 
+/**
+ * 工具卡的真实语义。
+ *
+ * `unknown` **不是**「没收到通知」的同义词：只有服务器自己也拿不出这次调用的
+ * 结果（记录已被回收 / 后端重启过）时才允许用它。
+ */
+export type ToolStatus = "running" | "success" | "failed" | "cancelled" | "unknown";
+
+/**
+ * 一份工具执行事实（`/api/runtime/state.tools`：活工具 + 最近结束的工具）。
+ *
+ * 身份是 `tool_call_id`（同一个工具名可能在一轮里被调用多次），
+ * `turn_id` 用于跨轮一致性校验 —— 别的 Turn 的调用不得改到本轮的卡片上。
+ */
+export interface ToolExecutionSnapshot {
+  turn_id?: string | null;
+  tool_call_id: string;
+  tool_name?: string;
+  status: ToolStatus;
+  started_at?: string | null;
+  ended_at?: string | null;
+  error_summary?: string | null;
+}
+
+/**
+ * 内部循环（子任务等）的 turn_id 前缀：它们的工具明细不属于主对话。
+ * 产品上 Subagent 的最小显示单位是「独立任务」，本轮不扩大这个范围。
+ */
+function isInternalToolTurn(turnId: unknown): boolean {
+  return typeof turnId === "string" && turnId.startsWith("subagent:");
+}
+
 /** 高影响知识候选（对话内确认卡）。 */
 export interface KnowledgeCandidate {
   knowledgeId: string;
@@ -106,6 +138,11 @@ export interface StreamMessage {
   callId?: string;
   /** 工具正在执行（卡片显示「运行中」，而不是假装已完成） */
   toolRunning?: boolean;
+  /**
+   * 工具的真实状态（内部数据模型必须区分五种语义；
+   * 视觉上仍复用最接近的既有状态，见 spec 第 27 条）。
+   */
+  toolStatus?: ToolStatus;
   /** 工具耗时（毫秒）；没有意义时（太快/未知）不显示 */
   toolDurationMs?: number;
   /** 独立任务标识：同一 task_id 只有一张卡 */
@@ -183,6 +220,12 @@ export const useSessionStore = defineStore("session", {
     historyCursor: null as string | null,
     /** 正在加载更早的历史（滚动会连续触发，需要防重入） */
     historyOlderLoading: false,
+    /**
+     * RESYNC 状态机：`normal` 正常实时；`resyncing` 正在拉权威快照
+     * （期间实时事件先缓存，快照应用后再按顺序补放）；`failed` 同步失败，
+     * 界面要如实说「可能不是最新的」，不能假装已经同步完成。
+     */
+    resyncState: "normal" as "normal" | "resyncing" | "failed",
     /** 本地排队中的用户消息 id（FIFO；TURN_START 到来时清除最早的一条） */
     queuedMessageIds: [] as string[],
     /**
@@ -477,17 +520,102 @@ export const useSessionStore = defineStore("session", {
       if (this.activeTurnId === turnId) this.activeTurnId = null;
     },
     /**
-     * 服务器说没有主 turn 在跑时，还挂着「运行中」的工具卡不可能真的在跑
-     * （它的 TOOL_END 已经丢在失真区间里了）—— 收口成「结果未收到」，
-     * 而不是让用户永远看到一个转圈的卡片。
+     * 一轮结束时收敛工具卡。
+     *
+     * 服务器保证「TURN_END 之前所有工具都已经结束」，所以此刻还显示
+     * 「运行中」的卡片一定是 TOOL_END 丢在失真区间里了 —— 收口，
+     * 而不是让用户一直看一个转圈的卡片。
+     *
+     * 这不是最终结论：如果服务器其实知道结果，下一次快照（`reconcileTools`）
+     * 会把这张卡改回真实的 success / failed / cancelled。
      */
-    finalizeRunningToolCards() {
+    convergeRunningTools(turnId?: string | null) {
       for (const m of this.messages) {
-        if (m.role === "tool" && m.toolRunning) {
-          m.toolRunning = false;
-          m.toolOk = false;
-          m.toolError = m.toolError ?? "连接中断，未收到执行结果";
+        if (m.role !== "tool" || !m.toolRunning) continue;
+        if (turnId && m.turnId && m.turnId !== turnId) continue;
+        this._markToolUnknown(m);
+      }
+    },
+    /**
+     * 用快照里的**工具执行事实**核对工具卡。
+     *
+     * 优先级（spec 第 20 条）：
+     *
+     * * 服务器给出的终态 > 本地过期的「运行中」（服务器知道就不能降级成 unknown）；
+     * * 快照之后到达的实时事件 > 快照 —— 由调用方的顺序保证：
+     *   快照先应用，同步期间缓存的事件随后按到达顺序补放；
+     * * 服务器说「还在跑」时只点亮还没结论的卡片，绝不把已有终态降级回运行中；
+     * * 两边都没有结果时才是 `unknown`。
+     */
+    reconcileTools(records: ToolExecutionSnapshot[]) {
+      const byCall = new Map<string, ToolExecutionSnapshot>();
+      for (const record of records ?? []) {
+        const callId = String(record?.tool_call_id ?? "");
+        if (!callId) continue;
+        // 子任务内部工具不属于主对话
+        if (isInternalToolTurn(record.turn_id)) continue;
+        byCall.set(callId, record);
+      }
+      for (const m of this.messages) {
+        if (m.role !== "tool" || !m.callId) continue;
+        const record = byCall.get(m.callId);
+        // 跨 Turn 不得串状态：别的 Turn 的同名 call_id 不是这次调用的事实，
+        // 与「服务器没有这条记录」等价 —— 同样只能收口成 unknown。
+        const mismatch = Boolean(record?.turn_id && m.turnId && record.turn_id !== m.turnId);
+        if (!record || mismatch) {
+          // 服务器也没有这次调用的记录（已按 retention 回收 / 后端重启过）：
+          // 这是服务器真的不知道，不是「通知没收到」。
+          if (m.toolStatus === "running" || m.toolRunning) this._markToolUnknown(m);
+          continue;
         }
+        if (record.status === "running") {
+          if (!m.toolStatus || m.toolStatus === "unknown") {
+            m.toolStatus = "running";
+            m.toolRunning = true;
+            m.toolOk = undefined;
+            m.toolError = null;
+          }
+          continue;
+        }
+        if (record.status === "unknown") {
+          if (m.toolStatus === "running") this._markToolUnknown(m);
+          continue;
+        }
+        this._applyToolTerminal(m, record.status, record.error_summary ?? null);
+      }
+    },
+    /** 服务器确认不了结果：如实收口成 unknown，绝不伪造 success / failed。 */
+    _markToolUnknown(m: StreamMessage) {
+      m.toolStatus = "unknown";
+      m.toolRunning = false;
+      m.toolOk = false;
+      m.toolError = m.toolError ?? "结果未收到";
+    },
+    /** 把服务器知道的终态写进卡片（同一次调用，原位更新）。 */
+    _applyToolTerminal(m: StreamMessage, status: ToolStatus, errorSummary: string | null) {
+      m.toolStatus = status;
+      m.toolRunning = false;
+      m.toolOk = status === "success";
+      if (status === "success") {
+        m.toolError = null;
+        return;
+      }
+      const known = (errorSummary ?? "").trim() || (m.toolError ?? "").trim();
+      m.toolError = known || (status === "cancelled" ? "已取消" : null);
+    },
+    /**
+     * 用快照里的活动任务集合核对独立任务卡：不在其中却还显示
+     * running / queued 的，说明它的结局事件丢了 —— 按「结果未收到」收口。
+     */
+    reconcileSubagents(activeTaskIds: string[]) {
+      const active = new Set(activeTaskIds.filter(Boolean));
+      for (const m of this.messages) {
+        if (m.role !== "subagent" || !m.taskId) continue;
+        if (m.taskStatus !== "running" && m.taskStatus !== "queued") continue;
+        if (active.has(m.taskId)) continue;
+        m.taskStatus = "failed";
+        m.toolOk = false;
+        m.toolError = m.toolError ?? "连接中断，未收到最终结果";
       }
     },
     /** 旧签名（只给 running/queued）：等价于带快照的权威应用，保持向后兼容。 */
@@ -630,6 +758,7 @@ export const useSessionStore = defineStore("session", {
         contentType: "tool",
         toolName: name,
         toolOk: ok,
+        toolStatus: ok ? "success" : "failed",
         toolError: error,
         presentation,
       });
@@ -658,6 +787,9 @@ export const useSessionStore = defineStore("session", {
       const existing = key ? this.messages.find((m) => m.role === "tool" && m.callId === key) : undefined;
       if (existing) {
         existing.toolRunning = true;
+        existing.toolStatus = "running";
+        existing.toolOk = undefined;
+        existing.toolError = null;
         existing.presentation = presentation ?? existing.presentation;
         return;
       }
@@ -668,6 +800,7 @@ export const useSessionStore = defineStore("session", {
         toolName,
         presentation: presentation ?? null,
         toolRunning: true,
+        toolStatus: "running",
         ...(key ? { callId: key } : {}),
         ...(turnId ? { turnId } : {}),
       });
@@ -684,6 +817,7 @@ export const useSessionStore = defineStore("session", {
       preview: string,
       presentation?: ToolPresentation | null,
       durationMs?: number,
+      status?: ToolStatus | null,
     ) {
       const key = callId || toolName;
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
@@ -702,9 +836,13 @@ export const useSessionStore = defineStore("session", {
       const existing = key ? this.messages.find((m) => m.role === "tool" && m.callId === key) : undefined;
       const target =
         existing ?? this.messages.find((m) => m.role === "tool" && !m.callId && m.toolName === toolName && m.toolRunning);
+      // 后端事件里的 status 是权威语义；老格式（没有 status）才用 ok 兜底 ——
+      // 但「取消」不能靠 ok 反推，所以缺 status 时只区分成功 / 失败。
+      const terminal: ToolStatus = status ?? (ok ? "success" : "failed");
       if (target) {
         target.toolRunning = false;
-        target.toolOk = ok;
+        target.toolStatus = terminal;
+        target.toolOk = terminal === "success";
         target.toolError = error;
         if (preview) target.content = preview;
         target.presentation = presentation ?? target.presentation;
@@ -719,7 +857,8 @@ export const useSessionStore = defineStore("session", {
         content: preview,
         contentType: "tool",
         toolName,
-        toolOk: ok,
+        toolOk: terminal === "success",
+        toolStatus: terminal,
         toolError: error,
         presentation: presentation ?? null,
         toolRunning: false,
@@ -935,7 +1074,9 @@ export const useSessionStore = defineStore("session", {
         createdAt: m.created_at,
         topicName: this.topicName,
         fresh: false,
-        ...(m.role === "tool" ? { toolName: "tool", toolOk: true, toolError: null } : {}),
+        ...(m.role === "tool"
+          ? { toolName: "tool", toolOk: true, toolStatus: "success" as const, toolError: null }
+          : {}),
       };
     },
     /**

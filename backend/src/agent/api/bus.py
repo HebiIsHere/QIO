@@ -172,8 +172,12 @@ class EventBus:
                 # 客户端的游标已经超出 replay 缓冲（或来自另一个实例）：
                 # 我们已经无法补发它漏掉的那一段。此时**不能**只补发最近几条
                 # 然后假装事件是连续的 —— 直接建立边界，让客户端拉权威快照。
+                #
+                # 与过载路径用同一个 `_record_control`：两条 RESYNC 来源必须给出
+                # 一致的恢复身份（这个 id 必须能被服务器再次识别），
+                # 否则客户端把它当 Last-Event-ID 带回来时会再触发一次无意义的同步。
                 subscriber.offer(
-                    self._control_event(
+                    self._record_control(
                         {
                             "reason": "replay_cursor_expired",
                             "message": "断线期间的事件已超出服务端缓冲，请重新同步状态",

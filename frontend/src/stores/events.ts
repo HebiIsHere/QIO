@@ -6,8 +6,9 @@ import {
   type EventStreamHandle,
   type EventType,
 } from "../services/events";
-import { useSessionStore, type ToolPresentation } from "./session";
+import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
 import { useApprovalsStore } from "./approvals";
+import { api } from "../services/api";
 
 /**
  * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
@@ -74,6 +75,12 @@ export const useEventStore = defineStore("events", {
     _source: null as EventStreamHandle | null,
     /** 已结束的 turn（防重连重放重复生效），有界 */
     endedTurns: [] as string[],
+    /** 正在 resync（期间实时事件先缓存，不直接与 snapshot 竞争） */
+    resyncing: false,
+    /** 同步期间再次收到 RESYNC → 完成当前同步后再补一次 */
+    _resyncAgain: false,
+    /** 同步期间到达的实时事件（按到达顺序暂存） */
+    resyncBuffer: [] as AgentEvent[],
   }),
   getters: {
     turnUsageFor: (state) => (turnId?: string | null): TurnUsage | undefined =>
@@ -103,6 +110,22 @@ export const useEventStore = defineStore("events", {
       this.connected = false;
     },
     route(event: AgentEvent) {
+      /**
+       * RESYNC 是控制事件，永远立即处理。
+       * 其余事件在同步期间先缓存：否则「HTTP 还在路上时到达的新事件」
+       * 会先被应用，随后旧 snapshot 返回又把它覆盖掉。
+       */
+      if (event.type === "RESYNC") {
+        void this.startResync();
+        return;
+      }
+      if (this.resyncing) {
+        this.resyncBuffer.push(event);
+        return;
+      }
+      this.dispatch(event);
+    },
+    dispatch(event: AgentEvent) {
       const session = useSessionStore();
       switch (event.type) {
         case "TURN_START":
@@ -112,10 +135,15 @@ export const useEventStore = defineStore("events", {
             // 只有真实的 TURN_START 能把 turn 设为 active。
             // 带上 revision：晚到的旧队列快照不能把这一轮清掉。
             // 陈旧事件整条不生效：连 turnRunning / turnPhase 都不许动。
+            const instanceBefore = session.instanceId;
+            const instanceChanged =
+              session.adoptInstance(stringOrNull(d.instance_id)) && instanceBefore !== null;
             const applied = tid
               ? session.activateTurn(tid, numberOrNull(d.revision), stringOrNull(d.instance_id))
               : true;
             if (!applied) break;
+            // 后端重启（instance 变化）：补一次完整同步，别只依赖这一条事件
+            if (tid && instanceChanged) void this.startResync();
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
@@ -177,6 +205,10 @@ export const useEventStore = defineStore("events", {
           }
           // 高影响知识候选：只有在回答完成之后才出现（顺序不能反）
           session.flushKnowledgeCandidates();
+          // 一轮结束 = 这一轮不可能还有工具在跑：还挂着的「运行中」卡片
+          // 说明它的 TOOL_END 丢了，先收口；服务器若知道真实结果，
+          // 随后的快照核对会把它改回 success / failed / cancelled。
+          session.convergeRunningTools(tid);
           session.turnEnded();
           session.lastTurnOutcome = { turnId: tid, status };
           if (status === "failed") {
@@ -193,6 +225,10 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const queuedList = (d.queued as { turn_id: string; message: string }[] | undefined) ?? [];
           const running = (d.running as { turn_id: string; message: string } | null) ?? null;
+          // 后端重启：revision 基准作废 → 接受新实例状态，并补一次完整同步
+          const instanceBefore = session.instanceId;
+          const instanceChanged =
+            session.adoptInstance(stringOrNull(d.instance_id)) && instanceBefore !== null;
           // 后端的队列快照是权威：既能恢复本地漏掉的状态（重连 / 丢帧），
           // 也能清除本地已经过期的状态（服务器已空闲而本地还以为在跑）。
           // 一份快照**要么全部接受、要么全部拒绝** —— 校验在前，落地在后，
@@ -206,50 +242,12 @@ export const useEventStore = defineStore("events", {
           });
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
           if (applied && !queuedList.length) session.clearQueuedFlags();
+          if (instanceChanged) void this.startResync();
           break;
         }
         case "RESYNC": {
-          /**
-           * 服务端主动告知：这条事件流已经不完整（例如关键生命周期事件在背压中
-           * 无法保序送达）。此时**不能继续假装状态是最新的** ——
-           * 立刻重新拉取完整权威状态（turn 队列 + 待审批 + 独立任务）并对齐。
-           */
-          const d = event.data as Record<string, unknown>;
-          void (async () => {
-            if (String(d.reason ?? "")) {
-              // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
-              session.warning = "连接出现过一次抖动，正在同步最新状态…";
-            }
-            const state = await session.resyncTurnState();
-            if (!state) {
-              // 失败时保留错误（lastError 已由 store 写入），不假装同步完成
-              session.warning = null;
-              return;
-            }
-            // 断线期间错过的待审批：按 id 去重后补回界面
-            for (const a of state.approvals) {
-              useApprovalsStore().enqueue(a.approval_id, a.kind, a.payload, {
-                autoOpen: false,
-                turnId: a.turn_id ?? null,
-                sessionId: a.session_id ?? null,
-                requestDigest: a.request_digest ?? null,
-              });
-            }
-            // 仍在跑 / 排队的独立任务：补回卡片（同一 task_id 原地更新）
-            for (const t of state.tasks) {
-              session.upsertSubagent(t.task_id, {
-                status: t.status,
-                toolName: t.tool,
-                ok: t.ok ?? null,
-                preview: t.content_preview ?? "",
-                error: t.error ?? null,
-              });
-            }
-            // 服务器说没有主 turn 在跑 → 还挂着「运行中」的工具卡不可能真的在跑
-            if (!session.activeTurnId) session.finalizeRunningToolCards();
-            // 同步成功就必须把提示收掉（不能永远停在「正在同步」）
-            session.warning = null;
-          })();
+          // RESYNC 在 `route()` 里就已经拦下并触发同步，这里只是兜底
+          void this.startResync();
           break;
         }
         case "CAPABILITY": {
@@ -346,6 +344,7 @@ export const useEventStore = defineStore("events", {
             String(d.content_preview ?? ""),
             (d.presentation as ToolPresentation | null) ?? null,
             typeof d.duration_ms === "number" ? d.duration_ms : undefined,
+            (d.status as ToolStatus | undefined) ?? null,
           );
           if (session.turnRunning) {
             session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
@@ -460,6 +459,8 @@ export const useEventStore = defineStore("events", {
           // 但绝不结束当前 turn —— 结束只认 TURN_END。
           const d = event.data as Record<string, unknown>;
           const tid = String(d.turn_id ?? "");
+          // 归属：子任务内部报错 ≠ 整个主会话出错（它的失败由任务卡表达）
+          if (!belongsToMainTurn(session, tid)) break;
           if (tid && session.activeTurnId && tid !== session.activeTurnId) break;
           session.lastError = String(d.message ?? "agent error");
           break;
@@ -467,6 +468,8 @@ export const useEventStore = defineStore("events", {
         case "WARNING": {
           // 非致命警告：只记提示，不代表 turn 结束（terminal 事件是 TURN_END/ERROR/取消）
           const d = event.data as Record<string, unknown>;
+          // 归属：子任务内部的警告留在它自己的任务卡 / trace 里，不污染主会话的全局提示
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
           const msg = String(d.message ?? "agent warning");
           if (msg.trim()) {
             session.warning = msg;
@@ -476,35 +479,8 @@ export const useEventStore = defineStore("events", {
         case "APPROVAL_REQUIRED": {
           const d = event.data as Record<string, unknown>;
           const approval = (d.approval ?? d) as Record<string, unknown>;
-          const id = String(approval.approval_id ?? "");
-          const kind = String(approval.kind ?? "");
-          if (kind === "continue") {
-            // 迭代/输出预算耗尽：进入「继续/停止」操作条，不进入审批队列
-            const payload = (approval.payload ?? {}) as Record<string, unknown>;
-            session.pendingContinue = {
-              id,
-              used: Number(payload.used_iterations ?? 0),
-              max: Number(payload.max_iterations ?? 0),
-            };
-            break;
-          }
-          if (id) {
-            useApprovalsStore().enqueue(
-              id,
-              kind || "unknown",
-              (approval.payload ?? {}) as Record<string, unknown>,
-              // 用户正在输入（含凭据表单）时不抢焦点：保留待办 + 亮出「有 N 项操作等待确认」入口
-              {
-                autoOpen: !isUserEditing(),
-                // 绑定信息随待办一起保存：应答时原样回传
-                turnId: (approval.turn_id as string | null) ?? null,
-                sessionId: (approval.session_id as string | null) ?? null,
-                requestDigest: (approval.request_digest as string | null) ?? null,
-              },
-            );
-            // 需要用户决定：全局状态说「等待确认」（决定本身在审批卡里）
-            session.activity = "approval";
-          }
+          // 与 RESYNC 恢复走同一个入口：同一个审批，实时收到和断线恢复必须一致
+          this.handleApprovalRequired(approval, { autoOpen: !isUserEditing() });
           break;
         }
       }
@@ -534,6 +510,137 @@ export const useEventStore = defineStore("events", {
         },
       };
       this.lastTurnId = turnId;
+    },
+
+    // -- 审批的统一入口 ---------------------------------------------------
+
+    /**
+     * 一个审批该走哪条 UI，只在这里决定一次。
+     *
+     * 实时 `APPROVAL_REQUIRED` 与 RESYNC 恢复出来的 pending approval 都调它，
+     * 所以 `kind = continue`（预算耗尽后的继续/停止）在两条路径上都会进
+     * ContinueBar，而不会被恢复成一个普通审批弹窗。
+     */
+    handleApprovalRequired(
+      approval: Record<string, unknown>,
+      opts: { autoOpen?: boolean } = {},
+    ) {
+      const session = useSessionStore();
+      const id = String(approval.approval_id ?? "");
+      if (!id) return;
+      const kind = String(approval.kind ?? "");
+      if (kind === "continue") {
+        // 迭代/输出预算耗尽：进入「继续/停止」操作条，不进入审批队列
+        const payload = (approval.payload ?? {}) as Record<string, unknown>;
+        session.pendingContinue = {
+          id,
+          used: Number(payload.used_iterations ?? 0),
+          max: Number(payload.max_iterations ?? 0),
+        };
+        return;
+      }
+      useApprovalsStore().enqueue(id, kind || "unknown", (approval.payload ?? {}) as Record<string, unknown>, {
+        // 用户正在输入（含凭据表单）时不抢焦点；恢复时不抢焦点
+        autoOpen: opts.autoOpen ?? !isUserEditing(),
+        // 绑定信息随待办一起保存：应答时原样回传（服务端另有自己的校验）
+        turnId: (approval.turn_id as string | null) ?? null,
+        sessionId: (approval.session_id as string | null) ?? null,
+        requestDigest: (approval.request_digest as string | null) ?? null,
+      });
+      session.activity = "approval";
+    },
+
+    // -- RESYNC 恢复协议 --------------------------------------------------
+
+    /**
+     * 进入同步：拉一次权威快照、完整应用、再把同步期间缓存的新事件按顺序补放。
+     *
+     * 关键点：
+     * * **单飞**：同一时间只允许一个同步在跑，重复 RESYNC 只做标记（不并发 snapshot）；
+     * * **顺序**：snapshot 先应用，之后才是同步期间到达的事件 —— 避免旧快照覆盖新事件；
+     * * **状态可见**：成功 → normal 并清掉提示；失败 → failed 且保留错误，不假装已同步。
+     */
+    async startResync(): Promise<void> {
+      const session = useSessionStore();
+      session.resyncState = "resyncing";
+      // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
+      session.warning = "连接出现过一次抖动，正在同步最新状态…";
+      if (this.resyncing) {
+        this._resyncAgain = true;
+        return;
+      }
+      this.resyncing = true;
+      try {
+        do {
+          this._resyncAgain = false;
+          const state = await api.getRuntimeState();
+          session.adoptInstance(state.instance_id);
+          session.applyTurnQueue(state.turn_queue);
+          this.applyRuntimeState(state);
+          this.flushResyncBuffer();
+        } while (this._resyncAgain);
+        session.resyncState = "normal";
+        session.warning = null;
+      } catch (e) {
+        // 失败必须如实说：界面显示的状态可能已经不是最新的
+        session.resyncState = "failed";
+        session.warning = null;
+        session.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
+      } finally {
+        this.resyncing = false;
+        this.flushResyncBuffer();
+      }
+    },
+
+    /** 同步期间缓存的事件按到达顺序补放（嵌套的 RESYNC 只做标记）。 */
+    flushResyncBuffer() {
+      if (!this.resyncBuffer.length) return;
+      const pending = this.resyncBuffer;
+      this.resyncBuffer = [];
+      for (const buffered of pending) {
+        if (buffered.type === "RESYNC") {
+          this._resyncAgain = true;
+          continue;
+        }
+        this.dispatch(buffered);
+      }
+    },
+
+    /**
+     * 应用一份权威运行状态。
+     *
+     * 规则（不是「全部 merge」，而是按状态性质区分）：
+     * * Turn 队列 —— **replace**（`applyTurnQueue`，含 revision / instance 校验）；
+     * * 审批 —— **reconcile**：服务器没列出的 = 已经不再 pending，本地移除；
+     * * 独立任务 —— **reconcile**：不在活动集合里的 running/queued 卡片按「结果未收到」收口；
+     * * 工具 —— **reconcile**：按 `tool_call_id` 用服务器知道的执行事实核对。
+     *   服务器给出终态的（success / failed / cancelled）一律以服务器为准 ——
+     *   「没收到 TOOL_END」不等于「结果未知」；只有服务器也拿不出记录时才 unknown。
+     */
+    applyRuntimeState(state: {
+      approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
+      tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
+      tools?: ToolExecutionSnapshot[];
+    }) {
+      const session = useSessionStore();
+      useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
+      for (const approval of state.approvals) {
+        // 恢复出来的审批不抢焦点：保留待办 + 亮出入口
+        this.handleApprovalRequired(approval as unknown as Record<string, unknown>, {
+          autoOpen: false,
+        });
+      }
+      session.reconcileSubagents(state.tasks.map((t) => t.task_id));
+      for (const task of state.tasks) {
+        session.upsertSubagent(task.task_id, {
+          status: task.status,
+          toolName: task.tool,
+          ok: task.ok ?? null,
+          preview: task.content_preview ?? "",
+          error: task.error ?? null,
+        });
+      }
+      session.reconcileTools(state.tools ?? []);
     },
     async sendTest(type: EventType) {
       await publishTestEvent(type, { smoke: Date.now() });

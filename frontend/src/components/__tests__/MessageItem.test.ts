@@ -308,6 +308,42 @@ describe("MessageItem 卡片家族契约（第四阶段）", () => {
     failed.unmount();
   });
 
+  it("工具卡：取消与「结果未收到」有自己的文案，不冒充失败或成功", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const cancelled = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "run_cmd",
+        content: "",
+        toolOk: false,
+        toolStatus: "cancelled",
+        toolError: "已取消",
+      }),
+      pinia,
+    );
+    expect(cancelled.find(".tool-status").text()).toBe("已取消");
+    expect(cancelled.find(".tool-mark").text()).not.toBe("✓");
+    expect(cancelled.find(".tool-fail-line").text()).toContain("取消");
+    cancelled.unmount();
+
+    const unknown = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "fs_read",
+        content: "",
+        toolOk: false,
+        toolStatus: "unknown",
+        toolError: "结果未收到",
+      }),
+      pinia,
+    );
+    expect(unknown.find(".tool-status").exists()).toBe(false);
+    expect(unknown.find(".tool-fail-line").text()).toContain("结果未收到");
+    expect(unknown.find(".tool-card").attributes("data-state")).toBe("failed");
+    unknown.unmount();
+  });
+
   it("工具卡展开详情有真实高度过渡（不是 v-show 瞬切）", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

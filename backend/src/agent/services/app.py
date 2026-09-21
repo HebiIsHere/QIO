@@ -26,6 +26,7 @@ from agent.adapters.probe import ProbeCache, probe_adapter
 from agent.adapters.text import TextAdapter
 from agent.config import Settings
 from agent.core.guard import RunawayGuard
+from agent.core.tool_state import ToolExecutionState
 from agent.credentials.policy import CredentialPolicy, CredentialRef
 from agent.credentials.store import CredentialStore
 from agent.graph.anchors import AnchorService
@@ -66,6 +67,17 @@ ANTHROPIC_PROBE_TTL_SECONDS = 3600.0
 # 会话历史分页：首屏只取最近一页，其余按游标往前翻。
 SESSION_PAGE_DEFAULT_LIMIT = 200
 SESSION_PAGE_MAX_LIMIT = 500
+
+# 内部循环的 turn_id 前缀。Subagent 面向用户的最小显示单位是「独立任务」，
+# 内部工具的明细既不展示也不恢复（产品范围边界，不是待修 bug）。
+INTERNAL_TURN_PREFIXES = ("subagent:",)
+
+
+def _is_main_turn_id(turn_id: object) -> bool:
+    """这条工具执行记录是否属于**主 Turn**（内部循环 / 无归属记录不算）。"""
+    if not isinstance(turn_id, str) or not turn_id:
+        return False
+    return not turn_id.startswith(INTERNAL_TURN_PREFIXES)
 
 
 class AppContext:
@@ -279,6 +291,10 @@ class AppContext:
         # turn runtime boundary：进程级服务在此，单轮状态在 TurnContext
         from agent.core.turn import TurnManager
 
+        # 工具执行的权威事实（进程级、纯内存、有界）：活工具 + 最近结束的工具。
+        # 为什么不是事件总线 history：history 会被裁剪 / 清空 / overflow，
+        # 而「这次调用最终成功、失败还是取消」不能因为一条通知丢失就永久变成 unknown。
+        self.tool_state = ToolExecutionState()
         self.turns = TurnManager()
         self.turns.set_runner(self._execute_turn)
         self.turns.set_publisher(self._publish_turn_queue)
@@ -689,6 +705,27 @@ class AppContext:
         active = self.turns.active
         return getattr(active, "turn_id", None) if active is not None else None
 
+    def tool_executions(self) -> list[dict]:
+        """主 Turn 中工具执行的权威事实（供 `/api/runtime/state` 恢复工具卡状态）。
+
+        `TOOL_END` 可能丢在失真区间里，但**服务器仍然知道**这次调用最终是
+        success / failed / cancelled —— 这个接口就是把那份事实交出来。
+
+        范围边界（与 `docs/status.md` 记录的一致）：
+
+        * 只报主 Turn 的调用：内部循环（`subagent:*` 等）不是主 Turn，
+          产品上也不展示它们的工具明细，所以不返回、也不新增对应 UI；
+        * 没有 turn 归属的记录同样不返回（无法证明属于当前主对话）；
+        * 快照不能因为一次投影失败就整体失败。
+        """
+        active = self.turns.active
+        active_turn_id = active.turn_id if active is not None else None
+        try:
+            records = self.tool_state.snapshot(active_turn_id=active_turn_id)
+        except Exception:  # noqa: BLE001 - 快照必须始终有返回值
+            return []
+        return [r for r in records if _is_main_turn_id(r.get("turn_id"))]
+
     # -- selector refresh -------------------------------------------------
 
     @staticmethod
@@ -901,6 +938,8 @@ class AppContext:
                 guard=RunawayGuard(),
                 turn_id=ctx.turn_id,
                 trace=tracer,
+                # 系统驱动的轮也是主 Turn：它的工具结果同样要能从快照恢复
+                tool_state=self.tool_state,
                 is_cancelled=lambda: ctx.cancelled,
             )
             ctx.loop = loop

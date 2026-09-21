@@ -260,6 +260,22 @@ export const api = {
         content_preview?: string;
         error?: string | null;
       }[];
+      /**
+       * 工具执行的权威事实（活工具 + 最近结束的工具）。
+       *
+       * `TOOL_END` 可能丢在失真区间里，但最终是 success / failed / cancelled
+       * 是服务器已经知道的事实 —— 界面据此恢复真实状态，
+       * 只有服务器也拿不出记录（`unknown`）时才显示「结果未收到」。
+       */
+      tools?: {
+        turn_id?: string | null;
+        tool_call_id: string;
+        tool_name?: string;
+        status: "running" | "success" | "failed" | "cancelled" | "unknown";
+        started_at?: string | null;
+        ended_at?: string | null;
+        error_summary?: string | null;
+      }[];
     }>("/api/runtime/state"),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(

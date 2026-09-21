@@ -193,3 +193,31 @@ async def test_resync_event_is_a_valid_replay_cursor():
     await bus.publish(make_event(EventType.WARNING, {"after": 1}))
     chunk = await asyncio.wait_for(pending, timeout=1)
     assert _type_of(chunk) == "WARNING"
+
+
+async def test_expired_cursor_resync_is_itself_a_valid_cursor():
+    """两条 RESYNC 来源必须给出一致的恢复身份。
+
+    过载触发的 RESYNC 已经写进 history；过期游标触发的也必须一样 ——
+    否则客户端把 RESYNC 的 id 存成 Last-Event-ID 之后，下一次重连又会被判成
+    「未知游标」→ 再 RESYNC，形成重复同步。
+    """
+    bus = EventBus(replay_limit=3, queue_limit=8)
+    for i in range(6):
+        await bus.publish(make_event(EventType.WARNING, {"n": i}))
+
+    first = _Reader(bus.stream(last_event_id="evt_expired_cursor"))
+    (resync_chunk,) = await first.take(1)
+    assert _type_of(resync_chunk) == "RESYNC"
+    resync_id = _id_of(resync_chunk)
+    assert resync_id
+
+    # 再次断线：客户端带着上一次 RESYNC 的 id 重连
+    second = _Reader(bus.stream(last_event_id=resync_id))
+    assert await second.next(0.05) is None, (
+        "RESYNC 的 id 必须能被识别，不能再触发一次无意义的 RESYNC"
+    )
+
+    await bus.publish(make_event(EventType.WARNING, {"after": 1}))
+    chunk = await second.next(1.0)
+    assert chunk is not None and _type_of(chunk) == "WARNING"

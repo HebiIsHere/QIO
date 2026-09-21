@@ -39,6 +39,7 @@ def test_runtime_state_reports_empty_defaults(client):
     assert body["turn_queue"]["queued"] == []
     assert body["approvals"] == []
     assert body["tasks"] == []
+    assert body["tools"] == []
 
 
 def test_runtime_state_exposes_pending_approval_for_reconnect(client):
@@ -112,6 +113,32 @@ def test_runtime_state_reports_running_and_queued_tasks(client):
 # ---------------------------------------------------------------------------
 # Approval 生命周期：pending → approved / rejected / expired
 # ---------------------------------------------------------------------------
+
+
+def test_respond_needs_only_the_approval_id(client):
+    """安全约束不能依赖客户端主动传字段：服务端自己掌握审批身份。
+
+    客户端只发 `approval_id` + `decision` 也必须照常工作 ——
+    服务端用自己保存的 request（turn / session / digest）完成匹配；
+    而这条批准只能作用于它对应的那一次请求（单次使用）。
+    """
+    ctx = client.app.state.ctx
+
+    async def arm():
+        ctx.approvals.set_context(turn_id="turn_a", session_id="sess_a")
+        return asyncio.create_task(
+            ctx.approvals.request("computer", {"action": "read", "path": "/tmp/x"})
+        )
+
+    client.portal.call(arm)
+    approval_id = client.get("/api/runtime/state").json()["approvals"][0]["approval_id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/respond", json={"decision": "approved"})
+    assert resp.status_code == 200
+
+    # 同一条审批不能被消费第二次
+    again = client.post(f"/api/approvals/{approval_id}/respond", json={"decision": "approved"})
+    assert again.status_code == 404
 
 
 async def _collect(bus: EventBus) -> list[dict]:

@@ -466,6 +466,92 @@
 
 ---
 
+### P12 — 稳定性最终收尾：RESYNC 闭环、快照核对与组合更新
+
+- **Status：** completed
+- **Implementation（RESYNC 闭环）：** 两条 RESYNC 来源（缓冲过载 / 游标过期）现在共用同一套恢复身份：
+  两者产生的 RESYNC 都写进 history，因此客户端把它存成 `Last-Event-ID` 之后重连能被识别，
+  不会「每次重连都再 RESYNC」。前端新增 `resyncing` 状态与**同步缓冲**：
+  收到 RESYNC 后进入 resyncing → 期间到达的实时事件先缓存 → 拉权威快照并完整应用 →
+  再按到达顺序补放缓冲事件 → 回到 normal；同一时间只允许一个同步在跑
+  （同步期间再来 RESYNC 只做标记，完成后补一次），既不丢事件也不会被旧 snapshot 覆盖。
+  同步失败进入 `failed` 并如实保留错误，不假装已同步。
+- **Implementation（快照核对语义）：** 恢复不再「只追加」，而是按状态性质分别处理：
+  Turn 队列 **replace**（含 revision / instance 校验）、审批 **reconcile**
+  （服务器没列出的 = 已不再 pending，本地移除）、独立任务 **reconcile**
+  （不在活动集合里的 running/queued 卡片收口为「结果未收到」）、工具 **reconcile**
+  （`/api/runtime/state.tools` 报告此刻真正在跑的工具，不在其中的「运行中」卡片收口）。
+  `AgentLoop.active_tools()` 提供该列表，`TOOL_END` 丢失 + 重连后工具卡不会再永久转圈。
+- **Implementation（审批路由统一）：** 实时 `APPROVAL_REQUIRED` 与 RESYNC 恢复出来的 pending approval
+  走同一个入口 `handleApprovalRequired()`：`kind=continue` 一律进 ContinueBar，
+  其余进审批队列（恢复时不抢焦点）。审批身份仍由服务端掌握：应答只需 `approval_id`。
+- **Implementation（事件归属补全）：** `WARNING` / `ERROR` 也按 turn_id 判归属：
+  `subagent:*` 的警告与错误不再升级成主会话的全局提示 / 错误（它们由任务卡表达）。
+- **Implementation（凭据组合更新）：** 新增 `CredentialStore.reconfigure()`，把
+  secret + endpoint + 其他元数据当成**一个**操作：校验全部输入（endpoint 变化必须重新输入 secret
+  并显式确认）→ 先写密钥 → 事务内写元数据 + 推进 version + 审计；任一步失败都回滚两边。
+  如果连密钥回滚都失败，记 **CRITICAL** 并抛 `CredentialRollbackError`（带两个原因），
+  绝不让调用方以为「只是没更新」。API 的 `PATCH /api/credentials/{id}` 改为只调用它，
+  不再把 `update_secret` 与 `update_metadata` 串起来。
+- **Implementation（Maintenance 避让）：** 是否避让主任务改为判断「有没有 active Turn」
+  （`ctx.turns.active is not None`），而不是 active AgentLoop —— Turn 处于上下文准备 /
+  结果保存 / 收尾阶段时 loop 可能已经不在，但主任务并没有结束。
+- **Tests：** `backend/tests/test_event_recovery.py`（过期游标产生的 RESYNC 也是合法游标）、
+  `test_active_tools.py`（只有真正在跑的工具被报告）、`test_credential_atomicity.py`
+  （组合更新的成功 / 失败回滚 / 回滚失败必须大声报错）、`test_app_lifecycle.py`
+  （维护避让任何 active Turn）、`test_runtime_state.py`（应答只需 approval_id）；
+  前端 `stores/__tests__/resyncProtocol.test.ts`（同步缓冲、单飞、快照核对、实例切换、失败状态）、
+  `approvalRouting.test.ts`（continue 审批两条路径一致）、`eventOwnership.test.ts`（WARNING/ERROR 归属）。
+- **Known limitations：** 同步缓冲只在内存里：如果同步期间进程被杀，缓冲事件随之消失
+  （下一次连接仍会走 RESYNC + 快照，状态最终一致）。失真区间内被丢弃的关键事件依然回放不了，
+  由快照覆盖。
+- **后续依赖：** 无下游；这是这一系列稳定性修复的收尾。
+
+---
+
+### P13 — 工具终态可恢复：过程可丢，结论不可丢
+
+- **Status：** completed
+- **Implementation（权威状态）：** 新增 `agent/core/tool_state.py`：进程级、纯内存、有界的
+  `ToolExecutionState`（active + recent terminal tool executions）。每条只留
+  `tool_call_id` / `tool_name` / `turn_id` / `status`（running / success / failed / cancelled）/
+  起止时间 / 一行错误摘要 —— 不保存完整工具输出、不落盘、不建事件日志。
+  身份是 `(turn_id, tool_call_id)`：同一次调用原位更新，跨 Turn 不会互相污染，
+  同一个工具名在一轮里连续调用多次也能区分。
+- **Implementation（写入顺序）：** `AgentLoop` 在 `tool/start` / `tool/end` 管线里**先**写权威状态、
+  **再**发 `TOOL_START` / `TOOL_END`。所以「`TOOL_END` 丢在失真区间里」不会让服务器已经知道的
+  终态一起消失。`TOOL_END` 载荷新增 `status`（success / failed / cancelled）：
+  工具注册表的取消路径显式标记 cancelled，前端不必从 `ok=false` 反推「取消还是失败」。
+- **Implementation（恢复入口）：** `GET /api/runtime/state` 的 `tools` 字段由这份状态生成
+  （活工具 + 最近结束的工具），只包含主 Turn：`subagent:*` 等内部循环的调用既不返回、
+  也不进 UI —— 产品上独立任务的最小显示单位仍然是「独立任务」。
+  属于 active Turn 的 running 记录如实报 running；所属 Turn 已经不在的记录报 unknown
+  （服务器不能替它保证「还在跑」）。
+- **Implementation（前端核对）：** 工具卡数据模型区分 running / success / failed / cancelled / unknown
+  （`session.reconcileTools()`）。优先级：服务器给出的终态 > 本地过期的「运行中」；
+  快照之后到达的实时事件 > 快照（同步缓冲按到达顺序补放）；服务器说还在跑时不把已有终态
+  降级回运行中；别的 Turn 的 `tool_call_id` 不会被当成这次调用的事实。`TURN_END` 时残余的
+  「运行中」卡片也会收口 —— 但下一次快照只要有真实终态，就会改写回 success / failed / cancelled。
+- **接受的限制 1：** RESYNC 期间到达的新事件只临时存在内存里。恢复过程中应用被强制结束，
+  下次启动重新获取完整快照（不尝试恢复上一次未完成的 resync buffer），不持久化临时缓冲。
+- **接受的限制 2：** Subagent 只恢复 Task 级状态（queued / running / done / failed），
+  不恢复、也不展示 subagent 内部单个 Tool 的执行明细。
+- **保证：** 主 Turn 中只要服务器仍然知道工具最终状态，即使实时 `TOOL_END` 丢失，
+  RESYNC 后仍能恢复成 success / failed / cancelled；只有服务器自己也无法确认
+  （记录已按 retention 回收、或进程重启过）时，界面才显示「结果未收到」。
+- **Tests：** `backend/tests/test_tool_state.py`（权威状态语义与 retention：active Turn 的终态不被提前清理）、
+  `backend/tests/test_tool_recovery.py`（`TOOL_END` 丢失后 snapshot 仍能恢复终态、取消不等于失败、
+  stale running 只能报 unknown、子任务内部工具不进主 snapshot）、
+  `frontend/src/stores/__tests__/toolRecovery.test.ts`（快照核对、同名多次调用、跨 Turn 不串、
+  快照与缓冲事件的顺序、`TURN_END` 收敛）、
+  `frontend/src/components/__tests__/MessageItem.test.ts`（「已取消」与「结果未收到」有自己的文案）。
+- **Known limitations：** 这份状态是**进程内**的：后端重启后它为空，此时界面显示「结果未收到」
+  是诚实答案（不伪造终态）；terminal 记录按 TTL 与最大条数回收，回收之后同样回落为「结果未收到」。
+  本轮不建设工具执行历史数据库，也不扩大 Subagent 的展示范围。
+- **后续依赖：** 无下游。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
