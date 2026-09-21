@@ -75,6 +75,15 @@ python scripts/models/fetch_model.py --from-modelscope
 产物落在 `frontend/src-tauri/resources/models/bge-small-zh-v1.5/`（该目录已被 gitignore，90MB 二进制不进仓库），
 由 `tauri.conf.json` 的 `bundle.resources` 打进安装包。**构建时缺这份资源会直接失败**，不会静默少模型。
 
+打包命令与实测体积（2026-09-21 本机）：
+
+```powershell
+cd frontend
+npm run tauri build -- --bundles nsis
+# → target/release/bundle/nsis/QIO_0.1.0_x64-setup.exe（128.9MB）
+#   生成的 installer.nsi 会把 model.onnx 复制到 $INSTDIR\models\bge-small-zh-v1.5\
+```
+
 内置档是 **fp32**（`model.onnx`，90.5MB，无量化损失）；想换成量化档就改清单里的 `default` 并换文件。
 
 **运行时**：桌面壳启动时把内置模型复制到用户数据目录（幂等；内容指纹一致就跳过），
