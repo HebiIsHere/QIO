@@ -69,13 +69,15 @@ jobs:
               problems = list(case.findall("failure")) + list(case.findall("error"))
               if not problems:
                   continue
-              text = (problems[0].get("message") or problems[0].text or "").strip()
-              first = next((line for line in text.splitlines() if line.strip()), "")
-              bad.append(f"{case.get('classname')}::{case.get('name')} -> {first[:200]}")
+              message = (problems[0].get("message") or "").strip()
+              text = (problems[0].text or "").strip()
+              bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
 
-          print(f"::error title=pytest failures ({len(bad)})::" + " | ".join(bad[:12]))
-          for line in bad[:40]:
-              print(f"FAILED {line}")
+          print(f"::error title=pytest failures ({len(bad)})::" + " | ".join(name for name, _ in bad[:12]))
+          # 一条用例一条注解：注解是公开可读的，失败细节不至于被折叠掉
+          for name, detail in bad[:20]:
+              flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
+              print(f"::error title={name}::{flat[:1400]}")
           PY
 
   frontend:
@@ -151,8 +153,7 @@ jobs:
               line.rstrip()
               for line in open("cargo.log", encoding="utf-8", errors="replace")
           ]
-          errors = [ln for ln in lines if re.match(r"^(error|error\[)", ln)] or lines[-15:]
-          print("::error title=cargo check failed::" + " | ".join(e[:180] for e in errors[:8]))
-          for line in errors[:20]:
-              print(line)
+          errors = [ln for ln in lines if re.search(r"\berror\b", ln, re.I)]
+          print(f"::error title=cargo check failed ({len(errors)} error lines)::" + " | ".join(e[:180] for e in errors[:6]))
+          print("::error title=cargo tail::" + " / ".join(ln.strip() for ln in lines[-40:] if ln.strip())[:1400])
           PY
