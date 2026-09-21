@@ -146,7 +146,9 @@ async function stopTurn() {
   <div class="composer bubble">
     <div class="topicbar">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
-      <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
+      <!-- 有「待落实」的接续选择时不再并排显示「位置就在历史上」那一条：
+           两句话说的是同一件事的两个阶段，并排会挤成一团、也读不清哪一句生效 -->
+      <span v-if="anchorText && !continuationText" class="anchor mono">{{ anchorText }}</span>
       <!-- 已登记、还没落实的接续选择：说清「下一条消息才生效」，并允许取消 -->
       <template v-if="continuationText">
         <span class="anchor mono pending">{{ continuationText }}</span>
