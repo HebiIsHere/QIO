@@ -41,13 +41,27 @@ def _specs(n: int) -> list[ToolSpec]:
 # -- scenario 8: tool permission ------------------------------------------
 
 
-async def test_pure_tool_has_no_credential_environment():
+async def test_pure_tool_has_no_credential_environment(monkeypatch):
+    # 父进程里放两个「父进程私有」的变量（其中一个长得像凭据）：
+    # 工具进程无论如何都不该看到它们 —— 这是与平台无关的安全属性。
+    monkeypatch.setenv("QIO_KEY_leak_canary", "sk-should-never-leak")
+    monkeypatch.setenv("QIO_PARENT_ONLY_MARKER", "should-never-leak")
+
     sb = SandboxExecutor(executor="subprocess")
     code = "import os\ndef run(**k):\n    return {'keys': sorted(os.environ)}\n"
     res = await sb.execute(code, {}, policy=_pure())
     assert res.ok
-    assert not any(k.startswith("QIO_KEY_") for k in res.value["keys"])
-    assert set(res.value["keys"]) <= {"PATH", "TEMP", "TMP", "PYTHONIOENCODING"}
+
+    keys = set(res.value["keys"])
+    assert not any(k.startswith("QIO_KEY_") for k in keys)
+    assert "QIO_PARENT_ONLY_MARKER" not in keys
+
+    # 沙箱只透传这四个变量。但解释器自己会往子进程环境里补 locale/UTF-8 变量
+    # （POSIX 上 CPython 的 C locale 强制转换，PEP 538/540：LC_CTYPE 等）——
+    # 那是 Python 的行为，不是我们把父进程环境透传给了工具。
+    allowlist = {"PATH", "TEMP", "TMP", "PYTHONIOENCODING"}
+    interpreter_injected = {"LC_CTYPE", "LC_ALL", "LANG", "PYTHONUTF8", "PYTHONCOERCECLOCALE"}
+    assert keys <= allowlist | interpreter_injected, sorted(keys - allowlist - interpreter_injected)
 
 
 async def test_high_risk_declaration_is_refused_without_container():

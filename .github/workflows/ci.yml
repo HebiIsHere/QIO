@@ -137,6 +137,15 @@ jobs:
             libxdo-dev \
             libssl-dev \
             patchelf
+      # Tauri 的 externalBin（后端 sidecar）仓库里只有 Windows 版（体积大、被 gitignore）。
+      # build script 会检查对应 target triple 的文件是否存在，Linux 上必然缺失 ——
+      # 这里放一个占位文件让 cargo check 能完成编译检查（这一步不产出发布包）。
+      - name: Provide sidecar placeholder for cargo check
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p binaries
+          touch binaries/qio-backend-x86_64-unknown-linux-gnu
+          chmod +x binaries/qio-backend-x86_64-unknown-linux-gnu
       - name: cargo check
         run: cargo check
       # 同上：失败时把 cargo 的报错摘要变成公开可读的注解。
