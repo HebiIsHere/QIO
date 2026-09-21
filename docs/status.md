@@ -672,9 +672,12 @@ npm test
 | 4 边界策略与容量 | partial | 确定性规则（容量 / 明确开工 / 短确认 / 同阶段修正）可运行、三档模式（off/shadow/enabled，默认 shadow）、离线评测；**Embedding 语义信号只做到「有模型就观察」**，尚未校准 |
 | 5 界面适配 | partial | 接续提示与取消、设置页分段文案与单段长度已完成；生成中改选等状态有实现但视觉重检未全部覆盖 |
 
-**向量模型（内置决定）**：默认内置 **fp32** ONNX（`model.onnx`，约 90MB），
-由 `model_manifest.json` 决定加载哪一档；向量缓存按「身份 + 维度」过滤，
-换档位必须重新编码。清单生成脚本：`scripts/models/write_manifest.py`；
+**向量模型（内置已落地）**：默认内置 **fp32** ONNX（`model.onnx`，约 90MB）。
+构建前用 `scripts/models/fetch_model.py` 把模型（含清单、许可证、声明）抓到
+`frontend/src-tauri/resources/models/`，由 `bundle.resources` 打进安装包；
+桌面壳启动时按内容指纹复制到 `%APPDATA%\qio\models\` 并注入 `QIO_MODELS_DIR`，
+失败不阻塞启动（退回 BM25 并在日志写明原因）。向量缓存按「身份 + 维度」过滤，
+换档位必须重新编码。清单生成：`scripts/models/write_manifest.py`；
 自检与 fp32/int8 对比：`scripts/models/onnx_ab.py`。
 
 **已知限制（不粉饰）**

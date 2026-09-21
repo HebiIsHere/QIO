@@ -61,18 +61,40 @@ cargo check
 - crates.io 直连不通时，配置 `rsproxy.cn` 镜像（见 `~/.cargo/config.toml`）。
 - Cargo 依赖：tauri 2、tauri-plugin-shell、serde、serde_json。
 
-## 5. ⚠️ Embedding 模型（项目未内置，必须手动准备）
+## 5. Embedding 模型（安装包内置 fp32；开发可指向本地模型）
 
-运行时从数据目录读取：
+**打包内置**：构建安装包前跑一次抓取脚本，把模型放进 Tauri 资源目录：
+
+```powershell
+# 从本机已有模型目录复制（校验 sha256，生成清单）
+python scripts/models/fetch_model.py --from-dir "C:\Tools\models\bge-small-zh-v1.5"
+# 或从 ModelScope 下载（hf-mirror 太慢时用这个源）
+python scripts/models/fetch_model.py --from-modelscope
+```
+
+产物落在 `frontend/src-tauri/resources/models/bge-small-zh-v1.5/`（该目录已被 gitignore，90MB 二进制不进仓库），
+由 `tauri.conf.json` 的 `bundle.resources` 打进安装包。**构建时缺这份资源会直接失败**，不会静默少模型。
+
+内置档是 **fp32**（`model.onnx`，90.5MB，无量化损失）；想换成量化档就改清单里的 `default` 并换文件。
+
+**运行时**：桌面壳启动时把内置模型复制到用户数据目录（幂等；内容指纹一致就跳过），
+并把 `QIO_MODELS_DIR` 与 `QIO_DATA_DIR` 一起注入后端：
 
 ```
-<QIO_DATA_DIR>/models/bge-small-zh-v1.5/
-├── model_quantized.onnx   # 量化 ONNX（512 维，CPU）
-└── tokenizer.json
+%APPDATA%\qio\models\bge-small-zh-v1.5\
+├── model.onnx              # 内置默认档（fp32）
+├── tokenizer.json
+├── model_manifest.json     # 体积 + sha256 + 默认档
+├── LICENSE-…txt / NOTICE.txt
+└── .ready                  # 内容指纹：内容没变就不重复复制
 ```
 
-- **获取**：从 HuggingFace `BAAI/bge-small-zh-v1.5` 导出并量化成 onnx；或从一台跑过的机器拷贝这两个文件。
-- **缺失影响**：不崩——向量召回自动降级为 **BM25**，话题预测走规则兜底；但向量记忆检索与 embedding 话题相似度不可用。
+**开发/自定义**：用 `QIO_MODELS_DIR` 指向任意符合上面布局的目录即可（例如你已经下好的
+`C:\Tools\models`）；模型目录里放 `model_manifest.json` 就能选择加载哪一档，
+向量缓存按「模型身份 + 维度」区分，换档位会重新编码。
+
+**缺失影响**：不崩——向量召回自动降级为 **BM25**，话题预测走规则兜底；
+日志里会写明原因（`model files missing; falling back`）。
 
 ## 6. 环境变量（可选）
 

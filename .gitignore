@@ -30,6 +30,8 @@ backend/dist-sidecar/
 frontend/src-tauri/binaries/
 frontend/src-tauri/gen/
 frontend/e2e-shots/
+# 内置模型资源（打包前由 scripts/models/fetch_model.py 生成；90MB 二进制不进仓库）
+frontend/src-tauri/resources/
 
 # 检查清单生成物
 *.inspect.ndjson
