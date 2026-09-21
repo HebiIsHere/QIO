@@ -307,7 +307,25 @@ class TurnOrchestrator:
         if extra_note:
             topic_note = topic_note + extra_note
         card_svc = EntityCardService(app.conn)
-        entity_cards = [card_svc.format_card(c) for c in card_svc.match_cards(message)]
+        # 实体卡也要标来源与适用范围（阶段 3）：挂在别的话题上的卡、以及没有归属记录的卡，
+        # 只能作为「参考」，不能被当成本轮已经接受的前提。
+        entity_cards = []
+        for card in card_svc.match_cards(message):
+            topics = card_svc.topics_of(card)
+            if not topics:
+                note = "（来源未知：这张卡没有关联话题记录｜只作参考）"
+            elif topic not in topics:
+                names = []
+                for other in topics:
+                    node = app.topics.nodes.get_topic(other)
+                    names.append(node.name if node is not None else other)
+                note = (
+                    f"（来自其他话题：{'、'.join(names)}｜只作参考，"
+                    "不代表本轮已接受的结论）"
+                )
+            else:
+                note = None
+            entity_cards.append(card_svc.format_card(card, note=note))
         payload = app.build_injection(
             message,
             topic_id=topic,

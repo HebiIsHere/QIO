@@ -285,15 +285,26 @@ class EntityCardService:
 
     # -- formatting ------------------------------------------------------
 
-    def format_card(self, card: EntityCard) -> str:
+    def topics_of(self, card: EntityCard) -> list[str]:
+        """这张卡挂在哪些话题上（mention 边 topic→entity）。"""
+        if not card.node_id:
+            return []
+        rows = self.conn.execute(
+            "SELECT src FROM edges WHERE dst = ? AND type = 'mention'", (card.node_id,)
+        ).fetchall()
+        return [str(r["src"]) for r in rows]
+
+    def format_card(self, card: EntityCard, *, note: str | None = None) -> str:
+        """卡片文本。`note` 用来标注来源与适用范围（见阶段 3 的路径隔离）。"""
         attrs = "；".join(f"{a.get('key')}={a.get('value')}" for a in card.attributes)
         rels = self._format_relations(card)
-        return ENTITY_CARD_INJECT.format(
+        text = ENTITY_CARD_INJECT.format(
             name=card.name,
             summary=card.summary or "",
             attrs=attrs or "—",
             rels=rels or "—",
         )
+        return f"{text}\n{note}" if note else text
 
     def _relation_rows(self, card: EntityCard) -> list[sqlite3.Row]:
         """实体卡的关系边行（排除 mention），_format_relations 与 to_dict 共用。"""
