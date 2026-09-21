@@ -292,6 +292,22 @@ class TurnOrchestrator:
         )
         ctx.user_message_id = msg_id
         tracer.write("messages", msg_id)
+        # 话题的第一段是懒创建的：这里把真正落库的片段补进本轮绑定（细化，不是改归属）。
+        # 不补的话，「本轮正在写入哪个片段」在绑定里是空的 —— 封存时的写入占用检查会漏掉它。
+        if not ctx.bound_fragment_id:
+            row = app.conn.execute(
+                "SELECT fragment_id FROM messages WHERE id = ?", (msg_id,)
+            ).fetchone()
+            actual_fragment = row["fragment_id"] if row is not None else None
+            if actual_fragment:
+                ctx.bound_fragment_id = actual_fragment
+                app.bindings.record_binding(
+                    ctx.turn_id,
+                    topic,
+                    fragment_id=actual_fragment,
+                    intent_id=ctx.intent_id,
+                    intent_version=ctx.bound_intent_version,
+                )
         # Focus 只服务「用户选中的历史位置」：一旦本轮消息写进当前开放片段，
         # 位置推进后就不再重复强调同一个历史片段（见 advance_anchor）。
         focus_fragment = AnchorService(app.conn).focus_fragment(topic)

@@ -121,6 +121,14 @@ class TurnBindingService:
         """写入本轮归属。同一个 turn 重复写同名值算重试（幂等），改值算冲突。"""
         existing = self.binding_for(turn_id)
         if existing is not None:
+            # 懒创建补全：绑定先落在「还没有开放片段」的话题上（fragment_id=None），
+            # 随后第一条消息创建了片段 —— 这时把具体片段补进绑定是**细化**，不是改归属。
+            if existing.fragment_id is None and fragment_id is not None:
+                self.conn.execute(
+                    "UPDATE turn_bindings SET fragment_id = ?, updated_at = ? WHERE turn_id = ?",
+                    (fragment_id, _now(), turn_id),
+                )
+                return self.binding_for(turn_id)  # type: ignore[return-value]
             if (
                 existing.topic_id != topic_id
                 or existing.fragment_id != fragment_id
