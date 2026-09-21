@@ -337,13 +337,24 @@ async def test_cancelling_a_wait_caller_does_not_cancel_the_turn():
 
 
 async def test_wait_without_timeout_still_returns_the_result():
-    """无 timeout 的正常等待路径不得回归。"""
+    """无 timeout 的正常等待路径不得回归。
+
+    注意：不要把 `wait()` 交给 `asyncio.wait_for` 去包装 —— 3.11 的 `wait_for`
+    会先把协程包成 Task，worker 可能抢先跑完并清理掉 future，`wait` 就只剩 None。
+    这里用「先注册 waiter、再放行任务」的写法，与版本调度无关。
+    """
+    release = asyncio.Event()
+
     async def runner(ctx):
+        await release.wait()
         ctx.result = {"ok": True, "message": ctx.message}
 
     tm = TurnManager(runner)
     a = tm.submit("A")
-    assert await asyncio.wait_for(tm.wait(a.turn_id), timeout=1.0) == {"ok": True, "message": "A"}
+    waiter = asyncio.create_task(tm.wait(a.turn_id))
+    await asyncio.sleep(0)
+    release.set()
+    assert await asyncio.wait_for(waiter, timeout=1.0) == {"ok": True, "message": "A"}
     await tm.shutdown()
 
 
