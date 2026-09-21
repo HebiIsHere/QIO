@@ -15,14 +15,66 @@ from typing import Callable
 from agent.memory.fragment import Fragment, FragmentManager, new_id
 
 
+class BindingMismatch(ValueError):
+    """写入的归属与轮次绑定的归属不一致。
+
+    出现它说明调用方想写的 Fragment 不是这一轮绑定的那一个 —— 这种时候
+    绝不能「就近写进当前开放片段」：那正是把已完成轮次的消息搬走的做法。
+    """
+
+
 class MemoryWriter:
     def __init__(
         self,
         conn: sqlite3.Connection,
         fragments: FragmentManager,
+        bindings: object | None = None,
     ) -> None:
         self.conn = conn
         self.fragments = fragments
+        # 轮次绑定服务（agent.services.binding.TurnBindingService）。
+        # 用对象注入而不是直接 import：memory/ 不反过来依赖 services/。
+        self.bindings = bindings
+
+    def _resolve_fragment(
+        self,
+        *,
+        topic_id: str,
+        fragment_id: str | None,
+        turn_id: str | None,
+    ) -> Fragment:
+        """确定这条消息该写进哪个 Fragment。
+
+        优先级：轮次绑定 > 调用方显式传入 > 该话题当前开放片段。
+        （没有轮次绑定的写入是系统通知一类，沿用旧行为。）
+        """
+        binding = None
+        if turn_id and self.bindings is not None:
+            binding = self.bindings.binding_for(turn_id)
+        if binding is not None:
+            if binding.topic_id != topic_id:
+                raise BindingMismatch(
+                    f"turn {turn_id} 绑定在话题 {binding.topic_id}，不能写入 {topic_id}"
+                )
+            if fragment_id is not None and binding.fragment_id not in (None, fragment_id):
+                raise BindingMismatch(
+                    f"turn {turn_id} 绑定片段 {binding.fragment_id}，与传入的 {fragment_id} 不一致"
+                )
+            fragment_id = binding.fragment_id if binding.fragment_id else fragment_id
+
+        if fragment_id is None:
+            return self.fragments.get_or_create_open(topic_id)
+
+        fragment = self.fragments.get(fragment_id)
+        if fragment is None:
+            raise BindingMismatch(f"片段不存在：{fragment_id}")
+        if fragment.topic_id != topic_id:
+            raise BindingMismatch(f"片段 {fragment_id} 不属于话题 {topic_id}")
+        if fragment.closed_at is not None:
+            raise BindingMismatch(
+                f"片段 {fragment_id} 已封存，不能继续追加内容（这一轮绑定的是它）"
+            )
+        return fragment
 
     def append_message(
         self,
@@ -33,6 +85,8 @@ class MemoryWriter:
         content_type: str = "text",
         model: str | None = None,
         raw: dict | None = None,
+        fragment_id: str | None = None,
+        turn_id: str | None = None,
     ) -> tuple[str, Fragment | None]:
         """Append one message; returns (message_id, closed_fragment).
 
@@ -41,7 +95,9 @@ class MemoryWriter:
         summarize — the caller invokes the summarizer via
         close_open_fragment().
         """
-        fragment = self.fragments.get_or_create_open(topic_id)
+        fragment = self._resolve_fragment(
+            topic_id=topic_id, fragment_id=fragment_id, turn_id=turn_id
+        )
         message_id = new_id("msg")
         now = self._now()
         self.conn.execute(

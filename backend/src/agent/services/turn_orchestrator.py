@@ -68,10 +68,12 @@ class TurnOrchestrator:
             return
         result = await self.execute_loop(ctx, adapter, plan)
         if result is None:
+            app.bindings.mark_status(ctx.turn_id, ctx.status or "failed")
             return
         # 取消检查点：不得把取消后产生的内容保存成正常最终回答
         if ctx.cancelled or result.cancelled:
             ctx.cancelled = True
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             app.trace_store.finish(ctx.turn_id, "cancelled")
             return
         final_topic = await self.persist(ctx, adapter, plan, result)
@@ -83,12 +85,14 @@ class TurnOrchestrator:
         }
         if ctx.cancelled:
             # 答案已经落库（用户能看见），但不再做收尾记忆处理
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             app.trace_store.finish(
                 ctx.turn_id, "cancelled", final_topic=final_topic, final_preview=ctx.final_content or ""
             )
             return
         await self.post_turn(ctx, adapter, plan, final_topic)
         if ctx.cancelled:
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             app.trace_store.finish(
                 ctx.turn_id, "cancelled", final_topic=final_topic, final_preview=ctx.final_content or ""
             )
@@ -123,13 +127,53 @@ class TurnOrchestrator:
             # 否则前端会永远停在 running。
             ctx.status = "unavailable"
             ctx.error = "no_credential"
+            app.bindings.mark_status(ctx.turn_id, "unavailable")
             return None
         # 能力模式与降级：正常时不显示，降级时用户得到一次性低干扰提示
         await app.announce_capability(adapter, ctx.turn_id)
         # 封块阈值是「轮」不是「消息条数」（第三阶段 spec 第 57~60 条）
         app.fragments.max_turns = resolve_max_turns(app.settings_store)
         topic = ctx.initial_topic or app.current_topic()
+
+        # ── 轮前：固定本轮归属（Topic / Fragment）──────────────────────────
+        # 顺序是有意的：先解析「用户明确要求切换」，再落实「已授权的历史接续」，
+        # 最后才写绑定。绑定一旦写下，本轮的消息归属就不再受后续导航影响。
+        from agent.services.navigation import detect_explicit_navigation
+
+        explicit_target = detect_explicit_navigation(
+            ctx.message, [(n.id, n.name) for n in app.topics.nodes.list_topics()]
+        )
+        if explicit_target and explicit_target != topic:
+            app.navigation.enter_topic(explicit_target, relate=True)
+            topic = explicit_target
+        ctx.explicit_target = explicit_target
         ctx.current_topic = topic
+
+        fragment_id: str | None = None
+        intent_version: int | None = None
+        if ctx.intent_id:
+            intent = app.bindings.intent_by_id(ctx.intent_id)
+            if intent is not None and intent.state in ("registered", "resolved"):
+                applied = app.navigation.apply_continuation(intent.topic_id, ctx.intent_id)
+                topic = applied.topic_id
+                fragment_id = applied.fragment_id
+                intent_version = intent.version
+                ctx.current_topic = topic
+                await app._publish_anchor_event()
+        if fragment_id is None:
+            open_fragment = app.fragments.open_fragment(topic)
+            fragment_id = open_fragment.id if open_fragment is not None else None
+        ctx.bound_topic = topic
+        ctx.bound_fragment_id = fragment_id
+        ctx.bound_intent_version = intent_version
+        app.bindings.record_binding(
+            ctx.turn_id,
+            topic,
+            fragment_id=fragment_id,
+            intent_id=ctx.intent_id,
+            intent_version=intent_version,
+        )
+
         tracer = TurnTracer(app.trace_store, ctx.turn_id)
         ctx.trace = tracer
         app.trace_store.begin(ctx.turn_id, initial_topic=topic)
@@ -150,7 +194,6 @@ class TurnOrchestrator:
             classify,
             related_topics,
         )
-        from agent.services.navigation import detect_explicit_navigation
         from agent.trace.redact import preview as _preview
 
         app = self.app
@@ -158,16 +201,9 @@ class TurnOrchestrator:
         message = ctx.message
         tracer = ctx.trace
 
-        # 用户明确要求切换（「切到 QIO 前端」「回到橡胶实验」）：
-        # 这是明确的导航意图，直接执行、不再确认（spec 第 28 条）。
-        explicit_target = detect_explicit_navigation(
-            message, [(n.id, n.name) for n in app.topics.nodes.list_topics()]
-        )
-        if explicit_target and explicit_target != topic:
-            app.navigation.enter_topic(explicit_target, relate=True)
-            topic = explicit_target
-            ctx.current_topic = topic
-            await app._publish_anchor_event()
+        # 明确导航已经在 begin() 里解析并写进本轮绑定（阶段 1）：
+        # 这里只读取结果，用于「不再叠加推测切换」与 trace 记录。
+        explicit_target = getattr(ctx, "explicit_target", None)
 
         prediction = app.predictor.predict(message, current_topic_id=topic)
         decision = classify(message, prediction, topic, app._entity_card_topics(message))
@@ -233,6 +269,7 @@ class TurnOrchestrator:
             content=message,
             content_type="text",
             model=adapter.model,
+            turn_id=ctx.turn_id,
         )
         ctx.user_message_id = msg_id
         tracer.write("messages", msg_id)
@@ -354,22 +391,24 @@ class TurnOrchestrator:
             ctx.loop = None
 
     async def persist(self, ctx, adapter, plan: _Plan, result) -> str:
-        from agent.graph.anchors import AnchorService
-
         app = self.app
-        final_topic = plan.topic
-        active = AnchorService(app.conn).get_active()
-        if active is not None and active.topic_id and active.topic_id != plan.topic:
-            final_topic = active.topic_id
-            app._move_message(plan.msg_id, plan.topic, final_topic)
+        # 阶段 1：回答写进**本轮绑定的**话题 / 片段，不再看「此刻的 Anchor」。
+        # 旧实现会在这里把已经提交的用户消息搬到当前 Anchor 所在的话题，
+        # 于是「回复在跑、用户改了导航」会把这一轮拆家。
+        final_topic = getattr(ctx, "bound_topic", None) or plan.topic
+        if final_topic != plan.topic:
+            # 只记录，不搬动：绑定的归属优先
+            ctx.trace.write("bound_topic", f"{final_topic} (context={plan.topic})")
         assistant_msg_id, _ = app.memory.append_message(
             topic_id=final_topic,
             role="assistant",
             content=result.final_content or "",
             content_type="text",
             model=adapter.model,
+            turn_id=ctx.turn_id,
         )
         ctx.trace.write("messages", assistant_msg_id)
+        app.bindings.mark_write_closed(ctx.turn_id)
         # 本轮消息真正写入的片段 = 成功之后的「当前位置」
         row = app.conn.execute(
             "SELECT fragment_id FROM messages WHERE id = ?", (assistant_msg_id,)
@@ -394,6 +433,9 @@ class TurnOrchestrator:
 
         失败 / 取消 / 没写出消息的轮次不推进 —— 用户「从这里开始」的选择必须
         留给下一次重试，而不是因为一次失败就被静默丢弃。
+
+        版本比较：如果用户在本轮绑定之后又做了更新的接续选择（version 更大），
+        本轮不得推进 Anchor —— 否则旧轮次收尾会覆盖用户刚做的导航。
         """
         if getattr(ctx, "cancelled", False):
             return
@@ -401,8 +443,21 @@ class TurnOrchestrator:
         if not fragment_id:
             return
         app = self.app
+        pending = app.bindings.peek_intent()
+        bound_version = getattr(ctx, "bound_intent_version", None) or 0
+        if pending is not None and pending.version > bound_version:
+            ctx.trace.write("anchor_skipped", fragment_id, pending_intent=pending.intent_id)
+            return
+        if ctx.intent_id:
+            # 首轮成功推进：接续提示可以撤下（来源关系永久保留）
+            app.bindings.consume_intent(ctx.intent_id)
         anchors = app.navigation.anchors
         active = anchors.get_active()
+        # 本轮执行期间发生了更新的导航（工具切/建话题）：位置归新的导航，
+        # 本轮只把自己的片段推进限制在**仍然停在同一个话题**时。
+        if active is not None and active.topic_id and active.topic_id != final_topic:
+            ctx.trace.write("anchor_kept", f"{active.topic_id} (turn_fragment={fragment_id})")
+            return
         if (
             active is not None
             and active.topic_id == final_topic
@@ -416,6 +471,7 @@ class TurnOrchestrator:
 
     def finish(self, ctx, plan: _Plan, result, final_topic: str) -> None:
         app = self.app
+        app.bindings.mark_status(ctx.turn_id, "completed")
         decision = plan.decision
         prediction = plan.prediction
         ctx.trace.topic(

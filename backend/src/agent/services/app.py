@@ -126,6 +126,11 @@ class AppContext:
 
         # Topic 导航的唯一入口：Anchor 只由它写入（Planet 选中 / 检索 / 预测都不算导航）。
         self.navigation = TopicNavigationService(conn)
+        from agent.services.binding import TurnBindingService
+
+        # 阶段 1：轮次归属（Turn → Topic/Fragment）与用户的历史接续意图。
+        self.bindings = TurnBindingService(conn)
+        self.memory.bindings = self.bindings
         from agent.services.context import ContextAssembler
 
         self.context_assembler = ContextAssembler(
@@ -346,6 +351,9 @@ class AppContext:
         topic_name = node.name if node is not None else anchor.topic_id
         historic = anchors.is_historic_position(anchor.topic_id)
         fragment_title = self._fragment_title(anchor.fragment_id)
+        # 阶段 1：把「已登记但还没落实」的接续选择一并广播。
+        # 界面据此显示「将从所选记录继续」；落实之后（consumed）这段字段消失。
+        pending = self.bindings.peek_intent()
         await self.bus.publish(
             make_event(
                 EventType.ANCHOR,
@@ -355,6 +363,12 @@ class AppContext:
                     "fragment_id": anchor.fragment_id,
                     "fragment_title": fragment_title,
                     "historic": historic,
+                    "pending_intent_id": pending.intent_id if pending else None,
+                    "pending_intent_version": pending.version if pending else None,
+                    "pending_source_fragment_id": pending.source_fragment_id if pending else None,
+                    "pending_source_title": (
+                        self._fragment_title(pending.source_fragment_id) if pending else None
+                    ),
                 },
             )
         )
@@ -1084,7 +1098,11 @@ class AppContext:
 
     async def run_turn(self, message: str, topic_id: str | None = None) -> dict:
         """提交一个 turn 并等待结果（单飞由 TurnManager 保证）。"""
-        ctx = self.turns.submit(message, topic_id)
+        # 提交时捕获「此刻待落实的接续选择」：之后用户再做的新选择只影响后续提交
+        pending = self.bindings.peek_intent()
+        ctx = self.turns.submit(
+            message, topic_id, intent_id=pending.intent_id if pending else None
+        )
         result = await self.turns.wait(ctx.turn_id)
         return result or {"ok": False, "reason": "no_result"}
 

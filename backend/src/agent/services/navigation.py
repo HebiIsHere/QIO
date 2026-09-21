@@ -28,6 +28,8 @@ from agent.graph.anchors import AnchorService
 from agent.graph.edges import EdgeService
 from agent.graph.nodes import NodeService
 from agent.memory.fragment import FragmentManager, new_id
+from agent.services.binding import IntentNotFound, TurnBindingService
+from agent.storage.db import transaction
 
 
 def _now() -> str:
@@ -50,6 +52,7 @@ class NavigationResult:
     historic: bool
     created_fragment_id: str | None = None
     source_fragment_id: str | None = None
+    sealed_fragment_id: str | None = None
 
 
 def relate_topics(conn: sqlite3.Connection, a: str, b: str) -> None:
@@ -149,11 +152,26 @@ class TopicNavigationService:
     def continue_from_history(
         self, topic_id: str, fragment_id: str, *, relate: bool = True
     ) -> NavigationResult:
-        """从一段历史接续：**创建新片段**，并记下来源。
+        """从一段历史接续（两步语义的便捷入口：登记 + 立即落实）。
 
-        旧片段（已封块的历史）永远保持不变：关闭的 Fragment 不得重新修改。
-        新片段在数据层记 `source_fragment_id`，未来可以做分支历史 UI
-        （A → B → C 与 A → D 并存），本阶段不要求树状界面。
+        规范要求的两步语义见 `register_continuation`（点击时只登记）与
+        `apply_continuation`（真正有消息要执行时才落实）。这个方法是二者的组合，
+        供「确实要立刻落实」的调用方使用，行为与旧版保持一致。
+        """
+        intent = self.register_continuation(topic_id, fragment_id)
+        if not intent.get("intent_id"):
+            # 来源就是当前开放片段：普通继续，没有可落实的意图
+            return self.enter_topic(topic_id, fragment_id=fragment_id, relate=relate)
+        return self.apply_continuation(topic_id, intent["intent_id"], relate=relate)
+
+    def register_continuation(
+        self, topic_id: str, fragment_id: str, *, request_id: str | None = None
+    ) -> dict:
+        """登记「下一次发送要从这段历史继续」。**不创建任何片段。**
+
+        - 点击已封存的历史 A：登记可替换的接续选择，界面据此显示「将从 A 继续」；
+        - 点击当前开放片段：视为继续现有位置（`opens_current=True`），不登记接续意图；
+        - 只浏览、发送前改选、取消：都不产生片段（落实发生在真正有消息执行时）。
         """
         node = self.nodes.get_topic(topic_id)
         if node is None:
@@ -162,16 +180,98 @@ class TopicNavigationService:
         if source is None or source.topic_id != topic_id:
             raise FragmentNotInTopic(f"片段不属于该话题：{fragment_id}")
         if source.closed_at is None:
-            # 来源就是当前开放片段：它本来就是对话的位置，不需要再开一段
-            return self.enter_topic(topic_id, fragment_id=fragment_id, relate=relate)
+            # 来源就是当前开放片段：它就是对话的位置，普通继续，不需要接续意图
+            return {
+                "topic_id": topic_id,
+                "fragment_id": fragment_id,
+                "fragment_title": self.fragment_title(fragment_id),
+                "historic": False,
+                "opens_current": True,
+                "intent_id": None,
+                "intent_version": None,
+                "source_fragment_id": fragment_id,
+            }
 
-        new_fragment_id = new_id("frag")
-        self.conn.execute(
-            "INSERT INTO fragments (id, topic_id, created_at, summary_version, meta, source_fragment_id) "
-            "VALUES (?, ?, ?, 0, '{}', ?)",
-            (new_fragment_id, topic_id, _now(), fragment_id),
+        intent = TurnBindingService(self.conn).register_intent(
+            topic_id, fragment_id, request_id=request_id
         )
+        return {
+            "topic_id": topic_id,
+            "fragment_id": fragment_id,
+            "fragment_title": self.fragment_title(fragment_id),
+            "historic": True,
+            "opens_current": False,
+            "intent_id": intent.intent_id,
+            "intent_version": intent.version,
+            "source_fragment_id": fragment_id,
+        }
+
+    def apply_continuation(
+        self, topic_id: str, intent_id: str, *, relate: bool = True
+    ) -> NavigationResult:
+        """落实接续意图：这是真正创建/复用片段的**唯一**位置（原子交接）。
+
+        三种情况：
+        1. 来源此刻是开放片段 → 普通继续，不新建；
+        2. 该话题没有开放片段 → 新建 D，来源记 A；
+        3. 该话题已有开放片段 C → 在同一个事务里封存 C（记录原因）再建 D，
+           而不是直接 INSERT —— 这正是过去撞上
+           `idx_fragments_one_open_per_topic` 的那条路径。
+
+        重复调用（传输重试 / 工具重试）返回同一个结果，不重复创建。
+        """
+        bindings = TurnBindingService(self.conn)
+        intent = bindings.intent_by_id(intent_id)
+        if intent is None:
+            raise IntentNotFound(f"接续意图不存在：{intent_id}")
+        if intent.topic_id != topic_id:
+            raise FragmentNotInTopic(
+                f"接续意图 {intent_id} 属于话题 {intent.topic_id}，与 {topic_id} 不一致"
+            )
+
+        # 已落实过：复用同一个片段（重试不新建路径）
+        if intent.resolved_fragment_id:
+            existing = self.fragments.get(intent.resolved_fragment_id)
+            if existing is not None:
+                return self._result(
+                    topic_id,
+                    existing.id,
+                    created_fragment_id=existing.id,
+                    source_fragment_id=intent.source_fragment_id,
+                )
+
+        source = self.fragments.get(intent.source_fragment_id) if intent.source_fragment_id else None
+        if source is not None and source.closed_at is None:
+            bindings.resolve_intent(intent_id, source.id)
+            return self.enter_topic(topic_id, fragment_id=source.id, relate=relate)
+
         previous = self.anchors.get_active()
+        open_fragment = self.fragments.open_fragment(topic_id)
+        new_fragment_id = new_id("frag")
+        sealed_id: str | None = None
+        with transaction(self.conn):
+            if open_fragment is not None:
+                sealed_id = open_fragment.id
+                self.conn.execute(
+                    "UPDATE fragments SET closed_at = ?, boundary_reason = ? WHERE id = ?",
+                    (_now(), "history_continuation", sealed_id),
+                )
+            self.conn.execute(
+                "INSERT INTO fragments "
+                "(id, topic_id, created_at, summary_version, meta, source_fragment_id, "
+                " relation_type, boundary_reason, content_version) "
+                "VALUES (?, ?, ?, 0, '{}', ?, ?, ?, 0)",
+                (
+                    new_fragment_id,
+                    topic_id,
+                    _now(),
+                    intent.source_fragment_id,
+                    "history_reopen",
+                    "history_continuation",
+                ),
+            )
+            # 落实结果与片段创建在同一个事务里：不会出现「片段建了但意图没落实」
+            bindings.resolve_intent(intent_id, new_fragment_id)
         self.anchors.set_active(topic_id, new_fragment_id)
         if relate and previous is not None and previous.topic_id:
             relate_topics(self.conn, previous.topic_id, topic_id)
@@ -179,7 +279,8 @@ class TopicNavigationService:
             topic_id,
             new_fragment_id,
             created_fragment_id=new_fragment_id,
-            source_fragment_id=fragment_id,
+            source_fragment_id=intent.source_fragment_id,
+            sealed_fragment_id=sealed_id,
         )
 
     def create_topic(self, name: str, *, relate: bool = True) -> NavigationResult:
@@ -251,6 +352,7 @@ class TopicNavigationService:
         *,
         created_fragment_id: str | None = None,
         source_fragment_id: str | None = None,
+        sealed_fragment_id: str | None = None,
     ) -> NavigationResult:
         return NavigationResult(
             topic_id=topic_id,
@@ -259,4 +361,5 @@ class TopicNavigationService:
             historic=self.anchors.is_historic_position(topic_id),
             created_fragment_id=created_fragment_id,
             source_fragment_id=source_fragment_id,
+            sealed_fragment_id=sealed_fragment_id,
         )

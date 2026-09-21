@@ -68,7 +68,9 @@ class ContinueFromFragmentTool(Tool):
             return ToolResult(ok=False, error=f"片段内容不可用（无摘要也无消息）：{fragment_id}")
 
         try:
-            result = TopicNavigationService(self.conn).continue_from_history(
+            # 阶段 1：Agent 在执行中调用接续工具时**只登记意图**，不改变当前轮绑定，
+            # 也不改写已经提交的排队消息。接续片段在这之后提交的消息真正执行时才落实。
+            result = TopicNavigationService(self.conn).register_continuation(
                 fragment.topic_id, fragment_id
             )
         except TopicNotFound as exc:
@@ -76,14 +78,22 @@ class ContinueFromFragmentTool(Tool):
         except FragmentNotInTopic as exc:
             return ToolResult(ok=False, error=str(exc))
 
+        if result.get("opens_current"):
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"「{self._title(fragment_id, fragment.summary)}」就是当前正在继续的片段，"
+                    "不需要新建接续片段。"
+                ),
+            )
         return ToolResult(
             ok=True,
             content=(
-                f"已把讨论位置移到历史片段「{self._title(fragment_id, fragment.summary)}」"
-                f"（fragment_id={fragment_id}，话题「{node.name}」）之后。"
-                "那段历史保持原样，新的接续片段会记下它的来源（source_fragment_id="
-                f"{result.source_fragment_id or fragment_id}）；"
-                "本轮上下文不会重建，从下一轮开始会带上这段历史。"
+                f"已登记：你的下一条消息将从历史片段「{self._title(fragment_id, fragment.summary)}」"
+                f"（fragment_id={fragment_id}，话题「{node.name}」）继续。"
+                "这条登记只对之后提交的消息生效：本轮归属不变，已经排队但还没开始的消息也不改向。"
+                "那段历史保持原样，接续片段会记下它的来源（source_fragment_id="
+                f"{result.get('source_fragment_id') or fragment_id}）。"
                 "如果本轮还需要那段讨论的细节，用 memory_search 继续查。"
             ),
         )

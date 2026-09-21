@@ -113,13 +113,24 @@ async def test_marker_once_when_model_switches_topic(ctx: AppContext):
     # one request before the tool call, one after: the marker must appear
     # exactly once in each
     assert adapter.marker_count_per_call(MARKER) == [1, 1], adapter.calls
-    # the message must exist once, now attached to the target topic
+    # 阶段 1：本轮消息写进**提交时绑定的**来源话题。
+    # 工具切话题只改变后续轮次的位置，不再把已经提交的消息搬走。
     rows = ctx.conn.execute(
         "SELECT m.content FROM messages m JOIN fragments f ON f.id = m.fragment_id "
-        "WHERE f.topic_id = ? AND m.role = 'user'",
-        (target,),
+        "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
+        (source, f"%{MARKER}%"),
     ).fetchall()
     assert [r["content"] for r in rows] == [f"换个话题 {MARKER}"]
+    moved = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ? AND m.role = 'user'",
+        (target,),
+    ).fetchone()["c"]
+    assert moved == 0, "已经提交的用户消息不得被搬动"
+    # 位置属于后续轮次：锚点确实切到了目标话题
+    from agent.graph.anchors import AnchorService
+
+    assert AnchorService(ctx.conn).get_active().topic_id == target
 
 
 async def test_marker_once_when_model_creates_topic(ctx: AppContext):
@@ -142,7 +153,16 @@ async def test_marker_once_when_model_creates_topic(ctx: AppContext):
     assert node is not None
     rows = ctx.conn.execute(
         "SELECT m.content FROM messages m JOIN fragments f ON f.id = m.fragment_id "
-        "WHERE f.topic_id = ? AND m.role = 'user'",
-        (node["id"],),
+        "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
+        (source, f"%{MARKER}%"),
     ).fetchall()
     assert [r["content"] for r in rows] == [f"开启新话题 {MARKER}"]
+    moved = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ? AND m.role = 'user'",
+        (node["id"],),
+    ).fetchone()["c"]
+    assert moved == 0, "已经提交的用户消息不得被搬动"
+    from agent.graph.anchors import AnchorService
+
+    assert AnchorService(ctx.conn).get_active().topic_id == node["id"]

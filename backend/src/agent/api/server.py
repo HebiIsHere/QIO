@@ -523,7 +523,33 @@ def create_app(
             if body.get("continue_from_history"):
                 if not fragment_id:
                     raise HTTPException(status_code=400, detail="fragment_id required to continue")
-                result = ctx.navigation.continue_from_history(topic_id, str(fragment_id))
+                # 阶段 1：点击历史**只登记接续意图**，不创建片段。
+                # 界面显示「将从所选记录继续」；真正的新片段在本轮消息执行时落实。
+                intent = ctx.navigation.register_continuation(
+                    topic_id, str(fragment_id), request_id=body.get("request_id")
+                )
+                if intent.get("opens_current"):
+                    result = ctx.navigation.enter_topic(
+                        topic_id, fragment_id=str(fragment_id), relate=False
+                    )
+                else:
+                    # 位置停在所选历史处（historic 提示由 Anchor 事件广播）
+                    result = ctx.navigation.enter_topic(
+                        topic_id, fragment_id=str(fragment_id), relate=False
+                    )
+                await ctx._publish_anchor_event()
+                return {
+                    "ok": True,
+                    "topic_id": result.topic_id,
+                    "fragment_id": result.fragment_id,
+                    "fragment_title": result.fragment_title,
+                    "historic": result.historic,
+                    "created_fragment_id": None,
+                    "source_fragment_id": intent.get("source_fragment_id") or str(fragment_id),
+                    "intent_id": intent.get("intent_id"),
+                    "intent_version": intent.get("intent_version"),
+                    "pending": bool(intent.get("intent_id")),
+                }
             else:
                 # 用户明确点「进入这个话题」＝从最新位置继续，不恢复旧位置。
                 result = ctx.navigation.enter_topic(
@@ -558,7 +584,12 @@ def create_app(
         topic_id = body.get("topic_id")
         # 受理时就已经有 turn_id：前端可以立刻用它做乐观消息关联与取消，
         # 不必等 SSE 的 TURN_START（SSE 是异步状态通道，不承担请求身份）。
-        turn = ctx.turns.submit(message, topic_id)
+        # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
+        # （排队中的这条消息不被追溯改向）。
+        pending = ctx.bindings.peek_intent()
+        turn = ctx.turns.submit(
+            message, topic_id, intent_id=pending.intent_id if pending else None
+        )
         return {
             "ok": True,
             "accepted": True,

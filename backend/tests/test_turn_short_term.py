@@ -87,13 +87,19 @@ async def test_run_turn_injects_short_term_and_switches_topic(ctx: AppContext, t
     ).fetchone()
     assert row is not None and row["weight"] >= 1.0
 
-    # 本轮用户消息与回复都迁移/写入新话题
-    count = ctx.conn.execute(
+    # 阶段 1：本轮消息写进提交时绑定的原话题；工具切话题只影响后续轮次。
+    count_source = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ?",
+        (topic,),
+    ).fetchone()["c"]
+    assert count_source >= 2
+    count_target = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ?",
         (t2.id,),
     ).fetchone()["c"]
-    assert count >= 2
+    assert count_target == 0, "已经提交的轮次不得被搬到新话题"
 
 
 async def test_run_turn_create_topic(ctx: AppContext, topic: str, monkeypatch):
@@ -108,6 +114,19 @@ async def test_run_turn_create_topic(ctx: AppContext, topic: str, monkeypatch):
     ).fetchone()
     assert node is not None
     assert AnchorService(ctx.conn).get_active().topic_id == node["id"]
+    # 本轮消息留在原话题（绑定优先），下一轮才会落到新话题
+    stayed = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ?",
+        (topic,),
+    ).fetchone()["c"]
+    assert stayed >= 2
+    moved = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
+        "WHERE f.topic_id = ?",
+        (node["id"],),
+    ).fetchone()["c"]
+    assert moved == 0
 
 
 async def test_fragment_tier_from_settings(ctx: AppContext, topic: str, monkeypatch):

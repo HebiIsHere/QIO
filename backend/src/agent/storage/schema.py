@@ -367,6 +367,66 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON fragments(topic_id) WHERE closed_at IS NULL",
         ],
     ),
+    (
+        13,
+        [
+            # 阶段 1：把「这一轮属于哪个 Topic / 哪个 Fragment」从「写入时再看一眼 Anchor」
+            # 变成**一条持久绑定**。绑定在轮前确定，写入、导航推进、失败收尾都读同一条，
+            # 因此后面的导航变化不会把已经提交的消息搬走。
+            #
+            # write_state: open | closed —— 写入是否还在进行（用于「尚有未完成写入的片段不得封存」）。
+            # status: 该轮的终态（completed/failed/cancelled/unavailable），运行中为 NULL。
+            """
+            CREATE TABLE IF NOT EXISTS turn_bindings (
+                turn_id       TEXT PRIMARY KEY,
+                topic_id      TEXT NOT NULL,
+                fragment_id   TEXT,
+                intent_id     TEXT,
+                intent_version INTEGER,
+                write_state   TEXT NOT NULL DEFAULT 'open',
+                status        TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_turn_bindings_topic ON turn_bindings(topic_id)",
+            "CREATE INDEX IF NOT EXISTS idx_turn_bindings_fragment ON turn_bindings(fragment_id)",
+            # 用户「从某段历史继续」的接续意图：点击时只登记，真正执行到本轮消息时才落实。
+            # 不复用「模型建议换话题、等待确认」的 pending 状态（两者含义不同）。
+            """
+            CREATE TABLE IF NOT EXISTS continuation_intents (
+                intent_id            TEXT PRIMARY KEY,
+                topic_id             TEXT NOT NULL,
+                source_fragment_id   TEXT,
+                version              INTEGER NOT NULL DEFAULT 1,
+                state                TEXT NOT NULL DEFAULT 'registered',
+                resolved_fragment_id TEXT,
+                request_id           TEXT,
+                created_at           TEXT NOT NULL,
+                updated_at           TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_continuation_intents_state ON continuation_intents(state)",
+            # 同一个 request_id 只能有一条意图：传输层重发不会制造第二条接续路径。
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_continuation_intents_request "
+            "ON continuation_intents(request_id) WHERE request_id IS NOT NULL",
+        ],
+    ),
+    (
+        14,
+        [
+            # 阶段 1 / 阶段 3 需要的片段元信息：
+            # - relation_type：这条片段与它来源的关系（普通延续 / 历史重新展开 / 未知旧数据）
+            # - boundary_reason：为什么在这里分段（容量 / 阶段变化 / 历史接续 / 其他）
+            # - same_stage：容量延续是否仍在同一阶段（1/0，未知为 NULL）
+            # - content_version：封存时固定的内容版本，派生任务（摘要/索引/实体）据此防止迟到结果覆盖新内容
+            "ALTER TABLE fragments ADD COLUMN relation_type TEXT",
+            "ALTER TABLE fragments ADD COLUMN boundary_reason TEXT",
+            "ALTER TABLE fragments ADD COLUMN same_stage INTEGER",
+            "ALTER TABLE fragments ADD COLUMN content_version INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_fragments_source ON fragments(source_fragment_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

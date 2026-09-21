@@ -84,6 +84,13 @@ class TurnContext:
     notify: bool = False  # system-driven (e.g. subagent completion) turn
     turn_start_emitted: bool = False
     turn_end_emitted: bool = False
+    # 阶段 1：这一轮的归属在**提交时**就捕获接续意图，在**开始执行时**落实成绑定。
+    # 提交之后用户再做的新选择只影响后续提交（排队消息不被追溯改向）。
+    intent_id: str | None = None
+    bound_topic: str | None = None
+    bound_fragment_id: str | None = None
+    bound_intent_version: int | None = None
+    explicit_target: str | None = None
 
 
 class TurnManager:
@@ -172,7 +179,12 @@ class TurnManager:
     # -- submission -------------------------------------------------------
 
     def submit(
-        self, message: str, topic_id: str | None = None, *, notify: bool = False
+        self,
+        message: str,
+        topic_id: str | None = None,
+        *,
+        notify: bool = False,
+        intent_id: str | None = None,
     ) -> TurnContext:
         if self._closed:
             # worker 已经停了：再收下这个 turn，它只会躺在队列里永远不被执行
@@ -186,6 +198,7 @@ class TurnManager:
             initial_topic=topic_id,
             current_topic=topic_id,
             notify=notify,
+            intent_id=intent_id,
             status="queued" if waits else "accepted",
         )
         try:

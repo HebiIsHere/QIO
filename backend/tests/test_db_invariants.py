@@ -15,7 +15,10 @@ from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations, current_version
 from agent.storage.schema import MIGRATIONS
 
-INVARIANT_VERSION = max(v for v, _ in MIGRATIONS)
+# 不变量由**迁移 12**建立。这里写死 12，不用 max(...)：
+# 用 max 的话，后续每次新增迁移都会把「旧库」的构造点往后挪，
+# 于是这些测试既测不到迁移 12 的归一化行为，还会在插入重复开放片段时先撞上索引。
+INVARIANT_VERSION = 12
 
 
 def _open_fragments(conn: sqlite3.Connection, topic_id: str) -> list[sqlite3.Row]:
@@ -98,7 +101,8 @@ def test_migration_normalizes_existing_duplicates_without_data_loss(tmp_path):
 
     # 2) 迁移：必须归一化而不是启动失败
     apply_migrations(conn)
-    assert current_version(conn) == INVARIANT_VERSION
+    # 迁移全部应用完（不变量在 12 建立，之后可以还有更新的迁移）
+    assert current_version(conn) >= INVARIANT_VERSION
 
     assert conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == before
     open_t1 = _open_fragments(conn, "t1")

@@ -140,7 +140,12 @@ def _continuation_source(ctx: AppContext, fragment_id: str | None) -> str | None
     return row["source_fragment_id"] if row is not None else None
 
 
-def test_continue_from_fragment_sets_topic_and_position(ctx: AppContext):
+def test_continue_from_fragment_registers_intent_for_the_next_round(ctx: AppContext):
+    """阶段 1：工具**只登记接续意图**，不搬动当前位置、不创建片段。
+
+    旧行为（a664900）是工具调用立刻切话题 + 建接续片段；那会让「Agent 在本轮执行中
+    调用接续」把本轮的位置也改掉。现在的契约：登记只对之后提交的消息生效。
+    """
     a = _topic(ctx, "话题A")
     b = _topic(ctx, "话题B")
     frag = _seed_fragment(ctx, b)
@@ -150,21 +155,15 @@ def test_continue_from_fragment_sets_topic_and_position(ctx: AppContext):
 
     assert result.ok is True
     active = AnchorService(ctx.conn).get_active()
-    assert active.topic_id == b, "跨话题 continue 必须同时切换话题"
-    # 第二阶段：历史片段保持不变，位置落在新建的接续片段上，并记下来源
-    assert active.fragment_id != frag
-    assert _continuation_source(ctx, active.fragment_id) == frag
-    assert AnchorService(ctx.conn).focus_fragment(b) == frag, "Focus 仍然读那段历史"
-    assert "继续" in result.content or "已" in result.content
-    # 与 switch_topic 一致：建立相关关系，便于后续话题亲和
-    row = ctx.conn.execute(
-        "SELECT weight FROM edges WHERE type='related' AND src=? AND dst=?",
-        tuple(sorted([a, b])),
-    ).fetchone()
-    assert row is not None and row["weight"] >= 1.0
+    assert active.topic_id == a, "登记不改动当前位置"
+    assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1, "登记不创建片段"
+    intent = ctx.bindings.peek_intent()
+    assert intent is not None
+    assert (intent.topic_id, intent.source_fragment_id) == (b, frag)
+    assert "下一条消息" in result.content
 
 
-def test_continue_from_fragment_same_topic_position(ctx: AppContext):
+def test_continue_from_fragment_same_topic_registers_intent(ctx: AppContext):
     a = _topic(ctx, "话题A")
     frag = _seed_fragment(ctx, a)
     AnchorService(ctx.conn).set_active(a, None)
@@ -173,9 +172,9 @@ def test_continue_from_fragment_same_topic_position(ctx: AppContext):
 
     assert result.ok is True
     active = AnchorService(ctx.conn).get_active()
-    assert active.fragment_id != frag
-    assert _continuation_source(ctx, active.fragment_id) == frag
-    assert AnchorService(ctx.conn).focus_fragment(a) == frag
+    assert active.fragment_id is None, "登记不改动当前位置"
+    assert ctx.bindings.peek_intent().source_fragment_id == frag
+    assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
 
 
 def test_continue_from_fragment_rejects_unknown_without_state_change(ctx: AppContext):
@@ -229,8 +228,9 @@ def test_agent_search_then_continue_flow(ctx: AppContext):
     result = _continue_tool(ctx).run_sync(fragment_id=frag, reason="从那次讨论继续")
     assert result.ok is True
     active = AnchorService(ctx.conn).get_active()
-    assert active.topic_id == b
-    assert _continuation_source(ctx, active.fragment_id) == frag
+    # 搜索与登记都不改位置：位置属于「有效导航」，落实发生在消息真正执行时
+    assert active.topic_id == a
+    assert ctx.bindings.peek_intent().source_fragment_id == frag
 
 
 # -- 工具 schema 与事件广播 ------------------------------------------------
@@ -286,5 +286,8 @@ def test_continue_tool_publishes_anchor_event(ctx: AppContext):
 
     collected = asyncio.run(collect())
     assert collected, "continue_from_fragment 成功后必须广播 ANCHOR"
-    assert collected[0]["fragment_id"]
-    assert collected[0]["historic"] is True, "历史位置要显式标记，前端才会显示提示"
+    # 事件要能把「已登记、还没落实」的接续选择告诉界面：
+    # 这样即使当前位置没动，前端也能显示「将从所选记录继续」。
+    assert collected[0]["pending_intent_id"]
+    assert collected[0]["pending_source_fragment_id"]
+    assert collected[0]["pending_source_title"], "提示要有可读的来源标题，不暴露内部 id"

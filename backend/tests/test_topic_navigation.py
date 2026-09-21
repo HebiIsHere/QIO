@@ -250,8 +250,16 @@ def test_anchor_api_continue_from_history_creates_a_continuation(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["source_fragment_id"] == source
-    assert body["created_fragment_id"] and body["created_fragment_id"] != source
-    assert AnchorService(ctx.conn).get_active().fragment_id == body["created_fragment_id"]
+    # 阶段 1 的语义：点击历史**只登记接续意图**，不创建新片段。
+    # 界面据此显示「将从所选记录继续」；真正的新片段在本轮消息执行时才落实。
+    assert body["created_fragment_id"] is None
+    assert body["pending"] is True
+    assert body["intent_id"]
+    assert ctx.bindings.peek_intent().source_fragment_id == source
+    # 还没有任何消息执行到这条意图：库里仍然只有那一段历史
+    assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
+    # 位置停在所选历史处，界面才能显示「从…继续」
+    assert body["historic"] is True
     row = ctx.conn.execute("SELECT * FROM fragments WHERE id = ?", (source,)).fetchone()
     assert row["closed_at"] is not None
 
