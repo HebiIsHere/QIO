@@ -69,8 +69,19 @@ async def test_close_fragment_updates_selector_incrementally(ctx, monkeypatch):
     assert hits, "增量更新之后新记忆必须可检索"
 
 
-async def test_close_fragment_rolls_back_when_index_write_fails(ctx, monkeypatch):
-    """多步写入必须原子：索引写失败不能留下「已关闭但没有记忆」的半截状态。"""
+async def test_index_failure_does_not_undo_the_seal_and_is_retryable(ctx, monkeypatch):
+    """阶段 2：索引写失败不再回滚「封存」，而是变成可重试的派生任务。
+
+    旧行为是「封存 + 写索引」绑成一个事务：索引写不进去就连封存一起回滚。
+    新契约把两者分开 —— 封存是对话状态（立刻、持久），索引是派生数据（可重试）。
+    代价与保障要同时成立：
+
+    * 封存不会因为一次索引失败而回退（对话不卡在「还没封」的半截状态）；
+    * 失败被记成 retryable，失败修好之后再跑一次就能补齐索引（幂等）；
+    * 期间原文仍然可读（片段不是「不存在」）。
+    """
+    from agent.services import derived_tasks
+
     topic = await _seed_topic(ctx)
 
     def boom(**kwargs):
@@ -78,12 +89,34 @@ async def test_close_fragment_rolls_back_when_index_write_fails(ctx, monkeypatch
 
     monkeypatch.setattr(ctx.index_builder, "build", boom)
 
-    with pytest.raises(RuntimeError):
-        await ctx._close_fragment(topic, _SummaryAdapter())
+    closed = await ctx._close_fragment(topic, _SummaryAdapter())
 
+    assert closed is not None
     row = ctx.conn.execute(
-        "SELECT closed_at FROM fragments WHERE topic_id = ?", (topic,)
+        "SELECT closed_at, content_version FROM fragments WHERE topic_id = ?", (topic,)
     ).fetchone()
-    # 整体回滚：fragment 不能被标成已关闭
-    assert row is not None and row["closed_at"] is None
+    assert row["closed_at"] is not None, "封存必须留下"
+    assert int(row["content_version"]) > 0, "封存时固定内容版本，供派生任务校验"
     assert ctx.conn.execute("SELECT COUNT(*) c FROM memory_index").fetchone()["c"] == 0
+
+    task = derived_tasks.task_for(
+        ctx.conn, derived_tasks.KIND_SUMMARY, closed.id, int(row["content_version"])
+    )
+    assert task is not None
+    assert task.state == derived_tasks.STATE_FAILED
+    assert task.attempts == 1
+    assert "index exploded" in (task.last_error or "")
+    # 原文仍然可读：片段不是「不存在」
+    assert ctx.fragments.messages(closed.id), "封存后原文必须仍然读得到"
+
+    # 把故障修好，再跑一次：索引补齐，任务完成（幂等）
+    monkeypatch.undo()
+    ctx.conn.execute(
+        "UPDATE derived_tasks SET run_after = NULL WHERE id = ?", (task.id,)
+    )
+    done = await ctx.memory_lifecycle.drain_derived_tasks(_SummaryAdapter(), limit=5)
+    assert done == 1
+    assert ctx.conn.execute("SELECT COUNT(*) c FROM memory_index").fetchone()["c"] == 1
+    assert derived_tasks.task_for(
+        ctx.conn, derived_tasks.KIND_SUMMARY, closed.id, int(row["content_version"])
+    ).state == derived_tasks.STATE_COMPLETED

@@ -103,6 +103,16 @@ def create_app(
         → （真实入口才）关 DB。DB 放在最后，避免后台任务还在写时连接先断了。
         """
         ctx.maintenance.start()
+        # 阶段 2：进程重启后把「卡在 running」的派生任务放回可重试状态，
+        # 并把上次没做完的补齐（幂等，不重放任何外部副作用）。
+        try:
+            from agent.services import derived_tasks
+
+            recovered = derived_tasks.recover_stale(ctx.conn)
+            if recovered:
+                logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
+        except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
+            logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
         try:
             yield
         finally:

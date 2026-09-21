@@ -138,6 +138,32 @@ class FragmentManager:
             (summary, summary_model, summary_version, _now(), fragment_id),
         )
 
+    def seal(
+        self,
+        fragment_id: str,
+        *,
+        reason: str | None = None,
+        content_version: int | None = None,
+    ) -> None:
+        """**封存**片段：只固定「这一段到今天为止」这件事，不写摘要。
+
+        摘要与索引属于派生数据（阶段 2）：它们可能失败、可以重试，
+        不该把「封存」这件事一起拖慢或拖回。所以封存自己只做三件事：
+        记封存时间、记分段原因、固定内容版本（派生任务据此校验迟到结果）。
+        """
+        if content_version is None:
+            self.conn.execute(
+                "UPDATE fragments SET closed_at = ?, "
+                "boundary_reason = COALESCE(?, boundary_reason) WHERE id = ?",
+                (_now(), reason, fragment_id),
+            )
+            return
+        self.conn.execute(
+            "UPDATE fragments SET closed_at = ?, boundary_reason = COALESCE(?, boundary_reason), "
+            "content_version = ? WHERE id = ?",
+            (_now(), reason, content_version, fragment_id),
+        )
+
     def should_close(self, fragment: Fragment) -> bool:
         """Chunk-boundary policy: 完整的对话轮数达到上限才封块。
 

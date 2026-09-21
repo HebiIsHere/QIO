@@ -427,6 +427,36 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_fragments_source ON fragments(source_fragment_id)",
         ],
     ),
+    (
+        15,
+        [
+            # 阶段 2：派生任务（摘要 / 索引 / 实体 / 知识）。
+            #
+            # 为什么要单独一张表：封存片段是**对话本身**的状态（必须立刻完成、
+            # 事务内完成），而摘要与索引是**可重试的派生数据**。以前两者绑在一起，
+            # 结果就是「为了封块要等一次模型调用」，失败还会把封存一起拖回去。
+            #
+            # UNIQUE(kind, fragment_id, content_version) 保证同一份内容只派发一次：
+            # 任务重试、进程重启、迟到结果都不会重复制造知识/实体/索引。
+            """
+            CREATE TABLE IF NOT EXISTS derived_tasks (
+                id              TEXT PRIMARY KEY,
+                kind            TEXT NOT NULL,
+                fragment_id     TEXT NOT NULL,
+                content_version INTEGER NOT NULL,
+                state           TEXT NOT NULL DEFAULT 'pending',
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                last_error      TEXT,
+                run_after       TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                UNIQUE (kind, fragment_id, content_version)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_derived_tasks_due ON derived_tasks(state, run_after)",
+            "CREATE INDEX IF NOT EXISTS idx_derived_tasks_fragment ON derived_tasks(fragment_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

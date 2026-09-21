@@ -84,6 +84,14 @@ async def test_unknown_cursor_requires_resync_instead_of_partial_replay():
 
 
 async def test_approval_required_is_never_replayed():
+    """审批永不被补发；新连接则一条历史都不补发（阶段 2 的重放策略）。
+
+    旧断言是「新连接拿到 WARNING、拿不到审批」——那依赖「新连接会重放历史」，
+    而重放历史正是新页面看到上一次提示与排队的原因。现在：
+
+    * 新连接（无游标）：什么都不补发；
+    * 重连（带游标）：补发游标之后的非审批事件，审批仍然永不补发。
+    """
     bus = EventBus()
     await bus.publish(
         make_event(
@@ -91,7 +99,12 @@ async def test_approval_required_is_never_replayed():
             {"approval": {"approval_id": "appr_1", "kind": "computer", "payload": {}}},
         )
     )
+    cursor = make_event(EventType.TURN_QUEUE, {"revision": 1, "running": None, "queued": []})
+    await bus.publish(cursor)
     await bus.publish(make_event(EventType.WARNING, {"n": 1}))
 
-    replayed = await _take(bus, 1)
+    fresh = await _take(bus, 1)  # 新连接：不该拿到任何历史
+    assert fresh == []
+
+    replayed = await _take(bus, 1, last_event_id=cursor.id)
     assert [e["type"] for e in replayed] == ["WARNING"]

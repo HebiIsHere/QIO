@@ -13,6 +13,8 @@ only per-turn flow, so AppContext stops being a pile of domain details.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -420,13 +422,32 @@ class TurnOrchestrator:
         app = self.app
         fragment = app.fragments.get_or_create_open(final_topic)
         if app.fragments.should_close(fragment):
-            closed = await app._close_fragment(final_topic, adapter, tracer=ctx.trace)
-            if closed is not None:
-                # 索引已由 `close_fragment` 增量维护（只处理新写入的那一条）。
-                # 这里再全量重建一次会把增量收益整个抵消掉。
+            # 阶段 2：这里**只封存**（事务内、不等模型）。
+            # 摘要与索引是派生数据，失败可以重试，不能拖住这一轮的终态 ——
+            # 也不能让「模型调用失败」把已经封存的片段回退成未封存。
+            sealed = app.memory_lifecycle.seal_fragment(
+                final_topic, reason="capacity", tracer=ctx.trace
+            )
+            if sealed is not None:
                 app.predictor.refresh_topic_vector(final_topic)
+                self._schedule_derived_work(adapter)
         if plan.payload.plan.needs_consolidation:
             await app.consolidate(final_topic, adapter)
+
+    def _schedule_derived_work(self, adapter) -> None:
+        """后台把派生任务做掉。失败只记录：派生数据不影响对话与导航。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _run() -> None:
+            try:
+                await self.app.memory_lifecycle.drain_derived_tasks(adapter, limit=3)
+            except Exception:  # noqa: BLE001 - 派生失败不得影响会话
+                logging.getLogger(__name__).warning("derived work failed", exc_info=True)
+
+        loop.create_task(_run())
 
     async def advance_anchor(self, ctx, final_topic: str) -> None:
         """成功一轮：把当前位置推进到本轮真实片段（用户的历史选择就此消费）。
