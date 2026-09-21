@@ -905,6 +905,11 @@ class AppContext:
                 return
             topic = self.current_topic()
             ctx.current_topic = topic
+            # 系统驱动的轮也要有自己的绑定（归属明确），并且标记成 system：
+            # 它不占用户轮次容量，也不该被当成「用户开了新的一轮」。
+            ctx.bound_topic = topic
+            ctx.bound_fragment_id = None
+            self.bindings.record_binding(ctx.turn_id, topic, system=True)
             from agent.trace.recorder import TurnTracer
 
             tracer = TurnTracer(self.trace_store, ctx.turn_id)
@@ -972,6 +977,7 @@ class AppContext:
                 content=result.final_content or "",
                 content_type="text",
                 model=adapter.model,
+                turn_id=ctx.turn_id,
             )
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content

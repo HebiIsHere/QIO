@@ -1,0 +1,16 @@
+{"id":"c01","split":"tune","text":"设计确定了，开始编写实施提示词吧","turns":2,"tokens":300,"expect":"split","note":"规格验收行：设计确定后开工"}
+{"id":"c02","split":"tune","text":"不要开始写代码，继续分析","turns":2,"tokens":300,"expect":"continue","note":"否定句不是指令"}
+{"id":"c03","split":"tune","text":"你刚才那句「现在开始实现」的措辞不太对","turns":2,"tokens":300,"expect":"continue","note":"引用是在讨论措辞"}
+{"id":"c04","split":"tune","text":"如果我们开始实现的话，第一步做什么？","turns":2,"tokens":300,"expect":"continue","note":"假设句不是指令"}
+{"id":"c05","split":"tune","text":"好","turns":2,"tokens":300,"expect":"continue","note":"短确认跟随上一轮下一步"}
+{"id":"c06","split":"tune","text":"继续","turns":2,"tokens":300,"expect":"continue","note":"同上"}
+{"id":"c07","split":"tune","text":"不过第二步的顺序我想换一下，再补充一个前提","turns":3,"tokens":400,"expect":"continue","note":"同一方案的修正"}
+{"id":"c08","split":"tune","text":"为什么这里要用轮次而不是消息条数？","turns":3,"tokens":400,"expect":"continue","note":"同一话题的追问"}
+{"id":"c09","split":"tune","text":"今天上海下雨了","turns":3,"tokens":400,"expect":"uncertain","note":"单次插话不足以证明阶段变化"}
+{"id":"c10","split":"tune","text":"我们接着上次的说","turns":3,"tokens":400,"expect":"uncertain","note":"长间隔不单独证明阶段结束（间隔信号另测）"}
+{"id":"c11","split":"tune","text":"继续吧","turns":10,"tokens":9000,"expect":"split","note":"容量到点：轮数与长度都可能触发"}
+{"id":"h01","split":"holdout","text":"方案我认可，动手实现吧","turns":2,"tokens":300,"expect":"split","note":"留出：换一种开工措辞"}
+{"id":"h02","split":"holdout","text":"先别动手实现，我们再把边界条件过一遍","turns":2,"tokens":300,"expect":"continue","note":"留出：否定 + 开工词"}
+{"id":"h03","split":"holdout","text":"假如今天就开始落地，风险会在哪里？","turns":2,"tokens":300,"expect":"continue","note":"留出：假设句 + 另一条开工词"}
+{"id":"h04","split":"holdout","text":"行","turns":4,"tokens":500,"expect":"continue","note":"留出：另一种短确认"}
+{"id":"h05","split":"holdout","text":"把刚才那份表格再改一版，列宽调整一下","turns":4,"tokens":500,"expect":"uncertain","note":"留出：同阶段修改，但没命中确定性规则（保守不切）"}

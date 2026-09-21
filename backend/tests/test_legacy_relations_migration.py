@@ -126,7 +126,14 @@ def test_upgrade_is_idempotent_and_keeps_messages(tmp_path):
     _topic(conn, "t1", "话题一")
     _legacy_fragment(conn, "frag_nosummary", "t1", messages=3)
     conn.commit()
-    before = [dict(r) for r in conn.execute("SELECT * FROM messages ORDER BY id").fetchall()]
+    # 迁移 17 会给 messages 增加 turn_id 列，所以这里比的是**内容列**而不是整行
+    def messages_snapshot() -> list[tuple]:
+        return [
+            (r["id"], r["fragment_id"], r["role"], r["content"], r["created_at"])
+            for r in conn.execute("SELECT * FROM messages ORDER BY id").fetchall()
+        ]
+
+    before = messages_snapshot()
 
     apply_migrations(conn)
     snapshot = [dict(r) for r in conn.execute("SELECT * FROM fragments ORDER BY id").fetchall()]
@@ -135,4 +142,4 @@ def test_upgrade_is_idempotent_and_keeps_messages(tmp_path):
 
     assert [dict(r) for r in conn.execute("SELECT * FROM fragments ORDER BY id").fetchall()] == snapshot
     assert conn.execute("SELECT COUNT(*) c FROM derived_tasks").fetchone()["c"] == tasks_after_first
-    assert [dict(r) for r in conn.execute("SELECT * FROM messages ORDER BY id").fetchall()] == before
+    assert messages_snapshot() == before

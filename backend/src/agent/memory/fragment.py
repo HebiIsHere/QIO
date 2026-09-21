@@ -27,6 +27,8 @@ FRAGMENT_TURNS_KEY = "fragment.max_turns"
 LEGACY_FRAGMENT_MESSAGES_KEY = "fragment.max_messages"
 FRAGMENT_MIN_TURNS = 1
 FRAGMENT_MAX_TURNS = 30
+# 单段内容长度目标（token）。长度只是兜底：到点分块，但不代表任务完成。
+FRAGMENT_TOKENS_KEY = "fragment.max_tokens"
 
 
 def _now() -> str:
@@ -56,6 +58,22 @@ def resolve_max_turns(store, default: int = DEFAULT_MAX_TURNS) -> int:
     return max(FRAGMENT_MIN_TURNS, min(FRAGMENT_MAX_TURNS, value))
 
 
+def resolve_max_tokens(store, default: int = DEFAULT_MAX_TOKENS) -> int:
+    """读取「单段内容长度目标」。长度是兜底手段，不表示任务完成。
+
+    合法区间取 2k–200k token：太小会把正常讨论切碎，太大等于没兜底。
+    没配置过就返回默认值（不偷偷写回设置）。
+    """
+    raw = store.get(FRAGMENT_TOKENS_KEY)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(2_000, min(200_000, value))
+
+
 @dataclass(frozen=True)
 class Fragment:
     id: str
@@ -68,6 +86,13 @@ class Fragment:
     created_at: str
     closed_at: str | None
     meta: dict
+    # 阶段 3/4：历史关系与分段原因。数据访问对象要完整暴露它们，
+    # 否则各处只能靠临时 SQL 去猜「这一段是从哪来的、为什么断开」。
+    source_fragment_id: str | None = None
+    relation_type: str | None = None
+    boundary_reason: str | None = None
+    same_stage: int | None = None
+    content_version: int = 0
 
 
 class FragmentManager:
@@ -258,15 +283,31 @@ class FragmentManager:
 
         两个条件缺一不可：
 
-        1. 已经开始的轮数（= user 消息数）达到 `max_turns`；
+        1. 已经开始的轮数达到 `max_turns`，**或者**内容长度达到 `max_tokens`；
         2. 当前片段不是停在半轮（最后落下的不是 user 消息）。
 
         第 2 条保证第 N 轮的助手回答不会因为「刚好数到 N 轮的 user 消息」
         被写进下一个片段，把一轮对话拆到两个片段里。
+
+        长度是**兜底**：到点分块，但这不构成「这一阶段做完了」的证据
+        （容量分块与阶段转换是两件事，见 memory/boundary.py）。
         """
-        if self.turn_count(fragment.id) < self.max_turns:
+        turns = self.turn_count(fragment.id)
+        tokens = self.content_tokens(fragment.id) if self.max_tokens > 0 else 0
+        if turns < self.max_turns and (self.max_tokens <= 0 or tokens < self.max_tokens):
             return False
         return not self._ends_mid_turn(fragment.id)
+
+    def content_tokens(self, fragment_id: str) -> int:
+        """片段内容长度（估算 token）：容量兜底用，与「模型上下文预算」不是一回事。"""
+        from agent.memory.index import estimate_tokens
+
+        total = 0
+        for row in self.conn.execute(
+            "SELECT content FROM messages WHERE fragment_id = ?", (fragment_id,)
+        ):
+            total += estimate_tokens(row["content"] or "")
+        return total
 
     def message_count(self, fragment_id: str) -> int:
         return int(
@@ -280,13 +321,17 @@ class FragmentManager:
         """已开始的对话轮数：一条 user 消息开启一轮。
 
         工具消息与助手回答都不计入 —— 它们是这一轮的一部分，不是新的一轮。
+        系统驱动的轮（例如独立任务完成后的收尾）按 `turn_bindings.system` 排除：
+        它不是用户发起的对话轮，不该占用容量；没有 turn_id 的旧消息按
+        「每条算一轮」回退，保持旧行为。
         """
-        return int(
-            self.conn.execute(
-                "SELECT COUNT(*) AS c FROM messages WHERE fragment_id = ? AND role = 'user'",
-                (fragment_id,),
-            ).fetchone()["c"]
-        )
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT COALESCE(m.turn_id, m.id)) AS c "
+            "FROM messages m LEFT JOIN turn_bindings b ON b.turn_id = m.turn_id "
+            "WHERE m.fragment_id = ? AND m.role = 'user' AND COALESCE(b.system, 0) = 0",
+            (fragment_id,),
+        ).fetchone()
+        return int(row["c"])
 
     def _ends_mid_turn(self, fragment_id: str) -> bool:
         """片段是否停在半轮（最后一条消息是 user）。"""
@@ -315,4 +360,9 @@ class FragmentManager:
             created_at=row["created_at"],
             closed_at=row["closed_at"],
             meta=json.loads(row["meta"] or "{}"),
+            source_fragment_id=row["source_fragment_id"],
+            relation_type=row["relation_type"],
+            boundary_reason=row["boundary_reason"],
+            same_stage=row["same_stage"],
+            content_version=int(row["content_version"] or 0),
         )

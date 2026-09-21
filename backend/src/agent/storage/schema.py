@@ -510,6 +510,17 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             """,
         ],
     ),
+    (
+        17,
+        [
+            # 阶段 4：容量按「真实轮次」统计，而不是按消息条数。
+            # 消息带上它所属的轮次之后，「系统通知 / 工具消息不计轮」才可判定；
+            # 绑带上记一句「这一轮是不是系统驱动的」，用于把通知轮排除在计数之外。
+            "ALTER TABLE messages ADD COLUMN turn_id TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_messages_turn ON messages(turn_id)",
+            "ALTER TABLE turn_bindings ADD COLUMN system INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

@@ -102,7 +102,8 @@ class MemoryWriter:
         now = self._now()
         self.conn.execute(
             "INSERT INTO messages (id, fragment_id, role, content, content_type, "
-            "model, raw, created_at, storage_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hot')",
+            "model, raw, created_at, storage_tier, turn_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hot', ?)",
             (
                 message_id,
                 fragment.id,
@@ -112,6 +113,7 @@ class MemoryWriter:
                 model,
                 json.dumps(raw or {}, ensure_ascii=False),
                 now,
+                turn_id,
             ),
         )
         if fragment.start_message_id is None:

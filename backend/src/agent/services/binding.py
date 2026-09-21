@@ -116,6 +116,7 @@ class TurnBindingService:
         fragment_id: str | None = None,
         intent_id: str | None = None,
         intent_version: int | None = None,
+        system: bool = False,
     ) -> TurnBinding:
         """写入本轮归属。同一个 turn 重复写同名值算重试（幂等），改值算冲突。"""
         existing = self.binding_for(turn_id)
@@ -140,9 +141,18 @@ class TurnBindingService:
                 self.conn.execute(
                     "INSERT INTO turn_bindings "
                     "(turn_id, topic_id, fragment_id, intent_id, intent_version, "
-                    " write_state, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'open', NULL, ?, ?)",
-                    (turn_id, topic_id, fragment_id, intent_id, intent_version, now, now),
+                    " write_state, status, system, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'open', NULL, ?, ?, ?)",
+                    (
+                        turn_id,
+                        topic_id,
+                        fragment_id,
+                        intent_id,
+                        intent_version,
+                        1 if system else 0,
+                        now,
+                        now,
+                    ),
                 )
         except sqlite3.IntegrityError:
             # 并发/重试：另一条路径先写成功了。只有值完全一致才算幂等。

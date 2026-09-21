@@ -20,6 +20,13 @@ from typing import Any
 
 from agent.api.events import EventType, make_event
 
+# 边界策略的运行模式（阶段 4）：
+# off     不评估；
+# shadow  只记录建议（默认先观察，不实际切分）；
+# enabled 确定性规则实际生效。
+BOUNDARY_MODE_KEY = "fragment.boundary_mode"
+DEFAULT_BOUNDARY_MODE = "shadow"
+
 
 @dataclass
 class _Plan:
@@ -108,7 +115,7 @@ class TurnOrchestrator:
     # -- stages -----------------------------------------------------------
 
     async def begin(self, ctx):
-        from agent.memory.fragment import resolve_max_turns
+        from agent.memory.fragment import resolve_max_tokens, resolve_max_turns
         from agent.services.app import make_warning
         from agent.trace.recorder import TurnTracer
 
@@ -135,6 +142,8 @@ class TurnOrchestrator:
         await app.announce_capability(adapter, ctx.turn_id)
         # 封块阈值是「轮」不是「消息条数」（第三阶段 spec 第 57~60 条）
         app.fragments.max_turns = resolve_max_turns(app.settings_store)
+        # 阶段 4：内容长度也参与兜底（长度到点分块，但不代表任务完成）
+        app.fragments.max_tokens = resolve_max_tokens(app.settings_store)
         topic = ctx.initial_topic or app.current_topic()
 
         # ── 轮前：固定本轮归属（Topic / Fragment）──────────────────────────
@@ -165,6 +174,18 @@ class TurnOrchestrator:
         if fragment_id is None:
             open_fragment = app.fragments.open_fragment(topic)
             fragment_id = open_fragment.id if open_fragment is not None else None
+
+        # trace 要在边界判断之前就位：shadow 模式的「建议」就是写进 trace 的
+        tracer = TurnTracer(app.trace_store, ctx.turn_id)
+        ctx.trace = tracer
+        app.trace_store.begin(ctx.turn_id, initial_topic=topic)
+
+        # ── 阶段 4：轮前边界判断（只使用当前输入与此前已完成的上下文）──────
+        # 确定性规则（明确进入新的交付工作）可以在 enabled 模式下实际生效；
+        # shadow 只记录建议；off 不评估。容量仍由 post_turn 在完整轮次边界处理。
+        self._apply_boundary_policy(ctx, topic, fragment_id)
+        fragment_id = ctx.bound_fragment_id
+
         ctx.bound_topic = topic
         ctx.bound_fragment_id = fragment_id
         ctx.bound_intent_version = intent_version
@@ -175,10 +196,6 @@ class TurnOrchestrator:
             intent_id=ctx.intent_id,
             intent_version=intent_version,
         )
-
-        tracer = TurnTracer(app.trace_store, ctx.turn_id)
-        ctx.trace = tracer
-        app.trace_store.begin(ctx.turn_id, initial_topic=topic)
         # speaking in a topic anchors it (if the anchor is absent or stale)。
         # 写入只走 Navigator：会话起点变化也是「进入话题」这一种导航。
         active_anchor = app.navigation.anchors.get_active()
@@ -454,6 +471,65 @@ class TurnOrchestrator:
                 logging.getLogger(__name__).warning("derived work failed", exc_info=True)
 
         loop.create_task(_run())
+
+    def _apply_boundary_policy(self, ctx, topic: str, fragment_id: str | None) -> None:
+        """轮前边界判断（阶段 4）：只使用当前输入与此前已完成的上下文。
+
+        * `off`：不评估；
+        * `shadow`：只把建议写进 trace，不实际切分；
+        * `enabled`：**确定性规则**（明确进入新的交付工作）实际生效 ——
+          在当前片段上做一次原子交接（封存 → 新建同话题的下一段），
+          本轮绑定到新片段。容量边界不在这里处理（它由 post_turn 在完整轮次边界执行）。
+
+        绝不在有未结束写入的片段上交接（安全边界）。
+        """
+        from agent.memory.boundary import REASON_PHASE_CHANGE, FragmentBoundaryPolicy
+
+        app = self.app
+        mode = str(app.settings_store.get(BOUNDARY_MODE_KEY, DEFAULT_BOUNDARY_MODE))
+        if mode == "off" or not fragment_id:
+            ctx.bound_fragment_id = fragment_id
+            return
+
+        current = app.fragments.get(fragment_id)
+        if current is None or current.closed_at is not None:
+            ctx.bound_fragment_id = fragment_id
+            return
+        if app.bindings.fragment_write_busy(fragment_id):
+            ctx.bound_fragment_id = fragment_id
+            return
+
+        policy = FragmentBoundaryPolicy(
+            max_turns=app.fragments.max_turns, max_tokens=app.fragments.max_tokens
+        )
+        decision = policy.decide(
+            user_input=ctx.message,
+            fragment_turns=app.fragments.turn_count(fragment_id),
+            fragment_tokens=app.fragments.content_tokens(fragment_id),
+        )
+        ctx.bound_fragment_id = fragment_id
+        if ctx.trace is not None:
+            ctx.trace.write(
+                "boundary", f"{mode}:{decision.action}:{decision.reason}:{decision.confidence}"
+            )
+
+        if mode != "enabled" or not decision.is_split or decision.reason != REASON_PHASE_CHANGE:
+            return
+        sealed = app.memory_lifecycle.seal_fragment(
+            topic, reason="stage_change", tracer=ctx.trace
+        )
+        if sealed is None:
+            return
+        child = app.fragments.create_child(
+            topic,
+            source_fragment_id=sealed.id,
+            relation_type="normal",
+            boundary_reason="stage_change",
+            same_stage=False,
+        )
+        ctx.bound_fragment_id = child
+        if ctx.trace is not None:
+            ctx.trace.write("boundary_split", f"{sealed.id} -> {child}")
 
     async def advance_anchor(self, ctx, final_topic: str) -> None:
         """成功一轮：把当前位置推进到本轮真实片段（用户的历史选择就此消费）。
