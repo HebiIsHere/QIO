@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { useSessionStore } from "../stores/session";
+import { api } from "../services/api";
 
 const session = useSessionStore();
 /**
@@ -49,6 +50,37 @@ const anchorText = computed(() => {
   if (session.anchorFragmentId) return "从选中的历史位置继续";
   return "";
 });
+
+/**
+ * 「已登记、还没落实」的接续选择。
+ *
+ * 与 anchorText 的区别：anchorText 说的是「位置就在一段历史上」，
+ * 这一条说的是「你选了从这段历史继续，下一条消息才会落实」——
+ * 界面必须说清是哪种，否则用户会以为已经建了新片段（其实什么都没建）。
+ */
+const continuationText = computed(() => {
+  const pending = session.pendingContinuation;
+  if (!pending) return "";
+  return pending.sourceTitle
+    ? `下一条消息将从「${pending.sourceTitle}」继续`
+    : "下一条消息将从所选历史继续";
+});
+
+const cancelling = ref(false);
+
+async function cancelContinuation() {
+  if (cancelling.value) return;
+  cancelling.value = true;
+  try {
+    await api.cancelContinuation();
+    // 服务端会广播新的 ANCHOR（pending 字段为空）→ 提示自动消失；
+    // 这里不自行清空，避免「本地以为取消了、服务端还留着」。
+  } catch {
+    /* 取消失败：提示保留，状态以服务端为准 */
+  } finally {
+    cancelling.value = false;
+  }
+}
 
 async function submit() {
   const value = text.value.trim();
@@ -115,6 +147,18 @@ async function stopTurn() {
     <div class="topicbar">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <span v-if="anchorText" class="anchor mono">{{ anchorText }}</span>
+      <!-- 已登记、还没落实的接续选择：说清「下一条消息才生效」，并允许取消 -->
+      <template v-if="continuationText">
+        <span class="anchor mono pending">{{ continuationText }}</span>
+        <button
+          class="anchor-cancel"
+          type="button"
+          :disabled="cancelling"
+          @click="cancelContinuation"
+        >
+          {{ cancelling ? "取消中…" : "取消" }}
+        </button>
+      </template>
       <span class="spacer"></span>
       <span class="kbd-hint mono">Enter 发送 · Shift+Enter 换行</span>
     </div>
@@ -224,6 +268,20 @@ async function stopTurn() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.anchor.pending { color: var(--accent); }
+.anchor-cancel {
+  flex-shrink: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--link);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+.anchor-cancel:hover:not(:disabled) { text-decoration: underline; }
+.anchor-cancel:disabled { color: var(--text-muted); cursor: default; }
 .spacer {
   flex: 1;
 }

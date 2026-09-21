@@ -316,6 +316,10 @@ export const api = {
       historic: boolean;
       created_fragment_id: string | null;
       source_fragment_id: string | null;
+      /** 阶段 1：点击历史只登记意图；这两个字段说明它还没落实 */
+      intent_id?: string | null;
+      intent_version?: number | null;
+      pending?: boolean;
     }>("/api/anchor", {
       method: "POST",
       body: JSON.stringify({
@@ -323,6 +327,11 @@ export const api = {
         fragment_id: fragmentId,
         continue_from_history: true,
       }),
+    }),
+  /** 取消「下一条消息从这段历史继续」的登记（不发消息就不留痕迹）。 */
+  cancelContinuation: () =>
+    request<{ ok: boolean; cancelled: boolean }>("/api/anchor/continue/cancel", {
+      method: "POST",
     }),
   /** 待确认切换：确认「转到这里」。 */
   confirmTopicSwitch: () =>

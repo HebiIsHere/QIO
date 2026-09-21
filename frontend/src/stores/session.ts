@@ -187,6 +187,11 @@ export const useSessionStore = defineStore("session", {
      */
     anchorHistoric: false,
     /**
+     * 已登记、尚未落实的接续选择（后端 continuation_intents 的 registered 态）。
+     * 有它时输入区要说明「下一条消息将从这段历史继续」；发出去（或取消）之后消失。
+     */
+    pendingContinuation: null as { intentId: string; sourceTitle: string | null } | null,
+    /**
      * 输入草稿。放在 store 而不是 Composer 局部状态：
      * 打开设置/星球会让对话页组件卸载重建，局部状态会随之丢失。
      */
@@ -352,6 +357,20 @@ export const useSessionStore = defineStore("session", {
      */
     setPendingSwitch(payload: { topicId: string; topicName: string; reason?: string } | null) {
       this.pendingSwitch = payload;
+    },
+
+    /**
+     * 「已登记、还没落实」的接续选择（阶段 1 的后端语义）。
+     *
+     * 与 anchorHistoric 的区别很重要：
+     * - anchorHistoric 表示「当前位置就在一段历史上」；
+     * - pendingContinuation 表示「你选了从这段历史继续，下一条消息才会落实」。
+     * 界面必须说清是哪一种：选了但还没发送时，不能显示成「已经创建了新片段」。
+     */
+    setPendingContinuation(
+      payload: { intentId: string; sourceTitle: string | null } | null,
+    ) {
+      this.pendingContinuation = payload;
     },
     /** 用户点「转到这里」：只有这一步会真的改变 Anchor。 */
     async confirmPendingSwitch() {

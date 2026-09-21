@@ -420,6 +420,17 @@ export const useEventStore = defineStore("events", {
             // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
             Boolean(d.historic),
           );
+          // 「已登记但还没落实」的接续选择：界面据此显示「将从所选记录继续」，
+          // 而不是让人以为已经建了新片段（阶段 1 的两步语义）。
+          const pendingIntent = (d.pending_intent_id as string | null) ?? null;
+          session.setPendingContinuation(
+            pendingIntent
+              ? {
+                  intentId: pendingIntent,
+                  sourceTitle: (d.pending_source_title as string | null) ?? null,
+                }
+              : null,
+          );
           // 起点换了但界面还留在上一条对话上 → 显示与真实起点不一致。
           // 正在跑任务时不重载（会擦掉正在流式输出的内容），
           // 这种情况下由任务结束/下次进入时的加载来对齐。

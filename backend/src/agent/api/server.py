@@ -586,6 +586,20 @@ def create_app(
 
     # -- turns -------------------------------------------------------------
 
+    @app.post("/api/anchor/continue/cancel")
+    async def cancel_continuation() -> dict:
+        """取消「下一条消息从某段历史继续」的登记。
+
+        阶段 1 的两步语义：点击历史只登记意图，真正的新片段要等消息执行时才落实。
+        所以用户在发送前取消是零成本的：不发消息就不留痕迹（不产生空片段）。
+        """
+        pending = ctx.bindings.peek_intent()
+        if pending is None:
+            return {"ok": True, "cancelled": False}
+        ctx.bindings.cancel_intent(pending.intent_id)
+        await ctx._publish_anchor_event()
+        return {"ok": True, "cancelled": True}
+
     @app.post("/api/turns")
     async def start_turn(body: dict) -> dict:
         message = str(body.get("message", "")).strip()
