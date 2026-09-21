@@ -47,6 +47,10 @@ function belongsToMainTurn(session: ReturnType<typeof useSessionStore>, turnId: 
 
 export type ModelMode = "native" | "text" | "unsupported";
 
+/** 同步卡住时才显示的那句话（以及它出现前允许的宽限时间） */
+export const RESYNC_NOTICE = "连接出现过一次抖动，正在同步最新状态…";
+export const RESYNC_NOTICE_DELAY_MS = 1500;
+
 export interface TurnUsage {
   /** 该 turn 的模型输出 token 累计（后端 USAGE/TURN_END 事件，按 turn_id 归属） */
   tokens: number;
@@ -97,6 +101,15 @@ export const useEventStore = defineStore("events", {
       });
       source.onopen = () => {
         this.connected = true;
+        /**
+         * 连接建立后主动拉一次权威状态。
+         *
+         * 为什么必须这么做：后端不再把最近一批事件重放给新连接（那是新页面看到
+         * 上一次错误提示与排队条的原因）。事件流现在只负责「变化」，
+         * 「当前有没有在跑的任务 / 有没有待审批」要客户端自己问一次。
+         * 这与 resync 走同一条路径，不新增协议。
+         */
+        void useSessionStore().resyncTurnState();
       };
       source.onerror = () => {
         this.connected = false;
@@ -563,8 +576,17 @@ export const useEventStore = defineStore("events", {
     async startResync(): Promise<void> {
       const session = useSessionStore();
       session.resyncState = "resyncing";
-      // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
-      session.warning = "连接出现过一次抖动，正在同步最新状态…";
+      /**
+       * 同步提示只在**真的卡住**时才出现。
+       *
+       * 之前的写法是立刻写一条「正在同步最新状态…」，但同步通常几十毫秒就完成、
+       * 随后又被清掉 —— 用户什么都看不到（实测：注入 RESYNC 后页面上没有任何提示）。
+       * 现在给它一个很短的宽限期：超过这个时间还没同步完，才把话说出来。
+       */
+      const notice = RESYNC_NOTICE;
+      const graceTimer = setTimeout(() => {
+        if (session.resyncState === "resyncing") session.warning = notice;
+      }, RESYNC_NOTICE_DELAY_MS);
       if (this.resyncing) {
         this._resyncAgain = true;
         return;
@@ -580,13 +602,15 @@ export const useEventStore = defineStore("events", {
           this.flushResyncBuffer();
         } while (this._resyncAgain);
         session.resyncState = "normal";
-        session.warning = null;
+        // 只撤下**这条同步提示**：同步期间新到的提醒不能被顺手抹掉
+        if (session.warning === notice) session.warning = null;
       } catch (e) {
         // 失败必须如实说：界面显示的状态可能已经不是最新的
         session.resyncState = "failed";
-        session.warning = null;
+        if (session.warning === notice) session.warning = null;
         session.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
       } finally {
+        clearTimeout(graceTimer);
         this.resyncing = false;
         this.flushResyncBuffer();
       }

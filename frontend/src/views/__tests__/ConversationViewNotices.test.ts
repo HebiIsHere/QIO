@@ -55,6 +55,43 @@ describe("历史读取失败的状态表达", () => {
   });
 });
 
+describe("凭据状态提示", () => {
+  it("凭据被暂停 / 撤销时，对话页把话说出来并给出恢复入口", async () => {
+    const w = mountView();
+    await flushPromises();
+    const events = useEventStore();
+
+    // 后端在凭据不可用/暂停/撤销时都会送这条文案（store 里早就写了，界面从来没渲染过）
+    events.credentialNotice = "有一项凭据已暂停：依赖它的能力暂时不可用（可在「设置 → 凭据」恢复）";
+    await flushPromises();
+
+    const notice = w.find(".notice.warn");
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain("已暂停");
+    expect(notice.text()).toContain("前往设置");
+
+    // 恢复之后这条提示自己消失（不常驻）
+    events.credentialNotice = null;
+    await flushPromises();
+    expect(w.find(".notice.warn").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("错误优先于凭据提示：同一时刻只显示最需要处理的那一条", async () => {
+    const w = mountView();
+    await flushPromises();
+    const session = useSessionStore();
+    const events = useEventStore();
+    session.lastError = "这一轮执行失败：模型调用被拒绝（401）";
+    events.credentialNotice = "有一项凭据已失效：依赖它的能力暂时不可用";
+    await flushPromises();
+
+    expect(w.find(".notice.err").exists()).toBe(true);
+    expect(w.find(".notice.warn").exists()).toBe(false);
+    w.unmount();
+  });
+});
+
 describe("取消的结局表达", () => {
   it("TURN_END(cancelled) 后显示安静的「已停止」，不是错误", async () => {
     const w = mountView();

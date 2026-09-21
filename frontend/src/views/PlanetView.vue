@@ -1678,11 +1678,17 @@ async function close() {
       <span v-else>WebGL 不可用</span>
     </div>
     <!-- WebGL 不可用时不白屏/黑屏：给一段可读的降级说明，管理功能仍可用 -->
-    <div v-if="!webglOK" class="webgl-fallback" role="alert">
-      <div class="wf-title serif">无法启用 3D 星球</div>
-      <p class="wf-text">
-        当前环境不支持 WebGL（或显卡驱动不可用）。话题数据不受影响，仍可在右侧面板查看与管理。
-      </p>
+    <!-- 只有星球真正打开时才显示这段说明：球态（关着星球）下它压在对话页上，
+         会变成「文字叠在聊天内容上」的观感问题（实测截图 planet-70-webgl-fallback） -->
+    <div v-if="!webglOK && !ballMode" class="webgl-fallback" role="alert">
+      <div class="wf-card qio-card">
+        <div class="wf-title serif">无法启用 3D 星球</div>
+        <p class="wf-text">
+          当前环境不支持 WebGL（或显卡驱动不可用），所以球面视图用不了。
+          话题数据不受影响：右侧面板里仍然可以查看话题、片段原文、知识与实体，
+          收起星球后也能继续对话。
+        </p>
+      </div>
     </div>
     <!-- 首次数据加载失败：说明 + 重试，不拿空球冒充完整内容 -->
     <div v-if="loadError" class="load-error qio-glass" role="alert">
@@ -2079,12 +2085,23 @@ async function close() {
   padding: 6px 12px;
 }
 .webgl-fallback {
-  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
-  align-items: center; justify-content: center; text-align: center; padding: 0 24px;
+  position: absolute; inset: 0;
+  /* 必须压在画布之上（.planet-stage 是 z-index: 2）：
+     否则这段说明虽然存在、也有底色，但会被画布盖住，屏幕上什么都看不到。 */
+  z-index: 60;
+  display: flex; align-items: center; justify-content: center; padding: 0 24px;
   pointer-events: none;
 }
-.webgl-fallback .wf-title { font-size: 20px; color: var(--text-strong); }
-.webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); max-width: 46ch; line-height: 1.7; }
+/* 说明自己是一块有底色的卡片：不透明底 + 内边距 + 阴影。
+   之前它只是一段裸文字，直接叠在对话内容上，看起来像界面坏了。 */
+.webgl-fallback .wf-card {
+  display: flex; flex-direction: column; gap: 10px; text-align: center;
+  max-width: 440px; padding: 22px 24px; border-radius: 14px;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-2);
+}
+.webgl-fallback .wf-title { font-size: 19px; color: var(--text-strong); }
+.webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .load-error {
   position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
   z-index: 61; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 200px));

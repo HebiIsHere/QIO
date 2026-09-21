@@ -232,12 +232,22 @@ class EventBus:
           必须走 RESYNC，而不是补发最近几条假装连续。
         """
         history = list(self._history)
-        if last_event_id is not None:
-            ids = [e.id for e in history]
-            if last_event_id in ids:
-                history = history[ids.index(last_event_id) + 1 :]
-            else:
-                return [], True
+        if last_event_id is None:
+            # **新连接不重放历史。**
+            #
+            # 旧行为是把最近一批事件重放给每一个新订阅者（只过滤掉审批），
+            # 于是新打开/刷新页面会看到上一次留下的错误提示、排队条、候选卡 ——
+            # 那些都不是这一次发生的事（实测复现：新页面不做任何操作，
+            # 也会出现「上一条执行失败」与「1 运行中 · 2 排队中」）。
+            #
+            # 新页面需要的「当前状态」改为客户端自己拉权威快照
+            # （前端连接建立后问一次队列状态），事件流只负责「变化」。
+            return [], False
+        ids = [e.id for e in history]
+        if last_event_id in ids:
+            history = history[ids.index(last_event_id) + 1 :]
+        else:
+            return [], True
         return [
             event
             for event in history

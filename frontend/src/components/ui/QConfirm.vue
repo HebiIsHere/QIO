@@ -59,7 +59,22 @@ function restoreFocus() {
   const el = restoreFocusTo;
   restoreFocusTo = null;
   // 触发元素可能已经因为操作完成而从 DOM 移除（例如被归档的条目）
-  if (el && el.isConnected) el.focus();
+  if (el && el.isConnected) {
+    el.focus();
+    return;
+  }
+  // 触发元素没了：把焦点还给同一张卡片上的相邻可聚焦元素，
+  // 否则键盘用户会掉到页面开头，要重新 Tab 一圈才能回到刚才那条。
+  const scope = rootRef.value?.parentElement ?? null;
+  if (!scope) return;
+  const focusable = scope.querySelector<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  if (focusable && focusable.isConnected) focusable.focus();
+  else {
+    scope.setAttribute("tabindex", "-1");
+    scope.focus();
+  }
 }
 
 function cancel() {
@@ -104,8 +119,12 @@ watch(
   async (open) => {
     if (open) {
       rememberFocus();
-      // layer 档挂全局 Esc：焦点可能被脚本移到别处，不能只依赖元素内的冒泡
-      if (props.variant === "layer") window.addEventListener("keydown", onKeydown, true);
+      // **所有档位都挂全局 Esc。**
+      //
+      // 之前只有 layer 档挂：inline / popover 档的 Esc 依赖元素内的冒泡，
+      // 而触发按钮被移除后焦点就落到 body —— 此时按 Esc 毫无反应
+      // （实测 4 个状态 × 2 套主题共 8 次复现完全一致）。
+      window.addEventListener("keydown", onKeydown, true);
       // 焦点先给「取消」：危险动作不应该因为一次回车就被执行
       await nextTick();
       if (props.variant === "layer") cancelRef.value?.focus();
@@ -130,7 +149,6 @@ onBeforeUnmount(() => {
     <div
       v-if="open && variant === 'layer'"
       class="qio-confirm-scrim"
-      @keydown="onKeydown"
     >
       <div
         ref="rootRef"
@@ -165,7 +183,6 @@ onBeforeUnmount(() => {
     :class="variant === 'popover' ? 'qio-confirm--popover qio-floating' : 'qio-confirm--inline'"
     role="group"
     :aria-labelledby="titleId"
-    @keydown="onKeydown"
   >
     <p :id="titleId" class="qio-confirm__title">{{ title }}</p>
     <p v-if="detail" class="qio-confirm__detail">{{ detail }}</p>

@@ -2,6 +2,7 @@
 import { defineAsyncComponent, onMounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
+import { useComposerClearance } from "../composables/useComposerClearance";
 import MessageStream from "../components/MessageStream.vue";
 import Composer from "../components/Composer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
@@ -18,6 +19,8 @@ const PlanetView = defineAsyncComponent({
 });
 const planetOpen = ref(false);
 const events = useEventStore();
+/** 底部三块的容器：让位高度由输入区实际高度决定（见 useComposerClearance） */
+const bottomCluster = ref<HTMLElement | null>(null);
 /**
  * 首次打开后才挂载，之后一直保留（关闭只是隐藏）。
  * 这样第二次打开不再重建整个 WebGL 场景（实测每次重建要 1.5–3.4s 冷启动）。
@@ -30,6 +33,7 @@ const planetMounted = ref(false);
  */
 const planetSeq = ref(0);
 const session = useSessionStore();
+useComposerClearance(bottomCluster);
 
 /**
  * 空闲时就把星球场景挂上：入口小球从此由**真实星球渲染**承担（同一个场景缩到入口尺度），
@@ -111,6 +115,13 @@ onMounted(() => {
         <span class="kind mono qio-state warn">提示</span>
         <span class="text">{{ session.warning }}</span>
       </div>
+      <!-- 凭据状态：暂停 / 撤销之后依赖它的能力会不可用，必须说出来（去哪里恢复）。
+           这段文案来自后端事件，只在真的影响当前使用时出现；恢复后自己消失。 -->
+      <div v-else-if="events.credentialNotice" class="notice warn" role="status">
+        <span class="kind mono qio-state warn">提示</span>
+        <span class="text">{{ events.credentialNotice }}</span>
+        <router-link to="/settings" class="link">前往设置</router-link>
+      </div>
       <!-- 取消是正常结局：安静地说一声，不当错误 -->
       <div
         v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
@@ -122,6 +133,10 @@ onMounted(() => {
       </div>
     </Transition>
     <MessageStream />
+    <!-- 底部三块（候选卡 / 兼容模式 / 话题切换）：用同一个「输入区让位」的量测
+         整体抬到输入气泡上方。不这么做的话它们会被固定悬浮的输入区压住，
+         按钮看得见、点不到（实测：按钮中点命中的是输入框）。 -->
+    <div ref="bottomCluster" class="bottom-cluster">
     <!-- 高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点 -->
     <div v-if="session.knowledgeCandidates.length" class="candidates">
       <KnowledgeCandidateCard
@@ -146,6 +161,7 @@ onMounted(() => {
       @confirm="session.confirmPendingSwitch()"
       @keep="session.rejectPendingSwitch()"
     />
+    </div>
     <Composer />
     <SettingsFloat />
     <PlanetDock @open="openPlanet" />
@@ -236,6 +252,13 @@ onMounted(() => {
   text-decoration: underline;
 }
 /* 知识候选与降级提示都贴在对话流底部、输入区上方：位置贴近发生的地方 */
+.bottom-cluster {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  /* 下内边距由 useComposerClearance 按输入区的实际高度写入：
+     输入区是固定悬浮层，不给它留位置的话这几块会被压住 */
+}
 .candidates {
   display: flex;
   flex-direction: column;
