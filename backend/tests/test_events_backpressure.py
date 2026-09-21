@@ -49,8 +49,11 @@ async def test_slow_subscriber_does_not_grow_unbounded():
         await bus.publish(make_event(EventType.WARNING, {"n": i}))
 
     chunks = await _drain(agen)
-    assert 0 < len(chunks) <= 8, f"慢订阅者缓冲无界：{len(chunks)} 条"
-    assert '"n":199' in chunks[-1]  # 保留的是最新事件
+    buffered = [c for c in chunks if _type_of(c) != "RESYNC"]
+    assert 0 < len(buffered) <= 8, f"慢订阅者缓冲无界：{len(buffered)} 条"
+    assert '"n":199' in buffered[-1]  # 保留的是最新事件
+    # 200 条关键事件挤进 8 格缓冲 → 一定丢过关键事件，因此必须明确要求客户端 resync
+    assert "RESYNC" in [_type_of(c) for c in chunks]
 
 
 async def test_same_turn_assistant_and_usage_keep_only_latest():
@@ -99,3 +102,97 @@ async def test_turn_lifecycle_events_survive_backpressure():
     assert len(chunks) <= 3
     assert "TURN_START" in types and "TURN_END" in types, types
     assert types.index("TURN_START") < types.index("TURN_END")
+
+
+# ---------------------------------------------------------------------------
+# 反例：缓冲里**全是关键事件**时的 overflow
+#
+# 上一轮的策略在这种情况下会直接丢掉最旧的关键事件，而且客户端毫不知情 ——
+# 「关键事件被删除，但客户端完全不知道状态流已经不完整」是最危险的情况。
+# 正确做法：有界内存 + 明确告知需要 resync，绝不假装事件序列是完整的。
+# ---------------------------------------------------------------------------
+
+
+def _resync_reason(chunks: list[str]) -> str:
+    for chunk in chunks:
+        if _type_of(chunk) == "RESYNC":
+            return chunk
+    return ""
+
+
+async def test_full_buffer_of_critical_events_never_silently_loses_one():
+    """queue_limit=2：TURN_START → TOOL_START → TURN_END 不得静默缺一条。"""
+    bus = EventBus(queue_limit=2)
+    agen = await _slow_subscriber(bus)
+
+    await bus.publish(make_event(EventType.TURN_START, {"turn_id": "t1"}))
+    await bus.publish(make_event(EventType.TOOL_START, {"turn_id": "t1", "call_id": "c1"}))
+    await bus.publish(
+        make_event(EventType.TURN_END, {"turn_id": "t1", "status": "completed"})
+    )
+
+    chunks = await _drain(agen)
+    types = [_type_of(c) for c in chunks]
+
+    complete = {"TURN_START", "TOOL_START", "TURN_END"} <= set(types)
+    assert complete or "RESYNC" in types, (
+        f"关键生命周期事件被静默丢弃、客户端却以为序列完整：{types}"
+    )
+    if not complete:
+        # 告知必须是**可解释**的，而不是一个没有理由的魔改事件
+        assert "backlog" in _resync_reason(chunks) or "overflow" in _resync_reason(chunks)
+        # 保序前提下优先保留最新状态：最新的 TURN_END 不能丢
+        assert "TURN_END" in types
+
+
+async def test_approval_and_error_survive_critical_overflow():
+    """审批与错误也属于不可静默丢失的转换事件。"""
+    bus = EventBus(queue_limit=2)
+    agen = await _slow_subscriber(bus)
+
+    await bus.publish(make_event(EventType.TURN_START, {"turn_id": "t1"}))
+    await bus.publish(
+        make_event(EventType.APPROVAL_REQUIRED, {"approval": {"approval_id": "a1"}})
+    )
+    await bus.publish(make_event(EventType.ERROR, {"turn_id": "t1", "message": "boom"}))
+    await bus.publish(
+        make_event(EventType.TURN_END, {"turn_id": "t1", "status": "failed"})
+    )
+
+    chunks = await _drain(agen)
+    types = [_type_of(c) for c in chunks]
+    expected = {"TURN_START", "APPROVAL_REQUIRED", "ERROR", "TURN_END"}
+
+    assert expected <= set(types) or "RESYNC" in types, (
+        f"关键转换事件被静默丢弃：{types}"
+    )
+    assert len([c for c in chunks if _type_of(c) != "RESYNC"]) <= 2
+
+
+async def test_mergeable_burst_never_triggers_a_resync():
+    """可合并事件的淘汰是设计内的：不该因此惊动客户端去 resync。"""
+    bus = EventBus(queue_limit=4)
+    agen = await _slow_subscriber(bus)
+
+    for i in range(100):
+        await bus.publish(
+            make_event(EventType.ASSISTANT, {"turn_id": "t1", "content": f"a{i}"})
+        )
+        await bus.publish(make_event(EventType.USAGE, {"turn_id": "t1", "tokens": i}))
+
+    chunks = await _drain(agen)
+    types = [_type_of(c) for c in chunks]
+
+    assert "RESYNC" not in types, "累计型事件的合并/淘汰不需要 resync"
+    assert len(chunks) <= 4
+
+
+def test_every_event_type_is_classified():
+    """分类必须显式且完备：新增事件类型时不允许「悄悄默认成可丢」。"""
+    from agent.api.bus import CRITICAL_EVENTS, MERGEABLE_EVENTS, RESYNC_CONTROL_EVENTS
+
+    classified = MERGEABLE_EVENTS | CRITICAL_EVENTS | RESYNC_CONTROL_EVENTS
+    assert classified == set(EventType), (
+        f"未分类事件：{sorted(e.value for e in set(EventType) - classified)}"
+    )
+    assert not (MERGEABLE_EVENTS & CRITICAL_EVENTS)

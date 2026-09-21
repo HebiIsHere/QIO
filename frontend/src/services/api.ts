@@ -214,6 +214,18 @@ export const api = {
       "/api/turns/cancel",
       { method: "POST" },
     ),
+  /**
+   * 权威队列快照（运行中 / 排队中 / revision）。
+   * 事件流只是增量；一旦收到 RESYNC（说明事件流可能不完整），
+   * 就用这个接口重新取权威状态，而不是靠猜。
+   */
+  getTurnQueue: () =>
+    request<{
+      running: { turn_id: string; message: string } | null;
+      queued: { turn_id: string; message: string }[];
+      cancelled: { turn_id: string; message: string }[];
+      revision: number;
+    }>("/api/turns/queue"),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
       `/api/traces?limit=${limit}&offset=${offset}`,

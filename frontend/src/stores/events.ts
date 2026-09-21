@@ -1,4 +1,4 @@
-﻿import { defineStore } from "pinia";
+import { defineStore } from "pinia";
 import {
   connectEvents,
   publishTestEvent,
@@ -18,6 +18,11 @@ function isUserEditing(): boolean {
   const ae = document.activeElement as HTMLElement | null;
   if (!ae) return false;
   return ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable === true;
+}
+
+/** 事件里的可选数值字段（缺失 / 非数字 → null，表示「没有版本信息」）。 */
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 export type ModelMode = "native" | "text" | "unsupported";
@@ -86,7 +91,8 @@ export const useEventStore = defineStore("events", {
             const d = event.data as Record<string, unknown>;
             const tid = String(d.turn_id ?? "");
             // 只有真实的 TURN_START 能把 turn 设为 active。
-            if (tid) session.activateTurn(tid);
+            // 带上 revision：晚到的旧队列快照不能把这一轮清掉。
+            if (tid) session.activateTurn(tid, numberOrNull(d.revision));
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
@@ -95,6 +101,20 @@ export const useEventStore = defineStore("events", {
         case "TURN_END": {
           const d = event.data as Record<string, unknown>;
           const tid = String(d.turn_id ?? session.activeTurnId ?? this.lastTurnId ?? "");
+          const endRevision = numberOrNull(d.revision);
+          /**
+           * 陈旧性判断：RESYNC 之后我们会补发缓冲里的旧事件，其中可能包含
+           * 一条**已经被权威快照覆盖**的 TURN_END（服务器早已空闲，本地也按快照对齐过）。
+           * 那种 END 不能再被应用 —— 否则它会把旧一轮的最终回答追加到当前对话里。
+           * 属于当前 active turn 的 END 永远照常生效（它是唯一能结束运行态的事件）。
+           */
+          const staleEnd =
+            endRevision !== null &&
+            endRevision < session.queueRevision &&
+            tid !== session.activeTurnId;
+          if (staleEnd) break;
+          // 结束也是一次状态变化：记下版本，避免更旧的快照事后把状态改回去
+          session.noteQueueRevision(endRevision);
           /**
            * 归属规则（active/queued 模型下重新审查）：
            *
@@ -155,10 +175,30 @@ export const useEventStore = defineStore("events", {
             queued: queuedList,
             cancelled: (d.cancelled as { turn_id: string; message: string }[] | undefined) ?? [],
           };
-          // 后端的队列快照是第二真源：本地漏掉 TURN_START（重连 / 丢帧）时靠它恢复
-          session.syncTurnQueue(running?.turn_id ?? null, queuedList.map((q) => q.turn_id));
+          // 后端的队列快照是权威：既能恢复本地漏掉的状态（重连 / 丢帧），
+          // 也能清除本地已经过期的状态（服务器已空闲而本地还以为在跑）。
+          // revision 保证「新状态不被旧快照覆盖」。
+          session.applyTurnQueue({
+            running,
+            queued: queuedList,
+            revision: numberOrNull(d.revision),
+          });
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
           if (!queuedList.length) session.clearQueuedFlags();
+          break;
+        }
+        case "RESYNC": {
+          /**
+           * 服务端主动告知：这条事件流已经不完整（例如关键生命周期事件在背压中
+           * 无法保序送达）。此时**不能继续假装状态是最新的** ——
+           * 立刻重新拉取权威快照并对齐。
+           */
+          const d = event.data as Record<string, unknown>;
+          void session.resyncTurnState();
+          if (String(d.reason ?? "")) {
+            // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
+            session.warning = "连接出现过一次抖动，正在同步最新状态…";
+          }
           break;
         }
         case "CAPABILITY": {

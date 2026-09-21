@@ -113,6 +113,95 @@ async def test_task_manager_await_timeout_and_failure():
     assert status == "not_found"
 
 
+async def test_queued_task_timeout_reports_queued_not_running():
+    """timeout 只说明「等待窗口内没有进入终态」，不代表任务正在运行。
+
+    真实缺陷：`await_result` 超时统一返回 "running"，把排队中的任务报成正在执行，
+    状态语义在等待路径上又被破坏了一次。
+    """
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking():
+        started.set()
+        await release.wait()
+        return ToolResult(ok=True, content="first")
+
+    first = tm.submit("t", blocking)
+    second = tm.submit("t", lambda: _ok("second"))
+    await started.wait()
+    await asyncio.sleep(0.01)
+    assert tm.record_info(second).status == "queued"
+
+    status, result = await tm.await_result(second, timeout=0.02)
+    assert status == "queued", "排队中的任务超时后必须报 queued，不能报 running"
+    assert result is None
+    release.set()
+    await tm.await_result(first, timeout=1)
+    await tm.await_result(second, timeout=1)
+
+
+async def test_running_task_timeout_reports_running():
+    """真正在跑的任务超时后仍然是 running（这条语义不变）。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=4)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def blocking():
+        started.set()
+        await release.wait()
+        return ToolResult(ok=True, content="late")
+
+    tid = tm.submit("t", blocking)
+    await started.wait()
+    status, result = await tm.await_result(tid, timeout=0.02)
+    assert status == "running" and result is None
+    release.set()
+    status, result = await tm.await_result(tid, timeout=1)
+    assert status == "done" and result.content == "late"
+
+
+async def test_timeout_reports_status_at_the_boundary():
+    """queued → running 恰好发生在等待窗口内时，返回的状态必须与当前 record 一致。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=1)
+    gate_first = asyncio.Event()
+    gate_second = asyncio.Event()
+
+    async def first():
+        await gate_first.wait()
+        return ToolResult(ok=True, content="first")
+
+    async def second():
+        await gate_second.wait()
+        return ToolResult(ok=True, content="second")
+
+    tm.submit("t", first)
+    queued = tm.submit("t", second)
+    await asyncio.sleep(0.01)
+    assert tm.record_info(queued).status == "queued"
+
+    waiter = asyncio.create_task(tm.await_result(queued, timeout=0.2))
+    await asyncio.sleep(0.01)
+    gate_first.set()  # 释放名额：queued 立刻变成 running
+    await asyncio.sleep(0.05)
+    assert tm.record_info(queued).status == "running"
+
+    status, result = await waiter  # 窗口内没进终态 → 超时
+    assert status == tm.record_info(queued).status == "running"
+    assert result is None
+
+    gate_second.set()
+    status, result = await tm.await_result(queued, timeout=1)
+    assert status == "done" and result.content == "second"
+
+
 async def test_task_manager_notify_callback():
     bus = EventBus()
     from agent.tools.task_manager import TaskManager
@@ -128,6 +217,59 @@ async def test_task_manager_notify_callback():
     tm.register_notify(tid, lambda tid_, rec: notified.append(tid_))
     await asyncio.sleep(0.3)
     assert notified == [tid]
+
+
+async def test_waiter_keeps_its_result_when_record_is_evicted_right_after():
+    """任务刚完成 → 记录被 retention 回收 → waiter 还没被调度读结果。
+
+    `_run` 的顺序是「先兑现 waiter，再 prune」，两者之间没有 await 点，
+    所以 waiter 一定是在 prune 之后才真正读到结果。如果兑现时传的是**记录对象**
+    而不是当时的结局，prune 里的 `release()` 会把结果清空，waiter 就拿到一个
+    「done 但没有内容」的假结论 —— 这比返回 not_found 更糟。
+    """
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=4, max_records=1)
+    gate = asyncio.Event()
+
+    async def work():
+        await gate.wait()
+        return ToolResult(ok=True, content="value")
+
+    tid = tm.submit("t", work)
+
+    async def evict(_tid, _record):
+        # 通知回调恰好发生在「waiter 已兑现、还没被调度」之后、「prune 之前」
+        tm.submit("t2", lambda: _ok("other"))
+
+    tm.register_notify(tid, evict)
+    waiter = asyncio.create_task(tm.await_result(tid, timeout=2))
+    await asyncio.sleep(0)
+    # 确认 waiter 已经把自己的 future 挂上（走 future 路径，而不是「已完成」快速路径）
+    assert tm._waiters.get(tid)
+    gate.set()
+
+    status, result = await asyncio.wait_for(waiter, timeout=2)
+    assert status == "done"
+    assert result is not None and result.content == "value", (
+        "waiter 已经拿到的结局不能被 retention 回收掉"
+    )
+
+
+async def test_evicted_record_lookup_is_not_a_fake_done():
+    """记录被回收之后，查询必须如实说 not_found，不能给一个「done + 空结果」。"""
+    from agent.tools.task_manager import TaskManager
+
+    tm = TaskManager(_RecordingBus(), max_concurrent=4, max_records=1)
+    first = tm.submit("t", lambda: _ok("value"))
+    status, result = await tm.await_result(first, timeout=2)
+    assert status == "done" and result.content == "value"
+
+    tm.submit("t2", lambda: _ok("other"))  # 触发 prune，把上一条挤出去
+    await asyncio.sleep(0.05)
+    assert tm.record_info(first) is None
+    status, result = await tm.await_result(first, timeout=0.05)
+    assert (status, result) == ("not_found", None)
 
 
 class _RecordingBus:

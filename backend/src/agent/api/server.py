@@ -572,6 +572,16 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
             "turn_id": active.turn_id if active is not None else None,
         }
 
+    @app.get("/api/turns/queue")
+    async def turn_queue() -> dict:
+        """权威的队列快照（运行中 + 排队中 + revision）。
+
+        SSE 事件流是「增量」；一旦客户端察觉到事件流可能不完整
+        （收到 RESYNC），就用这个接口重新取一次权威状态，而不是猜。
+        与 SSE 的 TURN_QUEUE 同源（同一个 snapshot()），所以两者可以互相校正。
+        """
+        return ctx.turns.snapshot()
+
     @app.post("/api/turns/{turn_id}/cancel")
     async def cancel_turn_by_id(turn_id: str) -> dict:
         """按 turn_id 取消 —— 运行中或仍在排队中的都可。"""

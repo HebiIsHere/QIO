@@ -162,20 +162,31 @@ async def test_sequence_shutdown_leaves_no_hanging_wait():
 
 
 async def test_sequence_repeated_wait_timeouts_do_not_accumulate_waiters():
-    """反复 wait → timeout 不得持续累积无效 waiter。"""
+    """反复 wait → timeout：既不能累积 waiter，也不能破坏 turn 的 completion future。
+
+    `wait` 不创建 future（future 由 `submit` 建立、到终态才兑现并清理），
+    所以「不累积」的可观测形态是：等待表大小不随超时次数增长、且始终是同一个 future，
+    同时这一轮仍然能正常跑到终态并 resolve。
+    """
     release = asyncio.Event()
 
     async def runner(ctx):
         await release.wait()
+        ctx.result = {"ok": True}
 
     tm = TurnManager(runner)
     a = tm.submit("A")
     await asyncio.sleep(0)
+    original = tm._futures[a.turn_id]
     for _ in range(5):
         assert await tm.wait(a.turn_id, timeout=0.005) is None
-    assert a.turn_id not in tm._futures
+        assert len(tm._futures) == 1, "反复超时不得在等待表里累积新条目"
+        assert tm._futures[a.turn_id] is original, "completion future 必须始终是同一个"
+
+    waiter = asyncio.create_task(tm.wait(a.turn_id))
     release.set()
-    await asyncio.sleep(0.05)
+    assert await asyncio.wait_for(waiter, timeout=1.0) == {"ok": True}
+    assert a.status == "completed"
     await tm.shutdown()
 
 

@@ -37,6 +37,9 @@ class EventType(str, Enum):
     TOPIC_SWITCH_SUGGESTED = "TOPIC_SWITCH_SUGGESTED"
     WARNING = "WARNING"
     ERROR = "ERROR"
+    # 事件流完整性受损时由总线发出：客户端据此重新拉取权威快照，
+    # 而不是继续拿一份可能不完整的事件序列当作最新状态。
+    RESYNC = "RESYNC"
 
 
 class AgentEvent(BaseModel):

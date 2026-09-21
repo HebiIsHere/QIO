@@ -257,21 +257,93 @@ async def test_terminal_turn_never_returns_to_running():
     await tm.shutdown()
 
 
-async def test_wait_timeout_does_not_leak_future():
-    """wait 超时后不得把 future 永久留在等待表里。"""
+async def test_wait_timeout_does_not_break_the_turn_completion():
+    """「某一次等待超时」≠「turn 已经结束」。
+
+    超时只能结束这一次 wait；turn 必须继续跑，它的 completion future 必须仍然有效，
+    turn 到终态时仍然能正常 resolve。
+    """
     release = asyncio.Event()
 
     async def runner(ctx):
         await release.wait()
+        ctx.result = {"ok": True, "message": ctx.message}
 
     tm = TurnManager(runner)
     a = tm.submit("A")
     await asyncio.sleep(0)
-    assert a.turn_id in tm._futures
+
     assert await tm.wait(a.turn_id, timeout=0.01) is None
-    assert a.turn_id not in tm._futures
+    # future 不能被超时删掉：它还欠一个结果
+    assert a.turn_id in tm._futures
+    assert not tm._futures[a.turn_id].done()
+
     release.set()
     await asyncio.sleep(0.05)
+    assert a.status == "completed"
+    # 终态才清理：这时 future 已经兑现并摘除
+    assert a.turn_id not in tm._futures
+
+
+async def test_second_waiter_still_gets_the_result_after_first_timed_out():
+    """waiter 1 超时不得影响 waiter 2：后者仍必须拿到结果。"""
+    release = asyncio.Event()
+
+    async def runner(ctx):
+        await release.wait()
+        ctx.result = {"ok": True, "message": ctx.message}
+
+    tm = TurnManager(runner)
+    a = tm.submit("A")
+    await asyncio.sleep(0)
+
+    assert await tm.wait(a.turn_id, timeout=0.01) is None
+
+    second = asyncio.create_task(tm.wait(a.turn_id))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await asyncio.wait_for(second, timeout=1.0) == {"ok": True, "message": "A"}
+
+
+async def test_cancelling_a_wait_caller_does_not_cancel_the_turn():
+    """调用 wait 的协程被取消，不等于用户取消了这一轮。"""
+    release = asyncio.Event()
+
+    async def runner(ctx):
+        await release.wait()
+        ctx.result = {"ok": True}
+
+    tm = TurnManager(runner)
+    a = tm.submit("A")
+    await asyncio.sleep(0)
+
+    waiter = asyncio.create_task(tm.wait(a.turn_id))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    try:
+        await waiter
+    except asyncio.CancelledError:
+        pass
+
+    assert a.cancelled is False, "取消一个 wait 调用者不能顺带取消 turn 本身"
+    # 也不能把 completion future 一起取消掉 —— 否则结果就没地方落地了
+    assert a.turn_id in tm._futures
+    assert tm._futures[a.turn_id].cancelled() is False
+    release.set()
+    await asyncio.sleep(0.05)
+    assert a.status == "completed"
+    await tm.shutdown()
+
+
+async def test_wait_without_timeout_still_returns_the_result():
+    """无 timeout 的正常等待路径不得回归。"""
+    async def runner(ctx):
+        ctx.result = {"ok": True, "message": ctx.message}
+
+    tm = TurnManager(runner)
+    a = tm.submit("A")
+    assert await asyncio.wait_for(tm.wait(a.turn_id), timeout=1.0) == {"ok": True, "message": "A"}
     await tm.shutdown()
 
 

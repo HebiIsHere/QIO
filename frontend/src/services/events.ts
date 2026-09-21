@@ -36,6 +36,8 @@ export const EVENT_TYPES = [
   "TOPIC_SWITCH_SUGGESTED",
   "WARNING",
   "ERROR",
+  // 服务端告知「这条事件流可能不完整」：客户端据此重新拉取权威快照
+  "RESYNC",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

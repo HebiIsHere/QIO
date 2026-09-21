@@ -187,6 +187,11 @@ export const useSessionStore = defineStore("session", {
     /** 已被后端受理、但还没有开始执行的 turn（accepted / queued） */
     queuedTurnIds: [] as string[],
     /**
+     * 最近一次生效的队列快照版本（服务端单调递增）。
+     * 快照是权威的，但**旧的**权威快照不能覆盖更新的状态 —— 用它做判断。
+     */
+    queueRevision: 0,
+    /**
      * 最近一轮的结局。界面用它安静地表达「已停止」这类状态：
      * 成功由回答本身表达，失败进 lastError，无凭据进 warning。
      */
@@ -353,10 +358,22 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /** 真实 TURN_START：唯一允许把某个 turn 设为 active 的入口。 */
-    activateTurn(turnId: string) {
+    activateTurn(turnId: string, revision?: number | null) {
       if (!turnId) return;
+      this.noteQueueRevision(revision);
       this.forgetQueuedTurn(turnId);
       this.activeTurnId = turnId;
+    },
+    /**
+     * 记录快照版本。
+     * 返回 false 表示这份快照比已知状态更旧，调用方应当丢弃它。
+     * 没有版本号（旧事件 / 测试）时一律接受，保持向后兼容。
+     */
+    noteQueueRevision(revision?: number | null): boolean {
+      if (typeof revision !== "number" || !Number.isFinite(revision)) return true;
+      if (revision < this.queueRevision) return false;
+      this.queueRevision = revision;
+      return true;
     },
     /** SEND 只表示「后端受理了」：登记为排队，不改变 active。 */
     markTurnQueued(turnId: string) {
@@ -373,20 +390,54 @@ export const useSessionStore = defineStore("session", {
       return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
     },
     /**
-     * 用后端的队列快照对齐本地状态（第二真源）。
+     * 应用一份**权威队列快照**（TURN_QUEUE 事件，或 RESYNC 后重新拉取的快照）。
      *
-     * 重连 / 丢帧之后，本地可能不知道谁在跑；快照里的 running 是后端自己的
-     * 事实陈述，用它恢复 active，而不是靠猜。
+     * 快照必须能同时做两件相反的事：
+     * - 恢复：running=A → active=A（重连 / 丢帧后本地不知道谁在跑）；
+     * - 清除：running=null → active=null（服务器早就跑完了，本地不能还停在「正在运行」）。
+     *
+     * 同时用 revision 挡住**旧快照覆盖新状态**（TURN_START 之后晚到的 running=null）。
      */
-    syncTurnQueue(runningTurnId: string | null, queuedTurnIds: string[]) {
-      this.queuedTurnIds = [...queuedTurnIds];
-      if (runningTurnId) {
-        this.activeTurnId = runningTurnId;
-        this.forgetQueuedTurn(runningTurnId);
-        // 重连/丢帧后本地可能还以为空闲，但后端的事实是「有主 turn 在跑」：
-        // 恢复到运行态，否则停止按钮会一直是灰的。
-        this.turnRunning = true;
-        if (this.turnPhase === "idle") this.turnPhase = "waiting";
+    applyTurnQueue(snapshot: {
+      running?: { turn_id: string; message: string } | null;
+      queued?: { turn_id: string; message: string }[];
+      revision?: number | null;
+    }) {
+      if (!this.noteQueueRevision(snapshot.revision)) return; // 旧快照：丢弃
+      this.queuedTurnIds = (snapshot.queued ?? []).map((q) => q.turn_id);
+      this.activeTurnId = snapshot.running?.turn_id ?? null;
+      if (this.activeTurnId) this.forgetQueuedTurn(this.activeTurnId);
+      // 「有活要干」= 正在跑，或还有排队在等。排队中时停止按钮仍可用
+      // （后端只会取消真正在跑的那一轮，不会误伤排队项）。
+      const busy = Boolean(this.activeTurnId) || this.queuedTurnIds.length > 0;
+      this.turnRunning = busy;
+      if (!busy) {
+        this.turnPhase = "idle";
+        this.cancelling = null;
+      } else if (this.turnPhase === "idle") {
+        this.turnPhase = "waiting";
+      }
+    },
+    /** 旧签名（只给 running/queued）：等价于带快照的权威应用，保持向后兼容。 */
+    syncTurnQueue(runningTurnId: string | null, queuedTurnIds: string[], revision?: number | null) {
+      this.applyTurnQueue({
+        running: runningTurnId ? { turn_id: runningTurnId, message: "" } : null,
+        queued: queuedTurnIds.map((turn_id) => ({ turn_id, message: "" })),
+        revision,
+      });
+    },
+    /**
+     * 事件流可能已经不完整（收到 RESYNC）：不再假装状态是最新的，
+     * 直接向服务器要一份权威快照并对齐。
+     */
+    async resyncTurnState(): Promise<boolean> {
+      try {
+        const snapshot = await api.getTurnQueue();
+        this.applyTurnQueue(snapshot);
+        return true;
+      } catch (e) {
+        this.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
+        return false;
       }
     },
     /**

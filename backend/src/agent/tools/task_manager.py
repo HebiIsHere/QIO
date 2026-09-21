@@ -125,9 +125,14 @@ class TaskManager:
                 record.status = "failed"
         record.finished_at = _now()
         await self._emit(task_id)
+        # 兑现 waiter 时传**结局快照**（status + result），而不是记录对象本身：
+        # 紧接着的 prune() 可能把这条记录回收并 release()（清空 result/full_content），
+        # 而 waiter 一定是在 prune 之后才被调度 —— 传对象就会让它拿到
+        # 「done 但没有内容」的假结论。
+        outcome = (record.status, record.result)
         for fut in self._waiters.pop(task_id, []):
             if not fut.done():
-                fut.set_result(record)
+                fut.set_result(outcome)
         for cb in list(self._notify.pop(task_id, [])):
             try:
                 await cb(task_id, record)
@@ -140,7 +145,13 @@ class TaskManager:
     async def await_result(
         self, task_id: str, timeout: float = 120.0
     ) -> tuple[str, ToolResult | None]:
-        """Returns (status, result): done/failed/not_found, or running on timeout."""
+        """Returns (status, result): 终态 / 仍等待中的**真实**状态 / not_found。
+
+        超时的含义只有一个：在这次等待窗口内任务没有进入终态。
+        它**不**代表任务正在运行 —— 排队中的任务超时后必须报 `queued`。
+        所以超时返回的是记录当前的真实状态（并在边界情况下重新读一次，
+        因为 queued → running / 终态 可能恰好发生在这个窗口里）。
+        """
         record = self._records.get(task_id)
         if record is None:
             return ("not_found", None)
@@ -151,12 +162,18 @@ class TaskManager:
         self._waiters.setdefault(task_id, []).append(fut)
         try:
             if timeout is None:
-                await fut
+                return await fut
             else:
-                await asyncio.wait_for(fut, timeout=timeout)
+                return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
-            # 超时必须摘掉自己注册的 waiter，否则每次超时都留下永久残留。
-            return ("running", None)
+            # 超时必须摘掉自己注册的 waiter，否则每次超时都留下永久残留；
+            # 返回前重读一次记录，避免把边界上的真实状态报成过期值。
+            current = self._records.get(task_id)
+            if current is None:
+                return ("not_found", None)
+            if current.done:
+                return (current.status, current.result)
+            return (current.status, None)
         finally:
             waiters = self._waiters.get(task_id)
             if waiters is not None:
@@ -164,7 +181,6 @@ class TaskManager:
                     waiters.remove(fut)
                 if not waiters:
                     self._waiters.pop(task_id, None)
-        return (record.status, record.result)
 
     def register_notify(self, task_id: str, cb: NOTIFY_CB) -> bool:
         """Subscribe a completion callback; returns False when already done."""

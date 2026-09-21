@@ -105,8 +105,16 @@ class TurnManager:
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
+        # 队列快照的版本号：每一次影响快照的状态变化都 +1。
+        # 前端据此丢弃「比已知状态更旧」的快照 —— 快照是权威的，
+        # 但**旧**的权威快照不能覆盖更新的事件（例如 TURN_START 之后晚到的 running=null）。
+        self._revision = 0
 
     # -- wiring -----------------------------------------------------------
+
+    def _bump_revision(self) -> int:
+        self._revision += 1
+        return self._revision
 
     def set_runner(self, runner: TurnRunner) -> None:
         self._runner = runner
@@ -123,6 +131,7 @@ class TurnManager:
     def snapshot(self) -> dict:
         active = self._active
         return {
+            "revision": self._revision,
             "running": (
                 {"turn_id": active.turn_id, "message": active.message[:120]}
                 if active is not None
@@ -178,25 +187,32 @@ class TurnManager:
             pass  # no running loop: enqueue without an awaitable result
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
+        self._bump_revision()
         self._ensure_worker()
         self._schedule_emit()
         return ctx
 
     async def wait(self, turn_id: str, timeout: float | None = None) -> dict | None:
+        """等待某个 turn 的结果。
+
+        `wait` 是一次**等待操作**，和 turn 本身的生命周期是两件事：
+
+        * 超时只结束这一次等待 —— 不删除、也不取消 turn 的 completion future；
+        * 调用方被取消（任务取消）同样只结束这一次等待；
+        * completion future 只在 turn 进入终态、被兑现之后清理（见 `_resolve`）。
+
+        所以这里必须用 `asyncio.shield`：`wait_for` / 任务取消只会取消 shield 的外层，
+        不会把内层 future 一起取消掉（否则 turn 结束时结果就没有地方落地了）。
+        """
         fut = self._futures.get(turn_id)
         if fut is None:
             return None
         try:
             if timeout is None:
-                return await fut
-            return await asyncio.wait_for(fut, timeout)
+                return await asyncio.shield(fut)
+            return await asyncio.wait_for(asyncio.shield(fut), timeout)
         except asyncio.TimeoutError:
             return None
-        finally:
-            # 超时（或已经被兑现）之后不得把这个 waiter 永久留在表里 ——
-            # 反复 wait/timeout 不能持续累积无效 future。
-            if timeout is not None:
-                self._futures.pop(turn_id, None)
 
     def _resolve(self, ctx: TurnContext, payload: dict) -> None:
         """兑现某个 turn 的等待者（幂等：已经兑现过的不再重复设置）。"""
@@ -223,6 +239,7 @@ class TurnManager:
                 continue
             self._active = ctx
             ctx.status = "running"
+            self._bump_revision()
             self._schedule_emit()
             await self._emit_turn_start(ctx)
             try:
@@ -244,6 +261,7 @@ class TurnManager:
                 await self._emit_turn_end(ctx)
                 if self._active is ctx:
                     self._active = None
+                    self._bump_revision()
                 self._resolve(
                     ctx,
                     ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status},
@@ -257,7 +275,14 @@ class TurnManager:
             return
         ctx.turn_start_emitted = True
         await self._emit_event(
-            TURN_START, {"turn_id": ctx.turn_id, "message": ctx.message[:200]}
+            TURN_START,
+            {
+                "turn_id": ctx.turn_id,
+                # revision 让前端能把「新的 turn 状态」和「旧的队列快照」比较：
+                # 晚到的旧快照不得把这一轮清掉。
+                "revision": self._revision,
+                "message": ctx.message[:200],
+            },
         )
 
     async def _emit_turn_end(self, ctx: TurnContext) -> None:
@@ -269,6 +294,7 @@ class TurnManager:
         ctx.turn_end_emitted = True
         payload: dict[str, Any] = {
             "turn_id": ctx.turn_id,
+            "revision": self._revision,
             "status": ctx.status,
             "final_content": ctx.final_content,
             "error": ctx.error,
@@ -311,6 +337,7 @@ class TurnManager:
         if ctx.loop is not None:
             ctx.loop.cancel()
         self._record_cancelled(ctx)
+        self._bump_revision()
         self._schedule_emit()
         return True
 
@@ -330,6 +357,7 @@ class TurnManager:
                 # 排队项的结局不依赖 worker：立刻兑现等待者，
                 # 之后 worker 取到这个 tombstone 只会跳过。
                 self._resolve(c, {"ok": False, "reason": "cancelled"})
+                self._bump_revision()
                 self._schedule_emit()
                 return True
         return False
@@ -345,6 +373,7 @@ class TurnManager:
         → 清理仍然挂着的等待者与队列对象。
         """
         self._closed = True
+        self._bump_revision()
 
         pending, self._pending = list(self._pending), []
         for ctx in pending:

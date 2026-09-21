@@ -372,12 +372,31 @@
   （解析按批次节拍，与动画帧率无关；`unified` processor 单例、hljs 结果按 `(lang, code)` 记忆化、
   落定时做一次完整解析）；会话历史改为渐进加载（首屏最近一页 + 向上滚动按游标加载更早，
   游标是 `created_at|id` 复合键，同一时刻写入的消息也不丢不重，插入旧历史时做滚动锚定保持阅读位置）。
+- **Implementation（2026-09-20 收尾轮 · 极端时序）：** 四处「只有在极端时序下才会暴露」的状态缺陷：
+  ① `api/bus.py` 的事件分类显式化（可合并 `ASSISTANT`/`USAGE`、关键状态转换、控制事件 `RESYNC`），
+  缓冲里**全是关键事件**时不再静默丢最旧的一条：仍然保持有界，但会先发一条 `RESYNC`
+  告知客户端「这一路事件流已经不完整」，客户端据此重新拉取权威快照；
+  ② `TURN_QUEUE` 成为真正的权威快照：既能**恢复**缺失状态，也能**清除**本地已经过期的 active，
+  同时 `core/turn.py` 给快照与 `TURN_START` / `TURN_END` 带上单调递增 `revision`，
+  新的 `GET /api/turns/queue` 供 resync 使用 —— 旧的权威快照不能覆盖更新的状态；
+  ③ `TurnManager.wait(timeout)` 不再删除 / 取消 turn 的 completion future
+  （`asyncio.shield`）：某一次等待超时或调用方被取消，都只结束那一次等待，turn 照常跑完并正常 resolve；
+  ④ `TaskManager.await_result` 超时返回**真实状态**（排队中报 `queued`，不报 `running`），
+  并且兑现 waiter 时传「结局快照」而不是记录对象 —— 任务刚完成就被 retention 回收时，
+  waiter 仍然拿得到结果（否则会拿到「done 但没有内容」的假结论）。
 - **Tests：** `backend/tests/test_turn_manager.py`、`test_turn_state_sequences.py`、`test_budget_defaults.py`、
   `test_model_usage.py`、`test_context_budget_accuracy.py`、`test_adapter_lifecycle.py`、
   `test_events_backpressure.py`、`test_selector_incremental.py`、`test_memory_selector_wiring.py`、
   `test_session_pagination.py`、`test_db_invariants.py`、`test_approval_binding.py`、`test_subagent.py`；
   前端 `stores/__tests__/turnSequences.test.ts`、`stores/__tests__/historyPagination.test.ts`、
   `components/__tests__/MarkdownStreaming.test.ts`、`stores/__tests__/approvals.test.ts`
+- **Tests（2026-09-20 收尾轮追加）：** `backend/tests/test_turn_queue_snapshot.py`（快照 revision 单调、
+  事件携带 revision、`GET /api/turns/queue` 与 SSE 快照同源）；`test_events_backpressure.py` 的反例用例
+  （满缓冲全是关键事件时不得静默丢失、可合并事件淘汰不触发 resync、事件分类完备性守卫）；
+  `test_turn_manager.py` 的 wait 语义用例（超时/取消不破坏 completion future、第二个 waiter 仍拿得到结果）；
+  `test_subagent.py` 的 queued/running 超时语义与 retention 竞态用例；
+  前端 `turnSequences.test.ts` 的 `TURN_QUEUE` 权威快照用例（清 stale、恢复 running/queued、旧快照不覆盖新状态、
+  RESYNC 后重新同步）
 - **Known limitations：** 取消仍不能物理中断已经发出的模型 HTTP 请求（返回值会被丢弃，turn 以
   `cancelled` 结束）；流式 Markdown 的单次解析仍是 O(全文长度)，只是频率不再等于动画帧数；
   增量检索的收益依赖后端支持 `supports_incremental`（不支持时自动回退全量重建，行为正确但没有加速）；

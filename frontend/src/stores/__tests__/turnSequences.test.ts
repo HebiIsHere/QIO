@@ -8,6 +8,7 @@
  * 「不属于当前 active」的过滤条件丢掉 → 界面永远停在运行中。
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { useSessionStore } from "../session";
 import { useEventStore } from "../events";
@@ -24,6 +25,12 @@ vi.mock("../../services/api", () => ({
     sendTurn: vi.fn(async () => ({ ok: true, accepted: true, turn_id: "turn_b", status: "queued" })),
     cancelTurn: vi.fn(async () => ({ ok: true, cancelled: true, turn_id: "turn_b" })),
     cancelActiveTurn: vi.fn(async () => ({ ok: true, cancelled: true, turn_id: "turn_a" })),
+    getTurnQueue: vi.fn(async () => ({
+      running: null,
+      queued: [],
+      cancelled: [],
+      revision: 100,
+    })),
   },
 }));
 
@@ -33,8 +40,13 @@ function setup() {
   return { session: useSessionStore(), events: useEventStore() };
 }
 
-function start(session: ReturnType<typeof useSessionStore>, events: ReturnType<typeof useEventStore>, id: string) {
-  events.route({ type: "TURN_START", id: `s_${id}`, ts: "", data: { turn_id: id } });
+function start(
+  session: ReturnType<typeof useSessionStore>,
+  events: ReturnType<typeof useEventStore>,
+  id: string,
+  revision = 1,
+) {
+  events.route({ type: "TURN_START", id: `s_${id}`, ts: "", data: { turn_id: id, revision } });
   expect(session.activeTurnId).toBe(id);
 }
 
@@ -168,3 +180,144 @@ describe("旧事件防护仍然有效", () => {
     expect(session.turnRunning).toBe(true);
   });
 });
+
+/**
+ * TURN_QUEUE 是服务器状态的权威快照：既能**恢复**缺失状态，
+ * 也必须能**清除**本地已经过期的状态。
+ */
+describe("TURN_QUEUE 权威快照", () => {
+  it("服务器已空闲时必须清掉本地的 stale active", () => {
+    const { session, events } = setup();
+    start(session, events, "turn_a", 3);
+    expect(session.turnRunning).toBe(true);
+
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q1",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 9 },
+    });
+
+    expect(session.activeTurnId).toBeNull();
+    expect(session.turnRunning).toBe(false);
+    expect(session.turnPhase).toBe("idle");
+  });
+
+  it("服务器有 running 时恢复 active 与排队列表", () => {
+    const { session, events } = setup();
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q1",
+      ts: "",
+      data: {
+        running: { turn_id: "turn_a", message: "一" },
+        queued: [{ turn_id: "turn_b", message: "二" }],
+        cancelled: [],
+        revision: 12,
+      },
+    });
+    expect(session.activeTurnId).toBe("turn_a");
+    expect(session.queuedTurnIds).toEqual(["turn_b"]);
+    expect(session.turnRunning).toBe(true);
+  });
+
+  it("旧快照不得覆盖更新的 Turn 状态（TURN_START 之后再晚到的旧快照）", () => {
+    const { session, events } = setup();
+    start(session, events, "turn_a", 20);
+
+    // 这是重连/重放里最危险的时序：一份「服务器当时空闲」的旧快照晚到了
+    events.route({
+      type: "TURN_QUEUE",
+      id: "stale",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 18 },
+    });
+
+    expect(session.activeTurnId).toBe("turn_a");
+    expect(session.turnRunning).toBe(true);
+  });
+
+  it("漏掉 TURN_END 后靠服务器快照恢复为空闲", () => {
+    const { session, events } = setup();
+    start(session, events, "turn_a", 30);
+    // 客户端漏掉了 TURN_END(A)：本地仍以为 A 在跑
+    assertRunning(session);
+
+    // 重连后收到服务器快照：已经空闲
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_after_reconnect",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [{ turn_id: "turn_a", message: "一" }], revision: 31 },
+    });
+
+    expect(session.activeTurnId).toBeNull();
+    expect(session.turnRunning).toBe(false);
+  });
+
+  it("收到 RESYNC 时重新拉取权威快照并据此对齐状态", async () => {
+    const { session, events } = setup();
+    start(session, events, "turn_a", 40);
+    vi.mocked(api.getTurnQueue).mockResolvedValueOnce({
+      running: null,
+      queued: [],
+      cancelled: [],
+      revision: 41,
+    } as never);
+
+    events.route({ type: "RESYNC", id: "resync_1", ts: "", data: { reason: "overflow" } });
+    await flushPromises();
+
+    expect(api.getTurnQueue).toHaveBeenCalled();
+    expect(session.activeTurnId).toBeNull();
+    expect(session.turnRunning).toBe(false);
+  });
+
+  it("resync 能把真实的 running 与 queued 一起恢复回来", async () => {
+    const { session, events } = setup();
+    // 本地状态已经被事件丢失搞乱：以为空闲，其实是 A 在跑、B 在排队
+    expect(session.activeTurnId).toBeNull();
+    vi.mocked(api.getTurnQueue).mockResolvedValueOnce({
+      running: { turn_id: "turn_a", message: "一" },
+      queued: [{ turn_id: "turn_b", message: "二" }],
+      cancelled: [],
+      revision: 50,
+    } as never);
+
+    events.route({ type: "RESYNC", id: "resync_2", ts: "", data: { reason: "overflow" } });
+    await flushPromises();
+
+    expect(session.activeTurnId).toBe("turn_a");
+    expect(session.queuedTurnIds).toEqual(["turn_b"]);
+    expect(session.turnRunning).toBe(true);
+  });
+
+  it("RESYNC 之后补发的陈旧 TURN_END 不得污染已经对齐的状态", async () => {
+    const { session, events } = setup();
+    // 服务器已经空闲（权威快照），本地也据此对齐
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_idle",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 60 },
+    });
+    session.pushAssistant("现在的回答");
+    const before = session.messages.length;
+
+    // 溢出前缓冲下来的一条旧 TURN_END，如今才补发
+    events.route({
+      type: "TURN_END",
+      id: "stale_end",
+      ts: "",
+      data: { turn_id: "turn_old", status: "completed", final_content: "很久以前的回答", revision: 55 },
+    });
+
+    expect(session.messages.length).toBe(before);
+    expect(session.lastTurnOutcome).toBeNull();
+  });
+});
+
+function assertRunning(session: ReturnType<typeof useSessionStore>) {
+  expect(session.activeTurnId).toBe("turn_a");
+  expect(session.turnRunning).toBe(true);
+}
