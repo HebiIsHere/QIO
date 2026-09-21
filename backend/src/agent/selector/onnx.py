@@ -5,6 +5,25 @@ model files are present and onnxruntime/tokenizers importable, vector
 recall replaces BM25. Vectors are persisted in the `embeddings` table
 (doc_type memory_index / topic) so re-indexing skips already-embedded
 documents. Falls back gracefully (available()=False) without the model.
+
+**模型与精度由清单决定**：模型目录里可以放一份 `model_manifest.json`：
+
+    {
+      "name": "bge-small-zh-v1.5",
+      "dims": 512,
+      "default": "model.onnx",
+      "files": [
+        {"file": "model.onnx",           "precision": "fp32", "bytes": 94851877, "sha256": "…"},
+        {"file": "model_quantized.onnx", "precision": "int8", "bytes": 24010842, "sha256": "…"}
+      ]
+    }
+
+没有清单时按「先 fp32、再 int8」的顺序找。
+
+**每个向量都带身份**（`onnx:<模型>:<精度>:<哈希前 12 位 或 字节数>`）：
+读缓存时必须身份一致才复用。否则换了档位（fp32 ↔ int8）之后，两个模型空间的
+向量会被混着比较，结果不可信而且从界面上看不出来。`selector/remote.py`
+本来就有这条判断，这里补上同样的一条。
 """
 
 from __future__ import annotations
@@ -24,8 +43,57 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "bge-small-zh-v1.5"
 MODEL_DIMS = 512
 MODEL_MAX_LEN = 512
-MODEL_FILENAME = "model_quantized.onnx"
+# 清单缺省时的查找顺序：内置默认是 fp32；没有它再退回量化版
+MODEL_FILENAMES = ("model.onnx", "model_quantized.onnx")
 TOKENIZER_FILENAME = "tokenizer.json"
+MANIFEST_FILENAME = "model_manifest.json"
+
+
+def load_model_manifest(model_dir: Path) -> dict | None:
+    """读取模型清单；不存在或坏掉就返回 None（调用方退回默认查找顺序）。"""
+    path = Path(model_dir) / MANIFEST_FILENAME
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("onnx embedding backend: 模型清单无法解析，按默认顺序查找：%s", path)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _guess_precision(filename: str) -> str:
+    if "quantized" in filename or "int8" in filename:
+        return "int8"
+    if "fp16" in filename:
+        return "fp16"
+    return "fp32"
+
+
+def resolve_model_file(model_dir: Path, manifest: dict | None) -> tuple[Path | None, str]:
+    """决定这次加载哪个模型文件，并给出**向量身份**。
+
+    身份里带精度与（清单提供的）哈希：换档位 = 换身份，旧向量不会被当成有效缓存。
+    """
+    model_dir = Path(model_dir)
+    entries: list[dict] = []
+    if manifest and isinstance(manifest.get("files"), list):
+        entries = [e for e in manifest["files"] if isinstance(e, dict) and e.get("file")]
+    if manifest and manifest.get("default"):
+        default = str(manifest["default"])
+        entries.sort(key=lambda e: 0 if str(e.get("file")) == default else 1)
+    if not entries:
+        entries = [{"file": name} for name in MODEL_FILENAMES]
+
+    model_name = str((manifest or {}).get("name") or MODEL_NAME)
+    for entry in entries:
+        path = model_dir / str(entry["file"])
+        if not path.exists():
+            continue
+        precision = str(entry.get("precision") or _guess_precision(path.name))
+        digest = str(entry.get("sha256") or "")[:12]
+        return path, f"onnx:{model_name}:{precision}:{digest or path.stat().st_size}"
+    return None, ""
 
 
 def cosine_similarity(query: np.ndarray, vectors: np.ndarray) -> np.ndarray:
@@ -53,6 +121,9 @@ class OnnxEmbeddingBackend(RecallBackend):
         self.max_len = max_len
         self.threads = threads
         self.model_name = MODEL_NAME
+        # 向量身份：换模型或换精度都会换它，用于缓存校验（见模块头）
+        self.model_identity = ""
+        self.model_file = ""
         self.dims = MODEL_DIMS
         self._session: Any | None = None
         self._tokenizer: Any | None = None
@@ -68,11 +139,27 @@ class OnnxEmbeddingBackend(RecallBackend):
     def _load(self) -> None:
         if self.model_dir is None:
             return
-        onnx_path = self.model_dir / MODEL_FILENAME
+        manifest = load_model_manifest(self.model_dir)
+        onnx_path, identity = resolve_model_file(self.model_dir, manifest)
         tokenizer_path = self.model_dir / TOKENIZER_FILENAME
-        if not onnx_path.exists() or not tokenizer_path.exists():
-            logger.info("onnx embedding backend: model files missing; falling back")
+        if onnx_path is None or not tokenizer_path.exists():
+            logger.info(
+                "onnx embedding backend: model files missing; falling back（找过 %s）",
+                ", ".join(MODEL_FILENAMES),
+            )
             return
+        if manifest and manifest.get("name"):
+            self.model_name = str(manifest["name"])
+        if manifest and manifest.get("dims"):
+            try:
+                self.dims = int(manifest["dims"])
+            except (TypeError, ValueError):
+                pass
+        if manifest and manifest.get("max_len"):
+            try:
+                self.max_len = int(manifest["max_len"])
+            except (TypeError, ValueError):
+                pass
         try:
             import onnxruntime as ort
             from tokenizers import Tokenizer
@@ -88,7 +175,15 @@ class OnnxEmbeddingBackend(RecallBackend):
             )
             self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
             self._inputs = [i.name for i in self._session.get_inputs()]
-            logger.info("onnx embedding backend: loaded %s (%d dims)", MODEL_NAME, self.dims)
+            self.model_identity = identity
+            self.model_file = onnx_path.name
+            logger.info(
+                "onnx embedding backend: loaded %s（%s，%d dims，identity=%s）",
+                self.model_name,
+                onnx_path.name,
+                self.dims,
+                identity,
+            )
         except Exception as exc:  # pragma: no cover - environment dependent
             logger.warning("onnx embedding backend load failed: %s", exc)
             self._session = None
@@ -124,10 +219,13 @@ class OnnxEmbeddingBackend(RecallBackend):
     def _load_persisted(self, doc_type: str, ref_ids: list[str]) -> dict[str, np.ndarray]:
         if not ref_ids:
             return {}
+        # 只认「身份 + 维度」都一致的缓存：换模型 / 换精度之后，
+        # 旧向量必须重新编码，不能混着比（remote.py 早就是这么做的）。
         rows = self.conn.execute(
-            "SELECT ref_id, dims, vector FROM embeddings WHERE doc_type = ? "
+            "SELECT ref_id, dims, vector FROM embeddings "
+            "WHERE doc_type = ? AND model = ? AND dims = ? "
             "AND ref_id IN (%s)" % ",".join("?" * len(ref_ids)),
-            [doc_type, *ref_ids],
+            [doc_type, self.model_identity, int(self.dims), *ref_ids],
         ).fetchall()
         out: dict[str, np.ndarray] = {}
         for row in rows:
@@ -149,7 +247,7 @@ class OnnxEmbeddingBackend(RecallBackend):
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(doc_type, ref_id) DO UPDATE SET vector = excluded.vector, "
                 "model = excluded.model, dims = excluded.dims, updated_at = excluded.updated_at",
-                (new_id("emb"), doc_type, ref_id, self.model_name, int(self.dims),
+                (new_id("emb"), doc_type, ref_id, self.model_identity or self.model_name, int(self.dims),
                  vec.astype(np.float32).tobytes(), now, now),
             )
 
@@ -236,8 +334,11 @@ class OnnxEmbeddingBackend(RecallBackend):
         """检索与查询最相似的实体卡向量；返回 [(card_id, score)]，低于阈值过滤。"""
         if not self.available():
             return []
+        # 同样按身份过滤：换档位之后，旧身份下的实体卡向量不能参与比较
         rows = self.conn.execute(
-            "SELECT ref_id, vector FROM embeddings WHERE doc_type = 'entity_card'"
+            "SELECT ref_id, dims, vector FROM embeddings "
+            "WHERE doc_type = 'entity_card' AND model = ? AND dims = ?",
+            (self.model_identity, int(self.dims)),
         ).fetchall()
         if not rows:
             return []
