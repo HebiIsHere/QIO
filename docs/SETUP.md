@@ -78,11 +78,29 @@ python scripts/models/fetch_model.py --from-modelscope
 打包命令与实测体积（2026-09-21 本机）：
 
 ```powershell
-cd frontend
-npm run tauri build -- --bundles nsis
-# → target/release/bundle/nsis/QIO_0.1.0_x64-setup.exe（128.9MB）
-#   生成的 installer.nsi 会把 model.onnx 复制到 $INSTDIR\models\bge-small-zh-v1.5\
+# 一条命令按正确顺序做三件事：取模型 → 重建 sidecar → 打安装包
+pwsh -File scripts/build_installer.ps1
+# → frontend/src-tauri/target/release/bundle/nsis/QIO_0.1.0_x64-setup.exe（106.8MB）
+#   生成的 installer.nsi 会把 model.onnx / tokenizer.json / 清单 / 许可证复制到
+#   $INSTDIR\models\bge-small-zh-v1.5\
 ```
+
+**⚠️ 不要直接跑 `tauri build`**：它只用**已经存在**的 sidecar，不会重建后端。
+实测踩过一次：安装包里的后端比源码早一个多月，内置模型加载失败、静默退回 BM25，
+而安装包看起来完全是好的。`build_installer.ps1` 就是为这件事准备的（顺序错/漏跑会构建失败）。
+
+### 一台干净的 Windows 电脑需要什么
+
+| 需要 | 说明 |
+| --- | --- |
+| Windows 10/11 64 位 | 11 自带 WebView2；**10 上若没装 WebView2，安装包会在安装阶段联网下载**（`downloadBootstrapper`）。要完全离线安装就把它换成 `embedBootstrapper` 或 `offlineInstaller` |
+| 约 300MB 磁盘 | 安装目录（sidecar + 模型）+ 首次启动复制到 `%APPDATA%\qio\models`（90MB） |
+| 能访问你自己的模型服务 | BYOK：填 OpenAI / Anthropic / 其它兼容服务商的 API Key |
+| **不需要** | Python、Node、uv、任何其它运行时（后端是 PyInstaller 单文件 sidecar） |
+
+首次启动流程：安装 → 启动 → 壳把内置模型复制到 `%APPDATA%\qio\models\bge-small-zh-v1.5\`
+（幂等，之后启动跳过）→ 后端加载 fp32 模型（日志 `loaded bge-small-zh-v1.5（model.onnx…）`）
+→ 在「设置 → 凭据」填入 API Key 即可开始对话。
 
 内置档是 **fp32**（`model.onnx`，90.5MB，无量化损失）；想换成量化档就改清单里的 `default` 并换文件。
 
