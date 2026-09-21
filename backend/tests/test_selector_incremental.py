@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
@@ -18,6 +19,10 @@ import pytest
 from agent.selector.base import IndexedDoc
 from agent.selector.bm25 import BM25Backend
 from agent.selector.selector import Selector
+
+# 规则层的时效项是「距离现在多久」的连续函数。比较两个 Selector 时必须把它钉住，
+# 否则两次 select 相隔几微秒，得分就会在第 12 位小数量级上漂移（测试偶发变红）。
+FIXED_NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _random_docs(n: int, seed: int = 7) -> list[IndexedDoc]:
@@ -147,8 +152,14 @@ def test_selector_upsert_and_remove_keep_results_consistent():
     )
 
     for query in ("橡胶 实验", "饮食 清淡", "预算 记忆"):
-        a = [(c.doc_id, round(c.score, 12), c.title, c.token_estimate) for c in selector.select(query, top_k=5)]
-        b = [(c.doc_id, round(c.score, 12), c.title, c.token_estimate) for c in rebuilt.select(query, top_k=5)]
+        a = [
+            (c.doc_id, round(c.score, 12), c.title, c.token_estimate)
+            for c in selector.select(query, top_k=5, now=FIXED_NOW)
+        ]
+        b = [
+            (c.doc_id, round(c.score, 12), c.title, c.token_estimate)
+            for c in rebuilt.select(query, top_k=5, now=FIXED_NOW)
+        ]
         assert a == b
 
     # 旁路数据也要跟着走
@@ -165,7 +176,21 @@ def test_selector_upsert_replaces_existing():
 
     assert len(selector._docs) == 10
     assert selector.text_of(docs[0].doc_id) == "完全不同的内容 河马"
-    assert selector.select("河马", top_k=3)[0].doc_id == docs[0].doc_id
+    assert selector.select("河马", top_k=3, now=FIXED_NOW)[0].doc_id == docs[0].doc_id
+
+
+def test_select_can_pin_the_clock_for_reproducible_ranking():
+    """规则层含时效项：允许调用方钉住「现在」，同一份索引的两次 select 才逐位一致。
+
+    默认仍然是当前时间（行为不变）；这里只是把已经存在于 QueryContext 里的可注入时钟
+    暴露到 Selector 上，让测试 / 评测能在同一时刻比较两次排序。
+    """
+    selector = Selector()
+    selector.load(_random_docs(12))
+
+    first = [(c.doc_id, c.score) for c in selector.select("饮食 清淡", top_k=5, now=FIXED_NOW)]
+    second = [(c.doc_id, c.score) for c in selector.select("饮食 清淡", top_k=5, now=FIXED_NOW)]
+    assert first == second
 
 
 def test_onnx_search_reuses_matrix_instead_of_restacking(monkeypatch, db_conn):

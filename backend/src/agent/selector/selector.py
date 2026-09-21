@@ -8,6 +8,7 @@ ONNX quantized embeddings (if importable and model present) > BM25
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Callable
 
 from agent.selector.base import IndexedDoc, MemoryCandidate, RecallBackend
@@ -142,11 +143,19 @@ class Selector:
         top_k: int = 5,
         anchor_topic_id: str | None = None,
         entity_names: list[str] | None = None,
+        now: datetime | None = None,
     ) -> list[MemoryCandidate]:
+        """按查询选出相关记忆。
+
+        `now` 用于规则层的时效项：默认取当前时间（行为与以前一致），
+        调用方也可以钉住它，让「同一份索引、同一时刻」的两次排序逐位可比
+        （测试与评测需要这个确定性；否则两次调用相隔几微秒就会在第 12 位小数上漂移）。
+        """
         ctx = QueryContext(
             query=query,
             anchor_topic_id=anchor_topic_id,
             entity_names=entity_names,
+            now=now,
         )
         scored: dict[str, list] = {}
 
