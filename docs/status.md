@@ -391,6 +391,9 @@
   ④ `TaskManager.await_result` 超时返回**真实状态**（排队中报 `queued`，不报 `running`），
   并且兑现 waiter 时传「结局快照」而不是记录对象 —— 任务刚完成就被 retention 回收时，
   waiter 仍然拿得到结果（否则会拿到「done 但没有内容」的假结论）。
+  另外 `Selector.select()` 把规则层时效项用到的时钟暴露成可选参数 `now`（`QueryContext` 本来就支持注入）：
+  默认仍是当前时间，行为不变；测试 / 评测钉住它之后，「同一份索引、同一时刻」的两次排序才逐位可比
+  —— 否则两次调用相隔几微秒，得分会在第 12 位小数上漂移（曾导致约 1/10 的偶发失败）。
 - **Tests：** `backend/tests/test_turn_manager.py`、`test_turn_state_sequences.py`、`test_budget_defaults.py`、
   `test_model_usage.py`、`test_context_budget_accuracy.py`、`test_adapter_lifecycle.py`、
   `test_events_backpressure.py`、`test_selector_incremental.py`、`test_memory_selector_wiring.py`、
