@@ -213,3 +213,29 @@ def test_path_items_are_deduplicated(ctx: AppContext):
     ids = [item.item_id for item in items if item.item_id]
 
     assert len(ids) == len(set(ids)), f"同一片段不能注入两次：{ids}"
+
+
+def test_other_topic_knowledge_is_labelled_as_reference_only(ctx: AppContext):
+    """其他话题的知识不能伪装成本轮的结论（阶段 3 的来源与适用性）。"""
+    from agent.knowledge.lifecycle import KnowledgeService
+
+    topic = _topic(ctx, "当前话题")
+    other = _topic(ctx, "另一个话题")
+    item = KnowledgeService(ctx.conn).create(
+        category="goal",
+        content="另一个话题里的决定：先用方案 B 落地",
+        topic_id=other,
+    )
+    # 只有 active 的知识会进注入；这里直接把 fixture 置为生效状态
+    ctx.conn.execute("UPDATE knowledge SET state = 'active' WHERE id = ?", (item.id,))
+    ctx.conn.commit()
+
+    # 查询与那条知识有词面重叠，确保它真的被选中（否则测的是「没命中」而不是标签）
+    payload = ctx.build_injection(
+        "另一个话题里的决定：先用方案 B 落地，下一步怎么做",
+        topic_id=topic,
+        aux_topic_ids=[other],
+    )
+
+    assert "仅参考" in payload.text
+    assert "不代表本轮已接受的结论" in payload.text

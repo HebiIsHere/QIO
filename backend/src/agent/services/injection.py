@@ -276,7 +276,14 @@ class InjectionAssembler:
                         source="knowledge",
                         surface="aux_topic",
                         item_id=item["id"],
-                        text=f"[相关话题知识·{item['category']}] {item['content']}",
+                        # 阶段 3：**其他话题**的知识只能作为参考出现。
+                        # 某个话题里的决定、假设、方案状态是那一段讨论的结论，
+                        # 不是本轮已经接受的前提；标签必须让人（和模型）一眼看出
+                        # 「这条不一定适用」，而不是伪装成本话题的结论。
+                        text=(
+                            f"[其他话题知识·仅参考·{item['category']}] {item['content']}\n"
+                            "（这条属于另一个话题，只能作为背景参考，不代表本轮已接受的结论）"
+                        ),
                         score=score,
                     )
                 )
