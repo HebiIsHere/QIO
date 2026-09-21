@@ -115,12 +115,25 @@ class FragmentManager:
         ).fetchone()
         if row is not None:
             return self._from_row(row)
+        # 新建时如果上一条是被容量分段封存的，就把它记成新片段的来源与同阶段延续
+        # （阶段 4：容量延续保留同阶段，路径不在容量边界断掉）。
+        pending = self.take_continuation(topic_id) or {}
         fragment_id = new_id("frag")
         now = _now()
         self.conn.execute(
-            "INSERT INTO fragments (id, topic_id, created_at, summary_version, meta) "
-            "VALUES (?, ?, ?, 0, '{}')",
-            (fragment_id, topic_id, now),
+            "INSERT INTO fragments "
+            "(id, topic_id, created_at, summary_version, meta, source_fragment_id, "
+            " relation_type, boundary_reason, same_stage) "
+            "VALUES (?, ?, ?, 0, '{}', ?, ?, ?, ?)",
+            (
+                fragment_id,
+                topic_id,
+                now,
+                pending.get("source_fragment_id"),
+                "normal" if pending else None,
+                pending.get("reason"),
+                pending.get("same_stage"),
+            ),
         )
         return Fragment(
             id=fragment_id,
@@ -133,6 +146,10 @@ class FragmentManager:
             created_at=now,
             closed_at=None,
             meta={},
+            source_fragment_id=pending.get("source_fragment_id"),
+            relation_type="normal" if pending else None,
+            boundary_reason=pending.get("reason"),
+            same_stage=pending.get("same_stage"),
         )
 
     def open_fragment(self, topic_id: str) -> Fragment | None:
@@ -158,6 +175,55 @@ class FragmentManager:
             "SELECT source_fragment_id FROM fragments WHERE id = ?", (fragment_id,)
         ).fetchone()
         return row["source_fragment_id"] if row is not None else None
+
+    # -- 容量延续的待用信息（阶段 4）-------------------------------------
+
+    def mark_continuation(
+        self,
+        topic_id: str,
+        source_fragment_id: str,
+        *,
+        same_stage: bool = True,
+        reason: str | None = None,
+    ) -> None:
+        """登记「下一次在这个话题建片段时，它接 source_fragment_id」。
+
+        只登记、不建片段：真正的片段仍然在**确实有消息要写**的时候才创建，
+        所以不会留下没有依据的空片段。
+        """
+        self.conn.execute(
+            "INSERT INTO fragment_continuations "
+            "(topic_id, source_fragment_id, same_stage, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(topic_id) DO UPDATE SET source_fragment_id = excluded.source_fragment_id, "
+            "same_stage = excluded.same_stage, reason = excluded.reason, "
+            "created_at = excluded.created_at",
+            (topic_id, source_fragment_id, 1 if same_stage else 0, reason, _now()),
+        )
+
+    def peek_continuation(self, topic_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM fragment_continuations WHERE topic_id = ?", (topic_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "source_fragment_id": row["source_fragment_id"],
+            "same_stage": int(row["same_stage"] or 0),
+            "reason": row["reason"],
+        }
+
+    def take_continuation(self, topic_id: str) -> dict | None:
+        """取走并清空：这条待用信息只能用一次（否则之后每个新片段都会继承同一来源）。"""
+        pending = self.peek_continuation(topic_id)
+        if pending is not None:
+            self.conn.execute(
+                "DELETE FROM fragment_continuations WHERE topic_id = ?", (topic_id,)
+            )
+        return pending
+
+    def clear_continuation(self, topic_id: str) -> None:
+        self.conn.execute("DELETE FROM fragment_continuations WHERE topic_id = ?", (topic_id,))
 
     def ancestors(
         self, fragment_id: str, *, max_depth: int = 5
@@ -222,6 +288,8 @@ class FragmentManager:
         self.validate_source(topic_id, source_fragment_id)
         # 新 id 不可能已经在来源的祖先链里，所以这里只需要校验来源本身；
         # 环只可能来自「改挂来源」或坏数据，前者用 would_cycle 判，后者由 ancestors 兜住。
+        # 显式建了子片段，就把「待延续」信息清掉：它已经被这次创建消费掉了。
+        self.clear_continuation(topic_id)
         self.conn.execute(
             "INSERT INTO fragments "
             "(id, topic_id, created_at, summary_version, meta, source_fragment_id, "

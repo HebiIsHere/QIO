@@ -83,12 +83,21 @@ class MemoryLifecycle:
     # -- 阶段 2：封存与派生分开 ------------------------------------------
 
     def seal_fragment(
-        self, topic_id: str, *, reason: str = "capacity", tracer=None
+        self,
+        topic_id: str,
+        *,
+        reason: str = "capacity",
+        tracer=None,
+        continue_same_stage: bool = False,
     ) -> Any | None:
         """封存该话题的开放片段：**只做对话状态**，事务内完成、不等模型。
 
         摘要与索引作为派生任务登记到 `derived_tasks`，由执行器慢慢做：
         模型失败、进程退出都不会让「已经封存」这件事回退，也不会卡住对话。
+
+        `continue_same_stage=True`（容量分段）时，额外登记「下一段接这一段、
+        同阶段延续」的待用信息 —— 新片段仍然在真有消息要写时才创建，
+        但它的来源与同阶段标记不会丢（阶段 4）。
         """
         from agent.services import derived_tasks
 
@@ -109,6 +118,10 @@ class MemoryLifecycle:
             derived_tasks.enqueue(
                 self.conn, derived_tasks.KIND_SUMMARY, fragment.id, content_version
             )
+            if continue_same_stage:
+                self.fragments.mark_continuation(
+                    topic_id, fragment.id, same_stage=True, reason=reason
+                )
         if tracer is not None:
             tracer.write("fragments_sealed", fragment.id)
         return self.fragments.get(fragment.id)
@@ -245,7 +258,9 @@ class MemoryLifecycle:
         新路径（编排器）只封存、不等待模型；直接调用它的地方
         （例如既有测试、离线维护）仍然拿到「封存并带摘要」的结果。
         """
-        sealed = self.seal_fragment(topic_id, reason="capacity", tracer=tracer)
+        sealed = self.seal_fragment(
+            topic_id, reason="capacity", tracer=tracer, continue_same_stage=True
+        )
         if sealed is None:
             return None
         await self.drain_derived_tasks(adapter, limit=5, tracer=tracer)

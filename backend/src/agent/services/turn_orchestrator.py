@@ -449,7 +449,12 @@ class TurnOrchestrator:
             # 摘要与索引是派生数据，失败可以重试，不能拖住这一轮的终态 ——
             # 也不能让「模型调用失败」把已经封存的片段回退成未封存。
             sealed = app.memory_lifecycle.seal_fragment(
-                final_topic, reason="capacity", tracer=ctx.trace
+                final_topic,
+                reason="capacity",
+                tracer=ctx.trace,
+                # 容量分段是「同一阶段接着往下」：记住来源与同阶段，
+                # 路径不会在容量边界断掉（阶段 4）
+                continue_same_stage=True,
             )
             if sealed is not None:
                 app.predictor.refresh_topic_vector(final_topic)

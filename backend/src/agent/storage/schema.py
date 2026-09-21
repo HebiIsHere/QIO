@@ -521,6 +521,28 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE turn_bindings ADD COLUMN system INTEGER NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        18,
+        [
+            # 阶段 4：容量分段要**记住它接的是哪一段**。
+            #
+            # 之前的做法是：容量到点 → 封存 → 下一个消息来了再 lazy 建新片段，
+            # 于是新片段没有来源、也没有 same_stage —— 路径在容量边界断掉，
+            # 而规格要求「容量延续保留同阶段」。
+            #
+            # 这里只登记「下一次在这个话题上建片段时，它接谁」这条待用信息；
+            # 真正的片段仍然在**确实有消息要写**时才创建（不制造空片段）。
+            """
+            CREATE TABLE IF NOT EXISTS fragment_continuations (
+                topic_id           TEXT PRIMARY KEY,
+                source_fragment_id TEXT NOT NULL,
+                same_stage         INTEGER NOT NULL DEFAULT 1,
+                reason             TEXT,
+                created_at         TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
