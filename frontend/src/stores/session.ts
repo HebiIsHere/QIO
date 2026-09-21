@@ -20,6 +20,15 @@ export interface TurnQueueState {
   cancelled: QueueItem[];
 }
 
+/** 服务端发来的一份权威 Turn 队列快照（TURN_QUEUE 事件 / runtime state 里的同一形状）。 */
+export interface TurnQueueSnapshot {
+  instance_id?: string | null;
+  revision?: number | null;
+  running?: QueueItem | null;
+  queued?: QueueItem[];
+  cancelled?: QueueItem[];
+}
+
 /** 高影响知识候选（对话内确认卡）。 */
 export interface KnowledgeCandidate {
   knowledgeId: string;
@@ -192,6 +201,11 @@ export const useSessionStore = defineStore("session", {
      */
     queueRevision: 0,
     /**
+     * 后端实例标识。进程重启后 revision 会从 0 重新计数，
+     * 所以「版本比较」必须建立在同一个实例的前提上。
+     */
+    instanceId: null as string | null,
+    /**
      * 最近一轮的结局。界面用它安静地表达「已停止」这类状态：
      * 成功由回答本身表达，失败进 lastError，无凭据进 warning。
      */
@@ -358,11 +372,33 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /** 真实 TURN_START：唯一允许把某个 turn 设为 active 的入口。 */
-    activateTurn(turnId: string, revision?: number | null) {
-      if (!turnId) return;
-      this.noteQueueRevision(revision);
+    activateTurn(turnId: string, revision?: number | null, instanceId?: string | null): boolean {
+      if (!turnId) return false;
+      this.adoptInstance(instanceId);
+      // 陈旧事件：整条事件不产生**任何**状态变化（不能只跳过 revision 比较）
+      if (!this.noteQueueRevision(revision)) return false;
       this.forgetQueuedTurn(turnId);
       this.activeTurnId = turnId;
+      this.turnQueue = {
+        ...this.turnQueue,
+        running: { turn_id: turnId, message: this.turnQueue.running?.message ?? "" },
+      };
+      this.turnRunning = true;
+      if (this.turnPhase === "idle") this.turnPhase = "waiting";
+      return true;
+    },
+    /**
+     * 后端实例变化（进程重启）→ revision 基准作废。
+     *
+     * 重启后新实例的 revision 会从 1 开始；如果不重置基准，
+     * 新实例的一切都会被当成「比 135 旧」而丢弃，界面就永远不再更新。
+     */
+    adoptInstance(instanceId?: string | null): boolean {
+      if (!instanceId) return false;
+      if (this.instanceId === instanceId) return false;
+      this.instanceId = instanceId;
+      this.queueRevision = 0;
+      return true;
     },
     /**
      * 记录快照版本。
@@ -385,6 +421,12 @@ export const useSessionStore = defineStore("session", {
     forgetQueuedTurn(turnId: string) {
       if (!turnId) return;
       this.queuedTurnIds = this.queuedTurnIds.filter((id) => id !== turnId);
+      if (this.turnQueue.queued.some((q) => q.turn_id === turnId)) {
+        this.turnQueue = {
+          ...this.turnQueue,
+          queued: this.turnQueue.queued.filter((q) => q.turn_id !== turnId),
+        };
+      }
     },
     isQueuedTurn(turnId: string) {
       return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
@@ -398,14 +440,21 @@ export const useSessionStore = defineStore("session", {
      *
      * 同时用 revision 挡住**旧快照覆盖新状态**（TURN_START 之后晚到的 running=null）。
      */
-    applyTurnQueue(snapshot: {
-      running?: { turn_id: string; message: string } | null;
-      queued?: { turn_id: string; message: string }[];
-      revision?: number | null;
-    }) {
-      if (!this.noteQueueRevision(snapshot.revision)) return; // 旧快照：丢弃
-      this.queuedTurnIds = (snapshot.queued ?? []).map((q) => q.turn_id);
-      this.activeTurnId = snapshot.running?.turn_id ?? null;
+    applyTurnQueue(snapshot: TurnQueueSnapshot): boolean {
+      this.adoptInstance(snapshot.instance_id);
+      // 先校验、再落地：旧快照必须**整条**丢弃，
+      // 否则会出现「active 用新数据、QueueChip 用旧数据」这种半应用状态。
+      if (!this.noteQueueRevision(snapshot.revision)) return false;
+
+      const running = snapshot.running ?? null;
+      const queued = snapshot.queued ?? [];
+      this.turnQueue = {
+        running,
+        queued,
+        cancelled: snapshot.cancelled ?? this.turnQueue.cancelled,
+      };
+      this.queuedTurnIds = queued.map((q) => q.turn_id);
+      this.activeTurnId = running?.turn_id ?? null;
       if (this.activeTurnId) this.forgetQueuedTurn(this.activeTurnId);
       // 「有活要干」= 正在跑，或还有排队在等。排队中时停止按钮仍可用
       // （后端只会取消真正在跑的那一轮，不会误伤排队项）。
@@ -417,10 +466,39 @@ export const useSessionStore = defineStore("session", {
       } else if (this.turnPhase === "idle") {
         this.turnPhase = "waiting";
       }
+      return true;
+    },
+    /** 一轮结束：清掉 running 指针（同样只由这一处写，保持单一真相）。 */
+    endTurn(turnId: string, revision?: number | null) {
+      if (revision !== undefined && revision !== null) this.noteQueueRevision(revision);
+      if (this.turnQueue.running && this.turnQueue.running.turn_id === turnId) {
+        this.turnQueue = { ...this.turnQueue, running: null };
+      }
+      if (this.activeTurnId === turnId) this.activeTurnId = null;
+    },
+    /**
+     * 服务器说没有主 turn 在跑时，还挂着「运行中」的工具卡不可能真的在跑
+     * （它的 TOOL_END 已经丢在失真区间里了）—— 收口成「结果未收到」，
+     * 而不是让用户永远看到一个转圈的卡片。
+     */
+    finalizeRunningToolCards() {
+      for (const m of this.messages) {
+        if (m.role === "tool" && m.toolRunning) {
+          m.toolRunning = false;
+          m.toolOk = false;
+          m.toolError = m.toolError ?? "连接中断，未收到执行结果";
+        }
+      }
     },
     /** 旧签名（只给 running/queued）：等价于带快照的权威应用，保持向后兼容。 */
-    syncTurnQueue(runningTurnId: string | null, queuedTurnIds: string[], revision?: number | null) {
+    syncTurnQueue(
+      runningTurnId: string | null,
+      queuedTurnIds: string[],
+      revision?: number | null,
+      instanceId?: string | null,
+    ) {
       this.applyTurnQueue({
+        instance_id: instanceId,
         running: runningTurnId ? { turn_id: runningTurnId, message: "" } : null,
         queued: queuedTurnIds.map((turn_id) => ({ turn_id, message: "" })),
         revision,
@@ -428,16 +506,21 @@ export const useSessionStore = defineStore("session", {
     },
     /**
      * 事件流可能已经不完整（收到 RESYNC）：不再假装状态是最新的，
-     * 直接向服务器要一份权威快照并对齐。
+     * 直接向服务器要一份**完整**权威状态并对齐（turn 队列 + 待审批 + 独立任务）。
      */
-    async resyncTurnState(): Promise<boolean> {
+    async resyncTurnState(): Promise<{
+      turn_queue: TurnQueueSnapshot;
+      approvals: Awaited<ReturnType<typeof api.getRuntimeState>>["approvals"];
+      tasks: Awaited<ReturnType<typeof api.getRuntimeState>>["tasks"];
+    } | null> {
       try {
-        const snapshot = await api.getTurnQueue();
-        this.applyTurnQueue(snapshot);
-        return true;
+        const state = await api.getRuntimeState();
+        this.adoptInstance(state.instance_id);
+        this.applyTurnQueue(state.turn_queue);
+        return { turn_queue: state.turn_queue, approvals: state.approvals, tasks: state.tasks };
       } catch (e) {
         this.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
-        return false;
+        return null;
       }
     },
     /**

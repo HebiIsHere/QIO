@@ -83,6 +83,7 @@ class TaskManager:
         self._tasks: set[asyncio.Task] = set()
         self._max_records = max(1, max_records)
         self._record_ttl = record_ttl_seconds
+        self._closed = False
 
     # -- submit -----------------------------------------------------------
 
@@ -93,6 +94,9 @@ class TaskManager:
         *,
         task_id: str | None = None,
     ) -> str:
+        if self._closed:
+            # 关闭之后收下的任务永远不会被执行（事件循环要走了）
+            raise RuntimeError("TaskManager is closed; it no longer accepts new tasks")
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         record = TaskRecord(task_id=task_id, tool=tool_name, status="queued")
         self._records[task_id] = record
@@ -101,6 +105,54 @@ class TaskManager:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task_id
+
+    # -- shutdown ---------------------------------------------------------
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    async def shutdown(self) -> None:
+        """应用关闭：停止收新任务、取消在跑的任务、兑现所有等待者。
+
+        顺序上要保证「等待者先被兑现、任务再被取消完」，否则调用方会永远
+        等一个不会再有人设置结果的 future。
+        """
+        self._closed = True
+
+        # 排队中的任务：取消对应的后台任务（它们在等 semaphore，从未真正执行）
+        running, self._tasks = list(self._tasks), set()
+        for task in running:
+            task.cancel()
+
+        for task in running:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+                logger.warning("task did not stop cleanly", exc_info=True)
+
+        # 兜底：任何仍然不是终态的记录都收口（例如任务在别处被取消过）
+        for record in self._records.values():
+            if not record.done:
+                record.status = "failed"
+                record.result = ToolResult(ok=False, error="task cancelled: app shutting down")
+                record.finished_at = _now()
+
+        # 兜底：任何仍然挂着的等待者都以终态结束
+        for task_id, waiters in list(self._waiters.items()):
+            record = self._records.get(task_id)
+            outcome = (
+                (record.status, record.result)
+                if record is not None
+                else ("not_found", None)
+            )
+            for fut in waiters:
+                if not fut.done():
+                    fut.set_result(outcome)
+            self._waiters.pop(task_id, None)
+        for task_id, callbacks in list(self._notify.items()):
+            self._notify.pop(task_id, None)
 
     # -- lifecycle --------------------------------------------------------
 
@@ -112,17 +164,27 @@ class TaskManager:
             return
         # 提交即 queued：抢到并发额度之前不得声称在跑，否则前端会把排队当成执行中。
         await self._emit(task_id)
-        async with self._semaphore:
-            record.status = "running"
-            await self._emit(task_id)
-            try:
-                result = await coro_factory()
-                record.result = result
-                record.status = "done" if result.ok else "failed"
-            except Exception as exc:  # noqa: BLE001 - task isolation
-                logger.warning("subagent task %s failed: %s", task_id, exc)
-                record.result = ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+        try:
+            async with self._semaphore:
+                record.status = "running"
+                await self._emit(task_id)
+                try:
+                    result = await coro_factory()
+                    record.result = result
+                    record.status = "done" if result.ok else "failed"
+                except Exception as exc:  # noqa: BLE001 - task isolation
+                    logger.warning("subagent task %s failed: %s", task_id, exc)
+                    record.result = ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+                    record.status = "failed"
+        except asyncio.CancelledError:
+            # 关闭时的取消也是终态：把记录留在 running 会让「谁在跑」永远失真。
+            # 这里要覆盖两种取消点：等 semaphore 时被取消（还没开始跑）与执行中被取消。
+            if not record.done:
                 record.status = "failed"
+                record.result = ToolResult(ok=False, error="task cancelled: shutting down")
+            record.finished_at = _now()
+            await self._emit(task_id)
+            raise
         record.finished_at = _now()
         await self._emit(task_id)
         # 兑现 waiter 时传**结局快照**（status + result），而不是记录对象本身：
@@ -192,6 +254,33 @@ class TaskManager:
 
     def record_info(self, task_id: str) -> TaskRecord | None:
         return self._records.get(task_id)
+
+    def snapshot(self) -> list[dict]:
+        """仍在跑 / 仍在排队的任务（重连后据此恢复「独立任务」卡）。
+
+        已完成的任务不进快照：它们的结果已经通过 SUBAGENT_STATUS 或收尾消息
+        体现过了，重连时再列一遍只会把已经结束的卡重新点亮。
+        字段与 SUBAGENT_STATUS 事件保持一致，前端可以用同一套渲染。
+        """
+        out: list[dict] = []
+        for record in self._records.values():
+            if record.done:
+                continue
+            result = record.result
+            out.append(
+                {
+                    "task_id": record.task_id,
+                    "tool": record.tool,
+                    "status": record.status,
+                    "ok": result.ok if result else None,
+                    "content_preview": (result.content or "")[:200] if result else "",
+                    "error": (result.error or "")[:200] if result and not result.ok else None,
+                    "iterations": record.iterations,
+                    "tokens": record.tokens,
+                    "tool_calls": record.tool_calls,
+                }
+            )
+        return out
 
     # -- retention --------------------------------------------------------
 

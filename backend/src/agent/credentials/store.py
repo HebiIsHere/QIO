@@ -18,6 +18,8 @@ from typing import Any
 import keyring
 from keyring.backends.fail import Keyring as FailKeyring
 
+from agent.storage.db import transaction
+
 SERVICE_NAME = "qio"
 _UNSET = object()
 # 凭据的安全身份：provider/endpoint/secret 任一变化都不是「普通元数据编辑」。
@@ -134,40 +136,75 @@ class CredentialStore:
     ) -> int:
         if not key_id or not key_id.strip():
             raise ValueError("key_id must not be empty")
+        # 创建时就走与「更新 endpoint」同一套安全规则：
+        # 远端只能 HTTPS，明文 HTTP 仅限 loopback 本地 provider。
+        validate_endpoint(endpoint)
         if self._row(key_id) is not None:
             raise ValueError(f"credential already exists: {key_id}")
-        now = _now()
-        self.conn.execute(
-            "INSERT INTO credentials (id, version, tags, endpoint, default_model, "
-            "budget, budget_used, status, created_at, updated_at, note) "
-            "VALUES (?, 1, ?, ?, ?, ?, 0, 'active', ?, ?, ?)",
-            (
-                key_id,
-                json.dumps(tags, ensure_ascii=False),
-                endpoint,
-                default_model,
-                budget,
-                now,
-                now,
-                note,
-            ),
-        )
+        # 顺序：先写密钥，再在一个事务里写元数据 + 审计。
+        # 反过来（先写元数据）一旦密钥写失败，就会留下
+        # 「active 元数据但没有密钥」的半成品 —— 那条凭据永远跑不通，
+        # 而且用户看不出为什么。
         self._kr.set_password(self.service, key_id, secret)
-        self._audit(key_id, "create", None, 1, triggered_by)
+        try:
+            now = _now()
+            with transaction(self.conn):
+                self.conn.execute(
+                    "INSERT INTO credentials (id, version, tags, endpoint, default_model, "
+                    "budget, budget_used, status, created_at, updated_at, note) "
+                    "VALUES (?, 1, ?, ?, ?, ?, 0, 'active', ?, ?, ?)",
+                    (
+                        key_id,
+                        json.dumps(tags, ensure_ascii=False),
+                        endpoint,
+                        default_model,
+                        budget,
+                        now,
+                        now,
+                        note,
+                    ),
+                )
+                self._audit(key_id, "create", None, 1, triggered_by)
+        except BaseException:
+            # 元数据没落库 → 把刚写进去的密钥删掉，回到操作前的状态
+            self._restore_secret(key_id, None)
+            raise
         return 1
 
     def update_secret(self, key_id: str, new_secret: str, triggered_by: str = "user") -> int:
         row = self._row(key_id)
         if row is None:
             raise KeyError(f"credential not found: {key_id}")
+        # 先记住旧密钥：万一元数据提交失败，要能把密钥写回去，
+        # 否则会留下「version 已经是新的、密钥还是旧的」这种对不上的状态。
+        old_secret = self._read_secret(key_id)
         new_version = int(row["version"]) + 1
-        self.conn.execute(
-            "UPDATE credentials SET version = ?, updated_at = ? WHERE id = ?",
-            (new_version, _now(), key_id),
-        )
         self._kr.set_password(self.service, key_id, new_secret)
-        self._audit(key_id, "update", row["version"], new_version, triggered_by)
+        try:
+            with transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE credentials SET version = ?, updated_at = ? WHERE id = ?",
+                    (new_version, _now(), key_id),
+                )
+                self._audit(key_id, "update", row["version"], new_version, triggered_by)
+        except BaseException:
+            self._restore_secret(key_id, old_secret)
+            raise
         return new_version
+
+    def _restore_secret(self, key_id: str, old_secret: str | None) -> None:
+        """把密钥恢复到操作前的状态（尽力而为，失败只记日志）。"""
+        try:
+            if old_secret is None:
+                self._kr.delete_password(self.service, key_id)
+            else:
+                self._kr.set_password(self.service, key_id, old_secret)
+        except Exception:  # noqa: BLE001 - 回滚失败不能掩盖原始异常
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "failed to roll back credential secret for %s", key_id, exc_info=True
+            )
 
     def revoke(self, key_id: str, triggered_by: str = "user") -> None:
         row = self._row(key_id)

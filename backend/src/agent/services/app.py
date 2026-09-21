@@ -520,7 +520,22 @@ class AppContext:
         self._adapter_cache[cache_key] = adapter
 
     async def aclose(self) -> None:
-        """应用关闭：统一释放所有缓存的 adapter / HTTP client。"""
+        """应用关闭：按依赖顺序收尾，不留悬挂的任务与等待。
+
+        顺序（后者都依赖前者已经停下来）：
+
+        1. 停后台维护调度；
+        2. 停 TurnManager（在跑的那一轮收尾、排队 turn 兑现终态、等待者全部结束）；
+        3. 停 TaskManager（取消在跑的独立任务、兑现所有 waiter）；
+        4. 释放 adapter / HTTP client。
+
+        数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
+        时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
+        """
+        await self.maintenance.stop()
+        await self.turns.shutdown()
+        await self.task_manager.shutdown()
+
         adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
         self._anthropic_probe_at.clear()
         for adapter in adapters:

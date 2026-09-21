@@ -25,6 +25,25 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** 事件里的可选字符串字段（缺失 / 非字符串 → null）。 */
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null;
+}
+
+/**
+ * 事件的 turn_id 是否属于**主对话**。
+ *
+ * 主对话只认「当前正在跑的那一轮」：
+ * * `subagent:task_xxx` 是子任务内部循环的 turn_id → 不进主对话；
+ * * 没有主 turn 在跑时，任何带 turn_id 的助手输出都不该出现在主对话里。
+ *
+ * 没有 turn_id 的事件（老事件 / 系统事件）维持旧行为，交给各自的分支处理。
+ */
+function belongsToMainTurn(session: ReturnType<typeof useSessionStore>, turnId: string): boolean {
+  if (!turnId) return true;
+  return turnId === session.activeTurnId;
+}
+
 export type ModelMode = "native" | "text" | "unsupported";
 
 export interface TurnUsage {
@@ -92,7 +111,11 @@ export const useEventStore = defineStore("events", {
             const tid = String(d.turn_id ?? "");
             // 只有真实的 TURN_START 能把 turn 设为 active。
             // 带上 revision：晚到的旧队列快照不能把这一轮清掉。
-            if (tid) session.activateTurn(tid, numberOrNull(d.revision));
+            // 陈旧事件整条不生效：连 turnRunning / turnPhase 都不许动。
+            const applied = tid
+              ? session.activateTurn(tid, numberOrNull(d.revision), stringOrNull(d.instance_id))
+              : true;
+            if (!applied) break;
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
@@ -163,42 +186,70 @@ export const useEventStore = defineStore("events", {
             session.warning = "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key";
           }
           if (tid) session.forgetQueuedTurn(tid);
-          session.activeTurnId = null;
+          session.endTurn(tid, endRevision);
           break;
         }
         case "TURN_QUEUE": {
           const d = event.data as Record<string, unknown>;
           const queuedList = (d.queued as { turn_id: string; message: string }[] | undefined) ?? [];
           const running = (d.running as { turn_id: string; message: string } | null) ?? null;
-          session.turnQueue = {
+          // 后端的队列快照是权威：既能恢复本地漏掉的状态（重连 / 丢帧），
+          // 也能清除本地已经过期的状态（服务器已空闲而本地还以为在跑）。
+          // 一份快照**要么全部接受、要么全部拒绝** —— 校验在前，落地在后，
+          // 所以这里不再单独给 session.turnQueue 赋值（那会造成半应用）。
+          const applied = session.applyTurnQueue({
+            instance_id: stringOrNull(d.instance_id),
             running,
             queued: queuedList,
             cancelled: (d.cancelled as { turn_id: string; message: string }[] | undefined) ?? [],
-          };
-          // 后端的队列快照是权威：既能恢复本地漏掉的状态（重连 / 丢帧），
-          // 也能清除本地已经过期的状态（服务器已空闲而本地还以为在跑）。
-          // revision 保证「新状态不被旧快照覆盖」。
-          session.applyTurnQueue({
-            running,
-            queued: queuedList,
             revision: numberOrNull(d.revision),
           });
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
-          if (!queuedList.length) session.clearQueuedFlags();
+          if (applied && !queuedList.length) session.clearQueuedFlags();
           break;
         }
         case "RESYNC": {
           /**
            * 服务端主动告知：这条事件流已经不完整（例如关键生命周期事件在背压中
            * 无法保序送达）。此时**不能继续假装状态是最新的** ——
-           * 立刻重新拉取权威快照并对齐。
+           * 立刻重新拉取完整权威状态（turn 队列 + 待审批 + 独立任务）并对齐。
            */
           const d = event.data as Record<string, unknown>;
-          void session.resyncTurnState();
-          if (String(d.reason ?? "")) {
-            // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
-            session.warning = "连接出现过一次抖动，正在同步最新状态…";
-          }
+          void (async () => {
+            if (String(d.reason ?? "")) {
+              // 低干扰、可自愈的提示：普通用户只在真的发生丢帧时才会看到
+              session.warning = "连接出现过一次抖动，正在同步最新状态…";
+            }
+            const state = await session.resyncTurnState();
+            if (!state) {
+              // 失败时保留错误（lastError 已由 store 写入），不假装同步完成
+              session.warning = null;
+              return;
+            }
+            // 断线期间错过的待审批：按 id 去重后补回界面
+            for (const a of state.approvals) {
+              useApprovalsStore().enqueue(a.approval_id, a.kind, a.payload, {
+                autoOpen: false,
+                turnId: a.turn_id ?? null,
+                sessionId: a.session_id ?? null,
+                requestDigest: a.request_digest ?? null,
+              });
+            }
+            // 仍在跑 / 排队的独立任务：补回卡片（同一 task_id 原地更新）
+            for (const t of state.tasks) {
+              session.upsertSubagent(t.task_id, {
+                status: t.status,
+                toolName: t.tool,
+                ok: t.ok ?? null,
+                preview: t.content_preview ?? "",
+                error: t.error ?? null,
+              });
+            }
+            // 服务器说没有主 turn 在跑 → 还挂着「运行中」的工具卡不可能真的在跑
+            if (!session.activeTurnId) session.finalizeRunningToolCards();
+            // 同步成功就必须把提示收掉（不能永远停在「正在同步」）
+            session.warning = null;
+          })();
           break;
         }
         case "CAPABILITY": {
@@ -244,13 +295,21 @@ export const useEventStore = defineStore("events", {
         }
         case "USAGE": {
           const d = event.data as Record<string, unknown>;
-          // USAGE 紧跟在 TURN_END 之后，归属当前（或最近结束的）turn
-          this.recordUsage(session.activeTurnId ?? this.lastTurnId ?? "", d);
+          /**
+           * 用量必须按**事件自带的 turn_id** 归属，不能拿「当前 active」去猜：
+           * 子任务的用量（`subagent:task_x`）如果记到主 turn 上，
+           * 界面显示的就不是这一轮的真实消耗了。
+           * 事件缺 turn_id 时（老格式）才回退到「最近一轮」。
+           */
+          const usageTurnId = String(d.turn_id ?? "") || this.lastTurnId || "";
+          this.recordUsage(usageTurnId, d);
           break;
         }
         case "ASSISTANT": {
           const d = event.data as Record<string, unknown>;
           const content = String(d.content ?? "");
+          // 归属：子任务 / 系统内部的助手输出不得进入主对话
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
           if (content.trim()) {
             // 已经有真实内容到达：阶段从「等待响应」转为「正在生成」
             session.turnPhase = "generating";
@@ -262,6 +321,8 @@ export const useEventStore = defineStore("events", {
         case "TOOL_START": {
           // 工具开始执行：立刻出现/更新一张「运行中」的卡（不再等结束才可见）
           const d = event.data as Record<string, unknown>;
+          // 归属：子任务内部的工具调用不属于主对话（它有自己的任务卡）
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
           const callId = String(d.call_id ?? "");
           session.startTool(
             callId,
@@ -275,6 +336,8 @@ export const useEventStore = defineStore("events", {
         }
         case "TOOL_END": {
           const d = event.data as Record<string, unknown>;
+          // 归属同上：子任务的工具结束不能去改主对话里的卡
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
           session.finishTool(
             String(d.call_id ?? ""),
             String(d.tool ?? "?"),

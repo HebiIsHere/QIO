@@ -415,6 +415,57 @@
 
 ---
 
+### P11 — 稳定性第二轮收敛：恢复协议与生命周期
+
+- **Status：** completed
+- **Implementation（Event / RESYNC 恢复协议）：** `api/bus.py` 把 RESYNC 从「顺便发一条提示」
+  升级成**硬边界**：关键事件过载时清空该订阅者失真区间的全部缓冲（含触发溢出的那一条），
+  只标记需要 resync，此后只有新事件进入；客户端据此拉权威快照，不会被旧事件改回错误状态。
+  `Last-Event-ID` 现在有明确三分法：**在 history 里** → 从下一条续传；**正好是最新一条** → 安静等新事件；
+  **不存在 / 已被挤出 / 来自旧实例** → `RESYNC`（不得补发最近几条假装连续）。
+  RESYNC 自身会写进 history，因此它是一个**合法游标** —— 客户端把它存成 Last-Event-ID 后重连
+  不会被当成未知游标（否则每次重连都会再 RESYNC）。
+- **Implementation（权威运行状态快照）：** 新增 `GET /api/runtime/state`，返回
+  `instance_id` + `revision` + `turn_queue` + `approvals`（仍在等待的审批）+ `tasks`（仍在跑 / 排队的独立任务）。
+  RESYNC 之后前端用它一次性恢复：turn 队列、断线期间错过的审批、仍在进行的独立任务，
+  并把服务器已不存在的「运行中」工具卡收口为「连接中断，未收到执行结果」。
+  审批的**过期**（timeout → `APPROVAL_RESULT(decision=timeout)`）与**取消**
+  （等待的那一轮被 Stop → `APPROVAL_RESULT(decision=cancelled)`）都会通知客户端，
+  界面不会一直留着已经不可能被批准的 Allow / Reject。
+- **Implementation（版本基准与单一状态来源）：** 快照与 `TURN_START` / `TURN_END` 都带
+  `instance_id`：同一实例内比较 `revision`，实例变化（后端重启，revision 从头计数）
+  则重置基准并接受新实例状态。前端 Turn 队列只有**一个** apply 入口
+  （`applyTurnQueue`）：先按 revision / instance 校验，再一次性落地 `turnQueue` +
+  `activeTurnId` + `queuedTurnIds`；陈旧事件**整条**不生效（不再出现「active 用新数据、
+  QueueChip 用旧数据」的半应用）。
+- **Implementation（Event Ownership）：** 前端按 `turn_id` 判定归属：`subagent:task_x`
+  的 `ASSISTANT` / `TOOL_START` / `TOOL_END` 不进入主对话，没有主 turn 在跑时带 turn_id 的
+  助手输出同样不进；`USAGE` 按**事件自带的 turn_id** 归属，子任务用量不再记到主 turn 上。
+- **Implementation（凭据写入原子性）：** `create` 改为「先校验 endpoint（与更新同一套规则：
+  远端必须 HTTPS、明文 HTTP 仅限 loopback）→ 写密钥 → 事务内写元数据 + 审计」，
+  任一失败都把刚写的密钥删掉；`update_secret` 先记住旧密钥、写新密钥成功后才提交
+  version + 审计，失败则把旧密钥写回。不再出现「有元数据没密钥」或「version 涨了密钥没换」。
+- **Implementation（应用生命周期）：** 维护调度改在 FastAPI lifespan startup 启动
+  （构造阶段没有 running loop，旧代码在那里 `except RuntimeError: pass`，等于从未启动且不出声），
+  新增 `stop()`；`_loop` 的异常隔离覆盖**整个循环体**（旧代码引用了早已不存在的
+  `ctx._active_loop`，一次 AttributeError 就会永久杀死调度器，真正状态来源改为 `ctx.turns`）。
+  `AppContext.aclose()` 现在是统一关机入口：停维护 → `TurnManager.shutdown()` →
+  `TaskManager.shutdown()`（取消在跑任务、兑现所有 waiter、把记录收口成终态）→ 关 adapter/HTTP；
+  真实入口 `main.create_app()` 再最后关 DB（避免后台任务还在写时连接先断）。
+  `TurnManager` / `TaskManager` 关闭后 `submit()` 直接拒绝，不再接一个永远不会执行的任务。
+- **Tests：** `backend/tests/test_event_recovery.py`（边界 / 过期游标 / 续传 / RESYNC 游标身份）、
+  `test_runtime_state.py`（快照内容、待审批恢复、审批过期与取消通知）、
+  `test_credential_atomicity.py`（create / update 失败注入、endpoint 校验）、
+  `test_app_lifecycle.py`（真实 startup/shutdown、维护错误隔离、submit 拒绝、任务取消）；
+  前端 `stores/__tests__/eventOwnership.test.ts`（归属 + RESYNC 恢复），
+  `stores/__tests__/turnSequences.test.ts` 扩充（stale TURN_START / stale 快照不半应用 / 实例切换）。
+- **Known limitations：** 事件流仍可能丢可合并的累计型事件（设计如此，状态可由快照恢复）；
+  RESYNC 之后「失真区间」内被丢掉的关键事件不再回放，其状态由 `/api/runtime/state` 覆盖。
+- **后续依赖：** 新增任何「丢一次事件就会让界面永久停在错误状态」的东西，
+  都必须同时进 `/api/runtime/state`。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：

@@ -19,7 +19,8 @@ def create_app() -> FastAPI:
     settings.ensure_dirs()
     conn = connect(settings.db_path)
     apply_migrations(conn)
-    app = build_app(settings, conn)
+    # 真实进程入口：由 lifespan 在最后一步关闭 DB（测试自己管 fixture 的连接）。
+    app = build_app(settings, conn, close_db_on_shutdown=True)
     app.state.settings = settings
     _announce_auth(app.state.auth, settings)
     return app

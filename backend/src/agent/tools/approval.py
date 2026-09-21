@@ -81,6 +81,29 @@ class ApprovalService:
         self._turn_id: str | None = None
         self._session_id: str | None = None
 
+    # -- introspection ----------------------------------------------------
+
+    def pending(self) -> list[dict]:
+        """仍然有效、仍在等待用户决定的审批（重连 / RESYNC 时用它恢复界面）。
+
+        只返回「有人真的在等」的请求：已应答、已超时的不算。
+        过期的顺手清掉，避免界面恢复出一个已经不存在的授权。
+        """
+        now = _now().isoformat()
+        out: list[dict] = []
+        for approval_id, request in list(self._requests.items()):
+            future = self._waiters.get(approval_id)
+            if future is None or future.done():
+                self._requests.pop(approval_id, None)
+                continue
+            if request.expires_at and request.expires_at < now:
+                self._waiters.pop(approval_id, None)
+                self._requests.pop(approval_id, None)
+                continue
+            out.append(request.as_payload())
+        out.sort(key=lambda item: str(item.get("created_at") or ""))
+        return out
+
     def set_context(self, *, turn_id: str | None = None, session_id: str | None = None) -> None:
         """当前上下文（本轮 turn / 本会话）：新审批自动绑定到它。
 
@@ -120,7 +143,38 @@ class ApprovalService:
         try:
             return await asyncio.wait_for(future, timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
+            # 过期也是审批的**结局**：必须让客户端知道，
+            # 否则界面会一直显示一个已经不可能被批准的 Allow / Reject。
+            await self.bus.publish(
+                make_event(
+                    EventType.APPROVAL_RESULT,
+                    {
+                        "approval_id": approval_id,
+                        "decision": "timeout",
+                        "reason": "expired",
+                        "turn_id": request.turn_id,
+                    },
+                )
+            )
             return ApprovalResult(approval_id, "timeout")
+        except asyncio.CancelledError:
+            # 等待审批的那一轮被取消（用户按了 Stop）：审批也随之结束。
+            # 不通知的话，服务端已经不认它了，界面还留着可点的 Allow / Reject。
+            try:
+                await self.bus.publish(
+                    make_event(
+                        EventType.APPROVAL_RESULT,
+                        {
+                            "approval_id": approval_id,
+                            "decision": "cancelled",
+                            "reason": "turn_cancelled",
+                            "turn_id": request.turn_id,
+                        },
+                    )
+                )
+            except Exception:  # noqa: BLE001 - 取消路径上的通知是尽力而为
+                pass
+            raise
         finally:
             self._waiters.pop(approval_id, None)
             self._requests.pop(approval_id, None)

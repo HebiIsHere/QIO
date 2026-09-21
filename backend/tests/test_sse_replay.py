@@ -68,12 +68,19 @@ async def test_cursor_for_turn_events_does_not_replay_them():
     assert [e["type"] for e in after] == ["TURN_END"]
 
 
-async def test_unknown_cursor_replays_buffer_for_client_side_dedup():
+async def test_unknown_cursor_requires_resync_instead_of_partial_replay():
+    """游标来自旧进程 / 已被缓冲挤出 → 连续性已丢失，必须 RESYNC。
+
+    旧实现会「把当前缓冲全量补发，让客户端按 event_id 去重」——
+    那会让客户端以为事件是连续的，而中间那一段（这里就是 n=0..2 之前的空档）
+    其实永远补不回来了。
+    """
     bus = EventBus()
     for i in range(3):
         await bus.publish(make_event(EventType.WARNING, {"n": i}))
     replayed = await _take(bus, 3, last_event_id="evt_from_a_previous_process")
-    assert len(replayed) == 3
+    assert [e["type"] for e in replayed] == ["RESYNC"]
+    assert replayed[0]["data"]["reason"] == "replay_cursor_expired"
 
 
 async def test_approval_required_is_never_replayed():

@@ -225,7 +225,42 @@ export const api = {
       queued: { turn_id: string; message: string }[];
       cancelled: { turn_id: string; message: string }[];
       revision: number;
+      instance_id?: string | null;
     }>("/api/turns/queue"),
+  /**
+   * RESYNC 之后要恢复的**全部**权威状态。
+   *
+   * 事件流只能表达增量：断线期间错过的审批、独立任务、turn 队列都必须能查回来，
+   * 否则界面会永久停在错误状态（审批永远不出现、任务卡永远「进行中」）。
+   */
+  getRuntimeState: () =>
+    request<{
+      instance_id: string;
+      revision: number;
+      turn_queue: {
+        instance_id?: string | null;
+        revision: number;
+        running: { turn_id: string; message: string } | null;
+        queued: { turn_id: string; message: string }[];
+        cancelled: { turn_id: string; message: string }[];
+      };
+      approvals: {
+        approval_id: string;
+        kind: string;
+        payload: Record<string, unknown>;
+        turn_id?: string | null;
+        session_id?: string | null;
+        request_digest?: string | null;
+      }[];
+      tasks: {
+        task_id: string;
+        tool: string;
+        status: "queued" | "running" | "done" | "failed";
+        ok?: boolean | null;
+        content_preview?: string;
+        error?: string | null;
+      }[];
+    }>("/api/runtime/state"),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
       `/api/traces?limit=${limit}&offset=${offset}`,

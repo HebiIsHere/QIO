@@ -82,13 +82,27 @@ def _knowledge_payload(ctx, item) -> dict:
     }
 
 
-def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
+def create_app(
+    settings: Settings,
+    conn: sqlite3.Connection,
+    *,
+    close_db_on_shutdown: bool = False,
+) -> FastAPI:
     bus = EventBus()
     ctx = AppContext(settings, conn, bus)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """应用关闭：释放缓存的 adapter / HTTP client，不留悬挂的等待。"""
+        """应用生命周期：启动后台维护，关闭时按顺序收尾。
+
+        startup 必须有 running loop 才可能真正启动后台任务 —— 所以维护调度
+        放在这里，而不是 `create_app()` 那种同步构造阶段（旧代码在那里
+        `try: start() except RuntimeError: pass`，等于**从未启动**还不出声）。
+
+        shutdown 顺序：停维护 → 停 Turn → 停 TaskManager → 关 adapter/HTTP
+        → （真实入口才）关 DB。DB 放在最后，避免后台任务还在写时连接先断了。
+        """
+        ctx.maintenance.start()
         try:
             yield
         finally:
@@ -96,10 +110,21 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
                 await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
                 logging.getLogger(__name__).warning("app context close failed", exc_info=True)
+            if close_db_on_shutdown:
+                try:
+                    from agent.storage.db import close as close_conn
+
+                    close_conn(conn)
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).warning("closing db failed", exc_info=True)
 
     app = FastAPI(title="QIO", version="0.1.0", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
     instance_id = f"qio_{uuid.uuid4().hex[:16]}"
+    # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，
+    # 前端据此知道旧基准作废、要完整 resync（见 /api/runtime/state）。
+    ctx.instance_id = instance_id
+    ctx.turns.instance_id = instance_id
     app.add_middleware(
         CORSMiddleware,
         # 只信任 QIO 自己的 WebView origin；开发模式额外允许本机 dev server。
@@ -581,6 +606,28 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
         与 SSE 的 TURN_QUEUE 同源（同一个 snapshot()），所以两者可以互相校正。
         """
         return ctx.turns.snapshot()
+
+    @app.get("/api/runtime/state")
+    async def runtime_state() -> dict:
+        """RESYNC 之后要恢复的**全部**权威状态（Turn 队列之外还有别的）。
+
+        事件流只能表达增量。任何「丢一次事件就会让界面永久停在错误状态」的东西，
+        都必须能从服务端重新查出来：
+
+        * `turn_queue`：运行中 / 排队的 Turn（含 revision，供前端做新旧比较）；
+        * `approvals`：仍在等待用户决定的审批（断线错过的 APPROVAL_REQUIRED）；
+        * `tasks`：仍在跑 / 仍在排队的独立任务（断线错过的 SUBAGENT_STATUS）。
+
+        `instance_id` 与后端实例绑定：后端重启后 revision 会从头计数，
+        前端据此判断「基准已经换了」，而不是把新实例的低 revision 当成旧状态。
+        """
+        return {
+            "instance_id": instance_id,
+            "revision": ctx.turns.snapshot()["revision"],
+            "turn_queue": ctx.turns.snapshot(),
+            "approvals": ctx.approvals.pending(),
+            "tasks": ctx.task_manager.snapshot(),
+        }
 
     @app.post("/api/turns/{turn_id}/cancel")
     async def cancel_turn_by_id(turn_id: str) -> dict:
@@ -1128,8 +1175,4 @@ def create_app(settings: Settings, conn: sqlite3.Connection) -> FastAPI:
     app.state.instance_id = instance_id
     app.state.approvals = approvals
     app.state.ctx = ctx
-    try:
-        ctx.maintenance.start()
-    except RuntimeError:
-        pass  # 不在事件循环内（如测试构造）时由手动 API 触发
     return app

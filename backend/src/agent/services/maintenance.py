@@ -305,22 +305,60 @@ class MaintenanceScheduler:
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
-        if self._task is None:
+        """启动调度器。
+
+        必须在有 running event loop 的地方调用（FastAPI 的 lifespan startup），
+        而不是在 `create_app()` 这种同步构造阶段 —— 那里没有 loop，
+        旧代码只能靠 `except RuntimeError: pass` 吞掉异常，
+        结果是「后台维护从来没有真正启动」而且没人知道。
+        """
+        if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
 
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def next_delay_seconds(self) -> float:
+        """下一次巡检的间隔（测试会把它调小以驱动真实循环）。"""
+        interval = self.ctx.settings_store.get_int("maintenance.interval_hours", 24)
+        return float(max(1, interval) * 3600)
+
+    async def stop(self) -> None:
+        """停止调度器：取消等待、等任务真正结束、清掉引用。"""
+        task, self._task = self._task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+            logger.warning("maintenance task ended with an error", exc_info=True)
+
     async def _loop(self) -> None:
+        """主循环：**整个循环体**都在异常隔离内。
+
+        旧实现的 try 只包住 `run_once()`，而 `ctx._active_loop` 这种引用
+        （这个属性早已不存在）在 try 之外抛 AttributeError，调度器会被一次
+        无关的错误永久杀死 —— 之后再也不会执行任何维护。
+        """
         while True:
-            interval = self.ctx.settings_store.get_int("maintenance.interval_hours", 24)
-            await asyncio.sleep(max(1, interval) * 3600)
-            enabled = self.ctx.settings_store.get("maintenance.enabled", "true") != "false"
-            if not enabled:
-                continue
-            if self.ctx._active_loop is not None:
-                continue  # idle only
             try:
-                await self.run_once()
-            except Exception:  # noqa: BLE001
-                logger.warning("maintenance pass failed", exc_info=True)
+                await asyncio.sleep(self.next_delay_seconds())
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 一次失败不能杀死调度器
+                logger.warning("maintenance tick failed", exc_info=True)
+
+    async def _tick(self) -> None:
+        if self.ctx.settings_store.get("maintenance.enabled", "true") == "false":
+            return
+        # 只在空闲时跑：当前真正的状态来源是 TurnManager（`ctx._active_loop` 早已不存在）
+        if self.ctx.turns.active_loop() is not None:
+            return
+        await self.run_once()
 
     async def run_once(self) -> dict:
         if self._running:

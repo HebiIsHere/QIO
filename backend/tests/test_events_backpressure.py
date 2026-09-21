@@ -140,9 +140,11 @@ async def test_full_buffer_of_critical_events_never_silently_loses_one():
     )
     if not complete:
         # 告知必须是**可解释**的，而不是一个没有理由的魔改事件
-        assert "backlog" in _resync_reason(chunks) or "overflow" in _resync_reason(chunks)
-        # 保序前提下优先保留最新状态：最新的 TURN_END 不能丢
-        assert "TURN_END" in types
+        reason = _resync_reason(chunks)
+        assert "backlog" in reason or "overflow" in reason
+        # 边界语义：失真区间里的事件一条都不许再送达 ——
+        # 只发 RESYNC，客户端据此拉权威快照（旧事件继续发会污染刚恢复的状态）
+        assert types == ["RESYNC"], types
 
 
 async def test_approval_and_error_survive_critical_overflow():

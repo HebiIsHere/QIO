@@ -126,3 +126,11 @@ def test_queue_endpoint_revision_matches_sse_snapshot_shape(client):
     ctx = client.app.state.ctx
     body = client.get("/api/turns/queue").json()
     assert body == ctx.turns.snapshot()
+
+
+def test_snapshot_and_turn_events_carry_the_instance_id(client):
+    """后端重启后 revision 会从 0 重新计数：事件必须自证来自哪个实例。"""
+    instance_id = client.app.state.instance_id
+    body = client.get("/api/turns/queue").json()
+    assert body["instance_id"] == instance_id
+    assert client.get("/api/runtime/state").json()["instance_id"] == instance_id

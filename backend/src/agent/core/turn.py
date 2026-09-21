@@ -109,6 +109,9 @@ class TurnManager:
         # 前端据此丢弃「比已知状态更旧」的快照 —— 快照是权威的，
         # 但**旧**的权威快照不能覆盖更新的事件（例如 TURN_START 之后晚到的 running=null）。
         self._revision = 0
+        # 后端实例标识（由 create_app 注入）：进程重启后 revision 会从头计数，
+        # 前端必须靠它判断「基准已经换了」，而不是把新实例的低 revision 当成旧状态。
+        self.instance_id: str | None = None
 
     # -- wiring -----------------------------------------------------------
 
@@ -131,6 +134,7 @@ class TurnManager:
     def snapshot(self) -> dict:
         active = self._active
         return {
+            "instance_id": self.instance_id,
             "revision": self._revision,
             "running": (
                 {"turn_id": active.turn_id, "message": active.message[:120]}
@@ -170,6 +174,10 @@ class TurnManager:
     def submit(
         self, message: str, topic_id: str | None = None, *, notify: bool = False
     ) -> TurnContext:
+        if self._closed:
+            # worker 已经停了：再收下这个 turn，它只会躺在队列里永远不被执行
+            # （调用方还会一直 await 一个永远不会兑现的 future）。
+            raise RuntimeError("TurnManager is closed; it no longer accepts new turns")
         # 提交成功 ≠ 开始执行：前面还有主 turn 或已经排着队时，它就是 queued。
         waits = self._active is not None or bool(self._pending)
         ctx = TurnContext(
@@ -278,6 +286,7 @@ class TurnManager:
             TURN_START,
             {
                 "turn_id": ctx.turn_id,
+                "instance_id": self.instance_id,
                 # revision 让前端能把「新的 turn 状态」和「旧的队列快照」比较：
                 # 晚到的旧快照不得把这一轮清掉。
                 "revision": self._revision,
@@ -294,6 +303,7 @@ class TurnManager:
         ctx.turn_end_emitted = True
         payload: dict[str, Any] = {
             "turn_id": ctx.turn_id,
+            "instance_id": self.instance_id,
             "revision": self._revision,
             "status": ctx.status,
             "final_content": ctx.final_content,

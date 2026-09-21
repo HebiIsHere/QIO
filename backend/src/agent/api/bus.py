@@ -101,11 +101,15 @@ class _Subscriber:
             # 缓冲里全是关键事件：这条累计型事件本身可以被丢弃，不会丢状态
             return
 
-        # 缓冲里全是关键事件，而这条也是关键事件：无论丢谁，事件流都不再完整。
-        # 保持有界（丢最旧、留最新），但必须明确告知客户端需要重新同步。
-        del self._items[0]
-        self._resync_pending = True
-        self._push(event)
+        # 关键事件过载：这一路事件流从此刻起**无法再保证完整**。
+        # 于是这里建立硬边界 —— 丢掉失真区间里的全部缓冲（包括触发本次溢出的这条），
+        # 只标记「需要 resync」。客户端会据此拉取权威快照，
+        # 而快照已经覆盖了被丢掉的这些事件所表达的状态。
+        #
+        # 关键点：边界之后不得再送出任何属于失真区间的旧事件，
+        # 否则客户端刚按快照对齐，又会被旧事件改回错误状态。
+        self._items.clear()
+        self._mark_resync()
 
     async def get(self) -> AgentEvent | None:
         """取下一个事件；返回 `None` 表示「这一路事件流已不完整，需要 resync」。"""
@@ -163,7 +167,20 @@ class EventBus:
         subscriber = _Subscriber(self._queue_limit)
         self._subscribers.add(subscriber)
         try:
-            for event in self._replay(last_event_id):
+            replay, continuity_lost = self._replay(last_event_id)
+            if continuity_lost:
+                # 客户端的游标已经超出 replay 缓冲（或来自另一个实例）：
+                # 我们已经无法补发它漏掉的那一段。此时**不能**只补发最近几条
+                # 然后假装事件是连续的 —— 直接建立边界，让客户端拉权威快照。
+                subscriber.offer(
+                    self._control_event(
+                        {
+                            "reason": "replay_cursor_expired",
+                            "message": "断线期间的事件已超出服务端缓冲，请重新同步状态",
+                        }
+                    )
+                )
+            for event in replay:
                 subscriber.offer(event)
             while True:
                 event = await subscriber.get()
@@ -171,12 +188,11 @@ class EventBus:
                     # 关键事件在背压中无法保序送达：不再假装事件流是完整的，
                     # 明确要求客户端重新获取权威快照。
                     yield sse_format(
-                        make_event(
-                            EventType.RESYNC,
+                        self._record_control(
                             {
                                 "reason": "subscriber_backlog_overflow",
                                 "message": "事件流可能不完整，请重新同步状态",
-                            },
+                            }
                         )
                     )
                     continue
@@ -184,18 +200,44 @@ class EventBus:
         finally:
             self._subscribers.discard(subscriber)
 
-    def _replay(self, last_event_id: str | None) -> list[AgentEvent]:
+    # -- control events ---------------------------------------------------
+
+    @staticmethod
+    def _control_event(payload: dict) -> AgentEvent:
+        return make_event(EventType.RESYNC, payload)
+
+    def _record_control(self, payload: dict) -> AgentEvent:
+        """生成一条控制事件并**写进 history**。
+
+        RESYNC 会被客户端存成 Last-Event-ID：如果它不在 history 里，
+        下一次重连就会变成「未知游标」→ 再 RESYNC → 永远在 resync。
+        所以它必须是可被识别的合法游标。
+        """
+        event = self._control_event(payload)
+        self._history.append(event)
+        return event
+
+    def _replay(self, last_event_id: str | None) -> tuple[list[AgentEvent], bool]:
+        """(补发的事件, 是否已经无法保证连续性)。
+
+        三种游标状态必须区分：
+
+        * 游标在 history 里 → 从下一条开始补发；
+        * 游标正好是最新一条 → 什么都不补发，安静等新事件；
+        * 游标不存在 / 已被缓冲挤出 / 来自另一个实例 → **连续性已丢失**，
+          必须走 RESYNC，而不是补发最近几条假装连续。
+        """
         history = list(self._history)
-        if last_event_id:
+        if last_event_id is not None:
             ids = [e.id for e in history]
             if last_event_id in ids:
                 history = history[ids.index(last_event_id) + 1 :]
-            # 游标已被缓冲挤出（或来自上一个实例）→ 全量重放当前缓冲，
-            # 由客户端按 event_id 去重，而不是猜测缺失的区间。
+            else:
+                return [], True
         return [
             event
             for event in history
             # interactive events must not be replayed: a stale approval
             # would resurrect a modal on reconnect
             if event.type != EventType.APPROVAL_REQUIRED
-        ]
+        ], False

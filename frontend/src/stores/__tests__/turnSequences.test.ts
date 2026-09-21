@@ -30,6 +30,14 @@ vi.mock("../../services/api", () => ({
       queued: [],
       cancelled: [],
       revision: 100,
+      instance_id: "inst_test",
+    })),
+    getRuntimeState: vi.fn(async () => ({
+      instance_id: "inst_test",
+      revision: 100,
+      turn_queue: { instance_id: "inst_test", revision: 100, running: null, queued: [], cancelled: [] },
+      approvals: [],
+      tasks: [],
     })),
   },
 }));
@@ -258,30 +266,45 @@ describe("TURN_QUEUE 权威快照", () => {
   it("收到 RESYNC 时重新拉取权威快照并据此对齐状态", async () => {
     const { session, events } = setup();
     start(session, events, "turn_a", 40);
-    vi.mocked(api.getTurnQueue).mockResolvedValueOnce({
-      running: null,
-      queued: [],
-      cancelled: [],
+    vi.mocked(api.getRuntimeState).mockResolvedValueOnce({
+      instance_id: "inst_test",
       revision: 41,
+      turn_queue: {
+        instance_id: "inst_test",
+        revision: 41,
+        running: null,
+        queued: [],
+        cancelled: [],
+      },
+      approvals: [],
+      tasks: [],
     } as never);
 
     events.route({ type: "RESYNC", id: "resync_1", ts: "", data: { reason: "overflow" } });
     await flushPromises();
 
-    expect(api.getTurnQueue).toHaveBeenCalled();
+    expect(api.getRuntimeState).toHaveBeenCalled();
     expect(session.activeTurnId).toBeNull();
     expect(session.turnRunning).toBe(false);
+    expect(session.warning).toBeNull();
   });
 
   it("resync 能把真实的 running 与 queued 一起恢复回来", async () => {
     const { session, events } = setup();
     // 本地状态已经被事件丢失搞乱：以为空闲，其实是 A 在跑、B 在排队
     expect(session.activeTurnId).toBeNull();
-    vi.mocked(api.getTurnQueue).mockResolvedValueOnce({
-      running: { turn_id: "turn_a", message: "一" },
-      queued: [{ turn_id: "turn_b", message: "二" }],
-      cancelled: [],
+    vi.mocked(api.getRuntimeState).mockResolvedValueOnce({
+      instance_id: "inst_test",
       revision: 50,
+      turn_queue: {
+        instance_id: "inst_test",
+        revision: 50,
+        running: { turn_id: "turn_a", message: "一" },
+        queued: [{ turn_id: "turn_b", message: "二" }],
+        cancelled: [],
+      },
+      approvals: [],
+      tasks: [],
     } as never);
 
     events.route({ type: "RESYNC", id: "resync_2", ts: "", data: { reason: "overflow" } });
@@ -314,6 +337,86 @@ describe("TURN_QUEUE 权威快照", () => {
 
     expect(session.messages.length).toBe(before);
     expect(session.lastTurnOutcome).toBeNull();
+  });
+
+  it("stale TURN_START（revision 更旧）不得修改任何状态", () => {
+    const { session, events } = setup();
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q1",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 60, instance_id: "inst_test" },
+    });
+    const snapshot = { ...session.turnQueue };
+
+    events.route({
+      type: "TURN_START",
+      id: "stale_start",
+      ts: "",
+      data: { turn_id: "turn_old", revision: 55, instance_id: "inst_test" },
+    });
+
+    expect(session.activeTurnId).toBeNull();
+    expect(session.turnRunning).toBe(false);
+    expect(session.turnQueue).toEqual(snapshot);
+  });
+
+  it("stale TURN_QUEUE 不得部分应用（turnQueue 也必须原样）", () => {
+    const { session, events } = setup();
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_new",
+      ts: "",
+      data: {
+        running: { turn_id: "turn_a", message: "a" },
+        queued: [{ turn_id: "turn_b", message: "b" }],
+        cancelled: [],
+        revision: 60,
+        instance_id: "inst_test",
+      },
+    });
+    expect(session.turnQueue.running?.turn_id).toBe("turn_a");
+
+    // 旧快照（revision 55，说服务器空闲）晚到
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_stale",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 55, instance_id: "inst_test" },
+    });
+
+    expect(session.turnQueue.running?.turn_id).toBe("turn_a");
+    expect(session.activeTurnId).toBe("turn_a");
+    expect(session.queuedTurnIds).toEqual(["turn_b"]);
+    expect(session.turnRunning).toBe(true);
+  });
+
+  it("后端重启（instance_id 变化）后必须接受新实例的低 revision", () => {
+    const { session, events } = setup();
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_old_instance",
+      ts: "",
+      data: {
+        running: { turn_id: "turn_a", message: "a" },
+        queued: [],
+        cancelled: [],
+        revision: 135,
+        instance_id: "inst_A",
+      },
+    });
+    expect(session.activeTurnId).toBe("turn_a");
+
+    // 后端重启：新实例从 revision=1 重新计数，且不再有正在跑的 turn
+    events.route({
+      type: "TURN_QUEUE",
+      id: "q_new_instance",
+      ts: "",
+      data: { running: null, queued: [], cancelled: [], revision: 1, instance_id: "inst_B" },
+    });
+
+    expect(session.activeTurnId).toBeNull();
+    expect(session.turnRunning).toBe(false);
   });
 });
 
