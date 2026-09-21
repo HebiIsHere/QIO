@@ -359,10 +359,39 @@ def create_app(
 
     @app.get("/api/settings/memory")
     async def get_memory_settings() -> dict:
-        return {"fragment_max_turns": resolve_max_turns(ctx.settings_store)}
+        from agent.memory.fragment import resolve_max_tokens
+
+        return {
+            "fragment_max_turns": resolve_max_turns(ctx.settings_store),
+            # 阶段 4：长度是兜底手段（到点分块，但不表示任务完成），
+            # 设置页要能看见并调整它，界面文案见前端。
+            "fragment_max_tokens": resolve_max_tokens(ctx.settings_store),
+        }
 
     @app.put("/api/settings/memory")
     async def update_memory_settings(body: dict) -> dict:
+        from agent.memory.fragment import FRAGMENT_TOKENS_KEY, resolve_max_tokens
+
+        if "fragment_max_tokens" in body:
+            try:
+                tokens = int(body["fragment_max_tokens"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="fragment_max_tokens must be an integer"
+                ) from None
+            if not (2_000 <= tokens <= 200_000):
+                raise HTTPException(
+                    status_code=400,
+                    detail="fragment_max_tokens must be in [2000, 200000]",
+                )
+            ctx.settings_store.set(FRAGMENT_TOKENS_KEY, str(tokens))
+            # 只改长度时不强制要求同时给轮数
+            if "fragment_max_turns" not in body:
+                return {
+                    "ok": True,
+                    "fragment_max_tokens": resolve_max_tokens(ctx.settings_store),
+                    "fragment_max_turns": resolve_max_turns(ctx.settings_store),
+                }
         raw = body.get("fragment_max_turns")
         try:
             value = int(raw)
@@ -374,7 +403,11 @@ def create_app(
                 detail=f"fragment_max_turns must be in [{FRAGMENT_MIN_TURNS}, {FRAGMENT_MAX_TURNS}]",
             )
         ctx.settings_store.set(FRAGMENT_TURNS_KEY, str(value))
-        return {"ok": True, "fragment_max_turns": value}
+        return {
+            "ok": True,
+            "fragment_max_turns": value,
+            "fragment_max_tokens": resolve_max_tokens(ctx.settings_store),
+        }
 
     # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
 

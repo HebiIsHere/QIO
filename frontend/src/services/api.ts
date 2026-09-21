@@ -497,7 +497,9 @@ export const api = {
    * 旧字段名 `fragment_max_messages` 描述的其实是消息数，语义与实现不一致，已由后端正名。
    */
   getMemorySettings: () =>
-    request<{ fragment_max_turns: number }>("/api/settings/memory"),
+    request<{ fragment_max_turns: number; fragment_max_tokens: number }>(
+      "/api/settings/memory",
+    ),
   runMaintenance: () =>
     request<{ ok: boolean; started: boolean }>("/api/maintenance/run", { method: "POST" }),
   getMaintenanceSettings: () =>
@@ -507,11 +509,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  updateMemorySettings: (fragmentMaxTurns: number) =>
-    request<{ ok: boolean; fragment_max_turns: number }>("/api/settings/memory", {
-      method: "PUT",
-      body: JSON.stringify({ fragment_max_turns: fragmentMaxTurns }),
-    }),
+  /** 只给轮数时只改轮数；只给长度时只改长度（互不牵连）。 */
+  updateMemorySettings: (payload: { fragment_max_turns?: number; fragment_max_tokens?: number }) =>
+    request<{ ok: boolean; fragment_max_turns: number; fragment_max_tokens: number }>(
+      "/api/settings/memory",
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+    ),
   getUISettings: () =>
     request<{ typewriter_cps: number }>("/api/settings/ui"),
   updateUISettings: (typewriterCps: number) =>

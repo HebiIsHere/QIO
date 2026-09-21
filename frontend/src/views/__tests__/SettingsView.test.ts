@@ -17,8 +17,12 @@ vi.mock("../../services/api", () => ({
     updateCredentialMeta: vi.fn(async () => ({ ok: true, credential: {} })),
     setCredentialEnabled: vi.fn(async () => ({ ok: true, credential: {} })),
     getCredentialAudit: vi.fn(async () => ({ ok: true, audit: [] })),
-    getMemorySettings: vi.fn(async () => ({ fragment_max_messages: 10 })),
-    updateMemorySettings: vi.fn(async () => ({ fragment_max_messages: 10 })),
+    getMemorySettings: vi.fn(async () => ({ fragment_max_turns: 10, fragment_max_tokens: 4096 })),
+    updateMemorySettings: vi.fn(async (payload: Record<string, number>) => ({
+      ok: true,
+      fragment_max_turns: payload.fragment_max_turns ?? 10,
+      fragment_max_tokens: payload.fragment_max_tokens ?? 4096,
+    })),
     getMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
     updateMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
     runMaintenance: vi.fn(async () => ({ started: false })),
@@ -609,6 +613,37 @@ describe("任务 04 PART B：保存模型与可用性说明", () => {
     await openTab(w, "模型与联网");
     expect(hints().some((t) => t.includes("保存搜索配置"))).toBe(true);
     expect(w.find("button.qio-btn.primary").text()).toContain("保存搜索配置");
+    w.unmount();
+  });
+});
+
+describe("分段语义与单段长度（阶段 4/5）", () => {
+  it("把「分段不等于任务完成」写清楚，并提供单段长度设置", async () => {
+    const w = await mountSettings();
+    await openTab(w, "对话与记忆");
+
+    const panel = visiblePanel(w);
+    expect(panel.text()).toContain("根据讨论的进展分段");
+    expect(panel.text()).toContain("不等于上一段的任务已经完成");
+    expect(panel.text()).toContain("单段长度目标");
+    expect(panel.text()).toContain("到点会分段");
+    w.unmount();
+  });
+
+  it("改单段长度只提交长度字段，轮数不受牵连", async () => {
+    const { api } = await import("../../services/api");
+    (api.updateMemorySettings as ReturnType<typeof vi.fn>).mockClear();
+    const w = await mountSettings();
+    await openTab(w, "对话与记忆");
+
+    // 同一个分区里还有「迭代上限 / 输出预算」两个数字输入，按 aria-label 精确定位
+    const tokenInput = visiblePanel(w).find('input[aria-label="单段长度目标"]');
+    expect(tokenInput.exists()).toBe(true);
+    await tokenInput.setValue("8000");
+    await tokenInput.trigger("blur");
+    await flushPromises();
+
+    expect(api.updateMemorySettings).toHaveBeenCalledWith({ fragment_max_tokens: 8000 });
     w.unmount();
   });
 });

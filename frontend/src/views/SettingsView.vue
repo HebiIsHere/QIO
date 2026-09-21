@@ -356,6 +356,11 @@ function resetWindowLayout() {
 /* ---------------- 对话与记忆 ---------------- */
 const fragmentTier = ref("10");
 const customCount = ref(10);
+/**
+ * 单段长度目标（token）。长度只是**兜底**：到了就分段，但不表示这一阶段做完了
+ * —— 这句话必须写在界面上，否则用户会把「分段」读成「任务完成」。
+ */
+const fragmentMaxTokens = ref(4096);
 const tierPresets = ["5", "10", "15"];
 const tierOptions = [
   { value: "5", label: "短（5 轮）" },
@@ -375,6 +380,9 @@ async function loadMemorySettings() {
       fragmentTier.value = "custom";
       customCount.value = s.fragment_max_turns;
     }
+    if (typeof s.fragment_max_tokens === "number" && s.fragment_max_tokens > 0) {
+      fragmentMaxTokens.value = s.fragment_max_tokens;
+    }
   } catch (e) {
     setNotice("chat", "err", errText("加载记忆设置", e));
   }
@@ -390,7 +398,7 @@ async function saveMemorySettings() {
   const seq = nextSaveSeq("chat");
   beginSave("chat", "正在保存记忆封块…");
   try {
-    const r = await api.updateMemorySettings(value);
+    const r = await api.updateMemorySettings({ fragment_max_turns: value });
     if (!isLatestSave("chat", seq)) return; // 已有更新的修改：不回填、不报成功
     setNotice("chat", "ok", `记忆封块已保存：${r.fragment_max_turns} 轮`);
     const saved = String(r.fragment_max_turns);
@@ -412,6 +420,30 @@ function onTierSelect(v: string) {
 }
 function onCustomCountInput(v: number | null) {
   customCount.value = v ?? 0;
+}
+
+function onMaxTokensInput(v: number | null) {
+  fragmentMaxTokens.value = v ?? 0;
+}
+
+async function saveMaxTokens() {
+  const value = fragmentMaxTokens.value;
+  clearNotice("chat");
+  if (!Number.isInteger(value) || value < 2000 || value > 200000) {
+    setNotice("chat", "err", "单段长度需在 2000-200000 之间");
+    return;
+  }
+  const seq = nextSaveSeq("chat");
+  beginSave("chat", "正在保存单段长度…");
+  try {
+    const r = await api.updateMemorySettings({ fragment_max_tokens: value });
+    if (!isLatestSave("chat", seq)) return;
+    fragmentMaxTokens.value = r.fragment_max_tokens;
+    setNotice("chat", "ok", `单段长度已保存：${r.fragment_max_tokens}`);
+  } catch (e) {
+    if (!isLatestSave("chat", seq)) return;
+    setNotice("chat", "err", errText("保存单段长度", e));
+  }
 }
 
 const loopMaxIterations = ref(128);
@@ -931,7 +963,10 @@ watch(activeTab, async () => {
         <div v-show="activeTab === 'chat'" class="panel">
           <section class="sec">
             <h2>记忆</h2>
-            <p class="desc">每个片段的消息数上限：达到后封块并生成摘要。</p>
+            <p class="desc">
+              根据讨论的进展分段：同一阶段可以跨多段，进入新的一段不等于上一段的任务已经完成。
+              下面两个值控制单段规模（轮数与长度），达到任一上限就在**完整的一轮之后**分段。
+            </p>
             <p class="mode-hint mono">选择后自动保存</p>
             <div class="pref">
               <div class="txt">
@@ -954,6 +989,28 @@ watch(activeTab, async () => {
                   label="自定义轮数"
                   @update:model-value="onCustomCountInput"
                   @change="saveMemorySettings"
+                />
+              </div>
+            </div>
+            <div class="pref">
+              <div class="txt">
+                <div class="t">单段长度目标</div>
+                <div class="d">
+                  内容长度的兜底上限（2000-200000，按估算字符数计）。到点会分段，
+                  但不表示这一阶段的任务已经做完。
+                </div>
+              </div>
+              <div class="ctl">
+                <QNumber
+                  class="num"
+                  :model-value="fragmentMaxTokens"
+                  :min="2000"
+                  :max="200000"
+                  :step="1000"
+                  mono
+                  label="单段长度目标"
+                  @update:model-value="onMaxTokensInput"
+                  @change="saveMaxTokens"
                 />
               </div>
             </div>
