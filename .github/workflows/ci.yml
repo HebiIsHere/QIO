@@ -44,7 +44,39 @@ jobs:
       - name: Sync dependencies from lock
         run: uv sync --frozen --extra dev
       - name: Run tests
+        env:
+          # 让 pytest 额外落一份 JUnit 报告，供下一步在失败时生成注解。
+          # 命令本身保持单行不变（scripts/check_docs.py 会校验它与 SETUP.md 一致）。
+          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
         run: uv run --frozen pytest -q
+      # Actions 的原始日志必须登录才能下载；**注解是公开可读的**。
+      # 失败时把「哪些用例挂了、报什么错」变成注解，CI 红了才有人能立刻定位。
+      - name: Summarize test failures
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          paths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)
+          if not paths:
+              print("::error title=pytest::no junit report written (collection/import error before tests ran)")
+              raise SystemExit(0)
+
+          bad = []
+          for case in ET.parse(paths[0]).getroot().iter("testcase"):
+              problems = list(case.findall("failure")) + list(case.findall("error"))
+              if not problems:
+                  continue
+              text = (problems[0].get("message") or problems[0].text or "").strip()
+              first = next((line for line in text.splitlines() if line.strip()), "")
+              bad.append(f"{case.get('classname')}::{case.get('name')} -> {first[:200]}")
+
+          print(f"::error title=pytest failures ({len(bad)})::" + " | ".join(bad[:12]))
+          for line in bad[:40]:
+              print(f"FAILED {line}")
+          PY
 
   frontend:
     name: frontend
@@ -105,3 +137,22 @@ jobs:
             patchelf
       - name: cargo check
         run: cargo check
+      # 同上：失败时把 cargo 的报错摘要变成公开可读的注解。
+      - name: Summarize cargo errors
+        if: failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --message-format=short 2>&1 | tee cargo.log || true
+          python - <<'PY'
+          import re
+
+          lines = [
+              line.rstrip()
+              for line in open("cargo.log", encoding="utf-8", errors="replace")
+          ]
+          errors = [ln for ln in lines if re.match(r"^(error|error\[)", ln)] or lines[-15:]
+          print("::error title=cargo check failed::" + " | ".join(e[:180] for e in errors[:8]))
+          for line in errors[:20]:
+              print(line)
+          PY
