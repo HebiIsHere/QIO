@@ -107,6 +107,10 @@ def cosine_similarity(query: np.ndarray, vectors: np.ndarray) -> np.ndarray:
 class OnnxEmbeddingBackend(RecallBackend):
     name = "onnx"
     supports_incremental = True
+    # 类级默认值：手工构造（测试里用 __new__ 建实例）时也不会因为缺属性而崩
+    model_identity = ""
+    model_file = ""
+    _inputs: list[str] = []
 
     def __init__(
         self,

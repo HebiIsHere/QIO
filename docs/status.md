@@ -652,3 +652,34 @@ npm test
 ```
 
 命令与 CI 一致，见 `.github/workflows/ci.yml`。
+
+---
+
+## 本轮变更：Fragment 重设计（2026-09-21 起）
+
+> 任务书：`docs/superpowers/specs/2026-09-21-fragment-redesign-spec.md`
+> 实施计划与逐条清单：`docs/superpowers/plans/2026-09-21-fragment-redesign.md`
+> 配套笔记：写入入口清单、分段边界评测报告（`docs/superpowers/notes/`）
+
+这一轮把「一轮对话属于哪个 Topic / Fragment」从「写入时临时看 Anchor」改成**持久绑定**，
+并把封存、派生数据、历史路径、分段边界逐层拆开。按阶段记状态（口径同上表）：
+
+| 阶段 | Status | 说明 |
+| --- | --- | --- |
+| 1 固定轮次归属 + 安全接续 | completed | 绑定与接续意图两张表；点击历史只登记、执行时才原子交接；队列顺序与幂等有测试；接续提示与取消已上界面 |
+| 2 封存与派生分开 | completed | 派生任务表（退避、重启恢复、幂等）；封存不等模型；摘要失败不影响对话；索引失败不再回滚封存 |
+| 3 历史关系与路径上下文 | completed | 祖先链（深度/环保护）、路径前提与「仅参考」标注、知识与其他话题实体卡的范围标注、旧数据迁移 16 |
+| 4 边界策略与容量 | partial | 确定性规则（容量 / 明确开工 / 短确认 / 同阶段修正）可运行、三档模式（off/shadow/enabled，默认 shadow）、离线评测；**Embedding 语义信号只做到「有模型就观察」**，尚未校准 |
+| 5 界面适配 | partial | 接续提示与取消、设置页分段文案与单段长度已完成；生成中改选等状态有实现但视觉重检未全部覆盖 |
+
+**向量模型（内置决定）**：默认内置 **fp32** ONNX（`model.onnx`，约 90MB），
+由 `model_manifest.json` 决定加载哪一档；向量缓存按「身份 + 维度」过滤，
+换档位必须重新编码。清单生成脚本：`scripts/models/write_manifest.py`；
+自检与 fp32/int8 对比：`scripts/models/onnx_ab.py`。
+
+**已知限制（不粉饰）**
+
+- 语义阶段切分没有经过校准，默认不实际切分；Embedding 只做观察与降级；
+- 进程重启后**排队中的消息**不会自动恢复（队列未持久化）；
+- 旧数据里 `relation_type='unknown'` 的片段没有路径隔离能力；
+- 打包时需附模型许可证与 NOTICE（上游 BAAI/bge-small-zh-v1.5 为 MIT）。

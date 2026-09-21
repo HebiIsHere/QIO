@@ -203,10 +203,17 @@ def test_onnx_search_reuses_matrix_instead_of_restacking(monkeypatch, db_conn):
     backend.max_len = 512
     backend.threads = 1
     backend.model_name = onnx_module.MODEL_NAME
+    # 向量身份：缓存读写按「身份 + 维度」过滤，手工构造的实例也要给一个
+    backend.model_identity = "onnx:test:fp32:fake"
+    backend.model_file = "test.onnx"
     backend.dims = 4
     backend._session = object()
     backend._tokenizer = object()
+    backend._inputs = ["input_ids", "attention_mask", "token_type_ids"]
     backend._vectors = {}
+    backend._matrix = None
+    backend._matrix_keys = []
+    backend._matrix_dirty = True
 
     def fake_embed(texts):
         out = []
