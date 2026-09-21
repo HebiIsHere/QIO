@@ -125,6 +125,95 @@ class FragmentManager:
         ).fetchone()
         return self._from_row(row) if row else None
 
+    # -- 关系：来源、祖先路径、校验（阶段 3）-----------------------------
+
+    def source_of(self, fragment_id: str) -> str | None:
+        """这条片段的直接来源（普通延续 / 历史重新展开都记在这里）。"""
+        row = self.conn.execute(
+            "SELECT source_fragment_id FROM fragments WHERE id = ?", (fragment_id,)
+        ).fetchone()
+        return row["source_fragment_id"] if row is not None else None
+
+    def ancestors(
+        self, fragment_id: str, *, max_depth: int = 5
+    ) -> list[tuple[str, int]]:
+        """从直接来源开始的祖先链：(fragment_id, depth)，由近到远。
+
+        三件事必须同时成立，否则历史关系会把上下文构建拖坏：
+
+        * **深度上限**：坏数据里的长链不会无限读下去；
+        * **环保护**：A→B→A 这种坏关系不能变成死循环；
+        * **去重**：同一条祖先只出现一次（取最近的那次深度）。
+        """
+        chain: list[tuple[str, int]] = []
+        seen: set[str] = {fragment_id}
+        current = self.source_of(fragment_id)
+        depth = 1
+        while current and depth <= max_depth and current not in seen:
+            chain.append((current, depth))
+            seen.add(current)
+            current = self.source_of(current)
+            depth += 1
+        return chain
+
+    def validate_source(self, topic_id: str, source_fragment_id: str | None) -> None:
+        """来源必须存在、属于同一个话题、不能自指、不能成环。"""
+        if not source_fragment_id:
+            return
+        source = self.get(source_fragment_id)
+        if source is None:
+            raise ValueError(f"来源片段不存在：{source_fragment_id}")
+        if source.topic_id != topic_id:
+            raise ValueError(
+                f"来源片段 {source_fragment_id} 不属于话题 {topic_id}（不能跨话题继承）"
+            )
+
+    def would_cycle(self, fragment_id: str, source_fragment_id: str | None) -> bool:
+        """把 `fragment_id` 挂到 `source_fragment_id` 下面，会不会让祖先链成环。
+
+        两种情况成环：来源就是自己；来源的祖先链里已经出现自己
+        （等于把一段挂到它自己的后代下面）。新建片段用的是全新 id，
+        不可能触发第二种 —— 这个判断真正的用途是**改挂来源**这类操作。
+        """
+        if not source_fragment_id:
+            return False
+        if source_fragment_id == fragment_id:
+            return True
+        return any(
+            fid == fragment_id for fid, _ in self.ancestors(source_fragment_id, max_depth=64)
+        )
+
+    def create_child(
+        self,
+        topic_id: str,
+        *,
+        source_fragment_id: str | None = None,
+        relation_type: str = "normal",
+        boundary_reason: str | None = None,
+        same_stage: bool | None = None,
+    ) -> str:
+        """新建一条片段并写清它的来源与分段原因（关系写入的唯一入口）。"""
+        fragment_id = new_id("frag")
+        self.validate_source(topic_id, source_fragment_id)
+        # 新 id 不可能已经在来源的祖先链里，所以这里只需要校验来源本身；
+        # 环只可能来自「改挂来源」或坏数据，前者用 would_cycle 判，后者由 ancestors 兜住。
+        self.conn.execute(
+            "INSERT INTO fragments "
+            "(id, topic_id, created_at, summary_version, meta, source_fragment_id, "
+            " relation_type, boundary_reason, same_stage, content_version) "
+            "VALUES (?, ?, ?, 0, '{}', ?, ?, ?, ?, 0)",
+            (
+                fragment_id,
+                topic_id,
+                _now(),
+                source_fragment_id,
+                relation_type,
+                boundary_reason,
+                None if same_stage is None else (1 if same_stage else 0),
+            ),
+        )
+        return fragment_id
+
     def close(
         self,
         fragment_id: str,

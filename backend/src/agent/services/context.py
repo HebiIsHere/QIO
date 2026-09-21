@@ -156,19 +156,27 @@ class ContextAssembler:
     # -- short-term memory ------------------------------------------------
 
     def short_term_items(
-        self, topic_id: str, exclude_message_id: str | None = None
+        self,
+        topic_id: str,
+        exclude_message_id: str | None = None,
+        fragment_id: str | None = None,
     ) -> list:
         """Deterministic short-term memory: open fragment transcript + recent summaries.
 
         转录按 token 上限截断（只保留最近消息），避免多轮对话后整段转录无限
         膨胀、单轮 token 消耗突破循环预算导致对话被 STOPPED。
+
+        阶段 3：历史前提按**本轮片段所在的路径**组织（见 `_path_items`），
+        不再无条件把「这个话题最近两段摘要」当作前提。
         """
         from agent.knowledge.inject import InjectionSource
         from agent.memory.index import estimate_tokens
         from agent.services.injection import PlannedItem
 
         items: list = []
-        frag = self.fragments.get_or_create_open(topic_id)
+        frag = self.fragments.get(fragment_id) if fragment_id else None
+        if frag is None or frag.topic_id != topic_id:
+            frag = self.fragments.get_or_create_open(topic_id)
         if frag.start_message_id is not None:
             # 只取最近 N 条消息，且整体不超过 ~2.5k token（约 1/6 迭代预算）
             max_messages = 12
@@ -205,18 +213,98 @@ class ContextAssembler:
                         tokens=estimate_tokens(text),
                     )
                 )
-        for s in InjectionSource(self.conn).recent_fragment_summaries(topic_id, limit=2):
-            text = f"【短期摘要·{s['title']}】\n{s['summary']}"
+        items.extend(self._path_items(topic_id, frag))
+        return items
+
+    def _path_items(self, topic_id: str, frag) -> list:
+        """本轮片段所在的**路径**上的前提 + 明确标注的参考。
+
+        层次（阶段 3）：
+        1. 直接来源（这段讨论是从哪一段长出来的）；
+        2. 更早的来源（祖先链，深度与 token 都有上限）；
+        3. 同话题但**不在这条路径上**的片段 —— 只能作为「仅参考」出现，
+           不能被当成已经接受的前提（A→B→C 与 A→D 的隔离就是靠这一条）。
+
+        摘要还没生成时用原文尾部兜底（阶段 2 之后「已封存但未摘要」是正常中间态）。
+        """
+        from agent.knowledge.inject import InjectionSource
+        from agent.memory.index import estimate_tokens
+        from agent.services.injection import PlannedItem
+
+        items: list = []
+        budget_tokens = 1_500
+        used = 0
+        chain = self.fragments.ancestors(frag.id, max_depth=3)
+        for ancestor_id, depth in chain:
+            text = self._premise_text(ancestor_id, depth)
+            if not text:
+                continue
+            tokens = estimate_tokens(text)
+            if used + tokens > budget_tokens:
+                break
+            used += tokens
             items.append(
                 PlannedItem(
                     source="memory",
                     surface="topic_short",
-                    item_id=s["id"],
+                    item_id=ancestor_id,
+                    text=text,
+                    tokens=tokens,
+                )
+            )
+
+        on_path = {ancestor_id for ancestor_id, _ in chain} | {frag.id}
+        references = [
+            s
+            for s in InjectionSource(self.conn).recent_fragment_summaries(topic_id, limit=4)
+            if s["id"] not in on_path
+        ][:2]
+        for ref in references:
+            text = (
+                f"【同话题其他片段·仅参考】{ref['title']}\n{ref['summary']}\n"
+                "（这条不在本轮讨论的接续路径上，只作背景，不代表本轮的结论）"
+            )
+            items.append(
+                PlannedItem(
+                    source="memory",
+                    surface="topic_short",
+                    item_id=ref["id"],
                     text=text,
                     tokens=estimate_tokens(text),
                 )
             )
         return items
+
+    def _premise_text(self, fragment_id: str, depth: int) -> str:
+        """一条路径前提的文本：优先摘要，没有摘要就用原文尾部兜底（受字符上限约束）。"""
+        from agent.services.params import FOCUS
+
+        fragment = self.fragments.get(fragment_id)
+        if fragment is None:
+            return ""
+        title = ""
+        row = self.conn.execute(
+            "SELECT title FROM memory_index WHERE fragment_id = ? ORDER BY created_at DESC LIMIT 1",
+            (fragment_id,),
+        ).fetchone()
+        if row is not None and row["title"]:
+            title = str(row["title"])
+        label = "直接来源" if depth == 1 else f"更早的来源（第 {depth} 层）"
+        summary = (fragment.summary or "").strip()
+        if summary:
+            body = summary[: FOCUS.max_summary_chars]
+        else:
+            rows = self.fragments.messages(fragment_id)[-4:]
+            body = "\n".join(
+                f"[{m['role']}] {str(m['content'])[:200]}" for m in rows if m["content"]
+            )
+            if not body:
+                return ""
+            body = (
+                f"（这一段还没有摘要，以下是当时的原文结尾）\n{body}"
+            )
+        heading = f"【路径前提·{label}】{title or '（未命名）'}"
+        return f"{heading}\n{body}"
 
     # -- topic note / entity hints ---------------------------------------
 

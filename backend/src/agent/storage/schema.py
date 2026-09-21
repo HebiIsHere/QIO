@@ -457,6 +457,59 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_derived_tasks_fragment ON derived_tasks(fragment_id)",
         ],
     ),
+    (
+        16,
+        [
+            # 阶段 3：旧数据的关系与内容版本。
+            #
+            # 坏关系（指向不存在的片段、或指向别的话题的片段）不能留着假装是路径：
+            # 断开来源并保留 unknown。历史本体（消息与摘要）一行不动。
+            # 顺序很重要：**先断开坏来源，再按来源标记关系类型** ——
+            # 反过来会把「来源已经不成立」的行也标成历史接续。
+            """
+            UPDATE fragments
+               SET source_fragment_id = NULL
+             WHERE source_fragment_id IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM fragments AS src
+                      WHERE src.id = fragments.source_fragment_id
+                        AND src.topic_id = fragments.topic_id
+                   )
+            """,
+            # 关系列是新加的，旧行全是 NULL。按「能确认到什么程度」分两档：
+            # * 有 source_fragment_id 的（迁移 11 起只有「从历史继续」会写这个字段）
+            #   → 可以确认是历史重新展开；
+            # * 其余（普通延续，但分不清容量分段还是阶段变化）→ unknown，不猜。
+            """
+            UPDATE fragments
+               SET relation_type = 'history_reopen'
+             WHERE relation_type IS NULL AND source_fragment_id IS NOT NULL
+            """,
+            "UPDATE fragments SET relation_type = 'unknown' WHERE relation_type IS NULL",
+            # 内容版本：封存过的旧片段用「消息条数」补齐，派生任务据此校验迟到结果。
+            """
+            UPDATE fragments
+               SET content_version = (
+                     SELECT COUNT(*) FROM messages WHERE messages.fragment_id = fragments.id
+                   )
+             WHERE content_version = 0
+               AND closed_at IS NOT NULL
+               AND EXISTS (SELECT 1 FROM messages WHERE messages.fragment_id = fragments.id)
+            """,
+            # 缺少摘要的旧封存片段：登记一次幂等补齐任务（这里不调用模型）。
+            """
+            INSERT OR IGNORE INTO derived_tasks
+                (id, kind, fragment_id, content_version, state, attempts, last_error,
+                 run_after, created_at, updated_at)
+            SELECT 'task_backfill_' || id, 'summary', id, content_version, 'pending', 0, NULL,
+                   NULL, datetime('now'), datetime('now')
+              FROM fragments
+             WHERE closed_at IS NOT NULL
+               AND (summary IS NULL OR summary = '')
+               AND content_version > 0
+            """,
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

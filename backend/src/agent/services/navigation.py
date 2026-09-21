@@ -247,7 +247,6 @@ class TopicNavigationService:
 
         previous = self.anchors.get_active()
         open_fragment = self.fragments.open_fragment(topic_id)
-        new_fragment_id = new_id("frag")
         sealed_id: str | None = None
         with transaction(self.conn):
             if open_fragment is not None:
@@ -256,19 +255,13 @@ class TopicNavigationService:
                     "UPDATE fragments SET closed_at = ?, boundary_reason = ? WHERE id = ?",
                     (_now(), "history_continuation", sealed_id),
                 )
-            self.conn.execute(
-                "INSERT INTO fragments "
-                "(id, topic_id, created_at, summary_version, meta, source_fragment_id, "
-                " relation_type, boundary_reason, content_version) "
-                "VALUES (?, ?, ?, 0, '{}', ?, ?, ?, 0)",
-                (
-                    new_fragment_id,
-                    topic_id,
-                    _now(),
-                    intent.source_fragment_id,
-                    "history_reopen",
-                    "history_continuation",
-                ),
+            # 关系写入只走 FragmentManager.create_child：来源校验（同话题/自指/成环）
+            # 与「来源、关系类型、分段原因」三个字段的写法只在这里定义一次。
+            new_fragment_id = self.fragments.create_child(
+                topic_id,
+                source_fragment_id=intent.source_fragment_id,
+                relation_type="history_reopen",
+                boundary_reason="history_continuation",
             )
             # 落实结果与片段创建在同一个事务里：不会出现「片段建了但意图没落实」
             bindings.resolve_intent(intent_id, new_fragment_id)

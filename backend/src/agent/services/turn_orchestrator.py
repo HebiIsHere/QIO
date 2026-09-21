@@ -279,7 +279,13 @@ class TurnOrchestrator:
         # 位置推进后就不再重复强调同一个历史片段（见 advance_anchor）。
         focus_fragment = AnchorService(app.conn).focus_fragment(topic)
         focus_block = app._focus_block(topic, focus_fragment) if focus_fragment else ""
-        short_term = app._short_term_items(topic, exclude_message_id=ctx.user_message_id)
+        # 本轮绑定的片段决定「路径前提」：当前片段 → 直接来源 → 祖先，
+        # 同话题但不在路径上的片段只能作为「仅参考」出现（阶段 3）。
+        short_term = app._short_term_items(
+            topic,
+            exclude_message_id=ctx.user_message_id,
+            fragment_id=ctx.bound_fragment_id,
+        )
         topic_note = app._topic_note(topic, prediction)
         if extra_note:
             topic_note = topic_note + extra_note

@@ -1011,11 +1011,14 @@ class AppContext:
         return self.context_assembler.anchor_fragment_info()
 
     def _short_term_items(
-        self, topic_id: str, exclude_message_id: str | None = None
+        self,
+        topic_id: str,
+        exclude_message_id: str | None = None,
+        fragment_id: str | None = None,
     ) -> list:
         """委派给 ContextAssembler。"""
         return self.context_assembler.short_term_items(
-            topic_id, exclude_message_id=exclude_message_id
+            topic_id, exclude_message_id=exclude_message_id, fragment_id=fragment_id
         )
 
     def _entity_card_topics(self, message: str) -> list[str]:
