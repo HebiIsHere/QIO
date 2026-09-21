@@ -51,9 +51,16 @@
 - **Status：** completed
 - **Implementation：** `credentials/store.py`（密钥进 keyring，元数据进 SQLite）、`credentials/policy.py`（按标签解析 + 快照）、`services/identify.py`（Key 识别与端点探测）
 - **Implementation（2026-09-15 身份边界）：** `endpoint` 视为凭据的**安全身份**而不是普通元数据：变化必须重新输入 secret 并显式确认（`confirm_reconfigure=true`），否则 HTTP 层与 store 双层拒绝；默认只允许 HTTPS，明文 HTTP 仅限 loopback 本地 provider。主 Agent Loop 的凭据解析改为 **`main-loop` 标签优先**（以前排序把专项凭据排在前面，一个 `vision` Key 会被主循环静默拿去用），专项标签只在没有 main-loop 可用时回落。
+- **Implementation（2026-09-21 后端可用性）：** 凭据后端的解析改为**惰性**：`CredentialStore` 构造期不再探测系统 keyring，
+  第一次真正读写密钥时才解析并缓存。语义上读写不对称是有意的 ——
+  **读路径**（`get_secret` / `get_default_secret`）在这台机器没有可用后端时如实返回 `None`
+  （应用本来就有「当前没有可用凭据」的降级路径），**写路径**（存 / 轮换 / 删除）仍然大声抛错，
+  绝不静默降级到 no-op 后端。动机：headless 环境（CI 的 ubuntu runner、容器、无 SecretService 的机器）
+  没有任何可用后端，而旧的构造期抛错会让应用工厂与大量测试在启动阶段直接失败。
 - **Tests：** `backend/tests/test_credentials.py`、`test_identify.py`、`test_tool_credentials.py`
 - **Tests（2026-09-15 追加）：** `test_credential_identity.py`（只改 endpoint 必须被拒、https 默认、loopback 例外）、`test_credential_routing.py`（main-loop 优先、专项凭据只作回落、无匹配用途不得拿别的标签顶上）、`test_credential_endpoint_api.py`（HTTP 层同一套规则）
-- **Known limitations：** 只在 Windows 凭据库上验证过；预算以 token 计数为主。
+- **Known limitations：** 真实凭据读写只在 Windows 凭据库上验证过（headless 环境没有可用后端时，
+  读路径返回「无凭据」、写路径报错）；预算以 token 计数为主。
 - **后续依赖：** M3 适配层、M10 子 agent、embedding 选档都从这里取 Key。
 
 ### M3 — 模型适配层

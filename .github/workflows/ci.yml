@@ -84,5 +84,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: frontend/src-tauri   # keyed on Cargo.lock
+      # Tauri 在 Linux 上依赖一组系统库（webkit2gtk / libsoup / librsvg 等）。
+      # 裸 ubuntu runner 什么都没装，缺了它们 cargo check 必然失败 ——
+      # 这正是 rust 任务此前一直红的原因，而不是 Rust 代码本身有问题。
+      - name: Install Linux system dependencies (Tauri)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
       - name: cargo check
         run: cargo check

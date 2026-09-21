@@ -76,7 +76,27 @@ class CredentialStore:
     ) -> None:
         self.conn = conn
         self.service = service
-        self._kr = keyring_backend or _default_keyring()
+        # 惰性解析凭据后端：构造期**不**探测系统 keyring。
+        # headless Linux（GitHub Actions 的 ubuntu runner、容器、没有 SecretService 的机器）
+        # 没有任何可用后端；如果在构造期就抛，应用工厂与几百个测试都会在启动阶段直接炸掉，
+        # 而「这台机器有没有可用后端」只有在**真正读写密钥**时才重要。
+        self._kr_override = keyring_backend
+        self._kr_cached: Any | None = None
+
+    # -- keyring backend --------------------------------------------------
+
+    @property
+    def _kr(self) -> Any:
+        """当前凭据后端；第一次真正使用时才解析，并缓存结果。"""
+        if self._kr_cached is None:
+            self._kr_cached = self._kr_override or _default_keyring()
+        return self._kr_cached
+
+    @_kr.setter
+    def _kr(self, backend: Any) -> None:
+        """显式指定后端（测试注入；覆盖之后不再探测系统后端）。"""
+        self._kr_override = backend
+        self._kr_cached = backend
 
     # -- metadata helpers -------------------------------------------------
 
@@ -264,7 +284,23 @@ class CredentialStore:
         row = self._row(key_id)
         if row is None or row["status"] != "active" or not row["enabled"]:
             return None
-        return self._kr.get_password(self.service, key_id)
+        return self._read_secret(key_id)
+
+    def _read_secret(self, key_id: str) -> str | None:
+        """读密钥；这台机器没有可用凭据后端时，答案就是「没有可用密钥」。
+
+        读路径返回 None 是有意义的：应用本来就有「当前没有可用凭据」的降级路径
+        （提示用户去设置里添加 Key）。写路径不在这里兜底 —— 存 / 轮换 / 删除
+        仍然大声失败，绝不静默假成功。
+        """
+        try:
+            backend = self._kr
+        except (RuntimeError, keyring.errors.NoKeyringError):
+            return None
+        try:
+            return backend.get_password(self.service, key_id)
+        except keyring.errors.NoKeyringError:
+            return None
 
     def get_default_secret(self) -> str | None:
         """Fallback secret: the enabled/active `main-loop` credential with budget."""
@@ -286,7 +322,7 @@ class CredentialStore:
                 best_left = left
         if best is None:
             return None
-        return self._kr.get_password(self.service, best["id"])
+        return self._read_secret(best["id"])
 
     def list_tagged(self, tag: str) -> list[dict[str, Any]]:
         """Active/enabled credentials carrying `tag`, with budget available,
