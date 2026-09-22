@@ -109,6 +109,8 @@ const progressText = computed(() => {
 
     <p class="hint foot">
       更新包经过签名校验后才会安装；安装过程中应用会短暂关闭并自动重启。
+      连不上更新源时可在 <span class="mono">%APPDATA%\qio\updater-proxy.txt</span> 写一行代理地址；
+      排查记录在 <span class="mono">%APPDATA%\qio\logs\qio.log</span>。
     </p>
   </div>
 </template>

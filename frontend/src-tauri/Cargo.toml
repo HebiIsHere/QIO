@@ -1,6 +1,6 @@
 [package]
 name = "qio"
-version = "0.1.3"
+version = "0.1.4"
 description = "QIO desktop shell"
 edition = "2021"
 
@@ -14,6 +14,10 @@ tauri-plugin-shell = "2"
 # 网络请求在 Rust 侧发出，所以不需要放宽前端 CSP。
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 文件日志：updater 插件把真实失败原因写进 log crate（而它抛给前端的是一句固定文案），
+# 没有日志就只能靠猜 —— 2026-09-22 实测踩过。
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -203,6 +203,28 @@ fn prepare_models(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 /// 等后端把令牌写出来（后端启动要几秒）。只在后台线程里阻塞。
+/// 更新用的代理：只有环境变量（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY）能影响 reqwest，
+/// 它**不读** Windows 系统代理设置。所以允许用户把代理写在一行文本里，壳启动时读进来
+/// 注入环境变量 —— 不把任何机器相关的地址编译进安装包。
+fn apply_updater_proxy() -> Option<String> {
+    if std::env::var("HTTPS_PROXY").is_ok() || std::env::var("https_proxy").is_ok() {
+        let current = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .unwrap_or_default();
+        return Some(current);
+    }
+    let path = data_dir().join("updater-proxy.txt");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let proxy = raw.trim().to_string();
+    if proxy.is_empty() {
+        return None;
+    }
+    std::env::set_var("HTTPS_PROXY", &proxy);
+    std::env::set_var("HTTP_PROXY", &proxy);
+    std::env::set_var("ALL_PROXY", &proxy);
+    Some(proxy)
+}
+
 fn read_token_file(path: &PathBuf, timeout: Duration) -> Option<String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -302,12 +324,29 @@ fn main() {
     let backend_for_setup = Arc::clone(&backend);
 
     tauri::Builder::default()
+        // 日志最先注册：这样 updater 等插件的 log::error! 才会落到文件里
+        // （%APPDATA%\qio\logs\qio.log），出问题时能看见真实原因而不是一句固定文案。
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("qio".to_string()),
+                    },
+                ))
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         // 应用内更新：updater（检查/下载/校验/安装）+ process（装完重启）。
         // 两者都在 Rust 侧工作，前端只通过插件 API 驱动，不需要放宽 CSP。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(move |app| {
+            if let Some(proxy) = apply_updater_proxy() {
+                log::info!("[qio] 更新走代理：{proxy}");
+            } else {
+                log::info!("[qio] 更新未配置代理（可用 %APPDATA%\\qio\\updater-proxy.txt 指定）");
+            }
             let port = pick_free_port();
             let token_path = session_token_path();
             // 清掉上一轮的残留文件：令牌绝不跨进程生命周期复用。
