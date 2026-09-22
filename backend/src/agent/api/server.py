@@ -128,7 +128,7 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     logging.getLogger(__name__).warning("closing db failed", exc_info=True)
 
-    app = FastAPI(title="QIO", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.1.1", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
     instance_id = f"qio_{uuid.uuid4().hex[:16]}"
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，

@@ -80,7 +80,7 @@ python scripts/models/fetch_model.py --from-modelscope
 ```powershell
 # 一条命令按正确顺序做三件事：取模型 → 重建 sidecar → 打安装包
 pwsh -File scripts/build_installer.ps1
-# → frontend/src-tauri/target/release/bundle/nsis/QIO_0.1.0_x64-setup.exe（106.8MB）
+# → frontend/src-tauri/target/release/bundle/nsis/QIO_0.1.1_x64-setup.exe（106.8MB）
 #   生成的 installer.nsi 会把 model.onnx / tokenizer.json / 清单 / 许可证复制到
 #   $INSTDIR\models\bge-small-zh-v1.5\
 ```
