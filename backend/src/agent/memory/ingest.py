@@ -130,6 +130,51 @@ class MemoryWriter:
             closed = self.fragments.get(fragment.id)
         return message_id, closed
 
+    def move_message(self, message_id: str, *, to_fragment_id: str) -> str | None:
+        """把一条已写入的消息搬到另一个片段（本轮工具导航改向时用）。
+
+        返回它原来所在的片段 id。两个片段的 `start/end_message_id` 都按实际
+        消息重算：只改 `messages.fragment_id` 会让目标片段的 `[start, end]`
+        漏掉这条被搬进来的消息（旧实现就漏了这一步）。
+        """
+        row = self.conn.execute(
+            "SELECT fragment_id FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if row is None:
+            raise BindingMismatch(f"消息不存在：{message_id}")
+        target = self.fragments.get(to_fragment_id)
+        if target is None:
+            raise BindingMismatch(f"片段不存在：{to_fragment_id}")
+        if target.closed_at is not None:
+            raise BindingMismatch(f"片段 {to_fragment_id} 已封存，不能接收消息")
+        source_id = row["fragment_id"]
+        if source_id == to_fragment_id:
+            return source_id
+        self.conn.execute(
+            "UPDATE messages SET fragment_id = ? WHERE id = ?",
+            (to_fragment_id, message_id),
+        )
+        self._recompute_bounds(source_id)
+        self._recompute_bounds(to_fragment_id)
+        return source_id
+
+    def _recompute_bounds(self, fragment_id: str | None) -> None:
+        """按实际消息重算片段边界（空片段两个字段都清空）。"""
+        if not fragment_id:
+            return
+        rows = self.conn.execute(
+            "SELECT id FROM messages WHERE fragment_id = ? ORDER BY created_at, id",
+            (fragment_id,),
+        ).fetchall()
+        self.conn.execute(
+            "UPDATE fragments SET start_message_id = ?, end_message_id = ? WHERE id = ?",
+            (
+                rows[0]["id"] if rows else None,
+                rows[-1]["id"] if rows else None,
+                fragment_id,
+            ),
+        )
+
     def close_open_fragment(
         self,
         topic_id: str,

@@ -11,7 +11,7 @@ import sqlite3
 
 from agent.graph.nodes import NodeService
 from agent.prompts import TOOL_CREATE_TOPIC_DESC, TOOL_SWITCH_TOPIC_DESC
-from agent.services.navigation import TopicNavigationService
+from agent.services.navigation import TopicNavigationService, note_tool_navigation
 from agent.tools.base import Tool, ToolResult
 
 
@@ -41,6 +41,8 @@ class SwitchTopicTool(Tool):
         # 切回已有话题时恢复它保存的位置（不覆盖用户明确选择：用户选择本身
         # 就是 active，因此在同一话题内它永远优先）。写 anchor 只走 Navigator。
         result = TopicNavigationService(self.conn).enter_topic(topic_id, relate=True)
+        # 本轮是模型自己换的话题：整轮归属跟着走（用户导航不会走到这里）。
+        note_tool_navigation(topic_id)
         if result.fragment_id:
             return ToolResult(
                 ok=True,
@@ -141,4 +143,6 @@ class CreateTopicTool(Tool):
 
     def _create(self, name: str) -> ToolResult:
         result = TopicNavigationService(self.conn).create_topic(name)
+        # 新话题此刻还没有片段，由本轮收尾时把整轮消息搬进它的开放片段。
+        note_tool_navigation(result.topic_id)
         return ToolResult(ok=True, content=f"已创建并切换到话题「{name}」（{result.topic_id}）")

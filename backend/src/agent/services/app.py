@@ -1035,25 +1035,6 @@ class AppContext:
         """委派给 ContextAssembler。"""
         return self.context_assembler.topic_note(topic_id, prediction)
 
-    def _move_message(self, message_id: str, old_topic: str, new_topic: str) -> None:
-        """Move the user message to the new topic's open fragment after a switch."""
-        target = self.fragments.get_or_create_open(new_topic)
-        self.conn.execute(
-            "UPDATE messages SET fragment_id = ? WHERE id = ?", (target.id, message_id)
-        )
-        old_frag = self.fragments.get_or_create_open(old_topic)
-        remaining = self.fragments.messages(old_frag.id)
-        if not remaining:
-            self.conn.execute(
-                "UPDATE fragments SET start_message_id = NULL, end_message_id = NULL WHERE id = ?",
-                (old_frag.id,),
-            )
-        else:
-            self.conn.execute(
-                "UPDATE fragments SET end_message_id = ? WHERE id = ?",
-                (remaining[-1]["id"], old_frag.id),
-            )
-
     # -- injection --------------------------------------------------------
 
     def build_injection(

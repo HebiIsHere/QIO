@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -34,6 +35,47 @@ from agent.storage.db import transaction
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── 工具导航登记（阶段 1 的受控例外）─────────────────────────────────────
+# 阶段 1 让「本轮归属」在轮前固定，代价是工具自己换话题也被当成「后续导航」
+# 排除掉了：建话题那一轮留在上一个话题里。这里把「谁换的话题」记下来 ——
+# 工具换话题（create_topic / switch_topic）整轮跟着走，用户换话题（另一个
+# 请求进来）一步不动。
+#
+# turn_id 走 ContextVar：工具在 turn 派生的 task 里执行，能读到本轮 id；
+# 另一个请求的任务读不到（默认 None），所以用户导航永远登记不上。
+# 回传走模块级 dict：子 task 里的写入不会传回父上下文，只能放在共享表里。
+_TOOL_NAV_TURN: ContextVar[str | None] = ContextVar("qio_tool_nav_turn", default=None)
+_TOOL_NAV_REBINDS: dict[str, str] = {}
+# 兜底上限：turn 在 persist 之前失败时由收尾清理，这里再挡一层内存无界增长。
+_TOOL_NAV_REBINDS_LIMIT = 64
+
+
+def set_tool_nav_turn(turn_id: str | None) -> None:
+    """标记「当前正在执行的是哪个 turn」，工具据此登记导航归属。"""
+    _TOOL_NAV_TURN.set(turn_id)
+
+
+def note_tool_navigation(topic_id: str) -> None:
+    """工具换话题成功：登记本轮归属应跟随到该话题（同一轮后登记的覆盖先前）。"""
+    turn_id = _TOOL_NAV_TURN.get()
+    if not turn_id or not topic_id:
+        return
+    _TOOL_NAV_REBINDS[turn_id] = topic_id
+    if len(_TOOL_NAV_REBINDS) > _TOOL_NAV_REBINDS_LIMIT:
+        for stale in list(_TOOL_NAV_REBINDS)[:-_TOOL_NAV_REBINDS_LIMIT]:
+            _TOOL_NAV_REBINDS.pop(stale, None)
+
+
+def take_tool_navigation(turn_id: str) -> str | None:
+    """取出并清掉本轮的导航登记。"""
+    return _TOOL_NAV_REBINDS.pop(turn_id, None)
+
+
+def clear_tool_navigation(turn_id: str) -> None:
+    """本轮结束（失败 / 取消也算）：不留悬挂登记。"""
+    _TOOL_NAV_REBINDS.pop(turn_id, None)
 
 
 class TopicNotFound(ValueError):

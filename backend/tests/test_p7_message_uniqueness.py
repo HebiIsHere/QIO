@@ -113,20 +113,20 @@ async def test_marker_once_when_model_switches_topic(ctx: AppContext):
     # one request before the tool call, one after: the marker must appear
     # exactly once in each
     assert adapter.marker_count_per_call(MARKER) == [1, 1], adapter.calls
-    # 阶段 1：本轮消息写进**提交时绑定的**来源话题。
-    # 工具切话题只改变后续轮次的位置，不再把已经提交的消息搬走。
+    # 本轮是**模型自己**切的话题：整轮跟着走（阶段 1 的受控例外）。
+    # 来源话题只留切话题之前的历史，当前消息落在目标话题。
     rows = ctx.conn.execute(
         "SELECT m.content FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
-        (source, f"%{MARKER}%"),
+        (target, f"%{MARKER}%"),
     ).fetchall()
     assert [r["content"] for r in rows] == [f"换个话题 {MARKER}"]
-    moved = ctx.conn.execute(
+    stayed = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
-        "WHERE f.topic_id = ? AND m.role = 'user'",
-        (target,),
+        "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
+        (source, f"%{MARKER}%"),
     ).fetchone()["c"]
-    assert moved == 0, "已经提交的用户消息不得被搬动"
+    assert stayed == 0, "工具切话题时这一轮不再留在来源话题"
     # 位置属于后续轮次：锚点确实切到了目标话题
     from agent.graph.anchors import AnchorService
 
@@ -151,18 +151,19 @@ async def test_marker_once_when_model_creates_topic(ctx: AppContext):
         "SELECT id FROM nodes WHERE type = 'topic' AND name = '全新话题XYZ'"
     ).fetchone()
     assert node is not None
+    # 新建话题的那一轮整轮落在新话题里，来源话题不留这一轮
     rows = ctx.conn.execute(
         "SELECT m.content FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
-        (source, f"%{MARKER}%"),
+        (node["id"], f"%{MARKER}%"),
     ).fetchall()
     assert [r["content"] for r in rows] == [f"开启新话题 {MARKER}"]
-    moved = ctx.conn.execute(
+    stayed = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
-        "WHERE f.topic_id = ? AND m.role = 'user'",
-        (node["id"],),
+        "WHERE f.topic_id = ? AND m.role = 'user' AND m.content LIKE ?",
+        (source, f"%{MARKER}%"),
     ).fetchone()["c"]
-    assert moved == 0, "已经提交的用户消息不得被搬动"
+    assert stayed == 0, "建话题时这一轮不再留在来源话题"
     from agent.graph.anchors import AnchorService
 
     assert AnchorService(ctx.conn).get_active().topic_id == node["id"]

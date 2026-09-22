@@ -19,6 +19,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.api.events import EventType, make_event
+from agent.services.navigation import (
+    clear_tool_navigation,
+    set_tool_nav_turn,
+    take_tool_navigation,
+)
 
 # 边界策略的运行模式（阶段 4）：
 # off     不评估；
@@ -56,12 +61,17 @@ class TurnOrchestrator:
         if ctx.notify:
             await app._execute_notify_turn(ctx)
             return
+        # 本轮的工具导航（create_topic / switch_topic）要能被认出来：工具在
+        # turn 派生的 task 里执行，读得到这个标记；别的请求（用户导航）读不到。
+        set_tool_nav_turn(ctx.turn_id)
         # 本轮产生的审批绑定到本 turn（工具不需要各自传参）
         app.approvals.set_context(turn_id=ctx.turn_id)
         try:
             await self._execute_turn(ctx)
         finally:
             app.approvals.set_context(turn_id=None)
+            set_tool_nav_turn(None)
+            clear_tool_navigation(ctx.turn_id)
 
     async def _execute_turn(self, ctx) -> None:
         app = self.app
@@ -454,6 +464,13 @@ class TurnOrchestrator:
         # 阶段 1：回答写进**本轮绑定的**话题 / 片段，不再看「此刻的 Anchor」。
         # 旧实现会在这里把已经提交的用户消息搬到当前 Anchor 所在的话题，
         # 于是「回复在跑、用户改了导航」会把这一轮拆家。
+        #
+        # 唯一的例外是本轮**工具**自己换的话题（阶段 1 的缺口）：那种情况下
+        # 整轮跟着走，判定与落实见 _apply_tool_nav_rebind。用户导航不会登记，
+        # 所以「回复在跑、用户改导航」的保证一点没动。
+        tool_nav_topic = take_tool_navigation(ctx.turn_id)
+        if tool_nav_topic:
+            self._apply_tool_nav_rebind(ctx, tool_nav_topic)
         final_topic = getattr(ctx, "bound_topic", None) or plan.topic
         if final_topic != plan.topic:
             # 只记录，不搬动：绑定的归属优先
@@ -474,6 +491,50 @@ class TurnOrchestrator:
         ).fetchone()
         ctx.position_fragment_id = row["fragment_id"] if row is not None else None
         return final_topic
+
+    def _apply_tool_nav_rebind(self, ctx, topic_id: str) -> bool:
+        """本轮模型自己换了话题：把这一轮整体搬到那个话题。
+
+        两个前提缺一不可，任何一条不成立都退回阶段 1 的默认行为（留在原绑定）：
+
+        * Anchor 仍停在 `topic_id` —— 用户在本轮之后又导航过，用户优先；
+        * 本轮绑定还没收尾（`write_state='open'`）；
+
+        目标片段由 `get_or_create_open` 懒创建（按定义是开放片段）；搬不动
+        （片段已封存 / 消息不存在）就抛 `BindingMismatch` 让本轮显式失败 ——
+        与「归属对不上时绝不就近写」的既有约定一致。
+        """
+        app = self.app
+        binding = app.bindings.binding_for(ctx.turn_id)
+        active = app.navigation.anchors.get_active()
+        if (
+            binding is None
+            or binding.write_state != "open"
+            or active is None
+            or active.topic_id != topic_id
+        ):
+            ctx.trace.write("tool_nav_rebind_skipped", topic_id)
+            return False
+        previous_topic = binding.topic_id
+        if previous_topic == topic_id:
+            return False
+        # 新话题的片段是懒创建的：建话题那一刻还没有片段，这里才落下第一段。
+        target = app.fragments.get_or_create_open(topic_id)
+        app.bindings.rebind_topic_from_tool_nav(ctx.turn_id, topic_id)
+        if ctx.user_message_id:
+            app.memory.move_message(ctx.user_message_id, to_fragment_id=target.id)
+        # 片段靠已有的「懒创建补全」分支补进绑定，不另开一条改片段的路径。
+        app.bindings.record_binding(
+            ctx.turn_id,
+            topic_id,
+            fragment_id=target.id,
+            intent_id=binding.intent_id,
+            intent_version=getattr(ctx, "bound_intent_version", None),
+        )
+        ctx.bound_topic = topic_id
+        ctx.bound_fragment_id = target.id
+        ctx.trace.write("tool_nav_rebind", f"{previous_topic} -> {topic_id}/{target.id}")
+        return True
 
     async def post_turn(self, ctx, adapter, plan: _Plan, final_topic: str) -> None:
         app = self.app

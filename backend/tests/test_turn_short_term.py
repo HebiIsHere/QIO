@@ -87,19 +87,20 @@ async def test_run_turn_injects_short_term_and_switches_topic(ctx: AppContext, t
     ).fetchone()
     assert row is not None and row["weight"] >= 1.0
 
-    # 阶段 1：本轮消息写进提交时绑定的原话题；工具切话题只影响后续轮次。
+    # 本轮是模型自己切的话题：整轮跟着走（阶段 1 的受控例外）。
+    # 来源话题只剩切话题之前的历史，这一轮的提问与回答都落在目标话题。
     count_source = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ?",
         (topic,),
     ).fetchone()["c"]
-    assert count_source >= 2
+    assert count_source == 3, "来源话题只保留切话题前的三条历史"
     count_target = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ?",
         (t2.id,),
     ).fetchone()["c"]
-    assert count_target == 0, "已经提交的轮次不得被搬到新话题"
+    assert count_target == 2, "这一轮的提问与回答都在目标话题"
 
 
 async def test_run_turn_create_topic(ctx: AppContext, topic: str, monkeypatch):
@@ -114,19 +115,19 @@ async def test_run_turn_create_topic(ctx: AppContext, topic: str, monkeypatch):
     ).fetchone()
     assert node is not None
     assert AnchorService(ctx.conn).get_active().topic_id == node["id"]
-    # 本轮消息留在原话题（绑定优先），下一轮才会落到新话题
+    # 新建话题的这一轮整轮落在新话题里；原话题不留这一轮
     stayed = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ?",
         (topic,),
     ).fetchone()["c"]
-    assert stayed >= 2
+    assert stayed == 0
     moved = ctx.conn.execute(
         "SELECT COUNT(*) c FROM messages m JOIN fragments f ON f.id = m.fragment_id "
         "WHERE f.topic_id = ?",
         (node["id"],),
     ).fetchone()["c"]
-    assert moved == 0
+    assert moved == 2
 
 
 async def test_fragment_tier_from_settings(ctx: AppContext, topic: str, monkeypatch):

@@ -177,6 +177,34 @@ class TurnBindingService:
             (_now(), turn_id),
         )
 
+    def rebind_topic_from_tool_nav(self, turn_id: str, topic_id: str) -> TurnBinding:
+        """受控例外：本轮自己的工具换了话题，归属跟着走。
+
+        这是 `record_binding` 唯一允许改话题的入口，因此条件卡得很死：
+
+        * 只能改**还没收尾**的轮次（`write_state='open'`）—— 收尾后再改就是把
+          已归档的轮次搬走，正是阶段 1 要禁止的事；
+        * 只把话题改成新值、片段清空 —— 具体片段随后由 `record_binding` 的
+          「懒创建补全」分支补上，不在这里猜；
+        * 调用方必须先确认 Anchor 仍停在 `topic_id`（用户后续导航优先），
+          否则用 `record_binding` 该报 `BindingConflict` 还是照报。
+        """
+        existing = self.binding_for(turn_id)
+        if existing is None:
+            raise BindingConflict(f"turn {turn_id} 还没有绑定，不能做工具导航改向")
+        if existing.write_state != "open":
+            raise BindingConflict(
+                f"turn {turn_id} 已 {existing.write_state}，不能再改归属"
+            )
+        if existing.topic_id == topic_id:
+            return existing
+        self.conn.execute(
+            "UPDATE turn_bindings SET topic_id = ?, fragment_id = NULL, updated_at = ? "
+            "WHERE turn_id = ?",
+            (topic_id, _now(), turn_id),
+        )
+        return self.binding_for(turn_id)  # type: ignore[return-value]
+
     def mark_status(self, turn_id: str, status: str) -> None:
         """记录终态（completed/failed/cancelled/unavailable），供恢复时判断。"""
         self.conn.execute(

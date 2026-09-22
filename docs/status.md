@@ -113,7 +113,8 @@
 - **Implementation：** `graph/nodes.py`、`graph/edges.py`、`graph/anchors.py`（Anchor 生命周期：位置校验/恢复/推进）、`graph/topics.py`、`graph/layout.py`、`entities/`（识别、抽取、卡片）、`tools/topic_tools.py`、`tools/continue_tool.py`（Agent 显式 `continue_from_fragment`）、`tools/entity_tools.py`
 - **Implementation（2026-09-15 第二阶段 · 话题导航与 Planet 浏览景观）：** 新增 `services/navigation.py::TopicNavigationService` 作为 Anchor 的**唯一写入者**（进入话题 / 创建话题 / 确认切换 / 从历史继续），`/api/anchor`、`switch_topic` / `create_topic` / `continue_from_fragment` 与 turn 编排全部改走它；`tests/test_topic_navigation.py` 里有一条源码扫描守卫测试，任何绕过 Navigator 直接写 anchor 的模块都会让它失败。
   「从历史继续」语义修正为**新建接续片段**（迁移 11 增加 `fragments.source_fragment_id`），旧片段零改动，Focus 读来源片段；新增「待确认切换」：用户明确说「切到 X」直接执行，预测器推测只发 `TOPIC_SWITCH_SUGGESTED` 事件并等用户表态。Planet 侧新增 `services/planet.py`（轻量概览 + 确定性浏览序列 / 可前进可后退的游标）与三层数据接口 `GET /api/planet/overview`、`POST /api/planet/browse`、`GET /api/fragments/{id}/messages`；`GET /api/graph/topics/{id}` 不再内联 Message 原文，`message_count` 改为真实计数。星球不再是「固定球面坐标 + 前 16 个话题」，而是「数据层无上限、视觉层固定 16 个槽位、旋转推动话题流」的浏览景观（前端 `planet/browseSession.ts`、`planet/layoutSlots.ts`、`planet/dotPool.ts`、`planet/browseFlow.ts`）。
-- **Tests：** `backend/tests/test_graph.py`、`test_anchor_event.py`、`test_anchor_lifecycle.py`、`test_continue_fragment.py`、`test_entities_recognizer.py`、`test_entity_cards.py`、`test_entity_correct.py`、`test_entity_extract.py`、`test_entity_inject.py`、`test_entity_retrieval.py`、`test_topic_tools.py`、`test_topic_dedup.py`
+- **Implementation（2026-09-22 · 工具导航归属）：** `services/navigation.py` 增加工具导航登记（`note_tool_navigation` / `take_tool_navigation`，turn 标记走 ContextVar、回传走共享表，因为子 task 的写入不会传回父上下文）；`tools/topic_tools.py` 的 `create_topic` / `switch_topic` 成功后登记，`services/turn_orchestrator.py::persist` 在写回答前落实；`continue_from_fragment` 刻意不登记（只影响后续提交）。用户导航（另一个请求）读不到本轮 turn 标记，登记不上，因此行为不变。
+- **Tests：** `backend/tests/test_graph.py`、`test_anchor_event.py`、`test_anchor_lifecycle.py`、`test_continue_fragment.py`、`test_entities_recognizer.py`、`test_entity_cards.py`、`test_entity_correct.py`、`test_entity_extract.py`、`test_entity_inject.py`、`test_entity_retrieval.py`、`test_topic_tools.py`、`test_topic_dedup.py`、`test_tool_nav_rebind.py`
 - **Tests（2026-09-15 追加）：** `test_planet_browse.py`、`test_planet_api_layers.py`、`test_topic_navigation.py`、`test_topic_switch_policy.py`、`test_anchor_no_advance.py`；前端 `planet/__tests__/browseSession.test.ts`、`layoutSlots.test.ts`、`dotPool.test.ts`、`browseFlow.test.ts`、`stores/__tests__/topicSwitch.test.ts`
 - **Known limitations：** 实体懒创建依赖提及计数阈值；星球视图的**当前展示布局**在前端按稳定种子临时生成（后端不再为渲染提供永久坐标，`nodes.meta.layout` 仅保留兼容）；浏览排序（哈希 + 近期活跃加权 + 曝光抑制）没有做过体验评估与调参；触控板手势与真机 GPU 帧率未验证。详见 `docs/release-planet-phase2.md`。
 - **后续依赖：** M9 的亲和度与 M10 的 `switch_topic` / `create_topic` 都依赖锚点。
@@ -666,11 +667,31 @@ npm test
 
 | 阶段 | Status | 说明 |
 | --- | --- | --- |
-| 1 固定轮次归属 + 安全接续 | completed | 绑定与接续意图两张表；点击历史只登记、执行时才原子交接；队列顺序与幂等有测试；接续提示与取消已上界面 |
+| 1 固定轮次归属 + 安全接续 | completed | 绑定与接续意图两张表；点击历史只登记、执行时才原子交接；队列顺序与幂等有测试；接续提示与取消已上界面。**工具自己换话题是唯一受控例外**：`create_topic` / `switch_topic` 整轮跟着走，用户导航仍一步不动 |
 | 2 封存与派生分开 | completed | 派生任务表（退避、重启恢复、幂等）；封存不等模型；摘要失败不影响对话；索引失败不再回滚封存 |
 | 3 历史关系与路径上下文 | completed | 祖先链（深度/环保护）、路径前提与「仅参考」标注、知识与其他话题实体卡的范围标注、旧数据迁移 16 |
 | 4 边界策略与容量 | partial | 确定性规则（容量 / 明确开工 / 短确认 / 同阶段修正）可运行、三档模式（off/shadow/enabled，默认 shadow）、离线评测；**Embedding 语义信号只做到「有模型就观察」**，尚未校准 |
 | 5 界面适配 | partial | 接续提示与取消、设置页分段文案与单段长度已完成；生成中改选等状态有实现但视觉重检未全部覆盖 |
+
+**阶段 1 的缺口与修复（2026-09-22 · 工具导航归属）**：阶段 1 把「本轮归属在轮前
+固定」落到绑定上时，把「模型自己用 `create_topic` / `switch_topic` 换话题」和
+「用户在本轮跑着的时候改导航」一起排除了 —— 于是建话题的那一轮（用户提问 +
+助手回答）留在**上一个**话题里：新话题的历史从第二轮才开始，追问看不到前提，
+`memory_search` 也搜不到（索引在片段封存时才生成）。现在把两者按来源分开：
+
+- 工具在 turn 派生的 task 里执行，能读到本轮的 `turn_id`；另一个请求（用户导航）
+  读不到，所以登记不上 —— 判定不靠 trace（trace 可关闭，靠它会静默退化）。
+- 工具换话题登记在 `services/navigation.py`（`note_tool_navigation`），由
+  `services/turn_orchestrator.py::persist` 在写回答前落实：先把「本轮自己的工具
+  换过话题」当成一次受控改向（`TurnBindingService.rebind_topic_from_tool_nav`，
+  只允许 `write_state='open'`），再把用户消息搬进新话题的开放片段
+  （`MemoryWriter.move_message`，两个片段的 `start/end_message_id` 都按实际消息
+  重算）。两个前提缺一不可：Anchor 仍停在那个话题、本轮绑定还没收尾；任何一条
+  不成立都退回原绑定（目标片段由 `get_or_create_open` 懒创建）。
+- 用户导航、失败/取消、`continue_from_fragment`（只影响后续提交）行为不变。
+- Tests：`backend/tests/test_tool_nav_rebind.py`（工具建话题 / 工具切话题 / 本轮内
+  用户导航三条），并同步更新了 `test_turn_short_term.py`、
+  `test_p7_message_uniqueness.py` 里原先把旧行为写死的断言。
 
 **向量模型（内置已落地）**：默认内置 **fp32** ONNX（`model.onnx`，约 90MB）。
 构建前用 `scripts/models/fetch_model.py` 把模型（含清单、许可证、声明）抓到
