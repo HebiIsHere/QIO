@@ -168,3 +168,218 @@ def test_registry_specs_declare_narrative_field():
     spec = reg.specs()[0]
     assert NARRATIVE_KEY in spec.parameters["properties"]
     assert spec.parameters["required"] == ["q"]
+
+
+# ---- 审批 explanation：模型只能补"为什么"，事实字段不变 --------------------------
+
+
+class _ApprovalStub:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict]] = []
+
+    async def request(self, kind: str, payload: dict, **kwargs) -> object:
+        from agent.tools.approval import ApprovalResult
+
+        self.requests.append((kind, dict(payload)))
+        return ApprovalResult("appr_1", "approved")
+
+
+class _RecordingBus:
+    """记录 SSE 事件，并对审批请求立即应答（用它跑真实的 ApprovalService）。"""
+
+    def __init__(self) -> None:
+        self.events: list[object] = []
+        self.service = None
+
+    async def publish(self, event) -> None:
+        import asyncio
+
+        self.events.append(event)
+        if getattr(event.type, "value", "") == "APPROVAL_REQUIRED":
+            approval_id = event.data["approval"]["approval_id"]
+            asyncio.get_running_loop().create_task(
+                self.service.respond(approval_id, "approved")
+            )
+
+
+class _NeedsApproval:
+    """构造工具类的小工厂：requires_approval 的普通工具。"""
+
+    @staticmethod
+    def build(name: str = "fs_write"):
+        from agent.tools.base import Tool, ToolResult
+
+        class _Write(Tool):
+            parameters = {"type": "object", "properties": {"path": {"type": "string"}}}
+            requires_approval = True
+
+            async def run(self, **kwargs):
+                return ToolResult(ok=True, content="written")
+
+        _Write.name = name
+        _Write.description = "write"
+        return _Write()
+
+
+async def test_approval_payload_gets_model_explanation():
+    from agent.adapters.base import ToolCall
+    from agent.tools.approval import ApprovalService
+    from agent.tools.registry import ToolRegistry
+
+    bus = _RecordingBus()
+    approvals = ApprovalService(bus)
+    bus.service = approvals
+    reg = ToolRegistry(approvals=approvals)
+    reg.register(_NeedsApproval.build())
+    result = await reg.execute(
+        ToolCall(
+            id="c1",
+            name="fs_write",
+            arguments={"path": "a.txt"},
+            narrative={
+                "kind": "announce",
+                "text": "写入叙事模块",
+                "explanation": "为了让过程说明可恢复。",
+            },
+        )
+    )
+    assert result.ok
+    event = next(e for e in bus.events if e.type.value == "APPROVAL_REQUIRED")
+    assert event.data["approval"]["kind"] == "tool_execution"
+    payload = event.data["approval"]["payload"]
+    assert payload["explanation"] == "为了让过程说明可恢复。"
+    # 事实字段仍是系统生成的，且没有混进模型给的键
+    assert payload["description"] == "想修改当前项目中的一个文件"
+    assert payload["arguments"] == {"path": "a.txt"}
+    assert payload["access"] == ["写入：a.txt"]
+
+
+async def test_approval_keeps_existing_explanation():
+    """工具自己带了 explanation（如工具创建提案）时，模型文案不得覆盖。"""
+    from agent.adapters.base import ToolCall
+    from agent.tools.approval import ApprovalService
+    from agent.tools.base import Tool, ToolResult
+    from agent.tools.registry import ToolRegistry
+
+    bus = _RecordingBus()
+    approvals = ApprovalService(bus)
+    bus.service = approvals
+
+    class _Inner(Tool):
+        name = "dev_submit_tool"
+        description = "submit"
+        parameters = {"type": "object", "properties": {}}
+
+        async def run(self, **kwargs):
+            await self.approvals.request(
+                "tool_create", {"name": "x", "explanation": "提案自带的说明"}
+            )
+            return ToolResult(ok=True, content="ok")
+
+    reg = ToolRegistry(approvals=approvals)
+    tool = _Inner()
+    tool.approvals = approvals
+    reg.register(tool)
+    await reg.execute(
+        ToolCall(
+            id="c1",
+            name="dev_submit_tool",
+            arguments={},
+            narrative={"explanation": "模型想覆盖的说明"},
+        )
+    )
+    event = next(e for e in bus.events if e.type.value == "APPROVAL_REQUIRED")
+    payload = event.data["approval"]["payload"]
+    assert payload["explanation"] == "提案自带的说明"
+
+
+async def test_approval_without_narrative_still_works():
+    from agent.adapters.base import ToolCall
+    from agent.tools.approval import ApprovalService
+    from agent.tools.registry import ToolRegistry
+
+    bus = _RecordingBus()
+    approvals = ApprovalService(bus)
+    bus.service = approvals
+    reg = ToolRegistry(approvals=approvals)
+    reg.register(_NeedsApproval.build())
+    result = await reg.execute(
+        ToolCall(id="c1", name="fs_write", arguments={"path": "a.txt"})
+    )
+    assert result.ok
+    event = next(e for e in bus.events if e.type.value == "APPROVAL_REQUIRED")
+    assert event.data["approval"]["kind"] == "tool_execution"
+    payload = event.data["approval"]["payload"]
+    assert str(payload.get("explanation") or "") == ""
+
+
+async def test_parallel_calls_do_not_leak_explanation():
+    """并行调用各自持有自己的叙事：一个带 explanation，一个不带。"""
+    import asyncio
+
+    from agent.adapters.base import ToolCall
+    from agent.tools.approval import ApprovalService
+    from agent.tools.registry import ToolRegistry
+
+    bus = _RecordingBus()
+    approvals = ApprovalService(bus)
+    bus.service = approvals
+    reg = ToolRegistry(approvals=approvals)
+    reg.register(_NeedsApproval.build("tool_a"))
+    reg.register(_NeedsApproval.build("tool_b"))
+    await asyncio.gather(
+        reg.execute(
+            ToolCall(
+                id="c1",
+                name="tool_a",
+                arguments={"path": "a.txt"},
+                narrative={"explanation": "A 需要说明"},
+            )
+        ),
+        reg.execute(
+            ToolCall(
+                id="c2",
+                name="tool_b",
+                arguments={"path": "b.txt"},
+                narrative={"explanation": "B 需要说明"},
+            )
+        ),
+        reg.execute(ToolCall(id="c3", name="tool_a", arguments={"path": "c.txt"})),
+    )
+    by_call = {}
+    for event in [e for e in bus.events if e.type.value == "APPROVAL_REQUIRED"]:
+        payload = event.data["approval"]["payload"]
+        by_call.setdefault(str(payload.get("arguments")), payload)
+    assert by_call["{'path': 'a.txt'}"]["explanation"] == "A 需要说明"
+    assert by_call["{'path': 'b.txt'}"]["explanation"] == "B 需要说明"
+    assert str(by_call["{'path': 'c.txt'}"].get("explanation") or "") == ""
+
+
+async def test_narrative_never_reaches_tool_arguments():
+    """_qio 在 adapter 层就被剥离：工具收到的 kwargs 里没有它。"""
+    from agent.adapters.base import ToolCall
+    from agent.tools.base import Tool, ToolResult
+    from agent.tools.registry import ToolRegistry
+
+    seen: list[dict] = []
+
+    class _Echo(Tool):
+        name = "echo"
+        description = "echo"
+        parameters = {"type": "object", "properties": {"q": {"type": "string"}}}
+
+        async def run(self, **kwargs):
+            seen.append(dict(kwargs))
+            return ToolResult(ok=True, content="ok")
+
+    reg = ToolRegistry()
+    reg.register(_Echo())
+    await reg.execute(
+        ToolCall(
+            id="c1",
+            name="echo",
+            arguments={"q": "hi"},
+            narrative={"kind": "announce", "text": "打招呼"},
+        )
+    )
+    assert seen == [{"q": "hi"}]

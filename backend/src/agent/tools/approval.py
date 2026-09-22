@@ -120,6 +120,7 @@ class ApprovalService:
         turn_id: str | None = None,
         session_id: str | None = None,
     ) -> ApprovalResult:
+        payload = self._with_narrative_explanation(payload)
         approval_id = f"appr_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ApprovalResult] = loop.create_future()
@@ -228,3 +229,26 @@ class ApprovalService:
             )
         )
         return True
+
+    # -- model-authored explanation ---------------------------------------
+
+    @staticmethod
+    def _with_narrative_explanation(payload: dict) -> dict:
+        """把模型写的 explanation 合并进审批载荷。
+
+        只补一个键，并且只在载荷自己没有 explanation 时补：
+
+        * 系统生成的事实字段（description / access / capabilities / scope / detail /
+          arguments …）一个都不动，模型也无法通过载荷提交它们；
+        * 工具创建流程自带的说明（tool_create 的提案 explanation）优先，不被覆盖；
+        * 拿不到模型说明时保持原样 —— 审批照常发起与应答。
+        """
+        out = dict(payload or {})
+        if str(out.get("explanation") or "").strip():
+            return out
+        from agent.tools.registry import current_narrative
+
+        narrative = current_narrative()
+        if narrative is not None and narrative.explanation:
+            out["explanation"] = narrative.explanation
+        return out

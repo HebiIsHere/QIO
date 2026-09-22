@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from agent.adapters.base import ToolCall, ToolSpec
-from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS
+from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS, Narrative, parse_narrative
 from agent.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,18 @@ EVENT_POST_EXECUTE = "tool/post-execute"
 EVENT_RESULT = "tool/result"
 EVENT_END = "tool/end"
 EVENT_UNREGISTERED = "tool/unregistered"
+
+# 当前正在执行的工具调用所携带的叙事（见 core/narrative.py）。
+# 用途只有一个：工具内部发起审批时（tool_execution / computer / create_topic），
+# ApprovalService 可以取到模型写的 explanation。并行调用各自 task 隔离，不会串味。
+_current_narrative: ContextVar[Narrative | None] = ContextVar(
+    "qio_current_narrative", default=None
+)
+
+
+def current_narrative() -> Narrative | None:
+    """当前工具调用携带的叙事（没有则 None）。"""
+    return _current_narrative.get()
 
 
 class ToolRegistry:
@@ -140,6 +153,15 @@ class ToolRegistry:
         外部取消（Task.cancel）会把 CancelledError 转成 aborted 失败结果，
         保证 per-call 隔离，并让 TOOL_END(ok=false, aborted) 照常发出。
         """
+        # 叙事只用于「模型想怎么表达」，不参与任何执行/风险/权限判断；
+        # 在这里挂到 ContextVar 上，工具内部发起的审批可以取到 explanation。
+        token = _current_narrative.set(parse_narrative(getattr(call, "narrative", None)))
+        try:
+            return await self._execute_call(call)
+        finally:
+            _current_narrative.reset(token)
+
+    async def _execute_call(self, call: ToolCall) -> ToolResult:
         tool = self._tools.get(call.name)
         if tool is None:
             result = ToolResult(
