@@ -1,6 +1,6 @@
 [project]
 name = "qio"
-version = "0.1.2"
+version = "0.1.3"
 description = "Agent with agentloop, dual memory-knowledge domains, self-created tools"
 requires-python = ">=3.11"
 dependencies = [
