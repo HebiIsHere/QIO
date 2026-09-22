@@ -56,6 +56,15 @@ describe("错误分类", () => {
     expect(out.kind).toBe("unknown");
     expect(out.message).toContain("boom");
   });
+
+  it("任何分类都必须带出原始信息（不许用我们猜的原因盖掉真因）", () => {
+    // 实测：插件连不上、代理不对、清单解析失败都会报同一句
+    // "Could not fetch a valid release JSON from the remote"
+    const out = describeUpdateError(
+      new Error("Could not fetch a valid release JSON from the remote"),
+    );
+    expect(out.message).toContain("Could not fetch a valid release JSON from the remote");
+  });
 });
 
 describe("更新状态机", () => {
@@ -77,7 +86,8 @@ describe("更新状态机", () => {
     await store.check();
     expect(store.phase).toBe("failed");
     expect(store.errorKind).toBe("network");
-    expect(store.message).toContain("网络");
+    expect(store.message).toContain("更新源请求失败");
+    expect(store.message).toContain("network unreachable"); // 原始信息必须可见
   });
 
   it("发现新版本 → available，但不自动下载", async () => {

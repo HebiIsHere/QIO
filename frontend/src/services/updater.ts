@@ -51,13 +51,20 @@ export function compareVersions(a: string, b: string): number {
 }
 
 const ERROR_TEXT: Record<UpdateErrorKind, string> = {
-  network: "网络不可达：连不上更新源，请检查网络或稍后重试",
+  network: "更新源请求失败：可能是网络或代理问题",
   signature: "更新包校验未通过，已放弃安装（不会安装未经签名的包）",
   installer: "安装器启动失败：更新没有装上去，可以重试",
   unknown: "更新失败",
 };
 
-/** 把插件抛出的错误分类成人话。分类错了会骗用户，所以宁可落入 unknown 也不猜。 */
+/**
+ * 把插件抛出的错误分类成人话。
+ *
+ * 教训（2026-09-22 实测）：Tauri updater 把底层原因统一成
+ * "Could not fetch a valid release JSON from the remote" —— 连不上、代理不对、
+ * 清单解析失败共用这一句。所以分类只用来决定措辞，**原始文本必须一起显示**，
+ * 否则用户看到的是我们猜的原因，而不是真实原因。
+ */
 export function describeUpdateError(error: unknown): { kind: UpdateErrorKind; message: string } {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const text = raw.toLowerCase();
@@ -77,10 +84,8 @@ export function describeUpdateError(error: unknown): { kind: UpdateErrorKind; me
     kind = "installer";
   }
   const base = ERROR_TEXT[kind];
-  return {
-    kind,
-    message: kind === "unknown" && raw ? `${base}：${raw}` : base,
-  };
+  const detail = raw.trim().replace(/\s+/g, " ").slice(0, 200);
+  return { kind, message: detail ? `${base}（原始信息：${detail}）` : base };
 }
 
 /**

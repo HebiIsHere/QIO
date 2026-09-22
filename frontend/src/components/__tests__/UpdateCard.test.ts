@@ -68,7 +68,8 @@ describe("更新卡片", () => {
     });
     await store.check();
     expect(w.text()).not.toContain("已是最新");
-    expect(w.text()).toContain("网络不可达");
+    expect(w.text()).toContain("更新源请求失败");
+    expect(w.text()).toContain("原始信息"); // 真因必须显示出来，不能被我们的措辞盖掉
     expect(w.find("[data-action='check']").text()).toContain("重试");
   });
 
