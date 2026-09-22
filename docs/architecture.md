@@ -448,6 +448,7 @@ npm test
 | `ASSISTANT` | `core/loop.py` | `stores/events.ts` | 是 | 流式正文 / 工具前中间话 |
 | `TOOL_START` | `core/loop.py`（转发 `tool/start`） | 工具卡 | 是 | 工具开始执行（卡片立即进入运行态） |
 | `TOOL_END` | 同上（`tool/end`） | 同一张工具卡（按 `call_id`） | 是 | 结果 / 失败原因 / 耗时，原地更新 |
+| `NARRATIVE` | `services/app.py::_on_narrative`（由 `AgentLoop` 的叙事 sink 触发） | 叙事抽屉（`NarrativeStage.vue`） | 是 | 模型自主决定的过程说明（announce / progress / warning / result）；**不是**工具事实 |
 | `SUBAGENT_STATUS` | `tools/task_manager.py` | 独立任务卡（按 `task_id`） | 是 | 独立任务 queued/running/done/failed |
 | `TOOL_CREATE_STATUS` | `tools/dev_tools.py`、`tools/lifecycle.py` | 工具创建卡（按 `group_id`） | 是 | 同一张卡的创建阶段推进 |
 | `KNOWLEDGE_CANDIDATE` | `services/memory_lifecycle.py` + turn 收尾 | 对话内确认卡 | 是（回答完成后） | 高影响知识的保存 / 修改 / 忽略 |
@@ -465,6 +466,25 @@ npm test
 `MEMORY_INJECT` 在第三阶段被**删除**：用户不需要每次知道「QIO 注入了 4 条记忆」。
 需要调试时看 Developer Mode 的单轮详情（`GET /api/traces/{turn_id}` 的 `injection`：
 哪些 Fragment / Knowledge / Entity 进入了上下文）。
+
+### 12.1.1 执行叙事（Execution Narrative）
+
+模型可以在工具调用参数里携带可选保留字段 `_qio`（`kind` / `text` / `explanation`）。
+它表达的只是"这一步想让用户知道什么"，与工具事实是**两套载荷**：
+
+* adapter 解析时就把 `_qio` 剥离，工具参数、风险判断、沙箱判定、审批摘要都看不到它；
+* `AgentLoop` 每批工具调用最多输出一条叙事，经 `AppContext._on_narrative` **先落库再广播**
+  （`messages` 行：`role='assistant'`、`content_type='narrative'`），
+  批次结束由系统把真实调用结果补写进同一行的 `raw.calls`；
+* 前端每个叙事行 = 一个**默认收起**的抽屉头，收纳它之后、下一行叙事之前的调用卡；
+  折叠头由系统状态决定显示 `N 次调用` / `N 运行中` / `N 失败` / `N 已取消`；
+* 恢复：`GET /api/runtime/state.narratives` 补齐断线期间丢失的叙事，
+  历史分页返回叙事行与 `raw`（kind + 系统生成的调用摘要），前端按 `narrative_id` 去重。
+
+审批的 `explanation` 复用同一个信封：`ApprovalService.request` 只在载荷自己没有
+explanation 时补上模型文案，`description` / `access` / `capabilities` / `scope` /
+`detail` 等系统字段一个都不动。详细设计见
+`docs/superpowers/specs/2026-09-22-execution-narrative-design.md`。
 
 ### 12.2 用户可见状态的层级
 

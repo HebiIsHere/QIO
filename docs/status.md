@@ -553,6 +553,47 @@
 
 ---
 
+### P14 — Execution Narrative（执行叙事层，2026-09-22）
+
+- **Status：** completed
+- **Implementation（表达与事实分离）：** 新增 `agent/core/narrative.py`：`Narrative(kind, text, explanation, silent)`
+  与白名单解析 `parse_narrative`（只认 `kind` / `text` / `explanation`，其它键丢弃、长度截断、
+  过 `trace/redact.redact_text`）。模型在工具调用参数里携带保留字段 `_qio`；
+  `NativeAdapter` / `TextAdapter` 解析时用 `split_narrative_arguments` **剥离**它，
+  所以工具参数、风险判断、沙箱判定、审批摘要都看不到模型文案。
+  `ToolRegistry.specs()` 在每份 parameters 副本里声明可选的 `_qio` 属性（不加入 required）。
+- **Implementation（一批一条 + 先说明再执行）：** `AgentLoop` 新增 `narrative_sink` / `narrative_settler`；
+  每个工具批次在取消检查之后、真正执行之前取**第一条有效叙事**，注入的 sink 先落库再广播
+  `NARRATIVE`，批次结束后把真实终态与耗时补写进同一行的 `raw.calls`（系统生成，模型改不了）。
+  子 agent / 维护循环不注入 sink，因此不会往主对话写过程说明。
+- **Implementation（审批 explanation）：** `ToolRegistry.execute` 用 ContextVar 挂上"当前调用的叙事"
+  （并行调用各 task 隔离）；`ApprovalService.request` 只在载荷自己没有 explanation 时补上模型文案。
+  `description` / `access` / `capabilities` / `scope` / `detail` / 事件载荷一个字段都不动，
+  审批的单次使用、过期、摘要校验、拒绝/超时/取消语义完全不变。
+- **Implementation（落库与恢复）：** 叙事写入 `messages`（`role='assistant'`、`content_type='narrative'`、
+  `raw={narrative, calls}`），不新增迁移；`GET /api/runtime/state.narratives` 与历史分页
+  （`raw` 一起返回）构成恢复路径，前端按 `narrative_id` 三层去重；
+  `FragmentManager.content_tokens` 排除叙事行，展示文本不会让片段提前封存。
+- **Implementation（前端）：** 新增 `NarrativeStage.vue`：一行叙事 = 一个**默认收起**的抽屉头，
+  收纳它之后、下一行叙事之前的调用卡；折叠头由系统状态显示
+  `N 次调用 · 耗时` / `N 运行中` / `N 失败` / `N 已取消`（异常不会因为收纳而消失）；
+  历史里抽屉内容来自 `raw.calls` 的系统生成调用摘要。机械提示「正在使用工具」已移除，
+  `MessageStream` 不再显示它；`ApprovalModal.vue` 把模型说明单独成段并标注「QIO 的说明」。
+- **Tests：** `backend/tests/test_execution_narrative.py`（silent / 执行前顺序 / 批量合并 /
+  审批 explanation 与事实不变 / 并行不串味 / `_qio` 不进参数 / 批次结算 / runtime 与历史恢复 /
+  容量排除 / 完整一轮端到端）、`frontend/src/stores/__tests__/executionNarrative.test.ts`、
+  `frontend/src/components/__tests__/ExecutionNarrativeDrawer.test.ts`、
+  `frontend/src/components/__tests__/ApprovalModal.test.ts`。
+- **Known limitations：**
+  - 工具卡本身仍**不落库**（沿用既有边界）：历史里抽屉打开看到的是系统生成的调用摘要，
+    不是原始工具输出；只有实时轮次里能展开工具卡详情。
+  - 叙事是展示记录，不参与记忆整理判断；它会计入片段的摘要输入但不计入容量。
+  - 模型可以不写叙事（silent 是默认）；此时不会出现任何过程文案，只保留工具卡。
+  - 叙事在取消/失败的轮次里会留在历史中（如实反映"说明过、没做完"）。
+- **后续依赖：** 无下游。设计见 `docs/superpowers/specs/2026-09-22-execution-narrative-design.md`。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
