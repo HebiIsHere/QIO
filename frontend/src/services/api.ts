@@ -276,6 +276,25 @@ export const api = {
         ended_at?: string | null;
         error_summary?: string | null;
       }[];
+      /**
+       * 本轮的执行叙事（模型文案 + 系统生成的调用摘要）。
+       * 断线期间丢失的叙事在这里补齐，客户端按 `narrative_id` 去重。
+       */
+      narratives?: {
+        narrative_id: string;
+        turn_id?: string | null;
+        kind?: string;
+        text?: string;
+        calls?: {
+          call_id?: string;
+          tool?: string;
+          title?: string;
+          status?: string;
+          error?: string | null;
+          duration_ms?: number | null;
+        }[];
+        created_at?: string | null;
+      }[];
     }>("/api/runtime/state"),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
@@ -356,6 +375,8 @@ export const api = {
         content: string;
         content_type: string;
         created_at: string;
+        /** 叙事行的系统元数据（JSON 字符串）：kind 与系统生成的调用摘要 */
+        raw?: string;
       }[];
       /** 还有更早的历史可以加载 */
       has_more?: boolean;
@@ -375,6 +396,7 @@ export const api = {
         content: string;
         content_type: string;
         created_at: string;
+        raw?: string;
       }[];
       has_more: boolean;
       next_before: string | null;

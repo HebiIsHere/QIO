@@ -37,6 +37,103 @@ export interface TurnQueueSnapshot {
  */
 export type ToolStatus = "running" | "success" | "failed" | "cancelled" | "unknown";
 
+/** 执行叙事（Execution Narrative）的四种形态，见 spec 2026-09-22。 */
+export type NarrativeKind = "announce" | "progress" | "warning" | "result";
+
+/** 历史里抽屉内容：**系统生成**的调用摘要（不是模型文案）。 */
+export interface NarrativeCallRecord {
+  callId: string;
+  tool: string;
+  title?: string;
+  status: "success" | "failed" | "cancelled";
+  error?: string | null;
+  durationMs?: number | null;
+}
+
+/** 消息流里的一个渲染分组：叙事行 + 它收纳的调用卡。 */
+export type TurnItemGroup =
+  | { kind: "stage"; narrative: StreamMessage; calls: StreamMessage[] }
+  | { kind: "loose"; items: StreamMessage[] };
+
+/** 被叙事抽屉收纳的卡片类型（普通工具 / 独立任务 / 工具创建）。 */
+const CALL_CARD_ROLES = new Set<StreamMessage["role"]>(["tool", "subagent", "tool_creation"]);
+
+/**
+ * 把一轮里的消息分成「叙事抽屉」与「散装消息」。
+ *
+ * 归属规则：一行叙事收纳**它之后、下一行叙事之前**的调用卡；轮次开头（还没有任何叙事）
+ * 的调用卡保持散装 —— 那正是模型选择静默的那一批，不该被硬塞进某一行叙事里。
+ */
+export function groupTurnItems(items: StreamMessage[]): TurnItemGroup[] {
+  const groups: TurnItemGroup[] = [];
+  let stage: { kind: "stage"; narrative: StreamMessage; calls: StreamMessage[] } | null = null;
+  let loose: StreamMessage[] = [];
+  const flush = () => {
+    if (loose.length) {
+      groups.push({ kind: "loose", items: loose });
+      loose = [];
+    }
+  };
+  for (const item of items) {
+    if (item.role === "narrative") {
+      flush();
+      stage = { kind: "stage", narrative: item, calls: [] };
+      groups.push(stage);
+      continue;
+    }
+    if (CALL_CARD_ROLES.has(item.role) && stage) {
+      stage.calls.push(item);
+      continue;
+    }
+    stage = null;
+    loose.push(item);
+  }
+  flush();
+  return groups;
+}
+
+function normalizeNarrativeKind(raw: unknown): NarrativeKind {
+  return raw === "announce" || raw === "warning" || raw === "result" ? raw : "progress";
+}
+
+function narrativeCallRecords(raw: unknown): NarrativeCallRecord[] {
+  if (!Array.isArray(raw)) return [];
+  const out: NarrativeCallRecord[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const status = String(row.status ?? "");
+    out.push({
+      callId: String(row.call_id ?? ""),
+      tool: String(row.tool ?? ""),
+      title: row.title === undefined ? undefined : String(row.title),
+      status: status === "failed" || status === "cancelled" ? status : "success",
+      error: row.error === undefined || row.error === null ? null : String(row.error),
+      durationMs: typeof row.duration_ms === "number" ? row.duration_ms : null,
+    });
+  }
+  return out;
+}
+
+/** 历史行的 `raw`（JSON 字符串）→ 叙事元数据；解析失败一律当作"没有"。 */
+function parseNarrativeRaw(raw?: string | null): {
+  kind?: NarrativeKind;
+  calls?: NarrativeCallRecord[];
+} {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const meta = (parsed.narrative ?? {}) as Record<string, unknown>;
+    const calls = narrativeCallRecords(parsed.calls);
+    return {
+      ...(meta.kind === undefined ? {} : { kind: normalizeNarrativeKind(meta.kind) }),
+      ...(calls.length ? { calls } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 /**
  * 一份工具执行事实（`/api/runtime/state.tools`：活工具 + 最近结束的工具）。
  *
@@ -125,7 +222,7 @@ export interface StreamMessage {
    * 但它们是三种不同的东西：一次工具调用、一个独立任务、一条工具创建流程。
    * 用户必须能分辨（spec 第 61~65、20~31 条）。
    */
-  role: "user" | "assistant" | "tool" | "subagent" | "tool_creation" | "system";
+  role: "user" | "assistant" | "tool" | "subagent" | "tool_creation" | "system" | "narrative";
   content: string;
   contentType: string;
   createdAt: string;
@@ -136,6 +233,12 @@ export interface StreamMessage {
   presentation?: ToolPresentation | null;
   /** 工具调用标识：TOOL_START / TOOL_END 按它更新同一张卡，不再产生第二张 */
   callId?: string;
+  /** 叙事形态（role === "narrative" 时使用） */
+  narrativeKind?: NarrativeKind;
+  /** 这一行叙事覆盖的调用（系统给的 call_ids，用于抽屉归属） */
+  narrativeCallIds?: string[];
+  /** 历史抽屉内容：系统生成的调用摘要（实时轮次里为空，用工具卡） */
+  narrativeCalls?: NarrativeCallRecord[];
   /** 工具正在执行（卡片显示「运行中」，而不是假装已完成） */
   toolRunning?: boolean;
   /**
@@ -687,7 +790,9 @@ export const useSessionStore = defineStore("session", {
         return false;
       }
     },
-    pushMessage(msg: Omit<StreamMessage, "id" | "createdAt">) {
+    pushMessage(
+      msg: Omit<StreamMessage, "id" | "createdAt"> & { id?: string; createdAt?: string },
+    ) {
       const item: StreamMessage = {
         id: this._nextId(),
         createdAt: new Date().toISOString(),
@@ -782,6 +887,99 @@ export const useSessionStore = defineStore("session", {
         presentation,
       });
     },
+    // -- 执行叙事（Execution Narrative） --------------------------------
+
+    /**
+     * 一条叙事到达（实时事件）。
+     *
+     * 去重是必须的：断线重连会补发、页面恢复可能重放，同一条叙事只能出现一次。
+     * 身份用后端落库的消息 id（`narrative_id`）；另外再做一层「同 turn 同 kind 同 text」
+     * 的内容级兜底（历史里不同帧可能带来不同的临时 id）。
+     */
+    applyNarrative(payload: {
+      narrative_id?: string;
+      turn_id?: string | null;
+      kind?: string;
+      text?: string;
+      call_ids?: string[];
+      created_at?: string | null;
+    }) {
+      const id = String(payload.narrative_id ?? "");
+      const text = String(payload.text ?? "").trim();
+      const turnId = payload.turn_id ? String(payload.turn_id) : (this.activeTurnId ?? null);
+      // 只有 explanation 的叙事不产生过程说明行（它只服务审批窗口）。
+      if (!id || !text) return;
+      if (this.messages.some((m) => m.id === id)) return;
+      const kind = normalizeNarrativeKind(payload.kind);
+      const duplicate = this.messages.some(
+        (m) =>
+          m.role === "narrative" &&
+          m.narrativeKind === kind &&
+          m.content === text &&
+          (m.turnId ?? null) === turnId,
+      );
+      if (duplicate) return;
+      const callIds = Array.isArray(payload.call_ids) ? payload.call_ids.map(String) : [];
+      this.pushMessage({
+        id,
+        createdAt: payload.created_at ?? new Date().toISOString(),
+        role: "narrative",
+        content: text,
+        contentType: "narrative",
+        narrativeKind: kind,
+        ...(callIds.length ? { narrativeCallIds: callIds } : {}),
+        ...(turnId ? { turnId } : {}),
+      });
+    },
+
+    /**
+     * RESYNC 恢复：把服务器已经落库的叙事补进消息流。
+     *
+     * 按 `narrative_id` 去重，并按 `created_at` 插到时间正确的位置 ——
+     * 叙事必须排在它说明的那次工具调用之前，不能挂在末尾。
+     */
+    mergeNarratives(
+      list:
+        | {
+            narrative_id?: string;
+            turn_id?: string | null;
+            kind?: string;
+            text?: string;
+            calls?: { call_id?: string; tool?: string; title?: string; status?: string; error?: string | null; duration_ms?: number | null }[];
+            created_at?: string | null;
+          }[]
+        | undefined,
+    ) {
+      for (const item of list ?? []) {
+        const id = String(item?.narrative_id ?? "");
+        const text = String(item?.text ?? "").trim();
+        if (!id || !text) continue;
+        if (this.messages.some((m) => m.id === id)) continue;
+        const kind = normalizeNarrativeKind(item.kind);
+        const calls = narrativeCallRecords(item.calls);
+        const at = Date.parse(String(item.created_at ?? ""));
+        const message: StreamMessage = {
+          id,
+          role: "narrative",
+          content: text,
+          contentType: "narrative",
+          createdAt: String(item.created_at ?? new Date().toISOString()),
+          narrativeKind: kind,
+          ...(calls.length ? { narrativeCalls: calls } : {}),
+          ...(item.turn_id ? { turnId: String(item.turn_id) } : {}),
+          fresh: false,
+        };
+        const index = Number.isFinite(at)
+          ? this.messages.findIndex((m) => {
+              const other = Date.parse(m.createdAt);
+              return Number.isFinite(other) && other > at;
+            })
+          : -1;
+        if (index < 0) this.messages.push(message);
+        else this.messages.splice(index, 0, message);
+      }
+    },
+
     /**
      * 工具开始执行（TOOL_START）。
      *
@@ -1084,7 +1282,23 @@ export const useSessionStore = defineStore("session", {
       content: string;
       content_type: string;
       created_at: string;
+      raw?: string;
     }): StreamMessage {
+      if (m.content_type === "narrative") {
+        // 历史里的叙事行：模型文案 + 系统生成的调用摘要（工具卡本身不进历史）
+        const meta = parseNarrativeRaw(m.raw);
+        return {
+          id: m.id,
+          role: "narrative",
+          content: m.content,
+          contentType: m.content_type,
+          createdAt: m.created_at,
+          topicName: this.topicName,
+          fresh: false,
+          narrativeKind: meta.kind ?? "progress",
+          ...(meta.calls ? { narrativeCalls: meta.calls } : {}),
+        };
+      }
       return {
         id: m.id,
         role: m.role as StreamMessage["role"],

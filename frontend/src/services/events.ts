@@ -31,6 +31,8 @@ export const EVENT_TYPES = [
   "TURN_QUEUE",
   "TOOL_START",
   "TOOL_END",
+  // 模型自主决定的过程说明（announce / progress / warning / result）
+  "NARRATIVE",
   "ASSISTANT",
   "ANCHOR",
   "TOPIC_SWITCH_SUGGESTED",

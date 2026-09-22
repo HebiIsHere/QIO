@@ -364,6 +364,25 @@ export const useEventStore = defineStore("events", {
           }
           break;
         }
+        case "NARRATIVE": {
+          /**
+           * 执行叙事：模型自己决定说的一句话（announce / progress / warning / result）。
+           *
+           * 与工具事实完全分开：这里只落一条叙事消息，绝不改动工具卡、风险或审批。
+           * 归属规则同工具事件 —— 子任务内部的过程说明不进主对话。
+           */
+          const d = event.data as Record<string, unknown>;
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
+          session.applyNarrative({
+            narrative_id: String(d.narrative_id ?? ""),
+            turn_id: (d.turn_id as string | null) ?? null,
+            kind: String(d.kind ?? "progress"),
+            text: String(d.text ?? ""),
+            call_ids: Array.isArray(d.call_ids) ? (d.call_ids as string[]) : [],
+            created_at: (d.created_at as string | null) ?? null,
+          });
+          break;
+        }
         case "TOOL_CREATE_STATUS": {
           // 工具创建是一条流程、一张卡：同一 group_id 原地推进
           const d = event.data as Record<string, unknown>;
@@ -656,6 +675,21 @@ export const useEventStore = defineStore("events", {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
+      narratives?: {
+        narrative_id?: string;
+        turn_id?: string | null;
+        kind?: string;
+        text?: string;
+        calls?: {
+          call_id?: string;
+          tool?: string;
+          title?: string;
+          status?: string;
+          error?: string | null;
+          duration_ms?: number | null;
+        }[];
+        created_at?: string | null;
+      }[];
     }) {
       const session = useSessionStore();
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
@@ -676,6 +710,8 @@ export const useEventStore = defineStore("events", {
         });
       }
       session.reconcileTools(state.tools ?? []);
+      // 叙事是历史事实：服务器知道的都要回来，且按 id 去重（不回放到末尾，按时间插入）
+      session.mergeNarratives(state.narratives ?? []);
     },
     async sendTest(type: EventType) {
       await publishTestEvent(type, { smoke: Date.now() });
