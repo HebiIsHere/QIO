@@ -594,6 +594,37 @@
 
 ---
 
+### P15 — 应用内联网更新（Updater，2026-09-22）
+
+- **Status：** partial（代码与单测已就位；签名构建与真机端到端更新**尚未运行**，见下方限制）
+- **Implementation（运行时）：** Tauri 官方 `tauri-plugin-updater`（检查 / 下载 / **签名校验** / 安装）
+  + `tauri-plugin-process`（装完重启）；`main.rs` 注册两个插件，`capabilities/default.json` 增加
+  `updater:default` 与 `process:allow-restart`，`tauri.conf.json` 开启 `bundle.createUpdaterArtifacts`
+  并配置 `plugins.updater`（endpoints = GitHub Releases 的 latest.json，pubkey = 用户生成的 minisign 公钥）。
+  更新请求在 Rust 侧发出，**前端 CSP 未放宽**。
+- **Implementation（前端）：** `services/updater.ts`（唯一插件入口 + 版本比较 + 错误分类）、
+  `stores/updater.ts`（状态机：idle/checking/up-to-date/available/downloading/ready/failed）、
+  `components/UpdateCard.vue`（设置 → 数据与维护）；启动后静默检查一次 + 每 24 小时一次，
+  设置里可关；**只检查不自动下载**，下载与安装必须用户点击；浏览器开发预览不触发检查。
+- **Implementation（发布侧）：** `scripts/build_installer.ps1` 增加第 4 步：校验签名环境变量 →
+  产出 `.sig` → 生成 `latest.json` → 复制 exe/.sig/latest.json 到 `dist/` → 汇总 `SHA256SUMS.txt`；
+  新增 `scripts/publish_release.ps1`（gh release create + 上传三个资产）。
+- **Tests：** `frontend/src/stores/__tests__/updater.test.ts`（版本比较、错误分类、
+  状态机正反两条路径、检查失败不得显示成"已是最新"、只有用户点击才 relaunch）、
+  `frontend/src/components/__tests__/UpdateCard.test.ts`（各状态按钮文案与可用性）。
+- **Known limitations：**
+  - **端到端更新尚未在真机验证**：签名构建需要私钥口令（只在拥有者手里），
+    本地假更新源与真实 Release 两条链路都还没跑过；在那之前不能把 Status 记为 completed；
+  - 0.1.2 → 0.1.3 必须**手动安装一次**（0.1.2 里没有更新器代码）；
+  - 更新包未做 Authenticode 代码签名，安装时 Windows 可能仍提示「已保护你的电脑」；
+  - 私钥与口令是信任根：泄露即等于所有已安装实例可被投毒；丢失即无法再发签名更新；
+  - 不做差分更新、不做 beta/stable 多通道、不做回滚。
+- **后续依赖：** 发布 v0.1.3 时补齐端到端验证。
+  设计与实现计划见 `docs/superpowers/specs/2026-09-22-updater-design.md`、
+  `docs/superpowers/plans/2026-09-22-updater.md`。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：

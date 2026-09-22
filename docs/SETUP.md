@@ -89,6 +89,41 @@ pwsh -File scripts/build_installer.ps1
 实测踩过一次：安装包里的后端比源码早一个多月，内置模型加载失败、静默退回 BM25，
 而安装包看起来完全是好的。`build_installer.ps1` 就是为这件事准备的（顺序错/漏跑会构建失败）。
 
+### 发一版更新（应用内更新，2026-09-22 起）
+
+从 v0.1.3 起，QIO 支持在应用内「检查 → 下载 → 安装 → 重启」。更新源是 GitHub Releases：
+
+```
+https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json
+```
+
+发一版的完整顺序：
+
+```powershell
+# 1) 改版本号（6 处：tauri.conf.json / Cargo.toml+lock / package.json+lock /
+#    pyproject.toml / agent/__init__.py / api/server.py 的 FastAPI title），
+#    并写 docs/releases/vX.Y.Z.md
+
+# 2) 让签名私钥与口令进环境（只在你本机；绝不写进仓库）
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH     = "C:\Users\zxy\Documents\Front agent\dist\qio-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<你的口令>"
+
+# 3) 构建（取模型 → 重建 sidecar → tauri build → 签名 + latest.json + 落 dist/）
+pwsh -File scripts/build_installer.ps1
+
+# 4) 发布到 GitHub Releases（上传 exe / exe.sig / latest.json 三个资产）
+pwsh -File scripts/publish_release.ps1 -Version X.Y.Z
+```
+
+两条硬规则：
+
+* **缺私钥或口令就构建失败** —— 绝不产出没有签名的更新包（客户端会拒绝安装未签名的包）；
+* 私钥文件与口令是这套机制的信任根：私钥泄露 = 所有已安装的 QIO 都能被投毒。
+  私钥不进仓库、不进构建产物、不进日志；口令丢了也签不出后续更新。
+
+**一次性迁移**：当前已发布的 0.1.2 里没有更新器代码，所以 0.1.2 → 0.1.3 必须**手动安装**一次；
+从 0.1.3 起才能在应用内一键更新。
+
 ### 一台干净的 Windows 电脑需要什么
 
 | 需要 | 说明 |

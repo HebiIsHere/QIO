@@ -303,6 +303,10 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // 应用内更新：updater（检查/下载/校验/安装）+ process（装完重启）。
+        // 两者都在 Rust 侧工作，前端只通过插件 API 驱动，不需要放宽 CSP。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(move |app| {
             let port = pick_free_port();
             let token_path = session_token_path();

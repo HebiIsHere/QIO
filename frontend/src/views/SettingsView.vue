@@ -12,6 +12,7 @@ import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
 import QConfirm from "../components/ui/QConfirm.vue";
+import UpdateCard from "../components/UpdateCard.vue";
 import { usePresence } from "../composables/usePresence";
 import {
   getThemePreference,
@@ -1229,6 +1230,11 @@ watch(activeTab, async () => {
 
         <!-- 数据与维护 -->
         <div v-show="activeTab === 'data'" class="panel">
+          <section class="sec">
+            <h2>更新</h2>
+            <p class="desc">在应用内完成检查、下载与安装；下载后由你决定何时重启。</p>
+            <UpdateCard />
+          </section>
           <section class="sec">
             <h2>维护</h2>
             <p class="desc">离线整理记忆与知识（后台执行）。</p>

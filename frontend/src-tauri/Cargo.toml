@@ -10,6 +10,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
+# 应用内更新：updater 负责「检查 / 下载 / 签名校验 / 安装」，process 负责装完重启。
+# 网络请求在 Rust 侧发出，所以不需要放宽前端 CSP。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

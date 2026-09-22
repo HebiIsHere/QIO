@@ -10,6 +10,7 @@ import "@fontsource/noto-serif-sc/400.css";
 import "@fontsource/noto-serif-sc/600.css";
 import { getThemePreference, resolveTheme, applyTheme, watchSystemTheme } from "./utils/theme";
 import { getMotionPreference, resolveMotion, applyMotion, watchSystemMotion } from "./utils/motion";
+import { useUpdaterStore } from "./stores/updater";
 
 // 启动即应用持久化主题偏好（system 时按系统解析，并监听系统切换）
 applyTheme(resolveTheme(getThemePreference()));
@@ -18,4 +19,9 @@ watchSystemTheme();
 applyMotion(resolveMotion(getMotionPreference()));
 watchSystemMotion();
 
-createApp(App).use(createPinia()).use(router).mount("#app");
+const pinia = createPinia();
+createApp(App).use(pinia).use(router).mount("#app");
+
+// 启动后的静默更新检查（10s 首检 + 24h 周期；设置里可关）。
+// 只在 Tauri 壳里生效，浏览器开发预览不会请求更新源。
+useUpdaterStore(pinia).startAutoCheck();

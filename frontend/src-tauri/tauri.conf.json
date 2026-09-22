@@ -27,8 +27,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/qio-backend"],
     "resources": { "resources/models": "models" },
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCQkYyNDhFNkNFOUY3NUEKUldSYTkrbHNqaVMvaXowdTBPeWw3ZmxkS2d1OElFajlpRVlCbUZLWkRQM1JwOTBLZ3RjNnRiNzIK"
+    }
   }
 }
