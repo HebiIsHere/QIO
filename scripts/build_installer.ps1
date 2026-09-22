@@ -79,6 +79,15 @@ try {
   if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
     throw "缺少更新签名口令：请设置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD。"
   }
+  # 关键细节（实测踩过）：`tauri build` 的打包器只读 TAURI_SIGNING_PRIVATE_KEY（私钥**内容**），
+  # 只有 `tauri signer sign` 子命令才认 TAURI_SIGNING_PRIVATE_KEY_PATH。
+  # 这里把路径读成内容，避免出现"公钥有了、私钥没找到"从而只出安装包、不出更新签名的情况。
+  if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    if (-not (Test-Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
+      throw "找不到私钥文件：$env:TAURI_SIGNING_PRIVATE_KEY_PATH"
+    }
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $env:TAURI_SIGNING_PRIVATE_KEY_PATH).Trim()
+  }
   Invoke-External "tauri build" { npm run tauri build -- --bundles $Bundles }
 } finally {
   Pop-Location
