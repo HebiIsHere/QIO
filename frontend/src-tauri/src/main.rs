@@ -255,6 +255,30 @@ async fn qio_backend_info(state: tauri::State<'_, Arc<BackendState>>) -> Result<
     Ok(BackendInfo { port: info.port, token })
 }
 
+/// 更新前调用：把后端进程**整棵树**结束掉。
+///
+/// 为什么必须有这一步（2026-09-22 实测）：后端是 PyInstaller 单文件程序，它自己会再起一个
+/// 子进程跑真正的服务。只杀父进程会留下子进程继续占着 `qio-backend.exe`，
+/// 于是 NSIS 安装器报 `Can't write: ...\qio-backend.exe` 并中止安装 —— 用户看到的就是
+/// 「安装失败」，实际是文件被残留进程锁住。`taskkill /T` 会连同子进程一起结束。
+#[tauri::command]
+fn qio_prepare_for_update(
+    backend: tauri::State<'_, Arc<Mutex<Option<CommandChild>>>>,
+) -> Result<bool, String> {
+    let pid = {
+        let guard = backend.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().map(|child| child.pid())
+    };
+    let Some(pid) = pid else { return Ok(false) };
+    let pid_arg = pid.to_string();
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+        .status();
+    log::info!("[qio] 更新前结束后端进程树 pid={pid} status={status:?}");
+    // 结束后端不影响返回值：拿不到 pid 或 taskkill 失败也要继续（安装器会自己再试一次）
+    Ok(true)
+}
+
 fn backend_launch(
     app: &tauri::AppHandle,
     port: u16,
@@ -355,13 +379,18 @@ fn main() {
                 port,
                 token_path: token_path.clone(),
             }));
+            // 让 qio_prepare_for_update 能拿到 sidecar 的 pid
+            app.manage(Arc::clone(&backend_for_setup));
             // 内置模型：复制到用户数据目录，并把目录交给后端（失败不阻塞启动）
             let models_dir = prepare_models(app.handle());
             let child = backend_launch(app.handle(), port, &token_path, models_dir)?;
             *backend_for_setup.lock().unwrap() = Some(child);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![qio_backend_info])
+        .invoke_handler(tauri::generate_handler![
+            qio_backend_info,
+            qio_prepare_for_update
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |_app, event| match event {

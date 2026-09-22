@@ -1,6 +1,6 @@
 [package]
 name = "qio"
-version = "0.1.4"
+version = "0.1.5"
 description = "QIO desktop shell"
 edition = "2021"
 

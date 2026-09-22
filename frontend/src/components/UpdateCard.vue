@@ -55,6 +55,7 @@ const progressText = computed(() => {
     </p>
     <p v-else-if="updater.phase === 'failed'" class="line err" role="alert">
       {{ updater.message }}
+      <span class="hint">若安装被中止（例如 "Can't write ...qio-backend.exe"）：完全退出 QIO 后重试安装。</span>
     </p>
     <p v-else-if="updater.phase === 'downloading'" class="line" role="status">
       正在下载更新…

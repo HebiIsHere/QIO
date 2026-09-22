@@ -95,10 +95,11 @@ export function describeUpdateError(error: unknown): { kind: UpdateErrorKind; me
  * 静态 import 会让整个模块加载失败，而这一层本可以只做纯函数。
  */
 export async function tauriUpdaterApi(): Promise<UpdaterApi> {
-  const [{ check }, { relaunch }, { getVersion }] = await Promise.all([
+  const [{ check }, { relaunch }, { getVersion }, { invoke }] = await Promise.all([
     import("@tauri-apps/plugin-updater"),
     import("@tauri-apps/plugin-process"),
     import("@tauri-apps/api/app"),
+    import("@tauri-apps/api/core"),
   ]);
   return {
     currentVersion: () => getVersion(),
@@ -112,6 +113,13 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       };
     },
     downloadAndInstall: async (onProgress) => {
+      // 关键一步：先结束后端进程树，否则安装器写不进 qio-backend.exe，
+      // 会以 "Can't write: ...\qio-backend.exe" 中止（实测踩过）。
+      try {
+        await invoke("qio_prepare_for_update");
+      } catch {
+        // 老版本壳没有这个命令时不阻塞更新流程
+      }
       const update = await check();
       if (!update) return;
       let total: number | null = null;
