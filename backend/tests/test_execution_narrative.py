@@ -397,3 +397,257 @@ def test_narrative_event_is_registered_and_critical():
     text = sse_format(make_event(EventType.NARRATIVE, {"text": "先确认链路"}))
     assert "event: NARRATIVE" in text
     assert "先确认链路" in text
+
+
+# ---- AgentLoop：一批工具最多一条叙事，执行前发出，批次结束结算 ------------------
+
+
+def _http_events(chunks: list[str]) -> list[dict]:
+    import json
+
+    out: list[dict] = []
+    for line in chunks:
+        for part in line.splitlines():
+            if part.startswith("data: "):
+                out.append(json.loads(part[6:]))
+    return out
+
+
+class _LoopAdapter:
+    mode = "native"
+    model = "m"
+
+
+def _narrative_tool():
+    from agent.tools.base import Tool, ToolResult
+
+    class _Echo(Tool):
+        name = "echo"
+        description = "echo"
+        parameters = {"type": "object", "properties": {"q": {"type": "string"}}}
+        is_concurrency_safe = True
+
+        async def run(self, **kwargs):
+            return ToolResult(ok=True, content="ok")
+
+    return _Echo()
+
+
+async def _collect_events(bus, expected: int, coro) -> list[dict]:
+    import asyncio
+
+    chunks: list[str] = []
+
+    async def consume() -> None:
+        async for chunk in bus.stream():
+            chunks.append(chunk)
+            if len(_http_events(chunks)) >= expected:
+                return
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    await coro
+    await asyncio.wait_for(task, timeout=5)
+    return _http_events(chunks)
+
+
+async def test_loop_emits_one_narrative_before_tool_batch():
+    from agent.adapters.base import ToolCall
+    from agent.api.bus import EventBus
+    from agent.api.events import EventType, make_event
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+    seen: list[dict] = []
+
+    async def sink(turn_id, narrative, call, call_ids):
+        seen.append(
+            {
+                "turn_id": turn_id,
+                "kind": narrative.kind,
+                "text": narrative.text,
+                "call_id": call.id,
+                "call_ids": list(call_ids),
+            }
+        )
+        # 真实实现里 sink = AppContext._on_narrative：落库后广播 NARRATIVE
+        await bus.publish(
+            make_event(
+                EventType.NARRATIVE,
+                {
+                    "narrative_id": "msg_1",
+                    "turn_id": turn_id,
+                    "kind": narrative.kind,
+                    "text": narrative.text,
+                    "call_ids": list(call_ids),
+                },
+            )
+        )
+        return "msg_1"
+
+    loop = AgentLoop(
+        _LoopAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink
+    )
+    calls = [
+        ToolCall(
+            id="c1",
+            name="echo",
+            arguments={"q": "a"},
+            narrative={"kind": "announce", "text": "我先确认审批链路。"},
+        ),
+        ToolCall(id="c2", name="echo", arguments={"q": "b"}),
+        ToolCall(id="c3", name="echo", arguments={"q": "c"}),
+    ]
+    events = await _collect_events(bus, expected=7, coro=loop._dispatch_tool_calls(calls))
+
+    # 只发布一次叙事；携带整批 call_ids（前端据此收纳抽屉）
+    assert len(seen) == 1
+    assert seen[0]["kind"] == "announce"
+    assert seen[0]["call_ids"] == ["c1", "c2", "c3"]
+
+    types = [e["type"] for e in events]
+    assert types[0] == "NARRATIVE"
+    assert types.index("NARRATIVE") < types.index("TOOL_START")
+    assert types.count("TOOL_START") == 3
+    assert types.count("TOOL_END") == 3
+
+
+async def test_loop_emits_single_narrative_when_every_call_carries_one():
+    from agent.adapters.base import ToolCall
+    from agent.api.bus import EventBus
+    from agent.api.events import EventType, make_event
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+    seen: list[str] = []
+
+    async def sink(turn_id, narrative, call, call_ids):
+        seen.append(narrative.text)
+        await bus.publish(
+            make_event(EventType.NARRATIVE, {"narrative_id": "msg_1", "text": narrative.text})
+        )
+        return "msg_1"
+
+    loop = AgentLoop(
+        _LoopAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink
+    )
+    calls = [
+        ToolCall(
+            id=f"c{i}",
+            name="echo",
+            arguments={"q": str(i)},
+            narrative={"kind": "announce", "text": f"第 {i} 步"},
+        )
+        for i in (1, 2, 3)
+    ]
+    await _collect_events(bus, expected=7, coro=loop._dispatch_tool_calls(calls))
+    assert seen == ["第 1 步"]
+
+
+async def test_loop_stays_silent_without_narrative():
+    from agent.adapters.base import ToolCall
+    from agent.api.bus import EventBus
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+    calls_to_sink: list[str] = []
+
+    async def sink(turn_id, narrative, call, call_ids):
+        calls_to_sink.append(narrative.text)
+        return "msg_1"
+
+    loop = AgentLoop(
+        _LoopAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink
+    )
+    calls = [
+        ToolCall(id="c1", name="echo", arguments={"q": "a"}),
+        ToolCall(id="c2", name="echo", arguments={"q": "b"}),
+    ]
+    events = await _collect_events(bus, expected=4, coro=loop._dispatch_tool_calls(calls))
+    assert calls_to_sink == []
+    assert [e["type"] for e in events] == ["TOOL_START", "TOOL_END", "TOOL_START", "TOOL_END"]
+
+
+async def test_loop_settles_narrative_with_real_results():
+    from agent.adapters.base import ToolCall
+    from agent.api.bus import EventBus
+    from agent.api.events import EventType, make_event
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+    settled: list[dict] = []
+
+    async def sink(turn_id, narrative, call, call_ids):
+        await bus.publish(
+            make_event(EventType.NARRATIVE, {"narrative_id": "msg_42", "text": narrative.text})
+        )
+        return "msg_42"
+
+    async def settler(narrative_id, results, calls):
+        settled.append(
+            {
+                "narrative_id": narrative_id,
+                "ok": {c.id: results[c.id].ok for c in calls},
+            }
+        )
+
+    loop = AgentLoop(
+        _LoopAdapter(),
+        registry,
+        bus,
+        turn_id="turn_1",
+        narrative_sink=sink,
+        narrative_settler=settler,
+    )
+    calls = [
+        ToolCall(
+            id="c1",
+            name="echo",
+            arguments={"q": "a"},
+            narrative={"kind": "announce", "text": "我先查一下。"},
+        )
+    ]
+    await _collect_events(bus, expected=3, coro=loop._dispatch_tool_calls(calls))
+    assert settled == [{"narrative_id": "msg_42", "ok": {"c1": True}}]
+
+
+async def test_narrative_sink_failure_does_not_break_tools():
+    """叙事只是表达：它失败绝不能影响工具执行与 TOOL_END。"""
+    from agent.adapters.base import ToolCall
+    from agent.api.bus import EventBus
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+
+    async def sink(turn_id, narrative, call, call_ids):
+        raise RuntimeError("narrative storage down")
+
+    loop = AgentLoop(
+        _LoopAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink
+    )
+    calls = [
+        ToolCall(
+            id="c1",
+            name="echo",
+            arguments={"q": "a"},
+            narrative={"kind": "announce", "text": "我先查一下。"},
+        )
+    ]
+    events = await _collect_events(bus, expected=2, coro=loop._dispatch_tool_calls(calls))
+    assert [e["type"] for e in events] == ["TOOL_START", "TOOL_END"]
+    assert events[1]["data"]["ok"] is True

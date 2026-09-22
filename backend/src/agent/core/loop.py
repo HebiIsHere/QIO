@@ -30,6 +30,7 @@ from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
 from agent.core.guard import GuardVerdict, RunawayGuard
+from agent.core.narrative import parse_narrative
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
@@ -87,6 +88,8 @@ class AgentLoop:
         max_parallel_tools: int = 4,
         is_cancelled: Callable[[], bool] | None = None,
         tool_state: ToolExecutionState | None = None,
+        narrative_sink: Callable[..., Any] | None = None,
+        narrative_settler: Callable[..., Any] | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -125,6 +128,10 @@ class AgentLoop:
         self.tool_state = tool_state or ToolExecutionState()
         self.tool_trace = tool_trace
         self.tool_selector = tool_selector
+        # 叙事出口（可选）：主 turn 由 AppContext 注入落库 + 广播；子 agent / 维护
+        # 循环不注入，因此不会往主对话里写过程说明。
+        self.narrative_sink = narrative_sink
+        self.narrative_settler = narrative_settler
         self.max_parallel_tools = max(1, max_parallel_tools)
         self.is_cancelled = is_cancelled or (lambda: False)
         self._active_tool_tasks: set[asyncio.Task] = set()
@@ -242,6 +249,27 @@ class AgentLoop:
 
     # -- parallel dispatch & cancellation -----------------------------------
 
+    async def _emit_batch_narrative(self, calls) -> str | None:
+        """一次工具批次最多输出一条叙事（批内第一条有效叙事胜出）。
+
+        叙事只描述"这一批要做什么"：连续的低价值读取要么不写，要么合并成一句 ——
+        这正是"不要求每次工具调用都提示"的落点。
+        """
+        if self.narrative_sink is None:
+            return None
+        for call in calls:
+            narrative = parse_narrative(getattr(call, "narrative", None))
+            if narrative is None:
+                continue
+            try:
+                return await self.narrative_sink(
+                    self.turn_id, narrative, call, [c.id for c in calls]
+                )
+            except Exception:  # noqa: BLE001 - 表达失败不得影响工具执行
+                logger.warning("narrative emission failed", exc_info=True)
+                return None
+        return None
+
     async def _dispatch_tool_calls(self, calls) -> dict[str, Any]:
         """并发安全工具并行（受 max_parallel_tools 限制），其余串行。
 
@@ -249,6 +277,8 @@ class AgentLoop:
         """
         for c in calls:
             self._dispatched_call_ids.add(c.id)
+        # 先说明、再执行：叙事事件必须排在本次工具事件之前。
+        narrative_id = await self._emit_batch_narrative(calls)
         from agent.tools.policy import Concurrency, effective_concurrency
 
         safe_calls = []
@@ -274,6 +304,12 @@ class AgentLoop:
             gathered = await asyncio.gather(*(_run_safe(c) for c in safe_calls))
             for call_id, result in gathered:
                 results[call_id] = result
+        # 批次结束：把系统知道的真实调用结果补写进叙事记录（失败只记日志）。
+        if narrative_id and self.narrative_settler is not None:
+            try:
+                await self.narrative_settler(narrative_id, results, calls)
+            except Exception:  # noqa: BLE001 - 结算失败不影响工具结果
+                logger.warning("narrative settle failed", exc_info=True)
         return results
 
     async def _guarded_execute(self, call) -> Any:
