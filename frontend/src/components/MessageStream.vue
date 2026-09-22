@@ -503,7 +503,10 @@ const phaseLabel = computed(() => {
 .stream {
   flex: 1;
   overflow-y: auto;
-  padding: 34px 24px 20px;
+  /* 左右留白取「正文列」令牌：与输入气泡同一条列。
+     ≤1400px 时右侧令牌会变成 132px —— 那是给常驻星球入口球留的通道，
+     两个组件读同一个值，谁也不能单独挪（见 tokens.css 的 --column-inset-*）。 */
+  padding: 34px var(--column-inset-right) 20px var(--column-inset-left);
   scrollbar-width: thin;
   background: var(--bg-base);
 }
@@ -511,13 +514,6 @@ const phaseLabel = computed(() => {
 .stream:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
-}
-/* 话题星球停靠球是 fixed 悬浮元素（96px）；窄窗口下会压住靠右的气泡与时间戳。
-   这里为它留出通道，避免遮挡正文。宽屏下气泡自身有 max-width，不受影响。 */
-@media (max-width: 1400px) {
-  .stream {
-    padding-right: 132px;
-  }
 }
 .spacer {
   width: 100%;

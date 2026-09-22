@@ -103,6 +103,29 @@ export function resetContinuum(epoch?: number): boolean {
   return true;
 }
 
+/**
+ * 离开这一页时的收尾：作废还在跑的转场，并回到 idle。
+ *
+ * 为什么必须有它：`planetContinuum` 是模块级单例，**不随组件卸载而消失**。
+ * 星球开着（phase = activating/expanding/ready）时切到设置页，PlanetView 直接卸载，
+ * 没有任何东西会把阶段收回 idle —— 入口球的 `handedOff` 永远是 true，
+ * `.dock.handed { opacity: 0; pointer-events: none }` 于是让球看不见也点不到，
+ * 而且再也打不开（用户反馈的「星球无法点动」）。
+ *
+ * 同时把代号 +1：被卸载打断的那次转场（关闭动画的续行还挂在定时器上）之后
+ * 还想 `advanceTo(旧代号, …)` 就会被忽略，不会把刚清干净的状态又写回非 idle。
+ *
+ * `ballLive` 一并清掉：场景已经不存在了，入口必须交回 2D 压缩态（PlanetOrb），
+ * 否则重挂载前那枚按钮是全透明的（用户看到「球没了」）。
+ */
+export function abandonContinuum(): void {
+  planetContinuum.epoch += 1;
+  planetContinuum.phase = "idle";
+  planetContinuum.origin = null;
+  planetContinuum.target = null;
+  planetContinuum.ballLive = false;
+}
+
 /** 星球是否已经可以被操作（只有 C 阶段才是「场景接管」） */
 export function isInteractive(): boolean {
   return planetContinuum.phase === "ready";

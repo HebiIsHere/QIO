@@ -23,6 +23,7 @@ import { prefersReducedMotion } from "../utils/motion";
 import { CSS_SETTLE_FALLBACK, easePointsFromCssValue, evalCubicBezier } from "../utils/easing";
 import { anchorSignatureOf, planetSession } from "../composables/planetSession";
 import {
+  abandonContinuum,
   advanceTo,
   beginClose,
   beginOpen,
@@ -358,6 +359,36 @@ function syncBall() {
 }
 
 /**
+ * 球态布局就位后再对齐（最多等几帧）。
+ *
+ * 现场（2026-09-22 用户反馈「星球打开又缩小后消失了」）：体量收缩会把舞台摆到
+ * 「入口半径 ÷ **整窗画布**上的球体半径」这个起点尺度上；如果这时球态接管了
+ * （父级把 open 置回 false），而 `.ball` 还没落到 DOM，那么按整窗几何算出来的尺度
+ * 就会留在舞台上 —— 画布下一秒变成 `--ball-size`（108px），球被乘成几个像素的点，
+ * 看起来就是「星球消失了」（实测 1513 宽的窗口里 k=0.075 → 8px）。
+ *
+ * 所以球态这一侧先确认「画布已经是球尺寸」再写尺度：没到位就下一帧再看，
+ * 上限几帧（正常情况一帧内就切好），不会无限等。
+ */
+function syncBallWhenLaidOut(attempt = 0): void {
+  if (!ballMode.value) return;
+  const canvas = canvasRef.value;
+  let ballSize = 108;
+  try {
+    const raw = parseFloat(getComputedStyle(rootRef.value ?? document.documentElement).getPropertyValue("--ball-size"));
+    if (Number.isFinite(raw) && raw > 0) ballSize = raw;
+  } catch {
+    /* 读不到就用 108（与 CSS 令牌同值） */
+  }
+  const laidOut = !canvas || canvas.offsetWidth <= ballSize * 1.5;
+  if (!laidOut && attempt < 4) {
+    requestAnimationFrame(() => syncBallWhenLaidOut(attempt + 1));
+    return;
+  }
+  syncBall();
+}
+
+/**
  * 屏幕上的环该有多宽。
  *
  * 环宽是按屏幕像素定的（设计值 5/3.25/2px ≈ 球体直径的 0.6%）。整层缩小时像素宽也一起被缩掉，
@@ -499,6 +530,19 @@ function stopEntryWatch() {
 }
 
 /**
+ * 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互。
+ *
+ * 声明位置要在下面的球态 watcher **之前**：那个 watcher 带 `immediate: true`，
+ * setup 期间就会同步跑一次「进入球态」分支并写这两个 ref —— 写在后面就是
+ * 「Cannot access 'closing' before initialization」：整个球态分支被打断
+ * （入口对齐、跟随入口拖动、球态数据刷新全部不生效），而且只有从设置页回来
+ * （ballLive 已经是 true、球态 watcher 首次就命中）才会暴露。
+ */
+const closing = ref(false);
+/** 收起第一段「收势」进行中（还没开始整体淡出） */
+const settling = ref(false);
+
+/**
  * 球态与展开态之间的切换。
  *
  * 球态 = 真实场景缩到入口尺度常驻：低帧率、慢速自转、只显示抽象态（球 + 融合环）。
@@ -529,7 +573,9 @@ watch(
       // 等 `ball` 类落到 DOM：画布尺寸要变成球的大小，之后测出来的球体半径才是小球的
       // 真实半径（否则会拿全屏尺寸去算尺度，球会被画得很小）
       await nextTick();
-      syncBall();
+      // 再确认一次布局真的落到球尺寸：被打断的收起留下的全屏几何绝不能用来写尺度
+      // （否则球会被乘成几个像素的点，用户看到的是「星球消失了」）
+      syncBallWhenLaidOut();
       startEntryWatch();
       // 回到球态时顺手刷一次数据（有保鲜期，不会每次都拉）
       void loadBallData(true);
@@ -583,10 +629,6 @@ let detailSeq = 0;
 let closeEpoch = 0;
 const search = ref("");
 const selectedFragmentId = ref<string | null>(null);
-/** 关闭动画进行中（相机拉回 overview），防止重复关闭/重复交互 */
-const closing = ref(false);
-/** 收起第一段「收势」进行中（还没开始整体淡出） */
-const settling = ref(false);
 /** 「正在收起」= 收势或淡出任一阶段：这段时间里画布/列表/起点等交互都要锁住 */
 const isClosing = computed(() => closing.value || settling.value);
 /**
@@ -745,7 +787,7 @@ onMounted(async () => {
   if (planet.webglOK.value) planetContinuum.ballLive = true;
   // 对话页常驻的小球状态：不打开也要渲染（缩在入口位置、慢速自转）
   if (!props.open) {
-    syncBall();
+    syncBallWhenLaidOut();
     return;
   }
   await enterWithData();
@@ -784,7 +826,7 @@ watch(
   async ([isOpen], prev) => {
     if (!isOpen) {
       // 关掉不是「停止渲染」，而是回到入口小球状态（球态要一直活着）
-      syncBall();
+      syncBallWhenLaidOut();
       return;
     }
     if (prev && prev[0] === isOpen && prev[1] === props.seq) return;
@@ -899,6 +941,14 @@ onUnmounted(() => {
   stopCanvasObserver();
   stopEntryWatch();
   window.clearTimeout(recenterTimer);
+  /**
+   * 离开对话页（去设置页 / 路由切换）必须把连续体收干净。
+   *
+   * 不做的后果（实测）：星球开着时切走，phase 停在 ready，PlanetDock 的 handedOff
+   * 永远是 true —— `.dock.handed { opacity: 0; pointer-events: none }`，球看不见也点不到，
+   * 而且没有任何路径能把它救回来。同一次调用还作废被打断的转场续行、把入口交回 2D 压缩态。
+   */
+  abandonContinuum();
 });
 
 function onKeydown(e: KeyboardEvent) {

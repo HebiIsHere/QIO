@@ -577,3 +577,134 @@ describe("useFloatingWindow 窗口 resize 保持贴靠关系（问题10）", () 
     dispose();
   });
 });
+
+/**
+ * 贴靠不能让球压在输入区底下（2026-09-22）。
+ *
+ * 现场：把入口球往下拖，它贴到底边并落在输入气泡正下方 —— 输入区 z-index 更高、
+ * 又是不透明底，球既看不见也点不到（Playwright 报「textarea intercepts pointer events」），
+ * 用户看到的是「星球没办法进行移动」。输入区不是浮动组件（不在 floatingState 里），
+ * 所以它必须由 avoidSelectors 显式声明为障碍。
+ */
+describe("useFloatingWindow 贴靠避让输入区", () => {
+  interface Rect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  }
+  const overlaps = (a: Rect, b: Rect): boolean =>
+    !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  const rectOf = (el: HTMLElement, w: number, h: number): Rect => {
+    const left = parseFloat(el.style.left) || 0;
+    const top = parseFloat(el.style.top) || 0;
+    return { left, top, right: left + w, bottom: top + h };
+  };
+  /** 固定在底部的输入气泡：300..500 × top..top+120 */
+  function composerBox(top: number): { el: HTMLElement; rect: () => Rect; remove: () => void } {
+    const el = makeEl("composer-box", { left: 300, top, width: 200, height: 120 });
+    el.className = "composer";
+    // 读实时位置：输入区会随多行输入变高、挪位
+    return {
+      el,
+      rect: () => {
+        const t = parseInt(el.style.top, 10) || top;
+        return { left: 300, top: t, right: 500, bottom: t + 120 };
+      },
+      remove: () => el.remove(),
+    };
+  }
+
+  it("拖到底边时停在输入区旁边，而不是压在它身上", async () => {
+    const composer = composerBox(600);
+    const dock = makeEl("planet-dock", { left: 300, top: 500, width: 96, height: 96 });
+    const { dispose } = await mountFloat(dock, {
+      id: "planet-dock",
+      dockMode: "edge",
+      avoidSelectors: [".composer"],
+      defaultPos: { x: 300, y: 500 },
+    });
+
+    dock.dispatchEvent(mouse("mousedown", 348, 548));
+    document.dispatchEvent(mouse("mousemove", 348, 620)); // 向下拖：最近边是 bottom
+    document.dispatchEvent(mouse("mouseup", 348, 620));
+
+    expect(overlaps(rectOf(dock, 96, 96), composer.rect())).toBe(false);
+    composer.remove();
+    dispose();
+  });
+
+  it("窗口变化后输入区才长上来压住球：重新贴靠自己让开", async () => {
+    const composer = composerBox(900); // 一开始在视口外（球贴底时不冲突）
+    const dock = makeEl("planet-dock", { left: 300, top: 668, width: 96, height: 96 });
+    const { dispose } = await mountFloat(dock, {
+      id: "planet-dock",
+      dockMode: "edge",
+      avoidSelectors: [".composer"],
+      defaultPos: { x: 300, y: 668 },
+    });
+    dock.dispatchEvent(mouse("mousedown", 348, 716));
+    document.dispatchEvent(mouse("mousemove", 348, 722));
+    document.dispatchEvent(mouse("mouseup", 348, 722));
+    expect(dock.dataset.fwTarget).toBe("bottom");
+
+    // 输入区这时才出现/变高（多行输入把它顶上来）
+    composer.el.style.top = "600px";
+    window.dispatchEvent(new Event("resize"));
+
+    expect(overlaps(rectOf(dock, 96, 96), composer.rect())).toBe(false);
+    composer.remove();
+    dispose();
+  });
+
+  it("恢复：旧版本把球停在输入气泡底下时，挂载即让开（否则升级后仍然点不到）", async () => {
+    const composer = composerBox(600);
+    localStorage.setItem(
+      FLOAT_STORAGE_KEY,
+      JSON.stringify({
+        "planet-dock": { x: 300, y: 668, docked: true, dockedTo: "bottom", hideEnabled: false },
+      }),
+    );
+    const dock = makeEl("planet-dock", { left: 0, top: 0, width: 96, height: 96 });
+    const { dispose } = await mountFloat(dock, {
+      id: "planet-dock",
+      dockMode: "edge",
+      avoidSelectors: [".composer"],
+      defaultPos: { x: 300, y: 668 },
+    });
+
+    expect(overlaps(rectOf(dock, 96, 96), composer.rect())).toBe(false);
+    composer.remove();
+    dispose();
+  });
+
+  it("窄窗口：底边被输入区占满时，球不会改停在设置齿轮底下", async () => {
+    // 窄窗口的输入区几乎是整宽：底边没有任何空位
+    const composer = makeEl("composer-box", { left: 12, top: 648, width: 1000, height: 120 });
+    composer.className = "composer";
+    const composerRect = { left: 12, top: 648, right: 1012, bottom: 768 };
+    // 设置齿轮冷启动停在右上角（没有贴靠过，所以不在互斥表里）
+    const gear = makeEl("settings-float", { left: 976, top: 4, width: 44, height: 44 });
+    gear.className = "settings-float";
+    const gearRect = { left: 976, top: 4, right: 1020, bottom: 48 };
+
+    const dock = makeEl("planet-dock", { left: 900, top: 336, width: 96, height: 96 });
+    const { dispose } = await mountFloat(dock, {
+      id: "planet-dock",
+      dockMode: "edge",
+      avoidSelectors: [".composer", ".settings-float"],
+      defaultPos: { x: 900, y: 336 },
+    });
+    // 拖到右下角：中心离右边与底边一样近 → 取「右边」，而右上的候选位正被齿轮占着
+    dock.dispatchEvent(mouse("mousedown", 948, 384));
+    document.dispatchEvent(mouse("mousemove", 1024, 768));
+    document.dispatchEvent(mouse("mouseup", 1024, 768));
+
+    const rect = rectOf(dock, 96, 96);
+    expect(overlaps(rect, composerRect)).toBe(false);
+    expect(overlaps(rect, gearRect)).toBe(false);
+    composer.remove();
+    gear.remove();
+    dispose();
+  });
+});

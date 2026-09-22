@@ -12,6 +12,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
+import { FLOAT_AVOID_SELECTORS } from "../composables/floatingState";
 import { planetContinuum } from "../composables/planetContinuum";
 import { prefersReducedMotion } from "../utils/motion";
 import PlanetOrb from "./planet/PlanetOrb.vue";
@@ -64,6 +65,9 @@ onBeforeUnmount(() => {
 const float = useFloatingWindow(elRef, {
   id: "planet-dock",
   dockMode: "edge",
+  // 输入气泡与设置齿轮都不是「已贴靠的浮动组件」，但压住球一样致命：
+  // 球会既看不见也点不到（用户看到的是「星球没办法进行移动」）。
+  avoidSelectors: FLOAT_AVOID_SELECTORS,
   defaultPos: (el, vp) => ({
     x: vp.width - 26 - (el.offsetWidth || 96),
     y: Math.round((vp.height - (el.offsetHeight || 96)) / 2),

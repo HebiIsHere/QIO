@@ -58,3 +58,70 @@ describe("设计语言守卫", () => {
     );
   });
 });
+
+/**
+ * 输入区必须与消息列是同一条列（2026-09-22 回归修复）。
+ *
+ * 现场（安装包默认窗口 1200×800）：输入区用 `left: calc(50% - 66px)` + 860px 宽手算位置，
+ * 结果比消息列右移 418px、右边缘溢出视口 194px（发送按钮跑到屏幕外），并且盖住了
+ * 停在右下角的星球入口球 —— 球点不到也拖不动，用户看到的是「UI 错位 + 星球移不动」。
+ *
+ * 现在两侧留白由同一对令牌给出：任何人只改一边（组件里手算偏移）都会在这里被拦下。
+ */
+describe("输入区与消息列同一条列", () => {
+  const composer = FILES.find((f) => f.path.endsWith("components/Composer.vue"));
+  const stream = FILES.find((f) => f.path.endsWith("components/MessageStream.vue"));
+  // tokens.css 不是 .vue/.ts，FILES 扫不到它 —— 直接读
+  const tokens = readFileSync(resolve(SRC, "styles", "tokens.css"), "utf8");
+
+  it("输入区两侧贴边取正文列令牌，不再手算 calc(50% ...)", () => {
+    expect(composer).toBeTruthy();
+    expect(composer!.text).toMatch(/left:\s*var\(--column-inset-left\)/);
+    expect(composer!.text).toMatch(/right:\s*var\(--column-inset-right\)/);
+    // 手算偏移会与列宽脱钩：它正是本次错位的来源
+    expect(composer!.text).not.toMatch(/left:\s*calc\(50%/);
+    expect(composer!.text).not.toMatch(/left:\s*max\(12px/);
+  });
+
+  it("消息流的内容盒用同一对令牌留白", () => {
+    expect(stream).toBeTruthy();
+    expect(stream!.text).toMatch(
+      /padding:\s*34px\s+var\(--column-inset-right\)\s+20px\s+var\(--column-inset-left\)/,
+    );
+  });
+
+  it("列留白只在 tokens.css 定义一次：宽屏 24px、≤1400px 右侧让出 132px 球通道", () => {
+    expect(tokens).toMatch(/--column-inset-left:\s*24px/);
+    expect(tokens).toMatch(/--column-inset-right:\s*24px/);
+    expect(tokens).toMatch(
+      /@media\s*\(max-width:\s*1400px\)\s*\{[\s\S]{0,240}?--column-inset-right:\s*132px/,
+    );
+  });
+});
+
+/**
+ * 入口球贴靠时不能被固定控件压住（2026-09-22）。
+ *
+ * 两个现场都是「球停在那儿，但点不到也拖不动」：
+ * - 输入气泡（`.composer`）不是浮动组件，z-index 12 + 不透明底，球贴到底边就藏在它下面；
+ * - 设置齿轮（`.settings-float`）冷启动停在右上角时**不算已贴靠**，不进互斥表，
+ *   窄窗口里底边被输入区占满后球改停右上角，正好压在它底下。
+ * 障碍清单只有一份，入口球必须声明它 —— 少一个就会重现「星球没办法进行移动」。
+ */
+describe("浮动球的障碍清单", () => {
+  const state = FILES.find((f) => f.path.endsWith("composables/floatingState.ts"));
+  const dock = FILES.find((f) => f.path.endsWith("components/PlanetDock.vue"));
+
+  it("清单含输入区与设置齿轮", () => {
+    expect(state).toBeTruthy();
+    const list = state!.text.match(/FLOAT_AVOID_SELECTORS[^=]*=\s*\[([^\]]*)\]/);
+    expect(list).not.toBeNull();
+    expect(list![1]).toContain('".composer"');
+    expect(list![1]).toContain('".settings-float"');
+  });
+
+  it("入口球贴靠时声明这份清单", () => {
+    expect(dock).toBeTruthy();
+    expect(dock!.text).toContain("avoidSelectors: FLOAT_AVOID_SELECTORS");
+  });
+});

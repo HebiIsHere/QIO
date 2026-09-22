@@ -20,6 +20,12 @@
   --fs-xs:11px; --fs-sm:12.5px; --fs-base:14.5px; --fs-md:16px; --fs-lg:19px; --fs-xl:24px; --fs-2xl:32px;
   --lh-tight:1.35; --lh-base:1.7; --lh-loose:1.85;
   --measure:68ch;
+  /* 正文列：消息流内容盒的左右留白，也是输入气泡的贴边值（**必须同源**）。
+     右值在 ≤1400px 由文件末尾的媒体查询放大到 132px —— 那条通道是常驻的
+     星球入口球（96px + 边距）用的。输入区曾经自己手算 `calc(50% - 66px)`，
+     结果与列宽脱钩：1200px 窗口里右移 418px、右边缘溢出 194px，还盖住了停在
+     右下角的入口球（点不到、拖不动）。 */
+  --column-inset-left:24px; --column-inset-right:24px;
   /* 间距 / 圆角 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
   --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;
@@ -90,6 +96,12 @@
   --bg-accent-subtle:#2b1326; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.32);
   --border-danger:#5a2c2c; --success-soft:rgba(95,191,143,.15); --danger-soft:rgba(224,106,106,.15); --warning-soft:rgba(217,178,92,.15);
   --approve-bg:#2a6e4f; --reject-bg:#6e2a2a;
+}
+
+/* 中等窗口：正文列右侧让出 132px 给星球入口球（96px 球 + 边距）。
+   消息流与输入区都读这一个令牌，改一边就等于改两边。 */
+@media (max-width: 1400px) {
+  :root { --column-inset-right:132px; }
 }
 :root[data-theme="light"] {
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;

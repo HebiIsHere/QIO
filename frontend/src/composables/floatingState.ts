@@ -25,6 +25,19 @@ export const FLOAT_STORAGE_KEY = "qio-float-positions";
 /** 贴靠隐藏偏好的独立持久化键：组件未挂载（设置页）时也能保存开关 */
 export const FLOAT_HIDE_KEY = "qio-float-hide";
 
+/**
+ * 浮动球必须避开的固定控件（贴靠障碍，选择器）。
+ *
+ * 它们不是「浮动组件」，但一样能把球变成「点不到也拖不动」：
+ * - `.composer` 输入气泡：普通 fixed 元素（z-index 12、不透明底），球贴到底边就藏在它下面；
+ * - `.settings-float` 设置齿轮：冷启动停在右上角时不算已贴靠，不进 floatingState 的互斥表，
+ *   窄窗口里底边被输入区占满后球会改停右上角 —— 正好压在齿轮底下。
+ *
+ * 一份清单、一处定义：少一个就会重现「星球没办法进行移动」（见 useFloatingWindow 的
+ * avoidSelectors 与 PlanetDock 的声明）。
+ */
+export const FLOAT_AVOID_SELECTORS = [".composer", ".settings-float"];
+
 function makeEntry(): FloatingEntry {
   return { x: 0, y: 0, width: 0, height: 0, docked: false, dockedTo: null, hideEnabled: false, hidden: false };
 }

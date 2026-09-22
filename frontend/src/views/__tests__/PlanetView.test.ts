@@ -1424,6 +1424,99 @@ describe("PlanetView 连续体编排（第四阶段）", () => {
     w.unmount();
   });
 
+  it("星球开着时卸载（=离开对话页去设置）：连续体收干净，入口球不会被 handed 永久锁住", async () => {
+    vi.useFakeTimers();
+    const w = mountView(newPinia());
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1800);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("ready");
+    planetContinuum.ballLive = true;
+
+    w.unmount();
+
+    // 留在 ready 就永远交不回去：PlanetDock 的 handedOff 一直是 true，
+    // 而 `.dock.handed` 是 opacity 0 + pointer-events none —— 球点不到，也没有路能救回来。
+    expect(planetContinuum.phase).toBe("idle");
+    // 场景没了，入口要交回 2D 压缩态；否则重挂载前那枚按钮是全透明的
+    expect(planetContinuum.ballLive).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("球态重挂载（上一段会话已让真实场景渲染入口）时，入口移动要跟得上", async () => {
+    const entry = document.createElement("button");
+    entry.setAttribute("data-planet-entry", "");
+    entry.getBoundingClientRect = () =>
+      ({ left: 900, top: 300, width: 96, height: 96, right: 996, bottom: 396, x: 900, y: 300 }) as DOMRect;
+    document.body.appendChild(entry);
+
+    // 关键前提：连续体是模块级单例，从设置页回来时 ballLive 还是 true
+    // → setup 里的球态 watcher 会立刻跑「进入球态」分支。
+    planetContinuum.ballLive = true;
+    const w = mount(PlanetView, { global: { plugins: [newPinia()] }, props: { open: false } });
+    await flushPromises();
+
+    currentFake!.resize.mockClear();
+    entry.setAttribute("style", "left: 640px; top: 120px"); // 拖动入口球
+    await flushPromises();
+    await new Promise((r) => setTimeout(r, 0)); // MutationObserver 回调
+    expect(currentFake!.resize).toHaveBeenCalled();
+
+    w.unmount();
+    entry.remove();
+  });
+
+  it("收起被打断又回到球态：必须按球态几何重新对齐，不能停在收缩起点的尺度", async () => {
+    // 入口在右侧（半径 48）；全屏构图下球体屏幕半径 300（整窗画布）→ 收缩起点 scale ≈ 0.16
+    const entry = document.createElement("button");
+    entry.setAttribute("data-planet-entry", "");
+    entry.getBoundingClientRect = () =>
+      ({ left: 1200, top: 400, width: 96, height: 96, right: 1296, bottom: 496, x: 1200, y: 400 }) as DOMRect;
+    document.body.appendChild(entry);
+    mocks.sphereRectMock.mockReturnValue({ cx: 700, cy: 400, radius: 300 });
+
+    vi.useFakeTimers();
+    const w = mountView(newPinia());
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(260);
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("ready"); // 展开编排真的跑完，再谈「收起」
+    const stage = w.find(".planet-stage");
+    const canvas = w.find("canvas").element as HTMLCanvasElement;
+    // 此刻画布还是整窗尺寸（球态布局尚未落到 DOM）
+    Object.defineProperty(canvas, "offsetWidth", { value: 1200, configurable: true });
+    Object.defineProperty(canvas, "offsetHeight", { value: 800, configurable: true });
+
+    // 点「收起星球」：写下收缩起点的尺度（按整窗画布的球体半径算出来）
+    await w.find(".close-btn").trigger("click");
+    await flushPromises();
+    expect(planetContinuum.phase).toBe("collapsing");
+    // 走过「收势 + 平滑帧等待」，收缩起点这一帧已经写下来了
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(Number(stage.attributes("data-stage-k"))).toBeLessThan(0.3);
+
+    // 收起还没跑完，父级就把 open 置回 false（用户实测的「打开又缩小」）→ 进入球态
+    await w.setProps({ open: false });
+    await flushPromises();
+    // 进入球态的那一刻，画布还是整窗尺寸（球态布局稍后才落到 DOM）——这正是现场的顺序
+    expect(Number(stage.attributes("data-stage-k"))).toBeLessThan(0.3);
+    // 布局这时才切到球尺寸，球体几何也变成小球那一档
+    Object.defineProperty(canvas, "offsetWidth", { value: 108, configurable: true });
+    Object.defineProperty(canvas, "offsetHeight", { value: 108, configurable: true });
+    mocks.sphereRectMock.mockReturnValue({ cx: 1248, cy: 448, radius: 48 });
+
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    // 球态必须回到「小球自己的尺度」≈1；停在 0.16 就是用户看到的「球变成一个点、等于消失」
+    expect(Number(stage.attributes("data-stage-k"))).toBeCloseTo(1, 1);
+    w.unmount();
+    entry.remove();
+    vi.useRealTimers();
+  });
+
   it("能拿到球体屏幕几何时，星球层从入口小球的尺度开始（同一个对象长大）", async () => {
     // 入口小球在视口右侧（96×96 → 半径 48），球体屏幕半径 300 → 起始缩放约 0.16
     const entry = document.createElement("button");

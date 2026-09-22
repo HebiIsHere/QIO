@@ -209,13 +209,19 @@ async function stopTurn() {
    增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */
 .composer {
   /* 独立悬浮于消息流之上，与对话内容同一列（居中 860px），不参与消息流布局；
-     消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方 */
+     消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方。
+
+     左右贴边取「正文列」令牌，不再手算 `calc(50% - Npx)`：手算的偏移与列宽、
+     与右侧给入口球留的通道都脱钩 —— 900–1400px 区间里它整体右移了 418px、
+     右边缘溢出视口 194px（发送按钮跑到屏幕外），还盖住了停在右下角的入口球。 */
   position: fixed;
-  left: max(12px, calc(50% - 430px));
-  right: auto;
+  left: var(--column-inset-left);
+  right: var(--column-inset-right);
+  width: auto;
+  max-width: 860px;
+  margin: 0 auto;
   bottom: 16px;
   z-index: 12;
-  width: min(860px, calc(100vw - 24px));
   /* 默认中性边框 + 较轻阴影：不靠重描边和重阴影抢注意力 */
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
@@ -231,18 +237,12 @@ async function stopTurn() {
   box-shadow: none;
   background: transparent;
 }
-/* 中等窗口：为右侧星球停靠球留出通道，避免气泡压住正文 */
-@media (max-width: 1400px) and (min-width: 900px) {
-  .composer {
-    left: calc(50% - 66px);
-    width: min(860px, calc(100vw - 168px));
-  }
-}
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
   .composer {
-    left: 12px;
-    width: calc(100vw - 24px);
+    left: var(--sp-3);
+    right: var(--sp-3);
+    max-width: none;
   }
 }
 .topicbar {

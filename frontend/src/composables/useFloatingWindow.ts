@@ -34,6 +34,15 @@ export interface UseFloatingWindowOptions {
   defaultPos: DefaultPos | DefaultPosFn;
   /** 拖拽把手（默认整个元素） */
   dragHandle?: Ref<HTMLElement | null> | (() => HTMLElement | null);
+  /**
+   * 除浮动组件之外、同样不能被压住的固定元素（选择器）。
+   *
+   * 为什么需要：输入气泡是普通 fixed 元素（不在 floatingState 里），但它的 z-index
+   * 更高、底色不透明。球一贴到底边落在它下面，就既看不见也点不到 —— 实测 Playwright
+   * 直接报「textarea intercepts pointer events」，用户看到的是「星球没办法进行移动」。
+   * 所以贴靠时必须把它算进障碍：宁可换一条边，也不能停在被压住的位置。
+   */
+  avoidSelectors?: string[];
 }
 
 const SNAP_PAD = 4;
@@ -146,6 +155,14 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       delete el.dataset.fwDocked;
       delete el.dataset.fwTarget;
     }
+    // 恢复出来的位置可能正压在输入气泡底下（旧版本拖到那儿就再也拿不出来）：
+    // 挂载时当场重新贴靠一次，让球自己挪到看得见、点得到的位置。
+    //
+    // 只针对 avoidSelectors 声明的固定元素：浮动组件之间的互斥是「拖起 → 松手贴靠」
+    // 才结算的（既有行为），挂载即重排会让别的组件在启动时跳一下。
+    if (isBlocked({ left: x, top: y, right: x + r.width, bottom: y + r.height }, avoidedRects())) {
+      snap(el);
+    }
     // 初始状态跟随开关：允许隐藏 → 挂载即进入隐藏态（hover 展开/移出再隐藏）
     if (entry.hideEnabled) maybeHide(el);
   }
@@ -192,6 +209,36 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     return others;
   }
 
+  /**
+   * 贴靠时全部要避开的矩形：其它已贴靠的浮动组件（互斥）+ 调用方声明的固定元素
+   * （avoidSelectors，例如输入气泡 —— 它不是浮动组件，但压住球一样致命）。
+   */
+  function avoidedRects() {
+    const rects: { left: number; top: number; right: number; bottom: number }[] = [];
+    for (const selector of options.avoidSelectors ?? []) {
+      const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      for (const node of nodes) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          rects.push({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
+        }
+      }
+    }
+    return rects;
+  }
+
+  function blockerRects() {
+    return dockedOthers().concat(avoidedRects());
+  }
+
+  /** 给定矩形是否会被某个障碍压住（未挂载/零尺寸的障碍不算） */
+  function isBlocked(
+    rect: { left: number; top: number; right: number; bottom: number },
+    blockers: { left: number; top: number; right: number; bottom: number }[],
+  ): boolean {
+    return blockers.some((o) => overlap(rect, o));
+  }
+
   function snap(el: HTMLElement) {
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const r = rectOf(el);
@@ -205,7 +252,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     const clampV = (v: number, max: number) => clamp(v, SNAP_PAD, max);
     const maxL = Math.max(SNAP_PAD, vp.width - w - SNAP_PAD);
     const maxT = Math.max(SNAP_PAD, vp.height - h - SNAP_PAD);
-    const others = dockedOthers();
+    const others = blockerRects();
     let rect: { left: number; top: number } | null = null;
     let target: DockTarget | null = null;
 
@@ -432,6 +479,12 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     }
     x = clamp(x, SNAP_PAD, maxX);
     y = clamp(y, SNAP_PAD, maxY);
+    // 障碍（输入气泡变高 / 挪位）这时才可能压住球：重新贴靠一次，
+    // 换一条边也比停在被压住的位置好 —— 那里球既看不见也点不到。
+    if (isBlocked({ left: x, top: y, right: x + r.width, bottom: y + r.height }, blockerRects())) {
+      snap(el);
+      return;
+    }
     if (x !== r.left || y !== r.top) {
       place(el, x, y);
       entry.x = x;
