@@ -436,6 +436,9 @@ class TurnOrchestrator:
             tool_state=app.tool_state,
             # 取消检查点：本 turn 被取消后循环不再发起新的模型/工具调用
             is_cancelled=lambda: ctx.cancelled,
+            # 执行叙事：模型决定说不说，AppContext 负责落库 + 广播 + 批次结束补写系统摘要
+            narrative_sink=app._on_narrative,
+            narrative_settler=app._settle_narrative,
         )
         ctx.loop = loop
         try:

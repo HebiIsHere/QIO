@@ -156,7 +156,7 @@ def test_registry_specs_declare_narrative_field():
     from agent.tools.registry import ToolRegistry
 
     class _Echo(Tool):
-        name = "echo"
+        name = "narrative_probe"
         description = "echo"
         parameters = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
 
@@ -595,11 +595,12 @@ async def test_loop_settles_narrative_with_real_results():
         )
         return "msg_42"
 
-    async def settler(narrative_id, results, calls):
+    async def settler(narrative_id, results, calls, facts):
         settled.append(
             {
                 "narrative_id": narrative_id,
                 "ok": {c.id: results[c.id].ok for c in calls},
+                "status": facts["c1"]["status"],
             }
         )
 
@@ -620,7 +621,9 @@ async def test_loop_settles_narrative_with_real_results():
         )
     ]
     await _collect_events(bus, expected=3, coro=loop._dispatch_tool_calls(calls))
-    assert settled == [{"narrative_id": "msg_42", "ok": {"c1": True}}]
+    assert settled[0]["narrative_id"] == "msg_42"
+    assert settled[0]["ok"] == {"c1": True}
+    assert settled[0]["status"] == "success"
 
 
 async def test_narrative_sink_failure_does_not_break_tools():
@@ -651,3 +654,271 @@ async def test_narrative_sink_failure_does_not_break_tools():
     events = await _collect_events(bus, expected=2, coro=loop._dispatch_tool_calls(calls))
     assert [e["type"] for e in events] == ["TOOL_START", "TOOL_END"]
     assert events[1]["data"]["ok"] is True
+
+
+# ---- AppContext：先落库、再广播；批次结束补写系统调用摘要 ------------------------
+
+
+def _app_ctx(tmp_path):
+    from agent.api.bus import EventBus
+    from agent.config import Settings
+    from agent.services.app import AppContext
+    from agent.storage.db import connect
+    from agent.storage.migrate import apply_migrations
+
+    conn = connect(tmp_path / "narrative.db")
+    apply_migrations(conn)
+    ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
+    topic = ctx.topics.nodes.create_topic("执行叙事层").id
+    fragment = ctx.fragments.get_or_create_open(topic).id
+    ctx.bindings.record_binding("turn_1", topic, fragment_id=fragment)
+    return ctx, topic, fragment
+
+
+async def test_narrative_is_persisted_then_broadcast(tmp_path):
+    from agent.adapters.base import ToolCall
+    from agent.core.narrative import Narrative, parse_narrative
+
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    narrative = parse_narrative({"kind": "announce", "text": "我先确认审批链路。"})
+    assert narrative is not None
+    call = ToolCall(id="c1", name="echo", arguments={"q": "a"})
+
+    message_id = await ctx._on_narrative("turn_1", narrative, call, ["c1"])
+    assert message_id
+
+    row = ctx.conn.execute(
+        "SELECT role, content, content_type, turn_id, raw, fragment_id FROM messages WHERE id = ?",
+        (message_id,),
+    ).fetchone()
+    assert row["role"] == "assistant"
+    assert row["content_type"] == "narrative"
+    assert row["content"] == "我先确认审批链路。"
+    assert row["turn_id"] == "turn_1"
+    assert row["fragment_id"] == fragment
+    import json
+
+    raw = json.loads(row["raw"])
+    assert raw["narrative"]["kind"] == "announce"
+    assert raw["narrative"]["tool"] == "echo"
+    assert raw["calls"] == []
+
+    events = [e for e in ctx.bus._history if e.type.value == "NARRATIVE"]
+    assert len(events) == 1
+    assert events[0].data["narrative_id"] == message_id
+    assert events[0].data["call_ids"] == ["c1"]
+
+
+async def test_narrative_without_binding_only_broadcasts(tmp_path):
+    """拿不到本轮绑定时不落库，但也不报错、不写脏数据。"""
+    from agent.adapters.base import ToolCall
+    from agent.core.narrative import parse_narrative
+
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    narrative = parse_narrative({"kind": "progress", "text": "继续核对。"})
+    assert narrative is not None
+    call = ToolCall(id="c9", name="echo", arguments={})
+    out = await ctx._on_narrative("turn_unknown", narrative, call, ["c9"])
+    assert out is None
+    count = ctx.conn.execute(
+        "SELECT COUNT(*) AS c FROM messages WHERE content_type = 'narrative'"
+    ).fetchone()["c"]
+    assert count == 0
+
+
+async def test_settle_writes_system_call_summary(tmp_path):
+    import json
+
+    from agent.adapters.base import ToolCall
+    from agent.core.narrative import parse_narrative
+    from agent.tools.base import ToolResult
+
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    narrative = parse_narrative(
+        {"kind": "announce", "text": "我先确认链路。", "explanation": "写入叙事模块需要你确认。"}
+    )
+    assert narrative is not None
+    call = ToolCall(id="c1", name="echo", arguments={"q": "a"}, narrative={})
+    message_id = await ctx._on_narrative("turn_1", narrative, call, ["c1"])
+
+    results = {"c1": ToolResult(ok=True, content="ok")}
+    facts = {"c1": {"status": "success", "duration_ms": 210, "error": None}}
+    await ctx._settle_narrative(message_id, results, [call], facts)
+
+    row = ctx.conn.execute("SELECT raw FROM messages WHERE id = ?", (message_id,)).fetchone()
+    raw = json.loads(row["raw"])
+    assert raw["calls"] == [
+        {
+            "call_id": "c1",
+            "tool": "echo",
+            "title": raw["calls"][0]["title"],
+            "status": "success",
+            "error": None,
+            "duration_ms": 210,
+        }
+    ]
+    # 系统摘要里不出现模型文案
+    assert "我先确认链路" not in json.dumps(raw["calls"], ensure_ascii=False)
+
+
+def test_narrative_rows_do_not_count_toward_fragment_capacity(tmp_path):
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    before = ctx.fragments.content_tokens(fragment)
+    ctx.memory.append_message(
+        topic_id=topic,
+        role="assistant",
+        content="我先确认审批请求从后端到前端的完整路径。",
+        content_type="narrative",
+        fragment_id=fragment,
+        turn_id="turn_1",
+    )
+    assert ctx.fragments.content_tokens(fragment) == before
+    # 普通消息照常计入
+    ctx.memory.append_message(
+        topic_id=topic, role="user", content="普通消息", fragment_id=fragment
+    )
+    assert ctx.fragments.content_tokens(fragment) > before
+
+
+def test_active_turn_narratives_returns_system_view(tmp_path):
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    ctx.memory.append_message(
+        topic_id=topic,
+        role="assistant",
+        content="我先确认链路。",
+        content_type="narrative",
+        fragment_id=fragment,
+        turn_id="turn_1",
+        raw={
+            "narrative": {"kind": "announce", "tool": "echo", "call_id": "c1"},
+            "calls": [{"call_id": "c1", "tool": "echo", "status": "success", "duration_ms": 5}],
+        },
+    )
+    out = ctx.active_turn_narratives("turn_1")
+    assert len(out) == 1
+    assert out[0]["kind"] == "announce"
+    assert out[0]["text"] == "我先确认链路。"
+    assert out[0]["calls"][0]["tool"] == "echo"
+    # 子任务的叙事不属于主对话
+    assert ctx.active_turn_narratives("subagent:task_x") == []
+
+
+async def test_full_turn_persists_narrative_and_call_summary(tmp_path, monkeypatch):
+    """端到端：一轮真实 turn 里模型带 `_qio`，叙事落库并补写系统调用摘要。"""
+    import json
+
+    from agent.adapters.base import ChatMessage, Completion, ToolCall
+
+    ctx, topic, fragment = _app_ctx(tmp_path)
+    # echo 是内置工具，直接用真实注册表跑完整一轮
+
+    class _Adapter:
+        mode = "native"
+        model = "fake-narrative"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    message=ChatMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            ToolCall(
+                                id="c1",
+                                name="echo",
+                                arguments={"text": "hi"},
+                                narrative={
+                                    "kind": "announce",
+                                    "text": "我先确认审批链路。",
+                                    "explanation": "写入叙事模块需要你确认。",
+                                },
+                            )
+                        ],
+                    )
+                )
+            return Completion(message=ChatMessage(role="assistant", content="完成"))
+
+    async def fake_build():
+        return _Adapter()
+
+    monkeypatch.setattr(ctx, "build_adapter", fake_build)
+    result = await ctx.run_turn("继续实现", topic_id=topic)
+    assert result["ok"] is True
+
+    rows = ctx.conn.execute(
+        "SELECT id, content, raw FROM messages WHERE content_type = 'narrative'"
+    ).fetchall()
+    assert len(rows) == 1
+    raw = json.loads(rows[0]["raw"])
+    assert rows[0]["content"] == "我先确认审批链路。"
+    assert raw["narrative"]["kind"] == "announce"
+    assert raw["calls"][0]["tool"] == "echo"
+    assert raw["calls"][0]["status"] == "success"
+    assert isinstance(raw["calls"][0]["duration_ms"], int)
+    assert ctx.active_turn_narratives(
+        ctx.conn.execute(
+            "SELECT turn_id FROM messages WHERE content_type = 'narrative'"
+        ).fetchone()["turn_id"]
+    )
+
+
+# ---- 恢复路径：runtime state 与历史分页都要能拿到叙事 ---------------------------
+
+
+def test_runtime_state_carries_narratives(db_conn, settings):
+    from fastapi.testclient import TestClient
+
+    from agent.api.server import create_app
+
+    app = create_app(settings, db_conn)
+    ctx = app.state.ctx
+    ctx.active_turn_narratives = lambda turn_id=None: [
+        {
+            "narrative_id": "msg_1",
+            "turn_id": "turn_1",
+            "kind": "announce",
+            "text": "我先确认链路。",
+            "calls": [],
+            "created_at": "2026-09-22T09:41:09+00:00",
+        }
+    ]
+    with TestClient(app) as client:
+        state = client.get("/api/runtime/state").json()
+    assert state["narratives"][0]["narrative_id"] == "msg_1"
+    assert state["narratives"][0]["kind"] == "announce"
+
+
+def test_session_context_returns_narrative_raw(db_conn, settings):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from agent.api.server import create_app
+
+    app = create_app(settings, db_conn)
+    ctx = app.state.ctx
+    topic = ctx.topics.nodes.create_topic("执行叙事层").id
+    fragment = ctx.fragments.get_or_create_open(topic).id
+    ctx.navigation.enter_topic(topic, fragment_id=fragment)
+    ctx.memory.append_message(
+        topic_id=topic,
+        role="assistant",
+        content="我先确认审批链路。",
+        content_type="narrative",
+        fragment_id=fragment,
+        turn_id="turn_1",
+        raw={
+            "narrative": {"kind": "announce", "tool": "echo", "call_id": "c1"},
+            "calls": [{"call_id": "c1", "tool": "echo", "status": "success", "duration_ms": 5}],
+        },
+    )
+    with TestClient(app) as client:
+        payload = client.get("/api/session/context").json()
+    msg = next(m for m in payload["messages"] if m["content_type"] == "narrative")
+    raw = json.loads(msg["raw"])
+    assert raw["narrative"]["kind"] == "announce"
+    assert raw["calls"][0]["status"] == "success"

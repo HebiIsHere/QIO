@@ -122,6 +122,9 @@ class AgentLoop:
         # 每次工具调用的开始时刻：TOOL_END 用它给出耗时（前端卡片显示「1.2s」）。
         # 放在 loop 上而不是 registry 上：registry 是跨 loop 共享的，计时必须按调用归属。
         self._tool_started_at: dict[str, float] = {}
+        # 每次工具调用的**系统事实**（终态 + 耗时）：工具卡与叙事摘要共用同一份，
+        # 批次结束交给 narrative_settler 写进叙事记录。
+        self._tool_facts: dict[str, dict] = {}
         # 工具执行的**权威事实**（active + recent terminal）。主 Turn 由 AppContext 注入
         # 进程级实例（这样「刚结束的 Turn」的工具结果在重连后仍查得到）；
         # 单独构造 loop（子任务 / 测试）时自建一份私有的，行为一致但不外泄。
@@ -214,6 +217,12 @@ class AgentLoop:
             tool_name=tool_name,
             error=data.get("error"),
         )
+        if call_id:
+            self._tool_facts[str(call_id)] = {
+                "status": status,
+                "duration_ms": duration_ms,
+                "error": data.get("error"),
+            }
         await self._emit(
             EventType.TOOL_END,
             {
@@ -307,7 +316,8 @@ class AgentLoop:
         # 批次结束：把系统知道的真实调用结果补写进叙事记录（失败只记日志）。
         if narrative_id and self.narrative_settler is not None:
             try:
-                await self.narrative_settler(narrative_id, results, calls)
+                facts = {c.id: dict(self._tool_facts.get(c.id) or {}) for c in calls}
+                await self.narrative_settler(narrative_id, results, calls, facts)
             except Exception:  # noqa: BLE001 - 结算失败不影响工具结果
                 logger.warning("narrative settle failed", exc_info=True)
         return results

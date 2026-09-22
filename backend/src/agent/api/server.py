@@ -702,6 +702,9 @@ def create_app(
             # 客户端据此把「运行中」的卡片恢复成真实的 success / failed / cancelled。
             # 只有服务器也确认不了（记录已回收 / 进程重启）时才轮到 unknown。
             "tools": ctx.tool_executions(),
+            # 本轮已输出的执行叙事（模型文案 + 系统生成的调用摘要）：
+            # 断线期间丢失的叙事在这里补齐，客户端按 narrative_id 去重。
+            "narratives": ctx.active_turn_narratives(),
         }
 
     @app.post("/api/turns/{turn_id}/cancel")

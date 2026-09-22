@@ -367,12 +367,18 @@ class FragmentManager:
         return not self._ends_mid_turn(fragment.id)
 
     def content_tokens(self, fragment_id: str) -> int:
-        """片段内容长度（估算 token）：容量兜底用，与「模型上下文预算」不是一回事。"""
+        """片段内容长度（估算 token）：容量兜底用，与「模型上下文预算」不是一回事。
+
+        过程说明（`content_type='narrative'`）是**展示记录**，不是记忆内容：
+        它不该让片段提前封存，所以这里排除掉（原文仍留在历史里可读）。
+        """
         from agent.memory.index import estimate_tokens
 
         total = 0
         for row in self.conn.execute(
-            "SELECT content FROM messages WHERE fragment_id = ?", (fragment_id,)
+            "SELECT content FROM messages WHERE fragment_id = ? "
+            "AND content_type <> 'narrative'",
+            (fragment_id,),
         ):
             total += estimate_tokens(row["content"] or "")
         return total

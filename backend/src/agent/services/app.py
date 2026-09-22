@@ -740,6 +740,141 @@ class AppContext:
             return []
         return [r for r in records if _is_main_turn_id(r.get("turn_id"))]
 
+    # -- execution narrative（模型怎么表达，见 core/narrative.py） -------------
+
+    async def _on_narrative(self, turn_id, narrative, call, call_ids) -> str | None:
+        """主 Turn 的过程说明：**先落库、再广播**。
+
+        落库的意义有两个：
+
+        * 页面刷新 / 分页能拿到同一条 ``narrative_id``（前端据此去重，不重复叙事）；
+        * 批次结束后可以把真实调用结果补写进同一行的 ``raw.calls``（B 方案）。
+
+        叙事只承载"模型怎么表达"，工具事实另走 TOOL_START / TOOL_END，两者不合并。
+        """
+        from agent.api.events import EventType, make_event
+        from agent.core.narrative import narrative_event_payload
+
+        binding = self.bindings.binding_for(turn_id)
+        if binding is None:
+            # 拿不到本轮归属（子任务 / 测试 / 异常时序）：不写脏数据，也不报错。
+            return None
+        raw = {
+            "narrative": {
+                "kind": narrative.kind,
+                "tool": call.name,
+                "call_id": call.id,
+                "silent": narrative.silent,
+            },
+            "calls": [],
+        }
+        try:
+            message_id, _ = self.memory.append_message(
+                topic_id=binding.topic_id,
+                role="assistant",
+                content=narrative.text,
+                content_type="narrative",
+                fragment_id=binding.fragment_id,
+                turn_id=turn_id,
+                raw=raw,
+            )
+        except Exception:  # noqa: BLE001 - 叙事落库失败不得影响工具执行
+            logger.warning("narrative persistence failed", exc_info=True)
+            return None
+        created_at = None
+        row = self.conn.execute(
+            "SELECT created_at FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if row is not None:
+            created_at = row["created_at"]
+        await self.bus.publish(
+            make_event(
+                EventType.NARRATIVE,
+                narrative_event_payload(
+                    message_id,
+                    turn_id,
+                    narrative,
+                    tool=call.name,
+                    call_id=call.id,
+                    call_ids=list(call_ids or []),
+                    created_at=created_at,
+                ),
+            )
+        )
+        return message_id
+
+    async def _settle_narrative(self, narrative_id, results, calls, facts=None) -> None:
+        """批次结束：把**系统知道的**调用结果补写进叙事记录（raw.calls）。
+
+        这份摘要只含系统事实（工具名 / 状态 / 耗时 / 失败原因），模型文案不进入它，
+        模型也无法改写它。写失败只记日志 —— 它不影响工具结果与 turn 终态。
+        """
+        if not narrative_id:
+            return
+        row = self.conn.execute(
+            "SELECT raw FROM messages WHERE id = ?", (narrative_id,)
+        ).fetchone()
+        if row is None:
+            return
+        from agent.tools.display import tool_label
+
+        try:
+            raw = json.loads(row["raw"] or "{}")
+        except ValueError:
+            raw = {}
+        summaries: list[dict] = []
+        for call in calls or []:
+            fact = dict((facts or {}).get(call.id) or {})
+            result = (results or {}).get(call.id)
+            summaries.append(
+                {
+                    "call_id": call.id,
+                    "tool": call.name,
+                    "title": tool_label(call.name),
+                    "status": str(fact.get("status") or ("success" if getattr(result, "ok", False) else "failed")),
+                    "error": fact.get("error") or (getattr(result, "error", None) if result is not None else None),
+                    "duration_ms": fact.get("duration_ms"),
+                }
+            )
+        raw["calls"] = summaries
+        try:
+            self.conn.execute(
+                "UPDATE messages SET raw = ? WHERE id = ?",
+                (json.dumps(raw, ensure_ascii=False), narrative_id),
+            )
+        except Exception:  # noqa: BLE001 - 摘要补写失败不影响任何执行结果
+            logger.warning("narrative settle write failed", exc_info=True)
+
+    def active_turn_narratives(self, turn_id: str | None = None) -> list[dict]:
+        """当前（或指定）主 Turn 的叙事，供 `/api/runtime/state` 恢复界面。"""
+        target = turn_id if turn_id is not None else self._active_turn_id()
+        if not target or not _is_main_turn_id(target):
+            return []
+        rows = self.conn.execute(
+            "SELECT id, content, raw, created_at FROM messages "
+            "WHERE content_type = 'narrative' AND turn_id = ? "
+            "ORDER BY created_at, id",
+            (target,),
+        ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            try:
+                raw = json.loads(row["raw"] or "{}")
+            except ValueError:
+                raw = {}
+            meta = dict(raw.get("narrative") or {})
+            out.append(
+                {
+                    "narrative_id": row["id"],
+                    "turn_id": target,
+                    "kind": str(meta.get("kind") or "progress"),
+                    "text": row["content"] or "",
+                    "calls": list(raw.get("calls") or []),
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
+
     # -- selector refresh -------------------------------------------------
 
     @staticmethod
@@ -1172,7 +1307,7 @@ class AppContext:
             params.extend([created_at, created_at, message_id])
         params.append(limit + 1)  # 多取一条判断是否还有更早的
         rows = self.conn.execute(
-            "SELECT id, role, content, content_type, created_at FROM messages "
+            "SELECT id, role, content, content_type, created_at, raw FROM messages "
             f"WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
