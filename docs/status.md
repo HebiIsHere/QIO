@@ -596,7 +596,13 @@
 
 ### P15 — 应用内联网更新（Updater，2026-09-22）
 
-- **Status：** partial（代码与单测已就位；签名构建与真机端到端更新**尚未运行**，见下方限制）
+- **Status：** completed
+- **Implementation（真机闭环，2026-09-22）：** 已发布 v0.1.3 → v0.1.6 六个版本，更新源为
+  GitHub Releases（`releases/latest/download/latest.json`）。**应用内一键更新已在真机跑通**：
+  0.1.5 内点「检查更新」→ 发现 0.1.6 → 下载 → 签名校验通过 → 安装 → 重启后版本为 0.1.6。
+  途中修掉三个真实故障：更新插件只读 `TAURI_SIGNING_PRIVATE_KEY`（导致"有安装包、无签名"）、
+  后端孤儿进程锁住 `qio-backend.exe` 让安装中止（改用 Windows Job Object 根治）、
+  以及残留的失效代理地址让请求一直等（改为读系统代理 + 采用前做连通测试）。
 - **Implementation（运行时）：** Tauri 官方 `tauri-plugin-updater`（检查 / 下载 / **签名校验** / 安装）
   + `tauri-plugin-process`（装完重启）；`main.rs` 注册两个插件，`capabilities/default.json` 增加
   `updater:default` 与 `process:allow-restart`，`tauri.conf.json` 开启 `bundle.createUpdaterArtifacts`
@@ -613,9 +619,9 @@
   状态机正反两条路径、检查失败不得显示成"已是最新"、只有用户点击才 relaunch）、
   `frontend/src/components/__tests__/UpdateCard.test.ts`（各状态按钮文案与可用性）。
 - **Known limitations：**
-  - **端到端更新尚未在真机验证**：签名构建需要私钥口令（只在拥有者手里），
-    本地假更新源与真实 Release 两条链路都还没跑过；在那之前不能把 Status 记为 completed；
-  - 0.1.2 → 0.1.3 必须**手动安装一次**（0.1.2 里没有更新器代码）；
+  - 0.1.2 及更早版本没有更新器代码，升级到 0.1.3 需要**手动安装一次**；0.1.5 起已在真机验证；
+  - 代理自动适配覆盖"系统代理模式"与 TUN/全局模式的 VPN；**PAC 自动配置脚本、浏览器插件式
+    VPN、需要用户名密码的代理不覆盖**（任何非浏览器程序都不行）；
   - 更新包未做 Authenticode 代码签名，安装时 Windows 可能仍提示「已保护你的电脑」；
   - 私钥与口令是信任根：泄露即等于所有已安装实例可被投毒；丢失即无法再发签名更新；
   - 不做差分更新、不做 beta/stable 多通道、不做回滚。
