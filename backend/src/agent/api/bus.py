@@ -45,6 +45,9 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         EventType.TURN_QUEUE,
         EventType.TOOL_START,
         EventType.TOOL_END,
+        # 过程说明：丢了就少一句模型文案，但客户端会因此无法与服务器对齐，
+        # 所以按关键事件处理（走既有 RESYNC 恢复路径）。
+        EventType.NARRATIVE,
         EventType.TOOL_CREATE_STATUS,
         EventType.APPROVAL_REQUIRED,
         EventType.APPROVAL_RESULT,

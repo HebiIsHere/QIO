@@ -383,3 +383,17 @@ async def test_narrative_never_reaches_tool_arguments():
         )
     )
     assert seen == [{"q": "hi"}]
+
+
+# ---- SSE 事件：NARRATIVE 是"关键事件"（不可静默丢弃） ---------------------------
+
+
+def test_narrative_event_is_registered_and_critical():
+    from agent.api.bus import CRITICAL_EVENTS
+    from agent.api.events import EventType, make_event, sse_format
+
+    assert EventType.NARRATIVE.value == "NARRATIVE"
+    assert EventType.NARRATIVE in CRITICAL_EVENTS
+    text = sse_format(make_event(EventType.NARRATIVE, {"text": "先确认链路"}))
+    assert "event: NARRATIVE" in text
+    assert "先确认链路" in text

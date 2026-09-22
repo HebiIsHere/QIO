@@ -31,6 +31,9 @@ class EventType(str, Enum):
     TURN_QUEUE = "TURN_QUEUE"
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
+    # 模型自主决定的过程说明（announce / progress / warning / result）。
+    # 它只承载"模型怎么表达"，工具事实仍走 TOOL_START / TOOL_END。
+    NARRATIVE = "NARRATIVE"
     ASSISTANT = "ASSISTANT"
     ANCHOR = "ANCHOR"
     # 推测切换：只表示「可能属于另一个话题，等你确认」，Anchor 没变（见 spec 第 29~30 条）
