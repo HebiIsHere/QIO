@@ -14,6 +14,23 @@ $root = Split-Path $PSScriptRoot -Parent
 $backend = Join-Path $root "backend"
 $binaries = Join-Path $root "frontend\src-tauri\binaries"
 
+# Windows PowerShell 5.1 会把原生命令写到 stderr 的正常输出（uv 的 "Uninstalled 1 package"、
+# python 的 traceback 之类）当成终止性错误，即使重定向了也一样。所有外部命令统一走这个包装：
+# 临时放宽错误偏好、只取退出码。返回 0/非 0，由调用处决定。
+function Invoke-External {
+  param([scriptblock]$Command)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    # Out-Host：日志照常打印，但不进入函数的返回值（否则 $code 会变成"输出行 + 退出码"的数组）
+    & $Command 2>&1 | Select-Object -Last 3 | Out-Host
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+  return $code
+}
+
 $pyiArgs = @(
   "--noconfirm", "--onefile", "--name", "qio-backend",
   "--collect-all", "tiktoken",
@@ -38,18 +55,29 @@ try {
 
   $done = $false
   if ($candidate) {
-    & $candidate -c "import PyInstaller" 2>$null
-    if ($LASTEXITCODE -eq 0) {
-      & $candidate -m PyInstaller @pyiArgs 2>&1 | Select-Object -Last 3
-      $done = ($LASTEXITCODE -eq 0)
+    # Windows PowerShell 5.1 的坑：原生命令一旦往 stderr 写东西，在
+    # $ErrorActionPreference="Stop" 下会被当成终止性错误（即使 2>$null 也一样），
+    # 于是"探测不到 PyInstaller"这种正常分支会把整个脚本干掉。
+    # 探测期间临时放宽，只看退出码。
+    $probePrev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $null = & $candidate -c "import PyInstaller" 2>&1
+      $hasPyInstaller = ($LASTEXITCODE -eq 0)
+    } finally {
+      $ErrorActionPreference = $probePrev
+    }
+    if ($hasPyInstaller) {
+      $code = Invoke-External { & $candidate -m PyInstaller @pyiArgs }
+      $done = ($code -eq 0)
     } else {
       Write-Host "PyInstaller 不在 $candidate 里，改用 uv 临时提供"
     }
   }
 
   if (-not $done) {
-    uv run --frozen --with pyinstaller python -m PyInstaller @pyiArgs 2>&1 | Select-Object -Last 3
-    if ($LASTEXITCODE -ne 0) { Write-Host "PyInstaller failed: $LASTEXITCODE"; exit 1 }
+    $code = Invoke-External { uv run --frozen --with pyinstaller python -m PyInstaller @pyiArgs }
+    if ($code -ne 0) { Write-Host "PyInstaller failed: $code"; exit 1 }
   }
 } finally {
   Pop-Location

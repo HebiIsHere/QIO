@@ -11,7 +11,7 @@
 #   latest.json                  更新清单（endpoints 指向 latest/download/latest.json）
 #
 # 用法：
-#   pwsh -File scripts/publish_release.ps1 -Version 0.1.3
+#   powershell -File scripts\publish_release.ps1 -Version 0.1.3
 param(
   [Parameter(Mandatory = $true)][string]$Version,
   [string]$DistDir = "",
@@ -20,6 +20,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
+
+# latest.json 会被 Rust 侧 serde_json 直接解析：必须无 BOM
+# （PowerShell 5.1 的 Set-Content -Encoding UTF8 会写 BOM）。
+function Write-Utf8NoBom {
+  param([string]$Path, [string]$Text)
+  [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 if (-not $DistDir) { $DistDir = Join-Path (Split-Path $root -Parent) "dist" }
 if (-not $NotesFile) { $NotesFile = Join-Path $root "docs\releases\v$Version.md" }
 
@@ -36,7 +44,7 @@ if (-not (Test-Path $NotesFile)) { throw "缺少发布说明：$NotesFile" }
 # 清单里的 url 必须指向本次 tag，否则客户端会去 latest 之外的地方下载
 $json = Get-Content -Raw $manifest | ConvertFrom-Json
 $json.platforms.'windows-x86_64'.url = "https://github.com/HebiIsHere/QIO/releases/download/$tag/QIO_${Version}_x64-setup.exe"
-$json | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $manifest
+Write-Utf8NoBom -Path $manifest -Text ($json | ConvertTo-Json -Depth 4)
 
 Write-Host "== 创建 release $tag 并上传资产 =="
 gh release create $tag `

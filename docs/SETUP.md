@@ -109,11 +109,13 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PATH     = "C:\Users\zxy\Documents\Front agent\di
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<你的口令>"
 
 # 3) 构建（取模型 → 重建 sidecar → tauri build → 签名 + latest.json + 落 dist/）
-pwsh -File scripts/build_installer.ps1
+powershell -File scripts\build_installer.ps1
 
 # 4) 发布到 GitHub Releases（上传 exe / exe.sig / latest.json 三个资产）
-pwsh -File scripts/publish_release.ps1 -Version X.Y.Z
+powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 ```
+
+（没装 PowerShell 7 就用系统自带的 `powershell`；两个脚本都已兼容 Windows PowerShell 5.1。）
 
 两条硬规则：
 
