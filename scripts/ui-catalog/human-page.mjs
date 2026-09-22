@@ -79,6 +79,13 @@ const ISSUES = [
       { group: "conv-root", id: "conv-53-candidate-covered", caption: "被压住的现场：卡片几乎全在输入框下面" },
       { group: "conv-root", id: "conv-51-knowledge-editing", caption: "同一张卡片进入「修改内容」之后：能看到的仍然只有上半部分，按钮还是在输入框下面" },
     ],
+    fixed:
+      "已修复。底部三块（知识候选卡 / 兼容模式提示 / 话题切换提示）按输入区的实际高度整体让位；" +
+      "实测按钮中点命中的元素已经从输入框变回按钮本身。",
+    fix_evidence: [
+      { group: "conv-root", id: "conv-130-candidate-above-composer", caption: "候选卡完整位于输入区上方，三个按钮可点" },
+      { group: "conv-root", id: "conv-132-topic-switch-above-composer", caption: "话题切换提示条同样抬到输入区上方（下沿 752px ≤ 输入框上沿 761px）" },
+    ],
   },
   {
     title: "2. 用 Esc 键关不掉小确认框",
@@ -88,6 +95,14 @@ const ISSUES = [
     evidence: [
       { group: "atoms", id: "atoms-qconfirm-inline-normal-dark", caption: "就地确认框（普通）" },
       { group: "atoms", id: "atoms-qconfirm-popover-normal-dark", caption: "浮在触发点旁边的确认框（同样受影响）" },
+    ],
+    fixed: "已修复。三档确认框一律全局监听 Esc，关闭后焦点归还触发元素（已不在时还给同卡片相邻项）。外观没有改动，所以仍用上面两张图看形态。",
+    fix_evidence: [
+      {
+        group: "atoms",
+        id: "atoms-qconfirm-layer-danger-dark",
+        caption: "确认层外观未变；行为修复由 test：QConfirmEsc.test.ts 覆盖（三档 + 重开场景）",
+      },
     ],
   },
   {
@@ -99,6 +114,12 @@ const ISSUES = [
       { group: "planet-root", id: "planet-16-fragment-selected", caption: "面板底部就是「进入某个话题」这个按钮" },
       { group: "planet-root", id: "planet-18-start-here", caption: "点下去之后的结果" },
     ],
+    fixed:
+      "已修复。点击历史只登记接续意图；真正有消息执行时才在一个事务里封存旧段并建立接续段，来源指向所选历史。",
+    fix_evidence: [
+      { group: "conv-root", id: "conv-133-continuation-hint", caption: "点击之后输入区显示「下一条消息将从「…」继续」+ 取消（不再直接报错）" },
+      { group: "conv-root", id: "conv-134-continuation-cancelled", caption: "发送前取消：提示消失，不留任何空片段" },
+    ],
   },
   {
     title: "4. 新打开页面时，会看到上一次留下的提示和排队信息",
@@ -107,6 +128,15 @@ const ISSUES = [
     impact: "用户可能重复处理已经处理过的错误，或者看到并不存在的排队任务。这条可以自己复验：先在页面里制造一条错误提示和一段排队信息，关掉它，再新开一个页面，什么都不做——提示和排队又会出现。",
     evidence: [
       { group: "conv-root", id: "conv-120-replay-residue", caption: "新页面（全程没有做任何操作）里出现的上一条错误提示与排队条" },
+    ],
+    fixed:
+      "已修复。新连接不再重放历史事件（只有带游标的重连才补发），前端在连接建立时主动拉一次权威快照。",
+    fix_evidence: [
+      {
+        group: "conv-root",
+        id: "conv-135-resync-quiet",
+        caption: "新打开的页面不再带出上一次的提示；连接抖动快速同步完成后也不留痕",
+      },
     ],
   },
   {
@@ -118,6 +148,10 @@ const ISSUES = [
       { group: "conv-root", id: "conv-66-cred-paused", caption: "暂停凭据后对话页的样子（图中那条提示是「一个凭据都没有」才有的话，与暂停无关）" },
       { group: "conv-root", id: "conv-67-cred-revoked", caption: "撤销凭据后对话页的样子" },
     ],
+    fixed: "已修复。凭据暂停 / 失效会在对话页用人话说明，并给出「前往设置」的恢复入口；恢复后提示自己消失。",
+    fix_evidence: [
+      { group: "conv-root", id: "conv-131-credential-paused-notice", caption: "暂停凭据后出现的提示：说明影响与去处" },
+    ],
   },
   {
     title: "6. 有两种提醒，用户看不到",
@@ -127,6 +161,12 @@ const ISSUES = [
     evidence: [
       { group: "conv-root", id: "conv-68-resync", caption: "触发「连接抖动」后，页面没有任何提示" },
     ],
+    fixed:
+      "已修复（按「不制造噪音」的方式）。同步只在真的卡住超过 1.5 秒时才提示，完成后自己撤下；" +
+      "同步期间新到的提醒不再被顺手清掉。",
+    fix_evidence: [
+      { group: "conv-root", id: "conv-135-resync-quiet", caption: "快速同步：页面保持干净，不闪一下又不留痕" },
+    ],
   },
   {
     title: "7. 环境不支持 3D 时，说明文字叠在对话内容上",
@@ -135,6 +175,10 @@ const ISSUES = [
     impact: "这类环境下的用户会以为应用出错；其实话题数据仍然可用，只是显示方式有问题。",
     evidence: [
       { group: "planet-root", id: "planet-70-webgl-fallback", caption: "说明文字与对话内容叠在一起" },
+    ],
+    fixed: "已修复。降级说明改成一块独立卡片（不透明底 + 内边距 + 圆角），并压在画布之上；球态下不再显示。",
+    fix_evidence: [
+      { group: "planet-root", id: "planet-80-webgl-fallback-card", caption: "现在是一块独立卡片，明确写了「话题数据仍可用」" },
     ],
   },
 ];
@@ -178,6 +222,15 @@ function issueBlock(issue) {
   const evidence = issue.evidence
     .map((ref) => figure(findEntry(ref.group, ref.id), ref.caption, { showNote: false }))
     .join("\n");
+  const fixed = (issue.fix_evidence ?? [])
+    .map((ref) =>
+      figure(
+        ref.synthetic ?? findEntry(ref.group, ref.id),
+        ref.caption,
+        { showNote: false },
+      ),
+    )
+    .join("\n");
   return [
     '<article class="issue">',
     `  <h3>${esc(issue.title)}</h3>`,
@@ -185,7 +238,11 @@ function issueBlock(issue) {
     `  <p><b>为什么会这样：</b>${esc(issue.why)}</p>`,
     `  <p><b>影响范围：</b>${esc(issue.impact)}</p>`,
     issue.numbers ? `  <p class="numbers">${esc(issue.numbers)}</p>` : "",
+    `  <p class="state-note"><b>当前状态：</b>${esc(issue.fixed ?? "尚未修复")}</p>`,
+    `  <p class="state-note">修复前的现场：</p>`,
     `  <div class="evidence">${evidence}</div>`,
+    fixed ? `  <p class="state-note">修复之后（同一状态重新采集）：</p>` : "",
+    fixed ? `  <div class="evidence">${fixed}</div>` : "",
     '</article>',
   ]
     .filter(Boolean)
