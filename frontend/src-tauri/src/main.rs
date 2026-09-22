@@ -279,6 +279,87 @@ fn qio_prepare_for_update(
     Ok(true)
 }
 
+/// Windows Job Object：把后端放进「job 关闭即终止」的 job。
+///
+/// 这是孤儿进程问题的根治手段（2026-09-22 实测：壳退出只杀父进程，PyInstaller 的子进程
+/// 会留下来锁住 `qio-backend.exe`，安装器因此报 `Can't write` 并中止）。
+/// Job 句柄由壳持有：壳正常退出、被强杀、被安装器结束 —— 只要句柄随进程消失，
+/// 系统就会连带终止 job 里的所有进程，包括那个子进程。
+#[cfg(windows)]
+mod backend_job {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    /// 持有 job 句柄（进程活着句柄就活着；句柄关闭 = 系统杀掉 job 内所有进程）
+    pub struct BackendJob(HANDLE);
+
+    // 句柄只在主线程创建、进程生命周期内一直存在
+    unsafe impl Send for BackendJob {}
+    unsafe impl Sync for BackendJob {}
+
+    pub fn create() -> Option<BackendJob> {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                log::warn!("[qio] 建 Job Object 失败，退回 taskkill 兜底");
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                log::warn!("[qio] 设置 Job Object 失败，退回 taskkill 兜底");
+                CloseHandle(job);
+                return None;
+            }
+            Some(BackendJob(job))
+        }
+    }
+
+    impl BackendJob {
+        /// 把某个 pid 放进 job。失败不是致命的：退出时仍有 taskkill 兜底。
+        pub fn assign(&self, pid: u32) -> bool {
+            unsafe {
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    log::warn!("[qio] OpenProcess({pid}) 失败，job 未生效");
+                    return false;
+                }
+                let ok = AssignProcessToJobObject(self.0, process) != 0;
+                CloseHandle(process);
+                if !ok {
+                    log::warn!("[qio] 把 pid {pid} 放进 job 失败（可能已在别的 job 里）");
+                }
+                ok
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod backend_job {
+    pub struct BackendJob;
+    pub fn create() -> Option<BackendJob> {
+        None
+    }
+    impl BackendJob {
+        pub fn assign(&self, _pid: u32) -> bool {
+            false
+        }
+    }
+}
+
 fn backend_launch(
     app: &tauri::AppHandle,
     port: u16,
@@ -346,6 +427,8 @@ fn backend_launch(
 fn main() {
     let backend: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
     let backend_for_setup = Arc::clone(&backend);
+    // 后端进程随这份 job 的生死而生死：壳没了，系统负责清干净，不留孤儿。
+    let backend_job = backend_job::create();
 
     tauri::Builder::default()
         // 日志最先注册：这样 updater 等插件的 log::error! 才会落到文件里
@@ -384,6 +467,11 @@ fn main() {
             // 内置模型：复制到用户数据目录，并把目录交给后端（失败不阻塞启动）
             let models_dir = prepare_models(app.handle());
             let child = backend_launch(app.handle(), port, &token_path, models_dir)?;
+            if let Some(job) = backend_job.as_ref() {
+                if job.assign(child.pid()) {
+                    log::info!("[qio] 后端 pid {} 已纳入 job（随壳退出自动终止）", child.pid());
+                }
+            }
             *backend_for_setup.lock().unwrap() = Some(child);
             Ok(())
         })

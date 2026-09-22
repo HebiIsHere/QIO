@@ -21,6 +21,16 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# 只用 Windows Job Object：把后端进程放进「随 job 关闭而终止」的 job 里，
+# 壳一死（正常退出、被强杀、被安装器结束）整个后端进程树都会被系统清掉，
+# 不会再有孤儿进程锁住 qio-backend.exe 导致安装中止。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [profile.release]
 codegen-units = 1
 lto = true
