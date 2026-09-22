@@ -26,6 +26,50 @@ beforeEach(() => {
   document.body.innerHTML = "";
 });
 
+describe("QIO 的说明（执行叙事 spec 2026-09-22）", () => {
+  it("有 explanation：单独成段展示，系统事实一个不少", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a1", "tool_execution", {
+      description: "想修改当前项目中的一个文件",
+      explanation: "为了把过程说明存进历史，需要写入叙事模块。",
+      access: ["写入：backend/src/agent/core/narrative.py"],
+      capabilities: ["写入文件：是", "副作用：write"],
+      scope: "once",
+      arguments: { path: "backend/src/agent/core/narrative.py" },
+    });
+    await flushPromises();
+
+    const block = w.find(".qio-explanation");
+    expect(block.exists()).toBe(true);
+    expect(block.text()).toContain("QIO 的说明");
+    expect(block.text()).toContain("为了把过程说明存进历史");
+    // 系统事实仍然在：想做什么 / 会改变什么 / 授权范围 / 会访问什么
+    expect(w.find(".intent").text()).toBe("想修改当前项目中的一个文件");
+    expect(w.text()).toContain("会写入或修改数据");
+    expect(w.text()).toContain("仅这一次");
+    expect(w.text()).toContain("backend/src/agent/core/narrative.py");
+    w.unmount();
+  });
+
+  it("没有 explanation：与现状一致，不出现该段，审批照常可批准", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a2", "tool_execution", {
+      description: "想修改当前项目中的一个文件",
+      access: ["写入：a.txt"],
+      capabilities: ["写入文件：是", "副作用：write"],
+      scope: "once",
+      arguments: { path: "a.txt" },
+    });
+    await flushPromises();
+
+    expect(w.find(".qio-explanation").exists()).toBe(false);
+    expect(w.find(".intent").text()).toBe("想修改当前项目中的一个文件");
+    expect(w.find(".approve").exists()).toBe(true);
+    expect(w.find(".reject").exists()).toBe(true);
+    w.unmount();
+  });
+});
+
 describe("ApprovalModal 失败可见性与可重试", () => {
   it("成功批准：modal 关闭", async () => {
     const { w, s } = mountModal();
@@ -180,13 +224,20 @@ describe("审批信息顺序：做什么 / 会改变什么 / 为什么需要 / �
     await flushPromises();
 
     const text = w.find(".modal").text();
-    // 默认可见区域（不含默认折叠的高级详情）
-    const main = w.find(".intent").text() + w.find(".risk-row").text() + w.find(".facts").text();
+    // 默认可见区域（不含默认折叠的高级详情）。
+    // 「为什么需要」现在由单独的「QIO 的说明」承担（模型生成、标注来源），
+    // 所以它必须仍然在这个默认可见区域内。
+    const main =
+      w.find(".intent").text() +
+      w.find(".risk-row").text() +
+      w.find(".qio-explanation").text() +
+      w.find(".facts").text();
     expect(main).toContain("抓取指定文档并写入工作区"); // 它想做什么
     expect(main).toContain("会联网"); // 它会访问什么
     expect(main).toContain("会写入或修改数据"); // 会改变什么（翻成人话，不显示 write）
     expect(main).not.toContain("副作用：write");
     expect(main).toContain("用户要求自动归档资料"); // 为什么需要
+    expect(w.find(".qio-explanation").text()).toContain("QIO 的说明"); // 标注来源
     expect(main).toContain("已验证");
     expect(main).toContain("3/3 检查通过");
     // 说明性字段不再以「创建解释 / 描述 / 测试」重复一遍

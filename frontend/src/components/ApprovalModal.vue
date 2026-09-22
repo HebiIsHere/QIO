@@ -147,10 +147,24 @@ const changeSummary = computed(() => {
   }
 });
 
-/** 为什么需要：解释/原因，与「它想做什么」重复时不再重复显示 */
+/**
+ * QIO 的说明（模型生成）：
+ *
+ * 它**只**回答"为什么需要 / 准备做什么"，并且单独成段、标注来源 ——
+ * 系统事实（想做什么 / 会访问什么 / 会改变什么 / 授权范围）仍然由下面的字段承担，
+ * 模型文案不能替换它们。缺失时整段不渲染，审批照常。
+ */
+const qioExplanation = computed(() => {
+  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
+  const text = typeof p.explanation === "string" ? p.explanation.trim() : "";
+  return text && text !== intent.value ? text : "";
+});
+
+/** 为什么需要：解释/原因，与「它想做什么」重复时不再重复显示；
+ *  explanation 已经在「QIO 的说明」里出现过，这里不再重复一遍。 */
 const whyNeeded = computed(() => {
   const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const first = [p.explanation, p.reason]
+  const first = [qioExplanation.value ? "" : p.explanation, p.reason]
     .map((v) => (typeof v === "string" ? v.trim() : ""))
     .find((v) => v.length > 0);
   return first && first !== intent.value ? first : "";
@@ -356,6 +370,11 @@ function onKeydown(e: KeyboardEvent) {
         <div v-if="risks.length" class="risk-row">
           <span v-for="r in risks" :key="r" class="risk qio-state warn">{{ r }}</span>
         </div>
+        <!-- 2.5) QIO 的说明（模型生成，单独成段并标注来源；缺失时不渲染） -->
+        <div v-if="qioExplanation" class="qio-explanation">
+          <div class="tag mono">◈ QIO 的说明</div>
+          <p>{{ qioExplanation }}</p>
+        </div>
         <!-- 3) 会改变什么 / 为什么需要 / 验证了吗 -->
         <dl v-if="changeSummary || whyNeeded || verification" class="facts">
           <template v-if="changeSummary">
@@ -487,6 +506,17 @@ function onKeydown(e: KeyboardEvent) {
 /* 「它会访问什么」的行为标签走统一状态徽章（warn 语义 = 需要你留意），
    不再自己写一套底色与边框。 */
 .risk { font-family: var(--mono); letter-spacing: 0.03em; }
+/* QIO 的说明：模型文案，与系统事实在视觉上明确分开（左/右/下都是系统字段） */
+.qio-explanation {
+  margin: 10px 0 12px; padding: 10px 12px;
+  border: 1px solid var(--accent-soft); background: var(--accent-softer);
+  border-radius: var(--r-md);
+}
+.qio-explanation .tag {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+  font-size: 10px; letter-spacing: 0.08em; color: var(--link);
+}
+.qio-explanation p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-primary); }
 .row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13px; }
 .label { color: var(--text-secondary); min-width: 64px; flex-shrink: 0; }
 .value { color: var(--text-primary); }
