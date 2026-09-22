@@ -146,6 +146,13 @@ jobs:
           mkdir -p binaries
           touch binaries/qio-backend-x86_64-unknown-linux-gnu
           chmod +x binaries/qio-backend-x86_64-unknown-linux-gnu
+      # 同理，`bundle.resources` 指向内置模型目录（90MB 二进制，也被 gitignore）。
+      # Tauri 的 build script 对「不含通配符的资源路径」只检查路径是否存在，路径缺失就报
+      # `resource path `resources/models` doesn't exist` 并以 exit 1 结束 —— cargo check 直接红。
+      # 放一个空占位目录即可：空目录不产出任何资源，也不会报错（这一步不产出发布包）。
+      - name: Provide bundled-model placeholder for cargo check
+        run: |
+          mkdir -p resources/models/bge-small-zh-v1.5
       - name: cargo check
         run: cargo check
       # 同上：失败时把 cargo 的报错摘要变成公开可读的注解。
