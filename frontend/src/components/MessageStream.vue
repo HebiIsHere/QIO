@@ -9,10 +9,12 @@ import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
 import type { StreamMessage } from "../stores/session";
 import MessageItem from "./MessageItem.vue";
+import NarrativeStage from "./NarrativeStage.vue";
 import ContinueBar from "./ContinueBar.vue";
 import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
+import { groupTurnItems, type TurnItemGroup } from "../stores/session";
 
 /** 对话内容列宽：用户消息与回答共用一个居中列，不分别贴窗口两端 */
 const CONTENT_MAX_PX = 860;
@@ -22,6 +24,10 @@ interface Turn {
   index: number;
   startedAt: string;
   items: StreamMessage[];
+  /** 渲染分组：叙事行收纳它之后的调用卡，其余消息按原顺序散装渲染 */
+  groups: TurnItemGroup[];
+  /** 本轮第一条助手消息（用于显示话题名） */
+  firstAssistantId: string | null;
 }
 
 const session = useSessionStore();
@@ -53,11 +59,20 @@ const turns = computed<Turn[]>(() => {
   for (const m of messages.value) {
     if (!cur || m.role === "user" || m.role === "system") {
       n += 1;
-      cur = { id: `turn_${n}`, index: n, startedAt: m.createdAt, items: [] };
+      cur = {
+        id: `turn_${n}`,
+        index: n,
+        startedAt: m.createdAt,
+        items: [],
+        groups: [],
+        firstAssistantId: null,
+      };
       out.push(cur);
     }
     cur.items.push(m);
+    if (cur.firstAssistantId === null && m.role === "assistant") cur.firstAssistantId = m.id;
   }
+  for (const turn of out) turn.groups = groupTurnItems(turn.items);
   return out;
 });
 
@@ -391,17 +406,18 @@ function formatTime(iso?: string): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function firstAssistantIdx(t: Turn): number {
-  return t.items.findIndex((m) => m.role === "assistant");
-}
-
 /**
  * 整体状态什么时候需要出现：
  * - 正在生成时，流式正文本身就是进度，不再重复说一遍；
- * - 等待响应 / 正在使用工具 / 等待确认 / 正在处理独立任务时，说一句就够了。
+ * - **正在使用工具时不出现**：过程由模型自己写的执行叙事表达，工具卡自己说状态
+ *   （机械的"正在使用工具"是待替换的旧提示，见 spec 2026-09-22）；
+ * - 等待响应 / 等待确认 / 正在处理独立任务时，说一句就够了。
  */
 const showGlobalStatus = computed(
-  () => session.activity !== "idle" && session.activity !== "generating",
+  () =>
+    session.activity !== "idle" &&
+    session.activity !== "generating" &&
+    session.activity !== "tool",
 );
 /** 只有「还在等」才播三圆点；其它状态是安静的说明文字 */
 const showWaitingDots = computed(
@@ -417,7 +433,6 @@ const showWaitingDots = computed(
 const ACTIVITY_LABELS: Record<string, string> = {
   waiting: "正在处理",
   generating: "正在生成…",
-  tool: "正在使用工具",
   approval: "等待你确认",
   subagent: "正在处理独立任务",
   notify: "正在整理独立任务的结果",
@@ -462,12 +477,24 @@ const phaseLabel = computed(() => {
             <span class="bar"></span>
             <span class="ts">{{ formatTime(turns[item.index].startedAt) }}</span>
           </div>
-          <MessageItem
-            v-for="(m, i) in turns[item.index].items"
-            :key="m.id"
-            :message="m"
-            :show-topic="i === firstAssistantIdx(turns[item.index])"
-          />
+          <template v-for="(group, gi) in turns[item.index].groups" :key="`g${gi}`">
+            <!-- 执行叙事：一行抽屉头 + 它收纳的调用卡（默认收起） -->
+            <NarrativeStage
+              v-if="group.kind === 'stage'"
+              :narrative="group.narrative"
+              :calls="group.calls"
+            >
+              <MessageItem v-for="m in group.calls" :key="m.id" :message="m" />
+            </NarrativeStage>
+            <template v-else>
+              <MessageItem
+                v-for="m in group.items"
+                :key="m.id"
+                :message="m"
+                :show-topic="m.id === turns[item.index].firstAssistantId"
+              />
+            </template>
+          </template>
         </div>
       </div>
     </div>

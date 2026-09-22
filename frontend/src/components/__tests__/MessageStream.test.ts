@@ -276,14 +276,16 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
    * 第三阶段 spec 第 35~38、90 条：用户要知道 QIO 现在在做什么，
    * 但不能出现内部事件名，也不能把几种状态同时堆在页面上。
    */
-  it("工具 / 审批 / 独立任务各自映射到一句中文整体状态，且不出现内部事件名", async () => {
+  it("工具运行不再有机械整体提示；审批 / 独立任务仍各有一句中文状态，且不出现内部事件名", async () => {
     const { w, session } = await mountStream();
     session.pushUser("问题");
     session.turnStarted();
 
+    // 「正在使用工具」是第四阶段要替换掉的机械提示：过程改由执行叙事表达，
+    // 工具自己的状态由工具卡承担（spec 2026-09-22）。
     session.activity = "tool";
     await settle();
-    expect(w.find(".typing").text()).toContain("正在使用工具");
+    expect(w.find(".typing").exists()).toBe(false);
 
     session.activity = "approval";
     await settle();
