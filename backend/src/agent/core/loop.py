@@ -342,12 +342,45 @@ class AgentLoop:
                     policy = "block"
                     result = ToolResult(ok=False, error="guard: 重复失败已被拦截")
                 elif verdict == GuardVerdict.HALT:
+                    # 阈值到了不再直接终止本轮：先问用户要不要继续（2026-09-22 起）。
                     policy = "halt"
-                    self._halted = True
-                    self._warn("guard: 同一工具反复失败，终止本轮")
+                    failures = self.guard.failures_for(call.name)
+                    if self.approvals is None:
+                        # 没有审批通道（子任务 / 单元测试）：退回旧的终止行为，不静默继续
+                        self._halted = True
+                        self._warn(
+                            f"guard: {call.name} 累计失败 {failures} 次，已终止本轮（无审批通道）"
+                        )
+                    else:
+                        decision = await self.approvals.request(
+                            "continue",
+                            {
+                                "reason": "tool_failures",
+                                "tool": call.name,
+                                "failures": failures,
+                                # 复用预算那条「继续/停止」的通道：把当前预算一并给出，
+                                # 界面不必为"为什么问"单独做一套 UI。
+                                "used_iterations": self.budget.used_iterations,
+                                "max_iterations": self.budget.max_iterations,
+                                "used_tokens": self.budget.used_tokens,
+                                "token_budget": self.budget.token_budget,
+                            },
+                        )
+                        if decision.decision == "approved":
+                            self.guard.reset_tool(call.name)
+                            self._warn(
+                                f"guard: {call.name} 累计失败 {failures} 次，用户选择继续（计数已清零）"
+                            )
+                        else:
+                            self._halted = True
+                            self._warn(
+                                f"guard: {call.name} 累计失败 {failures} 次，用户选择停止本轮"
+                            )
                 elif verdict == GuardVerdict.WARN:
                     policy = "warn"
-                    self._warn(f"guard: {call.name} 反复失败，建议换方法")
+                    self._warn(
+                        f"guard: {call.name} 已累计失败 {self.guard.failures_for(call.name)} 次，建议换方法"
+                    )
             if self.trace is not None:
                 self.trace.tool_run(
                     call_id=call.id,
@@ -483,11 +516,18 @@ class AgentLoop:
                 break
 
             # native 模式：模型在工具调用前先说话时，把内容作为 interim 事件推给前端
+            # 但这一批工具已经带了叙事（`_qio`）时不再推 interim：同一阶段只保留一种
+            # 过程表达，否则用户会看到「◈ 过程」气泡和叙事行各说一遍（2026-09-22 合并规则）。
+            batch_has_narrative = any(
+                parse_narrative(getattr(c, "narrative", None)) is not None
+                for c in (completion.tool_calls or [])
+            )
             if (
                 self.adapter.mode == AdapterMode.NATIVE
                 and completion.tool_calls
                 and completion.message.content
                 and completion.message.content.strip()
+                and not batch_has_narrative
             ):
                 await self._emit(
                     EventType.ASSISTANT,

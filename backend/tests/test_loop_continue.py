@@ -94,15 +94,29 @@ def test_loop_without_approvals_stops_silently():
     assert result.phase.value == "stopped"
 
 
-def test_runaway_guard_halts_repeated_failures():
+def test_runaway_guard_halts_repeated_failures_without_approvals():
+    """没有审批通道时（子任务/测试）：护栏到阈值仍然终止本轮，不静默继续。"""
     guard = RunawayGuard()
-    # 让迭代数足够大，但护栏应在同工具失败 8 次时 halt
     loop = _loop(_ScriptedAdapter("boom"), guard=guard)
     loop.budget = IterationBudget(max_iterations=50, token_budget=0)
     result = asyncio.run(loop.run("go"))
     assert result.phase.value == "stopped"
-    # 护栏触发后循环提前结束，用掉的迭代数应远小于 50
-    assert result.iterations_used <= 10
+    # 2026-09-22 起阈值为同一工具累计失败 30 次 → 用掉的迭代数远小于 50
+    assert result.iterations_used >= 29
+    assert result.iterations_used <= 35
+
+
+def test_runaway_guard_asks_instead_of_stopping():
+    """有审批通道时：到阈值先问用户 —— 批准＝清零继续（不会停在同一处）。"""
+    approvals = _ApproveThenReject()
+    guard = RunawayGuard()
+    loop = _loop(_ScriptedAdapter("boom"), approvals=approvals, guard=guard)
+    loop.budget = IterationBudget(max_iterations=40, token_budget=0)
+    result = asyncio.run(loop.run("go"))
+    # 第一次到阈值被批准 → 计数清零、继续跑；第二次到阈值被拒绝 → 本轮结束
+    assert approvals.calls >= 2
+    assert result.phase.value == "stopped"
+    assert result.iterations_used > 30  # 证明"不是到 30 就直接停"
 
 
 def test_tokens_counted_from_completion_tokens():

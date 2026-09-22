@@ -656,6 +656,97 @@ async def test_narrative_sink_failure_does_not_break_tools():
     assert events[1]["data"]["ok"] is True
 
 
+async def test_loop_skips_interim_when_batch_has_narrative():
+    """合并规则：这一批工具带了叙事，就不再推 interim 气泡（同一阶段只留一种过程表达）。"""
+    from agent.adapters.base import ChatMessage, Completion, ToolCall
+    from agent.api.bus import EventBus
+    from agent.api.events import EventType
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    class _EchoAdapter:
+        mode = "native"
+        model = "m"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    message=ChatMessage(
+                        role="assistant",
+                        content="我先看几个文件再说。",
+                        tool_calls=[
+                            ToolCall(
+                                id="c1",
+                                name="echo",
+                                arguments={"q": "a"},
+                                narrative={"kind": "announce", "text": "我先确认审批链路。"},
+                            )
+                        ],
+                    )
+                )
+            return Completion(message=ChatMessage(role="assistant", content="完成"))
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    bus = EventBus()
+    events: list[dict] = []
+
+    async def sink(turn_id, narrative, call, call_ids):
+        events.append({"narrative": narrative.text})
+        return "msg_1"
+
+    loop = AgentLoop(_EchoAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink)
+    await loop.run("hi")
+
+    published = [e.type for e in bus._history]
+    # 有叙事 → 没有 interim 的 ASSISTANT；叙事本身照常
+    assert EventType.ASSISTANT not in published
+    assert events == [{"narrative": "我先确认审批链路。"}]
+
+
+async def test_loop_keeps_interim_when_batch_has_no_narrative():
+    """没有叙事时，模型的前置说明仍然以 interim 气泡显示（不丢信息）。"""
+    from agent.adapters.base import ChatMessage, Completion, ToolCall
+    from agent.api.bus import EventBus
+    from agent.api.events import EventType
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    class _EchoAdapter:
+        mode = "native"
+        model = "m"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    message=ChatMessage(
+                        role="assistant",
+                        content="我先看几个文件再说。",
+                        tool_calls=[ToolCall(id="c1", name="echo", arguments={"q": "a"})],
+                    )
+                )
+            return Completion(message=ChatMessage(role="assistant", content="完成"))
+
+    registry = ToolRegistry()
+    registry.register(_narrative_tool())
+    loop = AgentLoop(_EchoAdapter(), registry, EventBus(), turn_id="turn_1")
+    await loop.run("hi")
+
+    interim = [
+        e for e in loop.bus._history if e.type == EventType.ASSISTANT and e.data.get("interim")
+    ]
+    assert len(interim) == 1
+    assert interim[0].data["content"] == "我先看几个文件再说。"
+
+
 # ---- AppContext：先落库、再广播；批次结束补写系统调用摘要 ------------------------
 
 
