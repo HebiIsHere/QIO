@@ -145,6 +145,17 @@ DEV_GUIDE = """工具开发指南：
 3. 契约约束：function 型必须是纯函数、单文件实现、至少 1 个确定性测试用例；subagent 型需提供 model 和 credential_ref，可跳过确定性测试。
 4. 提交口径：用通俗语言说明工具用途；用户不接触代码，技术细节留在工具卡片中。"""
 
+# 工具调用的可选叙事信封（保留字段 `_qio`）说明。定义于 tools/registry.py
+# `_with_narrative_field`，注入到每个工具的 parameters.properties；
+# 作用：告诉模型可以用一句话说明这次调用想让用户知道什么，不写就是保持安静。
+NARRATIVE_FIELD_DESCRIPTION = (
+    "可选。用一句中文说明这次调用想让用户知道的意图：kind 取 "
+    "announce（下一步准备做什么）/ progress（当前进展）/ warning（异常或限制）/ "
+    "result（上一阶段结果）。不要复述工具名或参数；连续的低价值读取可以整批省略。"
+    "不说明就省略整个字段（保持安静）。explanation 可选：若这次调用可能触发用户确认，"
+    "说明为什么需要执行、准备做什么、可能影响什么。"
+)
+
 
 # ============================================================================
 # 二、注入模板（长期记忆注入）——组装进每条用户消息前的系统上下文
@@ -268,7 +279,8 @@ SYSTEM_PROMPT_TEXT_MODE = (
     "To call tools, respond with a single ```json block containing only this object:\n"
     '{"tool_calls": [{"name": "<tool_name>", "arguments": {}}]}\n'
     "Call independent tools together in one block. If no tool is needed, respond with plain text only; "
-    "never mix prose and the JSON block."
+    "never mix prose and the JSON block. "
+    'Optional: add "_qio" inside arguments to tell the user what this step is for; omit it to stay silent.'
 )
 
 # text 模式工具列表标题。定义于 agent/adapters/text.py build_system_prompt；

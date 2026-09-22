@@ -76,3 +76,95 @@ def test_narrative_event_payload_carries_system_provenance():
     assert payload["tool"] == "grep_search"
     assert payload["call_ids"] == ["call_a", "call_b"]
     assert payload["text"] == "先看审批链路"
+
+
+# ---- 适配器：把 _qio 剥离成 ToolCall.narrative ---------------------------------
+
+
+def test_native_adapter_strips_narrative_from_arguments():
+    from agent.adapters.native import NativeAdapter
+
+    class _Fn:
+        name = "fs_read"
+        arguments = '{"path": "a.txt", "_qio": {"kind": "announce", "text": "先读它"}}'
+
+    class _Call:
+        id = "call_1"
+        function = _Fn()
+
+    class _Msg:
+        content = None
+        tool_calls = [_Call()]
+
+    class _Choice:
+        message = _Msg()
+        finish_reason = "tool_calls"
+
+    class _Raw:
+        choices = [_Choice()]
+        usage = None
+
+    completion = NativeAdapter(client=None, model="m")._to_completion(_Raw())
+    call = completion.tool_calls[0]
+    assert call.arguments == {"path": "a.txt"}
+    assert call.narrative == {"kind": "announce", "text": "先读它"}
+
+
+def test_text_adapter_parses_narrative_from_json_block():
+    from agent.adapters.text import TextAdapter
+
+    adapter = TextAdapter(client=None, model="m")
+    parsed = adapter._parse(
+        '```json\n{"tool_calls": [{"name": "fs_read", "arguments": '
+        '{"path": "a.txt", "_qio": {"kind": "progress", "text": "继续核对"}}}]}\n```'
+    )
+    assert parsed is not None
+    raw = parsed["tool_calls"][0]["arguments"]
+    clean, narrative = split_narrative_arguments(raw)
+    assert clean == {"path": "a.txt"}
+    assert narrative["kind"] == "progress"
+
+
+def test_text_adapter_tool_call_carries_narrative():
+    import asyncio
+
+    from agent.adapters.text import TextAdapter
+
+    class _Choice:
+        message = type("M", (), {"content": '{"tool_calls": [{"name": "fs_read", "arguments": {"path": "a.txt", "_qio": {"kind": "announce", "text": "先读它"}}}]}'})()
+
+    class _Raw:
+        choices = [_Choice()]
+        usage = None
+
+    class _Client:
+        class chat:  # noqa: N801 - 模拟 openai 客户端形状
+            class completions:  # noqa: N801
+                @staticmethod
+                async def create(**kwargs):
+                    return _Raw()
+
+    adapter = TextAdapter(client=_Client(), model="m")
+    completion = asyncio.run(adapter.complete([], []))
+    call = completion.tool_calls[0]
+    assert call.arguments == {"path": "a.txt"}
+    assert call.narrative == {"kind": "announce", "text": "先读它"}
+
+
+def test_registry_specs_declare_narrative_field():
+    from agent.tools.base import Tool, ToolResult
+    from agent.tools.registry import ToolRegistry
+
+    class _Echo(Tool):
+        name = "echo"
+        description = "echo"
+        parameters = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
+
+        async def run(self, **kwargs):
+            return ToolResult(ok=True, content="ok")
+
+    reg = ToolRegistry()
+    reg.register(_Echo())
+    spec = reg.specs()[0]
+    assert NARRATIVE_KEY in spec.parameters["properties"]
+    assert spec.parameters["required"] == ["q"]

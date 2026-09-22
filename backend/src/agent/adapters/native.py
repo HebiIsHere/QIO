@@ -152,8 +152,17 @@ class NativeAdapter(BaseAdapter):
                         name=tc.function.name,
                         raw_arguments=raw_arguments,
                     ) from None
+                # 模型给的过程说明信封在这里剥离：工具与风险判断只看 arguments。
+                from agent.core.narrative import split_narrative_arguments
+
+                arguments, narrative = split_narrative_arguments(arguments)
                 tool_calls.append(
-                    ToolCall(id=tc.id, name=tc.function.name, arguments=arguments)
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
+                        narrative=narrative,
+                    )
                 )
         usage = None
         if getattr(raw, "usage", None) is not None:

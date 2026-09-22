@@ -27,6 +27,9 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # 模型给的可选叙事信封（已从 arguments 剥离，见 core/narrative.py）。
+    # compare=False：不进相等比较，也不会因为里面是 dict 而影响 hash。
+    narrative: dict[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass

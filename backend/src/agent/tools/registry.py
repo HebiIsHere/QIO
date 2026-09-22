@@ -18,6 +18,7 @@ import logging
 from typing import Any, Callable
 
 from agent.adapters.base import ToolCall, ToolSpec
+from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS
 from agent.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -96,10 +97,40 @@ class ToolRegistry:
             ToolSpec(
                 name=t.name,
                 description=t.description,
-                parameters=t.parameters,
+                # 每个工具都声明可选的叙事信封：模型据此知道自己可以说明意图，
+                # 而 adapter 会在解析时把它剥离，工具本身永远看不到这个字段。
+                parameters=self._with_narrative_field(t.parameters),
             )
             for t in self._tools.values()
         ]
+
+    @staticmethod
+    def _with_narrative_field(parameters: dict[str, Any]) -> dict[str, Any]:
+        """在工具参数 schema 的副本里补一个可选的 `_qio` 属性。
+
+        只改副本，不动工具自己的 parameters；不加入 required；
+        已有同名属性时不覆盖（保持工具自身定义优先）。
+        """
+        from agent.prompts import NARRATIVE_FIELD_DESCRIPTION
+
+        spec = dict(parameters or {})
+        spec.setdefault("type", "object")
+        properties = dict(spec.get("properties") or {})
+        properties.setdefault(
+            NARRATIVE_KEY,
+            {
+                "type": "object",
+                "description": NARRATIVE_FIELD_DESCRIPTION,
+                "properties": {
+                    "kind": {"type": "string", "enum": list(NARRATIVE_KINDS)},
+                    "text": {"type": "string", "description": "一句面向用户的意图说明"},
+                    "explanation": {"type": "string", "description": "需要确认时说明原因与影响"},
+                },
+                "additionalProperties": False,
+            },
+        )
+        spec["properties"] = properties
+        return spec
 
     # -- pipeline -----------------------------------------------------------
 

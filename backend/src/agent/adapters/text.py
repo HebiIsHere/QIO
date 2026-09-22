@@ -133,14 +133,22 @@ class TextAdapter(BaseAdapter):
 
         tool_calls = None
         if parsed is not None:
-            tool_calls = [
-                ToolCall(
-                    id=f"tc_{uuid.uuid4().hex[:8]}",
-                    name=item["name"],
-                    arguments=item.get("arguments") or {},
+            from agent.core.narrative import split_narrative_arguments
+
+            tool_calls = []
+            for item in parsed["tool_calls"]:
+                # 与 native 档同一套剥离逻辑：模型的过程说明信封不进 arguments。
+                arguments, narrative = split_narrative_arguments(
+                    dict(item.get("arguments") or {})
                 )
-                for item in parsed["tool_calls"]
-            ]
+                tool_calls.append(
+                    ToolCall(
+                        id=f"tc_{uuid.uuid4().hex[:8]}",
+                        name=item["name"],
+                        arguments=arguments,
+                        narrative=narrative,
+                    )
+                )
         return Completion(
             message=ChatMessage(role="assistant", content=content, tool_calls=tool_calls),
             raw=raw,
