@@ -104,6 +104,13 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
   return {
     currentVersion: () => getVersion(),
     check: async () => {
+      // 每次检查前重新判断代理（VPN 可能刚开或刚关）——判断在壳里做：
+      // 环境变量 → updater-proxy.txt → Windows 系统代理 → 直连，且用前会测可达性。
+      try {
+        await invoke("qio_refresh_updater_proxy");
+      } catch {
+        // 老版本壳没有这个命令：保持原行为，不阻塞检查
+      }
       const update = await check();
       if (!update) return null;
       return {
@@ -113,6 +120,12 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       };
     },
     downloadAndInstall: async (onProgress) => {
+      // 下载(约 108MB)同样要先确认代理可用，否则会卡在一个没人听的地址上
+      try {
+        await invoke("qio_refresh_updater_proxy");
+      } catch {
+        /* 同上：缺失不阻塞 */
+      }
       // 关键一步：先结束后端进程树，否则安装器写不进 qio-backend.exe，
       // 会以 "Can't write: ...\qio-backend.exe" 中止（实测踩过）。
       try {

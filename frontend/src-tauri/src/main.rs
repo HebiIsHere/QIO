@@ -203,26 +203,170 @@ fn prepare_models(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 /// 等后端把令牌写出来（后端启动要几秒）。只在后台线程里阻塞。
-/// 更新用的代理：只有环境变量（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY）能影响 reqwest，
-/// 它**不读** Windows 系统代理设置。所以允许用户把代理写在一行文本里，壳启动时读进来
-/// 注入环境变量 —— 不把任何机器相关的地址编译进安装包。
-fn apply_updater_proxy() -> Option<String> {
-    if std::env::var("HTTPS_PROXY").is_ok() || std::env::var("https_proxy").is_ok() {
-        let current = std::env::var("HTTPS_PROXY")
-            .or_else(|_| std::env::var("https_proxy"))
-            .unwrap_or_default();
-        return Some(current);
-    }
-    let path = data_dir().join("updater-proxy.txt");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let proxy = raw.trim().to_string();
-    if proxy.is_empty() {
+/// 解析 Windows 的「系统代理」设置（浏览器读的就是这一份）。
+///
+/// 为什么需要它：更新用的 HTTP 客户端只认环境变量，**不读** Windows 系统代理；而绝大多数
+/// VPN（Clash / v2rayN / Shadowsocks / 脉动VPN 等）在"系统代理模式"下只写这份设置。
+/// 读它 → 用户开了 VPN 就能自动跟上，关掉就自动回到直连，不需要任何配置。
+///
+/// 用 `reg query` 而不是引入注册表库：少一个依赖，输出格式稳定，解析失败就当"没有"。
+/// 自动配置脚本（PAC）不在这里处理：无法在不解释脚本的前提下判断该走哪个代理，
+/// 这种情况如实记为"未使用代理"，并写进日志。
+fn system_proxy() -> Option<String> {
+    #[cfg(not(windows))]
+    {
         return None;
     }
-    std::env::set_var("HTTPS_PROXY", &proxy);
-    std::env::set_var("HTTP_PROXY", &proxy);
-    std::env::set_var("ALL_PROXY", &proxy);
-    Some(proxy)
+    #[cfg(windows)]
+    {
+        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+        let query = |name: &str| -> Option<String> {
+            let out = std::process::Command::new("reg")
+                .args(["query", KEY, "/v", name])
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let line = text.lines().find(|l| l.contains("REG_SZ") || l.contains("REG_DWORD"))?;
+            let value = line.split_once("REG_SZ").map(|(_, v)| v)
+                .or_else(|| line.split_once("REG_DWORD").map(|(_, v)| v))?;
+            Some(value.trim().to_string())
+        };
+        let enabled = query("ProxyEnable")
+            .map(|v| v.trim_start_matches("0x").trim() == "1" || v == "1")
+            .unwrap_or(false);
+        if !enabled {
+            return None;
+        }
+        let raw = query("ProxyServer")?;
+        pick_proxy_from_windows_value(&raw)
+    }
+}
+
+/// Windows 的 ProxyServer 可能是 `host:port`，也可能是
+/// `http=h:p;https=h:p;socks=h:p`。我们要发的是 HTTPS 请求，取值优先 https → http → 单个地址。
+/// socks 需要客户端支持 socks，这里不当作可用（宁可直连，也不给一个用不了的值）。
+fn pick_proxy_from_windows_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let mut https = None;
+    let mut http = None;
+    let mut single = None;
+    for part in raw.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part.split_once('=') {
+            Some((scheme, value)) => match scheme.trim().to_ascii_lowercase().as_str() {
+                "https" => https = Some(value.trim().to_string()),
+                "http" => http = Some(value.trim().to_string()),
+                "socks" | "socks5" => {}
+                _ => {}
+            },
+            None => single = Some(part.to_string()),
+        }
+    }
+    let chosen = https.or(http).or(single)?;
+    if chosen.is_empty() {
+        return None;
+    }
+    if chosen.contains("://") {
+        Some(chosen)
+    } else {
+        Some(format!("http://{chosen}"))
+    }
+}
+
+/// 用之前先确认这个代理地址真的有人监听（0.5 秒上限）。
+///
+/// 动机（2026-09-22 真实故障）：系统里留着一个指向"已经关掉的代理"的地址时，
+/// 客户端不会自己发现，只会一直等 —— 表现就是"卡住"或"网络错误"。
+/// 这里用一次极短的 TCP 连接判断可达性：不可达就不使用它，改为直连。
+fn proxy_is_reachable(proxy: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let without_scheme = proxy
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(proxy)
+        .trim_end_matches('/');
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    if host_port.is_empty() || host_port.starts_with(':') {
+        return false; // 空主机名不是地址（":80" 会被系统解析成任意地址，不能当可达）
+    }
+    let host_port = if host_port.contains(':') {
+        host_port.to_string()
+    } else if proxy.starts_with("https://") {
+        format!("{host_port}:443")
+    } else {
+        format!("{host_port}:80")
+    };
+    let Ok(addrs) = host_port.to_socket_addrs() else {
+        return false;
+    };
+    for addr in addrs {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 决定这次更新走哪个代理，并按需要写入/清除进程内的代理环境变量。
+///
+/// 顺序（从"最明确"到"最省事"）：
+///   1. 环境变量 —— 用户或别的程序显式设置的；
+///   2. `%APPDATA%\qio\updater-proxy.txt` —— 用户为 QIO 单独写的；
+///   3. Windows 系统代理 —— VPN 开的"系统代理"就是这一份，零配置跟上；
+///   4. 都不行 → 直连（TUN/全局模式的 VPN 本来就走这条）。
+///
+/// 前三种在采用之前都会做一次连通测试：不可达就不用（并清掉进程内的代理变量，避免
+/// 一个失效的地址让更新一直等）。每次检查更新前都会重新调用，所以用户开关 VPN 后
+/// 不需要重启 QIO。
+fn apply_updater_proxy() -> Option<String> {
+    let from_env = std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("https_proxy"))
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let from_file = std::fs::read_to_string(data_dir().join("updater-proxy.txt"))
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let from_system = system_proxy();
+
+    let mut candidates: Vec<(&str, String)> = Vec::new();
+    if let Some(v) = from_env {
+        candidates.push(("环境变量", v));
+    }
+    if let Some(v) = from_file {
+        candidates.push(("updater-proxy.txt", v));
+    }
+    if let Some(v) = from_system {
+        candidates.push(("Windows 系统代理", v));
+    }
+
+    for (source, proxy) in candidates {
+        if proxy_is_reachable(&proxy) {
+            std::env::set_var("HTTPS_PROXY", &proxy);
+            std::env::set_var("http_proxy", &proxy);
+            std::env::set_var("HTTP_PROXY", &proxy);
+            std::env::set_var("ALL_PROXY", &proxy);
+            log::info!("[qio] 更新走代理（来源：{source}）：{proxy}");
+            return Some(proxy);
+        }
+        log::warn!("[qio] 代理不可达，跳过（来源：{source}）：{proxy}");
+    }
+
+    // 一条都不可用：清掉进程内的代理变量，确保更新走直连而不是去连一个死地址。
+    for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"] {
+        std::env::remove_var(name);
+    }
+    log::info!("[qio] 本次更新不使用代理（直连）");
+    None
 }
 
 fn read_token_file(path: &PathBuf, timeout: Duration) -> Option<String> {
@@ -277,6 +421,15 @@ fn qio_prepare_for_update(
     log::info!("[qio] 更新前结束后端进程树 pid={pid} status={status:?}");
     // 结束后端不影响返回值：拿不到 pid 或 taskkill 失败也要继续（安装器会自己再试一次）
     Ok(true)
+}
+
+/// 前端每次检查更新之前调用：按当前网络环境重新判断该不该走代理。
+///
+/// 为什么由前端触发而不是只在启动时判断一次：VPN 是随时开关的。启动时缓存住判断结果，
+/// 用户在开会话期间开了 VPN（或关掉）就失效了。每次检查前重算一遍，用户就不用重启 QIO。
+#[tauri::command]
+fn qio_refresh_updater_proxy() -> Result<Option<String>, String> {
+    Ok(apply_updater_proxy())
 }
 
 /// Windows Job Object：把后端放进「job 关闭即终止」的 job。
@@ -477,7 +630,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             qio_backend_info,
-            qio_prepare_for_update
+            qio_prepare_for_update,
+            qio_refresh_updater_proxy
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -582,5 +736,44 @@ mod tests {
         assert!(sync_model_dir(&bundled, &target).is_err());
         assert!(!target.join(".ready").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn picks_https_then_http_from_windows_proxy_value() {
+        // 多段形式：优先 https
+        assert_eq!(
+            pick_proxy_from_windows_value("http=127.0.0.1:17011;https=127.0.0.1:17012").as_deref(),
+            Some("http://127.0.0.1:17012")
+        );
+        // 只有 http 段
+        assert_eq!(
+            pick_proxy_from_windows_value("http=127.0.0.1:7890").as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        // 单地址形式（不带协议）自动补 http://
+        assert_eq!(
+            pick_proxy_from_windows_value("127.0.0.1:8080").as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+        // 已带协议则原样保留
+        assert_eq!(
+            pick_proxy_from_windows_value("http://127.0.0.1:8080").as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+    }
+
+    #[test]
+    fn ignores_socks_only_and_empty_values() {
+        // 只给了 socks：不当作可用（客户端不支持时不猜），也不会拼出一个错地址
+        assert_eq!(pick_proxy_from_windows_value("socks=127.0.0.1:1080"), None);
+        assert_eq!(pick_proxy_from_windows_value("   "), None);
+    }
+
+    #[test]
+    fn proxy_reachability_detects_dead_port() {
+        // 本机上没人监听的端口：必须判为不可达，否则会"一直等"
+        assert!(!proxy_is_reachable("http://127.0.0.1:17011"));
+        // 语法都不成立的地址同样不可达
+        assert!(!proxy_is_reachable("http://"));
     }
 }
