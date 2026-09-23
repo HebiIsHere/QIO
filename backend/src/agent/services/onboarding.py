@@ -116,9 +116,16 @@ class OnboardingService:
     # -- 状态 -------------------------------------------------------------
 
     def status(self) -> OnboardingStatus:
-        # 「主页有没有内容」：本地是否已经聊过至少一条消息。
-        # 新用户（没有内容）不能在密钥那一步跳过；老用户（有内容）可以整场关掉引导。
-        message_count = self.conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
+        # 「主页有没有内容」= 这个客户端**不是空白**：聊过、建过话题、有过知识或实体卡，
+        # 任何一样都算。新用户（完全没有内容）不能在密钥那一步跳过，也不能关掉引导；
+        # 老用户只是再次运行设置助手时，随时可以关。
+        #
+        # 早期实现只数消息，导致「有 6 个话题、14 条知识、只是没聊过天」的客户端
+        # 被判成新用户、引导关不掉 —— 与产品语义不符。
+        content_count = sum(
+            self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+            for table in ("messages", "nodes", "knowledge", "entity_cards")
+        )
         wizard_seen = self.settings.get_bool(SEEN_KEY, False)
         welcome_version = self.settings.get(WELCOME_VERSION_KEY) or ""
         crossing_migration = (
@@ -130,7 +137,7 @@ class OnboardingService:
             done=self.settings.get_bool(DONE_KEY, False),
             has_credential=self._usable_credential(),
             has_name=bool((self.settings.get(NAME_KEY) or "").strip()),
-            has_content=message_count > 0,
+            has_content=content_count > 0,
             wizard_seen=wizard_seen,
             welcome_version=welcome_version,
             app_version=self.app_version,

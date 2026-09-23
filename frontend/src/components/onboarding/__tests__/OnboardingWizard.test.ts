@@ -112,6 +112,12 @@ describe("首次引导向导 v2", () => {
     expect(w.emitted("done")).toHaveLength(1);
   });
 
+  it("曾经完成过设置的老用户再次运行助手：即使暂时量不到内容也可以关闭", async () => {
+    const w = mountWizard({ has_content: false, done: true, has_credential: true });
+    await flushPromises();
+    expect(w.find(".onboarding-close").exists()).toBe(true);
+  });
+
   it("已经有一把可用密钥时：说明清楚，并且可以直接继续", async () => {
     const w = mountWizard({ has_content: false, has_credential: true });
     await flushPromises();

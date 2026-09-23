@@ -47,8 +47,9 @@ def _active(conn: sqlite3.Connection, category: str | None = None):
 
 
 def test_submit_attaches_profile_to_the_user_anchor(client, db_conn):
-    user_node_id = NodeService(db_conn).get_or_create_user_root().id
+    # 「有没有内容」要在建出任何节点之前看：建了「你」这个锚点之后就算有内容了
     assert client.get("/api/onboarding/status").json()["has_content"] is False
+    user_node_id = NodeService(db_conn).get_or_create_user_root().id
 
     body = client.post("/api/onboarding/submit", json=_payload()).json()
     assert body["self_card_id"]

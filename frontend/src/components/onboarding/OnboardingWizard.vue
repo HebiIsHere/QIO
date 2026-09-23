@@ -22,8 +22,15 @@ const index = ref(0);
 const step = computed<StepKey>(() => ONBOARDING_STEPS[index.value].key);
 const isFirst = computed(() => index.value === 0);
 const isLast = computed(() => index.value === ONBOARDING_STEPS.length - 1);
-/** 老用户（主页已经有内容）才允许关掉整场引导 */
-const closable = computed(() => Boolean(store.status?.has_content));
+/**
+ * 老用户（主页已经有内容）才允许关掉整场引导。
+ *
+ * 另外：曾经完成过设置的人再次运行助手，也随时可以关 —— 这份引导对他是"回看/修改"，
+ * 不是"必须先过的新手门槛"。
+ */
+const closable = computed(
+  () => Boolean(store.status?.has_content) || Boolean(store.status?.done),
+);
 /** 已经配过密钥的老用户不必再填一次 */
 const credentialReady = computed(
   () => credentialState.value === "ok" || Boolean(store.status?.has_credential),
