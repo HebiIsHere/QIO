@@ -2,14 +2,18 @@
 import { onMounted } from "vue";
 import { useEventStore } from "./stores/events";
 import { useUiStore } from "./stores/ui";
+import { useOnboardingStore } from "./stores/onboarding";
 import ApprovalModal from "./components/ApprovalModal.vue";
 import ApprovalEntry from "./components/ApprovalEntry.vue";
+import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
 
 const events = useEventStore();
 const ui = useUiStore();
+const onboarding = useOnboardingStore();
 onMounted(() => {
   events.connect();
   void ui.load();
+  void onboarding.load();
 });
 </script>
 
@@ -18,6 +22,8 @@ onMounted(() => {
     <router-view />
     <ApprovalEntry />
     <ApprovalModal />
+    <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
+    <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
   </div>
 </template>
 

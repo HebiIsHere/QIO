@@ -28,7 +28,19 @@ describe("onboarding store", () => {
     expect(store.needsSetup).toBe(true);
   });
 
-  it("markSeen() 用后端返回覆盖本地状态（版本更新后再关掉）", async () => {
+  it("show_wizard=false 时（本版本已展示过）不展开向导", async () => {
+    vi.spyOn(api, "getOnboardingStatus").mockResolvedValue({
+      ...baseStatus,
+      wizard_seen: true,
+      welcome_version: "0.1.6",
+      show_wizard: false,
+    });
+    const store = useOnboardingStore();
+    await store.load();
+    expect(store.showWizard).toBe(false);
+  });
+
+  it("markSeen() 只记后端状态：向导不会因为标记而自己关掉", async () => {
     vi.spyOn(api, "getOnboardingStatus").mockResolvedValue({ ...baseStatus });
     vi.spyOn(api, "markOnboardingSeen").mockResolvedValue({
       ...baseStatus,
@@ -39,6 +51,9 @@ describe("onboarding store", () => {
     const store = useOnboardingStore();
     await store.load();
     await store.markSeen();
+    expect(store.status?.wizard_seen).toBe(true);
+    expect(store.showWizard).toBe(true);
+    store.closeForSession();
     expect(store.showWizard).toBe(false);
   });
 

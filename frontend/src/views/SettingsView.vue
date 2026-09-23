@@ -9,6 +9,7 @@ import { api, type CredentialMeta } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
+import { useOnboardingStore } from "../stores/onboarding";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
 import QConfirm from "../components/ui/QConfirm.vue";
@@ -289,6 +290,13 @@ function showToast(text: string, kind: "ok" | "err") {
 
 /* ---------------- 外观 ---------------- */
 const themePref = ref<ThemePreference>(getThemePreference());
+
+/** 首次引导：重跑设置助手（向导挂在 App 层，这里只负责把它抬起来）。 */
+const onboarding = useOnboardingStore();
+function rerunOnboarding() {
+  onboarding.reopen();
+  setNotice("appearance", "ok", "设置助手已重新打开");
+}
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "system", label: "系统" },
   { value: "dark", label: "暗紫晶" },
@@ -875,6 +883,23 @@ watch(activeTab, async () => {
               >
                 {{ o.label }}
               </button>
+            </div>
+          </section>
+
+          <section class="sec">
+            <h2>首次引导</h2>
+            <p class="desc">
+              重新走一遍设置助手：连接模型、认识你、偏好与目标。已设置项会预填，
+              重复提交不会产生重复的记忆、实体卡或话题。
+            </p>
+            <div class="pref">
+              <div class="txt">
+                <div class="t">设置助手</div>
+                <div class="d">随时可以重跑，完成后回到对话页</div>
+              </div>
+              <div class="ctl">
+                <button class="qio-btn" type="button" @click="rerunOnboarding">重新运行设置助手</button>
+              </div>
             </div>
           </section>
 
