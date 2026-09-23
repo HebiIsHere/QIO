@@ -35,6 +35,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
+        "https://gh.llkk.cc/https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json",
+        "https://ghproxy.net/https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json",
+        "https://ghfast.top/https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json",
         "https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCQkYyNDhFNkNFOUY3NUEKUldSYTkrbHNqaVMvaXowdTBPeWw3ZmxkS2d1OElFajlpRVlCbUZLWkRQM1JwOTBLZ3RjNnRiNzIK"

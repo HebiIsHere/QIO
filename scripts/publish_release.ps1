@@ -15,7 +15,10 @@
 param(
   [Parameter(Mandatory = $true)][string]$Version,
   [string]$DistDir = "",
-  [string]$NotesFile = ""
+  [string]$NotesFile = "",
+  # 安装包下载地址前缀：默认走公共加速（国内直连 GitHub 常只有几十 KB/s）。
+  # 传 -AssetBaseUrl "" 就退回 GitHub 原始地址。
+  [string]$AssetBaseUrl = "https://gh.llkk.cc/https://github.com/HebiIsHere/QIO"
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,9 +44,15 @@ foreach ($file in @($exe, $sig, $manifest)) {
 }
 if (-not (Test-Path $NotesFile)) { throw "缺少发布说明：$NotesFile" }
 
-# 清单里的 url 必须指向本次 tag，否则客户端会去 latest 之外的地方下载
+# 清单里的 url 必须指向本次 tag，否则客户端会去 latest 之外的地方下载。
+# 默认把「公共加速」写在前面（原始 GitHub 地址留作 -AssetBaseUrl "" 的兜底）。
 $json = Get-Content -Raw $manifest | ConvertFrom-Json
-$json.platforms.'windows-x86_64'.url = "https://github.com/HebiIsHere/QIO/releases/download/$tag/QIO_${Version}_x64-setup.exe"
+$assetDir = if ($AssetBaseUrl) {
+  "$AssetBaseUrl/releases/download/$tag"
+} else {
+  "https://github.com/HebiIsHere/QIO/releases/download/$tag"
+}
+$json.platforms.'windows-x86_64'.url = "$assetDir/QIO_${Version}_x64-setup.exe"
 Write-Utf8NoBom -Path $manifest -Text ($json | ConvertTo-Json -Depth 4)
 
 Write-Host "== 创建 release $tag 并上传资产 =="
