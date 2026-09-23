@@ -103,6 +103,12 @@ def _knowledge_source_label(provenance: dict) -> str:
     return "未记录"
 
 
+def _topic_ended(ctx, topic_id: str) -> bool:
+    """话题是否已结束（标记存在 nodes.meta.ended_at）。"""
+    node = ctx.topics.nodes.get_topic(topic_id)
+    return bool(node is not None and node.meta.get("ended_at"))
+
+
 def _knowledge_scope(ctx, item) -> str:
     """这条知识作用在哪里：全局（你）/ 某个话题 / 某张实体卡 / 未指定。"""
     if item.topic_id:
@@ -846,10 +852,29 @@ def create_app(
                     "fragment_count": f.fragment_count,
                     "last_activity": f.last_activity,
                     "summary_preview": f.summary_preview,
+                    "ended": _topic_ended(ctx, f.topic_id),
                 }
                 for f in fingerprints
             ]
         }
+
+    @app.post("/api/graph/topics/{topic_id}/end")
+    async def end_topic(topic_id: str, body: dict | None = None) -> dict:
+        """标记话题已结束：离开星球主视图，进「已结束」分组，记忆仍可搜到。"""
+        reason = str((body or {}).get("reason") or "user_confirmed")
+        try:
+            node = ctx.topics.nodes.mark_topic_ended(topic_id, reason=reason)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="topic not found") from exc
+        return {"ok": True, "topic_id": node.id, "ended": True}
+
+    @app.post("/api/graph/topics/{topic_id}/resume")
+    async def resume_topic(topic_id: str) -> dict:
+        try:
+            node = ctx.topics.nodes.resume_topic(topic_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="topic not found") from exc
+        return {"ok": True, "topic_id": node.id, "ended": False}
 
     @app.get("/api/graph/topics/{topic_id}")
     async def topic_detail(topic_id: str) -> dict:
@@ -950,6 +975,18 @@ def create_app(
                 }
                 for t in topics
             ],
+            # 已结束分组：主视图放不下的「旧话题」在这里，搜索与记忆检索仍然可达。
+            "ended_topics": [
+                {
+                    "topic_id": t.topic_id,
+                    "title": t.title,
+                    "fragment_count": t.fragment_count,
+                    "last_activity": t.last_activity,
+                    "summary_preview": t.summary_preview,
+                    "visual_seed": t.visual_seed,
+                }
+                for t in ctx.planet.ended_overview()
+            ],
             "total": len(topics),
             "visible_capacity": VISIBLE_CAPACITY,
         }
@@ -1021,6 +1058,7 @@ def create_app(
 
     @app.post("/api/onboarding/profile")
     async def onboarding_profile(body: dict) -> dict:
+        """（v1 兼容入口）逐步落库；v2 的核对清单走 /api/onboarding/submit。"""
         try:
             return _onboarding().save_profile(
                 name=str(body.get("name", "")),
@@ -1035,6 +1073,28 @@ def create_app(
     @app.post("/api/onboarding/complete")
     async def onboarding_complete() -> dict:
         return _onboarding().complete().to_dict()
+
+    @app.post("/api/onboarding/submit")
+    async def onboarding_submit(body: dict) -> dict:
+        """核对清单确认后的一次性写入：用户填的直接生效，模型推测的等确认。"""
+        try:
+            return _onboarding().submit(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/onboarding/followups")
+    async def onboarding_followups(body: dict) -> dict:
+        """按用户自己的描述现问一到两个追问；没有可用模型时返回空列表。"""
+        from agent.services.followups import suggest_follow_ups
+
+        description = str(body.get("description") or "").strip()
+        if not description:
+            return {"questions": []}
+        adapter = await ctx.build_adapter()
+        if adapter is None:
+            return {"questions": []}
+        questions, _error = await suggest_follow_ups(adapter, description)
+        return {"questions": questions}
 
     @app.post("/api/onboarding/hint")
     async def onboarding_hint(body: dict) -> dict:

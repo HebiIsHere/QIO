@@ -6,7 +6,12 @@
  * 向导一旦打开就调 `markSeen()`，所以「无论如何」也只展开这一次。
  */
 import { defineStore } from "pinia";
-import { api, type OnboardingProfilePayload, type OnboardingStatus } from "../services/api";
+import {
+  api,
+  type OnboardingProfilePayload,
+  type OnboardingStatus,
+  type OnboardingSubmitPayload,
+} from "../services/api";
 
 export const useOnboardingStore = defineStore("onboarding", {
   state: () => ({
@@ -69,6 +74,24 @@ export const useOnboardingStore = defineStore("onboarding", {
       this.status = await api.completeOnboarding();
       this.dismissed = true;
       this.opened = false;
+    },
+    /**
+     * 核对清单确认后的一次性写入。
+     *
+     * 写之前不产生任何持久化内容；写完之后才把向导收起来。
+     */
+    async submit(payload: OnboardingSubmitPayload) {
+      this.saving = true;
+      try {
+        const result = await api.submitOnboarding(payload);
+        await this.complete();
+        return result;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        this.saving = false;
+      }
     },
     async setHintDismissed(dismissed: boolean) {
       this.status = await api.setOnboardingHint(dismissed);

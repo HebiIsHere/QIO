@@ -7,6 +7,7 @@ const baseStatus = {
   done: false,
   has_credential: false,
   has_name: false,
+  has_content: false,
   wizard_seen: false,
   welcome_version: "",
   app_version: "0.1.6",

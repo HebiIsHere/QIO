@@ -584,17 +584,49 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ dismissed }),
     }),
+  submitOnboarding: (payload: OnboardingSubmitPayload) =>
+    request<{
+      name: string;
+      self_card_id: string;
+      written: { id: string | null; content: string }[];
+      pending: { id: string; content: string }[];
+      topics: string[];
+    }>("/api/onboarding/submit", { method: "POST", body: JSON.stringify(payload) }),
+  suggestFollowUps: (description: string) =>
+    request<{ questions: string[] }>("/api/onboarding/followups", {
+      method: "POST",
+      body: JSON.stringify({ description }),
+    }),
 };
 
 export interface OnboardingStatus {
   done: boolean;
   has_credential: boolean;
   has_name: boolean;
+  /** 本机是否已经聊过至少一条消息：新用户不能在密钥这一步跳过 */
+  has_content: boolean;
   wizard_seen: boolean;
   welcome_version: string;
   app_version: string;
   show_wizard: boolean;
   hint_dismissed: boolean;
+}
+
+export interface OnboardingSubmitPayload {
+  name: string;
+  background?: string;
+  current_focus?: string;
+  current_focus_ended?: boolean;
+  interests?: string[];
+  familiarity?: string;
+  limits?: { dont_do?: string; how_to_talk?: string };
+  preferences?: {
+    kind: string;
+    value: string;
+    scope: { type: "global" | "topic"; topic_title?: string };
+  }[];
+  goals?: string[];
+  inferred?: { content: string; category?: string; reason?: string }[];
 }
 
 export interface OnboardingProfilePayload {
