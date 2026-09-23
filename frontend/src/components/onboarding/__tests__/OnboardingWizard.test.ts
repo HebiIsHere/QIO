@@ -58,6 +58,13 @@ describe("OnboardingWizard", () => {
     expect(api.markOnboardingSeen).toHaveBeenCalledTimes(1);
   });
 
+  it("右上角关闭 → 直接 emit done（刚更新的用户不必走完六步）", async () => {
+    const w = mountWizard();
+    await flushPromises();
+    await w.find(".onboarding-close").trigger("click");
+    expect(w.emitted("done")).toHaveLength(1);
+  });
+
   it("开始设置 → 连接模型；跳过 → 认识你", async () => {
     const w = mountWizard();
     await flushPromises();

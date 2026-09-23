@@ -137,6 +137,14 @@ async function finish() {
 <template>
   <div class="onboarding" role="dialog" aria-modal="true" aria-label="首次引导">
     <div class="onboarding-card">
+      <button
+        class="onboarding-close"
+        type="button"
+        aria-label="关闭引导"
+        @click="emit('done')"
+      >
+        ×
+      </button>
       <nav class="onboarding-steps" aria-label="设置步骤">
         <span
           v-for="(item, i) in ONBOARDING_STEPS"
@@ -287,6 +295,7 @@ async function finish() {
   backdrop-filter: blur(6px);
 }
 .onboarding-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: min(760px, 100%);
@@ -297,6 +306,18 @@ async function finish() {
   background: var(--bg-panel);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
+.onboarding-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.onboarding-close:hover { color: var(--text-strong); }
 .onboarding-steps {
   display: flex;
   gap: 14px;
