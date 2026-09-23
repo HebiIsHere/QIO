@@ -163,8 +163,13 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     if (isBlocked({ left: x, top: y, right: x + r.width, bottom: y + r.height }, avoidedRects())) {
       snap(el);
     }
-    // 初始状态跟随开关：允许隐藏 → 挂载即进入隐藏态（hover 展开/移出再隐藏）
-    if (entry.hideEnabled) maybeHide(el);
+    // 「贴边隐藏」是"拖到边上之后才收起"的效果，不是启动状态。
+    //
+    // 挂载即隐藏会让**唯一入口**（设置齿轮、星球入口球）在没有任何可见反馈的情况下
+    // 消失：用户看到的是「按钮不见了」，也没有可悬停的地方把它叫回来。
+    // 所以启动一律可见；要收起，等用户真的把它拖到边上（snap 之后）再说。
+    entry.hidden = false;
+    el.classList.remove("fw-hidden");
   }
 
   /** 拖起即释放占用：清除贴靠标记，其它组件不再避让本组件 */
