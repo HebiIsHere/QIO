@@ -28,6 +28,7 @@ function mountWizard() {
 
 describe("OnboardingWizard", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.restoreAllMocks();
     localStorage.clear();
     vi.spyOn(api, "getOnboardingStatus").mockResolvedValue({ ...baseStatus });
@@ -64,18 +65,37 @@ describe("OnboardingWizard", () => {
     const w = mountWizard();
     await flushPromises();
     await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
-    await w.find("input.qio-input").setValue("sk-test-key");
+    const realLookingKey = "sk-abcdefghijklmnopqrstuvwxyz012345";
+    await w.find("input.qio-input").setValue(realLookingKey);
     await w.find(".onboarding-body .qio-btn.mini").trigger("click"); // 保存并测试
     await flushPromises();
 
-    expect(identifyCredential).toHaveBeenCalledWith("sk-test-key");
+    expect(identifyCredential).toHaveBeenCalledWith(realLookingKey);
     expect(api.createCredential).toHaveBeenCalledWith({
-      secret: "sk-test-key",
+      secret: realLookingKey,
       endpoint: "https://api.xiaomimimo.com/v1",
       default_model: "mimo-v2.5",
     });
     expect(api.testCredential).toHaveBeenCalledWith("key_1");
     expect(w.text()).toContain("MiMo");
+  });
+
+  it("粘进来的不是 Key（链接 / 路径 / 报错文本）→ 本地拦下，不发网络请求", async () => {
+    (identifyCredential as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({
+      identified: false,
+    });
+    const w = mountWizard();
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    await w
+      .find("input.qio-input")
+      .setValue("/api/credentials/key_c4a507e1d173/test -> 502: {Incorrect API key provided}");
+    await w.find(".onboarding-body .qio-btn.mini").trigger("click");
+    await flushPromises();
+
+    expect(w.text()).toContain("这看起来不是 API Key");
+    expect(identifyCredential).not.toHaveBeenCalled();
+    expect(api.createCredential).not.toHaveBeenCalled();
   });
 
   it("首屏是欢迎步骤：品牌 + 定位 + 开始设置，进度条 6 段", async () => {

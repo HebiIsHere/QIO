@@ -114,6 +114,12 @@ async function saveCredential() {
     credentialNote.value = "请先填入 API Key";
     return;
   }
+  if (!looksLikeKey(secret)) {
+    credentialState.value = "err";
+    credentialNote.value =
+      "这看起来不是 API Key（像链接 / 路径 / 报错文本）：请粘贴完整的 Key 本身";
+    return;
+  }
   credentialState.value = "saving";
   credentialNote.value = "";
   // 先识别提供方：**不能**把第三方 Key 直接丢给 OpenAI 默认端点（会 401）
@@ -134,6 +140,17 @@ async function saveCredential() {
     credentialState.value = "err";
     credentialNote.value = error instanceof Error ? error.message : "连接失败，可稍后在设置页重试";
   }
+}
+
+/**
+ * 本地形状校验：挡住「把链接、接口路径、报错整行贴进来」这类明显不是 Key 的输入。
+ * 它们必然识别失败，还会被当成 OpenAI 兼容端点打出去，换回一条更难懂的 401。
+ */
+function looksLikeKey(secret: string): boolean {
+  if (secret.length < 20 || secret.length > 200) return false;
+  if (/\s/.test(secret)) return false;
+  if (secret.includes("://") || secret.includes("->")) return false;
+  return !secret.startsWith("/") && !secret.startsWith("http");
 }
 
 async function identifyKey(secret: string): Promise<boolean> {
