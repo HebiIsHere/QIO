@@ -34,6 +34,7 @@ import {
   resetContinuum,
   type EntryOrigin,
 } from "../composables/planetContinuum";
+import { ballLayoutReady, readBallSize } from "../planet/entryLayout";
 import QConfirm from "../components/ui/QConfirm.vue";
 
 /**
@@ -373,18 +374,14 @@ function syncBall() {
 function syncBallWhenLaidOut(attempt = 0): void {
   if (!ballMode.value) return;
   const canvas = canvasRef.value;
-  let ballSize = 108;
-  try {
-    const raw = parseFloat(getComputedStyle(rootRef.value ?? document.documentElement).getPropertyValue("--ball-size"));
-    if (Number.isFinite(raw) && raw > 0) ballSize = raw;
-  } catch {
-    /* 读不到就用 108（与 CSS 令牌同值） */
-  }
-  const laidOut = !canvas || canvas.offsetWidth <= ballSize * 1.5;
-  if (!laidOut && attempt < 4) {
+  const ballSize = readBallSize(rootRef.value);
+  const laidOut = !canvas || ballLayoutReady(canvas.offsetWidth, ballSize);
+  if (!laidOut && attempt < 30) {
+    // 上限放宽到约半秒：宁可晚一点对齐，也不要用过渡帧的几何把球写死在错误的小尺度上
     requestAnimationFrame(() => syncBallWhenLaidOut(attempt + 1));
     return;
   }
+  if (!laidOut) return; // 仍然没到位：交给画布尺寸观察者，等它真的变成球尺寸再对齐
   syncBall();
 }
 
@@ -695,7 +692,12 @@ function stopThemeObserver() {
 /* ---- 右侧话题边栏：画布尺寸同步 + 开合后重对焦 ---- */
 function startCanvasObserver() {
   if (typeof ResizeObserver === "undefined" || !canvasRef.value) return;
-  canvasObserver = new ResizeObserver(() => planet.resize());
+  canvasObserver = new ResizeObserver(() => {
+    planet.resize();
+    // 画布尺寸变了 = 布局可能刚从整窗切到球尺寸：
+    // 球态下必须重新对齐入口尺度，否则会一直停在过渡帧算出来的小尺度上
+    if (ballMode.value) syncBallWhenLaidOut();
+  });
   canvasObserver.observe(canvasRef.value);
 }
 
