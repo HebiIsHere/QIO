@@ -121,6 +121,35 @@ describe("首次引导向导 v2", () => {
     expect(api.submitOnboarding).toHaveBeenCalled();
   });
 
+  it("每个偏好维度都能选「其他」并自己填，填的内容按自定义值提交", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    await flushPromises();
+    await toProfile(w);
+    await w.find("input.qio-input").setValue("祠莎");
+    await w.find(".onboarding-actions .primary").trigger("click"); // 认识你 → 偏好
+
+    const verbosity = w.findAll(".pref-row")[0];
+    const other = verbosity.findAll(".chip").find((chip) => chip.text() === "其他");
+    expect(other).toBeTruthy();
+    await other!.trigger("click");
+    const custom = verbosity.find("input.qio-input");
+    expect(custom.exists()).toBe(true);
+    await custom.setValue("一句话说完");
+
+    await w.find(".onboarding-actions .primary").trigger("click"); // 偏好 → 目标
+    await w.find(".onboarding-actions .primary").trigger("click"); // 目标 → 追问
+    await flushPromises();
+    await w.find(".onboarding-actions .skip-followup").trigger("click");
+    await w.find(".onboarding-actions .finish").trigger("click");
+    await flushPromises();
+
+    const payload = (api.submitOnboarding as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][0] as { preferences: { kind: string; value: string }[] };
+    expect(payload.preferences).toEqual([
+      { kind: "verbosity", value: "一句话说完", scope: { type: "global" } },
+    ]);
+  });
+
   it("清单里删掉一条就不写进去，改过的按新值写", async () => {
     const w = mountWizard({ has_content: true, has_credential: true });
     await flushPromises();

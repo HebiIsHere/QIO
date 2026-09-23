@@ -40,6 +40,10 @@ const draft = reactive({
   dontDo: "",
   howToTalk: "",
   preferences: {} as Record<string, string>,
+  /** 每个维度勾了「其他」之后，用户自己写的内容 */
+  customPreferences: {} as Record<string, string>,
+  /** 该维度当前是否用的是「其他」 */
+  useCustom: {} as Record<string, boolean>,
   goals: [] as string[],
   answers: {} as Record<string, string>,
 });
@@ -81,6 +85,11 @@ const description = computed(() =>
     .join("\n"),
 );
 
+/** 一个维度的最终取值：选了「其他」就用自己写的，否则用选项。 */
+function preferenceValue(key: string): string {
+  return draft.useCustom[key] ? (draft.customPreferences[key] ?? "").trim() : (draft.preferences[key] ?? "");
+}
+
 const reviewItems = computed<ReviewItem[]>(() => {
   const items: ReviewItem[] = [];
   const push = (key: string, label: string, value: string) => {
@@ -94,7 +103,7 @@ const reviewItems = computed<ReviewItem[]>(() => {
   push("dontDo", "不要做什么", draft.dontDo);
   push("howToTalk", "希望怎么表达", draft.howToTalk);
   for (const dim of PREFERENCE_DIMENSIONS) {
-    const value = draft.preferences[dim.key] ?? "";
+    const value = preferenceValue(dim.key);
     push(`pref:${dim.key}`, `偏好 · ${dim.label}`, value);
   }
   draft.goals.forEach((goal, i) => push(`goal:${i}`, `目标（会新建话题）`, goal));
@@ -229,6 +238,17 @@ function addGoal() {
   goalInput.value = "";
 }
 
+/** 选预设选项：退出「其他」态。 */
+function choosePreference(key: string, option: string) {
+  draft.useCustom[key] = false;
+  draft.preferences[key] = option;
+}
+
+/** 选「其他」：改成自己写。 */
+function chooseCustomPreference(key: string) {
+  draft.useCustom[key] = true;
+}
+
 function removeGoal(at: number) {
   draft.goals.splice(at, 1);
 }
@@ -242,7 +262,12 @@ function applyEdit() {
   const key = editing.value;
   if (!key) return;
   const value = editBuffer.value.trim();
-  if (key.startsWith("pref:")) draft.preferences[key.slice(5)] = value;
+  if (key.startsWith("pref:")) {
+    // 在核对清单里改偏好 = 改成自己写的值（相当于自动切到「其他」）
+    const dim = key.slice(5);
+    draft.customPreferences[dim] = value;
+    draft.useCustom[dim] = true;
+  }
   else if (key.startsWith("goal:")) draft.goals[Number(key.slice(5))] = value;
   else if (key.startsWith("answer:")) {
     const question = questions.value[Number(key.slice(7))];
@@ -259,10 +284,10 @@ function applyEdit() {
 
 function buildPayload(): OnboardingSubmitPayload {
   const preferences = PREFERENCE_DIMENSIONS.filter(
-    (dim) => (draft.preferences[dim.key] ?? "").trim() && !removed[`pref:${dim.key}`],
+    (dim) => preferenceValue(dim.key) && !removed[`pref:${dim.key}`],
   ).map((dim) => ({
     kind: dim.key,
-    value: draft.preferences[dim.key].trim(),
+    value: preferenceValue(dim.key),
     // 引导只收集"你希望怎么被对待"；"只在某个话题里生效"属于星球·知识页的管理
     scope: { type: "global" as const },
   }));
@@ -406,12 +431,26 @@ async function finish() {
                 :key="option"
                 type="button"
                 class="chip"
-                :class="{ on: draft.preferences[dim.key] === option }"
-                @click="draft.preferences[dim.key] = option"
+                :class="{ on: !draft.useCustom[dim.key] && draft.preferences[dim.key] === option }"
+                @click="choosePreference(dim.key, option)"
               >
                 {{ option }}
               </button>
+              <button
+                type="button"
+                class="chip other"
+                :class="{ on: draft.useCustom[dim.key] }"
+                @click="chooseCustomPreference(dim.key)"
+              >
+                其他
+              </button>
             </div>
+            <QInput
+              v-if="draft.useCustom[dim.key]"
+              v-model="draft.customPreferences[dim.key]"
+              class="pref-custom"
+              :placeholder="`自己写一个${dim.label}的要求…`"
+            />
           </div>
           <div class="theme-row">
             <span>主题</span>
@@ -552,6 +591,8 @@ async function finish() {
 .check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .pref-row { display: grid; grid-template-columns: 88px 1fr; gap: 8px; align-items: center; }
 .pref-label { font-size: 12px; color: var(--text-secondary); }
+/* 「其他」自己写的内容是句子长度：独占一整行 */
+.pref-row > input.qio-input { grid-column: 1 / -1; width: 100%; }
 .chips, .theme-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .chip {
   padding: 5px 12px;
