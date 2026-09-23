@@ -1045,7 +1045,7 @@ def create_app(
     def _onboarding():
         from agent.services.onboarding import OnboardingService
 
-        return OnboardingService(ctx.conn, app.version)
+        return OnboardingService(ctx.conn, app.version, main_credential=ctx.resolve_main_ref)
 
     @app.get("/api/onboarding/status")
     async def onboarding_status() -> dict:

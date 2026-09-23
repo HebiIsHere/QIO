@@ -363,8 +363,13 @@ async function finish() {
         <section v-else-if="step === 'credential'" class="panel">
           <h2>连接模型</h2>
           <p class="hint">
-            填入 API Key，QIO 会自动识别提供方并做一次连通测试。
-            <template v-if="!closable">没有可用密钥时 QIO 无法回答任何问题，所以这一步不能跳过。</template>
+            <template v-if="store.status?.has_credential">
+              已有一把可用的密钥，这一步不用再填；如果要换一把，在下面粘贴新的即可。
+            </template>
+            <template v-else>
+              填入 API Key，QIO 会自动识别提供方、把它配成主循环用途，并做一次连通测试。
+              <template v-if="!closable">没有可用密钥时 QIO 无法回答任何问题，所以这一步不能跳过。</template>
+            </template>
           </p>
           <QInput v-model="apiKey" type="password" placeholder="粘贴 API Key…" />
           <button class="qio-btn mini" type="button" :disabled="credentialState === 'saving'" @click="saveCredential">

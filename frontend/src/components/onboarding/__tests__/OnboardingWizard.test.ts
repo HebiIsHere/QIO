@@ -112,6 +112,17 @@ describe("首次引导向导 v2", () => {
     expect(w.emitted("done")).toHaveLength(1);
   });
 
+  it("已经有一把可用密钥时：说明清楚，并且可以直接继续", async () => {
+    const w = mountWizard({ has_content: false, has_credential: true });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    expect(w.text()).toContain("已有一把可用的密钥");
+
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 认识你
+    await flushPromises();
+    expect(w.find(".onboarding-steps .step.current").text()).toContain("认识你");
+  });
+
   it("认识你没填称呼就停在原地", async () => {
     const w = mountWizard({ has_content: true });
     await flushPromises();

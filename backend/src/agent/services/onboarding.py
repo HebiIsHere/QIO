@@ -88,17 +88,34 @@ class OnboardingStatus:
 
 
 class OnboardingService:
-    def __init__(self, conn: sqlite3.Connection, app_version: str) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        app_version: str,
+        *,
+        main_credential=None,
+    ) -> None:
         self.conn = conn
         self.app_version = app_version
         self.settings = SettingsStore(conn)
+        # 「有没有配好模型」= 主循环**真的能选中**一把密钥，而不是"表里有记录"：
+        # 没有用途标签、被禁用、已撤销、预算用尽的密钥都选不中。
+        self._main_credential = main_credential
+
+    def _usable_credential(self) -> bool:
+        if self._main_credential is not None:
+            try:
+                return self._main_credential() is not None
+            except Exception:  # noqa: BLE001 - 判定失败时退回保守检查
+                pass
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM credentials WHERE status = 'active' AND enabled = 1"
+        ).fetchone()
+        return row["n"] > 0
 
     # -- 状态 -------------------------------------------------------------
 
     def status(self) -> OnboardingStatus:
-        credential_count = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM credentials"
-        ).fetchone()["n"]
         # 「主页有没有内容」：本地是否已经聊过至少一条消息。
         # 新用户（没有内容）不能在密钥那一步跳过；老用户（有内容）可以整场关掉引导。
         message_count = self.conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
@@ -111,7 +128,7 @@ class OnboardingService:
         )
         return OnboardingStatus(
             done=self.settings.get_bool(DONE_KEY, False),
-            has_credential=credential_count > 0,
+            has_credential=self._usable_credential(),
             has_name=bool((self.settings.get(NAME_KEY) or "").strip()),
             has_content=message_count > 0,
             wizard_seen=wizard_seen,
