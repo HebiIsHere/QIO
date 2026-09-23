@@ -964,6 +964,43 @@ def create_app(
             "limit": limit,
         }
 
+    # -- onboarding（首次引导 / 欢迎页）----------------------------------
+
+    def _onboarding():
+        from agent.services.onboarding import OnboardingService
+
+        return OnboardingService(ctx.conn, app.version)
+
+    @app.get("/api/onboarding/status")
+    async def onboarding_status() -> dict:
+        return _onboarding().status().to_dict()
+
+    @app.post("/api/onboarding/seen")
+    async def onboarding_seen() -> dict:
+        """向导打开即记「本版本已展示过欢迎页」——保证每个版本只强制展开一次。"""
+        return _onboarding().mark_seen().to_dict()
+
+    @app.post("/api/onboarding/profile")
+    async def onboarding_profile(body: dict) -> dict:
+        try:
+            return _onboarding().save_profile(
+                name=str(body.get("name", "")),
+                intro=str(body.get("intro", "")),
+                tags=body.get("tags") or [],
+                style=str(body.get("style", "")),
+                goals=body.get("goals") or [],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/onboarding/complete")
+    async def onboarding_complete() -> dict:
+        return _onboarding().complete().to_dict()
+
+    @app.post("/api/onboarding/hint")
+    async def onboarding_hint(body: dict) -> dict:
+        return _onboarding().set_hint_dismissed(bool(body.get("dismissed", False))).to_dict()
+
     # -- knowledge management --------------------------------------------
 
     @app.get("/api/knowledge")
