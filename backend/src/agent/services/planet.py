@@ -88,6 +88,17 @@ def parse_cursor(cursor: str) -> tuple[int, int, int] | None:
         return None
 
 
+def _topic_ended_meta(raw_meta: str | None) -> bool:
+    """话题是否已结束（标记存在 nodes.meta.ended_at）。"""
+    import json
+
+    try:
+        meta = json.loads(raw_meta or "{}")
+    except (TypeError, ValueError):
+        return False
+    return bool(isinstance(meta, dict) and meta.get("ended_at"))
+
+
 class PlanetBrowseService:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
@@ -95,17 +106,25 @@ class PlanetBrowseService:
     # -- 第一层：概览 ---------------------------------------------------
 
     def overview(self) -> list[PlanetTopic]:
-        """一次聚合查询拿到全部话题的轻量信息，绝不读 Message 原文。"""
+        """主视图：一次聚合查询拿到全部**未结束**话题的轻量信息，绝不读 Message 原文。"""
+        return self._overview(ended=False)
+
+    def ended_overview(self) -> list[PlanetTopic]:
+        """已结束分组：话题结束不等于删掉，它只是离开主视图。"""
+        return self._overview(ended=True)
+
+    def _overview(self, *, ended: bool) -> list[PlanetTopic]:
         rows = self.conn.execute(
             """
             SELECT n.id AS topic_id,
                    n.name AS title,
+                   n.meta AS meta,
                    COUNT(f.id) AS fragment_count,
                    MAX(f.created_at) AS last_activity
             FROM nodes n
             LEFT JOIN fragments f ON f.topic_id = n.id
             WHERE n.type = 'topic'
-            GROUP BY n.id, n.name
+            GROUP BY n.id, n.name, n.meta
             ORDER BY n.created_at
             """
         ).fetchall()
@@ -120,6 +139,7 @@ class PlanetBrowseService:
                 visual_seed=visual_seed_of(row["topic_id"]),
             )
             for row in rows
+            if _topic_ended_meta(row["meta"]) is ended
         ]
 
     def _latest_summaries(self) -> dict[str, str]:

@@ -74,6 +74,15 @@ afterEach(() => {
 });
 
 describe("useFloatingWindow 初始化与位置恢复", () => {
+  it("开启贴边隐藏的组件：挂载时仍然可见（唯一入口不能一上来就藏起来）", async () => {
+    localStorage.setItem(FLOAT_HIDE_KEY, JSON.stringify({ composer: true }));
+    const el = makeEl("composer", { left: 0, top: 0, width: 200, height: 80 });
+    const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 400, y: 300 } }));
+    expect(el.classList.contains("fw-hidden")).toBe(false);
+    expect(el.style.left).not.toBe("");
+    dispose();
+  });
+
   it("初始化：应用 defaultPos，像素 left/top + position fixed，并写入共享状态", async () => {
     const el = makeEl("composer", { left: 0, top: 0, width: 200, height: 80 });
     const { dispose } = await mountFloat(el, composerOpts({ defaultPos: { x: 120, y: 340 } }));
@@ -376,13 +385,14 @@ describe("useFloatingWindow 贴靠隐藏 / 展开", () => {
     dispose();
   });
 
-  it("初始化：hideEnabled 开启时挂载即隐藏（初始状态与开关一致，无需先贴靠）", async () => {
+  it("初始化：hideEnabled 开启时**不再**挂载即隐藏（否则用户看到「按钮不见了」）", async () => {
     localStorage.setItem(FLOAT_HIDE_KEY, JSON.stringify({ composer: true }));
     const el = makeEl("composer", { left: 100, top: 100, width: 200, height: 80 });
     const { api, dispose } = await mountFloat(el, composerOpts());
+    // 开关仍然记着（拖到边上后照样会收起），但启动时必须看得见
     expect(api.entry.hideEnabled).toBe(true);
-    expect(el.classList.contains("fw-hidden")).toBe(true);
-    expect(floatingState.composer.hidden).toBe(true);
+    expect(el.classList.contains("fw-hidden")).toBe(false);
+    expect(floatingState.composer.hidden).toBe(false);
     dispose();
   });
 

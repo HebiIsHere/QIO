@@ -2,6 +2,7 @@
 import { defineAsyncComponent, onMounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
+import { useOnboardingStore } from "../stores/onboarding";
 import { useComposerClearance } from "../composables/useComposerClearance";
 import MessageStream from "../components/MessageStream.vue";
 import Composer from "../components/Composer.vue";
@@ -33,6 +34,7 @@ const planetMounted = ref(false);
  */
 const planetSeq = ref(0);
 const session = useSessionStore();
+const onboarding = useOnboardingStore();
 useComposerClearance(bottomCluster);
 
 /**
@@ -95,6 +97,19 @@ onMounted(() => {
 <template>
   <div class="conversation">
     <a class="skip-link" href="#composer-input" @click="focusComposer">跳到输入框</a>
+    <!-- 未完成首次引导时的轻提示：可关闭，关闭状态落库（spec §1） -->
+    <div v-if="onboarding.hintVisible" class="setup-hint" role="status">
+      <span class="text">还没设置完 QIO —— 补上模型、称呼与目标，它才会真正记得你</span>
+      <button class="link resume" type="button" @click="onboarding.reopen()">继续设置</button>
+      <button
+        class="close"
+        type="button"
+        aria-label="关闭提示"
+        @click="onboarding.setHintDismissed(true)"
+      >
+        ×
+      </button>
+    </div>
     <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
     <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->
     <Transition name="qio-fade">
@@ -204,6 +219,28 @@ onMounted(() => {
   font-size: 12px;
   flex-shrink: 0;
 }
+/* 「继续设置」轻提示：安静的一行，不抢消息流，可关闭 */
+.setup-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 84px 8px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--accent-soft);
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.setup-hint .text { flex: 1; }
+.setup-hint .close {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.setup-hint .close:hover { color: var(--text-strong); }
 .notice.err {
   border-bottom: 1px solid var(--border-danger);
   color: var(--danger);

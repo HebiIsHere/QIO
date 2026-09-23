@@ -39,6 +39,7 @@ const topics = ref<TopicFingerprint[]>([]);
 const q = ref("");
 const category = ref("");
 const state = ref("");
+const source = ref("");
 const loading = ref(false);
 /** 读取失败原因：失败必须自己可见，不能只留在 console 里、更不能显示成「无数据」 */
 const loadError = ref("");
@@ -67,6 +68,12 @@ const stateOptions = [
   { value: "", label: "全部状态" },
   ...Object.entries(STATE_LABELS).map(([value, label]) => ({ value, label })),
 ];
+// 「看得懂」：每条知识都能按来源筛（引导里写的 / 对话里学到的 / 你修正过的）
+const SOURCE_LABELS = ["引导", "对话", "你的修正", "后台整理", "未记录"];
+const sourceOptions = [
+  { value: "", label: "全部来源" },
+  ...SOURCE_LABELS.map((label) => ({ value: label, label })),
+];
 const topicOptions = computed(() => [
   { value: "", label: "不关联话题" },
   ...topics.value.map((t) => ({ value: t.topic_id, label: t.title })),
@@ -77,18 +84,61 @@ const filtered = computed(() => {
   return items.value.filter((k) => {
     if (category.value && k.category !== category.value) return false;
     if (state.value && k.state !== state.value) return false;
+    if (source.value && k.source !== source.value) return false;
     if (query && !k.content.toLowerCase().includes(query)) return false;
     return true;
   });
 });
 
 /** 当前是否有生效的筛选条件（用于区分「暂无记录」和「没有匹配」） */
-const hasFilters = computed(() => Boolean(q.value.trim() || category.value || state.value));
+const hasFilters = computed(() =>
+  Boolean(q.value.trim() || category.value || state.value || source.value),
+);
 
 function clearFilters() {
   q.value = "";
   category.value = "";
   state.value = "";
+  source.value = "";
+}
+
+/** 结束 / 恢复：结束不是删除，它只是不再当作当前状态。 */
+async function toggleEnded(k: KnowledgeItem) {
+  try {
+    if (k.ended) await api.resumeKnowledge(k.id);
+    else await api.endKnowledge(k.id);
+    await load();
+  } catch (e) {
+    loadError.value = `操作失败：${(e as Error).message}`;
+  }
+}
+
+/**
+ * 适用范围：全局（你）/ 只在某个话题里生效。
+ *
+ * 归属管理属于知识页，不属于首次引导：引导里只问"你希望怎么被对待"，
+ * 范围在这里按需要调整。
+ */
+const scopeOptions = computed(() => [
+  { value: "global", label: "全局（你）" },
+  ...topics.value.map((t) => ({ value: `topic:${t.topic_id}`, label: `仅话题：${t.title}` })),
+]);
+
+function scopeValueOf(k: KnowledgeItem): string {
+  return k.topic_id ? `topic:${k.topic_id}` : "global";
+}
+
+async function changeScope(k: KnowledgeItem, value: string) {
+  try {
+    if (value.startsWith("topic:")) {
+      await api.setKnowledgeScope(k.id, { type: "topic", topic_id: value.slice(6) });
+    } else {
+      await api.setKnowledgeScope(k.id, { type: "global" });
+    }
+    await load();
+  } catch (e) {
+    loadError.value = `改适用范围失败：${(e as Error).message}`;
+  }
 }
 
 async function load() {
@@ -205,6 +255,7 @@ onMounted(() => {
     <div class="row filters">
       <QSelect v-model="category" :options="categoryOptions" class="grow" />
       <QSelect v-model="state" :options="stateOptions" class="grow" />
+      <QSelect v-model="source" :options="sourceOptions" class="grow k-source-filter" />
     </div>
 
     <form v-if="creating" class="create-form" @submit.prevent="submitCreate">
@@ -237,6 +288,9 @@ onMounted(() => {
         <div class="k-head">
           <span class="qio-tag k-cat">{{ CATEGORY_LABELS[k.category] || k.category }}</span>
           <span class="qio-state k-state" :class="[k.state, stateTone(k.state)]">{{ STATE_LABELS[k.state] || k.state }}</span>
+          <span v-if="k.ended" class="qio-state k-ended quiet">已结束</span>
+          <span class="k-source">{{ k.source }}</span>
+          <span class="k-scope">{{ k.scope }}</span>
           <button
             v-if="k.topic_name"
             class="link k-topic-link"
@@ -265,6 +319,19 @@ onMounted(() => {
             <button class="qio-btn mini k-approve" type="button" v-if="k.state === 'pending_review'" @click="approve(k)">批准</button>
             <button class="qio-btn mini k-reject" type="button" v-if="k.state === 'pending_review'" @click="reject(k)">打回</button>
             <button class="qio-btn mini quiet k-edit-open" type="button" @click="startEdit(k)">修正</button>
+            <button
+              class="qio-btn mini quiet k-toggle-ended"
+              type="button"
+              @click="toggleEnded(k)"
+            >
+              {{ k.ended ? "恢复" : "标记结束" }}
+            </button>
+            <QSelect
+              class="k-scope-select"
+              :model-value="scopeValueOf(k)"
+              :options="scopeOptions"
+              @update:model-value="(v: string) => changeScope(k, v)"
+            />
             <button
               class="qio-btn mini quiet k-archive"
               type="button"

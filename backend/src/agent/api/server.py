@@ -69,6 +69,7 @@ def _knowledge_payload(ctx, item) -> dict:
     if item.topic_id:
         node = ctx.topics.nodes.get_topic(item.topic_id)
         topic_name = node.name if node is not None else None
+    provenance = dict(item.provenance or {})
     return {
         "id": item.id,
         "category": item.category,
@@ -77,9 +78,53 @@ def _knowledge_payload(ctx, item) -> dict:
         "confidence": item.confidence,
         "topic_id": item.topic_id,
         "topic_name": topic_name,
+        # 「看得懂」三件套：从哪来、管多大范围、什么时候结束的
+        "source": _knowledge_source_label(provenance),
+        "scope": _knowledge_scope(ctx, item),
+        "ended": bool(provenance.get("ended_at")),
+        "ended_at": provenance.get("ended_at"),
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
+
+
+_KNOWLEDGE_SOURCE_LABELS = {"onboarding": "引导", "dream_correct": "后台整理"}
+
+
+def _knowledge_source_label(provenance: dict) -> str:
+    """把内部的来源标记翻译成人话（用户不需要看到 fragment_id 这类东西）。"""
+    if provenance.get("corrected_from"):
+        return "你的修正"
+    label = _KNOWLEDGE_SOURCE_LABELS.get(str(provenance.get("source") or ""))
+    if label:
+        return label
+    if provenance.get("fragment_id"):
+        return "对话"
+    return "未记录"
+
+
+def _topic_ended(ctx, topic_id: str) -> bool:
+    """话题是否已结束（标记存在 nodes.meta.ended_at）。"""
+    node = ctx.topics.nodes.get_topic(topic_id)
+    return bool(node is not None and node.meta.get("ended_at"))
+
+
+def _knowledge_scope(ctx, item) -> str:
+    """这条知识作用在哪里：全局（你）/ 某个话题 / 某张实体卡 / 未指定。"""
+    if item.topic_id:
+        node = ctx.topics.nodes.get_topic(item.topic_id)
+        return f"话题：{node.name}" if node is not None else "话题"
+    for node_id in item.node_ids or []:
+        node = ctx.topics.nodes.get(node_id)
+        if node is None:
+            continue
+        if node.type == "user":
+            return "全局（你）"
+        if node.type == "entity":
+            return f"实体：{node.name}"
+        if node.type == "topic":
+            return f"话题：{node.name}"
+    return "未指定"
 
 
 def create_app(
@@ -128,7 +173,7 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     logging.getLogger(__name__).warning("closing db failed", exc_info=True)
 
-    app = FastAPI(title="QIO", version="0.1.6", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.1.7", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
     instance_id = f"qio_{uuid.uuid4().hex[:16]}"
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，
@@ -807,10 +852,29 @@ def create_app(
                     "fragment_count": f.fragment_count,
                     "last_activity": f.last_activity,
                     "summary_preview": f.summary_preview,
+                    "ended": _topic_ended(ctx, f.topic_id),
                 }
                 for f in fingerprints
             ]
         }
+
+    @app.post("/api/graph/topics/{topic_id}/end")
+    async def end_topic(topic_id: str, body: dict | None = None) -> dict:
+        """标记话题已结束：离开星球主视图，进「已结束」分组，记忆仍可搜到。"""
+        reason = str((body or {}).get("reason") or "user_confirmed")
+        try:
+            node = ctx.topics.nodes.mark_topic_ended(topic_id, reason=reason)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="topic not found") from exc
+        return {"ok": True, "topic_id": node.id, "ended": True}
+
+    @app.post("/api/graph/topics/{topic_id}/resume")
+    async def resume_topic(topic_id: str) -> dict:
+        try:
+            node = ctx.topics.nodes.resume_topic(topic_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="topic not found") from exc
+        return {"ok": True, "topic_id": node.id, "ended": False}
 
     @app.get("/api/graph/topics/{topic_id}")
     async def topic_detail(topic_id: str) -> dict:
@@ -911,6 +975,18 @@ def create_app(
                 }
                 for t in topics
             ],
+            # 已结束分组：主视图放不下的「旧话题」在这里，搜索与记忆检索仍然可达。
+            "ended_topics": [
+                {
+                    "topic_id": t.topic_id,
+                    "title": t.title,
+                    "fragment_count": t.fragment_count,
+                    "last_activity": t.last_activity,
+                    "summary_preview": t.summary_preview,
+                    "visual_seed": t.visual_seed,
+                }
+                for t in ctx.planet.ended_overview()
+            ],
             "total": len(topics),
             "visible_capacity": VISIBLE_CAPACITY,
         }
@@ -963,6 +1039,66 @@ def create_app(
             "offset": offset,
             "limit": limit,
         }
+
+    # -- onboarding（首次引导 / 欢迎页）----------------------------------
+
+    def _onboarding():
+        from agent.services.onboarding import OnboardingService
+
+        return OnboardingService(ctx.conn, app.version, main_credential=ctx.resolve_main_ref)
+
+    @app.get("/api/onboarding/status")
+    async def onboarding_status() -> dict:
+        return _onboarding().status().to_dict()
+
+    @app.post("/api/onboarding/seen")
+    async def onboarding_seen() -> dict:
+        """向导打开即记「本版本已展示过欢迎页」——保证每个版本只强制展开一次。"""
+        return _onboarding().mark_seen().to_dict()
+
+    @app.post("/api/onboarding/profile")
+    async def onboarding_profile(body: dict) -> dict:
+        """（v1 兼容入口）逐步落库；v2 的核对清单走 /api/onboarding/submit。"""
+        try:
+            return _onboarding().save_profile(
+                name=str(body.get("name", "")),
+                intro=str(body.get("intro", "")),
+                tags=body.get("tags") or [],
+                style=str(body.get("style", "")),
+                goals=body.get("goals") or [],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/onboarding/complete")
+    async def onboarding_complete() -> dict:
+        return _onboarding().complete().to_dict()
+
+    @app.post("/api/onboarding/submit")
+    async def onboarding_submit(body: dict) -> dict:
+        """核对清单确认后的一次性写入：用户填的直接生效，模型推测的等确认。"""
+        try:
+            return _onboarding().submit(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/onboarding/followups")
+    async def onboarding_followups(body: dict) -> dict:
+        """按用户自己的描述现问一到两个追问；没有可用模型时返回空列表。"""
+        from agent.services.followups import suggest_follow_ups
+
+        description = str(body.get("description") or "").strip()
+        if not description:
+            return {"questions": []}
+        adapter = await ctx.build_adapter()
+        if adapter is None:
+            return {"questions": []}
+        questions, _error = await suggest_follow_ups(adapter, description)
+        return {"questions": questions}
+
+    @app.post("/api/onboarding/hint")
+    async def onboarding_hint(body: dict) -> dict:
+        return _onboarding().set_hint_dismissed(bool(body.get("dismissed", False))).to_dict()
 
     # -- knowledge management --------------------------------------------
 
@@ -1031,6 +1167,55 @@ def create_app(
             raise HTTPException(status_code=400, detail="only pending_review can be rejected")
         draft = ks.reject(knowledge_id)
         return {"ok": True, "knowledge": {"id": draft.id, "state": draft.state.value}}
+
+    @app.post("/api/knowledge/{knowledge_id}/end")
+    async def end_knowledge(knowledge_id: str, body: dict | None = None) -> dict:
+        """标记「已结束」：不再是当前状态，但仍可被相关对话参考到（权重降低）。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        reason = str((body or {}).get("reason") or "user_confirmed")
+        try:
+            item = ks.mark_ended(knowledge_id, reason=reason)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
+
+    @app.post("/api/knowledge/{knowledge_id}/resume")
+    async def resume_knowledge(knowledge_id: str) -> dict:
+        """撤销「已结束」：重新当作当前状态。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        try:
+            item = ks.resume(knowledge_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
+
+    @app.post("/api/knowledge/{knowledge_id}/scope")
+    async def set_knowledge_scope(knowledge_id: str, body: dict) -> dict:
+        """改适用范围：全局（你）/ 只在某个话题里生效。归属管理在知识页，不在引导里。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        scope_type = str(body.get("type") or "global")
+        ks = KnowledgeService(ctx.conn)
+        if scope_type == "global":
+            user_node = ctx.topics.nodes.get_or_create_user_root()
+            node_ids, topic_id = [user_node.id], None
+        elif scope_type == "topic":
+            topic_id = str(body.get("topic_id") or "")
+            node = ctx.topics.nodes.get_topic(topic_id)
+            if node is None:
+                raise HTTPException(status_code=404, detail="topic not found")
+            node_ids = [topic_id]
+        else:
+            raise HTTPException(status_code=400, detail="invalid scope type")
+        try:
+            item = ks.set_scope(knowledge_id, node_ids=node_ids, topic_id=topic_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
 
     @app.post("/api/knowledge/{knowledge_id}/ignore")
     async def ignore_knowledge(knowledge_id: str) -> dict:

@@ -95,6 +95,13 @@ export interface KnowledgeItem {
   confidence: number | null;
   topic_id: string | null;
   topic_name: string | null;
+  /** 从哪来（引导 / 对话 / 你的修正 / 后台整理 / 未记录） */
+  source?: string;
+  /** 管多大范围（全局（你） / 话题：X / 实体：Y / 未指定） */
+  scope?: string;
+  /** 是否已结束：不再是当前状态，但相关内容仍能被参考到 */
+  ended?: boolean;
+  ended_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -482,6 +489,33 @@ export const api = {
       `/api/knowledge/${encodeURIComponent(id)}/ignore`,
       { method: "POST" },
     ),
+  /** 标记「已结束」：不再是当前状态，但相关内容仍能被参考到（权重降低）。 */
+  endKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/end`,
+      { method: "POST", body: JSON.stringify({ reason: "user_confirmed" }) },
+    ),
+  resumeKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/resume`,
+      { method: "POST" },
+    ),
+  /** 改适用范围：全局（你）或只在某个话题里生效（归属管理在知识页，不在引导里）。 */
+  setKnowledgeScope: (id: string, scope: { type: "global" | "topic"; topic_id?: string }) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/scope`,
+      { method: "POST", body: JSON.stringify(scope) },
+    ),
+  endTopic: (topicId: string) =>
+    request<{ ok: boolean; topic_id: string }>(
+      `/api/graph/topics/${encodeURIComponent(topicId)}/end`,
+      { method: "POST", body: JSON.stringify({ reason: "user_confirmed" }) },
+    ),
+  resumeTopic: (topicId: string) =>
+    request<{ ok: boolean; topic_id: string }>(
+      `/api/graph/topics/${encodeURIComponent(topicId)}/resume`,
+      { method: "POST" },
+    ),
   listEntities: () => request<{ entities: EntityCard[] }>("/api/entities"),
   getEntity: (id: string) =>
     request<{ entity: EntityCard }>(`/api/entities/${encodeURIComponent(id)}`),
@@ -568,7 +602,74 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  getOnboardingStatus: () =>
+    request<OnboardingStatus>("/api/onboarding/status"),
+  markOnboardingSeen: () =>
+    request<OnboardingStatus>("/api/onboarding/seen", { method: "POST" }),
+  saveOnboardingProfile: (payload: OnboardingProfilePayload) =>
+    request<{ name: string; knowledge_id: string; entity_id: string; topics: string[] }>(
+      "/api/onboarding/profile",
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  completeOnboarding: () =>
+    request<OnboardingStatus>("/api/onboarding/complete", { method: "POST" }),
+  setOnboardingHint: (dismissed: boolean) =>
+    request<OnboardingStatus>("/api/onboarding/hint", {
+      method: "POST",
+      body: JSON.stringify({ dismissed }),
+    }),
+  submitOnboarding: (payload: OnboardingSubmitPayload) =>
+    request<{
+      name: string;
+      self_card_id: string;
+      written: { id: string | null; content: string }[];
+      pending: { id: string; content: string }[];
+      topics: string[];
+    }>("/api/onboarding/submit", { method: "POST", body: JSON.stringify(payload) }),
+  suggestFollowUps: (description: string) =>
+    request<{ questions: string[] }>("/api/onboarding/followups", {
+      method: "POST",
+      body: JSON.stringify({ description }),
+    }),
 };
+
+export interface OnboardingStatus {
+  done: boolean;
+  has_credential: boolean;
+  has_name: boolean;
+  /** 本机是否已经聊过至少一条消息：新用户不能在密钥这一步跳过 */
+  has_content: boolean;
+  wizard_seen: boolean;
+  welcome_version: string;
+  app_version: string;
+  show_wizard: boolean;
+  hint_dismissed: boolean;
+}
+
+export interface OnboardingSubmitPayload {
+  name: string;
+  background?: string;
+  current_focus?: string;
+  current_focus_ended?: boolean;
+  interests?: string[];
+  familiarity?: string;
+  limits?: { dont_do?: string; how_to_talk?: string };
+  preferences?: {
+    kind: string;
+    value: string;
+    scope: { type: "global" | "topic"; topic_title?: string };
+  }[];
+  goals?: string[];
+  inferred?: { content: string; category?: string; reason?: string }[];
+}
+
+export interface OnboardingProfilePayload {
+  name: string;
+  intro?: string;
+  tags?: { key: string; value: string }[];
+  style?: string;
+  goals?: string[];
+}
 
 export interface TopicFingerprint {
   topic_id: string;
@@ -577,6 +678,8 @@ export interface TopicFingerprint {
   fragment_count: number;
   last_activity: string | null;
   summary_preview: string | null;
+  /** 已结束的话题：不在星球主视图，只在「已结束」分组或搜索里出现 */
+  ended?: boolean;
 }
 
 export interface TopicPosition {

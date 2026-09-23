@@ -126,11 +126,11 @@ describe("KnowledgePanel", () => {
 });
 
 describe("KnowledgePanel 筛选框（P0：关闭态要有可见标签，且能回到全部）", () => {
-  it("两个筛选框关闭态显示「全部分类 / 全部状态」，不是空白方块", async () => {
+  it("筛选框关闭态显示「全部分类 / 全部状态 / 全部来源」，不是空白方块", async () => {
     const w = mountPanel();
     await flushPromises();
     const vals = w.findAll(".filters .qio-select-val").map((v) => v.text());
-    expect(vals).toEqual(["全部分类", "全部状态"]);
+    expect(vals).toEqual(["全部分类", "全部状态", "全部来源"]);
     w.unmount();
   });
 
