@@ -61,7 +61,16 @@ async function main() {
     });
 
     await page.click(".onboarding-actions .primary");
-    await sleep(5000); // 追问要现问一次模型
+    // 追问要现问一次模型（实测十秒级）：等它真的出题或确认"没有问题"再拍
+    await page.waitForFunction(
+      () => {
+        const body = document.querySelector(".onboarding-body");
+        if (!body) return false;
+        return !String(body.textContent || "").includes("正在根据你的描述准备问题");
+      },
+      { timeout: 90_000 },
+    );
+    await sleep(400);
     await session.shot("06-followup", "第 6 步「追问」", {
       note: "按你写的内容现问，可以跳过；跳过的不会出现在清单里",
     });

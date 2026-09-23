@@ -189,7 +189,8 @@ async function saveCredential() {
   credentialNote.value = "";
   const identified = await identifyKey(secret);
   try {
-    const payload: Record<string, unknown> = { secret };
+    // 用途标签必须带上：没有标签的密钥在 QIO 里任何角色都选不中（主循环、追问都用不了）
+    const payload: Record<string, unknown> = { secret, tags: ["main-loop"] };
     if (identified && identifiedEndpoint.value) {
       payload.endpoint = identifiedEndpoint.value;
       if (identifiedModel.value) payload.default_model = identifiedModel.value;

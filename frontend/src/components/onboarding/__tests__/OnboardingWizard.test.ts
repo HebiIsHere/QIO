@@ -66,6 +66,29 @@ describe("首次引导向导 v2", () => {
     expect(api.markOnboardingSeen).toHaveBeenCalledTimes(1);
   });
 
+  it("建凭据时必须带上用途标签，否则这条密钥在 QIO 里根本用不上", async () => {
+    (identifyCredential as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({
+      identified: true,
+      provider: "MiMo（小米）",
+      base_url: "https://api.xiaomimimo.com/v1",
+      default_model: "mimo-v2.5",
+      models: ["mimo-v2.5"],
+    });
+    const w = mountWizard({ has_content: false });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    await w.find("input.qio-input").setValue("sk-abcdefghijklmnopqrstuvwxyz012345");
+    await w.find(".onboarding-body .qio-btn.mini").trigger("click"); // 保存并测试
+    await flushPromises();
+
+    expect(api.createCredential).toHaveBeenCalledWith({
+      secret: "sk-abcdefghijklmnopqrstuvwxyz012345",
+      endpoint: "https://api.xiaomimimo.com/v1",
+      default_model: "mimo-v2.5",
+      tags: ["main-loop"],
+    });
+  });
+
   it("新用户（主页没有内容）不能离开连接模型这一步", async () => {
     const w = mountWizard({ has_content: false });
     await flushPromises();
