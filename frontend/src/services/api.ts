@@ -568,7 +568,42 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  getOnboardingStatus: () =>
+    request<OnboardingStatus>("/api/onboarding/status"),
+  markOnboardingSeen: () =>
+    request<OnboardingStatus>("/api/onboarding/seen", { method: "POST" }),
+  saveOnboardingProfile: (payload: OnboardingProfilePayload) =>
+    request<{ name: string; knowledge_id: string; entity_id: string; topics: string[] }>(
+      "/api/onboarding/profile",
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  completeOnboarding: () =>
+    request<OnboardingStatus>("/api/onboarding/complete", { method: "POST" }),
+  setOnboardingHint: (dismissed: boolean) =>
+    request<OnboardingStatus>("/api/onboarding/hint", {
+      method: "POST",
+      body: JSON.stringify({ dismissed }),
+    }),
 };
+
+export interface OnboardingStatus {
+  done: boolean;
+  has_credential: boolean;
+  has_name: boolean;
+  wizard_seen: boolean;
+  welcome_version: string;
+  app_version: string;
+  show_wizard: boolean;
+  hint_dismissed: boolean;
+}
+
+export interface OnboardingProfilePayload {
+  name: string;
+  intro?: string;
+  tags?: { key: string; value: string }[];
+  style?: string;
+  goals?: string[];
+}
 
 export interface TopicFingerprint {
   topic_id: string;
