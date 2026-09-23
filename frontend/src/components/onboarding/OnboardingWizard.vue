@@ -9,6 +9,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { api } from "../../services/api";
+import { identifyCredential } from "../../services/identify";
 import { getTheme, setTheme, type Theme } from "../../utils/theme";
 import QInput from "../ui/QInput.vue";
 import {
@@ -31,6 +32,10 @@ const isFirst = computed(() => index.value === 0);
 const apiKey = ref("");
 const credentialState = ref<"idle" | "saving" | "ok" | "err">("idle");
 const credentialNote = ref("");
+const identifyState = ref<"idle" | "working" | "done" | "failed">("idle");
+const identifiedProvider = ref("");
+const identifiedEndpoint = ref("");
+const identifiedModel = ref("");
 
 /** 认识你 */
 const name = ref("");
@@ -111,14 +116,45 @@ async function saveCredential() {
   }
   credentialState.value = "saving";
   credentialNote.value = "";
+  // 先识别提供方：**不能**把第三方 Key 直接丢给 OpenAI 默认端点（会 401）
+  const identified = await identifyKey(secret);
   try {
-    const created = await api.createCredential({ secret });
+    const payload: Record<string, unknown> = { secret };
+    if (identified && identifiedEndpoint.value) {
+      payload.endpoint = identifiedEndpoint.value;
+      if (identifiedModel.value) payload.default_model = identifiedModel.value;
+    }
+    const created = await api.createCredential(payload);
     await api.testCredential(created.key_id);
     credentialState.value = "ok";
-    credentialNote.value = "已连接，模型可用";
+    credentialNote.value = identifiedProvider.value
+      ? `已连接 ${identifiedProvider.value}，模型可用`
+      : "已连接，模型可用";
   } catch (error) {
     credentialState.value = "err";
     credentialNote.value = error instanceof Error ? error.message : "连接失败，可稍后在设置页重试";
+  }
+}
+
+async function identifyKey(secret: string): Promise<boolean> {
+  identifyState.value = "working";
+  try {
+    const result = await identifyCredential(secret);
+    if (!result.identified || !result.base_url) {
+      identifyState.value = "failed";
+      identifiedProvider.value = "";
+      identifiedEndpoint.value = "";
+      identifiedModel.value = "";
+      return false;
+    }
+    identifyState.value = "done";
+    identifiedProvider.value = result.provider ?? "";
+    identifiedEndpoint.value = result.base_url;
+    identifiedModel.value = result.default_model ?? "";
+    return true;
+  } catch {
+    identifyState.value = "failed";
+    return false;
   }
 }
 
@@ -185,6 +221,15 @@ async function finish() {
           </button>
           <p v-if="credentialNote" class="note" :class="credentialState === 'ok' ? 'ok' : 'err'">
             {{ credentialNote }}
+          </p>
+          <p v-if="identifyState !== 'idle'" class="note identify" :class="identifyState">
+            {{
+              identifyState === "working"
+                ? "正在识别提供方…"
+                : identifyState === "done"
+                  ? `已识别：${identifiedProvider} · ${identifiedEndpoint}`
+                  : "没识别出提供方（会把 Key 当作 OpenAI 兼容端点测试）"
+            }}
           </p>
         </section>
 

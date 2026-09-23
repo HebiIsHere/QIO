@@ -3,6 +3,11 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import OnboardingWizard from "../OnboardingWizard.vue";
 import { api } from "../../../services/api";
+import { identifyCredential } from "../../../services/identify";
+
+vi.mock("../../../services/identify", () => ({
+  identifyCredential: vi.fn(),
+}));
 
 const baseStatus = {
   done: false,
@@ -40,6 +45,37 @@ describe("OnboardingWizard", () => {
     });
     vi.spyOn(api, "completeOnboarding").mockResolvedValue({ ...baseStatus, done: true });
     vi.spyOn(api, "listCredentials").mockResolvedValue({ credentials: [] });
+    vi.spyOn(api, "createCredential").mockResolvedValue({ ok: true, key_id: "key_1", version: 1 });
+    vi.spyOn(api, "testCredential").mockResolvedValue({
+      key_id: "key_1",
+      probe: { mode: "chat", detail: "ok" },
+    });
+  });
+
+  it("连接模型：先自动识别提供方，再用识别出的 endpoint 建凭据并测试", async () => {
+    (identifyCredential as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({
+      identified: true,
+      provider: "MiMo（小米）",
+      base_url: "https://api.xiaomimimo.com/v1",
+      kind: "openai",
+      default_model: "mimo-v2.5",
+      models: ["mimo-v2.5"],
+    });
+    const w = mountWizard();
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    await w.find("input.qio-input").setValue("sk-test-key");
+    await w.find(".onboarding-body .qio-btn.mini").trigger("click"); // 保存并测试
+    await flushPromises();
+
+    expect(identifyCredential).toHaveBeenCalledWith("sk-test-key");
+    expect(api.createCredential).toHaveBeenCalledWith({
+      secret: "sk-test-key",
+      endpoint: "https://api.xiaomimimo.com/v1",
+      default_model: "mimo-v2.5",
+    });
+    expect(api.testCredential).toHaveBeenCalledWith("key_1");
+    expect(w.text()).toContain("MiMo");
   });
 
   it("首屏是欢迎步骤：品牌 + 定位 + 开始设置，进度条 6 段", async () => {
