@@ -105,6 +105,11 @@ class Retriever:
         if not query_tokens:
             return scores
         for fingerprint in self.topics.list_with_fingerprints():
+            # 已结束的话题不再参与联想（不给 affinity 加分）；
+            # 它的片段仍然留在记忆里，照样能被检索到。
+            node = self.topics.nodes.get_topic(fingerprint.topic_id)
+            if node is not None and node.meta.get("ended_at"):
+                continue
             overlap = query_tokens & set(fingerprint.keywords)
             if overlap:
                 scores[fingerprint.topic_id] = len(overlap) / len(query_tokens)

@@ -196,3 +196,41 @@ class NodeService:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    # -- 话题的「已结束」-------------------------------------------------
+
+    def mark_topic_ended(self, node_id: str, *, reason: str = "user_confirmed") -> Node:
+        """标记话题已结束：离开星球主视图，进「已结束」分组，但记忆仍可搜到。
+
+        和「合并」用同一个位置（`nodes.meta`），不新增表结构。
+        """
+        node = self.get(node_id)
+        if node is None or node.type != "topic":
+            raise KeyError(node_id)
+        now = _now()
+        meta = dict(node.meta)
+        meta["ended_at"] = now
+        meta["ended_reason"] = reason
+        self.conn.execute(
+            "UPDATE nodes SET meta = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), now, node_id),
+        )
+        updated = self.get(node_id)
+        assert updated is not None
+        return updated
+
+    def resume_topic(self, node_id: str) -> Node:
+        """撤销「已结束」：话题回到主视图。"""
+        node = self.get(node_id)
+        if node is None or node.type != "topic":
+            raise KeyError(node_id)
+        meta = dict(node.meta)
+        meta.pop("ended_at", None)
+        meta.pop("ended_reason", None)
+        self.conn.execute(
+            "UPDATE nodes SET meta = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), _now(), node_id),
+        )
+        updated = self.get(node_id)
+        assert updated is not None
+        return updated

@@ -227,6 +227,21 @@ class EntityCardService:
         )
         return self.get(card_id)
 
+    def rename(
+        self, card_id: str, name: str, *, aliases: list[str] | None = None
+    ) -> EntityCard | None:
+        """改名（旧名字由调用方放进 aliases）：自我信息改名时必须走这里，
+        否则同一个人会留下两张卡。"""
+        card = self.get(card_id)
+        if card is None:
+            return None
+        new_aliases = card.aliases if aliases is None else [str(a) for a in aliases]
+        self.conn.execute(
+            "UPDATE entity_cards SET name = ?, aliases = ?, updated_at = ? WHERE id = ?",
+            (str(name), json.dumps(new_aliases, ensure_ascii=False), _now(), card_id),
+        )
+        return self.get(card_id)
+
     def set_attribute(self, card_id: str, key: str, value: str) -> EntityCard | None:
         card = self.get(card_id)
         if card is None:
