@@ -45,14 +45,19 @@ def test_new_version_forces_wizard_once_even_when_done(client, db_conn):
     client.post("/api/onboarding/complete")
     assert client.get("/api/onboarding/status").json()["show_wizard"] is False
 
-    # 模拟「刚更新到这版」：已展示版本落后于当前版本
+    # 模拟「刚更新到 0.1.7」：已展示版本低于这个门槛、当前版本已经越过它
     from agent.storage.settings import SettingsStore
 
-    SettingsStore(db_conn).set("onboarding.welcome_version", "0.0.0")
+    client.app.version = "0.1.7"
+    SettingsStore(db_conn).set("onboarding.welcome_version", "0.1.5")
     body = client.get("/api/onboarding/status").json()
     assert body["done"] is True
     assert body["show_wizard"] is True
     assert client.post("/api/onboarding/seen").json()["show_wizard"] is False
+
+    # 之后再升版本不会重复弹
+    client.app.version = "0.1.8"
+    assert client.get("/api/onboarding/status").json()["show_wizard"] is False
 
 
 def test_profile_writes_knowledge_card_and_topics_idempotently(client, db_conn):
