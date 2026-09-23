@@ -95,6 +95,13 @@ export interface KnowledgeItem {
   confidence: number | null;
   topic_id: string | null;
   topic_name: string | null;
+  /** 从哪来（引导 / 对话 / 你的修正 / 后台整理 / 未记录） */
+  source?: string;
+  /** 管多大范围（全局（你） / 话题：X / 实体：Y / 未指定） */
+  scope?: string;
+  /** 是否已结束：不再是当前状态，但相关内容仍能被参考到 */
+  ended?: boolean;
+  ended_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -482,6 +489,27 @@ export const api = {
       `/api/knowledge/${encodeURIComponent(id)}/ignore`,
       { method: "POST" },
     ),
+  /** 标记「已结束」：不再是当前状态，但相关内容仍能被参考到（权重降低）。 */
+  endKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/end`,
+      { method: "POST", body: JSON.stringify({ reason: "user_confirmed" }) },
+    ),
+  resumeKnowledge: (id: string) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/resume`,
+      { method: "POST" },
+    ),
+  endTopic: (topicId: string) =>
+    request<{ ok: boolean; topic_id: string }>(
+      `/api/graph/topics/${encodeURIComponent(topicId)}/end`,
+      { method: "POST", body: JSON.stringify({ reason: "user_confirmed" }) },
+    ),
+  resumeTopic: (topicId: string) =>
+    request<{ ok: boolean; topic_id: string }>(
+      `/api/graph/topics/${encodeURIComponent(topicId)}/resume`,
+      { method: "POST" },
+    ),
   listEntities: () => request<{ entities: EntityCard[] }>("/api/entities"),
   getEntity: (id: string) =>
     request<{ entity: EntityCard }>(`/api/entities/${encodeURIComponent(id)}`),
@@ -644,6 +672,8 @@ export interface TopicFingerprint {
   fragment_count: number;
   last_activity: string | null;
   summary_preview: string | null;
+  /** 已结束的话题：不在星球主视图，只在「已结束」分组或搜索里出现 */
+  ended?: boolean;
 }
 
 export interface TopicPosition {

@@ -1087,10 +1087,41 @@ function focusInitialTopic(duration = OPEN_MS) {
 const filteredTopics = ref<TopicFingerprint[]>([]);
 watch([topics, search], () => {
   const q = search.value.trim().toLowerCase();
+  // 主视图只放"还在进行"的话题；已结束的进下面的分组（结束不是删掉）
+  const active = topics.value.filter((t) => !t.ended);
   filteredTopics.value = q
-    ? topics.value.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
-    : topics.value;
+    ? active.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
+    : active;
 }, { immediate: true });
+
+/** 已结束分组：依然可以被搜到、被点到，只是离开了主视图。 */
+const endedTopics = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  const ended = topics.value.filter((t) => t.ended);
+  return q
+    ? ended.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
+    : ended;
+});
+
+async function refreshTopics() {
+  try {
+    const r = await api.listTopics();
+    topics.value = r.topics;
+  } catch {
+    /* 刷新失败时保持现状：不把已有列表清空 */
+  }
+}
+
+/** 「这件事结束了」：结束话题（也会让对应目标降权），或者恢复。 */
+async function toggleTopicEnded(t: TopicFingerprint) {
+  try {
+    if (t.ended) await api.resumeTopic(t.topic_id);
+    else await api.endTopic(t.topic_id);
+    await refreshTopics();
+  } catch (e) {
+    anchorError.value = `操作失败：${(e as Error).message}`;
+  }
+}
 
 async function loadDetail(topicId: string) {
   const seq = ++detailSeq;
@@ -1797,6 +1828,36 @@ async function close() {
                 >
                   <span class="name serif">{{ t.title }}</span>
                   <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
+                  <button
+                    class="qio-btn mini quiet topic-toggle-ended"
+                    type="button"
+                    @click.stop="toggleTopicEnded(t)"
+                  >
+                    结束
+                  </button>
+                </li>
+              </ul>
+              <ul v-if="endedTopics.length" class="topic-list ended-list">
+                <li class="ended-head">已结束（{{ endedTopics.length }}）</li>
+                <li
+                  v-for="t in endedTopics"
+                  :key="t.topic_id"
+                  :class="{ active: t.topic_id === planet.selectedTopicId.value }"
+                  tabindex="0"
+                  role="option"
+                  :aria-selected="t.topic_id === planet.selectedTopicId.value"
+                  @click="selectTopic(t.topic_id)"
+                  @keydown.enter.prevent="selectTopic(t.topic_id)"
+                >
+                  <span class="name serif">{{ t.title }}</span>
+                  <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
+                  <button
+                    class="qio-btn mini quiet topic-resume"
+                    type="button"
+                    @click.stop="toggleTopicEnded(t)"
+                  >
+                    恢复
+                  </button>
                 </li>
               </ul>
             </div>
