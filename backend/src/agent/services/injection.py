@@ -9,6 +9,7 @@ Design (per plan):
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from agent.knowledge.inject import InjectionSource
@@ -194,14 +195,32 @@ SURFACE_BASE = {"user": 1.0, "entity": 0.7, "topic": 0.5, "aux_topic": 0.45}
 KEYWORD_WEIGHT = 0.5
 
 
-def knowledge_score(content: str, query: str, surface: str) -> float:
-    base = SURFACE_BASE.get(surface, 0.5)
+def knowledge_score(content: str, query: str, surface: str, *, ended: bool = False) -> float:
+    """知识条目的注入分数。
+
+    `ended=True`（用户确认「这件事已经结束」）：拿掉面的基础分，只留内容相关度。
+    于是它不再常驻注入，只有在和本轮内容相关时才作为参考出现 —— 权重低于同类
+    未结束条目（后者至少还有基础分）。
+    """
+    base = 0.0 if ended else SURFACE_BASE.get(surface, 0.5)
     query_tokens = set(tokenize(query))
     content_tokens = set(tokenize(content))
     if not query_tokens:
         return base
     overlap = len(query_tokens & content_tokens) / len(query_tokens)
     return base + KEYWORD_WEIGHT * overlap
+
+
+def _row_is_ended(row: dict) -> bool:
+    """知识行是否被标记为「已结束」（标记存在 provenance.ended_at）。"""
+    raw = row.get("provenance")
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return False
+    return bool(isinstance(data, dict) and data.get("ended_at"))
 
 
 def dedupe_candidates(
@@ -256,7 +275,9 @@ class InjectionAssembler:
         # main topic knowledge surface
         if topic_id:
             for item in self.knowledge_source.list_active_for_node(topic_id, limit=5):
-                score = knowledge_score(item["content"], query, "topic")
+                score = knowledge_score(
+                    item["content"], query, "topic", ended=_row_is_ended(item)
+                )
                 candidates.append(
                     Candidate(
                         source="knowledge",
@@ -270,7 +291,9 @@ class InjectionAssembler:
         # auxiliary topic surfaces: knowledge + recent fragment summaries
         for aux_id in aux_topic_ids:
             for item in self.knowledge_source.list_active_for_node(aux_id, limit=3):
-                score = knowledge_score(item["content"], query, "aux_topic")
+                score = knowledge_score(
+                    item["content"], query, "aux_topic", ended=_row_is_ended(item)
+                )
                 candidates.append(
                     Candidate(
                         source="knowledge",
@@ -306,7 +329,9 @@ class InjectionAssembler:
             if not node_id:
                 continue
             for item in self.knowledge_source.list_active_for_node(node_id, limit=5):
-                score = knowledge_score(item["content"], query, surface)
+                score = knowledge_score(
+                    item["content"], query, surface, ended=_row_is_ended(item)
+                )
                 candidates.append(
                     Candidate(
                         source="knowledge",

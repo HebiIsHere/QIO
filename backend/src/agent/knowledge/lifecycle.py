@@ -191,6 +191,43 @@ class KnowledgeService:
             knowledge_id, KnowledgeState.EXPIRED, extra={"expired_at": _now()}
         )
 
+    def mark_ended(self, knowledge_id: str, *, reason: str = "user_confirmed") -> KnowledgeItem:
+        """把一条知识标成「已结束」：**不改状态机**，只降低它的使用权重。
+
+        和 `expire` 的区别：过期与撤销是"不再算数"，从注入面彻底消失；结束是
+        "不再是当前状态"，主注入不再常驻，只有在和本轮内容相关时才作为参考出现
+        （权重见 `services/injection.knowledge_score`）。
+        """
+        item = self.get(knowledge_id)
+        if item is None:
+            raise KeyError(knowledge_id)
+        provenance = dict(item.provenance or {})
+        provenance["ended_at"] = _now()
+        provenance["ended_reason"] = reason
+        self.conn.execute(
+            "UPDATE knowledge SET provenance = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(provenance, ensure_ascii=False), _now(), knowledge_id),
+        )
+        marked = self.get(knowledge_id)
+        assert marked is not None
+        return marked
+
+    def resume(self, knowledge_id: str) -> KnowledgeItem:
+        """撤销「已结束」：重新当作当前状态使用。"""
+        item = self.get(knowledge_id)
+        if item is None:
+            raise KeyError(knowledge_id)
+        provenance = dict(item.provenance or {})
+        provenance.pop("ended_at", None)
+        provenance.pop("ended_reason", None)
+        self.conn.execute(
+            "UPDATE knowledge SET provenance = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(provenance, ensure_ascii=False), _now(), knowledge_id),
+        )
+        resumed = self.get(knowledge_id)
+        assert resumed is not None
+        return resumed
+
     # -- reading ----------------------------------------------------------
 
     def get(self, knowledge_id: str) -> KnowledgeItem | None:

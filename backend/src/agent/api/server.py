@@ -69,6 +69,7 @@ def _knowledge_payload(ctx, item) -> dict:
     if item.topic_id:
         node = ctx.topics.nodes.get_topic(item.topic_id)
         topic_name = node.name if node is not None else None
+    provenance = dict(item.provenance or {})
     return {
         "id": item.id,
         "category": item.category,
@@ -77,9 +78,47 @@ def _knowledge_payload(ctx, item) -> dict:
         "confidence": item.confidence,
         "topic_id": item.topic_id,
         "topic_name": topic_name,
+        # 「看得懂」三件套：从哪来、管多大范围、什么时候结束的
+        "source": _knowledge_source_label(provenance),
+        "scope": _knowledge_scope(ctx, item),
+        "ended": bool(provenance.get("ended_at")),
+        "ended_at": provenance.get("ended_at"),
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
+
+
+_KNOWLEDGE_SOURCE_LABELS = {"onboarding": "引导", "dream_correct": "后台整理"}
+
+
+def _knowledge_source_label(provenance: dict) -> str:
+    """把内部的来源标记翻译成人话（用户不需要看到 fragment_id 这类东西）。"""
+    if provenance.get("corrected_from"):
+        return "你的修正"
+    label = _KNOWLEDGE_SOURCE_LABELS.get(str(provenance.get("source") or ""))
+    if label:
+        return label
+    if provenance.get("fragment_id"):
+        return "对话"
+    return "未记录"
+
+
+def _knowledge_scope(ctx, item) -> str:
+    """这条知识作用在哪里：全局（你）/ 某个话题 / 某张实体卡 / 未指定。"""
+    if item.topic_id:
+        node = ctx.topics.nodes.get_topic(item.topic_id)
+        return f"话题：{node.name}" if node is not None else "话题"
+    for node_id in item.node_ids or []:
+        node = ctx.topics.nodes.get(node_id)
+        if node is None:
+            continue
+        if node.type == "user":
+            return "全局（你）"
+        if node.type == "entity":
+            return f"实体：{node.name}"
+        if node.type == "topic":
+            return f"话题：{node.name}"
+    return "未指定"
 
 
 def create_app(
@@ -1068,6 +1107,31 @@ def create_app(
             raise HTTPException(status_code=400, detail="only pending_review can be rejected")
         draft = ks.reject(knowledge_id)
         return {"ok": True, "knowledge": {"id": draft.id, "state": draft.state.value}}
+
+    @app.post("/api/knowledge/{knowledge_id}/end")
+    async def end_knowledge(knowledge_id: str, body: dict | None = None) -> dict:
+        """标记「已结束」：不再是当前状态，但仍可被相关对话参考到（权重降低）。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        reason = str((body or {}).get("reason") or "user_confirmed")
+        try:
+            item = ks.mark_ended(knowledge_id, reason=reason)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
+
+    @app.post("/api/knowledge/{knowledge_id}/resume")
+    async def resume_knowledge(knowledge_id: str) -> dict:
+        """撤销「已结束」：重新当作当前状态。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        ks = KnowledgeService(ctx.conn)
+        try:
+            item = ks.resume(knowledge_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
 
     @app.post("/api/knowledge/{knowledge_id}/ignore")
     async def ignore_knowledge(knowledge_id: str) -> dict:
