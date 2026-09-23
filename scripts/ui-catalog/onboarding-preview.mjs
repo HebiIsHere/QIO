@@ -16,7 +16,10 @@ async function apiJson(pathname) {
 
 async function main() {
   const browser = await launchBrowser();
-  const session = await createSession(browser, { group: "onboarding-v2", theme: "dark" });
+  const session = await createSession(browser, {
+    group: process.env.QIO_PREVIEW_GROUP || "onboarding-v2",
+    theme: process.env.QIO_PREVIEW_THEME || "dark",
+  });
   const { page } = session;
 
   try {

@@ -558,6 +558,9 @@ async function finish() {
 .check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .pref-row { display: grid; grid-template-columns: 88px 1fr; gap: 8px; align-items: center; }
 .pref-label { font-size: 12px; color: var(--text-secondary); }
+/* 「仅在这个话题生效」的输入框独占一行、拉满宽度：
+   它是句子长度的自由输入，不能挤在标签那一栏里（之前只有 88px 宽）。 */
+.pref-row > input.qio-input { grid-column: 1 / -1; width: 100%; }
 .chips, .theme-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .chip {
   padding: 5px 12px;
