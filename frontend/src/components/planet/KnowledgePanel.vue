@@ -113,6 +113,34 @@ async function toggleEnded(k: KnowledgeItem) {
   }
 }
 
+/**
+ * 适用范围：全局（你）/ 只在某个话题里生效。
+ *
+ * 归属管理属于知识页，不属于首次引导：引导里只问"你希望怎么被对待"，
+ * 范围在这里按需要调整。
+ */
+const scopeOptions = computed(() => [
+  { value: "global", label: "全局（你）" },
+  ...topics.value.map((t) => ({ value: `topic:${t.topic_id}`, label: `仅话题：${t.title}` })),
+]);
+
+function scopeValueOf(k: KnowledgeItem): string {
+  return k.topic_id ? `topic:${k.topic_id}` : "global";
+}
+
+async function changeScope(k: KnowledgeItem, value: string) {
+  try {
+    if (value.startsWith("topic:")) {
+      await api.setKnowledgeScope(k.id, { type: "topic", topic_id: value.slice(6) });
+    } else {
+      await api.setKnowledgeScope(k.id, { type: "global" });
+    }
+    await load();
+  } catch (e) {
+    loadError.value = `改适用范围失败：${(e as Error).message}`;
+  }
+}
+
 async function load() {
   loading.value = true;
   loadError.value = "";
@@ -298,6 +326,12 @@ onMounted(() => {
             >
               {{ k.ended ? "恢复" : "标记结束" }}
             </button>
+            <QSelect
+              class="k-scope-select"
+              :model-value="scopeValueOf(k)"
+              :options="scopeOptions"
+              @update:model-value="(v: string) => changeScope(k, v)"
+            />
             <button
               class="qio-btn mini quiet k-archive"
               type="button"

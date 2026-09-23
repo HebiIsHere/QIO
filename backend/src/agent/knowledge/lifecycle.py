@@ -228,6 +228,25 @@ class KnowledgeService:
         assert resumed is not None
         return resumed
 
+    def set_scope(
+        self, knowledge_id: str, *, node_ids: list[str], topic_id: str | None = None
+    ) -> KnowledgeItem:
+        """改「这条知识管多大范围」：挂到「你」= 全局，挂到话题 = 只在该话题生效。
+
+        归属的管理发生在知识页（星球 → 知识），不在首次引导里：引导只负责收集
+        「你希望怎么被对待」，范围由用户之后按需要调整。
+        """
+        item = self.get(knowledge_id)
+        if item is None:
+            raise KeyError(knowledge_id)
+        self.conn.execute(
+            "UPDATE knowledge SET node_ids = ?, topic_id = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(node_ids, ensure_ascii=False), topic_id, _now(), knowledge_id),
+        )
+        updated = self.get(knowledge_id)
+        assert updated is not None
+        return updated
+
     # -- reading ----------------------------------------------------------
 
     def get(self, knowledge_id: str) -> KnowledgeItem | None:

@@ -44,10 +44,8 @@ async function main() {
     await sleep(300);
     await page.click(".onboarding-body .chip >> text=简洁");
     await page.click(".onboarding-body .chip >> text=先讲逻辑再给结论");
-    const scopeInputs = page.locator(".onboarding-body .pref-row input.qio-input");
-    await scopeInputs.nth(2).fill("开发 QIO");
     await session.shot("04-preference", "第 4 步「偏好」", {
-      note: "每项都能单独指定只在某个话题里生效",
+      note: "引导只收集全局偏好；「只在某个话题里生效」在星球·知识页里管理",
     });
 
     await page.click(".onboarding-actions .primary");

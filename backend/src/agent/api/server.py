@@ -1193,6 +1193,30 @@ def create_app(
             raise HTTPException(status_code=404, detail="knowledge not found") from exc
         return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
 
+    @app.post("/api/knowledge/{knowledge_id}/scope")
+    async def set_knowledge_scope(knowledge_id: str, body: dict) -> dict:
+        """改适用范围：全局（你）/ 只在某个话题里生效。归属管理在知识页，不在引导里。"""
+        from agent.knowledge.lifecycle import KnowledgeService
+
+        scope_type = str(body.get("type") or "global")
+        ks = KnowledgeService(ctx.conn)
+        if scope_type == "global":
+            user_node = ctx.topics.nodes.get_or_create_user_root()
+            node_ids, topic_id = [user_node.id], None
+        elif scope_type == "topic":
+            topic_id = str(body.get("topic_id") or "")
+            node = ctx.topics.nodes.get_topic(topic_id)
+            if node is None:
+                raise HTTPException(status_code=404, detail="topic not found")
+            node_ids = [topic_id]
+        else:
+            raise HTTPException(status_code=400, detail="invalid scope type")
+        try:
+            item = ks.set_scope(knowledge_id, node_ids=node_ids, topic_id=topic_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {"ok": True, "knowledge": _knowledge_payload(ctx, item)}
+
     @app.post("/api/knowledge/{knowledge_id}/ignore")
     async def ignore_knowledge(knowledge_id: str) -> dict:
         """用户不要这条长期知识，别再问（对话内候选卡的「忽略」）。

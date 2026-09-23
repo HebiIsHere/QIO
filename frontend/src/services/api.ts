@@ -500,6 +500,12 @@ export const api = {
       `/api/knowledge/${encodeURIComponent(id)}/resume`,
       { method: "POST" },
     ),
+  /** 改适用范围：全局（你）或只在某个话题里生效（归属管理在知识页，不在引导里）。 */
+  setKnowledgeScope: (id: string, scope: { type: "global" | "topic"; topic_id?: string }) =>
+    request<{ ok: boolean; knowledge: KnowledgeItem }>(
+      `/api/knowledge/${encodeURIComponent(id)}/scope`,
+      { method: "POST", body: JSON.stringify(scope) },
+    ),
   endTopic: (topicId: string) =>
     request<{ ok: boolean; topic_id: string }>(
       `/api/graph/topics/${encodeURIComponent(topicId)}/end`,

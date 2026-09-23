@@ -40,7 +40,6 @@ const draft = reactive({
   dontDo: "",
   howToTalk: "",
   preferences: {} as Record<string, string>,
-  preferenceScope: {} as Record<string, string>,
   goals: [] as string[],
   answers: {} as Record<string, string>,
 });
@@ -96,12 +95,7 @@ const reviewItems = computed<ReviewItem[]>(() => {
   push("howToTalk", "希望怎么表达", draft.howToTalk);
   for (const dim of PREFERENCE_DIMENSIONS) {
     const value = draft.preferences[dim.key] ?? "";
-    const scope = draft.preferenceScope[dim.key] ?? "";
-    push(
-      `pref:${dim.key}`,
-      scope ? `偏好 · ${dim.label}（仅 ${scope}）` : `偏好 · ${dim.label}`,
-      value,
-    );
+    push(`pref:${dim.key}`, `偏好 · ${dim.label}`, value);
   }
   draft.goals.forEach((goal, i) => push(`goal:${i}`, `目标（会新建话题）`, goal));
   questions.value.forEach((question, i) =>
@@ -266,14 +260,12 @@ function applyEdit() {
 function buildPayload(): OnboardingSubmitPayload {
   const preferences = PREFERENCE_DIMENSIONS.filter(
     (dim) => (draft.preferences[dim.key] ?? "").trim() && !removed[`pref:${dim.key}`],
-  ).map((dim) => {
-    const scope = (draft.preferenceScope[dim.key] ?? "").trim();
-    return {
-      kind: dim.key,
-      value: draft.preferences[dim.key].trim(),
-      scope: scope ? { type: "topic" as const, topic_title: scope } : { type: "global" as const },
-    };
-  });
+  ).map((dim) => ({
+    kind: dim.key,
+    value: draft.preferences[dim.key].trim(),
+    // 引导只收集"你希望怎么被对待"；"只在某个话题里生效"属于星球·知识页的管理
+    scope: { type: "global" as const },
+  }));
   const payload: OnboardingSubmitPayload = {
     name: draft.name.trim(),
     preferences,
@@ -402,7 +394,10 @@ async function finish() {
 
         <section v-else-if="step === 'preference'" class="panel">
           <h2>偏好</h2>
-          <p class="hint">每一项都可以单独指定"只在某个话题里生效"；不填就是不设这条偏好。</p>
+          <p class="hint">
+            这些是"你希望 QIO 怎么对待你"。不填就是不设这条偏好；
+            如果某一条只想在某个话题里生效，之后可以在「星球 → 知识」里改它的适用范围。
+          </p>
           <div v-for="dim in PREFERENCE_DIMENSIONS" :key="dim.key" class="pref-row">
             <span class="pref-label">{{ dim.label }}</span>
             <div class="chips">
@@ -417,7 +412,6 @@ async function finish() {
                 {{ option }}
               </button>
             </div>
-            <QInput v-model="draft.preferenceScope[dim.key]" placeholder="仅在这个话题里生效（可留空）" />
           </div>
           <div class="theme-row">
             <span>主题</span>
@@ -558,9 +552,6 @@ async function finish() {
 .check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .pref-row { display: grid; grid-template-columns: 88px 1fr; gap: 8px; align-items: center; }
 .pref-label { font-size: 12px; color: var(--text-secondary); }
-/* 「仅在这个话题生效」的输入框独占一行、拉满宽度：
-   它是句子长度的自由输入，不能挤在标签那一栏里（之前只有 88px 宽）。 */
-.pref-row > input.qio-input { grid-column: 1 / -1; width: 100%; }
 .chips, .theme-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .chip {
   padding: 5px 12px;

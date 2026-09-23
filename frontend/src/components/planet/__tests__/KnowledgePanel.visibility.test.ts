@@ -27,6 +27,10 @@ function mountPanel(items: KnowledgeItem[] = [{ ...item }]) {
     knowledge: { ...item, ended: true, ended_at: "2026-09-23T01:00:00+00:00" },
   });
   vi.spyOn(api, "resumeKnowledge").mockResolvedValue({ ok: true, knowledge: { ...item } });
+  vi.spyOn(api, "setKnowledgeScope").mockResolvedValue({
+    ok: true,
+    knowledge: { ...item, scope: "话题：开发 QIO", topic_id: "t_qio" },
+  });
   return mount(KnowledgePanel);
 }
 
@@ -52,6 +56,20 @@ describe("知识看得懂：来源、范围与结束", () => {
     vm.source = "引导";
     await flushPromises();
     expect(w.findAll(".k-item")).toHaveLength(1);
+  });
+
+  it("可以在知识页把适用范围改成只在某个话题里生效", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    const select = w.find(".k-scope-select");
+    expect(select.exists()).toBe(true);
+    const vm = w.vm as unknown as { changeScope: (k: KnowledgeItem, v: string) => Promise<void> };
+    await vm.changeScope(item, "topic:t_qio");
+    await flushPromises();
+    expect(api.setKnowledgeScope).toHaveBeenCalledWith("kn_1", {
+      type: "topic",
+      topic_id: "t_qio",
+    });
   });
 
   it("可以把一条标成已结束，再恢复", async () => {
