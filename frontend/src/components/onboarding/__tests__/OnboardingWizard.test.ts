@@ -107,4 +107,23 @@ describe("OnboardingWizard", () => {
     expect(api.completeOnboarding).toHaveBeenCalledTimes(1);
     expect(w.emitted("done")).toHaveLength(1);
   });
+
+  it("勾选目标后离开「目标」步骤 → 带目标再落库一次（生成种子话题）", async () => {
+    const w = mountWizard();
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // 开始设置 → 连接模型
+    await w.find(".onboarding-actions .skip").trigger("click"); // 跳过 → 认识你
+    await w.find("input.qio-input").setValue("小舟");
+    await w.find(".onboarding-actions .primary").trigger("click"); // 认识你 → 偏好
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // 偏好 → 目标
+    await w.find(".onboarding-body .goal").trigger("click");
+    await w.find(".onboarding-actions .primary").trigger("click"); // 目标 → 完成
+    await flushPromises();
+
+    const calls = (api.saveOnboardingProfile as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1][0]).toMatchObject({ name: "小舟", goals: ["学习"] });
+  });
 });

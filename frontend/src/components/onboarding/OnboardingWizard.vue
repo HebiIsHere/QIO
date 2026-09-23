@@ -78,19 +78,28 @@ async function next() {
       return;
     }
     nameError.value = "";
-    try {
-      await store.saveProfile({
-        name: name.value.trim(),
-        intro: intro.value.trim(),
-        tags: filledTags.value,
-        style: style.value,
-        goals: goals.value,
-      });
-    } catch {
-      /* 落库失败不挡路：提示由 store.error 承载，用户可在设置页重跑 */
-    }
+    await submitProfile();
+  }
+  if (step.value === "goal") {
+    // 目标是选完这一步才有的：在这里再幂等落库一次，种子话题才会真的建出来
+    await submitProfile();
   }
   goNext();
+}
+
+async function submitProfile() {
+  if (!name.value.trim()) return;
+  try {
+    await store.saveProfile({
+      name: name.value.trim(),
+      intro: intro.value.trim(),
+      tags: filledTags.value,
+      style: style.value,
+      goals: goals.value,
+    });
+  } catch {
+    /* 落库失败不挡路：提示由 store.error 承载，用户可在设置页重跑 */
+  }
 }
 
 async function saveCredential() {
