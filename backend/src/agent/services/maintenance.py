@@ -370,6 +370,8 @@ class MaintenanceScheduler:
         self._running = True
         try:
             results: dict[str, Any] = {"ok": True}
+            # 顺带清理过期的工具输出（记录保留，只清正文）：维护是天然的执行时机
+            results["tool_outputs_purged"] = self.ctx.prune_tool_outputs()
             results.update(await scan_contradictions(self.ctx))
             results.update(await run_dreaming(self.ctx))
             results.update(await mine_tool_candidates(self.ctx))

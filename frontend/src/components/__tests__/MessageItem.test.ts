@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import MessageItem from "../MessageItem.vue";
 import { useEventStore } from "../../stores/events";
+import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
 import type { StreamMessage } from "../../stores/session";
 
@@ -172,6 +173,124 @@ describe("MessageItem 工具卡呈现", () => {
     expect(w.find(".tool-status.fail").exists()).toBe(true);
     w.find(".tool-head").trigger("click");
     expect(w.find(".tool-error").text()).toBe("unknown tool");
+    w.unmount();
+  });
+
+  it("失败原因在 120 字以内原样显示（不折叠成笼统文案）", () => {
+    const reason =
+      "列目录失败：[WinError 3] 系统找不到指定的路径。: 'C:\\Users\\zxy\\AppData\\Roaming\\qio\\workspace'";
+    expect(reason.length).toBeGreaterThan(60);
+    expect(reason.length).toBeLessThanOrEqual(120);
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({ role: "tool", toolName: "fs_list", content: "", toolOk: false, toolError: reason }),
+      pinia,
+    );
+    expect(w.find(".tool-fail-line").text()).toBe(reason);
+    w.unmount();
+  });
+
+  it("超过 120 字的失败原因截断并提示展开", () => {
+    const reason = "连接失败：".repeat(30);
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({ role: "tool", toolName: "web_fetch", content: "", toolOk: false, toolError: reason }),
+      pinia,
+    );
+    const line = w.find(".tool-fail-line").text();
+    expect(line).toContain("展开可看完整原因");
+    expect(line.length).toBeLessThan(reason.length);
+    w.unmount();
+  });
+
+  it("展开工具卡时按记录 id 取全文（参数与输出）", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const spy = vi.spyOn(session, "loadToolRecord").mockResolvedValue();
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "fs_list",
+        content: "列目录失败：找不到路径",
+        toolOk: false,
+        toolError: "列目录失败：找不到路径",
+        toolRecordId: "tr1",
+        toolRecordLoaded: false,
+      }),
+      pinia,
+    );
+    await w.find(".tool-head").trigger("click");
+    expect(spy).toHaveBeenCalledWith("m1");
+    w.unmount();
+  });
+
+  it("已有全文时展开显示参数段，且不再请求", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const spy = vi.spyOn(session, "loadToolRecord").mockResolvedValue();
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "fs_list",
+        content: "完整输出：目录为空",
+        toolOk: true,
+        toolRecordId: "tr1",
+        toolRecordLoaded: true,
+        toolArgs: '{\n  "path": "."\n}',
+      }),
+      pinia,
+    );
+    await w.find(".tool-head").trigger("click");
+    expect(spy).not.toHaveBeenCalled();
+    const labels = w.findAll(".sec-label").map((n) => n.text());
+    expect(labels).toEqual(["参数", "输出"]);
+    expect(w.find(".tool-detail").text()).toContain('"path"');
+    w.unmount();
+  });
+
+  it("输出未保存 / 已清理：说清原因，不藏起已有预览", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "fs_read",
+        content: "正文预览",
+        toolOk: true,
+        toolRecordId: "tr1",
+        toolRecordLoaded: true,
+        toolOutputMissing: true,
+        toolMissingReason: "setting",
+      }),
+      pinia,
+    );
+    await w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-note").text()).toContain("未保存");
+    expect(w.find(".tool-detail").text()).toContain("正文预览");
+    w.unmount();
+  });
+
+  it("输出被截断时标注已截断", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "tool",
+        toolName: "web_fetch",
+        content: "很长的正文…",
+        toolOk: true,
+        toolRecordId: "tr1",
+        toolRecordLoaded: true,
+        toolTruncated: true,
+      }),
+      pinia,
+    );
+    await w.find(".tool-head").trigger("click");
+    expect(w.find(".tool-note").text()).toContain("已截断");
     w.unmount();
   });
 });

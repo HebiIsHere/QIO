@@ -25,6 +25,21 @@ from agent.api.events import EventType, make_event
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
 
+def refusal_reason(decision: str) -> str:
+    """审批没通过的人话原因：超时 / 拒绝 / 取消必须分开说。
+
+    真实事故：三种结局被写成同一句「未获批准，未执行」，读起来像是用户拒绝了，
+    实际是 5 分钟自动过期（一轮里 6 次）。
+    """
+    if decision == "timeout":
+        return "审批等待超时（等你确认超过 5 分钟，已自动取消）"
+    if decision == "rejected":
+        return "你点了拒绝"
+    if decision == "cancelled":
+        return "本轮已停止"
+    return "未获批准"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 

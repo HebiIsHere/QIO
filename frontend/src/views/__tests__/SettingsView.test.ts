@@ -46,6 +46,15 @@ vi.mock("../../services/api", () => ({
       root_dir: String(body.root_dir ?? ""),
       permission_mode: String(body.permission_mode ?? "default"),
     })),
+    getToolHistorySettings: vi.fn(async () => ({
+      record_outputs: true,
+      output_retention_days: 90,
+    })),
+    updateToolHistorySettings: vi.fn(async (body: Record<string, unknown>) => ({
+      record_outputs: body.record_outputs === undefined ? true : Boolean(body.record_outputs),
+      output_retention_days: Number(body.output_retention_days ?? 90),
+      purged: 0,
+    })),
     getLoopSettings: vi.fn(async () => ({ max_iterations: 128, output_token_budget: 51200 })),
     updateLoopSettings: vi.fn(async (body: Record<string, unknown>) => ({
       max_iterations: Number(body.max_iterations ?? 128),
@@ -644,6 +653,27 @@ describe("分段语义与单段长度（阶段 4/5）", () => {
     await flushPromises();
 
     expect(api.updateMemorySettings).toHaveBeenCalledWith({ fragment_max_tokens: 8000 });
+    w.unmount();
+  });
+});
+
+describe("工具调用历史设置（2026-09-24）", () => {
+  it("开关显示服务端状态，改动后只提交这两个字段", async () => {
+    const { api } = await import("../../services/api");
+    (api.updateToolHistorySettings as ReturnType<typeof vi.fn>).mockClear();
+    const w = await mountSettings();
+    await openTab(w, "工具与权限");
+
+    const panel = visiblePanel(w);
+    expect(panel.text()).toContain("工具调用历史");
+    expect(panel.text()).toContain("到期只清空输出全文");
+
+    await panel.find('button[aria-label="保存工具输出全文开关"]').trigger("click");
+    await flushPromises();
+
+    expect(api.updateToolHistorySettings).toHaveBeenCalledWith(
+      expect.objectContaining({ record_outputs: false, output_retention_days: 90 }),
+    );
     w.unmount();
   });
 });

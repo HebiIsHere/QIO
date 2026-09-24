@@ -18,10 +18,13 @@ permission checks through this; no tool implements its own security logic.
 
 from __future__ import annotations
 
+import logging
 import shlex
 from enum import Enum
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 class CommandRisk(str, Enum):
@@ -90,6 +93,21 @@ class ComputerSandbox:
     def root(self) -> Path:
         """声明的工作区根（文件工具的唯一默认基准，不用进程 cwd）。"""
         return self._root()
+
+    def ensure_root(self) -> Path:
+        """建工作区根目录（幂等，只建这一层）。
+
+        根目录不存在时，相对路径的 `fs_*` 会一律报「系统找不到指定的路径」，
+        调用方分不清是路径写错了还是环境没准备好（真实事故：默认根
+        `%APPDATA%\\qio\\workspace` 从来没被创建过，一轮里失败 11 次）。
+        建不出来**不在这里伪造成功**：只记日志，工具仍然会如实报错。
+        """
+        root = self._root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("computer workspace root unavailable: %s (%s)", root, exc)
+        return root
 
     def contains(self, path: str | Path) -> bool:
         """resolve 之后是否仍在工作区根内（symlink 也会被解析到真实目标）。"""

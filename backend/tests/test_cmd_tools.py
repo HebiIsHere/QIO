@@ -4,12 +4,15 @@ import pytest
 
 from agent.services.computer import CommandRisk
 from agent.tools.cmd_tools import (
+    APPROVAL_SLACK_MS,
     ProcKillTool,
     ProcListTool,
     RunCmdTool,
     RunProgramTool,
     SysInfoTool,
 )
+# 放在 cmd_tools 之后导入：保持这个测试模块「先导入 agent.tools」的顺序不变
+from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS
 
 
 class _FakeSandbox:
@@ -81,6 +84,54 @@ async def test_run_shell_rejected():
     res = await t.run(cmd="rm -rf /tmp/x")
     assert not res.ok
     assert "未获批准" in res.error
+
+
+def test_command_tool_timeout_covers_approval_window():
+    """真实事故：run_shell 的工具超时是 45 秒，而审批给用户 5 分钟 ——
+    用户还没点确认，工具就已经报「超时（45000 毫秒）」结束。审批窗口必须算进去。"""
+    approval_ms = int(DEFAULT_TIMEOUT_SECONDS * 1000)
+    assert APPROVAL_SLACK_MS == approval_ms
+    assert RunCmdTool.timeout_ms >= approval_ms + 45_000
+    assert RunProgramTool.timeout_ms >= approval_ms + 45_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision, expected",
+    [
+        ("timeout", "审批等待超时"),
+        ("rejected", "你点了拒绝"),
+        ("cancelled", "本轮已停止"),
+    ],
+)
+async def test_shell_approval_outcome_is_specific(decision, expected):
+    """超时 / 拒绝 / 取消必须分开说：以前三种结局都是同一句「未获批准，未执行」。"""
+    t = RunCmdTool()
+    t.computer = _FakeSandbox(verdict="approve")
+    t.approvals = _FakeApproval(decision=decision)
+    res = await t.run(cmd="echo hi")
+    assert not res.ok
+    assert "未获批准" in res.error
+    assert expected in res.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision, expected",
+    [
+        ("timeout", "审批等待超时"),
+        ("rejected", "你点了拒绝"),
+        ("cancelled", "本轮已停止"),
+    ],
+)
+async def test_run_program_approval_outcome_is_specific(decision, expected):
+    t = RunProgramTool()
+    t.computer = _FakeSandbox(verdict="approve")
+    t.approvals = _FakeApproval(decision=decision)
+    res = await t.run(program="curl", args=["http://example.com"])
+    assert not res.ok
+    assert "未获批准" in res.error
+    assert expected in res.error
 
 
 @pytest.mark.asyncio

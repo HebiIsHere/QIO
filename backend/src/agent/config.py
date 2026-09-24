@@ -106,6 +106,13 @@ class Settings:
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 
+    @property
+    def workspace_dir(self) -> Path:
+        """电脑操控的默认工作区根目录（`computer.root_dir` 留空时用它）。"""
+        return self.data_dir / "workspace"
+
     def ensure_dirs(self) -> None:
-        for p in (self.data_dir, self.archive_dir, self.log_dir):
+        # 工作区根目录必须一起建：设置页写着「留空则用默认工作区」，而文件工具
+        # 的相对路径都以它为准 —— 它不存在时所有相对路径的调用都会报路径错误。
+        for p in (self.data_dir, self.archive_dir, self.log_dir, self.workspace_dir):
             p.mkdir(parents=True, exist_ok=True)

@@ -211,6 +211,8 @@ class AppContext:
             return self.settings_store.get("computer.permission_mode", DEFAULT_MODE) or DEFAULT_MODE
 
         self.computer = ComputerSandbox(resolve_root=_computer_root, permission_mode=_computer_mode)
+        # 启动即就位：工作区根目录不存在时，所有相对路径的文件工具都会直接失败
+        self.computer.ensure_root()
         self.services.register("computer", self.computer)
         for _tool in (
             FsReadTool(),
@@ -322,6 +324,9 @@ class AppContext:
         self.tool_router = ToolRouter(embedding=self.embedding)
         self.maintenance = MaintenanceScheduler(self)
         self._refresh_selector()
+        # 启动清理一次工具输出：把保留天数调小之后，重启也立刻生效。
+        # 失败只记日志 —— 清理是维护动作，不能挡住启动。
+        self.prune_tool_outputs()
 
     # -- anchor 事件广播 --------------------------------------------------
 
@@ -949,11 +954,16 @@ class AppContext:
         ).fetchall()
         return [r["dst"] for r in rows]
 
-    def _record_tool_call(self, trace: dict) -> None:
-        """Persist one tool call for trajectory analysis (truncated summaries)."""
+    def _record_tool_call(self, trace: dict) -> str | None:
+        """Persist one tool call.
+
+        两件事：轨迹审计（截断摘要，给分析用）与**工具调用历史**（打码后的参数与
+        输出全文，给用户复盘用）。返回历史记录 id；实时卡片用它在展开时取全文。
+        """
         import json as _json
 
         from agent.memory.fragment import new_id
+        from agent.storage.tool_records import record_tool_call
 
         active = AnchorService(self.conn).get_active()
         try:
@@ -961,20 +971,58 @@ class AppContext:
         except Exception:
             args = "{}"
         result = str(trace.get("result") or "")[:200]
+        # 失败原因单独一列：只落输出正文时，失败的调用在轨迹表里是一片空白
+        error = str(trace.get("error") or "")[:200]
         self.conn.execute(
-            "INSERT INTO tool_calls (id, topic_id, tool_name, arguments, result, ok, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tool_calls "
+            "(id, topic_id, tool_name, arguments, result, error, ok, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 new_id("tc"),
                 active.topic_id if active else None,
                 trace.get("tool_name", "?"),
                 args,
                 result,
+                error,
                 1 if trace.get("ok") else 0,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
         self.conn.commit()
+        return record_tool_call(
+            self.conn,
+            turn_id=str(trace.get("turn_id") or ""),
+            topic_id=active.topic_id if active else None,
+            call_id=str(trace.get("call_id") or ""),
+            seq=int(trace.get("seq") or 0),
+            tool_name=str(trace.get("tool_name") or "?"),
+            arguments=trace.get("arguments") or {},
+            output=str(trace.get("result") or ""),
+            status=str(trace.get("status") or ("success" if trace.get("ok") else "failed")),
+            error=str(trace.get("error") or ""),
+            duration_ms=trace.get("duration_ms"),
+            save_output=self.settings_store.get_bool("tools.record_outputs", True),
+        )
+
+    def prune_tool_outputs(self) -> int:
+        """清掉超过保留期的工具输出全文（记录本身保留）。
+
+        启动、后台维护、保存设置三处都会调；`tools.output_retention_days = 0`
+        表示永久保留。清理失败只记日志：这是维护动作，不能影响对话与启动。
+        """
+        from agent.storage.tool_records import DEFAULT_RETENTION_DAYS, prune_outputs
+
+        days = self.settings_store.get_int(
+            "tools.output_retention_days", DEFAULT_RETENTION_DAYS
+        )
+        try:
+            pruned = prune_outputs(self.conn, days)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不阻塞启动与维护
+            logger.warning("tool output prune failed: %s", exc)
+            return 0
+        if pruned:
+            logger.info("pruned %s tool outputs older than %s days", pruned, days)
+        return pruned
 
     def _route_tools(self, query: str):
         """Route the tool set for one PLANNING step (core + ranked subset)."""
@@ -1307,7 +1355,7 @@ class AppContext:
             params.extend([created_at, created_at, message_id])
         params.append(limit + 1)  # 多取一条判断是否还有更早的
         rows = self.conn.execute(
-            "SELECT id, role, content, content_type, created_at, raw FROM messages "
+            "SELECT id, role, content, content_type, created_at, raw, turn_id FROM messages "
             f"WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
@@ -1318,7 +1366,17 @@ class AppContext:
         next_before = (
             _format_history_cursor(page[0]["created_at"], page[0]["id"]) if has_more and page else None
         )
-        return {"messages": page, "has_more": has_more, "next_before": next_before}
+        from agent.storage.tool_records import previews_for_turns
+
+        # 工具记录按 turn_id 归属：工具换话题时整轮会跟着走，用话题过滤在那个瞬间不可靠；
+        # 按时间窗口切又会把分页边界上的调用切丢。预览随消息一起回来，全文另有接口。
+        turn_ids = sorted({str(m.get("turn_id") or "") for m in page} - {""})
+        return {
+            "messages": page,
+            "tool_records": previews_for_turns(self.conn, turn_ids),
+            "has_more": has_more,
+            "next_before": next_before,
+        }
 
     def _ensure_default_topic(self) -> str:
         if getattr(self, "_default_topic_id", None):

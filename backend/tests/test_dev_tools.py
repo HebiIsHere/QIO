@@ -266,3 +266,44 @@ async def test_lifecycle_submit_definition_test_gate(db_conn: sqlite3.Connection
     )
     outcome = await lifecycle.submit_definition(bad, "x")
     assert not outcome.ok and outcome.step == "test"
+
+
+# ---------- 跨进程存活（重启后仍然认得磁盘上的工作区） ----------
+
+def test_workspace_survives_process_restart(tmp_path):
+    """真实事故：应用重启后磁盘上工作区文件一个没少，但 dev_* 一律回
+    「找不到工作区」，工具创建流程断在那里（连续 5 次失败）。"""
+    root = tmp_path / "ws"
+    first = DevWorkspace(root)
+    task = first.create("检索原神测试服爆料")
+    first.write_file(task.id, "tool.py", "def run(**kwargs):\n    return 1")
+
+    reborn = DevWorkspace(root)  # 模拟后端 / 应用重启
+
+    restored = reborn.task(task.id)
+    assert restored is not None
+    assert restored.request == "检索原神测试服爆料"
+    assert reborn.list_files(task.id) == ["request.md", "tool.json", "tool.py"]
+    assert "def run" in reborn.read_file(task.id, "tool.py")
+
+
+def test_workspace_restore_ignores_foreign_entries(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir(parents=True)
+    (root / "not-a-workspace").mkdir()
+    (root / "ws_short").mkdir()
+    (root / "loose.txt").write_text("x", encoding="utf-8")
+    ws = DevWorkspace(root)
+    assert ws.task("not-a-workspace") is None
+    assert ws.task("ws_short") is None
+
+
+def test_workspace_restore_tolerates_missing_request_file(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir(parents=True)
+    (root / "ws_0123456789ab").mkdir()
+    ws = DevWorkspace(root)
+    task = ws.task("ws_0123456789ab")
+    assert task is not None
+    assert task.request == ""
+    assert ws.list_files(task.id) == []

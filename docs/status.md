@@ -585,8 +585,9 @@
   `frontend/src/components/__tests__/ExecutionNarrativeDrawer.test.ts`、
   `frontend/src/components/__tests__/ApprovalModal.test.ts`。
 - **Known limitations：**
-  - 工具卡本身仍**不落库**（沿用既有边界）：历史里抽屉打开看到的是系统生成的调用摘要，
-    不是原始工具输出；只有实时轮次里能展开工具卡详情。
+  - 工具卡本身**不写入 `messages` 表**（沿用既有边界）：历史里抽屉打开看到的是
+    系统生成的调用摘要。2026-09-24 起，工具调用另存于 `tool_records` 表，
+    历史与实时都能按记录 id 展开看完整参数与输出（见本文末「工具调用历史」一节）。
   - 叙事是展示记录，不参与记忆整理判断；它会计入片段的摘要输入但不计入容量。
   - 模型可以不写叙事（silent 是默认）；此时不会出现任何过程文案，只保留工具卡。
   - 叙事在取消/失败的轮次里会留在历史中（如实反映"说明过、没做完"）。
@@ -785,3 +786,79 @@ npm test
 - 进程重启后**排队中的消息**不会自动恢复（队列未持久化）；
 - 旧数据里 `relation_type='unknown'` 的片段没有路径隔离能力；
 - 打包时需附模型许可证与 NOTICE（上游 BAAI/bge-small-zh-v1.5 为 MIT）。
+
+---
+
+## 本轮变更：工具调用历史（2026-09-24）
+
+> 设计：`docs/superpowers/specs/2026-09-24-tool-record-history-design.md`
+> 计划：`docs/superpowers/plans/2026-09-24-tool-record-history.md`
+
+**问题**：工具卡只活在实时事件流里。刷新、重开应用、切话题之后，那一轮"调了哪些工具、
+各自成功还是失败、为什么失败"在对话里就没了；而且实时卡片的展开内容来自
+`TOOL_END.content_preview`（后端只给 200 字），**实时与历史都看不到完整输出**。
+
+**改法**：新增一张专用表 `tool_records`（迁移 20）+ 一个按 id 取全文的接口，
+写入挂在工具的权威终态上，历史与实时两种卡片共用同一条取全文的路径。
+
+| 部分 | 实现 | Tests |
+| --- | --- | --- |
+| 存储 | 迁移 20 建 `tool_records`（打码后的参数与输出全文、状态、一行错误、耗时、截断与"输出不在库里"的原因）；`storage/tool_records.py` 集中写入 / 查询 / 清理 | `test_tool_records.py` |
+| 写入 | `tool/result` 暂存 call 与 result，`tool/end` 拿权威终态后落库（取消与失败要分开）；`AppContext._record_tool_call` 同时写轨迹审计行与历史行，返回记录 id | `test_tool_record_wiring.py`、`test_tool_call_audit.py` |
+| 读取 | 历史接口按 `turn_id` 附带 400 字预览；`GET /api/tool-records/{id}` 取参数与输出全文（记录不存在 404，输出被清理时 `output_missing=1`） | `test_tool_record_api.py` |
+| 设置 | `GET/PUT /api/settings/tools`：`tools.record_outputs`（默认开）与 `tools.output_retention_days`（默认 90，0 = 永久）；启动、后台维护、保存设置三处清理 | `test_settings_tools_api.py` |
+| 前端 | 历史加载把记录按时间插进对应轮次（跨页按 id 去重）；卡片展开时才取全文，显示「参数」与「输出」两段；未保存 / 已清理 / 截断各有文案 | `toolRecordHistory.test.ts`、`MessageItem.test.ts`、`SettingsView.test.ts` |
+
+**保留期口径**：到期只清空**输出全文**（`missing_reason='retention'`），参数、状态、
+失败原因、耗时继续保留 —— 三个月后仍能查到"当时哪个工具失败、为什么失败"。
+
+**边界（与用户确认过的产品决定）**：这些记录**只给人看** —— 不进上下文、不进片段摘要、
+不进检索索引，模型检索不到；子任务内部的工具调用不入表（与"子任务不进主对话"一致）。
+
+**实拍证据**：隔离实例里写两条真实记录后刷新，历史卡片展开可见参数、
+密钥已打码为 `***redacted***`、输出为全文（含第 25 行）；窄窗口（820px）下卡片
+横向不溢出。脚本 `scripts/ui-catalog/tool-history.mjs`，图在
+`frontend/e2e-shots/ui-catalog/toolhist/`。
+
+**已知限制（不粉饰）**
+
+- 打码是规则匹配（`trace/redact.py`）：规则之外的密钥形态仍可能落库；
+  关掉「保存输出全文」是唯一彻底的做法。
+- 库会随时间增长。默认 90 天只清输出；参数与错误永远保留（体积很小），
+  目前没有"整条记录自动删除"的规则。
+- 本功能上线前的历史调用没有记录，不做回填。
+- 单条参数与输出上限 4 万字（与工具自身的输出上限对齐），超出会截断并标注。
+
+---
+
+## 本轮变更：工具失败与静默失败加固（2026-09-24）
+
+> 规格：`docs/superpowers/specs/2026-09-24-tool-failure-hardening-spec.md`
+> 计划：`docs/superpowers/plans/2026-09-24-tool-failure-hardening.md`
+
+起因是一次真实安装实例的运行数据核对：工具调用失败里，一批是设备自身没准备好
+（默认工作区目录不存在、开发工作区重启后不认），一批是等待方式不对（审批窗口被
+工具超时截断、审批结局只有一句「未获批准」），还有一批是原因说不清（抓取把脚本
+渲染的页面报成登录墙、底层异常没有文本时只剩半句）。另有两轮以**空白回答**结束，
+用户在界面上看不到任何解释。逐条修法如下。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 默认工作区根目录不存在 → 相对路径的文件工具全报路径错误 | `ensure_dirs` 一起建工作区目录；沙箱新增 `ensure_root()`，启动与保存设置时各建一次（建不出来只记日志，工具照实报错） | `config.py`、`services/computer.py`、`services/app.py`、`api/server.py` | `test_workspace_root.py` |
+| 应用重启后 `dev_*` 报「找不到工作区」 | `DevWorkspace` 构造时扫盘回填 `ws_*` 工作区（需求正文从 `request.md` 读回） | `tools/dev_workspace.py` | `test_dev_tools.py` |
+| `run_shell` 的审批窗口被 45 秒工具超时截断 | 工具级超时改为「审批窗口 + 执行窗口」；超时/拒绝/取消用 `refusal_reason` 分别表述 | `tools/cmd_tools.py`、`tools/fs_tools.py`、`tools/approval.py`、`tools/registry.py` | `test_cmd_tools.py`、`test_fs_tools.py` |
+| 抓取把脚本渲染的页面报成「需要登录或验证」；异常无文本时错误只有半句 | 登录墙只认明确短语；新增「正文由 JavaScript 生成」这一类；连接失败带地址与原因；异常兜底补 cause 说明 | `tools/web_fetch.py`、`tools/registry.py` | `test_web_fetch_tool.py`、`test_tool_pipeline.py` |
+| 护栏终止 / 预算停止后回答是空串 | 循环结束前若没有任何最终文本，写出一句说明（哪个工具、失败几次、最后一次原因）；取消轮不补 | `core/loop.py` | `test_loop_continue.py` |
+| 失败原因不在轨迹表里 | 迁移 19 给 `tool_calls` 加 `error` 列；循环把失败原因交给审计回调 | `storage/schema.py`、`services/app.py`、`core/loop.py` | `test_tool_call_audit.py` |
+| 工具卡把真正的原因折叠成笼统文案 | 失败结论上限从 60 字放到 120 字，超出才截断并提示展开 | `frontend/src/components/MessageItem.vue` | `MessageItem.test.ts` |
+
+**已知限制（不粉饰）**
+
+- 外部站点仍然会抓不到：站点下架、反爬、必须浏览器渲染的页面依旧失败，改动只让
+  原因准确。
+- 工具调用历史受打码与保留期约束（见文末「工具调用历史」一节）：本功能上线前的
+  历史没有记录，不做回填。
+- 用户主动取消的轮次不补收尾文本（界面已有「已停止」状态行）。
+- `import agent.tools.*` 必须在 `agent.core` 之后：单独导入会触发既有的循环导入
+  错误，因此只有 `agent.tools.*` 作为首个模块的单文件测试无法单独收集（整目录运行
+  不受影响）。本轮未改这条链路。

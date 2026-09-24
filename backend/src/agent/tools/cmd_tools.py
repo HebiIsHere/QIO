@@ -16,9 +16,14 @@ import platform
 import sys
 from typing import Any
 
+from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
 from agent.tools.base import Tool, ToolResult
 
 MAX_OUTPUT_CHARS = 20_000
+# 审批等待发生在工具自己的 `run()` 里，所以工具级超时必须把「用户思考的时间」
+# 也算进去。真实事故：run_shell 的工具超时是 45 秒，而审批给用户 5 分钟 ——
+# 用户还没点确认，工具就已经报「超时（45000 毫秒）」结束了。
+APPROVAL_SLACK_MS = int(DEFAULT_TIMEOUT_SECONDS * 1000)
 
 
 def _clip(text: str) -> str:
@@ -57,7 +62,7 @@ class RunProgramTool(_CmdTool):
         },
         "required": ["program"],
     }
-    timeout_ms = 45_000
+    timeout_ms = 45_000 + APPROVAL_SLACK_MS
 
     async def run(self, **kwargs: Any) -> ToolResult:
         program = str(kwargs.get("program") or "").strip()
@@ -82,7 +87,7 @@ class RunProgramTool(_CmdTool):
             payload.update(describe_computer_action(payload))
             r = await self.approvals.request("computer", payload)
             if r.decision != "approved":
-                return ToolResult(ok=False, error="程序执行未获批准，未执行")
+                return ToolResult(ok=False, error=f"程序执行未获批准：{refusal_reason(r.decision)}")
         return await self._exec(program, args, kwargs.get("cwd"), kwargs.get("timeout", 30))
 
     async def _exec(self, program: str, args: list[str], cwd: Any, timeout: Any) -> ToolResult:
@@ -126,7 +131,7 @@ class RunCmdTool(_CmdTool):
         },
         "required": ["cmd"],
     }
-    timeout_ms = 45_000
+    timeout_ms = 45_000 + APPROVAL_SLACK_MS
 
     async def run(self, **kwargs: Any) -> ToolResult:
         cmd = str(kwargs.get("cmd") or "").strip()
@@ -147,7 +152,7 @@ class RunCmdTool(_CmdTool):
             payload.update(describe_computer_action(payload))
             r = await self.approvals.request("computer", payload)
             if r.decision != "approved":
-                return ToolResult(ok=False, error="命令执行未获批准，未执行")
+                return ToolResult(ok=False, error=f"命令执行未获批准：{refusal_reason(r.decision)}")
         timeout = float(kwargs.get("timeout", 30))
         try:
             proc = await asyncio.create_subprocess_shell(

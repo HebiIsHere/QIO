@@ -111,6 +111,9 @@ class AgentLoop:
         self.trace = trace
         self._model_seq = 0
         self._halted = False
+        # 为什么停下来的人话说明：护栏终止 / 预算停止时记下来，收尾时若一个字
+        # 都没产生就把它当回答写出去（空回答等于静默失败）。
+        self._stop_note: str | None = None
         self._warnings: list[str] = []
         self._notices: list[str] = []
         # 统一用量累计（输入 / 输出 / 总量）：供应商差异已经在 Adapter 层消掉
@@ -125,6 +128,10 @@ class AgentLoop:
         # 每次工具调用的**系统事实**（终态 + 耗时）：工具卡与叙事摘要共用同一份，
         # 批次结束交给 narrative_settler 写进叙事记录。
         self._tool_facts: dict[str, dict] = {}
+        # 工具调用历史：本轮内第几次调用（历史卡片按它排序）+ 待结算的调用/结果
+        self._call_seq: dict[str, int] = {}
+        self._call_seq_next = 0
+        self._pending_tool_io: dict[str, dict] = {}
         # 工具执行的**权威事实**（active + recent terminal）。主 Turn 由 AppContext 注入
         # 进程级实例（这样「刚结束的 Turn」的工具结果在重连后仍查得到）；
         # 单独构造 loop（子任务 / 测试）时自建一份私有的，行为一致但不外泄。
@@ -217,11 +224,16 @@ class AgentLoop:
             tool_name=tool_name,
             error=data.get("error"),
         )
+        pending = self._pending_tool_io.pop(str(call_id or ""), None)
+        record_id = self._record_tool_call(tool_name, data, status, duration_ms, pending)
         if call_id:
+            # 合并写入：`record_id` 由上面刚写下的历史记录给出，整条覆盖会把它丢掉
             self._tool_facts[str(call_id)] = {
+                **(self._tool_facts.get(str(call_id)) or {}),
                 "status": status,
                 "duration_ms": duration_ms,
                 "error": data.get("error"),
+                "record_id": record_id,
             }
         await self._emit(
             EventType.TOOL_END,
@@ -236,25 +248,49 @@ class AgentLoop:
                 "content_preview": data.get("content_preview", ""),
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
+                # 工具调用历史的记录 id：实时卡片靠它取全文（与历史卡片同一条路径）
+                "record_id": record_id,
             },
         )
 
     async def _on_pipeline_result(self, data: dict) -> None:
         result = data.get("result")
-        if self.tool_trace is None or result is None:
+        if result is None:
             return
         call = data.get("call")
         if call is None or getattr(call, "id", None) not in self._dispatched_call_ids:
             return
+        # 终态（含「取消」）在 tool/end 才权威，而完整输出只有这里拿得到 → 先暂存
+        self._pending_tool_io[str(call.id)] = {"call": call, "result": result}
+
+    def _record_tool_call(self, tool_name: str, data: dict, status: str,
+                          duration_ms: int | None, pending: dict | None) -> str | None:
+        """把这次调用交给审计 / 历史回调；返回记录 id（没有回调或失败则 None）。
+
+        审计与历史都不得影响工具结果，也不得让这一轮失败。
+        """
+        if self.tool_trace is None or pending is None:
+            return None
+        call = pending["call"]
+        result = pending["result"]
         try:
-            self.tool_trace({
-                "tool_name": data.get("tool"),
+            record_id = self.tool_trace({
+                "tool_name": tool_name,
                 "arguments": getattr(call, "arguments", {}),
                 "ok": result.ok,
                 "result": result.content,
+                # 失败原因也要进轨迹：只落输出正文时，失败的调用落下来是空白
+                "error": result.error,
+                "call_id": str(data.get("call_id") or ""),
+                "turn_id": self.turn_id,
+                "seq": self._call_seq.get(str(data.get("call_id") or ""), 0),
+                "duration_ms": duration_ms,
+                "status": status,
             })
+            return str(record_id) if record_id else None
         except Exception:  # noqa: BLE001 - tracing must not break the loop
-            logger.warning("tool trace failed for %s", data.get("tool"), exc_info=True)
+            logger.warning("tool trace failed for %s", tool_name, exc_info=True)
+            return None
 
     # -- parallel dispatch & cancellation -----------------------------------
 
@@ -286,6 +322,8 @@ class AgentLoop:
         """
         for c in calls:
             self._dispatched_call_ids.add(c.id)
+            self._call_seq_next += 1
+            self._call_seq[c.id] = self._call_seq_next
         # 先说明、再执行：叙事事件必须排在本次工具事件之前。
         narrative_id = await self._emit_batch_narrative(calls)
         from agent.tools.policy import Concurrency, effective_concurrency
@@ -348,6 +386,7 @@ class AgentLoop:
                     if self.approvals is None:
                         # 没有审批通道（子任务 / 单元测试）：退回旧的终止行为，不静默继续
                         self._halted = True
+                        self._stop_note = self._halt_stop_note(call.name, failures, result.error)
                         self._warn(
                             f"guard: {call.name} 累计失败 {failures} 次，已终止本轮（无审批通道）"
                         )
@@ -373,6 +412,7 @@ class AgentLoop:
                             )
                         else:
                             self._halted = True
+                            self._stop_note = self._halt_stop_note(call.name, failures, result.error)
                             self._warn(
                                 f"guard: {call.name} 累计失败 {failures} 次，用户选择停止本轮"
                             )
@@ -433,6 +473,14 @@ class AgentLoop:
         if self.trace is not None:
             self.trace.warning("loop", message)
 
+    @staticmethod
+    def _halt_stop_note(tool: str, failures: int, error: str | None) -> str:
+        """护栏终止时的收尾文本：哪个工具、失败几次、最后一次为什么失败。"""
+        return (
+            f"本轮没有产生回答：工具 {tool} 连续失败 {failures} 次后已停止。"
+            f"最后一次失败原因：{error or '（没有更多说明）'}。"
+        )
+
     # -- main entry -------------------------------------------------------
 
     async def run(self, user_message: str) -> TurnResult:
@@ -465,14 +513,15 @@ class AgentLoop:
                 break
 
             if self.budget.exhausted and not self.force_continue:
+                reason = (
+                    f"迭代次数达到上限（{self.budget.used_iterations}/{self.budget.max_iterations}）"
+                    if self.budget.used_iterations >= self.budget.max_iterations
+                    else f"输出 token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
+                )
                 if self.approvals is None:
                     # 无审批服务：旧的静默停止行为
                     phase = LoopPhase.STOPPED
-                    reason = (
-                        f"迭代次数达到上限（{self.budget.used_iterations}/{self.budget.max_iterations}）"
-                        if self.budget.used_iterations >= self.budget.max_iterations
-                        else f"输出 token 预算耗尽（{self.budget.used_tokens}/{self.budget.token_budget}）"
-                    )
+                    self._stop_note = f"本轮没有产生回答：{reason}，已停止。"
                     self._warn(f"本轮提前结束：{reason}")
                     await self._emit(
                         EventType.WARNING,
@@ -495,6 +544,7 @@ class AgentLoop:
                     )
                     continue
                 phase = LoopPhase.STOPPED
+                self._stop_note = f"本轮没有产生回答：{reason}，按你的选择停下来了。"
                 self._warn("预算耗尽，用户选择停止")
                 break
 
@@ -565,6 +615,10 @@ class AgentLoop:
         cancelled = self.is_cancelled()
         if cancelled:
             phase = LoopPhase.STOPPED
+        if not cancelled and not (final_content or "").strip():
+            # 静默失败收口：护栏终止 / 预算停止 / 模型什么都没说，都必须留下人话。
+            # 取消是用户自己的动作，界面已有「已停止」状态行，这里不补文本。
+            final_content = self._stop_note or "本轮没有产生回答，也没有给出原因。"
         usage = {
             "iterations": self.budget.used_iterations,
             # 向后兼容字段：`tokens` 一直是「输出 token」（而不是总量）

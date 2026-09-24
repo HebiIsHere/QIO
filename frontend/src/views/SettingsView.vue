@@ -683,6 +683,54 @@ function onPermissionModeSelect(v: string) {
   void saveComputerSettings();
 }
 
+/* ---------------- 工具调用历史 ---------------- */
+const toolRecordOutputs = ref(true);
+const toolOutputRetentionDays = ref(90);
+
+async function loadToolHistorySettings() {
+  try {
+    const s = await api.getToolHistorySettings();
+    toolRecordOutputs.value = s.record_outputs;
+    toolOutputRetentionDays.value = s.output_retention_days;
+  } catch (e) {
+    setNotice("tools", "err", errText("加载工具调用历史设置", e));
+  }
+}
+
+async function saveToolHistorySettings() {
+  clearNotice("tools");
+  const seq = nextSaveSeq("tools");
+  beginSave("tools", "正在保存工具调用历史设置…");
+  try {
+    const r = await api.updateToolHistorySettings({
+      record_outputs: toolRecordOutputs.value,
+      output_retention_days: toolOutputRetentionDays.value,
+    });
+    if (!isLatestSave("tools", seq)) return;
+    toolRecordOutputs.value = r.record_outputs;
+    toolOutputRetentionDays.value = r.output_retention_days;
+    setNotice(
+      "tools",
+      "ok",
+      r.purged
+        ? `已保存；按保留期清理了 ${r.purged} 条旧输出（参数与失败原因仍在）`
+        : "已保存",
+    );
+  } catch (e) {
+    if (!isLatestSave("tools", seq)) return;
+    setNotice("tools", "err", errText("保存工具调用历史设置", e));
+  }
+}
+
+function toggleToolRecordOutputs() {
+  toolRecordOutputs.value = !toolRecordOutputs.value;
+  void saveToolHistorySettings();
+}
+
+function onToolRetentionInput(v: number | null) {
+  toolOutputRetentionDays.value = v ?? 0;
+}
+
 /* ---------------- 数据与维护 ---------------- */
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
@@ -765,6 +813,8 @@ const draftFields = {
   searchKeyless,
   computerRootDir,
   computerPermissionMode,
+  toolRecordOutputs,
+  toolOutputRetentionDays,
   maintenanceEnabled,
   maintenanceInterval,
 } as unknown as Record<string, Ref<unknown>>;
@@ -799,6 +849,7 @@ onMounted(async () => {
     loadMaintenanceSettings(),
     loadSearchSettings(),
     loadComputerSettings(),
+    loadToolHistorySettings(),
     loadLoopSettings(),
     ui.load(),
   ]);
@@ -1250,6 +1301,52 @@ watch(activeTab, async () => {
             <p v-if="notices.tools" class="msg" :class="notices.tools.kind" role="status">
               {{ notices.tools.text }}
             </p>
+          </section>
+
+          <section class="sec">
+            <h2>工具调用历史</h2>
+            <p class="desc">
+              保存每次工具调用的参数与输出，供你刷新或重开应用后回看（模型不会读到这些内容）。
+            </p>
+            <p class="mode-hint mono">修改后自动保存</p>
+            <div class="pref">
+              <div class="txt">
+                <div class="t">保存输出全文</div>
+                <div class="d">关闭后仍保留参数、状态、失败原因与耗时，只是没有完整输出</div>
+              </div>
+              <div class="ctl">
+                <button
+                  type="button"
+                  class="qio-switch"
+                  :class="{ on: toolRecordOutputs }"
+                  role="switch"
+                  :aria-checked="toolRecordOutputs"
+                  aria-label="保存工具输出全文开关"
+                  @click="toggleToolRecordOutputs"
+                ></button>
+              </div>
+            </div>
+            <div class="pref">
+              <div class="txt">
+                <div class="t">输出保留天数</div>
+                <div class="d">
+                  到期只清空输出全文，参数与失败原因继续保留；填 0 表示永久保留
+                </div>
+              </div>
+              <div class="ctl">
+                <QNumber
+                  class="num"
+                  :model-value="toolOutputRetentionDays"
+                  :min="0"
+                  :max="3650"
+                  mono
+                  label="输出保留（天）"
+                  unit="天"
+                  @update:model-value="onToolRetentionInput"
+                  @change="saveToolHistorySettings"
+                />
+              </div>
+            </div>
           </section>
         </div>
 

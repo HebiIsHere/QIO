@@ -19,10 +19,24 @@ from agent.tools.spec import ToolDefinition
 
 MAX_FILE_SIZE = 200_000
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9_.-]+$")
+# 工作区 id 的形状（`DevWorkspace.create` 生成）：扫盘回填时只认它
+_TASK_ID = re.compile(r"^ws_[0-9a-f]{12}$")
+_REQUEST_MARKER = "# 开发需求"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_request(task_dir: Path) -> str:
+    """读回工作区的需求正文（写盘时带了「# 开发需求」文件头，这里去掉）。"""
+    try:
+        text = (task_dir / "request.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if text.lstrip().startswith(_REQUEST_MARKER):
+        text = text.lstrip()[len(_REQUEST_MARKER):]
+    return text.strip()
 
 
 @dataclass
@@ -42,6 +56,32 @@ class DevWorkspace:
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._tasks: dict[str, DevTask] = {}
+        self._restore()
+
+    def _restore(self) -> None:
+        """把磁盘上已有的工作区登记回内存。
+
+        以前只有内存字典：应用一重启，磁盘上的 ws_* 目录还在（文件一个没少），
+        但 dev_* 工具一律回「找不到工作区」，工具创建流程就断在那里 ——
+        模型只会拿着同一个 id 反复重试（真实事故：连续 5 次失败）。
+        """
+        try:
+            entries = sorted(self.root_dir.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir() or not _TASK_ID.match(entry.name):
+                continue
+            try:
+                created = datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc)
+            except OSError:
+                created = datetime.now(timezone.utc)
+            self._tasks[entry.name] = DevTask(
+                id=entry.name,
+                request=_read_request(entry),
+                dir=entry,
+                created_at=created.isoformat(),
+            )
 
     # -- lifecycle --------------------------------------------------------
 

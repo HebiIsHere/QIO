@@ -173,7 +173,7 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     logging.getLogger(__name__).warning("closing db failed", exc_info=True)
 
-    app = FastAPI(title="QIO", version="0.1.7", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.1.8", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
     instance_id = f"qio_{uuid.uuid4().hex[:16]}"
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，
@@ -588,12 +588,48 @@ def create_app(
         store = ctx.settings_store
         if "root_dir" in body:
             store.set("computer.root_dir", str(body.get("root_dir") or ""))
+            # 新根目录同样要就位：否则用户填了一个还不存在的目录，之后每个相对
+            # 路径的文件调用都会以「系统找不到指定的路径」结束。
+            ctx.computer.ensure_root()
         if "permission_mode" in body:
             mode = str(body["permission_mode"])
             if mode not in PERMISSION_MODES:
                 raise HTTPException(status_code=400, detail="invalid permission_mode")
             store.set("computer.permission_mode", mode)
         return await get_computer_settings()
+
+    @app.get("/api/settings/tools")
+    async def get_tool_history_settings() -> dict:
+        """工具调用历史的两个设置：是否保存输出全文、输出保留多少天。"""
+        from agent.storage.tool_records import DEFAULT_RETENTION_DAYS
+
+        store = ctx.settings_store
+        days = store.get_int("tools.output_retention_days", DEFAULT_RETENTION_DAYS)
+        return {
+            "record_outputs": store.get_bool("tools.record_outputs", True),
+            "output_retention_days": max(0, days),
+        }
+
+    @app.put("/api/settings/tools")
+    async def update_tool_history_settings(body: dict) -> dict:
+        from agent.storage.tool_records import MAX_RETENTION_DAYS
+
+        store = ctx.settings_store
+        if "record_outputs" in body:
+            store.set("tools.record_outputs", "1" if body.get("record_outputs") else "0")
+        if "output_retention_days" in body:
+            try:
+                days = int(body["output_retention_days"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="invalid output_retention_days")
+            # 超出范围按边界收敛（与搜索设置的既有做法一致）
+            store.set(
+                "tools.output_retention_days", str(max(0, min(days, MAX_RETENTION_DAYS)))
+            )
+        payload = await get_tool_history_settings()
+        # 保存即生效：把天数调小要马上清掉过期输出；purged 是这次清掉的条数
+        payload["purged"] = ctx.prune_tool_outputs()
+        return payload
 
     # -- anchor -------------------------------------------------------------
 
@@ -825,6 +861,8 @@ def create_app(
             "topic_name": node.name if node else topic_id,
             "anchor_fragment": ctx.anchor_fragment_info(),
             "messages": page["messages"],
+            # 这一页涉及的工具调用（预览；全文走 /api/tool-records/{id}）
+            "tool_records": page["tool_records"],
             "has_more": page["has_more"],
             "next_before": page["next_before"],
         }
@@ -839,6 +877,20 @@ def create_app(
             target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
         )
         return {"topic_id": target, **page}
+
+    @app.get("/api/tool-records/{record_id}")
+    async def tool_record(record_id: str) -> dict:
+        """按 id 取一次工具调用的全文（参数 + 输出）。
+
+        工具调用历史只服务用户复盘：不进上下文、不进摘要、不进检索索引。
+        记录不存在返回 404；输出被保留期清掉时记录仍在（output_missing=1）。
+        """
+        from agent.storage.tool_records import get_record
+
+        record = get_record(ctx.conn, record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="tool record not found")
+        return record
 
     @app.get("/api/graph/topics")
     async def list_topics() -> dict:

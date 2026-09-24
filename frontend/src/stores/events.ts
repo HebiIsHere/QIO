@@ -358,6 +358,8 @@ export const useEventStore = defineStore("events", {
             (d.presentation as ToolPresentation | null) ?? null,
             typeof d.duration_ms === "number" ? d.duration_ms : undefined,
             (d.status as ToolStatus | undefined) ?? null,
+            // 工具调用历史的记录 id：卡片展开时按它取全文（实时与历史同一条路径）
+            (d.record_id as string | null) ?? null,
           );
           if (session.turnRunning) {
             session.activity = session.turnPhase === "generating" ? "generating" : "waiting";

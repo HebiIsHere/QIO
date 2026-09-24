@@ -543,6 +543,46 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             """,
         ],
     ),
+    (
+        19,
+        [
+            # 轨迹表以前只落「结果正文」，失败的调用落下来是一片空白 ——
+            # 事后无法回答「它当时为什么失败」。失败原因必须有自己的列。
+            "ALTER TABLE tool_calls ADD COLUMN error TEXT",
+        ],
+    ),
+    (
+        20,
+        [
+            # 工具调用历史：用户能回看的完整记录（打码后的参数与输出全文）。
+            # 与轨迹表分工不同 —— 轨迹是审计摘要且可被用户关掉，这里是复盘用的正文。
+            """
+            CREATE TABLE IF NOT EXISTS tool_records (
+                id             TEXT PRIMARY KEY,
+                turn_id        TEXT NOT NULL,
+                topic_id       TEXT,
+                call_id        TEXT NOT NULL DEFAULT '',
+                seq            INTEGER NOT NULL DEFAULT 0,
+                tool_name      TEXT NOT NULL,
+                arguments      TEXT NOT NULL DEFAULT '{}',
+                output         TEXT NOT NULL DEFAULT '',
+                status         TEXT NOT NULL DEFAULT 'success',
+                error          TEXT NOT NULL DEFAULT '',
+                duration_ms    INTEGER,
+                truncated      INTEGER NOT NULL DEFAULT 0,
+                output_missing INTEGER NOT NULL DEFAULT 0,
+                missing_reason TEXT NOT NULL DEFAULT '',
+                created_at     TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_tool_records_turn ON tool_records(turn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tool_records_created ON tool_records(created_at)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_records_call
+                ON tool_records(turn_id, call_id) WHERE call_id <> ''
+            """,
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

@@ -46,7 +46,12 @@ class _FsTool(Tool):
             described.update(describe_computer_action(payload))
             r = await self.approvals.request("computer", described)
             if r.decision != "approved":
-                return ToolResult(ok=False, error=f"{payload.get('action')} 未获批准，未执行")
+                from agent.tools.approval import refusal_reason
+
+                return ToolResult(
+                    ok=False,
+                    error=f"{payload.get('action')} 未获批准：{refusal_reason(r.decision)}",
+                )
         return None
 
 

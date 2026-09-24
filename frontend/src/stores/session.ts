@@ -1,5 +1,5 @@
 ﻿import { defineStore } from "pinia";
-import { api } from "../services/api";
+import { api, type ToolRecordPreview } from "../services/api";
 
 export interface ToolPresentation {
   title?: string;
@@ -158,6 +158,22 @@ function isInternalToolTurn(turnId: unknown): boolean {
   return typeof turnId === "string" && turnId.startsWith("subagent:");
 }
 
+/**
+ * 工具参数 → 可读文本。
+ *
+ * 取全文接口给的是原样 JSON（已打码）；对象就缩进格式化，字符串直接显示，
+ * 空值不编造内容。
+ */
+function formatToolArguments(args: unknown): string {
+  if (args === null || args === undefined) return "";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return String(args);
+  }
+}
+
 /** 高影响知识候选（对话内确认卡）。 */
 export interface KnowledgeCandidate {
   knowledgeId: string;
@@ -260,6 +276,24 @@ export interface StreamMessage {
   createPhase?: string;
   /** 这条创建流程在造哪个工具（拿不到就先不显示） */
   createdToolName?: string;
+  /**
+   * 工具调用历史的记录 id（实时与历史两种卡片都有）：
+   * 展开卡片时按它取参数与输出全文 —— 实时与历史走的是同一条路径。
+   */
+  toolRecordId?: string;
+  /** 已取到全文（避免重复请求） */
+  toolRecordLoaded?: boolean;
+  toolRecordLoading?: boolean;
+  /** 取全文失败的原因（可重试） */
+  toolRecordError?: string | null;
+  /** 参数（格式化后的 JSON 文本） */
+  toolArgs?: string;
+  /** 输出被截断（单条上限 4 万字） */
+  toolTruncated?: boolean;
+  /** 库里没有输出正文 */
+  toolOutputMissing?: boolean;
+  /** 为什么没有：'setting'（关闭了保存全文） / 'retention'（按保留期清掉） */
+  toolMissingReason?: string;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
   /** 正在流式输出（打字机逐字）的消息；落定后为 undefined */
@@ -1035,6 +1069,7 @@ export const useSessionStore = defineStore("session", {
       presentation?: ToolPresentation | null,
       durationMs?: number,
       status?: ToolStatus | null,
+      recordId?: string | null,
     ) {
       const key = callId || toolName;
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
@@ -1067,6 +1102,8 @@ export const useSessionStore = defineStore("session", {
         if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
           target.toolDurationMs = durationMs;
         }
+        // 工具调用历史的记录 id：卡片展开时靠它取参数与输出全文
+        if (recordId) target.toolRecordId = recordId;
         return;
       }
       this.pushMessage({
@@ -1081,6 +1118,7 @@ export const useSessionStore = defineStore("session", {
         toolRunning: false,
         ...(key ? { callId: key } : {}),
         ...(typeof durationMs === "number" ? { toolDurationMs: durationMs } : {}),
+        ...(recordId ? { toolRecordId: recordId } : {}),
       });
     },
     /**
@@ -1268,11 +1306,92 @@ export const useSessionStore = defineStore("session", {
         this.historyHasMore = Boolean(ctx.has_more);
         this.historyCursor = ctx.next_before ?? null;
         this.historyOlderLoading = false;
-        this.messages = ctx.messages.map((m) => this._historyMessage(m));
+        this.messages = this._mergeHistory(ctx.messages, ctx.tool_records ?? []);
         this.history = { status: "ready", error: null };
       } catch (e) {
         // 读不到 ≠ 没有：保留已经加载过的消息，只把失败状态交给界面显示与重试
         this.history = { status: "error", error: (e as Error).message };
+      }
+    },
+    /**
+     * 把这一页的消息与工具调用记录合成一条时间线。
+     *
+     * 工具记录按 `created_at` 插进消息之间，所以历史里的顺序与当时一致：
+     * 你的话 → 过程说明行 → 工具卡 → 助手回答。跨页边界时同一条记录可能被
+     * 两页各带一次，按记录 id 去重后不丢不重。
+     */
+    _mergeHistory(
+      messages: {
+        id: string;
+        role: string;
+        content: string;
+        content_type: string;
+        created_at: string;
+        raw?: string;
+      }[],
+      records: ToolRecordPreview[],
+    ): StreamMessage[] {
+      const items: StreamMessage[] = messages.map((m) => this._historyMessage(m));
+      const known = new Set(items.map((i) => i.toolRecordId).filter(Boolean) as string[]);
+      for (const record of records) {
+        if (known.has(record.id)) continue;
+        known.add(record.id);
+        items.push(this._historyToolRecord(record));
+      }
+      // 时间升序；同一时刻保持原有先后（V8 的 sort 是稳定的）
+      items.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      return items;
+    },
+    /** 一条工具调用记录 → 消息流里的工具卡（预览态；展开时才取全文） */
+    _historyToolRecord(r: ToolRecordPreview): StreamMessage {
+      return {
+        id: `toolrec_${r.id}`,
+        role: "tool",
+        content: r.preview,
+        contentType: "text",
+        createdAt: r.created_at,
+        topicName: this.topicName,
+        fresh: false,
+        toolName: r.tool_name,
+        callId: r.call_id,
+        toolRecordId: r.id,
+        toolRecordLoaded: false,
+        toolStatus: (r.status as ToolStatus) ?? "success",
+        toolOk: r.status === "success",
+        toolError: r.error || null,
+        toolDurationMs: r.duration_ms ?? undefined,
+        toolTruncated: r.truncated,
+        toolOutputMissing: r.output_missing,
+        toolMissingReason: r.missing_reason,
+        presentation: { title: r.title, tool: r.tool_name },
+      };
+    },
+    /**
+     * 取一次工具调用的全文（参数 + 输出）。
+     *
+     * 实时与历史两种卡片共用这一条路径：库里只有预览时展开才调，
+     * 写回同一条消息（原位更新，不新起一张卡）。输出被清理 / 没保存时
+     * 不清空已有的预览内容 —— 预览也是真实内容。
+     */
+    async loadToolRecord(messageId: string) {
+      const m = this.messages.find((x) => x.id === messageId);
+      if (!m || !m.toolRecordId || m.toolRecordLoaded || m.toolRecordLoading) return;
+      m.toolRecordLoading = true;
+      m.toolRecordError = null;
+      try {
+        const record = await api.getToolRecord(m.toolRecordId);
+        m.toolRecordLoaded = true;
+        m.toolArgs = formatToolArguments(record.arguments);
+        m.toolTruncated = Boolean(record.truncated);
+        m.toolOutputMissing = Boolean(record.output_missing);
+        m.toolMissingReason = record.missing_reason || "";
+        if (!record.output_missing && record.output) {
+          m.content = record.output;
+        }
+      } catch (e) {
+        m.toolRecordError = (e as Error).message || "读取失败";
+      } finally {
+        m.toolRecordLoading = false;
       }
     },
     /** 历史消息 → 消息流条目（历史不走入场动画，也不带 queued 之类的临时标记） */
@@ -1329,7 +1448,19 @@ export const useSessionStore = defineStore("session", {
           HISTORY_PAGE_SIZE,
         );
         const known = new Set(this.messages.map((m) => m.id));
-        const older = page.messages.filter((m) => !known.has(m.id)).map((m) => this._historyMessage(m));
+        const knownRecords = new Set(
+          this.messages.map((m) => m.toolRecordId).filter(Boolean) as string[],
+        );
+        const older = page.messages
+          .filter((m) => !known.has(m.id))
+          .map((m) => this._historyMessage(m));
+        // 工具记录同样按 id 去重：跨页边界时同一轮可能被两页各带一次
+        for (const record of page.tool_records ?? []) {
+          if (knownRecords.has(record.id)) continue;
+          knownRecords.add(record.id);
+          older.push(this._historyToolRecord(record));
+        }
+        older.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
         this.messages = [...older, ...this.messages];
         this.historyHasMore = Boolean(page.has_more);
         this.historyCursor = page.next_before ?? null;

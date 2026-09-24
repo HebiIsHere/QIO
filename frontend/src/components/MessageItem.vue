@@ -104,15 +104,19 @@ const durationText = computed(() => {
   return `${(ms / 1000).toFixed(1)}s`;
 });
 
-/** 工具失败时卡片上的一行结论（完整错误仍在折叠详情里） */
+/**
+ * 工具失败时卡片上的一行结论（完整错误仍在折叠详情里）。
+ *
+ * 上限从 60 放到 120 字：60 字会吃掉「列目录失败：[WinError 3] …」这类真正
+ * 有信息量的原因，用户只看到一句笼统的「这次执行没有成功」，等于又静默了一次。
+ */
+const FAILURE_LINE_LIMIT = 120;
 const toolFailureLine = computed(() => {
   if (!toolFailed.value) return "";
   const raw = (props.message.toolError ?? "").trim();
   if (raw) {
-    if (raw.includes("未执行")) return raw;
-    if (raw.includes("取消")) return raw;
-    if (raw.includes("超时")) return raw;
-    return raw.length <= 60 ? raw : "这次执行没有成功，展开可看原因";
+    if (raw.length <= FAILURE_LINE_LIMIT) return raw;
+    return `${raw.slice(0, FAILURE_LINE_LIMIT)}…（展开可看完整原因）`;
   }
   if (toolState.value === "cancelled") return "这次执行已取消";
   if (toolState.value === "unknown") return "结果未收到";
@@ -142,6 +146,32 @@ const rawToolName = computed(
 const toolSummary = computed(
   () => props.message.presentation?.summary || props.message.content || "",
 );
+
+/** 工具调用历史的全文（参数 + 输出）：展开时才去取，避免历史页一次带上几十万字 */
+const toolArgsText = computed(() => props.message.toolArgs ?? "");
+const toolRecordLoading = computed(() => props.message.toolRecordLoading === true);
+const toolRecordError = computed(() => props.message.toolRecordError ?? "");
+/** 库里没有输出正文时，说清是「没保存」还是「按保留期清掉了」 */
+const toolMissingNote = computed(() => {
+  if (!props.message.toolOutputMissing) return "";
+  return props.message.toolMissingReason === "setting"
+    ? "完整输出未保存（设置里关闭了「保存工具输出全文」）"
+    : "完整输出已按保留设置清理";
+});
+
+/**
+ * 展开卡片：首次展开时按记录 id 取全文（参数 + 输出）。
+ *
+ * 实时与历史两种卡片走同一条路径 —— 实时事件只带 200 字预览，
+ * 历史预览 400 字，全文都只在库里。
+ */
+function toggleTool() {
+  open.value = !open.value;
+  if (!open.value) return;
+  const m = props.message;
+  if (!m.toolRecordId || m.toolRecordLoaded || m.toolRecordLoading) return;
+  void session.loadToolRecord(m.id);
+}
 
 function formatTime(iso?: string): string {
   if (!iso) return "";
@@ -189,7 +219,7 @@ const metaText = computed(() => {
         <button
           class="tool-head"
           type="button"
-          @click="open = !open"
+          @click="toggleTool"
           :aria-expanded="open"
           :title="open ? '收起' : '展开'"
         >
@@ -218,7 +248,28 @@ const metaText = computed(() => {
         <div class="tool-detail-wrap" :class="{ open }">
           <div class="tool-detail-clip">
             <div class="tool-detail">
-              <pre>{{ toolSummary }}</pre>
+              <!-- 参数与输出分开：参数是「它想做什么」，输出是「结果是什么」 -->
+              <div v-if="toolArgsText" class="tool-detail-sec">
+                <div class="sec-label mono">参数</div>
+                <pre>{{ toolArgsText }}</pre>
+              </div>
+              <div class="tool-detail-sec">
+                <div class="sec-label mono">输出</div>
+                <pre>{{ toolSummary }}</pre>
+              </div>
+              <p v-if="toolRecordLoading" class="tool-note mono" role="status">正在读取完整输出…</p>
+              <p v-else-if="toolRecordError" class="tool-note err" role="status">
+                {{ toolRecordError }}
+                <button class="link" type="button" @click="session.loadToolRecord(message.id)">
+                  重试
+                </button>
+              </p>
+              <p v-else-if="toolMissingNote" class="tool-note mono" role="status">
+                {{ toolMissingNote }}
+              </p>
+              <p v-else-if="message.toolTruncated" class="tool-note mono" role="status">
+                输出过长，已截断（单条上限 4 万字）
+              </p>
               <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
             </div>
           </div>
@@ -483,6 +534,25 @@ const metaText = computed(() => {
   padding: 0 12px 8px;
   color: var(--danger);
   font-size: 12px;
+  /* 失败原因可能是一整条路径（没有空格可断行）：必须允许任意位置折行，
+    否则窄窗口下会把卡片撑出横向溢出。 */
+  overflow-wrap: anywhere;
+}
+.tool-detail-sec + .tool-detail-sec {
+  margin-top: 8px;
+}
+.sec-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+}
+.tool-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.tool-note.err {
+  color: var(--danger);
 }
 .tool-time {
   margin-left: auto;

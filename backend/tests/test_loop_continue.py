@@ -125,3 +125,23 @@ def test_tokens_counted_from_completion_tokens():
     asyncio.run(loop.run("go"))
     # 每轮 completion_tokens=1；已用过至少 1 轮
     assert loop.budget.used_tokens >= 1
+
+
+def test_guard_halt_never_leaves_an_empty_answer():
+    """真实事故：护栏终止后回答是空串，界面上只剩一个没有内容的回答，
+    用户不知道发生了什么，事后也无法复盘。"""
+    guard = RunawayGuard()
+    loop = _loop(_ScriptedAdapter("boom"), guard=guard)
+    loop.budget = IterationBudget(max_iterations=50, token_budget=0)
+    result = asyncio.run(loop.run("go"))
+    assert (result.final_content or "").strip()
+    assert "boom" in result.final_content
+    assert "nope" in result.final_content  # 带上最后一次失败原因
+
+
+def test_budget_stop_never_leaves_an_empty_answer():
+    approvals = _ApproveThenReject()
+    loop = _loop(_ScriptedAdapter(), approvals=approvals)
+    result = asyncio.run(loop.run("go"))
+    assert (result.final_content or "").strip()
+    assert "达到上限" in result.final_content

@@ -130,6 +130,27 @@ async def test_fs_write_rejected(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision, expected",
+    [
+        ("timeout", "审批等待超时"),
+        ("rejected", "你点了拒绝"),
+        ("cancelled", "本轮已停止"),
+    ],
+)
+async def test_fs_approval_outcome_is_specific(tmp_path, decision, expected):
+    """真实事故：一轮里 6 次审批都是 5 分钟自动过期，但文案写成「未获批准，未执行」，
+    读起来像是用户拒绝了 —— 三种结局必须分开说。"""
+    t = FsReadTool()
+    t.computer = _FakeSandbox("approve")
+    t.approvals = _FakeApproval(decision=decision)
+    res = await t.run(path=str(tmp_path / "x.txt"))
+    assert not res.ok
+    assert "未获批准" in res.error
+    assert expected in res.error
+
+
+@pytest.mark.asyncio
 async def test_fs_patch_edits_in_place(tmp_path):
     target = tmp_path / "d.txt"
     target.write_text("line1\nline2\n", encoding="utf-8")

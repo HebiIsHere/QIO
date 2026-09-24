@@ -61,6 +61,43 @@ export interface ComputerSettings {
   permission_mode: string;
 }
 
+/**
+ * 工具调用历史（历史接口随消息带回来的预览，不含输出全文）。
+ * 全文走 `getToolRecord(id)`，只在用户展开某张卡片时才取。
+ */
+export interface ToolRecordPreview {
+  id: string;
+  turn_id: string;
+  call_id: string;
+  seq: number;
+  tool_name: string;
+  /** 中文展示名（后端按工具名现算） */
+  title: string;
+  status: string;
+  error: string;
+  duration_ms: number | null;
+  truncated: boolean;
+  output_missing: boolean;
+  /** '' | 'setting'（关闭了保存全文） | 'retention'（按保留期清掉） */
+  missing_reason: string;
+  /** 库里实际存下的字符数 */
+  output_chars: number;
+  preview: string;
+  created_at: string;
+}
+
+export interface ToolRecordFull extends ToolRecordPreview {
+  arguments: unknown;
+  output: string;
+}
+
+export interface ToolHistorySettings {
+  record_outputs: boolean;
+  output_retention_days: number;
+  /** 保存设置时顺带清掉的输出条数（只有 PUT 会带） */
+  purged?: number;
+}
+
 export interface LoopSettings {
   max_iterations: number;
   output_token_budget: number;
@@ -382,9 +419,12 @@ export const api = {
         content: string;
         content_type: string;
         created_at: string;
+        turn_id?: string | null;
         /** 叙事行的系统元数据（JSON 字符串）：kind 与系统生成的调用摘要 */
         raw?: string;
       }[];
+      /** 这一页涉及的工具调用（预览；全文按 id 取） */
+      tool_records?: ToolRecordPreview[];
       /** 还有更早的历史可以加载 */
       has_more?: boolean;
       /** 取更早历史时传回的游标 */
@@ -403,8 +443,10 @@ export const api = {
         content: string;
         content_type: string;
         created_at: string;
+        turn_id?: string | null;
         raw?: string;
       }[];
+      tool_records?: ToolRecordPreview[];
       has_more: boolean;
       next_before: string | null;
     }>(
@@ -585,6 +627,18 @@ export const api = {
     request<ComputerSettings>("/api/settings/computer"),
   updateComputerSettings: (body: Record<string, unknown>) =>
     request<ComputerSettings>("/api/settings/computer", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  /** 工具调用历史：一次调用的全文（参数 + 输出） */
+  getToolRecord: (recordId: string) =>
+    request<ToolRecordFull>(`/api/tool-records/${encodeURIComponent(recordId)}`),
+  getToolHistorySettings: () => request<ToolHistorySettings>("/api/settings/tools"),
+  updateToolHistorySettings: (body: {
+    record_outputs?: boolean;
+    output_retention_days?: number;
+  }) =>
+    request<ToolHistorySettings>("/api/settings/tools", {
       method: "PUT",
       body: JSON.stringify(body),
     }),

@@ -45,6 +45,21 @@ def current_narrative() -> Narrative | None:
     return _current_narrative.get()
 
 
+def _exception_text(exc: BaseException) -> str:
+    """把异常写成「类型 + 说明」；说明为空时给出可查的替代信息。
+
+    以前是 `f"{type(exc).__name__}: {exc}"`：底层异常没有文本时只剩
+    「ConnectError: 」这半句（真实事故里出现 22 次），模型和用户都读不出下一步。
+    """
+    detail = str(exc).strip()
+    if not detail:
+        cause = exc.__cause__ or exc.__context__
+        detail = str(cause).strip() if cause is not None else ""
+    if not detail:
+        detail = "（底层错误没有给出说明）"
+    return f"{type(exc).__name__}: {detail}"
+
+
 class ToolRegistry:
     def __init__(self, approvals=None, internal_bus: Any = None, services: Any = None) -> None:
         # 惰性导入：agent.core.events_bus 会触发 agent.core 包初始化（含 loop），
@@ -309,8 +324,12 @@ class ToolRegistry:
         )
         if decision.decision == "approved":
             return await next(ctx)
-        reason = "用户已拒绝" if decision.decision == "rejected" else "审批等待超时"
-        return ToolResult(ok=False, error=f"工具「{tool.name}」未执行（{reason}）")
+        from agent.tools.approval import refusal_reason
+
+        return ToolResult(
+            ok=False,
+            error=f"工具「{tool.name}」未执行（{refusal_reason(decision.decision)}）",
+        )
 
     async def _default_execute(self, ctx: dict, *, next: Callable[..., Any]) -> ToolResult:
         tool = ctx["tool"]
@@ -330,4 +349,4 @@ class ToolRegistry:
             raise
         except Exception as exc:  # noqa: BLE001 - isolation boundary
             logger.warning("tool %s failed: %s", tool.name, exc)
-            return ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+            return ToolResult(ok=False, error=_exception_text(exc))

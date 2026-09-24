@@ -27,6 +27,28 @@ def make_call(name: str = "echo", arguments: dict | None = None) -> ToolCall:
     return ToolCall(id="c1", name=name, arguments=arguments or {})
 
 
+class NoMessageTool(Tool):
+    """抛出一个没有任何文字说明的异常（真实事故：错误信息只剩「ConnectError: 」）。"""
+
+    name = "nomsg"
+    description = "raises without message"
+    parameters = {"type": "object", "properties": {}}
+
+    async def run(self, **kwargs):
+        raise RuntimeError("")
+
+
+class EmptyWithCauseTool(Tool):
+    """异常自己没有文字，但 cause 里有真实原因（DNS / 连接层常见）。"""
+
+    name = "cause"
+    description = "raises with cause only"
+    parameters = {"type": "object", "properties": {}}
+
+    async def run(self, **kwargs):
+        raise RuntimeError("") from OSError(11001, "getaddrinfo failed")
+
+
 class EchoTool(Tool):
     name = "echo"
     description = "echo"
@@ -65,6 +87,25 @@ async def test_unknown_tool_fails_isolated():
     result = await reg.execute(make_call("ghost"))
     assert not result.ok
     assert "ghost" in result.error
+
+
+async def test_empty_exception_message_still_explains():
+    """真实事故：错误信息是「ConnectError: 」，冒号后面什么都没有（22 次）。"""
+    reg = ToolRegistry()
+    reg.register(NoMessageTool())
+    result = await reg.execute(make_call("nomsg"))
+    assert not result.ok
+    assert result.error.startswith("RuntimeError")
+    assert "没有给出说明" in result.error
+
+
+async def test_exception_cause_is_shown_when_message_is_empty():
+    """异常自己没有文字时，退一步用 cause 里的真实原因（DNS / 连接层常见）。"""
+    reg = ToolRegistry()
+    reg.register(EmptyWithCauseTool())
+    result = await reg.execute(make_call("cause"))
+    assert not result.ok
+    assert "getaddrinfo failed" in result.error
 
 
 async def test_pre_execute_reject_short_circuits():
