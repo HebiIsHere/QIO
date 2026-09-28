@@ -59,7 +59,13 @@ def test_credential_test_endpoint_no_secret(client):
 def test_credential_update_metadata_enable_disable_audit(client):
     resp = client.post(
         "/api/credentials",
-        json={"key_id": "k1", "secret": "sk-1", "tags": ["main-loop"]},
+        json={
+            "key_id": "k1",
+            "secret": "sk-1",
+            "tags": ["main-loop"],
+            "endpoint": "https://api.example.com/v1",
+            "default_model": "m1",
+        },
     )
     assert resp.status_code == 200
 
@@ -79,13 +85,28 @@ def test_credential_update_metadata_enable_disable_audit(client):
     assert client.app.state.ctx.credentials.get_secret("k1") == "sk-1"
 
     audit = client.get("/api/credentials/k1/audit").json()["audit"]
-    assert [e["action"] for e in audit] == ["create", "update", "update", "update"]
+    # 依次是：创建 → 自动可用性验证（test）→ 第一条验证可用的主对话凭据自动成为
+    # 默认项（update）→ 改备注与预算 → 停用 → 启用。
+    assert [e["action"] for e in audit] == [
+        "create",
+        "test",
+        "update",
+        "update",
+        "update",
+        "update",
+    ]
 
 
 def test_credential_delete_removes_record(client):
     client.post(
         "/api/credentials",
-        json={"key_id": "todelete", "secret": "s", "tags": ["main-loop"]},
+        json={
+            "key_id": "todelete",
+            "secret": "s",
+            "tags": ["main-loop"],
+            "endpoint": "https://api.example.com/v1",
+            "default_model": "m1",
+        },
     )
     resp = client.delete("/api/credentials/todelete")
     assert resp.status_code == 200
@@ -155,7 +176,13 @@ def test_topic_detail(client):
 def test_create_auto_generates_key_id_when_empty(client):
     resp = client.post(
         "/api/credentials",
-        json={"key_id": "", "secret": "sk-test", "tags": ["main-loop"]},
+        json={
+            "key_id": "",
+            "secret": "sk-test",
+            "tags": ["main-loop"],
+            "endpoint": "https://api.example.com/v1",
+            "default_model": "m1",
+        },
     )
     assert resp.status_code == 200
     generated = resp.json()["key_id"]

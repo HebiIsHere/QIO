@@ -32,3 +32,6 @@ testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
 pythonpath = ["src"]
+markers = [
+    "real_verify: 直接覆盖真实的凭据验证逻辑（网络仍由 fake 客户端替代）",
+]

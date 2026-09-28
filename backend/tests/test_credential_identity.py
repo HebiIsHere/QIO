@@ -48,6 +48,30 @@ def test_same_endpoint_edit_needs_no_reconfiguration(store):
     assert meta["note"] == "hi"
 
 
+def test_legacy_row_without_protocol_is_not_a_protocol_change(db_conn):
+    """老数据没有 kind：把同样的协议写回去不算「改了发送目标」。
+
+    运行时是按地址判断协议的（`providers.uses_anthropic`），所以 OpenAI 兼容端点的
+    老凭据写回 "openai" 只是把隐含值显式化，不该要求用户重新输入 Key + 确认。
+    """
+    store = CredentialStore(db_conn, keyring_backend=MemoryKeyring())
+    store.create(
+        key_id="legacy-openai",
+        secret="sk-old",
+        tags=["main-loop"],
+        endpoint="https://api.openai.com/v1",
+        verify_state="legacy",
+    )
+    assert store.get_metadata("legacy-openai")["kind"] is None
+    meta = store.update_metadata("legacy-openai", kind="openai", note="显式化")
+    assert meta["kind"] == "openai"
+    assert meta["note"] == "显式化"
+
+    # 但真的改成 Anthropic 协议仍然必须重填 Key 并显式确认
+    with pytest.raises(ValueError):
+        store.update_metadata("legacy-openai", kind="anthropic")
+
+
 def test_plain_http_only_for_localhost():
     validate_endpoint("https://api.example.com/v1")
     validate_endpoint("http://127.0.0.1:11434/v1")

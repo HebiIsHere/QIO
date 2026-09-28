@@ -18,12 +18,24 @@ from typing import Any
 import keyring
 from keyring.backends.fail import Keyring as FailKeyring
 
+from agent.credentials.providers import KINDS
 from agent.storage.db import transaction
 
 SERVICE_NAME = "qio"
 _UNSET = object()
 # 凭据的安全身份：provider/endpoint/secret 任一变化都不是「普通元数据编辑」。
 _LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+# 「这把钥匙能不能被自动选中」看的是验证状态：
+# - verified：真的发过一次请求并成功；
+# - legacy：本次改动之前就在用的老凭据（按老行为视为可用，不误标成未验证）；
+# - unverified / failed：新建但没通过 / 上一次没通过 —— 不进自动选择，
+#   但记录仍在（用户可以在设置里重试，重试操作的是同一条记录）。
+USABLE_VERIFY_STATES = ("verified", "legacy")
+VERIFY_STATE_UNVERIFIED = "unverified"
+VERIFY_STATE_VERIFIED = "verified"
+VERIFY_STATE_FAILED = "failed"
+VERIFY_STATE_LEGACY = "legacy"
 
 
 def validate_endpoint(endpoint: str | None) -> None:
@@ -132,6 +144,8 @@ class CredentialStore:
         default_model: str | None = None,
         budget: float | None = None,
         note: str | None = None,
+        kind: str | None = None,
+        verify_state: str = VERIFY_STATE_UNVERIFIED,
         triggered_by: str = "user",
     ) -> int:
         if not key_id or not key_id.strip():
@@ -151,8 +165,9 @@ class CredentialStore:
             with transaction(self.conn):
                 self.conn.execute(
                     "INSERT INTO credentials (id, version, tags, endpoint, default_model, "
-                    "budget, budget_used, status, created_at, updated_at, note) "
-                    "VALUES (?, 1, ?, ?, ?, ?, 0, 'active', ?, ?, ?)",
+                    "budget, budget_used, status, created_at, updated_at, note, kind, "
+                    "verify_state, verified_at, is_default) "
+                    "VALUES (?, 1, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?, ?, 0)",
                     (
                         key_id,
                         json.dumps(tags, ensure_ascii=False),
@@ -162,6 +177,9 @@ class CredentialStore:
                         now,
                         now,
                         note,
+                        kind,
+                        verify_state,
+                        now if verify_state == VERIFY_STATE_VERIFIED else None,
                     ),
                 )
                 self._audit(key_id, "create", None, 1, triggered_by)
@@ -170,6 +188,111 @@ class CredentialStore:
             self._restore_secret(key_id, None)
             raise
         return 1
+
+    # -- 验证状态与默认项 ------------------------------------------------
+
+    def set_verified(self, key_id: str, ok: bool, reason: str | None = None) -> dict[str, Any]:
+        """记录一次验证结果（不改密钥、不动版本）。
+
+        审计动作沿用既有的 'test'，与「改配置」区分开：验证不是配置变更，
+        它只回答「现在这把钥匙能不能用」。
+        """
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        state = VERIFY_STATE_VERIFIED if ok else VERIFY_STATE_FAILED
+        self.conn.execute(
+            "UPDATE credentials SET verify_state = ?, verified_at = ?, verify_error = ?, "
+            "updated_at = ? WHERE id = ?",
+            (state, _now() if ok else None, None if ok else (reason or ""), _now(), key_id),
+        )
+        self._audit(key_id, "test", row["version"], row["version"], "user")
+        return self.get_metadata(key_id) or {}
+
+    def _is_candidate_row(self, row: sqlite3.Row) -> bool:
+        """能不能被自动选中：状态、启用、验证、预算四项全过。"""
+        if row["status"] != "active" or not row["enabled"]:
+            return False
+        if (row["verify_state"] or VERIFY_STATE_UNVERIFIED) not in USABLE_VERIFY_STATES:
+            return False
+        budget = row["budget"]
+        if budget is None:
+            return True
+        return float(budget) - float(row["budget_used"] or 0) > 0
+
+    @staticmethod
+    def _resolved_kind(row: sqlite3.Row) -> str:
+        """这一行**实际上**用的协议：老数据（kind 为空）按地址判断。
+
+        判断规则与运行时（`providers.uses_anthropic`）完全一致 —— 否则「什么都没改」
+        也会被当成一次协议变更，要求用户重新输入 Key 并显式确认。
+        """
+        from agent.credentials.providers import KIND_ANTHROPIC, KIND_OPENAI, uses_anthropic
+
+        stored = (row["kind"] or "").strip()
+        if stored:
+            return stored
+        return KIND_ANTHROPIC if uses_anthropic(None, row["endpoint"]) else KIND_OPENAI
+
+    def _main_loop_candidates(self) -> list[sqlite3.Row]:
+        rows = self.conn.execute(
+            "SELECT * FROM credentials ORDER BY created_at, id"
+        ).fetchall()
+        out: list[sqlite3.Row] = []
+        for row in rows:
+            if "main-loop" not in json.loads(row["tags"] or "[]"):
+                continue
+            if not self._is_candidate_row(row):
+                continue
+            out.append(row)
+        return out
+
+    def current_default(self) -> dict[str, Any] | None:
+        """当前显式默认项；它不可用（停用/撤销/预算用尽/失去 main-loop）时返回 None。"""
+        row = self.conn.execute(
+            "SELECT * FROM credentials WHERE is_default = 1 AND status = 'active' "
+            "AND enabled = 1 ORDER BY created_at, id LIMIT 1"
+        ).fetchone()
+        if row is None or not self._is_candidate_row(row):
+            return None
+        if "main-loop" not in json.loads(row["tags"] or "[]"):
+            return None
+        return self._serialize(row)
+
+    def set_default(self, key_id: str, triggered_by: str = "user") -> dict[str, Any]:
+        """显式指定默认主对话凭据（同一时刻只有一条）。"""
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        with transaction(self.conn):
+            self.conn.execute(
+                "UPDATE credentials SET is_default = 0, updated_at = ? "
+                "WHERE is_default = 1 AND id <> ?",
+                (_now(), key_id),
+            )
+            self.conn.execute(
+                "UPDATE credentials SET is_default = 1, updated_at = ? WHERE id = ?",
+                (_now(), key_id),
+            )
+            self._audit(key_id, "update", row["version"], row["version"], triggered_by)
+        return self.get_metadata(key_id) or {}
+
+    def promote_default(self, triggered_by: str = "system") -> str | None:
+        """没有可用默认项时挑一条（幂等）。
+
+        - 已有可用默认项 → 什么都不做，绝不悄悄替换（用户显式选的那条优先）；
+        - 按创建顺序取第一条可用且验证过的主对话凭据（`main-loop` 优先语义不变）；
+        - 没有任何可用主对话凭据 → 返回 None（界面显示「当前没有可用凭据」）。
+        """
+        existing = self.current_default()
+        if existing is not None:
+            return str(existing["id"])
+        candidates = self._main_loop_candidates()
+        if not candidates:
+            return None
+        chosen = str(candidates[0]["id"])
+        self.set_default(chosen, triggered_by=triggered_by)
+        return chosen
 
     def update_secret(self, key_id: str, new_secret: str, triggered_by: str = "user") -> int:
         row = self._row(key_id)
@@ -215,6 +338,7 @@ class CredentialStore:
         secret: str | None = None,
         tags: Any = _UNSET,
         endpoint: Any = _UNSET,
+        kind: Any = _UNSET,
         default_model: Any = _UNSET,
         budget: Any = _UNSET,
         note: Any = _UNSET,
@@ -243,6 +367,7 @@ class CredentialStore:
         old_secret = self._read_secret(key_id)
         old_version = int(row["version"])
         old_endpoint = (row["endpoint"] or "").strip()
+        old_kind = self._resolved_kind(row)
 
         sets: list[str] = []
         params: list[Any] = []
@@ -261,10 +386,31 @@ class CredentialStore:
             sets.append("endpoint = ?")
             params.append(new_endpoint or None)
 
+        if kind is not _UNSET:
+            new_kind = str(kind or "").strip() or old_kind
+            if new_kind not in KINDS:
+                raise ValueError(f"unsupported protocol: {new_kind}")
+            if new_kind != old_kind:
+                # 协议和地址一样属于「这把钥匙发给谁、怎么发」：换了就必须重新
+                # 输入 Key 并显式确认，不能让高级设置悄悄改掉发送目标。
+                if not (secret and confirm_reconfigure):
+                    raise ValueError(
+                        "changing protocol is a credential reconfiguration: "
+                        "re-enter the secret and pass confirm_reconfigure=true"
+                    )
+                version_bump = True
+            sets.append("kind = ?")
+            params.append(new_kind)
+
         if secret is not None:
             if not str(secret).strip():
                 raise ValueError("secret must not be empty")
             version_bump = True
+            # 换了钥匙，上一次的验证结论就不再适用。
+            sets.append("verify_state = ?")
+            params.append(VERIFY_STATE_UNVERIFIED)
+            sets.append("verified_at = NULL")
+            sets.append("verify_error = NULL")
 
         if tags is not _UNSET:
             sets.append("tags = ?")
@@ -357,6 +503,7 @@ class CredentialStore:
         *,
         tags: Any = _UNSET,
         endpoint: Any = _UNSET,
+        kind: Any = _UNSET,
         default_model: Any = _UNSET,
         budget: Any = _UNSET,
         note: Any = _UNSET,
@@ -391,6 +538,18 @@ class CredentialStore:
                 validate_endpoint(new_endpoint)
             sets.append("endpoint = ?")
             params.append(new_endpoint or None)
+        if kind is not _UNSET:
+            current_kind = self._resolved_kind(row)
+            new_kind = str(kind or "").strip() or current_kind
+            if new_kind not in KINDS:
+                raise ValueError(f"unsupported protocol: {new_kind}")
+            if new_kind != current_kind and not (secret and confirm_reconfigure):
+                raise ValueError(
+                    "changing protocol is a credential reconfiguration: "
+                    "re-enter the secret and pass confirm_reconfigure=true"
+                )
+            sets.append("kind = ?")
+            params.append(new_kind)
         if default_model is not _UNSET:
             sets.append("default_model = ?")
             params.append(default_model)
@@ -471,30 +630,19 @@ class CredentialStore:
             return None
 
     def get_default_secret(self) -> str | None:
-        """Fallback secret: the enabled/active `main-loop` credential with budget."""
-        rows = self.conn.execute(
-            "SELECT * FROM credentials WHERE status = 'active' AND enabled = 1 ORDER BY created_at"
-        ).fetchall()
-        best: sqlite3.Row | None = None
-        best_left: float | None = None
-        for row in rows:
-            if "main-loop" not in json.loads(row["tags"] or "[]"):
-                continue
-            budget = row["budget"]
-            used = float(row["budget_used"] or 0)
-            left = None if budget is None else float(budget) - used
-            if left is not None and left <= 0:
-                continue
-            if best is None or (left is None and best_left is not None) or (left is not None and (best_left is None or left > best_left)):
-                best = row
-                best_left = left
-        if best is None:
+        """回落密钥：当前默认的主对话凭据（没有则按既有排序取第一条可用的）。"""
+        meta = self.get_default_meta()
+        if meta is None:
             return None
-        return self._read_secret(best["id"])
+        return self._read_secret(str(meta["id"]))
 
     def list_tagged(self, tag: str) -> list[dict[str, Any]]:
         """Active/enabled credentials carrying `tag`, with budget available,
-        sorted by budget remaining descending (then key_id for stability)."""
+        sorted by budget remaining descending (then key_id for stability).
+
+        未通过验证的凭据不在这里返回：它们可以留在库里等用户重试，但不会被
+        自动选进任何任务（主循环、子任务、工具都一样）。
+        """
         rows = self.conn.execute(
             "SELECT * FROM credentials WHERE status = 'active' AND enabled = 1"
         ).fetchall()
@@ -502,13 +650,13 @@ class CredentialStore:
         for row in rows:
             if tag not in json.loads(row["tags"] or "[]"):
                 continue
+            if not self._is_candidate_row(row):
+                continue
             meta = self._serialize(row)
             budget = meta["budget"]
-            used = float(meta["budget_used"] or 0)
-            left = None if budget is None else float(budget) - used
-            if left is not None and left <= 0:
-                continue
-            meta["_budget_left"] = left
+            meta["_budget_left"] = (
+                None if budget is None else float(budget) - float(meta["budget_used"] or 0)
+            )
             out.append(meta)
         out.sort(
             key=lambda m: (
@@ -519,7 +667,14 @@ class CredentialStore:
         return out
 
     def get_default_meta(self) -> dict[str, Any] | None:
-        """Best active/enabled `main-loop` credential metadata (fallback target)."""
+        """当前默认的主对话凭据：显式默认项优先，其次按既有排序回落。"""
+        return self.effective_default()
+
+    def effective_default(self) -> dict[str, Any] | None:
+        """界面上的「当前默认使用」：显式默认项 → 排序第一条可用主对话凭据。"""
+        explicit = self.current_default()
+        if explicit is not None:
+            return explicit
         tagged = self.list_tagged("main-loop")
         return tagged[0] if tagged else None
 
@@ -571,6 +726,8 @@ class CredentialStore:
         data = dict(row)
         data["tags"] = json.loads(data.get("tags") or "[]")
         data["enabled"] = bool(data.get("enabled", 1))
+        data["is_default"] = bool(data.get("is_default", 0))
+        data["verify_state"] = data.get("verify_state") or VERIFY_STATE_UNVERIFIED
         return data
 
 

@@ -28,6 +28,11 @@ from agent.config import Settings
 from agent.core.guard import RunawayGuard
 from agent.core.tool_state import ToolExecutionState
 from agent.credentials.policy import CredentialPolicy, CredentialRef
+from agent.credentials.providers import (
+    resolve_endpoint as resolve_credential_endpoint,
+    resolve_model as resolve_credential_model,
+    uses_anthropic as credential_uses_anthropic,
+)
 from agent.credentials.store import CredentialStore
 from agent.graph.anchors import AnchorService
 from agent.graph.topics import TopicService
@@ -486,8 +491,15 @@ class AppContext:
         if secret is None:
             return None
         meta = self.credentials.get_metadata(key_id)
-        base_url = (meta.get("endpoint") if meta else None) or "https://api.openai.com/v1"
-        model = model or (meta.get("default_model") if meta else None) or "gpt-4o-mini"
+        base_url = resolve_credential_endpoint(meta)
+        model = model or resolve_credential_model(meta)
+        if base_url is None or model is None:
+            # 地址或模型缺失时**不猜**：以前会兜底成另一家的默认地址/模型
+            # （openai.com + gpt-4o-mini），那等于把内容发给用户没选过的服务。
+            logger.warning(
+                "credential %s has no usable endpoint/model; refusing to build an adapter", key_id
+            )
+            return None
         cache_key = (
             key_id,
             (meta or {}).get("version"),
@@ -512,7 +524,7 @@ class AppContext:
         key_id: str,
         meta: dict | None,
     ) -> BaseAdapter | None:
-        if is_anthropic_endpoint(base_url):
+        if credential_uses_anthropic(meta, base_url):
             await self._ensure_anthropic_capability(secret, model, base_url, key_id, meta)
             return AnthropicAdapter(api_key=secret, model=model, endpoint=base_url)
         client = AsyncOpenAI(api_key=secret, base_url=base_url)

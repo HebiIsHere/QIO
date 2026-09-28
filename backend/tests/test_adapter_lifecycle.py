@@ -35,7 +35,14 @@ def ctx(tmp_path):
 
 
 def _grant(ctx: AppContext, key_id: str = "k1", endpoint: str = "https://api.example.com/v1"):
-    ctx.credentials.create(key_id, "sk-test-secret", ["main-loop"], endpoint, "gpt-x")
+    ctx.credentials.create(
+        key_id,
+        "sk-test-secret",
+        ["main-loop"],
+        endpoint,
+        "gpt-x",
+        verify_state="verified",
+    )
 
 
 @pytest.fixture()

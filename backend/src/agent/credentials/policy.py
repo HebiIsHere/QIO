@@ -1,13 +1,20 @@
 """Authorization policy (scheme C) and credential snapshots.
 
 Resolution:
-1. candidate keys: status active AND tags intersect required_tags;
-2. ordering: `main-loop` 标签优先，其次预算余额降序，最后 key_id 稳定排序。
+1. candidate keys: 状态 active、启用中、**通过过验证**、用途标签与 required_tags
+   有交集、预算没用完；
+2. ordering: 用户显式设的默认项优先 → `main-loop` 标签优先 → 预算余额降序 →
+   key_id 稳定排序。
 
-第 2 条的次序是安全语义，不是偏好：主 Agent Loop 以前会优先选中「非 main-loop」
-标签的凭据（例如一个打 `vision` 标签的 Key），于是专项凭据被主循环悄悄拿去用。
-主循环优先用 `main-loop`，其它用途（chat/code/vision/research）只在没有
-main-loop 可用时才回落。
+这三条都是安全语义，不是偏好：
+
+- 主 Agent Loop 以前会优先选中「非 main-loop」标签的凭据（例如一个打 `vision`
+  标签的 Key），于是专项凭据被主循环悄悄拿去用；现在主循环优先 `main-loop`，
+  其它用途（chat/code/vision/research）只在没有 main-loop 可用时才回落；
+- 显式默认项只影响**同一批合法候选之间**的先后：它不能绕过停用、撤销、预算、
+  用途标签和验证状态 —— 「设为默认」永远只是排序，不是授权；
+- 新建但没通过验证的凭据不进这里：用户可以重试验证，但不会在验证通过之前被
+  任何任务自动拿去用。
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from agent.credentials.store import CredentialStore
+from agent.credentials.store import USABLE_VERIFY_STATES, CredentialStore
 
 PRESET_TAGS = [
     "main-loop",
@@ -39,6 +46,8 @@ class CredentialRef:
     default_model: str | None
     tags: tuple[str, ...]
     budget_left: float | None
+    is_default: bool = False
+    verify_state: str = "legacy"
 
 
 @dataclass
@@ -80,6 +89,8 @@ class CredentialPolicy:
                 continue
             if not meta.get("enabled", 1):
                 continue
+            if (meta.get("verify_state") or "unverified") not in USABLE_VERIFY_STATES:
+                continue
             if not (set(meta["tags"]) & required):
                 continue
             budget_left = self.store.budget_left(meta["id"])
@@ -93,11 +104,14 @@ class CredentialPolicy:
                     default_model=meta.get("default_model"),
                     tags=tuple(meta["tags"]),
                     budget_left=budget_left,
+                    is_default=bool(meta.get("is_default")),
+                    verify_state=str(meta.get("verify_state") or "unverified"),
                 )
             )
-        # main-loop 优先；其余按预算余额降序；最后按 key_id，保证结果稳定。
+        # 显式默认项优先，其次 main-loop，其余按预算余额降序，最后按 key_id 保证稳定。
         candidates.sort(
             key=lambda r: (
+                0 if r.is_default else 1,
                 0 if "main-loop" in r.tags else 1,
                 -(r.budget_left if r.budget_left is not None else float("inf")),
                 r.key_id,

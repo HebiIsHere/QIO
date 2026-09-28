@@ -583,6 +583,29 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             """,
         ],
     ),
+    (
+        21,
+        [
+            # 凭据体验：把「保存成功」与「验证通过」拆成两件事 ——
+            # 保存只说明配置安全写入了；验证是一次真实调用，结果单独记。
+            # `kind` 存连接协议，避免「测试用 OpenAI 客户端、正式跑 Anthropic 分支」
+            # 这种两边不一致（历史行留 NULL，运行期按地址回退判断）。
+            "ALTER TABLE credentials ADD COLUMN kind TEXT",
+            "ALTER TABLE credentials ADD COLUMN verify_state TEXT NOT NULL DEFAULT 'unverified'",
+            "ALTER TABLE credentials ADD COLUMN verified_at TEXT",
+            "ALTER TABLE credentials ADD COLUMN verify_error TEXT",
+            "ALTER TABLE credentials ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0",
+            # 旧数据兼容：本次改动之前建的凭据都是「正在用」的，不能因为新增了一个
+            # 验证状态就把它们标成未验证并停用。legacy = 按老行为视为可用。
+            "UPDATE credentials SET verify_state = 'legacy'",
+            # 旧库里第一条可用的主对话凭据成为显式默认项（新库这条语句不动任何行）。
+            """UPDATE credentials SET is_default = 1 WHERE id = (
+                   SELECT id FROM credentials
+                    WHERE status = 'active' AND enabled = 1
+                      AND tags LIKE '%"main-loop"%'
+                    ORDER BY created_at, id LIMIT 1)""",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

@@ -26,13 +26,19 @@ from typing import AsyncIterator
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from openai import AsyncOpenAI
 
 from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
 from agent.api.events import AgentEvent, EventType, make_event
-from agent.adapters.probe import probe_adapter
 from agent.config import Settings
+from agent.credentials.providers import (
+    CUSTOM_PRESET,
+    MODEL_SUGGESTION_NOTE,
+    find_preset,
+    list_presets,
+    preset_for_endpoint,
+)
+from agent.credentials.store import USABLE_VERIFY_STATES
 from agent.graph.layout import assign_positions
 # 记忆封块设置的键名、范围与旧键迁移：设置读写与运行时（turn_orchestrator）
 # 共用同一处解析，避免两套语义漂移。
@@ -252,62 +258,288 @@ def create_app(
         creds = ctx.credentials.list_credentials()
         for c in creds:
             c["key_id"] = c.pop("id")
-        return {"credentials": creds}
+        default = ctx.credentials.effective_default()
+        return {
+            "credentials": creds,
+            # 「当前默认使用」由后端算：显式默认项优先，没有就按既有排序回落。
+            # 界面据此显示「当前默认」标记，而不是自己猜一个。
+            "default_key_id": default["id"] if default else None,
+        }
+
+    @app.get("/api/credentials/providers")
+    async def list_providers() -> dict:
+        """厂商预设：界面的唯一来源（名称 / 协议 / 地址 / 建议模型 / 类别）。
+
+        这**不识别 Key**：识别属于本地前缀提示（返回 key_hint 字段），
+        任何验证都只在用户选定地址上进行。
+        """
+        providers = [preset.to_dict() for preset in list_presets()]
+        providers.append(CUSTOM_PRESET.to_dict())
+        return {"providers": providers, "model_note": MODEL_SUGGESTION_NOTE}
+
+    def _credential_payload(meta: dict) -> dict:
+        payload = dict(meta)
+        payload["key_id"] = payload.pop("id")
+        preset = preset_for_endpoint(payload.get("endpoint"))
+        payload["provider_id"] = preset.id if preset else None
+        payload["provider_name"] = preset.name if preset else None
+        return payload
+
+    def _verify_failure_message(result) -> str:
+        return result.message
+
+    async def _run_verification(key_id: str) -> dict:
+        """对一条**已存在**的凭据做一次真实调用验证，并按结果更新状态。
+
+        - 通过 → verify_state=verified，并在没有可用默认项时把它设为默认；
+        - 明确被拒（Key 无效 / 没有该模型权限 / 额度不足）→ verify_state=failed；
+        - 只是网络/超时/限流这类临时故障 → **保持原状态**（不能因为一次断网
+          就把一把本来可用的钥匙判死），但如实把这次失败告诉用户。
+        """
+        from agent.services.verify import TRANSIENT_REASONS, verify_model
+
+        secret = ctx.credentials.get_secret(key_id)
+        meta = ctx.credentials.get_metadata(key_id)
+        if secret is None or meta is None:
+            return {
+                "ok": False,
+                "state": "failed",
+                "reason_code": "credential_unavailable",
+                "message": "这条凭据当前不可用（已停用或密钥不在本机）",
+                "detail": "",
+                "mode": None,
+                "state_kept": False,
+            }
+        previous = str(meta.get("verify_state") or "unverified")
+        result = await verify_model(
+            secret=secret,
+            endpoint=meta.get("endpoint"),
+            model=meta.get("default_model"),
+            kind=meta.get("kind"),
+        )
+        payload = result.to_dict()
+        if result.ok:
+            ctx.credentials.set_verified(key_id, True)
+            ctx.credentials.promote_default()
+            payload["state_kept"] = False
+        elif result.reason_code in TRANSIENT_REASONS and previous in ("verified", "legacy"):
+            payload.update(state=previous, state_kept=True)
+            payload["message"] = f"{_verify_failure_message(result)}（这条凭据的状态保持不变）"
+        else:
+            ctx.credentials.set_verified(key_id, False, result.reason_code)
+            payload["state_kept"] = False
+        updated = ctx.credentials.get_metadata(key_id)
+        if updated is not None:
+            payload["credential"] = _credential_payload(updated)
+        await bus.publish(
+            make_event(
+                EventType.CREDENTIAL_STATUS,
+                {"key_id": key_id, "status": payload["state"], "verified": result.ok},
+            )
+        )
+        return payload
 
     @app.post("/api/credentials")
     async def create_credential(body: dict) -> dict:
-        key_id = str(body.get("key_id", "")).strip() or f"key_{uuid.uuid4().hex[:12]}"
+        """保存 = 校验 + 安全写入 + 一次自动可用性验证。
+
+        「保存成功」与「验证通过」是两件事：写入失败什么都不留（报错），
+        写入成功但验证没过则如实返回「已保存，尚未通过验证」。
+        """
+        secret = str(body.get("secret") or "").strip()
+        if not secret:
+            raise HTTPException(status_code=400, detail="请填写 API Key")
+
+        # 用途：新建时**缺省** = 主对话；用户显式提交空用途时是他自己的选择，
+        # 这里返回看得懂的错误，不静默覆盖成主对话。
+        if "tags" not in body:
+            tags = ["main-loop"]
+        else:
+            raw_tags = body.get("tags")
+            tags = (
+                [str(t).strip() for t in raw_tags if str(t).strip()]
+                if isinstance(raw_tags, list)
+                else []
+            )
+            if not tags:
+                raise HTTPException(
+                    status_code=400,
+                    detail="请至少选择一种用途（例如「主对话」）；只有这样配置才能被任务选中",
+                )
+
+        preset = find_preset(str(body.get("provider") or "").strip()) or preset_for_endpoint(
+            body.get("endpoint")
+        )
+        endpoint = body.get("endpoint")
+        if endpoint is None:
+            endpoint = preset.base_url if preset else None
+        endpoint = str(endpoint or "").strip() or None
+        if not endpoint:
+            raise HTTPException(status_code=400, detail="请填写服务地址")
+        kind = str(body.get("kind") or (preset.kind if preset else "")).strip() or None
+        model = body.get("default_model")
+        if model is None:
+            model = preset.suggested_model if preset else ""
+        model = str(model or "").strip()
+        if not model:
+            # 没有可靠默认模型的服务（聚合/自定义）：明确要求用户补一个，
+            # 不替他从模型列表里挑第一条，也不回退到别家的模型。
+            raise HTTPException(status_code=400, detail="请选择或填写模型名称")
+        note = str(body.get("note") or "").strip() or (preset.name if preset else None)
+
+        def _budget(value):
+            if value is None or value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="用量上限要填数字（token）") from exc
+
+        # 内部标识不要求用户输入。带 client_request_id 时由它推导：
+        # 「点了保存但结果没回来，用户又点了一次」不会留下两条凭据。
+        request_id = str(body.get("client_request_id") or "").strip()
+        key_id = str(body.get("key_id") or "").strip()
+        if not key_id:
+            key_id = (
+                f"key_{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex[:12]}"
+                if request_id
+                else f"key_{uuid.uuid4().hex[:12]}"
+            )
+        existing = ctx.credentials.get_metadata(key_id)
+        if existing is not None:
+            return {
+                "ok": True,
+                "saved": True,
+                "idempotent": True,
+                "key_id": key_id,
+                "version": existing["version"],
+                "credential": _credential_payload(existing),
+                "verify": {
+                    "ok": existing.get("verify_state") == "verified",
+                    "state": existing.get("verify_state"),
+                    "reason_code": None,
+                    "message": "这次保存之前已经写入过了，没有重复创建",
+                    "detail": "",
+                    "mode": None,
+                    "state_kept": True,
+                },
+            }
         try:
             version = ctx.credentials.create(
                 key_id=key_id,
-                secret=body["secret"],
-                tags=body.get("tags", []),
-                endpoint=body.get("endpoint"),
-                default_model=body.get("default_model"),
-                budget=body.get("budget"),
-                note=body.get("note"),
+                secret=secret,
+                tags=tags,
+                endpoint=endpoint,
+                default_model=model,
+                budget=_budget(body.get("budget")),
+                note=note,
+                kind=kind,
             )
         except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - 安全存储不可用等系统级失败
+            raise HTTPException(
+                status_code=500,
+                detail="保存失败：系统的安全凭据库在写入时出错，密钥没有保存",
+            ) from exc
         await bus.publish(
             make_event(
                 EventType.CREDENTIAL_STATUS,
                 {"key_id": key_id, "status": "active", "version": version},
             )
         )
-        return {"ok": True, "key_id": key_id, "version": version}
+        verify = await _run_verification(key_id)
+        meta = ctx.credentials.get_metadata(key_id) or {}
+        return {
+            "ok": True,
+            "saved": True,
+            "idempotent": False,
+            "key_id": key_id,
+            "version": version,
+            "credential": _credential_payload(meta),
+            "verify": verify,
+        }
 
-    @app.post("/api/credentials/identify")
-    async def identify_credential(body: dict) -> dict:
-        from agent.services.identify import identify_key
+    @app.post("/api/credentials/verify-draft")
+    async def verify_draft(body: dict) -> dict:
+        """保存前验证一份草稿（换钥、自定义服务用）。
 
-        key = str(body.get("secret", "")).strip()
-        if not key:
-            raise HTTPException(status_code=400, detail="secret required")
-        result = await identify_key(key)
-        if result is None:
-            return {"identified": False}
-        return {"identified": True, **result}
+        只请求 body 里给的 endpoint，绝不把 Key 发给别家。密钥不落库、不记日志。
+        """
+        from agent.services.verify import verify_model
+
+        secret = str(body.get("secret") or "").strip()
+        if not secret:
+            raise HTTPException(status_code=400, detail="请填写 API Key")
+        result = await verify_model(
+            secret=secret,
+            endpoint=str(body.get("endpoint") or "").strip() or None,
+            model=str(body.get("default_model") or "").strip() or None,
+            kind=str(body.get("kind") or "").strip() or None,
+        )
+        return {"ok": result.ok, "verify": result.to_dict()}
+
+    @app.get("/api/credentials/models")
+    async def list_credential_models(
+        endpoint: str, secret: str | None = None, kind: str | None = None, key_id: str | None = None
+    ) -> dict:
+        """模型候选列表（只是便利，不是验证）。
+
+        `key_id` 用于已保存的凭据（不把密钥交给前端）；`secret` 用于还没落库的草稿。
+        """
+        from agent.services.verify import list_models
+
+        token = secret
+        if token is None and key_id:
+            token = ctx.credentials.get_secret(key_id)
+        if not token:
+            return {"models": [], "note": "没有可用的密钥，无法获取模型列表；可以手动填写模型名称"}
+        models = await list_models(secret=token, endpoint=endpoint, kind=kind)
+        return {"models": models}
+
+    @app.post("/api/credentials/{key_id}/verify")
+    async def verify_credential(key_id: str) -> dict:
+        """重试验证：操作的是同一条记录，不会重复创建凭据。"""
+        if ctx.credentials.get_metadata(key_id) is None:
+            raise HTTPException(status_code=404, detail="credential not found")
+        result = await _run_verification(key_id)
+        return {"ok": True, "key_id": key_id, "verify": result}
+
+    @app.post("/api/credentials/{key_id}/default")
+    async def set_default_credential(key_id: str) -> dict:
+        """把某条主对话凭据设为默认。
+
+        只改「用哪一条」，不是授权：停用、撤销、预算用尽、没有 main-loop 用途、
+        还没通过验证的凭据都不能被设为默认。
+        """
+        meta = ctx.credentials.get_metadata(key_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail="credential not found")
+        if "main-loop" not in (meta.get("tags") or []):
+            raise HTTPException(status_code=400, detail="这条凭据没有「主对话」用途，不能设为默认")
+        if meta.get("status") != "active" or not meta.get("enabled", True):
+            raise HTTPException(status_code=400, detail="请先启用这条凭据，再设为默认")
+        if (meta.get("verify_state") or "unverified") not in USABLE_VERIFY_STATES:
+            raise HTTPException(status_code=400, detail="请先完成验证，再把这条凭据设为默认")
+        budget_left = ctx.credentials.budget_left(key_id)
+        if budget_left is not None and budget_left <= 0:
+            raise HTTPException(status_code=400, detail="这条凭据的用量上限已经用完，不能设为默认")
+        updated = ctx.credentials.set_default(key_id)
+        await bus.publish(
+            make_event(EventType.CREDENTIAL_STATUS, {"key_id": key_id, "status": "default"})
+        )
+        return {"ok": True, "credential": _credential_payload(updated)}
 
     @app.post("/api/credentials/{key_id}/test")
     async def test_credential(key_id: str) -> dict:
-        secret = ctx.credentials.get_secret(key_id)
-        meta = ctx.credentials.get_metadata(key_id)
-        if secret is None or meta is None:
-            raise HTTPException(status_code=404, detail="credential unavailable")
-        base_url = meta["endpoint"] or "https://api.openai.com/v1"
-        model = meta["default_model"] or "gpt-4o-mini"
-        client = AsyncOpenAI(api_key=secret, base_url=base_url)
-        try:
-            probe = await probe_adapter(client, model, endpoint=base_url)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"connection failed: {type(exc).__name__}: {str(exc)[:200]}",
-            ) from exc
+        """（保留的旧入口）测试连接 = 重试验证，走与正式对话一致的协议。"""
+        if ctx.credentials.get_metadata(key_id) is None:
+            raise HTTPException(status_code=404, detail="credential not found")
+        result = await _run_verification(key_id)
         return {
             "key_id": key_id,
-            "probe": {"mode": probe.mode.value, "detail": probe.detail},
+            "verify": result,
+            "probe": {"mode": result.get("mode") or "", "detail": result.get("detail") or ""},
         }
 
     @app.post("/api/credentials/{key_id}/revoke")
@@ -320,11 +552,6 @@ def create_app(
             make_event(EventType.CREDENTIAL_STATUS, {"key_id": key_id, "status": "revoked"})
         )
         return {"ok": True, "key_id": key_id}
-
-    def _credential_payload(meta: dict) -> dict:
-        payload = dict(meta)
-        payload["key_id"] = payload.pop("id")
-        return payload
 
     @app.patch("/api/credentials/{key_id}")
     async def update_credential_meta(key_id: str, body: dict) -> dict:
@@ -347,6 +574,8 @@ def create_app(
             kwargs["note"] = body["note"]
         if "endpoint" in body:
             kwargs["endpoint"] = body.get("endpoint")
+        if "kind" in body:
+            kwargs["kind"] = body.get("kind")
         secret = str(body.get("secret") or "").strip() or None
         try:
             meta = ctx.credentials.reconfigure(
@@ -359,7 +588,23 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "credential": _credential_payload(meta)}
+        # 影响「还能不能通」的字段变了（钥匙 / 地址 / 协议 / 模型），就重新验证一次：
+        # 验证结果必须跟着配置走，不能沿用旧模型、旧地址的结论。
+        verify = None
+        if secret is not None or {"endpoint", "kind", "default_model"} & set(body):
+            verify = await _run_verification(key_id)
+            meta = ctx.credentials.get_metadata(key_id) or meta
+        await bus.publish(
+            make_event(
+                EventType.CREDENTIAL_STATUS,
+                {
+                    "key_id": key_id,
+                    "status": "active",
+                    "version": meta.get("version"),
+                },
+            )
+        )
+        return {"ok": True, "credential": _credential_payload(meta), "verify": verify}
 
     @app.post("/api/credentials/{key_id}/enable")
     async def enable_credential(key_id: str) -> dict:
