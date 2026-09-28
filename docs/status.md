@@ -831,6 +831,39 @@ npm test
 
 ---
 
+## 本轮变更：启动加固（2026-09-25）
+
+**问题（真机事故）**：0.1.8 首次启动时窗口一片空白，旁边弹出 `reg.exe` 的
+「应用程序无法正常启动(0xc0000142)」。核对证据：外壳 15:05:41 启动，日志里第一条记录
+出现在 15:07:23（**启动被拖住 1 分 42 秒**），后端 15:07:23 才被拉起；同一错误码
+（`ExitStatus(3221225794)`）也出现在外壳更新前调用的 `taskkill.exe` 上。也就是说：
+白窗是"启动被拖住"的等待状态，而拖住它的是**系统级**的子进程初始化失败
+（`reg.exe` 报错后会留一个必须先点掉的模态框，外壳在等它退出）。
+
+| 改法 | 实现 | Tests |
+| --- | --- | --- |
+| 跑系统命令带**硬超时**：超时杀子进程（模态框随之关闭）并按"拿不到"处理 | `frontend/src-tauri/src/main.rs` 新增 `run_command_with_timeout`；`reg query`（读系统代理）3 秒、`taskkill`（更新前结束后端）5 秒 | `hanging_command_is_killed_after_the_timeout`、`fast_command_still_returns_its_output` |
+| 探测失败即直连，不再等待 | `system_proxy()` 拿不到就返回 None → 更新按直连走（原本就有直连兜底），并写一条 WARN | 同上（超时返回 None 就是这条路径） |
+| 启动耗时进日志，下次能直接归因 | setup 里记录并打印「代理探测 / 内置模型 / 拉起后端 / 合计」四段耗时 | 随应用启动实测 |
+| 后端没应答时**不再白屏** | 新增 `services/boot.ts::waitForBackend`（解析连接信息 + 轮询 `/api/health`，单次探测带超时）；`App.vue` 增加启动状态：等待时显示「正在启动 QIO 后端…（已等 N 秒）」，超过 60 秒显示原因、日志位置与「重试」，后端应答后才渲染主界面并建立事件流 | `frontend/src/__tests__/appBoot.test.ts`、`frontend/src/services/__tests__/boot.test.ts` |
+
+**实拍证据**（`scripts/ui-catalog/boot-gate.mjs`，图在 `frontend/e2e-shots/ui-catalog/bootgate/`）：
+
+- 后端故意不起来：界面显示「正在启动 QIO 后端… 已等 N 秒」；
+- 等满 60 秒：「QIO 后端没有应答（已经等了 60 秒）／后端没有应答（最后一条错误：Failed to fetch）／
+  也可能只是启动很慢：点「重试」会接着等。日志：…QIO.log／重试」；
+- 后端起来后：同一套代码自己渲染出主界面（不靠刷新）。
+
+**已知限制（不粉饰）**
+
+- `0xC0000142` 本身是系统级故障（同一台机器上 `reg.exe`、`taskkill.exe` 都中过），
+  应用只能做到"不因为它卡死"，不能修好本机环境。
+- 代理探测仍在启动路径上（它决定后端继承的代理环境变量），现在最坏 3 秒/次；
+  启动日志会如实写出这一段花了多久。
+- 启动等待的默认上限是 60 秒：超过就显示可重试的失败说明（后端只是很慢时，重试会接着等）。
+
+---
+
 ## 本轮变更：工具失败与静默失败加固（2026-09-24）
 
 > 规格：`docs/superpowers/specs/2026-09-24-tool-failure-hardening-spec.md`

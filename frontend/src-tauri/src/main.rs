@@ -212,6 +212,43 @@ fn prepare_models(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// 用 `reg query` 而不是引入注册表库：少一个依赖，输出格式稳定，解析失败就当"没有"。
 /// 自动配置脚本（PAC）不在这里处理：无法在不解释脚本的前提下判断该走哪个代理，
 /// 这种情况如实记为"未使用代理"，并写进日志。
+fn run_command_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    // 超时就结束子进程：Windows 上"卡住的系统程序"往往挂着模态框，
+                    // 不杀掉它会连带把调用方一起钉住
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// 读系统代理的单次超时。
+///
+/// 为什么必须有超时：`Command::output()` 会一直等子进程退出。2026-09-24 实测 ——
+/// `reg.exe` 报 0xC0000142（DLL 初始化失败）并弹出"必须先点掉"的模态框，子进程
+/// 因此不退出，外壳启动流程被钉住 1 分 42 秒，用户看到的就是一直白屏。
+/// 超时后按"拿不到系统代理"处理 → 直接直连（更新本身就有直连兜底）。
+const SYSTEM_PROXY_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn system_proxy() -> Option<String> {
     #[cfg(not(windows))]
     {
@@ -221,10 +258,12 @@ fn system_proxy() -> Option<String> {
     {
         const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
         let query = |name: &str| -> Option<String> {
-            let out = std::process::Command::new("reg")
-                .args(["query", KEY, "/v", name])
-                .output()
-                .ok()?;
+            let mut cmd = std::process::Command::new("reg");
+            cmd.args(["query", KEY, "/v", name]);
+            let Some(out) = run_command_with_timeout(&mut cmd, SYSTEM_PROXY_QUERY_TIMEOUT) else {
+                log::warn!("[qio] 读系统代理失败或超时（{name}），按直连处理");
+                return None;
+            };
             let text = String::from_utf8_lossy(&out.stdout).to_string();
             let line = text.lines().find(|l| l.contains("REG_SZ") || l.contains("REG_DWORD"))?;
             let value = line.split_once("REG_SZ").map(|(_, v)| v)
@@ -415,10 +454,14 @@ fn qio_prepare_for_update(
     };
     let Some(pid) = pid else { return Ok(false) };
     let pid_arg = pid.to_string();
-    let status = std::process::Command::new("taskkill")
-        .args(["/PID", pid_arg.as_str(), "/T", "/F"])
-        .status();
-    log::info!("[qio] 更新前结束后端进程树 pid={pid} status={status:?}");
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/PID", pid_arg.as_str(), "/T", "/F"]);
+    // 同样要硬超时：taskkill 卡住会拖住更新流程（实测同一台机器上它也报过 0xC0000142）
+    let status = match run_command_with_timeout(&mut cmd, Duration::from_secs(5)) {
+        Some(out) => format!("{:?}", out.status),
+        None => "超时或启动失败（跳过）".to_string(),
+    };
+    log::info!("[qio] 更新前结束后端进程树 pid={pid} status={status}");
     // 结束后端不影响返回值：拿不到 pid 或 taskkill 失败也要继续（安装器会自己再试一次）
     Ok(true)
 }
@@ -602,11 +645,15 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(move |app| {
+            // 启动各步骤的耗时写进日志：下次"白屏很久"能直接看出卡在哪一步，
+            // 而不是只能靠猜（2026-09-24 那次就是没有这一步，排查全靠推断）。
+            let t_start = Instant::now();
             if let Some(proxy) = apply_updater_proxy() {
                 log::info!("[qio] 更新走代理：{proxy}");
             } else {
                 log::info!("[qio] 更新未配置代理（可用 %APPDATA%\\qio\\updater-proxy.txt 指定）");
             }
+            let proxy_ms = t_start.elapsed().as_millis();
             let port = pick_free_port();
             let token_path = session_token_path();
             // 清掉上一轮的残留文件：令牌绝不跨进程生命周期复用。
@@ -618,13 +665,21 @@ fn main() {
             // 让 qio_prepare_for_update 能拿到 sidecar 的 pid
             app.manage(Arc::clone(&backend_for_setup));
             // 内置模型：复制到用户数据目录，并把目录交给后端（失败不阻塞启动）
+            let t_models = Instant::now();
             let models_dir = prepare_models(app.handle());
+            let models_ms = t_models.elapsed().as_millis();
+            let t_backend = Instant::now();
             let child = backend_launch(app.handle(), port, &token_path, models_dir)?;
             if let Some(job) = backend_job.as_ref() {
                 if job.assign(child.pid()) {
                     log::info!("[qio] 后端 pid {} 已纳入 job（随壳退出自动终止）", child.pid());
                 }
             }
+            log::info!(
+                "[qio] 启动耗时：代理探测 {proxy_ms}ms / 内置模型 {models_ms}ms / 拉起后端 {}ms / 合计 {}ms",
+                t_backend.elapsed().as_millis(),
+                t_start.elapsed().as_millis()
+            );
             *backend_for_setup.lock().unwrap() = Some(child);
             Ok(())
         })
@@ -775,5 +830,33 @@ mod tests {
         assert!(!proxy_is_reachable("http://127.0.0.1:17011"));
         // 语法都不成立的地址同样不可达
         assert!(!proxy_is_reachable("http://"));
+    }
+
+    /// 实测事故（2026-09-24）：`reg.exe` 报 0xC0000142 并弹出"必须先点掉"的模态框，
+    /// 子进程因此一直不退出，`Command::output()` 把外壳的启动流程钉住 1 分 42 秒
+    /// （界面白屏）。所以跑系统命令必须有硬超时：超时就杀掉子进程、按"拿不到"处理。
+    #[cfg(windows)]
+    #[test]
+    fn hanging_command_is_killed_after_the_timeout() {
+        let mut cmd = std::process::Command::new("cmd");
+        // ping 6 次约 5 秒；给 800ms 超时，必须在超时后很快返回 None
+        cmd.args(["/c", "ping", "-n", "6", "127.0.0.1"]);
+        let started = Instant::now();
+        let out = run_command_with_timeout(&mut cmd, Duration::from_millis(800));
+        let elapsed = started.elapsed();
+        assert!(out.is_none(), "超时的命令不能返回输出");
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "超时后必须立刻返回（实测 {elapsed:?}）"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fast_command_still_returns_its_output() {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "echo", "hello-qio"]);
+        let out = run_command_with_timeout(&mut cmd, Duration::from_secs(10)).expect("应拿到输出");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hello-qio"));
     }
 }

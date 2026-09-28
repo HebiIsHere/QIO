@@ -21,6 +21,10 @@ vi.mock("../../services/api", () => ({
   },
 }));
 
+// 启动握手是外壳/后端的事，这里把它当作已就绪 —— 这几条用例只关心欢迎页的展开规则
+const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
+vi.mock("../../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
+
 vi.mock("../../stores/events", () => ({
   useEventStore: () => ({ connect: vi.fn() }),
 }));
@@ -86,6 +90,7 @@ describe("欢迎页 gating", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    boot.waitForBackend.mockResolvedValue({ base: "http://127.0.0.1:1", token: "tk" });
   });
 
   it("首次启动（show_wizard=true）→ 展开全屏向导", async () => {
