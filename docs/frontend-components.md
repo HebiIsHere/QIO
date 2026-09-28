@@ -83,13 +83,32 @@ SettingsView
 ├── SettingsTabs（凭据 / 偏好）
 ├── CredentialsTab
 │   ├── CredentialList     Key 卡片（掩码显示 + 状态色标 + 预算进度）
-│   ├── CredentialForm     新建/编辑（密钥只写不读、标签多选、scope 编辑器、预算）
-│   ├── TestConnection     测试连接按钮（调 /credentials/{id}/test）
+│   ├── CredentialCard     默认只给结论（名称/厂商、模型、中文用途、当前默认、启用与验证状态）
+│   │                      地址/内部标识/版本/审计收进「详情」；管理动作在「更多操作」里（收起时 inert）
+│   ├── CredentialModal    「添加 / 编辑 / 更换 API Key」三种入口的弹窗外壳（进出场 + 焦点归还）
 │   └── AuditView          审计日志（版本历史）
 └── PreferencesTab
     ├── ModelEndpoints     模型端点配置（base_url/model/适配档）
     ├── MemoryDefaults     记忆强度默认值、冷热阈值
     └── BehaviorToggles    行为开关（force_continue 等）
+```
+
+### 3.1 凭据表单（首次引导与设置页共用）
+
+`frontend/src/components/credentials/CredentialForm.vue` 是**唯一**一份凭据表单：
+首次引导的「连接模型」与设置页弹窗都渲染它，默认值、校验与提交/验证逻辑放在
+`frontend/src/services/credentials.ts` 的 `useCredentialForm`，两处不可能漂移。
+
+```
+CredentialForm
+├── QCombo                 服务厂商（可搜索；「其他 / 自定义服务」在列表末尾）
+├── QInput(password)       API Key（只写不读，可显示/隐藏；关闭表单即清空）
+├── 用途行                 默认「主对话」；点「修改」展开标签（界面中文，内部值不变）
+├── 高级设置（默认收起）    模型 / 服务地址 / 显示名称 / 用量上限(token) / 连接协议 / 自定义标签 / 内部标识(只读)
+├── 状态区                 保存与验证分开反馈；失败可「重试验证」（作用在同一条记录）
+└── 取消 / 保存            执行期间显示「保存中…」并禁用（防重复提交）
+                          · 首次引导那一步隐藏这一行（`showActions=false`）：
+                            保存并进流程主按钮，一个按钮同时完成保存与前进
 ```
 
 ## 4. 跨页面共享层

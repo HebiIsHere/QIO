@@ -9,12 +9,44 @@ import { useUiStore } from "../../stores/ui";
 
 vi.mock("../../services/api", () => ({
   api: {
-    listCredentials: vi.fn(async () => ({ credentials: [] })),
-    createCredential: vi.fn(async () => ({ ok: true, key_id: "k1", version: 2 })),
+    listCredentials: vi.fn(async () => ({ credentials: [], default_key_id: null })),
+    listProviders: vi.fn(async () => ({ providers: [], model_note: "" })),
+    createCredential: vi.fn(async () => ({
+      ok: true,
+      saved: true,
+      key_id: "k1",
+      version: 2,
+      credential: {},
+      verify: {
+        ok: true,
+        state: "verified",
+        reason_code: null,
+        message: "模型可用",
+        detail: "",
+        mode: "native",
+      },
+    })),
     revokeCredential: vi.fn(async () => ({ ok: true })),
     deleteCredential: vi.fn(async () => ({ ok: true, key_id: "k1" })),
-    testCredential: vi.fn(async () => ({ key_id: "k1", probe: { mode: "native", detail: "连接正常" } })),
-    updateCredentialMeta: vi.fn(async () => ({ ok: true, credential: {} })),
+    verifyCredential: vi.fn(async () => ({
+      ok: true,
+      key_id: "k1",
+      verify: {
+        ok: true,
+        state: "verified",
+        reason_code: null,
+        message: "模型可用",
+        detail: "连接正常",
+        mode: "native",
+      },
+    })),
+    verifyCredentialDraft: vi.fn(async () => ({
+      ok: true,
+      verify: { ok: true, state: "verified", reason_code: null, message: "模型可用", detail: "", mode: "native" },
+    })),
+    listCredentialModels: vi.fn(async () => ({ models: [] })),
+    setCredentialDefault: vi.fn(async () => ({ ok: true, credential: {} })),
+    updateCredentialMeta: vi.fn(async () => ({ ok: true, credential: {}, verify: null })),
     setCredentialEnabled: vi.fn(async () => ({ ok: true, credential: {} })),
     getCredentialAudit: vi.fn(async () => ({ ok: true, audit: [] })),
     getMemorySettings: vi.fn(async () => ({ fragment_max_turns: 10, fragment_max_tokens: 4096 })),
@@ -212,8 +244,10 @@ describe("SettingsView 凭据分区", () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       credentials: [{ ...CRED, enabled: true }],
+      default_key_id: "k1",
     });
     const w = await mountSettings();
+    await w.find(".cred-card .btn-manage").trigger("click");
     await w.find(".btn-toggle").trigger("click");
     await flushPromises();
     expect(api.setCredentialEnabled).toHaveBeenCalledWith("k1", false);
@@ -224,6 +258,7 @@ describe("SettingsView 凭据分区", () => {
     const { api } = await import("../../services/api");
     (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       credentials: [CRED, { ...CRED, key_id: "k_old", status: "revoked", note: null }],
+      default_key_id: "k1",
     });
     const w = await mountSettings();
     expect(w.findAll(".cred-card").length).toBe(1);
@@ -237,8 +272,12 @@ describe("SettingsView 凭据分区", () => {
 
   it("点击卡片「删除」：先用 QIO 确认层说明后果，确认后才调用 deleteCredential", async () => {
     const { api } = await import("../../services/api");
-    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      credentials: [CRED],
+      default_key_id: "k1",
+    });
     const w = await mountSettings();
+    await w.find(".cred-card .btn-manage").trigger("click");
     await w.find(".btn-danger").trigger("click");
     await flushPromises();
     // 第四阶段：原生 confirm 已替换为 QIO 自己的确认层（layer 档）
@@ -246,6 +285,8 @@ describe("SettingsView 凭据分区", () => {
     expect(dialog.exists()).toBe(true);
     expect(dialog.text()).toContain("彻底删除凭据「k1」？");
     expect(dialog.text()).toContain("不可恢复");
+    // 文案必须说清「删除 ≠ 厂商吊销」
+    expect(dialog.text()).toContain("厂商");
     expect(api.deleteCredential).not.toHaveBeenCalled();
     // 取消：什么都不发生
     await dialog.findAll("button")[0].trigger("click");
@@ -270,18 +311,19 @@ describe("SettingsView 凭据分区", () => {
     w.unmount();
   });
 
-  it("测试凭据：结果以一闪而过的 toast 气泡展示（成功）", async () => {
+  it("重新验证：结果写在凭据分区的反馈里（成功）", async () => {
     const { api } = await import("../../services/api");
-    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ credentials: [CRED] });
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      credentials: [CRED],
+      default_key_id: "k1",
+    });
     const w = await mountSettings();
-    // 第四阶段：管理动作在「管理」区里，先展开再点测试（不再按下标猜按钮）
+    // 第四阶段：管理动作在「更多操作」区里，先展开再点验证（不再按下标猜按钮）
     await w.find(".cred-card .btn-manage").trigger("click");
-    await w.find(".cred-card .btn-test").trigger("click");
+    await w.find(".cred-card .btn-verify").trigger("click");
     await flushPromises();
-    const toast = w.find(".toast");
-    expect(toast.exists()).toBe(true);
-    expect(toast.classes()).toContain("ok");
-    expect(toast.text()).toContain("native");
+    expect(api.verifyCredential).toHaveBeenCalledWith("k1");
+    expect(w.text()).toContain("已验证可用");
     w.unmount();
   });
 });

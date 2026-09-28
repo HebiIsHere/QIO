@@ -523,7 +523,7 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 | 记忆浏览（片段摘要 → 原文） | 星球 → 话题详情 → 片段「查看原文」 | — | 是 |
 | 知识浏览 / 修正 / 归档 | 星球 → 知识页签 + 对话内高影响候选卡 | 高影响候选在回答完成后出现 | 是 |
 | 实体卡浏览 / 修正 | 星球 → 实体页签 | Agent 提取实体卡 | 是 |
-| 凭据管理（新增 / 测试 / 暂停 / 删除 / 审计） | 设置 → 凭据 | 没有可用凭据时的提示指向这里 | 是 |
+| 凭据管理（新增 / 更换 API Key / 重新验证 / 设为默认 / 暂停 / 删除 / 审计） | 设置 → 凭据 | 没有可用凭据时的提示指向这里 | 是 |
 | 联网搜索通道 | 设置 → 模型与联网 | Agent 调 `web_search` | 是 |
 | 电脑操控权限 | 设置 → 工具与权限 | 越界操作触发审批 | 是 |
 | 记忆封块大小 | 设置 → 对话与记忆 | — | 是（语义为「轮」） |
@@ -532,6 +532,10 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 | `POST /api/turns/cancel`（取消当前轮） | — | 前端按 `turn_id` 取消 | 明确内部能力 |
 | `GET /api/graph/positions` | — | 第二阶段后星球改用 overview / browse | 明确内部能力（兼容保留） |
 | `POST /api/credentials/{id}/revoke` | — | 安全侧的吊销动作，保留审计记录 | 明确内部能力（用户入口是「删除」） |
+| `POST /api/credentials/{id}/verify` | — | 「保存后没通过验证」的重试入口 | 明确内部能力（入口是卡片「更多操作 → 重新验证」） |
+| `POST /api/credentials/{id}/default` | 设置 → 凭据「设为默认」 | 第一条验证可用的主对话凭据自动成为默认 | 是（只改排序，不绕过停用/撤销/预算/用途/验证） |
+| `GET /api/credentials/providers` | 设置 → 凭据（厂商下拉） | 表单打开时拉取 | 是（厂商预设的唯一来源） |
+| `POST /api/credentials/verify-draft` | 设置 → 凭据「更换 API Key」 | 换钥前先验证新 Key | 是（只请求给定的服务地址，不落库） |
 
 ### 12.4 工具创建的产品流程
 

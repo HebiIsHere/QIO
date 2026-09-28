@@ -45,6 +45,51 @@ export interface CredentialMeta {
   status: string;
   enabled: boolean;
   note: string | null;
+  /** 连接协议：openai（兼容接口）| anthropic；老数据可能为空，按地址判断 */
+  kind?: string | null;
+  /** unverified 尚未验证 | verified 已验证可用 | failed 上次没通过 | legacy 老数据 */
+  verify_state?: string;
+  verified_at?: string | null;
+  verify_error?: string | null;
+  /** 用户显式设定的默认主对话凭据（同一时刻只有一条） */
+  is_default?: boolean;
+  provider_id?: string | null;
+  provider_name?: string | null;
+}
+
+/** 厂商预设：名称 / 协议 / 地址 / 建议模型的唯一来源（后端下发）。 */
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  kind: string;
+  base_url: string;
+  suggested_model: string;
+  /** official 官方服务 | aggregator 第三方转发 | custom 自定义 */
+  category: string;
+  category_label: string;
+  note: string;
+}
+
+/** 一次可用性验证的结果。「保存成功」与「验证通过」是两件事。 */
+export interface VerifyReport {
+  ok: boolean;
+  state: string;
+  reason_code: string | null;
+  message: string;
+  detail: string;
+  mode: string | null;
+  /** true = 只是临时故障，这条凭据原来的状态保持不变 */
+  state_kept?: boolean;
+}
+
+export interface CredentialCreateResult {
+  ok: boolean;
+  saved: boolean;
+  idempotent?: boolean;
+  key_id: string;
+  version: number;
+  credential: CredentialMeta;
+  verify: VerifyReport;
 }
 
 export interface SearchSettings {
@@ -170,12 +215,52 @@ export interface EntityCard {
 
 export const api = {
   listCredentials: () =>
-    request<{ credentials: CredentialMeta[] }>("/api/credentials"),
-  createCredential: (payload: Record<string, unknown>) =>
-    request<{ ok: boolean; key_id: string; version: number }>("/api/credentials", {
+    request<{ credentials: CredentialMeta[]; default_key_id: string | null }>(
+      "/api/credentials",
+    ),
+  listProviders: () =>
+    request<{ providers: ProviderPreset[]; model_note: string }>(
+      "/api/credentials/providers",
+    ),
+  createCredential: (payload: Record<string, unknown>, signal?: AbortSignal) =>
+    request<CredentialCreateResult>("/api/credentials", {
       method: "POST",
       body: JSON.stringify(payload),
+      signal,
     }),
+  /** 重试验证：作用在同一条记录上，不会重复创建凭据 */
+  verifyCredential: (keyId: string, signal?: AbortSignal) =>
+    request<{ ok: boolean; key_id: string; verify: VerifyReport }>(
+      `/api/credentials/${encodeURIComponent(keyId)}/verify`,
+      { method: "POST", signal },
+    ),
+  /** 保存前验证一份草稿（换钥用）；只请求给定的服务地址，不落库 */
+  verifyCredentialDraft: (payload: {
+    secret: string;
+    endpoint: string;
+    default_model: string;
+    kind?: string;
+  }, signal?: AbortSignal) =>
+    request<{ ok: boolean; verify: VerifyReport }>("/api/credentials/verify-draft", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal,
+    }),
+  listCredentialModels: (params: { endpoint: string; kind?: string; keyId?: string; secret?: string }, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ endpoint: params.endpoint });
+    if (params.kind) query.set("kind", params.kind);
+    if (params.keyId) query.set("key_id", params.keyId);
+    if (params.secret) query.set("secret", params.secret);
+    return request<{ models: string[]; note?: string }>(
+      `/api/credentials/models?${query.toString()}`,
+      { signal },
+    );
+  },
+  setCredentialDefault: (keyId: string) =>
+    request<{ ok: boolean; credential: CredentialMeta }>(
+      `/api/credentials/${encodeURIComponent(keyId)}/default`,
+      { method: "POST" },
+    ),
   revokeCredential: (keyId: string) =>
     request<{ ok: boolean }>(`/api/credentials/${encodeURIComponent(keyId)}/revoke`, {
       method: "POST",
@@ -185,10 +270,10 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}`,
       { method: "DELETE" },
     ),
-  updateCredentialMeta: (keyId: string, payload: Record<string, unknown>) =>
-    request<{ ok: boolean; credential: CredentialMeta }>(
+  updateCredentialMeta: (keyId: string, payload: Record<string, unknown>, signal?: AbortSignal) =>
+    request<{ ok: boolean; credential: CredentialMeta; verify: VerifyReport | null }>(
       `/api/credentials/${encodeURIComponent(keyId)}`,
-      { method: "PATCH", body: JSON.stringify(payload) },
+      { method: "PATCH", body: JSON.stringify(payload), signal },
     ),
   setCredentialEnabled: (keyId: string, enabled: boolean) =>
     request<{ ok: boolean; credential: CredentialMeta }>(
@@ -200,7 +285,7 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}/audit`,
     ),
   testCredential: (keyId: string) =>
-    request<{ key_id: string; probe: { mode: string; detail: string } }>(
+    request<{ key_id: string; verify: VerifyReport; probe: { mode: string; detail: string } }>(
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
       { method: "POST" },
     ),

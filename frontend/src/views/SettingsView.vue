@@ -5,13 +5,14 @@
  * 服务端 tuning（SearXNG、原始阈值、图形诊断）收进「高级」，默认不打扰普通用户。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, type Ref } from "vue";
-import { api, type CredentialMeta } from "../services/api";
+import { api, type CredentialMeta, type VerifyReport } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
 import { useOnboardingStore } from "../stores/onboarding";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
+import { readableError, usageLabel, type CredentialMode } from "../services/credentials";
 import QConfirm from "../components/ui/QConfirm.vue";
 import UpdateCard from "../components/UpdateCard.vue";
 import { usePresence } from "../composables/usePresence";
@@ -108,11 +109,13 @@ function beginSave(key: NoticeKey, text = "保存中…"): void {
 
 /* ---------------- 凭据 ---------------- */
 const credentials = ref<CredentialMeta[]>([]);
+/** 当前默认使用（后端算好：显式默认项优先，否则按排序回落） */
+const defaultKeyId = ref<string | null>(null);
 const credFilter = ref<"all" | "enabled" | "disabled" | "revoked" | "expired">("enabled");
 const modal = ref<{
   open: boolean;
   mode: CredentialModalMode;
-  initial: Record<string, unknown> | null;
+  initial: CredentialMeta | null;
 }>({ open: false, mode: "create", initial: null });
 /** 凭据弹窗的退出动画：关闭时先淡出再卸载，功能完成不依赖动画事件 */
 const credModal = usePresence(() => modal.value.open, 150);
@@ -145,46 +148,79 @@ function openCreate() {
   modal.value = { open: true, mode: "create", initial: null };
 }
 function openMeta(c: CredentialMeta) {
-  modal.value = { open: true, mode: "meta", initial: { ...c } };
+  modal.value = { open: true, mode: "edit", initial: c };
 }
 function openRotate(c: CredentialMeta) {
-  modal.value = {
-    open: true,
-    mode: "rotate",
-    initial: { ...c, key_id: `${c.key_id}_new` },
-  };
+  modal.value = { open: true, mode: "rotate", initial: c };
 }
 
 async function load() {
   try {
-    credentials.value = (await api.listCredentials()).credentials;
+    const result = await api.listCredentials();
+    credentials.value = result.credentials;
+    defaultKeyId.value = result.default_key_id;
   } catch (e) {
     setNotice("cred", "err", errText("加载凭据", e));
   }
 }
 
-async function onModalSave(payload: Record<string, unknown>) {
+/**
+ * 表单已经完成「保存 + 验证」的全部工作（与首次引导共用同一套逻辑），
+ * 这里只负责：把结果如实转述给用户、必要时提供重试入口、刷新列表。
+ *
+ * 「保存成功」与「验证通过」必须分开说：写入成功但模型没通，也绝不能显示成可用。
+ */
+async function onModalSaved(payload: {
+  credential: CredentialMeta | null;
+  report: VerifyReport | null;
+  mode: CredentialMode;
+}) {
   clearNotice("cred");
-  const mode = modal.value.mode;
-  const target = modal.value.initial?.key_id;
+  modal.value.open = false;
+  await load();
+  const { report, mode } = payload;
+  if (!report) {
+    setNotice("cred", "ok", mode === "edit" ? "已保存修改" : "已保存");
+    return;
+  }
+  if (report.ok) {
+    setNotice(
+      "cred",
+      "ok",
+      mode === "rotate" ? "已保存，模型可用（新的 API Key 已生效）" : "已保存，模型可用",
+    );
+    return;
+  }
+  setNotice(
+    "cred",
+    "warn",
+    `已保存，尚未通过验证：${report.message}。这条凭据不会被自动选用；可在卡片「更多操作 → 重新验证」重试。`,
+  );
+}
+
+async function retryVerify(c: CredentialMeta) {
+  clearNotice("cred");
   try {
-    if (mode === "meta" && target) {
-      await api.updateCredentialMeta(String(target), payload);
-      setNotice("cred", "ok", "凭据元数据已更新（密钥未变）");
-    } else {
-      await api.createCredential(payload);
-      setNotice(
-        "cred",
-        "ok",
-        mode === "rotate" && target
-          ? `新凭据已创建。请撤销旧凭据「${target}」，避免双 key 并存（预算各计）。`
-          : "凭据已创建",
-      );
-    }
-    modal.value.open = false;
+    const result = await api.verifyCredential(c.key_id);
     await load();
+    if (result.verify.ok) {
+      setNotice("cred", "ok", `「${c.note || c.provider_name || c.key_id}」已验证可用`);
+    } else {
+      setNotice("cred", "warn", `仍未通过验证：${result.verify.message}`);
+    }
   } catch (e) {
-    setNotice("cred", "err", `${mode === "meta" ? "更新" : "创建"}凭据失败：${(e as Error).message}`);
+    setNotice("cred", "err", errText("验证凭据", e));
+  }
+}
+
+async function setAsDefault(c: CredentialMeta) {
+  clearNotice("cred");
+  try {
+    await api.setCredentialDefault(c.key_id);
+    await load();
+    setNotice("cred", "ok", `已把「${c.note || c.provider_name || c.key_id}」设为默认使用`);
+  } catch (e) {
+    setNotice("cred", "err", readableError(e));
   }
 }
 
@@ -204,7 +240,10 @@ function remove(keyId: string) {
   // 不可恢复的高风险动作：用 QIO 自己的确认层（layer 档），并说清后果。
   askConfirm({
     title: `彻底删除凭据「${keyId}」？`,
-    detail: "会删除密钥与这条凭据的全部记录，不可恢复。如果只是想让密钥失效、保留审计历史，请用「撤销」。",
+    detail:
+      "会从 QIO 里删除这把密钥与这条凭据的全部记录，不可恢复。" +
+      "这只是删除 QIO 本地的配置：厂商那边的 API Key 依然有效，需要作废请到厂商后台操作。" +
+      "如果只是想在本机让它失效、保留审计历史，请用「撤销密钥」。",
     confirmText: "删除",
     tone: "danger",
     run: async () => {
@@ -227,7 +266,9 @@ function remove(keyId: string) {
 function revoke(keyId: string) {
   askConfirm({
     title: `撤销凭据「${keyId}」？`,
-    detail: "密钥会立即作废并从密钥库移除；这条记录与审计历史会保留下来，之后可以恢复或彻底删除。",
+    detail:
+      "密钥会立即从本机密钥库移除，QIO 不再能用它；这条记录与审计历史会保留下来。" +
+      "注意：厂商那边的 API Key 不会被吊销，仍然有效且可能产生费用，需要作废请到厂商后台操作。",
     confirmText: "撤销",
     tone: "danger",
     run: async () => {
@@ -265,27 +306,6 @@ async function resolveConfirm() {
   const pending = pendingConfirm.value;
   pendingConfirm.value = null;
   if (pending) await pending.run();
-}
-
-async function test(keyId: string) {
-  try {
-    const result = await api.testCredential(keyId);
-    showToast(`${keyId}: ${result.probe.mode}（${result.probe.detail.slice(0, 60)}）`, "ok");
-  } catch (e) {
-    showToast((e as Error).message, "err");
-  }
-}
-
-/** 测试凭据结果：以浮现又消失的 toast 气泡展示 */
-const toast = ref<{ text: string; kind: "ok" | "err" } | null>(null);
-let toastTimer: ReturnType<typeof setTimeout> | null = null;
-function showToast(text: string, kind: "ok" | "err") {
-  if (toastTimer) clearTimeout(toastTimer);
-  toast.value = { text, kind };
-  toastTimer = setTimeout(() => {
-    toast.value = null;
-    toastTimer = null;
-  }, 2600);
 }
 
 /* ---------------- 外观 ---------------- */
@@ -1403,7 +1423,10 @@ watch(activeTab, async () => {
               <h2>凭据</h2>
               <button type="button" class="qio-btn primary new-cred" @click="openCreate">＋ 新建凭据</button>
             </div>
-            <p class="desc">密钥只写不读：保存后不再显示明文，仅本地写入 keyring，服务器不落盘。</p>
+            <p class="desc">
+              密钥只写不读：保存后不再显示明文，只写进本机的系统凭据库（keyring），QIO 的数据库里没有它。
+              在 QIO 里停用、撤销或删除凭据，都不会去厂商那边吊销 API Key —— 需要作废 Key 时请到厂商后台操作。
+            </p>
             <p v-if="notices.cred" class="msg" :class="notices.cred.kind" role="alert">
               {{ notices.cred.text }}
             </p>
@@ -1425,15 +1448,20 @@ watch(activeTab, async () => {
               v-for="c in filteredCredentials"
               :key="c.key_id"
               :credential="c"
-              @test="test(c.key_id)"
+              :is-default="defaultKeyId === c.key_id"
               @edit-meta="openMeta(c)"
               @rotate="openRotate(c)"
+              @verify="retryVerify(c)"
+              @set-default="setAsDefault(c)"
               @toggle-enabled="toggleEnabled(c)"
               @revoke="revoke(c.key_id)"
               @remove="remove(c.key_id)"
             />
             <p v-if="!filteredCredentials.length" class="empty mono">
               {{ credFilter === "all" ? "尚无凭据。" : "该筛选下无凭据。" }}
+            </p>
+            <p v-if="filteredCredentials.length && !defaultKeyId" class="msg warn" role="status">
+              当前没有可用的主对话凭据，QIO 还答不了话：请新建一把，或把某条凭据「重新验证」通过后设为默认。
             </p>
           </section>
         </div>
@@ -1512,13 +1540,9 @@ watch(activeTab, async () => {
       :mode="modal.mode"
       :initial="modal.initial"
       :leaving="credModal.leaving.value"
-      @save="onModalSave"
+      @saved="onModalSaved"
       @cancel="modal.open = false"
     />
-
-    <transition name="toast">
-      <div v-if="toast" class="toast" :class="toast.kind" role="status">{{ toast.text }}</div>
-    </transition>
   </div>
 </template>
 

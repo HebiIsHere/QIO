@@ -9,10 +9,11 @@
  */
 import { computed, onMounted, reactive, ref } from "vue";
 import { useOnboardingStore } from "../../stores/onboarding";
-import { api, type OnboardingSubmitPayload } from "../../services/api";
-import { identifyCredential } from "../../services/identify";
+import { api, type CredentialMeta, type OnboardingSubmitPayload, type VerifyReport } from "../../services/api";
 import { getTheme, setTheme, type Theme } from "../../utils/theme";
+import CredentialForm from "../credentials/CredentialForm.vue";
 import QInput from "../ui/QInput.vue";
+import { usageSummary } from "../../services/credentials";
 import { GOAL_EXAMPLES, ONBOARDING_STEPS, PREFERENCE_DIMENSIONS, type StepKey } from "./steps";
 
 const emit = defineEmits<{ done: [] }>();
@@ -31,11 +32,54 @@ const isLast = computed(() => index.value === ONBOARDING_STEPS.length - 1);
 const closable = computed(
   () => Boolean(store.status?.has_content) || Boolean(store.status?.done),
 );
-/** 已经配过密钥的老用户不必再填一次 */
+/**
+ * 「连接模型」这一步和设置页共用同一个表单（默认厂商、默认用途、保存与验证逻辑全一致）。
+ * 这里只记最后一次结果：验证通过才算准备好了。
+ */
+const credentialReport = ref<VerifyReport | null>(null);
+const credentialSaved = ref<CredentialMeta | null>(null);
+/** 共用表单的句柄：这一步的主按钮由引导页给，点了就提交它 */
+const credentialForm = ref<{ submit: () => Promise<void>; busy: boolean; touched: boolean } | null>(
+  null,
+);
 const credentialReady = computed(
-  () => credentialState.value === "ok" || Boolean(store.status?.has_credential),
+  () => credentialReport.value?.ok === true || Boolean(store.status?.has_credential),
 );
 const canLeaveCredential = computed(() => credentialReady.value || Boolean(store.status?.has_content));
+/**
+ * 「连接模型」这一步只有一个主按钮。
+ *
+ * 以前是表单自己的「保存」+ 底部「下一步」两个按钮并排：用户得先保存、再前进，
+ * 而且两步之间的关系看不出来。现在合并成一个 —— 需要保存时它叫「保存」（保存
+ * 通过就自动进入下一步），已经有可用凭据又没在填新的时候它就叫「下一步」。
+ */
+const credentialNeedsSave = computed(
+  () => !credentialReady.value || Boolean(credentialForm.value?.touched),
+);
+const credentialPrimaryLabel = computed(() => {
+  if (credentialForm.value?.busy) return "保存中…";
+  return credentialNeedsSave.value ? "保存" : "下一步";
+});
+/**
+ * 「跳过」只在它比主按钮多做一件事的时候出现。
+ *
+ * 已有可用凭据、用户也没在填新的 → 主按钮就是「下一步」，此时再放一个「跳过」
+ * 是同义重复（两个按钮做的是同一件事）；只有「确实有一份还没保存的填写」时，
+ * 「保存」与「这次不配了，直接往下走」才是两件不同的事。
+ */
+const showCredentialSkip = computed(() => closable.value && credentialNeedsSave.value);
+const credentialHint = computed(() => {
+  if (credentialReady.value && !credentialNeedsSave.value) {
+    return "已有一把通过验证的密钥，点「下一步」继续就行；下面也可以再添加一把。";
+  }
+  if (credentialReady.value) {
+    return "下面可以直接再添加一把密钥；不想现在配就点「跳过」。";
+  }
+  if (closable.value) {
+    return "选厂商、填 API Key，然后点「保存」：QIO 会把它配成主对话用途，并真的调用一次来确认模型可用。不想现在配就点「跳过」，之后可以在设置里补。";
+  }
+  return "选厂商、填 API Key，然后点「保存」：QIO 会把它配成主对话用途，并真的调用一次来确认模型可用。没有可用密钥时 QIO 无法回答任何问题，所以这一步不能跳过。";
+});
 
 const draft = reactive({
   name: "",
@@ -58,14 +102,6 @@ const draft = reactive({
 const goalInput = ref("");
 const nameError = ref("");
 const showOptional = ref(false);
-
-/** 连接模型 */
-const apiKey = ref("");
-const credentialState = ref<"idle" | "saving" | "ok" | "err">("idle");
-const credentialNote = ref("");
-const identifiedProvider = ref("");
-const identifiedEndpoint = ref("");
-const identifiedModel = ref("");
 
 /** 偏好 */
 const theme = ref<Theme>(getTheme());
@@ -136,10 +172,9 @@ async function next() {
     }
     nameError.value = "";
   }
-  if (step.value === "credential" && !canLeaveCredential.value) {
-    credentialNote.value = "没有可用的密钥就无法继续：QIO 需要它才能回答、记忆和提炼。";
-    return;
-  }
+  // 兜底：密钥这一步没有可用凭据时不前进（正常入口是主按钮 → 表单校验，
+  // 错误显示在表单里；这里只是防止将来别处直接调用 next() 绕过它）。
+  if (step.value === "credential" && !canLeaveCredential.value) return;
   if (step.value === "goal" || step.value === "preference") {
     // 追问基于用户自己写下的描述：进入追问步骤时现问一次
     goNext();
@@ -180,58 +215,27 @@ async function loadQuestions() {
   }
 }
 
-async function saveCredential() {
-  const secret = apiKey.value.trim();
-  if (!secret) {
-    credentialState.value = "err";
-    credentialNote.value = "请先填入 API Key";
-    return;
-  }
-  if (!looksLikeKey(secret)) {
-    credentialState.value = "err";
-    credentialNote.value = "这看起来不是 API Key（像链接 / 路径 / 报错文本）：请粘贴完整的 Key 本身";
-    return;
-  }
-  credentialState.value = "saving";
-  credentialNote.value = "";
-  const identified = await identifyKey(secret);
-  try {
-    // 用途标签必须带上：没有标签的密钥在 QIO 里任何角色都选不中（主循环、追问都用不了）
-    const payload: Record<string, unknown> = { secret, tags: ["main-loop"] };
-    if (identified && identifiedEndpoint.value) {
-      payload.endpoint = identifiedEndpoint.value;
-      if (identifiedModel.value) payload.default_model = identifiedModel.value;
-    }
-    const created = await api.createCredential(payload);
-    await api.testCredential(created.key_id);
-    credentialState.value = "ok";
-    credentialNote.value = identifiedProvider.value
-      ? `已连接 ${identifiedProvider.value}，模型可用`
-      : "已连接，模型可用";
-  } catch (error) {
-    credentialState.value = "err";
-    credentialNote.value = error instanceof Error ? error.message : "连接失败，可以稍后在设置页重试";
+function onCredentialSaved(payload: {
+  credential: CredentialMeta | null;
+  report: VerifyReport | null;
+}) {
+  credentialReport.value = payload.report;
+  credentialSaved.value = payload.credential ?? credentialSaved.value;
+  // 引导页要在本机也立刻反映「已经有一把可用凭据」，否则同一份状态会被判定成没配。
+  if (payload.report?.ok) {
+    void store.load();
+    // 合并后的主按钮：保存通过就继续下一步（没通过则留在原地看原因并重试）
+    goNext();
   }
 }
 
-async function identifyKey(secret: string): Promise<boolean> {
-  try {
-    const result = await identifyCredential(secret);
-    if (!result.identified || !result.base_url) return false;
-    identifiedProvider.value = result.provider ?? "";
-    identifiedEndpoint.value = result.base_url;
-    identifiedModel.value = result.default_model ?? "";
-    return true;
-  } catch {
-    return false;
+/** 「连接模型」的主按钮：该保存就保存（保存通过后自动前进），否则直接前进。 */
+async function onCredentialPrimary() {
+  if (!credentialNeedsSave.value) {
+    await next();
+    return;
   }
-}
-
-function looksLikeKey(secret: string): boolean {
-  if (secret.length < 20 || secret.length > 200) return false;
-  if (/\s/.test(secret)) return false;
-  if (secret.includes("://") || secret.includes("->")) return false;
-  return !secret.startsWith("/") && !secret.startsWith("http");
+  await credentialForm.value?.submit();
 }
 
 function chooseTheme(nextTheme: Theme) {
@@ -369,23 +373,17 @@ async function finish() {
 
         <section v-else-if="step === 'credential'" class="panel">
           <h2>连接模型</h2>
-          <p class="hint">
-            <template v-if="store.status?.has_credential">
-              已有一把可用的密钥，这一步不用再填；如果要换一把，在下面粘贴新的即可。
-            </template>
-            <template v-else>
-              填入 API Key，QIO 会自动识别提供方、把它配成主循环用途，并做一次连通测试。
-              <template v-if="!closable">没有可用密钥时 QIO 无法回答任何问题，所以这一步不能跳过。</template>
-            </template>
+          <p class="hint">{{ credentialHint }}</p>
+          <CredentialForm
+            ref="credentialForm"
+            mode="create"
+            variant="onboarding"
+            :show-actions="false"
+            @saved="onCredentialSaved"
+          />
+          <p v-if="credentialSaved && credentialReport?.ok" class="note ok">
+            已保存，模型可用；用途：{{ usageSummary(credentialSaved.tags) }}。
           </p>
-          <QInput v-model="apiKey" type="password" placeholder="粘贴 API Key…" />
-          <button class="qio-btn mini" type="button" :disabled="credentialState === 'saving'" @click="saveCredential">
-            {{ credentialState === "saving" ? "测试中…" : "保存并测试" }}
-          </button>
-          <p v-if="credentialNote" class="note" :class="credentialState === 'ok' ? 'ok' : 'err'">
-            {{ credentialNote }}
-          </p>
-          <p v-if="identifiedProvider" class="note ok">已识别：{{ identifiedProvider }} · {{ identifiedEndpoint }}</p>
         </section>
 
         <section v-else-if="step === 'profile'" class="panel">
@@ -527,7 +525,7 @@ async function finish() {
 
       <footer class="onboarding-actions">
         <button
-          v-if="step === 'credential' && closable"
+          v-if="step === 'credential' && showCredentialSkip"
           class="qio-btn quiet skip"
           type="button"
           @click="skip"
@@ -538,7 +536,17 @@ async function finish() {
           跳过
         </button>
         <button v-if="!isFirst" class="qio-btn quiet back" type="button" @click="back">上一步</button>
-        <button v-if="!isLast" class="qio-btn primary" type="button" @click="next">
+        <button
+          v-if="step === 'credential'"
+          class="qio-btn primary credential-primary"
+          type="button"
+          :disabled="Boolean(credentialForm?.busy)"
+          :aria-busy="credentialForm?.busy ? 'true' : undefined"
+          @click="onCredentialPrimary"
+        >
+          {{ credentialPrimaryLabel }}
+        </button>
+        <button v-else-if="!isLast" class="qio-btn primary" type="button" @click="next">
           {{ isFirst ? "开始设置" : "下一步" }}
         </button>
         <button v-else class="qio-btn primary finish" type="button" :disabled="store.saving" @click="finish">

@@ -49,7 +49,7 @@
 ### M2 — 凭据层（BYOK）
 
 - **Status：** completed
-- **Implementation：** `credentials/store.py`（密钥进 keyring，元数据进 SQLite）、`credentials/policy.py`（按标签解析 + 快照）、`services/identify.py`（Key 识别与端点探测）
+- **Implementation：** `credentials/store.py`（密钥进 keyring，元数据进 SQLite）、`credentials/policy.py`（按标签解析 + 快照）、`credentials/providers.py`（厂商预设的唯一来源：名称 / 协议 / 地址 / 建议模型 / 类别）、`services/verify.py`（只对**用户选定的地址**做一次真实调用验证）
 - **Implementation（2026-09-15 身份边界）：** `endpoint` 视为凭据的**安全身份**而不是普通元数据：变化必须重新输入 secret 并显式确认（`confirm_reconfigure=true`），否则 HTTP 层与 store 双层拒绝；默认只允许 HTTPS，明文 HTTP 仅限 loopback 本地 provider。主 Agent Loop 的凭据解析改为 **`main-loop` 标签优先**（以前排序把专项凭据排在前面，一个 `vision` Key 会被主循环静默拿去用），专项标签只在没有 main-loop 可用时回落。
 - **Implementation（2026-09-21 后端可用性）：** 凭据后端的解析改为**惰性**：`CredentialStore` 构造期不再探测系统 keyring，
   第一次真正读写密钥时才解析并缓存。语义上读写不对称是有意的 ——
@@ -57,10 +57,24 @@
   （应用本来就有「当前没有可用凭据」的降级路径），**写路径**（存 / 轮换 / 删除）仍然大声抛错，
   绝不静默降级到 no-op 后端。动机：headless 环境（CI 的 ubuntu runner、容器、无 SecretService 的机器）
   没有任何可用后端，而旧的构造期抛错会让应用工厂与大量测试在启动阶段直接失败。
-- **Tests：** `backend/tests/test_credentials.py`、`test_identify.py`、`test_tool_credentials.py`
+- **Implementation（2026-09-28 保存与验证分离）：** 删除「把同一把 Key 依次探测十几家候选厂商」的自动识别模块：
+  厂商由用户明确选择，Key 前缀只做**本地**提示，验证请求只发往选定的那一个地址，
+  失败也不会转投别家。`credentials` 表新增 `kind` / `verify_state` / `verified_at` / `verify_error` / `is_default`
+  （迁移 21，只追加）：历史凭据回填 `legacy`（按老行为视为可用，不误标未验证、不停止使用），并把第一条可用的
+  主对话凭据回填为默认项。新建凭据缺省用途 = 主对话；显式提交空用途返回可理解的中文错误（不静默覆盖）。
+  保存 = 必要校验 + 安全写入 + 一次自动可用性验证，两者分别反馈（「已保存，模型可用」/「已保存，尚未通过验证」）；
+  写入失败不留半条记录。未通过验证的凭据不进自动选择（`CredentialPolicy.resolve` 只认 `verified` / `legacy`），
+  因此首次引导也不会误判为已配置完成。显式默认项只影响**合法候选之间**的排序，不绕过停用、撤销、预算与用途限制；
+  第一条验证可用的主对话凭据自动成为默认，后续新增不替换（重试与换钥都作用在同一条记录上，带 `client_request_id`
+  的重复提交按确定性标识去重）。验证与正式对话共用同一套协议判断（OpenAI 兼容走 `probe_adapter`，Anthropic 走
+  `probe_anthropic`），「拿到模型列表」不再被当作「模型可用」。
+- **Tests：** `backend/tests/test_credentials.py`、`test_identify.py`、`test_credential_verify.py`、`test_tool_credentials.py`
 - **Tests（2026-09-15 追加）：** `test_credential_identity.py`（只改 endpoint 必须被拒、https 默认、loopback 例外）、`test_credential_routing.py`（main-loop 优先、专项凭据只作回落、无匹配用途不得拿别的标签顶上）、`test_credential_endpoint_api.py`（HTTP 层同一套规则）
 - **Known limitations：** 真实凭据读写只在 Windows 凭据库上验证过（headless 环境没有可用后端时，
-  读路径返回「无凭据」、写路径报错）；预算以 token 计数为主。
+  读路径返回「无凭据」、写路径报错）；预算以 token 计数为主（界面也按 token 显示，不再出现人民币符号）；
+  预设里的「建议模型」只是推荐值，是否真的可用由保存后的一次实际调用决定，因此没有可靠默认模型的服务
+  （聚合/自定义）要求用户自己选一个模型；`用量上限` 与实际计量一致，但运行期还没有按调用累计用量
+  （`record_usage` 目前只有测试调用），所以「已用量」这条进度在真实使用中基本停在 0。
 - **后续依赖：** M3 适配层、M10 子 agent、embedding 选档都从这里取 Key。
 
 ### M3 — 模型适配层
@@ -156,6 +170,24 @@
 - **Implementation：** `frontend/src/views/`（对话页、星球页、设置页、调试页）、`frontend/src/components/`、`frontend/src/stores/`、`frontend/src/planet/`、`frontend/src-tauri/`（桌面壳）。2026-09-12 稳定化：审批失败保留待审批项并可重试（失败 ≠ 已授权）、锚点切换以后端成功为准、token 用量按 `turn_id` 归属、流式 Markdown 增量渲染、流式自动跟随（上翻即停）、QNumber 统一 commit 语义、设置页分区反馈与凭据留空不清除、星球详情竞态防护、浮动组件单击不贴靠且 resize 保持贴靠关系。
 - **Implementation（2026-09-15 第三阶段 · 状态表达与事件收口）：** 事件集合与后端 `EventType` 完全一致（守卫测试 `backend/tests/test_event_protocol.py`：集合相等、每个事件都有生产者、都必须被前端消费）——删掉 `MEMORY_INJECT`（前端写了 case、后端从来不发；普通用户不需要知道「注入了 4 条记忆」，开发者改看 `/debug` 的单轮 `injection`），补上 `TOOL_START` / `TOOL_CREATE_STATUS` / `KNOWLEDGE_CANDIDATE` / `CREDENTIAL_STATUS` / `FALLBACK` / `APPROVAL_RESULT` 的消费分支。工具卡变成「开始时立刻出现运行中、结束时按 `call_id` 原地更新」（不再等结束才可见、不再出现重复卡，并显示耗时与失败结论）；`SUBAGENT_STATUS` 独立成「独立任务」卡（不再混进普通工具卡，按 `task_id` 原地更新）；工具创建是一张卡（`ToolCreationCard.vue`）；高影响知识候选在**回答完成之后**以低干扰卡片出现（`KnowledgeCandidateCard.vue`，保存 / 修改 / 忽略，修改是很轻的内联编辑）；全局只保留一句整体状态（正在处理 / 正在使用工具 / 等待你确认 / 正在处理独立任务 / 正在整理独立任务的结果），不再暴露内部事件名；审批弹窗新增「授权范围：仅这一次 / 长期生效」并优先显示具体访问清单。
 - **Tests（2026-09-15 追加）：** `stores/__tests__/phase3Cards.test.ts`（TOOL_START→TOOL_END 同一张卡、独立任务按 task_id 更新、工具创建按 group_id 推进、候选只在 TURN_END 后出现、凭据/降级提示不含内部标识、notify 轮不清排队标记）、`components/__tests__/MessageStream.test.ts`（整体状态文案与「不出现内部事件名」）
+- **Implementation（2026-09-28 凭据表单统一）：** 首次引导的「连接模型」与设置页的凭据弹窗改为**同一个组件**
+  （`frontend/src/components/credentials/CredentialForm.vue` + `services/credentials.ts` 的 `useCredentialForm`），
+  默认值、校验与提示语不再有第二份实现。基础区只保留厂商（可搜索的 `QCombo`）、API Key（可显隐）、用途
+  （默认「主对话」，可点「修改」多选）与「取消 / 保存」；地址、协议、模型、显示名称、用量上限、自定义标签与
+  只读的内部标识都收进默认收起的「高级设置」。主按钮固定「保存」（执行中「保存中…」+ 独立的进度/结果区，
+  提交期间禁用按钮并中断旧请求：关闭表单、切换厂商或改 Key 之后，旧结果不会覆盖新状态）。选厂商即补齐地址、
+  协议与建议模型；「其他 / 自定义服务」直接展开必填项；拿不到模型列表时可手填。凭据卡默认只给结论
+  （名称/厂商、模型、中文用途、当前默认标记、启用状态与验证状态），地址/内部标识/版本/审计收进详情，
+  常用入口是「编辑」与「更多操作」，「换钥」改名「更换 API Key」（先验证新 Key 再原子替换，失败保留原凭据）。
+  文案明确：在 QIO 里撤销或删除凭据**不会**吊销厂商账户里的 API Key。
+- **Implementation（2026-09-28 续 · 引导页合并按钮）：** 首次引导「连接模型」这一步只有一个主按钮：
+  该保存时它是「保存」，保存并验证通过后自动进入下一步；已经有可用凭据又没在填新的时它是「下一步」。
+  「跳过」只在它比主按钮多做一件事时才出现（确实有一份没保存的填写）：已有可用凭据且没在填新的时，
+  「跳过」与主按钮是同一件事，因此只保留主按钮；没有任何可用凭据时它仍是「先不配，往下走」的出口。
+  表单自己那一行「取消 / 保存」在这一步隐藏（`showActions=false`，由引导页调用表单的 `submit()`）。
+  验证没通过就停在原地，原因与「重试验证」显示在表单里。同一个表单里如果**已经写过库**，
+  后续的保存一律作用在那条记录上：钥匙没变 = 只重试验证（不写库、不涨版本），钥匙变了 = 原子替换
+  （失败保留原凭据），改地址/协议仍要求显式确认 —— 避免「改掉打错的 Key 再点保存」意外新建第二条凭据。
 - **Implementation（续 2026-09-14 体验轮）：** 复制的诚实反馈（剪贴板不存在/写入失败一律显示「复制失败」，不再假装成功）、草稿连续（输入草稿存 `session.draft`，切页不丢；发送失败回填草稿并撤掉未获受理的乐观消息）、排队请求失败不再清除仍在运行的任务状态、只有本机发送才把消息流拉回底部（后台任务开始不打断向上阅读）、星球详情加载失败独立可见且可重试（与「从这里继续」的错误分开）、QNumber 手输在真实父组件绑定下也会在失焦/回车时提交一次、知识页筛选框有可见标签与「全部」回退项。动效：设置与星球出现/消失 170–260ms、星球相机 420–460ms、边栏重新居中和宽度过渡同时发生、脚本相机补间遵守 `prefers-reduced-motion`。设计规则同步在 `docs/superpowers/specs/2026-08-09-qio-frontend-design.md`。
 - **Implementation（2026-09-14 状态一致性补齐）：** 阅读位置随会话保留（上翻阅读 → 设置/星球 → 返回恢复到原位置，恢复期间的程序性 scroll 不参与跟随判定；容器未完成布局时重试有上限）；设置页记住上次分类与分类列表滚动位置（存 ui store，仅同次运行期）；星球首次数据加载失败有可见失败条与重试；四个设置保存路径（记忆/对话深度/搜索/维护）加请求归属序号，旧响应不回填、不用陈旧成功盖住新的失败；起点请求在页面已关闭时失败会回到对话页可见；代码复制按钮每个独立计时（连续复制不同代码块各自复位）、失败时选中代码作为手动复制退路、`@media (hover: none)` 下默认可见（触屏可发现）；审批失败后焦点回到对话框。
 - **Implementation（2026-09-14 动画与反馈统一）：** 动画参数按用途分层落到令牌（按下 80ms / 开关选中 150ms / 菜单弹窗 170ms / 设置打开 220ms / 返回 170ms / 侧栏 210ms / 星球打开 300ms、关闭 200ms / 聚焦 320ms 且短距离 0.6×，曲线 `--ease-out` 打开、`--ease-in` 关闭），并去掉唯一的 `transition: all`；菜单与弹窗补齐出现与退出（退出结束从 DOM 移除，菜单退出期间不拦截点击、模态退出期间保留遮罩拦截），折叠的队列列表也补了短过渡；新增「跟随系统 / 标准 / 减少动画」偏好（`localStorage(qio-motion)` + `html[data-motion]`），CSS 过渡与星球相机补间读同一份结果、运行中切换立即生效，减少动画或时长为零时跳过退出阶段；按钮按下反馈立即开始（`.qio-btn/.qio-select/.opt/.tag-chip/.qio-btn` 独立 80ms 位移），处理中用 `min-width` 固定尺寸避免周围跳动，开关「关闭」与「禁用」视觉上区分；运行中任务与排队项分别用「停止」「取消排队」，取消请求期间显示等待确认、失败留下可见错误；队列项的旧 `TURN_END` 不再结束当前运行状态；流式正文标记 `aria-busy` 且不设 live 区域（不逐字播报）。
@@ -664,6 +696,13 @@
   （实测一次 51.5 秒的 turn 只记录了 1.7 秒模型耗时），无法从 Trace 解释时间去向。
 - **无嵌入模型时话题预判变弱**：缺本地 ONNX 模型时降级到规则层，关键词重叠分数被 1-gram/2-gram
   分词稀释；阈值调整需要 eval 支撑（见 P3）。
+- **内置嵌入模型已有离线基线，但只有两小套用例**：`python -m agent.eval.run --embedding onnx`
+  把真实模型接进话题判定（12 条）与检索（8 条）两套评测，结果存 `backend/evals/baseline_onnx.json`，
+  明细见 `docs/superpowers/notes/2026-09-23-embedding-baseline.md`。数字指向两处需要重新校准：
+  话题阈值 0.7 对真实模型偏严（「继续聊 SQLite 迁移」被判成新话题），检索排序权重是在
+  「关键词召回候选很少」的前提下调的（向量召回把「近但无关」的条目也带进候选，`person_entity`
+  与 `cross_topic_recall` 因此从对变错）。锚点延续评测没有接模型；用例规模只够看方向，
+  不是生产准确率。
 - **记忆的类别化衰减**：只对已有可靠元数据（知识条目 vs 片段）做差异化；未引入模型生成的记忆分类字段。
 - **多用户/多会话并发 Agent Server**：明确不做。当前是单机、单用户的 single-flight 主 turn。
 - **非 Windows 平台**：keyring 与桌面壳只在 Windows 验证，Linux/macOS 未验证。

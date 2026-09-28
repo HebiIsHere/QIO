@@ -3,9 +3,47 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import OnboardingWizard from "../OnboardingWizard.vue";
 import { api } from "../../../services/api";
-import { identifyCredential } from "../../../services/identify";
 
-vi.mock("../../../services/identify", () => ({ identifyCredential: vi.fn() }));
+const PRESETS = [
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    kind: "openai",
+    base_url: "https://api.deepseek.com/v1",
+    suggested_model: "deepseek-v4-flash",
+    category: "official",
+    category_label: "官方服务",
+    note: "",
+  },
+  {
+    id: "custom",
+    name: "其他 / 自定义服务",
+    kind: "openai",
+    base_url: "",
+    suggested_model: "",
+    category: "custom",
+    category_label: "自定义服务",
+    note: "",
+  },
+];
+
+function credentialMeta(overrides: Record<string, unknown> = {}) {
+  return {
+    key_id: "k1",
+    version: 1,
+    tags: ["main-loop"],
+    endpoint: "https://api.deepseek.com/v1",
+    default_model: "deepseek-v4-flash",
+    budget: null,
+    budget_used: 0,
+    status: "active",
+    enabled: true,
+    note: "DeepSeek",
+    verify_state: "verified",
+    is_default: true,
+    ...overrides,
+  };
+}
 
 const baseStatus = {
   done: false,
@@ -32,11 +70,38 @@ function mountWizard(status: Record<string, unknown> = {}) {
   });
   vi.spyOn(api, "completeOnboarding").mockResolvedValue({ ...merged, done: true });
   vi.spyOn(api, "suggestFollowUps").mockResolvedValue({ questions: [] });
-  vi.spyOn(api, "createCredential").mockResolvedValue({ ok: true, key_id: "k1", version: 1 });
-  vi.spyOn(api, "testCredential").mockResolvedValue({
-    key_id: "k1",
-    probe: { mode: "native", detail: "ok" },
+  vi.spyOn(api, "listProviders").mockResolvedValue({
+    providers: PRESETS,
+    model_note: "预设里的模型名只是推荐值",
   });
+  vi.spyOn(api, "createCredential").mockResolvedValue({
+    ok: true,
+    saved: true,
+    key_id: "k1",
+    version: 1,
+    credential: credentialMeta(),
+    verify: {
+      ok: true,
+      state: "verified",
+      reason_code: null,
+      message: "模型可用",
+      detail: "",
+      mode: "native",
+    },
+  });
+  vi.spyOn(api, "verifyCredential").mockResolvedValue({
+    ok: true,
+    key_id: "k1",
+    verify: {
+      ok: true,
+      state: "verified",
+      reason_code: null,
+      message: "模型可用",
+      detail: "",
+      mode: "native",
+    },
+  });
+  vi.spyOn(api, "listCredentialModels").mockResolvedValue({ models: [] });
   const pinia = createPinia();
   setActivePinia(pinia);
   const wrapper = mount(OnboardingWizard, { global: { plugins: [pinia] } });
@@ -46,7 +111,10 @@ function mountWizard(status: Record<string, unknown> = {}) {
 async function toProfile(wrapper: ReturnType<typeof mountWizard>) {
   // 欢迎 → 连接模型（老用户可以跳过）→ 认识你
   await wrapper.find(".onboarding-actions .primary").trigger("click");
-  await wrapper.find(".onboarding-actions .skip").trigger("click");
+  const skip = wrapper.find(".onboarding-actions .skip");
+  if (skip.exists()) await skip.trigger("click");
+  // 已有可用密钥时「跳过」与主按钮合并，主按钮就是「下一步」
+  else await wrapper.find(".onboarding-actions .credential-primary").trigger("click");
   await flushPromises();
 }
 
@@ -66,27 +134,105 @@ describe("首次引导向导 v2", () => {
     expect(api.markOnboardingSeen).toHaveBeenCalledTimes(1);
   });
 
-  it("建凭据时必须带上用途标签，否则这条密钥在 QIO 里根本用不上", async () => {
-    (identifyCredential as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({
-      identified: true,
-      provider: "MiMo（小米）",
-      base_url: "https://api.xiaomimimo.com/v1",
-      default_model: "mimo-v2.5",
-      models: ["mimo-v2.5"],
-    });
+  it("连接模型用的是与设置页相同的表单：只需要选厂商、填 Key、保存", async () => {
     const w = mountWizard({ has_content: false });
     await flushPromises();
     await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
-    await w.find("input.qio-input").setValue("sk-abcdefghijklmnopqrstuvwxyz012345");
-    await w.find(".onboarding-body .qio-btn.mini").trigger("click"); // 保存并测试
+
+    // 这一步只有一个主按钮：表单自己不再另起一行「取消 / 保存」
+    expect(w.find(".onboarding-body .btn-submit").exists()).toBe(false);
+    expect(w.find(".onboarding-actions .credential-primary").text()).toBe("保存");
+
+    // 选厂商（可搜索的下拉）
+    await w.find(".onboarding-body .qio-combo-trigger").trigger("click");
+    const option = w.findAll(".qio-combo-opt").find((o) => o.text().includes("DeepSeek"));
+    expect(option).toBeTruthy();
+    await option!.trigger("click");
+
+    await w.find("#cred-secret").setValue("sk-abcdefghijklmnopqrstuvwxyz012345");
+    await w.find(".onboarding-actions .credential-primary").trigger("click");
     await flushPromises();
 
-    expect(api.createCredential).toHaveBeenCalledWith({
-      secret: "sk-abcdefghijklmnopqrstuvwxyz012345",
-      endpoint: "https://api.xiaomimimo.com/v1",
-      default_model: "mimo-v2.5",
-      tags: ["main-loop"],
+    const payload = (api.createCredential as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][0] as Record<string, unknown>;
+    expect(payload.tags).toEqual(["main-loop"]);
+    // 选完厂商就自动补齐地址、协议与默认模型，普通用户不用碰这些
+    expect(payload.endpoint).toBe("https://api.deepseek.com/v1");
+    expect(payload.default_model).toBe("deepseek-v4-flash");
+    expect(payload.kind).toBe("openai");
+    expect(typeof payload.client_request_id).toBe("string");
+    // 保存通过就自动进入下一步：同一个按钮同时完成保存与前进
+    // （「已保存，模型可用」这段反馈由 CredentialForm 自己的用例守着；
+    //   引导页这里成功后立刻换步，所以状态区只会在瞬间出现）
+    expect(w.find(".onboarding-steps .step.current").text()).toContain("认识你");
+    expect(w.find(".onboarding-body .btn-submit").exists()).toBe(false);
+  });
+
+  it("连接模型：验证没通过时停在原地，按钮仍是「保存」并给出重试", async () => {
+    const w = mountWizard({ has_content: false });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    (api.createCredential as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      saved: true,
+      key_id: "k1",
+      version: 1,
+      credential: credentialMeta({ verify_state: "failed", is_default: false }),
+      verify: {
+        ok: false,
+        state: "failed",
+        reason_code: "invalid_key",
+        message: "API Key 无效或已被停用，请确认后重新填写",
+        detail: "401",
+        mode: null,
+      },
     });
+    await w.find(".onboarding-body .qio-combo-trigger").trigger("click");
+    const option = w.findAll(".qio-combo-opt").find((o) => o.text().includes("DeepSeek"));
+    await option!.trigger("click");
+    await w.find("#cred-secret").setValue("sk-bad-key-abcdefghijkl");
+    await w.find(".onboarding-actions .credential-primary").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".onboarding-steps .step.current").text()).toContain("连接模型");
+    expect(w.find(".onboarding-actions .credential-primary").text()).toBe("保存");
+    expect(w.find(".onboarding-body .qio-feedback").text()).toContain("已保存，尚未通过验证");
+    expect(w.find(".onboarding-body .btn-retry").exists()).toBe(true);
+  });
+
+  it("连接模型：已经有可用凭据且没在填新的时，按钮是「下一步」", async () => {
+    const w = mountWizard({ has_content: false, has_credential: true });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    expect(w.find(".onboarding-actions .credential-primary").text()).toBe("下一步");
+    // 「下一步」和「跳过」在这一刻做的是同一件事：只留一个
+    expect(w.find(".onboarding-actions .skip").exists()).toBe(false);
+    await w.find(".onboarding-actions .credential-primary").trigger("click");
+    await flushPromises();
+    expect(w.find(".onboarding-steps .step.current").text()).toContain("认识你");
+  });
+
+  it("连接模型：开始填新的凭据后才出现「跳过」（此时它与「保存」不是一回事）", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    expect(w.find(".onboarding-actions .skip").exists()).toBe(false);
+    await w.find("#cred-secret").setValue("sk-want-to-replace-1234");
+    await flushPromises();
+    expect(w.find(".onboarding-actions .credential-primary").text()).toBe("保存");
+    expect(w.find(".onboarding-actions .skip").exists()).toBe(true);
+  });
+
+  it("连接模型：没有可用凭据时，「跳过」仍然是把这一步放过去的出口", async () => {
+    const w = mountWizard({ has_content: true, has_credential: false });
+    await flushPromises();
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
+    expect(w.find(".onboarding-actions .credential-primary").text()).toBe("保存");
+    const skip = w.find(".onboarding-actions .skip");
+    expect(skip.exists()).toBe(true);
+    await skip.trigger("click");
+    await flushPromises();
+    expect(w.find(".onboarding-steps .step.current").text()).toContain("认识你");
   });
 
   it("新用户（主页没有内容）不能离开连接模型这一步", async () => {
@@ -98,7 +244,8 @@ describe("首次引导向导 v2", () => {
     await w.find(".onboarding-actions .primary").trigger("click");
     await flushPromises();
     expect(w.find(".onboarding-steps .step.current").text()).toContain("连接模型");
-    expect(w.text()).toContain("没有可用的密钥就无法继续");
+    // 没填任何东西就点保存：错误出现在表单里（当前表单项旁），不是另开一句提示
+    expect(w.text()).toContain("请先选择服务厂商");
     // 新用户看不到关闭按钮
     expect(w.find(".onboarding-close").exists()).toBe(false);
   });
@@ -122,9 +269,9 @@ describe("首次引导向导 v2", () => {
     const w = mountWizard({ has_content: false, has_credential: true });
     await flushPromises();
     await w.find(".onboarding-actions .primary").trigger("click"); // → 连接模型
-    expect(w.text()).toContain("已有一把可用的密钥");
+    expect(w.text()).toContain("已有一把通过验证的密钥");
 
-    await w.find(".onboarding-actions .primary").trigger("click"); // → 认识你
+    await w.find(".onboarding-actions .credential-primary").trigger("click"); // → 认识你
     await flushPromises();
     expect(w.find(".onboarding-steps .step.current").text()).toContain("认识你");
   });
