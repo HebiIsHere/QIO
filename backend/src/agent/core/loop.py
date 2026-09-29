@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completion
+from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completion, ToolSpec
 from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
@@ -65,6 +65,10 @@ class TurnResult:
     tool_calls_made: int
     warnings: list[str] = field(default_factory=list)
     cancelled: bool = False
+    # 没来得及读的系统通知（见 AgentLoop.push_notice）：宣布的时候还有下一轮
+    # planning 可读，等这一轮结束时却已经没有了。它们必须由上层变成自己的一轮，
+    # 否则子任务结果会无声消失。
+    unread_notices: list[str] = field(default_factory=list)
 
 
 class AgentLoop:
@@ -90,6 +94,7 @@ class AgentLoop:
         tool_state: ToolExecutionState | None = None,
         narrative_sink: Callable[..., Any] | None = None,
         narrative_settler: Callable[..., Any] | None = None,
+        usage_sink: Callable[[int, int], None] | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -142,9 +147,15 @@ class AgentLoop:
         # 循环不注入，因此不会往主对话里写过程说明。
         self.narrative_sink = narrative_sink
         self.narrative_settler = narrative_settler
+        # 用量归因：每次模型调用把 (进, 出) 报给调用方（由它记到对应凭据上）。
+        # 放在每次调用之后而不是整轮结束 —— 中途失败/取消的那部分也已经计费。
+        self.usage_sink = usage_sink
         self.max_parallel_tools = max(1, max_parallel_tools)
         self.is_cancelled = is_cancelled or (lambda: False)
         self._active_tool_tasks: set[asyncio.Task] = set()
+        # 「停止」要能掐掉正在等待的模型请求，而不是等它自然返回（见 cancel/_await_completion）。
+        self._cancel_event = asyncio.Event()
+        self._request_aborted = False
         self._disposers: list[Callable[[], None]] = []
         self._bind_pipeline()
 
@@ -438,7 +449,13 @@ class AgentLoop:
                 self._active_tool_tasks.discard(task)
 
     def cancel(self) -> None:
-        """取消本轮所有在途工具调用；registry 会把 CancelledError 转成 aborted。"""
+        """取消本轮：在途工具调用 + 正在等待的模型请求。
+
+        工具那条走 registry（它会把 CancelledError 转成 aborted）；
+        模型请求那条由 `_await_completion` 的竞速负责 —— 只设标志位的话，
+        请求还是会跑完，用户按了停止却要一直等。
+        """
+        self._cancel_event.set()
         for task in list(self._active_tool_tasks):
             task.cancel()
 
@@ -556,6 +573,10 @@ class AgentLoop:
 
             # PLANNING
             completion = await self._plan(messages)
+            if completion is None:
+                # 这一轮在等待模型时被用户停掉：请求已经中断，没有结果可用。
+                phase = LoopPhase.STOPPED
+                break
             self._account_usage(completion)
             self.budget.consume_iteration()
 
@@ -613,6 +634,9 @@ class AgentLoop:
             phase = LoopPhase.OBSERVING
 
         cancelled = self.is_cancelled()
+        if self._request_aborted:
+            # 请求被用户中断：这一轮的语义就是「被取消」，不能落成「模型没说话」。
+            cancelled = True
         if cancelled:
             phase = LoopPhase.STOPPED
         if not cancelled and not (final_content or "").strip():
@@ -629,6 +653,10 @@ class AgentLoop:
             "total_tokens": self._usage_total,
         }
         await self._emit(EventType.USAGE, usage)
+        # 迟到的系统通知：这一轮已经不会再 planning 了，留在手上的必须交还给上层
+        # （否则「子任务完成了」这句话会被静默丢掉，用户永远等不到结果）。
+        unread_notices = list(self._notices)
+        self._notices.clear()
         return TurnResult(
             final_content=final_content,
             phase=phase,
@@ -637,11 +665,12 @@ class AgentLoop:
             tool_calls_made=tool_calls_made,
             warnings=list(self._warnings),
             cancelled=cancelled,
+            unread_notices=unread_notices,
         )
 
     # -- steps ------------------------------------------------------------
 
-    async def _plan(self, messages: list[ChatMessage]) -> Completion:
+    async def _plan(self, messages: list[ChatMessage]) -> Completion | None:
         tools = self.registry.specs()
         if self.tool_selector is not None:
             # route tools by the current query context (last user + tool message)
@@ -664,7 +693,10 @@ class AgentLoop:
         self._model_seq += 1
         _t0 = _time.perf_counter()
         try:
-            completion = await self.adapter.complete(messages, tools)
+            completion = await self._await_completion(messages, tools)
+            if completion is None:
+                # 被用户取消：这次调用没有结果，也不再记一条「假成功」的 trace
+                return None
             if self.trace is not None:
                 usage = completion.usage or {}
                 self.trace.model_call(
@@ -693,6 +725,38 @@ class AgentLoop:
             )
             raise
 
+    async def _await_completion(
+        self, messages: list[ChatMessage], tools: list[ToolSpec]
+    ) -> Completion | None:
+        """跑一次模型调用；被用户取消时**中断这次请求**并返回 None。
+
+        以前取消只是一个检查点：请求已经发出去，就只能等它回来再把结果丢掉 ——
+        provider 慢的时候要白白等几十秒，而 turn 队列是单飞的，排在后面的消息
+        也跟着一起等。这里把请求放进自己的 task，与取消事件竞速；取消时立刻
+        取消它，底层 HTTP 连接随之中断。
+
+        诚实边界：断开的是**客户端的等待**，服务端是否立刻停止生成由供应商决定；
+        这条改动保证的是「不再占用等待时间、不再堵住下一条消息」。
+        """
+        if self._cancel_event.is_set():
+            return None
+        request = asyncio.ensure_future(self.adapter.complete(messages, tools))
+        waiter = asyncio.ensure_future(self._cancel_event.wait())
+        try:
+            await asyncio.wait({request, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        if request.done() and not request.cancelled():
+            # 正常返回（异常由 _plan 的 except 分支如实处理）
+            return request.result()
+        request.cancel()
+        try:
+            await request
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 结果已被取消，丢弃
+            pass
+        self._request_aborted = True
+        return None
+
     def _tokens_of(self, completion: Completion) -> int:
         """该次模型调用的**输出** token 数。
 
@@ -719,3 +783,12 @@ class AgentLoop:
             self._usage_output += int(usage.output_tokens)
             self._usage_total += int(usage.total_tokens)
         self.budget.consume_output_tokens(self._tokens_of(completion))
+        if self.usage_sink is not None:
+            # 归因给「这把钥匙」：进 / 出分开报，由调用方决定记到哪条凭据上。
+            input_tokens = self._input_tokens_of(completion)
+            output_tokens = self._output_tokens_of(completion)
+            if input_tokens or output_tokens:
+                try:
+                    self.usage_sink(input_tokens, output_tokens)
+                except Exception:  # noqa: BLE001 - 记账失败不得打断回答
+                    logger.warning("usage sink failed", exc_info=True)

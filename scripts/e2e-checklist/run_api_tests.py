@@ -156,7 +156,7 @@ def cred_tests():
     # 超预算
     refs_before = policy.resolve("main-loop", ["vision"])
     if budget_kid in [r.key_id for r in refs_before]:
-        store.record_usage(budget_kid, tokens=9999)
+        store.record_usage(budget_kid, input_tokens=9999)
         refs_after = policy.resolve("main-loop", ["vision"])
         budget_ok = budget_kid not in [r.key_id for r in refs_after]
     else:

@@ -176,9 +176,18 @@ async def run_dreaming(ctx) -> dict:
         if adapter is None:
             return {"dreaming_candidates": 0, "error": "no adapter"}
         from agent.core.loop import AgentLoop
+        from agent.credentials.usage import credential_usage_sink
         from agent.tools.registry import ToolRegistry
 
-        loop = AgentLoop(adapter, ToolRegistry(), ctx.bus, max_iterations=1, token_budget=40_000)
+        loop = AgentLoop(
+            adapter,
+            ToolRegistry(),
+            ctx.bus,
+            max_iterations=1,
+            token_budget=40_000,
+            # 后台分析也是真金白银的调用，同样要记到用的那把钥匙上
+            usage_sink=credential_usage_sink(ctx.credentials, adapter),
+        )
         result = await loop.run(prompt)
         candidates = _parse_candidates(result.final_content or "")[:MAX_DREAMING_CANDIDATES]
     except Exception as exc:  # noqa: BLE001 - isolated
@@ -281,10 +290,18 @@ async def _generate_draft(ctx, cluster: list[str]) -> dict:
         raise RuntimeError("no adapter")
     from agent.adapters.base import ChatMessage
     from agent.core.loop import AgentLoop
+    from agent.credentials.usage import credential_usage_sink
     from agent.tools.registry import ToolRegistry
 
     prompt = TOOL_AUTOMATION_PROMPT + "\n".join(f"- {c[:200]}" for c in cluster)
-    loop = AgentLoop(adapter, ToolRegistry(), ctx.bus, max_iterations=1, token_budget=20_000)
+    loop = AgentLoop(
+        adapter,
+        ToolRegistry(),
+        ctx.bus,
+        max_iterations=1,
+        token_budget=20_000,
+        usage_sink=credential_usage_sink(ctx.credentials, adapter),
+    )
     result = await loop.run(prompt)
     import re
 

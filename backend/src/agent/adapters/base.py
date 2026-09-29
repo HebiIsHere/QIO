@@ -144,6 +144,9 @@ class BaseAdapter(ABC):
     mode: AdapterMode
     model: str
     endpoint: str | None
+    # 这条 adapter 用的是哪把凭据（用量归因用）。构造它的地方负责填；
+    # 测试里的假 adapter 可以没有，此时用量不记账，而不是记到别人头上。
+    key_id: str | None = None
     # 工具定义是否被拼进 system prompt（text 兼容档如此）。
     # 影响上下文预算：走 API tools 字段与拼进 prompt 只能算一次。
     tools_in_prompt: bool = False

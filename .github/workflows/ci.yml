@@ -80,6 +80,57 @@ jobs:
               print(f"::error title={name}::{flat[:1400]}")
           PY
 
+  # Windows 是发布平台，也是启动加固（系统命令硬超时）与凭据库（keyring）唯一
+  # 真机验证过的环境，而它们恰恰是 Linux 任务看不见的路径。这里跑同一套后端
+  # 测试，失败摘要与 Linux 任务用同一套注解（注解公开可读，原始日志要登录）。
+  backend-windows:
+    name: backend (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Sync dependencies from lock
+        run: uv sync --frozen --extra dev
+      - name: Run tests
+        env:
+          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
+        run: uv run --frozen pytest -q
+      - name: Summarize test failures
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          paths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)
+          if not paths:
+              print("::error title=pytest (windows)::no junit report written (collection/import error before tests ran)")
+              raise SystemExit(0)
+
+          bad = []
+          for case in ET.parse(paths[0]).getroot().iter("testcase"):
+              problems = list(case.findall("failure")) + list(case.findall("error"))
+              if not problems:
+                  continue
+              message = (problems[0].get("message") or "").strip()
+              text = (problems[0].text or "").strip()
+              bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
+
+          print(f"::error title=pytest failures on windows ({len(bad)})::" + " | ".join(name for name, _ in bad[:12]))
+          for name, detail in bad[:20]:
+              flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
+              print(f"::error title={name}::{flat[:1400]}")
+          PY
+
   frontend:
     name: frontend
     runs-on: ubuntu-latest
@@ -173,3 +224,31 @@ jobs:
           print(f"::error title=cargo check failed ({len(errors)} error lines)::" + " | ".join(e[:180] for e in errors[:6]))
           print("::error title=cargo tail::" + " / ".join(ln.strip() for ln in lines[-40:] if ln.strip())[:1400])
           PY
+
+  # 壳的单元测试以前哪都不跑：ubuntu 任务只做 cargo check。于是
+  # `#[cfg(windows)]` 的启动加固用例（系统命令硬超时、杀子进程）一次都没被执行过 ——
+  # 而那正是 2026-09-25 白屏事故的修复点。Windows 上补一遍真跑。
+  rust-windows:
+    name: rust (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+      # 与 ubuntu 任务同理：externalBin 只有被 gitignore 的本机文件，build script
+      # 检查不到就直接编译失败。放空占位，让单测能编译起来（这一步不产出安装包）。
+      - name: Provide sidecar placeholder (Windows)
+        run: |
+          New-Item -ItemType Directory -Force -Path binaries | Out-Null
+          New-Item -ItemType File -Force -Path binaries/qio-backend-x86_64-pc-windows-msvc.exe | Out-Null
+      # bundle.resources 指向内置模型目录，缺路径 build script 同样报错。
+      - name: Provide bundled-model placeholder
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/models/bge-small-zh-v1.5 | Out-Null
+      - name: Unit tests
+        run: cargo test

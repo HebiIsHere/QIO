@@ -41,6 +41,27 @@ class _FastAdapter:
         return Completion(message=ChatMessage(role="assistant", content="收到"))
 
 
+class _AbortAwareSlowAdapter:
+    """慢回答，并记录这次请求到底有没有被中断。"""
+
+    mode = "native"
+    model = "fake-abortable"
+
+    def __init__(self, delay: float = 15.0) -> None:
+        self.delay = delay
+        self.started = False
+        self.aborted = False
+
+    async def complete(self, messages, tools, **kwargs):
+        self.started = True
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.aborted = True
+            raise
+        return Completion(message=ChatMessage(role="assistant", content="迟到的回答"))
+
+
 @pytest.fixture()
 def ctx(tmp_path) -> AppContext:
     conn = connect(tmp_path / "cancel.db")
@@ -89,6 +110,60 @@ async def test_cancelled_turn_writes_nothing_and_does_not_advance(ctx: AppContex
     assert binding is not None
     assert binding.status == "cancelled", f"绑定要记下取消终态，实际 {binding.status}"
     assert ctx.fragments.open_fragment(topic).id == before, "片段没有因为取消被切开"
+
+
+async def test_cancel_aborts_the_in_flight_model_request(ctx: AppContext):
+    """按「停止」要掐掉正在等待的模型请求，而不是干等它自然跑完。
+
+    真实抱怨：取消之后请求还在继续跑 —— 继续占用等待时间，也继续占着单飞队列。
+    这里要求的不是「结果被丢掉」，而是**这一次请求本身被中断**。
+    """
+    from unittest.mock import AsyncMock
+
+    topic = _topic(ctx)
+    adapter = _AbortAwareSlowAdapter(delay=15.0)
+    ctx.build_adapter = AsyncMock(return_value=adapter)
+
+    tctx = ctx.turns.submit("这一轮会被取消", topic)
+    for _ in range(300):
+        if adapter.started:
+            break
+        await asyncio.sleep(0.01)
+    assert adapter.started, "模型调用没有开始跑，测试前提不成立"
+
+    started = asyncio.get_running_loop().time()
+    assert ctx.turns.cancel_active() is True
+    result = await ctx.turns.wait(tctx.turn_id, timeout=25)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert adapter.aborted is True, "在途的模型请求必须被真正中断"
+    assert elapsed < 5, f"取消后应当立刻结束，实测 {elapsed:.1f}s"
+    assert result is not None and result.get("reason") == "cancelled"
+    assert "迟到的回答" not in _assistant_messages(ctx, topic)
+
+
+async def test_cancel_frees_the_single_flight_queue_immediately(ctx: AppContext):
+    """取消之后，排队的下一条消息要立刻开始跑，不能被旧请求继续堵着。"""
+    from unittest.mock import AsyncMock
+
+    topic = _topic(ctx)
+    slow = _AbortAwareSlowAdapter(delay=15.0)
+    ctx.build_adapter = AsyncMock(side_effect=[slow, _FastAdapter()])
+
+    ctx.turns.submit("会被取消的一轮", topic)
+    for _ in range(300):
+        if slow.started:
+            break
+        await asyncio.sleep(0.01)
+    second = ctx.turns.submit("排在后面的这一轮", topic)
+
+    started = asyncio.get_running_loop().time()
+    ctx.turns.cancel_active()
+    await ctx.turns.wait(second.turn_id, timeout=25)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 5, f"取消后排队消息应当立刻开始，实测 {elapsed:.1f}s"
+    assert "收到" in _assistant_messages(ctx, topic), "后一条消息要真的跑完"
 
 
 async def test_rapid_turns_stay_in_one_fragment(ctx: AppContext):

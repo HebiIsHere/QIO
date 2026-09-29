@@ -46,6 +46,10 @@ const enabled = computed(() => c.value.enabled);
 const verifyState = computed(() => c.value.verify_state ?? "legacy");
 const verifyText = computed(() => verifyLabel(verifyState.value));
 const hasBudget = computed(() => c.value.budget != null && c.value.budget > 0);
+// 真实调用累计的进 / 出（老数据没有这两个字段，按 0 处理）
+const usageInput = computed(() => c.value.usage_input ?? 0);
+const usageOutput = computed(() => c.value.usage_output ?? 0);
+const hasUsage = computed(() => usageInput.value > 0 || usageOutput.value > 0);
 const pct = computed(() => {
   const b = c.value.budget;
   if (!b || b <= 0) return 0;
@@ -130,8 +134,12 @@ async function toggleExpand() {
       <template v-if="hasBudget">
         <span>用量</span>
         <div class="budget"><div class="fill" :class="{ warn }" :style="{ width: pct + '%' }"></div></div>
-        <span>{{ formatTokens(credential.budget_used) }} / {{ formatTokens(credential.budget ?? 0) }} token</span>
+        <span>
+          进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }} ·
+          合计 {{ formatTokens(credential.budget_used) }} / {{ formatTokens(credential.budget ?? 0) }} token
+        </span>
       </template>
+      <span v-else-if="hasUsage">进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }} token（不限）</span>
       <span v-else>用量不限</span>
     </div>
     <!-- 管理动作：默认收起且 inert（不可见也不可聚焦），点「更多操作」才展开 -->
@@ -177,6 +185,10 @@ async function toggleExpand() {
       <div><span class="k">内部标识</span><span class="v">{{ credential.key_id }}</span></div>
       <div><span class="k">版本</span><span class="v">v{{ credential.version }}</span></div>
       <div><span class="k">用量上限</span><span class="v">{{ hasBudget ? `${formatTokens(credential.budget_used)} / ${formatTokens(credential.budget ?? 0)} token` : "不限" }}</span></div>
+      <div v-if="hasUsage">
+        <span class="k">用量明细</span>
+        <span class="v">进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }} token</span>
+      </div>
       <div>
         <span class="k">上次验证</span>
         <span class="v">{{ credential.verified_at || (verifyText || "—") }}</span>

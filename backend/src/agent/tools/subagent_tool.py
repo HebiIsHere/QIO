@@ -116,6 +116,7 @@ class SubagentTool(Tool):
 
     async def _run_subagent(self, task_id: str, adapter, kwargs: dict, tid: str, tracer):
         from agent.core.loop import AgentLoop
+        from agent.credentials.usage import credential_usage_sink
 
         budget = self.definition.subagent_budget or SubagentBudget()
         sub_registry = ToolRegistry()
@@ -130,6 +131,7 @@ class SubagentTool(Tool):
             adapter,
             sub_registry,
             self.bus,
+            usage_sink=credential_usage_sink(self.credentials, adapter),
             max_iterations=budget.max_iterations,
             token_budget=budget.max_tokens,
             turn_id=tid,

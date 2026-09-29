@@ -89,6 +89,10 @@ class TurnOrchestrator:
         if result is None:
             app.bindings.mark_status(ctx.turn_id, ctx.status or "failed")
             return
+        # 迟到的系统通知（例如子任务恰好在最后一次 planning 之后完成）：
+        # 塞进本轮已经读不到了，别丢掉 —— 让它自己成为一轮。
+        for notice in result.unread_notices:
+            app.turns.submit(notice, None, notify=True)
         # 取消检查点：不得把取消后产生的内容保存成正常最终回答
         if ctx.cancelled or result.cancelled:
             ctx.cancelled = True
@@ -419,11 +423,14 @@ class TurnOrchestrator:
 
         from agent.core.guard import RunawayGuard
         from agent.core.loop import AgentLoop
+        from agent.credentials.usage import credential_usage_sink
         from agent.services.app import make_error
 
         app = self.app
         loop = AgentLoop(
             adapter, app.registry, app.bus,
+            # 用量归因：这一轮的 token 记到本轮实际用的那把凭据上（上限才有可能真的生效）
+            usage_sink=credential_usage_sink(app.credentials, adapter),
             tool_trace=app._record_tool_call,
             tool_selector=app._route_tools,
             max_iterations=app._loop_max_iterations() or None,

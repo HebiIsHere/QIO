@@ -62,6 +62,38 @@ describe("CredentialCard 阅读态", () => {
     expect(w.find(".budget").exists()).toBe(false);
   });
 
+  it("用量同时显示进和出，合计仍按上限比较", () => {
+    const w = mount(CredentialCard, {
+      props: { credential: { ...base, usage_input: 10_500, usage_output: 1_500 } },
+    });
+    const meta = w.find(".meta").text();
+    expect(meta).toContain("进 10,500");
+    expect(meta).toContain("出 1,500");
+    expect(meta).toContain("合计 12,000 / 40,000 token");
+  });
+
+  it("没有上限但已经用过时，也如实给出进和出", () => {
+    const w = mount(CredentialCard, {
+      props: { credential: { ...base, budget: null, usage_input: 800, usage_output: 200 } },
+    });
+    const meta = w.find(".meta").text();
+    expect(meta).toContain("进 800");
+    expect(meta).toContain("出 200");
+    expect(meta).toContain("不限");
+    expect(w.find(".budget").exists()).toBe(false);
+  });
+
+  it("进 / 出在详情里各占一行，便于核对", async () => {
+    const w = mount(CredentialCard, {
+      props: { credential: { ...base, usage_input: 10_500, usage_output: 1_500 } },
+    });
+    await w.find(".btn-manage").trigger("click");
+    await w.find(".btn-detail").trigger("click");
+    const detail = w.find(".detail").text();
+    expect(detail).toContain("进 10,500");
+    expect(detail).toContain("出 1,500");
+  });
+
   it("地址、内部标识、版本与审计都收进详情", async () => {
     const w = mount(CredentialCard, { props: { credential: base } });
     expect(w.find(".detail").exists()).toBe(false);

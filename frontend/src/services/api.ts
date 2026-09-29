@@ -42,6 +42,12 @@ export interface CredentialMeta {
   default_model: string | null;
   budget: number | null;
   budget_used: number;
+  /**
+   * 真实调用累计的「进 / 出」token（分开记，便于说明钱花在哪一头）。
+   * `budget_used` 仍是两者合计，上限比较只认它。老数据 / 老响应可能没有这两个字段。
+   */
+  usage_input?: number;
+  usage_output?: number;
   status: string;
   enabled: boolean;
   note: string | null;

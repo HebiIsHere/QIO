@@ -83,7 +83,7 @@ def test_budget_ordering_and_exhaustion(store: CredentialStore, policy: Credenti
     make(store, "key-b", "sb", ["vision"], budget=1000)
     refs = policy.resolve("main-loop", ["vision"])
     assert [r.key_id for r in refs] == ["key-b", "key-a"]
-    store.record_usage("key-b", tokens=1500)  # exceed 1000-token budget
+    store.record_usage("key-b", input_tokens=1000, output_tokens=500)  # 超过 1000 的预算
     refs = policy.resolve("main-loop", ["vision"])
     assert [r.key_id for r in refs] == ["key-a"]
 
@@ -132,12 +132,31 @@ def test_update_metadata_keeps_secret_and_version(store: CredentialStore):
     assert [e["action"] for e in log] == ["create", "update"]
 
 
+def test_record_usage_keeps_input_and_output_apart(store: CredentialStore):
+    """用量要能分开看到「进」和「出」，闸门按两者合计走。
+
+    真实问题：运行期从来没有回写用量，「已用量」永远是 0，上限也就不可能生效。
+    """
+    make(store, "k1", "s", ["main-loop"], budget=1000)
+    store.record_usage("k1", input_tokens=120, output_tokens=30)
+    store.record_usage("k1", input_tokens=80, output_tokens=20)
+    meta = store.get_metadata("k1")
+    assert meta["usage_input"] == 200
+    assert meta["usage_output"] == 50
+    assert meta["budget_used"] == 250, "预算闸门按进 + 出合计"
+    assert store.budget_left("k1") == 750
+    assert meta["last_used_at"] is not None, "用过就要留下时间"
+
+
 def test_update_metadata_resets_budget_used_when_budget_changes(store: CredentialStore):
     make(store, "k1", "s", ["main-loop"], budget=100)
-    store.record_usage("k1", tokens=60)
+    store.record_usage("k1", input_tokens=40, output_tokens=20)
     assert store.budget_left("k1") == 40
     store.update_metadata("k1", budget=1000)
+    meta = store.get_metadata("k1")
     assert store.budget_left("k1") == 1000
+    # 换上限＝重新计数：三个数字必须互相对得上，否则卡片上「进 + 出 ≠ 合计」。
+    assert (meta["usage_input"], meta["usage_output"]) == (0, 0)
 
 
 def test_disable_hides_from_policy_and_get_secret(store: CredentialStore, policy: CredentialPolicy):
@@ -194,14 +213,14 @@ def test_get_default_secret_returns_main_loop_credential(store: CredentialStore)
 
 def test_get_default_secret_ignores_exhausted_budget(store: CredentialStore):
     make(store, "main-key", "sm", ["main-loop"], budget=100)
-    store.record_usage("main-key", tokens=150)
+    store.record_usage("main-key", input_tokens=100, output_tokens=50)
     assert store.get_default_secret() is None
 
 
 def test_list_tagged_filters_by_tag_and_budget(store: CredentialStore):
     make(store, "sub-key", "ss", ["subagent"], budget=100)
     make(store, "main-key", "sm", ["main-loop"], budget=50)
-    store.record_usage("sub-key", tokens=150)
+    store.record_usage("sub-key", input_tokens=100, output_tokens=50)
     assert [c["id"] for c in store.list_tagged("subagent")] == []
     make(store, "sub-key2", "ss2", ["subagent"], budget=100)
     assert [c["id"] for c in store.list_tagged("subagent")] == ["sub-key2"]

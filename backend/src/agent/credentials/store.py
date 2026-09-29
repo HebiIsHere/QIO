@@ -421,7 +421,11 @@ class CredentialStore:
         if budget is not _UNSET:
             sets.append("budget = ?")
             params.append(budget)
+            # 换上限＝重新计数：合计与「进 / 出」必须一起归零，
+            # 否则卡片上会出现「进 + 出 ≠ 合计」。
             sets.append("budget_used = 0")
+            sets.append("usage_input = 0")
+            sets.append("usage_output = 0")
         if note is not _UNSET:
             sets.append("note = ?")
             params.append(note)
@@ -557,6 +561,8 @@ class CredentialStore:
             sets.append("budget = ?")
             params.append(budget)
             sets.append("budget_used = 0")
+            sets.append("usage_input = 0")
+            sets.append("usage_output = 0")
         if note is not _UNSET:
             sets.append("note = ?")
             params.append(note)
@@ -697,13 +703,27 @@ class CredentialStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def record_usage(self, key_id: str, tokens: int, usd: float | None = None) -> None:
+    def record_usage(
+        self, key_id: str, *, input_tokens: int = 0, output_tokens: int = 0
+    ) -> None:
+        """把一次（或几次）真实模型调用的用量记到这条凭据上。
+
+        `budget_used` 是「进 + 出」的合计，预算闸门（`budget_left`）只认它；
+        `usage_input` / `usage_output` 分开存，供界面说明钱花在哪一头。
+        只读凭据不存在时静默返回：归因失败不该影响对话本身。
+        """
+        in_tokens = max(0, int(input_tokens))
+        out_tokens = max(0, int(output_tokens))
+        if in_tokens == 0 and out_tokens == 0:
+            return
         row = self._row(key_id)
         if row is None:
             return
         self.conn.execute(
-            "UPDATE credentials SET budget_used = budget_used + ?, last_used_at = ? WHERE id = ?",
-            (tokens, _now(), key_id),
+            "UPDATE credentials SET budget_used = budget_used + ?, "
+            "usage_input = usage_input + ?, usage_output = usage_output + ?, "
+            "last_used_at = ? WHERE id = ?",
+            (in_tokens + out_tokens, in_tokens, out_tokens, _now(), key_id),
         )
 
     def budget_left(self, key_id: str) -> float | None:
