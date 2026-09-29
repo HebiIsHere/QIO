@@ -18,6 +18,7 @@ def _make_ctx(db_path, data_dir):
     return AppContext(Settings(data_dir=data_dir), conn, EventBus()), conn
 
 
+@pytest.mark.requires_docker
 def test_restore_agent_tool_after_restart(tmp_path):
     db_path = tmp_path / "app.db"
     ctx1, conn1 = _make_ctx(db_path, tmp_path / "data")

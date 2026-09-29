@@ -117,6 +117,7 @@ async def test_dev_write_read_file():
     assert r.ok and r.content == "code"
 
 
+@pytest.mark.requires_docker
 async def test_dev_run_tests_pass_and_fail():
     ws = DevWorkspace(Path_factory())
     task = ws.create("求和工具")

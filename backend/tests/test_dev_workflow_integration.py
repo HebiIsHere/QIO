@@ -60,6 +60,7 @@ TOOL_JSON = json.dumps({
 }, ensure_ascii=False)
 
 
+@pytest.mark.requires_docker
 async def test_full_dev_workflow_registers_tool(ctx: AppContext, monkeypatch):
     from unittest.mock import AsyncMock
 

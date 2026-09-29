@@ -99,13 +99,20 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - name: Sync dependencies from lock
         run: uv sync --frozen --extra dev
+      # GitHub 的 windows runner 装了 docker CLI，但没有可用的守护进程：沙箱执行器会选
+      # docker，然后每次调用都以 `docker exit code 125` 失败。需要真实 docker 的用例
+      # （标记 requires_docker）在 ubuntu 任务里照常跑，这里只跳过它们。
       - name: Run tests
         env:
           PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
-        run: uv run --frozen pytest -q
+        run: uv run --frozen pytest -q -m "not requires_docker"
       - name: Summarize test failures
         if: failure()
         shell: bash
+        env:
+          # Windows 控制台默认 cp1252，中文失败原因会撞 UnicodeEncodeError，
+          # 结果是「注解一条都没发出来」—— 这一步的意义就没了。
+          PYTHONIOENCODING: utf-8
         run: |
           python - <<'PY'
           import glob

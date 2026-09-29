@@ -34,4 +34,5 @@ asyncio_mode = "auto"
 pythonpath = ["src"]
 markers = [
     "real_verify: 直接覆盖真实的凭据验证逻辑（网络仍由 fake 客户端替代）",
+    "requires_docker: 需要真实可用的 docker 守护进程（GitHub 的 windows runner 只有 CLI，没有 daemon）",
 ]
