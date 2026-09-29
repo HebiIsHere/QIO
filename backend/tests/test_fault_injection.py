@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,6 +68,23 @@ class _SummaryAdapter:
                 role="assistant",
                 content='{"title": "标题", "summary": "这是一段摘要", "entities": [], "keywords": []}',
             )
+        )
+
+
+class _OverlongSummaryAdapter(_SummaryAdapter):
+    """模型「给多了」的摘要：79 个实体、73 个关键词。"""
+
+    async def complete(self, messages, tools, **kwargs):
+        from agent.adapters.base import ChatMessage, Completion
+
+        payload = {
+            "title": "标题",
+            "summary": "这是一段摘要",
+            "entities": [f"实体{i}" for i in range(79)],
+            "keywords": [f"关键词{i}" for i in range(73)],
+        }
+        return Completion(
+            message=ChatMessage(role="assistant", content=json.dumps(payload, ensure_ascii=False))
         )
 
 
@@ -150,6 +168,34 @@ def test_restart_before_summary_resumes_the_task_once(tmp_path: Path):
     ).fetchone()["c"]
     assert done == 1 and rows == 1, f"done={done} index_rows={rows}"
     assert restarted.fragments.messages(sealed.id), "原文仍然可读"
+
+
+def test_overlong_entity_list_still_yields_summary_and_index(tmp_path: Path):
+    """模型给的实体超过上限：截断后照常落摘要与检索记录，而不是整条失败。
+
+    真实故障：一次 79 个实体让校验直接失败，于是这个片段既没有摘要也没有检索记录，
+    实体卡与知识条目也一起消失 —— 「一项给多了」不该让全部结果消失。
+    """
+    ctx = _app(tmp_path)
+    topic = _topic(ctx)
+    ctx.memory.append_message(topic_id=topic, role="user", content="问题")
+    ctx.memory.append_message(topic_id=topic, role="assistant", content="回答")
+    sealed = ctx.memory_lifecycle.seal_fragment(topic, reason="capacity")
+    assert sealed is not None
+
+    done = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(_OverlongSummaryAdapter(), limit=5)
+    )
+
+    row = ctx.conn.execute(
+        "SELECT summary FROM fragments WHERE id = ?", (sealed.id,)
+    ).fetchone()
+    index_rows = ctx.conn.execute(
+        "SELECT COUNT(*) c FROM memory_index WHERE fragment_id = ?", (sealed.id,)
+    ).fetchone()["c"]
+    assert done == 1, "摘要派生任务应该完成，而不是失败"
+    assert row["summary"] == "这是一段摘要"
+    assert index_rows == 1, "检索记录也要一起生成"
 
 
 def test_failed_first_turn_reuses_the_continuation_fragment(tmp_path: Path):

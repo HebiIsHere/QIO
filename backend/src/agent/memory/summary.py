@@ -20,22 +20,55 @@ logger = logging.getLogger(__name__)
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+# 实体/关键词的数量上限：超过就本地去重截断（见 `_normalize_items`），
+# 不把「模型给多了」当成摘要失败 —— 那会让整个片段的摘要、索引、
+# 实体卡与知识条目一起消失。
+MAX_ENTITIES = 50
+MAX_KEYWORDS = 50
+
 
 class FragmentSummary(BaseModel):
     """Contract for fragment summaries (schema v1)."""
 
     title: str = Field(min_length=1, max_length=60)
     summary: str = Field(min_length=1, max_length=2000)
-    entities: list[str] = Field(default_factory=list, max_length=50)
-    keywords: list[str] = Field(default_factory=list, max_length=50)
+    entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES)
+    keywords: list[str] = Field(default_factory=list, max_length=MAX_KEYWORDS)
 
 
 SUMMARY_PROMPT = (
     "You are summarizing a closed conversation fragment. "
     "Return only a single JSON object, no prose or Markdown fences:\n"
-    '{"title": "<short title, <=60 chars>", "summary": "<condensed record of facts, decisions, preferences, and commitments, <=2000 chars>", "entities": ["<mentioned people/objects, exact names>"], "keywords": ["<searchable keywords>"]}\n'
-    "Keep the summary faithful to the transcript; do not add or infer facts. entities and keywords may be empty arrays when none."
+    '{"title": "<short title, <=60 chars>", "summary": "<condensed record of facts, decisions, preferences, and commitments, <=2000 chars>", "entities": ["<mentioned people/objects, exact names, at most 50, no duplicates>"], "keywords": ["<searchable keywords, at most 50, no duplicates>"]}\n'
+    "Keep the summary faithful to the transcript; do not add or infer facts. entities and keywords may be empty arrays when none. "
+    "Keep the most important 50 entries at most for entities and for keywords; anything longer is dropped before it is stored."
 )
+
+
+def _normalize_items(values: Any, limit: int) -> Any:
+    """把字符串列表收敛成「去空白 + 去重 + 保序 + 截断」的形态。
+
+    「模型给多了」不是摘要失败的理由：这里先截断，再交给 pydantic 校验，
+    校验只负责挡住真正的结构错误。整条摘要失败会让这个片段的摘要、检索记录、
+    实体卡与知识条目一起消失 —— 代价远大于丢掉第 51 个实体名。
+
+    非列表（或列表里有非字符串元素）原样返回，让 pydantic 报出真实的结构错误。
+    """
+    if not isinstance(values, list):
+        return values
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            return values
+        item = value.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+        if len(normalized) >= limit:
+            break
+    return normalized
 
 
 def validate_summary_text(text: str) -> tuple[FragmentSummary | None, str | None]:
@@ -48,6 +81,9 @@ def validate_summary_text(text: str) -> tuple[FragmentSummary | None, str | None
         return None, f"invalid JSON: {exc}"
     if not isinstance(data, dict):
         return None, "summary is not a JSON object"
+    for field, limit in (("entities", MAX_ENTITIES), ("keywords", MAX_KEYWORDS)):
+        if field in data:
+            data[field] = _normalize_items(data[field], limit)
     try:
         return FragmentSummary(**data), None
     except ValidationError as exc:

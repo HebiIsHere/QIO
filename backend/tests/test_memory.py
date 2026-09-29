@@ -16,6 +16,9 @@ from agent.memory.index import (
 from agent.memory.ingest import MemoryWriter
 from agent.memory.summary import (
     FragmentSummary,
+    MAX_ENTITIES,
+    MAX_KEYWORDS,
+    SUMMARY_PROMPT,
     summarize_fragment,
     validate_summary_text,
 )
@@ -130,6 +133,42 @@ def test_validate_summary_rejects_bad_shapes():
     assert error is not None
     _, error = validate_summary_text('{"title": "", "summary": ""}')  # empty fields
     assert error is not None
+
+
+def test_validate_summary_truncates_over_long_lists_instead_of_failing():
+    """实体/关键词超出上限时，本地截断后继续用；不能因为「给多了」就整条判失败。
+
+    真实故障：模型一次给了 79 个实体，校验直接失败，于是这个片段没有摘要、
+    没有检索记录、没有实体卡、没有知识条目 —— 一项过多不该让全部结果消失。
+    """
+    payload = {
+        "title": "长实体列表",
+        "summary": "这段对话提到了很多实体",
+        "entities": [f"实体{i}" for i in range(79)],
+        "keywords": [f"关键词{i}" for i in range(73)],
+    }
+    summary, error = validate_summary_text(json.dumps(payload, ensure_ascii=False))
+    assert error is None, f"超限不该报错，实际：{error}"
+    assert summary is not None
+    assert len(summary.entities) == MAX_ENTITIES
+    assert summary.entities[:2] == ["实体0", "实体1"], "保留靠前的项，顺序不变"
+    assert len(summary.keywords) == MAX_KEYWORDS
+
+
+def test_validate_summary_dedupes_repeated_items():
+    summary, error = validate_summary_text(
+        '{"title": "t", "summary": "s", '
+        '"entities": ["牛奶", "牛奶", " 咖啡 ", "咖啡"], "keywords": []}'
+    )
+    assert error is None
+    assert summary is not None
+    assert summary.entities == ["牛奶", "咖啡"]
+
+
+def test_summary_prompt_states_the_limits():
+    """上限要写进给模型的要求里：模型知道要收敛，截断才是兜底而不是常态。"""
+    assert str(MAX_ENTITIES) in SUMMARY_PROMPT
+    assert str(MAX_KEYWORDS) in SUMMARY_PROMPT
 
 
 def test_summarize_fragment_success():
