@@ -50,7 +50,14 @@ class CodeTool(Tool):
             self.definition.code, kwargs, extra_env=extra_env, policy=policy
         )
         if not result.ok:
-            return ToolResult(ok=False, error=result.error or "沙箱执行失败")
+            # 失败要把 stderr / 退出码作为诊断一起交给模型，而不是只回一句
+            # 「沙箱执行失败」；类别也带上，供统一反馈层与界面使用。
+            return ToolResult(
+                ok=False,
+                error=result.error or "沙箱执行失败",
+                content=result.diagnostic(),
+                category=result.category,
+            )
         content = json.dumps(result.value, ensure_ascii=False)
         # policy.output_limit_chars 之前只是声明，没有真正生效；这里显式截断并
         # 标注，避免超大输出直接灌进模型上下文（截断是可见的，不静默）。

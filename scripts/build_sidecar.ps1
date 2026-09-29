@@ -35,6 +35,9 @@ $pyiArgs = @(
   "--noconfirm", "--onefile", "--name", "qio-backend",
   "--collect-all", "tiktoken",
   "--hidden-import", "keyring.backends.Windows",
+  # 工具 worker：main.py 在函数里 import 它（为了在加载服务前分流），
+  # 这里显式声明，避免将来改成动态导入时被 PyInstaller 漏掉。
+  "--hidden-import", "agent.tool_worker",
   "--hidden-import", "uvicorn.logging",
   "--hidden-import", "uvicorn.loops.auto",
   "--hidden-import", "uvicorn.protocols.http.auto",

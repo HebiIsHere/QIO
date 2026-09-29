@@ -50,12 +50,76 @@ def test_workspace_write_definition(tmp_path):
     assert loaded.tests[0].expect == {"sum": 3}
 
 
+def test_workspace_state_survives_restart_and_is_not_inferred(tmp_path):
+    """状态落盘、重启可读；没有 state.json 时测试结果标为未知（不是「通过」）。"""
+    root = tmp_path / "ws"
+    ws = DevWorkspace(root)
+    task = ws.create("做一个计算器")
+    ws.record_test(task.id, True, "2/2 tests passed")
+
+    reborn = DevWorkspace(root)
+    restored = reborn.task(task.id)
+    assert restored is not None
+    assert restored.phase == "testing_passed"
+    assert restored.last_test_passed is True
+    assert restored.last_test_summary == "2/2 tests passed"
+    assert restored.test_runs == 1
+
+    # 删掉 state.json：只能证明「文件还在」，不能推断测试通过
+    (task.dir / "state.json").unlink()
+    reborn2 = DevWorkspace(root)
+    again = reborn2.task(task.id)
+    assert again is not None
+    assert again.last_test_passed is None
+    assert again.test_runs == 0
+
+
+def test_workspace_content_digest_changes_with_content(tmp_path):
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("x")
+    first = ws.content_digest(task.id)
+    ws.write_file(task.id, "tool.json", '{"name": "a"}')
+    second = ws.content_digest(task.id)
+    assert first and second and first != second
+
+
+async def test_dev_list_tasks_reports_status():
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("查文献")
+    ws.record_test(task.id, False, "1/2 tests passed")
+    tool = DevListTasksTool(ws)
+    r = await tool.run()
+    assert r.ok
+    assert task.id in r.content
+    assert "测试失败" in r.content
+    assert "查文献" in r.content
+
+
+async def test_dev_run_tests_records_authoritative_state():
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("x")
+    ws.write_definition(task.id, ToolDefinition(
+        name="add_numbers", description="求和", tool_type="function",
+        code="def run(**kwargs):\n    return {'sum': kwargs['a'] + kwargs['b']}",
+        tests=[{"name": "t1", "input": {"a": 1, "b": 2}, "expect": {"sum": 3}}],
+    ))
+    from agent.tools.sandbox import SandboxExecutor
+
+    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor())
+    r = await tool.run(workspace=task.id)
+    assert r.ok
+    state = ws.status(task.id)
+    assert state["last_test_passed"] is True
+    assert state["test_runs"] == 1
+
+
 # ---------- dev tools ----------
 
 from agent.api.bus import EventBus
 from agent.tools.dev_tools import (
     CreateToolTool,
     DevListFilesTool,
+    DevListTasksTool,
     DevReadFileTool,
     DevRunTestsTool,
     DevSubmitTool,
@@ -169,6 +233,8 @@ async def test_dev_submit_maps_outcome_and_cleans():
         "code": "def run(**kwargs):\n    return {'sum': 1}",
         "tests": [{"name": "t", "input": {}, "expect": {"sum": 1}}],
     }
+    # 新契约：以工作区 tool.json 为准，提交前必须先写入工作区。
+    ws.write_definition(task.id, ToolDefinition(**definition))
     r = await tool.run(workspace=task.id, definition=definition, explanation="这个工具计算两个数之和")
     assert r.ok
     assert calls["n"] == 1
@@ -176,6 +242,11 @@ async def test_dev_submit_maps_outcome_and_cleans():
     assert calls["group_id"] == task.id
     # 成功后清理
     assert ws.task(task.id) is None
+    # 提交以工作区为准：不必再传 definition 也能提交
+    task3 = ws.create("y")
+    ws.write_definition(task3.id, ToolDefinition(**definition))
+    r3 = await tool.run(workspace=task3.id, explanation="提交时不复述定义")
+    assert r3.ok and calls["n"] == 2
     # 无效工作区
     r2 = await tool.run(workspace="ghost", definition=definition, explanation="x")
     assert r2.ok is False

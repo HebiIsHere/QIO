@@ -35,6 +35,7 @@ TOOL_LABELS: dict[str, str] = {
     # 工具开发
     "create_tool": "创建工具",
     "dev_list_files": "开发：列出文件",
+    "dev_list_tasks": "开发：列出任务",
     "dev_read_file": "开发：读取文件",
     "dev_write_file": "开发：写入文件",
     "dev_run_tests": "开发：运行测试",

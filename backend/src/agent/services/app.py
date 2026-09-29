@@ -255,6 +255,7 @@ class AppContext:
         from agent.tools.dev_tools import (
             CreateToolTool,
             DevListFilesTool,
+            DevListTasksTool,
             DevReadFileTool,
             DevRunTestsTool,
             DevSubmitTool,
@@ -272,6 +273,7 @@ class AppContext:
             )
         )
         self.registry.register(DevListFilesTool(self.dev_workspaces))
+        self.registry.register(DevListTasksTool(self.dev_workspaces))
         self.registry.register(
             DevWriteFileTool(
                 self.dev_workspaces,

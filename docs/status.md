@@ -979,3 +979,54 @@ npm test
 - 取消掐的是客户端等待；服务端是否立刻停止生成、停止计费，由供应商决定。
 - 用量只在主循环 / 子 agent / 后台维护三条路径归因；其它直接调用适配器的实验代码不计入。
 - 第 6 条（真实界面与 Planet 手感验收）**没有做**：那需要真机人工验收，自动化替代不了。
+
+---
+
+## 本轮变更：工具开发规范与可靠性修复 · 第一阶段（2026-09-29）
+
+计划：`docs/superpowers/plans/2026-09-29-tool-dev-spec-phase1.md`。目标不是改提示词，而是让「失败被如实、结构化地反馈」以及「开发任务有权威状态」进入代码。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 工具失败且 `content` 为空时，模型收到空正文，随后声称成功也被接受 | 公共执行层新增唯一的结果→模型消息构造点：失败至少带状态、错误类别、简短原因、是否可重试、`call_id` 与脱敏限长的诊断；成功且正文非空时保持原样 | `core/tool_feedback.py`、`core/loop.py`、`tools/base.py`（`ToolResult.category/recoverable`） | `test_tool_feedback.py`（含主循环集成：失败且空正文仍回填事实） |
+| 沙箱捕获的 `stderr` 没传到上层，模型只看到「exit code 1」 | `SandboxResult` 增加错误类别与 `diagnostic()`（stderr 优先、脱敏限长）；tester 与 CodeTool 把诊断一并交给模型 | `tools/sandbox.py`、`tools/tester.py`、`tools/runtime_tools.py` | `test_tool_feedback.py`（已知异常 / 缺依赖两类 stderr 与类别） |
+| 子进程用 `sys.executable -c`，冻结后指向后端 exe（入口只启动服务） | 改为统一执行协议：开发态 `python tool_worker.py`、正式态 `后端 exe --tool-worker`（见下一节）。本轮先做「解析出可执行命令 + 明确报环境问题」，旧接口随后被 worker 取代 | `tools/executor_env.py`、`tools/sandbox.py` | `test_executor_env.py` |
+| `dev_submit_tool` 要求模型再传完整 `definition`，容易与工作区文件/测试对象不一致 | 提交以工作区 `tool.json` 为唯一权威：省略 `definition` 即可提交；传了则必须与工作区一致，否则拒绝；提交时绑定工作区内容摘要 | `tools/dev_tools.py`、`prompts.py` | `test_dev_tools.py`（工作区为准的提交路径 + 不一致拒绝） |
+| 开发任务只有内存态，缺少可枚举的权威状态 | `DevWorkspace` 增加 `state.json` 落盘（阶段 / 测试通过与否 / 摘要 / 次数 / 提交摘要）、`list_tasks()`、`status()`、`content_digest()`；新增 `dev_list_tasks` 工具 | `tools/dev_workspace.py`、`tools/dev_tools.py`、`tools/display.py`、`services/app.py` | `test_dev_tools.py`（重启回填、删 `state.json` 后标未知、摘要随内容变化、任务枚举） |
+
+**已验证**：后端全量 `uv run --frozen pytest`（通过），新增用例覆盖上表每一行；`scripts/check_docs.py` 通过。
+
+**仍未验证 / 留到后续阶段（NOT RUN，不宣称完成）**
+
+- **冻结产物的真实执行链**：已由下一节「工具 worker 模式」补齐（后端 exe 自带 `--tool-worker`），本节的这项缺口作废。
+- **开发规范落地为单一权威、分节注入**：本阶段只更新了 `DEV_GUIDE` / 工具描述文案；尚未建立结构化的规范模块与按步骤注入。仍属 planned。
+- **模型谎报成功时的状态校正**：只修了「失败被如实反馈」，尚未实现「最终答复涉及验证/可用结论时按后端状态校验并纠正」。仍属 planned。
+- **所有已保存对话的原文检索**：开放片段、摘要失败内容的独立原文检索路径**未实现**。仍属 planned。
+- **前端界面**：任务卡、未完成任务提示、恢复入口都没动。未验证。
+
+---
+
+## 本轮变更：工具 worker 模式（2026-09-29）
+
+目标：让冻结产物在没有系统 Python、没有 Docker 的 Windows 上也能跑生成工具，同时不把后端主进程当作执行器、不把独立子进程说成安全沙箱。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 冻结后 `sys.executable` 是后端 exe，入口只启动服务，工具子进程测试与运行必然失败 | 后端 exe 增加 `--tool-worker` 模式；`agent/main.py` 顶层只留标准库，`main()` 第一件事按 argv 分流，worker 分支在加载 uvicorn / FastAPI / 数据库 / 凭据**之前**返回 | `src/agent/main.py`、`src/agent/tool_worker.py` | `test_entrypoint_split.py`（真子进程：import 入口不加载服务栈；worker 模式不建 app.db） |
+| 开发与正式运行的执行协议不一致（`-c` 拼脚本 vs 冻结 exe） | 统一的 worker 协议：stdin 传结构化 JSON 请求，stdout 只回一行 JSON 结果；工具自身的打印与异常栈收进结果的 `stdout`/`stderr` 字段 | `src/agent/tool_worker.py`、`src/agent/tools/executor_env.py`、`src/agent/tools/sandbox.py` | `test_tool_worker.py`（真子进程跑协议：成功/异常类型/输出捕获/非法结果/畸形请求）、`test_sandbox_worker.py` |
+| 超时只 `kill()` 直接子进程，工具自己起的子进程会残留；按名称清理会误伤别的进程 | 新增 `_kill_process_tree`：Windows 用 `taskkill /PID <pid> /T /F`（按 PID 遍历子树），POSIX 用独立进程组；取消路径同样清理后再传递取消语义 | `src/agent/tools/sandbox.py` | `test_sandbox_worker.py`（超时/取消各清理一次且 pid 正确；Windows 断言命令行是 `/PID` 而非镜像名） |
+
+**已验证（本机实跑）**
+
+- 后端全量 `uv run --frozen pytest`（退出码 0），含上表所有新用例。
+- **真实冻结产物**：用 `uv run --with pyinstaller` 按 `scripts/build_sidecar.ps1` 的参数打包出 `qio-backend.exe`，然后：
+  - `qio-backend.exe --tool-worker`（stdin 传请求、PATH 里已剔除所有真实 Python，只剩 Microsoft Store 的 `python.exe` 占位符）返回 `{"ok": true, "value": {"sum": 42}}`，退出码 0，**没有**创建数据目录与 `app.db`（证明 worker 模式不连库、不跑迁移）。
+  - 同一 exe 正常启动：创建 `app.db`、HTTP 端口应答（`/api/tools` 返回 404 = 服务在听）、按 PID 停止成功（证明正常启动路径没有退化）。
+
+**仍未验证 / 未实现（如实标注）**
+
+- **完整安装包（`tauri build` 产物）的人工安装验收**：NOT RUN。上面跑的是 PyInstaller 冻结 exe，不是装完的安装包。
+- **「没有 Docker」的对照实验**：NOT RUN。本机 Docker 状态未变更，worker 路径本来就不经过 Docker。
+- **Docker 执行器的协议统一**：Docker 分支仍用容器内 `python -c` 的旧协议，未与新 worker 协议合并。NOT RUN（未实测）。
+- **额外依赖的项目级隔离**（QIO 管理的专用 Python 环境 / 项目级依赖安装）：**未实现**，只有接口位置。默认只复用随包依赖；用到第三方库的工具会以 `missing_dependency` 明确失败，不会自动安装。
+- 「测试也执行实际权限检查」这条只覆盖了既有 `policy` 能力分级与审批路径，**测试数据隔离**（临时库/临时目录/模拟服务）没有在本轮补。

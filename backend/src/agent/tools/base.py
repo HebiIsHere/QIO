@@ -12,6 +12,10 @@ class ToolResult:
     ok: bool
     content: str = ""
     error: str | None = None
+    # 统一的失败语义（见 core/tool_feedback.py）：错误类别与「是否可重试」是给模型
+    # 与界面共用的**事实字段**，不是提示词。缺省 None = 交给反馈层按文本推断。
+    category: str | None = None
+    recoverable: bool | None = None
 
 
 class Tool(ABC):

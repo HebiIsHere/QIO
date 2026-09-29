@@ -31,6 +31,7 @@ from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
 from agent.core.guard import GuardVerdict, RunawayGuard
 from agent.core.narrative import parse_narrative
+from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
@@ -236,6 +237,10 @@ class AgentLoop:
             error=data.get("error"),
         )
         pending = self._pending_tool_io.pop(str(call_id or ""), None)
+        # 结果事实（类别 / 可重试）随 TOOL_END 一起给：界面不必从 ok 反推失败类型。
+        result_facts = (
+            tool_feedback.facts(pending["result"]) if pending and pending.get("result") else {}
+        )
         record_id = self._record_tool_call(tool_name, data, status, duration_ms, pending)
         if call_id:
             # 合并写入：`record_id` 由上面刚写下的历史记录给出，整条覆盖会把它丢掉
@@ -256,6 +261,9 @@ class AgentLoop:
                 # 前端不必从 ok 反推「取消」还是「失败」。
                 "status": status,
                 "error": data.get("error"),
+                "category": result_facts.get("category"),
+                "category_label": result_facts.get("category_label"),
+                "recoverable": result_facts.get("recoverable"),
                 "content_preview": data.get("content_preview", ""),
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
@@ -629,7 +637,15 @@ class AgentLoop:
                 if not result.ok:
                     self._warn(f"tool {call.name} failed: {result.error}")
                 messages.append(
-                    ChatMessage(role="tool", tool_call_id=call.id, content=result.content)
+                    # 统一反馈：失败也要把类别/原因/是否可重试交给模型，
+                    # 不能只回 content —— 失败且 content 为空时模型会收到空正文。
+                    ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        content=tool_feedback.message(
+                            result, tool_name=call.name, call_id=call.id
+                        ),
+                    )
                 )
             phase = LoopPhase.OBSERVING
 

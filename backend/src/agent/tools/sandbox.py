@@ -22,14 +22,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
+import signal
 import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any
 
 from agent.tools.policy import CapabilityLevel, ToolExecutionPolicy
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
@@ -84,6 +88,74 @@ class SandboxResult:
     # docker 自己没把容器跑起来（不是容器里的工具失败了）。只有这种情况下
     # 才允许回退 —— 见 SandboxExecutor.execute。
     launch_failed: bool = False
+    # 统一的错误类别（见 core/tool_feedback.py）；上层据此分类，而不是猜文本。
+    category: str | None = None
+
+    def diagnostic(self, limit: int = 2000) -> str:
+        """脱敏、限长后的诊断详情（stderr 优先，附 stdout 末尾）。
+
+        底层捕获的 stderr 以前没有完整传到上层，模型只能看到「exit code 1」。
+        """
+        from agent.trace.redact import redact_text
+
+        parts: list[str] = []
+        if self.stderr.strip():
+            parts.append("stderr:\n" + self.stderr.strip())
+        if self.stdout.strip():
+            parts.append("stdout:\n" + self.stdout.strip())
+        text = redact_text("\n".join(parts)).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + f"\n…[诊断已截断，共 {len(text)} 字符]"
+
+
+def _classify_failure(stderr: str) -> str:
+    """从子进程 stderr 推断类别（缺依赖 / 代码异常）。"""
+    text = (stderr or "").lower()
+    if "modulenotfounderror" in text or "no module named" in text:
+        return "missing_dependency"
+    return "code_error"
+
+
+def _category_for(error_type: str | None, stderr: str) -> str:
+    """worker 报的异常类型 → 统一错误类别（见 core/tool_feedback.py）。"""
+    text = (stderr or "").lower()
+    if error_type in {"ModuleNotFoundError", "ImportError"} or "no module named" in text:
+        return "missing_dependency"
+    return "code_error"
+
+
+def _spawn_kwargs() -> dict:
+    """POSIX 上让子进程自成一个进程组，便于按组清理。"""
+    if sys.platform == "win32":
+        return {}
+    return {"start_new_session": True}
+
+
+async def _kill_process_tree(process) -> None:
+    """只结束这一次工具调用对应的进程树。
+
+    明确不做的事：按可执行文件名称批量结束进程 —— 那会误伤同一台机器上名字相同的
+    其它进程（包括用户自己的）。Windows 用 `taskkill /PID <pid> /T /F`，它从这个
+    PID 往下遍历子进程；POSIX 用进程组。清理失败只记日志，不盖过真正的错误。
+    """
+    pid = getattr(process, "pid", None)
+    try:
+        if pid and sys.platform == "win32":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(killer.wait(), timeout=10)
+        elif pid:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001 - 清理是尽力而为
+        logger.warning("failed to terminate tool process tree (pid=%s)", pid, exc_info=True)
+    with contextlib.suppress(Exception):
+        await process.wait()
 
 
 class SandboxExecutor:
@@ -126,6 +198,7 @@ class SandboxExecutor:
                         "docker 不可用：命令行在 PATH 里，但守护进程没有应答"
                         "（Docker Desktop 没启动？）；已拒绝执行。"
                     ),
+                    category="environment",
                 )
             return await self._execute_docker(code, arguments, policy)
 
@@ -149,6 +222,7 @@ class SandboxExecutor:
                     "该工具申请了需要隔离的能力（联网/文件/进程/凭据），"
                     "但当前没有可用的容器隔离；已拒绝执行。"
                 ),
+                category="environment",
             )
         return await self._execute_subprocess(code, arguments, extra_env or {}, policy)
 
@@ -161,15 +235,20 @@ class SandboxExecutor:
         extra_env: dict[str, str] | None = None,
         policy: ToolExecutionPolicy | None = None,
     ) -> SandboxResult:
-        script = (
-            "import json, sys\n"
-            f"CODE = {code!r}\n"
-            f"ARGS = {arguments!r}\n"
-            "namespace = {}\n"
-            "exec(compile(CODE, '<tool>', 'exec'), namespace)\n"
-            "result = namespace['run'](**ARGS)\n"
-            "print(json.dumps(result, ensure_ascii=False))\n"
-        )
+        from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
+
+        try:
+            spec = resolve_tool_executor()
+        except ToolRuntimeUnavailable as exc:
+            # 没有可用执行方式：如实报环境问题，不静默用 PATH 里未知的 Python。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=str(exc), category="environment",
+            )
+        # 结构化请求走标准输入；结果只从标准输出读一行 JSON（见 agent/tool_worker.py）。
+        request = json.dumps(
+            {"code": code, "arguments": arguments}, ensure_ascii=False
+        ).encode("utf-8")
         # ignore_cleanup_errors：Windows 上被终止的子进程可能短暂占住作为 cwd 的
         # 临时目录，清理失败不应该让工具执行以异常收场（错误信息本身已经返回）。
         with tempfile.TemporaryDirectory(
@@ -185,43 +264,65 @@ class SandboxExecutor:
                 env.update(extra_env)
             try:
                 process = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-c",
-                    script,
+                    *spec.argv,
                     cwd=tmp,
                     env=env,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    **_spawn_kwargs(),
                 )
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=self.timeout_seconds
+                    process.communicate(request), timeout=self.timeout_seconds
                 )
             except asyncio.TimeoutError:
-                # 必须真正终止子进程：wait_for 只取消了读取，进程会继续运行并
-                # 持有临时目录（资源泄漏 + 后续清理失败）。
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                with contextlib.suppress(Exception):
-                    await process.wait()
+                # wait_for 只取消了读取；必须真的结束这棵进程树，否则工具自己起的
+                # 子进程会留下（资源泄漏 + 临时目录清理失败）。
+                await _kill_process_tree(process)
                 return SandboxResult(
                     ok=False, value=None, stdout="", stderr="",
                     error=f"timeout after {self.timeout_seconds}s",
+                    category="timeout",
                 )
+            except asyncio.CancelledError:
+                # 用户取消：同样只清理这一棵进程树，然后如实向上传递取消语义。
+                await _kill_process_tree(process)
+                raise
             out_text = stdout.decode("utf-8", errors="replace").strip()
             err_text = stderr.decode("utf-8", errors="replace").strip()
-            if process.returncode != 0:
+            if not out_text:
                 return SandboxResult(
                     ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error=f"exit code {process.returncode}",
+                    error=(
+                        f"工具执行程序没有返回结果（exit code {process.returncode}）"
+                    ),
+                    category="startup" if process.returncode != 0 else "output_format",
                 )
             try:
-                value = json.loads(out_text.splitlines()[-1]) if out_text else {}
+                payload = json.loads(out_text.splitlines()[-1])
             except (json.JSONDecodeError, IndexError):
                 return SandboxResult(
                     ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error="tool did not print a JSON result",
+                    error="工具执行程序返回的不是合法 JSON 结果",
+                    category="output_format",
                 )
-            return SandboxResult(ok=True, value=value, stdout=out_text, stderr=err_text)
+            tool_stdout = str(payload.get("stdout") or "")
+            tool_stderr = str(payload.get("stderr") or "")
+            if not payload.get("ok"):
+                return SandboxResult(
+                    ok=False,
+                    value=None,
+                    stdout=tool_stdout,
+                    stderr=tool_stderr or err_text,
+                    error=str(payload.get("error") or "工具执行失败"),
+                    category=_category_for(payload.get("error_type"), tool_stderr),
+                )
+            return SandboxResult(
+                ok=True,
+                value=payload.get("value") or {},
+                stdout=tool_stdout,
+                stderr=tool_stderr,
+            )
 
     # -- docker executor (optional) --------------------------------------
 
@@ -262,6 +363,7 @@ class SandboxExecutor:
             return SandboxResult(
                 ok=False, value=None, stdout="", stderr="",
                 error=f"docker timeout after {self.timeout_seconds}s",
+                category="timeout",
             )
         except OSError as exc:
             # 探测之后 docker 命令行起不来了（被卸载、路径变了）：容器没起来，
@@ -269,6 +371,7 @@ class SandboxExecutor:
             return SandboxResult(
                 ok=False, value=None, stdout="", stderr="",
                 error=f"docker 无法启动：{exc}", launch_failed=True,
+                category="environment",
             )
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
@@ -280,6 +383,10 @@ class SandboxExecutor:
                 ok=False, value=None, stdout=out_text, stderr=err_text,
                 error=f"docker exit code {process.returncode}",
                 launch_failed=process.returncode == 125,
+                category=(
+                    "environment" if process.returncode == 125
+                    else _classify_failure(err_text)
+                ),
             )
         try:
             value = json.loads(out_text.splitlines()[-1]) if out_text else {}
@@ -287,6 +394,7 @@ class SandboxExecutor:
             return SandboxResult(
                 ok=False, value=None, stdout=out_text, stderr=err_text,
                 error="tool did not print a JSON result",
+                category="output_format",
             )
         return SandboxResult(ok=True, value=value, stdout=out_text, stderr=err_text)
 

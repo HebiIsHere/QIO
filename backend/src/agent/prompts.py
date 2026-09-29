@@ -119,6 +119,14 @@ TOOL_DEV_LIST_FILES_DESC = (
     "开始开发前先调用本工具确认现有文件，再决定读取或改写哪个文件。"
 )
 
+# 列出开发任务工具 dev_list_tasks 的描述。定义于 agent/tools/dev_tools.py；
+# 作用：告诉模型「枚举开发任务及其权威状态」，重启/断线后据此恢复上下文。
+TOOL_DEV_LIST_TASKS_DESC = (
+    "列出全部开发任务及其状态（阶段、测试结果、是否已提交、需求摘要）。"
+    "无参数。重启或不确定有哪些未完成任务时先调用本工具，"
+    "不要凭对话记忆猜测工作区 id；状态来自后端记录，文件存在不代表测试通过。"
+)
+
 # 运行工具测试工具 dev_run_tests 的描述。定义于 agent/tools/dev_tools.py；
 # 作用：告诉模型「在沙箱运行 tool.json 定义的测试并返回逐条结果，失败则修改后重跑」。
 TOOL_DEV_RUN_TESTS_DESC = (
@@ -132,7 +140,8 @@ TOOL_DEV_RUN_TESTS_DESC = (
 # 作用：告诉模型「提交工具定义 JSON 进入审批」，审批通过后工具注册、工作区清理。
 TOOL_DEV_SUBMIT_DESC = (
     "提交工具开发成果进入审批。"
-    "definition 必填，为工具定义 JSON（含 name/description/parameters/tool_type/sync/code/tests）。"
+    "以工作区 tool.json 为准，不必再传 definition（只传 workspace 与 explanation）。"
+    "definition 只在需要核对时传入，且必须与工作区文件一致。"
     "explanation 必填，用通俗语言说明工具用途，用户会看到。"
     "审批通过后工具注册并清理工作区；被拒绝时保留当前工作区，可根据反馈修改后重新提交。"
 )
@@ -143,7 +152,8 @@ DEV_GUIDE = """工具开发指南：
 1. 开发范式：先理解需求，再用 dev_list_files 查看工作区已有文件（request.md 是开发需求、tool.json 是工具定义模板），然后改写 tool.json（name/description/parameters/tool_type/sync/code/tests）；运行测试；失败时读取错误、修改定义并重跑，直到全部通过，最后提交审批。
 2. 需求规格必填：工具用途（一句话）、输入输出、使用场景、是否需要凭据（访问外部服务时）、类型（function/subagent）、同步/异步。信息不完整时先与用户澄清。
 3. 契约约束：function 型必须是纯函数、单文件实现、至少 1 个确定性测试用例；subagent 型需提供 model 和 credential_ref，可跳过确定性测试。
-4. 提交口径：用通俗语言说明工具用途；用户不接触代码，技术细节留在工具卡片中。"""
+4. 提交口径：以工作区 tool.json 为准，dev_submit_tool 只需 workspace 与 explanation（不必复述整份 definition）；用通俗语言说明工具用途，用户不接触代码，技术细节留在工具卡片中。
+5. 恢复口径：不确定有哪些未完成任务时用 dev_list_tasks 枚举，状态由后端记录；文件存在不代表测试通过，未测试的任务要重新运行 dev_run_tests。"""
 
 # 工具调用的可选叙事信封（保留字段 `_qio`）说明。定义于 tools/registry.py
 # `_with_narrative_field`，注入到每个工具的 parameters.properties；

@@ -52,12 +52,21 @@ class ToolTester:
     ) -> TestOutcome:
         result = await self.sandbox.execute(code, inputs)
         if not result.ok:
-            return TestOutcome(name, False, f"sandbox failure: {result.error}", result)
+            # 把底层 stderr 一起给出来：只有「exit code 1」时，模型无从修改代码。
+            detail = f"sandbox failure: {result.error or '未知错误'}"
+            diagnostic = result.diagnostic()
+            if diagnostic:
+                detail += f"\n{diagnostic}"
+            return TestOutcome(name, False, detail, result)
         if result.value != expected:
+            diagnostic = result.diagnostic()
+            detail = f"assertion mismatch: expected {expected!r}, got {result.value!r}"
+            if diagnostic:
+                detail += f"\n{diagnostic}"
             return TestOutcome(
                 name,
                 False,
-                f"assertion mismatch: expected {expected!r}, got {result.value!r}",
+                detail,
                 result,
             )
         return TestOutcome(name, True, "assertion passed", result)

@@ -174,12 +174,27 @@ powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 | `QIO_DEV_INSECURE` | `0` | `1` = 显式开发豁免：不要求令牌（只允许本机 dev 用） |
 | `QIO_ENABLE_TEST_EVENTS` | `0` | `1` = 注册开发用的 `POST /api/events/test`（生产构建里不注册） |
 | `QIO_ALLOWED_ORIGINS` | — | 追加允许的 WebView origin（逗号分隔） |
+| `QIO_TOOL_PYTHON` | — | 开发/诊断用的逃生口：指定跑工具 worker 的解释器（绝对路径）。正式版不需要设 |
 
 > 不设任何令牌变量时后端会**自己生成**一个进程内令牌并拒绝所有未带令牌的请求
 > （fail-closed，日志只提示、不打印令牌）。要连上它，要么设 `QIO_SESSION_TOKEN`，
 > 要么用 `scripts/e2e_up.py`（默认开发豁免口径，`--secure` 为带令牌口径）。
 > QIO 自己的 WebView 走的永远是带令牌路径：桌面壳挑一个随机空闲端口，让后端
 > 生成令牌写到用户私有临时文件，再通过 `qio_backend_info` 命令交给自己的前端。
+
+**生成工具的执行方式（重要）**：工具代码跑在**独立子进程**里，不在后端主进程中执行。
+
+- 正式版：同一个后端 exe 以 `--tool-worker` 参数启动一次，只执行这一个工具请求然后退出。
+  这条分支在加载 uvicorn、数据库、凭据**之前**返回，不启动服务、不跑迁移、不做维护任务。
+  所以安装版不需要用户另装 Python，也不需要再打包第二个可执行文件。
+- 开发与测试：`python src/agent/tool_worker.py`，与正式版是同一份 worker 源码、同一套协议。
+- 两者协议一致：请求从标准输入传一个 JSON（代码 + 参数），结果只从标准输出读**一行** JSON；
+  工具自己的打印与异常栈被收进结果的 `stdout` / `stderr` 字段，保证结果通道干净。
+- 工具崩溃、超时或取消只会结束这一次调用对应的进程树（Windows 按 PID 用
+  `taskkill /PID <pid> /T /F`，不按可执行文件名称批量结束），不会影响后端服务。
+
+> 独立子进程**不是安全沙箱**：它隔离的是崩溃、超时与资源占用，不是能力边界。能访问什么
+> 由执行策略与用户审批决定（见 `docs/architecture.md` 的工具章节）。
 
 ## 7. 启动
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,6 +22,9 @@ _SAFE_NAME = re.compile(r"^[a-zA-Z0-9_.-]+$")
 # 工作区 id 的形状（`DevWorkspace.create` 生成）：扫盘回填时只认它
 _TASK_ID = re.compile(r"^ws_[0-9a-f]{12}$")
 _REQUEST_MARKER = "# 开发需求"
+# 开发任务状态文件（提交 / 测试 / 内容摘要）。放在工作区目录里，
+# 与已有 `ws_*` 成果同源：重启后可以原样读回，不依赖内存表。
+_STATE_FILE = "state.json"
 
 
 def _now() -> str:
@@ -39,6 +42,42 @@ def _read_request(task_dir: Path) -> str:
     return text.strip()
 
 
+def _read_state(task_dir: Path) -> dict:
+    """读回工作区状态；缺失或损坏时回空字典（调用方按「未知」处理）。"""
+    try:
+        raw = (task_dir / _STATE_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_state(task: "DevTask") -> None:
+    """落盘任务状态（尽力而为：写不进去也不能让工具调用失败）。"""
+    payload = {
+        "id": task.id,
+        "request": task.request,
+        "created_at": task.created_at,
+        "phase": task.phase,
+        "submitted": task.submitted,
+        "test_runs": task.test_runs,
+        "last_test_passed": task.last_test_passed,
+        "last_test_summary": task.last_test_summary,
+        "last_test_at": task.last_test_at,
+        "submitted_digest": task.submitted_digest,
+        "submitted_at": task.submitted_at,
+    }
+    try:
+        (task.dir / _STATE_FILE).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 @dataclass
 class DevTask:
     id: str
@@ -47,6 +86,13 @@ class DevTask:
     created_at: str = field(default_factory=_now)
     submitted: bool = False
     test_runs: int = 0
+    # 权威状态（不再靠文件存在推断「测试通过」）：
+    phase: str | None = None
+    last_test_passed: bool | None = None
+    last_test_summary: str | None = None
+    last_test_at: str | None = None
+    submitted_digest: str | None = None
+    submitted_at: str | None = None
 
 
 class DevWorkspace:
@@ -64,6 +110,9 @@ class DevWorkspace:
         以前只有内存字典：应用一重启，磁盘上的 ws_* 目录还在（文件一个没少），
         但 dev_* 工具一律回「找不到工作区」，工具创建流程就断在那里 ——
         模型只会拿着同一个 id 反复重试（真实事故：连续 5 次失败）。
+
+        有 state.json 就按它回填状态；没有就把测试结果标为**未知**（None），
+        绝不因为目录里有文件就推断「测试通过」。
         """
         try:
             entries = sorted(self.root_dir.iterdir())
@@ -72,6 +121,7 @@ class DevWorkspace:
         for entry in entries:
             if not entry.is_dir() or not _TASK_ID.match(entry.name):
                 continue
+            state = _read_state(entry)
             try:
                 created = datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc)
             except OSError:
@@ -80,7 +130,15 @@ class DevWorkspace:
                 id=entry.name,
                 request=_read_request(entry),
                 dir=entry,
-                created_at=created.isoformat(),
+                created_at=str(state.get("created_at") or created.isoformat()),
+                submitted=bool(state.get("submitted", False)),
+                test_runs=int(state.get("test_runs", 0) or 0),
+                phase=state.get("phase"),
+                last_test_passed=state.get("last_test_passed"),
+                last_test_summary=state.get("last_test_summary"),
+                last_test_at=state.get("last_test_at"),
+                submitted_digest=state.get("submitted_digest"),
+                submitted_at=state.get("submitted_at"),
             )
 
     # -- lifecycle --------------------------------------------------------
@@ -108,10 +166,38 @@ class DevWorkspace:
         )
         task = DevTask(id=task_id, request=request, dir=task_dir)
         self._tasks[task_id] = task
+        task.phase = "created"
+        _write_state(task)
         return task
 
     def task(self, task_id: str) -> DevTask | None:
         return self._tasks.get(task_id)
+
+    def list_tasks(self) -> list[DevTask]:
+        """按创建时间列出全部开发任务（重启后仍可枚举）。"""
+        return sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
+
+    def status(self, task_id: str) -> dict:
+        """任务的权威状态快照（给工具/界面/恢复用）。"""
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {}
+        files = self.list_files(task_id)
+        return {
+            "id": task.id,
+            "request": task.request,
+            "created_at": task.created_at,
+            "phase": task.phase,
+            "submitted": task.submitted,
+            "test_runs": task.test_runs,
+            "last_test_passed": task.last_test_passed,
+            "last_test_summary": task.last_test_summary,
+            "last_test_at": task.last_test_at,
+            "submitted_digest": task.submitted_digest,
+            "submitted_at": task.submitted_at,
+            "files": files,
+            "content_digest": self.content_digest(task_id),
+        }
 
     def cleanup(self, task_id: str) -> None:
         task = self._tasks.pop(task_id, None)
@@ -124,6 +210,29 @@ class DevWorkspace:
         task = self._tasks.get(task_id)
         if task is not None:
             task.submitted = True
+            task.phase = "submitted"
+            task.submitted_at = _now()
+            task.submitted_digest = self.content_digest(task_id)
+            _write_state(task)
+
+    def record_test(self, task_id: str, passed: bool, summary: str) -> None:
+        """记录一次测试的权威结果（通过/失败 + 摘要 + 时刻）。"""
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        task.test_runs += 1
+        task.last_test_passed = bool(passed)
+        task.last_test_summary = summary
+        task.last_test_at = _now()
+        task.phase = "testing_passed" if passed else "testing_failed"
+        _write_state(task)
+
+    def set_phase(self, task_id: str, phase: str) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        task.phase = phase
+        _write_state(task)
 
     # -- files ------------------------------------------------------------
 
@@ -156,7 +265,36 @@ class DevWorkspace:
         task = self._tasks.get(task_id)
         if task is None:
             return []
-        return sorted(p.name for p in task.dir.iterdir() if p.is_file())
+        return sorted(
+            p.name
+            for p in task.dir.iterdir()
+            if p.is_file() and p.name != _STATE_FILE
+        )
+
+    # -- content binding ---------------------------------------------------
+
+    def content_digest(self, task_id: str) -> str | None:
+        """工作区全部文件（不含 state.json）的内容摘要。
+
+        审批 / 注册 / 测试证据都绑定这个摘要：内容变了，旧证据不能再用。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return None
+        digest = hashlib.sha256()
+        try:
+            paths = sorted(task.dir.rglob("*"))
+        except OSError:
+            return None
+        for path in paths:
+            if not path.is_file() or path.name == _STATE_FILE:
+                continue
+            rel = path.relative_to(task.dir).as_posix()
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     # -- definition helpers ----------------------------------------------
 
