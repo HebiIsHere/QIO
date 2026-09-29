@@ -16,11 +16,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextvars import ContextVar
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from agent.adapters.base import ToolCall, ToolSpec
-from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS, Narrative, parse_narrative
 from agent.tools.base import Tool, ToolResult
+
+# 这里**不能**在模块级 `from agent.core.narrative import ...`：那会让
+# tools → lifecycle → registry → core → core.loop → tools.registry 围成一个圈，
+# 先导入 agent.tools.* 的调用方（比如单独跑某个测试文件）直接 ImportError。
+# 运行期用到的名字在各函数里局部导入；`Narrative` 只用于标注，而模块开了
+# `from __future__ import annotations`，标注不求值，所以放在 TYPE_CHECKING 下即可。
+if TYPE_CHECKING:
+    from agent.core.narrative import Narrative
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +146,7 @@ class ToolRegistry:
         只改副本，不动工具自己的 parameters；不加入 required；
         已有同名属性时不覆盖（保持工具自身定义优先）。
         """
+        from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS
         from agent.prompts import NARRATIVE_FIELD_DESCRIPTION
 
         spec = dict(parameters or {})
@@ -170,6 +178,8 @@ class ToolRegistry:
         """
         # 叙事只用于「模型想怎么表达」，不参与任何执行/风险/权限判断；
         # 在这里挂到 ContextVar 上，工具内部发起的审批可以取到 explanation。
+        from agent.core.narrative import parse_narrative
+
         token = _current_narrative.set(parse_narrative(getattr(call, "narrative", None)))
         try:
             return await self._execute_call(call)
