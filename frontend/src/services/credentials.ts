@@ -355,9 +355,18 @@ export function useCredentialForm(options: CredentialFormOptions): CredentialFor
       modelTimer = null;
       const endpoint = form.endpoint.trim();
       if (!endpoint) return;
-      if (!form.secret.trim() && !initial?.key_id) {
+      const newSecret = form.secret.trim();
+      // 已存的 Key 只能问**它自己那个地址**要模型列表。
+      //
+      // 改了服务地址（或协议）之后再用已存的 Key 去请求，等于在用户点「保存」、
+      // 勾选「确认发送到新地址」之前就把这把钥匙交给了新地址 —— 这里必须拦住：
+      // 没有新 Key 就干脆不取候选列表，让用户手填模型名，等保存之后再取。
+      const storedKeyUsable = Boolean(initial?.key_id) && !targetChanged.value;
+      if (!newSecret && !storedKeyUsable) {
         models.value = [];
-        modelsNote.value = "";
+        modelsNote.value = initial?.key_id
+          ? "地址和这把 Key 原来的地址不一致，这里不会自动去取模型列表；填好 Key 并保存后即可取回。"
+          : "";
         return;
       }
       const token = ++modelSeq;
@@ -366,7 +375,7 @@ export function useCredentialForm(options: CredentialFormOptions): CredentialFor
           endpoint,
           kind: form.kind,
         };
-        if (form.secret.trim()) params.secret = form.secret.trim();
+        if (newSecret) params.secret = newSecret;
         else if (initial?.key_id) params.keyId = initial.key_id;
         const result = await api.listCredentialModels(params);
         if (token !== modelSeq) return;

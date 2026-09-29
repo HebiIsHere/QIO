@@ -58,6 +58,17 @@ DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 _SENTENCE_END = "。！？!?\n"
 
 
+def _normalized_endpoint(value: str | None) -> str:
+    """地址比较用的归一化形式：忽略大小写与结尾斜杠。"""
+    return (value or "").strip().rstrip("/").lower()
+
+
+def _same_endpoint(left: str | None, right: str | None) -> bool:
+    """两个地址是不是同一个（空地址永不相等：不知道属于哪里就别乱发）。"""
+    normalized = _normalized_endpoint(left)
+    return bool(normalized) and normalized == _normalized_endpoint(right)
+
+
 def _first_sentence(text: str | None) -> str | None:
     """取摘要首句；没有内容就不返回，绝不编造。"""
     cleaned = (text or "").strip()
@@ -486,11 +497,20 @@ def create_app(
         """模型候选列表（只是便利，不是验证）。
 
         `key_id` 用于已保存的凭据（不把密钥交给前端）；`secret` 用于还没落库的草稿。
+        已保存的 Key 只回答**它自己那个地址**：地址变了就等于换了发送目标，
+        在用户重新填 Key 并确认之前不能把它发出去。
         """
         from agent.services.verify import list_models
 
         token = secret
         if token is None and key_id:
+            meta = ctx.credentials.get_metadata(key_id) or {}
+            if not _same_endpoint(meta.get("endpoint"), endpoint):
+                return {
+                    "models": [],
+                    "note": "服务地址和这条凭据保存时不一致，不会用已保存的 Key 去取模型列表；"
+                    "填好新的 Key 并保存后即可取回",
+                }
             token = ctx.credentials.get_secret(key_id)
         if not token:
             return {"models": [], "note": "没有可用的密钥，无法获取模型列表；可以手动填写模型名称"}

@@ -70,6 +70,56 @@ def test_endpoint_change_with_secret_and_confirmation_rotates_the_key(client):
     assert client.app.state.ctx.credentials.get_secret("k1") == "sk-new"
 
 
+def test_models_lookup_refuses_to_send_stored_key_to_a_different_endpoint(
+    client, monkeypatch
+):
+    """改地址之后、用户勾选确认之前，也不许拿已存的 Key 去问新地址要模型列表。
+
+    前端的自动取列表同样受这条约束；这里守的是后端：只要请求的地址不是这条
+    凭据自己的地址，就不解密、不外发，避免任何调用方（含前端漏改）提前把钥匙交出去。
+    """
+    _create(client, endpoint="https://api.openai.com/v1")
+    calls: list[dict] = []
+
+    from agent.services import verify as verify_service
+
+    async def _spy(**kwargs):  # noqa: ANN003
+        calls.append(kwargs)
+        return ["should-not-be-requested"]
+
+    monkeypatch.setattr(verify_service, "list_models", _spy)
+
+    resp = client.get(
+        "/api/credentials/models",
+        params={"endpoint": "https://attacker.example/v1", "key_id": "k1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["models"] == []
+    assert calls == [], "确认之前不得把已存的 Key 发到新地址"
+
+
+def test_models_lookup_still_uses_the_stored_key_for_its_own_endpoint(client, monkeypatch):
+    """地址没变时照旧：用已存的 Key 取候选模型，不误伤原本可用的便利路径。"""
+    _create(client, endpoint="https://api.openai.com/v1")
+    calls: list[dict] = []
+
+    from agent.services import verify as verify_service
+
+    async def _spy(**kwargs):  # noqa: ANN003
+        calls.append(kwargs)
+        return ["gpt-4o-mini"]
+
+    monkeypatch.setattr(verify_service, "list_models", _spy)
+
+    resp = client.get(
+        "/api/credentials/models",
+        params={"endpoint": "https://api.openai.com/v1", "key_id": "k1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["models"] == ["gpt-4o-mini"]
+    assert calls and calls[0]["secret"] == "sk-original"
+
+
 def test_plain_http_endpoint_only_for_localhost(client):
     _create(client)
     resp = client.patch(

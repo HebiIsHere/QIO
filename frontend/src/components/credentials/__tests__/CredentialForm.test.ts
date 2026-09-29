@@ -4,7 +4,7 @@
  * 这一份用例同时守护首次引导与设置页共用的行为：默认用途、选厂商补齐字段、
  * 保存与验证分开反馈、防重复提交、换钥失败不动原凭据、改发送目标必须确认。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import CredentialForm from "../CredentialForm.vue";
 import type { CredentialMeta, VerifyReport } from "../../../services/api";
@@ -101,6 +101,7 @@ async function setup(props: { mode: "create" | "edit" | "rotate"; initial?: Cred
   });
   const w = mount(CredentialForm, { props: { mode: props.mode, initial: props.initial ?? null } });
   await flushPromises();
+  mounted.push(w);
   return { w, api };
 }
 
@@ -110,6 +111,18 @@ async function pickProvider(w: Awaited<ReturnType<typeof setup>>["w"], label: st
   expect(option, `找不到厂商「${label}」`).toBeTruthy();
   await option!.trigger("click");
 }
+
+/**
+ * 挂载过的表单要逐条卸载：表单里的「取模型列表」「Key 前缀提示」都带防抖定时器，
+ * 卸载才会把它们清掉。否则上一条用例遗留的定时器会在下一条用例里发请求，
+ * 让「这条用例到底发了什么」变得不可信。
+ */
+const mounted: { unmount: () => void }[] = [];
+
+afterEach(() => {
+  for (const w of mounted) w.unmount();
+  mounted.length = 0;
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -450,6 +463,28 @@ describe("凭据表单 · 提示与编辑", () => {
     expect(payload.confirm_reconfigure).toBe(true);
     expect(payload.secret).toBe("sk-again-abcdefghijkl");
     expect(payload.endpoint).toBe("https://attacker.example/v1");
+  });
+
+  it("编辑时改了地址：勾选确认之前，不拿已存的 Key 去问新地址要模型列表", async () => {
+    const { w, api } = await setup({ mode: "edit", initial: meta() });
+    await w.find(".advanced-toggle").trigger("click");
+    await w.find("#cred-endpoint").setValue("https://attacker.example/v1");
+    // 取模型列表有 450ms 防抖：必须等它真的触发，才能证明「确认前不外发」
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await flushPromises();
+    expect(api.listCredentialModels).not.toHaveBeenCalled();
+  });
+
+  it("编辑时地址没变：仍然用已存的 Key 取模型列表", async () => {
+    const { w, api } = await setup({ mode: "edit", initial: meta() });
+    await w.find(".advanced-toggle").trigger("click");
+    await pickProvider(w, "OpenAI");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await flushPromises();
+    expect(api.listCredentialModels).toHaveBeenCalledTimes(1);
+    const params = (api.listCredentialModels as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(params.keyId).toBe("k1");
+    expect(params.endpoint).toBe("https://api.deepseek.com/v1");
   });
 
   it("换钥：先验证新 Key，验证不过就完全不碰原凭据", async () => {
