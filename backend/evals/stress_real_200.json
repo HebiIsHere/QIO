@@ -1,0 +1,19 @@
+{
+  "docs": 200,
+  "memories": 200,
+  "topics": 200,
+  "entities": 0,
+  "recall_cases": 600,
+  "questions": 200,
+  "failures": [],
+  "adapter": {
+    "model": "deepseek-v4-flash"
+  },
+  "budget": {
+    "calls": 0,
+    "spent_usd": 0.0,
+    "max_usd": 1.0,
+    "exhausted": false
+  },
+  "wall_s": 622.6
+}

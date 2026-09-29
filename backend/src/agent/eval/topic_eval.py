@@ -6,6 +6,11 @@ current topic, a message, and the expected mode. Thresholds come from
 
 Output: switch / new-topic / in-topic metrics. No network, no paid models;
 the embedding path uses a deterministic fake backend so it is reproducible.
+
+传入 `embedding_factory` 时改用它提供的嵌入后端（例如内置 ONNX 模型），
+并且**对每个用例都调用一次工厂**：后端实例会缓存话题向量，而同一个话题 id
+在不同用例里会出现，复用实例会让后面的用例读到前面用例的向量。
+工厂返回 `None` 时该用例退回规则路径（模型不可用时的降级行为）。
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.services.params import TOPIC, TopicPolicy
 
@@ -85,7 +90,12 @@ def load_cases(path: str | Path) -> list[dict[str, Any]]:
     return cases
 
 
-def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
+def predict_mode(
+    case: dict[str, Any],
+    policy: TopicPolicy = TOPIC,
+    *,
+    embedding_factory: Callable[[], Any] | None = None,
+) -> str:
     from agent.services.affinity import classify
     from agent.services.predict import TopicPredictor
 
@@ -93,7 +103,10 @@ def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
         _Fingerprint(t["id"], t.get("title", ""), t.get("keywords", []))
         for t in case.get("topics", [])
     ]
-    embedding = FakeEmbedding() if case.get("backend") == "fake_embedding" else None
+    if embedding_factory is not None:
+        embedding = embedding_factory()
+    else:
+        embedding = FakeEmbedding() if case.get("backend") == "fake_embedding" else None
     predictor = TopicPredictor(
         None,
         embedding,
@@ -110,7 +123,12 @@ def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
     return decision.mode.value
 
 
-def evaluate(cases: list[dict[str, Any]], policy: TopicPolicy = TOPIC) -> dict[str, Any]:
+def evaluate(
+    cases: list[dict[str, Any]],
+    policy: TopicPolicy = TOPIC,
+    *,
+    embedding_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
     counts = {"in_topic": 0, "switch": 0, "new_topic": 0}
     correct = {"in_topic": 0, "switch": 0, "new_topic": 0}
     pred_new_total = 0
@@ -121,7 +139,7 @@ def evaluate(cases: list[dict[str, Any]], policy: TopicPolicy = TOPIC) -> dict[s
     rows: list[dict[str, Any]] = []
     for case in cases:
         expected = case["expected"]
-        predicted = predict_mode(case, policy)
+        predicted = predict_mode(case, policy, embedding_factory=embedding_factory)
         counts[expected] = counts.get(expected, 0) + 1
         if predicted == expected:
             correct[expected] = correct.get(expected, 0) + 1

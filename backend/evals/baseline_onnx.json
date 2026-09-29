@@ -1,0 +1,65 @@
+{
+  "topic_prediction": {
+    "n": 12,
+    "in_topic_accuracy": 0.5,
+    "switch_accuracy": 1.0,
+    "new_topic_precision": 0.75,
+    "new_topic_recall": 1.0,
+    "false_new_rate": 0.3333,
+    "false_switch_rate": 0.0
+  },
+  "retrieval": {
+    "n": 8,
+    "recall@1": 0.75,
+    "recall@5": 1.0,
+    "mrr": 0.8542,
+    "wrong_memory_injection_rate": 0.25,
+    "stale_knowledge_injection_rate": 0.0
+  },
+  "anchor_continuation": {
+    "n": 5,
+    "baseline": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6667,
+      "wrong_memory_injection_rate": 0.2,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.3333
+    },
+    "focus_only": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6667,
+      "wrong_memory_injection_rate": 0.2,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.3333
+    },
+    "anchor_distance": {
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "mrr": 0.6333,
+      "wrong_memory_injection_rate": 0.4,
+      "stale_memory_injection_rate": 0.0,
+      "anchor_redundancy_rate": 0.0,
+      "duplicate_injection_rate": 0.0,
+      "anchor_distraction_rate": 0.6667
+    },
+    "decision": {
+      "recall5_delta": 0.0,
+      "wrong_rate_delta": 0.2,
+      "anchor_distraction_rate": 0.6667,
+      "verdict": "skip"
+    }
+  },
+  "_run": {
+    "embedding": "onnx",
+    "model_dir": "C:\\Users\\zxy\\AppData\\Roaming\\qio\\models\\bge-small-zh-v1.5",
+    "notes": [
+      "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1"
+    ]
+  }
+}

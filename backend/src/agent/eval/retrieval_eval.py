@@ -7,6 +7,10 @@ are reproducible on any machine.
 
 Metrics: Recall@1, Recall@5, MRR, wrong-memory injection rate,
 stale-knowledge injection rate.
+
+默认走关键词后端（不需要模型、任何机器上结果一致）。传入 `recall_factory`
+时改用它生产的那条召回路径（例如内置 ONNX 嵌入模型）：工厂**每个用例调一次**，
+因为后端实例会把向量缓存在自己身上，跨用例复用会串味。
 """
 
 from __future__ import annotations
@@ -14,9 +18,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from agent.selector.base import IndexedDoc
+from agent.selector.base import IndexedDoc, RecallBackend
+from agent.selector.bm25 import BM25Backend
 from agent.selector.selector import Selector
 from agent.services import params
 from agent.services.decay import DecayPolicy
@@ -41,7 +46,12 @@ def _iso(days_ago: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
 
 
-def rank_case(case: dict[str, Any], top_k: int = 5) -> list[str]:
+def rank_case(
+    case: dict[str, Any],
+    top_k: int = 5,
+    *,
+    recall_factory: Callable[[], RecallBackend | None] | None = None,
+) -> list[str]:
     docs = [
         IndexedDoc(
             doc_id=d["id"],
@@ -51,7 +61,13 @@ def rank_case(case: dict[str, Any], top_k: int = 5) -> list[str]:
         )
         for d in case["docs"]
     ]
-    selector = Selector()
+    # 不传工厂 = 现状（关键词后端）；传了就用调用方给的召回后端，
+    # 挂 BM25 作为后备 —— 与 app.py 里 Selector 的装配方式一致。
+    selector = (
+        Selector()
+        if recall_factory is None
+        else Selector(recall=recall_factory(), fallback_recall=BM25Backend())
+    )
     selector.load(docs)
     rp = params.RETRIEVAL
     retriever = Retriever(
@@ -75,7 +91,12 @@ def rank_case(case: dict[str, Any], top_k: int = 5) -> list[str]:
     return [h.doc_id for h in hits]
 
 
-def evaluate(cases: list[dict[str, Any]], top_k: int = 5) -> dict[str, Any]:
+def evaluate(
+    cases: list[dict[str, Any]],
+    top_k: int = 5,
+    *,
+    recall_factory: Callable[[], RecallBackend | None] | None = None,
+) -> dict[str, Any]:
     recall1 = recall5 = 0
     rr_sum = 0.0
     wrong = 0
@@ -84,7 +105,7 @@ def evaluate(cases: list[dict[str, Any]], top_k: int = 5) -> dict[str, Any]:
     for case in cases:
         expected = set(case["expected"])
         stale_ids = set(case.get("stale", []))
-        ranked = rank_case(case, top_k=top_k)
+        ranked = rank_case(case, top_k=top_k, recall_factory=recall_factory)
         top1 = set(ranked[:1])
         top5 = set(ranked[:top_k])
         if top1 & expected:

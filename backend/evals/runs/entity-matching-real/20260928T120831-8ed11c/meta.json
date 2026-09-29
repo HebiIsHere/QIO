@@ -1,0 +1,16 @@
+{
+  "run_id": "20260928T120831-8ed11c",
+  "name": "entity-matching-real",
+  "created_at": "2026-09-28T12:08:31.435095+00:00",
+  "code_version": "892aa26+dirty",
+  "config": {
+    "cards": 105,
+    "cases": 260,
+    "queries": "name/alias/desc"
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "cpu_count": 16
+  }
+}

@@ -1,0 +1,340 @@
+{
+  "rules": {
+    "recall": {
+      "all": {
+        "n": 600,
+        "recall@1": 0.5933,
+        "recall@5": 0.6067,
+        "mrr": 0.5993,
+        "wrong_memory_injection_rate": 0.3933,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "keyword_answerable": {
+        "n": 364,
+        "recall@1": 0.978,
+        "recall@5": 1.0,
+        "mrr": 0.9879,
+        "wrong_memory_injection_rate": 0.0,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "keyword_unanswerable": {
+        "n": 236,
+        "recall@1": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "wrong_memory_injection_rate": 1.0,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "by_category": {
+        "cross_topic": {
+          "n": 100,
+          "recall@1": 0.94,
+          "recall@5": 0.94,
+          "mrr": 0.94,
+          "wrong_memory_injection_rate": 0.06,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "entity_ref": {
+          "n": 100,
+          "recall@1": 0.01,
+          "recall@5": 0.03,
+          "mrr": 0.02,
+          "wrong_memory_injection_rate": 0.97,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "fact_update": {
+          "n": 100,
+          "recall@1": 0.96,
+          "recall@5": 0.96,
+          "mrr": 0.96,
+          "wrong_memory_injection_rate": 0.04,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "paraphrase": {
+          "n": 100,
+          "recall@1": 0.81,
+          "recall@5": 0.83,
+          "mrr": 0.8175,
+          "wrong_memory_injection_rate": 0.17,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "recent_noise": {
+          "n": 100,
+          "recall@1": 0.02,
+          "recall@5": 0.06,
+          "mrr": 0.0383,
+          "wrong_memory_injection_rate": 0.94,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "same_topic": {
+          "n": 100,
+          "recall@1": 0.82,
+          "recall@5": 0.82,
+          "mrr": 0.82,
+          "wrong_memory_injection_rate": 0.18,
+          "stale_knowledge_injection_rate": 0.0
+        }
+      },
+      "by_tier": {
+        "literal": {
+          "n": 111,
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "mrr": 1.0,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "partial": {
+          "n": 253,
+          "recall@1": 0.9684,
+          "recall@5": 1.0,
+          "mrr": 0.9825,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "disjoint": {
+          "n": 236,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 1.0,
+          "stale_knowledge_injection_rate": 0.0
+        }
+      },
+      "latency_ms": {
+        "n": 600,
+        "mean_ms": 0.23,
+        "p50_ms": 0.21,
+        "p90_ms": 0.35,
+        "max_ms": 0.65
+      }
+    },
+    "topic": {
+      "n": 180,
+      "accuracy": 0.3333,
+      "confusions": {
+        "in_topic→new_topic": 60,
+        "switch→new_topic": 60,
+        "new_topic→new_topic": 60
+      },
+      "latency_ms": {
+        "n": 180,
+        "mean_ms": 0.14,
+        "p50_ms": 0.12,
+        "p90_ms": 0.17,
+        "max_ms": 0.29
+      }
+    },
+    "entity": {
+      "n": 0,
+      "accuracy": 0.0,
+      "confusions": {},
+      "latency_ms": {
+        "n": 0
+      }
+    },
+    "tool": {
+      "n": 0,
+      "latency_ms": {
+        "n": 0
+      }
+    },
+    "dedup": {
+      "n": 120,
+      "accuracy": 0.5,
+      "recall": 0.0,
+      "false_positive_rate": 0.0,
+      "confusions": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 60,
+        "fn": 60
+      },
+      "latency_ms": {
+        "n": 120,
+        "mean_ms": 0.18,
+        "p50_ms": 0.17,
+        "p90_ms": 0.22,
+        "max_ms": 0.54
+      }
+    },
+    "wall_ms": 187.5
+  },
+  "local": {
+    "recall": {
+      "all": {
+        "n": 600,
+        "recall@1": 0.75,
+        "recall@5": 0.8233,
+        "mrr": 0.7758,
+        "wrong_memory_injection_rate": 0.1767,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "keyword_answerable": {
+        "n": 364,
+        "recall@1": 0.9835,
+        "recall@5": 1.0,
+        "mrr": 0.9892,
+        "wrong_memory_injection_rate": 0.0,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "keyword_unanswerable": {
+        "n": 236,
+        "recall@1": 0.3898,
+        "recall@5": 0.5508,
+        "mrr": 0.4466,
+        "wrong_memory_injection_rate": 0.4492,
+        "stale_knowledge_injection_rate": 0.0
+      },
+      "by_category": {
+        "cross_topic": {
+          "n": 100,
+          "recall@1": 0.99,
+          "recall@5": 1.0,
+          "mrr": 0.9933,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "entity_ref": {
+          "n": 100,
+          "recall@1": 0.27,
+          "recall@5": 0.51,
+          "mrr": 0.3487,
+          "wrong_memory_injection_rate": 0.49,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "fact_update": {
+          "n": 100,
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "mrr": 1.0,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "paraphrase": {
+          "n": 100,
+          "recall@1": 0.97,
+          "recall@5": 0.99,
+          "mrr": 0.9775,
+          "wrong_memory_injection_rate": 0.01,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "recent_noise": {
+          "n": 100,
+          "recall@1": 0.33,
+          "recall@5": 0.46,
+          "mrr": 0.3778,
+          "wrong_memory_injection_rate": 0.54,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "same_topic": {
+          "n": 100,
+          "recall@1": 0.94,
+          "recall@5": 0.98,
+          "mrr": 0.9575,
+          "wrong_memory_injection_rate": 0.02,
+          "stale_knowledge_injection_rate": 0.0
+        }
+      },
+      "by_tier": {
+        "literal": {
+          "n": 111,
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "mrr": 1.0,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "partial": {
+          "n": 253,
+          "recall@1": 0.9763,
+          "recall@5": 1.0,
+          "mrr": 0.9845,
+          "wrong_memory_injection_rate": 0.0,
+          "stale_knowledge_injection_rate": 0.0
+        },
+        "disjoint": {
+          "n": 236,
+          "recall@1": 0.3898,
+          "recall@5": 0.5508,
+          "mrr": 0.4466,
+          "wrong_memory_injection_rate": 0.4492,
+          "stale_knowledge_injection_rate": 0.0
+        }
+      },
+      "latency_ms": {
+        "n": 600,
+        "mean_ms": 2.39,
+        "p50_ms": 2.32,
+        "p90_ms": 3.02,
+        "max_ms": 4.47
+      }
+    },
+    "topic": {
+      "n": 180,
+      "accuracy": 0.3333,
+      "confusions": {
+        "in_topic→new_topic": 60,
+        "switch→new_topic": 60,
+        "new_topic→new_topic": 60
+      },
+      "latency_ms": {
+        "n": 180,
+        "mean_ms": 7.07,
+        "p50_ms": 7.09,
+        "p90_ms": 7.92,
+        "max_ms": 9.74
+      }
+    },
+    "entity": {
+      "n": 0,
+      "accuracy": 0.0,
+      "confusions": {},
+      "latency_ms": {
+        "n": 0
+      }
+    },
+    "tool": {
+      "n": 0,
+      "latency_ms": {
+        "n": 0
+      }
+    },
+    "dedup": {
+      "n": 120,
+      "accuracy": 0.4917,
+      "recall": 0.6333,
+      "false_positive_rate": 0.65,
+      "confusions": {
+        "tp": 38,
+        "fp": 39,
+        "tn": 21,
+        "fn": 22
+      },
+      "latency_ms": {
+        "n": 120,
+        "mean_ms": 5.68,
+        "p50_ms": 5.62,
+        "p90_ms": 6.48,
+        "max_ms": 7.13
+      }
+    },
+    "backend": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1",
+    "wall_ms": 4138.3
+  },
+  "_corpus": {
+    "memories": 200,
+    "topics": 200,
+    "entities": 0,
+    "recall_cases": 600,
+    "questions_cached": 200,
+    "wall_s": 4.3,
+    "budget": {
+      "calls": 0,
+      "spent_usd": 0.0,
+      "max_usd": 1.0,
+      "exhausted": false
+    },
+    "data_dir": "C:\\Users\\zxy\\AppData\\Local\\Temp\\qio-stress-cache\\qio-real-200b"
+  }
+}

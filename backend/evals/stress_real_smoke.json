@@ -1,0 +1,24 @@
+{
+  "docs": 5,
+  "memories": 4,
+  "topics": 4,
+  "entities": 0,
+  "recall_cases": 12,
+  "questions": 4,
+  "failures": [
+    {
+      "title": "DIVA華麗之後",
+      "error": "封块后没有产生记忆索引"
+    }
+  ],
+  "adapter": {
+    "model": "deepseek-v4-flash"
+  },
+  "budget": {
+    "calls": 0,
+    "spent_usd": 0.0,
+    "max_usd": 1.0,
+    "exhausted": false
+  },
+  "wall_s": 244.8
+}
