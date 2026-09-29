@@ -1,35 +1,36 @@
-"""Selector: combines the rule layer with the best available recall backend.
+"""Selector: 按原始检索相关程度取候选（M5）。
 
 Startup self-check picks the tier: remote embeddings (if configured) >
 ONNX quantized embeddings (if importable and model present) > BM25
-(always available). Rerank stays off by default.
+(always available).
+
+范围边界：这里**只**回答「哪些记忆和查询在检索上相关」——保留底层后端的
+原始分数、来源与稳定身份，按相关度截候选池。话题 / 时效 / 关键词 / 实体等
+业务奖励，以及任何重排，都属于唯一排序入口 `agent/services/ranking.py`。
+
+历史缺陷（本次消除）：候选阶段曾给召回分叠加 anchor/entity/keyword/recency
+奖励，Retriever 再按「相关性 × 时效 × 话题亲和」加权一次 —— 同一批信号算两遍，
+并且「原始相关性」其实是已经被奖励修改过的分数。
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Callable
 
 from agent.selector.base import IndexedDoc, MemoryCandidate, RecallBackend
 from agent.selector.bm25 import BM25Backend
-from agent.selector.rules import QueryContext, rule_score
 from agent.selector.tokenize import tokenize
 
 logger = logging.getLogger(__name__)
-
-RerankFn = Callable[[list[MemoryCandidate], str], list[MemoryCandidate]]
 
 
 class Selector:
     def __init__(
         self,
         recall: RecallBackend | None = None,
-        rerank: RerankFn | None = None,
         fallback_recall: RecallBackend | None = None,
     ) -> None:
         self.recall = recall or BM25Backend()
-        self.rerank = rerank
         self.fallback_recall = fallback_recall
         self._docs: list[IndexedDoc] = []
         self._titles: dict[str, str] = {}
@@ -140,64 +141,56 @@ class Selector:
         self,
         query: str,
         *,
-        top_k: int = 5,
-        anchor_topic_id: str | None = None,
-        entity_names: list[str] | None = None,
-        now: datetime | None = None,
+        candidate_pool: int,
     ) -> list[MemoryCandidate]:
-        """按查询选出相关记忆。
+        """按原始检索相关程度取候选池。
 
-        `now` 用于规则层的时效项：默认取当前时间（行为与以前一致），
-        调用方也可以钉住它，让「同一份索引、同一时刻」的两次排序逐位可比
-        （测试与评测需要这个确定性；否则两次调用相隔几微秒就会在第 12 位小数上漂移）。
+        `candidate_pool` 是候选池大小（不是最终返回条数，也不是底层召回请求数 ——
+        底层只被请求这么多条，没有隐藏乘数）。分数就是底层召回分；分数相同时
+        按稳定身份 `doc_id` 确定顺序，保证同一份索引、同一查询逐位可复现。
         """
-        ctx = QueryContext(
-            query=query,
-            anchor_topic_id=anchor_topic_id,
-            entity_names=entity_names,
-            now=now,
-        )
+        pool = int(candidate_pool)
+        if pool <= 0:
+            return []
         scored: dict[str, list] = {}
 
-        recall = self.recall
-        if not recall.available() and self.fallback_recall is not None and self.fallback_recall.available():
-            recall = self.fallback_recall
-        if recall.available():
-            for hit in recall.search(query, top_k=top_k * 3):
+        recall = self._active_recall()
+        if recall is not None:
+            for hit in recall.search(query, top_k=pool):
                 entry = scored.setdefault(hit.doc_id, [0.0, set()])
                 entry[0] += hit.score
                 entry[1].add(hit.source)
         else:
-            # rule layer alone: keyword/entity/anchor containment over docs
+            # 没有可用召回后端：用「查询词项与记忆关键词的重合度」当相关分。
+            # 这是退化后的检索相关度（词面命中），不是业务奖励。
             query_tokens = set(tokenize(query))
-            lower_entities = {e.lower() for e in (entity_names or [])}
-            for doc in self._docs:
-                if (
-                    query_tokens & set(doc.keywords)
-                    or (lower_entities and set(doc.entity_ids) & lower_entities)
-                    or (anchor_topic_id and doc.topic_id == anchor_topic_id)
-                ):
-                    scored.setdefault(doc.doc_id, [0.0, set()])
+            if query_tokens:
+                for doc in self._docs:
+                    overlap = query_tokens & set(doc.keywords)
+                    if overlap:
+                        scored[doc.doc_id] = [
+                            len(overlap) / len(query_tokens),
+                            {"lexical"},
+                        ]
 
         candidates: list[MemoryCandidate] = []
         for doc in self._docs:
             if doc.doc_id not in scored:
                 continue
-            base, source_set = scored[doc.doc_id]
-            boost = rule_score(doc, ctx)
+            relevance, source_set = scored[doc.doc_id]
             candidates.append(
                 MemoryCandidate(
                     doc_id=doc.doc_id,
-                    score=base + boost,
-                    sources=tuple(source_set),
+                    relevance=relevance,
+                    sources=tuple(sorted(source_set)),
                     topic_id=doc.topic_id,
                     title=self._titles.get(doc.doc_id),
                     token_estimate=self._token_estimates.get(doc.doc_id, 0),
+                    created_at=doc.created_at,
+                    keywords=tuple(doc.keywords),
+                    entity_ids=tuple(doc.entity_ids),
                 )
             )
 
-        candidates.sort(key=lambda c: (-c.score, c.doc_id))
-        candidates = candidates[:top_k]
-        if self.rerank is not None and candidates:
-            candidates = self.rerank(candidates, query)
-        return candidates
+        candidates.sort(key=lambda c: (-c.relevance, c.doc_id))
+        return candidates[:pool]

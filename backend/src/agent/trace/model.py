@@ -37,6 +37,15 @@ class InjectionItem(BaseModel):
     tokens: int = 0
     preview: str = ""
     reason: str | None = None
+    # -- 记忆候选的可解释量（知识条目为 None） ---------------------------
+    #: 生效的排序策略（relevance / weighted / entity_card / rules-only）
+    strategy: str | None = None
+    #: 原始检索相关分（未被任何业务奖励修改）
+    relevance: float | None = None
+    #: 各附加因素的实际贡献（权重 × 因素值）
+    factors: dict[str, float] = Field(default_factory=dict)
+    #: 在排序入口里的名次（1 起）
+    rank: int | None = None
 
 
 class TopicTrace(BaseModel):
@@ -62,6 +71,8 @@ class InjectionTrace(BaseModel):
     total_tokens: int = 0
     budget: dict[str, Any] = Field(default_factory=dict)
     dropped: list[dict[str, Any]] = Field(default_factory=list)
+    #: 本次生效的排序配置（策略 / 权重 / 候选池 / 返回上限）
+    ranking: dict[str, Any] = Field(default_factory=dict)
 
 
 class TurnTrace(BaseModel):

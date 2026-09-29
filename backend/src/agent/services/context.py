@@ -361,6 +361,7 @@ class ContextAssembler:
         entity_ids: list[str] | None = None,
         user_node_id: str | None = None,
         model: str | None = None,
+        query_entity_ids: list[str] | None = None,
         short_term: list | None = None,
         new_topic_candidate: bool = False,
         new_topic_reason: str = "",
@@ -404,7 +405,9 @@ class ContextAssembler:
             aux_topic_ids=aux_topic_ids,
             entity_ids=entity_ids or [],
             user_node_id=user_node_id,
-            top_k=6,
+            # 不写死数字：由集中配置 services/params.py 的 LIMITS 决定注入返回上限
+            top_k=None,
+            query_entity_ids=query_entity_ids,
             short_term=short_term,
             new_topic_candidate=new_topic_candidate,
             new_topic_reason=new_topic_reason,

@@ -1128,6 +1128,10 @@ class AppContext:
                         "tokens": it.tokens,
                         "score": round(it.score, 4),
                         "preview": (it.text or "")[:160],
+                        "strategy": it.strategy or None,
+                        "relevance": round(it.relevance, 4) if it.strategy else None,
+                        "factors": {k: round(v, 4) for k, v in (it.factors or {}).items()},
+                        "rank": it.rank or None,
                     }
                     for it in payload.plan.all_items
                 ],
@@ -1137,7 +1141,8 @@ class AppContext:
                     "truncated": payload.plan.truncated,
                     "needs_consolidation": payload.plan.needs_consolidation,
                 },
-                dropped=[],
+                dropped=payload.plan.dropped,
+                ranking=payload.plan.ranking,
             )
             prompt = notice
             if payload.text:
@@ -1241,6 +1246,7 @@ class AppContext:
         entity_ids: list[str] | None = None,
         user_node_id: str | None = None,
         model: str | None = None,
+        query_entity_ids: list[str] | None = None,
         short_term: list | None = None,
         new_topic_candidate: bool = False,
         new_topic_reason: str = "",
@@ -1261,6 +1267,7 @@ class AppContext:
             entity_ids=entity_ids,
             user_node_id=user_node_id,
             model=model,
+            query_entity_ids=query_entity_ids,
             short_term=short_term,
             new_topic_candidate=new_topic_candidate,
             new_topic_reason=new_topic_reason,

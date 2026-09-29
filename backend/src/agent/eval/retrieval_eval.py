@@ -1,9 +1,9 @@
 """Retrieval evaluator (deterministic, offline).
 
-Uses the production recall (Selector/BM25) + production ranking weights
-(RetrievalPolicy) + production decay (DecayPolicy). No DB and no network:
-timestamps and kinds come from the case data via small overrides, so results
-are reproducible on any machine.
+Uses the production recall (Selector/BM25) + the production ranking entry
+(`agent/services/ranking.py`, default = 只按相关程度) + production decay
+(DecayPolicy). No DB and no network: timestamps and kinds come from the case
+data via small overrides, so results are reproducible on any machine.
 
 Metrics: Recall@1, Recall@5, MRR, wrong-memory injection rate,
 stale-knowledge injection rate.
@@ -23,9 +23,8 @@ from typing import Any, Callable
 from agent.selector.base import IndexedDoc, RecallBackend
 from agent.selector.bm25 import BM25Backend
 from agent.selector.selector import Selector
-from agent.services import params
 from agent.services.decay import DecayPolicy
-from agent.services.retrieval import RetrievalConfig, Retriever
+from agent.services.retrieval import Retriever
 
 
 class _StubTopics:
@@ -69,16 +68,9 @@ def rank_case(
         else Selector(recall=recall_factory(), fallback_recall=BM25Backend())
     )
     selector.load(docs)
-    rp = params.RETRIEVAL
     retriever = Retriever(
         selector,
         _StubTopics(),
-        config=RetrievalConfig(
-            relevance_weight=rp.relevance_weight,
-            recency_weight=rp.recency_weight,
-            affinity_weight=rp.affinity_weight,
-            recency_half_life_days=rp.recency_half_life_days,
-        ),
         conn=None,
         decay=DecayPolicy(),
     )

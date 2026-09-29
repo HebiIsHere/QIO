@@ -151,8 +151,20 @@ Agent Runtime 自身的状态机在 `agent/core/loop.py`：
 | Knowledge | `agent/knowledge/` |
 | Topics / 锚点 | `agent/graph/` |
 | Entities | `agent/entities/` |
-| Retrieval | `agent/services/retrieval.py`、`agent/services/affinity.py`、`agent/selector/` |
+| Retrieval | `agent/services/retrieval.py`、`agent/services/ranking.py`、`agent/services/affinity.py`、`agent/selector/` |
 | Context packing | `agent/services/injection.py`、`agent/services/token_budget.py`、`agent/services/decay.py` |
+
+**记忆检索只有一次业务排序**（2026-09-29 简化，`docs/status.md` 的 M9 段为准）：
+
+```
+Selector（候选阶段）      只按底层检索相关程度取候选池，分数即原始相关分
+ranking.rank()（唯一入口）可选奖励（话题 / 时效 / 关键词 / 实体）+ 可选重排，各生效一次
+Retriever（编排）         话题指纹 → rank() → 实体卡按来源隔离合并 → 截断返回
+```
+
+默认策略是纯相关性（所有奖励权重为 0）；策略与数量（候选池 / 返回上限 / 主动检索上下限）
+只在 `agent/services/params.py` 定义一处。候选池、最终返回条数与注入 token 预算是三个
+独立的量，调用链里不再有隐藏的连续倍增。
 
 预算模型（`TokenBudgetPlanner`）不是「上下文窗口 × 固定比例」：
 

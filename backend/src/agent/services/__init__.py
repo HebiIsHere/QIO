@@ -8,7 +8,8 @@ from agent.services.injection import (
     InjectionPlan,
     PlannedItem,
 )
-from agent.services.retrieval import RetrievalConfig, RetrievalHit, Retriever
+from agent.services.ranking import RankingContext, RankedCandidate, rank
+from agent.services.retrieval import RetrievalHit, Retriever
 
 __all__ = [
     "BudgetConfig",
@@ -17,7 +18,9 @@ __all__ = [
     "PlannedItem",
     "InjectionAssembler",
     "InjectionPayload",
-    "RetrievalConfig",
     "RetrievalHit",
     "Retriever",
+    "RankingContext",
+    "RankedCandidate",
+    "rank",
 ]

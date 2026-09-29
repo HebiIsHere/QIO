@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.prompts import TOOL_MEMORY_SEARCH_DESC
+from agent.services import params
 from agent.services.retrieval import Retriever
 from agent.tools.base import Tool, ToolResult
 
@@ -16,7 +17,10 @@ class MemorySearchTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "要检索的内容描述"},
-            "top_k": {"type": "integer", "description": "返回条数，默认 5"},
+            "top_k": {
+                "type": "integer",
+                "description": f"返回条数，默认 {params.LIMITS.memory_search_default_k}",
+            },
             "topic_id": {"type": "string", "description": "限定检索的话题（可选）"},
         },
         "required": ["query"],
@@ -31,10 +35,14 @@ class MemorySearchTool(Tool):
         query = str(kwargs.get("query", "")).strip()
         if not query:
             return ToolResult(ok=False, error="query 必填：请描述要检索的内容")
-        top_k = int(kwargs.get("top_k", 5))
+        top_k = int(kwargs.get("top_k", params.LIMITS.memory_search_default_k))
         topic_id = kwargs.get("topic_id")
+        # 主动检索与自动注入走**同一个 Retriever + 同一套排序语义**，
+        # 差别只在返回条数（调用方可以要多几条）。
         hits = self.retriever.search(
-            query, anchor_topic_id=topic_id or None, top_k=max(1, min(top_k, 20))
+            query,
+            anchor_topic_id=topic_id or None,
+            top_k=max(1, min(top_k, params.LIMITS.memory_search_max_k)),
         )
         if not hits:
             return ToolResult(ok=True, content="未找到相关记忆")
@@ -43,12 +51,14 @@ class MemorySearchTool(Tool):
             # Agent 必须知道「找到的是哪一个具体历史片段」，才能 continue_from_fragment
             preview = " ".join((h.preview or "").split())[:240]
             when = (h.created_at or "")[:19] or "（未知时间）"
+            why = ",".join(h.factors) if h.factors else "relevance"
             lines.append(
                 f"[{i}] Fragment: {h.fragment_id or '（非片段来源，无法 continue）'}\n"
                 f"    Topic: {h.topic_id or '-'}\n"
                 f"    Title: {h.title or h.topic_id or '-'}\n"
                 f"    Time: {when}\n"
-                f"    Score: {h.score:.2f}（sources={','.join(h.sources) or '-'}）\n"
+                f"    Score: {h.score:.2f}"
+                f"（relatedness={h.relevance:.2f}, by={why}, sources={','.join(h.sources) or '-'}）\n"
                 f"    Preview: {preview}"
             )
         lines.append(

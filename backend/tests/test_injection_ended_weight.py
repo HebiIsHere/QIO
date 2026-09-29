@@ -11,7 +11,14 @@ from agent.services.injection import BudgetConfig, InjectionAssembler, Injection
 class _NoMemoryHits:
     """只测知识面：检索没有命中，避免记忆片段干扰断言。"""
 
-    def search(self, query: str, *, anchor_topic_id: str | None = None, top_k: int = 6):
+    def search(
+        self,
+        query: str,
+        *,
+        anchor_topic_id: str | None = None,
+        entity_ids: list[str] | None = None,
+        top_k: int | None = None,
+    ):
         return []
 
 

@@ -2,9 +2,11 @@
 
 The selector answers one question: which memory fragments are relevant to
 the current user request. It must be fast and deterministic-first:
-- rule layer: always on (anchor topic, entities, recency);
 - recall layer: pluggable (BM25 / ONNX embeddings / remote API);
-- rerank layer: optional, off by default.
+
+候选阶段**只按底层检索相关程度**取值：不叠加话题 / 时效 / 关键词 / 实体等
+业务奖励。业务排序（可选奖励与重排）的唯一入口是
+`agent/services/ranking.py`，由 `agent/services/retrieval.py` 调用。
 """
 
 from __future__ import annotations
@@ -33,22 +35,18 @@ class ScoredDoc:
 
 @dataclass(frozen=True)
 class MemoryCandidate:
+    """一条候选记忆：原始相关度 + 稳定身份 + 排序入口需要的元数据。"""
+
     doc_id: str
-    score: float
+    #: 底层召回给出的原始相关分（没有被任何业务奖励修改过）。
+    relevance: float
     sources: tuple[str, ...]
     topic_id: str | None = None
     title: str | None = None
     token_estimate: int = 0
-
-    def merge_score(self, extra: float, source: str) -> "MemoryCandidate":
-        return MemoryCandidate(
-            doc_id=self.doc_id,
-            score=self.score + extra,
-            sources=self.sources + (source,),
-            topic_id=self.topic_id,
-            title=self.title,
-            token_estimate=self.token_estimate,
-        )
+    created_at: str | None = None
+    keywords: tuple[str, ...] = ()
+    entity_ids: tuple[str, ...] = ()
 
 
 class RecallBackend(ABC):

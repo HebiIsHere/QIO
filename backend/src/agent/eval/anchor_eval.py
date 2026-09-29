@@ -32,10 +32,9 @@ from typing import Any
 
 from agent.selector.base import IndexedDoc
 from agent.selector.selector import Selector
-from agent.services import params
 from agent.services.decay import DecayPolicy
 from agent.services.injection import Candidate, dedupe_candidates
-from agent.services.retrieval import RetrievalConfig, Retriever
+from agent.services.retrieval import Retriever
 
 # 评测专用实验参数（刻意不放进 services/params.py：生产代码不使用）
 ANCHOR_DISTANCE_WEIGHT = 0.35
@@ -75,16 +74,9 @@ def rank_case(case: dict[str, Any], *, scheme: str = "baseline", top_k: int = 5)
     ]
     selector = Selector()
     selector.load(docs)
-    rp = params.RETRIEVAL
     retriever = Retriever(
         selector,
         _StubTopics(),
-        config=RetrievalConfig(
-            relevance_weight=rp.relevance_weight,
-            recency_weight=rp.recency_weight,
-            affinity_weight=rp.affinity_weight,
-            recency_half_life_days=rp.recency_half_life_days,
-        ),
         conn=None,
         decay=DecayPolicy(),
     )

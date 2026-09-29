@@ -137,8 +137,10 @@
 
 - **Status：** completed
 - **Implementation：** `services/context.py`（ContextAssembler：Focus 块 `标题 + 摘要 + 开头 2 条 + 省略标记 + 结尾 3 条`，受 `FOCUS.max_tokens` 硬上限）、`services/injection.py`（三面聚合 + **按稳定身份去重**：Focus / 短期记忆已给的片段不再从检索重复注入）、`services/retrieval.py`（命中携带 `fragment_id`）、`services/affinity.py`、`services/token_budget.py`（TokenBudgetPlanner + completion reserve + 预算分解）、`services/decay.py`（分类型时间衰减）、`services/params.py`（集中阈值，含 `FOCUS`）
+- **Implementation（2026-09-29 排序简化 · 单层统一排序）：** 记忆检索的业务排序收敛到**唯一入口** `services/ranking.py`：候选阶段（`selector/selector.py`）只按底层检索相关程度取候选池（保留原始分 / 来源 / 稳定身份，不再叠加话题、时效、关键词、实体奖励），`Retriever` 只做编排（话题指纹 → `rank()` 一次 → 实体卡按来源隔离合并 → 截断）。默认策略 `relevance`（`services/params.py:RANKING`，所有奖励权重 0）：`score == 原始相关分`，同分按 `doc_id` 稳定排序；可选奖励与可选重排都只在入口内各生效一次，重排结果不会被后续公式覆盖。数量参数同样集中为 `params.LIMITS`（候选池 12 / 自动注入返回 6 / 主动检索默认 5、上限 20），取消调用链里「候选池 ×3 得底层召回、返回 ×2 得候选池」两个隐藏乘数；`selector/rules.py` 与 `services/retrieval.py:RetrievalConfig` 的两份重复默认值已删除。排名的可解释量（原始相关分、各因素贡献、最终分与名次、生效配置）随 Trace 的 `injection` 一起落库，`dropped` 区分「重复删除 / 低于门槛 / 预算不足」；评测侧另有 `agent/eval/ranking_eval.py`（新旧对照）。实体卡是与片段不同量纲的跨类型命中，仍按历史行为合并并标注 `sources=("entity_card",)`，不计入「纯相关性」结论。
 - **Tests：** `backend/tests/test_service_injection.py`、`test_injection_short_term.py`、`test_token_budget.py`、`test_decay.py`、`test_affinity.py`、`test_focus.py`（含 Focus 尾部结论、Token 上限、开放片段、去重）、`test_turn_no_duplicate_query.py`
-- **Known limitations：** 注入上限是硬约束，强制项超预算时走确定性截断；阈值集中在 `services/params.py`，改动需要 eval 支撑（见 P3）。
+- **Tests（2026-09-29 追加）：** `backend/tests/test_ranking.py`（唯一入口：默认纯相关性、奖励只能显式开启、重排只生效一次）、`test_retrieval_ranking.py`（候选池 / 返回数独立、无隐藏倍增、跨类型隔离、集中配置真的生效）、`test_injection_ranking.py`（排除原因可解释）、`test_ranking_eval.py`（新旧对照口径 A/B）
+- **Known limitations：** 注入上限是硬约束，强制项超预算时走确定性截断；阈值集中在 `services/params.py`，改动需要 eval 支撑（见 P3）。排序默认只为相关性 —— 时效 / 话题奖励（`RankingPolicy` 的非零权重）**尚未在生产验证**，本阶段不启用。
 - **后续依赖：** 无下游；被 P1/P2 的 turn 流水线调用。
 
 ### M10 — 工具创建生命周期
@@ -685,10 +687,30 @@
   （检索侧只有话题级亲和 `anchor_topic_id`）。离线 Anchor Continuation Eval
   （`agent/eval/anchor_eval.py` + `backend/evals/anchor_continuation/` 下的 case 集）对比了
   baseline（Focus + 语义检索 + 身份去重）、focus_only 与 anchor_distance（按序数距离加权）：
-  距离偏置 recall@5 无提升（1.00 → 1.00）、MRR 反而下降（0.667 → 0.633）、
-  wrong-memory injection 翻倍（0.20 → 0.40）、anchor distraction 上升（0.333 → 0.667），
-  因此**不实现**距离偏置。基线数字与结论存于 `backend/evals/baseline.json`，
+  距离偏置 recall@5 无提升（1.00 → 1.00）；在旧双层排序基线下 MRR 反而下降
+  （0.667 → 0.633）、wrong-memory injection 翻倍（0.20 → 0.40）、anchor distraction
+  上升（0.333 → 0.667）；2026-09-29 排序简化后重跑，偏置与生产基线完全一致
+  （MRR 0.667 / wrong 0.20 / distraction 0.333，即「加了也没用」）—— 结论不变：
+  **不实现**距离偏置。基线数字与结论存于 `backend/evals/baseline.json`，
   `tests/test_anchor_eval.py` 会守住这个决策（哪天评测翻盘会直接测试失败，强制重新决策）。
+- **记忆排序简化的对照结果与尚未验证的部分**：新旧排序在同一后端、同一索引文本、
+  同一查询上下文、同一数据快照、同一固定评测时刻下的对照（命令
+  `python -m agent.eval.ranking_eval --scenarios handmade --log-run`；逐条记录落在
+  `backend/evals/runs/ranking-compare/`）：
+  场景语料上两臂的 recall@6 相同（0.6452），最终命中集合没有变化；只有 1 条
+  `fact_revision` 用例的第 1 名从新方案手里丢掉（旧方案靠时效奖励把它排到第一，
+  它仍在新方案的前 6 内）；固定同一批候选员时有 5 条顺序变化；没有出现
+  「正确答案被旧中间筛选切掉」的用例。保留集（`--scenarios holdout`）结论一致：
+  两臂 recall@6 均为 0.6，没有「错→对 / 对→错」翻转。同一份对照跑在压力语料的字面可答子集上
+  （`backend/tests/test_stress_arms.py` 里的 `literal_answerable_hits`）时，旧双层 7/8、
+  新纯相关性 6/8：差异用例是一条"最终决定"——它能进底层召回前 36，但纯相关性下被更旧的
+  近义记忆挤出 12 条候选池（属于**候选阶段**丢失，不是排序落后）。因此本轮**不能**证明
+  条件式时效 / 话题加分有收益，也**不能**证明纯相关性在「已被更新的事实」上更好；
+  它们只说明「取消时效奖励会让最新决定更容易被挤出候选池」，这部分要作为后续实验
+  （新独立样本）再验证。真实时间 / 话题关系目前只有场景语料这一份带标注数据。
+- **136 条真实查询回归集本轮未运行**：`backend/evals/runs/jev-error-attribution/` 只保留了
+  query id、候选与排序，没有对应记忆正文或快照 DB；仓库与临时目录里都没有包含这些 id 的库，
+  缺数据快照无法离线重算，因此不作为本轮对照证据。
 - **取消不中断进行中的模型请求**：取消只取消在途工具调用并把 turn 标记为 cancelled，
   正在等待的模型 HTTP 请求会跑完 —— 但它的返回值会被丢弃，agent 循环不会继续，
   turn 以 `cancelled` 结束，也不会保存任何后续内容为最终回答。

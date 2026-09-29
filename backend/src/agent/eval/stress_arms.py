@@ -26,11 +26,10 @@ from agent.eval.stress_corpus import Memory, StressCorpus
 from agent.selector.base import IndexedDoc
 from agent.selector.bm25 import BM25Backend
 from agent.selector.selector import Selector
-from agent.services import params
 from agent.services.affinity import classify
 from agent.services.decay import DecayPolicy
 from agent.services.predict import TopicPredictor
-from agent.services.retrieval import RetrievalConfig, Retriever
+from agent.services.retrieval import Retriever
 from agent.services.tool_router import ToolRouter
 
 NAME_SIM_THRESHOLD = 0.8
@@ -120,16 +119,9 @@ class RulesArm:
         if self._selector is None:
             self._selector = Selector()
             self._selector.load(self._docs)
-        rp = params.RETRIEVAL
         retriever = Retriever(
             self._selector,
             _TopicsStub(self.corpus.topics),
-            config=RetrievalConfig(
-                relevance_weight=rp.relevance_weight,
-                recency_weight=rp.recency_weight,
-                affinity_weight=rp.affinity_weight,
-                recency_half_life_days=rp.recency_half_life_days,
-            ),
             conn=None,
             decay=DecayPolicy(),
         )
@@ -222,16 +214,9 @@ class LocalEmbeddingArm(RulesArm):
                 recall=self.backend, fallback_recall=BM25Backend()
             )
             self._selector.load(self._docs)
-        rp = params.RETRIEVAL
         retriever = Retriever(
             self._selector,
             _TopicsStub(self.corpus.topics),
-            config=RetrievalConfig(
-                relevance_weight=rp.relevance_weight,
-                recency_weight=rp.recency_weight,
-                affinity_weight=rp.affinity_weight,
-                recency_half_life_days=rp.recency_half_life_days,
-            ),
             conn=None,
             decay=DecayPolicy(),
         )

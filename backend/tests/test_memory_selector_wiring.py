@@ -65,7 +65,7 @@ async def test_close_fragment_updates_selector_incrementally(ctx, monkeypatch):
     assert loads == [], f"封块触发了 {len(loads)} 次全量重建"
 
     # 增量之后，新片段必须真的能被检索到
-    hits = ctx.selector.select("清淡 饮食", top_k=3)
+    hits = ctx.selector.select("清淡 饮食", candidate_pool=3)
     assert hits, "增量更新之后新记忆必须可检索"
 
 

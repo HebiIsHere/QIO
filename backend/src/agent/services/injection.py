@@ -27,6 +27,20 @@ from agent.selector.tokenize import tokenize
 
 DEFAULT_BUDGET_RATIO = 0.25
 
+# 排除原因（`InjectionPlan.dropped` 的 reason 取值）：
+#   not_recalled            —— 检索阶段就没召回（记在 Retriever.last_trace.pool 里）
+#   dedupe_already_injected —— 同一身份已由更高优先级 surface（Focus / 实体卡 / 短期）注入
+#   dedupe_duplicate        —— 候选之间同一身份，只保留分数最高的一条
+#   below_min_score         —— 分数低于注入门槛
+#   budget_insufficient     —— 预算不够（含放不下整条、剩余为 0）
+#   reserved_no_space       —— 预留项（Focus / 实体卡 / 短期）自身放不下、被截断或丢弃
+DROP_NOT_RECALLED = "not_recalled"
+DROP_ALREADY_INJECTED = "dedupe_already_injected"
+DROP_DUPLICATE = "dedupe_duplicate"
+DROP_BELOW_MIN_SCORE = "below_min_score"
+DROP_BUDGET = "budget_insufficient"
+DROP_RESERVED = "reserved_no_space"
+
 
 @dataclass
 class BudgetConfig:
@@ -52,6 +66,12 @@ class Candidate:
     # 稳定身份（去重用）：同一片段/条目无论从哪个 surface 进来都算同一个；
     # 缺省时退回 item_id。
     identity: str | None = None
+    # -- 来自唯一排序入口的可解释量（知识候选没有这些，保持 0 / 空） ----------
+    relevance: float = 0.0
+    relevance_term: float = 0.0
+    factors: dict = field(default_factory=dict)
+    rank: int = 0
+    strategy: str = ""
 
 
 @dataclass
@@ -63,6 +83,11 @@ class PlannedItem:
     tokens: int
     score: float = 0.0
     identity: str | None = None
+    relevance: float = 0.0
+    relevance_term: float = 0.0
+    factors: dict = field(default_factory=dict)
+    rank: int = 0
+    strategy: str = ""
 
 
 @dataclass
@@ -75,6 +100,10 @@ class InjectionPlan:
     truncated: bool = False
     needs_consolidation: bool = False
     budget_breakdown: dict = field(default_factory=dict)
+    #: 各阶段排除情况：{item_id, reason}，reason 见 `_DROP_REASONS`
+    dropped: list[dict] = field(default_factory=list)
+    #: 本次生效的排序配置（策略 / 权重 / 候选池 / 返回上限）
+    ranking: dict = field(default_factory=dict)
 
     @property
     def all_items(self) -> list[PlannedItem]:
@@ -102,6 +131,11 @@ class InjectionBudget:
             text=text,
             tokens=estimate_tokens(text),
             score=item.score,
+            relevance=item.relevance,
+            relevance_term=item.relevance_term,
+            factors=item.factors,
+            rank=item.rank,
+            strategy=item.strategy,
         )
 
     def plan(
@@ -123,6 +157,9 @@ class InjectionBudget:
             placed = self._fit(item, remaining)
             if placed is None:
                 plan.truncated = True
+                plan.dropped.append(
+                    {"item_id": item.item_id, "reason": DROP_RESERVED}
+                )
                 continue
             if placed.tokens < item.tokens:
                 plan.truncated = True
@@ -134,12 +171,17 @@ class InjectionBudget:
         for cand in ordered:
             if remaining <= 0:
                 plan.truncated = True
-                break
+                plan.dropped.append({"item_id": cand.item_id, "reason": DROP_BUDGET})
+                continue
             if cand.score < min_score:
+                plan.dropped.append(
+                    {"item_id": cand.item_id, "reason": DROP_BELOW_MIN_SCORE}
+                )
                 continue
             tokens = estimate_tokens(cand.text)
             if tokens > remaining:
                 plan.truncated = True
+                plan.dropped.append({"item_id": cand.item_id, "reason": DROP_BUDGET})
                 continue
             item = PlannedItem(
                 source=cand.source,
@@ -148,6 +190,12 @@ class InjectionBudget:
                 text=cand.text,
                 tokens=tokens,
                 score=cand.score,
+                identity=cand.identity,
+                relevance=cand.relevance,
+                relevance_term=cand.relevance_term,
+                factors=cand.factors,
+                rank=cand.rank,
+                strategy=cand.strategy,
             )
             if cand.source == "knowledge":
                 plan.knowledge.append(item)
@@ -229,15 +277,40 @@ def dedupe_candidates(
     """按稳定身份去重：已被更高优先级 surface（Focus / 短期记忆）注入的条目跳过，
     候选之间同一身份只保留分数最高的一条。供注入组装与离线 eval 复用，
     避免两处各写一套「什么算重复」的规则。"""
+    return partition_dedupe(candidates, blocked)[0]
+
+
+def partition_dedupe(
+    candidates: list[Candidate], blocked: set[str]
+) -> tuple[list[Candidate], list[dict]]:
+    """同 `dedupe_candidates`，但同时给出**被删掉的是谁、为什么**。
+
+    返回 `(保留的候选, 排除记录)`；排除记录的 reason 见 `DROP_ALREADY_INJECTED`
+    / `DROP_DUPLICATE`。注入链路用后者写 Trace，让「结果为什么少了一条」
+    能和「排序落后」「预算不足」区分开。
+    """
     seen: dict[str, Candidate] = {}
+    dropped: list[dict] = []
     for cand in candidates:
         key = cand.identity or cand.item_id
         if key in blocked:
+            dropped.append(
+                {"item_id": cand.item_id, "identity": key, "reason": DROP_ALREADY_INJECTED}
+            )
             continue
         prev = seen.get(key)
-        if prev is None or cand.score > prev.score:
+        if prev is None:
             seen[key] = cand
-    return list(seen.values())
+        elif cand.score > prev.score:
+            dropped.append(
+                {"item_id": prev.item_id, "identity": key, "reason": DROP_DUPLICATE}
+            )
+            seen[key] = cand
+        else:
+            dropped.append(
+                {"item_id": cand.item_id, "identity": key, "reason": DROP_DUPLICATE}
+            )
+    return list(seen.values()), dropped
 
 
 class InjectionAssembler:
@@ -259,7 +332,8 @@ class InjectionAssembler:
         aux_topic_ids: list[str] | None = None,
         entity_ids: list[str] | None = None,
         user_node_id: str | None = None,
-        top_k: int = 6,
+        top_k: int | None = None,
+        query_entity_ids: list[str] | None = None,
         short_term: list[PlannedItem] | None = None,
         new_topic_candidate: bool = False,
         new_topic_reason: str = "",
@@ -342,8 +416,14 @@ class InjectionAssembler:
                     )
                 )
 
-        # memory surface: retriever with topic affinity
-        hits = self.retriever.search(query, anchor_topic_id=topic_id, top_k=top_k)
+        # memory surface：唯一排序入口（services/ranking.py）在 Retriever 内执行一次。
+        # top_k=None 表示用集中配置里的注入返回上限，调用方不再各写一个数字。
+        hits = self.retriever.search(
+            query,
+            anchor_topic_id=topic_id,
+            entity_ids=query_entity_ids,
+            top_k=top_k,
+        )
         for hit in hits:
             candidates.append(
                 Candidate(
@@ -353,6 +433,11 @@ class InjectionAssembler:
                     text=INJECT_MEMORY_ITEM.format(title=hit.title or hit.topic_id, preview=hit.preview),
                     score=hit.score,
                     identity=hit.fragment_id or hit.doc_id,
+                    relevance=hit.relevance,
+                    relevance_term=hit.relevance_term,
+                    factors=dict(hit.factors),
+                    rank=hit.rank,
+                    strategy=hit.strategy,
                 )
             )
 
@@ -387,8 +472,19 @@ class InjectionAssembler:
         # 身份去重（先于预算）：同一片段已被 Focus/短期注入，就不再从检索重复注入；
         # 候选之间也按身份去重，保留分数最高的一条。
         blocked: set[str] = {(item.identity or item.item_id) for item in reserved}
-        deduped = dedupe_candidates(candidates, blocked)
+        deduped, dedupe_dropped = partition_dedupe(candidates, blocked)
         plan = self.budget.plan(deduped, min_score=0.05, reserved=reserved)
+        # 排除原因按链路顺序拼接：先去重（重复删除），再预算（放不下 / 低于门槛）。
+        plan.dropped = dedupe_dropped + plan.dropped
+        # 兼容只实现 search() 的轻量替身（测试 / 离线组装）
+        trace = getattr(self.retriever, "last_trace", None) or {}
+        plan.ranking = {
+            "strategy": trace.get("strategy", ""),
+            "policy": trace.get("policy", {}),
+            "candidate_pool": trace.get("candidate_pool", 0),
+            "return_limit": trace.get("return_limit", 0),
+            "entity_card_hits": [h["doc_id"] for h in trace.get("entity_card_hits", [])],
+        }
         if not plan.all_items:
             return InjectionPayload(text="", plan=plan)
         sections = [INJECT_HEADER]

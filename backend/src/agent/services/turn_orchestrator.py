@@ -336,7 +336,12 @@ class TurnOrchestrator:
         # 实体卡也要标来源与适用范围（阶段 3）：挂在别的话题上的卡、以及没有归属记录的卡，
         # 只能作为「参考」，不能被当成本轮已经接受的前提。
         entity_cards = []
+        # 查询命中的实体标识（与 memory_index.doc.entity_ids 同一标识空间）：
+        # 排序入口的「实体」奖励用它；权重默认 0，所以默认不改变顺序。
+        query_entity_ids: list[str] = []
         for card in card_svc.match_cards(message):
+            if card.node_id:
+                query_entity_ids.append(card.node_id)
             topics = card_svc.topics_of(card)
             if not topics:
                 note = "（来源未知：这张卡没有关联话题记录｜只作参考）"
@@ -359,6 +364,7 @@ class TurnOrchestrator:
             entity_ids=app._topic_entity_ids(topic),
             user_node_id=app._user_root_id(),
             model=adapter.model,
+            query_entity_ids=query_entity_ids,
             short_term=short_term,
             new_topic_candidate=new_topic_candidate,
             new_topic_reason=reason,
@@ -387,6 +393,10 @@ class TurnOrchestrator:
                     "tokens": it.tokens,
                     "score": round(it.score, 4),
                     "preview": _preview(it.text, 160),
+                    "strategy": it.strategy or None,
+                    "relevance": round(it.relevance, 4) if it.strategy else None,
+                    "factors": {k: round(v, 4) for k, v in (it.factors or {}).items()},
+                    "rank": it.rank or None,
                 }
                 for it in payload.plan.all_items
             ],
@@ -396,7 +406,8 @@ class TurnOrchestrator:
                 "truncated": payload.plan.truncated,
                 "needs_consolidation": payload.plan.needs_consolidation,
             },
-            dropped=[],
+            dropped=payload.plan.dropped,
+            ranking=payload.plan.ranking,
         )
         prompt = message
         if payload.text:

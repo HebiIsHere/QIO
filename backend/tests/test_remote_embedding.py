@@ -101,8 +101,8 @@ def test_selector_fallback_to_bm25_when_remote_down(db_conn: sqlite3.Connection)
     remote = _backend(db_conn, client=FakeEmbeddingsClient(fail=True), failure_threshold=1)
     remote.embed_texts(["x"])  # 触发降级
     selector = Selector(recall=remote, fallback_recall=remote  or None)
-    # fallback 逻辑在 Selector.select 内验证：remote 不可用 → 规则层（无 BM25 注入）
+    # fallback 逻辑在 Selector.select 内验证：remote 不可用 → 词面相关度（无 BM25 注入）
     docs = [IndexedDoc(doc_id="d1", text="用户偏好清淡饮食", topic_id="t1", keywords=["饮食"])]
     selector.load(docs)
-    hits = selector.select("用户 饮食", top_k=2)
-    assert hits  # 规则层仍工作
+    hits = selector.select("用户 饮食", candidate_pool=2)
+    assert hits  # 降级路径仍能召回
