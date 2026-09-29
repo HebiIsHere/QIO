@@ -215,8 +215,9 @@ python scripts/check_docs.py
 cd backend
 uv run --frozen pytest -q
 
-# Windows CI 用的同一套（GitHub 的 windows runner 没有 docker 守护进程：
-# 需要真实 docker 的用例标记为 requires_docker，在这里排除，ubuntu 任务照常跑）
+# Windows CI 用的同一套（GitHub 的 windows runner 没有 docker 守护进程：沙箱探测
+# 不到守护进程会改走受限子进程；需要真实容器隔离的用例标记为 requires_docker，
+# 在这里排除，ubuntu 任务照常跑）
 uv run --frozen pytest -m "not requires_docker"
 
 # 前端测试 / 类型 / 构建（与 CI 顺序一致）
