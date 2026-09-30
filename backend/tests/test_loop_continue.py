@@ -45,7 +45,8 @@ class _ScriptedAdapter:
 
     async def complete(self, messages, tools, **kw):  # noqa: ANN001
         self.n += 1
-        tc = ToolCall(id=f"t{self.n}", name=self._tool_name, arguments={})
+        # 参数每轮都不同：这些用例考的是护栏与预算，不该被「无进展暂停」抢先触发。
+        tc = ToolCall(id=f"t{self.n}", name=self._tool_name, arguments={"n": self.n})
         return Completion(
             message=ChatMessage(role="assistant", content=None, tool_calls=[tc]),
             usage={"completion_tokens": 1},

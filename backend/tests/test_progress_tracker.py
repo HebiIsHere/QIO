@@ -48,29 +48,34 @@ def test_different_arguments_are_not_repetition():
         assert _observe(tracker, arguments={"text": str(i)}) is None
 
 
-def test_repeated_failures_with_the_same_error_also_count():
-    """成功没信息增量要停，失败反复踩同一个坑同样要停。"""
+def test_repeated_failures_are_left_to_the_runaway_guard():
+    """反复失败归 RunawayGuard（阈值用户调过），这里不提前插手。"""
     tracker = ProgressTracker()
 
-    for _ in range(2):
+    for _ in range(10):
         assert (
-            _observe(tracker, tool="dev_run_tests", arguments={"workspace": "ws_1"}, ok=False, result_text="同样的错") is None
+            _observe(
+                tracker,
+                tool="dev_run_tests",
+                arguments={"workspace": "ws_1"},
+                ok=False,
+                result_text="同样的错",
+            )
+            is None
         )
-    reason = _observe(
-        tracker, tool="dev_run_tests", arguments={"workspace": "ws_1"}, ok=False, result_text="同样的错"
-    )
-
-    assert reason is not None
-    assert "dev_run_tests" in reason
 
 
 def test_failure_after_success_is_not_treated_as_repetition():
-    """同一次调用的成败变了就是新信息，不能算重复。"""
+    """中间插进一次失败就是新信息：重复计数清零，不能接着往上加。"""
     tracker = ProgressTracker()
     _observe(tracker, result_text="same")
     _observe(tracker, result_text="same")
 
     assert _observe(tracker, ok=False, result_text="same") is None
+    # 清零之后，同样的成功还要重新攒满三次才算无进展
+    assert _observe(tracker, result_text="same") is None
+    assert _observe(tracker, result_text="same") is None
+    assert _observe(tracker, result_text="same") is not None
 
 
 def test_interleaved_calls_reset_the_count():
