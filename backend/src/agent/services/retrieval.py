@@ -59,7 +59,28 @@ class RetrievalHit:
             return float("inf")
 
 
+@dataclass
+class MessageHit:
+    """一条**保存的对话原文**的命中（不经过摘要、不依赖索引）。"""
+
+    message_id: str
+    fragment_id: str | None
+    topic_id: str | None
+    topic_name: str | None
+    role: str
+    created_at: str | None
+    content: str
+    score: float
+    truncated: bool = False
+
+
 class Retriever:
+    # 原文检索一次最多扫多少条候选：它是「把说过的话找回来」，不是全库导出。
+    # 先按时间取最近的一批，再按命中覆盖率排序取前几条。
+    MESSAGE_SCAN_LIMIT = 200
+    # 单条原文最多回多少字：够看清「当时到底说了什么」，又不至于把上下文塞满。
+    MESSAGE_TEXT_LIMIT = 600
+
     def __init__(
         self,
         selector: Selector,
@@ -75,6 +96,74 @@ class Retriever:
         # 默认策略与旧行为一致（ephemeral half-life == recency_half_life_days）
         self.decay = decay or DecayPolicy({EPHEMERAL: self.config.recency_half_life_days})
         self._fragment_cache: dict[str, str | None] = {}
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        topic_id: str | None = None,
+        top_k: int = 3,
+    ) -> list[MessageHit]:
+        """在**保存的对话原文**里检索（`messages` 表本身，不经过摘要）。
+
+        为什么需要这条路：`search()` 只看 `memory_index`，也就是「封存并摘要成功」
+        的片段。还没封存的片段（以及摘要失败的内容）在那儿根本不存在 ——
+        用户明明说过，Agent 却回「未找到相关记忆」。
+
+        中文靠 CJK 1/2-gram 分词（见 `selector/tokenize.py`）：单字不参与匹配
+        （否则「的」这种字会命中一切），二字词足够认出一句话。
+        `topic_id` 是**过滤**而不是偏向：指定了话题就只在这个话题里找。
+
+        这里**故意不缓存**：`Retriever` 与进程同寿，缓存会把「已经删掉的消息」
+        一直答出来。每次都读当前的行，删除与修改自然一致。
+        """
+        if self.conn is None:
+            return []
+        terms = sorted({t for t in tokenize(query) if len(t) >= 2})
+        if not terms:
+            return []
+        sql = (
+            "SELECT m.id AS message_id, m.fragment_id, m.role, m.content, m.created_at, "
+            "f.topic_id AS topic_id, n.name AS topic_name "
+            "FROM messages m "
+            "LEFT JOIN fragments f ON f.id = m.fragment_id "
+            "LEFT JOIN nodes n ON n.id = f.topic_id "
+            "WHERE m.content <> '' AND ("
+            + " OR ".join("m.content LIKE ?" for _ in terms)
+            + ")"
+        )
+        params: list[object] = [f"%{term}%" for term in terms]
+        if topic_id:
+            sql += " AND f.topic_id = ?"
+            params.append(topic_id)
+        sql += " ORDER BY m.created_at DESC LIMIT ?"
+        params.append(self.MESSAGE_SCAN_LIMIT)
+        rows = self.conn.execute(sql, params).fetchall()
+
+        hits: list[MessageHit] = []
+        for row in rows:
+            content = row["content"] or ""
+            low = content.lower()
+            matched = sum(1 for term in terms if term in low)
+            if not matched:
+                continue
+            text = content[: self.MESSAGE_TEXT_LIMIT]
+            hits.append(
+                MessageHit(
+                    message_id=row["message_id"],
+                    fragment_id=row["fragment_id"],
+                    topic_id=row["topic_id"],
+                    topic_name=row["topic_name"],
+                    role=row["role"],
+                    created_at=row["created_at"],
+                    content=text,
+                    score=matched / len(terms),
+                    truncated=len(content) > self.MESSAGE_TEXT_LIMIT,
+                )
+            )
+        # rows 已按时间倒序；稳定排序让「命中一样多」时新的排在前面
+        hits.sort(key=lambda hit: -hit.score)
+        return hits[:top_k]
 
     def fragment_of(self, doc_id: str) -> str | None:
         """索引行 → 片段 id（没有 DB 连接时返回 None，例如离线 eval）。"""
