@@ -16,6 +16,9 @@ class ToolResult:
     # 与界面共用的**事实字段**，不是提示词。缺省 None = 交给反馈层按文本推断。
     category: str | None = None
     recoverable: bool | None = None
+    # 机器可读的事实（见 core/turn_facts.py）：工具把自己操作之后的真实状态报给主
+    # 循环，用于「最终结论的事实校正」。它不是给用户看的正文，也不进模型消息。
+    facts: dict[str, Any] | None = None
 
 
 class Tool(ABC):
