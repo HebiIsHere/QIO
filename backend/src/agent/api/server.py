@@ -1048,6 +1048,30 @@ def create_app(
         """
         return ctx.turns.snapshot()
 
+    @app.get("/api/dev/tasks")
+    async def dev_tasks() -> dict:
+        """开发任务列表（状态来自工作区本身，不是界面的记忆）。
+
+        「有未完成的任务」入口用它：刷新、重启、断线之后任务都还在，
+        不会再出现「模型说要继续开发，界面上却找不到那个任务」。
+        """
+        rows: list[dict] = []
+        for task in ctx.dev_workspaces.list_tasks():
+            status = ctx.dev_workspaces.status(task.id)
+            rows.append(
+                {
+                    "id": task.id,
+                    "request": task.request[:200],
+                    "phase": status.get("phase"),
+                    "submitted": bool(status.get("submitted")),
+                    "test_passed": status.get("last_test_passed"),
+                    # 证据是否对应当前内容：false 就是「改过，结论不算数了」
+                    "test_evidence_current": bool(status.get("test_evidence_current")),
+                    "updated_at": status.get("last_test_at") or status.get("created_at"),
+                }
+            )
+        return {"tasks": rows}
+
     @app.get("/api/runtime/state")
     async def runtime_state() -> dict:
         """RESYNC 之后要恢复的**全部**权威状态（Turn 队列之外还有别的）。
