@@ -82,15 +82,30 @@ async def ensure_test_authorization(
         policy_fingerprint=fingerprint,
         capabilities=policy.describe(),
     )
+    # 授权范围：用户看到的说明、落盘的记录、之后能查到的范围是**同一份**数据。
+    scope = {
+        "executor": executor,
+        "isolated": boundary.isolated,
+        "capabilities": list(boundary.capabilities),
+        "filesystem": list(policy.filesystem),
+        "network": bool(policy.network),
+        "network_allow": list(policy.network_allow),
+        "credentials": list(policy.credentials),
+    }
     decision = await approvals.request(
         APPROVAL_KIND,
-        _approval_payload(task_id=task_id, definition=definition, boundary=boundary),
+        _approval_payload(
+            task_id=task_id, definition=definition, boundary=boundary, scope=scope
+        ),
     )
     if getattr(decision, "decision", None) != "approved":
         return _blocked(_refusal_text(getattr(decision, "decision", "unknown")))
     if workspaces is not None and task_id:
         workspaces.grant_test_authorization(
-            task_id, policy_fingerprint=fingerprint, executor=executor
+            task_id,
+            policy_fingerprint=fingerprint,
+            executor=executor,
+            scope=scope,
         )
     return None
 
@@ -110,7 +125,9 @@ def _blocked(message: str) -> ToolResult:
     return ToolResult(ok=False, error=message, category="permission", recoverable=False)
 
 
-def _approval_payload(*, task_id: str, definition: Any, boundary: TestBoundary) -> dict:
+def _approval_payload(
+    *, task_id: str, definition: Any, boundary: TestBoundary, scope: dict
+) -> dict:
     """给用户看的审批内容：说的必须是这次执行的**真实**边界。"""
     described = describe_tool_call(TEST_TOOL_NAME, {"workspace": task_id})
     environment = (
@@ -160,6 +177,8 @@ def _approval_payload(*, task_id: str, definition: Any, boundary: TestBoundary) 
             "isolated": boundary.isolated,
             "policy_fingerprint": boundary.policy_fingerprint,
             "credentials_simulated": boundary.credentials_simulated,
+            # 与落盘的授权范围同源：批准的就是这一份
+            "scope": scope,
         },
     }
 

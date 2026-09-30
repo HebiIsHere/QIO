@@ -1068,9 +1068,29 @@ def create_app(
                     # 证据是否对应当前内容：false 就是「改过，结论不算数了」
                     "test_evidence_current": bool(status.get("test_evidence_current")),
                     "updated_at": status.get("last_test_at") or status.get("created_at"),
+                    # 有没有「在某个环境里跑它的测试」的授权（范围另见 /api/dev/authorizations）
+                    "authorized": bool(status.get("test_authorized")),
                 }
             )
         return {"tasks": rows}
+
+    @app.get("/api/dev/authorizations")
+    async def dev_authorizations() -> dict:
+        """当前的执行授权**范围**：用户要看得到自己同意过什么。
+
+        授权不是一句「已允许」：它绑在（能力策略指纹 + 执行环境）上，范围包括
+        能力、目录、网络与凭据引用。这里把它们如实列出来。
+        """
+        rows = ctx.dev_workspaces.authorizations()
+        for row in rows:
+            definition = ctx.dev_workspaces.read_definition(row["task_id"])
+            row["tool_name"] = getattr(definition, "name", None)
+        return {"authorizations": rows}
+
+    @app.post("/api/dev/authorizations/{task_id}/revoke")
+    async def revoke_dev_authorization(task_id: str) -> dict:
+        """收回某个开发任务的执行授权：下一次测试会重新征求确认。"""
+        return {"revoked": ctx.dev_workspaces.revoke_test_authorization(task_id)}
 
     @app.get("/api/runtime/state")
     async def runtime_state() -> dict:

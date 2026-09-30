@@ -20,10 +20,14 @@ vi.mock("../../services/api", () => ({
       status: "accepted",
       topic_id: null,
     })),
+    listDevAuthorizations: vi.fn(async () => ({ authorizations: [] })),
+    revokeDevAuthorization: vi.fn(async () => ({ revoked: true })),
   },
 }));
 
 const sendTurn = api.sendTurn as unknown as ReturnType<typeof vi.fn>;
+const listDevAuthorizations = api.listDevAuthorizations as unknown as ReturnType<typeof vi.fn>;
+const revokeDevAuthorization = api.revokeDevAuthorization as unknown as ReturnType<typeof vi.fn>;
 
 function task(overrides: Record<string, unknown> = {}) {
   return {
@@ -34,6 +38,25 @@ function task(overrides: Record<string, unknown> = {}) {
     test_passed: false,
     test_evidence_current: true,
     updated_at: "2026-09-30T10:00:00+00:00",
+    authorized: false,
+    ...overrides,
+  };
+}
+
+function authorization(overrides: Record<string, unknown> = {}) {
+  return {
+    task_id: "ws_aaaaaaaaaaaa",
+    request: "做一个求和工具",
+    submitted: false,
+    executor: "subprocess",
+    isolated: false,
+    policy_fingerprint: "p1",
+    capabilities: ["受限子进程"],
+    filesystem: [],
+    network: false,
+    network_allow: [],
+    credentials: ["weather_key"],
+    granted_at: "2026-09-30T10:05:00+00:00",
     ...overrides,
   };
 }
@@ -56,6 +79,8 @@ beforeEach(() => {
     status: "accepted",
     topic_id: null,
   });
+  listDevAuthorizations.mockResolvedValue({ authorizations: [] });
+  revokeDevAuthorization.mockResolvedValue({ revoked: true });
 });
 
 describe("未完成开发任务的入口", () => {
@@ -120,5 +145,55 @@ describe("未完成开发任务的入口", () => {
 
     expect(wrapper.find(".dev-task-panel").exists()).toBe(true);
     expect(wrapper.find(".dev-task-error").text()).toContain("没能把这件事交给模型");
+  });
+
+  it("展开清单时查一次授权范围，并说清「同意了什么」", async () => {
+    listDevAuthorizations.mockResolvedValue({ authorizations: [authorization()] });
+    const { wrapper } = setup([task({ authorized: true })]);
+
+    await wrapper.find(".dev-task-entry").trigger("click");
+    await flushPromises();
+
+    expect(listDevAuthorizations).toHaveBeenCalledTimes(1);
+    const scope = wrapper.find(".dev-task-scope").text();
+    expect(scope).toContain("受限子进程");
+    expect(scope).toContain("weather_key");
+  });
+
+  it("没有授权时不显示范围那一行", async () => {
+    const { wrapper } = setup([task()]);
+
+    await wrapper.find(".dev-task-entry").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".dev-task-scope").exists()).toBe(false);
+  });
+
+  it("撤销授权：调后端、这一行的授权提示消失", async () => {
+    listDevAuthorizations.mockResolvedValue({ authorizations: [authorization()] });
+    const { session, wrapper } = setup([task({ authorized: true })]);
+    await wrapper.find(".dev-task-entry").trigger("click");
+    await flushPromises();
+
+    await wrapper.find(".dev-task-revoke").trigger("click");
+    await flushPromises();
+
+    expect(revokeDevAuthorization).toHaveBeenCalledWith("ws_aaaaaaaaaaaa");
+    expect(wrapper.find(".dev-task-scope").exists()).toBe(false);
+    expect(session.devAuthorizations).toEqual([]);
+  });
+
+  it("撤销失败时如实说明，不假装已经收回", async () => {
+    listDevAuthorizations.mockResolvedValue({ authorizations: [authorization()] });
+    revokeDevAuthorization.mockRejectedValueOnce(new Error("后端没接上"));
+    const { wrapper } = setup([task({ authorized: true })]);
+    await wrapper.find(".dev-task-entry").trigger("click");
+    await flushPromises();
+
+    await wrapper.find(".dev-task-revoke").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".dev-task-scope").exists()).toBe(true);
+    expect(wrapper.find(".dev-task-error").text()).toContain("撤销");
   });
 });

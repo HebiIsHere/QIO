@@ -1271,3 +1271,26 @@ npm test
 `test_final_answer_fact_check.py` 全绿；后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
 
 **仍未做**：规范分节仍写在代码里的长字符串，没有独立文件与版本号；用户可见的「开发规范」页面没有做。
+
+---
+
+## 本轮变更：范围授权的查询与撤销（2026-09-30）
+
+补的是第一阶段里那条「查询/撤销的范围授权」：用户批准过一次「可以在这个环境里跑这个任务的
+生成代码」之后，既看不到**授权范围**（在哪儿跑、能碰什么、用哪个凭据），也没有任何办法
+收回 —— 只能一直有效。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 授权只是一句「已允许」，没有范围 | 批准时构造一份范围（能力 / 目录 / 网络与允许的主机 / 凭据引用 / 执行环境），**审批说明、落盘记录、之后查到的范围是同一份数据** | `tools/dev_auth.py`、`tools/dev_workspace.py` | `test_dev_authorization_scope.py`、`test_dev_test_authorization.py` |
+| 授权查不到 | 新增 `GET /api/dev/authorizations`：列出仍然有效的授权与范围（任务、工具名、执行环境、能力、目录、网络、凭据、授权时间） | `api/server.py`、`tools/dev_workspace.py`（`authorizations()`） | `test_dev_authorization_scope.py` |
+| 授权收不回 | 新增 `POST /api/dev/authorizations/{task_id}/revoke`：清掉这条授权并落盘，下一次测试（或提交复测）重新征求确认 | `api/server.py`、`tools/dev_workspace.py`（`revoke_test_authorization`） | 同上（撤销后 `test_authorized` 为假、重启后仍然为假、未知任务不报假成功） |
+| 界面看不到、点不到 | 任务清单里展开时查一次授权范围，写着「已授权在本机受限子进程里跑它的测试；使用凭据：…」，并给一个「撤销授权」；撤销失败如实说「仍然有效」 | `frontend/src/components/DevTaskEntry.vue`、`stores/session.ts`、`services/api.ts` | `frontend .../DevTaskEntry.test.ts`（展开时查询、显示范围、撤销后提示消失、撤销失败不假装收回） |
+| 任务列表看不到「这个任务授权过没有」 | `GET /api/dev/tasks` 每行补 `authorized` | `api/server.py` | `test_dev_authorization_scope.py` |
+
+边界：这次收回的是**测试执行授权**；已经注册的工具走注册审批，不受这条撤销影响。
+
+**已验证**：后端 `test_dev_authorization_scope.py`、`test_dev_test_authorization.py`、`test_dev_tasks_api.py` 全绿；
+前端 `npx vitest run` 79 文件全绿、`npx vue-tsc --noEmit` 通过；后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
+
+**仍未做**：真机界面验收（撤销按钮只在组件测试里点过）；授权的**过期时间**没有做（现在一直有效到被撤销）。

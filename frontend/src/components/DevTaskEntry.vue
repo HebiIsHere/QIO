@@ -17,8 +17,50 @@ const session = useSessionStore();
 const open = ref(false);
 /** 上一次「继续开发」没有交出去（后端没受理）：要如实说，不能让用户以为已经在做了 */
 const resumeFailed = ref(false);
+/** 撤销授权失败的原因（成功时为空）：不假装已经收回 */
+const revokeFailed = ref("");
 
 const items = computed(() => session.unfinishedDevTasks);
+
+/** 展开/收起。展开时顺手查一次授权范围：用户要看得到自己同意过什么。 */
+function toggle() {
+  open.value = !open.value;
+  if (open.value) {
+    revokeFailed.value = "";
+    void session.refreshDevAuthorizations();
+  }
+}
+
+function authorizationFor(taskId: string) {
+  return session.devAuthorizations.find((item) => item.task_id === taskId) ?? null;
+}
+
+/** 授权范围的一行人话：在哪儿跑、能不能联网、用哪个凭据。 */
+function scopeText(taskId: string): string {
+  const auth = authorizationFor(taskId);
+  if (!auth) return "";
+  const where = auth.isolated
+    ? "容器隔离环境"
+    : "本机受限子进程（同一用户权限，不是安全沙箱）";
+  const parts = [`已授权在${where}里跑它的测试`];
+  if (auth.filesystem.length) parts.push(`可访问目录：${auth.filesystem.join("、")}`);
+  if (auth.network) {
+    parts.push(
+      auth.network_allow.length ? `联网：仅 ${auth.network_allow.join("、")}` : "联网：允许",
+    );
+  }
+  if (auth.credentials.length) parts.push(`使用凭据：${auth.credentials.join("、")}`);
+  return parts.join("；");
+}
+
+async function revoke(taskId: string) {
+  revokeFailed.value = "";
+  const ok = await session.revokeDevAuthorization(taskId);
+  if (!ok) {
+    revokeFailed.value =
+      "没能撤销这次授权（后端没有确认），它现在仍然有效。可以再试一次。";
+  }
+}
 
 /** 后端阶段名 → 界面说法。没见过的阶段照原样显示，不猜。 */
 const PHASE_LABELS: Record<string, string> = {
@@ -92,7 +134,7 @@ async function resume(task: DevTaskRow) {
       :aria-expanded="open"
       :aria-label="`有 ${items.length} 个工具开发任务没做完，展开查看`"
       @mousedown.prevent
-      @click="open = !open"
+      @click="toggle"
     >
       有 {{ items.length }} 个工具开发任务没做完
     </button>
@@ -105,9 +147,16 @@ async function resume(task: DevTaskRow) {
             <span>{{ testText(task) }}</span>
             <span v-if="updatedText(task)">更新于 {{ updatedText(task) }}</span>
           </p>
+          <p v-if="scopeText(task.id)" class="dev-task-scope">
+            <span>{{ scopeText(task.id) }}</span>
+            <button class="dev-task-revoke" type="button" @click="revoke(task.id)">
+              撤销授权
+            </button>
+          </p>
           <button class="dev-task-resume" type="button" @click="resume(task)">继续开发</button>
         </li>
       </ul>
+      <p v-if="revokeFailed" class="dev-task-error" role="alert">{{ revokeFailed }}</p>
       <p v-if="resumeFailed" class="dev-task-error" role="alert">
         没能把这件事交给模型{{ session.lastError ? `：${session.lastError}` : "" }}。可以再点一次。
       </p>
@@ -145,6 +194,19 @@ async function resume(task: DevTaskRow) {
 .dev-task-row { display: flex; flex-direction: column; gap: 4px; }
 .dev-task-request { margin: 0; color: var(--text-strong); }
 .dev-task-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 10px; color: var(--text-muted); font-size: 12px; }
+/* 授权范围：只读的一行事实 + 一个「撤销授权」动作 */
+.dev-task-scope {
+  margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  color: var(--text-muted); font-size: 12px;
+}
+.dev-task-revoke {
+  padding: 3px 9px; border-radius: var(--r-pill);
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--sans); font-size: 12px; cursor: pointer;
+}
+.dev-task-revoke:hover { color: var(--danger); border-color: var(--danger); }
+.dev-task-revoke:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .dev-task-resume {
   align-self: flex-start; margin-top: 2px;
   padding: 4px 10px; border-radius: var(--r-pill);

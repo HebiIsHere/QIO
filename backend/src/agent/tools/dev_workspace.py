@@ -53,7 +53,11 @@ def _is_digest(value: object) -> bool:
 
 
 def _read_authorization(raw: object) -> dict | None:
-    """读回「执行生成代码」的授权记录；形状不对就当作没有授权。"""
+    """读回「执行生成代码」的授权记录；形状不对就当作没有授权。
+
+    除指纹与执行环境外还保留**授权范围**（在哪儿跑、能碰什么、用哪个凭据）：
+    用户需要能查到自己到底同意了什么，也要能收回。
+    """
     if not isinstance(raw, dict):
         return None
     fingerprint = raw.get("policy_fingerprint")
@@ -62,11 +66,15 @@ def _read_authorization(raw: object) -> dict | None:
         return None
     if not isinstance(executor, str) or not executor:
         return None
-    return {
+    record = {
         "policy_fingerprint": fingerprint,
         "executor": executor,
         "at": str(raw.get("at") or ""),
     }
+    scope = raw.get("scope")
+    if isinstance(scope, dict):
+        record["scope"] = scope
+    return record
 
 
 def _now() -> str:
@@ -294,6 +302,8 @@ class DevWorkspace:
             "test_evidence_current": evidence_state == EVIDENCE_CURRENT,
             "submitted_digest": task.submitted_digest,
             "submitted_at": task.submitted_at,
+            # 有没有「在这个环境里跑它的测试」的授权（范围见 authorizations()）
+            "test_authorized": bool(task.test_authorization),
             "files": files,
             "content_digest": digest,
         }
@@ -358,12 +368,21 @@ class DevWorkspace:
     # -- 执行生成代码的授权 ------------------------------------------------
 
     def grant_test_authorization(
-        self, task_id: str, *, policy_fingerprint: str, executor: str
+        self,
+        task_id: str,
+        *,
+        policy_fingerprint: str,
+        executor: str,
+        scope: dict | None = None,
     ) -> None:
         """记下用户「可以在这个环境里跑这个任务的生成代码」的确认。
 
         绑的是（能力策略指纹 + 实际执行环境），不是内容摘要：测试本来就是
         「改一版、跑一次」的循环，绑内容会让每次迭代都重新弹窗。
+
+        `scope` 是这次确认的**范围**（能力 / 目录 / 网络 / 凭据引用）：它只用于
+        让用户之后能查到「我同意了什么」，并在想要的时候撤销 —— 判定仍按指纹与
+        执行环境，不因为多存了一份说明而改变语义。
         """
         task = self._tasks.get(task_id)
         if task is None:
@@ -373,7 +392,50 @@ class DevWorkspace:
             "executor": str(executor or ""),
             "at": _now(),
         }
+        if scope:
+            task.test_authorization["scope"] = dict(scope)
         _write_state(task)
+
+    def authorizations(self) -> list[dict]:
+        """当前有效的执行授权（含范围），按授权时间倒序。"""
+        rows: list[dict] = []
+        for task in self.list_tasks():
+            record = task.test_authorization
+            if not record:
+                continue
+            scope = record.get("scope") if isinstance(record, dict) else None
+            scope = scope if isinstance(scope, dict) else {}
+            rows.append(
+                {
+                    "task_id": task.id,
+                    "request": task.request[:200],
+                    "submitted": bool(task.submitted),
+                    "executor": record.get("executor"),
+                    "isolated": bool(scope.get("isolated")),
+                    "policy_fingerprint": record.get("policy_fingerprint"),
+                    "capabilities": list(scope.get("capabilities") or []),
+                    "filesystem": list(scope.get("filesystem") or []),
+                    "network": bool(scope.get("network")),
+                    "network_allow": list(scope.get("network_allow") or []),
+                    "credentials": list(scope.get("credentials") or []),
+                    "granted_at": record.get("at") or "",
+                }
+            )
+        rows.sort(key=lambda row: row["granted_at"], reverse=True)
+        return rows
+
+    def revoke_test_authorization(self, task_id: str) -> bool:
+        """收回这个任务的执行授权；返回是否真的收回了。
+
+        收回之后下一次测试（或提交复测）会重新问用户一遍。已经注册的工具不受影响：
+        它走的是注册审批，不是这条测试授权。
+        """
+        task = self._tasks.get(task_id)
+        if task is None or not task.test_authorization:
+            return False
+        task.test_authorization = None
+        _write_state(task)
+        return True
 
     def test_authorized(
         self, task_id: str, *, policy_fingerprint: str, executor: str

@@ -795,6 +795,20 @@ export const api = {
    * 不会再出现「模型说要继续开发，界面上却找不到那个任务」。
    */
   getDevTasks: () => request<{ tasks: DevTaskRow[] }>("/api/dev/tasks"),
+  /**
+   * 当前的执行授权范围：用户看得到自己同意过什么。
+   *
+   * 授权不是一句「已允许」——它绑在（能力策略指纹 + 执行环境）上，范围还包括
+   * 目录、网络与凭据引用。这里把它们如实列出来，并支持撤销。
+   */
+  listDevAuthorizations: () =>
+    request<{ authorizations: DevAuthorizationRow[] }>("/api/dev/authorizations"),
+  /** 收回某个开发任务的执行授权：下一次测试会重新征求确认。 */
+  revokeDevAuthorization: (taskId: string) =>
+    request<{ revoked: boolean }>(
+      `/api/dev/authorizations/${encodeURIComponent(taskId)}/revoke`,
+      { method: "POST" },
+    ),
 };
 
 /** 一条开发任务的权威状态（后端 `GET /api/dev/tasks` 的一行）。 */
@@ -813,6 +827,26 @@ export interface DevTaskRow {
    */
   test_evidence_current: boolean;
   updated_at: string | null;
+  /** 有没有「在某个环境里跑它的测试」的执行授权（范围见 getDevAuthorizations） */
+  authorized: boolean;
+}
+
+/** 一条执行授权的范围（后端 `GET /api/dev/authorizations` 的一行）。 */
+export interface DevAuthorizationRow {
+  task_id: string;
+  request: string;
+  submitted: boolean;
+  /** subprocess（受限子进程，不是安全沙箱）| docker（容器隔离） */
+  executor: string;
+  isolated: boolean;
+  policy_fingerprint: string | null;
+  capabilities: string[];
+  filesystem: string[];
+  network: boolean;
+  network_allow: string[];
+  credentials: string[];
+  granted_at: string;
+  tool_name?: string | null;
 }
 
 export interface OnboardingStatus {

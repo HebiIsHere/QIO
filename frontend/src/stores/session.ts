@@ -1,5 +1,10 @@
 ﻿import { defineStore } from "pinia";
-import { api, type DevTaskRow, type ToolRecordPreview } from "../services/api";
+import {
+  api,
+  type DevAuthorizationRow,
+  type DevTaskRow,
+  type ToolRecordPreview,
+} from "../services/api";
 
 export interface ToolPresentation {
   title?: string;
@@ -370,6 +375,13 @@ export const useSessionStore = defineStore("session", {
      * 一件事没做完。这里只持有后端给的形状，不缓存到本地存储、不自己推断状态。
      */
     devTasks: [] as DevTaskRow[],
+    /**
+     * 执行授权的**范围**（后端 `GET /api/dev/authorizations`）。
+     *
+     * 用户需要能看清「我同意过什么、在哪儿跑、用哪个凭据」，并且在想收回时
+     * 能真的收回 —— 所以这份列表是可查、可撤销的，而不是一次点击后永久生效。
+     */
+    devAuthorizations: [] as DevAuthorizationRow[],
     topicName: null as string | null,
     anchorFragmentId: null as string | null,
     anchorFragment: null as { id: string; title: string | null } | null,
@@ -890,6 +902,33 @@ export const useSessionStore = defineStore("session", {
         this.devTasks = res.tasks ?? [];
       } catch {
         // 安静地保留旧值（noticeable 的失败由主流程的 lastError 负责，这里不抢戏）
+      }
+      await this.refreshDevAuthorizations();
+    },
+    /** 拉一次执行授权范围（展开任务清单、每轮结束时用）。 */
+    async refreshDevAuthorizations(): Promise<void> {
+      try {
+        const res = await api.listDevAuthorizations();
+        this.devAuthorizations = res.authorizations ?? [];
+      } catch {
+        // 同上：这是补充信息，失败保留旧值
+      }
+    },
+    /**
+     * 收回一个任务的执行授权。返回是否真的收回 —— 失败时**不能**假装已经收回。
+     */
+    async revokeDevAuthorization(taskId: string): Promise<boolean> {
+      try {
+        const res = await api.revokeDevAuthorization(taskId);
+        if (!res.revoked) return false;
+        this.devAuthorizations = this.devAuthorizations.filter(
+          (item) => item.task_id !== taskId,
+        );
+        const task = this.devTasks.find((item) => item.id === taskId);
+        if (task) task.authorized = false;
+        return true;
+      } catch {
+        return false;
       }
     },
     /**
