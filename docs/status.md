@@ -1126,6 +1126,16 @@ npm test
 
 **仍未做**：前端还没显示这条记录，也还没有「未完成任务」入口 —— 那是 B 批的后半，跟着一起做。
 
+**B 批后半（界面，2026-09-30 同日）**
+
+- 前端在 RESYNC 时读 `/api/runtime/state` 的 `interrupted_approvals`，在审批入口上方显示一句事实：
+  「上次有一项操作没有执行：…」（多项时写「上次有 N 项操作没有执行（例如 …）」）。
+  它**不是待办、也点不动** —— 那次调用随进程没了，恢复一个「等你回答」的授权是假的。
+- 实现：`frontend/src/stores/session.ts`（`interruptedOperations` + RESYNC 时填充）、
+  `frontend/src/components/ApprovalEntry.vue`（只读的一行）、`frontend/src/services/api.ts`（类型）。
+- 已验证：前端 `npx vitest run` 全绿、`npx vue-tsc --noEmit` 通过。
+- 仍未做：**「未完成任务」入口**（把开发任务列表带进界面）还没做；`ApprovalEntry` 那一行只有 store 级测试，没有组件级渲染测试；真机界面验收仍未做。
+
 ---
 
 ## 本轮变更：测试前授权（2026-09-30）

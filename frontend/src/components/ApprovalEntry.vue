@@ -8,11 +8,29 @@
  * 用户主动点开——既不打断，也不会出现「看不见的待审批项」。
  */
 import { useApprovalsStore } from "../stores/approvals";
+import { useSessionStore } from "../stores/session";
+import { computed } from "vue";
 
 const approvals = useApprovalsStore();
+const session = useSessionStore();
+
+/**
+ * 上一次进程结束时没回答完的那次操作：**不会再恢复等待**，所以这里不是待办、
+ * 也没有可点的「继续」——只是一句事实，免得用户以为那件事做过了。
+ */
+const interrupted = computed(() => session.interruptedOperations);
+const interruptedHint = computed(() => {
+  const items = interrupted.value;
+  if (!items.length) return "";
+  const first = items[0]?.what || "一项操作";
+  return items.length === 1
+    ? `上次有一项操作没有执行：${first}`
+    : `上次有 ${items.length} 项操作没有执行（例如 ${first}）`;
+});
 </script>
 
 <template>
+  <p v-if="interruptedHint" class="interrupted-note" role="status">{{ interruptedHint }}</p>
   <button
     v-if="approvals.pendingCount > 0 && !approvals.visible"
     class="approval-entry"
@@ -45,5 +63,14 @@ const approvals = useApprovalsStore();
   width: 16px; height: 16px; border-radius: 50%;
   background: var(--warning); color: var(--bg-base);
   font-family: var(--mono); font-size: 11px; font-weight: 700;
+}
+/* 「上次那项操作没有执行」：一句事实，不是待办 —— 不能看起来像能点的按钮 */
+.interrupted-note {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 189; margin: 0; max-width: min(560px, calc(100vw - 32px));
+  padding: 6px 14px; border-radius: var(--r-pill);
+  background: var(--bg-elevated); color: var(--text-secondary);
+  border: 1px solid var(--border-subtle); font-family: var(--sans); font-size: 12.5px;
+  box-shadow: var(--shadow-1);
 }
 </style>

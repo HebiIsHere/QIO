@@ -352,6 +352,17 @@ export interface StreamMessage {
 export const useSessionStore = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
+    /**
+     * 上一次进程结束时仍没人回答的审批（后端 `/api/runtime/state` 的
+     * `interrupted_approvals`）。它们**不会**恢复等待 —— 那次工具调用随进程
+     * 一起没了；界面只负责说清「那一次操作没有执行」。
+     */
+    interruptedOperations: [] as {
+      approval_id: string;
+      kind: string;
+      what: string;
+      createdAt: string;
+    }[],
     topicName: null as string | null,
     anchorFragmentId: null as string | null,
     anchorFragment: null as { id: string; title: string | null } | null,
@@ -838,6 +849,12 @@ export const useSessionStore = defineStore("session", {
         const state = await api.getRuntimeState();
         this.adoptInstance(state.instance_id);
         this.applyTurnQueue(state.turn_queue);
+        this.interruptedOperations = (state.interrupted_approvals ?? []).map((item) => ({
+          approval_id: item.approval_id,
+          kind: item.kind,
+          what: item.what,
+          createdAt: item.created_at,
+        }));
         return { turn_queue: state.turn_queue, approvals: state.approvals, tasks: state.tasks };
       } catch (e) {
         this.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;

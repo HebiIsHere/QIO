@@ -18,6 +18,14 @@ vi.mock("../../services/api", () => ({
       messages: [],
     })),
     sendTurn: vi.fn(async () => ({})),
+    getRuntimeState: vi.fn(async () => ({
+      instance_id: "i",
+      revision: 1,
+      turn_queue: { instance_id: "i", revision: 1, running: null, queued: [], cancelled: [] },
+      approvals: [],
+      tasks: [],
+      tools: [],
+    })),
   },
 }));
 
@@ -140,6 +148,35 @@ describe("最终回答不会被中间话覆盖", () => {
       data: { turn_id: "t6", status: "completed", final_content: "答案" },
     });
     expect(assistantTexts(session)).toHaveLength(1);
+  });
+});
+
+describe("上次没回答完的审批", () => {
+  it("RESYNC 后把「那次操作没有执行」记在会话里", async () => {
+    vi.mocked(api.getRuntimeState).mockResolvedValueOnce({
+      instance_id: "i",
+      revision: 3,
+      turn_queue: { instance_id: "i", revision: 3, running: null, queued: [], cancelled: [] },
+      approvals: [],
+      interrupted_approvals: [
+        {
+          approval_id: "appr_1",
+          kind: "tool_execution",
+          what: "想运行一段命令",
+          turn_id: "turn_1",
+          created_at: "2026-09-30T10:00:00+00:00",
+          outcome: "not_executed",
+        },
+      ],
+      tasks: [],
+      tools: [],
+    } as never);
+
+    const { session } = setup();
+    await session.resyncTurnState();
+
+    expect(session.interruptedOperations).toHaveLength(1);
+    expect(session.interruptedOperations[0]?.what).toBe("想运行一段命令");
   });
 });
 

@@ -379,6 +379,18 @@ export const api = {
         queued: { turn_id: string; message: string }[];
         cancelled: { turn_id: string; message: string }[];
       };
+      /**
+       * 上一次进程结束时仍没人回答的审批：不会再恢复等待，只说清「那次操作没有执行」。
+       */
+      interrupted_approvals?: {
+        approval_id: string;
+        kind: string;
+        what: string;
+        turn_id?: string | null;
+        created_at: string;
+        expires_at?: string | null;
+        outcome: string;
+      }[];
       approvals: {
         approval_id: string;
         kind: string;
