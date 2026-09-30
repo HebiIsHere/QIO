@@ -154,19 +154,62 @@ TOOL_DEV_SUBMIT_DESC = (
     "审批通过后工具注册并清理工作区；被拒绝时保留当前工作区，可根据反馈修改后重新提交。"
 )
 
-# 工具开发指南 DEV_GUIDE。定义于 agent/tools/dev_tools.py；
-# 作用：创建开发任务后随结果一起发给模型，约束整个开发流程（范式/需求规格/契约/提交口径）。
-DEV_GUIDE = """工具开发指南：
-1. 开发范式：先理解需求，再用 dev_list_files 查看工作区已有文件（request.md 是开发需求、tool.json 是工具定义模板），然后改写 tool.json（name/description/parameters/tool_type/sync/code/tests）；运行测试；失败时读取错误、修改定义并重跑，直到全部通过，最后提交审批。
-2. 需求规格必填：工具用途（一句话）、输入输出、使用场景、是否需要凭据（访问外部服务时）、类型（function/subagent）、同步/异步。信息不完整时先与用户澄清。
-3. 契约约束：function 型必须是纯函数、至少 1 个确定性测试用例；subagent 型需提供 model 和 credential_ref，可跳过确定性测试。
-   多文件项目：入口代码放在 tool.json 的 code 里（或写成 pkg/main.py 并把 tool.json 的 entry 设成 "pkg.main:run"），
-   其它模块用 dev_write_file 写成普通文件（如 pkg/__init__.py、pkg/util.py），入口直接 import 它们；提交时后端会把工作区里的这些文件一起打进工具定义。
-   依赖：第三方依赖必须写进 tool.json 的 requirements（最多 10 条）。本机不会自动安装依赖，缺依赖会明确告诉你缺哪一个 —— 那就改用标准库或如实告诉用户需要先安装。
-4. 提交口径：以工作区 tool.json 为准，dev_submit_tool 只需 workspace 与 explanation（不必复述整份 definition）；用通俗语言说明工具用途，用户不接触代码，技术细节留在工具卡片中。
-5. 恢复口径：不确定有哪些未完成任务时用 dev_list_tasks 枚举，状态由后端记录；文件存在不代表测试通过，未测试的任务要重新运行 dev_run_tests。
-6. 结论口径：要对外说「测试通过 / 已提交 / 现在可以使用」之前，先用 declare_completion 把结论交给后端核对（task_id + 当前版本摘要 + claims）；核对不通过就照它说的去补，不要自己宣布完成。
-7. 执行授权：第一次在某个任务上运行测试（以及提交时的复测）之前，用户需要确认执行边界；被拒绝或超时就如实告诉用户「需要你的确认才能继续」，不要绕路、也不要谎称测过。跑测试时不会注入真实凭据，凭据相关的分支是模拟的，「测试通过」不等于真实链路验证过。"""
+# 工具开发规范，按**步骤**拆开（见 DEV_GUIDE_BY_STEP）。
+# 以前是一份长文，创建任务时一次性灌给模型：之后模型在写代码、排错、提交时
+# 该看的口径已经不在眼前，而一开始那份里大半内容当下还用不到。
+# 现在每一步只注入这一步该知道的，文本本身仍只有这一份来源。
+DEV_GUIDE_SECTIONS: dict[str, str] = {
+    "flow": (
+        "流程：先理解需求 → dev_list_files 看工作区（request.md 是需求、tool.json 是定义）→ "
+        "改写 tool.json → dev_run_tests 跑测试 → 失败就读错误改代码重跑 → "
+        "全部通过后 dev_submit_tool 提交审批。\n"
+    ),
+    "requirements": (
+        "需求规格（必填）：工具用途（一句话）、输入输出、使用场景、是否需要凭据（访问外部服务时）、"
+        "类型（function/subagent）、同步/异步。信息不完整时先与用户澄清。\n"
+    ),
+    "contract": (
+        "契约约束：function 型必须是纯函数、至少 1 个确定性测试用例；subagent 型需提供 model 与 "
+        "credential_ref，可跳过确定性测试。\n"
+        "多文件项目：入口代码写在 tool.json 的 code 里（或写成 pkg/main.py，并把 tool.json 的 entry 设成 "
+        '"pkg.main:run"），其它模块用 dev_write_file 写成普通文件（如 pkg/util.py），入口直接 import 它们；'
+        "提交时后端会把工作区里的这些文件一起打进定义。\n"
+        "依赖：第三方依赖必须写进 tool.json 的 requirements（最多 10 条）；本机不会自动安装，"
+        "缺了会明确告诉你是哪一个 —— 那就改用标准库，或如实告诉用户需要先安装。\n"
+    ),
+    "test": (
+        "执行授权与测试：第一次在某个任务上跑测试（以及提交时的复测）之前，用户要先确认执行边界；"
+        "被拒绝或超时就如实说「需要你的确认才能继续」，不要绕路、也不要谎称测过。"
+        "测试不注入真实凭据，凭据相关分支是模拟的，「测试通过」不等于真实链路验证过。\n"
+    ),
+    "submit": (
+        "提交口径：以工作区 tool.json 为准，dev_submit_tool 只需 workspace 与 explanation"
+        "（不必复述整份 definition）；用通俗语言说明用途，用户不接触代码，技术细节留在工具卡片里。\n"
+    ),
+    "claims": (
+        "结论口径：要说「测试通过 / 已提交 / 现在可以使用」之前，先用 declare_completion 交给后端核对"
+        "（task_id + 当前版本摘要 + claims）；核对不通过就照它说的补齐，不要自己宣布完成。\n"
+    ),
+    "recover": (
+        "恢复口径：不确定有哪些未完成任务时用 dev_list_tasks 枚举，状态以后端记录为准；"
+        "文件存在不代表测试通过，未测试或证据过期的任务要重新跑 dev_run_tests。\n"
+    ),
+}
+
+# 步骤 → 该注入的分节。没有步骤给整份长文，只给这一步的。
+DEV_GUIDE_BY_STEP: dict[str, tuple[str, ...]] = {
+    "create": ("flow", "requirements", "contract"),
+    "test": ("test",),
+    "submit": ("submit", "claims"),
+    "recover": ("recover",),
+}
+
+
+def dev_guide(step: str) -> str:
+    """按步骤渲染开发规范（只包含这一步的分节，未知步骤返回空串）。"""
+    return "".join(
+        DEV_GUIDE_SECTIONS[key] for key in DEV_GUIDE_BY_STEP.get(step, ())
+    )
 
 # 结论声明工具 declare_completion 的描述。定义于 agent/tools/declare_completion.py；
 # 作用：让「完成 / 可用」这类可以被证实的结论先过一遍后端记录。

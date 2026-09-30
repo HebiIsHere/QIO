@@ -12,7 +12,7 @@ import json
 from typing import Any, Awaitable, Callable
 
 from agent.prompts import (
-    DEV_GUIDE,
+    dev_guide,
     TOOL_CREATE_TOOL_DESC,
     TOOL_DEV_LIST_FILES_DESC,
     TOOL_DEV_LIST_TASKS_DESC,
@@ -64,6 +64,12 @@ def _simulation_note(definition: ToolDefinition) -> str | None:
 def _with_note(text: str, definition: ToolDefinition) -> str:
     note = _simulation_note(definition)
     return f"{text}\n{note}" if note else text
+
+
+def _with_guide(text: str, step: str) -> str:
+    """把这一步该知道的规范附在结果后面（分节注入，不给整份长文）。"""
+    guide = dev_guide(step).strip()
+    return f"{text}\n{guide}" if guide else text
 
 
 def ready_detail(definition: ToolDefinition | None, report) -> str:
@@ -156,7 +162,7 @@ class CreateToolTool(Tool):
             content=(
                 f"开发任务已创建，工作区 id={task.id}。"
                 f"工作区已有文件：{', '.join(files) or '(空)'}。\n"
-                f"按以下指南继续开发：\n\n{DEV_GUIDE}"
+                f"按以下指南继续开发：\n\n{dev_guide('create')}"
             ),
             facts=_dev_facts(self.workspaces, task.id, self.name),
         )
@@ -299,7 +305,10 @@ class DevListTasksTool(Tool):
             lines.append(
                 f"- {task.id} | 阶段 {phase} | {test} | {submitted} | {task.request[:40]}"
             )
-        return ToolResult(ok=True, content="开发任务：\n" + "\n".join(lines))
+        return ToolResult(
+            ok=True,
+            content=_with_guide("开发任务：\n" + "\n".join(lines), "recover"),
+        )
 
 
 class DevRunTestsTool(Tool):
@@ -389,7 +398,10 @@ class DevRunTestsTool(Tool):
             )
             return ToolResult(
                 ok=True,
-                content=_with_note(f"测试通过 {report.summary}\n" + "\n".join(lines), definition),
+                content=_with_guide(
+                    _with_note(f"测试通过 {report.summary}\n" + "\n".join(lines), definition),
+                    "test",
+                ),
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
         await self.status.emit(
@@ -402,7 +414,10 @@ class DevRunTestsTool(Tool):
         )
         return ToolResult(
             ok=False,
-            error=_with_note(f"测试失败 {report.summary}\n" + "\n".join(lines), definition),
+            error=_with_guide(
+                _with_note(f"测试失败 {report.summary}\n" + "\n".join(lines), definition),
+                "test",
+            ),
             facts=_dev_facts(self.workspaces, workspace, self.name),
         )
 
@@ -567,7 +582,10 @@ class DevSubmitTool(Tool):
             self.workspaces.archive(workspace)
             return ToolResult(
                 ok=True,
-                content=f"工具 {definition.name} 已注册（内容摘要 {str(digest)[:12]}）。",
+                content=_with_guide(
+                    f"工具 {definition.name} 已注册（内容摘要 {str(digest)[:12]}）。",
+                    "submit",
+                ),
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
         return ToolResult(

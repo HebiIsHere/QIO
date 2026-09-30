@@ -1252,3 +1252,22 @@ npm test
 
 **仍未做**：项目级隔离依赖（QIO 管理的专用 Python 环境）；把工作区里的**二进制**文件带进定义
 （现在只带能按 UTF-8 读回的文本文件）。
+
+---
+
+## 本轮变更：开发规范分节注入（2026-09-30）
+
+补的是第一阶段第 5 条：规范原来是一份长文 `DEV_GUIDE`，创建任务时一次性灌给模型 ——
+之后模型在写代码、排错、提交时，该看的口径已经不在眼前，而开头那份里大半内容当下还用不到。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 规范只有一整份长文 | 拆成 7 个分节（流程 / 需求规格 / 契约 / 测试与授权 / 提交 / 结论 / 恢复），并声明「每个步骤该拿哪几节」；**文本仍只有这一份来源** | `prompts.py`（`DEV_GUIDE_SECTIONS`、`DEV_GUIDE_BY_STEP`、`dev_guide`） | `test_dev_guide_sections.py`（每步只拿自己的那一节、没有孤儿分节、任何一步都不超过全文的六成） |
+| 规范只在创建时出现一次，后面再也看不到 | 按步骤注入到对应的工具结果里：创建任务给「流程 + 需求规格 + 契约」；跑测试给「测试与授权」（通过与失败都给）；提交成功给「提交 + 结论」；`dev_list_tasks` 给「恢复口径」 | `tools/dev_tools.py`（`_with_guide`） | `test_dev_guide_sections.py`（创建结果含需求规格、不含提交口径；测试结果含执行授权与「不等于真实链路」） |
+
+**已验证**：`test_dev_guide_sections.py` 全绿；`test_dev_tools.py`、`test_dev_workflow_integration.py`、
+`test_dev_test_authorization.py`、`test_dev_multifile_submit.py`、`test_tool_lifecycle.py`、
+`test_tool_create_events.py`、`test_tool_display.py`、`test_turn_facts.py`、
+`test_final_answer_fact_check.py` 全绿；后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
+
+**仍未做**：规范分节仍写在代码里的长字符串，没有独立文件与版本号；用户可见的「开发规范」页面没有做。
