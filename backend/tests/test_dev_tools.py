@@ -474,3 +474,63 @@ def test_restore_marks_evidence_stale_when_files_changed_out_of_band(tmp_path):
 
     reborn = DevWorkspace(root)
     assert reborn.status(task.id)["evidence_state"] == "stale"
+
+
+# ---------- 上报给主循环的事实（core/turn_facts.py） ----------
+
+def test_fact_for_reports_evidence_and_requires_tests(tmp_path):
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("x")
+    fact = ws.fact_for(task.id, "create_tool")["dev_task"]
+    assert fact["id"] == task.id
+    assert fact["tool_name"] == "create_tool"
+    assert fact["phase"] == "created"
+    assert fact["submitted"] is False
+    assert fact["requires_tests"] is True
+    assert fact["test"] == {"state": "none", "passed": None, "summary": None}
+    assert fact["version"] == ws.content_digest(task.id)
+
+
+def test_fact_for_marks_subagent_tools_as_not_requiring_tests(tmp_path):
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("x")
+    ws.write_definition(task.id, ToolDefinition(
+        name="deep_researcher", description="调研", tool_type="subagent", code="",
+    ))
+    assert ws.fact_for(task.id, "dev_run_tests")["dev_task"]["requires_tests"] is False
+
+
+def test_fact_for_unknown_task_is_empty(tmp_path):
+    ws = DevWorkspace(tmp_path / "ws")
+    assert ws.fact_for("ws_ffffffffffff", "create_tool") == {}
+
+
+async def test_dev_run_tests_reports_facts():
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("x")
+    ws.write_definition(task.id, ToolDefinition(
+        name="add_numbers", description="求和", tool_type="function",
+        code="def run(**kwargs):\n    return {'sum': kwargs['a'] + kwargs['b']}",
+        tests=[{"name": "t", "input": {"a": 1, "b": 2}, "expect": {"sum": 3}}],
+    ))
+    from agent.tools.sandbox import SandboxExecutor
+
+    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor())
+    r = await tool.run(workspace=task.id)
+    assert r.ok
+    fact = (r.facts or {})["dev_task"]
+    assert fact["test"]["state"] == "current"
+    assert fact["test"]["passed"] is True
+    assert fact["test"]["summary"] == "1/1 tests passed"
+
+
+async def test_dev_write_file_reports_stale_evidence():
+    """写完文件后的状态就是事实：证据被打成 stale，主循环据此补注记。"""
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("x")
+    ws.record_test(task.id, True, "1/1 tests passed")
+    tool = DevWriteFileTool(ws)
+    r = await tool.run(workspace=task.id, name="tool.py", content="broken")
+    assert r.ok
+    fact = (r.facts or {})["dev_task"]
+    assert fact["test"]["state"] == "stale"

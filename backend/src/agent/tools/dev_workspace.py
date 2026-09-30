@@ -405,6 +405,35 @@ class DevWorkspace:
 
     # -- definition helpers ----------------------------------------------
 
+    def fact_for(self, task_id: str, tool_name: str) -> dict:
+        """当前任务事实的机器可读快照（给 `core/turn_facts.py` 记账用）。
+
+        报的是**操作之后**的状态：调用方在写完文件、跑完测试、提交完之后取一次，
+        主循环据此知道「这一版到底验证到哪一步了」。取不到任务时返回空字典。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {}
+        status = self.status(task_id)
+        definition = self.read_definition(task_id)
+        # subagent 型工具没有确定性测试，不能算「还没有测试证据」。
+        requires_tests = definition is None or definition.tool_type != "subagent"
+        return {
+            "dev_task": {
+                "id": task.id,
+                "tool_name": str(tool_name or ""),
+                "phase": status.get("phase"),
+                "version": status.get("content_digest"),
+                "submitted": bool(status.get("submitted")),
+                "requires_tests": requires_tests,
+                "test": {
+                    "state": status.get("evidence_state") or EVIDENCE_NONE,
+                    "passed": status.get("last_test_passed"),
+                    "summary": status.get("last_test_summary"),
+                },
+            }
+        }
+
     def write_definition(self, task_id: str, definition: ToolDefinition) -> None:
         self.write_file(
             task_id,

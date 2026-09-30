@@ -39,6 +39,17 @@ PHASE_READY = "ready"
 PHASE_FAILED = "failed"
 
 
+def _dev_facts(workspaces, workspace: str, tool_name: str) -> dict[str, Any]:
+    """工具结果里带的开发任务事实（见 core/turn_facts.py）。
+
+    取不到就回空字典：记账失败绝不能让工具调用本身出问题。
+    """
+    try:
+        return workspaces.fact_for(workspace, tool_name)
+    except Exception:  # noqa: BLE001 - 记账不是执行的必要条件
+        return {}
+
+
 class ToolCreateStatus:
     """工具创建进度的事件出口：同一 `group_id` 就是同一张卡。
 
@@ -112,6 +123,7 @@ class CreateToolTool(Tool):
                 f"工作区已有文件：{', '.join(files) or '(空)'}。\n"
                 f"按以下指南继续开发：\n\n{DEV_GUIDE}"
             ),
+            facts=_dev_facts(self.workspaces, task.id, self.name),
         )
 
 
@@ -168,14 +180,22 @@ class DevWriteFileTool(Tool):
         try:
             self.workspaces.write_file(workspace, name, content)
         except (ValueError, KeyError) as exc:
-            return ToolResult(ok=False, error=str(exc))
+            return ToolResult(
+                ok=False,
+                error=str(exc),
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         await self.status.emit(
             workspace,
             PHASE_BUILDING,
             label="正在构建",
             detail=f"已写入 {len(self.workspaces.list_files(workspace))} 个文件",
         )
-        return ToolResult(ok=True, content=f"已写入 {name}（{len(content)} 字符）")
+        return ToolResult(
+            ok=True,
+            content=f"已写入 {name}（{len(content)} 字符）",
+            facts=_dev_facts(self.workspaces, workspace, self.name),
+        )
 
 
 class DevReadFileTool(Tool):
@@ -273,11 +293,19 @@ class DevRunTestsTool(Tool):
             return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
         definition = self.workspaces.read_definition(workspace)
         if definition is None:
-            return ToolResult(ok=False, error="tool.json 缺失或无效，请先写入工具定义")
+            return ToolResult(
+                ok=False,
+                error="tool.json 缺失或无效，请先写入工具定义",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         if definition.tool_type == "subagent":
             # 子 agent 型工具没有确定性测试，直接进入确认环节
             self.workspaces.set_phase(workspace, "no_tests_required")
-            return ToolResult(ok=True, content="subagent 型工具无需确定性测试，可直接提交审批。")
+            return ToolResult(
+                ok=True,
+                content="subagent 型工具无需确定性测试，可直接提交审批。",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         await self.status.emit(
             workspace,
             PHASE_TESTING,
@@ -297,7 +325,11 @@ class DevRunTestsTool(Tool):
                 ok=True,
                 tool_name=definition.name,
             )
-            return ToolResult(ok=True, content=f"测试通过 {report.summary}\n" + "\n".join(lines))
+            return ToolResult(
+                ok=True,
+                content=f"测试通过 {report.summary}\n" + "\n".join(lines),
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         await self.status.emit(
             workspace,
             PHASE_TESTING_FAILED,
@@ -309,6 +341,7 @@ class DevRunTestsTool(Tool):
         return ToolResult(
             ok=False,
             error=f"测试失败 {report.summary}\n" + "\n".join(lines),
+            facts=_dev_facts(self.workspaces, workspace, self.name),
         )
 
 
@@ -349,7 +382,10 @@ class DevSubmitTool(Tool):
             await self.status.emit(
                 workspace, PHASE_FAILED, label="创建失败", detail="缺少用途说明", ok=False
             )
-            return ToolResult(ok=False, error="explanation 必填")
+            return ToolResult(
+                ok=False, error="explanation 必填",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         # 以工作区 tool.json 为唯一权威：模型不必再复述整份定义（重复输出容易与
         # 工作区文件、测试对象不一致）。若仍传了 definition，只用于核对一致性。
         definition = self.workspaces.read_definition(workspace)
@@ -361,13 +397,20 @@ class DevSubmitTool(Tool):
                 detail="工作区里的 tool.json 缺失或无效",
                 ok=False,
             )
-            return ToolResult(ok=False, error="工作区里的 tool.json 缺失或无效，请先写入工具定义")
+            return ToolResult(
+                ok=False,
+                error="工作区里的 tool.json 缺失或无效，请先写入工具定义",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         if raw is not None:
             if not isinstance(raw, dict):
                 await self.status.emit(
                     workspace, PHASE_FAILED, label="创建失败", detail="工具定义不是对象", ok=False
                 )
-                return ToolResult(ok=False, error="definition 必须是对象")
+                return ToolResult(
+                    ok=False, error="definition 必须是对象",
+                    facts=_dev_facts(self.workspaces, workspace, self.name),
+                )
             try:
                 provided = ToolDefinition(**raw)
             except Exception as exc:  # noqa: BLE001 - pydantic validation
@@ -378,7 +421,10 @@ class DevSubmitTool(Tool):
                     detail=f"工具定义不合法：{exc}",
                     ok=False,
                 )
-                return ToolResult(ok=False, error=f"definition 不合法：{exc}")
+                return ToolResult(
+                    ok=False, error=f"definition 不合法：{exc}",
+                    facts=_dev_facts(self.workspaces, workspace, self.name),
+                )
             if provided.model_dump() != definition.model_dump():
                 await self.status.emit(
                     workspace,
@@ -393,6 +439,7 @@ class DevSubmitTool(Tool):
                         "definition 与工作区 tool.json 不一致；提交以工作区为准。"
                         "请先用 dev_read_file 读取 tool.json 核对，或改为省略 definition。"
                     ),
+                    facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
         digest = self.workspaces.content_digest(workspace)
 
@@ -417,7 +464,11 @@ class DevSubmitTool(Tool):
                 detail="提交时发生错误，请稍后重试",
                 ok=False,
             )
-            return ToolResult(ok=False, error=f"提交失败：{type(exc).__name__}: {exc}")
+            return ToolResult(
+                ok=False,
+                error=f"提交失败：{type(exc).__name__}: {exc}",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
         if outcome.ok:
             # 完成的任务必须留下来：项目文件、需求与测试证据是重启、更新和
             # 修复的依据。以前这里直接 rmtree，工具注册了但工作区没了，
@@ -427,5 +478,10 @@ class DevSubmitTool(Tool):
             return ToolResult(
                 ok=True,
                 content=f"工具 {definition.name} 已注册（内容摘要 {str(digest)[:12]}）。",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
             )
-        return ToolResult(ok=False, error=f"提交未通过（{outcome.step}）: {outcome.detail}")
+        return ToolResult(
+            ok=False,
+            error=f"提交未通过（{outcome.step}）: {outcome.detail}",
+            facts=_dev_facts(self.workspaces, workspace, self.name),
+        )
