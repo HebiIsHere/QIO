@@ -78,6 +78,9 @@ class TurnContext:
     notices: list[str] = field(default_factory=list)
     knowledge_snapshot: list[dict] = field(default_factory=list)
     final_content: str | None = None
+    # 本轮被后端核对通过的完成结论（见 core/turn_facts.py）：随 TURN_END 发出去，
+    # 前端据此在回答下方显示「后端已核对」那一行。
+    final_verification: dict | None = None
     error: str | None = None
     usage: dict | None = None
     result: dict | None = None
@@ -322,6 +325,8 @@ class TurnManager:
             "final_content": ctx.final_content,
             "error": ctx.error,
         }
+        if ctx.final_verification:
+            payload["verification"] = ctx.final_verification
         if ctx.usage:
             payload.update(ctx.usage)
         await self._emit_event(TURN_END, payload)

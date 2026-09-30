@@ -25,6 +25,7 @@ from agent.tools.dev_tools import (
     PHASE_REGISTERING,
     PHASE_WAITING_APPROVAL,
     ToolCreateStatus,
+    ready_detail,
 )
 from agent.tools.registry import ToolRegistry
 from agent.tools.runtime_tools import CodeTool, SubagentStubTool
@@ -320,7 +321,7 @@ class ToolLifecycle:
             group_id,
             PHASE_READY,
             label="已创建",
-            detail="现在可以使用",
+            detail=ready_detail(definition, report),
             ok=True,
             tool_name=definition.name,
         )

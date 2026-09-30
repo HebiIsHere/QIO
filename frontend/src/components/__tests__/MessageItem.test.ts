@@ -29,6 +29,31 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+describe("后端已核对的结论标记", () => {
+  it("有核对结论时把依据显示出来", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(
+      makeMessage({
+        role: "assistant",
+        content: "已创建工具 add_numbers。",
+        verified: { basis: "版本 a1b2c3d4e5f6；测试 1/1 通过", claims: ["test_passed"] },
+      }),
+      pinia,
+    );
+    expect(w.find(".verified-note").text()).toContain("后端已核对：版本 a1b2c3d4e5f6");
+    w.unmount();
+  });
+
+  it("没有核对结论时一个字都不加", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mountItem(makeMessage({ role: "assistant", content: "普通回答" }), pinia);
+    expect(w.find(".verified-note").exists()).toBe(false);
+    w.unmount();
+  });
+});
+
 describe("MessageItem 用量归属（问题3）", () => {
   it("正常模式不显示 token（宁可隐藏，也不显示错误数字）", () => {
     const pinia = createPinia();

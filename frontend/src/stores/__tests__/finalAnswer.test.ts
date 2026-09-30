@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useEventStore } from "../events";
 import { useSessionStore } from "../session";
+import { api } from "../../services/api";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -139,5 +140,93 @@ describe("最终回答不会被中间话覆盖", () => {
       data: { turn_id: "t6", status: "completed", final_content: "答案" },
     });
     expect(assistantTexts(session)).toHaveLength(1);
+  });
+});
+
+describe("后端已核对的结论标记", () => {
+  const VERIFIED = {
+    accepted: true,
+    basis: "版本 a1b2c3d4e5f6；测试 1/1 通过；已提交（注册为 add_numbers）",
+    claims: ["test_passed", "registered"],
+  };
+
+  it("TURN_END 带核对结论时挂在最终回答上", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t8" } });
+    events.route({
+      type: "TURN_END",
+      id: "2",
+      ts: "",
+      data: {
+        turn_id: "t8",
+        status: "completed",
+        final_content: "已创建工具 add_numbers。",
+        verification: VERIFIED,
+      },
+    });
+
+    const assistants = assistantTexts(session);
+    const last = assistants[assistants.length - 1];
+    expect(last?.verified?.basis).toContain("版本 a1b2c3d4e5f6");
+    expect(last?.verified?.claims).toEqual(["test_passed", "registered"]);
+  });
+
+  it("没有核对结论时不留下任何标记", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t9" } });
+    events.route({
+      type: "TURN_END",
+      id: "2",
+      ts: "",
+      data: { turn_id: "t9", status: "completed", final_content: "普通回答" },
+    });
+    const assistants = assistantTexts(session);
+    expect(assistants[assistants.length - 1]?.verified).toBeUndefined();
+  });
+
+  it("历史消息的 raw 里带核对结论时同样显示", async () => {
+    vi.mocked(api.getSessionContext).mockResolvedValueOnce({
+      topic_id: "t1",
+      topic_name: "话题",
+      anchor_fragment: null,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "已创建工具 add_numbers。",
+          content_type: "text",
+          created_at: "2026-09-30T10:00:00+00:00",
+          raw: JSON.stringify({ verified: VERIFIED }),
+        },
+      ],
+    } as never);
+
+    const { session } = setup();
+    await session.loadHistory();
+
+    expect(session.messages[0]?.verified?.basis).toContain("版本 a1b2c3d4e5f6");
+  });
+
+  it("历史消息的 raw 损坏时不崩、也不显示标记", async () => {
+    vi.mocked(api.getSessionContext).mockResolvedValueOnce({
+      topic_id: "t1",
+      topic_name: "话题",
+      anchor_fragment: null,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "普通回答",
+          content_type: "text",
+          created_at: "2026-09-30T10:00:00+00:00",
+          raw: "{not json",
+        },
+      ],
+    } as never);
+
+    const { session } = setup();
+    await session.loadHistory();
+
+    expect(session.messages[0]?.verified).toBeUndefined();
   });
 });

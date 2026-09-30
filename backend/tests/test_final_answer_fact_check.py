@@ -148,3 +148,122 @@ async def test_accepted_declaration_suppresses_the_note():
     )
     result = await _loop(registry, adapter).run("做一个工具")
     assert result.final_content == "已按后端记录说明：这一版测试没通过。"
+
+
+async def test_accepted_declaration_is_exposed_on_the_turn_result():
+    """核对结论要能从这一轮的结果里取走：它会被落库并随 TURN_END 发出去。"""
+    registry = ToolRegistry()
+    registry.register(_FailingDevTool())
+    registry.register(_DeclaringTool())
+    adapter = _ScriptAdapter(
+        [("dev_run_tests", {}), ("declare_completion", {})], "已经说明完了。"
+    )
+    result = await _loop(registry, adapter).run("做一个工具")
+    assert result.verification is not None
+    assert result.verification["accepted"] is True
+    assert "版本 aaaaaaaaaaaa" in result.verification["basis"]
+    assert result.verification["claims"] == ["test_passed"]
+
+
+async def test_no_verification_without_a_declaration():
+    registry = ToolRegistry()
+    registry.register(_OkTool())
+    adapter = _ScriptAdapter([("dev_list_files", {})], "看过了。")
+    result = await _loop(registry, adapter).run("看看工作区")
+    assert result.verification is None
+
+
+async def test_turn_end_carries_the_verification():
+    from agent.core.turn import TurnManager
+
+    events: list[tuple[str, dict]] = []
+
+    async def emitter(name: str, data: dict) -> None:
+        events.append((name, data))
+
+    async def runner(ctx) -> None:
+        ctx.final_content = "好了"
+        ctx.final_verification = {"accepted": True, "basis": "版本 a1b2；测试 1/1 通过"}
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("做一个工具")
+    await manager.wait(ctx.turn_id, timeout=5)
+    await manager.shutdown()
+
+    ends = [data for name, data in events if name == "TURN_END"]
+    assert ends, "没有发出 TURN_END"
+    assert ends[-1]["verification"]["accepted"] is True
+    assert ends[-1]["final_content"] == "好了"
+
+
+class _DeclaringStub(Tool):
+    """装配级的假核对工具：真实实现是 tools/declare_completion.py。"""
+
+    name = "declare_stub"
+    description = "核对结论"
+    parameters = {"type": "object", "properties": {}}
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        return ToolResult(
+            ok=True,
+            content="已核对",
+            facts={
+                "declaration": {
+                    "accepted": True,
+                    "basis": "版本 a1b2c3d4e5f6；测试 1/1 通过",
+                    "claims": ["test_passed"],
+                }
+            },
+        )
+
+
+async def test_verification_is_persisted_with_the_answer(tmp_path, monkeypatch):
+    """核对结论要跟着那条 assistant 消息一起落库（前端靠 raw 渲染标记）。"""
+    import json
+
+    from agent.config import Settings
+    from agent.services.app import AppContext
+    from agent.storage.db import connect
+    from agent.storage.migrate import apply_migrations
+
+    conn = connect(tmp_path / "app.db")
+    apply_migrations(conn)
+    ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
+    ctx.registry.register(_DeclaringStub())
+    topic = ctx.topics.nodes.create_topic("核对标记").id
+
+    class _Adapter:
+        mode = AdapterMode.NATIVE.value
+        model = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    message=ChatMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[ToolCall(id="c1", name="declare_stub", arguments={})],
+                    )
+                )
+            return Completion(message=ChatMessage(role="assistant", content="可以用了。"))
+
+    async def fake_build():
+        return _Adapter()
+
+    monkeypatch.setattr(ctx, "build_adapter", fake_build)
+    result = await ctx.run_turn("做一个工具", topic_id=topic)
+    assert result["ok"] is True
+
+    row = ctx.conn.execute(
+        "SELECT content, raw FROM messages WHERE role = 'assistant' "
+        "ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    assert row["content"] == "可以用了。"
+    raw = json.loads(row["raw"])
+    assert raw["verified"]["accepted"] is True
+    assert "版本 a1b2c3d4e5f6" in raw["verified"]["basis"]
+    assert raw["verified"]["claims"] == ["test_passed"]

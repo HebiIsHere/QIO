@@ -192,6 +192,16 @@ const metaText = computed(() => {
   const time = formatTime(props.message.createdAt);
   return tokText.value ? `${time} · ${tokText.value}` : time;
 });
+
+/**
+ * 「后端已核对」那一行：只有这一轮真的核对过（模型调了 declare_completion 且
+ * 后端逐条对上）才有。它是**事实说明**，不是装饰 —— 没有就不占位置。
+ */
+const verifiedText = computed(() => {
+  const fact = props.message.verified;
+  if (!fact) return "";
+  return fact.basis ? `后端已核对：${fact.basis}` : "后端已核对";
+});
 </script>
 
 <template>
@@ -325,6 +335,7 @@ const metaText = computed(() => {
           :cps="ui.typewriterCps"
           :pace-ms="message.paceMs ?? null"
         />
+        <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
       </div>
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
@@ -363,6 +374,15 @@ const metaText = computed(() => {
 .message.assistant {
   margin-right: auto;
   align-items: flex-start;
+}
+/* 「后端已核对」：贴在回答内部的一行事实，克制、不抢正文 */
+.verified-note {
+  margin: 8px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .bubble {
   padding: 10px 16px;

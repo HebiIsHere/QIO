@@ -135,6 +135,41 @@ function parseNarrativeRaw(raw?: string | null): {
 }
 
 /**
+ * 后端核对通过的完成结论（见 backend core/turn_facts.py）。
+ *
+ * 只有模型调 declare_completion 且后端逐条核对通过时才有：它证明「测试通过 /
+ * 已注册 / 可以使用」是后端记录里的结论，而不是模型自己说的。没有它就不显示
+ * 任何标记 —— 普通回答一个字都不加。
+ */
+export interface VerifiedFact {
+  /** 核对的依据（版本摘要、测试摘要、注册情况），直接给用户看 */
+  basis: string;
+  /** 通过核对的那几条结论（test_passed / registered / usable） */
+  claims: string[];
+}
+
+/** 把「核对结论」这个形状的值归一化；形状不对一律当作「没有」。 */
+function normalizeVerification(value: unknown): VerifiedFact | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.accepted !== true) return null;
+  const basis = typeof raw.basis === "string" ? raw.basis : "";
+  const claims = Array.isArray(raw.claims) ? raw.claims.map((c) => String(c)) : [];
+  return { basis, claims };
+}
+
+/** 历史行的 `raw`（JSON 字符串）→ 核对结论；解析失败一律当作「没有」。 */
+function parseVerifiedRaw(raw?: string | null): VerifiedFact | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return normalizeVerification(parsed?.verified);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 一份工具执行事实（`/api/runtime/state.tools`：活工具 + 最近结束的工具）。
  *
  * 身份是 `tool_call_id`（同一个工具名可能在一轮里被调用多次），
@@ -296,6 +331,8 @@ export interface StreamMessage {
   toolMissingReason?: string;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
+  /** 后端核对通过的完成结论（有就显示「后端已核对」，没有就不显示） */
+  verified?: VerifiedFact;
   /** 正在流式输出（打字机逐字）的消息；落定后为 undefined */
   streaming?: boolean;
   /** 最近一次增量到达的时间戳（毫秒）：用来按真实到达节奏驱动逐字显示 */
@@ -885,7 +922,7 @@ export const useSessionStore = defineStore("session", {
      * 绝不能因为「最后一条已经是 assistant」就把最终回答丢掉，
      * 也不能把工具前的中间话当成最终答案。
      */
-    applyFinalAnswer(text: string) {
+    applyFinalAnswer(text: string, verification?: unknown) {
       const last = this.messages[this.messages.length - 1];
       if (
         last &&
@@ -894,9 +931,17 @@ export const useSessionStore = defineStore("session", {
         last.content.trim() === text.trim()
       ) {
         last.interim = false;
+        this._attachVerification(last, verification);
         return;
       }
       this.pushAssistant(text);
+      const added = this.messages[this.messages.length - 1];
+      if (added) this._attachVerification(added, verification);
+    },
+    /** 把后端核对结论挂到这一条回答上（形状不对就当没有，不留半截状态） */
+    _attachVerification(message: StreamMessage, verification: unknown) {
+      const fact = normalizeVerification(verification);
+      if (fact) message.verified = fact;
     },
     /** 没有最终回答（失败/取消）时，别把中间话留在「已落定的最终回答」位置 */
     markLastAssistantInterim() {
@@ -1428,6 +1473,9 @@ export const useSessionStore = defineStore("session", {
         fresh: false,
         ...(m.role === "tool"
           ? { toolName: "tool", toolOk: true, toolStatus: "success" as const, toolError: null }
+          : {}),
+        ...(m.role === "assistant" && parseVerifiedRaw(m.raw)
+          ? { verified: parseVerifiedRaw(m.raw) as VerifiedFact }
           : {}),
       };
     },

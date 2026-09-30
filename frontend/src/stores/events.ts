@@ -209,7 +209,7 @@ export const useEventStore = defineStore("events", {
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
           session.finalizeAssistant();
           if (final.trim()) {
-            session.applyFinalAnswer(final);
+            session.applyFinalAnswer(final, d.verification);
           } else if (status === "completed") {
             // 正常的空回答：不动内容
           } else {

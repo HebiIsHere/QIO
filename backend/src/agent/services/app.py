@@ -1190,16 +1190,20 @@ class AppContext:
                 self.trace_store.finish(ctx.turn_id, "cancelled")
                 return
             # feedback enters memory (assistant message; no user message)
+            from agent.services.turn_orchestrator import verification_raw
+
             notify_msg_id, _ = self.memory.append_message(
                 topic_id=topic,
                 role="assistant",
                 content=result.final_content or "",
                 content_type="text",
                 model=adapter.model,
+                raw=verification_raw(result),
                 turn_id=ctx.turn_id,
             )
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
+            ctx.final_verification = getattr(result, "verification", None)
             ctx.result = {"ok": True, "turn": result.__dict__}
             ctx.usage = {
                 "iterations": result.iterations_used,

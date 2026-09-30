@@ -33,6 +33,16 @@ BOUNDARY_MODE_KEY = "fragment.boundary_mode"
 DEFAULT_BOUNDARY_MODE = "shadow"
 
 
+def verification_raw(result) -> dict | None:
+    """assistant 消息的 `raw`：把后端核对通过的结论一起存下来。
+
+    前端在回答下方渲染「后端已核对」那一行就靠它（见 core/turn_facts.py）；
+    这一轮没有核对结论时返回 None，落库行为与以前完全一样（raw = 空对象）。
+    """
+    verification = getattr(result, "verification", None)
+    return {"verified": verification} if verification else None
+
+
 @dataclass
 class _Plan:
     topic: str
@@ -491,8 +501,10 @@ class TurnOrchestrator:
             content=result.final_content or "",
             content_type="text",
             model=adapter.model,
+            raw=verification_raw(result),
             turn_id=ctx.turn_id,
         )
+        ctx.final_verification = getattr(result, "verification", None)
         ctx.trace.write("messages", assistant_msg_id)
         app.bindings.mark_write_closed(ctx.turn_id)
         # 本轮消息真正写入的片段 = 成功之后的「当前位置」

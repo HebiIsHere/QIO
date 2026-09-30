@@ -71,6 +71,9 @@ class TurnResult:
     # planning 可读，等这一轮结束时却已经没有了。它们必须由上层变成自己的一轮，
     # 否则子任务结果会无声消失。
     unread_notices: list[str] = field(default_factory=list)
+    # 本轮被后端核对通过的完成结论（见 core/turn_facts.py）：落进 assistant 消息的
+    # raw，并随 TURN_END 发给前端渲染「后端已核对」那一行；没有就是 None。
+    verification: dict | None = None
 
 
 class AgentLoop:
@@ -713,6 +716,7 @@ class AgentLoop:
             warnings=list(self._warnings),
             cancelled=cancelled,
             unread_notices=unread_notices,
+            verification=self.turn_facts.declaration,
         )
 
     # -- steps ------------------------------------------------------------

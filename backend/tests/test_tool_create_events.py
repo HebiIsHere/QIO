@@ -176,7 +176,9 @@ async def test_dev_flow_progresses_one_card_through_every_phase(tmp_path):
     final = collected[-1]
     assert final["tool_name"] == "add_numbers"
     assert final["label"] == "已创建"
-    assert final["detail"] == "现在可以使用"
+    # 注册成功不等于真实环境验证过：文案不能写「现在可以使用」
+    assert final["detail"].startswith("已注册，可以调用")
+    assert "1/1 tests passed" in final["detail"]
     # 用户可见文案不放内部工作区路径 / 源代码（group_id 是分组用的数据字段，不是文案）
     for event in collected:
         text = f"{event['label']} {event['detail'] or ''}"

@@ -156,17 +156,38 @@ class TurnFacts:
             self.record_declaration(
                 accepted=bool(declaration.get("accepted")),
                 basis=declaration.get("basis"),
+                claims=declaration.get("claims"),
             )
 
-    def record_declaration(self, *, accepted: bool, basis: str | None = None) -> None:
+    def record_declaration(
+        self,
+        *,
+        accepted: bool,
+        basis: str | None = None,
+        claims: Any = None,
+    ) -> None:
         """记一次结论声明（`declare_completion`）的核对结果。"""
-        self._declaration = {"accepted": bool(accepted), "basis": _one_line(basis)}
+        self._declaration = {
+            "accepted": bool(accepted),
+            "basis": _one_line(basis),
+            "claims": [str(c) for c in claims] if isinstance(claims, (list, tuple)) else [],
+        }
 
     # -- 读 ---------------------------------------------------------------
 
     @property
     def declaration_accepted(self) -> bool:
         return bool(self._declaration and self._declaration.get("accepted"))
+
+    @property
+    def declaration(self) -> dict | None:
+        """被接受的声明（给落库与 TURN_END 用）；没有对上的声明时为 None。"""
+        if not self.declaration_accepted:
+            return None
+        record = dict(self._declaration or {})
+        record.setdefault("basis", "")
+        record.setdefault("claims", [])
+        return record
 
     def unresolved(self) -> list[str]:
         """本轮「没有通过验证」的事实，一条一行（已压成单行）。"""

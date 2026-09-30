@@ -677,10 +677,9 @@
   失败原因都有自动化测试（进程内 + 真实 subprocess 沙箱），但「真实模型提议 → 真实沙箱测试 →
   两次审批 → 注册 → 立刻可用」这条完整链路没有在真实运行里走通。
 - **工具开发第一阶段的三个未收口项**（2026-09-30 收尾后的现状，详见文末「第一阶段收尾」一节）：
-  1. **最终结论的事实校正只做了后端一半**：后端已经有「每轮事实台账 + `declare_completion`
-     核对 + 收尾事实注记」（见文末「最终结论的事实校正」一节，规格与计划都在
-     `docs/superpowers/` 下）。**用户界面上那个「已核对」标记还没做** —— 它需要先决定核对
-     结论怎么随 assistant 消息持久化（新增迁移还是复用现有字段），再动界面。
+  1. **最终结论的事实校正已做完（后端 + 界面标记）**：后端有「每轮事实台账 +
+     `declare_completion` 核对 + 收尾事实注记」，界面上的「后端已核对」那一行也已上线
+     （见文末「结论标记与已创建文案」一节）。仍未做的只剩「未完成任务入口与审批跨重启语义」。
   2. **测试前授权与真实能力策略没补**：`dev_run_tests` 在拿到任何授权之前就执行生成代码，
      测试用的隔离数据（临时库 / 临时目录 / 模拟服务）也没做。
   3. **已保存对话的原文检索没做**：开放片段与摘要失败的内容搜不到（`memory_search` 只覆盖
@@ -1092,8 +1091,24 @@ npm test
 
 **仍未做（不宣称完成）**
 
-- **前端「已核对」标记**：需要先决定核对结论怎么随 assistant 消息持久化（新增迁移或复用现有字段），再在消息上渲染；后端事实已经准备好（`ToolResult.facts` 与台账）。
+- **前端「已核对」标记**：已由下一节补齐（复用 `messages.raw`，未加迁移）。
 - **声明面只覆盖开发类结论**：网页 / 桌面操作类结论要核对时，沿用同一张台账与同一套 claim 协议扩展，本次不做。
+
+---
+
+## 本轮变更：结论标记与「已创建」文案（2026-09-30）
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 「已核对」这件事在后端没有留痕，用户看不到哪句话是后端核对过的 | 被接受的 `declare_completion` 结论随那条 assistant 消息落库（复用已有的 `messages.raw`，**不加迁移**），并随 `TURN_END` 发给前端；界面在回答里显示一行「后端已核对：版本 … ；测试 … 」 | `core/turn_facts.py`、`core/loop.py`、`core/turn.py`、`services/turn_orchestrator.py`、`services/app.py`、`frontend/src/stores/session.ts`、`frontend/src/stores/events.ts`、`frontend/src/components/MessageItem.vue` | 后端 `test_turn_facts.py`、`test_final_answer_fact_check.py`；前端 `finalAnswer.test.ts`、`MessageItem.test.ts` |
+| 「已创建」卡片写死「现在可以使用」，把「注册成功」说成「验证过」 | 文案按实际拿到的证据写：「已注册，可以调用（1/1 tests passed）」；引用凭据的工具再加一句「真实服务未验证（测试不注入凭据）」 | `tools/dev_tools.py`（`ready_detail`）、`tools/lifecycle.py` | `test_dev_tools.py`、`test_tool_create_events.py` |
+
+**已验证**：后端全量 `pytest` 退出码 0；前端 `npx vitest run` 全绿、`npx vue-tsc --noEmit` 通过；`scripts/check_docs.py` 通过。
+
+**仍未做（不宣称完成）**
+
+- **真机界面验收**：只有组件级渲染测试（`.verified-note` 存在/不存在），没有在真实应用里看着这条标记出现。
+- **未完成任务入口与审批跨重启语义**：下一批（已定语义：重启后不恢复等待，只留「那次操作没有执行」的记录 + 安静的继续入口）。
 
 ---
 

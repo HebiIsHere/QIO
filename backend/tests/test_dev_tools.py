@@ -547,3 +547,44 @@ async def test_dev_write_file_reports_stale_evidence():
     assert r.ok
     fact = (r.facts or {})["dev_task"]
     assert fact["test"]["state"] == "stale"
+
+
+# ---------- 「已创建」卡片的话不能说过头 ----------
+
+def _report(summary: str = "1/1 tests passed"):
+    from agent.tools.tester import TestOutcome, TestReport
+
+    return TestReport(tool_name="add_numbers", outcomes=[TestOutcome("t", True, summary)])
+
+
+def test_ready_detail_says_registered_not_usable():
+    """注册成功 ≠ 真实环境验证过：文案要说得准。"""
+    from agent.tools.dev_tools import ready_detail
+
+    detail = ready_detail(ToolDefinition(
+        name="add_numbers", description="求和", tool_type="function",
+        code="def run(**kwargs):\n    return {}", tests=[],
+    ), _report())
+    assert detail.startswith("已注册，可以调用")
+    assert "1/1 tests passed" in detail
+    assert "现在可以使用" not in detail
+
+
+def test_ready_detail_flags_unverified_credentials():
+    from agent.tools.dev_tools import ready_detail
+
+    detail = ready_detail(ToolDefinition(
+        name="weather_fetch", description="查天气", tool_type="function",
+        code="def run(**kwargs):\n    return {}", tests=[],
+        credential_ref="weather-key",
+    ), _report())
+    assert "真实服务未验证" in detail
+
+
+def test_ready_detail_for_subagent_tools():
+    from agent.tools.dev_tools import ready_detail
+
+    detail = ready_detail(ToolDefinition(
+        name="deep_researcher", description="调研", tool_type="subagent", code="",
+    ), None)
+    assert "不需要确定性测试" in detail

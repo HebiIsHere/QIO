@@ -66,6 +66,25 @@ def _with_note(text: str, definition: ToolDefinition) -> str:
     return f"{text}\n{note}" if note else text
 
 
+def ready_detail(definition: ToolDefinition | None, report) -> str:
+    """「已创建」卡片上的那句话：能证实什么就说什么。
+
+    以前写的是「现在可以使用」—— 注册成功只说明它进了注册表，既不等于
+    真实服务跑通过，也不等于用户环境里验证过。这里按实际拿到的东西写：
+    确定性测试结果（有就报，没有就不提），以及凭据相关的分支是不是模拟的。
+    """
+    tool_type = getattr(definition, "tool_type", None)
+    if tool_type == "subagent":
+        text = "已注册，可以调用（该类型不需要确定性测试）"
+    elif report is not None:
+        text = f"已注册，可以调用（{report.summary}）"
+    else:
+        text = "已注册，可以调用"
+    if getattr(definition, "credential_ref", None):
+        text += "；真实服务未验证（测试不注入凭据）"
+    return text
+
+
 class ToolCreateStatus:
     """工具创建进度的事件出口：同一 `group_id` 就是同一张卡。
 

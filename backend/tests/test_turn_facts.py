@@ -161,3 +161,33 @@ def test_record_facts_ignores_garbage():
     facts.record_facts({"dev_task": "nope"})
     facts.record_facts({"dev_task": {"id": ""}})
     assert facts.annotation() is None
+
+
+def test_declaration_is_exposed_for_persistence():
+    """被接受的声明要能被落库/事件取走（前端那条「已核对」标记靠它）。"""
+    facts = TurnFacts()
+    facts.record_declaration(accepted=True, basis="版本 a1b2；测试 1/1 通过")
+    assert facts.declaration == {
+        "accepted": True,
+        "basis": "版本 a1b2；测试 1/1 通过",
+        "claims": [],
+    }
+
+
+def test_declaration_is_none_when_not_accepted():
+    facts = TurnFacts()
+    assert facts.declaration is None
+    facts.record_declaration(accepted=False, basis=None)
+    assert facts.declaration is None
+
+
+def test_record_facts_keeps_the_claims():
+    facts = TurnFacts()
+    facts.record_facts({
+        "declaration": {
+            "accepted": True,
+            "basis": "版本 a1b2",
+            "claims": ["test_passed", "registered"],
+        }
+    })
+    assert facts.declaration["claims"] == ["test_passed", "registered"]
