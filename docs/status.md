@@ -73,8 +73,8 @@
 - **Known limitations：** 真实凭据读写只在 Windows 凭据库上验证过（headless 环境没有可用后端时，
   读路径返回「无凭据」、写路径报错）；预算以 token 计数为主（界面也按 token 显示，不再出现人民币符号）；
   预设里的「建议模型」只是推荐值，是否真的可用由保存后的一次实际调用决定，因此没有可靠默认模型的服务
-  （聚合/自定义）要求用户自己选一个模型；`用量上限` 与实际计量一致，但运行期还没有按调用累计用量
-  （`record_usage` 目前只有测试调用），所以「已用量」这条进度在真实使用中基本停在 0。
+  （聚合/自定义）要求用户自己选一个模型；`用量上限` 按「进 + 出」合计与真实计量对齐，运行期每次模型调用
+  都会累计（主循环、子 agent、后台维护共用 `credentials/usage.py` 的同一份归因），界面把进 / 出分开显示。
 - **后续依赖：** M3 适配层、M10 子 agent、embedding 选档都从这里取 Key。
 
 ### M3 — 模型适配层
@@ -711,9 +711,9 @@
 - **136 条真实查询回归集本轮未运行**：`backend/evals/runs/jev-error-attribution/` 只保留了
   query id、候选与排序，没有对应记忆正文或快照 DB；仓库与临时目录里都没有包含这些 id 的库，
   缺数据快照无法离线重算，因此不作为本轮对照证据。
-- **取消不中断进行中的模型请求**：取消只取消在途工具调用并把 turn 标记为 cancelled，
-  正在等待的模型 HTTP 请求会跑完 —— 但它的返回值会被丢弃，agent 循环不会继续，
-  turn 以 `cancelled` 结束，也不会保存任何后续内容为最终回答。
+- **取消只掐客户端这一头**：取消现在会**真的中断**正在等待的模型请求（不再等它跑完再丢结果），
+  单飞队列里的下一条消息也会立刻开始；但服务端是否立刻停止生成由供应商决定 ——
+  「不再占用等待时间、不再堵住下一条消息」有保证，「不再产生费用」没有。
 - **Trace 时长归因缺口**：极端情况下 turn 总时长与已记录的模型/工具耗时差距很大
   （实测一次 51.5 秒的 turn 只记录了 1.7 秒模型耗时），无法从 Trace 解释时间去向。
 - **无嵌入模型时话题预判变弱**：缺本地 ONNX 模型时降级到规则层，关键词重叠分数被 1-gram/2-gram
@@ -956,3 +956,48 @@ npm test
 - `import agent.tools.*` 必须在 `agent.core` 之后：单独导入会触发既有的循环导入
   错误，因此只有 `agent.tools.*` 作为首个模块的单文件测试无法单独收集（整目录运行
   不受影响）。本轮未改这条链路。
+
+---
+
+## 本轮变更：确认之前不外发已存的 Key 与摘要超限（2026-09-29）
+
+> 计划：`docs/superpowers/plans/2026-09-29-credential-key-leak-and-summary-limit.md`
+
+起因是 2026-09-29 的代码评审。两条高危问题的共同形态是「自动动作跑在用户确认之前」。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 编辑已有凭据时改了服务地址，界面会自动去新地址取模型列表 —— 用户还没点「保存」、也还没勾「确认发送到新地址」，**原来保存的 Key 已经被发到新地址** | 已存的 Key 只回答**它自己那个地址**：地址/协议变了又没有新 Key 时根本不取列表，提示保存后再取 | `frontend/src/services/credentials.ts` | `CredentialForm.test.ts`（改地址后一次都不发 / 地址没变仍然用 `keyId`） |
+| 同一件事的另一半：`GET /api/credentials/models` 只要拿到 `key_id` 就解密并向任意 `endpoint` 发请求，前端漏改就直接变成外发 | 请求地址与这条凭据落库地址不一致（忽略大小写与结尾斜杠）时不解密、不外发，返回空列表加一句说明 | `backend/src/agent/api/server.py` | `test_credential_endpoint_api.py` |
+| 摘要的实体/关键词超过上限（实测出现过 79 项）被判成 schema 违规 → 整个派生任务失败：这个片段没有摘要、没有检索记录、没有实体卡、没有知识条目 | 本地先「去空白 + 去重 + 保序 + 截断」再交给 pydantic 校验；上限同时写进提示词；校验只负责挡真正的结构错误 | `backend/src/agent/memory/summary.py` | `test_memory.py`、`test_fault_injection.py`（超出上限时摘要与索引照常落库） |
+
+**已知限制（不粉饰）**
+
+- 两条都只做到「源码 + 自动化测试」：**没有用真实 Key 实测**，改地址的完整点击路径也没有真机走查。
+- 摘要的同类风险没有一次收完：`title` / `summary` 文本超长、知识提炼的 `candidates` 超上限仍会让那一项失败
+  （文本超长会丢掉整条摘要，候选超上限只丢知识条目）。本轮只改了实体与关键词。
+- 「已存的 Key 只能问它自己那个地址」是精确匹配（去尾斜杠、忽略大小写）：给同一个地址补一段路径也会被
+  当成换了目标，需要保存之后才重新取候选模型列表。
+
+---
+
+## 本轮变更：Windows 检查、用量累计与「停止」真取消（2026-09-29）
+
+接上一节的评审，处理剩下的三条：Windows 路径没有自动检查、用量上限不累计、按停止不掐请求。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 发布平台是 Windows，但 CI 只有 Linux；壳的单元测试（含 `#[cfg(windows)]` 的启动超时用例）**在哪都没跑过** | CI 新增 `backend-windows`（同一套后端测试）与 `rust-windows`（`cargo test`，不再只 `cargo check`）；两条命令同步进 SETUP | `.github/workflows/ci.yml`、`docs/SETUP.md` | 本机等价命令实跑：`cargo test` 八个用例全过（含 `hanging_command_is_killed_after_the_timeout`） |
+| 「用量上限」从来不随真实调用累计（`record_usage` 只有测试调用），已用量永远停在 0，上限也就不可能生效 | 建 adapter 时记住自己的 `key_id`；每次模型调用把「进 / 出」报给归因 sink 并写进这条凭据；主循环、子 agent、后台维护共用同一份归因 | 迁移 22（`usage_input` / `usage_output`）、`credentials/store.py`、`credentials/usage.py`、`core/loop.py`、`services/app.py` | `test_usage_accounting.py`、`test_credentials.py`、`CredentialCard.test.ts`（进 / 出 / 合计与上限比较） |
+| 按「停止」只是不再用结果，已经发出的模型请求照跑 | 请求放进自己的 task，与取消事件竞速；取消时立刻取消它（连接随之中断），turn 仍按 `cancelled` 语义收尾 | `core/loop.py`（`_await_completion`、`cancel`） | `test_cancel_and_rapid_turns.py`（请求被真正中断、排队消息不再被堵住） |
+| 附带修掉的既有缺陷：通知在「最后一次 planning 之后」到达时会被**静默丢掉** | 这一轮的 loop 把没读到的通知交还给上层，由它变成自己的一轮 | `core/loop.py`（`TurnResult.unread_notices`）、`services/turn_orchestrator.py` | `test_p7_subagent_race.py`（迟到的子任务结果仍成为独立一轮） |
+
+**已知限制（不粉饰）**
+
+- 新增的两个 CI 任务**还没在 GitHub 上真跑过**（本机等价命令通过）：Windows runner 是全新环境，
+  第一次跑可能要按它的情况再调一轮（占位文件命名、个别依赖本机状态的用例）。
+- 计量口径是「进 + 出」合计：注入的 system prompt / 记忆上下文都算在「进」里，所以进度条会比直觉更快接近上限。
+  换上限＝三个数字一起归零（重新计数）。
+- 取消掐的是客户端等待；服务端是否立刻停止生成、停止计费，由供应商决定。
+- 用量只在主循环 / 子 agent / 后台维护三条路径归因；其它直接调用适配器的实验代码不计入。
+- 第 6 条（真实界面与 Planet 手感验收）**没有做**：那需要真机人工验收，自动化替代不了。

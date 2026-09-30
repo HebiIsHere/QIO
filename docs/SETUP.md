@@ -55,7 +55,8 @@ npm ci
 ```powershell
 rustup toolchain install stable   # https://rustup.rs
 cd frontend/src-tauri
-cargo check
+cargo check   # 编译检查（CI 的 ubuntu 任务跑这一条）
+cargo test    # 单元测试：内置模型同步、代理解析、系统命令硬超时（Windows 专属）；CI 的 windows 任务跑这一条
 ```
 
 - crates.io 直连不通时，配置 `rsproxy.cn` 镜像（见 `~/.cargo/config.toml`）。
@@ -220,6 +221,10 @@ npm ci
 npx vue-tsc --noEmit
 npm test
 npm run build
+
+# 壳单元测试（含 Windows 专属的启动超时用例；CI 在 windows 任务里跑）
+cd src-tauri
+cargo test
 
 # 健康检查
 curl http://127.0.0.1:8734/api/health   # -> {"status":"ok"}

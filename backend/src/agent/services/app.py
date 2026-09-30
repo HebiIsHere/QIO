@@ -524,18 +524,25 @@ class AppContext:
         key_id: str,
         meta: dict | None,
     ) -> BaseAdapter | None:
+        adapter: BaseAdapter | None
         if credential_uses_anthropic(meta, base_url):
             await self._ensure_anthropic_capability(secret, model, base_url, key_id, meta)
-            return AnthropicAdapter(api_key=secret, model=model, endpoint=base_url)
-        client = AsyncOpenAI(api_key=secret, base_url=base_url)
-        probe = await probe_adapter(
-            client, model, endpoint=base_url, cache=self.probe_cache,
-        )
-        if probe.mode == AdapterMode.NATIVE:
-            return NativeAdapter(client, model, endpoint=base_url)
-        if probe.mode == AdapterMode.TEXT:
-            return TextAdapter(client, model, endpoint=base_url)
-        return None
+            adapter = AnthropicAdapter(api_key=secret, model=model, endpoint=base_url)
+        else:
+            client = AsyncOpenAI(api_key=secret, base_url=base_url)
+            probe = await probe_adapter(
+                client, model, endpoint=base_url, cache=self.probe_cache,
+            )
+            if probe.mode == AdapterMode.NATIVE:
+                adapter = NativeAdapter(client, model, endpoint=base_url)
+            elif probe.mode == AdapterMode.TEXT:
+                adapter = TextAdapter(client, model, endpoint=base_url)
+            else:
+                return None
+        # 用量归因：这条 adapter 发出的每次调用都算在这把凭据上。
+        # 主循环、子 agent、后台维护共用这里建出来的 adapter，所以只在这一处打标。
+        adapter.key_id = key_id
+        return adapter
 
     async def _ensure_anthropic_capability(
         self,
