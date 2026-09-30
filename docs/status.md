@@ -1225,3 +1225,30 @@ npm test
 `test_tool_recovery.py`、`test_tool_router*.py`、`test_topic_ended.py`、`test_memory.py`、
 `test_service_injection.py`、`test_injection_short_term.py`、`test_decay.py`、`test_focus.py`）全绿；
 后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
+
+---
+
+## 本轮变更：多文件项目与依赖契约（2026-09-30）
+
+补的是第一阶段里那条「文件工具仍禁止路径、定义与运行仍以 code 字符串为主」：模型写不出
+`pkg/util.py`，沙箱也只接收一段代码 —— 稍微拆分的项目一跑就是 ModuleNotFoundError。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 文件工具只接受单层文件名 | 改成工作区内的**相对路径**：按需建子目录、枚举返回相对路径；绝对路径 / `..` / `.` / 空段 / 非法字符 / 过深目录一律拒绝，保留名（`state.json`、`request.md`）在**任意深度**都不可写 | `tools/project_files.py`（路径规则唯一一份）、`tools/dev_workspace.py` | `test_dev_workspace_multifile.py` |
+| 沙箱只执行一段代码，import 不到自己的模块 | `execute(..., files=..., entry=...)`：项目文件写进**这次调用的一次性临时目录**，worker 把工作目录放进 `sys.path`；`entry`（`pkg.main:run`）走 importlib，包内相对 import（`from .util import x`）也成立；容器分支同语义（写进容器 `/tmp/project`） | `tools/sandbox.py`、`agent/tool_worker.py` | `test_tool_project_execution.py` |
+| 注册后的工具带不走项目文件 | 定义新增 `files` / `entry`，随定义 JSON 一起落库（**无新迁移**）；提交时后端从工作区收集项目文件（清单与保留文件不算），测试与运行都用**完整定义** | `tools/spec.py`、`tools/dev_workspace.py`（`project_files` / `collect_definition`）、`tools/dev_tools.py`、`tools/tester.py`、`tools/runtime_tools.py` | `test_dev_multifile_submit.py`（提交收集 / 重启后仍能 import 自己的模块 / 越界与超限被拒 / 只有 entry 也合法） |
+| 依赖只有「缺了才知道」，而且不知道缺的是谁 | 定义新增 `requirements`（≤10 条，工具可声明）；缺依赖时按 `No module named 'x'` 点名，并说清「声明过没有、本机不会自动安装」；测试与运行两处都把这句话放在诊断最前面 | `tools/spec.py`（`dependency_hint`）、`tools/tester.py`、`tools/runtime_tools.py` | `test_dev_multifile_submit.py` |
+| 用户批准时不知道要跑的是什么项目 | 执行前审批的说明补上「项目文件：N 个」与「声明的依赖：…（不会自动安装）」 | `tools/dev_auth.py` | `test_dev_test_authorization.py` |
+| 模型不知道能这么做 | `DEV_GUIDE` 第 3 条写明多文件项目与依赖声明；`dev_write_file` / `dev_list_files` 的描述改成相对路径口径 | `prompts.py`、`tools/dev_tools.py` | —（文案） |
+
+边界（说清不夸大）：**没有受管依赖环境** —— 声明了不等于会装上，缺依赖仍然明确失败；
+项目体积上限 40 个文件 / 单文件 200 KB / 合计 400 KB；一次调用一个临时目录，不落工作区。
+
+**已验证**：`test_dev_workspace_multifile.py`、`test_tool_project_execution.py`、
+`test_dev_multifile_submit.py`、`test_dev_tools.py`、`test_dev_workflow_integration.py`、
+`test_dev_test_authorization.py`、`test_tool_lifecycle.py`、`test_tool_credentials.py`、
+`test_sandbox_worker.py`、`test_tool_worker.py` 全绿；后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
+
+**仍未做**：项目级隔离依赖（QIO 管理的专用 Python 环境）；把工作区里的**二进制**文件带进定义
+（现在只带能按 UTF-8 读回的文本文件）。
