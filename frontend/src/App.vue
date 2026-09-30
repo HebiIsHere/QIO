@@ -5,6 +5,7 @@ import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
 import ApprovalModal from "./components/ApprovalModal.vue";
 import ApprovalEntry from "./components/ApprovalEntry.vue";
+import DevTaskEntry from "./components/DevTaskEntry.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
 import { waitForBackend } from "./services/boot";
 
@@ -80,7 +81,15 @@ onUnmounted(stopTicker);
     </div>
     <template v-else>
       <router-view />
-      <ApprovalEntry />
+      <!--
+        对话页顶部的常驻提示都放在这一个容器里：它们各自 fixed 定位会互相盖住
+        （真实情况：一句「上次那项操作没有执行」和「有 N 项操作等待确认」重叠）。
+        容器本身不接收点击，只有里面的按钮可点。
+      -->
+      <div class="top-notes">
+        <ApprovalEntry />
+        <DevTaskEntry />
+      </div>
       <ApprovalModal />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
@@ -126,4 +135,14 @@ body { margin: 0; }
 }
 .boot-note.err .boot-title { color: var(--danger); }
 .boot-note.err button { margin-top: 6px; }
+/*
+ * 顶部居中的提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）。
+ * 容器 shrink-to-fit，空白区域不挡下面页面的点击。
+ */
+.top-notes {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 190; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  pointer-events: none;
+}
 </style>

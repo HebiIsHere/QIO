@@ -45,18 +45,20 @@ const interruptedHint = computed(() => {
 </template>
 
 <style scoped>
-/* 顶部居中：避开右下角的星球入口与设置入口（它们是可拖动浮动组件） */
+/*
+ * 位置由 App.vue 的 `.top-notes` 容器统一负责（顶部居中，避开右下角的星球入口
+ * 与设置入口）。这里只描述这一行本身为什么长这样。
+ */
 .approval-entry {
-  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-  z-index: 190; display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; gap: 8px;
   padding: 6px 14px; border-radius: var(--r-pill);
   background: var(--bg-elevated); color: var(--text-strong);
   border: 1px solid var(--warning); font-family: var(--sans); font-size: 12.5px;
-  box-shadow: var(--shadow-2); cursor: pointer;
+  box-shadow: var(--shadow-2); cursor: pointer; pointer-events: auto;
   transition: transform var(--dur-press) var(--ease-out), border-color var(--dur-fast) var(--ease);
 }
 .approval-entry:hover { border-color: var(--accent); }
-.approval-entry:active { transform: translateX(-50%) translateY(var(--press-shift)); }
+.approval-entry:active { transform: translateY(var(--press-shift)); }
 .approval-entry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .mark {
   display: inline-flex; align-items: center; justify-content: center;
@@ -66,8 +68,7 @@ const interruptedHint = computed(() => {
 }
 /* 「上次那项操作没有执行」：一句事实，不是待办 —— 不能看起来像能点的按钮 */
 .interrupted-note {
-  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-  z-index: 189; margin: 0; max-width: min(560px, calc(100vw - 32px));
+  margin: 0; max-width: min(560px, calc(100vw - 32px));
   padding: 6px 14px; border-radius: var(--r-pill);
   background: var(--bg-elevated); color: var(--text-secondary);
   border: 1px solid var(--border-subtle); font-family: var(--sans); font-size: 12.5px;
