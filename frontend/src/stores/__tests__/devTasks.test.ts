@@ -6,13 +6,22 @@
  * 也不许把「拉不到」装成「一条都没有」。
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { useSessionStore } from "../session";
+import { useEventStore } from "../events";
 import { api } from "../../services/api";
 
 vi.mock("../../services/api", () => ({
   api: {
     getDevTasks: vi.fn(),
+    getRuntimeState: vi.fn(async () => ({
+      instance_id: "i",
+      revision: 1,
+      turn_queue: { instance_id: "i", revision: 1, running: null, queued: [], cancelled: [] },
+      approvals: [],
+      tasks: [],
+    })),
   },
 }));
 
@@ -21,7 +30,7 @@ const getDevTasks = api.getDevTasks as unknown as ReturnType<typeof vi.fn>;
 function setup() {
   const pinia = createPinia();
   setActivePinia(pinia);
-  return { session: useSessionStore() };
+  return { session: useSessionStore(), events: useEventStore() };
 }
 
 const TASKS = [
@@ -67,6 +76,32 @@ describe("开发任务列表", () => {
     getDevTasks.mockRejectedValueOnce(new Error("boom"));
     await session.refreshDevTasks();
 
+    expect(session.unfinishedDevTasks.map((t) => t.id)).toEqual(["ws_a"]);
+  });
+
+  it("一轮结束之后就刷新一次：刚创建、刚提交的改动用不着刷新页面", async () => {
+    const { events } = setup();
+    getDevTasks.mockClear();
+
+    events.route({
+      type: "TURN_END",
+      id: "1",
+      ts: "",
+      data: { turn_id: "t1", status: "completed", final_content: "做完了" },
+    });
+    await flushPromises();
+
+    expect(getDevTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("RESYNC（事件流抖动后重连）也要把任务列表拉齐", async () => {
+    const { events, session } = setup();
+    getDevTasks.mockClear();
+
+    events.route({ type: "RESYNC", id: "1", ts: "", data: {} });
+    await flushPromises();
+
+    expect(getDevTasks).toHaveBeenCalled();
     expect(session.unfinishedDevTasks.map((t) => t.id)).toEqual(["ws_a"]);
   });
 });

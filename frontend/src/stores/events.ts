@@ -232,6 +232,12 @@ export const useEventStore = defineStore("events", {
           }
           if (tid) session.forgetQueuedTurn(tid);
           session.endTurn(tid, endRevision);
+          /**
+           * 一轮结束 = 这一轮里可能刚好创建、测试或提交了开发任务。
+           * 顶部那行「有 N 个工具开发任务没做完」必须马上跟上，
+           * 否则用户得刷新页面才看得到刚发生的事。
+           */
+          void session.refreshDevTasks();
           break;
         }
         case "TURN_QUEUE": {
@@ -631,6 +637,8 @@ export const useEventStore = defineStore("events", {
           session.adoptInstance(state.instance_id);
           session.applyTurnQueue(state.turn_queue);
           this.applyRuntimeState(state);
+          // 开发任务列表是另一份权威状态：重连/抖动之后要一起拉齐
+          await session.refreshDevTasks();
           this.flushResyncBuffer();
         } while (this._resyncAgain);
         session.resyncState = "normal";
