@@ -33,6 +33,7 @@ from agent.core.guard import GuardVerdict, RunawayGuard
 from agent.core.narrative import parse_narrative
 from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
+from agent.core.turn_facts import TurnFacts
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
@@ -138,6 +139,9 @@ class AgentLoop:
         self._call_seq: dict[str, int] = {}
         self._call_seq_next = 0
         self._pending_tool_io: dict[str, dict] = {}
+        # 本轮的「后端事实」台账（见 core/turn_facts.py）：工具终态 + 开发任务状态。
+        # 每轮在 `_run` 里新建，收尾时用它决定要不要给最终答复补事实说明。
+        self.turn_facts = TurnFacts()
         # 工具执行的**权威事实**（active + recent terminal）。主 Turn 由 AppContext 注入
         # 进程级实例（这样「刚结束的 Turn」的工具结果在重连后仍查得到）；
         # 单独构造 loop（子任务 / 测试）时自建一份私有的，行为一致但不外泄。
@@ -310,6 +314,22 @@ class AgentLoop:
         except Exception:  # noqa: BLE001 - tracing must not break the loop
             logger.warning("tool trace failed for %s", tool_name, exc_info=True)
             return None
+
+    def _record_turn_facts(self, call, result: ToolResult) -> None:
+        """把一次调用的终态与工具上报的事实记进本轮台账（只记账，不改执行）。
+
+        见 core/turn_facts.py：台账是「最终答复事实校正」的唯一依据，
+        它只认后端已经知道的事实（工具终态 + 开发工具上报的任务状态）。
+        """
+        self.turn_facts.record_tool(
+            call_id=str(getattr(call, "id", "") or ""),
+            tool_name=str(getattr(call, "name", "") or ""),
+            ok=bool(result.ok),
+            status=tool_feedback.status_of(result),
+            category=result.category,
+            error=result.error,
+        )
+        self.turn_facts.record_facts(result.facts)
 
     # -- parallel dispatch & cancellation -----------------------------------
 
@@ -517,6 +537,8 @@ class AgentLoop:
     async def _run(self, user_message: str) -> TurnResult:
         messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
         self._warnings = []
+        # 每轮一份新台账：上一轮的失败不能算到这一轮头上。
+        self.turn_facts = TurnFacts()
 
         phase = LoopPhase.PLANNING
         tool_calls_made = 0
@@ -636,6 +658,9 @@ class AgentLoop:
                 result = results[call.id]
                 if not result.ok:
                     self._warn(f"tool {call.name} failed: {result.error}")
+                # 台账记的是**权威事实**：这一次调用最终是成功还是失败，以及工具
+                # 上报的「操作之后」的开发任务状态（见 core/turn_facts.py）。
+                self._record_turn_facts(call, result)
                 messages.append(
                     # 统一反馈：失败也要把类别/原因/是否可重试交给模型，
                     # 不能只回 content —— 失败且 content 为空时模型会收到空正文。
@@ -659,6 +684,12 @@ class AgentLoop:
             # 静默失败收口：护栏终止 / 预算停止 / 模型什么都没说，都必须留下人话。
             # 取消是用户自己的动作，界面已有「已停止」状态行，这里不补文本。
             final_content = self._stop_note or "本轮没有产生回答，也没有给出原因。"
+        if not cancelled:
+            # 后端事实校正：本轮存在没有通过验证的失败时，在答复末尾补一段事实说明。
+            # 它不改写、不删除模型写过的字；模型正文照原样留在前面。
+            note = self.turn_facts.annotation()
+            if note:
+                final_content = f"{final_content or ''}\n\n{note}"
         usage = {
             "iterations": self.budget.used_iterations,
             # 向后兼容字段：`tokens` 一直是「输出 token」（而不是总量）
