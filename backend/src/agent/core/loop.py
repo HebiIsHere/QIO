@@ -34,6 +34,7 @@ from agent.core.narrative import parse_narrative
 from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.core.turn_facts import TurnFacts
+from agent.core.progress import ProgressTracker
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
@@ -121,6 +122,9 @@ class AgentLoop:
         self.trace = trace
         self._model_seq = 0
         self._halted = False
+        # 无进展暂停的原因（同样的调用拿到同样的结果）：由 ProgressTracker 给出，
+        # 在下一轮开始时结束本轮 —— 不靠「失败次数」，也不靠「可重试」标签。
+        self._no_progress: str | None = None
         # 为什么停下来的人话说明：护栏终止 / 预算停止时记下来，收尾时若一个字
         # 都没产生就把它当回答写出去（空回答等于静默失败）。
         self._stop_note: str | None = None
@@ -145,6 +149,8 @@ class AgentLoop:
         # 本轮的「后端事实」台账（见 core/turn_facts.py）：工具终态 + 开发任务状态。
         # 每轮在 `_run` 里新建，收尾时用它决定要不要给最终答复补事实说明。
         self.turn_facts = TurnFacts()
+        # 进展判断：每轮一份新的（上一轮的重复不该算到这一轮头上）。
+        self.progress = ProgressTracker()
         # 工具执行的**权威事实**（active + recent terminal）。主 Turn 由 AppContext 注入
         # 进程级实例（这样「刚结束的 Turn」的工具结果在重连后仍查得到）；
         # 单独构造 loop（子任务 / 测试）时自建一份私有的，行为一致但不外泄。
@@ -400,6 +406,22 @@ class AgentLoop:
                 await self.narrative_settler(narrative_id, results, calls, facts)
             except Exception:  # noqa: BLE001 - 结算失败不影响工具结果
                 logger.warning("narrative settle failed", exc_info=True)
+        # 进展判断：按调用顺序看这一批有没有产生新信息（同样的调用 + 同样的结果）。
+        # 顺序固定，避免并发批次让判定随调度而变。
+        for call in calls:
+            result = results.get(call.id)
+            if result is None:
+                continue
+            reason = self.progress.observe(
+                tool=call.name,
+                arguments=dict(call.arguments or {}),
+                ok=bool(getattr(result, "ok", False)),
+                result_text=(
+                    getattr(result, "content", None) or getattr(result, "error", None) or ""
+                ),
+            )
+            if reason and self._no_progress is None:
+                self._no_progress = reason
         return results
 
     async def _guarded_execute(self, call) -> Any:
@@ -559,6 +581,50 @@ class AgentLoop:
                 await self._emit(
                     EventType.WARNING,
                     {"code": "guard_halt", "message": "同一工具反复失败，已终止本轮", "recoverable": True},
+                )
+                break
+
+            if self._no_progress:
+                # 有证据的暂停：这几次调用拿到的东西完全一样，继续只会重复。
+                reason = self._no_progress
+                self._no_progress = None
+                self._warn(f"本轮提前暂停：{reason}")
+                await self._emit(
+                    EventType.WARNING,
+                    {
+                        "code": "no_progress",
+                        "message": reason,
+                        "recoverable": True,
+                    },
+                )
+                if self.approvals is None:
+                    phase = LoopPhase.STOPPED
+                    self._stop_note = (
+                        f"本轮暂停：{reason}。"
+                        "继续下去只会重复同样的事情，需要换一个做法或给一个新的方向。"
+                    )
+                    break
+                # 有审批通道就交给用户决定（与预算 / 护栏走同一条「继续/停止」通道）。
+                decision = await self.approvals.request(
+                    "continue",
+                    {
+                        "reason": "no_progress",
+                        "message": reason,
+                        "used_iterations": self.budget.used_iterations,
+                        "max_iterations": self.budget.max_iterations,
+                        "used_tokens": self.budget.used_tokens,
+                        "token_budget": self.budget.token_budget,
+                    },
+                )
+                if decision.decision == "approved":
+                    # 用户让继续：重新开始计数，否则下一次同样的重复立刻又触发。
+                    self.progress.reset()
+                    self._warn(f"无进展暂停：用户选择继续（{reason}）")
+                    continue
+                phase = LoopPhase.STOPPED
+                self._stop_note = (
+                    f"本轮暂停：{reason}，按你的选择停下来了。"
+                    "需要换一个做法或给一个新的方向再继续。"
                 )
                 break
 

@@ -100,8 +100,12 @@ async def test_single_tool_turn():
 
 
 async def test_budget_stops_runaway_loop():
+    # 参数每次不同（结果也就不同）→ 不触发「无进展暂停」，验的是预算这条兜底
     client = ScriptedClient(
-        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x"}')]))]) for i in range(50)]
+        [
+            FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x%d"}' % i)]))])
+            for i in range(50)
+        ]
     )
     loop, _ = _make_loop(client, max_iterations=3)
     result = await loop.run("loop")
@@ -112,7 +116,10 @@ async def test_budget_stops_runaway_loop():
 async def test_budget_stop_emits_warning_event():
     """预算耗尽停止时须发出 WARNING，前端不再静默无输出。"""
     client = ScriptedClient(
-        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x"}')]))]) for i in range(50)]
+        [
+            FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x%d"}' % i)]))])
+            for i in range(50)
+        ]
     )
     loop, bus = _make_loop(client, max_iterations=3)
 
@@ -139,7 +146,10 @@ async def test_budget_stop_emits_warning_event():
 
 async def test_force_continue_overrides_budget():
     client = ScriptedClient(
-        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x"}')]))]) for i in range(50)]
+        [
+            FakeCompletion([FakeChoice(FakeMessage(None, [_tc(f"c{i}", "echo", '{"text": "x%d"}' % i)]))])
+            for i in range(50)
+        ]
     )
     loop, _ = _make_loop(client, max_iterations=3, force_continue=True)
     result = await loop.run("loop")
