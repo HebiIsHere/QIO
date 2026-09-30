@@ -98,6 +98,7 @@ def _wiring(tmp_path, bus: EventBus, *, turn_id_provider=None):
     ws = DevWorkspace(tmp_path / "ws")
     approvals = ApprovalService(bus, timeout_seconds=5)
     registry = ToolRegistry()
+    sandbox = SandboxExecutor(executor="subprocess")
 
     async def builder():
         return ToolLifecycle(
@@ -115,12 +116,25 @@ def _wiring(tmp_path, bus: EventBus, *, turn_id_provider=None):
         "create": CreateToolTool(ws, bus=bus, turn_id_provider=turn_id_provider),
         "write": DevWriteFileTool(ws, bus=bus, turn_id_provider=turn_id_provider),
         "run_tests": DevRunTestsTool(
-            ws, sandbox=SandboxExecutor(executor="subprocess"), bus=bus,
+            ws, sandbox=sandbox, approvals=approvals, bus=bus,
             turn_id_provider=turn_id_provider,
         ),
-        "submit": DevSubmitTool(ws, lifecycle_builder=builder, bus=bus,
+        "submit": DevSubmitTool(ws, lifecycle_builder=builder, sandbox=sandbox,
+                                approvals=approvals, bus=bus,
                                 turn_id_provider=turn_id_provider),
     }
+
+
+def _pre_authorize(tools: dict, task_id: str) -> None:
+    """跳过「第一次执行生成代码」的那次确认（这些用例测的是别的阶段）。"""
+    from agent.tools.policy import default_policy_for, policy_fingerprint
+
+    definition = tools["ws"].read_definition(task_id)
+    tools["ws"].grant_test_authorization(
+        task_id,
+        policy_fingerprint=policy_fingerprint(default_policy_for(definition)),
+        executor="subprocess",
+    )
 
 
 async def test_dev_flow_progresses_one_card_through_every_phase(tmp_path):
@@ -180,6 +194,7 @@ async def test_failed_tests_stop_before_asking_for_approval(tmp_path):
     await asyncio.sleep(0.05)
     group_id = collected[0]["group_id"]
     tools["ws"].write_definition(group_id, _definition(code=BAD_CODE))
+    _pre_authorize(tools, group_id)
     result = await tools["run_tests"].run(workspace=group_id)
     await finish()
 
@@ -205,6 +220,7 @@ async def test_rejected_approval_marks_the_card_failed_in_human_words(tmp_path):
     await asyncio.sleep(0.05)
     group_id = collected[0]["group_id"]
     tools["ws"].write_definition(group_id, _definition())
+    _pre_authorize(tools, group_id)
     await tools["submit"].run(
         workspace=group_id,
         definition=_definition().model_dump(),

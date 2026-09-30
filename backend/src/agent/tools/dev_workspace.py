@@ -50,6 +50,23 @@ def _is_digest(value: object) -> bool:
     )
 
 
+def _read_authorization(raw: object) -> dict | None:
+    """读回「执行生成代码」的授权记录；形状不对就当作没有授权。"""
+    if not isinstance(raw, dict):
+        return None
+    fingerprint = raw.get("policy_fingerprint")
+    executor = raw.get("executor")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return None
+    if not isinstance(executor, str) or not executor:
+        return None
+    return {
+        "policy_fingerprint": fingerprint,
+        "executor": executor,
+        "at": str(raw.get("at") or ""),
+    }
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -99,6 +116,7 @@ def _write_state(task: "DevTask") -> None:
         "last_test_at": task.last_test_at,
         "last_test_digest": task.last_test_digest,
         "evidence_state": task.evidence_state,
+        "test_authorization": task.test_authorization,
         "submitted_digest": task.submitted_digest,
         "submitted_at": task.submitted_at,
     }
@@ -126,6 +144,9 @@ class DevTask:
     # 这条测试证据对应的内容摘要（版本标识）：文件一变，证据立即失效。
     last_test_digest: str | None = None
     evidence_state: str = EVIDENCE_NONE
+    # 用户的「执行生成代码」授权记录：绑在（能力策略指纹 + 实际执行环境）上，
+    # 任一项变了就要重新确认（见 dev_auth.py）。
+    test_authorization: dict | None = None
     submitted_digest: str | None = None
     submitted_at: str | None = None
 
@@ -185,6 +206,7 @@ class DevWorkspace:
                 last_test_at=state.get("last_test_at"),
                 last_test_digest=last_test_digest,
                 evidence_state=evidence_state,
+                test_authorization=_read_authorization(state.get("test_authorization")),
                 submitted_digest=state.get("submitted_digest"),
                 submitted_at=state.get("submitted_at"),
             )
@@ -321,6 +343,39 @@ class DevWorkspace:
         task.evidence_state = EVIDENCE_CURRENT
         task.phase = "testing_passed" if passed else "testing_failed"
         _write_state(task)
+
+    # -- 执行生成代码的授权 ------------------------------------------------
+
+    def grant_test_authorization(
+        self, task_id: str, *, policy_fingerprint: str, executor: str
+    ) -> None:
+        """记下用户「可以在这个环境里跑这个任务的生成代码」的确认。
+
+        绑的是（能力策略指纹 + 实际执行环境），不是内容摘要：测试本来就是
+        「改一版、跑一次」的循环，绑内容会让每次迭代都重新弹窗。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        task.test_authorization = {
+            "policy_fingerprint": str(policy_fingerprint or ""),
+            "executor": str(executor or ""),
+            "at": _now(),
+        }
+        _write_state(task)
+
+    def test_authorized(
+        self, task_id: str, *, policy_fingerprint: str, executor: str
+    ) -> bool:
+        """这次执行是否已经在授权范围内（策略与执行环境都对得上）。"""
+        task = self._tasks.get(task_id)
+        record = task.test_authorization if task is not None else None
+        if not record:
+            return False
+        return (
+            record.get("policy_fingerprint") == str(policy_fingerprint or "")
+            and record.get("executor") == str(executor or "")
+        )
 
     def set_phase(self, task_id: str, phase: str) -> None:
         task = self._tasks.get(task_id)

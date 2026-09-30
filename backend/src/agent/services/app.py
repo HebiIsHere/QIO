@@ -262,8 +262,12 @@ class AppContext:
             DevWriteFileTool,
         )
         from agent.tools.dev_workspace import DevWorkspace
+        from agent.tools.sandbox import SandboxExecutor
 
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
+        # 工具执行器只建一份：开发测试、提交复测与注册后的真实执行走同一套
+        # 超时 / 环境 / 输出上限（见 tools/sandbox.py）。
+        self.tool_sandbox = SandboxExecutor()
         # 建工具是一条流程、一张卡：这些工具把阶段事件发到同一个出口
         self.registry.register(
             CreateToolTool(
@@ -285,6 +289,8 @@ class AppContext:
         self.registry.register(
             DevRunTestsTool(
                 self.dev_workspaces,
+                sandbox=self.tool_sandbox,
+                approvals=self.approvals,
                 bus=self.bus,
                 turn_id_provider=self._active_turn_id,
             )
@@ -293,6 +299,8 @@ class AppContext:
             DevSubmitTool(
                 self.dev_workspaces,
                 lifecycle_builder=self._build_tool_lifecycle,
+                sandbox=self.tool_sandbox,
+                approvals=self.approvals,
                 bus=self.bus,
                 turn_id_provider=self._active_turn_id,
             )
@@ -728,7 +736,6 @@ class AppContext:
     async def _build_tool_lifecycle(self):
         """Build a ToolLifecycle bound to the current main adapter (dev workflow submit)."""
         from agent.tools.lifecycle import ToolLifecycle
-        from agent.tools.sandbox import SandboxExecutor
 
         adapter = await self.build_adapter()
         if adapter is None:
@@ -736,7 +743,7 @@ class AppContext:
         return ToolLifecycle(
             adapter=adapter,
             approvals=self.approvals,
-            sandbox=SandboxExecutor(),
+            sandbox=self.tool_sandbox,
             registry=self.registry,
             credentials=self.credentials,
             task_manager=self.task_manager,

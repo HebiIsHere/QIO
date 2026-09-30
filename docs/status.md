@@ -1094,3 +1094,26 @@ npm test
 
 - **前端「已核对」标记**：需要先决定核对结论怎么随 assistant 消息持久化（新增迁移或复用现有字段），再在消息上渲染；后端事实已经准备好（`ToolResult.facts` 与台账）。
 - **声明面只覆盖开发类结论**：网页 / 桌面操作类结论要核对时，沿用同一张台账与同一套 claim 协议扩展，本次不做。
+
+---
+
+## 本轮变更：测试前授权（2026-09-30）
+
+补的是第一阶段里那条顺序错误：`dev_run_tests` 会把模型刚写出来的代码**真的跑起来**，
+而以前这条路径没有任何授权 —— 审批只发生在注册之后，等于「先执行、后确认」。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 执行 AI 生成代码之前没有任何授权 | 新增执行前闸门：第一次在某个任务上执行生成代码之前必须拿到用户确认；确认按（能力策略指纹 + 实际执行环境）记在工作区状态里，同一任务之后不再重复打扰 | `tools/dev_auth.py`、`tools/dev_workspace.py` | `test_dev_test_authorization.py`（首次询问、二次放行、换环境/换策略重新确认、重启后仍有效） |
+| 拒绝 / 超时之后仍可能被执行 | 拒绝 / 超时 / 拿不到审批服务 → **不执行**，返回类别为 `permission` 的失败；测试记录也不会留下 | `tools/dev_auth.py`、`tools/dev_tools.py` | 同上（断言沙箱执行次数为 0） |
+| 审批说明可能说不准「到底在哪儿执行」 | 说明用运行路径同一份策略（`policy.default_policy_for`），写明执行环境（Docker 容器 / **受限子进程，不是安全沙箱**）、一次性临时目录、超时、不注入凭据 | `tools/dev_auth.py` | `test_dev_test_authorization.py`（子进程与凭据两种边界的文案断言） |
+| 提交时的复测同样在执行生成代码，却没被授权约束 | `dev_submit_tool` 在 function 型工具提交前走同一道闸门 | `tools/dev_tools.py`、`services/app.py` | `test_dev_test_authorization.py`（未授权时提交被拦下且不进入审批） |
+| 「测试通过」容易被当成「真实链路验过」 | 引用凭据的工具，测试结果正文与审批说明都写明「凭据是模拟的，未注入真实凭据」 | `tools/dev_tools.py`、`tools/dev_auth.py` | `test_dev_test_authorization.py`、`test_dev_tools.py` |
+
+顺带收敛：应用启动时只建一份 `SandboxExecutor`，开发测试、提交复测与注册后的真实执行共用它（超时 / 环境 / 输出上限同一套）。
+
+**仍未做（不宣称完成）**
+
+- **项目级依赖隔离**（QIO 管理的专用 Python 环境）仍未实现；缺依赖仍以 `missing_dependency` 明确失败。
+- **真实外部服务模拟**：测试不注入凭据、不联网，但「模拟服务」本身没有做（工具里写死的真实 HTTP 调用在测试里就是失败或模拟不到）。
+- **旧的传统创建路径** `ToolLifecycle.create_from_request` 没有接这道闸门 —— 它在生产代码里没有调用点（只有测试用），但确实还留着。

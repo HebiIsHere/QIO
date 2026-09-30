@@ -22,6 +22,7 @@ from agent.prompts import (
     TOOL_DEV_WRITE_FILE_DESC,
 )
 from agent.tools.base import Tool, ToolResult
+from agent.tools.dev_auth import ensure_test_authorization
 from agent.tools.sandbox import SandboxExecutor
 from agent.tools.spec import ToolDefinition
 from agent.tools.tester import ToolTester
@@ -48,6 +49,21 @@ def _dev_facts(workspaces, workspace: str, tool_name: str) -> dict[str, Any]:
         return workspaces.fact_for(workspace, tool_name)
     except Exception:  # noqa: BLE001 - 记账不是执行的必要条件
         return {}
+
+
+def _simulation_note(definition: ToolDefinition) -> str | None:
+    """测试不注入真实凭据时必须留痕：免得把「测试通过」当成真实链路验过。"""
+    if not getattr(definition, "credential_ref", None):
+        return None
+    return (
+        "说明：本次测试没有注入真实凭据，凭据相关的分支是模拟的 —— "
+        "「测试通过」不等于真实服务链路已经验证过。"
+    )
+
+
+def _with_note(text: str, definition: ToolDefinition) -> str:
+    note = _simulation_note(definition)
+    return f"{text}\n{note}" if note else text
 
 
 class ToolCreateStatus:
@@ -279,11 +295,14 @@ class DevRunTestsTool(Tool):
         self,
         workspaces,
         sandbox: SandboxExecutor | None = None,
+        approvals=None,
         bus=None,
         turn_id_provider=None,
     ) -> None:
         self.workspaces = workspaces
-        self.tester = ToolTester(sandbox or SandboxExecutor())
+        self.sandbox = sandbox or SandboxExecutor()
+        self.tester = ToolTester(self.sandbox)
+        self.approvals = approvals
         self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
@@ -306,6 +325,25 @@ class DevRunTestsTool(Tool):
                 content="subagent 型工具无需确定性测试，可直接提交审批。",
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
+        # 执行 AI 生成的代码之前必须拿到用户对执行边界的确认（按任务一次）。
+        blocked = await ensure_test_authorization(
+            workspaces=self.workspaces,
+            approvals=self.approvals,
+            sandbox=self.sandbox,
+            task_id=workspace,
+            definition=definition,
+        )
+        if blocked is not None:
+            await self.status.emit(
+                workspace,
+                PHASE_FAILED,
+                label="需要你的确认",
+                detail="没有获得执行确认，这次没有运行测试",
+                ok=False,
+                tool_name=definition.name,
+            )
+            blocked.facts = _dev_facts(self.workspaces, workspace, self.name)
+            return blocked
         await self.status.emit(
             workspace,
             PHASE_TESTING,
@@ -327,7 +365,7 @@ class DevRunTestsTool(Tool):
             )
             return ToolResult(
                 ok=True,
-                content=f"测试通过 {report.summary}\n" + "\n".join(lines),
+                content=_with_note(f"测试通过 {report.summary}\n" + "\n".join(lines), definition),
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
         await self.status.emit(
@@ -340,7 +378,7 @@ class DevRunTestsTool(Tool):
         )
         return ToolResult(
             ok=False,
-            error=f"测试失败 {report.summary}\n" + "\n".join(lines),
+            error=_with_note(f"测试失败 {report.summary}\n" + "\n".join(lines), definition),
             facts=_dev_facts(self.workspaces, workspace, self.name),
         )
 
@@ -365,11 +403,15 @@ class DevSubmitTool(Tool):
         self,
         workspaces,
         lifecycle_builder: Callable[[], Awaitable[Any]],
+        sandbox: SandboxExecutor | None = None,
+        approvals=None,
         bus=None,
         turn_id_provider=None,
     ) -> None:
         self.workspaces = workspaces
         self.lifecycle_builder = lifecycle_builder
+        self.sandbox = sandbox or SandboxExecutor()
+        self.approvals = approvals
         self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
@@ -441,6 +483,26 @@ class DevSubmitTool(Tool):
                     ),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
+        if definition.tool_type == "function":
+            # 提交时的交叉复测同样会执行生成代码：没拿到执行确认就不能往下走。
+            blocked = await ensure_test_authorization(
+                workspaces=self.workspaces,
+                approvals=self.approvals,
+                sandbox=self.sandbox,
+                task_id=workspace,
+                definition=definition,
+            )
+            if blocked is not None:
+                await self.status.emit(
+                    workspace,
+                    PHASE_FAILED,
+                    label="需要你的确认",
+                    detail="没有获得执行确认，这次没有提交",
+                    ok=False,
+                    tool_name=definition.name,
+                )
+                blocked.facts = _dev_facts(self.workspaces, workspace, self.name)
+                return blocked
         digest = self.workspaces.content_digest(workspace)
 
         def record_retest(passed: bool, summary: str) -> None:

@@ -11,6 +11,19 @@ from agent.tools.dev_workspace import DevWorkspace
 from agent.tools.spec import ToolDefinition
 
 
+class _AutoApprovals:
+    """自动批准的审批替身：跑测试/提交前的那一次执行确认由它放行。"""
+
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    async def request(self, kind, payload, **kwargs):  # noqa: ANN001
+        from agent.tools.approval import ApprovalResult
+
+        self.requests.append(payload)
+        return ApprovalResult("appr_test", "approved")
+
+
 # ---------- DevWorkspace ----------
 
 def test_workspace_create_write_read_cleanup(tmp_path):
@@ -105,7 +118,7 @@ async def test_dev_run_tests_records_authoritative_state():
     ))
     from agent.tools.sandbox import SandboxExecutor
 
-    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor())
+    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor(), approvals=_AutoApprovals())
     r = await tool.run(workspace=task.id)
     assert r.ok
     state = ws.status(task.id)
@@ -193,7 +206,7 @@ async def test_dev_run_tests_pass_and_fail():
             {"name": "negative", "input": {"a": -1, "b": 1}, "expect": {"sum": 0}},
         ],
     ))
-    tool = DevRunTestsTool(ws)
+    tool = DevRunTestsTool(ws, approvals=_AutoApprovals())
     r = await tool.run(workspace=task.id)
     assert r.ok and "2/2" in r.content
     # 失败场景
@@ -232,7 +245,7 @@ async def test_dev_submit_maps_outcome_and_keeps_project():
     async def builder():
         return FakeLifecycle()
 
-    tool = DevSubmitTool(ws, lifecycle_builder=builder)
+    tool = DevSubmitTool(ws, lifecycle_builder=builder, approvals=_AutoApprovals())
     definition = {
         "name": "add_numbers", "description": "求和", "tool_type": "function",
         "code": "def run(**kwargs):\n    return {'sum': 1}",
@@ -515,7 +528,7 @@ async def test_dev_run_tests_reports_facts():
     ))
     from agent.tools.sandbox import SandboxExecutor
 
-    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor())
+    tool = DevRunTestsTool(ws, sandbox=SandboxExecutor(), approvals=_AutoApprovals())
     r = await tool.run(workspace=task.id)
     assert r.ok
     fact = (r.facts or {})["dev_task"]
