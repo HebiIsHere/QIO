@@ -45,9 +45,14 @@ def test_workspace_path_validation(tmp_path):
     with pytest.raises(ValueError):
         ws.write_file(task.id, "../evil.py", "x")
     with pytest.raises(ValueError):
-        ws.write_file(task.id, "a/b.py", "x")
+        ws.write_file(task.id, "a/../../evil.py", "x")
+    with pytest.raises(ValueError):
+        ws.write_file(task.id, "/abs.py", "x")
     with pytest.raises(ValueError):
         ws.write_file(task.id, "x", "x" * 200_001)
+    # 多文件项目：子目录是允许的（以前这里被单层文件名规则挡住）
+    ws.write_file(task.id, "pkg/b.py", "x")
+    assert "pkg/b.py" in ws.list_files(task.id)
 
 
 def test_workspace_write_definition(tmp_path):

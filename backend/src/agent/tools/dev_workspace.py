@@ -20,6 +20,10 @@ from agent.tools.spec import ToolDefinition
 
 MAX_FILE_SIZE = 200_000
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9_.-]+$")
+# 项目路径的边界：单段最长 64 字符、最深 8 层。多文件项目要能做，
+# 但一个失控的路径不该让工作区变成任意深的结构。
+_MAX_SEGMENT_CHARS = 64
+_MAX_PATH_DEPTH = 8
 # 工作区 id 的形状（`DevWorkspace.create` 生成）：扫盘回填时只认它
 _TASK_ID = re.compile(r"^ws_[0-9a-f]{12}$")
 _REQUEST_MARKER = "# 开发需求"
@@ -69,6 +73,36 @@ def _read_authorization(raw: object) -> dict | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_rel_path(name: object) -> str:
+    """把工具给的路径规范化成相对 posix 路径，不合法就抛 ValueError。
+
+    多文件项目的前提是「路径可信」。这里拒绝的是会让文件跑到工作区之外、
+    或让后端状态被覆盖的写法：绝对路径（含 `C:` 盘符）、`..`/`.`、空段、
+    非法字符、以及保留名（任意深度）。
+    """
+    raw = str(name or "").replace("\\", "/").strip()
+    if not raw:
+        raise ValueError("文件路径不能为空")
+    if raw.startswith("/") or re.match(r"^[a-zA-Z]:", raw):
+        raise ValueError(f"不能使用绝对路径：{name!r}")
+    segments = raw.split("/")
+    if len(segments) > _MAX_PATH_DEPTH:
+        raise ValueError(f"目录层级过深（最多 {_MAX_PATH_DEPTH} 层）：{name!r}")
+    for segment in segments:
+        if segment in ("", ".", ".."):
+            raise ValueError(f"路径不合法：{name!r}")
+        if len(segment) > _MAX_SEGMENT_CHARS or not _SAFE_NAME.match(segment):
+            raise ValueError(f"路径片段不合法：{segment!r}")
+    return "/".join(segments)
+
+
+def _check_not_reserved(rel_path: str) -> None:
+    """保留名在任何深度都不可写：`pkg/state.json` 同样不能覆盖后端状态。"""
+    for segment in rel_path.split("/"):
+        if segment in _RESERVED_NAMES:
+            raise ValueError(f"{segment} 由后端维护，不能通过文件工具写入")
 
 
 def _read_request(task_dir: Path) -> str:
@@ -390,21 +424,23 @@ class DevWorkspace:
         task = self._tasks.get(task_id)
         if task is None:
             return None
-        if not _SAFE_NAME.match(name or ""):
-            raise ValueError(f"unsafe file name: {name!r} (single file names only)")
-        path = (task.dir / name).resolve()
-        if task.dir.resolve() not in path.parents and path != task.dir.resolve():
+        rel_path = _safe_rel_path(name)
+        base = task.dir.resolve()
+        path = (task.dir / rel_path).resolve()
+        # 第二道闸：形状校验之外再看一次真实解析结果（符号链接也挡在这里）。
+        if base not in path.parents:
             raise ValueError(f"path escapes workspace: {name!r}")
         return path
 
     def write_file(self, task_id: str, name: str, content: str) -> None:
-        if name in _RESERVED_NAMES:
-            raise ValueError(f"{name} 由后端维护，不能通过文件工具写入")
+        _check_not_reserved(_safe_rel_path(name))
         path = self._resolve(task_id, name)
         if path is None:
             raise KeyError(f"workspace not found: {task_id}")
         if len(content) > MAX_FILE_SIZE:
             raise ValueError("file content too large")
+        # 子目录按需创建：模型写 `pkg/util.py` 时不必先建目录。
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._refresh_evidence(task_id)
 
@@ -424,12 +460,17 @@ class DevWorkspace:
         return path.read_text(encoding="utf-8")
 
     def list_files(self, task_id: str) -> list[str]:
+        """工作区里的全部文件（相对 posix 路径，排序稳定）。
+
+        以前只列顶层文件名：多文件项目一来，子目录里的模块就「看不见」，
+        模型会以为文件丢了。`state.json` 是后端状态，不算项目文件。
+        """
         task = self._tasks.get(task_id)
         if task is None:
             return []
         return sorted(
-            p.name
-            for p in task.dir.iterdir()
+            p.relative_to(task.dir).as_posix()
+            for p in task.dir.rglob("*")
             if p.is_file() and p.name != _STATE_FILE
         )
 

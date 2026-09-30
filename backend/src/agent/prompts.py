@@ -103,8 +103,11 @@ TOOL_CREATE_TOOL_DESC = (
 # 写工作区文件工具 dev_write_file 的描述。定义于 agent/tools/dev_tools.py；
 # 作用：告诉模型「在工具开发工作区写入或修改文件（tool.json / tool.py / tests.json 等）」。
 TOOL_DEV_WRITE_FILE_DESC = (
-    "在工作区写入或修改一个文件（tool.json / tool.py / tests.json 等）。"
-    "workspace 必填，为工作区 id；name 必须是不含路径的单文件名；content 为完整文件内容。"
+    "在工作区写入或修改一个文件（tool.json / tool.py / tests.json，也可以是 pkg/util.py 这样的子目录文件）。"
+    "workspace 必填，为工作区 id；name 是**工作区内的相对路径**（用 `/` 分隔，"
+    "不能是绝对路径、不能含 `..`、不能写 request.md 与 state.json）；content 为完整文件内容。"
+    "多文件项目建议：入口代码放在 tool.json 的 code 里，"
+    "其它模块写成普通文件（例如 pkg/__init__.py 与 pkg/util.py），入口直接 import 它们。"
 )
 
 # 读工作区文件工具 dev_read_file 的描述。定义于 agent/tools/dev_tools.py；
@@ -118,7 +121,7 @@ TOOL_DEV_READ_FILE_DESC = (
 # 作用：告诉模型「查看工具开发工作区里已有哪些文件」，开发第一步先调用它，避免模型卡在"看结构"无法继续。
 TOOL_DEV_LIST_FILES_DESC = (
     "列出工作区已有文件。"
-    "workspace 必填，为工作区 id；返回文件清单（如 request.md / tool.json / tool.py）。"
+    "workspace 必填，为工作区 id；返回文件清单（相对路径，如 request.md / tool.json / pkg/util.py）。"
     "开始开发前先调用本工具确认现有文件，再决定读取或改写哪个文件。"
 )
 

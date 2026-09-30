@@ -196,7 +196,10 @@ class DevWriteFileTool(Tool):
         "type": "object",
         "properties": {
             "workspace": {"type": "string", "description": "工作区 id"},
-            "name": {"type": "string", "description": "文件名（单文件，不允许路径）"},
+            "name": {
+                "type": "string",
+                "description": "工作区内的相对路径（可用子目录，如 pkg/util.py；不能绝对路径或含 ..）",
+            },
             "content": {"type": "string", "description": "文件内容"},
         },
         "required": ["workspace", "name", "content"],
