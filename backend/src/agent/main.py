@@ -41,11 +41,34 @@ def create_app() -> "FastAPI":
     settings.ensure_dirs()
     conn = connect(settings.db_path)
     apply_migrations(conn)
+    _check_db_identity(settings, conn)
     # 真实进程入口：由 lifespan 在最后一步关闭 DB（测试自己管 fixture 的连接）。
     app = build_app(settings, conn, close_db_on_shutdown=True)
     app.state.settings = settings
     _announce_auth(app.state.auth, settings)
     return app
+
+
+def _check_db_identity(settings: "Settings", conn) -> None:
+    """启动即做一次数据库身份自检：数据目录被外部软件换掉时，日志里要留下证据。
+
+    （界面上的告警走 /api/instance 的 `db` 字段；这里只负责"启动那一刻就记一笔"。）
+    """
+    from agent.storage.db_identity import (
+        check_enabled,
+        check_integrity,
+        connection_db_path,
+    )
+
+    if not check_enabled():
+        return
+    logger = logging.getLogger("agent.main")
+    path = connection_db_path(conn) or str(settings.db_path)
+    report = check_integrity(conn, path)
+    if report.alert:
+        logger.warning("数据库身份异常：%s", report.message)
+    else:
+        logger.info("数据库身份自检：%s（%s）", report.status, path)
 
 
 def _announce_auth(auth, settings: "Settings") -> None:

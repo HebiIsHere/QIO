@@ -175,6 +175,8 @@ powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 | `QIO_ENABLE_TEST_EVENTS` | `0` | `1` = 注册开发用的 `POST /api/events/test`（生产构建里不注册） |
 | `QIO_ALLOWED_ORIGINS` | — | 追加允许的 WebView origin（逗号分隔） |
 | `QIO_TOOL_PYTHON` | — | 开发/诊断用的逃生口：指定跑工具 worker 的解释器（绝对路径）。正式版不需要设 |
+| `QIO_DB_BASELINE` | — | 把数据库身份基线放到指定 JSON 文件（默认 Windows 落注册表 `HKCU\Software\qio\QIO`；测试/隔离实例用） |
+| `QIO_DISABLE_DB_CHECK` | `0` | `1` = 关闭数据库身份自检（隔离实例、跑测试时用；避免污染正式库的基线） |
 
 > 不设任何令牌变量时后端会**自己生成**一个进程内令牌并拒绝所有未带令牌的请求
 > （fail-closed，日志只提示、不打印令牌）。要连上它，要么设 `QIO_SESSION_TOKEN`，
@@ -195,6 +197,26 @@ powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 
 > 独立子进程**不是安全沙箱**：它隔离的是崩溃、超时与资源占用，不是能力边界。能访问什么
 > 由执行策略与用户审批决定（见 `docs/architecture.md` 的工具章节）。
+
+### 数据目录与数据库身份自检
+
+数据目录默认是 `%APPDATA%\qio`，可以用 `QIO_DATA_DIR` 指向别处（例如 `D:\QIO-data`）。
+**换目录不只是偏好的问题**：有些安全软件 / 沙箱 / 容器会在某个**路径**上给进程
+一份"影子副本"，于是应用读到的是另一个（可能是空的）数据库，表现为"聊天记录凭空
+消失"，而真实数据其实完好。我们实测过这种环境：重定向只认那一个路径，换目录即可绕开。
+
+为了在**任何环境**下都不再"无声地被骗"，后端每次启动会做一次身份自检：
+
+* 数据库自己有身份证（`settings.db.instance_id`，首次创建时生成）——跟着数据走，
+  拷贝、搬家都不变；
+* 文件身份（卷 + 文件号 + 大小）记在数据库之外（Windows 注册表），用来发现
+  "同一个库被换成了另一份文件"；
+* 结论通过 `GET /api/instance` 的 `db` 字段给出：
+  `first_run` / `ok` / `replaced_same_database`（轻提示）/ `different_database`（强告警）；
+* 用户确认"以当前数据库为准"时调 `POST /api/db-integrity/accept` 重新记基线。
+
+基线**按数据目录分别记录**，所以开发实例（`QIO_DATA_DIR=%TEMP%\...`）不会污染
+正式库的基线；跑测试时默认用 `QIO_DISABLE_DB_CHECK=1` 关掉自检。
 
 ## 7. 启动
 

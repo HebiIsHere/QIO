@@ -50,6 +50,13 @@ from agent.memory.fragment import (
 )
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
+from agent.storage.db_identity import (
+    accept_current,
+    check_enabled,
+    check_integrity,
+    connection_db_path,
+    disabled_report,
+)
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
@@ -233,13 +240,31 @@ def create_app(
 
     @app.get("/api/instance")
     async def instance_info() -> dict:
-        """backend 身份确认：前端/壳用它验证连上的是本实例，而不是别的进程。"""
+        """backend 身份确认：前端/壳用它验证连上的是本实例，而不是别的进程。
+
+        顺带带上数据库身份自检结果（`db`）：数据目录被外部软件"影子替换"时，
+        界面要能立刻告诉用户"你看到的不是原来那个数据库"，而不是让记录凭空消失。
+        """
         return {
             "instance_id": instance_id,
             "pid": os.getpid(),
             "auth_required": auth.enabled,
             "version": app.version,
+            "db": _db_integrity_payload(),
         }
+
+    def _db_integrity_payload() -> dict:
+        path = connection_db_path(ctx.conn) or str(settings.db_path)
+        if not check_enabled():
+            return disabled_report(path).as_payload()
+        return check_integrity(ctx.conn, path).as_payload()
+
+    @app.post("/api/db-integrity/accept")
+    async def accept_db_integrity() -> dict:
+        """用户确认"以当前数据库为准"：重新记基线，告警随之消失。"""
+        path = connection_db_path(ctx.conn) or str(settings.db_path)
+        report = accept_current(ctx.conn, path)
+        return {"ok": True, "db": report.as_payload()}
 
     @app.post("/api/events/ticket")
     async def create_events_ticket() -> dict:

@@ -9,6 +9,9 @@ from pathlib import Path
 # 认证本身由 tests/test_api_auth.py 专门覆盖（那里显式传入会话令牌，
 # 并且断言无令牌 401 / 恶意 origin 403）。
 os.environ.setdefault("QIO_DEV_INSECURE", "1")
+# 数据库身份自检默认关闭：它的基线存在用户级位置（注册表），测试不该碰。
+# 需要测自检的用例（tests/test_db_identity.py）自己打开，并把基线指向 tmp_path。
+os.environ.setdefault("QIO_DISABLE_DB_CHECK", "1")
 
 from agent.config import Settings
 from agent.storage.db import connect
