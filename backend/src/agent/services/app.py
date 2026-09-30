@@ -165,7 +165,9 @@ class AppContext:
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
         from agent.tools.approval import ApprovalService
 
-        self.approvals = ApprovalService(bus)
+        # 带上数据库连接：等待中的审批要落库，重启后才能说清「那次操作没有执行」
+        # （见迁移 23 与 tools/approval.py 的 interrupted）。
+        self.approvals = ApprovalService(bus, conn=conn)
         from agent.tools.services import ServiceRegistry
 
         self.services = ServiceRegistry()

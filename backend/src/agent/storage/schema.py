@@ -616,6 +616,28 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE credentials ADD COLUMN usage_output REAL NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        23,
+        [
+            # 审批跨重启：等待中的审批以前只活在进程内存里，重启后它既不会执行，
+            # 也没人告诉用户「那件事没做」。这里把每一次请求落一行，重启时把
+            # 仍然是 pending 的记录标成 interrupted —— 读出来就是「那一次没有执行」。
+            """
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                approval_id TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                payload     TEXT NOT NULL DEFAULT '{}',
+                turn_id     TEXT,
+                session_id  TEXT,
+                created_at  TEXT NOT NULL,
+                expires_at  TEXT,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                resolved_at TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

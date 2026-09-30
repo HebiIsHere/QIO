@@ -1067,6 +1067,8 @@ def create_app(
             "revision": ctx.turns.snapshot()["revision"],
             "turn_queue": ctx.turns.snapshot(),
             "approvals": ctx.approvals.pending(),
+            # 上一次进程结束时仍没人回答的审批：不恢复等待，只说清「那次操作没有执行」。
+            "interrupted_approvals": ctx.approvals.interrupted(),
             "tasks": ctx.task_manager.snapshot(),
             # 工具执行的权威事实（活工具 + 最近结束的工具）：
             # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，

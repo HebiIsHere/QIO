@@ -1112,6 +1112,22 @@ npm test
 
 ---
 
+## 本轮变更：审批跨重启（2026-09-30，B 批前半）
+
+语义（已定）：**重启后不恢复等待** —— 等待中的那次工具调用随进程一起没了，恢复一个「等你回答」的授权是假的。要做的是把它变成一条明确记录：「那一次操作没有执行」。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 等待中的审批只活在进程内存里，重启后既不会执行、也没人告诉用户「那件事没做」 | 新增迁移 23 的 `pending_approvals`：每次 `ApprovalService.request` 落一行；应答 / 超时 / 取消时收口；**构造新实例时**把仍是 `pending` 的行标成 `interrupted`（新进程不可能有自己的等待项，此刻还 pending 的都是上一个进程留下的） | `storage/schema.py`（迁移 23）、`tools/approval.py` | `test_approval_persistence.py` |
+| 「那次没执行」只在库里，界面看不到 | `/api/runtime/state` 增加 `interrupted_approvals`（只有 kind / 描述 / 时间 / `outcome: not_executed`，不回传完整载荷） | `api/server.py` | `test_approval_persistence.py`（装配级：真装配后能读出来） |
+| 应用装配没把连接交给审批服务，记录永远是空的 | `AppContext` 用 `ApprovalService(bus, conn=conn)`；没有连接时（老装配 / 单测）行为与以前完全一致 | `services/app.py` | `test_approval_persistence.py` |
+
+**已验证**：涉及审批、API、库不变量的测试文件全绿；后端全量测试见提交说明。
+
+**仍未做**：前端还没显示这条记录，也还没有「未完成任务」入口 —— 那是 B 批的后半，跟着一起做。
+
+---
+
 ## 本轮变更：测试前授权（2026-09-30）
 
 补的是第一阶段里那条顺序错误：`dev_run_tests` 会把模型刚写出来的代码**真的跑起来**，

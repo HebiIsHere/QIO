@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from agent.api.events import EventType, make_event
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
+logger = logging.getLogger(__name__)
 
 
 def refusal_reason(decision: str) -> str:
@@ -88,13 +90,115 @@ class ApprovalResult:
 
 
 class ApprovalService:
-    def __init__(self, bus, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        bus,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        conn=None,
+    ) -> None:
         self.bus = bus
         self.timeout_seconds = timeout_seconds
         self._waiters: dict[str, asyncio.Future[ApprovalResult]] = {}
         self._requests: dict[str, ApprovalRequest] = {}
         self._turn_id: str | None = None
         self._session_id: str | None = None
+        # 可选的持久化连接（见迁移 23）：有它才记录「等待中的审批」，
+        # 这样重启后能说清「那次操作没有执行」；没它就与旧行为完全一致。
+        self.conn = conn
+        self._mark_interrupted()
+
+    # -- 跨重启的等待记录 --------------------------------------------------
+
+    def _mark_interrupted(self) -> None:
+        """启动时把上一个进程留下的 pending 一律标成 interrupted。
+
+        判定放在构造时：新进程刚开始不可能有自己的等待项 —— 此刻还写着 pending
+        的，全是上一个进程没来得及回答的（不恢复等待，只留一条明确记录）。
+        """
+        if self.conn is None:
+            return
+        try:
+            self.conn.execute(
+                "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
+                "WHERE status = 'pending'",
+                (_now().isoformat(),),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
+            logger.warning("failed to mark interrupted approvals", exc_info=True)
+
+    def _remember(self, request: ApprovalRequest) -> None:
+        if self.conn is None:
+            return
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO pending_approvals "
+                "(approval_id, kind, payload, turn_id, session_id, created_at, expires_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (
+                    request.approval_id,
+                    request.kind,
+                    json.dumps(request.payload or {}, ensure_ascii=False),
+                    request.turn_id,
+                    request.session_id,
+                    request.created_at,
+                    request.expires_at,
+                ),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001 - 落库失败不能挡住审批本身
+            logger.warning("failed to persist pending approval", exc_info=True)
+
+    def _settle(self, approval_id: str, status: str) -> None:
+        """收口一条等待记录（单次使用：只有仍是 pending 的才会被改）。"""
+        if self.conn is None:
+            return
+        try:
+            self.conn.execute(
+                "UPDATE pending_approvals SET status = ?, resolved_at = ? "
+                "WHERE approval_id = ? AND status = 'pending'",
+                (status, _now().isoformat(), approval_id),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001 - 同上
+            logger.warning("failed to settle pending approval", exc_info=True)
+
+    def interrupted(self, limit: int = 20) -> list[dict]:
+        """上一次进程结束时仍没人回答的审批（给界面看的事实，不是待办）。
+
+        它们**不会再恢复等待**：等待中的那次工具调用随进程一起没了。所以这里
+        只报告「那一次操作没有执行」，让用户知道发生过什么。
+        """
+        if self.conn is None:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT approval_id, kind, payload, turn_id, created_at, expires_at "
+                "FROM pending_approvals WHERE status = 'interrupted' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - 读不到就不报告，不猜
+            logger.warning("failed to read interrupted approvals", exc_info=True)
+            return []
+        out: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            out.append(
+                {
+                    "approval_id": row["approval_id"],
+                    "kind": row["kind"],
+                    "what": str(payload.get("description") or ""),
+                    "turn_id": row["turn_id"],
+                    "created_at": row["created_at"],
+                    "expires_at": row["expires_at"],
+                    "outcome": "not_executed",
+                }
+            )
+        return out
 
     # -- introspection ----------------------------------------------------
 
@@ -153,6 +257,7 @@ class ApprovalService:
             digest=request_digest(kind, payload),
         )
         self._requests[approval_id] = request
+        self._remember(request)
         await self.bus.publish(
             make_event(EventType.APPROVAL_REQUIRED, {"approval": request.as_payload()})
         )
@@ -172,6 +277,7 @@ class ApprovalService:
                     },
                 )
             )
+            self._settle(approval_id, "timeout")
             return ApprovalResult(approval_id, "timeout")
         except asyncio.CancelledError:
             # 等待审批的那一轮被取消（用户按了 Stop）：审批也随之结束。
@@ -190,6 +296,7 @@ class ApprovalService:
                 )
             except Exception:  # noqa: BLE001 - 取消路径上的通知是尽力而为
                 pass
+            self._settle(approval_id, "cancelled")
             raise
         finally:
             self._waiters.pop(approval_id, None)
@@ -233,6 +340,7 @@ class ApprovalService:
         # 单次使用：立刻失效，重放必然失败
         self._waiters.pop(approval_id, None)
         self._requests.pop(approval_id, None)
+        self._settle(approval_id, decision)
         await self.bus.publish(
             make_event(
                 EventType.APPROVAL_RESULT,
