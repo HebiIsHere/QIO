@@ -788,7 +788,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ description }),
     }),
+  /**
+   * 工具开发任务列表（权威状态，来自工作区本身）。
+   *
+   * 「有未完成的任务」入口用它：刷新、重启、断线之后任务都还在，
+   * 不会再出现「模型说要继续开发，界面上却找不到那个任务」。
+   */
+  getDevTasks: () => request<{ tasks: DevTaskRow[] }>("/api/dev/tasks"),
 };
+
+/** 一条开发任务的权威状态（后端 `GET /api/dev/tasks` 的一行）。 */
+export interface DevTaskRow {
+  id: string;
+  /** 这个工具要做成什么样（后端截断到 200 字） */
+  request: string;
+  /** 后端给的阶段名；界面只做展示映射，不用它推断「做完了没有」 */
+  phase: string | null;
+  submitted: boolean;
+  /** 最近一次测试的结论；`null` = 从没跑过（不是「没通过」） */
+  test_passed: boolean | null;
+  /**
+   * 那条测试结论是否还对应**当前**的文件内容。
+   * false = 测试通过之后又改过文件，那次结论不再算数。
+   */
+  test_evidence_current: boolean;
+  updated_at: string | null;
+}
 
 export interface OnboardingStatus {
   done: boolean;

@@ -1,5 +1,5 @@
 ﻿import { defineStore } from "pinia";
-import { api, type ToolRecordPreview } from "../services/api";
+import { api, type DevTaskRow, type ToolRecordPreview } from "../services/api";
 
 export interface ToolPresentation {
   title?: string;
@@ -363,6 +363,13 @@ export const useSessionStore = defineStore("session", {
       what: string;
       createdAt: string;
     }[],
+    /**
+     * 工具开发任务（后端 `GET /api/dev/tasks` 的权威列表）。
+     *
+     * 以前任务只活在工具调用里：模型不提，界面就再也找不到它，用户也不知道还有
+     * 一件事没做完。这里只持有后端给的形状，不缓存到本地存储、不自己推断状态。
+     */
+    devTasks: [] as DevTaskRow[],
     topicName: null as string | null,
     anchorFragmentId: null as string | null,
     anchorFragment: null as { id: string; title: string | null } | null,
@@ -494,6 +501,14 @@ export const useSessionStore = defineStore("session", {
      * 停止动作会退化为「取消后端当前的 active turn」，同样不会打到排队项。
      */
     canStopTurn: (state): boolean => state.turnRunning,
+    /**
+     * 没做完的开发任务 = 还没提交的。
+     *
+     * 「提交」是唯一能证明这件事做完了的机器可读事实：任务一旦提交成功，
+     * 工具已经注册进后端，界面就不该再把它列成待办。
+     */
+    unfinishedDevTasks: (state): DevTaskRow[] =>
+      state.devTasks.filter((task) => !task.submitted),
   },
   actions: {
     _nextId() {
@@ -855,10 +870,26 @@ export const useSessionStore = defineStore("session", {
           what: item.what,
           createdAt: item.created_at,
         }));
+        // 开发任务是另一份权威状态（独立的接口）：连上就一起拉，别等用户想起来刷新
+        await this.refreshDevTasks();
         return { turn_queue: state.turn_queue, approvals: state.approvals, tasks: state.tasks };
       } catch (e) {
         this.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
         return null;
+      }
+    },
+    /**
+     * 拉一次开发任务列表（连接建立 / RESYNC / 一轮结束之后调用）。
+     *
+     * 失败时**保留上一次的结果**：这是补充信息，不值得为它弹错误；但也不能把
+     * 「拉不到」擦成空列表 —— 那会让用户以为任务没了，或以为事情已经做完。
+     */
+    async refreshDevTasks(): Promise<void> {
+      try {
+        const res = await api.getDevTasks();
+        this.devTasks = res.tasks ?? [];
+      } catch {
+        // 安静地保留旧值（noticeable 的失败由主流程的 lastError 负责，这里不抢戏）
       }
     },
     /**
