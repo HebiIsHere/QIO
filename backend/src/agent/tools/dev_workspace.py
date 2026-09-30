@@ -17,13 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.tools.spec import ToolDefinition
+from agent.tools.project_files import safe_rel_path
 
 MAX_FILE_SIZE = 200_000
-_SAFE_NAME = re.compile(r"^[a-zA-Z0-9_.-]+$")
-# 项目路径的边界：单段最长 64 字符、最深 8 层。多文件项目要能做，
-# 但一个失控的路径不该让工作区变成任意深的结构。
-_MAX_SEGMENT_CHARS = 64
-_MAX_PATH_DEPTH = 8
 # 工作区 id 的形状（`DevWorkspace.create` 生成）：扫盘回填时只认它
 _TASK_ID = re.compile(r"^ws_[0-9a-f]{12}$")
 _REQUEST_MARKER = "# 开发需求"
@@ -73,29 +69,6 @@ def _read_authorization(raw: object) -> dict | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _safe_rel_path(name: object) -> str:
-    """把工具给的路径规范化成相对 posix 路径，不合法就抛 ValueError。
-
-    多文件项目的前提是「路径可信」。这里拒绝的是会让文件跑到工作区之外、
-    或让后端状态被覆盖的写法：绝对路径（含 `C:` 盘符）、`..`/`.`、空段、
-    非法字符、以及保留名（任意深度）。
-    """
-    raw = str(name or "").replace("\\", "/").strip()
-    if not raw:
-        raise ValueError("文件路径不能为空")
-    if raw.startswith("/") or re.match(r"^[a-zA-Z]:", raw):
-        raise ValueError(f"不能使用绝对路径：{name!r}")
-    segments = raw.split("/")
-    if len(segments) > _MAX_PATH_DEPTH:
-        raise ValueError(f"目录层级过深（最多 {_MAX_PATH_DEPTH} 层）：{name!r}")
-    for segment in segments:
-        if segment in ("", ".", ".."):
-            raise ValueError(f"路径不合法：{name!r}")
-        if len(segment) > _MAX_SEGMENT_CHARS or not _SAFE_NAME.match(segment):
-            raise ValueError(f"路径片段不合法：{segment!r}")
-    return "/".join(segments)
 
 
 def _check_not_reserved(rel_path: str) -> None:
@@ -424,7 +397,7 @@ class DevWorkspace:
         task = self._tasks.get(task_id)
         if task is None:
             return None
-        rel_path = _safe_rel_path(name)
+        rel_path = safe_rel_path(name)
         base = task.dir.resolve()
         path = (task.dir / rel_path).resolve()
         # 第二道闸：形状校验之外再看一次真实解析结果（符号链接也挡在这里）。
@@ -433,7 +406,7 @@ class DevWorkspace:
         return path
 
     def write_file(self, task_id: str, name: str, content: str) -> None:
-        _check_not_reserved(_safe_rel_path(name))
+        _check_not_reserved(safe_rel_path(name))
         path = self._resolve(task_id, name)
         if path is None:
             raise KeyError(f"workspace not found: {task_id}")

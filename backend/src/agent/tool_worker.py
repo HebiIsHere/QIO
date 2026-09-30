@@ -83,9 +83,40 @@ def _dump(obj: object) -> str:
     return json.dumps(obj, ensure_ascii=False, default=None)
 
 
+def _project_root() -> str:
+    """本次调用的项目根（父进程已经把项目文件写在当前工作目录里）。
+
+    放进 `sys.path` 的目的只有一个：入口代码能 import 自己的工作区文件
+    （`from pkg.util import double`）。项目文件由父进程写进一次性临时目录，
+    随调用结束一起消失。
+    """
+    import os
+
+    root = os.getcwd()
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    return root
+
+
+def _load_entry(entry: str):
+    """按 `包.模块:函数` 加载入口（多文件项目的包内相对 import 靠它成立）。"""
+    module_name, _, func_name = entry.partition(":")
+    if not module_name or not func_name:
+        raise RuntimeError(f"入口格式必须是 `包.模块:函数`，实际是 {entry!r}")
+    import importlib
+
+    _project_root()
+    module = importlib.import_module(module_name)
+    run = getattr(module, func_name, None)
+    if not callable(run):
+        raise RuntimeError(f"入口 {entry} 不是可调用对象（没有这个函数？）")
+    return run
+
+
 def execute(payload: dict) -> dict:
     """执行一次工具请求，返回结果字典（不写标准输出）。"""
     code = str(payload.get("code") or "")
+    entry = str(payload.get("entry") or "")
     arguments = payload.get("arguments")
     if not isinstance(arguments, dict):
         arguments = {}
@@ -94,14 +125,19 @@ def execute(payload: dict) -> dict:
     captured_err = _CappedBuffer()
     namespace: dict = {}
     try:
-        compiled = compile(code, "<tool>", "exec")
         with contextlib.redirect_stdout(captured_out), contextlib.redirect_stderr(
             captured_err
         ):
-            exec(compiled, namespace)  # noqa: S102 - 执行生成代码是本模块的唯一职责
-            run = namespace.get("run")
-            if not callable(run):
-                raise RuntimeError("工具代码必须定义 run(**kwargs) 函数")
+            if entry:
+                run = _load_entry(entry)
+            else:
+                _project_root()
+                compiled = compile(code, "<tool>", "exec")
+                # noqa: S102 - 执行生成代码是本模块的唯一职责
+                exec(compiled, namespace)
+                run = namespace.get("run")
+                if not callable(run):
+                    raise RuntimeError("工具代码必须定义 run(**kwargs) 函数")
             value = run(**arguments)
     except BaseException as exc:  # noqa: BLE001 - 任何异常都要变成结构化结果
         if isinstance(exc, (KeyboardInterrupt, SystemExit)) and not isinstance(

@@ -29,9 +29,11 @@ import signal
 import sys
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agent.tools.policy import CapabilityLevel, ToolExecutionPolicy
+from agent.tools.project_files import check_project_size, materialize
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,32 @@ _ENV_ALLOWLIST = (
     "LANG",
     "LC_ALL",
 )
+
+# 容器里的执行脚本：先把这个项目的文件写进容器内的 /tmp/project，再在那里执行
+# 入口。语义与受限子进程那条路径一致（存在本地 docker 时才走这里）。
+_DOCKER_SCRIPT_TEMPLATE = """
+import importlib, json, os, sys
+PROJECT = "/tmp/project"
+os.makedirs(PROJECT, exist_ok=True)
+for rel, content in {files}.items():
+    target = os.path.join(PROJECT, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(content)
+sys.path.insert(0, PROJECT)
+os.chdir(PROJECT)
+CODE = {code}
+ENTRY = {entry}
+ARGS = {arguments}
+if ENTRY:
+    module_name, _, func_name = ENTRY.partition(":")
+    run = getattr(importlib.import_module(module_name), func_name)
+else:
+    namespace = {{}}
+    exec(compile(CODE, "<tool>", "exec"), namespace)
+    run = namespace["run"]
+print(json.dumps(run(**ARGS), ensure_ascii=False))
+"""
 
 
 def _system_env(scratch_dir: str) -> dict[str, str]:
@@ -274,8 +302,26 @@ class SandboxExecutor:
         arguments: dict[str, Any],
         extra_env: dict[str, str] | None = None,
         policy: ToolExecutionPolicy | None = None,
+        files: dict[str, str] | None = None,
+        entry: str | None = None,
     ) -> SandboxResult:
+        """执行一次工具。
+
+        `files` 是这个多文件项目的**其它文件**（相对路径 → 内容），`entry` 是入口
+        （`pkg.main:run`）。两者都只活在这一次调用的一次性临时目录里：不进工作区、
+        不留在后端进程，下一次调用是干净的。
+        """
         policy = policy or ToolExecutionPolicy()
+        try:
+            project_files = dict(files or {})
+            check_project_size(project_files)
+        except ValueError as exc:
+            # 项目结构本身不合法：这是「生成的项目有问题」，模型改路径就能修，
+            # 所以归到 code_error（可重试），而不是环境问题。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=str(exc), category="code_error",
+            )
 
         if self.executor == "docker":
             # 显式指定 docker：不回退。回退等于把「容器隔离」静默降成受限子进程，
@@ -292,10 +338,10 @@ class SandboxExecutor:
                     ),
                     category="environment",
                 )
-            return await self._execute_docker(code, arguments, policy)
+            return await self._execute_docker(code, arguments, policy, project_files, entry)
 
         if self.executor == "auto" and await docker_daemon_ready():
-            result = await self._execute_docker(code, arguments, policy)
+            result = await self._execute_docker(code, arguments, policy, project_files, entry)
             if not result.launch_failed:
                 return result
             # 容器根本没起来（守护进程中途掉了 / 镜像拉不下来）：工具代码一行都没
@@ -316,7 +362,9 @@ class SandboxExecutor:
                 ),
                 category="environment",
             )
-        return await self._execute_subprocess(code, arguments, extra_env or {}, policy)
+        return await self._execute_subprocess(
+            code, arguments, extra_env or {}, policy, project_files, entry
+        )
 
     # -- subprocess executor ----------------------------------------------
 
@@ -326,6 +374,8 @@ class SandboxExecutor:
         arguments: dict[str, Any],
         extra_env: dict[str, str] | None = None,
         policy: ToolExecutionPolicy | None = None,
+        files: dict[str, str] | None = None,
+        entry: str | None = None,
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
@@ -339,13 +389,24 @@ class SandboxExecutor:
             )
         # 结构化请求走标准输入；结果只从标准输出读一行 JSON（见 agent/tool_worker.py）。
         request = json.dumps(
-            {"code": code, "arguments": arguments}, ensure_ascii=False
+            {"code": code, "entry": entry or "", "arguments": arguments},
+            ensure_ascii=False,
         ).encode("utf-8")
         # ignore_cleanup_errors：Windows 上被终止的子进程可能短暂占住作为 cwd 的
         # 临时目录，清理失败不应该让工具执行以异常收场（错误信息本身已经返回）。
         with tempfile.TemporaryDirectory(
             prefix="sa-tool-", ignore_cleanup_errors=True
         ) as tmp:
+            # 项目文件写进这次调用自己的临时目录：工具里的 import 只看得见
+            # 它自己的项目，工作区与后端目录都不在其中。
+            if files:
+                try:
+                    materialize(files, Path(tmp))
+                except ValueError as exc:
+                    return SandboxResult(
+                        ok=False, value=None, stdout="", stderr="",
+                        error=str(exc), category="code_error",
+                    )
             env = _system_env(tmp)
             if extra_env:
                 env.update(extra_env)
@@ -470,16 +531,16 @@ class SandboxExecutor:
         code: str,
         arguments: dict[str, Any],
         policy: ToolExecutionPolicy | None = None,
+        files: dict[str, str] | None = None,
+        entry: str | None = None,
     ) -> SandboxResult:
         """在容器里执行。docker 是否可用由调用方确认（见 `docker_daemon_ready`）。"""
         policy = policy or ToolExecutionPolicy()
-        script = (
-            "import json, sys\n"
-            f"CODE = {code!r}\n"
-            f"ARGS = {arguments!r}\n"
-            "namespace = {}\n"
-            "exec(compile(CODE, '<tool>', 'exec'), namespace)\n"
-            "print(json.dumps(namespace['run'](**ARGS), ensure_ascii=False))\n"
+        script = _DOCKER_SCRIPT_TEMPLATE.format(
+            code=repr(code),
+            entry=repr(entry or ""),
+            files=repr(dict(files or {})),
+            arguments=repr(arguments),
         )
         command = self._docker_command(script, policy)
         try:
