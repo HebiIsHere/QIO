@@ -40,6 +40,7 @@ TOOL_LABELS: dict[str, str] = {
     "dev_write_file": "开发：写入文件",
     "dev_run_tests": "开发：运行测试",
     "dev_submit_tool": "开发：提交工具",
+    "declare_completion": "开发：核对完成结论",
     # 子任务
     "await_task": "等待子任务",
     "read_task_result": "读取子任务结果",

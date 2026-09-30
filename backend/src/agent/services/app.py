@@ -322,6 +322,14 @@ class AppContext:
         self.tool_store = ToolStore(conn)
         self.services.register("tool_store", self.tool_store)
         self._restore_tools()
+        from agent.tools.declare_completion import DeclareCompletionTool
+
+        # 「测试通过 / 已注册 / 现在可以使用」这类结论必须过一遍后端事实
+        # （见 core/turn_facts.py 与 docs/superpowers/specs/2026-09-30-final-answer-fact-check-design.md）。
+        # 它只读：不改任务状态、不触发审批、不注册任何东西。
+        self.registry.register(
+            DeclareCompletionTool(self.dev_workspaces, self.registry, self.tool_store)
+        )
         self._notify_turn = False
         # 上一次宣告过的适配档位：正常状态不制造噪声，只有档位变化才广播
         self._announced_mode: str | None = None

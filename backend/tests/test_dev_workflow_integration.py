@@ -47,6 +47,13 @@ class DevScriptAdapter:
         )
 
 
+def test_declare_completion_is_registered(ctx: AppContext):
+    """结论声明工具必须真的装配进主注册表（否则模型没有核对入口）。"""
+    tool = ctx.registry.get("declare_completion")
+    assert tool is not None
+    assert "declare_completion" in {spec.name for spec in ctx.registry.specs()}
+
+
 TOOL_JSON = json.dumps({
     "name": "dev_add",
     "description": "两个数求和",

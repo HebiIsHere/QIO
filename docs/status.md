@@ -677,11 +677,10 @@
   失败原因都有自动化测试（进程内 + 真实 subprocess 沙箱），但「真实模型提议 → 真实沙箱测试 →
   两次审批 → 注册 → 立刻可用」这条完整链路没有在真实运行里走通。
 - **工具开发第一阶段的三个未收口项**（2026-09-30 收尾后的现状，详见文末「第一阶段收尾」一节）：
-  1. **最终结论的事实校正没实现**：模型在本轮工具失败之后仍说「测试全部通过、已经可用」，
-     这句话照样成为最终答复。后端还没有「任务 / 版本 / 验证 / 审批 / 注册」的事实记录
-     与结论校验协议；这件事不能用全局关键词替换糊过去。方案（账本 + `declare_completion`
-     声明 + 兜底注记）已写成规格 `docs/superpowers/specs/2026-09-30-final-answer-fact-check-design.md`，
-     待评审后进入实施计划；**代码还没动**。
+  1. **最终结论的事实校正只做了后端一半**：后端已经有「每轮事实台账 + `declare_completion`
+     核对 + 收尾事实注记」（见文末「最终结论的事实校正」一节，规格与计划都在
+     `docs/superpowers/` 下）。**用户界面上那个「已核对」标记还没做** —— 它需要先决定核对
+     结论怎么随 assistant 消息持久化（新增迁移还是复用现有字段），再动界面。
   2. **测试前授权与真实能力策略没补**：`dev_run_tests` 在拿到任何授权之前就执行生成代码，
      测试用的隔离数据（临时库 / 临时目录 / 模拟服务）也没做。
   3. **已保存对话的原文检索没做**：开放片段与摘要失败的内容搜不到（`memory_search` 只覆盖
@@ -1064,10 +1063,34 @@ npm test
 
 **仍未实现 / 仍是 NOT RUN（不宣称完成）**
 
-- **模型谎报成功时的最终结论校正**：仍属 planned —— 规格已写（`docs/superpowers/specs/2026-09-30-final-answer-fact-check-design.md`），实现尚未开始。缺的是「任务 / 版本 / 验证 / 审批 / 注册」的后端事实记录与结论声明协议；明确不做全局关键词替换。
+- **模型谎报成功时的最终结论校正**：后端部分已实现（见文末「最终结论的事实校正」一节）；前端「已核对」标记仍未做。
 - **测试前授权与真实能力策略**：`dev_run_tests` 仍在审批之前就执行生成代码；测试数据隔离（临时库 / 临时目录 / 模拟服务）没有补。
 - **所有已保存对话的原文检索**：开放片段与摘要失败内容的独立原文检索仍未实现。
 - **开发规范分节注入**：仍是单一长文 `DEV_GUIDE`，没有按当前步骤注入。
 - **多文件项目与项目级依赖隔离**：未实现，文件工具仍只接受单层文件名。
 - **前端**：任务卡、未完成任务提示、恢复入口未动。
 - **真实冻结产物与安装包验收**：本轮只跑源码测试，未重跑 PyInstaller 冻结 exe，也未做安装包人工验收 —— NOT RUN。
+
+---
+
+## 本轮变更：最终结论的事实校正（2026-09-30）
+
+规格：`docs/superpowers/specs/2026-09-30-final-answer-fact-check-design.md`；计划：`docs/superpowers/plans/2026-09-30-final-answer-fact-check.md`。
+
+要解决的问题：工具失败的结果**已经**如实回填给模型（`core/tool_feedback.py`），模型随后仍然说
+「测试全部通过，已提交审批」，而这句话照样成为最终答复 —— 因为「本轮到底做了什么」没有任何
+地方记得住，最终答复也不经过任何核对。明确不采用的做法是「扫关键词改话」。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 本轮的失败与开发任务状态没有任何地方记得住 | 新增每轮事实台账（工具终态 + 开发工具上报的任务状态）；`ToolResult` 增加机器可读的 `facts` 通道，开发类工具在**操作之后**上报「任务 / 版本摘要 / 测试证据 / 是否提交」 | `core/turn_facts.py`、`tools/base.py`、`tools/dev_tools.py`、`tools/dev_workspace.py` | `test_turn_facts.py`、`test_dev_tools.py` |
+| 「测试通过 / 已注册 / 可以使用」可以被模型自己宣布 | 新增只读工具 `declare_completion`：按工作区状态、注册表与持久层逐条核对 `test_passed` / `registered` / `usable`（版本必须等于当前内容摘要，`subagent` 型不要求测试证据）；对不上就逐条说清缺什么 | `tools/declare_completion.py`、`services/app.py`、`prompts.py`、`tools/display.py` | `test_declare_completion.py`、`test_dev_workflow_integration.py` |
+| 最终答复不经过任何核对 | 主循环收尾：本轮有未解决失败（工具最后一次结局是失败、任务测试失败/证据失效/还没有测试证据）且没有被接受的声明时，在答复**末尾追加**一段后端事实说明。不重写模型正文；取消不算失败；先脱敏再限长；文案不含花括号 | `core/loop.py` | `test_final_answer_fact_check.py` |
+
+**已验证**：本机 Windows 源码运行，`tests/test_turn_facts.py`、`test_dev_tools.py`、`test_declare_completion.py`、`test_final_answer_fact_check.py`、
+`test_tool_feedback.py`、`test_loop.py`、`test_dev_workflow_integration.py`、`test_app_integration.py`、`test_settings_tools_api.py` 全绿；后端全量测试见本次提交说明。
+
+**仍未做（不宣称完成）**
+
+- **前端「已核对」标记**：需要先决定核对结论怎么随 assistant 消息持久化（新增迁移或复用现有字段），再在消息上渲染；后端事实已经准备好（`ToolResult.facts` 与台账）。
+- **声明面只覆盖开发类结论**：网页 / 桌面操作类结论要核对时，沿用同一张台账与同一套 claim 协议扩展，本次不做。
