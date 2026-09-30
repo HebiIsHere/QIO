@@ -153,7 +153,18 @@ DEV_GUIDE = """工具开发指南：
 2. 需求规格必填：工具用途（一句话）、输入输出、使用场景、是否需要凭据（访问外部服务时）、类型（function/subagent）、同步/异步。信息不完整时先与用户澄清。
 3. 契约约束：function 型必须是纯函数、单文件实现、至少 1 个确定性测试用例；subagent 型需提供 model 和 credential_ref，可跳过确定性测试。
 4. 提交口径：以工作区 tool.json 为准，dev_submit_tool 只需 workspace 与 explanation（不必复述整份 definition）；用通俗语言说明工具用途，用户不接触代码，技术细节留在工具卡片中。
-5. 恢复口径：不确定有哪些未完成任务时用 dev_list_tasks 枚举，状态由后端记录；文件存在不代表测试通过，未测试的任务要重新运行 dev_run_tests。"""
+5. 恢复口径：不确定有哪些未完成任务时用 dev_list_tasks 枚举，状态由后端记录；文件存在不代表测试通过，未测试的任务要重新运行 dev_run_tests。
+6. 结论口径：要对外说「测试通过 / 已提交 / 现在可以使用」之前，先用 declare_completion 把结论交给后端核对（task_id + 当前版本摘要 + claims）；核对不通过就照它说的去补，不要自己宣布完成。"""
+
+# 结论声明工具 declare_completion 的描述。定义于 agent/tools/declare_completion.py；
+# 作用：让「完成 / 可用」这类可以被证实的结论先过一遍后端记录。
+TOOL_DECLARE_COMPLETION_DESC = (
+    "在把「测试通过 / 已注册 / 现在可以使用」当作结论说出来之前，用它和"
+    "后端记录核对一遍。task_id 是开发任务 id，version 是当前工作区内容摘要"
+    "（工具结果与 dev_list_tasks 会给），claims 从 test_passed / registered / "
+    "usable 里选。全部对得上才算数；对不上会告诉你缺哪一步，先补齐再声明。"
+    "没有证据就不要说已完成或可使用。"
+)
 
 # 工具调用的可选叙事信封（保留字段 `_qio`）说明。定义于 tools/registry.py
 # `_with_narrative_field`，注入到每个工具的 parameters.properties；
