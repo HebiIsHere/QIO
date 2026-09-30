@@ -676,6 +676,14 @@
 - **工具创建的真实端到端未跑**：`TOOL_CREATE_STATUS` 的九个阶段、同一 `group_id` 一张卡、
   失败原因都有自动化测试（进程内 + 真实 subprocess 沙箱），但「真实模型提议 → 真实沙箱测试 →
   两次审批 → 注册 → 立刻可用」这条完整链路没有在真实运行里走通。
+- **工具开发第一阶段的三个未收口项**（2026-09-30 收尾后的现状，详见文末「第一阶段收尾」一节）：
+  1. **最终结论的事实校正没实现**：模型在本轮工具失败之后仍说「测试全部通过、已经可用」，
+     这句话照样成为最终答复。后端还没有「任务 / 版本 / 验证 / 审批 / 注册」的事实记录
+     与结论校验协议；这件事不能用全局关键词替换糊过去。
+  2. **测试前授权与真实能力策略没补**：`dev_run_tests` 在拿到任何授权之前就执行生成代码，
+     测试用的隔离数据（临时库 / 临时目录 / 模拟服务）也没做。
+  3. **已保存对话的原文检索没做**：开放片段与摘要失败的内容搜不到（`memory_search` 只覆盖
+     封存后摘要成功的部分）。
 - **能力降级的真实触发未跑**：`CAPABILITY` / `FALLBACK` 的语义有测试（native 不提示、text 只在
   模式变化那一次提示、unsupported 不发降级），但没有用真实「不支持原生工具调用」的模型跑过。
 - **子 agent 长任务未验证**：独立任务卡的 queued / running / done / failed 与结果回传有测试，
@@ -1030,3 +1038,34 @@ npm test
 - **Docker 执行器的协议统一**：Docker 分支仍用容器内 `python -c` 的旧协议，未与新 worker 协议合并。NOT RUN（未实测）。
 - **额外依赖的项目级隔离**（QIO 管理的专用 Python 环境 / 项目级依赖安装）：**未实现**，只有接口位置。默认只复用随包依赖；用到第三方库的工具会以 `missing_dependency` 明确失败，不会自动安装。
 - 「测试也执行实际权限检查」这条只覆盖了既有 `policy` 能力分级与审批路径，**测试数据隔离**（临时库/临时目录/模拟服务）没有在本轮补。
+
+> 上面两条与 worker 协议可信度、输出保护相关的缺口，已由下一节「第一阶段收尾」补齐；安装包人工验收仍是 NOT RUN。
+
+---
+
+## 本轮变更：第一阶段收尾 · 可信状态与执行协议（2026-09-30）
+
+计划：`docs/superpowers/plans/2026-09-30-tool-dev-spec-phase1-completion.md`。范围是复核报告里指出的五个会**掩盖真实状态**的缺陷：测试证据不绑定版本、`state.json` 可被伪造、提交后项目被删、注册与落库失败不回滚、worker 的假成功被采信。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 测试通过后把代码改成错的，任务列表仍显示「测试通过」 | 测试证据绑定被测内容的 sha256 摘要；内容一变（含越权直接改磁盘）立即标为 `stale`，任务列表照实说「证据失效，需重跑」 | `tools/dev_workspace.py`、`tools/dev_tools.py` | `test_dev_tools.py`（内容变更即失效、重启后仍失效、任务列表不谎报） |
+| agent 能用 `dev_write_file` 写 `state.json` 伪造「测试通过 / 99 次测试」 | `state.json` 与 `request.md` 列为后端保留名，文件工具写入即拒绝；`state.json` 带 `schema` 与 `source`，恢复时必须对上才认，否则按「未知」处理 | `tools/dev_workspace.py` | `test_dev_tools.py`（伪造被拒、无 schema 的 state 不被采信） |
+| 提交成功后工作区被删除，工具注册了但任务再也枚举不到 | 完成后保留项目：标记已提交 + 复制一份不可变快照到 `dev-workspaces/archive/<id>/` | `tools/dev_workspace.py`、`tools/dev_tools.py` | `test_dev_tools.py`、`test_dev_workflow_integration.py` |
+| 提交时的交叉复测失败，持久状态仍是「测试通过」 | 复测结论经 `test_sink` 在**任何对外事件之前**写回同一个任务 | `tools/lifecycle.py`、`tools/dev_tools.py` | `test_dev_tools.py`（复测写回同一任务） |
+| `ToolStore.save` 抛磁盘错误时，提交报失败但工具已在内存注册表里可调用 | 改为「先持久化、后注册」；失败回滚：撤销本次注册 + 写回上一可用版本 | `tools/lifecycle.py`、`storage/tool_store.py`（新增 `load`） | `test_tool_lifecycle.py`（落库失败不留注册、注册失败恢复上一版本） |
+| worker 直接吐一行形似成功的结果再以退出码 17 退出，沙箱仍报 `ok=True` | 成功必须同时满足：退出码 0、结果通道恰好一行 JSON、`ok` 是布尔、成功时 `value` 是对象 | `tools/sandbox.py` | `test_sandbox_worker.py`（伪造成功 / 多余行 / 非布尔 ok / 非对象 value 全部拒绝） |
+| Windows 上工具子进程环境缺 `SystemRoot` 等系统变量 | 环境改为显式白名单（`SystemRoot`、`SystemDrive`、`WINDIR`、`COMSPEC`、`PATHEXT`、`TEMP`、`TMP`、`TMPDIR`、`PATH`、`LANG`），白名单外一律不传 | `tools/sandbox.py` | `test_sandbox_worker.py`（系统变量可见、非白名单变量不可见） |
+| 输出限制发生得太晚：worker 先全写进 StringIO，父进程再 `communicate` 全部读回 | 两侧都加界：worker 端捕获缓冲封顶并标注截断，父进程边读边计数（stdout 2 MiB / stderr 512 KiB），超限即终止进程树并如实报错 | `tool_worker.py`、`tools/sandbox.py` | `test_sandbox_worker.py`（工具狂打印仍可用且标注截断；坏 worker 无限输出被截断） |
+
+**已验证（本机 Windows，源码运行）**：受影响的工具 / 沙箱 / 开发工作区相关测试文件全绿（`tests/test_tool_feedback.py`、`test_tool_worker.py`、`test_sandbox_worker.py`、`test_entrypoint_split.py`、`test_executor_env.py`、`test_dev_tools.py`、`test_tool_lifecycle.py`，以及 `test_tool_store.py`、`test_tool_restore.py`、`test_tool_recovery.py`、`test_tool_registry_reversible.py`、`test_tool_policy.py`、`test_tool_pipeline.py`、`test_active_tools.py`）；`python scripts/check_docs.py` 通过。
+
+**仍未实现 / 仍是 NOT RUN（不宣称完成）**
+
+- **模型谎报成功时的最终结论校正**：仍属 planned。缺的是「任务 / 版本 / 验证 / 审批 / 注册」的后端事实记录与结论声明协议；明确不做全局关键词替换。
+- **测试前授权与真实能力策略**：`dev_run_tests` 仍在审批之前就执行生成代码；测试数据隔离（临时库 / 临时目录 / 模拟服务）没有补。
+- **所有已保存对话的原文检索**：开放片段与摘要失败内容的独立原文检索仍未实现。
+- **开发规范分节注入**：仍是单一长文 `DEV_GUIDE`，没有按当前步骤注入。
+- **多文件项目与项目级依赖隔离**：未实现，文件工具仍只接受单层文件名。
+- **前端**：任务卡、未完成任务提示、恢复入口未动。
+- **真实冻结产物与安装包验收**：本轮只跑源码测试，未重跑 PyInstaller 冻结 exe，也未做安装包人工验收 —— NOT RUN。

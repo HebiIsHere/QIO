@@ -41,6 +41,44 @@ DOCKER_BINARY = "docker"
 # 探测只是「能不能用容器」的前置询问，不该让工具调用长时间挂住。
 DOCKER_PROBE_TIMEOUT_SECONDS = 5.0
 
+# 父进程愿意为一个工具子进程缓冲的上限。worker 自己也会限长（见
+# agent/tool_worker.py），这里是第二道闸：一个不是 worker 的程序（或坏掉的
+# worker）无限打印时，不能把后端进程的内存吃光。
+MAX_WORKER_STDOUT_BYTES = 2 * 1024 * 1024
+MAX_WORKER_STDERR_BYTES = 512 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
+
+# 传给工具子进程的环境白名单。以前只给 PATH/TEMP/TMP：Windows 上连
+# SystemRoot 都没有，而大量系统 API（含 Python 自身的一些调用）依赖它。
+# 这里逐项列出「运行确实需要」的系统变量；凭据与用户业务配置一律不传 ——
+# 子进程不是安全沙箱，但也没有理由把用不到的变量递进去。
+_ENV_ALLOWLIST = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+)
+
+
+def _system_env(scratch_dir: str) -> dict[str, str]:
+    """系统环境白名单（+ 本项目固定的编码设置）。"""
+    env: dict[str, str] = {}
+    for key in _ENV_ALLOWLIST:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    env.setdefault("TEMP", scratch_dir)
+    env.setdefault("TMP", scratch_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
 
 async def docker_daemon_ready(
     timeout_seconds: float = DOCKER_PROBE_TIMEOUT_SECONDS,
@@ -158,6 +196,60 @@ async def _kill_process_tree(process) -> None:
         await process.wait()
 
 
+async def _exchange(process, request: bytes) -> tuple[bytes, bytes, bool]:
+    """写请求、有界读回 stdout/stderr，返回 `(stdout, stderr, 超限?)`。
+
+    以前用 `process.communicate()`：父进程先把子进程的全部输出读进内存，输出
+    限制要等 worker 自己截断才生效。现在边读边计数；任何一侧超过上限就立刻终止
+    这棵进程树（否则子进程继续写、父进程不再消费，管道填满后双方互等）。
+    """
+    over_limit = False
+
+    async def drain(stream, limit: int) -> bytes:
+        nonlocal over_limit
+        chunks: list[bytes] = []
+        total = 0
+        capped = False
+        while True:
+            chunk = await stream.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                return b"".join(chunks)
+            if capped:
+                # 已经超限：把管道读干但不再留存，读完 EOF 管道才会正常关闭。
+                continue
+            total += len(chunk)
+            if total > limit:
+                room = limit - (total - len(chunk))
+                if room > 0:
+                    chunks.append(chunk[:room])
+                over_limit = True
+                capped = True
+                # 立刻结束这棵进程树：否则子进程继续写、我们只读不留，
+                # 会一直读到超时。
+                await _kill_process_tree(process)
+                continue
+            chunks.append(chunk)
+
+    try:
+        process.stdin.write(request)
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        # 子进程可能还没读就退出了；能不能拿到结果由下面的读取决定。
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            process.stdin.close()
+        with contextlib.suppress(Exception):
+            await process.stdin.wait_closed()
+    stdout, stderr = await asyncio.gather(
+        drain(process.stdout, MAX_WORKER_STDOUT_BYTES),
+        drain(process.stderr, MAX_WORKER_STDERR_BYTES),
+    )
+    with contextlib.suppress(Exception):
+        await process.wait()
+    return stdout, stderr, over_limit
+
+
 class SandboxExecutor:
     def __init__(
         self,
@@ -254,12 +346,7 @@ class SandboxExecutor:
         with tempfile.TemporaryDirectory(
             prefix="sa-tool-", ignore_cleanup_errors=True
         ) as tmp:
-            env = {
-                "PATH": os.environ.get("PATH", ""),
-                "TEMP": os.environ.get("TEMP", tmp),
-                "TMP": os.environ.get("TMP", tmp),
-                "PYTHONIOENCODING": "utf-8",
-            }
+            env = _system_env(tmp)
             if extra_env:
                 env.update(extra_env)
             try:
@@ -272,8 +359,17 @@ class SandboxExecutor:
                     stderr=asyncio.subprocess.PIPE,
                     **_spawn_kwargs(),
                 )
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(request), timeout=self.timeout_seconds
+            except OSError as exc:
+                # 命令行存在却起不来（路径损坏、权限不对）：这是环境问题，必须
+                # 说清楚，而不是让调用方以为「工具跑失败」。
+                return SandboxResult(
+                    ok=False, value=None, stdout="", stderr="",
+                    error=f"工具执行程序无法启动：{exc}",
+                    category="startup",
+                )
+            try:
+                stdout, stderr, over_limit = await asyncio.wait_for(
+                    _exchange(process, request), timeout=self.timeout_seconds
                 )
             except asyncio.TimeoutError:
                 # wait_for 只取消了读取；必须真的结束这棵进程树，否则工具自己起的
@@ -288,22 +384,57 @@ class SandboxExecutor:
                 # 用户取消：同样只清理这一棵进程树，然后如实向上传递取消语义。
                 await _kill_process_tree(process)
                 raise
+            if over_limit:
+                # 进程树已经在读取侧终止；这里只负责如实说明为什么没结果。
+                return SandboxResult(
+                    ok=False, value=None, stdout="", stderr="",
+                    error=(
+                        "工具执行程序的输出超过上限"
+                        f"（stdout {MAX_WORKER_STDOUT_BYTES} 字节 / "
+                        f"stderr {MAX_WORKER_STDERR_BYTES} 字节），已终止本次执行。"
+                    ),
+                    category="output_format",
+                )
             out_text = stdout.decode("utf-8", errors="replace").strip()
             err_text = stderr.decode("utf-8", errors="replace").strip()
-            if not out_text:
+
+            # 成功必须是「正常退出 + 恰好一行合法 JSON + 字段类型对」。以前只看
+            # 最后一行 JSON：工具自己打印一行形似成功的结果（甚至接着以非零码
+            # 退出）也会被当成 ok=True —— 协议的可信度就是这么丢掉的。
+            if process.returncode != 0:
                 return SandboxResult(
                     ok=False, value=None, stdout=out_text, stderr=err_text,
                     error=(
-                        f"工具执行程序没有返回结果（exit code {process.returncode}）"
+                        f"工具执行程序异常退出（exit code {process.returncode}）："
+                        "结果不可信，已按失败处理。"
                     ),
-                    category="startup" if process.returncode != 0 else "output_format",
+                    category="startup",
+                )
+            if not out_text:
+                return SandboxResult(
+                    ok=False, value=None, stdout=out_text, stderr=err_text,
+                    error="工具执行程序没有返回结果",
+                    category="output_format",
+                )
+            lines = [line for line in out_text.splitlines() if line.strip()]
+            if len(lines) != 1:
+                return SandboxResult(
+                    ok=False, value=None, stdout=out_text, stderr=err_text,
+                    error=f"结果通道必须恰好一行 JSON（实际 {len(lines)} 行）",
+                    category="output_format",
                 )
             try:
-                payload = json.loads(out_text.splitlines()[-1])
-            except (json.JSONDecodeError, IndexError):
+                payload = json.loads(lines[0])
+            except json.JSONDecodeError:
                 return SandboxResult(
                     ok=False, value=None, stdout=out_text, stderr=err_text,
                     error="工具执行程序返回的不是合法 JSON 结果",
+                    category="output_format",
+                )
+            if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+                return SandboxResult(
+                    ok=False, value=None, stdout=out_text, stderr=err_text,
+                    error="工具执行程序的返回结果缺少布尔字段 ok",
                     category="output_format",
                 )
             tool_stdout = str(payload.get("stdout") or "")
@@ -317,9 +448,17 @@ class SandboxExecutor:
                     error=str(payload.get("error") or "工具执行失败"),
                     category=_category_for(payload.get("error_type"), tool_stderr),
                 )
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                return SandboxResult(
+                    ok=False, value=None, stdout=tool_stdout,
+                    stderr=tool_stderr or err_text,
+                    error="工具执行程序声称成功但 value 不是 JSON 对象",
+                    category="output_format",
+                )
             return SandboxResult(
                 ok=True,
-                value=payload.get("value") or {},
+                value=value,
                 stdout=tool_stdout,
                 stderr=tool_stderr,
             )

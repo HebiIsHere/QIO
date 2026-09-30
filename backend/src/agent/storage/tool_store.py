@@ -46,6 +46,23 @@ class ToolStore:
                 continue  # skip corrupt rows, keep the rest
         return definitions
 
+    def load(self, name: str) -> ToolDefinition | None:
+        """读回某个工具当前生效的定义；没有（或已移除）返回 None。
+
+        注册流程用它保存「上一可用版本」：注册或落库失败时回滚到这个版本，
+        而不是把用户原来能用的工具一起弄没。
+        """
+        row = self.conn.execute(
+            "SELECT definition FROM tools WHERE name = ? AND status = 'active'",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return ToolDefinition(**json.loads(row["definition"]))
+        except Exception:
+            return None
+
     def remove(self, name: str) -> None:
         self.conn.execute(
             "UPDATE tools SET status = 'removed', updated_at = ? WHERE name = ?",

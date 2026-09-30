@@ -267,6 +267,131 @@ class _FakeCreds:
         self.scope[ref] = tool
 
 
+# ---------- 注册与持久化的可恢复顺序 ----------
+
+def _add_numbers_definition(name: str = "add_numbers"):
+    from agent.tools.spec import ToolDefinition
+
+    return ToolDefinition(
+        name=name, description="求和", tool_type="function",
+        code="def run(**kwargs):\n    return {'sum': kwargs['a'] + kwargs['b']}",
+        tests=[{"name": "t", "input": {"a": 1, "b": 2}, "expect": {"sum": 3}}],
+    )
+
+
+class _FailingStore:
+    """落库直接失败（磁盘错误），用来复现「注册成功但提交报失败」。"""
+
+    def __init__(self) -> None:
+        self.removed: list[str] = []
+
+    def load(self, name: str):
+        return None
+
+    def save(self, definition) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    def remove(self, name: str) -> None:
+        self.removed.append(name)
+
+
+class _RecordingStore:
+    """记录保存顺序，并保留一个「上一可用版本」。"""
+
+    def __init__(self, previous=None) -> None:
+        self.previous = previous
+        self.saved: list[str] = []
+        self.removed: list[str] = []
+
+    def load(self, name: str):
+        return self.previous
+
+    def save(self, definition) -> None:
+        self.saved.append(definition.name)
+
+    def remove(self, name: str) -> None:
+        self.removed.append(name)
+
+
+async def _lifecycle_with_store(store, registry=None):
+    from agent.tools.lifecycle import ToolLifecycle
+
+    class ScriptedAdapter:
+        mode = "native"
+
+        async def complete(self, messages, tools, **kwargs):
+            from agent.adapters.base import ChatMessage, Completion
+
+            return Completion(message=ChatMessage(role="assistant", content="ok"))
+
+    bus = EventBus()
+    registry = registry or ToolRegistry()
+    lifecycle = ToolLifecycle(
+        adapter=ScriptedAdapter(),
+        approvals=ApprovalService(bus, timeout_seconds=5),
+        sandbox=SandboxExecutor(executor="subprocess"),
+        registry=registry,
+        tool_store=store,
+    )
+    task = asyncio.create_task(_auto_approve(bus, lifecycle.approvals))
+    await asyncio.sleep(0.05)
+    return lifecycle, registry, task, bus
+
+
+async def test_store_failure_does_not_leave_tool_registered(db_conn: sqlite3.Connection):
+    store = _FailingStore()
+    lifecycle, registry, task, bus = await _lifecycle_with_store(store)
+    try:
+        outcome = await lifecycle.submit_definition(
+            _add_numbers_definition(), "计算两个数之和", skip_tests=True
+        )
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert not outcome.ok and outcome.step == "register"
+    # 关键：内存注册表里不能留下一个「界面说没成功、实际能调用」的工具
+    assert registry.get("add_numbers") is None
+
+
+async def test_register_failure_restores_previous_persisted_version(
+    db_conn: sqlite3.Connection,
+):
+    previous = _add_numbers_definition()
+    registry = ToolRegistry()
+    registry.register(_DummyTool("add_numbers"))
+    store = _RecordingStore(previous=previous)
+    lifecycle, registry, task, bus = await _lifecycle_with_store(store, registry)
+    try:
+        outcome = await lifecycle.submit_definition(
+            _add_numbers_definition(), "计算两个数之和", skip_tests=True
+        )
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert not outcome.ok
+    # 先写了新版本，注册失败（重名）后必须把上一可用版本写回去
+    assert store.saved == ["add_numbers", "add_numbers"]
+    assert store.removed == []
+
+
+class _DummyTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.description = "dummy"
+        self.parameters = {"type": "object", "properties": {}}
+
+    async def run(self, **kwargs):
+        from agent.tools.base import ToolResult
+
+        return ToolResult(ok=True, content="{}")
+
+
 async def test_subagent_tool_stub_fallback_without_wiring(db_conn: sqlite3.Connection):
     proposal = dict(GOOD_PROPOSAL)
     proposal["tool"] = dict(

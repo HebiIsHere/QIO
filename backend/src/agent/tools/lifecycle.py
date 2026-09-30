@@ -44,6 +44,10 @@ class ToolOutcome:
     tool_name: str | None
     step: str
     detail: str
+    # 提交路径上的交叉复测结论（给上层写回任务记录用）。子 agent 型工具没有
+    # 确定性测试，这两个字段保持 None。
+    test_passed: bool | None = None
+    test_summary: str | None = None
 
 
 class ToolLifecycle:
@@ -112,15 +116,22 @@ class ToolLifecycle:
         *,
         skip_tests: bool = False,
         group_id: str | None = None,
+        test_sink: Callable[[bool, str], None] | None = None,
     ) -> ToolOutcome:
         """Direct-submit path (dev workflow): test -> approve -> register.
 
         The deterministic cross-test is re-run as a double check (the
         submitting agent may have run tests itself). subagent tools skip it.
+
+        `test_sink` 在复测跑完、**任何对外事件之前**被调用一次：上层据此把
+        「这一版内容的测试结论」先可靠落盘，再让审批/注册/完成事件出去 ——
+        否则进程在事件之后崩掉，任务记录就会停在旧的「测试通过」上。
         """
         report = None
         if not skip_tests and definition.tool_type == "function":
             report = await self.tester.run(definition)
+            if test_sink is not None:
+                test_sink(report.passed, report.summary)
             if not report.passed:
                 await self.status.emit(
                     group_id,
@@ -135,10 +146,16 @@ class ToolLifecycle:
                     definition.name,
                     "test",
                     f"cross-test failed: {report.summary}",
+                    test_passed=False,
+                    test_summary=report.summary,
                 )
-        return await self._approve_and_register(
+        outcome = await self._approve_and_register(
             definition, explanation, report, group_id=group_id
         )
+        if report is not None:
+            outcome.test_passed = report.passed
+            outcome.test_summary = report.summary
+        return outcome
 
     async def _approve_and_register(
         self,
@@ -262,11 +279,33 @@ class ToolLifecycle:
             label="正在注册",
             tool_name=definition.name,
         )
+        # 顺序：先持久化，再注册。以前是先注册再 save：save 抛磁盘错误时，
+        # 提交回「失败」，但工具已经躺在内存注册表里可以调用了 —— 界面说没
+        # 成功、系统里却多了一个可用工具。现在任何一步失败都回滚到未注册状态，
+        # 并且持久层保留上一可用版本。
+        previous: ToolDefinition | None = None
+        if self.tool_store is not None:
+            previous = self.tool_store.load(definition.name)
+        registered = False
         try:
-            self._register(definition)
             if self.tool_store is not None:
                 self.tool_store.save(definition)
-        except ValueError as exc:
+            self._register(definition)
+            registered = True
+        except Exception as exc:  # noqa: BLE001 - 注册/落库失败都要回到干净状态
+            if registered:
+                self._unregister(definition.name)
+            if self.tool_store is not None:
+                try:
+                    if previous is not None:
+                        self.tool_store.save(previous)
+                    else:
+                        self.tool_store.remove(definition.name)
+                except Exception:  # noqa: BLE001 - 回滚本身失败只记日志
+                    logger.warning(
+                        "failed to roll back persisted tool %s", definition.name,
+                        exc_info=True,
+                    )
             await self.status.emit(
                 group_id,
                 PHASE_FAILED,
@@ -307,6 +346,16 @@ class ToolLifecycle:
         else:
             tool = CodeTool(definition, self.sandbox, credentials=self.credentials)
         self._registry_disposers[definition.name] = self.registry.register(tool)
+
+    def _unregister(self, name: str) -> None:
+        """撤销本次已经完成的注册（回滚用）。
+
+        只认本次注册留下的 disposer：不碰别人注册的同名工具，也不做
+        「按名字删一个不知道哪来的工具」这种危险兜底。
+        """
+        disposer = self._registry_disposers.pop(name, None)
+        if disposer is not None:
+            disposer()
 
     def revoke_tool(self, name: str) -> bool:
         """撤销工具：真正从注册表移除（disposer），并在持久层标记 removed。"""

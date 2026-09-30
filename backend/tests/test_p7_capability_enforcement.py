@@ -56,10 +56,26 @@ async def test_pure_tool_has_no_credential_environment(monkeypatch):
     assert not any(k.startswith("QIO_KEY_") for k in keys)
     assert "QIO_PARENT_ONLY_MARKER" not in keys
 
-    # 沙箱只透传这四个变量。但解释器自己会往子进程环境里补 locale/UTF-8 变量
-    # （POSIX 上 CPython 的 C locale 强制转换，PEP 538/540：LC_CTYPE 等）——
-    # 那是 Python 的行为，不是我们把父进程环境透传给了工具。
-    allowlist = {"PATH", "TEMP", "TMP", "PYTHONIOENCODING"}
+    # 沙箱只透传一份显式白名单：跑起来需要的系统变量（Windows 的系统 API 依赖
+    # SystemRoot / WINDIR 等）+ 临时目录 + 固定编码。白名单之外的父进程环境
+    # 一律不进去（上面两个 canary 就是这条性质的哨兵）。
+    # 解释器自己还会往子进程环境里补 locale/UTF-8 变量（POSIX 上 CPython 的
+    # C locale 强制转换，PEP 538/540：LC_CTYPE 等）——那是 Python 的行为，
+    # 不是我们把父进程环境透传给了工具。
+    allowlist = {
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "PYTHONIOENCODING",
+    }
     interpreter_injected = {"LC_CTYPE", "LC_ALL", "LANG", "PYTHONUTF8", "PYTHONCOERCECLOCALE"}
     assert keys <= allowlist | interpreter_injected, sorted(keys - allowlist - interpreter_injected)
 

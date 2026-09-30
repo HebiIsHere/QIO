@@ -27,12 +27,55 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import json
 import sys
 import traceback
 
 RESULT_LIMIT_CHARS = 200_000
+_TRUNCATION_MARK = "\n…[输出已截断]"
+
+
+class _CappedBuffer:
+    """只保留前 `limit` 个字符的捕获缓冲（超出部分丢弃并标记截断）。
+
+    `contextlib.redirect_stdout` 需要一个 `.write()` / `.flush()`；工具的一次
+    `print('x' * 10**9)` 不该先把 worker 的内存吃光再在最后截断 —— 限制必须
+    发生在写入的那一刻。
+    """
+
+    def __init__(self, limit: int = RESULT_LIMIT_CHARS) -> None:
+        self._limit = limit
+        self._parts: list[str] = []
+        self._size = 0
+        self.truncated = False
+
+    def write(self, text: object) -> int:
+        if not isinstance(text, str):
+            text = str(text)
+        room = self._limit - self._size
+        if room > 0:
+            chunk = text[:room]
+            self._parts.append(chunk)
+            self._size += len(chunk)
+        if len(text) > room:
+            self.truncated = True
+        return len(text)
+
+    def writelines(self, lines) -> None:  # noqa: ANN001 - 与 StringIO 同形
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        return None
+
+    def getvalue(self) -> str:
+        text = "".join(self._parts)
+        if not self.truncated:
+            return text
+        # 标记必须留在上限之内，否则外面再截一次就会把「已截断」这半句剪掉，
+        # 读的人只看到一长串正常输出、以为这就是全部。
+        keep = max(0, self._limit - len(_TRUNCATION_MARK))
+        return text[:keep] + _TRUNCATION_MARK
 
 
 def _dump(obj: object) -> str:
@@ -47,8 +90,8 @@ def execute(payload: dict) -> dict:
     if not isinstance(arguments, dict):
         arguments = {}
 
-    captured_out = io.StringIO()
-    captured_err = io.StringIO()
+    captured_out = _CappedBuffer()
+    captured_err = _CappedBuffer()
     namespace: dict = {}
     try:
         compiled = compile(code, "<tool>", "exec")
@@ -90,7 +133,7 @@ def execute(payload: dict) -> dict:
     }
 
 
-def _error_result(exc: BaseException, out: io.StringIO, err: io.StringIO) -> dict:
+def _error_result(exc: BaseException, out: _CappedBuffer, err: _CappedBuffer) -> dict:
     detail = str(exc).strip() or "（异常没有给出说明）"
     return {
         "ok": False,

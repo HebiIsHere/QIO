@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import hashlib
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,6 +26,28 @@ _REQUEST_MARKER = "# 开发需求"
 # 开发任务状态文件（提交 / 测试 / 内容摘要）。放在工作区目录里，
 # 与已有 `ws_*` 成果同源：重启后可以原样读回，不依赖内存表。
 _STATE_FILE = "state.json"
+# 权威状态文件的格式版本与来源标记：读回时必须同时对上，否则按「未知」处理。
+# 只认自己写的那一份，避免把外部/旧格式的 state.json 当成证据。
+_STATE_SCHEMA = 2
+_STATE_SOURCE = "qio.dev_workspace"
+# 后端独占的保留文件：文件工具不得写入。agent 只能改「项目内容」，
+# 不能改「权威记录」。（诚实边界：同权限子进程仍能直接改磁盘上的文件，
+# 保留名只是挡住了文件工具这条路径，不是完整安全边界。）
+_RESERVED_NAMES = frozenset({_STATE_FILE, "request.md"})
+# 测试证据的三态：没有证据 / 证据对应当前内容 / 证据已过期。
+EVIDENCE_NONE = "none"
+EVIDENCE_CURRENT = "current"
+EVIDENCE_STALE = "stale"
+_EVIDENCE_STATES = frozenset({EVIDENCE_NONE, EVIDENCE_CURRENT, EVIDENCE_STALE})
+
+
+def _is_digest(value: object) -> bool:
+    """sha256 十六进制摘要的形状校验（证据字段必须长这样才可信）。"""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
 
 
 def _now() -> str:
@@ -43,7 +66,7 @@ def _read_request(task_dir: Path) -> str:
 
 
 def _read_state(task_dir: Path) -> dict:
-    """读回工作区状态；缺失或损坏时回空字典（调用方按「未知」处理）。"""
+    """读回工作区状态；缺失、损坏、schema/来源对不上时回空字典（按「未知」处理）。"""
     try:
         raw = (task_dir / _STATE_FILE).read_text(encoding="utf-8")
     except OSError:
@@ -52,12 +75,19 @@ def _read_state(task_dir: Path) -> dict:
         data = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    if data.get("schema") != _STATE_SCHEMA or data.get("source") != _STATE_SOURCE:
+        # 旧格式 / 手写的 state.json：不认，一律回「未知」，绝不由此推断测试通过。
+        return {}
+    return data
 
 
 def _write_state(task: "DevTask") -> None:
     """落盘任务状态（尽力而为：写不进去也不能让工具调用失败）。"""
     payload = {
+        "schema": _STATE_SCHEMA,
+        "source": _STATE_SOURCE,
         "id": task.id,
         "request": task.request,
         "created_at": task.created_at,
@@ -67,6 +97,8 @@ def _write_state(task: "DevTask") -> None:
         "last_test_passed": task.last_test_passed,
         "last_test_summary": task.last_test_summary,
         "last_test_at": task.last_test_at,
+        "last_test_digest": task.last_test_digest,
+        "evidence_state": task.evidence_state,
         "submitted_digest": task.submitted_digest,
         "submitted_at": task.submitted_at,
     }
@@ -91,6 +123,9 @@ class DevTask:
     last_test_passed: bool | None = None
     last_test_summary: str | None = None
     last_test_at: str | None = None
+    # 这条测试证据对应的内容摘要（版本标识）：文件一变，证据立即失效。
+    last_test_digest: str | None = None
+    evidence_state: str = EVIDENCE_NONE
     submitted_digest: str | None = None
     submitted_at: str | None = None
 
@@ -126,7 +161,18 @@ class DevWorkspace:
                 created = datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc)
             except OSError:
                 created = datetime.now(timezone.utc)
-            self._tasks[entry.name] = DevTask(
+            last_test_digest = state.get("last_test_digest")
+            last_test_passed = state.get("last_test_passed")
+            evidence_state = state.get("evidence_state")
+            # 证据字段必须自洽：摘要形状不对、没有结论、状态词不认识，都回「没有证据」。
+            if (
+                evidence_state not in _EVIDENCE_STATES
+                or not _is_digest(last_test_digest)
+                or not isinstance(last_test_passed, bool)
+            ):
+                evidence_state = EVIDENCE_NONE
+                last_test_digest = None
+            task = DevTask(
                 id=entry.name,
                 request=_read_request(entry),
                 dir=entry,
@@ -134,12 +180,22 @@ class DevWorkspace:
                 submitted=bool(state.get("submitted", False)),
                 test_runs=int(state.get("test_runs", 0) or 0),
                 phase=state.get("phase"),
-                last_test_passed=state.get("last_test_passed"),
+                last_test_passed=last_test_passed if evidence_state != EVIDENCE_NONE else None,
                 last_test_summary=state.get("last_test_summary"),
                 last_test_at=state.get("last_test_at"),
+                last_test_digest=last_test_digest,
+                evidence_state=evidence_state,
                 submitted_digest=state.get("submitted_digest"),
                 submitted_at=state.get("submitted_at"),
             )
+            self._tasks[entry.name] = task
+            # 磁盘内容可能被外部改过（包括越权的同权限子进程）：对不上就当证据过期。
+            if (
+                task.evidence_state == EVIDENCE_CURRENT
+                and task.last_test_digest != self.content_digest(task.id)
+            ):
+                task.evidence_state = EVIDENCE_STALE
+                _write_state(task)
 
     # -- lifecycle --------------------------------------------------------
 
@@ -183,6 +239,12 @@ class DevWorkspace:
         if task is None:
             return {}
         files = self.list_files(task_id)
+        digest = self.content_digest(task_id)
+        # 兜底重算：文件可能在工具之外被改（例如同权限子进程），
+        # 只要摘要对不上，这条测试证据就不再算数。
+        evidence_state = task.evidence_state
+        if evidence_state == EVIDENCE_CURRENT and task.last_test_digest != digest:
+            evidence_state = EVIDENCE_STALE
         return {
             "id": task.id,
             "request": task.request,
@@ -193,18 +255,44 @@ class DevWorkspace:
             "last_test_passed": task.last_test_passed,
             "last_test_summary": task.last_test_summary,
             "last_test_at": task.last_test_at,
+            "last_test_digest": task.last_test_digest,
+            "evidence_state": evidence_state,
+            # 「现在就能拿测试通过当结论吗」：只有对应当前内容的证据才算数。
+            "test_evidence_current": evidence_state == EVIDENCE_CURRENT,
             "submitted_digest": task.submitted_digest,
             "submitted_at": task.submitted_at,
             "files": files,
-            "content_digest": self.content_digest(task_id),
+            "content_digest": digest,
         }
 
     def cleanup(self, task_id: str) -> None:
+        """删掉工作区目录（只用于明确要丢弃的临时工作区）。"""
         task = self._tasks.pop(task_id, None)
         if task is not None:
-            import shutil
-
             shutil.rmtree(task.dir, ignore_errors=True)
+
+    def archive(self, task_id: str) -> Path | None:
+        """把已完成的项目复制成不可变记录。
+
+        提交成功后不再删除工作区：项目文件、需求、测试证据与状态都是
+        「已完成任务」的一部分，重启、更新与修复都要靠它。这里额外留一份
+        只读快照，保证之后在工作区里的继续改动不会覆盖已提交版本。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return None
+        target = self.root_dir / "archive" / task_id
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for path in sorted(task.dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                dest = target / path.relative_to(task.dir)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, dest)
+        except OSError:
+            return None
+        return target
 
     def mark_submitted(self, task_id: str) -> None:
         task = self._tasks.get(task_id)
@@ -216,7 +304,12 @@ class DevWorkspace:
             _write_state(task)
 
     def record_test(self, task_id: str, passed: bool, summary: str) -> None:
-        """记录一次测试的权威结果（通过/失败 + 摘要 + 时刻）。"""
+        """记录一次测试的权威结果（通过/失败 + 摘要 + 时刻 + 被测内容摘要）。
+
+        证据绑定「被测内容」：只记「测试通过了」而不记跑的是哪一版，内容一改
+        旧结论就变成了假证据（真实缺口：测试通过后把代码改成错的，任务列表
+        仍然显示测试通过）。
+        """
         task = self._tasks.get(task_id)
         if task is None:
             return
@@ -224,6 +317,8 @@ class DevWorkspace:
         task.last_test_passed = bool(passed)
         task.last_test_summary = summary
         task.last_test_at = _now()
+        task.last_test_digest = self.content_digest(task_id)
+        task.evidence_state = EVIDENCE_CURRENT
         task.phase = "testing_passed" if passed else "testing_failed"
         _write_state(task)
 
@@ -248,12 +343,24 @@ class DevWorkspace:
         return path
 
     def write_file(self, task_id: str, name: str, content: str) -> None:
+        if name in _RESERVED_NAMES:
+            raise ValueError(f"{name} 由后端维护，不能通过文件工具写入")
         path = self._resolve(task_id, name)
         if path is None:
             raise KeyError(f"workspace not found: {task_id}")
         if len(content) > MAX_FILE_SIZE:
             raise ValueError("file content too large")
         path.write_text(content, encoding="utf-8")
+        self._refresh_evidence(task_id)
+
+    def _refresh_evidence(self, task_id: str) -> None:
+        """内容变了就让已有测试证据立即失效（并落盘，重启后不会复活）。"""
+        task = self._tasks.get(task_id)
+        if task is None or task.evidence_state != EVIDENCE_CURRENT:
+            return
+        if task.last_test_digest != self.content_digest(task_id):
+            task.evidence_state = EVIDENCE_STALE
+            _write_state(task)
 
     def read_file(self, task_id: str, name: str) -> str | None:
         path = self._resolve(task_id, name)

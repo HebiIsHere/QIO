@@ -120,8 +120,9 @@ async def test_full_dev_workflow_registers_tool(ctx: AppContext, monkeypatch):
     assert "工具已开发完成" in (result.final_content or "")
     tool = ctx.registry.get("dev_add")
     assert tool is not None, "tool should be registered"
-    # 工作区已清理
-    assert ctx.dev_workspaces.task(ws.id) is None
+    # 工作区保留：已完成任务的项目文件、需求与测试证据都要留下来
+    assert ctx.dev_workspaces.task(ws.id) is not None
+    assert ctx.dev_workspaces.status(ws.id)["submitted"] is True
     # 新工具可调用
     r = await tool.run(a=2, b=3)
     assert r.ok and r.content == '{"sum": 5}'

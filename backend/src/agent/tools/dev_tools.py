@@ -225,10 +225,17 @@ class DevListTasksTool(Tool):
         lines: list[str] = []
         for task in tasks:
             status = self.workspaces.status(task.id)
-            if status.get("last_test_passed") is None:
+            if status.get("test_evidence_current"):
+                test = "测试通过" if status["last_test_passed"] else "测试失败"
+            elif status.get("last_test_passed") is None:
                 test = "未测试"
             else:
-                test = "测试通过" if status["last_test_passed"] else "测试失败"
+                # 有结论但内容已经改过：旧结论不再是可用证据，必须照实说。
+                test = (
+                    "测试通过（内容已变更，证据失效，需重跑）"
+                    if status["last_test_passed"]
+                    else "测试失败（内容已变更，证据失效）"
+                )
             phase = status.get("phase") or "未知"
             submitted = "已提交" if status.get("submitted") else "未提交"
             lines.append(
@@ -388,10 +395,19 @@ class DevSubmitTool(Tool):
                     ),
                 )
         digest = self.workspaces.content_digest(workspace)
+
+        def record_retest(passed: bool, summary: str) -> None:
+            """提交前的交叉复测结果写回同一个任务。
+
+            复测是在**当前工作区内容**上跑的：它既代替了可能已失效的旧证据，
+            也保证「提交用的版本」和「任务记录里的测试结论」是同一版。
+            """
+            self.workspaces.record_test(workspace, passed, summary)
+
         try:
             lifecycle = await self.lifecycle_builder()
             outcome = await lifecycle.submit_definition(
-                definition, explanation, group_id=workspace
+                definition, explanation, group_id=workspace, test_sink=record_retest
             )
         except Exception as exc:  # noqa: BLE001 - isolation
             await self.status.emit(
@@ -403,8 +419,11 @@ class DevSubmitTool(Tool):
             )
             return ToolResult(ok=False, error=f"提交失败：{type(exc).__name__}: {exc}")
         if outcome.ok:
+            # 完成的任务必须留下来：项目文件、需求与测试证据是重启、更新和
+            # 修复的依据。以前这里直接 rmtree，工具注册了但工作区没了，
+            # 任务再也枚举不到。
             self.workspaces.mark_submitted(workspace)
-            self.workspaces.cleanup(workspace)
+            self.workspaces.archive(workspace)
             return ToolResult(
                 ok=True,
                 content=f"工具 {definition.name} 已注册（内容摘要 {str(digest)[:12]}）。",

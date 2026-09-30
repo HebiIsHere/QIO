@@ -207,7 +207,7 @@ async def test_dev_run_tests_pass_and_fail():
     assert r2.ok is False and "assertion" in (r2.error or "")
 
 
-async def test_dev_submit_maps_outcome_and_cleans():
+async def test_dev_submit_maps_outcome_and_keeps_project():
     ws = DevWorkspace(Path_factory())
     task = ws.create("x")
     calls = {"n": 0}
@@ -220,8 +220,13 @@ async def test_dev_submit_maps_outcome_and_cleans():
         return ToolOutcome(True, "add_numbers", "registered", "ok")
 
     class FakeLifecycle:
-        async def submit_definition(self, definition, explanation, *, group_id=None):
+        async def submit_definition(
+            self, definition, explanation, *, group_id=None, test_sink=None
+        ):
             calls["group_id"] = group_id
+            # 复测发生在提交路径内部：结论必须在事件之前落回同一个任务
+            if test_sink is not None:
+                test_sink(True, "2/2 tests passed")
             return await fake_submit(definition, explanation)
 
     async def builder():
@@ -240,8 +245,14 @@ async def test_dev_submit_maps_outcome_and_cleans():
     assert calls["n"] == 1
     # 同一张卡靠 group_id 串起来：提交时必须把工作区 id 传下去
     assert calls["group_id"] == task.id
-    # 成功后清理
-    assert ws.task(task.id) is None
+    # 成功后**保留**项目：文件、需求与测试证据都是已完成任务的一部分
+    assert ws.task(task.id) is not None
+    state = ws.status(task.id)
+    assert state["submitted"] is True
+    assert state["last_test_summary"] == "2/2 tests passed"
+    assert state["test_evidence_current"] is True
+    # 另留一份不可变快照，之后在工作区继续改动不会覆盖已提交版本
+    assert (ws.root_dir / "archive" / task.id / "state.json").exists()
     # 提交以工作区为准：不必再传 definition 也能提交
     task3 = ws.create("y")
     ws.write_definition(task3.id, ToolDefinition(**definition))
@@ -379,3 +390,87 @@ def test_workspace_restore_tolerates_missing_request_file(tmp_path):
     assert task is not None
     assert task.request == ""
     assert ws.list_files(task.id) == []
+
+
+# ---------- 证据绑定内容：文件一变，旧结论立即失效 ----------
+
+def test_test_evidence_is_invalidated_when_content_changes(tmp_path):
+    """真实缺口：测试通过后把代码改成错的，任务列表仍显示「测试通过」。"""
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("x")
+    ws.record_test(task.id, True, "1/1 tests passed")
+    assert ws.status(task.id)["evidence_state"] == "current"
+
+    ws.write_file(task.id, "tool.py", "def run(**kwargs):\n    return 999")
+
+    state = ws.status(task.id)
+    assert state["evidence_state"] == "stale"
+    assert state["test_evidence_current"] is False
+    assert state["last_test_passed"] is True  # 历史保留，但不再是可用证据
+
+
+def test_stale_evidence_survives_restart(tmp_path):
+    root = tmp_path / "ws"
+    ws = DevWorkspace(root)
+    task = ws.create("x")
+    ws.record_test(task.id, True, "1/1 tests passed")
+    ws.write_file(task.id, "tool.py", "broken")
+
+    reborn = DevWorkspace(root)
+    state = reborn.status(task.id)
+    assert state["evidence_state"] == "stale"
+    assert state["test_evidence_current"] is False
+
+
+async def test_dev_list_tasks_does_not_claim_stale_pass():
+    ws = DevWorkspace(Path_factory())
+    task = ws.create("查文献")
+    ws.record_test(task.id, True, "1/1 tests passed")
+    ws.write_file(task.id, "tool.py", "def run(**kwargs):\n    return 999")
+    tool = DevListTasksTool(ws)
+    r = await tool.run()
+    assert r.ok
+    assert "证据失效" in r.content
+
+
+# ---------- state.json 是后端权威记录，不是普通文件 ----------
+
+def test_agent_cannot_forge_state_file(tmp_path):
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("x")
+    with pytest.raises(ValueError):
+        ws.write_file(task.id, "state.json", '{"last_test_passed": true, "test_runs": 99}')
+    with pytest.raises(ValueError):
+        ws.write_file(task.id, "request.md", "改掉需求")
+
+
+def test_restore_rejects_state_without_schema(tmp_path):
+    root = tmp_path / "ws"
+    ws = DevWorkspace(root)
+    task = ws.create("x")
+    (task.dir / "state.json").write_text(
+        '{"last_test_passed": true, "test_runs": 99}', encoding="utf-8"
+    )
+    restored = DevWorkspace(root).task(task.id)
+    assert restored is not None
+    assert restored.last_test_passed is None
+    assert restored.test_runs == 0
+    assert restored.evidence_state == "none"
+
+
+def test_restore_marks_evidence_stale_when_files_changed_out_of_band(tmp_path):
+    """越权改文件（受限子进程也能做到）之后，重启不能复活旧证据。"""
+    root = tmp_path / "ws"
+    ws = DevWorkspace(root)
+    task = ws.create("x")
+    ws.write_definition(task.id, ToolDefinition(
+        name="add_numbers", description="求和", tool_type="function",
+        code="def run(**kwargs):\n    return {'sum': 1}",
+        tests=[{"name": "t", "input": {}, "expect": {"sum": 1}}],
+    ))
+    ws.record_test(task.id, True, "1/1 tests passed")
+    # 绕过文件工具，直接改磁盘内容（等同越权子进程的行为）
+    (task.dir / "tool.json").write_text('{"name": "add_numbers"}', encoding="utf-8")
+
+    reborn = DevWorkspace(root)
+    assert reborn.status(task.id)["evidence_state"] == "stale"
