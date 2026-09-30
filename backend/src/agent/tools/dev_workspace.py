@@ -34,6 +34,8 @@ _STATE_SOURCE = "qio.dev_workspace"
 # 不能改「权威记录」。（诚实边界：同权限子进程仍能直接改磁盘上的文件，
 # 保留名只是挡住了文件工具这条路径，不是完整安全边界。）
 _RESERVED_NAMES = frozenset({_STATE_FILE, "request.md"})
+# 清单文件也不是项目模块：`tool.json` 描述工具，不参与工具自身的运行。
+_NON_PROJECT_NAMES = _RESERVED_NAMES | {"tool.json"}
 # 测试证据的三态：没有证据 / 证据对应当前内容 / 证据已过期。
 EVIDENCE_NONE = "none"
 EVIDENCE_CURRENT = "current"
@@ -245,6 +247,8 @@ class DevWorkspace:
             '  "sync": true,\n'
             '  "parameters": {},\n'
             '  "code": "",\n'
+            '  "entry": "",\n'
+            '  "requirements": [],\n'
             '  "tests": []\n'
             "}\n",
             encoding="utf-8",
@@ -509,6 +513,35 @@ class DevWorkspace:
             "tool.json",
             json.dumps(definition.model_dump(), ensure_ascii=False, indent=2),
         )
+
+    def project_files(self, task_id: str) -> dict[str, str]:
+        """项目模块（相对路径 → 内容）。
+
+        多文件项目里，`tool.json` 是清单、`request.md`/`state.json` 是后端记录，
+        都不算项目模块 —— 定义里只带真正要跟着工具走的代码。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {}
+        files: dict[str, str] = {}
+        for path in sorted(task.dir.rglob("*")):
+            if not path.is_file() or path.name in _NON_PROJECT_NAMES:
+                continue
+            rel = path.relative_to(task.dir).as_posix()
+            try:
+                files[rel] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # 二进制 / 读不到的文件不进定义：宁可少带，也不写半个内容。
+                continue
+        return files
+
+    def collect_definition(self, task_id: str) -> ToolDefinition | None:
+        """清单 + 项目文件 = 可以注册的完整定义（注册后自包含）。"""
+        definition = self.read_definition(task_id)
+        if definition is None:
+            return None
+        definition.files = self.project_files(task_id)
+        return definition
 
     def read_definition(self, task_id: str) -> ToolDefinition | None:
         raw = self.read_file(task_id, "tool.json")

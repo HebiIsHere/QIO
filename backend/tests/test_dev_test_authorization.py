@@ -76,6 +76,34 @@ from agent.tools import dev_auth
 from agent.tools.sandbox import SandboxExecutor
 
 
+async def test_approval_detail_declares_the_project_shape_and_dependencies(tmp_path):
+    """审批说明要说清「跑的是什么项目、依赖谁」——依赖本机不装，缺了会明确报错。"""
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("会联网的工具")
+    approvals = _FakeApprovals()
+    definition = ToolDefinition(
+        name="weather_fetch",
+        description="查天气",
+        code="import requests\n\ndef run(**kwargs):\n    return {'ok': True}",
+        requirements=["requests>=2.31"],
+        files={"pkg/__init__.py": "", "pkg/util.py": "X = 1\n"},
+        tests=[{"name": "t", "input": {}, "expect": {"ok": True}}],
+    )
+
+    await dev_auth.ensure_test_authorization(
+        workspaces=ws,
+        approvals=approvals,
+        sandbox=SandboxExecutor(executor="subprocess"),
+        task_id=task.id,
+        definition=definition,
+    )
+
+    detail = approvals.requests[0][1]["detail"]
+    assert "项目文件：2 个" in detail
+    assert "requests>=2.31" in detail
+    assert "不会自动安装" in detail
+
+
 async def test_without_an_approval_service_nothing_executes(tmp_path):
     """拿不到授权服务就没有授权 —— 明确阻断，而不是照旧执行。"""
     ws = DevWorkspace(tmp_path / "ws")
@@ -234,7 +262,9 @@ class _RecordingSandbox:
     async def effective_executor(self) -> str:
         return "subprocess"
 
-    async def execute(self, code, arguments, extra_env=None, policy=None) -> SandboxResult:
+    async def execute(
+        self, code, arguments, extra_env=None, policy=None, files=None, entry=None
+    ) -> SandboxResult:
         self.executions += 1
         return SandboxResult(ok=True, value={"ok": True}, stdout="", stderr="")
 

@@ -47,15 +47,24 @@ class CodeTool(Tool):
             key = (ref or "default").upper().replace("-", "_")
             extra_env[f"QIO_KEY_{key}"] = secret
         result = await self.sandbox.execute(
-            self.definition.code, kwargs, extra_env=extra_env, policy=policy
+            self.definition.code,
+            kwargs,
+            extra_env=extra_env,
+            policy=policy,
+            files=self.definition.files,
+            entry=self.definition.entry,
         )
         if not result.ok:
             # 失败要把 stderr / 退出码作为诊断一起交给模型，而不是只回一句
             # 「沙箱执行失败」；类别也带上，供统一反馈层与界面使用。
+            detail = result.diagnostic()
+            hint = self.definition.dependency_hint(result.error or detail)
+            if hint:
+                detail = f"{hint}\n{detail}" if detail else hint
             return ToolResult(
                 ok=False,
                 error=result.error or "沙箱执行失败",
-                content=result.diagnostic(),
+                content=detail,
                 category=result.category,
             )
         content = json.dumps(result.value, ensure_ascii=False)

@@ -332,7 +332,9 @@ class DevRunTestsTool(Tool):
         task = self.workspaces.task(workspace)
         if task is None:
             return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
-        definition = self.workspaces.read_definition(workspace)
+        # 测试跑的是**完整项目**（清单 + 工作区里的其它文件），不是单段代码：
+        # 否则多文件项目在测试阶段就已经 import 不到自己的模块。
+        definition = self.workspaces.collect_definition(workspace)
         if definition is None:
             return ToolResult(
                 ok=False,
@@ -452,8 +454,11 @@ class DevSubmitTool(Tool):
             )
         # 以工作区 tool.json 为唯一权威：模型不必再复述整份定义（重复输出容易与
         # 工作区文件、测试对象不一致）。若仍传了 definition，只用于核对一致性。
-        definition = self.workspaces.read_definition(workspace)
-        if definition is None:
+        # 清单（tool.json）是模型写的；完整定义 = 清单 + 工作区里的项目文件。
+        # 注册的必须是完整定义，否则注册后的工具 import 不到自己的模块。
+        manifest = self.workspaces.read_definition(workspace)
+        definition = self.workspaces.collect_definition(workspace)
+        if manifest is None or definition is None:
             await self.status.emit(
                 workspace,
                 PHASE_FAILED,
@@ -489,7 +494,8 @@ class DevSubmitTool(Tool):
                     ok=False, error=f"definition 不合法：{exc}",
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
-            if provided.model_dump() != definition.model_dump():
+            # 只核对模型写的清单：项目文件是后端从工作区收集的，不在模型职责内。
+            if provided.model_dump() != manifest.model_dump():
                 await self.status.emit(
                     workspace,
                     PHASE_FAILED,

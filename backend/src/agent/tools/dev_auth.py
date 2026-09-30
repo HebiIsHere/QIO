@@ -124,6 +124,16 @@ def _approval_payload(*, task_id: str, definition: Any, boundary: TestBoundary) 
         f"超时：{boundary.timeout_seconds:g} 秒，超时会结束这棵进程树",
         "生成代码：%s" % (getattr(definition, "name", "") or "（未命名）"),
     ]
+    # 多文件项目与依赖也属于「这次到底要跑什么」的一部分：说清项目里有几个文件、
+    # 声明了哪些第三方依赖（本机不会自动安装，缺了会明确报错）。
+    files = getattr(definition, "files", None) or {}
+    detail.append(f"项目文件：{len(files)} 个（另有入口代码）")
+    requirements = list(getattr(definition, "requirements", None) or [])
+    detail.append(
+        "声明的依赖：%s（不会自动安装；缺哪个会明确报出来）" % "、".join(requirements)
+        if requirements
+        else "声明的依赖：无（只用标准库）"
+    )
     detail.append(
         "凭据：不注入真实凭据，凭据相关的分支本次是模拟的"
         if boundary.credentials_simulated
