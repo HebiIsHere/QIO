@@ -1,0 +1,1036 @@
+{
+  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1",
+  "rules": {
+    "n": 44,
+    "accuracy": 0.8182,
+    "split_recall": 0.3333,
+    "false_split": 0,
+    "missed_split": 8,
+    "wrong_split_ids": [],
+    "missed_split_ids": [
+      "b08",
+      "b11",
+      "b12",
+      "b13",
+      "b14",
+      "b15",
+      "b16",
+      "b17"
+    ],
+    "per_category": {
+      "correction": {
+        "n": 5,
+        "ok": 5,
+        "wrong": []
+      },
+      "hypothetical": {
+        "n": 3,
+        "ok": 3,
+        "wrong": []
+      },
+      "negated": {
+        "n": 3,
+        "ok": 3,
+        "wrong": []
+      },
+      "new_goal": {
+        "n": 4,
+        "ok": 0,
+        "wrong": [
+          {
+            "id": "b14",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b15",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b16",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b17",
+            "expected": "split",
+            "actual": "continue"
+          }
+        ]
+      },
+      "quoted": {
+        "n": 2,
+        "ok": 2,
+        "wrong": []
+      },
+      "return_to_task": {
+        "n": 3,
+        "ok": 3,
+        "wrong": []
+      },
+      "same_stage_continue": {
+        "n": 6,
+        "ok": 6,
+        "wrong": []
+      },
+      "short_ack": {
+        "n": 6,
+        "ok": 6,
+        "wrong": []
+      },
+      "side_branch": {
+        "n": 4,
+        "ok": 4,
+        "wrong": []
+      },
+      "stage_change": {
+        "n": 8,
+        "ok": 4,
+        "wrong": [
+          {
+            "id": "b08",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b11",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b12",
+            "expected": "split",
+            "actual": "continue"
+          },
+          {
+            "id": "b13",
+            "expected": "split",
+            "actual": "continue"
+          }
+        ]
+      }
+    }
+  },
+  "semantic_curve": [
+    {
+      "threshold": 0.3,
+      "n": 44,
+      "accuracy": 0.8182,
+      "split_recall": 0.3333,
+      "false_split": 0,
+      "missed_split": 8,
+      "wrong_split_ids": [],
+      "missed_split_ids": [
+        "b08",
+        "b11",
+        "b12",
+        "b13",
+        "b14",
+        "b15",
+        "b16",
+        "b17"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 5,
+          "wrong": []
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b14",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b16",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b17",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 4,
+          "wrong": []
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 4,
+          "wrong": [
+            {
+              "id": "b08",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b12",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b13",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.35,
+      "n": 44,
+      "accuracy": 0.8409,
+      "split_recall": 0.4167,
+      "false_split": 0,
+      "missed_split": 7,
+      "wrong_split_ids": [],
+      "missed_split_ids": [
+        "b08",
+        "b11",
+        "b12",
+        "b14",
+        "b15",
+        "b16",
+        "b17"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 5,
+          "wrong": []
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b14",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b16",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b17",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 4,
+          "wrong": []
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 5,
+          "wrong": [
+            {
+              "id": "b08",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b12",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.4,
+      "n": 44,
+      "accuracy": 0.7955,
+      "split_recall": 0.4167,
+      "false_split": 2,
+      "missed_split": 7,
+      "wrong_split_ids": [
+        "b30",
+        "b31"
+      ],
+      "missed_split_ids": [
+        "b08",
+        "b11",
+        "b12",
+        "b14",
+        "b15",
+        "b16",
+        "b17"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 5,
+          "wrong": []
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b14",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b16",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b17",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 2,
+          "wrong": [
+            {
+              "id": "b30",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b31",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 5,
+          "wrong": [
+            {
+              "id": "b08",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b12",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.45,
+      "n": 44,
+      "accuracy": 0.75,
+      "split_recall": 0.5833,
+      "false_split": 6,
+      "missed_split": 5,
+      "wrong_split_ids": [
+        "b01",
+        "b02",
+        "b05",
+        "b29",
+        "b30",
+        "b31"
+      ],
+      "missed_split_ids": [
+        "b11",
+        "b12",
+        "b14",
+        "b15",
+        "b16"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 5,
+          "wrong": []
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 1,
+          "wrong": [
+            {
+              "id": "b14",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b16",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 3,
+          "wrong": [
+            {
+              "id": "b01",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b02",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b05",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 1,
+          "wrong": [
+            {
+              "id": "b29",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b30",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b31",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 6,
+          "wrong": [
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b12",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.5,
+      "n": 44,
+      "accuracy": 0.7273,
+      "split_recall": 0.75,
+      "false_split": 9,
+      "missed_split": 3,
+      "wrong_split_ids": [
+        "b00",
+        "b01",
+        "b02",
+        "b05",
+        "b24",
+        "b29",
+        "b30",
+        "b31",
+        "b32"
+      ],
+      "missed_split_ids": [
+        "b11",
+        "b12",
+        "b15"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 4,
+          "wrong": [
+            {
+              "id": "b24",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 3,
+          "wrong": [
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 2,
+          "wrong": [
+            {
+              "id": "b00",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b01",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b02",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b05",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b29",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b30",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b31",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b32",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 6,
+          "wrong": [
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            },
+            {
+              "id": "b12",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.55,
+      "n": 44,
+      "accuracy": 0.7045,
+      "split_recall": 0.8333,
+      "false_split": 11,
+      "missed_split": 2,
+      "wrong_split_ids": [
+        "b00",
+        "b01",
+        "b02",
+        "b05",
+        "b24",
+        "b29",
+        "b30",
+        "b31",
+        "b32",
+        "b33",
+        "b35"
+      ],
+      "missed_split_ids": [
+        "b11",
+        "b15"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 4,
+          "wrong": [
+            {
+              "id": "b24",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 3,
+          "wrong": [
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 1,
+          "wrong": [
+            {
+              "id": "b33",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b35",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 2,
+          "wrong": [
+            {
+              "id": "b00",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b01",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b02",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b05",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b29",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b30",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b31",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b32",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 7,
+          "wrong": [
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "threshold": 0.6,
+      "n": 44,
+      "accuracy": 0.6818,
+      "split_recall": 0.8333,
+      "false_split": 12,
+      "missed_split": 2,
+      "wrong_split_ids": [
+        "b00",
+        "b01",
+        "b02",
+        "b04",
+        "b05",
+        "b24",
+        "b29",
+        "b30",
+        "b31",
+        "b32",
+        "b33",
+        "b35"
+      ],
+      "missed_split_ids": [
+        "b11",
+        "b15"
+      ],
+      "per_category": {
+        "correction": {
+          "n": 5,
+          "ok": 4,
+          "wrong": [
+            {
+              "id": "b24",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "hypothetical": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "negated": {
+          "n": 3,
+          "ok": 3,
+          "wrong": []
+        },
+        "new_goal": {
+          "n": 4,
+          "ok": 3,
+          "wrong": [
+            {
+              "id": "b15",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        },
+        "quoted": {
+          "n": 2,
+          "ok": 2,
+          "wrong": []
+        },
+        "return_to_task": {
+          "n": 3,
+          "ok": 1,
+          "wrong": [
+            {
+              "id": "b33",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b35",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "same_stage_continue": {
+          "n": 6,
+          "ok": 1,
+          "wrong": [
+            {
+              "id": "b00",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b01",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b02",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b04",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b05",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "short_ack": {
+          "n": 6,
+          "ok": 6,
+          "wrong": []
+        },
+        "side_branch": {
+          "n": 4,
+          "ok": 0,
+          "wrong": [
+            {
+              "id": "b29",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b30",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b31",
+              "expected": "continue",
+              "actual": "split"
+            },
+            {
+              "id": "b32",
+              "expected": "continue",
+              "actual": "split"
+            }
+          ]
+        },
+        "stage_change": {
+          "n": 8,
+          "ok": 7,
+          "wrong": [
+            {
+              "id": "b11",
+              "expected": "split",
+              "actual": "continue"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "n": 44
+}

@@ -83,6 +83,16 @@ def _text_of(items: list) -> str:
     return "\n".join(item.text for item in items)
 
 
+def _sections(text: str, *, prefix: str) -> list[str]:
+    """按【小节标题】切块，返回标题以 prefix 开头的整块（标题 + 正文）。
+
+    只看标题行的断言是空转的：正文在标题的下一行。
+    """
+    import re
+
+    return [block for block in re.split(r"(?=【)", text) if block.startswith(prefix)]
+
+
 def test_path_premises_follow_the_chain_not_the_topic(ctx: AppContext):
     topic = _topic(ctx)
     _fragment(ctx, topic, "frag_a", summary="A：最初的前提")
@@ -96,11 +106,12 @@ def test_path_premises_follow_the_chain_not_the_topic(ctx: AppContext):
     # 直接来源是 A：它必须以「路径前提」的身份出现
     assert "【路径前提·直接来源】" in text
     assert "A：最初的前提" in text
-    # B/C 不在 D 的路径上：不能作为前提出现
-    premise_lines = [
-        line for line in text.splitlines() if line.startswith("【路径前提")
-    ]
-    assert not any("B：" in line or "C：" in line for line in premise_lines)
+    # B/C 不在 D 的路径上：不能作为前提出现。
+    # 注意按**整块**（标题 + 正文）判断 —— 摘要正文在标题的下一行，
+    # 只看标题行的话这条断言永远是空转的（查不出任何问题）。
+    premise_blocks = _sections(text, prefix="【路径前提")
+    assert premise_blocks, "D 的直接来源 A 必须作为前提出现"
+    assert not any("B：" in block or "C：" in block for block in premise_blocks)
     # 若 B/C 作为同话题背景出现，必须带「仅参考」标注
     for fragment_id in ("frag_b", "frag_c"):
         for item in items:
