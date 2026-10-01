@@ -1,5 +1,19 @@
 # 真实端到端验收记录（Agent G · 前端 / 打包 / 真机 E2E）
 
+> ## ⚠️ 先说清楚两件**没有**被证明的事
+>
+> **1. 本轮的 NSIS 安装包 E2E 没有执行。** 不是"没做完"，是**一步都没有跑**：
+> 安装 → 首次启动 → 打包后端启动 → 内置模型就位 → …… → 更新 → 卸载
+> **全部未验证**。原因是第 0 节的会话沙箱限制：安装器静默安装实测 `exit=2`，
+> 没有任何文件落地、注册表项也没有产生。第 5 节给出必须由**人在真机**上做的
+> 8 步清单；在有人按那 8 步留下证据之前，安装包这一路**不得**被读成"已验证"。
+> 本记录里所有"通过"的结论**都不覆盖安装包**。
+>
+> **2. 假厂商服务不是真实服务验证。** `scripts/e2e_fake_provider.py` 是一个本地
+> HTTP 服务，扮演厂商端点，让"真实界面 + 真实后端 + 真实 agent 循环"这条链路
+> 在没有真实 API Key 的前提下能跑起来。**它不能证明任何真实厂商的可用性、
+> 兼容性或网络行为**；用到它的结论只能读成"QIO 自己的链路对"。
+
 分支：`wt/agent-g-frontend-e2e`（基于 main `fbb350a`）
 日期：2026-10-02
 验证环境：Windows 11 + 本机 Chrome（headless CDP）、真实后端（uvicorn + SSE）、
@@ -48,15 +62,48 @@
 python scripts/release_gate.py --repo "<main 检出>"
 ```
 
-| 检查项 | 结果 | 说明 |
-| --- | --- | --- |
-| installer | PASS | QIO_0.1.10_x64-setup.exe（108.2 MB） |
-| installer.sha256 | PASS | 26434967d0bdc673… |
-| sha256sums | PASS | 与 dist/SHA256SUMS.txt 一致 |
-| latest.json.bom / version / url | PASS | 无 BOM、0.1.10 与 tauri.conf.json 一致、url 指向同一文件 |
-| latest.json.signature / installer.sig | PASS | 结构合法（alg=ED，key id=5af7e96c8e24bf8b 与内嵌公钥一致） |
-| nsis.payload | PASS | NSIS 标记 + 产品名 + 版本号（UTF-16LE）都在 |
-| sidecar | PASS | qio-backend-x86_64-pc-windows-msvc.exe（56.9 MB，2026-10-02 00:48） |
+**逐条结果（13 项：12 PASS + 1 FAIL）**：
+
+| # | 检查项 | 结果 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `tauri.conf.json` | PASS | 能读出并解析，`version=0.1.10` |
+| 2 | `installer` | PASS | 找到 QIO_0.1.10_x64-setup.exe，108.2 MB（>50 MB 下限） |
+| 3 | `installer.sha256` | PASS | 26434967d0bdc6737e8056a6665929e36d5e93f1a75e91be5d651c5884b08fb8 |
+| 4 | `sha256sums` | PASS | 与 dist/SHA256SUMS.txt 里记的哈希完全一致 |
+| 5 | `latest.json.bom` | PASS | 更新清单无 UTF-8 BOM（带 BOM 会让 Rust 侧 serde_json 直接解析失败） |
+| 6 | `latest.json.version` | PASS | 清单版本 0.1.10 == tauri.conf.json 版本 |
+| 7 | `latest.json.url` | PASS | 清单指向的文件名就是磁盘上这个安装包 |
+| 8 | `latest.json.signature` | PASS | 结构合法：alg=ED，key id=`5af7e96c8e24bf8b` 与 tauri.conf.json 内嵌公钥一致（**仅结构核对，未做 ed25519 验签**） |
+| 9 | `bundle.config` | PASS | externalBin 含 qio-backend、resources 含 models、createUpdaterArtifacts 开启 |
+| 10 | `nsis.payload` | PASS | 包内含 Nullsoft 标记、产品名 QIO、版本号 0.1.10（UTF-16LE） |
+| 11 | `installer.sig` | PASS | .sig 文件结构合法（alg=ED，key id 同上） |
+| 12 | `sidecar` | PASS | binaries/qio-backend-x86_64-pc-windows-msvc.exe 存在，56.9 MB，2026-10-02 00:48 |
+| 13 | **`sidecar.fresh`** | **FAIL** | **安装包（2026-09-29 17:11）比 sidecar（2026-10-02 00:48）旧：dist 里这个包包含的是更早构建的后端** |
+
+第 13 项之外还有一项 `models`，它在**staging 过模型的那个检出**里是 PASS
+（bge-small-zh-v1.5 的文件与 model_manifest.json 的 bytes+sha256 逐一对上），
+在没 staging 的检出里是 SKIP（并写明原因：构建前没跑 fetch_model.py）。
+命中不同状态的检出，`models` 会 PASS 或 SKIP，两者都不算失败。
+
+### 让 `sidecar.fresh` 变绿需要谁做什么
+
+这条**不是**脚本误报，也不是 QIO 的代码缺陷，而是发布产物的时序问题：
+
+1. **触发条件**：`frontend/src-tauri/binaries/qio-backend-*.exe` 的修改时间**晚于**
+   安装包。本轮实测 binaries 是 2026-10-02 00:48 重建的（冻结后端收敛那一路的产物），
+   而 dist 里的安装包是 2026-09-29 17:11 打的 → 已发布的包里装的是**更早的后端**。
+2. **谁来做**：Lead 在合并后（或任何一次真正的发布）执行
+   `powershell -File scripts/build_installer.ps1`，顺序为
+   fetch_model（staging 内置模型）→ build_sidecar（重建后端）→ tauri build（打包）→
+   生成更新清单；然后用新产物覆盖 dist/ 下的安装包、`.sig`、`latest.json`、`SHA256SUMS.txt`。
+3. **前置条件（本机缺）**：`TAURI_SIGNING_PRIVATE_KEY`（或
+   `TAURI_SIGNING_PRIVATE_KEY_PATH`）+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+   私钥文件在 `dist/qio-updater.key`，但**口令不在本机任何地方**，
+   所以本轮**没有**重新产出安装包（也不会去猜口令）。
+4. **做完之后**：`python scripts/release_gate.py --repo <检出>` 应当 13 项全绿。
+   如果 `sidecar.fresh` 仍然红，说明 tauri build 用的是旧 sidecar ——
+   这正是这条检查要拦的事故（历史上出过一次：包里的后端比源码早一个多月，
+   内置模型加载失败后静默退回 BM25，包看起来是好的）。
 | **sidecar.fresh** | **FAIL** | **安装包（2026-09-29 17:11）比 sidecar（2026-10-02 00:48）旧：dist 里这个包包含的是更早构建的后端，必须重新打包再发布** |
 | models | PASS | bge-small-zh-v1.5 的文件与 model_manifest.json 的 bytes+sha256 逐一对上 |
 | bundle.config | PASS | externalBin / resources / createUpdaterArtifacts 自洽 |
@@ -128,7 +175,7 @@ turn_id + request_digest（两者都实测被服务端校验）。
 * 根因：`handleApprovalRequired` 只取 `used/max` 丢掉 `payload.reason/message`，
   `ContinueBar` 把文案写死。
 * 修复后实测：`这一轮没有新的进展` + 后端原话
-  `\`echo\` 连续 3 次给出完全相同的结果，这一轮没有新的进展`；
+  「echo 连续 3 次给出完全相同的结果，这一轮没有新的进展」；
   `aria-label` 同步为「这一轮没有新的进展，需要你决定是否继续」。
 * **不抢焦点**：操作条出现时焦点仍在 `TEXTAREA#composer-input`。
 * **继续后可以恢复**：点「继续」→ 计数清零、本轮继续跑完
@@ -153,6 +200,11 @@ turn_id + request_digest（两者都实测被服务端校验）。
 ---
 
 ## 5. 必须人工在真机完成的部分（G1 安装器全链）
+
+> **状态：未执行（NOT EXECUTED）。** 本轮**没有**跑过安装 → 首次启动 → …… →
+> 卸载中的任何一步。安装器的静默安装在本次会话里 `exit=2`、无文件落地
+> （见第 0 节），因此下面 8 步全部是**待办**，不是结论。
+> 任何人不得把本节读成"已验收"；本节只在有人按步骤执行并附上证据后才有结论。
 
 以下路径**本机沙箱无法执行**（安装器 exit=2，见第 0 节），必须在有桌面会话、
 写权限正常的机器上做；每一步都要留证据（截图 / 日志 / 数据库查询）：
