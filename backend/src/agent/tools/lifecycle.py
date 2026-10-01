@@ -1,4 +1,4 @@
-﻿"""Tool creation lifecycle: test -> approve (x2) -> register.
+"""Tool creation lifecycle: test -> approve (x2) -> register.
 
 唯一的创建入口是 submit_definition：定义来自开发工作区里的 tool.json（由模型写
 文件，不是本类向模型要提案）。历史上还有一条 create_from_request（模型提案 →
@@ -113,7 +113,43 @@ class ToolLifecycle:
         """
         report = None
         if not skip_tests and definition.tool_type == "function":
-            report = await self.tester.run(definition)
+            # 复测也要用「对的那个执行环境」：容器执行器下必须用按锁定清单构建的依赖镜像，
+            # 否则会在默认镜像里跑一个依赖不存在的工具（测试必挂，或者更糟：假通过）。
+            # 授权顺序不变：调用方（DevSubmitTool）已经先过了 ensure_test_authorization。
+            from agent.tools.tool_envs import resolve_execution_environment
+
+            plan = await resolve_execution_environment(
+                definition,
+                self.envs,
+                executor=await self.sandbox.effective_executor(),
+                prepare=True,
+                approvals=self.approvals,
+                tool_name=definition.name,
+            )
+            if not plan.ok:
+                # 依赖环境没准备好就不跑复测：不换成「没有依赖的解释器」制造假结论。
+                reason = plan.reason or "依赖环境没准备好，没有执行复测"
+                if test_sink is not None:
+                    test_sink(False, reason)
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail=reason,
+                    ok=False,
+                    tool_name=definition.name,
+                )
+                return ToolOutcome(
+                    False,
+                    definition.name,
+                    "environment",
+                    reason,
+                    test_passed=False,
+                    test_summary=reason,
+                )
+            report = await self.tester.run(
+                definition, interpreter=plan.interpreter, container_image=plan.container_image
+            )
             if test_sink is not None:
                 test_sink(report.passed, report.summary)
             if not report.passed:

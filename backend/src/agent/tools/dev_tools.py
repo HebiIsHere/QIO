@@ -386,31 +386,39 @@ class DevRunTestsTool(Tool):
             label="正在测试",
             tool_name=definition.name,
         )
-        interpreter: str | None = None
-        if definition.requirements and self.envs is not None:
-            env_status = await self.envs.ensure(
-                definition.requirements,
-                approvals=self.approvals,
+        # 依赖环境：由执行器决定用宿主专用环境还是容器依赖镜像（同一份判定，
+        # 见 tools/tool_envs.py::resolve_execution_environment）。测试阶段可以现准备
+        # （安装 / 构建镜像都会先征求许可）；没准备好就明确失败，绝不换成没有依赖的
+        # 解释器跑一遍 —— 那会让缺依赖变成一个假通过。
+        from agent.tools.tool_envs import resolve_execution_environment
+
+        plan = await resolve_execution_environment(
+            definition,
+            self.envs,
+            executor=await self.sandbox.effective_executor(),
+            prepare=True,
+            approvals=self.approvals,
+            tool_name=definition.name,
+            task_id=workspace,
+        )
+        if not plan.ok:
+            await self.status.emit(
+                workspace,
+                PHASE_FAILED,
+                label="依赖环境没准备好",
+                detail=plan.reason or "",
+                ok=False,
                 tool_name=definition.name,
-                task_id=workspace,
             )
-            if not env_status.ok:
-                await self.status.emit(
-                    workspace,
-                    PHASE_FAILED,
-                    label="依赖环境没准备好",
-                    detail=env_status.reason or "",
-                    ok=False,
-                    tool_name=definition.name,
-                )
-                return ToolResult(
-                    ok=False,
-                    error=env_status.reason or "依赖环境没准备好，这次没有运行测试",
-                    category="missing_dependency",
-                    facts=_dev_facts(self.workspaces, workspace, self.name),
-                )
-            interpreter = env_status.interpreter
-        report = await self.tester.run(definition, interpreter=interpreter)
+            return ToolResult(
+                ok=False,
+                error=plan.reason or "依赖环境没准备好，这次没有运行测试",
+                category="missing_dependency",
+                facts=_dev_facts(self.workspaces, workspace, self.name),
+            )
+        report = await self.tester.run(
+            definition, interpreter=plan.interpreter, container_image=plan.container_image
+        )
         lines = [f"- {o.name}: {'通过' if o.passed else '失败'} {o.detail}" for o in report.outcomes]
         # 权威测试记录：通过与否、摘要、时刻落盘（重启后可查，且不被文件存在推断）。
         self.workspaces.record_test(workspace, report.passed, report.summary)

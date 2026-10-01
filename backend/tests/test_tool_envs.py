@@ -155,6 +155,12 @@ class _Approvals:
         return ApprovalResult("appr_test", self.decision)
 
 
+def _other_python_version() -> str:
+    """一个与当前解释器主次版本**不同**的版本号（CI 跑 py3.12 时不能写死 3.12）。"""
+    major, minor = sys.version_info[0], sys.version_info[1]
+    return f"{major}.{minor + 1}.0" if minor < 20 else f"{major}.{minor - 1}.0"
+
+
 def _manager(tmp_path, runner, **kwargs) -> ToolEnvManager:
     return ToolEnvManager(tmp_path / "envs", base_python="C:/python.exe", runner=runner, **kwargs)
 
@@ -270,7 +276,11 @@ def test_the_environment_identity_covers_the_python_and_the_platform(tmp_path, m
     assert manager.fingerprint_for(REQUIREMENTS) != baseline
 
     monkeypatch.undo()
-    monkeypatch.setattr(tool_envs_module.sys, "version_info", (3, 12, 0, "final", 0))
+    # 不能写死 3.12：CI 的 py3.12 任务上主次版本没变，指纹当然也一样（实测踩到过）。
+    other = _other_python_version().split(".")
+    monkeypatch.setattr(
+        tool_envs_module.sys, "version_info", (int(other[0]), int(other[1]), 0, "final", 0)
+    )
     assert manager.fingerprint_for(REQUIREMENTS) != baseline
 
 
@@ -437,7 +447,7 @@ def test_an_old_pip_without_report_still_locks_the_versions(tmp_path):
 
 
 def test_a_venv_with_another_python_is_not_accepted(tmp_path):
-    runner = _FakeRunner(python_version="3.12.1")
+    runner = _FakeRunner(python_version=_other_python_version())
     manager = _manager(tmp_path, runner)
 
     status = asyncio.run(manager.ensure(REQUIREMENTS, approvals=_Approvals()))
@@ -928,7 +938,7 @@ def test_resolve_falls_back_to_a_venv_pip_when_the_base_interpreter_has_none(tmp
 
 
 def test_resolve_refuses_a_venv_whose_python_version_does_not_match(tmp_path):
-    runner = _FakeDocker(pip_in_base=False, python_version="3.12.1")
+    runner = _FakeDocker(pip_in_base=False, python_version=_other_python_version())
     manager = _manager(tmp_path, runner)
 
     ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))

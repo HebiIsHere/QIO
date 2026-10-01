@@ -35,24 +35,27 @@ class CodeTool(Tool):
         from agent.tools.policy import resolve_policy
 
         interpreter: str | None = None
+        container_image: str | None = None
         if self.definition.requirements:
-            if self.envs is None:
+            # 执行器决定用哪个环境：受限子进程用宿主专用环境，容器用按锁定清单构建的
+            # 依赖镜像。这里没有审批通道（注册后的调用不该临时装东西）：两种情况都
+            # 只复用已经准备好的，没准备好就明确失败，绝不换成没有依赖的解释器跑一遍。
+            from agent.tools.tool_envs import resolve_execution_environment
+
+            plan = await resolve_execution_environment(
+                self.definition,
+                self.envs,
+                executor=await self.sandbox.effective_executor(),
+                prepare=False,
+            )
+            if not plan.ok:
                 return ToolResult(
                     ok=False,
-                    error=(
-                        "这个工具声明了第三方依赖，但当前没有可用的专用环境管理："
-                        "无法保证依赖存在，已拒绝执行。"
-                    ),
+                    error=plan.reason or "专用环境没准备好，已拒绝执行",
                     category="missing_dependency",
                 )
-            env_status = self.envs.status_for(self.definition.requirements)
-            if not env_status.ok:
-                return ToolResult(
-                    ok=False,
-                    error=env_status.reason or "专用环境没准备好，已拒绝执行",
-                    category="missing_dependency",
-                )
-            interpreter = env_status.interpreter
+            interpreter = plan.interpreter
+            container_image = plan.container_image
 
         policy = resolve_policy(self)
         extra_env: dict[str, str] = {}
@@ -70,6 +73,11 @@ class CodeTool(Tool):
                 return ToolResult(ok=False, error="引用的凭据不可用")
             key = (ref or "default").upper().replace("-", "_")
             extra_env[f"QIO_KEY_{key}"] = secret
+        execution: dict[str, Any] = {"interpreter": interpreter}
+        if container_image:
+            # 只在真给了依赖镜像时才传：sandbox 的替身（测试里）不必认识这个参数；
+            # 给了镜像却用受限子进程时 sandbox 会明确报错，不会静默忽略。
+            execution["container_image"] = container_image
         result = await self.sandbox.execute(
             self.definition.code,
             kwargs,
@@ -77,7 +85,7 @@ class CodeTool(Tool):
             policy=policy,
             files=self.definition.files,
             entry=self.definition.entry,
-            interpreter=interpreter,
+            **execution,
         )
         if not result.ok:
             # 失败要把 stderr / 退出码作为诊断一起交给模型，而不是只回一句
