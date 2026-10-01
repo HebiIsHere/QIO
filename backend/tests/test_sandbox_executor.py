@@ -399,6 +399,85 @@ async def test_container_runaway_output_is_cut_off_and_stops_the_container(monke
     assert _removals(seen) == [("docker", "rm", "-f", name)]
 
 
+# -- 依赖镜像：用了就用它，起不来不回退 ----------------------------------
+
+IMAGE_TOOL = (
+    "from pathlib import Path\n"
+    "def run(**k):\n"
+    "    Path(k['marker']).write_text('ran')\n"
+    "    return {'ok': 1}\n"
+)
+
+
+async def test_dependency_image_replaces_the_default_image(monkeypatch):
+    seen = stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=0,
+        run_stdout=_worker_reply({"via": "container-env"}),
+    )
+    res = await SandboxExecutor(executor="docker").execute(
+        PURE_TOOL, {}, policy=ToolExecutionPolicy(), container_image="qio-tool-env:3.12-abc123"
+    )
+    assert res.ok is True, res.error
+    run = next(cmd for cmd in seen if len(cmd) > 1 and cmd[1] == "run")
+    assert "qio-tool-env:3.12-abc123" in run
+    assert "python:3.12-slim" not in run
+
+
+async def test_missing_dependency_image_is_reported_and_never_falls_back(
+    monkeypatch, tmp_path
+):
+    """镜像不在本机（docker run 以 125 收场）：如实报缺依赖，绝不用宿主解释器重跑。"""
+    marker = tmp_path / "subprocess-ran.txt"
+    seen = stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=125,
+        run_stderr=b"docker: Error response from daemon: pull access denied for qio-tool-env",
+    )
+    res = await SandboxExecutor(executor="docker").execute(
+        IMAGE_TOOL,
+        {"marker": str(marker)},
+        policy=ToolExecutionPolicy(),
+        container_image="qio-tool-env:3.12-deadbeef",
+    )
+    assert res.ok is False
+    assert res.category == "missing_dependency"
+    assert "qio-tool-env:3.12-deadbeef" in (res.error or "")
+    assert "不回退" in (res.error or "")
+    assert marker.exists() is False, "回退了：工具在宿主受限子进程里跑了一遍"
+    assert len([cmd for cmd in seen if len(cmd) > 1 and cmd[1] == "run"]) == 1
+
+
+async def test_auto_with_missing_dependency_image_does_not_fall_back(monkeypatch, tmp_path):
+    marker = tmp_path / "subprocess-ran.txt"
+    stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=125,
+        run_stderr=b"docker: Error response from daemon: no such image",
+    )
+    res = await SandboxExecutor().execute(
+        IMAGE_TOOL,
+        {"marker": str(marker)},
+        policy=ToolExecutionPolicy(),
+        container_image="qio-tool-env:3.12-deadbeef",
+    )
+    assert res.ok is False
+    assert res.category == "missing_dependency"
+    assert marker.exists() is False, "auto 也不许把依赖镜像失败降级成宿主执行"
+
+
+async def test_dependency_image_with_the_subprocess_executor_is_rejected(monkeypatch):
+    res = await SandboxExecutor(executor="subprocess").execute(
+        PURE_TOOL, {}, policy=ToolExecutionPolicy(), container_image="qio-tool-env:3.12-abc"
+    )
+    assert res.ok is False
+    assert res.category == "environment"
+    assert "受限子进程" in (res.error or "")
+
+
 # -- 容器里跑的是同一份 worker 源码 --------------------------------------
 
 

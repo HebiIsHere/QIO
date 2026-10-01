@@ -22,6 +22,12 @@ jobs:
       # stdlib only: no dependencies to install
       - name: Check docs against code
         run: python scripts/check_docs.py
+      # 离线发布闸门自己也要有人验证：--selftest 只检查闸门能正确变红/变绿
+      #（不构建安装包、不联网、不依赖 sidecar 或 ONNX 模型）。闸门坏了没人知道，
+      # 那它就是纸面能力 —— 所以这一步必须真跑。前提：scripts/release_gate.py 已入库。
+      - name: Release gate selftest
+        run: |
+          python scripts/release_gate.py --selftest
 
   backend:
     name: backend (py${{ matrix.python-version }})
@@ -292,5 +298,17 @@ jobs:
         run: uv sync --frozen --extra dev
       - name: Build the frozen sidecar
         run: pwsh -File scripts/build_sidecar.ps1
+      # 容器隔离执行要把 worker 源码带进容器（tools/executor_env.py::worker_source()）。
+      # 冻结产物里没有 .py 文件，靠 build_sidecar.ps1 的 --add-data 放进包里；这里直接
+      # 读 onefile 归档，确认那份资源真的在**产物里**（而不是只在源码树上）。
+      # 本机沙箱不允许 onefile 解包，所以这条断言只能在 CI 上真跑。
+      - name: Verify the bundled worker source
+        working-directory: backend
+        run: |
+          uv run --frozen --with pyinstaller pyi-archive_viewer -l ../frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe | Out-File -Encoding utf8 archive.txt
+          if (-not (Select-String -Path archive.txt -Pattern 'tool_worker\.py' -Quiet)) {
+            Write-Error '冻结产物里没有 agent/tool_worker.py：容器执行路径会拿不到 worker 源码'
+            exit 1
+          }
       - name: Smoke-test the frozen worker protocol
         run: python scripts/frozen_worker_smoke.py frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe

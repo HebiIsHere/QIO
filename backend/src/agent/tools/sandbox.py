@@ -43,6 +43,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 DOCKER_BINARY = "docker"
+# 没有指定依赖镜像时用的默认镜像。声明了第三方依赖的工具改用**已准备好的依赖镜像**
+# （tools/tool_envs.py::ensure_container_image 按锁定清单构建，见 execute 的 container_image）。
+DEFAULT_DOCKER_IMAGE = "python:3.12-slim"
+# 镜像不在本机时 docker 的真实报错形状（用来把 125 归到「缺依赖」而不是笼统的环境错误）。
+_IMAGE_MISSING_HINTS = (
+    "pull access denied",
+    "no such image",
+    "manifest unknown",
+    "unable to find image",
+    "pull access denied for",
+)
 # 探测只是「能不能用容器」的前置询问，不该让工具调用长时间挂住。
 DOCKER_PROBE_TIMEOUT_SECONDS = 5.0
 # 超时/取消/输出超限后清理**这一次调用的容器**（docker rm -f）的上限。
@@ -463,6 +474,7 @@ class SandboxExecutor:
         files: dict[str, str] | None = None,
         entry: str | None = None,
         interpreter: str | None = None,
+        container_image: str | None = None,
     ) -> SandboxResult:
         """执行一次工具。
 
@@ -471,6 +483,19 @@ class SandboxExecutor:
         不留在后端进程，下一次调用是干净的。
 
         `interpreter` 是项目级专用环境的 Python（声明了第三方依赖时由调用方解析）。
+
+        `container_image` 是**已经准备好的依赖镜像**（`tools/tool_envs.py` 的
+        `ensure_container_image` 按锁定清单构建）：给了它，容器路径就用这个镜像，而
+        不是默认的 python:3.12-slim。规则（三条都写死在这里，不做隐式推断）：
+
+        * `executor="docker"` 或 `auto` 选到容器 + 有依赖镜像 → 镜像不在本机时 docker
+          以 125 收场，**如实报环境/缺依赖错误，绝不回退受限子进程** —— 回退等于用
+          没有依赖的解释器再跑一遍，那正是要消灭的假成功（与「stdout 打印成功不能
+          覆盖真实 exit code」是同一类问题）；
+        * 宿主 `interpreter` + 容器（任何形式）→ 仍然拒绝（专用环境在宿主上，容器里
+          没有它）；调用方要二选一：给容器镜像，或者用受限子进程 + 宿主解释器。
+          同时给了两者时以**宿主解释器**为准（它更具体），因此这条拒绝照旧生效；
+        * `executor="subprocess"` + 依赖镜像 → 互相矛盾，直接报错，不静默忽略镜像。
         """
         policy = policy or ToolExecutionPolicy()
         try:
@@ -483,14 +508,25 @@ class SandboxExecutor:
                 ok=False, value=None, stdout="", stderr="",
                 error=str(exc), category="code_error",
             )
-        if interpreter and self.tool_executor is not None:
-            # 两个显式指定的东西互相矛盾：注入的是「用哪个程序跑 worker」，
-            # interpreter 是「用哪个环境跑工具」。说清楚，不悄悄选一边。
+        if (interpreter or container_image) and self.tool_executor is not None:
+            # 两个显式指定的东西互相矛盾：注入的是「用哪个程序跑 worker」（宿主子进程），
+            # interpreter / container_image 是「用哪个环境跑工具」。说清楚，不悄悄选一边。
             return SandboxResult(
                 ok=False, value=None, stdout="", stderr="",
                 error=(
-                    "显式注入的工具执行方式与项目专用环境解释器互相矛盾："
+                    "显式注入的工具执行方式与项目专用环境（解释器/依赖镜像）互相矛盾："
                     "两者不能同时生效。"
+                ),
+                category="environment",
+            )
+        if self.executor == "subprocess" and container_image:
+            # 受限子进程跑在宿主上，容器镜像在这条路径上没有任何作用：说清楚，
+            # 不静默忽略（静默忽略会让调用方以为依赖真的装上了）。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=(
+                    "指定了容器依赖镜像，但执行器是受限子进程：镜像在这条路径上不起作用。"
+                    "请把执行器改成 auto/docker，或去掉依赖镜像。"
                 ),
                 category="environment",
             )
@@ -522,7 +558,9 @@ class SandboxExecutor:
                     ),
                     category="environment",
                 )
-            return await self._execute_docker(code, arguments, policy, project_files, entry)
+            return await self._execute_docker(
+                code, arguments, policy, project_files, entry, container_image
+            )
 
         if self.executor == "auto" and self.tool_executor is None and await docker_daemon_ready():
             if interpreter:
@@ -536,8 +574,12 @@ class SandboxExecutor:
                     ),
                     category="environment",
                 )
-            result = await self._execute_docker(code, arguments, policy, project_files, entry)
-            if not result.launch_failed:
+            result = await self._execute_docker(
+                code, arguments, policy, project_files, entry, container_image
+            )
+            if not result.launch_failed or container_image:
+                # 指定了依赖镜像时**不许回退**：容器没起来说明镜像/守护进程有问题，
+                # 换一条没有隔离、也没有依赖的环境跑一遍只会制造假成功。
                 return result
             # 容器根本没起来（守护进程中途掉了 / 镜像拉不下来）：工具代码一行都没
             # 执行过，所以按「没有容器隔离」改走受限子进程，而不是把整次调用判死。
@@ -676,11 +718,15 @@ class SandboxExecutor:
         policy: ToolExecutionPolicy | None = None,
         files: dict[str, str] | None = None,
         entry: str | None = None,
+        container_image: str | None = None,
     ) -> SandboxResult:
         """在容器里执行。docker 是否可用由调用方确认（见 `docker_daemon_ready`）。
 
         容器里跑的是**同一份 worker 源码**（见 `_DOCKER_BOOTSTRAP_TEMPLATE`）：请求从
         stdin 进、结果从 stdout 出一行 JSON、退出码语义与受限子进程完全一致。
+
+        `container_image` 为空时用默认镜像；给了依赖镜像时容器起不来（125）不再算
+        「可以回退的启动失败」—— 那是依赖环境的问题，回退只会用错误的解释器跑一遍。
         """
         from agent.tools.executor_env import ToolRuntimeUnavailable, worker_source
 
@@ -700,7 +746,8 @@ class SandboxExecutor:
             worker_source=repr(source),
         )
         name = _container_name()
-        command = self._docker_command(script, policy, name)
+        image = container_image or DEFAULT_DOCKER_IMAGE
+        command = self._docker_command(script, policy, name, image)
         request = _worker_request(code, entry, arguments)
 
         async def _terminate() -> None:
@@ -746,6 +793,23 @@ class SandboxExecutor:
             # 125 是 docker 自己的「这条命令根本没跑起来」（守护进程不可达、镜像拉
             # 不下来、参数被拒）；126/127 是容器起来了但命令跑不了，其余退出码来自
             # 容器里的工具本身 —— 只有 125 属于「容器没起来」，只有它允许回退。
+            if container_image and process.returncode == 125:
+                # 依赖镜像是调用方准备好的：它起不来是依赖环境的问题，不许回退，
+                # 也不许把它说成「工具跑失败」。
+                return SandboxResult(
+                    ok=False, value=None, stdout=out_text, stderr=err_text,
+                    error=(
+                        f"依赖镜像 {container_image} 起不来（docker exit code 125）："
+                        "镜像不在本机或守护进程不可用。请重新准备依赖环境；"
+                        "已拒绝执行，不回退受限子进程。"
+                    ),
+                    launch_failed=False,
+                    category=(
+                        "missing_dependency"
+                        if any(hint in err_text.lower() for hint in _IMAGE_MISSING_HINTS)
+                        else "environment"
+                    ),
+                )
             return SandboxResult(
                 ok=False, value=None, stdout=out_text, stderr=err_text,
                 error=f"docker exit code {process.returncode}",
@@ -765,15 +829,21 @@ class SandboxExecutor:
         )
 
     def _docker_command(
-        self, script: str, policy: ToolExecutionPolicy, name: str | None = None
+        self,
+        script: str,
+        policy: ToolExecutionPolicy,
+        name: str | None = None,
+        image: str | None = None,
     ) -> list[str]:
         """Build the docker run command from the execution policy.
 
         `name` 是这次调用唯一的容器名：超时/取消时要靠它精确清理（见 `_remove_container`）。
         省略时现生成一个 —— 命令行本身仍然合法（诊断与策略用例只检查参数）。
+        `image` 为空时用默认镜像；依赖镜像由调用方准备好后传进来。
         """
         if not name:
             name = _container_name()
+        image = image or DEFAULT_DOCKER_IMAGE
         command = [
             "docker", "run", "--rm",
             "--name", name,
@@ -790,5 +860,5 @@ class SandboxExecutor:
 
             tag = int(hashlib.md5(path.encode("utf-8")).hexdigest(), 16) % 10000
             command += ["-v", f"{path}:/mnt/{tag}:ro"]
-        command += ["-i", "python:3.12-slim", "python", "-c", script]
+        command += ["-i", image, "python", "-c", script]
         return command
