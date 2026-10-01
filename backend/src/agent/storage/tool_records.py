@@ -118,9 +118,12 @@ def record_tool_call(
 def _tool_title(name: str) -> str:
     """工具的中文展示名。
 
-    惰性导入 + 兜底：`agent.tools` 包有既有的导入顺序约束（先导入 `agent.core`
-    才安全），而这里可能在只导入存储层时被调用。拿不到展示名时回落原始工具名 ——
-    诚实优先，也绝不让历史读取本身失败。
+    惰性导入 + 兜底：存储层不该在 import 期就把整棵 `agent.tools` 拉起来
+    （展示名只是显示细节，依赖方向是「工具/服务依赖存储」，不是反过来）。
+    历史上这里还写着「必须先 import agent.core 才安全」的导入顺序约束 —— 那条
+    约束已经不成立（tests/test_import_smoke.py 会守住「每个模块都能作为第一个
+    import」）；保留惰性导入是为了依赖方向本身，而不是为了绕开循环。
+    拿不到展示名时回落原始工具名 —— 诚实优先，也绝不让历史读取本身失败。
     """
     try:
         from agent.tools.display import tool_label
