@@ -27,6 +27,20 @@ beforeEach(() => {
 });
 
 describe("QIO 的说明（执行叙事 spec 2026-09-22）", () => {
+  it("安装依赖这种新 kind：标题说人话，不把英文枚举名给用户看", async () => {
+    const { w, s } = mountModal();
+    s.enqueue("a0", "dependency_install", {
+      packages: ["requests>=2.31"],
+      detail: "这个工具声明了第三方依赖，需要为它准备一个专用环境并安装：requests>=2.31。",
+      scope: "once",
+    });
+    await flushPromises();
+
+    expect(w.find("#approval-title").text()).toBe("安装依赖");
+    expect(w.text()).toContain("requests>=2.31");
+    w.unmount();
+  });
+
   it("有 explanation：单独成段展示，系统事实一个不少", async () => {
     const { w, s } = mountModal();
     s.enqueue("a1", "tool_execution", {

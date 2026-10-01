@@ -30,7 +30,14 @@ class _PassingSandbox:
         return "subprocess"
 
     async def execute(
-        self, code, arguments, extra_env=None, policy=None, files=None, entry=None
+        self,
+        code,
+        arguments,
+        extra_env=None,
+        policy=None,
+        files=None,
+        entry=None,
+        interpreter=None,
     ) -> SandboxResult:
         self.executions += 1
         return SandboxResult(ok=True, value=dict(arguments), stdout="", stderr="")

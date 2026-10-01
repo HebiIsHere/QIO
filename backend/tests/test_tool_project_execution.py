@@ -96,3 +96,18 @@ def test_broken_entry_is_reported_as_a_code_problem():
     assert not result.ok
     assert result.category == "code_error"
     assert "run" in (result.error or "")
+
+
+def test_a_project_environment_is_not_silently_ignored_in_a_container():
+    """容器隔离执行不会装项目依赖：这种情况必须说清，而不是拿容器里的 Python 顶替。"""
+    result = _run(
+        SandboxExecutor("docker").execute(
+            "def run(**kwargs):\n    return {}\n",
+            {},
+            interpreter="C:/envs/deadbeef/Scripts/python.exe",
+        )
+    )
+
+    assert not result.ok
+    assert result.category == "environment"
+    assert "容器" in (result.error or "")

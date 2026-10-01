@@ -1323,3 +1323,29 @@ npm test
 `test_turn_facts.py` 全绿；后端全量测试与 `scripts/check_docs.py` 见本次提交说明。
 
 **仍未做**：真机界面验收（「无进展暂停」在真实应用里的继续/停止条没点过）。
+
+---
+
+## 本轮变更：项目级依赖环境（按需受管的 Python）（2026-09-30）
+
+补的是第一阶段里那条「隔离依赖、按需受管 Python 环境」：以前声明了第三方依赖也
+没有任何地方能把它装上 —— 工具永远跑不起来，用户还得自己猜要装什么、装到哪。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+| 声明的依赖没人装 | 新增 `ToolEnvManager`：为每个**依赖集合**准备一个 QIO 管理的专用虚拟环境（目录在数据目录的 `tool-envs/` 下，按依赖集合指纹复用） | `tools/tool_envs.py` | `test_tool_envs.py`（无依赖不建环境、未准备时明确不 ok、按依赖集合去重、失败不记成「已就绪」） |
+| 装依赖是一次网络 + 磁盘动作 | 必须先拿到用户确认（新增审批 kind `dependency_install`，列出要装的包）；拒绝或超时 → **不建环境、不跑测试**，并说明「没有同意」 | `tools/tool_envs.py`、`tools/dev_tools.py` | `test_tool_envs.py`、`test_tool_env_integration.py` |
+| 测试与运行可能偷偷用错解释器 | 声明了依赖的工具：测试用专用环境的 Python；注册后的调用也用它，环境没准备好就**明确失败**（不静默回落随包环境） | `tools/tester.py`、`tools/runtime_tools.py`、`tools/executor_env.py`、`tools/sandbox.py` | `test_tool_env_integration.py`（测试跑在专用环境里 / 拒绝安装则不执行 / 无依赖工具不受影响 / 注册工具缺环境时拒绝执行） |
+| 容器执行时依赖环境会被忽略 | 容器隔离执行 + 需要专用环境 → 直接说明「容器里不会装这套依赖」，请改用受限子进程或去掉依赖声明 | `tools/sandbox.py` | `test_tool_project_execution.py` |
+| 界面看到安装请求会显示英文枚举名 | 审批标题加「安装依赖」；payload 里的包列表与说明沿用既有渲染 | `frontend/src/components/ApprovalModal.vue` | `frontend .../ApprovalModal.test.ts` |
+
+**真实链路验证（不是替身）**：本机用默认安装器实跑过一遍 —— 真建 venv、真从 PyPI 装
+`six`、拿到专用解释器；第二次调用直接复用同一个环境（`reused=true`），没有重复安装。
+
+**已验证**：`test_tool_envs.py`、`test_tool_env_integration.py`、`test_tool_project_execution.py`、
+`test_dev_tools.py`、`test_dev_test_authorization.py`、`test_dev_guide_sections.py`、
+`test_app_integration.py`、`test_tool_lifecycle.py`、`test_tool_restore.py` 全绿；
+前端 `npx vitest run` 与 `npx vue-tsc --noEmit` 见本次提交说明；后端全量测试与 `scripts/check_docs.py` 见提交说明。
+
+**仍未做**：依赖版本锁定（装的是声明里的约束，不是哈希锁定）；卸载 / 清理专用环境的入口；
+容器执行路径下的依赖安装。

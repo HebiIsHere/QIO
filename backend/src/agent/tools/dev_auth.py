@@ -147,7 +147,7 @@ def _approval_payload(
     detail.append(f"项目文件：{len(files)} 个（另有入口代码）")
     requirements = list(getattr(definition, "requirements", None) or [])
     detail.append(
-        "声明的依赖：%s（不会自动安装；缺哪个会明确报出来）" % "、".join(requirements)
+        "声明的依赖：%s（只装这些；第一次测试时会另行征求安装许可）" % "、".join(requirements)
         if requirements
         else "声明的依赖：无（只用标准库）"
     )

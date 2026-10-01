@@ -304,12 +304,15 @@ class SandboxExecutor:
         policy: ToolExecutionPolicy | None = None,
         files: dict[str, str] | None = None,
         entry: str | None = None,
+        interpreter: str | None = None,
     ) -> SandboxResult:
         """执行一次工具。
 
         `files` 是这个多文件项目的**其它文件**（相对路径 → 内容），`entry` 是入口
         （`pkg.main:run`）。两者都只活在这一次调用的一次性临时目录里：不进工作区、
         不留在后端进程，下一次调用是干净的。
+
+        `interpreter` 是项目级专用环境的 Python（声明了第三方依赖时由调用方解析）。
         """
         policy = policy or ToolExecutionPolicy()
         try:
@@ -321,6 +324,18 @@ class SandboxExecutor:
             return SandboxResult(
                 ok=False, value=None, stdout="", stderr="",
                 error=str(exc), category="code_error",
+            )
+        if interpreter and self.executor == "docker":
+            # 专用依赖环境是宿主上的 venv，容器里没有它；用容器里的 Python 跑
+            # 等于把「依赖已装好」这句话变成假的。说清楚，让调用方选一条路。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=(
+                    "这个工具需要项目专用依赖环境，但当前是容器隔离执行："
+                    "容器里不会安装这套依赖。请把执行器改成受限子进程，"
+                    "或去掉这份依赖声明。"
+                ),
+                category="environment",
             )
 
         if self.executor == "docker":
@@ -341,6 +356,17 @@ class SandboxExecutor:
             return await self._execute_docker(code, arguments, policy, project_files, entry)
 
         if self.executor == "auto" and await docker_daemon_ready():
+            if interpreter:
+                # 同上：auto 选到容器时也不能假装依赖可用。
+                return SandboxResult(
+                    ok=False, value=None, stdout="", stderr="",
+                    error=(
+                        "这个工具需要项目专用依赖环境，但当前是容器隔离执行："
+                        "容器里不会安装这套依赖。请把执行器改成受限子进程，"
+                        "或去掉这份依赖声明。"
+                    ),
+                    category="environment",
+                )
             result = await self._execute_docker(code, arguments, policy, project_files, entry)
             if not result.launch_failed:
                 return result
@@ -363,7 +389,7 @@ class SandboxExecutor:
                 category="environment",
             )
         return await self._execute_subprocess(
-            code, arguments, extra_env or {}, policy, project_files, entry
+            code, arguments, extra_env or {}, policy, project_files, entry, interpreter
         )
 
     # -- subprocess executor ----------------------------------------------
@@ -376,11 +402,12 @@ class SandboxExecutor:
         policy: ToolExecutionPolicy | None = None,
         files: dict[str, str] | None = None,
         entry: str | None = None,
+        interpreter: str | None = None,
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
         try:
-            spec = resolve_tool_executor()
+            spec = resolve_tool_executor(interpreter)
         except ToolRuntimeUnavailable as exc:
             # 没有可用执行方式：如实报环境问题，不静默用 PATH 里未知的 Python。
             return SandboxResult(

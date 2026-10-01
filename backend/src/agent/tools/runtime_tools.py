@@ -19,6 +19,7 @@ class CodeTool(Tool):
         definition: ToolDefinition,
         sandbox: SandboxExecutor,
         credentials: CredentialStore | None = None,
+        envs=None,
     ) -> None:
         self.definition = definition
         self.name = definition.name
@@ -26,9 +27,31 @@ class CodeTool(Tool):
         self.parameters = definition.parameters
         self.sandbox = sandbox
         self.credentials = credentials
+        # 项目级专用环境：声明了第三方依赖的工具必须用它跑（没有就明确失败）。
+        self.envs = envs
 
     async def run(self, **kwargs: Any) -> ToolResult:
         from agent.tools.policy import resolve_policy
+
+        interpreter: str | None = None
+        if self.definition.requirements:
+            if self.envs is None:
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        "这个工具声明了第三方依赖，但当前没有可用的专用环境管理："
+                        "无法保证依赖存在，已拒绝执行。"
+                    ),
+                    category="missing_dependency",
+                )
+            env_status = self.envs.status_for(self.definition.requirements)
+            if not env_status.ok:
+                return ToolResult(
+                    ok=False,
+                    error=env_status.reason or "专用环境没准备好，已拒绝执行",
+                    category="missing_dependency",
+                )
+            interpreter = env_status.interpreter
 
         policy = resolve_policy(self)
         extra_env: dict[str, str] = {}
@@ -53,6 +76,7 @@ class CodeTool(Tool):
             policy=policy,
             files=self.definition.files,
             entry=self.definition.entry,
+            interpreter=interpreter,
         )
         if not result.ok:
             # 失败要把 stderr / 退出码作为诊断一起交给模型，而不是只回一句

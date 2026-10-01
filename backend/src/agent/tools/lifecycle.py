@@ -60,6 +60,7 @@ class ToolLifecycle:
         sandbox: SandboxExecutor | None = None,
         registry: ToolRegistry,
         credentials: CredentialStore | None = None,
+        envs=None,
         task_manager=None,
         retriever=None,
         adapter_factory=None,
@@ -74,6 +75,8 @@ class ToolLifecycle:
         self.tester = ToolTester(self.sandbox)
         self.registry = registry
         self.credentials = credentials
+        # 项目级专用依赖环境：注册后的工具跑它自己的环境（缺环境就不跑）。
+        self.envs = envs
         self.task_manager = task_manager
         self.retriever = retriever
         self.adapter_factory = adapter_factory
@@ -345,7 +348,9 @@ class ToolLifecycle:
                     trace_store=self.trace_store,
                 )
         else:
-            tool = CodeTool(definition, self.sandbox, credentials=self.credentials)
+            tool = CodeTool(
+                definition, self.sandbox, credentials=self.credentials, envs=self.envs
+            )
         self._registry_disposers[definition.name] = self.registry.register(tool)
 
     def _unregister(self, name: str) -> None:

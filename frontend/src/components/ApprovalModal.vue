@@ -29,6 +29,8 @@ const KIND_LABELS: Record<string, string> = {
   high_impact_knowledge: "高影响知识确认",
   tool_execution: "需要你确认的操作",
   computer: "电脑操作审批",
+  // 为声明了第三方依赖的工具准备专用环境（安装是一次网络 + 磁盘动作）
+  dependency_install: "安装依赖",
 };
 /** 标题一律说人话：后端出现新 kind 时也不要显示英文枚举名给用户 */
 function kindTitle(kind: string): string {

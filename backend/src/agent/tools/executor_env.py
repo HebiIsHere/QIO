@@ -48,8 +48,24 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
-def resolve_tool_executor() -> ToolExecutorSpec:
-    """解析工具执行命令；没有可用方式时抛 ToolRuntimeUnavailable。"""
+def resolve_tool_executor(interpreter: str | None = None) -> ToolExecutorSpec:
+    """解析工具执行命令；没有可用方式时抛 ToolRuntimeUnavailable。
+
+    `interpreter` 用于**项目级专用环境**（见 tools/tool_envs.py）：声明了第三方
+    依赖的工具由那条路径指定它自己的 Python。仍然跑同一份 worker 源码、同一套
+    协议，所以上层（sandbox）不需要知道这是哪一种解释器。
+    """
+    if interpreter:
+        script = _worker_script_path()
+        if not Path(interpreter).is_file():
+            raise ToolRuntimeUnavailable(f"专用环境的解释器不存在：{interpreter}")
+        if not script.is_file():
+            raise ToolRuntimeUnavailable(
+                "专用环境只支持开发态（找不到 worker 源码）："
+                f"{script}"
+            )
+        return ToolExecutorSpec("worker-project-env", [interpreter, str(script)])
+
     explicit = os.environ.get("QIO_TOOL_PYTHON")
     if explicit:
         # 逃生口：显式指定一个受控解释器（开发/诊断用）。仍走同一份 worker 源码。

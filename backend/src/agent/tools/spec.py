@@ -121,12 +121,13 @@ class ToolDefinition(BaseModel):
         if any(_dist_name(item) == name for item in self.requirements):
             return (
                 f"缺少依赖：{name}（tool.json 的 requirements 里声明了它，"
-                "但本机环境没有安装；不会自动安装，请让用户装好再试，"
-                "或改成只用标准库实现）"
+                "但专用环境里仍然找不到它 —— 通常是包名与模块名不同（例如 "
+                "requests-toolbelt 提供的是 requests_toolbelt），"
+                "或者它只是别的包的间接依赖）"
             )
         return (
             f"缺少依赖：{name}（没有在 tool.json 的 requirements 里声明；"
-            "第三方依赖要先声明，而且本机需要已经装好）"
+            "第三方依赖要先写进 requirements，系统才能为它准备专用环境）"
         )
 
 

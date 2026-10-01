@@ -101,7 +101,7 @@ async def test_approval_detail_declares_the_project_shape_and_dependencies(tmp_p
     detail = approvals.requests[0][1]["detail"]
     assert "项目文件：2 个" in detail
     assert "requests>=2.31" in detail
-    assert "不会自动安装" in detail
+    assert "征求安装许可" in detail
 
 
 async def test_without_an_approval_service_nothing_executes(tmp_path):
@@ -263,7 +263,14 @@ class _RecordingSandbox:
         return "subprocess"
 
     async def execute(
-        self, code, arguments, extra_env=None, policy=None, files=None, entry=None
+        self,
+        code,
+        arguments,
+        extra_env=None,
+        policy=None,
+        files=None,
+        entry=None,
+        interpreter=None,
     ) -> SandboxResult:
         self.executions += 1
         return SandboxResult(ok=True, value={"ok": True}, stdout="", stderr="")

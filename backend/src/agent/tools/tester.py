@@ -40,11 +40,13 @@ class ToolTester:
     def __init__(self, sandbox: SandboxExecutor) -> None:
         self.sandbox = sandbox
 
-    async def run(self, definition: ToolDefinition) -> TestReport:
+    async def run(
+        self, definition: ToolDefinition, interpreter: str | None = None
+    ) -> TestReport:
         report = TestReport(tool_name=definition.name)
         for test in definition.tests:
             outcome = await self._run_case(
-                definition, test.name, test.input, test.expect
+                definition, test.name, test.input, test.expect, interpreter
             )
             if not outcome.passed:
                 # 缺依赖是最常见的失败之一：把「缺的是哪一个、声明过没有」写在
@@ -56,11 +58,20 @@ class ToolTester:
         return report
 
     async def _run_case(
-        self, definition: ToolDefinition, name: str, inputs: dict, expected: dict
+        self,
+        definition: ToolDefinition,
+        name: str,
+        inputs: dict,
+        expected: dict,
+        interpreter: str | None = None,
     ) -> TestOutcome:
         # 多文件项目：整份项目（入口 + 其它文件）一起进沙箱，测试跑的就是要注册的东西。
         result = await self.sandbox.execute(
-            definition.code, inputs, files=definition.files, entry=definition.entry
+            definition.code,
+            inputs,
+            files=definition.files,
+            entry=definition.entry,
+            interpreter=interpreter,
         )
         if not result.ok:
             # 把底层 stderr 一起给出来：只有「exit code 1」时，模型无从修改代码。

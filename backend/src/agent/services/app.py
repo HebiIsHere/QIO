@@ -265,11 +265,15 @@ class AppContext:
         )
         from agent.tools.dev_workspace import DevWorkspace
         from agent.tools.sandbox import SandboxExecutor
+        from agent.tools.tool_envs import ToolEnvManager
 
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
         # 工具执行器只建一份：开发测试、提交复测与注册后的真实执行走同一套
         # 超时 / 环境 / 输出上限（见 tools/sandbox.py）。
         self.tool_sandbox = SandboxExecutor()
+        # 项目级专用依赖环境（QIO 管理）：声明了第三方依赖的工具用它跑，
+        # 没准备好就明确失败 —— 不静默回落到随包解释器。
+        self.tool_envs = ToolEnvManager(Path(settings.data_dir) / "tool-envs")
         # 建工具是一条流程、一张卡：这些工具把阶段事件发到同一个出口
         self.registry.register(
             CreateToolTool(
@@ -295,6 +299,7 @@ class AppContext:
                 approvals=self.approvals,
                 bus=self.bus,
                 turn_id_provider=self._active_turn_id,
+                envs=self.tool_envs,
             )
         )
         self.registry.register(
@@ -478,7 +483,12 @@ class AppContext:
                         trace_store=self.trace_store,
                     )
                 else:
-                    tool = CodeTool(definition, sandbox, credentials=self.credentials)
+                    tool = CodeTool(
+                        definition,
+                        sandbox,
+                        credentials=self.credentials,
+                        envs=self.tool_envs,
+                    )
                 self.registry.register(tool)
                 logger.info("restored tool: %s", definition.name)
             except Exception:  # noqa: BLE001 - a broken tool must not block startup
@@ -748,6 +758,7 @@ class AppContext:
             sandbox=self.tool_sandbox,
             registry=self.registry,
             credentials=self.credentials,
+            envs=self.tool_envs,
             task_manager=self.task_manager,
             retriever=self.retriever,
             adapter_factory=self.build_adapter_for_credential,

@@ -10,7 +10,14 @@ class _CapturingSandbox:
         self.last_policy = None
 
     async def execute(  # noqa: ANN001
-        self, code, arguments, extra_env=None, policy=None, files=None, entry=None
+        self,
+        code,
+        arguments,
+        extra_env=None,
+        policy=None,
+        files=None,
+        entry=None,
+        interpreter=None,
     ):
         from agent.tools.sandbox import SandboxResult
 

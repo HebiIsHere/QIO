@@ -329,11 +329,14 @@ class DevRunTestsTool(Tool):
         approvals=None,
         bus=None,
         turn_id_provider=None,
+        envs=None,
     ) -> None:
         self.workspaces = workspaces
         self.sandbox = sandbox or SandboxExecutor()
         self.tester = ToolTester(self.sandbox)
         self.approvals = approvals
+        # 项目级专用环境（声明了第三方依赖时用）；没有就退回随包环境。
+        self.envs = envs
         self.status = ToolCreateStatus(bus, turn_id_provider)
 
     async def run(self, **kwargs: Any) -> ToolResult:
@@ -383,7 +386,31 @@ class DevRunTestsTool(Tool):
             label="正在测试",
             tool_name=definition.name,
         )
-        report = await self.tester.run(definition)
+        interpreter: str | None = None
+        if definition.requirements and self.envs is not None:
+            env_status = await self.envs.ensure(
+                definition.requirements,
+                approvals=self.approvals,
+                tool_name=definition.name,
+                task_id=workspace,
+            )
+            if not env_status.ok:
+                await self.status.emit(
+                    workspace,
+                    PHASE_FAILED,
+                    label="依赖环境没准备好",
+                    detail=env_status.reason or "",
+                    ok=False,
+                    tool_name=definition.name,
+                )
+                return ToolResult(
+                    ok=False,
+                    error=env_status.reason or "依赖环境没准备好，这次没有运行测试",
+                    category="missing_dependency",
+                    facts=_dev_facts(self.workspaces, workspace, self.name),
+                )
+            interpreter = env_status.interpreter
+        report = await self.tester.run(definition, interpreter=interpreter)
         lines = [f"- {o.name}: {'通过' if o.passed else '失败'} {o.detail}" for o in report.outcomes]
         # 权威测试记录：通过与否、摘要、时刻落盘（重启后可查，且不被文件存在推断）。
         self.workspaces.record_test(workspace, report.passed, report.summary)
