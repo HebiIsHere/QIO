@@ -46,6 +46,14 @@ class TurnTracer:
         self.timer.after_turn(name, ms, detail)
         self.store.set_phases(self.turn_id, self.timer.payload())
 
+    def stop_phases(self) -> None:
+        """时间轴到此为止（幂等）：与 trace_store.finish() 的 duration 结算同一时刻。
+
+        之后的工作（TURN_END 广播、台账收尾）不再进入这一轮的阶段账 —— 它们不在
+        duration 里，也不该被算进「这一轮花了多久」。
+        """
+        self.timer.stop()
+
     def take_phases(self, *, duration_ms: int | None = None) -> dict:
         """收口并交出阶段账本（幂等：第二次拿到的是同一份快照）。"""
         self.timer.stop()

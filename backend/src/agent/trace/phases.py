@@ -128,6 +128,7 @@ class PhaseTimer:
         if self._stopped:
             return
         now = self.clock()
+        had_open = bool(self._open)
         while self._open:
             span = self._open.pop()  # 内层先结束（异常/强制收口路径）
             self._spans.append(
@@ -139,7 +140,12 @@ class PhaseTimer:
                     "start_ms": span.start_ms,
                 }
             )
-        self._record_gap(now)
+        if had_open:
+            # 收口时还开着的顶层阶段已经覆盖了「游标 → now」这一段：
+            # 再补一段 other 就会把它重复计一次（实测多算 17ms）。
+            self._cursor = now
+        else:
+            self._record_gap(now)
         self._stopped = True
 
     # -- output -----------------------------------------------------------

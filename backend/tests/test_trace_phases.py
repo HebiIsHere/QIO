@@ -150,6 +150,8 @@ async def test_turn_duration_is_explained_by_named_phases(ctx: AppContext, tmp_p
     # 铺满：顶层阶段 + residual ≈ duration
     top = [s for s in phases["spans"] if s["depth"] == 1]
     assert top, phases["spans"]
+    # 各阶段之和不得大于 duration（否则就是把 TURN_END / 台账收尾算进了执行时间）
+    assert sum(int(s["ms"]) for s in top) <= duration + 5, phases["spans"]
     assert abs(sum(int(s["ms"]) for s in top) + int(phases["residual_ms"]) - duration) <= 20
     # 不允许几十秒继续成为 unknown
     assert int(phases["residual_ms"]) <= 50, phases
@@ -219,6 +221,25 @@ def test_phase_timer_tiles_the_timeline_with_explicit_other():
     # 嵌套只作细分：b 的时长包含 b.inner，但合计只算一次
     assert payload["sum_ms"] < sum(s["ms"] for s in payload["spans"]) + 1
     assert any(s["depth"] == 2 and s["name"] == "b.inner" for s in payload["spans"])
+
+
+def test_stop_while_a_stage_is_open_does_not_double_count():
+    """收口时还有阶段开着（finish 在 finalize 阶段里调用）：不得补记一段 other。"""
+    import time as _time
+
+    timer = PhaseTimer()
+    with timer.phase("a"):
+        _time.sleep(0.01)
+    opened = timer.phase("open_stage")
+    opened.__enter__()
+    _time.sleep(0.02)
+    timer.stop()
+
+    payload = timer.payload()
+    top = [s for s in payload["spans"] if s["depth"] == 1]
+    assert [s["name"] for s in top] == ["a", "open_stage"]
+    # 每段各自取整，允许 1ms 级别的舍入差；关键是**没有**多记一段 other
+    assert abs(sum(int(s["ms"]) for s in top) - payload["total_ms"]) <= 2
 
 
 def test_phases_payload_shape_is_always_complete(db_conn):

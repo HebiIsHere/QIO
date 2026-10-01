@@ -129,13 +129,19 @@ class TraceStore:
     ) -> None:
         if not self.enabled:
             return
+        # 阶段账本要**先**收口，duration 才在同一时刻结算：否则 finish() 之后
+        # 还要发 TURN_END / 落台账，这段时间会被算进阶段合计却不进 duration，
+        # 变成「各阶段之和 > duration」的假账（实测多出 19ms）。
+        tracer = self.take_tracer(turn_id)
+        if tracer is not None:
+            stopper = getattr(tracer, "stop_phases", None)
+            if stopper is not None:
+                stopper()
         row = self.conn.execute(
             "SELECT started_at FROM turn_traces WHERE turn_id = ?", (turn_id,)
         ).fetchone()
         started = row["started_at"] if row is not None else _now()
         duration = _duration_ms(started)
-        # 阶段账本随终态一起收口：活着的计时句柄自动带上（见 register_tracer）。
-        tracer = self.take_tracer(turn_id)
         if tracer is not None:
             self.set_phases(turn_id, tracer.take_phases(duration_ms=duration))
         sets = ["status = ?", "ended_at = ?", "duration_ms = ?", "error = ?", "final_preview = ?"]
