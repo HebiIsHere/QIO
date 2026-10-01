@@ -60,6 +60,11 @@ jobs:
       # 可用（这正是它们此前全红的根因），注入的 fake worker 必须仍然被使用；
       # 协议严格化（ok 必须是 bool / 恰好一行 / 空输出 / 非零退出 / 取消语义）都在这里。
       - name: Fake worker protocol tests (Linux)
+        env:
+          # 这一步也要落 JUnit：否则它失败时「Summarize test failures」只找得到
+          # pytest-results.xml（不存在），注解只剩一句 "no junit report written"，
+          # 定位成本极高（2026-10-02 实测到过一次偶发红，就是因为这个才难查）。
+          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
         run: |
           uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
       - name: Run tests
