@@ -44,6 +44,12 @@ backend/.pytest_tmp/
 vite.err.log
 vite.log
 spike_search/
+# 测试临时残留：本机 %TEMP% 不可写时，tempfile 会退回到当前目录，
+# 于是每次跑后端测试都会在 backend/ 下留一堆 tmp*/ 目录（还有 pytest 的
+# 临时根目录与检索缓存）。它们是可再生的，不进库。
+backend/tmp*/
+backend/pytest-of-*/
+backend/data-gym-cache/
 
 # brainstorm 原型会话（可视化伴侣）
 .superpowers/
