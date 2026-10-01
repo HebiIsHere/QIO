@@ -329,6 +329,20 @@ class AppContext:
         self.turns.set_publisher(self._publish_turn_queue)
         # TurnManager 是 turn 生命周期的唯一事实源：TURN_START / TURN_END 只由它发。
         self.turns.set_emitter(self._publish_turn_event)
+        # turn 队列台账（迁移 25）：被 API 接受过的消息跨重启不丢。
+        # 重启时把上一个进程留下的 queued / running 标成 interrupted —— 只留痕、
+        # **不自动重放**（见 storage/turn_journal.py 的产品语义）。
+        from agent.storage.turn_journal import TurnJournal
+
+        self.turn_journal = TurnJournal(conn)
+        self.turns.set_journal(self.turn_journal)
+        self.recovered_turns = self.turn_journal.interrupt_stale()
+        if self.recovered_turns:
+            logger.warning(
+                "上一个进程留下了 %s 条没有执行的用户消息（不会自动重放，等用户决定）",
+                len(self.recovered_turns),
+            )
+        self.turn_journal.prune_terminal()
         self.registry.register(
             CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )
@@ -357,6 +371,8 @@ class AppContext:
         # 启动清理一次工具输出：把保留天数调小之后，重启也立刻生效。
         # 失败只记日志 —— 清理是维护动作，不能挡住启动。
         self.prune_tool_outputs()
+        # 「整条记录保留天数」默认 0（永久保留，行为与以前一致）；设了天数才清理。
+        self.prune_tool_records()
 
     # -- anchor 事件广播 --------------------------------------------------
 
@@ -1014,14 +1030,18 @@ class AppContext:
         from agent.memory.fragment import new_id
         from agent.storage.tool_records import record_tool_call
 
+        from agent.trace.redact import redact_any, redact_text
+
         active = AnchorService(self.conn).get_active()
         try:
-            args = _json.dumps(trace.get("arguments") or {}, ensure_ascii=False)[:500]
+            # 审计行同样不得出现密钥原文：这里的参数/结果/错误都是工具给的原始值，
+            # 必须与 tool_records 走同一个打码入口（trace/redact.py）。
+            args = _json.dumps(redact_any(trace.get("arguments") or {}), ensure_ascii=False)[:500]
         except Exception:
             args = "{}"
-        result = str(trace.get("result") or "")[:200]
+        result = redact_text(str(trace.get("result") or ""))[:200]
         # 失败原因单独一列：只落输出正文时，失败的调用在轨迹表里是一片空白
-        error = str(trace.get("error") or "")[:200]
+        error = redact_text(str(trace.get("error") or ""))[:200]
         self.conn.execute(
             "INSERT INTO tool_calls "
             "(id, topic_id, tool_name, arguments, result, error, ok, created_at) "
@@ -1071,6 +1091,31 @@ class AppContext:
             return 0
         if pruned:
             logger.info("pruned %s tool outputs older than %s days", pruned, days)
+        return pruned
+
+    def prune_tool_records(self) -> int:
+        """按「记录保留天数」删掉整条工具历史（参数、错误、状态一并删）。
+
+        **默认 0 = 永久保留**：与既有行为完全一致 —— 以前只按天清输出全文，
+        记录行本身不删。只有用户显式设置天数才会隐式清理，且这里的清理
+        只动 `tool_records`（用户能回看的历史）；`tool_calls` / `turn_traces`
+        是审计用途，是否记录由 `trace.enabled` 决定（见 storage/tool_records.py 顶部注释）。
+        """
+        from agent.storage.tool_records import (
+            DEFAULT_RECORD_RETENTION_DAYS,
+            prune_records,
+        )
+
+        days = self.settings_store.get_int(
+            "tools.record_retention_days", DEFAULT_RECORD_RETENTION_DAYS
+        )
+        try:
+            pruned = prune_records(self.conn, days)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不阻塞启动与维护
+            logger.warning("tool record prune failed: %s", exc)
+            return 0
+        if pruned:
+            logger.info("pruned %s tool records older than %s days", pruned, days)
         return pruned
 
     def _route_tools(self, query: str):
@@ -1129,11 +1174,20 @@ class AppContext:
         self._notify_turn = True
         try:
             self.approvals.set_context(turn_id=ctx.turn_id)
-            adapter = await self.build_adapter()
+            tracer = getattr(ctx, "trace", None)
+            if tracer is None:
+                from agent.trace.recorder import TurnTracer
+
+                tracer = TurnTracer(self.trace_store, ctx.turn_id)
+                ctx.trace = tracer
+            self.trace_store.ensure_started(ctx.turn_id, initial_topic=ctx.initial_topic)
+            with tracer.phase("adapter_setup"):
+                adapter = await self.build_adapter()
             if adapter is None:
                 ctx.result = {"ok": False, "reason": "no_credential"}
                 ctx.status = "unavailable"
                 ctx.error = "no_credential"
+                self.trace_store.finish(ctx.turn_id, "unavailable", error="no_credential")
                 return
             topic = self.current_topic()
             ctx.current_topic = topic
@@ -1142,21 +1196,20 @@ class AppContext:
             ctx.bound_topic = topic
             ctx.bound_fragment_id = None
             self.bindings.record_binding(ctx.turn_id, topic, system=True)
-            from agent.trace.recorder import TurnTracer
-
-            tracer = TurnTracer(self.trace_store, ctx.turn_id)
-            ctx.trace = tracer
-            self.trace_store.begin(ctx.turn_id, initial_topic=topic)
+            self.trace_store.set_initial_topic(ctx.turn_id, topic)
             notice = ctx.message
-            prediction = self.predictor.predict(notice, current_topic_id=topic)
-            payload = self.build_injection(
-                notice,
-                topic_id=topic,
-                aux_topic_ids=prediction.aux_topic_ids,
-                entity_ids=self._topic_entity_ids(topic),
-                user_node_id=self._user_root_id(),
-                model=adapter.model,
-            )
+            with tracer.phase("context_assembly"):
+                with tracer.phase("topic_prediction"):
+                    prediction = self.predictor.predict(notice, current_topic_id=topic)
+                with tracer.phase("retrieval"):
+                    payload = self.build_injection(
+                        notice,
+                        topic_id=topic,
+                        aux_topic_ids=prediction.aux_topic_ids,
+                        entity_ids=self._topic_entity_ids(topic),
+                        user_node_id=self._user_root_id(),
+                        model=adapter.model,
+                    )
             tracer.injection(
                 items=[
                     {
@@ -1195,7 +1248,8 @@ class AppContext:
             )
             ctx.loop = loop
             try:
-                result = await loop.run(prompt)
+                with tracer.phase("agent_loop"):
+                    result = await loop.run(prompt)
             finally:
                 ctx.loop = None
             if ctx.cancelled or result.cancelled:
@@ -1205,15 +1259,16 @@ class AppContext:
             # feedback enters memory (assistant message; no user message)
             from agent.services.turn_orchestrator import verification_raw
 
-            notify_msg_id, _ = self.memory.append_message(
-                topic_id=topic,
-                role="assistant",
-                content=result.final_content or "",
-                content_type="text",
-                model=adapter.model,
-                raw=verification_raw(result),
-                turn_id=ctx.turn_id,
-            )
+            with tracer.phase("persistence"):
+                notify_msg_id, _ = self.memory.append_message(
+                    topic_id=topic,
+                    role="assistant",
+                    content=result.final_content or "",
+                    content_type="text",
+                    model=adapter.model,
+                    raw=verification_raw(result),
+                    turn_id=ctx.turn_id,
+                )
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
             ctx.final_verification = getattr(result, "verification", None)
@@ -1223,15 +1278,17 @@ class AppContext:
                 "tokens": result.tokens_used,
                 "tool_calls": result.tool_calls_made,
             }
-            fragment = self.fragments.get_or_create_open(topic)
-            if self.fragments.should_close(fragment):
-                closed = await self._close_fragment(topic, adapter, tracer=tracer)
-                if closed is not None:
-                    # 索引在 close_fragment 内部已增量更新（不再全量重建）
-                    self.predictor.refresh_topic_vector(topic)
-            self.trace_store.finish(
-                ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
-            )
+            with tracer.phase("memory_post"):
+                fragment = self.fragments.get_or_create_open(topic)
+                if self.fragments.should_close(fragment):
+                    closed = await self._close_fragment(topic, adapter, tracer=tracer)
+                    if closed is not None:
+                        # 索引在 close_fragment 内部已增量更新（不再全量重建）
+                        self.predictor.refresh_topic_vector(topic)
+            with tracer.phase("finalize"):
+                self.trace_store.finish(
+                    ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
+                )
         except Exception as exc:  # noqa: BLE001 - notify turn must not crash
             logger.warning("notify turn failed: %s", exc)
             self.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])

@@ -890,14 +890,28 @@ def create_app(
 
     @app.get("/api/settings/tools")
     async def get_tool_history_settings() -> dict:
-        """工具调用历史的两个设置：是否保存输出全文、输出保留多少天。"""
-        from agent.storage.tool_records import DEFAULT_RETENTION_DAYS
+        """工具调用历史的设置：是否保存输出全文、输出保留多少天、整条记录保留多少天。
+
+        `record_retention_days = 0` 表示**永久保留整条记录** —— 这是默认值，
+        与历史行为一致（以前只按天清输出全文，参数/错误等永久保留）。
+        `record_count` 让界面能说清「清空会删掉多少条」，而不是让用户盲删。
+        """
+        from agent.storage.tool_records import (
+            DEFAULT_RECORD_RETENTION_DAYS,
+            DEFAULT_RETENTION_DAYS,
+            count_records,
+        )
 
         store = ctx.settings_store
         days = store.get_int("tools.output_retention_days", DEFAULT_RETENTION_DAYS)
+        record_days = store.get_int(
+            "tools.record_retention_days", DEFAULT_RECORD_RETENTION_DAYS
+        )
         return {
             "record_outputs": store.get_bool("tools.record_outputs", True),
             "output_retention_days": max(0, days),
+            "record_retention_days": max(0, record_days),
+            "record_count": count_records(ctx.conn),
         }
 
     @app.put("/api/settings/tools")
@@ -916,9 +930,20 @@ def create_app(
             store.set(
                 "tools.output_retention_days", str(max(0, min(days, MAX_RETENTION_DAYS)))
             )
+        if "record_retention_days" in body:
+            try:
+                record_days = int(body["record_retention_days"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="invalid record_retention_days")
+            # 0 = 永久保留（默认，与既有行为一致）
+            store.set(
+                "tools.record_retention_days",
+                str(max(0, min(record_days, MAX_RETENTION_DAYS))),
+            )
         payload = await get_tool_history_settings()
-        # 保存即生效：把天数调小要马上清掉过期输出；purged 是这次清掉的条数
+        # 保存即生效：把天数调小要马上清掉过期内容；purged 是这次清掉的条数
         payload["purged"] = ctx.prune_tool_outputs()
+        payload["records_purged"] = ctx.prune_tool_records()
         return payload
 
     # -- anchor -------------------------------------------------------------
@@ -1101,6 +1126,9 @@ def create_app(
 
         * `turn_queue`：运行中 / 排队的 Turn（含 revision，供前端做新旧比较）；
         * `approvals`：仍在等待用户决定的审批（断线错过的 APPROVAL_REQUIRED）；
+        * `interrupted_turns`：上一个进程结束时**已经被接受、但没有执行完**的
+          用户消息（排队中就退出、或执行到一半退出）。它们不会被自动重放，
+          但也不能静默消失 —— 界面据此如实告诉用户，并提供「重发 / 知道了」。
         * `tasks`：仍在跑 / 仍在排队的独立任务（断线错过的 SUBAGENT_STATUS）。
 
         `instance_id` 与后端实例绑定：后端重启后 revision 会从头计数，
@@ -1113,6 +1141,8 @@ def create_app(
             "approvals": ctx.approvals.pending(),
             # 上一次进程结束时仍没人回答的审批：不恢复等待，只说清「那次操作没有执行」。
             "interrupted_approvals": ctx.approvals.interrupted(),
+            # 上一次进程结束时没有被执行完的用户消息（见 storage/turn_journal.py）。
+            "interrupted_turns": ctx.turn_journal.unfinished(),
             "tasks": ctx.task_manager.snapshot(),
             # 工具执行的权威事实（活工具 + 最近结束的工具）：
             # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，
@@ -1129,6 +1159,51 @@ def create_app(
         """按 turn_id 取消 —— 运行中或仍在排队中的都可。"""
         ok = ctx.turns.cancel(turn_id)
         return {"ok": ok, "cancelled": ok, "turn_id": turn_id}
+
+    # -- 未执行的用户消息（重启恢复）--------------------------------------
+    # 语义：只留痕 + 用户决定，**不自动重放**。reason/time 都如实给，
+    # 前端不需要也不可能「猜」出这条消息到底执行过没有。
+
+    @app.post("/api/turns/{turn_id}/resend")
+    async def resend_turn(turn_id: str) -> dict:
+        """把一条「被接受但没有执行」的消息按原话题重新提交。
+
+        一次性：先用带条件的 UPDATE 抢占（`claim`），抢不到就 409 ——
+        所以同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
+        """
+        record = ctx.turn_journal.recoverable(turn_id)
+        if record is None:
+            raise HTTPException(
+                status_code=409,
+                detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
+            )
+        if not ctx.turn_journal.claim(turn_id):
+            raise HTTPException(status_code=409, detail="这一条已经被处理过了")
+        pending = ctx.bindings.peek_intent()
+        try:
+            turn = ctx.turns.submit(
+                record["message"],
+                record["topic_id"],
+                intent_id=pending.intent_id if pending else None,
+            )
+        except Exception:
+            ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
+            raise
+        ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
+        return {
+            "ok": True,
+            "recovered_turn_id": turn_id,
+            "turn_id": turn.turn_id,
+            "status": turn.status,
+        }
+
+    @app.post("/api/turns/{turn_id}/dismiss")
+    async def dismiss_turn(turn_id: str) -> dict:
+        """用户选择「知道了」：不再提示，但记录与消息原文仍然保留（不删用户数据）。"""
+        ok = ctx.turn_journal.dismiss(turn_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail="这一条不在「未执行」状态")
+        return {"ok": True, "dismissed": turn_id}
 
     # -- topic switch（待确认切换） ----------------------------------------
     #
@@ -1227,6 +1302,34 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="tool record not found")
         return record
+
+    @app.delete("/api/tool-records/{record_id}")
+    async def delete_tool_record(record_id: str) -> dict:
+        """删掉一条工具调用历史（用户主动，不可撤销）。
+
+        只删 `tool_records`（用户能回看的完整历史）；`tool_calls` / `turn_traces`
+        是审计记录，是否记录由 `trace.enabled` 决定 —— 见 storage/tool_records.py。
+        """
+        from agent.storage.tool_records import delete_record
+
+        if not delete_record(ctx.conn, record_id):
+            raise HTTPException(status_code=404, detail="tool record not found")
+        return {"ok": True, "deleted": record_id}
+
+    @app.delete("/api/tool-records")
+    async def clear_tool_records(
+        topic_id: str | None = None, older_than_days: int | None = None
+    ) -> dict:
+        """清空工具调用历史（默认全部；也可只清某个话题 / 只清 N 天前的）。
+
+        审计表不在这个动作的范围里：用户删的是「自己能回看的完整记录」。
+        """
+        from agent.storage.tool_records import delete_records
+
+        deleted = delete_records(
+            ctx.conn, topic_id=topic_id, older_than_days=older_than_days
+        )
+        return {"ok": True, "deleted": deleted, "scope": "tool_records"}
 
     @app.get("/api/graph/topics")
     async def list_topics() -> dict:

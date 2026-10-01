@@ -27,6 +27,10 @@ STATUSES = ("success", "failed", "cancelled")
 DEFAULT_RETENTION_DAYS = 90
 MAX_RETENTION_DAYS = 3650
 
+# 新增设置：整条记录（参数 / 错误 / 状态）保留多少天。
+# **默认 0 = 永久保留** —— 与既有行为一致：以前只按天清输出全文，记录行不删。
+DEFAULT_RECORD_RETENTION_DAYS = 0
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -63,13 +67,18 @@ def record_tool_call(
     """写一行工具记录。
 
     返回记录 id：重复的 `(turn_id, call_id)` 返回已有行的 id（幂等），写库失败返回 None。
-    参数与输出都先过 `trace/redact.py` 打码；**写历史失败绝不影响工具结果**。
+    参数、输出**与错误原因**都先过 `trace/redact.py` 打码；**写历史失败绝不影响工具结果**。
+
+    错误原因曾经是唯一的例外（只做 str()）：工具把凭据写进异常消息再抛出时，
+    参数与输出都是打码的，只有 error 是密钥原文 —— 与本模块的承诺和 AGENTS.md
+    的硬性约束直接冲突（2026-10-02 用渗透实验复现并修）。
     """
     if status not in STATUSES:
         status = "failed"
     args_text, args_truncated = _clip(
         json.dumps(redact_any(arguments or {}), ensure_ascii=False)
     )
+    error_text, error_truncated = _clip(redact_text(error or ""))
     if save_output:
         output_text, truncated = _clip(redact_text(output or ""))
         output_missing, missing_reason = 0, ""
@@ -93,9 +102,9 @@ def record_tool_call(
                 args_text,
                 output_text,
                 status,
-                str(error or ""),
+                error_text,
                 int(duration_ms) if duration_ms is not None else None,
-                1 if (truncated or args_truncated) else 0,
+                1 if (truncated or args_truncated or error_truncated) else 0,
                 output_missing,
                 missing_reason,
                 _now(),
@@ -118,9 +127,12 @@ def record_tool_call(
 def _tool_title(name: str) -> str:
     """工具的中文展示名。
 
-    惰性导入 + 兜底：`agent.tools` 包有既有的导入顺序约束（先导入 `agent.core`
-    才安全），而这里可能在只导入存储层时被调用。拿不到展示名时回落原始工具名 ——
-    诚实优先，也绝不让历史读取本身失败。
+    惰性导入 + 兜底：存储层不该在 import 期就把整棵 `agent.tools` 拉起来
+    （展示名只是显示细节，依赖方向是「工具/服务依赖存储」，不是反过来）。
+    历史上这里还写着「必须先 import agent.core 才安全」的导入顺序约束 —— 那条
+    约束已经不成立（tests/test_import_smoke.py 会守住「每个模块都能作为第一个
+    import」）；保留惰性导入是为了依赖方向本身，而不是为了绕开循环。
+    拿不到展示名时回落原始工具名 —— 诚实优先，也绝不让历史读取本身失败。
     """
     try:
         from agent.tools.display import tool_label
@@ -198,5 +210,87 @@ def prune_outputs(
         "WHERE output_missing = 0 AND created_at < ?",
         (cutoff,),
     )
+    conn.commit()
+    return int(cur.rowcount or 0)
+
+
+def delete_record(conn: sqlite3.Connection, record_id: str) -> bool:
+    """删掉一条工具历史（用户主动「删除这一条」）。返回是否真的删到了。"""
+    try:
+        cur = conn.execute("DELETE FROM tool_records WHERE id = ?", (str(record_id),))
+    except sqlite3.Error as exc:  # noqa: BLE001 - 删除失败如实返回 False
+        logger.warning("tool record delete failed: %s", exc)
+        return False
+    return int(cur.rowcount or 0) > 0
+
+
+def count_records(conn: sqlite3.Connection, *, topic_id: str | None = None) -> int:
+    """工具历史条数（设置页用来说清「清空会删掉多少」）。"""
+    try:
+        if topic_id:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tool_records WHERE topic_id = ?", (topic_id,)
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS n FROM tool_records").fetchone()
+    except sqlite3.Error as exc:  # noqa: BLE001 - 读不到就当 0
+        logger.warning("tool record count failed: %s", exc)
+        return 0
+    return int(row["n"] if row is not None else 0)
+
+
+def delete_records(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: str | None = None,
+    older_than_days: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    """删掉工具历史记录（可限定话题 / 只删 N 天前的）。返回删除条数。
+
+    这是用户主动动作（「清空工具历史」），不做隐式清理：隐式删除用户数据需要
+    用户先打开 `tools.record_retention_days`（默认 0 = 永久保留）。
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if topic_id:
+        where.append("topic_id = ?")
+        params.append(str(topic_id))
+    if older_than_days is not None and int(older_than_days) > 0:
+        cutoff = (
+            (now or datetime.now(timezone.utc)) - timedelta(days=int(older_than_days))
+        ).isoformat()
+        where.append("created_at < ?")
+        params.append(cutoff)
+    sql = "DELETE FROM tool_records"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    try:
+        cur = conn.execute(sql, params)
+    except sqlite3.Error as exc:  # noqa: BLE001 - 删除失败不抛给调用方
+        logger.warning("tool records delete failed: %s", exc)
+        return 0
+    return int(cur.rowcount or 0)
+
+
+def prune_records(
+    conn: sqlite3.Connection, retention_days: int, *, now: datetime | None = None
+) -> int:
+    """按保留期删掉整条工具历史（参数、错误、状态一并删）。
+
+    `retention_days <= 0` 表示永久保留 —— 这是**默认值**，与既有行为完全一致：
+    以前只按天清输出全文，记录行本身永久保留。只有用户显式把「记录保留天数」
+    设成正数，这里才会删整行。
+    """
+    if not retention_days or int(retention_days) <= 0:
+        return 0
+    cutoff = (
+        (now or datetime.now(timezone.utc)) - timedelta(days=int(retention_days))
+    ).isoformat()
+    try:
+        cur = conn.execute("DELETE FROM tool_records WHERE created_at < ?", (cutoff,))
+    except sqlite3.Error as exc:  # noqa: BLE001 - 清理是维护动作
+        logger.warning("tool record prune failed: %s", exc)
+        return 0
     conn.commit()
     return int(cur.rowcount or 0)

@@ -64,6 +64,29 @@ class InjectionTrace(BaseModel):
     dropped: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class PhaseSpan(BaseModel):
+    """一段时间花在哪：顶层阶段铺满时间轴，嵌套阶段只作细分。"""
+
+    name: str
+    ms: int = 0
+    depth: int = 1
+    detail: str | None = None
+    start_ms: int = 0
+
+
+class PhaseTrace(BaseModel):
+    """阶段账本：`sum(顶层) + residual_ms ≈ duration_ms`（见 trace/phases.py）。"""
+
+    version: int = 1
+    total_ms: int = 0
+    sum_ms: int = 0
+    residual_ms: int | None = None
+    notes: dict[str, Any] = Field(default_factory=dict)
+    spans: list[PhaseSpan] = Field(default_factory=list)
+    # turn 结束之后才发生的工作（例如后台摘要派生）：不计入 duration_ms。
+    after_turn: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class TurnTrace(BaseModel):
     turn_id: str
     status: str = "running"
@@ -78,3 +101,5 @@ class TurnTrace(BaseModel):
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
     final_preview: str = ""
+    # 阶段时间：一轮的时间去向（队列等待另见 notes.queue_wait_ms）
+    phases: PhaseTrace = Field(default_factory=PhaseTrace)

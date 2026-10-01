@@ -1,4 +1,4 @@
-﻿"""M12 offline maintenance: scheduler + contradiction scan + dreaming + tool candidates.
+"""M12 offline maintenance: scheduler + contradiction scan + dreaming + tool candidates.
 
 Runs in the background (periodic or manual). All failures are isolated:
 a broken maintenance pass must never affect the main loop.
@@ -389,6 +389,8 @@ class MaintenanceScheduler:
             results: dict[str, Any] = {"ok": True}
             # 顺带清理过期的工具输出（记录保留，只清正文）：维护是天然的执行时机
             results["tool_outputs_purged"] = self.ctx.prune_tool_outputs()
+            # 整条记录的保留天数默认 0（永久保留）；用户设置过才在这里隐式清理
+            results["tool_records_purged"] = self.ctx.prune_tool_records()
             results.update(await scan_contradictions(self.ctx))
             results.update(await run_dreaming(self.ctx))
             results.update(await mine_tool_candidates(self.ctx))
