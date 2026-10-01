@@ -1,4 +1,4 @@
-﻿import { defineStore } from "pinia";
+import { defineStore } from "pinia";
 import {
   api,
   type DevAuthorizationRow,
@@ -492,8 +492,22 @@ export const useSessionStore = defineStore("session", {
     candidateError: {} as Record<string, string>,
     /** 主 turn 队列快照（TURN_QUEUE 事件更新）：运行中 + 排队中 */
     turnQueue: { running: null, queued: [], cancelled: [] } as TurnQueueState,
-    /** 迭代/输出预算耗尽，等待用户决定是否继续 */
-    pendingContinue: null as { id: string; used: number; max: number } | null,
+    /**
+     * 等待用户决定是否继续的那次暂停。
+     *
+     * 不只是预算耗尽：无进展暂停（连续几次调用拿到完全一样的结果）走的是同一条
+     * 「继续/停止」通道。所以这里必须原样保留后端给的原因与说明 —— 界面自己猜原因
+     * 会把无进展暂停说成「已达迭代上限」。
+     */
+    pendingContinue: null as {
+      id: string;
+      used: number;
+      max: number;
+      /** 后端给的机器可读原因；预算耗尽路径目前为空 */
+      reason: string;
+      /** 后端给的人话说明；为空时由界面兜底 */
+      message: string;
+    } | null,
     _msgSeq: 0,
     /** 被折叠进创建卡的调用：call_id → 开发工作区 id（失败时回写创建卡用） */
     _creationGroupByCall: {} as Record<string, string>,

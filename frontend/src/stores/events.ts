@@ -581,12 +581,16 @@ export const useEventStore = defineStore("events", {
       if (!id) return;
       const kind = String(approval.kind ?? "");
       if (kind === "continue") {
-        // 迭代/输出预算耗尽：进入「继续/停止」操作条，不进入审批队列
+        // 「继续/停止」操作条，不进入审批队列。原因可能是预算耗尽，也可能是
+        // 无进展暂停（payload.reason = "no_progress"）——原因与说明一律原样带着，
+        // 界面不去猜（猜错会把无进展说成「已达迭代上限」）。
         const payload = (approval.payload ?? {}) as Record<string, unknown>;
         session.pendingContinue = {
           id,
           used: Number(payload.used_iterations ?? 0),
           max: Number(payload.max_iterations ?? 0),
+          reason: String(payload.reason ?? ""),
+          message: String(payload.message ?? ""),
         };
         return;
       }
