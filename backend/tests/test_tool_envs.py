@@ -75,6 +75,7 @@ class _FakeRunner:
         freeze_output: str | None = None,
         python_version: str | None = None,
         report: bool = True,
+        pip_in_base: bool = True,
     ) -> None:
         self.calls: list[list[str]] = []
         self.packages = list([PACKAGE] if packages is None else packages)
@@ -82,6 +83,8 @@ class _FakeRunner:
         self.freeze_output = freeze_output
         self.python_version = python_version or ".".join(str(item) for item in sys.version_info[:3])
         self.report = report
+        # False = 模拟 uv 管理的 venv（没有 pip）：解析要退回到新建 venv 里的 pip
+        self.pip_in_base = pip_in_base
 
     async def __call__(self, argv: list[str], timeout: float, cwd=None):
         self.calls.append(list(argv))
@@ -95,6 +98,10 @@ class _FakeRunner:
             )
             return True, ""
         if len(argv) >= 4 and argv[1:3] == ["-m", "pip"]:
+            if argv[3] == "--version":
+                if self.pip_in_base or argv[0] != "C:/python.exe":
+                    return True, "pip 24.0 from C:/python.exe (python 3.11)"
+                return False, "C:/python.exe: No module named pip"
             if argv[3] == "install":
                 return self._install(argv)
             if argv[3] == "freeze":
@@ -117,12 +124,16 @@ class _FakeRunner:
             packages = list(result.get("packages") or self.packages)
         else:
             packages = list(self.packages)
-        directory = Path(argv[0]).parent.parent
-        site = directory / ("Lib/site-packages" if os.name == "nt" else "lib/python3.11/site-packages")
-        site.mkdir(parents=True, exist_ok=True)
-        for package in packages:
-            dist = f"{package['name'].replace('-', '_')}-{package['version']}.dist-info"
-            (site / dist).mkdir(exist_ok=True)
+        if "--dry-run" not in argv:
+            # 真 pip 的 --dry-run 只解析、不落盘：替身也不能在这里造出 dist-info。
+            directory = Path(argv[0]).parent.parent
+            site = directory / (
+                "Lib/site-packages" if os.name == "nt" else "lib/python3.11/site-packages"
+            )
+            site.mkdir(parents=True, exist_ok=True)
+            for package in packages:
+                dist = f"{package['name'].replace('-', '_')}-{package['version']}.dist-info"
+                (site / dist).mkdir(exist_ok=True)
         if "--report" in argv:
             report_path = Path(argv[argv.index("--report") + 1])
             report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -487,6 +498,50 @@ def test_last_used_is_recorded_for_a_real_tool_call(tmp_path):
     assert _manifest(manager)["last_used_at"] != "2000-01-01T00:00:00+00:00"
 
 
+class _FakeDocker:
+    """docker 命令行替身（本机没有 Docker：只验证管理端的命令与状态机）。
+
+    * §docker image inspect <tag>§：按 §images§ 集合回答（命中 = 本机已有镜像）；
+    * §docker build ... -t <tag> ...§：按 §build_ok§ 回答，成功后把 tag 加进 §images§；
+    * 其它命令（venv / pip）交给 §_FakeRunner§（§calls§ 里只有这些）。
+    """
+
+    def __init__(
+        self,
+        *,
+        images: tuple[str, ...] = (),
+        build_ok: bool = True,
+        build_output: str = "Successfully built qio-tool-env",
+        **runner_kwargs,
+    ) -> None:
+        self.images = set(images)
+        self.build_ok = build_ok
+        self.build_output = build_output
+        self.docker_calls: list[list[str]] = []
+        self._inner = _FakeRunner(**runner_kwargs)
+
+    @property
+    def calls(self) -> list[list[str]]:
+        return self._inner.calls
+
+    async def __call__(self, argv: list[str], timeout: float, cwd=None):
+        if argv and argv[0] == "docker":
+            self.docker_calls.append(list(argv))
+            if argv[1:3] == ["image", "inspect"]:
+                if argv[3] in self.images:
+                    return True, "[]"
+                return False, "Error: No such image: " + argv[3]
+            if argv[1] == "build":
+                if self.build_ok:
+                    self.images.add(argv[argv.index("-t") + 1])
+                return self.build_ok, self.build_output
+            return False, "unknown docker command"
+        return await self._inner(argv, timeout, cwd)
+
+    def builds(self) -> list[list[str]]:
+        return [call for call in self.docker_calls if call[1] == "build"]
+
+
 # -- E2 环境清理 -----------------------------------------------------------
 
 
@@ -698,3 +753,167 @@ def test_the_maintenance_cli_lists_and_removes_with_confirmation(tmp_path, capsy
     ) == 0
     assert manager.is_ready(requirements) is False
     assert manager.lock_file_for(requirements).is_file()
+
+# -- E3 容器执行路径的依赖（准备侧；本机没有 Docker，用替身验证命令与状态机） ----
+
+
+def test_the_container_image_identity_follows_the_environment(tmp_path):
+    manager = _manager(tmp_path, _FakeDocker())
+    tag = manager.container_image_for(REQUIREMENTS)
+
+    assert tag.startswith("qio-tool-env:")
+    assert tag.endswith(manager.fingerprint_for(REQUIREMENTS))
+    assert manager.container_image_for(["other>=1"]) != tag
+    plan = manager.container_plan(REQUIREMENTS)
+    assert plan["base_image"] == manager.container_base_image()
+    assert "FROM python:" in plan["dockerfile"]
+    assert "COPY requirements.lock" in plan["dockerfile"]
+    assert "-r /tmp/qio-requirements.lock" in plan["dockerfile"]
+    assert plan["never"] == "不在每次工具调用时联网解析或安装依赖"
+
+
+def test_resolve_only_does_not_install_anything_on_the_host(tmp_path):
+    runner = _FakeDocker()
+    manager = _manager(tmp_path, runner)
+
+    ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))
+
+    assert ok is True
+    assert packages == [PACKAGE]
+    assert installer == "pip 24.0"
+    argv = [call for call in runner.calls if "--dry-run" in call][0]
+    assert argv[:3] == ["C:/python.exe", "-m", "pip"]
+    assert "--dry-run" in argv and "--ignore-installed" in argv
+    assert argv[-1] == "requests>=2.31"
+    # 只解析：没有建环境、没有安装、也不算「环境就绪」
+    assert not any(call[1:3] == ["-m", "venv"] for call in runner.calls)
+    assert not any("install" in call and "--dry-run" not in call for call in runner.calls)
+    assert manager.is_ready(REQUIREMENTS) is False
+    assert manager.lock_for(REQUIREMENTS) is None
+
+
+def test_resolve_only_reports_a_failure_instead_of_an_empty_lock(tmp_path):
+    runner = _FakeDocker(install_results=[{"ok": False, "output": "ERROR: 没有网络"}])
+    manager = _manager(tmp_path, runner)
+
+    ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))
+
+    assert ok is False
+    assert packages == []
+    assert "没有网络" in installer
+
+
+def test_a_container_image_is_built_once_from_the_lock_and_reused_offline(tmp_path):
+    runner = _FakeDocker()
+    manager = _manager(tmp_path, runner)
+    approvals = _Approvals()
+
+    first = asyncio.run(
+        manager.ensure_container_image(REQUIREMENTS, approvals=approvals, tool_name="weather")
+    )
+
+    assert first.ok, first.reason
+    assert first.built is True and first.reused is False
+    assert first.image == manager.container_image_for(REQUIREMENTS)
+    # 没有为了拿锁定清单在宿主上装东西：是 pip --dry-run 解析出来的
+    assert not any(call[1:3] == ["-m", "venv"] for call in runner.calls)
+    assert not any("install" in call and "--dry-run" not in call for call in runner.calls)
+    assert manager.lock_for(REQUIREMENTS)["fidelity"] == "pip-report-resolve-only"
+    assert manager.locked_packages_for(REQUIREMENTS) == ["requests==2.32.3"]
+    # 构建上下文只有锁定清单 + Dockerfile，且 Dockerfile 只按锁定清单装
+    build = runner.builds()[0]
+    assert build[1:3] == ["build", "-f"]
+    assert build[build.index("-t") + 1] == first.image
+    context = Path(build[-1])
+    assert (context / "requirements.lock").read_text(encoding="utf-8") == (
+        manager.lock_file_for(REQUIREMENTS).read_text(encoding="utf-8")
+    )
+    dockerfile = (context / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY requirements.lock" in dockerfile
+    assert "requests>=2.31" not in dockerfile  # 镜像里不做临时解析
+    # 构建结果记进持久锁定记录
+    assert manager.lock_for(REQUIREMENTS)["container"]["image"] == first.image
+
+    before = len(runner.calls)
+    second_approvals = _Approvals()
+    second = asyncio.run(manager.ensure_container_image(REQUIREMENTS, approvals=second_approvals))
+
+    assert second.ok and second.reused is True and second.built is False
+    assert second_approvals.requests == []  # 镜像已有：不再打扰用户
+    assert len(runner.calls) == before  # 也不再动 pip / venv
+    assert len(runner.builds()) == 1
+
+
+def test_the_container_path_asks_for_approval_before_building(tmp_path):
+    runner = _FakeDocker()
+    manager = _manager(tmp_path, runner)
+
+    no_channel = asyncio.run(manager.ensure_container_image(REQUIREMENTS))
+
+    assert no_channel.ok is False
+    assert "确认通道" in (no_channel.reason or "")
+    assert runner.builds() == []
+    assert [call for call in runner.docker_calls if call[1] == "image"] != []  # 只探测，不构建
+
+    rejected = asyncio.run(
+        manager.ensure_container_image(REQUIREMENTS, approvals=_Approvals(decision="rejected"))
+    )
+
+    assert rejected.ok is False
+    assert "没有同意" in (rejected.reason or "")
+    assert runner.builds() == []
+    assert manager.lock_for(REQUIREMENTS) is None
+
+
+def test_a_container_build_is_not_attempted_when_versions_cannot_be_resolved(tmp_path):
+    runner = _FakeDocker(install_results=[{"ok": False, "output": "ERROR: 解析不了"}])
+    manager = _manager(tmp_path, runner)
+
+    status = asyncio.run(manager.ensure_container_image(REQUIREMENTS, approvals=_Approvals()))
+
+    assert status.ok is False
+    assert "解析依赖版本失败" in (status.reason or "")
+    assert runner.builds() == []
+    assert manager.lock_for(REQUIREMENTS) is None
+
+
+def test_a_failed_build_is_reported_and_not_recorded_as_ready(tmp_path):
+    runner = _FakeDocker(build_ok=False, build_output="ERROR: no space left on device")
+    manager = _manager(tmp_path, runner)
+
+    status = asyncio.run(manager.ensure_container_image(REQUIREMENTS, approvals=_Approvals()))
+
+    assert status.ok is False
+    assert "no space left on device" in (status.reason or "")
+    record = manager.lock_for(REQUIREMENTS) or {}
+    assert "container" not in record
+
+
+def test_the_container_plan_uses_an_existing_lock_without_resolving(tmp_path):
+    runner = _FakeDocker()
+    manager = _manager(tmp_path, runner)
+    assert asyncio.run(manager.ensure(REQUIREMENTS, approvals=_Approvals())).ok
+    calls_before = len(runner.calls)
+
+    status = asyncio.run(manager.ensure_container_image(REQUIREMENTS, approvals=_Approvals()))
+
+    assert status.ok and status.built is True
+    assert status.pinned == ["requests==2.32.3"]  # 用的是宿主环境那份锁定清单
+    assert len(runner.calls) == calls_before  # 没有再解析
+    assert manager.lock_for(REQUIREMENTS)["fidelity"] == "pip-report"
+
+def test_resolve_falls_back_to_a_venv_pip_when_the_base_interpreter_has_none(tmp_path):
+    """uv 管理的 venv 默认没有 pip（实测过）：解析要退回新建 venv 里的 pip，而不是直接失败。"""
+    runner = _FakeDocker(pip_in_base=False)
+    manager = _manager(tmp_path, runner)
+
+    ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))
+
+    assert ok is True
+    assert packages == [PACKAGE]
+    assert any(call[1:3] == ["-m", "venv"] for call in runner.calls)
+    resolve = [call for call in runner.calls if "--dry-run" in call][0]
+    assert resolve[0].replace("\\", "/").endswith(manager.interpreter_name)
+    # 宿主上仍然什么都没装：只建了一个空环境 + 解析
+    assert not any("install" in call and "--dry-run" not in call for call in runner.calls)
+    assert manager.is_ready(REQUIREMENTS) is False

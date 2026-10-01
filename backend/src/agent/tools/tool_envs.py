@@ -73,6 +73,13 @@ _PIP_REPORT_NAME = ".qio-pip-report.json"
 # 「最后使用时间」写盘的最小间隔：工具调用很频繁，记账不该每次都写盘。
 TOUCH_INTERVAL_SECONDS = 60.0
 
+# 容器路径（E3）：与 tools/sandbox.py 探测的是同一个 docker 命令行。
+# 这里不 import sandbox：环境管理器只负责「把镜像准备好」，执行由 sandbox 决定。
+CONTAINER_BINARY = "docker"
+CONTAINER_DOCKERFILE_NAME = "Dockerfile"
+CONTAINER_CONTEXT_DIR = "containers"
+CONTAINER_PROBE_TIMEOUT_SECONDS = 30.0
+
 EnvRunner = Callable[..., Awaitable[tuple[bool, str]]]
 
 
@@ -392,6 +399,21 @@ class CleanupReport:
     def ok(self) -> bool:
         """没有跳过任何一个才算「清理完成」；跳过的一定带原因。"""
         return not self.skipped
+
+
+@dataclass(frozen=True)
+class ContainerStatus:
+    """容器执行路径的依赖镜像现状（准备侧；执行侧由 tools/sandbox.py 接线）。"""
+
+    ok: bool
+    image: str | None = None
+    base_image: str | None = None
+    reused: bool = False
+    built: bool = False
+    reason: str | None = None
+    note: str | None = None
+    lock_available: bool = False
+    pinned: list[str] = field(default_factory=list)
 
 
 class ToolEnvManager:
@@ -751,6 +773,61 @@ class ToolEnvManager:
             return "none", "", []
         return "freeze", "", packages
 
+    def _store_lock(
+        self,
+        requirements: list[str],
+        fingerprint: str,
+        packages: list[dict],
+        *,
+        fidelity: str,
+        installer: str,
+        mode: str,
+        python_record: dict,
+        note: str | None = None,
+    ) -> dict:
+        """把锁定清单写两份（环境目录 + 持久目录）；返回写入结果的账。
+
+        两份都要：环境目录那份跟着环境走（核对用），持久那份删了环境也还在（重建用）。
+        """
+        with_hashes = bool(packages) and all(item.get("hash") for item in packages)
+        lock_text = _render_lock_file(packages, with_hashes)
+        lock_sha = hashlib.sha256(lock_text.encode("utf-8")).hexdigest()
+        created = _now()
+        previous = self.lock_for(requirements)
+        record: dict[str, Any] = {
+            "schema": MANIFEST_SCHEMA,
+            "fingerprint": fingerprint,
+            "requirements": requirements,
+            "identity": self.identity_for(requirements),
+            "python": python_record,
+            "created_at": (previous or {}).get("created_at") or created,
+            "updated_at": created,
+            "last_used_at": created,
+            "resolution": mode,
+            "installer": installer or "",
+            "hashes": with_hashes,
+            "fidelity": fidelity,
+            "packages": packages,
+        }
+        if note:
+            record["note"] = note
+        stored = False
+        error: str | None = None
+        try:
+            self.lock_directory(requirements).mkdir(parents=True, exist_ok=True)
+            _write_text(self.lock_file_for(requirements), lock_text)
+            _write_json(self.lock_record_for(requirements), record)
+            stored = True
+        except OSError as exc:
+            error = f"锁定清单没能写入（{exc}）"
+        return {
+            "stored": stored,
+            "error": error,
+            "sha256": lock_sha,
+            "hashes": with_hashes,
+            "created_at": created,
+        }
+
     async def _prepare(self, requirements: list[str], *, fingerprint: str) -> EnvStatus:
         directory = self.directory_for(requirements)
         try:
@@ -816,37 +893,21 @@ class ToolEnvManager:
             if lock_failure:
                 reason += f"（按锁定版本安装也失败：{lock_failure[:200]}）"
             return EnvStatus(False, None, reason, fingerprint=fingerprint)
-        created = _now()
-        with_hashes = bool(packages) and all(item.get("hash") for item in packages)
-        lock_text = _render_lock_file(packages, with_hashes)
-        lock_sha = hashlib.sha256(lock_text.encode("utf-8")).hexdigest()
-        lock_available = False
-        lock_error: str | None = None
-        previous = self.lock_for(requirements)
-        record: dict[str, Any] = {
-            "schema": MANIFEST_SCHEMA,
-            "fingerprint": fingerprint,
-            "requirements": requirements,
-            "identity": self.identity_for(requirements),
-            "python": python_record,
-            "created_at": (previous or {}).get("created_at") or created,
-            "updated_at": created,
-            "last_used_at": created,
-            "resolution": mode,
-            "installer": installer or "",
-            "hashes": with_hashes,
-            "fidelity": fidelity,
-            "packages": packages,
-        }
-        if note:
-            record["note"] = note
-        try:
-            self.lock_directory(requirements).mkdir(parents=True, exist_ok=True)
-            _write_text(self.lock_file_for(requirements), lock_text)
-            _write_json(self.lock_record_for(requirements), record)
-            lock_available = True
-        except OSError as exc:
-            lock_error = f"锁定清单没能写入（{exc}）"
+        stored = self._store_lock(
+            requirements,
+            fingerprint,
+            packages,
+            fidelity=fidelity,
+            installer=installer,
+            mode=mode,
+            python_record=python_record,
+            note=note,
+        )
+        created = stored["created_at"]
+        lock_available = stored["stored"]
+        lock_error = stored["error"]
+        lock_sha = stored["sha256"]
+        with_hashes = stored["hashes"]
         manifest: dict[str, Any] = {
             "schema": MANIFEST_SCHEMA,
             "fingerprint": fingerprint,
@@ -885,6 +946,321 @@ class ToolEnvManager:
             resolution=mode,
             lock_available=lock_available,
             note=note,
+        )
+
+    # -- 容器执行路径的依赖（E3） -----------------------------------------
+
+    async def _pip_capable_python(self, requirements: list[str]) -> tuple[str | None, str | None]:
+        """找一个**带 pip** 的解释器来做「只解析」。
+
+        为什么不直接用 base_python：uv 管理的 venv 默认不带 pip（实测 §uv run python -m pip§
+        会 ModuleNotFoundError: No module named pip），而容器路径的解析不该因此失败。
+        base_python 没有 pip 时，用 §python -m venv§ 建一个**空环境**（venv 的 pip 来自
+        CPython 自带的 ensurepip，不需要联网）；这个目录以后宿主安装也复用，不浪费。
+        """
+        ok, _output = await self._runner(
+            [self.base_python, "-m", "pip", "--version"], CONTAINER_PROBE_TIMEOUT_SECONDS, None
+        )
+        if ok:
+            return self.base_python, None
+        directory = self.directory_for(requirements)
+        try:
+            directory.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return None, f"无法创建专用环境的目录：{exc}"
+        ok, output = await self._runner(
+            [self.base_python, "-m", "venv", str(directory)], self.timeout_seconds, str(directory.parent)
+        )
+        if not ok:
+            return None, f"创建用于解析的虚拟环境失败：{_output_tail(output) or '（没有输出）'}"
+        interpreter = self.interpreter_for(requirements)
+        if not Path(interpreter).is_file():
+            return None, "虚拟环境建好了，但找不到它的 Python 解释器"
+        ok, output = await self._runner(
+            [interpreter, "-m", "pip", "--version"], CONTAINER_PROBE_TIMEOUT_SECONDS, str(directory)
+        )
+        if not ok:
+            return None, f"虚拟环境里没有可用的 pip：{_output_tail(output) or '（没有输出）'}"
+        return interpreter, None
+
+    async def resolve_only(self, requirements: Sequence[str]) -> tuple[bool, list[dict], str]:
+        """只解析、不安装：给容器镜像准备锁定清单（pip 的 `--dry-run --report`）。
+
+        为什么需要它：容器路径要按锁定版本构建镜像；为了拿到锁定清单先在宿主上装一整套
+        依赖是白装。`--dry-run` 只解析不落盘，`--ignore-installed` 让解析结果不受宿主
+        已装包影响。**仍然只有 pip 一个解析器**：这里不自己算版本。
+        """
+        wanted = _normalize_requirements(requirements)
+        if not wanted:
+            return True, [], ""
+        interpreter, problem = await self._pip_capable_python(wanted)
+        if interpreter is None:
+            return False, [], problem or "找不到带 pip 的解释器来解析依赖版本"
+        report_path = self.locks_root / f".resolve-{self.fingerprint_for(wanted)}.json"
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            ok, output = await self._runner(
+                [
+                    interpreter, "-m", "pip", "install", "--disable-pip-version-check",
+                    "--dry-run", "--ignore-installed", "--report", str(report_path), *wanted,
+                ],
+                self.timeout_seconds,
+                str(report_path.parent),
+            )
+            if not ok:
+                return False, [], output
+            packages, installer = _packages_from_report(report_path)
+            if not packages:
+                # 没有解析结果就不能构建镜像：宁可不做，也不做一个「依赖是空的」镜像。
+                return False, [], output + "\n（pip 没有给出解析报告，无法锁定版本）"
+            return True, packages, installer
+        finally:
+            with contextlib.suppress(OSError):
+                report_path.unlink()
+
+    @property
+    def container_root(self) -> Path:
+        return self.root / CONTAINER_CONTEXT_DIR
+
+    def container_python_tag(self) -> str:
+        return f"{sys.version_info[0]}.{sys.version_info[1]}"
+
+    def container_base_image(self) -> str:
+        """基础镜像跟环境身份同一个 Python 主次版本：锁定清单是按它解析的。"""
+        return f"python:{self.container_python_tag()}-slim"
+
+    def container_image_for(self, requirements: Sequence[str]) -> str:
+        """镜像 tag 就是这个环境的身份指纹：同一组依赖 + 同一 Python/平台 → 同一个镜像。"""
+        return f"qio-tool-env:{self.container_python_tag()}-{self.fingerprint_for(requirements)}"
+
+    def container_dockerfile(self, requirements: Sequence[str]) -> str:
+        return (
+            f"FROM {self.container_base_image()}\n"
+            "# 只按锁定清单装：精确版本（有哈希就带 --hash，pip 会进哈希校验模式）。\n"
+            "# 镜像按指纹 tag 复用，构建只发生一次；工具调用时不做任何联网解析/安装。\n"
+            "COPY requirements.lock /tmp/qio-requirements.lock\n"
+            "RUN python -m pip install --no-cache-dir --disable-pip-version-check \\\n"
+            "      -r /tmp/qio-requirements.lock && rm -f /tmp/qio-requirements.lock\n"
+        )
+
+    def container_plan(self, requirements: Sequence[str]) -> dict:
+        """容器依赖方案（纯数据：给诊断、界面与 sandbox 接线用）。"""
+        wanted = _normalize_requirements(requirements)
+        lock_file = self.lock_file_for(wanted) if wanted else None
+        return {
+            "image": self.container_image_for(wanted) if wanted else None,
+            "base_image": self.container_base_image(),
+            "lock_file": str(lock_file) if lock_file else None,
+            "lock_available": bool(lock_file and lock_file.is_file()),
+            "pinned": self.locked_packages_for(wanted) if wanted else [],
+            "dockerfile": self.container_dockerfile(wanted) if wanted else "",
+            "reuse": "本机已有这个 tag 的镜像 → 直接复用（不联网、不重装）；没有 → 用户同意后构建一次",
+            "never": "不在每次工具调用时联网解析或安装依赖",
+        }
+
+    async def _docker_image_ready(self, image: str) -> bool:
+        ok, _output = await self._runner(
+            [CONTAINER_BINARY, "image", "inspect", image], CONTAINER_PROBE_TIMEOUT_SECONDS, None
+        )
+        return ok
+
+    def _record_container(self, requirements: list[str], image: str) -> None:
+        record = self.lock_for(requirements)
+        if record is None:
+            return
+        record["container"] = {
+            "image": image,
+            "base": self.container_base_image(),
+            "built_at": _now(),
+            "hashes": bool(record.get("hashes")),
+        }
+        with contextlib.suppress(OSError, ValueError):
+            _write_json(self.lock_record_for(requirements), record)
+
+    def _container_approval_payload(
+        self,
+        requirements: list[str],
+        *,
+        tool_name: str,
+        task_id: str | None,
+        image: str,
+        needs_resolve: bool,
+    ) -> dict:
+        detail = (
+            "容器隔离执行 + 声明了第三方依赖：需要按锁定版本构建一个专用镜像（tag "
+            + image
+            + "）。构建一次之后按 tag 复用，**不会**在每次工具调用时联网安装。"
+        )
+        if needs_resolve:
+            detail += (
+                "目前还没有锁定清单：会先用 pip 做一次只解析不安装的解析（--dry-run），"
+                "把精确版本记下来再构建。"
+            )
+        else:
+            detail += "锁定清单已经存在，直接按它构建。"
+        return {
+            "packages": list(requirements),
+            "tool": tool_name,
+            "task_id": task_id,
+            "detail": detail,
+            "container": {
+                "image": image,
+                "base_image": self.container_base_image(),
+                "resolve_only": needs_resolve,
+            },
+            "lock": {
+                "available": not needs_resolve,
+                "packages": self.locked_packages_for(requirements),
+            },
+        }
+
+    async def ensure_container_image(
+        self,
+        requirements: Sequence[str],
+        *,
+        approvals=None,
+        tool_name: str = "",
+        task_id: str | None = None,
+    ) -> ContainerStatus:
+        """把「按锁定版本构建的镜像」准备好（构建一次，之后按 tag 离线复用）。
+
+        顺序：锁定清单（没有就用 pip `--dry-run` 解析一次，宿主上什么都不装）→ 本机已有
+        该 tag 的镜像就复用 → 否则拿到用户同意后 `docker build` 一次 → 记进持久锁定记录。
+        容器执行本身由 tools/sandbox.py 决定（接线见给 lead 的 CROSS-ROUTE REQUEST）。
+        """
+        wanted = _normalize_requirements(requirements)
+        if not wanted:
+            return ContainerStatus(
+                ok=True, note="没有依赖声明：容器路径用随包镜像即可，不需要专用镜像。"
+            )
+        fingerprint = self.fingerprint_for(wanted)
+        image = self.container_image_for(wanted)
+        base_image = self.container_base_image()
+        lock_file = self.lock_file_for(wanted)
+        pinned = self.locked_packages_for(wanted)
+        if await self._docker_image_ready(image):
+            return ContainerStatus(
+                ok=True,
+                image=image,
+                base_image=base_image,
+                reused=True,
+                lock_available=lock_file.is_file(),
+                pinned=pinned,
+                note="本机已经有这个镜像（按锁定版本构建过）：直接复用，不联网、不重新安装。",
+            )
+        if approvals is None:
+            return ContainerStatus(
+                ok=False,
+                image=image,
+                base_image=base_image,
+                lock_available=lock_file.is_file(),
+                pinned=pinned,
+                reason=(
+                    "需要一个按锁定版本构建的容器镜像，但没有可用的确认通道来征求构建许可："
+                    "这次没有构建，也不会在工具调用时临时 pip install。"
+                ),
+            )
+        needs_resolve = not lock_file.is_file()
+        decision = await approvals.request(
+            "dependency_install",
+            self._container_approval_payload(
+                wanted,
+                tool_name=tool_name,
+                task_id=task_id,
+                image=image,
+                needs_resolve=needs_resolve,
+            ),
+        )
+        if getattr(decision, "decision", None) != "approved":
+            return ContainerStatus(
+                ok=False,
+                image=image,
+                base_image=base_image,
+                lock_available=lock_file.is_file(),
+                pinned=pinned,
+                reason="你（或超时）没有同意构建容器镜像：容器路径这次不可用（不会退回临时安装）。",
+            )
+        note: str | None = None
+        if needs_resolve:
+            resolved, packages, installer = await self.resolve_only(wanted)
+            if not resolved:
+                return ContainerStatus(
+                    ok=False,
+                    image=image,
+                    base_image=base_image,
+                    reason=(
+                        "解析依赖版本失败（容器镜像要按锁定版本构建）："
+                        + (_output_tail(installer) or "（没有输出）")
+                    ),
+                )
+            stored = self._store_lock(
+                wanted,
+                fingerprint,
+                packages,
+                fidelity="pip-report-resolve-only",
+                installer=installer,
+                mode="resolved",
+                python_record={
+                    "version": ".".join(str(item) for item in sys.version_info[:3]),
+                    "major_minor": self.container_python_tag(),
+                    "base": self.base_python,
+                    "source": "resolver（只解析，没有建环境）",
+                },
+                note=(
+                    "这份锁定清单来自 pip --dry-run 解析（宿主上什么都没有安装），"
+                    "供容器镜像构建使用。"
+                ),
+            )
+            if not stored["stored"]:
+                return ContainerStatus(
+                    ok=False, image=image, base_image=base_image, reason=f"无法记录锁定清单：{stored['error']}"
+                )
+            pinned = self.locked_packages_for(wanted)
+            lock_file = self.lock_file_for(wanted)
+            note = "锁定清单是用 pip --dry-run 解析出来的（宿主上什么都没装）。"
+        context = self.container_root / fingerprint
+        try:
+            context.mkdir(parents=True, exist_ok=True)
+            (context / LOCK_NAME).write_text(lock_file.read_text(encoding="utf-8"), encoding="utf-8")
+            (context / CONTAINER_DOCKERFILE_NAME).write_text(
+                self.container_dockerfile(wanted), encoding="utf-8"
+            )
+        except OSError as exc:
+            return ContainerStatus(
+                ok=False, image=image, base_image=base_image, reason=f"无法准备容器镜像的构建上下文：{exc}"
+            )
+        ok, output = await self._runner(
+            [
+                CONTAINER_BINARY, "build",
+                "-f", str(context / CONTAINER_DOCKERFILE_NAME),
+                "-t", image,
+                str(context),
+            ],
+            self.timeout_seconds,
+            str(context),
+        )
+        if not ok:
+            return ContainerStatus(
+                ok=False,
+                image=image,
+                base_image=base_image,
+                lock_available=lock_file.is_file(),
+                pinned=pinned,
+                reason=f"构建容器镜像失败：{_output_tail(output) or '（没有输出）'}",
+            )
+        self._record_container(wanted, image)
+        return ContainerStatus(
+            ok=True,
+            image=image,
+            base_image=base_image,
+            built=True,
+            lock_available=True,
+            pinned=pinned,
+            note=((note + " ") if note else "")
+            + (
+                "镜像已按锁定版本构建并打上指纹 tag：下次调用直接用本机镜像"
+                "（docker image inspect 命中即复用），不会每次联网装。"
+            ),
         )
 
     # -- 生命周期：谁在引用、哪些是 orphan、怎么删 -------------------------
