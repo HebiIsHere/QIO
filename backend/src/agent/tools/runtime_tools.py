@@ -7,6 +7,7 @@ from typing import Any
 
 from agent.credentials.store import CredentialStore
 from agent.tools.base import Tool, ToolResult
+from agent.trace.redact import redact_text
 from agent.tools.sandbox import SandboxExecutor
 from agent.tools.spec import ToolDefinition
 
@@ -80,18 +81,22 @@ class CodeTool(Tool):
         )
         if not result.ok:
             # 失败要把 stderr / 退出码作为诊断一起交给模型，而不是只回一句
-            # 「沙箱执行失败」；类别也带上，供统一反馈层与界面使用。
+            # 「工具执行失败」；类别也带上，供统一反馈层与界面使用。
             detail = result.diagnostic()
             hint = self.definition.dependency_hint(result.error or detail)
             if hint:
                 detail = f"{hint}\n{detail}" if detail else hint
             return ToolResult(
                 ok=False,
-                error=result.error or "沙箱执行失败",
-                content=detail,
+                # 不说「沙箱」：真实执行器可能是容器，也可能是受限子进程
+                # （受限子进程不是安全沙箱），这里只是没有更具体错误时的兜底文案。
+                error=redact_text(result.error or "工具执行失败"),
+                content=redact_text(detail),
                 category=result.category,
             )
-        content = json.dumps(result.value, ensure_ascii=False)
+        # 工具输出要过打码再交给模型与历史：注入给工具的凭据（QIO_KEY_*）如果被
+        # 原样打印/返回（很常见的调试写法），不能顺着工具结果流进模型上下文。
+        content = redact_text(json.dumps(result.value, ensure_ascii=False))
         # policy.output_limit_chars 之前只是声明，没有真正生效；这里显式截断并
         # 标注，避免超大输出直接灌进模型上下文（截断是可见的，不静默）。
         limit = getattr(policy, "output_limit_chars", 0) or 0

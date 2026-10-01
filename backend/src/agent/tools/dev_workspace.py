@@ -1,4 +1,4 @@
-"""Tool development workspace: sandboxed per-task directory.
+﻿"""Tool development workspace: sandboxed per-task directory.
 
 The main agent develops tools inside a workspace (write code/tests, run
 tests, iterate) before submitting for approval. Files are restricted to

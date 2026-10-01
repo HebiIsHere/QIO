@@ -23,8 +23,11 @@ This module is the single choke point for that guarantee.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
+import traceback
+from collections import OrderedDict
 from typing import Any, Iterable
 
 REDACTED = "***redacted***"
@@ -75,10 +78,13 @@ _INLINE_PATTERNS = [
     ),
 ]
 
-# 已知密钥登记表：进程内、只用于匹配。
+# 已知密钥登记表：进程内、只用于匹配。**有界**：超过上限先淘汰最早登记的，
+# 免得长期运行的进程把内存吃成一条新的可靠性问题。
+MAX_KNOWN_SECRETS = 64
+
 _secrets_lock = threading.Lock()
-_known_secrets: list[str] = []  # 长的在前（先替换长的，避免被短的前缀先啃掉）
-_known_secret_set: set[str] = set()
+_known_secrets: "OrderedDict[str, None]" = OrderedDict()
+_ordered_cache: tuple[str, ...] | None = None  # 长的在前，避免短前缀先啃掉长值
 
 # 字符串里嵌的 JSON 最多再往下一层解析这么多次，避免构造出来的深嵌套文本
 # 把打码变成指数级工作。
@@ -94,12 +100,14 @@ def register_secret(value: str | None, *, source: str | None = None) -> bool:
     text = str(value or "")
     if len(text) < _MIN_SECRET_LENGTH:
         return False
+    global _ordered_cache
     with _secrets_lock:
-        if text in _known_secret_set:
+        if text in _known_secrets:
             return False
-        _known_secret_set.add(text)
-        _known_secrets.append(text)
-        _known_secrets.sort(key=len, reverse=True)
+        _known_secrets[text] = None
+        while len(_known_secrets) > MAX_KNOWN_SECRETS:
+            _known_secrets.popitem(last=False)
+        _ordered_cache = None
     return True
 
 
@@ -120,17 +128,27 @@ def registered_secret_count() -> int:
 
 def clear_registered_secrets() -> None:
     """清空登记表（测试用；也用于凭据被删除后主动失效）。"""
+    global _ordered_cache
     with _secrets_lock:
         _known_secrets.clear()
-        _known_secret_set.clear()
+        _ordered_cache = None
+
+
+def _ordered_secrets() -> tuple[str, ...]:
+    """长的在前：短的前缀先替换会把长值啃成半截，剩下的仍然泄露。"""
+    global _ordered_cache
+    with _secrets_lock:
+        cached = _ordered_cache
+        if cached is None:
+            cached = tuple(sorted(_known_secrets, key=len, reverse=True))
+            _ordered_cache = cached
+        return cached
 
 
 def _replace_known_secrets(text: str) -> str:
     if not text:
         return text
-    with _secrets_lock:
-        secrets = tuple(_known_secrets)
-    for secret in secrets:
+    for secret in _ordered_secrets():
         if secret in text:
             text = text.replace(secret, REDACTED)
     return text
@@ -226,3 +244,94 @@ def assert_clean(payload: Any, secrets: list[str]) -> None:
     for s in secrets:
         if s and s in blob:
             raise AssertionError(f"secret leaked into trace payload: {s[:4]}…")
+
+# ---------- 日志路径：密钥同样不许出现 ----------
+#
+# trace / 工具历史走的是 redact_any / redact_text；日志是另一条独立出口，
+# 以前谁都没管它。这里用 LogRecord 工厂做全局兜底：任何 logger 打出来的
+# 记录，在**进入任何 handler 之前**先过一遍打码。
+#
+# 为什么不是给 root logger 加 Filter：Filter 只作用于「直接打在它身上」的记录，
+# 子 logger 向上传的记录不会经过 root 的 filter（只会经过 handler 的）。
+
+_factory_lock = threading.Lock()
+_log_redaction_installed = False
+_previous_factory = None
+
+
+def _redact_log_args(args: Any) -> Any:
+    if isinstance(args, dict):
+        return {key: _redact_log_args(value) for key, value in args.items()}
+    if isinstance(args, tuple):
+        return tuple(_redact_log_args(value) for value in args)
+    if isinstance(args, str):
+        return redact_text(args)
+    return args
+
+
+# 日志量远大于 trace：普通日志不该为了一条「没有任何可疑痕迹」的消息跑五条正则。
+# 先做一次廉价的「有没有可能藏着密钥」预筛，命中才走完整打码。
+_LOG_HINT = re.compile(
+    r"(?i)sk-|pk-|rk-|bearer|://|-----begin|eyj|token|key|secret|password|cookie|authorization"
+)
+
+
+def _redact_log_message(text: str) -> str:
+    """日志消息打码：已知密钥 exact match（便宜）+ 命中线索才跑完整规则。"""
+    out = _replace_known_secrets(text)
+    stripped = out.lstrip()
+    if stripped[:1] in ("{", "[") or _LOG_HINT.search(out):
+        return _redact_text(out, secret_fields=None, depth=0)
+    return out
+
+
+def _redact_log_record(record: logging.LogRecord) -> logging.LogRecord:
+    """把一条日志记录打码（只做本地替换，值不出进程）。
+
+    顺序很重要：**先把 % 参数合成完整消息，再打码**。反过来做会在消息模板上
+    误伤格式串（例如模板里的 `token=%s` 会被 kv 规则吃掉 %s），结果是
+    「not all arguments converted」这种日志系统自己的异常 —— 测试抓过一次。
+    合成之后 msg 已是最终文本，args 清空（getMessage 不再二次格式化）。
+    """
+    try:
+        message = record.getMessage()
+    except Exception:  # noqa: BLE001 - 调用方格式串写错：至少把参数里的密钥挡掉
+        if record.args:
+            record.args = _redact_log_args(record.args)
+        return record
+    record.msg = _redact_log_message(message)
+    record.args = None
+    if record.exc_info and not record.exc_text:
+        try:
+            text = "".join(traceback.format_exception(*record.exc_info))
+        except Exception:  # noqa: BLE001 - 拿不到 traceback 不算打码失败
+            text = ""
+        if text:
+            record.exc_text = redact_text(text)
+    return record
+
+
+def install_log_redaction() -> bool:
+    """装上日志打码（幂等）。返回本次是否真的装上了。"""
+    global _log_redaction_installed, _previous_factory
+    with _factory_lock:
+        if _log_redaction_installed:
+            return False
+        _previous_factory = logging.getLogRecordFactory()
+
+        def _factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+            record = _previous_factory(*args, **kwargs)
+            return _redact_log_record(record)
+
+        logging.setLogRecordFactory(_factory)
+        _log_redaction_installed = True
+        return True
+
+
+def log_redaction_installed() -> bool:
+    return _log_redaction_installed
+
+
+# 导入即装：redact 模块本身就是「密钥不出现在持久化/输出路径」的唯一收口，
+# 让日志这条路依赖各调用方记得安装，等于默认留了一条漏的路径。
+install_log_redaction()
