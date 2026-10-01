@@ -647,6 +647,33 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE turn_traces ADD COLUMN phases TEXT NOT NULL DEFAULT '{}'",
         ],
     ),
+    (
+        25,
+        [
+            # Turn 队列台账：排队中的用户消息以前只活在进程内存里，重启即静默消失。
+            # 这里给每一个**被 API 接受过**的 turn 落一行，并区分
+            # queued / running / 终态 / interrupted（见 storage/turn_journal.py）。
+            """
+            CREATE TABLE IF NOT EXISTS turn_journal (
+                turn_id         TEXT PRIMARY KEY,
+                message         TEXT NOT NULL DEFAULT '',
+                topic_id        TEXT,
+                notify          INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'queued',
+                created_at      TEXT NOT NULL,
+                started_at      TEXT,
+                ended_at        TEXT,
+                updated_at      TEXT NOT NULL,
+                reason          TEXT,
+                user_message_id TEXT,
+                recovered_at    TEXT,
+                recovered_by    TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_turn_journal_status ON turn_journal(status)",
+            "CREATE INDEX IF NOT EXISTS idx_turn_journal_created ON turn_journal(created_at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

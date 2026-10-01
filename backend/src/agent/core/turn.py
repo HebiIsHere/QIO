@@ -120,6 +120,10 @@ class TurnManager:
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
+        # 可选的持久化台账（见 storage/turn_journal.py）：被 API 接受过的消息
+        # 从此有痕迹，进程退出后不会静默消失。core/ 不认识 storage，只按协议调用；
+        # 台账写入失败绝不影响 turn 本身。
+        self._journal: Any = None
         # 队列快照的版本号：每一次影响快照的状态变化都 +1。
         # 前端据此丢弃「比已知状态更旧」的快照 —— 快照是权威的，
         # 但**旧**的权威快照不能覆盖更新的事件（例如 TURN_START 之后晚到的 running=null）。
@@ -143,6 +147,31 @@ class TurnManager:
     def set_emitter(self, emitter: EventEmitter) -> None:
         """Wire the SSE emitter; kept as a callable so core/ never imports api/."""
         self._emitter = emitter
+
+    def set_journal(self, journal: Any) -> None:
+        """接上 turn 持久化台账（duck-typed：accepted / running / terminal）。"""
+        self._journal = journal
+
+    # -- journal（跨重启的痕迹；写入失败只忽略，绝不影响 turn）------------
+
+    def note_user_message(self, turn_id: str, message_id: str | None) -> None:
+        """把「这一轮的用户消息已经写进历史」记进台账。
+
+        重启后就能如实区分「消息连历史都没进」和「消息已保存、只是没生成回答」。
+        """
+        self._journal_call("note_user_message", turn_id, message_id)
+
+    def _journal_call(self, method: str, *args, **kwargs) -> None:
+        journal = self._journal
+        if journal is None:
+            return
+        fn = getattr(journal, method, None)
+        if fn is None:
+            return
+        try:
+            fn(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - 台账是旁路，不能挡住对话
+            pass
 
     # -- queue snapshot ---------------------------------------------------
 
@@ -216,6 +245,15 @@ class TurnManager:
             pass  # no running loop: enqueue without an awaitable result
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
+        # 受理即落台账：排队中的消息从此不会因为进程退出而静默消失
+        self._journal_call(
+            "accepted",
+            turn_id=ctx.turn_id,
+            message=ctx.message,
+            topic_id=ctx.initial_topic,
+            notify=ctx.notify,
+            status=ctx.status,
+        )
         self._bump_revision()
         self._ensure_worker()
         self._schedule_emit()
@@ -269,6 +307,7 @@ class TurnManager:
             self._active = ctx
             ctx.status = "running"
             ctx.started_perf = time.perf_counter()
+            self._journal_call("running", ctx.turn_id)
             self._bump_revision()
             self._schedule_emit()
             await self._emit_turn_start(ctx)
@@ -289,6 +328,14 @@ class TurnManager:
                 ctx.error = f"{type(exc).__name__}: {exc}"
             finally:
                 self._flush_trace_phases(ctx)
+                # 终态落台账；关闭中的 cancelled 记成 interrupted（那是进程掐断的，
+                # 不是用户取消的 —— 重启后应当给用户重发的机会）。
+                self._journal_call(
+                    "terminal",
+                    ctx.turn_id,
+                    ctx.status,
+                    reason="shutdown" if self._closed else None,
+                )
                 await self._emit_turn_end(ctx)
                 if self._active is ctx:
                     self._active = None
@@ -404,6 +451,7 @@ class TurnManager:
                 c.cancelled = True
                 c.status = "cancelled"
                 self._pending.pop(i)
+                self._journal_call("terminal", c.turn_id, "cancelled", reason="user")
                 self._record_cancelled(c)
                 # 排队项的结局不依赖 worker：立刻兑现等待者，
                 # 之后 worker 取到这个 tombstone 只会跳过。
@@ -431,6 +479,9 @@ class TurnManager:
             ctx.cancelled = True
             if not _terminal(ctx):
                 ctx.status = "cancelled"
+            # 排队中还没执行的消息：进程关闭不等于用户取消 —— 记成 interrupted，
+            # 下次启动会作为「没有执行的消息」提示用户（不自动重放）。
+            self._journal_call("terminal", ctx.turn_id, "cancelled", reason="shutdown")
             self._resolve(ctx, {"ok": False, "reason": "shutdown"})
 
         worker = self._worker

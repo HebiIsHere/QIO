@@ -1101,6 +1101,9 @@ def create_app(
 
         * `turn_queue`：运行中 / 排队的 Turn（含 revision，供前端做新旧比较）；
         * `approvals`：仍在等待用户决定的审批（断线错过的 APPROVAL_REQUIRED）；
+        * `interrupted_turns`：上一个进程结束时**已经被接受、但没有执行完**的
+          用户消息（排队中就退出、或执行到一半退出）。它们不会被自动重放，
+          但也不能静默消失 —— 界面据此如实告诉用户，并提供「重发 / 知道了」。
         * `tasks`：仍在跑 / 仍在排队的独立任务（断线错过的 SUBAGENT_STATUS）。
 
         `instance_id` 与后端实例绑定：后端重启后 revision 会从头计数，
@@ -1113,6 +1116,8 @@ def create_app(
             "approvals": ctx.approvals.pending(),
             # 上一次进程结束时仍没人回答的审批：不恢复等待，只说清「那次操作没有执行」。
             "interrupted_approvals": ctx.approvals.interrupted(),
+            # 上一次进程结束时没有被执行完的用户消息（见 storage/turn_journal.py）。
+            "interrupted_turns": ctx.turn_journal.unfinished(),
             "tasks": ctx.task_manager.snapshot(),
             # 工具执行的权威事实（活工具 + 最近结束的工具）：
             # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，
@@ -1129,6 +1134,51 @@ def create_app(
         """按 turn_id 取消 —— 运行中或仍在排队中的都可。"""
         ok = ctx.turns.cancel(turn_id)
         return {"ok": ok, "cancelled": ok, "turn_id": turn_id}
+
+    # -- 未执行的用户消息（重启恢复）--------------------------------------
+    # 语义：只留痕 + 用户决定，**不自动重放**。reason/time 都如实给，
+    # 前端不需要也不可能「猜」出这条消息到底执行过没有。
+
+    @app.post("/api/turns/{turn_id}/resend")
+    async def resend_turn(turn_id: str) -> dict:
+        """把一条「被接受但没有执行」的消息按原话题重新提交。
+
+        一次性：先用带条件的 UPDATE 抢占（`claim`），抢不到就 409 ——
+        所以同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
+        """
+        record = ctx.turn_journal.recoverable(turn_id)
+        if record is None:
+            raise HTTPException(
+                status_code=409,
+                detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
+            )
+        if not ctx.turn_journal.claim(turn_id):
+            raise HTTPException(status_code=409, detail="这一条已经被处理过了")
+        pending = ctx.bindings.peek_intent()
+        try:
+            turn = ctx.turns.submit(
+                record["message"],
+                record["topic_id"],
+                intent_id=pending.intent_id if pending else None,
+            )
+        except Exception:
+            ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
+            raise
+        ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
+        return {
+            "ok": True,
+            "recovered_turn_id": turn_id,
+            "turn_id": turn.turn_id,
+            "status": turn.status,
+        }
+
+    @app.post("/api/turns/{turn_id}/dismiss")
+    async def dismiss_turn(turn_id: str) -> dict:
+        """用户选择「知道了」：不再提示，但记录与消息原文仍然保留（不删用户数据）。"""
+        ok = ctx.turn_journal.dismiss(turn_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail="这一条不在「未执行」状态")
+        return {"ok": True, "dismissed": turn_id}
 
     # -- topic switch（待确认切换） ----------------------------------------
     #

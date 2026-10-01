@@ -329,6 +329,20 @@ class AppContext:
         self.turns.set_publisher(self._publish_turn_queue)
         # TurnManager 是 turn 生命周期的唯一事实源：TURN_START / TURN_END 只由它发。
         self.turns.set_emitter(self._publish_turn_event)
+        # turn 队列台账（迁移 25）：被 API 接受过的消息跨重启不丢。
+        # 重启时把上一个进程留下的 queued / running 标成 interrupted —— 只留痕、
+        # **不自动重放**（见 storage/turn_journal.py 的产品语义）。
+        from agent.storage.turn_journal import TurnJournal
+
+        self.turn_journal = TurnJournal(conn)
+        self.turns.set_journal(self.turn_journal)
+        self.recovered_turns = self.turn_journal.interrupt_stale()
+        if self.recovered_turns:
+            logger.warning(
+                "上一个进程留下了 %s 条没有执行的用户消息（不会自动重放，等用户决定）",
+                len(self.recovered_turns),
+            )
+        self.turn_journal.prune_terminal()
         self.registry.register(
             CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )

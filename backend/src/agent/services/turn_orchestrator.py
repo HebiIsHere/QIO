@@ -366,6 +366,9 @@ class TurnOrchestrator:
                 turn_id=ctx.turn_id,
             )
         ctx.user_message_id = msg_id
+        # 用户消息已经进历史：台账记下来，重启后能如实区分「连消息都没进」
+        # 与「消息已保存、只是没生成回答」。
+        app.turns.note_user_message(ctx.turn_id, msg_id)
         tracer.write("messages", msg_id)
         # 话题的第一段是懒创建的：这里把真正落库的片段补进本轮绑定（细化，不是改归属）。
         # 不补的话，「本轮正在写入哪个片段」在绑定里是空的 —— 封存时的写入占用检查会漏掉它。
