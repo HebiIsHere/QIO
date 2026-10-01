@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useEventStore } from "../events";
 import { useSessionStore } from "../session";
@@ -210,6 +210,36 @@ describe("events store 路由", () => {
     });
     expect(session.pendingContinue?.id).toBe("appr_1");
     expect(session.pendingContinue?.used).toBe(128);
+  });
+
+  it("无进展暂停（reason=no_progress）也进 pendingContinue，并原样保留原因与说明", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const events = useEventStore();
+    const session = useSessionStore();
+    events.route({
+      type: "APPROVAL_REQUIRED",
+      id: "c2",
+      ts: "2026-09-10T00:00:00Z",
+      data: {
+        approval: {
+          approval_id: "appr_np",
+          kind: "continue",
+          payload: {
+            reason: "no_progress",
+            message: "`echo` 连续 3 次给出完全相同的结果，这一轮没有新的进展",
+            used_iterations: 3,
+            max_iterations: 128,
+          },
+        },
+      },
+    });
+    expect(session.pendingContinue?.id).toBe("appr_np");
+    expect(session.pendingContinue?.reason).toBe("no_progress");
+    expect(session.pendingContinue?.message).toContain("没有新的进展");
+    // 关键是别把 3/128 当成「已达迭代上限」：预算根本没耗尽
+    expect(session.pendingContinue?.used).toBe(3);
+    expect(session.pendingContinue?.max).toBe(128);
   });
 
   it("TURN_START 记录 activeTurnId，消息归属该 turn，TURN_END 清除", () => {
