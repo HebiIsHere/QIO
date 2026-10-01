@@ -1381,3 +1381,26 @@ Vite `127.0.0.1:5199`，独立数据目录，不碰用户的真实数据）。�
 
 **仍未做**：这一批之外的老界面（星球、设置、审批弹窗）没有重跑人工验收；「继续开发」
 按钮没有真点过（它需要真实模型凭据，本次环境没有）。
+
+---
+
+## 冻结产物验证（2026-10-02）
+
+第一阶段里「真实冻结产物执行链」与「CI 用冻结产物验证」原来都是 NOT RUN。这次在本机
+真的走了一遍：
+
+1. `pwsh -File scripts/build_sidecar.ps1` → 打出 `qio-backend.exe`（56.9 MB，
+   写入 `frontend/src-tauri/binaries/`）。本机 venv 没有 PyInstaller，脚本按既有设计用
+   `uv run --frozen --with pyinstaller` 临时提供，不改动任何环境。
+2. 对着这个 exe 跑 `scripts/frozen_worker_smoke.py`（新增，stdlib only），三项全过：
+   - 单文件代码 → 恰好一行 JSON、值正确；
+   - **多文件项目 + 入口 + 包内相对 import** → 值正确（这是本轮新加的「按项目执行」在
+     冻结产物里的验证，不再是只跑源码）；
+   - 先打印一行形似成功的结果、再以 17 退出 → 没有结果输出、不被当成成功。
+3. CI 新增 `frozen-worker` 任务（windows-latest）：装依赖 → `scripts/build_sidecar.ps1`
+   → `scripts/frozen_worker_smoke.py`；`docs/SETUP.md` 补上同一条本地路径。
+
+**诚实边界**：上面第 3 步的**工作流文件本身没有在本机执行过**（没有 CI 运行环境），
+它只是把已经在本机验证过的两条命令串起来；`frozen_worker_smoke.py` 与
+`build_sidecar.ps1` 是实跑过的。安装包（Tauri NSIS）**仍未做端到端人工验收** ——
+本轮只验到「后端冻结产物能按协议跑工具」。

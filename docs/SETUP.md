@@ -90,6 +90,17 @@ pwsh -File scripts/build_installer.ps1
 实测踩过一次：安装包里的后端比源码早一个多月，内置模型加载失败、静默退回 BM25，
 而安装包看起来完全是好的。`build_installer.ps1` 就是为这件事准备的（顺序错/漏跑会构建失败）。
 
+**只验证后端冻结产物**（不打安装包，CI 的 `frozen-worker` 任务用同一条路径）：
+
+```powershell
+uv sync --frozen --extra dev                     # backend 依赖（CI 同款命令）
+pwsh -File scripts/build_sidecar.ps1             # 重建 sidecar
+python scripts/frozen_worker_smoke.py frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe
+```
+
+三项冒烟：单文件代码、多文件项目（包内相对 import）、坏 worker 被拒。源码测试跑的是
+`python tool_worker.py`，用户机器上跑的是这个 exe —— 只有这一步能证明打包之后仍然成立。
+
 ### 发一版更新（应用内更新，2026-09-22 起）
 
 从 v0.1.3 起，QIO 支持在应用内「检查 → 下载 → 安装 → 重启」。更新源是 GitHub Releases：

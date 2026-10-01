@@ -260,3 +260,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path resources/models/bge-small-zh-v1.5 | Out-Null
       - name: Unit tests
         run: cargo test
+
+  # 冻结产物验证：源码测试跑的是 python，用户机器上跑的是打包后的 exe。
+  # 这里真的把 sidecar 打出来，再对着它跑工具 worker 的三项冒烟（单文件 /
+  # 多文件项目 / 坏 worker 被拒）。跑得慢，但这是唯一能证明「打包之后仍然成立」的地方。
+  frozen-worker:
+    name: frozen worker (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Sync backend dependencies from lock
+        working-directory: backend
+        run: uv sync --frozen --extra dev
+      - name: Build the frozen sidecar
+        run: pwsh -File scripts/build_sidecar.ps1
+      - name: Smoke-test the frozen worker protocol
+        run: python scripts/frozen_worker_smoke.py frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe
