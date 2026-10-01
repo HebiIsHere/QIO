@@ -64,20 +64,28 @@ def test_disabled_store_is_noop(db_conn: sqlite3.Connection):
 
 
 def test_recording_overhead_is_small(db_conn: sqlite3.Connection):
-    """轨迹写入的**相对**开销：与同进程原生 sqlite 基线比倍数，而不是比绝对秒数。
+    """轨迹写入的**相对**开销：与同进程、同形状的原生 sqlite 基线比倍数。
 
-    旧写法是 `assert elapsed < 1.0`（200 次写入的绝对墙钟）。这条插入路径是
-    「读 JSON 列 → append → 写回」，在本机安静环境下**原生 sqlite 做同样的事**
-    就要 0.93–1.01s；7 个 agent 并行时会到 1.2s+。于是这个断言变成了负载计：
-    main 的 store.py 与本分支在这一段逐字节同路径，负载高时一样会红
-    （2026-10-02 交错测 6 组：main 中位数 1.065s / 本分支 1.054s，两组各自的
-    单次波动 ±0.25s —— 波动比版本差大一个数量级）。
+    为什么不能比绝对秒数：这条写入路径是「读整列 JSON → append → 写回整列」，
+    200 次在本机安静环境就要 ~0.9s，7 个 agent 并行时 1.2s+（main 的 store.py 与
+    本分支在这段逐字节同路径，负载高时一样会红）。旧的 `assert elapsed < 1.0`
+    实际是负载计，不是代码质量计。
 
-    所以自校准：先用**同样的 SQL 形状**量一个原生基线（干净列 → 200 次读改写），
-    再量 TraceStore.record_model_call，断言倍数上限 3.0x。
-    实测（200 次/组，安静环境）：worktree/native ≈ 1.0–1.3x，main/native ≈ 1.1–1.2x；
-    3.0x 拦的是「每次写入多了一次 commit / fsync / 全表重写」这类数量级退化，
-    而不是磁盘快慢。正确性断言（真的落下 200 条）保持不变。
+    基线为什么用「同样读-改-写整列 JSON」而不是「200 次单行 UPDATE」：
+    实测后者只要 0.0008–0.0090s（SQLite 对「新值与旧值逐字节相同」的 UPDATE 会
+    跳过写页），把它当分母时倍数在连续三次里从 500x 晃到 1300x —— 量的是磁盘，
+    不是代码。同形状基线（同连接、同 autocommit、同样 grow 的 JSON 列）才是稳定的
+    分母：实测 trace/shaped = 0.95–1.12x（2026-10-02，多次、含中高负载）。
+
+    上界 3.0x 的依据：基线每次调用已经是「SELECT + UPDATE 整列」两条语句，
+    TraceStore 若每次多写一条语句会到 ~1.5x，多一次 commit/fsync 会到 2x 以上；
+    3.0x 留给调度抖动，同时仍能抓住「每次写入多做数量级的事」。
+
+    分档实测（本机，200 次）：select-only 0.0012s、常量 6KB UPDATE 0.0090s、
+    增长的 JSON UPDATE 0.9969s、纯 json.dumps 0.0060s —— 也就是说这段时间是
+    「每次重写整列」的真实 I/O 形状，TraceStore 自身没有额外开销（见汇报）。
+
+    正确性断言（200 条真的落下、seq 0..199）保持不变。
     """
     import json
     import time
@@ -86,36 +94,37 @@ def test_recording_overhead_is_small(db_conn: sqlite3.Connection):
     s = TraceStore(db_conn)
     s.begin("turn_perf")
 
-    def run(*, native: bool) -> float:
+    def shaped_run(*, through_store: bool) -> float:
         db_conn.execute(
             "UPDATE turn_traces SET model_calls = '[]' WHERE turn_id = 'turn_perf'"
         )
         started = time.perf_counter()
         for i in range(calls):
-            if native:
-                row = db_conn.execute(
-                    "SELECT model_calls FROM turn_traces WHERE turn_id = 'turn_perf'"
-                ).fetchone()
-                data = json.loads(row["model_calls"]) if row["model_calls"] else []
-                data.append({"seq": i, "output_tokens": i})
-                db_conn.execute(
-                    "UPDATE turn_traces SET model_calls = ? WHERE turn_id = 'turn_perf'",
-                    (json.dumps(data),),
-                )
-            else:
+            if through_store:
                 s.record_model_call("turn_perf", {"seq": i, "output_tokens": i})
+                continue
+            row = db_conn.execute(
+                "SELECT model_calls FROM turn_traces WHERE turn_id = 'turn_perf'"
+            ).fetchone()
+            data = json.loads(row["model_calls"]) if row["model_calls"] else []
+            data.append({"seq": i, "output_tokens": i})
+            db_conn.execute(
+                "UPDATE turn_traces SET model_calls = ? WHERE turn_id = 'turn_perf'",
+                (json.dumps(data),),
+            )
         return time.perf_counter() - started
 
-    baseline = min(run(native=True), run(native=True))  # 取两次里更快的一次，抵消抖动
-    elapsed = run(native=False)
-    ratio = elapsed / max(baseline, 1e-6)
+    # 各量两次取更快的一次，抵消一次性的抖动（两侧都取最快，比较的是稳态）
+    baseline = min(shaped_run(through_store=False), shaped_run(through_store=False))
+    elapsed = min(shaped_run(through_store=True), shaped_run(through_store=True))
 
-    # 正确性：200 条必须真的写下去（与旧断言相同的那一条）
+    # 正确性：200 条必须真的写下去
     stored = s.get("turn_perf")["model_calls"]
     assert len(stored) == calls
     assert stored[0]["seq"] == 0 and stored[-1]["seq"] == calls - 1
 
+    ratio = elapsed / max(baseline, 1e-6)
     assert ratio <= 3.0, (
-        f"轨迹每次写入的开销相对原生 sqlite 基线 {ratio:.2f}x（上限 3.0x）："
+        f"轨迹写入相对同形状原生基线的开销 {ratio:.2f}x（上限 3.0x，实测 0.95–1.12x）："
         f"trace={elapsed:.3f}s baseline={baseline:.3f}s"
     )
