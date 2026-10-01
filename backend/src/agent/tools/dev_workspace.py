@@ -52,11 +52,52 @@ def _is_digest(value: object) -> bool:
     )
 
 
+# ---- 授权的生命周期（D2）-------------------------------------------------
+# 三种明确的生命周期，取代「用户不撤销就永久有效」：
+#   once      —— 本次执行：只放行紧接着的这一次执行（放行的同时就用掉），
+#                且只覆盖那一版内容（绑定内容摘要）。
+#   task      —— 当前开发任务：任务还在开发中就一直有效；任务提交即结束。
+#   long_term —— 长期授权（跨任务）：必须由用户**显式选择**，不会自动升级。
+# 刻意不设「默认 24 小时」这种拍出来的时长：有效期只由这三条生命周期与
+# 身份绑定决定（见 tools/dev_auth.py）。expires_at 只在审批明确带回时才记。
+LIFETIME_ONCE = "once"
+LIFETIME_TASK = "task"
+LIFETIME_LONG_TERM = "long_term"
+_LIFETIMES = frozenset({LIFETIME_ONCE, LIFETIME_TASK, LIFETIME_LONG_TERM})
+LIFETIME_LABELS = {
+    LIFETIME_ONCE: "本次执行",
+    LIFETIME_TASK: "当前开发任务",
+    LIFETIME_LONG_TERM: "长期授权（跨任务）",
+}
+DEFAULT_LIFETIME = LIFETIME_TASK
+
+# 授权记录的**对外状态**（接口 / 界面看到的事实，不是内部枚举）：
+# 一条授权要么现在真的算数（valid），要么有一条说清为什么不算数的理由。
+AUTH_VALID = "valid"
+AUTH_NONE = "none"            # 从来没有授权过
+AUTH_LEGACY = "legacy"        # 旧格式记录：覆盖范围无法证明 → 必须重新确认
+AUTH_CONSUMED = "consumed"    # 「本次执行」已经用掉
+AUTH_ENDED = "ended"          # 开发任务已提交：任务级授权到此为止
+AUTH_STALE = "stale"          # 策略 / 执行环境 / 被测内容变了
+AUTH_NARROWED = "narrowed"    # 现在要的范围比授权过的更大 → 不得自动扩大
+AUTH_EXPIRED = "expired"      # 记录里带了到期时刻且已到期
+
+_LONG_TERM_FILE = "long_term_authorizations.json"
+
+
+def _str_list(value: object) -> list[str]:
+    """把 scope 里的列表字段收敛成字符串列表（形状不对就回空列表）。"""
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item or "")]
+    return []
+
+
 def _read_authorization(raw: object) -> dict | None:
     """读回「执行生成代码」的授权记录；形状不对就当作没有授权。
 
-    除指纹与执行环境外还保留**授权范围**（在哪儿跑、能碰什么、用哪个凭据）：
-    用户需要能查到自己到底同意了什么，也要能收回。
+    记录里明明白白绑着这次执行的身份：能力策略指纹、执行环境、目录范围、
+    网络范围、凭据范围、被测内容摘要，以及生命周期。用户要能查到自己到底
+    同意了什么；判定也只认这些字段，不因为多存了一份说明而改变语义。
     """
     if not isinstance(raw, dict):
         return None
@@ -66,15 +107,67 @@ def _read_authorization(raw: object) -> dict | None:
         return None
     if not isinstance(executor, str) or not executor:
         return None
-    record = {
+    scope = raw.get("scope")
+    scope = dict(scope) if isinstance(scope, dict) else {}
+    lifetime = raw.get("lifetime")
+    return {
         "policy_fingerprint": fingerprint,
         "executor": executor,
         "at": str(raw.get("at") or ""),
+        # 没有 lifetime 的记录来自旧版本：它覆盖什么范围无法证明，按 legacy
+        # 处理 —— 下一次执行重新确认，绝不沿用一条说不清的授权。
+        "lifetime": lifetime if lifetime in _LIFETIMES else "",
+        "content_digest": str(raw.get("content_digest") or ""),
+        "filesystem": _str_list(raw.get("filesystem", scope.get("filesystem"))),
+        "network": bool(raw.get("network", scope.get("network"))),
+        "network_allow": _str_list(
+            raw.get("network_allow", scope.get("network_allow"))
+        ),
+        "credentials": _str_list(raw.get("credentials", scope.get("credentials"))),
+        "consumed_at": str(raw.get("consumed_at") or ""),
+        "expires_at": str(raw.get("expires_at") or ""),
+        "owner_task_id": str(raw.get("owner_task_id") or ""),
+        "scope": scope,
     }
-    scope = raw.get("scope")
-    if isinstance(scope, dict):
-        record["scope"] = scope
-    return record
+
+
+def _authorization_state(record: dict | None, *, task, requested: dict | None) -> str:
+    """这条授权现在还作数吗？不作数就给出**具体理由**（不是一句「没授权」）。
+
+    `requested` 是这次要执行的身份（能力指纹 / 执行环境 / 目录 / 网络 / 凭据 /
+    内容摘要）。范围只允许**收窄或相等**：现在要的比授权过的更大就是不覆盖，
+    必须重新确认 —— 这就是「范围变化后旧授权不得自动扩大」。
+    """
+    if not record:
+        return AUTH_NONE
+    if not record.get("lifetime"):
+        return AUTH_LEGACY
+    if record.get("consumed_at"):
+        return AUTH_CONSUMED
+    expires_at = record.get("expires_at")
+    if expires_at and expires_at < _now():
+        return AUTH_EXPIRED
+    if record.get("lifetime") == LIFETIME_TASK and task is not None and task.submitted:
+        return AUTH_ENDED
+    if requested:
+        if record.get("policy_fingerprint") != str(
+            requested.get("policy_fingerprint") or ""
+        ):
+            return AUTH_STALE
+        if record.get("executor") != str(requested.get("executor") or ""):
+            return AUTH_STALE
+        for field in ("filesystem", "network_allow", "credentials"):
+            if not set(requested.get(field) or []) <= set(record.get(field) or []):
+                return AUTH_NARROWED
+        if requested.get("network") and not record.get("network"):
+            return AUTH_NARROWED
+        if record.get("lifetime") == LIFETIME_ONCE:
+            # 「本次执行」只覆盖被批准的那一版内容：摘要对不上（或拿不到）
+            # 就不再算数。
+            wanted = str(requested.get("content_digest") or "")
+            if not wanted or wanted != record.get("content_digest"):
+                return AUTH_STALE
+    return AUTH_VALID
 
 
 def _now() -> str:
@@ -161,8 +254,9 @@ class DevTask:
     # 这条测试证据对应的内容摘要（版本标识）：文件一变，证据立即失效。
     last_test_digest: str | None = None
     evidence_state: str = EVIDENCE_NONE
-    # 用户的「执行生成代码」授权记录：绑在（能力策略指纹 + 实际执行环境）上，
-    # 任一项变了就要重新确认（见 dev_auth.py）。
+    # 用户的「执行生成代码」授权记录：逐字段绑定这次执行的身份（能力策略指纹、
+    # 执行环境、目录 / 网络 / 凭据范围、被测内容摘要）与生命周期，任一项变了、
+    # 或者现在要的范围更大，就不再算数（见 dev_auth.py 与 _authorization_state）。
     test_authorization: dict | None = None
     submitted_digest: str | None = None
     submitted_at: str | None = None
@@ -175,7 +269,11 @@ class DevWorkspace:
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._tasks: dict[str, DevTask] = {}
+        # 工作区级（跨任务）的长期授权：与任务状态分开存，重启后照样生效，
+        # 也让「长期」真的跨任务 —— 不然它只是任务级的另一个名字。
+        self._long_term: list[dict] = []
         self._restore()
+        self._restore_long_term()
 
     def _restore(self) -> None:
         """把磁盘上已有的工作区登记回内存。
@@ -236,6 +334,35 @@ class DevWorkspace:
                 task.evidence_state = EVIDENCE_STALE
                 _write_state(task)
 
+    def _restore_long_term(self) -> None:
+        """读回工作区级的长期授权；格式不对一律当作没有（不猜、不放宽）。"""
+        try:
+            raw = (self.root_dir / _LONG_TERM_FILE).read_text(encoding="utf-8")
+        except OSError:
+            return
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(data, list):
+            return
+        records = []
+        for item in data:
+            record = _read_authorization(item)
+            if record and record.get("lifetime") == LIFETIME_LONG_TERM:
+                records.append(record)
+        self._long_term = records
+
+    def _write_long_term(self) -> None:
+        """落盘长期授权（尽力而为：写不进去不能让授权流程崩掉）。"""
+        try:
+            (self.root_dir / _LONG_TERM_FILE).write_text(
+                json.dumps(self._long_term, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
     # -- lifecycle --------------------------------------------------------
 
     def create(self, request: str) -> DevTask:
@@ -286,6 +413,9 @@ class DevWorkspace:
         evidence_state = task.evidence_state
         if evidence_state == EVIDENCE_CURRENT and task.last_test_digest != digest:
             evidence_state = EVIDENCE_STALE
+        authorization_state = _authorization_state(
+            _read_authorization(task.test_authorization), task=task, requested=None
+        )
         return {
             "id": task.id,
             "request": task.request,
@@ -302,8 +432,12 @@ class DevWorkspace:
             "test_evidence_current": evidence_state == EVIDENCE_CURRENT,
             "submitted_digest": task.submitted_digest,
             "submitted_at": task.submitted_at,
-            # 有没有「在这个环境里跑它的测试」的授权（范围见 authorizations()）
-            "test_authorized": bool(task.test_authorization),
+            # 有没有「在这个环境里跑它的测试」的授权（范围与生命周期见 authorizations()）。
+            # 只有仍在期限内的记录才算（任务提交后任务级授权即结束；一次性授权
+            # 用过就没了；旧格式记录必须重新确认）。
+            "test_authorized": authorization_state == AUTH_VALID,
+            "authorization_state": authorization_state,
+            "authorization_lifetime": (task.test_authorization or {}).get("lifetime", ""),
             "files": files,
             "content_digest": digest,
         }
@@ -374,81 +508,202 @@ class DevWorkspace:
         policy_fingerprint: str,
         executor: str,
         scope: dict | None = None,
+        lifetime: str = DEFAULT_LIFETIME,
+        content_digest: str | None = None,
+        expires_at: str | None = None,
     ) -> None:
-        """记下用户「可以在这个环境里跑这个任务的生成代码」的确认。
+        """记下用户「可以在这个环境里跑生成代码」的确认，**带明确生命周期**。
 
-        绑的是（能力策略指纹 + 实际执行环境），不是内容摘要：测试本来就是
-        「改一版、跑一次」的循环，绑内容会让每次迭代都重新弹窗。
+        记录里逐字段绑定这次执行的身份：能力策略指纹、执行环境、目录范围、
+        网络范围、凭据范围、被测内容摘要。任何一个变了、或者现在要的范围比
+        授权过的更大，这条记录就不再算数（见 `_authorization_state`）。
 
-        `scope` 是这次确认的**范围**（能力 / 目录 / 网络 / 凭据引用）：它只用于
-        让用户之后能查到「我同意了什么」，并在想要的时候撤销 —— 判定仍按指纹与
-        执行环境，不因为多存了一份说明而改变语义。
+        `lifetime` 只接受三值之一，没有默认的「永久」：
+
+        * `once`      —— 本次执行，放行的同时就用掉，且绑定内容摘要；
+        * `task`      —— 当前开发任务，任务提交即结束；
+        * `long_term` —— 长期（跨任务），只存进工作区级的长期授权表，
+                         并且必须由用户显式选择（调用方负责不擅自升级）。
+
+        `scope` 仍是给用户看的那份说明（能力 / 目录 / 网络 / 凭据引用），
+        它与上面的绑定字段同源，不另造一套语义。
         """
+        if lifetime not in _LIFETIMES:
+            raise ValueError(f"unknown authorization lifetime: {lifetime!r}")
         task = self._tasks.get(task_id)
         if task is None:
             return
-        task.test_authorization = {
+        display = dict(scope or {})
+        record = {
             "policy_fingerprint": str(policy_fingerprint or ""),
             "executor": str(executor or ""),
             "at": _now(),
+            "lifetime": lifetime,
+            "content_digest": str(content_digest or ""),
+            "filesystem": _str_list(display.get("filesystem")),
+            "network": bool(display.get("network")),
+            "network_allow": _str_list(display.get("network_allow")),
+            "credentials": _str_list(display.get("credentials")),
+            "owner_task_id": task.id,
         }
-        if scope:
-            task.test_authorization["scope"] = dict(scope)
+        if expires_at:
+            record["expires_at"] = str(expires_at)
+        if display:
+            record["scope"] = display
+        if lifetime == LIFETIME_LONG_TERM:
+            # 长期授权不绑某个任务的寿命：放在工作区级记录里，跨任务可见。
+            self._long_term = [
+                item for item in self._long_term if item.get("owner_task_id") != task.id
+            ]
+            self._long_term.append(record)
+            self._write_long_term()
+            return
+        task.test_authorization = record
         _write_state(task)
 
-    def authorizations(self) -> list[dict]:
-        """当前有效的执行授权（含范围），按授权时间倒序。"""
+    def authorization_records(self) -> list[dict]:
+        """当前**还在有效期概念内**的授权记录（含长期），按授权时间倒序。
+
+        这里不隐藏「已经不算数」的记录：界面要能说清「你同意过什么、现在还算不算」，
+        所以每条都带 `state` 与理由。
+        """
         rows: list[dict] = []
         for task in self.list_tasks():
-            record = task.test_authorization
+            record = _read_authorization(task.test_authorization)
             if not record:
                 continue
-            scope = record.get("scope") if isinstance(record, dict) else None
-            scope = scope if isinstance(scope, dict) else {}
+            rows.append(self._authorization_row(record, task=task))
+        for record in self._long_term:
             rows.append(
-                {
-                    "task_id": task.id,
-                    "request": task.request[:200],
-                    "submitted": bool(task.submitted),
-                    "executor": record.get("executor"),
-                    "isolated": bool(scope.get("isolated")),
-                    "policy_fingerprint": record.get("policy_fingerprint"),
-                    "capabilities": list(scope.get("capabilities") or []),
-                    "filesystem": list(scope.get("filesystem") or []),
-                    "network": bool(scope.get("network")),
-                    "network_allow": list(scope.get("network_allow") or []),
-                    "credentials": list(scope.get("credentials") or []),
-                    "granted_at": record.get("at") or "",
-                }
+                self._authorization_row(
+                    record, task=self._tasks.get(record.get("owner_task_id") or "")
+                )
             )
         rows.sort(key=lambda row: row["granted_at"], reverse=True)
         return rows
+
+    def _authorization_row(self, record: dict, *, task) -> dict:
+        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+        lifetime = record.get("lifetime") or ""
+        return {
+            "task_id": task.id if task is not None else record.get("owner_task_id") or None,
+            "owner_task_id": record.get("owner_task_id") or "",
+            "request": task.request[:200] if task is not None else "",
+            "submitted": bool(task.submitted) if task is not None else False,
+            "executor": record.get("executor"),
+            "isolated": bool(scope.get("isolated")) or record.get("executor") == "docker",
+            "policy_fingerprint": record.get("policy_fingerprint"),
+            "capabilities": list(scope.get("capabilities") or []),
+            "filesystem": list(record.get("filesystem") or []),
+            "network": bool(record.get("network")),
+            "network_allow": list(record.get("network_allow") or []),
+            "credentials": list(record.get("credentials") or []),
+            "granted_at": record.get("at") or "",
+            # 生命周期：本次执行 / 当前开发任务 / 长期授权（跨任务）
+            "lifetime": lifetime,
+            "lifetime_label": LIFETIME_LABELS.get(lifetime, "无法识别的旧授权"),
+            "applies_to_all_tasks": lifetime == LIFETIME_LONG_TERM,
+            "content_digest": record.get("content_digest") or "",
+            "expires_at": record.get("expires_at") or "",
+            "consumed_at": record.get("consumed_at") or "",
+            # 现在还算不算数：不加 request 时按「这条记录本身是否仍然有效」判
+            "state": _authorization_state(record, task=task, requested=None),
+        }
+
+    # 兼容旧名字：授权列表（接口直接把它交给前端）
+    authorizations = authorization_records
 
     def revoke_test_authorization(self, task_id: str) -> bool:
         """收回这个任务的执行授权；返回是否真的收回了。
 
         收回之后下一次测试（或提交复测）会重新问用户一遍。已经注册的工具不受影响：
         它走的是注册审批，不是这条测试授权。
+
+        如果这个任务还建立过**长期授权**，一并收回 —— 否则「收回」只收掉了
+        任务级那一份，长期那一份还在暗处生效。
         """
         task = self._tasks.get(task_id)
-        if task is None or not task.test_authorization:
+        revoked = False
+        if task is not None and task.test_authorization:
+            task.test_authorization = None
+            _write_state(task)
+            revoked = True
+        kept = [item for item in self._long_term if item.get("owner_task_id") != task_id]
+        if len(kept) != len(self._long_term):
+            self._long_term = kept
+            self._write_long_term()
+            revoked = True
+        return revoked
+
+    def consume_test_authorization(self, task_id: str) -> bool:
+        """用掉一次「本次执行」的授权（只有 once 用得上）。
+
+        语义：放行紧接着的这一次执行。用掉之后下一次必须重新确认 ——
+        宁可多问一次，也不让一次性授权变成可以反复使用的长期授权。
+        """
+        task = self._tasks.get(task_id)
+        record = _read_authorization(task.test_authorization) if task is not None else None
+        if task is None or not record or record.get("consumed_at"):
             return False
-        task.test_authorization = None
+        record["consumed_at"] = _now()
+        task.test_authorization = record
         _write_state(task)
         return True
 
-    def test_authorized(
-        self, task_id: str, *, policy_fingerprint: str, executor: str
-    ) -> bool:
-        """这次执行是否已经在授权范围内（策略与执行环境都对得上）。"""
+    def test_authorization_state(
+        self, task_id: str, *, identity: dict | None = None, policy_fingerprint="", executor=""
+    ) -> dict:
+        """这次执行是否已有授权，以及**是哪一条、什么生命周期**放行的。
+
+        返回 `{"state": ..., "lifetime": ..., "owner_task_id": ...}`：
+        只有 `state == "valid"` 才算有授权；其余都是明确的不算数理由。
+        长期授权对所有任务生效，所以除了任务自己的记录，还要看工作区级的长期表。
+        """
+        requested = dict(identity or {})
+        if not requested:
+            requested = {
+                "policy_fingerprint": str(policy_fingerprint or ""),
+                "executor": str(executor or ""),
+            }
         task = self._tasks.get(task_id)
-        record = task.test_authorization if task is not None else None
-        if not record:
-            return False
-        return (
-            record.get("policy_fingerprint") == str(policy_fingerprint or "")
-            and record.get("executor") == str(executor or "")
+        candidates: list[tuple[dict, object]] = []
+        if task is not None:
+            own = _read_authorization(task.test_authorization)
+            if own:
+                candidates.append((own, task))
+        for record in self._long_term:
+            owner = self._tasks.get(record.get("owner_task_id") or "")
+            candidates.append((record, owner))
+        best = AUTH_NONE
+        for record, owner in candidates:
+            state = _authorization_state(record, task=owner, requested=requested)
+            if state == AUTH_VALID:
+                return {
+                    "state": AUTH_VALID,
+                    "lifetime": record.get("lifetime") or "",
+                    "owner_task_id": record.get("owner_task_id") or task_id,
+                    "executor": record.get("executor") or "",
+                }
+            if best == AUTH_NONE:
+                best = state
+        return {"state": best, "lifetime": "", "owner_task_id": "", "executor": ""}
+
+    def test_authorized(
+        self,
+        task_id: str,
+        *,
+        policy_fingerprint: str = "",
+        executor: str = "",
+        identity: dict | None = None,
+    ) -> bool:
+        """这次执行是否已经被授权过（身份对得上、范围没有变大、生命周期未结束）。"""
+        state = self.test_authorization_state(
+            task_id,
+            identity=identity,
+            policy_fingerprint=policy_fingerprint,
+            executor=executor,
         )
+        return state["state"] == AUTH_VALID
 
     def set_phase(self, task_id: str, phase: str) -> None:
         task = self._tasks.get(task_id)

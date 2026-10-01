@@ -625,15 +625,26 @@ class CredentialStore:
         读路径返回 None 是有意义的：应用本来就有「当前没有可用凭据」的降级路径
         （提示用户去设置里添加 Key）。写路径不在这里兜底 —— 存 / 轮换 / 删除
         仍然大声失败，绝不静默假成功。
+
+        读完顺手把值登记进打码表（`trace/redact.py`）：真正在用的密钥出现即替换，
+        不靠正则猜它长什么样。**只在读路径喂入**意味着：从没被读过的密钥不会被
+        登记 —— 这是设计边界（没有值就没有可匹配的东西），不是漏洞兜底。
+        登记只进进程内存且**有界**：不落库、不进日志、不进 trace、不进异常消息。
         """
         try:
             backend = self._kr
         except (RuntimeError, keyring.errors.NoKeyringError):
             return None
         try:
-            return backend.get_password(self.service, key_id)
+            secret = backend.get_password(self.service, key_id)
         except keyring.errors.NoKeyringError:
             return None
+        if secret:
+            # 函数内导入：避免凭据库 → trace 的模块级依赖（导入顺序是既有约束）。
+            from agent.trace.redact import register_secret
+
+            register_secret(secret)
+        return secret
 
     def get_default_secret(self) -> str | None:
         """回落密钥：当前默认的主对话凭据（没有则按既有排序取第一条可用的）。"""

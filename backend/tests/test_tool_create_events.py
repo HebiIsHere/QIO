@@ -132,7 +132,10 @@ def _pre_authorize(tools: dict, task_id: str) -> None:
     definition = tools["ws"].read_definition(task_id)
     tools["ws"].grant_test_authorization(
         task_id,
-        policy_fingerprint=policy_fingerprint(default_policy_for(definition)),
+        # 与生产同一口径：隔离等级来自真实执行器（这里固定受限子进程）
+        policy_fingerprint=policy_fingerprint(
+            default_policy_for(definition, executor="subprocess")
+        ),
         executor="subprocess",
     )
 

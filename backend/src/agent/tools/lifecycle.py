@@ -1,12 +1,19 @@
-﻿"""Tool creation lifecycle: explain -> test -> approve (x2) -> register.
+﻿"""Tool creation lifecycle: test -> approve (x2) -> register.
+
+唯一的创建入口是 submit_definition：定义来自开发工作区里的 tool.json（由模型写
+文件，不是本类向模型要提案）。历史上还有一条 create_from_request（模型提案 →
+交叉测试 → 审批 → 注册）：它在**审批之前**就把 AI 生成的代码真的跑了一遍
+（先执行、后确认），而且生产代码里没有任何调用点 —— 已删除；回归测试锁住它
+不会回来（tests/test_tool_lifecycle.py）。要接回「让模型提案」这条路，必须先
+让它走 tools/dev_auth.py 的执行授权闸门，不能只把方法加回来。
 
 Segments:
-1. proposal with explanation (main model);
-2. deterministic cross-testing in the sandbox;
-3. approval segment 1: tool creation;
-4. approval segment 2 (only when a credential is referenced): credential
+1. deterministic cross-testing in the sandbox（调用方 DevSubmitTool 在这之前必须
+   拿到执行授权：tools/dev_auth.py）；
+2. approval segment 1: tool creation;
+3. approval segment 2 (only when a credential is referenced): credential
    grant, which narrows the key scope to this tool;
-5. registration side-by-side with builtin tools.
+4. registration side-by-side with builtin tools.
 """
 
 from __future__ import annotations
@@ -18,7 +25,6 @@ from typing import Callable
 from agent.adapters.base import BaseAdapter
 from agent.credentials.store import CredentialStore
 from agent.tools.approval import ApprovalService
-from agent.tools.creator import ToolCreator
 from agent.tools.dev_tools import (
     PHASE_FAILED,
     PHASE_READY,
@@ -69,7 +75,6 @@ class ToolLifecycle:
         trace_store=None,
         turn_id_provider=None,
     ) -> None:
-        self.creator = ToolCreator(adapter)
         self.approvals = approvals
         self.sandbox = sandbox or SandboxExecutor()
         self.tester = ToolTester(self.sandbox)
@@ -87,31 +92,6 @@ class ToolLifecycle:
         self.status = ToolCreateStatus(bus, turn_id_provider)
         # 已注册工具的 disposer，撤销时真正从注册表移除
         self._registry_disposers: dict[str, Callable[[], None]] = {}
-
-    async def create_from_request(
-        self, user_request: str, *, context: str | None = None
-    ) -> ToolOutcome:
-        # 1. proposal with explanation
-        proposal, error = await self.creator.propose(user_request, context)
-        if proposal is None:
-            return ToolOutcome(False, None, "propose", error or "proposal failed")
-        definition = proposal.tool
-
-        # 2. deterministic cross-testing (function tools only; subagent
-        #    tools have a separate contract in v1.5)
-        report = None
-        if definition.tool_type == "function":
-            report = await self.tester.run(definition)
-            if not report.passed:
-                return ToolOutcome(
-                    False,
-                    definition.name,
-                    "test",
-                    f"cross-test failed: {report.summary}",
-                )
-
-        # 3-5. approval (x2) + registration (shared with submit_definition)
-        return await self._approve_and_register(definition, proposal.explanation, report)
 
     async def submit_definition(
         self,

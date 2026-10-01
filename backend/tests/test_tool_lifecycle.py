@@ -12,7 +12,7 @@ from agent.tools.approval import ApprovalService
 from agent.tools.lifecycle import ToolLifecycle
 from agent.tools.registry import ToolRegistry
 from agent.tools.sandbox import SandboxExecutor
-from agent.tools.spec import validate_tool_proposal
+from agent.tools.spec import ToolDefinition, validate_tool_proposal
 from agent.tools.tester import ToolTester
 
 GOOD_PROPOSAL = {
@@ -34,6 +34,21 @@ GOOD_PROPOSAL = {
         ],
     },
 }
+
+
+def _subagent_proposal(name: str) -> dict:
+    """subagent 型工具的定义（字段形状沿用旧提案，便于对照）。"""
+    base = dict(GOOD_PROPOSAL["tool"])
+    base.update(
+        {
+            "name": name,
+            "tool_type": "subagent",
+            "credential_ref": "key_sub",
+            "model": "deepseek-v4-flash",
+            "code": "",
+        }
+    )
+    return base
 
 
 class ScriptedAdapter:
@@ -162,7 +177,9 @@ async def test_lifecycle_end_to_end(db_conn: sqlite3.Connection):
     )
     task = asyncio.create_task(_auto_approve(bus, approvals))
     await asyncio.sleep(0.05)
-    outcome = await lifecycle.create_from_request("我需要一个加法工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**GOOD_PROPOSAL["tool"]), GOOD_PROPOSAL["explanation"]
+    )
     task.cancel()
     try:
         await task
@@ -189,7 +206,9 @@ async def test_lifecycle_rejected_not_registered(db_conn: sqlite3.Connection):
     )
     task = asyncio.create_task(_auto_approve(bus, approvals, "rejected"))
     await asyncio.sleep(0.05)
-    outcome = await lifecycle.create_from_request("加法工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**GOOD_PROPOSAL["tool"]), GOOD_PROPOSAL["explanation"]
+    )
     task.cancel()
     try:
         await task
@@ -200,21 +219,20 @@ async def test_lifecycle_rejected_not_registered(db_conn: sqlite3.Connection):
 
 
 async def test_lifecycle_test_failure_blocks(db_conn: sqlite3.Connection):
-    broken = dict(GOOD_PROPOSAL)
-    broken["tool"] = dict(
-        GOOD_PROPOSAL["tool"],
-        code="def run(**kwargs):\n    return {'sum': kwargs['a'] - kwargs['b']}",
-    )
+    broken = dict(GOOD_PROPOSAL["tool"])
+    broken["code"] = "def run(**kwargs):\n    return {'sum': kwargs['a'] - kwargs['b']}"
     bus = EventBus()
     approvals = ApprovalService(bus, timeout_seconds=5)
     registry = ToolRegistry()
     lifecycle = ToolLifecycle(
-        adapter=ScriptedAdapter(json.dumps(broken, ensure_ascii=False)),
+        adapter=ScriptedAdapter(),
         approvals=approvals,
         sandbox=SandboxExecutor(executor="subprocess"),
         registry=registry,
     )
-    outcome = await lifecycle.create_from_request("加法工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**broken), GOOD_PROPOSAL["explanation"]
+    )
     assert not outcome.ok and outcome.step == "test"
     assert registry.get("add_numbers") is None
 
@@ -234,7 +252,7 @@ async def test_lifecycle_credential_grant(db_conn: sqlite3.Connection):
     approvals = ApprovalService(bus, timeout_seconds=5)
     registry = ToolRegistry()
     lifecycle = ToolLifecycle(
-        adapter=ScriptedAdapter(json.dumps(proposal, ensure_ascii=False)),
+        adapter=ScriptedAdapter(),
         approvals=approvals,
         sandbox=SandboxExecutor(executor="subprocess"),
         registry=registry,
@@ -242,7 +260,9 @@ async def test_lifecycle_credential_grant(db_conn: sqlite3.Connection):
     )
     task = asyncio.create_task(_auto_approve(bus, approvals))
     await asyncio.sleep(0.05)
-    outcome = await lifecycle.create_from_request("天气工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**proposal["tool"]), proposal["explanation"]
+    )
     task.cancel()
     try:
         await task
@@ -393,20 +413,12 @@ class _DummyTool:
 
 
 async def test_subagent_tool_stub_fallback_without_wiring(db_conn: sqlite3.Connection):
-    proposal = dict(GOOD_PROPOSAL)
-    proposal["tool"] = dict(
-        GOOD_PROPOSAL["tool"],
-        name="deep_researcher",
-        tool_type="subagent",
-        credential_ref="key_sub",
-        model="deepseek-v4-flash",
-        code="",
-    )
+    proposal = _subagent_proposal("deep_researcher")
     bus = EventBus()
     approvals = ApprovalService(bus, timeout_seconds=5)
     registry = ToolRegistry()
     lifecycle = ToolLifecycle(
-        adapter=ScriptedAdapter(json.dumps(proposal, ensure_ascii=False)),
+        adapter=ScriptedAdapter(),
         approvals=approvals,
         sandbox=SandboxExecutor(executor="subprocess"),
         registry=registry,
@@ -414,7 +426,9 @@ async def test_subagent_tool_stub_fallback_without_wiring(db_conn: sqlite3.Conne
     )
     task = asyncio.create_task(_auto_approve(bus, approvals))
     await asyncio.sleep(0.05)
-    outcome = await lifecycle.create_from_request("研究工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**proposal), "研究工具"
+    )
     task.cancel()
     try:
         await task
@@ -434,21 +448,17 @@ async def test_subagent_tool_registers_runtime_when_wired(db_conn: sqlite3.Conne
     from agent.tools.subagent_tool import SubagentTool
     from agent.tools.task_manager import TaskManager
 
-    proposal = dict(GOOD_PROPOSAL)
-    proposal["tool"] = dict(
-        GOOD_PROPOSAL["tool"],
-        name="deep_researcher2",
-        tool_type="subagent",
-        credential_ref="key_sub",
-        model="deepseek-v4-flash",
-        code="",
-        subagent_budget={"max_iterations": 3, "max_tokens": 50000, "output_limit_chars": 1000},
-    )
+    proposal = _subagent_proposal("deep_researcher2")
+    proposal["subagent_budget"] = {
+        "max_iterations": 3,
+        "max_tokens": 50000,
+        "output_limit_chars": 1000,
+    }
     bus = EventBus()
     approvals = ApprovalService(bus, timeout_seconds=5)
     registry = ToolRegistry()
     lifecycle = ToolLifecycle(
-        adapter=ScriptedAdapter(json.dumps(proposal, ensure_ascii=False)),
+        adapter=ScriptedAdapter(),
         approvals=approvals,
         sandbox=SandboxExecutor(executor="subprocess"),
         registry=registry,
@@ -458,7 +468,9 @@ async def test_subagent_tool_registers_runtime_when_wired(db_conn: sqlite3.Conne
     )
     task = asyncio.create_task(_auto_approve(bus, approvals))
     await asyncio.sleep(0.05)
-    outcome = await lifecycle.create_from_request("研究工具")
+    outcome = await lifecycle.submit_definition(
+        ToolDefinition(**proposal), "研究工具"
+    )
     task.cancel()
     try:
         await task
@@ -468,3 +480,30 @@ async def test_subagent_tool_registers_runtime_when_wired(db_conn: sqlite3.Conne
     tool = registry.get("deep_researcher2")
     assert isinstance(tool, SubagentTool)
     assert tool.definition.subagent_budget.max_iterations == 3
+
+# ---------- D1 回归：审批之前执行生成代码的旧创建路径不得复活 ----------
+
+
+def test_the_ungated_legacy_creation_path_is_gone():
+    """历史缺口（复现）：create_from_request 在用户确认**之前**就把 AI 生成的
+    代码真的跑了一遍 —— 复现里用户点了拒绝，沙箱执行次数仍然是 2（两条用例
+    各一次）。它当时在生产代码里没有任何调用点（只有测试用），但一直留着。
+
+    现在删掉，并用这条用例锁住：没有执行授权闸门的创建入口不得重新出现。
+    要接回「让模型提案」，必须先走 tools/dev_auth.py 的闸门。
+    """
+    assert not hasattr(ToolLifecycle, "create_from_request")
+
+
+def test_the_lifecycle_no_longer_asks_the_model_for_a_proposal():
+    """唯一的创建入口是 submit_definition（定义来自工作区的 tool.json）。
+
+    生命周期不再自己向模型要提案：那条路就是「先执行、后确认」的来源。
+    """
+    lifecycle = ToolLifecycle(
+        adapter=ScriptedAdapter(),
+        approvals=None,
+        sandbox=SandboxExecutor(executor="subprocess"),
+        registry=ToolRegistry(),
+    )
+    assert not hasattr(lifecycle, "creator")

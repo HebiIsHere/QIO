@@ -39,6 +39,48 @@ class IsolationLevel(str, Enum):
     CONTAINER = "container"
 
 
+# 受限子进程**没有**保护的东西：把它写成一份可被测试与文案共用的清单，
+# 而不是散落在各处的形容词。用户文件 / 网络 / 任意进程 / 环境 都在同一用户
+# 权限下，凭据不注入但用户自己的凭据文件仍可读，QIO 数据目录同样可读写。
+# 真实强制隔离（容器 / AppContainer / 受限令牌 / 专用用户）见
+# docs/security/tool-execution-isolation.md 的分阶段设计。
+SUBPROCESS_UNPROTECTED_SURFACES = (
+    "用户文件（家目录、桌面、文档等能读就能读，能写就能写）",
+    "网络（不受限；没有按域名/端口拦截）",
+    "任意进程（可以再拉起别的程序）",
+    "环境（子进程环境已裁剪，但同用户下的其它信息仍可读）",
+    "QIO 数据目录（同用户权限下可读写）",
+    "凭据（不注入，但用户自己的凭据文件仍可读）",
+)
+
+
+def isolation_for_executor(executor: str | None) -> IsolationLevel:
+    """真实执行器 → 它**实际**提供的隔离等级。
+
+    只有探测到 docker 才算容器隔离；拿不到执行器、或它是别的值时按受限子进程
+    记 —— 宁可少报隔离，也不在策略里写一个不存在的容器。
+    """
+    return (
+        IsolationLevel.CONTAINER
+        if str(executor or "") == "docker"
+        else IsolationLevel.SUBPROCESS
+    )
+
+
+def isolation_label(executor: str | None) -> str:
+    """用户可见的隔离说法**唯一来源**：受限子进程不许被叫成安全沙箱。"""
+    if str(executor or "") == "docker":
+        return "Docker 容器（隔离执行）"
+    return "受限子进程（同一用户权限，不是安全沙箱）"
+
+
+def unprotected_surfaces(executor: str | None) -> tuple[str, ...]:
+    """这个执行器下**没有**被保护的面。容器分支只声明容器本身挡住的那些。"""
+    if str(executor or "") == "docker":
+        return ()
+    return SUBPROCESS_UNPROTECTED_SURFACES
+
+
 class SideEffect(str, Enum):
     PURE = "pure"
     READ = "read"
@@ -103,20 +145,35 @@ class ToolExecutionPolicy:
         return out
 
 
-def default_policy_for(definition: Any) -> ToolExecutionPolicy:
+def default_policy_for(
+    definition: Any, *, executor: str | None = None
+) -> ToolExecutionPolicy:
     """Derive a policy for an agent-created tool definition.
 
     AI-generated function tools are PURE unless they explicitly reference a
     credential, which promotes them to RESTRICTED with that category only.
+
+    `executor` = 实际会用的执行器（`SandboxExecutor.effective_executor()`）。
+    给了它就按**真实隔离等级**记（subprocess / docker），指纹也跟着变 —— 换
+    执行环境必须重新批准，而不是沿用旧授权。
+
+    不给执行器时保持历史默认值不变：已批准工具的
+    `approved_policy_fingerprint` 是按这个默认值算的，在这里改默认值会让所有
+    已注册工具在升级后一次性「指纹不匹配」而不被恢复。要写清真实隔离的那条
+    路径（执行授权、审批说明）一律显式传 executor。
     """
     cred = getattr(definition, "credential_ref", None)
+    isolation = (
+        IsolationLevel.CONTAINER if executor is None else isolation_for_executor(executor)
+    )
     if cred:
         return ToolExecutionPolicy(
             level=CapabilityLevel.RESTRICTED,
             credentials=(str(cred),),
             side_effect=SideEffect.READ,
+            isolation=isolation,
         )
-    return ToolExecutionPolicy()
+    return ToolExecutionPolicy(isolation=isolation)
 
 
 def policy_fingerprint(policy: ToolExecutionPolicy) -> str:
