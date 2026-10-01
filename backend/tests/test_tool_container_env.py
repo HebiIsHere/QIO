@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -466,7 +467,10 @@ async def test_a_real_container_runs_with_the_locked_dependency_image(tmp_path):
     CI 的这条用例为准。
     """
     if not await sandbox_module.docker_daemon_ready():
-        pytest.skip("本机没有可用的 docker 守护进程：这条只能在 ubuntu CI 上真跑")
+        if os.environ.get("CI"):
+            # CI 上不能静默跳过：跳过等于这条「容器里真的有依赖」的验证不存在。
+            pytest.fail("CI 上必须有可用的 docker 守护进程：这条用例不能跳过")
+        pytest.skip("本机没有 docker 守护进程：这条只能在 ubuntu CI 上真跑")
 
     manager = ToolEnvManager(tmp_path / "envs")
     status = await manager.ensure_container_image(
