@@ -36,6 +36,7 @@ are not turns, and a subagent's `TURN_END` used to end the user's turn.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -67,6 +68,10 @@ class TurnContext:
     turn_id: str
     message: str
     created_at: str = field(default_factory=_now)
+    # 受理时刻（单调钟）：排队等待 = started_perf - accepted_perf。
+    # 用 perf_counter 而不是墙钟：它测的是「等了多久」，不受系统时间调整影响。
+    accepted_perf: float = field(default_factory=time.perf_counter)
+    started_perf: float | None = None
     initial_topic: str | None = None
     current_topic: str | None = None
     # accepted | queued | running | completed | failed | cancelled | unavailable
@@ -263,6 +268,7 @@ class TurnManager:
                 continue
             self._active = ctx
             ctx.status = "running"
+            ctx.started_perf = time.perf_counter()
             self._bump_revision()
             self._schedule_emit()
             await self._emit_turn_start(ctx)
@@ -282,6 +288,7 @@ class TurnManager:
                 ctx.status = "failed"
                 ctx.error = f"{type(exc).__name__}: {exc}"
             finally:
+                self._flush_trace_phases(ctx)
                 await self._emit_turn_end(ctx)
                 if self._active is ctx:
                     self._active = None
@@ -291,6 +298,22 @@ class TurnManager:
                     ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status},
                 )
                 self._schedule_emit()
+
+    def _flush_trace_phases(self, ctx: TurnContext) -> None:
+        """把这一轮的阶段时间落库（幂等）。
+
+        收口放在 turn 生命周期的 finally 里：不论 runner 是正常结束、抛异常，
+        还是根本没走到 trace_store.finish（例如凭据不可用提前返回），
+        「这一轮的时间去哪了」都不会丢。计时句柄由 ctx.trace 提供（鸭子类型，
+        core/ 不认识 trace 的具体实现）。
+        """
+        flush = getattr(getattr(ctx, "trace", None), "flush_phases", None)
+        if flush is None:
+            return
+        try:
+            flush()
+        except Exception:  # noqa: BLE001 - 阶段时间写不进去不能影响 turn 收尾
+            pass
 
     # -- lifecycle events -------------------------------------------------
 

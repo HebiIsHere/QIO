@@ -2,18 +2,58 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Any, Iterator
+
+from agent.trace.phases import PhaseTimer
 from agent.trace.redact import preview
 from agent.trace.store import TraceStore
 
 
 class TurnTracer:
+    """一轮的计时/记录句柄。
+
+    `phase()` 是「时间花在哪」的权威入口（见 trace/phases.py）：调用方按阶段开
+    上下文，收口时 store 自动带上整本阶段账。`note()` 记与时间轴无关的事实
+    （例如排队等待时长）。
+    """
+
     def __init__(self, store: TraceStore, turn_id: str) -> None:
         self.store = store
         self.turn_id = turn_id
+        self.timer = PhaseTimer()
+        store.register_tracer(self)
 
     @property
     def enabled(self) -> bool:
         return self.store.enabled
+
+    # -- phase timing ------------------------------------------------------
+
+    @contextmanager
+    def phase(self, name: str, detail: str | None = None) -> Iterator[None]:
+        with self.timer.phase(name, detail):
+            yield
+
+    def note(self, key: str, value: Any) -> None:
+        self.timer.note(key, value)
+
+    def record_after_turn(self, name: str, ms: int, detail: str | None = None) -> None:
+        """登记一段 turn 结束后的后台工作耗时，并立刻落库（阶段账本会重算 residual）。
+
+        后台任务在这一轮 finish() 之后才结束，所以它自己负责把这一段补写回去。
+        """
+        self.timer.after_turn(name, ms, detail)
+        self.store.set_phases(self.turn_id, self.timer.payload())
+
+    def take_phases(self, *, duration_ms: int | None = None) -> dict:
+        """收口并交出阶段账本（幂等：第二次拿到的是同一份快照）。"""
+        self.timer.stop()
+        return self.timer.payload(duration_ms=duration_ms)
+
+    def flush_phases(self) -> None:
+        """兜底落库：没走到 store.finish 的路径（例如凭据不可用）也不丢时间去向。"""
+        self.store.flush_phases(self.turn_id, self)
 
     # -- loop-facing ------------------------------------------------------
 

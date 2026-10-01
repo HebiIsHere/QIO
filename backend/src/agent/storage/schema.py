@@ -1,4 +1,4 @@
-﻿"""Schema definitions and ordered migrations.
+"""Schema definitions and ordered migrations.
 
 Schema version 1 covers the 9 tables agreed in design review:
 nodes / edges / fragments / messages / memory_index / knowledge /
@@ -636,6 +636,15 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status)",
+        ],
+    ),
+    (
+        24,
+        [
+            # Trace 阶段时间：一轮的时间去向（见 agent/trace/phases.py）。
+            # 以前只记模型/工具耗时，一次真实 turn 的 49.8 秒在 Trace 里无法解释。
+            # 旧行默认 '{}'，读取端按「没有阶段账本」处理（向后兼容）。
+            "ALTER TABLE turn_traces ADD COLUMN phases TEXT NOT NULL DEFAULT '{}'",
         ],
     ),
 ]

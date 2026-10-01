@@ -1,4 +1,4 @@
-﻿"""Agent loop state machine.
+"""Agent loop state machine.
 
 States: PLANNING -> (TOOL_EXEC -> OBSERVING -> PLANNING) | DONE
 Termination: no tool calls requested, or budget exhausted (STOPPED unless
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -373,7 +374,8 @@ class AgentLoop:
             self._call_seq_next += 1
             self._call_seq[c.id] = self._call_seq_next
         # 先说明、再执行：叙事事件必须排在本次工具事件之前。
-        narrative_id = await self._emit_batch_narrative(calls)
+        with self._phase("narrative"):
+            narrative_id = await self._emit_batch_narrative(calls)
         from agent.tools.policy import Concurrency, effective_concurrency
 
         safe_calls = []
@@ -385,20 +387,23 @@ class AgentLoop:
         unsafe_calls = [c for c in calls if c.id not in safe_ids]
         results: dict[str, Any] = {}
 
-        # 非安全：严格串行（保持顺序）
-        for call in unsafe_calls:
-            results[call.id] = await self._guarded_execute(call)
+        # 工具等待是一个批次一条顶层细分：并行的多次调用只记批次墙钟，
+        # 每次调用自己的耗时仍然在 tool_runs 里（不重复计入合计）。
+        with self._phase("tool_wait", f"calls={len(calls)}"):
+            # 非安全：严格串行（保持顺序）
+            for call in unsafe_calls:
+                results[call.id] = await self._guarded_execute(call)
 
-        if safe_calls:
-            semaphore = asyncio.Semaphore(self.max_parallel_tools)
+            if safe_calls:
+                semaphore = asyncio.Semaphore(self.max_parallel_tools)
 
-            async def _run_safe(call):
-                async with semaphore:
-                    return call.id, await self._guarded_execute(call)
+                async def _run_safe(call):
+                    async with semaphore:
+                        return call.id, await self._guarded_execute(call)
 
-            gathered = await asyncio.gather(*(_run_safe(c) for c in safe_calls))
-            for call_id, result in gathered:
-                results[call_id] = result
+                gathered = await asyncio.gather(*(_run_safe(c) for c in safe_calls))
+                for call_id, result in gathered:
+                    results[call_id] = result
         # 批次结束：把系统知道的真实调用结果补写进叙事记录（失败只记日志）。
         if narrative_id and self.narrative_settler is not None:
             try:
@@ -455,20 +460,21 @@ class AgentLoop:
                             f"guard: {call.name} 累计失败 {failures} 次，已终止本轮（无审批通道）"
                         )
                     else:
-                        decision = await self.approvals.request(
-                            "continue",
-                            {
-                                "reason": "tool_failures",
-                                "tool": call.name,
-                                "failures": failures,
-                                # 复用预算那条「继续/停止」的通道：把当前预算一并给出，
-                                # 界面不必为"为什么问"单独做一套 UI。
-                                "used_iterations": self.budget.used_iterations,
-                                "max_iterations": self.budget.max_iterations,
-                                "used_tokens": self.budget.used_tokens,
-                                "token_budget": self.budget.token_budget,
-                            },
-                        )
+                        with self._phase("approval_wait", "tool_failures"):
+                            decision = await self.approvals.request(
+                                "continue",
+                                {
+                                    "reason": "tool_failures",
+                                    "tool": call.name,
+                                    "failures": failures,
+                                    # 复用预算那条「继续/停止」的通道：把当前预算一并给出，
+                                    # 界面不必为"为什么问"单独做一套 UI。
+                                    "used_iterations": self.budget.used_iterations,
+                                    "max_iterations": self.budget.max_iterations,
+                                    "used_tokens": self.budget.used_tokens,
+                                    "token_budget": self.budget.token_budget,
+                                },
+                            )
                         if decision.decision == "approved":
                             self.guard.reset_tool(call.name)
                             self._warn(
@@ -536,6 +542,18 @@ class AgentLoop:
         if self.turn_id:
             data = {**data, "turn_id": self.turn_id}
         await self.bus.publish(make_event(event_type, data))
+
+    def _phase(self, name: str, detail: str | None = None):
+        """阶段计时上下文（见 trace/phases.py）；没有 trace 时是空上下文。
+
+        「这一轮的时间去哪了」必须由阶段账本回答，而不是只看模型/工具耗时：
+        真实事故是 51.5 秒的一轮只有 1.7 秒模型调用被记录，其余全是 unknown。
+        """
+        tracer = self.trace
+        phase = getattr(tracer, "phase", None)
+        if phase is None:
+            return nullcontext()
+        return phase(name, detail)
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)
@@ -605,17 +623,20 @@ class AgentLoop:
                     )
                     break
                 # 有审批通道就交给用户决定（与预算 / 护栏走同一条「继续/停止」通道）。
-                decision = await self.approvals.request(
-                    "continue",
-                    {
-                        "reason": "no_progress",
-                        "message": reason,
-                        "used_iterations": self.budget.used_iterations,
-                        "max_iterations": self.budget.max_iterations,
-                        "used_tokens": self.budget.used_tokens,
-                        "token_budget": self.budget.token_budget,
-                    },
-                )
+                # 这段时间以前完全不可见：模型只跑了 1.7 秒、turn 却 51.5 秒，
+                # 差的那 50 秒就可能是「等人点确认」。
+                with self._phase("approval_wait", "no_progress"):
+                    decision = await self.approvals.request(
+                        "continue",
+                        {
+                            "reason": "no_progress",
+                            "message": reason,
+                            "used_iterations": self.budget.used_iterations,
+                            "max_iterations": self.budget.max_iterations,
+                            "used_tokens": self.budget.used_tokens,
+                            "token_budget": self.budget.token_budget,
+                        },
+                    )
                 if decision.decision == "approved":
                     # 用户让继续：重新开始计数，否则下一次同样的重复立刻又触发。
                     self.progress.reset()
@@ -645,15 +666,16 @@ class AgentLoop:
                     )
                     break
                 # 有审批服务：挂起等用户决定「继续/停止」
-                decision = await self.approvals.request(
-                    "continue",
-                    {
-                        "used_iterations": self.budget.used_iterations,
-                        "max_iterations": self.budget.max_iterations,
-                        "used_tokens": self.budget.used_tokens,
-                        "token_budget": self.budget.token_budget,
-                    },
-                )
+                with self._phase("approval_wait", "budget"):
+                    decision = await self.approvals.request(
+                        "continue",
+                        {
+                            "used_iterations": self.budget.used_iterations,
+                            "max_iterations": self.budget.max_iterations,
+                            "used_tokens": self.budget.used_tokens,
+                            "token_budget": self.budget.token_budget,
+                        },
+                    )
                 if decision.decision == "approved":
                     self.budget.raise_limits(
                         self.continue_batch_iterations, self.continue_batch_tokens
@@ -787,30 +809,40 @@ class AgentLoop:
 
     # -- steps ------------------------------------------------------------
 
-    async def _plan(self, messages: list[ChatMessage]) -> Completion | None:
+    def _routed_tools(self, messages: list[ChatMessage]) -> list[ToolSpec]:
+        """按当前查询上下文路由工具集（原 _plan 的前半段，行为不变）。"""
         tools = self.registry.specs()
-        if self.tool_selector is not None:
-            # route tools by the current query context (last user + tool message)
-            query_parts: list[str] = []
-            for m in reversed(messages):
-                if m.role == "user" and m.content:
-                    query_parts.append(m.content)
-                    break
-            for m in reversed(messages):
-                if m.role == "tool" and m.content:
-                    query_parts.append(m.content[:200])
-                    break
-            query = "\n".join(reversed(query_parts))[:500]
-            try:
-                tools = self.tool_selector(query)
-            except Exception:  # noqa: BLE001 - routing must never break planning
-                logger.warning("tool routing failed; falling back to full set", exc_info=True)
+        if self.tool_selector is None:
+            return tools
+        # route tools by the current query context (last user + tool message)
+        query_parts: list[str] = []
+        for m in reversed(messages):
+            if m.role == "user" and m.content:
+                query_parts.append(m.content)
+                break
+        for m in reversed(messages):
+            if m.role == "tool" and m.content:
+                query_parts.append(m.content[:200])
+                break
+        query = "\n".join(reversed(query_parts))[:500]
+        try:
+            return self.tool_selector(query)
+        except Exception:  # noqa: BLE001 - routing must never break planning
+            logger.warning("tool routing failed; falling back to full set", exc_info=True)
+            return tools
+
+    async def _plan(self, messages: list[ChatMessage]) -> Completion | None:
+        # 工具路由（含 query 嵌入）以前在模型计时**之前**发生：它既不算模型耗时，
+        # 也没有任何分区 —— 慢的路由曾经是完全不可见的等待。
+        with self._phase("tool_routing"):
+            tools = self._routed_tools(messages)
         import time as _time
 
         self._model_seq += 1
         _t0 = _time.perf_counter()
         try:
-            completion = await self._await_completion(messages, tools)
+            with self._phase("model_wait", f"call#{self._model_seq}"):
+                completion = await self._await_completion(messages, tools)
             if completion is None:
                 # 被用户取消：这次调用没有结果，也不再记一条「假成功」的 trace
                 return None

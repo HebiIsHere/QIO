@@ -15,7 +15,7 @@ from typing import Any
 from agent.trace.model import TurnTrace
 from agent.trace.redact import preview, redact_any, redact_text
 
-_JSON_COLS = ("topic", "injection", "model_calls", "tool_runs", "writes", "warnings")
+_JSON_COLS = ("topic", "injection", "model_calls", "tool_runs", "writes", "warnings", "phases")
 
 
 def _now() -> str:
@@ -26,6 +26,9 @@ class TraceStore:
     def __init__(self, conn: sqlite3.Connection, *, enabled: bool = True) -> None:
         self.conn = conn
         self.enabled = enabled
+        # 活着的 per-turn 计时句柄：finish() 收口时**自动**把它们的时间轴带上，
+        # 于是「忘记写阶段时间」不可能发生（新增调用点也不用记得改）。
+        self._live_tracers: dict[str, Any] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -38,6 +41,78 @@ class TraceStore:
             "VALUES (?, 'running', ?, ?, ?)",
             (turn_id, _now(), initial_topic, initial_topic),
         )
+
+    def ensure_started(self, turn_id: str, *, initial_topic: str | None = None) -> None:
+        """幂等开场：Trace 的时间窗从**这一轮真正开始执行**时就打开。
+
+        以前 begin() 发生在凭据/能力探测之后 —— 那段时间既不在 duration 里，
+        也没有任何分区，属于「连时长都对不上」。开场提前到执行起点，后面的
+        解析出来的初始话题用 set_initial_topic 补齐。
+        """
+        if not self.enabled:
+            return
+        row = self.conn.execute(
+            "SELECT 1 FROM turn_traces WHERE turn_id = ?", (turn_id,)
+        ).fetchone()
+        if row is not None:
+            return
+        self.conn.execute(
+            "INSERT INTO turn_traces (turn_id, status, started_at, initial_topic, final_topic) "
+            "VALUES (?, 'running', ?, ?, ?)",
+            (turn_id, _now(), initial_topic, initial_topic),
+        )
+
+    def set_initial_topic(self, turn_id: str, topic: str | None) -> None:
+        if not self.enabled or topic is None:
+            return
+        self.conn.execute(
+            "UPDATE turn_traces SET initial_topic = ? WHERE turn_id = ?", (topic, turn_id)
+        )
+
+    # -- phase timing -----------------------------------------------------
+
+    def register_tracer(self, tracer: Any) -> None:
+        """登记一个 turn 的计时句柄；finish() 会把它收口并写进 phases 列。"""
+        if not self.enabled:
+            return
+        turn_id = getattr(tracer, "turn_id", None)
+        if turn_id:
+            self._live_tracers[str(turn_id)] = tracer
+
+    def take_tracer(self, turn_id: str) -> Any | None:
+        return self._live_tracers.pop(turn_id, None)
+
+    def set_phases(self, turn_id: str, payload: dict | None) -> None:
+        """写阶段账本；residual 以落库的 duration_ms 为准（它才是权威时长）。
+
+        `set_phases` 可能在 finish() 之后被兜底调用（例如没走到 finish 的路径），
+        所以这里自己读一次 duration_ms，而不是假设调用顺序。
+        """
+        if not self.enabled or not payload:
+            return
+        payload = redact_any(payload)
+        row = self.conn.execute(
+            "SELECT duration_ms FROM turn_traces WHERE turn_id = ?", (turn_id,)
+        ).fetchone()
+        if row is not None and row["duration_ms"] is not None:
+            sum_ms = int(payload.get("sum_ms") or 0)
+            payload = {**payload, "residual_ms": max(0, int(row["duration_ms"]) - sum_ms)}
+        self._patch(turn_id, phases=payload)
+
+    def flush_phases(self, turn_id: str, tracer: Any) -> None:
+        """兜底收口：把一个还没写进库的计时句柄落库（幂等）。"""
+        if not self.enabled:
+            return
+        if self._live_tracers.pop(turn_id, None) is not tracer:
+            return  # 已经被 finish() 收口过
+        row = self.conn.execute(
+            "SELECT duration_ms FROM turn_traces WHERE turn_id = ?", (turn_id,)
+        ).fetchone()
+        duration = row["duration_ms"] if row is not None else None
+        taker = getattr(tracer, "take_phases", None)
+        if taker is None:
+            return
+        self.set_phases(turn_id, taker(duration_ms=duration))
 
     def finish(
         self,
@@ -55,6 +130,10 @@ class TraceStore:
         ).fetchone()
         started = row["started_at"] if row is not None else _now()
         duration = _duration_ms(started)
+        # 阶段账本随终态一起收口：活着的计时句柄自动带上（见 register_tracer）。
+        tracer = self.take_tracer(turn_id)
+        if tracer is not None:
+            self.set_phases(turn_id, tracer.take_phases(duration_ms=duration))
         sets = ["status = ?", "ended_at = ?", "duration_ms = ?", "error = ?", "final_preview = ?"]
         params: list[Any] = [status, _now(), duration, error, preview(final_preview, 500)]
         if final_topic is not None:

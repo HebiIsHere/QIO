@@ -1,4 +1,4 @@
-﻿"""Application context: wires storage, credentials, adapters, tools, loop.
+"""Application context: wires storage, credentials, adapters, tools, loop.
 
 Built once per process; the HTTP layer pulls what it needs from it.
 """
@@ -1129,11 +1129,20 @@ class AppContext:
         self._notify_turn = True
         try:
             self.approvals.set_context(turn_id=ctx.turn_id)
-            adapter = await self.build_adapter()
+            tracer = getattr(ctx, "trace", None)
+            if tracer is None:
+                from agent.trace.recorder import TurnTracer
+
+                tracer = TurnTracer(self.trace_store, ctx.turn_id)
+                ctx.trace = tracer
+            self.trace_store.ensure_started(ctx.turn_id, initial_topic=ctx.initial_topic)
+            with tracer.phase("adapter_setup"):
+                adapter = await self.build_adapter()
             if adapter is None:
                 ctx.result = {"ok": False, "reason": "no_credential"}
                 ctx.status = "unavailable"
                 ctx.error = "no_credential"
+                self.trace_store.finish(ctx.turn_id, "unavailable", error="no_credential")
                 return
             topic = self.current_topic()
             ctx.current_topic = topic
@@ -1142,21 +1151,20 @@ class AppContext:
             ctx.bound_topic = topic
             ctx.bound_fragment_id = None
             self.bindings.record_binding(ctx.turn_id, topic, system=True)
-            from agent.trace.recorder import TurnTracer
-
-            tracer = TurnTracer(self.trace_store, ctx.turn_id)
-            ctx.trace = tracer
-            self.trace_store.begin(ctx.turn_id, initial_topic=topic)
+            self.trace_store.set_initial_topic(ctx.turn_id, topic)
             notice = ctx.message
-            prediction = self.predictor.predict(notice, current_topic_id=topic)
-            payload = self.build_injection(
-                notice,
-                topic_id=topic,
-                aux_topic_ids=prediction.aux_topic_ids,
-                entity_ids=self._topic_entity_ids(topic),
-                user_node_id=self._user_root_id(),
-                model=adapter.model,
-            )
+            with tracer.phase("context_assembly"):
+                with tracer.phase("topic_prediction"):
+                    prediction = self.predictor.predict(notice, current_topic_id=topic)
+                with tracer.phase("retrieval"):
+                    payload = self.build_injection(
+                        notice,
+                        topic_id=topic,
+                        aux_topic_ids=prediction.aux_topic_ids,
+                        entity_ids=self._topic_entity_ids(topic),
+                        user_node_id=self._user_root_id(),
+                        model=adapter.model,
+                    )
             tracer.injection(
                 items=[
                     {
@@ -1195,7 +1203,8 @@ class AppContext:
             )
             ctx.loop = loop
             try:
-                result = await loop.run(prompt)
+                with tracer.phase("agent_loop"):
+                    result = await loop.run(prompt)
             finally:
                 ctx.loop = None
             if ctx.cancelled or result.cancelled:
@@ -1205,15 +1214,16 @@ class AppContext:
             # feedback enters memory (assistant message; no user message)
             from agent.services.turn_orchestrator import verification_raw
 
-            notify_msg_id, _ = self.memory.append_message(
-                topic_id=topic,
-                role="assistant",
-                content=result.final_content or "",
-                content_type="text",
-                model=adapter.model,
-                raw=verification_raw(result),
-                turn_id=ctx.turn_id,
-            )
+            with tracer.phase("persistence"):
+                notify_msg_id, _ = self.memory.append_message(
+                    topic_id=topic,
+                    role="assistant",
+                    content=result.final_content or "",
+                    content_type="text",
+                    model=adapter.model,
+                    raw=verification_raw(result),
+                    turn_id=ctx.turn_id,
+                )
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
             ctx.final_verification = getattr(result, "verification", None)
@@ -1223,15 +1233,17 @@ class AppContext:
                 "tokens": result.tokens_used,
                 "tool_calls": result.tool_calls_made,
             }
-            fragment = self.fragments.get_or_create_open(topic)
-            if self.fragments.should_close(fragment):
-                closed = await self._close_fragment(topic, adapter, tracer=tracer)
-                if closed is not None:
-                    # 索引在 close_fragment 内部已增量更新（不再全量重建）
-                    self.predictor.refresh_topic_vector(topic)
-            self.trace_store.finish(
-                ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
-            )
+            with tracer.phase("memory_post"):
+                fragment = self.fragments.get_or_create_open(topic)
+                if self.fragments.should_close(fragment):
+                    closed = await self._close_fragment(topic, adapter, tracer=tracer)
+                    if closed is not None:
+                        # 索引在 close_fragment 内部已增量更新（不再全量重建）
+                        self.predictor.refresh_topic_vector(topic)
+            with tracer.phase("finalize"):
+                self.trace_store.finish(
+                    ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
+                )
         except Exception as exc:  # noqa: BLE001 - notify turn must not crash
             logger.warning("notify turn failed: %s", exc)
             self.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
