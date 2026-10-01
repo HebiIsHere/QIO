@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 /**
  * 星球页（全屏覆盖层）：3D 球体（左/中）+ 右侧面板（列表/详情/从这里开始）。
  * usePlanetScene 在本页内实例化渲染全屏星球（悬浮球为 SVG 微缩星球，不共享同一
@@ -1816,7 +1816,9 @@ async function close() {
                底部操作区在两者之外，始终可见且不覆盖内容 -->
           <div class="panel-body">
             <div class="topic-scroll">
-              <ul class="topic-list">
+              <!-- aria-selected 的 option 必须挂在 listbox 上；没有这个祖先，
+                   读屏软件不会把话题读成"可选中的一项"，只会念一串文字 -->
+              <ul class="topic-list" role="listbox" aria-label="话题列表">
                 <li
                   v-for="t in filteredTopics"
                   :key="t.topic_id"
@@ -1839,8 +1841,14 @@ async function close() {
                   </button>
                 </li>
               </ul>
-              <ul v-if="endedTopics.length" class="topic-list ended-list">
-                <li class="ended-head">已结束（{{ endedTopics.length }}）</li>
+              <ul
+                v-if="endedTopics.length"
+                class="topic-list ended-list"
+                role="listbox"
+                aria-label="已结束的话题"
+              >
+                <!-- 分组标题不是可选项：给它 presentation，避免 listbox 里混进非 option 子节点 -->
+                <li class="ended-head" role="presentation">已结束（{{ endedTopics.length }}）</li>
                 <li
                   v-for="t in endedTopics"
                   :key="t.topic_id"

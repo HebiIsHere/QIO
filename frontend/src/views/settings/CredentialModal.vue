@@ -50,10 +50,41 @@ function firstFocusable(): HTMLElement | null {
   );
 }
 
+/**
+ * 键盘行为与 ApprovalModal 保持一致：
+ *
+ * * Esc 取消（stopPropagation：只关最上层这一个弹窗）；
+ * * Tab 在弹窗内循环。没有这一段时，Tab 会从"保存"走到弹窗后面的设置页按钮上 ——
+ *   对一个模态窗口来说，焦点跑到遮罩以外就是键盘用户"点到了看不见的地方"。
+ */
+function focusables(): HTMLElement[] {
+  const root = dialog.value;
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.stopPropagation();
     emit("cancel");
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const items = focusables();
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (event.shiftKey && (active === first || active === dialog.value)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
   }
 }
 
