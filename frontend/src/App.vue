@@ -140,7 +140,8 @@ body { margin: 0; }
  * 容器 shrink-to-fit，空白区域不挡下面页面的点击。
  */
 .top-notes {
-  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  /* 顶部有「还没设置完」横幅时，对话页会把这条浮层让到横幅下面（见 ConversationView） */
+  position: fixed; top: var(--qio-top-notes-offset, 12px); left: 50%; transform: translateX(-50%);
   z-index: 190; display: flex; flex-direction: column; align-items: center; gap: 8px;
   max-width: min(560px, calc(100vw - 32px));
   pointer-events: none;

@@ -35,6 +35,26 @@ function mountView() {
 }
 
 describe("历史读取失败的状态表达", () => {
+  it("「还没设置完」横幅在时，把顶部提示条让到它下面（两者不重叠）", async () => {
+    const w = mountView();
+    const { useOnboardingStore } = await import("../../stores/onboarding");
+    const store = useOnboardingStore();
+    store.status = { done: false, hint_dismissed: false } as never;
+    await flushPromises();
+
+    expect(w.find(".setup-hint").exists()).toBe(true);
+    expect(
+      document.documentElement.style.getPropertyValue("--qio-top-notes-offset"),
+    ).not.toBe("");
+
+    store.status = { done: false, hint_dismissed: true } as never;
+    await flushPromises();
+
+    expect(w.find(".setup-hint").exists()).toBe(false);
+    expect(document.documentElement.style.getPropertyValue("--qio-top-notes-offset")).toBe("");
+    w.unmount();
+  });
+
   it("失败时显示「历史记录暂时无法读取」+ 重试，重试成功后消失", async () => {
     vi.mocked(api.getSessionContext).mockRejectedValueOnce(new Error("boom"));
     const w = mountView();

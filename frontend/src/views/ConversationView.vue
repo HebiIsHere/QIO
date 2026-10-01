@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, ref } from "vue";
+import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useOnboardingStore } from "../stores/onboarding";
@@ -66,6 +66,24 @@ function openPlanet() {
   planetMounted.value = true;
   planetOpen.value = true;
 }
+
+/**
+ * 顶部提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）是固定的
+ * top-center 浮层，而「还没设置完」是一条正常流的横幅 —— 两者同时出现会叠在一起
+ * （真机验收看到的实际情况）。横幅在的时候，把浮层让到它下面。
+ */
+watch(
+  () => onboarding.hintVisible,
+  (visible) => {
+    const style = document.documentElement.style;
+    if (visible) style.setProperty("--qio-top-notes-offset", "52px");
+    else style.removeProperty("--qio-top-notes-offset");
+  },
+  { immediate: true },
+);
+onUnmounted(() =>
+  document.documentElement.style.removeProperty("--qio-top-notes-offset"),
+);
 
 function closePlanet(seq?: number) {
   if (seq !== undefined && seq !== planetSeq.value) return;
