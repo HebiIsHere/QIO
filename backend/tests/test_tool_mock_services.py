@@ -7,6 +7,7 @@ sitecustomize 夹具 → 本机桩服务器）：写死 URL 的工具照样发�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 
@@ -20,6 +21,8 @@ from agent.tools.mock_services import (
     fixture_for_definition,
 )
 from agent.tools.sandbox import SandboxExecutor
+from agent.tools.spec import ToolDefinition
+from agent.tools.tester import ToolTester
 
 PLAN_JSON = {
     "services": [
@@ -252,3 +255,80 @@ def test_the_declaration_is_read_from_the_tool_project_file(tmp_path):
 
     with pytest.raises(MockServiceError):
         fixture_for_definition(_broken())
+
+# -- 与 ToolTester 的接线（lead 授权改 tester.py） --------------------------
+
+
+def _weather_definition(*, mocks: str, expected: dict) -> ToolDefinition:
+    return ToolDefinition(
+        name="fetch_weather",
+        description="查天气",
+        code=HTTP_TOOL,
+        tests=[{"name": "now", "input": {}, "expect": expected}],
+        files={MOCK_FILE_NAME: mocks},
+    )
+
+
+class _NeverCalledSandbox:
+    async def execute(self, *args, **kwargs):
+        raise AssertionError("声明非法时不该执行任何测试代码")
+
+
+async def test_the_tool_tester_runs_declared_mocks_and_says_it_is_simulated():
+    definition = _weather_definition(
+        mocks=json.dumps(PLAN_JSON, ensure_ascii=False),
+        expected={"temp_c": 21, "status": 200, "credential": FIXTURE_CREDENTIAL},
+    )
+    report = await ToolTester(SandboxExecutor(executor="subprocess")).run(definition)
+
+    assert report.passed, [outcome.detail for outcome in report.outcomes]
+    assert report.simulated is True
+    detail = report.outcomes[0].detail
+    assert "模拟服务" in detail
+    assert "没有访问真实服务" in detail
+    assert "不等于真实服务已验证" in detail
+    assert "模拟服务" in report.summary
+
+
+async def test_a_failed_case_still_says_the_test_was_simulated():
+    definition = _weather_definition(
+        mocks=json.dumps(PLAN_JSON, ensure_ascii=False),
+        expected={"temp_c": 999},  # 故意断言错：失败结论里也要说清「这是模拟」
+    )
+    report = await ToolTester(SandboxExecutor(executor="subprocess")).run(definition)
+
+    assert report.passed is False
+    detail = report.outcomes[0].detail
+    assert "assertion mismatch" in detail
+    assert "模拟服务" in detail
+    assert "不等于真实服务已验证" in detail
+
+
+async def test_an_invalid_mock_declaration_fails_the_test_with_a_readable_reason():
+    definition = _weather_definition(
+        mocks=json.dumps({"services": [{"host": "api.weather.example", "routes": []}]}),
+        expected={"temp_c": 21},
+    )
+
+    report = await ToolTester(_NeverCalledSandbox()).run(definition)
+
+    assert report.passed is False
+    assert report.simulated is False
+    assert len(report.outcomes) == 1
+    assert "模拟服务声明有问题" in report.outcomes[0].detail
+    assert "routes" in report.outcomes[0].detail
+
+
+def test_a_definition_without_mocks_keeps_the_old_behaviour():
+    definition = ToolDefinition(
+        name="adder",
+        description="加法",
+        code="def run(**kwargs):\n    return {'sum': kwargs['a'] + kwargs['b']}\n",
+        tests=[{"name": "t", "input": {"a": 1, "b": 2}, "expect": {"sum": 3}}],
+    )
+    report = asyncio.run(ToolTester(SandboxExecutor(executor="subprocess")).run(definition))
+
+    assert report.passed, [outcome.detail for outcome in report.outcomes]
+    assert report.simulated is False
+    assert report.outcomes[0].detail == "assertion passed"
+    assert "模拟" not in report.summary
