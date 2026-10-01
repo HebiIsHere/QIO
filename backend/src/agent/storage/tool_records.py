@@ -67,13 +67,18 @@ def record_tool_call(
     """写一行工具记录。
 
     返回记录 id：重复的 `(turn_id, call_id)` 返回已有行的 id（幂等），写库失败返回 None。
-    参数与输出都先过 `trace/redact.py` 打码；**写历史失败绝不影响工具结果**。
+    参数、输出**与错误原因**都先过 `trace/redact.py` 打码；**写历史失败绝不影响工具结果**。
+
+    错误原因曾经是唯一的例外（只做 str()）：工具把凭据写进异常消息再抛出时，
+    参数与输出都是打码的，只有 error 是密钥原文 —— 与本模块的承诺和 AGENTS.md
+    的硬性约束直接冲突（2026-10-02 用渗透实验复现并修）。
     """
     if status not in STATUSES:
         status = "failed"
     args_text, args_truncated = _clip(
         json.dumps(redact_any(arguments or {}), ensure_ascii=False)
     )
+    error_text, error_truncated = _clip(redact_text(error or ""))
     if save_output:
         output_text, truncated = _clip(redact_text(output or ""))
         output_missing, missing_reason = 0, ""
@@ -97,9 +102,9 @@ def record_tool_call(
                 args_text,
                 output_text,
                 status,
-                str(error or ""),
+                error_text,
                 int(duration_ms) if duration_ms is not None else None,
-                1 if (truncated or args_truncated) else 0,
+                1 if (truncated or args_truncated or error_truncated) else 0,
                 output_missing,
                 missing_reason,
                 _now(),

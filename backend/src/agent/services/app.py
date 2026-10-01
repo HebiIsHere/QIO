@@ -1030,14 +1030,18 @@ class AppContext:
         from agent.memory.fragment import new_id
         from agent.storage.tool_records import record_tool_call
 
+        from agent.trace.redact import redact_any, redact_text
+
         active = AnchorService(self.conn).get_active()
         try:
-            args = _json.dumps(trace.get("arguments") or {}, ensure_ascii=False)[:500]
+            # 审计行同样不得出现密钥原文：这里的参数/结果/错误都是工具给的原始值，
+            # 必须与 tool_records 走同一个打码入口（trace/redact.py）。
+            args = _json.dumps(redact_any(trace.get("arguments") or {}), ensure_ascii=False)[:500]
         except Exception:
             args = "{}"
-        result = str(trace.get("result") or "")[:200]
+        result = redact_text(str(trace.get("result") or ""))[:200]
         # 失败原因单独一列：只落输出正文时，失败的调用在轨迹表里是一片空白
-        error = str(trace.get("error") or "")[:200]
+        error = redact_text(str(trace.get("error") or ""))[:200]
         self.conn.execute(
             "INSERT INTO tool_calls "
             "(id, topic_id, tool_name, arguments, result, error, ok, created_at) "
