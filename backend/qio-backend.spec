@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('src/agent/tool_worker.py', 'agent')]
 binaries = []
 hiddenimports = ['keyring.backends.Windows', 'agent.tool_worker', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on']
 tmp_ret = collect_all('tiktoken')
