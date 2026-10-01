@@ -122,6 +122,39 @@ async def test_cancel_cleans_the_process_tree_of_this_call(monkeypatch):
     assert len(killed) == 1 and killed[0] > 0
 
 
+async def test_timeout_kills_the_whole_process_tree_of_this_call(tmp_path):
+    """A5：工具自己起的子进程也必须一起清掉 —— 清理的是**这一次调用的进程树**。
+
+    实现上 Windows 用 `taskkill /PID <pid> /T /F`、POSIX 用进程组（killpg），但
+    上层语义必须一致：超时之后属于这次调用的任何进程都不能再干活。这条断言在
+    Windows CI 与 Linux CI 上**完全相同**，就是「语义一致」的证据。
+    """
+    started = tmp_path / "grandchild-started.marker"
+    survived = tmp_path / "grandchild-survived.marker"
+    child = (
+        "import pathlib, time\n"
+        f"pathlib.Path({str(started)!r}).write_text('up')\n"
+        "time.sleep(6)\n"
+        f"pathlib.Path({str(survived)!r}).write_text('alive')\n"
+    )
+    code = (
+        "import subprocess, sys, time\n"
+        "def run(**kwargs):\n"
+        f"    subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "    time.sleep(30)\n"
+        "    return {}\n"
+    )
+    executor = _subprocess_executor(timeout_seconds=3.0)
+    result = await executor.execute(code, {})
+    assert result.ok is False
+    assert result.category == "timeout"
+    await asyncio.sleep(8.0)
+    # 正对照：子进程真的起来过（否则这条用例会因为「什么都没跑」而空过）
+    assert started.exists() is True, "工具的子进程根本没起来，这条用例没有证明力"
+    # 真正的断言：超时清理之后，这次调用里的子进程不能再留下任何痕迹
+    assert survived.exists() is False, "属于这次调用的子进程还活着"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="taskkill 只在 Windows 上使用")
 async def test_windows_cleanup_targets_pid_not_image_name(monkeypatch):
     """只按 PID 清理进程树；绝不按可执行文件名称批量结束进程。"""
