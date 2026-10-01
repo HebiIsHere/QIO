@@ -13,6 +13,14 @@ os.environ.setdefault("QIO_DEV_INSECURE", "1")
 # 需要测自检的用例（tests/test_db_identity.py）自己打开，并把基线指向 tmp_path。
 os.environ.setdefault("QIO_DISABLE_DB_CHECK", "1")
 
+# 开发机上的 QIO_DATA_DIR 不得泄漏进测试。它是「整个应用的数据落点覆盖」，
+# 而且 agent.config.Settings.__post_init__ 是**无条件**覆盖 —— 连显式传进来的
+# Settings(data_dir=tmp_path) 也会被它改掉。开发机设了 QIO_DATA_DIR 时，
+# 用例会真的写到用户数据目录（实测：PermissionError D:\QIO-data\dev-workspaces\...
+# 以及跨用例互相污染）。测试必须自己声明落点：这里直接摘掉它，
+# 需要它的用例（如 tests/test_entrypoint_split.py）自己构造子进程环境显式传。
+os.environ.pop("QIO_DATA_DIR", None)
+
 from agent.config import Settings
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
