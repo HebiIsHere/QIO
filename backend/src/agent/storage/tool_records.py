@@ -27,6 +27,10 @@ STATUSES = ("success", "failed", "cancelled")
 DEFAULT_RETENTION_DAYS = 90
 MAX_RETENTION_DAYS = 3650
 
+# 新增设置：整条记录（参数 / 错误 / 状态）保留多少天。
+# **默认 0 = 永久保留** —— 与既有行为一致：以前只按天清输出全文，记录行不删。
+DEFAULT_RECORD_RETENTION_DAYS = 0
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -201,5 +205,87 @@ def prune_outputs(
         "WHERE output_missing = 0 AND created_at < ?",
         (cutoff,),
     )
+    conn.commit()
+    return int(cur.rowcount or 0)
+
+
+def delete_record(conn: sqlite3.Connection, record_id: str) -> bool:
+    """删掉一条工具历史（用户主动「删除这一条」）。返回是否真的删到了。"""
+    try:
+        cur = conn.execute("DELETE FROM tool_records WHERE id = ?", (str(record_id),))
+    except sqlite3.Error as exc:  # noqa: BLE001 - 删除失败如实返回 False
+        logger.warning("tool record delete failed: %s", exc)
+        return False
+    return int(cur.rowcount or 0) > 0
+
+
+def count_records(conn: sqlite3.Connection, *, topic_id: str | None = None) -> int:
+    """工具历史条数（设置页用来说清「清空会删掉多少」）。"""
+    try:
+        if topic_id:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tool_records WHERE topic_id = ?", (topic_id,)
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS n FROM tool_records").fetchone()
+    except sqlite3.Error as exc:  # noqa: BLE001 - 读不到就当 0
+        logger.warning("tool record count failed: %s", exc)
+        return 0
+    return int(row["n"] if row is not None else 0)
+
+
+def delete_records(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: str | None = None,
+    older_than_days: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    """删掉工具历史记录（可限定话题 / 只删 N 天前的）。返回删除条数。
+
+    这是用户主动动作（「清空工具历史」），不做隐式清理：隐式删除用户数据需要
+    用户先打开 `tools.record_retention_days`（默认 0 = 永久保留）。
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if topic_id:
+        where.append("topic_id = ?")
+        params.append(str(topic_id))
+    if older_than_days is not None and int(older_than_days) > 0:
+        cutoff = (
+            (now or datetime.now(timezone.utc)) - timedelta(days=int(older_than_days))
+        ).isoformat()
+        where.append("created_at < ?")
+        params.append(cutoff)
+    sql = "DELETE FROM tool_records"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    try:
+        cur = conn.execute(sql, params)
+    except sqlite3.Error as exc:  # noqa: BLE001 - 删除失败不抛给调用方
+        logger.warning("tool records delete failed: %s", exc)
+        return 0
+    return int(cur.rowcount or 0)
+
+
+def prune_records(
+    conn: sqlite3.Connection, retention_days: int, *, now: datetime | None = None
+) -> int:
+    """按保留期删掉整条工具历史（参数、错误、状态一并删）。
+
+    `retention_days <= 0` 表示永久保留 —— 这是**默认值**，与既有行为完全一致：
+    以前只按天清输出全文，记录行本身永久保留。只有用户显式把「记录保留天数」
+    设成正数，这里才会删整行。
+    """
+    if not retention_days or int(retention_days) <= 0:
+        return 0
+    cutoff = (
+        (now or datetime.now(timezone.utc)) - timedelta(days=int(retention_days))
+    ).isoformat()
+    try:
+        cur = conn.execute("DELETE FROM tool_records WHERE created_at < ?", (cutoff,))
+    except sqlite3.Error as exc:  # noqa: BLE001 - 清理是维护动作
+        logger.warning("tool record prune failed: %s", exc)
+        return 0
     conn.commit()
     return int(cur.rowcount or 0)

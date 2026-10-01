@@ -371,6 +371,8 @@ class AppContext:
         # 启动清理一次工具输出：把保留天数调小之后，重启也立刻生效。
         # 失败只记日志 —— 清理是维护动作，不能挡住启动。
         self.prune_tool_outputs()
+        # 「整条记录保留天数」默认 0（永久保留，行为与以前一致）；设了天数才清理。
+        self.prune_tool_records()
 
     # -- anchor 事件广播 --------------------------------------------------
 
@@ -1085,6 +1087,31 @@ class AppContext:
             return 0
         if pruned:
             logger.info("pruned %s tool outputs older than %s days", pruned, days)
+        return pruned
+
+    def prune_tool_records(self) -> int:
+        """按「记录保留天数」删掉整条工具历史（参数、错误、状态一并删）。
+
+        **默认 0 = 永久保留**：与既有行为完全一致 —— 以前只按天清输出全文，
+        记录行本身不删。只有用户显式设置天数才会隐式清理，且这里的清理
+        只动 `tool_records`（用户能回看的历史）；`tool_calls` / `turn_traces`
+        是审计用途，是否记录由 `trace.enabled` 决定（见 storage/tool_records.py 顶部注释）。
+        """
+        from agent.storage.tool_records import (
+            DEFAULT_RECORD_RETENTION_DAYS,
+            prune_records,
+        )
+
+        days = self.settings_store.get_int(
+            "tools.record_retention_days", DEFAULT_RECORD_RETENTION_DAYS
+        )
+        try:
+            pruned = prune_records(self.conn, days)
+        except Exception as exc:  # noqa: BLE001 - 清理失败不阻塞启动与维护
+            logger.warning("tool record prune failed: %s", exc)
+            return 0
+        if pruned:
+            logger.info("pruned %s tool records older than %s days", pruned, days)
         return pruned
 
     def _route_tools(self, query: str):

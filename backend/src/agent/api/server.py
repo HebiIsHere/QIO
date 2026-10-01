@@ -890,14 +890,28 @@ def create_app(
 
     @app.get("/api/settings/tools")
     async def get_tool_history_settings() -> dict:
-        """工具调用历史的两个设置：是否保存输出全文、输出保留多少天。"""
-        from agent.storage.tool_records import DEFAULT_RETENTION_DAYS
+        """工具调用历史的设置：是否保存输出全文、输出保留多少天、整条记录保留多少天。
+
+        `record_retention_days = 0` 表示**永久保留整条记录** —— 这是默认值，
+        与历史行为一致（以前只按天清输出全文，参数/错误等永久保留）。
+        `record_count` 让界面能说清「清空会删掉多少条」，而不是让用户盲删。
+        """
+        from agent.storage.tool_records import (
+            DEFAULT_RECORD_RETENTION_DAYS,
+            DEFAULT_RETENTION_DAYS,
+            count_records,
+        )
 
         store = ctx.settings_store
         days = store.get_int("tools.output_retention_days", DEFAULT_RETENTION_DAYS)
+        record_days = store.get_int(
+            "tools.record_retention_days", DEFAULT_RECORD_RETENTION_DAYS
+        )
         return {
             "record_outputs": store.get_bool("tools.record_outputs", True),
             "output_retention_days": max(0, days),
+            "record_retention_days": max(0, record_days),
+            "record_count": count_records(ctx.conn),
         }
 
     @app.put("/api/settings/tools")
@@ -916,9 +930,20 @@ def create_app(
             store.set(
                 "tools.output_retention_days", str(max(0, min(days, MAX_RETENTION_DAYS)))
             )
+        if "record_retention_days" in body:
+            try:
+                record_days = int(body["record_retention_days"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="invalid record_retention_days")
+            # 0 = 永久保留（默认，与既有行为一致）
+            store.set(
+                "tools.record_retention_days",
+                str(max(0, min(record_days, MAX_RETENTION_DAYS))),
+            )
         payload = await get_tool_history_settings()
-        # 保存即生效：把天数调小要马上清掉过期输出；purged 是这次清掉的条数
+        # 保存即生效：把天数调小要马上清掉过期内容；purged 是这次清掉的条数
         payload["purged"] = ctx.prune_tool_outputs()
+        payload["records_purged"] = ctx.prune_tool_records()
         return payload
 
     # -- anchor -------------------------------------------------------------
@@ -1277,6 +1302,34 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="tool record not found")
         return record
+
+    @app.delete("/api/tool-records/{record_id}")
+    async def delete_tool_record(record_id: str) -> dict:
+        """删掉一条工具调用历史（用户主动，不可撤销）。
+
+        只删 `tool_records`（用户能回看的完整历史）；`tool_calls` / `turn_traces`
+        是审计记录，是否记录由 `trace.enabled` 决定 —— 见 storage/tool_records.py。
+        """
+        from agent.storage.tool_records import delete_record
+
+        if not delete_record(ctx.conn, record_id):
+            raise HTTPException(status_code=404, detail="tool record not found")
+        return {"ok": True, "deleted": record_id}
+
+    @app.delete("/api/tool-records")
+    async def clear_tool_records(
+        topic_id: str | None = None, older_than_days: int | None = None
+    ) -> dict:
+        """清空工具调用历史（默认全部；也可只清某个话题 / 只清 N 天前的）。
+
+        审计表不在这个动作的范围里：用户删的是「自己能回看的完整记录」。
+        """
+        from agent.storage.tool_records import delete_records
+
+        deleted = delete_records(
+            ctx.conn, topic_id=topic_id, older_than_days=older_than_days
+        )
+        return {"ok": True, "deleted": deleted, "scope": "tool_records"}
 
     @app.get("/api/graph/topics")
     async def list_topics() -> dict:
