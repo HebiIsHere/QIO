@@ -22,7 +22,8 @@ def _use_fake_worker(monkeypatch, tmp_path: Path, body: str) -> None:
     monkeypatch.setattr(
         executor_env,
         "resolve_tool_executor",
-        lambda: executor_env.ToolExecutorSpec(
+        # 与真实签名一致：多文件项目/专用环境会传 interpreter（这里忽略）
+        lambda interpreter=None: executor_env.ToolExecutorSpec(
             "worker-script", [sys.executable, str(script)]
         ),
     )
