@@ -13,7 +13,7 @@ from typing import Callable
 
 from agent.selector.base import IndexedDoc, MemoryCandidate, RecallBackend
 from agent.selector.bm25 import BM25Backend
-from agent.selector.rules import QueryContext, rule_score
+from agent.selector.rules import QueryContext, compute_signals
 from agent.selector.tokenize import tokenize
 
 logger = logging.getLogger(__name__)
@@ -145,11 +145,15 @@ class Selector:
         entity_names: list[str] | None = None,
         now: datetime | None = None,
     ) -> list[MemoryCandidate]:
-        """按查询选出相关记忆。
+        """按查询选出**候选**（只按底层相关度）。
 
-        `now` 用于规则层的时效项：默认取当前时间（行为与以前一致），
-        调用方也可以钉住它，让「同一份索引、同一时刻」的两次排序逐位可比
-        （测试与评测需要这个确定性；否则两次调用相隔几微秒就会在第 12 位小数上漂移）。
+        这里不做任何业务加权，也不因为奖励分提前截断候选池 —— 截断是候选池的
+        职责（top_k），业务排序是 agent/services/retrieval.py 的唯一入口。
+        规则层的分项（anchor / entity / keyword / recency）随候选一起带出去，
+        由那一个入口按参数决定用不用、用多重。
+
+        `now` 用于规则层的时效项：默认取当前时间；调用方也可以钉住它，
+        让「同一份索引、同一时刻」的两次排序逐位可比（测试与评测需要这个确定性）。
         """
         ctx = QueryContext(
             query=query,
@@ -168,31 +172,31 @@ class Selector:
                 entry[0] += hit.score
                 entry[1].add(hit.source)
         else:
-            # rule layer alone: keyword/entity/anchor containment over docs
+            # 没有召回后端时的降级路径：用词项重合度当**相关度**（不是业务奖励），
+            # 这样候选之间仍有可比的原始分，统一排序才有意义。
             query_tokens = set(tokenize(query))
             lower_entities = {e.lower() for e in (entity_names or [])}
             for doc in self._docs:
-                if (
-                    query_tokens & set(doc.keywords)
-                    or (lower_entities and set(doc.entity_ids) & lower_entities)
-                    or (anchor_topic_id and doc.topic_id == anchor_topic_id)
-                ):
-                    scored.setdefault(doc.doc_id, [0.0, set()])
+                overlap = len(query_tokens & set(doc.keywords)) / (len(query_tokens) or 1)
+                entity_hit = bool(lower_entities and set(doc.entity_ids) & lower_entities)
+                anchor_hit = bool(anchor_topic_id and doc.topic_id == anchor_topic_id)
+                if overlap or entity_hit or anchor_hit:
+                    scored.setdefault(doc.doc_id, [0.0, set()])[0] += overlap
 
         candidates: list[MemoryCandidate] = []
         for doc in self._docs:
             if doc.doc_id not in scored:
                 continue
             base, source_set = scored[doc.doc_id]
-            boost = rule_score(doc, ctx)
             candidates.append(
                 MemoryCandidate(
                     doc_id=doc.doc_id,
-                    score=base + boost,
+                    score=base,
                     sources=tuple(source_set),
                     topic_id=doc.topic_id,
                     title=self._titles.get(doc.doc_id),
                     token_estimate=self._token_estimates.get(doc.doc_id, 0),
+                    signals=compute_signals(doc, ctx),
                 )
             )
 

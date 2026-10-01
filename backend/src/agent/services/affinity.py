@@ -1,10 +1,30 @@
 # -*- coding: utf-8 -*-
 """话题归属分类：把消息归类为 延续 / 切换 / 新建。
 
-决策信号：
-- 硬信号：预测器 main_topic（==当前→延续；其他且 score≥SWITCH_THRESHOLD→切换）→ new_candidate→新建；
+决策信号（**唯一判定入口**，predict.py 只负责给出每条话题的相似度）：
+- 硬信号：相似度分数 + 当前话题；三种决定用**三个不同的门槛**，不再共用一条
+  绝对阈值（这是 2026-10-02 修掉的根因）；
 - 软信号：消息命中的实体卡关联话题（entity_topics）只作提示（hints），不改变硬判定。
-新建再收紧：top score < NEW_TOPIC_STRICT 才真正新建，[strict, switch) 区间引导切换到最相似话题。
+
+为什么不能只看一条阈值：真实 ONNX（bge-small-zh-v1.5）分数带很窄，而且
+「真新话题」与「措辞变化后的延续」在词面上会互相靠近（对抗样本：
+当前是数据库话题时「Excel 透视表怎么用」同样像数据库）。旧实现用
+new_topic_threshold=0.7 一条线同时管「延续 / 切换 / 新建」，真实语料上
+in_topic_recall 0.044、false_new 0.941（见 backend/evals/topic_threshold/）。
+
+现在的规则（owner-first）：
+
+1. 「有归属」的定义：最高分 >= new_topic_threshold ⇒ 这条消息有主人（owner）。
+   owner 就是当前话题 → 延续；
+2. owner 是别的话题：分数 >= switch_threshold **且**领先当前一个 switch_delta
+   → SWITCH（仍只发「待确认切换」，绝不自行移锚）；
+3. 没有 owner，或者 owner 证据不足：只要当前话题还有信号
+   （current_score >= incumbent_threshold）**或**输入短到撑不起一个新话题
+   （< min_new_topic_chars，例如「嗯 / 继续 / ok」）→ 延续；
+4. 其余 → 新建。
+
+阈值与默认值来自 backend/evals/topic_threshold/（生产路径 + 真实 embedding 的
+离线评测），全部集中在 agent/services/params.py，禁止在此新增魔数。
 """
 from __future__ import annotations
 
@@ -18,13 +38,16 @@ class TopicMode(str, Enum):
     NEW_TOPIC = "new_topic"
 
 
-# 阈值集中管理（见 agent/services/params.py 与 agent/eval/topic_eval.py）
+# 阈值集中管理（见 agent/services/params.py 与 backend/evals/topic_threshold/）
 from agent.services.params import TOPIC as _TOPIC
+from agent.services.params import TopicPolicy
 
 # 切换到其他已有话题的预测分数门槛
 SWITCH_THRESHOLD = _TOPIC.switch_threshold
 # 真正「新建」的严格上限：top score < 该值才允许 create_topic；[strict, switch) 引导 switch
 NEW_TOPIC_STRICT = _TOPIC.new_topic_strict
+# 留在现任话题所需的最低分数（低于切换门槛）
+INCUMBENT_THRESHOLD = _TOPIC.incumbent_threshold
 
 
 @dataclass
@@ -41,19 +64,58 @@ def classify(
     prediction,
     current_topic_id: str | None,
     entity_topics: list[str] | None = None,
+    *,
+    policy: TopicPolicy | None = None,
 ) -> TopicDecision:
-    """按预测结果 + 实体软信号归类消息归属。"""
-    scores = dict(getattr(prediction, "scores", None) or {})
-    main = getattr(prediction, "main_topic_id", None)
-    hints = [t for t in (entity_topics or []) if t and t != current_topic_id]
+    """按分数 + 当前话题 + 实体软信号归类消息归属。
 
-    if main and main == current_topic_id:
-        return TopicDecision(TopicMode.IN_TOPIC, entity_hints=hints)
-    if main and main != current_topic_id and scores.get(main, 0.0) >= SWITCH_THRESHOLD:
-        return TopicDecision(TopicMode.SWITCH, switch_to=main, entity_hints=hints)
+    `policy` 可注入（默认取生产 TOPIC），评测与测试用它扫阈值，
+    不需要 monkeypatch 模块常量 —— 被评测的就是产品跑的这一份逻辑。
+    """
+    pol = policy or _TOPIC
+    scores = dict(getattr(prediction, "scores", None) or {})
+    hints = [t for t in (entity_topics or []) if t and t != current_topic_id]
 
     top_topic = max(scores, key=scores.get) if scores else None
     top_score = scores.get(top_topic, 0.0) if top_topic else 0.0
+    current_score = scores.get(current_topic_id, 0.0) if current_topic_id else 0.0
+
+    text = (message or "").strip()
+    # 「有归属」由**预测器**判定（它知道后端用的是哪条阈值：onnx 用
+    # new_topic_threshold，关键词兜底用 rules_new_topic_threshold，两者量纲不同）。
+    # 这里不重新用 onnx 阈值算一遍，否则兜底路径的 0.22 会被 0.42 判成「没有主人」。
+    backend = getattr(prediction, "backend_used", "rules")
+    owner = getattr(prediction, "main_topic_id", None)
+    incumbent_threshold = (
+        pol.incumbent_threshold if backend == "onnx" else pol.rules_incumbent_threshold
+    )
+
+    # 1) 主人就是当前话题 → 延续
+    if owner is not None and owner == current_topic_id:
+        return TopicDecision(TopicMode.IN_TOPIC, entity_hints=hints)
+
+    # 2) 主人是别的话题：够强 + 领先当前一个 margin → 待确认切换
+    if (
+        owner is not None
+        and owner != current_topic_id
+        and top_score >= pol.switch_threshold
+        and top_score - current_score >= pol.switch_delta
+    ):
+        return TopicDecision(
+            TopicMode.SWITCH,
+            switch_to=owner,
+            closest_topic=owner,
+            closest_score=top_score,
+            entity_hints=hints,
+        )
+
+    # 3) 没有主人 / 证据不足：当前话题还有信号，或输入短到撑不起新话题 → 延续
+    if current_topic_id and (
+        current_score >= incumbent_threshold or len(text) < pol.min_new_topic_chars
+    ):
+        return TopicDecision(TopicMode.IN_TOPIC, entity_hints=hints)
+
+    # 4) 其余 → 新建
     return TopicDecision(
         TopicMode.NEW_TOPIC,
         closest_topic=top_topic,

@@ -1,0 +1,2196 @@
+{
+  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1 @ C:\\Users\\zxy\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\qio\\models\\bge-small-zh-v1.5",
+  "n": 104,
+  "production_default": {
+    "policy": {
+      "new_topic_threshold": 0.7,
+      "incumbent_threshold": 0.3,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.1,
+      "new_topic_strict": 0.5
+    },
+    "n": 104,
+    "accuracy": 0.8173,
+    "confusion": {
+      "in_topic": {
+        "in_topic": 67,
+        "switch": 1,
+        "new_topic": 3
+      },
+      "switch": {
+        "in_topic": 3,
+        "switch": 7,
+        "new_topic": 0
+      },
+      "new_topic": {
+        "in_topic": 12,
+        "switch": 0,
+        "new_topic": 11
+      }
+    },
+    "in_topic_recall": 0.9437,
+    "switch_recall": 0.7,
+    "new_topic_precision": 0.7857,
+    "new_topic_recall": 0.4783,
+    "false_new_rate": 0.037,
+    "per_category": {
+      "continue_current": {
+        "n": 18,
+        "ok": 18,
+        "accuracy": 1.0
+      },
+      "paraphrase": {
+        "n": 10,
+        "ok": 10,
+        "accuracy": 1.0
+      },
+      "cross_topic_reference": {
+        "n": 12,
+        "ok": 11,
+        "accuracy": 0.9167
+      },
+      "genuinely_new": {
+        "n": 18,
+        "ok": 11,
+        "accuracy": 0.6111
+      },
+      "ambiguous_shift": {
+        "n": 8,
+        "ok": 6,
+        "accuracy": 0.75
+      },
+      "no_signal": {
+        "n": 7,
+        "ok": 6,
+        "accuracy": 0.8571
+      },
+      "short_cn": {
+        "n": 13,
+        "ok": 11,
+        "accuracy": 0.8462
+      },
+      "en": {
+        "n": 9,
+        "ok": 5,
+        "accuracy": 0.5556
+      },
+      "mixed": {
+        "n": 9,
+        "ok": 7,
+        "accuracy": 0.7778
+      }
+    },
+    "wrong": [
+      {
+        "id": "cross_12",
+        "expected": "in_topic",
+        "predicted": "switch"
+      },
+      {
+        "id": "new_05",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_01",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_02",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_03",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_04",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_06",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "hard_07",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "amb_04",
+        "expected": "switch",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "amb_12",
+        "expected": "switch",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "short_15",
+        "expected": "in_topic",
+        "predicted": "new_topic"
+      },
+      {
+        "id": "short_07",
+        "expected": "in_topic",
+        "predicted": "new_topic"
+      },
+      {
+        "id": "short_09",
+        "expected": "in_topic",
+        "predicted": "new_topic"
+      },
+      {
+        "id": "en_03",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "en_04",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "en_05",
+        "expected": "switch",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "en_09",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "mix_06",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      },
+      {
+        "id": "mix_09",
+        "expected": "new_topic",
+        "predicted": "in_topic"
+      }
+    ],
+    "rows": [
+      {
+        "id": "cont_01",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5802,
+        "top": "t_db",
+        "top_score": 0.5802
+      },
+      {
+        "id": "cont_02",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5903,
+        "top": "t_db",
+        "top_score": 0.5903
+      },
+      {
+        "id": "cont_03",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5982,
+        "top": "t_db",
+        "top_score": 0.5982
+      },
+      {
+        "id": "cont_04",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6723,
+        "top": "t_ui",
+        "top_score": 0.6723
+      },
+      {
+        "id": "cont_05",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4615,
+        "top": "t_work",
+        "top_score": 0.4705
+      },
+      {
+        "id": "cont_06",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6727,
+        "top": "t_travel",
+        "top_score": 0.6727
+      },
+      {
+        "id": "cont_07",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6025,
+        "top": "t_perf",
+        "top_score": 0.6025
+      },
+      {
+        "id": "cont_08",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5803,
+        "top": "t_db",
+        "top_score": 0.5803
+      },
+      {
+        "id": "cont_09",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4542,
+        "top": "t_db",
+        "top_score": 0.4542
+      },
+      {
+        "id": "cont_10",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6778,
+        "top": "t_work",
+        "top_score": 0.6778
+      },
+      {
+        "id": "para_01",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5749,
+        "top": "t_db",
+        "top_score": 0.5749
+      },
+      {
+        "id": "para_02",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6528,
+        "top": "t_ui",
+        "top_score": 0.6528
+      },
+      {
+        "id": "para_03",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5457,
+        "top": "t_deploy",
+        "top_score": 0.5457
+      },
+      {
+        "id": "para_04",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.7011,
+        "top": "t_perf",
+        "top_score": 0.7011
+      },
+      {
+        "id": "para_05",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6141,
+        "top": "t_travel",
+        "top_score": 0.6141
+      },
+      {
+        "id": "para_06",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.57,
+        "top": "t_deploy",
+        "top_score": 0.57
+      },
+      {
+        "id": "para_07",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5257,
+        "top": "t_perf",
+        "top_score": 0.5257
+      },
+      {
+        "id": "para_08",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5237,
+        "top": "t_work",
+        "top_score": 0.5237
+      },
+      {
+        "id": "cross_01",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5229,
+        "top": "t_ui",
+        "top_score": 0.5608
+      },
+      {
+        "id": "cross_02",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4394,
+        "top": "t_db",
+        "top_score": 0.4924
+      },
+      {
+        "id": "cross_03",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6032,
+        "top": "t_travel",
+        "top_score": 0.6032
+      },
+      {
+        "id": "cross_04",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6107,
+        "top": "t_db",
+        "top_score": 0.6107
+      },
+      {
+        "id": "cross_05",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6903,
+        "top": "t_work",
+        "top_score": 0.6903
+      },
+      {
+        "id": "cross_06",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6718,
+        "top": "t_deploy",
+        "top_score": 0.6718
+      },
+      {
+        "id": "cross_07",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.757,
+        "top": "t_ui",
+        "top_score": 0.757
+      },
+      {
+        "id": "cross_08",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5637,
+        "top": "t_travel",
+        "top_score": 0.5637
+      },
+      {
+        "id": "new_01",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2095,
+        "top": "t_ui",
+        "top_score": 0.2655
+      },
+      {
+        "id": "new_02",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.1619,
+        "top": "t_ui",
+        "top_score": 0.318
+      },
+      {
+        "id": "new_03",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2717,
+        "top": "t_ui",
+        "top_score": 0.3036
+      },
+      {
+        "id": "new_04",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2405,
+        "top": "t_perf",
+        "top_score": 0.2405
+      },
+      {
+        "id": "new_05",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3013,
+        "top": "t_travel",
+        "top_score": 0.3013
+      },
+      {
+        "id": "new_06",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2159,
+        "top": "t_db",
+        "top_score": 0.2159
+      },
+      {
+        "id": "new_07",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2898,
+        "top": "t_work",
+        "top_score": 0.2898
+      },
+      {
+        "id": "new_08",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2928,
+        "top": "t_ui",
+        "top_score": 0.2928
+      },
+      {
+        "id": "new_09",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2911,
+        "top": "t_travel",
+        "top_score": 0.2911
+      },
+      {
+        "id": "new_10",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2887,
+        "top": "t_deploy",
+        "top_score": 0.2887
+      },
+      {
+        "id": "amb_01",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.4349,
+        "top": "t_deploy",
+        "top_score": 0.5861
+      },
+      {
+        "id": "amb_02",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.3699,
+        "top": "t_arch",
+        "top_score": 0.7175
+      },
+      {
+        "id": "amb_03",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.4277,
+        "top": "t_work",
+        "top_score": 0.6463
+      },
+      {
+        "id": "amb_04",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "in_topic",
+        "current_score": 0.4602,
+        "top": "t_deploy",
+        "top_score": 0.482
+      },
+      {
+        "id": "amb_05",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3316,
+        "top": "t_db",
+        "top_score": 0.3316
+      },
+      {
+        "id": "amb_06",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4116,
+        "top": "t_perf",
+        "top_score": 0.4116
+      },
+      {
+        "id": "amb_07",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3728,
+        "top": "t_ui",
+        "top_score": 0.4269
+      },
+      {
+        "id": "amb_08",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4014,
+        "top": "t_ui",
+        "top_score": 0.4014
+      },
+      {
+        "id": "short_01",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3874,
+        "top": "t_ui",
+        "top_score": 0.4164
+      },
+      {
+        "id": "short_02",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3644,
+        "top": "t_ui",
+        "top_score": 0.3744
+      },
+      {
+        "id": "short_03",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3507,
+        "top": "t_db",
+        "top_score": 0.4096
+      },
+      {
+        "id": "short_04",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3166,
+        "top": "t_perf",
+        "top_score": 0.3166
+      },
+      {
+        "id": "short_05",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3341,
+        "top": "t_db",
+        "top_score": 0.3341
+      },
+      {
+        "id": "short_06",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3803,
+        "top": "t_db",
+        "top_score": 0.4138
+      },
+      {
+        "id": "short_07",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2729,
+        "top": "t_work",
+        "top_score": 0.2986
+      },
+      {
+        "id": "short_08",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3123,
+        "top": "t_work",
+        "top_score": 0.3764
+      },
+      {
+        "id": "en_01",
+        "category": "en",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4382,
+        "top": "t_db",
+        "top_score": 0.4382
+      },
+      {
+        "id": "en_02",
+        "category": "en",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4233,
+        "top": "t_perf",
+        "top_score": 0.4233
+      },
+      {
+        "id": "en_03",
+        "category": "en",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4099,
+        "top": "t_db",
+        "top_score": 0.4099
+      },
+      {
+        "id": "en_04",
+        "category": "en",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3887,
+        "top": "t_db",
+        "top_score": 0.4063
+      },
+      {
+        "id": "en_05",
+        "category": "en",
+        "expected": "switch",
+        "predicted": "in_topic",
+        "current_score": 0.3915,
+        "top": "t_ui",
+        "top_score": 0.5052
+      },
+      {
+        "id": "en_06",
+        "category": "en",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3521,
+        "top": "t_ui",
+        "top_score": 0.3557
+      },
+      {
+        "id": "mix_01",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4749,
+        "top": "t_db",
+        "top_score": 0.4749
+      },
+      {
+        "id": "mix_02",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4549,
+        "top": "t_work",
+        "top_score": 0.4787
+      },
+      {
+        "id": "mix_03",
+        "category": "mixed",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.4391,
+        "top": "t_ui",
+        "top_score": 0.6268
+      },
+      {
+        "id": "mix_04",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6082,
+        "top": "t_db",
+        "top_score": 0.6082
+      },
+      {
+        "id": "mix_05",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4305,
+        "top": "t_db",
+        "top_score": 0.5247
+      },
+      {
+        "id": "mix_06",
+        "category": "mixed",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5107,
+        "top": "t_db",
+        "top_score": 0.5107
+      },
+      {
+        "id": "hard_01",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4663,
+        "top": "t_perf",
+        "top_score": 0.4663
+      },
+      {
+        "id": "hard_02",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3505,
+        "top": "t_ui",
+        "top_score": 0.3882
+      },
+      {
+        "id": "hard_03",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3636,
+        "top": "t_db",
+        "top_score": 0.3991
+      },
+      {
+        "id": "hard_04",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3946,
+        "top": "t_deploy",
+        "top_score": 0.3946
+      },
+      {
+        "id": "hard_05",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2744,
+        "top": "t_travel",
+        "top_score": 0.2744
+      },
+      {
+        "id": "hard_06",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3022,
+        "top": "t_work",
+        "top_score": 0.3022
+      },
+      {
+        "id": "hard_07",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4113,
+        "top": "t_db",
+        "top_score": 0.4113
+      },
+      {
+        "id": "hard_08",
+        "category": "genuinely_new",
+        "expected": "new_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2913,
+        "top": "t_perf",
+        "top_score": 0.2913
+      },
+      {
+        "id": "short_09",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2998,
+        "top": "t_db",
+        "top_score": 0.2998
+      },
+      {
+        "id": "short_10",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3895,
+        "top": "t_work",
+        "top_score": 0.3895
+      },
+      {
+        "id": "short_11",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3457,
+        "top": "t_ui",
+        "top_score": 0.3457
+      },
+      {
+        "id": "short_12",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3675,
+        "top": "t_work",
+        "top_score": 0.3941
+      },
+      {
+        "id": "short_13",
+        "category": "short_cn",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3357,
+        "top": "t_ui",
+        "top_score": 0.3594
+      },
+      {
+        "id": "short_14",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4122,
+        "top": "t_perf",
+        "top_score": 0.4122
+      },
+      {
+        "id": "short_15",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "new_topic",
+        "current_score": 0.2713,
+        "top": "t_work",
+        "top_score": 0.3629
+      },
+      {
+        "id": "short_16",
+        "category": "no_signal",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3959,
+        "top": "t_ui",
+        "top_score": 0.3959
+      },
+      {
+        "id": "cont_11",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4667,
+        "top": "t_db",
+        "top_score": 0.4667
+      },
+      {
+        "id": "cont_12",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6116,
+        "top": "t_db",
+        "top_score": 0.6116
+      },
+      {
+        "id": "cont_13",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.71,
+        "top": "t_ui",
+        "top_score": 0.71
+      },
+      {
+        "id": "cont_14",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5498,
+        "top": "t_deploy",
+        "top_score": 0.5498
+      },
+      {
+        "id": "cont_15",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3757,
+        "top": "t_travel",
+        "top_score": 0.3757
+      },
+      {
+        "id": "cont_16",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5453,
+        "top": "t_perf",
+        "top_score": 0.5453
+      },
+      {
+        "id": "cont_17",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.7364,
+        "top": "t_work",
+        "top_score": 0.7364
+      },
+      {
+        "id": "cont_18",
+        "category": "continue_current",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.6905,
+        "top": "t_arch",
+        "top_score": 0.6905
+      },
+      {
+        "id": "en_07",
+        "category": "en",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.437,
+        "top": "t_db",
+        "top_score": 0.437
+      },
+      {
+        "id": "en_08",
+        "category": "en",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3562,
+        "top": "t_work",
+        "top_score": 0.3652
+      },
+      {
+        "id": "en_09",
+        "category": "en",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4243,
+        "top": "t_db",
+        "top_score": 0.4243
+      },
+      {
+        "id": "mix_07",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4876,
+        "top": "t_db",
+        "top_score": 0.4876
+      },
+      {
+        "id": "mix_08",
+        "category": "mixed",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4641,
+        "top": "t_deploy",
+        "top_score": 0.4641
+      },
+      {
+        "id": "mix_09",
+        "category": "mixed",
+        "expected": "new_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3078,
+        "top": "t_ui",
+        "top_score": 0.357
+      },
+      {
+        "id": "para_09",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3924,
+        "top": "t_perf",
+        "top_score": 0.4426
+      },
+      {
+        "id": "para_10",
+        "category": "paraphrase",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.3399,
+        "top": "t_ui",
+        "top_score": 0.3399
+      },
+      {
+        "id": "cross_09",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5809,
+        "top": "t_work",
+        "top_score": 0.5809
+      },
+      {
+        "id": "cross_10",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.5474,
+        "top": "t_perf",
+        "top_score": 0.5474
+      },
+      {
+        "id": "cross_11",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "in_topic",
+        "current_score": 0.4221,
+        "top": "t_work",
+        "top_score": 0.4493
+      },
+      {
+        "id": "cross_12",
+        "category": "cross_topic_reference",
+        "expected": "in_topic",
+        "predicted": "switch",
+        "current_score": 0.4725,
+        "top": "t_arch",
+        "top_score": 0.6131
+      },
+      {
+        "id": "amb_09",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.3487,
+        "top": "t_arch",
+        "top_score": 0.5697
+      },
+      {
+        "id": "amb_10",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.4697,
+        "top": "t_perf",
+        "top_score": 0.639
+      },
+      {
+        "id": "amb_11",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "switch",
+        "current_score": 0.2689,
+        "top": "t_ui",
+        "top_score": 0.7017
+      },
+      {
+        "id": "amb_12",
+        "category": "ambiguous_shift",
+        "expected": "switch",
+        "predicted": "in_topic",
+        "current_score": 0.4657,
+        "top": "t_ui",
+        "top_score": 0.4657
+      }
+    ]
+  },
+  "incumbent_curve": [
+    {
+      "policy": {
+        "new_topic_threshold": 0.7,
+        "incumbent_threshold": 0.25,
+        "switch_threshold": 0.55,
+        "switch_delta": 0.1,
+        "new_topic_strict": 0.5
+      },
+      "n": 104,
+      "accuracy": 0.7788,
+      "confusion": {
+        "in_topic": {
+          "in_topic": 70,
+          "switch": 1,
+          "new_topic": 0
+        },
+        "switch": {
+          "in_topic": 3,
+          "switch": 7,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 19,
+          "switch": 0,
+          "new_topic": 4
+        }
+      },
+      "in_topic_recall": 0.9859,
+      "switch_recall": 0.7,
+      "new_topic_precision": 1.0,
+      "new_topic_recall": 0.1739,
+      "false_new_rate": 0.0,
+      "per_category": {
+        "continue_current": {
+          "n": 18,
+          "ok": 18,
+          "accuracy": 1.0
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 10,
+          "accuracy": 1.0
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11,
+          "accuracy": 0.9167
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 4,
+          "accuracy": 0.2222
+        },
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 6,
+          "accuracy": 0.75
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 7,
+          "accuracy": 1.0
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13,
+          "accuracy": 1.0
+        },
+        "en": {
+          "n": 9,
+          "ok": 5,
+          "accuracy": 0.5556
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 7,
+          "accuracy": 0.7778
+        }
+      },
+      "wrong": [
+        {
+          "id": "cross_12",
+          "expected": "in_topic",
+          "predicted": "switch"
+        },
+        {
+          "id": "new_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "new_05",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "new_07",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "new_08",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "new_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "new_10",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_01",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_02",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_05",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_07",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_08",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_04",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_12",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_05",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        }
+      ]
+    },
+    {
+      "policy": {
+        "new_topic_threshold": 0.7,
+        "incumbent_threshold": 0.3,
+        "switch_threshold": 0.55,
+        "switch_delta": 0.1,
+        "new_topic_strict": 0.5
+      },
+      "n": 104,
+      "accuracy": 0.8173,
+      "confusion": {
+        "in_topic": {
+          "in_topic": 67,
+          "switch": 1,
+          "new_topic": 3
+        },
+        "switch": {
+          "in_topic": 3,
+          "switch": 7,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 12,
+          "switch": 0,
+          "new_topic": 11
+        }
+      },
+      "in_topic_recall": 0.9437,
+      "switch_recall": 0.7,
+      "new_topic_precision": 0.7857,
+      "new_topic_recall": 0.4783,
+      "false_new_rate": 0.037,
+      "per_category": {
+        "continue_current": {
+          "n": 18,
+          "ok": 18,
+          "accuracy": 1.0
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 10,
+          "accuracy": 1.0
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11,
+          "accuracy": 0.9167
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 11,
+          "accuracy": 0.6111
+        },
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 6,
+          "accuracy": 0.75
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 6,
+          "accuracy": 0.8571
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 11,
+          "accuracy": 0.8462
+        },
+        "en": {
+          "n": 9,
+          "ok": 5,
+          "accuracy": 0.5556
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 7,
+          "accuracy": 0.7778
+        }
+      },
+      "wrong": [
+        {
+          "id": "cross_12",
+          "expected": "in_topic",
+          "predicted": "switch"
+        },
+        {
+          "id": "new_05",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_01",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_02",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_07",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_04",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_12",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "short_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_05",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        }
+      ]
+    },
+    {
+      "policy": {
+        "new_topic_threshold": 0.7,
+        "incumbent_threshold": 0.35,
+        "switch_threshold": 0.55,
+        "switch_delta": 0.1,
+        "new_topic_strict": 0.5
+      },
+      "n": 104,
+      "accuracy": 0.7788,
+      "confusion": {
+        "in_topic": {
+          "in_topic": 60,
+          "switch": 1,
+          "new_topic": 10
+        },
+        "switch": {
+          "in_topic": 3,
+          "switch": 7,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 9,
+          "switch": 0,
+          "new_topic": 14
+        }
+      },
+      "in_topic_recall": 0.8451,
+      "switch_recall": 0.7,
+      "new_topic_precision": 0.5833,
+      "new_topic_recall": 0.6087,
+      "false_new_rate": 0.1235,
+      "per_category": {
+        "continue_current": {
+          "n": 18,
+          "ok": 18,
+          "accuracy": 1.0
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 9,
+          "accuracy": 0.9
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11,
+          "accuracy": 0.9167
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 13,
+          "accuracy": 0.7222
+        },
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 6,
+          "accuracy": 0.75
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 5,
+          "accuracy": 0.7143
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 6,
+          "accuracy": 0.4615
+        },
+        "en": {
+          "n": 9,
+          "ok": 5,
+          "accuracy": 0.5556
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 8,
+          "accuracy": 0.8889
+        }
+      },
+      "wrong": [
+        {
+          "id": "para_10",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "cross_12",
+          "expected": "in_topic",
+          "predicted": "switch"
+        },
+        {
+          "id": "hard_01",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_02",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_07",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_04",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_12",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_04",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_11",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_13",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_04",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_05",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        }
+      ]
+    },
+    {
+      "policy": {
+        "new_topic_threshold": 0.7,
+        "incumbent_threshold": 0.4,
+        "switch_threshold": 0.55,
+        "switch_delta": 0.1,
+        "new_topic_strict": 0.5
+      },
+      "n": 104,
+      "accuracy": 0.7019,
+      "confusion": {
+        "in_topic": {
+          "in_topic": 48,
+          "switch": 1,
+          "new_topic": 22
+        },
+        "switch": {
+          "in_topic": 2,
+          "switch": 7,
+          "new_topic": 1
+        },
+        "new_topic": {
+          "in_topic": 5,
+          "switch": 0,
+          "new_topic": 18
+        }
+      },
+      "in_topic_recall": 0.6761,
+      "switch_recall": 0.7,
+      "new_topic_precision": 0.439,
+      "new_topic_recall": 0.7826,
+      "false_new_rate": 0.284,
+      "per_category": {
+        "continue_current": {
+          "n": 18,
+          "ok": 17,
+          "accuracy": 0.9444
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 8,
+          "accuracy": 0.8
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11,
+          "accuracy": 0.9167
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 16,
+          "accuracy": 0.8889
+        },
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 6,
+          "accuracy": 0.75
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 3,
+          "accuracy": 0.4286
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 0,
+          "accuracy": 0.0
+        },
+        "en": {
+          "n": 9,
+          "ok": 4,
+          "accuracy": 0.4444
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 8,
+          "accuracy": 0.8889
+        }
+      },
+      "wrong": [
+        {
+          "id": "cont_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "para_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "para_10",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "cross_12",
+          "expected": "in_topic",
+          "predicted": "switch"
+        },
+        {
+          "id": "hard_01",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "hard_07",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_04",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_12",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "amb_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_16",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_01",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_02",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_03",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_04",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_06",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_10",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_11",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_12",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_13",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_03",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "en_05",
+          "expected": "switch",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_06",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_09",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "mix_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        }
+      ]
+    },
+    {
+      "policy": {
+        "new_topic_threshold": 0.7,
+        "incumbent_threshold": 0.45,
+        "switch_threshold": 0.55,
+        "switch_delta": 0.1,
+        "new_topic_strict": 0.5
+      },
+      "n": 104,
+      "accuracy": 0.6442,
+      "confusion": {
+        "in_topic": {
+          "in_topic": 39,
+          "switch": 1,
+          "new_topic": 31
+        },
+        "switch": {
+          "in_topic": 2,
+          "switch": 7,
+          "new_topic": 1
+        },
+        "new_topic": {
+          "in_topic": 2,
+          "switch": 0,
+          "new_topic": 21
+        }
+      },
+      "in_topic_recall": 0.5493,
+      "switch_recall": 0.7,
+      "new_topic_precision": 0.3962,
+      "new_topic_recall": 0.913,
+      "false_new_rate": 0.3951,
+      "per_category": {
+        "continue_current": {
+          "n": 18,
+          "ok": 17,
+          "accuracy": 0.9444
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 8,
+          "accuracy": 0.8
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 9,
+          "accuracy": 0.75
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 17,
+          "accuracy": 0.9444
+        },
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 6,
+          "accuracy": 0.75
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 0,
+          "accuracy": 0.0
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 0,
+          "accuracy": 0.0
+        },
+        "en": {
+          "n": 9,
+          "ok": 3,
+          "accuracy": 0.3333
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 7,
+          "accuracy": 0.7778
+        }
+      },
+      "wrong": [
+        {
+          "id": "cont_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "para_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "para_10",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "cross_02",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "cross_11",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "cross_12",
+          "expected": "in_topic",
+          "predicted": "switch"
+        },
+        {
+          "id": "hard_01",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_04",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_12",
+          "expected": "switch",
+          "predicted": "in_topic"
+        },
+        {
+          "id": "amb_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "amb_06",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "amb_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "amb_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_14",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_15",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_16",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_01",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_02",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_03",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_04",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_06",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_09",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_10",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_11",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_12",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "short_13",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_01",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_02",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_05",
+          "expected": "switch",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_06",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_07",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "en_08",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "mix_05",
+          "expected": "in_topic",
+          "predicted": "new_topic"
+        },
+        {
+          "id": "mix_06",
+          "expected": "new_topic",
+          "predicted": "in_topic"
+        }
+      ]
+    }
+  ]
+}

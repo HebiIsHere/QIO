@@ -76,6 +76,13 @@ class FakeEmbedding:
         self._vectors[topic_id] = self._vec(text)
 
 
+#: recorded 后端使用**真实模型记录下来的余弦快照**（输入是 embedding，不是标签）。
+#: 见 backend/evals/record_topic_scores.py；快照自带 model identity 以便溯源。
+RECORDED_SCORES_PATH = (
+    Path(__file__).resolve().parents[3] / "evals" / "topic_prediction" / "scores_onnx.json"
+)
+
+
 def load_cases(path: str | Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -83,6 +90,35 @@ def load_cases(path: str | Path) -> list[dict[str, Any]]:
         if line:
             cases.append(json.loads(line))
     return cases
+
+
+def load_recorded_scores(path: str | Path | None = None) -> dict[str, Any]:
+    path = Path(path) if path is not None else RECORDED_SCORES_PATH
+    if not path.exists():
+        raise RuntimeError(
+            f"用例声明 backend=recorded，但快照不存在：{path}。"
+            "请先跑 backend/evals/record_topic_scores.py（需要本机有 ONNX 模型）。"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def recorded_scores_for(case_id: str, path: str | Path | None = None) -> dict[str, float]:
+    """取某条用例的记录余弦。
+
+    **绝不静默回落**：缺快照、缺该用例、结果为空 —— 一律抛错。
+    退回 fake / BM25 / 零向量都会让评测看起来有数、实际测的是别的东西。
+    """
+    snapshot = load_recorded_scores(path)
+    entry = (snapshot.get("cases") or {}).get(case_id)
+    if entry is None:
+        raise RuntimeError(
+            f"用例 {case_id} 声明 backend=recorded，但快照 {snapshot.get('model', '?')} 里没有它；"
+            "请重跑 record_topic_scores.py，不要退回假 embedding。"
+        )
+    scores = entry.get("scores")
+    if not isinstance(scores, dict) or not scores:
+        raise RuntimeError(f"用例 {case_id} 的记录余弦为空：{entry!r}")
+    return {str(k): float(v) for k, v in scores.items()}
 
 
 def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
@@ -93,7 +129,8 @@ def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
         _Fingerprint(t["id"], t.get("title", ""), t.get("keywords", []))
         for t in case.get("topics", [])
     ]
-    embedding = FakeEmbedding() if case.get("backend") == "fake_embedding" else None
+    backend = case.get("backend")
+    embedding = FakeEmbedding() if backend == "fake_embedding" else None
     predictor = TopicPredictor(
         None,
         embedding,
@@ -105,7 +142,14 @@ def predict_mode(case: dict[str, Any], policy: TopicPolicy = TOPIC) -> str:
         switch_delta=policy.switch_delta,
         aux_top_count=policy.aux_top_count,
     )
-    prediction = predictor.predict(case["message"], current_topic_id=case.get("current_topic"))
+    if backend == "recorded":
+        # 记录的真实 ONNX 余弦：只替换 embedding 这一层，
+        # 后面的 _rank + classify 仍是生产代码（与 predict() 内部第二步一致）。
+        prediction = predictor._rank(
+            recorded_scores_for(case["id"]), case.get("current_topic"), backend="onnx"
+        )
+    else:
+        prediction = predictor.predict(case["message"], current_topic_id=case.get("current_topic"))
     decision = classify(case["message"], prediction, case.get("current_topic"), [])
     return decision.mode.value
 

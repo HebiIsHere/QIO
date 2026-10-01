@@ -1,11 +1,20 @@
-"""Cross-session retrieval with the three-weight ranking.
+"""Cross-session retrieval with **one** ranking entry.
 
 Pipeline:
 1. first hop: topic fingerprints (session-level meta summaries) match the
-   query — topics that score get an affinity bonus;
-2. global recall: the M5 selector over memory_index fragments (relevance);
-3. ranking: relevance (BM25, normalized) x relevance_weight +
-   recency decay x recency_weight + topic affinity x affinity_weight.
+   query — topics that score get an affinity factor;
+2. candidate pool: the M5 selector over memory_index fragments returns
+   candidates ordered by raw recall relevance only (no business rewards, no
+   reward-driven truncation);
+3. ranking: **here, once** — relevance (normalized) x relevance_weight +
+   recency decay x recency_weight + topic affinity x affinity_weight +
+   rule signals x rule_weight. All weights come from services.params.RETRIEVAL
+   and default to pure relevance.
+
+历史缺陷（2026-10-02 修）：奖励以前被算了两遍 —— Selector 先把
+anchor/entity/keyword/recency 加进分数并据此截断候选池，Retriever 再加
+recency + affinity 排序。第一层淘汰掉的候选第二层救不回来，而且同一维度
+（时效）被计了两次。臂对比见 backend/evals/retrieval_ranking/。
 """
 
 from __future__ import annotations
@@ -20,15 +29,25 @@ from agent.selector.base import IndexedDoc
 from agent.selector.selector import Selector
 from agent.selector.tokenize import tokenize
 
-DEFAULT_RECENCY_HALF_LIFE_DAYS = 30.0
+from agent.services.params import RETRIEVAL as _RETRIEVAL
+
+DEFAULT_RECENCY_HALF_LIFE_DAYS = _RETRIEVAL.recency_half_life_days
 
 
 @dataclass
 class RetrievalConfig:
-    relevance_weight: float = 0.4
-    recency_weight: float = 0.25
-    affinity_weight: float = 0.35
-    recency_half_life_days: float = DEFAULT_RECENCY_HALF_LIFE_DAYS
+    """排序权重载体。默认值**直接取自** services.params.RETRIEVAL（唯一权威）。
+
+    显式传入的 config 用于评测/测试扫描权重；生产路径不传 config，
+    因此改 params 就改生产行为（旧版这里有一份独立的数字，
+    改 params 对生产完全无效）。
+    """
+
+    relevance_weight: float = _RETRIEVAL.relevance_weight
+    recency_weight: float = _RETRIEVAL.recency_weight
+    affinity_weight: float = _RETRIEVAL.affinity_weight
+    rule_weight: float = _RETRIEVAL.rule_weight
+    recency_half_life_days: float = _RETRIEVAL.recency_half_life_days
     fingerprint_top: int = 3
 
 
@@ -240,10 +259,16 @@ class Retriever:
                     affinity = 1.0
                 elif candidate.topic_id in fingerprint_scores:
                     affinity = fingerprint_scores[candidate.topic_id]
+            # 规则分项里 anchor/entity/keyword 是「业务奖励」；
+            # recency 已经由上面的 decay 表示，不在这里重复计入（同一维度只算一次）。
+            rule_signals = sum(
+                value for name, value in (candidate.signals or {}).items() if name != "recency"
+            )
             score = (
                 self.config.relevance_weight * relevance_norm
                 + self.config.recency_weight * recency
                 + self.config.affinity_weight * affinity
+                + self.config.rule_weight * rule_signals
             )
             ranked.append(
                 (

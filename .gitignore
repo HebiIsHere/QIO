@@ -53,3 +53,4 @@ backend/data-gym-cache/
 
 # brainstorm 原型会话（可视化伴侣）
 .superpowers/
+backend/tmp*
