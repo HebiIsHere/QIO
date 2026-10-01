@@ -15,8 +15,10 @@ import os
 import pytest
 
 from agent.tools import sandbox as sandbox_module
-from agent.tools.dev_tools import DevRunTestsTool
+from agent.tools.dev_tools import DevRunTestsTool, DevSubmitTool
 from agent.tools.dev_workspace import DevWorkspace
+from agent.tools.lifecycle import ToolLifecycle
+from agent.tools.registry import ToolRegistry
 from agent.tools.runtime_tools import CodeTool
 from agent.tools.sandbox import DEFAULT_DOCKER_IMAGE, SandboxExecutor, SandboxResult
 from agent.tools.spec import ToolDefinition
@@ -267,15 +269,19 @@ class _FakeEnvs:
         container_reason: str = "依赖镜像没准备好",
         host_interpreter: str | None = "C:/envs/host/Scripts/python.exe",
         host_ok: bool = True,
+        order: list[str] | None = None,
     ) -> None:
         self.container_image = container_image
         self.container_reason = container_reason
         self.host_interpreter = host_interpreter
         self.host_ok = host_ok
+        self.order = order
         self.container_requests: list[dict] = []
         self.host_requests: list[dict] = []
 
     async def ensure_container_image(self, requirements, **kwargs) -> ContainerStatus:
+        if self.order is not None:
+            self.order.append("dependency_prep")
         self.container_requests.append({"requirements": list(requirements), **kwargs})
         if self.container_image is None:
             return ContainerStatus(ok=False, reason=self.container_reason)
@@ -298,8 +304,9 @@ class _RecordingSandbox:
     executor = "docker"
     timeout_seconds = 5.0
 
-    def __init__(self, executor: str = "docker") -> None:
+    def __init__(self, executor: str = "docker", order: list[str] | None = None) -> None:
         self.executor = executor
+        self.order = order
         self.executions = 0
         self.executions_args: list[dict] = []
 
@@ -318,6 +325,8 @@ class _RecordingSandbox:
         container_image=None,
     ) -> SandboxResult:
         self.executions += 1
+        if self.order is not None:
+            self.order.append("execute")
         self.executions_args.append(
             {"interpreter": interpreter, "container_image": container_image}
         )
@@ -454,6 +463,124 @@ async def test_without_dependencies_nothing_is_prepared_in_a_container(tmp_path)
     assert sandbox.executions_args == [{"interpreter": None, "container_image": None}]
     assert envs.container_requests == []
     assert envs.host_requests == []
+
+# -- 提交复测（lifecycle）：容器执行器下也要用依赖镜像 ----------------------
+
+
+class _OrderApprovals:
+    """按顺序记录审批；用于钉住「执行授权 → 依赖准备 → 执行」这个顺序。"""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+        self.requests: list[tuple[str, dict]] = []
+
+    async def request(self, kind: str, payload: dict, **kwargs):
+        from agent.tools.approval import ApprovalResult
+
+        self.order.append(f"approval:{kind}")
+        self.requests.append((kind, payload))
+        return ApprovalResult("appr_test", "approved")
+
+
+class _FakeAdapter:
+    mode = "native"
+    model = "main"
+
+    async def complete(self, messages, tools, **kwargs):  # pragma: no cover - 提交路径不用它
+        raise AssertionError("提交路径不该调用模型")
+
+
+def _lifecycle(sandbox, approvals, envs) -> ToolLifecycle:
+    return ToolLifecycle(
+        adapter=_FakeAdapter(),
+        approvals=approvals,
+        sandbox=sandbox,
+        registry=ToolRegistry(),
+        envs=envs,
+    )
+
+
+def _builder(lifecycle: ToolLifecycle):
+    async def build():
+        return lifecycle
+
+    return build
+
+
+async def test_the_submit_retest_uses_the_dependency_image_after_the_execution_gate(tmp_path):
+    """提交复测：容器执行器 + 有依赖 → 真的用依赖镜像；且顺序仍是 授权 → 依赖准备 → 执行。"""
+    order: list[str] = []
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("查天气")
+    ws.write_definition(task.id, _definition(requirements=["requests"]))
+    sandbox = _RecordingSandbox("docker", order=order)
+    envs = _FakeEnvs(order=order)
+    approvals = _OrderApprovals(order)
+    lifecycle = _lifecycle(sandbox, approvals, envs)
+    tool = DevSubmitTool(
+        ws, lifecycle_builder=_builder(lifecycle), sandbox=sandbox, approvals=approvals
+    )
+
+    result = await tool.run(workspace=task.id, explanation="查天气")
+
+    assert result.ok, result.error
+    # 复测真的用了依赖镜像（而不是默认镜像 / 随包解释器）
+    assert sandbox.executions_args == [{"interpreter": None, "container_image": IMAGE}]
+    assert envs.container_requests and envs.container_requests[0]["approvals"] is not None
+    assert envs.host_requests == []
+    # 顺序：执行授权闸门 → 依赖准备 → 执行（Agent D 的守卫要求）
+    assert order.index("approval:tool_execution") < order.index("dependency_prep")
+    assert order.index("dependency_prep") < order.index("execute")
+
+
+async def test_the_submit_retest_really_runs_in_the_dependency_image_with_stub_docker(
+    tmp_path, monkeypatch
+):
+    """真 sandbox + 真 ToolEnvManager + 桩 docker：提交复测的 docker run 用的是依赖镜像。"""
+    seen = stub_docker_cli(monkeypatch, run_stdout=_worker_reply({"ok": True}))
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("查天气")
+    ws.write_definition(task.id, _definition(requirements=["requests"]))
+    sandbox = SandboxExecutor(executor="docker")
+    envs = ToolEnvManager(tmp_path / "envs")
+    approvals = _Approvals()
+    lifecycle = _lifecycle(sandbox, approvals, envs)
+    tool = DevSubmitTool(
+        ws, lifecycle_builder=_builder(lifecycle), sandbox=sandbox, approvals=approvals
+    )
+
+    result = await tool.run(workspace=task.id, explanation="查天气")
+
+    assert result.ok, result.error
+    run = _docker_runs(seen)[0]
+    assert _image_of(run) == envs.container_image_for(["requests"])
+    assert DEFAULT_DOCKER_IMAGE not in run
+    # 镜像准备（inspect）发生在容器执行（run）之前
+    assert [cmd[1] for cmd in seen if cmd[0] == "docker"].index("image") < [
+        cmd[1] for cmd in seen if cmd[0] == "docker"
+    ].index("run")
+
+
+async def test_the_submit_retest_refuses_when_the_dependency_image_is_missing(tmp_path):
+    """容器执行器 + 依赖，但镜像准备失败：不跑复测、不注册，如实失败。"""
+    order: list[str] = []
+    ws = DevWorkspace(tmp_path / "ws")
+    task = ws.create("查天气")
+    ws.write_definition(task.id, _definition(requirements=["requests"]))
+    sandbox = _RecordingSandbox("docker", order=order)
+    envs = _FakeEnvs(container_image=None, container_reason="你没有同意构建容器镜像：容器路径这次不可用", order=order)
+    approvals = _OrderApprovals(order)
+    lifecycle = _lifecycle(sandbox, approvals, envs)
+    tool = DevSubmitTool(
+        ws, lifecycle_builder=_builder(lifecycle), sandbox=sandbox, approvals=approvals
+    )
+
+    result = await tool.run(workspace=task.id, explanation="查天气")
+
+    assert result.ok is False
+    assert "没有同意构建容器镜像" in (result.error or result.content or "")
+    assert sandbox.executions == 0  # 没换成没有依赖的解释器跑一遍
+
 
 # -- 真容器：只能由 ubuntu CI 给出结论（本机没有 Docker 守护进程） ----------
 
