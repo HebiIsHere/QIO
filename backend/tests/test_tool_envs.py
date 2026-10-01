@@ -907,13 +907,33 @@ def test_resolve_falls_back_to_a_venv_pip_when_the_base_interpreter_has_none(tmp
     runner = _FakeDocker(pip_in_base=False)
     manager = _manager(tmp_path, runner)
 
-    ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))
+    status = asyncio.run(manager.ensure_container_image(REQUIREMENTS, approvals=_Approvals()))
 
-    assert ok is True
-    assert packages == [PACKAGE]
+    assert status.ok, status.reason
+    assert status.pinned == ["requests==2.32.3"]
     assert any(call[1:3] == ["-m", "venv"] for call in runner.calls)
     resolve = [call for call in runner.calls if "--dry-run" in call][0]
     assert resolve[0].replace("\\", "/").endswith(manager.interpreter_name)
     # 宿主上仍然什么都没装：只建了一个空环境 + 解析
     assert not any("install" in call and "--dry-run" not in call for call in runner.calls)
     assert manager.is_ready(REQUIREMENTS) is False
+    # 降级路径拿到的锁定清单与正常路径**同一套 schema/指纹语义**：同一个目录、同一个
+    # fingerprint、python 记录照真建出来的环境写（source=pyvenv.cfg），不是「另一个身份」。
+    resolve_lock = manager.lock_for(REQUIREMENTS)
+    assert resolve_lock["fingerprint"] == manager.fingerprint_for(REQUIREMENTS)
+    assert resolve_lock["schema"] == tool_envs_module.MANIFEST_SCHEMA
+    assert resolve_lock["python"]["source"] == "pyvenv.cfg"
+    assert resolve_lock["python"]["version"] == ".".join(str(item) for item in sys.version_info[:3])
+    assert manager.lock_file_for(REQUIREMENTS).is_file()
+
+
+def test_resolve_refuses_a_venv_whose_python_version_does_not_match(tmp_path):
+    runner = _FakeDocker(pip_in_base=False, python_version="3.12.1")
+    manager = _manager(tmp_path, runner)
+
+    ok, packages, installer = asyncio.run(manager.resolve_only(REQUIREMENTS))
+
+    assert ok is False
+    assert packages == []
+    assert "不一致" in installer
+    assert manager.lock_for(REQUIREMENTS) is None

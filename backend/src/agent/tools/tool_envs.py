@@ -981,6 +981,15 @@ class ToolEnvManager:
         )
         if not ok:
             return None, f"虚拟环境里没有可用的 pip：{_output_tail(output) or '（没有输出）'}"
+        # 与正常路径同一口径：真建出来的 Python 与后端主次版本不一致就不能拿它的解析结果
+        # 去对应这个身份指纹（否则「锁定清单属于哪个 Python」会说不清）。
+        actual = _read_pyvenv_cfg(directory).get("major_minor")
+        expected = f"{sys.version_info[0]}.{sys.version_info[1]}"
+        if actual and actual != expected:
+            return None, (
+                f"解析用的虚拟环境是 Python {actual}，与当前后端的 {expected} 不一致："
+                "不能用它的解析结果代表这个环境身份。"
+            )
         return interpreter, None
 
     async def resolve_only(self, requirements: Sequence[str]) -> tuple[bool, list[dict], str]:
@@ -1063,6 +1072,18 @@ class ToolEnvManager:
             [CONTAINER_BINARY, "image", "inspect", image], CONTAINER_PROBE_TIMEOUT_SECONDS, None
         )
         return ok
+
+    def _resolver_python_record(self, requirements: list[str]) -> dict:
+        """解析用的 Python 记录：真建过环境就照 pyvenv.cfg 记，没建就如实标 resolver。"""
+        record = _read_pyvenv_cfg(self.directory_for(requirements))
+        if record.get("source") == "pyvenv.cfg":
+            return record
+        return {
+            "version": ".".join(str(item) for item in sys.version_info[:3]),
+            "major_minor": self.container_python_tag(),
+            "base": self.base_python,
+            "source": "resolver（只解析，没有建环境）",
+        }
 
     def _record_container(self, requirements: list[str], image: str) -> None:
         record = self.lock_for(requirements)
@@ -1200,12 +1221,7 @@ class ToolEnvManager:
                 fidelity="pip-report-resolve-only",
                 installer=installer,
                 mode="resolved",
-                python_record={
-                    "version": ".".join(str(item) for item in sys.version_info[:3]),
-                    "major_minor": self.container_python_tag(),
-                    "base": self.base_python,
-                    "source": "resolver（只解析，没有建环境）",
-                },
+                python_record=self._resolver_python_record(wanted),
                 note=(
                     "这份锁定清单来自 pip --dry-run 解析（宿主上什么都没有安装），"
                     "供容器镜像构建使用。"
