@@ -185,7 +185,12 @@ def _redact_embedded_json(text: str, *, secret_fields: set[str] | None, depth: i
     """字符串里嵌着完整 JSON 文档时按**结构**打码，而不是靠正则猜。
 
     只处理「整段就是一份 JSON 对象/数组」的情况：散文里的一段 JSON 片段不动，
-    免得把无关文本重排。字段名规则与 `redact_any` 完全同一套。
+    免得把无关文本重排。
+
+    与 `redact_any` 的关键差别：这里**只动字符串叶子**。字符串才是要交给模型 /
+    落库的内容；把非字符串叶子也按字段名替换会改掉数据形状 —— 全量回归抓过一次：
+    工具返回 {"has_key": true} 会变成 {"has_key": "***redacted***"}，类型都变了。
+    结构化路径（`redact_any`）保留「整个子树替换」的强行为。
     """
     stripped = text.strip()
     if not stripped or stripped[0] not in "[{":
@@ -196,11 +201,42 @@ def _redact_embedded_json(text: str, *, secret_fields: set[str] | None, depth: i
         return text
     if not isinstance(parsed, (dict, list)):
         return text
-    cleaned = _redact_any(parsed, secret_fields=secret_fields, depth=depth + 1)
+    cleaned = _redact_json_strings(parsed, secret_fields=secret_fields, depth=depth + 1)
     try:
         return json.dumps(cleaned, ensure_ascii=False)
     except (TypeError, ValueError):
         return text
+
+
+def _is_secret_name(key: str, secret_fields: set[str] | None) -> bool:
+    if secret_fields and key in secret_fields:
+        return True
+    return is_secret_field(key)
+
+
+def _redact_json_strings(
+    value: Any, *, secret_fields: set[str] | None, depth: int
+) -> Any:
+    """嵌在文本里的 JSON：只替换字符串，非字符串（bool/数字/null）原样保留。"""
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            if isinstance(item, str) and _is_secret_name(name, secret_fields):
+                out[name] = REDACTED
+            else:
+                out[name] = _redact_json_strings(
+                    item, secret_fields=secret_fields, depth=depth
+                )
+        return out
+    if isinstance(value, (list, tuple)):
+        return [
+            _redact_json_strings(item, secret_fields=secret_fields, depth=depth)
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _redact_text(value, secret_fields=secret_fields, depth=depth)
+    return value
 
 
 def is_secret_field(name: str) -> bool:

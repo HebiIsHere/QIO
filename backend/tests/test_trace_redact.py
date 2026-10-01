@@ -273,3 +273,12 @@ def test_words_that_merely_look_like_the_prefix_are_not_touched():
         "QIO_KEY 只是一个前缀",
     ):
         assert redact_text(text) == text
+
+def test_embedded_json_keeps_non_string_values_intact():
+    """回归（全量跑出来过）：工具返回 {"has_key": true} 不许被替换成字符串 ——
+    打码改内容可以，改数据形状不行。"""
+    import json
+
+    out = redact_text('{"has_key": true, "count": 3, "ratio": 1.5, "note": null}')
+
+    assert json.loads(out) == {"has_key": True, "count": 3, "ratio": 1.5, "note": None}

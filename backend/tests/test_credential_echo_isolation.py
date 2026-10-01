@@ -137,3 +137,17 @@ def record_output(db_conn: sqlite3.Connection, raw: str) -> str:
         db_conn, turn_id="turn-2", tool_name="x", arguments={}, output=raw
     )
     return get_record(db_conn, record_id)["output"]
+
+async def test_the_tool_output_shape_is_preserved(db_conn):
+    """打码只替换密钥，不改数据形状：布尔还是布尔（模型据此判断事实）。"""
+    store = _store(db_conn)
+    code = (
+        "import os\n\n"
+        "def run(**kwargs):\n"
+        "    return {'has_key': bool(os.environ.get('QIO_KEY_WEATHER_KEY'))}\n"
+    )
+    result = await _tool(store, code, name="has_key_predicate").run()
+
+    assert result.ok is True
+    # 非空洞：凭据确实注入了（True），而且类型没被改掉
+    assert json.loads(result.content) == {"has_key": True}
