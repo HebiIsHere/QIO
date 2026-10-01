@@ -564,8 +564,12 @@ def test_structurally_broken_summary_fails_visibly_and_isolates_entity_cards(
     assert task["last_error"] and "JSON" in task["last_error"], task["last_error"]
     assert _summary_row(ctx, sealed.id)["summary"] in (None, ""), "不得伪造摘要"
     assert _index_rows(ctx, sealed.id) == [], "不得留下索引"
-    codes = [w["code"] for w in _trace(ctx, "turn_broken")["warnings"]]
+    warnings = _trace(ctx, "turn_broken")["warnings"]
+    codes = [w["code"] for w in warnings]
     assert "summary_derivation_failed" in codes, codes
+    message = [w["message"] for w in warnings if w["code"] == "summary_derivation_failed"][0]
+    assert "JSON" in message, message
+    assert _ENTITY_PAYLOAD["entities"][0]["name"] not in message, "trace 不落模型原文"
     assert _count(ctx, "entity_cards") == 1, "实体卡只依赖原文，不该被摘要失败带走"
     assert _count(ctx, "knowledge") == 0, "知识依赖摘要，摘要失败时确实没有"
 
@@ -604,9 +608,62 @@ def test_knowledge_failure_reason_is_readable_without_model_text(tmp_path: Path)
         ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
     )
 
-    warnings = _trace(ctx, "turn_knowledge_garbage")["warnings"]
+    trace = _trace(ctx, "turn_knowledge_garbage")
+    warnings = trace["warnings"]
     message = [w["message"] for w in warnings if w["code"] == "knowledge_extraction_failed"][0]
     assert "JSON" in message, message
+    # 失败原因只描述「哪里不合格」，不回显模型原文（redact_text 之前也不该有原文）
+    assert "sk-secret" not in json.dumps(trace, ensure_ascii=False), "trace 不得落模型原文"
+
+
+@pytest.mark.parametrize(
+    "bad_entities",
+    [
+        "完全不是 JSON",
+        {"entities": ["不是对象", {"name": 123}]},
+        [1, 2, 3],
+    ],
+)
+def test_broken_entity_card_output_does_not_break_the_chain(tmp_path: Path, bad_entities):
+    """实体卡提炼的坏输出不带走摘要 / 索引 / 知识（阶段间失败隔离）。
+
+    实体卡提炼自己去吞异常（返回空列表），这是它的既有契约；这里验证的是
+    「它坏了不会让别的派生数据一起消失」，并把这个降级行为钉住。
+    """
+    ctx = _app(tmp_path)
+    sealed = _seal(ctx)
+    adapter = _ScriptedAdapter(entities=bad_entities)
+
+    done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
+
+    assert done == 1, "实体卡提炼坏了不该让摘要任务失败"
+    assert _summary_row(ctx, sealed.id)["summary"] == "这是一段摘要"
+    assert len(_index_rows(ctx, sealed.id)) == 1
+    assert _count(ctx, "knowledge") == 2
+    assert _count(ctx, "entity_cards") == 0
+
+
+def test_missing_required_field_failure_is_traceable(tmp_path: Path):
+    """「必需结构缺失」类不可修复错误：任务状态 + trace 都能读到同一条可读原因。"""
+    ctx = _app(tmp_path)
+    _seal(ctx)
+    tracer = _tracer(ctx, "turn_missing_field")
+    adapter = _ScriptedAdapter(
+        summary={"title": "只有标题", "entities": [], "keywords": []},
+        entities={"entities": []},
+    )
+
+    done = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
+    )
+
+    assert done == 0
+    task = _task_row(ctx)
+    assert task["state"] == "failed" and task["attempts"] == 1
+    assert "缺少必需字段 summary" in task["last_error"], task["last_error"]
+    warnings = _trace(ctx, "turn_missing_field")["warnings"]
+    messages = [w["message"] for w in warnings if w["code"] == "summary_derivation_failed"]
+    assert messages and "缺少必需字段 summary" in messages[0], warnings
 
 
 @pytest.mark.parametrize(
