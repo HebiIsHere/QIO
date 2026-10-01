@@ -765,12 +765,15 @@ class SandboxExecutor:
         )
 
     def _docker_command(
-        self, script: str, policy: ToolExecutionPolicy, name: str
+        self, script: str, policy: ToolExecutionPolicy, name: str | None = None
     ) -> list[str]:
         """Build the docker run command from the execution policy.
 
         `name` 是这次调用唯一的容器名：超时/取消时要靠它精确清理（见 `_remove_container`）。
+        省略时现生成一个 —— 命令行本身仍然合法（诊断与策略用例只检查参数）。
         """
+        if not name:
+            name = _container_name()
         command = [
             "docker", "run", "--rm",
             "--name", name,

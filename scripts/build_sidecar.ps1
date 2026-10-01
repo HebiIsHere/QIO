@@ -38,6 +38,9 @@ $pyiArgs = @(
   # 工具 worker：main.py 在函数里 import 它（为了在加载服务前分流），
   # 这里显式声明，避免将来改成动态导入时被 PyInstaller 漏掉。
   "--hidden-import", "agent.tool_worker",
+  # 容器隔离执行要把 worker 源码文本带进容器（tools/executor_env.py::worker_source）。
+  # 冻结产物里没有 .py 文件，所以随包放一份数据文件到 _MEIPASS/agent/tool_worker.py。
+  "--add-data", "src/agent/tool_worker.py;agent",
   "--hidden-import", "uvicorn.logging",
   "--hidden-import", "uvicorn.loops.auto",
   "--hidden-import", "uvicorn.protocols.http.auto",

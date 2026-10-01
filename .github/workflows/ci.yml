@@ -43,6 +43,19 @@ jobs:
           cache-dependency-glob: backend/uv.lock   # cache key bound to lockfile
       - name: Sync dependencies from lock
         run: uv sync --frozen --extra dev
+      # 真 worker 冒烟（源码路径）：与 Windows 的冻结冒烟是**同一套**三项检查，
+      # 只是换一个子进程命令前缀 —— 「打包之后成立」与「源码里成立」都要真执行证据。
+      # 用多行 run: | 形式：scripts/check_docs.py 只把单行 run: 命令与 SETUP.md 对齐，
+      # 这条是新增的冒烟入口，不属于「安装/测试命令」那类。
+      - name: Real worker smoke (source)
+        run: |
+          uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+      # 显式把 worker 协议的两组用例单独跑一遍：ubuntu runner 上 docker 守护进程真的
+      # 可用（这正是它们此前全红的根因），注入的 fake worker 必须仍然被使用；
+      # 协议严格化（ok 必须是 bool / 恰好一行 / 空输出 / 非零退出 / 取消语义）都在这里。
+      - name: Fake worker protocol tests (Linux)
+        run: |
+          uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
       - name: Run tests
         env:
           # 让 pytest 额外落一份 JUnit 报告，供下一步在失败时生成注解。
