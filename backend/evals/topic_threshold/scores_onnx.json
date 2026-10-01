@@ -1,0 +1,734 @@
+{
+  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1 @ C:\\Users\\zxy\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\qio\\models\\bge-small-zh-v1.5",
+  "provenance": "由 evals/topic_threshold_curve.py --record 生成：真实 bge-small-zh-v1.5 ONNX 余弦",
+  "cases": {
+    "cont_01": {
+      "scores": {
+        "t_db": 0.580248,
+        "t_ui": 0.366442
+      },
+      "current": "t_db"
+    },
+    "cont_02": {
+      "scores": {
+        "t_db": 0.590273,
+        "t_ui": 0.341064
+      },
+      "current": "t_db"
+    },
+    "cont_03": {
+      "scores": {
+        "t_db": 0.598174,
+        "t_ui": 0.353718
+      },
+      "current": "t_db"
+    },
+    "cont_04": {
+      "scores": {
+        "t_ui": 0.672261,
+        "t_db": 0.305154
+      },
+      "current": "t_ui"
+    },
+    "cont_05": {
+      "scores": {
+        "t_deploy": 0.461466,
+        "t_work": 0.470515
+      },
+      "current": "t_deploy"
+    },
+    "cont_06": {
+      "scores": {
+        "t_travel": 0.672728,
+        "t_work": 0.364785
+      },
+      "current": "t_travel"
+    },
+    "cont_07": {
+      "scores": {
+        "t_perf": 0.602474,
+        "t_db": 0.465456
+      },
+      "current": "t_perf"
+    },
+    "cont_08": {
+      "scores": {
+        "t_db": 0.580282,
+        "t_perf": 0.486265
+      },
+      "current": "t_db"
+    },
+    "cont_09": {
+      "scores": {
+        "t_db": 0.454193,
+        "t_ui": 0.419441
+      },
+      "current": "t_db"
+    },
+    "cont_10": {
+      "scores": {
+        "t_work": 0.677832,
+        "t_db": 0.395422
+      },
+      "current": "t_work"
+    },
+    "para_01": {
+      "scores": {
+        "t_db": 0.57485,
+        "t_ui": 0.343206
+      },
+      "current": "t_db"
+    },
+    "para_02": {
+      "scores": {
+        "t_ui": 0.652782,
+        "t_db": 0.252702
+      },
+      "current": "t_ui"
+    },
+    "para_03": {
+      "scores": {
+        "t_deploy": 0.545661,
+        "t_work": 0.293478
+      },
+      "current": "t_deploy"
+    },
+    "para_04": {
+      "scores": {
+        "t_perf": 0.70107,
+        "t_db": 0.402296
+      },
+      "current": "t_perf"
+    },
+    "para_05": {
+      "scores": {
+        "t_travel": 0.614054,
+        "t_work": 0.330604
+      },
+      "current": "t_travel"
+    },
+    "para_06": {
+      "scores": {
+        "t_deploy": 0.569957,
+        "t_ui": 0.388456
+      },
+      "current": "t_deploy"
+    },
+    "para_07": {
+      "scores": {
+        "t_perf": 0.525682,
+        "t_db": 0.462083
+      },
+      "current": "t_perf"
+    },
+    "para_08": {
+      "scores": {
+        "t_work": 0.523676,
+        "t_ui": 0.273615
+      },
+      "current": "t_work"
+    },
+    "cross_01": {
+      "scores": {
+        "t_db": 0.522852,
+        "t_ui": 0.560782
+      },
+      "current": "t_db"
+    },
+    "cross_02": {
+      "scores": {
+        "t_ui": 0.439412,
+        "t_db": 0.49241
+      },
+      "current": "t_ui"
+    },
+    "cross_03": {
+      "scores": {
+        "t_travel": 0.603222,
+        "t_work": 0.322367
+      },
+      "current": "t_travel"
+    },
+    "cross_04": {
+      "scores": {
+        "t_db": 0.61073,
+        "t_deploy": 0.570851
+      },
+      "current": "t_db"
+    },
+    "cross_05": {
+      "scores": {
+        "t_work": 0.690323,
+        "t_perf": 0.613776
+      },
+      "current": "t_work"
+    },
+    "cross_06": {
+      "scores": {
+        "t_deploy": 0.671827,
+        "t_db": 0.505786
+      },
+      "current": "t_deploy"
+    },
+    "cross_07": {
+      "scores": {
+        "t_ui": 0.757011,
+        "t_db": 0.369625
+      },
+      "current": "t_ui"
+    },
+    "cross_08": {
+      "scores": {
+        "t_travel": 0.563672,
+        "t_perf": 0.471223
+      },
+      "current": "t_travel"
+    },
+    "new_01": {
+      "scores": {
+        "t_db": 0.209517,
+        "t_ui": 0.26548
+      },
+      "current": "t_db"
+    },
+    "new_02": {
+      "scores": {
+        "t_db": 0.161873,
+        "t_ui": 0.318042
+      },
+      "current": "t_db"
+    },
+    "new_03": {
+      "scores": {
+        "t_db": 0.271721,
+        "t_ui": 0.30357
+      },
+      "current": "t_db"
+    },
+    "new_04": {
+      "scores": {
+        "t_perf": 0.240477,
+        "t_db": 0.191486
+      },
+      "current": "t_perf"
+    },
+    "new_05": {
+      "scores": {
+        "t_travel": 0.30131,
+        "t_work": 0.114885
+      },
+      "current": "t_travel"
+    },
+    "new_06": {
+      "scores": {
+        "t_db": 0.215852,
+        "t_ui": 0.173412
+      },
+      "current": "t_db"
+    },
+    "new_07": {
+      "scores": {
+        "t_work": 0.289792,
+        "t_db": 0.243588
+      },
+      "current": "t_work"
+    },
+    "new_08": {
+      "scores": {
+        "t_ui": 0.292824,
+        "t_db": 0.211278
+      },
+      "current": "t_ui"
+    },
+    "new_09": {
+      "scores": {
+        "t_travel": 0.291125,
+        "t_work": 0.25398
+      },
+      "current": "t_travel"
+    },
+    "new_10": {
+      "scores": {
+        "t_deploy": 0.288703,
+        "t_work": 0.206757
+      },
+      "current": "t_deploy"
+    },
+    "amb_01": {
+      "scores": {
+        "t_db": 0.434872,
+        "t_deploy": 0.586115
+      },
+      "current": "t_db"
+    },
+    "amb_02": {
+      "scores": {
+        "t_ui": 0.369877,
+        "t_arch": 0.717535
+      },
+      "current": "t_ui"
+    },
+    "amb_03": {
+      "scores": {
+        "t_db": 0.427732,
+        "t_work": 0.646301
+      },
+      "current": "t_db"
+    },
+    "amb_04": {
+      "scores": {
+        "t_db": 0.460179,
+        "t_deploy": 0.482016
+      },
+      "current": "t_db"
+    },
+    "amb_05": {
+      "scores": {
+        "t_db": 0.331611,
+        "t_ui": 0.297373
+      },
+      "current": "t_db"
+    },
+    "amb_06": {
+      "scores": {
+        "t_perf": 0.411552,
+        "t_db": 0.323086
+      },
+      "current": "t_perf"
+    },
+    "amb_07": {
+      "scores": {
+        "t_db": 0.372784,
+        "t_ui": 0.426891
+      },
+      "current": "t_db"
+    },
+    "amb_08": {
+      "scores": {
+        "t_ui": 0.401353,
+        "t_work": 0.3982
+      },
+      "current": "t_ui"
+    },
+    "short_01": {
+      "scores": {
+        "t_db": 0.387439,
+        "t_ui": 0.41635
+      },
+      "current": "t_db"
+    },
+    "short_02": {
+      "scores": {
+        "t_db": 0.364432,
+        "t_ui": 0.374392
+      },
+      "current": "t_db"
+    },
+    "short_03": {
+      "scores": {
+        "t_ui": 0.350652,
+        "t_db": 0.409646
+      },
+      "current": "t_ui"
+    },
+    "short_04": {
+      "scores": {
+        "t_perf": 0.316604,
+        "t_db": 0.274766
+      },
+      "current": "t_perf"
+    },
+    "short_05": {
+      "scores": {
+        "t_db": 0.334064,
+        "t_ui": 0.279778
+      },
+      "current": "t_db"
+    },
+    "short_06": {
+      "scores": {
+        "t_work": 0.380327,
+        "t_db": 0.413764
+      },
+      "current": "t_work"
+    },
+    "short_07": {
+      "scores": {
+        "t_deploy": 0.272947,
+        "t_work": 0.298648
+      },
+      "current": "t_deploy"
+    },
+    "short_08": {
+      "scores": {
+        "t_travel": 0.312327,
+        "t_work": 0.376415
+      },
+      "current": "t_travel"
+    },
+    "en_01": {
+      "scores": {
+        "t_db": 0.438196,
+        "t_ui": 0.39478
+      },
+      "current": "t_db"
+    },
+    "en_02": {
+      "scores": {
+        "t_perf": 0.423317,
+        "t_db": 0.390671
+      },
+      "current": "t_perf"
+    },
+    "en_03": {
+      "scores": {
+        "t_db": 0.409871,
+        "t_ui": 0.359415
+      },
+      "current": "t_db"
+    },
+    "en_04": {
+      "scores": {
+        "t_work": 0.388741,
+        "t_db": 0.406329
+      },
+      "current": "t_work"
+    },
+    "en_05": {
+      "scores": {
+        "t_db": 0.39146,
+        "t_ui": 0.505185
+      },
+      "current": "t_db"
+    },
+    "en_06": {
+      "scores": {
+        "t_db": 0.352067,
+        "t_ui": 0.35566
+      },
+      "current": "t_db"
+    },
+    "mix_01": {
+      "scores": {
+        "t_db": 0.474926,
+        "t_ui": 0.370385
+      },
+      "current": "t_db"
+    },
+    "mix_02": {
+      "scores": {
+        "t_deploy": 0.454876,
+        "t_work": 0.478741
+      },
+      "current": "t_deploy"
+    },
+    "mix_03": {
+      "scores": {
+        "t_db": 0.439096,
+        "t_ui": 0.626848
+      },
+      "current": "t_db"
+    },
+    "mix_04": {
+      "scores": {
+        "t_db": 0.60818,
+        "t_arch": 0.593357
+      },
+      "current": "t_db"
+    },
+    "mix_05": {
+      "scores": {
+        "t_work": 0.43046,
+        "t_db": 0.524718
+      },
+      "current": "t_work"
+    },
+    "mix_06": {
+      "scores": {
+        "t_db": 0.510659,
+        "t_ui": 0.355742
+      },
+      "current": "t_db"
+    },
+    "hard_01": {
+      "scores": {
+        "t_perf": 0.466319,
+        "t_db": 0.374222
+      },
+      "current": "t_perf"
+    },
+    "hard_02": {
+      "scores": {
+        "t_db": 0.350456,
+        "t_ui": 0.388233
+      },
+      "current": "t_db"
+    },
+    "hard_03": {
+      "scores": {
+        "t_ui": 0.363617,
+        "t_db": 0.399093
+      },
+      "current": "t_ui"
+    },
+    "hard_04": {
+      "scores": {
+        "t_deploy": 0.394565,
+        "t_work": 0.266119
+      },
+      "current": "t_deploy"
+    },
+    "hard_05": {
+      "scores": {
+        "t_travel": 0.274351,
+        "t_work": 0.164389
+      },
+      "current": "t_travel"
+    },
+    "hard_06": {
+      "scores": {
+        "t_work": 0.302208,
+        "t_db": 0.276174
+      },
+      "current": "t_work"
+    },
+    "hard_07": {
+      "scores": {
+        "t_db": 0.411297,
+        "t_ui": 0.220198
+      },
+      "current": "t_db"
+    },
+    "hard_08": {
+      "scores": {
+        "t_perf": 0.29134,
+        "t_db": 0.227974
+      },
+      "current": "t_perf"
+    },
+    "short_09": {
+      "scores": {
+        "t_db": 0.299817,
+        "t_ui": 0.296344
+      },
+      "current": "t_db"
+    },
+    "short_10": {
+      "scores": {
+        "t_work": 0.389523,
+        "t_db": 0.316729
+      },
+      "current": "t_work"
+    },
+    "short_11": {
+      "scores": {
+        "t_ui": 0.345671,
+        "t_db": 0.331916
+      },
+      "current": "t_ui"
+    },
+    "short_12": {
+      "scores": {
+        "t_deploy": 0.36752,
+        "t_work": 0.3941
+      },
+      "current": "t_deploy"
+    },
+    "short_13": {
+      "scores": {
+        "t_db": 0.335744,
+        "t_ui": 0.359364
+      },
+      "current": "t_db"
+    },
+    "short_14": {
+      "scores": {
+        "t_perf": 0.412249,
+        "t_db": 0.336928
+      },
+      "current": "t_perf"
+    },
+    "short_15": {
+      "scores": {
+        "t_travel": 0.271347,
+        "t_work": 0.362935
+      },
+      "current": "t_travel"
+    },
+    "short_16": {
+      "scores": {
+        "t_ui": 0.395858,
+        "t_db": 0.367702
+      },
+      "current": "t_ui"
+    },
+    "cont_11": {
+      "scores": {
+        "t_db": 0.466722,
+        "t_ui": 0.335776
+      },
+      "current": "t_db"
+    },
+    "cont_12": {
+      "scores": {
+        "t_db": 0.611585,
+        "t_perf": 0.523505
+      },
+      "current": "t_db"
+    },
+    "cont_13": {
+      "scores": {
+        "t_ui": 0.710048,
+        "t_db": 0.327225
+      },
+      "current": "t_ui"
+    },
+    "cont_14": {
+      "scores": {
+        "t_deploy": 0.549772,
+        "t_work": 0.360861
+      },
+      "current": "t_deploy"
+    },
+    "cont_15": {
+      "scores": {
+        "t_travel": 0.375694,
+        "t_work": 0.353694
+      },
+      "current": "t_travel"
+    },
+    "cont_16": {
+      "scores": {
+        "t_perf": 0.545316,
+        "t_db": 0.373926
+      },
+      "current": "t_perf"
+    },
+    "cont_17": {
+      "scores": {
+        "t_work": 0.736364,
+        "t_ui": 0.386505
+      },
+      "current": "t_work"
+    },
+    "cont_18": {
+      "scores": {
+        "t_arch": 0.690457,
+        "t_db": 0.366375
+      },
+      "current": "t_arch"
+    },
+    "en_07": {
+      "scores": {
+        "t_db": 0.436964,
+        "t_ui": 0.308615
+      },
+      "current": "t_db"
+    },
+    "en_08": {
+      "scores": {
+        "t_deploy": 0.356174,
+        "t_work": 0.365239
+      },
+      "current": "t_deploy"
+    },
+    "en_09": {
+      "scores": {
+        "t_db": 0.424328,
+        "t_ui": 0.345576
+      },
+      "current": "t_db"
+    },
+    "mix_07": {
+      "scores": {
+        "t_db": 0.487599,
+        "t_ui": 0.417697
+      },
+      "current": "t_db"
+    },
+    "mix_08": {
+      "scores": {
+        "t_deploy": 0.464118,
+        "t_work": 0.463104
+      },
+      "current": "t_deploy"
+    },
+    "mix_09": {
+      "scores": {
+        "t_db": 0.30782,
+        "t_ui": 0.356999
+      },
+      "current": "t_db"
+    },
+    "para_09": {
+      "scores": {
+        "t_db": 0.392421,
+        "t_perf": 0.442554
+      },
+      "current": "t_db"
+    },
+    "para_10": {
+      "scores": {
+        "t_ui": 0.339936,
+        "t_db": 0.300577
+      },
+      "current": "t_ui"
+    },
+    "cross_09": {
+      "scores": {
+        "t_work": 0.580942,
+        "t_db": 0.506846
+      },
+      "current": "t_work"
+    },
+    "cross_10": {
+      "scores": {
+        "t_perf": 0.54737,
+        "t_ui": 0.461176
+      },
+      "current": "t_perf"
+    },
+    "cross_11": {
+      "scores": {
+        "t_travel": 0.422067,
+        "t_work": 0.449332
+      },
+      "current": "t_travel"
+    },
+    "cross_12": {
+      "scores": {
+        "t_deploy": 0.472454,
+        "t_arch": 0.613133
+      },
+      "current": "t_deploy"
+    },
+    "amb_09": {
+      "scores": {
+        "t_db": 0.348694,
+        "t_arch": 0.569659
+      },
+      "current": "t_db"
+    },
+    "amb_10": {
+      "scores": {
+        "t_work": 0.469676,
+        "t_perf": 0.638987
+      },
+      "current": "t_work"
+    },
+    "amb_11": {
+      "scores": {
+        "t_db": 0.268921,
+        "t_ui": 0.701678
+      },
+      "current": "t_db"
+    },
+    "amb_12": {
+      "scores": {
+        "t_ui": 0.465702,
+        "t_deploy": 0.465544
+      },
+      "current": "t_ui"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
@@ -124,15 +124,30 @@ def test_cold_start_generates_topic_vectors(db_conn: sqlite3.Connection):
     assert pred.main_topic_id == "t_diet"
 
 
-def test_default_threshold_0_7_marks_moderate_similarity_as_new_topic(db_conn: sqlite3.Connection):
-    """默认阈值 0.7：中度相关（~0.56-0.6）也判为新话题候选，交给主模型决定。"""
+def test_default_threshold_treats_moderate_similarity_as_an_existing_topic(db_conn: sqlite3.Connection):
+    """默认阈值来自真实 embedding 评测：中度相关（~0.56-0.6）算「有归属」的既有话题。
+
+    旧默认 0.7 会把这类消息判成新话题（真实语料上 in_topic_recall 0.044）；
+    新默认 0.42 来自 backend/evals/topic_threshold/ 的曲线与 CV，
+    数据里真新话题对当前话题 <=0.32、有内容的延续 >=0.45。
+    """
     _topics(db_conn)
     emb = FakeEmbedding()
     pred = _make_predictor(db_conn, emb).predict(
         "饮食 清淡 吃辣 健身 跑步", current_topic_id="t_diet"
     )
-    assert pred.is_new_topic_candidate is True
-    assert pred.main_topic_id is None
+    assert pred.main_topic_id == "t_diet"
+    assert pred.is_new_topic_candidate is False
+
+
+def test_default_topic_policy_stays_within_the_evaluated_band():
+    """默认值必须落在评测数据支持的范围里（防止有人凭感觉把它调回 0.7）。"""
+    from agent.services.params import TOPIC
+
+    assert 0.35 <= TOPIC.new_topic_threshold <= 0.50
+    assert TOPIC.incumbent_threshold <= TOPIC.switch_threshold
+    assert TOPIC.rules_incumbent_threshold <= TOPIC.rules_new_topic_threshold + 0.2
+    assert TOPIC.min_new_topic_chars > 0, "短确认必须有长度护栏，否则 1 个字的「好」会被判成新话题"
 
 
 def test_rules_fallback_without_embedding(db_conn: sqlite3.Connection):

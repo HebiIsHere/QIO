@@ -19,27 +19,50 @@ class TopicPolicy:
     """Topic prediction / classification thresholds.
 
     Semantics:
-        new_topic_threshold   — onnx cosine below this ⇒ not an existing topic
+        new_topic_threshold   — onnx cosine below this ⇒ no existing topic is a
+            plausible owner (predictor: main_topic_id=None / is_new_topic_candidate)
         rules_new_topic_threshold — same, on the keyword-overlap fallback
         aux_topic_threshold   — onnx cosine above this ⇒ related (aux) topic
         rules_aux_topic_threshold — same, on the fallback layer
-        switch_delta          — margin over current topic to suggest switching
-        new_topic_strict      — classifier: below this ⇒ eligible to create
-        switch_threshold      — classifier: at/above this ⇒ switch to that topic
+        incumbent_threshold   — classifier: at/above this the message still belongs
+            to the *current* topic (onnx cosine scale)
+        rules_incumbent_threshold — same, on the keyword-overlap fallback scale
+            (两个后端的分数不同量纲：onnx 是余弦，兜底是关键词重合比例，
+            所以每条门槛都要有兜底孪生值 —— 与 new_topic_threshold /
+            rules_new_topic_threshold 的既有做法一致)
+        switch_threshold      — classifier: at/above this a *different* topic may be
+            suggested (still only a suggestion; the user confirms)
+        switch_delta          — margin over the current topic needed for that suggestion
+        new_topic_strict      — below this ⇒ eligible to create a new topic
+        min_new_topic_chars   — 短于这个长度（去空白后的字符数）的输入不足以开新话题：
+            真实语料里「嗯 / 继续 / ok」这类短确认的分数落在噪声带里（0.27~0.43），
+            与「真新话题」和「延续」都重叠 —— 长度是唯一可靠的区分信号
         aux_top_count         — how many aux topics to surface
 
-    Default source: current production values (unchanged behaviour), to be
-    re-derived from `evals/topic_prediction/` before any future change.
-    Eval: agent/eval/topic_eval.py (switch/new-topic/in-topic metrics).
+    Default source: **真实 embedding 评测**，不是历史默认值。
+        eval:  backend/evals/topic_threshold_curve.py   （生产路径 + 真实 ONNX 余弦曲线）
+               backend/evals/topic_threshold_analysis.py（分层 5 折 + 敏感度）
+        data:  backend/evals/topic_threshold/{cases.jsonl, scores_onnx.json, curve_onnx.json}
+        model: onnx:bge-small-zh-v1.5:fp32（真实 fp32 权重，离线，无网络）
+        原始数据里的两条边界：真新话题对当前话题 ≤0.32；有内容的延续 ≥0.45。
+        旧值 0.7 在这份语料上 in_topic_recall 0.044 / false_new 0.941，
+        且只调数值无法收敛（短确认与无信号和两个分数带都重叠），
+        所以拆成 incumbent / switch 两条门槛，见 affinity.classify。
+
+    改这里的值必须同时更新上面两份 eval 的结论，否则默认值会重新变成
+    「看起来有出处、实际没数据」的魔数。
     """
 
-    new_topic_threshold: float = 0.7
+    new_topic_threshold: float = 0.42
     rules_new_topic_threshold: float = 0.2
     aux_topic_threshold: float = 0.3
     rules_aux_topic_threshold: float = 0.1
-    switch_delta: float = 0.1
+    switch_delta: float = 0.15
     new_topic_strict: float = 0.5
     switch_threshold: float = 0.55
+    incumbent_threshold: float = 0.42
+    rules_incumbent_threshold: float = 0.2
+    min_new_topic_chars: int = 8
     aux_top_count: int = 2
 
 

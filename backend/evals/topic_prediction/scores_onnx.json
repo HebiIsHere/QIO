@@ -1,0 +1,35 @@
+{
+  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1",
+  "model_file": "model.onnx",
+  "model_dir": "C:\\Users\\zxy\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\qio\\models\\bge-small-zh-v1.5",
+  "provenance": "由 evals/record_topic_scores.py 记录：真实 bge-small-zh-v1.5 ONNX 余弦。指纹文本 = TopicPredictor._fingerprint_text（title + keywords + summary_preview）",
+  "cases": {
+    "switch_to_ui": {
+      "scores": {
+        "t_db": 0.276649,
+        "t_ui": 0.958582
+      },
+      "current": "t_db"
+    },
+    "entity_same_name": {
+      "scores": {
+        "t_fruit": 0.502998,
+        "t_tech": 0.80904
+      },
+      "current": "t_fruit"
+    },
+    "embedding_continue": {
+      "scores": {
+        "t_db": 0.525879,
+        "t_ui": 0.27969
+      },
+      "current": "t_db"
+    },
+    "embedding_new": {
+      "scores": {
+        "t_db": 0.112233
+      },
+      "current": "t_db"
+    }
+  }
+}
