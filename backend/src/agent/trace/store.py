@@ -94,9 +94,13 @@ class TraceStore:
         row = self.conn.execute(
             "SELECT duration_ms FROM turn_traces WHERE turn_id = ?", (turn_id,)
         ).fetchone()
+        sum_ms = int(payload.get("sum_ms") or 0)
         if row is not None and row["duration_ms"] is not None:
-            sum_ms = int(payload.get("sum_ms") or 0)
             payload = {**payload, "residual_ms": max(0, int(row["duration_ms"]) - sum_ms)}
+        elif "residual_ms" not in payload:
+            # 形状必须始终完整：读的人（界面 / 分析脚本）不该因为缺键而炸。
+            total_ms = int(payload.get("total_ms") or 0)
+            payload = {**payload, "residual_ms": max(0, total_ms - sum_ms)}
         self._patch(turn_id, phases=payload)
 
     def flush_phases(self, turn_id: str, tracer: Any) -> None:

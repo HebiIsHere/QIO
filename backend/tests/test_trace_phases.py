@@ -221,6 +221,29 @@ def test_phase_timer_tiles_the_timeline_with_explicit_other():
     assert any(s["depth"] == 2 and s["name"] == "b.inner" for s in payload["spans"])
 
 
+def test_phases_payload_shape_is_always_complete(db_conn):
+    """读的人（界面 / 分析脚本）不该因为缺键而炸：账本形状必须始终完整。"""
+    from agent.trace.store import TraceStore
+
+    store = TraceStore(db_conn)
+    store.begin("turn_shape")
+    store.set_phases(
+        "turn_shape",
+        {"version": 1, "total_ms": 120, "sum_ms": 100, "spans": [{"name": "a", "ms": 100}]},
+    )
+    store.finish("turn_shape", "done")
+
+    payload = store.get("turn_shape")["phases"]
+    assert set(payload) >= {"version", "total_ms", "sum_ms", "residual_ms", "spans"}
+    assert int(payload["residual_ms"]) >= 0
+    # 旧行（迁移前写入）默认 {}，读取端容忍
+    db_conn.execute(
+        "INSERT INTO turn_traces (turn_id, status, started_at) VALUES ('legacy', 'done', "
+        "'2026-01-01T00:00:00+00:00')"
+    )
+    assert store.get("legacy")["phases"] == {}
+
+
 def test_phase_notes_are_redacted(ctx: AppContext):
     """阶段账本走存储层，同样不能出现密钥原文。"""
     from agent.trace.recorder import TurnTracer
