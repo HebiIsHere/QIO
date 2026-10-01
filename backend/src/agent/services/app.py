@@ -1,4 +1,4 @@
-﻿"""Application context: wires storage, credentials, adapters, tools, loop.
+"""Application context: wires storage, credentials, adapters, tools, loop.
 
 Built once per process; the HTTP layer pulls what it needs from it.
 """
@@ -1362,9 +1362,11 @@ class AppContext:
 
     # -- budget-pressure consolidation ------------------------------------
 
-    async def consolidate(self, topic_id: str, adapter: BaseAdapter) -> bool:
-        """委派给 MemoryLifecycle。"""
-        return await self.memory_lifecycle.consolidate(topic_id, adapter)
+    async def consolidate(
+        self, topic_id: str, adapter: BaseAdapter, tracer=None
+    ) -> bool:
+        """委派给 MemoryLifecycle（tracer 只用于把派生修正/失败写进 trace）。"""
+        return await self.memory_lifecycle.consolidate(topic_id, adapter, tracer=tracer)
 
     # -- topics -----------------------------------------------------------
 

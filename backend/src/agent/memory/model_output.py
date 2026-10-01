@@ -77,13 +77,18 @@ class TextField:
 
 @dataclass(frozen=True)
 class TextListField:
-    """字符串数组字段契约：截断 / 去重 / 去空 / strip，都由本地兜底。"""
+    """字符串数组字段契约：截断 / 去重 / 去空 / strip，都由本地兜底。
+
+    `strict=False` 用于**条目内部的子字段**（例如实体卡的 aliases）：这里坏掉
+    只把子值降级为空 + 记 note，不让承载它的那条主条目一起被丢掉。
+    """
 
     name: str
     max_items: int
     max_item_length: int | None = None
     required: bool = False
     dedupe: bool = True
+    strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -92,13 +97,17 @@ class ObjectListField:
 
     `item_validator` 是领域校验：返回非空字符串表示该条无效，只丢这一条。
     「列表非空但一条都没保住」才算无法安全恢复。
+
+    `fields` 允许嵌套（子字段也可以是 TextListField / ObjectListField）；
+    `strict=False` 的嵌套字段只做局部降级（空数组 + note），不让父条目失败。
     """
 
     name: str
     max_items: int
-    fields: tuple[TextField, ...] = ()
+    fields: tuple[Field, ...] = ()
     required: bool = False
     dedupe: bool = False
+    strict: bool = True
     item_validator: Callable[[dict[str, Any]], str | None] | None = None
 
 
@@ -172,12 +181,7 @@ def repair_output(
     notes: list[RepairNote] = []
 
     for spec in fields:
-        if isinstance(spec, TextField):
-            error = _apply_text_field(data, spec, notes)
-        elif isinstance(spec, TextListField):
-            error = _apply_text_list_field(data, spec, notes)
-        else:
-            error = _apply_object_list_field(data, spec, notes)
+        error = _apply_field(data, spec, notes)
         if error is not None:
             return RepairResult(None, f"{contract}：{error}", tuple(notes))
 
@@ -189,15 +193,35 @@ def repair_output(
 # ---------------------------------------------------------------------------
 
 
-def _apply_text_field(
-    data: dict[str, Any], spec: TextField, notes: list[RepairNote]
+def _apply_field(
+    data: dict[str, Any],
+    spec: Field,
+    notes: list[RepairNote],
+    *,
+    prefix: str = "",
 ) -> str | None:
+    """按字段类型分派修正。prefix 只影响留痕 / 失败原因里的可读标签。"""
+    if isinstance(spec, TextField):
+        return _apply_text_field(data, spec, notes, prefix=prefix)
+    if isinstance(spec, TextListField):
+        return _apply_text_list_field(data, spec, notes, prefix=prefix)
+    return _apply_object_list_field(data, spec, notes, prefix=prefix)
+
+
+def _apply_text_field(
+    data: dict[str, Any],
+    spec: TextField,
+    notes: list[RepairNote],
+    *,
+    prefix: str = "",
+) -> str | None:
+    label = f"{prefix}{spec.name}"
     if spec.name not in data:
         if spec.required:
-            return f"缺少必需字段 {spec.name}"
+            return f"缺少必需字段 {label}"
         return None
     value, error = _repair_text_value(
-        data[spec.name], spec, label=spec.name, notes=notes
+        data[spec.name], spec, label=label, notes=notes
     )
     if error is not None:
         return error
@@ -209,15 +233,30 @@ def _apply_text_field(
 
 
 def _apply_text_list_field(
-    data: dict[str, Any], spec: TextListField, notes: list[RepairNote]
+    data: dict[str, Any],
+    spec: TextListField,
+    notes: list[RepairNote],
+    *,
+    prefix: str = "",
 ) -> str | None:
+    label = f"{prefix}{spec.name}"
     if spec.name not in data:
         if spec.required:
-            return f"缺少必需字段 {spec.name}"
+            return f"缺少必需字段 {label}"
         return None
     raw = data[spec.name]
     if not isinstance(raw, list):
-        return f"字段 {spec.name} 类型错误（期望数组，拿到 {type(raw).__name__}）"
+        if spec.strict:
+            return f"字段 {label} 类型错误（期望数组，拿到 {type(raw).__name__}）"
+        notes.append(
+            RepairNote(
+                label,
+                NOTE_DROPPED_INVALID_ITEM,
+                f"类型不是数组（{type(raw).__name__}），按空处理",
+            )
+        )
+        data[spec.name] = []
+        return None
 
     kept: list[str] = []
     seen: set[str] = set()
@@ -247,27 +286,37 @@ def _apply_text_list_field(
         kept.append(value)
 
     if raw and type_invalid == len(raw):
-        return f"字段 {spec.name} 类型完全错误（{len(raw)} 项都不是字符串）"
-    if stripped:
-        notes.append(RepairNote(spec.name, NOTE_STRIPPED, f"{stripped} 项去掉首尾空白"))
-    if blank:
-        notes.append(RepairNote(spec.name, NOTE_DROPPED_BLANK, f"丢掉 {blank} 项空白值"))
-    if truncated:
-        notes.append(
-            RepairNote(spec.name, NOTE_TRUNCATED_TEXT, f"{truncated} 项按上限截断")
-        )
-    if type_invalid:
+        if spec.strict:
+            return f"字段 {label} 类型完全错误（{len(raw)} 项都不是字符串）"
         notes.append(
             RepairNote(
-                spec.name, NOTE_DROPPED_INVALID_ITEM, f"丢掉 {type_invalid} 项非字符串"
+                label,
+                NOTE_DROPPED_INVALID_ITEM,
+                f"{len(raw)} 项都不是字符串，按空处理",
+            )
+        )
+        kept = []
+    if stripped:
+        notes.append(RepairNote(label, NOTE_STRIPPED, f"{stripped} 项去掉首尾空白"))
+    if blank:
+        notes.append(RepairNote(label, NOTE_DROPPED_BLANK, f"丢掉 {blank} 项空白值"))
+    if truncated:
+        notes.append(
+            RepairNote(label, NOTE_TRUNCATED_TEXT, f"{truncated} 项按上限截断")
+        )
+    all_type_invalid = bool(raw) and type_invalid == len(raw)
+    if type_invalid and not all_type_invalid:
+        notes.append(
+            RepairNote(
+                label, NOTE_DROPPED_INVALID_ITEM, f"丢掉 {type_invalid} 项非字符串"
             )
         )
     if deduped:
-        notes.append(RepairNote(spec.name, NOTE_DEDUPED, f"去掉 {deduped} 项重复"))
+        notes.append(RepairNote(label, NOTE_DEDUPED, f"去掉 {deduped} 项重复"))
     if len(kept) > spec.max_items:
         notes.append(
             RepairNote(
-                spec.name,
+                label,
                 NOTE_TRUNCATED_ITEMS,
                 f"保留 {spec.max_items}/{len(kept)} 项",
             )
@@ -278,15 +327,30 @@ def _apply_text_list_field(
 
 
 def _apply_object_list_field(
-    data: dict[str, Any], spec: ObjectListField, notes: list[RepairNote]
+    data: dict[str, Any],
+    spec: ObjectListField,
+    notes: list[RepairNote],
+    *,
+    prefix: str = "",
 ) -> str | None:
+    label = f"{prefix}{spec.name}"
     if spec.name not in data:
         if spec.required:
-            return f"缺少必需字段 {spec.name}"
+            return f"缺少必需字段 {label}"
         return None
     raw = data[spec.name]
     if not isinstance(raw, list):
-        return f"字段 {spec.name} 类型错误（期望数组，拿到 {type(raw).__name__}）"
+        if spec.strict:
+            return f"字段 {label} 类型错误（期望数组，拿到 {type(raw).__name__}）"
+        notes.append(
+            RepairNote(
+                label,
+                NOTE_DROPPED_INVALID_ITEM,
+                f"类型不是数组（{type(raw).__name__}），按空处理",
+            )
+        )
+        data[spec.name] = []
+        return None
 
     kept: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -297,24 +361,17 @@ def _apply_object_list_field(
         if not isinstance(item, Mapping):
             type_invalid += 1
             continue
-        label = f"{spec.name}[{index}]"
+        item_label = f"{label}[{index}]"
         repaired: dict[str, Any] = dict(item)
         item_notes: list[RepairNote] = []
         reason: str | None = None
         for field_spec in spec.fields:
-            value, error = _repair_text_value(
-                repaired.get(field_spec.name, _MISSING),
-                field_spec,
-                label=f"{label}.{field_spec.name}",
-                notes=item_notes,
+            error = _apply_field(
+                repaired, field_spec, item_notes, prefix=f"{item_label}."
             )
             if error is not None:
                 reason = error
                 break
-            if value is _MISSING:
-                repaired.pop(field_spec.name, None)
-            else:
-                repaired[field_spec.name] = value
         if reason is None and spec.item_validator is not None:
             reason = spec.item_validator(repaired)
         if reason is not None:
@@ -330,33 +387,43 @@ def _apply_object_list_field(
         notes.extend(item_notes)
         kept.append(repaired)
 
-    if raw and type_invalid == len(raw):
-        return f"字段 {spec.name} 类型完全错误（{len(raw)} 项都不是对象）"
-    if raw and not kept:
+    all_type_invalid = bool(raw) and type_invalid == len(raw)
+    all_invalid = bool(raw) and not kept
+    if all_type_invalid and spec.strict:
+        return f"字段 {label} 类型完全错误（{len(raw)} 项都不是对象）"
+    if all_invalid and not all_type_invalid and spec.strict:
         return (
-            f"字段 {spec.name} 无法安全恢复（{len(raw)} 项全部无效："
+            f"字段 {label} 无法安全恢复（{len(raw)} 项全部无效："
             f"{invalid[0] if invalid else '类型无效'}）"
         )
-    if type_invalid:
+    if all_type_invalid:
         notes.append(
             RepairNote(
-                spec.name, NOTE_DROPPED_INVALID_ITEM, f"丢掉 {type_invalid} 项非对象"
+                label,
+                NOTE_DROPPED_INVALID_ITEM,
+                f"{len(raw)} 项都不是对象，按空处理",
+            )
+        )
+    elif type_invalid:
+        notes.append(
+            RepairNote(
+                label, NOTE_DROPPED_INVALID_ITEM, f"丢掉 {type_invalid} 项非对象"
             )
         )
     if invalid:
         notes.append(
             RepairNote(
-                spec.name,
+                label,
                 NOTE_DROPPED_INVALID_ITEM,
                 f"丢掉 {len(invalid)} 项无效条目（{invalid[0]}）",
             )
         )
     if deduped:
-        notes.append(RepairNote(spec.name, NOTE_DEDUPED, f"去掉 {deduped} 项重复"))
+        notes.append(RepairNote(label, NOTE_DEDUPED, f"去掉 {deduped} 项重复"))
     if len(kept) > spec.max_items:
         notes.append(
             RepairNote(
-                spec.name,
+                label,
                 NOTE_TRUNCATED_ITEMS,
                 f"保留 {spec.max_items}/{len(kept)} 项",
             )

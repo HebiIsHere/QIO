@@ -199,6 +199,29 @@ def _task_row(ctx: AppContext) -> dict:
     )
 
 
+def _task_states(ctx: AppContext) -> dict[str, str]:
+    """按 kind 汇总派生任务状态（摘要 / 知识 各自一条）。"""
+    return {
+        row["kind"]: row["state"]
+        for row in ctx.conn.execute("SELECT kind, state FROM derived_tasks").fetchall()
+    }
+
+
+def _task_row_for(ctx: AppContext, kind: str) -> dict | None:
+    row = ctx.conn.execute(
+        "SELECT state, attempts, last_error, run_after FROM derived_tasks WHERE kind = ?",
+        (kind,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _fragment_meta(ctx: AppContext, fragment_id: str) -> dict:
+    row = ctx.conn.execute(
+        "SELECT meta FROM fragments WHERE id = ?", (fragment_id,)
+    ).fetchone()
+    return json.loads(row["meta"] or "{}")
+
+
 # ---------------------------------------------------------------------------
 # B1 / B2：title、summary 超长 —— 可修正，不整条失败
 # ---------------------------------------------------------------------------
@@ -474,14 +497,15 @@ def test_over_long_title_no_longer_zeroes_the_derivation_chain(tmp_path: Path):
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 1, "派生任务应当完成，而不是失败重试"
+    # 两条派生任务：摘要 + 链式登记的知识提炼
+    assert done == 2, "摘要与知识都应当完成，而不是失败重试"
     assert _summary_row(ctx, sealed.id)["summary"] == "这是一段摘要"
     rows = _index_rows(ctx, sealed.id)
     assert len(rows) == 1, "索引要一起生成"
     assert len(rows[0]["title"]) == MAX_TITLE, "索引里的标题是截断后的"
     assert _count(ctx, "entity_cards") == 1, "实体卡要一起生成"
     assert _count(ctx, "knowledge") == 2, "知识条目要一起生成"
-    assert _task_row(ctx)["state"] == "completed"
+    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
 
 
 def test_over_long_summary_no_longer_zeroes_the_derivation_chain(tmp_path: Path):
@@ -500,12 +524,12 @@ def test_over_long_summary_no_longer_zeroes_the_derivation_chain(tmp_path: Path)
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 1
+    assert done == 2
     assert len(_summary_row(ctx, sealed.id)["summary"]) == MAX_SUMMARY
     assert len(_index_rows(ctx, sealed.id)) == 1
     assert _count(ctx, "entity_cards") == 1
     assert _count(ctx, "knowledge") == 2
-    assert _task_row(ctx)["state"] == "completed"
+    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
 
 
 def test_fifty_candidates_still_produce_knowledge(tmp_path: Path):
@@ -516,9 +540,9 @@ def test_fifty_candidates_still_produce_knowledge(tmp_path: Path):
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 1
+    assert done == 2
     assert _count(ctx, "knowledge") == MAX_CANDIDATES
-    assert _task_row(ctx)["state"] == "completed"
+    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
 
 
 def test_repairs_are_recorded_in_trace(tmp_path: Path):
@@ -595,6 +619,11 @@ def test_knowledge_schema_failure_is_recorded_and_keeps_summary(tmp_path: Path):
     assert any(w["code"] == "knowledge_extraction_failed" for w in warnings), warnings
     message = [w["message"] for w in warnings if w["code"] == "knowledge_extraction_failed"][0]
     assert "无法安全恢复" in message, message
+    # 知识提炼有自己的派生任务行：失败可读、可重试
+    knowledge_task = _task_row_for(ctx, "knowledge")
+    assert knowledge_task is not None
+    assert knowledge_task["state"] == "failed" and knowledge_task["attempts"] == 1
+    assert "无法安全恢复" in (knowledge_task["last_error"] or ""), knowledge_task
 
 
 def test_knowledge_failure_reason_is_readable_without_model_text(tmp_path: Path):
@@ -636,11 +665,12 @@ def test_broken_entity_card_output_does_not_break_the_chain(tmp_path: Path, bad_
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 1, "实体卡提炼坏了不该让摘要任务失败"
+    assert done == 2, "实体卡提炼坏了不该让摘要 / 知识任务失败"
     assert _summary_row(ctx, sealed.id)["summary"] == "这是一段摘要"
     assert len(_index_rows(ctx, sealed.id)) == 1
     assert _count(ctx, "knowledge") == 2
     assert _count(ctx, "entity_cards") == 0
+    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
 
 
 def test_missing_required_field_failure_is_traceable(tmp_path: Path):
@@ -679,3 +709,237 @@ def test_unrecoverable_summary_outputs_all_fail_with_a_reason(bad_input: str):
     outcome = validate_summary(bad_input)
     assert outcome.value is None
     assert outcome.error and len(outcome.error) > 6, outcome.error
+
+
+# ---------------------------------------------------------------------------
+# 知识提炼成为独立派生任务：状态行 / 可重试 / 幂等
+# ---------------------------------------------------------------------------
+
+
+def test_knowledge_runs_as_its_own_derived_task(tmp_path: Path):
+    ctx = _app(tmp_path)
+    _seal(ctx)
+
+    done = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(_ScriptedAdapter(), limit=5)
+    )
+
+    assert done == 2
+    row = _task_row_for(ctx, "knowledge")
+    assert row is not None, "知识提炼必须有自己的一条派生任务"
+    assert row["state"] == "completed" and row["attempts"] == 0
+    assert _count(ctx, "knowledge") == 2
+
+
+def test_knowledge_task_failure_is_retryable_with_a_readable_reason(tmp_path: Path):
+    ctx = _app(tmp_path)
+    _seal(ctx)
+    broken = _ScriptedAdapter(knowledge='{"candidates": [{"content": ""}]}')
+
+    done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(broken, limit=5))
+
+    assert done == 1, "摘要完成、知识失败"
+    row = _task_row_for(ctx, "knowledge")
+    assert row is not None and row["state"] == "failed" and row["attempts"] == 1
+    assert "无法安全恢复" in (row["last_error"] or ""), row
+    assert _count(ctx, "knowledge") == 0
+
+    # 修好故障 + 把退避时间拨回过去：同一条任务重试成功
+    ctx.conn.execute(
+        "UPDATE derived_tasks SET run_after = NULL WHERE kind = 'knowledge'"
+    )
+    done_again = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(_ScriptedAdapter(), limit=5)
+    )
+    assert done_again == 1
+    assert _task_row_for(ctx, "knowledge")["state"] == "completed"
+    assert _count(ctx, "knowledge") == 2
+
+
+def test_knowledge_task_retry_does_not_duplicate_knowledge(tmp_path: Path):
+    """幂等：任务被放回队列再跑一次，不会重复制造知识条目。"""
+    ctx = _app(tmp_path)
+    _seal(ctx)
+    adapter = _ScriptedAdapter()
+    asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
+    assert _count(ctx, "knowledge") == 2
+
+    ctx.conn.execute(
+        "UPDATE derived_tasks SET state = 'pending', run_after = NULL WHERE kind = 'knowledge'"
+    )
+    done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
+
+    assert done == 1
+    assert _count(ctx, "knowledge") == 2, "重试不得重复写知识"
+
+
+def test_knowledge_task_waits_for_its_summary(tmp_path: Path):
+    """摘要还没落库时知识任务失败但可重试（不是结构错误）。"""
+    from agent.services import derived_tasks
+
+    ctx = _app(tmp_path)
+    sealed = _seal(ctx)  # 只封存，先不跑摘要任务
+    version = int(sealed.content_version or 0)
+    derived_tasks.enqueue(ctx.conn, derived_tasks.KIND_KNOWLEDGE, sealed.id, version)
+    task = derived_tasks.claim_due(
+        ctx.conn, kinds=(derived_tasks.KIND_KNOWLEDGE,)
+    )[0]
+
+    ok = asyncio.run(ctx.memory_lifecycle.run_knowledge_task(task, _ScriptedAdapter()))
+
+    assert ok is False
+    row = derived_tasks.task_for(
+        ctx.conn, derived_tasks.KIND_KNOWLEDGE, sealed.id, version
+    )
+    assert row.state == derived_tasks.STATE_FAILED
+    assert "摘要尚未生成" in (row.last_error or ""), row.last_error
+
+
+# ---------------------------------------------------------------------------
+# 实体卡提炼接入统一可修正层：修正与失败都要留痕
+# ---------------------------------------------------------------------------
+
+
+def test_entity_card_repairs_are_visible_in_trace(tmp_path: Path):
+    ctx = _app(tmp_path)
+    _seal(ctx)
+    tracer = _tracer(ctx, "turn_cards")
+    adapter = _ScriptedAdapter(
+        entities={
+            "entities": [
+                {
+                    "name": " 我家的鹅 ",
+                    "aliases": ["鹅", "鹅", "  ", "大鹅"],
+                    "attributes": [{"key": "状态", "value": "红肿"}, {"key": 1, "value": 2}],
+                },
+                {"name": 123},
+            ]
+        }
+    )
+
+    done = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
+    )
+
+    assert done == 2
+    card = ctx.conn.execute("SELECT name, aliases FROM entity_cards").fetchone()
+    assert card is not None and card["name"] == "我家的鹅"
+    assert json.loads(card["aliases"]) == ["鹅", "大鹅"]
+    lines = _trace(ctx, "turn_cards")["writes"].get("derivation_repairs", [])
+    assert any(line.startswith("实体卡:") for line in lines), lines
+
+
+def test_unrecoverable_entity_card_output_is_recorded(tmp_path: Path):
+    """实体卡坏到无法恢复：不再静默返回空，而是给出可读失败原因。"""
+    ctx = _app(tmp_path)
+    _seal(ctx)
+    tracer = _tracer(ctx, "turn_cards_bad")
+    adapter = _ScriptedAdapter(entities={"entities": [{"name": 123}]})
+
+    done = asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
+    )
+
+    assert done == 2, "实体卡提炼失败不影响摘要与知识"
+    assert _count(ctx, "entity_cards") == 0
+    warnings = _trace(ctx, "turn_cards_bad")["warnings"]
+    assert any(w["code"] == "entity_card_extraction_failed" for w in warnings), warnings
+    message = [
+        w["message"] for w in warnings if w["code"] == "entity_card_extraction_failed"
+    ][0]
+    assert "无法安全恢复" in message, message
+
+
+# ---------------------------------------------------------------------------
+# 失败原因不得泄漏密钥原文（trace + 派生任务状态）
+# ---------------------------------------------------------------------------
+
+
+def _seal_with(ctx: AppContext, user_text: str):
+    topic = ctx.topics.nodes.create_topic("可靠性").id
+    ctx.memory.append_message(topic_id=topic, role="user", content=user_text)
+    ctx.memory.append_message(topic_id=topic, role="assistant", content="记下了")
+    sealed = ctx.memory_lifecycle.seal_fragment(topic, reason="capacity")
+    assert sealed is not None
+    return sealed
+
+
+class _LeakyAdapter(_ScriptedAdapter):
+    """模型调用失败时把请求原文带进异常（真实适配器/网关可能这样）。"""
+
+    async def complete(self, messages, tools, **kwargs) -> Completion:
+        first = messages[0]
+        prompt = first["content"] if isinstance(first, dict) else first.content
+        raise RuntimeError("upstream 400: " + prompt)
+
+
+def test_failure_reason_never_leaks_key_shaped_text(tmp_path: Path, caplog):
+    """模型调用失败把请求原文带进异常时：日志 / trace / 任务状态都不得出现密钥原文。
+
+    这条守的是 AGENTS.md 的硬性约束（日志、事件、Trace、错误信息、测试输出都不许有
+    密钥原文）；模型原文进入异常是真实适配器会发生的事，所以三个出口都要脱敏。
+    """
+    import logging
+
+    ctx = _app(tmp_path)
+    secret = "sk-live-abcdef1234567890"
+    _seal_with(ctx, f"我的密钥是 {secret}，帮我记一下")
+    tracer = _tracer(ctx, "turn_leak")
+
+    with caplog.at_level(logging.INFO):
+        done = asyncio.run(
+            ctx.memory_lifecycle.drain_derived_tasks(
+                _LeakyAdapter(), limit=5, tracer=tracer
+            )
+        )
+
+    assert done == 0
+    task = _task_row_for(ctx, "summary")
+    assert task["state"] == "failed"
+    assert secret not in (task["last_error"] or ""), "派生任务状态不得出现密钥原文"
+    trace_json = json.dumps(_trace(ctx, "turn_leak"), ensure_ascii=False)
+    assert secret not in trace_json, "trace 不得出现密钥原文"
+    assert secret not in caplog.text, "日志（含异常回溯）不得出现密钥原文"
+    assert "***redacted***" in trace_json, "trace 里应能看出原文被脱敏过"
+
+
+# ---------------------------------------------------------------------------
+# 截断要在数据里可见（fragments.meta），不只是 trace
+# ---------------------------------------------------------------------------
+
+
+def test_truncated_summary_is_marked_in_fragment_data(tmp_path: Path):
+    ctx = _app(tmp_path)
+    sealed = _seal(ctx)
+    adapter = _ScriptedAdapter(
+        summary={
+            "title": "标题",
+            "summary": "摘" * (MAX_SUMMARY * 2),
+            "entities": [],
+            "keywords": [],
+        }
+    )
+
+    asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
+
+    meta = _fragment_meta(ctx, sealed.id)
+    assert meta["summary_truncated"] is True, meta
+    assert any(
+        "summary:truncated_text" in item for item in meta["summary_repairs"]
+    ), meta
+    text = _summary_row(ctx, sealed.id)["summary"]
+    assert len(text) == MAX_SUMMARY and text == "摘" * MAX_SUMMARY, "只截断，不改写正文"
+
+
+def test_normal_summary_is_not_marked_truncated(tmp_path: Path):
+    ctx = _app(tmp_path)
+    sealed = _seal(ctx)
+
+    asyncio.run(
+        ctx.memory_lifecycle.drain_derived_tasks(_ScriptedAdapter(), limit=5)
+    )
+
+    meta = _fragment_meta(ctx, sealed.id)
+    assert meta["summary_truncated"] is False, meta
+    assert meta["summary_repairs"] == []
+

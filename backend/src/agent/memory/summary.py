@@ -29,6 +29,18 @@ from agent.memory.model_output import (
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_exc(exc: BaseException) -> str:
+    """异常文本进日志前先过统一脱敏。
+
+    适配器/网关的异常消息可能夹带请求原文（含用户贴过的密钥），
+    而「日志 / Trace / 错误信息不得出现密钥原文」是硬性约束。
+    """
+    from agent.trace.redact import redact_text
+
+    return redact_text(f"{type(exc).__name__}: {exc}")
+
+
 # 派生字段的硬上限。同一组常量既写进提示词（让模型自己收敛），又用在本地契约
 # （模型没收住时兜底），两处共用一个事实来源，避免各自漂移。
 MAX_TITLE = 60
@@ -132,7 +144,7 @@ async def summarize_fragment_outcome(
             temperature=temperature,
         )
     except Exception as exc:
-        logger.warning("summarize call failed: %s", exc)
+        logger.warning("summarize call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")
     return validate_summary(completion.message.content or "")
 
@@ -270,7 +282,7 @@ async def extract_knowledge_candidates_outcome(
             temperature=temperature,
         )
     except Exception as exc:
-        logger.warning("knowledge extraction call failed: %s", exc)
+        logger.warning("knowledge extraction call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")
     return validate_knowledge(completion.message.content or "")
 
@@ -328,7 +340,7 @@ async def summarize_rolling_outcome(
             temperature=temperature,
         )
     except Exception as exc:
-        logger.warning("rolling summary call failed: %s", exc)
+        logger.warning("rolling summary call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")
     return validate_summary(completion.message.content or "")
 
