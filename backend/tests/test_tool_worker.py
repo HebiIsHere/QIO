@@ -121,3 +121,94 @@ def test_worker_rejects_malformed_request():
     )
     assert proc.returncode != 0
     assert "请求" in proc.stderr
+
+
+# ---------- 编码契约：通道编码由协议钉死，不跟随子进程 locale ----------
+
+# GitHub 的 windows-latest、英文 Windows 用户机都是 cp1252：中文无法用它编码。
+# 本机的开发机是中文 Windows（cp936），缺陷不会自然复现，所以显式构造 cp1252 子进程。
+_NON_UTF8_ENV = {"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+
+
+def _run_under(env_overrides: dict, payload: object, *, raw: bytes | None = None):
+    """在一个显式指定编码的子进程里跑 worker（真子进程，不是 mock）。"""
+    import os
+
+    env = dict(os.environ)
+    env.update(env_overrides)
+    body = raw if raw is not None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(WORKER)],
+        input=body,
+        capture_output=True,
+        env=env,
+        timeout=60.0,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_worker_result_channel_is_utf8_even_under_cp1252():
+    """英文 Windows 上以前会在这里直接崩掉：结果里有中文就抛 UnicodeEncodeError，
+    进程死在结果通道上，父进程只看到「标准输出为空」。"""
+    code, out, err = _run_under(_NON_UTF8_ENV, {"code": "def run(**kwargs):\n    return 42\n", "arguments": {}})
+    assert code == 0, f"worker 在 cp1252 下异常退出：{err!r}"
+    result = _result(out.decode("utf-8"))  # 协议是 UTF-8 字节，与子进程 locale 无关
+    assert result["ok"] is False
+    assert result["error_type"] == "RuntimeError"
+    assert "对象" in result["error"]
+
+
+def test_worker_missing_entry_error_survives_cp1252():
+    code, out, _ = _run_under(_NON_UTF8_ENV, {"code": "x = 1\n", "arguments": {}})
+    assert code == 0
+    result = _result(out.decode("utf-8"))
+    assert result["ok"] is False
+    assert "run" in result["error"]
+
+
+def test_worker_error_channel_is_utf8_not_backslash_escapes_under_cp1252():
+    """stderr 以前被 backslashreplace 写成字面 \\u5de5\\u5177…，读的人看到的是转义。"""
+    code, _out, err = _run_under(_NON_UTF8_ENV, {}, raw=b"{not json")
+    assert code != 0
+    text = err.decode("utf-8")
+    assert "请求" in text
+    assert "\\u5de5" not in text
+
+
+def test_worker_round_trips_non_ascii_arguments():
+    """请求体也是 UTF-8 字节：中文参数不能被按 locale 解释成乱码。"""
+    code, out, _ = _run(
+        {
+            "code": "def run(**kwargs):\n    return {'echo': kwargs['text']}\n",
+            "arguments": {"text": "中文参数 ✅"},
+        }
+    )
+    assert code == 0
+    result = _result(out)
+    assert result["value"] == {"echo": "中文参数 ✅"}
+
+
+def test_worker_round_trips_non_ascii_arguments_under_cp1252():
+    code, out, _ = _run_under(
+        _NON_UTF8_ENV,
+        {
+            "code": "def run(**kwargs):\n    return {'echo': kwargs['text']}\n",
+            "arguments": {"text": "中文参数"},
+        },
+    )
+    assert code == 0
+    result = _result(out.decode("utf-8"))
+    assert result["value"] == {"echo": "中文参数"}
+
+
+def test_worker_result_line_stays_single_line_with_embedded_newlines():
+    """工具输出里的换行必须进 JSON 转义，结果通道仍然只有一行。"""
+    code, out, _ = _run(
+        {
+            "code": "def run(**kwargs):\n    print('a\\nb')\n    return {'ok': 1}\n",
+            "arguments": {},
+        }
+    )
+    assert code == 0
+    result = _result(out)
+    assert result["stdout"] == "a\nb\n"
