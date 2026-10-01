@@ -237,3 +237,39 @@ def test_pem_private_key_block_is_redacted():
     out = redact_text(f"key material:\n{pem}\nend")
     assert "MIIEowIBAAKCAQEA" not in out
     assert "end" in out
+
+# ---------- 裸 qio_key_ 令牌（正则兜底，不是主防线） ----------
+
+
+def test_a_bare_qio_key_token_is_redacted():
+    """没有 `=` / `:` 分隔符的裸令牌，以前整条漏过去（Lead 独立复现过）。"""
+    for text in (
+        "and qio_key_ABCDEF0123456789",
+        "QIO_KEY_DEADBEEF0123456789 leaked",
+        "token 是 qio_key_abcdef-123456 结束",
+    ):
+        out = redact_text(text)
+        assert "ABCDEF0123456789" not in out
+        assert "DEADBEEF0123456789" not in out
+        assert "abcdef-123456" not in out
+        assert REDACTED in out
+
+
+def test_the_env_var_form_still_redacts_its_value():
+    """顺序回归：先让 kv 规则吃掉「名字=值」的值，再由裸令牌规则吃掉名字 ——
+    反过来（先吃名字）kv 规则就看不到 `名字=值`，值会漏出去。"""
+    out = redact_text("env QIO_KEY_WEATHER_KEY=abc123 set")
+    assert "abc123" not in out
+    assert "QIO_KEY_WEATHER_KEY" not in out
+    assert out.count(REDACTED) >= 1
+
+
+def test_words_that_merely_look_like_the_prefix_are_not_touched():
+    """反例：qio_key 后面必须跟下划线，普通词与短标识符不许被吞。"""
+    for text in (
+        "qio_keyword_test 是普通词",
+        "qio_keys 表示复数",
+        "qio_key_abc 太短，不当令牌",
+        "QIO_KEY 只是一个前缀",
+    ):
+        assert redact_text(text) == text

@@ -13,8 +13,13 @@ This module is the single choke point for that guarantee.
    这是唯一能挡住「形状不像密钥」的密钥（随机串、密码、自定义 token）的办法；
    登记表只活在进程内存里：不落库、不进日志、不发事件、**不送给模型**；
    对外只能问到条数（`registered_secret_count`），拿不到值；
-3. **形状正则**（兜底）：Bearer / sk-·pk-·rk- / JWT / URL 里的 user:pass /
-   PEM 私钥块 / `key=value` 形式。
+3. **形状正则**（只是兜底，**不是主防线**）：Bearer / sk-·pk-·rk- / JWT /
+   裸的 `qio_key_` 令牌 / URL 里的 user:pass / PEM 私钥块 / `key=value` 形式。
+
+分工会被误解，所以写在这里：正则永远只能覆盖「长得像密钥」的东西 —— 随机串、
+密码、自定义 token 它一概认不出。**主防线是第 2 层的精确登记**：真正在用的
+凭据值一律从凭据读路径登记进来，出现即替换。正则只负责「这个值还没被登记过，
+但它明显是密钥形状」这类兜底；加了新正则不等于可以少登记。
 
 字符串里嵌的 JSON 文档会先按结构打码再序列化回去，避免「正则把 JSON 里的
 引号一起吃掉」这种既难看又可能漏掉的情况。
@@ -76,6 +81,11 @@ _INLINE_PATTERNS = [
         ),
         lambda m: m.group(0).split(":", 1)[0].split("=", 1)[0].strip() + "=" + REDACTED,
     ),
+    # 裸的 qio_key_ 令牌（后面没有 : 或 =）。**必须排在 kv 那条之后**：
+    # 先让 kv 规则把 `QIO_KEY_X=<值>` 的**值**一起打掉，再由这条把剩下的名字打掉；
+    # 反过来先吃掉名字，kv 规则就再也看不到 `名字=值`，值会漏出去（实测过）。
+    # qio_key 后面必须跟下划线：`qio_keyword_test` 这种词不会被误伤。
+    (re.compile(r"(?i)\bqio_key_[A-Za-z0-9_\-]{6,}"), REDACTED),
 ]
 
 # 已知密钥登记表：进程内、只用于匹配。**有界**：超过上限先淘汰最早登记的，
