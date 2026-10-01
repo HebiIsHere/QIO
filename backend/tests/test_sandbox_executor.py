@@ -1,20 +1,23 @@
-"""SandboxExecutor：docker 可用性探测与回退（回归用例）。
+"""SandboxExecutor：docker 可用性探测与回退 + 容器路径的进程/输出保护（回归用例）。
 
-回归的缺陷：可用性只用 `shutil.which("docker")` 判断，于是「装了 Docker Desktop
-但没启动」被当成「容器隔离可用」——每次工具调用都选 docker 并以 `docker exit
-code 125` 失败，而不是改走受限子进程。
+回归的缺陷 1：可用性只用 shutil.which("docker") 判断，于是「装了 Docker Desktop
+但没启动」被当成「容器隔离可用」——每次工具调用都选 docker 并以 docker exit code 125
+失败，而不是改走受限子进程。
 
-GitHub 的 windows runner 踩的是同一件事（装了 CLI、没有守护进程），当时的处理是
-给用例加 `requires_docker` 标记并在 windows 任务里过滤掉，产品行为没动；这个文件
-覆盖产品行为本身。
+回归的缺陷 2（2026-10-02）：容器路径是**第二套执行实现** —— 它自己拼一段脚本、
+自己 print JSON、自己取「最后一行」当结果，不校验 ok/value、不限长、超时只 kill
+docker 客户端（容器继续在后台跑）。现在容器里跑的是同一份 worker 源码、同一套协议，
+协议判定与受限子进程共用 sandbox._parse_worker_result。
 
-测试用 `stub_docker_cli` 在**进程边界**上模拟 docker 命令行：非 docker 命令仍走
+测试用 stub_docker_cli 在**进程边界**上模拟 docker 命令行：非 docker 命令仍走
 真实实现，所以「回退到受限子进程」这条路径是真的跑起来了才断言通过。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 
 from agent.tools import sandbox as sandbox_module
 from agent.tools.policy import ToolExecutionPolicy
@@ -24,11 +27,72 @@ from agent.tools.sandbox import SandboxExecutor
 PURE_TOOL = "def run(**k):\n    return {'ok': 1}\n"
 
 
-class _StubProcess:
-    """只实现沙箱用到的三个成员：communicate / returncode / kill。"""
+def _worker_reply(value: dict) -> bytes:
+    """容器里的 worker 会写出的那一行（协议结果）。"""
+    payload = {
+        "ok": True,
+        "value": value,
+        "stdout": "",
+        "stderr": "",
+        "error": None,
+        "error_type": None,
+    }
+    return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
-    def __init__(self, returncode: int, stdout: bytes = b"", stderr: bytes = b"") -> None:
+
+class _StubStream:
+    """子进程的一侧管道：按块读出预设字节（block=True 时永不返回，模拟卡住的容器）。"""
+
+    def __init__(self, data: bytes = b"", *, block: bool = False) -> None:
+        self._data = data
+        self._block = block
+
+    async def read(self, size: int = -1) -> bytes:
+        if self._block:
+            await asyncio.sleep(3600)
+        if not self._data:
+            return b""
+        if size is None or size < 0:
+            size = len(self._data)
+        chunk, self._data = self._data[:size], self._data[size:]
+        return chunk
+
+
+class _StubStdin:
+    def __init__(self) -> None:
+        self.written = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written += data
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _StubProcess:
+    """沙箱真正用到的成员：pid / 三条管道 / returncode / kill / wait（+ 探测用 communicate）。"""
+
+    def __init__(
+        self,
+        returncode: int,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        *,
+        block: bool = False,
+        pid: int = 4321,
+    ) -> None:
+        self.pid = pid
         self.returncode = returncode
+        self.stdin = _StubStdin()
+        self.stdout = _StubStream(stdout, block=block)
+        self.stderr = _StubStream(stderr, block=block)
         self._stdout = stdout
         self._stderr = stderr
 
@@ -50,11 +114,15 @@ def stub_docker_cli(
     run_stdout: bytes = b"",
     run_stderr: bytes = b"",
     run_raises: BaseException | None = None,
+    run_block: bool = False,
+    spawns: list | None = None,
 ) -> list[tuple[str, ...]]:
     """模拟 docker 命令行，返回它收到的命令列表。
 
-    `daemon_version=None` 表示守护进程没有应答：探测命令失败，`docker run` 以
+    daemon_version=None 表示守护进程没有应答：探测命令失败，docker run 以
     125 失败 —— 这就是「装了 Docker Desktop 但没启动」那台机器上的真实表现。
+
+    run_block=True 表示 docker run 起来的容器永不返回（超时/取消用例）。
 
     只有 docker 命令被替换成桩；受限子进程执行器用的解释器仍走真实实现。
     """
@@ -73,18 +141,35 @@ def stub_docker_cli(
                 )
             if run_raises is not None:
                 raise run_raises
-            return _StubProcess(run_returncode, run_stdout, run_stderr)
-        # 其余 docker 子命令按「可用性探测」处理
-        if daemon_version is None:
-            return _StubProcess(
-                1, b"",
-                b"error during connect: cannot connect to the Docker daemon",
+            process = _StubProcess(
+                run_returncode, run_stdout, run_stderr, block=run_block
             )
-        return _StubProcess(0, daemon_version, b"")
+            if spawns is not None:
+                spawns.append(process)
+            return process
+        # docker version：可用性探测（没应答时退出码 1 + connect 报错）
+        if len(cmd) > 1 and cmd[1] == "version":
+            if daemon_version is None:
+                return _StubProcess(
+                    1, b"",
+                    b"error during connect: cannot connect to the Docker daemon",
+                )
+            return _StubProcess(0, daemon_version, b"")
+        # docker rm -f：超时/取消/超限后的容器清理
+        return _StubProcess(0, b"", b"")
 
     monkeypatch.setattr(sandbox_module.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(sandbox_module.shutil, "which", lambda name: f"/fake/bin/{name}")
     return seen
+
+
+def _container_name_from(commands: list[tuple[str, ...]]) -> str:
+    run = next(cmd for cmd in commands if len(cmd) > 1 and cmd[1] == "run")
+    return run[run.index("--name") + 1]
+
+
+def _removals(commands: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+    return [cmd for cmd in commands if len(cmd) > 1 and cmd[1] == "rm"]
 
 
 # -- 可用性探测本身 ------------------------------------------------------
@@ -152,7 +237,7 @@ async def test_explicit_docker_with_silent_daemon_reports_and_never_runs_the_too
 
 
 async def test_auto_falls_back_when_docker_cannot_start_a_container(monkeypatch):
-    """守护进程应答了，但 `docker run` 自己失败（典型：镜像拉不下来）→ exit 125。"""
+    """守护进程应答了，但 docker run 自己失败（典型：镜像拉不下来）→ exit 125。"""
     stub_docker_cli(monkeypatch, daemon_version=b"27.0.3\n", run_returncode=125,
                     run_stderr=b"docker: Error response from daemon: pull access denied")
     res = await SandboxExecutor().execute(PURE_TOOL, {}, policy=ToolExecutionPolicy())
@@ -188,18 +273,25 @@ async def test_tool_failure_inside_the_container_is_not_retried_in_subprocess(mo
 
 async def test_auto_uses_docker_when_the_daemon_answers(monkeypatch):
     """守护进程应答时仍然走容器：返回值来自（桩）docker，而不是子进程执行器。"""
+    spawns: list = []
     seen = stub_docker_cli(
         monkeypatch,
         daemon_version=b"27.0.3\n",
         run_returncode=0,
-        run_stdout=b'{"via": "docker"}\n',
+        run_stdout=_worker_reply({"via": "docker"}),
+        spawns=spawns,
     )
     res = await SandboxExecutor().execute(
-        "def run(**k):\n    return {'via': 'tool'}\n", {}, policy=ToolExecutionPolicy()
+        "def run(**k):\n    return {'via': 'tool'}\n", {"a": 1}, policy=ToolExecutionPolicy()
     )
     assert res.ok is True, res.error
     assert res.value == {"via": "docker"}
     assert any(cmd[1] == "run" for cmd in seen)
+    # 请求是用同一套协议从 stdin 递进容器的（不是把代码拼进命令行）
+    request = json.loads(spawns[0].stdin.written.decode("utf-8"))
+    assert request["arguments"] == {"a": 1}
+    assert "return {'via': 'tool'}" in request["code"]
+    assert spawns[0].stdin.closed is True
 
 
 async def test_effective_executor_reports_what_the_probe_found(monkeypatch):
@@ -210,3 +302,142 @@ async def test_effective_executor_reports_what_the_probe_found(monkeypatch):
 
     stub_docker_cli(monkeypatch, daemon_version=b"27.0.3\n")
     assert await SandboxExecutor().effective_executor() == "docker"
+
+
+# -- 容器路径：协议判定与受限子进程同源 ----------------------------------
+
+
+async def test_container_result_channel_uses_the_same_strict_protocol(monkeypatch):
+    """容器里 worker 多打一行：与受限子进程一样判失败（以前只取最后一行）。"""
+    stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=0,
+        run_stdout=b'noise\n{"ok": true, "value": {"via": "docker"}}\n',
+    )
+    res = await SandboxExecutor().execute(PURE_TOOL, {}, policy=ToolExecutionPolicy())
+    assert res.ok is False
+    assert "恰好一行" in (res.error or "")
+
+
+async def test_container_non_boolean_ok_is_rejected(monkeypatch):
+    stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=0,
+        run_stdout=b'{"ok": 1, "value": {"via": "docker"}}\n',
+    )
+    res = await SandboxExecutor().execute(PURE_TOOL, {}, policy=ToolExecutionPolicy())
+    assert res.ok is False
+    assert "布尔" in (res.error or "")
+
+
+async def test_container_success_without_object_value_is_rejected(monkeypatch):
+    stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=0,
+        run_stdout=_worker_reply({"via": "docker"}).replace(b'{"via": "docker"}', b"[1, 2]"),
+    )
+    res = await SandboxExecutor().execute(PURE_TOOL, {}, policy=ToolExecutionPolicy())
+    assert res.ok is False
+    assert res.value is None
+
+
+# -- 容器路径：超时 / 取消 / 输出超限都要清掉这次的容器 --------------------
+
+
+async def test_container_timeout_removes_this_calls_container(monkeypatch):
+    seen = stub_docker_cli(
+        monkeypatch, daemon_version=b"27.0.3\n", run_block=True
+    )
+    res = await SandboxExecutor(executor="docker", timeout_seconds=0.2).execute(
+        PURE_TOOL, {}, policy=ToolExecutionPolicy()
+    )
+    assert res.ok is False
+    assert res.category == "timeout"
+    name = _container_name_from(seen)
+    assert _removals(seen) == [("docker", "rm", "-f", name)], "超时后容器必须被清掉"
+
+
+async def test_container_cancel_removes_this_calls_container(monkeypatch):
+    seen = stub_docker_cli(
+        monkeypatch, daemon_version=b"27.0.3\n", run_block=True
+    )
+    task = asyncio.ensure_future(
+        SandboxExecutor(executor="docker", timeout_seconds=60).execute(
+            PURE_TOOL, {}, policy=ToolExecutionPolicy()
+        )
+    )
+    await asyncio.sleep(0.2)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:  # pragma: no cover - 取消必须向上传递，不能伪装成一次失败
+        raise AssertionError("取消没有作为取消传上去")
+    name = _container_name_from(seen)
+    assert _removals(seen) == [("docker", "rm", "-f", name)], "取消后容器必须被清掉"
+
+
+async def test_container_runaway_output_is_cut_off_and_stops_the_container(monkeypatch):
+    monkeypatch.setattr(sandbox_module, "MAX_WORKER_STDOUT_BYTES", 4096)
+    seen = stub_docker_cli(
+        monkeypatch,
+        daemon_version=b"27.0.3\n",
+        run_returncode=0,
+        run_stdout=b"y" * 200_000,
+    )
+    res = await SandboxExecutor(executor="docker", timeout_seconds=30).execute(
+        PURE_TOOL, {}, policy=ToolExecutionPolicy()
+    )
+    assert res.ok is False
+    assert res.category == "output_format"
+    assert "上限" in (res.error or "")
+    name = _container_name_from(seen)
+    assert _removals(seen) == [("docker", "rm", "-f", name)]
+
+
+# -- 容器里跑的是同一份 worker 源码 --------------------------------------
+
+
+async def test_container_bootstrap_runs_the_same_worker(tmp_path):
+    """把 docker run 里那段引导脚本拿本地解释器跑一遍（不需要 docker）。
+
+    证明容器路径与受限子进程路径跑的是同一个 worker（同一套 stdin/stdout 协议、
+    同一套退出码语义），而不是「容器里另写一段打印 JSON 的脚本」。
+    """
+    from agent.tools import executor_env
+    from agent.tools.sandbox import _DOCKER_BOOTSTRAP_TEMPLATE, _worker_request
+
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/util.py": "def double(x):\n    return x * 2\n",
+        "pkg/main.py": (
+            "from .util import double\n\n"
+            "def run(**kwargs):\n    return {'value': double(kwargs['x'])}\n"
+        ),
+    }
+    script = _DOCKER_BOOTSTRAP_TEMPLATE.format(
+        project=repr(str(tmp_path / "project")),
+        worker_path=repr(str(tmp_path / "worker.py")),
+        files=repr(files),
+        worker_source=repr(executor_env.worker_source()),
+    )
+    request = _worker_request("", "pkg.main:run", {"x": 21})
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", script,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(request), timeout=60)
+    assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
+    lines = [line for line in stdout.decode("utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1, stdout
+    payload = json.loads(lines[0])
+    assert payload["ok"] is True
+    assert payload["value"] == {"value": 42}
+    # 工程文件确实被带进容器，包内相对 import 成立
+    assert (tmp_path / "project" / "pkg" / "util.py").is_file()

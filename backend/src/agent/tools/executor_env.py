@@ -7,6 +7,11 @@
   `python -c` 解释器使用（那是另一回事：它没有解释器入口）。
 * 开发与测试环境：`python <agent/tool_worker.py>` —— 与正式环境同一份 worker
   源码、同一套 stdin/stdout 协议。
+* 容器隔离执行：`docker run … python -c <引导脚本>` —— 引导脚本把 `worker_source()`
+  读到的**同一份源码**写进容器再执行（见 tools/sandbox.py），协议不变。
+
+冻结产物里没有 `agent/tool_worker.py` 这个文件，但 PyInstaller 包内带了它的副本
+（`--add-data`，见 scripts/build_sidecar.ps1），`worker_source()` 会读那一份。
 
 上层（`tools/sandbox.py`）只依赖返回的 `ToolExecutorSpec`，不关心是哪种。
 额外依赖的项目级隔离环境（QIO 管理的专用 Python）是后续阶段的工作，本阶段
@@ -21,6 +26,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 WORKER_FLAG = "--tool-worker"
+
+# 冻结产物里 worker 源码的位置：build_sidecar.ps1 用 --add-data 把它放进包内
+# （PyInstaller onefile 的解包目录 = sys._MEIPASS）。容器隔离执行要把源码文本
+# 带进容器，冻结态就得从这里读。
+FROZEN_WORKER_RESOURCE = ("agent", "tool_worker.py")
 
 
 class ToolRuntimeUnavailable(RuntimeError):
@@ -42,6 +52,37 @@ class ToolExecutorSpec:
 def _worker_script_path() -> Path:
     """worker 源码路径：`agent/tools/executor_env.py` 的上一级目录。"""
     return Path(__file__).resolve().parents[1] / "tool_worker.py"
+
+
+def worker_source() -> str:
+    """worker 源码文本：容器隔离执行要把**同一份**实现带进容器跑。
+
+    容器里看不到宿主文件系统，源码只能以文本递进去。这里保证递进去的就是当前这
+    一份实现（冻结产物读包内资源，开发态读源码路径）；找不到就如实报环境错误，
+    绝不退回「在容器里另写一段跑工具代码的脚本」—— 那会变成第二套协议实现，
+    结果格式与退出码语义立刻开始漂移（2026-10-02 之前就是这样）。
+    """
+    candidates = _worker_source_candidates()
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    raise ToolRuntimeUnavailable(
+        "容器隔离执行需要 worker 源码（冻结产物应随包携带 agent/tool_worker.py）："
+        + "、".join(str(path) for path in candidates)
+    )
+
+
+def _worker_source_candidates() -> list[Path]:
+    """按优先级列出可能的 worker 源码位置（冻结资源 → 源码路径）。"""
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass).joinpath(*FROZEN_WORKER_RESOURCE))
+    candidates.append(_worker_script_path())
+    return candidates
 
 
 def is_frozen() -> bool:

@@ -30,7 +30,10 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # 只用于标注：executor_env 不 import 本模块，运行期再取
+    from agent.tools.executor_env import ToolExecutorSpec
 
 from agent.tools.policy import CapabilityLevel, ToolExecutionPolicy
 from agent.tools.project_files import check_project_size, materialize
@@ -42,6 +45,9 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DOCKER_BINARY = "docker"
 # 探测只是「能不能用容器」的前置询问，不该让工具调用长时间挂住。
 DOCKER_PROBE_TIMEOUT_SECONDS = 5.0
+# 超时/取消/输出超限后清理**这一次调用的容器**（docker rm -f）的上限。
+# 清理是尽力而为：失败只记日志，不盖过真正的错误。
+DOCKER_CLEANUP_TIMEOUT_SECONDS = 15.0
 
 # 父进程愿意为一个工具子进程缓冲的上限。worker 自己也会限长（见
 # agent/tool_worker.py），这里是第二道闸：一个不是 worker 的程序（或坏掉的
@@ -68,35 +74,49 @@ _ENV_ALLOWLIST = (
     "LC_ALL",
 )
 
-# 容器里的执行脚本：先把这个项目的文件写进容器内的 /tmp/project，再在那里执行
-# 入口。语义与受限子进程那条路径一致（存在本地 docker 时才走这里）。
-_DOCKER_SCRIPT_TEMPLATE = """
-import importlib, json, os, sys
-PROJECT = "/tmp/project"
+# 容器里的引导脚本：把这个项目的文件写进容器内的 /tmp/project，再把**同一份 worker
+# 源码**写进去执行它。
+#
+# 为什么不是「在容器里另写一段跑工具代码的脚本」：那会变成第二套协议实现 ——
+# 结果格式、退出码语义、输出截断、错误分类都得各写一遍，一定漂移（2026-10-02 之前
+# 就是这样：容器路径只认「最后一行 JSON」，连 ok/value 都不校验，也不限长）。
+# 现在两条路径跑的是同一个 agent/tool_worker.py、同一套 stdin/stdout 协议。
+# 容器内的路径（写成常量而不是散在模板里：本地可以用临时目录跑同一段脚本，
+# 见 tests/test_sandbox_executor.py::test_container_bootstrap_runs_the_same_worker）。
+CONTAINER_PROJECT_DIR = "/tmp/project"
+CONTAINER_WORKER_PATH = "/tmp/qio-tool-worker.py"
+
+_DOCKER_BOOTSTRAP_TEMPLATE = """
+import os, sys
+PROJECT = {project}
+WORKER_PATH = {worker_path}
+WORKER_SOURCE = {worker_source}
 os.makedirs(PROJECT, exist_ok=True)
 for rel, content in {files}.items():
     target = os.path.join(PROJECT, rel)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.makedirs(os.path.dirname(target) or PROJECT, exist_ok=True)
     with open(target, "w", encoding="utf-8") as handle:
         handle.write(content)
-sys.path.insert(0, PROJECT)
+with open(WORKER_PATH, "w", encoding="utf-8") as handle:
+    handle.write(WORKER_SOURCE)
 os.chdir(PROJECT)
-CODE = {code}
-ENTRY = {entry}
-ARGS = {arguments}
-if ENTRY:
-    module_name, _, func_name = ENTRY.partition(":")
-    run = getattr(importlib.import_module(module_name), func_name)
-else:
-    namespace = {{}}
-    exec(compile(CODE, "<tool>", "exec"), namespace)
-    run = namespace["run"]
-print(json.dumps(run(**ARGS), ensure_ascii=False))
+sys.argv = [WORKER_PATH]
+exec(compile(WORKER_SOURCE, WORKER_PATH, "exec"),
+     {{"__name__": "__main__", "__file__": WORKER_PATH}})
 """
 
 
 def _system_env(scratch_dir: str) -> dict[str, str]:
-    """系统环境白名单（+ 本项目固定的编码设置）。"""
+    """工具子进程的环境：**逐项白名单**，不继承 os.environ。
+
+    三条硬规则（回归用例 test_sandbox_worker.py 直接断言）：
+    1. 只传「跑起来确实需要」的系统变量（PATH/TEMP/系统目录/语言），
+       不做 `env=dict(os.environ)` 这种整体继承 —— 那会把 QIO 令牌、
+       API Key、用户自己的业务变量一起递进生成代码；
+    2. Python 的 I/O 编码变量由这里**显式钉死**（PYTHONIOENCODING/PYTHONUTF8），
+       于是同一份 worker 在 cp1252 / cp936 / UTF-8 的机器上行为一致；
+    3. TEMP/TMP 没配时兜底到本次调用的一次性临时目录。
+    """
     env: dict[str, str] = {}
     for key in _ENV_ALLOWLIST:
         value = os.environ.get(key)
@@ -105,6 +125,8 @@ def _system_env(scratch_dir: str) -> dict[str, str]:
     env.setdefault("TEMP", scratch_dir)
     env.setdefault("TMP", scratch_dir)
     env["PYTHONIOENCODING"] = "utf-8"
+    # 让工具自己的 open()/文件读写也默认 UTF-8：容器里是 C.UTF-8，宿主上不该是另一套。
+    env["PYTHONUTF8"] = "1"
     return env
 
 
@@ -188,7 +210,118 @@ def _category_for(error_type: str | None, stderr: str) -> str:
     text = (stderr or "").lower()
     if error_type in {"ModuleNotFoundError", "ImportError"} or "no module named" in text:
         return "missing_dependency"
+    # worker 自己发现结果通道装不下返回值（见 agent/tool_worker.py）：这是输出格式
+    # 问题，不是工具代码异常。
+    if error_type == "ResultTooLarge":
+        return "output_format"
     return "code_error"
+
+
+def _worker_request(code: str, entry: str | None, arguments: dict[str, Any]) -> bytes:
+    """协议请求体：UTF-8 编码的一个 JSON 对象（见 agent/tool_worker.py）。"""
+    return json.dumps(
+        {"code": code, "entry": entry or "", "arguments": arguments},
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _container_name() -> str:
+    """每次调用一个唯一容器名：超时/取消时才可能只清掉这一次的容器。"""
+    return f"qio-tool-{os.urandom(6).hex()}"
+
+
+def _parse_worker_result(
+    *,
+    returncode: int | None,
+    stdout_text: str,
+    stderr_text: str,
+    over_limit: bool,
+    runtime: str,
+) -> SandboxResult:
+    """把 worker 的结果通道翻译成 SandboxResult —— **协议的唯一权威实现**。
+
+    受限子进程与容器执行都调用这里。以前容器路径另有一套「取最后一行 JSON」的
+    判断：不校验 ok 是不是布尔、不校验 value 是不是对象、不限长、只看最后一行 ——
+    同一个 worker 的两条执行路径对「什么算成功」给出不同答案。
+
+    判定顺序（顺序本身就是协议的一部分）：
+    输出超限 → 退出码 → 空输出 → 恰好一行 → 合法 JSON → 布尔 ok → value 类型。
+    """
+    label = "工具执行程序（容器）" if runtime == "docker" else "工具执行程序"
+    if over_limit:
+        return SandboxResult(
+            ok=False, value=None, stdout="", stderr="",
+            error=(
+                f"{label}的输出超过上限"
+                f"（stdout {MAX_WORKER_STDOUT_BYTES} 字节 / "
+                f"stderr {MAX_WORKER_STDERR_BYTES} 字节），已终止本次执行。"
+            ),
+            category="output_format",
+        )
+    if returncode != 0:
+        # 工具自己打印一行形似成功的结果再以非零码退出（或崩溃、被信号杀死）：
+        # 退出码是硬事实，结果通道不可信。
+        if returncode is not None and returncode < 0:
+            detail = f"被信号终止（signal {-returncode}）"
+        else:
+            detail = f"异常退出（exit code {returncode}）"
+        return SandboxResult(
+            ok=False, value=None, stdout=stdout_text, stderr=stderr_text,
+            error=f"{label}{detail}：结果不可信，已按失败处理。",
+            category="startup",
+        )
+    if not stdout_text:
+        return SandboxResult(
+            ok=False, value=None, stdout=stdout_text, stderr=stderr_text,
+            error=f"{label}没有返回结果",
+            category="output_format",
+        )
+    lines = [line for line in stdout_text.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return SandboxResult(
+            ok=False, value=None, stdout=stdout_text, stderr=stderr_text,
+            error=f"结果通道必须恰好一行 JSON（实际 {len(lines)} 行）",
+            category="output_format",
+        )
+    try:
+        payload = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return SandboxResult(
+            ok=False, value=None, stdout=stdout_text, stderr=stderr_text,
+            error="工具执行程序返回的不是合法 JSON 结果",
+            category="output_format",
+        )
+    if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+        return SandboxResult(
+            ok=False, value=None, stdout=stdout_text, stderr=stderr_text,
+            error="工具执行程序的返回结果缺少布尔字段 ok",
+            category="output_format",
+        )
+    tool_stdout = str(payload.get("stdout") or "")
+    tool_stderr = str(payload.get("stderr") or "")
+    if not payload["ok"]:
+        return SandboxResult(
+            ok=False,
+            value=None,
+            stdout=tool_stdout,
+            stderr=tool_stderr or stderr_text,
+            error=str(payload.get("error") or "工具执行失败"),
+            category=_category_for(payload.get("error_type"), tool_stderr),
+        )
+    value = payload.get("value")
+    if not isinstance(value, dict):
+        return SandboxResult(
+            ok=False, value=None, stdout=tool_stdout,
+            stderr=tool_stderr or stderr_text,
+            error="工具执行程序声称成功但 value 不是 JSON 对象",
+            category="output_format",
+        )
+    return SandboxResult(
+        ok=True,
+        value=value,
+        stdout=tool_stdout,
+        stderr=tool_stderr,
+    )
 
 
 def _spawn_kwargs() -> dict:
@@ -224,12 +357,15 @@ async def _kill_process_tree(process) -> None:
         await process.wait()
 
 
-async def _exchange(process, request: bytes) -> tuple[bytes, bytes, bool]:
+async def _exchange(process, request: bytes, on_over_limit=None) -> tuple[bytes, bytes, bool]:
     """写请求、有界读回 stdout/stderr，返回 `(stdout, stderr, 超限?)`。
 
     以前用 `process.communicate()`：父进程先把子进程的全部输出读进内存，输出
     限制要等 worker 自己截断才生效。现在边读边计数；任何一侧超过上限就立刻终止
     这棵进程树（否则子进程继续写、父进程不再消费，管道填满后双方互等）。
+
+    `on_over_limit` 交给调用方决定「怎么终止」：受限子进程杀进程树；容器路径还得
+    先 `docker rm -f` 把容器停掉 —— 只杀 docker 客户端，容器会继续在后台跑。
     """
     over_limit = False
 
@@ -254,7 +390,10 @@ async def _exchange(process, request: bytes) -> tuple[bytes, bytes, bool]:
                 capped = True
                 # 立刻结束这棵进程树：否则子进程继续写、我们只读不留，
                 # 会一直读到超时。
-                await _kill_process_tree(process)
+                if on_over_limit is not None:
+                    await on_over_limit()
+                else:
+                    await _kill_process_tree(process)
                 continue
             chunks.append(chunk)
 
@@ -283,15 +422,34 @@ class SandboxExecutor:
         self,
         executor: str = "auto",
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        tool_executor: "ToolExecutorSpec | None" = None,
     ) -> None:
+        """`tool_executor` 是**已经解析好的** worker 运行方式（正常依赖注入）。
+
+        给了它就等于把「用哪个程序跑 worker」钉死：`auto` 不再去探测 docker，也不会
+        再走 `resolve_tool_executor` 的另一套解析 —— 显式注入的运行方式不会被自动解析
+        悄悄换掉（诊断、测试、嵌入方自己决定运行方式时走的就是这条缝，不需要 CI/pytest
+        特判）。显式 `executor="docker"` 与它互相矛盾：构造时就报错，不猜。
+        """
+        if tool_executor is not None and executor == "docker":
+            raise ValueError(
+                "显式 docker 与显式注入的工具执行方式互相矛盾："
+                "容器路径不经过注入的 worker 运行方式。"
+            )
         self.executor = executor
         self.timeout_seconds = timeout_seconds
+        self.tool_executor = tool_executor
 
     async def effective_executor(self) -> str:
         """实际会用的执行器。
 
         auto 下「有 docker 命令行」不算可用，要守护进程应答（见 docker_daemon_ready）。
+        注入了运行方式时不再探测：注入的 worker 就是这次执行的方式。
         """
+        if self.executor == "docker":
+            return "docker"
+        if self.tool_executor is not None:
+            return "subprocess"
         if self.executor != "auto":
             return self.executor
         return "docker" if await docker_daemon_ready() else "subprocess"
@@ -325,6 +483,17 @@ class SandboxExecutor:
                 ok=False, value=None, stdout="", stderr="",
                 error=str(exc), category="code_error",
             )
+        if interpreter and self.tool_executor is not None:
+            # 两个显式指定的东西互相矛盾：注入的是「用哪个程序跑 worker」，
+            # interpreter 是「用哪个环境跑工具」。说清楚，不悄悄选一边。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=(
+                    "显式注入的工具执行方式与项目专用环境解释器互相矛盾："
+                    "两者不能同时生效。"
+                ),
+                category="environment",
+            )
         if interpreter and self.executor == "docker":
             # 专用依赖环境是宿主上的 venv，容器里没有它；用容器里的 Python 跑
             # 等于把「依赖已装好」这句话变成假的。说清楚，让调用方选一条路。
@@ -355,7 +524,7 @@ class SandboxExecutor:
                 )
             return await self._execute_docker(code, arguments, policy, project_files, entry)
 
-        if self.executor == "auto" and await docker_daemon_ready():
+        if self.executor == "auto" and self.tool_executor is None and await docker_daemon_ready():
             if interpreter:
                 # 同上：auto 选到容器时也不能假装依赖可用。
                 return SandboxResult(
@@ -406,19 +575,18 @@ class SandboxExecutor:
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
-        try:
-            spec = resolve_tool_executor(interpreter)
-        except ToolRuntimeUnavailable as exc:
-            # 没有可用执行方式：如实报环境问题，不静默用 PATH 里未知的 Python。
-            return SandboxResult(
-                ok=False, value=None, stdout="", stderr="",
-                error=str(exc), category="environment",
-            )
+        spec = self.tool_executor
+        if spec is None:
+            try:
+                spec = resolve_tool_executor(interpreter)
+            except ToolRuntimeUnavailable as exc:
+                # 没有可用执行方式：如实报环境问题，不静默用 PATH 里未知的 Python。
+                return SandboxResult(
+                    ok=False, value=None, stdout="", stderr="",
+                    error=str(exc), category="environment",
+                )
         # 结构化请求走标准输入；结果只从标准输出读一行 JSON（见 agent/tool_worker.py）。
-        request = json.dumps(
-            {"code": code, "entry": entry or "", "arguments": arguments},
-            ensure_ascii=False,
-        ).encode("utf-8")
+        request = _worker_request(code, entry, arguments)
         # ignore_cleanup_errors：Windows 上被终止的子进程可能短暂占住作为 cwd 的
         # 临时目录，清理失败不应该让工具执行以异常收场（错误信息本身已经返回）。
         with tempfile.TemporaryDirectory(
@@ -472,86 +640,34 @@ class SandboxExecutor:
                 # 用户取消：同样只清理这一棵进程树，然后如实向上传递取消语义。
                 await _kill_process_tree(process)
                 raise
-            if over_limit:
-                # 进程树已经在读取侧终止；这里只负责如实说明为什么没结果。
-                return SandboxResult(
-                    ok=False, value=None, stdout="", stderr="",
-                    error=(
-                        "工具执行程序的输出超过上限"
-                        f"（stdout {MAX_WORKER_STDOUT_BYTES} 字节 / "
-                        f"stderr {MAX_WORKER_STDERR_BYTES} 字节），已终止本次执行。"
-                    ),
-                    category="output_format",
-                )
-            out_text = stdout.decode("utf-8", errors="replace").strip()
-            err_text = stderr.decode("utf-8", errors="replace").strip()
-
-            # 成功必须是「正常退出 + 恰好一行合法 JSON + 字段类型对」。以前只看
-            # 最后一行 JSON：工具自己打印一行形似成功的结果（甚至接着以非零码
-            # 退出）也会被当成 ok=True —— 协议的可信度就是这么丢掉的。
-            if process.returncode != 0:
-                return SandboxResult(
-                    ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error=(
-                        f"工具执行程序异常退出（exit code {process.returncode}）："
-                        "结果不可信，已按失败处理。"
-                    ),
-                    category="startup",
-                )
-            if not out_text:
-                return SandboxResult(
-                    ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error="工具执行程序没有返回结果",
-                    category="output_format",
-                )
-            lines = [line for line in out_text.splitlines() if line.strip()]
-            if len(lines) != 1:
-                return SandboxResult(
-                    ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error=f"结果通道必须恰好一行 JSON（实际 {len(lines)} 行）",
-                    category="output_format",
-                )
-            try:
-                payload = json.loads(lines[0])
-            except json.JSONDecodeError:
-                return SandboxResult(
-                    ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error="工具执行程序返回的不是合法 JSON 结果",
-                    category="output_format",
-                )
-            if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
-                return SandboxResult(
-                    ok=False, value=None, stdout=out_text, stderr=err_text,
-                    error="工具执行程序的返回结果缺少布尔字段 ok",
-                    category="output_format",
-                )
-            tool_stdout = str(payload.get("stdout") or "")
-            tool_stderr = str(payload.get("stderr") or "")
-            if not payload.get("ok"):
-                return SandboxResult(
-                    ok=False,
-                    value=None,
-                    stdout=tool_stdout,
-                    stderr=tool_stderr or err_text,
-                    error=str(payload.get("error") or "工具执行失败"),
-                    category=_category_for(payload.get("error_type"), tool_stderr),
-                )
-            value = payload.get("value")
-            if not isinstance(value, dict):
-                return SandboxResult(
-                    ok=False, value=None, stdout=tool_stdout,
-                    stderr=tool_stderr or err_text,
-                    error="工具执行程序声称成功但 value 不是 JSON 对象",
-                    category="output_format",
-                )
-            return SandboxResult(
-                ok=True,
-                value=value,
-                stdout=tool_stdout,
-                stderr=tool_stderr,
+            # 协议判定只有一份实现（见 _parse_worker_result）：
+            # 输出超限 → 退出码 → 空输出 → 恰好一行 → 合法 JSON → 布尔 ok → value 类型。
+            return _parse_worker_result(
+                returncode=process.returncode,
+                stdout_text=stdout.decode("utf-8", errors="replace").strip(),
+                stderr_text=stderr.decode("utf-8", errors="replace").strip(),
+                over_limit=over_limit,
+                runtime="subprocess",
             )
 
     # -- docker executor (optional) --------------------------------------
+
+    async def _remove_container(self, name: str) -> None:
+        """结束这次调用对应的容器（超时 / 取消 / 输出超限）。
+
+        只 kill docker 客户端是不够的：容器会继续在后台跑（`--rm` 也要等它自己退出
+        才清理）。这里按唯一名字 `docker rm -f`，只影响这一次调用，不碰别人的容器。
+        """
+        try:
+            remover = await asyncio.create_subprocess_exec(
+                DOCKER_BINARY, "rm", "-f", name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(remover.wait(), timeout=DOCKER_CLEANUP_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - 清理是尽力而为，不盖过真正的错误
+            logger.warning("failed to remove tool container (name=%s)", name, exc_info=True)
 
     async def _execute_docker(
         self,
@@ -561,36 +677,43 @@ class SandboxExecutor:
         files: dict[str, str] | None = None,
         entry: str | None = None,
     ) -> SandboxResult:
-        """在容器里执行。docker 是否可用由调用方确认（见 `docker_daemon_ready`）。"""
+        """在容器里执行。docker 是否可用由调用方确认（见 `docker_daemon_ready`）。
+
+        容器里跑的是**同一份 worker 源码**（见 `_DOCKER_BOOTSTRAP_TEMPLATE`）：请求从
+        stdin 进、结果从 stdout 出一行 JSON、退出码语义与受限子进程完全一致。
+        """
+        from agent.tools.executor_env import ToolRuntimeUnavailable, worker_source
+
         policy = policy or ToolExecutionPolicy()
-        script = _DOCKER_SCRIPT_TEMPLATE.format(
-            code=repr(code),
-            entry=repr(entry or ""),
+        try:
+            source = worker_source()
+        except ToolRuntimeUnavailable as exc:
+            # 拿不到 worker 源码就说清楚，绝不静默降级成「没有隔离地再跑一遍」。
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=str(exc), category="environment",
+            )
+        script = _DOCKER_BOOTSTRAP_TEMPLATE.format(
+            project=repr(CONTAINER_PROJECT_DIR),
+            worker_path=repr(CONTAINER_WORKER_PATH),
             files=repr(dict(files or {})),
-            arguments=repr(arguments),
+            worker_source=repr(source),
         )
-        command = self._docker_command(script, policy)
+        name = _container_name()
+        command = self._docker_command(script, policy, name)
+        request = _worker_request(code, entry, arguments)
+
+        async def _terminate() -> None:
+            """终止这次调用：先停容器，再收掉 docker 客户端进程。"""
+            await self._remove_container(name)
+            await _kill_process_tree(process)
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            # 超时不回退：容器可能已经在跑，重跑等于在没有隔离的情况下又执行一遍。
-            # 同受限子进程执行器，被终止的进程必须真的终止。
-            with contextlib.suppress(Exception):
-                process.kill()
-            with contextlib.suppress(Exception):
-                await process.wait()
-            return SandboxResult(
-                ok=False, value=None, stdout="", stderr="",
-                error=f"docker timeout after {self.timeout_seconds}s",
-                category="timeout",
             )
         except OSError as exc:
             # 探测之后 docker 命令行起不来了（被卸载、路径变了）：容器没起来，
@@ -600,9 +723,26 @@ class SandboxExecutor:
                 error=f"docker 无法启动：{exc}", launch_failed=True,
                 category="environment",
             )
+        try:
+            stdout, stderr, over_limit = await asyncio.wait_for(
+                _exchange(process, request, on_over_limit=_terminate),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            # 超时不回退：容器可能已经在跑，重跑等于在没有隔离的情况下又执行一遍。
+            await _terminate()
+            return SandboxResult(
+                ok=False, value=None, stdout="", stderr="",
+                error=f"docker timeout after {self.timeout_seconds}s",
+                category="timeout",
+            )
+        except asyncio.CancelledError:
+            # 用户取消：容器与客户端都要清掉，然后如实向上传递取消语义。
+            await _terminate()
+            raise
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
-        if process.returncode != 0:
+        if process.returncode in (125, 126, 127):
             # 125 是 docker 自己的「这条命令根本没跑起来」（守护进程不可达、镜像拉
             # 不下来、参数被拒）；126/127 是容器起来了但命令跑不了，其余退出码来自
             # 容器里的工具本身 —— 只有 125 属于「容器没起来」，只有它允许回退。
@@ -615,20 +755,25 @@ class SandboxExecutor:
                     else _classify_failure(err_text)
                 ),
             )
-        try:
-            value = json.loads(out_text.splitlines()[-1]) if out_text else {}
-        except (json.JSONDecodeError, IndexError):
-            return SandboxResult(
-                ok=False, value=None, stdout=out_text, stderr=err_text,
-                error="tool did not print a JSON result",
-                category="output_format",
-            )
-        return SandboxResult(ok=True, value=value, stdout=out_text, stderr=err_text)
+        # 与受限子进程同一套协议判定（这是唯一权威实现）。
+        return _parse_worker_result(
+            returncode=process.returncode,
+            stdout_text=out_text,
+            stderr_text=err_text,
+            over_limit=over_limit,
+            runtime="docker",
+        )
 
-    def _docker_command(self, script: str, policy: ToolExecutionPolicy) -> list[str]:
-        """Build the docker run command from the execution policy."""
+    def _docker_command(
+        self, script: str, policy: ToolExecutionPolicy, name: str
+    ) -> list[str]:
+        """Build the docker run command from the execution policy.
+
+        `name` 是这次调用唯一的容器名：超时/取消时要靠它精确清理（见 `_remove_container`）。
+        """
         command = [
             "docker", "run", "--rm",
+            "--name", name,
             "--network", "bridge" if policy.network else "none",
             "--memory", "256m",
             "--cpus", "1",
