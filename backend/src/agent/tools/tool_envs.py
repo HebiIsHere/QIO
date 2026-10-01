@@ -416,6 +416,81 @@ class ContainerStatus:
     pinned: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ToolExecutionEnv:
+    """一次工具执行该用哪个环境：宿主专用解释器或容器依赖镜像（二选一，不给就两个都是 None）。"""
+
+    ok: bool
+    executor: str
+    interpreter: str | None = None
+    container_image: str | None = None
+    reason: str | None = None
+
+
+async def resolve_execution_environment(
+    definition: Any,
+    envs: "ToolEnvManager | None",
+    *,
+    executor: str,
+    prepare: bool,
+    approvals=None,
+    tool_name: str = "",
+    task_id: str | None = None,
+) -> ToolExecutionEnv:
+    """按执行器决定「用宿主专用环境还是容器依赖镜像」，没准备好就给出原因。
+
+    `executor` 必须是解析后的执行器（`await sandbox.effective_executor()`），不是 "auto"。
+
+    * 没有依赖声明 → 随包环境（两个字段都为 None）；
+    * 受限子进程 → 宿主专用环境：`prepare=True`（测试阶段）先装好并征求安装许可，
+      `prepare=False`（注册后调用）只查（status_for），缺了就明确失败；
+    * 容器 → 按锁定清单构建的依赖镜像：`prepare=True` 可用审批现构建，`prepare=False`
+      只复用本机已有的镜像（docker image inspect 命中即复用），没有就明确失败；
+    * **两条路都不静默降级**：没准备好只返回 reason，绝不换成「没有依赖的解释器」跑一遍 ——
+      那等于把缺依赖变成假成功。调用方拿到 reason 必须原样明确失败。
+    """
+    requirements = _normalize_requirements(getattr(definition, "requirements", None) or [])
+    if not requirements:
+        return ToolExecutionEnv(ok=True, executor=executor)
+    if envs is None:
+        return ToolExecutionEnv(
+            ok=False,
+            executor=executor,
+            reason=(
+                "这个工具声明了第三方依赖，但当前没有可用的专用环境管理："
+                "无法保证依赖存在，已拒绝执行。"
+            ),
+        )
+    if executor == "docker":
+        status = await envs.ensure_container_image(
+            requirements,
+            approvals=approvals if prepare else None,
+            tool_name=tool_name,
+            task_id=task_id,
+        )
+        if not status.ok:
+            reason = status.reason or "依赖镜像没准备好，已拒绝执行"
+            if not prepare:
+                reason += "（跑一次这个工具的测试会问你是否允许构建依赖镜像。）"
+            return ToolExecutionEnv(
+                ok=False, executor=executor, reason=reason, container_image=status.image
+            )
+        return ToolExecutionEnv(ok=True, executor=executor, container_image=status.image)
+    if prepare:
+        status = await envs.ensure(
+            requirements, approvals=approvals, tool_name=tool_name, task_id=task_id
+        )
+    else:
+        status = envs.status_for(requirements)
+    if not status.ok:
+        return ToolExecutionEnv(
+            ok=False,
+            executor=executor,
+            reason=status.reason or "专用环境没准备好，已拒绝执行",
+        )
+    return ToolExecutionEnv(ok=True, executor=executor, interpreter=status.interpreter)
+
+
 class ToolEnvManager:
     """按依赖集合管理专用 Python 环境，并记录可复现的版本锁定。"""
 

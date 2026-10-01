@@ -54,8 +54,16 @@ class ToolTester:
         self.sandbox = sandbox
 
     async def run(
-        self, definition: ToolDefinition, interpreter: str | None = None
+        self,
+        definition: ToolDefinition,
+        interpreter: str | None = None,
+        container_image: str | None = None,
     ) -> TestReport:
+        """跑一遍定义里的确定性用例。
+
+        interpreter 是宿主专用环境的 Python；container_image 是按锁定清单准备好的依赖
+        镜像。两者由调用方按执行器二选一（见 tools/tool_envs.py 的
+        resolve_execution_environment）；两个都不给 = 随包环境。"""
         report = TestReport(tool_name=definition.name)
         try:
             fixture = fixture_for_definition(definition)
@@ -69,7 +77,13 @@ class ToolTester:
         try:
             for test in definition.tests:
                 outcome = await self._run_case(
-                    definition, test.name, test.input, test.expect, interpreter, fixture
+                    definition,
+                    test.name,
+                    test.input,
+                    test.expect,
+                    interpreter,
+                    fixture,
+                    container_image,
                 )
                 if not outcome.passed:
                     # 缺依赖是最常见的失败之一：把「缺的是哪一个、声明过没有」写在
@@ -93,16 +107,21 @@ class ToolTester:
         expected: dict,
         interpreter: str | None = None,
         fixture: MockFixture | None = None,
+        container_image: str | None = None,
     ) -> TestOutcome:
         # 多文件项目：整份项目（入口 + 其它文件）一起进沙箱，测试跑的就是要注册的东西。
         # 声明了模拟服务的项目：把夹具的环境变量一起带进去（默认断网 + 假凭据）。
+        # 容器依赖镜像只在真给了的时候才传：sandbox 的替身（测试里）不必认识这个参数。
+        execution: dict = {"interpreter": interpreter}
+        if container_image:
+            execution["container_image"] = container_image
         result = await self.sandbox.execute(
             definition.code,
             inputs,
             extra_env=fixture.extra_env() if fixture is not None else None,
             files=definition.files,
             entry=definition.entry,
-            interpreter=interpreter,
+            **execution,
         )
         note = _mock_note(fixture)
         if not result.ok:
