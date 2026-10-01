@@ -148,7 +148,8 @@
 - **Implementation（2026-09-15 第三阶段 · 创建进度与审批表达）：** 工具创建以前在界面上是一串彼此无关的工具卡（`create_tool` → `dev_write_file` → `dev_run_tests` → `dev_submit_tool`），用户看不出走到哪一步。现在 `tools/dev_tools.py` 的 `ToolCreateStatus` 出口按 **`group_id`（开发工作区）** 发 `TOOL_CREATE_STATUS`，phase 为 `proposal / building / testing / testing_passed / testing_failed / waiting_approval / registering / ready / failed`，前端同一张卡原地推进；失败（测试没过 / 用户拒绝 / 超时 / 凭据不可用 / 注册冲突）都带可理解的中文原因。同时 `tools/approval_present.py::describe_tool_call` 把每次工具调用翻译成「想做什么 / 会访问什么 / 影响 / 一次性还是长期」（`description` / `access` / `capabilities` / `scope`），工具执行的审批不再是 `fs_write path=...` 这种只有工程师能读的形式。
 - **Tests（2026-09-15 追加）：** `backend/tests/test_tool_create_events.py`、`test_approval_present.py`；前端 `components/__tests__/ApprovalModal.test.ts`（授权范围与访问清单）、`stores/__tests__/phase3Cards.test.ts`（同一 group_id 一张卡）
 - **Tests：** `backend/tests/test_tool_lifecycle.py`、`test_dev_tools.py`、`test_dev_workflow_integration.py`、`test_tool_policy.py`、`test_computer_sandbox.py`、`test_subagent.py`、`test_subagent_integration.py`、`test_tool_parallel_cancel.py`、`test_tool_registry_reversible.py`、`test_tool_restore.py`、`test_tool_store.py`、`test_tool_schema_present.py`、`test_tool_pipeline.py`、`test_tool_event_isolation.py`
-- **Known limitations：** 受限子进程不是强安全隔离，而且**不强制**文件/网络隔离——实测声明为 PURE 的工具仍可读取用户目录。当前强制力只来自「按声明拒绝高风险」+「剥离环境变量」，谎报能力的工具拦不住。高风险能力在没有可用 Docker 时直接拒绝执行，不做静默降级。子 agent 异步并行上限见 `tools/task_manager.py`。
+- **Known limitations：** 受限子进程不是强安全隔离，而且**不强制**文件/网络隔离——实测声明为 PURE 的工具仍可读取用户目录。当前强制力只来自「按声明拒绝高风险」+「剥离环境变量」+「凭据不进工具结果」，谎报能力的工具拦不住。高风险能力在没有可用 Docker 时直接拒绝执行，不做静默降级。子 agent 异步并行上限见 `tools/task_manager.py`。
+  隔离说法与「不保护什么」只有一个来源（`tools/policy.py` 的 `isolation_label` / `unprotected_surfaces`，按**真实执行器**推导）；威胁模型与分阶段方案见 `docs/security/tool-execution-isolation.md`。**强制隔离未实现**，不要把它读成已实现。
 - **Implementation（2026-09-14 任务04 确认调度）：** 后台任务请求确认不再无条件抢焦点——用户正在输入（输入框/文本域/可编辑区）时到达的审批
   只入队并亮出常驻入口「⚠ 有 N 项操作等待确认」（`components/ApprovalEntry.vue`，顶部居中，避开右下角浮动组件），用户主动点开才显示窗口；
   没在输入时仍立即弹出（直接相关的确认不延迟）。窗口新增「稍后处理」＝只收起窗口、保留待审批任务（不批准也不拒绝）；**Esc 改为按最上层处理**：
@@ -1035,9 +1036,9 @@ npm test
 **仍未验证 / 未实现（如实标注）**
 
 - **完整安装包（`tauri build` 产物）的人工安装验收**：NOT RUN。上面跑的是 PyInstaller 冻结 exe，不是装完的安装包。
-- **「没有 Docker」的对照实验**：NOT RUN。本机 Docker 状态未变更，worker 路径本来就不经过 Docker。
-- **Docker 执行器的协议统一**：Docker 分支仍用容器内 `python -c` 的旧协议，未与新 worker 协议合并。NOT RUN（未实测）。
-- **额外依赖的项目级隔离**（QIO 管理的专用 Python 环境 / 项目级依赖安装）：**未实现**，只有接口位置。默认只复用随包依赖；用到第三方库的工具会以 `missing_dependency` 明确失败，不会自动安装。
+- ~~**「没有 Docker」的对照实验**：NOT RUN。~~ **已由 2026-10-02 一节作废**（用进程边界桩复现了「守护进程可用 → auto 选容器 → 注入被覆盖」这条路径）。
+- ~~**Docker 执行器的协议统一**：Docker 分支仍用容器内 `python -c` 的旧协议。~~ **已由 2026-10-02 一节作废**：容器路径现在跑同一份 worker 源码与同一个 `_parse_worker_result`。
+- ~~**额外依赖的项目级隔离**：未实现。~~ **已由 2026-10-02 一节作废**：专用环境 + 锁定清单 + 清理入口已实现；容器执行路径下的依赖准备有准备侧实现、执行侧待 ubuntu CI 验证。
 - 「测试也执行实际权限检查」这条只覆盖了既有 `policy` 能力分级与审批路径，**测试数据隔离**（临时库/临时目录/模拟服务）没有在本轮补。
 
 > 上面两条与 worker 协议可信度、输出保护相关的缺口，已由下一节「第一阶段收尾」补齐；安装包人工验收仍是 NOT RUN。
@@ -1195,9 +1196,11 @@ npm test
 
 **仍未做（不宣称完成）**
 
-- **项目级依赖隔离**（QIO 管理的专用 Python 环境）仍未实现；缺依赖仍以 `missing_dependency` 明确失败。
-- **真实外部服务模拟**：测试不注入凭据、不联网，但「模拟服务」本身没有做（工具里写死的真实 HTTP 调用在测试里就是失败或模拟不到）。
-- **旧的传统创建路径** `ToolLifecycle.create_from_request` 没有接这道闸门 —— 它在生产代码里没有调用点（只有测试用），但确实还留着。
+- ~~**项目级依赖隔离**仍未实现。~~ **已由 2026-10-02 一节补齐**（专用环境 + 锁定清单 + 清理入口）。
+- ~~**真实外部服务模拟**没有做。~~ **已由 2026-10-02 一节补齐**（`qio-mocks.json` 显式模拟服务夹具；默认断网、假凭据、结论写明「不等于真实服务已验证」）。
+- ~~**旧的传统创建路径** `ToolLifecycle.create_from_request` …… 但确实还留着。~~ **已删除**（2026-10-02）。
+  复现证据：调用它时即使用户拒绝，沙箱仍执行了 2 次 AI 生成的代码；生产代码里只有定义、没有调用点（6 处调用全在测试里）。
+  现在由 `tests/test_tool_creation_entrypoints.py` 的源码守卫锁住它不会复活（AST 断言 + 「执行生成代码只允许两个位置」扫描）。
 
 ---
 
@@ -1404,3 +1407,79 @@ Vite `127.0.0.1:5199`，独立数据目录，不碰用户的真实数据）。�
 它只是把已经在本机验证过的两条命令串起来；`frozen_worker_smoke.py` 与
 `build_sidecar.ps1` 是实跑过的。安装包（Tauri NSIS）**仍未做端到端人工验收** ——
 本轮只验到「后端冻结产物能按协议跑工具」。
+
+---
+
+## 本轮变更：可靠性收敛（2026-10-02）
+
+这一轮没有加产品功能，只做「把已经发现且仍然成立的问题修到根因，并把修不了的边界写清楚」。
+所有条目都带真实执行证据；没有用 skip / xfail / 放宽断言 / 平台特判换取绿灯。
+
+### 执行链与 worker 协议（P0）
+
+| 问题（复现） | 根因 | 修法 | 证据 |
+| --- | --- | --- | --- |
+| Windows 上 `tests/test_tool_worker.py` 3 条红：结果通道 stdout 全空、错误通道是字面 `\u5de5\u5177…` | worker 从不钉自己的 I/O 编码：结果用 `json.dumps(ensure_ascii=False)` 写 `sys.stdout`，cp1252 机器上只要有中文就 `UnicodeEncodeError` 死在结果通道；`sys.stderr` 默认 `backslashreplace` 把中文写成转义 | 协议通道钉死 UTF-8（字节层读写 + `reconfigure` 兜底），编不出去时降级成 ASCII 转义行（同一个 JSON 值）；结果行加字节上限，超限给**合法**的协议失败 | 显式 `PYTHONIOENCODING=cp1252` 子进程复现改前/改后；`tests/test_tool_worker.py` 新增 8 条在 cp936 与 cp1252 下都跑 |
+| Linux CI 上 `tests/test_sandbox_worker.py` 10 条红，错误信息里是 `docker exit code 1` | ubuntu runner 的 docker 守护进程可用 → `auto` 选了容器路径；而测试的 fake worker 是 monkeypatch 内部 resolver，**只有受限子进程路径会读它**，注入被静默覆盖；容器分支还是第二套实现（只认最后一行、不校验 ok/value、不限长、超时只杀客户端） | 正常依赖注入 `SandboxExecutor(tool_executor=…)`，显式注入后 `auto` 不再探测 docker；容器路径跑**同一份 worker 源码**，协议判定收敛为唯一 `_parse_worker_result`；容器补齐 `docker rm -f <本次唯一名字>`、有界读取与取消语义 | 修前用进程边界桩复现出与 CI 逐字相同的 `error='docker exit code 1'`；CI run `36908760127`：backend py3.11 / py3.12 / windows-latest / frozen worker 全绿 |
+| 冻结产物冒烟在 CI 第一条打印就 `UnicodeEncodeError`，冒烟本体结论未知 | 报告层没钉编码（cp1252 控制台） | 报告层按「tty 保留控制台编码 + `backslashreplace`，重定向写 UTF-8」处理，永不抛异常；新增 `--script` 源码模式 | CI 上真 onefile 产物 3/3 通过；本机 onedir 3/3 通过；`PYTHONIOENCODING=cp1252` 下源码模式 3/3 通过 |
+
+- **环境变量白名单**保持逐项列出，绝不整体继承 `os.environ`；调用方显式注入的 `extra_env` 是受信通道，在白名单之后合并（有回归用例断言它进得去、而主机上的 `QIO_SECRET_MARKER` 进不去）。
+- **进程树清理**的上层语义在 Windows 与 POSIX 上一致，断言完全相同（真子进程 + 存活标记 + 正对照）。
+
+### 记忆派生：模型输出统一可修正层
+
+| 问题（复现） | 根因 | 修法 | 证据 |
+| --- | --- | --- | --- |
+| `title` 120 字 / `summary` 4000 字 → 摘要、索引、实体卡、知识**全部归零**；`candidates` 50 条 → 知识静默为 0 | 硬上限直接压在 pydantic 契约上，调用方把任何 `ValidationError` 当成整条派生失败；旧归一化只补了 entities/keywords 两个字段 | 新增 `memory/model_output.py` 统一可修正层（声明式字段规则：类型/数量/长度/去重/空白/坏条目逐条丢弃），只有「无法解析 / 类型完全错误 / 必需结构缺失 / 无法安全恢复」才算失败；实体卡提炼也接入该层 | `tests/test_derivation_recovery.py`（45 条，含 8 类故障注入与「不可修复必须进 trace」） |
+| 知识提炼失败只有 `logger.info`，没有状态行 | 摘要是派生任务、知识是内联的，两者不对齐 | 知识成为独立派生任务（与摘要同构：状态 / attempts / 可读 last_error / 可重试 / 幂等） | `tests/test_derivation_recovery.py`、`test_fault_injection.py` |
+| 摘要被截断在数据里不可见 | 只有 trace note | `fragments.meta.summary_truncated` + `summary_repairs`（封块摘要与滚动摘要同口径），不改摘要正文 | 同上 |
+
+### 检索与话题判定：阈值/权重来自真实 eval，不再来自历史常量
+
+- 话题判定**由一条绝对余弦阈值管三种决定**（延续 / 切换 / 新建）改为 owner-first 三门槛；默认值来自 104 条真实 ONNX 语料（`bge-small-zh-v1.5:fp32`）。旧实现在同一语料上 `acc 0.279 / 延续召回 0.056 / 假新话题 0.926`，新实现 `acc 0.885 / 延续 0.930 / 真新话题 0.826 / 假新 0.074`。
+  **诚实口径必须一起读**：分层 5 折「折内选参」的泛化估计只有 `acc 0.731 / 真新话题 0.696`；900 组网格里没有任何组合能把真新话题召回推到 0.80（分数带天然重叠）。两个数都写在代码注释与 `backend/evals/EXPERIMENTS.md` 里。
+- 检索排序**由两层收敛为单层唯一入口**（`services/retrieval.py`）：候选阶段只产出底层相关度，规则分项作为信号带出；同一维度不再算两遍，第一层不再提前截断。默认权重由实验决定：`relevance=1.0 / rule=0.25`，**时效与话题亲和为 0**（权重扫描与 5 折里从未被选中）。臂对比：两层 `R@1 0.597 / MRR 0.664`，单层纯相关性 `0.792 / 0.840`，生产默认 `0.847 / 0.873`。
+- 12 条旧话题评测里有 4 条用的是 `topic_eval` 的假几何体（同一条消息假值 0.2946 vs 真实 0.5259）——**测的不是产品路径**。已换成带模型身份的真实余弦快照（缺快照大声失败，不静默回落）；`backend/evals/baseline.json` 一个字节未改，六项指标全部不劣于基线。
+  ＊其中 3 条标签（「好」「ok」「继续刚才那个」被标成新话题）是从**当时的实现回落行为**推出来的，不是语义地面真值，已按语义修正并在 `note` 写明理由；12 条旧集仍作护栏。
+- Fragment 语义切分**保持 shadow**：44 条七类边界数据上规则臂 `acc 0.8182 / 误切 0`，规则+语义最好只多 1 例，而阈值从 0.35 挪到 0.45 误切就从 0 涨到 6 —— 这是数据支持的「先不启用」，不是没做完。
+- 旧数据 `relation_type='unknown'`：只做可确认的推断，不编造关系；隔离实际由来源链与话题校验承担，实测无法扩大上下文。
+
+### 授权、安全与打码
+
+- **删掉旧创建路径** `ToolLifecycle.create_from_request`（审批之前就执行 AI 生成代码，复现：用户拒绝后沙箱仍执行 2 次）；新增源码守卫测试锁住它不会复活。
+- **授权有明确生命周期**：本次执行 / 当前开发任务 / 长期授权（**没有**硬编码时长）；身份逐字段绑定 task、能力指纹、执行环境、目录、网络、凭据、内容摘要；范围只允许收窄，环境变化即失效。
+- **隔离文案与策略同源**：`isolation` 由真实执行器推导并进指纹；「受限子进程」不再被称为安全沙箱。威胁模型与分阶段方案见 `docs/security/tool-execution-isolation.md`。**强制隔离未实现**。
+- **打码补上「已知密钥登记表」与全局日志过滤**：登记表精确匹配（有界 64 条、只在内存、只在读路径喂入）+ 结构化 JSON（只动字符串叶子）+ 形状正则兜底；日志层覆盖 `msg` / `args` / `exc_info` 栈文本 / `stack_info`。真实渗透实验（工具回显 `QIO_KEY_*`）修前有 2 条出口把密钥原文交给模型，修后 5 条出口全部不含原文。
+- **工具历史 `error` 通道**（第三条通道，docstring 只写了参数与输出）以前不打码也不截断，已与 `output` 同构。
+
+### 运行时可靠性与可观测性
+
+- **turn 时间账本**：新增 `trace/phases.py`，顶层阶段铺满时间轴（缺口变成显式的 `other`，嵌套只作细分不重复计）；阶段覆盖凭据/能力探测、上下文装配、检索、模型等待、工具等待、审批等待、落库、收尾记忆处理。真实一轮：`duration_ms=1699 = sum_ms 1699 / residual 0`，其中 `approval_wait 910ms` —— 这就是「模型 1.7 秒、turn 51.5 秒」的形状，现在有名字。
+  ＊那次 51498 的**原始 Trace 不在本机**（两个数据目录都是空库），所以「那一次具体是不是审批等待」无法反查；修的是「不可解释」本身。
+- **队列持久化**：迁移 25 `turn_journal`。受理即落 `queued`，worker 取到 → `running`，重启时 `queued`/`running` → `interrupted`（**不自动执行**）；`/api/runtime/state.interrupted_turns` 如实给出，`resend`（一次性 claim）或 `dismiss`。前端尚未接这两个入口。
+- **import 边界**：新增每模块单独起进程的导入冒烟（对当前全部模块逐个新解释器导入）。已记录的循环导入**在当前 main 上不复现**；红绿对照证明旧的三入口测试抓不到它、新测试能抓到。
+- **工具历史保留**：整条保留 / 单条删除 / 清空历史，**默认行为不变**（默认永久保留）。
+- **取消语义**只做回归验证：queue 不被堵、HTTP client task 被取消、turn 正确 `cancelled`、不保存假 final。**供应商是否停止服务端生成与计费，QIO 无法保证。**
+- **测试计时断言**：`test_trace_store` 的「200 次写入 < 1.0s」改成自校准相对口径（同进程同形状原生基线，实测 0.95–1.12x，阈值 3.0x）。原来那个绝对常数在这台机器上贴着原生基线本身，负载一高必红，会让「全绿」失去意义。
+
+### 依赖与环境
+
+- **依赖可复现**：安装时向 pip 要 `--report`，落成锁定清单（package / 精确版本 / 下载来源 / sha256 / Python 版本与平台 / 环境指纹）；重建按锁定版本装（全有哈希时进哈希校验模式），锁定版本装不上时如实标 `re-resolved`。环境身份 = 依赖集合 + Python 主次版本 + 平台。锁定清单两份存放，**删环境不丢**。
+- **环境清理**：`inventory` / `cleanup_candidates` / `remove` / `cleanup` + 运维 CLI；删除三道闸（显式确认 / 仍被已注册工具引用则拒绝 / 无引用信息时保守拒绝），删除后工具侧明确提示「需要重新准备 + 重建会用哪批版本」。
+- **容器依赖**：准备侧按锁定清单构建指纹 tag 镜像（本机有就离线复用，没有则一次审批后构建）；执行侧接上依赖镜像，**镜像缺失不回退**到受限子进程（回退等于用没有依赖的解释器跑一遍）。**容器执行路径本身未在本机真实验证**（本机无 Docker 守护进程），真跑在 ubuntu CI。
+- **外部服务测试**：`qio-mocks.json` 显式模拟服务夹具 —— 默认断网（未声明 host 连 DNS 都不做）、只把声明过的 host 接到本机桩服务器、凭据只注入明显假值、结论固定写明「没有访问真实服务，不等于真实服务已验证」。
+
+### 前端与发布
+
+- 「继续/停止」条不再猜原因：无进展暂停不再显示「已达迭代上限 3/128」；预算耗尽的两种形状（迭代次数 / 输出 token）由后端给 `reason` + `budget_kind` + 人话说明，界面照说。
+- 无障碍：凭据弹窗补 Tab 焦点循环；星球话题列表补 `listbox` 祖先；暂停条文案与 `aria-label` 同源。
+- **发布闸门** `scripts/release_gate.py`（离线、不联网、不安装）：真实跑 `dist/` 得到 12 项 PASS + **1 项 FAIL** —— 安装包（2026-09-29）比 sidecar（2026-10-02）旧，**重打包前不要发布**。`--selftest` 会注入两种缺陷验证闸门自己会红，并已加进 CI 的 `docs consistency` 任务。
+- **完整 NSIS 安装包端到端验收：未执行**（一步都没跑）。本会话环境拒绝工作树外与 HKCU 写入，安装器 `/S /D=` 8 秒后退出码 2、目标目录与注册表项均未产生。可离线完成的部分（发布闸门 + 人工清单）已交付，见 `docs/e2e-qualification-agent-g.md`；**该文档里所有通过的结论都不覆盖安装包**。
+- 旧报告里的 favicon 404 与「assistant 数据到达前短暂 `tok 0`」经代码路径与真实启动采样核对，**均不再存在**（obsolete）。
+
+### 本轮明确没有做的事（边界，不是 bug）
+
+- **真实强制隔离未实现**：Windows 上没有便宜的操作系统级边界，AppContainer / 受限令牌需要原生启动器 + 打包 + 真机验收。本轮交付威胁模型、分阶段方案与阶段 0 的可验证实现。
+- **供应商侧停止生成 / 停止计费**：取消只能保证客户端 HTTP task 被取消。
+- **非 Windows 平台**：Linux/macOS 仍未完整产品化验证。
+- **Planet 手感**：`getContext('webgl2')` 约 101 ms、点开到星球视图约 101 ms，本轮**未复现** 1.5–3.4 秒的说法；没有为启动速度改动任何东西。真机 GPU / 高刷新率 / 触控板 / 冷启动仍需人工。

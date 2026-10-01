@@ -1,4 +1,4 @@
-﻿# QIO 新机器安装与运行指南
+# QIO 新机器安装与运行指南
 
 QIO 是一个本地优先、长对话场景的 agent：Python(FastAPI) 后端 + Vue3 前端 + Tauri(Rust) 桌面壳，记忆/知识双域，向量召回（本地 ONNX embedding），BYOK（用户自带模型 Key）。
 
@@ -259,6 +259,10 @@ python scripts/verify_stage1.py [--secure --token-file <path>]   # 第一阶段 
 # 文档一致性（里程碑状态、被引用的路径与命令、与 CI 的命令对齐）
 python scripts/check_docs.py
 
+# 发布闸门自检：确认闸门自己会红（注入哈希不符 / 安装包比后端旧两种缺陷）
+# 只验闸门本身，不构建安装包、不联网、不需要 dist
+python scripts/release_gate.py --selftest
+
 # 后端测试
 cd backend
 uv run --frozen pytest -q
@@ -267,6 +271,12 @@ uv run --frozen pytest -q
 # 不到守护进程会改走受限子进程；需要真实容器隔离的用例标记为 requires_docker，
 # 在这里排除，ubuntu 任务照常跑）
 uv run --frozen pytest -m "not requires_docker"
+
+# Linux CI 的两条专项（本机也能跑；都不需要 docker 守护进程）
+# 1) 真 worker 冒烟：直接用源码里的工具 worker 跑三项协议检查
+uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+# 2) fake worker 协议测试：显式注入假执行器，断言它不会被自动解析覆盖
+uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
 
 # 前端测试 / 类型 / 构建（与 CI 顺序一致）
 cd frontend

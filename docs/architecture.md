@@ -154,6 +154,11 @@ Agent Runtime 自身的状态机在 `agent/core/loop.py`：
 | Retrieval | `agent/services/retrieval.py`、`agent/services/affinity.py`、`agent/selector/` |
 | Context packing | `agent/services/injection.py`、`agent/services/token_budget.py`、`agent/services/decay.py` |
 
+记忆检索的排序**只有一个权威入口**：`agent/services/retrieval.py::Retriever.search`。
+`agent/selector/` 只负责产出候选与底层相关度（规则分项作为 `signals` 带出，**不参与候选阶段排序、也不据此截断**）；
+权重集中在 `agent/services/params.py::RETRIEVAL`（`RetrievalConfig` 的默认值直接取自它，不再各写一份）。
+话题判定同理只有一个入口：`agent/services/affinity.py::classify`，由 `services/predict.py` 提供 owner 证据。
+
 预算模型（`TokenBudgetPlanner`）不是「上下文窗口 × 固定比例」：
 
 ```
