@@ -166,7 +166,15 @@ def test_restart_before_summary_resumes_the_task_once(tmp_path: Path):
     rows = restarted.conn.execute(
         "SELECT COUNT(*) c FROM memory_index WHERE fragment_id = ?", (sealed.id,)
     ).fetchone()["c"]
-    assert done == 1 and rows == 1, f"done={done} index_rows={rows}"
+    # 现在有两条派生任务：摘要 + 链式登记的知识提炼（各自一条状态行）
+    states = {
+        row["kind"]: row["state"]
+        for row in restarted.conn.execute(
+            "SELECT kind, state FROM derived_tasks"
+        ).fetchall()
+    }
+    assert done == 2 and rows == 1, f"done={done} index_rows={rows} states={states}"
+    assert states == {"summary": "completed", "knowledge": "completed"}, states
     assert restarted.fragments.messages(sealed.id), "原文仍然可读"
 
 
@@ -193,9 +201,13 @@ def test_overlong_entity_list_still_yields_summary_and_index(tmp_path: Path):
     index_rows = ctx.conn.execute(
         "SELECT COUNT(*) c FROM memory_index WHERE fragment_id = ?", (sealed.id,)
     ).fetchone()["c"]
-    assert done == 1, "摘要派生任务应该完成，而不是失败"
+    assert done == 2, "摘要 + 知识两条派生任务都应该完成，而不是失败"
     assert row["summary"] == "这是一段摘要"
     assert index_rows == 1, "检索记录也要一起生成"
+    knowledge_task = ctx.conn.execute(
+        "SELECT state FROM derived_tasks WHERE kind = 'knowledge'"
+    ).fetchone()
+    assert knowledge_task is not None and knowledge_task["state"] == "completed"
 
 
 def test_failed_first_turn_reuses_the_continuation_fragment(tmp_path: Path):

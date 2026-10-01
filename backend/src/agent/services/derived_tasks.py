@@ -130,7 +130,13 @@ def complete(conn: sqlite3.Connection, task_id: str) -> None:
 
 
 def fail(conn: sqlite3.Connection, task_id: str, error: str) -> None:
-    """失败：记原因、次数 +1、安排下一次尝试时间（退避）。"""
+    """失败：记原因、次数 +1、安排下一次尝试时间（退避）。
+
+    原因入库前先过统一脱敏（agent/trace/redact.py）：last_error 会进状态接口与
+    界面，属于「错误信息」的硬性约束范围 —— 派生失败原因可能夹带模型输入片段。
+    """
+    from agent.trace.redact import redact_text
+
     row = conn.execute("SELECT attempts FROM derived_tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         return
@@ -139,7 +145,7 @@ def fail(conn: sqlite3.Connection, task_id: str, error: str) -> None:
     conn.execute(
         "UPDATE derived_tasks SET state = ?, attempts = ?, last_error = ?, run_after = ?, "
         "updated_at = ? WHERE id = ?",
-        (STATE_FAILED, attempts, error[:500], run_after, _iso(_now()), task_id),
+        (STATE_FAILED, attempts, redact_text(error)[:500], run_after, _iso(_now()), task_id),
     )
 
 
