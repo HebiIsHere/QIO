@@ -71,18 +71,35 @@ class RetrievalPolicy:
     """Retrieval ranking weights + recency half-life.
 
     Semantics:
-        relevance_weight / recency_weight / affinity_weight — the three-way
-            ranking blend (sum to 1.0 by convention)
-        recency_half_life_days — default (ephemeral) memory half-life;
+        relevance_weight — 底层召回相关度（归一化后）在最终分里的权重
+        recency_weight   — 时效衰减（agent/services/decay.py）的权重
+        affinity_weight  — 话题亲和（锚点话题 / 话题指纹命中）的权重
+        rule_weight      — 规则分项（anchor / entity / keyword，不含 recency）的权重
+        recency_half_life_days — default (ephemeral) memory half-life；
             per-kind half-lives live in agent/services/decay.py
 
-    Default source: current production values (unchanged behaviour).
-    Eval: agent/eval/retrieval_eval.py (Recall@k / MRR / stale-injection).
+    这四项是**唯一**的排序权重来源：agent/services/retrieval.py 的 RetrievalConfig
+    默认值直接取自这里，Selector 不再自己加一遍奖励分（2026-10-02 收敛为单层排序）。
+
+    Default source: backend/evals/retrieval_ranking/ 的臂对比实验（生产代码 + 真实
+        embedding，72 条带标签查询 / 67 条记忆）。
+        实测（同一份 72 查询语料）：
+          A 两层排序(rel .4/rec .25/aff .35)       R@1 0.597 R@5 0.750 MRR 0.664 wrong 0.403
+          B/C 单层 + 纯相关性                       R@1 0.792 R@5 0.903 MRR 0.840 wrong 0.208
+          单层 + 时效(害, 旧比例 .625)              R@1 0.389
+          单层 + 话题亲和(害, 旧比例 .875)          R@1 0.722
+          单层 + 规则分项(anchor/entity/keyword .25) R@1 0.847 R@5 0.917 MRR 0.873 wrong 0.153
+          权重扫描 top：rec=0 / aff=0 / rule=0.25；分层 5 折折内选权的诚实估计 R@1=0.833。
+          结论：时效与话题亲和两项**默认关掉**（没有收益的维度不留在配置里「看起来完整」），
+          规则分项保留 0.25 —— 它在单层里只加一次时确实有效（同一维度不再被计两遍）。
+          rule 里的 anchor 项与 affinity 项含义重叠，后者已按数据关掉，不要同时打开。
+    Eval: backend/evals/retrieval_ranking/{run_arms.py,sweep_weights.py}、agent/eval/retrieval_eval.py。
     """
 
-    relevance_weight: float = 0.4
-    recency_weight: float = 0.25
-    affinity_weight: float = 0.35
+    relevance_weight: float = 1.0
+    recency_weight: float = 0.0
+    affinity_weight: float = 0.0
+    rule_weight: float = 0.25
     recency_half_life_days: float = 30.0
 
 

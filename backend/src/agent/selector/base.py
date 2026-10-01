@@ -33,12 +33,25 @@ class ScoredDoc:
 
 @dataclass(frozen=True)
 class MemoryCandidate:
+    """候选记忆。
+
+    `score` 是**底层召回的相关度**（多来源相加），不是最终业务分 —— 业务奖励
+    （话题亲和 / 时效 / 关键词 / 实体）只在 agent/services/retrieval.py 的统一排序
+    入口里加一次，默认权重全部为 0（纯相关性）。2026-10-02 之前这里是「召回分 +
+    规则奖励」并在 Selector 里截断，Retriever 再加权一次 —— 两层排序会先淘汰掉
+    第二层本来能救回来的候选，且规则奖励实际上被算了两次
+    （见 backend/evals/retrieval_ranking/arms_before_refactor.json）。
+
+    `signals` 只是把规则层算出的**分项**带出来供统一排序按权重使用，不参与排序本身。
+    """
+
     doc_id: str
     score: float
     sources: tuple[str, ...]
     topic_id: str | None = None
     title: str | None = None
     token_estimate: int = 0
+    signals: dict[str, float] = field(default_factory=dict)
 
     def merge_score(self, extra: float, source: str) -> "MemoryCandidate":
         return MemoryCandidate(
@@ -48,6 +61,7 @@ class MemoryCandidate:
             topic_id=self.topic_id,
             title=self.title,
             token_estimate=self.token_estimate,
+            signals=dict(self.signals),
         )
 
 

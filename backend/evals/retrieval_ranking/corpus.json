@@ -1,0 +1,1596 @@
+{
+ "name": "retrieval-ranking-deterministic",
+ "provenance": "确定性生成（build_corpus.py），不含个人数据；用于排序结构与权重的对比实验",
+ "docs": [
+  {
+   "id": "t_db_f0",
+   "text": "项目准备使用 PostgreSQL 作为主数据库，连接池按 20 配置",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "postgresql",
+    "数据库",
+    "连接池"
+   ],
+   "kind": "decision",
+   "created_days_ago": 220
+  },
+  {
+   "id": "t_db_f1",
+   "text": "最终决定数据库改用 SQLite，理由是单机部署维护成本低",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "sqlite",
+    "数据库",
+    "部署"
+   ],
+   "kind": "decision",
+   "created_days_ago": 25
+  },
+  {
+   "id": "t_db_f2",
+   "text": "迁移脚本用 Python 写，按用户表、订单表、日志表分三批执行",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "迁移",
+    "脚本",
+    "分批"
+   ],
+   "kind": "decision",
+   "created_days_ago": 20
+  },
+  {
+   "id": "t_db_f3",
+   "text": "SQLite 打开了 WAL 模式，并发读写不再互相阻塞",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "sqlite",
+    "wal",
+    "并发"
+   ],
+   "kind": "decision",
+   "created_days_ago": 18
+  },
+  {
+   "id": "t_db_f4",
+   "text": "订单表给 user_id 和 created_at 加了联合索引，查询从 800ms 降到 40ms",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "索引",
+    "订单",
+    "查询"
+   ],
+   "kind": "decision",
+   "created_days_ago": 12
+  },
+  {
+   "id": "t_db_f5",
+   "text": "迁移过程中发现自增主键要改成 INTEGER PRIMARY KEY 才能复用 rowid",
+   "topic": "t_db",
+   "title": "SQLite 迁移",
+   "keywords": [
+    "主键",
+    "rowid",
+    "迁移"
+   ],
+   "kind": "decision",
+   "created_days_ago": 10
+  },
+  {
+   "id": "t_ui_f0",
+   "text": "最初界面用的是亮色主题，白色背景",
+   "topic": "t_ui",
+   "title": "界面配色",
+   "keywords": [
+    "亮色",
+    "主题",
+    "背景"
+   ],
+   "kind": "decision",
+   "created_days_ago": 200
+  },
+  {
+   "id": "t_ui_f1",
+   "text": "最终确定用暗色主题，背景取 #101216，正文文字用低饱和的浅灰",
+   "topic": "t_ui",
+   "title": "界面配色",
+   "keywords": [
+    "暗色",
+    "主题",
+    "背景"
+   ],
+   "kind": "decision",
+   "created_days_ago": 30
+  },
+  {
+   "id": "t_ui_f2",
+   "text": "用户偏好低饱和的深灰背景，说太亮的蓝色看久了眼睛累",
+   "topic": "t_ui",
+   "title": "界面配色",
+   "keywords": [
+    "偏好",
+    "深灰",
+    "底色"
+   ],
+   "kind": "preference",
+   "created_days_ago": 28
+  },
+  {
+   "id": "t_ui_f3",
+   "text": "卡片阴影从 8px 改成 2px，层次靠边框而不是投影",
+   "topic": "t_ui",
+   "title": "界面配色",
+   "keywords": [
+    "卡片",
+    "阴影",
+    "边框"
+   ],
+   "kind": "decision",
+   "created_days_ago": 15
+  },
+  {
+   "id": "t_ui_f4",
+   "text": "图表配色只保留三种强调色：青、橙、紫",
+   "topic": "t_ui",
+   "title": "界面配色",
+   "keywords": [
+    "图表",
+    "强调色",
+    "配色"
+   ],
+   "kind": "decision",
+   "created_days_ago": 9
+  },
+  {
+   "id": "t_deploy_f0",
+   "text": "早期部署在自建机房的物理机上，运维要自己插网线",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "机房",
+    "物理机",
+    "运维"
+   ],
+   "kind": "decision",
+   "created_days_ago": 400
+  },
+  {
+   "id": "t_deploy_f1",
+   "text": "现在部署环境已经迁到云上，用一台 4 核 8G 的云服务器",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "云服务器",
+    "部署",
+    "配置"
+   ],
+   "kind": "decision",
+   "created_days_ago": 40
+  },
+  {
+   "id": "t_deploy_f2",
+   "text": "上线流程是：先灰度 10% 流量，观察半小时再全量",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "灰度",
+    "上线",
+    "流量"
+   ],
+   "kind": "decision",
+   "created_days_ago": 35
+  },
+  {
+   "id": "t_deploy_f3",
+   "text": "回滚剧本里写死了三条命令：停服、切镜像、清缓存",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "回滚",
+    "镜像",
+    "缓存"
+   ],
+   "kind": "decision",
+   "created_days_ago": 33
+  },
+  {
+   "id": "t_deploy_f4",
+   "text": "扩容之后必须重启 worker，否则新进程读不到新的连接串",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "扩容",
+    "重启",
+    "worker"
+   ],
+   "kind": "decision",
+   "created_days_ago": 22
+  },
+  {
+   "id": "t_deploy_f5",
+   "text": "云服务器带宽从 5M 升到 20M，静态资源改走对象存储",
+   "topic": "t_deploy",
+   "title": "部署环境",
+   "keywords": [
+    "带宽",
+    "带宽",
+    "对象存储"
+   ],
+   "kind": "decision",
+   "created_days_ago": 16
+  },
+  {
+   "id": "t_travel_f0",
+   "text": "原来打算去海南，后来改成了云南",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "海南",
+    "旅行",
+    "计划"
+   ],
+   "kind": "decision",
+   "created_days_ago": 90
+  },
+  {
+   "id": "t_travel_f1",
+   "text": "最终确认十月去云南走滇西北线路，昆明进、丽江出",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "云南",
+    "滇西北",
+    "线路"
+   ],
+   "kind": "decision",
+   "created_days_ago": 45
+  },
+  {
+   "id": "t_travel_f2",
+   "text": "机票已经出票，10 月 2 日早班机，回程 10 月 9 日",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "机票",
+    "出票",
+    "回程"
+   ],
+   "kind": "decision",
+   "created_days_ago": 44
+  },
+  {
+   "id": "t_travel_f3",
+   "text": "行程安排是大理两天、丽江三天、香格里拉两天",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "大理",
+    "丽江",
+    "香格里拉"
+   ],
+   "kind": "decision",
+   "created_days_ago": 42
+  },
+  {
+   "id": "t_travel_f4",
+   "text": "住宿选的是古城里的客栈，预算每晚 300 以内",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "住宿",
+    "客栈",
+    "预算"
+   ],
+   "kind": "decision",
+   "created_days_ago": 41
+  },
+  {
+   "id": "t_travel_f5",
+   "text": "租车走环湖路线，需要提前确认驾照能不能异地取车",
+   "topic": "t_travel",
+   "title": "云南旅行",
+   "keywords": [
+    "租车",
+    "环湖",
+    "驾照"
+   ],
+   "kind": "decision",
+   "created_days_ago": 38
+  },
+  {
+   "id": "t_perf_f0",
+   "text": "接口延迟的 P95 一开始是 1.2 秒，用户抱怨很卡",
+   "topic": "t_perf",
+   "title": "性能优化",
+   "keywords": [
+    "延迟",
+    "p95",
+    "接口"
+   ],
+   "kind": "decision",
+   "created_days_ago": 60
+  },
+  {
+   "id": "t_perf_f1",
+   "text": "优化目标定为 P95 降到 200ms 以内",
+   "topic": "t_perf",
+   "title": "性能优化",
+   "keywords": [
+    "目标",
+    "p95",
+    "200ms"
+   ],
+   "kind": "decision",
+   "created_days_ago": 55
+  },
+  {
+   "id": "t_perf_f2",
+   "text": "压测脚本用 locust 写，单机并发 200",
+   "topic": "t_perf",
+   "title": "性能优化",
+   "keywords": [
+    "压测",
+    "locust",
+    "并发"
+   ],
+   "kind": "decision",
+   "created_days_ago": 30
+  },
+  {
+   "id": "t_perf_f3",
+   "text": "慢查询主要来自没加索引的模糊匹配，改成长列表预筛后降到 300ms",
+   "topic": "t_perf",
+   "title": "性能优化",
+   "keywords": [
+    "慢查询",
+    "索引",
+    "模糊匹配"
+   ],
+   "kind": "decision",
+   "created_days_ago": 28
+  },
+  {
+   "id": "t_perf_f4",
+   "text": "缓存命中率只有 35%，加了一层本地缓存后到 78%",
+   "topic": "t_perf",
+   "title": "性能优化",
+   "keywords": [
+    "缓存",
+    "命中率",
+    "本地缓存"
+   ],
+   "kind": "decision",
+   "created_days_ago": 20
+  },
+  {
+   "id": "t_work_f0",
+   "text": "本周要完成与前端的接口联调，排期到周五",
+   "topic": "t_work",
+   "title": "接口联调",
+   "keywords": [
+    "联调",
+    "排期",
+    "周五"
+   ],
+   "kind": "decision",
+   "created_days_ago": 12
+  },
+  {
+   "id": "t_work_f1",
+   "text": "联调卡在鉴权参数的字段命名上，前端要 token，后端返回 access_token",
+   "topic": "t_work",
+   "title": "接口联调",
+   "keywords": [
+    "鉴权",
+    "字段",
+    "token"
+   ],
+   "kind": "decision",
+   "created_days_ago": 11
+  },
+  {
+   "id": "t_work_f2",
+   "text": "最终约定字段统一用 snake_case，前端做一次映射",
+   "topic": "t_work",
+   "title": "接口联调",
+   "keywords": [
+    "字段",
+    "snake_case",
+    "映射"
+   ],
+   "kind": "decision",
+   "created_days_ago": 9
+  },
+  {
+   "id": "t_work_f3",
+   "text": "错误码从 500 改成业务码 + HTTP 200，前端按 code 分支",
+   "topic": "t_work",
+   "title": "接口联调",
+   "keywords": [
+    "错误码",
+    "业务码",
+    "分支"
+   ],
+   "kind": "decision",
+   "created_days_ago": 8
+  },
+  {
+   "id": "t_people_f0",
+   "text": "小林是团队里的后端工程师，负责服务端和数据库",
+   "topic": "t_people",
+   "title": "团队成员",
+   "keywords": [
+    "小林",
+    "后端",
+    "工程师"
+   ],
+   "kind": "person",
+   "created_days_ago": 60
+  },
+  {
+   "id": "t_people_f1",
+   "text": "老王是前端负责人，同时管发布流程",
+   "topic": "t_people",
+   "title": "团队成员",
+   "keywords": [
+    "老王",
+    "前端",
+    "发布"
+   ],
+   "kind": "person",
+   "created_days_ago": 58
+  },
+  {
+   "id": "t_people_f2",
+   "text": "阿 May 是测试，联调阶段由她来跑回归",
+   "topic": "t_people",
+   "title": "团队成员",
+   "keywords": [
+    "阿may",
+    "测试",
+    "回归"
+   ],
+   "kind": "person",
+   "created_days_ago": 30
+  },
+  {
+   "id": "t_people_f3",
+   "text": "产品那边由小周对接，需求变更都要经过她",
+   "topic": "t_people",
+   "title": "团队成员",
+   "keywords": [
+    "小周",
+    "产品",
+    "需求"
+   ],
+   "kind": "person",
+   "created_days_ago": 26
+  },
+  {
+   "id": "t_food_f0",
+   "text": "用户偏好清淡饮食，不吃辣",
+   "topic": "t_food",
+   "title": "饮食偏好",
+   "keywords": [
+    "清淡",
+    "不吃辣",
+    "口味"
+   ],
+   "kind": "preference",
+   "created_days_ago": 120
+  },
+  {
+   "id": "t_food_f1",
+   "text": "早餐通常是一杯美式加一个鸡蛋",
+   "topic": "t_food",
+   "title": "饮食偏好",
+   "keywords": [
+    "早餐",
+    "美式",
+    "鸡蛋"
+   ],
+   "kind": "preference",
+   "created_days_ago": 100
+  },
+  {
+   "id": "t_food_f2",
+   "text": "对香菜过敏，点餐时要去掉",
+   "topic": "t_food",
+   "title": "饮食偏好",
+   "keywords": [
+    "香菜",
+    "过敏",
+    "忌口"
+   ],
+   "kind": "preference",
+   "created_days_ago": 95
+  },
+  {
+   "id": "t_food_f3",
+   "text": "晚上喝咖啡会失眠，所以下午三点以后不喝",
+   "topic": "t_food",
+   "title": "饮食偏好",
+   "keywords": [
+    "咖啡",
+    "失眠",
+    "下午"
+   ],
+   "kind": "preference",
+   "created_days_ago": 80
+  },
+  {
+   "id": "t_arch_f0",
+   "text": "架构决策：缓存采用内存加定期落盘，理由是延迟低",
+   "topic": "t_arch",
+   "title": "缓存方案",
+   "keywords": [
+    "缓存",
+    "内存",
+    "落盘",
+    "延迟"
+   ],
+   "kind": "decision",
+   "created_days_ago": 200
+  },
+  {
+   "id": "t_arch_f1",
+   "text": "缓存淘汰策略是 LRU，容量上限 2000 条",
+   "topic": "t_arch",
+   "title": "缓存方案",
+   "keywords": [
+    "lru",
+    "淘汰",
+    "容量"
+   ],
+   "kind": "decision",
+   "created_days_ago": 150
+  },
+  {
+   "id": "t_arch_f2",
+   "text": "落盘间隔设成 5 分钟，进程退出时再强制刷一次",
+   "topic": "t_arch",
+   "title": "缓存方案",
+   "keywords": [
+    "落盘",
+    "间隔",
+    "退出"
+   ],
+   "kind": "decision",
+   "created_days_ago": 140
+  },
+  {
+   "id": "t_arch_f3",
+   "text": "一致性上只保证最终一致，读路径允许短暂旧值",
+   "topic": "t_arch",
+   "title": "缓存方案",
+   "keywords": [
+    "一致性",
+    "最终一致",
+    "旧值"
+   ],
+   "kind": "decision",
+   "created_days_ago": 130
+  },
+  {
+   "id": "t_study_f0",
+   "text": "复习计划是每天两小时，先过一遍错题再看新内容",
+   "topic": "t_study",
+   "title": "学习方法",
+   "keywords": [
+    "复习",
+    "错题",
+    "计划"
+   ],
+   "kind": "decision",
+   "created_days_ago": 50
+  },
+  {
+   "id": "t_study_f1",
+   "text": "笔记用康奈尔格式，左边写关键词右边写细节",
+   "topic": "t_study",
+   "title": "学习方法",
+   "keywords": [
+    "笔记",
+    "康奈尔",
+    "关键词"
+   ],
+   "kind": "decision",
+   "created_days_ago": 48
+  },
+  {
+   "id": "t_study_f2",
+   "text": "线性代数打算先刷完历年题再回头看课本",
+   "topic": "t_study",
+   "title": "学习方法",
+   "keywords": [
+    "线代",
+    "历年题",
+    "课本"
+   ],
+   "kind": "decision",
+   "created_days_ago": 45
+  },
+  {
+   "id": "noise_0",
+   "text": "今天楼下在装修，吵得没法开会",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_1",
+   "text": "刚泡了杯咖啡，顺手把杯子洗了",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_2",
+   "text": "手机没电了，先充一会儿",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_3",
+   "text": "窗外下雨了，出门记得带伞",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_4",
+   "text": "中午吃了拉面，味道一般",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_5",
+   "text": "快递到楼下了，下去拿一下",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_6",
+   "text": "新买的键盘到了，手感不错",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_7",
+   "text": "同事推荐了一家面包店",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_8",
+   "text": "打印机又卡纸了",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_9",
+   "text": "周末想去电影院看新片",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_10",
+   "text": "空调温度调低了两度",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_11",
+   "text": "椅子有点晃，找时间修一下",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_12",
+   "text": "充电线接触不良，换了一根",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_13",
+   "text": "会议室的投影仪坏了",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_14",
+   "text": "顺手把桌面文件整理了一下",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_15",
+   "text": "刚把垃圾拿下楼",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_16",
+   "text": "天气转凉，把外套找出来了",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  },
+  {
+   "id": "noise_17",
+   "text": "给花浇了水",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 2
+  },
+  {
+   "id": "noise_18",
+   "text": "地铁上遇到老同学",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 0
+  },
+  {
+   "id": "noise_19",
+   "text": "晚饭想简单煮个面",
+   "topic": null,
+   "title": "",
+   "keywords": [],
+   "kind": "ephemeral",
+   "created_days_ago": 1
+  }
+ ],
+ "queries": [
+  {
+   "id": "t_db_q1",
+   "query": "最后数据库定的是哪个",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f1"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_db_q2",
+   "query": "迁移脚本怎么分批跑的",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f2"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_db_q3",
+   "query": "并发读写怎么解决的",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f3"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_db_q4",
+   "query": "订单查询怎么优化的",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f4"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_db_q5",
+   "query": "自增主键踩了什么坑",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "fact_update"
+  },
+  {
+   "id": "t_db_cross",
+   "query": "之前聊过的SQLite 迁移那件事，结论是什么",
+   "topic": "t_ui",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_db_para",
+   "query": "迁移脚本怎么分批跑的（换个说法问）",
+   "topic": "t_db",
+   "expected": [
+    "t_db_f2"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_db_switch",
+   "query": "换个话题，自增主键踩了什么坑",
+   "topic": "t_ui",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "switch"
+  },
+  {
+   "id": "t_ui_q1",
+   "query": "现在界面走什么风格",
+   "topic": "t_ui",
+   "expected": [
+    "t_ui_f1"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_ui_q2",
+   "query": "用户喜欢什么样的底色",
+   "topic": "t_ui",
+   "expected": [
+    "t_ui_f2"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "preference"
+  },
+  {
+   "id": "t_ui_q3",
+   "query": "卡片层次怎么做的",
+   "topic": "t_ui",
+   "expected": [
+    "t_ui_f3"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_ui_q4",
+   "query": "图表用了哪些强调色",
+   "topic": "t_ui",
+   "expected": [
+    "t_ui_f4"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "fact_update"
+  },
+  {
+   "id": "t_ui_cross",
+   "query": "之前聊过的界面配色那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_ui_f4"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_ui_para",
+   "query": "用户喜欢什么样的底色（换个说法问）",
+   "topic": "t_ui",
+   "expected": [
+    "t_ui_f2"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_ui_switch",
+   "query": "换个话题，图表用了哪些强调色",
+   "topic": "t_db",
+   "expected": [
+    "t_ui_f4"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "switch"
+  },
+  {
+   "id": "t_deploy_q1",
+   "query": "现在跑在哪台机器上",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f1"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_deploy_q2",
+   "query": "上线怎么放量",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f2"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_deploy_q3",
+   "query": "回滚怎么操作",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f3"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_deploy_q4",
+   "query": "扩容后要注意什么",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f4"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_deploy_q5",
+   "query": "带宽做过什么调整",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "fact_update"
+  },
+  {
+   "id": "t_deploy_cross",
+   "query": "之前聊过的部署环境那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_deploy_para",
+   "query": "上线怎么放量（换个说法问）",
+   "topic": "t_deploy",
+   "expected": [
+    "t_deploy_f2"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_deploy_switch",
+   "query": "换个话题，带宽做过什么调整",
+   "topic": "t_db",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "switch"
+  },
+  {
+   "id": "t_travel_q1",
+   "query": "最后定的路线是什么",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f1"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_travel_q2",
+   "query": "机票定了哪天的",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f2"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_travel_q3",
+   "query": "每个地方待几天",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f3"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_travel_q4",
+   "query": "住宿怎么定的",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f4"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_travel_q5",
+   "query": "环湖怎么走",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "fact_update"
+  },
+  {
+   "id": "t_travel_cross",
+   "query": "之前聊过的云南旅行那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_travel_para",
+   "query": "机票定了哪天的（换个说法问）",
+   "topic": "t_travel",
+   "expected": [
+    "t_travel_f2"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_travel_switch",
+   "query": "换个话题，环湖怎么走",
+   "topic": "t_db",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "switch"
+  },
+  {
+   "id": "t_perf_q1",
+   "query": "性能目标是多少",
+   "topic": "t_perf",
+   "expected": [
+    "t_perf_f1"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_perf_q2",
+   "query": "压测怎么做的",
+   "topic": "t_perf",
+   "expected": [
+    "t_perf_f2"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_perf_q3",
+   "query": "慢查询的原因是什么",
+   "topic": "t_perf",
+   "expected": [
+    "t_perf_f3"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "decision"
+  },
+  {
+   "id": "t_perf_q4",
+   "query": "缓存命中率怎么提上来的",
+   "topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "fact_update"
+  },
+  {
+   "id": "t_perf_cross",
+   "query": "之前聊过的性能优化那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_perf_para",
+   "query": "压测怎么做的（换个说法问）",
+   "topic": "t_perf",
+   "expected": [
+    "t_perf_f2"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_perf_switch",
+   "query": "换个话题，缓存命中率怎么提上来的",
+   "topic": "t_db",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "switch"
+  },
+  {
+   "id": "t_work_q0",
+   "query": "联调排到什么时候",
+   "topic": "t_work",
+   "expected": [
+    "t_work_f0"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_work_q1",
+   "query": "联调卡在哪里",
+   "topic": "t_work",
+   "expected": [
+    "t_work_f1"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_work_q2",
+   "query": "字段命名最后怎么统一的",
+   "topic": "t_work",
+   "expected": [
+    "t_work_f2"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_work_q3",
+   "query": "错误码怎么处理的",
+   "topic": "t_work",
+   "expected": [
+    "t_work_f3"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_work_cross",
+   "query": "之前聊过的接口联调那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_work_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_work_para",
+   "query": "联调卡在哪里（换个说法问）",
+   "topic": "t_work",
+   "expected": [
+    "t_work_f1"
+   ],
+   "stale": [],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_work_switch",
+   "query": "换个话题，错误码怎么处理的",
+   "topic": "t_db",
+   "expected": [
+    "t_work_f3"
+   ],
+   "stale": [],
+   "category": "switch"
+  },
+  {
+   "id": "t_people_q0",
+   "query": "小林负责什么",
+   "topic": "t_people",
+   "expected": [
+    "t_people_f0"
+   ],
+   "stale": [],
+   "category": "person_entity"
+  },
+  {
+   "id": "t_people_q1",
+   "query": "老王是做什么的",
+   "topic": "t_people",
+   "expected": [
+    "t_people_f1"
+   ],
+   "stale": [],
+   "category": "person_entity"
+  },
+  {
+   "id": "t_people_q2",
+   "query": "谁负责跑回归",
+   "topic": "t_people",
+   "expected": [
+    "t_people_f2"
+   ],
+   "stale": [],
+   "category": "person_entity"
+  },
+  {
+   "id": "t_people_q3",
+   "query": "需求变更找谁",
+   "topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "person_entity"
+  },
+  {
+   "id": "t_people_cross",
+   "query": "之前聊过的团队成员那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_people_para",
+   "query": "老王是做什么的（换个说法问）",
+   "topic": "t_people",
+   "expected": [
+    "t_people_f1"
+   ],
+   "stale": [],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_people_switch",
+   "query": "换个话题，需求变更找谁",
+   "topic": "t_db",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "switch"
+  },
+  {
+   "id": "t_food_q0",
+   "query": "用户口味怎么样",
+   "topic": "t_food",
+   "expected": [
+    "t_food_f0"
+   ],
+   "stale": [],
+   "category": "preference"
+  },
+  {
+   "id": "t_food_q1",
+   "query": "早餐一般吃什么",
+   "topic": "t_food",
+   "expected": [
+    "t_food_f1"
+   ],
+   "stale": [],
+   "category": "preference"
+  },
+  {
+   "id": "t_food_q2",
+   "query": "有什么忌口",
+   "topic": "t_food",
+   "expected": [
+    "t_food_f2"
+   ],
+   "stale": [],
+   "category": "preference"
+  },
+  {
+   "id": "t_food_q3",
+   "query": "咖啡什么时候不能喝",
+   "topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "preference"
+  },
+  {
+   "id": "t_food_cross",
+   "query": "之前聊过的饮食偏好那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_food_para",
+   "query": "早餐一般吃什么（换个说法问）",
+   "topic": "t_food",
+   "expected": [
+    "t_food_f1"
+   ],
+   "stale": [],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_food_switch",
+   "query": "换个话题，咖啡什么时候不能喝",
+   "topic": "t_db",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "switch"
+  },
+  {
+   "id": "t_arch_q0",
+   "query": "缓存方案当时为什么这么选",
+   "topic": "t_arch",
+   "expected": [
+    "t_arch_f0"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_arch_q1",
+   "query": "缓存怎么淘汰",
+   "topic": "t_arch",
+   "expected": [
+    "t_arch_f1"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_arch_q2",
+   "query": "缓存多久落一次盘",
+   "topic": "t_arch",
+   "expected": [
+    "t_arch_f2"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_arch_q3",
+   "query": "缓存一致性怎么保证",
+   "topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_arch_cross",
+   "query": "之前聊过的缓存方案那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_arch_para",
+   "query": "缓存怎么淘汰（换个说法问）",
+   "topic": "t_arch",
+   "expected": [
+    "t_arch_f1"
+   ],
+   "stale": [],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_arch_switch",
+   "query": "换个话题，缓存一致性怎么保证",
+   "topic": "t_db",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "switch"
+  },
+  {
+   "id": "t_study_q0",
+   "query": "复习怎么安排的",
+   "topic": "t_study",
+   "expected": [
+    "t_study_f0"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_study_q1",
+   "query": "笔记怎么记的",
+   "topic": "t_study",
+   "expected": [
+    "t_study_f1"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_study_q2",
+   "query": "线代怎么复习",
+   "topic": "t_study",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "decision"
+  },
+  {
+   "id": "t_study_cross",
+   "query": "之前聊过的学习方法那件事，结论是什么",
+   "topic": "t_db",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "cross_topic"
+  },
+  {
+   "id": "t_study_para",
+   "query": "笔记怎么记的（换个说法问）",
+   "topic": "t_study",
+   "expected": [
+    "t_study_f1"
+   ],
+   "stale": [],
+   "category": "paraphrase"
+  },
+  {
+   "id": "t_study_switch",
+   "query": "换个话题，线代怎么复习",
+   "topic": "t_db",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "switch"
+  }
+ ]
+}

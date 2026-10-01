@@ -38,11 +38,17 @@ def test_bm25_empty_index():
     assert backend.search("anything", top_k=5) == []
 
 
-def test_selector_combines_recall_and_rules():
+def test_selector_ranks_by_relevance_and_exposes_rule_signals():
+    """候选阶段只按底层相关度排序；规则分项作为**信号**带出去，不参与这里的排序。
+
+    业务奖励（anchor / entity / keyword / recency）由 agent/services/retrieval.py
+    的统一排序按权重使用一次 —— 2026-10-02 之前这里会把奖励加进分数并据此截断，
+    与下游再加权一次，形成两层排序（见 backend/evals/retrieval_ranking/）。
+    """
     docs = [
         IndexedDoc(
             doc_id="f1", text="用户偏好清淡饮食", topic_id="t1",
-            keywords=["清淡", "饮食"], entity_ids=["entity_milk"],
+            keywords=["清淡", "饮食"], entity_ids=["milk"],
             created_at=_iso(2),
         ),
         IndexedDoc(
@@ -54,26 +60,33 @@ def test_selector_combines_recall_and_rules():
     selector.load(docs, titles={"f1": "饮食偏好", "f2": "存储设计"})
     assert selector.backend_name == "bm25"
 
-    # anchor topic + entity mention push f1 up
     result = selector.select(
         "用户 饮食 偏好 牛奶",
         anchor_topic_id="t1",
-        entity_names=["牛奶"],
+        entity_names=["Milk"],  # 大小写不敏感：与 doc.entity_ids 的 "milk" 对上
         top_k=2,
     )
     assert result[0].doc_id == "f1"
-    assert "anchor" in result[0].sources or result[0].score > 0
+    assert result[0].score > 0, "相关度来自召回后端"
+    # 规则分项必须完整带出来，下游那一个排序入口才有得用
+    signals = result[0].signals
+    assert signals.get("anchor") and signals.get("keyword") and signals.get("entity")
+    assert "recency" in signals
 
 
-def test_selector_recency_boost():
+def test_selector_does_not_apply_business_rewards_itself():
+    """同样的文本、不同的时间/话题，候选阶段给出的相关度必须相同。"""
     docs = [
-        IndexedDoc(doc_id="old", text="记忆 实验", created_at=_iso(200)),
-        IndexedDoc(doc_id="new", text="记忆 实验", created_at=_iso(1)),
+        IndexedDoc(doc_id="old", text="记忆 实验", created_at=_iso(200), topic_id="t_a"),
+        IndexedDoc(doc_id="new", text="记忆 实验", created_at=_iso(1), topic_id="t_b"),
     ]
     selector = Selector()
     selector.load(docs)
-    result = selector.select("记忆 实验", top_k=2)
-    assert result[0].doc_id == "new"
+    result = selector.select("记忆 实验", top_k=2, anchor_topic_id="t_b")
+    scores = {c.doc_id: c.score for c in result}
+    assert scores["old"] == scores["new"], "候选阶段不得把时效/话题奖励加进相关度"
+    # 奖励仍以信号形式可见，供统一排序使用
+    assert result[0].signals["anchor"] > 0 or result[1].signals["anchor"] > 0
 
 
 def test_selector_rules_only_when_recall_unavailable():
