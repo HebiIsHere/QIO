@@ -128,7 +128,7 @@ class MemoryLifecycle:
 
     async def run_summary_task(self, task, adapter: BaseAdapter, *, tracer=None) -> bool:
         """执行一条摘要派生任务。返回是否完成（失败会进可重试状态）。"""
-        from agent.memory.summary import summarize_fragment
+        from agent.memory.summary import summarize_fragment_outcome
         from agent.services import derived_tasks
 
         fragment = self.fragments.get(task.fragment_id)
@@ -147,12 +147,20 @@ class MemoryLifecycle:
             )
             return False
 
-        summary, error = await summarize_fragment(adapter, [dict(m) for m in messages])
-        if summary is None:
+        outcome = await summarize_fragment_outcome(adapter, [dict(m) for m in messages])
+        self._record_repairs(tracer, "摘要", outcome.notes)
+        if outcome.value is None:
             # 摘要失败不使对话或导航失败：片段保持「已封存、无摘要」，
             # 原文仍可读（上下文里有预算受控的原文回退）。
-            derived_tasks.fail(self.conn, task.id, error or "摘要模型不可用")
+            # 失败隔离：实体卡只依赖对话原文、不依赖摘要，摘要这条不可恢复时
+            # 仍然把它做掉，避免「一个字段的结构错误」把整条派生链一起归零。
+            await self._extract_entity_cards(adapter, messages, tracer)
+            self._record_failure(
+                tracer, "summary_derivation_failed", outcome.error or "摘要模型不可用"
+            )
+            derived_tasks.fail(self.conn, task.id, outcome.error or "摘要模型不可用")
             return False
+        summary = outcome.value
 
         # 再确认一次内容版本，然后在一个事务里写摘要 + 索引
         row = self.conn.execute(
@@ -208,6 +216,17 @@ class MemoryLifecycle:
     async def _extract_entities_and_knowledge(
         self, adapter, messages, summary, fragment, entity_ids: list[str], tracer=None
     ) -> None:
+        await self._extract_entity_cards(adapter, messages, tracer)
+        await self.extract_knowledge(
+            adapter, summary, fragment.topic_id, entity_ids, fragment.id, tracer=tracer
+        )
+
+    async def _extract_entity_cards(self, adapter, messages, tracer=None) -> None:
+        """实体卡提炼：**只依赖对话原文**，不依赖摘要。
+
+        单独成一步是为了失败隔离：摘要那条派生失败时，实体卡仍然能产出，
+        而不是整条链一起归零。
+        """
         from agent.entities.cards import EntityCardService
         from agent.entities.extract import extract_entity_cards
 
@@ -225,12 +244,11 @@ class MemoryLifecycle:
                         )
                 except Exception:
                     pass
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - 派生数据失败不影响对话
             logger.warning("entity card extraction failed", exc_info=True)
-
-        await self.extract_knowledge(
-            adapter, summary, fragment.topic_id, entity_ids, fragment.id, tracer=tracer
-        )
+            self._record_failure(
+                tracer, "entity_card_extraction_failed", f"{type(exc).__name__}: {exc}"
+            )
 
     async def drain_derived_tasks(
         self, adapter: BaseAdapter, *, limit: int = 3, tracer=None
@@ -266,6 +284,29 @@ class MemoryLifecycle:
         await self.drain_derived_tasks(adapter, limit=5, tracer=tracer)
         return self.fragments.get(sealed.id)
 
+    # -- 派生诊断 ----------------------------------------------------------
+
+    @staticmethod
+    def _record_repairs(tracer, scope: str, notes) -> None:
+        """本地修正过什么必须留痕：可修正不等于可以不看见。
+
+        只记录「修正类型 + 计数」，不落模型原文；trace 侧还会再过一次脱敏。
+        """
+        from agent.memory.model_output import render_notes
+
+        if tracer is None or not notes:
+            return
+        detail = render_notes(notes)
+        logger.info("%s派生修正：%s", scope, detail)
+        tracer.write("derivation_repairs", f"{scope}:{detail}")
+
+    @staticmethod
+    def _record_failure(tracer, code: str, message: str) -> None:
+        """派生失败的统一诊断通道：日志 + trace warning（trace 内部脱敏）。"""
+        logger.warning("%s: %s", code, message)
+        if tracer is not None:
+            tracer.warning(code, message)
+
     # -- knowledge extraction --------------------------------------------
 
     async def extract_knowledge(
@@ -279,15 +320,20 @@ class MemoryLifecycle:
     ) -> None:
         from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
         from agent.knowledge.verify import VerificationService
-        from agent.memory.summary import extract_knowledge_candidates
+        from agent.memory.summary import extract_knowledge_candidates_outcome
 
-        extraction, error = await extract_knowledge_candidates(adapter, summary)
-        if extraction is None:
-            logger.info("knowledge extraction skipped: %s", error)
+        outcome = await extract_knowledge_candidates_outcome(adapter, summary)
+        self._record_repairs(tracer, "知识抽取", outcome.notes)
+        if outcome.value is None:
+            # 知识抽取失败不影响已完成的摘要与索引，但**必须留痕**：
+            # 失败原因要能在 trace 与日志里读出来，而不是悄悄没有知识条目。
+            self._record_failure(
+                tracer, "knowledge_extraction_failed", outcome.error or "知识抽取不可用"
+            )
             return
         ks = KnowledgeService(self.conn)
         vs = VerificationService(self.conn, ks)
-        for cand in extraction.candidates:
+        for cand in outcome.value.candidates:
             node_ids: list[str] = []
             if cand.attach == "user":
                 node_ids = [self.user_root_id()]
@@ -329,9 +375,11 @@ class MemoryLifecycle:
 
     # -- budget-pressure consolidation -----------------------------------
 
-    async def consolidate(self, topic_id: str, adapter: BaseAdapter) -> bool:
+    async def consolidate(
+        self, topic_id: str, adapter: BaseAdapter, tracer=None
+    ) -> bool:
         """Rolling summary of the open fragment under budget pressure."""
-        from agent.memory.summary import summarize_rolling
+        from agent.memory.summary import summarize_rolling_outcome
 
         fragment = self.fragments.get_or_create_open(topic_id)
         if fragment.start_message_id is None:
@@ -349,12 +397,16 @@ class MemoryLifecycle:
             except ValueError:
                 pass
         messages = self.fragments.messages(fragment.id)
-        summary, error = await summarize_rolling(
+        outcome = await summarize_rolling_outcome(
             adapter, fragment.summary, [dict(m) for m in messages]
         )
-        if summary is None:
-            logger.info("consolidation skipped: %s", error)
+        self._record_repairs(tracer, "滚动摘要", outcome.notes)
+        if outcome.value is None:
+            self._record_failure(
+                tracer, "rolling_summary_failed", outcome.error or "滚动摘要不可用"
+            )
             return False
+        summary = outcome.value
         now = datetime.now(timezone.utc).isoformat()
         meta["consolidated"] = True
         meta["consolidated_at"] = now
