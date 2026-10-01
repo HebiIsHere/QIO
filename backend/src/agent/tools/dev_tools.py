@@ -1,4 +1,4 @@
-"""Dev workflow tools: create_tool + dev_write_file/read_file/run_tests/submit_tool.
+﻿"""Dev workflow tools: create_tool + dev_write_file/read_file/run_tests/submit_tool.
 
 The main agent develops tools like an engineer: create a workspace, write
 implementation + tests, run tests, iterate on failures, then submit for
