@@ -232,7 +232,8 @@ def test_the_declaration_is_read_from_the_tool_project_file(tmp_path):
     assert fixture_for_definition(_Definition({})) is None
 
     fixture = fixture_for_definition(
-        _Definition({MOCK_FILE_NAME: json.dumps(PLAN_JSON, ensure_ascii=False)})
+        _Definition({MOCK_FILE_NAME: json.dumps(PLAN_JSON, ensure_ascii=False)}),
+        workdir=tmp_path,
     )
 
     assert fixture is not None

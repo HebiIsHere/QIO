@@ -187,20 +187,21 @@ class MockServicePlan:
         return text
 
     def bootstrap(self, *, workdir: str | Path | None = None) -> "MockFixture":
-        """把夹具落到磁盘（默认按内容指纹放在系统临时目录，可重复使用）。"""
-        directory = (
-            Path(workdir)
-            if workdir is not None
-            else Path(tempfile.gettempdir()) / "qio-mock-fixtures" / self.fingerprint()
-        )
-        directory.mkdir(parents=True, exist_ok=True)
+        """把夹具落到磁盘：`workdir/qio-mock-fixture/`，没给就在系统临时目录里新建一个。
+
+        夹具与报告在同一个目录里，`cleanup()` 一次删干净（一次测试运行一份夹具）。
+        """
+        if workdir is None:
+            directory = Path(tempfile.mkdtemp(prefix="qio-mock-fixture-"))
+        else:
+            directory = Path(workdir) / "qio-mock-fixture"
+            directory.mkdir(parents=True, exist_ok=True)
         (directory / "qio_mock_service.py").write_text(_RUNTIME_SOURCE, encoding="utf-8")
         (directory / "sitecustomize.py").write_text(_SITECUSTOMIZE_SOURCE, encoding="utf-8")
         (directory / "plan.json").write_text(
             json.dumps(self.to_json(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        report_dir = Path(tempfile.mkdtemp(prefix="qio-mock-report-"))
-        return MockFixture(plan=self, directory=directory, report_path=report_dir / "report.json")
+        return MockFixture(plan=self, directory=directory, report_path=directory / "report.json")
 
 
 def _parse_route(raw_route: Any, host: str) -> MockRoute:
@@ -348,16 +349,18 @@ class MockFixture:
         return "（" + report.summary() + "）"
 
     def cleanup(self) -> None:
-        """删掉报告目录（夹具目录按内容指纹共享，不在这里删）。"""
-        shutil.rmtree(self.report_path.parent, ignore_errors=True)
+        """删掉这份夹具（含报告）；不删也不影响测试，只是临时目录里会多一份。"""
+        shutil.rmtree(self.directory, ignore_errors=True)
 
 
-def fixture_for_definition(definition: Any) -> MockFixture | None:
+def fixture_for_definition(
+    definition: Any, *, workdir: str | Path | None = None
+) -> MockFixture | None:
     """按工具定义里的 `qio-mocks.json` 建夹具；没有声明就返回 None。"""
     plan = MockServicePlan.from_definition(definition)
     if plan is None:
         return None
-    return plan.bootstrap()
+    return plan.bootstrap(workdir=workdir)
 
 
 # 下面是真正跑在沙箱子进程里的夹具源码（标准库；由 sitecustomize 自动加载）。
