@@ -78,12 +78,14 @@ class TurnOrchestrator:
         # 本轮的工具导航（create_topic / switch_topic）要能被认出来：工具在
         # turn 派生的 task 里执行，读得到这个标记；别的请求（用户导航）读不到。
         set_tool_nav_turn(ctx.turn_id)
-        # 本轮产生的审批绑定到本 turn（工具不需要各自传参）
-        app.approvals.set_context(turn_id=ctx.turn_id)
+        # 本轮产生的审批绑定到本 turn + 本会话（工具不需要各自传参）。
+        # 会话身份以前从没被传进来，pending_approvals.session_id 永远是 NULL，
+        # respond() 里那条比对因此是死代码 —— 现在它真的会被写入并比对。
+        app.approvals.set_context(turn_id=ctx.turn_id, session_id=app.session_id)
         try:
             await self._execute_turn(ctx)
         finally:
-            app.approvals.set_context(turn_id=None)
+            app.approvals.set_context(turn_id=None, session_id=app.session_id)
             set_tool_nav_turn(None)
             clear_tool_navigation(ctx.turn_id)
 

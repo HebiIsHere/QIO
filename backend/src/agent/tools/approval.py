@@ -227,6 +227,15 @@ class ApprovalService:
         """当前上下文（本轮 turn / 本会话）：新审批自动绑定到它。
 
         由 turn 运行时在开始一轮时设置，这样审批不需要每个工具各自传参。
+        以前只有 `turn_id` 被真正传进来，`session_id` 从头到尾是 NULL ——
+        `respond()` 里那条会话比对因此一次也没有生效过。现在 AppContext 给出
+        `session_id`（本进程一个），turn 运行时把它一起设进来。
+
+        **这是绑定校验，不是访问控制。** 客户端把审批里带回来的 session_id 原样回传，
+        不一致就拒答（防止答错到别的审批/别的会话）。真正的门在 HTTP 层：
+        `api/server.py` 的 session_guard 用会话令牌认证每个请求（settings.session_token）。
+        也不要把它当成「跨重启屏障」：落库的 interrupted 审批是**有意**可以在新会话里被
+        处理的（客户端回传的仍是它原来那个 session_id），这是既有产品行为。
         """
         self._turn_id = turn_id
         self._session_id = session_id

@@ -18,16 +18,25 @@ const error = ref("");
 /**
  * 暂停原因：**用后端给的原因，不猜**。
  *
- * 这条操作条现在服务两种暂停：预算耗尽（payload 里只有 used/max）与无进展暂停
- * （payload.reason = "no_progress"）。旧实现一律写「已达迭代上限 X/Y」，于是
- * 无进展暂停会显示「已达迭代上限 3/128」——一句与事实不符的话，用户据此做了决定。
+ * 这条操作条服务两种暂停：预算耗尽（payload.reason = "budget"，再用 budget_kind
+ * 区分 iterations / tokens）与无进展暂停（payload.reason = "no_progress"）。
+ * 旧实现一律写「已达迭代上限 X/Y」，于是无进展暂停显示「已达迭代上限 3/128」、
+ * token 预算耗尽也显示「已达迭代上限」——两句与事实不符的话，用户据此做了决定。
  */
 const REASON_NO_PROGRESS = "no_progress";
+const REASON_BUDGET = "budget";
+const BUDGET_TOKENS = "tokens";
 
 const headline = computed(() => {
   const pending = session.pendingContinue;
   if (!pending) return "";
   if (pending.reason === REASON_NO_PROGRESS) return "这一轮没有新的进展";
+  // 预算耗尽的两种形状必须分开说：token 预算耗尽时写「已达迭代上限」是一句与事实
+  // 不符的话，而用户正是拿这句话决定继续还是停止（旧后端不带 reason，走兜底那支）。
+  if (pending.reason === REASON_BUDGET && pending.budgetKind === BUDGET_TOKENS) {
+    return "输出 token 预算已用完";
+  }
+  if (pending.reason && pending.reason !== REASON_BUDGET) return "这一轮被暂停了";
   return `已达迭代上限 ${pending.used}/${pending.max}`;
 });
 

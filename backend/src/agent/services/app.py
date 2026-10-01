@@ -12,6 +12,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -164,6 +165,12 @@ class AppContext:
         self.turn_orchestrator = TurnOrchestrator(self)
         self.predictor = TopicPredictor(conn, self.embedding, self.topics)
         from agent.tools.approval import ApprovalService
+
+        # 本次进程的会话身份：审批创建时带上它，应答时客户端把它回传，
+        # approval.respond 比对不一致就拒绝（见 tools/approval.py::set_context 里
+        # 「这是绑定校验、不是访问控制」的说明）。以前这个字段永远是 NULL，
+        # 那条比对因此从来没有生效过 —— 一个看起来在校验、实际不会触发的检查。
+        self.session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
         # 带上数据库连接：等待中的审批要落库，重启后才能说清「那次操作没有执行」
         # （见迁移 23 与 tools/approval.py 的 interrupted）。
@@ -1173,7 +1180,7 @@ class AppContext:
 
         self._notify_turn = True
         try:
-            self.approvals.set_context(turn_id=ctx.turn_id)
+            self.approvals.set_context(turn_id=ctx.turn_id, session_id=self.session_id)
             tracer = getattr(ctx, "trace", None)
             if tracer is None:
                 from agent.trace.recorder import TurnTracer
@@ -1297,7 +1304,7 @@ class AppContext:
             ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
         finally:
             self._notify_turn = False
-            self.approvals.set_context(turn_id=None)
+            self.approvals.set_context(turn_id=None, session_id=self.session_id)
 
     # -- short-term memory & topic helpers ---------------------------------
 

@@ -666,10 +666,22 @@ class AgentLoop:
                     )
                     break
                 # 有审批服务：挂起等用户决定「继续/停止」
+                # 「继续/停止」这条通道服务两种暂停（无进展 / 预算耗尽）。
+                # 只给 used/max 时界面只能说「已达迭代上限」，而 token 预算耗尽会因此显示一句
+                # 与事实不符的话 —— 用户拿它做决定。这里把**准确原因**一起交出去，
+                # 界面不再替后端猜（对应 core/loop.py 上面 no_progress 分支的同一口径）。
+                budget_kind = (
+                    "iterations"
+                    if self.budget.used_iterations >= self.budget.max_iterations
+                    else "tokens"
+                )
                 with self._phase("approval_wait", "budget"):
                     decision = await self.approvals.request(
                         "continue",
                         {
+                            "reason": "budget",
+                            "budget_kind": budget_kind,
+                            "message": reason,
                             "used_iterations": self.budget.used_iterations,
                             "max_iterations": self.budget.max_iterations,
                             "used_tokens": self.budget.used_tokens,

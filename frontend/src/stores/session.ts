@@ -503,8 +503,10 @@ export const useSessionStore = defineStore("session", {
       id: string;
       used: number;
       max: number;
-      /** 后端给的机器可读原因；预算耗尽路径目前为空 */
+      /** 后端给的机器可读原因：no_progress / budget（旧后端可能为空） */
       reason: string;
+      /** 预算耗尽时进一步区分：iterations / tokens；其它情况为空 */
+      budgetKind: string;
       /** 后端给的人话说明；为空时由界面兜底 */
       message: string;
     } | null,
