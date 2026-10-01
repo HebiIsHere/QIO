@@ -353,7 +353,12 @@ def _redact_log_record(record: logging.LogRecord) -> logging.LogRecord:
         except Exception:  # noqa: BLE001 - 拿不到 traceback 不算打码失败
             text = ""
         if text:
+            # 先落一份打过码的栈文本：Formatter 看到 exc_text 已经有了就不再自己渲染，
+            # 于是 exc_info=True 这条通道也被覆盖（这是「只改 msg/args 的过滤器」的经典漏点）。
             record.exc_text = redact_text(text)
+    if record.stack_info:
+        # stack_info=True 渲染的是另一段文本（formatStack），同样不经过 msg。
+        record.stack_info = redact_text(str(record.stack_info))
     return record
 
 
