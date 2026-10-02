@@ -34,6 +34,8 @@ OTHER_DOCS = [
     ROOT / "docs" / "frontend-design.md",
     ROOT / "docs" / "frontend-components.md",
     ROOT / "docs" / "release-qualification.md",
+    # 长期测试体系的护栏清单：它引用的路径/命令必须真实存在，所以也纳入一致性检查
+    ROOT / "docs" / "longterm-testing.md",
 ]
 
 VALID_STATUS = {"completed", "partial", "active", "planned"}
