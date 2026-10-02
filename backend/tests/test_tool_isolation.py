@@ -571,8 +571,9 @@ async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeyp
         assert result.value['user'] == 'WRITE-OK'
         assert result.value['qio'] == 'WRITE-OK'
     else:
-        assert result.value['user'] == 'WRITE-DENIED', result.isolation
-        assert result.value['qio'] == 'WRITE-DENIED', result.isolation
+        # 工具返回 'WRITE-DENIED <ExceptionName>'，这里断言前缀，不把异常名写死
+        assert result.value['user'].startswith('WRITE-DENIED'), result.isolation
+        assert result.value['qio'].startswith('WRITE-DENIED'), result.isolation
         assert not (user_dir / 'probe.txt').exists()
         assert not (qio_dir / 'probe.txt').exists()
 # 工具侧自检片段：真实执行工具代码的进程自己报 pid / 完整性 / 是否在 job 里。
@@ -645,8 +646,37 @@ def test_low_integrity_is_not_claimed_when_a_process_cannot_be_verified(tmp_path
 
         assert outcome.applied is True, outcome
         assert 'low_integrity' not in outcome.mechanisms, outcome.problems
-        assert any('按未降级处理' in problem for problem in outcome.problems), outcome.problems
+        # 读回永远不是 Low 时，fail-safe 会在探针或令牌核实这一步停下来；两种原因都算合格，
+        # 但**必须**留下明确原因，且不许声称低完整性。
+        assert any(
+            ('按未降级处理' in problem) or ('Low 进程实测写不了' in problem)
+            for problem in outcome.problems
+        ), outcome.problems
         assert 'low_integrity' not in outcome.detail
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+@WINDOWS_ONLY
+def test_low_integrity_is_skipped_when_a_low_process_cannot_write_the_scratch(tmp_path, monkeypatch):
+    """fail-safe：Low 进程实测写不了 scratch 时，必须**跳过降级**并说明原因。
+
+    「标签读回是 Low」不够：CI（High 完整性的 runner）实测标签读回 S:AI(ML;OICI;NW;;;LW)、
+    Low 子进程写同一个目录依然 PermissionError。所以判据是一次真实的 Low 写入探针。
+    """
+    _enable_low_integrity(monkeypatch)
+    target = tmp_path / 'scratch'
+    target.mkdir()
+    monkeypatch.setattr(
+        isolation, '_low_process_can_write',
+        lambda path: (False, 'write-denied exit=1'),
+    )
+    process = _spawn_sleeper()
+    try:
+        outcome = isolation.harden(process, scratch_dir=str(target), policy=None)
+
+        assert 'low_integrity' not in outcome.mechanisms, outcome.problems
+        assert any('Low 进程实测写不了' in problem for problem in outcome.problems), outcome.problems
     finally:
         isolation.release(process)
         _kill(process)

@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import os
@@ -421,6 +422,40 @@ def _child_processes(parents: set) -> set:
         _k32.CloseHandle(snapshot)
 
 
+def _low_process_can_write(path: str) -> tuple:
+    # 用一个**一次性 Low 子进程**真的往目录写一个文件：这是唯一可信的判据。
+    # 「标签读回 Low」不等于「Low 进程写得进去」：CI（High 完整性的 runner）实测
+    # 标签读回 S:AI(ML;OICI;NW;;;LW)，Low 子进程写同一个目录依然 PermissionError。
+    # 探针不过就不降级（fail-safe），并把原因写进 problems。
+    probe_path = os.path.join(str(path), '.qio-low-write-probe')
+    quote = chr(34)
+    command = 'pause >nul & echo x> ' + quote + probe_path + quote
+    process = None
+    try:
+        process = subprocess.Popen(
+            ['cmd', '/c', command],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _set_low_integrity(int(process.pid))
+        actual = integrity_of_process(int(process.pid))
+        if actual != LOW_INTEGRITY_SID:
+            return False, 'probe-not-low: ' + str(actual)
+        process.stdin.write(b'x')
+        process.stdin.flush()
+        code = process.wait(timeout=15)
+    except Exception as exc:
+        return False, 'probe-error: ' + str(exc)
+    finally:
+        if process is not None:
+            with contextlib.suppress(Exception):
+                process.kill()
+    wrote = os.path.exists(probe_path)
+    with contextlib.suppress(OSError):
+        os.remove(probe_path)
+    if wrote and code == 0:
+        return True, 'ok'
+    return False, 'write-denied exit=' + str(code)
+
 def _harden_tree(root_pid: int, job: int, problems: list[str]) -> tuple:
     """把 worker **以及整棵后代**降级 + 指派进 job + 读回核实，直到收敛。
 
@@ -564,10 +599,22 @@ def harden(
         for path in writable:
             if not label_low(path):
                 unlabelled.append(path)
+        # 光有标签还不够：CI（High 完整性的 runner）实测标签读回 Low、Low 子进程照样写不进。
+        # 所以再用一个一次性 Low 进程真的写一次；写不进去就不降级（否则工具直接罢工）。
+        unwritable: list[str] = []
+        for path in writable:
+            ok, why = _low_process_can_write(path)
+            if not ok:
+                unwritable.append(path + "（" + why + "）")
         if unlabelled:
             problems.append(
                 "低完整性降级已跳过：以下目录没能核实为低标签，降级会让工具写不进去 "
                 + "，".join(unlabelled)
+            )
+        elif unwritable:
+            problems.append(
+                "低完整性降级已跳过：Low 进程实测写不了以下目录（降级会让工具连 scratch 都用不了）"
+                + "，".join(unwritable)
             )
         else:
             try:
