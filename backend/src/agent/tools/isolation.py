@@ -1,4 +1,4 @@
-﻿"""工具子进程的真实强制隔离（Windows 内核能力）——以及**做不到什么**的诚实清单。
+"""工具子进程的真实强制隔离（Windows 内核能力）——以及**做不到什么**的诚实清单。
 
 这个模块只做「操作系统真的会拦」的事，不做「策略上声明」的事。本机实测（2026-10-02，
 非提权普通账户 admin\\zxy）确认可用的两件事：
@@ -37,12 +37,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
+from ctypes import wintypes  # 顶层导入：模块级还有平台无关的类型定义要用到它
 import os
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -157,6 +160,9 @@ if WINDOWS:  # pragma: no cover - 平台分支
         wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD
     ]
     _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _k32.IsProcessInJob.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)
+    ]
     _k32.OpenProcess.restype = wintypes.HANDLE
     _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     _k32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -202,6 +208,7 @@ if WINDOWS:  # pragma: no cover - 平台分支
     _PROCESS_TERMINATE = 0x0001
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_QUERY_INFORMATION = 0x0400
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _TOKEN_ADJUST_DEFAULT = 0x0080
     _TOKEN_QUERY = 0x0008
     _TOKEN_INTEGRITY_LEVEL = 25
@@ -256,12 +263,22 @@ def _create_job() -> int:
 
 
 def _assign_job(job: int, pid: int) -> None:
-    process = _k32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+    """把进程放进 job，并**读回核实**它真的在里面（不是只看调用返回）。"""
+    # 核实成员资格需要查询权限：少了它 IsProcessInJob 会以 err=5 失败（实测踩过）。
+    process = _k32.OpenProcess(
+        _PROCESS_SET_QUOTA | _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION,
+        False, pid,
+    )
     if not process:
         raise OSError(f"OpenProcess failed: {ctypes.get_last_error()}")
     try:
         if not _k32.AssignProcessToJobObject(job, process):
             raise OSError(f"AssignProcessToJobObject failed: {ctypes.get_last_error()}")
+        in_job = wintypes.BOOL()
+        if not _k32.IsProcessInJob(process, job, ctypes.byref(in_job)) or not in_job.value:
+            raise OSError(
+                f"IsProcessInJob 核实失败：err={ctypes.get_last_error()} in_job={bool(in_job.value)}"
+            )
     finally:
         _k32.CloseHandle(process)
 
@@ -358,41 +375,159 @@ def integrity_label_of(path: str) -> str:
 
 
 def label_is_low(sddl_text: str) -> bool:
-    """SDDL 片段里是不是低完整性（LW 或 S-1-16-4096）。对外公开：测试用它判断环境。"""
+    """读回来的 SDDL 里是不是**真的**有一条低完整性标签 ACE。
+
+    必须同时看到强制标签 ACE 与 Low：只有 `LW` 字样不算 —— 实测过一次
+    `SetNamedSecurityInfoW` 返回 0、读回却是 `S:AINO_ACCESS_CONTROL`（根本没有标签），
+    拿它当成功就会把工具自己的 scratch 写死。
+    """
     text = sddl_text or ""
-    return "S-1-16-4096" in text or ";LW" in text or ";;LW)" in text
+    has_label_ace = "(ML;" in text
+    has_low = "S-1-16-4096" in text or ";LW" in text or ";;LW)" in text
+    return has_label_ace and has_low
+
+
+_TH32CS_SNAPPROCESS = 0x00000002
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ('dwSize', wintypes.DWORD),
+        ('cntUsage', wintypes.DWORD),
+        ('th32ProcessID', wintypes.DWORD),
+        ('th32DefaultHeapID', ctypes.c_void_p),
+        ('th32ModuleID', wintypes.DWORD),
+        ('cntThreads', wintypes.DWORD),
+        ('th32ParentProcessID', wintypes.DWORD),
+        ('pcPriClassBase', ctypes.c_long),
+        ('dwFlags', wintypes.DWORD),
+        ('szExeFile', wintypes.WCHAR * 260),
+    ]
+
+
+def _child_processes(parents: set) -> set:
+    snapshot = _k32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return set()
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        found = set()
+        ok = _k32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID in parents:
+                found.add(int(entry.th32ProcessID))
+            ok = _k32.Process32NextW(snapshot, ctypes.byref(entry))
+        return found
+    finally:
+        _k32.CloseHandle(snapshot)
+
+
+def _low_process_can_write(path: str) -> tuple:
+    # 用一个**一次性 Low 子进程**真的往目录写一个文件：这是唯一可信的判据。
+    # 「标签读回 Low」不等于「Low 进程写得进去」：CI（High 完整性的 runner）实测
+    # 标签读回 S:AI(ML;OICI;NW;;;LW)，Low 子进程写同一个目录依然 PermissionError。
+    # 探针不过就不降级（fail-safe），并把原因写进 problems。
+    probe_path = os.path.join(str(path), '.qio-low-write-probe')
+    quote = chr(34)
+    command = 'pause >nul & echo x> ' + quote + probe_path + quote
+    process = None
+    try:
+        process = subprocess.Popen(
+            ['cmd', '/c', command],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _set_low_integrity(int(process.pid))
+        actual = integrity_of_process(int(process.pid))
+        if actual != LOW_INTEGRITY_SID:
+            return False, 'probe-not-low: ' + str(actual)
+        process.stdin.write(b'x')
+        process.stdin.flush()
+        code = process.wait(timeout=15)
+    except Exception as exc:
+        return False, 'probe-error: ' + str(exc)
+    finally:
+        if process is not None:
+            with contextlib.suppress(Exception):
+                process.kill()
+    wrote = os.path.exists(probe_path)
+    with contextlib.suppress(OSError):
+        os.remove(probe_path)
+    if wrote and code == 0:
+        return True, 'ok'
+    return False, 'write-denied exit=' + str(code)
+
+def _harden_tree(root_pid: int, job: int, problems: list[str]) -> tuple:
+    """把 worker **以及整棵后代**降级 + 指派进 job + 读回核实，直到收敛。
+
+    为什么：Windows 上 `sys.executable` 可能是 uv 的 trampoline（.venv\\Scripts\\python.exe
+    先起一个真解释器再转发参数），**工具代码跑在子进程里**；只处理被 spawn 的那一个 pid
+    等于两层强制全部落空（CI 实测：工具以普通完整性跑完，能写用户目录）。
+
+    递归：每轮把新发现的后代加入已知集合，直到连续若干轮没有新进程（trampoline 可能不止一层）；
+    时间上仍然安全 —— sandbox 把请求写进 stdin 之后工具代码才会执行，这一步远早于它。
+
+    返回 (处理过的 pid 列表, 核实失败的 pid 列表)。
+    """
+    handled: list[int] = []
+    failed: list[int] = []
+    known = {int(root_pid)}
+    idle = 0
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        fresh = _child_processes(known) - known
+        if fresh:
+            idle = 0
+        else:
+            idle += 1
+            if idle >= 5:  # 连续 5 轮（约 100ms）没有新进程：认为收敛
+                break
+        for pid in fresh:
+            known.add(pid)
+            try:
+                _set_low_integrity(pid)
+                if job:
+                    _assign_job(job, pid)
+                handled.append(pid)
+            except Exception as exc:  # noqa: BLE001 - 单个后代失败不放弃整棵树
+                problems.append(f"后代进程 {pid} 未能纳入隔离：{exc}")
+                failed.append(pid)
+        time.sleep(0.02)
+
+    for pid in handled:
+        actual = integrity_of_process(pid)
+        if actual != LOW_INTEGRITY_SID:
+            problems.append(
+                f"后代进程 {pid} 降级后读回令牌是 {actual or '读不到'}，按未降级处理"
+            )
+            failed.append(pid)
+    return handled, failed
 
 
 def label_low(path: str) -> str:
-    """给目录打低完整性标签（含继承）并**读回核实**；返回办法：sddl / icacls / 空。"""
-    descriptor = ctypes.c_void_p()
-    applied = ""
-    if _advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        _LOW_LABEL_SDDL, _SDDL_REVISION_1, ctypes.byref(descriptor), None
-    ):
-        try:
-            code = _advapi.SetNamedSecurityInfoW(
-                str(path), _SE_FILE_OBJECT, _LABEL_SECURITY_INFORMATION,
-                None, None, None, descriptor,
-            )
-            if code == 0:
-                applied = "sddl"
-        finally:
-            _k32.LocalFree(descriptor)
-    if not applied or not label_is_low(integrity_label_of(path)):
-        # 回退：icacls 同时把**已存在**的子文件一起打上标签（/T）。
-        try:
-            done = subprocess.run(
-                ["icacls", str(path), "/setintegritylevel", "(OI)(CI)L", "/T"],
-                capture_output=True, timeout=30,
-            )
-            if done.returncode == 0:
-                applied = "icacls"
-        except (OSError, subprocess.SubprocessError):
-            pass
-    if not label_is_low(integrity_label_of(path)):
+    """给目录打低完整性标签（含继承）并**读回核实**；成功返回 "icacls"，否则回空串。
+
+    为什么只用 icacls（2026-10-03 最小实验，Medium 父进程 + Low 子进程）：
+
+        SDDL 路径  : SetNamedSecurityInfoW rc=0，读回 "S:AINO_ACCESS_CONTROL"（没有标签 ACE）
+                     → 子进程 scratch=WRITE-DENIED（标签没落上，目录仍是 Medium）
+        icacls 路径: exit=0，读回 "S:AI(ML;OICI;NW;;;LW)"，icacls 也显示
+                     Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)
+                     → 子进程 scratch=WRITE-OK，user/qio=WRITE-DENIED
+
+    也就是说「调用返回 0」完全不可信；只有**读回看到 (ML;…;LW)** 才算打上。
+    icacls 同时处理已存在的子文件（/T），SDDL 那次连目录本身都没改对。
+    """
+    try:
+        done = subprocess.run(
+            ["icacls", str(path), "/setintegritylevel", "(OI)(CI)L", "/T"],
+            capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
         return ""
-    return applied
+    if done.returncode != 0:
+        return ""
+    return "icacls" if label_is_low(integrity_label_of(path)) else ""
 
 
 # --------------------------------------------------------------------------
@@ -465,29 +600,60 @@ def harden(
         for path in writable:
             if not label_low(path):
                 unlabelled.append(path)
+        # 光有标签还不够：CI（High 完整性的 runner）实测标签读回 Low、Low 子进程照样写不进。
+        # 所以再用一个一次性 Low 进程真的写一次；写不进去就不降级（否则工具直接罢工）。
+        unwritable: list[str] = []
+        for path in writable:
+            ok, why = _low_process_can_write(path)
+            if not ok:
+                unwritable.append(path + "（" + why + "）")
         if unlabelled:
             problems.append(
                 "低完整性降级已跳过：以下目录没能核实为低标签，降级会让工具写不进去 "
                 + "，".join(unlabelled)
             )
+        elif unwritable:
+            problems.append(
+                "低完整性降级已跳过：Low 进程实测写不了以下目录（降级会让工具连 scratch 都用不了）"
+                + "，".join(unwritable)
+            )
         else:
             try:
                 _set_low_integrity(int(pid))
-                mechanisms.append(_MECHANISM_LOW_IL)
             except Exception as exc:  # noqa: BLE001 - 同上
                 problems.append(f"low_integrity: {exc}")
                 logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
+            else:
+                # 关键：真正跑工具代码的进程可能**不是**我们 spawn 的那个（uv trampoline 会再起
+                # 一个真解释器）。整棵后代都要降级 + 进 job，并且逐个读回核实。
+                _handled, failed = _harden_tree(int(pid), job, problems)
+                # C5：只有当 worker 与**所有**已发现的后代都核实为 Low 时，才允许声称低完整性。
+                actual = integrity_of_process(int(pid))
+                if actual != LOW_INTEGRITY_SID:
+                    problems.append(
+                        f"low_integrity: 降级后读回令牌仍是 {actual or '读不到'}，"
+                        "按未降级处理（不声称低完整性）"
+                    )
+                elif failed:
+                    problems.append(
+                        "low_integrity: 有后代进程未能核实为低完整性（见上面的原因），"
+                        "按未降级处理（不声称低完整性）"
+                    )
+                else:
+                    mechanisms.append(_MECHANISM_LOW_IL)
 
     if not mechanisms:
         return IsolationOutcome(applied=False, detail="没有可用的强制隔离机制", problems=tuple(problems))
+    # C5：detail 只描述**真的核实过**的机制（哪一层没成，就说哪一层没成）。
+    parts: list[str] = []
+    if _MECHANISM_JOB in mechanisms:
+        parts.append("Job Object 已核实：进程内存/活动进程数上限 + 关句柄即收整棵树")
+    if _MECHANISM_LOW_IL in mechanisms:
+        parts.append("工具进程令牌已读回核实为低完整性（写不进用户文件与 QIO 数据目录，读不受限）")
     return IsolationOutcome(
         applied=True,
         mechanisms=tuple(mechanisms),
-        detail=(
-            "已强制：进程内存/活动进程上限 + 关句柄即收整棵树"
-            + ("；工具进程降为低完整性（写不进用户文件与 QIO 数据目录，读不受限）"
-               if _MECHANISM_LOW_IL in mechanisms else "")
-        ),
+        detail="；".join(parts),
         limits=limits,
         problems=tuple(problems),
     )

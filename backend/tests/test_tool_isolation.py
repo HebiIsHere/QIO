@@ -431,3 +431,289 @@ async def test_extra_writable_dirs_are_kept_writable_when_declared(tmp_path, mon
     assert result.ok is True, result.error
     assert result.value['declared'] == 'WRITE-OK', result.isolation
 
+
+# ---------------------------------------------------------------- 标签与声明必须与事实一致（C5）
+
+
+@WINDOWS_ONLY
+def test_label_is_low_only_accepts_a_real_label_ace():
+    """实测过的两个读回值：一个是真标签，一个是「调用成功但没落上」的坏结果。"""
+    # icacls 落上的正确结果（实测读回）
+    assert isolation.label_is_low('S:AI(ML;OICI;NW;;;LW)') is True
+    # SetNamedSecurityInfoW 返回 0 时的读回（根本没有标签 ACE）—— 必须判为否
+    assert isolation.label_is_low('S:AINO_ACCESS_CONTROL') is False
+    assert isolation.label_is_low('') is False
+    assert isolation.label_is_low('S:AI(ML;OICI;NW;;;ME)') is False  # 中完整性不是低
+
+
+@WINDOWS_ONLY
+def test_label_low_refuses_when_the_readback_does_not_show_low(tmp_path, monkeypatch):
+    """打标签必须读回核实：读回不是低标签 → 返回空串（调用方据此不降级）。"""
+    target = tmp_path / 'labelled'
+    target.mkdir()
+
+    monkeypatch.setattr(isolation, 'integrity_label_of', lambda path: 'S:AINO_ACCESS_CONTROL')
+
+    assert isolation.label_low(str(target)) == '', '读回不是低标签时必须拒绝'
+
+
+@WINDOWS_ONLY
+def test_low_integrity_is_not_claimed_when_the_token_did_not_downgrade(monkeypatch):
+    """C5：SetTokenInformation 成功但令牌没变时，不许声明 low_integrity。"""
+    _enable_low_integrity(monkeypatch)
+    process = _spawn_sleeper()
+    try:
+        # 令牌读回永远是中完整性 —— 模拟「调用了但没生效」
+        monkeypatch.setattr(
+            isolation, 'integrity_of_process', lambda pid: isolation.MEDIUM_INTEGRITY_SID
+        )
+        outcome = isolation.harden(process, scratch_dir=None, policy=None)
+
+        assert 'low_integrity' not in outcome.mechanisms
+        assert any('读回' in problem for problem in outcome.problems), outcome.problems
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+
+@WINDOWS_ONLY
+def test_job_object_is_not_claimed_when_the_assignment_fails(monkeypatch):
+    """C5：指派失败时不许声明 job_object（声明 == 事实）。"""
+    process = _spawn_sleeper()
+    try:
+        def boom(job, pid):
+            raise OSError('injected: assign failed')
+
+        monkeypatch.setattr(isolation, '_assign_job', boom)
+        outcome = isolation.harden(process, scratch_dir=None, policy=None)
+
+        assert 'job_object' not in outcome.mechanisms
+        assert any('job_object' in problem for problem in outcome.problems), outcome.problems
+        assert outcome.limits == {}
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+
+def _spawn_sleeper():
+    return subprocess.Popen(
+        [sys.executable, '-c', 'import time; time.sleep(60)'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _kill(process) -> None:
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        process.kill()
+    with contextlib.suppress(Exception):
+        process.wait(timeout=10)
+
+
+@WINDOWS_ONLY
+async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeypatch):
+    """C3 目标三件套：scratch 可写 / 用户目录不可写 / QIO 数据目录不可写。
+
+    只有在父进程**高于 Low** 时才可能观察到「拒绝」：本机 `uv run` 出来的 python 自己在 Low
+    完整性，降级是 no-op，目标目录也是 Low —— 那时写被允许才是正确行为，这时本条**无法验证拒绝**，
+    只断言「状态与标签一致」并把事实打印出来。CI（windows-latest）是普通完整性，会走完整断言。
+    """
+    _enable_low_integrity(monkeypatch)
+    base = tmp_path / 'c3'
+    scratch = base / 'scratch'
+    user_dir = base / 'user-files'
+    qio_dir = base / 'qio-data'
+    for path in (scratch, user_dir, qio_dir):
+        path.mkdir(parents=True)
+
+    code = (
+        'import os\n'
+        'def _touch(path):\n'
+        '    try:\n'
+        "        with open(os.path.join(path, 'probe.txt'), 'w') as fh:\n"
+        "            fh.write('x')\n"
+        "        return 'WRITE-OK'\n"
+        '    except OSError as exc:\n'
+        "        return 'WRITE-DENIED ' + type(exc).__name__\n"
+        'def run(**kwargs):\n'
+        '    return {\n'
+        "        'scratch': _touch(os.getcwd()),\n"
+        "        'user': _touch(kwargs['user']),\n"
+        "        'qio': _touch(kwargs['qio']),\n"
+        '    }\n'
+    )
+    sandbox = SandboxExecutor(executor='subprocess')
+    result = await sandbox.execute(
+        code, {'user': str(user_dir), 'qio': str(qio_dir)}
+    )
+
+    assert result.ok is True, result.error
+    # 硬契约：工具自己的 scratch 永远必须可写
+    assert result.value['scratch'] == 'WRITE-OK', result.isolation
+
+    parent_integrity = isolation.integrity_of_process(os.getpid())
+    user_label = isolation.integrity_label_of(str(user_dir))
+    print(
+        '[C3] parent=' + str(parent_integrity),
+        'user_label=' + repr(user_label),
+        'isolation=' + str(result.isolation),
+    )
+    if os.environ.get('CI'):
+        # GitHub Actions 的 runner 是普通完整性。若这里看到 Low，说明 CI 上跑的是「无法验证」分支，
+        # 那这次绿就不能当作三件套的证据 —— 直接失败，不许拿绿当结论。
+        assert parent_integrity != isolation.LOW_INTEGRITY_SID, (
+            'CI 上父进程应当在 Low 之上（普通完整性）；当前是 Low，说明拒绝分支没有被验证到。'
+            f' parent={parent_integrity}'
+        )
+    mechanisms = (result.isolation or {}).get('mechanisms', [])
+    problems = (result.isolation or {}).get('problems', [])
+    claimed_low = 'low_integrity' in mechanisms
+    # 目标目录是否**明确**标了高于 Low 的标签（没有标签 ACE 时读回是空串，不能当成「更高」）
+    higher_target = bool(user_label) and not isolation.label_is_low(user_label)
+
+    if claimed_low and higher_target:
+        # 声明了低完整性、而且目标确实更高：这时写必须被内核拒绝（工具返回 'WRITE-DENIED <原因>'）
+        assert result.value['user'].startswith('WRITE-DENIED'), result.isolation
+        assert result.value['qio'].startswith('WRITE-DENIED'), result.isolation
+        assert not (user_dir / 'probe.txt').exists()
+        assert not (qio_dir / 'probe.txt').exists()
+    else:
+        # 这个环境里没法（或不该）观察拒绝：要么本会话本身就在 Low（目标目录也是 Low），
+        # 要么 fail-safe 主动跳过了降级。两种情况都断言「写是通的」，并且要求**说清原因**。
+        assert result.value['user'].startswith('WRITE-OK'), result.isolation
+        assert result.value['qio'].startswith('WRITE-OK'), result.isolation
+        if not claimed_low:
+            assert any(
+                '低完整性降级已跳过' in problem for problem in problems
+            ), f'没声称低完整性就必须给出跳过的原因；problems={problems}'
+# 工具侧自检片段：真实执行工具代码的进程自己报 pid / 完整性 / 是否在 job 里。
+_SELF_REPORT = (
+    'import ctypes, os\n'
+    'from ctypes import wintypes\n'
+    'def _self():\n'
+    "    adv = ctypes.WinDLL('advapi32'); k32 = ctypes.WinDLL('kernel32')\n"
+    '    adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]\n'
+    '    adv.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]\n'
+    '    adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]\n'
+    '    k32.GetCurrentProcess.restype = wintypes.HANDLE\n'
+    '    k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]\n'
+    '    token = wintypes.HANDLE()\n'
+    '    adv.OpenProcessToken(k32.GetCurrentProcess(), 8, ctypes.byref(token))\n'
+    '    buf = ctypes.create_string_buffer(64); size = wintypes.DWORD(0)\n'
+    '    adv.GetTokenInformation(token, 25, buf, 64, ctypes.byref(size))\n'
+    '    sid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p)).contents.value\n'
+    '    text = ctypes.c_wchar_p()\n'
+    '    adv.ConvertSidToStringSidW(ctypes.c_void_p(sid), ctypes.byref(text))\n'
+    '    in_job = wintypes.BOOL()\n'
+    '    k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))\n'
+    "    return {'pid': os.getpid(), 'integrity': text.value, 'in_job': bool(in_job.value), 'ppid': os.getppid()}\n"
+)
+
+
+@WINDOWS_ONLY
+async def test_the_process_that_runs_tool_code_is_the_one_we_hardened(tmp_path, monkeypatch):
+    """C5 的核心：真正执行工具代码的 pid 必须已经是 Low、并且进了 job。
+
+    这条专门盯 uv trampoline：sandbox spawn 的是转发进程，工具代码跑在它起的子进程里，
+    只降级转发进程时，真正干活的进程两层都逃逸（CI 实测过）。
+    """
+    _enable_low_integrity(monkeypatch)
+    code = _SELF_REPORT + (
+        'def run(**kwargs):\n'
+        '    return _self()\n'
+    )
+    result = await _run(code)
+
+    assert result.ok is True, result.error
+    info = result.isolation or {}
+    mechanisms = info.get('mechanisms', [])
+    assert result.value['pid'] != os.getpid(), '工具必须跑在独立进程里'
+    print('[tool-process]', result.value, '| mechanisms=', mechanisms)
+
+    if 'low_integrity' in mechanisms:
+        assert result.value['integrity'] == isolation.LOW_INTEGRITY_SID, (
+            '声称低完整性，但真正跑工具代码的进程是 '
+            + str(result.value['integrity'])
+            + f' (pid={result.value["pid"]}, 父进程={result.value["ppid"]})；'
+            '说明降级落在转发进程上、真正干活的进程逃逸了'
+        )
+    if 'job_object' in mechanisms:
+        assert result.value['in_job'] is True, '声称 job 强制，但工具进程不在任何 job 里'
+
+
+@WINDOWS_ONLY
+def test_low_integrity_is_not_claimed_when_a_process_cannot_be_verified(tmp_path, monkeypatch):
+    """核实不到就不许声称（C5）：读回永远不是 Low 时，机制里不能有 low_integrity。"""
+    _enable_low_integrity(monkeypatch)
+    target = tmp_path / 'scratch'
+    target.mkdir()
+    monkeypatch.setattr(
+        isolation, 'integrity_of_process', lambda pid: isolation.MEDIUM_INTEGRITY_SID
+    )
+    process = _spawn_sleeper()
+    try:
+        outcome = isolation.harden(process, scratch_dir=str(target), policy=None)
+
+        assert outcome.applied is True, outcome
+        assert 'low_integrity' not in outcome.mechanisms, outcome.problems
+        # 读回永远不是 Low 时，fail-safe 会在探针或令牌核实这一步停下来；两种原因都算合格，
+        # 但**必须**留下明确原因，且不许声称低完整性。
+        assert any(
+            ('按未降级处理' in problem) or ('Low 进程实测写不了' in problem)
+            for problem in outcome.problems
+        ), outcome.problems
+        assert 'low_integrity' not in outcome.detail
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+@WINDOWS_ONLY
+def test_low_integrity_is_skipped_when_a_low_process_cannot_write_the_scratch(tmp_path, monkeypatch):
+    """fail-safe：Low 进程实测写不了 scratch 时，必须**跳过降级**并说明原因。
+
+    「标签读回是 Low」不够：CI（High 完整性的 runner）实测标签读回 S:AI(ML;OICI;NW;;;LW)、
+    Low 子进程写同一个目录依然 PermissionError。所以判据是一次真实的 Low 写入探针。
+    """
+    _enable_low_integrity(monkeypatch)
+    target = tmp_path / 'scratch'
+    target.mkdir()
+    monkeypatch.setattr(
+        isolation, '_low_process_can_write',
+        lambda path: (False, 'write-denied exit=1'),
+    )
+    process = _spawn_sleeper()
+    try:
+        outcome = isolation.harden(process, scratch_dir=str(target), policy=None)
+
+        assert 'low_integrity' not in outcome.mechanisms, outcome.problems
+        assert any('Low 进程实测写不了' in problem for problem in outcome.problems), outcome.problems
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+def test_the_module_imports_on_a_posix_platform_path():
+    """回归：模块级代码不能假设 Windows 专属名字存在。
+
+    真实事故：模块级的 class 用了 wintypes，而 wintypes 只在 `if WINDOWS:` 分支里导入 ——
+    Linux CI 一 import 就 NameError，两个 py3.x job 都在 10 秒内变红（本机 Windows 永远发现不了）。
+    这里把 sys.platform 临时改成 linux 再导入一次，走的就是 CI 的那条路径。
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / 'src' / 'agent' / 'tools' / 'isolation.py'
+    spec = importlib.util.spec_from_file_location('isolation_posix_probe', path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['isolation_posix_probe'] = module
+    original = sys.platform
+    try:
+        sys.platform = 'linux'
+        spec.loader.exec_module(module)
+    finally:
+        sys.platform = original
+
+    assert module.WINDOWS is False
+    assert module.supported() is False
+    assert module.harden(object()).applied is False  # POSIX：不声称有隔离
