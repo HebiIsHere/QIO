@@ -1,0 +1,472 @@
+{
+  "n": 118,
+  "arms": {
+    "A_current": {
+      "n": 118,
+      "accuracy": 0.4237,
+      "continuation_recall": 0.3086,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.7283,
+      "switch_accuracy": 0.0,
+      "short_input": {
+        "n": 20,
+        "accuracy": 0.9
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.3889
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 25,
+          "switch": 0,
+          "new_topic": 56
+        },
+        "switch": {
+          "in_topic": 0,
+          "switch": 0,
+          "new_topic": 11
+        },
+        "new_topic": {
+          "in_topic": 1,
+          "switch": 0,
+          "new_topic": 25
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 0
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 2
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 0
+        },
+        "en": {
+          "n": 9,
+          "ok": 4
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 17
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 3
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 1
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 3
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 0
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 5
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 2
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "B_conservative": {
+      "n": 118,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0,
+      "short_input": {
+        "n": 20,
+        "accuracy": 1.0
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6111
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 81,
+          "switch": 0,
+          "new_topic": 0
+        },
+        "switch": {
+          "in_topic": 11,
+          "switch": 0,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 26,
+          "switch": 0,
+          "new_topic": 0
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 0
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 12
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 0
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 6
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 10
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 0
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 0
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 7
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 10
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "C_lexical": {
+      "n": 118,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091,
+      "short_input": {
+        "n": 20,
+        "accuracy": 0.9
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6111
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 64,
+          "switch": 1,
+          "new_topic": 16
+        },
+        "switch": {
+          "in_topic": 0,
+          "switch": 10,
+          "new_topic": 1
+        },
+        "new_topic": {
+          "in_topic": 2,
+          "switch": 0,
+          "new_topic": 24
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 8
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 16
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 6
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 7
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 3
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 1
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 5
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 5
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "D_handoff": {
+      "n": 118,
+      "accuracy": 0.678,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.1196,
+      "switch_accuracy": 0.0,
+      "short_input": {
+        "n": 20,
+        "accuracy": 1.0
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6111
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 80,
+          "switch": 0,
+          "new_topic": 1
+        },
+        "switch": {
+          "in_topic": 1,
+          "switch": 0,
+          "new_topic": 10
+        },
+        "new_topic": {
+          "in_topic": 26,
+          "switch": 0,
+          "new_topic": 0
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 0
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 12
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 0
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 6
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 10
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 0
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 0
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 7
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 9
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": {
+        "count": 62,
+        "useful": 25,
+        "useful_rate": 0.4032
+      }
+    }
+  },
+  "sweep": [],
+  "cv": [
+    {
+      "k": 5,
+      "safe_only": true,
+      "pooled_accuracy": 0.7458,
+      "folds": [
+        {
+          "fold": 0,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.55,
+            "switch_delta": 0.15
+          },
+          "accuracy": 0.75,
+          "n": 24
+        },
+        {
+          "fold": 1,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.55,
+            "switch_delta": 0.15
+          },
+          "accuracy": 0.7917,
+          "n": 24
+        },
+        {
+          "fold": 2,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.55,
+            "switch_delta": 0.15
+          },
+          "accuracy": 0.7083,
+          "n": 24
+        },
+        {
+          "fold": 3,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.55,
+            "switch_delta": 0.15
+          },
+          "accuracy": 0.8696,
+          "n": 23
+        },
+        {
+          "fold": 4,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.55,
+            "switch_delta": 0.15
+          },
+          "accuracy": 0.6087,
+          "n": 23
+        }
+      ]
+    },
+    {
+      "k": 5,
+      "safe_only": false,
+      "pooled_accuracy": 0.8305,
+      "folds": [
+        {
+          "fold": 0,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.02,
+            "switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 1,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.02,
+            "switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 2,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.02,
+            "switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 3,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.02,
+            "switch_delta": 0.02
+          },
+          "accuracy": 0.9565,
+          "n": 23
+        },
+        {
+          "fold": 4,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "switch_threshold": 0.02,
+            "switch_delta": 0.02
+          },
+          "accuracy": 0.6957,
+          "n": 23
+        }
+      ]
+    }
+  ]
+}
