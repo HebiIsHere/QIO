@@ -34,7 +34,11 @@
         "installerHooks": "nsis/installer-hooks.nsh"
       }
     },
-    "resources": { "resources/models": "models" },
+    "resources": {
+      "resources/models": "models",
+      "resources/python-runtime": "python-runtime",
+      "resources/qio-uninstall-helper.exe": "qio-uninstall-helper.exe"
+    },
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
   },
   "plugins": {

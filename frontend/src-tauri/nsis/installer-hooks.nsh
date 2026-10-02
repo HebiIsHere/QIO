@@ -1,5 +1,20 @@
-﻿; QIO 自定义 NSIS 钩子（Tauri v2 bundle.windows.nsis.installerHooks）
+; QIO 自定义 NSIS 钩子（Tauri v2 bundle.windows.nsis.installerHooks）
 ;
+; ⚠️ 这个文件**必须与构建期的模板补丁一起用**（scripts/build_nsis_with_patch.py）。
+; 下面这段是硬门禁：模板卸载段里有一处按**可执行文件名**杀 qio.exe 的检查
+; （杀当前用户所有 qio.exe → 壳死 → Job Object 关闭 → 另一份安装的 backend 也死），
+; Tauri 的 installerHooks 只能追加宏、不能替换模板里已有的语句，所以补丁必须在
+; 「生成 installer.nsi」与「makensis 编译」之间把那一处换成 !insertmacro QIO_CloseMainExeIfOwned，
+; 并定义 QIO_OWNERSHIP_PATCHED。
+;
+; 没打补丁就编译？这里直接 !error 中止 —— 宁可构建失败，也不要出一个"卸载会误杀别人"的安装包。
+; 而且这让"补丁到底进没进产物"变成**编译期事实**：构建成功 = 补丁一定生效了。
+; （不用事后在产物里找字符串：NSIS 用 LZMA 压整包，字符串搜不到，会得到假阴性。）
+
+!ifndef QIO_OWNERSHIP_PATCHED
+  !error "NSIS 模板补丁没打上：installer-hooks.nsh 需要 scripts/build_nsis_with_patch.py 在编译前把模板里按名字杀 qio.exe 的那一处换成所有权守卫。请用该包装脚本构建安装包。"
+!endif
+
 ; 为什么需要它
 ; ------------
 ; Tauri 生成的卸载段只在**用户勾选「删除应用数据」**时才清理 HKCU\Software\qio\QIO
@@ -34,25 +49,36 @@
   DeleteRegKey /ifempty SHCTX "Software\qio"
 !macroend
 ; ---------------------------------------------------------------------------
-; 卸载前：把还在跑的 sidecar 收掉
+; 卸载前：只收「属于这一个安装实例」的后台进程
 ;
-; 为什么需要它（2026-10-03 两条独立实测拼起来的事实）：
-;   * 运行中的 qio-backend.exe **删不掉也覆盖不了**（delete -> WinError 5，
-;     overwrite -> Errno 13），只有 rename 能成功（映像以 FILE_SHARE_DELETE 打开）
-;     —— Agent A 用冻结产物实测（scripts/verify_backend_process_model.py --case 6）；
-;   * onefile 是 launcher + child 两层，只结束 launcher 会留下孤儿 child，
-;     它继续持有映像、端口也仍然开着（我自己的安装/卸载 E2E 实测过同样的形状）；
-;   * 而 Tauri 模板的 CheckIfAppIsRunning 只查主程序 qio.exe，**不查 sidecar** ——
-;     于是 sidecar 还活着时：Delete "$INSTDIR\qio-backend.exe" 静默失败、
-;     RMDir "$INSTDIR" 也失败，用户看到的是"卸载完了但目录还在、后端还在跑"。
+; 以前这里写的是 !insertmacro CheckIfAppIsRunning "qio-backend.exe" —— 它按**可执行
+; 文件名**找当前用户的进程，于是同一用户下存在两份 QIO 安装时，卸载 A 会把 B 的 sidecar
+; 一起结束（**已确认 Bug**，2026-10-03 用改动前产物实测复现）。按名字只能证明
+; 「机器上有个 qio-backend」，不能证明「这个 qio-backend 属于正在卸载的这一份」。
 ;
-; 这里复用模板自带的同一个宏（utils.nsh 里的 CheckIfAppIsRunning）把 sidecar 纳入检查：
-; 静默卸载直接结束它，交互卸载问用户 —— 与主程序的处理方式保持一致。
-; 注意：与模板一样是按**可执行文件名**找当前用户的进程；多份 QIO 安装并存时，
-; 卸载其中一份会连带结束另一份的 sidecar。这与模板对 qio.exe 的既有行为一致，
-; 属于已知限制（见 docs/e2e-install-2026-10-02.md 的"当前限制"）。
+; 现在换成按**所有权记录**收（frontend/src-tauri/src/ownership.rs 是唯一实现）：
+;   * 外壳启动时在安装目录写 sidecar.lease.json，记下自己与后端的 pid + 进程创建时间
+;     （100ns FILETIME）+ 映像路径。PID 复用会被创建时间挡掉。
+;   * 这里调同源的 qio-uninstall-helper.exe：记录对得上才动手（先 WM_CLOSE 让外壳自己
+;     按 job 收整棵树，超时才 taskkill /PID），对不上就**什么都不动**。
+;   * 帮助程序缺失 / 起不来 / 判定不了 → 退出码非 0，直接往下走，
+;     **绝不**回退成"按名字杀"。宁可留下删不掉的文件，也不误杀别人的进程。
+;
+; 壳自己就是 sidecar 的所有者（Windows 下有 Job Object：关句柄即收整棵树），所以这里
+; 只是"壳没能自己收干净"时的兜底 —— 不是主路径。
+;
+; 后面模板自带的 CheckIfAppIsRunning 仍然保留（它查的是主程序 qio.exe）：那是模板行为，
+; 本轮不动。上面的帮助程序会先把本实例关掉，正常情况下它不会再命中。
 ; ---------------------------------------------------------------------------
 
 !macro NSIS_HOOK_PREUNINSTALL
-  !insertmacro CheckIfAppIsRunning "qio-backend.exe" "${PRODUCTNAME}"
+  ; 关掉文件系统重定向，避免 32 位上下文里判定路径出错（与 Tauri 模板同一写法）
+  ${DisableX64FSRedirection}
+  ClearErrors
+  nsExec::ExecToStack '"$INSTDIR\qio-uninstall-helper.exe" --close-installation --install-dir "$INSTDIR" --timeout-ms 8000 --json'
+  Pop $0 ; nsExec 的返回（"ok" / "error" / "timeout"）
+  Pop $1 ; 退出码
+  Pop $2 ; 一行诊断（已脱敏，不含密钥）
+  ${EnableX64FSRedirection}
+  DetailPrint "sidecar 归属检查：$2（exit=$1）"
 !macroend

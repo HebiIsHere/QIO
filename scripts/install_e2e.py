@@ -24,11 +24,27 @@ r"""NSIS 安装包「真机 E2E」驱动：装 → 首启 → 工具全链 → �
 3. 同一个产品名只有一个卸载注册表槽位（HKCU\...\Uninstall\QIO），新安装必然覆写它。
    所以脚本在动手前 reg export 备份、结束后 reg import 还原；桌面/开始菜单快捷方式同样备份还原；
    并在最后逐文件比对 D:\QIO 的 sha256 证明既有安装未被改动。
+
+P4 轮新增（语义按 docs/p4-plan.md 第 1 节，先失败后通过）：
+
+* `shelllease` 阶段：启动**真外壳** `qio.exe`，核对它写的 `sidecar.lease.json`
+  （schema / install_dir / shell / backend 四件套，以及 backend.pid 就是安装目录里按路径枚举到的
+  那个 qio-backend.exe），再用 WM_CLOSE 关掉壳，断言壳与 sidecar 都退出、lease 消失。
+  lease 由**外壳**写：本脚本直接起 qio-backend.exe 的那条路径观测不到它（那里只记 NOT VERIFIED）。
+* `--uninstall-with-running-backend` 的语义**变了**：安装目录里的替身（ping.exe 改名的
+  `qio-backend.exe`）没有 lease、也没有主程序 → 卸载器**必须不杀它**，并如实报告"无法确认归属"。
+  断言 = 拒绝误杀 + 可行动报告 + 残留只有被占用的那个替身；旧的"卸载器自己收掉了还在跑的 sidecar"
+  断言按新语义作废（不要为了保绿把它留下）。
+* `pidreuse` 阶段：PID 复用反证（plan §1.4）—— 伪造三份对不上的 lease（无关进程的 pid /
+  创建时间差 1 / install_dir 指向别处），帮助程序必须 exit 3 且**不动任何进程**；再加一份
+  合法 lease 的正向对照（必须 exit 0 并真的收掉那两个 pid），防止"永远拒绝"骗过反证。
+* `coinstall` 阶段：两份真安装并存的判定交给 `scripts/install_e2e_multi.py`（一份实现、两个入口）。
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -115,6 +131,497 @@ def sha256_of(path: Path) -> str:
 def powershell(script: str, *, timeout: int = 300, tag: str | None = None) -> tuple[int, str]:
     return run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                timeout=timeout, tag=tag)
+
+
+# ---------------------------------------------------------------- Windows 进程事实
+#
+# 为什么用 ctypes 直连 kernel32，而不是 PowerShell/WMI：
+#   * 「B 的 backend 没有重启过」与「PID 复用反证」都要求**100ns 精度**的进程创建时间
+#     （UTC FILETIME）。Win32_Process.CreationDate 经 PowerShell 序列化后会丢精度，
+#     拿它去比对只能得出"大概一样"，那不足以支撑这两条硬断言；
+#   * 本机子进程是受限令牌，.NET 静态调用在受限语言模式下会被挡；ctypes 只读查询不受影响。
+# 失败时一律返回 None（进程不存在/查不到），调用方负责把它记成 FAIL 而不是当成"通过"。
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+TH32CS_SNAPPROCESS = 0x00000002
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_ulong),
+        ("cntUsage", ctypes.c_ulong),
+        ("th32ProcessID", ctypes.c_ulong),
+        ("th32DefaultHeapID", ctypes.c_void_p),
+        ("th32ModuleID", ctypes.c_ulong),
+        ("cntThreads", ctypes.c_ulong),
+        ("th32ParentProcessID", ctypes.c_ulong),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.c_ulong),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+_kernel32.OpenProcess.restype = ctypes.c_void_p
+_kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_kernel32.GetProcessTimes.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong * 2), ctypes.POINTER(ctypes.c_ulong * 2),
+    ctypes.POINTER(ctypes.c_ulong * 2), ctypes.POINTER(ctypes.c_ulong * 2)]
+_kernel32.QueryFullProcessImageNameW.argtypes = [
+    ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
+_kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+_kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_ulong, ctypes.c_ulong]
+_kernel32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+_kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+_kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+
+# 259 = STILL_ACTIVE。**必须**查这个：只要还有句柄开着（我们自己的 Popen 就开着一个），
+# 已经退出的进程在内核里仍然可以被 OpenProcess 到、创建时间也还查得到 —— 只按
+# "OpenProcess 成功"判存活，会把刚被 taskkill 掉的进程记成"还在跑"（本机 smoke 实测踩到）。
+STILL_ACTIVE = 259
+
+
+def _process_times_and_path(pid: int) -> dict | None:
+    """一个 pid 的 (映像路径, 创建时间 FILETIME)。进程已退出/查不到 → None。"""
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
+    if not handle:
+        return None
+    try:
+        exit_code = ctypes.c_ulong(0)
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return None
+        if exit_code.value != STILL_ACTIVE:
+            return None
+        creation = (ctypes.c_ulong * 2)()
+        exit_time = (ctypes.c_ulong * 2)()
+        kernel = (ctypes.c_ulong * 2)()
+        user = (ctypes.c_ulong * 2)()
+        if not _kernel32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = ctypes.c_ulong(len(buffer))
+        path = ""
+        if _kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            path = buffer.value
+        filetime = (int(creation[1]) << 32) | int(creation[0])
+        return {"pid": int(pid), "exe": path, "created_filetime": str(filetime)}
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def _snapshot_pids() -> list[dict]:
+    """Toolhelp 快照：所有进程的 (pid, ppid, 映像名)。"""
+    snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == INVALID_HANDLE_VALUE:
+        return []
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    out: list[dict] = []
+    try:
+        if not _kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return []
+        while True:
+            out.append({"pid": int(entry.th32ProcessID), "ppid": int(entry.th32ParentProcessID),
+                        "name": entry.szExeFile})
+            if not _kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        _kernel32.CloseHandle(snapshot)
+    return out
+
+
+def process_identity(pid: int) -> dict | None:
+    """进程身份 = pid + 父 pid + 映像路径 + 创建时间（**抗 PID 复用**的那四件套）。"""
+    info = _process_times_and_path(pid)
+    if info is None:
+        return None
+    ppid = next((item["ppid"] for item in _snapshot_pids() if item["pid"] == int(pid)), None)
+    return {**info, "ppid": ppid}
+
+
+def processes_in_dir(install_dir) -> list[dict]:
+    """安装目录里的进程 —— 按**映像路径**匹配，不按映像名。
+
+    这台机器上同时有多个 agent 在跑真实后端：按名字枚举（qio-backend.exe）会把别人的进程
+    算成自己的，之后的每一条断言都在验错对象。
+    """
+    prefix = os.path.normcase(str(Path(install_dir).resolve())) + os.sep
+    found: list[dict] = []
+    for entry in _snapshot_pids():
+        info = _process_times_and_path(entry["pid"])
+        if not info or not info["exe"]:
+            continue
+        if os.path.normcase(str(Path(info["exe"]).resolve())).startswith(prefix):
+            found.append({**entry, **info})
+    return sorted(found, key=lambda item: item["pid"])
+
+
+def identity_digest(items: list[dict]) -> str:
+    """一组进程身份的指纹：pid + 创建时间 + 路径。有任何重启/替换都会变。"""
+    canonical = json.dumps(sorted(
+        (int(item["pid"]), str(item.get("exe") or ""), str(item.get("created_filetime") or ""))
+        for item in items), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def describe_processes(items: list[dict]) -> str:
+    return ", ".join("%s(ppid=%s,ft=%s)" % (item["pid"], item.get("ppid"), item.get("created_filetime"))
+                     for item in items) or "无"
+
+
+def wait_processes_gone(pids, timeout: float = 30.0) -> list[int]:
+    """等这些 pid 真的消失；返回仍在的 pid（空列表 = 确认都退了）。"""
+    deadline = time.time() + timeout
+    left = [int(pid) for pid in pids]
+    while True:
+        left = [pid for pid in left if process_identity(pid) is not None]
+        if not left or time.time() >= deadline:
+            return left
+        time.sleep(0.5)
+
+
+def listen_port_of(pids) -> int | None:
+    """按 pid 反查监听端口。
+
+    外壳自己 pick_free_port（见 frontend/src-tauri/src/main.rs），**不认** QIO_PORT
+    —— 所以启动真外壳的场景里端口只能这样反查，不能沿用 --port 的假设。
+    """
+    wanted = [int(pid) for pid in pids if int(pid) > 0]
+    if not wanted:
+        return None
+    script = (
+        "$ids = @(%s); Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
+        "Where-Object { $ids -contains $_.OwningProcess } | "
+        "Select-Object -First 1 -ExpandProperty LocalPort" % ",".join(str(pid) for pid in wanted))
+    code, out = run(["powershell", "-NoProfile", "-Command", script], tag="listen-port-of")
+    for token in out.split():
+        if token.strip().isdigit():
+            return int(token.strip())
+    return None
+
+
+# ---------------------------------------------------------------- sidecar.lease.json
+#
+# 契约的唯一事实源是 docs/p4-plan.md §1.1（外壳在启动时写、退出时删；PID + 创建时间 +
+# 映像路径三者同时匹配才认这个进程 = 抗 PID 复用；内容不含任何密钥/令牌）。
+
+LEASE_NAME = "sidecar.lease.json"
+# 只把「有非空值」的敏感字段名算成泄露：字段名本身（例如 "token": null）不是泄露。
+# 字段名里出现这些词就算敏感（api_token / session_token / client_secret 都要能抓到）；
+# "key" 单独作为整名匹配，避免把 keys/keyset 这类无害字段误判成泄露。
+SECRET_WORDS = ("token", "secret", "password", "credential", "private")
+SECRET_EXACT = ("key", "api_key", "apikey", "authorization")
+
+
+def lease_path(install_dir) -> Path:
+    return Path(install_dir) / LEASE_NAME
+
+
+def read_lease(install_dir) -> tuple[dict | None, str]:
+    """读 lease：返回 (解析后的 dict 或 None, 原文)。文件不存在 → (None, "")。"""
+    path = lease_path(install_dir)
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, ""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None, raw
+    return (data if isinstance(data, dict) else None), raw
+
+
+def lease_problems(lease: dict, install_dir) -> list[str]:
+    """按 §1.1 核对 lease 的四件套；返回问题清单（空 = 每一项都对得上真实进程）。"""
+    problems: list[str] = []
+    if lease.get("schema") != 1:
+        problems.append("schema=%r（期望 1）" % lease.get("schema"))
+    recorded_dir = str(lease.get("install_dir") or "")
+    if not recorded_dir or os.path.normcase(os.path.abspath(recorded_dir)) != \
+            os.path.normcase(str(Path(install_dir).resolve())):
+        problems.append("install_dir=%r 与安装目录不符" % recorded_dir)
+    for role in ("shell", "backend"):
+        item = lease.get(role)
+        if not isinstance(item, dict):
+            problems.append("缺少 %s 段" % role)
+            continue
+        pid = item.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            problems.append("%s.pid=%r 不是正整数" % (role, pid))
+            continue
+        live = _process_times_and_path(pid)
+        if live is None:
+            problems.append("%s.pid=%s 当前取不到（进程已退出或无权查询）" % (role, pid))
+            continue
+        if str(item.get("created_filetime") or "") != live["created_filetime"]:
+            problems.append("%s.created_filetime=%r 与实际 %s 不符（PID 复用/伪造？）"
+                            % (role, item.get("created_filetime"), live["created_filetime"]))
+        recorded_exe_live = str(item.get("exe") or "")
+        if recorded_exe_live and os.path.normcase(os.path.abspath(recorded_exe_live)) != \
+                os.path.normcase(os.path.abspath(live["exe"])):
+            problems.append("%s.exe=%r 与实际映像路径 %r 不符" % (role, recorded_exe_live, live["exe"]))
+        if role == "backend":
+            recorded_exe = str(item.get("exe") or "")
+            expected = str((Path(install_dir) / "qio-backend.exe").resolve())
+            if not recorded_exe or os.path.normcase(os.path.abspath(recorded_exe)) != \
+                    os.path.normcase(expected):
+                problems.append("backend.exe=%r 不是安装目录里的 %s" % (recorded_exe, expected))
+    return problems
+
+
+def lease_secret_hits(raw: str, extra_values=()) -> list[str]:
+    """lease 原文里有没有密钥/令牌。
+
+    * 只对**有非空值**的敏感字段名报警（字段名本身不算）；
+    * 另外扫会话令牌的**值**与 sk- 形态的密钥。
+    """
+    hits: list[str] = []
+    for value in extra_values:
+        if value and str(value) in raw:
+            hits.append("lease 原文里出现了会话令牌的值")
+    for match in re.finditer(r'"([^"]+)"\s*:\s*("(?:[^"\\]|\\.)*"|[^,}\s]+)', raw):
+        name = match.group(1).strip().lower()
+        value = match.group(2).strip().strip('"').strip().lower()
+        if not value or value in ("null", "false", "0", "none"):
+            continue  # 字段名本身不算泄露；只有**有值**才算
+        if any(word in name for word in SECRET_WORDS) or name in SECRET_EXACT:
+            hits.append("字段 %s 有非空值" % name)
+    if re.search(r"sk-[A-Za-z0-9]{4,}", raw):
+        hits.append("出现 sk- 形态的密钥原文")
+    return sorted(set(hits))
+
+
+def write_synthetic_lease(install_dir, shell_pid: int, backend_pid: int) -> dict:
+    """**测试装置**：按 §1.1 的契约合成一份 lease。
+
+    它证明的是「卸载判定与 PID 定向」，**不证明**外壳真的会写这份文件 ——
+    「外壳会写」由 shelllease 阶段用真外壳验证。整份文件里不放任何密钥/令牌。
+    """
+    install_dir = Path(install_dir)
+    shell = process_identity(shell_pid)
+    backend = process_identity(backend_pid)
+    if shell is None or backend is None:
+        raise RuntimeError("合成 lease 失败：shell/backend 进程身份取不到（shell=%s backend=%s）"
+                           % (shell_pid, backend_pid))
+    payload = {
+        "schema": 1,
+        "install_dir": str(install_dir.resolve()),
+        # shell 段也要 exe：产品侧（qio_core::ownership）的 shell 三要素是 pid + created_filetime
+        # + exe，少写一个就永远对不上（本机实测踩到过一次）。
+        "shell": {"pid": int(shell_pid), "created_filetime": shell["created_filetime"],
+                  "exe": shell["exe"]},
+        "backend": {"pid": int(backend_pid), "created_filetime": backend["created_filetime"],
+                    "exe": str(install_dir / "qio-backend.exe")},
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "_synthetic": "E2E 按 §1.1 契约合成（只证明判定逻辑，不证明外壳会写）",
+    }
+    target = lease_path(install_dir)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    return payload
+
+
+# ---------------------------------------------------------------- 真外壳 / lease 阶段
+
+def shell_token_path(args, shell_pid: int) -> Path:
+    """外壳把会话令牌写进 %TEMP% 下的 qio-session-<pid>.token（session_token_path），
+    而 TEMP 被白名单 env 指到了 <work>/tmp —— 所以路径是确定的。"""
+    return Path(args.work_dir) / "tmp" / ("qio-session-%d.token" % shell_pid)
+
+
+def launch_shell(args, exe: Path, data_dir: Path, tag: str, extra_env: dict | None = None):
+    """启动安装目录里的**真外壳**（qio.exe / 它的改名副本）。"""
+    env = clean_env(args, args.port)
+    env["QIO_DATA_DIR"] = str(data_dir)
+    # 本机子进程是受限令牌：tauri 的 log 插件要在 %LOCALAPPDATA%\<identifier>\logs 下建目录，
+    # ACCESS_DENIED 会让外壳在启动时直接 panic（原始输出：PluginInitialization("log",
+    # "拒绝访问。 (os error 5)")）。把 LOCALAPPDATA 也指到检出内 —— 与 TEMP 同一类沙箱适配，
+    # **不是产品行为**，真机/CI 不需要。WebView2 的用户数据目录也在它下面，顺带一起解决。
+    local_appdata = Path(args.work_dir) / "localappdata"
+    local_appdata.mkdir(parents=True, exist_ok=True)
+    env["LOCALAPPDATA"] = str(local_appdata)
+    if extra_env:
+        env.update(extra_env)
+    logfile = Path(args.work_dir) / "evidence" / ("shell-%s.log" % tag)
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    fh = logfile.open("wb")
+    proc = subprocess.Popen([str(exe)], cwd=str(exe.parent), env=env,
+                            stdout=fh, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    log("  $ [shell %s] %s（pid=%s, data=%s）" % (tag, exe, proc.pid, data_dir))
+    return proc, logfile
+
+
+def wait_lease(install_dir, timeout: float, proc=None) -> tuple[dict | None, str]:
+    """等 lease 出现。外壳提前退出就立刻返回（不白等）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        lease, raw = read_lease(install_dir)
+        if lease is not None:
+            return lease, raw
+        if proc is not None and proc.poll() is not None:
+            return None, ""
+        time.sleep(0.5)
+    return None, ""
+
+
+def close_main_window(pid: int) -> tuple[bool, str]:
+    """给外壳发 WM_CLOSE（GUI 的关闭按钮点不到）。返回 (是否受理, 原始输出)。"""
+    script = (
+        "$p = Get-Process -Id %d -ErrorAction SilentlyContinue;"
+        "if ($p) { $ok = $p.CloseMainWindow(); Write-Output ('CLOSE_MAIN_WINDOW=' + $ok) }"
+        " else { Write-Output 'ALREADY_GONE' }" % int(pid))
+    code, out = run(["powershell", "-NoProfile", "-Command", script], tag="shell-close-main-window")
+    return ("CLOSE_MAIN_WINDOW=True" in out or "ALREADY_GONE" in out), out
+
+
+def kill_by_pid(pid: int, tag: str, *, force: bool = True) -> tuple[int, str]:
+    """按 **PID** 收进程（绝不用 /IM 按映像名收）。"""
+    cmd = ["taskkill", "/T", "/PID", str(int(pid))]
+    if force:
+        cmd.insert(1, "/F")
+    return run(cmd, timeout=60, tag=tag)
+
+
+def tail_text(path: Path, limit: int = 800) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-limit:]
+
+
+def step_shell_lease(args) -> bool:
+    """真外壳路径：lease 生成 → 四件套校验 → 健康检查 → WM_CLOSE → 都退出 + lease 消失。
+
+    这是计划 §1.1「外壳写 lease、退出删 lease」唯一**能观测到**的路径：直接起
+    qio-backend.exe 的流程里没有外壳，注定看不到这份文件（那里只能记 NOT VERIFIED）。
+    """
+    install_dir = Path(args.install_dir)
+    shell_exe = install_dir / args.shell_exe_name
+    if not shell_exe.is_file():
+        record("A-110", "真外壳存在（%s）" % args.shell_exe_name, "FAIL",
+               "找不到 %s —— shelllease 需要一份真实安装（--stages install）" % shell_exe)
+        return False
+    data = Path(args.work_dir) / "data-shell"
+    shutil.rmtree(data, ignore_errors=True)
+    data.mkdir(parents=True, exist_ok=True)
+    lease_file = lease_path(install_dir)
+    if lease_file.exists():  # 上一轮的残留会让"启动后出现"变成假结论
+        lease_file.unlink()
+    proc, logfile = launch_shell(args, shell_exe, data, "lease")
+    shell_id = process_identity(proc.pid)
+    record("A-110", "真外壳已启动（%s）" % args.shell_exe_name, "PASS",
+           "pid=%s 创建时间=%s；数据目录=%s（全新空目录）"
+           % (proc.pid, (shell_id or {}).get("created_filetime"), data))
+
+    lease, raw = wait_lease(install_dir, args.shell_timeout, proc)
+    if lease is None:
+        exited = proc.poll()
+        log_tail = tail_text(logfile, 600)
+        detail = ("外壳在 %ss 内就退出了（exit=%s），没有写出 %s"
+                  % (args.shell_timeout, exited, LEASE_NAME)) if exited is not None else \
+                 ("外壳还活着（pid=%s）但 %ss 内没有出现 %s" % (proc.pid, args.shell_timeout, LEASE_NAME))
+        detail += "；壳日志尾部：" + (log_tail or "（空）")
+        # 本机沙箱的已知签名：子进程是受限令牌 → tauri 的 log 插件在 %LOCALAPPDATA% 下建目录被拒
+        # （PluginInitialization("log", "拒绝访问。 (os error 5)")）→ 外壳启动即 panic。
+        # 这种失败**不是产品结论**，记 WARN/NOT VERIFIED；别的失败仍然是 FAIL。
+        sandbox_blocked = (exited is not None and
+                           ("PluginInitialization(\"log\"" in log_tail
+                            or ("os error 5" in log_tail and "拒绝访问" in log_tail)))
+        if sandbox_blocked:
+            detail += ("；判定：**本机沙箱限制**（LOG 插件写 %LOCALAPPDATA% 被拒）—— 本机 NOT VERIFIED，"
+                       "真外壳这条必须在 CI / 真机上硬过，不能读成产品通过")
+        record("A-111", "启动后安装目录里出现 sidecar.lease.json",
+               "WARN" if sandbox_blocked else "FAIL", detail)
+        kill_by_pid(proc.pid, "cleanup-shell-no-lease")
+        return False
+
+    hits = lease_secret_hits(raw, extra_values=[args.token])
+    lease_evidence = raw if not hits else "<REDACTED：lease 里检测到疑似密钥/令牌，原文不落盘；命中=%s>" % hits
+    evidence("shell-lease-raw", lease_evidence)
+    record("A-111", "启动后安装目录里出现 sidecar.lease.json", "PASS",
+           "pid(shell)=%s pid(backend)=%s；原文见 evidence/shell-lease-raw（%d 字节）"
+           % ((lease.get("shell") or {}).get("pid"), (lease.get("backend") or {}).get("pid"), len(raw)))
+
+    problems = lease_problems(lease, install_dir)
+    record("A-112", "lease 四件套与真实进程一致（schema/install_dir/shell/backend）",
+           "FAIL" if problems else "PASS",
+           "；".join(problems) if problems else
+           "schema=1、install_dir 一致、shell/backend 的 pid+created_filetime 与内核值一致、backend.exe 指向安装目录")
+
+    record("A-113", "lease 内容不含密钥/令牌", "FAIL" if hits else "PASS",
+           "命中：%s" % hits if hits else "没有非空敏感字段、没有会话令牌值、没有 sk- 形态密钥")
+
+    procs = processes_in_dir(install_dir)
+    lease_backend_pid = (lease.get("backend") or {}).get("pid")
+    in_dir = lease_backend_pid in [item["pid"] for item in procs]
+    record("A-114", "lease.backend.pid 就是安装目录里按路径枚举到的那个进程",
+           "PASS" if in_dir else "FAIL",
+           "按路径枚举：%s；lease.backend.pid=%s（命中=%s）—— 按路径而不是按映像名，"
+           "所以别的安装实例的同名进程不会被算进来"
+           % (describe_processes(procs), lease_backend_pid, in_dir))
+
+    token_file = shell_token_path(args, proc.pid)
+    deadline = time.time() + 30
+    token = ""
+    while time.time() < deadline and not token:
+        try:
+            token = token_file.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            time.sleep(0.5)
+    port = listen_port_of([item["pid"] for item in procs]) or listen_port_of([lease_backend_pid])
+    if port is None:
+        record("A-115", "外壳启动的 sidecar 健康检查可用", "FAIL",
+               "按 pid 反查不到监听端口（pids=%s）" % [item["pid"] for item in procs])
+    else:
+        ok, detail = wait_health(Client("http://127.0.0.1:%d" % port, token or args.token), timeout=60)
+        code, out = powershell(
+            "$owner = (Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | "
+            "Select-Object -First 1 -ExpandProperty OwningProcess);"
+            "if ($owner) { (Get-Process -Id $owner -ErrorAction SilentlyContinue).Path } else { '' }" % port,
+            tag="shell-lease-responder")
+        expected = str((install_dir / "qio-backend.exe").resolve())
+        same = bool(out.strip()) and str(Path(out.strip()).resolve()) == expected
+        record("A-115", "外壳启动的 sidecar 健康检查可用（端口按 pid 反查）",
+               "PASS" if ok and same else "FAIL",
+               "port=%s token文件=%s(%s) health=%s 回答者=%r（期望 %s）"
+               % (port, token_file.name, "有令牌" if token else "**没读到令牌**", detail, out.strip(), expected))
+
+    accepted, close_out = close_main_window(proc.pid)
+    record("A-116", "WM_CLOSE 已发给外壳", "PASS" if accepted else "FAIL", close_out.strip()[:200])
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is None:
+        kill_by_pid(proc.pid, "cleanup-shell-close-fallback")
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+    record("A-117", "WM_CLOSE 后外壳退出", "PASS" if proc.poll() is not None else "FAIL",
+           "exit=%s" % proc.poll())
+    backend_pids = [item["pid"] for item in procs]
+    left = wait_processes_gone(backend_pids, timeout=30)
+    record("A-118", "外壳退出后 sidecar 也退出（job 生效，不留孤儿）",
+           "FAIL" if left else "PASS",
+           "仍在：%s" % left if left else "按路径枚举：无残留（pid=%s 全部消失）" % backend_pids)
+    for pid in left:
+        kill_by_pid(pid, "cleanup-sidecar-orphan")
+    deadline = time.time() + 15
+    while time.time() < deadline and lease_file.exists():
+        time.sleep(0.5)
+    record("A-119", "外壳退出后 lease 被删除", "PASS" if not lease_file.exists() else "FAIL",
+           "%s 仍在（退出路径没有清 lease）" % lease_file.name if lease_file.exists()
+           else "%s 已消失" % LEASE_NAME)
+    return not (hits or problems or left)
 
 
 # ---------------------------------------------------------------- HTTP
@@ -455,6 +962,19 @@ def step_preflight(args) -> bool:
     return True
 
 
+def installer_env(args) -> dict:
+    """跑安装器要一份**可写**的 TEMP。
+
+    本机子进程是受限令牌，写不了用户目录下的 AppData\Local\Temp：NSIS 解 $PLUGINSDIR
+    失败会直接静默 abort（实测 exit=2、目录不生成；把 TEMP 指到检出内 work/tmp 后同一份
+    安装包 exit=0、8.4s 装完）。指到检出内的 work/tmp。
+    真机/CI 的 %TEMP% 本来就可写 —— 这条是**本沙箱的环境适配，不是产品行为**，必须记账。
+    """
+    tmp = Path(args.work_dir) / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    return {**os.environ, "TEMP": str(tmp), "TMP": str(tmp)}
+
+
 def step_decoy(args) -> bool:
     """把「既有安装」换成诱饵，验证静默安装不会调用既有卸载器。"""
     decoy = Path(args.decoy_dir)
@@ -513,7 +1033,8 @@ Write-Output 'REPOINTED'
            "HKCU\\...\\Uninstall\\QIO 与 HKCU\\Software\\qio\\QIO 暂时指向 %s；"
            "整个 E2E 期间保持这个状态，结束时还原" % decoy)
 
-    code, out = run(install_cmdline(args.installer, args.install_dir), timeout=900, tag="decoy-install")
+    code, out = run(install_cmdline(args.installer, args.install_dir), env=installer_env(args),
+                    timeout=900, tag="decoy-install")
     ran = marker.exists()
     state = "FAIL" if ran else "PASS"
     detail = ("诱饵卸载器被执行了 —— 说明静默安装会卸载既有安装，禁止在本机跑真安装！"
@@ -1003,7 +1524,8 @@ def step_reinstall(args, client: Client, port: int):
     """同一版本再装一次（等价于「重装/覆盖升级」），验证用户数据是否保留。"""
     data_dir = Path(args.work_dir) / "data"
     before = sorted(p.name for p in data_dir.glob("*"))
-    code, out = run(install_cmdline(args.installer, args.install_dir), timeout=900, tag="reinstall")
+    code, out = run(install_cmdline(args.installer, args.install_dir), env=installer_env(args),
+                    timeout=900, tag="reinstall")
     time.sleep(2)
     after = sorted(p.name for p in data_dir.glob("*"))
     proc = start_backend(args, port)
@@ -1014,7 +1536,13 @@ def step_reinstall(args, client: Client, port: int):
     return proc
 
 
-def step_uninstall(args):
+def step_uninstall(args, *, locked_residue=None):
+    """跑卸载器 /S。
+
+    locked_residue：**预期**会残留的文件名集合（替身占着 qio-backend.exe 时，卸载器按
+    新语义不杀它 → 文件删不掉）。给了它，A-090 记 WARN 并写清"这是预期残留，不是卸载器
+    缺陷"；残留**超出**这个集合仍然是 FAIL —— 不能拿"预期"当挡箭牌。
+    """
     uninstaller = Path(args.install_dir) / "uninstall.exe"
     if not uninstaller.exists():
         record("A-090", "卸载器存在", "FAIL", "找不到 %s" % uninstaller)
@@ -1029,16 +1557,279 @@ def step_uninstall(args):
         time.sleep(2)
     still = sorted(p.name for p in Path(args.install_dir).glob("*")) if Path(args.install_dir).exists() else []
     after = sorted(p.name for p in data_dir.glob("*"))
-    record("A-090", "卸载后安装目录被清空", "PASS" if not Path(args.install_dir).exists() else
-           ("WARN" if still in (["uninstall.exe"], []) else "FAIL"),
-           "exit=%s 残留：%s" % (code, still))
-    record("A-091", "卸载保留用户数据（未勾选删除数据）", "PASS" if after == before and before else "FAIL",
-           "数据目录 %s -> %s" % (before, after))
+    if not Path(args.install_dir).exists():
+        record("A-090", "卸载后安装目录被清空", "PASS", "exit=%s 目录已删除" % code)
+    elif locked_residue is not None and set(still) <= set(locked_residue):
+        record("A-090", "卸载后安装目录被清空", "WARN",
+               "exit=%s 残留：%s —— **预期残留**：这些文件被拒绝误杀的无归属替身占着（见 A-095/A-096），"
+               "卸载器按新语义不杀它，所以文件删不掉。不是卸载器缺陷，但也**不是**「目录已清空」" % (code, still))
+    else:
+        record("A-090", "卸载后安装目录被清空",
+               "WARN" if still in (["uninstall.exe"], []) else "FAIL",
+               "exit=%s 残留：%s" % (code, still))
+    if after == before and before:
+        record("A-091", "卸载保留用户数据（未勾选删除数据）", "PASS", "数据目录 %s -> %s" % (before, after))
+    elif not before:
+        # 数据目录本来就是空的（例如 --stages uninstall 单独跑）：没有对象可验，记 NOT VERIFIED，
+        # 不要把它印成 FAIL —— 那会让人以为是产品把数据删了（本机实测踩到过）。
+        record("A-091", "卸载保留用户数据（未勾选删除数据）", "WARN",
+               "**NOT VERIFIED**：卸载前数据目录就是空的，这一条没有对象可验（完整流程里由 "
+               "CI/前面的 stage 放进合成用户状态）")
+    else:
+        record("A-091", "卸载保留用户数据（未勾选删除数据）", "FAIL",
+               "数据目录 %s -> %s" % (before, after))
     code, out2 = powershell("if (Test-Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QIO') "
                             "{ 'STILL PRESENT' } else { 'REMOVED' }", tag="uninstall-registry")
     record("A-092", "卸载后卸载注册表项被移除", "PASS" if "REMOVED" in out2 else "WARN",
            out2.strip()[:120] + "（本会话子进程是受限令牌：安装器的 WriteRegStr 与卸载器的 DeleteRegKey "
            "都 ACCESS_DENIED 且静默失败 —— 所以这一项在本机**无法**验证，不是产品结论）")
+
+
+def write_forged_lease(install_dir, *, shell_pid: int, backend_pid: int,
+                       backend_exe: str | None = None, backend_filetime: str | None = None,
+                       install_dir_field: str | None = None) -> Path:
+    """写一份**伪造**的 lease（PID 复用反证用；只动安装目录里的这一个文件）。
+
+    shell/backend 的 pid 与创建时间默认取真实进程的值，再按需要把**某一项**改错 ——
+    这样每条断言只考一个判定点，不与别的判定纠缠。
+    """
+    install_dir = Path(install_dir)
+    shell = process_identity(shell_pid)
+    backend = process_identity(backend_pid)
+    if shell is None or backend is None:
+        raise RuntimeError("伪造 lease 失败：shell/backend 进程身份取不到（%s / %s）"
+                           % (shell_pid, backend_pid))
+    payload = {
+        "schema": 1,
+        "install_dir": install_dir_field or str(install_dir.resolve()),
+        # shell 段用真实的三要素（pid + 创建时间 + 映像路径）—— 反证要考的是 backend 那一项，
+        # 不能让 shell 段先对不上（那就变成"到处都对不上"的弱反证了）。
+        "shell": {"pid": int(shell_pid), "created_filetime": shell["created_filetime"],
+                  "exe": shell["exe"]},
+        "backend": {"pid": int(backend_pid),
+                    "created_filetime": backend_filetime or backend["created_filetime"],
+                    "exe": backend_exe or str(install_dir / "qio-backend.exe")},
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "_forged": "E2E 伪造（PID 复用反证）：故意让某个判定点对不上",
+    }
+    target = lease_path(install_dir)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def step_pid_reuse_rebuttal(args) -> bool:
+    """PID 复用反证（plan §1.4）：lease 指向一个**已存在的无关进程**时，帮助程序必须拒绝。
+
+    四个变体（前三个都必须 exit 3 + 一行可行动诊断 + **不动任何进程**）：
+      1. backend 段指向一个真实存在的**无关进程**（另一个目录里的 ping）：pid 与创建时间都是
+         真的，只有 exe 路径不是安装目录里的 qio-backend.exe → 必须拒绝（否则就是"只看 pid"）；
+      2. pid 与 exe 都对（就是安装目录里的那个替身），但 created_filetime 差 1 → 必须拒绝
+         （否则抗不了 PID 复用）；
+      3. 内容全对，只有 lease.install_dir 指向别的目录 → 必须拒绝；
+      4. **正向对照**：一份完全合法的 lease（shell 与 backend 都指向我们自己的两个进程）
+         → 必须 exit 0 且真的把这两个 pid 收掉 —— 否则"永远拒绝"也能骗过前三条。
+    """
+    install_dir = Path(args.install_dir)
+    helper = install_dir / "qio-uninstall-helper.exe"
+    if not helper.is_file():
+        record("A-120", "帮助程序存在（PID 复用反证的前提）", "FAIL",
+               "**实现未就位**：找不到 %s" % helper)
+        return False
+    procs = processes_in_dir(install_dir)
+    if not procs:
+        record("A-120", "安装目录里有一个可当 backend 的进程", "FAIL",
+               "按路径枚举为空 —— 先用 --stages uninstall --uninstall-with-running-backend 造替身，"
+               "或让真后端跑着")
+        return False
+    backend_pid = procs[0]["pid"]
+
+    scratch = Path(args.work_dir) / "pidreuse-scratch"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True, exist_ok=True)
+    ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ping.exe"
+    unrelated_exe = scratch / "unrelated.exe"
+    shutil.copy2(ping, unrelated_exe)
+
+    def spawn(exe: Path):
+        return subprocess.Popen([str(exe), "-t", "127.0.0.1"], cwd=str(exe.parent),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    unrelated = spawn(unrelated_exe)
+    shell_stub = spawn(unrelated_exe)
+    time.sleep(1.5)
+    tracked = [item["pid"] for item in processes_in_dir(install_dir)] + [unrelated.pid, shell_stub.pid]
+
+    def identity_map():
+        return {pid: process_identity(pid) for pid in tracked}
+
+    def untouched(before_map) -> tuple[bool, str]:
+        after_map = identity_map()
+        for pid, item in before_map.items():
+            if item is None:
+                continue
+            if after_map.get(pid) is None:
+                return False, "pid %s 消失了（帮助程序动了不该动的进程）" % pid
+            if after_map[pid]["created_filetime"] != item["created_filetime"]:
+                return False, "pid %s 的创建时间变了" % pid
+        return True, "进程身份逐条未变"
+
+    def helper_refuses(cid: str, title: str, expect_reason: str) -> bool:
+        before_map = identity_map()
+        code, out = run([str(helper), "--close-installation", "--install-dir", str(install_dir),
+                         "--timeout-ms", "2000", "--json"], timeout=120, tag=cid)
+        ok_codes = code == 3
+        actionable = any(word in out for word in ("归属", "lease", "租约", "对不上", "不一致",
+                                                   "不存在", "未找到", "无法确认"))
+        still, why = untouched(before_map)
+        state = "PASS" if (ok_codes and actionable and still) else "FAIL"
+        record(cid, title, state,
+               "exit=%s（期望 3）；诊断=%r；进程=%s；判定点=%s"
+               % (code, out.strip().replace("\n", " ")[:260], why, expect_reason))
+        return state == "PASS"
+
+    results = []
+    try:
+        # 变体 1：无关进程的 pid + 真实创建时间，但 exe 路径不是安装目录里的
+        write_forged_lease(install_dir, shell_pid=shell_stub.pid, backend_pid=unrelated.pid,
+                           backend_exe=str(install_dir / "qio-backend.exe"))
+        results.append(helper_refuses("A-121", "反证 1：backend 指向无关进程（路径对不上）→ 必须拒绝",
+                                      "映像路径"))
+        # 变体 2：pid 与 exe 都对，创建时间差 1（PID 复用）
+        backend_stub = next(item for item in processes_in_dir(install_dir) if item["pid"] == backend_pid)
+        write_forged_lease(install_dir, shell_pid=shell_stub.pid, backend_pid=backend_pid,
+                           backend_filetime=str(int(backend_stub["created_filetime"]) + 1))
+        results.append(helper_refuses("A-122", "反证 2：创建时间差 1（PID 复用）→ 必须拒绝",
+                                      "created_filetime"))
+        # 变体 3：内容全对，install_dir 指向别处
+        write_forged_lease(install_dir, shell_pid=shell_stub.pid, backend_pid=backend_pid,
+                           install_dir_field=str(scratch))
+        results.append(helper_refuses("A-123", "反证 3：lease.install_dir 指向别的目录 → 必须拒绝",
+                                      "install_dir"))
+        # 变体 4：正向对照 —— 合法 lease 必须真的收掉这两个 pid（防止"永远拒绝"骗过上面三条）
+        write_forged_lease(install_dir, shell_pid=shell_stub.pid, backend_pid=backend_pid)
+        code, out = run([str(helper), "--close-installation", "--install-dir", str(install_dir),
+                         "--timeout-ms", "3000", "--json"], timeout=120, tag="pidreuse-positive")
+        left = wait_processes_gone([shell_stub.pid, backend_pid], timeout=30)
+        record("A-124", "正向对照：合法 lease 必须真的收掉这两个 pid（exit 0）",
+               "PASS" if code == 0 and not left else "FAIL",
+               "exit=%s（期望 0）；诊断=%r；仍在=%s" % (code, out.strip()[:260], left or "无"))
+        results.append(code == 0 and not left)
+    finally:
+        for pid in set([unrelated.pid, shell_stub.pid] + [item["pid"] for item in processes_in_dir(install_dir)]):
+            if process_identity(pid) is not None:
+                kill_by_pid(pid, "cleanup-pidreuse")
+        lease_file = lease_path(install_dir)
+        if lease_file.exists():
+            lease_file.unlink()
+        shutil.rmtree(scratch, ignore_errors=True)
+    record("A-125", "PID 复用反证收尾（伪造 lease 已删除、进程按 PID 清掉）", "PASS",
+           "残留 lease=%s；残留进程=%s" % (lease_path(install_dir).exists(),
+                                          [item["pid"] for item in processes_in_dir(install_dir)]))
+    return all(results)
+
+
+def step_uninstall_with_standin(args) -> bool:
+    """替身语义（plan §1.4）：安装目录里那个 qio-backend.exe 是 ping.exe 改名的替身。
+
+    它**没有 lease、也没有主程序** → 卸载器必须不杀它，并如实报告"无法确认归属"。
+    不能保留旧版本那句"卸载器自己收掉了还在跑的 sidecar"：那是改动前的行为，
+    也不是本轮想要的行为。
+
+    CI 的调用方式不变：CI 先自己起好替身，再跑
+    --stages uninstall --uninstall-with-running-backend；本函数也支持替身还没起时
+    自己造一个（本地跑用）。全过程只按 **PID / 路径**收进程，绝不用 /IM。
+    """
+    install_dir = Path(args.install_dir)
+    if not install_dir.exists():
+        record("A-087", "替身还在跑（卸载前）", "FAIL", "%s 不存在" % install_dir)
+        return False
+    standin_before = processes_in_dir(install_dir)
+    if not standin_before:
+        # 本地跑：自己造替身（CI 里是 CI 那一步造的，语义完全一样）。
+        ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ping.exe"
+        if not ping.exists():
+            record("A-087", "替身还在跑（卸载前）", "FAIL", "找不到 %s，造不出替身" % ping)
+            return False
+        target = install_dir / "qio-backend.exe"
+        try:
+            shutil.copy2(ping, target)
+        except OSError as exc:
+            record("A-087", "替身还在跑（卸载前）", "FAIL",
+                   "替换成替身失败：%r（真后端还在跑？先让 --stages uninstall 走不带 flag 的路径）" % exc)
+            return False
+        subprocess.Popen([str(target), "-t", "127.0.0.1"], cwd=str(install_dir),
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+        standin_before = processes_in_dir(install_dir)
+    if not standin_before:
+        record("A-087", "替身还在跑（卸载前）", "FAIL", "替身没有起来（按路径枚举为空）")
+        return False
+
+    lease, _raw = read_lease(install_dir)
+    record("A-087", "替身场景的前提：进程在跑、且**没有** lease",
+           "FAIL" if lease is not None else "PASS",
+           "按路径枚举：%s；lease=%s" % (
+               describe_processes(standin_before),
+               "存在（这就不是「无归属」场景了，验的不是同一条缝）" if lease is not None else "不存在"))
+
+    # --- 直接调帮助程序：这是唯一能拿到"如实报告"原文的路径（卸载器静默模式吞 stdout）---
+    helper = install_dir / "qio-uninstall-helper.exe"
+    if not helper.exists():
+        record("A-095a", "帮助程序如实报告无法确认归属（exit 3 + 可行动诊断）", "FAIL",
+               "**实现未就位**：%s 不存在。plan §1.2 要求它拒绝时 exit 3 并输出一行 JSON 诊断" % helper)
+    else:
+        helper_code, helper_out = run(
+            [str(helper), "--close-installation", "--install-dir", str(install_dir),
+             "--timeout-ms", "3000", "--json"],
+            timeout=120, tag="uninstall-helper-standin")
+        actionable = any(word in helper_out for word in
+                         ("无法确认", "归属", "lease", "租约", "未找到", "不存在", "不一致"))
+        refused = helper_code == 3
+        record("A-095a", "帮助程序如实报告无法确认归属（exit 3 + 可行动诊断）",
+               "PASS" if refused and actionable else "FAIL",
+               "exit=%s（期望 3）；输出=%r；判定关键词命中=%s"
+               % (helper_code, helper_out.strip()[:400], actionable))
+
+    alive = processes_in_dir(install_dir)
+    same = [item["pid"] for item in alive] == [item["pid"] for item in standin_before] and all(
+        next((x for x in alive if x["pid"] == item["pid"]), {}).get("created_filetime")
+        == item["created_filetime"] for item in standin_before)
+    record("A-095b", "帮助程序拒绝后替身一个都没被动过（按 pid+创建时间核对）",
+           "PASS" if same else "FAIL",
+           "调用前：%s；调用后：%s" % (describe_processes(standin_before), describe_processes(alive)))
+
+    # --- 端到端：跑真卸载器 ---
+    step_uninstall(args, locked_residue={"qio-backend.exe"})
+    alive_after = processes_in_dir(install_dir)
+    survived = [item["pid"] for item in alive_after] == [item["pid"] for item in standin_before] and all(
+        next((x for x in alive_after if x["pid"] == item["pid"]), {}).get("created_filetime")
+        == item["created_filetime"] for item in standin_before)
+    record("A-095", "卸载器**没有误杀**没有 lease 的替身（端到端，按 pid+创建时间核对）",
+           "PASS" if survived else "FAIL",
+           "卸载前：%s；卸载后：%s" % (describe_processes(standin_before),
+                                       describe_processes(alive_after)))
+    residue = sorted(p.name for p in install_dir.glob("*")) if install_dir.exists() else []
+    residue_ok = set(residue) <= {"qio-backend.exe"}
+    record("A-096", "卸载后残留只有被占用的那个替身（没有别的残渣）",
+           "PASS" if residue_ok else "FAIL",
+           "残留=%s（期望 ⊆ ['qio-backend.exe']：替身占着它 → 文件删不掉，这是拒绝误杀的必然后果）"
+           % residue)
+
+    # --- E2E 自己的收尾：按 PID 杀替身（不是产品行为，必须单独记账）---
+    cleanup_pids = [item["pid"] for item in processes_in_dir(install_dir)]
+    for pid in cleanup_pids:
+        kill_by_pid(pid, "cleanup-standin")
+    left = wait_processes_gone([item["pid"] for item in standin_before], timeout=20)
+    shutil.rmtree(install_dir, ignore_errors=True)
+    record("A-097", "E2E 收尾：按 PID 清掉替身与残留目录（非产品行为）",
+           "PASS" if not left and not install_dir.exists() else "FAIL",
+           "taskkill /F /T /PID %s；残留 pid=%s；目录存在=%s"
+           % (cleanup_pids, left, install_dir.exists()))
+    return survived and residue_ok
 
 
 def step_restore(args):
@@ -1102,9 +1893,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--token", default="e2e-install-token-0001")
     parser.add_argument("--stages", default="all")
-    # 故意让 sidecar 继续跑着去卸载：验证卸载器**自己**会不会收掉它
-    # （模板的 CheckIfAppIsRunning 只查 qio.exe，不查 sidecar —— 这正是要测的那条缝）。
+    # 替身语义（P4 起）：安装目录里那个 qio-backend.exe 是 ping.exe 改名的替身 —— 没有 lease、
+    # 也没有主程序 → 卸载器**必须不杀它**并如实报告"无法确认归属"。旧的"卸载器自己收掉了
+    # 还在跑的 sidecar"断言已按新语义作废。
     parser.add_argument("--uninstall-with-running-backend", action="store_true")
+    # shelllease 阶段用哪个可执行文件当"真外壳"（默认 qio.exe）。
+    # 多安装并存场景里 B 那份要用改名副本，见 scripts/install_e2e_multi.py 的说明。
+    parser.add_argument("--shell-exe-name", default="qio.exe")
+    parser.add_argument("--shell-timeout", type=float, default=120.0,
+                        help="等外壳写出 sidecar.lease.json 的秒数")
     args = parser.parse_args()
 
     global EVIDENCE
@@ -1115,8 +1912,8 @@ def main() -> int:
     EVIDENCE = work / "evidence"
 
     stages = set(args.stages.split(",")) if args.stages != "all" else {
-        "preflight", "decoy", "install", "models", "health", "api", "dev", "restart", "reinstall",
-        "uninstall", "restore"}
+        "preflight", "decoy", "install", "models", "health", "shelllease", "pidreuse", "api", "dev",
+        "restart", "reinstall", "uninstall", "restore", "coinstall"}
     # /D= 可以含空格（裸值、放最后），但不能含引号：已用 makensis 探针验证过含空格路径可用。
     if '"' in args.install_dir:
         log("! 安装目录不能含引号（NSIS /D= 规则）")
@@ -1152,6 +1949,13 @@ def main() -> int:
             ok, client = step_health(args, args.port)
             if not ok:
                 return 7
+        if "shelllease" in stages:
+            # 真外壳：lease 只由外壳写（plan §1.1）。直接起 qio-backend.exe 的流程里
+            # 观测不到它 —— 所以"启动后 lease 在不在"这条只在 shelllease 里判。
+            step_shell_lease(args)
+        if "pidreuse" in stages:
+            # PID 复用反证（plan §1.4）：伪造 lease 必须被帮助程序拒绝，且不动任何进程。
+            step_pid_reuse_rebuttal(args)
         if client is None:
             client = Client("http://127.0.0.1:%d" % args.port, args.token)
         sse = SseReader(client)
@@ -1173,24 +1977,45 @@ def main() -> int:
             backend, _ = step_restart(args, client, backend, args.port)
         if "uninstall" in stages:
             if args.uninstall_with_running_backend:
-                running = _backend_pids_by_path(args.install_dir)
-                record("A-087", "卸载前故意让 sidecar 继续运行", "PASS" if running else "WARN",
-                       "运行中的 sidecar pid=%s（不主动停，看卸载器自己收不收）" % (running or "无"))
+                # 替身路径：断言 = 拒绝误杀 + 如实报告 + 残留只有被占用的替身。
+                # 真后端必须先停（否则替身覆盖不了 qio-backend.exe），这一步由
+                # step_uninstall_with_standin 负责（它自己按 PID 清）。
+                stop_backend(backend, args.install_dir)
+                backend = None
+                ensure_backend_stopped(args, "替身替换前")
+                step_uninstall_with_standin(args)
             else:
                 stop_backend(backend, args.install_dir)
                 ensure_backend_stopped(args, "卸载前")
-            backend = None
-            # 先在同一个键下放一个合成 DbBaseline（只在注册表可写时），
-            # 用来断言「卸载清安装信息，但不动用户状态」这条边界。
-            seeded = step_seed_user_state(args)
-            step_uninstall(args)
-            step_uninstall_registry(args, seeded)
-            if args.uninstall_with_running_backend:
-                left = _backend_pids_by_path(args.install_dir)
-                record("A-095", "卸载器自己收掉了还在跑的 sidecar", "PASS" if not left else "FAIL",
-                       "卸载后按路径枚举：%s" % (left or "无残留进程"))
-                for pid in left:  # 兜底：绝不给机器留孤儿
-                    run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="cleanup-orphan")
+                backend = None
+                # 先在同一个键下放一个合成 DbBaseline（只在注册表可写时），
+                # 用来断言「卸载清安装信息，但不动用户状态」这条边界。
+                seeded = step_seed_user_state(args)
+                step_uninstall(args)
+                step_uninstall_registry(args, seeded)
+        if "coinstall" in stages:
+            # 两份真安装并存：判定逻辑全在 install_e2e_multi.py（一份实现、两个入口）。
+            # 这里只负责把它当子进程跑起来、把它的结果并进本脚本的 summary。
+            coinstall_dir = Path(args.work_dir) / "coinstall"
+            cmd = [sys.executable, str(HERE / "install_e2e_multi.py"),
+                   "--installer", args.installer, "--work-dir", str(coinstall_dir),
+                   "--port-a", str(args.port + 100), "--port-b", str(args.port + 101),
+                   "--shell-timeout", str(args.shell_timeout)]
+            code, out = run(cmd, timeout=7200, tag="coinstall-driver")
+            child_summary = coinstall_dir / "summary.json"
+            if child_summary.exists():
+                try:
+                    payload = json.loads(child_summary.read_text(encoding="utf-8"))
+                    for item in payload.get("results") or []:
+                        RESULTS.append(item)
+                        log("  [coinstall %s] %s %s :: %s" % (
+                            item.get("state"), item.get("id"), item.get("title"),
+                            str(item.get("detail"))[:160]))
+                except ValueError as exc:
+                    record("C-999", "coinstall 结果汇总", "FAIL", "子驱动 summary.json 读不了：%r" % exc)
+            if code != 0:
+                record("C-998", "coinstall 阶段退出码", "FAIL",
+                       "install_e2e_multi.py exit=%s（原始输出见 evidence/coinstall-driver.txt）" % code)
         if "restore" in stages:
             step_restore(args)
     finally:

@@ -373,7 +373,14 @@ def parse_docker_images(output: str | None, *, prefix: str = CONTAINER_IMAGE_PRE
 #     File "pathlib.py", line 1385, in expanduser
 #   RuntimeError: Could not determine home directory.
 # 在真机上（home 变量没被清掉时）它会变成「悄悄跑起第二个后端」直到 600s 超时。
+# 版本必须与冻结后端一致；P4-B 起安装包把解释器随包带上（scripts/build_runtime.ps1 →
+# resources/python-runtime），外壳用 QIO_BUNDLED_PYTHON_DIR 把目录交进来。自带运行时比
+# 机器上的 Python 优先，且版本不匹配时**明确失败**：ABI 不一致的依赖装进去就是错的。
 BASE_PYTHON_ENV = "QIO_PYTHON"
+# 安装包自带的运行时目录（外壳在冻结态通过它交进来，见 scripts/build_runtime.ps1）：
+# 一般是 resource_dir()/python-runtime。它优先于「机器上装的 Python」—— 新 VM 语义下
+# PATH 里什么都没有，本机 Python 根本不存在；而且它必须与后端同版本，否则明确失败。
+BUNDLED_PYTHON_ENV = "QIO_BUNDLED_PYTHON_DIR"
 BASE_PYTHON_PROBE_TIMEOUT_SECONDS = 15.0
 
 
@@ -430,7 +437,11 @@ def _py_launcher_pythons() -> list[str]:
 
 
 def _candidate_pythons() -> list[str]:
-    """按优先级列候选：显式 QIO_PYTHON → py 启动器注册的 → PATH 上的 python3/python。"""
+    """**机器上**的解释器候选：显式 QIO_PYTHON → py 启动器注册的 → PATH 上的 python3/python。
+
+    自带运行时（QIO_BUNDLED_PYTHON_DIR）不在这里 —— 它是安装包的一部分，语义是「必须能用，
+    否则明确失败」，不能和「机器上碰巧有哪个」混在一条候选链上（见 _resolve_bundled_python）。
+    """
     candidates: list[str] = []
     explicit = (os.environ.get(BASE_PYTHON_ENV) or "").strip()
     if explicit:
@@ -451,14 +462,74 @@ def _candidate_pythons() -> list[str]:
     return ordered
 
 
+def _bundled_python_dir() -> str | None:
+    """外壳交进来的自带运行时目录；没给或给了空串就当没这回事。"""
+    raw = (os.environ.get(BUNDLED_PYTHON_ENV) or "").strip()
+    return raw or None
+
+
+def _bundled_interpreter_names() -> tuple[str, ...]:
+    """自带运行时目录里解释器的相对路径：Windows 是 python.exe，POSIX 是 bin/python3。"""
+    return ("python.exe",) if os.name == "nt" else ("bin/python3", "bin/python")
+
+
+def _bundled_interpreter(directory: str) -> str | None:
+    """自带运行时目录里的解释器（按 _bundled_interpreter_names 的顺序找）。
+
+    只认这一层：这个目录就是 `resource_dir()/python-runtime`，构建脚本把解释器的**内容**
+    直接铺在里面（scripts/build_runtime.ps1）。找不到就返回 None，由调用方给出明确失败 ——
+    绝不悄悄改成「机器上碰巧存在的那个 Python」。
+    """
+    root = Path(directory)
+    for name in _bundled_interpreter_names():
+        candidate = root / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _resolve_bundled_python(directory: str, expected: str) -> tuple[str | None, str]:
+    """自带运行时 → (解释器, 说明)；目录在但没有能用的匹配解释器 → (None, 明确失败原因)。
+
+    这里的失败一律是**安装包构建缺陷**（运行时没打进去 / 被裁剪坏 / 与冻结后端版本不一致），
+    所以不退回机器上的 Python：那只会把「包坏了」伪装成「这台机器恰好能跑」。
+    """
+    interpreter = _bundled_interpreter(directory)
+    if interpreter is None:
+        expected_name = _bundled_interpreter_names()[0]
+        return None, (
+            f"安装包自带的 Python 运行时目录里找不到解释器：{directory}（期望 {expected_name}）。"
+            f"这属于安装包构建缺陷（scripts/build_runtime.ps1 负责生成并自检这份运行时）；"
+            f"要用本机解释器请显式设置 {BASE_PYTHON_ENV}。"
+        )
+    version = _probe_python_version(interpreter)
+    if version is None:
+        return None, (
+            f"安装包自带的解释器跑不起来：{interpreter}（运行时被裁剪坏了？）。"
+            f"这属于安装包构建缺陷（scripts/build_runtime.ps1 的自检不过就不该出货）；"
+            f"要用本机解释器请显式设置 {BASE_PYTHON_ENV}。"
+        )
+    if version != expected:
+        return None, (
+            f"安装包自带的运行时是 Python {version}，后端是 Python {expected}：依赖环境的 ABI "
+            f"必须与后端一致（环境身份与锁定清单都按后端版本算），已拒绝。这属于安装包构建缺陷"
+            f"（scripts/python-version.txt 是两者共同的版本来源）；要用本机解释器请显式设置 "
+            f"{BASE_PYTHON_ENV}。"
+        )
+    return interpreter, f"{interpreter}（Python {version}，安装包自带运行时）"
+
+
 def _resolve_base_python(explicit: str | None = None) -> tuple[str | None, str]:
     """依赖环境用哪个解释器：返回 (路径, 说明)；找不到时说明必须是**可行动**的。
 
-    规则：
-    * 非冻结态（开发/测试）：仍然用后端自己的解释器 —— 行为一行不变；
-    * 冻结态（安装版）：sys.executable 是 qio-backend.exe，**绝不使用**；按
-      QIO_PYTHON → py 启动器 → PATH 找，并且要求 major.minor 与后端一致
-      （环境身份指纹、锁定清单都按后端版本算；ABI 不一致的依赖装进去就是错的）。
+    规则（说明里必须写清这次用的是哪一个）：
+    * 显式（参数或 QIO_PYTHON）：以它为准 —— 不匹配时**明确失败**，绝不悄悄换别的；
+    * 安装包自带的运行时（外壳通过 QIO_BUNDLED_PYTHON_DIR 传目录）：用它；不匹配同样是
+      明确失败（那是包的问题，不是「换台机器上的 Python 顶上」）；
+    * 非冻结态（开发/测试）而没有上面两者：仍然用后端自己的解释器 —— 行为一行不变；
+    * 冻结态（安装版）：sys.executable 是 qio-backend.exe，**绝不使用**；按 py 启动器 →
+      PATH 找，并且要求 major.minor 与后端一致（环境身份指纹、锁定清单都按后端版本算；
+      ABI 不一致的依赖装进去就是错的）。
     """
     expected = _backend_major_minor()
     if explicit is None:
@@ -474,16 +545,19 @@ def _resolve_base_python(explicit: str | None = None) -> tuple[str | None, str]:
                 f"指定的解释器是 Python {version}，后端是 Python {expected}：依赖环境的 ABI "
                 f"必须与后端一致（环境身份与锁定清单都按后端版本算），已拒绝。"
             )
-        return explicit, f"{explicit}（Python {version}）"
+        return explicit, f"{explicit}（Python {version}，显式指定 {BASE_PYTHON_ENV}）"
+    bundled_dir = _bundled_python_dir()
+    if bundled_dir:
+        return _resolve_bundled_python(bundled_dir, expected)
     if not getattr(sys, "frozen", False):
-        return sys.executable, f"{sys.executable}（Python {expected}，非冻结态）"
+        return sys.executable, f"{sys.executable}（Python {expected}，非冻结态：后端自己的解释器）"
     mismatched: list[str] = []
     for candidate in _candidate_pythons():
         version = _probe_python_version(candidate)
         if version is None:
             continue
         if version == expected:
-            return candidate, f"{candidate}（Python {version}）"
+            return candidate, f"{candidate}（Python {version}，机器上装的）"
         mismatched.append(f"{candidate}（Python {version}）")
     detail = (
         "；本机找到的解释器版本都不匹配：" + "、".join(mismatched)
@@ -492,7 +566,8 @@ def _resolve_base_python(explicit: str | None = None) -> tuple[str | None, str]:
     )
     return None, (
         f"安装版需要本机有一个 Python {expected} 才能为工具准备依赖环境"
-        f"（可用 {BASE_PYTHON_ENV} 指定解释器路径）{detail}。"
+        f"（可用 {BASE_PYTHON_ENV} 指定解释器路径；正常情况下安装包会自带运行时并由外壳通过 "
+        f"{BUNDLED_PYTHON_ENV} 传入，这里一个都没看到）{detail}。"
     )
 
 def _clean_env() -> dict[str, str]:

@@ -71,3 +71,9 @@ backend/qio-*.xml
 #   .e2e-*     —— 其它同类验收脚本
 .dep-e2e/
 .e2e-*/
+# P4 最小复现装置的工作目录（可再生产物）：
+#   .repro   —— scripts/repro_sidecar_kill.py 的两份安装、证据与探测脚本
+.repro/
+
+# install-e2e 的一次性驱动脚本（证据在 .e2e-work/，脚本本身是可再生的）
+.e2e-*.py

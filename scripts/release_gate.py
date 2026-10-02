@@ -603,6 +603,12 @@ def _uninstall_hook_body(text: str) -> str | None:
     return "\n".join(bodies) if bodies else None
 
 
+def _preuninstall_hook_body(text: str) -> str | None:
+    """只取 NSIS_HOOK_PREUNINSTALL 的正文（sidecar 所有权判定在这一段里）。"""
+    bodies = re.findall(r"!macro\s+NSIS_HOOK_PREUNINSTALL\b(.*?)!macroend", text, re.S)
+    return "\n".join(bodies) if bodies else None
+
+
 def check_uninstall_contract(gate: Gate, conf: dict) -> None:
     """普通卸载必须清掉**安装信息**，且**绝不能**动用户状态与数据目录。"""
     hooks = nsis_hooks_path(conf)
@@ -646,6 +652,48 @@ def check_uninstall_contract(gate: Gate, conf: dict) -> None:
             problems.append(f"碰了数据目录 {directory}（保留策略只能由「删除应用数据」复选框决定）")
     if re.search(r"\bRMDir\b[^\r\n]*com\.qio\.app", body, re.I):
         problems.append("在卸载钩子里删数据目录")
+
+    # --- sidecar 所有权（P4-A，2026-10-03） ---------------------------------
+    # 卸载前必须**按所有权记录**收 sidecar，绝不能按可执行文件名。
+    # 为什么是硬门禁：CheckIfAppIsRunning 走 nsis_tauri_utils 的
+    # FindProcessCurrentUser / KillProcessCurrentUser，只认 exe 名 —— 两份 QIO 安装并存时
+    # 卸载 A 会连 B 的 sidecar 一起杀（已确认 Bug）。谁把这行加回来，闸门就红。
+    pre = _preuninstall_hook_body(text)
+    if pre is None:
+        problems.append("没有 NSIS_HOOK_PREUNINSTALL：卸载前不会收本安装实例的 sidecar")
+    else:
+        if re.search(r'CheckIfAppIsRunning\s+"qio-backend\.exe"', pre):
+            problems.append(
+                "卸载钩子又用 CheckIfAppIsRunning 按**可执行文件名**收 sidecar："
+                "两份安装并存时会误杀另一份的 sidecar（已确认 Bug）"
+            )
+        if "qio-uninstall-helper.exe" not in pre or "--close-installation" not in pre:
+            problems.append(
+                "卸载钩子没有调用 qio-uninstall-helper.exe --close-installation："
+                "sidecar 收不干净（运行中的 qio-backend.exe 删不掉也覆盖不了）"
+            )
+    guard = hooks.parent / "qio-ownership.nsh"
+    if not guard.exists():
+        problems.append(
+            f"缺少所有权守卫宏 {guard.name}：构建期模板补丁要靠它替换掉模板里按名字杀 qio.exe 的那一处"
+        )
+    elif "!macro QIO_CloseMainExeIfOwned" not in guard.read_text(encoding="utf-8", errors="replace"):
+        problems.append(f"{guard.name} 里没有 QIO_CloseMainExeIfOwned 宏定义")
+    # SCRIPT_REPO 是脚本自己所在的检出（set_repo 会改 REPO，自检时 REPO 指向合成目录）
+    # 构建期模板补丁：hook 里必须有**编译期门禁**（!ifndef QIO_OWNERSHIP_PATCHED → !error）。
+    # 有它才谈得上"补丁真的进了产物"：没打补丁的编译会直接失败，构建成功即补丁生效。
+    # （不要用"事后在产物里找字符串"来判定：NSIS 用 LZMA 压整包，字符串搜不到，会假阴性。）
+    if "!ifndef QIO_OWNERSHIP_PATCHED" not in text:
+        problems.append(
+            "installer-hooks.nsh 里没有 !ifndef QIO_OWNERSHIP_PATCHED 编译期门禁："
+            "没打模板补丁也能编译成功，于是可能出一个卸载会误杀另一份安装的包"
+        )
+    patch_script = SCRIPT_REPO / "scripts" / "patch_nsis_template.py"
+    if not patch_script.exists():
+        problems.append(
+            "缺少 scripts/patch_nsis_template.py：没有它，模板卸载段里按名字杀 qio.exe 的那一处"
+            "不会被替换，卸载 A 会杀掉另一份安装的壳（壳死 → job 关闭 → backend 也死）"
+        )
 
     nsis_conf = (((conf.get("bundle") or {}).get("windows") or {}).get("nsis") or {})
     mode = str(nsis_conf.get("installMode") or "currentUser（未显式配置，Tauri 默认）")
@@ -874,15 +922,40 @@ def build_fixture(
                 '!macroend\n'
             )
         else:
+            # 健康钩子：清安装信息 + 按**所有权记录**收 sidecar（P4-A 的口径）。
+            # 「按名字杀 sidecar」是缺陷态，单独由 hook == "by_name" 覆盖。
+            kill = (
+                '  !insertmacro CheckIfAppIsRunning "qio-backend.exe" "${PRODUCTNAME}"\n'
+                if hook == "by_name"
+                else '  nsExec::ExecToStack \'"$INSTDIR\\qio-uninstall-helper.exe" --close-installation --install-dir "$INSTDIR" --json\'\n'
+            )
+            gate = (
+                "!ifndef QIO_OWNERSHIP_PATCHED\n"
+                '  !error "NSIS 模板补丁没打上"\n'
+                "!endif\n"
+                if hook != "no_gate"
+                else ""
+            )
             body = (
-                '!macro NSIS_HOOK_POSTUNINSTALL\n'
+                gate
+                + '!macro NSIS_HOOK_POSTUNINSTALL\n'
                 '  DeleteRegValue SHCTX "Software\\qio\\QIO" ""\n'
                 '  DeleteRegValue SHCTX "Software\\qio\\QIO" "Installer Language"\n'
                 '  DeleteRegKey /ifempty SHCTX "Software\\qio\\QIO"\n'
                 '  DeleteRegKey /ifempty SHCTX "Software\\qio"\n'
                 '!macroend\n'
+                '!macro NSIS_HOOK_PREUNINSTALL\n'
+                + kill +
+                '!macroend\n'
             )
         (hooks_dir / "installer-hooks.nsh").write_text(body, encoding="utf-8")
+        # 所有权守卫宏：构建期模板补丁的目标（缺了闸门要红）
+        if hook == "no_guard":
+            pass
+        else:
+            (hooks_dir / "qio-ownership.nsh").write_text(
+                "!macro QIO_CloseMainExeIfOwned\n!macroend\n", encoding="utf-8"
+            )
 
     # 构建 manifest（构建过程写下来的配置身份）
     if not no_manifest:
@@ -962,6 +1035,21 @@ def _selftest() -> int:
         dict(
             label="卸载钩子删整键（会带走 DbBaseline）",
             kwargs={"hook": "dangerous"},
+            expect_fail={"uninstall.contract"},
+        ),
+        dict(
+            label="卸载钩子又按可执行文件名收 sidecar（会误杀另一份安装）",
+            kwargs={"hook": "by_name"},
+            expect_fail={"uninstall.contract"},
+        ),
+        dict(
+            label="缺少所有权守卫宏（模板补丁无处可指）",
+            kwargs={"hook": "no_guard"},
+            expect_fail={"uninstall.contract"},
+        ),
+        dict(
+            label="钩子缺编译期门禁（没打补丁也能编译成功）",
+            kwargs={"hook": "no_gate"},
             expect_fail={"uninstall.contract"},
         ),
         dict(

@@ -378,8 +378,18 @@ jobs:
         working-directory: backend
         run: uv sync --frozen --extra dev
       # 真 sidecar（PyInstaller onefile，约 1 分钟）：安装包里放的是真实后端，不是空占位。
+      # 注意：sidecar 的 Python major.minor 必须与安装包自带的运行时一致（scripts/python-version.txt），
+      # build_sidecar.ps1 会自己核对并在不一致时明确失败。
       - name: Build the backend sidecar
         run: pwsh -File scripts/build_sidecar.ps1
+      # 安装包自带的 Python 运行时（P4-B）：冻结后端不能拿 sys.executable 当解释器，
+      # 依赖型工具靠这份运行时建环境。构建脚本带自检（venv + 离线 pip），失败即这一步红。
+      - name: Build the bundled Python runtime
+        run: pwsh -File scripts/build_runtime.ps1
+      # 卸载帮助程序（所有权判定：只按 pid 收本安装实例的进程）—— 它随安装包落到安装目录，
+      # 被 NSIS 的 PREUNINSTALL 钩子调用。
+      - name: Build the uninstall helper
+        run: pwsh -File scripts/build_uninstall_helper.ps1
       # CI 没有 90MB 内置模型的来源（build_installer.ps1 的 fetch_model 需要模型源/联网）：
       # 这里放一个**合成** model.onnx + 与之相符的 model_manifest.json，让「安装目录关键文件」
       # 与「模型与清单一致」两条断言有对象可查。它证明的是安装/卸载**机制**，不是真实模型产物
@@ -401,7 +411,14 @@ jobs:
           # （`--config` 的相对路径会被 tauri 按 app 目录解析，容易踩空）。
           $override = "$env:RUNNER_TEMP\tauri-ci-unsigned.json"
           [System.IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}', (New-Object System.Text.UTF8Encoding($false)))
-          npm run tauri build -- --bundles nsis --config $override
+          # 必须走这个包装：NSIS 模板卸载段里有一处按**可执行文件名**的主程序检查
+          # （杀当前用户所有 qio.exe → 壳死 → job 关闭 → 另一份安装的 backend 也死），
+          # Tauri 的 installerHooks 只能追加宏、不能替换它。包装脚本在"生成 installer.nsi"
+          # 与"makensis 编译"之间用**原子替换**把所有权守卫打进去（就地写会被 makensis 读到
+          # 写了一半的文件，实测报 Invalid command），并核对**编译产物**里真的有守卫
+          # （只核对中间文件会假绿）；没打上就重跑，仍不达标以非 0 退出。
+          python ../scripts/build_nsis_with_patch.py -- npm run tauri build -- --bundles nsis --config $override
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Silent install + registry assertions
         env:
           PYTHONIOENCODING: utf-8

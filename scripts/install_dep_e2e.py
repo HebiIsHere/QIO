@@ -18,6 +18,21 @@ requirements 的那个，并把依赖相关的每一步都留证据。
 用法：
   python scripts/install_dep_e2e.py --install-dir <含 qio-backend.exe 的目录> --work-dir <目录>
          [--port 8899] [--tool-python <python.exe>] [--extra-env KEY=VAL]
+
+无系统 Python（P4 轮新增，plan §2.4）：
+
+  python scripts/install_dep_e2e.py --install-dir <安装目录> --work-dir <目录> --no-system-python
+
+这一档做三件事：
+  1. 把子进程可见的 PATH 收窄到不含任何 python.exe / py.exe，并用 where 探针**证明**收干净了；
+  2. 由脚本注入 QIO_BUNDLED_PYTHON_DIR（模拟外壳按 §2.3 解析 resource_dir()/python-runtime），
+     让安装版后端用自带运行时建出依赖环境并**真的调用**声明第三方依赖的工具
+     （解释器来自自带运行时这条写进 evidence/no-system-python-evidence.txt：pyvenv.cfg 的
+     home、qio-env.json 的 python.base、以及自带运行时自己的版本输出）；
+  3. 默认再起一个子进程做**对照**：同样的收窄 PATH，但自带运行时指向不存在的目录 —— 断言
+     dev_run_tests 明确失败且说的是"需要 Python / 用 QIO_PYTHON 指定"这类可行动的话，
+     并且没有静默换解释器把环境建出来（D-110）。
+  诚实边界：系统里那个 Python 仍在盘上，只是这个进程看不见它 —— 不是"干净 VM 上验证过"。
 """
 
 from __future__ import annotations
@@ -294,6 +309,132 @@ def run_tool_turn(client, sse, fp, tool: str, tool_args: dict, *, timeout: float
     return None, approvals, err or "这一轮没有调用工具"
 
 
+# ---------------------------------------------------------------- 无系统 Python 口径
+#
+# 「用户机器上没有 Python」这件事在本机**不能真的验**（不能把系统 Python 卸掉）。
+# 能做到的等价条件，以及它差在哪：
+#   * 子进程可见的 PATH 收窄到不含任何 python.exe / py.exe —— 并且用 where 探针**证明**收干净了
+#     （探针输出一起留证，不靠"我以为"）；
+#   * QIO_PYTHON 不传（显式指定优先级最高，传了就不是"无系统 Python"这条口径）；
+#   * 由外壳注入的 QIO_BUNDLED_PYTHON_DIR 指向安装目录里的 python-runtime。
+# 差在哪：系统里那个 Python 仍然在盘上，只是这个进程看不见它；py 启动器因为 py.exe 不在
+# PATH 上也探不到。这不是"在干净 VM 上验证过"，是等价条件 —— 结论只能按这个口径写。
+
+PYTHON_EXE_NAMES = ("python.exe", "python3.exe", "pythonw.exe", "py.exe")
+
+
+def sanitized_path(path_value: str) -> tuple[str, list[str]]:
+    """把 PATH 里所有能露出 Python / py 启动器的目录摘掉。返回 (新 PATH, 被摘掉的目录)。"""
+    kept: list[str] = []
+    dropped: list[str] = []
+    for raw in (path_value or "").split(os.pathsep):
+        entry = raw.strip()
+        if not entry:
+            continue
+        has_interpreter = any((Path(entry) / name).exists() for name in PYTHON_EXE_NAMES)
+        looks_like_python = "python" in Path(entry).name.lower()
+        if has_interpreter or looks_like_python:
+            dropped.append(entry)
+            continue
+        kept.append(entry)
+    return os.pathsep.join(kept), dropped
+
+
+def probe_no_python(env: dict) -> tuple[bool, str]:
+    """用**同一份 env** 跑 where 探针：python / python3 / py 都必须找不到。"""
+    lines: list[str] = []
+    found: list[str] = []
+    for name in ("python", "python3", "py"):
+        code, out = base.run(["where", name], timeout=60, env=env, tag="where-%s" % name)
+        first = (out or "").strip().splitlines()[0] if (out or "").strip() else ""
+        if code == 0 and first:
+            found.append("%s -> %s" % (name, first))
+            lines.append("$ where %s\n%s" % (name, out.strip()))
+        else:
+            lines.append("$ where %s\n（未找到，exit=%s）%s" % (name, code, out.strip()[:120]))
+    return (not found), "\n".join(lines)
+
+
+def interpreter_info(python_exe: Path) -> dict | None:
+    """跑一次自带运行时的 python -c 拿版本 —— 证据里要有"这个解释器是哪个"。"""
+    if not python_exe.is_file():
+        return None
+    code, out = base.run([str(python_exe), "-c",
+                          "import sys; print(sys.executable); print('%d.%d' % sys.version_info[:2]); "
+                          "print(sys.version.split()[0])"],
+                         timeout=120, tag="bundled-runtime-version")
+    lines = [line.strip() for line in (out or "").splitlines() if line.strip()]
+    if code != 0 or len(lines) < 2:
+        return {"exe": str(python_exe), "error": (out or "").strip()[-200:]}
+    return {"exe": lines[0], "major_minor": lines[1], "version": lines[2] if len(lines) > 2 else ""}
+
+
+def read_pyvenv_cfg(env_dir: Path) -> str:
+    try:
+        return (env_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def write_results(work: Path) -> Path:
+    out = work / "results.json"
+    out.write_text(json.dumps(base.RESULTS, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out
+
+
+def missing_runtime_control_result(args, tool_ends, err, data_dir: Path) -> int:
+    """缺自带运行时那条对照的判定（只在 --control-missing-runtime 下跑）。
+
+    断言方向：dev_run_tests 必须**失败**，失败说明必须是可行动的（提到 Python / 解释器 /
+    自带运行时 / QIO_PYTHON），并且**没有**建出任何 ToolEnv（建出来 = 静默换了别的解释器）。
+    """
+    run_tests = next((item for item in tool_ends if item.get("tool") == "dev_run_tests"), None)
+    text = json.dumps({"err": err, "run_tests": run_tests}, ensure_ascii=False)
+    root = data_dir / "tool-envs"
+    envs = [p.name for p in root.iterdir() if p.is_dir() and p.name != "locks"] if root.is_dir() else []
+    actionable = any(word in text for word in
+                     ("Python", "解释器", "自带运行时", "运行时", "QIO_PYTHON", "安装包"))
+    ok = bool(run_tests) and not run_tests.get("ok") and actionable and not envs
+    base.record("D-110", "对照：缺自带运行时 → 可行动的明确失败（不换解释器、不假装可用）",
+                "PASS" if ok else "FAIL",
+                "dev_run_tests ok=%s；建出的环境=%s；err=%s；输出=%s"
+                % ((run_tests or {}).get("ok"), envs or "无", err or "无", text[:400]))
+    write_results(Path(args.work_dir))
+    return 0 if ok else 1
+
+
+def run_missing_runtime_control(args) -> None:
+    """起一个**子进程**跑同一份脚本：同样收窄的 PATH，但 QIO_BUNDLED_PYTHON_DIR 指向不存在的目录。
+
+    用全新的空数据目录与独立端口；子进程自己的结论（D-110）写进它的 results.json，
+    父进程只把那条结论并进来（原始输出也一并留证）。
+    """
+    control_dir = Path(args.work_dir) / "control-missing-runtime"
+    shutil.rmtree(control_dir, ignore_errors=True)
+    control_dir.mkdir(parents=True, exist_ok=True)
+    port = base._free_port(args.port + 1)
+    missing = control_dir / "no-such-python-runtime"
+    cmd = [sys.executable, str(Path(__file__).resolve()),
+           "--install-dir", args.install_dir, "--work-dir", str(control_dir),
+           "--port", str(port), "--no-system-python", "--control-missing-runtime",
+           "--bundled-runtime-dir", str(missing), "--skip-missing-runtime-control"]
+    code, _out = base.run(cmd, timeout=2400, tag="control-missing-runtime")
+    results_path = control_dir / "results.json"
+    if not results_path.exists():
+        base.record("D-110", "对照：缺自带运行时 → 可行动的明确失败", "FAIL",
+                    "子进程（exit=%s）没有写出 results.json —— 对照没跑起来" % code)
+        return
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+    base.evidence("control-missing-runtime-results",
+                  json.dumps(results, ensure_ascii=False, indent=2))
+    target = next((item for item in results if item["id"] == "D-110"), None)
+    state = (target or {}).get("state", "MISSING")
+    base.record("D-110", "对照（空数据目录 + 缺自带运行时）：可行动的明确失败",
+                "PASS" if state == "PASS" else "FAIL",
+                "子进程 exit=%s；它自己的 D-110=%s：%s（原始结果见 evidence/control-missing-runtime-results）"
+                % (code, state, str((target or {}).get("detail"))[:300]))
+
+
 def step_warmup(client, sse, fp) -> bool:
     """先跑一轮纯文本对话。
 
@@ -425,6 +566,14 @@ def main() -> int:
     parser.add_argument("--token", default="dep-e2e-token-0001")
     parser.add_argument("--tool-python", default="", help="传给安装版后端的 QIO_PYTHON（本机 Python）")
     parser.add_argument("--extra-env", action="append", default=[], help="额外注入后端的环境变量 KEY=VAL")
+    parser.add_argument("--no-system-python", action="store_true",
+                        help="无系统 Python 口径：收窄 PATH + 注入 QIO_BUNDLED_PYTHON_DIR")
+    parser.add_argument("--bundled-runtime-dir", default="",
+                        help="自带运行时目录（默认 <install-dir>/python-runtime）")
+    parser.add_argument("--skip-missing-runtime-control", action="store_true",
+                        help="跳过「缺自带运行时」的对照断言（对照子进程自己会带这个开关）")
+    parser.add_argument("--control-missing-runtime", action="store_true",
+                        help="内部开关：本次只跑到开发流程，判定「缺运行时是否明确失败」")
     args = parser.parse_args()
 
     # 必须是绝对路径：安装版进程的 cwd 是安装目录，相对的 TEMP 会被 PyInstaller
@@ -443,6 +592,39 @@ def main() -> int:
         extra[key] = value
     if args.tool_python:
         extra["QIO_PYTHON"] = args.tool_python
+
+    # -- 无系统 Python 口径：收窄 PATH + 注入自带运行时（plan §2.2/§2.4）--------------
+    runtime_dir: Path | None = None
+    if args.no_system_python:
+        if args.tool_python:
+            base.record("D-103", "无系统 Python 口径下没有传 QIO_PYTHON", "FAIL",
+                        "--tool-python 传了 %s：显式指定优先级最高，这条口径就验不到自带运行时"
+                        % args.tool_python)
+        else:
+            base.record("D-103", "无系统 Python 口径下没有传 QIO_PYTHON", "PASS",
+                        "只注入了 QIO_BUNDLED_PYTHON_DIR（外壳在冻结态就是这么做的）")
+        new_path, dropped = sanitized_path(os.environ.get("PATH", ""))
+        extra["PATH"] = new_path
+        probe_env = {**base.clean_env(args, args.port), **extra}
+        probe_env["QIO_DATA_DIR"] = str(data_dir)
+        clean, probe_text = probe_no_python(probe_env)
+        base.record("D-100", "PATH 收窄的前提：where 探针找不到 python / python3 / py",
+                    "PASS" if clean else "FAIL",
+                    "被摘掉的 PATH 目录=%s" % dropped if clean else
+                    "**没收拾干净**：%s" % probe_text)
+        runtime_dir = Path(args.bundled_runtime_dir).resolve() if args.bundled_runtime_dir \
+            else Path(args.install_dir) / "python-runtime"
+        extra["QIO_BUNDLED_PYTHON_DIR"] = str(runtime_dir)
+        runtime_python = runtime_dir / "python.exe"
+        base.record("D-101", "安装目录里的自带运行时存在（python.exe）",
+                    "PASS" if runtime_python.is_file() else "FAIL",
+                    "%s；sha256=%s" % (runtime_python, sha256_of(runtime_python)[:16]
+                                       if runtime_python.is_file() else "（不存在）"))
+        base.evidence("no-system-python-prereq", json.dumps(
+            {"sanitized_path": new_path, "dropped_path_entries": dropped,
+             "where_probe": probe_text, "runtime_dir": str(runtime_dir),
+             "QIO_BUNDLED_PYTHON_DIR": extra["QIO_BUNDLED_PYTHON_DIR"],
+             "QIO_PYTHON": extra.get("QIO_PYTHON") or "（没有传）"}, ensure_ascii=False, indent=2))
 
     base.log("== 安装版第三方依赖工具链 E2E ==")
     base.log("  安装目录 : %s" % args.install_dir)
@@ -505,11 +687,22 @@ def main() -> int:
         if dep:
             base.evidence("dep-approval-payload", json.dumps(dep, ensure_ascii=False, indent=2))
         run_tests = next((t for t in tool_ends if t.get("tool") == "dev_run_tests"), None)
-        base.record("D-012", "dev_run_tests（装依赖 + 跑测试）", "PASS" if run_tests and run_tests.get("ok") else "FAIL",
-                    str((run_tests or {}).get("content_preview"))[:400] or "没有 dev_run_tests 事件")
+        # 注意：tool 失败时 content_preview 往往是空的，只印它会得出"没有事件"这种**误导性的**
+        # 结论（本机实测踩到：明明有 TOOL_END，却因为 preview 为空被印成"没有 dev_run_tests 事件"）。
+        base.record("D-012", "dev_run_tests（装依赖 + 跑测试）",
+                    "PASS" if run_tests and run_tests.get("ok") else "FAIL",
+                    json.dumps({k: (run_tests or {}).get(k) for k in
+                                ("ok", "status", "error", "category", "content_preview")},
+                               ensure_ascii=False)[:600] if run_tests else "没有 dev_run_tests 事件")
         submit = next((t for t in tool_ends if t.get("tool") == "dev_submit_tool"), None)
         base.record("D-013", "dev_submit_tool 注册成功", "PASS" if submit and submit.get("ok") else "FAIL",
-                    str((submit or {}).get("content_preview"))[:300] or "没有 dev_submit_tool 事件")
+                    json.dumps({k: (submit or {}).get(k) for k in
+                                ("ok", "status", "error", "category", "content_preview")},
+                               ensure_ascii=False)[:600] if submit else "没有 dev_submit_tool 事件")
+
+        if args.control_missing_runtime:
+            # 对照只跑到这里：判定「缺自带运行时 → 明确失败」就够了，后面几步没有对象可查。
+            return missing_runtime_control_result(args, tool_ends, err, data_dir)
 
         # -- D-020 锁定清单 ---------------------------------------------------
         records = find_env_records(data_dir)
@@ -525,6 +718,38 @@ def main() -> int:
         else:
             base.record("D-020", "ToolEnv 与锁定清单（schema 2 / pip --report）", "FAIL",
                         "data/tool-envs 下没有任何环境记录")
+
+        # -- D-102/D-104 自带运行时口径：解释器到底是谁（写进证据，不靠推断）---------
+        if args.no_system_python and runtime_dir is not None:
+            env_dir = data_dir / "tool-envs" / records[0]["fingerprint"] if records else None
+            cfg_text = read_pyvenv_cfg(env_dir) if env_dir else ""
+            manifest_python = (records[0].get("manifest") or {}).get("python") if records else None
+            lock_python = ((records[0].get("lock") or {}).get("python") if records else None) or {}
+            info = interpreter_info(runtime_dir / "python.exe")
+            base_dir = str((manifest_python or {}).get("base") or "")
+            from_runtime = bool(base_dir) and base_dir.lower().replace("/", "\\").startswith(
+                str(runtime_dir).lower().replace("/", "\\"))
+            base.record("D-104", "ToolEnv 的解释器来自安装目录里的自带运行时（不是机器上的 Python）",
+                        "PASS" if from_runtime else "FAIL",
+                        "pyvenv.cfg 里的 home=%r（期望在 %s 下）；配置里记的解释器记录=%s"
+                        % (base_dir, runtime_dir, json.dumps(manifest_python, ensure_ascii=False)))
+            version_match = bool(info) and bool(lock_python.get("major_minor")) and \
+                info.get("major_minor") == lock_python.get("major_minor")
+            base.record("D-102", "自带运行时的版本 == 锁定清单里记的版本（同一解释器）",
+                        "PASS" if version_match else "FAIL",
+                        "自带运行时=%s；锁清单 python=%s；pyvenv.cfg 版本=%s"
+                        % (json.dumps(info, ensure_ascii=False), json.dumps(lock_python, ensure_ascii=False),
+                           (manifest_python or {}).get("version")))
+            base.evidence("no-system-python-evidence", json.dumps({
+                "runtime_dir": str(runtime_dir),
+                "runtime_interpreter": info,
+                "QIO_BUNDLED_PYTHON_DIR": extra.get("QIO_BUNDLED_PYTHON_DIR"),
+                "QIO_PYTHON": extra.get("QIO_PYTHON") or "（没有传）",
+                "tool_env_fingerprint": records[0]["fingerprint"] if records else None,
+                "pyvenv_cfg": cfg_text,
+                "qio_env_json_python": manifest_python,
+                "lock_python": lock_python,
+            }, ensure_ascii=False, indent=2))
 
         # -- D-021 注册后调用（重启前） ---------------------------------------
         call, _ap, err = run_tool_turn(client, sse, fp, TOOL_NAME, {"mode": "version"})
@@ -630,6 +855,10 @@ def main() -> int:
                     "本机不能真断网：这里只证明「正常调用不经过出网代理、也没有重装/改动环境」，"
                     "不是「物理断网下验证过」。")
 
+        # -- D-110 对照：缺自带运行时 → 明确失败（子进程，独立空数据目录）--------
+        if args.no_system_python and not args.skip_missing_runtime_control:
+            run_missing_runtime_control(args)
+
         # -- D-060 Docker：not tested -----------------------------------------
         docker = shutil.which("docker")
         if docker is None:
@@ -651,8 +880,7 @@ def main() -> int:
             sum(1 for r in base.RESULTS if r["state"] == "NOT TESTED")))
         for item in base.RESULTS:
             base.log("[%s] %s %s" % (item["state"], item["id"], item["title"]))
-        (Path(args.work_dir) / "results.json").write_text(
-            json.dumps(base.RESULTS, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_results(Path(args.work_dir))
         return 1 if failed else 0
     finally:
         stop_backend_mine(backend, Path(args.work_dir))
