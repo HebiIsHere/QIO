@@ -38,7 +38,9 @@ CLI），容器镜像缺这一层。
 
 1. **只认 `qio-tool-env:` 前缀**：别人的镜像、`python:3.11-slim` 这类基础镜像一律不碰；
 2. **被已注册工具引用的镜像绝不删**：tag 就是环境指纹，删了那组依赖就没有可用镜像 ——
-   没有任何 override 能绕过（这条是任务书的硬约束，测试里用定点变异验证过它真的会挡住）；
+   没有任何 override 能绕过（这条是任务书的硬约束，测试里用定点变异验证过它真的会挡住）。
+   引用判定不依赖环境记录：注册工具声明的依赖集合 → 应然 tag 会**直接算进清单**并标 protected，
+   所以锁定清单被删掉、或镜像在旧版本里建的而记录没留下时，仍然拦得住；
 3. 必须显式确认；另外**拿不到引用表时保守拒绝**（「看起来没人用」可能只是「不知道谁在用」），
    CLI 要显式写 `--assume-unreferenced` 才放行。
 
@@ -156,7 +158,8 @@ ALTER 生效、版本行没写（崩溃/断电），下次启动重放就永远 
 | actions/setup-node | v4 | **v5** | v5 起 `using: node24` |
 | astral-sh/setup-uv | v5 | **v7** | v6 仍是 `node20`，v7 才是 `node24` |
 
-升级后的验证：CI run **37030691212 = completed / success，8/8 全绿**（backend py3.11 / py3.12 /
+升级后的验证：CI run **37030691212 = completed / success，8/8 全绿**，其后的提交
+（37031735492 docs、37032498417 F1 加固）同样 8/8 全绿（backend py3.11 / py3.12 /
 windows-latest、frontend、rust ×2、frozen worker、docs）。那一跑同时也跑了 F1 的真 docker 用例
 （ubuntu 上守护进程可用，Windows 任务按标记过滤）。
 
