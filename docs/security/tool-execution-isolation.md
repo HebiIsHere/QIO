@@ -135,7 +135,8 @@ SandboxResult.isolation 里能看到实际用了哪些机制、哪些没生效�
 工具连自己的 scratch 与 mock 夹具目录都写不进去 —— 说明标签在这些环境下没有可核实的落地。
 打开后的契约（也是测试断言的契约）：
 
-* `scratch_dir` 与调用方声明的 `extra_writable_dirs` 必须都核实为低标签，否则**整体不降级**
+* `scratch_dir` 与调用方声明的 `extra_writable_dirs` 必须都**通过真实 Low 写入探针**
+  （`_low_process_can_write`，见第 11 节），否则**整体不降级**
   （fail-safe：宁可少一层写边界，也不能让工具连自己的目录都写不了）；
 * 降级成功后，工具写这些目录正常，写 Medium 及以上标签的对象被内核拒绝；
 * 工具声明了文件系统能力（policy.filesystem 非空）时同样跳过降级。
@@ -177,8 +178,11 @@ argv_tail = []
 * **POSIX 上不提供任何隔离**：isolation.harden() 返回 unsupported，行为与改动前一致。
 * **低完整性降级默认关闭**：不设 QIO_TOOL_LOW_INTEGRITY（或设 0）时只有 Job Object 生效；
   此时 SandboxResult.isolation.problems 里会写明「默认关闭 + 怎么开」。
-* **打开低完整性后，调用方必须声明工具要写的目录**（extra_writable_dirs）：目前 sandbox 侧已支持，
-  但 mock 夹具目录还没有接上（tester/mock_services 不在本次改动范围），打开开关前需要先接。
+* **打开低完整性后，调用方必须声明工具要写的目录**（extra_writable_dirs）：sandbox 侧已支持，
+  且 **mock 夹具目录已经接上** —— `tools/tester.py` 会传
+  `execution["extra_writable_dirs"] = [str(fixture.directory)]`（并有两道护栏测试：声明了夹具目录、
+  以及没有 mock 时不放开）。也就是说打开 `QIO_TOOL_LOW_INTEGRITY=1` 时，夹具目录已在可写声明列表里；
+  其它「工具合法要写」的目录仍需调用方自己声明。
 
 ---
 
