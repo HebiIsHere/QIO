@@ -1,7 +1,8 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
+import TurnTimingPanel from "./TurnTimingPanel.vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
@@ -337,6 +338,9 @@ const verifiedText = computed(() => {
         />
         <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
       </div>
+      <!-- 「这次为什么等这么久」：只在轮次结束、且这一轮有自己的 turn_id 时出现；
+           没有 phases 的旧轮次由面板自己降级说明，不占对话正文的注意力 -->
+      <TurnTimingPanel v-if="message.turnId && !message.streaming" :turn-id="message.turnId" />
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
         <button class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
