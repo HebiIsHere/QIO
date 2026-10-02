@@ -55,6 +55,18 @@ $assetDir = if ($AssetBaseUrl) {
 $json.platforms.'windows-x86_64'.url = "$assetDir/QIO_${Version}_x64-setup.exe"
 Write-Utf8NoBom -Path $manifest -Text ($json | ConvertTo-Json -Depth 4)
 
+# 发布闸门：**先判、再发**。闸门查的是「这份 dist 到底能不能被客户端信任」
+# （安装包里的后端是不是这次构建的、清单版本/哈希/签名结构与安装包对不对得上、
+#  内置模型与清单是否逐字节一致……）。历史教训：包里带的是早一个多月的后端，
+# 装上去模型加载失败、静默退回 BM25，而包看起来是好的。
+# 不过闸门就绝不发 —— 这一条是有意做成硬阻断的，不要改成 continue-on-error。
+# 每次运行还会往 docs/releases/release-history.jsonl 追加一条记录（--no-history 可关）。
+Write-Host "== 发布闸门 =="
+python (Join-Path $PSScriptRoot "release_gate.py") --repo $root --dist $DistDir
+if ($LASTEXITCODE -ne 0) {
+  throw "发布闸门未通过（见上面逐项结果）：不要发布。修好产物后重跑 scripts\build_installer.ps1。"
+}
+
 Write-Host "== 创建 release $tag 并上传资产 =="
 gh release create $tag `
   --title "QIO $tag" `
