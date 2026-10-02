@@ -167,6 +167,32 @@ windows-latest、frontend、rust ×2、frozen worker、docs）。那一跑同时
 frontend 的 `node-version: "20"` 是**项目运行时**而非 action 运行时，本轮不动。
 setup-uv v7 的 inputs 与在用的一致（python-version / enable-cache / cache-dependency-glob）。
 
+## CR1（Lead 追加）：进程模型与 Job Object 时序进 CI 门槛
+
+`frozen worker (windows)` 任务里加了两步，紧跟既有冒烟之后，用同一构建产物
+`frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe`（路径来自 `scripts/build_sidecar.ps1`，
+与既有冒烟步骤一致）：
+
+* `python scripts/verify_backend_process_model.py --exe <exe> --case 2 --json <runner_temp>`
+* `python scripts/verify_backend_process_model.py --exe <exe> --case job --json <runner_temp>`
+* 两步后面各串一个 `python scripts/check_backend_process_model.py --report <json> --case 2|job`。
+
+**为什么需要检查器**：`verify_backend_process_model.py`（Agent A）只采集数据 —— `main()` 跑完
+`return 0`，只有 exe 缺失/非 Windows 才返回 2。直接拿它当门槛等于纸面能力：进程模型退化了它照样绿。
+`scripts/check_backend_process_model.py` 读它的 JSON 断言四条形状（同 exe 的两个进程、只杀 launcher 会
+留下占端口的孤儿、立即 assign 收住 child 且关句柄不留孤儿、延迟 assign 会逃逸），非 0 退出即步骤红，
+并把每条未通过的检查发成 `::error` 注解。自带 `--selftest`（9 个场景：好报告过、每种退化必须红）。
+
+两步都设 `PYTHONIOENCODING: utf-8`：Windows runner 的 Python 标准输出默认 cp1252，脚本里的中文
+输出会撞 `UnicodeEncodeError`（第一次上线就是这么红的）；没有 `continue-on-error`。
+
+验证：run **37035687098 = 8/8 全绿**（frozen worker 2m42s）。CI 实测：case 2 `ready=True in 10.234s`、
+两个同 exe 进程（ppid 7392 → 8304）、`结束 launcher 后 child 仍在=[8304] 端口仍开=True`；
+case job 立即 assign `child_in_job=True` + 关句柄后「无相关进程 + 端口仍开=False」，延迟 assign
+`child 在 job 里=False` + `端口仍开=True`；嵌套 job 成立；壳被强杀残留 0。
+
+`scripts/verify_backend_process_model.py` 逐字节取自 Agent A 的 `wt/p3-a`（`git diff wt/p3-a -- <path>` 为空），
+合并时以 A 的版本为准。
 ## 本机环境陷阱（本轮踩到、已同步给 Lead）
 
 1. 工作树的 venv 需要用 `uv sync --frozen --extra dev` 才有 pytest；否则 `uv run --frozen pytest`
