@@ -219,6 +219,29 @@ export interface EntityCard {
   updated_at: string;
 }
 
+/**
+ * 一条「已经被后端接受、但没有执行完」的用户消息（后端 `turn_journal` 台账）。
+ *
+ * 语义（见 storage/turn_journal.py）：进程退出时还在 `queued` / `running` 的行
+ * 会被标成 `interrupted`，**不会自动重放**；消息原文留在台账里，由用户明确决定
+ * 「继续发送」或「忽略」。`completed` / `cancelled` 等终态永远不会出现在这里。
+ */
+export interface InterruptedTurn {
+  turn_id: string;
+  /** 用户当时发的原文。界面必须如实显示（截断也要看得见） */
+  message: string;
+  topic_id?: string | null;
+  status: string;
+  /** 机器可读原因：queued_at_restart | running_at_restart | shutdown */
+  reason?: string | null;
+  /** 后端给的人话说明（reason 的中文）；老数据可能为空 */
+  reason_text?: string;
+  created_at?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  updated_at?: string | null;
+}
+
 export const api = {
   listCredentials: () =>
     request<{ credentials: CredentialMeta[]; default_key_id: string | null }>(
@@ -334,6 +357,26 @@ export const api = {
         ...(binding?.requestDigest ? { request_digest: binding.requestDigest } : {}),
       }),
     }),
+  /**
+   * 重发一条「上次没有执行」的消息（按原话题重新提交一轮）。
+   *
+   * 后端用一次性 claim 抢占：同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
+   * 抢不到 / 不在未执行状态 → **409**，调用方必须给出可读反馈，不能静默失败。
+   */
+  resendInterruptedTurn: (turnId: string) =>
+    request<{ ok: boolean; recovered_turn_id: string; turn_id: string; status: string }>(
+      `/api/turns/${encodeURIComponent(turnId)}/resend`,
+      { method: "POST" },
+    ),
+  /**
+   * 用户选择「忽略」：不再提示，但台账记录与消息原文都保留（不删用户数据）。
+   * 不在「未执行」状态同样返回 409。
+   */
+  dismissInterruptedTurn: (turnId: string) =>
+    request<{ ok: boolean; dismissed: string }>(
+      `/api/turns/${encodeURIComponent(turnId)}/dismiss`,
+      { method: "POST" },
+    ),
   cancelTurn: (turnId: string) =>
     request<{ ok: boolean; cancelled: boolean; turn_id: string }>(
       `/api/turns/${encodeURIComponent(turnId)}/cancel`,
@@ -391,6 +434,13 @@ export const api = {
         expires_at?: string | null;
         outcome: string;
       }[];
+      /**
+       * 上一次进程结束时**已经被接受、但没有执行完**的用户消息。
+       *
+       * 后端只给 `interrupted` 且还没被用户处理过的行（终态与系统通知轮都不在其中），
+       * 前端照单渲染，不自己推断「这条算不算没做完」。
+       */
+      interrupted_turns?: InterruptedTurn[];
       approvals: {
         approval_id: string;
         kind: string;
