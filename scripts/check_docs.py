@@ -235,23 +235,20 @@ def check_ci_commands_documented(errors: list[str]) -> None:
             )
 
 
-def check_last_checked(errors: list[str], *, today: date | None = None) -> None:
-    """status.md 的「最后核对」必须 >= 正文里已经记到的最新日期。
+def last_checked_problem(text: str, *, today: date | None = None) -> str | None:
+    """「最后核对」是不是落后于正文日期：有问题返回可行动的描述，没问题返回 None。
 
+    纯函数（只看传入的文本）—— `--selftest` 用合成文本验证它真的能红、也能绿。
     只用**不晚于今天**的日期算「已记到」：正文里可能有路线图/迁移通知那类未来日期
     （例如「ubuntu-latest 2026-10-19 起迁移」），拿它们当「已记到」会立刻变成假警报。
     """
-    text = read(STATUS_FILE)
-    relative = STATUS_FILE.relative_to(ROOT)
     declared = LAST_CHECKED.search(text)
     if declared is None:
-        errors.append(f"{relative}：找不到「最后核对：YYYY-MM-DD」字段（读者靠它判断状态有多新）")
-        return
+        return "找不到「最后核对：YYYY-MM-DD」字段（读者靠它判断状态有多新）"
     try:
         declared_date = date.fromisoformat(declared.group(1))
     except ValueError:
-        errors.append(f"{relative}：「最后核对」不是合法日期：{declared.group(1)}")
-        return
+        return f"「最后核对」不是合法日期：{declared.group(1)}"
 
     limit = today or date.today()
     latest: tuple[date, str, int] | None = None
@@ -264,21 +261,76 @@ def check_last_checked(errors: list[str], *, today: date | None = None) -> None:
         if parsed > limit:
             continue  # 未来日期（路线图/迁移通知）：不算「已经记到」
         if latest is None or parsed > latest[0]:
-            line_number = text.count("\n", 0, match.start()) + 1
-            latest = (parsed, raw, line_number)
-    if latest is None:
-        errors.append(f"{relative}：正文里找不到任何日期，无法判断「最后核对」是否过期")
-        return
+            latest = (parsed, raw, text.count("\n", 0, match.start()) + 1)
+    if latest is None:  # 防御：头顶那个合法日期一定命中过，正常到不了这里
+        return "正文里找不到任何日期，无法判断「最后核对」是否过期"
     if declared_date < latest[0]:
-        errors.append(
-            f"{relative}：顶部「最后核对」= {declared.group(1)}，"
-            f"但正文已记到 {latest[1]}（第 {latest[2]} 行）——"
-            f"请把「最后核对」更新到 >= {latest[1]}"
+        return (
+            f"顶部「最后核对」= {declared.group(1)}，但正文已记到 {latest[1]}"
+            f"（第 {latest[2]} 行）——请把「最后核对」更新到 >= {latest[1]}"
         )
+    return None
 
 
-def main() -> int:
+def check_last_checked(errors: list[str]) -> None:
+    """把 last_checked_problem 接到 docs/status.md 上。"""
+    problem = last_checked_problem(read(STATUS_FILE))
+    if problem:
+        errors.append(f"{STATUS_FILE.relative_to(ROOT)}：{problem}")
+
+
+def selftest() -> int:
+    """离线自检：这条检查必须能正确变红、也能变绿（CI 的 docs 任务每次都会跑）。
+
+    为什么要它：一个永远返回「没问题」的检查等于纸面能力。这里用合成文本把
+    「过期 / 新鲜 / 只有未来日期 / 缺字段 / 非法日期 / 正文无日期」六种情况都钉住。
+    """
+    today = date(2026, 10, 3)
+    cases: list[tuple[str, str, bool]] = [
+        (
+            "过期：顶部 2026-09-12 < 正文 2026-10-03",
+            "最后核对：2026-09-12（`main` 分支）。\n\n- 2026-10-03 做完 X。\n",
+            True,
+        ),
+        (
+            "新鲜：顶部与正文同为 2026-10-03",
+            "最后核对：2026-10-03。\n\n- 2026-10-03 做完 X。\n",
+            False,
+        ),
+        (
+            "正文只有未来日期（路线图/迁移通知）→ 不算「已记到」",
+            "最后核对：2026-10-03。\n\n- ubuntu-latest 2026-10-19 起迁移到 Ubuntu 26。\n",
+            False,
+        ),
+        ("缺「最后核对」字段", "没有这个字段。\n\n- 2026-10-03 做完 X。\n", True),
+        ("「最后核对」不是合法日期", "最后核对：2026-13-99。\n\n- 2026-10-03 做完 X。\n", True),
+        (
+            "正文只有更早的日期 → 不该误报",
+            "最后核对：2026-10-03。\n\n- 2026-09-30 做完 X。\n",
+            False,
+        ),
+    ]
+    failures = 0
+    for label, text, expect_problem in cases:
+        problem = last_checked_problem(text, today=today)
+        ok = (problem is not None) == expect_problem
+        if not ok:
+            failures += 1
+        state = "ok" if ok else "FAIL"
+        detail = f"（{problem}）" if problem else ""
+        print(
+            f"  [{state}] {label} → 期望{'红' if expect_problem else '绿'}，"
+            f"实际{'红' if problem else '绿'}{detail}"
+        )
+    summary = "全部符合预期" if not failures else f"{failures} 个不符合预期"
+    print(f"check_docs --selftest：{len(cases)} 个场景，{summary}")
+    return 0 if not failures else 1
+
+
+def main(argv: list[str] | None = None) -> int:
     _configure_output()
+    if argv and "--selftest" in argv:
+        return selftest()
     errors: list[str] = []
     milestones = parse_status_milestones()
     check_status_values(milestones, errors)
@@ -301,4 +353,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
