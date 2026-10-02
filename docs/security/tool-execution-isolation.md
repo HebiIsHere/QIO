@@ -19,17 +19,20 @@ backend/src/agent/tools/dev_auth.py 与 lifecycle.py；执行器见 sandbox.py�
    用户文件与 QIO 数据目录（Medium 及以上标签的对象），只能写调用方声明可写的目录；
    **读不受限制**。
 
-**为什么第二层默认关**（2026-10-02 CI 实测）：在 windows-latest（普通完整性）上它确实生效，
-但工具连**自己的 scratch 目录**与 **mock 夹具目录**都写不进去 —— 标签没有可核实的落地，
-结果是 mock 服务报告、进程树标记文件写不出来（8 条用例在 CI 上变红）。修法有两条，都做了：
+**为什么第二层默认关**（2026-10-02 CI 实测 → 2026-10-03 定位到根因，见第 9 节）：
+打标签的那次调用**返回成功但其实没落上标签**，代码又只信返回值，于是降级后工具连
+自己的 scratch 目录与 mock 夹具目录都写不进去（CI 上 8 条用例变红）。现在的状态：
 
-* 打标签之后**读回核实**（`integrity_label_of`）；核实不了就**跳过降级**（fail-safe），
-  并把原因写进结果 —— 宁可少一层写边界，也不能让工具连自己的目录都写不了；
-* 默认改为**关闭**：只保留 Job Object 这一项不受写权限影响的真实强制。
+* 打标签改成 `icacls /setintegritylevel` + **读回核实**（`integrity_label_of` → `label_is_low`，
+  必须有 `(ML;…;LW)` 才算数）；核实不了就**跳过降级**（fail-safe），并把原因写进结果 ——
+  宁可少一层写边界，也不能让工具连自己的目录都写不了；
+* 默认仍然**关闭**：只保留 Job Object 这一项不受写权限影响的真实强制。原因是第二个环境
+  （CI windows-latest）还没有跑出三件套证据 —— 只在一种环境里成立的东西不配做默认值。
 
 打开的正确姿势：`QIO_TOOL_LOW_INTEGRITY=1`，并保证调用方把所有「工具合法需要写」的目录
 通过 `SandboxExecutor.execute(..., extra_writable_dirs=[...])` 声明出来（例如 mock 夹具目录）；
-任何一个声明目录核实不到低标签，这次就整体不降级。
+任何一个声明目录核实不到低标签，这次就整体不降级。打开开关后，
+`SandboxResult.isolation.detail` 会写清哪一层是**读回核实过**的，没成的写进 `problems`。
 
 它**不是安全沙箱**：网络完全不受限，读取完全不受限，路径猜得到就访问得到。
 因此界面、审批说明与文档一律按「受限子进程 + 已生效的强制项」表述，不叫「安全沙箱」。
@@ -221,3 +224,108 @@ argv_tail = []
 * 不声称「数据不会被读出」「不会联网」：读与网络都没有被隔离。
 * 不用「用户已批准」代替隔离：批准的是能力范围，不是「代码一定守规矩」。
 * 不声称 AppContainer / 受限令牌已经接上：前者本机被拒（0x80070005），后者需要改启动路径。
+---
+
+## 7. 网络强制边界：工程判断（本轮不实现）
+
+**结论：当前架构下没有任何一种「低成本」办法能形成网络的强制边界；真正可行的只有容器。**
+
+| 方案 | 能不能形成强制边界 | 需要什么 | 本轮为什么不选 |
+| --- | --- | --- | --- |
+| Docker 容器（`--network none`） | **能**，而且是唯一已经在代码里的强制路径 | Docker daemon + 镜像 | 本机没有 Docker；且只是「有容器就用」的既有分支，不是新机制 |
+| Windows 过滤平台 WFP（WFP callout / `FwpmFilterAdd`） | **能** | 管理员权限（安装过滤器驱动/策略） | 普通用户非提权，装不了；要求提权违反产品前提 |
+| AppContainer（`internetClient` capability 不给） | **能** | 提权创建 profile（实测 `0x80070005`）+ 运行时目录 ACL + 原生启动器 | 属架构变更（阶段 2），本轮无预算 |
+| 专用低权限用户 + 出网代理/防火墙规则 | 能 | 管理员建用户 + 防火墙策略 | 实测 `net user … /add` → `Access is denied.` |
+| 低完整性（MIC） | **不能** | —— | 实测：低完整性不影响出网，只限制「写向上」 |
+| Python monkeypatch（拦 `socket.connect`）/ 环境变量代理 / prompt 里叮嘱模型 | **不能** | —— | 只对「配合的代码」有效，工具可以自己 `ctypes` 直接调 Winsock；**这不是强制边界，禁止这样宣称** |
+
+给产品的说法：**网络当前没有强制边界**；要形成边界，路径是「容器（跨平台）/ AppContainer（Windows 原生，需提权与原生启动器）」。
+在这之前，任何「工具不能联网」的说法都只能是 QIO policy（声明/审批/默认不给凭据），不是 OS enforcement。
+
+## 8. QIO policy 与 OS enforcement：文案口径（C6）
+
+两件事必须分开说，不能混成一句「更安全」：
+
+* **QIO policy**（QIO 承诺做什么）：能力声明与审批、默认不向工具提供凭据、默认不给用户文件路径、
+  一次性临时目录、超时、输出上限。这些是**策略**，工具撒谎或绕过就没了。
+* **OS enforcement**（Windows 真的挡住了什么）：Job Object 的进程内存/活动进程/关句柄收树
+  （默认生效）；低完整性写入边界（默认关闭）。**读与网络没有 enforcement。**
+
+审计结果（2026-10-03，`rg` 全仓）：
+
+* `README.md:29`「受限子进程不是安全沙箱」✓；`docs/architecture.md` §6 明确写「读没有隔离 / 网络没有隔离」✓；
+* 前端 `DevTaskEntry.vue`：「本机受限子进程（同一用户权限，不是安全沙箱）」✓；
+  `ApprovalModal.vue` 用行为句 + 能力清单，未出现「无法读取用户文件」这类越界表述 ✓；
+* `frontend/src` 里与隔离相关的表述共 4 处（`rg "隔离|沙箱" frontend/src`），无一处声称读/网络被强制；
+* 因此本轮**没有改前端文案**（改了就得分摊 vue-tsc + vitest 的验证预算，而当前没有可修的越界表述）。
+
+唯一需要 Lead 落笔的地方（那 5 个文档不归我）：`docs/status.md` / `docs/release-qualification.md`
+里的安全边界段可以补一句「Job Object 已读回核实；低完整性默认关；读与网络无强制边界」。
+
+## 9. C1/C2 定位记录：为什么有的环境 scratch 写不了（2026-10-03 最小实验）
+
+实验脚本：`scripts/low_integrity_probe.py`（不依赖 QIO 工具系统，stdlib + ctypes，逐步打印事实）。
+关键前提：**必须用普通完整性的解释器当父进程** —— 本机 `uv run` 出来的 python 自己在 Low 完整性，
+降级是 no-op，永远复现不了 CI 的现象（实测：`uv run` python = `S-1-16-4096`，系统 Python312 = `S-1-16-8192`）。
+
+原始输出（Windows 10.0.26200 / NTFS / Medium 父进程 S-1-16-8192）：
+
+```
+标签方式：SDDL
+  scratch 标签 设置前='（没有标签 ACE）' 调用=SetNamedSecurityInfoW rc=0 设置后='S:AINO_ACCESS_CONTROL'
+  scratch icacls 标签行: []
+  child 降级前 IL: S-1-16-8192 | 降级: ok | 降级后 IL: S-1-16-4096
+  scratch=WRITE-DENIED PermissionError      ← 标签没落上：目录仍是 Medium，Low 写不进去
+  user=WRITE-DENIED PermissionError
+  qio=WRITE-DENIED PermissionError
+
+标签方式：icacls
+  scratch 标签 设置前='S:AINO_ACCESS_CONTROL' 调用=icacls exit=0 设置后='S:AI(ML;OICI;NW;;;LW)'
+  scratch icacls 标签行: ['Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)']
+  child 降级前 IL: S-1-16-8192 | 降级: ok | 降级后 IL: S-1-16-4096
+  scratch=WRITE-OK                          ← 标签真的落上了
+  user=WRITE-DENIED PermissionError
+  qio=WRITE-DENIED PermissionError
+
+对照：不降级
+  child IL: S-1-16-8192 -> S-1-16-8192
+  scratch=WRITE-OK / user=WRITE-OK / qio=WRITE-OK
+```
+
+**C2 的答案（可判定条件）**：scratch 写不写得进去，不取决于环境「某些环境」，而取决于
+**那个目录的强制标签是否真的落下**：
+
+* 目录的标签读回是 `(ML;…;LW)` → Low 工具能写它（并且能写自己）；
+* 目录没有标签 ACE（沿用父容器的 Medium）→ Low 工具写不了，无论调用返回什么。
+**判定动作 = 读回标签**，不是看 `SetNamedSecurityInfoW` 的返回值 —— 它在本次实验里返回 0
+但产生了 `S:AINO_ACCESS_CONTROL`（没有标签 ACE）。
+
+**C3 修复**：`label_low()` 改成只用 `icacls /setintegritylevel (OI)(CI)L /T` + 读回核实；
+`label_is_low()` 收紧为「必须有强制标签 ACE **且** 是 LW」。
+用**生产代码**在 Medium 父进程下复验（`scripts/low_integrity_real_check.py`）：
+
+```
+父进程完整性: S-1-16-8192
+label_low(scratch) -> 'icacls'
+读回 scratch 标签: 'S:AI(ML;OICI;NW;;;LW)'   label_is_low: True
+harden outcome: {"applied": true, "mechanisms": ["job_object", "low_integrity"], ... "problems": []}
+child 降级后 IL: S-1-16-4096
+scratch=WRITE-OK / user=WRITE-DENIED PermissionError / qio=WRITE-DENIED PermissionError
+```
+
+## 10. C5 fail-safe：声称的隔离必须与事实一致（已修）
+
+改成「读回核实之后才算数」：
+
+* Job Object：`AssignProcessToJobObject` 之后再 `IsProcessInJob` 核实；核实不了就不写进 mechanisms
+  （踩过的坑：查询需要 `PROCESS_QUERY_LIMITED_INFORMATION`，少了它以 err=5 假失败）；
+* 低完整性：`SetTokenInformation` 之后再 `integrity_of_process(pid)` 读回，必须是 `S-1-16-4096`，
+  否则写进 problems 并按**未降级**处理；
+* `IsolationOutcome.detail` 只描述**核实过**的机制（哪一层没成就说哪一层没成），不再出现
+  「已强制：内存/进程上限」这种在 job 失败时也照写的模板句。
+对应测试：`backend/tests/test_tool_isolation.py` 的
+`test_low_integrity_is_not_claimed_when_the_token_did_not_downgrade`、
+`test_job_object_is_not_claimed_when_the_assignment_fails`、
+`test_label_low_refuses_when_the_readback_does_not_show_low`、
+`test_label_is_low_only_accepts_a_real_label_ace`、
+`test_the_declared_triple_holds_with_a_non_low_parent`。

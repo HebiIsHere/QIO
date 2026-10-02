@@ -431,3 +431,140 @@ async def test_extra_writable_dirs_are_kept_writable_when_declared(tmp_path, mon
     assert result.ok is True, result.error
     assert result.value['declared'] == 'WRITE-OK', result.isolation
 
+
+# ---------------------------------------------------------------- 标签与声明必须与事实一致（C5）
+
+
+@WINDOWS_ONLY
+def test_label_is_low_only_accepts_a_real_label_ace():
+    """实测过的两个读回值：一个是真标签，一个是「调用成功但没落上」的坏结果。"""
+    # icacls 落上的正确结果（实测读回）
+    assert isolation.label_is_low('S:AI(ML;OICI;NW;;;LW)') is True
+    # SetNamedSecurityInfoW 返回 0 时的读回（根本没有标签 ACE）—— 必须判为否
+    assert isolation.label_is_low('S:AINO_ACCESS_CONTROL') is False
+    assert isolation.label_is_low('') is False
+    assert isolation.label_is_low('S:AI(ML;OICI;NW;;;ME)') is False  # 中完整性不是低
+
+
+@WINDOWS_ONLY
+def test_label_low_refuses_when_the_readback_does_not_show_low(tmp_path, monkeypatch):
+    """打标签必须读回核实：读回不是低标签 → 返回空串（调用方据此不降级）。"""
+    target = tmp_path / 'labelled'
+    target.mkdir()
+
+    monkeypatch.setattr(isolation, 'integrity_label_of', lambda path: 'S:AINO_ACCESS_CONTROL')
+
+    assert isolation.label_low(str(target)) == '', '读回不是低标签时必须拒绝'
+
+
+@WINDOWS_ONLY
+def test_low_integrity_is_not_claimed_when_the_token_did_not_downgrade(monkeypatch):
+    """C5：SetTokenInformation 成功但令牌没变时，不许声明 low_integrity。"""
+    _enable_low_integrity(monkeypatch)
+    process = _spawn_sleeper()
+    try:
+        # 令牌读回永远是中完整性 —— 模拟「调用了但没生效」
+        monkeypatch.setattr(
+            isolation, 'integrity_of_process', lambda pid: isolation.MEDIUM_INTEGRITY_SID
+        )
+        outcome = isolation.harden(process, scratch_dir=None, policy=None)
+
+        assert 'low_integrity' not in outcome.mechanisms
+        assert any('读回' in problem for problem in outcome.problems), outcome.problems
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+
+@WINDOWS_ONLY
+def test_job_object_is_not_claimed_when_the_assignment_fails(monkeypatch):
+    """C5：指派失败时不许声明 job_object（声明 == 事实）。"""
+    process = _spawn_sleeper()
+    try:
+        def boom(job, pid):
+            raise OSError('injected: assign failed')
+
+        monkeypatch.setattr(isolation, '_assign_job', boom)
+        outcome = isolation.harden(process, scratch_dir=None, policy=None)
+
+        assert 'job_object' not in outcome.mechanisms
+        assert any('job_object' in problem for problem in outcome.problems), outcome.problems
+        assert outcome.limits == {}
+    finally:
+        isolation.release(process)
+        _kill(process)
+
+
+def _spawn_sleeper():
+    return subprocess.Popen(
+        [sys.executable, '-c', 'import time; time.sleep(60)'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _kill(process) -> None:
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        process.kill()
+    with contextlib.suppress(Exception):
+        process.wait(timeout=10)
+
+
+@WINDOWS_ONLY
+async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeypatch):
+    """C3 目标三件套：scratch 可写 / 用户目录不可写 / QIO 数据目录不可写。
+
+    只有在父进程**高于 Low** 时才可能观察到「拒绝」：本机 `uv run` 出来的 python 自己在 Low
+    完整性，降级是 no-op，目标目录也是 Low —— 那时写被允许才是正确行为，这时本条**无法验证拒绝**，
+    只断言「状态与标签一致」并把事实打印出来。CI（windows-latest）是普通完整性，会走完整断言。
+    """
+    _enable_low_integrity(monkeypatch)
+    base = tmp_path / 'c3'
+    scratch = base / 'scratch'
+    user_dir = base / 'user-files'
+    qio_dir = base / 'qio-data'
+    for path in (scratch, user_dir, qio_dir):
+        path.mkdir(parents=True)
+
+    code = (
+        'import os\n'
+        'def _touch(path):\n'
+        '    try:\n'
+        "        with open(os.path.join(path, 'probe.txt'), 'w') as fh:\n"
+        "            fh.write('x')\n"
+        "        return 'WRITE-OK'\n"
+        '    except OSError as exc:\n'
+        "        return 'WRITE-DENIED ' + type(exc).__name__\n"
+        'def run(**kwargs):\n'
+        '    return {\n'
+        "        'scratch': _touch(os.getcwd()),\n"
+        "        'user': _touch(kwargs['user']),\n"
+        "        'qio': _touch(kwargs['qio']),\n"
+        '    }\n'
+    )
+    sandbox = SandboxExecutor(executor='subprocess')
+    result = await sandbox.execute(
+        code, {'user': str(user_dir), 'qio': str(qio_dir)}
+    )
+
+    assert result.ok is True, result.error
+    # 硬契约：工具自己的 scratch 永远必须可写
+    assert result.value['scratch'] == 'WRITE-OK', result.isolation
+
+    parent_integrity = isolation.integrity_of_process(os.getpid())
+    user_label = isolation.integrity_label_of(str(user_dir))
+    print(
+        '[C3] parent=' + str(parent_integrity),
+        'user_label=' + repr(user_label),
+        'isolation=' + str(result.isolation),
+    )
+    if parent_integrity == isolation.LOW_INTEGRITY_SID or isolation.label_is_low(user_label):
+        # 本会话自己就是 Low：这里无法验证「拒绝」，如实断言不拒绝
+        assert result.value['user'] == 'WRITE-OK'
+        assert result.value['qio'] == 'WRITE-OK'
+    else:
+        assert result.value['user'] == 'WRITE-DENIED', result.isolation
+        assert result.value['qio'] == 'WRITE-DENIED', result.isolation
+        assert not (user_dir / 'probe.txt').exists()
+        assert not (qio_dir / 'probe.txt').exists()
