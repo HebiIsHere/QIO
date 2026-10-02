@@ -397,8 +397,11 @@ jobs:
       - name: Build the NSIS installer
         working-directory: frontend
         run: |
-          '{"bundle":{"createUpdaterArtifacts":false}}' | Out-File -Encoding utf8 tauri.ci.conf.json
-          npm run tauri build -- --bundles nsis --config tauri.ci.conf.json
+          # 与 scripts/build_installer.ps1 的未签名路径同一套写法：绝对路径 + 无 BOM 的 UTF-8
+          # （`--config` 的相对路径会被 tauri 按 app 目录解析，容易踩空）。
+          $override = "$env:RUNNER_TEMP\tauri-ci-unsigned.json"
+          [System.IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}', (New-Object System.Text.UTF8Encoding($false)))
+          npm run tauri build -- --bundles nsis --config $override
       - name: Silent install + registry assertions
         env:
           PYTHONIOENCODING: utf-8
