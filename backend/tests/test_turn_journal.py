@@ -242,8 +242,12 @@ def client(tmp_path):
         yield c
 
 
-def _seed_interrupted(ctx: AppContext, turn_id: str, message: str, topic_id: str) -> None:
-    ctx.turn_journal.accepted(turn_id=turn_id, message=message, topic_id=topic_id)
+def _seed_interrupted(
+    ctx: AppContext, turn_id: str, message: str, topic_id: str, *, notify: bool = False
+) -> None:
+    ctx.turn_journal.accepted(
+        turn_id=turn_id, message=message, topic_id=topic_id, notify=notify
+    )
     ctx.turn_journal.running(turn_id)
 
 
@@ -299,3 +303,87 @@ def test_dismiss_acknowledges_without_executing(client):
     assert client.post("/api/turns/turn_lost2/dismiss").status_code == 409
     assert ctx.turn_journal.unfinished() == []
     assert ctx.turns.snapshot()["queued"] == []
+
+
+# -- 系统通知轮（notify=1）：入口、重发、知道了都不放行（第二阶段修复） --------
+#
+# 缺陷：unfinished() 带了 notify = 0，而 recoverable() / claim() 没带 —— 同一个概念
+# 两份口径。对系统通知轮直接调 resend 会 200 并且真的再提交一条系统消息（实测
+# {"ok":true,...,"status":"accepted"}），dismiss 也会被放行。现在四处共用一个权威谓词
+# （turn_journal._RECOVERABLE_CLAUSE）。
+
+
+def test_notify_rows_are_not_recoverable_and_cannot_be_claimed(db_conn: sqlite3.Connection):
+    journal = TurnJournal(db_conn)
+    journal.accepted(turn_id="turn_notify", message="系统通知", topic_id="t1", notify=True)
+    journal.running("turn_notify")
+    journal.accepted(turn_id="turn_user", message="用户的消息", topic_id="t1")
+    journal.running("turn_user")
+    journal.interrupt_stale()
+
+    assert journal.recoverable("turn_notify") is None
+    # 就算有人绕过 recoverable() 直接抢，也抢不到
+    assert journal.claim("turn_notify") is False
+    assert journal.mark_recovered("turn_notify", new_turn_id="turn_x") is False
+    row = db_conn.execute(
+        "SELECT status, recovered_at, recovered_by FROM turn_journal WHERE turn_id='turn_notify'"
+    ).fetchone()
+    assert row["status"] == INTERRUPTED
+    assert row["recovered_at"] is None and row["recovered_by"] is None
+
+    # 对照组：notify=0 的用户消息照旧可恢复、可抢占（行为不变）
+    assert journal.recoverable("turn_user") is not None
+    assert journal.claim("turn_user") is True
+
+
+def test_unfinished_still_lists_only_user_rows(db_conn: sqlite3.Connection):
+    """入口的返回不变：通知轮仍然不出现。"""
+    journal = TurnJournal(db_conn)
+    journal.accepted(turn_id="turn_notify", message="系统通知", topic_id="t1", notify=True)
+    journal.running("turn_notify")
+    journal.accepted(turn_id="turn_user", message="用户的消息", topic_id="t1")
+    journal.running("turn_user")
+    journal.interrupt_stale()
+
+    assert [row["turn_id"] for row in journal.unfinished()] == ["turn_user"]
+
+
+def test_notify_rows_cannot_be_resent_or_dismissed_over_http(client):
+    ctx = client.app.state.ctx
+    topic = ctx.topics.nodes.create_topic("通知话题").id
+    _seed_interrupted(ctx, "turn_notify", "系统通知轮", topic, notify=True)
+    _seed_interrupted(ctx, "turn_notify2", "系统通知轮二", topic, notify=True)
+    _seed_interrupted(ctx, "turn_user", "用户的消息", topic)
+    ctx.turn_journal.interrupt_stale()
+
+    # 入口里没有它们（现状保留）
+    state = client.get("/api/runtime/state").json()
+    assert {row["turn_id"] for row in state["interrupted_turns"]} == {"turn_user"}
+
+    resend = client.post("/api/turns/turn_notify/resend")
+    assert resend.status_code == 409, resend.text
+    dismiss = client.post("/api/turns/turn_notify2/dismiss")
+    assert dismiss.status_code == 409, dismiss.text
+    # 没有偷偷提交新 turn，行也没有被标成「已处理」
+    assert ctx.turns.snapshot()["queued"] == []
+    row = ctx.conn.execute(
+        "SELECT recovered_at, recovered_by FROM turn_journal WHERE turn_id='turn_notify'"
+    ).fetchone()
+    assert row["recovered_at"] is None and row["recovered_by"] is None
+
+    # 对照组：notify=0 的用户消息行为完全一样（一次性重发 / 一次性知道了）
+    assert client.post("/api/turns/turn_user/resend").status_code == 200
+    assert client.post("/api/turns/turn_user/resend").status_code == 409
+
+
+def test_user_rows_are_still_dismissable_once(client):
+    """notify=0 的回归：知道了仍然只成功一次，且不再出现在入口。"""
+    ctx = client.app.state.ctx
+    topic = ctx.topics.nodes.create_topic("忽略话题二").id
+    _seed_interrupted(ctx, "turn_user2", "用户的消息二", topic)
+    ctx.turn_journal.interrupt_stale()
+
+    assert client.post("/api/turns/turn_user2/dismiss").status_code == 200
+    assert client.post("/api/turns/turn_user2/dismiss").status_code == 409
+    assert ctx.turn_journal.unfinished() == []
+
