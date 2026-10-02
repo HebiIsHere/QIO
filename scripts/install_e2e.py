@@ -77,10 +77,20 @@ def evidence(name: str, text: str) -> str:
     return str(target.relative_to(EVIDENCE.parent))
 
 
-def run(cmd: list[str], *, timeout: int = 600, env: dict | None = None, cwd: str | None = None,
+def install_cmdline(installer: str, install_dir: str) -> str:
+    """拼安装器命令行。
+
+    NSIS 的 /D= **不能带引号**（即使路径里有空格），而 Python 传列表时会自动给含空格的
+    参数加引号 —— 那样 NSIS 会解析失败（表现为「进程起来又消失、目录没生成」）。
+    所以：exe 自己加引号，/D= 放最后且保持裸值。这条路径已用 makensis 探针单独验证过。
+    """
+    return '"%s" /S /D=%s' % (installer, install_dir)
+
+
+def run(cmd, *, timeout: int = 600, env: dict | None = None, cwd: str | None = None,
         tag: str | None = None) -> tuple[int, str]:
-    """跑外部命令并把命令 + 原始输出一起留证。"""
-    log("  $ " + " ".join(cmd))
+    """跑外部命令并把命令 + 原始输出一起留证。cmd 可以是 list，也可以是**原样**命令行字符串。"""
+    log("  $ " + (cmd if isinstance(cmd, str) else " ".join(cmd)))
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                               timeout=timeout, env=env, cwd=cwd)
@@ -142,6 +152,9 @@ class SseReader:
     def __init__(self, client: Client) -> None:
         self.client = client
         self.events: list[dict] = []
+        # 见过的 event id：重连时服务端会重放历史，必须能把"历史"和"本轮"分开，
+        # 否则一个旧的 TURN_END 就会让本轮提前"结束"（实测踩过：重启后那条流）。
+        self.seen: set[str] = set()
         self.q: queue.Queue = queue.Queue()
         self._stop = False
         self._thread = threading.Thread(target=self._pump, daemon=True)
@@ -164,6 +177,8 @@ class SseReader:
                         except ValueError:
                             continue
                         self.events.append(event)
+                        if event.get("id"):
+                            self.seen.add(str(event["id"]))
                         self.q.put(event)
         except Exception as exc:  # 流断了就把原因放进队列，别静默
             self.q.put({"type": "__SSE_ERROR__", "data": {"error": repr(exc)}})
@@ -203,8 +218,13 @@ def step_preflight(args) -> bool:
                      "Get-Process -Name qio,qio-backend -ErrorAction SilentlyContinue | "
                      "Select-Object Id,ProcessName,Path | Format-Table -AutoSize | Out-String"],
                     tag="preflight-processes")
-    record("A-002", "安装前没有 QIO 进程在跑", "PASS" if not out.strip() else "WARN",
-           out.strip()[:200] or "无")
+    # 静默安装遇到正在运行的 qio.exe 会**直接把它杀掉**（NSIS 模板行为）。那是动用户正在用的
+    # 程序，所以这里不替用户做决定：有进程就先停，让人来决定。
+    if out.strip():
+        record("A-002", "安装前没有 QIO 进程在跑", "FAIL",
+               "检测到正在运行的 QIO：%s（静默安装会杀掉它，脚本主动停止）" % out.strip()[:200])
+        return False
+    record("A-002", "安装前没有 QIO 进程在跑", "PASS", "无")
 
     work = Path(args.work_dir)
     backup = work / "backup"
@@ -269,23 +289,36 @@ def step_decoy(args) -> bool:
         record("A-010", "诱饵实验", "SKIP", "诱饵卸载器编译失败：%s" % out.strip()[:200])
         return True
 
-    # 把注册表指向诱饵（真安装器就是照这个槽位判断「有没有既有安装」）
-    powershell(
-        "$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QIO';"
-        "Set-ItemProperty -Path $k -Name DisplayVersion -Value '0.1.9';"
-        "Set-ItemProperty -Path $k -Name InstallLocation -Value '\"%s\"';"
-        "Set-ItemProperty -Path $k -Name UninstallString -Value '\"%s\\uninstall.exe\"';"
-        "Set-ItemProperty -Path 'HKCU:\\Software\\qio\\QIO' -Name '(default)' -Value '%s';"
-        "$p='HKCU:\\Software\\qio'; if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null };"
-        "if (-not (Test-Path 'HKCU:\\Software\\qio\\QIO')) { New-Item -Path 'HKCU:\\Software\\qio\\QIO' -Force | Out-Null }"
-        % (decoy, decoy, decoy),
-        tag="decoy-registry")
+    # 把注册表指向诱饵（真安装器就是照这个槽位判断「有没有既有安装」）。
+    # 键可能不存在（例如已经被卸载过），所以先建键、再写值。
+    # 这一整段用 raw 三引号字符串：PowerShell 里的反斜杠不需要再过一层 Python 转义，
+    # 引号用 [char]34 在 PowerShell 侧拼，避免三层引号互相打架。
+    repointer = r"""
+$decoy = '%s'
+$q = [char]34
+$un = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\QIO'
+$prod = 'HKCU:\Software\qio\QIO'
+foreach ($p in @('HKCU:\Software\qio', $prod, $un)) {
+  if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
+}
+Set-ItemProperty -Path $un -Name DisplayName -Value 'QIO'
+Set-ItemProperty -Path $un -Name Publisher -Value 'qio'
+Set-ItemProperty -Path $un -Name DisplayVersion -Value '0.1.9'
+Set-ItemProperty -Path $un -Name InstallLocation -Value ($q + $decoy + $q)
+Set-ItemProperty -Path $un -Name UninstallString -Value ($q + $decoy + '\uninstall.exe' + $q)
+Set-ItemProperty -Path $prod -Name '(default)' -Value $decoy
+Write-Output 'REPOINTED'
+""" % decoy
+    code, out = powershell(repointer, tag="decoy-registry")
+    if "REPOINTED" not in out:
+        record("A-009", "诱饵注册表已生效", "FAIL", "改注册表失败：%s" % out.strip()[:300])
+        return False
     STATE["decoy_applied"] = True
     record("A-009", "诱饵注册表已生效", "PASS",
            "HKCU\\...\\Uninstall\\QIO 与 HKCU\\Software\\qio\\QIO 暂时指向 %s；"
            "整个 E2E 期间保持这个状态，结束时还原" % decoy)
 
-    code, out = run([args.installer, "/S", "/D=%s" % args.install_dir], timeout=900, tag="decoy-install")
+    code, out = run(install_cmdline(args.installer, args.install_dir), timeout=900, tag="decoy-install")
     ran = marker.exists()
     state = "FAIL" if ran else "PASS"
     detail = ("诱饵卸载器被执行了 —— 说明静默安装会卸载既有安装，禁止在本机跑真安装！"
@@ -369,6 +402,13 @@ def clean_env(args, port: int) -> dict:
     env["QIO_DATA_DIR"] = str(Path(args.work_dir) / "data")
     env["QIO_PORT"] = str(port)
     env["QIO_SESSION_TOKEN"] = args.token
+    # 唯一的**偏差开关**，必须显式记账：
+    # 启动时的「数据库身份自检」在 Windows 上把基线写进 HKCU\Software\qio（注册表）。
+    # 本会话的沙箱给子进程的是受限令牌，任何注册表写入都是 WinError 5 —— 装出来的后端会
+    # 在启动阶段直接崩（原始 traceback 见 docs）。QIO_DISABLE_DB_CHECK=1 是产品**自带**的
+    # 开关（注释写明给测试/隔离环境用），这里用它绕开环境限制，而不是改产品代码。
+    # 代价：这次 E2E **没有覆盖**「数据库身份自检」这条启动路径。
+    env["QIO_DISABLE_DB_CHECK"] = "1"
     dropped = sorted(k for k in os.environ if k.startswith(("QIO_", "PYTHON", "UV_", "VIRTUAL_ENV", "NODE_")) and k not in env)
     evidence("backend-env", json.dumps({"kept": sorted(env), "dropped_dev_vars": dropped}, ensure_ascii=False, indent=2))
     return env
@@ -402,6 +442,9 @@ def wait_health(client: Client, timeout: float = 60.0):
 
 def step_health(args, port: int):
     client = Client("http://127.0.0.1:%d" % port, args.token)
+    record("A-032", "启动环境偏差（必须记账）", "WARN",
+           "注入了 QIO_DISABLE_DB_CHECK=1：沙箱令牌不允许写注册表，而启动时的数据库身份自检"
+           "要把基线写进 HKCU\\Software\\qio。该路径本次未被覆盖；不用这个开关后端会在启动阶段崩溃。")
     ok, detail = wait_health(client)
     record("A-030", "安装目录里的后端 /api/health", "PASS" if ok else "FAIL",
            "200 + status=ok + db=true：%s" % detail if ok else "未就绪：%s" % detail)
@@ -470,6 +513,9 @@ def run_turn(client: Client, sse: SseReader, fp_client: Client, message: str,
              on_event=None, timeout: float = 300.0):
     """触发一轮模型对话，边收事件边让调用方推进假厂商脚本。"""
     sse.drain_replay()
+    # 关键：把"连接重放出来的历史事件"全部排除，只认本轮新产生的事件。
+    # 单靠 drain_replay 的固定等待是不够的 —— 重放可能比那 1.2s 慢，旧 TURN_END 会先到。
+    before = set(sse.seen)
     events: list[dict] = []
     status, body = client.post("/api/turns", {"message": message})
     if status != 200:
@@ -479,6 +525,8 @@ def run_turn(client: Client, sse: SseReader, fp_client: Client, message: str,
         event = sse.next_event(timeout=2.0)
         if event is None:
             continue
+        if event.get("id") and str(event["id"]) in before:
+            continue  # 历史重放，不属于本轮
         events.append(event)
         if on_event is not None:
             try:
@@ -539,8 +587,12 @@ def step_dev_flow(args, client: Client, sse: SseReader, fp: Client):
         elif etype == "TOOL_END":
             tool_ends.append(data)
             if data.get("tool") == "create_tool" and data.get("ok") and not state["pushed"]:
+                # 先用事件里的 content_preview（create_tool 的第一行就带工作区 id），
+                # 它不需要再发一次 HTTP —— 少一次往返就少一点被主循环抢先的机会。
+                text = json.dumps(data.get("content_preview") or "", ensure_ascii=False)
                 rec = data.get("record_id")
-                text = json.dumps(client.get("/api/tool-records/%s" % rec)[1], ensure_ascii=False) if rec else ""
+                if not re.search(r"工作区 id=([A-Za-z0-9_\-]+)", text) and rec:
+                    text += " " + json.dumps(client.get("/api/tool-records/%s" % rec)[1], ensure_ascii=False)
                 match = re.search(r"工作区 id=([A-Za-z0-9_\-]+)", text)
                 if match:
                     state["ws"] = match.group(1)
@@ -553,9 +605,15 @@ def step_dev_flow(args, client: Client, sse: SseReader, fp: Client):
                         {"text": "工具已开发完成"},
                     ]})
 
+    # 关键：主循环不会等我们（SSE 是异步的）。create_tool 之后它立刻再问一次模型，
+    # 如果这时脚本队列是空的，假厂商就会回一句文本 → turn 直接结束，后面的开发步骤永远没机会跑。
+    # 所以先把 default 设成一个**无害且可重复**的工具调用（dev_list_tasks 不写任何东西），
+    # 让 turn 撑到我们把真正的步骤推进队列为止。
     fp.post("/__script", {"steps": [{"tool": "create_tool",
-                                     "args": {"request": "我需要一个把两个数求和的工具，输入 a、b，输出 sum"}}]})
+                                     "args": {"request": "我需要一个把两个数求和的工具，输入 a、b，输出 sum"}}],
+                          "default": {"tool": "dev_list_tasks", "args": {}}})
     events, err = run_turn(client, sse, fp, "帮我做一个两个数求和的工具。", on_event=on_event, timeout=600)
+    fp.post("/__script", {"steps": [], "default": {"text": "（假模型默认回复）"}})
     names = [t.get("tool") for t in tool_ends]
     record("A-060", "开发流程四步都被调用", "PASS" if {"create_tool", "dev_write_file", "dev_run_tests",
                                                        "dev_submit_tool"} <= set(names) else "FAIL",
@@ -602,13 +660,17 @@ def step_invoke_tool(args, client: Client, sse: SseReader, fp: Client):
 
 
 def stop_backend(proc) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    # PyInstaller onefile 是「引导进程 + 真正跑服务的子进程」两层。上面 terminate 掉的只是引导进程，
+    # 子进程会继续活着并握着安装目录里的 qio-backend.exe（本机实测：卸载器因此删不掉它）。
+    # 不连子进程一起收，撤销/卸载这类"文件能不能被删"的结论就不可信。
+    run(["taskkill", "/F", "/T", "/IM", "qio-backend.exe"], timeout=60, tag="taskkill-backend")
+    time.sleep(3)
 
 
 def step_restart(args, client: Client, proc, port: int):
@@ -639,15 +701,36 @@ def step_recovery(args, client: Client, sse: SseReader, fp: Client):
         except Exception as exc:
             record(cid, title, "FAIL", "%s 读取失败：%r" % (path, exc))
             checks.append(False)
-    # 工具恢复：重启后再调一次
+    # 工具恢复：重启后再调一次。
+    # 注意：重启把上一条 SSE 流打断了（后端进程没了），必须换一条新连接 ——
+    # 用旧连接会「一个事件都收不到」，然后看起来像功能坏了。
+    sse = SseReader(client)
     results: list[dict] = []
-    fp.post("/__script", {"steps": [{"tool": "dev_add", "args": {"a": 40, "b": 2}}, {"text": "42"}]})
-    run_turn(client, sse, fp, "重启后再算 40+2。",
-             on_event=lambda e: results.append(e.get("data") or {}) if e.get("type") == "TOOL_END" else None,
-             timeout=300)
+
+    # 用 default 而不是 FIFO 队列来驱动这一轮：队列里的步骤可能被"别的模型调用"先吃掉，
+    # 那会让检查变成假阴性（本机踩过：脚本明明推了，厂商却回了默认文本）。
+    # default 保证"这一轮任何一次模型调用"都先拿到 dev_add，直到我们把它换成文本。
+    def recovery_event(event: dict) -> None:
+        data = event.get("data") or {}
+        if event.get("type") == "TOOL_END":
+            results.append(data)
+            if data.get("tool") == "dev_add":
+                fp.post("/__script", {"steps": [], "default": {"text": "42"}})
+
+    fp.post("/__script", {"steps": [], "default": {"tool": "dev_add", "args": {"a": 40, "b": 2}}})
+    events, err = run_turn(client, sse, fp, "重启后再算 40+2。", on_event=recovery_event, timeout=300)
+    fp.post("/__script", {"steps": [], "default": {"text": "（假模型默认回复）"}})
     call = next((r for r in results if r.get("tool") == "dev_add"), None)
+    types = [e.get("type") for e in events]
+    # 诊断：假厂商到底把哪一步喂给了模型（这是"没调用工具"时唯一能分辨原因的证据）
+    served = fp.get("/__log")[1].get("requests", [])
+    last = served[-1] if served else {}
     record("A-075", "注册的工具在重启后仍可调用", "PASS" if call and call.get("ok") else "FAIL",
-           "ok=%s content=%s" % ((call or {}).get("ok"), str((call or {}).get("content_preview"))[:160]))
+           "ok=%s content=%s；本轮事件=%s；err=%s；厂商总请求=%d；最后一次 step=%s；offered 里有 dev_add=%s" % (
+               (call or {}).get("ok"), str((call or {}).get("content_preview"))[:120],
+               ",".join(types), err or "无", len(served),
+               json.dumps(last.get("step"), ensure_ascii=False),
+               "dev_add" in (last.get("tool_names_offered") or [])))
     return all(checks)
 
 
@@ -665,7 +748,7 @@ def step_reinstall(args, client: Client, port: int):
     """同一版本再装一次（等价于「重装/覆盖升级」），验证用户数据是否保留。"""
     data_dir = Path(args.work_dir) / "data"
     before = sorted(p.name for p in data_dir.glob("*"))
-    code, out = run([args.installer, "/S", "/D=%s" % args.install_dir], timeout=900, tag="reinstall")
+    code, out = run(install_cmdline(args.installer, args.install_dir), timeout=900, tag="reinstall")
     time.sleep(2)
     after = sorted(p.name for p in data_dir.glob("*"))
     proc = start_backend(args, port)
@@ -698,7 +781,9 @@ def step_uninstall(args):
            "数据目录 %s -> %s" % (before, after))
     code, out2 = powershell("if (Test-Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QIO') "
                             "{ 'STILL PRESENT' } else { 'REMOVED' }", tag="uninstall-registry")
-    record("A-092", "卸载后卸载注册表项被移除", "PASS" if "REMOVED" in out2 else "WARN", out2.strip()[:120])
+    record("A-092", "卸载后卸载注册表项被移除", "PASS" if "REMOVED" in out2 else "WARN",
+           out2.strip()[:120] + "（本会话子进程是受限令牌：安装器的 WriteRegStr 与卸载器的 DeleteRegKey "
+           "都 ACCESS_DENIED 且静默失败 —— 所以这一项在本机**无法**验证，不是产品结论）")
 
 
 def step_restore(args):
@@ -707,11 +792,24 @@ def step_restore(args):
         path = backup / name
         if path.exists():
             run(["reg", "import", str(path)], tag="restore-%s" % name)
+    notes = []
     for src, dst in ((backup / "desktop-QIO.lnk", Path(os.environ.get("USERPROFILE", "")) / "Desktop" / "QIO.lnk"),
                      (backup / "startmenu-QIO.lnk",
                       Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "QIO.lnk")):
-        if src.exists():
+        if not src.exists():
+            continue
+        try:
             shutil.copy2(src, dst)
+            notes.append("%s 已还原" % dst.name)
+        except OSError as exc:
+            # 沙箱不允许子进程写检出外的路径。那就退一步核对「有没有被动过」——
+            # 这一层结论仍然是硬的（哈希比对）。
+            unchanged = dst.exists() and sha256_of(src) == sha256_of(dst)
+            notes.append("%s 需要人工还原（%s；当前与备份%s）" % (
+                dst.name, type(exc).__name__, "一致，未被改动" if unchanged else "**不一致**"))
+    if notes:
+        bad = [n for n in notes if "已还原" not in n and "未被改动" not in n]
+        record("A-102", "桌面/开始菜单快捷方式", "WARN" if bad else "PASS", "；".join(notes))
     run_value = (backup / "run-value.txt")
     if run_value.exists() and run_value.read_text(encoding="utf-8").strip():
         powershell("Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' "
@@ -740,9 +838,11 @@ def step_restore(args):
 def main() -> int:
     parser = argparse.ArgumentParser(description="NSIS 安装包真机 E2E（不动本机既有安装）")
     parser.add_argument("--installer", required=True)
-    parser.add_argument("--work-dir", default=r"C:\Users\zxy\qio-e2e\work")
-    parser.add_argument("--install-dir", default=r"C:\Users\zxy\qio-e2e\install")
-    parser.add_argument("--decoy-dir", default=r"C:\Users\zxy\qio-e2e\decoy-old")
+    # 全部放在检出内部：这台机器的 DSH 沙箱只允许**检出内**的路径被子进程写，
+    # 检出外（C:\Users\zxy\...、D:\...）会被拒绝访问 —— 那是沙箱行为，不是产品行为。
+    parser.add_argument("--work-dir", default=str(ROOT / ".e2e-work"))
+    parser.add_argument("--install-dir", default=str(ROOT / ".e2e-work" / "install"))
+    parser.add_argument("--decoy-dir", default=str(ROOT / ".e2e-work" / "decoy-old"))
     parser.add_argument("--existing-install", default=r"D:\QIO")
     parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--token", default="e2e-install-token-0001")
@@ -759,8 +859,9 @@ def main() -> int:
     stages = set(args.stages.split(",")) if args.stages != "all" else {
         "preflight", "decoy", "install", "models", "health", "api", "dev", "restart", "reinstall",
         "uninstall", "restore"}
-    if " " in args.install_dir:
-        log("! 安装目录含空格，/D= 不能带引号，NSIS 会解析失败 —— 请换成无空格路径")
+    # /D= 可以含空格（裸值、放最后），但不能含引号：已用 makensis 探针验证过含空格路径可用。
+    if '"' in args.install_dir:
+        log("! 安装目录不能含引号（NSIS /D= 规则）")
         return 2
 
     log("== 安装包 E2E ==")
