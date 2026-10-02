@@ -40,6 +40,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import logging
+from ctypes import wintypes  # 顶层导入：模块级还有平台无关的类型定义要用到它
 import os
 import subprocess
 import sys

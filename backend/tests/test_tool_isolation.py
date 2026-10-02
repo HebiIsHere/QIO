@@ -680,3 +680,29 @@ def test_low_integrity_is_skipped_when_a_low_process_cannot_write_the_scratch(tm
     finally:
         isolation.release(process)
         _kill(process)
+
+def test_the_module_imports_on_a_posix_platform_path():
+    """回归：模块级代码不能假设 Windows 专属名字存在。
+
+    真实事故：模块级的 class 用了 wintypes，而 wintypes 只在 `if WINDOWS:` 分支里导入 ——
+    Linux CI 一 import 就 NameError，两个 py3.x job 都在 10 秒内变红（本机 Windows 永远发现不了）。
+    这里把 sys.platform 临时改成 linux 再导入一次，走的就是 CI 的那条路径。
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / 'src' / 'agent' / 'tools' / 'isolation.py'
+    spec = importlib.util.spec_from_file_location('isolation_posix_probe', path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['isolation_posix_probe'] = module
+    original = sys.platform
+    try:
+        sys.platform = 'linux'
+        spec.loader.exec_module(module)
+    finally:
+        sys.platform = original
+
+    assert module.WINDOWS is False
+    assert module.supported() is False
+    assert module.harden(object()).applied is False  # POSIX：不声称有隔离
