@@ -317,3 +317,17 @@ jobs:
           }
       - name: Smoke-test the frozen worker protocol
         run: python scripts/frozen_worker_smoke.py frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe
+      # 冻结产物的进程模型与 Job Object 时序（scripts/verify_backend_process_model.py，Agent A 实测脚本）。
+      # 它只**采集数据**（跑完 return 0），所以这里串上 check_backend_process_model.py 当闸门：
+      # 「launcher+child 同 exe」「只杀 launcher 会留孤儿占端口」「立即 assign 收住 child、不留孤儿」
+      # 「延迟 assign 会逃逸」任何一条变了 → 这一步红（需要人工重新验证，而不是悄悄变绿）。
+      - name: Backend process model (onefile launcher/child)
+        run: |
+          python scripts/verify_backend_process_model.py --exe frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe --case 2 --json "$env:RUNNER_TEMP\process-model-case2.json" --work "$env:RUNNER_TEMP\process-model-case2"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_backend_process_model.py --report "$env:RUNNER_TEMP\process-model-case2.json" --case 2
+      - name: Backend process model (Job Object timing)
+        run: |
+          python scripts/verify_backend_process_model.py --exe frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe --case job --json "$env:RUNNER_TEMP\process-model-job.json" --work "$env:RUNNER_TEMP\process-model-job"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_backend_process_model.py --report "$env:RUNNER_TEMP\process-model-job.json" --case job
