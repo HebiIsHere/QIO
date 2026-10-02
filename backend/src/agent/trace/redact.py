@@ -305,14 +305,49 @@ _log_redaction_installed = False
 _previous_factory = None
 
 
+# %-格式指令（含宽度/精度/长度修饰与 %%）。只用来数「模板里的占位符有没有被动过」，
+# 不做格式化本身。
+_PERCENT_DIRECTIVE = re.compile(
+    r"%[-#0 +]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[hlL]?[diouxXeEfFgGcrsa%]"
+)
+
+
+def _percent_directive_count(text: str) -> int:
+    return len(_PERCENT_DIRECTIVE.findall(text or ""))
+
+
+def _redact_arg_leaf(value: Any) -> Any:
+    """按**叶子**打码一个 % 参数，并尽量保持类型。
+
+    * str → 打码后的字符串；
+    * int / float / bool / None → 原样（uvicorn 的 status_code 之类要靠类型）；
+    * 其它对象（异常、自定义对象）→ 取其文本形态再打码。这里**确实换了类型**，
+      但换成字符串后 %s 的输出与原来完全一致，而 %r/%d 这类用法本来就少见；
+      不这样做就没法检查对象内部文本，也就挡不住 'call failed: %s' % exc 这条路。
+    """
+    if isinstance(value, str):
+        return redact_text(value)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    try:
+        return redact_text(str(value))
+    except Exception:  # noqa: BLE001 - 连 str() 都失败的怪对象：原样留着，不打码也不崩
+        return value
+
+
 def _redact_log_args(args: Any) -> Any:
+    """打码 % 参数，**保持容器形状**：tuple 还是 tuple、dict 还是 dict、长度不变。
+
+    为什么不能像第一版那样「先合成消息再把 args 清空」：uvicorn 的
+    AccessFormatter.formatMessage 会 `client_addr, method, full_path, http_version,
+    status_code = record.args` **按位置解包**，args=None 直接 TypeError
+    （每个 HTTP 请求往 stderr 打一条 traceback，访问日志全丢）。
+    """
     if isinstance(args, dict):
-        return {key: _redact_log_args(value) for key, value in args.items()}
+        return {key: _redact_arg_leaf(value) for key, value in args.items()}
     if isinstance(args, tuple):
-        return tuple(_redact_log_args(value) for value in args)
-    if isinstance(args, str):
-        return redact_text(args)
-    return args
+        return tuple(_redact_arg_leaf(value) for value in args)
+    return _redact_arg_leaf(args)
 
 
 # 日志量远大于 trace：普通日志不该为了一条「没有任何可疑痕迹」的消息跑五条正则。
@@ -334,19 +369,32 @@ def _redact_log_message(text: str) -> str:
 def _redact_log_record(record: logging.LogRecord) -> logging.LogRecord:
     """把一条日志记录打码（只做本地替换，值不出进程）。
 
-    顺序很重要：**先把 % 参数合成完整消息，再打码**。反过来做会在消息模板上
-    误伤格式串（例如模板里的 `token=%s` 会被 kv 规则吃掉 %s），结果是
-    「not all arguments converted」这种日志系统自己的异常 —— 测试抓过一次。
-    合成之后 msg 已是最终文本，args 清空（getMessage 不再二次格式化）。
+    **不动 record.args 的容器形状**：tuple 还是 tuple、dict 还是 dict、长度与简单类型的
+    元素原样保留，只对字符串叶子打码。第一版为了避开「在模板上误伤 %s」而改成
+    「先合成消息、再 args=None」，结果把 uvicorn 的访问日志打成了每个请求一条
+    TypeError（AccessFormatter 按位置解包 record.args）—— 那是一条真实产品缺陷。
+
+    现在的做法是两条互不冲突的规则：
+
+    1. args 按叶子打码（形状不变）→ 格式化时值已经干净；
+    2. msg 模板只有在**%-指令数量不变**时才替换 —— 上一次的坑正是「模板里的
+       `token=%s` 被 kv 规则吃掉 %s」，导致 'not all arguments converted'。
+       数量变了就保留原模板：这时值仍然由第 1 条挡着，格式化出来的文本是干净的
+       （`'token=%s' % ('sk-x',)` → `token=***redacted***`）。
+
+    exc_info 的栈文本与 stack_info 依旧单独打码（它们不经过 msg/args）。
     """
-    try:
-        message = record.getMessage()
-    except Exception:  # noqa: BLE001 - 调用方格式串写错：至少把参数里的密钥挡掉
-        if record.args:
-            record.args = _redact_log_args(record.args)
-        return record
-    record.msg = _redact_log_message(message)
-    record.args = None
+    # 1) % 参数：保持形状，按叶子打码
+    if record.args:
+        record.args = _redact_log_args(record.args)
+
+    # 2) 消息模板：只在不会动到占位符时替换
+    if isinstance(record.msg, str) and record.msg:
+        cleaned = _redact_log_message(record.msg)
+        if cleaned != record.msg and _percent_directive_count(cleaned) == _percent_directive_count(
+            record.msg
+        ):
+            record.msg = cleaned
     if record.exc_info and not record.exc_text:
         try:
             text = "".join(traceback.format_exception(*record.exc_info))
