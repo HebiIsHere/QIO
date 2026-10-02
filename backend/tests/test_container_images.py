@@ -378,7 +378,6 @@ async def test_real_docker_lists_and_removes_only_orphan_images(tmp_path: Path):
             pytest.fail("CI 上必须有可用的 docker 守护进程：这条用例不能跳过")
         pytest.skip("本机没有 docker 守护进程：这条只能在 ubuntu CI 上真跑")
 
-    import asyncio
     import subprocess
 
     manager = ToolEnvManager(tmp_path / "envs", base_python="C:/python.exe")
@@ -401,23 +400,28 @@ async def test_real_docker_lists_and_removes_only_orphan_images(tmp_path: Path):
     build(orphan_image)
     build(referenced_image)
     try:
-        available, images = asyncio.run(manager.list_local_images())
+        available, images = await manager.list_local_images()
         assert available is True
         names = [item["image"] for item in images]
         assert orphan_image in names and referenced_image in names
 
-        # 让 referenced_image 成为「被注册工具引用」的镜像（tag 就是那个环境的身份）
+        # 让 referenced_image 成为「被注册工具引用」的镜像：按真实记录形状写一份锁定清单，
+        # 再用真实代码路径把 container 段记进去（清单元数据以锁定记录为准，不看 tag 里的指纹）。
+        reqs = [f"pkg-for-{referenced_fp}"]
+        lock_path = manager.lock_record_for(reqs)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         tool_envs_module._write_json(
-            manager.locks_root / referenced_fp / tool_envs_module.LOCK_RECORD_NAME,
-            {"requirements": REQS_A, "packages": [], "created_at": "2026-01-01T00:00:00+00:00"},
+            lock_path,
+            {
+                "schema": 2,
+                "fingerprint": manager.fingerprint_for(reqs),
+                "requirements": reqs,
+                "packages": [],
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
         )
-        manager._record_container(REQS_A, referenced_image)
-        # 让 referenced_image 的指纹与它记录的依赖集合一致：直接改写成被测环境的指纹
-        record_path = manager.locks_root / referenced_fp / tool_envs_module.LOCK_RECORD_NAME
-        record = json.loads(record_path.read_text(encoding="utf-8"))
-        record["requirements"] = [f"pkg-for-{referenced_fp}"]
-        record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        table = _referenced_table(manager, _definition("six_tool", [f"pkg-for-{referenced_fp}"]))
+        manager._record_container(reqs, referenced_image)
+        table = _referenced_table(manager, _definition("six_tool", reqs))
 
         inventory = {entry.image: entry for entry in manager.container_inventory(
             referenced_by=table, local_images=images, docker_available=True
