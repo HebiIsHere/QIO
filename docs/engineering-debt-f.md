@@ -193,6 +193,68 @@ case job 立即 assign `child_in_job=True` + 关句柄后「无相关进程 + �
 
 `scripts/verify_backend_process_model.py` 逐字节取自 Agent A 的 `wt/p3-a`（`git diff wt/p3-a -- <path>` 为空），
 合并时以 A 的版本为准。
+## CR2（Lead 追加，Agent B 路由）：安装包真机 E2E 进 CI
+
+新增任务 `install-e2e (windows-latest)`（14 步，`timeout-minutes: 45`）：
+
+```
+npm ci → setup-uv + uv sync --frozen --extra dev → build_sidecar.ps1（真 sidecar）
+→ 合成内置模型（model.onnx + 与它相符的 model_manifest.json）
+→ npm run tauri build -- --bundles nsis --config <绝对路径的无 BOM JSON，关掉 createUpdaterArtifacts>
+→ scripts/install_e2e.py --stages decoy,install      # /S 静默安装 + 注册表断言
+→ 把一个替身 qio-backend.exe（ping -t）放进安装目录并启动
+→ scripts/install_e2e.py --stages uninstall --uninstall-with-running-backend
+```
+
+**为什么必须放在 CI**：本机（含 Lead 那台）子进程是受限令牌 —— 安装器的 `WriteRegStr`、卸载器的
+`DeleteRegKey` 都 ACCESS_DENIED 且静默失败，只能记 NOT VERIFIED。runner 能写注册表。
+没有 `continue-on-error`：`install_e2e.py` 有任何 FAIL 就 `return 1`，即这一步红。
+
+### CI 上的实测（run 37042120092，install e2e 任务）
+
+安装阶段：**6 PASS / 0 WARN / 0 FAIL**
+
+```
+A-009 诱饵注册表已生效
+A-010 诱饵实验：静默安装不调用既有安装的卸载器 :: 诱饵卸载器没有被执行（exit=0）；安装目录存在=True
+A-020 安装目录内容 :: 5 个文件（78.2 MB）
+A-021 安装目录关键文件 :: qio.exe / qio-backend.exe / uninstall.exe /
+      models/bge-small-zh-v1.5/model.onnx / models/bge-small-zh-v1.5/model_manifest.json
+A-023 安装信息写入注册表 :: InstallLocation=D:\a\_temp\qio-install-e2e\install
+      DisplayVersion=0.1.10  Software\qio\QIO=<install dir>
+```
+
+卸载阶段（sidecar 仍在跑）：**9 PASS / 0 WARN / 0 FAIL**
+
+```
+A-087 卸载前故意让 sidecar 继续运行 :: 运行中的 sidecar pid=[5048]
+A-090 卸载后安装目录被清空 :: exit=0 残留：[]
+A-091 卸载保留用户数据（未勾选删除数据） :: 数据目录 [user-state-marker.txt] -> 同
+A-092 卸载后卸载注册表项被移除 :: REMOVED
+A-093 卸载清掉安装信息（安装位置 / Installer Language） :: 键内剩余值：[DbBaseline]
+A-094 卸载保留用户状态（DbBaseline 不被顺手删掉） :: 合成 DbBaseline 卸载后仍在
+A-095 卸载器自己收掉了还在跑的 sidecar :: 卸载后按路径枚举：无残留进程
+```
+
+### 三点如实说明（不含糊）
+
+1. 内置模型是**合成**的（CI 没有 90MB 模型的来源）：这一步验的是安装/卸载**机制**与注册表边界，
+   不是真实模型产物（真实模型由 release gate 与 B 的本机 E2E 覆盖）；
+2. 「sidecar 在跑」用的是**替身进程**（`ping.exe` 拷成 `qio-backend.exe`，从安装目录启动）：真 onefile
+   的 launcher/child 形状由 frozen worker 任务的进程模型门槛覆盖；这一步验的是钩子
+   （`CheckIfAppIsRunning "qio-backend.exe"`）与卸载器行为；
+3. 没跑 `preflight` / `restore` 阶段：那是「备份并还原本机既有安装」的步骤（reg export/import `D:\QIO`），
+   CI 上没有既有安装。工作目录全部在 `$RUNNER_TEMP`。
+
+### 迭代记录（三次真实反馈）
+
+1. 红：`build_sidecar.ps1` 在 `backend\.venv` 里没有 PyInstaller，回退到
+   `uv run --frozen --with pyinstaller` —— 新任务忘了装 uv（frozen worker 任务有 setup-uv）。补上；
+2. 顺手把 `--config` 改成绝对路径 + 无 BOM UTF-8（与 `build_installer.ps1` 验证过的写法一致）；
+3. 红：`--stages install` 只做「检查安装目录 + 注册表断言」，**真正的 /S 安装发生在 decoy 阶段**
+   （`step_decoy` 里的 `install_cmdline`）→ `A-020 安装目录生成 :: ... 不存在`，退出码 5。
+   改成 `--stages decoy,install`；两个步骤的失败诊断也改成 GitHub 注解（`::error title=A-xxx ...`），
+   这样失败不用登录下载日志就能定位。
 ## 本机环境陷阱（本轮踩到、已同步给 Lead）
 
 1. 工作树的 venv 需要用 `uv sync --frozen --extra dev` 才有 pytest；否则 `uv run --frozen pytest`
