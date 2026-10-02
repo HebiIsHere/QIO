@@ -53,7 +53,7 @@ import re
 import shutil
 import sys
 import sysconfig
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
@@ -1551,6 +1551,54 @@ class ToolEnvManager:
                 last_used_at=env.last_used_at or (record or {}).get("last_used_at"),
                 lock_available=env.lock_available,
                 detail=env.detail,
+            )
+
+        # 注册工具的「应然镜像」也要进清单：环境记录可能被手工删掉、或镜像在旧版本里建的而
+        # 记录没留下 —— 只要还有注册工具声明这组依赖，对应 tag 就必须是 protected。
+        # 引用表的键有两种：规范化依赖集合的 JSON（可反解）与旧版 16 位指纹（不反解，靠记录归属）。
+        for key, names in table.items():
+            text = str(key)
+            if not text.startswith("["):
+                continue
+            try:
+                raw_requirements = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(raw_requirements, list) or not all(
+                isinstance(item, str) for item in raw_requirements
+            ):
+                continue
+            requirements = _normalize_requirements(raw_requirements)
+            if not requirements:
+                continue
+            image = self.container_image_for(requirements)
+            other_tools = sorted(str(name) for name in names if str(name).strip())
+            existing = entries.get(image)
+            if existing is None:
+                entries[image] = ContainerImageEntry(
+                    image=image,
+                    state="referenced",
+                    fingerprint=self.fingerprint_for(requirements),
+                    base_image=self.container_base_image(),
+                    referenced_by=other_tools,
+                    present_locally=(image in locals_by_name) if known_local else None,
+                    size_bytes=(locals_by_name.get(image) or {}).get("size_bytes"),
+                    detail="注册工具声明的依赖需要这个 tag：删了它这些工具就没有可用镜像。",
+                )
+                continue
+            merged = list(existing.referenced_by)
+            for name in other_tools:
+                if name not in merged:
+                    merged.append(name)
+            entries[image] = replace(
+                existing,
+                state="referenced",
+                referenced_by=sorted(merged),
+                present_locally=(
+                    existing.present_locally
+                    if existing.present_locally is not None
+                    else ((image in locals_by_name) if known_local else None)
+                ),
             )
 
         if known_local:

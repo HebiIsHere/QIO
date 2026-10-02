@@ -210,6 +210,38 @@ def test_removing_a_referenced_image_is_refused_even_with_confirmation(tmp_path:
     assert result.referenced_by == ["six_tool"]
 
 
+def test_a_registered_tool_image_is_protected_even_without_a_record(tmp_path: Path):
+    """注册工具声明的依赖集合对应的 tag，就算没有任何环境记录也必须受保护。
+
+    现实路径：锁定清单被手工删掉、或镜像在旧版本里建的而记录没留下 —— 只要还有注册工具
+    在声明这组依赖，删掉这个 tag 就等于让那个工具没有可用镜像。
+    """
+    runner = _FakeDockerRunner()
+    manager = _manager(tmp_path, runner)
+    image = manager.container_image_for(REQS_A)
+    table = _referenced_table(manager, _definition("six_tool", REQS_A))
+    local = [{"image": image, "fingerprint": "3.11-deadbeef", "size_bytes": 10, "id": "sha256:1"}]
+
+    inventory = {
+        entry.image: entry
+        for entry in manager.container_inventory(
+            referenced_by=table, local_images=local, docker_available=True
+        )
+    }
+
+    assert inventory[image].protected is True
+    assert inventory[image].referenced_by == ["six_tool"]
+    assert inventory[image].present_locally is True
+
+    result = asyncio_run(
+        manager.remove_container_image(
+            image, confirm=True, referenced_by=table, local_images=local, docker_available=True
+        )
+    )
+    assert result.removed is False
+    assert runner.rm_calls == []
+
+
 def test_removing_without_reference_information_is_refused(tmp_path: Path):
     runner = _FakeDockerRunner()
     manager = _manager(tmp_path, runner)
