@@ -155,3 +155,113 @@ def test_a_directly_constructed_log_record_is_not_covered():
         exc_info=None,
     )
     assert SECRET in record.getMessage()
+
+# ---------- P0 回归：uvicorn 访问日志（args 的清空会把访问日志打成 traceback） ----------
+
+
+def _access_record(args=None):
+    """走真实路径造一条 uvicorn 访问日志记录：logger.makeRecord → LogRecordFactory。"""
+    logger = logging.getLogger('uvicorn.access')
+    return logger.makeRecord(
+        'uvicorn.access',
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        args or ('127.0.0.1:63111', 'GET', '/api/health', '1.1', 200),
+        None,
+    )
+
+
+def test_uvicorn_access_log_formats_normally_through_the_factory():
+    """真实 AccessFormatter + 真实工厂：不抛异常，且三个字段都在输出里。"""
+    from uvicorn.logging import AccessFormatter
+
+    record = _access_record()
+    formatter = AccessFormatter(
+        fmt='%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        use_colors=False,
+    )
+
+    out = formatter.format(record)
+
+    assert '127.0.0.1:63111' in out
+    assert 'GET /api/health HTTP/1.1' in out
+    assert '200' in out
+    assert 'Logging error' not in out
+
+
+def test_the_args_container_shape_is_never_changed():
+    """容器形状与简单类型不许变：uvicorn 是按位置解包 args 的。"""
+    record = _access_record()
+
+    assert isinstance(record.args, tuple)
+    assert len(record.args) == 5
+    assert [type(item) for item in record.args] == [str, str, str, str, int]
+    assert record.args[4] == 200
+    assert record.msg == '%s - "%s %s HTTP/%s" %d'
+
+
+def test_a_secret_inside_args_is_redacted_in_the_formatted_text():
+    """密钥在 args 里：最终格式化出来的文本必须干净（不是只看 record.msg）。"""
+    from uvicorn.logging import AccessFormatter
+
+    secret = 'sk-live-abcdef1234567890'
+    record = _access_record(('127.0.0.1:1', 'GET', f'/api/x?key={secret}', '1.1', 200))
+
+    out = AccessFormatter(
+        fmt='%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        use_colors=False,
+    ).format(record)
+
+    assert secret not in out
+    assert REDACTED in out
+    assert 'GET /api/x?key=' in out  # 路径还在，只有密钥被替换
+
+
+def test_dict_args_with_named_placeholders_still_format():
+    caplog_text = None
+    logger = logging.getLogger('agent.tests.forms.named')
+    logger.handlers = []
+    logger.propagate = True
+    logger.setLevel(logging.INFO)
+    import io
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(handler)
+    try:
+        logger.info('payload %(body)s done %(count)s', {'body': 'token sk-live-abcdef1234567890', 'count': 2})
+    finally:
+        logger.removeHandler(handler)
+    caplog_text = stream.getvalue()
+
+    assert 'sk-live-abcdef1234567890' not in caplog_text
+    assert REDACTED in caplog_text
+    assert 'done 2' in caplog_text
+
+
+def test_a_template_placeholder_is_never_eaten_by_redaction():
+    """第一阶段踩过的坑：模板里的 token=%s 被 kv 规则吃掉 %s → logging 自己报错。"""
+    logger = logging.getLogger('agent.tests.forms.placeholder')
+    logger.handlers = []
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    import io
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    handler.raiseExceptions = False
+    logger.addHandler(handler)
+    try:
+        logger.info('token=%s', 'plain-value-not-a-secret')
+        logger.info('api_key=%s and %s', 'one', 'two')
+    finally:
+        logger.removeHandler(handler)
+
+    out = stream.getvalue()
+    assert 'not all arguments converted' not in out
+    assert 'TypeError' not in out
+    assert 'one' in out and 'two' in out
