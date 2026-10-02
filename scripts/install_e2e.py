@@ -402,7 +402,7 @@ def step_uninstall_registry(args, seeded: bool) -> None:
     timing += (
         "（超时 %ss，注册表始终没干净）" % settled["timeout_seconds"]
         if not settled["clean"]
-        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"],
+        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"]
     )
     record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "FAIL" if problems else "PASS",
            ("；".join(problems) + "；" if problems else
@@ -1131,7 +1131,7 @@ def step_uninstall(args):
     timing += (
         "（超时 %ss，注册表始终没干净）" % settled["timeout_seconds"]
         if not settled["clean"]
-        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"],
+        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"]
     )
     if not writable:
         # 本机：子进程写不了注册表，安装器当初可能根本没写进去 —— 「STILL PRESENT」不能当产品结论。
