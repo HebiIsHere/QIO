@@ -329,3 +329,41 @@ scratch=WRITE-OK / user=WRITE-DENIED PermissionError / qio=WRITE-DENIED Permissi
 `test_label_low_refuses_when_the_readback_does_not_show_low`、
 `test_label_is_low_only_accepts_a_real_label_ace`、
 `test_the_declared_triple_holds_with_a_non_low_parent`。
+## 11. 判据升级：从「标签读回」到「Low 进程真的写得进去」（2026-10-03 CI 实测）
+
+### 11.1 CI runner 的真实完整性不是我以为的那个
+
+`windows-latest` 上 pytest 进程的令牌读回是 **`S-1-16-12288`（High）**，不是普通完整性。
+原始输出（CI 日志里那条自我诊断）：
+
+```
+[C3] parent=S-1-16-12288 user_label='' isolation={mechanisms: [job_object, low_integrity], problems: []}
+```
+
+### 11.2 「标签读回 Low」不等于「Low 进程写得进去」
+
+同一份代码在 CI 上：scratch 的标签读回 `S:AI(ML;OICI;NW;;;LW)`，工具进程令牌读回 `S-1-16-4096`，
+**工具写自己的 scratch 依然 PermissionError**（`assert 'WRITE-DENIED' == 'WRITE-OK'`）。
+标签与令牌两个读回都过，承诺的「工具仍能写自己的工作目录」却不成立 —— 这是实质缺陷，不是测试问题。
+
+### 11.3 新的判据与实现
+
+降级之前先跑一个**真实的一次性 Low 写入探针**（`isolation._low_process_can_write`）：
+
+1. `cmd /c "pause >nul & echo x> <dir>\.qio-low-write-probe"` 起一个进程；
+2. 把它降级到 Low 并**读回核实**；
+3. 放行，看退出码与文件是否真的出现；
+4. 任何一个「工具合法需要写」的目录（scratch + `extra_writable_dirs`）写不进去 → **整体不降级**，
+   原因写进 `SandboxResult.isolation.problems`，并且**不声称** low_integrity。
+
+**可判定的条件（C2 最终答案）**：能不能用低完整性，取决于「一个真的 Low 进程能不能写工具的工作目录」，
+而**不是**取决于标签调用是否返回 0、也不是取决于标签读回。在 CI 那种 High 完整性的进程树下，
+这个探针不通过 —— 于是低完整性在这一环境下**自动不生效**（fail-safe），工具保持原完整性正常工作。
+
+### 11.4 因此默认值不变
+
+低完整性仍然**默认关闭**。理由现在是可判定的三条：
+
+1. 它的可写性依赖父进程树的完整性级别，CI（High）与开发机（Medium）结论不同；
+2. 只有在探针通过的机器上它才生效 —— 这本身就是「环境相关的能力」，不适合做默认承诺；
+3. 默认生效的那一层（Job Object）不受写权限影响，是唯一可以无条件相信的。
