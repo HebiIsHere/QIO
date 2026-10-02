@@ -566,16 +566,27 @@ async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeyp
             'CI 上父进程应当在 Low 之上（普通完整性）；当前是 Low，说明拒绝分支没有被验证到。'
             f' parent={parent_integrity}'
         )
-    if parent_integrity == isolation.LOW_INTEGRITY_SID or isolation.label_is_low(user_label):
-        # 本会话自己就是 Low：这里无法验证「拒绝」，如实断言不拒绝
-        assert result.value['user'] == 'WRITE-OK'
-        assert result.value['qio'] == 'WRITE-OK'
-    else:
-        # 工具返回 'WRITE-DENIED <ExceptionName>'，这里断言前缀，不把异常名写死
+    mechanisms = (result.isolation or {}).get('mechanisms', [])
+    problems = (result.isolation or {}).get('problems', [])
+    claimed_low = 'low_integrity' in mechanisms
+    # 目标目录是否**明确**标了高于 Low 的标签（没有标签 ACE 时读回是空串，不能当成「更高」）
+    higher_target = bool(user_label) and not isolation.label_is_low(user_label)
+
+    if claimed_low and higher_target:
+        # 声明了低完整性、而且目标确实更高：这时写必须被内核拒绝（工具返回 'WRITE-DENIED <原因>'）
         assert result.value['user'].startswith('WRITE-DENIED'), result.isolation
         assert result.value['qio'].startswith('WRITE-DENIED'), result.isolation
         assert not (user_dir / 'probe.txt').exists()
         assert not (qio_dir / 'probe.txt').exists()
+    else:
+        # 这个环境里没法（或不该）观察拒绝：要么本会话本身就在 Low（目标目录也是 Low），
+        # 要么 fail-safe 主动跳过了降级。两种情况都断言「写是通的」，并且要求**说清原因**。
+        assert result.value['user'].startswith('WRITE-OK'), result.isolation
+        assert result.value['qio'].startswith('WRITE-OK'), result.isolation
+        if not claimed_low:
+            assert any(
+                '低完整性降级已跳过' in problem for problem in problems
+            ), f'没声称低完整性就必须给出跳过的原因；problems={problems}'
 # 工具侧自检片段：真实执行工具代码的进程自己报 pid / 完整性 / 是否在 job 里。
 _SELF_REPORT = (
     'import ctypes, os\n'
