@@ -28,13 +28,14 @@ import shutil
 import signal
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # 只用于标注：executor_env 不 import 本模块，运行期再取
     from agent.tools.executor_env import ToolExecutorSpec
 
+from agent.tools import isolation
 from agent.tools.policy import CapabilityLevel, ToolExecutionPolicy
 from agent.tools.project_files import check_project_size, materialize
 
@@ -117,6 +118,13 @@ exec(compile(WORKER_SOURCE, WORKER_PATH, "exec"),
 """
 
 
+def _with_isolation(result: SandboxResult, hardening) -> SandboxResult:
+    """把这次实际拿到的隔离附在结果上（只加一个诊断字段，不改任何既有字段）。"""
+    if hardening is None:
+        return result
+    return replace(result, isolation=hardening.as_dict())
+
+
 def _system_env(scratch_dir: str) -> dict[str, str]:
     """工具子进程的环境：**逐项白名单**，不继承 os.environ。
 
@@ -189,6 +197,9 @@ class SandboxResult:
     launch_failed: bool = False
     # 统一的错误类别（见 core/tool_feedback.py）；上层据此分类，而不是猜文本。
     category: str | None = None
+    # 这次执行**实际**拿到的强制隔离（Job Object / 低完整性；见 tools/isolation.py）。
+    # None = 没走隔离钩子（例如容器执行器，隔离由容器提供）。
+    isolation: dict | None = None
 
     def diagnostic(self, limit: int = 2000) -> str:
         """脱敏、限长后的诊断详情（stderr 优先，附 stdout 末尾）。
@@ -665,6 +676,11 @@ class SandboxExecutor:
                     error=f"工具执行程序无法启动：{exc}",
                     category="startup",
                 )
+            # 追加式隔离钩子（见 tools/isolation.py）：给刚创建的子进程加真实强制 ——
+            # Job Object（内存/活动进程数上限 + 关句柄即收整棵树）与低完整性降级。
+            # 钩子永不抛异常；平台不支持 / 调用失败时行为与改动前完全一致，
+            # 并把实际结果与原因附在 SandboxResult.isolation 上（可诊断，不静默）。
+            hardening = isolation.harden(process, scratch_dir=tmp, policy=policy)
             try:
                 stdout, stderr, over_limit = await asyncio.wait_for(
                     _exchange(process, request), timeout=self.timeout_seconds
@@ -673,23 +689,32 @@ class SandboxExecutor:
                 # wait_for 只取消了读取；必须真的结束这棵进程树，否则工具自己起的
                 # 子进程会留下（资源泄漏 + 临时目录清理失败）。
                 await _kill_process_tree(process)
-                return SandboxResult(
-                    ok=False, value=None, stdout="", stderr="",
-                    error=f"timeout after {self.timeout_seconds}s",
-                    category="timeout",
+                return _with_isolation(
+                    SandboxResult(
+                        ok=False, value=None, stdout="", stderr="",
+                        error=f"timeout after {self.timeout_seconds}s",
+                        category="timeout",
+                    ),
+                    hardening,
                 )
             except asyncio.CancelledError:
                 # 用户取消：同样只清理这一棵进程树，然后如实向上传递取消语义。
                 await _kill_process_tree(process)
                 raise
+            finally:
+                # 关掉 job 句柄：KILL_ON_JOB_CLOSE 保证这棵树里不会留下任何进程。
+                isolation.release(process)
             # 协议判定只有一份实现（见 _parse_worker_result）：
             # 输出超限 → 退出码 → 空输出 → 恰好一行 → 合法 JSON → 布尔 ok → value 类型。
-            return _parse_worker_result(
-                returncode=process.returncode,
-                stdout_text=stdout.decode("utf-8", errors="replace").strip(),
-                stderr_text=stderr.decode("utf-8", errors="replace").strip(),
-                over_limit=over_limit,
-                runtime="subprocess",
+            return _with_isolation(
+                _parse_worker_result(
+                    returncode=process.returncode,
+                    stdout_text=stdout.decode("utf-8", errors="replace").strip(),
+                    stderr_text=stderr.decode("utf-8", errors="replace").strip(),
+                    over_limit=over_limit,
+                    runtime="subprocess",
+                ),
+                hardening,
             )
 
     # -- docker executor (optional) --------------------------------------
