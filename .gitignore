@@ -55,3 +55,10 @@ backend/data-gym-cache/
 .superpowers/
 backend/tmp*
 .tmp/
+
+# 本机构建/验收过程中的工作目录（可再生产物，不进库）：
+#   .build-tmp   —— build_installer / build_sidecar 的构建临时目录
+#                   （本机 %TEMP% 带拒绝访问的 ACL，所以默认放检出内）
+#   .e2e-work    —— scripts/install_e2e.py 的安装目录、证据与 E2E 数据库
+.build-tmp/
+.e2e-work/
