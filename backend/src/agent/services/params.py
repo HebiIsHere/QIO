@@ -103,8 +103,44 @@ class RetrievalPolicy:
     recency_half_life_days: float = 30.0
 
 
+@dataclass(frozen=True)
+class CrossTopicPolicy:
+    """跨话题召回：**候选生成阶段**的开关（不动排序层）。
+
+    背景（backend/evals/EXPERIMENTS-CROSSTOPIC.md）：普通检索已经稳定
+    （单层排序 + relevance 1.0 / rule 0.25，R@1 0.847），但跨话题查询
+    （「之前聊过的 X 那件事，结论是什么」）R@1 只有 0.1~0.2 —— 既缺词面重叠，
+    也缺明确语义对应。这里的三组开关都只影响「候选池」，排序仍然是
+    Retriever 里那唯一一次加权（不新增第二层 selector / rerank）。
+
+    Semantics:
+        rewrite_enabled      — 用话题指纹给查询补关键词后再召回（确定性，无模型）
+        expand_enabled       — 用话题指纹文本额外取一批候选，与主召回合并（单次排序不变）
+        relation_enabled     — 沿 fragment 来源链（source_fragment_id）把路径上话题的
+                               记忆纳入候选（同话题校验由 FragmentManager 保证）
+        topics_per_query     — 一次最多识别几个候选话题
+        terms_per_topic      — 改写时每个话题补几个词
+
+    说明：候选扩充是「同一个查询 + 放宽候选池 + 按话题过滤」，没有「每个话题取多少条」
+    这种旋钮 —— 那种旋钮会诱导出「用别的文本去召回」的写法，实测会把普通集打崩
+    （见 EXPERIMENTS-CROSSTOPIC.md 的踩坑一节）。
+
+    Default source: 默认**全关**。见 EXPERIMENTS-CROSSTOPIC.md 的实测：
+        在 46 条跨话题查询上，A/B 只在「查询里出现话题词面」的子类上有收益，
+        指代类（无词面线索）无论怎么扩候选都上不去 —— 那是数据集本身的语义鸿沟。
+    Eval: backend/evals/cross_topic/run_cross_topic.py
+    """
+
+    rewrite_enabled: bool = False
+    expand_enabled: bool = False
+    relation_enabled: bool = False
+    topics_per_query: int = 2
+    terms_per_topic: int = 4
+
+
 TOPIC = TopicPolicy()
 RETRIEVAL = RetrievalPolicy()
+CROSS_TOPIC = CrossTopicPolicy()
 
 
 @dataclass(frozen=True)

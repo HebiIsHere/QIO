@@ -1,0 +1,694 @@
+{
+  "arms": {
+    "P0": {
+      "ordinary": {
+        "n": 72,
+        "recall@1": 0.8472,
+        "recall@5": 0.9167,
+        "mrr": 0.8731,
+        "wrong_memory_injection_rate": 0.1528,
+        "stale_memory_injection_rate": 0.0278,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "by_subtype": {
+          "cross_topic": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.2533
+          },
+          "decision": {
+            "n": 28,
+            "recall@1": 0.9286,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.9583
+          },
+          "fact_update": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "paraphrase": {
+            "n": 10,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "person_entity": {
+            "n": 4,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "preference": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "switch": {
+            "n": 10,
+            "recall@1": 0.9,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.95
+          }
+        }
+      },
+      "cross_topic": {
+        "n": 46,
+        "recall@1": 0.0652,
+        "recall@5": 0.2174,
+        "mrr": 0.1062,
+        "wrong_memory_injection_rate": 0.9348,
+        "stale_memory_injection_rate": 0.1522,
+        "topic_hit@1": 0.4348,
+        "topic_hit@5": 0.8043,
+        "by_subtype": {
+          "conclusion_review": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.375,
+            "mrr": 0.025
+          },
+          "explicit_title": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.7,
+            "topic_hit@5": 1.0,
+            "mrr": 0.2533
+          },
+          "keyword_only": {
+            "n": 6,
+            "recall@1": 0.0,
+            "recall@5": 0.1667,
+            "topic_hit@1": 0.6667,
+            "topic_hit@5": 1.0,
+            "mrr": 0.0333
+          },
+          "long_span_old": {
+            "n": 4,
+            "recall@1": 0.0,
+            "recall@5": 0.25,
+            "topic_hit@1": 0.75,
+            "topic_hit@5": 1.0,
+            "mrr": 0.125
+          },
+          "mixed_language": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.6,
+            "topic_hit@5": 0.8,
+            "mrr": 0.05
+          },
+          "multi_topic": {
+            "n": 5,
+            "recall@1": 0.2,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.2,
+            "topic_hit@5": 1.0,
+            "mrr": 0.2
+          },
+          "pronoun_only": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.625,
+            "mrr": 0.025
+          }
+        }
+      }
+    },
+    "A_rewrite": {
+      "ordinary": {
+        "n": 72,
+        "recall@1": 0.4444,
+        "recall@5": 0.9028,
+        "mrr": 0.6322,
+        "wrong_memory_injection_rate": 0.5556,
+        "stale_memory_injection_rate": 0.2083,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "by_subtype": {
+          "cross_topic": {
+            "n": 10,
+            "recall@1": 0.1,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.1733
+          },
+          "decision": {
+            "n": 28,
+            "recall@1": 0.5357,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.7244
+          },
+          "fact_update": {
+            "n": 5,
+            "recall@1": 0.8,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.9
+          },
+          "paraphrase": {
+            "n": 10,
+            "recall@1": 0.3,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.6
+          },
+          "person_entity": {
+            "n": 4,
+            "recall@1": 0.5,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.7083
+          },
+          "preference": {
+            "n": 5,
+            "recall@1": 0.4,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.6667
+          },
+          "switch": {
+            "n": 10,
+            "recall@1": 0.5,
+            "recall@5": 0.9,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.6833
+          }
+        }
+      },
+      "cross_topic": {
+        "n": 46,
+        "recall@1": 0.0217,
+        "recall@5": 0.2391,
+        "mrr": 0.0826,
+        "wrong_memory_injection_rate": 0.9783,
+        "stale_memory_injection_rate": 0.1957,
+        "topic_hit@1": 0.413,
+        "topic_hit@5": 0.7609,
+        "by_subtype": {
+          "conclusion_review": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.375,
+            "mrr": 0.025
+          },
+          "explicit_title": {
+            "n": 10,
+            "recall@1": 0.1,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.6,
+            "topic_hit@5": 1.0,
+            "mrr": 0.1733
+          },
+          "keyword_only": {
+            "n": 6,
+            "recall@1": 0.0,
+            "recall@5": 0.5,
+            "topic_hit@1": 0.8333,
+            "topic_hit@5": 1.0,
+            "mrr": 0.1389
+          },
+          "long_span_old": {
+            "n": 4,
+            "recall@1": 0.0,
+            "recall@5": 0.25,
+            "topic_hit@1": 0.5,
+            "topic_hit@5": 1.0,
+            "mrr": 0.125
+          },
+          "mixed_language": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.0,
+            "topic_hit@1": 0.4,
+            "topic_hit@5": 0.8,
+            "mrr": 0.0
+          },
+          "multi_topic": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.4,
+            "topic_hit@5": 0.6,
+            "mrr": 0.0667
+          },
+          "pronoun_only": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.625,
+            "mrr": 0.025
+          }
+        }
+      }
+    },
+    "B_expand": {
+      "ordinary": {
+        "n": 72,
+        "recall@1": 0.8472,
+        "recall@5": 0.9167,
+        "mrr": 0.8731,
+        "wrong_memory_injection_rate": 0.1528,
+        "stale_memory_injection_rate": 0.0278,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "by_subtype": {
+          "cross_topic": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.2533
+          },
+          "decision": {
+            "n": 28,
+            "recall@1": 0.9286,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.9583
+          },
+          "fact_update": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "paraphrase": {
+            "n": 10,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "person_entity": {
+            "n": 4,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "preference": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "switch": {
+            "n": 10,
+            "recall@1": 0.9,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.95
+          }
+        }
+      },
+      "cross_topic": {
+        "n": 46,
+        "recall@1": 0.0652,
+        "recall@5": 0.2174,
+        "mrr": 0.1062,
+        "wrong_memory_injection_rate": 0.9348,
+        "stale_memory_injection_rate": 0.1522,
+        "topic_hit@1": 0.4348,
+        "topic_hit@5": 0.7826,
+        "by_subtype": {
+          "conclusion_review": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.375,
+            "mrr": 0.025
+          },
+          "explicit_title": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.7,
+            "topic_hit@5": 1.0,
+            "mrr": 0.2533
+          },
+          "keyword_only": {
+            "n": 6,
+            "recall@1": 0.0,
+            "recall@5": 0.1667,
+            "topic_hit@1": 0.6667,
+            "topic_hit@5": 1.0,
+            "mrr": 0.0333
+          },
+          "long_span_old": {
+            "n": 4,
+            "recall@1": 0.0,
+            "recall@5": 0.25,
+            "topic_hit@1": 0.75,
+            "topic_hit@5": 1.0,
+            "mrr": 0.125
+          },
+          "mixed_language": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.6,
+            "topic_hit@5": 0.8,
+            "mrr": 0.05
+          },
+          "multi_topic": {
+            "n": 5,
+            "recall@1": 0.2,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.2,
+            "topic_hit@5": 0.8,
+            "mrr": 0.2
+          },
+          "pronoun_only": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.625,
+            "mrr": 0.025
+          }
+        }
+      }
+    },
+    "C_relation": {
+      "ordinary": {
+        "n": 72,
+        "recall@1": 0.8472,
+        "recall@5": 0.9028,
+        "mrr": 0.8692,
+        "wrong_memory_injection_rate": 0.1528,
+        "stale_memory_injection_rate": 0.0278,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "by_subtype": {
+          "cross_topic": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.3,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.225
+          },
+          "decision": {
+            "n": 28,
+            "recall@1": 0.9286,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.9583
+          },
+          "fact_update": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "paraphrase": {
+            "n": 10,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "person_entity": {
+            "n": 4,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "preference": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "switch": {
+            "n": 10,
+            "recall@1": 0.9,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.95
+          }
+        }
+      },
+      "cross_topic": {
+        "n": 46,
+        "recall@1": 0.0652,
+        "recall@5": 0.1304,
+        "mrr": 0.087,
+        "wrong_memory_injection_rate": 0.9348,
+        "stale_memory_injection_rate": 0.1522,
+        "topic_hit@1": 0.413,
+        "topic_hit@5": 0.6957,
+        "by_subtype": {
+          "conclusion_review": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.0,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.25,
+            "mrr": 0.0
+          },
+          "explicit_title": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.3,
+            "topic_hit@1": 0.7,
+            "topic_hit@5": 1.0,
+            "mrr": 0.225
+          },
+          "keyword_only": {
+            "n": 6,
+            "recall@1": 0.0,
+            "recall@5": 0.0,
+            "topic_hit@1": 0.5,
+            "topic_hit@5": 1.0,
+            "mrr": 0.0
+          },
+          "long_span_old": {
+            "n": 4,
+            "recall@1": 0.0,
+            "recall@5": 0.25,
+            "topic_hit@1": 0.75,
+            "topic_hit@5": 1.0,
+            "mrr": 0.125
+          },
+          "mixed_language": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.6,
+            "topic_hit@5": 0.8,
+            "mrr": 0.05
+          },
+          "multi_topic": {
+            "n": 5,
+            "recall@1": 0.2,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.2,
+            "topic_hit@5": 0.8,
+            "mrr": 0.2
+          },
+          "pronoun_only": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.0,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.25,
+            "mrr": 0.0
+          }
+        }
+      }
+    },
+    "O_oracle": {
+      "ordinary": {
+        "n": 72,
+        "recall@1": 0.8472,
+        "recall@5": 0.9167,
+        "mrr": 0.8731,
+        "wrong_memory_injection_rate": 0.1528,
+        "stale_memory_injection_rate": 0.0278,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "by_subtype": {
+          "cross_topic": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.2533
+          },
+          "decision": {
+            "n": 28,
+            "recall@1": 0.9286,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.9583
+          },
+          "fact_update": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "paraphrase": {
+            "n": 10,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "person_entity": {
+            "n": 4,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "preference": {
+            "n": 5,
+            "recall@1": 1.0,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 1.0
+          },
+          "switch": {
+            "n": 10,
+            "recall@1": 0.9,
+            "recall@5": 1.0,
+            "topic_hit@1": 0.0,
+            "topic_hit@5": 0.0,
+            "mrr": 0.95
+          }
+        }
+      },
+      "cross_topic": {
+        "n": 46,
+        "recall@1": 0.0652,
+        "recall@5": 0.2174,
+        "mrr": 0.1062,
+        "wrong_memory_injection_rate": 0.9348,
+        "stale_memory_injection_rate": 0.1522,
+        "topic_hit@1": 0.4348,
+        "topic_hit@5": 0.8043,
+        "by_subtype": {
+          "conclusion_review": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.375,
+            "mrr": 0.025
+          },
+          "explicit_title": {
+            "n": 10,
+            "recall@1": 0.2,
+            "recall@5": 0.4,
+            "topic_hit@1": 0.7,
+            "topic_hit@5": 1.0,
+            "mrr": 0.2533
+          },
+          "keyword_only": {
+            "n": 6,
+            "recall@1": 0.0,
+            "recall@5": 0.1667,
+            "topic_hit@1": 0.6667,
+            "topic_hit@5": 1.0,
+            "mrr": 0.0333
+          },
+          "long_span_old": {
+            "n": 4,
+            "recall@1": 0.0,
+            "recall@5": 0.25,
+            "topic_hit@1": 0.75,
+            "topic_hit@5": 1.0,
+            "mrr": 0.125
+          },
+          "mixed_language": {
+            "n": 5,
+            "recall@1": 0.0,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.6,
+            "topic_hit@5": 0.8,
+            "mrr": 0.05
+          },
+          "multi_topic": {
+            "n": 5,
+            "recall@1": 0.2,
+            "recall@5": 0.2,
+            "topic_hit@1": 0.2,
+            "topic_hit@5": 1.0,
+            "mrr": 0.2
+          },
+          "pronoun_only": {
+            "n": 8,
+            "recall@1": 0.0,
+            "recall@5": 0.125,
+            "topic_hit@1": 0.125,
+            "topic_hit@5": 0.625,
+            "mrr": 0.025
+          }
+        }
+      }
+    }
+  }
+}
