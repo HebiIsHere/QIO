@@ -10,18 +10,28 @@ on:
 env:
   PYTHONHASHSEED: "0"
 
+# 固定 Linux runner 版本（2026-10-03）：GitHub 通知 ubuntu-latest 将从 2026-10-19 起迁移到
+# Ubuntu 26，而 QIO 的 Linux 任务依赖一串系统组件（rust 任务里的 webkit2gtk / libsoup / gtk /
+# librsvg 等 apt 包），OS 大版本变化可能让 CI 直接变红。实测证据（run 37043505457 的 runner 日志，
+# 标签 ubuntu-latest 的 backend (py3.11) 任务）：Operating System = Ubuntu 24.04.5 LTS、
+# Image: ubuntu-24.04。所以这里显式钉住已验证的版本；将来要升级 Ubuntu 26 时一次性替换所有
+# ubuntu-24.04 并重跑 CI，不要靠 latest 漂移。
 jobs:
   docs:
     name: docs consistency
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       # stdlib only: no dependencies to install
+      # 两条都要跑：--selftest 用合成文本证明新检查真的能红/能绿（一个永远返回「没问题」的检查
+      # 等于纸面能力）。写成多行 run:，否则 scripts/check_docs.py 会把单行命令拿去和 SETUP.md 对齐。
       - name: Check docs against code
-        run: python scripts/check_docs.py
+        run: |
+          python scripts/check_docs.py
+          python scripts/check_docs.py --selftest
       # 离线发布闸门自己也要有人验证：--selftest 只检查闸门能正确变红/变绿
       #（不构建安装包、不联网、不依赖 sidecar 或 ONNX 模型）。闸门坏了没人知道，
       # 那它就是纸面能力 —— 所以这一步必须真跑。前提：scripts/release_gate.py 已入库。
@@ -31,7 +41,7 @@ jobs:
 
   backend:
     name: backend (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -165,7 +175,7 @@ jobs:
 
   frontend:
     name: frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -191,7 +201,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
     defaults:
       run:
         working-directory: frontend/src-tauri
