@@ -12,15 +12,27 @@ backend/src/agent/tools/dev_auth.py 与 lifecycle.py；执行器见 sandbox.py�
 
 ## 1. 一句话结论
 
-生成代码仍然跑在**同一用户权限**的独立子进程里（受限子进程），但自第二阶段起它多了两层
-**内核强制**的约束：
+生成代码仍然跑在**同一用户权限**的独立子进程里（受限子进程）。当前**默认生效**的强制只有一层：
 
-1. **Job Object**：进程内存上限、活动进程数上限、关句柄即收整棵树；
-2. **低完整性级别（Low IL）**：工具**写不进**用户文件与 QIO 数据目录（Medium 及以上标签的对象），
-   只能写自己那一次调用的一次性目录；**读不受限制**。
+1. **Job Object（默认开）**：进程内存上限、活动进程数上限、关句柄即收整棵树；
+2. **低完整性级别（Low IL，默认关）**：`QIO_TOOL_LOW_INTEGRITY=1` 打开后，工具**写不进**
+   用户文件与 QIO 数据目录（Medium 及以上标签的对象），只能写调用方声明可写的目录；
+   **读不受限制**。
+
+**为什么第二层默认关**（2026-10-02 CI 实测）：在 windows-latest（普通完整性）上它确实生效，
+但工具连**自己的 scratch 目录**与 **mock 夹具目录**都写不进去 —— 标签没有可核实的落地，
+结果是 mock 服务报告、进程树标记文件写不出来（8 条用例在 CI 上变红）。修法有两条，都做了：
+
+* 打标签之后**读回核实**（`integrity_label_of`）；核实不了就**跳过降级**（fail-safe），
+  并把原因写进结果 —— 宁可少一层写边界，也不能让工具连自己的目录都写不了；
+* 默认改为**关闭**：只保留 Job Object 这一项不受写权限影响的真实强制。
+
+打开的正确姿势：`QIO_TOOL_LOW_INTEGRITY=1`，并保证调用方把所有「工具合法需要写」的目录
+通过 `SandboxExecutor.execute(..., extra_writable_dirs=[...])` 声明出来（例如 mock 夹具目录）；
+任何一个声明目录核实不到低标签，这次就整体不降级。
 
 它**不是安全沙箱**：网络完全不受限，读取完全不受限，路径猜得到就访问得到。
-因此界面、审批说明与文档一律按「受限子进程 + 两条强制边界」表述，不叫「安全沙箱」。
+因此界面、审批说明与文档一律按「受限子进程 + 已生效的强制项」表述，不叫「安全沙箱」。
 
 ---
 
@@ -30,9 +42,9 @@ backend/src/agent/tools/dev_auth.py 与 lifecycle.py；执行器见 sandbox.py�
 
 | 资产 | 攻击者能做什么（无强制时） | 现在被谁挡住 | 现状 |
 | --- | --- | --- | --- |
-| 1 用户文件 | 读、写、删 | **写：Windows MIC（低完整性）**；读：无 | **写已挡、读未挡** |
+| 1 用户文件 | 读、写、删 | 写：Windows MIC（低完整性，**默认关**）；读：无 | **写默认可写、读未挡**（打开开关后写被挡） |
 | 2 API Key | 读用户自己的凭据文件、打日志外带 | 凭据不注入子进程（环境白名单）；读：无 | **注入已挡、读取未挡** |
-| 3 QIO 数据目录 | 读、写、删（同用户权限） | **写：Windows MIC**；读：无 | **写已挡、读未挡** |
+| 3 QIO 数据目录 | 读、写、删（同用户权限） | 写：Windows MIC（**默认关**）；读：无 | **写默认可写、读未挡**（打开开关后写被挡） |
 | 4 网络访问 | 任意出网、横向、连本机端口 | **无** | **未实现**（需要 WFP／管理员，见 3.7） |
 | 5 任意进程控制 | 无限 fork、吃光内存、常驻 | **Job Object**：内存上限、活动进程上限、关句柄即收树 | **资源被限、拉起进程本身未禁止** |
 
@@ -99,7 +111,7 @@ CreateProcessAsUserW → True（成功跑起 cmd /c echo hi），**不需要管�
 实测：net user qio_isolated_probe … /add → Access is denied.（exit 2）；
 当前令牌里 Administrators 是 deny-only，net session → System error 5。
 普通用户机器上不能建专用用户，也不该要求用户提权。**不作为产品路径。**
-### 3.6 低完整性级别（MIC）—— 已采用
+### 3.6 低完整性级别（MIC）—— 已实现，但**默认关闭**
 
 实测（Medium 父进程 → 子进程降级；同一次实验里有不降级的对照组）：
 
@@ -112,13 +124,20 @@ qio_data   WRITE-OK                qio_data   WRITE-DENIED PermissionError
 ```
 
 实现：父进程在子进程创建后 OpenProcessToken + SetTokenInformation(TokenIntegrityLevel, Low)；
-同时把这一次调用的一次性目录打上 Low 标签（SDDL S:(ML;OICI;NW;;;LW)，回退 icacls），
-于是工具仍能写自己的工作目录。已接进 _execute_subprocess（追加式钩子），
-SandboxResult.isolation 里能看到实际用了哪些机制、以及哪些没生效和原因。
+同时把这次调用需要可写的目录打上 Low 标签（SDDL S:(ML;OICI;NW;;;LW)，回退 icacls /T），
+并**读回核实**（integrity_label_of → label_is_low）。已接进 _execute_subprocess（追加式钩子），
+SandboxResult.isolation 里能看到实际用了哪些机制、哪些没生效、以及原因。
+
+**默认关闭**：`QIO_TOOL_LOW_INTEGRITY=1` 打开。CI 实测（windows-latest）降级一旦生效，
+工具连自己的 scratch 与 mock 夹具目录都写不进去 —— 说明标签在这些环境下没有可核实的落地。
+打开后的契约（也是测试断言的契约）：
+
+* `scratch_dir` 与调用方声明的 `extra_writable_dirs` 必须都核实为低标签，否则**整体不降级**
+  （fail-safe：宁可少一层写边界，也不能让工具连自己的目录都写不了）；
+* 降级成功后，工具写这些目录正常，写 Medium 及以上标签的对象被内核拒绝；
+* 工具声明了文件系统能力（policy.filesystem 非空）时同样跳过降级。
 
 **没有挡住**：读（Low 只限制「写向上」）、网络、以及工具自己猜到的路径。
-工具声明了文件系统能力（policy.filesystem 非空）时**跳过**降级 —— 它已经被批准在工作区外写文件，
-降级只会让它以权限错误失败；Job Object 限制照常生效。
 
 ### 3.7 网络隔离 —— 未实现
 
@@ -153,8 +172,10 @@ argv_tail = []
   才写进 stdin 的（时序由 test_closing_the_job_handle_reaps_descendants_created_after_assignment 锁住；
   边界由 test_a_child_created_before_assignment_is_not_contained 老实记录）。
 * **POSIX 上不提供任何隔离**：isolation.harden() 返回 unsupported，行为与改动前一致。
-* **逃生开关**：QIO_TOOL_LOW_INTEGRITY=0 会关掉低完整性降级（只剩 Job Object），用于支持/回滚；
-  此时 SandboxResult.isolation.problems 里会明确写出来。
+* **低完整性降级默认关闭**：不设 QIO_TOOL_LOW_INTEGRITY（或设 0）时只有 Job Object 生效；
+  此时 SandboxResult.isolation.problems 里会写明「默认关闭 + 怎么开」。
+* **打开低完整性后，调用方必须声明工具要写的目录**（extra_writable_dirs）：目前 sandbox 侧已支持，
+  但 mock 夹具目录还没有接上（tester/mock_services 不在本次改动范围），打开开关前需要先接。
 
 ---
 

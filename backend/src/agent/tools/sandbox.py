@@ -486,6 +486,7 @@ class SandboxExecutor:
         entry: str | None = None,
         interpreter: str | None = None,
         container_image: str | None = None,
+        extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
     ) -> SandboxResult:
         """执行一次工具。
 
@@ -611,7 +612,8 @@ class SandboxExecutor:
                 category="environment",
             )
         return await self._execute_subprocess(
-            code, arguments, extra_env or {}, policy, project_files, entry, interpreter
+            code, arguments, extra_env or {}, policy, project_files, entry, interpreter,
+            extra_writable_dirs=extra_writable_dirs,
         )
 
     # -- subprocess executor ----------------------------------------------
@@ -625,6 +627,7 @@ class SandboxExecutor:
         files: dict[str, str] | None = None,
         entry: str | None = None,
         interpreter: str | None = None,
+        extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
@@ -680,7 +683,12 @@ class SandboxExecutor:
             # Job Object（内存/活动进程数上限 + 关句柄即收整棵树）与低完整性降级。
             # 钩子永不抛异常；平台不支持 / 调用失败时行为与改动前完全一致，
             # 并把实际结果与原因附在 SandboxResult.isolation 上（可诊断，不静默）。
-            hardening = isolation.harden(process, scratch_dir=tmp, policy=policy)
+            hardening = isolation.harden(
+                process,
+                scratch_dir=tmp,
+                policy=policy,
+                extra_writable_dirs=extra_writable_dirs,
+            )
             try:
                 stdout, stderr, over_limit = await asyncio.wait_for(
                     _exchange(process, request), timeout=self.timeout_seconds

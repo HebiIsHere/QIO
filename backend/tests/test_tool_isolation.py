@@ -9,6 +9,12 @@
 平台说明：Job Object 与 MIC 是 Windows 内核能力；POSIX 上本模块明确返回 unsupported，
 行为与改动前完全一致（容器隔离由 executor=docker 负责）。这里没有用平台特判去掩盖失败：
 每个 Windows 用例都是真跑内核 API，POSIX 用例断言的就是「不声称有隔离」。
+
+默认值（2026-10-02 起）：**Job Object 默认生效；低完整性降级默认关闭**
+（QIO_TOOL_LOW_INTEGRITY=1 打开）。原因见 docs/security/tool-execution-isolation.md：
+CI（windows-latest）实测降级一旦生效，工具连自己的 scratch 与 mock 夹具都写不进去 ——
+标签没有可核实的落地。打开时也会先**读回核实**标签，核实不了就跳过降级（fail-safe）。
+本文件对两种状态都有断言：关着时断言「诚实的未生效 + 原因」，打开时断言真实边界。
 """
 
 from __future__ import annotations
@@ -29,23 +35,9 @@ WINDOWS = sys.platform == 'win32'
 WINDOWS_ONLY = pytest.mark.skipif(not WINDOWS, reason='Windows 内核能力（Job Object / MIC）')
 
 
-def _session_is_low_integrity() -> bool:
-    if not WINDOWS:
-        return False
-    try:
-        return isolation.integrity_of_process(os.getpid()) == isolation.LOW_INTEGRITY_SID
-    except OSError:
-        return False
-
-
-NOT_LOW_SESSION = pytest.mark.skipif(
-    _session_is_low_integrity(),
-    reason=(
-        '本会话自身运行在 Low 完整性：父进程没有 SeRelabelPrivilege，无法创建 Medium 标签对象，'
-        '因此本机无法演示「Low 工具写不进 Medium 目录」。机制本身由 test_tool_process_runs_at_low_integrity '
-        '与 docs/security/tool-execution-isolation.md 记录的真机实验（Medium 父进程 → 写拒绝）覆盖。'
-    ),
-)
+def _enable_low_integrity(monkeypatch) -> None:
+    """显式打开低完整性降级（默认是关的）。"""
+    monkeypatch.setenv(isolation.LOW_INTEGRITY_ENV, '1')
 
 
 async def _run(code: str, arguments: dict | None = None, *, timeout_seconds: float | None = None):
@@ -77,8 +69,9 @@ async def test_the_isolation_hook_never_breaks_a_tool_call():
 
 
 @WINDOWS_ONLY
-async def test_tool_process_runs_at_low_integrity(monkeypatch):
-    """父进程侧读回子进程令牌的完整性级别：真的降到 Low（不是声明）。"""
+async def test_low_integrity_is_off_by_default_and_that_is_reported(monkeypatch):
+    """默认关闭时：降级不生效，但必须在结果里说清「没生效 + 怎么开」。"""
+    monkeypatch.delenv(isolation.LOW_INTEGRITY_ENV, raising=False)
     observed: dict[str, str] = {}
     original = isolation.harden
 
@@ -92,8 +85,38 @@ async def test_tool_process_runs_at_low_integrity(monkeypatch):
     result = await _run("def run(**kwargs):\n    return {'ok': 1}\n")
 
     assert result.ok is True, result.error
-    assert observed['integrity'] == isolation.LOW_INTEGRITY_SID
-    assert 'low_integrity' in (result.isolation or {}).get('mechanisms', [])
+    assert isolation.low_integrity_enabled() is False
+    info = result.isolation or {}
+    assert 'low_integrity' not in info.get('mechanisms', [])
+    assert any(isolation.LOW_INTEGRITY_ENV in problem for problem in info.get('problems', []))
+    # Job Object 仍然是默认生效的那一层
+    assert 'job_object' in info.get('mechanisms', [])
+    assert observed['integrity'], '读不到子进程完整性级别，说明进程没跑起来'
+
+
+@WINDOWS_ONLY
+async def test_enabling_low_integrity_downgrades_the_child(monkeypatch):
+    """打开开关：要么真的降到 Low（父进程侧读回核实），要么按 fail-safe 明确跳过并给出原因。"""
+    _enable_low_integrity(monkeypatch)
+    observed: dict[str, str] = {}
+    original = isolation.harden
+
+    def spy(process, **kwargs):
+        outcome = original(process, **kwargs)
+        observed['integrity'] = isolation.integrity_of_process(process.pid)
+        return outcome
+
+    monkeypatch.setattr(isolation, 'harden', spy)
+
+    result = await _run("def run(**kwargs):\n    return {'ok': 1}\n")
+
+    assert result.ok is True, result.error
+    info = result.isolation or {}
+    if 'low_integrity' in info.get('mechanisms', []):
+        assert observed['integrity'] == isolation.LOW_INTEGRITY_SID
+    else:
+        # fail-safe 分支：标签核实不了就不降级；必须留下可诊断的原因，不能悄悄放过
+        assert any('低完整性' in problem for problem in info.get('problems', [])), info
 
 
 @WINDOWS_ONLY
@@ -346,9 +369,13 @@ async def test_reads_are_not_isolated_that_is_the_honest_boundary(tmp_path):
 
 
 @WINDOWS_ONLY
-@NOT_LOW_SESSION
-async def test_low_integrity_blocks_writes_outside_the_scratch_dir(tmp_path):
-    """Medium 会话下：工具写自己的一次性目录可以，写外面的目录被内核拒绝。"""
+async def test_low_integrity_keeps_the_scratch_writable(tmp_path, monkeypatch):
+    """打开降级时的硬契约：工具**必须**还能写自己的一次性 scratch 目录。
+
+    这一条是 CI 上真出过的事故：标签没落地，工具连 scratch 都写不进去，
+    mock 服务报告、进程树标记文件全写不出来。无论降级是否真的生效，这条都必须成立。
+    """
+    _enable_low_integrity(monkeypatch)
     outside = tmp_path / 'outside'
     outside.mkdir()
 
@@ -367,7 +394,40 @@ async def test_low_integrity_blocks_writes_outside_the_scratch_dir(tmp_path):
     result = await _run(code, {'outside': str(outside)})
 
     assert result.ok is True, result.error
-    assert result.value['scratch'] == 'WRITE-OK'
-    assert result.value['outside'] == 'WRITE-DENIED'
-    assert not (outside / 'probe.txt').exists()
+    assert result.value['scratch'] == 'WRITE-OK', result.isolation
+
+    # 外面那个目录的标签高于 Low 时（Medium 会话/CI），写必须被内核拒绝；
+    # 本会话自身就在 Low 完整性（父进程造不出更高标签的对象）时，它也是 Low，写得进去才是对的。
+    label = isolation.integrity_label_of(str(outside))
+    if isolation.label_is_low(label) or not label:
+        assert result.value['outside'] == 'WRITE-OK'
+    else:
+        assert result.value['outside'] == 'WRITE-DENIED'
+        assert not (outside / 'probe.txt').exists()
+
+
+@WINDOWS_ONLY
+async def test_extra_writable_dirs_are_kept_writable_when_declared(tmp_path, monkeypatch):
+    """调用方声明「工具合法需要写」的目录（例如 mock 夹具目录）时，它同样必须可写。"""
+    _enable_low_integrity(monkeypatch)
+    declared = tmp_path / 'declared'
+    declared.mkdir()
+
+    code = (
+        'import os\n'
+        'def run(**kwargs):\n'
+        '    try:\n'
+        "        with open(os.path.join(kwargs['path'], 'report.json'), 'w') as fh:\n"
+        "            fh.write('{}')\n"
+        "        return {'declared': 'WRITE-OK'}\n"
+        '    except OSError:\n'
+        "        return {'declared': 'WRITE-DENIED'}\n"
+    )
+    sandbox = SandboxExecutor(executor='subprocess')
+    result = await sandbox.execute(
+        code, {'path': str(declared)}, extra_writable_dirs=[str(declared)]
+    )
+
+    assert result.ok is True, result.error
+    assert result.value['declared'] == 'WRITE-OK', result.isolation
 
