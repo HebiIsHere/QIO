@@ -366,6 +366,17 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      # build_sidecar.ps1 在 backend\.venv 里找不到 PyInstaller 时会退到
+      # `uv run --frozen --with pyinstaller`（CI 上没有预置 venv）——所以这里要先装 uv 并 sync，
+      # 与 frozen worker 任务同一套（第一次上线就是因为没装 uv 而红）。
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Sync backend dependencies from lock
+        working-directory: backend
+        run: uv sync --frozen --extra dev
       # 真 sidecar（PyInstaller onefile，约 1 分钟）：安装包里放的是真实后端，不是空占位。
       - name: Build the backend sidecar
         run: pwsh -File scripts/build_sidecar.ps1
