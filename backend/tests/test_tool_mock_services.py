@@ -332,3 +332,55 @@ def test_a_definition_without_mocks_keeps_the_old_behaviour():
     assert report.simulated is False
     assert report.outcomes[0].detail == "assertion passed"
     assert "模拟" not in report.summary
+
+class _RecordingSandbox:
+    """记录调用参数的沙箱替身：只关心「夹具目录有没有被声明为可写」。"""
+
+    def __init__(self, value: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self._value = value
+
+    async def execute(self, code, inputs, **kwargs):
+        self.calls.append(kwargs)
+        from agent.tools.sandbox import SandboxResult
+
+        return SandboxResult(
+            ok=True, value=self._value if self._value is not None else dict(inputs),
+            stdout="", stderr="",
+        )
+
+
+def test_the_mock_fixture_directory_is_declared_writable():
+    """夹具目录是父进程建的；工具必须能往里写报告。
+
+    低完整性降级（QIO_TOOL_LOW_INTEGRITY=1）生效时，没被声明为可写的目录会让工具写不进去 ——
+    那时 mock 服务只会看到「拿不到运行报告」。这条护栏钉住 tester → sandbox 的这条管道，
+    否则那个开关一打开就会静默丢掉报告（CI 上真发生过一次同类事故）。
+    """
+    definition = _weather_definition(
+        mocks=json.dumps(PLAN_JSON, ensure_ascii=False),
+        expected={"temp_c": 21, "status": 200, "credential": FIXTURE_CREDENTIAL},
+    )
+    sandbox = _RecordingSandbox()
+    asyncio.run(ToolTester(sandbox).run(definition))
+
+    assert sandbox.calls, "夹具声明了模拟服务，却一次都没调用沙箱"
+    declared = sandbox.calls[0].get("extra_writable_dirs")
+    assert declared, "夹具目录必须被声明为可写，否则工具写不进报告"
+    assert len(declared) == 1, declared
+    assert declared[0]
+
+
+def test_a_definition_without_mocks_declares_no_extra_writable_dirs():
+    """没有声明模拟服务时不许顺手把目录放开。"""
+    definition = ToolDefinition(
+        name="adder",
+        description="加法",
+        code="def run(**kwargs):\n    return {'sum': kwargs['a'] + kwargs['b']}\n",
+        tests=[{"name": "t", "input": {"a": 1, "b": 2}, "expect": {"sum": 3}}],
+    )
+    sandbox = _RecordingSandbox(value={"sum": 3})
+    report = asyncio.run(ToolTester(sandbox).run(definition))
+
+    assert report.passed is True, [o.detail for o in report.outcomes]
+    assert sandbox.calls[0].get("extra_writable_dirs") is None

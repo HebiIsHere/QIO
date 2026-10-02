@@ -1557,8 +1557,12 @@ Vite `127.0.0.1:5199`，独立数据目录，不碰用户的真实数据）。�
 
 - **Job Object**：内存 1 GiB、活动进程 32、`KILL_ON_JOB_CLOSE`。实测：超限分配 → `MemoryError`；连拉 5 个进程 →
   4 个 `WinError 1816 配额不足`；关句柄 → worker 与孙进程都不在了。
-- **低完整性（MIC）降级**：工具进程从 Medium 降到 Low。实测：对照组可写 `user_files` / QIO 数据目录，
-  降级后两者 `WRITE-DENIED PermissionError`，而打上 Low 标签的一次性目录仍可写。
+- **低完整性（MIC）降级 —— 默认关闭（`QIO_TOOL_LOW_INTEGRITY=1` 打开）**：机制本身实测有效
+  （对照组可写 `user_files` / QIO 数据目录，降级后两者 `WRITE-DENIED PermissionError`）。
+  **但它在 Windows CI（普通完整性 runner）上把 8 条用例打红了**：降级一旦真正生效，
+  工具连**自己的一次性 scratch 目录**与 mock 夹具目录都写不进去 —— 标签没有可核实的落地。
+  因此现在默认关闭，只在显式打开时启用；打开时会先**读回核实**标签，核实不了就跳过降级（fail-safe）。
+  「默认生效的真实强制」目前**只有 Job Object 这一层**。
 
 **仍然没做到的（明确写清，不改文案假装安全）**：网络**未隔离**；读**未隔离**（知道路径就能读）；
 AppContainer 本机被拒（`0x80070005`，需提权）；受限令牌启动路径需要改 sandbox 启动方式，留作下一阶段；

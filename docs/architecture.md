@@ -319,9 +319,11 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 - **Job Object**：本次调用的进程内存 1 GiB、活动进程 32、`KILL_ON_JOB_CLOSE`。
   实测：超限分配 → `MemoryError`；连拉 5 个进程 → 4 个 `WinError 1816 配额不足`；
   关句柄 → 该 Job 里的 worker 与孙进程全部消失。
-- **低完整性（MIC）降级**：工具进程从 Medium 降到 Low，写边界随完整性级别生效。
-  实测：对照组可写 `user_files` 与 QIO 数据目录，降级后两者 `WRITE-DENIED PermissionError`，
-  而打上 Low 标签的一次性工作目录仍可写。
+- **低完整性（MIC）降级 —— 默认关闭**（`QIO_TOOL_LOW_INTEGRITY=1` 打开）：写边界随完整性级别生效，
+  机制实测有效（对照组可写 `user_files` 与 QIO 数据目录，降级后两者 `WRITE-DENIED`）。
+  但它在**普通完整性**的 Windows runner 上会让工具连自己的一次性目录都写不进去（标签落地不可核实），
+  所以默认不开；打开时先读回核实标签，核实不了就 fail-safe 跳过。
+  **默认生效的内核强制只有 Job Object 这一层。**
 
 **仍然只靠「声明」的**——按策略拒绝高风险声明、剥离环境变量、限制超时与输出：
 

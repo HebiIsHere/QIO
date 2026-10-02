@@ -115,6 +115,12 @@ class ToolTester:
         execution: dict = {"interpreter": interpreter}
         if container_image:
             execution["container_image"] = container_image
+        if fixture is not None:
+            # 夹具目录是**父进程**建的，工具进程必须能往里写运行报告。
+            # 低完整性降级（`QIO_TOOL_LOW_INTEGRITY=1`）一旦生效，没被声明为可写的目录会让工具
+            # 写不进去 —— 那时「模拟服务」只会看到「拿不到运行报告」。把目录显式声明出去，
+            # 沙箱才会给它打上匹配的标签（或在核实不了时 fail-safe 地不降级）。
+            execution["extra_writable_dirs"] = [str(fixture.directory)]
         result = await self.sandbox.execute(
             definition.code,
             inputs,
