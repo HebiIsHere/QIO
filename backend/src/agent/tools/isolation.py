@@ -1,4 +1,4 @@
-"""工具子进程的真实强制隔离（Windows 内核能力）——以及**做不到什么**的诚实清单。
+﻿"""工具子进程的真实强制隔离（Windows 内核能力）——以及**做不到什么**的诚实清单。
 
 这个模块只做「操作系统真的会拦」的事，不做「策略上声明」的事。本机实测（2026-10-02，
 非提权普通账户 admin\\zxy）确认可用的两件事：
@@ -8,7 +8,8 @@
    * 活动进程数上限：超出后 CreateProcess 返回 WinError 1816（配额不足），fork 炸弹失效；
    * KILL_ON_JOB_CLOSE：QIO 进程退出（或被强杀）时，句柄关闭 → **整棵进程树由内核收掉**，
      不依赖 taskkill 有没有跑成功。
-2. **低完整性级别（Low IL，Windows MIC）**：把工具子进程的令牌完整性级别降到 Low 之后，
+2. **低完整性级别（Low IL，Windows MIC）——默认关闭，`QIO_TOOL_LOW_INTEGRITY=1` 打开**：
+   把工具子进程的令牌完整性级别降到 Low 之后，
    它对**标记为 Medium 及以上的对象没有写权限** —— 用户文件、QIO 数据目录（由正常权限的
    QIO 进程创建）都写不进去；副作用是**读仍然可以**（MIC 只管写向上）。本机实测：
    同一段代码在降级前 user_files/qio_data 写入成功，降级后 PermissionError。
@@ -49,8 +50,12 @@ logger = logging.getLogger(__name__)
 
 WINDOWS = sys.platform == "win32"
 
-# 关掉低完整性降级的逃生开关（支持/回滚用；默认开启）。
-DISABLE_ENV = "QIO_TOOL_LOW_INTEGRITY"
+# 低完整性降级的开关。**默认关闭**：CI（windows-latest）实测证明降级一旦生效，
+# 工具的 scratch 目录与 mock 夹具目录都写不进去 —— 标签没有得到可核实的落地。
+# 默认只保留 Job Object 这一项真实强制（它不受写权限影响）。
+# 置为 1/true/on/yes 才打开；打开时也会**先核实标签真的打上**，核实不了就不降级。
+LOW_INTEGRITY_ENV = "QIO_TOOL_LOW_INTEGRITY"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Job Object 上限。取「远高于正常工具、远低于吃光整机」的值：
 # 单个工具进程最多 1 GiB 内存、最多同时 32 个进程（含它自己拉起的子进程）。
@@ -179,6 +184,16 @@ if WINDOWS:  # pragma: no cover - 平台分支
         wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
     ]
+    _advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    _advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(wintypes.DWORD),
+    ]
+    _k32.LocalFree.argtypes = [ctypes.c_void_p]
+    _k32.LocalFree.restype = ctypes.c_void_p
 
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _LIMIT_ACTIVE_PROCESS = 0x00000008
@@ -202,15 +217,14 @@ if WINDOWS:  # pragma: no cover - 平台分支
 
 
 def supported() -> bool:
-    """当前平台能不能给出**强制**隔离（不是声明）。"""
-    if not WINDOWS:
-        return False
-    return _env_disabled() is False
+    """当前平台能不能给出**强制**隔离（不是声明）。Job Object 是默认生效的那一项。"""
+    return WINDOWS
 
 
-def _env_disabled() -> bool:
-    value = (os.environ.get(DISABLE_ENV) or "").strip().lower()
-    return value in {"0", "false", "no", "off"}
+def low_integrity_enabled() -> bool:
+    """低完整性降级是否被显式打开（默认关；见 LOW_INTEGRITY_ENV）。"""
+    value = (os.environ.get(LOW_INTEGRITY_ENV) or "").strip().lower()
+    return value in _TRUTHY
 
 
 def _job_limits() -> dict[str, Any]:
@@ -318,9 +332,41 @@ def _set_low_integrity(pid: int) -> None:
             _k32.CloseHandle(token)
 
 
+def integrity_label_of(path: str) -> str:
+    """读回一个路径的强制标签（SDDL 片段）。读不到就回空串 —— 这是核实用的。
+
+    「调用返回 0」不等于「标签真的落上了」（CI 上就这么翻过一次车：以为打上了，
+    结果工具连自己的 scratch 都写不进去）。所以这里读回来自己看。
+    """
+    sd = ctypes.c_void_p()
+    code = _advapi.GetNamedSecurityInfoW(
+        str(path), _SE_FILE_OBJECT, _LABEL_SECURITY_INFORMATION,
+        None, None, None, None, ctypes.byref(sd),
+    )
+    if code != 0 or not sd.value:
+        return ""
+    try:
+        text = wintypes.LPWSTR()
+        length = wintypes.DWORD(0)
+        ok = _advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd, _SDDL_REVISION_1, _LABEL_SECURITY_INFORMATION,
+            ctypes.byref(text), ctypes.byref(length),
+        )
+        return str(text.value) if ok and text.value else ""
+    finally:
+        _k32.LocalFree(sd)
+
+
+def label_is_low(sddl_text: str) -> bool:
+    """SDDL 片段里是不是低完整性（LW 或 S-1-16-4096）。对外公开：测试用它判断环境。"""
+    text = sddl_text or ""
+    return "S-1-16-4096" in text or ";LW" in text or ";;LW)" in text
+
+
 def label_low(path: str) -> str:
-    """给目录打低完整性标签（含继承），返回使用的办法：sddl / icacls / 空。"""
+    """给目录打低完整性标签（含继承）并**读回核实**；返回办法：sddl / icacls / 空。"""
     descriptor = ctypes.c_void_p()
+    applied = ""
     if _advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
         _LOW_LABEL_SDDL, _SDDL_REVISION_1, ctypes.byref(descriptor), None
     ):
@@ -330,32 +376,46 @@ def label_low(path: str) -> str:
                 None, None, None, descriptor,
             )
             if code == 0:
-                return "sddl"
+                applied = "sddl"
         finally:
             _k32.LocalFree(descriptor)
-    # 回退：icacls 同时把**已存在**的子文件一起打上标签（/T）。
-    try:
-        done = subprocess.run(
-            ["icacls", str(path), "/setintegritylevel", "(OI)(CI)L", "/T"],
-            capture_output=True, timeout=30,
-        )
-        if done.returncode == 0:
-            return "icacls"
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return ""
+    if not applied or not label_is_low(integrity_label_of(path)):
+        # 回退：icacls 同时把**已存在**的子文件一起打上标签（/T）。
+        try:
+            done = subprocess.run(
+                ["icacls", str(path), "/setintegritylevel", "(OI)(CI)L", "/T"],
+                capture_output=True, timeout=30,
+            )
+            if done.returncode == 0:
+                applied = "icacls"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if not label_is_low(integrity_label_of(path)):
+        return ""
+    return applied
 
 
 # --------------------------------------------------------------------------
 # 对外接口
 # --------------------------------------------------------------------------
 
-def harden(process, *, scratch_dir: str | None = None, policy: Any = None) -> IsolationOutcome:
+def harden(
+    process,
+    *,
+    scratch_dir: str | None = None,
+    policy: Any = None,
+    extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
+) -> IsolationOutcome:
     """给刚创建的工具子进程加真实强制隔离。**永远不抛异常**。
 
-    * Job Object：内存 / 活动进程数上限 + 关句柄即收整棵树；
-    * 低完整性降级：工具写不进用户文件与 QIO 数据目录（读不受影响）；
-      当工具显式声明了文件系统能力时跳过（它被批准在工作区外写文件）。
+    * Job Object：内存 / 活动进程数上限 + 关句柄即收整棵树（**默认生效**）；
+    * 低完整性降级（**默认关闭**，`QIO_TOOL_LOW_INTEGRITY=1` 打开）：工具写不进用户文件
+      与 QIO 数据目录（读不受影响）。打开时：
+      - 先把 `scratch_dir` 与 `extra_writable_dirs`（调用方声明的「工具合法需要写」的目录，
+        例如 mock 夹具目录）都打上低标签**并读回核实**；
+      - 任何一个核实不了 → **跳过降级**（fail-safe）：宁可少一层写边界，
+        也不能让工具连自己的 scratch 都写不进去；
+      - 工具显式声明了文件系统能力（policy.filesystem 非空）时同样跳过。
 
     返回的 outcome 会跟 SandboxResult 一起交出去，失败/跳过都带原因。
     """
@@ -387,25 +447,36 @@ def harden(process, *, scratch_dir: str | None = None, policy: Any = None) -> Is
         logger.debug("job object hardening failed for pid=%s: %s", pid, exc)
 
     declared_filesystem = bool(getattr(policy, "filesystem", None)) if policy else False
-    if _env_disabled():
+    writable = [str(item) for item in (extra_writable_dirs or []) if item]
+    if scratch_dir:
+        writable.insert(0, str(scratch_dir))
+    if not low_integrity_enabled():
+        # 默认关闭：CI 上降级一旦生效，工具连自己的 scratch 与 mock 夹具都写不进去。
         problems.append(
-            f"低完整性降级被 {DISABLE_ENV} 关掉（显式逃生开关，保护面缩小）"
+            f"低完整性降级默认关闭（置 {LOW_INTEGRITY_ENV}=1 打开；打开前会先核实标签）"
         )
     elif declared_filesystem:
         # 工具被批准在工作区外写文件：降级只会让它以权限错误失败，不做。
         problems.append("工具声明了文件系统能力，未做低完整性降级（job limits 仍然生效）")
     else:
-        if scratch_dir:
-            how = label_low(scratch_dir)
-            if not how:
-                # 标不上标签仍然降级：安全属性优先；工具自己的目录写不了会在结果里显形。
-                problems.append("临时目录打低完整性标签失败（工具可能写不了自己的工作目录）")
-        try:
-            _set_low_integrity(int(pid))
-            mechanisms.append(_MECHANISM_LOW_IL)
-        except Exception as exc:  # noqa: BLE001 - 同上
-            problems.append(f"low_integrity: {exc}")
-            logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
+        # 只有「所有需要可写的目录都**核实**为低标签」才降级：
+        # 核实不了就不降级（fail-safe）—— 宁可少一层写边界，也不能让工具连 scratch 都写不了。
+        unlabelled: list[str] = []
+        for path in writable:
+            if not label_low(path):
+                unlabelled.append(path)
+        if unlabelled:
+            problems.append(
+                "低完整性降级已跳过：以下目录没能核实为低标签，降级会让工具写不进去 "
+                + "，".join(unlabelled)
+            )
+        else:
+            try:
+                _set_low_integrity(int(pid))
+                mechanisms.append(_MECHANISM_LOW_IL)
+            except Exception as exc:  # noqa: BLE001 - 同上
+                problems.append(f"low_integrity: {exc}")
+                logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
 
     if not mechanisms:
         return IsolationOutcome(applied=False, detail="没有可用的强制隔离机制", problems=tuple(problems))
