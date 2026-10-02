@@ -257,6 +257,62 @@ def registry_write_probe(tag: str = "registry-write-probe") -> tuple[bool, str]:
     return False, (text[-200:] or "未知原因")
 
 
+def _wait_registry_settled(*, timeout: float = 30.0, interval: float = 0.5,
+                           tag: str = "uninstall-registry-settle") -> dict:
+    """等卸载**真的**做完再读注册表；返回等待证据（等了多久、第几次轮询读到干净）。
+
+    为什么需要（2026-10-03 复核 run 37058622003）：`uninstall.exe /S` 会把自己复制到临时目录再执行，
+    原进程**提前返回**，真正的卸载在另一个进程里继续跑。于是「安装目录已经没了、注册表还没清」会被
+    读成 FAIL —— 而 A-092（控制面板登记，主卸载脚本删的）与 A-093（安装信息，POSTUNINSTALL 钩子删的）
+    **同时**不干净，正是这个时序特征的指纹，不是「钩子慢几毫秒」。
+
+    判据与断言一致：UNINSTALLKEY 消失 **且** MANUPRODUCTKEY 的安装位置默认值消失。超时**不算通过**：
+    返回 clean=False 与超时那一刻还剩下什么，由调用方原样判 FAIL（重试不许把真失败洗成绿）。
+    """
+    script = (
+        "$deadline = (Get-Date).AddSeconds(%s);"
+        "$i = 0; $cleanAt = 0; $unPresent = $true; $loc = '';"
+        "while ($true) {"
+        "  $i++;"
+        "  $unPresent = Test-Path 'HKCU:\\%s';"
+        "  $loc = [string]((Get-ItemProperty 'HKCU:\\%s' -Name '(default)' "
+        "    -ErrorAction SilentlyContinue).'(default)');"
+        "  if ((-not $unPresent) -and ($loc -eq '')) { $cleanAt = $i; break }"
+        "  if ((Get-Date) -ge $deadline) { break }"
+        "  Start-Sleep -Milliseconds %s"
+        "};"
+        "[pscustomobject]@{ polls=$i; clean_at=$cleanAt; uninstall_key_present=[bool]$unPresent;"
+        " install_location=$loc } | ConvertTo-Json -Compress"
+        % (int(timeout), UNINSTALL_KEY, MANUPRODUCT_KEY, int(interval * 1000))
+    )
+    started = time.time()
+    code, out = powershell(script, tag=tag)
+    waited = time.time() - started
+    data: dict = {}
+    for line in reversed((out or "").splitlines()):
+        text = line.strip()
+        if text.startswith("{"):
+            try:
+                data = json.loads(text)
+                break
+            except ValueError:
+                continue
+    location = str(data.get("install_location") or "").strip()
+    clean = bool(data.get("clean_at")) and not data.get("uninstall_key_present") and not location
+    result = {
+        "clean": clean,
+        "waited_seconds": round(waited, 2),
+        "polls": data.get("polls"),
+        "clean_at_poll": data.get("clean_at") or None,
+        "uninstall_key_present": data.get("uninstall_key_present"),
+        "install_location_value": location or None,
+        "timeout_seconds": timeout,
+        "poll_interval_seconds": interval,
+    }
+    evidence("registry-settle-%d" % int(started * 1000), json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 def step_install_registry(args) -> None:
     """安装信息必须真的写进注册表：控制面板登记 + 安装位置记录。"""
     writable, why = registry_write_probe()
@@ -316,6 +372,8 @@ def step_seed_user_state(args) -> bool:
 
 def step_uninstall_registry(args, seeded: bool) -> None:
     """卸载必须清掉**安装信息**，并且**保留用户状态**（DbBaseline）。"""
+    # 与 A-092 同一份等待证据（若已经干净会立刻返回）：拒绝在卸载还没做完时下断言。
+    settled = _wait_registry_settled(tag="uninstall-registry-settle-install-info")
     writable, why = registry_write_probe("registry-write-probe-after-uninstall")
     manu_key = _registry_dump(MANUPRODUCT_KEY, "registry-manuproduct-after-uninstall")
     uninstall_key = _registry_dump(UNINSTALL_KEY, "registry-uninstall-after-uninstall")
@@ -340,9 +398,15 @@ def step_uninstall_registry(args, seeded: bool) -> None:
         problems.append("安装位置默认值仍在：%r" % manu_key["(default)"])
     if "Installer Language" in manu_key:
         problems.append("Installer Language 仍在（安装向导语言属于安装信息）")
+    timing = "等待 %.2fs / %s 次轮询" % (settled["waited_seconds"], settled["polls"])
+    timing += (
+        "（超时 %ss，注册表始终没干净）" % settled["timeout_seconds"]
+        if not settled["clean"]
+        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"],
+    )
     record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "FAIL" if problems else "PASS",
-           "；".join(problems) if problems else
-           "安装位置与 Installer Language 都已清掉；键内剩余值：%s" % sorted(manu_key))
+           ("；".join(problems) + "；" if problems else
+            "安装位置与 Installer Language 都已清掉；键内剩余值：%s；" % sorted(manu_key)) + timing)
 
     if seeded:
         kept = str(manu_key.get(USER_STATE_VALUE) or "")
@@ -884,6 +948,32 @@ def _backend_pids_by_path(install_dir) -> list[int]:
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
 
+def _wait_sidecar_gone(install_dir, *, timeout: float = 30.0, interval: float = 0.5) -> dict:
+    """等安装目录里的 sidecar 被卸载器收掉（PREUNINSTALL 钩子负责收）。
+
+    A-095 的语义不变：超时后仍然留下进程就是 FAIL。这里只是把「等到稳定」的过程与证据记下来
+    （按路径枚举、按 PID 收；绝不按镜像名杀）。
+    """
+    started = time.time()
+    polls = 0
+    left: list[int] = []
+    while True:
+        polls += 1
+        left = _backend_pids_by_path(install_dir)
+        if not left or time.time() - started >= timeout:
+            break
+        time.sleep(interval)
+    result = {
+        "gone": not left,
+        "waited_seconds": round(time.time() - started, 2),
+        "polls": polls,
+        "left_pids": left,
+        "timeout_seconds": timeout,
+    }
+    evidence("sidecar-settle", json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 def ensure_backend_stopped(args, tag: str) -> bool:
     """卸载/重装前的硬前置：安装目录里的后端必须**真的**停下。
 
@@ -1034,11 +1124,24 @@ def step_uninstall(args):
            "exit=%s 残留：%s" % (code, still))
     record("A-091", "卸载保留用户数据（未勾选删除数据）", "PASS" if after == before and before else "FAIL",
            "数据目录 %s -> %s" % (before, after))
-    code, out2 = powershell("if (Test-Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QIO') "
-                            "{ 'STILL PRESENT' } else { 'REMOVED' }", tag="uninstall-registry")
-    record("A-092", "卸载后卸载注册表项被移除", "PASS" if "REMOVED" in out2 else "WARN",
-           out2.strip()[:120] + "（本会话子进程是受限令牌：安装器的 WriteRegStr 与卸载器的 DeleteRegKey "
-           "都 ACCESS_DENIED 且静默失败 —— 所以这一项在本机**无法**验证，不是产品结论）")
+    # 卸载器会把自己复制到临时目录再执行、原进程提前返回 —— 读到「还没清」之前必须等它真的做完。
+    settled = _wait_registry_settled()
+    writable, why = registry_write_probe("registry-write-probe-after-uninstall")
+    timing = "等待 %.2fs / %s 次轮询" % (settled["waited_seconds"], settled["polls"])
+    timing += (
+        "（超时 %ss，注册表始终没干净）" % settled["timeout_seconds"]
+        if not settled["clean"]
+        else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"],
+    )
+    if not writable:
+        # 本机：子进程写不了注册表，安装器当初可能根本没写进去 —— 「STILL PRESENT」不能当产品结论。
+        record("A-092", "卸载后卸载注册表项被移除", "WARN",
+               "**NOT VERIFIED**：本会话子进程写不了注册表（%s），安装器的 WriteRegStr 会静默失败，"
+               "读到的值不代表产品行为。%s" % (why, timing))
+    else:
+        present = bool(settled["uninstall_key_present"])
+        detail = ("控制面板登记 UNINSTALLKEY 仍在；" if present else "UNINSTALLKEY 已移除；") + timing
+        record("A-092", "卸载后卸载注册表项被移除", "FAIL" if present else "PASS", detail)
 
 
 def step_restore(args):
@@ -1186,9 +1289,12 @@ def main() -> int:
             step_uninstall(args)
             step_uninstall_registry(args, seeded)
             if args.uninstall_with_running_backend:
-                left = _backend_pids_by_path(args.install_dir)
+                sidecar = _wait_sidecar_gone(args.install_dir)
+                left = sidecar["left_pids"]
                 record("A-095", "卸载器自己收掉了还在跑的 sidecar", "PASS" if not left else "FAIL",
-                       "卸载后按路径枚举：%s" % (left or "无残留进程"))
+                       "卸载后按路径枚举：%s；等待 %.2fs / %s 次轮询%s" % (
+                           left or "无残留进程", sidecar["waited_seconds"], sidecar["polls"],
+                           "" if sidecar["gone"] else "（超时 %ss 仍在）" % sidecar["timeout_seconds"]))
                 for pid in left:  # 兜底：绝不给机器留孤儿
                     run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="cleanup-orphan")
         if "restore" in stages:
