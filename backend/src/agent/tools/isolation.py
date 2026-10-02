@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -384,6 +385,89 @@ def label_is_low(sddl_text: str) -> bool:
     return has_label_ace and has_low
 
 
+_TH32CS_SNAPPROCESS = 0x00000002
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ('dwSize', wintypes.DWORD),
+        ('cntUsage', wintypes.DWORD),
+        ('th32ProcessID', wintypes.DWORD),
+        ('th32DefaultHeapID', ctypes.c_void_p),
+        ('th32ModuleID', wintypes.DWORD),
+        ('cntThreads', wintypes.DWORD),
+        ('th32ParentProcessID', wintypes.DWORD),
+        ('pcPriClassBase', ctypes.c_long),
+        ('dwFlags', wintypes.DWORD),
+        ('szExeFile', wintypes.WCHAR * 260),
+    ]
+
+
+def _child_processes(parents: set) -> set:
+    snapshot = _k32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return set()
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        found = set()
+        ok = _k32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID in parents:
+                found.add(int(entry.th32ProcessID))
+            ok = _k32.Process32NextW(snapshot, ctypes.byref(entry))
+        return found
+    finally:
+        _k32.CloseHandle(snapshot)
+
+
+def _harden_tree(root_pid: int, job: int, problems: list[str]) -> tuple:
+    """把 worker **以及整棵后代**降级 + 指派进 job + 读回核实，直到收敛。
+
+    为什么：Windows 上 `sys.executable` 可能是 uv 的 trampoline（.venv\\Scripts\\python.exe
+    先起一个真解释器再转发参数），**工具代码跑在子进程里**；只处理被 spawn 的那一个 pid
+    等于两层强制全部落空（CI 实测：工具以普通完整性跑完，能写用户目录）。
+
+    递归：每轮把新发现的后代加入已知集合，直到连续若干轮没有新进程（trampoline 可能不止一层）；
+    时间上仍然安全 —— sandbox 把请求写进 stdin 之后工具代码才会执行，这一步远早于它。
+
+    返回 (处理过的 pid 列表, 核实失败的 pid 列表)。
+    """
+    handled: list[int] = []
+    failed: list[int] = []
+    known = {int(root_pid)}
+    idle = 0
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        fresh = _child_processes(known) - known
+        if fresh:
+            idle = 0
+        else:
+            idle += 1
+            if idle >= 5:  # 连续 5 轮（约 100ms）没有新进程：认为收敛
+                break
+        for pid in fresh:
+            known.add(pid)
+            try:
+                _set_low_integrity(pid)
+                if job:
+                    _assign_job(job, pid)
+                handled.append(pid)
+            except Exception as exc:  # noqa: BLE001 - 单个后代失败不放弃整棵树
+                problems.append(f"后代进程 {pid} 未能纳入隔离：{exc}")
+                failed.append(pid)
+        time.sleep(0.02)
+
+    for pid in handled:
+        actual = integrity_of_process(pid)
+        if actual != LOW_INTEGRITY_SID:
+            problems.append(
+                f"后代进程 {pid} 降级后读回令牌是 {actual or '读不到'}，按未降级处理"
+            )
+            failed.append(pid)
+    return handled, failed
+
+
 def label_low(path: str) -> str:
     """给目录打低完整性标签（含继承）并**读回核实**；成功返回 "icacls"，否则回空串。
 
@@ -488,19 +572,27 @@ def harden(
         else:
             try:
                 _set_low_integrity(int(pid))
-                # C5：声明「这次是低完整性执行」之前，必须**读回子进程令牌**确认真的降了；
-                # 只是 SetTokenInformation 返回成功不算 —— 实际状态必须与 label 一致。
+            except Exception as exc:  # noqa: BLE001 - 同上
+                problems.append(f"low_integrity: {exc}")
+                logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
+            else:
+                # 关键：真正跑工具代码的进程可能**不是**我们 spawn 的那个（uv trampoline 会再起
+                # 一个真解释器）。整棵后代都要降级 + 进 job，并且逐个读回核实。
+                _handled, failed = _harden_tree(int(pid), job, problems)
+                # C5：只有当 worker 与**所有**已发现的后代都核实为 Low 时，才允许声称低完整性。
                 actual = integrity_of_process(int(pid))
                 if actual != LOW_INTEGRITY_SID:
                     problems.append(
                         f"low_integrity: 降级后读回令牌仍是 {actual or '读不到'}，"
                         "按未降级处理（不声称低完整性）"
                     )
+                elif failed:
+                    problems.append(
+                        "low_integrity: 有后代进程未能核实为低完整性（见上面的原因），"
+                        "按未降级处理（不声称低完整性）"
+                    )
                 else:
                     mechanisms.append(_MECHANISM_LOW_IL)
-            except Exception as exc:  # noqa: BLE001 - 同上
-                problems.append(f"low_integrity: {exc}")
-                logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
 
     if not mechanisms:
         return IsolationOutcome(applied=False, detail="没有可用的强制隔离机制", problems=tuple(problems))

@@ -575,3 +575,78 @@ async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeyp
         assert result.value['qio'] == 'WRITE-DENIED', result.isolation
         assert not (user_dir / 'probe.txt').exists()
         assert not (qio_dir / 'probe.txt').exists()
+# 工具侧自检片段：真实执行工具代码的进程自己报 pid / 完整性 / 是否在 job 里。
+_SELF_REPORT = (
+    'import ctypes, os\n'
+    'from ctypes import wintypes\n'
+    'def _self():\n'
+    "    adv = ctypes.WinDLL('advapi32'); k32 = ctypes.WinDLL('kernel32')\n"
+    '    adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]\n'
+    '    adv.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]\n'
+    '    adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]\n'
+    '    k32.GetCurrentProcess.restype = wintypes.HANDLE\n'
+    '    k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]\n'
+    '    token = wintypes.HANDLE()\n'
+    '    adv.OpenProcessToken(k32.GetCurrentProcess(), 8, ctypes.byref(token))\n'
+    '    buf = ctypes.create_string_buffer(64); size = wintypes.DWORD(0)\n'
+    '    adv.GetTokenInformation(token, 25, buf, 64, ctypes.byref(size))\n'
+    '    sid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p)).contents.value\n'
+    '    text = ctypes.c_wchar_p()\n'
+    '    adv.ConvertSidToStringSidW(ctypes.c_void_p(sid), ctypes.byref(text))\n'
+    '    in_job = wintypes.BOOL()\n'
+    '    k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))\n'
+    "    return {'pid': os.getpid(), 'integrity': text.value, 'in_job': bool(in_job.value), 'ppid': os.getppid()}\n"
+)
+
+
+@WINDOWS_ONLY
+async def test_the_process_that_runs_tool_code_is_the_one_we_hardened(tmp_path, monkeypatch):
+    """C5 的核心：真正执行工具代码的 pid 必须已经是 Low、并且进了 job。
+
+    这条专门盯 uv trampoline：sandbox spawn 的是转发进程，工具代码跑在它起的子进程里，
+    只降级转发进程时，真正干活的进程两层都逃逸（CI 实测过）。
+    """
+    _enable_low_integrity(monkeypatch)
+    code = _SELF_REPORT + (
+        'def run(**kwargs):\n'
+        '    return _self()\n'
+    )
+    result = await _run(code)
+
+    assert result.ok is True, result.error
+    info = result.isolation or {}
+    mechanisms = info.get('mechanisms', [])
+    assert result.value['pid'] != os.getpid(), '工具必须跑在独立进程里'
+    print('[tool-process]', result.value, '| mechanisms=', mechanisms)
+
+    if 'low_integrity' in mechanisms:
+        assert result.value['integrity'] == isolation.LOW_INTEGRITY_SID, (
+            '声称低完整性，但真正跑工具代码的进程是 '
+            + str(result.value['integrity'])
+            + f' (pid={result.value["pid"]}, 父进程={result.value["ppid"]})；'
+            '说明降级落在转发进程上、真正干活的进程逃逸了'
+        )
+    if 'job_object' in mechanisms:
+        assert result.value['in_job'] is True, '声称 job 强制，但工具进程不在任何 job 里'
+
+
+@WINDOWS_ONLY
+def test_low_integrity_is_not_claimed_when_a_process_cannot_be_verified(tmp_path, monkeypatch):
+    """核实不到就不许声称（C5）：读回永远不是 Low 时，机制里不能有 low_integrity。"""
+    _enable_low_integrity(monkeypatch)
+    target = tmp_path / 'scratch'
+    target.mkdir()
+    monkeypatch.setattr(
+        isolation, 'integrity_of_process', lambda pid: isolation.MEDIUM_INTEGRITY_SID
+    )
+    process = _spawn_sleeper()
+    try:
+        outcome = isolation.harden(process, scratch_dir=str(target), policy=None)
+
+        assert outcome.applied is True, outcome
+        assert 'low_integrity' not in outcome.mechanisms, outcome.problems
+        assert any('按未降级处理' in problem for problem in outcome.problems), outcome.problems
+        assert 'low_integrity' not in outcome.detail
+    finally:
+        isolation.release(process)
+        _kill(process)
