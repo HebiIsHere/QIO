@@ -205,6 +205,201 @@ class SseReader:
 
 # ---------------------------------------------------------------- 步骤
 
+MANUPRODUCT_KEY = r"Software\qio\QIO"
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\QIO"
+# 这个键下不属于「安装信息」的值：后端写的数据库身份基线（用户状态）。
+# 卸载必须保留它 —— 这是「安装信息 vs 用户数据」这条边界的可执行断言。
+USER_STATE_VALUE = "DbBaseline"
+
+
+def _registry_dump(key: str, tag: str) -> dict:
+    """把一个 HKCU 键下的值读成 dict（**读**注册表沙箱允许）。键不存在返回 {}。"""
+    script = (
+        "$k='HKCU:\\%s';"
+        "if (-not (Test-Path $k)) { Write-Output '__ABSENT__' } else {"
+        "  $o = [ordered]@{};"
+        "  (Get-ItemProperty $k).PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } |"
+        "    ForEach-Object { $o[$_.Name] = [string]$_.Value };"
+        "  $o | ConvertTo-Json -Compress }" % key
+    )
+    code, out = powershell(script, tag=tag)
+    text = out.strip()
+    if not text or text == "__ABSENT__":
+        return {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def registry_write_probe(tag: str = "registry-write-probe") -> tuple[bool, str]:
+    """**子进程**能不能写注册表 —— 这是判定的前提，不是跳过检查的借口。
+
+    本会话给子进程的是受限令牌，安装器的 WriteRegStr 与卸载器的 DeleteRegKey
+    都会静默 ACCESS_DENIED。能写就必须给 PASS/FAIL；不能写就必须写 NOT VERIFIED，
+    绝不允许把"没验"写成"通过"。
+    """
+    key = r"Software\qio-e2e-probe"
+    script = (
+        "$ErrorActionPreference='Continue';"
+        "try {"
+        "  New-Item -Path 'HKCU:\\%s' -Force -ErrorAction Stop | Out-Null;"
+        "  Set-ItemProperty -Path 'HKCU:\\%s' -Name probe -Value 'x' -ErrorAction Stop;"
+        "  Remove-Item 'HKCU:\\%s' -Recurse -Force -ErrorAction SilentlyContinue;"
+        "  Write-Output 'WRITABLE'"
+        "} catch { Write-Output ('DENIED: ' + $_.Exception.Message) }" % (key, key, key)
+    )
+    code, out = powershell(script, tag=tag)
+    text = out.strip()
+    if "WRITABLE" in text:
+        return True, "子进程可以写 HKCU"
+    return False, (text[-200:] or "未知原因")
+
+
+def step_install_registry(args) -> None:
+    """安装信息必须真的写进注册表：控制面板登记 + 安装位置记录。"""
+    writable, why = registry_write_probe()
+    uninstall_key = _registry_dump(UNINSTALL_KEY, "registry-uninstall-key")
+    manu_key = _registry_dump(MANUPRODUCT_KEY, "registry-manuproduct-key")
+    evidence(
+        "registry-after-install",
+        json.dumps(
+            {"child_can_write_registry": writable, "probe": why,
+             "uninstall_key": uninstall_key, "manuproduct_key": manu_key},
+            ensure_ascii=False, indent=2),
+    )
+    if not writable:
+        record("A-023", "安装信息写入注册表（控制面板登记 + 安装位置）", "WARN",
+               "**NOT VERIFIED**：本会话子进程写不了注册表（%s），安装器的 WriteRegStr 会静默失败，"
+               "本机既不能判通过也不能判失败 —— 必须在真机/CI（有桌面会话）上验证" % why)
+        return
+    problems = []
+    location = str(uninstall_key.get("InstallLocation") or "").strip('"')
+    if location.lower() != str(Path(args.install_dir)).lower():
+        problems.append("InstallLocation=%r 期望 %r" % (location, args.install_dir))
+    if not str(uninstall_key.get("DisplayVersion") or ""):
+        problems.append("没有 DisplayVersion（控制面板里看不到版本）")
+    recorded = str(manu_key.get("(default)") or "")
+    if recorded.lower() != str(Path(args.install_dir)).lower():
+        problems.append("%s 默认值=%r 期望 %r（下次安装会还原到它）" % (MANUPRODUCT_KEY, recorded, args.install_dir))
+    record("A-023", "安装信息写入注册表（控制面板登记 + 安装位置）", "FAIL" if problems else "PASS",
+           "；".join(problems) if problems else
+           "InstallLocation=%s DisplayVersion=%s %s=%s" % (
+               location, uninstall_key.get("DisplayVersion"), MANUPRODUCT_KEY, recorded))
+
+
+def step_seed_user_state(args) -> bool:
+    """卸载前放一个**合成的** DbBaseline，用来验证"卸载不会顺手删用户状态"。
+
+    只在注册表可写时放（真机/CI）。值里带 e2e 标记，避免与真实基线混淆；
+    断言结束后立刻删掉，恢复原状。返回"是否真的放了"。
+    """
+    writable, why = registry_write_probe("registry-write-probe-seed")
+    if not writable:
+        return False
+    value = '{"e2e": "install_e2e", "note": "synthetic DbBaseline"}'
+    script = (
+        "$ErrorActionPreference='Continue';"
+        "if (-not (Test-Path 'HKCU:\\%s')) { New-Item -Path 'HKCU:\\%s' -Force | Out-Null };"
+        "Set-ItemProperty -Path 'HKCU:\\%s' -Name '%s' -Value '%s';"
+        "Write-Output 'SEEDED'"
+        % (MANUPRODUCT_KEY, MANUPRODUCT_KEY, MANUPRODUCT_KEY, USER_STATE_VALUE, value)
+    )
+    code, out = powershell(script, tag="seed-user-state")
+    seeded = "SEEDED" in out
+    record("A-092a", "卸载前放入合成用户状态（DbBaseline）", "PASS" if seeded else "WARN",
+           "已写入合成 DbBaseline（断言后会删除，恢复原状）" if seeded
+           else "写不进去（%s）—— A-094 只能记 NOT VERIFIED" % out.strip()[-160:])
+    return seeded
+
+
+def step_uninstall_registry(args, seeded: bool) -> None:
+    """卸载必须清掉**安装信息**，并且**保留用户状态**（DbBaseline）。"""
+    writable, why = registry_write_probe("registry-write-probe-after-uninstall")
+    manu_key = _registry_dump(MANUPRODUCT_KEY, "registry-manuproduct-after-uninstall")
+    uninstall_key = _registry_dump(UNINSTALL_KEY, "registry-uninstall-after-uninstall")
+    evidence(
+        "registry-after-uninstall",
+        json.dumps(
+            {"child_can_write_registry": writable, "probe": why, "seeded": seeded,
+             "uninstall_key": uninstall_key, "manuproduct_key": manu_key},
+            ensure_ascii=False, indent=2),
+    )
+    if not writable:
+        record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "WARN",
+               "**NOT VERIFIED**：本会话子进程写不了注册表（%s），卸载器的 DeleteRegKey / "
+               "DeleteRegValue 会静默失败，本机无法判定。修复本身由 release_gate.py 的 "
+               "uninstall.contract 静态契约在 CI 上守着" % why)
+        record("A-094", "卸载保留用户状态（DbBaseline 不被顺手删掉）", "WARN",
+               "**NOT VERIFIED**：同上 —— 本机读得到注册表，但装/卸两边都写不进去，断言没有意义")
+        return
+
+    problems = []
+    if manu_key.get("(default)"):
+        problems.append("安装位置默认值仍在：%r" % manu_key["(default)"])
+    if "Installer Language" in manu_key:
+        problems.append("Installer Language 仍在（安装向导语言属于安装信息）")
+    record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "FAIL" if problems else "PASS",
+           "；".join(problems) if problems else
+           "安装位置与 Installer Language 都已清掉；键内剩余值：%s" % sorted(manu_key))
+
+    if seeded:
+        kept = str(manu_key.get(USER_STATE_VALUE) or "")
+        record("A-094", "卸载保留用户状态（DbBaseline 不被顺手删掉）",
+               "PASS" if "install_e2e" in kept else "FAIL",
+               "合成 DbBaseline 卸载后仍在" if "install_e2e" in kept
+               else "合成 DbBaseline 被卸载删掉了 —— 卸载动了用户状态（%r）" % kept[:80])
+    else:
+        record("A-094", "卸载保留用户状态（DbBaseline 不被顺手删掉）", "WARN",
+               "**NOT VERIFIED**：没能放入合成 DbBaseline（注册表不可写），本机无法断言")
+
+    # 恢复原状：把合成值删掉（reg import 是合并语义，不会替我们清掉它）
+    cleanup = (
+        "$ErrorActionPreference='Continue';"
+        "try { Remove-ItemProperty -Path 'HKCU:\\%s' -Name '%s' -ErrorAction Stop;"
+        " Write-Output 'CLEANED' } catch { Write-Output ('CLEANUP-FAILED: ' + $_.Exception.Message) }"
+        % (MANUPRODUCT_KEY, USER_STATE_VALUE)
+    )
+    code, out = powershell(cleanup, tag="cleanup-user-state")
+    if "CLEANED" not in out:
+        record("A-094b", "清理合成用户状态", "WARN", out.strip()[-160:])
+
+
+def _port_open(port: int) -> bool:
+    """端口上有没有人在听。
+
+    存在的理由（2026-10-02 实测踩到）：这台机器上多个 agent 会同时跑同一份 E2E，
+    默认端口一撞，"健康检查"就会被**别人的后端**答上来 —— 后面每一条断言都在
+    验错的对象，却看起来全绿。宁可开局就红，也不要一份验错对象的报告。
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.6)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _free_port(start: int, limit: int = 20) -> int:
+    """从 start 起挑第一个空闲端口（假厂商是测试替身，端口随便挑，不占别人的配额）。"""
+    for candidate in range(start, start + limit):
+        if not _port_open(candidate):
+            return candidate
+    return start
+
+
+def step_ports(args) -> bool:
+    """开局检查**后端**端口。假厂商的端口自动挑空闲的，不参与配额。"""
+    if _port_open(args.port):
+        record("A-005", "E2E 端口未被占用", "FAIL",
+               "端口 %d 已被占用（可能是另一个 agent 的后端/E2E 在跑）：换 --port 重跑，"
+               "否则健康检查会被别人的后端答上来" % args.port)
+        return False
+    record("A-005", "E2E 端口未被占用", "PASS",
+           "%d（后端）空着；假厂商端口自动挑空闲的" % args.port)
+    return True
+
+
 def step_preflight(args) -> bool:
     installer = Path(args.installer)
     if not installer.exists():
@@ -450,15 +645,28 @@ def step_health(args, port: int):
            "200 + status=ok + db=true：%s" % detail if ok else "未就绪：%s" % detail)
     if not ok:
         return False, client
-    code, out = run(["powershell", "-NoProfile", "-Command",
-                     "(Get-Process -Name qio-backend -ErrorAction SilentlyContinue | "
-                     "Select-Object -First 1 -ExpandProperty Path)"], tag="backend-process-path")
-    record("A-031", "健康检查回答者就是安装目录里的后端", "PASS" if str(Path(args.install_dir)) in out else "WARN",
-           out.strip() or "(取不到进程路径)")
-    return True, client
+    # 谁在回答这个端口？必须**就是**安装目录里的那个 exe。
+    # 只看进程名不够：机器上可能有别的 QIO 后端（别的 agent 的 E2E、或本机既有安装）。
+    script = (
+        "$owner = (Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | "
+        "Select-Object -First 1 -ExpandProperty OwningProcess);"
+        "if ($owner) { (Get-Process -Id $owner -ErrorAction SilentlyContinue).Path } else { '' }" % port
+    )
+    code, out = run(["powershell", "-NoProfile", "-Command", script], tag="backend-process-path")
+    expected = str((Path(args.install_dir) / "qio-backend.exe").resolve())
+    actual = out.strip()
+    if actual and Path(actual).resolve() == Path(expected):
+        record("A-031", "健康检查回答者就是安装目录里的后端", "PASS", actual)
+        return True, client
+    record("A-031", "健康检查回答者就是安装目录里的后端", "FAIL",
+           "端口 %d 的回答者是 %r，不是 %r —— 后面的断言会验错对象，直接停" % (
+               port, actual or "(取不到进程路径)", expected))
+    return False, client
 
 def step_fake_provider(args, port: int):
-    fp_port = port + 1
+    # 假厂商端口自动挑空闲的：port+1 可能正好是别的 agent 分配到的后端端口
+    # （Lead 2026-10-02 的端口分配里就存在这种相邻冲突）。
+    fp_port = _free_port(port + 1)
     logfile = Path(args.work_dir) / "evidence" / "fake-provider.log"
     fh = logfile.open("wb")
     proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "e2e_fake_provider.py"),
@@ -659,22 +867,69 @@ def step_invoke_tool(args, client: Client, sse: SseReader, fp: Client):
     return ok
 
 
-def stop_backend(proc) -> None:
+def _backend_pids_by_path(install_dir) -> list[int]:
+    """**只**找安装目录里那个 qio-backend.exe 的进程 id。
+
+    按路径找，不按镜像名找：这台机器上同时有多个 agent 在跑真实后端，
+    按名字杀（taskkill /IM qio-backend.exe）会误伤别人的进程
+    —— 2026-10-02 Lead 明确要求"按 PID / 进程树杀"。
+    """
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='qio-backend.exe'\" | "
+        "Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq '%s' } | "
+        "Select-Object -ExpandProperty ProcessId"
+        % str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
+    )
+    code, out = powershell(script, tag="backend-pids-by-path")
+    return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def ensure_backend_stopped(args, tag: str) -> bool:
+    """卸载/重装前的硬前置：安装目录里的后端必须**真的**停下。
+
+    「端口关 ≠ 文件没被锁」（2026-10-03，Agent A 用冻结产物实测 + 我的安装/卸载实测）：
+      * 运行中的 qio-backend.exe 删不掉也覆盖不了（delete -> WinError 5，
+        overwrite -> Errno 13），只有 rename 能成功；
+      * onefile 是 launcher + child，只结束 launcher 会留下孤儿 child 继续持有映像。
+    所以这里按**路径**枚举进程、按 **PID / 进程树**收，然后确认真的没有了 ——
+    否则后面的「卸载残留了什么 / 重装有没有换掉文件」都会被这把锁污染成假结论。
+    """
+    for _ in range(3):
+        pids = _backend_pids_by_path(args.install_dir)
+        if not pids:
+            record("A-088", "%s：安装目录里的后端已确认停止" % tag, "PASS", "按路径枚举：无残留进程")
+            return True
+        for pid in pids:
+            run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="precondition-kill")
+        time.sleep(2)
+    pids = _backend_pids_by_path(args.install_dir)
+    record("A-088", "%s：安装目录里的后端已确认停止" % tag, "FAIL",
+           "仍有进程持有安装目录里的 exe（pid=%s）：文件删不掉/换不掉，之后的结论不可信" % pids)
+    return False
+
+
+def stop_backend(proc, install_dir=None) -> None:
+    """收掉**我们自己**起的后端：先按 PID 收整棵树，再按路径兜底。
+
+    PyInstaller onefile 是「引导进程 + 真正跑服务的子进程」两层，而子进程会握着安装目录里的
+    qio-backend.exe（本机实测：不连子进程一起收，卸载器就删不掉它）。
+    顺序很关键：**先** taskkill /T /PID（此时父子关系还在，/T 才能收掉子进程），
+    再去 terminate 父进程 —— 反过来的话子进程会变成孤儿，就再也按树收不到了。
+    """
     if proc is not None and proc.poll() is None:
-        proc.terminate()
+        run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout=60, tag="taskkill-tree")
         try:
-            proc.wait(timeout=20)
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    # PyInstaller onefile 是「引导进程 + 真正跑服务的子进程」两层。上面 terminate 掉的只是引导进程，
-    # 子进程会继续活着并握着安装目录里的 qio-backend.exe（本机实测：卸载器因此删不掉它）。
-    # 不连子进程一起收，撤销/卸载这类"文件能不能被删"的结论就不可信。
-    run(["taskkill", "/F", "/T", "/IM", "qio-backend.exe"], timeout=60, tag="taskkill-backend")
-    time.sleep(3)
+    if install_dir is not None:
+        for pid in _backend_pids_by_path(install_dir):
+            run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="taskkill-by-path")
+    time.sleep(2)
 
 
 def step_restart(args, client: Client, proc, port: int):
-    stop_backend(proc)
+    stop_backend(proc, args.install_dir)
     time.sleep(1.5)
     new_proc = start_backend(args, port)
     ok, detail = wait_health(Client("http://127.0.0.1:%d" % port, args.token))
@@ -847,6 +1102,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--token", default="e2e-install-token-0001")
     parser.add_argument("--stages", default="all")
+    # 故意让 sidecar 继续跑着去卸载：验证卸载器**自己**会不会收掉它
+    # （模板的 CheckIfAppIsRunning 只查 qio.exe，不查 sidecar —— 这正是要测的那条缝）。
+    parser.add_argument("--uninstall-with-running-backend", action="store_true")
     args = parser.parse_args()
 
     global EVIDENCE
@@ -879,11 +1137,17 @@ def main() -> int:
             if not step_decoy(args):
                 log("!! 诱饵实验判定有风险：停止，绝不在这台机器上继续安装")
                 return 4
-        if "install" in stages and not step_install_files(args):
-            return 5
+        if "install" in stages:
+            if not step_install_files(args):
+                return 5
+            # 安装信息（控制面板登记 + 安装位置）是否真的写进去了。
+            # 本会话的沙箱可能让子进程写不了注册表 —— 那种情况记 NOT VERIFIED，不记通过。
+            step_install_registry(args)
         if "models" in stages and not step_models(args):
             return 6
         if "health" in stages:
+            if not step_ports(args):
+                return 8
             backend = start_backend(args, args.port)
             ok, client = step_health(args, args.port)
             if not ok:
@@ -903,17 +1167,34 @@ def main() -> int:
             backend, _ = step_restart(args, client, backend, args.port)
             step_recovery(args, client, sse, fp)
         if "reinstall" in stages:
-            stop_backend(backend)
+            stop_backend(backend, args.install_dir)
+            ensure_backend_stopped(args, "重装前")
             backend = step_reinstall(args, client, args.port)
             backend, _ = step_restart(args, client, backend, args.port)
         if "uninstall" in stages:
-            stop_backend(backend)
+            if args.uninstall_with_running_backend:
+                running = _backend_pids_by_path(args.install_dir)
+                record("A-087", "卸载前故意让 sidecar 继续运行", "PASS" if running else "WARN",
+                       "运行中的 sidecar pid=%s（不主动停，看卸载器自己收不收）" % (running or "无"))
+            else:
+                stop_backend(backend, args.install_dir)
+                ensure_backend_stopped(args, "卸载前")
             backend = None
+            # 先在同一个键下放一个合成 DbBaseline（只在注册表可写时），
+            # 用来断言「卸载清安装信息，但不动用户状态」这条边界。
+            seeded = step_seed_user_state(args)
             step_uninstall(args)
+            step_uninstall_registry(args, seeded)
+            if args.uninstall_with_running_backend:
+                left = _backend_pids_by_path(args.install_dir)
+                record("A-095", "卸载器自己收掉了还在跑的 sidecar", "PASS" if not left else "FAIL",
+                       "卸载后按路径枚举：%s" % (left or "无残留进程"))
+                for pid in left:  # 兜底：绝不给机器留孤儿
+                    run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="cleanup-orphan")
         if "restore" in stages:
             step_restore(args)
     finally:
-        stop_backend(backend)
+        stop_backend(backend, args.install_dir)
         if fp_proc is not None:
             fp_proc.terminate()
         if STATE["decoy_applied"] and "restore" in stages:
@@ -925,15 +1206,19 @@ def main() -> int:
         failures = [r for r in RESULTS if r["state"] == "FAIL"]
         summary = {"installer": args.installer, "install_dir": args.install_dir,
                    "results": RESULTS, "failed": len(failures),
+                   "warned": [r["id"] for r in RESULTS if r["state"] == "WARN"],
                    "not_executed": [r["id"] for r in RESULTS if r["state"] == "SKIP"]}
         out = work / "summary.json"
         out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         log("")
-        log("== 汇总：%d 项 PASS / %d 项 FAIL / %d 项 SKIP ==" % (
-            len([r for r in RESULTS if r["state"] == "PASS"]), len(failures),
+        warned = [r for r in RESULTS if r["state"] == "WARN"]
+        log("== 汇总：%d 项 PASS / %d 项 WARN / %d 项 FAIL / %d 项 SKIP ==" % (
+            len([r for r in RESULTS if r["state"] == "PASS"]), len(warned), len(failures),
             len([r for r in RESULTS if r["state"] == "SKIP"])))
         for item in failures:
             log("  FAIL %s %s :: %s" % (item["id"], item["title"], item["detail"][:200]))
+        for item in warned:
+            log("  WARN %s %s :: %s" % (item["id"], item["title"], item["detail"][:160]))
         log("  summary.json -> %s" % out)
     return 1 if any(r["state"] == "FAIL" for r in RESULTS) else 0
 
