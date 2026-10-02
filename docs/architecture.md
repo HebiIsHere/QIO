@@ -28,6 +28,30 @@ QIO 是一个面向长对话的本地优先 agent：对话以网状话题组织�
 
 运行形态：Tauri 壳启动 Python sidecar，前端通过 localhost HTTP + SSE 与后端通信。前端壳可整体替换，后端协议不变。
 
+### 2.1 sidecar 进程所有权（2026-10-03 实测定稿）
+
+发布产物里的 `qio-backend.exe` 是 **PyInstaller onefile**：它是 **launcher + child 两个进程**，
+**真正监听端口、提供服务的那个是 child**；两者 `ExecutablePath` 完全相同，**按名字或路径都分不出父子**。
+（`backend/.venv/Scripts/python.exe` 在开发态有同样的形状：它是 uv 的 trampoline，工具代码跑在它起的子进程里。）
+
+所有权规则（唯一事实源，实测记录见 `docs/process-lifecycle-verification.md`）：
+
+- 壳在 `spawn()` 返回后**立刻**把 sidecar 放进一个 `KILL_ON_JOB_CLOSE` 的 Job Object，句柄由壳持有；
+  **句柄随壳消失 = 系统连带终止 job 内所有进程**，所以壳正常退出、被强杀、被安装器结束都干净。
+- **时序是这条修复的一部分**：child 比 launcher 晚约 1~2 秒才创建（launcher 要先解包），
+  assign 必须紧跟 `spawn()`；等 child 出现再 assign，child 会**逃逸**。这条有单测反证钉住。
+- job 建不出来 / assign 失败时，退出路径按 **pid** 结束整棵树（`taskkill /PID <pid> /T /F`）。
+  **绝不允许按进程名杀** —— 会误伤开发实例、测试实例与其它安装实例。
+- 运行中的 `qio-backend.exe` **可以改名，但不能删除、不能原地覆盖**（WinError 5 / EACCES）。
+  所以「端口已经关了」**不等于**「文件没被锁」，更新与卸载都要按这个事实设计。
+
+### 2.2 工具专用环境（ToolEnv）用哪个解释器
+
+冻结后 `sys.executable` 就是 `qio-backend.exe`，**它不能当 Python 解释器用**（拿它跑 `-m venv` 只会再起一个后端）。
+所以：非冻结态仍用后端自己的解释器；**冻结态按 `QIO_PYTHON` → Windows `py -0p` → `PATH` 找**，
+并要求 major.minor 与后端一致；找不到时给出**可行动的明确失败**且不起任何子进程。
+这意味着**安装版要为用户工具准备依赖环境，前提是机器上有一个匹配的 Python** —— 这是已知的产品级限制。
+
 ## 3. 分层总览
 
 请求自上而下穿过这些层，每层只依赖它下面的层：

@@ -1612,3 +1612,139 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
 - **onefile 子进程可能成孤儿（待确认）**：PyInstaller onefile 的服务子进程不随引导进程退出，
   壳异常结束时可能留下孤儿 sidecar 并锁住安装目录里的 exe。需要专门实验，未列入本轮结论。
 
+---
+
+## 本轮变更：第三阶段（2026-10-03）——把「已知但没答案」的问题变成有答案
+
+这一阶段不新增功能，只处理第二、三阶段已经暴露、并且**现在可以明确推进**的剩余问题。
+凡是实验没证明有效的方案一律不上线；凡是环境无法验证的一律不写成完成。
+
+### 一、后端进程生命周期：孤儿是真的，但壳里已有修复，且它依赖时序
+
+- **进程模型**：onefile 是 **launcher + child**，**真正监听端口的是 child**；两者 `ExecutablePath` 完全相同，
+  所以按名字/路径都分不出父子（这正是「按进程名杀」会误伤的原因）。
+- **孤儿真实存在**：只结束 launcher → child 仍在、端口仍开。
+- **但壳里的 Job Object 是真的生效**，而且**不是竞态**：child 比 launcher 晚 **1.2~2.3 秒**才创建
+  （launcher 要先解 55MB 压缩包），而 assign 在 `spawn()` 返回后毫秒级完成 → **10/10 次都赶在 child 创建之前**，
+  收容成功；关掉 job 句柄后无残留、端口释放。
+- **反证（重要）**：等 child 出现再 assign → child **逃逸**，关 job 后它继续监听。
+  也就是说「assign 必须紧跟 spawn」是修复的一部分，已写成代码注释 + 单测钉住。
+- **本轮发现的真实缺口**：job 建不出来 / assign 失败时，代码注释写着「退出仍有 taskkill 兜底」，
+  但 `RunEvent::Exit` 里只有 `child.kill()`（只杀 launcher）—— 兜底当时**只存在于注释里**。
+  已接上：job 未生效时按 **pid 结束整棵树**（`taskkill /PID <pid> /T /F`，5s 硬超时），
+  **绝不按进程名杀**。
+- **更新/卸载影响**：运行中的 `qio-backend.exe` **可以改名，但不能删除、不能原地覆盖**
+  （WinError 5 / EACCES）—— 这正是安装器历史上 `Can't write` 的形状。**端口关 ≠ 文件没被锁。**
+- **CI 门槛**：`--case 2`（孤儿形状）与 `--case job`（Job Object 时序，含延迟 assign 的反证）已进 CI。
+  注意一个教训：**采集脚本本身不能当门槛** —— 它跑完 `return 0`，进程模型退化了照样绿；
+  所以另写了一个断言检查器（非 0 退出 = 步骤红，失败时发 `::error` 注解）。
+
+### 二、安装与卸载：安装信息与用户数据已经分开
+
+- **普通卸载残留 `HKCU\Software\qio\QIO`（安装位置）已修**。修法是在新增的 NSIS 钩子
+  （`frontend/src-tauri/nsis/installer-hooks.nsh`，通过 `installerHooks` 挂载）里：
+  清掉安装位置与 `Installer Language`，并用 `DeleteRegKey /ifempty` **保留 `DbBaseline`（用户状态）**。
+  选钩子而不是 fork 900 行的模板 —— 后者会把每次 Tauri 升级变成人工合并。
+- **卸载器现在自己收掉还在跑的 sidecar**：模板的 `CheckIfAppIsRunning` 只查 `qio.exe`，
+  不查 `qio-backend.exe`；这正是「卸载完目录还在、后端还在跑」的缝。
+- **CI 上现在是硬断言**（`install e2e (windows-latest)` 任务，9/9）：安装信息写入 → 普通卸载后
+  卸载登记被移除、安装位置被清掉、**合成 `DbBaseline` 仍在**、安装目录清空、用户数据保留、
+  运行中的 sidecar 被卸载器收掉。这条路径在本机**永远无法验证**（子进程写不了注册表，本轮如实记 NOT VERIFIED），
+  现在由 runner 覆盖。
+- **已知限制（做了 15 分钟可行性判断后选择不做）**：「多份 QIO 并存」时卸载器按**可执行文件名**找 sidecar，
+  卸载一份会连带结束另一份的 sidecar。取证：Tauri 自带 DLL 只导出按名字的进程函数，NSIS 无进程 API、
+  插件也只有按名字的；按路径只能自写 C++ 插件，或给卸载器加 shell 依赖并保留按名字的回退 —— 回退路径上
+  这条精化没买到东西。已写进文档，替代修法是让外壳负责结束 sidecar。
+
+### 三、发布闸门：按实际产物判定，不再只看源码配置
+
+以前闸门的 `bundle.config` 只读 `tauri.conf.json`，而构建期 `--config` 覆盖（例如关掉
+`createUpdaterArtifacts`）它看不见 → 未签名产物在这一项上**假报 PASS**。现在：
+
+- 新增 `updater.artifacts`（**按实际产物**判定签名）、`build.manifest`、`repo.commit`、`uninstall.contract`；
+- 新增 **WARN** 状态：查到了、如实说，但不构成「不要发布」（历史比较里单列）；
+- `bundle.config` 口径收窄为「只看源码配置」，不再假装能代表产物；
+- 构建产出 `<installer>.build.json`（commit / version / 两个 sha256 / overrides / signing state），
+  **闸门知道自己正在检查什么**；
+- 自检扩到 8 个用例（缺卸载钩子、钩子删用户状态、manifest 串包……都必须变红）。
+- **签名仍然 `BLOCKED BY SIGNING CREDENTIAL`**：没有口令，就不伪造 `.sig` / `latest.json`。
+
+### 四、工具隔离：判据升级了，所以结论仍然是「默认关闭」
+
+上一阶段低完整性被默认关闭，但**没有人知道为什么在某些环境失效**。本轮的答案：
+
+- **`SetNamedSecurityInfoW` 返回 0 但标签根本没落上**（读回 `S:AINO_ACCESS_CONTROL`）——
+  旧代码只信返回值就降级，这才是上一阶段 CI 8 条红的根因；`icacls /setintegritylevel` 才真的落标签。
+- **判据升级**：**「标签读回 Low」只是必要不充分条件**。CI runner 的真实完整性是 **High**，
+  即使标签读回 `S:AI(ML;OICI;NW;;;LW)`、令牌读回 Low，工具写自己的 scratch **仍然被拒**。
+  充分条件是**一个真的 Low 进程能写那个目录** → 因此加了「真实 Low 写入探针」，探针不过就整体不降级。
+- **真正执行工具的进程不是被降级的那个**：`.venv/Scripts/python.exe` 是 uv 的 **trampoline**
+  （它再起一个真解释器，工具代码跑在子进程里）。只处理被 spawn 的 pid，两层强制一起逃逸。
+  已改成递归枚举整棵后代、逐个降级 + 指派 job + 读回核实，**核实不到就不许声称**。
+- **结论：仍然默认关闭**。可判定条件是「一个真的 Low 进程能写工具的工作目录」；
+  只有探针通过的机器才生效，默认那一层 Job Object 不受写权限影响。
+- **诚实缺口**：High 环境下「标签读回 Low 却写不进去」的**内核级原因没有追到底** ——
+  本轮做到的是**可判定 + 自动 fail-safe**，不是解释清楚。
+- **网络**：只给工程判断（容器 / AppContainer / WFP 三条可行），**未实现**；
+  并且明确写了 monkeypatch / 环境变量 / 提示词**都不算**网络安全隔离。
+- 文案审计：前端与文档里与隔离相关的表述**未发现越界**（仍严格区分「QIO 不给」与「OS 阻止」）。
+
+### 五、安装版第三方依赖工具：一个真实的产品级缺陷（本轮最重要的发现）
+
+**缺陷**：安装版 QIO **完全无法为带第三方依赖的工具准备环境**。根因是 `ToolEnvManager.base_python =
+`sys.executable`，冻结后它就是 `qio-backend.exe`；于是执行 `qio-backend.exe -m venv <dir>` ——
+后端只认 `--tool-worker`，参数被忽略，**又启动了一个后端**（真机上会悄悄跑到 600s 超时），
+而 `_clean_env()` 又把 `USERPROFILE/HOMEDRIVE/HOMEPATH` 清掉，于是它死在 `Path.home()`。
+
+**修复**：非冻结态行为不变；冻结态**绝不使用 `sys.executable`**，按 `QIO_PYTHON` → Windows `py -0p` →
+`PATH` 找，并要求 major.minor 与后端一致；找不到时给出**可行动的明确失败**（「需要 Python 3.11，
+可用 `QIO_PYTHON` 指定」）且**一个子进程都不起**。`_clean_env()` 保留 home 变量
+（子进程不是安全边界，缺 home 只会让工具炸）。
+
+**修好之后，在真实安装产物上跑通了完整链**：依赖审批 → 环境创建 → 安装并锁定（`six==1.17.0` + sha256）→
+测试 → 注册 → 调用 → **重启后仍可调用且版本一致** → 删除环境后**明确进入「需要重新准备」而不是静默换环境** →
+重建后仍是同一批锁定版本 → 离线（近似）再调用正常。**21 PASS / 0 FAIL**（1 WARN、1 NOT TESTED）。
+
+**但这不等于开箱即用**：它要求用户机器上有一个与后端 ABI 匹配的 Python（3.11）。
+绝大多数终端用户机器上没有 —— 这是**产品级限制**，不是「已支持」。
+（好消息是接缝已经留好：随包提供解释器后，只要把 `QIO_PYTHON` 指过去。）
+
+### 六、话题与记忆：一个负结果 + 一个数据支持的修复
+
+- **跨话题（负结果）**：把 46 条拆成 explicit(30) / implicit(16) 分别评估。
+  「把目标话题当前状态当检索上下文」看着很好（explicit R@1 1.000），但**全部来自答案泄漏**
+  （状态取最新记忆时 46/46 被判泄漏）；换成不含答案的同话题记忆后 **P2 比 P0 更差**
+  （R@5 0.267 → 0.067）。**不满足上线条件，生产行为未改**。
+  explicit R@1 0.100 / implicit R@1 0.000（implicit 查询里没有目标话题的任何线索，
+  **如实保留，没有去猜用户指哪个话题**）。
+- **无 embedding 时的 Topic 判定（已修，有数据）**：规则层分数实际只落在 **0~0.22**，而门槛是 0.2 →
+  **假新话题 72.8%**。按真实量纲重新标定（`rules_*` 四项 = 0.02，onnx 与规则共用的门槛不动）：
+  **acc 0.4237 → 0.8305、假新 0.728 → 0.185、切换召回 0 → 0.909**；分层 5 折一致（非过拟合）；
+  onnx 路径与普通检索**逐字段未变**（curve eval 0.8983 不变、普通集 R@1 0.847 不变）。
+  产品取舍记一笔：选择「宁可多建话题，不要乱并」—— 乱并的损害不可见且累积。
+
+### 七、工程遗留
+
+- **迁移不是原子的（真实可靠性缺陷，已修）**：`storage/db.py` 用 autocommit（`isolation_level = None`），
+  此时 `with conn:` **不会隐式开事务** → 迁移中途失败/进程死掉会留下**半截 DDL**，而 `schema_version` 不推进。
+  `migration 24` 是单条 `ALTER TABLE turn_traces ADD COLUMN phases`：ALTER 生效而版本行没写就**再也起不来**
+  （`duplicate column name: phases`）。现在「本迁移的全部语句 + 版本行」在一个真实事务里，
+  并对**已存在的对象**做窄口径自愈（只认 duplicate column / already exists，其它错误照旧抛）。
+  实测：修复前 `partial_ddl_left_behind: true`、`crash_window_restart: raises`；修复后 small/medium/large
+  三档全部 ok（large = 100k turn_traces / 500k messages / 169 MB，迁移 0.07s，数据与关键字段无变化）。
+  顺带确认了**真实存量库**（本机开发库的 7 条 `turn_traces` **没有 `phases` 列**）确实停在 23 版，
+  说明 24/25 就是存量升级路径，不是纸面迁移。
+- **容器镜像清理（F1）**：新增 inventory / 引用判定 / 清理候选 / **显式**清理 + CLI；
+  三道闸（只认自家 tag → **被注册工具引用的镜像绝不删** → 必须显式确认），拿不到引用表时保守拒绝。
+  测试与**定点变异验证**（拆掉任一保护分支，对应用例必须变红）见 `backend/tests/test_container_images.py`；
+  真 docker 路径由 ubuntu CI 的 `requires_docker` 用例覆盖（本机无 docker，如实记）。
+- **TraceStore 写放大（F2，负结论）**：benchmark 四档规模（短 / 中 / 长 / 大量事件），单次成本只涨约 1.9x，
+  与**同连接同 autocommit 的裸写**同量级（1.0–1.7x）→ 开销主因是 SQLite 每条语句的提交/写盘，
+  **不是 TraceStore 的形状**。**结论：不重构。**
+- **CI 升级（F4）**：actions 升到 Node 24 运行时（checkout v5 / setup-python v6 / setup-node v5 / setup-uv v7），
+  最小改动、无 workflow 重写；CI 保持全绿。
+- **测试可靠性**：`tests/test_events_bus.py::test_parallel_waits_for_all` 的**墙钟硬断言**在高负载下会假红
+  （本轮在多个 agent 并发时真的红过）。改成相对断言（并行 < 串行 × 0.75），
+  并用变异验证证明它**仍有区分度**（把并行改成顺序执行 → 断言必须失败）。
+
+
