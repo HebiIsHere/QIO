@@ -21,11 +21,20 @@ backend venv 没有 cryptography）。这里只核对签名结构与 key id 归�
 "签名不是这把钥匙签的 / 签名文件损坏 / 清单指向了别的包"，但**不能**替代真正的
 密码学验签。真机发布时应再跑一次 tauri 官方验签路径。
 
+**结果落库（2026-10-02 追加）**：每次跑完把「时间 / commit / 版本 / 逐项 PASS-FAIL-SKIP /
+安装包 sha256」追加到一份历史文件（默认 `docs/releases/release-history.jsonl`），并自动与
+**上一条**比较，明确说出这次比上次多了/少了哪些通过项。放这里的理由：历史是发布决策的
+一部分，应该跟 `docs/releases/v0.1.x.md` 一起进仓库、随 PR 评审、在 dist 被清掉后仍然可查；
+`--history-file` 可以指到别处（CI 里想只留在产物目录就用它）。历史写失败不影响闸门判定，
+只打一行警告 —— 判定必须只由真实产物决定。
+
 用法：
 
     python scripts/release_gate.py                 # 自动找最新的 QIO_*_x64-setup.exe
     python scripts/release_gate.py --installer path\\to\\QIO_0.1.10_x64-setup.exe
     python scripts/release_gate.py --json out.json # 额外落一份机器可读结果
+    python scripts/release_gate.py --no-history    # 只判定，不写历史
+    python scripts/release_gate.py --history       # 读历史：最近几条 + 最近两条的差异
 """
 
 from __future__ import annotations
@@ -65,6 +74,11 @@ PASS = "PASS"
 FAIL = "FAIL"
 SKIP = "SKIP"
 
+# 历史写在**脚本所在的检出**里（不是 --repo 指的产物目录）：发布记录要跟版本一起进仓库。
+SCRIPT_REPO = Path(__file__).resolve().parents[1]
+HISTORY_SCHEMA = 1
+DEFAULT_HISTORY = SCRIPT_REPO / "docs" / "releases" / "release-history.jsonl"
+
 
 @dataclass
 class Result:
@@ -90,6 +104,126 @@ class Gate:
         for r in self.results:
             lines.append(f"{r.name.ljust(width)}  {r.state}  {r.detail}")
         return "\n".join(lines)
+
+
+def _git_commit(repo: Path) -> str:
+    """当前 commit（拿不到就空串）：历史要能对上「哪一版源码出的这个包」。"""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def make_record(gate: "Gate", installer: Path, digest: str, version: str) -> dict:
+    """把一次判定压成一条历史记录（逐项状态 + 关键标识）。"""
+    import datetime
+
+    counts = {PASS: 0, FAIL: 0, SKIP: 0}
+    for r in gate.results:
+        counts[r.state] = counts.get(r.state, 0) + 1
+    return {
+        "schema": HISTORY_SCHEMA,
+        "ts": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "commit": _git_commit(SCRIPT_REPO),
+        "version": version,
+        "installer": installer.name,
+        "installer_sha256": digest,
+        "counts": counts,
+        "results": {r.name: r.state for r in gate.results},
+        "failed": [r.name for r in gate.failed],
+    }
+
+
+def append_history(path: Path, record: dict) -> None:
+    """追加一条 JSONL 记录。失败只警告：闸门判定不能被「写不了历史」左右。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"[warn] 历史记录没写成（{path}）：{exc}", file=sys.stderr)
+
+
+def load_history(path: Path) -> list[dict]:
+    """读回历史；坏行跳过（历史文件不该让闸门崩）。"""
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def compare_records(previous: dict, current: dict) -> dict:
+    """这次比上次：哪些项新通过 / 新失败 / 一直失败，以及检查项本身的增减。"""
+    prev = previous.get("results") or {}
+    cur = current.get("results") or {}
+    newly_failed = sorted(k for k, v in cur.items() if v != PASS and prev.get(k) == PASS)
+    newly_passed = sorted(k for k, v in cur.items() if v == PASS and k in prev and prev[k] != PASS)
+    still_failing = sorted(k for k, v in cur.items() if v != PASS and prev.get(k) not in (PASS, None))
+    return {
+        "previous_ts": previous.get("ts"),
+        "previous_version": previous.get("version"),
+        "previous_commit": previous.get("commit"),
+        "newly_passed": newly_passed,
+        "newly_failed": newly_failed,
+        "still_failing": still_failing,
+        "added_items": sorted(set(cur) - set(prev)),
+        "removed_items": sorted(set(prev) - set(cur)),
+    }
+
+
+def format_comparison(diff: dict) -> list[str]:
+    def names(key: str) -> str:
+        values = diff[key]
+        return "、".join(values) if values else "无"
+
+    lines = [
+        f"与上一条比较（{diff['previous_ts']} / v{diff['previous_version']} / "
+        f"{(diff['previous_commit'] or '?')[:8]}）："
+    ]
+    lines.append(f"  新通过：{names('newly_passed')}")
+    lines.append(f"  新失败：{names('newly_failed')}")
+    lines.append(f"  一直失败：{names('still_failing')}")
+    if diff["added_items"] or diff["removed_items"]:
+        lines.append(f"  检查项增减：+{names('added_items')} / -{names('removed_items')}")
+    return lines
+
+
+def print_history(path: Path, limit: int) -> int:
+    """--history：最近几条 + 最近两条的差异。"""
+    records = load_history(path)
+    if not records:
+        print(f"没有历史记录：{path}")
+        return 0
+    print(f"# 发布闸门历史 {path}（{len(records)} 条）")
+    print(f"{'时间':<26} {'版本':<10} {'commit':<10} {'PASS':>5} {'FAIL':>5} {'SKIP':>5}  安装包")
+    for record in records[-limit:]:
+        counts = record.get("counts") or {}
+        print(
+            f"{(record.get('ts') or '?')[:26]:<26} {(record.get('version') or '?')[:10]:<10} "
+            f"{(record.get('commit') or '?')[:8]:<10} "
+            f"{counts.get(PASS, 0):>5} {counts.get(FAIL, 0):>5} {counts.get(SKIP, 0):>5}  "
+            f"{record.get('installer')}"
+        )
+    if len(records) >= 2:
+        print()
+        print("\n".join(format_comparison(compare_records(records[-2], records[-1]))))
+    return 0
 
 
 def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
@@ -380,76 +514,83 @@ def _make_fake_minisign(key_id: bytes, payload_len: int) -> str:
     return base64.b64encode(inner.encode("utf-8")).decode("ascii")
 
 
+def build_fixture(root: Path, *, sidecar_newer: bool = False, bad_hash: bool = False) -> Path:
+    """造一个最小的发布产物目录（自检与历史回归测试共用，只写合成数据）。
+
+    `bad_hash=True` 让 SHA256SUMS.txt 记一个错的哈希；`sidecar_newer=True` 造出
+    「包里是旧后端」这件事。返回 dist 目录。
+    """
+    (root / "frontend" / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
+    (root / "frontend" / "src-tauri" / "resources" / "models" / "fake-model").mkdir(parents=True, exist_ok=True)
+    (root / "frontend" / "src-tauri" / "target" / "release").mkdir(parents=True, exist_ok=True)
+    dist = root / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    key_id = bytes(range(8))
+    (root / "frontend" / "src-tauri" / "tauri.conf.json").write_text(
+        json.dumps(
+            {
+                "version": "9.9.9",
+                "bundle": {
+                    "externalBin": ["binaries/qio-backend"],
+                    "resources": {"resources/models": "models"},
+                    "createUpdaterArtifacts": True,
+                },
+                "plugins": {"updater": {"pubkey": _make_fake_minisign(key_id, 42)}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    installer_path = dist / "QIO_9.9.9_x64-setup.exe"
+    installer_path.write_bytes(b"MZ" + b"Nullsoft" + "9.9.9".encode("utf-16-le") + b"QIO" + b"x" * 60_000_000)
+    (dist / "QIO_9.9.9_x64-setup.exe.sig").write_text(_make_fake_minisign(key_id, 74), encoding="utf-8")
+    digest = sha256_of(dist / "QIO_9.9.9_x64-setup.exe")
+    recorded = "0" * 64 if bad_hash else digest
+    (dist / "SHA256SUMS.txt").write_text(f"QIO_9.9.9_x64-setup.exe  {recorded}\n", encoding="utf-8")
+    (dist / "latest.json").write_text(
+        json.dumps(
+            {
+                "version": "9.9.9",
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": _make_fake_minisign(key_id, 74),
+                        "url": "https://example.invalid/QIO_9.9.9_x64-setup.exe",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    sidecar = root / "frontend" / "src-tauri" / "binaries" / "qio-backend-x86_64-pc-windows-msvc.exe"
+    sidecar.write_bytes(b"SIDECAR")
+    (root / "frontend" / "src-tauri" / "target" / "release" / "qio-backend.exe").write_bytes(b"SIDECAR")
+    model_file = root / "frontend" / "src-tauri" / "resources" / "models" / "fake-model" / "model.onnx"
+    model_file.write_bytes(b"MODEL")
+    (model_file.parent / "model_manifest.json").write_text(
+        json.dumps({"files": [{"file": "model.onnx", "bytes": 5, "sha256": sha256_of(model_file)}]}),
+        encoding="utf-8",
+    )
+    # 真实构建顺序：先 build_sidecar，再 tauri build（安装包更晚）。
+    # sidecar_newer=True 就反过来造出「包里是旧后端」这件事。
+    import os
+    import time
+
+    now = time.time()
+    if sidecar_newer:
+        os.utime(installer_path, (now - 3600, now - 3600))
+        os.utime(sidecar, (now, now))
+    else:
+        os.utime(sidecar, (now - 3600, now - 3600))
+        os.utime(installer_path, (now, now))
+    return dist
+
+
+
 def _selftest() -> int:
     """自检：造一个最小的发布目录，先要求全绿，再逐一注入缺陷要求变红。"""
     import shutil
     import tempfile
 
     failures: list[str] = []
-
-    def build(root: Path, sidecar_newer: bool = False, bad_hash: bool = False) -> Path:
-        (root / "frontend" / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
-        (root / "frontend" / "src-tauri" / "resources" / "models" / "fake-model").mkdir(parents=True, exist_ok=True)
-        (root / "frontend" / "src-tauri" / "target" / "release").mkdir(parents=True, exist_ok=True)
-        dist = root / "dist"
-        dist.mkdir(parents=True, exist_ok=True)
-        key_id = bytes(range(8))
-        (root / "frontend" / "src-tauri" / "tauri.conf.json").write_text(
-            json.dumps(
-                {
-                    "version": "9.9.9",
-                    "bundle": {
-                        "externalBin": ["binaries/qio-backend"],
-                        "resources": {"resources/models": "models"},
-                        "createUpdaterArtifacts": True,
-                    },
-                    "plugins": {"updater": {"pubkey": _make_fake_minisign(key_id, 42)}},
-                }
-            ),
-            encoding="utf-8",
-        )
-        installer_path = dist / "QIO_9.9.9_x64-setup.exe"
-        installer_path.write_bytes(b"MZ" + b"Nullsoft" + "9.9.9".encode("utf-16-le") + b"QIO" + b"x" * 60_000_000)
-        (dist / "QIO_9.9.9_x64-setup.exe.sig").write_text(_make_fake_minisign(key_id, 74), encoding="utf-8")
-        digest = sha256_of(dist / "QIO_9.9.9_x64-setup.exe")
-        recorded = "0" * 64 if bad_hash else digest
-        (dist / "SHA256SUMS.txt").write_text(f"QIO_9.9.9_x64-setup.exe  {recorded}\n", encoding="utf-8")
-        (dist / "latest.json").write_text(
-            json.dumps(
-                {
-                    "version": "9.9.9",
-                    "platforms": {
-                        "windows-x86_64": {
-                            "signature": _make_fake_minisign(key_id, 74),
-                            "url": "https://example.invalid/QIO_9.9.9_x64-setup.exe",
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        sidecar = root / "frontend" / "src-tauri" / "binaries" / "qio-backend-x86_64-pc-windows-msvc.exe"
-        sidecar.write_bytes(b"SIDECAR")
-        (root / "frontend" / "src-tauri" / "target" / "release" / "qio-backend.exe").write_bytes(b"SIDECAR")
-        model_file = root / "frontend" / "src-tauri" / "resources" / "models" / "fake-model" / "model.onnx"
-        model_file.write_bytes(b"MODEL")
-        (model_file.parent / "model_manifest.json").write_text(
-            json.dumps({"files": [{"file": "model.onnx", "bytes": 5, "sha256": sha256_of(model_file)}]}),
-            encoding="utf-8",
-        )
-        # 真实构建顺序：先 build_sidecar，再 tauri build（安装包更晚）。
-        # sidecar_newer=True 就反过来造出「包里是旧后端」这件事。
-        import os
-        import time
-
-        now = time.time()
-        if sidecar_newer:
-            os.utime(installer_path, (now - 3600, now - 3600))
-            os.utime(sidecar, (now, now))
-        else:
-            os.utime(sidecar, (now - 3600, now - 3600))
-            os.utime(installer_path, (now, now))
-        return dist
 
     tmp = Path(tempfile.mkdtemp(prefix="qio-gate-selftest-"))  # noqa: S108 - 自检临时目录
     try:
@@ -459,7 +600,7 @@ def _selftest() -> int:
             ("安装包比 sidecar 旧", {"sidecar_newer": True}, "sidecar.fresh"),
         ):
             root = tmp / label
-            build(root, **kwargs)
+            build_fixture(root, **kwargs)
             set_repo(root)
             gate = Gate()
             conf = json.loads((root / "frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
@@ -500,9 +641,16 @@ def main() -> int:
     parser.add_argument("--installer", help="指定安装包；默认取 dist 里最新的 QIO_*_x64-setup.exe")
     parser.add_argument("--json", help="把机器可读结果写到这个文件")
     parser.add_argument("--selftest", action="store_true", help="用合成产物自检闸门本身")
+    parser.add_argument("--history-file", help=f"发布历史 JSONL（默认 {DEFAULT_HISTORY}）")
+    parser.add_argument("--no-history", action="store_true", help="只判定，不写历史")
+    parser.add_argument("--history", action="store_true", help="读历史：最近几条 + 最近两条的差异")
+    parser.add_argument("--history-limit", type=int, default=10, help="--history 打印最近几条")
     args = parser.parse_args()
     if args.selftest:
         return _selftest()
+    history_path = Path(args.history_file) if args.history_file else DEFAULT_HISTORY
+    if args.history:
+        return print_history(history_path, args.history_limit)
 
     if args.repo:
         set_repo(Path(args.repo).resolve())
@@ -559,6 +707,16 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
+
+    # 结果落库：先跟上一条比较（明确说出增减），再追加本次记录。
+    if not args.no_history:
+        record = make_record(gate, installer, digest, str(conf.get("version") or ""))
+        previous = load_history(history_path)
+        if previous:
+            print()
+            print("\n".join(format_comparison(compare_records(previous[-1], record))))
+        append_history(history_path, record)
+        print(f"\n历史记录 +1 -> {history_path}（共 {len(previous) + 1} 条）")
     return 1 if failures else 0
 
 
