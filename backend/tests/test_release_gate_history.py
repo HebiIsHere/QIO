@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -143,6 +144,28 @@ def test_an_unwritable_history_does_not_change_the_verdict(tmp_path):
     assert proc.returncode == 0, '历史写不进去不该改变判定'
     assert '[warn]' in proc.stderr
     assert not (blocker / 'history.jsonl').exists()
+
+
+def test_report_survives_a_non_utf8_console(tmp_path):
+    """英文 Windows（cp1252）上报告全是中文：报告层必须降级，不能崩在第一条 print。
+
+    CI 的 windows-latest 抓到过这件事：闸门以 UnicodeEncodeError 收场，判定没跑完，
+    历史里当然也没有记录 —— 一个「跑不完」的发布闸门等于没有闸门。
+    """
+    gate = _gate_module()
+    fixture = tmp_path / 'fixture'
+    gate.build_fixture(fixture)
+    history = tmp_path / 'history.jsonl'
+    proc = subprocess.run(
+        [sys.executable, str(GATE), *_gate_args(fixture, history)],
+        capture_output=True, cwd=str(REPO), timeout=300,
+        env={**os.environ, 'PYTHONIOENCODING': 'cp1252', 'PYTHONUTF8': '0'},
+    )
+    out = proc.stdout.decode('utf-8', 'replace')  # 重定向时报告按 UTF-8 写字节
+    err = proc.stderr.decode('utf-8', 'replace')
+    assert proc.returncode == 0, out + err
+    assert '发布闸门' in out, out
+    assert len(_history(history)) == 1
 
 
 def test_default_history_lives_in_the_repo_not_in_dist():

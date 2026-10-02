@@ -106,6 +106,35 @@ class Gate:
         return "\n".join(lines)
 
 
+def _configure_output() -> None:
+    """报告层必须能在任何控制台编码下工作（cp1252 的发布机 / CI runner 都不能崩）。
+
+    回归的事故形状（2026-10-02，Windows CI 抓到）：闸门的报告全是中文，而英文 Windows
+    的 stdout 是 cp1252 —— 第一条 print 就抛 UnicodeEncodeError，闸门以 traceback 收场，
+    「判定」根本没能跑完。做法与 scripts/frozen_worker_smoke.py 一致：
+
+    * 老控制台（tty）：保留它自己的编码，编不出来的字符转义，绝不抛异常；
+    * 重定向 / CI：直接写 UTF-8 字节，日志按 UTF-8 解码。
+
+    判定结果与历史记录都不受编码影响。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
 def _git_commit(repo: Path) -> str:
     """当前 commit（拿不到就空串）：历史要能对上「哪一版源码出的这个包」。"""
     import subprocess
@@ -635,6 +664,7 @@ def _selftest() -> int:
 
 
 def main() -> int:
+    _configure_output()
     parser = argparse.ArgumentParser(description="QIO 离线发布闸门（不联网、不安装）")
     parser.add_argument("--repo", help="产出这些安装包的检出根目录（默认脚本所在检出）")
     parser.add_argument("--dist", help="发布产物目录（默认 <repo>/../dist）")

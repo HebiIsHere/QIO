@@ -61,6 +61,29 @@ SETUP_FILE = ROOT / "docs" / "SETUP.md"
 CI_COMMAND_PREFIXES = ("uv ", "npm ", "npx ", "cargo ", "python scripts/")
 
 
+def _configure_output() -> None:
+    """报告层必须能在任何控制台编码下工作（英文 Windows 的 cp1252 也不能崩）。
+
+    与 scripts/release_gate.py / scripts/frozen_worker_smoke.py 同一套做法：
+    tty 保留自己的编码 + backslashreplace；重定向/CI 写 UTF-8 字节。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -204,6 +227,7 @@ def check_ci_commands_documented(errors: list[str]) -> None:
 
 
 def main() -> int:
+    _configure_output()
     errors: list[str] = []
     milestones = parse_status_milestones()
     check_status_values(milestones, errors)
