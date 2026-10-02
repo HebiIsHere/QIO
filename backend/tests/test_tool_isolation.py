@@ -559,6 +559,13 @@ async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeyp
         'user_label=' + repr(user_label),
         'isolation=' + str(result.isolation),
     )
+    if os.environ.get('CI'):
+        # GitHub Actions 的 runner 是普通完整性。若这里看到 Low，说明 CI 上跑的是「无法验证」分支，
+        # 那这次绿就不能当作三件套的证据 —— 直接失败，不许拿绿当结论。
+        assert parent_integrity != isolation.LOW_INTEGRITY_SID, (
+            'CI 上父进程应当在 Low 之上（普通完整性）；当前是 Low，说明拒绝分支没有被验证到。'
+            f' parent={parent_integrity}'
+        )
     if parent_integrity == isolation.LOW_INTEGRITY_SID or isolation.label_is_low(user_label):
         # 本会话自己就是 Low：这里无法验证「拒绝」，如实断言不拒绝
         assert result.value['user'] == 'WRITE-OK'
