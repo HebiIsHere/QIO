@@ -19,6 +19,22 @@ onefile 产物是**两个进程、同一个可执行文件**：
 两者 `ExecutablePath` 完全相同，所以**只按名字或路径分不出父子** —— 判定归属必须靠
 `ParentProcessId` + 创建时间，或者靠 Job Object / 按 pid 的 `taskkill /T`。
 
+递归枚举出来的完整树（`--case tree`，原始输出）：
+
+```
+spawn 返回的 launcher pid=113540 assign=True ready=True port=49694
+监听 49694 的 pid=112748                     <= 真正提供服务的是 child，不是 launcher
+完整进程树（递归）：
+  pid=97312  ppid=113540 conhost.exe                          （控制台宿主）
+  pid=112748 ppid=113540 qio-backend-x86_64-pc-windows-msvc.exe <= 监听端口
+job 内 pid=[113540, 97312, 112748]  监听者在 job 里=True
+关闭 job 后：端口仍开=False 同名残留=0 监听 pid 还活着=False
+```
+
+要点：**`spawn()` 返回的 pid 不是干活的进程**。服务是 child（112748），launcher（113540）
+只负责解包与等待。这和 uv 的 `.venv\Scripts\python.exe` trampoline 是同一类结构，
+所以「管住了 launcher」不等于「管住了服务」。
+
 ## 2. 六个生命周期 case 的结论
 
 | case | 操作 | 结果 |
@@ -44,11 +60,17 @@ NSIS 就删不掉、也写不进去；而 case 2 说明**只杀 launcher 不足�
 | 等 child 出现再 assign（反证） | 等第二个进程出现才 assign | child **不在** job 里；关掉句柄后 child 还在监听 —— 孤儿复现 |
 | 宿主已有 job（嵌套） | 先放进 J1 再放进 J2 | 两次 assign 都成功，child 仍在 job 里，关闭 J2 后全清 |
 | 壳被强杀 | 建 job + assign 后进程直接退出 | 无残留、端口关闭（句柄随进程消失 → 系统清理） |
+| 稳定性 10 次重复 | 立即 assign，重复 10 次 | child 在 job 里 **10/10**、监听者在 job 里 **10/10**、关 job 后残留 **0** |
 
 结论：**已有的 Job Object 修复是真的生效的**，前提是 assign 必须紧跟 spawn —— onefile 的
 child 是之后才创建的，Windows 只把「指派之后创建的后代」自动收进 job。这条时序是修复的
 一部分，代码里已写明，并由 `backend_job::tests::descendants_created_before_assignment_are_not_captured`
 钉住（谁把 assign 挪到 child 创建之后，测试就会红）。
+
+**这不是竞态**（有人怀疑 child 几乎与 launcher 同时创建，assign 可能来不及）：10 次重复实测
+launcher→child 的间隔是 **1246~2279ms**，而 assign 发生在 `spawn()` 返回后的同一段同步代码里
+（毫秒级），10 次全部收容成功、10 次关闭 job 后零残留。间隔之所以这么大，是因为 launcher
+要先把 55MB 压缩包解到临时目录再创建 child。
 
 ## 4. 兜底路径（2026-10-02 补齐）
 
