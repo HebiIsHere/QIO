@@ -294,6 +294,71 @@ def _render_lock_file(packages: Sequence[Mapping[str, Any]], with_hashes: bool) 
     return "\n".join(lines) + "\n"
 
 
+# -- 容器镜像清单（F1）：inventory / 引用判定 / 清理候选 / 显式清理 ----------------
+
+# QIO 自己构建的镜像 tag 前缀。只认这个前缀：别人的镜像一律不碰。
+CONTAINER_IMAGE_PREFIX = "qio-tool-env:"
+
+_SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3, "TB": 1000 ** 4, "PB": 1000 ** 5}
+
+
+def _docker_size_bytes(text: str | None) -> int | None:
+    """把 `docker image ls` 的 Size 文本（如 "1.2GB"）换成字节数；看不懂就 None。"""
+    raw = str(text or "").strip().upper().replace(" ", "")
+    if not raw:
+        return None
+    for unit in ("PB", "TB", "GB", "MB", "KB", "B"):
+        if raw.endswith(unit):
+            number = raw[: -len(unit)]
+            try:
+                return int(float(number) * _SIZE_UNITS[unit])
+            except ValueError:
+                return None
+    try:
+        return int(float(raw))
+    except ValueError:
+        return None
+
+
+def parse_docker_images(output: str | None, *, prefix: str = CONTAINER_IMAGE_PREFIX) -> list[dict]:
+    """解析 `docker image ls --format "{{json .}}"` 的输出（每行一个 JSON）。
+
+    纯函数：本机没有 Docker 也能测（CI 上没有守护进程时，真实命令那一步单独标记）。
+    只保留 QIO 自己 tag 的镜像；`<none>`（dangling）与别人的镜像不进清单 ——
+    「不认识的镜像」永远不会变成清理候选。
+    """
+    images: list[dict] = []
+    for line in (output or "").splitlines():
+        text = line.strip()
+        if not text or not text.startswith("{"):
+            continue
+        try:
+            item = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        repository = str(item.get("Repository") or "").strip()
+        tag = str(item.get("Tag") or "").strip()
+        if not repository or repository == "<none>":
+            continue
+        name = repository if not tag or tag == "<none>" else f"{repository}:{tag}"
+        if prefix and not name.startswith(prefix):
+            continue
+        fingerprint = name[len(prefix):] if prefix and name.startswith(prefix) else None
+        images.append(
+            {
+                "image": name,
+                "fingerprint": fingerprint,
+                "id": str(item.get("ID") or ""),
+                "size_bytes": _docker_size_bytes(item.get("Size")),
+                "created_at": str(item.get("CreatedAt") or "") or None,
+                "created_since": str(item.get("CreatedSince") or "") or None,
+            }
+        )
+    return sorted(images, key=lambda entry: entry["image"])
+
+
 # -- 安装执行（默认实现） --------------------------------------------------
 
 
@@ -414,6 +479,59 @@ class ContainerStatus:
     note: str | None = None
     lock_available: bool = False
     pinned: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContainerImageEntry:
+    """一个 QIO 容器镜像的现状：本机有没有、谁在用、能不能清。
+
+    `present_locally = None` 表示**判断不了**（本机没有可用的 docker）—— 不猜成 False。
+    """
+
+    image: str
+    # referenced（被注册工具引用）/ orphan（没有工具引用）/ unknown（本机有、但没有环境记录指向它）
+    state: str
+    fingerprint: str | None = None
+    base_image: str | None = None
+    referenced_by: list[str] = field(default_factory=list)
+    present_locally: bool | None = None
+    size_bytes: int | None = None
+    built_at: str | None = None
+    last_used_at: str | None = None
+    lock_available: bool = False
+    detail: str | None = None
+
+    @property
+    def protected(self) -> bool:
+        """被已注册工具引用 → **绝不删除**：这是那组依赖唯一可用的镜像。"""
+        return bool(self.referenced_by)
+
+    @property
+    def orphan(self) -> bool:
+        """没有注册工具引用它（仍然要显式确认才删）。"""
+        return self.state == "orphan" and not self.referenced_by
+
+
+@dataclass(frozen=True)
+class ContainerCleanupResult:
+    ok: bool
+    image: str
+    removed: bool = False
+    reason: str | None = None
+    referenced_by: list[str] = field(default_factory=list)
+    next_step: str | None = None
+
+
+@dataclass(frozen=True)
+class ContainerCleanupReport:
+    candidates: int
+    removed: list[ContainerCleanupResult] = field(default_factory=list)
+    skipped: list[ContainerCleanupResult] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """没有跳过任何一个才算清理完成；跳过的一定带原因。"""
+        return not self.skipped
 
 
 @dataclass(frozen=True)
@@ -1354,6 +1472,244 @@ class ToolEnvManager:
             ),
         )
 
+    # -- 容器镜像：清单 / 引用判定 / 清理候选 / 显式清理（F1）---------------
+
+    async def list_local_images(self) -> tuple[bool, list[dict]]:
+        """列本机镜像（只解析 QIO 自己 tag 的）。docker 不可用 → (False, [])，不抛异常。"""
+        ok, output = await self._runner(
+            [CONTAINER_BINARY, "image", "ls", "--format", "{{json .}}"],
+            CONTAINER_PROBE_TIMEOUT_SECONDS,
+            None,
+        )
+        if not ok:
+            return False, []
+        return True, parse_docker_images(output)
+
+    def _container_records(self) -> dict[str, dict]:
+        """扫 `locks/`：镜像 → 锁定记录里的 container 段（谁构建的、什么时候）。"""
+        records: dict[str, dict] = {}
+        if not self.locks_root.is_dir():
+            return records
+        for lock_dir in sorted(self.locks_root.iterdir()):
+            if not lock_dir.is_dir():
+                continue
+            record = _read_json(lock_dir / LOCK_RECORD_NAME) or {}
+            container = record.get("container")
+            if not isinstance(container, dict):
+                continue
+            image = str(container.get("image") or "").strip()
+            if not image:
+                continue
+            records[image] = {
+                "fingerprint": lock_dir.name,
+                "built_at": container.get("built_at"),
+                "base": container.get("base"),
+                "hashes": bool(container.get("hashes")),
+                "last_used_at": record.get("last_used_at"),
+                "requirements": _normalize_requirements(record.get("requirements") or []),
+            }
+        return records
+
+    def container_inventory(
+        self,
+        *,
+        referenced_by: Mapping[str, Sequence[str]] | None = None,
+        local_images: Sequence[Mapping[str, Any]] | None = None,
+        docker_available: bool | None = None,
+    ) -> list[ContainerImageEntry]:
+        """列「QIO 会用到的 / 本机已有的」容器镜像，并标注谁在引用、能不能清。
+
+        * 期望镜像：来自每个专用环境的依赖集合（含只剩锁定清单的），tag 就是环境指纹；
+          锁文件里记过 container.image 的以记录为准（可能是另一个 Python 标签下构建的）。
+        * 本机镜像：`docker image ls` 的解析结果；没有 docker 时 **present_locally 留 None**，
+          不把「不知道」写成「本机没有」。
+        * 保护规则：**被已注册工具引用的镜像永远不是清理候选**（它是那组依赖唯一可用的镜像）。
+        """
+        table: Mapping[str, Sequence[str]] = referenced_by or {}
+        records = self._container_records()
+        records_by_fingerprint = {
+            str(item.get("fingerprint")): (image, item) for image, item in records.items()
+        }
+        locals_by_name = {str(item.get("image")): dict(item) for item in (local_images or [])}
+        known_local = docker_available is not False and local_images is not None
+        entries: dict[str, ContainerImageEntry] = {}
+
+        for env in self.inventory(referenced_by=table, include_unknown=True):
+            computed = self.container_image_for(env.requirements) if env.requirements else None
+            image, record = records_by_fingerprint.get(env.fingerprint, (computed, None))
+            if not image:
+                continue
+            entries[image] = ContainerImageEntry(
+                image=image,
+                state="referenced" if env.referenced_by else "orphan",
+                fingerprint=env.fingerprint,
+                base_image=(record or {}).get("base") or self.container_base_image(),
+                referenced_by=list(env.referenced_by),
+                present_locally=(image in locals_by_name) if known_local else None,
+                size_bytes=(locals_by_name.get(image) or {}).get("size_bytes"),
+                built_at=(record or {}).get("built_at"),
+                last_used_at=env.last_used_at or (record or {}).get("last_used_at"),
+                lock_available=env.lock_available,
+                detail=env.detail,
+            )
+
+        if known_local:
+            for image, item in locals_by_name.items():
+                if image in entries:
+                    continue
+                entries[image] = ContainerImageEntry(
+                    image=image,
+                    state="unknown",
+                    fingerprint=item.get("fingerprint"),
+                    present_locally=True,
+                    size_bytes=item.get("size_bytes"),
+                    detail="本机有、但没有环境记录指向它：可能是旧版本留下的（要 --include-unknown 才算候选）。",
+                )
+        return sorted(entries.values(), key=lambda entry: entry.image)
+
+    def container_cleanup_candidates(
+        self,
+        *,
+        referenced_by: Mapping[str, Sequence[str]] | None = None,
+        local_images: Sequence[Mapping[str, Any]] | None = None,
+        docker_available: bool | None = None,
+        include_unknown: bool = False,
+    ) -> list[ContainerImageEntry]:
+        """可以被清理的镜像：没有工具引用（默认不算「来路不明」的）。"""
+        return [
+            entry
+            for entry in self.container_inventory(
+                referenced_by=referenced_by,
+                local_images=local_images,
+                docker_available=docker_available,
+            )
+            if entry.orphan and (include_unknown or entry.state != "unknown")
+        ]
+
+    def _forget_container_record(self, fingerprint: str) -> bool:
+        """把锁定记录里的 container 段摘掉（镜像已经删了，记录别再指着一个不存在的 tag）。"""
+        path = self.locks_root / fingerprint / LOCK_RECORD_NAME
+        record = _read_json(path)
+        if record is None or "container" not in record:
+            return False
+        record.pop("container", None)
+        try:
+            _write_json(path, record)
+        except (OSError, ValueError):
+            return False
+        return True
+
+    async def remove_container_image(
+        self,
+        image: str,
+        *,
+        confirm: bool = False,
+        referenced_by: Mapping[str, Sequence[str]] | None = None,
+        forget_lock: bool = False,
+        local_images: Sequence[Mapping[str, Any]] | None = None,
+        docker_available: bool | None = None,
+    ) -> ContainerCleanupResult:
+        """显式删除一个容器镜像（三道闸：只认自家 tag / 被引用绝不删 / 必须确认）。
+
+        **硬约束**：被已注册工具引用的镜像不删 —— tag 就是环境指纹，删了那组依赖就没有
+        可用镜像了（没有任何 override 能绕过这一条）。别人的镜像也一律不碰。
+        """
+        wanted = str(image or "").strip()
+        if not wanted:
+            return ContainerCleanupResult(ok=False, image=wanted, reason="没有指定镜像。")
+        if not wanted.startswith(CONTAINER_IMAGE_PREFIX):
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                reason="不是 QIO 建的镜像（tag 前缀不匹配）：不碰别人的镜像。",
+            )
+        entries = {
+            entry.image: entry
+            for entry in self.container_inventory(
+                referenced_by=referenced_by,
+                local_images=local_images,
+                docker_available=docker_available,
+            )
+        }
+        entry = entries.get(wanted)
+        if entry is not None and entry.protected:
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                referenced_by=list(entry.referenced_by),
+                reason="仍被已注册工具引用，而且这是那组依赖唯一可用的镜像：不能删。",
+                next_step="先让这些工具不再声明这组依赖（或换一组依赖），再清理镜像。",
+            )
+        if entry is not None and referenced_by is None:
+            # 与专用环境清理同一条保守规则：拿不到引用表就不删「有记录」的东西 ——
+            # 「看起来没人用」在缺少引用信息时可能只是「不知道谁在用」。
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                reason="没有引用信息：无法确认没有工具在用它，保守不删。",
+                next_step="从应用内清理（会带上注册工具的引用表），或在确认过之后显式声明。",
+            )
+        if not confirm:
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                reason="删除镜像需要显式确认（--yes / confirm=True）。",
+                next_step="确认没有工具需要它之后再执行清理。",
+            )
+        if docker_available is False:
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                reason="本机没有可用的 docker：清单可以照常算，但删不了镜像。",
+            )
+        ok, output = await self._runner(
+            [CONTAINER_BINARY, "image", "rm", wanted], self.timeout_seconds, None
+        )
+        if not ok:
+            return ContainerCleanupResult(
+                ok=False,
+                image=wanted,
+                reason=f"docker image rm 失败：{_output_tail(output) or '（没有输出）'}",
+            )
+        forgotten = False
+        if forget_lock and entry is not None and entry.fingerprint:
+            forgotten = self._forget_container_record(entry.fingerprint)
+        return ContainerCleanupResult(
+            ok=True,
+            image=wanted,
+            removed=True,
+            reason="已删除镜像。" + ("镜像记录也一并摘掉了。" if forgotten else ""),
+        )
+
+    async def container_cleanup(
+        self,
+        *,
+        confirm: bool = False,
+        referenced_by: Mapping[str, Sequence[str]] | None = None,
+        include_unknown: bool = False,
+        local_images: Sequence[Mapping[str, Any]] | None = None,
+        docker_available: bool | None = None,
+    ) -> ContainerCleanupReport:
+        """清理没有工具引用的镜像（每个都要显式确认；被引用的一个都不动）。"""
+        candidates = self.container_cleanup_candidates(
+            referenced_by=referenced_by,
+            local_images=local_images,
+            docker_available=docker_available,
+            include_unknown=include_unknown,
+        )
+        removed: list[ContainerCleanupResult] = []
+        skipped: list[ContainerCleanupResult] = []
+        for entry in candidates:
+            result = await self.remove_container_image(
+                entry.image,
+                confirm=confirm,
+                referenced_by=referenced_by,
+                local_images=local_images,
+                docker_available=docker_available,
+            )
+            (removed if result.removed else skipped).append(result)
+        return ContainerCleanupReport(candidates=len(candidates), removed=removed, skipped=skipped)
+
     # -- 生命周期：谁在引用、哪些是 orphan、怎么删 -------------------------
 
     def references_from_definitions(self, definitions: Iterable[Any]) -> dict[str, list[str]]:
@@ -1690,15 +2046,51 @@ def _result_to_dict(result: CleanupResult) -> dict:
     }
 
 
+def _container_entry_to_dict(entry: ContainerImageEntry) -> dict:
+    return {
+        "image": entry.image,
+        "state": entry.state,
+        "fingerprint": entry.fingerprint,
+        "base_image": entry.base_image,
+        "referenced_by": entry.referenced_by,
+        "protected": entry.protected,
+        "orphan": entry.orphan,
+        "present_locally": entry.present_locally,
+        "size_bytes": entry.size_bytes,
+        "built_at": entry.built_at,
+        "last_used_at": entry.last_used_at,
+        "lock_available": entry.lock_available,
+        "detail": entry.detail,
+    }
+
+
+def _container_result_to_dict(result: ContainerCleanupResult) -> dict:
+    return {
+        "ok": result.ok,
+        "image": result.image,
+        "removed": result.removed,
+        "referenced_by": result.referenced_by,
+        "reason": result.reason,
+        "next_step": result.next_step,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """`python -m agent.tools.tool_envs list|remove|cleanup --root <tool-envs>`。
+    """`python -m agent.tools.tool_envs [--root <tool-envs>] [--json] <命令>`。
+
+    命令：list / remove / cleanup（专用环境），images / rm-image / cleanup-images（容器镜像）。
+    注意 `--root`、`--json` 是**全局选项**，要写在命令前面。
 
     清理只删环境目录、保留锁定清单；没有引用信息时不删「可用」的环境（保守），
-    归属不明的旧目录要 `--include-unknown` 才会进入候选。
+    归属不明的旧目录要 `--include-unknown` 才会进入候选。容器镜像同理：CLI 拿不到
+    注册工具表，所以删除要显式写 `--assume-unreferenced`（声明已确认没人用）。
     """
     parser = argparse.ArgumentParser(
         prog="python -m agent.tools.tool_envs",
-        description="QIO 专用依赖环境：查看（list）与清理（remove / cleanup）",
+        description=(
+            "QIO 专用依赖环境与容器镜像：查看（list / images）与清理"
+            "（remove / cleanup / rm-image / cleanup-images）"
+        ),
     )
     parser.add_argument("--root", help="环境目录（默认：QIO 数据目录下的 tool-envs）")
     parser.add_argument("--json", action="store_true", help="机器可读输出")
@@ -1713,6 +2105,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     cleanup_parser.add_argument("--yes", action="store_true", help="确认删除")
     cleanup_parser.add_argument(
         "--include-unknown", action="store_true", help="把归属不明的目录也当成候选"
+    )
+    images_parser = sub.add_parser("images", help="列出容器镜像、引用与清理候选")
+    images_parser.add_argument(
+        "--include-unknown", action="store_true", help="把没有环境记录的镜像也算进候选"
+    )
+    rm_image_parser = sub.add_parser("rm-image", help="删除一个容器镜像（需要显式确认）")
+    rm_image_parser.add_argument("image")
+    rm_image_parser.add_argument("--yes", action="store_true", help="确认删除")
+    rm_image_parser.add_argument(
+        "--forget-lock", action="store_true", help="同时摘掉锁定记录里的镜像信息"
+    )
+    rm_image_parser.add_argument(
+        "--assume-unreferenced",
+        action="store_true",
+        help="声明「已经确认没有工具引用它」（CLI 拿不到注册工具表；不给就保守拒绝）",
+    )
+    cleanup_images_parser = sub.add_parser("cleanup-images", help="清理没有被引用的容器镜像")
+    cleanup_images_parser.add_argument("--yes", action="store_true", help="确认删除")
+    cleanup_images_parser.add_argument(
+        "--include-unknown", action="store_true", help="把没有环境记录的镜像也当成候选"
+    )
+    cleanup_images_parser.add_argument(
+        "--assume-unreferenced",
+        action="store_true",
+        help="声明「已经确认没有工具引用它们」（不给就保守拒绝）",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -1761,8 +2178,123 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return 0 if result.removed else 1
 
-    report = asyncio.run(
-        manager.cleanup(confirm=bool(args.yes), include_unknown=bool(args.include_unknown))
+    if args.command in {"images", "rm-image", "cleanup-images"}:
+        # CLI 拿不到「注册工具有哪些依赖」：默认按「引用未知」处理（保守），
+        # 只有运维显式声明 --assume-unreferenced 才当成「已确认没人用」。
+        declared = bool(getattr(args, "assume_unreferenced", False))
+        references: dict | None = {} if declared else None
+        available, images = asyncio.run(manager.list_local_images())
+        inventory = manager.container_inventory(
+            referenced_by=references,
+            local_images=images if available else None,
+            docker_available=available,
+        )
+
+        if args.command == "images":
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "docker_available": available,
+                            "references_known": declared,
+                            "images": [_container_entry_to_dict(entry) for entry in inventory],
+                            "candidates": [
+                                entry.image
+                                for entry in manager.container_cleanup_candidates(
+                                    referenced_by=references,
+                                    local_images=images if available else None,
+                                    docker_available=available,
+                                    include_unknown=bool(args.include_unknown),
+                                )
+                            ]
+                            if declared
+                            else None,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if not available:
+                print("本机没有可用的 docker：只能列出「应该有哪些镜像」，无法判断本机有没有。")
+            if not declared:
+                print("引用未知（CLI 拿不到注册工具表）：删除时会保守拒绝，--assume-unreferenced 才放行。")
+            if not inventory:
+                print(f"没有容器镜像记录：{root}")
+                return 0
+            for entry in inventory:
+                who = "、".join(entry.referenced_by) if entry.referenced_by else (
+                    "未知" if not declared else "（没有工具引用）"
+                )
+                present = {True: "本机有", False: "本机没有", None: "本机有没有：未知"}[
+                    entry.present_locally
+                ]
+                print(f"{entry.image}  [{entry.state}]  {present}  引用：{who}")
+                if entry.size_bytes:
+                    print(f"  大小：{entry.size_bytes / 1_000_000:.1f} MB")
+                if entry.built_at:
+                    print(f"  构建于：{entry.built_at}")
+                print(f"  最后使用：{entry.last_used_at or '未知'}")
+                if entry.detail:
+                    print(f"  说明：{entry.detail}")
+            if declared:
+                candidates = manager.container_cleanup_candidates(
+                    referenced_by=references,
+                    local_images=images if available else None,
+                    docker_available=available,
+                    include_unknown=bool(args.include_unknown),
+                )
+                print(f"清理候选：{len(candidates)} 个" + ("（" + "、".join(c.image for c in candidates) + "）" if candidates else ""))
+            return 0
+
+        if args.command == "rm-image":
+            result = asyncio.run(
+                manager.remove_container_image(
+                    args.image,
+                    confirm=bool(args.yes),
+                    referenced_by=references,
+                    forget_lock=bool(args.forget_lock),
+                    local_images=images if available else None,
+                    docker_available=available,
+                )
+            )
+            if args.json:
+                print(json.dumps(_container_result_to_dict(result), ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"{'已删除' if result.removed else '没有删除'}：{result.reason or ''}"
+                    + (f"\n下一步：{result.next_step}" if result.next_step else "")
+                )
+            return 0 if result.removed else 1
+
+        report = asyncio.run(
+            manager.container_cleanup(
+                confirm=bool(args.yes),
+                referenced_by=references,
+                include_unknown=bool(args.include_unknown),
+                local_images=images if available else None,
+                docker_available=available,
+            )
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "candidates": report.candidates,
+                        "removed": [_container_result_to_dict(item) for item in report.removed],
+                        "skipped": [_container_result_to_dict(item) for item in report.skipped],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(f"候选 {report.candidates} 个，删除 {len(report.removed)} 个，跳过 {len(report.skipped)} 个")
+            for item in report.skipped:
+                print(f"  跳过 {item.image}：{item.reason}")
+        return 0 if report.ok else 1
+
+    report = asyncio.run(        manager.cleanup(confirm=bool(args.yes), include_unknown=bool(args.include_unknown))
     )
     if args.json:
         print(
