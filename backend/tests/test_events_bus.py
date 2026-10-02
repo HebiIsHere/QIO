@@ -57,14 +57,42 @@ async def test_serial_passes_value_in_order(bus):
 
 
 async def test_parallel_waits_for_all(bus):
+    """并行分发必须明显快于串行 —— 用**同一台机器上的串行基线**比较，不用绝对墙钟。
+
+    原来的写法是 `assert dt < 0.09`（两个 0.05s 的 handler）：机器一忙（本轮实测：同时 6 个
+    pytest + PyInstaller）就抖红过一次，而它并不是要证明「这台机器有多快」，要证明的是
+    「parallel 明显快于 serial」。所以先量一次串行基线，再比相对值；两边都取 3 次里的最小值，
+    负载尖峰只会抬高单次测量，最小值接近没被抢 CPU 时的真实成本。
+
+    区分度没有被削弱：如果 parallel 其实是顺序执行，两个数字会几乎相等 → 断言仍然红。
+    """
+
     async def slow():
         await asyncio.sleep(0.05)
+
     bus.on("p", slow)
     bus.on("p", slow)
-    t0 = asyncio.get_event_loop().time()
-    await bus.parallel("p")
-    dt = asyncio.get_event_loop().time() - t0
-    assert dt < 0.09  # 并行而非串行(0.10+)
+
+    def now() -> float:
+        return asyncio.get_event_loop().time()
+
+    serials: list[float] = []
+    parallels: list[float] = []
+    for _ in range(3):
+        start = now()
+        await slow()
+        await slow()
+        serials.append(now() - start)
+
+        start = now()
+        await bus.parallel("p")
+        parallels.append(now() - start)
+
+    serial, parallel = min(serials), min(parallels)
+    assert parallel < serial * 0.75, (
+        f"并行没有明显快于串行：parallel={parallel:.4f}s serial={serial:.4f}s"
+        f"（比值 {parallel / serial:.2f}，要求 < 0.75）"
+    )
 
 
 async def test_disposer_removes_listener(bus):
