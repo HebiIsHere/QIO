@@ -39,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -297,10 +298,25 @@ def _wait_registry_settled(*, timeout: float = 30.0, interval: float = 0.5,
                 break
             except ValueError:
                 continue
+    # 防御：非 0 退出 / 空输出 / 非法 JSON 都不许抛异常 —— 变成可诊断的 read_error，
+    # 由调用方记成 FAIL。异常逃出去只会留一行 traceback，还会让 finally 里的汇总看起来没失败。
+    read_error: str | None = None
+    if code != 0:
+        read_error = "powershell 退出码 %s；输出尾部：%s" % (
+            code, (out or "").strip()[-200:] or "（空）")
+    elif not data:
+        read_error = "读注册表没有拿到可解析的结果；输出尾部：%s" % (
+            (out or "").strip()[-200:] or "（空）")
     location = str(data.get("install_location") or "").strip()
-    clean = bool(data.get("clean_at")) and not data.get("uninstall_key_present") and not location
+    clean = (
+        read_error is None
+        and bool(data.get("clean_at"))
+        and not data.get("uninstall_key_present")
+        and not location
+    )
     result = {
         "clean": clean,
+        "read_error": read_error,
         "waited_seconds": round(waited, 2),
         "polls": data.get("polls"),
         "clean_at_poll": data.get("clean_at") or None,
@@ -384,6 +400,12 @@ def step_uninstall_registry(args, seeded: bool) -> None:
              "uninstall_key": uninstall_key, "manuproduct_key": manu_key},
             ensure_ascii=False, indent=2),
     )
+    if settled.get("read_error"):
+        record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "FAIL",
+               "读注册表失败，无法下断言：%s" % settled["read_error"])
+        record("A-094", "卸载保留用户状态（DbBaseline 不被顺手删掉）", "WARN",
+               "同上：读注册表失败，无法下断言")
+        return
     if not writable:
         record("A-093", "卸载清掉安装信息（安装位置 / Installer Language）", "WARN",
                "**NOT VERIFIED**：本会话子进程写不了注册表（%s），卸载器的 DeleteRegKey / "
@@ -1133,7 +1155,10 @@ def step_uninstall(args):
         if not settled["clean"]
         else "（第 %s 次轮询读到干净）" % settled["clean_at_poll"]
     )
-    if not writable:
+    if settled.get("read_error"):
+        record("A-092", "卸载后卸载注册表项被移除", "FAIL",
+               "读注册表失败，无法下断言：%s；%s" % (settled["read_error"], timing))
+    elif not writable:
         # 本机：子进程写不了注册表，安装器当初可能根本没写进去 —— 「STILL PRESENT」不能当产品结论。
         record("A-092", "卸载后卸载注册表项被移除", "WARN",
                "**NOT VERIFIED**：本会话子进程写不了注册表（%s），安装器的 WriteRegStr 会静默失败，"
@@ -1299,6 +1324,16 @@ def main() -> int:
                     run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="cleanup-orphan")
         if "restore" in stages:
             step_restore(args)
+    except Exception as exc:  # noqa: BLE001 - 一次把问题报全：异常也要变成 FAIL 记录
+        # 以前异常直接逃出 main()：traceback 打完之后，finally 里的「汇总」照样打印 0 FAIL，
+        # 读日志的人会被那个假象骗到（2026-10-03 真的骗过一次）。异常必须变成一条 FAIL 记录。
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = ""
+        if frames:
+            last = frames[-1]
+            where = " @ %s:%s in %s" % (Path(last.filename).name, last.lineno, last.name)
+        record("A-999", "E2E 流程未完成（异常）", "FAIL",
+               "%s: %s%s" % (type(exc).__name__, exc, where))
     finally:
         stop_backend(backend, args.install_dir)
         if fp_proc is not None:
