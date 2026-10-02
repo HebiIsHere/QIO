@@ -51,6 +51,27 @@ TERMINAL_STATUSES = (COMPLETED, CANCELLED, FAILED, UNAVAILABLE)
 OPEN_STATUSES = (QUEUED, RUNNING)
 
 DEFAULT_RETENTION_DAYS = 7
+
+# 权威定义一：「用户的消息被进程掐断」的行 —— 系统通知轮（notify = 1）不是用户的消息，
+# 永远不在这个集合里。notify 这个条件**只在下面这一行写一次**。
+_USER_INTERRUPTED_CLAUSE = "status = ? AND notify = 0"
+_USER_INTERRUPTED_PARAMS: tuple = (INTERRUPTED,)
+
+# 权威定义二：「用户还没处理的 interrupted 行」= 定义一 + 还没被处理过。
+# 用它的人：unfinished()（界面入口）、recoverable()（resend / dismiss 的判断，
+# dismiss 也走它）、claim()（重发的一次性抢占）。
+#
+# 两者确实不同（写清差异，不混用）：区别就是 recovered_at IS NULL。
+# * 定义一给「已经进入恢复流程」的行用：claim 抢占时会把 recovered_at 写上，
+#   mark_recovered / release_claim 处理的正是这种「已经抢占过」的行 —— 它们用定义一；
+# * 定义二给「还没被处理过才算可恢复」的入口与判断用。
+#
+# 为什么必须收敛：以前 unfinished() 带了 notify = 0，recoverable() / claim() 没带，
+# 于是对系统通知轮直接调 resend 会真的再提交一条系统消息（实测 200 + accepted），
+# dismiss 也会被放行。
+_RECOVERABLE_CLAUSE = f"{_USER_INTERRUPTED_CLAUSE} AND recovered_at IS NULL"
+_RECOVERABLE_PARAMS = _USER_INTERRUPTED_PARAMS
+
 # 用户看到的文案（不含任何内部标识之外的东西）
 REASON_TEXT = {
     "queued_at_restart": "这条消息当时还在排队，进程退出后没有开始执行",
@@ -155,30 +176,39 @@ class TurnJournal:
         return recovered
 
     def unfinished(self) -> list[dict[str, Any]]:
-        """还没被用户处理的 interrupted 行（系统通知轮不算：它不是用户的消息）。"""
+        """还没被用户处理的 interrupted 行（系统通知轮不算：它不是用户的消息）。
+
+        与 recoverable() 共用同一个权威谓词（见 _RECOVERABLE_CLAUSE）。
+        """
         rows = self._query(
-            "SELECT * FROM turn_journal WHERE status = ? AND recovered_at IS NULL "
-            "AND notify = 0 ORDER BY created_at ASC",
-            (INTERRUPTED,),
+            f"SELECT * FROM turn_journal WHERE {_RECOVERABLE_CLAUSE} ORDER BY created_at ASC",
+            _RECOVERABLE_PARAMS,
         )
         return [self._view(dict(r)) for r in rows]
 
     def recoverable(self, turn_id: str) -> dict[str, Any] | None:
-        """这条记录还能不能重发：只有 interrupted 且没被处理过才算。"""
+        """这条记录还能不能重发 / 知道了：只有「用户还没处理的 interrupted 行」才算。
+
+        与 unfinished() 同一个权威谓词（见 _RECOVERABLE_CLAUSE）——系统通知轮
+        （notify = 1）不在其中：它既不在入口里，也不允许被重发 / 知道了。
+        """
         row = self._query_one(
-            "SELECT * FROM turn_journal WHERE turn_id = ? AND status = ? "
-            "AND recovered_at IS NULL",
-            (str(turn_id), INTERRUPTED),
+            f"SELECT * FROM turn_journal WHERE turn_id = ? AND {_RECOVERABLE_CLAUSE}",
+            (str(turn_id), *_RECOVERABLE_PARAMS),
         )
         return dict(row) if row is not None else None
 
     def claim(self, turn_id: str) -> bool:
-        """抢占一条记录的重发权（原子、一次性）：抢到了才允许提交新 turn。"""
+        """抢占一条记录的重发权（原子、一次性）：抢到了才允许提交新 turn。
+
+        抢占条件与 recoverable() 完全一致（同一个权威谓词）：系统通知轮抢不到，
+        所以即便有人绕过接口判断，也提交不出新的系统消息。
+        """
         try:
             cur = self.conn.execute(
                 "UPDATE turn_journal SET recovered_at = ?, updated_at = ? "
-                "WHERE turn_id = ? AND status = ? AND recovered_at IS NULL",
-                (_now(), _now(), str(turn_id), INTERRUPTED),
+                f"WHERE turn_id = ? AND {_RECOVERABLE_CLAUSE}",
+                (_now(), _now(), str(turn_id), *_RECOVERABLE_PARAMS),
             )
         except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不得影响接口可用性
             logger.warning("turn journal claim failed: %s", exc)
@@ -186,19 +216,33 @@ class TurnJournal:
         return int(cur.rowcount or 0) == 1
 
     def release_claim(self, turn_id: str) -> None:
-        """提交失败时把抢占退回去（否则用户就再也重发不了这条消息了）。"""
+        """提交失败时把抢占退回去（否则用户就再也重发不了这条消息了）。
+
+        回滚作用于「用户被掐断的行」（权威定义一）：抢不到的行本来就没被改过，
+        不该在这里被动到；通知轮也不在其中。
+        """
         self._execute(
-            "UPDATE turn_journal SET recovered_at = NULL, updated_at = ? WHERE turn_id = ?",
-            (_now(), str(turn_id)),
+            "UPDATE turn_journal SET recovered_at = NULL, updated_at = ? "
+            f"WHERE turn_id = ? AND {_USER_INTERRUPTED_CLAUSE}",
+            (_now(), str(turn_id), *_USER_INTERRUPTED_PARAMS),
         )
 
     def mark_recovered(self, turn_id: str, *, new_turn_id: str | None = None) -> bool:
-        self._execute(
-            "UPDATE turn_journal SET recovered_at = ?, recovered_by = ?, updated_at = ? "
-            "WHERE turn_id = ? AND status = ?",
-            (_now(), new_turn_id, _now(), str(turn_id), INTERRUPTED),
-        )
-        return True
+        """标记已处理；返回是否真的改到了行（与 claim 一样是带条件的更新）。
+
+        这里用权威定义一（不含 recovered_at IS NULL）：调用它的时机是 claim 已经
+        抢占成功之后，行上的 recovered_at 已经写上了。通知轮仍然不在集合里。
+        """
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET recovered_at = ?, recovered_by = ?, updated_at = ? "
+                f"WHERE turn_id = ? AND {_USER_INTERRUPTED_CLAUSE}",
+                (_now(), new_turn_id, _now(), str(turn_id), *_USER_INTERRUPTED_PARAMS),
+            )
+        except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不得影响接口可用性
+            logger.warning("turn journal mark_recovered failed: %s", exc)
+            return False
+        return int(cur.rowcount or 0) == 1
 
     def dismiss(self, turn_id: str) -> bool:
         """用户选择「知道了」：不再提示，但仍然保留记录（不删用户消息）。"""
