@@ -17,6 +17,7 @@
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -475,6 +476,25 @@ fn qio_refresh_updater_proxy() -> Result<Option<String>, String> {
     Ok(apply_updater_proxy())
 }
 
+/// 按 **pid** 结束整棵进程树（`taskkill /T`）。只在 job 没生效时用。
+///
+/// 为什么不能只 `child.kill()`：onefile 的 launcher 被杀掉之后，真正提供服务的 child
+/// 还活着（实测：scripts/verify_backend_process_model.py 的 case 2 —— 杀 launcher，child
+/// 仍在监听端口），它会锁住 qio-backend.exe，安装器就报 Can't write。
+///
+/// 只按 pid 杀**我们自己拉起的这棵树**，绝不按进程名批量杀：开发实例、测试实例、
+/// 其它安装实例都不能被误伤（ownership 原则，见任务书 A3）。
+#[cfg(windows)]
+fn kill_tree_by_pid(pid: u32) -> bool {
+    // 硬超时：taskkill 卡住会拖住退出流程（同一台机器上实测它报过 0xC0000142）
+    const KILL_TREE_TIMEOUT: Duration = Duration::from_secs(5);
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    run_command_with_timeout(&mut cmd, KILL_TREE_TIMEOUT)
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 /// Windows Job Object：把后端放进「job 关闭即终止」的 job。
 ///
 /// 这是孤儿进程问题的根治手段（2026-09-22 实测：壳退出只杀父进程，PyInstaller 的子进程
@@ -539,6 +559,141 @@ mod backend_job {
                 }
                 ok
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! Job Object 语义的回归测试（真进程，不是 mock）。
+        //!
+        //! 守的是两件事：
+        //! 1. 「指派之后创建的后代自动进 job」—— onefile 的 child 靠的就是这条；
+        //! 2. 「先有后代再指派，后代收不到」—— 这条反证把 main.rs 里 assign 的**时序**
+        //!    钉死：谁把 assign 挪到 child 创建之后，测试就会红。
+
+        use super::*;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicProcessIdList, QueryInformationJobObject,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        const MAX_PIDS: usize = 64;
+
+        #[repr(C)]
+        struct PidList {
+            assigned: u32,
+            count: u32,
+            pids: [usize; MAX_PIDS],
+        }
+
+        fn job_pids(job: &BackendJob) -> Vec<u32> {
+            let mut list = PidList { assigned: 0, count: 0, pids: [0; MAX_PIDS] };
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    job.0,
+                    JobObjectBasicProcessIdList,
+                    &mut list as *mut PidList as *mut core::ffi::c_void,
+                    std::mem::size_of::<PidList>() as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_ne!(ok, 0, "QueryInformationJobObject 失败");
+            list.pids[..list.count as usize].iter().map(|p| *p as u32).collect()
+        }
+
+        /// 进程是否还活着。
+        ///
+        /// 不能只看 OpenProcess 成不成功：测试自己持有 Child 句柄时，进程对象在退出后
+        /// 仍然存在，OpenProcess 照样成功 —— 那会把「已经死了」判成「还活着」。
+        /// 所以要看退出码是不是 STILL_ACTIVE。
+        fn process_alive(pid: u32) -> bool {
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if handle.is_null() {
+                    return false;
+                }
+                let mut code: u32 = 0;
+                let ok = GetExitCodeProcess(handle, &mut code);
+                CloseHandle(handle);
+                ok != 0 && code == STILL_ACTIVE as u32
+            }
+        }
+
+        fn spawn_spawner(seconds: u32) -> std::process::Child {
+            // cmd 先等一秒再起 ping：模拟 onefile「launcher 先起、child 后到」
+            let script = format!("ping -n 2 127.0.0.1 >nul & ping -n {seconds} 127.0.0.1");
+            Command::new("cmd")
+                .args(["/c", script.as_str()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("拉起测试子进程失败")
+        }
+
+        #[test]
+        fn descendants_created_after_assignment_join_the_job_and_die_with_it() {
+            let job = create().expect("CreateJobObjectW 失败");
+            let mut spawner = spawn_spawner(30);
+            assert!(job.assign(spawner.id()), "assign 失败");
+
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut pids = job_pids(&job);
+            while pids.len() < 2 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+                pids = job_pids(&job);
+            }
+            assert!(pids.len() >= 2, "指派之后创建的后代没有进入 job：{pids:?}");
+            let grandchild = *pids.iter().find(|pid| **pid != spawner.id()).expect("没有后代");
+
+            // 关掉 job 句柄 = 壳退出（正常退出/被强杀/被安装器结束都一样）
+            unsafe { CloseHandle(job.0) };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while process_alive(grandchild) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            assert!(!process_alive(grandchild), "job 关闭后后代还活着（孤儿）");
+            let _ = spawner.kill();
+            let _ = spawner.wait();
+        }
+
+        #[test]
+        fn descendants_created_before_assignment_are_not_captured() {
+            // 反证：先让后代跑起来，再 assign —— 后代不在 job 里。
+            // 这条失败通常意味着「assign 被挪到 child 创建之后」，那正是孤儿问题复发。
+            let mut spawner = spawn_spawner(5);
+            std::thread::sleep(Duration::from_secs(3));
+            let job = create().expect("CreateJobObjectW 失败");
+            assert!(job.assign(spawner.id()), "assign 失败");
+            let pids = job_pids(&job);
+            assert_eq!(pids, vec![spawner.id()], "先存在的后代不应被收容：{pids:?}");
+            let _ = spawner.kill();
+            let _ = spawner.wait();
+        }
+
+        #[test]
+        fn assign_reports_failure_for_an_unknown_pid() {
+            let job = create().expect("CreateJobObjectW 失败");
+            assert!(!job.assign(0xFFFF_FFF0), "不存在的 pid 不该报成功");
+        }
+
+        #[test]
+        fn kill_tree_by_pid_ends_the_whole_tree() {
+            // job 没生效时的兜底路径：只按 pid 杀整棵树（绝不按进程名）
+            let mut spawner = spawn_spawner(30);
+            let pid = spawner.id();
+            std::thread::sleep(Duration::from_secs(2));
+            assert!(crate::kill_tree_by_pid(pid), "taskkill /T 应返回成功");
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while process_alive(pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            assert!(!process_alive(pid), "按 pid 的 taskkill 没有结束这棵树");
+            let _ = spawner.wait();
         }
     }
 }
@@ -623,6 +778,10 @@ fn backend_launch(
 fn main() {
     let backend: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
     let backend_for_setup = Arc::clone(&backend);
+    // job 是否真的生效（create + assign 都成功）。没生效时退出必须自己按 pid 杀整棵树 ——
+    // 「失败时还有 taskkill 兜底」这句话必须真的接在退出路径上，否则就是一句注释。
+    let job_active = Arc::new(AtomicBool::new(false));
+    let job_active_for_setup = Arc::clone(&job_active);
     // 后端进程随这份 job 的生死而生死：壳没了，系统负责清干净，不留孤儿。
     let backend_job = backend_job::create();
 
@@ -670,9 +829,19 @@ fn main() {
             let models_ms = t_models.elapsed().as_millis();
             let t_backend = Instant::now();
             let child = backend_launch(app.handle(), port, &token_path, models_dir)?;
+            // 时序是这份修复的一部分：**必须在 spawn 之后立刻 assign**。
+            // onefile 的 launcher 是先把压缩包解到临时目录、再创建真正提供服务的 child
+            // （实测 child 比 launcher 晚约 1.5s）。Windows 只把「指派之后创建的后代」
+            // 自动收进 job —— 等 child 出现再 assign 就收不到它，关 job 也杀不掉，
+            // 安装器又会报 Can't write。反证见 scripts/verify_backend_process_model.py
+            // 的 job_late 实验与 src/main.rs 里 backend_job::tests::descendants_created_before_assignment_are_not_captured。
             if let Some(job) = backend_job.as_ref() {
-                if job.assign(child.pid()) {
+                let assigned = job.assign(child.pid());
+                job_active_for_setup.store(assigned, Ordering::SeqCst);
+                if assigned {
                     log::info!("[qio] 后端 pid {} 已纳入 job（随壳退出自动终止）", child.pid());
+                } else {
+                    log::warn!("[qio] job 未生效：退出时会退回 taskkill /T 按 pid 清理整棵树");
                 }
             }
             log::info!(
@@ -693,7 +862,21 @@ fn main() {
         .run(move |_app, event| match event {
             RunEvent::Exit | RunEvent::ExitRequested { .. } => {
                 if let Some(child) = backend.lock().unwrap().take() {
-                    let _ = child.kill();
+                    if job_active.load(Ordering::SeqCst) {
+                        // job 生效：杀掉 launcher 就够，系统会带走 job 里整棵树
+                        let _ = child.kill();
+                    } else {
+                        // job 没生效：必须按 pid 结束整棵树，否则 onefile 的 child 会留下
+                        // 锁住 qio-backend.exe（安装器报 Can't write 的根因）
+                        #[cfg(windows)]
+                        {
+                            let _ = kill_tree_by_pid(child.pid());
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = child.kill();
+                        }
+                    }
                 }
                 let _ = std::fs::remove_file(session_token_path());
             }
