@@ -82,7 +82,13 @@ try {
   }
 
   if (-not $done) {
-    $code = Invoke-External { uv run --frozen --with pyinstaller python -m PyInstaller @pyiArgs }
+    # --extra dev 不是给打包用的，是**保护开发环境**用的（2026-10-02 实测踩到）：
+    # 不带 extras 的 uv run --frozen 会把环境同步成"默认依赖集"，于是把 dev extra 里的
+    # pytest / pytest-asyncio 从 .venv 里卸掉 —— 之后跑 uv run --frozen pytest 会以
+    # 150 个 collection error（ModuleNotFoundError）收场，看起来像代码坏了，
+    # 其实是构建脚本动了共享 venv。PyInstaller 只跟着 main.py 的 import 走，
+    # 不会把 pytest 打进包里。
+    $code = Invoke-External { uv run --frozen --extra dev --with pyinstaller python -m PyInstaller @pyiArgs }
     if ($code -ne 0) { Write-Host "PyInstaller failed: $code"; exit 1 }
   }
 } finally {

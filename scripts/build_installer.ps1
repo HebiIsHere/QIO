@@ -187,6 +187,52 @@ $sums = Get-ChildItem -Path $DistDir -File |
   }
 Write-Utf8NoBom -Path (Join-Path $DistDir "SHA256SUMS.txt") -Text ($sums -join "`r`n")
 
+# 构建 manifest：把「这次构建到底用了什么配置」写成事实，供 release_gate.py 核对。
+# 没有它的时候，闸门只能读 tauri.conf.json 猜这次构建用了什么 —— 上一阶段就因为
+# 构建时用 --config 关掉 createUpdaterArtifacts 而漏判过一次（真产物没签名，闸门报 PASS）。
+$installerPath = Join-Path $DistDir $fileName
+$installerHash = (Get-FileHash -Algorithm SHA256 $installerPath).Hash.ToLower()
+$sidecarFile = Get-ChildItem -Path (Join-Path $root "frontend\src-tauri\binaries") -Filter "qio-backend-*.exe" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime | Select-Object -Last 1
+$sidecarInfo = $null
+if ($sidecarFile) {
+  $sidecarInfo = [ordered]@{
+    name   = $sidecarFile.Name
+    sha256 = (Get-FileHash -Algorithm SHA256 $sidecarFile.FullName).Hash.ToLower()
+    bytes  = $sidecarFile.Length
+  }
+}
+$commit = ""
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try { $commit = ((& git -C $root rev-parse HEAD 2>$null | Select-Object -First 1) + "").Trim() } catch { $commit = "" }
+$ErrorActionPreference = $prevPref
+
+$overrides = [ordered]@{}
+$signingState = "signed"
+if ($UnsignedTestArtifact) {
+  $overrides = [ordered]@{ bundle = [ordered]@{ createUpdaterArtifacts = $false } }
+  $signingState = "unsigned-test"
+}
+
+$buildManifest = [ordered]@{
+  schema            = 1
+  product           = "QIO"
+  version           = $version
+  commit            = $commit
+  built_at          = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  bundles           = $Bundles
+  installer         = $fileName
+  installer_sha256  = $installerHash
+  installer_bytes   = (Get-Item $installerPath).Length
+  sidecar           = $sidecarInfo
+  updater_artifacts = (-not $UnsignedTestArtifact)
+  config_overrides  = $overrides
+  signing           = $signingState
+}
+$buildManifestPath = "$installerPath.build.json"
+Write-Utf8NoBom -Path $buildManifestPath -Text ($buildManifest | ConvertTo-Json -Depth 5)
+
 Write-Host "完成。"
 Write-Host "  安装包：$(Join-Path $DistDir $fileName)"
 if ($UnsignedTestArtifact) {
@@ -198,3 +244,4 @@ if ($UnsignedTestArtifact) {
   Write-Host "  清单：  $manifestPath"
   Write-Host "下一步：powershell -File scripts\publish_release.ps1 -Version $version"
 }
+Write-Host "  构建 manifest：$buildManifestPath（release_gate.py 用它核对构建配置身份）"

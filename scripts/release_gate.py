@@ -14,7 +14,18 @@
    （历史上出过"包里是旧后端"的事故，这条就是拦它的）；
 5. 内置模型：resources/models 下的每个文件都要与 model_manifest.json 的
    bytes + sha256 对得上（存在才查，不存在就明确 SKIP，不静默放过）；
-6. 打包配置自洽：externalBin / resources / createUpdaterArtifacts。
+6. 打包配置自洽：externalBin / resources / createUpdaterArtifacts（**只看源码配置**）；
+7. 实际产物是否带更新签名：按**产物本身**判定（.sig 在不在 + 构建 manifest 声明的 signing），
+   不再按源码配置推断 —— 见下面"构建配置身份"；
+8. 构建配置身份：安装包旁边那份 `<installer>.build.json`（build_installer.ps1 写出来），
+   核对 installer sha256 / 版本 / commit / config overrides / signing；没有就明确记 WARN；
+9. 卸载契约（静态）：`bundle.windows.nsis.installerHooks` 指向的钩子必须清掉**安装信息**
+   （安装位置默认值 + Installer Language），并且**不能**删用户状态（DbBaseline）或数据目录；
+10. 当前 commit：产物要能对到某一版源码。
+
+结果状态有四种：PASS / FAIL / SKIP / **WARN**。WARN 的语义是"查到了、也如实说了，
+但它本身不构成'不要发布'"（例如：显式标注的未签名测试产物）。它**不**计入失败，
+历史比较里也单列，不会被读成"新失败"。
 
 **诚实边界（不要把它读成"验签通过"）**：ed25519 验签需要非标准库实现（本机
 backend venv 没有 cryptography）。这里只核对签名结构与 key id 归属 —— 能发现
@@ -73,6 +84,10 @@ DEFAULT_DIST = REPO.parent / "dist"
 PASS = "PASS"
 FAIL = "FAIL"
 SKIP = "SKIP"
+# WARN：**查到了、也如实说出来了**，但它本身不构成"不要发布"。
+# 存在的理由：像"这是已知的未签名测试产物"这种事，既不是 PASS（没有签名），
+# 也不是 FAIL（它没有冒充发布产物）。以前只能塞进 SKIP，读起来像"没查"。
+WARN = "WARN"
 
 # 历史写在**脚本所在的检出**里（不是 --repo 指的产物目录）：发布记录要跟版本一起进仓库。
 SCRIPT_REPO = Path(__file__).resolve().parents[1]
@@ -97,6 +112,10 @@ class Gate:
     @property
     def failed(self) -> list[Result]:
         return [r for r in self.results if r.state == FAIL]
+
+    @property
+    def warned(self) -> list[Result]:
+        return [r for r in self.results if r.state == WARN]
 
     def report(self) -> str:
         width = max((len(r.name) for r in self.results), default=10)
@@ -201,15 +220,19 @@ def compare_records(previous: dict, current: dict) -> dict:
     """这次比上次：哪些项新通过 / 新失败 / 一直失败，以及检查项本身的增减。"""
     prev = previous.get("results") or {}
     cur = current.get("results") or {}
-    newly_failed = sorted(k for k, v in cur.items() if v != PASS and prev.get(k) == PASS)
+    # 只有 FAIL 才是"失败"。WARN / SKIP 不是 —— 否则"已知未签名测试产物"这种
+    # 如实记录会被历史比较读成"新失败"，把诚实标注变成噪声。
+    newly_failed = sorted(k for k, v in cur.items() if v == FAIL and prev.get(k) == PASS)
+    newly_warned = sorted(k for k, v in cur.items() if v == WARN and prev.get(k) == PASS)
     newly_passed = sorted(k for k, v in cur.items() if v == PASS and k in prev and prev[k] != PASS)
-    still_failing = sorted(k for k, v in cur.items() if v != PASS and prev.get(k) not in (PASS, None))
+    still_failing = sorted(k for k, v in cur.items() if v == FAIL and prev.get(k) not in (PASS, None))
     return {
         "previous_ts": previous.get("ts"),
         "previous_version": previous.get("version"),
         "previous_commit": previous.get("commit"),
         "newly_passed": newly_passed,
         "newly_failed": newly_failed,
+        "newly_warned": newly_warned,
         "still_failing": still_failing,
         "added_items": sorted(set(cur) - set(prev)),
         "removed_items": sorted(set(prev) - set(cur)),
@@ -227,6 +250,7 @@ def format_comparison(diff: dict) -> list[str]:
     ]
     lines.append(f"  新通过：{names('newly_passed')}")
     lines.append(f"  新失败：{names('newly_failed')}")
+    lines.append(f"  新警告：{names('newly_warned')}")
     lines.append(f"  一直失败：{names('still_failing')}")
     if diff["added_items"] or diff["removed_items"]:
         lines.append(f"  检查项增减：+{names('added_items')} / -{names('removed_items')}")
@@ -240,13 +264,14 @@ def print_history(path: Path, limit: int) -> int:
         print(f"没有历史记录：{path}")
         return 0
     print(f"# 发布闸门历史 {path}（{len(records)} 条）")
-    print(f"{'时间':<26} {'版本':<10} {'commit':<10} {'PASS':>5} {'FAIL':>5} {'SKIP':>5}  安装包")
+    print(f"{'时间':<26} {'版本':<10} {'commit':<10} {'PASS':>5} {'WARN':>5} {'FAIL':>5} {'SKIP':>5}  安装包")
     for record in records[-limit:]:
         counts = record.get("counts") or {}
         print(
             f"{(record.get('ts') or '?')[:26]:<26} {(record.get('version') or '?')[:10]:<10} "
             f"{(record.get('commit') or '?')[:8]:<10} "
-            f"{counts.get(PASS, 0):>5} {counts.get(FAIL, 0):>5} {counts.get(SKIP, 0):>5}  "
+            f"{counts.get(PASS, 0):>5} {counts.get(WARN, 0):>5} {counts.get(FAIL, 0):>5} "
+            f"{counts.get(SKIP, 0):>5}  "
             f"{record.get('installer')}"
         )
     if len(records) >= 2:
@@ -511,7 +536,15 @@ def check_bundle_config(gate: Gate, conf: dict) -> None:
     if problems:
         gate.add("bundle.config", FAIL, "；".join(problems))
     else:
-        gate.add("bundle.config", PASS, "externalBin / resources / createUpdaterArtifacts 自洽")
+        # 注意口径：这一项只看**源码配置**是否自洽。实际产物到底有没有更新签名，
+        # 由 updater.artifacts 按产物判定 —— 上一阶段就是在这里漏过一次：
+        # 构建用 --config 关掉了 createUpdaterArtifacts，产物没有签名，这里却报 PASS。
+        gate.add(
+            "bundle.config",
+            PASS,
+            "源码配置自洽（externalBin / resources / createUpdaterArtifacts=true）；"
+            "实际产物是否带更新签名见 updater.artifacts",
+        )
 
 
 def check_nsis_strings(gate: Gate, installer: Path, conf: dict) -> None:
@@ -536,6 +569,200 @@ def check_nsis_strings(gate: Gate, installer: Path, conf: dict) -> None:
         gate.add("nsis.payload", PASS, f"NSIS 结构标记、产品名与版本号 {version} 都在")
 
 
+# ---------------------------------------------------------------------------
+# 安装器契约（静态）与构建配置身份
+#
+# 为什么这几项是"静态"的：真机跑一次安装/卸载需要能写注册表的桌面会话。
+# 本会话的沙箱给子进程的是受限令牌（WriteRegStr / DeleteRegKey 静默 ACCESS_DENIED），
+# CI runner 上也没有装出来的应用。但"卸载时到底删了什么"是**源码里可判定的事实**，
+# 而且恰恰是最容易在后续重构里被悄悄改坏的地方（比如有人图省事把 DeleteRegValue
+# 改成 DeleteRegKey，就把用户状态一起删了）。
+# ---------------------------------------------------------------------------
+
+INSTALL_LOCATION_KEY = r"Software\qio\QIO"
+# 这个键下**不属于安装信息**的值：后端写的数据库身份基线（用户状态）。
+USER_STATE_VALUES = ("DbBaseline",)
+# 数据目录：保留与否只能由「删除应用数据」复选框决定，卸载钩子不许碰。
+APP_DATA_DIRS = (r"$APPDATA\com.qio.app", r"$LOCALAPPDATA\com.qio.app")
+
+
+def nsis_hooks_path(conf: dict) -> Path | None:
+    """tauri.conf.json 里 bundle.windows.nsis.installerHooks 指向的 .nsh（相对配置目录）。"""
+    windows = ((conf.get("bundle") or {}).get("windows") or {})
+    rel = (windows.get("nsis") or {}).get("installerHooks") or ""
+    if not rel:
+        return None
+    return (TAURI_CONF.parent / str(rel)).resolve()
+
+
+def _uninstall_hook_body(text: str) -> str | None:
+    """把卸载钩子宏（PREUNINSTALL / POSTUNINSTALL）的正文拼起来；都没有就返回 None。"""
+    bodies: list[str] = []
+    for name in ("NSIS_HOOK_PREUNINSTALL", "NSIS_HOOK_POSTUNINSTALL"):
+        bodies += re.findall(r"!macro\s+" + re.escape(name) + r"\b(.*?)!macroend", text, re.S)
+    return "\n".join(bodies) if bodies else None
+
+
+def check_uninstall_contract(gate: Gate, conf: dict) -> None:
+    """普通卸载必须清掉**安装信息**，且**绝不能**动用户状态与数据目录。"""
+    hooks = nsis_hooks_path(conf)
+    if hooks is None:
+        gate.add(
+            "uninstall.contract",
+            FAIL,
+            "没有配置 bundle.windows.nsis.installerHooks：Tauri 默认的卸载段只在"
+            "「删除应用数据」勾选时才清理安装位置记录，于是普通卸载会留下 "
+            f"{INSTALL_LOCATION_KEY}，下一次安装会把默认目录指到一个已经被删掉的路径",
+        )
+        return
+    if not hooks.exists():
+        gate.add("uninstall.contract", FAIL, f"installerHooks 指向的文件不存在：{hooks}")
+        return
+    text = hooks.read_text(encoding="utf-8", errors="replace")
+    body = _uninstall_hook_body(text)
+    if body is None:
+        gate.add(
+            "uninstall.contract",
+            FAIL,
+            f"{hooks.name} 里没有 NSIS_HOOK_POSTUNINSTALL / NSIS_HOOK_PREUNINSTALL："
+            "文件在、但什么都没挂上（Tauri 只会插入存在的宏）",
+        )
+        return
+
+    problems: list[str] = []
+    if not re.search(r'DeleteRegValue\s+SHCTX\s+"Software\\qio\\QIO"\s+""', body):
+        problems.append("没有删除安装位置（该键的默认值）的 DeleteRegValue")
+    for stmt in re.findall(r"DeleteRegKey[^\r\n]*", body):
+        if "Software\\qio" in stmt and "/ifempty" not in stmt:
+            problems.append(
+                "对整个 Software\\qio\\QIO 用了不带 /ifempty 的 DeleteRegKey："
+                "会把 DbBaseline（用户状态）一起删掉，等于改了数据保留策略"
+            )
+    for value in USER_STATE_VALUES:
+        if re.search(r"DeleteRegValue[^\r\n]*" + re.escape(value), body):
+            problems.append(f"在删用户状态值 {value}")
+    for directory in APP_DATA_DIRS:
+        if directory in body:
+            problems.append(f"碰了数据目录 {directory}（保留策略只能由「删除应用数据」复选框决定）")
+    if re.search(r"\bRMDir\b[^\r\n]*com\.qio\.app", body, re.I):
+        problems.append("在卸载钩子里删数据目录")
+
+    nsis_conf = (((conf.get("bundle") or {}).get("windows") or {}).get("nsis") or {})
+    mode = str(nsis_conf.get("installMode") or "currentUser（未显式配置，Tauri 默认）")
+    if problems:
+        gate.add("uninstall.contract", FAIL, "；".join(problems))
+    else:
+        gate.add(
+            "uninstall.contract",
+            PASS,
+            f"卸载钩子会清安装信息（{INSTALL_LOCATION_KEY} 的默认值与 Installer Language），"
+            f"且用 /ifempty 保留 DbBaseline；installMode={mode}",
+        )
+
+
+def check_repo_identity(gate: Gate) -> None:
+    """产物必须能对到某一版源码：把当前 commit 写进判定结果。"""
+    commit = _git_commit(REPO)
+    if commit:
+        gate.add("repo.commit", PASS, f"{commit[:12]}（{REPO}）")
+    else:
+        gate.add(
+            "repo.commit",
+            WARN,
+            f"取不到 git commit（{REPO} 不是 git 检出？）—— 这份产物无法对到某一版源码",
+        )
+
+
+def build_manifest_path(installer: Path) -> Path:
+    """构建 manifest 与产物同名同目录：QIO_x.y.z_x64-setup.exe.build.json。"""
+    return installer.with_name(installer.name + ".build.json")
+
+
+def check_build_manifest(gate: Gate, installer: Path, digest: str, conf: dict) -> dict | None:
+    """构建配置身份：**构建过程写下来的事实**，不是"按默认配置推断"。
+
+    没有它的时候，闸门只能读 tauri.conf.json 猜这次构建用了什么配置 —— 上一阶段
+    就因此漏过一次（--config 关掉 createUpdaterArtifacts，产物没签名却报 PASS）。
+    """
+    path = build_manifest_path(installer)
+    if not path.exists():
+        gate.add(
+            "build.manifest",
+            WARN,
+            f"没有 {path.name}：这次构建用的配置无法核对（只能按 tauri.conf.json 推断）。"
+            "用 scripts/build_installer.ps1 构建会自动写出它",
+        )
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        gate.add("build.manifest", FAIL, f"{path.name} 解析失败：{exc}")
+        return None
+    if not isinstance(manifest, dict):
+        gate.add("build.manifest", FAIL, f"{path.name} 不是一个 JSON 对象")
+        return None
+
+    problems: list[str] = []
+    recorded = str(manifest.get("installer_sha256") or "").lower()
+    if recorded and recorded != digest.lower():
+        problems.append(
+            f"manifest 记的安装包 sha256 {recorded[:16]}… 与实际 {digest[:16]}… 不一致"
+            "（这份 manifest 描述的是另一个产物）"
+        )
+    if str(manifest.get("installer") or "") and str(manifest["installer"]) != installer.name:
+        problems.append(f"manifest 记的安装包名 {manifest['installer']} 与选中的 {installer.name} 不一致")
+    version = str(manifest.get("version") or "")
+    conf_version = str(conf.get("version") or "")
+    if version and conf_version and version != conf_version:
+        problems.append(f"manifest 版本 {version} != tauri.conf.json {conf_version}")
+    if problems:
+        gate.add("build.manifest", FAIL, "；".join(problems))
+        return manifest
+
+    overrides = manifest.get("config_overrides") or {}
+    gate.add(
+        "build.manifest",
+        PASS,
+        f"commit={str(manifest.get('commit') or '?')[:8]} version={version or '?'} "
+        f"built_at={manifest.get('built_at') or '?'} signing={manifest.get('signing') or '?'} "
+        f"overrides={'无' if not overrides else json.dumps(overrides, ensure_ascii=False)}",
+    )
+    return manifest
+
+
+def check_updater_artifacts(
+    gate: Gate, installer: Path, conf: dict, manifest: dict | None
+) -> None:
+    """更新产物**按实际产物**判定，不按源码配置推断。"""
+    sig = installer.with_name(installer.name + ".sig")
+    wants = bool(((conf.get("bundle") or {}).get("createUpdaterArtifacts")))
+    signing = str((manifest or {}).get("signing") or "")
+    declared_unsigned = signing == "unsigned-test" or "UNSIGNED-TEST" in installer.name
+    overrides = json.dumps((manifest or {}).get("config_overrides") or {}, ensure_ascii=False)
+
+    if sig.exists():
+        gate.add("updater.artifacts", PASS, f"实际产物带更新签名：{sig.name}")
+        return
+    if declared_unsigned:
+        gate.add(
+            "updater.artifacts",
+            WARN,
+            f"实际产物**没有**更新签名（{sig.name} 不存在），且它被显式标成未签名测试产物"
+            f"（signing={signing or 'UNSIGNED-TEST 名称'}，config_overrides={overrides}）。"
+            "这不是可发布产物；正式签名需要 TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)",
+        )
+        return
+    if wants:
+        gate.add(
+            "updater.artifacts",
+            FAIL,
+            f"tauri.conf.json 要求 createUpdaterArtifacts，但实际产物没有 {sig.name}"
+            "（构建时被 --config 覆盖，或签名失败）—— 这正是只看源码配置会漏掉的那种不一致",
+        )
+    else:
+        gate.add("updater.artifacts", WARN, f"源码配置没有要求更新产物，实际产物也没有 {sig.name}")
+
+
 def _make_fake_minisign(key_id: bytes, payload_len: int) -> str:
     """造一份结构合法（但不做真实验签）的 minisign 载荷，供自检用。"""
     blob = b"ED" + key_id + bytes(payload_len - 10)
@@ -543,11 +770,28 @@ def _make_fake_minisign(key_id: bytes, payload_len: int) -> str:
     return base64.b64encode(inner.encode("utf-8")).decode("ascii")
 
 
-def build_fixture(root: Path, *, sidecar_newer: bool = False, bad_hash: bool = False) -> Path:
+def build_fixture(
+    root: Path,
+    *,
+    sidecar_newer: bool = False,
+    bad_hash: bool = False,
+    hook: str = "good",
+    unsigned: bool = False,
+    manifest_foreign: bool = False,
+    no_manifest: bool = False,
+) -> Path:
     """造一个最小的发布产物目录（自检与历史回归测试共用，只写合成数据）。
 
-    `bad_hash=True` 让 SHA256SUMS.txt 记一个错的哈希；`sidecar_newer=True` 造出
-    「包里是旧后端」这件事。返回 dist 目录。
+    * `bad_hash=True`：SHA256SUMS.txt 记一个错的哈希；
+    * `sidecar_newer=True`：造出「包里是旧后端」；
+    * `hook`：`good`（正常卸载钩子）/ `dangerous`（整键 DeleteRegKey，会删掉用户状态）/
+      `none`（根本没配 installerHooks）；
+    * `unsigned=True`：产物是显式标注的未签名测试产物（没有 .sig / latest.json，
+      但 build manifest 声明 signing=unsigned-test 与 config_overrides）；
+    * `manifest_foreign=True`：build manifest 描述的是另一个产物（哈希对不上）；
+    * `no_manifest=True`：根本没有 build manifest（只能记 WARN）。
+
+    返回 dist 目录。
     """
     (root / "frontend" / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
     (root / "frontend" / "src-tauri" / "resources" / "models" / "fake-model").mkdir(parents=True, exist_ok=True)
@@ -563,32 +807,40 @@ def build_fixture(root: Path, *, sidecar_newer: bool = False, bad_hash: bool = F
                     "externalBin": ["binaries/qio-backend"],
                     "resources": {"resources/models": "models"},
                     "createUpdaterArtifacts": True,
+                    **(
+                        {"windows": {"nsis": {"installerHooks": "nsis/installer-hooks.nsh"}}}
+                        if hook != "none"
+                        else {}
+                    ),
                 },
                 "plugins": {"updater": {"pubkey": _make_fake_minisign(key_id, 42)}},
             }
         ),
         encoding="utf-8",
     )
-    installer_path = dist / "QIO_9.9.9_x64-setup.exe"
+    name = "QIO_9.9.9_x64-setup-UNSIGNED-TEST.exe" if unsigned else "QIO_9.9.9_x64-setup.exe"
+    installer_path = dist / name
     installer_path.write_bytes(b"MZ" + b"Nullsoft" + "9.9.9".encode("utf-16-le") + b"QIO" + b"x" * 60_000_000)
-    (dist / "QIO_9.9.9_x64-setup.exe.sig").write_text(_make_fake_minisign(key_id, 74), encoding="utf-8")
-    digest = sha256_of(dist / "QIO_9.9.9_x64-setup.exe")
+    if not unsigned:
+        (dist / f"{name}.sig").write_text(_make_fake_minisign(key_id, 74), encoding="utf-8")
+    digest = sha256_of(installer_path)
     recorded = "0" * 64 if bad_hash else digest
-    (dist / "SHA256SUMS.txt").write_text(f"QIO_9.9.9_x64-setup.exe  {recorded}\n", encoding="utf-8")
-    (dist / "latest.json").write_text(
-        json.dumps(
-            {
-                "version": "9.9.9",
-                "platforms": {
-                    "windows-x86_64": {
-                        "signature": _make_fake_minisign(key_id, 74),
-                        "url": "https://example.invalid/QIO_9.9.9_x64-setup.exe",
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    (dist / "SHA256SUMS.txt").write_text(f"{name}  {recorded}\n", encoding="utf-8")
+    if not unsigned:
+        (dist / "latest.json").write_text(
+            json.dumps(
+                {
+                    "version": "9.9.9",
+                    "platforms": {
+                        "windows-x86_64": {
+                            "signature": _make_fake_minisign(key_id, 74),
+                            "url": f"https://example.invalid/{name}",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
     sidecar = root / "frontend" / "src-tauri" / "binaries" / "qio-backend-x86_64-pc-windows-msvc.exe"
     sidecar.write_bytes(b"SIDECAR")
     (root / "frontend" / "src-tauri" / "target" / "release" / "qio-backend.exe").write_bytes(b"SIDECAR")
@@ -610,46 +862,156 @@ def build_fixture(root: Path, *, sidecar_newer: bool = False, bad_hash: bool = F
     else:
         os.utime(sidecar, (now - 3600, now - 3600))
         os.utime(installer_path, (now, now))
+
+    # 卸载钩子文件（Tauri 通过 bundle.windows.nsis.installerHooks 挂它）
+    if hook != "none":
+        hooks_dir = root / "frontend" / "src-tauri" / "nsis"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        if hook == "dangerous":
+            body = (
+                '!macro NSIS_HOOK_POSTUNINSTALL\n'
+                '  DeleteRegKey SHCTX "Software\\qio\\QIO"\n'
+                '!macroend\n'
+            )
+        else:
+            body = (
+                '!macro NSIS_HOOK_POSTUNINSTALL\n'
+                '  DeleteRegValue SHCTX "Software\\qio\\QIO" ""\n'
+                '  DeleteRegValue SHCTX "Software\\qio\\QIO" "Installer Language"\n'
+                '  DeleteRegKey /ifempty SHCTX "Software\\qio\\QIO"\n'
+                '  DeleteRegKey /ifempty SHCTX "Software\\qio"\n'
+                '!macroend\n'
+            )
+        (hooks_dir / "installer-hooks.nsh").write_text(body, encoding="utf-8")
+
+    # 构建 manifest（构建过程写下来的配置身份）
+    if not no_manifest:
+        manifest_digest = "0" * 64 if manifest_foreign else digest
+        (dist / f"{name}.build.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "installer": name,
+                    "installer_sha256": manifest_digest,
+                    "version": "9.9.9",
+                    "commit": "f" * 40,
+                    "built_at": "2026-10-02T00:00:00+00:00",
+                    "updater_artifacts": not unsigned,
+                    "config_overrides": (
+                        {"bundle": {"createUpdaterArtifacts": False}} if unsigned else {}
+                    ),
+                    "signing": "unsigned-test" if unsigned else "signed",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     return dist
 
 
 
+def run_checks(
+    gate: Gate,
+    dist: Path,
+    installer: Path,
+    conf: dict,
+    *,
+    with_repo_identity: bool = True,
+) -> str:
+    """闸门的检查清单。
+
+    **main 与 --selftest 必须共用这一份**：否则会出现"自检绿了、真跑却查了别的"，
+    自检就不再证明任何事。返回安装包 sha256。
+    """
+    if with_repo_identity:
+        check_repo_identity(gate)
+    digest = check_installer(gate, installer)
+    check_sums(gate, dist, installer, digest)
+    if conf:
+        check_manifest(gate, dist, installer, conf)
+        check_bundle_config(gate, conf)
+        check_uninstall_contract(gate, conf)
+        if installer.exists():
+            check_nsis_strings(gate, installer, conf)
+    if installer.exists():
+        check_sig_file(gate, dist, installer)
+    check_sidecar(gate, installer)
+    check_models(gate)
+    manifest = check_build_manifest(gate, installer, digest, conf) if installer.exists() else None
+    if conf:
+        check_updater_artifacts(gate, installer, conf, manifest)
+    return digest
+
+
 def _selftest() -> int:
-    """自检：造一个最小的发布目录，先要求全绿，再逐一注入缺陷要求变红。"""
+    """自检：造一个最小的发布目录，先要求全绿，再逐一注入缺陷要求变红。
+
+    每个用例写清"期望哪些项红、哪些项只是警告" —— 特别是
+    「未签名测试产物」：签名两项必须红，而 updater.artifacts 只能是 WARN，
+    不能既不是 PASS 也不是 FAIL 地被吞掉。
+    """
     import shutil
     import tempfile
 
-    failures: list[str] = []
+    cases = (
+        dict(label="健康产物", kwargs={}, expect_fail=set()),
+        dict(label="哈希不符", kwargs={"bad_hash": True}, expect_fail={"sha256sums"}),
+        dict(label="安装包比 sidecar 旧", kwargs={"sidecar_newer": True}, expect_fail={"sidecar.fresh"}),
+        dict(label="没有卸载钩子", kwargs={"hook": "none"}, expect_fail={"uninstall.contract"}),
+        dict(
+            label="卸载钩子删整键（会带走 DbBaseline）",
+            kwargs={"hook": "dangerous"},
+            expect_fail={"uninstall.contract"},
+        ),
+        dict(
+            label="没有构建 manifest（记 WARN，不判失败）",
+            kwargs={"no_manifest": True},
+            expect_fail=set(),
+            expect_warn={"build.manifest"},
+        ),
+        dict(
+            label="manifest 描述的是别的产物",
+            kwargs={"manifest_foreign": True},
+            expect_fail={"build.manifest"},
+        ),
+        dict(
+            label="未签名测试产物：签名项红、更新产物只记 WARN",
+            kwargs={"unsigned": True},
+            expect_fail={"installer.sig", "latest.json"},
+            expect_warn={"updater.artifacts"},
+        ),
+    )
 
+    failures: list[str] = []
     tmp = Path(tempfile.mkdtemp(prefix="qio-gate-selftest-"))  # noqa: S108 - 自检临时目录
     try:
-        for label, kwargs, want_fail in (
-            ("健康产物", {}, None),
-            ("哈希不符", {"bad_hash": True}, "sha256sums"),
-            ("安装包比 sidecar 旧", {"sidecar_newer": True}, "sidecar.fresh"),
-        ):
-            root = tmp / label
-            build_fixture(root, **kwargs)
+        for case in cases:
+            label = case["label"]
+            root = tmp / label.replace("/", "_")
+            build_fixture(root, **case["kwargs"])
             set_repo(root)
             gate = Gate()
-            conf = json.loads((root / "frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-            installer = root / "dist" / "QIO_9.9.9_x64-setup.exe"
-            digest = check_installer(gate, installer)
-            check_sums(gate, root / "dist", installer, digest)
-            check_manifest(gate, root / "dist", installer, conf)
-            check_bundle_config(gate, conf)
-            check_nsis_strings(gate, installer, conf)
-            check_sig_file(gate, root / "dist", installer)
-            check_sidecar(gate, installer)
-            check_models(gate)
+            conf = json.loads(
+                (root / "frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+            )
+            names = sorted((root / "dist").glob("QIO_*_x64-setup*.exe"))
+            installer = names[-1] if names else root / "dist" / "QIO_9.9.9_x64-setup.exe"
+            run_checks(gate, root / "dist", installer, conf, with_repo_identity=False)
+
             failed = {r.name for r in gate.failed}
-            if want_fail is None:
-                if failed:
-                    failures.append(f"{label}: 期望全绿，实际失败 {sorted(failed)}")
-            elif want_fail not in failed:
-                failures.append(f"{label}: 期望 {want_fail} 变红，实际失败 {sorted(failed) or '无'}")
-            else:
-                print(f"  [OK] {label} -> {want_fail} 正确变红")
+            warned = {r.name for r in gate.warned}
+            expect_fail = set(case["expect_fail"])
+            expect_warn = set(case.get("expect_warn") or ())
+            if failed != expect_fail:
+                failures.append(f"{label}: 期望失败 {sorted(expect_fail) or '无'}，实际 {sorted(failed) or '无'}")
+                continue
+            missing_warn = expect_warn - warned
+            if missing_warn:
+                failures.append(f"{label}: 期望 {sorted(missing_warn)} 记 WARN，实际没记")
+                continue
+            suffix = f"（失败 {sorted(failed) or '无'}；警告 {sorted(warned) or '无'}）"
+            print(f"  [OK] {label} {suffix}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         set_repo(Path(__file__).resolve().parents[1])
@@ -659,7 +1021,10 @@ def _selftest() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("[PASS] 发布闸门自检通过：健康产物全绿，哈希不符 / 后端过期 都能变红")
+    print(
+        "[PASS] 发布闸门自检通过：健康产物全绿；哈希不符 / 后端过期 / 缺卸载钩子 / "
+        "钩子删用户状态 / manifest 串包 都能变红；未签名测试产物只记 WARN"
+    )
     return 0
 
 
@@ -700,21 +1065,16 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         gate.add("tauri.conf.json", FAIL, f"读不出/解析失败：{exc}")
 
-    digest = check_installer(gate, installer)
-    check_sums(gate, dist, installer, digest)
-    if conf:
-        check_manifest(gate, dist, installer, conf)
-        check_bundle_config(gate, conf)
-        if installer.exists():
-            check_nsis_strings(gate, installer, conf)
-    if installer.exists():
-        check_sig_file(gate, dist, installer)
-    check_sidecar(gate, installer)
-    check_models(gate)
+    digest = run_checks(gate, dist, installer, conf)
 
     print(gate.report())
     failures = gate.failed
+    warnings = gate.warned
     print()
+    if warnings:
+        for item in warnings:
+            print(f"  警告 {item.name}：{item.detail}")
+        print()
     if failures:
         print(f"发布闸门：{len(failures)} 项不通过 —— 不要发布。")
     else:
@@ -729,8 +1089,13 @@ def main() -> int:
                 {
                     "installer": str(installer),
                     "sha256": digest,
+                    # 判定结果必须能对到"哪一版源码 + 哪次构建配置"
+                    "commit": _git_commit(REPO),
+                    "version": str(conf.get("version") or ""),
                     "results": [r.__dict__ for r in gate.results],
                     "failed": len(failures),
+                    "warned": len(warnings),
+                    "warnings": [r.name for r in warnings],
                 },
                 ensure_ascii=False,
                 indent=2,
