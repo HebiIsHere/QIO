@@ -17,6 +17,7 @@ launcher 会留下 child 锁住 qio-backend.exe，安装器因此报 Can't write
 from __future__ import annotations
 
 import argparse
+import atexit
 import ctypes
 import json
 import os
@@ -29,6 +30,18 @@ from ctypes import wintypes
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+
+# 本脚本创建过的实例 TEMP 目录：退出时统一删（onefile 的 _MEI 残留不删会堆到 GB 级）
+_TEMP_DIRS: list[Path] = []
+
+
+def cleanup_temp_dirs() -> None:
+    for path in _TEMP_DIRS:
+        shutil.rmtree(path, ignore_errors=True)
+    _TEMP_DIRS.clear()
+
+
+atexit.register(cleanup_temp_dirs)
 
 # ---------------------------------------------------------------- Win32 ----
 
@@ -223,6 +236,149 @@ def _cim_time_to_epoch(value) -> float | None:
     return None
 
 
+def listener_pid(port: int) -> int | None:
+    """哪个 pid 在监听这个端口 —— 「真正提供服务的进程」的直接证据。"""
+    cmd = (
+        f"(Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "
+        "| Select-Object -First 1 -ExpandProperty OwningProcess)"
+    )
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    text = (proc.stdout or "").strip()
+    return int(text) if text.isdigit() else None
+
+
+def full_tree(launcher_pid: int) -> list[dict]:
+    """从 launcher 出发**递归**枚举整棵进程树（不限可执行文件名）。
+
+    为什么要递归枚举而不是只看同名进程：onefile 是 launcher + child，但中间/旁边还可能有
+    别的进程（控制台宿主、trampoline、子进程）；「你以为在管那个进程，其实干活的不是它」
+    是这类结构最容易踩的坑（uv 的 venv python 也是同样的 trampoline 结构）。
+    """
+    all_procs = list_processes()
+    by_parent: dict[int, list[dict]] = {}
+    for item in all_procs:
+        by_parent.setdefault(int(item.get("ParentProcessId") or 0), []).append(item)
+    out: list[dict] = []
+    stack = [launcher_pid]
+    seen: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        for item in by_parent.get(pid, []):
+            row = {
+                "pid": int(item.get("ProcessId")),
+                "ppid": int(item.get("ParentProcessId") or 0),
+                "name": item.get("Name"),
+                "exe": item.get("ExecutablePath"),
+                "cmdline": (item.get("CommandLine") or "")[:160],
+                "created": str(item.get("CreationDate")),
+            }
+            out.append(row)
+            stack.append(row["pid"])
+    return sorted(out, key=lambda r: r["pid"])
+
+
+def print_tree(launcher_pid: int, listener: int | None) -> str:
+    rows = full_tree(launcher_pid)
+    lines = []
+    for row in rows:
+        mark = "  <= 监听端口" if listener is not None and row["pid"] == listener else ""
+        lines.append(
+            f"    pid={row['pid']} ppid={row['ppid']} {row['name']} "
+            f"created={row['created']} cmd={row['cmdline'][:70]!r}{mark}"
+        )
+    return "\n".join(lines) if lines else "    （没有后代）"
+
+
+def case_tree(exe: Path, work: Path, report: dict) -> None:
+    """完整进程树 + 谁在监听端口 + 监听者是否在 job 里（一次跑全）。"""
+    print("== 进程树实验：递归枚举 + 监听端口归属 + 监听者是否在 job 里 ==")
+    port = free_port()
+    since = time.time()
+    job = job_create()
+    proc, token = spawn_backend(exe, work, port)
+    assigned = job_assign(job, proc.pid)
+    ready = wait_ready(port, token, exe, since)
+    listener = listener_pid(port)
+    tree = full_tree(proc.pid)
+    pids = job_pids(job)
+    print(f"    spawn 返回的 launcher pid={proc.pid} assign={assigned} ready={ready['ready']} port={port}")
+    print(f"    监听 {port} 的 pid={listener}")
+    print("    完整进程树（递归）：")
+    print(print_tree(proc.pid, listener))
+    print(f"    job 内 pid={pids}  监听者在 job 里={listener in pids if listener else None}")
+    kernel32.CloseHandle(job)
+    time.sleep(3.0)
+    after = snapshot(exe, since)
+    print(f"    关闭 job 后：端口仍开={port_open(port)} 同名残留={after['count']} 监听 pid 还活着={_alive(listener) if listener else None}")
+    report["tree"] = {
+        "launcher_pid": proc.pid, "assign_ok": assigned, "ready": ready,
+        "listener_pid": listener, "tree": tree, "job_pids": pids,
+        "listener_in_job": (listener in pids) if listener else None,
+        "after_close": after, "port_open_after": port_open(port),
+    }
+    for pid in [p["pid"] for p in after["processes"]]:
+        kill_tree(pid)
+
+
+def job_stability_experiment(exe: Path, work: Path, report: dict, runs: int = 10) -> None:
+    """同一时序重复 N 次：child 到底稳不稳定地落进 job（竞态检查）。"""
+    print(f"== Job Object 稳定性：立即 assign 重复 {runs} 次 ==")
+    rows = []
+    for i in range(1, runs + 1):
+        port = free_port()
+        since = time.time()
+        job = job_create()
+        proc, token = spawn_backend(exe, work / f"run{i}", port)
+        assigned = job_assign(job, proc.pid)
+        ready = wait_ready(port, token, exe, since)
+        snap = wait_for_two(exe, since)
+        pids = job_pids(job)
+        child = next((p for p in snap["processes"] if p["pid"] != proc.pid), None)
+        listener = listener_pid(port)
+        delta_ms = None
+        if child is not None and child.get("created_ts") and snap["processes"]:
+            launcher_ts = next((p["created_ts"] for p in snap["processes"] if p["pid"] == proc.pid), None)
+            if launcher_ts:
+                delta_ms = round((child["created_ts"] - launcher_ts) * 1000)
+        row = {
+            "run": i, "launcher": proc.pid, "assign_ok": assigned,
+            "child": child["pid"] if child else None,
+            "child_in_job": bool(child and child["pid"] in pids),
+            "listener": listener, "listener_in_job": (listener in pids) if listener else None,
+            "launcher_to_child_ms": delta_ms,
+            "job_pids": pids, "ready": ready["ready"],
+        }
+        rows.append(row)
+        print(
+            f"    run {i:2d}: assign={assigned} child={row['child']} child_in_job={row['child_in_job']} "
+            f"listener={listener} listener_in_job={row['listener_in_job']} "
+            f"launcher->child={delta_ms}ms job_pids={pids}"
+        )
+        kernel32.CloseHandle(job)
+        time.sleep(2.0)
+        leftovers = snapshot(exe, since)
+        row["leftovers_after_close"] = leftovers["count"]
+        row["port_open_after"] = port_open(port)
+        for p in leftovers["processes"]:
+            kill_tree(p["pid"])
+        cleanup_temp_dirs()  # 每轮清一次，别让 10 轮的 _MEI 堆起来
+    stable = all(r["child_in_job"] and r["listener_in_job"] for r in rows)
+    deltas = [r["launcher_to_child_ms"] for r in rows if r["launcher_to_child_ms"] is not None]
+    print(
+        f"    汇总：{runs} 次里 child_in_job={sum(1 for r in rows if r['child_in_job'])}、"
+        f"listener_in_job={sum(1 for r in rows if r['listener_in_job'])}、"
+        f"launcher->child 间隔 {min(deltas) if deltas else None}~{max(deltas) if deltas else None}ms、"
+        f"关 job 后残留={sum(r['leftovers_after_close'] for r in rows)}"
+    )
+    report["job_stability"] = {"runs": rows, "stable": stable, "deltas_ms": deltas}
+
+
 def pid_names(pids: list[int]) -> dict:
     """把 pid 解析成 (名字, 可执行文件) —— 报告里要说清 job 里除了后端还有谁。"""
     if not pids:
@@ -267,8 +423,15 @@ def spawn_backend(exe: Path, work: Path, port: int, *, new_console: bool = True)
     token = work / "session-token.txt"
     if token.exists():
         token.unlink()
+    # 每个实例用自己的 TEMP：onefile 会把压缩包解到这里（约 130MB），而进程被 job 杀掉时
+    # 不会自己清理 —— 集中放一个目录，实验结束（或每轮结束）一起删，免得把磁盘塞满。
+    run_tmp = work / "tmp"
+    run_tmp.mkdir(parents=True, exist_ok=True)
+    _TEMP_DIRS.append(run_tmp)
     env = {
         **os.environ,
+        "TEMP": str(run_tmp),
+        "TMP": str(run_tmp),
         "QIO_HOST": "127.0.0.1",
         "QIO_PORT": str(port),
         "QIO_SESSION_TOKEN_FILE": str(token),
@@ -745,6 +908,12 @@ def main() -> int:
         print()
     if args.case in ("all", "job", "nested"):
         nested_job_experiment(exe, work / "job-nested", report)
+        print()
+    if args.case in ("all", "tree"):
+        case_tree(exe, work / "tree", report)
+        print()
+    if args.case in ("all", "stability"):
+        job_stability_experiment(exe, work / "stability", report, runs=10)
         print()
     if args.case in ("all", "job", "die"):
         shell_death_experiment(exe, work / "job-die", report)
