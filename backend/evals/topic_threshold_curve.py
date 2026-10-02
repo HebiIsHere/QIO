@@ -20,6 +20,13 @@ policy 是可注入的 TopicPolicy（生产默认就是 params.TOPIC），所以
 
 模型发现顺序：QIO_MODEL_DIR -> 常见 QIO 数据目录下的 models/bge-small-zh-v1.5。
 不联网、不需要 API Key；没有模型时用 --fake 仍可复现（结论只对 fake 成立）。
+
+**多轮上下文（2026-10-02 追加）**：用例可以带 `previous_exchanges`（这个话题里已经发生过的
+轮次）。评测把其中的 user 轮折进**当前话题的指纹文本**（title + keywords + summary_preview
++ 历史轮次），再让生产预测器冷启动出话题向量 —— 与生产一致：话题向量就是「话题指纹文本」
+的 embedding，而指纹里的 summary 随对话累积。这里不做真摘要（那要模型调用），用历史轮次
+文本近似；--record 会为这类用例同时记录 `scores_without_context`（不折历史），
+让测试能断言「上下文真的参与了判定」，而不是摆设。
 """
 
 from __future__ import annotations
@@ -165,19 +172,49 @@ def load_cases(path=CASES_PATH):
     return out
 
 
-def fingerprints_of(case):
-    return [
-        Fingerprint(t["id"], t.get("title", ""), t.get("keywords", []), t.get("summary_preview", ""))
-        for t in case["topics"]
-    ]
+CONTEXT_KEY = "previous_exchanges"
 
 
-def production_decision(case, embedding, policy):
+def context_text(case) -> str:
+    """历史轮次里 user 说过的话（它们代表这个话题里讨论过的内容）。"""
+    turns = case.get(CONTEXT_KEY) or []
+    parts = []
+    for turn in turns:
+        if str(turn.get("role", "user")) != "user":
+            continue
+        content = str(turn.get("content") or "").strip()
+        if content:
+            parts.append(content)
+    return " ".join(parts)
+
+
+def effective_summary(case, topic) -> str:
+    """当前话题的 summary_preview：生产里它随对话累积，这里用历史轮次近似。
+
+    只折当前话题：别的候选话题没有参与这段对话，不该被写进它们的指纹。
+    """
+    base = str(topic.get("summary_preview") or "")
+    if topic.get("id") != case.get("current_topic"):
+        return base
+    context = context_text(case)
+    return f"{base} {context}".strip() if context else base
+
+
+def fingerprints_of(case, *, with_context: bool = True):
+    """候选话题指纹；`with_context=False` 时不折历史（用于对照记录）。"""
+    out = []
+    for t in case["topics"]:
+        summary = effective_summary(case, t) if with_context else str(t.get("summary_preview") or "")
+        out.append(Fingerprint(t["id"], t.get("title", ""), t.get("keywords", []), summary))
+    return out
+
+
+def production_decision(case, embedding, policy, *, with_context: bool = True):
     """跑生产路径：TopicPredictor.predict() + affinity.classify(policy=...)。"""
     from agent.services.affinity import classify
     from agent.services.predict import TopicPredictor
 
-    fps = fingerprints_of(case)
+    fps = fingerprints_of(case, with_context=with_context)
     predictor = TopicPredictor(
         None,
         embedding,
@@ -196,13 +233,13 @@ def production_decision(case, embedding, policy):
     return decision.mode.value, prediction, decision
 
 
-def evaluate(cases, embedding, policy, collect_rows=False):
+def evaluate(cases, embedding, policy, collect_rows=False, *, with_context: bool = True):
     confusion = {a: {b: 0 for b in MODES} for a in MODES}
     per_category: dict = {}
     rows = []
     for case in cases:
         expected = case["expected"]
-        predicted, prediction, decision = production_decision(case, embedding, policy)
+        predicted, prediction, decision = production_decision(case, embedding, policy, with_context=with_context)
         confusion[expected][predicted] += 1
         cat = per_category.setdefault(case["category"], {"n": 0, "ok": 0, "wrong": []})
         cat["n"] += 1
@@ -305,7 +342,9 @@ def main() -> int:
     seen: dict = {}
     for case in cases:
         for t in case["topics"]:
-            key = (t["id"], t.get("title", ""), tuple(t.get("keywords", [])), t.get("summary_preview", ""))
+            # 用**生效**指纹（含多轮上下文折叠）做键：同一个 topic_id 在两处必须完全一致，
+            # 否则 CachedEmbedding 的话题向量缓存会串味，评测结果不可信。
+            key = (t["id"], t.get("title", ""), tuple(t.get("keywords", [])), effective_summary(case, t))
             seen.setdefault(t["id"], key)
             assert seen[t["id"]] == key, f"topic {t['id']} 的指纹在不同用例里不一致"
 
@@ -340,13 +379,29 @@ def main() -> int:
         snapshot_cases = {}
         for case in cases:
             _, prediction, _ = production_decision(case, embedding, TOPIC)
-            snapshot_cases[case["id"]] = {
+            entry = {
                 "scores": {k: round(float(v), 6) for k, v in (prediction.scores or {}).items()},
                 "current": case.get("current_topic"),
             }
+            if context_text(case):
+                # 对照：不折历史时同一个末尾消息的分数。测试用它断言「上下文真的参与了判定」。
+                # 每次用一个全新的 CachedEmbedding，避免话题向量缓存互相污染。
+                _, bare, _ = production_decision(
+                    case, CachedEmbedding(embedding.inner), TOPIC, with_context=False
+                )
+                entry["scores_without_context"] = {
+                    k: round(float(v), 6) for k, v in (bare.scores or {}).items()
+                }
+                entry["context_turns"] = len(case.get(CONTEXT_KEY) or [])
+            snapshot_cases[case["id"]] = entry
+        # 快照是**入库产物**：只写 model identity（它唯一确定权重），不写记录机上的路径 ——
+        # 否则每台机器 --record 一次都会在提交里留一条只对本机有意义的路径差异。
         SNAPSHOT_PATH.write_text(json.dumps({
-            "model": model_label,
-            "provenance": "由 evals/topic_threshold_curve.py --record 生成：真实 bge-small-zh-v1.5 ONNX 余弦",
+            "model": backend.model_identity or model_label,
+            "provenance": (
+                "由 evals/topic_threshold_curve.py --record 生成：真实 bge-small-zh-v1.5 ONNX 余弦；"
+                "model identity 里的哈希唯一确定权重文件，记录机路径不入库"
+            ),
             "cases": snapshot_cases,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n记录余弦快照 -> {SNAPSHOT_PATH}", file=sys.stderr)
