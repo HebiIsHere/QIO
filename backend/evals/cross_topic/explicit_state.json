@@ -1,0 +1,1455 @@
+{
+  "arms": {
+    "latest": {
+      "P0": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "explicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "note": "所有样本都被判定为答案泄漏：该状态来源不能用于证明检索改善"
+      },
+      "P1": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "explicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "note": "所有样本都被判定为答案泄漏：该状态来源不能用于证明检索改善"
+      },
+      "P2": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "mrr": 1.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "explicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "mrr": 1.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "implicit_clean": {
+          "n": 0,
+          "recall@1": 0.0,
+          "recall@5": 0.0,
+          "mrr": 0.0,
+          "wrong_memory_injection_rate": 0.0
+        },
+        "note": "所有样本都被判定为答案泄漏：该状态来源不能用于证明检索改善"
+      },
+      "P3": {
+        "p3": {
+          "explicit": {
+            "n": 30,
+            "state_contains_expected_rate": 1.0,
+            "n_non_leaked": 0,
+            "clean_hit_rate": 0.0
+          },
+          "implicit": {
+            "n": 16,
+            "state_contains_expected_rate": 1.0,
+            "n_non_leaked": 0,
+            "clean_hit_rate": 0.0
+          }
+        }
+      }
+    },
+    "others": {
+      "P0": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "explicit_clean": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit_clean": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        }
+      },
+      "P1": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "explicit_clean": {
+          "n": 30,
+          "recall@1": 0.1,
+          "recall@5": 0.2667,
+          "mrr": 0.1494,
+          "wrong_memory_injection_rate": 0.9
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit_clean": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.125,
+          "mrr": 0.025,
+          "wrong_memory_injection_rate": 1.0
+        }
+      },
+      "P2": {
+        "explicit": {
+          "n": 30,
+          "recall@1": 0.0,
+          "recall@5": 0.0667,
+          "mrr": 0.0133,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "explicit_clean": {
+          "n": 30,
+          "recall@1": 0.0,
+          "recall@5": 0.0667,
+          "mrr": 0.0133,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.0625,
+          "mrr": 0.0125,
+          "wrong_memory_injection_rate": 1.0
+        },
+        "implicit_clean": {
+          "n": 16,
+          "recall@1": 0.0,
+          "recall@5": 0.0625,
+          "mrr": 0.0125,
+          "wrong_memory_injection_rate": 1.0
+        }
+      },
+      "P3": {
+        "p3": {
+          "explicit": {
+            "n": 30,
+            "state_contains_expected_rate": 0.0,
+            "n_non_leaked": 30,
+            "clean_hit_rate": 0.0
+          },
+          "implicit": {
+            "n": 16,
+            "state_contains_expected_rate": 0.0,
+            "n_non_leaked": 16,
+            "clean_hit_rate": 0.0
+          }
+        }
+      }
+    }
+  },
+  "states": {
+    "latest": {
+      "leaked": 46,
+      "n": 46
+    },
+    "others": {
+      "leaked": 0,
+      "n": 46
+    }
+  },
+  "ordinary": {
+    "n": 72,
+    "recall@1": 0.8472,
+    "recall@5": 0.9167,
+    "mrr": 0.8731,
+    "wrong_memory_injection_rate": 0.1528,
+    "stale_memory_injection_rate": 0.0278,
+    "topic_hit@1": 0.0,
+    "topic_hit@5": 0.0,
+    "by_subtype": {
+      "cross_topic": {
+        "n": 10,
+        "recall@1": 0.2,
+        "recall@5": 0.4,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 0.2533
+      },
+      "decision": {
+        "n": 28,
+        "recall@1": 0.9286,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 0.9583
+      },
+      "fact_update": {
+        "n": 5,
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 1.0
+      },
+      "paraphrase": {
+        "n": 10,
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 1.0
+      },
+      "person_entity": {
+        "n": 4,
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 1.0
+      },
+      "preference": {
+        "n": 5,
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 1.0
+      },
+      "switch": {
+        "n": 10,
+        "recall@1": 0.9,
+        "recall@5": 1.0,
+        "topic_hit@1": 0.0,
+        "topic_hit@5": 0.0,
+        "mrr": 0.95
+      }
+    },
+    "rows": [
+      {
+        "id": "t_db_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_db_f1",
+          "t_db_f0",
+          "t_db_f4",
+          "t_people_f0",
+          "t_perf_f1"
+        ],
+        "expected": [
+          "t_db_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_db_f2",
+          "t_db_f5",
+          "t_perf_f2",
+          "t_deploy_f1",
+          "t_arch_f2"
+        ],
+        "expected": [
+          "t_db_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_db_f3",
+          "t_perf_f2",
+          "t_deploy_f4",
+          "t_arch_f3",
+          "t_study_f1"
+        ],
+        "expected": [
+          "t_db_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_q4",
+        "subtype": "decision",
+        "ranked": [
+          "t_db_f4",
+          "t_db_f1",
+          "t_db_f2",
+          "t_perf_f3",
+          "t_perf_f1"
+        ],
+        "expected": [
+          "t_db_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_q5",
+        "subtype": "fact_update",
+        "ranked": [
+          "t_db_f5",
+          "t_perf_f3",
+          "t_deploy_f4",
+          "t_work_f3",
+          "t_arch_f2"
+        ],
+        "expected": [
+          "t_db_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_db_f5",
+          "t_db_f1",
+          "t_deploy_f1",
+          "t_db_f2",
+          "t_db_f3"
+        ],
+        "expected": [
+          "t_db_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_db_f2",
+          "t_db_f5",
+          "t_perf_f2",
+          "t_people_f2",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_db_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_db_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_db_f5",
+          "t_ui_f3",
+          "t_perf_f3",
+          "noise_12",
+          "t_people_f3"
+        ],
+        "expected": [
+          "t_db_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_ui_f0",
+          "t_ui_f4",
+          "t_ui_f1",
+          "t_deploy_f1",
+          "noise_16"
+        ],
+        "expected": [
+          "t_ui_f1"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_q2",
+        "subtype": "preference",
+        "ranked": [
+          "t_ui_f2",
+          "t_ui_f0",
+          "t_ui_f4",
+          "t_ui_f1",
+          "t_food_f0"
+        ],
+        "expected": [
+          "t_ui_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_ui_f3",
+          "t_ui_f4",
+          "noise_8",
+          "t_deploy_f2",
+          "t_perf_f4"
+        ],
+        "expected": [
+          "t_ui_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_q4",
+        "subtype": "fact_update",
+        "ranked": [
+          "t_ui_f4",
+          "t_ui_f0",
+          "t_ui_f2",
+          "t_ui_f1",
+          "t_db_f2"
+        ],
+        "expected": [
+          "t_ui_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_ui_f4",
+          "t_ui_f0",
+          "t_ui_f2",
+          "t_ui_f1",
+          "t_ui_f3"
+        ],
+        "expected": [
+          "t_ui_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_ui_f2",
+          "t_ui_f4",
+          "t_ui_f1",
+          "t_ui_f0",
+          "t_food_f0"
+        ],
+        "expected": [
+          "t_ui_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_ui_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_ui_f4",
+          "t_ui_f0",
+          "t_db_f2",
+          "t_db_f5",
+          "t_ui_f1"
+        ],
+        "expected": [
+          "t_ui_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_deploy_f1",
+          "t_deploy_f0",
+          "t_deploy_f5",
+          "t_db_f0",
+          "noise_11"
+        ],
+        "expected": [
+          "t_deploy_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_deploy_f2",
+          "t_arch_f1",
+          "t_deploy_f5",
+          "t_deploy_f1",
+          "t_perf_f0"
+        ],
+        "expected": [
+          "t_deploy_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_deploy_f3",
+          "noise_14",
+          "noise_11",
+          "t_people_f2",
+          "noise_15"
+        ],
+        "expected": [
+          "t_deploy_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_q4",
+        "subtype": "decision",
+        "ranked": [
+          "t_deploy_f4",
+          "t_deploy_f2",
+          "t_people_f3",
+          "t_food_f0",
+          "t_perf_f1"
+        ],
+        "expected": [
+          "t_deploy_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_q5",
+        "subtype": "fact_update",
+        "ranked": [
+          "t_deploy_f5",
+          "t_deploy_f4",
+          "noise_10",
+          "t_deploy_f1",
+          "t_people_f3"
+        ],
+        "expected": [
+          "t_deploy_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_db_f1",
+          "t_deploy_f1",
+          "t_work_f2",
+          "t_ui_f2",
+          "t_perf_f4"
+        ],
+        "expected": [
+          "t_deploy_f5"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_deploy_f2",
+          "t_arch_f1",
+          "t_perf_f0",
+          "noise_12",
+          "t_people_f3"
+        ],
+        "expected": [
+          "t_deploy_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_deploy_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_db_f1",
+          "t_deploy_f5",
+          "t_people_f3",
+          "noise_12",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_deploy_f5"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_travel_f1",
+          "t_travel_f0",
+          "t_arch_f3",
+          "t_work_f2",
+          "t_travel_f3"
+        ],
+        "expected": [
+          "t_travel_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_travel_f2",
+          "t_travel_f3",
+          "t_travel_f1",
+          "t_travel_f4",
+          "t_travel_f5"
+        ],
+        "expected": [
+          "t_travel_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_travel_f3",
+          "t_travel_f4",
+          "t_travel_f2",
+          "t_study_f0",
+          "t_travel_f1"
+        ],
+        "expected": [
+          "t_travel_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_q4",
+        "subtype": "decision",
+        "ranked": [
+          "t_travel_f4",
+          "t_travel_f3",
+          "t_travel_f0",
+          "noise_19",
+          "t_study_f1"
+        ],
+        "expected": [
+          "t_travel_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_q5",
+        "subtype": "fact_update",
+        "ranked": [
+          "t_travel_f5",
+          "t_travel_f1",
+          "t_travel_f4",
+          "noise_16",
+          "t_arch_f2"
+        ],
+        "expected": [
+          "t_travel_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_travel_f0",
+          "t_travel_f1",
+          "t_db_f1",
+          "t_travel_f3",
+          "t_travel_f4"
+        ],
+        "expected": [
+          "t_travel_f5"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_travel_f2",
+          "t_travel_f3",
+          "t_travel_f4",
+          "t_travel_f0",
+          "t_travel_f1"
+        ],
+        "expected": [
+          "t_travel_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_travel_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_travel_f5",
+          "t_people_f3",
+          "noise_11",
+          "noise_16",
+          "noise_12"
+        ],
+        "expected": [
+          "t_travel_f5"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_perf_f1",
+          "t_perf_f4",
+          "t_db_f0",
+          "t_perf_f3",
+          "t_arch_f1"
+        ],
+        "expected": [
+          "t_perf_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_perf_f2",
+          "t_people_f2",
+          "t_study_f0",
+          "noise_7",
+          "noise_14"
+        ],
+        "expected": [
+          "t_perf_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_perf_f3",
+          "t_perf_f0",
+          "t_db_f1",
+          "t_db_f4",
+          "noise_10"
+        ],
+        "expected": [
+          "t_perf_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_q4",
+        "subtype": "fact_update",
+        "ranked": [
+          "t_perf_f4",
+          "t_perf_f1",
+          "t_perf_f3",
+          "t_arch_f0",
+          "t_perf_f0"
+        ],
+        "expected": [
+          "t_perf_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_db_f1",
+          "t_perf_f1",
+          "t_perf_f4",
+          "t_people_f3",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_perf_f4"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_perf_f2",
+          "t_perf_f3",
+          "t_people_f2",
+          "t_study_f0",
+          "t_people_f3"
+        ],
+        "expected": [
+          "t_perf_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_perf_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_perf_f4",
+          "t_db_f0",
+          "t_db_f1",
+          "t_arch_f0",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_perf_f4"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_q0",
+        "subtype": "decision",
+        "ranked": [
+          "t_work_f0",
+          "t_people_f2",
+          "t_work_f1",
+          "noise_10",
+          "t_study_f2"
+        ],
+        "expected": [
+          "t_work_f0"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_work_f1",
+          "t_people_f2",
+          "t_work_f0",
+          "t_work_f3",
+          "t_db_f4"
+        ],
+        "expected": [
+          "t_work_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_work_f2",
+          "t_work_f1",
+          "t_work_f3",
+          "noise_14",
+          "t_study_f1"
+        ],
+        "expected": [
+          "t_work_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_work_f3",
+          "t_work_f1",
+          "t_db_f1",
+          "noise_14",
+          "t_study_f0"
+        ],
+        "expected": [
+          "t_work_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_work_f0",
+          "t_db_f1",
+          "t_perf_f0",
+          "t_people_f2",
+          "t_work_f1"
+        ],
+        "expected": [
+          "t_work_f3"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_work_f1",
+          "t_people_f2",
+          "t_work_f0",
+          "t_db_f5",
+          "t_db_f4"
+        ],
+        "expected": [
+          "t_work_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_work_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_work_f3",
+          "t_db_f1",
+          "t_db_f3",
+          "noise_12",
+          "t_study_f0"
+        ],
+        "expected": [
+          "t_work_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_q0",
+        "subtype": "person_entity",
+        "ranked": [
+          "t_people_f0",
+          "t_people_f1",
+          "t_people_f3",
+          "t_people_f2",
+          "t_study_f1"
+        ],
+        "expected": [
+          "t_people_f0"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_q1",
+        "subtype": "person_entity",
+        "ranked": [
+          "t_people_f1",
+          "t_people_f2",
+          "noise_17",
+          "noise_18",
+          "t_travel_f4"
+        ],
+        "expected": [
+          "t_people_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_q2",
+        "subtype": "person_entity",
+        "ranked": [
+          "t_people_f2",
+          "t_people_f1",
+          "t_people_f0",
+          "t_people_f3",
+          "t_work_f1"
+        ],
+        "expected": [
+          "t_people_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_q3",
+        "subtype": "person_entity",
+        "ranked": [
+          "t_people_f3",
+          "t_perf_f3",
+          "t_db_f5",
+          "t_deploy_f5",
+          "t_db_f1"
+        ],
+        "expected": [
+          "t_people_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_db_f1",
+          "t_people_f1",
+          "t_people_f0",
+          "t_work_f2",
+          "noise_7"
+        ],
+        "expected": [
+          "t_people_f3"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_people_f1",
+          "t_people_f3",
+          "t_people_f2",
+          "t_food_f0",
+          "t_study_f0"
+        ],
+        "expected": [
+          "t_people_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_people_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_people_f3",
+          "t_db_f1",
+          "t_db_f0",
+          "t_db_f5",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_people_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_q0",
+        "subtype": "preference",
+        "ranked": [
+          "t_food_f0",
+          "noise_4",
+          "t_perf_f0",
+          "t_ui_f2",
+          "t_study_f1"
+        ],
+        "expected": [
+          "t_food_f0"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_q1",
+        "subtype": "preference",
+        "ranked": [
+          "t_food_f1",
+          "noise_4",
+          "noise_19",
+          "t_food_f3",
+          "t_food_f2"
+        ],
+        "expected": [
+          "t_food_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_q2",
+        "subtype": "preference",
+        "ranked": [
+          "t_food_f2",
+          "t_food_f0",
+          "t_food_f3",
+          "t_food_f1",
+          "noise_4"
+        ],
+        "expected": [
+          "t_food_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_q3",
+        "subtype": "preference",
+        "ranked": [
+          "t_food_f3",
+          "t_food_f1",
+          "t_food_f0",
+          "noise_1",
+          "noise_4"
+        ],
+        "expected": [
+          "t_food_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_food_f0",
+          "noise_4",
+          "t_ui_f2",
+          "t_food_f2",
+          "t_people_f3"
+        ],
+        "expected": [
+          "t_food_f3"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_food_f1",
+          "t_food_f0",
+          "noise_4",
+          "t_food_f2",
+          "noise_19"
+        ],
+        "expected": [
+          "t_food_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_food_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_food_f3",
+          "t_food_f0",
+          "noise_1",
+          "noise_0",
+          "noise_4"
+        ],
+        "expected": [
+          "t_food_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_q0",
+        "subtype": "decision",
+        "ranked": [
+          "t_arch_f0",
+          "t_arch_f1",
+          "t_perf_f4",
+          "t_db_f1",
+          "t_perf_f0"
+        ],
+        "expected": [
+          "t_arch_f0"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_arch_f1",
+          "t_arch_f0",
+          "t_perf_f4",
+          "t_perf_f1",
+          "t_deploy_f5"
+        ],
+        "expected": [
+          "t_arch_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_arch_f0",
+          "t_arch_f2",
+          "t_arch_f1",
+          "t_perf_f4",
+          "t_perf_f0"
+        ],
+        "expected": [
+          "t_arch_f2"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_q3",
+        "subtype": "decision",
+        "ranked": [
+          "t_arch_f3",
+          "t_arch_f0",
+          "t_arch_f1",
+          "t_perf_f4",
+          "t_deploy_f3"
+        ],
+        "expected": [
+          "t_arch_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_arch_f0",
+          "t_perf_f4",
+          "t_db_f1",
+          "t_db_f3",
+          "t_arch_f1"
+        ],
+        "expected": [
+          "t_arch_f3"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_arch_f1",
+          "t_arch_f0",
+          "t_perf_f4",
+          "t_deploy_f3",
+          "t_perf_f3"
+        ],
+        "expected": [
+          "t_arch_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_arch_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_arch_f3",
+          "t_perf_f4",
+          "t_arch_f0",
+          "t_db_f1",
+          "t_db_f3"
+        ],
+        "expected": [
+          "t_arch_f3"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_q0",
+        "subtype": "decision",
+        "ranked": [
+          "t_study_f0",
+          "t_study_f2",
+          "noise_14",
+          "t_study_f1",
+          "t_ui_f1"
+        ],
+        "expected": [
+          "t_study_f0"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_q1",
+        "subtype": "decision",
+        "ranked": [
+          "t_study_f1",
+          "t_study_f0",
+          "noise_14",
+          "t_db_f0",
+          "noise_6"
+        ],
+        "expected": [
+          "t_study_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_q2",
+        "subtype": "decision",
+        "ranked": [
+          "t_study_f2",
+          "t_study_f0",
+          "t_deploy_f0",
+          "t_work_f2",
+          "noise_12"
+        ],
+        "expected": [
+          "t_study_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_cross",
+        "subtype": "cross_topic",
+        "ranked": [
+          "t_study_f0",
+          "t_db_f1",
+          "t_db_f3",
+          "t_study_f1",
+          "t_study_f2"
+        ],
+        "expected": [
+          "t_study_f2"
+        ],
+        "hit@1": false,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_para",
+        "subtype": "paraphrase",
+        "ranked": [
+          "t_study_f1",
+          "t_study_f0",
+          "t_study_f2",
+          "t_db_f0",
+          "noise_14"
+        ],
+        "expected": [
+          "t_study_f1"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      },
+      {
+        "id": "t_study_switch",
+        "subtype": "switch",
+        "ranked": [
+          "t_study_f2",
+          "t_study_f0",
+          "t_db_f5",
+          "noise_12",
+          "t_work_f2"
+        ],
+        "expected": [
+          "t_study_f2"
+        ],
+        "hit@1": true,
+        "topic_hit@1": false
+      }
+    ]
+  }
+}

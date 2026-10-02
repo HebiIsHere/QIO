@@ -1,0 +1,5162 @@
+{
+  "n": 118,
+  "arms": {
+    "A_before_fix": {
+      "n": 118,
+      "accuracy": 0.4237,
+      "continuation_recall": 0.3086,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.7283,
+      "switch_accuracy": 0.0,
+      "short_input": {
+        "n": 20,
+        "accuracy": 0.9
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.3889
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 25,
+          "switch": 0,
+          "new_topic": 56
+        },
+        "switch": {
+          "in_topic": 0,
+          "switch": 0,
+          "new_topic": 11
+        },
+        "new_topic": {
+          "in_topic": 1,
+          "switch": 0,
+          "new_topic": 25
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 0
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 2
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 0
+        },
+        "en": {
+          "n": 9,
+          "ok": 4
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 17
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 3
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 1
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 3
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 0
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 5
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 2
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "B_conservative": {
+      "n": 118,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0,
+      "short_input": {
+        "n": 20,
+        "accuracy": 1.0
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6111
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 81,
+          "switch": 0,
+          "new_topic": 0
+        },
+        "switch": {
+          "in_topic": 11,
+          "switch": 0,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 26,
+          "switch": 0,
+          "new_topic": 0
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 0
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 12
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 0
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 6
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 10
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 0
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 0
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 7
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 10
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "C_fixed_default": {
+      "n": 118,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091,
+      "short_input": {
+        "n": 20,
+        "accuracy": 0.9
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6111
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 64,
+          "switch": 1,
+          "new_topic": 16
+        },
+        "switch": {
+          "in_topic": 0,
+          "switch": 10,
+          "new_topic": 1
+        },
+        "new_topic": {
+          "in_topic": 2,
+          "switch": 0,
+          "new_topic": 24
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 8
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 11
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 16
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 6
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 7
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 3
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 1
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 5
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 5
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": null
+    },
+    "D_handoff": {
+      "n": 118,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091,
+      "short_input": {
+        "n": 20,
+        "accuracy": 1.0
+      },
+      "mixed_language": {
+        "n": 18,
+        "accuracy": 0.6667
+      },
+      "confusion": {
+        "in_topic": {
+          "in_topic": 80,
+          "switch": 1,
+          "new_topic": 0
+        },
+        "switch": {
+          "in_topic": 1,
+          "switch": 10,
+          "new_topic": 0
+        },
+        "new_topic": {
+          "in_topic": 26,
+          "switch": 0,
+          "new_topic": 0
+        }
+      },
+      "per_category": {
+        "ambiguous_shift": {
+          "n": 8,
+          "ok": 8
+        },
+        "continue_current": {
+          "n": 18,
+          "ok": 18
+        },
+        "cross_topic_reference": {
+          "n": 12,
+          "ok": 12
+        },
+        "en": {
+          "n": 9,
+          "ok": 5
+        },
+        "genuinely_new": {
+          "n": 18,
+          "ok": 0
+        },
+        "mixed": {
+          "n": 9,
+          "ok": 7
+        },
+        "multi_turn_continue": {
+          "n": 10,
+          "ok": 10
+        },
+        "multi_turn_new_topic": {
+          "n": 3,
+          "ok": 0
+        },
+        "multi_turn_switch": {
+          "n": 1,
+          "ok": 1
+        },
+        "no_signal": {
+          "n": 7,
+          "ok": 7
+        },
+        "paraphrase": {
+          "n": 10,
+          "ok": 9
+        },
+        "short_cn": {
+          "n": 13,
+          "ok": 13
+        }
+      },
+      "handoff": {
+        "count": 62,
+        "useful": 25,
+        "useful_rate": 0.4032
+      }
+    }
+  },
+  "sweep": [
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.963,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7034,
+      "continuation_recall": 0.8272,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.8148,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2826,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1522,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1739,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.163,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1739,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2065,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.0,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.8025,
+      "new_topic_recall": 0.6154,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.963,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.8051,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2065,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2065,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2391,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.02,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7627,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.8305,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1848,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.8051,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.822,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2065,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.1957,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.8136,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2065,
+      "switch_accuracy": 0.9091
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2391,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.03,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3261,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7288,
+      "continuation_recall": 0.9753,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.9877,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.8051,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.8051,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.8051,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2174,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7881,
+      "continuation_recall": 0.7654,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7966,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2283,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.6364
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.05,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.678,
+      "continuation_recall": 0.6914,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3913,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7797,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2609,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7712,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2717,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7203,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.337,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.5678,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5435,
+      "switch_accuracy": 0.3636
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.08,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7542,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.2935,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.6949,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3696,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.5424,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.5761,
+      "switch_accuracy": 0.0909
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.12,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.0,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 1.0,
+      "new_topic_recall": 0.0,
+      "false_new_topic_rate": 0.0,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.02,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7458,
+      "continuation_recall": 0.7901,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3043,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.03,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.7373,
+      "continuation_recall": 0.7778,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3152,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.05,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.6864,
+      "continuation_recall": 0.7037,
+      "new_topic_recall": 0.9231,
+      "false_new_topic_rate": 0.3804,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.02,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.03,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.05,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.0,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.02,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    },
+    {
+      "rules_new_topic_threshold": 0.2,
+      "rules_incumbent_threshold": 0.08,
+      "switch_threshold": 0.55,
+      "switch_delta": 0.15,
+      "accuracy": 0.5339,
+      "continuation_recall": 0.4691,
+      "new_topic_recall": 0.9615,
+      "false_new_topic_rate": 0.587,
+      "switch_accuracy": 0.0
+    }
+  ],
+  "score_diagnostic": {
+    "in_topic": {
+      "n": 81,
+      "top>0": 45,
+      "top_hist": {
+        "0.22": 1,
+        "0.06": 6,
+        "0.04": 3,
+        "0.12": 2,
+        "0.08": 5,
+        "0.1": 2,
+        "0.09": 4,
+        "0.05": 8,
+        "0.07": 5,
+        "0.13": 1,
+        "0.0": 36,
+        "0.03": 3,
+        "0.11": 2,
+        "0.17": 1,
+        "0.2": 2
+      },
+      "cur>0": 44,
+      "cur_hist": {
+        "0.22": 1,
+        "0.06": 5,
+        "0.04": 3,
+        "0.12": 2,
+        "0.08": 5,
+        "0.1": 2,
+        "0.09": 4,
+        "0.05": 8,
+        "0.07": 5,
+        "0.13": 1,
+        "0.0": 37,
+        "0.03": 3,
+        "0.11": 2,
+        "0.17": 1,
+        "0.2": 2
+      }
+    },
+    "new_topic": {
+      "n": 26,
+      "top>0": 1,
+      "top_hist": {
+        "0.0": 25,
+        "0.06": 1
+      },
+      "cur>0": 1,
+      "cur_hist": {
+        "0.0": 25,
+        "0.06": 1
+      }
+    },
+    "switch": {
+      "n": 11,
+      "top>0": 10,
+      "top_hist": {
+        "0.05": 6,
+        "0.08": 2,
+        "0.0": 1,
+        "0.09": 1,
+        "0.12": 1
+      },
+      "cur>0": 0,
+      "cur_hist": {
+        "0.0": 11
+      }
+    }
+  },
+  "cv": [
+    {
+      "k": 5,
+      "safe_only": true,
+      "pooled_accuracy": 0.7458,
+      "folds": [
+        {
+          "fold": 0,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.55,
+            "rules_switch_delta": 0.15
+          },
+          "accuracy": 0.75,
+          "n": 24
+        },
+        {
+          "fold": 1,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.55,
+            "rules_switch_delta": 0.15
+          },
+          "accuracy": 0.7917,
+          "n": 24
+        },
+        {
+          "fold": 2,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.55,
+            "rules_switch_delta": 0.15
+          },
+          "accuracy": 0.7083,
+          "n": 24
+        },
+        {
+          "fold": 3,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.55,
+            "rules_switch_delta": 0.15
+          },
+          "accuracy": 0.8696,
+          "n": 23
+        },
+        {
+          "fold": 4,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.55,
+            "rules_switch_delta": 0.15
+          },
+          "accuracy": 0.6087,
+          "n": 23
+        }
+      ]
+    },
+    {
+      "k": 5,
+      "safe_only": false,
+      "pooled_accuracy": 0.8305,
+      "folds": [
+        {
+          "fold": 0,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.02,
+            "rules_switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 1,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.02,
+            "rules_switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 2,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.02,
+            "rules_switch_delta": 0.02
+          },
+          "accuracy": 0.8333,
+          "n": 24
+        },
+        {
+          "fold": 3,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.02,
+            "rules_switch_delta": 0.02
+          },
+          "accuracy": 0.9565,
+          "n": 23
+        },
+        {
+          "fold": 4,
+          "policy": {
+            "rules_new_topic_threshold": 0.01,
+            "rules_incumbent_threshold": 0.01,
+            "rules_switch_threshold": 0.02,
+            "rules_switch_delta": 0.02
+          },
+          "accuracy": 0.6957,
+          "n": 23
+        }
+      ]
+    }
+  ]
+}

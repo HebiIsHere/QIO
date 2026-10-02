@@ -33,6 +33,10 @@ class TopicPolicy:
         switch_threshold      — classifier: at/above this a *different* topic may be
             suggested (still only a suggestion; the user confirms)
         switch_delta          — margin over the current topic needed for that suggestion
+        rules_switch_threshold / rules_switch_delta
+            — 上面两条在**关键词兜底层**的孪生值。两个后端分数不同量纲（onnx 是余弦
+            0~1，兜底是关键词重合比例 0~0.22），共用一条门槛必然有一边失效：
+            兜底分数够不到 0.55 时 switch 永远不触发（实测切换召回 0.000）
         new_topic_strict      — below this ⇒ eligible to create a new topic
         min_new_topic_chars   — 短于这个长度（去空白后的字符数）的输入不足以开新话题：
             真实语料里「嗯 / 继续 / ok」这类短确认的分数落在噪声带里（0.27~0.43），
@@ -49,19 +53,33 @@ class TopicPolicy:
         且只调数值无法收敛（短确认与无信号和两个分数带都重叠），
         所以拆成 incumbent / switch 两条门槛，见 affinity.classify。
 
+    兜底层（rules_*）默认值的来源：**118 条真实语料、强制关闭 embedding** 的评测。
+        eval:  backend/evals/topic_fallback/run_fallback_arms.py
+        data:  backend/evals/topic_fallback/results.json
+        report: backend/evals/EXPERIMENTS-P3-E.md
+        观测：兜底分数实际只落在 0~0.22（score=|查询词元∩话题关键词|/|查询词元|），
+        而旧门槛是 0.2 —— 于是「没有 owner + 现任门槛也够不着」→ 直接判新话题，
+        false_new_topic_rate 0.728、accuracy 0.4237。
+        按真实量纲标定后（0.02 一带，0.01~0.05 是平台）：
+        accuracy 0.8305 / 假新 0.185 / 继续召回 0.790 / 新话题召回 0.923 / 切换召回 0.909，
+        分层 5 折折内选参的诚实估计与全量一致（非过拟合）。
+        **换语料/换分词必须重新标定这四个 rules_* 值。**
+
     改这里的值必须同时更新上面两份 eval 的结论，否则默认值会重新变成
     「看起来有出处、实际没数据」的魔数。
     """
 
     new_topic_threshold: float = 0.42
-    rules_new_topic_threshold: float = 0.2
+    rules_new_topic_threshold: float = 0.02
     aux_topic_threshold: float = 0.3
     rules_aux_topic_threshold: float = 0.1
     switch_delta: float = 0.15
+    rules_switch_delta: float = 0.02
     new_topic_strict: float = 0.5
     switch_threshold: float = 0.55
+    rules_switch_threshold: float = 0.02
     incumbent_threshold: float = 0.42
-    rules_incumbent_threshold: float = 0.2
+    rules_incumbent_threshold: float = 0.02
     min_new_topic_chars: int = 8
     aux_top_count: int = 2
 

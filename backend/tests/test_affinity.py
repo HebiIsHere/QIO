@@ -31,10 +31,13 @@ def test_switch_when_other_topic_high_score():
 def test_new_when_main_score_below_switch_threshold():
     # 消息长度必须超过短输入护栏（min_new_topic_chars），否则它会被判成「延续」——
     # 这里要测的是 switch 门槛那一支，所以用一句内容完整的消息。
-    d = classify("那只鹅的伤口是不是还得去医院看看", _pred(main="t_fit", scores={"t_fit": 0.5}), "t_sql")
+    # 0.01 是**兜底层量纲**下的弱归属：兜底分数是关键词重合比例（实测 0~0.22），
+    # 门槛随之标定为 rules_switch_threshold=0.02（见 params.TopicPolicy 与
+    # backend/evals/EXPERIMENTS-P3-E.md）；0.5 在这个量纲里是绝对强信号，会走 SWITCH。
+    d = classify("那只鹅的伤口是不是还得去医院看看", _pred(main="t_fit", scores={"t_fit": 0.01}), "t_sql")
     assert d.mode == TopicMode.NEW_TOPIC
     assert d.closest_topic == "t_fit"
-    assert d.closest_score == 0.5
+    assert d.closest_score == 0.01
 
 
 def test_new_when_no_main():
@@ -95,8 +98,10 @@ def test_incumbent_keeps_the_current_topic_when_no_other_topic_is_strong():
 
 def test_new_topic_when_nothing_owns_it_and_current_has_no_signal():
     """无归属 + 现任无信号 + 长度足够 → 新话题；两个后端量纲各自成立。"""
+    # 兜底层量纲：0.10 在关键词重合比例里已是明确信号（阈值 rules_incumbent_threshold=0.02），
+    # 「现任无信号」要用真正的 0 来构造
     rules = classify(
-        "推荐几本推理小说", _pred(main=None, scores={"t_sql": 0.10, "t_fit": 0.08}, backend="rules"), "t_sql"
+        "推荐几本推理小说", _pred(main=None, scores={"t_sql": 0.0, "t_fit": 0.0}, backend="rules"), "t_sql"
     )
     assert rules.mode == TopicMode.NEW_TOPIC
     onnx = classify(
