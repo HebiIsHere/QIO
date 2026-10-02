@@ -24,7 +24,7 @@ import tracemalloc
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend" / "src"))
 
-from agent.storage.db import connect  # noqa: E402
+from agent.storage.db import connect, transaction  # noqa: E402
 from agent.storage.migrate import apply_migrations, current_version  # noqa: E402
 from agent.storage import migrate as migrate_module  # noqa: E402
 from agent.storage.schema import MIGRATIONS  # noqa: E402
@@ -66,7 +66,16 @@ def build_v23_database(db_path: pathlib.Path, scale: dict) -> sqlite3.Connection
 
 
 def seed(conn: sqlite3.Connection, scale: dict) -> None:
-    """灌 synthetic 数据：话题 → 片段 → 消息；另有 trace 与工具历史。"""
+    """灌 synthetic 数据：话题 → 片段 → 消息；另有 trace 与工具历史。
+
+    整段包在一个事务里：连接是 autocommit 的，不包的话每一行都要自己提交一次
+    （大档 = 几十万次 fsync，几分钟起步）。
+    """
+    with transaction(conn):
+        _seed_rows(conn, scale)
+
+
+def _seed_rows(conn: sqlite3.Connection, scale: dict) -> None:
     topics = max(1, scale["turn_traces"] // 50)
     conn.executemany(
         "INSERT OR IGNORE INTO nodes (id, type, name, meta, created_at, updated_at) "
@@ -235,13 +244,15 @@ def run(scale_name: str, directory: pathlib.Path | None, keep: bool) -> dict:
     conn.close()
 
     # --- 失败回滚：真实的 apply_migrations 路径 + 一条会失败的迁移 ---
+    # 失败样本必须是**真失败**：duplicate column 属于自愈规则认的「对象已存在」信号，
+    # 拿它当失败样本会测出「迁移成功」—— 那是另一条用例（下面的自愈边界）。
     failure_conn = connect(db_path)
     original = list(migrate_module.MIGRATIONS)
     broken_version = max(target for target, _ in original) + 1
     try:
         migrate_module.MIGRATIONS.append((broken_version, [
             "ALTER TABLE turn_traces ADD COLUMN rollback_probe TEXT",
-            "ALTER TABLE turn_traces ADD COLUMN rollback_probe TEXT",  # 故意重复 → 必然失败
+            "ALTER TABLE no_such_table_here ADD COLUMN x TEXT",  # 真失败：表不存在
         ]))
         try:
             apply_migrations(failure_conn)
@@ -258,8 +269,24 @@ def run(scale_name: str, directory: pathlib.Path | None, keep: bool) -> dict:
     report["partial_ddl_left_behind"] = "rollback_probe" in columns_after_failure
     report["counts_after_failure"] = counts(failure_conn)
 
+    # --- 自愈边界：只有「对象已存在」才当已应用（幂等重放），其它错误必须照旧抛 ---
+    heal_version = max(target for target, _ in original) + 2
+    try:
+        migrate_module.MIGRATIONS.append((heal_version, [
+            "ALTER TABLE turn_traces ADD COLUMN heal_probe TEXT",
+            "ALTER TABLE turn_traces ADD COLUMN heal_probe TEXT",  # 半截迁移的形状：对象已在
+        ]))
+        try:
+            healed_to = apply_migrations(failure_conn)
+            report["already_applied_is_tolerated"] = healed_to == heal_version
+        except sqlite3.Error as exc:
+            report["already_applied_is_tolerated"] = False
+            report["already_applied_error"] = str(exc)[:120]
+    finally:
+        migrate_module.MIGRATIONS[:] = original
+
     # 真实后果：迁移 24 的 ALTER 生效了、版本号没推进（进程在两步之间死掉），
-    # 下次启动会再跑一遍这条 ALTER —— 这是一条**不可自愈**的路径，看它到底会不会炸。
+    # 下次启动会再跑一遍这条 ALTER —— 修复后必须能自愈（跳过已存在的那条，补齐版本行）。
     try:
         apply_migrations(failure_conn)
         report["rerun_after_partial_failure"] = "ok"
