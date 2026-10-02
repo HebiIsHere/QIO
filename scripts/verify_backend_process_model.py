@@ -409,7 +409,17 @@ def port_open(port: int, timeout: float = 0.4) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+# 本机同时有多个 agent 在起真实后端，固定端口会互相踩。默认给每个实例要一个空闲端口；
+# 需要固定时用 --port 指定（Agent A 的分配是 8891，连续实例往后顺延）。
+_PINNED_PORT: int | None = None
+_PINNED_USED = 0
+
+
 def free_port() -> int:
+    global _PINNED_USED
+    if _PINNED_PORT is not None:
+        _PINNED_USED += 1
+        return _PINNED_PORT + _PINNED_USED - 1
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
@@ -866,6 +876,9 @@ def main() -> int:
     if not exe.is_file():
         print(f"找不到冻结产物：{exe}")
         return 2
+    if args.port:
+        global _PINNED_PORT
+        _PINNED_PORT = args.port
     if args.spawn_and_die:
         return spawn_and_die(exe, Path(args.work).resolve(), args.port)
     work = Path(args.work).resolve() if args.work else exe.parent / "p3a-process-model"
