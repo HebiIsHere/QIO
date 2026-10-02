@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 内联 favicon：演示页不发 favicon 请求，控制台保持零错误（404 只会干扰视觉检查结论） -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23c51b7d'/%3E%3C/svg%3E" />
+    <title>QIO 耗时面板 · 视觉检查</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: var(--bg-base);
+        color: var(--text-primary);
+        font-family: var(--sans);
+      }
+      .col { max-width: 760px; display: flex; flex-direction: column; gap: 22px; }
+      .case { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 16px 18px; }
+      .case h2 { margin: 0 0 10px; font-size: var(--fs-md); font-family: var(--serif); font-weight: 600; }
+      .hint { color: var(--text-muted); font-size: var(--fs-sm); margin: 0 0 10px; }
+      .bubble { background: var(--bg-elevated); border-radius: var(--r-md); padding: 10px 12px; font-size: var(--fs-base); line-height: var(--lh-base); }
+    </style>
+  </head>
+  <body>
+    <!-- 视觉检查脚手架：把耗时面板挂在真实样式令牌下渲染，用 Edge 截图核对
+         （窄窗口、长分类、开发者模式、老数据降级）。不属于产品入口。 -->
+    <div id="app"></div>
+    <script type="module" src="./timing-demo.ts"></script>
+  </body>
+</html>
