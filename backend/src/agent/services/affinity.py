@@ -95,11 +95,15 @@ def classify(
         return TopicDecision(TopicMode.IN_TOPIC, entity_hints=hints)
 
     # 2) 主人是别的话题：够强 + 领先当前一个 margin → 待确认切换
+    #    门槛按后端取孪生值：onnx 余弦与兜底重合比例不同量纲，共用一条会让兜底
+    #    永远切不动（兜底分数 0~0.22 < 0.55，实测切换召回 0.000）。
+    switch_threshold = pol.switch_threshold if backend == "onnx" else pol.rules_switch_threshold
+    switch_delta = pol.switch_delta if backend == "onnx" else pol.rules_switch_delta
     if (
         owner is not None
         and owner != current_topic_id
-        and top_score >= pol.switch_threshold
-        and top_score - current_score >= pol.switch_delta
+        and top_score >= switch_threshold
+        and top_score - current_score >= switch_delta
     ):
         return TopicDecision(
             TopicMode.SWITCH,

@@ -6,11 +6,12 @@
    explicit 的 R@1 只有 0.100；把「目标话题的当前状态」当检索上下文（P2）**只有在状态文本
    自己就含答案（泄漏 46/46）时才好看**，换成不含答案的同话题其他记忆（无泄漏对照）反而
    比 P0 更差（R@5 0.267 → 0.067）。已知话题但不注入状态（P1）与 P0 完全一致。
-2. **无 embedding 的 fallback：发现并定位了一个真实的量纲错配，修法有数据支持。**
+2. **无 embedding 的 fallback：定位到真实的量纲错配，修法已获批并落地（C-full）。**
    规则层分数实际落在 0~0.22，而门槛是 0.2 —— 结果是 72.8% 的延续句被判成新话题。
    按真实量纲重标定后：acc 0.4237 → **0.8305**，假新 0.728 → **0.185**，切换召回 0 → **0.909**；
    分层 5 折折内选参的诚实估计同样是 0.8305（不是过拟合）。
-   需要改 params.py / affinity.py，**已按约定写成 Cross-route 请求，本轮不动生产代码**。
+   生产改动只用 rules_* 四项参数（onnx 路径与两端共用的 switch_threshold/switch_delta 未动），
+   见第 8 节「修复落地」。
 
 复现命令（backend 目录下；本机 %TEMP% 不可写，先设 TEMP）：
 
@@ -133,7 +134,36 @@ relation expansion / 单纯扩大 candidate pool。依据与数据在
 **分层 5 折（折内选参、折外计分）**：C-safe **0.7458**、C-full **0.8305** ——
 与全量成绩完全相同，且每折都选中同一组参数 → 不是过拟合。
 
-### 结论与建议（Cross-route）
+### 生产落地：C-full（Lead 2026-10-02 拍板）
+
+采用 **C-full**：C-safe 的四项 rules_* 阈值重标定 + **新增 rules 专用 switch 门槛**
+（`rules_switch_threshold` / `rules_switch_delta`，默认 0.02 / 0.02）。
+
+为什么不是 D（低置信交给主模型）：QIO 的核心体验是「话题是记忆的组织单位」，
+**该建不建**（把新事情塞进旧话题）会污染话题、让回忆检索变差，比**多建一个话题**更难被用户纠正；
+D 的「交给主模型」把不确定性转移到了一个**没有指标覆盖**的地方，不算更安全。
+另外 C-full 的假新 0.185 出现在「embedding 不可用」这个**降级**状态，
+降级状态本来就该「宁可多建、不要乱并」——乱并的损害是不可见的、累积的。
+
+落地改动（只影响规则/兜底路径）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `services/params.py` | `rules_new_topic_threshold` 0.2→0.02、`rules_incumbent_threshold` 0.2→0.02；新增 `rules_switch_threshold=0.02`、`rules_switch_delta=0.02`；docstring 写明依据与「换语料要重新标定」 |
+| `services/predict.py` | 新增 `rules_switch_delta` 注入项；`_rank` 的 `suggested_switch` 按 backend 取余量 |
+| `services/affinity.py` | `classify` 的切换门槛按 backend 取孪生值（onnx 仍用 0.55/0.15） |
+
+**未改动**：`switch_threshold`(0.55) / `switch_delta`(0.15) —— 它们是 onnx 与兜底共用的，
+改了会破坏第一阶段标定的 onnx 行为。
+
+修复前后同一次运行的对照（`--sweep --cv`，原始输出见 `results.json`）：
+
+| 臂 | acc | 继续召回 | 新话题召回 | 假新 | 切换 |
+| --- | --- | --- | --- | --- | --- |
+| A_before_fix（旧 0.2/0.2/0.55/0.15） | 0.4237 | 0.309 | 0.962 | 0.728 | 0.000 |
+| **C_fixed_default（= 生产默认）** | **0.8305** | 0.790 | 0.923 | **0.185** | **0.909** |
+
+### 结论与建议（实验阶段记录，已被上面的落地取代）
 
 * **A 必须换掉**：0.4237 的准确率、72.8% 的假新话题，是「embedding 不可用时把用户上下文拆散」。
 * 若只允许改两条既有参数：`rules_new_topic_threshold 0.2 → 0.02`、

@@ -80,8 +80,8 @@ def test_fallback_corpus_is_available():
     assert all(c.get("current_topic") for c in cases)
 
 
-def test_fallback_lexical_policy_reaches_the_recorded_quality():
-    """C 方案（按规则层真实量纲重标定门槛）必须保持住实测水平。
+def test_fallback_default_policy_reaches_the_recorded_quality():
+    """C 方案（= 生产默认，按规则层真实量纲重标定门槛）必须保持住实测水平；下限卡在实测值略低处。
 
     门槛注入到**预测器**与 classify 两处（只传一处会让 switch 永不触发，
     这个坑第一次跑就踩到了，见 EXPERIMENTS-P3-E.md）。
@@ -90,15 +90,40 @@ def test_fallback_lexical_policy_reaches_the_recorded_quality():
 
     from run_fallback_arms import evaluate, load_cases
 
+    metrics = evaluate(load_cases(), mode="rules", policy=TOPIC)  # 生产默认 = C 方案
+    assert metrics["accuracy"] >= 0.80, metrics                # 实测 0.8305
+    assert metrics["false_new_topic_rate"] <= 0.25, metrics    # 实测 0.185
+    assert metrics["continuation_recall"] >= 0.75, metrics     # 实测 0.790
+    assert metrics["new_topic_recall"] >= 0.85, metrics        # 实测 0.923
+    assert metrics["switch_accuracy"] >= 0.80, metrics         # 实测 0.909
+
+
+def test_fallback_defaults_are_calibrated():
+    """rules_* 默认值必须是实测标定值，且不得碰 onnx 的参数（含两端共用项）。"""
+    from agent.services.params import TOPIC
+
+    assert TOPIC.rules_new_topic_threshold == 0.02
+    assert TOPIC.rules_incumbent_threshold == 0.02
+    assert TOPIC.rules_switch_threshold == 0.02
+    assert TOPIC.rules_switch_delta == 0.02
+    assert TOPIC.new_topic_threshold == 0.42       # onnx 侧保持第一阶段标定值
+    assert TOPIC.incumbent_threshold == 0.42
+    assert TOPIC.switch_threshold == 0.55          # 两端共用项不得被兜底改动
+    assert TOPIC.switch_delta == 0.15
+
+
+def test_fallback_fix_is_a_real_improvement_over_the_old_params():
+    """修复前后必须在**同一次评估**里可对比（旧参数显式写死，不依赖历史版本）。"""
+    from agent.services.params import TOPIC
+
+    from run_fallback_arms import BEFORE_FIX, evaluate, load_cases
+
     cases = load_cases()
-    policy = replace(TOPIC, rules_new_topic_threshold=0.02, rules_incumbent_threshold=0.02,
-                     switch_threshold=0.02, switch_delta=0.02)
-    metrics = evaluate(cases, mode="rules", policy=policy)
-    assert metrics["accuracy"] >= 0.80, metrics
-    assert metrics["false_new_topic_rate"] <= 0.25, metrics
-    assert metrics["continuation_recall"] >= 0.75, metrics
-    assert metrics["new_topic_recall"] >= 0.85, metrics
-    assert metrics["switch_accuracy"] >= 0.80, metrics
+    before = evaluate(cases, mode="rules", policy=replace(TOPIC, **BEFORE_FIX))
+    after = evaluate(cases, mode="rules", policy=TOPIC)
+    assert before["accuracy"] < 0.5, before                      # 实测 0.4237
+    assert after["accuracy"] >= before["accuracy"] + 0.3, (before, after)
+    assert after["false_new_topic_rate"] <= before["false_new_topic_rate"] - 0.4, (before, after)
 
 
 def test_conservative_policy_never_invents_a_topic():
@@ -120,8 +145,7 @@ def test_handoff_policy_keeps_the_decision_for_the_model():
 
     from run_fallback_arms import evaluate, load_cases
 
-    policy = replace(TOPIC, rules_new_topic_threshold=0.02, rules_incumbent_threshold=0.02)
-    metrics = evaluate(load_cases(), mode="handoff", policy=policy, confident=1e-9)
+    metrics = evaluate(load_cases(), mode="handoff", policy=TOPIC, confident=1e-9)
     assert metrics["handoff"]["count"] > 0, "D 方案必须有交接发生，否则等于没实现"
     assert metrics["false_new_topic_rate"] <= 0.2, metrics
 
@@ -165,6 +189,7 @@ def test_rules_thresholds_do_not_affect_the_onnx_path():
                                        aux_topic_threshold=policy.aux_topic_threshold,
                                        rules_aux_topic_threshold=policy.rules_aux_topic_threshold,
                                        switch_delta=policy.switch_delta,
+                                       rules_switch_delta=policy.rules_switch_delta,
                                        aux_top_count=policy.aux_top_count)
             prediction = predictor._rank(dict(scores), case.get("current_topic"), backend="onnx")
             decisions.append(classify(case["message"], prediction, case.get("current_topic"), [],
@@ -175,8 +200,8 @@ def test_rules_thresholds_do_not_affect_the_onnx_path():
 def test_fallback_results_are_recorded():
     payload = json.loads((EVALS / "topic_fallback" / "results.json").read_text(encoding="utf-8"))
     arms = payload["arms"]
-    assert set(arms) == {"A_current", "B_conservative", "C_lexical", "D_handoff"}
-    assert arms["A_current"]["accuracy"] < arms["C_lexical"]["accuracy"]
+    assert set(arms) == {"A_before_fix", "B_conservative", "C_fixed_default", "D_handoff"}
+    assert arms["A_before_fix"]["accuracy"] < arms["C_fixed_default"]["accuracy"]
     assert payload["cv"], "分层 5 折必须一起入库（否则 0.8305 会被误当成泛化估计）"
     for entry in payload["cv"]:
         assert entry["k"] == 5 and entry["pooled_accuracy"] > 0.7

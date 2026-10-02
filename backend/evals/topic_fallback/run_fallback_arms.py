@@ -77,6 +77,7 @@ def rules_decision(case, policy):
         aux_topic_threshold=policy.aux_topic_threshold,
         rules_aux_topic_threshold=policy.rules_aux_topic_threshold,
         switch_delta=policy.switch_delta,
+        rules_switch_delta=policy.rules_switch_delta,
         aux_top_count=policy.aux_top_count,
     )
     # 生产入口：embedding=None 时走规则层
@@ -195,6 +196,8 @@ def cross_validate(cases, *, safe_only: bool, k: int = 5):
 
     grid_new = (0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.12, 0.2)
     grid_inc = (0.0, 0.01, 0.02, 0.03, 0.05)
+    # 注意：兜底层读的是 rules_switch_*（不是 onnx 的 switch_*）——
+    # 扫错参数会得到「扫描无效果」，这个坑第一次就跑出来过（见 EXPERIMENTS-P3-E.md）
     grid_sw = (0.55,) if safe_only else (0.02, 0.03, 0.05, 0.55)
     grid_dlt = (0.15,) if safe_only else (0.0, 0.02, 0.05, 0.15)
     folds = stratified_folds(cases, k)
@@ -209,8 +212,8 @@ def cross_validate(cases, *, safe_only: bool, k: int = 5):
                 for sw in grid_sw:
                     for dlt in grid_dlt:
                         policy = replace(TOPIC, rules_new_topic_threshold=new_th,
-                                         rules_incumbent_threshold=inc, switch_threshold=sw,
-                                         switch_delta=dlt)
+                                         rules_incumbent_threshold=inc,
+                                         rules_switch_threshold=sw, rules_switch_delta=dlt)
                         m = evaluate(train, mode="rules", policy=policy)
                         if m["new_topic_recall"] == 0:
                             continue  # 放弃自动建话题不算方案
@@ -224,32 +227,40 @@ def cross_validate(cases, *, safe_only: bool, k: int = 5):
         fold_rows.append({"fold": i, "policy": {
             "rules_new_topic_threshold": policy.rules_new_topic_threshold,
             "rules_incumbent_threshold": policy.rules_incumbent_threshold,
-            "switch_threshold": policy.switch_threshold,
-            "switch_delta": policy.switch_delta,
+            "rules_switch_threshold": policy.rules_switch_threshold,
+            "rules_switch_delta": policy.rules_switch_delta,
         }, "accuracy": held["accuracy"], "n": held["n"]})
     return {"k": k, "safe_only": safe_only, "pooled_accuracy": round(pooled_ok / (pooled_n or 1), 4),
             "folds": fold_rows}
 
 
+# 修复前的兜底参数（规则分数只到 0~0.22 却用 0.2 门槛；rules 专用 switch 门槛当时不存在，
+# 兜底实际共用 onnx 的 switch_threshold/switch_delta = 0.55/0.15）
+BEFORE_FIX = {
+    "rules_new_topic_threshold": 0.2,
+    "rules_incumbent_threshold": 0.2,
+    "rules_switch_threshold": 0.55,
+    "rules_switch_delta": 0.15,
+}
+
+
 def arm_policies():
     """A/B/C/D 四方案的参数与模式。
 
-    A 当前 fallback（生产默认）
-    B 保守留在当前话题（inc=0 且不让任何话题成为 owner）
-    C 规则 + 明确词面信号（门槛由 --sweep 的数据决定，这里用扫描最优值）
-    D 低置信交给后续机制（mode="handoff"：有明确词面命中才判定，否则留在当前话题并标记待确认）
+    A_before_fix    修复前的兜底（显式写死旧参数，好在同一份结果里与修复后再比一次）
+    B_conservative  保守留在当前话题（inc=0 且不让任何话题成为 owner）
+    C_fixed_default 规则 + 明确词面信号 = **当前生产默认**（rules_* 按真实量纲标定）
+    D_handoff       低置信交给后续机制（有明确词面命中才判，否则留在当前话题并标记待确认）
     """
     from agent.services.params import TOPIC
 
     return {
-        "A_current": (TOPIC, "rules"),
-        "B_conservative": (replace(TOPIC, rules_new_topic_threshold=1.0, rules_incumbent_threshold=0.0), "rules"),
-        "C_lexical": (replace(TOPIC, rules_new_topic_threshold=0.02, rules_incumbent_threshold=0.02,
-                              switch_threshold=0.02, switch_delta=0.02), "rules"),
-        # D 的「有明确词面信号才判」= top score > 0（分布见 --diagnose）
+        "A_before_fix": (replace(TOPIC, **BEFORE_FIX), "rules"),
+        "B_conservative": (replace(TOPIC, rules_new_topic_threshold=1.0,
+                                   rules_incumbent_threshold=0.0), "rules"),
+        "C_fixed_default": (TOPIC, "rules"),
         # D 的「明确词面信号」门槛与 C 的规则门槛同一量纲
-        "D_handoff": (replace(TOPIC, rules_new_topic_threshold=0.02,
-                              rules_incumbent_threshold=0.02), "handoff"),
+        "D_handoff": (TOPIC, "handoff"),
     }
 
 
@@ -299,8 +310,8 @@ def main() -> int:
                 for sw in (0.02, 0.03, 0.05, 0.55):
                     for dlt in (0.0, 0.02, 0.15):
                         policy = replace(TOPIC, rules_new_topic_threshold=new_th,
-                                         rules_incumbent_threshold=inc, switch_threshold=sw,
-                                         switch_delta=dlt)
+                                         rules_incumbent_threshold=inc,
+                                         rules_switch_threshold=sw, rules_switch_delta=dlt)
                         m = evaluate(cases, mode="rules", policy=policy)
                         payload["sweep"].append({"rules_new_topic_threshold": new_th,
                                                  "rules_incumbent_threshold": inc,

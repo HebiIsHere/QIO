@@ -1,4 +1,4 @@
-﻿"""Topic prediction: which topic does the current message belong to?
+"""Topic prediction: which topic does the current message belong to?
 
 Judgement belongs to the (small) embedding model; execution (switching,
 creating) belongs to the main model via tools. The predictor runs on the
@@ -25,6 +25,7 @@ AUX_TOPIC_THRESHOLD = _TOPIC.aux_topic_threshold
 RULES_NEW_TOPIC_THRESHOLD = _TOPIC.rules_new_topic_threshold
 RULES_AUX_TOPIC_THRESHOLD = _TOPIC.rules_aux_topic_threshold
 SWITCH_DELTA = _TOPIC.switch_delta
+RULES_SWITCH_DELTA = _TOPIC.rules_switch_delta
 AUX_TOP_COUNT = _TOPIC.aux_top_count
 
 
@@ -51,6 +52,7 @@ class TopicPredictor:
         aux_topic_threshold: float = AUX_TOPIC_THRESHOLD,
         rules_new_topic_threshold: float = RULES_NEW_TOPIC_THRESHOLD,
         rules_aux_topic_threshold: float = RULES_AUX_TOPIC_THRESHOLD,
+        rules_switch_delta: float = RULES_SWITCH_DELTA,
     ) -> None:
         self.conn = conn
         self.embedding = embedding
@@ -61,6 +63,7 @@ class TopicPredictor:
         self.aux_topic_threshold = aux_topic_threshold
         self.rules_new_topic_threshold = rules_new_topic_threshold
         self.rules_aux_topic_threshold = rules_aux_topic_threshold
+        self.rules_switch_delta = rules_switch_delta
 
     # -- fingerprint text -------------------------------------------------
 
@@ -152,10 +155,12 @@ class TopicPredictor:
             aux.append(tid)
             if len(aux) >= self.aux_top_count:
                 break
+        # 切换余量按后端取：onnx 余弦与兜底重合比例不同量纲（见 params.TopicPolicy）
+        switch_delta = self.switch_delta if backend == "onnx" else self.rules_switch_delta
         suggested = False
         if main_id is not None and current_topic_id is not None and main_id != current_topic_id:
             current_score = scores.get(current_topic_id, 0.0)
-            suggested = main_score - current_score >= self.switch_delta
+            suggested = main_score - current_score >= switch_delta
         return TopicPrediction(
             main_topic_id=main_id,
             aux_topic_ids=aux,
