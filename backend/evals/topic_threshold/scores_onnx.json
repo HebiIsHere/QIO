@@ -1,6 +1,6 @@
 {
-  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1 @ C:\\Users\\zxy\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\qio\\models\\bge-small-zh-v1.5",
-  "provenance": "由 evals/topic_threshold_curve.py --record 生成：真实 bge-small-zh-v1.5 ONNX 余弦",
+  "model": "onnx:bge-small-zh-v1.5:fp32:69a0b846f4f1",
+  "provenance": "由 evals/topic_threshold_curve.py --record 生成：真实 bge-small-zh-v1.5 ONNX 余弦；model identity 里的哈希唯一确定权重文件，记录机路径不入库",
   "cases": {
     "cont_01": {
       "scores": {
@@ -729,6 +729,174 @@
         "t_deploy": 0.465544
       },
       "current": "t_ui"
+    },
+    "ctx_01": {
+      "scores": {
+        "t_ctx_sql_01": 0.45583,
+        "t_ui": 0.352856
+      },
+      "current": "t_ctx_sql_01",
+      "scores_without_context": {
+        "t_ctx_sql_01": 0.485685,
+        "t_ui": 0.352856
+      },
+      "context_turns": 3
+    },
+    "ctx_02": {
+      "scores": {
+        "t_ctx_theme_02": 0.56208,
+        "t_db": 0.267902
+      },
+      "current": "t_ctx_theme_02",
+      "scores_without_context": {
+        "t_ctx_theme_02": 0.518378,
+        "t_db": 0.267902
+      },
+      "context_turns": 3
+    },
+    "ctx_03": {
+      "scores": {
+        "t_ctx_deploy_03": 0.557484,
+        "t_ui": 0.324197
+      },
+      "current": "t_ctx_deploy_03",
+      "scores_without_context": {
+        "t_ctx_deploy_03": 0.539378,
+        "t_ui": 0.324197
+      },
+      "context_turns": 3
+    },
+    "ctx_04": {
+      "scores": {
+        "t_ctx_api_04": 0.534786,
+        "t_db": 0.414775
+      },
+      "current": "t_ctx_api_04",
+      "scores_without_context": {
+        "t_ctx_api_04": 0.574842,
+        "t_db": 0.414775
+      },
+      "context_turns": 3
+    },
+    "ctx_05": {
+      "scores": {
+        "t_ctx_perf_05": 0.535716,
+        "t_work": 0.416185
+      },
+      "current": "t_ctx_perf_05",
+      "scores_without_context": {
+        "t_ctx_perf_05": 0.482285,
+        "t_work": 0.416185
+      },
+      "context_turns": 3
+    },
+    "ctx_06": {
+      "scores": {
+        "t_ctx_doc_06": 0.622362,
+        "t_arch": 0.537949
+      },
+      "current": "t_ctx_doc_06",
+      "scores_without_context": {
+        "t_ctx_doc_06": 0.60894,
+        "t_arch": 0.537949
+      },
+      "context_turns": 3
+    },
+    "ctx_07": {
+      "scores": {
+        "t_ctx_test_07": 0.442354,
+        "t_db": 0.437839
+      },
+      "current": "t_ctx_test_07",
+      "scores_without_context": {
+        "t_ctx_test_07": 0.443084,
+        "t_db": 0.437839
+      },
+      "context_turns": 3
+    },
+    "ctx_08": {
+      "scores": {
+        "t_ctx_data_08": 0.493309,
+        "t_work": 0.349937
+      },
+      "current": "t_ctx_data_08",
+      "scores_without_context": {
+        "t_ctx_data_08": 0.429639,
+        "t_work": 0.349937
+      },
+      "context_turns": 3
+    },
+    "ctx_adv_01": {
+      "scores": {
+        "t_ctx_sql_09": 0.285791,
+        "t_ui": 0.367717
+      },
+      "current": "t_ctx_sql_09",
+      "scores_without_context": {
+        "t_ctx_sql_09": 0.316321,
+        "t_ui": 0.367717
+      },
+      "context_turns": 3
+    },
+    "ctx_adv_02": {
+      "scores": {
+        "t_ctx_theme_10": 0.395077,
+        "t_deploy": 0.604245
+      },
+      "current": "t_ctx_theme_10",
+      "scores_without_context": {
+        "t_ctx_theme_10": 0.35234,
+        "t_deploy": 0.604245
+      },
+      "context_turns": 3
+    },
+    "ctx_adv_03": {
+      "scores": {
+        "t_ctx_deploy_11": 0.380332,
+        "t_travel": 0.323079
+      },
+      "current": "t_ctx_deploy_11",
+      "scores_without_context": {
+        "t_ctx_deploy_11": 0.360995,
+        "t_travel": 0.323079
+      },
+      "context_turns": 3
+    },
+    "ctx_adv_04": {
+      "scores": {
+        "t_ctx_test_12": 0.391538,
+        "t_db": 0.393508
+      },
+      "current": "t_ctx_test_12",
+      "scores_without_context": {
+        "t_ctx_test_12": 0.371051,
+        "t_db": 0.393508
+      },
+      "context_turns": 3
+    },
+    "ctx_09": {
+      "scores": {
+        "t_ctx_ledger_13": 0.487724,
+        "t_ui": 0.373333
+      },
+      "current": "t_ctx_ledger_13",
+      "scores_without_context": {
+        "t_ctx_ledger_13": 0.228313,
+        "t_ui": 0.373333
+      },
+      "context_turns": 3
+    },
+    "ctx_10": {
+      "scores": {
+        "t_ctx_release_14": 0.615817,
+        "t_db": 0.436215
+      },
+      "current": "t_ctx_release_14",
+      "scores_without_context": {
+        "t_ctx_release_14": 0.470249,
+        "t_db": 0.436215
+      },
+      "context_turns": 3
     }
   }
 }

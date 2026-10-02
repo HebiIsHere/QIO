@@ -34,6 +34,8 @@ OTHER_DOCS = [
     ROOT / "docs" / "frontend-design.md",
     ROOT / "docs" / "frontend-components.md",
     ROOT / "docs" / "release-qualification.md",
+    # 长期测试体系的护栏清单：它引用的路径/命令必须真实存在，所以也纳入一致性检查
+    ROOT / "docs" / "longterm-testing.md",
 ]
 
 VALID_STATUS = {"completed", "partial", "active", "planned"}
@@ -43,9 +45,12 @@ STATUS_LINE = re.compile(r"^\s*-\s*\*\*Status：\*\*\s*(\w+)")
 
 CONTRADICTION_WORDS = ("未实现", "实现中", "待实现", "尚未实现", "规划中")
 HARDCODED = re.compile(r"\d+\s*(?:个|类|种|张|条)?\s*(?:测试|事件类型|事件|表)")
+# 注意扩展名的**顺序**：`json` 放在 `jsonl` 前面会把 `x.jsonl` 截成 `x.json`，
+# 于是 `.jsonl` 路径永远被报成「不存在」（2026-10-02 由 docs/longterm-testing.md 暴露）。
+# 前缀相同的扩展名一律长者在前。
 PATH_LIKE = re.compile(
     r"`((?:docs|backend|frontend|scripts)/[A-Za-z0-9_./\-*]+?"
-    r"\.(?:md|py|ts|vue|json|jsonl|toml|ps1|yml|yaml|css))"
+    r"\.(?:md|py|ts|vue|jsonl|json|toml|ps1|yaml|yml|css))"
 )
 SCRIPT_LIKE = re.compile(r"`(scripts/[A-Za-z0-9_./\-]+\.(?:py|ps1))")
 MODULE_LIKE = re.compile(r"python\s+-m\s+(agent(?:\.[a-z_]+)+)")
@@ -54,6 +59,29 @@ CI_FILE = ROOT / ".github" / "workflows" / "ci.yml"
 SETUP_FILE = ROOT / "docs" / "SETUP.md"
 # CI 里这些前缀的 run 命令属于「安装/测试」，必须与 SETUP 对齐
 CI_COMMAND_PREFIXES = ("uv ", "npm ", "npx ", "cargo ", "python scripts/")
+
+
+def _configure_output() -> None:
+    """报告层必须能在任何控制台编码下工作（英文 Windows 的 cp1252 也不能崩）。
+
+    与 scripts/release_gate.py / scripts/frozen_worker_smoke.py 同一套做法：
+    tty 保留自己的编码 + backslashreplace；重定向/CI 写 UTF-8 字节。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
 
 
 def read(path: Path) -> str:
@@ -199,6 +227,7 @@ def check_ci_commands_documented(errors: list[str]) -> None:
 
 
 def main() -> int:
+    _configure_output()
     errors: list[str] = []
     milestones = parse_status_milestones()
     check_status_values(milestones, errors)
