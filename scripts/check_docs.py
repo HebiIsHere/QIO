@@ -45,9 +45,12 @@ STATUS_LINE = re.compile(r"^\s*-\s*\*\*Status：\*\*\s*(\w+)")
 
 CONTRADICTION_WORDS = ("未实现", "实现中", "待实现", "尚未实现", "规划中")
 HARDCODED = re.compile(r"\d+\s*(?:个|类|种|张|条)?\s*(?:测试|事件类型|事件|表)")
+# 注意扩展名的**顺序**：`json` 放在 `jsonl` 前面会把 `x.jsonl` 截成 `x.json`，
+# 于是 `.jsonl` 路径永远被报成「不存在」（2026-10-02 由 docs/longterm-testing.md 暴露）。
+# 前缀相同的扩展名一律长者在前。
 PATH_LIKE = re.compile(
     r"`((?:docs|backend|frontend|scripts)/[A-Za-z0-9_./\-*]+?"
-    r"\.(?:md|py|ts|vue|json|jsonl|toml|ps1|yml|yaml|css))"
+    r"\.(?:md|py|ts|vue|jsonl|json|toml|ps1|yaml|yml|css))"
 )
 SCRIPT_LIKE = re.compile(r"`(scripts/[A-Za-z0-9_./\-]+\.(?:py|ps1))")
 MODULE_LIKE = re.compile(r"python\s+-m\s+(agent(?:\.[a-z_]+)+)")
