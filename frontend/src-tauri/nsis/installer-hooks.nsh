@@ -33,3 +33,26 @@
   DeleteRegKey /ifempty SHCTX "Software\qio\QIO"
   DeleteRegKey /ifempty SHCTX "Software\qio"
 !macroend
+; ---------------------------------------------------------------------------
+; 卸载前：把还在跑的 sidecar 收掉
+;
+; 为什么需要它（2026-10-03 两条独立实测拼起来的事实）：
+;   * 运行中的 qio-backend.exe **删不掉也覆盖不了**（delete -> WinError 5，
+;     overwrite -> Errno 13），只有 rename 能成功（映像以 FILE_SHARE_DELETE 打开）
+;     —— Agent A 用冻结产物实测（scripts/verify_backend_process_model.py --case 6）；
+;   * onefile 是 launcher + child 两层，只结束 launcher 会留下孤儿 child，
+;     它继续持有映像、端口也仍然开着（我自己的安装/卸载 E2E 实测过同样的形状）；
+;   * 而 Tauri 模板的 CheckIfAppIsRunning 只查主程序 qio.exe，**不查 sidecar** ——
+;     于是 sidecar 还活着时：Delete "$INSTDIR\qio-backend.exe" 静默失败、
+;     RMDir "$INSTDIR" 也失败，用户看到的是"卸载完了但目录还在、后端还在跑"。
+;
+; 这里复用模板自带的同一个宏（utils.nsh 里的 CheckIfAppIsRunning）把 sidecar 纳入检查：
+; 静默卸载直接结束它，交互卸载问用户 —— 与主程序的处理方式保持一致。
+; 注意：与模板一样是按**可执行文件名**找当前用户的进程；多份 QIO 安装并存时，
+; 卸载其中一份会连带结束另一份的 sidecar。这与模板对 qio.exe 的既有行为一致，
+; 属于已知限制（见 docs/e2e-install-2026-10-02.md 的"当前限制"）。
+; ---------------------------------------------------------------------------
+
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro CheckIfAppIsRunning "qio-backend.exe" "${PRODUCTNAME}"
+!macroend

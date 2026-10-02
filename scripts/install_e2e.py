@@ -380,15 +380,23 @@ def _port_open(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _free_port(start: int, limit: int = 20) -> int:
+    """从 start 起挑第一个空闲端口（假厂商是测试替身，端口随便挑，不占别人的配额）。"""
+    for candidate in range(start, start + limit):
+        if not _port_open(candidate):
+            return candidate
+    return start
+
+
 def step_ports(args) -> bool:
-    """开局检查端口：E2E 要用 port（后端）与 port+1（假厂商）。"""
-    busy = [p for p in (args.port, args.port + 1) if _port_open(p)]
-    if busy:
+    """开局检查**后端**端口。假厂商的端口自动挑空闲的，不参与配额。"""
+    if _port_open(args.port):
         record("A-005", "E2E 端口未被占用", "FAIL",
-               "端口 %s 已被占用（可能是另一个 agent 的 E2E 在跑）：换 --port 重跑，"
-               "否则健康检查会被别人的后端答上来" % busy)
+               "端口 %d 已被占用（可能是另一个 agent 的后端/E2E 在跑）：换 --port 重跑，"
+               "否则健康检查会被别人的后端答上来" % args.port)
         return False
-    record("A-005", "E2E 端口未被占用", "PASS", "%d（后端）/ %d（假厂商）都空着" % (args.port, args.port + 1))
+    record("A-005", "E2E 端口未被占用", "PASS",
+           "%d（后端）空着；假厂商端口自动挑空闲的" % args.port)
     return True
 
 
@@ -656,7 +664,9 @@ def step_health(args, port: int):
     return False, client
 
 def step_fake_provider(args, port: int):
-    fp_port = port + 1
+    # 假厂商端口自动挑空闲的：port+1 可能正好是别的 agent 分配到的后端端口
+    # （Lead 2026-10-02 的端口分配里就存在这种相邻冲突）。
+    fp_port = _free_port(port + 1)
     logfile = Path(args.work_dir) / "evidence" / "fake-provider.log"
     fh = logfile.open("wb")
     proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "e2e_fake_provider.py"),
@@ -857,22 +867,69 @@ def step_invoke_tool(args, client: Client, sse: SseReader, fp: Client):
     return ok
 
 
-def stop_backend(proc) -> None:
+def _backend_pids_by_path(install_dir) -> list[int]:
+    """**只**找安装目录里那个 qio-backend.exe 的进程 id。
+
+    按路径找，不按镜像名找：这台机器上同时有多个 agent 在跑真实后端，
+    按名字杀（taskkill /IM qio-backend.exe）会误伤别人的进程
+    —— 2026-10-02 Lead 明确要求"按 PID / 进程树杀"。
+    """
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='qio-backend.exe'\" | "
+        "Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq '%s' } | "
+        "Select-Object -ExpandProperty ProcessId"
+        % str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
+    )
+    code, out = powershell(script, tag="backend-pids-by-path")
+    return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def ensure_backend_stopped(args, tag: str) -> bool:
+    """卸载/重装前的硬前置：安装目录里的后端必须**真的**停下。
+
+    「端口关 ≠ 文件没被锁」（2026-10-03，Agent A 用冻结产物实测 + 我的安装/卸载实测）：
+      * 运行中的 qio-backend.exe 删不掉也覆盖不了（delete -> WinError 5，
+        overwrite -> Errno 13），只有 rename 能成功；
+      * onefile 是 launcher + child，只结束 launcher 会留下孤儿 child 继续持有映像。
+    所以这里按**路径**枚举进程、按 **PID / 进程树**收，然后确认真的没有了 ——
+    否则后面的「卸载残留了什么 / 重装有没有换掉文件」都会被这把锁污染成假结论。
+    """
+    for _ in range(3):
+        pids = _backend_pids_by_path(args.install_dir)
+        if not pids:
+            record("A-088", "%s：安装目录里的后端已确认停止" % tag, "PASS", "按路径枚举：无残留进程")
+            return True
+        for pid in pids:
+            run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="precondition-kill")
+        time.sleep(2)
+    pids = _backend_pids_by_path(args.install_dir)
+    record("A-088", "%s：安装目录里的后端已确认停止" % tag, "FAIL",
+           "仍有进程持有安装目录里的 exe（pid=%s）：文件删不掉/换不掉，之后的结论不可信" % pids)
+    return False
+
+
+def stop_backend(proc, install_dir=None) -> None:
+    """收掉**我们自己**起的后端：先按 PID 收整棵树，再按路径兜底。
+
+    PyInstaller onefile 是「引导进程 + 真正跑服务的子进程」两层，而子进程会握着安装目录里的
+    qio-backend.exe（本机实测：不连子进程一起收，卸载器就删不掉它）。
+    顺序很关键：**先** taskkill /T /PID（此时父子关系还在，/T 才能收掉子进程），
+    再去 terminate 父进程 —— 反过来的话子进程会变成孤儿，就再也按树收不到了。
+    """
     if proc is not None and proc.poll() is None:
-        proc.terminate()
+        run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout=60, tag="taskkill-tree")
         try:
-            proc.wait(timeout=20)
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    # PyInstaller onefile 是「引导进程 + 真正跑服务的子进程」两层。上面 terminate 掉的只是引导进程，
-    # 子进程会继续活着并握着安装目录里的 qio-backend.exe（本机实测：卸载器因此删不掉它）。
-    # 不连子进程一起收，撤销/卸载这类"文件能不能被删"的结论就不可信。
-    run(["taskkill", "/F", "/T", "/IM", "qio-backend.exe"], timeout=60, tag="taskkill-backend")
-    time.sleep(3)
+    if install_dir is not None:
+        for pid in _backend_pids_by_path(install_dir):
+            run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="taskkill-by-path")
+    time.sleep(2)
 
 
 def step_restart(args, client: Client, proc, port: int):
-    stop_backend(proc)
+    stop_backend(proc, args.install_dir)
     time.sleep(1.5)
     new_proc = start_backend(args, port)
     ok, detail = wait_health(Client("http://127.0.0.1:%d" % port, args.token))
@@ -1045,6 +1102,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--token", default="e2e-install-token-0001")
     parser.add_argument("--stages", default="all")
+    # 故意让 sidecar 继续跑着去卸载：验证卸载器**自己**会不会收掉它
+    # （模板的 CheckIfAppIsRunning 只查 qio.exe，不查 sidecar —— 这正是要测的那条缝）。
+    parser.add_argument("--uninstall-with-running-backend", action="store_true")
     args = parser.parse_args()
 
     global EVIDENCE
@@ -1107,21 +1167,34 @@ def main() -> int:
             backend, _ = step_restart(args, client, backend, args.port)
             step_recovery(args, client, sse, fp)
         if "reinstall" in stages:
-            stop_backend(backend)
+            stop_backend(backend, args.install_dir)
+            ensure_backend_stopped(args, "重装前")
             backend = step_reinstall(args, client, args.port)
             backend, _ = step_restart(args, client, backend, args.port)
         if "uninstall" in stages:
-            stop_backend(backend)
+            if args.uninstall_with_running_backend:
+                running = _backend_pids_by_path(args.install_dir)
+                record("A-087", "卸载前故意让 sidecar 继续运行", "PASS" if running else "WARN",
+                       "运行中的 sidecar pid=%s（不主动停，看卸载器自己收不收）" % (running or "无"))
+            else:
+                stop_backend(backend, args.install_dir)
+                ensure_backend_stopped(args, "卸载前")
             backend = None
             # 先在同一个键下放一个合成 DbBaseline（只在注册表可写时），
             # 用来断言「卸载清安装信息，但不动用户状态」这条边界。
             seeded = step_seed_user_state(args)
             step_uninstall(args)
             step_uninstall_registry(args, seeded)
+            if args.uninstall_with_running_backend:
+                left = _backend_pids_by_path(args.install_dir)
+                record("A-095", "卸载器自己收掉了还在跑的 sidecar", "PASS" if not left else "FAIL",
+                       "卸载后按路径枚举：%s" % (left or "无残留进程"))
+                for pid in left:  # 兜底：绝不给机器留孤儿
+                    run(["taskkill", "/F", "/T", "/PID", str(pid)], timeout=60, tag="cleanup-orphan")
         if "restore" in stages:
             step_restore(args)
     finally:
-        stop_backend(backend)
+        stop_backend(backend, args.install_dir)
         if fp_proc is not None:
             fp_proc.terminate()
         if STATE["decoy_applied"] and "restore" in stages:
