@@ -1,0 +1,388 @@
+{
+  "n": 46,
+  "summary_from": "oldest",
+  "counters": {
+    "visible_in_recall": 31,
+    "in_candidate_pool": 14,
+    "in_top5": 10,
+    "pool_cut": 17,
+    "ranking_gap": 4,
+    "recall_gap": 15
+  },
+  "widened_pool_top5": 6,
+  "by_subtype": {
+    "explicit_title": {
+      "n": 10,
+      "pool": 5,
+      "top5": 4,
+      "rank_gap": 1,
+      "recall_gap": 1
+    },
+    "keyword_only": {
+      "n": 6,
+      "pool": 1,
+      "top5": 1,
+      "rank_gap": 0,
+      "recall_gap": 4
+    },
+    "pronoun_only": {
+      "n": 8,
+      "pool": 1,
+      "top5": 1,
+      "rank_gap": 0,
+      "recall_gap": 4
+    },
+    "conclusion_review": {
+      "n": 8,
+      "pool": 3,
+      "top5": 1,
+      "rank_gap": 2,
+      "recall_gap": 4
+    },
+    "multi_topic": {
+      "n": 5,
+      "pool": 2,
+      "top5": 1,
+      "rank_gap": 1,
+      "recall_gap": 1
+    },
+    "mixed_language": {
+      "n": 5,
+      "pool": 1,
+      "top5": 1,
+      "rank_gap": 0,
+      "recall_gap": 1
+    },
+    "long_span_old": {
+      "n": 4,
+      "pool": 1,
+      "top5": 1,
+      "rank_gap": 0,
+      "recall_gap": 0
+    }
+  },
+  "rows": [
+    {
+      "id": "ct_title_arch",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 16,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_title_db",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 1,
+      "rank_in_pool": 1,
+      "rank_in_top5": 1
+    },
+    {
+      "id": "ct_title_deploy",
+      "subtype": "explicit_title",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_title_food",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 27,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_title_people",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 8,
+      "rank_in_pool": 8,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_title_perf",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 3,
+      "rank_in_pool": 3,
+      "rank_in_top5": 3
+    },
+    {
+      "id": "ct_title_study",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 3,
+      "rank_in_pool": 3,
+      "rank_in_top5": 5
+    },
+    {
+      "id": "ct_title_travel",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 30,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_title_ui",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 3,
+      "rank_in_pool": 3,
+      "rank_in_top5": 1
+    },
+    {
+      "id": "ct_title_work",
+      "subtype": "explicit_title",
+      "rank_in_recall30": 13,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_kw_arch",
+      "subtype": "keyword_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_kw_db",
+      "subtype": "keyword_only",
+      "rank_in_recall30": 14,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_kw_deploy",
+      "subtype": "keyword_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_kw_food",
+      "subtype": "keyword_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_kw_people",
+      "subtype": "keyword_only",
+      "rank_in_recall30": 5,
+      "rank_in_pool": 5,
+      "rank_in_top5": 5
+    },
+    {
+      "id": "ct_kw_perf",
+      "subtype": "keyword_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_arch",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": 17,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_db",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_deploy",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_food",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_people",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": 4,
+      "rank_in_pool": 4,
+      "rank_in_top5": 5
+    },
+    {
+      "id": "ct_pro_perf",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_study",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": 15,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_pro_travel",
+      "subtype": "pronoun_only",
+      "rank_in_recall30": 21,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_arch",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": 4,
+      "rank_in_pool": 4,
+      "rank_in_top5": 5
+    },
+    {
+      "id": "ct_rev_db",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_deploy",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_food",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_people",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": 22,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_perf",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": 10,
+      "rank_in_pool": 10,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_study",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": 8,
+      "rank_in_pool": 8,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_rev_travel",
+      "subtype": "conclusion_review",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_multi_arch",
+      "subtype": "multi_topic",
+      "rank_in_recall30": 25,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_multi_db",
+      "subtype": "multi_topic",
+      "rank_in_recall30": 1,
+      "rank_in_pool": 1,
+      "rank_in_top5": 1
+    },
+    {
+      "id": "ct_multi_deploy",
+      "subtype": "multi_topic",
+      "rank_in_recall30": 11,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_multi_food",
+      "subtype": "multi_topic",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_multi_people",
+      "subtype": "multi_topic",
+      "rank_in_recall30": 9,
+      "rank_in_pool": 9,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_mix_arch",
+      "subtype": "mixed_language",
+      "rank_in_recall30": 30,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_mix_deploy",
+      "subtype": "mixed_language",
+      "rank_in_recall30": null,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_mix_db",
+      "subtype": "mixed_language",
+      "rank_in_recall30": 14,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_mix_perf",
+      "subtype": "mixed_language",
+      "rank_in_recall30": 22,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_mix_work",
+      "subtype": "mixed_language",
+      "rank_in_recall30": 4,
+      "rank_in_pool": 4,
+      "rank_in_top5": 4
+    },
+    {
+      "id": "ct_old_arch",
+      "subtype": "long_span_old",
+      "rank_in_recall30": 15,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_old_food",
+      "subtype": "long_span_old",
+      "rank_in_recall30": 17,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_old_people",
+      "subtype": "long_span_old",
+      "rank_in_recall30": 11,
+      "rank_in_pool": null,
+      "rank_in_top5": null
+    },
+    {
+      "id": "ct_old_ui",
+      "subtype": "long_span_old",
+      "rank_in_recall30": 2,
+      "rank_in_pool": 2,
+      "rank_in_top5": 2
+    }
+  ]
+}

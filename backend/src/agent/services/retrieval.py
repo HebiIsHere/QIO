@@ -29,6 +29,7 @@ from agent.selector.base import IndexedDoc
 from agent.selector.selector import Selector
 from agent.selector.tokenize import tokenize
 
+from agent.services.params import CROSS_TOPIC as _CROSS_TOPIC
 from agent.services.params import RETRIEVAL as _RETRIEVAL
 
 DEFAULT_RECENCY_HALF_LIFE_DAYS = _RETRIEVAL.recency_half_life_days
@@ -107,10 +108,13 @@ class Retriever:
         config: RetrievalConfig | None = None,
         conn=None,
         decay: DecayPolicy | None = None,
+        cross_topic=None,
     ) -> None:
         self.selector = selector
         self.topics = topics
         self.config = config or RetrievalConfig()
+        # 跨话题候选生成策略（默认全关 = 与现状逐位一致）；排序权重不受它影响
+        self.cross_topic = cross_topic or _CROSS_TOPIC
         self.conn = conn
         # 默认策略与旧行为一致（ephemeral half-life == recency_half_life_days）
         self.decay = decay or DecayPolicy({EPHEMERAL: self.config.recency_half_life_days})
@@ -223,6 +227,84 @@ class Retriever:
                 scores[fingerprint.topic_id] = len(overlap) / len(query_tokens)
         return scores
 
+    # -- 跨话题候选生成（只影响候选池，不动排序） --------------------------
+
+    def _hint_topics(self, query: str, explicit: list[str] | None) -> list[str]:
+        """候选话题：调用方显式给的优先（例如话题层算出的 aux topics），否则用指纹匹配。"""
+        limit = max(0, int(self.cross_topic.topics_per_query))
+        if not limit:
+            return []
+        ordered: list[str] = []
+        for topic_id in explicit or []:
+            if topic_id and topic_id not in ordered:
+                ordered.append(topic_id)
+        if not ordered and (self.cross_topic.expand_enabled or self.cross_topic.rewrite_enabled):
+            scores = self._fingerprint_scores(query)
+            for topic_id, _score in sorted(scores.items(), key=lambda pair: (-pair[1], pair[0])):
+                if topic_id not in ordered:
+                    ordered.append(topic_id)
+        return ordered[:limit]
+
+    def _rewrite_query(self, query: str, topics: list[str]) -> str:
+        """给查询补上候选话题的关键词（确定性；不调用任何模型）。"""
+        terms: list[str] = []
+        for topic_id in topics:
+            try:
+                fingerprint = self.topics.fingerprint(topic_id)
+            except Exception:  # noqa: BLE001 - 指纹取不到就不改写，不影响主路径
+                continue
+            for keyword in list(fingerprint.keywords)[: max(0, int(self.cross_topic.terms_per_topic))]:
+                if keyword and keyword not in terms:
+                    terms.append(str(keyword))
+        if not terms:
+            return query
+        return f"{query} {' '.join(terms)}"
+
+    def _relation_topics(self, anchor_topic_id: str | None) -> list[str]:
+        """来源链（source_fragment_id）上的话题；同话题校验由 FragmentManager 保证。"""
+        if self.conn is None or not anchor_topic_id:
+            return []
+        from agent.graph.anchors import AnchorService
+        from agent.memory.fragment import FragmentManager
+
+        fragment_id = AnchorService(self.conn).position_fragment(anchor_topic_id)
+        if not fragment_id:
+            return []
+        fragments = FragmentManager(self.conn)
+        topics: list[str] = []
+        for ancestor_id, _depth in fragments.ancestors(fragment_id, max_depth=3):
+            fragment = fragments.get(ancestor_id)
+            if fragment is not None and fragment.topic_id and fragment.topic_id not in topics:
+                topics.append(fragment.topic_id)
+        current = fragments.get(fragment_id)
+        if current is not None and current.topic_id and current.topic_id not in topics:
+            topics.append(current.topic_id)
+        return topics
+
+    def _expand_candidates(self, query: str, anchor_topic_id, topics: list[str], pool: int):
+        """候选扩充：用**同一个查询**取更宽的候选池，只保留候选话题的记忆。
+
+        关键点（第一版踩过的坑）：扩充出来的候选必须和主召回**同源打分**——
+        都相对用户的查询算相关度。若改用「话题指纹文本」去召回，候选分数是相对
+        指纹算的，把它和主召回的分数放进同一个排序里就是在比两把不同的尺子，
+        结果是指纹文本命中的文档被顶到最前面，普通集直接塌掉
+        （实测普通集 R@1 0.847 → 0.347，见 EXPERIMENTS-CROSSTOPIC.md 的教训一节）。
+
+        这里只做「放宽候选池 + 按话题过滤」，排序公式一行没动。
+        """
+        if not topics:
+            return []
+        from agent.selector.base import MemoryCandidate
+
+        wide = self.selector.select(
+            query,
+            top_k=max(pool * 4, pool + 8),
+            anchor_topic_id=anchor_topic_id,
+        )
+        wanted = set(topics)
+        out: list[MemoryCandidate] = [c for c in wide if c.topic_id in wanted]
+        return out
+
     # -- main search ------------------------------------------------------
 
     def search(
@@ -231,12 +313,38 @@ class Retriever:
         *,
         anchor_topic_id: str | None = None,
         top_k: int = 6,
+        topic_hints: list[str] | None = None,
     ) -> list[RetrievalHit]:
+        """检索记忆。
+
+        `topic_hints`：调用方已知的候选话题（例如话题层算出的 aux topics / 评测里的
+        oracle）。给了就把它当作**候选生成**的提示，排序公式一行不变。
+        """
+        pool = top_k * 2
+        hint_topics = self._hint_topics(query, topic_hints)
+        if self.cross_topic.relation_enabled:
+            # 关系感知：沿 fragment 来源链把「路径上话题」的记忆也纳入候选。
+            # 注意：来源链在写入时就被校验为**同话题**（FragmentManager.validate_source），
+            # 所以它只能补当前话题的记忆，跨不出话题边界 —— 这一点由评测证实。
+            for topic_id in self._relation_topics(anchor_topic_id):
+                if topic_id not in hint_topics:
+                    hint_topics.append(topic_id)
+            hint_topics = hint_topics[: max(1, int(self.cross_topic.topics_per_query))]
+        effective_query = (
+            self._rewrite_query(query, hint_topics) if self.cross_topic.rewrite_enabled else query
+        )
         candidates = self.selector.select(
-            query,
-            top_k=top_k * 2,
+            effective_query,
+            top_k=pool,
             anchor_topic_id=anchor_topic_id,
         )
+        if hint_topics and (self.cross_topic.expand_enabled or self.cross_topic.relation_enabled):
+            merged = {c.doc_id: c for c in candidates}
+            for candidate in self._expand_candidates(
+                effective_query, anchor_topic_id, hint_topics, pool
+            ):
+                merged.setdefault(candidate.doc_id, candidate)
+            candidates = list(merged.values())
         if not candidates:
             # 无记忆候选时仍允许实体卡命中（交流锚点）
             entity_hits = self._entity_card_hits(query, top_k=top_k)

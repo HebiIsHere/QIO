@@ -1,0 +1,788 @@
+{
+ "name": "cross-topic-queries",
+ "provenance": "确定性生成（build_queries.py）；docs 复用 ../retrieval_ranking/corpus.json",
+ "docs_source": "../retrieval_ranking/corpus.json",
+ "ground_truth": "expected = 目标话题最新一条仍然成立的事实；stale = 被取代的旧值",
+ "queries": [
+  {
+   "id": "ct_title_arch",
+   "query": "之前聊过的缓存方案那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "查询里出现目标话题标题「缓存方案」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_db",
+   "query": "之前聊过的SQLite 迁移那件事，结论是什么",
+   "topic": "t_ui",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "查询里出现目标话题标题「SQLite 迁移」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_deploy",
+   "query": "之前聊过的部署环境那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "查询里出现目标话题标题「部署环境」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_food",
+   "query": "之前聊过的饮食偏好那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "查询里出现目标话题标题「饮食偏好」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_people",
+   "query": "之前聊过的团队成员那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "查询里出现目标话题标题「团队成员」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_perf",
+   "query": "之前聊过的性能优化那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_perf"
+   ],
+   "note": "查询里出现目标话题标题「性能优化」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_study",
+   "query": "之前聊过的学习方法那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_study",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_study"
+   ],
+   "note": "查询里出现目标话题标题「学习方法」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_travel",
+   "query": "之前聊过的云南旅行那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_travel",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_travel"
+   ],
+   "note": "查询里出现目标话题标题「云南旅行」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_ui",
+   "query": "之前聊过的界面配色那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_ui",
+   "expected": [
+    "t_ui_f4"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_ui"
+   ],
+   "note": "查询里出现目标话题标题「界面配色」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_title_work",
+   "query": "之前聊过的接口联调那件事，结论是什么",
+   "topic": "t_db",
+   "target_topic": "t_work",
+   "expected": [
+    "t_work_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "explicit_title",
+   "oracle_topics": [
+    "t_work"
+   ],
+   "note": "查询里出现目标话题标题「接口联调」；期望=该话题最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_arch",
+   "query": "那个 缓存 的事后来怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "只出现目标话题关键词「缓存」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_db",
+   "query": "那个 postgresql 的事后来怎么定的",
+   "topic": "t_ui",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "只出现目标话题关键词「postgresql」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_deploy",
+   "query": "那个 机房 的事后来怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "只出现目标话题关键词「机房」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_food",
+   "query": "那个 清淡 的事后来怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "只出现目标话题关键词「清淡」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_people",
+   "query": "那个 小林 的事后来怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "只出现目标话题关键词「小林」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_kw_perf",
+   "query": "那个 延迟 的事后来怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "keyword_only",
+   "oracle_topics": [
+    "t_perf"
+   ],
+   "note": "只出现目标话题关键词「延迟」，不含标题；期望=最新仍然成立的事实"
+  },
+  {
+   "id": "ct_pro_arch",
+   "query": "那个方案后来定了吗",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_db",
+   "query": "刚才说的那件事最后怎么处理的",
+   "topic": "t_ui",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_deploy",
+   "query": "这个我们之前是不是聊过，最后结论是啥",
+   "topic": "t_db",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_food",
+   "query": "那个东西到底选哪个了",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_people",
+   "query": "前面提到的那个问题解决了吗",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_perf",
+   "query": "你还有印象吗，我们最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_perf"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_study",
+   "query": "那件事后来有变化吗",
+   "topic": "t_db",
+   "target_topic": "t_study",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_study"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_pro_travel",
+   "query": "之前那个选择现在还算数吗",
+   "topic": "t_db",
+   "target_topic": "t_travel",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "pronoun_only",
+   "oracle_topics": [
+    "t_travel"
+   ],
+   "note": "只有指代（那个/那件事），查询本身没有任何目标话题的词面线索；单靠检索不可解，需要会话状态或意图记录（oracle_topics 就是那个状态）"
+  },
+  {
+   "id": "ct_rev_arch",
+   "query": "上次那个结论再确认一下",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_db",
+   "query": "我们最后决定的是什么来着",
+   "topic": "t_ui",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_deploy",
+   "query": "把上次定下来的再念一遍",
+   "topic": "t_db",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_food",
+   "query": "结论有没有改过",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_people",
+   "query": "最终版本是什么",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_perf",
+   "query": "之前敲定的那个还算数吗",
+   "topic": "t_db",
+   "target_topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_perf"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_study",
+   "query": "再复述一下最后的决定",
+   "topic": "t_db",
+   "target_topic": "t_study",
+   "expected": [
+    "t_study_f2"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_study"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_rev_travel",
+   "query": "有没有后来又推翻",
+   "topic": "t_db",
+   "target_topic": "t_travel",
+   "expected": [
+    "t_travel_f5"
+   ],
+   "stale": [
+    "t_travel_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "conclusion_review",
+   "oracle_topics": [
+    "t_travel"
+   ],
+   "note": "复查结论类：句式指向「上一话题的结论」，同样没有目标话题的词面线索"
+  },
+  {
+   "id": "ct_multi_arch",
+   "query": "SQLite 迁移和缓存方案都聊过，缓存方案那边最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "multi_topic",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "一句话里出现两个话题，问的是后一个；考验的是「别被先出现的词带走」"
+  },
+  {
+   "id": "ct_multi_db",
+   "query": "界面配色和SQLite 迁移都聊过，SQLite 迁移那边最后怎么定的",
+   "topic": "t_ui",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "multi_topic",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "一句话里出现两个话题，问的是后一个；考验的是「别被先出现的词带走」"
+  },
+  {
+   "id": "ct_multi_deploy",
+   "query": "SQLite 迁移和部署环境都聊过，部署环境那边最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "multi_topic",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "一句话里出现两个话题，问的是后一个；考验的是「别被先出现的词带走」"
+  },
+  {
+   "id": "ct_multi_food",
+   "query": "SQLite 迁移和饮食偏好都聊过，饮食偏好那边最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "multi_topic",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "一句话里出现两个话题，问的是后一个；考验的是「别被先出现的词带走」"
+  },
+  {
+   "id": "ct_multi_people",
+   "query": "SQLite 迁移和团队成员都聊过，团队成员那边最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "multi_topic",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "一句话里出现两个话题，问的是后一个；考验的是「别被先出现的词带走」"
+  },
+  {
+   "id": "ct_mix_arch",
+   "query": "之前说的 cache 那套方案定了吗",
+   "topic": "t_work",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "mixed_language",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "中英混合：用英文词「cache」指代目标话题，中文检索词面命中不到"
+  },
+  {
+   "id": "ct_mix_deploy",
+   "query": "deploy 那块的 rollback 流程最后怎么定的",
+   "topic": "t_ui",
+   "target_topic": "t_deploy",
+   "expected": [
+    "t_deploy_f5"
+   ],
+   "stale": [
+    "t_deploy_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "mixed_language",
+   "oracle_topics": [
+    "t_deploy"
+   ],
+   "note": "中英混合：用英文词「rollback」指代目标话题，中文检索词面命中不到"
+  },
+  {
+   "id": "ct_mix_db",
+   "query": "migration 那件事最后结论是啥",
+   "topic": "t_travel",
+   "target_topic": "t_db",
+   "expected": [
+    "t_db_f5"
+   ],
+   "stale": [
+    "t_db_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "mixed_language",
+   "oracle_topics": [
+    "t_db"
+   ],
+   "note": "中英混合：用英文词「migration」指代目标话题，中文检索词面命中不到"
+  },
+  {
+   "id": "ct_mix_perf",
+   "query": "latency 那个问题后来解决了吗",
+   "topic": "t_study",
+   "target_topic": "t_perf",
+   "expected": [
+    "t_perf_f4"
+   ],
+   "stale": [
+    "t_perf_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "mixed_language",
+   "oracle_topics": [
+    "t_perf"
+   ],
+   "note": "中英混合：用英文词「latency」指代目标话题，中文检索词面命中不到"
+  },
+  {
+   "id": "ct_mix_work",
+   "query": "接口那个 token 字段最后怎么统一的",
+   "topic": "t_perf",
+   "target_topic": "t_work",
+   "expected": [
+    "t_work_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "mixed_language",
+   "oracle_topics": [
+    "t_work"
+   ],
+   "note": "中英混合：用英文词「token」指代目标话题，中文检索词面命中不到"
+  },
+  {
+   "id": "ct_old_arch",
+   "query": "很久以前聊过的缓存方案，最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_arch",
+   "expected": [
+    "t_arch_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "long_span_old",
+   "oracle_topics": [
+    "t_arch"
+   ],
+   "note": "目标话题最早一条记忆是 200 天前；检验旧记忆不会被时效压掉"
+  },
+  {
+   "id": "ct_old_food",
+   "query": "很久以前聊过的饮食偏好，最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_food",
+   "expected": [
+    "t_food_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "long_span_old",
+   "oracle_topics": [
+    "t_food"
+   ],
+   "note": "目标话题最早一条记忆是 120 天前；检验旧记忆不会被时效压掉"
+  },
+  {
+   "id": "ct_old_people",
+   "query": "很久以前聊过的团队成员，最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_people",
+   "expected": [
+    "t_people_f3"
+   ],
+   "stale": [],
+   "category": "cross_topic",
+   "subtype": "long_span_old",
+   "oracle_topics": [
+    "t_people"
+   ],
+   "note": "目标话题最早一条记忆是 60 天前；检验旧记忆不会被时效压掉"
+  },
+  {
+   "id": "ct_old_ui",
+   "query": "很久以前聊过的界面配色，最后怎么定的",
+   "topic": "t_db",
+   "target_topic": "t_ui",
+   "expected": [
+    "t_ui_f4"
+   ],
+   "stale": [
+    "t_ui_f0"
+   ],
+   "category": "cross_topic",
+   "subtype": "long_span_old",
+   "oracle_topics": [
+    "t_ui"
+   ],
+   "note": "目标话题最早一条记忆是 200 天前；检验旧记忆不会被时效压掉"
+  }
+ ]
+}

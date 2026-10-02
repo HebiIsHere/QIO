@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,8 +45,87 @@ MODEL_DIRS = (
 
 
 class StubTopics:
+    """默认话题桩：没有指纹（普通集不需要话题联想）。"""
+
     def list_with_fingerprints(self):
         return []
+
+    def fingerprint(self, topic_id):
+        raise ValueError(f"没有话题 {topic_id} 的指纹")
+
+
+class CorpusTopics:
+    """从评测语料构造**与生产同构**的话题指纹。
+
+    生产 TopicService.fingerprint = 话题名 + 最近片段的关键词（most_common 10）
+    + 最新摘要预览 80 字（见 agent/graph/topics.py）。评测语料里没有真正的
+    fragments/memory_index，所以这里用「该话题所有记忆的关键词并集 + 最新一条
+    记忆正文前 80 字」等价构造 —— 构造方式与生产一致，只是数据来源不同。
+    """
+
+    class _Node:
+        meta: dict = {}
+
+    class _Nodes:
+        def get_topic(self, topic_id):
+            return CorpusTopics._Node()
+
+    def __init__(self, docs: list, *, summary_from: str = "latest") -> None:
+        """summary_from：
+
+        * "latest" —— 摘要预览取该话题**最新一条**记忆的正文（生产语义：话题指纹来自
+          最近封存片段的摘要，本来就会概括当前状态）；
+        * "oldest" —— 取**最早一条**记忆的正文。跨话题评测里期望值恰好是「最新一条仍
+          然成立的事实」，若摘要预览也来自它，就等于把答案放进了输入（泄漏）。
+          "oldest" 是无泄漏变体，用来量化「增益有多少来自摘要预览」。
+        """
+        from collections import Counter
+
+        grouped: dict = {}
+        for doc in docs:
+            topic = doc.get("topic")
+            if topic:
+                grouped.setdefault(topic, []).append(doc)
+        self._fingerprints = []
+        self._by_id: dict = {}
+        for topic, rows in grouped.items():
+            counter = Counter()
+            for row in rows:
+                counter.update(row.get("keywords") or [])
+            newest = min(rows, key=lambda r: r.get("created_days_ago", 0.0))
+            source = newest if summary_from == "latest" else max(
+                rows, key=lambda r: r.get("created_days_ago", 0.0)
+            )
+            fingerprint = _Fingerprint(
+                topic_id=topic,
+                title=newest.get("title") or topic,
+                keywords=[k for k, _ in counter.most_common(10)],
+                fragment_count=len(rows),
+                last_activity=None,
+                summary_preview=(source.get("text") or "")[:80],
+            )
+            self._fingerprints.append(fingerprint)
+            self._by_id[topic] = fingerprint
+        self.nodes = CorpusTopics._Nodes()
+
+    def list_with_fingerprints(self):
+        return list(self._fingerprints)
+
+    def fingerprint(self, topic_id):
+        fingerprint = self._by_id.get(topic_id)
+        if fingerprint is None:
+            raise ValueError(f"没有话题 {topic_id} 的指纹")
+        return fingerprint
+
+
+@dataclass
+class _Fingerprint:
+    topic_id: str
+    title: str
+    keywords: list
+    fragment_count: int
+    last_activity: str | None
+    summary_preview: str | None
 
 
 def _memo_onnx_class():
@@ -124,8 +204,12 @@ ARMS["P_default_vector"] = ("vector", None, "生产默认配置 + 向量召回")
 ARMS["P_default_bm25"] = ("bm25", None, "生产默认配置 + BM25（CI 可跑，无需模型）")
 
 
-def build(corpus: dict, arm: str):
-    """按臂装配生产组件。所有臂都只用产品自己的类，评测里没有第二条排序实现。"""
+def build(corpus: dict, arm: str, topics=None):
+    """按臂装配生产组件。所有臂都只用产品自己的类，评测里没有第二条排序实现。
+
+    `topics`：话题服务桩。默认没有指纹（只测召回+排序）；跨话题实验传
+    CorpusTopics 以启用话题联想。
+    """
     from agent.selector.base import IndexedDoc
     from agent.selector.bm25 import BM25Backend
     from agent.selector.hybrid import HybridBackend
@@ -170,6 +254,7 @@ def build(corpus: dict, arm: str):
 
     selector = Selector(recall=recall, fallback_recall=bm25)
     selector.load(docs, titles={d["id"]: d.get("title", "") for d in corpus["docs"]})
+    topics = topics if topics is not None else StubTopics()
     if weights is None:
         config = RetrievalConfig()  # 完全走生产默认（params.RETRIEVAL）
     else:
@@ -179,7 +264,7 @@ def build(corpus: dict, arm: str):
             affinity_weight=weights[2],
             rule_weight=weights[3],
         )
-    retriever = Retriever(selector, StubTopics(), config=config, conn=conn, decay=DecayPolicy())
+    retriever = Retriever(selector, topics, config=config, conn=conn, decay=DecayPolicy())
     ages = {d["id"]: d.get("created_days_ago", 0.0) for d in corpus["docs"]}
     kinds = {d["id"]: d.get("kind", "ephemeral") for d in corpus["docs"]}
     retriever._created_at = lambda doc_id: _iso(ages.get(doc_id, 0.0))  # type: ignore[assignment]
