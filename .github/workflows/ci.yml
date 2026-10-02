@@ -343,3 +343,93 @@ jobs:
             exit $LASTEXITCODE
           }
           python scripts/check_backend_process_model.py --report "$env:RUNNER_TEMP\process-model-job.json" --case job
+
+  # 安装包真机 E2E（windows-latest）：/S 静默安装 → 普通卸载 → 注册表断言 → sidecar 在跑时卸载。
+  # 为什么必须在 CI：本机（含 Lead 那台）子进程是受限令牌，安装器的 WriteRegStr / 卸载器的
+  # DeleteRegKey 都 ACCESS_DENIED 且静默失败 —— 本机只能记 NOT VERIFIED；runner 能写注册表。
+  # 没有 continue-on-error：scripts/install_e2e.py 有任何 FAIL 就退出 1，即这一步红。
+  install-e2e:
+    name: install e2e (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      # 真 sidecar（PyInstaller onefile，约 1 分钟）：安装包里放的是真实后端，不是空占位。
+      - name: Build the backend sidecar
+        run: pwsh -File scripts/build_sidecar.ps1
+      # CI 没有 90MB 内置模型的来源（build_installer.ps1 的 fetch_model 需要模型源/联网）：
+      # 这里放一个**合成** model.onnx + 与之相符的 model_manifest.json，让「安装目录关键文件」
+      # 与「模型与清单一致」两条断言有对象可查。它证明的是安装/卸载**机制**，不是真实模型产物
+      # —— 真实模型由 release gate 与 Agent B 的本机 E2E 覆盖（不含糊其辞）。
+      - name: Provide synthetic bundled-model payload
+        run: |
+          $dir = "frontend/src-tauri/resources/models/bge-small-zh-v1.5"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = New-Object byte[] 4096
+          (New-Object System.Random 7).NextBytes($bytes)
+          [System.IO.File]::WriteAllBytes("$dir/model.onnx", $bytes)
+          $hash = (Get-FileHash "$dir/model.onnx" -Algorithm SHA256).Hash.ToLower()
+          @{ files = @(@{ file = "model.onnx"; bytes = $bytes.Length; sha256 = $hash }) } |
+            ConvertTo-Json -Depth 6 | Out-File -Encoding utf8 "$dir/model_manifest.json"
+      - name: Build the NSIS installer
+        working-directory: frontend
+        run: |
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Out-File -Encoding utf8 tauri.ci.conf.json
+          npm run tauri build -- --bundles nsis --config tauri.ci.conf.json
+      - name: Silent install + registry assertions
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $setup = (Get-ChildItem "frontend/src-tauri/target/release/bundle/nsis/QIO_*_x64-setup.exe" | Select-Object -First 1)
+          if (-not $setup) { Write-Output "::error title=install e2e::找不到 NSIS 安装包"; exit 1 }
+          $work = "$env:RUNNER_TEMP\qio-install-e2e"
+          New-Item -ItemType Directory -Force -Path "$work\data" | Out-Null
+          # 「卸载保留用户数据」断言要求数据目录非空：塞一个合成标记文件当用户状态。
+          "synthetic user state (CI)" | Out-File -Encoding utf8 "$work\data\user-state-marker.txt"
+          # preflight / decoy / restore 是「保护本机既有安装」的步骤（reg export/import D:\QIO）：
+          # CI 上没有既有安装，跑它们只会失败；这里要的是安装 + 注册表断言。
+          python scripts/install_e2e.py --installer $setup.FullName --work-dir $work --install-dir "$work\install" --stages install
+          $code = $LASTEXITCODE
+          if (Test-Path "$work\summary.json") { Copy-Item "$work\summary.json" "$work\summary-install.json" -Force }
+          if ($code -ne 0) {
+            Write-Output "::error title=install e2e (install)::退出码 $code"
+            Get-Content "$work\summary-install.json" -ErrorAction SilentlyContinue | Select-Object -Last 30
+            exit $code
+          }
+      # 「sidecar 还在跑时卸载」：用一个**替身进程**（拷贝成 <安装目录>\qio-backend.exe 的 ping -t）
+      # 占住安装目录里的后端名字与路径 —— 这正好触发安装器 PREUNINSTALL 钩子里的
+      # CheckIfAppIsRunning "qio-backend.exe" 与 RMDir 的真实冲突（没有钩子时目录删不掉）。
+      # 真实 onefile 的 launcher/child 形状由 frozen worker 任务的进程模型门槛覆盖；
+      # 这一步验的是**钩子与卸载器行为**，不要说成「真后端被杀了」。
+      - name: Start a stand-in sidecar from the install dir
+        run: |
+          $work = "$env:RUNNER_TEMP\qio-install-e2e"
+          Copy-Item "$env:SystemRoot\System32\ping.exe" "$work\install\qio-backend.exe" -Force
+          $p = Start-Process -FilePath "$work\install\qio-backend.exe" -ArgumentList '-t','127.0.0.1' -PassThru
+          $p.Id | Out-File "$work\standin.pid"
+          Write-Output "stand-in sidecar pid=$($p.Id) path=$($p.Path)"
+      - name: Uninstall with the sidecar still running + registry assertions
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $work = "$env:RUNNER_TEMP\qio-install-e2e"
+          $setup = (Get-ChildItem "frontend/src-tauri/target/release/bundle/nsis/QIO_*_x64-setup.exe" | Select-Object -First 1).FullName
+          python scripts/install_e2e.py --installer $setup --work-dir $work --install-dir "$work\install" --stages uninstall --uninstall-with-running-backend
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -and (Test-Path "$work\summary.json")) {
+            Write-Output "::error title=install e2e (uninstall)::退出码 $code"
+            Get-Content "$work\summary.json" | Select-Object -Last 40
+          }
+          exit $code
