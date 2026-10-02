@@ -412,14 +412,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$work\data" | Out-Null
           # 「卸载保留用户数据」断言要求数据目录非空：塞一个合成标记文件当用户状态。
           "synthetic user state (CI)" | Out-File -Encoding utf8 "$work\data\user-state-marker.txt"
-          # preflight / decoy / restore 是「保护本机既有安装」的步骤（reg export/import D:\QIO）：
-          # CI 上没有既有安装，跑它们只会失败；这里要的是安装 + 注册表断言。
-          python scripts/install_e2e.py --installer $setup.FullName --work-dir $work --install-dir "$work\install" --stages install
+          # **真正的静默安装发生在 decoy 阶段**（step_decoy 里那一行 install_cmdline）：它先造一个
+          # 诱饵卸载器并把注册表指向诱饵，证明「静默安装不会顺手卸载既有安装」，然后才装到 --install-dir。
+          # 第一次上线只给了 --stages install，结果什么都没装、A-020「安装目录生成」直接 FAIL。
+          # preflight / restore 仍不跑：那是「备份并还原本机既有安装」的步骤（reg export/import D:\QIO），
+          # CI 上没有既有安装，reg export 会失败。
+          python scripts/install_e2e.py --installer $setup.FullName --work-dir $work --install-dir "$work\install" --stages decoy,install
           $code = $LASTEXITCODE
           if (Test-Path "$work\summary.json") { Copy-Item "$work\summary.json" "$work\summary-install.json" -Force }
           if ($code -ne 0) {
             Write-Output "::error title=install e2e (install)::退出码 $code"
-            Get-Content "$work\summary-install.json" -ErrorAction SilentlyContinue | Select-Object -Last 30
+            if (Test-Path "$work\summary-install.json") {
+              $s = Get-Content "$work\summary-install.json" -Raw | ConvertFrom-Json
+              foreach ($r in $s.results) { if ($r.state -eq "FAIL") { Write-Output ("::error title=" + $r.id + " " + $r.title + "::" + $r.detail) } }
+            }
             exit $code
           }
       # 「sidecar 还在跑时卸载」：用一个**替身进程**（拷贝成 <安装目录>\qio-backend.exe 的 ping -t）
@@ -442,8 +448,11 @@ jobs:
           $setup = (Get-ChildItem "frontend/src-tauri/target/release/bundle/nsis/QIO_*_x64-setup.exe" | Select-Object -First 1).FullName
           python scripts/install_e2e.py --installer $setup --work-dir $work --install-dir "$work\install" --stages uninstall --uninstall-with-running-backend
           $code = $LASTEXITCODE
-          if ($code -ne 0 -and (Test-Path "$work\summary.json")) {
+          if ($code -ne 0) {
             Write-Output "::error title=install e2e (uninstall)::退出码 $code"
-            Get-Content "$work\summary.json" | Select-Object -Last 40
+            if (Test-Path "$work\summary.json") {
+              $s = Get-Content "$work\summary.json" -Raw | ConvertFrom-Json
+              foreach ($r in $s.results) { if ($r.state -eq "FAIL") { Write-Output ("::error title=" + $r.id + " " + $r.title + "::" + $r.detail) } }
+            }
           }
           exit $code
