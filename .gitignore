@@ -62,3 +62,7 @@ backend/tmp*
 #   .e2e-work    —— scripts/install_e2e.py 的安装目录、证据与 E2E 数据库
 .build-tmp/
 .e2e-work/
+# 测试/构建脚本产生的报告产物（junit xml、_MEI 解包残留），不进库：
+#   backend/qio-*.xml  —— 各 agent 跑 pytest --junitxml=qio-*.xml 留下的报告
+backend/qio-*.xml
+*.junit.xml
