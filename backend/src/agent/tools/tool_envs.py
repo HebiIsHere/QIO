@@ -51,6 +51,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import sysconfig
 from dataclasses import dataclass, field
@@ -297,11 +298,151 @@ def _render_lock_file(packages: Sequence[Mapping[str, Any]], with_hashes: bool) 
 # -- 安装执行（默认实现） --------------------------------------------------
 
 
+# -- 依赖环境用哪个 Python 建（第三阶段安装版 E2E 定下来的规则） -----------------
+#
+# 安装版（PyInstaller 冻结）里 sys.executable 是 **qio-backend.exe**，不能当解释器用：
+# 它只认 --tool-worker，`-m venv` 会被当成未知参数忽略掉 —— 于是子进程**又启动一个后端**。
+# 实测（安装目录里的 qio-backend.exe + 真实依赖工具）：
+#   WARNING:agent.core.loop:tool dev_run_tests failed: 创建专用环境失败：Traceback (most recent call last):
+#     File "agent\config.py", line 32, in default_data_dir
+#     File "pathlib.py", line 1385, in expanduser
+#   RuntimeError: Could not determine home directory.
+# 在真机上（home 变量没被清掉时）它会变成「悄悄跑起第二个后端」直到 600s 超时。
+BASE_PYTHON_ENV = "QIO_PYTHON"
+BASE_PYTHON_PROBE_TIMEOUT_SECONDS = 15.0
+
+
+def _backend_major_minor() -> str:
+    return f"{sys.version_info[0]}.{sys.version_info[1]}"
+
+
+def _probe_python_version(path: str) -> str | None:
+    """问候选解释器它的 major.minor；不是能用的解释器就返回 None。"""
+    try:
+        proc = subprocess.run(
+            [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+            timeout=BASE_PYTHON_PROBE_TIMEOUT_SECONDS,
+            env=_clean_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = (proc.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    value = lines[-1].strip()
+    return value if re.fullmatch(r"\d+\.\d+", value) else None
+
+
+def _py_launcher_pythons() -> list[str]:
+    """Windows py 启动器注册的解释器（py -0p）。
+
+    它能看到 PATH 上看不到的安装（例如 uv 管理的 cpython-3.11），而这台机器上
+    PATH 里的 python 是 3.10、py 默认是 3.12 —— 都不匹配后端。
+    """
+    launcher = shutil.which("py")
+    if not launcher:
+        return []
+    try:
+        proc = subprocess.run(
+            [launcher, "-0p"],
+            capture_output=True,
+            text=True,
+            timeout=BASE_PYTHON_PROBE_TIMEOUT_SECONDS,
+            env=_clean_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found: list[str] = []
+    for raw in (proc.stdout or "").splitlines():
+        match = re.search(r"([A-Za-z]:\\[^\r\n]*?python\.exe)\s*$", raw.strip())
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def _candidate_pythons() -> list[str]:
+    """按优先级列候选：显式 QIO_PYTHON → py 启动器注册的 → PATH 上的 python3/python。"""
+    candidates: list[str] = []
+    explicit = (os.environ.get(BASE_PYTHON_ENV) or "").strip()
+    if explicit:
+        candidates.append(explicit)
+    if os.name == "nt":
+        candidates.extend(_py_launcher_pythons())
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = os.path.normcase(os.path.abspath(item))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(item)
+    return ordered
+
+
+def _resolve_base_python(explicit: str | None = None) -> tuple[str | None, str]:
+    """依赖环境用哪个解释器：返回 (路径, 说明)；找不到时说明必须是**可行动**的。
+
+    规则：
+    * 非冻结态（开发/测试）：仍然用后端自己的解释器 —— 行为一行不变；
+    * 冻结态（安装版）：sys.executable 是 qio-backend.exe，**绝不使用**；按
+      QIO_PYTHON → py 启动器 → PATH 找，并且要求 major.minor 与后端一致
+      （环境身份指纹、锁定清单都按后端版本算；ABI 不一致的依赖装进去就是错的）。
+    """
+    expected = _backend_major_minor()
+    if explicit is None:
+        # 环境变量就是「用户显式指定」：它一旦给了，就以它为准 —— 不匹配时**明确失败**，
+        # 不许悄悄换成另一个解释器（那正是这一轮要消灭的静默行为）。
+        explicit = (os.environ.get(BASE_PYTHON_ENV) or "").strip() or None
+    if explicit:
+        version = _probe_python_version(explicit)
+        if version is None:
+            return None, f"指定的解释器不能用：{explicit}（跑不起来或不是 Python）"
+        if version != expected:
+            return None, (
+                f"指定的解释器是 Python {version}，后端是 Python {expected}：依赖环境的 ABI "
+                f"必须与后端一致（环境身份与锁定清单都按后端版本算），已拒绝。"
+            )
+        return explicit, f"{explicit}（Python {version}）"
+    if not getattr(sys, "frozen", False):
+        return sys.executable, f"{sys.executable}（Python {expected}，非冻结态）"
+    mismatched: list[str] = []
+    for candidate in _candidate_pythons():
+        version = _probe_python_version(candidate)
+        if version is None:
+            continue
+        if version == expected:
+            return candidate, f"{candidate}（Python {version}）"
+        mismatched.append(f"{candidate}（Python {version}）")
+    detail = (
+        "；本机找到的解释器版本都不匹配：" + "、".join(mismatched)
+        if mismatched
+        else "；本机没找到任何 Python 解释器"
+    )
+    return None, (
+        f"安装版需要本机有一个 Python {expected} 才能为工具准备依赖环境"
+        f"（可用 {BASE_PYTHON_ENV} 指定解释器路径）{detail}。"
+    )
+
 def _clean_env() -> dict[str, str]:
-    """安装用的环境：系统必需项 + 无业务变量、无凭据。"""
+    """安装用的环境：系统必需项 + 无业务变量、无凭据。
+
+    为什么保留 USERPROFILE / HOMEDRIVE / HOMEPATH：它们不是业务变量，而是 Windows 上
+    Path.home() / 用户级配置的必需品。第三阶段安装版 E2E 实测：解释器子进程缺了它们会直接
+    RuntimeError: Could not determine home directory（冻结后端被当解释器时就是这么炸的）。
+    **子进程不是安全边界**，缺 home 只会让工具炸；凭据与业务变量（QIO_*、API key 之类）
+    仍然一个都不给 —— 这里只补回这三个。
+    """
     keep = (
         "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
         "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+        "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
     )
     env = {key: os.environ[key] for key in keep if os.environ.get(key)}
     env["PYTHONIOENCODING"] = "utf-8"
@@ -504,8 +645,18 @@ class ToolEnvManager:
         touch_interval_seconds: float = TOUCH_INTERVAL_SECONDS,
     ) -> None:
         self.root = Path(root)
-        # 用哪个 Python 去建环境：随包的这一个（冻结态由 executor_env 保证不是后端 exe）。
-        self.base_python = base_python or sys.executable
+        # 用哪个 Python 去建环境：非冻结态是后端自己；**冻结态必须另找** ——
+        # sys.executable 是 qio-backend.exe，把它当解释器会悄悄启动第二个后端（见
+        # _resolve_base_python 的注释与第三阶段安装版 E2E 的原始输出）。
+        if base_python:
+            self.base_python = base_python
+            self.base_python_note = f"{base_python}（显式指定）"
+            self.base_python_problem: str | None = None
+        else:
+            resolved, note = _resolve_base_python()
+            self.base_python = resolved or ""
+            self.base_python_note = note
+            self.base_python_problem = None if resolved else note
         self._runner: EnvRunner = runner or _default_runner
         self.timeout_seconds = timeout_seconds
         self.touch_interval_seconds = touch_interval_seconds
@@ -904,6 +1055,14 @@ class ToolEnvManager:
         }
 
     async def _prepare(self, requirements: list[str], *, fingerprint: str) -> EnvStatus:
+        if not self.base_python:
+            # 冻结态没有可用解释器：**明确失败**，绝不拿 qio-backend.exe 冒充解释器。
+            return EnvStatus(
+                False,
+                None,
+                self.base_python_problem or "没有可用的 Python 解释器",
+                fingerprint=fingerprint,
+            )
         directory = self.directory_for(requirements)
         try:
             directory.parent.mkdir(parents=True, exist_ok=True)
@@ -1033,6 +1192,8 @@ class ToolEnvManager:
         base_python 没有 pip 时，用 §python -m venv§ 建一个**空环境**（venv 的 pip 来自
         CPython 自带的 ensurepip，不需要联网）；这个目录以后宿主安装也复用，不浪费。
         """
+        if not self.base_python:
+            return None, self.base_python_problem or "没有可用的 Python 解释器"
         ok, _output = await self._runner(
             [self.base_python, "-m", "pip", "--version"], CONTAINER_PROBE_TIMEOUT_SECONDS, None
         )
