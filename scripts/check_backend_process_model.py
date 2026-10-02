@@ -19,12 +19,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 
 def _fail(message: str) -> None:
     print(f"  [FAIL] {message}")
+    # CI 上同时发一条注解（注解公开可读，不用登录下载日志就能定位）。
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::error title=进程模型门槛::{message}")
 
 
 def _ok(message: str) -> None:
