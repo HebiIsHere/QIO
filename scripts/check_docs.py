@@ -8,6 +8,9 @@
 4. 被引用的命令必须真实存在（`scripts/*.py`、`python -m agent.x.y` 等）。
 5. CI 里执行的安装/测试命令，必须在 `docs/SETUP.md` 里能找到——否则
    「本地照着 SETUP 装、CI 装另一套」的漂移会重新出现。
+6. `docs/status.md` 顶部的「最后核对」不能落后于正文里已经记到的最新日期——
+   读者就是靠这个字段判断「这份状态有多新」；正文写到 2026-10-03 而顶部还挂 2026-09-12，
+   比缺一条数据更误导（2026-10-03 由用户发现）。
 
 用法：python scripts/check_docs.py
 退出码：0 = 通过；1 = 存在漂移。
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +43,11 @@ OTHER_DOCS = [
 ]
 
 VALID_STATUS = {"completed", "partial", "active", "planned"}
+
+# 「最后核对：2026-10-03（main 分支）」——日期后可以带别的说明
+LAST_CHECKED = re.compile(r"最后核对：\s*(\d{4}-\d{2}-\d{2})")
+# 正文里的日期字面量（用来判断「这份文件已经记到哪天」）
+DATE_LITERAL = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 
 MILESTONE_HEADING = re.compile(r"^###\s+((?:M|P)\d+)\s+—")
 STATUS_LINE = re.compile(r"^\s*-\s*\*\*Status：\*\*\s*(\w+)")
@@ -226,6 +235,48 @@ def check_ci_commands_documented(errors: list[str]) -> None:
             )
 
 
+def check_last_checked(errors: list[str], *, today: date | None = None) -> None:
+    """status.md 的「最后核对」必须 >= 正文里已经记到的最新日期。
+
+    只用**不晚于今天**的日期算「已记到」：正文里可能有路线图/迁移通知那类未来日期
+    （例如「ubuntu-latest 2026-10-19 起迁移」），拿它们当「已记到」会立刻变成假警报。
+    """
+    text = read(STATUS_FILE)
+    relative = STATUS_FILE.relative_to(ROOT)
+    declared = LAST_CHECKED.search(text)
+    if declared is None:
+        errors.append(f"{relative}：找不到「最后核对：YYYY-MM-DD」字段（读者靠它判断状态有多新）")
+        return
+    try:
+        declared_date = date.fromisoformat(declared.group(1))
+    except ValueError:
+        errors.append(f"{relative}：「最后核对」不是合法日期：{declared.group(1)}")
+        return
+
+    limit = today or date.today()
+    latest: tuple[date, str, int] | None = None
+    for match in DATE_LITERAL.finditer(text):
+        raw = match.group(1)
+        try:
+            parsed = date.fromisoformat(raw)
+        except ValueError:
+            continue
+        if parsed > limit:
+            continue  # 未来日期（路线图/迁移通知）：不算「已经记到」
+        if latest is None or parsed > latest[0]:
+            line_number = text.count("\n", 0, match.start()) + 1
+            latest = (parsed, raw, line_number)
+    if latest is None:
+        errors.append(f"{relative}：正文里找不到任何日期，无法判断「最后核对」是否过期")
+        return
+    if declared_date < latest[0]:
+        errors.append(
+            f"{relative}：顶部「最后核对」= {declared.group(1)}，"
+            f"但正文已记到 {latest[1]}（第 {latest[2]} 行）——"
+            f"请把「最后核对」更新到 >= {latest[1]}"
+        )
+
+
 def main() -> int:
     _configure_output()
     errors: list[str] = []
@@ -237,6 +288,7 @@ def main() -> int:
     check_referenced_paths(errors)
     check_referenced_commands(errors)
     check_ci_commands_documented(errors)
+    check_last_checked(errors)
 
     if errors:
         print("文档一致性检查未通过：")
