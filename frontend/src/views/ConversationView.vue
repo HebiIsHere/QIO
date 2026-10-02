@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
+import { defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useOnboardingStore } from "../stores/onboarding";
@@ -11,6 +11,7 @@ import SettingsFloat from "../components/SettingsFloat.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
 import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
 import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
+import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -69,17 +70,45 @@ function openPlanet() {
 
 /**
  * 顶部提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）是固定的
- * top-center 浮层，而「还没设置完」是一条正常流的横幅 —— 两者同时出现会叠在一起
- * （真机验收看到的实际情况）。横幅在的时候，把浮层让到它下面。
+ * top-center 浮层，而「还没设置完」与「上次没执行的消息」都是正常流里的横幅 ——
+ * 同时出现会叠在一起（真机验收看到的实际情况）。横幅在的时候，把浮层让到它们下面。
+ *
+ * 「上次没执行的消息」展开后高度会变，所以按**实测高度**让位，而不是写死一个常数：
+ * ResizeObserver 盯着它，展开 / 收起 / 列表条数变化都会重新算。
  */
+const interruptedRef = ref<HTMLElement | null>(null);
+let interruptedObserver: ResizeObserver | null = null;
+
+function syncTopNotesOffset() {
+  const style = document.documentElement.style;
+  const hint = onboarding.hintVisible ? 52 : 0;
+  const entry = interruptedRef.value?.getBoundingClientRect().height ?? 0;
+  const total = Math.round(hint + (entry ? entry + 8 : 0));
+  if (total > 0) style.setProperty("--qio-top-notes-offset", `${total}px`);
+  else style.removeProperty("--qio-top-notes-offset");
+}
+
 watch(
-  () => onboarding.hintVisible,
-  (visible) => {
-    const style = document.documentElement.style;
-    if (visible) style.setProperty("--qio-top-notes-offset", "52px");
-    else style.removeProperty("--qio-top-notes-offset");
-  },
+  [() => onboarding.hintVisible, () => session.interruptedTurns.length],
+  () => void nextTick(syncTopNotesOffset),
   { immediate: true },
+);
+watch(
+  interruptedRef,
+  (el, _prev, onCleanup) => {
+    interruptedObserver?.disconnect();
+    interruptedObserver = null;
+    if (el && typeof ResizeObserver !== "undefined") {
+      interruptedObserver = new ResizeObserver(() => syncTopNotesOffset());
+      interruptedObserver.observe(el);
+    }
+    syncTopNotesOffset();
+    onCleanup(() => {
+      interruptedObserver?.disconnect();
+      interruptedObserver = null;
+    });
+  },
+  { flush: "post" },
 );
 onUnmounted(() =>
   document.documentElement.style.removeProperty("--qio-top-notes-offset"),
@@ -127,6 +156,13 @@ onMounted(() => {
       >
         ×
       </button>
+    </div>
+    <!--
+      上次退出时「已经收下、但没有执行」的消息：不自动重发，只如实说出这件事，
+      继续 / 忽略都由用户点。默认收起，出现时不抢焦点。
+    -->
+    <div ref="interruptedRef" class="interrupted-slot">
+      <InterruptedTurnEntry />
     </div>
     <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
     <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->

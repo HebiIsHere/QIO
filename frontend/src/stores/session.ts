@@ -3,6 +3,7 @@ import {
   api,
   type DevAuthorizationRow,
   type DevTaskRow,
+  type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
 
@@ -368,6 +369,25 @@ export const useSessionStore = defineStore("session", {
       what: string;
       createdAt: string;
     }[],
+    /**
+     * 上一次进程结束时「已经被接受、但没有执行完」的**用户消息**
+     * （后端 `/api/runtime/state` 的 `interrupted_turns`）。
+     *
+     * 与 interrupted_approvals 是两件事：审批那次是「工具没执行」，这里是
+     * 「你说的话没人接」。两条都**不会自动重放** —— 是否继续由用户明确决定。
+     * 这里只持有后端给的形状，不本地缓存、不自己判断哪条算没做完。
+     */
+    interruptedTurns: [] as InterruptedTurn[],
+    /**
+     * 正在提交中的那条（turn_id）；「全部忽略」用 `ALL`。
+     *
+     * 放在 store 而不是组件里：同一条记录的「继续」只能有一个请求在飞，
+     * 否则双击就会变成两次重发（后端虽然会用一次性 claim 挡住第二次，
+     * 但界面上不该出现"点了两下、弹两条错"这种事）。
+     */
+    interruptedBusyId: "" as string,
+    /** 上一次恢复操作的结果（成功或失败都说清楚，不静默） */
+    interruptedNotice: "" as string,
     /**
      * 工具开发任务（后端 `GET /api/dev/tasks` 的权威列表）。
      *
@@ -880,6 +900,109 @@ export const useSessionStore = defineStore("session", {
       });
     },
     /**
+     * 继续发送一条「上次没执行」的消息。
+     *
+     * 只做用户点的那一次：**不自动重发**是产品语义（进程退出可能正是用户的意思，
+     * 自动重放会重复花钱、重复产生回答）。
+     *
+     * 结果必须说清楚，不静默：
+     * * 成功 → 该条从入口消失（后端台账已把它标成已处理）；
+     * * **409** → 它已经不在「未执行」状态（别处处理过 / 已完成）—— 这时**不猜**，
+     *   重新向服务端要一份权威状态，并把这句话原样告诉用户；
+     * * 其它失败 → 保留入口，给出可重试的说明。
+     */
+    async resumeInterruptedTurn(turnId: string): Promise<{ ok: boolean; message: string }> {
+      if (this.interruptedBusyId) {
+        return { ok: false, message: "上一次操作还在提交中，请稍候" };
+      }
+      this.interruptedBusyId = turnId;
+      this.interruptedNotice = "";
+      try {
+        const res = await api.resendInterruptedTurn(turnId);
+        this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+        // 不把内部 turn_id 抛给用户：他要的是"这条重新发出去了"，不是一串标识
+        void res;
+        this.interruptedNotice = "已经按原话题重新排队，这一轮马上开始";
+        return { ok: true, message: this.interruptedNotice };
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        if (status === 409) {
+          await this.resyncTurnState();
+          this.interruptedNotice =
+            "这条已经被处理过了（可能已在别处继续、或已被忽略），入口已按后端最新状态刷新";
+          return { ok: false, message: this.interruptedNotice };
+        }
+        this.interruptedNotice = `提交没有成功：${(e as Error).message}（可以重试）`;
+        return { ok: false, message: this.interruptedNotice };
+      } finally {
+        this.interruptedBusyId = "";
+      }
+    },
+    /**
+     * 忽略一条：不再提示，但台账记录与消息原文都保留（后端不删用户数据）。
+     * 同样只有真正成功才从入口移除；409 时向后端要真相。
+     */
+    async dismissInterruptedTurn(turnId: string): Promise<{ ok: boolean; message: string }> {
+      if (this.interruptedBusyId) {
+        return { ok: false, message: "上一次操作还在提交中，请稍候" };
+      }
+      this.interruptedBusyId = turnId;
+      this.interruptedNotice = "";
+      try {
+        await api.dismissInterruptedTurn(turnId);
+        this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+        this.interruptedNotice = "已忽略这一条（原文仍然保留在记录里）";
+        return { ok: true, message: this.interruptedNotice };
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        if (status === 409) {
+          await this.resyncTurnState();
+          this.interruptedNotice = "这条已经被处理过了，入口已按后端最新状态刷新";
+          return { ok: false, message: this.interruptedNotice };
+        }
+        this.interruptedNotice = `忽略没有成功：${(e as Error).message}（可以重试）`;
+        return { ok: false, message: this.interruptedNotice };
+      } finally {
+        this.interruptedBusyId = "";
+      }
+    },
+    /**
+     * 全部忽略：逐条提交，失败的保留在入口里并如实报数（不假装全成功）。
+     */
+    async dismissAllInterruptedTurns(): Promise<{ ok: boolean; message: string }> {
+      if (this.interruptedBusyId) {
+        return { ok: false, message: "上一次操作还在提交中，请稍候" };
+      }
+      const ids = this.interruptedTurns.map((t) => t.turn_id);
+      if (!ids.length) return { ok: true, message: "没有需要忽略的记录" };
+      this.interruptedBusyId = "ALL";
+      this.interruptedNotice = "";
+      let failed = 0;
+      let already = 0;
+      for (const id of ids) {
+        try {
+          await api.dismissInterruptedTurn(id);
+          this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== id);
+        } catch (e) {
+          if ((e as { status?: number }).status === 409) already += 1;
+          else failed += 1;
+        }
+      }
+      this.interruptedBusyId = "";
+      if (failed) {
+        this.interruptedNotice = `有 ${failed} 条没有忽略成功（可以重试）；其余已忽略`;
+        return { ok: false, message: this.interruptedNotice };
+      }
+      if (already) {
+        // 已经被别处处理过的那些：不猜，直接以后端为准重新对齐
+        await this.resyncTurnState();
+        this.interruptedNotice = `有 ${already} 条已经被处理过，入口已按后端最新状态刷新`;
+        return { ok: true, message: this.interruptedNotice };
+      }
+      this.interruptedNotice = "已忽略全部未完成的消息（原文仍然保留在记录里）";
+      return { ok: true, message: this.interruptedNotice };
+    },
+    /**
      * 事件流可能已经不完整（收到 RESYNC）：不再假装状态是最新的，
      * 直接向服务器要一份**完整**权威状态并对齐（turn 队列 + 待审批 + 独立任务）。
      */
@@ -898,6 +1021,9 @@ export const useSessionStore = defineStore("session", {
           what: item.what,
           createdAt: item.created_at,
         }));
+        // 上一次退出时没执行完的用户消息：后端只给「还没被处理过」的那些，
+        // 这里照单收下 —— 前端不做第二套「算不算没做完」的判断。
+        this.interruptedTurns = state.interrupted_turns ?? [];
         // 开发任务是另一份权威状态（独立的接口）：连上就一起拉，别等用户想起来刷新
         await this.refreshDevTasks();
         return { turn_queue: state.turn_queue, approvals: state.approvals, tasks: state.tasks };
