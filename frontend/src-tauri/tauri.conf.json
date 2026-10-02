@@ -29,6 +29,11 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/qio-backend"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/installer-hooks.nsh"
+      }
+    },
     "resources": { "resources/models": "models" },
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
   },
