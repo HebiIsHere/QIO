@@ -1672,8 +1672,24 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   （自检里各有一条用例）。
 - **CI 上现在是硬断言**（`install e2e (windows-latest)` 任务）：安装信息写入 → 普通卸载后
   卸载登记被移除、安装位置被清掉、**合成 `DbBaseline` 仍在**、安装目录清空、用户数据保留、
-  运行中的 sidecar 被卸载器收掉；`coinstall` 阶段还会验「两份真安装并存时卸载 A 不动 B」。
-  注册表这条路径在本机**永远无法验证**（子进程写不了注册表，如实记 NOT VERIFIED），由 runner 覆盖。
+  运行中的 sidecar 被卸载器收掉。注册表这条路径在本机**永远无法验证**（子进程写不了注册表，
+  如实记 NOT VERIFIED），由 runner 覆盖。
+- **仍未验的一条（重要，别读成"全绿"）**：**「外壳启动时写出 lease」这一步没有任何地方验过**。
+  * 本机：受限令牌下安装版外壳起不来（旧签名是 log 插件 panic；把日志插件改到 `.setup()` 里注册后
+    不再 panic，但本机仍走不到写 lease 那一步）；
+  * windows runner（CI run 37088404384 的 coinstall 步骤实测）：外壳进程起来了、120s 内没写
+    `sidecar.lease.json`、也没有任何日志输出 → 断言按"不是已知沙箱签名"记 **FAIL**
+    （10 PASS / 4 FAIL，原始行：`C-020-A/B 外壳没有写出 lease（exit=None）；日志尾部=（空）`）。
+  * 代码层线索：Tauri 的 setup 回调是在事件循环 `RuntimeRunEvent::Ready` 时才调用
+    （tauri `app.rs:1424`），Ready 之前不会有 setup 里的日志、也不会有 lease —— 所以最像
+    「事件循环没到 Ready」（runner 会话/窗口站差异）或「Ready 之前的初始化卡住」，
+    **不是**已证实的写 lease 逻辑错误。
+  * 下一步诊断（未做）：① 在 setup 首行与写 lease 前后各留一条可外部观察的痕迹，或让 E2E 把应用日志
+    （`%APPDATA%\qio\logs\qio.log` / `$QIO_DATA_DIR\logs\qio.log`）打出来，先定位卡在哪；
+    ② 在一台真桌面机器上手工验「启动 → lease 出现 → 退出 → lease 消失」。
+  * 因此 `coinstall` **没有**挂进 CI 门禁（挂上去只会让 main 一直红，且红的原因与被修的 Bug 无关）；
+    判定逻辑与整条验收脚本仍在 `scripts/install_e2e_multi.py`（`--stages coinstall`），
+    本机跑出的 31 PASS / 0 FAIL 与「改动前产物 FAIL」的对照见 `docs/e2e-install-2026-10-02.md` §15。
 
 ### 三、发布闸门：按实际产物判定，不再只看源码配置
 
