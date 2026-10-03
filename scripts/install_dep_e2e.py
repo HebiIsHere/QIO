@@ -19,20 +19,40 @@ requirements 的那个，并把依赖相关的每一步都留证据。
   python scripts/install_dep_e2e.py --install-dir <含 qio-backend.exe 的目录> --work-dir <目录>
          [--port 8899] [--tool-python <python.exe>] [--extra-env KEY=VAL]
 
-无系统 Python（P4 轮新增，plan §2.4）：
+无系统 Python（P4 轮新增，plan §2.4；第 2 步验收起接进 CI 的 install e2e 任务）：
 
   python scripts/install_dep_e2e.py --install-dir <安装目录> --work-dir <目录> --no-system-python
+         [--clear-pip-cache]
 
-这一档做三件事：
-  1. 把子进程可见的 PATH 收窄到不含任何 python.exe / py.exe，并用 where 探针**证明**收干净了；
-  2. 由脚本注入 QIO_BUNDLED_PYTHON_DIR（模拟外壳按 §2.3 解析 resource_dir()/python-runtime），
-     让安装版后端用自带运行时建出依赖环境并**真的调用**声明第三方依赖的工具
+这一档做四件事（缺任何一条都算**没验**：对应断言会 FAIL 并让整轮非 0 退出，不会继续跑出一条
+看着漂亮的结论）：
+
+  1. **显式断言"此刻系统 Python 不可用"**：先把子进程可见的 PATH 收窄到不含任何
+     python.exe / py.exe，再用**同一份 env** 跑探针 —— where python / python3 / pythonw / py
+     全部找不到，且 `py -0p` 要么跑不起来、要么一个 python.exe 都不列（产品
+     tools/tool_envs.py 找机器上的 Python 走的就是这两条）。探针原文 + 注册表里登记的 Python
+     （只读证据）一起写进 evidence/system-python-unavailable.txt 并打印到日志。
+     第一轮收窄不干净时按"新 VM 语义"再收一次（只留 System32 / Wbem / WindowsPowerShell）；
+     两轮都不干净就直接 FAIL 退出 —— 能看见系统 Python 的机器上跑出来的"用了自带运行时"是假绿。
+  2. **断言起点干净**：工具环境目录（data/tool-envs）预先不存在、数据目录为空、后端 env 里没有
+     PYTHONHOME / PYTHONPATH / PYTHONSTARTUP / VIRTUAL_ENV 之类的东西。
+  3. 由脚本注入 QIO_BUNDLED_PYTHON_DIR（模拟外壳按 §2.3 解析 resource_dir()/python-runtime），
+     让安装版后端用自带运行时建出依赖环境、装依赖、并**真的调用**声明第三方依赖的工具，
+     再核对"工具返回的版本 == 锁定清单里锁的版本"（D-022）。
      （解释器来自自带运行时这条写进 evidence/no-system-python-evidence.txt：pyvenv.cfg 的
-     home、qio-env.json 的 python.base、以及自带运行时自己的版本输出）；
-  3. 默认再起一个子进程做**对照**：同样的收窄 PATH，但自带运行时指向不存在的目录 —— 断言
+     home、qio-env.json 的 python.base、以及自带运行时自己的版本输出。）
+  4. 默认再起一个子进程做**对照**：同样的收窄 PATH，但自带运行时指向不存在的目录 —— 断言
      dev_run_tests 明确失败且说的是"需要 Python / 用 QIO_PYTHON 指定"这类可行动的话，
      并且没有静默换解释器把环境建出来（D-110）。
-  诚实边界：系统里那个 Python 仍在盘上，只是这个进程看不见它 —— 不是"干净 VM 上验证过"。
+
+"装依赖要不要联网"照证据说，不推断：装第三方依赖走环境里 pip 的默认索引，本脚本**不**把源指向
+本地。D-053 用 pip 自己的 HTTP 缓存作答 —— 装之前缓存里没有该包的下载产物、装之后有了，说明这次
+安装真的发生了网络取回（判 PASS）；装之前缓存里就有，只能证明"缓存命中时能装上"，**不能**证明
+"需要联网"（如实记 WARN）。CI 上带 --clear-pip-cache 从冷缓存起步（真实用户第一次用到依赖工具
+时就是冷缓存；只删 <pip 缓存>\http 与 http-v2，不动任何系统状态），让这条可判定。
+
+  诚实边界：系统里那个 Python 仍在盘上，只是这个进程看不见它 —— 不是"干净 VM 上验证过"；
+  也不是"物理断网验证过"（断网只有 D-050 的近似口径 + D-052 的 WARN）。
 """
 
 from __future__ import annotations
@@ -41,6 +61,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -321,6 +342,24 @@ def run_tool_turn(client, sse, fp, tool: str, tool_args: dict, *, timeout: float
 # PATH 上也探不到。这不是"在干净 VM 上验证过"，是等价条件 —— 结论只能按这个口径写。
 
 PYTHON_EXE_NAMES = ("python.exe", "python3.exe", "pythonw.exe", "py.exe")
+PYTHON_PROBE_NAMES = ("python", "python3", "pythonw", "py")
+
+
+def where_exe() -> str:
+    """where.exe 的绝对路径。
+
+    探针**不能**靠 "where" 这个名字：PATH 被收窄之后它自己就可能解析不到，那时探针会把
+    "找不到 where" 误读成 "找不到 python" —— 那是假证据，不是证据。
+    """
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return str(Path(root) / "System32" / "where.exe")
+
+
+def minimal_shell_path() -> list[str]:
+    """"新 VM 语义"的最小 PATH：只有裸 Windows 的 shell 目录，一个解释器都不会露出来。"""
+    root = Path(os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows")
+    rels = ("System32", r"System32\Wbem", r"System32\WindowsPowerShell\v1.0")
+    return [str(root / rel) for rel in rels if (root / rel).is_dir()]
 
 
 def sanitized_path(path_value: str) -> tuple[str, list[str]]:
@@ -341,18 +380,117 @@ def sanitized_path(path_value: str) -> tuple[str, list[str]]:
 
 
 def probe_no_python(env: dict) -> tuple[bool, str]:
-    """用**同一份 env** 跑 where 探针：python / python3 / py 都必须找不到。"""
-    lines: list[str] = []
+    """用**同一份 env** 跑 where 探针：python / python3 / pythonw / py 都必须找不到。"""
+    lines: list[str] = ["$ where.exe = %s（用绝对路径，免得「找不到 where」被误读成「找不到 python」）"
+                        % where_exe()]
     found: list[str] = []
-    for name in ("python", "python3", "py"):
-        code, out = base.run(["where", name], timeout=60, env=env, tag="where-%s" % name)
-        first = (out or "").strip().splitlines()[0] if (out or "").strip() else ""
+    for name in PYTHON_PROBE_NAMES:
+        code, out = base.run([where_exe(), name], timeout=60, env=env, tag="where-%s" % name)
+        text = (out or "").strip()
+        first = text.splitlines()[0] if text else ""
         if code == 0 and first:
             found.append("%s -> %s" % (name, first))
-            lines.append("$ where %s\n%s" % (name, out.strip()))
+            lines.append("$ where %s\n%s" % (name, text))
         else:
-            lines.append("$ where %s\n（未找到，exit=%s）%s" % (name, code, out.strip()[:120]))
+            lines.append("$ where %s\n（未找到，exit=%s）%s" % (name, code, text[:120]))
     return (not found), "\n".join(lines)
+
+
+def py_launcher_probe(env: dict) -> tuple[str, str]:
+    """`py -0p` 探针：产品 _py_launcher_pythons() 找机器上的解释器就是这么找的。
+
+    返回 (结论, 原文)。结论三种：启动器不可达 / 没列出解释器 / 列出了 N 个解释器。
+    """
+    launcher = shutil.which("py", path=env.get("PATH", ""))
+    if not launcher:
+        return "不可达（PATH 上没有 py.exe）", "（没有运行：py 启动器不在 PATH 上）"
+    try:
+        code, out = base.run([launcher, "-0p"], timeout=60, env=env, tag="py-0p")
+    except OSError as exc:  # noqa: BLE001
+        return "不可达（%s）" % exc, "（启动失败：%r）" % (exc,)
+    listed = re.findall(r"([A-Za-z]:\\[^\r\n]*?python\.exe)\s*$", out or "", re.M)
+    text = "$ %s -0p -> exit=%s\n%s" % (launcher, code, (out or "").strip() or "（无输出）")
+    if not listed:
+        return "没列出任何解释器", text
+    return "列出了 %d 个解释器" % len(listed), text
+
+
+def _looks_like_registered_interpreter(value: str) -> bool:
+    """注册表里只挑"解释器路径"那些值（DisplayName / 帮助 URL / chm 之类不算）。"""
+    text = value.strip()
+    return bool(re.search(r"(?i)(python|pythonw)\.exe$", text)
+                or re.search(r"(?i)\\python[0-9.]+\\?$", text))
+
+
+def registry_pythons() -> list[str]:
+    """只读证据：机器注册表里登记了哪些 Python（py 启动器就是照这些列的）。
+
+    这不是"可达性"证据 —— 登记了但启动器拿不到，产品同样用不上。写进证据只是让读日志的人
+    一眼看到"这台机器其实装过 Python"，免得把这轮结论误读成"在一台没装过 Python 的机器上验过"。
+    """
+    if os.name != "nt":
+        return []
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    reg = str(Path(root) / "System32" / "reg.exe")
+    entries: list[str] = []
+    for key in (r"HKLM\SOFTWARE\Python\PythonCore",
+                r"HKLM\SOFTWARE\WOW6432Node\Python\PythonCore",
+                r"HKCU\SOFTWARE\Python\PythonCore"):
+        try:
+            code, out = base.run([reg, "query", key, "/s"], timeout=60, tag="reg-query-python")
+        except OSError:
+            continue
+        if code != 0:
+            continue
+        hive = key.split("\\")[0]
+        version = "?"
+        for line in (out or "").splitlines():
+            text = line.strip()
+            head = re.search(r"\\PythonCore\\([0-9][0-9.]*)\\InstallPath$", text)
+            if head:
+                version = head.group(1)
+                continue
+            value = re.search(r"REG_SZ\s+(.+?)\s*$", text)
+            if value and _looks_like_registered_interpreter(value.group(1)):
+                entries.append("%s %s -> %s" % (hive, version, value.group(1).strip()))
+    return sorted(set(entries))
+
+
+def assert_system_python_unavailable(env: dict) -> dict:
+    """显式断言：用后端将要拿到的那份 env，此刻**拿不到**任何系统 Python。
+
+    判据（两条都要成立，比"没有可用的 3.11"更严格）：
+      1) where python / python3 / pythonw / py 全部找不到；
+      2) `py -0p` 跑不起来，或一个 python.exe 都不列。
+    任何一条不成立 → 这次"无系统 Python"的口径就不成立：必须停在这里，不能继续跑出
+    "后端用了自带运行时"的结论（那可能是它悄悄用了机器上的解释器）。
+    """
+    where_clean, where_text = probe_no_python(env)
+    verdict, launcher_text = py_launcher_probe(env)
+    launcher_clean = verdict in ("不可达（PATH 上没有 py.exe）", "没列出任何解释器")
+    registry = registry_pythons()
+    ok = where_clean and launcher_clean
+    text = "\n".join([
+        "== 断言：此刻系统 Python 不可用（用后端将拿到的那份 env 探） ==",
+        "PATH = %s" % env.get("PATH", ""),
+        "",
+        where_text,
+        "",
+        launcher_text,
+        "",
+        "注册表里登记的 Python（只读证据；登记 ≠ 此刻可达）: %s"
+        % ("；".join(registry) if registry else "（三处 PythonCore 都没读到 InstallPath）"),
+        "",
+        "PYTHONHOME=%s；PYTHONPATH=%s；PYTHONSTARTUP=%s（三者都必须不存在）"
+        % (env.get("PYTHONHOME", "（没有这个变量）"), env.get("PYTHONPATH", "（没有这个变量）"),
+           env.get("PYTHONSTARTUP", "（没有这个变量）")),
+        "",
+        "结论：%s" % ("**系统 Python 不可用** —— where 探针与 py -0p 两条都拿不到解释器"
+                      if ok else
+                      "**断言不成立** —— 这个环境里还能拿到系统 Python，本轮结论不能算数"),
+    ])
+    return {"ok": ok, "text": text, "where_clean": where_clean, "launcher_verdict": verdict,
+            "registry": registry}
 
 
 def interpreter_info(python_exe: Path) -> dict | None:
@@ -374,6 +512,125 @@ def read_pyvenv_cfg(env_dir: Path) -> str:
         return (env_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+# ---------------------------------------------------------------- 联网证据（D-053）
+#
+# "装依赖要不要联网"不靠推断作答。装第三方包走的是环境里 pip 的默认索引（产品不把源指向
+# 本地，脚本也不指），所以用 pip 自己的 HTTP 缓存作证据：
+#   * 装之前缓存里没有该包的下载产物、装之后有了 → 这次安装真的从索引取回了一份产物（要联网）；
+#   * 装之前缓存里就有 → 只能证明"缓存命中时能装上"，**不能**证明"需要联网"（记 WARN）；
+#   * 两条都对不上（缓存目录猜错 / 没有 url）→ 记 WARN，不猜。
+# CI 上用 --clear-pip-cache 从冷缓存起步（真实用户第一次用依赖工具就是冷缓存），只删
+# <pip 缓存>\http 与 http-v2 两个子目录，不动任何系统状态。
+
+
+def pip_cache_dir() -> Path:
+    """pip 的 HTTP 缓存目录。
+
+    为什么是"算"而不是"问"：自带运行时把 site-packages 里的 pip 裁掉了（venv 的 pip 来自
+    ensurepip），装之前没有能跑 `-m pip cache dir` 的解释器。按 pip 在 Windows 上的实际口径
+    （%LOCALAPPDATA%\pip\Cache）算一个，等环境建好后用环境里的 pip 核实；核实对不上就在
+    D-053 里如实写"目录存疑"，不拿错目录当证据。
+    """
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(local) / "pip" / "Cache"
+
+
+def cache_snapshot(directory: Path) -> dict[str, int]:
+    """缓存目录的文件指纹：相对路径 -> 字节数。"""
+    snapshot: dict[str, int] = {}
+    if not directory.is_dir():
+        return snapshot
+    for path in directory.rglob("*"):
+        if path.is_file():
+            try:
+                snapshot[str(path.relative_to(directory))] = path.stat().st_size
+            except OSError:
+                continue
+    return snapshot
+
+
+def cache_key_for_url(url: str) -> str:
+    """pip 的 http-v2 缓存文件名 = sha224(url)（前 5 位做目录分片）。"""
+    return hashlib.sha224(url.encode("utf-8")).hexdigest()
+
+
+def cached_entry(snapshot: dict[str, int], url: str) -> str | None:
+    """这份快照里有没有该 url 的缓存条目（.body 是响应体）。"""
+    digest = cache_key_for_url(url)
+    for rel in snapshot:
+        normalized = rel.replace("\\", "/")
+        if normalized.endswith(digest + ".body") or normalized.endswith(digest):
+            return rel
+    return None
+
+
+def clear_pip_cache(cache_dir: Path) -> dict:
+    """清空 pip 的 HTTP 缓存（只认 <...>\pip\Cache 结尾的目录），返回删了什么。"""
+    result: dict = {"dir": str(cache_dir), "refused": False, "files": 0, "bytes": 0, "reason": ""}
+    normalized = str(cache_dir).replace("/", "\\").lower()
+    if not normalized.endswith("\\pip\\cache"):
+        result["refused"] = True
+        result["reason"] = "路径不是 <...>\\pip\\Cache 结尾：拒绝删除（不做破坏性操作）"
+        return result
+    for name in ("http", "http-v2"):
+        target = cache_dir / name
+        snapshot = cache_snapshot(target)
+        result["files"] += len(snapshot)
+        result["bytes"] += sum(snapshot.values())
+        shutil.rmtree(target, ignore_errors=True)
+    return result
+
+
+def record_network_evidence(cache_dir: Path, before: dict[str, int], after: dict[str, int],
+                           lock: dict | None, cleared: dict, pip_reported: str) -> str:
+    """D-053：这次装依赖到底有没有走网络。返回给文档用的一句话结论。"""
+    packages = (lock or {}).get("packages") or []
+    # 锁定清单里的下载地址字段叫 source（_packages_from_report 的结果，见 tool_envs.py）；
+    # url 只是老口径的兼容别名。
+    urls = [str(p.get("source") or p.get("url") or "") for p in packages
+            if (p.get("source") or p.get("url"))]
+    hits_before = {url: cached_entry(before, url) for url in urls}
+    hits_after = {url: cached_entry(after, url) for url in urls}
+    fresh = [url for url in urls if not hits_before.get(url) and hits_after.get(url)]
+    cached_already = [url for url in urls if hits_before.get(url)]
+    new_entries = sorted(set(after) - set(before))
+    guessed = str(cache_dir)
+    verified = pip_reported.strip()
+    dir_ok = bool(verified) and verified.lower().replace("/", "\\").rstrip("\\").endswith(
+        guessed.lower().replace("/", "\\").rstrip("\\"))
+    detail = (
+        "pip 缓存=%s（环境里的 pip 自报=%s，与本脚本算的一致=%s）；--clear-pip-cache 删除=%s；"
+        "缓存条目 before=%d after=%d（新增 %d）；锁定包=%s；命中缓存条目的 url=%s"
+        % (guessed, verified or "（没问到）", dir_ok, json.dumps(cleared, ensure_ascii=False),
+           len(before), len(after), len(new_entries),
+           json.dumps([{"name": p.get("name"), "version": p.get("version"),
+                        "source": p.get("source") or p.get("url"), "hash": p.get("hash")}
+                       for p in packages], ensure_ascii=False),
+           json.dumps({u: hits_after.get(u) for u in urls}, ensure_ascii=False)))
+    if not urls:
+        base.record("D-053", "装依赖是否需要联网：用 pip 缓存条目回答", "WARN",
+                    "锁定清单里没有 url（老 pip / freeze 退路），无法定位缓存条目 → NOT VERIFIED。" + detail)
+        return "NOT VERIFIED（锁定清单里没有下载地址，无法定位缓存条目）"
+    if fresh:
+        # 安装前不在缓存里、安装后在了：不管目录自报对不对，pip 确实往这里写了这次安装的产物。
+        base.record("D-053", "装依赖需要联网：本次安装真的从索引取回了产物",
+                    "PASS", "安装前缓存里没有、安装后有了：%s。%s"
+                    % (json.dumps(fresh, ensure_ascii=False), detail))
+        return "需要联网：本次运行里 pip 从索引取回了一份产物（安装前不在 pip 缓存里、安装后在了）"
+    if cached_already:
+        base.record("D-053", "装依赖是否需要联网：本次是缓存命中，判不了",
+                    "WARN", "安装前缓存里已经有这些 url 的产物：%s → 只能证明「缓存命中时能装上」，"
+                            "不能证明「需要联网」，也不能推断「离线开箱可用」→ NOT VERIFIED。%s"
+                    % (json.dumps(cached_already, ensure_ascii=False), detail))
+        return "NOT VERIFIED（本次是缓存命中：既没证明需要联网，也没证明离线可用）"
+    base.record("D-053", "装依赖是否需要联网：缓存条目对不上，判不了", "WARN",
+                "缓存新增条目=%s（都没对上锁定清单里的 url；缓存目录存疑：自报=%s vs 本脚本算的=%s，"
+                "一致=%s）→ NOT VERIFIED。%s"
+                % (json.dumps(new_entries[:5], ensure_ascii=False), verified or "（没问到）", guessed,
+                   dir_ok, detail))
+    return "NOT VERIFIED（缓存条目对不上，无法判定；本轮没有证明需要联网，也没有证明离线可用）"
 
 
 def write_results(work: Path) -> Path:
@@ -574,6 +831,9 @@ def main() -> int:
                         help="跳过「缺自带运行时」的对照断言（对照子进程自己会带这个开关）")
     parser.add_argument("--control-missing-runtime", action="store_true",
                         help="内部开关：本次只跑到开发流程，判定「缺运行时是否明确失败」")
+    parser.add_argument("--clear-pip-cache", action="store_true",
+                        help="先清空 pip 的 HTTP 缓存再跑（CI 用：从冷缓存起步，让"
+                             "「装依赖要不要联网」这条可判定；只删 <pip 缓存>\\http 与 http-v2）")
     args = parser.parse_args()
 
     # 必须是绝对路径：安装版进程的 cwd 是安装目录，相对的 TEMP 会被 PyInstaller
@@ -593,6 +853,13 @@ def main() -> int:
     if args.tool_python:
         extra["QIO_PYTHON"] = args.tool_python
 
+    # -- 联网证据的起点：pip 的 HTTP 缓存（快照 + 可选的冷缓存起步）----------------
+    cache_dir = pip_cache_dir()
+    cache_cleared: dict = {"cleared": False}
+    if args.clear_pip_cache:
+        cache_cleared = {"cleared": True, **clear_pip_cache(cache_dir)}
+    cache_before = cache_snapshot(cache_dir)
+
     # -- 无系统 Python 口径：收窄 PATH + 注入自带运行时（plan §2.2/§2.4）--------------
     runtime_dir: Path | None = None
     if args.no_system_python:
@@ -603,15 +870,39 @@ def main() -> int:
         else:
             base.record("D-103", "无系统 Python 口径下没有传 QIO_PYTHON", "PASS",
                         "只注入了 QIO_BUNDLED_PYTHON_DIR（外壳在冻结态就是这么做的）")
+        # 第一轮：把 PATH 上所有能露出 python.exe / py.exe 的目录摘掉。
         new_path, dropped = sanitized_path(os.environ.get("PATH", ""))
         extra["PATH"] = new_path
         probe_env = {**base.clean_env(args, args.port), **extra}
         probe_env["QIO_DATA_DIR"] = str(data_dir)
         clean, probe_text = probe_no_python(probe_env)
-        base.record("D-100", "PATH 收窄的前提：where 探针找不到 python / python3 / py",
-                    "PASS" if clean else "FAIL",
-                    "被摘掉的 PATH 目录=%s" % dropped if clean else
-                    "**没收拾干净**：%s" % probe_text)
+        rounds = [{"round": 1, "why": "摘掉 PATH 上所有能露出解释器的目录", "path": new_path,
+                   "dropped": dropped, "clean": clean, "probe": probe_text}]
+        if not clean:
+            # 第一轮不够：PATH 上还剩着能露出解释器的目录（py.exe 住在 C:\Windows 是常见情况）。
+            # 按「新 VM 语义」再收一次：只留裸 Windows 的 shell 目录，重探。
+            minimal = minimal_shell_path()
+            extra["PATH"] = os.pathsep.join(minimal)
+            probe_env["PATH"] = extra["PATH"]
+            clean2, probe_text2 = probe_no_python(probe_env)
+            rounds.append({"round": 2, "why": "第一轮不够 → 按新 VM 语义只留 shell 目录",
+                           "path": extra["PATH"], "minimal_shell_path": minimal,
+                           "clean": clean2, "probe": probe_text2})
+            clean, probe_text = clean2, probe_text2
+        # 显式断言「此刻系统 Python 不可用」：where 探针 + py -0p 两条都拿不到解释器。
+        assertion = assert_system_python_unavailable(probe_env)
+        base.log("== 「此刻系统 Python 不可用」断言证据（原文也落 evidence/system-python-unavailable）==")
+        for line in assertion["text"].splitlines():
+            base.log("   " + line)
+        base.record("D-100", "前提断言：此刻系统 Python 不可用（where 探针 + py -0p 都拿不到解释器）",
+                    "PASS" if (clean and assertion["ok"]) else "FAIL",
+                    "PATH 收窄轮数=%d；被摘掉的目录=%s；py -0p=%s；where 探针干净=%s；探针原文见 "
+                    "evidence/system-python-unavailable"
+                    % (len(rounds), dropped or "无", assertion["launcher_verdict"],
+                       assertion["where_clean"]))
+        base.evidence("system-python-unavailable", assertion["text"] + "\n\n" + "\n\n".join(
+            "-- 第 %d 轮 PATH 收窄（%s）--\nPATH = %s\n%s"
+            % (r["round"], r["why"], r["path"], r["probe"]) for r in rounds))
         runtime_dir = Path(args.bundled_runtime_dir).resolve() if args.bundled_runtime_dir \
             else Path(args.install_dir) / "python-runtime"
         extra["QIO_BUNDLED_PYTHON_DIR"] = str(runtime_dir)
@@ -620,11 +911,42 @@ def main() -> int:
                     "PASS" if runtime_python.is_file() else "FAIL",
                     "%s；sha256=%s" % (runtime_python, sha256_of(runtime_python)[:16]
                                        if runtime_python.is_file() else "（不存在）"))
+        # 起点干净之一：工具环境目录**预先不存在**（不是"拿一个早就建好的环境当证据"）。
+        tool_envs_root = data_dir / "tool-envs"
+        leftovers = sorted(p.name for p in data_dir.iterdir()) if data_dir.is_dir() else []
+        fresh = (not tool_envs_root.exists()) and not leftovers
+        base.record("D-105", "前提断言：没有预置的工具环境（data/tool-envs 不存在、数据目录为空）",
+                    "PASS" if fresh else "FAIL",
+                    "QIO_DATA_DIR=%s；tool-envs 已存在=%s；数据目录里已有的项=%s"
+                    % (data_dir, tool_envs_root.exists(), leftovers or "无"))
+        # 起点干净之二：后端 env 里没有会改变解释器解析的变量。
+        leaked = sorted(k for k in probe_env
+                        if k in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
+                                 "VIRTUAL_ENV", "CONDA_PREFIX", "PIP_INDEX_URL", "PIP_NO_INDEX")
+                        or k.startswith(("PYTHON", "UV_", "PIP_")))
+        base.record("D-106", "前提断言：后端 env 里没有 PYTHONHOME/PYTHONPATH/PIP_* 之类会改解释器或索引的变量",
+                    "PASS" if not leaked else "FAIL",
+                    "泄露的变量=%s；本轮注入的变量=%s" % (leaked or "无", sorted(extra)))
         base.evidence("no-system-python-prereq", json.dumps(
-            {"sanitized_path": new_path, "dropped_path_entries": dropped,
-             "where_probe": probe_text, "runtime_dir": str(runtime_dir),
+            {"path_rounds": [{k: r.get(k) for k in ("round", "why", "path", "clean")} for r in rounds],
+             "dropped_path_entries": dropped,
+             "assertion_text": assertion["text"],
+             "where_clean": assertion["where_clean"],
+             "py_launcher_verdict": assertion["launcher_verdict"],
+             "registry_pythons": assertion["registry"],
+             "runtime_dir": str(runtime_dir),
              "QIO_BUNDLED_PYTHON_DIR": extra["QIO_BUNDLED_PYTHON_DIR"],
-             "QIO_PYTHON": extra.get("QIO_PYTHON") or "（没有传）"}, ensure_ascii=False, indent=2))
+             "QIO_PYTHON": extra.get("QIO_PYTHON") or "（没有传）",
+             "tool_env_dir_preexisting": tool_envs_root.exists(),
+             "data_dir_leftovers": leftovers,
+             "pip_cache_dir": str(cache_dir),
+             "pip_cache_cleared": cache_cleared,
+             "pip_cache_entries_before": len(cache_before)}, ensure_ascii=False, indent=2))
+        if not (clean and assertion["ok"]):
+            base.log("!! 「系统 Python 不可用」这条前提不成立：本轮不能证明「用了自带运行时」，"
+                     "停在这里、不写通过结论。")
+            write_results(work)
+            return 7
 
     base.log("== 安装版第三方依赖工具链 E2E ==")
     base.log("  安装目录 : %s" % args.install_dir)
@@ -674,6 +996,8 @@ def main() -> int:
 
         # -- D-010..D-013 创建工具 + 声明依赖 + 审批 + 测试 + 注册 -------------
         ws, approvals, tool_ends, err = step_dev_flow(client, sse, fp)
+        # 装依赖就发生在这一步里：装完立刻取 pip 缓存的第二份快照（D-053 的"after"）。
+        cache_after = cache_snapshot(cache_dir)
         names = [t.get("tool") for t in tool_ends]
         base.record("D-010", "开发四步都被调用", "PASS" if
                     {"create_tool", "dev_write_file", "dev_run_tests", "dev_submit_tool"} <= set(names) else "FAIL",
@@ -719,6 +1043,30 @@ def main() -> int:
             base.record("D-020", "ToolEnv 与锁定清单（schema 2 / pip --report）", "FAIL",
                         "data/tool-envs 下没有任何环境记录")
 
+        # -- D-053 联网证据：这次装依赖到底有没有走网络（拿 pip 自己的 HTTP 缓存作答）--
+        lock_record = (records[0].get("lock") if records else None) or {}
+        pip_reported = "（环境里没有解释器，没能核实缓存目录）"
+        if records:
+            env_python = data_dir / "tool-envs" / records[0]["fingerprint"] / "Scripts" / "python.exe"
+            if env_python.is_file():
+                _code, _out = base.run([str(env_python), "-m", "pip", "cache", "dir"], timeout=120,
+                                       tag="pip-cache-dir")
+                _text = (_out or "").strip()
+                pip_reported = _text.splitlines()[-1] if _text else "（没有输出）"
+        network_conclusion = record_network_evidence(cache_dir, cache_before, cache_after,
+                                                    lock_record, cache_cleared, pip_reported)
+        base.log("== 联网结论（D-053）：%s ==" % network_conclusion)
+        base.evidence("network-evidence", json.dumps({
+            "pip_cache_dir_guessed": str(cache_dir),
+            "pip_cache_dir_reported_by_env_pip": pip_reported,
+            "cleared": cache_cleared,
+            "entries_before": len(cache_before),
+            "entries_after": len(cache_after),
+            "new_entries": sorted(set(cache_after) - set(cache_before))[:20],
+            "lock_packages": lock_record.get("packages"),
+            "conclusion": network_conclusion,
+        }, ensure_ascii=False, indent=2))
+
         # -- D-102/D-104 自带运行时口径：解释器到底是谁（写进证据，不靠推断）---------
         if args.no_system_python and runtime_dir is not None:
             env_dir = data_dir / "tool-envs" / records[0]["fingerprint"] if records else None
@@ -758,6 +1106,14 @@ def main() -> int:
                     "ok=%s version=%s err=%s content=%s" % (
                         (call or {}).get("ok"), version_before, err or "无",
                         str((call or {}).get("content_preview"))[:200]))
+        locked_six = next((p for p in (lock_record.get("packages") or [])
+                           if str(p.get("name") or "").lower().replace("_", "-") == "six"), None)
+        locked_version = str((locked_six or {}).get("version") or "")
+        base.record("D-022", "调用结果正确：工具返回的 six 版本 == 锁定清单里锁的版本",
+                    "PASS" if (call and call.get("ok") and locked_version
+                               and version_before == locked_version) else "FAIL",
+                    "工具返回 version=%r；锁定清单里的 six=%s"
+                    % (version_before, json.dumps(locked_six, ensure_ascii=False)))
 
         # -- D-030 重启 -------------------------------------------------------
         stop_backend_mine(backend, Path(args.work_dir))
