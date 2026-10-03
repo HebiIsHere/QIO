@@ -188,3 +188,20 @@ def test_the_install_environment_keeps_home_but_not_business_variables(monkeypat
     assert "QIO_DATA_DIR" not in env
     assert "OPENAI_API_KEY" not in env
     assert "sk-must-not-leak" not in " ".join(env.values())
+
+
+def test_the_install_environment_never_writes_bytecode_into_the_install_dir(monkeypatch):
+    r"""安装目录里不能多出「安装器没登记过的文件」，否则卸载删不掉整个目录。
+
+    2026-10-03 实测：venv 与工具用的都是安装包自带解释器，stdlib 在 <安装目录>\python-runtime\Lib；
+    import 时生成 __pycache__ → NSIS 卸载器（只删登记过的文件 + 非递归 RMDir "$INSTDIR"）
+    留下整个 python-runtime（33.9MB）。用户路径真实可达：装完用一次依赖工具再卸载。
+    """
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+
+    env = tool_envs._clean_env()
+
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1", (
+        "给 python 子进程的环境里必须钉住 PYTHONDONTWRITEBYTECODE=1："
+        "否则安装目录里会长出 __pycache__，卸载时整个目录删不掉"
+    )

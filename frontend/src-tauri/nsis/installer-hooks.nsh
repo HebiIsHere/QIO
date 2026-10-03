@@ -47,6 +47,25 @@
   ; 键空了才删：只要 DbBaseline 还在，这两行就是 no-op（用户状态必须留下）
   DeleteRegKey /ifempty SHCTX "Software\qio\QIO"
   DeleteRegKey /ifempty SHCTX "Software\qio"
+
+  ; 安装目录收尾（2026-10-03 实测的卸载残留）
+  ; ----------------------------------------
+  ; Tauri 的卸载段只删**登记过的文件**（逐个 Delete），最后只做一次非递归的
+  ; RMDir "$INSTDIR" —— 只要安装目录里多出任何一个运行期生成的文件，整个目录就删不掉。
+  ; 实测：装完用一次依赖型工具后卸载，残留整个 python-runtime（33.9MB）——
+  ; venv 与工具用的是安装包自带解释器，stdlib 就在 <安装目录>\python-runtime\Lib 下，
+  ; import 时生成的 __pycache__ 就是那个"没登记过的文件"。
+  ;
+  ; 根治在 backend（tools/tool_envs.py 给 python 子进程钉 PYTHONDONTWRITEBYTECODE=1）；
+  ; 这里做兜底：把**属于我们的**资源目录整棵删掉，再重试一次非递归 RMDir。
+  ; 只碰本安装目录里的这两处，绝不 RMDir /r "$INSTDIR"（用户可能把 QIO 装在
+  ; 别的目录旁边，整棵删会连带删掉不属于我们的东西），也绝不碰数据目录。
+  RMDir /r "$INSTDIR\python-runtime"
+  ; 外壳异常退出时可能留下的归属记录/诊断文件：不清掉同样会让目录删不掉
+  Delete "$INSTDIR\sidecar.lease.json"
+  Delete "$INSTDIR\sidecar.lease.json.tmp*"
+  Delete "$INSTDIR\qio-startup-error.txt"
+  RMDir "$INSTDIR"
 !macroend
 ; ---------------------------------------------------------------------------
 ; 卸载前：只收「属于这一个安装实例」的后台进程

@@ -586,6 +586,12 @@ def _clean_env() -> dict[str, str]:
     )
     env = {key: os.environ[key] for key in keep if os.environ.get(key)}
     env["PYTHONIOENCODING"] = "utf-8"
+    # 绝不往**安装目录**里写字节码（2026-10-03 实测的卸载残留根因）：
+    # venv 与工具用的都是安装包自带的解释器，它的 stdlib 就在 <安装目录>\python-runtime\Lib 下；
+    # 一旦 import 时生成 __pycache__，安装目录里就多出「安装器没登记过的文件」，
+    # 而 NSIS 卸载器只删登记过的文件、最后只做非递归的 RMDir "$INSTDIR" → 整个目录删不掉，
+    # 实测残留 33.9MB 的 python-runtime（用户路径真实可达：装完用一次依赖工具再卸载）。
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 

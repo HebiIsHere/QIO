@@ -1689,6 +1689,26 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   为什么必须 fail-closed：那条路的终点是「卸载时无法确认归属 → 宁可不杀 → 安装目录删不干净」，
   而且用户拿不到任何指向真因的线索。本机实测（把 `sidecar.lease.json` 做成目录制造真实写失败）：
   exit=1、原因文件首行 `QIO-LEASE-WRITE-FAILED`、安装目录里**没有** `qio-backend.exe` 残留。
+- **卸载残留 python-runtime（2026-10-03 实测 + 已修）**：装完用一次依赖型工具再卸载，
+  会残留整个 `<安装目录>\python-runtime`（33.9MB）。根因不在卸载器逻辑：
+  Tauri 的卸载段只删**登记过的文件**（逐个 `Delete`），最后只做一次**非递归**的 `RMDir "$INSTDIR"`；
+  而 venv 与工具用的都是安装包自带解释器，stdlib 就在 `python-runtime\Lib` 下 ——
+  import 时生成的 `__pycache__` 就是"安装器没登记过的文件"，整个目录因此删不掉。
+  两层修：
+  * **根治**（backend）：`tools/tool_envs.py::_clean_env` 给所有 python 子进程钉
+    `PYTHONDONTWRITEBYTECODE=1`，安装目录里不再长出字节码（有单测守）。
+  * **兜底**（NSIS POSTUNINSTALL 钩子）：`RMDir /r "$INSTDIR\python-runtime"` +
+    清掉 `sidecar.lease.json` 等运行期文件，再重试一次非递归 `RMDir "$INSTDIR"`。
+    **不做** `RMDir /r "$INSTDIR"`（用户可能把 QIO 装在别的目录旁边，整棵删会连带删别人的东西）。
+- **WebView2 用户数据目录坏掉时，界面会静默消失（已知限制，本轮未修）**：
+  实测 `%LOCALAPPDATA%\com.qio.app\EBWebView` 损坏后，窗口**建出来约 1 秒就被销毁**、
+  进程继续活着、日志里一个字都没有 —— 用户侧现象是"双击后什么都没发生"。
+  证据：50ms 轮询到 hwnd → t≈1.02s `IsWindow(hwnd)=False`；换一个全新
+  `WEBVIEW2_USER_DATA_FOLDER` → 窗口全程存活并收到 Focused 事件（可稳定复现）。
+  处置（用户侧）：把 `%LOCALAPPDATA%\com.qio.app\EBWebView` 改名或删除后重启 QIO；
+  本机就是这么恢复的（改名成 `EBWebView.broken-20261003`，可回滚）。
+  **没有**在本轮加"窗口没了就报错退出"的看门狗：写好了但唯一一次正向实验被外部误杀，
+  没验证过失败路径就不进发布（补丁留在 `.build-tmp/window-diagnostics-and-watchdog.patch`，下一轮再做）。
 - **仍未验的一条（重要，别读成"全绿"）**：**「安装态外壳启动 → 写出 lease」这一步在本机**
   **与 runner 上都还没验过**（本机 2026-10-03 已能在真桌面会话里跑 release 外壳并写出 lease，
   但那是从 `target\release` 直接跑，**不是安装后的目录**；安装态四步验收见 `docs/e2e-install-2026-10-02.md` §17）。
