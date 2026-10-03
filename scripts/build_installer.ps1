@@ -10,10 +10,12 @@
 #   3) build_uninstall_helper —— 编译卸载帮助程序（所有权判定，只按 pid 收 sidecar）放进资源目录
 #   4) build_sidecar         —— 重建后端 sidecar；**必须**在打包前跑，否则打进包的是旧后端
 #                               （实测踩过：旧后端不认内置的 fp32 模型，静默退回 BM25）
-#   5) tauri build           —— 编译壳并产出安装包（含更新用的 .sig，见 createUpdaterArtifacts）
-#   6) 更新清单              —— 校验签名产物 → 生成 latest.json → 复制到 dist/ → 更新 SHA256SUMS.txt
+#   5) 打包前校验            —— 运行时与帮助程序必须是**真产物**（build.rs 会在干净检出上补占位，
+#                               占位绝不能被打进安装包）
+#   6) tauri build           —— 编译壳并产出安装包（含更新用的 .sig，见 createUpdaterArtifacts）
+#   7) 更新清单              —— 校验签名产物 → 生成 latest.json → 复制到 dist/ → 更新 SHA256SUMS.txt
 #
-# 更新签名（第 3、4 步都依赖它）：
+# 更新签名（第 6、7 步都依赖它）：
 #   私钥与口令必须由环境提供，缺失就**构建失败** —— 宁可不出包，也不出"没有签名"的更新包：
 #     $env:TAURI_SIGNING_PRIVATE_KEY_PATH   = "…\qio-updater.key"
 #     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<你的口令>"
@@ -80,7 +82,7 @@ function Write-Utf8NoBom {
   [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-Write-Host "== 1/3 准备内置模型 =="
+Write-Host "== 1/7 准备内置模型 =="
 Push-Location $root
 try {
   if ($FromModelScope) {
@@ -104,7 +106,26 @@ Write-Host "== 4/6 重建后端 sidecar =="
 & (Join-Path $PSScriptRoot "build_sidecar.ps1")
 if ($LASTEXITCODE -ne 0) { throw "sidecar 构建失败" }
 
-Write-Host "== 5/6 打包安装包（--bundles $Bundles）=="
+# 打包前的硬校验：确认这两项是**真产物**、不是 build.rs 补的占位。
+# 背景：bundle.resources 里列了构建产物，干净检出上不存在会让 tauri-build 编译期直接失败，
+# 所以 frontend/src-tauri/build.rs 会先补占位（目录 / 空文件）。占位只为了让 cargo 过得去，
+# **绝不能**被打进安装包 —— 所以这里按体积/结构核对一遍，不合格就让构建停下来。
+Write-Host "== 5/6 打包前校验：运行时与帮助程序是真产物 =="
+$helper = Join-Path $root "frontend\src-tauri\resources\qio-uninstall-helper.exe"
+$runtime = Join-Path $root "frontend\src-tauri\resources\python-runtime"
+if (-not (Test-Path $helper)) { throw "缺 $helper（build_uninstall_helper.ps1 没跑？）" }
+$helperBytes = (Get-Item $helper).Length
+if ($helperBytes -lt 100KB) {
+  throw "卸载帮助程序只有 $helperBytes 字节 —— 这是 build.rs 的空占位，不是真产物。拒绝打包。"
+}
+if (-not (Test-Path (Join-Path $runtime "python.exe"))) { throw "缺 $runtime\python.exe（build_runtime.ps1 没跑？）" }
+$runtimeFiles = (Get-ChildItem $runtime -Recurse -File).Count
+if (-not (Test-Path (Join-Path $runtime "Lib\venv")) -or $runtimeFiles -lt 400) {
+  throw "自带运行时不像真产物（文件数 $runtimeFiles，Lib\venv 存在=$(Test-Path (Join-Path $runtime 'Lib\venv'))）：拒绝打包。"
+}
+Write-Host ("   帮助程序 {0:N0} 字节；自带运行时 {1} 个文件 —— 都是真产物" -f $helperBytes, $runtimeFiles)
+
+Write-Host "== 6/6 打包安装包（--bundles $Bundles）=="
 Push-Location (Join-Path $root "frontend")
 try {
   if ($UnsignedTestArtifact) {
@@ -146,7 +167,7 @@ try {
 $out = Join-Path $root "frontend\src-tauri\target\release\bundle\$Bundles"
 Write-Host "安装包在：$out"
 
-Write-Host "== 6/6 生成更新清单并落到发布目录 =="
+Write-Host "== 7/7 生成更新清单并落到发布目录 =="
 if (-not $DistDir) {
   $DistDir = Join-Path (Split-Path $root -Parent) "dist"
 }

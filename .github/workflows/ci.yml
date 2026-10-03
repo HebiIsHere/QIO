@@ -387,6 +387,22 @@ jobs:
       - name: Sync backend dependencies from lock
         working-directory: backend
         run: uv sync --frozen --extra dev
+      # CI 没有 90MB 内置模型的来源（build_installer.ps1 的 fetch_model 需要模型源/联网）：
+      # 这里放一个**合成** model.onnx + 与之相符的 model_manifest.json，让「安装目录关键文件」
+      # 与「模型与清单一致」两条断言有对象可查。它证明的是安装/卸载**机制**，不是真实模型产物
+      # —— 真实模型由 release gate 与 Agent B 的本机 E2E 覆盖（不含糊其辞）。
+      # 顺序：必须在任何 cargo 构建之前 —— tauri-build 在编译期校验 bundle.resources 存在，
+      # 缺 resources/models 会让 `cargo build` 直接失败（实测：helper 那一步就是这么红的）。
+      - name: Provide synthetic bundled-model payload
+        run: |
+          $dir = "frontend/src-tauri/resources/models/bge-small-zh-v1.5"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = New-Object byte[] 4096
+          (New-Object System.Random 7).NextBytes($bytes)
+          [System.IO.File]::WriteAllBytes("$dir/model.onnx", $bytes)
+          $hash = (Get-FileHash "$dir/model.onnx" -Algorithm SHA256).Hash.ToLower()
+          @{ files = @(@{ file = "model.onnx"; bytes = $bytes.Length; sha256 = $hash }) } |
+            ConvertTo-Json -Depth 6 | Out-File -Encoding utf8 "$dir/model_manifest.json"
       # 真 sidecar（PyInstaller onefile，约 1 分钟）：安装包里放的是真实后端，不是空占位。
       # 注意：sidecar 的 Python major.minor 必须与安装包自带的运行时一致（scripts/python-version.txt），
       # build_sidecar.ps1 会自己核对并在不一致时明确失败。
@@ -400,20 +416,6 @@ jobs:
       # 被 NSIS 的 PREUNINSTALL 钩子调用。
       - name: Build the uninstall helper
         run: pwsh -File scripts/build_uninstall_helper.ps1
-      # CI 没有 90MB 内置模型的来源（build_installer.ps1 的 fetch_model 需要模型源/联网）：
-      # 这里放一个**合成** model.onnx + 与之相符的 model_manifest.json，让「安装目录关键文件」
-      # 与「模型与清单一致」两条断言有对象可查。它证明的是安装/卸载**机制**，不是真实模型产物
-      # —— 真实模型由 release gate 与 Agent B 的本机 E2E 覆盖（不含糊其辞）。
-      - name: Provide synthetic bundled-model payload
-        run: |
-          $dir = "frontend/src-tauri/resources/models/bge-small-zh-v1.5"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $bytes = New-Object byte[] 4096
-          (New-Object System.Random 7).NextBytes($bytes)
-          [System.IO.File]::WriteAllBytes("$dir/model.onnx", $bytes)
-          $hash = (Get-FileHash "$dir/model.onnx" -Algorithm SHA256).Hash.ToLower()
-          @{ files = @(@{ file = "model.onnx"; bytes = $bytes.Length; sha256 = $hash }) } |
-            ConvertTo-Json -Depth 6 | Out-File -Encoding utf8 "$dir/model_manifest.json"
       - name: Build the NSIS installer
         working-directory: frontend
         run: |
