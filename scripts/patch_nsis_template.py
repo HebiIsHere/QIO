@@ -104,7 +104,31 @@ def patch_text(text: str) -> tuple[str, str]:
     return patched, "patched"
 
 
+def _configure_output() -> None:
+    """任何控制台编码下都不能崩（英文 Windows / CI runner 的 stdout 默认是 cp1252）。
+
+    回归的事故形状（2026-10-03，Windows CI 抓到）：本脚本的 JSON 报告全是中文，
+    第一条 print 就 UnicodeEncodeError —— 与 release_gate.py 2026-10-02 那次同一个坑。
+    tty 保留自身编码只转义；重定向 / CI 直接写 UTF-8 字节。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_output()
     parser = argparse.ArgumentParser(description="NSIS 模板所有权补丁")
     parser.add_argument("--nsis-dir", required=True, help="含 installer.nsi 的目录（生成模板所在处）")
     parser.add_argument("--guard", default="", help="守卫宏文件（默认 frontend/src-tauri/nsis/qio-ownership.nsh）")

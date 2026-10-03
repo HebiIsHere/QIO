@@ -418,6 +418,11 @@ jobs:
         run: pwsh -File scripts/build_uninstall_helper.ps1
       - name: Build the NSIS installer
         working-directory: frontend
+        # 打包包装脚本会打印中文日志：英文 Windows 的 Python stdout 默认是 cp1252，
+        # 不设这个就会 UnicodeEncodeError（2026-10-03 CI 实测）。脚本自己也 reconfigure 了，
+        # 这里是第二道保险。
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           # 与 scripts/build_installer.ps1 的未签名路径同一套写法：绝对路径 + 无 BOM 的 UTF-8
           # （`--config` 的相对路径会被 tauri 按 app 目录解析，容易踩空）。

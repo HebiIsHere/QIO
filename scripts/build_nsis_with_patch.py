@@ -34,6 +34,30 @@ ROOT = Path(__file__).resolve().parent.parent
 PATCH = ROOT / "scripts" / "patch_nsis_template.py"
 
 
+def _configure_output() -> None:
+    """任何控制台编码下都不能崩（英文 Windows / CI runner 的 stdout 默认是 cp1252）。
+
+    回归的事故形状（2026-10-03，Windows CI 抓到）：本脚本的日志与 JSON 报告全是中文，
+    第一条 print 就 UnicodeEncodeError，打包步骤以 traceback 收场 —— 与 release_gate.py
+    2026-10-02 那次是同一个坑。做法与 scripts/release_gate.py::_configure_output 一致：
+    tty 保留自身编码只转义；重定向 / CI 直接写 UTF-8 字节。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
 def log(msg: str) -> None:
     print("[nsis-patch] " + msg, flush=True)
 
@@ -192,6 +216,7 @@ def watch_and_patch(nsis_dir: Path, guard: Path, stop: threading.Event, state: d
 
 
 def main() -> int:
+    _configure_output()
     ap = argparse.ArgumentParser()
     ap.add_argument("--nsis-dir", default=str(ROOT / "frontend" / "src-tauri" / "target" / "release" / "nsis" / "x64"))
     ap.add_argument("--guard", default=str(ROOT / "frontend" / "src-tauri" / "nsis" / "qio-ownership.nsh"))
