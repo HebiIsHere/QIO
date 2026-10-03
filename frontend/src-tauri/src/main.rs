@@ -24,7 +24,10 @@ use std::time::{Duration, Instant};
 use qio_core::ownership;
 // 跑系统命令的硬超时与「按 pid 结束整棵树」现在住在共享库里（src/ownership.rs）：
 // 卸载帮助程序要用**同一套**语义，不许出现第二份实现。
-use qio_core::ownership::{kill_tree_by_pid, run_command_with_timeout};
+use qio_core::ownership::run_command_with_timeout;
+// 按 pid 结束整棵树只在 Windows 的退出/兜底路径上用（非 Windows 没有 job，也没有 taskkill 语义）。
+#[cfg(windows)]
+use qio_core::ownership::kill_tree_by_pid;
 use serde::Serialize;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
@@ -876,7 +879,11 @@ fn fatal_lease_failure(
             }
             #[cfg(not(windows))]
             {
-                child.as_ref().map(|c| c.kill().is_ok()).unwrap_or(false)
+                // CommandChild::kill(self) 是按值消费，这里必须 move（Linux 上编译才过）。
+                match child {
+                    Some(c) => c.kill().is_ok(),
+                    None => false,
+                }
             }
         }
     };
