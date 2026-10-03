@@ -4,6 +4,31 @@ version = "0.1.11"
 description = "QIO desktop shell"
 edition = "2021"
 
+[lib]
+# 共享实现（ownership）：主程序 qio 与卸载帮助程序必须是**同一份**实现，不许复制两份。
+# 名字带 _core 是为了不跟主程序的 bin target（qio）撞名。
+name = "qio_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qio"
+path = "src/main.rs"
+
+[[bin]]
+# 卸载帮助程序（被 NSIS 卸载段调用）：读 sidecar.lease.json、只收本安装实例的进程。
+# 必须是 **console 子系统** —— Rust 在 Windows 上默认就是 console，只要源文件里不写
+# #![windows_subsystem = "windows"]（本 target 的源文件里确实没有）。
+# 理由：NSIS 的 nsExec::ExecToStack 要靠 stdout + 退出码判断结果。
+name = "qio-uninstall-helper"
+path = "src/bin/qio-uninstall-helper.rs"
+
+# 帮助程序的进程级契约测试：必须作为**集成测试**编译，cargo 才会真的构建 bin 产物
+# 并注入 CARGO_BIN_EXE_qio-uninstall-helper（lib 单元测试拿不到它）。
+# 放在 src/ 下是为了不越出本轮 A 项的写权限范围。
+[[test]]
+name = "uninstall_helper_cli"
+path = "src/tests_uninstall_helper_cli.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -24,11 +49,16 @@ serde_json = "1"
 # 只用 Windows Job Object：把后端进程放进「随 job 关闭而终止」的 job 里，
 # 壳一死（正常退出、被强杀、被安装器结束）整个后端进程树都会被系统清掉，
 # 不会再有孤儿进程锁住 qio-backend.exe 导致安装中止。
+#
+# ownership（安装实例所有权）还要用到的 Win32：
+#   * Threading：OpenProcess / GetProcessTimes / QueryFullProcessImageNameW / GetExitCodeProcess；
+#   * UI_WindowsAndMessaging：EnumWindows 找到外壳自己的顶层窗口，再发 WM_CLOSE。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

@@ -1,13 +1,17 @@
 # 一条命令产出「内置 fp32 模型」的 Windows 安装包。
 #
 # 顺序是有意的，每一步失败就停：
-#   1) fetch_model.py   —— 取模型（校验 sha256）放进 Tauri 资源目录；
-#                          没有它 `tauri build` 会直接失败（这是想要的行为：宁可构建失败，
-#                          也不要静默出一个没有模型的安装包）
-#   2) build_sidecar    —— 重建后端 sidecar；**必须**在打包前跑，否则打进包的是旧后端
-#                          （实测踩过：旧后端不认内置的 fp32 模型，静默退回 BM25）
-#   3) tauri build      —— 编译壳并产出安装包（含更新用的 .sig，见 createUpdaterArtifacts）
-#   4) 更新清单         —— 校验签名产物 → 生成 latest.json → 复制到 dist/ → 更新 SHA256SUMS.txt
+#   1) fetch_model.py        —— 取模型（校验 sha256）放进 Tauri 资源目录；
+#                               没有它 `tauri build` 会直接失败（这是想要的行为：宁可构建失败，
+#                               也不要静默出一个没有模型的安装包）
+#   2) build_runtime         —— 生成安装包自带的 Python 运行时（resources/python-runtime）；
+#                               冻结后端不能拿 sys.executable 当解释器，依赖型工具靠它建环境。
+#                               缺失即构建失败：否则会出一个「依赖工具用不了」的包
+#   3) build_uninstall_helper —— 编译卸载帮助程序（所有权判定，只按 pid 收 sidecar）放进资源目录
+#   4) build_sidecar         —— 重建后端 sidecar；**必须**在打包前跑，否则打进包的是旧后端
+#                               （实测踩过：旧后端不认内置的 fp32 模型，静默退回 BM25）
+#   5) tauri build           —— 编译壳并产出安装包（含更新用的 .sig，见 createUpdaterArtifacts）
+#   6) 更新清单              —— 校验签名产物 → 生成 latest.json → 复制到 dist/ → 更新 SHA256SUMS.txt
 #
 # 更新签名（第 3、4 步都依赖它）：
 #   私钥与口令必须由环境提供，缺失就**构建失败** —— 宁可不出包，也不出"没有签名"的更新包：
@@ -88,18 +92,33 @@ try {
   Pop-Location
 }
 
-Write-Host "== 2/3 重建后端 sidecar =="
+Write-Host "== 2/6 生成安装包自带的 Python 运行时 =="
+& (Join-Path $PSScriptRoot "build_runtime.ps1")
+if ($LASTEXITCODE -ne 0) { throw "自带 Python 运行时构建失败" }
+
+Write-Host "== 3/6 编译卸载帮助程序 =="
+& (Join-Path $PSScriptRoot "build_uninstall_helper.ps1")
+if ($LASTEXITCODE -ne 0) { throw "卸载帮助程序构建失败" }
+
+Write-Host "== 4/6 重建后端 sidecar =="
 & (Join-Path $PSScriptRoot "build_sidecar.ps1")
 if ($LASTEXITCODE -ne 0) { throw "sidecar 构建失败" }
 
-Write-Host "== 3/4 打包安装包（--bundles $Bundles）=="
+Write-Host "== 5/6 打包安装包（--bundles $Bundles）=="
 Push-Location (Join-Path $root "frontend")
 try {
   if ($UnsignedTestArtifact) {
     Write-Warning "未签名测试产物模式：createUpdaterArtifacts 已关，本次产物没有更新签名，不能发布。"
     $override = Join-Path $TempDir "tauri-unsigned-test.json"
     [System.IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}', (New-Object System.Text.UTF8Encoding($false)))
-    Invoke-External "tauri build（未签名测试产物）" { npm run tauri build -- --bundles $Bundles --config $override }
+    # NSIS 模板补丁必须夹在「Tauri 生成 installer.nsi」与「makensis 编译」之间：
+    # 模板卸载段里有一处按**可执行文件名**的主程序检查（杀当前用户所有 qio.exe → 壳死 →
+    # job 关闭 → 另一份安装的 backend 也死），Tauri 的 installerHooks 只能追加宏、不能替换它。
+    # scripts/build_nsis_with_patch.py 负责盯着生成文件、在编译前把补丁打进去，
+    # 并在构建结束后核对"补丁真的进了 installer.nsi"；没打上就**构建失败**（绝不出无补丁的包）。
+    Invoke-External "tauri build（未签名测试产物）" {
+      python (Join-Path $root "scripts\build_nsis_with_patch.py") -- npm run tauri build -- --bundles $Bundles --config $override
+    }
   } else {
     if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
       throw "缺少更新签名私钥：请设置 TAURI_SIGNING_PRIVATE_KEY_PATH（见脚本头部说明）。"
@@ -116,7 +135,9 @@ try {
       }
       $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $env:TAURI_SIGNING_PRIVATE_KEY_PATH).Trim()
     }
-    Invoke-External "tauri build" { npm run tauri build -- --bundles $Bundles }
+    Invoke-External "tauri build" {
+      python (Join-Path $root "scripts\build_nsis_with_patch.py") -- npm run tauri build -- --bundles $Bundles
+    }
   }
 } finally {
   Pop-Location
@@ -125,7 +146,7 @@ try {
 $out = Join-Path $root "frontend\src-tauri\target\release\bundle\$Bundles"
 Write-Host "安装包在：$out"
 
-Write-Host "== 4/4 生成更新清单并落到发布目录 =="
+Write-Host "== 6/6 生成更新清单并落到发布目录 =="
 if (-not $DistDir) {
   $DistDir = Join-Path (Split-Path $root -Parent) "dist"
 }

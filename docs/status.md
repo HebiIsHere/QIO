@@ -1645,16 +1645,35 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   （`frontend/src-tauri/nsis/installer-hooks.nsh`，通过 `installerHooks` 挂载）里：
   清掉安装位置与 `Installer Language`，并用 `DeleteRegKey /ifempty` **保留 `DbBaseline`（用户状态）**。
   选钩子而不是 fork 900 行的模板 —— 后者会把每次 Tauri 升级变成人工合并。
-- **卸载器现在自己收掉还在跑的 sidecar**：模板的 `CheckIfAppIsRunning` 只查 `qio.exe`，
-  不查 `qio-backend.exe`；这正是「卸载完目录还在、后端还在跑」的缝。
-- **CI 上现在是硬断言**（`install e2e (windows-latest)` 任务，9/9）：安装信息写入 → 普通卸载后
+- **卸载器只收「本安装实例自己的」sidecar（2026-10-03 P4-A 修复）**：
+  以前钩子写的是 `CheckIfAppIsRunning "qio-backend.exe"` —— 按**可执行文件名**找当前用户的进程，
+  两份 QIO 安装并存时卸载 A 会连 B 的 sidecar 一起杀（**已用改动前产物实测复现**，见 `docs/e2e-install-2026-10-02.md` §15）。
+  现在改成按**所有权记录**：
+  * 外壳在安装目录写 `sidecar.lease.json`（schema=1）：自己与后端的 `pid` + **进程创建时间**
+    （Windows FILETIME，100ns）+ 映像路径。三者同时匹配才算「就是当时那个进程」→ 抗 PID 复用；
+  * 卸载钩子调同源的 `qio-uninstall-helper.exe`（`frontend/src-tauri/src/ownership.rs` 是两个二进制
+    **共用的一份实现**）：记录对得上才动手（先 WM_CLOSE 让外壳自己按 job 收树，超时才 `taskkill /PID`），
+    对不上就**什么都不动**（exit 3）；
+  * 帮助程序缺失 / 起不来 / 判定不了 → 直接往下走，**绝不回退成按名字杀**。宁可留下删不掉的文件，
+    也不误杀别人的进程（「宁可不杀」写进了契约）。
+  顺带发现并修掉第二条连坐路径：模板卸载段里还有一处 `CheckIfAppIsRunning "qio.exe"`（同样是按名字，
+  静默卸载直接杀当前用户**所有** qio.exe）。被杀的那个壳持有 Job Object（KILL_ON_JOB_CLOSE），
+  它一死 → job 关闭 → 它那份安装的 backend 也一起死。Tauri 的 `installerHooks` 只能追加宏、
+  **不能替换模板里已有的语句**，所以在构建期做一次**机械、可验证、幂等**的模板补丁：
+  `scripts/patch_nsis_template.py` 把那一处换成 `!insertmacro QIO_CloseMainExeIfOwned`
+  （守卫定义在 `frontend/src-tauri/nsis/qio-ownership.nsh`：先 `--check-only` 问「本实例的壳在不在」，
+  在才 `--close-installation --allow-main-exe` 收自己的壳；不在就什么都不做）。补丁由
+  `scripts/build_nsis_with_patch.py` 夹在「Tauri 生成 `installer.nsi`」与「makensis 编译」之间执行：
+  用**原子替换**写回（就地写会让 makensis 读到写了一半的文件，实测报 `Invalid command: "!either"`），
+  并且钩子里有**编译期门禁** —— `!ifndef QIO_OWNERSHIP_PATCHED` 就 `!error` 中止编译。
+  于是「补丁到底进没进产物」是编译期事实：**构建成功 = 补丁一定生效**，没打上补丁的构建会直接失败
+  （包装脚本还会重试几次；不看产物字符串 —— NSIS 用 LZMA 压整包，字符串搜不到，会得到假阴性）。
+  发布闸门 `uninstall.contract` 会把「钩子又按名字杀」「缺守卫宏」「缺编译期门禁」都判红
+  （自检里各有一条用例）。
+- **CI 上现在是硬断言**（`install e2e (windows-latest)` 任务）：安装信息写入 → 普通卸载后
   卸载登记被移除、安装位置被清掉、**合成 `DbBaseline` 仍在**、安装目录清空、用户数据保留、
-  运行中的 sidecar 被卸载器收掉。这条路径在本机**永远无法验证**（子进程写不了注册表，本轮如实记 NOT VERIFIED），
-  现在由 runner 覆盖。
-- **已知限制（做了 15 分钟可行性判断后选择不做）**：「多份 QIO 并存」时卸载器按**可执行文件名**找 sidecar，
-  卸载一份会连带结束另一份的 sidecar。取证：Tauri 自带 DLL 只导出按名字的进程函数，NSIS 无进程 API、
-  插件也只有按名字的；按路径只能自写 C++ 插件，或给卸载器加 shell 依赖并保留按名字的回退 —— 回退路径上
-  这条精化没买到东西。已写进文档，替代修法是让外壳负责结束 sidecar。
+  运行中的 sidecar 被卸载器收掉；`coinstall` 阶段还会验「两份真安装并存时卸载 A 不动 B」。
+  注册表这条路径在本机**永远无法验证**（子进程写不了注册表，如实记 NOT VERIFIED），由 runner 覆盖。
 
 ### 三、发布闸门：按实际产物判定，不再只看源码配置
 
@@ -1705,9 +1724,27 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
 测试 → 注册 → 调用 → **重启后仍可调用且版本一致** → 删除环境后**明确进入「需要重新准备」而不是静默换环境** →
 重建后仍是同一批锁定版本 → 离线（近似）再调用正常。**21 PASS / 0 FAIL**（1 WARN、1 NOT TESTED）。
 
-**但这不等于开箱即用**：它要求用户机器上有一个与后端 ABI 匹配的 Python（3.11）。
-绝大多数终端用户机器上没有 —— 这是**产品级限制**，不是「已支持」。
-（好消息是接缝已经留好：随包提供解释器后，只要把 `QIO_PYTHON` 指过去。）
+**2026-10-03 P4-B 已把「要求用户自己装 Python」这条产品级缺陷修掉**：安装包现在**自带**一份 Python 运行时。
+
+- **产物**：`scripts/build_runtime.ps1` 用 `uv python install <ver>` 取官方 CPython（python-build-standalone），
+  裁剪掉 `tcl/`、`include/`、`libs/`、`Lib\test`、`idlelib`、`tkinter`、所有 `__pycache__`、
+  `site-packages` 里的 pip/setuptools/`_distutils_hack`（以及会报错的 `distutils-precedence.pth`），
+  **保留 `Lib\venv` 与 `Lib\ensurepip\_bundled`**（`-m venv` 的离线 pip 就来自这里）→ **33.9 MB / 726 个文件**。
+  脚本带 4 项自检（产物解释器能跑 / `-m venv` 建得出 / venv 内 `pip --version` 可用 / major.minor 一致），
+  任何一步失败就 exit 1（坏运行时绝不当成功产物）。
+- **版本唯一来源**：`scripts/python-version.txt`（仓库根另有 `.python-version` 给 uv 用，两者必须一致）。
+  冻结后端与自带运行时必须是**同一个 major.minor**：后端按 `sys.version_info[:2]` 记环境身份，
+  `ToolEnvManager._prepare` 会拒绝不一致的环境。`build_sidecar.ps1` 现在会**先核对再打包**，不一致就明确失败。
+- **解析顺序**（`tools/tool_envs.py::_resolve_base_python`）：`QIO_PYTHON`（显式，优先级最高，不匹配就明确失败）
+  → **`QIO_BUNDLED_PYTHON_DIR`**（外壳在冻结态把 `resource_dir()/python-runtime` 交下来）
+  → 冻结态 `py -0p` / `PATH` → 非冻结态 `sys.executable`。自带运行时存在但版本不对时**明确失败**，
+  不会静默换成本机碰巧有的解释器。
+- **打包**：`tauri.conf.json` 的 `bundle.resources` 增加 `resources/python-runtime → python-runtime`；
+  `build_installer.ps1` 把「生成运行时」排在「打包」之前，缺运行时即构建失败（与缺模型同一口径）。
+- **仍然诚实的两条**：① 依赖工具仍要**联网**才能装第三方包（自带的是解释器与 pip，不是依赖缓存）；
+  ② 本机沙箱下「安装版 + 自带运行时」的完整 E2E 只有**先失败**的一半（本机 `qio-backend.exe` 是改动前产物，
+  不认 `QIO_BUNDLED_PYTHON_DIR`；对照 D-110 证明缺运行时那条「可行动的明确失败」仍然成立）。
+  修复后产物的正向结论要由 CI 的 `install e2e` 与 `install_dep_e2e.py --no-system-python` 给出。
 
 ### 六、话题与记忆：一个负结果 + 一个数据支持的修复
 

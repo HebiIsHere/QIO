@@ -21,6 +21,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use qio_core::ownership;
+// 跑系统命令的硬超时与「按 pid 结束整棵树」现在住在共享库里（src/ownership.rs）：
+// 卸载帮助程序要用**同一套**语义，不许出现第二份实现。
+use qio_core::ownership::{kill_tree_by_pid, run_command_with_timeout};
 use serde::Serialize;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
@@ -203,6 +207,36 @@ fn prepare_models(app: &tauri::AppHandle) -> Option<PathBuf> {
     Some(models_dir)
 }
 
+/// 安装包自带的 Python 运行时目录（资源目录下的 `python-runtime`）。
+///
+/// 为什么需要它：冻结后的后端 `sys.executable` 是 qio-backend.exe，**不能**当解释器用；
+/// 而"用户自己装一个 Python 3.11"是产品级缺陷（绝大多数 Windows 机器上没有）。
+/// 所以安装包里带一份运行时，外壳把**目录**交给后端（`QIO_BUNDLED_PYTHON_DIR`），
+/// 由 backend/src/agent/tools/tool_envs.py 解析成解释器并校验版本与后端一致。
+///
+/// 开发态（debug 构建）通常没有这份资源：这时返回 None，后端行为与以前完全一样
+/// （用后端自己的解释器）。**不猜路径**：目录里没有 python.exe 就当作没有，
+/// 免得给后端一个"看起来存在、其实不可用"的目录。
+fn bundled_python_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = match app.path().resource_dir() {
+        Ok(root) => root.join("python-runtime"),
+        Err(err) => {
+            log::warn!("[qio] 找不到资源目录，自带 Python 运行时不可用：{err}");
+            return None;
+        }
+    };
+    let exe = dir.join(if cfg!(windows) { "python.exe" } else { "python3" });
+    if !exe.is_file() {
+        log::info!(
+            "[qio] 安装包里没有自带 Python 运行时（{}）：依赖型工具会退回本机解释器或给出可行动的失败",
+            dir.display()
+        );
+        return None;
+    }
+    log::info!("[qio] 自带 Python 运行时：{}", exe.display());
+    Some(dir)
+}
+
 /// 等后端把令牌写出来（后端启动要几秒）。只在后台线程里阻塞。
 /// 解析 Windows 的「系统代理」设置（浏览器读的就是这一份）。
 ///
@@ -213,34 +247,8 @@ fn prepare_models(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// 用 `reg query` 而不是引入注册表库：少一个依赖，输出格式稳定，解析失败就当"没有"。
 /// 自动配置脚本（PAC）不在这里处理：无法在不解释脚本的前提下判断该走哪个代理，
 /// 这种情况如实记为"未使用代理"，并写进日志。
-fn run_command_with_timeout(
-    cmd: &mut std::process::Command,
-    timeout: Duration,
-) -> Option<std::process::Output> {
-    use std::process::Stdio;
-
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    // 超时就结束子进程：Windows 上"卡住的系统程序"往往挂着模态框，
-                    // 不杀掉它会连带把调用方一起钉住
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-}
+// run_command_with_timeout 已挪到 qio_core::ownership（帮助程序也要用同一份实现），
+// 本文件通过 use qio_core::ownership::run_command_with_timeout 使用它。
 
 /// 读系统代理的单次超时。
 ///
@@ -476,24 +484,9 @@ fn qio_refresh_updater_proxy() -> Result<Option<String>, String> {
     Ok(apply_updater_proxy())
 }
 
-/// 按 **pid** 结束整棵进程树（`taskkill /T`）。只在 job 没生效时用。
-///
-/// 为什么不能只 `child.kill()`：onefile 的 launcher 被杀掉之后，真正提供服务的 child
-/// 还活着（实测：scripts/verify_backend_process_model.py 的 case 2 —— 杀 launcher，child
-/// 仍在监听端口），它会锁住 qio-backend.exe，安装器就报 Can't write。
-///
-/// 只按 pid 杀**我们自己拉起的这棵树**，绝不按进程名批量杀：开发实例、测试实例、
-/// 其它安装实例都不能被误伤（ownership 原则，见任务书 A3）。
-#[cfg(windows)]
-fn kill_tree_by_pid(pid: u32) -> bool {
-    // 硬超时：taskkill 卡住会拖住退出流程（同一台机器上实测它报过 0xC0000142）
-    const KILL_TREE_TIMEOUT: Duration = Duration::from_secs(5);
-    let mut cmd = std::process::Command::new("taskkill");
-    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
-    run_command_with_timeout(&mut cmd, KILL_TREE_TIMEOUT)
-        .map(|out| out.status.success())
-        .unwrap_or(false)
-}
+// kill_tree_by_pid 已挪到 qio_core::ownership（卸载帮助程序也要用同一份实现）：
+// 只按 pid 杀我们自己拉起的这棵树（taskkill /PID <pid> /T /F），绝不按进程名批量杀 ——
+// 开发实例、测试实例、其它安装实例都不能被误伤。
 
 /// Windows Job Object：把后端放进「job 关闭即终止」的 job。
 ///
@@ -716,11 +709,15 @@ fn backend_launch(
     port: u16,
     token_path: &PathBuf,
     models_dir: Option<PathBuf>,
+    python_dir: Option<PathBuf>,
 ) -> Result<CommandChild, String> {
     let port = port.to_string();
     let token_path = token_path.to_string_lossy().to_string();
     let user_data_dir = data_dir().to_string_lossy().to_string();
     let models_env = models_dir.map(|dir| dir.to_string_lossy().to_string());
+    // 自带 Python 运行时：只在**真的存在**时传，避免给后端一个不可用的目录。
+    // 后端只认 QIO_PYTHON（显式指定，优先级最高）→ QIO_BUNDLED_PYTHON_DIR → 本机解释器。
+    let python_env = python_dir.map(|dir| dir.to_string_lossy().to_string());
     if cfg!(debug_assertions) {
         // Repo layout: frontend/src-tauri -> ../../backend
         let backend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -750,6 +747,7 @@ fn backend_launch(
             // 数据目录显式传入：壳与后端必须算同一个目录（内置模型就放在它下面）
             .env("QIO_DATA_DIR", user_data_dir.clone())
             .envs(models_env.clone().map(|dir| ("QIO_MODELS_DIR", dir)))
+            .envs(python_env.clone().map(|dir| ("QIO_BUNDLED_PYTHON_DIR", dir)))
             .spawn()
             .map_err(|e| format!("failed to start backend: {e}"))?;
         tauri::async_runtime::spawn(async move {
@@ -766,6 +764,7 @@ fn backend_launch(
             .env("QIO_SESSION_TOKEN_FILE", token_path.clone())
             .env("QIO_DATA_DIR", user_data_dir.clone())
             .envs(models_env.clone().map(|dir| ("QIO_MODELS_DIR", dir)))
+            .envs(python_env.clone().map(|dir| ("QIO_BUNDLED_PYTHON_DIR", dir)))
             .spawn()
             .map_err(|e| format!("sidecar spawn failed: {e}"))?;
         tauri::async_runtime::spawn(async move {
@@ -775,9 +774,53 @@ fn backend_launch(
     }
 }
 
+/// 写「本安装实例」的所有权记录（安装目录 = 外壳 exe 所在目录）。
+///
+/// 只有 release 构建（安装态）才写：开发态的实例不能成为某个安装实例的清理目标
+/// （计划 1.1 的硬约束）。写失败**不阻塞启动**：宁可没有记录（卸载器就"宁可不杀"），
+/// 也不要让应用起不来。
+///
+/// shell_pid 传的是外壳**主进程自己**（std::process::id()），创建时间由
+/// ownership 用 GetProcessTimes 读出来 —— 不是任何子进程的创建时间。
+fn write_install_lease(shell_pid: u32, backend_pid: u32) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        log::info!("[qio] 开发态（debug 构建）不写 sidecar lease");
+        return None;
+    }
+    let Some(install_dir) = ownership::shell_install_dir() else {
+        log::warn!("[qio] 拿不到外壳所在目录，跳过 sidecar lease（卸载器将无法确认本实例归属）");
+        return None;
+    };
+    let lease =
+        match ownership::lease_for_current_processes(&install_dir, shell_pid, backend_pid, None) {
+            Ok(lease) => lease,
+            Err(err) => {
+                log::warn!("[qio] 不写 sidecar lease：{err}");
+                return None;
+            }
+        };
+    match ownership::write_lease(&install_dir, &lease) {
+        Ok(path) => {
+            log::info!(
+                "[qio] 已写 sidecar lease：shell pid {shell_pid} / backend pid {backend_pid} → {}",
+                path.display()
+            );
+            Some(path)
+        }
+        Err(err) => {
+            log::warn!("[qio] 写 sidecar lease 失败（卸载器将宁可不杀）：{err}");
+            None
+        }
+    }
+}
+
 fn main() {
     let backend: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
     let backend_for_setup = Arc::clone(&backend);
+    // 本安装实例的 lease 路径（release 启动时写、退出回调里删）：setup 与退出共享这一个 Option。
+    let lease_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let lease_path_for_setup = Arc::clone(&lease_path);
+    let lease_path_for_exit = Arc::clone(&lease_path);
     // job 是否真的生效（create + assign 都成功）。没生效时退出必须自己按 pid 杀整棵树 ——
     // 「失败时还有 taskkill 兜底」这句话必须真的接在退出路径上，否则就是一句注释。
     let job_active = Arc::new(AtomicBool::new(false));
@@ -785,25 +828,54 @@ fn main() {
     // 后端进程随这份 job 的生死而生死：壳没了，系统负责清干净，不留孤儿。
     let backend_job = backend_job::create();
 
+    // 日志目录先探测一次可写性：**写不了日志不该让应用起不来**。
+    // 2026-10-03 实测（受限令牌下跑安装版外壳）：tauri_plugin_log 的 setup 里
+    // acquire_logger 建不出目录就返回 Err，而插件初始化失败会让 Builder::build() 直接失败 ——
+    // 用户看到的是"双击没反应"（panic 里只有 PluginInitialization("log", 拒绝访问)）。
+    // 日志是诊断手段，不是运行前提：写不了就退回只打控制台，并把原因说清楚。
+    let log_dir = data_dir().join("logs");
+    let log_dir_ready = std::fs::create_dir_all(&log_dir).is_ok()
+        && std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("qio.log"))
+            .is_ok();
+    if !log_dir_ready {
+        eprintln!(
+            "[qio] 日志目录不可写（{}）：本次只打控制台，不影响使用",
+            log_dir.display()
+        );
+    }
+    let mut log_builder = tauri_plugin_log::Builder::new().level(log::LevelFilter::Info);
+    log_builder = if log_dir_ready {
+        log_builder.target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Folder {
+                path: log_dir.clone(),
+                file_name: Some("qio".to_string()),
+            },
+        ))
+    } else {
+        // 写不了文件时给一个明确的落点（Windows GUI 子系统下 stderr 不可见，
+        // 但开发/CI 跑得到），而不是把插件注册成一个必然失败的初始化。
+        log_builder.target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+        ))
+    };
+
     tauri::Builder::default()
-        // 日志最先注册：这样 updater 等插件的 log::error! 才会落到文件里
-        // （%APPDATA%\qio\logs\qio.log），出问题时能看见真实原因而不是一句固定文案。
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("qio".to_string()),
-                    },
-                ))
-                .level(log::LevelFilter::Info)
-                .build(),
-        )
         .plugin(tauri_plugin_shell::init())
         // 应用内更新：updater（检查/下载/校验/安装）+ process（装完重启）。
         // 两者都在 Rust 侧工作，前端只通过插件 API 驱动，不需要放宽 CSP。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(move |app| {
+            // 日志插件**在这里**注册（AppHandle::plugin 返回 Result），而不是在 Builder 链上：
+            // Builder::plugin 的初始化错误会在 build() 里变成 panic（用户看到"双击没反应"），
+            // 而日志只是诊断手段、不是运行前提。注册失败就退回控制台并说明原因，应用照常启动。
+            // 2026-10-03 实测：受限令牌下 LogDir 建目录报 os error 5，安装版外壳就是这样起不来的。
+            if let Err(err) = app.handle().plugin(log_builder.build()) {
+                eprintln!("[qio] 日志插件初始化失败（本次只打控制台，不影响使用）：{err}");
+            }
             // 启动各步骤的耗时写进日志：下次"白屏很久"能直接看出卡在哪一步，
             // 而不是只能靠猜（2026-09-24 那次就是没有这一步，排查全靠推断）。
             let t_start = Instant::now();
@@ -828,7 +900,9 @@ fn main() {
             let models_dir = prepare_models(app.handle());
             let models_ms = t_models.elapsed().as_millis();
             let t_backend = Instant::now();
-            let child = backend_launch(app.handle(), port, &token_path, models_dir)?;
+            // 自带 Python 运行时（安装包资源）：交给后端去建依赖环境；没有就按以前的行为。
+            let python_dir = bundled_python_dir(app.handle());
+            let child = backend_launch(app.handle(), port, &token_path, models_dir, python_dir)?;
             // 时序是这份修复的一部分：**必须在 spawn 之后立刻 assign**。
             // onefile 的 launcher 是先把压缩包解到临时目录、再创建真正提供服务的 child
             // （实测 child 比 launcher 晚约 1.5s）。Windows 只把「指派之后创建的后代」
@@ -849,7 +923,11 @@ fn main() {
                 t_backend.elapsed().as_millis(),
                 t_start.elapsed().as_millis()
             );
+            let backend_pid = child.pid();
             *backend_for_setup.lock().unwrap() = Some(child);
+            // 所有权记录：只有 release（安装态）才写；开发态不写（见 write_install_lease）。
+            *lease_path_for_setup.lock().unwrap() =
+                write_install_lease(std::process::id(), backend_pid);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -876,6 +954,14 @@ fn main() {
                         {
                             let _ = child.kill();
                         }
+                    }
+                }
+                // lease 是「本安装实例还活着」的唯一记录：外壳退出（任何路径）都要删掉，
+                // 否则下次卸载会读到一个指向已死进程的文件，帮助程序只会如实报"无法确认"。
+                if let Some(path) = lease_path_for_exit.lock().unwrap().take() {
+                    match ownership::remove_lease_at(&path) {
+                        Ok(()) => log::info!("[qio] 已删除 sidecar lease：{}", path.display()),
+                        Err(err) => log::warn!("[qio] 删除 sidecar lease 失败：{err}"),
                     }
                 }
                 let _ = std::fs::remove_file(session_token_path());
@@ -1015,31 +1101,6 @@ mod tests {
         assert!(!proxy_is_reachable("http://"));
     }
 
-    /// 实测事故（2026-09-24）：`reg.exe` 报 0xC0000142 并弹出"必须先点掉"的模态框，
-    /// 子进程因此一直不退出，`Command::output()` 把外壳的启动流程钉住 1 分 42 秒
-    /// （界面白屏）。所以跑系统命令必须有硬超时：超时就杀掉子进程、按"拿不到"处理。
-    #[cfg(windows)]
-    #[test]
-    fn hanging_command_is_killed_after_the_timeout() {
-        let mut cmd = std::process::Command::new("cmd");
-        // ping 6 次约 5 秒；给 800ms 超时，必须在超时后很快返回 None
-        cmd.args(["/c", "ping", "-n", "6", "127.0.0.1"]);
-        let started = Instant::now();
-        let out = run_command_with_timeout(&mut cmd, Duration::from_millis(800));
-        let elapsed = started.elapsed();
-        assert!(out.is_none(), "超时的命令不能返回输出");
-        assert!(
-            elapsed < Duration::from_secs(4),
-            "超时后必须立刻返回（实测 {elapsed:?}）"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn fast_command_still_returns_its_output() {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/c", "echo", "hello-qio"]);
-        let out = run_command_with_timeout(&mut cmd, Duration::from_secs(10)).expect("应拿到输出");
-        assert!(String::from_utf8_lossy(&out.stdout).contains("hello-qio"));
-    }
+    // 跑命令的硬超时那两条测试随 run_command_with_timeout 一起挪到了
+    // qio_core::ownership（同一份实现，就在它自己的 crate 里测）。
 }

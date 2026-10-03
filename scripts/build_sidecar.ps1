@@ -7,12 +7,21 @@
 #
 # 解释器：优先 $env:QIO_PYTHON，其次 backend\.venv；没有 PyInstaller 时用
 # `uv run --frozen --with pyinstaller` 临时提供（不改动任何环境）。
+#
+# ⚠️ 版本必须与安装包自带的 Python 运行时**同一个 major.minor**（P4-B）：
+#   * 后端自己按 sys.version_info[:2] 记环境身份（tools/tool_envs.py），
+#   * ToolEnvManager._prepare 会拒绝与后端 major.minor 不一致的环境；
+#   * 自带运行时由 scripts\build_runtime.ps1 按 scripts\python-version.txt 生成。
+# 所以这里**先核对**再打包：选中的解释器不是 python-version.txt 里的版本就明确失败
+# （而不是悄悄产出一个"装到自己带的运行时上会明确失败"的后端）。仓库根还有
+# .python-version（uv 的口径），两者必须一致。
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path $PSScriptRoot -Parent
 $backend = Join-Path $root "backend"
 $binaries = Join-Path $root "frontend\src-tauri\binaries"
+$versionFile = Join-Path $PSScriptRoot "python-version.txt"
 
 # Windows PowerShell 5.1 会把原生命令写到 stderr 的正常输出（uv 的 "Uninstalled 1 package"、
 # python 的 traceback 之类）当成终止性错误，即使重定向了也一样。所有外部命令统一走这个包装：
@@ -51,12 +60,50 @@ $pyiArgs = @(
   "src/agent/main.py"
 )
 
+# 期望的 major.minor（scripts\python-version.txt 是侧车与自带运行时共用的唯一来源）
+$wanted = ""
+if (Test-Path $versionFile) { $wanted = ((Get-Content -Raw $versionFile) + "").Trim() }
+if (-not $wanted) {
+  Write-Host "读不到 $versionFile：侧车与自带运行时的版本必须同一来源，拒绝继续。"
+  exit 1
+}
+
+# 问一个解释器它自己的 major.minor；不是 Python 就返回空串。
+function Get-PythonMajorMinor {
+  param([string]$Exe)
+  if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return "" }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    # 单引号包住 Python 代码：PowerShell 5.1 的 -c 参数会把双引号吃掉（实测）
+    $out = & $Exe -c 'import sys;print("%d.%d" % sys.version_info[:2])' 2>&1
+    $mm = ("$out" -split "?
+" | Where-Object { $_ -match '^d+.d+$' } | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return ("$mm").Trim()
+  } catch {
+    return ""
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 Push-Location $backend
 try {
   $candidate = $env:QIO_PYTHON
   if (-not $candidate) {
     $venv = Join-Path $backend ".venv\Scripts\python.exe"
     if (Test-Path $venv) { $candidate = $venv }
+  }
+
+  if ($candidate) {
+    $actual = Get-PythonMajorMinor $candidate
+    if ($actual -and $actual -ne $wanted) {
+      Write-Host "选中的解释器是 Python $actual，但 scripts\python-version.txt 要求 $wanted。"
+      Write-Host "侧车与安装包自带的运行时必须同一 major.minor（后端按 sys.version_info[:2] 记环境身份）。"
+      Write-Host "请先执行：uv sync --frozen --extra dev --python $wanted（重建 backend\.venv），或用 QIO_PYTHON 指向 $wanted 的解释器。"
+      exit 1
+    }
   }
 
   $done = $false
@@ -88,7 +135,7 @@ try {
     # 150 个 collection error（ModuleNotFoundError）收场，看起来像代码坏了，
     # 其实是构建脚本动了共享 venv。PyInstaller 只跟着 main.py 的 import 走，
     # 不会把 pytest 打进包里。
-    $code = Invoke-External { uv run --frozen --extra dev --with pyinstaller python -m PyInstaller @pyiArgs }
+    $code = Invoke-External { uv run --frozen --extra dev --python $wanted --with pyinstaller python -m PyInstaller @pyiArgs }
     if ($code -ne 0) { Write-Host "PyInstaller failed: $code"; exit 1 }
   }
 } finally {

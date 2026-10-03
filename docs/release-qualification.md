@@ -186,11 +186,26 @@
    **产不出被应用信任的更新签名**（私钥是口令加密的，口令不在本机）→ `BLOCKED BY SIGNING CREDENTIAL`。
    另外界面层一步没走（图形向导 / 界面审批 / 界面卸载复选框必须人工）；CI 的 install e2e 用的是**合成模型**与
    **替身 sidecar 进程**，验的是安装/卸载机制与注册表边界，不是真实模型产物。
-8. **安装版的第三方依赖工具需要机器上有 Python**（2026-10-03 新增，产品级前提）：冻结后端不能拿
-   `sys.executable` 当解释器去建工具环境（那会把后端 exe 当 python，悄悄起第二个后端）。
-   修复后按 `QIO_PYTHON` → `py -0p` → `PATH` 找**与后端 ABI 匹配**的解释器；找不到时给可行动的明确失败，
-   但依赖工具**不可用**。绝大多数终端用户机器上没有 Python 3.11 —— 这是限制，不是「已支持」。
-   所以本报告仍然**不能**读成「可以发布」。
+8. ~~**安装版的第三方依赖工具需要机器上有 Python**~~ **已修（2026-10-03 P4-B）**：安装包现在自带一份
+   Python 运行时（`scripts/build_runtime.ps1` 取官方 CPython → 裁剪 → 4 项自检，**33.9 MB / 726 文件**；
+   保留 `Lib\venv` 与 `Lib\ensurepip\_bundled`，所以 `-m venv` 与离线 pip 可用）。
+   外壳把 `resource_dir()/python-runtime` 经 `QIO_BUNDLED_PYTHON_DIR` 交给后端，
+   `tool_envs.py::_resolve_base_python` 的解析顺序变成 `QIO_PYTHON` → **自带运行时** → 冻结态 `py -0p`/`PATH`
+   → 非冻结态 `sys.executable`；版本不匹配一律**明确失败**，不静默换解释器。
+   仍然成立的两条：① 装第三方包本身仍要联网；② 「安装版 + 自带运行时」的正向端到端结论要由 CI
+   （`install e2e` / `install_dep_e2e.py --no-system-python`）给出 —— 本机只跑到了**先失败**的一半
+   （本机 `qio-backend.exe` 是改动前产物，不认 `QIO_BUNDLED_PYTHON_DIR`），如实记 NOT VERIFIED。
+
+9. ~~**多份 QIO 安装并存时卸载会误杀另一份的 sidecar**~~ **已修（2026-10-03 P4-A）**：
+   卸载钩子不再按可执行文件名收 sidecar，改成按安装目录里的 `sidecar.lease.json`
+   （pid + 进程创建时间 FILETIME + 映像路径，抗 PID 复用）判定归属，只收本实例的进程；
+   判定不了就**什么都不动**（exit 3），绝不回退成按名字杀。
+   同时修掉第二条连坐路径：模板卸载段里按名字杀 `qio.exe` 的那一处，在构建期被机械替换成所有权守卫
+   （`scripts/patch_nsis_template.py` + `frontend/src-tauri/nsis/qio-ownership.nsh`）。
+   补丁用**原子替换**写回，钩子里有**编译期门禁**（`!ifndef QIO_OWNERSHIP_PATCHED` → `!error`）：
+   没打上补丁的构建会直接失败，所以「构建成功」本身就是「守卫已生效」的证明。
+   发布闸门 `uninstall.contract` 会把「钩子又按名字杀」「缺守卫宏」「缺编译期门禁」判红。
+   已用改动前产物**实测复现**缺陷（见 `docs/e2e-install-2026-10-02.md` §15）。
 
 **未做视觉验证（诚实缺口）**
 
