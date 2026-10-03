@@ -1703,15 +1703,32 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
 - **WebView2 用户数据目录坏掉时，界面会静默消失（已知限制，本轮未修）**：
   实测 `%LOCALAPPDATA%\com.qio.app\EBWebView` 损坏后，窗口**建出来约 1 秒就被销毁**、
   进程继续活着、日志里一个字都没有 —— 用户侧现象是"双击后什么都没发生"。
-  证据：50ms 轮询到 hwnd → t≈1.02s `IsWindow(hwnd)=False`；换一个全新
-  `WEBVIEW2_USER_DATA_FOLDER` → 窗口全程存活并收到 Focused 事件（可稳定复现）。
-  处置（用户侧）：把 `%LOCALAPPDATA%\com.qio.app\EBWebView` 改名或删除后重启 QIO；
-  本机就是这么恢复的（改名成 `EBWebView.broken-20261003`，可回滚）。
+  证据（2026-10-03 多轮实测）：窗口建出来（class `Tauri Window` / title `QIO` / visible）后
+  **约 8 秒被销毁**，进程继续活着；`qio.exe` **从未**生成过 `msedgewebview2.exe` 子进程，
+  `%LOCALAPPDATA%\com.qio.app\EBWebView` 在 40 分钟内**零文件变动** → WebView2 环境压根没初始化成功。
+  机器侧硬证据：近 3 小时 **62 条** `msedgewebview2.exe` APPCRASH（版本 `154.0.4258.53`，
+  出错模块 `msedge_elf.dll`，异常代码 `0x80000003`）；该版本目录 `154.0.4258.53` 是当天 19:40
+  才装上的（`154.0.4258.48` 是前一天）——**这台机器的 WebView2 运行时更新后对新宿主进程不可用**。
+  排除项：换 `WEBVIEW2_USER_DATA_FOLDER`（全新目录）、把坏 profile 改名、指定旧运行时目录、
+  最小环境（去掉我们设的代理变量）——窗口**都是 ~8 秒后消失**，所以**不是**我们的环境变量、
+  也不是坏 profile 残留，而是这台机器的 WebView2 本身。
+  处置（用户侧）：重装/回滚 Microsoft Edge WebView2 Runtime 后重启 QIO。
   **没有**在本轮加"窗口没了就报错退出"的看门狗：写好了但唯一一次正向实验被外部误杀，
   没验证过失败路径就不进发布（补丁留在 `.build-tmp/window-diagnostics-and-watchdog.patch`，下一轮再做）。
-- **仍未验的一条（重要，别读成"全绿"）**：**「安装态外壳启动 → 写出 lease」这一步在本机**
-  **与 runner 上都还没验过**（本机 2026-10-03 已能在真桌面会话里跑 release 外壳并写出 lease，
-  但那是从 `target\release` 直接跑，**不是安装后的目录**；安装态四步验收见 `docs/e2e-install-2026-10-02.md` §17）。
+- **安装后完整使用过程：四步里验到三步（2026-10-03 真桌面，脚本可复跑）**
+  详见 `docs/e2e-install-2026-10-02.md` §17（最终候选包 `f46ea483…`，`PASS 53 / FAIL 4 / WARN 2 / SKIP 1`）：
+  * **① lease 内容：全绿** —— install_dir 对；shell/backend 的 pid + 创建时间 FILETIME + exe 与
+    **独立枚举**（Toolhelp/`GetProcessTimes`/`QueryFullProcessImageNameW`）逐项一致；
+    安装目录里 2 个活动进程全部能被 lease 解释；lease 不含令牌；日志里记了本次写入。
+  * **② 正常退出 → lease 清理：NOT VERIFIED（本机没有时间窗）** —— 窗口存活 0.1~7.6s，
+    而 lease 写出在 8.0~8.7s，**两者不重叠**；对照实验：窗口一出现（t=0.06s）就发 WM_CLOSE，
+    外壳**一直没退**（启动期主线程被 WebView2 初始化挡住，消息根本没被处理）。
+    按纪律**没有**用 taskkill 凑过 —— 这条要等窗口寿命问题（见上一条，机器侧 WebView2）修好后重跑。
+  * **③ 保持开着直接卸载：修复后全绿** —— `S3-010 … 目录存在=False；残留=无`；本次安装的壳+后台被结束、
+    用户数据目录**逐字节不变**、诱饵进程与第二份安装（进程 + lease 原文）**一个都没被动过**。
+    （中间轮在旧包上残留 `python-runtime` → 见上面那条修复。）
+  * **④ lease 写失败：全绿** —— exit=1、`QIO-LEASE-WRITE-FAILED` 在原因文件与日志、后台被收掉、零残留。
+- **仍未验的（别读成"全绿"）**：
   * 本机：受限令牌下安装版外壳起不来（旧签名是 log 插件 panic；把日志插件改到 `.setup()` 里注册后
     不再 panic，但本机仍走不到写 lease 那一步）；
   * windows runner（CI run 37088404384 的 coinstall 步骤实测）：外壳进程起来了、120s 内没写
