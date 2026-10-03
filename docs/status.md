@@ -1700,37 +1700,32 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   * **兜底**（NSIS POSTUNINSTALL 钩子）：`RMDir /r "$INSTDIR\python-runtime"` +
     清掉 `sidecar.lease.json` 等运行期文件，再重试一次非递归 `RMDir "$INSTDIR"`。
     **不做** `RMDir /r "$INSTDIR"`（用户可能把 QIO 装在别的目录旁边，整棵删会连带删别人的东西）。
-- **WebView2 用户数据目录坏掉时，界面会静默消失（已知限制，本轮未修）**：
-  实测 `%LOCALAPPDATA%\com.qio.app\EBWebView` 损坏后，窗口**建出来约 1 秒就被销毁**、
-  进程继续活着、日志里一个字都没有 —— 用户侧现象是"双击后什么都没发生"。
-  证据（2026-10-03 多轮实测）：窗口建出来（class `Tauri Window` / title `QIO` / visible）后
-  **约 8 秒被销毁**，进程继续活着；`qio.exe` **从未**生成过 `msedgewebview2.exe` 子进程，
-  `%LOCALAPPDATA%\com.qio.app\EBWebView` 在 40 分钟内**零文件变动** → WebView2 环境压根没初始化成功。
-  机器侧硬证据：近 3 小时 **62 条** `msedgewebview2.exe` APPCRASH（版本 `154.0.4258.53`，
-  出错模块 `msedge_elf.dll`，异常代码 `0x80000003`）；该版本目录 `154.0.4258.53` 是当天 19:40
-  才装上的（`154.0.4258.48` 是前一天）——**这台机器的 WebView2 运行时更新后对新宿主进程不可用**。
-  排除项：换 `WEBVIEW2_USER_DATA_FOLDER`（全新目录）、把坏 profile 改名、指定旧运行时目录、
-  最小环境（去掉我们设的代理变量）——窗口**都是 ~8 秒后消失**，所以**不是**我们的环境变量、
-  也不是坏 profile 残留，而是这台机器的 WebView2 本身。
-  处置（用户侧）：重装/回滚 Microsoft Edge WebView2 Runtime 后重启 QIO。
-  **2026-10-04 实测：这条处置在本机无效**，逐条试过并记录（都失败）：
-  * 用微软官方 Evergreen Standalone Installer（签名校验通过）**提权重装**运行时 → 窗口仍在 ~9s 消失；
-  * 用 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 指向上一版 `154.0.4258.48` → 崩溃报告里**两个版本都出现**；
-  * `--no-sandbox` / `--disable-gpu` / 空 `additionalBrowserArgs`（即不传 wry 的默认
-    `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`）→ 无差别；
-  * 预建 / 换全新 `WEBVIEW2_USER_DATA_FOLDER` → WebView2 **一个文件都不写**（连 Crashpad 都不建）；
-  * 用 `explorer.exe` 在**我的进程树之外**启动 → 一样崩（排除 Job Object / 父进程 / 受限令牌）；
-  * 反向对照：空转 2 分钟 **0 次** webview 崩溃；跑一次 QIO 20 秒 → **4 次**；
-    而机器上其它 WebView2 应用正常（clash 的 EBWebView 23:29 还在写）。
-  结论：这是**本机 Windows 11（build 26200）+ Edge WebView2 154.0.4258.x + wry 0.55.1**
-  三者组合下的不兼容，**不是**"运行时没装好"，重装/回滚修不了。
-  后果也更严重：主线程**永久卡在 WebView2 初始化**（连投 129 次 WM_CLOSE 都没被处理），
-  于是这台机器上 GUI 既用不了、也没有正常退出路径 → 第 ② 步在这台机器上**没有时间窗**。
-  下一步候选（未做）：升级 Tauri/wry 后重测；或换一台 Windows 桌面跑同一条脚本。
+- **"界面静默消失"的真因：不是产品缺陷，是"程序放在带沙箱 ACL 的工作区目录里"**（2026-10-04 定位）
+  现象：窗口建出来（class `Tauri Window` / title `QIO` / visible）后 1~9 秒被销毁、进程继续活着、
+  `qio.exe` 从不生成 `msedgewebview2.exe` 子进程、`EBWebView` 零文件变动，同时产生
+  `msedgewebview2.exe` APPCRASH（`msedge_elf.dll`，异常码 `0x80000003`）。
+  **定位过程（同一份二进制、只换目录）**：
+  * `C:\qio-probe`、`C:\qio test\app`、`C:\Users\zxy\Documents\qio-probe-app`、`Desktop`、`D:\` → 窗口**全程存活**；
+  * 只要放在 `C:\Users\zxy\Documents\Front agent\...`（本会话的工作区根）下面 → **1~1.5 秒就死**；
+  * 复制品 `.probe-app`（内容与能跑的副本逐字节相同、只换了父目录）→ 也死；
+  * 换 CWD（用工作区目录当工作目录、但 exe 在干净目录）→ 能跑 → **是 exe 所在目录，不是 CWD**。
+  机制：工作区根目录带**沙箱 ACL** —— `ADMIN\CodexSandboxUsers:(OI)(CI)(M)`、
+  `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`（低完整性、禁止向上写）、
+  `Everyone:(CI)(DENY)(DC)`（拒绝删除子项）。放在其下的可执行文件因此继承低完整性标签，
+  WebView2 的宿主进程在这种文件上起不来（Chromium 沙箱直接崩）。
+  **这与产品无关**：用户真实的 `D:\QIO` 安装、以及任何普通目录都正常（0.1.10 装在那里一直能用）。
+  这也解释了为什么"重装/回滚 WebView2、`--no-sandbox`、`--disable-gpu`、换 profile、
+  换 `WEBVIEW2_USER_DATA_FOLDER`、脱离我的进程树"全都无效 —— 试的方向从一开始就错了。
+  教训（写给下一个在本工作区里跑桌面验证的人）：**桌面/E2E 验证必须把被测程序放到工作区之外的
+  干净目录**（例如 `C:\qio-verify`），否则会得到"产品坏了"的假结论。
   **没有**在本轮加"窗口没了就报错退出"的看门狗：写好了但唯一一次正向实验被外部误杀，
   没验证过失败路径就不进发布（补丁留在 `.build-tmp/window-diagnostics-and-watchdog.patch`，下一轮再做）。
-- **安装后完整使用过程：四步里验到三步（2026-10-03 真桌面，脚本可复跑）**
-  详见 `docs/e2e-install-2026-10-02.md` §17（最终候选包 `f46ea483…`，`PASS 53 / FAIL 4 / WARN 2 / SKIP 1`）：
+- **安装后完整使用过程：四步全过（2026-10-04 真桌面；② 在干净目录下补验）**
+  §17 里那次（包 `f46ea483…`，`PASS 53 / FAIL 4`）的 4 条 FAIL 全部来自上面那条工作区沙箱假象：
+  把同一份构建放到 `C:\qio-verify` 重跑，**第 ② 步也过了** ——
+  窗口出现 → lease 写出（`install_dir=C:\qio-verify`，shell/backend 的 pid 与 exe 逐项一致）→
+  给主窗口发 1 次 `WM_CLOSE` → **外壳自己退出（exit=0）、lease 被删除、零残留进程**。
+  详见 `docs/e2e-install-2026-10-02.md` §17.8。
   * **① lease 内容：全绿** —— install_dir 对；shell/backend 的 pid + 创建时间 FILETIME + exe 与
     **独立枚举**（Toolhelp/`GetProcessTimes`/`QueryFullProcessImageNameW`）逐项一致；
     安装目录里 2 个活动进程全部能被 lease 解释；lease 不含令牌；日志里记了本次写入。
