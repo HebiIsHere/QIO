@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-03（`main` 分支）。核对方法见文末。
+最后核对：2026-10-04（`main` 分支）。核对方法见文末。
 
 ---
 
@@ -1713,6 +1713,20 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   最小环境（去掉我们设的代理变量）——窗口**都是 ~8 秒后消失**，所以**不是**我们的环境变量、
   也不是坏 profile 残留，而是这台机器的 WebView2 本身。
   处置（用户侧）：重装/回滚 Microsoft Edge WebView2 Runtime 后重启 QIO。
+  **2026-10-04 实测：这条处置在本机无效**，逐条试过并记录（都失败）：
+  * 用微软官方 Evergreen Standalone Installer（签名校验通过）**提权重装**运行时 → 窗口仍在 ~9s 消失；
+  * 用 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 指向上一版 `154.0.4258.48` → 崩溃报告里**两个版本都出现**；
+  * `--no-sandbox` / `--disable-gpu` / 空 `additionalBrowserArgs`（即不传 wry 的默认
+    `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`）→ 无差别；
+  * 预建 / 换全新 `WEBVIEW2_USER_DATA_FOLDER` → WebView2 **一个文件都不写**（连 Crashpad 都不建）；
+  * 用 `explorer.exe` 在**我的进程树之外**启动 → 一样崩（排除 Job Object / 父进程 / 受限令牌）；
+  * 反向对照：空转 2 分钟 **0 次** webview 崩溃；跑一次 QIO 20 秒 → **4 次**；
+    而机器上其它 WebView2 应用正常（clash 的 EBWebView 23:29 还在写）。
+  结论：这是**本机 Windows 11（build 26200）+ Edge WebView2 154.0.4258.x + wry 0.55.1**
+  三者组合下的不兼容，**不是**"运行时没装好"，重装/回滚修不了。
+  后果也更严重：主线程**永久卡在 WebView2 初始化**（连投 129 次 WM_CLOSE 都没被处理），
+  于是这台机器上 GUI 既用不了、也没有正常退出路径 → 第 ② 步在这台机器上**没有时间窗**。
+  下一步候选（未做）：升级 Tauri/wry 后重测；或换一台 Windows 桌面跑同一条脚本。
   **没有**在本轮加"窗口没了就报错退出"的看门狗：写好了但唯一一次正向实验被外部误杀，
   没验证过失败路径就不进发布（补丁留在 `.build-tmp/window-diagnostics-and-watchdog.patch`，下一轮再做）。
 - **安装后完整使用过程：四步里验到三步（2026-10-03 真桌面，脚本可复跑）**
