@@ -1674,7 +1674,24 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   卸载登记被移除、安装位置被清掉、**合成 `DbBaseline` 仍在**、安装目录清空、用户数据保留、
   运行中的 sidecar 被卸载器收掉。注册表这条路径在本机**永远无法验证**（子进程写不了注册表，
   如实记 NOT VERIFIED），由 runner 覆盖。
-- **仍未验的一条（重要，别读成"全绿"）**：**「外壳启动时写出 lease」这一步没有任何地方验过**。
+- **日志通道曾经是坏的（2026-10-03 本机实测并修掉）**：安装态下 tauri-plugin-log **完全初始化失败**
+  （`failed to initialize plugin log: 拒绝访问 (os error 5)`），`qio.log` 一个字都没有。
+  根因不是权限：`Builder::new()` 的默认 targets 是 `[Stdout, LogDir]`，而 `.target()` 是**追加** ——
+  那个默认 `LogDir` target 初始化失败就把整个插件拖死，跟我们自己加的 target 成不成没关系
+  （两个变体报的错一模一样）。改用 `.targets([...])` **替换**默认列表，并按
+  「数据目录文件 → 插件默认日志目录 → 控制台」顺序兜底，每个失败原因都留档。
+  实测：正常启动后 `$QIO_DATA_DIR\logs\qio.log` 有内容，且含 `已写 sidecar lease：shell pid … / backend pid …`。
+- **归属记录写失败 = fail-closed（2026-10-03 实现并实测）**：写不下 lease 时**绝不留下后台**。
+  处理顺序：留明确原因（`<QIO_DATA_DIR>\qio-startup-error.txt` → `<install_dir>\qio-startup-error.txt`
+  → stderr，首行稳定标记 `QIO-LEASE-WRITE-FAILED`；同一段也进日志的 [ERROR] 行）→ 用 job
+  `TerminateJobObject` 收掉**本次启动的后台** → 退出码 1。GUI 下默认弹一次错误框，
+  `QIO_STARTUP_ERROR_DIALOG=0` 关掉它（无人值守/自动化环境用）。
+  为什么必须 fail-closed：那条路的终点是「卸载时无法确认归属 → 宁可不杀 → 安装目录删不干净」，
+  而且用户拿不到任何指向真因的线索。本机实测（把 `sidecar.lease.json` 做成目录制造真实写失败）：
+  exit=1、原因文件首行 `QIO-LEASE-WRITE-FAILED`、安装目录里**没有** `qio-backend.exe` 残留。
+- **仍未验的一条（重要，别读成"全绿"）**：**「安装态外壳启动 → 写出 lease」这一步在本机**
+  **与 runner 上都还没验过**（本机 2026-10-03 已能在真桌面会话里跑 release 外壳并写出 lease，
+  但那是从 `target\release` 直接跑，**不是安装后的目录**；安装态四步验收见 `docs/e2e-install-2026-10-02.md` §17）。
   * 本机：受限令牌下安装版外壳起不来（旧签名是 log 插件 panic；把日志插件改到 `.setup()` 里注册后
     不再 panic，但本机仍走不到写 lease 那一步）；
   * windows runner（CI run 37088404384 的 coinstall 步骤实测）：外壳进程起来了、120s 内没写

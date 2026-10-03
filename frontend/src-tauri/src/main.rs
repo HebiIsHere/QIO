@@ -500,7 +500,7 @@ mod backend_job {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
@@ -552,6 +552,14 @@ mod backend_job {
                 }
                 ok
             }
+        }
+
+        /// 立刻结束 job 里的所有进程（不是关句柄那种"随壳退出"的被动收）。
+        ///
+        /// fail-closed 用：归属记录写不下来时，绝不允许留下「后台还在跑、但卸载器
+        /// 无法确认归属」的状态 —— 那条路的终点是安装目录删不干净。
+        pub fn terminate(&self) -> bool {
+            unsafe { TerminateJobObject(self.0, 1) != 0 }
         }
     }
 
@@ -782,36 +790,124 @@ fn backend_launch(
 ///
 /// shell_pid 传的是外壳**主进程自己**（std::process::id()），创建时间由
 /// ownership 用 GetProcessTimes 读出来 —— 不是任何子进程的创建时间。
-fn write_install_lease(shell_pid: u32, backend_pid: u32) -> Option<PathBuf> {
+/// 启动期致命问题（目前只有一种：写不下归属记录）的**稳定标记**。
+/// 卸载验证脚本按这一行 grep 原因；不要改它，改了要同步改脚本与文档。
+const LEASE_ERROR_MARKER: &str = "QIO-LEASE-WRITE-FAILED";
+
+/// 把启动期致命原因写到**不依赖日志插件**的地方：数据目录 → 安装目录 → stderr。
+///
+/// 为什么不能只写日志：日志插件本身可能初始化失败（2026-10-03 实测：安装态下
+/// `failed to initialize plugin log: 拒绝访问 (os error 5)`），那时日志里一个字都没有，
+/// 用户和排查者都只能看到"双击没反应"。
+fn report_startup_error(detail: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = vec![data_dir().join("qio-startup-error.txt")];
+    if let Some(dir) = ownership::shell_install_dir() {
+        candidates.push(dir.join("qio-startup-error.txt"));
+    }
+    for path in candidates {
+        if std::fs::write(&path, detail.as_bytes()).is_ok() {
+            return Some(path);
+        }
+    }
+    eprintln!("[qio] {detail}");
+    None
+}
+
+/// GUI 下把原因摆到用户面前（没有控制台可看）。`QIO_STARTUP_ERROR_DIALOG=0` 关掉它 ——
+/// 无人值守/自动化环境需要进程可预期地退出，而不是停在一个模态框上等点击。
+#[cfg(windows)]
+fn show_startup_error_dialog(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND};
+    if std::env::var("QIO_STARTUP_ERROR_DIALOG").ok().as_deref() == Some("0") {
+        return;
+    }
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+    let mut title: Vec<u16> = "QIO 启动失败".encode_utf16().collect();
+    title.push(0);
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_startup_error_dialog(text: &str) {
+    eprintln!("[qio] {text}");
+}
+
+/// 写不下归属记录时的统一处理（fail-closed）：
+///   1. 留下**明确原因**（数据目录 → 安装目录 → stderr，不依赖日志插件）；
+///   2. **收掉已经启动的后台**：job 优先（一次收整棵树），否则按 pid 结束进程树；
+///   3. 让用户看到原因（`QIO_STARTUP_ERROR_DIALOG=0` 可关）；
+///   4. 以 1 退出 —— 绝不带着「后台在跑、卸载器却认不出归属」的状态继续运行。
+///
+/// 为什么是退出而不是"继续跑但没有记录"：那条路的终点是卸载时宁可不杀 → 安装目录删不干净，
+/// 用户看到的是"卸载失败"，而且没有任何线索指向真正的原因（2026-10-03 用户明确要求堵掉）。
+fn fatal_lease_failure(
+    reason: &str,
+    backend_pid: u32,
+    job: Option<&backend_job::BackendJob>,
+    child: Option<tauri_plugin_shell::process::CommandChild>,
+) -> ! {
+    let _ = &child; // 非 Windows 才用得到（那里没有 job 兜底）
+    let detail = format!(
+        "{LEASE_ERROR_MARKER}\n原因：{reason}\n后台 pid：{backend_pid}\n\
+         处理：已终止本次启动的后台进程，并以退出码 1 结束（不留无归属的后台）。"
+    );
+    log::error!("[qio] {detail}");
+    let written = report_startup_error(&detail);
+    let killed = match job {
+        Some(job) => job.terminate(),
+        None => {
+            #[cfg(windows)]
+            {
+                ownership::kill_tree_by_pid(backend_pid)
+            }
+            #[cfg(not(windows))]
+            {
+                child.as_ref().map(|c| c.kill().is_ok()).unwrap_or(false)
+            }
+        }
+    };
+    let where_text = match &written {
+        Some(path) => format!("原因已写入：{}", path.display()),
+        None => "原因写盘失败，见 stderr".to_string(),
+    };
+    let killed_text = if killed {
+        "已终止本次启动的后台进程。"
+    } else {
+        "终止后台进程失败 —— 请手动结束它，再重新启动 QIO。"
+    };
+    let text = format!(
+        "QIO 无法记录本次安装的所有权信息，已停止启动。\n\n原因：{reason}\n{killed_text}\n{where_text}\n\n\
+         常见原因：安装目录不可写（杀毒软件/权限）。修好后重试即可。"
+    );
+    show_startup_error_dialog(&text);
+    std::process::exit(1)
+}
+
+fn write_install_lease(shell_pid: u32, backend_pid: u32) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         log::info!("[qio] 开发态（debug 构建）不写 sidecar lease");
-        return None;
+        // 开发态不是失败：调用方按 Ok 处理，只是不记路径（见 setup 里的 Debug 分支）。
+        return Err("开发态（debug 构建）不写 lease".to_string());
     }
-    let Some(install_dir) = ownership::shell_install_dir() else {
-        log::warn!("[qio] 拿不到外壳所在目录，跳过 sidecar lease（卸载器将无法确认本实例归属）");
-        return None;
-    };
-    let lease =
-        match ownership::lease_for_current_processes(&install_dir, shell_pid, backend_pid, None) {
-            Ok(lease) => lease,
-            Err(err) => {
-                log::warn!("[qio] 不写 sidecar lease：{err}");
-                return None;
-            }
-        };
-    match ownership::write_lease(&install_dir, &lease) {
-        Ok(path) => {
-            log::info!(
-                "[qio] 已写 sidecar lease：shell pid {shell_pid} / backend pid {backend_pid} → {}",
-                path.display()
-            );
-            Some(path)
-        }
-        Err(err) => {
-            log::warn!("[qio] 写 sidecar lease 失败（卸载器将宁可不杀）：{err}");
-            None
-        }
-    }
+    let install_dir = ownership::shell_install_dir()
+        .ok_or_else(|| "拿不到外壳 exe 所在目录，无法确定安装目录".to_string())?;
+    let lease = ownership::lease_for_current_processes(&install_dir, shell_pid, backend_pid, None)
+        .map_err(|err| format!("读进程身份失败：{err}"))?;
+    let path = ownership::write_lease(&install_dir, &lease)
+        .map_err(|err| format!("写 {} 失败：{err}", ownership::lease_path(&install_dir).display()))?;
+    log::info!(
+        "[qio] 已写 sidecar lease：shell pid {shell_pid} / backend pid {backend_pid} → {}",
+        path.display()
+    );
+    Ok(path)
 }
 
 fn main() {
@@ -829,38 +925,46 @@ fn main() {
     let backend_job = backend_job::create();
 
     // 日志目录先探测一次可写性：**写不了日志不该让应用起不来**。
-    // 2026-10-03 实测（受限令牌下跑安装版外壳）：tauri_plugin_log 的 setup 里
-    // acquire_logger 建不出目录就返回 Err，而插件初始化失败会让 Builder::build() 直接失败 ——
-    // 用户看到的是"双击没反应"（panic 里只有 PluginInitialization("log", 拒绝访问)）。
+    // 2026-10-03 实测（安装版外壳）：tauri_plugin_log 的 setup 里 acquire_logger 一旦返回 Err，
+    // 插件初始化就失败；而插件初始化失败会让 Builder::build() 直接 panic —— 用户看到的是
+    // "双击没反应"（panic 里只有 PluginInitialization("log", 拒绝访问)）。
     // 日志是诊断手段，不是运行前提：写不了就退回只打控制台，并把原因说清楚。
+    //
+    // 探针用**独立文件名**、用完即删：探针自己占着 qio.log 会让插件的 RotatingFile
+    // 在同一路径上再开一次，失败原因会被搅浑（排查时踩过）。
     let log_dir = data_dir().join("logs");
+    let probe_path = log_dir.join(format!("qio-write-probe-{}.tmp", std::process::id()));
     let log_dir_ready = std::fs::create_dir_all(&log_dir).is_ok()
-        && std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("qio.log"))
-            .is_ok();
+        && std::fs::write(&probe_path, b"probe").is_ok();
+    let _ = std::fs::remove_file(&probe_path);
     if !log_dir_ready {
         eprintln!(
             "[qio] 日志目录不可写（{}）：本次只打控制台，不影响使用",
             log_dir.display()
         );
     }
-    let mut log_builder = tauri_plugin_log::Builder::new().level(log::LevelFilter::Info);
-    log_builder = if log_dir_ready {
-        log_builder.target(tauri_plugin_log::Target::new(
-            tauri_plugin_log::TargetKind::Folder {
-                path: log_dir.clone(),
-                file_name: Some("qio".to_string()),
-            },
-        ))
-    } else {
-        // 写不了文件时给一个明确的落点（Windows GUI 子系统下 stderr 不可见，
-        // 但开发/CI 跑得到），而不是把插件注册成一个必然失败的初始化。
-        log_builder.target(tauri_plugin_log::Target::new(
-            tauri_plugin_log::TargetKind::Stdout,
-        ))
+    // 注意用 `targets([...])` 而**不是** `target(...)`：`Builder::new()` 的默认 targets 是
+    // [Stdout, LogDir]，`target()` 是追加 —— 那个默认 LogDir 目标一旦初始化失败，整个插件
+    // 初始化就失败，和我们自己加的 target 成不成没关系（2026-10-03 实测：两个变体报的错
+    // 一模一样，都是 `拒绝访问 (os error 5)`，就是被默认 target 拖死的）。
+    // `targets()` 是替换，所以这里显式列全我们真正要的落点。
+    let logger_with = |kind: tauri_plugin_log::TargetKind| {
+        tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
+            .targets([tauri_plugin_log::Target::new(kind)])
+            .build()
     };
+    let folder_logger = {
+        let dir = log_dir.clone();
+        move || {
+            logger_with(tauri_plugin_log::TargetKind::Folder {
+                path: dir.clone(),
+                file_name: Some("qio".to_string()),
+            })
+        }
+    };
+    let logdir_logger = move || logger_with(tauri_plugin_log::TargetKind::LogDir { file_name: None });
+    let console_logger = move || logger_with(tauri_plugin_log::TargetKind::Stdout);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -872,9 +976,34 @@ fn main() {
             // 日志插件**在这里**注册（AppHandle::plugin 返回 Result），而不是在 Builder 链上：
             // Builder::plugin 的初始化错误会在 build() 里变成 panic（用户看到"双击没反应"），
             // 而日志只是诊断手段、不是运行前提。注册失败就退回控制台并说明原因，应用照常启动。
-            // 2026-10-03 实测：受限令牌下 LogDir 建目录报 os error 5，安装版外壳就是这样起不来的。
-            if let Err(err) = app.handle().plugin(log_builder.build()) {
-                eprintln!("[qio] 日志插件初始化失败（本次只打控制台，不影响使用）：{err}");
+            //
+            // 按「文件夹 → 控制台」顺序试：装到文件里最好，但**任何一个能成就行**。
+            // 每个失败原因都留档（数据目录 → 安装目录 → stderr），不能只在控制台上喊一声 ——
+            // 安装态下没有控制台可看。2026-10-03 实测：文件夹目标会报 `拒绝访问 (os error 5)`，
+            // 用户据此能知道该去查什么（目录权限/杀软）。
+            let mut log_errors: Vec<String> = Vec::new();
+            let mut log_ok = false;
+            for (label, plugin) in [
+                ("数据目录文件", folder_logger()),
+                ("插件默认日志目录", logdir_logger()),
+                ("控制台", console_logger()),
+            ] {
+                match app.handle().plugin(plugin) {
+                    Ok(()) => {
+                        log_ok = true;
+                        eprintln!("[qio] 日志落点：{label}");
+                        break;
+                    }
+                    Err(err) => log_errors.push(format!("{label}目标初始化失败：{err}")),
+                }
+            }
+            if !log_ok {
+                let detail = format!(
+                    "QIO-LOG-INIT-FAILED\n原因：{}\n说明：日志不可用不影响使用，但排查时只能靠这一行。",
+                    log_errors.join("；")
+                );
+                eprintln!("[qio] {detail}");
+                report_startup_error(&detail);
             }
             // 启动各步骤的耗时写进日志：下次"白屏很久"能直接看出卡在哪一步，
             // 而不是只能靠猜（2026-09-24 那次就是没有这一步，排查全靠推断）。
@@ -926,8 +1055,19 @@ fn main() {
             let backend_pid = child.pid();
             *backend_for_setup.lock().unwrap() = Some(child);
             // 所有权记录：只有 release（安装态）才写；开发态不写（见 write_install_lease）。
-            *lease_path_for_setup.lock().unwrap() =
-                write_install_lease(std::process::id(), backend_pid);
+            //
+            // fail-closed：写不下归属就**不能留下后台**（否则卸载时"无法确认归属 → 宁可不杀"
+            // → 安装目录删不干净）。处理见 fatal_lease_failure：留原因 → 收后台 → 退出码 1。
+            match write_install_lease(std::process::id(), backend_pid) {
+                Ok(path) => *lease_path_for_setup.lock().unwrap() = Some(path),
+                Err(err) if cfg!(debug_assertions) => {
+                    log::info!("[qio] 开发态不写 sidecar lease：{err}");
+                }
+                Err(err) => {
+                    let child = backend_for_setup.lock().unwrap().take();
+                    fatal_lease_failure(&err, backend_pid, backend_job.as_ref(), child);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
