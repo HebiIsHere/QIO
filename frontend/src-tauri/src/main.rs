@@ -709,6 +709,12 @@ mod backend_job {
         pub fn assign(&self, _pid: u32) -> bool {
             false
         }
+
+        /// 非 Windows 没有 job 语义（`create()` 返回 None，调用方拿不到实例）。
+        /// 这里保留同签名只是为了跨平台编译：fail-closed 的收尾在那边走按 pid 结束进程树。
+        pub fn terminate(&self) -> bool {
+            false
+        }
     }
 }
 
