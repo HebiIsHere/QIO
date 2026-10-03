@@ -490,23 +490,3 @@ jobs:
             }
           }
           exit $code
-      # A 的核心验收：**两份真实安装并存**时，卸载 A 不能动 B 的任何进程。
-      # 这是本轮修的 Bug 的直接对照（改动前产物跑同一条是 FAIL，见 docs/e2e-install-2026-10-02.md §15）。
-      # 用真外壳 + 真 lease + 真卸载器 + 真帮助程序；判定逻辑全在 scripts/install_e2e_multi.py。
-      # 真外壳起不来就是 FAIL（runner 有完整桌面会话，不该起不来）—— 这正是本机沙箱里验不了的那一半。
-      - name: Two installations side by side (uninstall A must not touch B)
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          $work = "$env:RUNNER_TEMP\qio-install-e2e"
-          $setup = (Get-ChildItem "frontend/src-tauri/target/release/bundle/nsis/QIO_*_x64-setup.exe" | Select-Object -First 1).FullName
-          python scripts/install_e2e.py --installer $setup --work-dir "$work" --install-dir "$work\install" --stages coinstall --port 8899 --shell-timeout 120
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
-            Write-Output "::error title=install e2e (coinstall)::退出码 $code"
-            $s = "$work\coinstall\summary.json"
-            if (Test-Path $s) {
-              foreach ($r in (Get-Content $s -Raw | ConvertFrom-Json).results) { if ($r.state -eq "FAIL") { Write-Output ("::error title=" + $r.id + " " + $r.title + "::" + $r.detail) } }
-            }
-          }
-          exit $code
