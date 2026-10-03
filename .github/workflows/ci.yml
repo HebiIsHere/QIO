@@ -462,6 +462,45 @@ jobs:
             }
             exit $code
           }
+      # 第 2 步验收（task-6）：在**没有系统 Python、也没有预置工具环境**的前提下，安装版必须用
+      # <安装目录>\python-runtime 建出依赖环境、装依赖、并**真的调用**一个依赖型工具。
+      # 为什么必须在 CI 跑：runner 的 setup-uv / hostedtoolcache 会把 Python 放进 PATH，
+      #   --no-system-python 会先**显式断言**"此刻系统 Python 不可用"（where 探针找不到
+      #   python/python3/pythonw/py，且 `py -0p` 跑不起来或列不出解释器；探针原文与注册表证据
+      #   都打印进日志并落 evidence/system-python-unavailable.txt）。断言不成立就直接 FAIL ——
+      #   不让证明在"其实还能用到系统 Python"时假绿。
+      # 起点也要干净：断言 data/tool-envs 预先不存在、数据目录为空、后端 env 里没有
+      #   PYTHONHOME/PYTHONPATH/PIP_*（D-105/D-106）。
+      # 正式结论还包括"调用结果正确"：D-022 比对工具返回的 six 版本 == 锁定清单里锁的版本。
+      # --no-docker：runner 自带 Docker（Windows 容器模式，拉不了 python:3.11-slim），而产品的
+      #   执行器 auto 在 docker 守护进程应答时走**容器**路径（tools/sandbox.py::effective_executor）
+      #   —— 那条路径根本不建宿主依赖环境。这一步要证的是「用安装包自带的 Python 建宿主环境」，
+      #   所以把 PATH 上能露出 docker.exe 的目录也摘掉（模拟没装 Docker 的用户机器），并用
+      #   where 探针显式断言 docker 不可达（D-107）；断言不成立就直接 FAIL。
+      # --clear-pip-cache：从冷缓存起步（真实用户第一次用依赖工具就是冷缓存），让 D-053
+      #   「装依赖要不要联网」可判定；只删 <pip 缓存>\http 与 http-v2，不动任何系统状态。
+      # 位置必须在这里：上面刚静默安装完（install 目录还是真后端），下面那步会把
+      #   qio-backend.exe 换成 ping 替身，再往后就是卸载。
+      - name: Bundled-runtime dependency E2E (no system Python)
+        timeout-minutes: 25
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $work = "$env:RUNNER_TEMP\qio-install-e2e"
+          $dep = "$env:RUNNER_TEMP\qio-dep-e2e"
+          python scripts/install_dep_e2e.py --install-dir "$work\install" --work-dir $dep `
+            --port 8899 --no-system-python --no-docker --clear-pip-cache
+          $code = $LASTEXITCODE
+          if (Test-Path "$dep\results.json") { Copy-Item "$dep\results.json" "$work\dep-results.json" -Force }
+          if ($code -ne 0) {
+            Write-Output "::error title=install dep e2e::退出码 $code"
+            if (Test-Path "$dep\results.json") {
+              $s = Get-Content "$dep\results.json" -Raw | ConvertFrom-Json
+              foreach ($r in $s) { if ($r.state -eq "FAIL") { Write-Output ("::error title=" + $r.id + " " + $r.title + "::" + $r.detail) } }
+            }
+            exit $code
+          }
+
       # 「sidecar 还在跑时卸载」：用一个**替身进程**（拷贝成 <安装目录>\qio-backend.exe 的 ping -t）
       # 占住安装目录里的后端名字与路径 —— 这正好触发安装器 PREUNINSTALL 钩子里的
       # CheckIfAppIsRunning "qio-backend.exe" 与 RMDir 的真实冲突（没有钩子时目录删不掉）。

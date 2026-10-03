@@ -1794,10 +1794,19 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   不会静默换成本机碰巧有的解释器。
 - **打包**：`tauri.conf.json` 的 `bundle.resources` 增加 `resources/python-runtime → python-runtime`；
   `build_installer.ps1` 把「生成运行时」排在「打包」之前，缺运行时即构建失败（与缺模型同一口径）。
-- **仍然诚实的两条**：① 依赖工具仍要**联网**才能装第三方包（自带的是解释器与 pip，不是依赖缓存）；
-  ② 本机沙箱下「安装版 + 自带运行时」的完整 E2E 只有**先失败**的一半（本机 `qio-backend.exe` 是改动前产物，
-  不认 `QIO_BUNDLED_PYTHON_DIR`；对照 D-110 证明缺运行时那条「可行动的明确失败」仍然成立）。
-  修复后产物的正向结论要由 CI 的 `install e2e` 与 `install_dep_e2e.py --no-system-python` 给出。
+- **验收（2026-10-03，第 2 步）**：`scripts/install_dep_e2e.py --no-system-python` 已接进 CI 的
+  `install e2e` 任务（静默安装之后、替身 sidecar 之前）。CI run
+  [37132457659](https://github.com/HebiIsHere/QIO/actions/runs/37132457659)（commit `bedd056`）在**真安装包**上
+  **34 条 32 PASS / 0 FAIL / 1 WARN / 1 NOT TESTED**：先断言"此刻系统 Python 不可用"（where 探针 + `py -0p`
+  都拿不到解释器，断言不成立直接 FAIL）→ 用 `<安装目录>\python-runtime` 建 ToolEnv（`pyvenv.cfg` 的 home
+  就是它，3.11.17 == 冻结后端版本）→ 装 `six==1.17.0` → **真的调用**依赖型工具，返回版本 == 锁定版本；
+  缺运行时的对照（D-110）仍是「可行动的明确失败、不静默换解释器」。本机私建 sidecar 的同口径复跑
+  33 条 30 PASS / 0 FAIL。原始输出与口径（含"私建 sidecar 不是安装包"）见 `docs/e2e-install-2026-10-02.md` §18。
+- **仍然诚实的两条**：① 依赖工具**首次装包要联网**（D-053 冷缓存实证：pip 从 files.pythonhosted.org 取回
+  six 的 wheel）——发布口径只能写「无需另装 Python，首次使用时自动安装依赖」，**不能**写"离线开箱可用"；
+  ② 这一轮把 docker 从 PATH 摘掉了（`--no-docker`，模拟没装 Docker 的用户机器）：run 37131520475 实测
+  runner 自带 Docker（Windows 容器模式）时产品走容器路径并失败，所以**容器路径本轮没验**（D-060 NOT TESTED）。
+  顺带发现一条待定位的问题：跑过解释器之后卸载会残留 `python-runtime`（CI 的 A-090/A-096 红，见 §18.7）。
 
 ### 六、话题与记忆：一个负结果 + 一个数据支持的修复
 
