@@ -36,6 +36,11 @@ requirements 的那个，并把依赖相关的每一步都留证据。
      两轮都不干净就直接 FAIL 退出 —— 能看见系统 Python 的机器上跑出来的"用了自带运行时"是假绿。
   2. **断言起点干净**：工具环境目录（data/tool-envs）预先不存在、数据目录为空、后端 env 里没有
      PYTHONHOME / PYTHONPATH / PYTHONSTARTUP / VIRTUAL_ENV 之类的东西。
+     另外（--no-docker）：PATH 上也不能露出 docker —— 产品的执行器是 auto（docker 守护进程应答
+     就走容器路径，见 tools/sandbox.py::effective_executor），而这条验收要证的是**宿主路径**
+     （用户机器上没装 Docker 的那一类）。CI 的 runner 自带 Docker（Windows 容器模式，拉不了
+     python:3.11-slim）：不摘掉它，D-012 会走容器路径并在那里失败 —— 那是另一个结论，
+     不是这条验收的证据。
   3. 由脚本注入 QIO_BUNDLED_PYTHON_DIR（模拟外壳按 §2.3 解析 resource_dir()/python-runtime），
      让安装版后端用自带运行时建出依赖环境、装依赖、并**真的调用**声明第三方依赖的工具，
      再核对"工具返回的版本 == 锁定清单里锁的版本"（D-022）。
@@ -337,12 +342,17 @@ def run_tool_turn(client, sse, fp, tool: str, tool_args: dict, *, timeout: float
 #   * 子进程可见的 PATH 收窄到不含任何 python.exe / py.exe —— 并且用 where 探针**证明**收干净了
 #     （探针输出一起留证，不靠"我以为"）；
 #   * QIO_PYTHON 不传（显式指定优先级最高，传了就不是"无系统 Python"这条口径）；
-#   * 由外壳注入的 QIO_BUNDLED_PYTHON_DIR 指向安装目录里的 python-runtime。
+#   * 由外壳注入的 QIO_BUNDLED_PYTHON_DIR 指向安装目录里的 python-runtime；
+#   * （--no-docker）PATH 里也不露出 docker：产品的执行器 auto 在有可用 docker 守护进程时
+#     走容器路径，那条路径验不到"自带运行时建环境"。
 # 差在哪：系统里那个 Python 仍然在盘上，只是这个进程看不见它；py 启动器因为 py.exe 不在
 # PATH 上也探不到。这不是"在干净 VM 上验证过"，是等价条件 —— 结论只能按这个口径写。
 
 PYTHON_EXE_NAMES = ("python.exe", "python3.exe", "pythonw.exe", "py.exe")
 PYTHON_PROBE_NAMES = ("python", "python3", "pythonw", "py")
+# 宿主依赖环境这条口径还要 docker 不可达：产品的执行器默认 auto，docker 守护进程应答就走
+# 容器路径（tools/sandbox.py::effective_executor）。见 --no-docker。
+DOCKER_EXE_NAMES = ("docker.exe",)
 
 
 def where_exe() -> str:
@@ -362,21 +372,29 @@ def minimal_shell_path() -> list[str]:
     return [str(root / rel) for rel in rels if (root / rel).is_dir()]
 
 
-def sanitized_path(path_value: str) -> tuple[str, list[str]]:
-    """把 PATH 里所有能露出 Python / py 启动器的目录摘掉。返回 (新 PATH, 被摘掉的目录)。"""
+def sanitized_path(path_value: str, *, drop_docker: bool = False
+                   ) -> tuple[str, list[str], list[dict]]:
+    """把 PATH 里能露出 Python / py 启动器（以及 docker，当 drop_docker）的目录摘掉。
+
+    返回 (新 PATH, 被摘掉的目录, 每条的摘除理由)。理由要留证：这是"模拟用户机器"的口径，
+    读日志的人必须一眼看到摘了什么、为什么摘。
+    """
     kept: list[str] = []
     dropped: list[str] = []
+    reasons: list[dict] = []
+    names = list(PYTHON_EXE_NAMES) + (list(DOCKER_EXE_NAMES) if drop_docker else [])
     for raw in (path_value or "").split(os.pathsep):
         entry = raw.strip()
         if not entry:
             continue
-        has_interpreter = any((Path(entry) / name).exists() for name in PYTHON_EXE_NAMES)
+        hits = [name for name in names if (Path(entry) / name).exists()]
         looks_like_python = "python" in Path(entry).name.lower()
-        if has_interpreter or looks_like_python:
+        if hits or looks_like_python:
             dropped.append(entry)
+            reasons.append({"entry": entry, "hit": hits or ["目录名里带 python"]})
             continue
         kept.append(entry)
-    return os.pathsep.join(kept), dropped
+    return os.pathsep.join(kept), dropped, reasons
 
 
 def probe_no_python(env: dict) -> tuple[bool, str]:
@@ -413,6 +431,20 @@ def py_launcher_probe(env: dict) -> tuple[str, str]:
     if not listed:
         return "没列出任何解释器", text
     return "列出了 %d 个解释器" % len(listed), text
+
+
+def probe_no_docker(env: dict) -> tuple[bool, str]:
+    """证明 docker 命令行在这份 env 里不可达（= 用户机器上没装 Docker 的那一类）。
+
+    为什么这条也要断言：产品执行器是 auto，docker 守护进程应答就走**容器**路径 —— 那时
+    "用安装包自带的 Python 建环境"根本没有被执行，D-012 的成功也证明不了宿主路径。
+    """
+    if not DOCKER_EXE_NAMES:
+        return True, "（没有启用 docker 排除）"
+    code, out = base.run([where_exe(), "docker"], timeout=60, env=env, tag="where-docker")
+    text = (out or "").strip()
+    clean = not (code == 0 and text)
+    return clean, "$ where docker -> exit=%s\n%s" % (code, text or "（未找到）")
 
 
 def _looks_like_registered_interpreter(value: str) -> bool:
@@ -675,6 +707,10 @@ def run_missing_runtime_control(args) -> None:
            "--install-dir", args.install_dir, "--work-dir", str(control_dir),
            "--port", str(port), "--no-system-python", "--control-missing-runtime",
            "--bundled-runtime-dir", str(missing), "--skip-missing-runtime-control"]
+    if args.no_docker:
+        # 对照必须和正档同一个口径：docker 可达时子进程会走容器路径，
+        # 那样 D-110 验到的就是"容器镜像建不出来"，而不是"缺自带运行时".
+        cmd.append("--no-docker")
     code, _out = base.run(cmd, timeout=2400, tag="control-missing-runtime")
     results_path = control_dir / "results.json"
     if not results_path.exists():
@@ -831,6 +867,10 @@ def main() -> int:
                         help="跳过「缺自带运行时」的对照断言（对照子进程自己会带这个开关）")
     parser.add_argument("--control-missing-runtime", action="store_true",
                         help="内部开关：本次只跑到开发流程，判定「缺运行时是否明确失败」")
+    parser.add_argument("--no-docker", action="store_true",
+                        help="把 PATH 上能露出 docker.exe 的目录也摘掉（模拟没装 Docker 的用户机器）："
+                             "产品的执行器 auto 会在 docker 可用时走容器路径，那条路径验不到"
+                             "「用自带运行时建宿主依赖环境」")
     parser.add_argument("--clear-pip-cache", action="store_true",
                         help="先清空 pip 的 HTTP 缓存再跑（CI 用：从冷缓存起步，让"
                              "「装依赖要不要联网」这条可判定；只删 <pip 缓存>\\http 与 http-v2）")
@@ -871,7 +911,8 @@ def main() -> int:
             base.record("D-103", "无系统 Python 口径下没有传 QIO_PYTHON", "PASS",
                         "只注入了 QIO_BUNDLED_PYTHON_DIR（外壳在冻结态就是这么做的）")
         # 第一轮：把 PATH 上所有能露出 python.exe / py.exe 的目录摘掉。
-        new_path, dropped = sanitized_path(os.environ.get("PATH", ""))
+        new_path, dropped, dropped_reasons = sanitized_path(
+            os.environ.get("PATH", ""), drop_docker=args.no_docker)
         extra["PATH"] = new_path
         probe_env = {**base.clean_env(args, args.port), **extra}
         probe_env["QIO_DATA_DIR"] = str(data_dir)
@@ -891,6 +932,11 @@ def main() -> int:
             clean, probe_text = clean2, probe_text2
         # 显式断言「此刻系统 Python 不可用」：where 探针 + py -0p 两条都拿不到解释器。
         assertion = assert_system_python_unavailable(probe_env)
+        # docker 也要不可达（--no-docker）：不然 D-012 会走容器路径，验不到宿主环境这条。
+        if args.no_docker:
+            docker_clean, docker_text = probe_no_docker(probe_env)
+        else:
+            docker_clean, docker_text = None, "（没有启用 --no-docker：本轮不排除容器执行器）"
         base.log("== 「此刻系统 Python 不可用」断言证据（原文也落 evidence/system-python-unavailable）==")
         for line in assertion["text"].splitlines():
             base.log("   " + line)
@@ -907,6 +953,17 @@ def main() -> int:
             else Path(args.install_dir) / "python-runtime"
         extra["QIO_BUNDLED_PYTHON_DIR"] = str(runtime_dir)
         runtime_python = runtime_dir / "python.exe"
+        base.log("== docker 可达性（--no-docker）==")
+        for line in docker_text.splitlines():
+            base.log("   " + line)
+        base.record("D-107", "前提断言：docker 不可达（执行器不会被 auto 选到容器路径）",
+                    "PASS" if docker_clean else ("FAIL" if docker_clean is False else "WARN"),
+                    ("%s；被摘掉的 PATH 条目（含理由）=%s"
+                     % (docker_text.replace("\n", " | "),
+                        json.dumps([r for r in dropped_reasons
+                                    if any(n in r["hit"] for n in DOCKER_EXE_NAMES)], ensure_ascii=False))
+                     if args.no_docker else
+                     "没有开 --no-docker：产品可能走容器执行器，本轮不覆盖宿主依赖环境这条路径"))
         base.record("D-101", "安装目录里的自带运行时存在（python.exe）",
                     "PASS" if runtime_python.is_file() else "FAIL",
                     "%s；sha256=%s" % (runtime_python, sha256_of(runtime_python)[:16]
@@ -930,6 +987,9 @@ def main() -> int:
         base.evidence("no-system-python-prereq", json.dumps(
             {"path_rounds": [{k: r.get(k) for k in ("round", "why", "path", "clean")} for r in rounds],
              "dropped_path_entries": dropped,
+             "dropped_path_reasons": dropped_reasons,
+             "docker_probe": docker_text,
+             "docker_unreachable": docker_clean,
              "assertion_text": assertion["text"],
              "where_clean": assertion["where_clean"],
              "py_launcher_verdict": assertion["launcher_verdict"],
@@ -942,7 +1002,7 @@ def main() -> int:
              "pip_cache_dir": str(cache_dir),
              "pip_cache_cleared": cache_cleared,
              "pip_cache_entries_before": len(cache_before)}, ensure_ascii=False, indent=2))
-        if not (clean and assertion["ok"]):
+        if not (clean and assertion["ok"] and docker_clean in (True, None)):
             base.log("!! 「系统 Python 不可用」这条前提不成立：本轮不能证明「用了自带运行时」，"
                      "停在这里、不写通过结论。")
             write_results(work)

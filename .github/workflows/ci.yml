@@ -472,6 +472,11 @@ jobs:
       # 起点也要干净：断言 data/tool-envs 预先不存在、数据目录为空、后端 env 里没有
       #   PYTHONHOME/PYTHONPATH/PIP_*（D-105/D-106）。
       # 正式结论还包括"调用结果正确"：D-022 比对工具返回的 six 版本 == 锁定清单里锁的版本。
+      # --no-docker：runner 自带 Docker（Windows 容器模式，拉不了 python:3.11-slim），而产品的
+      #   执行器 auto 在 docker 守护进程应答时走**容器**路径（tools/sandbox.py::effective_executor）
+      #   —— 那条路径根本不建宿主依赖环境。这一步要证的是「用安装包自带的 Python 建宿主环境」，
+      #   所以把 PATH 上能露出 docker.exe 的目录也摘掉（模拟没装 Docker 的用户机器），并用
+      #   where 探针显式断言 docker 不可达（D-107）；断言不成立就直接 FAIL。
       # --clear-pip-cache：从冷缓存起步（真实用户第一次用依赖工具就是冷缓存），让 D-053
       #   「装依赖要不要联网」可判定；只删 <pip 缓存>\http 与 http-v2，不动任何系统状态。
       # 位置必须在这里：上面刚静默安装完（install 目录还是真后端），下面那步会把
@@ -484,7 +489,7 @@ jobs:
           $work = "$env:RUNNER_TEMP\qio-install-e2e"
           $dep = "$env:RUNNER_TEMP\qio-dep-e2e"
           python scripts/install_dep_e2e.py --install-dir "$work\install" --work-dir $dep `
-            --port 8899 --no-system-python --clear-pip-cache
+            --port 8899 --no-system-python --no-docker --clear-pip-cache
           $code = $LASTEXITCODE
           if (Test-Path "$dep\results.json") { Copy-Item "$dep\results.json" "$work\dep-results.json" -Force }
           if ($code -ne 0) {
