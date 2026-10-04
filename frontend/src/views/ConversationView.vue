@@ -348,7 +348,9 @@ onMounted(() => {
   flex-direction: column;
   flex-shrink: 0;
   /* 下内边距由 useComposerClearance 按输入区的实际高度写入：
-     输入区是固定悬浮层，不给它留位置的话这几块会被压住 */
+     输入区是固定悬浮层，不给它留位置的话这几块会被压住。
+     **空块不写内边距**：以前即使没有任何内容也留出「输入区高度 + 16px」，
+     消息区底边因此被抬高，靠 sticky 贴底的那类元素也跟着飘高。 */
 }
 .candidates {
   display: flex;

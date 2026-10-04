@@ -15,6 +15,8 @@ import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
 import { groupTurnItems, type TurnItemGroup } from "../stores/session";
+import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
+import { subscribeComposerMetrics } from "../composables/composerMetrics";
 
 /** 对话内容列宽：用户消息与回答共用一个居中列，不分别贴窗口两端 */
 const CONTENT_MAX_PX = 860;
@@ -40,6 +42,16 @@ const followBottom = ref(true);
 const unseen = ref(0);
 /** 程序化滚动（回到最新/贴底）的 rAF 句柄：用户一操作就中断 */
 let programmaticRaf = 0;
+/**
+ * 异步滚动操作的**代次**：历史锚定、阅读位置恢复、输入区挂载重试都记自己的代次，
+ * 提交前比一次。切话题、组件卸载后，旧回调一律不再改滚动位置（见修复提示词 §6）。
+ */
+let streamGen = 0;
+/** 历史锚定循环 / 阅读位置恢复的 rAF 句柄：卸载时要能取消 */
+let anchorRaf = 0;
+let restoreRaf = 0;
+/** 内容增高的跟随检查合并到一帧（观察器可能连续触发多次） */
+let followRaf = 0;
 /** 正在恢复阅读位置（此时到来的 scroll 事件是程序写入造成的，不算用户意图） */
 let restoring = false;
 /** 本机发送前的阅读状态：请求被后端拒绝时要放回原位（没发出去的消息不该留下后遗症） */
@@ -51,6 +63,27 @@ let pendingRestoreOnReject = false;
 const NEAR_BOTTOM_PX = 120;
 
 const messages = computed(() => session.messages);
+
+/**
+ * 「回到最新消息」按钮的位置：由输入框与底部内容块的**真实边界**算出来
+ * （见 useLatestButtonAnchor）：下缘距输入框上缘 8–12px，水平对齐对话内容列中心。
+ * 锚点元素本身参与测量（CSS zoom 下的局部→视口换算要用它自己的比例）。
+ */
+const latestAnchorRef = ref<HTMLElement | null>(null);
+const {
+  bottomPx: latestBottomPx,
+  centerX: latestCenterX,
+  remeasure: remeasureLatest,
+} = useLatestButtonAnchor(latestAnchorRef);
+// 按钮出现/消失时重新量一次：它自己渲染出来之后才拿得到「锚点自身的缩放比例」
+watch(
+  () => !followBottom.value && messages.value.length > 0,
+  async (visible) => {
+    if (!visible) return;
+    await nextTick();
+    remeasureLatest();
+  },
+);
 
 const turns = computed<Turn[]>(() => {
   const out: Turn[] = [];
@@ -117,13 +150,22 @@ let anchoringHeight = 0;
 async function loadOlderHistoryVue() {
   const el = containerRef.value;
   if (!el || !session.historyHasMore || session.historyOlderLoading) return;
+  // 这次锚定属于哪一代：切话题或卸载后，旧的一帧不得再动滚动位置
+  const gen = streamGen;
   anchoringHeight = el.scrollHeight;
   const loaded = await session.loadOlderHistory();
-  if (!loaded) return;
+  if (!loaded || gen !== streamGen) return;
   await nextTick();
+  if (gen !== streamGen) return;
   restoring = true;
   let frames = 0;
   const anchor = () => {
+    anchorRaf = 0;
+    // 代次/归属校验：用户已经切了话题或组件已卸载 → 这次锚定作废（但要把 restoring 交还）
+    if (gen !== streamGen) {
+      restoring = false;
+      return;
+    }
     const node = containerRef.value;
     if (node) {
       const height = node.scrollHeight;
@@ -135,17 +177,41 @@ async function loadOlderHistoryVue() {
       }
     }
     frames += 1;
-    if (frames < 8) requestAnimationFrame(anchor);
+    if (frames < 8) anchorRaf = requestAnimationFrame(anchor);
     else restoring = false;
   };
-  requestAnimationFrame(anchor);
+  anchorRaf = requestAnimationFrame(anchor);
 }
+
+/**
+ * 切话题 = 上一代异步操作的归属全部失效：锚定、阅读位置恢复、输入区挂载重试
+ * 都不再允许改动新话题的滚动位置（见修复提示词 §4/§6）。
+ */
+watch(
+  () => session.currentTopicId,
+  () => {
+    streamGen += 1;
+    restoring = false;
+    if (anchorRaf) cancelAnimationFrame(anchorRaf);
+    anchorRaf = 0;
+    if (restoreRaf) cancelAnimationFrame(restoreRaf);
+    restoreRaf = 0;
+  },
+);
 
 /** 用户一动滚轮/触屏：立刻中断程序化滚动（自动滚动不能和用户抢） */
 function onUserInput() {
   cancelProgrammaticScroll();
   // 用户自己接管了滚动：发送失败时不再把位置放回发送前
   pendingRestoreOnReject = false;
+  // 「恢复上次阅读位置」属于会跳位置的旧回调：用户一接管就作废，不许再改 scrollTop。
+  // （历史插入锚定不在这里取消：它做的是「内容插在上方时补回高度增量」，作用是让用户
+  //   停在原来那一行，不是把用户挪走；见修复提示词 §6 的区分。）
+  if (restoreRaf) {
+    cancelAnimationFrame(restoreRaf);
+    restoreRaf = 0;
+  }
+  restoring = false;
 }
 
 /**
@@ -210,18 +276,15 @@ function backToLatest() {
 }
 
 /** 右下角输入框高度观察：消息流底部滚动缓冲 = 输入框高 + 间距，
- *  滚动到底时最新消息恰好停在浮动气泡上方（消息少时无额外留白）。 */
-let composerObserver: ResizeObserver | null = null;
+ *  滚动到底时最新消息恰好停在浮动气泡上方（消息少时无额外留白）。
+ *  尺寸走共享量测（composerMetrics）：以前这里、底部让位、按钮锚定各量一遍同一个输入框。 */
+let unsubscribeComposer: (() => void) | null = null;
 /** 内容高度观察器：assistant 流式正文变高（不换条）时也要跟随底部 */
 let streamObserver: ResizeObserver | null = null;
-function composerHeight(): number {
-  const el = document.querySelector<HTMLElement>(".composer");
-  return el ? el.getBoundingClientRect().height : 0;
-}
-function applyComposerPad() {
+function applyComposerPad(height: number) {
   const el = containerRef.value;
   if (!el) return;
-  el.style.paddingBottom = `${Math.round(composerHeight()) + 16}px`;
+  el.style.paddingBottom = `${Math.round(height) + 16}px`;
 }
 onMounted(() => {
   lastContainer = containerRef.value;
@@ -230,27 +293,29 @@ onMounted(() => {
   containerRef.value?.addEventListener("touchstart", onUserInput, { passive: true });
   containerRef.value?.addEventListener("keydown", onKeyScroll);
   restoreScrollPosition();
-  // 内容增高（同一条流式消息变长 / markdown 布局变化）时，若仍在跟随就贴底
+  // 内容增高（同一条流式消息变长 / markdown 布局变化）时，若仍在跟随就贴底。
+  // 观察器通知合并到一帧：连续多次通知只做一次测量与一次贴底（避免同帧反复写滚动位置）。
   if (typeof ResizeObserver !== "undefined") {
     streamObserver = new ResizeObserver(() => {
-      if (followBottom.value) scrollToBottom();
+      if (followRaf) return;
+      followRaf = requestAnimationFrame(() => {
+        followRaf = 0;
+        if (followBottom.value) scrollToBottom();
+      });
     });
     if (spacerRef.value) streamObserver.observe(spacerRef.value);
   }
   if (typeof ResizeObserver === "undefined") {
-    applyComposerPad();
+    unsubscribeComposer = subscribeComposerMetrics(({ height }) => applyComposerPad(height));
     return;
   }
-  composerObserver = new ResizeObserver(applyComposerPad);
-  const tryObserve = () => {
-    const c = document.querySelector<HTMLElement>(".composer");
-    if (c) composerObserver?.observe(c);
-    else requestAnimationFrame(tryObserve);
-  };
-  tryObserve();
-  applyComposerPad();
+  // 输入区尺寸由共享量测负责观察（含「输入框比本视图晚挂载」的有限次重试）
+  unsubscribeComposer = subscribeComposerMetrics(({ height }) => applyComposerPad(height));
 });
 onUnmounted(() => {
+  // 卸载即换代：所有在飞的锚定/恢复回调作废，不再改动任何滚动位置
+  streamGen += 1;
+  restoring = false;
   containerRef.value?.removeEventListener("wheel", onUserInput);
   containerRef.value?.removeEventListener("touchstart", onUserInput);
   containerRef.value?.removeEventListener("keydown", onKeyScroll);
@@ -258,9 +323,15 @@ onUnmounted(() => {
   lastContainer?.removeEventListener("touchstart", onUserInput);
   lastContainer?.removeEventListener("keydown", onKeyScroll);
   cancelProgrammaticScroll();
+  if (anchorRaf) cancelAnimationFrame(anchorRaf);
+  anchorRaf = 0;
+  if (restoreRaf) cancelAnimationFrame(restoreRaf);
+  restoreRaf = 0;
+  if (followRaf) cancelAnimationFrame(followRaf);
+  followRaf = 0;
   saveScrollPosition();
-  composerObserver?.disconnect();
-  composerObserver = null;
+  unsubscribeComposer?.();
+  unsubscribeComposer = null;
   streamObserver?.disconnect();
   streamObserver = null;
 });
@@ -283,9 +354,16 @@ function restoreScrollPosition() {
   const target = session.streamScrollTop;
   if (followBottom.value || target <= 0) return;
   restoring = true;
+  const gen = streamGen;
   // 虚拟列表首次布局可能晚于 mount：容器还不可滚动就下一帧再试（有上限，不会无限重试）
   let tries = 0;
   const attempt = () => {
+    restoreRaf = 0;
+    // 归属校验：切了话题（换代）或组件已卸载 → 这次恢复作废，不许改动新视图的位置
+    if (gen !== streamGen) {
+      restoring = false;
+      return;
+    }
     const el = containerRef.value;
     if (!el) {
       restoring = false;
@@ -294,19 +372,19 @@ function restoreScrollPosition() {
     const max = el.scrollHeight - el.clientHeight;
     if (max <= 0 && tries < 10) {
       tries += 1;
-      afterNextPaint(attempt);
+      restoreRaf = afterNextPaint(attempt);
       return;
     }
     el.scrollTop = Math.min(target, Math.max(0, max));
     restoring = false;
   };
-  afterNextPaint(attempt);
+  restoreRaf = afterNextPaint(attempt);
 }
 
-/** 等下一帧（无 rAF 的环境退回 setTimeout，保证恢复逻辑不会因为环境而中断） */
-function afterNextPaint(cb: () => void) {
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
-  else setTimeout(cb, 0);
+/** 等下一帧（无 rAF 的环境退回 setTimeout，保证恢复逻辑不会因为环境而中断）；返回句柄供卸载时取消 */
+function afterNextPaint(cb: () => void): number {
+  if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
+  return setTimeout(cb, 0) as unknown as number;
 }
 
 // 动态测量列表项真实高度（替代固定 estimateSize），避免长消息重叠
@@ -506,16 +584,29 @@ const phaseLabel = computed(() => {
         <span class="phase mono">{{ phaseLabel }}</span>
       </div>
     </div>
-    <!-- 回到最新：只有用户主动点才滚动，且用可被滚轮/触屏中断的短滚动 -->
-    <button
+    <!--
+      回到最新：只有用户主动点才滚动，且用可被滚轮/触屏中断的短滚动。
+      位置由输入框与底部内容块的**真实边界**算出来（useLatestButtonAnchor）：
+      外层 fixed 锚点把按钮放在「输入框上缘往上 8–12px」，并水平对齐对话内容列中心。
+      按钮因此不在滚动流里，不会再被「消息区底边」和空着的底部内容块一起抬高。
+      （曾经用 Teleport 投到对话视图的浮层：Teleport 在挂载时解析目标，而那时父视图的根
+       还没插进文档，目标解析成 null 且因为 disabled 连警告都没有 —— 按钮永远不出现。
+       改用固定定位，位置一样由真实元素边界算，且没有挂载时序问题。）
+    -->
+    <div
       v-if="!followBottom && messages.length"
-      class="back-latest"
-      type="button"
-      @click="backToLatest"
+      ref="latestAnchorRef"
+      class="latest-anchor"
+      :style="{
+        ...(latestBottomPx === null ? {} : { bottom: `${latestBottomPx}px` }),
+        ...(latestCenterX === null ? {} : { left: `${latestCenterX}px` }),
+      }"
     >
-      <span class="arrow">↓</span>
-      回到最新消息<span v-if="unseen > 0" class="count mono qio-state info">{{ unseen }}</span>
-    </button>
+      <button class="back-latest" type="button" @click="backToLatest">
+        <span class="arrow">↓</span>
+        回到最新消息<span v-if="unseen > 0" class="count mono qio-state info">{{ unseen }}</span>
+      </button>
+    </div>
     <ContinueBar />
     <QueueChip />
     <div v-if="!messages.length" class="empty">
@@ -647,11 +738,21 @@ const phaseLabel = computed(() => {
   letter-spacing: 0.04em;
 }
 /* ---- 回到最新消息 ---- */
+/*
+ * 外层锚点：fixed 定位，位置来自真实边界测量（bottom = 输入框上缘往上 8–12px；
+ * left = 对话内容列中心）。只有它做位移变换，按钮自己仍保留按压缩放，
+ * 两者不互相覆盖。
+ */
+.latest-anchor {
+  position: fixed;
+  z-index: 7;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.latest-anchor > .back-latest {
+  pointer-events: auto;
+}
 .back-latest {
-  position: sticky;
-  bottom: 8px;
-  z-index: 6;
-  margin: 6px auto 0;
   display: flex;
   align-items: center;
   gap: 8px;
