@@ -1458,6 +1458,120 @@ async function runApprovalCardChecks(browser, base, api) {
   }
 }
 
+/** 请场景服务器为某个任务发起一条真实等待中的**凭据授权**审批（契约 v2 B1） */
+async function createCredentialApproval(api, taskId) {
+  const resp = await fetch(
+    `${CARD_APPROVAL_API(api)}/credential-approval/${encodeURIComponent(taskId)}`,
+    { method: "POST" },
+  );
+  if (!resp.ok) throw new Error(`POST /scenario/credential-approval 失败：${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
+/**
+ * 凭据授权确认卡：放弃之后必须**立即消失**（契约 v2 B1/B2/B4、D3）。
+ *
+ * 与 approval-card 阶段的分工：那一轮验的是「测试执行审批」（tool_execution）；
+ * 这一轮验的是**凭据授权审批**（credential_grant）—— 它以前载荷里没有 workspace，
+ * 放弃时找不到它，卡片会一直挂着等人点「允许」。
+ */
+async function runCredentialCardChecks(browser, base, api) {
+  const s = await createSession(browser, {
+    group: GROUP,
+    name: "凭据授权卡消失",
+    theme: "dark",
+    viewport: DEFAULT_VIEWPORT,
+    base,
+    api,
+  });
+  const page = s.page;
+  try {
+    if (!(await scenarioAvailable(api))) {
+      skip("cc-00-场景服务器", "凭据确认卡消失的实测", `场景服务器不可用（${api}/scenario/*）`);
+      return;
+    }
+    const unfinished = await unfinishedRows(api);
+    assert(unfinished.length >= 3, `未完成任务不足（${unfinished.length}）`);
+    const target = unfinished[0].id;
+    const control = unfinished[1].id;
+
+    // 先开页面并等它连上，再发起审批（这样卡片来自实时事件，是弹窗形态）
+    await s.goto("#/", { waitFor: ".conversation", settle: 900 });
+    await page.waitForSelector(".dev-task-entry", { timeout: 30000 });
+    const created = await createCredentialApproval(api, target);
+    assert(created.approval_id, "场景服务器没有返回 approval_id");
+
+    await check("cc-01-凭据确认卡出现", "需要凭据的开发任务发起审批后，界面上出现确认卡", async () => {
+      await page.waitForSelector('.modal-mask [role="dialog"][aria-modal="true"]', { timeout: 20000 });
+      const text = await page.textContent('.modal-mask [role="dialog"]');
+      assert(text && text.trim().length > 0, "确认卡是空的");
+      return `卡片文案前 50 字：「${text.replace(/\s+/g, " ").trim().slice(0, 50)}」`;
+    });
+    await s.shot("credential-card-01-modal", "凭据授权确认卡出现");
+
+    await check("cc-02-稍后处理收成入口条", "「稍后处理」后弹窗收起、待审批入口条保留", async () => {
+      await page.click(".modal-mask button.later");
+      await page.waitForSelector(".approval-entry", { timeout: 8000 });
+      return `入口条：「${(await page.textContent(".approval-entry")).replace(/\s+/g, " ").trim()}」`;
+    });
+
+    await check("cc-03-放弃后立即消失（不刷新）", "在面板里放弃该任务 → 入口条**立即**消失，页面没有刷新", async () => {
+      await page.evaluate(() => {
+        window.__verifyReload = false;
+        window.addEventListener("beforeunload", () => {
+          window.__verifyReload = true;
+        });
+      });
+      await openEntryPanel(page);
+      await abandonRowFor(page, api, target);
+      await page.waitForFunction(() => !document.querySelector(".approval-entry"), null, { timeout: 5000 });
+      const reloaded = await page.evaluate(() => window.__verifyReload === true);
+      assert(reloaded === false, "页面被刷新了 —— 不能靠刷新才消失");
+      return "入口条已消失，且没有发生页面刷新";
+    });
+    await s.shot("credential-card-02-gone", "放弃后凭据确认卡消失");
+
+    await check("cc-04-后端与库一致", "运行时状态里没有它；库里是 cancelled；等待方 cancelled；旧批准请求无效", async () => {
+      const state = await fetch(`${api}/api/runtime/state`).then((r) => r.json());
+      const still = (state.approvals ?? []).filter((row) => row.approval_id === created.approval_id);
+      assert(still.length === 0, "运行时状态里还挂着这条审批");
+      const db = await fetch(`${api}/scenario/db/approval/${created.approval_id}`).then((r) => r.json());
+      assert(db.found === true && db.status === "cancelled", `库里状态=${db.status}`);
+      const waiter = await fetch(`${api}/scenario/credential-approval/${target}`).then((r) => r.json());
+      assert(waiter.done === true && waiter.decision === "cancelled", `等待方结局=${JSON.stringify(waiter)}`);
+      const lateResp = await fetch(`${api}/scenario/task/${target}/respond-late`, { method: "POST" });
+      const lateBody = await lateResp.json().catch(() => ({}));
+      // 2026-10-05 修（Lead 定性的验证台缺陷）：这条断言以前只看 `handled`，而 404 的响应体里
+      // 根本没有 `handled`，`undefined === false` 被读成「仍然可以被批准」→ 误报成产品缺陷。
+      // 现在先要求 HTTP 成功（否则是**验证台**没读到审批登记），再看 handled 与库里的结局。
+      assert(
+        lateResp.ok,
+        `respond-late 返回 HTTP ${lateResp.status}：${JSON.stringify(lateBody)} —— ` +
+          "验证台没读到这条审批的登记，不能据此判断「是否还能被批准」",
+      );
+      assert(lateBody.handled === false, `作废过的凭据审批仍然可以被批准：${JSON.stringify(lateBody)}`);
+      assert(
+        lateBody.product_http?.db_status === "cancelled",
+        `库里结局不是 cancelled：${JSON.stringify(lateBody)}`,
+      );
+      return "db.status=cancelled；等待方=cancelled；再批准 handled=false（HTTP 200）";
+    });
+
+    await check("cc-05-对照组（别的任务的凭据卡不受影响）", "另一个任务的凭据审批仍然在等（没有被误伤）", async () => {
+      const other = await createCredentialApproval(api, control);
+      assert(other.approval_id, "对照组审批没有建立");
+      await page.waitForSelector('.modal-mask [role="dialog"][aria-modal="true"]', { timeout: 20000 });
+      const state = await fetch(`${api}/api/runtime/state`).then((r) => r.json());
+      const pending = (state.approvals ?? []).filter((row) => row.approval_id === other.approval_id);
+      assert(pending.length === 1, "对照组的审批没在等待表里");
+      return `对照组 ${other.approval_id} 的卡片仍在等`;
+    });
+    await s.shot("credential-card-03-control", "对照：别的任务的凭据卡仍在等");
+  } finally {
+    await s.close();
+  }
+}
+
 /** 把背景对话撑到能滚（与 wide/narrow 里那段同一目的，抽出来给滚动条阶段复用） */
 async function ensureConversationScrollable(s, page) {  const before = await page.evaluate(() => {
     const el = document.querySelector(".stream");
@@ -1503,7 +1617,7 @@ await runGroup(async () => {
 
   const listed = await fetch(`${api}/api/dev/tasks`).then((r) => r.json());
   const unfinished = listed.tasks.filter((row) => !row.submitted && !row.abandoned);
-  if (!["restart", "approval-card"].includes(STAGE) && unfinished.length < 30) {
+  if (!["restart", "approval-card", "credential-card"].includes(STAGE) && unfinished.length < 30) {
     throw new Error(
       `后端只看到 ${unfinished.length} 个未完成开发任务（需要 ≥30）。` +
         `播种必须在后端启动前完成：先 --seed，再 instance.py up（数据目录 ${dataDir}）。\n` +
@@ -1535,6 +1649,19 @@ await runGroup(async () => {
     const browser = await launchBrowser({ headless: !headed });
     try {
       await runScrollbarChecks(browser, base, api, await unfinishedCount());
+    } finally {
+      await browser.close();
+    }
+    const failed = persistChecks(STAGE, meta);
+    if (failed > 0) process.exitCode = 1;
+    return;
+  }
+
+  // 凭据授权确认卡：放弃后立即消失（需要场景服务器）
+  if (STAGE === "credential-card") {
+    const browser = await launchBrowser();
+    try {
+      await runCredentialCardChecks(browser, base, api);
     } finally {
       await browser.close();
     }

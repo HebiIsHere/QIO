@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 APPROVAL_KIND_CREATE = "tool_create"
 APPROVAL_KIND_CREDENTIAL = "credential_grant"
 
+# 「这条确认被作废」的人话：说清是任务被放弃导致确认失效，**不是**用户拒绝了它。
+# 与 tools/dev_auth.py::_refusal_text("cancelled") 说的是同一件事。
+ABANDONED_APPROVAL_DETAIL = "任务已放弃，这个确认已作废"
+
 
 @dataclass
 class ToolOutcome:
@@ -287,21 +291,29 @@ class ToolLifecycle:
         if refused is not None:
             return refused
         if approval.decision != "approved":
-            detail = (
-                "等待确认超时，这次没有创建"
-                if approval.decision == "timeout"
-                else "你没有同意创建这个工具"
-            )
+            # `cancelled` 只会来自 approvals.invalidate_for_task（放弃开发）：
+            # 本轮被按 Stop 时，approval.request 会抛 CancelledError，根本走不到这里。
+            # 所以这一条说的是「任务已放弃」，而不是「你没同意」。
+            cancelled = approval.decision == "cancelled"
+            if cancelled:
+                detail = ABANDONED_APPROVAL_DETAIL
+            elif approval.decision == "timeout":
+                detail = "等待确认超时，这次没有创建"
+            else:
+                detail = "你没有同意创建这个工具"
             await self.status.emit(
                 group_id,
                 PHASE_FAILED,
-                label="创建失败",
+                label="已放弃" if cancelled else "创建失败",
                 detail=detail,
                 ok=False,
                 tool_name=definition.name,
             )
             return ToolOutcome(
-                False, definition.name, "approve", f"creation {approval.decision}"
+                False,
+                definition.name,
+                "approve",
+                detail if cancelled else f"creation {approval.decision}",
             )
         if approval.overrides and "subagent_budget" in approval.overrides:
             from agent.tools.spec import SubagentBudget
@@ -345,20 +357,36 @@ class ToolLifecycle:
                     "key_id": definition.credential_ref,
                     "tool_name": definition.name,
                     "capabilities": policy.describe(),
+                    # 这条凭据确认属于哪个开发任务：放弃该任务时要能按任务作废它
+                    # （approvals.invalidate_for_task）。写法与上面的创建审批完全一致
+                    # —— 直接复用 _refers_to 既有的识别规则，空 group_id 不写。
+                    **({"workspace": group_id} if group_id else {}),
                 },
             )
             if grant.decision != "approved":
+                # 作废（任务被放弃）不是「用户拒绝了」：凭据这条必须单独说。
+                # 统一写「你没有同意这个工具使用该凭据」会把系统作废读成用户的选择。
+                # （`cancelled` 只来自 invalidate_for_task：本轮被 Stop 时
+                # approval.request 抛 CancelledError，走不到这里。）
+                cancelled = grant.decision == "cancelled"
+                detail = (
+                    ABANDONED_APPROVAL_DETAIL
+                    if cancelled
+                    else "你没有同意这个工具使用该凭据"
+                )
                 await self.status.emit(
                     group_id,
                     PHASE_FAILED,
-                    label="创建失败",
-                    detail="你没有同意这个工具使用该凭据",
+                    label="已放弃" if cancelled else "创建失败",
+                    detail=detail,
                     ok=False,
                     tool_name=definition.name,
                 )
                 return ToolOutcome(
-                    False, definition.name, "credential",
-                    f"credential grant {grant.decision}",
+                    False,
+                    definition.name,
+                    "credential",
+                    detail if cancelled else f"credential grant {grant.decision}",
                 )
 
         # register side-by-side + persist
