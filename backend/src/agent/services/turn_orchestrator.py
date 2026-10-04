@@ -24,6 +24,7 @@ from agent.services.navigation import (
     set_tool_nav_turn,
     take_tool_navigation,
 )
+from agent.services.predict import TopicPrediction
 
 # 边界策略的运行模式（阶段 4）：
 # off     不评估；
@@ -98,16 +99,21 @@ class TurnOrchestrator:
         """
         app = self.app
         tracer = ctx.trace
+        # 取消检查点：每一个都记下终态。上下文装配现在会把推理/检索交给工作线程，
+        # 于是「取消正好落在装配期间」变得常见 —— 这里不记，绑定就会停在 None。
         if ctx.cancelled:
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
         adapter = await self.begin(ctx)
         if adapter is None:
             return
         if ctx.cancelled:
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
         with tracer.phase("context_assembly"):
             plan = await self.build_context(ctx, adapter)
         if ctx.cancelled:
+            app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
         with tracer.phase("agent_loop"):
             result = await self.execute_loop(ctx, adapter, plan)
@@ -299,8 +305,11 @@ class TurnOrchestrator:
 
         # 话题预判会用嵌入模型（缺本地模型时降级到规则层）——单独成段，
         # 不要让「第一次加载嵌入模型」的几秒钟变成上下文装配里的黑盒。
+        #
+        # 契约 WS3 §3：读输入 → **线程里纯计算** → 回事件循环提交。ONNX 推理
+        # 以前直接跑在事件循环上，期间健康探测 / 取消请求 / 事件流全都要等它。
         with tracer.phase("topic_prediction"):
-            prediction = app.predictor.predict(message, current_topic_id=topic)
+            prediction = await self._predict_topics(ctx, message, topic)
             decision = classify(message, prediction, topic, app._entity_card_topics(message))
             if decision.mode == TopicMode.IN_TOPIC:
                 aux_topic_ids = related_topics(app.conn, topic, top_n=2)
@@ -334,7 +343,8 @@ class TurnOrchestrator:
 
         # 推测切换（spec 第 29~30 条）：内容明显属于另一个话题，但用户没有说要切。
         # 只登记「待确认」，Anchor 留在原地 —— 由用户点「转到这里」才真的切。
-        if not explicit_target:
+        # 取消之后不再提交：切换建议是**用户可见**的结果，过时的一律不发。
+        if not explicit_target and not ctx.cancelled:
             suggested = (
                 decision.switch_to
                 if decision.mode == TopicMode.SWITCH and decision.switch_to
@@ -423,8 +433,14 @@ class TurnOrchestrator:
                 note = None
             entity_cards.append(card_svc.format_card(card, note=note))
         # 检索（记忆 + 知识 + 实体卡）单独成段：嵌入与向量检索的耗时以前完全不可见。
+        # 契约 WS3 §3：这条路径是**只读**的（没有 INSERT/UPDATE，也没有事务），
+        # 但里面的 ONNX 推理 + 向量比较 + 分词打分是实打实的同步计算 —— 放到
+        # 有并发上限的工作线程里跑，事件循环在它期间仍能响应健康探测 / 取消 / 事件流。
+        # 输入（话题、短期记忆、实体卡、token 预算）都在这里先读好、随参数传进去；
+        # 结果提交（`ctx.knowledge_snapshot`）留在 await 之后的事件循环一侧。
         with tracer.phase("retrieval"):
-            payload = app.build_injection(
+            payload = await app.heavy.run(
+                app.build_injection,
                 message,
                 topic_id=topic,
                 aux_topic_ids=aux_topic_ids,
@@ -444,13 +460,15 @@ class TurnOrchestrator:
                 adapter_overhead_tokens=_adapter_overhead_tokens(adapter, app.registry),
                 tool_definitions_tokens=_tool_definitions_tokens(adapter, app.registry),
             )
-        ctx.knowledge_snapshot = [
-            {
-                "item_id": item.item_id,
-                "content": (item.text.split("] ", 1)[-1] if "] " in item.text else item.text),
-            }
-            for item in payload.plan.knowledge
-        ]
+        # 取消之后不再把这次检索的结果提交进本轮上下文（这一轮不会再被使用）。
+        if not ctx.cancelled:
+            ctx.knowledge_snapshot = [
+                {
+                    "item_id": item.item_id,
+                    "content": (item.text.split("] ", 1)[-1] if "] " in item.text else item.text),
+                }
+                for item in payload.plan.knowledge
+            ]
         tracer.injection(
             items=[
                 {
@@ -485,6 +503,38 @@ class TurnOrchestrator:
             payload=payload,
             prompt=prompt,
         )
+
+    async def _predict_topics(self, ctx, message: str, topic: str | None):
+        """话题预判：读输入 → 工作线程里算 → 工作线程里提交（契约 WS3 §3）。
+
+        三段拆分：`plan_prediction`（只读数据库，留在事件循环一侧）→
+        `compute_embedding`（纯 ONNX 推理，进有上限的工作线程）→
+        `finish_prediction`（排序 + 冷启动向量写回，进工作线程）。
+
+        为什么提交也在工作线程：写回是若干条 autocommit 落盘，留在事件循环上
+        会再占住 20ms 左右。归属与顺序仍然明确 —— 只有这条预判路径写话题向量，
+        且一定发生在「算完**且这一轮没有被取消**」之后；取消检查在提交之前。
+        """
+        app = self.app
+        predictor = app.predictor
+        plan = predictor.plan_prediction(message, current_topic_id=topic)
+        if plan is None:
+            return TopicPrediction(
+                main_topic_id=None,
+                is_new_topic_candidate=True,
+                backend_used=predictor.backend_name,
+            )
+        if plan.backend != "onnx":
+            return predictor.finish_prediction(plan, None, commit=False)
+        embedded = await app.heavy.run(predictor.compute_embedding, plan)
+        if ctx.cancelled:
+            # 过时的计算结果不许提交：只排序，不写回
+            return predictor.finish_prediction(plan, embedded, commit=False)
+        return await app.heavy.run(predictor.finish_prediction, plan, embedded)
+
+    async def _refresh_topic_vector(self, ctx, topic_id: str) -> None:
+        """封块之后刷新话题向量：嵌入进线程，写回留在事件循环；取消后不写回。"""
+        await self.app.refresh_topic_vector_offloaded(topic_id, ctx=ctx)
 
     async def execute_loop(self, ctx, adapter, plan: _Plan):
         import logging
@@ -633,7 +683,7 @@ class TurnOrchestrator:
                 continue_same_stage=True,
             )
             if sealed is not None:
-                app.predictor.refresh_topic_vector(final_topic)
+                await self._refresh_topic_vector(ctx, final_topic)
                 # 派生工作（摘要 / 知识抽取）是后台任务：把 tracer 交下去，
                 # 失败与本地修正才会落进这一轮的 trace，而不是只留在日志里。
                 self._schedule_derived_work(adapter, getattr(ctx, "trace", None))

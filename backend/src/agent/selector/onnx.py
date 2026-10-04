@@ -1,4 +1,4 @@
-﻿"""ONNX embedding recall backend (bge-small-zh-v1.5, CPU).
+"""ONNX embedding recall backend (bge-small-zh-v1.5, CPU).
 
 Implements the pluggable RecallBackend: at startup self-check, if the
 model files are present and onnxruntime/tokenizers importable, vector
@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,9 @@ MODEL_MAX_LEN = 512
 MODEL_FILENAMES = ("model.onnx", "model_quantized.onnx")
 TOKENIZER_FILENAME = "tokenizer.json"
 MANIFEST_FILENAME = "model_manifest.json"
+# 重复嵌入的复用上限（按「输入 + 模型身份」缓存，见 embed_texts）。
+# 一轮对话里同一段文本会被预判与检索各嵌入一次；缓存把重复的那几次省掉。
+EMBED_CACHE_SIZE = 256
 
 
 def load_model_manifest(model_dir: Path) -> dict | None:
@@ -111,6 +116,11 @@ class OnnxEmbeddingBackend(RecallBackend):
     model_identity = ""
     model_file = ""
     _inputs: list[str] = []
+    # 缓存锁是**类级**的：它只保护毫秒级的字典 / 矩阵快照（不跨 await、不碰数据库），
+    # 跨实例共享没有代价，却能让 `__new__` 手工构造的实例也拿得到同一把锁。
+    _cache_lock = threading.Lock()
+    # 嵌入复用缓存：`__new__` 构造的实例这里是 None → 不启用缓存（直接算）。
+    _embed_cache: OrderedDict | None = None
 
     def __init__(
         self,
@@ -136,6 +146,13 @@ class OnnxEmbeddingBackend(RecallBackend):
         self._matrix: np.ndarray | None = None
         self._matrix_keys: list[str] = []
         self._matrix_dirty = True
+        # 嵌入复用：键是（模型身份, 文本）。身份进键，换模型 / 换精度之后旧向量
+        # 不会被当成有效结果（与落盘缓存同一条规矩）。
+        self._embed_cache: OrderedDict[tuple[str, str], np.ndarray] = OrderedDict()
+        # 这把锁**只**保护上面几个可变缓存的读写（字典/矩阵的快照与替换），
+        # 不跨 await、不包数据库访问、不参与业务事务 —— 不是「阻塞所有请求的大锁」。
+        # 重活搬到工作线程之后，search（读缓存）与 upsert（改缓存）可能真的并发。
+        self._cache_lock = threading.Lock()
         self._load()
 
     # -- availability -----------------------------------------------------
@@ -199,7 +216,44 @@ class OnnxEmbeddingBackend(RecallBackend):
     # -- embedding --------------------------------------------------------
 
     def embed_texts(self, texts: list[str]) -> np.ndarray | None:
-        """Return (n, dims) L2-normalized vectors, or None when unavailable."""
+        """Return (n, dims) L2-normalized vectors, or None when unavailable.
+
+        **重复计算按「输入 + 模型身份」复用**（契约 WS3 §3）：同一段文本在同一
+        个模型身份下只嵌入一次。一轮对话里查询文本会被话题预判与检索各嵌入
+        一次，缓存把重复的那几次省掉；换模型 / 换精度（身份变了）不会命中旧结果。
+        """
+        if not self.available() or not texts:
+            return None
+        cache = self._embed_cache
+        if cache is None:
+            # 手工构造的实例（测试里 __new__）：不启用复用缓存，直接算
+            return self._embed_uncached(texts)
+        keys = [(self.model_identity or self.model_name, text) for text in texts]
+        out: list[np.ndarray | None] = [None] * len(texts)
+        missing: list[int] = []
+        with self._cache_lock:
+            for index, key in enumerate(keys):
+                cached = cache.get(key)
+                if cached is None:
+                    missing.append(index)
+                else:
+                    cache.move_to_end(key)
+                    out[index] = cached
+        if missing:
+            computed = self._embed_uncached([texts[i] for i in missing])
+            if computed is None:
+                return None
+            with self._cache_lock:
+                for slot, vector in zip(missing, computed):
+                    out[slot] = vector
+                    cache[keys[slot]] = vector
+                    cache.move_to_end(keys[slot])
+                while len(cache) > EMBED_CACHE_SIZE:
+                    cache.popitem(last=False)
+        return np.stack([vector for vector in out]).astype(np.float32)
+
+    def _embed_uncached(self, texts: list[str]) -> np.ndarray | None:
+        """真正跑推理（不做缓存查找）。调用方负责缓存读写。"""
         if not self.available() or not texts:
             return None
         vectors = []
@@ -241,7 +295,6 @@ class OnnxEmbeddingBackend(RecallBackend):
     def _save(self, doc_type: str, ref_ids: list[str], vectors: np.ndarray) -> None:
         from agent.memory.fragment import new_id
 
-        now = "2026-01-01T00:00:00+00:00"  # placeholder; replaced below
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat()
@@ -258,8 +311,9 @@ class OnnxEmbeddingBackend(RecallBackend):
     # -- RecallBackend ----------------------------------------------------
 
     def index(self, docs: list[IndexedDoc]) -> None:
-        self._vectors = {}
-        self._matrix_dirty = True
+        with self._cache_lock:
+            self._vectors = {}
+            self._matrix_dirty = True
         if not self.available():
             return
         ref_ids = [d.doc_id for d in docs]
@@ -272,10 +326,11 @@ class OnnxEmbeddingBackend(RecallBackend):
             self._save("memory_index", [d.doc_id for d in missing], vectors)
             for doc, vec in zip(missing, vectors):
                 persisted[doc.doc_id] = vec
-        for doc in docs:
-            if doc.doc_id in persisted:
-                self._vectors[doc.doc_id] = persisted[doc.doc_id]
-        self._matrix_dirty = True
+        with self._cache_lock:
+            for doc in docs:
+                if doc.doc_id in persisted:
+                    self._vectors[doc.doc_id] = persisted[doc.doc_id]
+            self._matrix_dirty = True
 
     # -- 增量更新 ---------------------------------------------------------
 
@@ -287,24 +342,33 @@ class OnnxEmbeddingBackend(RecallBackend):
         if vectors is None:
             return
         self._save("memory_index", [doc.doc_id], vectors)
-        self._vectors[doc.doc_id] = vectors[0]
-        self._matrix_dirty = True
-
-    def remove(self, doc_id: str) -> None:
-        if self._vectors.pop(doc_id, None) is not None:
+        with self._cache_lock:
+            self._vectors[doc.doc_id] = vectors[0]
             self._matrix_dirty = True
 
+    def remove(self, doc_id: str) -> None:
+        with self._cache_lock:
+            if self._vectors.pop(doc_id, None) is not None:
+                self._matrix_dirty = True
+
     def _search_matrix(self) -> tuple[np.ndarray | None, list[str]]:
-        """(矩阵, doc_id 顺序)。向量集合没变就直接复用上一份矩阵。"""
-        if self._matrix_dirty or self._matrix is None:
-            self._matrix_keys = list(self._vectors.keys())
-            self._matrix = (
-                np.stack([self._vectors[k] for k in self._matrix_keys]).astype(np.float32)
-                if self._matrix_keys
-                else None
-            )
-            self._matrix_dirty = False
-        return self._matrix, self._matrix_keys
+        """(矩阵, doc_id 顺序)。向量集合没变就直接复用上一份矩阵。
+
+        重建在锁里做：重活搬到工作线程之后，search（这里）与 upsert（改
+        `_vectors`）可能真的并发 —— 不加锁会出现「矩阵用旧向量、keys 用新集合」
+        的错位，或 `_matrix_dirty` 被覆盖成 False 导致长期用陈旧矩阵。
+        锁只覆盖一次内存重组（毫秒级），不跨 await、不碰数据库。
+        """
+        with self._cache_lock:
+            if self._matrix_dirty or self._matrix is None:
+                self._matrix_keys = list(self._vectors.keys())
+                self._matrix = (
+                    np.stack([self._vectors[k] for k in self._matrix_keys]).astype(np.float32)
+                    if self._matrix_keys
+                    else None
+                )
+                self._matrix_dirty = False
+            return self._matrix, self._matrix_keys
 
     def search(self, query: str, top_k: int) -> list[ScoredDoc]:
         if not self.available() or not self._vectors:
@@ -368,6 +432,31 @@ class OnnxEmbeddingBackend(RecallBackend):
         if vectors is None:
             return
         self._save("topic", [topic_id], vectors)
+
+    def topic_vectors(self, topic_ids: list[str]) -> dict[str, np.ndarray]:
+        """一次读回多个话题的向量（每个话题各查一次太浪费）。
+
+        只读、不推理：调用方（话题预判的「输入读取」一段）在事件循环一侧用它
+        决定这次要嵌入哪些文本。
+        """
+        if not topic_ids:
+            return {}
+        return self._load_persisted("topic", list(topic_ids))
+
+    def save_topic_vector(self, topic_id: str, vector: np.ndarray) -> None:
+        """把**已经算好**的话题向量落盘（不重新推理）。
+
+        这是预判的「结果提交」：只有结果真的可用、且这一轮没有被取消时才调用。
+        """
+        self._save("topic", [topic_id], np.asarray([vector], dtype=np.float32))
+
+    def save_topic_vectors(
+        self, topic_ids: list[str], vectors: np.ndarray
+    ) -> None:
+        """批量落盘已算好的话题向量（冷启动补算一次写回多条）。"""
+        if not topic_ids:
+            return
+        self._save("topic", list(topic_ids), np.asarray(vectors, dtype=np.float32))
 
     def topic_vector(self, topic_id: str) -> np.ndarray | None:
         persisted = self._load_persisted("topic", [topic_id])

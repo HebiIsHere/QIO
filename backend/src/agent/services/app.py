@@ -41,6 +41,7 @@ from agent.memory.fragment import FragmentManager
 from agent.memory.index import IndexBuilder
 from agent.memory.ingest import MemoryWriter
 from agent.selector.selector import Selector
+from agent.services.heavy import HeavyWork
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
     NOTIFY_SUBTASK_DONE,
@@ -374,6 +375,9 @@ class AppContext:
 
         self.tool_router = ToolRouter(embedding=self.embedding)
         self.maintenance = MaintenanceScheduler(self)
+        # 重活执行器（契约 WS3 §3）：把纯计算（ONNX 推理等）搬出事件循环，
+        # 有并发上限。输入读取与结果提交仍留在事件循环一侧（见 services/heavy.py）。
+        self.heavy = HeavyWork()
         self._refresh_selector()
         # 启动清理一次工具输出：把保留天数调小之后，重启也立刻生效。
         # 失败只记日志 —— 清理是维护动作，不能挡住启动。
@@ -642,6 +646,8 @@ class AppContext:
         await self.maintenance.stop()
         await self.turns.shutdown()
         await self.task_manager.shutdown()
+        # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。
+        await self.heavy.shutdown()
 
         adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
         self._anthropic_probe_at.clear()
@@ -1290,8 +1296,9 @@ class AppContext:
                 if self.fragments.should_close(fragment):
                     closed = await self._close_fragment(topic, adapter, tracer=tracer)
                     if closed is not None:
-                        # 索引在 close_fragment 内部已增量更新（不再全量重建）
-                        self.predictor.refresh_topic_vector(topic)
+                        # 索引在 close_fragment 内部已增量更新（不再全量重建）；
+                        # 话题向量刷新走工作线程，取消后不写回。
+                        await self.refresh_topic_vector_offloaded(topic, ctx=ctx)
             with tracer.phase("finalize"):
                 self.trace_store.finish(
                     ctx.turn_id, "done", final_topic=topic, final_preview=result.final_content or ""
@@ -1334,6 +1341,22 @@ class AppContext:
     def _topic_note(self, topic_id: str, prediction) -> str:
         """委派给 ContextAssembler。"""
         return self.context_assembler.topic_note(topic_id, prediction)
+
+    async def refresh_topic_vector_offloaded(self, topic_id: str, ctx=None) -> bool:
+        """封块之后刷新话题向量：读输入 → 线程里嵌入 → 回事件循环写回。
+
+        契约 WS3 §3：嵌入（ONNX 推理）搬进有上限的工作线程；数据库写回留在
+        事件循环一侧。这一轮已经被取消（`ctx.cancelled`）时**不写回** ——
+        过时的计算结果不许提交。返回是否真的写回了。
+        """
+        predictor = self.predictor
+        plan = predictor.plan_topic_refresh(topic_id)
+        if plan is None:
+            return False
+        vector = await self.heavy.run(predictor.compute_topic_refresh, plan)
+        if ctx is not None and getattr(ctx, "cancelled", False):
+            return False
+        return predictor.commit_topic_refresh(plan, vector)
 
     # -- injection --------------------------------------------------------
 

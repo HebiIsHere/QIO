@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
@@ -34,22 +35,72 @@ def _token_overlap(a: str, b: str) -> float:
 
 
 def _similarity(ctx, a: str, b: str) -> float:
-    if ctx.embedding is not None and ctx.embedding.available():
-        vecs = ctx.embedding.embed_texts([a, b])
+    """旧入口（保留）：有嵌入就用余弦，否则词元重合。"""
+    embedding = ctx.embedding if (ctx.embedding is not None and ctx.embedding.available()) else None
+    return _similarity_with(embedding, a, b)
+
+
+def _similarity_with(embedding, a: str, b: str) -> float:
+    """**纯计算**：两段文本的相似度（不碰数据库、不碰 ctx）。
+
+    有嵌入时用它算余弦，否则退回词元重合 —— 与旧 `_similarity` 逐字一致，
+    只是把「拿嵌入」这一步挪到输入读取侧，好让本函数能进工作线程。
+    """
+    if embedding is not None:
+        vecs = embedding.embed_texts([a, b])
         if vecs is not None:
             import numpy as np
 
             va, vb = vecs[0], vecs[1]
-            denom = np.linalg.norm(va) * np.linalg.norm(vb) or 1e-9
+            denom = float(np.linalg.norm(va)) * float(np.linalg.norm(vb)) or 1e-9
             return float(np.dot(va, vb) / denom)
     return _token_overlap(a, b)
+
+
+# ---------------------------------------------------------------------------
+# 拆分约定（契约 WS3 §3，task-12）
+#
+# 维护这一轮过去整段跑在事件循环上（实测 460ms~5.4s，全部花在「工具候选聚类」
+# 里逐条消息的嵌入上）。现在每个重活都按同一套拆：
+#
+#   plan_*   输入读取：循环侧、**只读**数据库，产出纯数据
+#   *_compute 纯计算：不碰 ctx / 数据库，可交给 `ctx.heavy` 的工作线程
+#   commit_* 结果提交：回到循环侧写库 / 发审批；提交前校验「代次」
+#
+# 「代次」= 这一轮维护开始时 `ctx.turns.active` 的引用。计算期间用户开始了新一轮
+# （引用变了）就丢弃这次结果：过时的维护结果不落地，也不再花一次模型调用。
+# 模型调用（`await`）始终留在循环侧，**不进线程**。
+# ---------------------------------------------------------------------------
+
+
+def _maintenance_generation(ctx):
+    """这一轮维护开始时的代次：当前主 turn 的引用（没有主 turn 就是 None）。"""
+    return getattr(getattr(ctx, "turns", None), "active", None)
+
+
+async def _run_heavy(ctx, fn, *args):
+    """把纯计算交给 AppContext 的有上限执行器；没有执行器（替身 ctx）就同步跑。"""
+    heavy = getattr(ctx, "heavy", None)
+    if heavy is None:
+        return fn(*args)
+    return await heavy.run(fn, *args)
 
 
 # ---------------------------------------------------------------------------
 # 1) implicit feedback: contradiction scan
 # ---------------------------------------------------------------------------
 
-async def scan_contradictions(ctx) -> dict:
+@dataclass(frozen=True)
+class ContradictionPlan:
+    """矛盾扫描的「输入」：近期用户消息 + 活跃知识（纯数据）。"""
+
+    messages: list[str]
+    knowledge: list[dict]
+    generation: object
+
+
+def plan_contradiction_scan(ctx) -> ContradictionPlan:
+    """输入读取（循环侧，只读）。"""
     rows = ctx.conn.execute(
         "SELECT content FROM messages WHERE role = 'user' AND content != '' "
         "ORDER BY created_at DESC LIMIT ?",
@@ -58,16 +109,41 @@ async def scan_contradictions(ctx) -> dict:
     knowledge = ctx.conn.execute(
         "SELECT id, content, category, confidence FROM knowledge WHERE state = 'active'"
     ).fetchall()
+    return ContradictionPlan(
+        messages=[m["content"] or "" for m in rows],
+        knowledge=[
+            {"id": k["id"], "content": k["content"] or "", "category": k["category"]}
+            for k in knowledge
+        ],
+        generation=_maintenance_generation(ctx),
+    )
+
+
+def find_contradiction_hits(messages: list[str], knowledge: list[dict]) -> dict[str, dict]:
+    """**纯计算**：带否定词的近期消息命中哪些活跃知识（词元重合 ≥ 2）。
+
+    判定口径与旧实现逐字一致；返回的键/值与旧实现相同，便于提交侧原样使用。
+    """
     hits: dict[str, dict] = {}
-    for msg in rows:
-        text = msg["content"] or ""
+    for text in messages:
         if not any(w in text for w in NEGATION_WORDS):
             continue
         msg_tokens = set(tokenize(text))
         for k in knowledge:
             ktokens = set(tokenize(k["content"] or ""))
             if len(msg_tokens & ktokens) >= 2:
-                hits.setdefault(k["id"], {"id": k["id"], "content": k["content"], "category": k["category"]})
+                hits.setdefault(
+                    k["id"],
+                    {"id": k["id"], "content": k["content"], "category": k["category"]},
+                )
+    return hits
+
+
+async def commit_contradiction_scan(ctx, plan: ContradictionPlan, hits: dict) -> int:
+    """结果提交（循环侧）：下调置信度、必要时请求审批。"""
+    if _maintenance_generation(ctx) is not plan.generation:
+        logger.info("contradiction scan result discarded: a new turn started meanwhile")
+        return 0
     applied = 0
     for hit in hits.values():
         try:
@@ -94,7 +170,13 @@ async def scan_contradictions(ctx) -> dict:
                 )
         except Exception:  # noqa: BLE001 - isolated
             logger.warning("contradiction scan item failed", exc_info=True)
-    return {"contradiction_hits": applied}
+    return applied
+
+
+async def scan_contradictions(ctx) -> dict:
+    plan = plan_contradiction_scan(ctx)
+    hits = await _run_heavy(ctx, find_contradiction_hits, plan.messages, plan.knowledge)
+    return {"contradiction_hits": await commit_contradiction_scan(ctx, plan, hits)}
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +315,22 @@ async def run_dreaming(ctx) -> dict:
 # 3) trajectory -> tool candidates
 # ---------------------------------------------------------------------------
 
-async def mine_tool_candidates(ctx) -> dict:
+@dataclass(frozen=True)
+class ToolClusterPlan:
+    """工具候选挖掘的「输入」：消息文本 + 这次用的相似度口径（纯数据）。
+
+    `embedding` 只放**嵌入后端本身**（不是 ctx）：工作线程里只做推理与相似度比较，
+    碰不到数据库、也碰不到 AppContext。
+    """
+
+    texts: list[str]
+    embedding: object | None
+    threshold: float
+    generation: object
+
+
+def plan_tool_candidates(ctx) -> ToolClusterPlan | None:
+    """输入读取（循环侧，只读）。消息太少（< CLUSTER_MIN_SIZE）时返回 None。"""
     rows = ctx.conn.execute(
         "SELECT content FROM messages WHERE role = 'user' AND content != '' "
         "ORDER BY created_at DESC LIMIT ?",
@@ -241,27 +338,58 @@ async def mine_tool_candidates(ctx) -> dict:
     ).fetchall()
     texts = [r["content"] for r in rows]
     if len(texts) < CLUSTER_MIN_SIZE:
-        return {"tool_candidates": 0}
-    clusters: list[list[str]] = []
-    for text in texts:
+        return None
+    embedding = (
+        ctx.embedding if (ctx.embedding is not None and ctx.embedding.available()) else None
+    )
+    return ToolClusterPlan(
+        texts=texts,
+        embedding=embedding,
+        # 口径与旧实现一致：能嵌入就用嵌入阈值，否则用词元重合阈值
+        threshold=(
+            EMBED_SIMILARITY_THRESHOLD if embedding is not None else TOKEN_OVERLAP_THRESHOLD
+        ),
+        generation=_maintenance_generation(ctx),
+    )
+
+
+def cluster_texts(texts: list[str], embedding, threshold: float) -> list[list[int]]:
+    """**纯计算**（可交给工作线程）：按「与簇首条相似度 ≥ 阈值」顺序聚类。
+
+    返回的是**下标**而不是文本，提交侧再取原文 —— 这样顺序与旧实现逐字一致，
+    而且线程里不搬动大对象。逐条比较会调 `embed_texts`，过去这一步整段跑在
+    事件循环上（240 条消息实测 5.4 s）。
+    """
+    clusters: list[list[int]] = []
+    for index, text in enumerate(texts):
         placed = False
         for cluster in clusters:
-            if _similarity(ctx, text, cluster[0]) >= (
-                EMBED_SIMILARITY_THRESHOLD if ctx.embedding and ctx.embedding.available()
-                else TOKEN_OVERLAP_THRESHOLD
-            ):
-                cluster.append(text)
+            if _similarity_with(embedding, text, texts[cluster[0]]) >= threshold:
+                cluster.append(index)
                 placed = True
                 break
         if not placed:
-            clusters.append([text])
+            clusters.append([index])
+    return clusters
+
+
+async def commit_tool_candidates(ctx, plan: ToolClusterPlan, clusters: list[list[int]]) -> int:
+    """结果提交（循环侧）：够大的簇生成草案并请求审批。
+
+    模型调用（`_generate_draft` 里的 `await`）留在循环上，不进线程。提交前校验
+    代次：计算期间用户开始了新一轮就丢弃 —— 不落审批、也不再花一次模型调用。
+    """
+    if _maintenance_generation(ctx) is not plan.generation:
+        logger.info("tool candidate mining result discarded: a new turn started meanwhile")
+        return 0
     generated = 0
     for i, cluster in enumerate(clusters):
         if len(cluster) < CLUSTER_MIN_SIZE:
             continue
-        representative = max(cluster, key=len)
+        texts = [plan.texts[index] for index in cluster]
+        representative = max(texts, key=len)
         try:
-            draft = await _generate_draft(ctx, cluster)
+            draft = await _generate_draft(ctx, texts)
         except Exception:  # noqa: BLE001
             draft = {
                 "name": f"auto_tool_{i}",
@@ -281,7 +409,15 @@ async def mine_tool_candidates(ctx) -> dict:
             },
         )
         generated += 1
-    return {"tool_candidates": generated}
+    return generated
+
+
+async def mine_tool_candidates(ctx) -> dict:
+    plan = plan_tool_candidates(ctx)
+    if plan is None:
+        return {"tool_candidates": 0}
+    clusters = await _run_heavy(ctx, cluster_texts, plan.texts, plan.embedding, plan.threshold)
+    return {"tool_candidates": await commit_tool_candidates(ctx, plan, clusters)}
 
 
 async def _generate_draft(ctx, cluster: list[str]) -> dict:
@@ -382,6 +518,13 @@ class MaintenanceScheduler:
         await self.run_once()
 
     async def run_once(self) -> dict:
+        """跑一轮维护。
+
+        每个重活都在自己的模块里拆成「输入读取 / 纯计算 / 结果提交」（见文件上方
+        的拆分约定）：纯计算走 `ctx.heavy` 的工作线程，循环侧只剩只读读取、毫秒级
+        DB 写与 `await` 模型调用。`prune_*` 本身就是毫秒级 DB 写（实测 0.1ms），
+        留在循环侧当作提交动作。
+        """
         if self._running:
             return {"ok": False, "reason": "already_running"}
         self._running = True
