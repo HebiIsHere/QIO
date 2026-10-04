@@ -1930,10 +1930,14 @@ GitHub 直链与 `gh` 上传本身是通的。
 - `POST /api/dev/tasks/{task_id}/abandon`：成功/幂等重复返回 `200 {ok:true, …}`；
   被拒绝（正在执行 / 已做完）返回 `200 {ok:false, status, message}` 且**零状态改动**
   （不标放弃、不收回授权、不作废审批、不停任何东西）；未知任务 `404`。
-- 允许放弃时**先作废未决审批，再标放弃**：`ApprovalService.invalidate_for_task()`
-  让等待方收到 `ApprovalResult(..., "cancelled")`（不是异常、不是静默丢弃），落库为 cancelled，
-  并发一条 `APPROVAL_RESULT` 事件让界面上的确认卡自己消失。顺序反了会留下
-  「任务已放弃、审批还挂着等人点允许」的窗口。
+- **顺序（契约 v2，不许调换）**：允许放弃时**先把放弃终态可靠落盘**
+  （同目录临时文件 → `flush` + `fsync` → `os.replace` → 回读校验 `id` 与 `abandoned`；
+  失败则内存与磁盘一起保持「未放弃」，并且**一个审批都不作废**），落盘成功之后才作废未决审批：
+  `ApprovalService.invalidate_for_task()` 让等待方收到 `ApprovalResult(..., "cancelled")`
+  （不是异常、不是静默丢弃），落库为 cancelled，并发一条 `APPROVAL_RESULT` 事件让界面上的
+  确认卡自己消失。作废是**不可逆**的，所以不能先作废再保存：保存失败会留下
+  「确认已作废、任务还在」的部分完成状态；反过来（先落盘）失败代价只是
+  「任务仍在、卡片还在、重试收敛」。0.1.13 里这里是相反的写法，本轮按契约 v2 反转。
 - 注册前的守卫挡在 `tool_store.save` 与 `_register` **之前**（创建审批载荷现在带 `workspace`）：
   即使审批刚好在放弃前通过，也不会注册出一个用户已经放弃的工具。
 - `GET /api/dev/tasks` 的行增加 `abandoned` / `abandoned_at`：这是**事实清单**，
@@ -1988,9 +1992,94 @@ GitHub 直链与 `gh` 上传本身是通的。
 
 - `can_stop` 目前恒为 `False`：这是如实报告「没有只停止这一个任务的执行能力」。
   用户看到的是一句明确的话（请先停止当前执行），而不是一个假装的「已放弃」。
-- 凭据授权审批（`credential_grant`）的载荷里没有 `workspace`，所以放弃时**那一张**确认卡不会
-  立刻消失（等它超时自然结束）；但注册前的守卫保证它即使被批准也不会注册工具。
+- **已修复（契约 v2）**：凭据授权审批（`credential_grant`）此前载荷里没有 `workspace`，
+  放弃时那一张确认卡不会消失。现在它与 `tool_create` 一样带 `workspace`，放弃会把三类未决审批
+  （测试执行 / 工具创建 / 凭据授权）一起作废，等待方都收到 `cancelled`，界面上的卡片与入口条
+  由 `APPROVAL_RESULT` 驱动**立即消失**（不依赖刷新或超时）；作废文案说的是
+  「任务已放弃，这个确认已作废」，不写成「你拒绝了」。留下的是设计本身的性质而不是缺陷：
+  审批单次使用，作废后的旧审批再批准必然无效。
 - `GET /api/dev/tasks` 把 `request` 截到 200 字：界面上显示的、确认层里点名的就是这 200 字
   （CSS 对任意长无空格串都有断行防御，将来放开长度也不会横向溢出）。
+
+## 本轮变更：放弃开发的两个缺口（2026-10-04，尚未发布）
+
+0.1.13 已经发布的是放弃功能的第一版；这一轮修它暴露出来的两个真实缺口。
+**本节的改动在 0.1.13 之后，尚未打包发布**。
+
+### 一、保存失败不能再报告「已放弃」
+
+缺口：`_write_state()` 捕获写入错误后直接忽略，而 `abandon()` 改完内存就返回成功 ——
+用户看到条目消失，重启后任务又回来了（内存已放弃、磁盘没放弃）。
+
+- `_write_state()` 的既有语义**没有改**（它仍是「尽力而为」：其它工具操作
+  `set_phase` / `record_test` / `mark_submitted` / 授权发放收回 的失败语义不跟着变）。
+  可靠保存是**放弃终态这一条路径**的要求。
+- 新增严格路径：同目录临时文件 `state.json.tmp` → `flush` + `fsync` → `os.replace`
+  → **回读校验**（`id` 一致且 `abandoned` 为真）；任何一步失败都抛 `StatePersistError`
+  并尽力清理临时文件。`state.json` 及其临时兄弟文件从「工作区文件」视图里排除
+  （`list_files` / `content_digest` / `project_files`），文件工具也不能写这类名字 ——
+  否则残留的临时文件会改变内容摘要、把测试证据变成假 stale。
+- `abandon()` 变成**事务式**，顺序固定：先严格收回长期授权并落盘 → 再改终态与任务级授权并严格落盘。
+  失败时内存回滚到与磁盘一致（**绝不允许内存停在「已放弃而磁盘没放弃」**），接口返回
+  `ok:false / status:"persist_failed" / persisted:false`，`revoked` 只报**已经落盘的那部分**
+  （第 3 步成功、第 4 步失败时是 true，原因里写明「任务还没有被放弃；它的长期授权已经收回；可以重试」）。
+- **顺序（接口层）**：先 `abandon()` 落盘，成功之后才 `invalidate_for_task()` 作废未决审批。
+  作废不可逆，反过来会在保存失败时留下「确认已作废、任务还在」；先落盘的失败代价只是
+  「任务仍在、卡片还在、重试收敛」。保存失败这一支**一个审批都不作废**
+  （`invalidated_approvals: 0`）。
+- 幂等与重试：`already_abandoned` 的重试会把上次没收回的授权收干净；「保存成功但响应丢失」的
+  重复请求是幂等成功。
+
+**持久化保证的边界（如实记录，不夸大）**：进程崩溃 / 被强杀安全 —— 要么是旧内容、要么是新内容，
+不会出现空文件或半截（临时文件 + 原子替换 + 回读校验）；`fsync` 保证新内容已交给操作系统；
+`os.replace` 在 NTFS 上原子。**掉电不宣称安全**：Windows 上无法 fsync 目录项，最后一次改名
+理论上可能丢失，最坏结果是回到「放弃前」的旧状态，而不是文件损坏。掉电场景没有做实测。
+
+### 二、放弃时同时作废凭据授权审批
+
+缺口：`lifecycle.py` 创建 `credential_grant` 审批时没有任务标识，`invalidate_for_task()` 找不到它 ——
+任务已经放弃，那张凭据确认卡却还挂着。
+
+- `credential_grant` 载荷追加 `workspace`（与 `tool_create` 同一种写法），复用
+  `ApprovalService._refers_to` 的既有识别规则；没有新造字段、没有给作废逻辑加 kind 特例。
+- 放弃会把三类未决审批一起作废：测试执行（`tool_execution`）、工具创建（`tool_create`）、
+  凭据授权（`credential_grant`）；等待方都收到明确的 `cancelled`（不是异常、不是静默丢弃），
+  库里逐条落 `cancelled`，并各发一条 `APPROVAL_RESULT` —— 界面上的弹窗与待审批入口条
+  **立即消失，不依赖刷新或超时**（前端本来就是按 id 收敛，这一轮先用测试证明现状，
+  再用变异检查确认测试有判别力，前端生产代码因此没有改动）。
+- 取消文案：`dev_auth._refusal_text("cancelled")`、以及创建 / 凭据两条审批分支的
+  `label` / `detail` 都统一说「任务已放弃，这个确认已作废」，不再把系统的作废写成
+  「你没有同意」或「你拒绝了」。
+- 边界不变：作废是单次使用语义，作废后的旧审批再批准必然无效；其它任务的审批、
+  与开发任务无关的独立凭据审批、已注册工具都不受影响。
+
+### 三、本轮实测
+
+- `cd backend; uv run --frozen pytest` 全绿（exit 0）；与放弃相关的几个测试文件
+  （`backend/tests/test_dev_abandon.py`、`backend/tests/test_dev_abandon_persist.py`、
+  `backend/tests/test_verify_dev_abandon.py`、`backend/tests/test_verify_dev_abandon_v2.py`、
+  `backend/tests/test_verify_credential_abandon.py`、`backend/tests/test_credential_approval_task_link.py`）
+  专项跑同样 exit 0。
+- `cd frontend; npm test` 全绿；`npx vue-tsc --noEmit` 通过；`python scripts/check_docs.py` 通过。
+- **失败注入**（临时文件写失败 / `os.replace` 失败 / 回读校验对不上 / 半截 JSON）：接口一律
+  `ok=false / status=persist_failed`，内存与磁盘都仍是「未放弃」，重启后不复活，解除注入后重试成功。
+- **中断点强杀**（真实子进程 `os._exit`，三个位置都覆盖）：写临时文件前 → `state.json` 一个字节没变、
+  重启后未放弃；临时文件写完但 replace 前 → 正式文件仍是旧的**完整**内容、无半截、残留临时文件
+  不影响内容摘要与证据；replace 与回读之后、响应之前 → 重启后已是「已放弃」且授权已收回。
+- **凭据卡真实浏览器实测**：卡片出现 → 「稍后处理」收成入口条 → 在面板里放弃该任务 →
+  入口条**立即消失且页面没有刷新** → 运行时状态里没有它、库里 `cancelled`、
+  等待方得到 `cancelled` → 别的任务的凭据卡不受影响。把这条**作废过的**审批再打到产品自己的
+  批准接口 `POST /api/approvals/{id}/respond`，得到 `404 approval not found or already answered`
+  （即作废后不能再被批准）。
+  说明：这一格第一次跑时报过一条 FAIL，事后定性为**验证台自身读错了登记表**
+  （作废后那次「再批准」的助手去查了测试执行那张表，拿到 404 却按「仍然可以被批准」报出来），
+  修好验证台后整套凭据卡检查项全部通过；产品代码没有因此改动。
+- 没覆盖的中断窗口：长期授权文件自己的写入窗口、`fsync` 之后的掉电窗口（见上）。
+
+### 四、仍然存在的限制
+
+- `can_stop` 依旧恒为 `False`（没有「只停止这一个任务」的能力，如实提示先停止当前执行）。
+- `GET /api/dev/tasks` 的需求文字仍截到 200 字。
+- 掉电场景只做如实声明、没有实测。
 
 
