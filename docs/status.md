@@ -1875,6 +1875,13 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
 ## 本轮变更：放弃未完成的开发任务 + 未完成任务列表滚动（2026-10-04）
 
 **版本：** 本次改动随 **0.1.13** 发布，用户可见的说明见 `docs/releases/v0.1.13.md`。
+已发布：GitHub Release `v0.1.13`（安装包 + `.sig` + `latest.json` 三个资产都上传），
+应用内更新源 `https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json`
+实测返回 `version = 0.1.13` 且 URL/签名结构正确；发布闸门 `scripts/release_gate.py`
+本地可判定的项目全部通过（18 PASS / 0 FAIL，构建清单里的 commit 与本次发布的提交一致）。
+**未验证的一段**：`latest.json` 里的下载地址走公共加速前缀 `gh.llkk.cc`（与 v0.1.12 完全相同），
+这台机器连不上该主机（connect timeout），所以「加速通道能否真正下到安装包」没有实测；
+GitHub 直链与 `gh` 上传本身是通的。
 版本位共 7 处（`backend/pyproject.toml`、`backend/src/agent/__init__.py`、
 `backend/src/agent/api/server.py` 的 `FastAPI(version=…)`、`frontend/package.json`、
 `frontend/src-tauri/Cargo.toml`、`frontend/src-tauri/tauri.conf.json`、
