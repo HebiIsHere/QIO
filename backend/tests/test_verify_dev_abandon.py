@@ -680,9 +680,13 @@ def test_abandon_endpoint_refuses_a_running_task_without_changing_anything(clien
     ctx.dev_workspaces.end_run(task.id, "tests")
 
 
-def test_abandon_endpoint_invalidates_approvals_before_marking_abandoned(client, monkeypatch):
-    """顺序硬要求：先 invalidate_for_task，再 abandon —— 反了会出现
-    「已经放弃、审批还在等」的窗口。"""
+def test_abandon_endpoint_persists_the_terminal_state_before_invalidating(client, monkeypatch):
+    """顺序硬要求（契约 v2 第 C 章）：**先可靠落盘放弃终态，成功之后才作废审批**。
+
+    v1 的顺序（先作废、再标放弃）已被 v2 反转：作废不可逆 —— 先作废、随后保存失败，
+    会留下「确认已作废、任务却还在」的部分完成状态；反过来最坏只是「任务仍在、
+    卡片还在、重试收敛」。这里用调用顺序断言，而不是只看最终状态。
+    """
     ctx = client.app.state.ctx
     task = ctx.dev_workspaces.create("x")
     calls: list[str] = []
@@ -704,7 +708,65 @@ def test_abandon_endpoint_invalidates_approvals_before_marking_abandoned(client,
     body = client.post(f"/api/dev/tasks/{task.id}/abandon").json()
 
     assert body["ok"] is True
-    assert calls == ["invalidate", "abandon"]
+    assert body["persisted"] is True
+    assert calls == ["abandon", "invalidate"], f"顺序不对（契约 v2 要求先落盘再作废）：{calls}"
+
+
+def test_abandon_endpoint_persist_failure_invalidates_nothing_and_retry_converges(client, monkeypatch):
+    """契约 v2 C4/D1：保存失败这一支**一个审批都不许作废**（作废不可逆），且重试能收敛。
+
+    v1 没有这条语义（它会先作废、再在保存失败时留下部分完成状态）。
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import agent.tools.dev_workspace as _dev_workspace
+
+    ctx = client.app.state.ctx
+    task = ctx.dev_workspaces.create("验证：保存失败不许作废审批")
+    calls: list[str] = []
+    real_invalidate = ctx.approvals.invalidate_for_task
+
+    def spy_invalidate(task_id, **kwargs):
+        calls.append("invalidate")
+        return real_invalidate(task_id, **kwargs)
+
+    monkeypatch.setattr(ctx.approvals, "invalidate_for_task", spy_invalidate)
+
+    # 只让「任务状态」这一步写失败：长期授权那一步（如果有）仍然能正常落盘
+    real_atomic = getattr(_dev_workspace, "_atomic_write_json", None)
+    if real_atomic is None:
+        pytest.fail("严格持久化还没落地：缺少 _atomic_write_json（契约 v2 A2）")
+
+    def failing_atomic(path, payload):
+        if _Path(path).name.startswith("state.json"):
+            raise OSError(28, "No space left on device (injected)")
+        return real_atomic(path, payload)
+
+    monkeypatch.setattr(_dev_workspace, "_atomic_write_json", failing_atomic)
+
+    body = client.post(f"/api/dev/tasks/{task.id}/abandon").json()
+
+    assert body["ok"] is False, f"保存失败却报成功：{body}"
+    assert body["status"] == "persist_failed", f"status={body['status']}"
+    assert body["persisted"] is False, f"persisted={body['persisted']}"
+    assert body["invalidated_approvals"] == 0, "失败这一支作废了审批（作废不可逆）"
+    assert calls == [], f"保存失败时不该调用 invalidate_for_task，实际调用：{calls}"
+    assert body["task"]["abandoned"] is False, "返回的任务行被标成已放弃"
+    # 内存与磁盘一致：都还是「没放弃」
+    assert ctx.dev_workspaces.status(task.id)["abandoned"] is False
+    disk = _json.loads((task.dir / "state.json").read_text(encoding="utf-8"))
+    assert disk.get("abandoned") is False, "磁盘上留下了已放弃标记"
+    listed = client.get("/api/dev/tasks").json()["tasks"]
+    row = [item for item in listed if item["id"] == task.id]
+    assert row and row[0]["abandoned"] is False, "列表里任务被错误地标成已放弃"
+
+    # 解除注入后重试：这时才成功、也这时才作废审批
+    monkeypatch.undo()
+    monkeypatch.setattr(ctx.approvals, "invalidate_for_task", spy_invalidate)
+    retry = client.post(f"/api/dev/tasks/{task.id}/abandon").json()
+    assert retry["ok"] is True and retry["persisted"] is True, f"重试没有成功：{retry}"
+    assert calls == ["invalidate"], f"成功路径应当作废一次审批，实际：{calls}"
 
 
 def test_abandon_endpoint_never_cancels_any_turn(client, monkeypatch):

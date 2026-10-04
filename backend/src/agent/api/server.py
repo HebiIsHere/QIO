@@ -1121,8 +1121,19 @@ def create_app(
         语义边界（见 _ABANDON-CONTRACT.md 第 1 章）：放弃**不**删记录、不删工作区
         文件、不删已注册工具；它只结束这项开发并收回该任务的执行授权。
 
-        顺序很重要：允许放弃时**先作废未决审批，再标放弃**。反过来的话会存在一个
-        「任务已放弃、审批还挂着等人点允许」的窗口，批准后迟到的执行就会拿到授权。
+        **顺序**（契约 v2 第 C 章，不许调换）：
+        1. 先把放弃终态**可靠落盘**（`abandon()` 内部是事务式的：先严格收回长期授权，
+           再严格写 `state.json` 并回读校验）；
+        2. 只有落盘成功，才去作废这个任务的未决审批。
+
+        为什么不是「先作废审批再标放弃」：作废是**不可逆**的（等待方立刻收到 cancelled），
+        如果先作废、随后保存失败，就会出现「确认已经作废、任务却还在」的部分完成状态，
+        用户看到的是「失败、请重试」，而他刚点掉的确认已经回不来了。反过来的失败代价小得多：
+        任务仍是未完成、卡片还在、重试即可收敛。
+
+        保存失败（`persist_failed`）时**一个审批都不作废**、任务行原样返回（仍是未放弃），
+        界面保留条目、就地显示原因、允许重试；这保证不会出现「内存已放弃、磁盘未放弃」
+        却报成功的状态。
 
         被拒绝（正在执行 / 已提交）时**零状态改动**：不标放弃、不收回授权、
         不作废审批、不停任何东西。这个接口**绝不**调用 turn 取消 —— 那会误停用户
@@ -1141,18 +1152,37 @@ def create_app(
                 "revoked": False,
                 "invalidated_approvals": 0,
                 "can_stop": bool(readiness["can_stop"]),
+                "persisted": False,
                 "task": _dev_task_row(ctx.dev_workspaces, task) if task else None,
             }
-        invalidated = ctx.approvals.invalidate_for_task(task_id)
+
+        # 1) 先把终态可靠落盘（失败则内存与磁盘一致地保持「未放弃」）
         result = ctx.dev_workspaces.abandon(task_id)
         task = ctx.dev_workspaces.task(task_id)
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "status": str(result.get("status") or "persist_failed"),
+                "message": str(result.get("message") or "这次没能放弃：状态没能保存，请重试。"),
+                # 如实反映**已经落盘**的那部分（例如长期授权已收回）
+                "revoked": bool(result.get("revoked")),
+                "invalidated_approvals": 0,
+                "can_stop": bool(readiness["can_stop"]),
+                "persisted": bool(result.get("persisted", False)),
+                "task": _dev_task_row(ctx.dev_workspaces, task) if task else None,
+            }
+
+        # 2) 落盘成功之后才作废未决审批（test_execution / tool_create / credential_grant）。
+        #    已经放弃过（幂等重复）也要走这一步：上次可能在作废之前就中断了，重试要能收敛。
+        invalidated = ctx.approvals.invalidate_for_task(task_id)
         return {
-            "ok": bool(result["ok"]),
-            "status": result["status"],
-            "message": result["message"],
-            "revoked": bool(result["revoked"]),
+            "ok": True,
+            "status": str(result.get("status") or "abandoned"),
+            "message": str(result.get("message") or "已放弃这个开发任务。"),
+            "revoked": bool(result.get("revoked")),
             "invalidated_approvals": int(invalidated),
             "can_stop": bool(readiness["can_stop"]),
+            "persisted": True,
             "task": _dev_task_row(ctx.dev_workspaces, task) if task else None,
         }
 

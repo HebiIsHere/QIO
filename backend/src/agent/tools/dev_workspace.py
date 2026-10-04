@@ -8,6 +8,7 @@ the workspace directory; the definition contract reuses ToolDefinition.
 from __future__ import annotations
 
 import json
+import os
 import re
 import hashlib
 import shutil
@@ -27,6 +28,9 @@ _REQUEST_MARKER = "# 开发需求"
 # 开发任务状态文件（提交 / 测试 / 内容摘要）。放在工作区目录里，
 # 与已有 `ws_*` 成果同源：重启后可以原样读回，不依赖内存表。
 _STATE_FILE = "state.json"
+# 原子写的临时文件后缀：`state.json.tmp`。它必须与正式文件**同一个目录**
+# （同卷才能用 os.replace 原子替换）。
+_STATE_TMP_SUFFIX = ".tmp"
 # 权威状态文件的格式版本与来源标记：读回时必须同时对上，否则按「未知」处理。
 # 只认自己写的那一份，避免把外部/旧格式的 state.json 当成证据。
 _STATE_SCHEMA = 3
@@ -55,6 +59,21 @@ def _is_digest(value: object) -> bool:
         and len(value) == 64
         and all(c in "0123456789abcdef" for c in value)
     )
+
+
+def _is_state_name(name: str) -> bool:
+    """名字是否属于后端状态文件家族（`state.json` 及其临时兄弟）。
+
+    按**前缀**而不是精确名判断：原子写会用到 `state.json.tmp`，崩溃时可能
+    残留。它同样是后端记录，不是项目文件 —— 混进文件视图会改变内容摘要，
+    把测试证据变成假 stale（真实缺口，见契约 v2 A3）。
+    """
+    return name.startswith(_STATE_FILE)
+
+
+def _is_reserved_name(name: str) -> bool:
+    """文件工具不许写的名字（任何深度都算）：状态文件家族 + 需求文件。"""
+    return _is_state_name(name) or name in _RESERVED_NAMES
 
 
 # ---- 授权的生命周期（D2）-------------------------------------------------
@@ -101,6 +120,11 @@ ABANDON_NOT_FOUND = "not_found"
 ABANDON_SUBMITTED = "submitted"
 ABANDON_RUNNING = "running"
 ABANDON_DONE = "abandoned"
+# 严格落盘失败：**不能**报成成功。任务还在（内存与磁盘一致），可以重试。
+ABANDON_PERSIST_FAILED = "persist_failed"
+ABANDON_RETRY_FAILED_MESSAGE = (
+    "任务已经放弃（重启后不会回来），但它的执行授权还没能收回：可以再试一次。"
+)
 
 # ---- 活跃执行登记（进程内、不落盘）----------------------------------------
 # 运行登记是**进程内**事实：进程重启后本来就没有任何东西在跑，这是诚实的答案，
@@ -204,9 +228,13 @@ def _now() -> str:
 
 
 def _check_not_reserved(rel_path: str) -> None:
-    """保留名在任何深度都不可写：`pkg/state.json` 同样不能覆盖后端状态。"""
+    """保留名在任何深度都不可写：`pkg/state.json` 同样不能覆盖后端状态。
+
+    `state.json.tmp` 这类**临时兄弟**也一并挡住：工具不该往原子写的中间文件上
+    写东西（写坏了会让下一次落盘的回读校验失败）。
+    """
     for segment in rel_path.split("/"):
-        if segment in _RESERVED_NAMES:
+        if _is_reserved_name(segment):
             raise ValueError(f"{segment} 由后端维护，不能通过文件工具写入")
 
 
@@ -240,8 +268,24 @@ def _read_state(task_dir: Path) -> dict:
 
 
 def _write_state(task: "DevTask") -> None:
-    """落盘任务状态（尽力而为：写不进去也不能让工具调用失败）。"""
-    payload = {
+    """落盘任务状态（尽力而为：写不进去也不能让工具调用失败）。
+
+    注意：这是**宽松**路径，吞掉 OSError。放弃终态走 `_write_state_strict` ——
+    那条路径必须确认真的写进去了，否则会出现「任务当场消失、重启后又回来」。
+    本函数的语义与调用方（set_phase / record_test / mark_submitted / 授权等）
+    的失败行为**保持原样**，不因为严格路径的出现而收紧。
+    """
+    try:
+        (task.dir / _STATE_FILE).write_text(
+            json.dumps(_state_payload(task), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _state_payload(task: "DevTask") -> dict:
+    """state.json 的完整内容（宽松写与严格写共用同一份形状）。"""
+    return {
         "schema": _STATE_SCHEMA,
         "source": _STATE_SOURCE,
         "id": task.id,
@@ -262,12 +306,100 @@ def _write_state(task: "DevTask") -> None:
         "abandoned": task.abandoned,
         "abandoned_at": task.abandoned_at,
     }
+
+
+class StatePersistError(RuntimeError):
+    """任务状态没能可靠落盘。调用方**不许**把这个变更报告成成功。
+
+    「放弃」是用户看得见、且不可逆的动作：只有在严格写盘并回读校验通过之后
+    才算成功。否则会出现「任务当场消失、重启后又回来」——把用户骗了一次，
+    而且他没有任何办法察觉。
+    """
+
+    def __init__(
+        self,
+        task_id: str,
+        path: Path | str,
+        *,
+        cause: Exception | None = None,
+        detail: str = "",
+    ) -> None:
+        self.task_id = str(task_id or "")
+        self.path = str(path)
+        self.cause = cause
+        self.detail = str(detail or "")
+        target = self.task_id or "（工作区级记录）"
+        message = f"状态没能可靠落盘（task={target}, path={self.path}）"
+        if self.detail:
+            message = f"{message}：{self.detail}"
+        if cause is not None:
+            message = f"{message}（{type(cause).__name__}: {cause}）"
+        super().__init__(message)
+
+
+def _atomic_write_json(path: Path, payload: object) -> None:
+    """把 JSON **原子**写到 `path`；任何失败抛 OSError（并尽力清掉临时文件）。
+
+    步骤固定：同目录临时文件 → `flush()` + `os.fsync()` → `os.replace()`。
+
+    保证的边界（如实写清，不夸大）：
+
+    * **进程崩溃 / 被强杀安全**：只有临时文件写完整了才会 replace，读者看到的
+      要么是旧内容、要么是新内容，不会看到空文件或半截 JSON；
+    * `fsync` 保证新内容已经交给操作系统，而不是还躺在进程缓冲里；
+    * `os.replace` 在 NTFS 上是原子的（同卷改名），替换本身不会留下半个文件；
+    * **掉电不宣称安全**：Windows 上无法 fsync 目录项，最后一次改名在掉电时
+      理论上可能丢失 —— 最坏结果是回到**旧的**（放弃前）状态，而不是文件损坏。
+    """
+    tmp = path.with_name(path.name + _STATE_TMP_SUFFIX)
     try:
-        (task.dir / _STATE_FILE).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # 失败时尽力清掉临时文件：残留虽然不会影响读回（文件视图会忽略它），
+        # 但没有必要留在用户的工作区里。
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _write_state_strict(task: "DevTask") -> None:
+    """严格落盘任务状态：任何一步失败都抛 `StatePersistError`。
+
+    与 `_write_state`（尽力而为、吞 OSError）的区别：放弃终态**必须**确认真的
+    写进去了，否则就会出现「任务当场消失、重启后又回来」。
+
+    写完**回读校验**（`id` 一致且 `abandoned is True`）：这是「可以对外报成功」
+    的证据，也是唯一能挡住「写进去的不是这次要写的东西 / 只写了半截」的办法。
+    """
+    path = task.dir / _STATE_FILE
+    try:
+        _atomic_write_json(path, _state_payload(task))
+    except Exception as exc:  # noqa: BLE001 - 任何失败都不许被当成成功
+        raise StatePersistError(
+            task.id, path, cause=exc, detail="写入状态文件失败"
+        ) from exc
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - 读不回来同样不算成功
+        raise StatePersistError(
+            task.id, path, cause=exc, detail="回读校验失败（读不回来或不是合法 JSON）"
+        ) from exc
+    if (
+        not isinstance(data, dict)
+        or data.get("id") != task.id
+        or data.get("abandoned") is not True
+    ):
+        raise StatePersistError(
+            task.id,
+            path,
+            detail="回读校验不通过：磁盘上的内容不是这次要写的「已放弃」终态",
         )
-    except OSError:
-        pass
 
 
 @dataclass
@@ -421,6 +553,30 @@ class DevWorkspace:
             )
         except OSError:
             pass
+
+    def _write_long_term_strict(self) -> None:
+        """严格落盘长期授权表：失败抛 `StatePersistError`（契约 v2 A2）。
+
+        回读校验：磁盘上的表必须与内存里的表**一致** —— 收回长期授权之后，
+        磁盘上不能再留着那条记录，否则重启后它又会在暗处对别的任务生效。
+        """
+        path = self.root_dir / _LONG_TERM_FILE
+        try:
+            _atomic_write_json(path, self._long_term)
+        except Exception as exc:  # noqa: BLE001 - 任何失败都不许被当成成功
+            raise StatePersistError(
+                "", path, cause=exc, detail="长期授权表写入失败"
+            ) from exc
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise StatePersistError(
+                "", path, cause=exc, detail="长期授权表回读校验失败"
+            ) from exc
+        if data != self._long_term:
+            raise StatePersistError(
+                "", path, detail="长期授权表回读校验不通过：磁盘内容与内存不一致"
+            )
 
     # -- lifecycle --------------------------------------------------------
 
@@ -638,39 +794,176 @@ class DevWorkspace:
 
         这里**再判一次**前置条件（不只信调用方）：并发/迟到调用进来时，
         已提交或正在执行的任务同样一个字都不改。
+
+        **事务式保存**（契约 v2 A4），顺序固定不许调换：
+        先严格收回长期授权并落盘 → 再改终态与任务级授权并严格落盘。
+        任何一步失败都回滚内存到与磁盘一致的状态，返回
+        `ok=False / status="persist_failed"` —— 绝不允许「内存里已放弃、
+        磁盘上没放弃」却报成功（那会让任务当场消失、重启后又回来）。
         """
         readiness = self.abandon_readiness(task_id)
         status = readiness["status"]
         if status == ABANDON_ALREADY:
-            return {
-                "status": ABANDON_ALREADY,
-                "ok": True,
-                "revoked": False,
-                "message": readiness["message"],
-            }
+            return self._abandon_retry(task_id, readiness)
         if not readiness["allowed"]:
             return {
                 "status": status,
                 "ok": False,
+                "persisted": False,
                 "revoked": False,
                 "message": readiness["message"],
             }
         task = self._tasks[task_id]
+        # 记下将被修改的内存字段（失败时回滚到与磁盘一致）
+        old_abandoned = task.abandoned
+        old_abandoned_at = task.abandoned_at
+        old_phase = task.phase
+        old_authorization = task.test_authorization
+        old_long_term = self._long_term
+
+        # 第 3 步：先收回长期授权并**严格**落盘。没有长期授权就跳过、不写文件。
+        revoked = False
+        owned = self._long_term_owned_by(task_id)
+        if owned:
+            self._long_term = [
+                item for item in self._long_term if item.get("owner_task_id") != task_id
+            ]
+            try:
+                self._write_long_term_strict()
+            except StatePersistError:
+                self._long_term = old_long_term
+                return self._persist_failed(
+                    revoked=False,
+                    message=(
+                        "没能保存这次放弃（长期授权表没写进磁盘）："
+                        "任务还在、授权也还在，可以重试。"
+                    ),
+                )
+            revoked = True
+
+        # 第 4 步：改终态 + 收回任务级授权，再严格落盘。
         task.abandoned = True
         task.abandoned_at = _now()
         task.phase = ABANDONED_PHASE
-        # 复用既有的收回语义：任务级 + 这个任务建立的长期授权一起收回。
-        revoked = self.revoke_test_authorization(task_id)
-        _write_state(task)
+        had_task_authorization = bool(task.test_authorization)
+        if had_task_authorization:
+            task.test_authorization = None
+        try:
+            _write_state_strict(task)
+        except StatePersistError:
+            # 磁盘上这个任务还是「没放弃」：内存也必须回到那个状态。
+            task.abandoned = old_abandoned
+            task.abandoned_at = old_abandoned_at
+            task.phase = old_phase
+            task.test_authorization = old_authorization
+            # `revoked` 只报**已经落盘**的那部分：任务级授权刚被回滚，不算收回。
+            return self._persist_failed(
+                revoked=revoked,
+                message=(
+                    "没能保存这次放弃：任务还没有被放弃"
+                    + ("；它的长期授权已经收回" if revoked else "，授权也还在")
+                    + "。可以重试。"
+                ),
+            )
+        if had_task_authorization:
+            revoked = True
         return {
             "status": ABANDON_DONE,
             "ok": True,
+            "persisted": True,
             "revoked": revoked,
             "message": (
                 "已放弃这个开发任务：不会再执行、不会再注册工具；"
                 "工作区文件与记录保留，已注册的工具不受影响。"
             ),
         }
+
+    def _long_term_owned_by(self, task_id: str) -> list[dict]:
+        """这个任务建立的长期授权记录（收回时要一起收干净）。"""
+        return [item for item in self._long_term if item.get("owner_task_id") == task_id]
+
+    @staticmethod
+    def _persist_failed(*, revoked: bool, message: str) -> dict:
+        """保存失败的统一形状：`revoked` 如实反映**已经落盘的那部分**。"""
+        return {
+            "status": ABANDON_PERSIST_FAILED,
+            "ok": False,
+            "persisted": False,
+            "revoked": bool(revoked),
+            "message": message,
+        }
+
+    def _abandon_retry(self, task_id: str, readiness: dict) -> dict:
+        """任务已经放弃：把上次没收回的授权收干净（严格落盘，契约 v2 A5）。
+
+        为什么还要重试：放弃分两步落盘（先长期授权、后任务终态）。历史状态或
+        异常中断可能在磁盘上留下「终态已写、授权还没收」的残余；重复点击必须
+        收敛到「授权确实收回了」，而不是回一句「已经放弃过了」就完事。
+        「保存成功但响应丢失」的重复请求走的也是这里：没有残余时直接幂等成功。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {
+                "status": ABANDON_ALREADY,
+                "ok": True,
+                "persisted": True,
+                "revoked": False,
+                "message": readiness["message"],
+            }
+        owned = self._long_term_owned_by(task_id)
+        has_task_authorization = bool(task.test_authorization)
+        # 终态也要确认在磁盘上：内存说「已放弃」而磁盘没有，重启就会复活。
+        # （正常情况下它早写过了；这里是历史状态 / 手工状态下的兜底。）
+        needs_state_write = has_task_authorization or not self._state_is_abandoned_on_disk(
+            task
+        )
+        if not owned and not needs_state_write:
+            # 没有残余：终态早就在磁盘上了（写的时候回读校验过），幂等成功。
+            return {
+                "status": ABANDON_ALREADY,
+                "ok": True,
+                "persisted": True,
+                "revoked": False,
+                "message": readiness["message"],
+            }
+        old_long_term = self._long_term
+        old_authorization = task.test_authorization
+        revoked = False
+        if owned:
+            self._long_term = [
+                item for item in self._long_term if item.get("owner_task_id") != task_id
+            ]
+            try:
+                self._write_long_term_strict()
+            except StatePersistError:
+                self._long_term = old_long_term
+                return self._persist_failed(
+                    revoked=False, message=ABANDON_RETRY_FAILED_MESSAGE
+                )
+            revoked = True
+        if needs_state_write:
+            task.test_authorization = None
+            try:
+                _write_state_strict(task)
+            except StatePersistError:
+                task.test_authorization = old_authorization
+                return self._persist_failed(
+                    revoked=revoked, message=ABANDON_RETRY_FAILED_MESSAGE
+                )
+            if has_task_authorization:
+                revoked = True
+        return {
+            "status": ABANDON_ALREADY,
+            "ok": True,
+            "persisted": True,
+            "revoked": revoked,
+            "message": "这个开发任务已经放弃过了；这次把上次没收回的执行授权收干净了。",
+        }
+
+    @staticmethod
+    def _state_is_abandoned_on_disk(task: "DevTask") -> bool:
+        """磁盘上的 state.json 是否已经写着「已放弃」（读不到 / 不合法 = 没有）。"""
+        return _read_state(task.dir).get("abandoned") is True
 
     def status(self, task_id: str) -> dict:
         """任务的权威状态快照（给工具/界面/恢复用）。"""
@@ -1043,7 +1336,8 @@ class DevWorkspace:
         """工作区里的全部文件（相对 posix 路径，排序稳定）。
 
         以前只列顶层文件名：多文件项目一来，子目录里的模块就「看不见」，
-        模型会以为文件丢了。`state.json` 是后端状态，不算项目文件。
+        模型会以为文件丢了。`state.json` 是后端状态，不算项目文件 ——
+        它的临时兄弟（`state.json.tmp`）同样不算。
         """
         task = self._tasks.get(task_id)
         if task is None:
@@ -1051,15 +1345,17 @@ class DevWorkspace:
         return sorted(
             p.relative_to(task.dir).as_posix()
             for p in task.dir.rglob("*")
-            if p.is_file() and p.name != _STATE_FILE
+            if p.is_file() and not _is_state_name(p.name)
         )
 
     # -- content binding ---------------------------------------------------
 
     def content_digest(self, task_id: str) -> str | None:
-        """工作区全部文件（不含 state.json）的内容摘要。
+        """工作区全部文件（不含 state.json 及其临时文件）的内容摘要。
 
         审批 / 注册 / 测试证据都绑定这个摘要：内容变了，旧证据不能再用。
+        后端自己的状态文件不是「被测内容」：残留一个 `state.json.tmp` 不能
+        把测试证据变成假 stale。
         """
         task = self._tasks.get(task_id)
         if task is None:
@@ -1070,7 +1366,7 @@ class DevWorkspace:
         except OSError:
             return None
         for path in paths:
-            if not path.is_file() or path.name == _STATE_FILE:
+            if not path.is_file() or _is_state_name(path.name):
                 continue
             rel = path.relative_to(task.dir).as_posix()
             digest.update(rel.encode("utf-8"))
@@ -1124,14 +1420,19 @@ class DevWorkspace:
         """项目模块（相对路径 → 内容）。
 
         多文件项目里，`tool.json` 是清单、`request.md`/`state.json` 是后端记录，
-        都不算项目模块 —— 定义里只带真正要跟着工具走的代码。
+        都不算项目模块 —— 定义里只带真正要跟着工具走的代码。`state.json.tmp`
+        这类临时兄弟同理：它们是后端原子写的中间文件，绝不能进工具定义。
         """
         task = self._tasks.get(task_id)
         if task is None:
             return {}
         files: dict[str, str] = {}
         for path in sorted(task.dir.rglob("*")):
-            if not path.is_file() or path.name in _NON_PROJECT_NAMES:
+            if (
+                not path.is_file()
+                or _is_state_name(path.name)
+                or path.name in _NON_PROJECT_NAMES
+            ):
                 continue
             rel = path.relative_to(task.dir).as_posix()
             try:

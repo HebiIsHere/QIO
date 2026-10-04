@@ -913,7 +913,18 @@ export interface DevTaskRow {
  */
 export interface DevAbandonResult {
   ok: boolean;
-  status: "abandoned" | "already_abandoned" | "running" | "submitted";
+  /**
+   * 结局词。
+   *
+   * `persist_failed` = 放弃终态**没能可靠落盘**：任务仍是未完成，界面必须保留条目、
+   * 就地显示 `message` 并允许重试（绝不能因为这次失败就把条目拿掉）。
+   */
+  status:
+    | "abandoned"
+    | "already_abandoned"
+    | "running"
+    | "submitted"
+    | "persist_failed";
   /** 面向用户的中文一句话：界面原样显示，不改写成别的结论 */
   message: string;
   /** 是否真的收回了执行授权（含长期授权） */
@@ -922,6 +933,13 @@ export interface DevAbandonResult {
   invalidated_approvals: number;
   /** 现在能不能只停止这一个任务（当前架构恒为 false：没有这个能力） */
   can_stop: boolean;
+  /**
+   * 放弃终态是否已经可靠落盘。
+   *
+   * 只有 `ok === true` 时才是 true；`ok === false` 时它表示「这次没有任何终态被写下去」，
+   * 界面据此如实说明「任务还在，可以重试」。
+   */
+  persisted: boolean;
   /** 更新后的任务行；未知任务是 null */
   task: DevTaskRow | null;
 }
