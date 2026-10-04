@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import {
   api,
+  type DevAbandonResult,
   type DevAuthorizationRow,
   type DevTaskRow,
   type InterruptedTurn,
@@ -550,13 +551,15 @@ export const useSessionStore = defineStore("session", {
      */
     canStopTurn: (state): boolean => state.turnRunning,
     /**
-     * 没做完的开发任务 = 还没提交的。
+     * 没做完的开发任务 = 还没提交、也还没被放弃的。
      *
      * 「提交」是唯一能证明这件事做完了的机器可读事实：任务一旦提交成功，
      * 工具已经注册进后端，界面就不该再把它列成待办。
+     * 「放弃」是另一个终态：结束了、不再执行，同样不属于「没做完」。
+     * 列表接口会把已放弃的行也带回来（事实清单），所以这里必须两个条件一起判。
      */
     unfinishedDevTasks: (state): DevTaskRow[] =>
-      state.devTasks.filter((task) => !task.submitted),
+      state.devTasks.filter((task) => !task.submitted && !task.abandoned),
   },
   actions: {
     _nextId() {
@@ -1072,6 +1075,42 @@ export const useSessionStore = defineStore("session", {
       } catch {
         return false;
       }
+    },
+    /**
+     * 放弃一项没做完的开发任务。返回后端是否确认（`ok`）、状态词与一句人话。
+     *
+     * **不做乐观移除**：只有 `ok === true` 才把这一条从本地列表去掉。后端说
+     * 「正在执行」「已经做完」时，列表一行都不动，原因原样交回界面显示。
+     *
+     * 网络异常也返回（`status: "network_error"`）而不是抛出：调用方要能如实说
+     * 「这次没有放弃」并允许重试，不能把请求失败装成已放弃。
+     */
+    async abandonDevTask(
+      taskId: string,
+    ): Promise<{ ok: boolean; status: string; message: string }> {
+      let res: DevAbandonResult;
+      try {
+        res = await api.abandonDevTask(taskId);
+      } catch (e) {
+        return {
+          ok: false,
+          status: "network_error",
+          message:
+            `没能放弃这项开发（请求没有得到后端确认）：${(e as Error).message}。` +
+            "这项任务还在列表里，可以再试一次。",
+        };
+      }
+      if (!res.ok) {
+        // 后端明确拒绝（正在执行 / 已经做完）：什么都不改，原因原样交给界面
+        return { ok: false, status: res.status, message: res.message };
+      }
+      // 后端已确认放弃：先让界面与「已放弃」对齐，再按权威列表拉一次
+      this.devTasks = this.devTasks.filter((item) => item.id !== taskId);
+      this.devAuthorizations = this.devAuthorizations.filter(
+        (item) => item.task_id !== taskId,
+      );
+      await this.refreshDevTasks();
+      return { ok: true, status: res.status, message: res.message };
     },
     /**
      * 停止「真正在运行的主 turn」。

@@ -33,6 +33,7 @@ from agent.tools.dev_tools import (
     ToolCreateStatus,
     ready_detail,
 )
+from agent.tools.dev_workspace import STAGE_EXECUTING, STAGE_WAITING_APPROVAL
 from agent.tools.registry import ToolRegistry
 from agent.tools.runtime_tools import CodeTool, SubagentStubTool
 from agent.tools.sandbox import SandboxExecutor
@@ -90,8 +91,31 @@ class ToolLifecycle:
         self.trace_store = trace_store
         # 工具创建流程的进度出口（同一 group_id 一张卡）
         self.status = ToolCreateStatus(bus, turn_id_provider)
+        # 注册前守卫（由 DevSubmitTool 在提交前注入）：返回拒绝理由字符串表示
+        # 「不要注册」，返回 None 表示放行。默认 None = 不守卫（单测直接构造
+        # 生命周期时行为与以前完全一致）。用属性而不是 submit_definition 的
+        # 参数，是为了不动那个公开方法的签名。
+        self.abandon_guard: Callable[[], str | None] | None = None
+        # 运行阶段出口（由 DevSubmitTool 注入）：提交路径里「等审批」和「真的跑
+        # 代码」是交替发生的，只有这里知道现在处在哪一段。如实登记之后，
+        # 用户才可能在**等审批**时放弃（那时放弃是允许的），而不会在真的跑
+        # 生成代码时被误判成「可以放弃」。默认 None = 不登记。
+        self.stage_sink: Callable[[str], None] | None = None
         # 已注册工具的 disposer，撤销时真正从注册表移除
         self._registry_disposers: dict[str, Callable[[], None]] = {}
+
+    def _set_stage(self, stage: str) -> None:
+        """如实登记当前阶段（没有出口就什么都不做）。
+
+        登记失败绝不能挡住创建流程：它只影响「放弃」的判定精度。
+        """
+        sink = self.stage_sink
+        if sink is None:
+            return
+        try:
+            sink(stage)
+        except Exception:  # noqa: BLE001 - 登记失败不能挡住创建流程
+            logger.warning("failed to record run stage", exc_info=True)
 
     async def submit_definition(
         self,
@@ -110,9 +134,15 @@ class ToolLifecycle:
         `test_sink` 在复测跑完、**任何对外事件之前**被调用一次：上层据此把
         「这一版内容的测试结论」先可靠落盘，再让审批/注册/完成事件出去 ——
         否则进程在事件之后崩掉，任务记录就会停在旧的「测试通过」上。
+
+        注册前的守卫见 `self.abandon_guard`（由 DevSubmitTool 注入）：它返回
+        拒绝理由时**不落盘、不进注册表、不发「已注册」事件**，用于挡住
+        「任务已经被放弃，但一个迟到的提交请求还想注册工具」这条路。
         """
         report = None
         if not skip_tests and definition.tool_type == "function":
+            # 从这里开始真的执行生成代码：阶段如实登记成「正在执行」。
+            self._set_stage(STAGE_EXECUTING)
             # 复测也要用「对的那个执行环境」：容器执行器下必须用按锁定清单构建的依赖镜像，
             # 否则会在默认镜像里跑一个依赖不存在的工具（测试必挂，或者更糟：假通过）。
             # 授权顺序不变：调用方（DevSubmitTool）已经先过了 ensure_test_authorization。
@@ -188,8 +218,38 @@ class ToolLifecycle:
         """Approval segment 1 (create) + segment 2 (credential) + registration."""
         from agent.tools.policy import default_policy_for, policy_fingerprint
 
+        async def refuse_if_abandoned() -> ToolOutcome | None:
+            """注册前的守卫：被放弃的任务不允许注册任何东西。
+
+            在三个位置各查一次（进入审批前、审批回来后、真正落盘注册前）：
+            用户完全可能在**等审批的过程中**点了「放弃开发」——那时审批会被
+            作废（approvals.invalidate_for_task），但如果时序上审批刚好先通过，
+            没有这道闸就会注册出一个用户已经放弃的工具。
+            """
+            guard = self.abandon_guard
+            if guard is None:
+                return None
+            reason = guard()
+            if not reason:
+                return None
+            await self.status.emit(
+                group_id,
+                PHASE_FAILED,
+                label="已放弃",
+                detail=reason,
+                ok=False,
+                tool_name=definition.name,
+            )
+            return ToolOutcome(False, definition.name, "abandoned", reason)
+
+        refused = await refuse_if_abandoned()
+        if refused is not None:
+            return refused
+
         policy = default_policy_for(definition)
         definition.approved_policy_fingerprint = policy_fingerprint(policy)
+        # 等创建确认：这一段是「等审批」，用户此时放弃是允许的。
+        self._set_stage(STAGE_WAITING_APPROVAL)
         await self.status.emit(
             group_id,
             PHASE_WAITING_APPROVAL,
@@ -217,8 +277,15 @@ class ToolLifecycle:
                     if report
                     else []
                 ),
+                # 这条审批属于哪个开发任务：放弃该任务时要能按任务作废它
+                # （approvals.invalidate_for_task）。空 group_id 不写。
+                **({"workspace": group_id} if group_id else {}),
             },
         )
+        # 等审批的这段时间里任务可能已经被放弃：先看守卫，再看审批结论。
+        refused = await refuse_if_abandoned()
+        if refused is not None:
+            return refused
         if approval.decision != "approved":
             detail = (
                 "等待确认超时，这次没有创建"
@@ -243,6 +310,8 @@ class ToolLifecycle:
 
         # approval segment 2: credential grant (only when referenced)
         if definition.credential_ref:
+            # 又要在审批上等一段：阶段回到「等审批」。
+            self._set_stage(STAGE_WAITING_APPROVAL)
             if self.credentials is None:
                 await self.status.emit(
                     group_id,
@@ -293,6 +362,14 @@ class ToolLifecycle:
                 )
 
         # register side-by-side + persist
+        # 最后一道守卫：就在落盘与进注册表之前。被拒绝时**不落盘、不进注册表、
+        # 不发「已注册」事件** —— 这是「已放弃的任务不能注册工具」的可靠落点。
+        refused = await refuse_if_abandoned()
+        if refused is not None:
+            return refused
+        # 落盘 + 注册是「正在动这个任务」的一段：如实登记成执行中，
+        # 让「放弃」在这里被拒绝（而不是和它抢着写）。
+        self._set_stage(STAGE_EXECUTING)
         await self.status.emit(
             group_id,
             PHASE_REGISTERING,

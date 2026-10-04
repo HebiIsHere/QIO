@@ -859,6 +859,20 @@ export const api = {
       `/api/dev/authorizations/${encodeURIComponent(taskId)}/revoke`,
       { method: "POST" },
     ),
+  /**
+   * 放弃一项**没做完**的开发任务（终态，不可逆）。
+   *
+   * 语义边界（与「撤销授权」「删除已注册工具」都不混用）：结束这项开发、从未完成
+   * 列表移除、收回它的执行授权并作废未决确认；**不删**工作区文件与记录，也**不动**
+   * 已经注册的工具。
+   *
+   * 被拒绝时后端返回 `200 + ok:false`（正在执行 / 已经做完），调用方必须按
+   * 「没有被放弃」处理：条目保留、原因就地显示。未知任务是 `404`。
+   */
+  abandonDevTask: (taskId: string) =>
+    request<DevAbandonResult>(`/api/dev/tasks/${encodeURIComponent(taskId)}/abandon`, {
+      method: "POST",
+    }),
 };
 
 /** 一条开发任务的权威状态（后端 `GET /api/dev/tasks` 的一行）。 */
@@ -879,6 +893,37 @@ export interface DevTaskRow {
   updated_at: string | null;
   /** 有没有「在某个环境里跑它的测试」的执行授权（范围见 getDevAuthorizations） */
   authorized: boolean;
+  /**
+   * 已经放弃（终态）：不再执行、不再注册。
+   *
+   * 列表接口仍然会带回这一行（列表是事实清单），「没做完」是界面按
+   * `!submitted && !abandoned` 过滤出来的视图。
+   */
+  abandoned: boolean;
+  /** 放弃的时刻；没放弃过是 null */
+  abandoned_at: string | null;
+}
+
+/**
+ * 一次「放弃开发」的结果（`POST /api/dev/tasks/{id}/abandon`）。
+ *
+ * `ok === true` 才代表真的放弃了 —— 界面只认这一个字段，不做乐观移除。
+ * `status` 直接用后端的词：`running`（正在跑测试/正在提交，放弃被拒绝）与
+ * `submitted`（已经做完、工具已注册）都**不是**「已放弃」。
+ */
+export interface DevAbandonResult {
+  ok: boolean;
+  status: "abandoned" | "already_abandoned" | "running" | "submitted";
+  /** 面向用户的中文一句话：界面原样显示，不改写成别的结论 */
+  message: string;
+  /** 是否真的收回了执行授权（含长期授权） */
+  revoked: boolean;
+  /** 被这次放弃作废的未决确认条数 */
+  invalidated_approvals: number;
+  /** 现在能不能只停止这一个任务（当前架构恒为 false：没有这个能力） */
+  can_stop: boolean;
+  /** 更新后的任务行；未知任务是 null */
+  task: DevTaskRow | null;
 }
 
 /** 一条执行授权的范围（后端 `GET /api/dev/authorizations` 的一行）。 */

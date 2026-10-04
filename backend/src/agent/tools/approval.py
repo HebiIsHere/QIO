@@ -84,7 +84,7 @@ class ApprovalRequest:
 @dataclass(frozen=True)
 class ApprovalResult:
     approval_id: str
-    decision: str  # approved / rejected / timeout
+    decision: str  # approved / rejected / timeout / cancelled
     scope: dict | None = None
     overrides: dict | None = None
 
@@ -106,6 +106,93 @@ class ApprovalService:
         # 这样重启后能说清「那次操作没有执行」；没它就与旧行为完全一致。
         self.conn = conn
         self._mark_interrupted()
+        # 由本方法排进事件循环的发布任务：持有引用，避免被 GC 提前回收。
+        self._pending_publishes: set[asyncio.Task] = set()
+
+    # -- 按任务作废（放弃开发）---------------------------------------------
+
+    def invalidate_for_task(self, task_id: str, *, reason: str = "task_abandoned") -> int:
+        """作废所有仍指向这个开发任务的未决审批，返回作废条数。
+
+        为什么需要它：用户在等确认的时候点了「放弃开发」。如果只把任务标成放弃，
+        那条审批还挂在界面上等人点「允许」；一旦被批准，迟到的执行就会拿到授权
+        —— 任务已经放弃了，代码却还在跑。所以放弃路径必须先作废审批。
+
+        每一条的结局是**明确的**（不是静默丢弃、也不抛异常给等待方）：
+
+        * 等待方收到 `ApprovalResult(..., "cancelled")`，据此返回「这次没有执行」；
+        * 从 `_waiters` / `_requests` 摘掉，`_settle` 落库为 cancelled；
+        * 发一条 `APPROVAL_RESULT` 事件（载荷带 reason），界面上的确认卡自己消失。
+
+        单次使用语义不变：作废过的审批再 `respond()` 必然返回 False。
+        """
+        victims = [
+            approval_id
+            for approval_id, request in list(self._requests.items())
+            if self._refers_to(request.payload, task_id)
+        ]
+        invalidated = 0
+        for approval_id in victims:
+            future = self._waiters.get(approval_id)
+            request = self._requests.get(approval_id)
+            if request is None:
+                continue
+            if future is None or future.done():
+                # 已经没人等了（超时/已应答/被取消）：不算作废，也不去动它。
+                self._requests.pop(approval_id, None)
+                continue
+            future.set_result(ApprovalResult(approval_id, "cancelled"))
+            self._waiters.pop(approval_id, None)
+            self._requests.pop(approval_id, None)
+            self._settle(approval_id, "cancelled")
+            self._publish_result(
+                {
+                    "approval_id": approval_id,
+                    "decision": "cancelled",
+                    "reason": reason,
+                    "turn_id": request.turn_id,
+                }
+            )
+            invalidated += 1
+        return invalidated
+
+    @staticmethod
+    def _refers_to(payload: object, task_id: str) -> bool:
+        """这条审批的载荷是不是指向这个开发任务（三种既有写法都要认）。
+
+        测试执行授权写 `workspace` + `code_boundary.task_id`；注册审批写
+        `workspace`（见 tools/lifecycle.py）；别的调用方可能只写 `task_id`。
+        """
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("workspace") == task_id:
+            return True
+        if payload.get("task_id") == task_id:
+            return True
+        boundary = payload.get("code_boundary")
+        return isinstance(boundary, dict) and boundary.get("task_id") == task_id
+
+    def _publish_result(self, data: dict) -> None:
+        """发布一条 APPROVAL_RESULT。
+
+        本方法由同步方法调用（契约签名是 `def invalidate_for_task`），所以在有
+        事件循环时把它排进循环；没有循环（纯同步调用）就只做状态收口 —— 没有
+        界面在等，事件无处可发，也不该因此让作废失败。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        try:
+            task = loop.create_task(
+                self.bus.publish(make_event(EventType.APPROVAL_RESULT, data))
+            )
+        except RuntimeError:
+            # 事件循环正在关闭：状态已经收口，通知发不出去就算了，
+            # 绝不能让「作废」因为通知失败而失败。
+            return
+        self._pending_publishes.add(task)
+        task.add_done_callback(self._pending_publishes.discard)
 
     # -- 跨重启的等待记录 --------------------------------------------------
 

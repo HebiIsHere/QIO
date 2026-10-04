@@ -151,6 +151,30 @@ def _knowledge_scope(ctx, item) -> str:
     return "未指定"
 
 
+def _dev_task_row(workspaces, task) -> dict:
+    """开发任务列表的一行（列表接口与放弃接口**共用同一形状**）。
+
+    状态一律来自工作区本身；已放弃的任务照样在列表里（`abandoned: true`），
+    只是界面的「未完成」视图会把它过滤掉。
+    """
+    status = workspaces.status(task.id)
+    return {
+        "id": task.id,
+        "request": task.request[:200],
+        "phase": status.get("phase"),
+        "submitted": bool(status.get("submitted")),
+        "test_passed": status.get("last_test_passed"),
+        # 证据是否对应当前内容：false 就是「改过，结论不算数了」
+        "test_evidence_current": bool(status.get("test_evidence_current")),
+        "updated_at": status.get("last_test_at") or status.get("created_at"),
+        # 有没有「在某个环境里跑它的测试」的授权（范围另见 /api/dev/authorizations）
+        "authorized": bool(status.get("test_authorized")),
+        # 放弃开发（不可逆终态）：界面按 !submitted && !abandoned 过滤未完成列表
+        "abandoned": bool(status.get("abandoned")),
+        "abandoned_at": status.get("abandoned_at"),
+    }
+
+
 def create_app(
     settings: Settings,
     conn: sqlite3.Connection,
@@ -1079,25 +1103,58 @@ def create_app(
 
         「有未完成的任务」入口用它：刷新、重启、断线之后任务都还在，
         不会再出现「模型说要继续开发，界面上却找不到那个任务」。
+
+        已放弃的任务**仍然出现在这里**（带 `abandoned: true`）：这是事实清单；
+        「未完成」是界面按 `!submitted && !abandoned` 过滤出来的视图。
         """
-        rows: list[dict] = []
-        for task in ctx.dev_workspaces.list_tasks():
-            status = ctx.dev_workspaces.status(task.id)
-            rows.append(
-                {
-                    "id": task.id,
-                    "request": task.request[:200],
-                    "phase": status.get("phase"),
-                    "submitted": bool(status.get("submitted")),
-                    "test_passed": status.get("last_test_passed"),
-                    # 证据是否对应当前内容：false 就是「改过，结论不算数了」
-                    "test_evidence_current": bool(status.get("test_evidence_current")),
-                    "updated_at": status.get("last_test_at") or status.get("created_at"),
-                    # 有没有「在某个环境里跑它的测试」的授权（范围另见 /api/dev/authorizations）
-                    "authorized": bool(status.get("test_authorized")),
-                }
-            )
-        return {"tasks": rows}
+        return {
+            "tasks": [
+                _dev_task_row(ctx.dev_workspaces, task)
+                for task in ctx.dev_workspaces.list_tasks()
+            ]
+        }
+
+    @app.post("/api/dev/tasks/{task_id}/abandon")
+    async def abandon_dev_task(task_id: str) -> dict:
+        """放弃一项没做完的开发任务（终态，幂等）。
+
+        语义边界（见 _ABANDON-CONTRACT.md 第 1 章）：放弃**不**删记录、不删工作区
+        文件、不删已注册工具；它只结束这项开发并收回该任务的执行授权。
+
+        顺序很重要：允许放弃时**先作废未决审批，再标放弃**。反过来的话会存在一个
+        「任务已放弃、审批还挂着等人点允许」的窗口，批准后迟到的执行就会拿到授权。
+
+        被拒绝（正在执行 / 已提交）时**零状态改动**：不标放弃、不收回授权、
+        不作废审批、不停任何东西。这个接口**绝不**调用 turn 取消 —— 那会误停用户
+        别的任务；没有「只停止这一个任务」的能力就如实说明（can_stop=false）。
+        """
+        readiness = ctx.dev_workspaces.abandon_readiness(task_id)
+        if readiness["status"] == "not_found":
+            raise HTTPException(status_code=404, detail=readiness["message"])
+        if not readiness["allowed"]:
+            # 拒绝路径：读一次当前状态行即可，一个字段都不改。
+            task = ctx.dev_workspaces.task(task_id)
+            return {
+                "ok": False,
+                "status": readiness["status"],
+                "message": readiness["message"],
+                "revoked": False,
+                "invalidated_approvals": 0,
+                "can_stop": bool(readiness["can_stop"]),
+                "task": _dev_task_row(ctx.dev_workspaces, task) if task else None,
+            }
+        invalidated = ctx.approvals.invalidate_for_task(task_id)
+        result = ctx.dev_workspaces.abandon(task_id)
+        task = ctx.dev_workspaces.task(task_id)
+        return {
+            "ok": bool(result["ok"]),
+            "status": result["status"],
+            "message": result["message"],
+            "revoked": bool(result["revoked"]),
+            "invalidated_approvals": int(invalidated),
+            "can_stop": bool(readiness["can_stop"]),
+            "task": _dev_task_row(ctx.dev_workspaces, task) if task else None,
+        }
 
     @app.get("/api/dev/authorizations")
     async def dev_authorizations() -> dict:

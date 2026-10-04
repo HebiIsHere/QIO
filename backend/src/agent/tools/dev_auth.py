@@ -203,6 +203,13 @@ async def ensure_test_authorization(
 
     返回 None = 已授权（可以继续执行）；否则返回一条失败结果，调用方必须**不执行**。
     """
+    # 终态优先：已放弃的任务**不发起审批、不执行**。判定放在最前面 ——
+    # 不能先看「有没有旧授权」，否则一条还没收回的授权会让放弃后的执行继续跑。
+    if workspaces is not None and task_id and _is_abandoned(workspaces, task_id):
+        return _blocked(
+            "这个开发任务已经被放弃：不会执行生成代码，也不会注册工具。"
+            "要重做请新建开发任务。"
+        )
     executor, timeout = await _resolved_executor(sandbox)
     policy = default_policy_for(definition, executor=executor)
     identity = execution_identity(
@@ -275,6 +282,14 @@ def _content_digest(workspaces, task_id: str) -> str:
         return ""
 
 
+def _is_abandoned(workspaces, task_id: str) -> bool:
+    """任务是否已放弃（拿不到判定就按「没放弃」——但调用方另有工具层守卫）。"""
+    try:
+        return bool(workspaces.is_abandoned(task_id))
+    except Exception:  # noqa: BLE001 - 判定失败不能让授权流程挂掉
+        return False
+
+
 def _display_scope(*, identity: ExecutionIdentity, boundary: TestBoundary) -> dict:
     """给用户看的授权范围：与绑定字段同源，不另写一份说明。"""
     return {
@@ -296,6 +311,13 @@ def _refusal_text(decision: str) -> str:
         )
     if decision == "timeout":
         return "等待确认超时：这次没有执行生成代码。需要你确认之后才能跑测试。"
+    if decision == "cancelled":
+        # 「作废」不是「用户拒绝」：这条路径来自放弃开发（或本轮已停止）。
+        # 说成「你拒绝了」会误导用户，让他以为是自己点的。
+        return (
+            "这次没有执行：这个开发任务已经被放弃，或本轮已停止"
+            "（等待中的确认已作废，不是你的拒绝）。"
+        )
     return f"这次没有执行生成代码（授权结论：{decision}）。"
 
 

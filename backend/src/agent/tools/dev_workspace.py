@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from agent.tools.spec import ToolDefinition
 from agent.tools.project_files import safe_rel_path
@@ -28,7 +29,11 @@ _REQUEST_MARKER = "# 开发需求"
 _STATE_FILE = "state.json"
 # 权威状态文件的格式版本与来源标记：读回时必须同时对上，否则按「未知」处理。
 # 只认自己写的那一份，避免把外部/旧格式的 state.json 当成证据。
-_STATE_SCHEMA = 2
+_STATE_SCHEMA = 3
+# 读回时**同时接受**旧号与新号（向后兼容是硬要求）：schema 2 是本改动之前
+# 写下的文件（没有 abandoned 字段）。旧文件必须仍能读回测试证据 / 授权 /
+# 提交摘要，不能因为升了 schema 就把它们当成「未知」丢掉。
+_STATE_SCHEMAS = frozenset({2, _STATE_SCHEMA})
 _STATE_SOURCE = "qio.dev_workspace"
 # 后端独占的保留文件：文件工具不得写入。agent 只能改「项目内容」，
 # 不能改「权威记录」。（诚实边界：同权限子进程仍能直接改磁盘上的文件，
@@ -83,6 +88,30 @@ AUTH_NARROWED = "narrowed"    # 现在要的范围比授权过的更大 → 不�
 AUTH_EXPIRED = "expired"      # 记录里带了到期时刻且已到期
 
 _LONG_TERM_FILE = "long_term_authorizations.json"
+
+# ---- 放弃开发（终态）-------------------------------------------------------
+# 「放弃」结束一项**没做完**的开发任务：进入不可逆终态，从未完成列表移除，
+# 并收回这个任务的执行授权。它**不**删记录、不删工作区文件、不删已注册工具
+# （见 _ABANDON-CONTRACT.md 第 1 章的语义边界）。
+ABANDONED_PHASE = "abandoned"
+# 放弃前置判定的状态词（契约 §2.4 / §2.5，前端按同一组词显示文案）
+ABANDON_OK = "ok"
+ABANDON_ALREADY = "already_abandoned"
+ABANDON_NOT_FOUND = "not_found"
+ABANDON_SUBMITTED = "submitted"
+ABANDON_RUNNING = "running"
+ABANDON_DONE = "abandoned"
+
+# ---- 活跃执行登记（进程内、不落盘）----------------------------------------
+# 运行登记是**进程内**事实：进程重启后本来就没有任何东西在跑，这是诚实的答案，
+# 所以它不写 state.json。
+RUN_TESTS = "tests"
+RUN_SUBMIT = "submit"
+_RUN_KINDS = frozenset({RUN_TESTS, RUN_SUBMIT})
+STAGE_PREPARING = "preparing"
+STAGE_WAITING_APPROVAL = "waiting_approval"
+STAGE_EXECUTING = "executing"
+_RUN_STAGES = frozenset({STAGE_PREPARING, STAGE_WAITING_APPROVAL, STAGE_EXECUTING})
 
 
 def _str_list(value: object) -> list[str]:
@@ -204,7 +233,7 @@ def _read_state(task_dir: Path) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    if data.get("schema") != _STATE_SCHEMA or data.get("source") != _STATE_SOURCE:
+    if data.get("schema") not in _STATE_SCHEMAS or data.get("source") != _STATE_SOURCE:
         # 旧格式 / 手写的 state.json：不认，一律回「未知」，绝不由此推断测试通过。
         return {}
     return data
@@ -229,6 +258,9 @@ def _write_state(task: "DevTask") -> None:
         "test_authorization": task.test_authorization,
         "submitted_digest": task.submitted_digest,
         "submitted_at": task.submitted_at,
+        # 放弃是终态：它必须落盘，否则重启后任务会「复活」成未完成。
+        "abandoned": task.abandoned,
+        "abandoned_at": task.abandoned_at,
     }
     try:
         (task.dir / _STATE_FILE).write_text(
@@ -260,6 +292,10 @@ class DevTask:
     test_authorization: dict | None = None
     submitted_digest: str | None = None
     submitted_at: str | None = None
+    # 放弃开发：不可逆终态。一旦为 True，所有写操作对它都是无效操作
+    # （见 DevWorkspace 各写方法的前置判定），绝不能擦回 False。
+    abandoned: bool = False
+    abandoned_at: str | None = None
 
 
 class DevWorkspace:
@@ -272,6 +308,9 @@ class DevWorkspace:
         # 工作区级（跨任务）的长期授权：与任务状态分开存，重启后照样生效，
         # 也让「长期」真的跨任务 —— 不然它只是任务级的另一个名字。
         self._long_term: list[dict] = []
+        # 活跃执行登记：task_id → {kind, stage, started_at, stopper}。
+        # 进程内事实，不落盘（重启后本来就没有东西在跑）。
+        self._runs: dict[str, dict] = {}
         self._restore()
         self._restore_long_term()
 
@@ -321,10 +360,23 @@ class DevWorkspace:
                 last_test_at=state.get("last_test_at"),
                 last_test_digest=last_test_digest,
                 evidence_state=evidence_state,
-                test_authorization=_read_authorization(state.get("test_authorization")),
+                # 旧 schema（2）没有这两个键：读回就是 False / None —— 那正是
+                # 「本改动之前写下的任务都没有被放弃」这个事实。
+                abandoned=bool(state.get("abandoned", False)),
+                abandoned_at=state.get("abandoned_at"),
+                # 放弃即收回授权（契约 §2.5）：磁盘上若还留着一条授权记录，
+                # 读回时也不认 —— 终态的不变量不能靠「文件恰好是干净的」维持。
+                test_authorization=(
+                    None
+                    if state.get("abandoned")
+                    else _read_authorization(state.get("test_authorization"))
+                ),
                 submitted_digest=state.get("submitted_digest"),
                 submitted_at=state.get("submitted_at"),
             )
+            if task.abandoned:
+                # 终态的 phase 只有一个合法值：旧文件里若写着别的，按终态纠正。
+                task.phase = ABANDONED_PHASE
             self._tasks[entry.name] = task
             # 磁盘内容可能被外部改过（包括越权的同权限子进程）：对不上就当证据过期。
             if (
@@ -349,8 +401,15 @@ class DevWorkspace:
         records = []
         for item in data:
             record = _read_authorization(item)
-            if record and record.get("lifetime") == LIFETIME_LONG_TERM:
-                records.append(record)
+            if not record or record.get("lifetime") != LIFETIME_LONG_TERM:
+                continue
+            owner = self._tasks.get(record.get("owner_task_id") or "")
+            if owner is not None and owner.abandoned:
+                # 长期授权在放弃的那一刻就被收回了（契约 §2.5）。磁盘上若还留着，
+                # 读回时也不认 —— 否则「放弃」只收掉了任务级那一份，长期那份还在
+                # 暗处对**别的任务**生效。
+                continue
+            records.append(record)
         self._long_term = records
 
     def _write_long_term(self) -> None:
@@ -401,6 +460,218 @@ class DevWorkspace:
         """按创建时间列出全部开发任务（重启后仍可枚举）。"""
         return sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
 
+    # -- 活跃执行登记（进程内、不落盘）--------------------------------------
+
+    def begin_run(
+        self,
+        task_id: str,
+        kind: str,
+        *,
+        stopper: Callable[[], None] | None = None,
+    ) -> dict:
+        """登记「这个任务上正在跑一次执行」。`kind`：tests / submit。
+
+        `stopper` 是**唯一**决定 `can_stop` 的东西，默认 `None`：谁真的留下了
+        「只停止这一次执行」的句柄，谁才登记它。当前架构下没有这样的句柄 ——
+        开发工具跑在主 turn 的协程里（`core/loop.py` 用 `asyncio.gather` 直接
+        await，没有留单次工具调用的取消句柄），所以这里登记不到 stopper，
+        `can_stop` 就是 `False`：**如实报告「没有这个能力」**，不是硬编码常量。
+        将来有人真的把句柄接进来，`can_stop` 会自动变 True。
+
+        登记是进程内事实：进程重启后没有任何东西在跑，所以不写 state.json。
+        """
+        run = {
+            "kind": str(kind or ""),
+            "stage": STAGE_PREPARING,
+            "started_at": _now(),
+            "stopper": stopper if callable(stopper) else None,
+        }
+        # 同一个任务同一时刻只有一次执行（工具调用是顺序的）：后来者覆盖前者，
+        # 免得登记表里留着一个永远不结束的僵尸运行。
+        self._runs[task_id] = run
+        return self._run_view(run)
+
+    def set_run_stage(self, task_id: str, stage: str) -> None:
+        """推进当前执行的阶段：preparing / waiting_approval / executing。
+
+        没有登记在跑的执行时**什么都不做** —— 不凭空造一个运行出来（那会让
+        「正在执行」变成假事实）。不认识的状态词同样不写：登记表里只放真话。
+        """
+        run = self._runs.get(task_id)
+        if run is None or stage not in _RUN_STAGES:
+            return
+        run["stage"] = stage
+
+    def end_run(self, task_id: str, kind: str) -> None:
+        """结束登记。只结束**同一 kind** 的那一次：迟到的 `end_run("tests")`
+        不能把另一个正在跑的 submit 登记抹掉。"""
+        run = self._runs.get(task_id)
+        if run is None or run.get("kind") != str(kind or ""):
+            return
+        self._runs.pop(task_id, None)
+
+    def active_run(self, task_id: str) -> dict | None:
+        """当前登记的运行（没有就是 None）。
+
+        返回 `{"kind", "stage", "started_at", "can_stop"}`：`can_stop` 由登记里
+        有没有 stopper 算出来，调用方不需要（也不允许）自己硬编码。
+        """
+        run = self._runs.get(task_id)
+        if run is None:
+            return None
+        return self._run_view(run)
+
+    @staticmethod
+    def _run_view(run: dict) -> dict:
+        return {
+            "kind": run.get("kind") or "",
+            "stage": run.get("stage") or "",
+            "started_at": run.get("started_at") or "",
+            "can_stop": callable(run.get("stopper")),
+        }
+
+    # -- 放弃开发（不可逆终态）---------------------------------------------
+
+    def is_abandoned(self, task_id: str) -> bool:
+        """这个任务是否已经放弃（工具层守卫用的唯一判定）。"""
+        task = self._tasks.get(task_id)
+        return bool(task is not None and task.abandoned)
+
+    def abandon_readiness(self, task_id: str) -> dict:
+        """放弃之前先算清楚：现在允许放弃吗？不允许的话是哪一种。
+
+        规则顺序即优先级（契约 §2.4）：
+        不存在 → 已经放弃（幂等成功）→ 已提交（拒绝）→ 正在执行（拒绝）→
+        正在等审批（**允许**，等审批不等于在执行）→ 其余（允许）。
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return self._readiness(
+                ABANDON_NOT_FOUND,
+                allowed=False,
+                message=f"找不到这个开发任务：{task_id}",
+            )
+        if task.abandoned:
+            return self._readiness(
+                ABANDON_ALREADY,
+                allowed=True,
+                message="这个开发任务已经放弃过了，不用再放弃一次。",
+            )
+        if task.submitted:
+            return self._readiness(
+                ABANDON_SUBMITTED,
+                allowed=False,
+                message=(
+                    "这个任务已经做完、工具已经注册。放弃开发只处理没做完的任务；"
+                    "要移除已注册的工具，请用撤销工具那条路径。"
+                ),
+            )
+        run = self.active_run(task_id)
+        if run is not None and run["stage"] == STAGE_EXECUTING:
+            # 「正在执行」与「正在等审批」必须分开：执行中放弃会留下一个
+            # 还在写工作区的孤儿执行，所以这里明确拒绝，并如实说明能力。
+            message = (
+                "这个任务正在执行（正在跑测试或正在提交）。"
+                + (
+                    "请先停止当前执行，再放弃开发。"
+                    if run["can_stop"]
+                    else "现在没有只停止这一个任务的能力：请先停止当前执行，再放弃开发。"
+                )
+            )
+            return self._readiness(
+                ABANDON_RUNNING, allowed=False, run=run, message=message
+            )
+        if run is not None and run["stage"] == STAGE_WAITING_APPROVAL:
+            # 等审批 ≠ 在执行：这时放弃是允许的。未决审批由接口层先作废
+            # （approvals.invalidate_for_task），等待方会收到 cancelled 而不是异常。
+            return self._readiness(
+                ABANDON_OK,
+                allowed=True,
+                run=run,
+                message=(
+                    "这个任务正在等待你的确认：放弃会同时作废这次确认，"
+                    "不会执行生成代码。"
+                ),
+            )
+        # 其余（没有执行登记，或登记还停在 preparing）：允许放弃。
+        # 有登记就把登记一并报出去（准备阶段也是事实），但它是「可以放弃」的一支。
+        return self._readiness(
+            ABANDON_OK,
+            allowed=True,
+            run=run,
+            message=(
+                "可以放弃这个开发任务：放弃后不会再执行、不会再注册工具；"
+                "工作区文件与记录保留。"
+            ),
+        )
+
+    @staticmethod
+    def _readiness(
+        status: str,
+        *,
+        allowed: bool,
+        message: str,
+        run: dict | None = None,
+    ) -> dict:
+        return {
+            "status": status,
+            "allowed": bool(allowed),
+            "can_stop": bool(run.get("can_stop")) if run else False,
+            "run": (
+                {
+                    "kind": run.get("kind") or "",
+                    "stage": run.get("stage") or "",
+                    "started_at": run.get("started_at") or "",
+                }
+                if run
+                else None
+            ),
+            "message": message,
+        }
+
+    def abandon(self, task_id: str) -> dict:
+        """放弃一项没做完的开发任务（调用方必须先过 `abandon_readiness`）。
+
+        终态不可逆：`abandoned=True` + `abandoned_at` + `phase="abandoned"`，
+        并收回这个任务的执行授权（含它建立的长期授权）。不删目录、不删文件、
+        不清测试证据、不删已注册工具。
+
+        这里**再判一次**前置条件（不只信调用方）：并发/迟到调用进来时，
+        已提交或正在执行的任务同样一个字都不改。
+        """
+        readiness = self.abandon_readiness(task_id)
+        status = readiness["status"]
+        if status == ABANDON_ALREADY:
+            return {
+                "status": ABANDON_ALREADY,
+                "ok": True,
+                "revoked": False,
+                "message": readiness["message"],
+            }
+        if not readiness["allowed"]:
+            return {
+                "status": status,
+                "ok": False,
+                "revoked": False,
+                "message": readiness["message"],
+            }
+        task = self._tasks[task_id]
+        task.abandoned = True
+        task.abandoned_at = _now()
+        task.phase = ABANDONED_PHASE
+        # 复用既有的收回语义：任务级 + 这个任务建立的长期授权一起收回。
+        revoked = self.revoke_test_authorization(task_id)
+        _write_state(task)
+        return {
+            "status": ABANDON_DONE,
+            "ok": True,
+            "revoked": revoked,
+            "message": (
+                "已放弃这个开发任务：不会再执行、不会再注册工具；"
+                "工作区文件与记录保留，已注册的工具不受影响。"
+            ),
+        }
+
     def status(self, task_id: str) -> dict:
         """任务的权威状态快照（给工具/界面/恢复用）。"""
         task = self._tasks.get(task_id)
@@ -432,6 +703,9 @@ class DevWorkspace:
             "test_evidence_current": evidence_state == EVIDENCE_CURRENT,
             "submitted_digest": task.submitted_digest,
             "submitted_at": task.submitted_at,
+            # 放弃开发（不可逆终态）：界面的「未完成」视图按 !submitted && !abandoned 过滤。
+            "abandoned": bool(task.abandoned),
+            "abandoned_at": task.abandoned_at,
             # 有没有「在这个环境里跑它的测试」的授权（范围与生命周期见 authorizations()）。
             # 只有仍在期限内的记录才算（任务提交后任务级授权即结束；一次性授权
             # 用过就没了；旧格式记录必须重新确认）。
@@ -456,7 +730,8 @@ class DevWorkspace:
         只读快照，保证之后在工作区里的继续改动不会覆盖已提交版本。
         """
         task = self._tasks.get(task_id)
-        if task is None:
+        if task is None or task.abandoned:
+            # 已放弃 = 终态：不复制、不建 archive 目录（契约 §2.2）。
             return None
         target = self.root_dir / "archive" / task_id
         try:
@@ -473,7 +748,8 @@ class DevWorkspace:
 
     def mark_submitted(self, task_id: str) -> None:
         task = self._tasks.get(task_id)
-        if task is not None:
+        # 已放弃的任务不能被「迟到的提交成功」复活成已提交。
+        if task is not None and not task.abandoned:
             task.submitted = True
             task.phase = "submitted"
             task.submitted_at = _now()
@@ -488,7 +764,8 @@ class DevWorkspace:
         仍然显示测试通过）。
         """
         task = self._tasks.get(task_id)
-        if task is None:
+        # 已放弃 = 终态：迟到的测试结果既不能复活任务，也不能清掉 abandoned。
+        if task is None or task.abandoned:
             return
         task.test_runs += 1
         task.last_test_passed = bool(passed)
@@ -531,7 +808,9 @@ class DevWorkspace:
         if lifetime not in _LIFETIMES:
             raise ValueError(f"unknown authorization lifetime: {lifetime!r}")
         task = self._tasks.get(task_id)
-        if task is None:
+        # 已放弃的任务不再接受任何授权：否则「放弃后又被迟到审批授权」会让
+        # 这个终态在语义上复活（下一次执行又会拿到授权）。
+        if task is None or task.abandoned:
             return
         display = dict(scope or {})
         record = {
@@ -643,7 +922,8 @@ class DevWorkspace:
         """
         task = self._tasks.get(task_id)
         record = _read_authorization(task.test_authorization) if task is not None else None
-        if task is None or not record or record.get("consumed_at"):
+        # 已放弃的任务没有「用掉一次授权」这回事（授权在放弃时已经收回）。
+        if task is None or task.abandoned or not record or record.get("consumed_at"):
             return False
         record["consumed_at"] = _now()
         task.test_authorization = record
@@ -707,7 +987,8 @@ class DevWorkspace:
 
     def set_phase(self, task_id: str, phase: str) -> None:
         task = self._tasks.get(task_id)
-        if task is None:
+        # 已放弃 = 终态：阶段不能被任何迟到的调用改回去（哪怕写成 "abandoned"）。
+        if task is None or task.abandoned:
             return
         task.phase = phase
         _write_state(task)
@@ -728,6 +1009,11 @@ class DevWorkspace:
 
     def write_file(self, task_id: str, name: str, content: str) -> None:
         _check_not_reserved(safe_rel_path(name))
+        task = self._tasks.get(task_id)
+        if task is not None and task.abandoned:
+            # 已放弃 = 终态：不落盘、不改内容摘要、不让证据复活。这里直接拒绝
+            # （工具层在此之前已经给出明确失败，这里是最后一道闸）。
+            raise ValueError("这个开发任务已经被放弃：不能再改工作区文件")
         path = self._resolve(task_id, name)
         if path is None:
             raise KeyError(f"workspace not found: {task_id}")
@@ -815,6 +1101,9 @@ class DevWorkspace:
                 "phase": status.get("phase"),
                 "version": status.get("content_digest"),
                 "submitted": bool(status.get("submitted")),
+                # 放弃是终态：主循环据此知道这个任务不能再继续做（也不会注册）。
+                "abandoned": bool(status.get("abandoned")),
+                "abandoned_at": status.get("abandoned_at"),
                 "requires_tests": requires_tests,
                 "test": {
                     "state": status.get("evidence_state") or EVIDENCE_NONE,

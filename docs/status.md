@@ -1872,4 +1872,118 @@ oracle 那一行最有信息量：**把正确话题直接喂进去，top-5 一�
   （本轮在多个 agent 并发时真的红过）。改成相对断言（并行 < 串行 × 0.75），
   并用变异验证证明它**仍有区分度**（把并行改成顺序执行 → 断言必须失败）。
 
+## 本轮变更：放弃未完成的开发任务 + 未完成任务列表滚动（2026-10-04）
+
+**版本：** 本次改动随 **0.1.13** 发布，用户可见的说明见 `docs/releases/v0.1.13.md`。
+版本位共 7 处（`backend/pyproject.toml`、`backend/src/agent/__init__.py`、
+`backend/src/agent/api/server.py` 的 `FastAPI(version=…)`、`frontend/package.json`、
+`frontend/src-tauri/Cargo.toml`、`frontend/src-tauri/tauri.conf.json`、
+`frontend/src-tauri/Cargo.lock` 里 `name = "qio"` 那一条），逐处断言一致。
+**注意 `Cargo.lock` 只能按包名定位**：历史上一次批量替换把 `winapi-util` 的版本也改成
+0.1.12，导致 cargo 解析失败（`f5b16e3` 修回）；本次复核 `winapi-util` 仍是 0.1.11。
+`frontend/package-lock.json` 的根版本停在 0.1.10 是既有情况（0.1.11 / 0.1.12 也未同步），
+本轮沿用先例，未顺手改动。
+
+两件事：① 用户可以**放弃**一项不再需要的未完成开发任务（此前只有「继续开发」「撤销授权」）；
+② 「有 N 个工具开发任务没做完」的清单支持内部滚动，任务多、需求文字长时不再溢出窗口。
+
+### 一、三个动作互不混用（语义边界）
+
+| 动作 | 含义 | 本次范围 |
+| --- | --- | --- |
+| 放弃开发 | 结束一项**没做完**的开发任务：进终态、从未完成列表移除、收回该任务的执行授权 | 新增 |
+| 撤销授权 | 只收回「在某个环境里跑它的测试」的授权，任务本身仍在开发中 | 保留（原有） |
+| 删除已注册工具 | 把已注册、可调用的工具从注册表里去掉 | **不在本轮** |
+
+放弃**不删**数据库记录、**不删**工作区文件、**不删**已注册工具。工作区里的代码、需求与
+测试证据原样保留，作为之后的排查与修复依据。
+
+### 二、终态是不可逆的（后端）
+
+- `DevTask` 增加 `abandoned` / `abandoned_at`，落盘在 `state.json`（schema 升到 3，
+  **读回同时接受 2 与 3**）：本改动之前写下的任务目录必须仍能读回测试证据 / 授权 / 提交摘要，
+  不能因为升了版本号就把旧记录当成「未知」丢掉。
+- **对已放弃的任务，8 个写操作一律无效**：`set_phase` / `record_test` / `mark_submitted` /
+  `write_file` / `archive` / `grant_test_authorization` / `consume_test_authorization`。
+  这是「迟到的执行结果不能让任务复活」的可靠落点 —— 只靠工具层拦截不够：
+  任何一条迟到的调用都不能把 `abandoned` 擦回 `False`，也不能清掉它。
+- `abandon_readiness()` 把前置判定说清楚（状态词即接口的一部分）：
+  `not_found` / `already_abandoned`（幂等成功）/ `submitted`（拒绝：已做完的工具要走别的路径）/
+  `running`（拒绝）/ `ok`。**「正在执行」与「正在等审批」必须分开**：
+  `stage=executing` 时拒绝并请用户先停止当前执行；`stage=waiting_approval` 时**允许**放弃
+  （等审批不等于在执行，这时不放行会让用户对着确认卡无路可走）。
+- 活跃执行登记是**进程内**事实（不落盘：重启后本来就没有东西在跑）。`can_stop` 由登记里的
+  `stopper` **算出来**，不是硬编码：当前架构里开发工具跑在主 turn 协程中
+  （`core/loop.py` 用 `asyncio.gather` 直接 await，没有留单次工具调用的取消句柄），
+  所以 `can_stop=False` —— 如实报告「没有只停止这一个任务的能力」，不假装已经停止，
+  也不去调 turn 取消（那会误停用户别的任务）。
+
+### 三、接口与审批边界
+
+- `POST /api/dev/tasks/{task_id}/abandon`：成功/幂等重复返回 `200 {ok:true, …}`；
+  被拒绝（正在执行 / 已做完）返回 `200 {ok:false, status, message}` 且**零状态改动**
+  （不标放弃、不收回授权、不作废审批、不停任何东西）；未知任务 `404`。
+- 允许放弃时**先作废未决审批，再标放弃**：`ApprovalService.invalidate_for_task()`
+  让等待方收到 `ApprovalResult(..., "cancelled")`（不是异常、不是静默丢弃），落库为 cancelled，
+  并发一条 `APPROVAL_RESULT` 事件让界面上的确认卡自己消失。顺序反了会留下
+  「任务已放弃、审批还挂着等人点允许」的窗口。
+- 注册前的守卫挡在 `tool_store.save` 与 `_register` **之前**（创建审批载荷现在带 `workspace`）：
+  即使审批刚好在放弃前通过，也不会注册出一个用户已经放弃的工具。
+- `GET /api/dev/tasks` 的行增加 `abandoned` / `abandoned_at`：这是**事实清单**，
+  已放弃的任务仍然列出（`abandoned: true`）；「未完成」是界面按 `!submitted && !abandoned`
+  过滤出来的视图。刷新、重启、断线都不会让它重新出现。
+
+### 四、界面（`frontend/src/components/DevTaskEntry.vue`）
+
+- 每行新增「放弃开发」，确认用项目已有的 `frontend/src/components/ui/QConfirm.vue`
+  （`inline` + `danger` 档）：文案说清三件事 —— 结束这项开发并从未完成列表移除、
+  工作区文件与记录保留且**不删除已注册的工具**、同时收回执行授权且没回答的确认会失效，
+  并**点名是哪一项**（清单长时只说「这项开发」用户对不上）。
+- **以后端确认为准**：`ok === true` 才移除条目与更新数量（不做乐观移除）；失败时条目留在列表里、
+  原因就地显示在**滚动容器之外**（`role="alert"`，任何滚动位置都看得见），按钮恢复可点可重试。
+- 提交期间该行禁用、文案变「正在放弃…」，并有第二道防重判断：重复点击不会发出第二个请求。
+- 成功移除最后一项时面板收起，入口整行随列表为空一起消失（不留空面板、不留空入口）。
+- `status="running"` 时原样显示后端给的原因（说清「先停止当前执行」），不说成已放弃。
+
+### 五、列表滚动
+
+- 面板最大高度**随窗口可用高度变化**：
+  `max-height: max(180px, calc(100dvh - var(--qio-top-notes-offset, 12px) - var(--dev-panel-reserve)))`
+  （`--qio-top-notes-offset` 由对话页按顶部提示条 / 设置横幅的**实测高度**写入，
+  见 `.top-notes`；预留项在样式注释里逐条列出，不写成一个说不清来源的常数）。
+- 列表 `.dev-task-list` 自身是滚动容器：`overflow-y: auto` + `overscroll-behavior: contain`
+  （滚列表不带动背后的对话，滚到底继续滚也不穿透）、`tabindex="0"` + `aria-label`
+  （键盘可聚焦后用方向键 / PageDown / End 滚动）、细而安静的滚动条。
+- 错误提示区与滚动容器是兄弟节点，滚到任何位置都看得见；长需求文字 `overflow-wrap: anywhere`，
+  窄窗口不横向溢出、按钮不会被挤出可见区。
+
+### 六、本轮实测（真实实例 + 截图）
+
+- 命令：`cd frontend; npm test` → 全绿；`npx vue-tsc --noEmit` → exit 0；
+  `cd backend; uv run --frozen pytest` → exit 0（全绿）；`python scripts/check_docs.py` → 通过。
+- 隔离实例（独立数据目录 + 独立端口，播种 30 项未完成任务，含多条超长需求与一条连续无空格长串）
+  上的界面采集脚本 `scripts/ui-catalog/dev-abandon.mjs` 共 49 条检查、**0 条 FAIL**，
+  截图落在 `frontend/e2e-shots/ui-catalog/dev-abandon/`（该目录不进仓库）。关键实测数值：
+  - 滚动：滚轮 `0 → 760`、PageDown `603`、End 到底、ArrowUp 回退；列表 `scrollHeight` 远大于
+    `clientHeight`；背景对话的 `scrollTop` 在列表滚动前后**恒为 160**，滚到底继续滚也不穿透；
+    两个视口下横向溢出均为 0px；滚到底后最后一项的按钮 `elementFromPoint` 命中自身；
+    滚到底后顶部入口仍可见；面板高度 712px / 视口 900px。
+  - 滚动条（有头窗口，列表确实占到一条经典滚动条 10px）：从滑块中心向下拖生效（`0 → 1844`）、
+    拖到轨道底部到 `maxScroll`、**反向拖回 `2971 → 0`**、点轨道翻页生效、拖动时背景不动；
+    对照组说明「合成鼠标事件本身能拖动滚动条」。
+  - 放弃：真实后端上点确认后行数 `30 → 29`、只发出一次请求、后端那一行变 `abandoned=true`、
+    刷新后不再出现；**把 uvicorn 进程真的重启**后：已放弃仍为 abandoned、已提交的行不受影响、
+    页面里一条都不复活；只剩 1 项时入口显示「有 1 个」，放弃最后一项后入口 / 面板 / 容器全部消失。
+- **未验证**：真实触控板手势（本机无触控板，只有滚轮小步等价与滚轮/键盘/拖动滚动条三类实测）；
+  以及需要真实容器 / 真实凭据的路径（与本轮改动无关，沿用既有记录）。
+
+### 七、已知限制（诚实边界）
+
+- `can_stop` 目前恒为 `False`：这是如实报告「没有只停止这一个任务的执行能力」。
+  用户看到的是一句明确的话（请先停止当前执行），而不是一个假装的「已放弃」。
+- 凭据授权审批（`credential_grant`）的载荷里没有 `workspace`，所以放弃时**那一张**确认卡不会
+  立刻消失（等它超时自然结束）；但注册前的守卫保证它即使被批准也不会注册工具。
+- `GET /api/dev/tasks` 把 `request` 截到 200 字：界面上显示的、确认层里点名的就是这 200 字
+  （CSS 对任意长无空格串都有断行防御，将来放开长度也不会横向溢出）。
+
 
