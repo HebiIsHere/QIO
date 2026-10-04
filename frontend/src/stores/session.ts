@@ -451,6 +451,26 @@ export const useSessionStore = defineStore("session", {
     /** 正在加载更早的历史（滚动会连续触发，需要防重入） */
     historyOlderLoading: false,
     /**
+     * 历史加载的请求代次：每一次**完整加载**都领一个新号。
+     *
+     * 提交结果前必须同时校验「自己还是最新一次请求」与「发起时的话题没被换掉」——
+     * 慢的旧响应（成功、错误、finally 三处）都要整段丢弃，不能把新话题改回去。
+     */
+    _historyRequestSeq: 0,
+    /**
+     * 向前分页的票据号。
+     *
+     * 只有**还持有当前票据**的那次请求才允许解锁 `historyOlderLoading`：
+     * 旧分页的 finally 不能把新分页的锁打开（否则新分页还在飞时又会被放进来一次）。
+     */
+    _historyOlderToken: 0,
+    /** 开发任务列表的刷新代次：连接后可能并发刷新，只认最后发起的那次。 */
+    _devTasksSeq: 0,
+    /** 执行授权列表的刷新代次（同上）。 */
+    _devAuthSeq: 0,
+    /** 权威运行状态读取的代次（RESYNC 与失败恢复可能并发）。 */
+    _runtimeStateSeq: 0,
+    /**
      * RESYNC 状态机：`normal` 正常实时；`resyncing` 正在拉权威快照
      * （期间实时事件先缓存，快照应用后再按顺序补放）；`failed` 同步失败，
      * 界面要如实说「可能不是最新的」，不能假装已经同步完成。
@@ -1014,8 +1034,12 @@ export const useSessionStore = defineStore("session", {
       approvals: Awaited<ReturnType<typeof api.getRuntimeState>>["approvals"];
       tasks: Awaited<ReturnType<typeof api.getRuntimeState>>["tasks"];
     } | null> {
+      const seq = ++this._runtimeStateSeq;
       try {
         const state = await api.getRuntimeState();
+        // 归属校验：期间又发起了一次权威读取 → 这一份是旧的，整段丢弃
+        // （队列快照自身还有 revision / instance 校验，这里补的是请求代次）
+        if (seq !== this._runtimeStateSeq) return null;
         this.adoptInstance(state.instance_id);
         this.applyTurnQueue(state.turn_queue);
         this.interruptedOperations = (state.interrupted_approvals ?? []).map((item) => ({
@@ -1042,8 +1066,14 @@ export const useSessionStore = defineStore("session", {
      * 「拉不到」擦成空列表 —— 那会让用户以为任务没了，或以为事情已经做完。
      */
     async refreshDevTasks(): Promise<void> {
+      const seq = ++this._devTasksSeq;
+      const instanceAtStart = this.instanceId;
       try {
         const res = await api.getDevTasks();
+        // 归属校验：有更新的刷新已经发起 → 这份是旧列表，别覆盖新的
+        if (seq !== this._devTasksSeq) return;
+        // 归属校验：期间后端换了实例 → 旧实例的任务列表不是当前状态
+        if (this.instanceId !== instanceAtStart) return;
         this.devTasks = res.tasks ?? [];
       } catch {
         // 安静地保留旧值（noticeable 的失败由主流程的 lastError 负责，这里不抢戏）
@@ -1052,8 +1082,12 @@ export const useSessionStore = defineStore("session", {
     },
     /** 拉一次执行授权范围（展开任务清单、每轮结束时用）。 */
     async refreshDevAuthorizations(): Promise<void> {
+      const seq = ++this._devAuthSeq;
+      const instanceAtStart = this.instanceId;
       try {
         const res = await api.listDevAuthorizations();
+        if (seq !== this._devAuthSeq) return;
+        if (this.instanceId !== instanceAtStart) return;
         this.devAuthorizations = res.authorizations ?? [];
       } catch {
         // 同上：这是补充信息，失败保留旧值
@@ -1606,9 +1640,17 @@ export const useSessionStore = defineStore("session", {
       this.cancelling = null;
     },
     async loadHistory() {
+      const seq = ++this._historyRequestSeq;
+      const topicAtStart = this.currentTopicId;
+      // 这次加载开始时就存在的消息 id：用来识别「加载期间新到的」本地消息
+      const idsAtStart = new Set(this.messages.map((m) => m.id));
+      // 这次完整加载作废所有在飞的旧分页票据：它们的 finally 不许再动 loading 标记
+      this._historyOlderToken += 1;
       this.history = { status: "loading", error: null };
       try {
         const ctx = await api.getSessionContext(HISTORY_PAGE_SIZE);
+        // 归属校验（成功路径）：期间换了话题 / 又发起了新的加载 → 这一份是旧答案
+        if (!this._historyResultBelongs(seq, topicAtStart)) return;
         this.currentTopicId = ctx.topic_id;
         this.topicName = ctx.topic_name ?? null;
         this.anchorFragment = ctx.anchor_fragment ?? null;
@@ -1619,12 +1661,39 @@ export const useSessionStore = defineStore("session", {
         this.historyHasMore = Boolean(ctx.has_more);
         this.historyCursor = ctx.next_before ?? null;
         this.historyOlderLoading = false;
-        this.messages = this._mergeHistory(ctx.messages, ctx.tool_records ?? []);
+        const snapshot = this._mergeHistory(ctx.messages, ctx.tool_records ?? []);
+        /**
+         * 快照是「请求发起那一刻」的历史。加载期间新到的本地消息（乐观消息、
+         * 实时助手/工具/叙事条目）比它更新，不能被整段替换掉 ——
+         * 用户刚发出去的那句话不能因为一次历史刷新凭空消失。
+         * 只保留**加载期间新到的**：加载之前就有的本地消息按老规矩让快照接手，
+         * 否则后端已经收录的那条会以两个 id 重复出现。
+         */
+        const arrivedDuring = this.messages.filter(
+          (m) => m.id.startsWith("local_") && !idsAtStart.has(m.id),
+        );
+        this.messages = arrivedDuring.length
+          ? [...snapshot, ...arrivedDuring].sort((a, b) =>
+              a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+            )
+          : snapshot;
         this.history = { status: "ready", error: null };
       } catch (e) {
+        // 归属校验（错误路径）：旧请求的失败不能把**新**话题标成 error
+        if (!this._historyResultBelongs(seq, topicAtStart)) return;
         // 读不到 ≠ 没有：保留已经加载过的消息，只把失败状态交给界面显示与重试
         this.history = { status: "error", error: (e as Error).message };
       }
+    },
+    /**
+     * 这份历史结果还属于当前页面吗？
+     *
+     * 两个条件同时满足才算数：它是最新一次请求的结果，且发起时的话题仍是当前话题。
+     * 成功、错误、finally 三处都要过这一关 —— 慢响应回来时页面可能已经换了话题、
+     * 或者用户已经重新加载过一轮。
+     */
+    _historyResultBelongs(seq: number, topicAtStart: string | null): boolean {
+      return seq === this._historyRequestSeq && this.currentTopicId === topicAtStart;
     },
     /**
      * 把这一页的消息与工具调用记录合成一条时间线。
@@ -1756,6 +1825,9 @@ export const useSessionStore = defineStore("session", {
     async loadOlderHistory(): Promise<boolean> {
       const cursor = this.historyCursor;
       if (!this.historyHasMore || !cursor || this.historyOlderLoading) return false;
+      const token = ++this._historyOlderToken;
+      const seq = this._historyRequestSeq;
+      const topicAtStart = this.currentTopicId;
       this.historyOlderLoading = true;
       try {
         const page = await api.getSessionMessagesBefore(
@@ -1763,6 +1835,9 @@ export const useSessionStore = defineStore("session", {
           cursor,
           HISTORY_PAGE_SIZE,
         );
+        // 归属校验：换了话题 / 重新加载过 → 这一页属于旧页面，整段丢弃
+        // （不串进新列表、不改新话题的游标与 has_more）
+        if (!this._historyResultBelongs(seq, topicAtStart)) return false;
         const known = new Set(this.messages.map((m) => m.id));
         const knownRecords = new Set(
           this.messages.map((m) => m.toolRecordId).filter(Boolean) as string[],
@@ -1782,10 +1857,14 @@ export const useSessionStore = defineStore("session", {
         this.historyCursor = page.next_before ?? null;
         return older.length > 0;
       } catch (e) {
-        this.lastError = `更早的历史没有加载出来：${(e as Error).message}`;
+        // 归属校验（错误路径）：旧分页的失败不该写进新话题的提示
+        if (this._historyResultBelongs(seq, topicAtStart)) {
+          this.lastError = `更早的历史没有加载出来：${(e as Error).message}`;
+        }
         return false;
       } finally {
-        this.historyOlderLoading = false;
+        // 只有还持有当前票据时才解锁：旧分页的 finally 不许解锁**新**分页
+        if (token === this._historyOlderToken) this.historyOlderLoading = false;
       }
     },
     /** 顶部提示里的「重试」：同一份状态机再跑一次 */

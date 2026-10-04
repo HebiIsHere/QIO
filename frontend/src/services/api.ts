@@ -1,5 +1,5 @@
 /** 后端 API 客户端（本机 HTTP + 会话令牌）。 */
-import { authHeaders, resolveBackend } from "./backend";
+import { authHeaders, resetBackend, resolveBackend } from "./backend";
 
 /** API 错误：带上状态码，调用方才能区分「没权限」和「真的坏了」。 */
 export class ApiError extends Error {
@@ -17,21 +17,117 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const { base, token } = await resolveBackend();
-  const resp = await fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(token),
-      ...((init?.headers as Record<string, string> | undefined) ?? {}),
-    },
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new ApiError(resp.status, path, text.slice(0, 200));
+/** 请求超时（已取消）：如实说「没有响应」，调用方据此决定是否重试。 */
+export class ApiTimeoutError extends Error {
+  constructor(
+    readonly path: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`${path} 在 ${Math.round(timeoutMs / 1000)} 秒内没有响应（这次请求已取消，可以重试）`);
+    this.name = "ApiTimeoutError";
   }
-  return resp.json() as Promise<T>;
+}
+
+/**
+ * 用途匹配的超时（毫秒）。
+ *
+ * 不套同一个短超时：会调外部模型/凭据服务的长操作几十秒是正常的，
+ * 而历史页、工具全文这类大对象也比普通读慢。写操作给的等待比读长一点，
+ * 但**超时后绝不自动重试**（见 `request`）。
+ */
+export const API_TIMEOUT_MS = {
+  /** 普通读：设置、列表、健康类 */
+  read: 15_000,
+  /** 大对象 / 权威状态 / 历史页：后端忙的时候也要给足时间 */
+  bulk: 45_000,
+  /** 写：可能已经生效，只如实报错，不自动重复提交 */
+  write: 20_000,
+  /** 会调外部模型或凭据服务的长操作 */
+  long: 90_000,
+} as const;
+
+export interface RequestOptions extends RequestInit {
+  /** 这次请求允许等多久（毫秒）。默认按方法取：GET = read，其余 = write。 */
+  timeoutMs?: number;
+  /** 读类请求的有限重试次数；写操作固定 0。 */
+  retries?: number;
+}
+
+/** 读类请求可以有限重试的失败：超时、网络层失败、（重新解析后的）认证失效。 */
+function isRetryableFailure(err: unknown): boolean {
+  if (err instanceof ApiTimeoutError) return true;
+  if (err instanceof ApiError) return err.status === 401 || err.status === 403;
+  return err instanceof TypeError; // fetch 的网络层失败
+}
+
+async function requestOnce<T>(
+  path: string,
+  init: RequestOptions,
+  timeoutMs: number,
+): Promise<T> {
+  const { base, token } = await resolveBackend();
+  const controller = new AbortController();
+  const external = init.signal ?? null;
+  const onExternalAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const resp = await fetch(`${base}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(token),
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      // 认证明确失效：令牌可能已经轮换、或后端换了实例 → 下一次请求重新解析地址与令牌
+      if (resp.status === 401 || resp.status === 403) resetBackend();
+      throw new ApiError(resp.status, path, text.slice(0, 200));
+    }
+    return (await resp.json()) as T;
+  } catch (err) {
+    if (timedOut) throw new ApiTimeoutError(path, timeoutMs);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    external?.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+/**
+ * 一次请求。
+ *
+ * 读类（GET）失败可以有限重试（默认 1 次）：超时、网络层失败、认证失效后重新解析。
+ * **写操作（发送 / 审批 / 工具执行 / 设置）永远不自动重试** —— 超时只说明「没等到响应」，
+ * 操作可能已经生效，自动重发会变成重复提交；调用方要么查询原操作状态，要么用既有的
+ * 幂等标识（例如 turn 的一次性 claim）。
+ */
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const isRead = method === "GET";
+  const timeoutMs = init.timeoutMs ?? (isRead ? API_TIMEOUT_MS.read : API_TIMEOUT_MS.write);
+  const retries = isRead ? Math.max(0, init.retries ?? 1) : 0;
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await requestOnce<T>(path, init, timeoutMs);
+    } catch (err) {
+      const canRetry =
+        attempt < retries && !init.signal?.aborted && isRetryableFailure(err);
+      if (!canRetry) throw err;
+      attempt += 1;
+    }
+  }
 }
 
 export interface CredentialMeta {
@@ -256,12 +352,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
       signal,
+      // 保存前会真的连一次服务商：属于长操作，不能套普通读的超时
+      timeoutMs: API_TIMEOUT_MS.long,
     }),
   /** 重试验证：作用在同一条记录上，不会重复创建凭据 */
   verifyCredential: (keyId: string, signal?: AbortSignal) =>
     request<{ ok: boolean; key_id: string; verify: VerifyReport }>(
       `/api/credentials/${encodeURIComponent(keyId)}/verify`,
-      { method: "POST", signal },
+      { method: "POST", signal, timeoutMs: API_TIMEOUT_MS.long },
     ),
   /** 保存前验证一份草稿（换钥用）；只请求给定的服务地址，不落库 */
   verifyCredentialDraft: (payload: {
@@ -274,6 +372,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
       signal,
+      timeoutMs: API_TIMEOUT_MS.long,
     }),
   listCredentialModels: (params: { endpoint: string; kind?: string; keyId?: string; secret?: string }, signal?: AbortSignal) => {
     const query = new URLSearchParams({ endpoint: params.endpoint });
@@ -282,7 +381,7 @@ export const api = {
     if (params.secret) query.set("secret", params.secret);
     return request<{ models: string[]; note?: string }>(
       `/api/credentials/models?${query.toString()}`,
-      { signal },
+      { signal, timeoutMs: API_TIMEOUT_MS.long },
     );
   },
   setCredentialDefault: (keyId: string) =>
@@ -316,7 +415,7 @@ export const api = {
   testCredential: (keyId: string) =>
     request<{ key_id: string; verify: VerifyReport; probe: { mode: string; detail: string } }>(
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
-      { method: "POST" },
+      { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
   sendTurn: (message: string, topicId?: string | null) =>
     request<{
@@ -404,7 +503,7 @@ export const api = {
       cancelled: { turn_id: string; message: string }[];
       revision: number;
       instance_id?: string | null;
-    }>("/api/turns/queue"),
+    }>("/api/turns/queue", { timeoutMs: API_TIMEOUT_MS.bulk }),
   /**
    * RESYNC 之后要恢复的**全部**权威状态。
    *
@@ -492,13 +591,16 @@ export const api = {
         }[];
         created_at?: string | null;
       }[];
-    }>("/api/runtime/state"),
+    }>("/api/runtime/state", { timeoutMs: API_TIMEOUT_MS.bulk }),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
       `/api/traces?limit=${limit}&offset=${offset}`,
+      { timeoutMs: API_TIMEOUT_MS.bulk },
     ),
   getTrace: (turnId: string) =>
-    request<TraceDetail>(`/api/traces/${encodeURIComponent(turnId)}`),
+    request<TraceDetail>(`/api/traces/${encodeURIComponent(turnId)}`, {
+      timeoutMs: API_TIMEOUT_MS.bulk,
+    }),
   getTraceSettings: () =>
     request<{ enabled: boolean }>("/api/settings/trace"),
   updateTraceSettings: (enabled: boolean) =>
@@ -582,7 +684,9 @@ export const api = {
       has_more?: boolean;
       /** 取更早历史时传回的游标 */
       next_before?: string | null;
-    }>(`/api/session/context${limit ? `?limit=${limit}` : ""}`),
+    }>(`/api/session/context${limit ? `?limit=${limit}` : ""}`, {
+      timeoutMs: API_TIMEOUT_MS.bulk,
+    }),
   /**
    * 更早的一页历史（用户向上读时按需加载）。
    * `before` 是后端给的复合游标（created_at|id）：同一时刻写入的消息也不会丢或重。
@@ -605,6 +709,7 @@ export const api = {
     }>(
       `/api/session/messages?before=${encodeURIComponent(before)}&limit=${limit}` +
         (topicId ? `&topic_id=${encodeURIComponent(topicId)}` : ""),
+      { timeoutMs: API_TIMEOUT_MS.bulk },
     ),
   listTopics: () =>
     request<{ topics: TopicFingerprint[] }>("/api/graph/topics"),
@@ -648,6 +753,7 @@ export const api = {
       messages: { id: string; role: string; content: string; content_type: string; created_at: string }[];
     }>(
       `/api/fragments/${encodeURIComponent(fragmentId)}/messages?offset=${offset}&limit=${limit}`,
+      { timeoutMs: API_TIMEOUT_MS.bulk },
     ),
   reviseKnowledge: (knowledgeId: string, content: string) =>
     request<{ ok: boolean; knowledge_id: string }>(
@@ -752,7 +858,10 @@ export const api = {
       "/api/settings/memory",
     ),
   runMaintenance: () =>
-    request<{ ok: boolean; started: boolean }>("/api/maintenance/run", { method: "POST" }),
+    request<{ ok: boolean; started: boolean }>("/api/maintenance/run", {
+      method: "POST",
+      timeoutMs: API_TIMEOUT_MS.long,
+    }),
   getMaintenanceSettings: () =>
     request<{ enabled: boolean; interval_hours: number }>("/api/settings/maintenance"),
   updateMaintenanceSettings: (body: { enabled?: boolean; interval_hours?: number }) =>
@@ -785,7 +894,9 @@ export const api = {
     }),
   /** 工具调用历史：一次调用的全文（参数 + 输出） */
   getToolRecord: (recordId: string) =>
-    request<ToolRecordFull>(`/api/tool-records/${encodeURIComponent(recordId)}`),
+    request<ToolRecordFull>(`/api/tool-records/${encodeURIComponent(recordId)}`, {
+      timeoutMs: API_TIMEOUT_MS.bulk,
+    }),
   getToolHistorySettings: () => request<ToolHistorySettings>("/api/settings/tools"),
   updateToolHistorySettings: (body: {
     record_outputs?: boolean;
@@ -832,11 +943,16 @@ export const api = {
       written: { id: string | null; content: string }[];
       pending: { id: string; content: string }[];
       topics: string[];
-    }>("/api/onboarding/submit", { method: "POST", body: JSON.stringify(payload) }),
+    }>("/api/onboarding/submit", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: API_TIMEOUT_MS.long,
+    }),
   suggestFollowUps: (description: string) =>
     request<{ questions: string[] }>("/api/onboarding/followups", {
       method: "POST",
       body: JSON.stringify({ description }),
+      timeoutMs: API_TIMEOUT_MS.long,
     }),
   /**
    * 工具开发任务列表（权威状态，来自工作区本身）。

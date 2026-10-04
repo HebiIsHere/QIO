@@ -77,3 +77,6 @@ backend/qio-*.xml
 
 # install-e2e 的一次性驱动脚本（证据在 .e2e-work/，脚本本身是可再生的）
 .e2e-*.py
+
+# 界面实测的隔离实例运行目录（可再生产物：数据目录、日志、临时文件）
+.verify-ui-run/

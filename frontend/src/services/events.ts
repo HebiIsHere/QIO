@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SSE 事件协议客户端。
  *
  * 认证：EventSource 不能自定义 header，所以先换一张一次性、短 TTL、
@@ -47,16 +47,29 @@ export type EventType = (typeof EVENT_TYPES)[number];
 /** 去重表长度：只保留最近的事件 id（够覆盖任何合理的重连窗口）。 */
 export const DEDUP_LIMIT = 1000;
 
+/**
+ * 事件票据请求的超时。
+ *
+ * 票据只是换一张一次性凭证，正常几十毫秒；它卡住时不能让 `open()` 永远悬着
+ * （那样既连不上事件流、也不会走重连），断开时还要能立刻取消。
+ */
+export const EVENTS_TICKET_TIMEOUT_MS = 10_000;
+
 export interface EventStreamHandle {
   onopen: (() => void) | null;
   onerror: ((detail?: unknown) => void) | null;
   close(): void;
 }
 
-async function fetchEventsTicket(base: string, token: string): Promise<string> {
+async function fetchEventsTicket(
+  base: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<string> {
   const resp = await fetch(`${base}/api/events/ticket`, {
     method: "POST",
     headers: authHeaders(token),
+    signal,
   });
   if (!resp.ok) throw new Error(`events ticket -> ${resp.status}`);
   const data = (await resp.json()) as { ticket?: string };
@@ -71,6 +84,8 @@ export function connectEvents(onEvent: (event: AgentEvent) => void): EventStream
   let closed = false;
   let attempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 当前这次 open 的票据请求：断开时要能立刻取消，不能留在后台 */
+  let ticketAbort: AbortController | null = null;
 
   const handle: EventStreamHandle = {
     onopen: null,
@@ -79,6 +94,8 @@ export function connectEvents(onEvent: (event: AgentEvent) => void): EventStream
       closed = true;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
+      ticketAbort?.abort();
+      ticketAbort = null;
       source?.close();
       source = null;
     },
@@ -110,18 +127,27 @@ export function connectEvents(onEvent: (event: AgentEvent) => void): EventStream
   async function open(): Promise<void> {
     if (closed) return;
     let url: string;
+    ticketAbort?.abort();
+    ticketAbort = new AbortController();
+    const abort = ticketAbort;
+    const ticketTimer = setTimeout(() => abort.abort(), EVENTS_TICKET_TIMEOUT_MS);
     try {
       const { base, token } = await resolveBackend();
-      const ticket = token ? await fetchEventsTicket(base, token) : "";
+      const ticket = token ? await fetchEventsTicket(base, token, abort.signal) : "";
       const params = new URLSearchParams();
       if (ticket) params.set("ticket", ticket);
       if (lastEventId) params.set("last_event_id", lastEventId);
       const qs = params.toString();
       url = `${base}/api/events${qs ? `?${qs}` : ""}`;
     } catch (err) {
-      handle.onerror?.(err);
-      scheduleReconnect();
+      // 断开 / 关闭之后的失败不再上报，也不再排重连（no-op：closed 时 schedule 会直接返回）
+      if (!closed) {
+        handle.onerror?.(err);
+        scheduleReconnect();
+      }
       return;
+    } finally {
+      clearTimeout(ticketTimer);
     }
     if (closed) return;
     source = new EventSource(url);

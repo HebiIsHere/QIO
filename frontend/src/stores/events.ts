@@ -9,6 +9,7 @@ import {
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
 import { useApprovalsStore } from "./approvals";
 import { api } from "../services/api";
+import { resetBackend } from "../services/backend";
 
 /**
  * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
@@ -51,6 +52,15 @@ export type ModelMode = "native" | "text" | "unsupported";
 export const RESYNC_NOTICE = "连接出现过一次抖动，正在同步最新状态…";
 export const RESYNC_NOTICE_DELAY_MS = 1500;
 
+/**
+ * 同步期间事件缓冲的**明确上限**。
+ *
+ * 同步迟迟不返回（或一直失败）时实时事件会一直到达；没有上限就是内存无界增长。
+ * 到顶之后丢**最旧**的一条：ASSISTANT / NARRATIVE 这类事件是累计或幂等的，
+ * 旧的丢掉、保留最新的才不会丢内容；真正被丢掉的增量由紧接着的权威快照补回来。
+ */
+export const RESYNC_BUFFER_LIMIT = 500;
+
 export interface TurnUsage {
   /** 该 turn 的模型输出 token 累计（后端 USAGE/TURN_END 事件，按 turn_id 归属） */
   tokens: number;
@@ -83,8 +93,15 @@ export const useEventStore = defineStore("events", {
     resyncing: false,
     /** 同步期间再次收到 RESYNC → 完成当前同步后再补一次 */
     _resyncAgain: false,
-    /** 同步期间到达的实时事件（按到达顺序暂存） */
+    /** 同步期间到达的实时事件（按到达顺序暂存；有上限，见 RESYNC_BUFFER_LIMIT） */
     resyncBuffer: [] as AgentEvent[],
+    /**
+     * 本轮同步里因为缓冲到顶被丢掉的实时事件条数。
+     *
+     * 只要不为 0，就说明这一轮缓冲已经不完整 —— 必须再拉一次权威状态之后
+     * 才能宣布同步成功，不能静默丢事件还说「已经同步」。
+     */
+    resyncDroppedEvents: 0,
   }),
   getters: {
     turnUsageFor: (state) => (turnId?: string | null): TurnUsage | undefined =>
@@ -133,6 +150,13 @@ export const useEventStore = defineStore("events", {
         return;
       }
       if (this.resyncing) {
+        if (this.resyncBuffer.length >= RESYNC_BUFFER_LIMIT) {
+          // 到顶：丢最旧的一条（保留最新状态），并登记「这一轮缓冲已经不完整」。
+          // 置 _resyncAgain 会让本轮结束后**再拉一次权威快照**，把丢掉的增量补回来。
+          this.resyncBuffer.shift();
+          this.resyncDroppedEvents += 1;
+          this._resyncAgain = true;
+        }
         this.resyncBuffer.push(event);
         return;
       }
@@ -155,8 +179,12 @@ export const useEventStore = defineStore("events", {
               ? session.activateTurn(tid, numberOrNull(d.revision), stringOrNull(d.instance_id))
               : true;
             if (!applied) break;
-            // 后端重启（instance 变化）：补一次完整同步，别只依赖这一条事件
-            if (tid && instanceChanged) void this.startResync();
+            // 后端重启（instance 变化）：地址与令牌都可能变 → 重新解析连接信息，
+            // 并补一次完整同步，别只依赖这一条事件
+            if (tid && instanceChanged) {
+              resetBackend();
+              void this.startResync();
+            }
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
@@ -261,7 +289,11 @@ export const useEventStore = defineStore("events", {
           });
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
           if (applied && !queuedList.length) session.clearQueuedFlags();
-          if (instanceChanged) void this.startResync();
+          if (instanceChanged) {
+            // 换了实例：旧的连接信息（端口 / 令牌）不再可信
+            resetBackend();
+            void this.startResync();
+          }
           break;
         }
         case "RESYNC": {
@@ -619,6 +651,16 @@ export const useEventStore = defineStore("events", {
      */
     async startResync(): Promise<void> {
       const session = useSessionStore();
+      /**
+       * 单飞判断放在**建定时器之前**。
+       *
+       * 以前是先建 `graceTimer` 再判断 `this.resyncing` 直接 return —— 每一次
+       * 重复 RESYNC 都会留下一个没人清的提示定时器（稍后可能写出一条过期提示）。
+       */
+      if (this.resyncing) {
+        this._resyncAgain = true;
+        return;
+      }
       session.resyncState = "resyncing";
       /**
        * 同步提示只在**真的卡住**时才出现。
@@ -631,16 +673,17 @@ export const useEventStore = defineStore("events", {
       const graceTimer = setTimeout(() => {
         if (session.resyncState === "resyncing") session.warning = notice;
       }, RESYNC_NOTICE_DELAY_MS);
-      if (this.resyncing) {
-        this._resyncAgain = true;
-        return;
-      }
       this.resyncing = true;
       try {
         do {
           this._resyncAgain = false;
+          // 本轮的溢出情况单独计：只要中间到过上限，本轮结束就要再来一轮
+          this.resyncDroppedEvents = 0;
           const state = await api.getRuntimeState();
+          const instanceBefore = session.instanceId;
           session.adoptInstance(state.instance_id);
+          // 后端重启（实例变化）→ 地址与令牌都可能变：下一次请求重新解析
+          if (instanceBefore && session.instanceId !== instanceBefore) resetBackend();
           session.applyTurnQueue(state.turn_queue);
           this.applyRuntimeState(state);
           // 开发任务列表是另一份权威状态：重连/抖动之后要一起拉齐
