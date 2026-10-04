@@ -3,9 +3,10 @@
 //! 为什么要有它（2026-10-03 A 项）：sidecar 的所有权判定（读 lease、验进程身份、
 //! 只按 pid 结束）同时被两个二进制使用 ——
 //!
-//! * qio（src/main.rs，外壳）：启动时写 sidecar.lease.json、退出时删；
+//! * qio（src/main.rs，外壳）：启动时写本实例的 sidecar.lease.<pid>.json（外加一份旧版
+//!   单文件名兼容镜像）、退出时只删自己那一份；
 //! * qio-uninstall-helper（src/bin/qio-uninstall-helper.rs，卸载器调用的帮助程序）：
-//!   读 lease、验身份、只收本实例的进程。
+//!   扫安装目录下**所有**实例的记录、逐个验身份、只收本安装实例自己的进程。
 //!
 //! 这两处一旦漂移，后果就是「卸载杀错实例」或「该杀的没杀掉」。所以是 lib 化共享，
 //! **不是**两份复制粘贴（Cargo.toml 里 lib 名 = qio_core，避开主程序 bin 名 qio）。

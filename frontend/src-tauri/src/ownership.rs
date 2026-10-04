@@ -7,7 +7,17 @@
 //! * 运行中的 qio-backend.exe 删不掉也覆盖不了（只有 rename 能成功），所以卸载前必须
 //!   真的把**本实例的**后端结束掉，但又不能碰别的实例。
 //!
-//! 唯一事实源 = 安装目录下的 sidecar.lease.json（外壳启动时写、退出时删）。
+//! 事实源 = 安装目录下的**按实例区分**的 lease 文件：`sidecar.lease.<shell_pid>.json`
+//! （外壳启动时写自己那一份、退出时只删自己那一份）。
+//!
+//! 为什么按实例分文件（2026-10-05 §7 核查发现的缺陷）：旧实现固定写
+//! `sidecar.lease.json` 一个文件 —— 同一安装目录下第二个实例会**覆盖**第一个实例的记录，
+//! 而**先退出的实例会把后启动实例的记录删掉**，卸载器从此看不到它。现在：
+//! * 每个实例写自己的文件（`shell.pid` 命名），互不覆盖；
+//! * 退出只删自己那份（外加"如果旧版镜像记的正是我"才删镜像）；
+//! * 旧版单文件名仍然写一份**兼容镜像**（NSIS 卸载钩子、e2e 脚本、老帮助程序都认这个名字），
+//!   但它是镜像不是事实源：权威记录在各自的 per-pid 文件里。
+//!
 //! 字段（schema = 1）：
 //!   * schema：固定 1，不认识的版本一律拒绝；
 //!   * install_dir：安装目录绝对路径（外壳 exe 所在目录）；
@@ -42,8 +52,37 @@ use serde::{Deserialize, Serialize};
 
 /// lease 的 schema 版本。帮助程序只认这一个值；不认识的版本一律拒绝（宁可不杀）。
 pub const LEASE_SCHEMA: u32 = 1;
-/// lease 文件名：固定放在安装目录下（与外壳 exe 同目录）。
+/// 旧版单文件 lease 名（与外壳 exe 同目录）。
+///
+/// 新外壳仍然写它，但只当**兼容镜像**：NSIS 卸载钩子、e2e 脚本、老帮助程序都认这个名字。
+/// 权威记录是按实例区分的 `sidecar.lease.<shell_pid>.json`（见 [`instance_lease_path`]）。
 pub const LEASE_FILE_NAME: &str = "sidecar.lease.json";
+
+/// 按实例区分的 lease 文件名：`sidecar.lease.<shell_pid>.json`。
+pub fn instance_lease_file_name(shell_pid: u32) -> String {
+    format!("sidecar.lease.{shell_pid}.json")
+}
+
+/// 某个实例**自己**的 lease 路径（权威记录；不会被别的实例覆盖）。
+pub fn instance_lease_path(install_dir: &Path, shell_pid: u32) -> PathBuf {
+    install_dir.join(instance_lease_file_name(shell_pid))
+}
+
+/// 文件名是不是一份 lease 记录（旧版单文件或 per-instance 文件）。
+///
+/// 临时文件（`….tmp<pid>`）不算：它们不参与判定。
+fn is_lease_file_name(name: &str) -> bool {
+    if name == LEASE_FILE_NAME {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix("sidecar.lease.") else {
+        return false;
+    };
+    let Some(pid) = rest.strip_suffix(".json") else {
+        return false;
+    };
+    !pid.is_empty() && pid.chars().all(|c| c.is_ascii_digit())
+}
 
 /// 结束进程的硬超时：taskkill 卡住不能拖住卸载流程（本机实测它报过 0xC0000142）。
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -163,7 +202,10 @@ impl fmt::Display for LeaseError {
 
 impl std::error::Error for LeaseError {}
 
-/// lease 的固定路径：<install_dir>\sidecar.lease.json。
+/// 旧版单文件 lease 的固定路径：<install_dir>\sidecar.lease.json。
+///
+/// 保留它是为了兼容（NSIS 卸载钩子、e2e 脚本、老帮助程序）；**权威记录**是
+/// [`instance_lease_path`] 那份按 pid 命名的文件。
 pub fn lease_path(install_dir: &Path) -> PathBuf {
     install_dir.join(LEASE_FILE_NAME)
 }
@@ -203,6 +245,48 @@ fn same_path(a: &str, b: &str) -> bool {
 /// 为什么必须原子：卸载器随时可能读这份文件，半夜读到写了一半的 JSON 就会把
 /// 「本实例还活着」误判成「lease 非法 → 宁可不杀」，该收的进程收不掉。
 pub fn write_lease(install_dir: &Path, lease: &Lease) -> Result<PathBuf, String> {
+    write_lease_to(&lease_path(install_dir), install_dir, lease)
+}
+
+/// 写「本实例」的权威记录：`sidecar.lease.<shell_pid>.json`。
+///
+/// 每个实例一份文件 → 第二个实例不会覆盖第一个的记录，退出时也只删自己那份。
+pub fn write_instance_lease(install_dir: &Path, lease: &Lease) -> Result<PathBuf, String> {
+    write_lease_to(
+        &instance_lease_path(install_dir, lease.shell.pid),
+        install_dir,
+        lease,
+    )
+}
+
+/// 写旧版单文件名那份**兼容镜像**。
+///
+/// 规则：如果这个名字已经被**另一个还活着的实例**占着，就**不覆盖**（否则又退回
+/// "后写覆盖先写"）；否则写成本实例的记录。返回 `Ok(None)` 表示"让给别人，没写"。
+pub fn write_legacy_mirror(install_dir: &Path, lease: &Lease) -> Result<Option<PathBuf>, String> {
+    let path = lease_path(install_dir);
+    if let Ok(existing) = read_lease_file(&path, install_dir) {
+        if !same_instance(&existing, lease) && instance_is_running(&existing) {
+            return Ok(None);
+        }
+    }
+    write_lease_to(&path, install_dir, lease).map(Some)
+}
+
+/// 只删「记的正是这个 pid 且三要素对得上」的旧版镜像（退出路径用；别人的记录一律不动）。
+pub fn remove_legacy_mirror_if_owned(install_dir: &Path, shell_pid: u32) -> Result<bool, String> {
+    let path = lease_path(install_dir);
+    let Ok(existing) = read_lease_file(&path, install_dir) else {
+        return Ok(false);
+    };
+    if existing.shell.pid != shell_pid || !record_matches_current_process(&existing.shell) {
+        return Ok(false);
+    }
+    remove_lease_at(&path)?;
+    Ok(true)
+}
+
+fn write_lease_to(path: &Path, install_dir: &Path, lease: &Lease) -> Result<PathBuf, String> {
     if lease.schema != LEASE_SCHEMA {
         return Err(format!(
             "拒绝写 schema={} 的 lease（只写 {LEASE_SCHEMA}）",
@@ -211,24 +295,27 @@ pub fn write_lease(install_dir: &Path, lease: &Lease) -> Result<PathBuf, String>
     }
     std::fs::create_dir_all(install_dir)
         .map_err(|err| format!("建目录 {} 失败：{err}", install_dir.display()))?;
-    let final_path = lease_path(install_dir);
-    let tmp_path = install_dir.join(format!("{LEASE_FILE_NAME}.tmp{}", std::process::id()));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| LEASE_FILE_NAME.to_string());
+    // 临时名带 pid：两个实例同时写各自的文件也不会撞（它们连文件名都不同）
+    let tmp_path = install_dir.join(format!("{file_name}.tmp{}", std::process::id()));
     let mut body =
         serde_json::to_string_pretty(lease).map_err(|err| format!("序列化 lease 失败：{err}"))?;
     body.push('\n');
     std::fs::write(&tmp_path, body.as_bytes())
         .map_err(|err| format!("写临时文件 {} 失败：{err}", tmp_path.display()))?;
-    if let Err(err) = std::fs::rename(&tmp_path, &final_path) {
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("原子替换 {} 失败：{err}", final_path.display()));
+        return Err(format!("原子替换 {} 失败：{err}", path.display()));
     }
-    Ok(final_path)
+    Ok(path.to_path_buf())
 }
 
-/// 读 lease 并做全部静态校验：存在 / 可读 / 合法 JSON / schema=1 / install_dir 与传入目录一致。
-pub fn read_lease(install_dir: &Path) -> Result<Lease, LeaseError> {
-    let path = lease_path(install_dir);
-    let raw = match std::fs::read_to_string(&path) {
+/// 读一份 lease 文件并做全部静态校验：可读 / 合法 JSON / schema=1 / install_dir 一致。
+fn read_lease_file(path: &Path, install_dir: &Path) -> Result<Lease, LeaseError> {
+    let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(LeaseError {
@@ -269,6 +356,33 @@ pub fn read_lease(install_dir: &Path) -> Result<Lease, LeaseError> {
     Ok(lease)
 }
 
+/// 读旧版单文件 lease（兼容入口，行为与历史一致）。
+pub fn read_lease(install_dir: &Path) -> Result<Lease, LeaseError> {
+    read_lease_file(&lease_path(install_dir), install_dir)
+}
+
+/// 两份记录是不是**同一个实例**（三要素：pid + 创建时间 + 映像路径）。
+fn same_instance(a: &Lease, b: &Lease) -> bool {
+    a.shell.pid == b.shell.pid
+        && a.shell.created_filetime == b.shell.created_filetime
+        && same_path(&a.shell.exe, &b.shell.exe)
+}
+
+/// 记录里的三要素是不是**当前这个进程**（用于"只删自己那份"）。
+fn record_matches_current_process(record: &LeaseProcess) -> bool {
+    if record.pid != std::process::id() {
+        return false;
+    }
+    let filetime = process_created_filetime(record.pid);
+    let exe = process_image_path(record.pid);
+    match (filetime, exe) {
+        (Some(filetime), Some(exe)) => {
+            filetime == record.created_filetime && same_path(&exe, &record.exe)
+        }
+        _ => false,
+    }
+}
+
 /// 删 lease（幂等：文件本来就不在也算成功）。
 pub fn remove_lease_at(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
@@ -281,6 +395,116 @@ pub fn remove_lease_at(path: &Path) -> Result<(), String> {
 /// 删安装目录下的 lease（幂等）。
 pub fn remove_lease(install_dir: &Path) -> Result<(), String> {
     remove_lease_at(&lease_path(install_dir))
+}
+
+// ---------------------------------------------------------------------------
+// 多实例：扫描 / 识别 / 清理
+// ---------------------------------------------------------------------------
+
+/// 安装目录里的一份 lease 记录。
+#[derive(Debug, Clone)]
+pub struct LeaseCandidate {
+    pub path: PathBuf,
+    pub lease: Lease,
+    /// 旧版单文件名（兼容镜像）那份
+    pub legacy: bool,
+}
+
+/// 扫描结果：可用记录 + 解析不过的记录（后者不参与判定，但原因要看得见）。
+#[derive(Debug, Clone, Default)]
+pub struct LeaseScan {
+    pub candidates: Vec<LeaseCandidate>,
+    pub errors: Vec<(LeaseErrorKind, String)>,
+}
+
+/// 扫出安装目录下**所有**实例的 lease 记录。
+///
+/// * 兼容旧版单文件（`sidecar.lease.json`）与新的按实例文件（`sidecar.lease.<pid>.json`）；
+/// * 同一个实例同时有镜像与权威文件时**只留一份**（优先 per-pid 那份）；
+/// * 顺序稳定：per-pid 在前、同类按 shell pid 升序（判定结果可复现）。
+pub fn scan_leases(install_dir: &Path) -> Result<LeaseScan, LeaseError> {
+    let entries = std::fs::read_dir(install_dir).map_err(|err| LeaseError {
+        kind: if err.kind() == std::io::ErrorKind::NotFound {
+            LeaseErrorKind::Missing
+        } else {
+            LeaseErrorKind::Unreadable
+        },
+        detail: format!("读目录 {} 失败：{err}", install_dir.display()),
+    })?;
+    let mut scan = LeaseScan::default();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_lease_file_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        match read_lease_file(&path, install_dir) {
+            Ok(lease) => scan.candidates.push(LeaseCandidate {
+                path,
+                lease,
+                legacy: name == LEASE_FILE_NAME,
+            }),
+            Err(err) => scan.errors.push((err.kind, err.detail)),
+        }
+    }
+    scan.candidates
+        .sort_by_key(|candidate| (candidate.legacy, candidate.lease.shell.pid));
+    let mut deduped: Vec<LeaseCandidate> = Vec::new();
+    for candidate in scan.candidates {
+        if deduped
+            .iter()
+            .any(|kept| same_instance(&kept.lease, &candidate.lease))
+        {
+            continue;
+        }
+        deduped.push(candidate);
+    }
+    scan.candidates = deduped;
+    Ok(scan)
+}
+
+/// 这个实例（记录里的外壳）是不是**还在跑**：三要素对得上且进程活着。
+pub fn instance_is_running(lease: &Lease) -> bool {
+    matches!(
+        probe_process(lease.shell.pid, &lease.shell.created_filetime, &lease.shell.exe),
+        Probe::Ours(guard) if guard.is_alive()
+    )
+}
+
+/// 安装目录下**正在运行**的其它实例（`exclude_shell_pid` 排除自己）。
+///
+/// 外壳启动时用它做「重复启动同目录」的识别与日志：能看见已有实例，而不是把它的记录覆盖掉。
+pub fn live_instances(install_dir: &Path, exclude_shell_pid: u32) -> Vec<LeaseCandidate> {
+    match scan_leases(install_dir) {
+        Ok(scan) => scan
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.lease.shell.pid != exclude_shell_pid
+                    && instance_is_running(&candidate.lease)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 删掉「外壳进程已经不存在」的实例记录（崩溃残留）。
+///
+/// 只删**确定不存在**的：pid 还在（可能是复用）就一律保留 —— 宁可不删，也不误删活实例的记录。
+pub fn prune_dead_instance_leases(install_dir: &Path) -> Vec<PathBuf> {
+    let Ok(scan) = scan_leases(install_dir) else {
+        return Vec::new();
+    };
+    let mut removed: Vec<PathBuf> = Vec::new();
+    for candidate in scan.candidates {
+        if process_created_filetime(candidate.lease.shell.pid).is_some() {
+            continue;
+        }
+        if remove_lease_at(&candidate.path).is_ok() {
+            removed.push(candidate.path);
+        }
+    }
+    removed
 }
 
 /// 由外壳调用：把「本实例」的进程身份读出来，组成一份 lease 内容。
@@ -834,8 +1058,48 @@ pub struct CloseReport {
     pub killed_shell: bool,
     /// 结束时 lease 是否已删除（外壳自己删掉也算）。
     pub lease_removed: bool,
+    /// 同一安装目录下**其它实例**的处置结果（多实例时才非空；卸载要删整个目录，
+    /// 所以能确认归属的其它实例也一并收掉）。旧消费者忽略这个字段即可。
+    pub instances: Vec<InstanceOutcome>,
     /// 人话（中文），给日志与 NSIS 输出用。
     pub message: String,
+}
+
+/// 同一安装目录下另一个实例的处置结果（[`CloseReport::instances`] 的元素）。
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceOutcome {
+    pub lease_file: String,
+    pub shell_pid: u32,
+    pub backend_pid: u32,
+    /// 处置前外壳是否还活着
+    pub shell_alive: bool,
+    pub action: String,
+    pub reason: String,
+    pub killed_shell: bool,
+    pub killed_backend: bool,
+    pub lease_removed: bool,
+    pub message: String,
+}
+
+impl InstanceOutcome {
+    fn from_report(candidate: &LeaseCandidate, report: &CloseReport) -> InstanceOutcome {
+        InstanceOutcome {
+            lease_file: candidate
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            shell_pid: candidate.lease.shell.pid,
+            backend_pid: candidate.lease.backend.pid,
+            shell_alive: report.shell_alive,
+            action: report.action.clone(),
+            reason: report.reason.clone(),
+            killed_shell: report.killed_shell,
+            killed_backend: report.killed_backend,
+            lease_removed: report.lease_removed,
+            message: report.message.clone(),
+        }
+    }
 }
 
 impl CloseReport {
@@ -855,6 +1119,7 @@ impl CloseReport {
             killed_backend: false,
             killed_shell: false,
             lease_removed: false,
+            instances: Vec::new(),
             message: String::new(),
         }
     }
@@ -876,17 +1141,8 @@ fn fail(mut report: CloseReport, reason: &str, message: String) -> CloseReport {
     report
 }
 
-/// 读 lease 并把两侧的探测结果填进报告；失败就返回拒绝报告。
-fn read_and_probe(req: &CloseRequest, report: &mut CloseReport) ->
-    Result<(Lease, Probe, Probe), CloseReport>
-{
-    let lease = match read_lease(&req.install_dir) {
-        Ok(lease) => lease,
-        Err(err) => {
-            let text = format!("{err}：无法确认本安装实例还在不在，不动任何进程");
-            return Err(refuse(report.clone(), err.kind.reason(), text));
-        }
-    };
+/// 把一份记录的探测结果填进报告。
+fn probe_lease(lease: &Lease, report: &mut CloseReport) -> (Probe, Probe) {
     report.shell_pid = Some(lease.shell.pid);
     report.backend_pid = Some(lease.backend.pid);
     let backend = probe_process(
@@ -903,7 +1159,69 @@ fn read_and_probe(req: &CloseRequest, report: &mut CloseReport) ->
     report.backend_alive = alive_ok(&backend);
     report.shell_identity_ok = identity_ok(&shell);
     report.shell_alive = alive_ok(&shell);
-    Ok((lease, backend, shell))
+    (backend, shell)
+}
+
+/// 读安装目录下的全部记录，选出「要处理的那一个实例」。
+///
+/// 规则（宁可不杀）：
+/// 1. 优先选**外壳三要素对得上且活着**的那个（多个就取 shell pid 最小的，结果可复现）；
+/// 2. 一份记录都没有：有解析错误就用第一条错误的原因（与旧版单文件的语义一致），
+///    否则是 `lease_missing`；
+/// 3. 只有一份记录：就用它 —— 该拒绝的按具体原因拒绝（保持旧行为与旧文案）；
+/// 4. 多份记录且没有一份能确认对应进程还活着 → `lease_ambiguous`，不动任何进程。
+fn select_primary(scan: &LeaseScan, req: &CloseRequest) -> Result<usize, (String, String)> {
+    let mut best: Option<(usize, u32)> = None;
+    for (index, candidate) in scan.candidates.iter().enumerate() {
+        if instance_is_running(&candidate.lease) {
+            let pid = candidate.lease.shell.pid;
+            if best.map(|(_, best_pid)| pid < best_pid).unwrap_or(true) {
+                best = Some((index, pid));
+            }
+        }
+    }
+    if let Some((index, _)) = best {
+        return Ok(index);
+    }
+    if scan.candidates.is_empty() {
+        if let Some((kind, detail)) = scan.errors.first() {
+            return Err((
+                kind.reason().to_string(),
+                format!("{detail}：无法确认本安装实例还在不在，不动任何进程"),
+            ));
+        }
+        return Err((
+            "lease_missing".to_string(),
+            format!(
+                "{} 下没有任何 lease 记录（每个实例一份 sidecar.lease.<pid>.json）：无法确认归属，不动任何进程",
+                req.install_dir.display()
+            ),
+        ));
+    }
+    if scan.candidates.len() == 1 {
+        return Ok(0);
+    }
+    Err((
+        "lease_ambiguous".to_string(),
+        format!(
+            "{} 下有 {} 份 lease 记录，但没有任何一份能确认对应进程还活着：无法确认归属，不动任何进程（{}）",
+            req.install_dir.display(),
+            scan.candidates.len(),
+            scan.candidates
+                .iter()
+                .map(|candidate| format!(
+                    "{}：shell pid {}",
+                    candidate
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    candidate.lease.shell.pid
+                ))
+                .collect::<Vec<String>>()
+                .join("；")
+        ),
+    ))
 }
 
 /// --check-only：**只读**判定，一个进程都不碰、一个文件都不删。
@@ -911,12 +1229,53 @@ fn read_and_probe(req: &CloseRequest, report: &mut CloseReport) ->
 /// 退出码 0 = **本安装实例的壳正在运行**（三要素对得上且活着）→ 可以交给
 /// close_installation（必要时配 --allow-main-exe）去收；
 /// 退出码 3 = 无法确认 / 本实例没在运行 / 记录对不上。
+///
+/// 多实例：优先判定"还活着的那个实例"（`select_primary`）；其余实例的存在与存活情况
+/// 列在 `instances` 里（同样一个进程都不碰）。
 pub fn check_installation(req: &CloseRequest) -> CloseReport {
     let mut report = CloseReport::new(&req.install_dir);
-    let (lease, _backend, shell) = match read_and_probe(req, &mut report) {
-        Ok(parts) => parts,
-        Err(refused) => return refused,
+    let scan = match scan_leases(&req.install_dir) {
+        Ok(scan) => scan,
+        Err(err) => {
+            return refuse(
+                report,
+                err.kind.reason(),
+                format!("{err}：无法确认本安装实例还在不在，不动任何进程"),
+            )
+        }
     };
+    let index = match select_primary(&scan, req) {
+        Ok(index) => index,
+        Err((reason, message)) => return refuse(report, &reason, message),
+    };
+    let lease = scan.candidates[index].lease.clone();
+    for (other_index, candidate) in scan.candidates.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        let alive = instance_is_running(&candidate.lease);
+        report.instances.push(InstanceOutcome {
+            lease_file: candidate
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            shell_pid: candidate.lease.shell.pid,
+            backend_pid: candidate.lease.backend.pid,
+            shell_alive: alive,
+            action: if alive { "would_close".to_string() } else { "not_running".to_string() },
+            reason: if alive { "shell_running".to_string() } else { "shell_exited".to_string() },
+            killed_shell: false,
+            killed_backend: false,
+            lease_removed: false,
+            message: format!(
+                "同一安装目录的另一个实例（shell pid {}）：{}",
+                candidate.lease.shell.pid,
+                if alive { "外壳还活着，close 时会一并收掉" } else { "已经不在，close 时不会碰" }
+            ),
+        });
+    }
+    let (_backend, shell) = probe_lease(&lease, &mut report);
     let backend_note = describe_probe(&_backend, "后端", lease.backend.pid);
     match &shell {
         Probe::Ours(guard) if guard.is_alive() => {
@@ -967,10 +1326,10 @@ pub fn check_installation(req: &CloseRequest) -> CloseReport {
     report
 }
 
-/// 只结束「本安装实例自己的」进程。判定顺序（宁可不杀）：
+/// 收掉**一个**实例：`candidate` 决定读哪份记录、最后删哪份记录。判定顺序（宁可不杀）：
 ///
 /// 默认（allow_main_exe = false，严格）：
-/// 1. lease 缺失 / 不可读 / 非法 JSON / schema≠1 / install_dir 不一致 → 不动任何进程，退出码 3；
+/// 1. 记录缺失 / 不可读 / 非法 JSON / schema≠1 / install_dir 不一致 → 不动任何进程，退出码 3；
 /// 2. backend 三要素对不上（PID 复用、映像路径不同）→ 不动任何进程，退出码 3；
 /// 3. backend 已经退出 / 不存在 → 不动任何进程，退出码 3（确认不了归属就如实报告，不猜）；
 /// 4. 都对得上 → 先给外壳发 WM_CLOSE（外壳自己的退出路径会关 job → 收掉整棵树），
@@ -979,18 +1338,15 @@ pub fn check_installation(req: &CloseRequest) -> CloseReport {
 ///    taskkill 收不掉外壳时（受限环境里它可能看不到这个 pid），退回用手里这个
 ///    **已核验身份的句柄**结束它（TerminateProcess，见 ProcessGuard::terminate）；
 ///    外壳有没有顶层窗口**不影响身份判定**：有窗口才发 WM_CLOSE，没有就跳过直接等超时；
-/// 5. 结束动作之后确认不了 backend 已经死了 → 保留 lease、退出码 3，便于下次再试。
+/// 5. 结束动作之后确认不了 backend 已经死了 → 保留**这一份**记录、退出码 3，便于下次再试。
 ///
 /// allow_main_exe = true（模板把「按名字杀 qio.exe」换成「先 --check-only，再收自己的壳」时用）：
 /// 门槛换成**外壳**的三要素 —— 壳对得上且活着就收壳（先 WM_CLOSE，超时按 pid 结束）；
 /// backend 记录仍然对得上就顺手一起收；对不上就**不碰它**（绝不动无法核验的进程）。
-pub fn close_installation(req: &CloseRequest) -> CloseReport {
+fn close_one(req: &CloseRequest, candidate: &LeaseCandidate) -> CloseReport {
     let mut report = CloseReport::new(&req.install_dir);
-
-    let (lease, backend_probe, shell_probe) = match read_and_probe(req, &mut report) {
-        Ok(parts) => parts,
-        Err(refused) => return refused,
-    };
+    let lease = candidate.lease.clone();
+    let (backend_probe, shell_probe) = probe_lease(&lease, &mut report);
 
     if !req.allow_main_exe {
         // 严格模式：backend 记录必须完全对得上才动手
@@ -1185,14 +1541,22 @@ pub fn close_installation(req: &CloseRequest) -> CloseReport {
         }
     }
 
-    // 成功：删掉 lease（外壳退出时也会删；这里删是为了「卸载后不留记录」）
-    let lease_note = match remove_lease(&req.install_dir) {
-        Ok(()) => {
-            report.lease_removed = true;
-            String::new()
+    // 成功：只删**这个实例**的记录（外壳退出时也会删；这里删是为了「卸载后不留记录」）
+    let mut lease_note = String::new();
+    match remove_lease_at(&candidate.path) {
+        Ok(()) => report.lease_removed = true,
+        Err(err) => lease_note = format!("{err}；"),
+    }
+    // 旧版单文件镜像如果记的正是这个实例，一并删掉：脚本/钩子按这个名字核对"记录已消失"。
+    // 记的是**别人**就绝不碰（那正是"先退出的实例删掉后启动实例记录"的缺陷）。
+    if !candidate.legacy {
+        let mirror = lease_path(&req.install_dir);
+        if let Ok(existing) = read_lease_file(&mirror, &req.install_dir) {
+            if same_instance(&existing, &candidate.lease) {
+                let _ = remove_lease_at(&mirror);
+            }
         }
-        Err(err) => format!("{err}；"),
-    };
+    }
     report.exit_code = 0;
     report.action = if report.killed_backend || report.killed_shell {
         "killed".to_string()
@@ -1238,6 +1602,67 @@ pub fn close_installation(req: &CloseRequest) -> CloseReport {
             format!("；{}", notes.join("；"))
         }
     );
+    report
+}
+
+/// 收掉安装目录下**所有能确认归属**的实例（多实例：卸载要删整个目录）。
+///
+/// 判定规则见 [`close_one`]（每个实例各自过一遍同样的门槛）。
+/// 主实例（`select_primary` 选中的那个）的字段直接放在返回值顶层，保持既有 CLI 语义；
+/// 其它实例的处置结果放在 `instances` 里。
+pub fn close_installation(req: &CloseRequest) -> CloseReport {
+    let scan = match scan_leases(&req.install_dir) {
+        Ok(scan) => scan,
+        Err(err) => {
+            return refuse(
+                CloseReport::new(&req.install_dir),
+                err.kind.reason(),
+                format!("{err}：无法确认本安装实例还在不在，不动任何进程"),
+            )
+        }
+    };
+    let index = match select_primary(&scan, req) {
+        Ok(index) => index,
+        Err((reason, message)) => {
+            return refuse(CloseReport::new(&req.install_dir), &reason, message)
+        }
+    };
+    let mut report = close_one(req, &scan.candidates[index]);
+    let mut notes: Vec<String> = Vec::new();
+    for (other_index, candidate) in scan.candidates.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        // 已经不在的实例不碰（没有可结束的目标，也不该动别人的记录）
+        if !instance_is_running(&candidate.lease) {
+            continue;
+        }
+        let sub = close_one(req, candidate);
+        if sub.exit_code == 0 {
+            report.instances.push(InstanceOutcome::from_report(candidate, &sub));
+        } else {
+            let outcome = InstanceOutcome::from_report(candidate, &sub);
+            notes.push(format!(
+                "另有实例 {}（shell pid {}）无法确认/无法结束：{}",
+                outcome.lease_file, outcome.shell_pid, outcome.message
+            ));
+        }
+    }
+    if !report.instances.is_empty() {
+        let closed: Vec<String> = report
+            .instances
+            .iter()
+            .map(|outcome| format!("{}（shell pid {}）", outcome.lease_file, outcome.shell_pid))
+            .collect();
+        notes.push(format!(
+            "同一安装目录另有 {} 个实例也按同样规则收掉：{}",
+            closed.len(),
+            closed.join("、")
+        ));
+    }
+    if !notes.is_empty() {
+        report.message = format!("{}；{}", report.message, notes.join("；"));
+    }
     report
 }
 
@@ -1973,5 +2398,243 @@ mod tests {
         cmd.args(["/c", "echo", "hello-qio"]);
         let out = run_command_with_timeout(&mut cmd, Duration::from_secs(10)).expect("应拿到输出");
         assert!(String::from_utf8_lossy(&out.stdout).contains("hello-qio"));
+    }
+
+    // ---------- 多实例：按实例区分的记录（§7 修复） ----------
+
+    #[test]
+    fn is_lease_file_name_accepts_only_the_two_forms() {
+        assert!(is_lease_file_name(LEASE_FILE_NAME));
+        assert!(is_lease_file_name("sidecar.lease.1234.json"));
+        // 临时文件不参与判定
+        assert!(!is_lease_file_name("sidecar.lease.json.tmp42"));
+        assert!(!is_lease_file_name("sidecar.lease.1234.json.tmp42"));
+        assert!(!is_lease_file_name("sidecar.lease..json"));
+        assert!(!is_lease_file_name("sidecar.lease.abc.json"));
+        assert!(!is_lease_file_name("other.json"));
+    }
+
+    #[test]
+    fn two_instances_keep_separate_records_and_one_exit_leaves_the_other() {
+        // §7 的核心要求：两个实例各写各的记录；先退出的那个**只删自己那份**。
+        let dir = TempDir::new("two-instances");
+        let a = lease_with(
+            dir.path(),
+            &(111, "1".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(112, "2".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        let b = lease_with(
+            dir.path(),
+            &(222, "3".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(223, "4".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+
+        let path_a = write_instance_lease(dir.path(), &a).unwrap();
+        let path_b = write_instance_lease(dir.path(), &b).unwrap();
+        assert_ne!(path_a, path_b, "两个实例必须落在两个文件里");
+        assert!(path_a.exists() && path_b.exists());
+        assert_eq!(path_a, instance_lease_path(dir.path(), 111));
+        assert_eq!(path_b, instance_lease_path(dir.path(), 222));
+
+        let scan = scan_leases(dir.path()).unwrap();
+        assert_eq!(
+            scan.candidates.len(),
+            2,
+            "两份记录都要能看到：{:?}",
+            scan.candidates
+                .iter()
+                .map(|candidate| candidate.path.clone())
+                .collect::<Vec<PathBuf>>()
+        );
+        assert_eq!(scan.candidates[0].lease.shell.pid, 111);
+        assert_eq!(scan.candidates[1].lease.shell.pid, 222);
+
+        // 实例 A 退出（外壳退出路径做的就是这件事）
+        remove_lease_at(&path_a).unwrap();
+        assert!(!path_a.exists());
+        assert!(path_b.exists(), "先退出的实例不许删掉后启动实例的记录");
+        assert_eq!(read_lease_file(&path_b, dir.path()).unwrap(), b);
+
+        // B 再退出：目录里不再有任何记录
+        remove_lease_at(&path_b).unwrap();
+        assert!(scan_leases(dir.path()).unwrap().candidates.is_empty());
+    }
+
+    #[test]
+    fn old_single_file_layout_loses_the_second_instance() {
+        // 旧布局（固定文件名）的缺陷本体，钉在这里防止改回去：
+        // 后启动的实例覆盖先启动的记录；先退出者删文件会把后者的记录一起删掉。
+        let dir = TempDir::new("legacy-loss");
+        let a = lease_with(
+            dir.path(),
+            &(111, "1".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(112, "2".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        let b = lease_with(
+            dir.path(),
+            &(222, "3".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(223, "4".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        write_lease(dir.path(), &a).unwrap();
+        write_lease(dir.path(), &b).unwrap();
+        assert_eq!(
+            read_lease(dir.path()).unwrap().shell.pid,
+            222,
+            "单文件名布局：后写覆盖先写"
+        );
+        remove_lease(dir.path()).unwrap(); // 实例 A 退出
+        assert!(
+            !lease_path(dir.path()).exists(),
+            "A 退出把 B 的记录一起删了 —— 这就是旧布局的缺陷"
+        );
+    }
+
+    #[test]
+    fn scan_leases_dedupes_the_legacy_mirror_of_the_same_instance() {
+        let dir = TempDir::new("mirror-dedupe");
+        let lease = lease_with(
+            dir.path(),
+            &(333, "5".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(334, "6".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        write_instance_lease(dir.path(), &lease).unwrap();
+        write_lease(dir.path(), &lease).unwrap(); // 同一个实例的兼容镜像
+
+        let scan = scan_leases(dir.path()).unwrap();
+        assert_eq!(scan.candidates.len(), 1, "同一个实例的镜像不能算两份");
+        assert!(!scan.candidates[0].legacy, "留下的应当是 per-pid 那份");
+        assert!(scan.candidates[0].path.ends_with(instance_lease_file_name(333)));
+    }
+
+    #[test]
+    fn legacy_mirror_is_not_overwritten_by_another_live_instance() {
+        // 兼容镜像也不能退回"后写覆盖"：已被另一个**活着的**实例占着就不写。
+        let dir = TempDir::new("mirror-owner");
+        let first = Proc::spawn(ping(60));
+        let second = Proc::spawn(ping(60));
+        let a = lease_with(
+            dir.path(),
+            &identity_tuple(first.pid()),
+            &(9001, "x".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        let b = lease_with(
+            dir.path(),
+            &identity_tuple(second.pid()),
+            &(9002, "y".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+
+        assert!(write_legacy_mirror(dir.path(), &a).unwrap().is_some());
+        assert!(
+            write_legacy_mirror(dir.path(), &b).unwrap().is_none(),
+            "另一个活实例占着镜像时不许覆盖"
+        );
+        assert_eq!(read_lease(dir.path()).unwrap().shell.pid, a.shell.pid);
+        // 同一个实例重写自己的镜像：允许
+        assert!(write_legacy_mirror(dir.path(), &a).unwrap().is_some());
+    }
+
+    #[test]
+    fn prune_removes_only_records_of_dead_shells() {
+        let dir = TempDir::new("prune");
+        let live_pid = std::process::id();
+        let live = lease_with(
+            dir.path(),
+            &(
+                live_pid,
+                process_created_filetime(live_pid).unwrap(),
+                process_image_path(live_pid).unwrap(),
+            ),
+            &(9001, "x".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        let dead = lease_with(
+            dir.path(),
+            &(0xFFFF_FFF0, "1".to_string(), r"C:\QIO\qio.exe".to_string()),
+            &(0xFFFF_FFF1, "2".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        let live_path = write_instance_lease(dir.path(), &live).unwrap();
+        let dead_path = write_instance_lease(dir.path(), &dead).unwrap();
+
+        let removed = prune_dead_instance_leases(dir.path());
+        assert_eq!(removed, vec![dead_path.clone()]);
+        assert!(!dead_path.exists(), "已退出实例的记录要清掉");
+        assert!(live_path.exists(), "活实例的记录不许删");
+    }
+
+    #[test]
+    fn live_instances_lists_other_running_shells_only() {
+        let dir = TempDir::new("live-instances");
+        let shell = Proc::spawn(ping(60));
+        let other = lease_with(
+            dir.path(),
+            &identity_tuple(shell.pid()),
+            &(9001, "x".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        write_instance_lease(dir.path(), &other).unwrap();
+
+        let me = std::process::id();
+        let mine = lease_with(
+            dir.path(),
+            &(
+                me,
+                process_created_filetime(me).unwrap(),
+                process_image_path(me).unwrap(),
+            ),
+            &(9002, "y".to_string(), r"C:\QIO\qio-backend.exe".to_string()),
+        );
+        write_instance_lease(dir.path(), &mine).unwrap();
+
+        let others = live_instances(dir.path(), me);
+        assert_eq!(others.len(), 1, "只列别的活实例：{others:?}");
+        assert_eq!(others[0].lease.shell.pid, shell.pid());
+    }
+
+    #[test]
+    fn close_installation_closes_every_live_instance_in_the_directory() {
+        // 同一安装目录两个实例（各自真进程 + 同一个替身后端 exe）：
+        // 卸载要删整个目录，两个都要按同样门槛收掉，两份记录都要删掉。
+        let dir = TempDir::new("multi-close");
+        let (backend_exe, backend_a) = decoy_backend(dir.path());
+        let shell_a = Proc::spawn(ping(120));
+        write_instance_lease(
+            dir.path(),
+            &lease_with(
+                dir.path(),
+                &identity_tuple(shell_a.pid()),
+                &identity_tuple(backend_a.pid()),
+            ),
+        )
+        .unwrap();
+
+        let mut second = std::process::Command::new(&backend_exe);
+        second.args(["-n", "120", "127.0.0.1"]);
+        let backend_b = Proc::spawn(second);
+        let shell_b = Proc::spawn(ping(120));
+        write_instance_lease(
+            dir.path(),
+            &lease_with(
+                dir.path(),
+                &identity_tuple(shell_b.pid()),
+                &identity_tuple(backend_b.pid()),
+            ),
+        )
+        .unwrap();
+        assert_eq!(scan_leases(dir.path()).unwrap().candidates.len(), 2);
+
+        let report = close_installation(&close_req(dir.path(), 300));
+        assert_eq!(report.exit_code, 0, "两个实例都要能收掉：{}", report.message);
+        assert!(report.killed_backend && report.killed_shell, "{report:?}");
+        assert_eq!(
+            report.instances.len(),
+            1,
+            "另一个实例要出现在 instances 里：{}",
+            report.message
+        );
+        assert_eq!(report.instances[0].lease_removed, true);
+        assert!(!alive(shell_a.pid()) && !alive(backend_a.pid()));
+        assert!(!alive(shell_b.pid()) && !alive(backend_b.pid()));
+        assert!(
+            scan_leases(dir.path()).unwrap().candidates.is_empty(),
+            "两份记录都要删掉（镜像也不能留下）"
+        );
     }
 }

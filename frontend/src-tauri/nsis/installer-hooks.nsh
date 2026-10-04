@@ -62,8 +62,12 @@
   ; 别的目录旁边，整棵删会连带删掉不属于我们的东西），也绝不碰数据目录。
   RMDir /r "$INSTDIR\python-runtime"
   ; 外壳异常退出时可能留下的归属记录/诊断文件：不清掉同样会让目录删不掉
+  ; 归属记录现在按实例区分（sidecar.lease.<pid>.json，见 ownership.rs）——
+  ; 旧版单文件名仍然会写（兼容镜像），两种名字都要清。
   Delete "$INSTDIR\sidecar.lease.json"
   Delete "$INSTDIR\sidecar.lease.json.tmp*"
+  Delete "$INSTDIR\sidecar.lease.*.json"
+  Delete "$INSTDIR\sidecar.lease.*.json.tmp*"
   Delete "$INSTDIR\qio-startup-error.txt"
   RMDir "$INSTDIR"
 !macroend
@@ -76,8 +80,10 @@
 ; 「机器上有个 qio-backend」，不能证明「这个 qio-backend 属于正在卸载的这一份」。
 ;
 ; 现在换成按**所有权记录**收（frontend/src-tauri/src/ownership.rs 是唯一实现）：
-;   * 外壳启动时在安装目录写 sidecar.lease.json，记下自己与后端的 pid + 进程创建时间
-;     （100ns FILETIME）+ 映像路径。PID 复用会被创建时间挡掉。
+;   * 外壳启动时在安装目录写**按实例区分**的记录 sidecar.lease.<pid>.json
+;     （外加一份旧版单文件名 sidecar.lease.json 的兼容镜像），记下自己与后端的 pid +
+;     进程创建时间（100ns FILETIME）+ 映像路径。PID 复用会被创建时间挡掉；
+;     同一安装目录的多个实例各有各的记录，帮助程序会逐个核验、逐个收。
 ;   * 这里调同源的 qio-uninstall-helper.exe：记录对得上才动手（先 WM_CLOSE 让外壳自己
 ;     按 job 收整棵树，超时才 taskkill /PID），对不上就**什么都不动**。
 ;   * 帮助程序缺失 / 起不来 / 判定不了 → 退出码非 0，直接往下走，
