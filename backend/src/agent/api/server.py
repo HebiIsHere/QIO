@@ -239,6 +239,7 @@ def create_app(
     # 附件服务：登记 / 副本 / 引用 / 可用性检查的唯一入口（见 services/attachments.py）。
     # 注册放在 create_app（而不是 AppContext.__init__）：附件相关的文件都归本模块所有，
     # 不改 A 名下的 services/app.py。
+    from agent.trace.redact import redact_text
     from agent.services.attachments import AttachmentError, AttachmentService
 
     attachments = AttachmentService(conn, settings.data_dir)
@@ -1064,6 +1065,36 @@ def create_app(
 
     # -- attachments -------------------------------------------------------
 
+    async def _prepare_attachment_in_background(attachment_id: str) -> None:
+        """后台准备：**工作线程只做文件 I/O**，数据库动作全部回到事件循环线程。
+
+        为什么必须这么绕（2026-10-06 CI py3.12/windows 真事故）：AttachmentService 与
+        整个应用共用同一个 sqlite 连接（storage/db.py 用 check_same_thread=False）。
+        以前这里把整个 run_prepare 丢进 asyncio.to_thread，工作线程于是既读又写那个
+        共享连接，与事件循环线程并发使用同一个连接对象 —— 结果是
+        sqlite3.InterfaceError，以及「刚 POST 成功、紧接着 GET 404」的幻影状态。
+        本机（Windows + py3.11）反复全绿只是时序运气。
+        """
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            return
+        outcome = await asyncio.to_thread(attachments.copy_to_disk, att)
+        attachments.apply_outcome(attachment_id, outcome)
+
+    def _note_background_failure(task: asyncio.Task) -> None:
+        """后台任务的异常必须被取走：否则日志里只剩 'Task exception was never retrieved'。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logging.getLogger(__name__).warning(
+                "附件后台准备失败：%s", redact_text(str(exc)), exc_info=exc
+            )
+
+    def _schedule_prepare(attachment_id: str) -> None:
+        task = asyncio.create_task(_prepare_attachment_in_background(attachment_id))
+        task.add_done_callback(_note_background_failure)
+
     @app.post("/api/attachments")
     async def create_attachment(body: dict) -> dict:
         """登记一个本地文件：**按服务端 stat 出来的真实大小**决定存副本还是记引用。
@@ -1085,7 +1116,7 @@ def create_app(
             )
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        asyncio.create_task(asyncio.to_thread(attachments.run_prepare, att.id))
+        _schedule_prepare(att.id)
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
     @app.post("/api/attachments/upload")
@@ -1155,7 +1186,7 @@ def create_app(
         att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
-        asyncio.create_task(asyncio.to_thread(attachments.run_prepare, att.id))
+        _schedule_prepare(att.id)
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
     @app.delete("/api/attachments/{attachment_id}")

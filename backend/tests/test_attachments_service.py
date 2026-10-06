@@ -514,3 +514,18 @@ def test_turn_note_says_reference_caveat(svc, tmp_path, monkeypatch):
     assert note is not None
     assert "引用本地文件" in note
     assert "不保证内容仍然存在" in note
+
+def test_apply_outcome_after_delete_cleans_the_orphan_copy(svc: AttachmentService, tmp_path: Path):
+    """复制期间用户把附件移除了：行已经删掉，落库无处可落 → 提交出来的副本必须一并清掉。
+
+    否则 attachments 目录里会留下没有数据库记录的副本（用户看不见、也删不掉）。
+    """
+    source = _write(tmp_path / "orphan.txt", b"o" * 256)
+    att = svc.prepare(str(source))
+    outcome = svc.copy_to_disk(att)  # 纯文件 I/O（工作线程做的那一半）
+    assert outcome.stored_path and Path(outcome.stored_path).is_file()
+
+    svc.delete(att.id)  # 复制进行中：用户点了移除
+    assert svc.apply_outcome(att.id, outcome) is None
+    assert not Path(outcome.stored_path).exists()
+    assert source.is_file()  # 用户原文件仍然不动
