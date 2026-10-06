@@ -102,6 +102,21 @@ class TextAdapter(BaseAdapter):
 
     # -- completion -------------------------------------------------------
 
+    def _request_client(self) -> Any:
+        """发起请求用的客户端：**关掉 SDK 自己的自动重试**（与 native 档同一口径）。
+
+        openai SDK 默认 max_retries=2：明确的厂商/传输错误会被静默重试，我们看到
+        的是重试后那一次的结果 —— 一次 5xx 可能因此变成一个「正常回答」。QIO 的
+        语义是原样上抛 → 整轮如实失败（provider_error）。
+        """
+        with_options = getattr(self._client, "with_options", None)
+        if with_options is None:
+            return self._client
+        try:
+            return with_options(max_retries=0)
+        except Exception:  # noqa: BLE001 - 兼容客户端不认识这个参数时原样用
+            return self._client
+
     async def complete(
         self,
         messages: list[ChatMessage],
@@ -120,7 +135,7 @@ class TextAdapter(BaseAdapter):
             kwargs["max_tokens"] = max_tokens
 
         try:
-            raw = await self._client.chat.completions.create(**kwargs)
+            raw = await self._request_client().chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             from agent.adapters.errors import normalize_error
 

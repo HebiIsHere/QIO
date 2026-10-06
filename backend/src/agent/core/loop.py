@@ -234,8 +234,10 @@ class _AssistantStream:
 
         角色**在发起前就定了**，这里不做任何角色改判（也不存在「提升」这一步）：
 
-        * 回答调用（tools=[]）→ 正文是正式回答：补一条 interim=false、streaming=false
-          的累计快照做**收尾校准**（首次展示已经在流式增量里发生过）。
+        * 回答调用（tools=[]）→ 正文是正式回答：先保证它已经以 streaming=true 的
+          增量出现过（没到发布阈值的真实增量在这里补发一次），再补一条
+          interim=false、streaming=false 的累计快照做**收尾校准** —— 首次展示
+          永远不是校准快照。
         * 工作调用（tools=[...] 或取消/失败）→ 正文是进度说明：留在过程区；这一批
           带工具时等 flush_interim 补 stage_id / call_ids，其余情况直接收尾。
         * completion=None（取消 / 失败 / 断流）→ 已确认文字原样保留在过程区，只收尾
@@ -256,6 +258,12 @@ class _AssistantStream:
                 self._pending += text
         if completion is not None and completion.tool_calls and not self._answer_from_start:
             return  # 工具轮：文字已经实时发过，等 flush_interim 补阶段信息
+        if self._answer_from_start and self._pending and self._saw_text:
+            # 回答调用收尾前还有**没到发布阈值**的真实增量：先按累计快照发一条
+            # streaming=true，再发 streaming=false 的收尾校准 —— 保证「首次展示
+            # 永远不是校准快照」（契约 §1.1）。没有收到任何增量、整段返回的路径
+            # 不在此列：那种情况不许假装流式。
+            await self._flush(force=True)
         await self._settle()
 
     async def _settle(self) -> None:

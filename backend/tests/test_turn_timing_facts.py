@@ -417,6 +417,59 @@ async def test_normalized_provider_error_from_the_model_call_is_provider_error()
     assert end["actions"] == ["retry"]
 
 
+async def test_answer_call_provider_error_fails_the_turn_honestly(tmp_path):
+    """回答调用的明确厂商错误 → 整轮 failed + provider_error，不重试出一个假答案。
+
+    复现（第五轮复核 ②）：SDK 默认 max_retries=2 会把 5xx 静默重试，有状态假厂商的
+    下一个脚本步骤会被当成成功返回 —— 「厂商错误」于是变成一个假答案。
+    """
+    from unittest.mock import AsyncMock
+
+    from agent.adapters.base import ChatMessage, Completion
+    from agent.adapters.errors import ProviderInternalError
+    from agent.credentials.store import MemoryKeyring
+
+    class _AnswerBoom:
+        mode = "text"
+        model = "boom"
+        supports_stream = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    message=ChatMessage(role="assistant", content="我先看一下。")
+                )
+            raise ProviderInternalError("厂商返回 500：stream-aborted")
+
+    ctx = _app_ctx(tmp_path)
+    ctx.credentials._kr = MemoryKeyring()
+    adapter = _AnswerBoom()
+    ctx.build_adapter = AsyncMock(return_value=adapter)
+    topic = ctx.topics.nodes.create_topic("回答失败").id
+    tctx = ctx.turns.submit("回答我", topic)
+    await ctx.turns.wait(tctx.turn_id, timeout=10)
+
+    ends = [e.data for e in ctx.bus._history if e.type.value == "TURN_END"]
+    assert len(ends) == 1
+    end = ends[0]
+    assert end["status"] == "failed"
+    assert end["reason_code"] == "provider_error"
+    assert "500" in (end["reason"] or "")
+    assert end["actions"] == ["retry"]
+    # 失败的回答调用不得编出正式回答；两次调用各一次，没有被重试
+    answers = [
+        e.data
+        for e in ctx.bus._history
+        if e.type.value == "ASSISTANT" and not e.data.get("interim")
+    ]
+    assert answers == [], answers
+    assert adapter.calls == 2
+
+
 # ---- 服务层：TURN_END 出口用台账覆盖 core 的值 -------------------------------
 
 
