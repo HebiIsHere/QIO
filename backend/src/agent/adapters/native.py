@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 from agent.adapters.base import (
+    STREAM_DONE,
+    STREAM_TEXT,
+    STREAM_TOOL_CALL,
     BaseAdapter,
     ChatMessage,
     Completion,
     ModelUsage,
+    StreamDelta,
     ToolCall,
     ToolSpec,
     ToolCallParseError,
@@ -26,9 +30,120 @@ logger = logging.getLogger(__name__)
 
 MAX_PARSE_RETRIES = 2
 
+# 供应商明确表示「不认识 stream_options」时才去掉它重试一次（窄路径）：
+# 其它 4xx 一律按真实错误抛出，不靠重试掩盖。
+_STREAM_OPTIONS_HINTS = ("stream_options", "stream options", "include_usage")
+
+
+def _rejects_stream_options(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(hint in text for hint in _STREAM_OPTIONS_HINTS)
+
+
+def _stream_rejected(exc: Exception) -> bool:
+    """「这条请求形状不被接受」：交给上层整段降级，而不是让整轮失败。
+
+    只覆盖两类，都是有证据的「这里没法流式」：
+
+    * 端点明确拒绝请求（400 家族的 InvalidToolCall）；
+    * 客户端根本不返回异步流（UnsupportedCapability）。
+
+    认证 / 限流 / 网络错误**不**在这里降级：它们换一条路径也照样失败，
+    应当如实抛出去。
+    """
+    from agent.adapters.errors import InvalidToolCall, UnsupportedCapability
+
+    return isinstance(exc, (UnsupportedCapability, InvalidToolCall))
+
+
+def _unsupported_stream(exc: Exception) -> Exception:
+    from agent.adapters.errors import UnsupportedCapability
+
+    return UnsupportedCapability(f"streaming not usable on this endpoint: {exc}"[:300])
+
+
+def _model_dump(obj: Any) -> dict[str, Any] | None:
+    """SDK 对象 / dict / 普通对象 → dict（拿不到就 None，绝不猜）。
+
+    真实 openai SDK 给的是 pydantic 模型（有 model_dump）；自定义兼容端点
+    可能给 dict 或普通对象 —— 这里都按**同一个字段名**读取之后交给
+    ModelUsage.from_provider 归一化，不新增任何猜测。
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    dumper = getattr(obj, "model_dump", None)
+    if dumper is not None:
+        try:
+            payload = dumper()
+        except Exception:  # noqa: BLE001 - 用量字段缺失不能影响回答
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+    data = getattr(obj, "__dict__", None)
+    return dict(data) if isinstance(data, dict) else None
+
+
+class _ToolCallAccumulator:
+    """把流式工具调用碎片攒成一次可执行的调用。
+
+    碎片的到达顺序、id/name 是否分片、参数是否跨 chunk 都不确定；这里只按 index
+    归档，最终一次性解析 JSON。中间状态永远不外泄 —— 没攒成合法 JSON 就没有工具
+    调用，也就没有任何东西会被执行。
+    """
+
+    def __init__(self) -> None:
+        self._items: dict[int, dict[str, Any]] = {}
+
+    def add(
+        self,
+        index: int,
+        *,
+        call_id: Any = None,
+        name: Any = None,
+        arguments: Any = None,
+    ) -> None:
+        item = self._items.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        if call_id:
+            item["id"] = str(call_id)
+        if name:
+            item["name"] += str(name)
+        if arguments:
+            item["arguments"] += str(arguments)
+
+    @property
+    def seen(self) -> bool:
+        return bool(self._items)
+
+    def build(self) -> list[ToolCall] | None:
+        if not self._items:
+            return None
+        from agent.core.narrative import split_narrative_arguments
+
+        calls: list[ToolCall] = []
+        for index in sorted(self._items):
+            item = self._items[index]
+            raw = item["arguments"] or "{}"
+            try:
+                arguments = parse_arguments(raw)
+            except Exception:
+                raise ToolCallParseError(
+                    tool_call_id=item["id"], name=item["name"], raw_arguments=raw
+                ) from None
+            arguments, narrative = split_narrative_arguments(arguments)
+            calls.append(
+                ToolCall(
+                    id=item["id"], name=item["name"], arguments=arguments, narrative=narrative
+                )
+            )
+        return calls
+
 
 class NativeAdapter(BaseAdapter):
     mode = "native"
+    # OpenAI 兼容协议的真流式（见 stream()）。
+    supports_stream = True
 
     def __init__(
         self,
@@ -136,6 +251,133 @@ class NativeAdapter(BaseAdapter):
                     ]
                 )
                 logger.warning("tool-call parse retry %d/%d", attempt, self.parse_retries)
+
+    # -- real streaming (plan §2.1) ---------------------------------------
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[ToolSpec],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """真 SSE 增量（chat.completions stream=True）。
+
+        边界（与 StreamDelta 的契约一致）：
+
+        * 正文碎片逐片透出，不做任何改写；
+        * 工具调用的 id / name / arguments 碎片**只在这里**累积，攒成合法 JSON 之后
+          才出现在 kind="done" 的 completion 里 —— 没有 done 就没有可执行的调用；
+        * usage 只在流结束时由供应商给出，所以显式要求 stream_options.include_usage；
+          供应商不认这个参数时（窄判定）去掉它重试一次，此时用量如实为 None，
+          而不是伪造一个 0。
+        """
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": self.to_openai_messages(messages),
+            "tools": self.to_openai_tools(tools),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        yielded = False
+        try:
+            async for delta in self._stream_once(kwargs):
+                yielded = True
+                yield delta
+            return
+        except Exception as exc:  # noqa: BLE001 - 两条窄降级路径
+            if yielded:
+                raise  # 已经透出正文就不能重来（会重复展示）
+            if _rejects_stream_options(exc):
+                logger.warning("provider rejected stream_options; retrying without usage")
+            elif _stream_rejected(exc):
+                raise _unsupported_stream(exc) from exc
+            else:
+                raise
+        kwargs.pop("stream_options", None)
+        try:
+            async for delta in self._stream_once(kwargs):
+                yield delta
+        except Exception as exc:  # noqa: BLE001 - 同上；此时仍然什么都没发出去
+            if _stream_rejected(exc):
+                raise _unsupported_stream(exc) from exc
+            raise
+
+    async def _stream_once(self, kwargs: dict[str, Any]) -> AsyncIterator[StreamDelta]:
+        from agent.adapters.errors import normalize_error
+
+        try:
+            raw = await self._client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - normalize provider errors
+            raise normalize_error(exc) from exc
+        if not hasattr(raw, "__aiter__"):
+            # 客户端不返回异步流（自定义兼容端点 / 假客户端）：如实降级，
+            # 而不是在这里假装拿到了一条流。
+            from agent.adapters.errors import UnsupportedCapability
+
+            raise UnsupportedCapability("client did not return an async stream")
+
+        accumulator = _ToolCallAccumulator()
+        content_parts: list[str] = []
+        usage: ModelUsage | None = None
+        finish_reason: str | None = None
+        try:
+            async for chunk in raw:
+                chunk_usage = ModelUsage.from_provider(
+                    _model_dump(getattr(chunk, "usage", None))
+                )
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue  # 有些供应商单独发一个只带 usage 的尾包
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                text = getattr(delta, "content", None) if delta is not None else None
+                if text:
+                    content_parts.append(text)
+                    yield StreamDelta(kind=STREAM_TEXT, text=text)
+                fragments = getattr(delta, "tool_calls", None) if delta is not None else None
+                for fragment in fragments or []:
+                    function = getattr(fragment, "function", None)
+                    index = int(getattr(fragment, "index", 0) or 0)
+                    accumulator.add(
+                        index,
+                        call_id=getattr(fragment, "id", None),
+                        name=getattr(function, "name", None),
+                        arguments=getattr(function, "arguments", None),
+                    )
+                    # 只通知「出现了工具调用」，碎片参数不往上走。
+                    yield StreamDelta(
+                        kind=STREAM_TOOL_CALL,
+                        index=index,
+                        call_id=getattr(fragment, "id", None),
+                        name=getattr(function, "name", None),
+                    )
+                reason = getattr(choice, "finish_reason", None)
+                if reason:
+                    finish_reason = reason
+        except Exception as exc:  # noqa: BLE001 - 传输层异常统一归一化
+            raise normalize_error(exc) from exc
+
+        # 组装在 try 之外：ToolCallParseError 是解析错误，不能被归一化成 provider 错误。
+        completion = Completion(
+            message=ChatMessage(
+                role="assistant",
+                content="".join(content_parts) or None,
+                tool_calls=accumulator.build(),
+            ),
+            raw=None,
+            usage=usage,
+            finish_reason=finish_reason,
+        )
+        yield StreamDelta(kind=STREAM_DONE, completion=completion)
 
     def _to_completion(self, raw: Any) -> Completion:
         message = raw.choices[0].message

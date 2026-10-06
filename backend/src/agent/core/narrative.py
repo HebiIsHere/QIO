@@ -6,14 +6,17 @@
 * 工具事实、参数、风险、审批权限不经过本模块，也不受本模块影响；
 * `silent`（不说明）是默认选项：解析失败、文本为空、kind 非法一律返回 None。
 
-模型给的原始信封只允许三个键：``kind`` / ``text`` / ``explanation``。
+模型给的原始信封只允许四个键：``kind`` / ``text`` / ``explanation`` / ``stage``。
 其它键（例如模型试图提交 ``risk``、``capabilities``、``description``）直接丢弃，
 所以文案不可能覆盖系统生成的真实操作信息。
+
+``stage`` 是阶段协议的操作（plan §1.2）：本模块只负责把形状摆正（必须是 dict），
+白名单解析与状态机在 ``core/stage.py``；非法一律当成「没有阶段操作」。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent.trace.redact import redact_text
@@ -21,6 +24,8 @@ from agent.trace.redact import redact_text
 # 工具调用参数里的保留字段名：模型写在这里，adapter 解析时剥离，
 # 工具与风险判断永远看不到它。
 NARRATIVE_KEY = "_qio"
+# 信封里的阶段操作键（plan §1.2）；解析在 core/stage.py。
+STAGE_KEY = "stage"
 
 NARRATIVE_KINDS = ("announce", "progress", "warning", "result")
 
@@ -36,13 +41,23 @@ class Narrative:
     text: str
     explanation: str = ""
     silent: bool = False  # 只带 explanation、没有 text 时为 True
+    # 模型给的阶段操作原文（未解析）：白名单解析与状态机在 core/stage.py。
+    # compare=False：dict 不参与相等比较，也不影响可哈希性（与 ToolCall.narrative 一致）。
+    stage: dict[str, Any] | None = field(default=None, compare=False)
 
 
-def _clean(value: object, limit: int) -> str:
-    """统一清洗：非字符串丢弃、密钥形态内容脱敏、长度截断。"""
+def clean_text(value: object, limit: int) -> str:
+    """统一清洗：非字符串丢弃、密钥形态内容脱敏、长度截断。
+
+    阶段名 / 阶段说明也必须走这里（plan §1.2 规则 5）。
+    """
     if not isinstance(value, str):
         return ""
     return redact_text(value).strip()[:limit]
+
+
+def _clean(value: object, limit: int) -> str:
+    return clean_text(value, limit)
 
 
 def parse_narrative(raw: object) -> Narrative | None:
@@ -52,6 +67,8 @@ def parse_narrative(raw: object) -> Narrative | None:
     kind = raw.get("kind")
     text = _clean(raw.get("text"), MAX_TEXT_CHARS)
     explanation = _clean(raw.get("explanation"), MAX_EXPLANATION_CHARS)
+    stage = raw.get(STAGE_KEY)
+    stage = dict(stage) if isinstance(stage, dict) else None
     if kind not in NARRATIVE_KINDS:
         # 只带 explanation（例如"这次调用需要你确认，因为…"）时按 progress 记录，
         # 但没有文本 → 不产生过程说明行。
@@ -61,7 +78,13 @@ def parse_narrative(raw: object) -> Narrative | None:
             return None
     if not text and not explanation:
         return None
-    return Narrative(kind=str(kind), text=text, explanation=explanation, silent=not text)
+    return Narrative(
+        kind=str(kind),
+        text=text,
+        explanation=explanation,
+        silent=not text,
+        stage=stage,
+    )
 
 
 def split_narrative_arguments(arguments: dict[str, Any]) -> tuple[dict[str, Any], dict | None]:

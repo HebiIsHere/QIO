@@ -6,7 +6,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, AsyncIterator
 
 
 class AdapterMode(str, Enum):
@@ -117,6 +117,41 @@ class Completion:
         return self.message.tool_calls
 
 
+# -- 流式增量（plan §2.1）-------------------------------------------------
+
+STREAM_TEXT = "text"
+STREAM_TOOL_CALL = "tool_call"
+STREAM_DONE = "done"
+
+
+@dataclass(frozen=True)
+class StreamDelta:
+    """一次模型调用流出的一段增量。
+
+    契约（plan §2.1，调用方必须按这个边界使用）：
+
+    * kind="text"：正文增量。它可能是半个词、半个字，调用方只允许**拼接**，
+      不得把它当作完整语义去解析，更不得据此执行任何东西。
+    * kind="tool_call"：出现了工具调用增量（可能只是一个碎片）。它的
+      name / call_id 只用于「这条响应是工具轮」的判定与诊断；**碎片参数不在
+      这里暴露** —— 参数只在 adapter 内部组装，永远不当作正文展示，也永远
+      不执行未完成参数。
+    * kind="done"：流结束，completion 是组装完成的整段结果，也是**唯一**
+      可以交给工具执行与落库的入口。没有 done = 流被中断/出错：已确认文本
+      保留，但不得执行任何调用，也不得把半截 JSON 当结果。
+
+    adapter 必须保证 kind="done" 至多出现一次，且是最后一段。
+    """
+
+    kind: str
+    text: str = ""
+    # 工具调用序号（同一响应内从 0 开始）：碎片按它归档，不靠到达顺序猜。
+    index: int = 0
+    call_id: str | None = None
+    name: str | None = None
+    completion: "Completion | None" = None
+
+
 class ParseError(Exception):
     """Raised when tool-call arguments cannot be parsed."""
 
@@ -151,6 +186,10 @@ class BaseAdapter(ABC):
     # 影响上下文预算：走 API tools 字段与拼进 prompt 只能算一次。
     tools_in_prompt: bool = False
 
+    # 这条 adapter 是否**真的**能边生成边返回（plan §2.1）。
+    # 默认 False：不支持就由 AgentLoop 走整段降级，**不假装流式**。
+    supports_stream: bool = False
+
     @abstractmethod
     async def complete(
         self,
@@ -162,6 +201,24 @@ class BaseAdapter(ABC):
     ) -> Completion:
         """Run one completion step; returns parsed tool calls (may be empty)."""
         raise NotImplementedError
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[ToolSpec],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """真流式增量（见 StreamDelta 的契约）。
+
+        默认实现直接抛 NotImplementedError：调用方（AgentLoop）据此走整段降级，
+        而不是误以为拿到了一条流。声明 supports_stream = True 的子类必须给出真实
+        实现 —— 「声明支持但抛异常」同样会被降级，不会假装流式。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support streaming")
+        # 下面这行不可达，只是让本方法保持异步生成器的形状（async for 可用）。
+        yield StreamDelta(kind=STREAM_DONE)  # pragma: no cover
 
     def to_chat(self, messages: list[ChatMessage]) -> Completion:
         raise NotImplementedError
