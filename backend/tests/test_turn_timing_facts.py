@@ -333,20 +333,20 @@ def test_provider_error_names_cover_the_adapter_taxonomy():
     assert declared <= set(PROVIDER_ERROR_NAMES)
 
 
-async def test_plain_exception_from_the_model_call_is_a_provider_error():
-    """模型调用抛出的普通异常也必须归到 provider_error（与 D 的独立验证同一口径）。
+async def test_unexpected_exception_from_the_model_call_is_internal_error():
+    """未归一化的意外异常 = **内部故障**，不得冒充厂商故障（Lead 裁决 2026-10-06）。
 
-    适配器没有走 errors.py 归一化时（自定义端点 / 假厂商），上层只看得到类名；
-    循环必须在**模型调用这条路径**上就把失败说清楚，不能让它冒充内部故障。
+    分类只看异常类名（系统事实）：ProviderError 家族 → provider_error；
+    其它异常 → internal_error，reason 如实带异常类名与原文。
     """
 
-    class _BoomAdapter:
+    class _BugAdapter:
         mode = "text"
-        model = "boom"
+        model = "bug"
         supports_stream = False
 
         async def complete(self, messages, tools, **kwargs):
-            raise RuntimeError("厂商返回 500：上游错误")
+            raise RuntimeError("验证用的意外内部错误")
 
     events, emitter = _collector()
 
@@ -355,7 +355,7 @@ async def test_plain_exception_from_the_model_call_is_a_provider_error():
         from agent.core.loop import AgentLoop
         from agent.tools.registry import ToolRegistry
 
-        loop = AgentLoop(_BoomAdapter(), ToolRegistry(), EventBus(), turn_id=ctx.turn_id)
+        loop = AgentLoop(_BugAdapter(), ToolRegistry(), EventBus(), turn_id=ctx.turn_id)
         ctx.loop = loop
         try:
             await loop.run("hi")
@@ -369,7 +369,49 @@ async def test_plain_exception_from_the_model_call_is_a_provider_error():
 
     end = _end_event(events)
     assert end["status"] == "failed"
-    assert end["reason_code"] == "provider_error"  # 不是 internal_error
+    assert end["reason_code"] == "internal_error"  # 不是 provider_error
+    assert "RuntimeError" in end["reason"]  # 系统事实：异常类名
+    assert "验证用的意外内部错误" in end["reason"]
+    assert end["stopped_by"] == "system"
+    assert end["actions"] == ["retry"]
+
+
+async def test_normalized_provider_error_from_the_model_call_is_provider_error():
+    """对照：适配器**归一化过**的供应商错误才是 provider_error。"""
+    from agent.adapters.errors import ProviderInternalError
+
+    class _ProviderBoomAdapter:
+        mode = "text"
+        model = "fake-boom"
+        supports_stream = False
+
+        async def complete(self, messages, tools, **kwargs):
+            raise ProviderInternalError("厂商返回 500：上游错误")
+
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        from agent.api.bus import EventBus
+        from agent.core.loop import AgentLoop
+        from agent.tools.registry import ToolRegistry
+
+        loop = AgentLoop(
+            _ProviderBoomAdapter(), ToolRegistry(), EventBus(), turn_id=ctx.turn_id
+        )
+        ctx.loop = loop
+        try:
+            await loop.run("hi")
+        finally:
+            ctx.loop = None
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "failed"
+    assert end["reason_code"] == "provider_error"
     assert "厂商返回 500" in end["reason"]
     assert end["stopped_by"] == "system"
     assert end["actions"] == ["retry"]

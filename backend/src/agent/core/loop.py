@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from agent.adapters.errors import ProviderError, ProviderInternalError, UnsupportedCapability
+from agent.adapters.errors import UnsupportedCapability
 from agent.adapters.base import (
     STREAM_DONE,
     STREAM_TEXT,
@@ -1343,15 +1343,13 @@ class AgentLoop:
                 EventType.ERROR,
                 {"code": "planning_failed", "message": str(exc)[:200], "recoverable": False},
             )
-            # 这个 try 里只跑**模型调用**（工具、存储、审批都在它之外）：从这条
-            # 路径逃出来的任何异常都是**供应商路径**的失败。适配器已经归一化过的
-            # 错误原样上抛；其它异常如实包一层 ProviderInternalError（原类名与原
-            # 文都保留在消息里），否则上层只拿得到一个普通 RuntimeError 的类名，
-            # 会把「厂商返回 500」误报成内部故障（TURN_END 的 reason_code 是产品
-            # 事实，不能靠猜）。
-            if isinstance(exc, ProviderError):
-                raise
-            raise ProviderInternalError(f"{type(exc).__name__}: {exc}") from exc
+            # **原样上抛**（Lead 裁决 2026-10-06）：适配器归一化过的异常自己带着
+            # 「这是厂商/传输路径失败」的事实；没有归一化的异常就是 QIO 内部的意外
+            # 故障，绝不能包装成 ProviderError —— provider_error 的含义是「厂商故障」，
+            # 把内部 bug 报成厂商故障是对用户撒谎。
+            # 上层（core/turn.py::_failure_facts）按类名如实分类：
+            # ProviderError 家族 → provider_error；其它 → internal_error（reason 带类名）。
+            raise
 
     async def _await_completion(
         self, messages: list[ChatMessage], tools: list[ToolSpec]
