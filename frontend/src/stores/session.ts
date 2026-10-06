@@ -442,6 +442,14 @@ export const useSessionStore = defineStore("session", {
     warning: null as string | null,
     /** 正在「取消中」的 turn_id（停止按钮反馈，避免假装已停止） */
     cancelling: null as string | null,
+    /**
+     * 已经结束的 turn（有界，只用于本地竞态判断）。
+     *
+     * 受理 ≠ 开始执行：`POST /api/turns` 的回执可能**晚于** `TURN_END` 到达
+     * （没有可用凭据时一轮十几毫秒就结束了）。那种情况下绝不能再把运行态点亮，
+     * 否则界面会永远停在「运行中」：停止按钮一直在、发送一直被禁用。
+     */
+    endedTurnIds: [] as string[],
     /** 历史读取状态（失败时保留已有消息，只标记失败） */
     history: { status: "idle", error: null } as HistoryState,
     /** 是否还有更早的历史可以加载 */
@@ -808,6 +816,11 @@ export const useSessionStore = defineStore("session", {
         this.turnQueue = { ...this.turnQueue, running: null };
       }
       if (this.activeTurnId === turnId) this.activeTurnId = null;
+      // 记下「这一轮已经结束」：发送回执迟到时不能把它重新点亮（见 endedTurnIds）
+      if (turnId) {
+        this.endedTurnIds.push(turnId);
+        if (this.endedTurnIds.length > 50) this.endedTurnIds.shift();
+      }
     },
     /**
      * 一轮结束时收敛工具卡。
@@ -1899,7 +1912,9 @@ export const useSessionStore = defineStore("session", {
           optimistic.turnId = res.turn_id;
           if (queued) {
             this.markTurnQueued(res.turn_id);
-          } else {
+          } else if (!this.endedTurnIds.includes(res.turn_id)) {
+            // 只有「还没结束的」才点亮运行态：快轮次的 TURN_END 可能已经先到，
+            // 那时再点亮就永远不会有人来熄灭它（真实缺陷：界面卡在运行中）。
             this.turnRunning = true;
             this.turnPhase = "waiting";
           }

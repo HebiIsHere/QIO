@@ -696,7 +696,7 @@
   重启恢复）。
 - **验证（真实界面）：** `scripts/interactive-verify/ui-scenarios.mjs` 驱动真实 Chrome 走
   加材料 → 写注释 → 只勾选一条 → 多选成组 → 真实鼠标拖动 → 提交 → 演示意图 → 板面虚线预览 → 批量条件，
-  18 项断言全过，截图见该目录说明；字体路径只通过验收专用配置放宽（`scripts/interactive-verify/vite.e2e.config.ts`）。
+  18 项断言全过，截图见该目录说明；字体路径只通过验收专用配置放宽（`frontend/vite.e2e.config.ts`）。
 - **Known limitations：**
   - QIO 的真实理解、模型调用与外部执行**没有接入**：提交会落库并标记「第一阶段没有接入 QIO 模型调用，
     QIO 还没有真正读取或理解这些内容」，`delivery.delivered` 恒为 false；演示意图只走可控状态机，不代表 QIO 判断。

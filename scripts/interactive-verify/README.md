@@ -19,8 +19,10 @@
    $env:QIO_DATA_DIR = "$env:TEMP\qio-e2e-im"; $env:QIO_DEV_INSECURE = "1"
    backend\.venv\Scripts\python.exe -m uvicorn agent.main:create_app --factory --host 127.0.0.1 --port 8791
    ```
-2. 前端：`node frontend/node_modules/vite/bin/vite.js --config scripts/interactive-verify/vite.e2e.config.ts --port 5299 --host 127.0.0.1`
+2. 前端：`node frontend/node_modules/vite/bin/vite.js --config frontend/vite.e2e.config.ts --port 5299 --host 127.0.0.1`
    （环境变量 `VITE_QIO_BACKEND_URL=http://127.0.0.1:8791`）
+   说明：这个验收配置**放在 frontend/ 下**，因为它要 import `vite` 与 `@vitejs/plugin-vue`，
+   只有 frontend/ 能解析到 node_modules；放在 scripts/ 下时子智能体的独立工作区会 ERR_MODULE_NOT_FOUND。
 3. 跑验收：`node scripts/interactive-verify/ui-scenarios.mjs`（可用 `IM_APP` / `IM_BACKEND` 覆盖地址）
 4. 截图输出在 `%TEMP%\qio-visual\shots`。
 
