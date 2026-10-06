@@ -186,6 +186,129 @@ def test_selection_only_keeps_visible_cards(db_conn):
     assert visible["selection"] == [note_a["id"]]
 
 
+# --- 删除 × 未勾选：复核缺陷的边界（不得借「撤回」泄露） -------------------
+
+
+def _stored_cards(conn: sqlite3.Connection) -> dict[str, dict]:
+    state = board_store.load_board(conn, BOARD)["state"]
+    return {card["id"]: card for card in state["cards"]}
+
+
+def test_unchecked_then_deleted_note_never_leaks_back(db_conn, marking):
+    """勾选并提交过 → 取消勾选 → 删除：文字 / id / 链接（含含义）都不许借「撤回」回到载荷。
+
+    复核缺陷：project_baseline 的删除分支没有先确认「当前是否仍允许查看」，
+    于是删除优先于未勾选，把未勾选注释的原文与链接又带进了 before 与 pending 预览。
+    """
+    other = _note("一直可见的另一条注释", checked=True)
+    secret = _note(SECRET_NOTE, checked=True)
+    link = models.new_link(secret["id"], other["id"], meaning="秘密关系含义")
+    _save(db_conn, _state([other, secret], links=[link]))
+    assert _submit(db_conn)["status"] == "succeeded"
+
+    stored = _stored_cards(db_conn)
+    gone = dict(stored[secret["id"]])
+    gone["checked"] = False
+    gone["deleted"] = True
+    # other 保持允许查看（提交成功会清空勾选，这里重新勾上）
+    kept_other = dict(stored[other["id"]])
+    kept_other["checked"] = True
+    _save(db_conn, _state([kept_other, gone]), reason="uncheck-delete")
+
+    pending = _dump(board_store.load_pending(db_conn, BOARD)["expressions"])
+    assert SECRET_NOTE not in pending, "pending 预览不得出现未勾选注释的文字"
+    assert secret["id"] not in pending
+    assert link["id"] not in pending
+    assert "秘密关系含义" not in pending
+
+    result = _submit(db_conn)
+    for payload in (
+        result["before"],
+        result["after"],
+        result["expressions"],
+        result["visibleRange"],
+        result["submission"],
+    ):
+        text = _dump(payload)
+        assert SECRET_NOTE not in text
+        assert secret["id"] not in text
+        assert link["id"] not in text
+        assert "秘密关系含义" not in text
+    assert [card["id"] for card in result["before"]["cards"]] == [other["id"]]
+    assert [card["id"] for card in result["after"]["cards"]] == [other["id"]]
+    assert result["expressions"] == []
+    assert result["status"] == "empty"
+
+
+def test_hidden_then_deleted_note_never_leaks_back(db_conn, marking):
+    """明确隐藏 + 删除：同样不得回到 before / 表达式 / pending。"""
+    note = _note(HIDDEN_NOTE, checked=True)
+    _save(db_conn, _state([note]))
+    assert _submit(db_conn)["status"] == "succeeded"
+
+    hidden = dict(_stored_cards(db_conn)[note["id"]])
+    hidden["checked"] = False
+    hidden["hidden"] = True
+    hidden["deleted"] = True
+    _save(db_conn, _state([hidden]), reason="hide-delete")
+
+    pending = _dump(board_store.load_pending(db_conn, BOARD)["expressions"])
+    assert HIDDEN_NOTE not in pending
+    assert note["id"] not in pending
+
+    result = _submit(db_conn)
+    for payload in (result["before"], result["after"], result["expressions"], result["submission"]):
+        assert HIDDEN_NOTE not in _dump(payload)
+        assert note["id"] not in _dump(payload)
+
+
+def test_checked_but_deleted_note_still_reports_retraction(db_conn, marking):
+    """对照：仍然勾选（允许查看）时删除 → before 保留它并生成「撤回」表达。"""
+    note = _note("允许查看的说明", checked=True)
+    other = _note("另一条允许查看的说明", checked=True)
+    link = models.new_link(note["id"], other["id"], meaning="相关")
+    _save(db_conn, _state([note, other], links=[link]))
+    assert _submit(db_conn)["status"] == "succeeded"
+
+    stored = _stored_cards(db_conn)
+    rechecked = dict(stored[note["id"]])
+    rechecked["checked"] = True
+    rechecked["deleted"] = True
+    rechecked_other = dict(stored[other["id"]])
+    rechecked_other["checked"] = True
+    _save(db_conn, _state([rechecked, rechecked_other]), reason="recheck-delete")
+
+    result = _submit(db_conn)
+    assert result["status"] == "succeeded"
+    kinds = _kind(result["expressions"])
+    assert "note_deleted" in kinds, "仍允许查看的注释被删除，删除这件事本身可以被表达"
+    assert "link_removed" in kinds, "两端都仍允许查看时，链接移除也可以被表达"
+    assert [card["id"] for card in result["before"]["cards"]] == [note["id"], other["id"]]
+    assert "允许查看的说明" in _dump(result["before"])
+    assert [card["id"] for card in result["after"]["cards"]] == [other["id"]]
+    assert note["id"] not in _dump(result["after"])
+
+
+def test_deleted_material_still_reports_retraction(db_conn, marking):
+    """材料默认可见：删除材料仍然表达「撤回」（不受未勾选边界影响）。"""
+    material = _material("file", "方案.pdf", meta={"name": "方案.pdf"})
+    _save(db_conn, _state([material]))
+    assert _submit(db_conn)["status"] == "succeeded"
+
+    gone = dict(_stored_cards(db_conn)[material["id"]])
+    gone["deleted"] = True
+    _save(db_conn, _state([gone]), reason="delete-material")
+
+    result = _submit(db_conn)
+    assert result["status"] == "succeeded"
+    kinds = _kind(result["expressions"])
+    assert "material_removed" in kinds
+    assert "方案.pdf" in result["expressions"][0]["summary"]
+    assert [card["id"] for card in result["before"]["cards"]] == [material["id"]]
+    assert result["after"]["cards"] == []
+    assert "方案.pdf" not in _dump(result["after"])
+
+
 # --- 保存 / 快照 / 草稿 --------------------------------------------------
 
 
