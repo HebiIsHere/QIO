@@ -178,16 +178,13 @@ def test_retry_reuses_saved_copy_and_new_turn_can_read_the_content(client: TestC
     text = _read_attachment_text(client, new_id)
     assert MARKER in text, ("新轮读取工具读不到原附件内容", text[:200])
 
-    # 原轮归属与历史不变
+    # 原轮归属不变（行级事实）
     old = client.get(f"/api/attachments/{att['id']}").json()["attachment"]
     assert old["turn_id"] == turn1, ("原行归属被改写", old)
-    page = client.get("/api/session/context").json()
-    messages = page.get("messages") or []
-    carried = [m for m in messages if any(a.get("id") == att["id"] for a in (m.get("attachments") or []))]
-    assert carried, (
-        "原轮历史里找不到这个附件（历史仍应能打开原副本）",
-        [sorted(m.keys()) for m in messages][-3:],
-    )
+    # 「历史里仍带原附件」需要**真的执行过一轮**（有用户消息行）才谈得上：
+    # 本夹具没有 provider，messages 表是空的，所以这里不做历史断言（C 的诊断已核实
+    # message rows: []）。历史富集路径由 C 的 tests/test_attachment_history.py 与
+    # 阶段二实机（假厂商 + 真跑一轮）覆盖。
 
 
 # ---- 2. 已绑到别的轮次 / 跨话题：结构化拒绝，绝不静默丢弃 ---------------------------
@@ -215,14 +212,20 @@ def test_stealing_attachment_bound_to_another_turn_is_rejected(client: TestClien
 
 def test_cross_topic_attachment_is_rejected_with_reason(client: TestClient, tmp_path: Path):
     ctx = client.app.state.ctx
+    # 建新话题会**同时把当前话题切过去**（C 的诊断核实过）。要测「跨话题」，
+    # 就先把原话题 id 抓在手里，提交时显式用它当 topic_id —— 它与附件所属话题必然不同。
+    original_topic = ctx.current_topic()
     other_topic = ctx.topics.nodes.create_topic("别的话题")
     other_id = getattr(other_topic, "id", None) or str(other_topic)
+    assert original_topic != other_id, (
+        "装置前提不成立：两个话题 id 相同，这条用例测不到跨话题拒绝",
+        {"original": original_topic, "other": other_id},
+    )
     src = tmp_path / "别话题的附件.txt"
     src.write_text(MARKER, encoding="utf-8")
     att = _register(client, src, topic_id=other_id)
 
-    current = client.get("/api/session/context").json().get("topic_id")
-    resp = _submit(client, "跨话题取件", [att["id"]], topic_id=current)
+    resp = _submit(client, "跨话题取件", [att["id"]], topic_id=original_topic)
     assert resp.status_code in (409, 422), (
         "契约 §1.2：跨话题的 id 不得被拿来当本轮附件（也不得被静默丢弃）",
         resp.status_code,
