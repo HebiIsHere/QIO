@@ -10,7 +10,7 @@
  *  - 正式回答容器 = 助手消息气泡 .message.assistant（MessageItem.vue 根节点 class="message" + role）；
  *  - 过程容器     = [data-test="turn-process"]。
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
@@ -18,7 +18,43 @@ import { nextTick } from "vue";
 import MessageStream from "../MessageStream.vue";
 import { useEventStore } from "../../stores/events";
 import { useSessionStore } from "../../stores/session";
-import type { AgentEvent } from "../../services/api";
+import type { AgentEvent } from "../../services/events";
+
+// 与 AnswerRoleStability.audit.verify.test.ts 同一套装置（这两条 mock 是必需的）：
+// 1) services/api 打桩：不让挂载去请求真实后端；
+vi.mock("../../services/api", () => {
+  const payload = () => ({
+    tasks: [],
+    messages: [],
+    approvals: [],
+    tools: [],
+    narratives: [],
+    instance_id: "inst_r4",
+    turn_queue: { running: null, queued: [], cancelled: [], revision: 0, instance_id: "inst_r4" },
+  });
+  return {
+    api: new Proxy({}, { get: () => vi.fn(async () => payload()) }),
+    ApiError: class ApiError extends Error {},
+  };
+});
+
+// 2) 虚拟滚动在 jsdom 里没有布局，不会渲染任何轮次；换成「全部渲染」的桩。
+vi.mock("@tanstack/vue-virtual", async () => {
+  const { computed } = await import("vue");
+  return {
+    useVirtualizer: (options: { value: { count: number } }) =>
+      computed(() => ({
+        getTotalSize: () => options.value.count * 400,
+        getVirtualItems: () =>
+          Array.from({ length: options.value.count }, (_, index) => ({
+            index,
+            key: index,
+            start: index * 400,
+          })),
+        measureElement: () => undefined,
+      })),
+  };
+});
 
 let seq = 0;
 
@@ -119,18 +155,19 @@ beforeEach(() => {
   seq = 0;
 });
 
-// ⚠ 装置状态（D 如实记录）：在当前 vitest 环境下，按本文件的事件序列
-//   .message.assistant 没有物化（把回答事件换成旧协议 streaming:false 也一样、去掉过程事件也一样），
-//   所以这两条现在是 it.skip —— **不是产品结论**。下一轮对照 AnswerRoleStability.audit.verify.test.ts
-//   的挂载/事件路径定位差异后再打开；打开前不计红绿。
+// 装置已调通（两处 vi.mock 与 AnswerRoleStability.audit.verify.test.ts 一致：services/api 打桩 +
+// @tanstack/vue-virtual 换成全部渲染的桩 —— jsdom 没有布局，不换桩一个轮次都不渲染）。
+// 现在这两条**真的红了**，红点是产品行为：按 plan §1.1 的流式回答事件
+// {interim:false, streaming:true} 在前端既没进回答容器也没进过程区（.message.assistant 里只有
+// 话题名/时间/复制按钮，没有正文）；同期旧形态 {interim:false, streaming:false} 的快照是能渲染的
+// （AnswerRoleStability.audit.verify.test.ts 3 passed 可对照）。过程区的说明照常渲染，说明装置没问题。
 describe("R4 问题一：正式回答容器 vs 过程容器", () => {
-  it.skip("回答文字渲染在 .message.assistant 里，过程区 [data-test=turn-process] 内不含它", async () => {
+  it("回答文字渲染在 .message.assistant 里，过程区 [data-test=turn-process] 内不含它", async () => {
     const { wrapper, events, session } = await mountStream();
     await driveAnswerStream(events, session);
 
     const answers = answerText(wrapper);
     const process = processText(wrapper);
-
     expect(answers, "正式回答必须渲染在正式回答容器（.message.assistant）里").toContain(ANSWER_ONE);
     expect(answers, "后续增量也要落在同一个正式回答气泡里").toContain("补上的第二段");
     expect(
@@ -146,7 +183,7 @@ describe("R4 问题一：正式回答容器 vs 过程容器", () => {
     wrapper.unmount();
   });
 
-  it.skip("断流（连接中断 + 一轮失败）之后，已显示的正式回答仍在回答容器里、过程区仍不含它", async () => {
+  it("断流（连接中断 + 一轮失败）之后，已显示的正式回答仍在回答容器里、过程区仍不含它", async () => {
     const { wrapper, events, session } = await mountStream();
     await driveAnswerStream(events, session);
 

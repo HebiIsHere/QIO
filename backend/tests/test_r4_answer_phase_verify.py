@@ -471,27 +471,16 @@ async def test_answer_call_failure_is_honest(provider):
     provider.script.set([{"chunks": []}, {"status": 500, "body": "stream-aborted", "repeat": 6}])
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_abort")
-    # 循环层可以直接把不可恢复的 provider 错误抛出去（服务层负责落成 failed + 原因），
-    # 也可以返回一个如实标失败的结果 —— 两种都不算错。这里只钉用户可见的那一条：
-    # **绝不编造正式回答**，且失败原因如实出现。
-    result = None
-    failure: str | None = None
-    try:
-        result = await asyncio.wait_for(loop.run("回答我"), timeout=60)
-    except Exception as exc:  # noqa: BLE001 - 失败冒泡是允许的
-        failure = f"{type(exc).__name__}: {exc}"
+    # 口径（A + Lead 确认）：loop 层对**不可恢复的厂商错误是抛出**（ProviderError 家族），
+    # 编排层（TurnManager）才把它落成 status=failed + reason_code=provider_error。
+    # 用户可见规则由 A 的端到端用例锁定；这里只钉「失败必须如实抛出、绝不编造正式回答」。
+    from agent.adapters.errors import ProviderError
 
+    with pytest.raises(ProviderError) as raised:
+        await asyncio.wait_for(loop.run("回答我"), timeout=60)
+    assert "500" in str(raised.value) or "InternalServer" in str(raised.value), (
+        "失败原因必须如实出现（不能是一句没头没尾的错）", str(raised.value)[:200]
+    )
     answers = _non_empty(_answer_events(_assistant(loop)))
     assert not answers, ("回答调用失败了却编出了正式回答", [e.get("content") for e in answers])
-    if failure is not None:
-        assert "500" in failure or "InternalServer" in failure, (
-            "失败原因必须如实出现（不能是一句没头没尾的错）", failure[:200]
-        )
-    else:
-        failed = (
-            getattr(result, "status", None) not in ("done", "completed", None)
-            or bool(getattr(result, "error", None))
-            or not str(getattr(result, "final_content", "") or "").strip()
-        )
-        assert failed, ("回答调用 500，整轮却像正常完成一样交付了空回答", result)
 
