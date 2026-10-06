@@ -208,6 +208,24 @@ class NativeAdapter(BaseAdapter):
 
     # -- completion -------------------------------------------------------
 
+    def _request_client(self) -> Any:
+        """发起请求用的客户端：**关掉 SDK 自己的自动重试**。
+
+        openai SDK 默认 max_retries=2：5xx / 429 会被**静默重试**。后果不只是多花
+        一次钱 —— 我们看到的会是重试后那一次的结果，一次明确的厂商错误可能因此
+        变成一个「正常回答」（有状态端点 / 假厂商会把下一个脚本步骤当成功返回）。
+        QIO 的语义是：明确的厂商/传输错误**原样上抛** → 整轮如实失败
+        （provider_error），由用户决定要不要重试。形状问题（200 但不是 SSE）
+        走的是 _stream_once 的 Content-Type 分支，不靠 SDK 重试。
+        """
+        with_options = getattr(self._client, "with_options", None)
+        if with_options is None:
+            return self._client  # 假客户端 / 兼容实现：没有这个 API 就原样用
+        try:
+            return with_options(max_retries=0)
+        except Exception:  # noqa: BLE001 - 兼容客户端不认识这个参数时原样用
+            return self._client
+
     async def complete(
         self,
         messages: list[ChatMessage],
@@ -230,10 +248,11 @@ class NativeAdapter(BaseAdapter):
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
+        client = self._request_client()
         attempt = 0
         while True:
             try:
-                raw = await self._client.chat.completions.create(**kwargs)
+                raw = await client.chat.completions.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - normalize provider errors
                 from agent.adapters.errors import normalize_error
 
@@ -336,10 +355,15 @@ class NativeAdapter(BaseAdapter):
         # 响应会给出一条零 chunk 的流且不报错（实测 3.13.0）。先看到 Content-Type，
         # 就能把整段 JSON 直接当成这次调用的结果 —— 零额外请求，也不会把按请求
         # 消费脚本的假厂商/有状态端点打乱。
-        completions = getattr(getattr(self._client, "chat", None), "completions", None)
+        client = self._request_client()
+        completions = getattr(getattr(client, "chat", None), "completions", None)
         raw_sender = getattr(getattr(completions, "with_raw_response", None), "create", None)
+        # 看得到 Content-Type（raw 路径）时，「零增量」只说明这一次没有输出，
+        # **不能**当成「这条路径用不了流式」的证据（见下面的零增量判断）。
+        saw_content_type = False
         try:
             if raw_sender is not None:
+                saw_content_type = True
                 response = await raw_sender(**kwargs)
                 status = int(getattr(response.http_response, "status_code", 200) or 200)
                 if status >= 400:
@@ -355,7 +379,7 @@ class NativeAdapter(BaseAdapter):
                     return
                 raw = response.parse()
             else:
-                raw = await self._client.chat.completions.create(**kwargs)
+                raw = await client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             raise normalize_error(exc) from exc
         if not hasattr(raw, "__aiter__"):
@@ -406,7 +430,12 @@ class NativeAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001 - 传输层异常统一归一化
             raise normalize_error(exc) from exc
 
-        if not content_parts and not accumulator.seen and finish_reason is None:
+        if (
+            not content_parts
+            and not accumulator.seen
+            and finish_reason is None
+            and not saw_content_type
+        ):
             # 一次流式调用**什么增量都没产生**，而且我们连 Content-Type 都没看到
             # （裸客户端 / 假客户端：走不到上面的 with_raw_response 分支）。真实
             # 事故形态：服务忽略 stream=true、直接回整段 JSON，openai SDK 对这种
@@ -415,6 +444,10 @@ class NativeAdapter(BaseAdapter):
             #
             # 那是兼容性问题，不是「模型没说话」：如实声明这条路径用不了流式，
             # 由 AgentLoop 回退到整段 complete()（**只回退一次**），不假装流式。
+            #
+            # 已经看到 Content-Type（就是 text/event-stream）时不走这条兜底：
+            # 零增量只说明这次没有输出，再打一次 complete() 只会多一个请求，
+            # 而且会把「明确的错误」变成另一个请求的结果（第五轮复核 ②）。
             raise UnsupportedCapability(
                 "stream produced no increments (provider likely ignored stream=true)"
             )

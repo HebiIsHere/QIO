@@ -783,9 +783,12 @@ async def test_one_second_late_tool_call_never_shows_answer_then_moves_it():
     assert tool_round[-1]["content"] == said
     assert tool_round[-1]["call_ids"] == ["c1"]
     assert tool_round[-1]["streaming"] is False  # 收尾快照
-    # 正式回答只属于**回答调用**（不带工具的那一次）；工具轮的正文一个字都没进回答区
-    assert [e["delta_id"] for e in assistant if not e["interim"]] == ["dl_1_3"]
-    assert all(said not in (e["content"] or "") for e in assistant if not e["interim"])
+    # 正式回答只属于**回答调用**（不带工具的那一次）；工具轮的正文一个字都没进回答区。
+    # 回答调用会发两条：未到发布阈值的增量先补一条 streaming=true，再一条收尾校准。
+    answers = [e for e in assistant if not e["interim"]]
+    assert {e["delta_id"] for e in answers} == {"dl_1_3"}
+    assert answers[0]["streaming"] is True and answers[-1]["streaming"] is False
+    assert all(said not in (e["content"] or "") for e in answers)
 
 
 async def test_anthropic_path_follows_the_same_role_rules():
@@ -859,8 +862,10 @@ async def test_tool_phase_without_text_gets_one_tool_free_answer_call():
     assert answers[-1]["delta_id"] == "dl_1_3"
     # 角色证据来自「这是不带工具的显式回答调用」本身，不是时间窗口
     assert all(a["role_evidence"] == "tool_free_call" for a in answers)
-    # 前两次调用一个字都没有 → 不伪造过程区气泡
-    assert [e["content"] for e in _events(bus, "ASSISTANT")] == ["这是正式回答"]
+    # 前两次调用一个字都没有 → 不伪造过程区气泡；回答调用发两条（增量 + 收尾校准）
+    published = _events(bus, "ASSISTANT")
+    assert [e["content"] for e in published] == ["这是正式回答", "这是正式回答"]
+    assert published[0]["streaming"] is True and published[-1]["streaming"] is False
 
 
 async def test_tool_free_answer_call_happens_at_most_once_per_turn():
@@ -898,8 +903,11 @@ async def test_loop_without_any_tool_gets_a_single_answer_call():
     assert len(adapter.requests) == 1
     assert [r["tools"] for r in adapter.requests] == [[]]
     assert result.final_content == "直接回答"
+    # 回答调用发两条：先 streaming=true 的累计增量，再 streaming=false 的收尾校准
     published = _events(bus, "ASSISTANT")
-    assert len(published) == 1 and published[0]["interim"] is False
+    assert [e["interim"] for e in published] == [False, False]
+    assert published[0]["streaming"] is True and published[-1]["streaming"] is False
+    assert published[-1]["content"] == "直接回答"
 
 
 async def test_stage_id_is_attached_to_tool_events_when_provider_exists():
@@ -1252,6 +1260,95 @@ def test_stage_is_a_critical_event():
 
     assert EventType.STAGE in CRITICAL_EVENTS
     assert EventType.ASSISTANT not in CRITICAL_EVENTS  # 仍是可合并事件
+
+
+# ---- 明确的厂商错误：不得被 SDK 自动重试换成一个假答案（第五轮复核 ②）--------
+
+
+async def test_provider_error_on_the_answer_call_is_not_retried_into_a_fake_answer():
+    """回答调用的明确错误（500）必须原样上抛，且**只发一个请求**。
+
+    openai SDK 默认 max_retries=2：5xx 会被静默重试，我们看到的会是重试后那一次
+    的结果 —— 有状态假厂商的下一个脚本步骤会被当成成功返回，「厂商错误」因此
+    变成一个假答案。适配器必须关掉 SDK 的自动重试。
+    """
+    import httpx
+    from openai import AsyncOpenAI
+
+    from agent.adapters.errors import ProviderError
+
+    requests: list[int] = []
+
+    def handler(request: Any) -> Any:
+        requests.append(len(requests) + 1)
+        if len(requests) == 1:
+            # 工作调用：SSE 200，但零增量（这次调用没有输出）
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=b""
+            )
+        return httpx.Response(
+            500, json={"error": {"message": "stream-aborted", "type": "verify"}}
+        )
+
+    client = AsyncOpenAI(
+        api_key="sk-test-not-a-real-key",
+        base_url="http://fake-provider.test/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=2,  # 故意打开：适配器必须自己关掉它
+    )
+    adapter = NativeAdapter(client=client, model="m1")
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    try:
+        with pytest.raises(ProviderError):
+            await loop.run("hi")
+    finally:
+        await client.close()
+
+    assert requests == [1, 2], ("明确的厂商错误不得被 SDK 重试", requests)
+    assert _events(bus, "ASSISTANT") == [], "失败的回答调用不得编出一个正式回答"
+
+
+async def test_anthropic_and_text_tiers_do_not_retry_provider_errors():
+    """anthropic / text 档同样不在明确错误上重试：各只发一个请求、原样上抛。"""
+    from agent.adapters import errors as adapter_errors
+    from agent.adapters.anthropic import AnthropicAdapter
+    from agent.adapters.text import TextAdapter
+
+    # anthropic：500 → 归一化成供应商错误，且只有一次请求
+    adapter = AnthropicAdapter(api_key="k", model="m")
+    fake = _FakeHttpxClient([], status_code=500)
+    adapter._client = fake
+    try:
+        with pytest.raises(adapter_errors.ProviderError):
+            async for _ in adapter.stream([ChatMessage(role="user", content="hi")], TOOLS):
+                pass
+    finally:
+        await adapter.close()
+    assert len(fake.payloads) == 1
+
+    # text 档：complete() 抛错 → 归一化成供应商错误，且只有一次请求
+    class _CountingTextClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def chat(self) -> "_CountingTextClient":
+            return self
+
+        @property
+        def completions(self) -> "_CountingTextClient":
+            return self
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls += 1
+            raise RuntimeError("provider returned 500")
+
+    text_client = _CountingTextClient()
+    text_adapter = TextAdapter(client=text_client, model="m")
+    with pytest.raises(adapter_errors.ProviderError):
+        await text_adapter.complete([ChatMessage(role="user", content="hi")], TOOLS)
+    assert text_client.calls == 1
 
 
 # ---- 兼容性：服务忽略 stream=true（真实 SDK 复现 install e2e 的失败）-------------

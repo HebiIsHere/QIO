@@ -415,8 +415,11 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         if e.type.value == "ASSISTANT" and not e.data.get("interim")
     ]
     assert all(said not in (a["content"] or "") for a in answers), answers
-    # 正式回答来自回答调用（tools=[]）
-    assert [a["content"] for a in answers] == ["完成"]
+    # 正式回答来自回答调用（tools=[]）：先一条 streaming=true 的累计增量，
+    # 再一条 streaming=false 的收尾校准（同一 delta_id、同一份文字）
+    assert [a["content"] for a in answers] == ["完成", "完成"]
+    assert answers[0]["streaming"] is True and answers[-1]["streaming"] is False
+    assert answers[0]["delta_id"] == answers[-1]["delta_id"]
     # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]
