@@ -22,6 +22,7 @@ stage 操作」走同一条安全降级路径 —— 建立隐式阶段并把这
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from agent.core.narrative import MAX_TEXT_CHARS, Narrative, clean_text
@@ -223,7 +224,12 @@ def stage_event_payload(
     call_ids: list[str] | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    """SSE STAGE 载荷（plan §1.3）。标识与状态全部来自系统，模型无法伪造。"""
+    """SSE STAGE 载荷（plan §1.3）。标识与状态全部来自系统，模型无法伪造。
+
+    ``created_at`` 一定可用（ISO8601）：有落库行时由调用方给行的 created_at；
+    系统合成的边界事件（op=end，以及任何没有落库行的 start/next）在这里补事件
+    时刻 —— 与其它事件一样是 UTC ISO8601，绝不给 null。
+    """
     state = transition.stage
     return {
         "turn_id": turn_id,
@@ -237,5 +243,5 @@ def stage_event_payload(
         "narrative_id": narrative_id,
         "call_id": call_id,
         "call_ids": list(call_ids or []),
-        "created_at": created_at,
+        "created_at": created_at or datetime.now(timezone.utc).isoformat(),
     }
