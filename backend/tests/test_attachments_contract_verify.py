@@ -40,10 +40,21 @@ def _sparse(path, size: int):
     return path
 
 
+def _unwrap(body: dict) -> dict:
+    """附件的取数路径。
+
+    契约 §4.2 把响应写成顶层 {id, kind, display, state, size_bytes}，实现是信封形式
+    {"ok": true, "attachment": {...}}（Lead 已确认把契约文档同步成实际形状）。
+    两种都接受：这里只统一取数路径，不对字段名与取值放宽。
+    """
+    nested = body.get("attachment")
+    return nested if isinstance(nested, dict) else body
+
+
 def _post_source(client, path, **extra) -> dict:
     resp = client.post("/api/attachments", json={"source_path": str(path), **extra})
     assert resp.status_code in (200, 201, 202), (resp.status_code, resp.text)
-    return resp.json()
+    return _unwrap(resp.json())
 
 
 def _wait_terminal(client, attachment_id: str, timeout: float = 60.0) -> dict:
@@ -52,7 +63,7 @@ def _wait_terminal(client, attachment_id: str, timeout: float = 60.0) -> dict:
     while time.time() < deadline:
         resp = client.get(f"/api/attachments/{attachment_id}")
         assert resp.status_code == 200, (resp.status_code, resp.text)
-        last = resp.json()
+        last = _unwrap(resp.json())
         if str(last.get("state")) in TERMINAL_STATES:
             return last
         time.sleep(0.05)
@@ -168,11 +179,11 @@ def test_missing_and_changed_reference_are_reported(app_client, tmp_path):
     assert meta["state"] == "ready", meta
 
     source.unlink()
-    missing = client.get(f"/api/attachments/{created['id']}").json()
+    missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
     assert missing["state"] == "missing", ("引用文件不在了必须如实说 missing", missing)
 
     source = _sparse(tmp_path / "被引用.bin", THRESHOLD + 2)
-    changed = client.get(f"/api/attachments/{created['id']}").json()
+    changed = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
     assert changed["state"] in {"changed", "missing"}, (
         "引用文件变了必须如实说 changed（不得继续冒充 ready）",
         changed,
@@ -264,21 +275,34 @@ def test_unreadable_binary_is_reported_not_faked(app_client, tmp_path):
 # ---- 4. 接口面（契约 §4.2） -------------------------------------------------------
 
 
-def test_turns_endpoint_documents_attachment_ids(app_client):
+def test_turns_accepts_and_binds_attachment_ids(app_client, tmp_path):
+    """契约 §4.2：POST /api/turns 接受 attachment_ids，发送后与消息绑定。
+
+    接口是未类型化的 dict body（OpenAPI 看不出字段），所以这里按**行为**验：
+    1) attachment_ids 不是数组 → 明确 400（说明字段真的被消费，不是被忽略）；
+    2) 带一个真实附件 id → 200 且响应里带回绑定的附件（同 id）。
+    """
     client, _app = app_client
-    schema = client.get("/openapi.json").json()
-    post = schema["paths"]["/api/turns"]["post"]
-    body = post.get("requestBody") or {}
-    content = (body.get("content") or {}).get("application/json") or {}
-    ref = content.get("schema") or {}
-    if "$ref" in ref:
-        name = ref["$ref"].rsplit("/", 1)[-1]
-        props = schema["components"]["schemas"][name].get("properties") or {}
-    else:
-        props = ref.get("properties") or {}
-    if not props:
-        # 也可能是 requestBody 直接内联成 oneOf/anyOf
-        text = str(body)
-        assert "attachment_ids" in text, ("POST /api/turns 必须声明 attachment_ids", text[:500])
-        return
-    assert "attachment_ids" in props, ("契约 §4.2：POST /api/turns 接受 attachment_ids", sorted(props))
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/turns" in paths, sorted(paths)[:20]
+
+    bad = client.post("/api/turns", json={"message": "验证", "attachment_ids": "not-a-list"})
+    assert bad.status_code == 400, ("attachment_ids 非数组必须明确拒绝", bad.status_code, bad.text)
+
+    source = tmp_path / "绑定用.txt"
+    source.write_text("绑定内容", encoding="utf-8")
+    created = _post_source(client, source)
+    _wait_terminal(client, str(created["id"]))
+
+    ok = client.post(
+        "/api/turns",
+        json={"message": "验证附件绑定", "attachment_ids": [str(created["id"])]},
+    )
+    assert ok.status_code in (200, 201, 202), (ok.status_code, ok.text)
+    body = ok.json()
+    bound = body.get("attachments") or []
+    assert [str(item.get("id")) for item in bound] == [str(created["id"])], (
+        "发送后附件必须与本轮绑定",
+        body,
+    )
+    client.post("/api/turns/cancel")
