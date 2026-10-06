@@ -1,0 +1,58 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1800
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const e=document.querySelector('[data-im=\"batch-entry\"]');if(!e)return 'no-entry';e.click();return 'opened';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){\n    const g=s=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right)};};\n    const panel=g('[data-im=\"batch-list\"]'), bar=g('[data-im=\"board-toolbar\"]'), submit=g('[data-im=\"submit\"]'), entry=g('[data-im=\"batch-entry\"]');\n    const ov=(a,b)=>!!a&&!!b&&a.l<b.r&&b.l<a.r&&a.t<b.b&&b.t<a.b;\n    const el=document.querySelector('[data-im=\"batch-list\"]');\n    const se=document.querySelector('[data-im=\"submit\"]');\n    const hit=se?(function(){const r=se.getBoundingClientRect();const x=document.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2));return !!(x&&(x===se||se.contains(x)));})():null;\n    return {panel, bar, submit, entry, panelOverToolbar:ov(panel,bar), submitHit:hit, panelScrollable: el?el.scrollHeight>el.clientHeight:null, maxH: el?el.style.maxHeight:null, overflowX: document.documentElement.scrollWidth>window.innerWidth};\n  })())"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-95-batch-800x600"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){\n    const g=s=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right)};};\n    const panel=g('[data-im=\"batch-list\"]'), bar=g('[data-im=\"board-toolbar\"]'), submit=g('[data-im=\"submit\"]'), entry=g('[data-im=\"batch-entry\"]');\n    const ov=(a,b)=>!!a&&!!b&&a.l<b.r&&b.l<a.r&&a.t<b.b&&b.t<a.b;\n    const el=document.querySelector('[data-im=\"batch-list\"]');\n    const se=document.querySelector('[data-im=\"submit\"]');\n    const hit=se?(function(){const r=se.getBoundingClientRect();const x=document.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2));return !!(x&&(x===se||se.contains(x)));})():null;\n    return {panel, bar, submit, entry, panelOverToolbar:ov(panel,bar), submitHit:hit, panelScrollable: el?el.scrollHeight>el.clientHeight:null, maxH: el?el.style.maxHeight:null, overflowX: document.documentElement.scrollWidth>window.innerWidth};\n  })())"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-95-batch-1024x768"
+  }
+]

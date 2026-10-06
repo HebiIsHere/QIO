@@ -11,7 +11,7 @@
   - 冲突、依赖、材料变化与权限都由服务端判定，这里只显示结果，不自己下结论。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
   batchesWithList,
@@ -41,28 +41,58 @@ const notice = ref<string | null>(null);
 const error = ref<string | null>(null);
 
 /**
- * 面板可用的最大高度：不能越过底部悬浮工具栏，入口与提交区必须始终可见可点。
+ * 面板可用的最大高度：**不能越过底部悬浮工具栏**，入口与提交区必须始终可见可点。
  *
- * 优先用页面壳维护的 --im-toolbar-clearance；拿不到就自己量页面上**最下面那条**工具栏
- * （[role="toolbar"]，即页面壳底部工具栏）的顶边；工具栏由别的组件渲染，这里只读不写。
+ * 这里的教训（集成后由独立复核发现）：早先写成
+ * `min(60vh, calc(100% - Npx - var(--sp-4)))` 是**无效约束** —— 绝对定位的 .batch-tray
+ * 高度由内容决定，百分比在「高度不确定」的父元素上解析不出来，等于没限制，
+ * 窄窗口下 800×600 实测面板压住工具栏 143px、1024×768 压住 392px。
+ *
+ * 现在改成**算出一个确定的像素上限**：
+ *   可用高度 = 最下面那条板面工具栏的顶边 − 面板自己的顶边 − 间距，
+ * 再与 60vh 取小。面板自己滚动，入口按钮不参与滚动。
  */
 const panelMax = ref<string | null>(null);
+const trayEl = ref<HTMLElement | null>(null);
+const panelEl = ref<HTMLElement | null>(null);
+
+/** 页面上**最下面那条**工具栏的顶边：必须取最下面那条（卡片局部工具栏也在 role=toolbar 里）。 */
+function bottomToolbarTop(): number | null {
+  const bars = Array.from(document.querySelectorAll('[data-im="board-toolbar"], [role="toolbar"]'));
+  let top: number | null = null;
+  for (const el of bars) {
+    const rect = el.getBoundingClientRect();
+    if (rect.height <= 0 || rect.width <= 0) continue;
+    if (top === null || rect.top > top) top = rect.top;
+  }
+  return top;
+}
 
 function measureClearance(): void {
   if (typeof document === "undefined") return;
-  // 取最下面那条工具栏（页面壳底部工具栏）：面板不许越过它；拿不到就退回 CSS 变量兜底
-  const bars = Array.from(document.querySelectorAll('[role="toolbar"]'));
-  let bottom: Element | null = null;
-  for (const el of bars) {
-    if (!bottom || el.getBoundingClientRect().top > bottom.getBoundingClientRect().top) bottom = el;
+  const barTop = bottomToolbarTop();
+  const tray = trayEl.value;
+  if (barTop === null || !tray) {
+    panelMax.value = null;
+    return;
   }
-  const clearance = bottom
-    ? Math.round(Math.max(0, window.innerHeight - bottom.getBoundingClientRect().top) + 16)
-    : null;
-  panelMax.value = "min(60vh, calc(100% - " + (clearance ?? 120) + "px - var(--sp-4)))";
+  // 面板还没渲染时用「入口按钮底边 + 间距」估一个顶边，渲染出来后用真实顶边
+  const entry = tray.querySelector('[data-im="batch-entry"]');
+  const anchor = panelEl.value
+    ? panelEl.value.getBoundingClientRect().top
+    : (entry ? entry.getBoundingClientRect().bottom + 8 : tray.getBoundingClientRect().top);
+  const available = Math.round(barTop - anchor - 16);
+  const cap = Math.round(window.innerHeight * 0.6);
+  panelMax.value = Math.max(140, Math.min(cap, available)) + "px";
 }
 
 const onResize = () => window.setTimeout(measureClearance, 0);
+
+// 面板一打开就量一次（这时才有真实顶边）
+watch(() => store.batchOpen, async () => {
+  await nextTick();
+  measureClearance();
+});
 
 onMounted(() => {
   measureClearance();
@@ -178,7 +208,7 @@ watch(
 </script>
 
 <template>
-  <div v-if="batches.length" class="batch-tray" data-im="batch-area">
+  <div v-if="batches.length" ref="trayEl" class="batch-tray" data-im="batch-area">
     <!-- 入口默认收起：只有用户点击才展开 -->
     <button
       v-for="batch in batches"
@@ -199,6 +229,7 @@ watch(
     <section
       v-if="store.batchOpen"
       id="im-batch-list"
+      ref="panelEl"
       class="panel"
       data-im="batch-list"
       :style="panelMax ? { maxHeight: panelMax } : undefined"

@@ -1,0 +1,169 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const el=document.querySelector('[data-im=\"add-menu\"]');if(!el)return 'missing';el.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const el=document.querySelector('[data-im=\"add-text\"]');if(!el)return 'missing';el.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const el=document.querySelector('[data-im=\"add-menu\"]');if(!el)return 'missing';el.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const el=document.querySelector('[data-im=\"add-text\"]');if(!el)return 'missing';el.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify([...document.querySelectorAll('[data-im=\"card\"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'),x:Math.round(r.left),y:Math.round(r.top)};}))"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 72,
+      "y": 149,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 100
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 200,
+      "y": 149,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 80
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 356,
+      "y": 149,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 120
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 356,
+      "y": 149,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 1600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const i=document.querySelector('input[data-im=\"group-name\"]');if(!i)return 'missing';i.focus();return JSON.stringify({active:document.activeElement===i, value:i.value});})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.insertText",
+    "params": {
+      "text": "材料准备"
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 300
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const i=document.querySelector('input[data-im=\"group-name\"]');return JSON.stringify({value:i?i.value:null, active:document.activeElement===i});})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyDown",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "text": "\r"
+    }
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyUp",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 1800
+  },
+  {
+    "op": "eval",
+    "await": true,
+    "js": "(async()=>{const raw=await (await fetch('http://127.0.0.1:8791/api/interactive/boards/board_default/state')).json();const j=raw.state||raw;const i=document.querySelector('input[data-im=\"group-name\"]');return JSON.stringify({groups:(j.groups||[]).map(g=>({name:g.name,defaultName:g.defaultName})), inputValue:i?i.value:null});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-debug-rename"
+  }
+]

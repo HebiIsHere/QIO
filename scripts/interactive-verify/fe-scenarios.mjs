@@ -2,11 +2,14 @@
  * 互动板前端改版的实机验收（主智能体维护）。
  *
  * 对应提示词第七节的 12 个场景，用 scripts/visual_probe.mjs 驱动真实 Chrome：
- * 真实鼠标拖动、真实滚轮、真实键盘，并在页面里包一层 fetch 记录，用来证明
- * 「聊天发送不带板面、不调提交接口」。
+ * 真实鼠标拖动、真实滚轮、真实键盘；并在页面里包一层 fetch 记录，
+ * 用来证明「聊天发送只发文字、不带板面、不调提交接口」。
  *
- * 前置：后端 IM_BACKEND（默认 http://127.0.0.1:8891）、前端 IM_APP（默认 http://127.0.0.1:5399）。
+ * 前置：后端 IM_BACKEND（默认 http://127.0.0.1:8791）、前端 IM_APP（默认 http://127.0.0.1:5299）。
  * 用法：node scripts/interactive-verify/fe-scenarios.mjs [--only=1,2,4]
+ *
+ * 端口/用户目录用 QIO_PROBE_PORT / QIO_PROBE_PROFILE / QIO_PROBE_OUT 隔离，
+ * 避免与别的智能体的验收互相抢 Chrome。
  */
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -14,9 +17,11 @@ import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
-const APP = process.env.IM_APP || "http://127.0.0.1:5399";
-const BACKEND = process.env.IM_BACKEND || "http://127.0.0.1:8891";
+const APP = process.env.IM_APP || "http://127.0.0.1:5299";
+const BACKEND = process.env.IM_BACKEND || "http://127.0.0.1:8791";
 const BOARD = "board_default";
+/** 本次运行的唯一后缀：避免「和上次成功提交内容一致 → 未重复提交」把验收结果带偏 */
+const RUN_TAG = String(Date.now()).slice(-6);
 const onlyArg = (process.argv.find((a) => a.startsWith("--only=")) || "").split("=")[1] || "";
 const ONLY = onlyArg ? onlyArg.split(",").map((x) => x.trim()) : null;
 const want = (id) => !ONLY || ONLY.includes(String(id));
@@ -27,23 +32,47 @@ function check(name, ok, detail) {
   console.log((ok ? "PASS  " : "FAIL  ") + name + (detail ? "  —— " + detail : ""));
 }
 
-function runSteps(steps) {
+function runSteps(steps, attempt = 1) {
   const probe = spawnSync(process.execPath, [resolve(root, "scripts", "visual_probe.mjs"), JSON.stringify(steps)], {
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: 128 * 1024 * 1024,
   });
   const raw = probe.stdout || "";
   const start = raw.indexOf("{");
-  if (start < 0) throw new Error("探针没有输出 JSON：" + raw.slice(0, 400));
+  if (start < 0) {
+    // Chrome 偶发起不来（上一次会话还在退出、用户目录被占用）：重试几次再放弃
+    if (attempt < 4) {
+      const until = Date.now() + 2500;
+      while (Date.now() < until) {
+        /* 同步等待，这里已经在 Node 主线程里串行跑 */
+      }
+      return runSteps(steps, attempt + 1);
+    }
+    throw new Error("探针没有输出 JSON：" + (raw + (probe.stderr || "")).slice(0, 500));
+  }
   return JSON.parse(raw.slice(start));
 }
+
+/**
+ * 在**页面里**读一次服务端板面状态。
+ *
+ * 为什么不用 Node 侧读：前端提交是**防抖自动保存**（450ms + 往返），
+ * 探针会话结束后立刻用 Node 读接口可能读到的还是上一版；
+ * 在页面里等一会儿再读，才不会把「还没保存」误判成「操作没生效」。
+ */
+const stateRead = (extra = "") => ({
+  op: "eval",
+  await: true,
+  js: `(async()=>{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;return JSON.stringify({selected:(j.selection||[]),cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted).map(g=>({name:g.name,members:g.members,ordered:g.ordered})),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length${extra}});})()`,
+});
+
+/** 探针每次都会新起一个 Chrome：**任何一步交互都必须先导航到应用**，否则页面是 about:blank。 */
+const sess = (steps) => runSteps([...NAV, ...steps]);
 
 const evals = (payload) => (payload.results || []).filter((r) => r.op === "eval").map((r) => r.value);
 function lastJson(values, fallback) {
   for (let i = values.length - 1; i >= 0; i -= 1) {
-    const value = values[i];
-    if (typeof value !== "string") continue;
-    const text = value.trim();
+    const text = typeof values[i] === "string" ? values[i].trim() : "";
     if (!text.startsWith("{") && !text.startsWith("[")) continue;
     try { return JSON.parse(text); } catch { /* 继续往前找 */ }
   }
@@ -51,16 +80,42 @@ function lastJson(values, fallback) {
 }
 const last = (payload, fallback) => lastJson(evals(payload), fallback);
 
-async function api(path, init) {
-  const resp = await fetch(BACKEND + path, {
-    ...(init || {}),
-    headers: { "Content-Type": "application/json", ...((init && init.headers) || {}) },
-  });
-  return resp.json();
+async function api(path, init, attempt = 1) {
+  try {
+    const resp = await fetch(BACKEND + path, {
+      ...(init || {}),
+      // keep-alive 连接被服务端关掉时 Node 偶发 "fetch failed"：每次都新建连接，并重试一次
+      headers: { "Content-Type": "application/json", Connection: "close", ...((init && init.headers) || {}) },
+    });
+    return resp.json();
+  } catch (error) {
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return api(path, init, attempt + 1);
+    }
+    throw new Error("接口调用失败 " + (init && init.method ? init.method + " " : "GET ") + path + "：" + (error && error.message ? error.message : String(error)));
+  }
 }
-const boardState = () => api("/api/interactive/boards/" + BOARD + "/state");
-const submissions = () => api("/api/interactive/boards/" + BOARD + "/submissions");
+/** GET /state 的响应是 { state: {...} } 包了一层，这里统一拆包 */
+async function boardState() {
+  const payload = await api("/api/interactive/boards/" + BOARD + "/state");
+  return payload && payload.state ? payload.state : payload;
+}
 const intentsApi = () => api("/api/interactive/boards/" + BOARD + "/intents");
+
+/** 把还等待审批的意图全部拒绝：演示入口会复用未完成的演示意图，不清理就拿不到「干净的一批四项」 */
+async function clearPendingIntents() {
+  const payload = await intentsApi();
+  const list = payload.intents || [];
+  let cleared = 0;
+  for (const item of list) {
+    if (["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status)) {
+      await api("/api/interactive/intents/" + item.id + "/reject", { method: "POST", body: "{}" });
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
 
 async function resetBoard() {
   await api("/api/interactive/boards/" + BOARD + "/state", {
@@ -75,50 +130,614 @@ async function resetBoard() {
 const NAV = [
   { op: "navigate", url: APP + "/#/interactive", ms: 5200 },
   { op: "viewport", width: 1440, height: 900 },
-  { op: "wait", ms: 800 },
+  { op: "wait", ms: 700 },
 ];
+const RELOAD = [{ op: "eval", js: "location.reload(); 'reload'" }, { op: "wait", ms: 5200 }];
 
 /** 在页面里记下所有 fetch（用来证明聊天与提交是两条独立请求路径） */
-const SPY_ON = { op: "eval", js: "(function(){if(window.__qioCalls)return 'already';window.__qioCalls=[];const raw=window.fetch.bind(window);window.fetch=function(input,init){try{window.__qioCalls.push({url:String(input&&input.url||input),method:(init&&init.method)||'GET',body:(init&&typeof init.body==='string')?init.body.slice(0,400):null,at:Date.now()});}catch(e){}return raw(input,init);};return 'spy-on';})()" };
+const SPY_ON = { op: "eval", js: "(function(){if(window.__qioCalls)return 'already';window.__qioCalls=[];const raw=window.fetch.bind(window);window.fetch=function(input,init){try{window.__qioCalls.push({url:String((input&&input.url)||input),method:((init&&init.method)||'GET'),body:(init&&typeof init.body==='string')?init.body.slice(0,600):null,at:Date.now()});}catch(e){}return raw(input,init);};return 'spy-on';})()" };
+const SPY_RESET = { op: "eval", js: "window.__qioCalls=[]; 'cleared'" };
 const SPY_READ = { op: "eval", js: "JSON.stringify(window.__qioCalls||[])" };
+
+const clickHook = (hook) => ({ op: "eval", js: `(function(){const el=document.querySelector('[data-im="${hook}"]');if(!el)return 'missing';(el.disabled?'disabled':'ok');el.click();return el.disabled?'disabled':'clicked';})()` });
+const probeHook = (hook) => ({ op: "eval", js: `(function(){const el=document.querySelector('[data-im="${hook}"]');if(!el)return 'missing';(el.disabled?'disabled':'ok');el.click();return el.disabled?'disabled':'clicked';})()` });
+const existsHook = (hook) => ({ op: "eval", js: `document.querySelector('[data-im="${hook}"]')?'yes':'no'` });
 
 function mouse(type, x, y, extra) {
   return {
     op: "cdp",
     method: "Input.dispatchMouseEvent",
-    params: { type, x: Math.round(x), y: Math.round(y), button: "left", clickCount: 1, buttons: type === "mouseReleased" ? 0 : 1, ...(extra || {}) },
+    params: {
+      type,
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "left",
+      clickCount: type === "mousePressed" ? 1 : 0,
+      buttons: type === "mouseReleased" ? 0 : 1,
+      ...(extra || {}),
+    },
   };
+}
+function click(x, y) {
+  return [mouse("mousePressed", x, y), { op: "wait", ms: 60 }, mouse("mouseReleased", x, y), { op: "wait", ms: 260 }];
+}
+/** 真实拖动：按下 → 中间过程 → 到达 → （可选截图）→ 松手 */
+function drag(from, to, midShot) {
+  const steps = [mouse("mousePressed", from.x, from.y), { op: "wait", ms: 90 }];
+  const N = 6;
+  for (let i = 1; i <= N; i += 1) {
+    steps.push(mouse("mouseMoved", from.x + ((to.x - from.x) * i) / N, from.y + ((to.y - from.y) * i) / N));
+    steps.push({ op: "wait", ms: 60 });
+  }
+  if (midShot) steps.push({ op: "screenshot", name: midShot });
+  steps.push(mouse("mouseReleased", to.x, to.y));
+  steps.push({ op: "wait", ms: 520 });
+  return steps;
 }
 function wheel(x, y, deltaY) {
   return { op: "cdp", method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: Math.round(x), y: Math.round(y), deltaX: 0, deltaY, button: "none", buttons: 0 } };
 }
-const cardsExpr = "JSON.stringify([...document.querySelectorAll('[data-im=\"card\"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'), x:Math.round(r.left), y:Math.round(r.top), w:Math.round(r.width), cx:Math.round(r.left+r.width/2), cy:Math.round(r.top+16)};}))";
-
+const KEY = {
+  space: { key: " ", code: "Space", vk: 32 },
+  escape: { key: "Escape", code: "Escape", vk: 27 },
+  enter: { key: "Enter", code: "Enter", vk: 13 },
+};
+function keyDown(k) {
+  return { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "rawKeyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk } };
+}
+function keyUp(k) {
+  return { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk } };
+}
 /**
- * 场景 1：初始页以板面为主体；底部工具栏、添加菜单、独立聊天入口位置正确；无常驻右侧回复栏。
+ * 真的按一次键。
+ *
+ * text 字段有讲究：Enter 要给 "\r"、空格给 " "，其他键**不要给 text**，
+ * 否则浏览器会收到奇怪的字面量（例如把 "Enter" 当成要插入的文本）。
  */
+function typeKey(k, text) {
+  const payload = text !== undefined ? text : (k === KEY.enter ? "\r" : k === KEY.space ? " " : undefined);
+  const params = { type: "keyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk };
+  if (payload !== undefined) params.text = payload;
+  return [
+    { op: "cdp", method: "Input.dispatchKeyEvent", params },
+    { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk } },
+    { op: "wait", ms: 120 },
+  ];
+}
+
+/** 屏幕上卡片的位置（板面坐标 → 屏幕坐标：缩放 1、不平移时 surface 左 0 上 77） */
+async function cardScreens() {
+  const payload = sess([
+    { op: "eval", js: `JSON.stringify([...document.querySelectorAll('[data-im="card"]')].map(c=>{const r=c.getBoundingClientRect();const id=c.getAttribute('data-card-id');return {id,x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),cx:Math.round(r.left+r.width/2),cy:Math.round(r.top+22)};}))` },
+  ]);
+  return lastJson(evals(payload), []);
+}
+const CARDS_EXPR = `JSON.stringify([...document.querySelectorAll('[data-im="card"]')].map(c=>{const r=c.getBoundingClientRect();const id=c.getAttribute('data-card-id');return {id,x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),cx:Math.round(r.left+r.width/2),cy:Math.round(r.top+22)};}))`;
+
+/** 用真实点击添加 n 张文字注释（不直接改 store：这是用户真实路径） */
+async function addNoteCards(n) {
+  const steps = [...NAV];
+  for (let i = 0; i < n; i += 1) {
+    steps.push(clickHook("add-menu"), { op: "wait", ms: 420 }, clickHook("add-text"), { op: "wait", ms: 900 });
+  }
+  const payload = runSteps(steps);
+  const results = evals(payload);
+  return results.filter((r) => r === "clicked").length;
+}
+const stateJson = () => boardState();
+
+// --- 场景 1：初始页以板面为主体 -------------------------------------------
+
 async function scenario1() {
   const payload = runSteps([...NAV, SPY_ON,
-    { op: "eval", js: "JSON.stringify({toolbar: !!document.querySelector('[data-im=\"board-toolbar\"]'), addMenu: !!document.querySelector('[data-im=\"add-menu\"]'), chatToggle: !!document.querySelector('[data-im=\"chat-toggle\"]'), submit: !!document.querySelector('[data-im=\"submit\"]'), stage: !!document.querySelector('.im-stage'), legacyRail: !!document.querySelector('.im-aux'), replyPanel: !!document.querySelector('[data-im=\"reply-panel\"]')})" },
-    { op: "eval", js: "JSON.stringify((function(){const t=document.querySelector('[data-im=\"board-toolbar\"]').getBoundingClientRect();const c=document.querySelector('[data-im=\"chat-toggle\"]').getBoundingClientRect();return {toolbarBottomGap: Math.round(window.innerHeight-t.bottom), toolbarVisible: t.width>0&&t.height>0, chatRightGap: Math.round(window.innerWidth-c.right), chatBottomGap: Math.round(window.innerHeight-c.bottom)};})())" },
-    { op: "screenshot", name: "fe-01-initial" },
+    { op: "eval", js: `JSON.stringify({toolbars: document.querySelectorAll('[data-im="board-toolbar"]').length, addMenu: !!document.querySelector('[data-im="add-menu"]'), chatToggle: !!document.querySelector('[data-im="chat-toggle"]'), submit: !!document.querySelector('[data-im="submit"]'), saveStatus: !!document.querySelector('[data-im="save-status"]'), submitStatus: !!document.querySelector('[data-im="submit-status"]'), visibleRange: !!document.querySelector('[data-im="visible-range"]'), legacyRail: !!document.querySelector('.im-aux'), replyPanel: !!document.querySelector('[data-im="reply-panel"]'), surface: !!document.querySelector('.board-surface')})` },
+    { op: "eval", js: `JSON.stringify((function(){const t=document.querySelector('[data-im="board-toolbar"]').getBoundingClientRect();const c=document.querySelector('[data-im="chat-toggle"]').getBoundingClientRect();const s=document.querySelector('.board-surface').getBoundingClientRect();return {toolbarBottomGap:Math.round(window.innerHeight-t.bottom),toolbarTop:Math.round(t.top),toolbarW:Math.round(t.width),chatRightGap:Math.round(window.innerWidth-c.right),chatBottomGap:Math.round(window.innerHeight-c.bottom),surfaceW:Math.round(s.width),surfaceTop:Math.round(s.top)};})())` },
+    { op: "screenshot", name: "fe-01-initial-1440" },
   ]);
   const values = evals(payload);
   const dom = lastJson(values.slice(0, -1));
   const geo = lastJson(values);
-  check("1. 底部工具栏与添加菜单存在", dom.toolbar && dom.addMenu, JSON.stringify(dom));
-  check("1. 右下独立聊天入口存在且可点", dom.chatToggle, JSON.stringify(geo));
-  check("1. 提交入口在工具栏内", dom.submit);
-  check("1. 没有常驻右侧回复栏", dom.legacyRail === false && dom.replyPanel === false, JSON.stringify({ rail: dom.legacyRail, reply: dom.replyPanel }));
-  check("1. 工具栏贴底、聊天入口贴右下", geo.toolbarBottomGap >= 0 && geo.toolbarBottomGap <= 80 && geo.chatRightGap >= 0 && geo.chatRightGap <= 80, JSON.stringify(geo));
+  check("1 底部工具栏唯一且存在", dom.toolbars === 1, JSON.stringify({ toolbars: dom.toolbars }));
+  check("1 添加菜单/聊天入口/提交入口/状态都在", dom.addMenu && dom.chatToggle && dom.submit && dom.saveStatus && dom.submitStatus && dom.visibleRange, JSON.stringify(dom));
+  check("1 没有常驻右侧回复栏", dom.legacyRail === false && dom.replyPanel === false);
+  check("1 板面是主体（surface 宽度 ≥ 视口 60%）", geo.surfaceW >= 1440 * 0.6, JSON.stringify(geo));
+  check("1 工具栏贴底、聊天入口贴右下", geo.toolbarBottomGap >= 0 && geo.toolbarBottomGap <= 60 && geo.chatRightGap >= 0 && geo.chatRightGap <= 80, JSON.stringify(geo));
+}
+
+// --- 场景 2：平移 / 空格框选 / 输入框内空格 --------------------------------
+
+async function scenario2() {
+  await resetBoard();
+  await addNoteCards(2);
+  const before = await cardScreens();
+  if (before.length < 2) { check("2 前置：两张卡片已用真实点击添加", false, JSON.stringify(before)); return; }
+  const a = before[0];
+
+  // 2.1 空白处拖动 = 平移（卡片屏幕位置变化、板面坐标不变）
+  // 平移是「抓取滚动」：往左/上拖才能看到右下方的内容（往右/下拖在左上边界会被钳住）
+  const empty = { x: a.x + 620, y: a.y + 360 };
+  const pan = sess([
+    ...drag(empty, { x: empty.x - 240, y: empty.y - 120 }),
+    { op: "eval", js: CARDS_EXPR },
+    { op: "wait", ms: 1400 },
+    stateRead(),
+    { op: "screenshot", name: "fe-21-panned" },
+  ]);
+  const panValues = evals(pan).filter((v) => typeof v === "string" && v.trim().startsWith("["));
+  const afterPan = lastJson(panValues, []);
+  const pannedCard = afterPan.find((c) => c.id === a.id) || {};
+  const movedBy = { dx: (pannedCard.x ?? 0) - a.x, dy: (pannedCard.y ?? 0) - a.y };
+  const panState = lastJson(evals(pan), {});
+  const boardCard = (await boardState()).cards.find((c) => c.id === a.id) || {};
+  check("2.1 空白拖动 = 平移（卡片在屏幕上跟着移动）", Math.abs(movedBy.dx) > 80 && Math.abs(movedBy.dy) > 30, JSON.stringify({ movedBy, panState }));
+  check("2.1 平移不改变板面坐标（只是查看位置）", Math.abs(Number(boardCard.x) - Number(a.x)) < 2, JSON.stringify({ boardX: boardCard.x, screenX: a.x }));
+
+  // 还原查看位置：反向拖动
+  sess(drag({ x: empty.x - 240, y: empty.y - 120 }, empty));
+
+  // 2.2 空格 + 拖动空白 = 框选（不按空格时空白拖动是平移）
+  const cards = await cardScreens();
+  const first = cards[0];
+  const rectStart = { x: first.x - 40, y: first.y - 30 };
+  const rectEnd = { x: Math.max(...cards.map((c) => c.x + c.w)) + 40, y: Math.max(...cards.map((c) => c.y + c.h)) + 40 };
+  const marquee = sess([
+    keyDown(KEY.space), { op: "wait", ms: 160 },
+    ...drag(rectStart, rectEnd, "fe-22-marquee-dragging"),
+    keyUp(KEY.space), { op: "wait", ms: 1500 },
+    stateRead(), stateRead(", selectedCount: (j.selection||[]).length"),
+    { op: "screenshot", name: "fe-23-marquee-selected" },
+  ]);
+  const sel = lastJson(evals(marquee), {});
+  const selection = sel.selected || [];
+  check("2.2 空格 + 拖动空白 = 框选到卡片", selection.length >= 2, JSON.stringify(sel));
+
+  // 2.3 在卡片输入框里按空格：正常输入，不触发板面操作
+  const zoomBefore = (await cardScreens())[0];
+  const typed = sess([
+    ...click(first.cx, first.cy),
+    { op: "wait", ms: 260 },
+    { op: "eval", js: `(function(){const el=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"], [data-im="card-toolbar"] button');if(!el)return 'no-edit';el.click();return 'clicked-edit';})()` },
+    { op: "wait", ms: 420 },
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');if(!t)return 'no-editor';t.focus();window.__before=t.value;return 'focused';})()` },
+    ...typeKey(KEY.space, " "),
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');return JSON.stringify({value:t?t.value:null, gotSpace:!!t&&t.value.includes(' ')});})()` },
+  ]);
+  const typedResult = last(typed, {});
+  const zoomAfter = (await cardScreens())[0];
+  void typed;
+  check("2.3 输入框内空格正常输入（不被板面吃掉）", typedResult.gotSpace === true, JSON.stringify({ typed: typedResult }));
+  check("2.3 输入空格时板面没有平移（卡片屏幕位置未变）", Math.abs((zoomAfter?.x ?? 0) - (zoomBefore?.x ?? 0)) < 2, JSON.stringify({ before: zoomBefore?.x, after: zoomAfter?.x }));
+  runSteps([keyDown(KEY.escape), keyUp(KEY.escape), { op: "wait", ms: 200 }]);
+}
+
+// --- 场景 3：缩放后坐标仍然准确；聊天滚动不缩放 ----------------------------
+
+async function scenario3() {
+  const cards = await cardScreens();
+  if (!cards.length) { check("3 前置：有卡片", false); return; }
+  const target = cards[0];
+  const stateBefore = await boardState();
+  const beforeCard = (stateBefore.cards || []).find((c) => c.id === target.id) || {};
+
+  // 缩放：滚轮对准卡片中心，放大后再在同一会话里拖动这张卡片
+  const zoomAndDrag = sess([
+    wheel(target.cx, target.cy, -240),
+    { op: "wait", ms: 300 },
+    wheel(target.cx, target.cy, -240),
+    { op: "wait", ms: 500 },
+    { op: "eval", js: CARDS_EXPR },
+    { op: "screenshot", name: "fe-30-zoomed" },
+    ...drag({ x: target.cx, y: target.cy }, { x: target.cx + 200, y: target.cy + 120 }),
+    { op: "wait", ms: 1800 },
+    { op: "screenshot", name: "fe-31-zoomed-drag" },
+  ]);
+  const zoomedValues = evals(zoomAndDrag);
+  const zoomed = lastJson(zoomedValues.filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  const zoomCard = zoomed.find((c) => c.id === target.id) || {};
+  check("3 滚轮缩放真的改变了板面比例", Math.abs((zoomCard.w ?? 0) - target.w) > 8, JSON.stringify({ before: target.w, after: zoomCard.w }));
+
+  const stateAfter = await boardState();
+  const afterCard = (stateAfter.cards || []).find((c) => c.id === target.id) || {};
+  const boardDx = Number(afterCard.x) - Number(beforeCard.x);
+  check("3 缩放后拖动卡片：板面坐标按比例落位（不是按屏幕像素 1:1）", Math.abs(boardDx) > 10 && Math.abs(boardDx - 200) > 5, JSON.stringify({ boardDx, screenDx: 200, scale: zoomCard.w ? (zoomCard.w / target.w).toFixed(2) : null }));
+  check("3 缩放后拖动没有改变卡片数量", (stateAfter.cards || []).length === (stateBefore.cards || []).length);
+  void beforeCard;
+}
+
+// --- 场景 4：两张卡片明确重叠 → 松手成组；改名；刷新后仍在 -------------------
+
+async function scenario4() {
+  await resetBoard();
+  await addNoteCards(1);
+  await addNoteCards(1);
+  const cards = await cardScreens();
+  if (cards.length < 2) { check("4 前置：两张卡片", false, JSON.stringify(cards)); return; }
+  const [a, b] = cards;
+
+  const dragSteps = [mouse("mousePressed", a.x + 12, a.y + 12), { op: "wait", ms: 90 }];
+  for (let i = 1; i <= 6; i += 1) {
+    dragSteps.push(mouse("mouseMoved", a.x + 12 + ((b.x - a.x) * i) / 6, a.y + 12 + ((b.y - a.y) * i) / 6));
+    dragSteps.push({ op: "wait", ms: 70 });
+  }
+  dragSteps.push({ op: "eval", js: "JSON.stringify({hint: !!document.querySelector('[data-im=\"group-merge-hint\"]'), hintText: (document.querySelector('[data-im=\"group-merge-hint\"]')||{}).textContent||''})" });
+  dragSteps.push({ op: "screenshot", name: "fe-40-merge-hint" });
+  dragSteps.push(mouse("mouseReleased", b.x + 12, b.y + 12));
+  dragSteps.push({ op: "wait", ms: 1800 });
+  dragSteps.push(stateRead());
+  dragSteps.push({ op: "screenshot", name: "fe-41-grouped" });
+  const dragged = sess(dragSteps);
+  const hint = lastJson(evals(dragged).filter((v) => typeof v === "string" && v.includes("hint")), {});
+  check("4 拖动中提示「松开后合并成组」", hint.hint === true && /松开后合并成组/.test(hint.hintText || ""), JSON.stringify({ hint: hint.hintText }));
+  const groupRead = lastJson(evals(dragged), {});
+  const groups = groupRead.groups || [];
+  const group = groups[0] || {};
+  check("4 松手后才成组，组里有两张卡片", groups.length === 1 && (group.members || []).length === 2, JSON.stringify(groups.map((g) => ({ name: g.name, members: g.members }))));
+  check("4 初始组名是系统默认名「组 N」", /^组\s*\d+$/.test(group.name || ""), String(group.name));
+
+  // 组名是组框头上那个输入框（data-im="group-name"），真键盘输入 + 回车提交
+  const renamed = sess([
+    { op: "eval", js: `(function(){const i=document.querySelector('input[data-im="group-name"]');if(!i)return 'missing';i.focus();if(i.select)i.select();return 'focused';})()` },
+    { op: "wait", ms: 260 },
+    { op: "cdp", method: "Input.insertText", params: { text: "材料准备" } },
+    { op: "wait", ms: 220 },
+    ...typeKey(KEY.enter, undefined),
+    { op: "wait", ms: 1800 },
+    stateRead(),
+    { op: "screenshot", name: "fe-42-renamed" },
+  ]);
+  const afterRenameState = await boardState();
+  const renamedGroup = (afterRenameState.groups || []).filter((g) => !g.deleted)[0] || {};
+  void renamed;
+  const renameRead = lastJson(evals(renamed), {});
+  check("4 输入名称后使用用户名称", (renameRead.groups || []).some((g) => g.name === "材料准备"), JSON.stringify({ groups: renameRead.groups, probe: last(renamed, null) }));
+
+  const reloadRead = sess([{ op: "eval", js: CARDS_EXPR }, { op: "wait", ms: 900 }, stateRead(), { op: "screenshot", name: "fe-43-after-reload" }]);
+  const reloadedGroups = lastJson(evals(reloadRead), {}).groups || [];
+  check("4 刷新后组与组名仍在", reloadedGroups.length === 1 && reloadedGroups[0].name === "材料准备", JSON.stringify(reloadedGroups.map((g) => g.name)));
+
+  // 清空名称：留空也保留一个可用名字（组仍然成立、可提交）
+  const cleared = sess([
+    { op: "eval", js: `(function(){const i=document.querySelector('input[data-im="group-name"]');if(!i)return 'missing';i.focus();i.select();return 'focused';})()` },
+    { op: "wait", ms: 240 },
+    { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 } },
+    { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 } },
+    { op: "wait", ms: 200 },
+    ...typeKey(KEY.enter, undefined),
+    { op: "wait", ms: 1600 },
+    stateRead(),
+    { op: "screenshot", name: "fe-44-name-cleared" },
+  ]);
+  const clearedGroups = lastJson(evals(cleared), {}).groups || [];
+  check("4 留空不删组：仍有一个可用组名", clearedGroups.length === 1 && String(clearedGroups[0].name || "").trim().length > 0, JSON.stringify(clearedGroups.map((g) => g.name)));
+}
+
+// --- 场景 6：勾选框只在注释卡上；未勾选内容不进允许查看范围 ------------------
+
+async function scenario6() {
+  await resetBoard();
+  await addNoteCards(2);
+  const cards = await cardScreens();
+  if (cards.length < 2) { check("6 前置：两张卡片", false, JSON.stringify(cards)); return; }
+  const [first, second] = cards;
+  const write = (card, text) => [
+    ...click(card.cx, card.cy), { op: "wait", ms: 220 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"], [data-im="card-toolbar"] button');if(b)b.click();return !!b;})()` },
+    { op: "wait", ms: 320 },
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');if(!t)return 'no';t.focus();t.value=${JSON.stringify(text)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "wait", ms: 200 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/完成编辑|确定|保存/.test(x.textContent));if(b)b.click();return b?'confirmed':'no-confirm';})()` },
+    { op: "wait", ms: 400 },
+  ];
+  const checkedText = "甲己勾选的注释" + RUN_TAG;
+  const uncheckedText = "乙未勾选的注释" + RUN_TAG;
+  sess([...write(first, checkedText), { op: "wait", ms: 1400 }, ...write(second, uncheckedText), { op: "wait", ms: 1600 }, { op: "screenshot", name: "fe-60-two-notes" }]);
+
+  const hooks = sess([
+    ...click(first.cx, first.cy), { op: "wait", ms: 260 },
+    { op: "eval", js: `JSON.stringify((function(){const c=document.querySelector('[data-im="check"]');if(!c)return {check:false};const label=c.closest('label');return {check:true, toolbar:!!document.querySelector('[data-im="card-toolbar"]'), text:(c.textContent||'').trim(), aria:c.getAttribute('aria-label')||'', title:c.getAttribute('title')||'', labelText:label?(label.textContent||'').trim():'', near:(c.parentElement?(c.parentElement.textContent||'').trim():'').slice(0,80)};})())` },
+    clickHook("check"), { op: "wait", ms: 700 },
+    { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||''})" },
+    { op: "screenshot", name: "fe-61-checked" },
+  ]);
+  const values = evals(hooks);
+  const meta = lastJson(values.slice(0, -1), {});
+  check("6 选中注释卡才出现勾选框", meta.check === true && meta.toolbar === true, JSON.stringify(meta));
+  const checkText = [meta.text, meta.aria, meta.title, meta.labelText, meta.near].join(" | ");
+  check("6 勾选框写着「本次允许 QIO 查看」", /允许 QIO 查看/.test(checkText), checkText.slice(0, 120));
+  const preSubmitRange = lastJson(evals(hooks), {}).range || "";
+  check("6 提交前允许查看范围里就有这条勾选的注释（注释 1 条）", /注释\s*1\s*条/.test(preSubmitRange), preSubmitRange.slice(0, 140));
+
+  const stateChecked = await boardState();
+  const checked = (stateChecked.cards || []).filter((c) => c.checked);
+  check("6 勾选后状态里只有这一张被允许查看", checked.length === 1, JSON.stringify(checked.map((c) => c.id)));
+
+  const submitted = sess([clickHook("submit"), { op: "wait", ms: 2000 }, { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||'', status: (document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-62-submitted" }]);
+  const submitInfo = last(submitted, {});
+  const submissions = await api("/api/interactive/boards/" + BOARD + "/submissions");
+  const payloadText = JSON.stringify(submissions);
+  check("6 提交内容里有已勾选的注释", payloadText.includes("甲己勾选的注释"), JSON.stringify({ range: (submitInfo.range || "").slice(0, 80) }));
+  check("6 未勾选的注释没有进入提交内容", !payloadText.includes("乙未勾选的注释"), "");
+  const afterSubmitState = await boardState();
+  check(
+    "6 提交后勾选被自动取消（不是删除）",
+    afterSubmitState.cards.filter((c) => c.checked).length === 0 && afterSubmitState.cards.length === 2,
+    JSON.stringify({ checked: afterSubmitState.cards.filter((c) => c.checked).length, cards: afterSubmitState.cards.length, status: (submitInfo.status || "").slice(0, 60) }),
+  );
+}
+
+// --- 场景 7：聊天只发文字；板面提交走另一条路径 -----------------------------
+
+async function scenario7() {
+  await resetBoard();
+  await addNoteCards(1);
+  const payload = runSteps([
+    ...NAV, SPY_ON, SPY_RESET,
+    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="chat-panel"]')){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'ensure-open';})()` },
+    { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'missing';t.focus();t.value='只发这一句文字，不带板面';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "wait", ms: 300 },
+    ...typeKey(KEY.enter, undefined),
+    { op: "wait", ms: 2400 },
+    SPY_READ,
+    { op: "screenshot", name: "fe-70-chat-sent" },
+  ]);
+  const calls = lastJson(evals(payload).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  const turnCalls = calls.filter((c) => /\/api\/turns$/.test(c.url));
+  const submitCalls = calls.filter((c) => /\/submissions$/.test(c.url));
+  check("7 聊天发送只有 /api/turns 一条请求", turnCalls.length === 1, JSON.stringify(calls.map((c) => c.method + " " + c.url)));
+  check("7 聊天请求体只带文字（不带板面/改动）", turnCalls.length === 1 && /只发这一句文字/.test(turnCalls[0].body || "") && !/cards|selection/.test(turnCalls[0].body || ""), turnCalls[0] ? turnCalls[0].body : "");
+  check("7 聊天发送没有调用板面提交接口", submitCalls.length === 0, JSON.stringify(submitCalls.map((c) => c.url)));
+
+  // 新会话：先装探针、再点提交（spy 只活在这一个页面会话里）
+  const submitRun = sess([SPY_ON, SPY_RESET, clickHook("submit"), { op: "wait", ms: 2200 }, SPY_READ]);
+  const afterSubmitCalls = lastJson(evals(submitRun).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  check("7 板面提交走 /api/interactive/boards/*/submissions", afterSubmitCalls.some((c) => /\/submissions$/.test(c.url)), JSON.stringify(afterSubmitCalls.map((c) => c.method + " " + c.url)));
+  check("7 板面提交没有走 /api/turns", !afterSubmitCalls.some((c) => /\/api\/turns$/.test(c.url)));
+}
+
+// --- 场景 8：聊天收起/展开不丢；输入法不误发送；失败保留输入 ------------------
+
+async function scenario8() {
+  const typed = sess([
+    clickHook("chat-toggle"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'no-input';t.focus();t.value='中文草稿：收起再展开要还在';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "wait", ms: 700 },
+    clickHook("chat-toggle"), { op: "wait", ms: 500 },
+    clickHook("chat-toggle"), { op: "wait", ms: 700 },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');return JSON.stringify({draft: t?t.value:null});})()` },
+    { op: "screenshot", name: "fe-80-chat-draft-kept" },
+  ]);
+  const draft = last(typed, {});
+  check("8 收起再展开聊天草稿还在", String(draft.draft || "").includes("中文草稿"), JSON.stringify(draft));
+
+  const ime = sess([
+    SPY_ON, SPY_RESET,
+    clickHook("chat-toggle"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'no-input';t.focus();t.value='输入法候选中的文字';t.dispatchEvent(new Event('input',{bubbles:true}));t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:229,isComposing:true,bubbles:true}));return 'composing-enter';})()` },
+    { op: "wait", ms: 1000 },
+    SPY_READ,
+  ]);
+  const imeCalls = lastJson(evals(ime).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  check("8 输入法选字中的 Enter 不发送", imeCalls.filter((c) => /\/api\/turns$/.test(c.url)).length === 0, JSON.stringify(imeCalls.map((c) => c.url)));
+
+  // 说明：CDP 的 offline 模拟对 localhost 不生效（请求照旧成功），后端整体停掉又会让应用起不来。
+  // 所以这里**只拦截发送这一条请求**，应用自己的失败处理是真的（报告里标注为「模拟发送失败」）。
+  const offline = sess([
+    clickHook("chat-toggle"), { op: "wait", ms: 700 },
+    { op: "eval", js: `(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/api\\/turns$/.test(url)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed';})()` },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'no-input';t.focus();t.value='断网时发送';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    ...typeKey(KEY.enter, undefined),
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');const p=document.querySelector('[data-im="chat-panel"]');const w=document.querySelector('[data-im="chat-warning"], [data-im="chat-status"]');return JSON.stringify({draft:t?t.value:null, warning:w?w.textContent:'', panel:(p?p.textContent:'').replace(/\\s+/g,' ').slice(0,300)});})()` },
+    { op: "screenshot", name: "fe-81-chat-offline" },
+  ]);
+  const failed = last(offline, {});
+  const failureText = [failed.draft, failed.warning, failed.panel].join(" | ");
+  check("8 模拟发送失败时保留输入并给出真实原因", String(failed.draft || "").includes("断网时发送") && /发送失败/.test(failureText), JSON.stringify(failed));
+}
+
+// --- 场景 9：批量列表阈值（同一批 ≥4 才出现，默认收起，不累加） ---------------
+
+async function scenario9() {
+  await resetBoard();
+  const cleared = await clearPendingIntents();
+  const demoOnce = () => sess([
+    clickHook("demo-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
+    { op: "wait", ms: 2400 },
+  ]);
+  const first = await demoOnce();
+  const intentsAfterFirst = await intentsApi();
+  const list = (intentsAfterFirst.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  check("9 演示入口一次生成四项（先清理了旧的待审批意图）", list.length >= 4, JSON.stringify({ pending: list.length, cleared, probe: last(first, null) }));
+
+  const tray = sess([
+    { op: "wait", ms: 500 },
+    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]'), entryText: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" },
+    { op: "screenshot", name: "fe-90-batch-collapsed" },
+  ]);
+  const trayState = last(tray, {});
+  check("9 同批四项出现批量入口", trayState.entry === true, JSON.stringify(trayState));
+  check("9 批量列表默认收起（不自动展开）", trayState.list === false, JSON.stringify(trayState));
+
+  const expanded = sess([
+    clickHook("batch-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: "JSON.stringify({list: !!document.querySelector('[data-im=\"batch-list\"]'), items: document.querySelectorAll('[data-im=\"batch-item\"]').length, text: ((document.querySelector('[data-im=\"batch-list\"]')||{}).textContent||'').slice(0,80)})" },
+    { op: "screenshot", name: "fe-91-batch-expanded" },
+  ]);
+  const expandedState = last(expanded, {});
+  check("9 点击后展开该批列表，条目数与这一批一致", expandedState.list === true && Number(expandedState.items) >= 4, JSON.stringify({ items: expandedState.items, text: expandedState.text }));
+
+  const target = list.find((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status)) || list[0];
+  const decision = await api("/api/interactive/intents/" + target.id + "/reject", { method: "POST", body: JSON.stringify({}) });
+  const afterReject = sess([{ op: "wait", ms: 900 }, { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]')})" }, { op: "screenshot", name: "fe-92-batch-after-reject" }]);
+  const rejectState = last(afterReject, {});
+  const intentsAfterReject = await intentsApi();
+  const pending = (intentsAfterReject.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  check("9 同批剩三项时批量入口消失（不同批次不累加）", pending.length === 3 && rejectState.entry === false, JSON.stringify({ pending: pending.length, entry: rejectState.entry, decision: decision && decision.status }));
+}
+
+// --- 场景 12：窄窗口 + 两种主题 ---------------------------------------------
+
+async function scenario12() {
+  const seen = [];
+  for (const size of [[1024, 768], [800, 600]]) {
+    const w = size[0];
+    const payload = sess([
+      { op: "viewport", width: size[0], height: size[1] }, { op: "wait", ms: 800 },
+      { op: "eval", js: `JSON.stringify((function(){
+        const g=(s)=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();const el=document.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2));return {l:Math.round(r.left),t:Math.round(r.top),r:Math.round(r.right),b:Math.round(r.bottom),hit:!!(el&&(el===e||e.contains(el)))};};
+        const overlap=(a,b)=>!!a&&!!b&&a.l<b.r&&b.l<a.r&&a.t<b.b&&b.t<a.b;
+        const toolbar=g('[data-im="board-toolbar"]'), submit=g('[data-im="submit"]'), chat=g('[data-im="chat-toggle"]'), batch=g('[data-im="batch-entry"]');
+        return {toolbar:!!toolbar, submit, chat, batch, overlapChatToolbar:overlap(chat,toolbar), overflowX: document.documentElement.scrollWidth>window.innerWidth};
+      })())` },
+      { op: "screenshot", name: "fe-12-" + w + "x" + size[1] },
+    ]);
+    const m = last(payload, {});
+    seen.push({ size: w + "x" + size[1], ...m });
+    check("12 " + w + "×" + size[1] + "：工具栏/提交/聊天入口都在且可点", m.toolbar === true && !!m.submit && m.submit.hit === true && !!m.chat && m.chat.hit === true, JSON.stringify({ toolbar: m.toolbar, submit: m.submit, chat: m.chat }));
+    check("12 " + w + "×" + size[1] + "：聊天入口不压工具栏", m.overlapChatToolbar === false, JSON.stringify(m.overlapChatToolbar));
+    check("12 " + w + "×" + size[1] + "：不横向溢出", m.overflowX === false);
+  }
+  sess([
+    { op: "viewport", width: 1440, height: 900 }, { op: "wait", ms: 500 },
+    { op: "eval", js: "document.documentElement.setAttribute('data-theme','dark'); 'dark'" },
+    { op: "wait", ms: 500 },
+    { op: "screenshot", name: "fe-12-theme-dark" },
+    { op: "eval", js: "document.documentElement.setAttribute('data-theme','light'); 'light'" },
+    { op: "wait", ms: 500 },
+    { op: "screenshot", name: "fe-12-theme-light" },
+  ]);
+}
+
+
+// --- 场景 5：连接点拖线建链 / 取消拖动不留痕迹 -------------------------------
+
+async function scenario5() {
+  await resetBoard();
+  await addNoteCards(1);
+  await addNoteCards(1);
+  const cards = await cardScreens();
+  if (cards.length < 2) { check("5 前置：两张卡片", false, JSON.stringify(cards)); return; }
+  const [a, b] = cards;
+
+  // 选中一张卡片 → 出现连接点
+  const selected = sess([
+    ...click(a.cx, a.cy), { op: "wait", ms: 400 },
+    { op: "eval", js: `JSON.stringify({toolbar: !!document.querySelector('[data-im="card-toolbar"]'), points: document.querySelectorAll('[data-im="connect-point"]').length, pointRect: (function(){const p=document.querySelector('[data-im="connect-point"]');if(!p)return null;const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()})` },
+    { op: "screenshot", name: "fe-50-card-toolbar-and-points" },
+  ]);
+  const sel = last(selected, {});
+  check("5 选中卡片后出现局部工具栏与连接点", sel.toolbar === true && Number(sel.points) >= 1, JSON.stringify(sel));
+  const point = sel.pointRect || { x: a.x + 130, y: a.y + 8 };
+
+  // 从连接点拖到另一张卡片 → 建链
+  const linked = sess([
+    // 连接点只在选中卡片后出现：新会话要先选中，否则按下的位置落在卡片身上会变成拖动卡片
+    ...click(a.cx, a.cy), { op: "wait", ms: 420 },
+    { op: "eval", js: `JSON.stringify({points:[...document.querySelectorAll('[data-im="connect-point"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})})` },
+    mouse("mousePressed", point.x, point.y), { op: "wait", ms: 120 },
+    mouse("mouseMoved", (point.x + b.cx) / 2, (point.y + b.cy) / 2), { op: "wait", ms: 100 },
+    mouse("mouseMoved", b.cx, b.cy), { op: "wait", ms: 160 },
+    { op: "eval", js: `JSON.stringify({draft: !!document.querySelector('[data-im="link-draft"]')})` },
+    { op: "screenshot", name: "fe-51-link-dragging" },
+    mouse("mouseReleased", b.cx, b.cy), { op: "wait", ms: 1600 },
+    stateRead(),
+    { op: "screenshot", name: "fe-52-link-created" },
+  ]);
+  const linkState = lastJson(evals(linked), {});
+  check("5 从连接点拖到另一张卡片建立关系链接", Number(linkState.links) >= 1, JSON.stringify({ links: linkState.links }));
+
+  // 无效位置松手：不建链
+  const beforeInvalid = (await boardState()).links.length;
+  sess([
+    ...click(a.cx, a.cy), { op: "wait", ms: 420 },
+    ...drag(point, { x: 1200, y: 700 }),
+    { op: "wait", ms: 1200 },
+  ]);
+  const afterInvalid = (await boardState()).links.length;
+  check("5 拖到无效位置松手不建链", afterInvalid === beforeInvalid, JSON.stringify({ before: beforeInvalid, after: afterInvalid }));
+
+  // 拖动中按 Esc：卡片回到原位（未完成的拖动不成为正式改动）
+  const stateBefore = await boardState();
+  const cardBefore = stateBefore.cards.find((c) => c.id === a.id) || {};
+  const cancelled = sess([
+    mouse("mousePressed", a.cx, a.cy), { op: "wait", ms: 120 },
+    mouse("mouseMoved", a.cx + 160, a.cy + 120), { op: "wait", ms: 140 },
+    keyDown(KEY.escape), keyUp(KEY.escape), { op: "wait", ms: 200 },
+    mouse("mouseReleased", a.cx + 160, a.cy + 120), { op: "wait", ms: 1200 },
+    { op: "screenshot", name: "fe-53-drag-cancelled" },
+  ]);
+  const stateAfter = await boardState();
+  const cardAfter = stateAfter.cards.find((c) => c.id === a.id) || {};
+  check("5 拖动中按 Esc 取消：卡片回到原位，不保存未完成的拖动", Number(cardAfter.x) === Number(cardBefore.x) && Number(cardAfter.y) === Number(cardBefore.y), JSON.stringify({ before: [cardBefore.x, cardBefore.y], after: [cardAfter.x, cardAfter.y], probe: last(cancelled, null) }));
+}
+
+// --- 场景 11：未提交改动与草稿的恢复；恢复不自动提交 -------------------------
+
+async function scenario11() {
+  await resetBoard();
+  await addNoteCards(1);
+  const cards = await cardScreens();
+  if (!cards.length) { check("11 前置：一张卡片", false); return; }
+  const card = cards[0];
+
+  // 在编辑器里写一段「还没确认」的草稿，然后离开
+  const draftTag = "草稿" + RUN_TAG;
+  sess([
+    ...click(card.cx, card.cy), { op: "wait", ms: 260 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"], [data-im="card-toolbar"] button');if(b)b.click();return !!b;})()` },
+    { op: "wait", ms: 400 },
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');if(!t)return 'no-editor';t.focus();t.value=${JSON.stringify(draftTag)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed-draft';})()` },
+    { op: "wait", ms: 1500 },
+    { op: "screenshot", name: "fe-110-card-draft" },
+  ]);
+
+  // 刷新后：草稿还在，且没有自动提交
+  const reloaded = sess([
+    SPY_ON, SPY_RESET,
+    ...click(card.cx, card.cy), { op: "wait", ms: 300 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"], [data-im="card-toolbar"] button');if(b)b.click();return !!b;})()` },
+    { op: "wait", ms: 500 },
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');return JSON.stringify({value:t?t.value:null, hasDraft:t?t.value.includes(${JSON.stringify(draftTag)}):false});})()` },
+    { op: "wait", ms: 1200 },
+    SPY_READ,
+    { op: "screenshot", name: "fe-111-draft-after-reload" },
+  ]);
+  const draftState = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.includes("hasDraft")), {});
+  const calls = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  check("11 刷新后卡片编辑草稿仍在", draftState.hasDraft === true, JSON.stringify(draftState));
+  check("11 恢复过程不自动提交（没有 submissions 请求）", !calls.some((c) => /\/submissions$/.test(c.url)), JSON.stringify(calls.map((c) => c.method + " " + c.url).slice(0, 8)));
+  const state = await boardState();
+  check("11 未确认的草稿没有变成正式内容（仍是草稿）", !state.cards.some((c) => String(c.content || "").includes(draftTag)), JSON.stringify(state.cards.map((c) => String(c.content || "").slice(0, 12))));
 }
 
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
-  try {
-    if (want(1)) { await resetBoard(); await scenario1(); }
-  } catch (error) {
-    check("验收脚本执行完成", false, String(error));
+  const scenarios = [
+    [1, scenario1],
+    [2, scenario2],
+    [3, scenario3],
+    [4, scenario4],
+    [5, scenario5],
+    [6, scenario6],
+    [7, scenario7],
+    [8, scenario8],
+    [9, scenario9],
+    [11, scenario11],
+    [12, scenario12],
+  ];
+  for (const entry of scenarios) {
+    const id = entry[0];
+    const fn = entry[1];
+    if (!want(id)) continue;
+    console.log("");
+    console.log("--- 场景 " + id + " ---");
+    try {
+      await fn();
+    } catch (error) {
+      check("场景 " + id + " 执行完成", false, String(error && error.message ? error.message : error));
+    }
   }
   const failed = checks.filter((c) => !c.ok);
   console.log("");

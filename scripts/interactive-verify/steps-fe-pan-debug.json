@@ -1,0 +1,75 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){\n    const p=(x,y)=>{const e=document.elementFromPoint(x,y);if(!e)return null;return {tag:e.tagName, cls:String(e.className).slice(0,60), im:e.getAttribute&&e.getAttribute('data-im'), path:(function(){const out=[];let n=e;let i=0;while(n&&i<6){out.push(n.tagName+'.'+String(n.className).split(' ')[0]);n=n.parentElement;i++;}return out.join(' < ');})()};};\n    return {at900_620:p(900,620), at700_500:p(700,500), at1300_300:p(1300,300), zz:(document.querySelector('[data-im=\"zz-state\"]')||{}).textContent||''};\n  })())"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){window.__ev=[];for(const t of ['pointerdown','mousedown','pointermove','pointerup','mouseup']){document.addEventListener(t,e=>{window.__ev.push(t+':'+(e.target.getAttribute&&e.target.getAttribute('data-im')||e.target.className||e.target.tagName))},true);}return 'listening';})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 900,
+      "y": 620,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 120
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 1000,
+      "y": 660,
+      "button": "left",
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 120
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 1000,
+      "y": 660,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({events:(window.__ev||[]).slice(0,12), zz:(document.querySelector('[data-im=\"zz-state\"]')||{}).textContent||''})"
+  }
+]
