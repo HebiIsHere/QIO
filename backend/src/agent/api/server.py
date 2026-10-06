@@ -1692,6 +1692,9 @@ def create_app(
             # 本轮已输出的执行叙事（模型文案 + 系统生成的调用摘要）：
             # 断线期间丢失的叙事在这里补齐，客户端按 narrative_id 去重。
             "narratives": ctx.active_turn_narratives(),
+            # 结束事实（R4 S6）：RESYNC 时把「当前相关轮次」（运行 / 排队 / 刚取消 /
+            # 上一个进程留下的未完成轮）的事实一并给前端，按 turn_id 合并。
+            "turn_facts": _turn_facts_for(_current_turn_ids()),
         }
 
     @app.post("/api/turns/{turn_id}/cancel")
@@ -1826,6 +1829,65 @@ def create_app(
 
     # -- graph -------------------------------------------------------------
 
+    def _current_turn_ids() -> list[str]:
+        """「当前相关轮次」：运行中 + 排队中 + 刚取消 + 上个进程留下的未完成轮。
+
+        只按权威来源取 id（queue 快照 / 台账），不扫全表。
+        """
+        snapshot = ctx.turns.snapshot()
+        ids: list[str] = []
+        running = snapshot.get("running") or {}
+        if running.get("turn_id"):
+            ids.append(str(running["turn_id"]))
+        ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("queued") or [])
+        ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("cancelled") or [])
+        ids.extend(str(row.get("turn_id") or "") for row in ctx.turn_journal.unfinished())
+        return ids
+
+    def _turn_facts_for(turn_ids) -> list[dict]:
+        """这一页 / 当前相关轮次的结束事实（R4 S6）：**一次批量查询**，绝不 N+1。
+
+        * 只给台账里**确实有事实**的轮次：旧记录（迁移前三列全 NULL）不出现 ——
+          不伪造成 none / 假原因；没有任何事实时就是空数组。
+        * 顺序 = 调用方给的顺序（前端按 turn_id 合并，顺序只影响可读性）。
+        * 台账读不出来只记日志：历史接口照常返回（不能因为旁路台账挂掉）。
+        """
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for item in turn_ids:
+            value = str(item or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                wanted.append(value)
+        if not wanted:
+            return []
+        try:
+            rows = ctx.turn_journal.facts(wanted)
+        except Exception as exc:  # noqa: BLE001 - 台账读不出来不能影响历史接口
+            logger.warning("结束事实读台账失败（历史照常返回）：%s", redact_text(str(exc)))
+            return []
+        out: list[dict] = []
+        for turn_id in wanted:
+            row = (rows or {}).get(turn_id)
+            if not row:
+                continue
+            actions = [str(a) for a in (row.get("actions") or [])]
+            if not any(
+                (row.get("reason_code"), row.get("reason"), row.get("stopped_by"), actions)
+            ):
+                continue  # 旧记录：没有事实就不带这一条（不给假原因）
+            out.append(
+                {
+                    "turn_id": str(row.get("turn_id") or turn_id),
+                    "status": row.get("status"),
+                    "reason_code": row.get("reason_code"),
+                    "reason": row.get("reason"),
+                    "stopped_by": row.get("stopped_by"),
+                    "actions": actions,
+                }
+            )
+        return out
+
     def _history_page_with_attachments(page: dict) -> dict:
         """给一页历史消息补上附件（问题 5：刷新 / 重进历史后附件行必须还在）。
 
@@ -1838,19 +1900,27 @@ def create_app(
           分页字段与 before 游标原样不动。
         """
         messages = page.get("messages") or []
+        enriched = messages
         by_message = attachments.payloads_for_messages(messages)
-        if not by_message:
-            return page
-        enriched: list[dict] = []
-        for message in messages:
-            items = by_message.get(str(message.get("id") or ""))
-            if items:
-                updated = dict(message)
-                updated["attachments"] = items
-                enriched.append(updated)
-            else:
-                enriched.append(message)
-        return {**page, "messages": enriched}
+        if by_message:
+            enriched = []
+            for message in messages:
+                items = by_message.get(str(message.get("id") or ""))
+                if items:
+                    updated = dict(message)
+                    updated["attachments"] = items
+                    enriched.append(updated)
+                else:
+                    enriched.append(message)
+        # 结束事实（R4 S6）：刷新 / 换设备后失败轮仍要说得出为什么、还有哪些操作。
+        # 只查这一页涉及的轮次（一次批量），旧记录没有事实就不出现。
+        return {
+            **page,
+            "messages": enriched,
+            "turn_facts": _turn_facts_for(
+                str(message.get("turn_id") or "") for message in messages
+            ),
+        }
 
     @app.get("/api/session/context")
     async def session_context(limit: int | None = None) -> dict:
@@ -1865,6 +1935,8 @@ def create_app(
             "topic_name": node.name if node else topic_id,
             "anchor_fragment": ctx.anchor_fragment_info(),
             "messages": page["messages"],
+            # 这一页涉及的轮次结束事实（R4 S6：失败轮的原因 / 可用操作，刷新后仍在）
+            "turn_facts": page["turn_facts"],
             # 这一页涉及的工具调用（预览；全文走 /api/tool-records/{id}）
             "tool_records": page["tool_records"],
             "has_more": page["has_more"],

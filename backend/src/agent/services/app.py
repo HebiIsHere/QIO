@@ -1326,7 +1326,35 @@ class AppContext:
         if name == "TURN_END":
             await self._close_open_stage(data.get("turn_id"))
             data = {**data, **self._turn_timing_facts(data.get("turn_id"))}
+            # 结束事实落台账（R4 S6）：这些字段以前只随事件发一次，刷新 / 换设备后就没了 ——
+            # 用户看到一轮失败、刷新后「重试」入口消失。台账是旁路，写不进去不影响发布。
+            self._record_turn_facts(data)
         await self.bus.publish(make_event(EventType(name), data))
+
+    def _record_turn_facts(self, data: dict) -> None:
+        """把 TURN_END 的结束事实写进台账（只写系统确实给的事实）。
+
+        * 台账里没有这一行 → record_facts 静默不写（旁路，不凭空建假记录）；
+        * 写入异常只记日志：用户仍然必须收到 TURN_END；
+        * reason 的脱敏在 turn_journal.record_facts 内部完成（不在这里二次加工）。
+        """
+        turn_id = str(data.get("turn_id") or "").strip()
+        if not turn_id:
+            return
+        try:
+            self.turn_journal.record_facts(
+                turn_id,
+                reason_code=data.get("reason_code"),
+                reason=data.get("reason"),
+                stopped_by=data.get("stopped_by"),
+                actions=list(data.get("actions") or []),
+            )
+        except Exception as exc:  # noqa: BLE001 - 台账写不进去不能挡住对话
+            from agent.trace.redact import redact_text
+
+            logger.warning(
+                "结束事实落台账失败（不影响事件发布）：%s", redact_text(str(exc))
+            )
 
     def _turn_timing_facts(self, turn_id: str | None) -> dict:
         """TURN_END 的耗时事实（plan §3）：以 trace 台账为准，缺什么就不补什么。"""
