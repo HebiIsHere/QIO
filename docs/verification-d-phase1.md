@@ -144,6 +144,16 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-sse-local.ps1
 
 假厂商端点在本机跑了真 HTTP + 真 SSE；这不证明任何真实厂商行为。
 
+
+同一轮**全量**前端套件（含既有用例）也跑过，确认新增验证用例没有污染既有行为：
+
+~~~text
+cd frontend
+npx vitest run
+-> Test Files 3 failed | 102 passed (105)，Tests 12 failed | 947 passed (959)
+   （3 个失败文件就是我新增的 3 个 verify 文件）
+~~~
+
 ### 2.4 前端类型检查
 
 ~~~text
