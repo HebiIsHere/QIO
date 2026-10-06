@@ -692,6 +692,16 @@
   独立验证方另有一组 `*_verify` 用例（`backend/tests/test_*_verify.py`、`frontend/src/**/*.verify.test.ts`）。
   附件边界的真机取证另有一个手工脚本 `scripts/verify_attachment_boundaries.py`（含**真实 100MB 复制**的精确等号边界，
   不进 CI，避免每次全量都写 100MB）。
+- **Implementation（远端 CI 抓到的两个真缺陷，2026-10-06 已修）：**
+  1) **后台复制不再在工作线程碰共享 sqlite 连接**：原先整个 `run_prepare` 被丢进 `asyncio.to_thread`，
+     工作线程既读又写与全应用共享的连接（`check_same_thread=False`），在 CI 的 py3.12 / windows 上
+     稳定复现 `sqlite3.InterfaceError` 与「刚 POST 成功、马上 GET 404」的幻影状态（本机 py3.11 全绿只是时序运气）。
+     现在工作线程只跑纯文件 I/O（`copy_to_disk`），落库回到事件循环线程（`apply_outcome`），
+     并有确定性并发用例（闸门卡住复制 + 复制期间高频 GET）守住「同一个连接只有一个线程碰」这条不变量。
+  2) **兼容忽略 `stream: true` 的 OpenAI 兼容服务**：这类服务回整段 `application/json`，
+     SDK 会给出 0 个 chunk 且不报错 —— 整轮会「没有工具调用」。现在先看响应 `Content-Type`：
+     不是 `text/event-stream` 就直接用整段结果（零额外请求），并对裸客户端保留「零增量则只回退一次」的兜底；
+     两种路径都如实告知「这条模型路径不支持实时生成」。
 - **Known limitations：**
   - **真实厂商端点的 SSE 未验证**（规则禁止真实 Key / 联网）：只验证了协议形状与假厂商分片；
     「不支持流式」的 provider 路径明确降级，不宣称实时生成。
