@@ -353,11 +353,21 @@ describe("dropCard：放下才完成操作", () => {
     expect(groupIds(result.state)).toEqual([]);
   });
 
-  it("与多张未分组卡片重叠时一起成组", () => {
-    const state = mkState([mkCard("a", 0, 0), mkCard("b", 120, 0), mkCard("c", 240, 0)]);
-    const result = board.dropCard(state, "c", 60, 10);
+  it("一叠卡片里只认一个明确目标：不是整堆一起成组", () => {
+    // a 在 0..100、b 在 100..200，c 落在 100 → 与两张的重叠比例都是 0.6（完全并列）。
+    // 并列时按卡片顺序取第一个（确定性目标），绝不把一叠卡片整堆合并。
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 100, 0), mkCard("c", 300, 0)]);
+    const result = board.dropCard(state, "c", 50, 0);
     const group = board.groupById(result.state, result.groupId as string);
-    expect([...(group?.members ?? [])].sort()).toEqual(["a", "b", "c"]);
+    expect([...(group?.members ?? [])].sort()).toEqual(["a", "c"]);
+  });
+
+  it("一叠卡片里落点明确压在中间那张上时只与中间那张成组", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 120, 0), mkCard("c", 240, 0)]);
+    // b 的矩形是 120..220；c 落在 130 → 与 b 的重叠是 90/100 = 0.9，与 a 的重叠是 0
+    const result = board.dropCard(state, "c", 130, 0);
+    const group = board.groupById(result.state, result.groupId as string);
+    expect([...(group?.members ?? [])].sort()).toEqual(["b", "c"]);
   });
 
   it("已删除或不存在的卡片放下不改状态", () => {
@@ -585,5 +595,91 @@ describe("选择 / 勾选 / 隐藏 / 折叠 / 书签 / 搜索", () => {
     expect(board.searchCards(state, "ROADMAP")).toEqual(["u1"]);
     expect(board.searchCards(state, "   ")).toEqual([]);
     expect(board.searchCards(state, "不存在的词")).toEqual([]);
+  });
+});
+
+// --- 重叠成组的阈值判定（契约 §1.3 / §8.2「卡片重叠」）----------------------
+// 规则：靠近不成组、边框相碰不擅自合并；只有**明确目标**才提示「松开后合并成组」。
+
+describe("重叠阈值：rectOverlapRatio / rectCenterCovered / bestMergeTarget", () => {
+  it("重叠比例按**较小矩形**算，只碰边为 0", () => {
+    const a = { x: 0, y: 0, w: 100, h: 100 };
+    expect(board.rectOverlapRatio(a, { x: 50, y: 0, w: 100, h: 100 })).toBeCloseTo(0.5, 10);
+    expect(board.rectOverlapRatio(a, { x: 100, y: 0, w: 100, h: 100 })).toBe(0);
+    expect(board.rectOverlapRatio(a, { x: 0, y: 100, w: 100, h: 100 })).toBe(0);
+    expect(board.rectOverlapRatio(a, { x: 25, y: 25, w: 50, h: 50 })).toBeCloseTo(1, 10);
+    expect(board.rectOverlapRatio({ x: 0, y: 0, w: 0, h: 0 }, a)).toBe(0);
+  });
+
+  it("中心覆盖：落点在目标里，或目标中心在被拖动矩形里，都算明确", () => {
+    const dragged = { x: 20, y: 20, w: 100, h: 100 };
+    const target = { x: 0, y: 0, w: 100, h: 100 };
+    // 落点 (20,20) 在目标矩形里
+    expect(board.rectCenterCovered(dragged, target)).toBe(true);
+    // 落点在目标外，但目标中心 (50,50) 在被拖动矩形里
+    expect(board.rectCenterCovered({ x: 40, y: 40, w: 100, h: 100 }, target)).toBe(true);
+    // 两个方向都不成立
+    expect(board.rectCenterCovered({ x: 300, y: 300, w: 100, h: 100 }, target)).toBe(false);
+  });
+
+  it("边框相碰不算明确目标（不擅自合并）", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 100, 0), mkCard("c", 500, 0)]);
+    // c 落到 100：与 b 完全重合 → 明确；与 a 只碰到边 → 不算
+    expect(board.bestMergeTarget(state, "c", 100, 0)?.cardId).toBe("b");
+    // c 落到 200：与谁都不碰 → 不成组
+    expect(board.bestMergeTarget(state, "c", 200, 0)).toBeNull();
+  });
+
+  it("靠近不成组：距离再近也不给目标", () => {
+    // a 在 0..100、b 在 200..300；c 落到 96 → 与 a 差 4px、与 b 差 4px，谁都不重叠
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 500, 0)]);
+    expect(board.bestMergeTarget(state, "c", 96, 0)).toBeNull();
+    // 只碰到 a 的右边（c 的右边界 = a 的左边界）也不算
+    expect(board.bestMergeTarget(state, "c", 100, 0)).toBeNull();
+  });
+
+  it("只有一条细缝重叠不算明确目标（面积比例低于阈值）", () => {
+    // 卡片 100x60：重叠宽 10 → 10*60/(100*60) = 0.1 < 0.25
+    const state = mkState([mkCard("a", 0, 0), mkCard("c", 500, 0)]);
+    expect(board.bestMergeTarget(state, "c", 90, 0)).toBeNull();
+    // 重叠宽 30 → 0.3 ≥ 0.25 且中心覆盖 → 明确
+    expect(board.bestMergeTarget(state, "c", 70, 0)?.cardId).toBe("a");
+  });
+
+  it("已分组的卡片不是成组目标；阈值常量可读且写清", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 100, 0), mkCard("c", 500, 0)], [mkGroup("g1", ["a"])]);
+    expect(board.bestMergeTarget(state, "c", 50, 0)?.cardId).toBe("b");
+    expect(board.bestMergeTarget(state, "c", 0, 0)).toBeNull();
+    expect(board.MERGE_MIN_AREA_RATIO).toBe(0.25);
+    expect(board.MERGE_REQUIRE_CENTER_COVER).toBe(true);
+  });
+
+  it("并列时取卡片顺序第一个，不会一次合并一叠", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 100, 0), mkCard("c", 300, 0)]);
+    const best = board.bestMergeTarget(state, "c", 50, 0);
+    expect(best?.cardId).toBe("a");
+    expect(best?.ratio).toBeCloseTo(0.5, 10);
+  });
+
+  it("删除的卡片不是成组目标", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 100, 0, { deleted: true }), mkCard("c", 500, 0)]);
+    // 与 a 重叠不足（10/60 < 0.25），与 b 完全重合但 b 已删除 → 没有明确目标
+    expect(board.bestMergeTarget(state, "c", 90, 0)).toBeNull();
+    // 与 a 明显重叠时仍然有目标
+    expect(board.bestMergeTarget(state, "c", 30, 0)?.cardId).toBe("a");
+  });
+
+  it("预览与放下的判定一致：有目标才提示、松手才成组", () => {
+    const state = mkState([mkCard("a", 0, 0), mkCard("b", 140, 0)]);
+    // 落到 50：与 a 的重叠 50x50 → 比例 0.417 ≥ 0.25，明确目标
+    expect(board.previewDrop(state, "b", 50, 10).mergesWith).toBe("a");
+    // 落到 120：与 a 的重叠只有 20x50 → 比例 0.167 < 0.25，不算明确目标
+    expect(board.previewDrop(state, "b", 120, 10).mergesWith).toBeNull();
+    // 预演不改状态
+    expect(state.cards.find((card) => card.id === "b")?.x).toBe(140);
+    // 松手才成组，且只产生一次成组
+    const dropped = board.dropCard(state, "b", 50, 10);
+    expect(dropped.state.groups).toHaveLength(1);
+    expect(dropped.state.groups[0].members.sort()).toEqual(["a", "b"]);
   });
 });

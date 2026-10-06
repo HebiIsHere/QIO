@@ -1,19 +1,26 @@
-<!-- 互动板面画布（子智能体 A 负责）：卡片、组框、关系连线、拖动、选择、板内搜索。
+<!-- 互动板面画布（子智能体 B 负责）：卡片、组框、关系连线、平移 / 空格框选 / 滚轮缩放 / 连接点拖线。
 
-  契约：docs/interactive-mode-contract.md §1.2 / §1.3 / §4.3 / §4.4。
-  三条硬规则在这里落地：
-  1. 拖动期间只预演（previewDrop），松手才 dropCard 并提交；Esc / 中断丢弃本地拖动状态即可，
-     因为板面状态从头到尾没被改过，卡片自然回到操作前位置。
+  契约：docs/interactive-mode-contract.md §1.2 / §1.3 / §4.3 / §8.2。
+  这里落地的硬规则：
+  1. 拖动期间只预演（previewDrop），松手才 dropCard 并提交；Esc / 指针中断丢弃本地拖动状态即可，
+     因为板面状态从头到尾没被改过，卡片自然回到操作前位置；没产生变化的放下不提交（不留下无意义改动）。
   2. 组件绝不直接改 store.board：所有变化都算成 next 之后调 store.commit(next, 中文说明)。
   3. 位置只影响显示，不构成意图依据；链接方向只表示用户写明的方向，不推断因果 / 先后。
+  4. 平移 / 缩放只是**查看状态**（不形成表达、不调用 QIO、不触发保存）：
+     - 拖动板面空白处 = 平移；空格 + 拖动空白处 = 框选卡片；
+     - 滚轮以指针附近为缩放中心；聊天 / 列表 / 代码区等可滚动内容优先滚动自身，不穿透成板面缩放；
+     - 所有坐标换算统一走 interactive/viewport.ts，保证缩放平移后卡片拖动 / 框选 / 连线 / 工具栏都准确。
+  5. 卡片局部工具栏与连接点由 BoardCard 渲染；重叠成组的提示与判定走 board.ts 的 bestMergeTarget。
+  6. 改版后底部工具栏与板内搜索由页面壳与 A 的组件渲染：本文件不再引用 <BoardToolbar /> 与 <BoardSearchPanel />。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
-  addCard,
   addLink,
+  bestMergeTarget,
   cardById,
+  cardRect,
   CARD_KIND_LABELS,
   createGroup,
   dissolveGroup,
@@ -23,33 +30,47 @@ import {
   groupOfCard,
   joinGroup,
   mergeGroups,
+  normalizeState,
+  pointInRect,
   previewDrop,
   removeCard,
-  renameGroup,
   removeFromGroup,
   removeLink,
+  renameGroup,
   selectInRect,
-  setBookmark,
-  setChecked,
-  setFolded,
   setGroupOrdered,
-  setHidden,
   setSelection,
   updateCard,
   updateLink,
   type DropPreview,
 } from "../../interactive/board";
+import {
+  clampViewport,
+  effectiveRect,
+  clampScroll,
+  IDENTITY_VIEWPORT,
+  rectFromDrag,
+  toBoardPoint,
+  toScreenPoint,
+  wheelDeltaY,
+  wheelZoomFactor,
+  zoomAtScroll,
+  type DOMRectLike,
+  type Viewport,
+} from "../../interactive/viewport";
 import type { BoardCard as BoardCardModel, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
 import BoardLinkLayer from "./BoardLinkLayer.vue";
 import BoardPreviewLayer from "./BoardPreviewLayer.vue";
-import BoardSearchPanel from "./BoardSearchPanel.vue";
-import BoardToolbar from "./BoardToolbar.vue";
 
-/** 板面坐标系大小：卡片位置是板面状态，滚动只是查看方式。 */
+/** 板面坐标系大小：卡片位置是板面状态，平移 / 缩放只是查看方式。 */
 const SURFACE_W = 2400;
 const SURFACE_H = 1600;
+
+/** 工具栏 / 提示与卡片之间的间距（屏幕像素）。 */
+const TOOLBAR_GAP = 10;
+const HINT_GAP = 8;
 
 type BoardMode = "select" | "rect" | "link";
 type GroupOp = "form" | "join" | "leave" | "dissolve" | "ordered" | "unordered" | "merge";
@@ -64,31 +85,71 @@ interface DragState {
   fromGroupId: string | null;
 }
 
+interface PanState {
+  startClient: { x: number; y: number };
+  startScroll: { x: number; y: number };
+  moved: boolean;
+}
+
 interface RectDrag {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
+  startClient: { x: number; y: number };
+  currentClient: { x: number; y: number };
   additive: boolean;
+  moved: boolean;
+}
+
+interface LinkDraft {
+  fromId: string;
+  point: { x: number; y: number } | null;
+  targetId: string | null;
 }
 
 const store = useInteractiveStore();
 const boardState = computed<BoardState | null>(() => store.board);
 
 const surface = ref<HTMLElement | null>(null);
-const viewport = ref<HTMLElement | null>(null);
-const mode = ref<BoardMode>("select");
+const viewportEl = ref<HTMLElement | null>(null);
+const shell = ref<HTMLElement | null>(null);
+/**
+ * 查看状态：**缩放 + 滚动**。
+ * 内容用 transform: scale() 缩放，平移查看位置就是容器的 scrollLeft / scrollTop
+ * （两者叠加会让坐标算错：滚动会改变内容原点在屏幕上的位置）。
+ * 滚动量用 ref 保存，作为坐标换算的**唯一事实来源**（不依赖浏览器取整后的 scrollLeft）。
+ */
+const view = ref<Viewport>({ ...IDENTITY_VIEWPORT });
+const scroll = ref({ x: 0, y: 0 });
+const localMode = ref<BoardMode>("select");
 const dragging = ref<DragState | null>(null);
+const panning = ref<PanState | null>(null);
 const rectSelect = ref<RectDrag | null>(null);
-const linkSource = ref<string | null>(null);
+const linkDraft = ref<LinkDraft | null>(null);
+const spaceDown = ref(false);
 const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
 const notice = ref("");
 const highlightId = ref<string | null>(null);
 const locatedIntentId = ref<string | null>(null);
+/** 工具栏 / 提示的浮层位置（板面容器坐标） */
+const overlay = ref({ left: 0, top: 0, visible: false });
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let locatedTimer: ReturnType<typeof setTimeout> | null = null;
+let scrollSyncLock = false;
+
+/**
+ * 板面指针模式：lead 已裁定走 store（工具栏写、画布读）。
+ * 骨架阶段 store 还没有这个字段，所以这里做兼容读取 + 监听事件，两者都能工作。
+ */
+const mode = computed<BoardMode>(() => {
+  const fromStore = (store as unknown as { boardMode?: BoardMode }).boardMode;
+  return fromStore ?? localMode.value;
+});
+
+function setMode(next: BoardMode) {
+  const setter = (store as unknown as { setBoardMode?: (value: BoardMode) => void }).setBoardMode;
+  if (typeof setter === "function") setter.call(store, next);
+  localMode.value = next;
+}
 
 /** 仍在等待的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。 */
 const OPEN_INTENT_STATUSES = ["pending", "needs_update", "waiting_dependency", "waiting_confirm", "running"];
@@ -144,15 +205,117 @@ function displayY(card: BoardCardModel): number {
   return drag && drag.cardId === card.id ? drag.y : card.y;
 }
 
-function toBoardPoint(event: PointerEvent | MouseEvent): { x: number; y: number } {
-  const element = surface.value;
-  if (!element) return { x: 0, y: 0 };
-  const rect = element.getBoundingClientRect();
-  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-}
-
 function commit(next: BoardState, label: string) {
   store.commit(next, label);
+}
+
+// --- 视口：平移 / 缩放 / 坐标换算 -----------------------------------------
+
+const surfaceStyle = computed(() => ({
+  width: SURFACE_W * view.value.scale + "px",
+  height: SURFACE_H * view.value.scale + "px",
+  transform: `scale(${view.value.scale})`,
+  transformOrigin: "0 0",
+}));
+
+const contentStyle = computed(() => ({
+  width: SURFACE_W * view.value.scale + "px",
+  height: SURFACE_H * view.value.scale + "px",
+}));
+
+/** 板面内容原点在屏幕上的位置（含滚动量）—— 所有坐标换算都用它。 */
+function surfaceRect(): DOMRectLike {
+  const element = viewportEl.value;
+  if (!element) return { left: 0, top: 0 };
+  const rect = typeof element.getBoundingClientRect === "function"
+    ? element.getBoundingClientRect()
+    : { left: 0, top: 0 };
+  return effectiveRect(rect, scroll.value.x, scroll.value.y);
+}
+
+function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
+  return toBoardPoint(view.value, { x: event.clientX, y: event.clientY }, surfaceRect());
+}
+
+function containerSize(): { w: number; h: number } {
+  const element = viewportEl.value;
+  if (!element) return { w: SURFACE_W, h: SURFACE_H };
+  return { w: element.clientWidth || SURFACE_W, h: element.clientHeight || SURFACE_H };
+}
+
+/** 把滚动量写回容器（滚动量本身已经是坐标换算的事实来源）。 */
+function applyScroll(next: { x: number; y: number }) {
+  scroll.value = clampScroll(next, view.value.scale, containerSize(), { w: SURFACE_W, h: SURFACE_H });
+  const element = viewportEl.value;
+  if (!element) return;
+  // 浏览器不接受负滚动量：以 DOM 为准回写，保证坐标换算与真实显示一致
+  element.scrollLeft = scroll.value.x;
+  element.scrollTop = scroll.value.y;
+  scroll.value = { x: element.scrollLeft, y: element.scrollTop };
+  scrollSyncLock = true;
+  void nextTick(() => {
+    scrollSyncLock = false;
+  });
+}
+
+/**
+ * 用户直接拖动滚动条 / 触控板滚动时，把滚动量同步进 ref。
+ * 只在容器**真的能滚动**时同步：jsdom 没有真实布局，scrollLeft 会被浏览器取整或钳制，
+ * 无条件同步反而会让坐标换算失真。
+ */
+function onViewportScroll() {
+  if (scrollSyncLock) return;
+  const element = viewportEl.value;
+  if (!element) return;
+  const canScrollX = element.scrollWidth > element.clientWidth + 1;
+  const canScrollY = element.scrollHeight > element.clientHeight + 1;
+  if (!canScrollX && !canScrollY) return;
+  if (canScrollX) scroll.value = { ...scroll.value, x: element.scrollLeft };
+  if (canScrollY) scroll.value = { ...scroll.value, y: element.scrollTop };
+  view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+}
+
+/** 以指针附近为缩放中心：同时收敛缩放与滚动，指针下的板面点保持不动。 */
+function zoomAtPointer(factor: number, client: { x: number; y: number }) {
+  const result = zoomAtScroll(
+    scroll.value,
+    view.value.scale,
+    factor,
+    client,
+    surfaceRect(),
+    containerSize(),
+    { w: SURFACE_W, h: SURFACE_H },
+  );
+  view.value = { scale: result.scale, x: -result.scroll.x, y: -result.scroll.y };
+  applyScroll(result.scroll);
+}
+
+/** 浮层（局部工具栏 / 合并提示）定位：板面坐标 → 容器坐标，缩放平移后依然跟着卡片。 */
+function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
+  const element = viewportEl.value;
+  const shellElement = shell.value;
+  if (!element || !shellElement) {
+    overlay.value = { left: 0, top: 0, visible: false };
+    return;
+  }
+  const viewRect = element.getBoundingClientRect();
+  const shellRect = shellElement.getBoundingClientRect();
+  const offsetX = viewRect.left - shellRect.left;
+  const offsetY = viewRect.top - shellRect.top;
+  const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
+  const left = screen.x - shellRect.left;
+  const top = screen.y - shellRect.top;
+  // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
+  const visible =
+    screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
+    screen.x < viewRect.right + 40 &&
+    screen.y + rect.h * view.value.scale > viewRect.top - 40 &&
+    screen.y < viewRect.bottom + 40;
+  overlay.value = {
+    left: Math.max(offsetX + 4, Math.min(offsetX + viewRect.width - 40, left)),
+    top: Math.max(offsetY + 2, top),
+    visible,
+  };
 }
 
 // --- 拖动：预演 → 放下 / 中断 ---------------------------------------------
@@ -166,7 +329,7 @@ function onDragStart(cardId: string, event: PointerEvent) {
   }
   const card = cardById(current, cardId);
   if (!card) return;
-  const point = toBoardPoint(event);
+  const point = boardPointOf(event);
   const from = groupOfCard(current, cardId);
   dragging.value = {
     cardId,
@@ -177,28 +340,47 @@ function onDragStart(cardId: string, event: PointerEvent) {
     preview: previewDrop(current, cardId, card.x, card.y),
     fromGroupId: from ? from.id : null,
   };
+  panning.value = null;
   notice.value = "";
   attachPointerListeners();
 }
 
 function onPointerMove(event: PointerEvent) {
   const current = boardState.value;
+  const pan = panning.value;
+  if (pan) {
+    const dx = event.clientX - pan.startClient.x;
+    const dy = event.clientY - pan.startClient.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pan.moved = true;
+    applyScroll({ x: pan.startScroll.x - dx, y: pan.startScroll.y - dy });
+    view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+    return;
+  }
   const drag = dragging.value;
   if (drag && current) {
-    const point = toBoardPoint(event);
-    const x = Math.max(0, point.x - drag.offsetX);
-    const y = Math.max(0, point.y - drag.offsetY);
-    drag.x = x;
+    const point = boardPointOf(event);
+    const x = point.x - drag.offsetX;
+    const y = point.y - drag.offsetY;
+      drag.x = x;
     drag.y = y;
     // 只预演：板面状态在松手前不变
     drag.preview = previewDrop(current, drag.cardId, x, y);
+    const card = cardById(current, drag.cardId);
+    if (card) placeOverlay({ x, y, w: card.w, h: card.folded ? 60 : card.h });
     return;
   }
   const rect = rectSelect.value;
   if (rect) {
-    const point = toBoardPoint(event);
-    rect.x1 = point.x;
-    rect.y1 = point.y;
+    rect.currentClient = { x: event.clientX, y: event.clientY };
+    if (Math.abs(event.clientX - rect.startClient.x) > 3 || Math.abs(event.clientY - rect.startClient.y) > 3) {
+      rect.moved = true;
+    }
+    return;
+  }
+  const draft = linkDraft.value;
+  if (draft) {
+    draft.point = boardPointOf(event);
+    draft.targetId = hitCardAt(draft.point, draft.fromId);
   }
 }
 
@@ -206,44 +388,84 @@ function onPointerUp() {
   const current = boardState.value;
   const drag = dragging.value;
   if (drag && current) {
-    const result = dropCard(current, drag.cardId, drag.x, drag.y);
-    const label = dragLabel(drag, result.groupId, result.merged);
     detachPointerListeners();
     dragging.value = null;
-    commit(result.state, label);
-    notice.value =
-      label + "：" + (result.groupId ? "已放入组（板面会自动保存，不会调用 QIO）。" : "只改变位置（位置不构成意图依据）。");
+    const result = dropCard(current, drag.cardId, drag.x, drag.y);
+    const formed = !drag.fromGroupId && Boolean(result.groupId);
+    const label = dragLabel(drag, result.groupId, result.merged, formed);
+    // 时间戳每次都不同，不能直接比较 JSON：只比较**真实含义**（位置 / 成员 / 顺序 / 选择 / 链接 / 勾选等）
+    const changed = stateDiffers(normalizeState(current), result.state);
+    if (changed) {
+      commit(result.state, label);
+      notice.value =
+        label + "：" + (result.groupId ? "已放入组（板面会自动保存，不会调用 QIO）。" : "只改变位置（位置不构成意图依据）。");
+    } else {
+      notice.value = "卡片没有移动：板面没有产生改动，也没有保存。";
+    }
+    refreshOverlay();
+    return;
+  }
+  const pan = panning.value;
+  if (pan) {
+    detachPointerListeners();
+    panning.value = null;
+    // 空白处单击（没有拖动）＝ 取消选择
+    if (!pan.moved && current && current.selection.length) {
+      commit(setSelection(current, []), "清空选择");
+    }
     return;
   }
   const rect = rectSelect.value;
   if (rect && current) {
     rectSelect.value = null;
     detachPointerListeners();
-    const area = {
-      x: Math.min(rect.x0, rect.x1),
-      y: Math.min(rect.y0, rect.y1),
-      w: Math.abs(rect.x1 - rect.x0),
-      h: Math.abs(rect.y1 - rect.y0),
-    };
-    if (area.w > 4 || area.h > 4) commit(selectInRect(current, area, rect.additive), "区域选择");
+    const area = rectFromDrag(view.value, rect.startClient, rect.currentClient, surfaceRect());
+    if (area.w > 4 || area.h > 4) {
+      commit(selectInRect(current, area, rect.additive), "框选卡片");
+      notice.value = "已框选 " + area.w.toFixed(0) + "×" + area.h.toFixed(0) + " 板面范围内的卡片。";
+    }
+    return;
+  }
+  const draft = linkDraft.value;
+  if (draft) {
+    finishLinkDraft(true);
   }
 }
 
-/** Esc / 指针中断：不提交，卡片回到操作前位置。 */
+/** Esc / 指针中断 / 窗口失焦：不提交，卡片回到操作前位置。 */
 function onDragCancel() {
   detachPointerListeners();
-  if (dragging.value) {
-    dragging.value = null;
-    notice.value = "已取消拖动：卡片回到操作前的位置，板面没有改动。";
-  }
+  const hadDrag = Boolean(dragging.value);
+  const hadRect = Boolean(rectSelect.value);
+  const hadPan = Boolean(panning.value);
+  dragging.value = null;
   rectSelect.value = null;
+  panning.value = null;
+  if (linkDraft.value) {
+    linkDraft.value = null;
+    notice.value = "已取消建立关系：没有保存半条链接。";
+    return;
+  }
+  if (hadDrag) notice.value = "已取消拖动：卡片回到操作前的位置，板面没有改动。";
+  else if (hadRect) notice.value = "已取消框选：选择范围没有改变。";
+  else if (hadPan) notice.value = "已停止平移查看位置（查看位置不属于板面改动）。";
 }
 
-function dragLabel(drag: DragState, groupId: string | null, merged: boolean): string {
+/**
+ * 两次板面状态在**含义**上是否有差别（忽略 updatedAt 这类每次都变的时间戳）。
+ * 用于「松手后什么都没变」时不提交，避免留下无意义的改动与撤销记录。
+ */
+function stateDiffers(before: BoardState, after: BoardState): boolean {
+  const strip = (value: unknown) => JSON.stringify(value, (key, item) => (key === "updatedAt" || key === "createdAt" ? "" : item));
+  return strip(before) !== strip(after);
+}
+
+function dragLabel(drag: DragState, groupId: string | null, merged: boolean, formed: boolean): string {
   if (merged) return "合并组";
   if (groupId && drag.fromGroupId === groupId) return "调整组内顺序";
   if (groupId && drag.fromGroupId) return "换组";
   if (groupId) return "加入组";
+  if (formed) return "两张卡片重叠成组";
   if (drag.fromGroupId) return "移出组";
   return "移动卡片";
 }
@@ -283,6 +505,50 @@ function dragHintText(): string {
 
 const dragHint = computed(dragHintText);
 
+/**
+ * 明确的成组目标：只有**明确重叠**才提示「松开后合并成组」，松手才成组。
+ * 靠近、边框相碰都不提示（判定见 board.ts 的 MERGE_MIN_AREA_RATIO）。
+ */
+const mergeTarget = computed(() => {
+  const drag = dragging.value;
+  const current = boardState.value;
+  if (!drag || !current) return null;
+  // 已经会落入某个组（含两组相撞合并）时，用组框上的提示，不再叠一条「合并成组」
+  if (drag.preview.groupId) return null;
+  if (drag.fromGroupId) return null;
+  // 与 previewDrop 的 mergesWith 用同一个判定：达到阈值才算「明确重叠」
+  return bestMergeTarget(current, drag.cardId, drag.x, drag.y);
+});
+
+const mergeHintText = computed(() => {
+  const target = mergeTarget.value;
+  const current = boardState.value;
+  if (!target || !current) return "";
+  const card = cardById(current, target.cardId);
+  const percent = Math.round(target.ratio * 100);
+  return "松开后合并成组：与「" + cardSummary(card) + "」明确重叠（覆盖 " + percent + "%），松手才成组。";
+});
+
+/** 合并提示浮在目标卡片上方（data-im="group-merge-hint"）。 */
+const mergeHintStyle = computed(() => {
+  const target = mergeTarget.value;
+  const current = boardState.value;
+  if (!target || !current) return { display: "none" };
+  const card = cardById(current, target.cardId);
+  if (!card) return { display: "none" };
+  const rect = cardRect(card);
+  const element = viewportEl.value;
+  const shellElement = shell.value;
+  if (!element || !shellElement) return { display: "none" };
+  const viewRect = element.getBoundingClientRect();
+  const shellRect = shellElement.getBoundingClientRect();
+  const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
+  return {
+    left: Math.max(viewRect.left - shellRect.left + 4, screen.x - shellRect.left) + "px",
+    top: Math.max(viewRect.top - shellRect.top + 4, screen.y - shellRect.top - 34) + "px",
+  };
+});
+
 function attachPointerListeners() {
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
@@ -297,6 +563,109 @@ function detachPointerListeners() {
   window.removeEventListener("pointercancel", onDragCancel);
   window.removeEventListener("blur", onDragCancel);
 }
+
+// --- 平移 / 空格框选 / 滚轮缩放 -------------------------------------------
+
+/** 输入框、可编辑内容、聊天、菜单、确认框里的操作不算板面操作。 */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  const tag = element.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (element.isContentEditable) return true;
+  if (typeof element.closest !== "function") return false;
+  return Boolean(element.closest("[contenteditable='true'], [data-im='chat-panel'], [data-im='impact-dialog'], [role='dialog'], [role='menu']"));
+}
+
+function isBoardInteractive(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.closest !== "function") return false;
+  return Boolean(
+    element.closest(
+      "article[data-im='card'], button, input, textarea, select, a, label, [data-im='card-toolbar'], [data-im='group'], [data-im='preview'], [data-im='link-draft'], [data-im='search']",
+    ),
+  );
+}
+
+/** 可滚动容器（聊天 / 列表 / 代码区）优先滚动自身，不穿透成板面缩放。 */
+function canScroll(element: HTMLElement): boolean {
+  const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : null;
+  if (!style) return false;
+  const overflowY = style.overflowY;
+  const overflowX = style.overflowX;
+  const scrollableY = (overflowY === "auto" || overflowY === "scroll") && element.scrollHeight > element.clientHeight + 1;
+  const scrollableX = (overflowX === "auto" || overflowX === "scroll") && element.scrollWidth > element.clientWidth + 1;
+  return scrollableY || scrollableX;
+}
+
+function insideScrollable(target: EventTarget | null): boolean {
+  let element = target as HTMLElement | null;
+  while (element && element !== viewportEl.value) {
+    if (canScroll(element)) return true;
+    element = element.parentElement;
+  }
+  return false;
+}
+
+function onSurfacePointerDown(event: PointerEvent) {
+  if (event.button !== 0 && event.button !== 1) return;
+  if (isBoardInteractive(event.target) || insideScrollable(event.target)) return;
+  // 输入框 / 可编辑内容里按下不启动板面操作（空格正常输入）
+  if (isTypingTarget(event.target)) return;
+  event.preventDefault();
+  const rect = rectSelect.value;
+  if (rect) return;
+  if (dragging.value || panning.value || linkDraft.value) return;
+  const current = boardState.value;
+  const wantsRect = mode.value === "rect" || spaceDown.value;
+  if (wantsRect) {
+    rectSelect.value = {
+      startClient: { x: event.clientX, y: event.clientY },
+      currentClient: { x: event.clientX, y: event.clientY },
+      additive: event.shiftKey,
+      moved: false,
+    };
+    attachPointerListeners();
+    return;
+  }
+  panning.value = {
+    startClient: { x: event.clientX, y: event.clientY },
+    startScroll: { ...scroll.value },
+    moved: false,
+  };
+  if (current && current.selection.length) {
+    // 单击空白处会清空选择；拖动则只平移，不改变选择
+    notice.value = "";
+  }
+  attachPointerListeners();
+}
+
+function onWheel(event: WheelEvent) {
+  // 聊天 / 列表 / 代码区优先滚动自身
+  if (insideScrollable(event.target) || isTypingTarget(event.target)) return;
+  event.preventDefault();
+  const delta = wheelDeltaY(event);
+  if (!delta) return;
+  zoomAtPointer(wheelZoomFactor(delta), { x: event.clientX, y: event.clientY });
+}
+
+/** 框选矩形的屏幕样式（相对板面容器）。 */
+const rectStyle = computed(() => {
+  const rect = rectSelect.value;
+  const element = viewportEl.value;
+  if (!rect || !element) return {};
+  const viewRect = element.getBoundingClientRect();
+  const x0 = rect.startClient.x - viewRect.left;
+  const y0 = rect.startClient.y - viewRect.top;
+  const x1 = rect.currentClient.x - viewRect.left;
+  const y1 = rect.currentClient.y - viewRect.top;
+  return {
+    left: Math.min(x0, x1) + "px",
+    top: Math.min(y0, y1) + "px",
+    width: Math.abs(x1 - x0) + "px",
+    height: Math.abs(y1 - y0) + "px",
+  };
+});
 
 // --- 选择 -----------------------------------------------------------------
 
@@ -316,50 +685,41 @@ function onSelect(cardId: string, additive: boolean) {
   commit(setSelection(current, ids), additive ? "加选 / 减选卡片" : "选择卡片");
 }
 
-function onSurfacePointerDown(event: PointerEvent) {
-  const target = event.target as HTMLElement | null;
-  if (target && target.closest("article, button, input, textarea, select, a, .group-head, .sequence")) return;
-  const point = toBoardPoint(event);
-  if (mode.value === "rect" || event.shiftKey) {
-    rectSelect.value = { x0: point.x, y0: point.y, x1: point.x, y1: point.y, additive: event.shiftKey };
-    attachPointerListeners();
+// --- 卡片局部工具栏 -------------------------------------------------------
+
+const primarySelectedId = computed(() => {
+  const current = boardState.value;
+  if (!current || current.selection.length !== 1) return null;
+  return current.selection[0];
+});
+
+const primarySelectedCard = computed(() => {
+  const current = boardState.value;
+  const id = primarySelectedId.value;
+  if (!current || !id) return null;
+  return cardById(current, id);
+});
+
+/** 工具栏跟着选中卡片：位置由 placeOverlay 换算（缩放平移后仍准确）。 */
+function refreshOverlay() {
+  const card = primarySelectedCard.value;
+  if (!card) {
+    overlay.value = { ...overlay.value, visible: false };
     return;
   }
-  const current = boardState.value;
-  if (current && current.selection.length) commit(setSelection(current, []), "清空选择");
+  placeOverlay({ x: card.x, y: card.y, w: card.w, h: card.folded ? 60 : card.h });
 }
 
-const rectStyle = computed(() => {
-  const rect = rectSelect.value;
-  if (!rect) return {};
+const toolbarStyle = computed(() => {
+  const card = primarySelectedCard.value;
+  if (!card) return { display: "none" };
   return {
-    left: Math.min(rect.x0, rect.x1) + "px",
-    top: Math.min(rect.y0, rect.y1) + "px",
-    width: Math.abs(rect.x1 - rect.x0) + "px",
-    height: Math.abs(rect.y1 - rect.y0) + "px",
+    left: overlay.value.left + "px",
+    top: Math.max(0, overlay.value.top - TOOLBAR_GAP) + "px",
   };
 });
 
 // --- 卡片操作 -------------------------------------------------------------
-
-function onAdd(kind: CardKind) {
-  const current = boardState.value;
-  if (!current) return;
-  const defaults: Record<CardKind, { content: string; meta: Record<string, unknown> }> = {
-    text: { content: "", meta: {} },
-    file: { content: "待补充文件说明", meta: { name: "未命名文件" } },
-    image: { content: "", meta: { name: "未命名图片" } },
-    code: { content: "// 待补充代码", meta: { language: "text" } },
-    url: { content: "", meta: { href: "https://", title: "待补充标题" } },
-    reply: { content: "", meta: {} },
-  };
-  const preset = defaults[kind];
-  commit(addCard(current, { kind, content: preset.content, meta: preset.meta }), "添加" + CARD_KIND_LABELS[kind]);
-  notice.value =
-    kind === "text"
-      ? "已添加文字注释：默认未勾选，QIO 看不到它的文字；勾选后才允许查看，而且仍要提交。"
-      : "已添加" + CARD_KIND_LABELS[kind] + "：材料默认在本次允许查看范围内，不需要勾选。";
-}
 
 function onCardPatch(cardId: string, patch: Partial<BoardCardModel>, label: string) {
   const current = boardState.value;
@@ -373,18 +733,18 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
   const card = cardById(current, cardId);
   if (!card) return;
   if (flag === "checked") {
-    commit(setChecked(current, cardId, !card.checked), card.checked ? "取消勾选" : "勾选注释（本次允许 QIO 查看）");
+    commit(updateCard(current, cardId, { checked: !card.checked }), card.checked ? "取消勾选" : "勾选注释（本次允许 QIO 查看）");
     return;
   }
   if (flag === "hidden") {
-    commit(setHidden(current, cardId, !card.hidden), card.hidden ? "取消隐藏" : "隐藏卡片（退出讨论范围）");
+    commit(updateCard(current, cardId, { hidden: !card.hidden }), card.hidden ? "取消隐藏" : "隐藏卡片（退出讨论范围）");
     return;
   }
   if (flag === "folded") {
-    commit(setFolded(current, cardId, !card.folded), card.folded ? "展开卡片" : "折叠卡片");
+    commit(updateCard(current, cardId, { folded: !card.folded }), card.folded ? "展开卡片" : "折叠卡片");
     return;
   }
-  commit(setBookmark(current, cardId, !card.bookmarked), card.bookmarked ? "取消书签" : "加书签");
+  commit(updateCard(current, cardId, { bookmarked: !card.bookmarked }), card.bookmarked ? "取消书签" : "加书签");
 }
 
 function onCardRemove(cardId: string) {
@@ -396,6 +756,7 @@ function onCardRemove(cardId: string) {
 function onCardDuplicate(cardId: string) {
   const current = boardState.value;
   if (!current) return;
+  // 复制只对这张卡片生效：多选时工具栏不显示「复制」，不会把单卡片编辑应用到整组
   commit(duplicateCard(current, cardId), "复制卡片");
 }
 
@@ -502,29 +863,74 @@ function onLeaveMember(groupId: string, cardId: string) {
   commit(removeFromGroup(current, cardId), "把卡片移出组");
 }
 
-// --- 关系链接 -------------------------------------------------------------
+// --- 关系链接：连接点拖线 -------------------------------------------------
 
+/** 指针下的卡片：多个命中时取面积最小的（最具体）。 */
+function hitCardAt(point: { x: number; y: number }, excludeId: string | null): string | null {
+  const current = boardState.value;
+  if (!current) return null;
+  let best: { id: string; area: number } | null = null;
+  for (const card of current.cards) {
+    if (card.deleted || card.id === excludeId) continue;
+    const rect = cardRect(card);
+    if (!pointInRect(point.x, point.y, rect)) continue; // board.ts 的签名是 (x, y, rect)
+    const area = rect.w * rect.h;
+    if (!best || area < best.area) best = { id: card.id, area };
+  }
+  return best ? best.id : null;
+}
+
+function onConnectStart(cardId: string, event: PointerEvent) {
+  event.preventDefault();
+  // 从连接点开始拖线：取消可能残留的卡片拖动 / 平移状态，避免同一指针同时驱动两件事
+  dragging.value = null;
+  panning.value = null;
+  rectSelect.value = null;
+  linkDraft.value = { fromId: cardId, point: boardPointOf(event), targetId: null };
+  notice.value = "从连接点拖到另一张卡片上建立关系；拖到无效位置或取消不会建立任何链接。";
+  attachPointerListeners();
+}
+
+function finishLinkDraft(allowCreate: boolean) {
+  const draft = linkDraft.value;
+  linkDraft.value = null;
+  detachPointerListeners();
+  const current = boardState.value;
+  if (!draft || !current) return;
+  if (!allowCreate || !draft.targetId || draft.targetId === draft.fromId) {
+    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    return;
+  }
+  const next = addLink(current, draft.fromId, draft.targetId, false, "");
+  commit(next, "新建关系（方向与含义由你写明）");
+  const created = next.links.find(
+    (link) =>
+      (link.src === draft.fromId && link.dst === draft.targetId) ||
+      (link.src === draft.targetId && link.dst === draft.fromId),
+  );
+  if (created) openLinkEditor(created.id);
+}
+
+/** 关系模式（工具栏选择模式）里依次点两张卡片也能建立关系。 */
 function pickLinkCard(cardId: string) {
   const current = boardState.value;
   if (!current) return;
-  const source = linkSource.value;
+  dragging.value = null;
+  panning.value = null;
+  rectSelect.value = null;
+  const source = linkDraft.value?.fromId ?? null;
   if (!source) {
-    linkSource.value = cardId;
+    linkDraft.value = { fromId: cardId, point: null, targetId: null };
     notice.value = "关系模式：已选起点「" + cardSummary(cardById(current, cardId)) + "」，再点一张卡片建立关系。";
     return;
   }
   if (source === cardId) {
-    linkSource.value = null;
+    linkDraft.value = null;
     notice.value = "已取消建立关系。";
     return;
   }
-  const next = addLink(current, source, cardId, false, "");
-  commit(next, "新建关系（方向与含义由你写明）");
-  const created = next.links.find(
-    (link) => (link.src === source && link.dst === cardId) || (link.src === cardId && link.dst === source),
-  );
-  linkSource.value = null;
-  if (created) openLinkEditor(created.id);
+  linkDraft.value = { fromId: source, point: null, targetId: cardId };
+  finishLinkDraft(true);
 }
 
 function openLinkEditor(linkId: string) {
@@ -569,28 +975,52 @@ const editingLinkSummary = computed(() => {
   return linkDirection.value ? src + " → " + dst + "（方向由你标注）" : src + " ↔ " + dst + "（无方向）";
 });
 
-// --- 板内搜索定位 ---------------------------------------------------------
+// --- 板内搜索定位（页面壳的搜索面板 dispatch 事件） -----------------------
 
 function locate(cardId: string) {
   const current = boardState.value;
   if (!current) return;
   const card = cardById(current, cardId);
   if (!card) return;
-  const element = viewport.value;
-  const left = Math.max(0, card.x - 80);
-  const top = Math.max(0, card.y - 80);
-  // jsdom / 老 webview 可能没有 scrollTo：退回直接设置滚动位置
-  if (element && typeof element.scrollTo === "function") {
-    element.scrollTo({ left, top, behavior: "smooth" });
-  } else if (element) {
-    element.scrollLeft = left;
-    element.scrollTop = top;
+  // 平移查看位置，让卡片进入可视区（查看位置不是板面改动）
+  const element = viewportEl.value;
+  if (element) {
+    const viewRect = element.getBoundingClientRect();
+    const screen = toScreenPoint(view.value, { x: card.x, y: card.y }, surfaceRect());
+    const margin = 80;
+    let dx = 0;
+    let dy = 0;
+    if (screen.x < viewRect.left + margin) dx = viewRect.left + margin - screen.x;
+    else if (screen.x + card.w * view.value.scale > viewRect.right - margin) {
+      dx = viewRect.right - margin - (screen.x + card.w * view.value.scale);
+    }
+    if (screen.y < viewRect.top + margin) dy = viewRect.top + margin - screen.y;
+    else if (screen.y + card.h * view.value.scale > viewRect.bottom - margin) {
+      dy = viewRect.bottom - margin - (screen.y + card.h * view.value.scale);
+    }
+    if (dx || dy) {
+      applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
+      view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+    }
   }
   highlightId.value = cardId;
   if (highlightTimer) clearTimeout(highlightTimer);
   highlightTimer = setTimeout(() => {
     highlightId.value = null;
   }, 1600);
+}
+
+function onLocateCard(event: Event) {
+  const detail = (event as CustomEvent<{ cardId?: string }>).detail;
+  if (!detail || !detail.cardId) return;
+  locate(detail.cardId);
+}
+
+function onBoardMode(event: Event) {
+  const detail = (event as CustomEvent<{ mode?: BoardMode }>).detail;
+  if (!detail || !detail.mode) return;
+  if (detail.mode !== "select" && detail.mode !== "rect" && detail.mode !== "link") return;
+  setMode(detail.mode);
 }
 
 // --- 待审批预览：定位事件 --------------------------------------------------
@@ -600,7 +1030,7 @@ interface LocatePreviewDetail {
   bounds?: { x: number; y: number; w: number; h: number };
 }
 
-/** C 的回复区点「在板面上定位」时 dispatch 这个事件；这里高亮 + 滚动到预览范围。 */
+/** C / D 的浮层点「在板面上定位」时 dispatch 这个事件；这里高亮 + 把预览移进可视区。 */
 function onLocatePreview(event: Event) {
   const detail = (event as CustomEvent<LocatePreviewDetail>).detail;
   if (!detail || !detail.intentId) return;
@@ -610,35 +1040,44 @@ function onLocatePreview(event: Event) {
     locatedIntentId.value = null;
   }, 2000);
   const bounds = detail.bounds;
-  const element = viewport.value;
+  const element = viewportEl.value;
   if (!bounds || !element) return;
-  const left = Math.max(0, bounds.x - 60);
-  const top = Math.max(0, bounds.y - 60);
-  if (typeof element.scrollTo === "function") element.scrollTo({ left, top, behavior: "smooth" });
-  else {
-    element.scrollLeft = left;
-    element.scrollTop = top;
+  const viewRect = element.getBoundingClientRect();
+  const screen = toScreenPoint(view.value, { x: bounds.x, y: bounds.y }, surfaceRect());
+  const dx = screen.x < viewRect.left + 60 ? viewRect.left + 60 - screen.x : 0;
+  const dy = screen.y < viewRect.top + 60 ? viewRect.top + 60 - screen.y : 0;
+  if (dx || dy) {
+    applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
+    view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
   }
 }
 
 // --- 键盘 -----------------------------------------------------------------
 
 function onKeyDown(event: KeyboardEvent) {
-  const target = event.target as HTMLElement | null;
-  const typing = Boolean(
-    target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable),
-  );
+  const typing = isTypingTarget(event.target);
   if (event.key === "Escape") {
-    if (dragging.value || rectSelect.value) {
+    if (dragging.value || rectSelect.value || panning.value) {
       onDragCancel();
       return;
     }
-    if (linkSource.value) {
-      linkSource.value = null;
+    if (linkDraft.value) {
+      linkDraft.value = null;
       notice.value = "已退出建立关系。";
       return;
     }
     if (editingLinkId.value) editingLinkId.value = null;
+    return;
+  }
+  // 空格 + 拖动空白处 = 框选卡片；输入框 / 可编辑内容 / 聊天 / 菜单 / 确认框里空格正常输入
+  if (event.code === "Space" || event.key === " ") {
+    if (typing) return;
+    const target = event.target as HTMLElement | null;
+    if (target && typeof target.closest === "function" && target.closest("button, a, [role='button'], [role='menuitem']")) {
+      return; // 空格是这些控件的激活键，不劫持
+    }
+    if (!spaceDown.value) spaceDown.value = true;
+    if (!event.repeat) event.preventDefault();
     return;
   }
   if (typing) return;
@@ -658,14 +1097,32 @@ function onKeyDown(event: KeyboardEvent) {
   }
 }
 
+function onKeyUp(event: KeyboardEvent) {
+  if (event.code === "Space" || event.key === " ") spaceDown.value = false;
+}
+
+// --- 生命周期 -------------------------------------------------------------
+
 onMounted(() => {
+  // 滚轮要 preventDefault（否则浏览器会把页面也滚走），所以显式用非被动监听
+  viewportEl.value?.addEventListener("wheel", onWheel, { passive: false });
+  viewportEl.value?.addEventListener("scroll", onViewportScroll, { passive: true });
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
+  window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
+  window.addEventListener("qio:interactive:board-mode", onBoardMode as EventListener);
+  refreshOverlay();
 });
 
 onBeforeUnmount(() => {
+  viewportEl.value?.removeEventListener("wheel", onWheel);
+  viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("keyup", onKeyUp);
   window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
+  window.removeEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
+  window.removeEventListener("qio:interactive:board-mode", onBoardMode as EventListener);
   detachPointerListeners();
   if (highlightTimer) clearTimeout(highlightTimer);
   if (locatedTimer) clearTimeout(locatedTimer);
@@ -673,29 +1130,27 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="board-shell" data-im="board">
-    <BoardToolbar
-      :mode="mode"
-      :selected-ids="selection"
-      :groups="groups"
-      :selected-group-ids="selectedGroupIds"
-      @add="onAdd"
-      @mode="mode = $event"
-      @undo="store.undo()"
-      @redo="store.redo()"
-      @group-op="onGroupOp"
-      @delete-selected="deleteSelected"
-    />
-
+  <section ref="shell" class="board-shell" data-im="board">
+    <p data-im="zz-state" style="display: none">{{ JSON.stringify({ scale: view.scale, scroll, space: spaceDown, mode, dragging: Boolean(dragging), panning: Boolean(panning), rect: Boolean(rectSelect), vw: viewportEl ? viewportEl.clientWidth : null, vh: viewportEl ? viewportEl.clientHeight : null, sw: viewportEl ? viewportEl.scrollWidth : null, sh: viewportEl ? viewportEl.scrollHeight : null, dom: viewportEl ? [viewportEl.scrollLeft, viewportEl.scrollTop] : null, content: contentStyle.width }) }}</p>
     <p v-if="mode === 'link'" class="banner" role="status">
-      关系模式：依次点两张卡片建立关系。方向只表示你写明的方向，含义由你填写；系统不会把它解释成因果、支持或执行顺序。
+      关系模式：从卡片连接点拖到另一张卡片，或依次点两张卡片建立关系。方向只表示你写明的方向，含义由你填写；系统不会把它解释成因果、支持或执行顺序。
     </p>
     <p v-if="dragging" class="banner drag" role="status">{{ dragHint }}</p>
     <p v-if="notice" class="banner" role="status">{{ notice }}</p>
+    <p class="banner view-hint" role="status">
+      拖动空白处平移查看位置（{{ Math.round(view.scale * 100) }}%）；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
+      平移与缩放只改变查看方式，不形成改动、不调用 QIO。
+    </p>
 
     <div class="board-main">
-      <div ref="viewport" class="board-viewport" :class="{ dragging: Boolean(dragging) }" @pointerdown="onSurfacePointerDown">
-        <div ref="surface" class="board-surface" :style="{ width: SURFACE_W + 'px', height: SURFACE_H + 'px' }">
+      <div
+        ref="viewportEl"
+        class="board-viewport"
+        :class="{ dragging: Boolean(dragging), panning: Boolean(panning), framing: Boolean(rectSelect) }"
+        @pointerdown="onSurfacePointerDown"
+      >
+        <div class="board-scroll-content" :style="contentStyle">
+          <div ref="surface" class="board-surface" :style="surfaceStyle">
           <BoardGroupFrame
             v-for="group in groups"
             :key="group.id"
@@ -704,6 +1159,8 @@ onBeforeUnmount(() => {
             :selected-ids="selection"
             :drop-target="dragging !== null && dragging.preview.groupId === group.id"
             :drop-merge="dragging !== null && dragging.preview.mergesWith === group.id"
+            :drop-index="dragging !== null && dragging.preview.groupId === group.id ? dragging.preview.index : null"
+            :drop-card-id="dragging ? dragging.cardId : null"
             @rename="onGroupRename"
             @toggle-ordered="onToggleOrdered"
             @dissolve="onDissolveGroup"
@@ -723,6 +1180,10 @@ onBeforeUnmount(() => {
             :y="displayY(card)"
             :group-name="groupNameOf(card.id)"
             :groups="groups.filter((item) => item.id !== groupIdOf(card.id))"
+            :toolbar-left="overlay.left"
+            :toolbar-top="Math.max(0, overlay.top - TOOLBAR_GAP)"
+            :multi="selection.length > 1"
+            :connecting="linkDraft !== null && linkDraft.fromId === card.id"
             @select="onSelect"
             @drag-start="onDragStart"
             @patch="onCardPatch"
@@ -731,6 +1192,7 @@ onBeforeUnmount(() => {
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"
             @join-group="onCardJoinGroup"
+            @connect-start="onConnectStart"
           />
 
           <BoardLinkLayer
@@ -739,6 +1201,9 @@ onBeforeUnmount(() => {
             :active-link-id="editingLinkId"
             :width="SURFACE_W"
             :height="SURFACE_H"
+            :draft-from-id="linkDraft ? linkDraft.fromId : null"
+            :draft-point="linkDraft ? linkDraft.point : null"
+            :draft-target-id="linkDraft ? linkDraft.targetId : null"
             @select-link="openLinkEditor"
           />
 
@@ -749,11 +1214,22 @@ onBeforeUnmount(() => {
             :height="SURFACE_H"
           />
 
-          <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
+            <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
+          </div>
         </div>
       </div>
 
-      <BoardSearchPanel @locate="locate" />
+      <!-- 松开后合并成组：只在**明确重叠**时出现，松手才成组 -->
+      <p
+        v-if="mergeTarget"
+        class="merge-hint"
+        :style="mergeHintStyle"
+        data-im="group-merge-hint"
+        :data-target-card-id="mergeTarget.cardId"
+        role="status"
+      >
+        {{ mergeHintText }}
+      </p>
     </div>
 
     <div v-if="editingLink" class="link-editor" role="dialog" aria-label="关系编辑">
@@ -775,7 +1251,6 @@ onBeforeUnmount(() => {
   </section>
 </template>
 
-
 <style scoped>
 .board-shell {
   position: relative;
@@ -795,16 +1270,22 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border-subtle);
 }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
-.board-main { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.banner.view-hint { color: var(--text-faint); }
+.board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
 .board-viewport {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
   background: var(--bg-inset);
+  touch-action: none;
 }
 .board-viewport.dragging { user-select: none; }
-.board-surface { position: relative; }
+.board-viewport.panning { cursor: grabbing; }
+.board-viewport.framing { cursor: crosshair; }
+.board-scroll-content { position: relative; }
+.board-surface { position: relative; will-change: transform; }
 .select-rect {
   position: absolute;
   border: 1px dashed var(--accent);
@@ -812,11 +1293,26 @@ onBeforeUnmount(() => {
   pointer-events: none;
   z-index: 40;
 }
+/* 合并提示：浮在目标卡片附近，缩放平移后仍然指得准 */
+.merge-hint {
+  position: absolute;
+  z-index: 55;
+  margin: 0;
+  max-width: 320px;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-strong);
+  background: var(--bg-elevated);
+  border: 1px dashed var(--accent);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+}
 .link-editor {
   position: absolute;
   left: var(--sp-4);
   bottom: var(--sp-4);
-  z-index: 50;
+  z-index: 70;
   width: min(420px, 92%);
   display: flex;
   flex-direction: column;

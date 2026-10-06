@@ -52,6 +52,30 @@ export const CARD_KIND_LABELS: Record<CardKind, string> = {
 /** 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。 */
 export const MATERIAL_KINDS: CardKind[] = ["file", "image", "code", "url"];
 
+/** 用户能从工具栏添加的五类卡片（reply 由 QIO 结果产生，不由用户直接添加）。 */
+export const ADDABLE_CARD_KINDS: CardKind[] = ["text", "file", "image", "code", "url"];
+
+/**
+ * 新卡片的默认内容与元信息（五类一致，避免工具栏与画布各写一份而漂移）。
+ * 默认内容只是占位文字，不代表任何意图；卡片添加后由用户填写。
+ */
+export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: string; meta: Record<string, unknown> } {
+  switch (kind) {
+    case "file":
+      return { kind, content: "待补充文件说明", meta: { name: "未命名文件" } };
+    case "image":
+      return { kind, content: "", meta: { name: "未命名图片" } };
+    case "code":
+      return { kind, content: "// 待补充代码", meta: { language: "text" } };
+    case "url":
+      return { kind, content: "", meta: { href: "https://", title: "待补充标题" } };
+    case "reply":
+      return { kind, content: "", meta: {} };
+    default:
+      return { kind, content: "", meta: {} };
+  }
+}
+
 /** 需要勾选才允许 QIO 查看的卡片：文字注释（材料默认在范围内）。 */
 export const CHECKABLE_KINDS: CardKind[] = ["text"];
 
@@ -70,7 +94,10 @@ const DEFAULT_CARD_COLUMNS = 4;
 //: 复制卡片的偏移（故意叠一点，表示这是副本）
 const DUPLICATE_OFFSET = 32;
 
-const DEFAULT_GROUP_PREFIX = "组";
+/** 系统默认组名的前缀：契约 §1.3 / §6.1「默认组名使用『组 N』」。 */
+export const DEFAULT_GROUP_NAME_PREFIX = "组";
+
+const DEFAULT_GROUP_PREFIX = DEFAULT_GROUP_NAME_PREFIX;
 const DEFAULT_NAME_RE = /^组\s*(\d+)$/;
 
 let idCounter = 0;
@@ -834,18 +861,92 @@ function insertIndex(
 /**
  * 与卡片矩形重叠的、未分组的活卡片（自动成组的对象）。
  * 矩形按**落点**算：拖动预演时卡片还没有真的移动过去。
+ *
+ * 契约 §1.3 只要求「明确重叠」才算成组，所以这里用两个写清的阈值过滤：
+ * - 重叠面积 ≥ 较小矩形面积的 {@link MERGE_MIN_AREA_RATIO}；
+ * - 拖动卡片的**中心**落在目标矩形里，或反过来（中心覆盖）。
+ * 靠近、只碰到边、只有一条细缝都不算重叠 —— 边框相碰绝不擅自合并。
  */
-function overlappingFreeCards(state: BoardState, cardId: string, x: number, y: number): BoardCard[] {
+export const MERGE_MIN_AREA_RATIO = 0.25;
+export const MERGE_REQUIRE_CENTER_COVER = true;
+
+/** 两个矩形的重叠面积占**较小矩形**面积的比例（0..1；无重叠为 0）。 */
+export function rectOverlapRatio(a: BoardRect, b: BoardRect): number {
+  const aw = Math.max(0, asFloat(a.w, 0));
+  const ah = Math.max(0, asFloat(a.h, 0));
+  const bw = Math.max(0, asFloat(b.w, 0));
+  const bh = Math.max(0, asFloat(b.h, 0));
+  const base = Math.min(aw * ah, bw * bh);
+  if (base <= 0) return 0;
+  const overlapW = Math.min(a.x + aw, b.x + bw) - Math.max(a.x, b.x);
+  const overlapH = Math.min(a.y + ah, b.y + bh) - Math.max(a.y, b.y);
+  if (overlapW <= 0 || overlapH <= 0) return 0;
+  return (overlapW * overlapH) / base;
+}
+
+/**
+ * 中心覆盖：**落点**（指针位置）在目标矩形里，或者目标矩形的中心落在被拖动卡片的矩形里。
+ * 两个方向任一成立即可 —— 这样「把卡片拖到另一张卡片上」和「拖到目标正中间」都算明确重叠。
+ */
+export function rectCenterCovered(dragged: BoardRect, target: BoardRect): boolean {
+  if (pointInRect(dragged.x, dragged.y, target)) return true;
+  const targetX = target.x + target.w / 2;
+  const targetY = target.y + target.h / 2;
+  return pointInRect(targetX, targetY, dragged);
+}
+
+/** 重叠判定结果：目标卡片 + 重叠比例（拖动期间提示与放下成组用同一份判定）。 */
+export interface MergeCandidate {
+  cardId: string;
+  ratio: number;
+}
+
+interface OverlapCandidate extends MergeCandidate {
+  card: BoardCard;
+  index: number;
+}
+
+/** 与「落点处的卡片矩形」重叠且达到阈值的未分组活卡片（按重叠比例降序，稳定）。 */
+function mergeCandidates(state: BoardState, cardId: string, x: number, y: number): OverlapCandidate[] {
   const card = cardById(state, cardId);
   if (!card) return [];
-  const rect: BoardRect = { x, y, w: Math.max(1, card.w), h: Math.max(1, card.h) };
-  return state.cards.filter(
-    (other) =>
-      other.id !== cardId &&
-      !other.deleted &&
-      !groupOfCard(state, other.id) &&
-      rectsOverlap(rect, cardRect(other)),
-  );
+  const rect: BoardRect = {
+    x: asFloat(x, 0),
+    y: asFloat(y, 0),
+    w: Math.max(1, asFloat(card.w, DEFAULT_CARD_W)),
+    h: Math.max(1, asFloat(card.h, DEFAULT_CARD_H)),
+  };
+  const result: OverlapCandidate[] = [];
+  state.cards.forEach((other, index) => {
+    if (other.id === cardId || other.deleted) return;
+    if (groupOfCard(state, other.id)) return;
+    const otherRect = cardRect(other);
+    const ratio = rectOverlapRatio(rect, otherRect);
+    if (ratio < MERGE_MIN_AREA_RATIO) return;
+    if (MERGE_REQUIRE_CENTER_COVER && !rectCenterCovered(rect, otherRect)) return;
+    result.push({ cardId: other.id, ratio, card: other, index });
+  });
+  // 比例高者优先；比例相同时按卡片顺序取第一个 —— 确定性目标，绝不把一叠卡片一起合并
+  return result.sort((a, b) => b.ratio - a.ratio || a.index - b.index);
+}
+
+/**
+ * 明确的成组目标：拖到另一张**未分组**卡片上时给出那张卡片。
+ * 靠近不成组、边框相碰不合并、没有达到阈值一律返回 null（此时不显示「松开后合并成组」）。
+ */
+export function bestMergeTarget(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+): MergeCandidate | null {
+  const work = normalizeState(state);
+  const best = mergeCandidates(work, cardId, x, y)[0];
+  return best ? { cardId: best.cardId, ratio: best.ratio } : null;
+}
+
+function overlappingFreeCards(state: BoardState, cardId: string, x: number, y: number): BoardCard[] {
+  return mergeCandidates(state, cardId, x, y).map((item) => item.card);
 }
 
 function resolveDrop(
@@ -861,8 +962,9 @@ function resolveDrop(
     const mergesWith = current && current.id !== target.id ? current.id : null;
     return { target, index, mergesWith };
   }
-  const partners = overlappingFreeCards(state, cardId, x, y);
-  return { target: null, index: null, mergesWith: partners.length ? partners[0].id : null };
+  // 未分组卡片之间：只认**明确**的成组目标（阈值见 MERGE_MIN_AREA_RATIO）
+  const best = bestMergeTarget(state, cardId, x, y);
+  return { target: null, index: null, mergesWith: best ? best.cardId : null };
 }
 
 /** 拖动期间显示将要加入的组或插入位置 —— **不改状态**。 */
@@ -910,9 +1012,11 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
       // 拖出组：自由摆放，组空了会自动消失
       work = removeFromGroup(work, cardId);
     }
-    const partners = overlappingFreeCards(work, cardId, px, py);
-    if (partners.length) {
-      // 两张（或多张）未分组卡片重叠 → 自动成组，默认组名
+    // 只把**明确目标**那张卡片并进来：靠近 / 边框相碰不合并，一叠卡片也不会被整堆合并
+    const best = bestMergeTarget(work, cardId, px, py);
+    if (best) {
+      const partner = cardById(work, best.cardId);
+      // 两张未分组卡片明确重叠 → 自动成组，默认组名（组框由成员推导，位置只影响显示）
       work.groups.push({
         id: newId("g"),
         name: nextDefaultGroupName(work.groups.map((item) => item.name)),
@@ -922,7 +1026,7 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
         y: py,
         w: Math.max(1, card.w + GROUP_PAD_X * 2),
         h: Math.max(1, card.h + GROUP_PAD_TOP + GROUP_PAD_BOTTOM),
-        members: [...partners.map((item) => item.id), cardId],
+        members: partner ? [partner.id, cardId] : [cardId],
         deleted: false,
         createdAt: stamp,
         updatedAt: stamp,
