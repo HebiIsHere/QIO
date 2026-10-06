@@ -108,6 +108,14 @@ async function cancelContinuation() {
  */
 const sendRejection = computed(() => session.lastSendRejection);
 
+/** 某个附件已经不在待发列表里：把拒绝信息里的对应行去掉（空则整块收掉）。 */
+function dropFromRejection(id: string) {
+  const rejection = session.lastSendRejection;
+  if (!rejection) return;
+  const left = rejection.rejected.filter((row) => row.id !== id);
+  session.lastSendRejection = left.length ? { ...rejection, rejected: left } : null;
+}
+
 function nameOfAttachment(id: string): string {
   return pending.value.find((item) => item.id === id)?.name ?? id;
 }
@@ -297,6 +305,8 @@ async function removeOne(id: string) {
     pathOpen.value = false;
   }
   pending.value = pending.value.filter((a) => a.id !== id);
+  // 用户自己把这个附件移掉了：拒绝信息里对应的那条也一起收掉（不留一条点不动的待办）
+  dropFromRejection(id);
   try {
     await removeAttachment(id);
   } catch (err) {

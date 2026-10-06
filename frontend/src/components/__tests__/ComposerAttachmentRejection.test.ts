@@ -129,6 +129,22 @@ describe("附件没附上：文本与附件留着，原因与出口都在", () =
     expect(secondCall[2], "移除后重发不能再带上被拒的附件").toEqual([]);
   });
 
+  it("用户手动移除被拒的附件：拒绝框里对应的那一行一起收掉", async () => {
+    mocks.sendTurn.mockRejectedValueOnce(structured409());
+    const { w } = await mountComposer();
+
+    await w.find("textarea").setValue("看看这个文件");
+    await w.find(".send-btn").trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="attach-reject"]').exists()).toBe(true);
+
+    // chip 上的「×」：手动移除
+    await w.find(".chip .act.remove").trigger("click");
+    await flushPromises();
+    expect(w.findAll(".chip")).toHaveLength(0);
+    expect(w.find('[data-test="attach-reject"]').exists()).toBe(false);
+  });
+
   it("普通失败：不伪造附件原因，也不出现「移除附件」入口", async () => {
     mocks.sendTurn.mockRejectedValueOnce(new ApiError(500, "/api/turns", "boom"));
     const { w } = await mountComposer();
