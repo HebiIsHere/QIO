@@ -2094,6 +2094,13 @@ GitHub 直链与 `gh` 上传本身是通的。
 「回到最新消息」按钮要更贴近输入区。下面按「改了什么 / 怎么验证 / 还有什么没解决」写。
 
 **版本：** 本次改动随 **0.1.14** 发布，用户可见的说明见 `docs/releases/v0.1.14.md`。
+已发布：GitHub Release `v0.1.14`（安装包 + `.sig` + `latest.json` 三个资产都上传，tag 指向构建提交 `0ac624e`），
+应用内更新源 `https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json`
+实测返回 `version = 0.1.14` 且 URL/签名结构正确；发布闸门 `scripts/release_gate.py`
+本地可判定的项目全部通过（18 PASS / 0 FAIL，构建清单里的 commit 与本次发布的提交一致）。
+公共加速前缀 `gh.llkk.cc` 实测可达（HTTP 200）。
+**本轮没有在真机上做的**：安装 → 首次启动 → 内置模型就位 → 设置 provider → 保存凭据 → 对话 → 创建工具 →
+测试前授权 → 依赖安装 → 提交 → 注册 → 调用 → 重启恢复 → 应用内更新 → 卸载，这条人工验收链仍未跑（闸门覆盖不到）。
 
 ### 一、窗口在启动与更新期间不再被同步命令挡住（外壳）
 
