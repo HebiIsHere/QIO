@@ -67,6 +67,8 @@ const approveLabel = computed(() => {
       return "已批准，等待前项";
     case "needs_update":
       return "需要更新，不能批准";
+    case "paused":
+      return "继续（按当前材料）";
     default:
       return "批准";
   }
@@ -247,7 +249,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
       <button
         class="btn primary"
         type="button"
-        data-im="approve"
+        :data-im="intent.status === 'paused' ? 'resume' : 'approve'"
         :data-intent-id="intent.id"
         :disabled="!approve.allowed"
         :title="approve.text"
@@ -276,7 +278,10 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
         在板面上定位
       </button>
     </div>
-    <p v-if="!approve.allowed" class="action-hint">{{ approve.text }}</p>
+    <p v-if="intent.status === 'paused'" class="action-hint">
+      继续不会自动重试，也不会重新执行已完成的部分；材料依据会按当前板面重新记录。
+    </p>
+    <p v-else-if="!approve.allowed" class="action-hint">{{ approve.text }}</p>
   </article>
 </template>
 

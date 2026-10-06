@@ -200,6 +200,47 @@ def test_batch_conflicting_pair_neither_is_approved(db_conn):
     assert statuses[failing["id"]] == "running"
 
 
+def test_batch_approve_records_executor_identity(db_conn):
+    """批量批准也要记录执行者身份，否则紧接着读一次列表就会把它当成别的进程遗留而暂停。"""
+    _seed(db_conn)
+    target = _demo(db_conn)[_t("failing")]
+    result = intents.batch_decide(db_conn, approve=[target["id"]], reject=[], instance_id="proc-9")
+    assert result["approved"] == [target["id"]]
+    assert _stored_progress_of(db_conn, target["id"])["__ownerInstance"] == "proc-9"
+
+    # 同一个进程读列表：仍然是执行中（复核报的缺陷就是这个）
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-9") == {"paused": []}
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
+    # 换一个进程才降级为暂停
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-10") == {
+        "paused": [target["id"]]
+    }
+
+
+def test_batch_dependency_path_records_owner_when_it_starts(db_conn):
+    """批量批准里「依赖等待 → 前项完成 → 再次确认 → running」这条路径也要带上身份。"""
+    _seed(db_conn)
+    demo = _demo(db_conn)
+    combine, followup = demo[_t("combine")], demo[_t("followup")]
+    batch = intents.batch_decide(
+        db_conn, approve=[combine["id"], followup["id"]], reject=[], instance_id="proc-1"
+    )
+    assert set(batch["approved"]) == {combine["id"], followup["id"]}
+    assert _listed(db_conn)[followup["id"]]["status"] == "waiting_dependency"
+
+    intents.advance_intent(db_conn, combine["id"], outcome="done")
+    assert _listed(db_conn)[followup["id"]]["status"] == "waiting_confirm"
+
+    confirmed = intents.approve_intent(
+        db_conn, followup["id"], confirm_dependency=True, instance_id="proc-1"
+    )
+    assert confirmed["ok"] is True
+    assert confirmed["intent"]["status"] == "running"
+    assert _stored_progress_of(db_conn, followup["id"])["__ownerInstance"] == "proc-1"
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-1")["paused"] == []
+
+
 # --- 依赖 ---------------------------------------------------------------
 
 
@@ -477,10 +518,88 @@ def test_recover_running_intents_respects_process_identity(db_conn):
     assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-3")["paused"] == []
     assert _listed(db_conn)[target["id"]]["status"] == "paused"
 
-    # 暂停的任务不会因为「批准」而自动接着跑
+    # 暂停的任务不会因为「批准」而自动接着跑：必须先确认（继续由 approve(confirm=True) 完成）
     again = intents.approve_intent(db_conn, target["id"])
-    assert again["ok"] is False and again["reason"] == "paused"
+    assert again["ok"] is False and again["reason"] == "confirm_required"
     assert _listed(db_conn)[target["id"]]["status"] == "paused"
+
+
+def test_paused_task_resumes_on_confirmation_with_fresh_material_baseline(db_conn):
+    seed = _seed(db_conn)
+    target = _demo(db_conn)[_t("failing")]
+    intents.approve_intent(db_conn, target["id"], instance_id="proc-1")
+
+    # 材料变化 → 暂停（保留原始基线）
+    state = _state(db_conn)
+    for card in state["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料（已替换）"
+    board_store.save_board(db_conn, BOARD, state, reason="user-edit")
+    assert intents.on_board_saved(db_conn, board_id=BOARD, state=_state(db_conn))["affected"] == [
+        target["id"]
+    ]
+    assert _listed(db_conn)[target["id"]]["status"] == "paused"
+
+    # 不确认：不能继续
+    blocked = intents.approve_intent(db_conn, target["id"])
+    assert blocked["ok"] is False and blocked["reason"] == "confirm_required"
+    assert "确认" in blocked["detail"]
+    assert _listed(db_conn)[target["id"]]["status"] == "paused"
+
+    # 确认：按当前材料继续，指纹刷新成当前板面
+    resumed = intents.approve_intent(
+        db_conn, target["id"], confirm_dependency=True, instance_id="proc-1"
+    )
+    assert resumed["ok"] is True
+    assert resumed["intent"]["status"] == "running"
+    assert "不会自动重试" in resumed["intent"]["reason"]
+    stored = _stored_progress_of(db_conn, target["id"])
+    assert stored["__ownerInstance"] == "proc-1"
+    assert stored["__materialWatch"]
+
+    # 继续之后材料没再变：不报告受影响
+    assert (
+        intents.preview_material_impact(db_conn, board_id=BOARD, state=_state(db_conn))["affected"]
+        == []
+    )
+
+    # 之后再改材料，仍然能被识别为变化
+    again = _state(db_conn)
+    for card in again["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料（第二次替换）"
+    assert [
+        item["intentId"]
+        for item in intents.preview_material_impact(db_conn, board_id=BOARD, state=again)["affected"]
+    ] == [target["id"]]
+
+
+def test_finished_intents_cannot_be_revived_by_approve(db_conn):
+    _seed(db_conn)
+    demo = _demo(db_conn)
+
+    rejected = demo[_t("combine")]
+    assert intents.reject_intent(db_conn, rejected["id"])["ok"] is True
+    assert (
+        intents.approve_intent(db_conn, rejected["id"], confirm_dependency=True)["ok"] is False
+    )
+    assert _listed(db_conn)[rejected["id"]]["status"] == "rejected"
+
+    finished = demo[_t("failing")]
+    intents.approve_intent(db_conn, finished["id"])
+    intents.advance_intent(db_conn, finished["id"], outcome="done")
+    assert intents.approve_intent(db_conn, finished["id"], confirm_dependency=True)["reason"] == "done"
+    intents.advance_intent(db_conn, finished["id"], outcome="failed")
+    assert (
+        intents.approve_intent(db_conn, finished["id"], confirm_dependency=True)["reason"] == "closed"
+    )
+
+    cancelled = demo[_t("separate")]
+    intents.approve_intent(db_conn, cancelled["id"])
+    intents.advance_intent(db_conn, cancelled["id"], outcome="cancelled")
+    result = intents.approve_intent(db_conn, cancelled["id"], confirm_dependency=True)
+    assert result["ok"] is False and result["reason"] == "closed"
+    assert _listed(db_conn)[cancelled["id"]]["status"] == "cancelled"
 
 
 # --- HTTP 路由（冻结路径） ------------------------------------------------
@@ -532,6 +651,38 @@ def test_list_does_not_pause_own_running_task(db_conn):
     assert recovery["recovery"]["paused"] == [combine["id"]]
     assert _by_title(recovery["intents"])[_t("combine")]["status"] == "paused"
     assert _stored_progress_of(db_conn, combine["id"]).get("__materialWatch")
+
+
+def test_batch_approve_route_survives_same_instance_list(db_conn):
+    """复核报的缺陷：批量批准后同一进程再读列表，任务仍然是 running。"""
+    _seed(db_conn)
+    client = _client(db_conn, "instance-A")
+    assert (
+        client.post(f"/api/interactive/boards/{BOARD}/intents", json={"demo": True}).status_code
+        == 200
+    )
+    listed = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    combine = _by_title(listed["intents"])[_t("combine")]
+    failing = _by_title(listed["intents"])[_t("failing")]
+
+    decided = client.post(
+        "/api/interactive/intents/batch",
+        json={"approve": [combine["id"], failing["id"]], "reject": []},
+    ).json()
+    assert set(decided["approved"]) == {combine["id"], failing["id"]}
+
+    # store.decideBatch() 之后就会 loadIntents()：这里正是真实界面里的那一步
+    again = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    statuses = _by_title(again["intents"])
+    assert statuses[_t("combine")]["status"] == "running"
+    assert statuses[_t("failing")]["status"] == "running"
+    assert again["recovery"] == {"paused": []}
+
+    # 换一个进程身份再读，才会降级为暂停
+    restarted = _client(db_conn, "instance-B")
+    recovery = restarted.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    assert set(recovery["recovery"]["paused"]) == {combine["id"], failing["id"]}
+    assert _by_title(recovery["intents"])[_t("failing")]["status"] == "paused"
 
 
 def test_intents_routes_follow_frozen_paths(db_conn):

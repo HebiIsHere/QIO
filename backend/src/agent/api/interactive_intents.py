@@ -147,4 +147,6 @@ async def batch(request: Request, body: dict) -> dict:
     payload = _body_dict(body)
     approve_ids = _id_list(payload, "approve")
     reject_ids = _id_list(payload, "reject")
-    return intents.batch_decide(conn, approve=approve_ids, reject=reject_ids)
+    return intents.batch_decide(
+        conn, approve=approve_ids, reject=reject_ids, instance_id=_instance_id(request)
+    )

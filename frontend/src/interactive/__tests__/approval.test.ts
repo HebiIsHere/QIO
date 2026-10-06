@@ -223,6 +223,12 @@ describe("状态文案", () => {
     );
   });
 
+  it("暂停状态说明「确认后按当前材料继续」", () => {
+    const text = statusText(intent({ id: "i_paused", status: "paused" }));
+    expect(text.detail).toContain("按当前材料继续");
+    expect(text.detail).toContain("不会自动继续");
+  });
+
   it("失败状态说明撤回与不自动重试", () => {
     const text = statusText(intent({ id: "i4", status: "failed" }));
     expect(text.detail).toContain("撤回");
@@ -248,6 +254,18 @@ describe("审批可用性（只显示服务端结果）", () => {
     const waiting = approveAvailability(intent({ id: "i4", status: "waiting_dependency" }));
     expect(waiting.allowed).toBe(false);
     expect(waiting.text).toContain("不会自动开始");
+  });
+
+  it("暂停的任务可以「按当前材料继续」，但必须先确认", () => {
+    const paused = approveAvailability(intent({ id: "i8", status: "paused" }));
+    expect(paused.allowed).toBe(true);
+    expect(paused.needsConfirm).toBe(true);
+    expect(paused.text).toContain("按当前材料继续");
+    expect(paused.text).toContain("不会自动重试");
+
+    // 暂停时不能「拒绝」（要取消得先继续或走演示推进），继续之后是 running
+    expect(rejectAvailability(intent({ id: "i9", status: "paused" })).allowed).toBe(false);
+    expect(approveAvailability(intent({ id: "i10", status: "running" })).allowed).toBe(false);
   });
 
   it("已经结束的状态不能批准也不能拒绝；执行中不能拒绝", () => {
