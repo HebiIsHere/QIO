@@ -505,6 +505,24 @@ def test_join_group_index_is_clamped():
     assert members_of(board.join_group(state, "c", "g1", -5), "g1") == ["c", "a", "b"]
 
 
+def test_create_group_moves_cards_out_of_previous_groups():
+    state = mk_state(
+        cards=[mk_card("a"), mk_card("b"), mk_card("c")],
+        groups=[mk_group("g1", ["a", "b"])],
+    )
+    created = board.create_group(state, ["a", "b", "c"])
+    new_id = [gid for gid in group_ids(created) if gid != "g1"][0]
+    assert members_of(created, new_id) == ["a", "b", "c"]
+    assert members_of(created, "g1") == []
+    assert group_ids(created) == [new_id], "原来的组空了 → 消失"
+    assert group_of(created, new_id)["name"] == models.default_group_name(1)
+
+
+def test_create_group_without_live_cards_does_nothing():
+    state = mk_state(cards=[mk_card("a", deleted=True)])
+    assert board.create_group(state, ["a", "ghost"])["groups"] == []
+
+
 def test_remove_from_group_and_dissolve_group():
     state = mk_state(
         cards=[mk_card("a"), mk_card("b"), mk_card("c")],

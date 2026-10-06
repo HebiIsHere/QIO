@@ -420,6 +420,42 @@ def duplicate_card(state: dict, card_id: str) -> dict:
 # --- 分组与顺序 -----------------------------------------------------------
 
 
+def create_group(state: dict, card_ids: Iterable[str], name: str = "") -> dict:
+    """把若干卡片组成一个新组（普通组，默认名或用户给的名字）。
+
+    已在别的组里的卡片会先离开原来的组（G1）；组里没有活卡片时不建组（G3）。
+    这是「显式分组」入口；拖动重叠自动成组走 drop_card。
+    """
+    work = normalize_state(state)
+    members: list[str] = []
+    for card_id in _dedupe(card_ids or []):
+        card = models.card_by_id(work, card_id)
+        if card is None or card["deleted"]:
+            continue
+        members.append(card_id)
+    if not members:
+        return work
+    stamp = _now()
+    member_set = set(members)
+    for group in work["groups"]:
+        if any(cid in member_set for cid in group["members"]):
+            group["members"] = [cid for cid in group["members"] if cid not in member_set]
+            group["updatedAt"] = stamp
+    # 先让被搬空的组消失，再取默认名（避免新组拿到一个刚刚空掉的旧组名）
+    work = normalize_state(work)
+    cleaned = _as_text(name).strip()
+    group = models.new_group(
+        cleaned or _next_default_name(item["name"] for item in work["groups"]),
+        default_name=(not cleaned) or _is_default_name(cleaned),
+    )
+    group["members"] = members
+    group["createdAt"] = stamp
+    group["updatedAt"] = stamp
+    work["groups"].append(group)
+    work["updatedAt"] = stamp
+    return normalize_state(work)
+
+
 def join_group(state: dict, card_id: str, group_id: str, index: int | None = None) -> dict:
     """把卡片加入组（会先离开原来的组）。有序组里 index 决定序号；组名不变。"""
     work = normalize_state(state)
