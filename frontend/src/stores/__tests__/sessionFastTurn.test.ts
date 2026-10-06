@@ -46,10 +46,13 @@ beforeEach(() => {
 describe("发送回执与 TURN_END 的先后", () => {
   it("TURN_END 先到：回执迟到也不能把已结束的一轮重新点亮", async () => {
     const { session, events } = setup();
-    let release: ((value: unknown) => void) | null = null;
-    vi.mocked(api.sendTurn).mockImplementation(
-      () => new Promise((resolve) => { release = resolve as (value: unknown) => void; }),
-    );
+    // 明确的「稍后再给回执」闸门：release 用 definite assignment 声明，
+    // 避免 TS 把闭包里的赋值当成「永远是 null」而把调用点收窄成 never。
+    let release!: (value: unknown) => void;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(api.sendTurn).mockImplementation(() => gate as never);
 
     const sending = session.send("快问快答");
     // 回执还没回来，但这一轮已经跑完（没有凭据时的真实形状）
@@ -57,7 +60,7 @@ describe("发送回执与 TURN_END 的先后", () => {
     events.route({ type: "TURN_END", id: "e1", ts: "", data: { turn_id: "turn_fast", revision: 3, status: "unavailable", final_content: "" } });
     expect(session.turnRunning).toBe(false);
 
-    release?.({ ok: true, accepted: true, turn_id: "turn_fast", status: "accepted" });
+    release({ ok: true, accepted: true, turn_id: "turn_fast", status: "accepted", topic_id: null });
     await sending;
     expect(session.turnRunning).toBe(false);
     expect(session.turnPhase).toBe("idle");
@@ -65,7 +68,13 @@ describe("发送回执与 TURN_END 的先后", () => {
 
   it("正常顺序（回执先到、TURN_END 后到）仍然按运行中呈现，然后被 TURN_END 熄灭", async () => {
     const { session, events } = setup();
-    vi.mocked(api.sendTurn).mockResolvedValue({ ok: true, accepted: true, turn_id: "turn_slow", status: "accepted" });
+    vi.mocked(api.sendTurn).mockResolvedValue({
+      ok: true,
+      accepted: true,
+      turn_id: "turn_slow",
+      status: "accepted",
+      topic_id: null,
+    });
     await session.send("正常一轮");
     expect(session.turnRunning).toBe(true);
     events.route({ type: "TURN_START", id: "s2", ts: "", data: { turn_id: "turn_slow", revision: 6, instance_id: "i" } });
