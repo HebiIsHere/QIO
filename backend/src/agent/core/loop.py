@@ -107,7 +107,8 @@ class _AssistantStream:
     分类守卫（plan §2.1）：正文增量先进缓冲，**分类确定才出缓冲**：
 
     * 出现任何工具调用增量 → 这条响应是工具轮：整段（含已缓冲正文）判为 interim，
-      之后所有增量都进过程区；
+      之后所有增量都进过程区；工具轮的文字**等阶段就位后**由 flush_interim 一次性
+      交付（与同批 STAGE 说明共用一个 stage_id），不在这里抢先发；
     * 守卫窗口到期（GUARD_MS 且已收到 ≥1 个正文增量）仍无工具调用增量 → 判为
       answer：缓冲文字**一次性**进入正式回答区，之后增量直接进正式回答区；
     * 流终止时仍未分类 → 按「有工具调用 / 无工具调用」定论（无工具调用即 answer）。
@@ -188,7 +189,13 @@ class _AssistantStream:
     # -- 时间 -------------------------------------------------------------
 
     def next_deadline(self) -> float | None:
-        """下一个必须处理的时间点；None = 可以一直等下一段增量。"""
+        """下一个必须处理的时间点；None = 可以一直等下一段增量。
+
+        工具轮（deferred）不给发布定时器：它的文字等 flush_interim 带阶段信息发，
+        这里再设一个「到点就发」的截止时间只会让消费循环空转（到点又发不出去）。
+        """
+        if self._deferred:
+            return None
         if self.role is None:
             if self._buffer and self._first_text_at is not None:
                 return self._first_text_at + self._guard_ms / 1000.0
