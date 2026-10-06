@@ -42,6 +42,26 @@ COPY_MAX = 100 * MB
 MAX_STALL_MS = 120.0
 
 
+#: 诊断用：单次停顿超过这个毫秒数就把**所有线程**的栈打到 stderr（只在异常路径触发；
+#: 健康时心跳间隔约 5ms，不会有任何输出）。CI 上再红时可以直接看到事件循环/工作线程停在哪。
+STALL_DUMP_MS = 100
+
+
+def _dump_thread_stacks(gap_ms: float) -> None:
+    import faulthandler
+    import sys
+
+    print(
+        "[诊断] 检测到 %.0f ms 的停顿，打印所有线程栈（诊断用，不影响断言）：" % gap_ms,
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        faulthandler.dump_traceback(file=sys.stderr)
+    except Exception:  # noqa: BLE001 - 诊断失败绝不能影响用例
+        pass
+
+
 def _report(label: str, max_gap_ms: float, blocked_ms: float, stats: dict) -> None:
     """诊断输出（不参与判定）：最大单次停顿 / 累计停顿 / 探针推进情况。"""
     print(
@@ -67,13 +87,20 @@ async def _measure_loop_lag(work, *, probe_factory=None, tick: float = 0.005):
     stats = {"count": 0, "during": 0, "max_ms": 0.0}
     window = {"started": None, "finished": None}
 
+    dumped = {"count": 0}
+
     async def _ticker() -> None:
         nonlocal last
         while not stop:
             await asyncio.sleep(tick)
             now = time.perf_counter()
-            gaps.append(now - last)
+            gap = now - last
+            gaps.append(gap)
             last = now
+            # 只在「一次明显停顿」之后打栈（最多 3 次）：健康机器上永远不会触发
+            if gap * 1000 >= STALL_DUMP_MS and dumped["count"] < 3:
+                dumped["count"] += 1
+                _dump_thread_stacks(gap * 1000)
 
     async def _probe() -> None:
         if probe_factory is None:

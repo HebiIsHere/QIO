@@ -17,7 +17,9 @@
 # 断言语义与阈值**不改**（120ms 是 Lead 裁决的口径）。
 param(
   [int]$Spinners = 0,
-  [string]$Worktree = ""
+  [string]$Worktree = "",
+  # 只跑压力档（重复取样时用；对照表里就没有空载行）
+  [switch]$SkipIdle
 )
 
 $ErrorActionPreference = "Continue"
@@ -63,9 +65,12 @@ Write-Output ("worktree: " + $Worktree)
 Write-Output ("逻辑核数: " + [Environment]::ProcessorCount + "；压力进程数: " + $Spinners)
 Write-Output ("日志目录: " + $outDir)
 
-Write-Output ""
-Write-Output "== 1) 空载基线 =="
-$baseline = Run-Once "空载" (Join-Path $outDir "idle.log")
+$baseline = [pscustomobject]@{ Label = "空载(跳过)"; Exit = -1; Load = -1; Diag = "n/a" }
+if (-not $SkipIdle) {
+  Write-Output ""
+  Write-Output "== 1) 空载基线 =="
+  $baseline = Run-Once "空载" (Join-Path $outDir "idle.log")
+}
 
 # 注意：PowerShell 变量名大小写不敏感 —— 不要再声明 $spinners/$Spinners，会撞到参数（实测踩过）
 $burners = @()
