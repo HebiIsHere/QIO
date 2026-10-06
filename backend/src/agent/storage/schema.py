@@ -706,6 +706,14 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_attachments_topic ON attachments(topic_id, state)",
         ],
     ),
+    (
+        27,
+        [
+            # R4 问题二：重试复用原轮附件时，新记录要指回源行（新 id + 复用已保存副本，
+            # 原行归属与历史不变）。只追加一列，不改历史迁移；老库既有行的值为 NULL。
+            "ALTER TABLE attachments ADD COLUMN source_attachment_id TEXT",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

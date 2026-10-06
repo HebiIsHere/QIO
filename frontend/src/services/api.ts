@@ -7,6 +7,12 @@ export class ApiError extends Error {
     readonly status: number,
     readonly path: string,
     detail: string,
+    /**
+     * 响应体解析出来的结构（能解析成 JSON 才有）。
+     * 结构化失败（例如附件没附上）靠它拿到逐条原因 —— 光有一句话的 detail
+     * 让调用方只能把 JSON 当字符串显示。
+     */
+    readonly body?: unknown,
   ) {
     super(
       status === 401 || status === 403
@@ -92,7 +98,13 @@ async function requestOnce<T>(
       const text = await resp.text();
       // 认证明确失效：令牌可能已经轮换、或后端换了实例 → 下一次请求重新解析地址与令牌
       if (resp.status === 401 || resp.status === 403) resetBackend();
-      throw new ApiError(resp.status, path, text.slice(0, 200));
+      let body: unknown;
+      try {
+        body = JSON.parse(text) as unknown;
+      } catch {
+        body = undefined; // 不是 JSON（代理页 / 纯文本错误）：保持 undefined，不伪造结构
+      }
+      throw new ApiError(resp.status, path, text.slice(0, 200), body);
     }
     return (await resp.json()) as T;
   } catch (err) {
@@ -417,7 +429,19 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
       { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
-  sendTurn: (message: string, topicId?: string | null, attachmentIds?: string[]) =>
+  /**
+   * 提交一轮。
+   *
+   * `retryOfTurnId` 只在「重试/重发某一轮」时给：后端据此允许把**原来绑在那一轮**的
+   * 附件克隆到新一轮（新 id + 复用已保存副本）。不给的话，原轮的附件已经属于别的一轮，
+   * 后端只能拒绝 —— 旧实现正是这里漏了参数，导致「界面有附件、模型实际没有」。
+   */
+  sendTurn: (
+    message: string,
+    topicId?: string | null,
+    attachmentIds?: string[],
+    retryOfTurnId?: string | null,
+  ) =>
     request<{
       ok: boolean;
       accepted: boolean;
@@ -425,11 +449,19 @@ export const api = {
       turn_id: string;
       status: string;
       topic_id: string | null;
+      /** 本轮真实绑定到的附件（受理回执；前端以它为准） */
+      bound_attachment_ids?: string[];
+      /** 旧形状的回执：真实绑定到的附件 payload（id 就是事实） */
+      attachments?: { id?: string }[];
+      /** 没绑上的附件与原因（严格语义下非空即整轮被拒） */
+      rejected?: { id: string; reason: string }[];
     }>("/api/turns", {
       method: "POST",
       body: JSON.stringify({
         message,
         topic_id: topicId ?? null,
+        // 重试/重发：告诉后端这些附件原来属于哪一轮（克隆复用的唯一凭据）
+        ...(retryOfTurnId ? { retry_of_turn_id: retryOfTurnId } : {}),
         // 附件随这一轮绑定（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
         // 只要调用方给了这个参数就一律带上，**包括空数组**（= 这一轮没有附件）。
         // 以前写成 attachmentIds?.length ? {...} : {}：空数组被省略成「缺字段」，

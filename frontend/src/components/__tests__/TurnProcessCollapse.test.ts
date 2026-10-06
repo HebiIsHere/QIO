@@ -470,7 +470,8 @@ describe("问题 7：失败 / 停止显示简短原因与确实可用的操作�
 
     await retry.trigger("click");
     // 第三个参数无条件带上（空数组 = 显式「这条消息没有附件」，契约 §1.4）
-    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", null, []);
+    // 第四个参数是 retry_of_turn_id（R4 §1.2：后端据此复用原轮附件）
+    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", null, [], "turn_1");
     await flushPromises(); // 重试提交结束后按钮才重新可用
     await resend.trigger("click");
     expect(resendInterruptedTurn).toHaveBeenCalledWith("turn_1");
