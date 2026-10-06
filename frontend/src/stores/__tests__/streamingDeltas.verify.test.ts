@@ -1,13 +1,15 @@
 /**
- * D 独立验证：流式增量在「事件 → store」这一层的契约（契约 §2.1）。
+ * D 独立验证：流式增量在「事件 → store」这一层的契约（plan §1.1 最终版）。
  *
- * 契约来源：docs/plans/2026-10-06-unified-process-attachments-streaming.md §2。
+ * 契约来源：docs/plans/2026-10-06-audit-seven-fixes.md §1.1（Lead 2026-10-06 最终口径）。
  * 这里不渲染 DOM，只吃冻结的 SSE 载荷并断言对话状态：
- *   * 正式回答（interim=false）在**任何** TURN_END 之前就已经以非空、streaming 状态出现；
+ *   * 正文增量**一开始就以 interim=true 在过程区实时可见**（边生成边显示）；
+ *   * 该次调用结束且没有工具调用 → **同一 delta_id** 用 {interim:false, streaming:false}
+ *     原样**提升**到正式回答区（同一条消息，不重打、不重复）；
+ *   * 调用结束时有工具调用 → 该段留在过程区；
+ *   * **永久废止「正式回答 → 过程区」这个方向**：答案区文字不因后来的工具增量而消失或转移；
  *   * 累计快照语义：就地更新、不回退、不追加第二个气泡；
- *   * 回退/重复 seq 必须丢弃；
- *   * 不同 delta_id 不得互相覆盖（总线合并键要细化到 delta_id）；
- *   * 答案放行后才发现是工具轮：同一段文字移到过程区，标识不变、绝不重复；
+ *   * 回退/重复 seq 必须丢弃；不同 delta_id 不得互相覆盖（合并键细化到 delta_id）；
  *   * TURN_END.final_content 只做校准（替换），不追加；
  *   * 取消/失败保留已确认文本并如实给状态。
  *
@@ -141,35 +143,129 @@ describe("契约 §2.1：正式回答真流式", () => {
   });
 });
 
-describe("契约 §2.1：唯一允许的改判 —— 不放行之后才发现是工具轮", () => {
-  it("同一段文字从答案区移到过程区：只出现一次、标识不变", () => {
+describe("契约 §1.1 最终版：正文先进过程区，无工具调用时原样提升", () => {
+  function interimDelta(content: string, deltaSeq: number, deltaId = "dl_turn1_7", stageId?: string) {
+    return ev("ASSISTANT", {
+      turn_id: "turn_1",
+      content,
+      interim: true,
+      streaming: true,
+      delta_id: deltaId,
+      seq: deltaSeq,
+      ...(stageId ? { stage_id: stageId } : {}),
+    });
+  }
+
+  it("正文一开始就在过程区实时可见（不是等 provider 结束才出现）", () => {
     const { events, session } = setup();
-    const text = "这段话说完了我才决定调工具";
+    events.dispatch(interimDelta("第一句。", 1));
 
-    events.dispatch(answerDelta(text, 1, "dl_turn1_9"));
+    const process = assistantMessages(session).filter((message) => message.interim);
+    expect(process.length, "过程说明必须已经落地（实时可见）").toBe(1);
+    expect(process[0].content).toBe("第一句。");
+    expect(process[0].streaming, "还在生成中").toBe(true);
+    expect(answerMessages(session), "角色还没确定前不得出现在答案区").toEqual([]);
+  });
+
+  it("无工具调用：同一 delta_id 用 {interim:false, streaming:false} 原样提升到答案区", () => {
+    const { events, session } = setup();
+    const full = "第一句。第二句。";
+    events.dispatch(interimDelta("第一句。", 1, "dl_turn1_7"));
+    events.dispatch(interimDelta(full, 2, "dl_turn1_7"));
+    // 调用结束且没有工具调用 → 提升（同一 delta_id，同一份文字）
+    events.dispatch(
+      ev("ASSISTANT", {
+        turn_id: "turn_1",
+        content: full,
+        interim: false,
+        streaming: false,
+        delta_id: "dl_turn1_7",
+        seq: 3,
+      }),
+    );
+
+    const all = assistantMessages(session).filter((message) => message.content.trim());
+    expect(all.length, "同一条消息只能有一份（不得既留在过程区又出现在答案区）").toBe(1);
+    expect(all[0].content).toBe(full);
+    expect(all[0].interim ?? false, "提升之后必须是正式回答").toBe(false);
+    expect(answerMessages(session).length).toBe(1);
+  });
+
+  it("工具轮：正文留在过程区；答案区文字不因后来的工具增量消失或转移", () => {
+    const { events, session } = setup();
+    const toolTurnText = "我先说明一下，马上要调用工具。";
+    events.dispatch(interimDelta(toolTurnText, 1, "dl_turn1_8", "st_turn1_1"));
+
+    // 调用结束时有工具调用 → 这段是过程说明；随后的工具增量不得把它搬进答案区
+    events.dispatch(
+      ev("TOOL_START", { turn_id: "turn_1", call_id: "c1", tool: "fs_read", stage_id: "st_turn1_1" }),
+    );
+    events.dispatch(
+      ev("TOOL_END", { turn_id: "turn_1", call_id: "c1", tool: "fs_read", ok: true, stage_id: "st_turn1_1" }),
+    );
     expect(
-      answerMessages(session).some((message) => message.content === text),
-      "守卫放行之后、改判之前，这段文字属于正式回答",
-    ).toBe(true);
+      answerMessages(session).some((message) => message.content.includes(toolTurnText)),
+      "工具轮的正文不得出现在答案区",
+    ).toBe(false);
+    expect(
+      session.messages.filter((message) => message.content.includes(toolTurnText)).length,
+      "同一段文字全局只有一份",
+    ).toBe(1);
 
-    // 同一个 delta_id 后续被判为工具轮（守卫放行后的改判）
+    // 之后到来的正式回答进答案区；再来的工具增量不得让它消失或转移
+    const answer = "工具跑完了，这是正式回答。";
+    events.dispatch(
+      ev("ASSISTANT", {
+        turn_id: "turn_1",
+        content: answer,
+        interim: false,
+        streaming: false,
+        delta_id: "dl_turn1_9",
+        seq: 1,
+      }),
+    );
+    events.dispatch(
+      ev("TOOL_START", { turn_id: "turn_1", call_id: "c2", tool: "grep_search", stage_id: "st_turn1_1" }),
+    );
+
+    const answers = answerMessages(session).map((message) => message.content);
+    expect(answers, "答案区文字不得因为工具增量而消失").toContain(answer);
+    expect(
+      answers.some((text) => text.includes(toolTurnText)),
+      "过程说明不得被搬进答案区",
+    ).toBe(false);
+    expect(
+      session.messages.filter((message) => message.content.includes(answer)).length,
+      "答案区文字不得重复",
+    ).toBe(1);
+  });
+
+  it("§1.1 废止的方向：迟到的 interim=true 不得把答案区文字搬回过程区", () => {
+    const { events, session } = setup();
+    const text = "这段文字已经进入正式回答区。";
     events.dispatch(
       ev("ASSISTANT", {
         turn_id: "turn_1",
         content: text,
-        interim: true,
-        streaming: true,
-        delta_id: "dl_turn1_9",
-        seq: 2,
+        interim: false,
+        streaming: false,
+        delta_id: "dl_turn1_10",
+        seq: 1,
       }),
     );
+    expect(answerMessages(session).some((message) => message.content === text)).toBe(true);
 
-    const occurrences = session.messages.filter((message) => message.content.includes(text)).length;
-    expect(occurrences).toBe(1);
+    // 旧规则允许、§1.1 最终版**永久废止**的改判方向：答案 → 过程
+    events.dispatch(interimDelta(text, 2, "dl_turn1_10"));
+
+    expect(
+      session.messages.filter((message) => message.content.includes(text)).length,
+      "全局只能有一份（不得因此多出重复气泡）",
+    ).toBe(1);
     expect(
       answerMessages(session).some((message) => message.content.includes(text)),
-      "改判之后答案区不得再显示这段文字",
-    ).toBe(false);
+      "文字必须留在答案区，不得被搬回过程区",
+    ).toBe(true);
   });
 });
 

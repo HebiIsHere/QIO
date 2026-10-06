@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 独立验证（验证方维护，`*.verify.test.ts`）：**同步期间的事件缓存必须有界**（契约 WS1 §5，验收清单第 6 条）。
  *
  * 契约要求：
@@ -8,10 +8,12 @@
  *
  * 当前实现里 `route()` 无条件 `push`，没有上限也没有溢出标记 —— 修复前这些用例应当变红。
  *
- * 关于超时（Lead 在真实 vitest 下实测）：灌 2 万条事件走真实 store + jsdom 约需 **7–8 秒**，
- * 默认 5s 超时会先超时（不是断言失败、也不是产品缺陷）。所以：
- *   * 大数量那条（2 万）显式给 `{ timeout: 30000 }`，保留为压力用例；
- *   * 另外两条降到 5 千（上限远小于它，足够触发多次溢出），也显式给超时。
+ * 关于超时（实测口径，不是功能断言的一部分）：
+ *   * 单跑：灌 2 万条事件走真实 store + jsdom 约 **7–10 秒**；5 千条约 2–3 秒；
+ *   * 整套并行跑（全量 vitest + 其它重用例同时占 CPU）实测可慢到 **3–4 倍**，
+ *     2026-10-06 出现过 30s 上限被顶掉的情况 —— 那是**机器负载**，不是功能回归；
+ *   * 因此这里把上限放宽到「负载下也够用」：2 万那条 90s、5 千那两条 60s。
+ *     **功能断言一个字都不放宽**（上限必须存在、必须标记重新同步、无溢出时一条不丢）。
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -33,10 +35,14 @@ vi.mock("../../services/api", () => ({
   },
 }));
 
-/** 压力用例：2 万条（真实 store + jsdom 下约 7–8 秒） */
+/** 压力用例：2 万条（单跑约 7–10 秒；并行跑可能 3–4 倍慢） */
 const OVERFLOW_TOTAL = 20000;
 /** 其余用例：5 千条已足够触发多次溢出，且跑得快 */
 const OVERFLOW_SMALL = 5000;
+
+/** 负载余量：只为「机器被别的重用例占住」留，不为放宽断言。 */
+const TIMEOUT_STRESS_MS = 90000;
+const TIMEOUT_NORMAL_MS = 60000;
 
 function event(index: number) {
   return {
@@ -64,7 +70,7 @@ beforeEach(() => {
 });
 
 describe("WS1 §5：resyncBuffer 必须有明确上限", () => {
-  it("同步期间灌入 2 万条事件：缓存必须有界，不能无限增长", { timeout: 30000 }, () => {
+  it("同步期间灌入 2 万条事件：缓存必须有界，不能无限增长", { timeout: TIMEOUT_STRESS_MS }, () => {
     const events = useEventStore();
     const session = useSessionStore();
     events.resyncing = true; // 模拟同步在飞（不真的发请求）
@@ -75,7 +81,7 @@ describe("WS1 §5：resyncBuffer 必须有明确上限", () => {
     expect(events.resyncBuffer.length).toBeLessThan(OVERFLOW_TOTAL);
   });
 
-  it("溢出时必须标记「需要重新同步」，不能静默丢事件", { timeout: 15000 }, () => {
+  it("溢出时必须标记「需要重新同步」，不能静默丢事件", { timeout: TIMEOUT_NORMAL_MS }, () => {
     const events = useEventStore();
     const session = useSessionStore();
     events.resyncing = true;
@@ -87,7 +93,7 @@ describe("WS1 §5：resyncBuffer 必须有明确上限", () => {
     expect(needsResyncSignal(events, session)).toBe(true);
   });
 
-  it("溢出之后不得宣称已同步（resyncState 不能停在 normal）", { timeout: 15000 }, async () => {
+  it("溢出之后不得宣称已同步（resyncState 不能停在 normal）", { timeout: TIMEOUT_NORMAL_MS }, async () => {
     const events = useEventStore();
     const session = useSessionStore();
     events.resyncing = true;
