@@ -168,6 +168,59 @@ export interface TurnFacts {
  * 保留最近的一批（正在跑的那一轮永远在最后，不会被裁掉）。
  */
 const TURN_PROCESS_LIMIT = 200;
+
+/**
+ * 每轮结束事实的**本机留痕**（刷新兜底）。
+ *
+ * 为什么需要：TURN_END 的 reason / actions 原本只活在内存里 —— 用户看到一轮失败、
+ * 刷新页面之后「重试」入口就没了，只能重写整段需求（D 实机 S6 复现）。
+ * 这里把**后端真实给过的**事实按 turn_id 留一份（有界、超长文本截断），
+ * 只用于本机恢复兜底；后端历史 / RESYNC 一旦给了同一条，以它为准。
+ *
+ * 三条底线：不猜、不造（没收到过 TURN_END 事实的轮次这里什么都没有）、
+ * 读不到/写不进都不影响会话本身。
+ */
+const TURN_FACTS_STORAGE_KEY = "qio.turnFacts";
+const TURN_FACTS_CACHE_LIMIT = 100;
+const TURN_FACTS_TEXT_LIMIT = 500;
+
+function loadTurnFactsCache(): Record<string, TurnFacts> {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const raw = localStorage.getItem(TURN_FACTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, TurnFacts> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const row = value as TurnFacts | null;
+      if (row && typeof row === "object" && typeof row.turnId === "string") out[key] = row;
+    }
+    return out;
+  } catch {
+    return {}; // 存储不可用 / 内容坏了：当作没有留痕
+  }
+}
+
+function persistTurnFactsCache(map: Record<string, TurnFacts>): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const keep = Object.keys(map).slice(-TURN_FACTS_CACHE_LIMIT);
+    const out: Record<string, TurnFacts> = {};
+    for (const key of keep) {
+      const facts = map[key];
+      if (!facts) continue;
+      out[key] = {
+        ...facts,
+        reason: facts.reason ? facts.reason.slice(0, TURN_FACTS_TEXT_LIMIT) : facts.reason,
+        errorText: facts.errorText ? facts.errorText.slice(0, TURN_FACTS_TEXT_LIMIT) : facts.errorText,
+      };
+    }
+    localStorage.setItem(TURN_FACTS_STORAGE_KEY, JSON.stringify(out));
+  } catch {
+    // 写不进去（隐私模式 / 配额）：留痕只是兜底，不是功能本身
+  }
+}
 function trimTurnMap<T>(map: Record<string, T>): Record<string, T> {
   const keys = Object.keys(map);
   if (keys.length <= TURN_PROCESS_LIMIT) return map;
@@ -810,8 +863,11 @@ export const useSessionStore = defineStore("session", {
     freshIds: [] as string[],
     /** 按 turn_id 组织的阶段（契约 §1.3：系统生成，前端只消费，不能自己造） */
     stagesByTurn: {} as Record<string, TurnStage[]>,
-    /** 每轮 TURN_END 的权威事实（总耗时 / 状态 / 结束原因）：折叠态不展开也要显示 */
-    turnFacts: {} as Record<string, TurnFacts>,
+    /**
+     * 每轮 TURN_END 的权威事实（总耗时 / 状态 / 结束原因）：折叠态不展开也要显示。
+     * 初值来自本机留痕（刷新后失败轮的「重试」入口不能消失）。
+     */
+    turnFacts: loadTurnFactsCache(),
     /** 问题 7 的可用操作失败反馈：按 turn_id 留在那一轮上（不静默、可重试） */
     turnActionFeedback: {} as Record<string, string>,
     /** 正在提交的操作（`turnId:action`）：防重复提交 */
@@ -1946,9 +2002,7 @@ export const useSessionStore = defineStore("session", {
         const s = typeof value === "string" ? value.trim() : "";
         return s ? s : null;
       };
-      this.turnFacts = trimTurnMap({
-        ...this.turnFacts,
-        [turnId]: {
+      const nextFacts: TurnFacts = {
           turnId,
           status: String(d.status ?? "completed"),
           durationMs: num(d.duration_ms),
@@ -1959,11 +2013,13 @@ export const useSessionStore = defineStore("session", {
           reason: text(d.reason),
           reasonCode: text(d.reason_code),
           stoppedBy: d.stopped_by === "user" || d.stopped_by === "system" ? d.stopped_by : null,
-          // 只列后端说「当前确实可用」的操作（未知 / 重复 / 非字符串丢弃）
-          actions: normalizeTurnActions(d.actions),
-          errorText: text(d.error ?? d.message),
-        },
-      });
+        // 只列后端说「当前确实可用」的操作（未知 / 重复 / 非字符串丢弃）
+        actions: normalizeTurnActions(d.actions),
+        errorText: text(d.error ?? d.message),
+      };
+      this.turnFacts = trimTurnMap({ ...this.turnFacts, [turnId]: nextFacts });
+      // 本机留痕：刷新之后失败轮的「重试」入口不能消失（后端历史给了就以它为准）
+      persistTurnFactsCache(this.turnFacts);
     },
     /**
      * 历史分页 / RESYNC 快照里的每轮结束事实（契约 §1.2）。
@@ -2576,6 +2632,8 @@ export const useSessionStore = defineStore("session", {
         // 归属校验：换了话题 / 重新加载过 → 这一页属于旧页面，整段丢弃
         // （不串进新列表、不改新话题的游标与 has_more）
         if (!this._historyResultBelongs(seq, topicAtStart)) return false;
+        // 更早的一页同样带回每轮结束事实（翻到的失败轮也要能「重试」）
+        this.applyTurnFactsSnapshot((page as unknown as { turn_facts?: unknown }).turn_facts);
         const known = new Set(this.messages.map((m) => m.id));
         const knownRecords = new Set(
           this.messages.map((m) => m.toolRecordId).filter(Boolean) as string[],
