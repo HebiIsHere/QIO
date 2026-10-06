@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from agent.interactive.models import (  # noqa: F401  (re-export for callers)
     CARD_KINDS,
+    CHECKABLE_KINDS,
     DEFAULT_BOARD_ID,
     EXPRESSION_KINDS,
     INTENT_STATUSES,
