@@ -7,7 +7,7 @@
 
 结论只能读成「QIO 自己的链路对」：假厂商是本机扮演的，不证明任何真实厂商行为。
 
-用法（阶段二，在集成分支上；后端与 provider 先起来）：
+用法（后端与 provider 先起来；scripts/verify-sse-local.ps1 会自动完成这套准备工作）：
 
     python scripts/verify_sse_capture.py \
         --base http://127.0.0.1:8734 \
@@ -108,9 +108,14 @@ def main() -> int:
     provider = args.provider.rstrip("/")
 
     _request(provider + "/__reset", payload={})
+    # default 与 steps 用同一份内容：凭据验证等旁路调用会先吃掉一步，
+    # 只要每个请求拿到的都是这份分片，「最终全文」才可比对。
     _request(
         provider + "/__script",
-        payload={"steps": [{"chunks": chunks, "chunk_delay_ms": args.chunk_delay_ms}]},
+        payload={
+            "steps": [{"chunks": chunks, "chunk_delay_ms": args.chunk_delay_ms}],
+            "default": {"chunks": chunks, "chunk_delay_ms": args.chunk_delay_ms},
+        },
     )
 
     capture = SseCapture(args.base)

@@ -18,6 +18,7 @@ A/B/C 的实现**尚未合并**，所以按契约写好的验证用例在基线�
 | 假厂商端点自检 | **PASS**（流式分片/工具碎片/断流/500/时间线/脱敏） |
 | 耗时口径取证 | 已跑出真实数字（见 §4） |
 | 端到端（真起应用 + 截图） | **未运行**（阶段二） |
+| 本地 SSE 冒烟（假厂商 + 真 uvicorn + 真 SSE，无前端/截图） | **已跑通 harness**；契约项 2 红（见 §2.5） |
 
 说明：本文件里的红/绿条数是 **2026-10-06 在基线 ee6bbff 上的取证快照**，不是长期状态；实现合并后这些数字必须重跑、以重跑结果为准（命令见各节）。
 
@@ -107,6 +108,42 @@ npx vitest run src/stores/__tests__/streamingDeltas.verify.test.ts src/component
 | 统一过程区不存在 | `契约 §1.5：一轮必须有一个可识别的过程区（锚点 [data-test="turn-process"]）: expected null not to be null` |
 | 耗时五态（composable） | 5 条绿：idle/loading/ready/missing/error 与「旧记录 totalMs=null 不是 0」 |
 
+
+### 2.5 本地 SSE 冒烟（真 uvicorn + 真 SSE + 假厂商；无前端/截图）
+
+~~~text
+cd D:\qio-dev\qio-up-d
+powershell -ExecutionPolicy Bypass -File scripts/verify-sse-local.ps1
+-> provider_ready=True / backend_ready=True
+-> credential: key_id=key_aad04311aef1 verify_ok=True verify_state=verified
+-> capture_exit=1（基线应为红）
+~~~
+
+真实取证（完整 JSON：docs/verification-e2e-stream-local.json）：
+
+~~~json
+{
+  "turn_id": "turn_002bd1ffd62f",
+  "provider_chunks": 0,          // QIO 全程没有向 provider 请求流式（没有 stream=true）
+  "sse_events": 6,
+  "turn_end_status": "completed",
+  "checks": [
+    {"name": "provider 真的分片发送", "ok": false, "detail": {"chunks": 0, "stream_end": false}},
+    {"name": "SSE 收到非空正式回答增量", "ok": false, "detail": {"assistant_events": 0, "answer_events": 0}},
+    {"name": "TURN_END 的最终全文与 provider 发出的完全一致", "ok": true, "detail": {"final_len": 100, "provider_len": 100}},
+    {"name": "SSE 全流里没有出现重复的完整回答", "ok": true}
+  ],
+  "failed": ["provider 真的分片发送", "SSE 收到非空正式回答增量"]
+}
+~~~
+
+这条取证说明两件事：
+
+1. **现状（基线）**：真链路上 SSE 里**一条非空 ASSISTANT 增量都没有**，整段回答只在 TURN_END 的 final_content 里出现一次 —— 与 §2.3 的 store 层红证据互相印证。
+2. **阶段二的 harness 已经跑通**：假厂商 + 真 uvicorn + 假凭据（@@verify_state=verified@@）+ 真 SSE 采集 + 与 provider 时间线对比，全链路可用；阶段二只需把期望从「应当红」换成「应当绿」。
+
+假厂商端点在本机跑了真 HTTP + 真 SSE；这不证明任何真实厂商行为。
+
 ### 2.4 前端类型检查
 
 ~~~text
@@ -158,7 +195,7 @@ TIMING_EVIDENCE {"after_turn_ms": 0, "all_spans_raw_sum_ms": 710, "duration_ms":
 ## 5. 未验证（诚实清单）
 
 1. **A/B/C 的实现是否满足契约：未验证。** 未合并，全部相关用例为红（§2.2/§2.3）；合并后必须在集成分支重跑。
-2. **端到端（真起应用 + SSE + 截图）：未运行。** `scripts/verify-e2e.ps1`、`scripts/verify_sse_capture.py` 已写好但**没有对真实后端跑过**，因此「回答先于 provider 结束」这条只在进程内（pytest 用真 NativeAdapter + 真 HTTP + 真 SSE 假端点）验证过，**没有在 uvicorn + 浏览器链路上验证**。
+2. **浏览器/前端链路的端到端与截图：未运行。** `scripts/verify-e2e.ps1`（含 vite + msedge 截图）没有跑过。已跑过的是 §2.5 的 `scripts/verify-sse-local.ps1`（真 uvicorn + 真 SSE + 假厂商，无前端），它在**基线**上证明了 harness 可用；因此「回答先于 provider 结束」这条在**流式实现合并前仍未在任何链路验证过**（进程内用例、真 SSE 冒烟都还是红的）。
 3. **截图：未做。** msedge 可用（`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`，版本 `154.0.4258.53`），端口 8734/5199/8798 当前空闲，但阶段一没有起应用。
 4. **附件前端 UI（Composer 的附件入口、AttachmentChip 文案）：未验证。** 前端附件服务层的函数名/入参契约未冻结，写单测等于写死实现名；改为阶段二在 e2e 里验（含 100MB 边界的真实复制耗时）。
 5. **100MB 边界只写了用例、没跑过。** `test_file_exactly_at_threshold_is_copied` 用稀疏文件造 100,000,000 字节，真正复制 100MB 的时间/磁盘必须等 C 的实现在阶段二实跑确认。
@@ -170,7 +207,7 @@ TIMING_EVIDENCE {"after_turn_ms": 0, "all_spans_raw_sum_ms": 710, "duration_ms":
 
 1. 集成后先跑：`uv run --frozen --extra dev pytest` 全量 + `npx vitest run` 全量 + `npx vue-tsc --noEmit`。
 2. 跑本文件 §2 的五个 verify 文件与三个 verify test：把红变绿的部分逐条核实，**没有变绿的必须指出是锚点缺失还是实现缺失**。
-3. `powershell -File scripts/verify-e2e.ps1`：真 provider + 真 uvicorn + 真 vite + 真 SSE 取证 + msedge 无头截图（宽 1440x900 / 窄 480x900），产出 `docs/verification-e2e-stream.json` 与截图。
+3. 先 `powershell -File scripts/verify-sse-local.ps1`（快，后端 + SSE，基线已跑通 harness），再 `powershell -File scripts/verify-e2e.ps1`：真 provider + 真 uvicorn + 真 vite + 真 SSE 取证 + msedge 无头截图（宽 1440x900 / 窄 480x900），产出 `docs/verification-e2e-stream.json` 与截图。
 4. 补 §5 的 8 条未验证项；出阶段二报告，仍按「已实现/已验证/未验证」分开写。
 
 ## 7. 跨模块提醒（不改别人的文件，只报告）

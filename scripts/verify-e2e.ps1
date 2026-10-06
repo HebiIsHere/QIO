@@ -75,8 +75,8 @@ try {
   } | ConvertTo-Json -Depth 5
   try {
     $created = Invoke-RestMethod -Uri "http://127.0.0.1:8734/api/credentials" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 60
-    Write-Output ("credential: key_id=" + $created.key_id + " verify_state=" + $created.verify_state)
-    if ($created.verify_state -ne "verified") { $failures += "凭据没有通过验证（verify_state=" + $created.verify_state + "）" }
+    Write-Output ("credential: key_id=" + $created.key_id + " verify_ok=" + $created.verify.ok + " verify_state=" + $created.verify.state)
+    if (-not $created.verify.ok) { $failures += "凭据没有通过验证（verify.state=" + $created.verify.state + "）" }
   } catch {
     $failures += "建凭据失败：" + $_.Exception.Message
   }
