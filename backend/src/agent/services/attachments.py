@@ -37,6 +37,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -59,6 +60,25 @@ REFERENCE_CAVEAT = "历史保留的是位置，不保证内容仍然存在"
 CHUNK_BYTES = 1024 * 1024
 #: 临时文件后缀：重启清理只认自己写的这个后缀
 TEMP_SUFFIX = ".part"
+
+#: 上传写入的单块上限：ASGI 服务端/测试客户端可能一次送来一整包（几十 MB），
+#: 所以工作线程里再切一次 —— 让「让出 GIL」的粒度只与字节数有关，与调用方分块无关。
+IO_PIECE_BYTES = 1024 * 1024
+#: 协作让出：每处理这么多字节，工作线程主动让出一次 GIL / CPU 时间片，
+#: 让事件循环（SSE / 停止 / 其它请求）确定地拿到执行机会。
+#: 2026-10-07 CI 真缺陷：CI 共享 CPU 下工作线程连续 memcpy/哈希反复抢到 GIL，
+#: 事件循环被饿住 228-459ms；这是「单次最大停顿」指标，累计值只作诊断。
+#: 调参（1 核 + 4/8 个抢核进程，D 的用例与同形状探针）见交付说明，结论：
+#:   * 4MB 粒度 + 1ms 让出：8 抢核进程下上传 187ms → 140ms、重定位 105ms → 96ms，
+#:     同一时间窗内完成的并发探针请求 69 → 102 次；4 抢核进程下用例 4 passed（59/60ms）；
+#:   * 1MB 粒度 + 1ms：更差（上传 132/重定位 131ms，累计也更大）——让出太密会把工作线程拖长；
+#:   * 4MB 粒度 + sleep(0)：更差（上传 156/重定位 123ms）——sleep(0) 让不出足够的窗口。
+#: 吞吐代价（空闲机实测）：上传 3×60MB 188ms（改前 192ms）；重定位 3×90MB 459ms（改前 345ms，
+#: 每 100MB 约 +38ms）。用尾延迟换有限的吞吐，值；要再省就把 YIELD_EVERY_BYTES 调大。
+YIELD_EVERY_BYTES = 4 * 1024 * 1024
+#: 让出时睡多久：sleep(0) 只是放弃当前时间片（实测不够，见上）；1ms 才让事件循环
+#: 确定地拿到 GIL。Windows 上 Python 3.11 用高精度可等待定时器，实测平均 ~1.7ms/次。
+YIELD_SECONDS = 0.001
 
 STATE_PREPARED = "prepared"
 STATE_READY = "ready"
@@ -566,17 +586,30 @@ class AttachmentService:
         written = 0
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
+            next_yield = YIELD_EVERY_BYTES
             with open(tmp, "wb") as handle:
                 for chunk in chunks:
                     if event.is_set():
                         raise _Cancelled()
                     if not chunk:
                         continue
-                    written += len(chunk)
-                    if written > limit:
-                        raise UploadTooLarge(written, limit)
-                    handle.write(chunk)
-                    digest.update(chunk)
+                    # 调用方可能一次给一整包：这里再切成有界小块，
+                    # 让「让出 GIL」的粒度与调用方分块无关（见 YIELD_EVERY_BYTES）。
+                    view = memoryview(chunk)
+                    offset = 0
+                    while offset < len(view):
+                        if event.is_set():
+                            raise _Cancelled()
+                        piece = view[offset : offset + IO_PIECE_BYTES]
+                        offset += len(piece)
+                        written += len(piece)
+                        if written > limit:
+                            raise UploadTooLarge(written, limit)
+                        handle.write(piece)
+                        digest.update(piece)
+                        if written >= next_yield:
+                            next_yield = written + YIELD_EVERY_BYTES
+                            _yield_to_event_loop()
                 if written == 0:
                     raise UploadAborted("上传内容为空")
         except _Cancelled:
@@ -778,6 +811,7 @@ class AttachmentService:
             # 只复制这一份大小：源文件在被写入（日志、下载中）时，无界复制会永远追不上
             # 文件末尾 —— 既可能吞掉磁盘，也会让「取消」失去意义。
             remaining = target_size
+            next_yield = YIELD_EVERY_BYTES
             with open(source, "rb") as src, open(tmp, "wb") as dst:
                 while remaining > 0:
                     if event.is_set():
@@ -791,6 +825,10 @@ class AttachmentService:
                     remaining -= len(chunk)
                     if on_chunk is not None:
                         on_chunk(copied)
+                    if copied >= next_yield:
+                        # 主动让出：不让出时事件循环会被反复抢 GIL 的工作线程饿住（见文件头）
+                        next_yield = copied + YIELD_EVERY_BYTES
+                        _yield_to_event_loop()
             after = source.stat()
         except _Cancelled:
             _unlink_quiet(tmp)
@@ -1380,6 +1418,14 @@ class AttachmentService:
 
 class _Cancelled(Exception):
     """内部信号：复制被取消（不是失败）。"""
+
+
+def _yield_to_event_loop() -> None:
+    """工作线程主动让出 GIL / CPU 时间片（它与事件循环唯一的协作点）。
+
+    只在纯文件 I/O 的工作线程里调用；绝不碰数据库。
+    """
+    time.sleep(YIELD_SECONDS)
 
 
 def _unlink_quiet(path: Path) -> None:
