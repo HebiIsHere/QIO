@@ -143,10 +143,11 @@ def test_explicit_ids_do_not_steal_attachment_bound_to_another_turn(
         json={"message": "第二轮不该抢", "topic_id": "t_owner", "attachment_ids": [att["id"]]},
     )
     assert refused.status_code == 409, refused.text
-    body = refused.json()
-    assert body["ok"] is False and body["accepted"] is False
-    assert [item["id"] for item in body["rejected"]] == [att["id"]]
-    assert "别的轮次" in body["rejected"][0]["reason"]
+    detail = refused.json()["detail"]
+    assert detail["code"] == "attachment_binding_failed"
+    assert [item["id"] for item in detail["rejected"]] == [att["id"]]
+    assert "别的一轮" in detail["rejected"][0]["reason"]
+    assert detail["bound_attachment_ids"] == []
     after = client.app.state.ctx.turns.snapshot()
     assert after["queued"] == before["queued"], "被拒绝的请求不得入队"
     assert _turn_row(client, att["id"]) == first["turn_id"], "原归属不得被改写"
@@ -164,9 +165,10 @@ def test_explicit_ids_skip_attachment_from_another_topic(client: TestClient, tmp
     )
 
     assert refused.status_code == 409, refused.text
-    body = refused.json()
-    assert [item["id"] for item in body["rejected"]] == [other["id"]]
-    assert "不属于当前话题" in body["rejected"][0]["reason"]
+    detail = refused.json()["detail"]
+    assert detail["code"] == "attachment_binding_failed"
+    assert [item["id"] for item in detail["rejected"]] == [other["id"]]
+    assert "另一个话题" in detail["rejected"][0]["reason"]
     assert client.app.state.ctx.turns.snapshot()["queued"] == before["queued"]
     assert _turn_row(client, other["id"]) is None
     _drain_turns(client)
@@ -195,9 +197,9 @@ def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path
     )
 
     assert refused.status_code == 409, refused.text
-    body = refused.json()
-    assert [item["id"] for item in body["rejected"]] == [failed["id"], missing["id"]]
-    assert all(item["reason"] for item in body["rejected"]), "每个附件都要有人话原因"
+    detail = refused.json()["detail"]
+    assert [item["id"] for item in detail["rejected"]] == [failed["id"], missing["id"]]
+    assert all(item["reason"] for item in detail["rejected"]), "每个附件都要有人话原因"
     assert _turn_row(client, failed["id"]) is None
     assert _turn_row(client, missing["id"]) is None
     _drain_turns(client)
@@ -243,9 +245,10 @@ def test_explicit_unknown_id_is_refused_not_a_crash(client: TestClient, tmp_path
     )
 
     assert refused.status_code == 409, refused.text
-    body = refused.json()
-    assert [item["id"] for item in body["rejected"]] == ["att_does_not_exist"]
-    assert "没有这个附件" in body["rejected"][0]["reason"]
+    detail = refused.json()["detail"]
+    assert detail["code"] == "attachment_binding_failed"
+    assert [item["id"] for item in detail["rejected"]] == ["att_does_not_exist"]
+    assert "没有这个附件" in detail["rejected"][0]["reason"]
     assert client.app.state.ctx.turns.snapshot()["queued"] == before["queued"]
     # 混合请求整体被拒：真附件也不得被绑上（不允许半绑定状态）
     assert _turn_row(client, ready["id"]) is None
