@@ -73,6 +73,21 @@ def active_jobs() -> list["UploadJob"]:
         return list(_ACTIVE.values())
 
 
+def abort_jobs_for(attachment_id: str, reason: str) -> int:
+    """把某个附件正在进行的上传作业置成终态（DELETE = 取消这次上传）。
+
+    为什么必须由路由来做：services/attachments.py 的 delete() 置位取消事件后**会把它从
+    _cancel 里清掉**，事后用 is_cancel_requested() 轮询的消费者（本模块的取块循环）就再也
+    看不到取消了 —— 取消信号必须在作业自己的终态上留痕，而不是依赖服务里那个临时事件。
+    """
+    target = str(attachment_id)
+    with _ACTIVE_LOCK:
+        jobs = [job for job in _ACTIVE.values() if job.id == target]
+    for job in jobs:
+        job.abort(reason)
+    return len(jobs)
+
+
 class UploadJob:
     """一次上传的共享状态机（构造在事件循环线程）。"""
 
@@ -96,9 +111,17 @@ class UploadJob:
         self.reason: str | None = None
         #: 线程安全终态：工作线程与接收端都读它
         self._end_flag = threading.Event()
-        #: 事件循环侧：等「有空位」与「终态」（由跨线程 call_soon_threadsafe 唤醒）
+        #: 工作线程**已经开始**跑（进入取块循环之前）；诊断/验收用来确定「它已经/还没进阻塞读」
+        self.worker_started = threading.Event()
+        #: 已经交给写盘循环的分块数 + 是否正阻塞在 queue.get 上（验收用的确定性状态，不靠 sleep 猜）
+        self.consumed = 0
+        self._reading = False
+        #: 工作线程**真的退出**了（临时文件清理完成）：取消/收尾的验收等它，不靠墙钟
+        self.worker_done = threading.Event()
+        #: 事件循环侧：等「有空位」「终态」「工作线程退出」（跨线程 call_soon_threadsafe 唤醒）
         self._space = asyncio.Event()
         self._end = asyncio.Event()
+        self._worker_exit = asyncio.Event()
         self._lock = threading.Lock()
         with _ACTIVE_LOCK:
             _ACTIVE[self.id] = self
@@ -116,6 +139,9 @@ class UploadJob:
             "reason": self.reason,
             "queued": self.box.qsize(),
             "terminal": self.terminal,
+            "consumed": self.consumed,
+            "reading": self._reading,
+            "worker_done": self.worker_done.is_set(),
         }
 
     def _mark(self, state: str, reason: str | None) -> str:
@@ -139,8 +165,39 @@ class UploadJob:
     # -- 事件循环线程侧 ------------------------------------------------------
 
     def abort(self, reason: str, *, state: str = STATE_CANCELLED) -> str:
-        """事件循环线程主动中止（超限 / 客户端断开 / 请求被取消 / 服务关闭）。"""
-        return self._mark(state, reason)
+        """事件循环线程主动中止（超限 / 客户端断开 / 请求被取消 / 服务关闭 / 附件被删）。
+
+        除了置终态，还要**把阻塞在 queue.get 上的工作线程叫醒** —— 取消不能靠「等下一轮
+        轮询」，那是运气（CI py3.12 的取消用例就是被这个坑掉的）。
+        """
+        result = self._mark(state, reason)
+        self._wake_reader()
+        return result
+
+    def _wake_reader(self) -> None:
+        """往队列里塞一个中止哨兵，让阻塞的读取立刻返回。
+
+        队列满时工作线程本来就有数据可读（消费完自然会在循环顶部看到终态），忽略 Full 即可。
+        """
+        try:
+            self.box.put_nowait(SENTINEL_ABORT)
+        except queue.Full:
+            pass
+
+    def worker_exited(self) -> None:
+        """工作线程退出（run_upload_worker 的 finally）：置退出事件并唤醒事件循环上的等待者。"""
+        self.worker_done.set()
+        self._wake(self._worker_exit)
+
+    async def wait_worker_exit(self, *, timeout: float) -> bool:
+        """等工作线程真的退出：事件驱动；timeout 只用于判定失败（不是证据）。"""
+        if self.worker_done.is_set():
+            return True
+        try:
+            await asyncio.wait_for(self._worker_exit.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     async def wait_end(self) -> None:
         await self._end.wait()
@@ -213,14 +270,18 @@ class UploadJob:
             if self._stop_requested():
                 raise UploadAborted(self.reason or "上传已中止（取消 / 服务关闭）；没有保存任何副本")
             try:
+                self._reading = True
                 item = self.box.get(timeout=self.poll_seconds)
             except queue.Empty:
                 continue
+            finally:
+                self._reading = False
             self._note_space()
             if item is SENTINEL_END:
                 return
             if item is SENTINEL_ABORT:
                 raise UploadAborted("上传被中止（超出上限或客户端断开）；没有保存任何副本")
+            self.consumed += 1
             yield item  # type: ignore[misc]
 
     # -- 工作线程汇报（只置终态，不落库） -------------------------------------
@@ -249,10 +310,16 @@ class UploadJob:
 
 def run_upload_worker(service, att, job: UploadJob, *, max_bytes: int) -> DiskOutcome:
     """工作线程入口：**只做文件 I/O**（+ 作业终态），绝不碰数据库。"""
+    job.worker_started.set()
     try:
         outcome = service.write_upload_stream(att, job.consume(), max_bytes=max_bytes)
     except BaseException as exc:  # noqa: BLE001 - 任何退出路径都要先给接收端一个准确终态
         job.worker_failed(exc)
         raise
-    job.worker_finished(outcome)
-    return outcome
+    else:
+        job.worker_finished(outcome)
+        return outcome
+    finally:
+        # 终态先落、退出事件后置（等 worker_done 的验收再读 job.terminal 时不会看到半截状态）；
+        # 临时文件清理已经在 write_upload_stream 内部完成。
+        job.worker_exited()
