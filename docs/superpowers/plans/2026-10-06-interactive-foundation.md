@@ -56,18 +56,22 @@ store / 视图 / 模式入口 + 三个占位组件），因此：
   - C 回复与审批：`wt/int-c-approval` → `ea7f2f5`
   - 独立复核：`wt/int-verify`（只读复核，产出报告与复现用例，不加入产品分支）
 - **集成顺序：** A → B → C，之后是按复核结论的修复（B 的权限边界、C 的恢复身份与批量透传）与 Lead 的文档/验收脚本。
-- **最终提交：** `bf942e5`（集成分支头）。
-- **规模：** 相对起点 `54 files changed, 16673 insertions(+), 1 deletion(-)`。
+- **最终提交：** `f356287`（集成分支头；含独立复核的复现用例与报告）。
+- **规模：** 相对起点 `57 files changed, 17964 insertions(+), 1 deletion(-)`，共 42 个提交。
+- **独立复核：** `wt/int-verify` → `dc31610`（`docs/interactive-verify-report.md` +
+  `backend/tests/test_interactive_verify.py`），已并入集成分支；复核发现的两条阻断问题
+  （批量审批漏传执行者身份、未勾选注释借「撤回」回到 before）都已修复并复测通过。
 
 ### 最终验收（都在 `bf942e5` 上跑）
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 后端全量 | `cd backend; uv run --frozen pytest` | `2079 passed, 9 skipped`（exit 0） |
+| 后端全量 | `cd backend; uv run --frozen pytest` | `2105 passed, 9 skipped`（exit 0，含复核用例） |
 | 前端类型 | `cd frontend; npx vue-tsc --noEmit` | 无输出（exit 0） |
 | 前端全量 | `cd frontend; npm test` | `106 files / 1041 tests passed`（exit 0） |
 | 文档一致性 | `python scripts/check_docs.py` | 通过（28 个里程碑条目） |
 | 真实界面验收 | `node scripts/interactive-verify/ui-scenarios.mjs` | 21 项断言全过（含真实鼠标拖动、批量审批冲突、重新打开恢复） |
+| 独立复核 | `cd backend; uv run --frozen pytest tests/test_interactive_verify.py` | `26 passed`（复核者自己写的对抗性用例） |
 
 界面验收的截图与说明见 `scripts/interactive-verify/README.md`。
 
