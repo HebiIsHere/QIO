@@ -214,6 +214,26 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     wrapper.unmount();
   });
 
+  it("折叠态状态词只出现一次（「已完成 · 已完成 · 耗时」是缺陷）", async () => {
+    const { wrapper, events, session } = await mountStream();
+    completedTurn(events, session);
+    await settle();
+
+    const region = wrapper.find('[data-test="turn-process"]');
+    expect(region.exists(), "折叠态过程区必须存在").toBe(true);
+    const regionText = region.text();
+    const wordCount = (regionText.match(/已完成/g) || []).length;
+    expect(wordCount, "折叠态状态词只出现一次：" + regionText).toBe(1);
+    expect(regionText, "折叠态仍要看得见总耗时").toMatch(/耗时[\s\S]{0,8}1\.5/);
+
+    const timing = wrapper.find('[data-test="turn-timing"]');
+    if (timing.exists()) {
+      const timingText = timing.text();
+      expect(timingText, "耗时入口自己不该再拼状态词：" + timingText).not.toContain("已完成");
+      expect(timingText).toContain("耗时");
+    }
+    wrapper.unmount();
+  });
   it("一轮只有一个耗时入口（同一轮多条助手消息不得各来一个）", async () => {
     const { wrapper, events, session } = await mountStream();
     completedTurn(events, session);

@@ -23,7 +23,7 @@
       "ok": true,
       "detail": {
         "shot": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\02-stage-history.png",
-        "region": "已完成\n核对实现 · 2 项失败\n▾\n已完成 · 耗时 631 毫秒\n2 个阶段 · 2 次调用\n1\n读取仓库结构\n已完成\n\n正在读取仓库结构\n\n✕\n读取文件\n18:14:33\n▸\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-181408\\\\workspace…（展开可看完整原因）\n\n输出\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-181408\\\\workspace\\\\README.md'\n\n2\n核对实现\n已完成\n\n正在核对实现\n\n✕\n读取文件\n18:14:33\n▸"
+        "region": "已完成\n核对实现 · 2 项失败\n▾\n耗时 294 毫秒\n2 个阶段 · 2 次调用\n1\n读取仓库结构\n已完成\n\n正在读取仓库结构\n\n✕\n读取文件\n18:30:41\n▸\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-183023\\\\workspace…（展开可看完整原因）\n\n输出\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-183023\\\\workspace\\\\README.md'\n\n2\n核对实现\n已完成\n\n正在核对实现\n\n✕\n读取文件\n18:30:41\n▸\n\n读取失败"
       }
     },
     {

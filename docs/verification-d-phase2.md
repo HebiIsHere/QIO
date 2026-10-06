@@ -1,7 +1,7 @@
 # D 阶段二验证报告：集成分支（独立验证 + 真实链路 + 截图）
 
 - 验证 worktree：`D:\qio-dev\qio-up-v`，分支 `wt/up-verify2`
-- 起点：`8d52634`（Lead 集成提交）→ 已 fast-forward 到 `a9caae5`（含 A 的 loop 修复）
+- 起点：`8d52634` → 中途验证 `a9caae5` → **最终验证 `2d7c2b2`**（含 A 的 created_at 修复 d940fb3、B 的 d570e25、D 的 794f831、Lead 的附件边界脚本）
 - 契约：`qio-up/docs/plans/2026-10-06-unified-process-attachments-streaming.md`
 - 角色：验证方（D）。本文件只写「我跑了什么、真实输出是什么」，不转述实现方结论。
 - 日期：2026-10-06
@@ -11,14 +11,32 @@
 | # | 验收组 | 结论 | 证据 |
 | --- | --- | --- | --- |
 | 1 | 统一过程（立即出现/安静/同阶段更新/自主转阶段/并行工具与晚到结果/无重复气泡/完成自动收起） | **已验证** | `TurnProcess.verify.test.ts` 5/5 绿；截图 01/02/03；阶段历史里两个阶段 + 工具卡可见 |
-| 2 | 审批与异常（批准/拒绝/多项待审批/可恢复错误/失败/停止/中断/重连/旧历史） | **部分验证** | DOM 锚点与 store 行为在单测里绿；**真机审批截图未能触发**（见 §3.4）—— 这一组整体按「未验证」计 |
+| 2 | 审批与异常（批准/拒绝/多项待审批/可恢复错误/失败/停止/中断/重连/旧历史） | **机制已验证（事件层）/ 界面未验证** | `scripts/verify-approval-probe.py` → **[PASS]**：真链路发出 APPROVAL_REQUIRED（payload 完整）；浏览器级审批入口未捕获（§3.4） |
 | 3 | 流式（provider 未结束前已有非空回答；碎片组装；取消/错误/重复/恢复/全文校准不重复） | **已验证** | 真链路 `verify-sse-local`：回答比 provider 结束早 **643ms**；`test_streaming_contract_verify.py` 6/6 绿 |
-| 4 | 耗时（未展开即见总耗时；五态；明细错误不抹掉总耗时） | **已验证** | `TurnTimingContract.verify.test.ts` 7/7 绿；截图 03 显示「已完成 · 耗时 2.6 秒」折叠态 |
+| 4 | 耗时（未展开即见总耗时；五态；明细错误不抹掉总耗时） | **已验证** | `TurnTimingContract.verify.test.ts` **8/8 绿**（含新增「状态词只出现一次」回归断言）；截图 03 显示「已完成 · 耗时 X」折叠态 |
 | 5 | 附件（<、=、> 100MB 边界；多文件/同名/失败/取消/移动/删除/变更/重定位/重启/不可读类型） | **已验证（后端）** | `test_attachments_contract_verify.py` 13/13 绿（含 **100_000_000 字节实跑复制**）；前端附件 UI 见 §4 |
 | 6 | 性能与视觉（真实起应用 + 截图：窄窗口/长回答/代码块/历史展开/审批/附件准备） | **6/7 场景已验证** | `docs/verification-shots/`（01–05、07、08）；审批场景未捕获 |
-| 7 | check_docs + 后端 pytest + 前端 vue-tsc/vitest | **1 条红** | 后端 2116 收集 / 1 失败（A 的 STAGE created_at，见 §3.1）；前端 113 文件 1023 用例全绿；vue-tsc exit 0；check_docs 通过 |
+| 7 | check_docs + 后端 pytest + 前端 vue-tsc/vitest | **全绿（HEAD 2d7c2b2）** | 后端 2117 收集 / 0 失败；前端 1024 用例全绿；vue-tsc exit 0；check_docs 通过（§0.5） |
 
-## 1. 真实命令与真实输出
+
+## 0.5 最终复跑（HEAD 2d7c2b2，Lead 要求）
+
+| 项 | 命令 | 真实数字 |
+| --- | --- | --- |
+| 后端全量 pytest | `cd backend; uv run --frozen --extra dev pytest -q` | **2117 collected / 0 failed** |
+| 前端全量 vitest | `cd frontend; npx vitest run` | **1024 passed（0 failed）** |
+| 前端类型检查 | `npx vue-tsc --noEmit` | **exit 0** |
+| 文档一致性 | `python scripts/check_docs.py` | **通过（28 个里程碑条目）** |
+| D 的 8 个 verify 文件 | 5 个后端 + 3 个前端 | **35/35 + 20/20 全绿** |
+
+结论变化：
+
+- **A 的 STAGE created_at 缺口已转绿**（25daf6f）：`test_stage_events_always_carry_created_at` 现在通过。
+- **B 的重复文案已修并已复验**（d570e25）：真机阶段历史里耗时入口现在是「耗时 294 毫秒」（不再带状态词），
+  完成态折叠行是「已完成 · 耗时 X」——状态词恰好一次。我为这条缺陷补了回归断言
+  （`TurnTimingContract.verify.test.ts` 新增「折叠态状态词只出现一次」），它在 2d7c2b2 上通过。
+- **审批组按有界尝试收口**：见 §3.4（机制在事件层已验证，浏览器入口未捕获）。
+## 1. 真实命令与真实输出（首次跑，HEAD a9caae5；最终 HEAD 2d7c2b2 的数字见 §0.5）
 
 ### 1.1 真实链路 SSE 取证（阶段二核心）
 
@@ -111,7 +129,7 @@ AssertionError: ('契约 §1.3：每个 STAGE 事件都要带 created_at',
 ~~~
 
 契约 §1.3 把 created_at 写成时间字符串；实测只有**系统收口事件**（op=end，没有落库行）为 null，
-其余事件（start/update/next）都带时间戳。前端排序有兜底，影响小；Lead 已确认派给 A 修，修完这条应变绿。
+其余事件（start/update/next）都带时间戳。前端排序有兜底，影响小；Lead 已确认派给 A 修。**已在 25daf6f 修复并合并（d940fb3）：2d7c2b2 上这条用例通过。**
 
 ### 3.2 UI 缺陷（B）：状态行重复「已完成」
 
@@ -123,7 +141,10 @@ AssertionError: ('契约 §1.3：每个 STAGE 事件都要带 created_at',
 
 原因：过程区状态词（已完成）+ `TurnTimingPanel` 折叠文案自身也以「已完成 · 耗时 X」开头。
 同一行出现两次「已完成」。我的 verify 用例只断言「耗时 + 总耗时可见」，没有断言「状态词不重复」，
-所以单测没拦住；这是**视觉检查才发现的**。建议 B 二选一：状态词与耗时文案合并，或耗时文案去掉状态前缀。
+所以单测没拦住；这是**视觉检查才发现的**。B 已在 d570e25 修复并合并（2d7c2b2）：
+耗时入口不再拼状态词，完成态折叠行只剩一处「已完成」。我为这条缺陷补了回归断言
+（`TurnTimingContract.verify.test.ts` 新增用例：折叠态过程区 text() 里状态词恰好 1 次、耗时入口不含状态词），
+它在 2d7c2b2 上通过；真机截图 02 里耗时入口显示为「耗时 294 毫秒」。
 
 ### 3.3 我的 harness 缺陷（已修）：旧进程占端口造成「假绿/假红」
 
@@ -137,17 +158,35 @@ AssertionError: ('契约 §1.3：每个 STAGE 事件都要带 created_at',
 已修（两处）：脚本启动前做**端口预检**（占用即报错并指出 pid），收尾用 taskkill /PID <pid> /T /F 杀进程树。
 修完后同一条命令全绿。这条教训对 Lead 的闸门同样适用：**端口被占用时的「就绪」是假的**。
 
-### 3.4 未能捕获：审批内联截图
+### 3.4 审批组：机制已在事件层验证，浏览器入口未捕获
 
-run_shell（cmd_tools.py:153 无条件请求审批）与 fs_write（工作区外应 approve）两种触发方式，
-在默认权限模式下都没出现可截图的审批：`[data-test="turn-process-approval"]` 与审批模态（role=dialog 含「拒绝」）都不存在。
-我的驱动方式（Playwright 填输入框 → 发送 → 等锚点）与工具参数都核对过（run_shell 的参数是 cmd，已修正）。
-**未定位到根因**：可能是默认权限模式下判定为 deny（直接拒绝而非请求批准）、审批路由（inline claim）条件、
-或工具执行前置校验。按诚实原则记为**未验证**，并把真实失败输出留在这里。
+**有界尝试的结论（Lead 要求）**：
+
+1. **机制存在（已验证，事件层）**：`scripts/verify-approval-probe.py` 自己起假厂商 + uvicorn + 真 SSE，
+   脚本化一次 `run_shell`（参数 `cmd`），实测：
+
+~~~text
+sse_event_types: ['TURN_START','TURN_QUEUE','TURN_QUEUE','CAPABILITY','ANCHOR','TOOL_START','APPROVAL_REQUIRED']
+APPROVAL_REQUIRED count: 1
+approval payload: {"approval_id":"appr_...","kind":"computer","payload":{"action":"run_shell",
+  "cmd":"echo qio-approval-probe","risk":"high","description":"想运行一条 shell 命令",
+  "capabilities":["联网：否","读取文件：否","写入文件：否","启动进程：是","使用凭据：无","副作用：destructive"],"scope":"once"}}
+[PASS] 真链路发出了 APPROVAL_REQUIRED（机制存在）
+~~~
+
+   注意：这条探针前两版是**我的脚本 bug**，不是实现问题 —— (a) `run_shell` 的参数是 `cmd`，我写成 `command`，
+   工具直接报「cmd 必填」；(b) 假厂商脚本是 FIFO，凭据验证会先吃掉若干步，轮到本轮只剩文本回复。两处都修掉后才得到上面的结果。
+
+2. **浏览器级审批入口未捕获（未验证）**：Playwright 驱动真实页面（发送 `run_shell` 轮次、失焦输入框、
+   查 `[data-test="turn-process-approval"]` / 审批模态 / 「确认·待办·审批」入口按钮）都没有出现审批 UI。
+   **我没有把根因定性**（候选：`autoOpen` 的焦点门控、inline claim 要求队列头、`kind=computer` 的路由），
+   只记录事实。界面机制由 B 的 DOM 级测试覆盖（approvalInlineGating / approvalRouting / ApprovalDefer / ApprovalModal 全绿）。
+
+3. 因此本组口径：**事件层已验证；浏览器级截图未验证**。
 
 ## 4. 未验证（诚实清单）
 
-1. **审批与异常组**（批准/拒绝/多项待审批/可恢复错误/失败/停止/中断/重连/旧历史）在真实界面上的呈现：截图未捕获；只有单测与 DOM 锚点层面的证据。
+1. **审批与异常组**在真实界面上的呈现：事件层已验（APPROVAL_REQUIRED 到达），**浏览器入口未捕获**；批准/拒绝/多项待审批/可恢复错误/失败/停止/中断/重连/旧历史的完整 UI 路径未逐一验证。
 2. **附件前端完整交互**：多文件、复制失败、取消、移动、删除、变更、重定位在 UI 上的表现未逐一验证（后端 13 条契约已验）。
 3. **bus 合并键 (type, turn_id, delta_id) 的后端背压/合并行为**：未跑 A 侧用例。
 4. **真实厂商**：不适用——本报告全部基于本机假厂商端点，只证明 QIO 自己的链路。
@@ -159,7 +198,7 @@ run_shell（cmd_tools.py:153 无条件请求审批）与 fs_write（工作区外
 | --- | --- | --- |
 | 01-process-running.png | 统一过程区运行中 | PASS |
 | 02-stage-history.png | 阶段历史展开（2 阶段 + 工具卡 + 失败原因） | PASS |
-| 03-process-collapsed-complete.png | 完成自动收起（保留状态 + 总耗时） | PASS（含 §3.2 的重复文案） |
+| 03-process-collapsed-complete.png | 完成自动收起（保留状态 + 总耗时） | PASS（**2d7c2b2 重截**：折叠行「已完成 · 耗时 X」状态词只出现一次） |
 | 04-long-answer-codeblock.png | 长回答 + 代码块 + 表格 | PASS |
 | 05-narrow.png | 窄窗口 480x900（阶段历史 + 长错误换行不溢出） | PASS |
 | 06-approval-inline.png | 审批内联 | **未捕获**（§3.4） |

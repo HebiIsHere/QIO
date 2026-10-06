@@ -12,6 +12,7 @@
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 
 const require = createRequire(import.meta.url);
 const PW =
@@ -96,6 +97,9 @@ async function send(page, text) {
     await page.waitForTimeout(100);
   }
   await button.first().click();
+  // 审批到达时若用户仍在输入框里，界面**按设计**不自动展开（只亮入口）。
+  // 真机截图要看到审批，就必须先失焦，模拟用户离开输入框。
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
 }
 
 async function main() {
@@ -204,7 +208,8 @@ async function main() {
     try {
       // run_shell 无条件请求审批（cmd_tools.py:153），且我们随后会点「拒绝」，不会真的执行
       await scriptProvider([
-        { tool: "run_shell", args: { cmd: "echo qio-verify-approval-probe" } },
+        // repeat：凭据验证会先吃掉若干步，本轮必须还能拿到这个工具调用
+        { tool: "run_shell", args: { cmd: "echo qio-verify-approval-probe" }, repeat: 4 },
         { chunks: ["已跳过。"], chunk_delay_ms: 10 },
       ]);
       await send(page, "请写入一个文件");
@@ -218,7 +223,17 @@ async function main() {
       }
       // 兜底：审批也可能走独立模态（同一审批只能有一个入口，不重复截图）
       const modal = page.locator('[role="dialog"]', { hasText: "拒绝" });
-      const modalVisible = (await modal.count()) > 0 && (await modal.first().isVisible());
+      let modalVisible = (await modal.count()) > 0 && (await modal.first().isVisible());
+      if (!inline && !modalVisible) {
+        // 兜底：审批入口可能只是一个「有待办」的按钮/徽标（不自动展开的那条路径）
+        const entry = page.locator("button, [role='button']", { hasText: /确认|待办|审批/ });
+        if ((await entry.count()) > 0) {
+          await entry.first().click();
+          await page.waitForTimeout(600);
+          modalVisible = (await modal.count()) > 0 && (await modal.first().isVisible());
+          if (!modalVisible && (await approval.count()) > 0) inline = true;
+        }
+      }
       record("审批内联截图", inline, {
         shot: await shot(page, "06-approval-inline.png"),
         inline,
@@ -241,7 +256,8 @@ async function main() {
 
     // ---- S6：附件准备中（浏览器回退：input[type=file] 走字节上传）----
     try {
-      const big = join(OUT, "verify-big-attachment.bin");
+      // 大文件写到系统临时目录：它是 60MB 的探针，绝不能进仓库（截图目录只放图）
+      const big = join(tmpdir(), "qio-verify-big-attachment.bin");
       writeFileSync(big, Buffer.alloc(60 * 1024 * 1024, 7));
       await page.setInputFiles(".file-input", big);
       const hint = page.locator(".attach-hint");
