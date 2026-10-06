@@ -496,6 +496,30 @@ async function s6RetryAfterRefresh() {
   });
   if (!retryAfter) return; // 刷新后真的不在 → 上面的红就是产品缺陷证据，交 Lead 转 B
 
+  // 额外一条：把 localStorage 清掉再刷新（模拟换设备 / 清存储）——
+  // 事实必须**从后端历史/台账**恢复，而不是只靠前端本地留痕。
+  await page.evaluate(() => {
+    try {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    } catch {
+      /* 忽略 */
+    }
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitAppReady();
+  const processAfterWipe = await page.locator('[data-test="turn-process"]').count();
+  const retryAfterWipe = (await page.getByRole("button", { name: /^重试$/ }).count()) > 0;
+  const wipedShot = await shot("r4-12-after-localstorage-wipe.png");
+  record("S6 清掉 localStorage 再刷新：失败轮的事实仍从后端历史恢复（过程区 + 重试入口）",
+    retryAfterWipe && processAfterWipe > 0, {
+      processRegionsAfterWipe: processAfterWipe,
+      retryAfterWipe,
+      shot: wipedShot,
+      note: "这一条证明后端权威路径（turn_journal 的 TURN_END facts 随历史接口下发）真的生效",
+    });
+  if (!retryAfterWipe) return;
+
   // 点它：新轮必须带上原附件（新 id 克隆），且原文件删除后仍读出原内容
   unlinkSync(src);
   await scriptProvider([{ chunks: ["刷新之后我照样能看到你带来的文件。"] }]);
@@ -518,7 +542,7 @@ async function s6RetryAfterRefresh() {
     const resp = await fetch(API + "/api/attachments/" + newIds[newIds.length - 1] + "/content");
     content = resp.ok ? await resp.text() : null;
   }
-  const retriedShot = await shot("r4-12-retry-after-refresh-result.png");
+  const retriedShot = await shot("r4-13-retry-after-refresh-result.png");
   record("S6 刷新后点「重试」：新轮附件是克隆（新 id、原文件已删除）且内容读得回来",
     !!started && newIds.length > 0 && !!content && content.includes(MARKER), {
       originalId, newIds, state, content: (content || "").slice(0, 80), shot: retriedShot,

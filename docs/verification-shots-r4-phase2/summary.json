@@ -17,7 +17,7 @@
       "ok": true,
       "detail": {
         "observed": true,
-        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。\n\n06:06:44\n复制",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n07:05:00\n复制\n默认话题\n\n正式回答第一句。\n\n07:05:01\n复制",
         "streamEndSeenAtObservation": true,
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-01-answer-live-before-provider-end.png"
       }
@@ -26,16 +26,16 @@
       "name": "S1 命中时刻过程区不含这段正式回答",
       "ok": true,
       "detail": {
-        "process": "已完成\n▸\n耗时 121 毫秒\n运行中"
+        "process": "已完成\n▸\n耗时 156 毫秒\n运行中"
       }
     },
     {
       "name": "S1 端到端时间线：首个正文显示时刻早于 provider 结束",
       "ok": true,
       "detail": {
-        "firstTextVisibleAtMs": 1791324404894,
-        "providerStreamEndAtMs": 1791324406828,
-        "leadMs": 1934,
+        "firstTextVisibleAtMs": 1791327901562,
+        "providerStreamEndAtMs": 1791327903507,
+        "leadMs": 1945,
         "answerCallStillOpenAtObservation": true,
         "chunksSent": 3,
         "timelineEvents": [
@@ -62,8 +62,8 @@
       "name": "S2 断流前：已显示的正式回答在 .message.assistant 里、过程区不含",
       "ok": true,
       "detail": {
-        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制",
-        "process": "已完成\n▸\n耗时 121 毫秒\n已完成\n耗时 2.2 秒\n运行中",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n07:05:00\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n07:05:01\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n07:05:03\n复制",
+        "process": "已完成\n▸\n耗时 156 毫秒\n已完成\n耗时 2.2 秒\n运行中",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-03-answer-before-abort.png"
       }
     },
@@ -71,7 +71,7 @@
       "name": "S2 断流：未到达的那一句一个字都没出现（真的断在中间）",
       "ok": true,
       "detail": {
-        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制"
+        "answers": "默认话题\n\n（假模型默认回复）\n\n07:05:00\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n07:05:01\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n07:05:03\n复制"
       }
     },
     {
@@ -80,7 +80,7 @@
       "detail": {
         "duplicateCount": 1,
         "inProcess": false,
-        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n07:05:00\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n07:05:01\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n07:05:03\n复制",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-04-answer-after-abort.png"
       }
     },
@@ -97,9 +97,9 @@
       "name": "S3 点「重试」真的开了新轮，且新轮附件是**克隆**（新 id、原文件已删除）",
       "ok": true,
       "detail": {
-        "originalId": "att_09ccb7fa1f6a",
+        "originalId": "att_59a04401ecbb",
         "newIds": [
-          "att_c5e402faeb28"
+          "att_ca2bac8f96c2"
         ],
         "state": "ready",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-06-after-retry.png"
@@ -155,19 +155,19 @@
       "ok": true,
       "detail": {
         "retryBeforeRefresh": true,
-        "processRegionsBeforeRefresh": 2,
+        "processRegionsBeforeRefresh": 7,
         "leftoverChipsBeforeSend": 0,
-        "composerText": "默认话题 Enter 发送 · Shift+Enter 换行 附件 路径 ↑"
+        "composerText": "默认话题 Enter 发送 · Shift+Enter 换行 附件 路径 停止 ↑"
       }
     },
     {
       "name": "S6 刷新（历史恢复）之后：结束原因/过程区仍在，且「重试」入口仍在",
-      "ok": false,
+      "ok": true,
       "detail": {
         "retryBeforeRefresh": true,
-        "processRegionsBeforeRefresh": 2,
-        "processRegionsAfterRefresh": 1,
-        "retryAfterRefresh": false,
+        "processRegionsBeforeRefresh": 7,
+        "processRegionsAfterRefresh": 7,
+        "retryAfterRefresh": true,
         "netTail": [
           {
             "method": "POST",
@@ -186,6 +186,30 @@
           }
         ],
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-11-after-refresh-retry-entry.png"
+      }
+    },
+    {
+      "name": "S6 清掉 localStorage 再刷新：失败轮的事实仍从后端历史恢复（过程区 + 重试入口）",
+      "ok": true,
+      "detail": {
+        "processRegionsAfterWipe": 7,
+        "retryAfterWipe": true,
+        "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-12-after-localstorage-wipe.png",
+        "note": "这一条证明后端权威路径（turn_journal 的 TURN_END facts 随历史接口下发）真的生效"
+      }
+    },
+    {
+      "name": "S6 刷新后点「重试」：新轮附件是克隆（新 id、原文件已删除）且内容读得回来",
+      "ok": true,
+      "detail": {
+        "originalId": "att_a2ec40581501",
+        "newIds": [
+          "att_59a04401ecbb",
+          "att_ca2bac8f96c2"
+        ],
+        "state": "ready",
+        "content": "R4-阶段二附件内容：只有这份副本里才有的标记 7f3a\\n",
+        "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-13-retry-after-refresh-result.png"
       }
     }
   ],
@@ -213,7 +237,7 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_09ccb7fa1f6a"
+      "url": "http://127.0.0.1:8734/api/attachments/att_59a04401ecbb"
     },
     {
       "method": "POST",
@@ -233,12 +257,12 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_98e0dea6a0db"
+      "url": "http://127.0.0.1:8734/api/attachments/att_97693e75cd10"
     },
     {
       "method": "DELETE",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_98e0dea6a0db"
+      "url": "http://127.0.0.1:8734/api/attachments/att_97693e75cd10"
     },
     {
       "method": "POST",
@@ -248,7 +272,7 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_09ccb7fa1f6a/content"
+      "url": "http://127.0.0.1:8734/api/attachments/att_59a04401ecbb/content"
     },
     {
       "method": "POST",
@@ -258,7 +282,12 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_696d33e6dae7"
+      "url": "http://127.0.0.1:8734/api/attachments/att_a2ec40581501"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
     },
     {
       "method": "POST",

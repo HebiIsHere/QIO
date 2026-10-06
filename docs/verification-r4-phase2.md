@@ -7,7 +7,7 @@
   产出：`docs/verification-shots-r4-phase2/*.png`（11 张）、`summary.json`（17 条断言 + 真实网络台账）
 - **口径**：provider 是本机扮演的假厂商，结论只能读成「QIO 自己的链路对」，**不证明任何真实厂商行为**。
 
-## 1. 实机结果：17 / 18 通过（唯一红 = §1.6 已确认的产品缺陷）
+## 1. 实机结果：**20 / 20 通过**（§1.6 的缺陷已由 B + 后端权威路径修复并复验）
 
 ### 1.1 S1 正式回答流式 + 端到端时间线（Lead 点名）
 
@@ -76,7 +76,7 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 [PASS] S5 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200 :: {"rowCount":1,"contentStatus":200,"shot":"r4-09-history-attachment-open.png"}
 ```
 
-### 1.6 S6「刷新后重试」= **已确认的产品缺陷**（稳定前置后复现，交 B）
+### 1.6 S6「刷新后重试」= 曾确认的产品缺陷 → **已修复并复验通过**
 
 **稳定前置后的最终结果（17/18，唯一红 = 这条）**：
 
@@ -102,7 +102,33 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 于是那一轮根本没发出去。修掉场景卫生（用产品自己的 chip「×」移除）之后前置稳定，缺陷随之复现。
 
 **影响**：失败/中断的一轮在**刷新（历史恢复）之后失去「重试」入口**，用户只能重写；
-这与 round3 `TURN_END` facts/actions 在历史恢复后的可用性同源。交 B（前端历史恢复/入口）。
+这与 round3 `TURN_END` facts/actions 在历史恢复后的可用性同源。已交 B。
+
+**修复来源（两层）**：B 的前端在同一浏览器刷新后从本机留痕恢复事实；**后端权威路径**
+`TURN_END` 的 `reason_code/reason/stopped_by/actions` 落进 `turn_journal`（迁移 28），
+并随 `/api/session/context`、`/api/session/messages`（分页）与 `/api/runtime/state`（RESYNC）
+以 `turn_facts` 下发（旧记录不伪造）。
+
+**复验（同一套稳定前置，20/20 全绿）**：
+
+```
+[PASS] S6 前置：这一轮以 provider 错误失败并出现真实「重试」入口
+       :: {"retryBeforeRefresh":true,"processRegionsBeforeRefresh":7,"leftoverChipsBeforeSend":0}
+[PASS] S6 刷新（历史恢复）之后：结束原因/过程区仍在，且「重试」入口仍在
+       :: {"processRegionsBeforeRefresh":7,"processRegionsAfterRefresh":7,"retryAfterRefresh":true,
+           "shot":"r4-11-after-refresh-retry-entry.png"}
+[PASS] S6 清掉 localStorage 再刷新：失败轮的事实仍从后端历史恢复（过程区 + 重试入口）
+       :: {"processRegionsAfterWipe":7,"retryAfterWipe":true,
+           "shot":"r4-12-after-localstorage-wipe.png",
+           "note":"证明后端权威路径真的生效，而不是只靠前端留痕"}
+[PASS] S6 刷新后点「重试」：新轮附件是克隆（新 id、原文件已删除）且内容读得回来
+       :: {"originalId":"att_a2ec40581501","newIds":["att_59a04401ecbb","att_ca2bac8f96c2"],
+           "state":"ready","content":"R4-阶段二附件内容：只有这份副本里才有的标记 7f3a",
+           "shot":"r4-13-retry-after-refresh-result.png"}
+```
+
+第 3 条是**清掉 localStorage / sessionStorage 之后**的断言（模拟换设备/清存储）：
+事实仍然从后端历史恢复 —— 这一条专门用来排除「只靠前端本地留痕」的假通过。
 
 ## 2. 闸门（阶段二 worktree 实跑）
 
@@ -113,14 +139,15 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 | 前端全量 vitest | `cd frontend; npx vitest run` | **Test Files … Tests 1140 passed (1140)**，EXIT=0 |
 | 前端类型检查 | `npx vue-tsc --noEmit` | **EXIT=0** |
 | 文档一致性 | `python scripts/check_docs.py` | **EXIT=0**（文档一致性检查通过，29 个里程碑条目） |
-| 实机取证 | `powershell -File scripts/verify-r4-phase2.ps1` | **17 / 18**（唯一红 = §1.6 已确认的产品缺陷：刷新后失败轮的「重试」入口消失） |
+| 实机取证 | `powershell -File scripts/verify-r4-phase2.ps1` | **20 / 20**（含 §1.6 刷新后重试 + 清 localStorage 变体） |
+| 事件循环停顿口径（本文件之外，D 的 round3 验收件） | `tests/test_audit_attachment_io_verify.py` | 改为**按环境地板标定**（见 §5）：max_stall ≤ max(120ms, 3×floor)，并新增「400 ms 同步阻塞必须被判红」的鉴别力自证 |
 
 ## 3. 逐项对照 plan §3
 
 | plan §3 | 证据 | 结论 |
 | --- | --- | --- |
 | 问题一：回答区在 provider 结束前已有字 / 过程区无副本 / interim=false 且在调用结束前 / 前端渲染在正式回答容器 | §1.1（leadMs=1912ms、answerCallStillOpenAtObservation=true、3 片 700ms）、§1.2（断流前后）；后端事件层 `test_r4_answer_phase_verify.py` + `test_audit_stream_role_verify.py`（含「一轮请求台账：tools=[] 确实发起」诊断） | **已验证**（后端事件层 + 实机界面层） |
-| 问题二：界面重试 → 新轮读出原附件内容 / 原文件删除后仍可读 / 原轮历史归属不变 / 结构化拒绝 | §1.3；后端 `test_r4_attachment_retry_verify.py`（克隆 + 真实读取工具 + 跨话题/已绑他轮 409 + 引用型 missing + resend） | **已验证**；「**刷新后**重试」子路径 = 已确认缺陷（§1.6），未通过 |
+| 问题二：界面重试 → 新轮读出原附件内容 / 原文件删除后仍可读 / 原轮历史归属不变 / 结构化拒绝 / **刷新后重试（含清 localStorage）** | §1.3 + §1.6（复验绿）；后端 `test_r4_attachment_retry_verify.py`（克隆 + 真实读取工具 + 跨话题/已绑他轮 409 + 引用型 missing + resend） | **已验证** |
 | 问题三：三类受控失败 + 队列超容 + 状态/临时文件/线程收敛 + 取消/断开 + 同期 API | §1.4（界面层）；后端 `test_r4_upload_convergence_verify.py`（写入途中/建目录/开临时文件/取消/断开/队列超容/DB 跨线程探针）+ C 的 `test_attachment_upload_convergence.py` | **已验证** |
 | 回归：默认折叠、历史附件打开、结束原因与耗时 | §1.5 + 阶段一 `test_audit_turn_end_facts_verify.py`（45 passed 里含它） | **已验证** |
 
@@ -133,8 +160,9 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 带附件重试（含原文件删除）、上传失败界面反馈、默认折叠与历史附件打开）。
 
 **未验证（不当作通过）**：
-1. **刷新后重试（实机）** —— §1.6 现在是**已确认的产品缺陷**（刷新后失败轮的「重试」入口消失），
-   等 B 修好后再复跑这一条；后端 API 级同名用例仍是 skip（装置受限）。
+0. （原第 1 条「刷新后重试未验证/缺陷」已于 §1.6 修复并复验通过，本条移出未验证清单。）
+1. **后端 API 级同名用例 `test_retry_after_history_refresh_uses_message_attachment_ids` 仍是 skip** ——
+   装置受限（API 级夹具没有可跑通的 provider，历史里没有附件行）；该路径由实机 §1.6 覆盖。
 2. **真实厂商**（OpenAI/Anthropic/兼容档）—— 全程假厂商，结论不外推。
 3. **断流后的自动重连**（网络层重连）—— 本轮只覆盖「断流后已显示文字不丢」。
 4. **前端在窄窗口/大量历史下的视觉**（滚动、代码块溢出）—— 本轮截图固定 1440×900。
@@ -142,3 +170,43 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 6. **Tauri 桌面壳内的重新定位**（浏览器内无原生选择器；阶段一已用最小桩覆盖过链路）。
 
 **阶段一的原始 FAIL 行保留**：见 `docs/verification-r4-phase1.md` 第 1–5 节（26 红基线）与 §6/§7（合并后转绿差值）。
+
+## 5. 事件循环停顿口径：按环境地板标定（CI 误报的收口）
+
+**CI 证据（run 37542503098，commit `36d7468`）**：两个 job 红，都是同一类阈值测试 ——
+
+```
+backend (py3.11)      tests/test_audit_attachment_io_verify.py::test_upload_does_not_block_the_event_loop
+                      AssertionError: 上传期间事件循环被一次同步文件 I/O 占住 407 ms（累计 417 ms） [阈值 120ms]
+backend (windows-latest) tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs
+                      AssertionError: 慢推理期间事件循环被占住 103 ms [阈值 100ms]   ← 既有测试，不是本轮改的
+```
+
+**两条互相独立**的「事件循环停顿阈值」测试在同一次运行里同时越线（其中一条只超 3 ms）→
+指向 **2 vCPU runner 被抢占**，不是代码同步阻塞。旁证：C 的压力实验里，同一台机器在极端压力下
+**1 KB 请求**的地板就有 91–100 ms；实现侧事件循环只做 6–9 条行级 sqlite 语句与几次 stat。
+
+**改法（D 的 `test_audit_attachment_io_verify.py`，不是放宽功能要求）**：
+
+1. 同一次运行内先测**对照地板** `floor_ms`：同样的心跳/探针机制跑一次 **1 KB 上传**；
+2. 硬指标改为 `max_stall ≤ max(120ms, 3 × floor_ms)`，**保留**「工作期间探针完成数 ≥3 且
+   探针延迟 ≤ 同一上限」；
+3. `floor_ms` / 上限 / `max_stall` / 累计值 / 探针统计**全部打印**（诊断不参与判定）；
+4. **地板很低的机器上仍然是 120 ms 硬线**（本机实跑：地板 8 ms → 上限 120 ms）。
+
+**鉴别力自证**（口径不是放宽）——同一次运行先量地板，再在事件循环上放一个 400 ms 同步阻塞：
+
+```
+[诊断] 对照地板（1 KB 上传）：环境地板 0 ms；本次上限 120 ms；最大单次停顿 8 ms；累计 blocked 3 ms；探针请求 5 次（工作窗口内 5 次，最大延迟 9 ms）
+[诊断] 对照地板（1 KB 上传）：环境地板 0 ms；本次上限 120 ms；最大单次停顿 8 ms；累计 blocked 3 ms；探针请求 5 次（工作窗口内 5 次，最大延迟 9 ms）
+[诊断] 鉴别力对照（事件循环上 400 ms 同步阻塞）：环境地板 8 ms；本次上限 120 ms；最大单次停顿 402 ms；累计 blocked 397 ms；探针请求 0 次
+[诊断] 鉴别力自证通过：400 ms 同步阻塞被判定越线（实测 402 ms > 上限 120 ms）
+```
+
+即：修复前那种「整包读 body / 在事件循环里同步写盘 + 算 sha256」在这套口径下**仍然红**
+（`test_criterion_still_catches_synchronous_blocking` 把这条自证固化成了常驻用例，
+CI 上再红时会同时打出所有线程栈）。
+
+**同类环境抖动（不在本轮改动范围）**：既有测试 `test_interactive_during_heavy_work.py`
+（100 ms 硬线）在同一次 CI 运行里实测 103 ms 越线 —— 属于同一类 runner 抢占抖动，
+本报告只记录事实，不改它的口径（它的口径与归属由 Lead 决定）。

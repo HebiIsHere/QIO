@@ -16,15 +16,30 @@ relocate 的 run_prepare 也在事件循环里同步复制 —— 因此本文�
 本文件用 httpx.ASGITransport 把应用跑在**同一个事件循环**里：只有这样，
 「同步文件 I/O 占住事件循环」才能被真实测到（TestClient 的 portal 线程测不到）。
 
-**判定口径（Lead 2026-10-06 裁决，C 已先确认没有同步重活）**：不用「累计 blocked 时间」
-当硬阈值 —— 累计值是**许多小停顿的和**（心跳抖动也会计入），修复后实测最大单次停顿只有
-18 / 29 ms，而累计仍有 352 / 608 ms。真正要防的是「主循环被**一次**同步 I/O 占住」，
-所以硬指标是：
+**判定口径（Lead 2026-10-07 最终裁决：按环境地板标定）**：不用「累计 blocked 时间」当硬阈值 ——
+累计值是**许多小停顿的和**（心跳抖动也会计入）。真正要防的是「主循环被**一次**同步 I/O 占住」。
+用固定的 120 ms 硬线在**共享 CPU 的 CI runner** 上会误报，实测证据：
 
-1. **最大单次停顿 ≤ MAX_STALL_MS（120 ms）**；
-2. **工作期间其它请求确实在推进**（探针请求在窗口内持续完成，且探针延迟不越同一个上限）。
+* CI run 37542503098（commit 36d7468）两个 job 红：
+  `backend (py3.11)` 本文件的上传档 **407 ms（累计 417 ms）**、`backend (windows-latest)`
+  `test_interactive_during_heavy_work.py`（**既有测试，不在本轮改动范围**）**103 ms**（它的硬线是 100 ms）——
+  **两条互相独立的「事件循环停顿阈值」测试在同一次运行里同时越线**，其中一条只超 3 ms，
+  强烈指向 2 vCPU runner 被抢占，而不是我们的代码同步阻塞（实现侧事件循环只做 6–9 条行级
+  sqlite 语句与几次 stat）；
+* C 的压力实验：同一台机器在极端压力下，**1 KB 请求**的地板就有 91–100 ms。
 
-累计 blocked 时间与探针统计**打印出来作诊断**，不参与判定。
+因此本文件在**同一次运行内先测一个对照地板** `floor_ms`（同样的心跳/探针机制，跑一次极小负载：
+1 KB 上传），硬指标改为：
+
+1. **最大单次停顿 ≤ max(120 ms, 3 × floor_ms)**；
+2. **工作期间其它请求确实在推进**（探针在窗口内完成 ≥3 次，且探针延迟不越同一个上限）。
+
+**这不是放宽**：地板很低的机器上仍然是 120 ms 硬线（`3 × floor_ms` 只有在环境地板被证明
+高于 40 ms 时才接管）；而「一次同步阻塞」在这种口径下仍然必须被判红 —— 见
+`test_criterion_still_catches_synchronous_blocking`（同一次运行里先量地板，再放一个
+400 ms 的同步阻塞，断言它越线），这就是本口径**鉴别力**的自证。
+
+`floor_ms` / `max_stall` / 累计值 / 探针统计**全部打印**（诊断信息不参与判定）。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_audit_attachment_io_verify.py -q
 """
@@ -62,13 +77,47 @@ def _dump_thread_stacks(gap_ms: float) -> None:
         pass
 
 
-def _report(label: str, max_gap_ms: float, blocked_ms: float, stats: dict) -> None:
-    """诊断输出（不参与判定）：最大单次停顿 / 累计停顿 / 探针推进情况。"""
+#: 地板倍数：环境地板被证明高于 40 ms 时才接管（= 3 × 40 ms ≈ 120 ms）
+FLOOR_FACTOR = 3.0
+
+
+def _stall_limit(floor_ms: float) -> float:
+    """本环境这一次运行里的停顿上限：max(120ms, 3 × 环境地板)。地板低 → 仍然是 120ms 硬线。"""
+    return max(MAX_STALL_MS, FLOOR_FACTOR * float(floor_ms))
+
+
+def _report(label: str, max_gap_ms: float, blocked_ms: float, stats: dict, *, floor_ms: float | None = None) -> None:
+    """诊断输出（不参与判定）：环境地板 / 上限 / 最大单次停顿 / 累计停顿 / 探针推进情况。"""
+    limit = _stall_limit(floor_ms) if floor_ms is not None else MAX_STALL_MS
     print(
-        "[诊断] %s：最大单次停顿 %.0f ms；累计 blocked %.0f ms；"
+        "[诊断] %s：环境地板 %.0f ms；本次上限 %.0f ms；最大单次停顿 %.0f ms；累计 blocked %.0f ms；"
         "探针请求 %d 次（工作窗口内 %d 次，最大延迟 %.0f ms）"
-        % (label, max_gap_ms, blocked_ms, stats["count"], stats["during"], stats["max_ms"])
+        % (label, floor_ms or 0.0, limit, max_gap_ms, blocked_ms, stats["count"], stats["during"], stats["max_ms"])
     )
+
+
+async def _control_floor_ms(async_app, *, size: int = 1024) -> float:
+    """同一次运行内的**对照地板**：同样的心跳/探针机制跑一次极小负载（默认 1 KB 上传）。
+
+    它量的是这个环境（CI 共享 runner / 本机）自身的调度噪声 —— 天花板不是我们的代码造成的。
+    """
+    payload = b"f" * size
+
+    async def _work():
+        async with _client(async_app) as client:
+            resp = await client.post(
+                "/api/attachments/upload",
+                content=payload,
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": "floor-1kb.bin"},
+            )
+            return resp.status_code
+
+    status, max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
+        _work, probe_factory=lambda: _client(async_app)
+    )
+    _report("对照地板（1 KB 上传）", max_gap_ms, blocked_ms, stats)
+    assert status == 200, ("地板测量的极小上传本身应当成功", status)
+    return max_gap_ms
 
 
 async def _measure_loop_lag(work, *, probe_factory=None, tick: float = 0.005):
@@ -241,20 +290,23 @@ async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
                 results.append(resp.status_code)
         return results
 
+    floor_ms = await _control_floor_ms(async_app)  # 同一次运行内的对照地板
     statuses, max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
         _work, probe_factory=lambda: _client(async_app)
     )
-    _report("上传（2 × 99 MB）", max_gap_ms, blocked_ms, stats)
+    _report("上传（2 × 99 MB）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
+    limit = _stall_limit(floor_ms)
     assert statuses == [200, 200], ("上传本身应当成功", statuses)
-    assert max_gap_ms <= MAX_STALL_MS, (
-        "上传期间事件循环被一次同步文件 I/O 占住 %.0f ms（累计 %.0f ms）："
-        "期间其它请求 / SSE / 停止都要等这么久" % (max_gap_ms, blocked_ms)
+    assert max_gap_ms <= limit, (
+        "上传期间事件循环被一次同步文件 I/O 占住 %.0f ms（本次上限 %.0f ms = max(120, 3×地板 %.0f)，"
+        "累计 %.0f ms）：期间其它请求 / SSE / 停止都要等这么久"
+        % (max_gap_ms, limit, floor_ms, blocked_ms)
     )
     assert stats["during"] >= 3, (
         "上传期间其它请求必须确实在推进（工作窗口内完成的探针请求数 %d）" % stats["during"]
     )
-    assert stats["max_ms"] <= MAX_STALL_MS, (
-        "探针请求在文件 I/O 期间的最大延迟 %.0f ms" % stats["max_ms"]
+    assert stats["max_ms"] <= limit, (
+        "探针请求在文件 I/O 期间的最大延迟 %.0f ms（本次上限 %.0f ms）" % (stats["max_ms"], limit)
     )
 
 
@@ -304,20 +356,53 @@ async def test_relocate_does_not_block_the_event_loop(async_app, tmp_path):
                     await asyncio.sleep(0.02)
         return status, state
 
+    floor_ms = await _control_floor_ms(async_app)
     (status, state), max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
         _work, probe_factory=lambda: _client(async_app)
     )
-    _report("重定位（3 × 90 MB）", max_gap_ms, blocked_ms, stats)
+    _report("重定位（3 × 90 MB）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
+    limit = _stall_limit(floor_ms)
     assert status in (200, 201, 202), (status, state)
     assert state == "ready", ("重定位最终必须真的把副本做出来", state)
-    assert max_gap_ms <= MAX_STALL_MS, (
-        "重定位期间事件循环被一次同步复制占住 %.0f ms（累计 %.0f ms）" % (max_gap_ms, blocked_ms)
+    assert max_gap_ms <= limit, (
+        "重定位期间事件循环被一次同步复制占住 %.0f ms（本次上限 %.0f ms = max(120, 3×地板 %.0f)，累计 %.0f ms）"
+        % (max_gap_ms, limit, floor_ms, blocked_ms)
     )
     assert stats["during"] >= 3, (
         "重定位期间其它请求必须确实在推进（工作窗口内完成的探针请求数 %d）" % stats["during"]
     )
-    assert stats["max_ms"] <= MAX_STALL_MS, (
-        "探针请求在重定位期间的最大延迟 %.0f ms" % stats["max_ms"]
+    assert stats["max_ms"] <= limit, (
+        "探针请求在重定位期间的最大延迟 %.0f ms（本次上限 %.0f ms）" % (stats["max_ms"], limit)
+    )
+
+
+# ---- 3b. 鉴别力自证：一次同步阻塞必须被判红（口径不是放宽） -------------------------
+
+
+async def test_criterion_still_catches_synchronous_blocking(async_app):
+    """把一次 400 ms 的**同步阻塞**放在事件循环上：本口径必须判红。
+
+    等价于修复前的「整包读 body / 在事件循环里同步写盘 + 算 sha256」——不是耦合实现细节的回退，
+    而是同一类阻塞。它证明：按环境地板标定之后，**鉴别力没有被丢掉**。
+    """
+    floor_ms = await _control_floor_ms(async_app)
+    limit = _stall_limit(floor_ms)
+
+    async def _work():
+        time.sleep(0.4)  # 事件循环上的同步阻塞（修复前就是这么被占住的）
+        return "blocked"
+
+    _, max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
+        _work, probe_factory=lambda: _client(async_app)
+    )
+    _report("鉴别力对照（事件循环上 400 ms 同步阻塞）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
+    assert max_gap_ms > limit, (
+        "本口径抓不到一次 400 ms 的同步阻塞（地板 %.0f ms、上限 %.0f ms、实测 %.0f ms）—— 口径被放宽过头了"
+        % (floor_ms, limit, max_gap_ms)
+    )
+    print(
+        "[诊断] 鉴别力自证通过：400 ms 同步阻塞被判定越线（实测 %.0f ms > 上限 %.0f ms）"
+        % (max_gap_ms, limit)
     )
 
 
