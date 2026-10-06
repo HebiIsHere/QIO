@@ -780,24 +780,68 @@ def _insert_index(state: dict, group: dict, exclude_card_id: str | None, x: floa
     return sum(1 for center in centers if center <= point)
 
 
+#: 自动成组要求的最小重叠比例（占较小矩形面积），与前端 board.ts 的 MERGE_MIN_AREA_RATIO 一致
+MERGE_MIN_AREA_RATIO = 0.25
+#: 是否要求中心覆盖（落点在目标里，或目标中心在被拖动矩形里），与前端 MERGE_REQUIRE_CENTER_COVER 一致
+MERGE_REQUIRE_CENTER_COVER = True
+
+
+def _rect_overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    """重叠面积占**较小矩形**面积的比例（0..1；无重叠为 0）。"""
+    aw, ah = max(0.0, a[2]), max(0.0, a[3])
+    bw, bh = max(0.0, b[2]), max(0.0, b[3])
+    base = min(aw * ah, bw * bh)
+    if base <= 0:
+        return 0.0
+    overlap_w = min(a[0] + aw, b[0] + bw) - max(a[0], b[0])
+    overlap_h = min(a[1] + ah, b[1] + bh) - max(a[1], b[1])
+    if overlap_w <= 0 or overlap_h <= 0:
+        return 0.0
+    return (overlap_w * overlap_h) / base
+
+
+def _point_in_rect(px: float, py: float, rect: tuple[float, float, float, float]) -> bool:
+    return rect[0] <= px <= rect[0] + rect[2] and rect[1] <= py <= rect[1] + rect[3]
+
+
+def _rect_center_covered(
+    dragged: tuple[float, float, float, float], target: tuple[float, float, float, float]
+) -> bool:
+    """落点在目标矩形里，或目标中心在被拖动矩形里 —— 任一成立即算「明确重叠」。"""
+    if _point_in_rect(dragged[0], dragged[1], target):
+        return True
+    return _point_in_rect(target[0] + target[2] / 2, target[1] + target[3] / 2, dragged)
+
+
 def _overlapping_free_cards(state: dict, card_id: str, x: float, y: float) -> list[dict]:
-    """与卡片矩形重叠的、未分组的活卡片（自动成组的对象）。
+    """与**落点矩形**明确重叠的、未分组的活卡片（自动成组候选，按重叠比例降序）。
 
     矩形按**落点**算：拖动预演时卡片还没有真的移动过去。
+
+    只认「明确重叠」：重叠面积达到 MERGE_MIN_AREA_RATIO，且中心覆盖。
+    边框相碰、只有一条细缝、只是靠近 —— 都不算（与前端同一套判据，
+    避免「前端提示不成组、服务端却建了组」这种前后端语义分叉）。
     """
     card = models.card_by_id(state, card_id)
     if card is None:
         return []
     rect = (x, y, max(1.0, _as_float(card.get("w"), DEFAULT_CARD_W)), max(1.0, _as_float(card.get("h"), DEFAULT_CARD_H)))
-    result: list[dict] = []
-    for other in state.get("cards", []) or []:
+    scored: list[tuple[float, int, dict]] = []
+    for index, other in enumerate(state.get("cards", []) or []):
         if other["id"] == card_id or other.get("deleted"):
             continue
         if models.group_of(state, other["id"]) is not None:
             continue
-        if _rect_overlap(rect, card_rect(other)):
-            result.append(other)
-    return result
+        other_rect = card_rect(other)
+        ratio = _rect_overlap_ratio(rect, other_rect)
+        if ratio < MERGE_MIN_AREA_RATIO:
+            continue
+        if MERGE_REQUIRE_CENTER_COVER and not _rect_center_covered(rect, other_rect):
+            continue
+        scored.append((ratio, index, other))
+    # 重叠比例降序；比例相同按原始顺序，保证结果稳定（只认一张最明确的目标）
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in scored]
 
 
 def _resolve_drop(state: dict, card_id: str, x: float, y: float) -> dict:
@@ -863,9 +907,11 @@ def drop_card(state: dict, card_id: str, x: float, y: float) -> dict:
             work = remove_from_group(work, card_id)
         partners = _overlapping_free_cards(work, card_id, px, py)
         if partners:
-            # 两张（或多张）未分组卡片重叠 → 自动成组，默认组名
+            # 未分组卡片拖到另一张未分组卡片上 → 自动成组，默认组名。
+            # 只认**一张**最明确的目标卡：一叠卡片不整堆合并（契约 §1.3 与前端一致）。
+            partner = partners[0]
             group = models.new_group(_next_default_name(group["name"] for group in work["groups"]))
-            group["members"] = [item["id"] for item in partners] + [card_id]
+            group["members"] = [partner["id"], card_id]
             work["groups"].append(group)
             work["updatedAt"] = stamp
 

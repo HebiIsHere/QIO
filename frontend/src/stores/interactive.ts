@@ -11,7 +11,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
-import { batchesWithList, groupIntentsByBatch } from "../interactive/approval";
+import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../interactive/approval";
 import {
   cloneState,
   emptyBoardState,
@@ -251,6 +251,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
   }
 
+  /**
+   * 记录「这一次创建动作产生的意图」，供批次判定使用（契约 §8.5 的来源①）。
+   *
+   * 放在 store 而不是组件里：意图只有两个来源 —— 演示入口与提交后的 QIO 回复，
+   * 两条路径都经过这里，记录一次就够，不需要任何组件知道这件事。
+   */
+  function recordNewIntents(before: Set<string>, batchKey: string) {
+    const fresh = intents.value.filter((item) => !before.has(item.id)).map((item) => item.id);
+    if (fresh.length) recordIntentBatch(batchKey, fresh);
+  }
+
+  const intentIdSet = () => new Set(intents.value.map((item) => item.id));
+
   async function loadIntents() {
     try {
       const payload = await api.fetchIntents(boardId.value);
@@ -307,6 +320,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       submitError.value = `板面没有保存成功，本次未提交（${saveError.value ?? "原因未知"}）`;
       return null;
     }
+    const intentsBefore = intentIdSet();
     try {
       const result = await api.submitBoard(boardId.value);
       lastSubmission.value = result;
@@ -315,6 +329,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       await refreshBoardFromServer();
       await refreshVisibleRange();
       await loadIntents();
+      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
+      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
       return result;
     } catch (err) {
       submitStatus.value = "failed";
@@ -364,8 +380,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   async function createDemoIntents() {
+    const before = intentIdSet();
     const result = await api.createDemoIntents(boardId.value);
     await loadIntents();
+    // 演示入口一次生成的（可能不止四项）：记成同一批
+    recordNewIntents(before, "session:demo:" + Date.now());
     return result;
   }
 

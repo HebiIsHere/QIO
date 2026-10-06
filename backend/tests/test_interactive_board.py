@@ -459,11 +459,41 @@ def test_drop_free_card_alone_only_moves_it():
     assert group_ids(next_state) == []
 
 
-def test_drop_overlapping_several_free_cards_forms_one_group_with_all():
+def test_drop_overlapping_several_free_cards_picks_single_best_target():
+    """一叠卡片不整堆合并：只认**一张**最明确的目标卡（与前端同一判据）。"""
     state = mk_state(cards=[mk_card("a", 0, 0), mk_card("b", 120, 0), mk_card("c", 240, 0)])
     result = board.drop_card(state, "c", 60, 10)
     group = group_of(result["state"], result["groupId"])
-    assert sorted(group["members"]) == ["a", "b", "c"]
+    assert sorted(group["members"]) == ["a", "c"], "只与最明确的那一张成组"
+    assert group["name"] == models.default_group_name(1)
+
+
+def test_drop_border_touch_does_not_form_group():
+    """边框相碰不算重叠：不得擅自把两张卡片合成组。
+
+    a 是 100×60，拖到 (200,0) 后右边缘正好贴住 b 的左边缘（b 在 300,0），重叠面积为 0。
+    """
+    state = mk_state(cards=[mk_card("a", 0, 0), mk_card("b", 300, 0)])
+    result = board.drop_card(state, "a", 200, 0)
+    assert result["groupId"] is None
+    assert group_ids(result["state"]) == []
+    assert board.preview_drop(state, "a", 200, 0)["mergesWith"] is None
+
+
+def test_drop_small_overlap_below_ratio_does_not_form_group():
+    """重叠面积不到较小矩形的 25%（这里 20×60 / 100×60 = 20%）不算明确重叠。"""
+    state = mk_state(cards=[mk_card("a", 0, 0), mk_card("b", 300, 0)])
+    result = board.drop_card(state, "a", 220, 0)
+    assert result["groupId"] is None
+    assert group_ids(result["state"]) == []
+
+
+def test_drop_center_not_covered_does_not_form_group():
+    """重叠够了（50% 以上）但中心覆盖不成立（只压住大卡片左下角）也不成组。"""
+    state = mk_state(cards=[mk_card("a", 0, 0), mk_card("b", 300, 300, w=400.0, h=400.0)])
+    result = board.drop_card(state, "a", 280, 280)
+    assert result["groupId"] is None
+    assert group_ids(result["state"]) == []
 
 
 def test_drop_deleted_or_unknown_card_changes_nothing():
