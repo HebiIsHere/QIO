@@ -675,10 +675,14 @@
   阶段与说明随叙事行落库（`messages.raw.stage`）后再广播，工具按 `stage_id` 归属而非相邻位置；
   旧数据没有 `raw.stage` 时按旧版平铺渲染，不伪造阶段历史。
 - **Implementation（真实流式）：** adapter 层新增 `supports_stream` / `stream()`（OpenAI 兼容与 Anthropic 走真 SSE，
-  文本兼容档明确降级为一次性输出并提示「不支持实时生成」）；主循环按**分类守卫**决定正文归属
-  （出现工具调用增量 → 过程区；守卫窗口到期仍无 → 正式回答区），按字符/时间合并发布累计快照，
-  `(delta_id, seq)` 单调去重，`TURN_END.final_content` 只做校准；工具参数碎片只在 adapter 内组装，
-  未完成的参数绝不执行。
+  文本兼容档明确降级为一次性输出并提示「不支持实时生成」）；正文增量**一到达就以 `interim=true` 实时发布**
+  （进过程区，边生成边显示），**唯一可靠的正式回答判据 = 该次调用结束且没有任何工具调用** → 同一 `delta_id`
+  原样提升为正式回答（`streaming=false` 收尾快照），调用结束有工具调用则该段留在过程区；
+  **没有时间守卫，也没有「正式回答→过程区」的移动**（旧的 300ms 守卫与移动例外已于 2026-10-06 审计废止）。
+  按字符/时间合并发布累计快照，`(delta_id, seq)` 单调去重，`TURN_END.final_content` 只做校准；
+  工具参数碎片只在 adapter 内组装，未完成的参数绝不执行。
+  `TURN_END` 另带轮次结束事实 `reason_code / reason / stopped_by / actions`（系统事实、过 redact、
+  只列确实可用的操作；旧记录为 `none` 不伪造）。
 - **Implementation（耗时）：** `TURN_END` 增补 `duration_ms / queue_ms / started_at / ended_at`（来源 turn_traces 台账，
   缺失时退化为单调钟执行窗口）；折叠态直接显示「已完成 · 耗时」，不再无期限显示「读取中」；
   仅真正请求明细时才加载，未请求 / 加载中 / 成功无分项 / 失败 / 旧记录五种显示互不混淆，明细失败不抹掉已知总耗时。
