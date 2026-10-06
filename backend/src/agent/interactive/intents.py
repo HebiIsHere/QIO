@@ -610,12 +610,17 @@ def approve_intent(
                 "intent": payload,
                 "waitingFor": [],
             }
+        running_progress = dict(_progress_shape({"done": 0, "text": "执行中"}, preview))
+        # 开始执行时记下材料的指纹：之后用户改动这些材料就能被保护住（§1.6）
+        watch = _watch_for(conn, row)
+        if watch:
+            running_progress["__materialWatch"] = watch
         _update(
             conn,
             row["id"],
             status="running",
             reason="已确认开始：前项已完成，任务开始执行。",
-            progress=_progress_shape({"done": 0, "text": "执行中"}, preview),
+            progress=running_progress,
         )
         fresh = _get_row(conn, intent_id)
         assert fresh is not None
@@ -644,12 +649,16 @@ def approve_intent(
             "detail": "已批准；前项成功完成后还需要你再次确认才会开始。",
             "waitingFor": pending_deps,
         }
+    pending_progress = dict(_progress_shape({"done": 0, "text": "执行中"}, preview))
+    watch = _watch_for(conn, row)
+    if watch:
+        pending_progress["__materialWatch"] = watch
     _update(
         conn,
         row["id"],
         status="running",
         reason="已批准：任务开始执行。",
-        progress=_progress_shape({"done": 0, "text": "执行中"}, preview),
+        progress=pending_progress,
     )
     fresh = _get_row(conn, intent_id)
     assert fresh is not None
@@ -1338,6 +1347,137 @@ def recover_running_intents(conn: sqlite3.Connection, board_id: str) -> dict:
     return {"paused": paused}
 
 
+# --- 保存后的材料保护（执行中任务） ---------------------------------------
+
+
+def _material_signatures(state: dict, ids: Iterable[str]) -> dict[str, str]:
+    """材料在**有含义的字段**上的指纹：位置 / 折叠 / 书签不算改动。"""
+    cards = {str(c.get("id")): c for c in state.get("cards") or []}
+    signatures: dict[str, str] = {}
+    for card_id in ids:
+        key = str(card_id)
+        card = cards.get(key)
+        signatures[key] = _signature(_card_semantic(card)) if isinstance(card, dict) else "missing"
+    return signatures
+
+
+def _material_watch(row: sqlite3.Row) -> dict[str, str]:
+    """任务开始执行时记下的材料指纹（存在 progress 的私有键里，不进接口负载）。"""
+    progress = models.loads(row["progress"], {})
+    watch = progress.get("__materialWatch") if isinstance(progress, dict) else None
+    if not isinstance(watch, dict):
+        return {}
+    return {str(key): str(value) for key, value in watch.items()}
+
+
+def _progress_with_watch(row: sqlite3.Row, signatures: dict[str, str]) -> dict:
+    payload = dict(_progress_shape(models.loads(row["progress"], {})))
+    if signatures:
+        payload["__materialWatch"] = signatures
+    return payload
+
+
+def _watch_for(conn: sqlite3.Connection, row: sqlite3.Row, state: dict | None = None) -> dict:
+    refs = [str(x) for x in models.loads(row["material_refs"], [])]
+    if not refs:
+        return {}
+    if state is None:
+        state = _load_state(conn, row["board_id"])
+    return _material_signatures(state, refs)
+
+
+def _material_label(state: dict, card_id: str) -> str:
+    for card in state.get("cards") or []:
+        if str(card.get("id")) == str(card_id):
+            return _card_label(card)
+    return f"材料 {card_id}（已经不在板面上）"
+
+
+def _changed_materials(row: sqlite3.Row, state: dict) -> list[str]:
+    watch = _material_watch(row)
+    if not watch:
+        return []
+    refs = [str(x) for x in models.loads(row["material_refs"], [])]
+    current = _material_signatures(state, refs)
+    return [card_id for card_id in refs if watch.get(card_id) != current.get(card_id)]
+
+
+def preview_material_impact(conn: sqlite3.Connection, *, board_id: str, state: dict) -> dict:
+    """保存前的只读预判：这次改动会不会影响执行中的任务。
+
+    契约 §1.6：改动执行中任务依赖的材料前，先说明受影响的任务与后果，再让用户选择
+    继续（改动生效、相关任务暂停并保留进度）或取消（不改动、任务继续）。
+    这里**不改任何状态**；状态判定以 on_board_saved 为准。
+    """
+    affected: list[dict] = []
+    for row in _board_rows(conn, board_id):
+        if row["status"] != "running" or not _material_watch(row):
+            continue
+        changed = _changed_materials(row, state)
+        if not changed:
+            continue
+        affected.append(
+            {
+                "intentId": row["id"],
+                "title": row["title"],
+                "materials": [_material_label(state, card_id) for card_id in changed],
+                "consequence": (
+                    "继续保存会让这项任务暂停并保留当前进度；取消则不改动板面，任务继续。"
+                    "暂停后不会自动继续，需要你确认。"
+                ),
+            }
+        )
+    return {"affected": affected}
+
+
+def on_board_saved(
+    conn: sqlite3.Connection, *, board_id: str, state: dict, reason: str = "op"
+) -> dict:
+    """保存板面之后被调用（保存本身仍然不调用 QIO）。
+
+    服务端**自己再判定一次**，不依赖前端的预判：凡是 materialRefs 与本次改动相交的
+    running 意图，置为 paused 并保留进度。第一次观察到的任务只记基线，不算改动。
+    """
+    rows = _board_rows(conn, board_id)
+    if not rows:
+        return {"paused": [], "affected": []}
+    paused: list[dict] = []
+    affected: list[str] = []
+    for row in rows:
+        if row["status"] != "running":
+            continue
+        refs = [str(x) for x in models.loads(row["material_refs"], [])]
+        if not refs:
+            continue
+        if not _material_watch(row):
+            # 还没有基线（例如任务在这套保护生效之前就开始）：记下指纹，本次不误伤
+            _update(conn, row["id"], progress=_progress_with_watch(row, _material_signatures(state, refs)))
+            continue
+        changed = _changed_materials(row, state)
+        if not changed:
+            continue
+        labels = "、".join(_material_label(state, card_id) for card_id in changed)
+        text = (
+            f"你修改了这项任务依赖的材料（{labels}）：保存已经生效，任务因此暂停并保留进度。"
+            "需要你确认后才会继续；不会自动重试。"
+        )
+        base = _progress_shape(models.loads(row["progress"], {}))
+        api_progress = _progress_shape({"done": base["done"], "total": base["total"], "text": text})
+        stored = dict(api_progress)
+        stored["__materialWatch"] = _material_signatures(state, refs)
+        _update(conn, row["id"], status="paused", reason=text, progress=stored)
+        affected.append(row["id"])
+        paused.append(
+            {
+                "intentId": row["id"],
+                "title": row["title"],
+                "reason": text,
+                "progress": api_progress,
+            }
+        )
+    return {"paused": paused, "affected": affected}
+
+
 # --- 演示意图 -----------------------------------------------------------
 
 
@@ -1556,7 +1696,9 @@ __all__ = [
     "batch_decide",
     "create_demo_intents",
     "list_intents",
+    "on_board_saved",
     "on_new_submission",
+    "preview_material_impact",
     "recover_running_intents",
     "reject_intent",
     "update_preview",

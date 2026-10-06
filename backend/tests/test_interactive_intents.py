@@ -546,3 +546,83 @@ def test_preview_payload_shape_is_json_serialisable(db_conn):
     dumped = json.dumps(failed, ensure_ascii=False)
     assert "演示" in dumped
     assert set(failed["revert"]) == {"reverted", "kept", "pendingDecision", "reasonText"}
+
+# --- 执行中任务的材料保护（保存后判定 + 保存前预判） -----------------------
+
+
+def test_preview_material_impact_is_read_only(db_conn):
+    seed = _seed(db_conn)
+    target = _demo(db_conn)[_t("failing")]
+    intents.approve_intent(db_conn, target["id"])
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
+    pending = _state(db_conn)
+    for card in pending["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料 A（用户改过）"
+
+    impact = intents.preview_material_impact(db_conn, board_id=BOARD, state=pending)
+    assert len(impact["affected"]) == 1
+    entry = impact["affected"][0]
+    assert entry["intentId"] == target["id"]
+    assert entry["title"] == target["title"]
+    assert entry["materials"] and any("材料" in item for item in entry["materials"])
+    assert "暂停" in entry["consequence"]
+
+    # 只读：板面没保存，任务仍然是执行中
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+    assert _cards(db_conn)[seed["a"]["id"]]["content"] == "材料 A"
+
+
+def test_on_board_saved_pauses_running_intent_when_material_changes(db_conn):
+    seed = _seed(db_conn)
+    demo = _demo(db_conn)
+    running = demo[_t("failing")]
+    waiting = demo[_t("combine")]
+    intents.approve_intent(db_conn, running["id"])
+    progress_before = _listed(db_conn)[running["id"]]["progress"]
+
+    state = _state(db_conn)
+    for card in state["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料 A（用户改过）"
+    board_store.save_board(db_conn, BOARD, state, reason="user-edit-material")
+
+    result = intents.on_board_saved(
+        db_conn, board_id=BOARD, state=_state(db_conn), reason="user-edit-material"
+    )
+    assert result["affected"] == [running["id"]]
+    assert [item["intentId"] for item in result["paused"]] == [running["id"]]
+    assert "暂停" in result["paused"][0]["reason"]
+    assert result["paused"][0]["progress"]["done"] == progress_before["done"]
+    assert result["paused"][0]["progress"]["total"] == progress_before["total"]
+
+    paused = _listed(db_conn)[running["id"]]
+    assert paused["status"] == "paused"
+    assert "不会自动重试" in paused["reason"]
+    # 等待审批的意图不受影响
+    assert _listed(db_conn)[waiting["id"]]["status"] == "pending"
+
+    # 再保存一次不会重复暂停
+    assert intents.on_board_saved(
+        db_conn, board_id=BOARD, state=_state(db_conn), reason="op"
+    ) == {"paused": [], "affected": []}
+
+
+def test_on_board_saved_ignores_layout_and_unrelated_cards(db_conn):
+    _seed(db_conn)
+    target = _demo(db_conn)[_t("failing")]
+    intents.approve_intent(db_conn, target["id"])
+
+    state = _state(db_conn)
+    for card in state["cards"]:
+        card["x"] = card["x"] + 200  # 只移动位置：不是材料变化
+    assert intents.on_board_saved(db_conn, board_id=BOARD, state=state) == {
+        "paused": [],
+        "affected": [],
+    }
+
+    state["cards"].append(models.new_card("text", "与任务无关的临时注释"))
+    assert intents.on_board_saved(db_conn, board_id=BOARD, state=state)["paused"] == []
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
