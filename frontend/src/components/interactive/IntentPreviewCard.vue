@@ -169,10 +169,12 @@ const revertText = computed(() => props.intent.revert?.reasonText ?? "");
 const dockedStyle = computed<CSSProperties>(() => {
   if (!props.docked) return {};
   const bounds = previewBounds(preview.value);
+  // 板面坐标不等于屏幕坐标（板面可以平移、缩放）：这里只用它做左右倾向，
+  // 真正贴着预览定位由放在板面舞台上的父组件（IntentStatusPopover）用屏幕矩形覆盖。
   if (!bounds) return { top: "auto", bottom: "var(--sp-6)", left: "50%", transform: "translateX(-50%)" };
   const centerX = Math.round(bounds.x + Math.max(bounds.w, 1) / 2);
   return {
-    left: "clamp(180px, " + centerX + "px, calc(100% - 280px))",
+    left: "min(max(180px, " + centerX + "px), calc(100% - 180px))",
     top: "auto",
     bottom: "var(--sp-6)",
     transform: "translateX(-50%)",
@@ -343,7 +345,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 .intent-card.docked {
   position: absolute;
   z-index: 34;
-  width: min(420px, calc(100vw - var(--sp-6)));
+  width: min(360px, calc(100vw - var(--sp-6)));
   padding: var(--sp-2) var(--sp-3);
   border-style: dashed;
   border-color: var(--link);

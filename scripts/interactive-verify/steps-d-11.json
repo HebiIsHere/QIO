@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();let running=j.intents.filter(i=>i.status==='running');if(!running.length){const cand=j.intents.find(i=>i.status==='pending');if(cand){const r=await fetch(base+'/intents/'+cand.id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmDependency:true})});const jj=await r.json();return JSON.stringify({approved:cand.id,ok:jj.ok,status:jj.intent&&jj.intent.status})}return 'no-pending'}return 'already-running:'+running[0].id})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();await new Promise(r=>setTimeout(r,700));const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');const id=card?card.getAttribute('data-intent-id'):null;const nodes=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>{const r=e.getBoundingClientRect();return {cls:e.className,w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)}}):[];const strip=card?card.getBoundingClientRect():null;return JSON.stringify({id,nodes,strip:strip?{x:Math.round(strip.x),y:Math.round(strip.y),w:Math.round(strip.width),h:Math.round(strip.height)}:null,within:strip?strip.x>=0&&strip.y>=0&&strip.right<=window.innerWidth&&strip.bottom<=window.innerHeight:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-45-docked-anchored-running"
+  }
+]

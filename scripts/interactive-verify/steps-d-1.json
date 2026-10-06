@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{try{localStorage.removeItem('qio.interactive.intentBatches');}catch(e){};return 'cleared'})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({board:!!document.querySelector('[data-im=\"board\"]'), addText:!!document.querySelector('[data-im=\"add-text\"]'), demo:!!document.querySelector('[data-im=\"demo-create\"]'), tasksEntry:!!document.querySelector('[data-im=\"tasks-entry\"]'), batchEntry:!!document.querySelector('[data-im=\"batch-entry\"]'), intents:document.querySelectorAll('[data-im=\"intent\"]').length, cards:document.querySelectorAll('[data-im=\"card\"]').length})"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-00-board-empty"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const u=window.__D_HOST__&&window.__D_HOST__.useInteractiveStore; if(!u) return 'no-store'; const s=u(); const r=await fetch('http://127.0.0.1:8894/api/interactive/boards/'+s.boardId+'/state'); const j=await r.json(); return JSON.stringify({cards:j.state.cards.length, ids:j.state.cards.map(c=>c.id)});})()"
+  }
+]
