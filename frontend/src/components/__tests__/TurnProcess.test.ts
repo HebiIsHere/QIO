@@ -137,6 +137,16 @@ describe("过程区：状态行与当前阶段", () => {
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
     expect(w.find("[data-test='turn-process-status']").text()).toContain("已完成");
     expect(w.find("[data-test='turn-process-duration']").text()).toContain("12 秒");
+    /**
+     * 折叠态**只出现一次状态词**（2026-10-06 D 的真机截图实测缺陷：
+     * 过程区状态行说「已完成」，内嵌耗时面板又拼了一次 → 「已完成 · 已完成 · 耗时 2.6 秒」）。
+     * 状态词由过程区状态行唯一负责，耗时面板只输出「耗时 X」。
+     */
+    const region = w.find("[data-test='turn-process']");
+    // 用可见文本计数（html() 会带上模板注释，注释不该参与断言）
+    expect(region.text().split("已完成").length - 1).toBe(1);
+    // 总耗时仍然可见（在同一个折叠态里）
+    expect(region.text()).toContain("12 秒");
     w.unmount();
   });
 
@@ -153,6 +163,8 @@ describe("过程区：状态行与当前阶段", () => {
     expect(status).toContain("已失败");
     expect(status).toContain("1 项失败");
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
+    // 失败态同样只有一个状态词（耗时面板不再拼状态词）
+    expect(w.find("[data-test='turn-process']").text().split("已失败").length - 1).toBe(1);
     w.unmount();
   });
 });
