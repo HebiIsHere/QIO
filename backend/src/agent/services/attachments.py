@@ -195,6 +195,18 @@ def safe_name(name: str) -> str:
     return cleaned
 
 
+def _dedup_ids(values: Iterable[str] | None) -> list[str]:
+    """请求里的附件 id：去空白、去重、保序（显式清单的唯一整理）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in values or []:
+        value = str(item).strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
 def human_size(size: int) -> str:
     value = float(size)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -1125,13 +1137,7 @@ class AttachmentService:
                     outcome.accept(refreshed)
             return outcome
 
-        seen: set[str] = set()
-        wanted: list[str] = []
-        for item in attachment_ids:
-            value = str(item).strip()
-            if value and value not in seen:
-                seen.add(value)
-                wanted.append(value)
+        wanted = _dedup_ids(attachment_ids)
 
         for attachment_id in wanted:
             # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
@@ -1142,14 +1148,14 @@ class AttachmentService:
             if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
                 outcome.reject(attachment_id, "这个附件属于另一个话题，不能带到这里")
                 continue
+            reason = self._reject_reason(
+                att, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+            )
+            if reason:
+                outcome.reject(attachment_id, reason)
+                continue
             owner = str(att.turn_id or "")
             if owner and owner != turn:
-                if not retry_of or owner != retry_of:
-                    outcome.reject(
-                        attachment_id,
-                        "这个附件已经属于别的一轮了；把它带到新一轮请用这一轮的重试入口",
-                    )
-                    continue
                 cloned = self._clone_for_retry(
                     att, turn_id=turn, topic_id=topic_id, message_id=message_id
                 )
@@ -1157,9 +1163,6 @@ class AttachmentService:
                     outcome.reject(attachment_id, cloned)
                 else:
                     outcome.accept(cloned)
-                continue
-            if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
-                outcome.reject(attachment_id, self._state_reason(att))
                 continue
             self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
             refreshed = self.get(att.id, check=False)
@@ -1172,6 +1175,72 @@ class AttachmentService:
         if not str(turn_id or "").strip():
             return []
         return [att.id for att in self.list(turn_id=str(turn_id), limit=200, check=False)]
+
+    def precheck_for_turn(
+        self,
+        *,
+        attachment_ids: Iterable[str] | None,
+        topic_id: str | None,
+        retry_of_turn_id: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """受理前**只校验、不落库**：返回 [(请求的 id, 人话原因)]（空 = 都能绑）。
+
+        调用方（POST /api/turns、/api/turns/{id}/resend）在**入队之前**调用它：
+        非空就返回结构化失败，绝不出现「后端已经开始执行后才发现附件丢失」。
+        判据与 bind_for_turn 共用同一份 _reject_reason，两处规则不会漂移；
+        真正的克隆 / 绑定在拿到 turn_id 之后由 bind_for_turn 完成。
+        """
+        if attachment_ids is None:
+            # 缺字段 = 旧客户端兜底：没有显式清单可预检（兜底只会绑能绑的）
+            return []
+        retry_of = str(retry_of_turn_id or "").strip() or None
+        rejected: list[tuple[str, str]] = []
+        for attachment_id in _dedup_ids(attachment_ids):
+            # check=True：missing / changed 由文件世界的事实决定
+            att = self.get(attachment_id)
+            if att is None:
+                rejected.append((attachment_id, "没有这个附件（可能已经被删除）"))
+                continue
+            reason = self._reject_reason(
+                att, turn_id="", topic_id=topic_id, retry_of_turn_id=retry_of
+            )
+            if reason:
+                rejected.append((attachment_id, reason))
+        return rejected
+
+    def _reject_reason(
+        self,
+        att: Attachment,
+        *,
+        turn_id: str,
+        topic_id: str | None,
+        retry_of_turn_id: str | None,
+    ) -> str | None:
+        """这条附件现在能不能绑到这一轮；不能就给人话原因（判据的唯一一份）。"""
+        if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
+            return "这个附件属于另一个话题，不能带到这里"
+        owner = str(att.turn_id or "")
+        if owner and owner != str(turn_id or ""):
+            if not retry_of_turn_id or owner != retry_of_turn_id:
+                return "这个附件已经属于别的一轮了；把它带到新一轮请用这一轮的重试入口"
+            # 重试复用：还要能真的复用（副本在 / 引用位置可用）
+            return self._clone_reason(att)
+        if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
+            return self._state_reason(att)
+        return None
+
+    def _clone_reason(self, att: Attachment) -> str | None:
+        """重试克隆的**只读**可行性检查（真正落盘在 _clone_for_retry）。"""
+        if att.kind == "copy":
+            if not att.stored_path or not self.is_managed_path(att.stored_path):
+                return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
+            if not Path(att.stored_path).is_file():
+                return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
+            return None
+        state, error = self._reference_state_now(att)
+        if state == STATE_FAILED:
+            return error or "这个位置现在不能当附件用"
+        return None
 
     def _bind_row(
         self,

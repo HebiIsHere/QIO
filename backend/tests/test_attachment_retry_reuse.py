@@ -278,6 +278,52 @@ def test_retry_attachment_ids_lists_what_the_source_turn_bound(svc: AttachmentSe
     assert svc.retry_attachment_ids("turn_absent") == []
 
 
+# -- 6. 受理前预检（route 在 submit 之前调用：rejected 非空就不入队） ------------------
+
+
+def test_precheck_reports_the_same_rejections_without_touching_anything(
+    svc: AttachmentService, tmp_path: Path
+):
+    """预检只读：判据与 bind_for_turn 同一份，且不落库、不克隆。"""
+    ready = _ready_copy(svc, _write(tmp_path / "ok.txt", b"ok"), topic_id="t1")
+    other_topic = _ready_copy(svc, _write(tmp_path / "other.txt", b"o"), topic_id="t2")
+    bound = _ready_copy(svc, _write(tmp_path / "bound.txt", b"b"), topic_id="t1")
+    _bind(svc, "turn_old", [bound.id])
+
+    rejected = dict(
+        svc.precheck_for_turn(
+            attachment_ids=["att_missing_0001", other_topic.id, bound.id, ready.id],
+            topic_id="t1",
+        )
+    )
+    assert set(rejected) == {"att_missing_0001", other_topic.id, bound.id}
+    assert "没有这个附件" in rejected["att_missing_0001"]
+    assert "话题" in rejected[other_topic.id]
+    assert "别的一轮" in rejected[bound.id]
+    # 只读：没有任何行被改写，也没有产生克隆
+    assert svc.get(ready.id).turn_id is None
+    assert svc.get(other_topic.id).turn_id is None
+    assert svc.get(bound.id).turn_id == "turn_old"
+
+
+def test_precheck_accepts_retry_of_turn_and_stays_read_only(svc: AttachmentService, tmp_path: Path):
+    att = _ready_copy(svc, _write(tmp_path / "retry.txt", b"r"), topic_id="t1")
+    _bind(svc, "turn_old", [att.id])
+
+    assert svc.precheck_for_turn(
+        attachment_ids=[att.id], topic_id="t1", retry_of_turn_id="turn_old"
+    ) == []
+    # 预检本身不克隆（克隆只在 bind_for_turn 里发生）
+    assert [a.id for a in svc.list(turn_id="turn_new")] == []
+    assert svc.get(att.id).turn_id == "turn_old"
+
+
+def test_precheck_ignores_missing_field_fallback(svc: AttachmentService, tmp_path: Path):
+    """缺字段 = 旧客户端兜底：没有显式清单可预检（兜底永远能绑或跳过）。"""
+    _ready_copy(svc, _write(tmp_path / "fallback.txt", b"f"), topic_id="t1")
+    assert svc.precheck_for_turn(attachment_ids=None, topic_id="t1") == []
+
+
 def test_bind_outcome_is_still_list_shaped_for_existing_callers(svc: AttachmentService, tmp_path: Path):
     """旧调用点（server.py / 既有测试）按 list[Attachment] 消费：迁移期不能突然 500。"""
     att = _ready_copy(svc, _write(tmp_path / "compat.txt", b"c"))
