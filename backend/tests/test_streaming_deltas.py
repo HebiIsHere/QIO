@@ -909,34 +909,49 @@ async def test_stream_error_keeps_confirmed_text_and_emits_error():
     assert published[-1]["interim"] is True
 
 
-async def test_model_call_failure_is_normalized_to_a_provider_error():
-    """模型调用路径上的异常一律归一化成供应商错误（原类名/原文如实保留）。
+async def test_plain_adapter_exception_is_not_disguised_as_a_provider_error():
+    """没有走适配器错误分类的异常**不得**被包装成厂商故障（Lead 裁决 2026-10-06）。
 
-    上层（TURN_END）只拿得到异常类名；不归一化的话，一个没有走适配器错误分类的
-    RuntimeError 会被误报成「内部错误」，而它其实是供应商路径的失败。
+    provider_error 的含义是「厂商/传输路径失败」。适配器或解析自己出 bug 时把它
+    报成厂商故障，是对用户撒谎 —— 所以这里断言异常**原样**上抛（类型与文字都不变），
+    由上层按类名如实归到 internal_error。
     """
+    from agent.adapters import errors as adapter_errors
     from agent.adapters.errors import ProviderError
 
-    class _BoomAdapter(BaseAdapter):
+    class _BugAdapter(BaseAdapter):
         mode = AdapterMode.TEXT
         supports_stream = False
 
         def __init__(self) -> None:
-            self.model = "boom"
+            self.model = "bug"
             self.endpoint = None
 
         async def complete(self, messages, tools, **kwargs):
-            raise RuntimeError("厂商返回 500：上游错误")
+            raise RuntimeError("解析响应时炸了：choices 字段缺失")
 
     bus = EventBus()
-    loop = AgentLoop(_BoomAdapter(), _registry(), bus, turn_id="turn_1")
-    with pytest.raises(ProviderError) as excinfo:
+    loop = AgentLoop(_BugAdapter(), _registry(), bus, turn_id="turn_1")
+    with pytest.raises(RuntimeError) as excinfo:
         await loop.run("hi")
 
-    # 原类名与原文都在：包一层不是为了掩盖，而是为了把「哪条路径失败」说清楚
-    assert "RuntimeError" in str(excinfo.value)
-    assert "厂商返回 500" in str(excinfo.value)
-    # 归一化后的类名足以让 core/turn.py 归到 provider_error（见 test_turn_timing_facts）
+    assert not isinstance(excinfo.value, ProviderError)  # 不冒充厂商故障
+    assert type(excinfo.value).__name__ == "RuntimeError"
+    assert "choices 字段缺失" in str(excinfo.value)  # 原文如实保留
+    assert _events(bus, "ERROR")[0]["code"] == "planning_failed"
+
+    # 对照：已经归一化的适配器错误保持自己的类型（它就是厂商故障）
+    normalized = FakeStreamAdapter(
+        [
+            StreamScript(
+                text_chunks=["前半段"],
+                error=adapter_errors.NetworkError("连接断了"),
+                error_after=1,
+            )
+        ]
+    )
+    with pytest.raises(adapter_errors.NetworkError):
+        await AgentLoop(normalized, _registry(), EventBus(), turn_id="turn_2").run("hi")
 
 
 async def test_adapter_without_streaming_gets_one_shot_assistant():
