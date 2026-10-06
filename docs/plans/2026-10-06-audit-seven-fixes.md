@@ -33,6 +33,9 @@
 4. **显式回答阶段（补充路径，零/一次额外调用）**：工具阶段收尾的那次调用**没有产出任何正文**时，循环再发**一次不带工具**的调用专门产出正式回答；这次调用天然满足「role 可靠」，其正文从**第一个增量起**就进正式回答区（真流式）。成本如实记录：每轮最多一次额外调用，只在必要时发生。
 5. 判据里**不得**出现：经过多少时间、文案像不像答案、暂未收到工具增量、某 kind 变化。
 6. 保持不变：累计快照 + `delta_id`/`seq` 单调去重、取消/失败保留已确认文本、断线重连与历史恢复、`TURN_END.final_content` 只校准、不支持流式的 provider 如实提示 `streaming:false`。
+7. **实现口径（2026-10-06 Lead 确认）**：正文增量**一开始就**以 `interim=true` 实时发布（进过程区）；调用结束且无工具调用 → **同一 `delta_id`** 发 `{interim:false, streaming:false, content=累计全文}` 原样提升；有工具调用 → 留在过程区，阶段就位后用**同一 `delta_id`** 补发带 `stage_id`/`call_ids` 的累计快照。
+   - 前端必须允许 `interim: true → false` 的**单向提升**（现状 session.ts 写着「interim 一旦为 true 就不再回正文区」要改）；**正式回答 → 过程区永远不允许**。
+   - 事件里**显式 `stage_id=null` 时不得回退到「到达时的当前阶段」**：先按未归属渲染，带 `stage_id` 的快照到达后就地归位（同一消息，不新增）；正式回答永不挂阶段。
 
 事件层不变（`ASSISTANT{content, interim, streaming, delta_id, seq, stage_id, call_ids}`）：`interim=true` 表示「过程区文字」，`interim=false` 表示「正式回答」。新增可选字段 `role_evidence: "call_closed_without_tools" | "tool_free_call"`，仅用于取证与测试断言。
 
@@ -41,13 +44,23 @@
 `TURN_END.data` 增补（全部来自系统事实，脱敏后写入）：
 ```jsonc
 {
-  "reason_code": "provider_error" | "tool_failed" | "budget" | "no_progress" | "guard_halt" | "user_stopped" | "interrupted" | "none",
+  "reason_code": "provider_error" | "internal_error" | "credential_unavailable" | "tool_failed"
+               | "budget" | "no_progress" | "guard_halt" | "user_stopped" | "interrupted" | "none",
   "reason": "一句话人话原因（≤200 字，已过 redact）",
   "stopped_by": "user" | "system" | null,
-  "actions": ["retry" | "resend" | "continue"]   // 只列**当前确实可用**的操作
+  "actions": ["retry" | "resend"]   // 只列**当前确实可用**的操作，见下表
 }
 ```
 - 可恢复的单次工具错误**不等于**整轮失败；`status` 语义不变（`completed|failed|cancelled|unavailable`）。
+- `actions` 映射（2026-10-06 Lead 裁决：宁缺毋滥，**只给确实可执行的**）：
+
+| reason_code | actions | 依据 |
+| --- | --- | --- |
+| `provider_error` / `internal_error` / `tool_failed` | `["retry"]` | 前端用现有发送接口重发该轮用户消息（新开一轮）；B 必须提供入口，否则 A 必须去掉该 action |
+| `user_stopped` / `interrupted` | `["resend"]` | 后端既有 `POST /api/turns/{id}/resend`（仅 journal 记成 interrupted 的可重发） |
+| `budget` / `no_progress` / `guard_halt` | `[]` | 重发同样的请求会再次停下，不给会再次失败的按钮；原因写清楚即可 |
+| `credential_unavailable` | `[]` | 真正入口是「设置 → 凭据」，写在 reason 文案里 |
+| `none` | `[]` | — |
 - 前端把 `reason/reason_code/actions` 记进 `TurnFacts`（按 `turn_id`），历史分页与 RESYNC 快照同样带回。
 - 旧记录没有这些字段 → 不伪造原因，只显示原有状态词。
 
