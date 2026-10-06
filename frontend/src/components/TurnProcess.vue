@@ -101,15 +101,25 @@ const interims = computed(() => props.items.filter((m) => m.role === "assistant"
 function toolsOf(stageId: string): StreamMessage[] {
   return tools.value.filter((m) => (m.stageId ?? "") === stageId);
 }
-/** 某阶段里的中间话（与阶段说明同文时不重复出现：同一段文字只渲染一次） */
-function interimsOf(stage: TurnStage): StreamMessage[] {
-  const notes = new Set(stage.notes.map((n) => n.text));
-  return interims.value.filter(
-    (m) => (m.stageId ?? "") === stage.stageId && !notes.has(m.content.trim()),
-  );
-}
 const looseTools = computed(() => tools.value.filter((m) => !m.stageId));
-const looseInterims = computed(() => interims.value.filter((m) => !m.stageId));
+/**
+ * 没有阶段归属的中间话（旧后端 / 旧记录）：仍然按过程说明行渲染。
+ *
+ * 带 stage_id 的中间话**不在这里** —— 它是该阶段的历次说明之一（StageNote），
+ * 由阶段的 notes 渲染，避免出现并列的过程气泡。
+ * 兜底：如果它的文字在任何阶段说明里都找不到（阶段被裁剪 / 归属失败），
+ * 仍然按过程说明行渲染 —— 绝不因为归属问题把已经生成的字丢掉。
+ */
+const looseInterims = computed(() => {
+  const noteTexts = new Set<string>();
+  for (const stage of stages.value) {
+    for (const note of stage.notes) noteTexts.add(note.text);
+  }
+  return interims.value.filter((m) => {
+    if (!m.stageId) return true;
+    return !noteTexts.has(m.content.trim());
+  });
+});
 
 /** 当前阶段的说明：STAGE 的最后一条 text（模型文案，不参与任何判定） */
 const currentNote = computed(() => {
@@ -128,12 +138,6 @@ const currentStageEarlierNotes = computed(() => {
   return stage.notes.slice(0, -1);
 });
 
-/** 当前阶段里的中间话（与阶段说明同文时不重复显示） */
-const currentInterims = computed(() => {
-  const stage = currentStage.value;
-  if (!stage) return [];
-  return interimsOf(stage);
-});
 /** legacy（没有阶段）：运行中把最后一句中间话当作「当前说明」，但不给它编一个阶段名 */
 const lastLooseLine = computed(() => {
   const last = props.items[props.items.length - 1];
@@ -332,8 +336,8 @@ onBeforeUnmount(() => {
     <!-- 当前阶段：名字 + 当前说明，突出显示；当前阶段的工具也在这里（运行中看得见） -->
     <div v-if="currentStage" class="tp-current">
       <div class="tp-cur-name serif">{{ currentStage.name || "当前阶段" }}</div>
+      <!-- 当前说明：STAGE.text 或这一批中间话的最新一句（中间话是该阶段的说明，不是并列气泡） -->
       <p v-if="currentNote" class="tp-cur-text">{{ currentNote }}</p>
-      <MessageItem v-for="m in currentInterims" :key="m.id" :message="m" />
       <MessageItem v-for="m in toolsOf(currentStage.stageId)" :key="m.id" :message="m" />
     </div>
     <div v-else-if="running && lastLooseLine" class="tp-current">
@@ -385,10 +389,10 @@ onBeforeUnmount(() => {
                   {{ stage.status === "done" ? "已完成" : "进行中" }}
                 </span>
               </div>
+              <!-- 阶段说明（含 STAGE.text 与工具轮中间话）：一个阶段一个列表，各出现一次 -->
               <p v-for="note in stage.notes" :key="note.narrativeId || note.text" class="tp-note" :data-kind="note.kind">
                 {{ note.text }}
               </p>
-              <MessageItem v-for="m in interimsOf(stage)" :key="m.id" :message="m" />
               <MessageItem v-for="m in toolsOf(stage.stageId)" :key="m.id" :message="m" />
             </section>
             <!-- 当前阶段更早的说明：运行中也能回看（最新一条在上面突出显示） -->

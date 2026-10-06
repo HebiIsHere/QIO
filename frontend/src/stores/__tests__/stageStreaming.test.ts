@@ -162,6 +162,134 @@ describe("STAGE：阶段顺序 / 说明 / 状态", () => {
   });
 });
 
+/**
+ * A 的最终契约：ASSISTANT 载荷多了 stage_id / call_ids。
+ *
+ * 已知取舍（Lead 明示）：工具轮的过程旁白在「该次模型调用结束、阶段就位后」显示，
+ * 正式回答的实时性不受影响 —— 所以这里的断言关注「文字挂到哪个阶段、只出现一次」，
+ * 不要求中间话在模型调用结束前就出现在某个阶段里。
+ */
+describe("ASSISTANT 的 stage_id / call_ids（A 最终契约）", () => {
+  it("interim 带 stage_id：先建占位，STAGE 到达就地补齐（同一阶段，不新建）", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });
+    // ASSISTANT 先于 STAGE 到达：阶段还不存在 → 建占位
+    events.route({
+      type: "ASSISTANT",
+      id: "2",
+      ts: "",
+      data: {
+        content: "我先看看仓库",
+        interim: true,
+        streaming: true,
+        delta_id: "dl_a",
+        seq: 1,
+        stage_id: "st_ab12_1",
+        call_ids: ["call_1"],
+      },
+    });
+    let stages = session.stagesFor("t1");
+    expect(stages).toHaveLength(1);
+    expect(stages[0]?.stageId).toBe("st_ab12_1");
+    expect(stages[0]?.notes.map((n) => n.text)).toEqual(["我先看看仓库"]);
+
+    // STAGE 到达：同一 stage_id 就地补齐名字 / 顺序 / 说明，不产生第二个阶段
+    events.route({ type: "STAGE", id: "3", ts: "", data: stagePayload() });
+    stages = session.stagesFor("t1");
+    expect(stages).toHaveLength(1);
+    expect(stages[0]?.name).toBe("读取仓库结构");
+    expect(stages[0]?.notes.map((n) => n.text)).toEqual(["我先看看仓库", "正在读取仓库结构"]);
+
+    // 累计快照：同一条说明**原地更新**，不新增
+    events.route({
+      type: "ASSISTANT",
+      id: "4",
+      ts: "",
+      data: {
+        content: "我先看看仓库结构",
+        interim: true,
+        streaming: true,
+        delta_id: "dl_a",
+        seq: 2,
+        stage_id: "st_ab12_1",
+      },
+    });
+    stages = session.stagesFor("t1");
+    expect(stages[0]?.notes.map((n) => n.text)).toEqual(["我先看看仓库结构", "正在读取仓库结构"]);
+  });
+
+  it("第二个 delta 是第二条说明（不覆盖第一段）", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });
+    events.route({
+      type: "ASSISTANT",
+      id: "2",
+      ts: "",
+      data: { content: "我先看看仓库", interim: true, streaming: true, delta_id: "dl_a", seq: 1, stage_id: "st_ab12_1" },
+    });
+    events.route({
+      type: "ASSISTANT",
+      id: "3",
+      ts: "",
+      data: { content: "再看一眼配置", interim: true, streaming: true, delta_id: "dl_b", seq: 1, stage_id: "st_ab12_1" },
+    });
+    const stage = session.stagesFor("t1")[0];
+    expect(stage?.notes.map((n) => n.text)).toEqual(["我先看看仓库", "再看一眼配置"]);
+  });
+
+  it("call_ids 把没带 stage_id 的工具补到该阶段（系统事实，不靠消息相邻位置猜）", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });
+    events.route({
+      type: "TOOL_START",
+      id: "2",
+      ts: "",
+      data: { turn_id: "t1", call_id: "call_9", tool: "read_file" },
+    });
+    expect(session.messages.find((m) => m.role === "tool")?.stageId).toBeUndefined();
+
+    events.route({
+      type: "ASSISTANT",
+      id: "3",
+      ts: "",
+      data: {
+        content: "我先看看仓库",
+        interim: true,
+        streaming: true,
+        delta_id: "dl_a",
+        seq: 1,
+        stage_id: "st_ab12_1",
+        call_ids: ["call_9"],
+      },
+    });
+    expect(session.messages.find((m) => m.role === "tool")?.stageId).toBe("st_ab12_1");
+    expect(session.stagesFor("t1")[0]?.callIds).toContain("call_9");
+  });
+
+  it("正式回答（interim=false, stage_id=null）不进任何阶段", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });
+    events.route({
+      type: "ASSISTANT",
+      id: "2",
+      ts: "",
+      data: {
+        content: "正式回答",
+        interim: false,
+        streaming: true,
+        delta_id: "dl_ans",
+        seq: 1,
+        stage_id: null,
+        call_ids: [],
+      },
+    });
+    expect(session.stagesFor("t1")).toHaveLength(0);
+    const answer = assistants(session)[0];
+    expect(answer?.interim).not.toBe(true);
+    expect(answer?.stageId).toBeUndefined();
+  });
+});
+
 describe("ASSISTANT：interim 按字段、按 delta 保真、按 seq 去重", () => {
   it("interim 由事件字段决定（正式回答不再被写死成过程）", () => {
     const { events, session } = setup();

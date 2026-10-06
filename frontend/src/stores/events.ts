@@ -374,6 +374,10 @@ export const useEventStore = defineStore("events", {
             session.pushAssistant(content, d.interim === true, d.streaming !== false, {
               deltaId: stringOrNull(d.delta_id),
               seq: numberOrNull(d.seq),
+              // 契约最终版：interim 时后端给同批 STAGE 的 stage_id 与这一批的 call_ids
+              // （正式回答 stage_id=null、call_ids=[]）
+              stageId: stringOrNull(d.stage_id),
+              callIds: Array.isArray(d.call_ids) ? (d.call_ids as string[]).map(String) : [],
             });
           }
           break;

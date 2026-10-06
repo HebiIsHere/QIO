@@ -80,7 +80,14 @@ export interface MessageAttachment {
 /** 阶段自身状态（契约 §1.3）：只表达这个阶段，不代表整轮。 */
 export type StageStatus = "running" | "done";
 
-/** 阶段内的一次说明（来自 STAGE.text，按 narrative_id 去重）。 */
+/**
+ * 阶段内的一次说明。
+ *
+ * 两个来源共用同一个列表（契约 §1.3 最终版）：
+ * * `STAGE.text`：narrativeId 是后端落库的消息 id；
+ * * 工具轮的**中间话**（`ASSISTANT{interim:true, stage_id}`）：narrativeId 是这条本地消息 id。
+ *   中间话是**该阶段的历次说明之一**，不再是一个并列的过程气泡。
+ */
 export interface StageNote {
   narrativeId: string;
   text: string;
@@ -1361,13 +1368,37 @@ export const useSessionStore = defineStore("session", {
       text: string,
       interim = false,
       streaming = false,
-      meta: { deltaId?: string | null; seq?: number | null } = {},
+      meta: {
+        deltaId?: string | null;
+        seq?: number | null;
+        /** 契约最终版：interim 时后端给同批 STAGE 的 stage_id；正式回答为 null */
+        stageId?: string | null;
+        /** 这一批的工具调用 id（系统事实：用于把工具补到该阶段） */
+        callIds?: string[];
+      } = {},
     ) {
       const deltaId = String(meta.deltaId ?? "");
       const seq =
         typeof meta.seq === "number" && Number.isFinite(meta.seq) ? Math.trunc(meta.seq) : null;
-      // 中间话归属「到达时的当前阶段」（归属只看 stage_id，不靠消息相邻位置）
-      const stageId = interim ? this._currentStageIdFor(this.activeTurnId) : null;
+      /**
+       * 中间话归属：优先用事件自带的 stage_id（契约最终版）；旧后端没有这个字段时
+       * 才退回「到达时的当前阶段」。归属只看 stage_id，不靠消息相邻位置。
+       */
+      const stageId = interim
+        ? String(meta.stageId ?? "").trim() || this._currentStageIdFor(this.activeTurnId)
+        : null;
+      /**
+       * 这一批的工具调用 id：系统事实，登记到阶段上（TOOL_START 没给 stage_id 时补归属）。
+       * 先 ensureStage：ASSISTANT 的 stage_id 可能早于 STAGE 到达，占位要在这里就建好，
+       * 否则 call_ids 会因为「阶段还不存在」而丢掉（STAGE 到达后就地补齐，不新建阶段）。
+       */
+      if (stageId) {
+        const turnId = this.activeTurnId ?? "";
+        if (interim) this.ensureStage(stageId, turnId);
+        for (const callId of meta.callIds ?? []) {
+          this.attachCallToStage(turnId, stageId, String(callId));
+        }
+      }
 
       // 1) 同一个 delta_id：累计快照**就地更新**，绝不新建第二条
       const existing = deltaId
@@ -1384,7 +1415,11 @@ export const useSessionStore = defineStore("session", {
         // 只允许 正文 → 过程 这一个方向
         if (interim) {
           existing.interim = true;
-          if (stageId) existing.stageId = stageId;
+          if (stageId) {
+            existing.stageId = stageId;
+            // 说明挂到该阶段（累计快照：同一条说明原地更新，不新增）
+            this._attachInterimNote(existing, stageId);
+          }
         }
         return;
       }
@@ -1396,7 +1431,10 @@ export const useSessionStore = defineStore("session", {
         last.content = text;
         if (interim) {
           last.interim = true;
-          if (stageId) last.stageId = stageId;
+          if (stageId) {
+            last.stageId = stageId;
+            this._attachInterimNote(last, stageId);
+          }
         }
         return;
       }
@@ -1413,6 +1451,67 @@ export const useSessionStore = defineStore("session", {
         ...(seq !== null ? { assistantSeq: seq } : {}),
         ...(stageId ? { stageId } : {}),
       });
+      if (interim && stageId) {
+        const added = this.messages[this.messages.length - 1];
+        if (added) this._attachInterimNote(added, stageId);
+      }
+    },
+    /**
+     * 把一条中间话挂到它的阶段上（作为该阶段的历次说明之一）。
+     *
+     * * 阶段还没建立（ASSISTANT 先于 STAGE 到达）→ 先建**占位阶段**，
+     *   STAGE 到达后由 upsertStage 就地把名字 / 顺序补齐（同一 stage_id，不新建）；
+     * * 同一个 delta 的累计快照**原地更新同一条说明**（按消息 id 认），
+     *   绝不每来一个增量就多出一条说明；
+     * * 空文本不产生说明（不占位置）。
+     */
+    _attachInterimNote(message: StreamMessage, stageId: string) {
+      const turnId = message.turnId ?? this.activeTurnId ?? "";
+      if (!turnId) return;
+      this.ensureStage(stageId, turnId);
+      const list = this.stagesByTurn[turnId];
+      const stage = list?.find((s) => s.stageId === stageId);
+      if (!stage) return;
+      const text = String(message.content ?? "").trim();
+      if (!text) return;
+      const existing = stage.notes.find((n) => n.narrativeId === message.id);
+      if (existing) {
+        existing.text = text;
+        return;
+      }
+      stage.notes.push({
+        narrativeId: message.id,
+        text,
+        kind: "progress",
+        at: message.createdAt,
+      });
+      // 重新赋值一次：让嵌套改动也走一遍响应式更新（与 upsertStage 保持一致）
+      this.stagesByTurn = { ...this.stagesByTurn, [turnId]: [...(list ?? [])] };
+    },
+    /**
+     * 确保某个 stage_id 的阶段存在（占位）。
+     *
+     * ASSISTANT 的 stage_id 可能先于 STAGE 到达：先建一个没有名字的占位，
+     * STAGE 到达后 upsertStage 找到同一 stage_id 就地补齐 —— 不新建第二个阶段。
+     */
+    ensureStage(stageId: string, turnId: string) {
+      const id = String(stageId ?? "").trim();
+      const turn = String(turnId ?? "");
+      if (!id || !turn) return;
+      const list = this.stagesByTurn[turn] ?? [];
+      if (list.some((s) => s.stageId === id)) return;
+      const next = [
+        ...list,
+        {
+          stageId: id,
+          index: list.length + 1,
+          name: "",
+          status: "running" as const,
+          notes: [],
+          callIds: [],
+        },
+      ];
+      this.stagesByTurn = trimTurnMap({ ...this.stagesByTurn, [turn]: next });
     },
     /**
      * 记一次增量到达的真实节奏（相邻两次增量的间隔），并同步 streaming 标记。
@@ -1581,6 +1680,14 @@ export const useSessionStore = defineStore("session", {
         };
         list.push(stage);
       }
+      // 顺序以事件为准（占位阶段是先建的，index 要按 STAGE 补齐）
+      if (
+        typeof payload.index === "number" &&
+        Number.isFinite(payload.index) &&
+        payload.index > 0
+      ) {
+        stage.index = Math.trunc(payload.index);
+      }
       const name = String(payload.name ?? "").trim();
       if (name) stage.name = name;
       // 状态单调：done 之后不再回到 running（阶段文案不能重开一整轮）
@@ -1621,10 +1728,15 @@ export const useSessionStore = defineStore("session", {
       if (!stageId || !callId) return;
       const id = turnId ? String(turnId) : (this.activeTurnId ?? "");
       const list = this.stagesByTurn[id];
-      if (!list) return;
-      const stage = list.find((s) => s.stageId === stageId);
-      if (!stage || stage.callIds.includes(callId)) return;
-      stage.callIds.push(callId);
+      const stage = list?.find((s) => s.stageId === stageId);
+      if (stage && !stage.callIds.includes(callId)) stage.callIds.push(callId);
+      /**
+       * 批内工具归属：ASSISTANT 的 call_ids 是**系统事实**（这一批调用了哪些工具），
+       * 用它把还没归属的工具卡补到该阶段 —— 这不是「靠消息相邻位置猜」，
+       * TOOL_START 自己带了 stage_id 时不会被改动。
+       */
+      const tool = this.messages.find((m) => m.role === "tool" && m.callId === callId && !m.stageId);
+      if (tool) tool.stageId = stageId;
     },
 
     /**
