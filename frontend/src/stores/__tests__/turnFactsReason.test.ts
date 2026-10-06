@@ -153,8 +153,9 @@ describe("问题 7：可用操作真的能执行（retry 重发该轮用户消�
 
     const ok = await session.retryTurn("turn_1");
     expect(ok).toBe(true);
-    // 附件显式绑定（契约 §1.4）：没有附件也要把空数组传给发送接口
-    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", null, []);
+    // 附件显式绑定（契约 §1.4）：没有附件也要把空数组传给发送接口；
+    // R4 §1.2：重试还带 retry_of_turn_id，后端才能复用原轮附件
+    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", null, [], "turn_1");
     const last = session.messages[session.messages.length - 1];
     expect(last?.role).toBe("user");
     expect(last?.content).toBe("帮我核对实现");

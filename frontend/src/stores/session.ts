@@ -397,6 +397,41 @@ function formatToolArguments(args: unknown): string {
   }
 }
 
+/**
+ * 从发送失败里取出「附件没附上」的结构化信息（契约 §1.2）。
+ *
+ * 后端在 rejected 非空时返回结构化失败（detail 对象里带 rejected 数组）。
+ * 拿不到这个形状就返回 null —— 普通失败绝不伪造成附件原因。
+ */
+function attachmentRejectionFrom(err: unknown): {
+  message: string;
+  rejected: { id: string; reason: string }[];
+} | null {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as { detail?: unknown }).detail;
+  const source =
+    detail && typeof detail === "object"
+      ? (detail as Record<string, unknown>)
+      : (body as Record<string, unknown>);
+  const raw = source.rejected;
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const rejected: { id: string; reason: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const id = String(row.id ?? "").trim();
+    if (!id) continue;
+    rejected.push({ id, reason: String(row.reason ?? "没有附上") });
+  }
+  if (!rejected.length) return null;
+  const text =
+    typeof source.message === "string" && source.message.trim()
+      ? source.message.trim()
+      : `有 ${rejected.length} 个附件没有附上`;
+  return { message: text, rejected };
+}
+
 /** 高影响知识候选（对话内确认卡）。 */
 export interface KnowledgeCandidate {
   knowledgeId: string;
@@ -527,6 +562,11 @@ export interface StreamMessage {
   attachmentIds?: string[];
   /** 附件展示元数据（与 C 的 AttachmentRef 同形；拿不到就不编造名称与状态） */
   attachments?: MessageAttachment[];
+  /**
+   * 受理回执与界面不一致时的**事实**说明（例如「有 1 个附件没有附上：…」）。
+   * 只在后端明确说「没绑上」时写：绝不出现「界面有附件、模型实际没有」。
+   */
+  attachmentNotice?: string;
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
   /** 后端核对通过的完成结论（有就显示「后端已核对」，没有就不显示） */
@@ -617,6 +657,15 @@ export const useSessionStore = defineStore("session", {
      * 后台/排队任务开始时用户可能正在往上读，不能被拽走。
      */
     localSendSeq: 0,
+    /**
+     * 最近一次发送因附件被拒（结构化失败）：保留文本与可恢复信息，
+     * 由输入区显示逐条原因并提供「移除这些附件后发送」。
+     * 下一次发送开始时清空（不把上一次的原因挂在新的尝试上）。
+     */
+    lastSendRejection: null as {
+      message: string;
+      rejected: { id: string; reason: string }[];
+    } | null,
     /** 本机发送被后端拒绝的次数：消息流据此把阅读位置放回发送前 */
     sendRejectedSeq: 0,
     /**
@@ -2575,11 +2624,21 @@ export const useSessionStore = defineStore("session", {
       this.turnActionBusy = `${turnId}:retry`;
       this.clearTurnActionFeedback(turnId);
       try {
-        const ok = await this.send(text, source?.attachmentIds, source?.attachments);
+        /**
+         * 关键：把「这是哪一轮的重试」告诉后端。
+         * 原轮的附件已经绑在那一轮上，没有这个参数后端只能拒绝（旧实现正是漏了它，
+         * 于是重试轮 0 附件、界面却还显示着标签）。
+         */
+        const ok = await this.send(text, source?.attachmentIds, source?.attachments, {
+          retryOfTurnId: turnId,
+        });
         if (!ok) {
+          const rejection = this.lastSendRejection;
           this.setTurnActionFeedback(
             turnId,
-            `重试没有发出去：${this.lastError ?? "请求未被受理"}（可以再试一次）`,
+            rejection
+              ? `重试没有发出去：${rejection.message}（可以移除这些附件后再试）`
+              : `重试没有发出去：${this.lastError ?? "请求未被受理"}（可以再试一次）`,
           );
         }
         return ok;
@@ -2614,10 +2673,16 @@ export const useSessionStore = defineStore("session", {
       text: string,
       attachmentIds?: string[],
       attachments?: MessageAttachment[],
+      options: {
+        /** 只在重试/重发某一轮时给：后端据此允许克隆复用那一轮的附件 */
+        retryOfTurnId?: string | null;
+      } = {},
     ): Promise<boolean> {
       const message = text.trim();
       if (!message) return false;
       const ids = (attachmentIds ?? []).map((x) => String(x)).filter(Boolean);
+      // 新的尝试开始：上一次的附件拒绝原因不再挂到这一次上
+      this.lastSendRejection = null;
       const queued = this.turnRunning;
       this.pushUser(message, ids, attachments ?? []);
       const optimistic = this.messages[this.messages.length - 1];
@@ -2635,7 +2700,10 @@ export const useSessionStore = defineStore("session", {
          * 「这条消息没有附件」的显式语义。不传参数 = 缺字段 = 旧客户端，
          * 后端会走兜底把该话题下遗留的未绑定附件绑上（审计问题 3）。
          */
-        const res = await api.sendTurn(message, this.currentTopicId, ids);
+        // 非重试路径保持既有三参形状；只有重试/重发才带第四个参数（retry_of_turn_id）
+        const res = options.retryOfTurnId
+          ? await api.sendTurn(message, this.currentTopicId, ids, options.retryOfTurnId)
+          : await api.sendTurn(message, this.currentTopicId, ids);
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
@@ -2648,9 +2716,13 @@ export const useSessionStore = defineStore("session", {
             this.turnPhase = "waiting";
           }
         }
+        // 以受理回执为准：没绑上的附件不得再显示为已带上（契约 §1.2）
+        this._applySendReceipt(optimistic, ids, res);
         return true;
       } catch (e) {
         this.lastError = (e as Error).message;
+        // 附件被拒（结构化失败）：留下可恢复信息，输入区据此给出逐条原因与出口
+        this.lastSendRejection = attachmentRejectionFrom(e);
         // 通知消息流：这次发送没有被受理，界面要回到发送前的样子
         this.sendRejectedSeq += 1;
         // 这条请求没有被后端接受：撤掉乐观消息，交给 Composer 恢复草稿，
@@ -2663,6 +2735,52 @@ export const useSessionStore = defineStore("session", {
         return false;
       }
     },
+    /**
+     * 以**受理回执**为准核对「界面上带的附件」与「后端真的绑上的附件」（契约 §1.2）。
+     *
+     * * 回执给了 bound_attachment_ids → 只保留真的绑上的；没绑上的从这条消息上摘掉，
+     *   并留下事实说明（绝不出现「界面有附件、模型实际没有」）；
+     * * 回执缺失（旧后端）→ 保持原样：不凭空判定，也不伪造一个结果。
+     */
+    _applySendReceipt(
+      message: StreamMessage | undefined,
+      requestedIds: string[],
+      res:
+        | {
+            bound_attachment_ids?: string[];
+            /** 旧形状的回执：这一轮真实绑定的附件 payload（id 就是事实） */
+            attachments?: { id?: string }[];
+            rejected?: { id: string; reason: string }[];
+          }
+        | null
+        | undefined,
+    ) {
+      if (!message) return;
+      // 回执优先用 bound_attachment_ids；只有旧形状（attachments 列表）时用它的 id ——
+      // 两者都缺才是「拿不到回执」，那时保持原样（不凭空判定）。
+      const boundRaw = Array.isArray(res?.bound_attachment_ids)
+        ? res?.bound_attachment_ids
+        : Array.isArray(res?.attachments)
+          ? res.attachments.map((row) => String(row?.id ?? "")).filter(Boolean)
+          : null;
+      if (!boundRaw) return;
+      const bound = new Set(boundRaw.map((x) => String(x)));
+      const dropped = requestedIds.filter((id) => !bound.has(id));
+      message.attachmentIds = requestedIds.filter((id) => bound.has(id));
+      if (message.attachments) {
+        message.attachments = message.attachments.filter((a) => bound.has(a.id));
+      }
+      if (!dropped.length) return;
+      const reasons = new Map(
+        (res?.rejected ?? []).map((row) => [String(row.id), String(row.reason)]),
+      );
+      const first = reasons.get(dropped[0]);
+      message.attachmentNotice =
+        `有 ${dropped.length} 个附件没有附上` + (first ? `：${first}` : "");
+      // 全局也留一句：这条消息发出去时附件没带上，用户必须看得见
+      this.lastError = message.attachmentNotice;
+    },
+
     /** 取消排队中的消息（只影响该条，不动 active turn） */
     dequeue(messageId: string) {
       this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== messageId);

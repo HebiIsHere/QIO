@@ -100,6 +100,28 @@ async function cancelContinuation() {
   }
 }
 
+/**
+ * 上一次发送被后端拒掉的附件（结构化失败）：逐条原因 + 一个「移除这些附件后发送」出口。
+ *
+ * 严格语义（契约 §1.2）：rejected 非空时整轮不入队；文本与附件都留在输入区，
+ * 用户不必重写，也不会出现「看起来发出去了、其实附件没带上」。
+ */
+const sendRejection = computed(() => session.lastSendRejection);
+
+function nameOfAttachment(id: string): string {
+  return pending.value.find((item) => item.id === id)?.name ?? id;
+}
+
+/** 移除被拒的附件后立刻重发（草稿还在；不删服务端记录，只把它们从这次发送里去掉）。 */
+async function removeRejectedAndSend() {
+  const rejected = sendRejection.value?.rejected ?? [];
+  const ids = new Set(rejected.map((row) => row.id));
+  pending.value = pending.value.filter((item) => !ids.has(item.id));
+  session.lastSendRejection = null;
+  attachError.value = "";
+  await submit();
+}
+
 async function submit() {
   const value = text.value.trim();
   if (!value) return;
@@ -535,7 +557,7 @@ async function stopTurn() {
     </div>
 
     <div
-      v-if="pending.length || attaching || attachError || attachNote || pathOpen"
+      v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection"
       class="attach-area"
     >
       <div class="attach-row">
@@ -573,6 +595,24 @@ async function stopTurn() {
           @click="pathOpen = false; pathDraft = ''; relocateTargetId = ''"
         >
           取消
+        </button>
+      </div>
+      <!-- 附件没附上（结构化失败）：说清是哪几个、为什么，并给一个出口 -->
+      <div v-if="sendRejection" class="attach-reject" data-test="attach-reject" role="alert">
+        <p class="attach-reject-msg">{{ sendRejection.message }}</p>
+        <ul class="attach-reject-list">
+          <li v-for="row in sendRejection.rejected" :key="row.id">
+            <span class="attach-reject-name">{{ nameOfAttachment(row.id) }}</span>
+            <span class="attach-reject-why">{{ row.reason }}</span>
+          </li>
+        </ul>
+        <button
+          class="qio-btn quiet"
+          type="button"
+          data-test="attach-reject-remove"
+          @click="removeRejectedAndSend"
+        >
+          移除这些附件后发送
         </button>
       </div>
       <p v-if="attachError" class="attach-error" role="alert">{{ attachError }}</p>
@@ -889,6 +929,36 @@ async function stopTurn() {
 .path-btn:hover {
   border-color: var(--border-strong);
   color: var(--text-primary);
+}
+/* 附件没附上：原因逐条列出，出口只有一个（移除后重发） */
+.attach-reject {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+.attach-reject-msg {
+  margin: 0 0 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-strong);
+  line-height: 1.6;
+}
+.attach-reject-list {
+  margin: 0 0 var(--sp-2);
+  padding-left: 18px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.attach-reject-list li {
+  margin: 2px 0;
+  line-height: 1.6;
+}
+.attach-reject-name {
+  color: var(--text-primary);
+}
+.attach-reject-why {
+  margin-left: 6px;
 }
 .attach-error {
   margin-top: 6px;

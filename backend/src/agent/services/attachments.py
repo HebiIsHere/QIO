@@ -35,6 +35,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -148,6 +149,8 @@ class Attachment:
     error: str | None
     created_at: str
     updated_at: str
+    #: 重试复用：这一行是从哪一条附件克隆来的（原行归属与历史都不变，见 bind_for_turn）
+    source_attachment_id: str | None = None
 
 
 @dataclass
@@ -190,6 +193,18 @@ def safe_name(name: str) -> str:
         else:
             cleaned = cleaned[:_MAX_NAME_CHARS]
     return cleaned
+
+
+def _dedup_ids(values: Iterable[str] | None) -> list[str]:
+    """请求里的附件 id：去空白、去重、保序（显式清单的唯一整理）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in values or []:
+        value = str(item).strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 def human_size(size: int) -> str:
@@ -277,6 +292,54 @@ def classify_readability(name: str) -> tuple[str, str, str]:
     return ("sniff", "未知类型", "读取时按内容嗅探，不是文本就明确说不可读")
 
 
+def rejected_failure_message(rejected: Iterable[tuple[str, str]]) -> str:
+    """一句人话：哪几个附件没有附上、为什么（结构化失败的 message 用它）。"""
+    rows = list(rejected or [])
+    if not rows:
+        return ""
+    shown = [f"{item}（{reason}）" for item, reason in rows[:3]]
+    extra = "" if len(rows) <= 3 else f"；另有 {len(rows) - 3} 个"
+    return f"有 {len(rows)} 个附件没有附上：" + "；".join(shown) + extra
+
+
+class BindOutcome(list):
+    """一次「把附件绑到这一轮」的结果（契约 §1.2 冻结接口）。
+
+    * bound：真正绑到本轮的 attachment_id（重试复用的克隆是**新 id**）；
+    * rejected：(请求的 id, 人话原因) —— 调用方必须据此拒绝这一轮，
+      绝不允许「请求 accepted，但附件其实没带上」。
+
+    它同时是一个 list[Attachment]：迁移期里按旧形状消费的调用点
+    （api/server.py 的响应组装、既有测试）不会突然坏掉；新调用方一律读
+    bound / rejected / as_receipt()。
+    """
+
+    def __init__(self, bound=None, rejected=None, *, items=None) -> None:
+        super().__init__(list(items or []))
+        self.bound: list[str] = [str(x) for x in (bound or [])]
+        self.rejected: list[tuple[str, str]] = [
+            (str(i), str(r)) for i, r in (rejected or [])
+        ]
+
+    def accept(self, att) -> None:
+        self.append(att)
+        self.bound.append(str(att.id))
+
+    def reject(self, attachment_id: str, reason: str) -> None:
+        self.rejected.append((str(attachment_id), str(reason)))
+
+    def as_receipt(self) -> dict:
+        """受理回执（响应必须带它；前端以回执为准更新界面）。"""
+        return {
+            "bound_attachment_ids": list(self.bound),
+            "rejected": [{"id": item, "reason": reason} for item, reason in self.rejected],
+        }
+
+    def failure_message(self) -> str:
+        """一句人话（结构化失败响应的 message 用它）。"""
+        return rejected_failure_message(self.rejected)
+
+
 class AttachmentService:
     """附件的登记、准备（复制/引用）、检查、重定位、删除。"""
 
@@ -320,6 +383,10 @@ class AttachmentService:
 
     @staticmethod
     def _row_to_attachment(row) -> Attachment:
+        try:
+            source_attachment_id = row["source_attachment_id"]
+        except (IndexError, KeyError):  # 迁移尚未跑到的库：按「不是克隆」处理
+            source_attachment_id = None
         return Attachment(
             id=row["id"],
             message_id=row["message_id"],
@@ -336,6 +403,7 @@ class AttachmentService:
             error=row["error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            source_attachment_id=source_attachment_id,
         )
 
     def _note_db_thread(self) -> None:
@@ -408,13 +476,13 @@ class AttachmentService:
             self.conn.execute(
                 "INSERT INTO attachments (id, message_id, turn_id, topic_id, kind,"
                 " original_name, stored_path, source_path, size_bytes, mtime, sha256,"
-                " state, error, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " state, error, created_at, updated_at, source_attachment_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     att.id, att.message_id, att.turn_id, att.topic_id, att.kind,
                     att.original_name, att.stored_path, att.source_path, att.size_bytes,
                     att.mtime, att.sha256, att.state, att.error, att.created_at,
-                    att.updated_at,
+                    att.updated_at, att.source_attachment_id,
                 ),
             )
         return att
@@ -1031,12 +1099,14 @@ class AttachmentService:
 
     def bind_for_turn(
         self,
-        turn_id: str,
-        attachment_ids: Iterable[str] | None,
+        turn_id: str | None = None,
+        attachment_ids: Iterable[str] | None = None,
         *,
+        message_id: str | None = None,
         topic_id: str | None = None,
-    ) -> list[Attachment]:
-        """把附件绑到这一轮。
+        retry_of_turn_id: str | None = None,
+    ) -> BindOutcome:
+        """把附件绑到这一轮（契约 §1.2 冻结接口）。
 
         判据是 **None（缺字段） vs 列表（显式，含空列表）**，不是「空不空」：
 
@@ -1047,44 +1117,299 @@ class AttachmentService:
           显式空列表被压成 falsy 落进兜底分支 —— 用户清空附件后发纯文字，
           遗留附件仍被绑进这一轮（模型上下文与历史里都出现了它）。
 
-        显式绑定前逐条校验，不满足就静默跳过（绝不把不属于这一轮的附件塞进上下文）：
+        显式绑定前逐条校验；**任何一条不满足都进 rejected（带人话原因）**，
+        不再静默跳过 —— 调用方据此拒绝这一轮，避免「请求 accepted、附件其实没带上」：
 
-        * 附件存在（不存在的 id 只记一条日志，不 500）；
-        * 属于当前话题，或还没有话题归属；
-        * 状态可绑：prepared / ready / changed；failed / cancelled / missing 不绑；
-        * 没有绑到**别的**轮次（已被别的 turn 绑定的 id 不得重复绑；同一轮重复提交幂等）。
+        * 存在、属于本话题、状态允许（prepared / ready / changed）；
+        * 归属：未绑定，或正好就是这一轮（同一轮重复提交幂等）；
+        * **重试复用**：绑定在 retry_of_turn_id 那一轮上的附件可以克隆到本轮
+          （新 id + 复用已保存副本；原行归属与历史不变）。
+
+        message_id 给了就一并写上（受理时即绑定消息，历史页不必再收敛一次）。
         """
+        turn = str(turn_id or "").strip()
+        if not turn:
+            raise AttachmentError("turn_id 必填")
+        retry_of = str(retry_of_turn_id or "").strip() or None
+        outcome = BindOutcome()
+
         if attachment_ids is None:
-            targets = [self._check(a) for a in self._unbound(topic_id)]
-            targets = [a for a in targets if self._bindable(a, turn_id=turn_id, topic_id=topic_id)]
-        else:
-            seen: set[str] = set()
-            wanted: list[str] = []
-            for item in attachment_ids:
-                value = str(item).strip()
-                if value and value not in seen:
-                    seen.add(value)
-                    wanted.append(value)
-            targets = []
-            for attachment_id in wanted:
-                # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
-                att = self.get(attachment_id)
-                if att is None:
-                    logger.info("显式附件 id 不存在，已跳过：%s", attachment_id)
+            for att in (self._check(a) for a in self._unbound(topic_id)):
+                if not self._bindable(att, turn_id=turn, topic_id=topic_id):
                     continue
-                if not self._bindable(att, turn_id=turn_id, topic_id=topic_id):
-                    continue
-                targets.append(att)
-        bound: list[Attachment] = []
-        for att in targets:
-            fields: dict[str, object] = {"turn_id": str(turn_id)}
-            if topic_id is not None and not att.topic_id:
-                fields["topic_id"] = str(topic_id)
-            self._update(att.id, **fields)
+                self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
+                refreshed = self.get(att.id, check=False)
+                if refreshed is not None:
+                    outcome.accept(refreshed)
+            return outcome
+
+        wanted = _dedup_ids(attachment_ids)
+
+        for attachment_id in wanted:
+            # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
+            att = self.get(attachment_id)
+            if att is None:
+                outcome.reject(attachment_id, "没有这个附件（可能已经被删除）")
+                continue
+            if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
+                outcome.reject(attachment_id, "这个附件属于另一个话题，不能带到这里")
+                continue
+            reason = self._reject_reason(
+                att, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+            )
+            if reason:
+                outcome.reject(attachment_id, reason)
+                continue
+            owner = str(att.turn_id or "")
+            if owner and owner != turn:
+                cloned = self._clone_for_retry(
+                    att, turn_id=turn, topic_id=topic_id, message_id=message_id
+                )
+                if isinstance(cloned, str):
+                    outcome.reject(attachment_id, cloned)
+                else:
+                    outcome.accept(cloned)
+                continue
+            self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
             refreshed = self.get(att.id, check=False)
             if refreshed is not None:
-                bound.append(self._check(refreshed))
-        return bound
+                outcome.accept(refreshed)
+        return outcome
+
+    def retry_attachment_ids(self, turn_id: str) -> list[str]:
+        """这一轮原来绑定的附件 id（重试 / 重发按同一清单重新归属，顺序稳定）。"""
+        if not str(turn_id or "").strip():
+            return []
+        return [att.id for att in self.list(turn_id=str(turn_id), limit=200, check=False)]
+
+    def precheck_for_turn(
+        self,
+        *,
+        attachment_ids: Iterable[str] | None,
+        topic_id: str | None,
+        retry_of_turn_id: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """受理前**只校验、不落库**：返回 [(请求的 id, 人话原因)]（空 = 都能绑）。
+
+        调用方（POST /api/turns、/api/turns/{id}/resend）在**入队之前**调用它：
+        非空就返回结构化失败，绝不出现「后端已经开始执行后才发现附件丢失」。
+        判据与 bind_for_turn 共用同一份 _reject_reason，两处规则不会漂移；
+        真正的克隆 / 绑定在拿到 turn_id 之后由 bind_for_turn 完成。
+        """
+        if attachment_ids is None:
+            # 缺字段 = 旧客户端兜底：没有显式清单可预检（兜底只会绑能绑的）
+            return []
+        retry_of = str(retry_of_turn_id or "").strip() or None
+        rejected: list[tuple[str, str]] = []
+        for attachment_id in _dedup_ids(attachment_ids):
+            # check=True：missing / changed 由文件世界的事实决定
+            att = self.get(attachment_id)
+            if att is None:
+                rejected.append((attachment_id, "没有这个附件（可能已经被删除）"))
+                continue
+            reason = self._reject_reason(
+                att, turn_id="", topic_id=topic_id, retry_of_turn_id=retry_of
+            )
+            if reason:
+                rejected.append((attachment_id, reason))
+        return rejected
+
+    def _reject_reason(
+        self,
+        att: Attachment,
+        *,
+        turn_id: str,
+        topic_id: str | None,
+        retry_of_turn_id: str | None,
+    ) -> str | None:
+        """这条附件现在能不能绑到这一轮；不能就给人话原因（判据的唯一一份）。"""
+        if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
+            return "这个附件属于另一个话题，不能带到这里"
+        owner = str(att.turn_id or "")
+        if owner and owner != str(turn_id or ""):
+            if not retry_of_turn_id or owner != retry_of_turn_id:
+                return "这个附件已经属于别的一轮了；把它带到新一轮请用这一轮的重试入口"
+            # 重试复用：还要能真的复用（副本在 / 引用位置可用）
+            return self._clone_reason(att)
+        if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
+            return self._state_reason(att)
+        return None
+
+    def _clone_reason(self, att: Attachment) -> str | None:
+        """重试克隆的**只读**可行性检查（真正落盘在 _clone_for_retry）。"""
+        if att.kind == "copy":
+            if not att.stored_path or not self.is_managed_path(att.stored_path):
+                return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
+            if not Path(att.stored_path).is_file():
+                return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
+            return None
+        state, error = self._reference_state_now(att)
+        if state == STATE_FAILED:
+            return error or "这个位置现在不能当附件用"
+        return None
+
+    def _bind_row(
+        self,
+        att: Attachment,
+        *,
+        turn_id: str,
+        topic_id: str | None,
+        message_id: str | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"turn_id": str(turn_id)}
+        if topic_id is not None and not att.topic_id:
+            fields["topic_id"] = str(topic_id)
+        if message_id:
+            fields["message_id"] = str(message_id)
+        self._update(att.id, **fields)
+
+    @staticmethod
+    def _state_reason(att: Attachment) -> str:
+        """状态不允许绑定时的人话原因（说清卡在哪，并给一条出路）。"""
+        if att.state == STATE_FAILED:
+            return "这个附件准备失败了：" + (att.error or "原因未知") + "；请重试准备后再发送"
+        if att.state == STATE_MISSING:
+            return "这个附件现在不在原位（文件被移动或删除）；请重新定位或重新附上后再发送"
+        if att.state == STATE_CANCELLED:
+            return "这个附件的准备已取消；请重试准备后再发送"
+        return "这个附件当前的准备状态不允许发送（" + str(att.state) + "）"
+
+    def _clone_for_retry(
+        self,
+        source: Attachment,
+        *,
+        turn_id: str,
+        topic_id: str | None,
+        message_id: str | None,
+    ) -> Attachment | str:
+        """重试复用：为新一轮**新建记录**并复用已保存的副本；失败返回人话原因。
+
+        * copy：优先 os.link 硬链接同一份副本，失败退化为复制；
+          **绝不重新读用户原文件**（原文件可能已经不在、或者已经变了）；
+        * reference：重新检查当前可用性与变化，**不沿用旧状态**。
+        """
+        if source.kind == "copy":
+            return self._clone_copy_for_retry(
+                source, turn_id=turn_id, topic_id=topic_id, message_id=message_id
+            )
+        return self._clone_reference_for_retry(
+            source, turn_id=turn_id, topic_id=topic_id, message_id=message_id
+        )
+
+    def _new_clone(
+        self,
+        source: Attachment,
+        *,
+        turn_id: str,
+        topic_id: str | None,
+        message_id: str | None,
+        kind: str,
+        state: str,
+        error: str | None,
+        size_bytes: int,
+        mtime: float | None,
+        stored_path: str | None = None,
+    ) -> Attachment:
+        now = self._clock()
+        return Attachment(
+            id=f"att_{uuid.uuid4().hex[:12]}",
+            message_id=str(message_id) if message_id else None,
+            turn_id=str(turn_id),
+            topic_id=str(topic_id or source.topic_id or "") or None,
+            kind=kind,
+            original_name=source.original_name,
+            stored_path=stored_path,
+            source_path=source.source_path,
+            size_bytes=int(size_bytes),
+            mtime=mtime,
+            sha256=source.sha256 if kind == "copy" else None,
+            state=state,
+            error=error,
+            created_at=now,
+            updated_at=now,
+            source_attachment_id=source.id,
+        )
+
+    def _clone_copy_for_retry(
+        self, source: Attachment, *, turn_id: str, topic_id: str | None, message_id: str | None
+    ) -> Attachment | str:
+        if not source.stored_path or not self.is_managed_path(source.stored_path):
+            return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
+        source_copy = Path(source.stored_path)
+        if not source_copy.is_file():
+            return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
+        clone = self._new_clone(
+            source,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            message_id=message_id,
+            kind="copy",
+            state=STATE_PREPARED,
+            error=None,
+            size_bytes=source.size_bytes,
+            mtime=source.mtime,
+        )
+        self._insert(clone)
+        target = self.copy_path(clone)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(source_copy, target)
+            except OSError:
+                shutil.copyfile(source_copy, target)
+        except OSError as exc:
+            reason = "复用已保存的副本失败：" + self._describe_oserror(exc, target=target)
+            _unlink_quiet(target)
+            self.delete(clone.id, purge_copy=True)
+            return reason
+        self._update(clone.id, stored_path=str(target), state=STATE_READY, error=None)
+        return self.get(clone.id, check=False) or clone
+
+    def _clone_reference_for_retry(
+        self, source: Attachment, *, turn_id: str, topic_id: str | None, message_id: str | None
+    ) -> Attachment | str:
+        state, error = self._reference_state_now(source)
+        if state == STATE_FAILED:
+            return error or "这个位置现在不能当附件用"
+        # 登记事实（大小 / 修改时间）沿用源行：这样「与登记时是否不同」在新行上仍然可判定，
+        # 不会因为把当前值写进去而把 changed 洗成 ready。
+        clone = self._new_clone(
+            source,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            message_id=message_id,
+            kind="reference",
+            state=state,
+            error=error,
+            size_bytes=source.size_bytes,
+            mtime=source.mtime,
+        )
+        return self._insert(clone)
+
+    @staticmethod
+    def _reference_state_now(source: Attachment) -> tuple[str, str | None]:
+        """引用型附件的**当前**事实（状态/原因按现在的文件世界重算，不沿用旧状态）。"""
+        raw = str(source.source_path or "")
+        if not raw:
+            return STATE_MISSING, "没有记录文件位置"
+        path = Path(raw)
+        try:
+            stat = path.stat()
+        except OSError:
+            return STATE_MISSING, "本地文件不在原位了（可能被移动或删除）；可以重新指定位置"
+        if path.is_dir():
+            return STATE_FAILED, "这个位置现在是目录，不是文件"
+        size = int(stat.st_size)
+        mtime = float(stat.st_mtime)
+        changed = size != int(source.size_bytes) or (
+            source.mtime is not None and abs(mtime - float(source.mtime)) > 1e-6
+        )
+        if changed:
+            return (
+                STATE_CHANGED,
+                f"本地文件内容看起来变了（现在 {human_size(size)}，登记时 {human_size(int(source.size_bytes))}）；克隆记录的是重新检查后的事实",
+            )
+        return STATE_READY, None
 
     def payloads_for_messages(self, messages: Iterable[dict]) -> dict[str, list[dict]]:
         """一页历史消息的附件（问题 5：刷新 / 重进历史后附件行必须还在）。

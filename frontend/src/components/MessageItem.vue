@@ -335,6 +335,15 @@ function removeOne(id: string) {
           />
         </span>
       </div>
+      <!-- 受理回执与界面不一致：这条消息实际没带上附件（绝不假装带上了） -->
+      <p
+        v-if="message.attachmentNotice"
+        class="attach-notice"
+        role="status"
+        data-test="attachment-receipt-notice"
+      >
+        {{ message.attachmentNotice }}
+      </p>
       <p v-if="attachNotice" class="attach-notice" role="status" data-test="attachment-notice">
         {{ attachNotice }}
       </p>
