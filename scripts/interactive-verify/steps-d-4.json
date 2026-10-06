@@ -1,0 +1,56 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{try{localStorage.removeItem('qio.interactive.intentBatches');}catch(e){};return 'cleared'})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const ids=j.intents.map(i=>i.id);await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:ids})});const r2=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const created=(await r2.json()).created;return JSON.stringify({rejectedBefore:ids.length,created:created.length,ids:created.map(i=>i.id),refs:created.map(i=>i.materialRefs),titles:created.map(i=>i.title)});})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({batchEntry:!!document.querySelector('[data-im=\"batch-entry\"]'),batchList:!!document.querySelector('[data-im=\"batch-list\"]'),entryText:(document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent})"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector('[data-im=\"batch-entry\"]');e.click();return 'clicked'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({batchList:!!document.querySelector('[data-im=\"batch-list\"]'),items:document.querySelectorAll('[data-im=\"batch-item\"]').length,titles:[...document.querySelectorAll('[data-im=\"batch-item\"] .name')].map(e=>e.textContent.trim()),approveLabel:document.querySelector('[data-im=\"batch-approve\"]').textContent.trim(),rejectLabel:document.querySelector('[data-im=\"batch-reject\"]').textContent.trim(),blocked:[...document.querySelectorAll('[data-im=\"batch-item\"] .blocked')].map(e=>e.textContent.trim())})"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-12-batch-expanded"
+  }
+]

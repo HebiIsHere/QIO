@@ -1,17 +1,20 @@
 <!--
-  QIO 意图的虚线预览卡片（子智能体 C）。
+  QIO 意图的虚线预览卡片（子智能体 C 原有，子智能体 D 调整单项审批入口与定位）。
 
-  契约 §1.6 / §4.4：
+  契约 §1.6 / §4.4 / §8.1：
   - 预览用虚线展示位置、结构（组）与关系（链接），不能只给一个文字任务列表；
-  - 批准 / 拒绝入口保留在这张预览附近；
+  - 批准 / 拒绝入口保留在预览附近：除了列表里的完整卡片，本组件还能以 docked 形式
+    靠在板面下沿，作为「靠近板面虚线预览的单项审批浮条」；
   - 状态同时用文字说明（颜色只是辅助）；
-  - 演示意图必须写明「演示」。
+  - 演示意图必须写明「演示」，批准只表示「成为任务」，不代表已经真的执行成功。
 -->
 <script setup lang="ts">
 import { computed, type CSSProperties } from "vue";
 import {
   approveAvailability,
   cardLabel,
+  locatePreview,
+  previewBounds,
   rejectAvailability,
   statusText,
   waitingForLabels,
@@ -19,8 +22,8 @@ import {
 import type { Intent } from "../../interactive/types";
 
 const props = withDefaults(
-  defineProps<{ intent: Intent; allIntents?: Intent[]; active?: boolean }>(),
-  { allIntents: () => [], active: false },
+  defineProps<{ intent: Intent; allIntents?: Intent[]; active?: boolean; docked?: boolean }>(),
+  { allIntents: () => [], active: false, docked: false },
 );
 
 const emit = defineEmits<{
@@ -158,14 +161,49 @@ const layout = computed(() => {
 });
 
 const revertText = computed(() => props.intent.revert?.reasonText ?? "");
+
+/**
+ * 浮条靠在板面下沿，避免盖住虚线预览本身（板面坐标由预览范围给出）。
+ * 预览在板面下方时把浮条放到它上面；没有坐标时退回板面下沿。
+ */
+const dockedStyle = computed<CSSProperties>(() => {
+  if (!props.docked) return {};
+  const bounds = previewBounds(preview.value);
+  // 板面坐标不等于屏幕坐标（板面可以平移、缩放）：这里只用它做左右倾向，
+  // 真正贴着预览定位由放在板面舞台上的父组件（IntentStatusPopover）用屏幕矩形覆盖。
+  if (!bounds) return { top: "auto", bottom: "var(--sp-6)", left: "50%", transform: "translateX(-50%)" };
+  const centerX = Math.round(bounds.x + Math.max(bounds.w, 1) / 2);
+  return {
+    left: "min(max(180px, " + centerX + "px), calc(100% - 180px))",
+    top: "auto",
+    bottom: "var(--sp-6)",
+    transform: "translateX(-50%)",
+  };
+});
+
+/** 单项审批入口的说明：把服务端的判定结果原样说给用户听 */
+const dockedNote = computed(() => {
+  if (props.intent.status === "needs_update") return status.value.detail;
+  if (!approve.value.allowed && reject.value.allowed) return approve.value.text;
+  return "批准只表示它成为任务；第一阶段没有接入真实执行，进度来自演示入口。";
+});
+
+/** 定位到板面上的虚线预览（沿用 window 事件，A 的 BoardCanvas 监听它） */
+function onLocate(): void {
+  const bounds = previewBounds(preview.value);
+  locatePreview(props.intent.id, bounds);
+  emit("locate", props.intent.id);
+}
 const progressText = computed(() => props.intent.progress?.text ?? "");
 </script>
 
 <template>
   <article
     class="intent-card"
-    :class="{ active }"
+    :class="{ active, docked }"
+    :style="dockedStyle"
     data-im="intent"
+    :data-docked="docked ? '1' : '0'"
     :data-intent-id="intent.id"
     :data-intent-status="intent.status"
   >
@@ -273,7 +311,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
         type="button"
         data-im="preview-locate"
         :data-intent-id="intent.id"
-        @click="emit('locate', intent.id)"
+        @click="onLocate"
       >
         在板面上定位
       </button>
@@ -282,6 +320,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
       继续不会自动重试，也不会重新执行已完成的部分；材料依据会按当前板面重新记录。
     </p>
     <p v-else-if="!approve.allowed" class="action-hint">{{ approve.text }}</p>
+    <p v-if="docked" class="action-hint docked-note">{{ dockedNote }}</p>
   </article>
 </template>
 
@@ -299,6 +338,29 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
+/*
+  靠近板面虚线预览的单项审批浮条：只保留说明 + 批准 / 拒绝 / 定位。
+  绝对定位（left 由预览在板面上的位置算出），不抢板面中央、也不遮住预览本身。
+*/
+.intent-card.docked {
+  position: absolute;
+  z-index: 34;
+  width: min(360px, calc(100vw - var(--sp-6)));
+  padding: var(--sp-2) var(--sp-3);
+  border-style: dashed;
+  border-color: var(--link);
+  background: var(--bg-elevated);
+  box-shadow: 0 12px 30px var(--shadow-soft, rgba(0, 0, 0, 0.32));
+}
+.intent-card.docked .preview-wrap,
+.intent-card.docked .summary,
+.intent-card.docked .progress,
+.intent-card.docked .revert-text,
+.intent-card.docked .waiting { display: none; }
+.intent-card.docked .title { font-size: var(--fs-sm); }
+.intent-card.docked .status-detail { display: none; }
+.intent-card.docked .actions { position: static; }
+.intent-card.docked .docked-note { color: var(--text-faint); }
 .head {
   display: flex;
   align-items: center;
