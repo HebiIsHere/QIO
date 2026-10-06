@@ -15,15 +15,15 @@ import asyncio
 import json
 import logging
 import os
-import queue
 import secrets
 import sqlite3
 import uuid
 from collections import Counter, deque
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,14 +51,30 @@ from agent.memory.fragment import (
     resolve_max_turns,
 )
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
-# 附件路由的错误类型：模块级导入让上传桥接的哨兵迭代器也能用（无循环依赖）
+# 附件路由的错误类型与可绑状态：模块级导入（无循环依赖）
 from agent.services.attachments import (
+    TEMP_SUFFIX,
+    STATE_CANCELLED as DISK_CANCELLED,
+    STATE_CHANGED as DISK_CHANGED,
+    STATE_FAILED as DISK_FAILED,
+    STATE_PREPARED as DISK_PREPARED,
+    STATE_READY as DISK_READY,
     AttachmentContentError,
     AttachmentError,
+    DiskOutcome,
     UploadAborted,
     UploadTooLarge,
 )
+# 上传作业：接收端 / 工作线程 / 收尾共享同一份终态（round 4 问题三）
+from agent.services.attachment_upload import (
+    SETTLE_SECONDS as UPLOAD_SETTLE_SECONDS,
+    UploadJob,
+    UploadJobEnded,
+    active_jobs as upload_active_jobs,
+    run_upload_worker,
+)
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
+from agent.trace.redact import redact_text
 from agent.storage.db_identity import (
     accept_current,
     check_enabled,
@@ -70,12 +86,6 @@ from agent.storage.db_identity import (
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
-#: 上传桥接：读取端（事件循环）与写盘端（工作线程）之间的有界队列深度。
-#: 深度 × 单块大小 = 内存上界；工作线程慢时读取端会自然减速（背压），不丢块也不涨内存。
-UPLOAD_QUEUE_DEPTH = 4
-
-#: 队列哨兵：让工作线程立刻停下来（超出上限 / 客户端断开），不提交任何字节。
-_UPLOAD_ABORT = object()
 
 #: GET /content 只把「确定安全、可内联查看」的类型如实告诉浏览器（并始终带 nosniff）。
 #: HTML / SVG / XML 这类会执行脚本或带外链的类型**不内联**：一律 application/octet-stream。
@@ -100,25 +110,6 @@ INLINE_SAFE_SUFFIXES = {
 }
 
 
-async def _upload_queue_put(box: "queue.Queue", item: object) -> None:
-    """把一块字节放进桥接队列：满时让出事件循环（有界、不阻塞、不丢块）。"""
-    while True:
-        try:
-            box.put_nowait(item)
-            return
-        except queue.Full:
-            await asyncio.sleep(0.005)
-
-
-def _iter_upload_chunks(box: "queue.Queue") -> Iterable[bytes]:
-    """工作线程侧的分块迭代器：None = 正常结束；哨兵 = 立刻中止（不提交）。"""
-    while True:
-        item = box.get()
-        if item is None:
-            return
-        if item is _UPLOAD_ABORT:
-            raise UploadAborted("上传被中止（超出上限或客户端断开）；没有保存任何副本")
-        yield item  # type: ignore[misc]
 
 # 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
 _SENTENCE_END = "。！？!?\n"
@@ -1188,6 +1179,53 @@ def create_app(
             f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
         )
 
+    def _converge_upload(attachment_id: str, reason: str, *, state: str = DISK_FAILED) -> None:
+        """失败/取消的收尾（**事件循环线程**）：行还在就如实转 failed/cancelled，绝不提交 ready。
+
+        工作线程只做文件 I/O、不再落库，所以这里是上传状态的唯一出口。行已经被用户删掉时
+        什么都不做（apply_outcome 会自己处理「行不在」的情况并清掉可能已提交的副本）。
+        """
+        attachments.apply_outcome(attachment_id, DiskOutcome(state=state, error=reason))
+
+    def _purge_uncommitted_copy(att) -> None:
+        """取消竞态清理：工作线程可能已经把正式副本提交到位（os.replace 之后才被丢弃），
+
+        而它的结果已经落不到库里 —— 按**可预测的副本路径**（QIO 自己的管理目录）清掉它，
+        避免留下无人认领的副本。用户原文件永远不在此列。
+        """
+        with contextlib.suppress(Exception):
+            path = attachments.copy_path(att)
+            if attachments.is_managed_path(path):
+                Path(path).unlink(missing_ok=True)
+                Path(str(path) + TEMP_SUFFIX).unlink(missing_ok=True)
+
+    async def _settle_upload_worker(
+        worker: asyncio.Task, job: UploadJob, *, attachment_id: str
+    ) -> DiskOutcome | None:
+        """请求被取消（服务关闭 / 客户端离开）：解除工作线程阻塞读、有界等它收尾，返回磁盘结果。
+
+        收尾纪律：**不留临时文件、不留孤儿副本**。
+        * 先置服务侧取消标志（工作线程提交前的最后一道闸会看到它，不再 os.replace）；
+        * 再置作业终态（解除它在 queue.get 上的阻塞）；
+        * 工作线程如果已经提交了正式副本（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
+        """
+        attachments.cancel(attachment_id)
+        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何副本")
+        outcome: DiskOutcome | None = None
+        with contextlib.suppress(BaseException):
+            outcome = await asyncio.wait_for(
+                asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+            )
+        if outcome is not None and outcome.stored_path:
+            if attachments.is_managed_path(outcome.stored_path):
+                try:
+                    Path(outcome.stored_path).unlink(missing_ok=True)
+                except OSError as exc:  # noqa: BLE001 - 清理失败不能掩盖取消
+                    logging.getLogger(__name__).warning(
+                        "清理被取消上传的副本失败：%s", redact_text(str(exc))
+                    )
+        return outcome
+
     @app.post("/api/attachments/upload")
     async def upload_attachment(request: Request) -> dict:
         """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
@@ -1216,18 +1254,20 @@ def create_app(
         att = attachments.begin_upload(
             name=name, topic_id=str(topic_id) if topic_id else None
         )
-        box: "queue.Queue" = queue.Queue(maxsize=UPLOAD_QUEUE_DEPTH)
+        # 一次上传 = 一个作业：队列 + 终态 + 工作线程句柄，接收端/工作线程/取消清理共享它。
+        # 这样「工作线程死了」不再表现为「队列永远等不到空位」，取消也能解除工作线程的阻塞读。
+        job = UploadJob(
+            label=att.id,
+            loop=asyncio.get_running_loop(),
+            cancel_requested=lambda: attachments.is_cancel_requested(att.id),
+        )
         worker = asyncio.create_task(
-            asyncio.to_thread(
-                attachments.write_upload_stream,
-                att,
-                _iter_upload_chunks(box),
-                max_bytes=limit,
-            )
+            asyncio.to_thread(run_upload_worker, attachments, att, job, max_bytes=limit)
         )
         received = 0
         too_large = False
         read_error: BaseException | None = None
+        ended: UploadJobEnded | None = None
         try:
             async for chunk in request.stream():
                 if not chunk:
@@ -1236,29 +1276,71 @@ def create_app(
                 if received > limit:
                     too_large = True
                     break
-                await _upload_queue_put(box, chunk)
+                # 每次排队前先看终态；队列满时同时等空位与终态（谁先到谁解除等待）
+                await job.put(chunk)
+        except UploadJobEnded as exc:
+            # 工作线程已经结束（写盘失败 / 被取消）：立即停止接收，按它的结果准确反馈
+            ended = exc
+        except asyncio.CancelledError:
+            # 服务关闭 / 请求被取消：先让工作线程看到终态（解除阻塞读），再等它收尾
+            await _settle_upload_worker(worker, job, attachment_id=att.id)
+            _converge_upload(att.id, "上传被取消（服务关闭或请求中断）；没有保存任何副本")
+            _purge_uncommitted_copy(att)
+            job.close()
+            raise
         except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
             read_error = exc
         finally:
-            await _upload_queue_put(box, _UPLOAD_ABORT if (too_large or read_error) else None)
+            if read_error is not None:
+                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何副本")
+            with contextlib.suppress(UploadJobEnded):
+                await job.close_input(abort=bool(too_large or read_error))
         try:
-            outcome = await worker
-        except (UploadTooLarge, UploadAborted) as exc:
-            # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
-            attachments.delete(att.id)
-            if too_large or isinstance(exc, UploadTooLarge):
-                raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except AttachmentError as exc:
-            attachments.delete(att.id)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if too_large:
-            attachments.delete(att.id)
-            raise HTTPException(status_code=413, detail=_upload_limit_detail())
-        applied = attachments.apply_outcome(att.id, outcome)
-        if applied is None:
-            raise HTTPException(status_code=404, detail="上传期间附件已被移除")
-        return {"ok": True, "attachment": attachments.payload(applied, check=False)}
+            try:
+                outcome = await worker
+            except (UploadTooLarge, UploadAborted) as exc:
+                # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
+                if too_large or isinstance(exc, UploadTooLarge):
+                    attachments.delete(att.id)
+                    raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
+                if read_error is not None:
+                    attachments.delete(att.id)
+                    raise HTTPException(
+                        status_code=400, detail=f"上传被中断：{redact_text(str(read_error))}"
+                    ) from exc
+                # 取消（用户 DELETE / 服务关闭）：行若还在，如实转 cancelled；不提交 ready
+                _converge_upload(att.id, str(exc), state=DISK_CANCELLED)
+                if attachments.get(att.id, check=False) is None or ended is not None:
+                    raise HTTPException(status_code=404, detail="上传期间附件已被移除") from exc
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except AttachmentError as exc:
+                attachments.delete(att.id)
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except asyncio.CancelledError:
+                # 等结果时被取消（服务关闭 / 客户端离开）：工作线程可能刚好把副本提交到位，
+                # 而它的结果已经无法落库 —— 先解除阻塞、再把这份无人认领的副本清掉。
+                await _settle_upload_worker(worker, job, attachment_id=att.id)
+                _converge_upload(att.id, "上传被取消（服务关闭或请求中断）；没有保存任何副本")
+                _purge_uncommitted_copy(att)
+                raise
+            if too_large:
+                attachments.delete(att.id)
+                raise HTTPException(status_code=413, detail=_upload_limit_detail())
+            applied = attachments.apply_outcome(att.id, outcome)
+            if applied is None:
+                raise HTTPException(status_code=404, detail="上传期间附件已被移除")
+            if outcome.state == DISK_FAILED:
+                # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
+                # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
+                raise HTTPException(
+                    status_code=500,
+                    detail=outcome.error or "上传失败：没有保存副本",
+                )
+            if outcome.state == DISK_CANCELLED:
+                raise HTTPException(status_code=409, detail=outcome.error or "上传已取消")
+            return {"ok": True, "attachment": attachments.payload(applied, check=False)}
+        finally:
+            job.close()
 
     @app.get("/api/attachments")
     async def list_attachments(
@@ -1338,6 +1420,114 @@ def create_app(
             raise HTTPException(status_code=404, detail="没有这个附件")
         return {"ok": True, **result}
 
+    # -- 轮次绑定：B 的冻结回执 + 受理前校验（round4 §1.2） -------------------
+
+    def _attachment_rejection(
+        rejected: list[tuple[str, str]],
+        *,
+        topic_id: str | None,
+        turn_id: str | None = None,
+    ) -> JSONResponse:
+        """结构化拒绝（409）：每个附件一句人话原因；调用方保证这一轮没有入队（或已撤销）。"""
+        items = [{"id": str(aid), "reason": str(reason)} for aid, reason in rejected]
+        summary = "；".join(reason for _aid, reason in rejected)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "accepted": False,
+                "error": "attachment_rejected",
+                "detail": f"有 {len(items)} 个附件不能随这条消息发送：{summary}",
+                "rejected": items,
+                "topic_id": topic_id,
+                "turn_id": turn_id,
+            },
+        )
+
+    def _attachment_preflight(
+        attachment_ids: list[str] | None,
+        *,
+        topic_id: str | None,
+        retry_of_turn_id: str | None,
+    ) -> list[tuple[str, str]]:
+        """受理前校验（镜像 §1.2 的冻结规则）：返回 [(id, 人话原因)]。
+
+        为什么路由侧还要挡一次：turn_id 只有 submit 之后才有，而绑定需要 turn_id；
+        「rejected 非空 → 不入队」要求在提交**之前**就知道会被拒。最终判据仍是 B 的
+        bind_for_turn 回执（它更严时以回执为准，这里挡住的是明显不该发的）。
+        """
+        if attachment_ids is None:
+            return []
+        rejected: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw in attachment_ids:
+            attachment_id = str(raw).strip()
+            if not attachment_id or attachment_id in seen:
+                continue
+            seen.add(attachment_id)
+            att = attachments.get(attachment_id)  # check=True：missing/changed 按现在的事实
+            if att is None:
+                rejected.append((attachment_id, "没有这个附件（可能已经被移除）"))
+                continue
+            if att.topic_id and str(att.topic_id) != str(topic_id or ""):
+                rejected.append((attachment_id, "附件不属于当前话题"))
+                continue
+            if att.state not in (DISK_PREPARED, DISK_READY, DISK_CHANGED):
+                rejected.append(
+                    (attachment_id, f"附件当前不可用（{att.state}）：先重试或重新定位")
+                )
+                continue
+            if att.turn_id and str(att.turn_id) != str(retry_of_turn_id or ""):
+                rejected.append((attachment_id, "附件已经绑到别的轮次（可以移除后重发）"))
+        return rejected
+
+    def _bind_attachments(
+        turn_id: str,
+        attachment_ids: list[str] | None,
+        *,
+        topic_id: str | None,
+        retry_of_turn_id: str | None,
+    ) -> tuple[list[str], list[tuple[str, str]], list]:
+        """调用 B 的冻结签名，返回 (bound_ids, rejected, bound_attachments)。
+
+        接口还没落地时退回当前签名（try/except TypeError，不阻塞本模块开发）：
+        此时按「请求了但没绑上」自己记 rejected —— 绝不静默丢弃。
+        空数组 = 显式没有附件；attachment_ids=None（缺字段）= 旧客户端兜底。
+        """
+        requested = [str(item).strip() for item in (attachment_ids or []) if str(item).strip()]
+        try:
+            outcome = attachments.bind_for_turn(
+                turn_id=str(turn_id),
+                message_id=None,
+                attachment_ids=attachment_ids,
+                topic_id=topic_id,
+                retry_of_turn_id=retry_of_turn_id,
+            )
+        except TypeError:
+            logging.getLogger(__name__).info(
+                "bind_for_turn 还没有冻结签名（B 未落地）：退回当前签名"
+            )
+            bound_list = attachments.bind_for_turn(turn_id, attachment_ids, topic_id=topic_id)
+            bound_ids = [str(att.id) for att in bound_list]
+            known = set(bound_ids)
+            rejected = [
+                (aid, "附件没有绑定成功（可能已经被别的轮次使用）")
+                for aid in requested
+                if aid not in known
+            ]
+            return bound_ids, rejected, list(bound_list)
+        bound_ids = [str(item) for item in (getattr(outcome, "bound", None) or [])]
+        rejected = [
+            (str(item[0]), str(item[1]))
+            for item in (getattr(outcome, "rejected", None) or [])
+        ]
+        bound_attachments = [
+            att
+            for att in (attachments.get(aid, check=False) for aid in bound_ids)
+            if att is not None
+        ]
+        return bound_ids, rejected, bound_attachments
+
     # -- turns -------------------------------------------------------------
 
     @app.post("/api/anchor/continue/cancel")
@@ -1376,10 +1566,28 @@ def create_app(
             if not isinstance(raw_ids, list):
                 raise HTTPException(status_code=400, detail="attachment_ids must be a list")
             explicit_ids = [str(item) for item in raw_ids]
+        # 重试复用（round4 §1.2）：重试时必须带上原轮 turn_id，B 据此克隆可复用的附件；
+        # 严格语义「rejected 非空 → 不入队」：受理前先校验一次，避免「已经开始执行才发现附件丢了」。
+        retry_of_turn_id = body.get("retry_of_turn_id")
+        retry_of_turn_id = str(retry_of_turn_id) if retry_of_turn_id else None
+        preflight = _attachment_preflight(
+            explicit_ids, topic_id=topic_id, retry_of_turn_id=retry_of_turn_id
+        )
+        if preflight:
+            return _attachment_rejection(preflight, topic_id=topic_id)
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        bound = attachments.bind_for_turn(turn.turn_id, explicit_ids, topic_id=topic_id)
+        bound_ids, rejected, bound_attachments = _bind_attachments(
+            turn.turn_id,
+            explicit_ids,
+            topic_id=topic_id,
+            retry_of_turn_id=retry_of_turn_id,
+        )
+        if rejected:
+            # B 的回执拒绝（例如受理瞬间被别的轮次抢走）：撤销刚提交的这一轮并结构化失败。
+            ctx.turns.cancel(turn.turn_id)
+            return _attachment_rejection(rejected, topic_id=topic_id, turn_id=turn.turn_id)
         return {
             "ok": True,
             "accepted": True,
@@ -1387,7 +1595,12 @@ def create_app(
             "status": turn.status,
             "message": message,
             "topic_id": topic_id,
-            "attachments": [attachments.payload(a, check=False) for a in bound],
+            # 实际绑定回执（§1.2）：前端以它为准更新界面，未绑定不得显示为「已带上」
+            "bound_attachment_ids": bound_ids,
+            "rejected": [],
+            "attachments": [
+                attachments.payload(a, check=False) for a in bound_attachments
+            ],
         }
 
     @app.post("/api/turns/cancel")

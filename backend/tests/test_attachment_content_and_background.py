@@ -40,12 +40,26 @@ TERMINAL = ("ready", "failed", "changed", "missing", "cancelled")
 TOKEN = "test-session-token-not-a-real-secret"
 
 
+def _pin_attachment_data_dir(app, tmp_path: Path) -> None:
+    """把附件的真实落点钉在 tmp_path。
+
+    已知陷阱（Lead 2026-10-07 确认的代码事实）：config.Settings.__post_init__ 会用环境变量
+    QIO_DATA_DIR **覆盖**构造时显式传入的 data_dir。tests/conftest.py 会 pop 掉它，但把用例
+    放在仓外跑（或 conftest 没被加载）时，Settings(data_dir=tmp_path) 就会写进用户真实数据目录。
+    所以走 create_app 的附件测试必须再钉一次服务自己的 data_dir（root 由它派生）。
+    """
+    data_dir = tmp_path / "data"
+    (data_dir / "attachments").mkdir(parents=True, exist_ok=True)
+    app.state.ctx.attachments.data_dir = data_dir
+
+
 @pytest.fixture()
 def client(tmp_path: Path):
     conn = connect(tmp_path / "content_api.db")
     apply_migrations(conn)
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
+    _pin_attachment_data_dir(app, tmp_path)
     with TestClient(app) as c:
         yield c
 
@@ -56,6 +70,7 @@ def async_app(tmp_path: Path):
     apply_migrations(conn)
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
+    _pin_attachment_data_dir(app, tmp_path)
     return app
 
 
@@ -180,6 +195,7 @@ def test_content_requires_session_token(tmp_path: Path):
     apply_migrations(conn)
     app = create_app(Settings(data_dir=tmp_path / "data", session_token=TOKEN), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
+    _pin_attachment_data_dir(app, tmp_path)
     auth = {"Authorization": f"Bearer {TOKEN}"}
     source = tmp_path / "受保护.txt"
     source.write_bytes(b"guard me")

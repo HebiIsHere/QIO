@@ -28,6 +28,19 @@ from agent.storage.migrate import apply_migrations
 TERMINAL = ("ready", "failed", "changed", "missing", "cancelled")
 
 
+def _pin_attachment_data_dir(app, tmp_path: Path) -> None:
+    """把附件的真实落点钉在 tmp_path。
+
+    已知陷阱（Lead 2026-10-07 确认的代码事实）：config.Settings.__post_init__ 会用环境变量
+    QIO_DATA_DIR **覆盖**构造时显式传入的 data_dir。tests/conftest.py 会 pop 掉它，但把用例
+    放在仓外跑（或 conftest 没被加载）时，Settings(data_dir=tmp_path) 就会写进用户真实数据目录。
+    所以走 create_app 的附件测试必须再钉一次服务自己的 data_dir（root 由它派生）。
+    """
+    data_dir = tmp_path / "data"
+    (data_dir / "attachments").mkdir(parents=True, exist_ok=True)
+    app.state.ctx.attachments.data_dir = data_dir
+
+
 @pytest.fixture()
 def client(tmp_path: Path):
     conn = connect(tmp_path / "explicit_binding.db")
@@ -35,6 +48,7 @@ def client(tmp_path: Path):
     settings = Settings(data_dir=tmp_path / "data")
     app = create_app(settings, conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
+    _pin_attachment_data_dir(app, tmp_path)
     with TestClient(app) as c:
         yield c
 
@@ -108,7 +122,12 @@ def test_missing_field_still_falls_back_for_old_clients(client: TestClient, tmp_
 def test_explicit_ids_do_not_steal_attachment_bound_to_another_turn(
     client: TestClient, tmp_path: Path
 ):
-    """已被别的 turn 绑定的 id 不得重复绑（第二轮不能把它抢走）。"""
+    """已被别的 turn 绑定的 id 不得重复绑。
+
+    round4 §1.2 冻结语义（取代 round1 的「静默跳过」）：这种情况必须**结构化拒绝**
+    （409 + 每个附件的人话原因）、不入队、不改原归属 —— 不允许静默丢弃，
+    也不允许「后端已经开始执行后才发现附件丢了」。
+    """
     att = _create(client, tmp_path, "先到先得.txt", topic_id="t_owner")
     first = client.post(
         "/api/turns",
@@ -118,31 +137,46 @@ def test_explicit_ids_do_not_steal_attachment_bound_to_another_turn(
     assert _turn_row(client, att["id"]) == first["turn_id"]
     _drain_turns(client)
 
-    second = client.post(
+    before = client.app.state.ctx.turns.snapshot()
+    refused = client.post(
         "/api/turns",
         json={"message": "第二轮不该抢", "topic_id": "t_owner", "attachment_ids": [att["id"]]},
-    ).json()
-    assert [item["id"] for item in second["attachments"]] == []
-    assert _turn_row(client, att["id"]) == first["turn_id"]
+    )
+    assert refused.status_code == 409, refused.text
+    body = refused.json()
+    assert body["ok"] is False and body["accepted"] is False
+    assert [item["id"] for item in body["rejected"]] == [att["id"]]
+    assert "别的轮次" in body["rejected"][0]["reason"]
+    after = client.app.state.ctx.turns.snapshot()
+    assert after["queued"] == before["queued"], "被拒绝的请求不得入队"
+    assert _turn_row(client, att["id"]) == first["turn_id"], "原归属不得被改写"
     _drain_turns(client)
 
 
 def test_explicit_ids_skip_attachment_from_another_topic(client: TestClient, tmp_path: Path):
-    """别的话题的附件不能借显式 id 串到本话题的轮次里。"""
+    """别的话题的附件不能借显式 id 串到本话题的轮次里（round4 §1.2：结构化拒绝）。"""
     other = _create(client, tmp_path, "别的话题.txt", topic_id="t_other")
 
-    accepted = client.post(
+    before = client.app.state.ctx.turns.snapshot()
+    refused = client.post(
         "/api/turns",
         json={"message": "本话题", "topic_id": "t_here", "attachment_ids": [other["id"]]},
-    ).json()
+    )
 
-    assert [item["id"] for item in accepted["attachments"]] == []
+    assert refused.status_code == 409, refused.text
+    body = refused.json()
+    assert [item["id"] for item in body["rejected"]] == [other["id"]]
+    assert "不属于当前话题" in body["rejected"][0]["reason"]
+    assert client.app.state.ctx.turns.snapshot()["queued"] == before["queued"]
     assert _turn_row(client, other["id"]) is None
     _drain_turns(client)
 
 
 def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path):
-    """failed / missing 明确不绑（状态无效的附件不该被当成「这一轮的附件」）。"""
+    """failed / missing 不许当成「这一轮的附件」：round4 §1.2 也是结构化拒绝。
+
+    状态校验按**现在的事实**（GET 之后 missing/changed），拒绝要让用户看到是哪一条、为什么。
+    """
     failed = _create(client, tmp_path, "失败.txt", topic_id="t_bad")
     missing = _create(client, tmp_path, "丢了副本.txt", topic_id="t_bad")
     ctx = client.app.state.ctx
@@ -151,16 +185,19 @@ def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path
     Path(missing["stored_path"]).unlink()
     assert client.get(f"/api/attachments/{missing['id']}").json()["attachment"]["state"] == "missing"
 
-    accepted = client.post(
+    refused = client.post(
         "/api/turns",
         json={
             "message": "这些都没准备好",
             "topic_id": "t_bad",
             "attachment_ids": [failed["id"], missing["id"]],
         },
-    ).json()
+    )
 
-    assert [item["id"] for item in accepted["attachments"]] == []
+    assert refused.status_code == 409, refused.text
+    body = refused.json()
+    assert [item["id"] for item in body["rejected"]] == [failed["id"], missing["id"]]
+    assert all(item["reason"] for item in body["rejected"]), "每个附件都要有人话原因"
     assert _turn_row(client, failed["id"]) is None
     assert _turn_row(client, missing["id"]) is None
     _drain_turns(client)
@@ -187,20 +224,31 @@ def test_explicit_ids_bind_ready_and_prepared_only(client: TestClient, tmp_path:
     _drain_turns(client)
 
 
-def test_explicit_unknown_id_is_ignored_not_a_crash(client: TestClient, tmp_path: Path):
-    """不存在的 id 静默跳过（不 500、不绑），真附件照常绑。"""
+def test_explicit_unknown_id_is_refused_not_a_crash(client: TestClient, tmp_path: Path):
+    """不存在的 id 不 500、不静默丢：409 + 逐条原因，真附件也不能被「顺带绑上」。
+
+    round4 §1.2：任何 id 不满足「存在 / 同话题 / 状态允许 / 未绑定或绑定在 retry_of_turn_id」
+    都进 rejected；rejected 非空 → 整条请求不入队。
+    """
     ready = _create(client, tmp_path, "真附件.txt", topic_id="t_unknown")
 
-    accepted = client.post(
+    before = client.app.state.ctx.turns.snapshot()
+    refused = client.post(
         "/api/turns",
         json={
             "message": "混合 id",
             "topic_id": "t_unknown",
             "attachment_ids": ["att_does_not_exist", ready["id"]],
         },
-    ).json()
+    )
 
-    assert [item["id"] for item in accepted["attachments"]] == [ready["id"]]
+    assert refused.status_code == 409, refused.text
+    body = refused.json()
+    assert [item["id"] for item in body["rejected"]] == ["att_does_not_exist"]
+    assert "没有这个附件" in body["rejected"][0]["reason"]
+    assert client.app.state.ctx.turns.snapshot()["queued"] == before["queued"]
+    # 混合请求整体被拒：真附件也不得被绑上（不允许半绑定状态）
+    assert _turn_row(client, ready["id"]) is None
     _drain_turns(client)
 
 
