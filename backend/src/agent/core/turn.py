@@ -31,6 +31,10 @@ Every accepted turn gets exactly one `TURN_START` and exactly one `TURN_END`
 (the latter in a `finally`), whatever happens inside the runner. Nested loops
 (subagents, maintenance, tool development) must never emit turn events — they
 are not turns, and a subagent's `TURN_END` used to end the user's turn.
+
+TURN_END 除了终态与权威最终回答，还带**结束事实**（plan §1.2）：
+`reason_code` / `reason`（已过 redact）/ `stopped_by` / `actions`。
+全部来自系统事实；没有事实（含旧记录）就是 `none`，不伪造原因。
 """
 
 from __future__ import annotations
@@ -68,6 +72,46 @@ TURN_END = "TURN_END"
 
 # 终态：进入其中之一后不再变化。
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
+
+# 适配器（供应商）异常的类名：见 adapters/errors.py 的归一化分类。
+# 只按**类名**分类，不解析错误正文去猜厂商内容（与 services/verify.py 同一口径）。
+# tests/test_turn_timing_facts.py 有一条防漂移断言：这张表必须覆盖 ProviderError 家族。
+PROVIDER_ERROR_NAMES = frozenset(
+    {
+        "ProviderError",
+        "AuthenticationError",
+        "RateLimitError",
+        "NetworkError",
+        "UnsupportedCapability",
+        "InvalidToolCall",
+        "ProviderInternalError",
+    }
+)
+
+# reason_code → 当前**确实可用**的操作（plan §1.2「只列当前确实可用的操作」）。
+# * retry：前端用「重发这条用户消息」实现（走现有发送接口）；
+# * resend：后端既有 /api/turns/{id}/resend（只认 journal 记成 interrupted 的行）；
+# * 预算 / 无进展 / 护栏 / 缺凭据：重发同样的请求会再次停下，或真正的入口不在对话里
+#   （设置 → 凭据）—— 一律不给按钮，原因写在 reason 里。
+ACTIONS_BY_REASON: dict[str, tuple[str, ...]] = {
+    "provider_error": ("retry",),
+    "internal_error": ("retry",),
+    "tool_failed": ("retry",),
+    "user_stopped": ("resend",),
+    "interrupted": ("resend",),
+    "budget": (),
+    "no_progress": (),
+    "guard_halt": (),
+    "credential_unavailable": (),
+    "none": (),
+}
+
+# 没有「更具体原因」可用时的系统事实文案（与 services/app.py 的既有口径一致）。
+INTERRUPTED_REASON = "进程结束前这一轮还没有跑完。"
+NO_CREDENTIAL_REASON = "还没有配置可用的模型凭据（设置 → 凭据），这一轮没有开始。"
+
+# 人话原因的上限（plan §1.2：≤200 字）。
+REASON_MAX_CHARS = 200
 
 
 def _terminal(ctx: "TurnContext") -> bool:
@@ -415,11 +459,94 @@ class TurnManager:
         # 耗时事实（plan §3）：duration_ms 权威来自 trace 台账；台账还没收口时
         # 退回进程内单调钟测得的执行时长 —— 缺失 ≠ 0，也不给一个假的 0。
         payload.update(self._turn_timing(ctx))
+        # 结束事实（plan §1.2）：为什么停下来 + 当前确实可用的操作。
+        payload.update(self._end_facts(ctx))
         if ctx.final_verification:
             payload["verification"] = ctx.final_verification
         if ctx.usage:
             payload.update(ctx.usage)
         await self._emit_event(TURN_END, payload)
+
+    # -- 结束事实（plan §1.2）-----------------------------------------------
+
+    def _end_facts(self, ctx: TurnContext) -> dict[str, Any]:
+        """TURN_END 的 reason_code / reason / stopped_by / actions。
+
+        只写系统**确实知道**的事实，不猜、不伪造：
+
+        * 循环记下的停止原因（预算 / 无进展 / 护栏）随 TurnResult 到达
+          （服务层把它放进 ctx.result["turn"]）；
+        * 取消分两种：用户按的停止是 user_stopped，进程收尾掐断的是 interrupted；
+        * 失败按**异常类名**分类：适配器错误 → provider_error，其余 → internal_error；
+        * 没有事实 / 旧记录 → "none"，不编一个理由；旧记录也不会被补写。
+        """
+        status = ctx.status
+        turn = self._turn_result(ctx)
+        code = str(turn.get("stop_reason_code") or "")
+        reason: str | None = turn.get("stop_reason")
+        stopped_by: str | None = turn.get("stopped_by")
+        if status == "cancelled":
+            # 谁停的：用户按的停止优先（进程恰好也在收尾不影响这个事实）；
+            # 只有「没有任何人按停止、进程自己掐断」才是 interrupted。
+            if ctx.cancelled:
+                code, stopped_by, reason = "user_stopped", "user", None
+            else:
+                code, stopped_by, reason = "interrupted", "system", INTERRUPTED_REASON
+        elif status == "unavailable":
+            code, stopped_by, reason = (
+                "credential_unavailable",
+                "system",
+                NO_CREDENTIAL_REASON,
+            )
+        elif status == "failed":
+            code, stopped_by, reason = self._failure_facts(ctx.error)
+        elif status == "completed" and not code:
+            code, stopped_by, reason = "none", None, None
+        if not code:
+            code = "none"
+        return {
+            "reason_code": code,
+            "reason": self._clean_reason(reason),
+            "stopped_by": stopped_by,
+            "actions": list(ACTIONS_BY_REASON.get(code, ())),
+        }
+
+    @staticmethod
+    def _turn_result(ctx: TurnContext) -> dict:
+        """本轮循环的 TurnResult 事实：服务层以 {"ok": ..., "turn": {...}} 放在 ctx.result。"""
+        result = ctx.result if isinstance(ctx.result, dict) else {}
+        turn = result.get("turn")
+        return turn if isinstance(turn, dict) else {}
+
+    @staticmethod
+    def _failure_facts(error: str | None) -> tuple[str, str, str | None]:
+        """失败 → (reason_code, stopped_by, reason)。依据是异常**类名**前缀。"""
+        text = (error or "").strip()
+        name = text.split(":", 1)[0].strip()
+        code = "provider_error" if name in PROVIDER_ERROR_NAMES else "internal_error"
+        return code, "system", text or None
+
+    @staticmethod
+    def _clean_reason(reason: str | None) -> str | None:
+        """人话原因：过 redact、截断到 REASON_MAX_CHARS；没有原因就是 None。
+
+        这是**新增输出路径**，所以必须过 agent/trace/redact.py：打码器自己出问题时
+        宁可给一句「无法安全显示」，也绝不把原文发出去。
+        """
+        if not reason:
+            return None
+        from agent.trace.redact import redact_text
+
+        try:
+            text = redact_text(str(reason))
+        except Exception:  # noqa: BLE001 - 打码失败也不能把未打码的原文发出去
+            return "（原因包含无法安全显示的内容）"
+        text = text.strip()
+        if not text:
+            return None
+        if len(text) > REASON_MAX_CHARS:
+            text = text[: REASON_MAX_CHARS - 1] + "…"
+        return text
 
     # -- 耗时事实（plan §3）-------------------------------------------------
 

@@ -346,7 +346,8 @@ async def test_turn_end_without_stage_publishes_nothing_extra(tmp_path):
 
 
 async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path):
-    """Lead 裁决：流式工具轮的正文与随之而来的 STAGE 说明必须同属一个阶段。
+    """Lead 裁决 + 审计修复 plan §1.1：流式工具轮的正文**先实时进过程区**，
+    阶段就位后用同一个 delta_id 补上 stage_id / call_ids —— 同一份文字、同一个阶段。
 
     端到端：真 AppContext（真的落库 + 真阶段状态机）+ 脚本化流式 provider。
     """
@@ -357,10 +358,11 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
 
     ctx = _app_ctx(tmp_path)
     ctx.credentials._kr = MemoryKeyring()
+    said = "我先读一下文件，然后把里面的配置和结论都整理出来。"
     adapter = FakeStreamAdapter(
         [
             StreamScript(
-                text="我先读一下文件。",
+                text=said,
                 tool_calls=[
                     ScriptedToolCall(
                         id="c1",
@@ -393,11 +395,22 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         for e in ctx.bus._history
         if e.type.value == "ASSISTANT" and e.data.get("interim")
     ]
-    assert len(interim) == 1, "工具轮正文必须恰好出现一次（延后发布不能重复）"
-    assert interim[0]["content"] == "我先读一下文件。"
-    # 同一个阶段、同一批调用：前端表现为「同一阶段的历次说明」
+    # ① 实时事件：字数过了发布阈值就发，此时还不知道这批工具的阶段
+    assert len(interim) == 2, "工具轮正文先实时出现，阶段就位后补归属（同一份文字，不发第二次）"
+    assert interim[0]["content"] == said and interim[0]["stage_id"] is None
+    assert interim[0]["delta_id"] == interim[-1]["delta_id"]
+    # ② 阶段就位后的同一条累计快照：同一份文字 + 同一个阶段、同一批调用
+    assert interim[-1]["content"] == said
     assert interim[-1]["stage_id"] == opened["stage_id"]
     assert interim[-1]["call_ids"] == opened["call_ids"] == ["c1"]
+    assert [e["seq"] for e in interim] == sorted({e["seq"] for e in interim})
+    # 工具轮的正文**永不**进正式回答区（审计问题 2）
+    answers = [
+        e.data
+        for e in ctx.bus._history
+        if e.type.value == "ASSISTANT" and not e.data.get("interim")
+    ]
+    assert all(said not in (a["content"] or "") for a in answers), answers
     # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]
