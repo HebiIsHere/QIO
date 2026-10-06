@@ -248,6 +248,9 @@ class Handler(BaseHTTPRequestHandler):
             "model": body.get("model"),
             "stream_requested": bool(body.get("stream")),
             "message_count": len(body.get("messages") or []),
+            # D 的诊断字段（纯追加，不影响任何行为）：这一轮请求带没带工具 ——
+            # plan §1.1 的唯一角色判据就是它（tools=[] = 回答调用）。
+            "tool_count": len(body.get("tools") or []),
             "step_kind": (
                 "tool_chunks" if step.get("tool_chunks") else ("status" if step.get("status") else "text")
             ),

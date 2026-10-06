@@ -379,6 +379,90 @@ async def test_cancel_mid_answer_keeps_published_text(provider):
             "取消之后又出现 interim=true 的搬家事件（已进入回答区的文字被移回过程区）", event
         )
 
+# ---- 4. 诊断：一轮发生几次 provider 请求、每次吃到哪一步、带不带工具 ----------------
+
+
+def _request_log(provider) -> list[dict]:
+    """provider 台账：每次请求的 step_kind / tool_count / message_count / 是否要流。"""
+    entries = list(getattr(provider, "log", []) or [])
+    return [
+        {
+            "step": e.get("step_kind"),
+            "tools": e.get("tool_count"),
+            "msgs": e.get("message_count"),
+            "stream": e.get("stream_requested"),
+        }
+        for e in entries
+    ]
+
+
+async def test_answer_call_is_requested_without_tools_and_streams_its_deltas(provider):
+    """诊断 + 断言：工具轮之后确实发起了 tools=[] 的回答调用，且它的增量必须标 streaming。
+
+    这条同时给出 Lead 要的直接证据：一轮到底请求了几次、每次带几个工具、吃到哪一步脚本。
+    """
+    script = [
+        {
+            "chunks": ["第一轮说明。"],
+            "chunk_delay_ms": 20,
+            "tool_chunks": [{"id": "r4_d1", "name": "echo", "args_fragments": ['{"text": "one"}']}],
+        },
+        {
+            "chunks": ["第二轮说明。"],
+            "chunk_delay_ms": 20,
+            "tool_chunks": [{"id": "r4_d2", "name": "echo", "args_fragments": ['{"text": "two"}']}],
+        },
+        {"chunks": []},
+        {"chunks": ["两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
+    ]
+    provider.script.set(script)
+    registry, tool = _registry()
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_diag")
+    await asyncio.wait_for(loop.run("两轮工具后回答"), timeout=60)
+
+    requests = _request_log(provider)
+    answers = _answer_events(_non_empty(_assistant(loop)))
+    # 紧凑写法：pytest 会把长 dict 截断，这里压成短字符串，失败信息里能看全（诊断要的就是这个）
+    evidence = {
+        "script_steps": len(script),
+        "requests": [
+            "#%d tools=%s step=%s msgs=%s stream=%s"
+            % (i, r["tools"], r["step"], r["msgs"], r["stream"])
+            for i, r in enumerate(requests)
+        ],
+        "answer_events": [
+            "%s | interim=%s streaming=%s" % (e.get("content"), e.get("interim"), e.get("streaming"))
+            for e in answers
+        ],
+        "tool_calls_seen": [t.get("text") for t in tool.seen],
+    }
+    answer_calls = [r for r in requests if r["tools"] == 0]
+    assert answer_calls, (
+        "整轮没有发生 tools=[] 的回答调用（plan §1.1：工作阶段结束后必须发起一次不带工具的调用）",
+        evidence,
+    )
+    summary = (
+        "script_steps=%d | requests=[%s] | answer_events=[%s] | tools=%s"
+        % (
+            len(script),
+            " ; ".join(
+                "#%d tools=%s step=%s msgs=%s stream=%s"
+                % (i, r["tools"], r["step"], r["msgs"], r["stream"])
+                for i, r in enumerate(requests)
+            ),
+            " ; ".join(
+                "%s|interim=%s|streaming=%s" % (e.get("content"), e.get("interim"), e.get("streaming"))
+                for e in answers
+            ),
+            [t.get("text") for t in tool.seen],
+        )
+    )
+    assert any(e.get("streaming") is True for e in answers), (
+        "回答调用确实发起了（tools=[]），但它的正文没有以 streaming=true 的增量发布 —— "
+        "只有收尾快照（这也是 Lead 要的直接证据）：" + summary
+    )
+
+
 
 async def test_answer_call_failure_is_honest(provider):
     """回答调用失败（断流/厂商 500）必须如实失败，不得把空回答当成成功。"""
