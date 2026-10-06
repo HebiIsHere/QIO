@@ -7,14 +7,20 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useSessionStore } from "../stores/session";
-import type { StreamMessage } from "../stores/session";
+import { useApprovalsStore } from "../stores/approvals";
 import MessageItem from "./MessageItem.vue";
-import NarrativeStage from "./NarrativeStage.vue";
+import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
 import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
-import { groupTurnItems, type TurnItemGroup } from "../stores/session";
+import {
+  splitTurnItems,
+  type StreamMessage,
+  type TurnFacts,
+  type TurnItemsView,
+  type TurnStage,
+} from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 
@@ -26,13 +32,24 @@ interface Turn {
   index: number;
   startedAt: string;
   items: StreamMessage[];
-  /** 渲染分组：叙事行收纳它之后的调用卡，其余消息按原顺序散装渲染 */
-  groups: TurnItemGroup[];
-  /** 本轮第一条助手消息（用于显示话题名） */
+  /** 一轮的消息分到哪一块：过程区 / 正文区 / 其余卡片（见 splitTurnItems） */
+  parts: TurnItemsView;
+  /** 这一轮的 turn_id（旧历史记录可能没有） */
+  turnId: string;
+  /** 本轮第一条正式回答（用于显示话题名） */
   firstAssistantId: string | null;
+  /** 这一轮正在运行（只有最后一轮 + turnRunning 同时成立） */
+  running: boolean;
+  /** 已受理、还没开始执行 */
+  queued: boolean;
+  stages: TurnStage[];
+  facts: TurnFacts | null;
+  /** 是否渲染过程区：有过程内容 / 在跑 / 有权威事实 */
+  showProcess: boolean;
 }
 
 const session = useSessionStore();
+const approvals = useApprovalsStore();
 const containerRef = ref<HTMLDivElement | null>(null);
 /** 卸载阶段模板 ref 会被置空，这里留一份引用，保证离开时仍能读到滚动位置 */
 let lastContainer: HTMLDivElement | null = null;
@@ -97,15 +114,38 @@ const turns = computed<Turn[]>(() => {
         index: n,
         startedAt: m.createdAt,
         items: [],
-        groups: [],
+        parts: { user: [], process: [], answers: [], other: [] },
+        turnId: "",
         firstAssistantId: null,
+        running: false,
+        queued: false,
+        stages: [],
+        facts: null,
+        showProcess: false,
       };
       out.push(cur);
     }
     cur.items.push(m);
-    if (cur.firstAssistantId === null && m.role === "assistant") cur.firstAssistantId = m.id;
+    // 话题名挂在第一条**正式回答**上（中间话不再单独成气泡，也不该抢这一行）
+    if (cur.firstAssistantId === null && m.role === "assistant" && !m.interim) {
+      cur.firstAssistantId = m.id;
+    }
+    if (!cur.turnId && m.turnId) cur.turnId = m.turnId;
   }
-  for (const turn of out) turn.groups = groupTurnItems(turn.items);
+  const lastIndex = out.length;
+  for (const turn of out) {
+    turn.parts = splitTurnItems(turn.items);
+    turn.queued = turn.items.some((m) => m.role === "user" && m.queued === true);
+    // 主对话同一时刻只有一轮在跑：只有最后一轮可能是「正在运行」
+    turn.running = session.turnRunning && turn.index === lastIndex && !turn.queued;
+    turn.stages = session.stagesFor(turn.turnId);
+    turn.facts = session.factsFor(turn.turnId);
+    turn.showProcess =
+      turn.parts.process.length > 0 ||
+      turn.running ||
+      turn.queued ||
+      Boolean(turn.turnId && turn.facts);
+  }
   return out;
 });
 
@@ -491,12 +531,18 @@ function formatTime(iso?: string): string {
  *   （机械的"正在使用工具"是待替换的旧提示，见 spec 2026-09-22）；
  * - 等待响应 / 等待确认 / 正在处理独立任务时，说一句就够了。
  */
-const showGlobalStatus = computed(
-  () =>
+const showGlobalStatus = computed(() => {
+  /**
+   * 内联审批卡已经在过程区里承担了「等待确认」这件事（含按钮），
+   * 全局状态条不再重复说一遍；没有内联卡（非当前轮 / 恢复路径）时照旧显示。
+   */
+  if (session.activity === "approval" && approvals.inlineClaimed) return false;
+  return (
     session.activity !== "idle" &&
     session.activity !== "generating" &&
-    session.activity !== "tool",
-);
+    session.activity !== "tool"
+  );
+});
 /** 只有「还在等」才播三圆点；其它状态是安静的说明文字 */
 const showWaitingDots = computed(
   () => session.activity === "waiting" || session.activity === "notify",
@@ -555,24 +601,38 @@ const phaseLabel = computed(() => {
             <span class="bar"></span>
             <span class="ts">{{ formatTime(turns[item.index].startedAt) }}</span>
           </div>
-          <template v-for="(group, gi) in turns[item.index].groups" :key="`g${gi}`">
-            <!-- 执行叙事：一行抽屉头 + 它收纳的调用卡（默认收起） -->
-            <NarrativeStage
-              v-if="group.kind === 'stage'"
-              :narrative="group.narrative"
-              :calls="group.calls"
-            >
-              <MessageItem v-for="m in group.calls" :key="m.id" :message="m" />
-            </NarrativeStage>
-            <template v-else>
-              <MessageItem
-                v-for="m in group.items"
-                :key="m.id"
-                :message="m"
-                :show-topic="m.id === turns[item.index].firstAssistantId"
-              />
-            </template>
-          </template>
+          <!-- 用户消息：这一轮的起点 -->
+          <MessageItem
+            v-for="m in turns[item.index].parts.user"
+            :key="m.id"
+            :message="m"
+          />
+          <!--
+            一轮 = **一个过程区域**（契约 §1.5）：中间话、工具卡、legacy 叙事行、
+            内联审批、耗时入口都在里面，同一内容只出现一次。
+          -->
+          <TurnProcess
+            v-if="turns[item.index].showProcess"
+            :turn-id="turns[item.index].turnId"
+            :items="turns[item.index].parts.process"
+            :stages="turns[item.index].stages"
+            :facts="turns[item.index].facts"
+            :running="turns[item.index].running"
+            :queued="turns[item.index].queued"
+          />
+          <!-- 独立任务 / 工具创建卡：生命周期比一轮的过程说明长，留在过程区外 -->
+          <MessageItem
+            v-for="m in turns[item.index].parts.other"
+            :key="m.id"
+            :message="m"
+          />
+          <!-- 正式回答（正文区）：流式生成时用增量渲染 -->
+          <MessageItem
+            v-for="m in turns[item.index].parts.answers"
+            :key="m.id"
+            :message="m"
+            :show-topic="m.id === turns[item.index].firstAssistantId"
+          />
         </div>
       </div>
     </div>

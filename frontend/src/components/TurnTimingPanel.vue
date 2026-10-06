@@ -1,36 +1,85 @@
 <script setup lang="ts">
 /**
- * 「这次为什么等这么久」：一轮耗时的用户可读分解。
+ * 一轮耗时的入口 + 明细（契约 §3）。
  *
- * 三条产品规则（对应任务书 C1/C3）：
- * 1. 展示的是用户分类（排队 / 准备环境 / 上下文准备 / 记忆检索 / 模型 / 工具 /
- *    等待确认 / 保存 / 记忆整理 / 其它），不是内部阶段名；内部名只在开发者模式出现。
- * 2. 能一眼看出占比：一行一条 + 一条细比例条，不做需要解读的图表。
- * 3. 老数据（没有 phases）与读取失败都优雅降级：给出总耗时或一句说明，绝不显示 0 或空白。
+ * 三条产品规则：
+ * 1. 展示的是用户分类（排队 / 准备环境 / 上下文准备 / …），不是内部阶段名
+ *    （内部名只在开发者模式出现）；
+ * 2. 折叠态**直接显示总耗时**（来自 TURN_END 的 duration_ms，不展开也能看到）；
+ * 3. 五种状态互不混淆：未请求 / 加载中 / 成功但无分项 / 失败 / 旧记录缺字段；
+ *    明细失败**不抹掉**已知总耗时；缺失 ≠ 0，不永久转圈，可重试。
  *
  * 数据只在用户展开时拉取（见 composables/useTurnTiming.ts），失败不打断对话。
  */
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useUiStore } from "../stores/ui";
 import { useTurnTiming } from "../composables/useTurnTiming";
 import { buildTimingSentence, formatMs } from "../services/trace";
 
-const props = defineProps<{ turnId?: string | null; dev?: boolean }>();
+const props = defineProps<{
+  turnId?: string | null;
+  dev?: boolean;
+  /** TURN_END 的权威总耗时（毫秒）：折叠态直接显示它，不依赖明细是否加载 */
+  durationMs?: number | null;
+  /** 这一轮的系统状态（completed / failed / cancelled / unavailable…） */
+  status?: string | null;
+}>();
 const ui = useUiStore();
 /** 开发者模式看得到内部阶段名；普通模式只给用户分类 */
 const devMode = computed(() => props.dev ?? ui.developerMode);
 
 const { state, timing, load } = useTurnTiming(() => props.turnId ?? null);
 
-const sentence = computed(() => buildTimingSentence(timing.value));
-const totalText = computed(() => {
-  const total = timing.value?.totalMs;
-  return total === null || total === undefined ? "" : formatMs(total);
+const STATUS_WORD: Record<string, string> = {
+  completed: "已完成",
+  failed: "已失败",
+  cancelled: "已停止",
+  stopped: "已停止",
+  unavailable: "未完成",
+};
+
+/** 已知总耗时：TURN_END 的权威值优先，没有才退回明细里的（排队 + 执行） */
+const knownTotal = computed(() => {
+  const authoritative = props.durationMs;
+  if (typeof authoritative === "number" && Number.isFinite(authoritative) && authoritative >= 0) {
+    return authoritative;
+  }
+  const fromTrace = timing.value?.totalMs;
+  return typeof fromTrace === "number" && Number.isFinite(fromTrace) ? fromTrace : null;
+});
+
+const totalText = computed(() => (knownTotal.value === null ? "" : formatMs(knownTotal.value)));
+
+/**
+ * 折叠态文案。只有**真的在请求明细**时才说「读取中」；
+ * 已知总耗时永远优先显示 —— 明细失败也不把它换成「读取中」或 0。
+ */
+const summaryText = computed(() => {
+  const word = props.status ? (STATUS_WORD[props.status] ?? "已结束") : "";
+  if (totalText.value) return word ? `${word} · 耗时 ${totalText.value}` : `耗时 ${totalText.value}`;
+  if (state.value === "loading") return "读取中";
+  if (state.value === "error") return "耗时（明细没读到）";
+  if (state.value === "missing") return "没有耗时记录";
+  // 未请求：安静的入口，不假装已经在读
+  return "耗时";
+});
+
+/** 读屏句子：优先用明细；明细还没有但已知总耗时时，也要念得出总耗时 */
+const sentence = computed(() => {
+  const base = buildTimingSentence(timing.value);
+  if (timing.value?.totalMs !== null && timing.value?.totalMs !== undefined) return base;
+  if (totalText.value) return `总耗时 ${totalText.value}`;
+  return base;
 });
 
 function onToggle(event: Event) {
   const el = event.target as HTMLDetailsElement | null;
   if (el?.open) void load();
+}
+
+/** 明细失败后的重试：force 绕过缓存（缓存里没有失败结果，force 只是语义明确） */
+function retry() {
+  void load(true);
 }
 
 const rawText = computed(() =>
@@ -51,14 +100,12 @@ const queueNote = computed(() => {
   <details v-if="turnId" class="tt" data-test="turn-timing" @toggle="onToggle">
     <summary class="tt-summary" :aria-label="sentence">
       <span class="tt-title">耗时</span>
-      <span v-if="totalText" class="tt-total mono">{{ totalText }}</span>
-      <span v-else class="tt-total mono">读取中</span>
+      <span class="tt-total mono" :data-state="state">{{ summaryText }}</span>
     </summary>
 
     <div class="tt-body">
-      <p v-if="state === 'loading'" class="tt-note" role="status">正在读取耗时明细…</p>
-
-      <template v-else-if="timing && timing.rows.length">
+      <!-- 成功且有分项 -->
+      <template v-if="timing && timing.rows.length">
         <ul class="tt-rows">
           <li v-for="row in timing.rows" :key="row.key" class="tt-row">
             <span class="tt-label">{{ row.label }}</span>
@@ -81,16 +128,27 @@ const queueNote = computed(() => {
         </p>
       </template>
 
+      <!-- 正在请求明细（且还没有任何可显示的分项） -->
+      <p v-else-if="state === 'loading'" class="tt-note" role="status">正在读取耗时明细…</p>
+
+      <!-- 失败：说清没读到，给重试；已知总耗时仍在上面那一行 -->
       <p v-else-if="state === 'error'" class="tt-note" role="status">
         这次没读到耗时明细（不影响回答本身）
+        <button class="tt-retry" type="button" @click.stop.prevent="retry">重试</button>
       </p>
 
-      <p v-else class="tt-note" role="status">
-        <template v-if="timing && timing.totalMs !== null">
-          总耗时 {{ formatMs(timing.totalMs) }}，但这次没有分阶段记录（旧版本留下的数据）
-        </template>
-        <template v-else>这次没有留下耗时记录</template>
+      <!-- 旧记录：有总耗时但没有 phases 账本 -->
+      <p v-else-if="timing && timing.totalMs !== null && timing.legacy" class="tt-note" role="status">
+        总耗时 {{ formatMs(timing.totalMs) }}，但这次没有分阶段记录（旧版本留下的数据）
       </p>
+
+      <!-- 成功但无分项：账本在，只是这次没有可分解的阶段 -->
+      <p v-else-if="timing && timing.totalMs !== null" class="tt-note" role="status">
+        总耗时 {{ formatMs(timing.totalMs) }}，这次没有可分解的耗时记录
+      </p>
+
+      <!-- 没有记录：缺失就是缺失，不显示 0 -->
+      <p v-else class="tt-note" role="status">这次没有留下耗时记录</p>
     </div>
   </details>
 </template>
@@ -126,6 +184,20 @@ const queueNote = computed(() => {
 }
 .tt-total {
   color: var(--text-secondary);
+}
+.tt-retry {
+  margin-left: var(--sp-2);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.tt-retry:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .tt-body {
   margin-top: var(--sp-2);

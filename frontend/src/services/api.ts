@@ -417,7 +417,7 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
       { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
-  sendTurn: (message: string, topicId?: string | null) =>
+  sendTurn: (message: string, topicId?: string | null, attachmentIds?: string[]) =>
     request<{
       ok: boolean;
       accepted: boolean;
@@ -427,7 +427,12 @@ export const api = {
       topic_id: string | null;
     }>("/api/turns", {
       method: "POST",
-      body: JSON.stringify({ message, topic_id: topicId ?? null }),
+      body: JSON.stringify({
+        message,
+        topic_id: topicId ?? null,
+        // 附件随这一轮绑定（契约 §4.2）；没有附件时不带这个字段
+        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+      }),
     }),
   getInstance: () =>
     request<{ instance_id: string; pid: number; auth_required: boolean; version: string }>(

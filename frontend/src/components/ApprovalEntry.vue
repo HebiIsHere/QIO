@@ -32,7 +32,7 @@ const interruptedHint = computed(() => {
 <template>
   <p v-if="interruptedHint" class="interrupted-note" role="status">{{ interruptedHint }}</p>
   <button
-    v-if="approvals.pendingCount > 0 && !approvals.visible"
+    v-if="approvals.pendingCount > 0 && !approvals.visible && !approvals.inlineClaimed"
     class="approval-entry"
     type="button"
     :aria-label="`有 ${approvals.pendingCount} 项操作等待确认，打开审批窗口`"
