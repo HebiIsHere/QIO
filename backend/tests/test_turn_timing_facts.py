@@ -134,6 +134,198 @@ async def test_ledger_failure_falls_back_to_measured_duration():
     assert end["started_at"] and end["ended_at"]
 
 
+# ---- 结束事实（plan §1.2）：reason_code / reason / stopped_by / actions --------
+
+
+async def test_completed_turn_reports_none_reason_and_no_actions():
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        ctx.result = {
+            "ok": True,
+            "turn": {"stop_reason_code": "none", "stop_reason": None, "stopped_by": None},
+        }
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["reason_code"] == "none"
+    assert end["reason"] is None  # 正常跑完就不编一个理由
+    assert end["stopped_by"] is None
+    assert end["actions"] == []
+
+
+async def test_completed_turn_carries_the_loop_stop_facts():
+    """预算 / 无进展 / 护栏停下但整轮仍算完成：原因如实带出，且不给会再次失败的按钮。"""
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        ctx.result = {
+            "ok": True,
+            "turn": {
+                "stop_reason_code": "budget",
+                "stop_reason": "迭代次数达到上限（8/8）",
+                "stopped_by": "system",
+            },
+        }
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "completed"
+    assert end["reason_code"] == "budget"
+    assert "迭代次数达到上限" in end["reason"]
+    assert end["stopped_by"] == "system"
+    assert end["actions"] == []  # 重发同样的请求会再次停下 → 不给按钮
+
+
+async def test_provider_failure_is_a_provider_error_with_retry():
+    from agent.adapters.errors import NetworkError
+
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        raise NetworkError("连接断了")
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "failed"
+    assert end["reason_code"] == "provider_error"
+    assert "连接断了" in end["reason"]
+    assert end["stopped_by"] == "system"
+    assert end["actions"] == ["retry"]
+
+
+async def test_internal_failure_is_reported_as_internal_error():
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        raise ValueError("某个内部假设不成立")
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["reason_code"] == "internal_error"  # 不是供应商错误就不冒充
+    assert "某个内部假设不成立" in end["reason"]
+    assert end["stopped_by"] == "system"
+    assert end["actions"] == ["retry"]
+
+
+async def test_user_stop_is_reported_as_user_stopped():
+    events, emitter = _collector()
+    release = asyncio.Event()
+
+    async def runner(ctx):
+        await release.wait()
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    while manager.active is None:
+        await asyncio.sleep(0.005)
+    assert manager.cancel_active() is True
+    release.set()
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "cancelled"
+    assert end["reason_code"] == "user_stopped"
+    assert end["stopped_by"] == "user"
+    assert end["actions"] == ["resend"]
+
+
+async def test_shutdown_interruption_is_not_a_user_stop():
+    events, emitter = _collector()
+    running = asyncio.Event()
+
+    async def runner(ctx):
+        running.set()
+        await asyncio.sleep(30)
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await running.wait()
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "cancelled"
+    assert end["reason_code"] == "interrupted"  # 进程掐断 ≠ 用户按的停止
+    assert end["stopped_by"] == "system"
+    assert end["reason"]
+    assert end["actions"] == ["resend"]
+
+
+async def test_missing_credential_turn_is_reported_honestly():
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        ctx.status = "unavailable"
+        ctx.error = "no_credential"
+        ctx.result = {"ok": False, "reason": "no_credential"}
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "unavailable"
+    assert end["reason_code"] == "credential_unavailable"
+    assert "凭据" in end["reason"]
+    assert end["actions"] == []  # 真正的入口是「设置 → 凭据」，写在 reason 里
+
+
+async def test_turn_end_reason_is_redacted():
+    """新增输出路径必须过 redact：原因里不得出现密钥原文。"""
+    from agent.trace import redact
+
+    secret = "sk-live-turn-end-secret-0001"
+    redact.register_secret(secret)
+    try:
+        events, emitter = _collector()
+
+        async def runner(ctx):
+            raise RuntimeError(f"upstream 400: {secret}")
+
+        manager = TurnManager(runner=runner, emitter=emitter)
+        ctx = manager.submit("hi")
+        await manager.wait(ctx.turn_id, timeout=3)
+        await manager.shutdown()
+
+        end = _end_event(events)
+        assert end["reason"]
+        assert secret not in end["reason"]
+    finally:
+        redact.clear_registered_secrets()
+
+
+def test_provider_error_names_cover_the_adapter_taxonomy():
+    """类名表必须覆盖 adapters/errors.py 的全部归一化错误，否则失败会被误判。"""
+    from agent.adapters import errors as adapter_errors
+    from agent.core.turn import PROVIDER_ERROR_NAMES
+
+    declared = {
+        name
+        for name, obj in vars(adapter_errors).items()
+        if isinstance(obj, type) and issubclass(obj, adapter_errors.ProviderError)
+    }
+    assert declared
+    assert declared <= set(PROVIDER_ERROR_NAMES)
+
+
 # ---- 服务层：TURN_END 出口用台账覆盖 core 的值 -------------------------------
 
 

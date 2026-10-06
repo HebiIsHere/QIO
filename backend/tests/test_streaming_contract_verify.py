@@ -1,14 +1,17 @@
-"""D 独立验证：真实流式（契约 §2）。
+"""D 独立验证：真实流式（契约 §2 + 审计修复 plan §1.1）。
 
-契约来源：docs/plans/2026-10-06-unified-process-attachments-streaming.md §2。
+契约来源：docs/plans/2026-10-06-unified-process-attachments-streaming.md §2，
+以及 docs/plans/2026-10-06-audit-seven-fixes.md §1.1（输出角色边界）。
 验证方式：**不走实现方的内部形状猜测**，而是用本地假厂商端点（真 HTTP + 真 SSE）
 喂给真实的 NativeAdapter + AgentLoop，断言事件层与最终文本的契约。
 
 假厂商端点：scripts/verify_stream_provider.py（本地扮演，不联网、不需要真实 Key）。
 它只证明「QIO 自己的链路对」，不证明任何真实厂商的兼容性。
 
-基线（ee6bbff）现状：BaseAdapter 没有 stream/supports_stream、loop 不逐段推送、
-TURN_END 之外没有任何增量 —— 因此本文件在实现合并前应当是**红的**。
+审计修复后的口径（plan §1.1）：正文增量**先实时进过程区**（interim=true），
+只有「这次调用结束且没有任何工具调用」才把它原样提升为正式回答（interim=false，
+同一 delta_id、同一份文字、不重打）—— 因此本文件断言的是「provider 结束前已经
+看得见字」，不再要求「结束前就已经是正式回答」。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_streaming_contract_verify.py -q
 """
@@ -167,8 +170,13 @@ async def test_stream_delta_carries_a_text_fragment():
 
 
 async def test_streaming_answer_arrives_before_provider_finishes(provider):
+    """审计修复 plan §1.1：正文**先实时进过程区**；调用结束且无工具调用时**原样提升**。
+
+    强度不变的三条：provider 结束前已经看得见字 + 按节奏合并发布 + 同一份文字不重复。
+    """
     chunks = [f"第{i:02d}段。" for i in range(1, 21)]
-    provider.script.set([{"chunks": chunks, "chunk_delay_ms": 45}])
+    # 10ms 一片：分片到达比发布节奏（40ms）快 —— 合并发布必须发生，否则就是逐片推送。
+    provider.script.set([{"chunks": chunks, "chunk_delay_ms": 10}])
 
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="turn_stream_verify")
@@ -178,7 +186,7 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
     early_timeline: list[str] = []
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not task.done():
-        for event in _assistant_events(loop, interim=False):
+        for event in _assistant_events(loop):
             if str(event.data.get("content") or "").strip():
                 early_event = event
                 early_timeline = _timeline_events(provider)
@@ -189,12 +197,17 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
 
     result = await asyncio.wait_for(task, timeout=20)
 
-    assert early_event is not None, "契约 §2：守卫窗口是有界的，不能等整段响应结束才播放"
+    assert early_event is not None, "契约 §1.1 第 1 条：正文必须边生成边显示，不能等整段响应结束才播放"
     assert "stream_end" not in early_timeline, (
         "回答是在 provider 已经发完之后才出现的（假流式）：时间线=%r" % early_timeline
     )
+    # 还没有定论：实时展示的是**过程区**文字（不是「先当答案、再移走」）
+    assert early_event.data.get("interim") is True, (
+        "定论之前不得把文字放进正式回答区",
+        early_event.data,
+    )
 
-    events = _assistant_events(loop, interim=False)
+    events = _assistant_events(loop)
     contents = [str(event.data.get("content") or "") for event in events]
     full = "".join(chunks)
 
@@ -215,9 +228,9 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
     seqs = [int(event.data["seq"]) for event in events]
     assert seqs == sorted(seqs), ("seq 必须单调", seqs)
     assert len(set(seqs)) == len(seqs), ("seq 必须唯一（前端据此丢重复）", seqs)
-    # 增量阶段必须是 streaming=true（真流式）。实现允许在最后补一条 streaming=false 的
-    # **落定标记**（停打字机）：它必须与上一段内容完全一致、同一个 delta_id、只多一条，
-    # 且绝不能改内容（否则就成了「重打一遍」）。
+    # 增量阶段必须是 streaming=true（真流式）。最后一条是 streaming=false 的**落定 +
+    # 提升**（停打字机、同一份文字进正式回答区）：它必须与上一段内容完全一致、
+    # 同一个 delta_id、只多一条，且绝不能改内容（否则就成了「重打一遍」）。
     streamed = [event for event in events if event.data.get("streaming") is True]
     settle = [event for event in events if event.data.get("streaming") is not True]
     assert streamed, ("流式路径必须至少有 streaming=true 的增量", [e.data for e in events])
@@ -231,6 +244,16 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
         "收尾快照必须交付已确认全文（且不改内容）",
         settle[0].data.get("content"),
         full,
+    )
+    # 提升（promotion）：同一 delta_id、同一份文字，从过程区进正式回答区
+    assert settle[0].data.get("interim") is False, ("收尾必须把它提升为正式回答", settle[0].data)
+    assert settle[0].data.get("role_evidence") == "call_closed_without_tools", (
+        "提升的依据必须是「调用结束且无工具调用」，不是时间窗口",
+        settle[0].data,
+    )
+    assert all(event.data.get("interim") is True for event in streamed), (
+        "定论之前不得有任何文字被当成正式回答",
+        [e.data for e in events],
     )
 
 
