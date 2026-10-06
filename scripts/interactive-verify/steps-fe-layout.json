@@ -1,0 +1,20 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({toolbars: document.querySelectorAll('[data-im=\"board-toolbar\"]').length, chatToggle: !!document.querySelector('[data-im=\"chat-toggle\"]'), submit: !!document.querySelector('[data-im=\"submit\"]'), saveStatus: !!document.querySelector('[data-im=\"save-status\"]'), submitStatus: !!document.querySelector('[data-im=\"submit-status\"]'), legacyRail: !!document.querySelector('.im-aux'), batchEntry: !!document.querySelector('[data-im=\"batch-entry\"]')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-50-merged-ac"
+  }
+]

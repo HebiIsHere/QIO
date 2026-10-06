@@ -4,6 +4,8 @@ import App from "./App.vue";
 import router from "./router";
 import "./styles/tokens.css";
 import "./styles/base.css";
+// 互动板改版的浮层层级与避让（主智能体在集成时统一导入；A 负责该文件）
+import "./styles/interactive-shell.css";
 // 中文衬线声部：本地打包 Noto Serif SC（SIL OFL 1.1，@fontsource 分发，
 // unicode-range 分片按需加载，离线可用；不引入网络字体）
 import "@fontsource/noto-serif-sc/400.css";

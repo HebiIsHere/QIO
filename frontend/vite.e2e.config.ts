@@ -29,6 +29,9 @@ try {
 export default mergeConfig(
   base as UserConfig,
   defineConfig({
+    // 必须显式指定 root：vite 默认以**进程工作目录**为 root，而这个配置文件可能被
+    // 从仓库根目录用 --config 引用，那样根目录下没有 index.html，页面会 404。
+    root: here,
     server: { fs: { allow: [here, modules] } },
   }),
 );

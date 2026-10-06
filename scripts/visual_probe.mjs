@@ -25,9 +25,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const PORT = 9333;
-const PROFILE = `${process.env.TEMP}\\qio-chrome-profile`;
-const OUT = `${process.env.TEMP}\\qio-visual\\shots`;
+/**
+ * 端口与用户目录可用环境变量覆盖。
+ *
+ * 为什么需要：这个脚本原来固定用 9333 端口 + 同一个用户目录，多个智能体/多个验收脚本
+ * **同时**跑时会互相抢同一个调试端口与同一个 Chrome 实例，表现是「探针卡住不返回」
+ * 或者别人的运行被打断。各自给一份就能并行：
+ *   $env:QIO_PROBE_PORT = "9341"; $env:QIO_PROBE_PROFILE = "$env:TEMP\qio-chrome-a"
+ */
+const PORT = Number(process.env.QIO_PROBE_PORT || 9333);
+const PROFILE = process.env.QIO_PROBE_PROFILE || `${process.env.TEMP}\\qio-chrome-profile`;
+const OUT = process.env.QIO_PROBE_OUT || `${process.env.TEMP}\\qio-visual\\shots`;
 mkdirSync(OUT, { recursive: true });
 
 import { readFileSync } from "node:fs";

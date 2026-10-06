@@ -14,7 +14,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { addCard, CARD_KIND_LABELS } from "../../interactive/board";
+import { addCard, CARD_KIND_LABELS, defaultCardSeed } from "../../interactive/board";
 import type { CardKind } from "../../interactive/types";
 
 /** 可添加的五类；reply 是 QIO 结果产生的卡片，不由用户「添加」。 */
@@ -44,18 +44,6 @@ const ITEMS: AddItem[] = [
   { kind: "url", label: "网址", hint: "材料默认在本次允许查看范围内，不需要勾选" },
 ];
 
-/**
- * 新卡片的初始内容：与旧 BoardCanvas.onAdd 的五份默认值一致（同一个「添加文件」不能有两种默认值）。
- * B 正在把这份默认值抽到 board.ts 的 defaultCardSeed(kind)；他给出后这里改成引用，避免两处漂移。
- */
-const SEEDS: Record<AddableKind, { content: string; meta: Record<string, unknown> }> = {
-  text: { content: "", meta: {} },
-  file: { content: "待补充文件说明", meta: { name: "未命名文件" } },
-  image: { content: "", meta: { name: "未命名图片" } },
-  code: { content: "// 待补充代码", meta: { language: "text" } },
-  url: { content: "", meta: { href: "https://", title: "待补充标题" } },
-};
-
 function toggle(): void {
   open.value = !open.value;
 }
@@ -70,7 +58,8 @@ function close(returnFocus = false): void {
 function add(kind: AddableKind): void {
   const current = store.board;
   if (!current) return;
-  const seed = SEEDS[kind];
+  // 默认内容统一由 board.ts 提供：同一个「添加文件」不能有两种默认值（集成时去掉这里的复制）
+  const seed = defaultCardSeed(kind);
   store.commit(addCard(current, { kind, content: seed.content, meta: seed.meta }), "添加" + CARD_KIND_LABELS[kind]);
   close(true);
 }
