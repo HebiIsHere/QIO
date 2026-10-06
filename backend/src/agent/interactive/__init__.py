@@ -33,4 +33,5 @@ from agent.interactive.models import (  # noqa: F401  (re-export for callers)
     now_iso,
     selectable_cards,
     selectable_ids,
+    visible_except_deleted,
 )
