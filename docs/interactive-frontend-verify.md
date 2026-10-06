@@ -637,3 +637,84 @@ A 的 shell 又用 `--im-chat-lift` 把面板整体抬高一次；1440×900 下 
 4. 本轮探针控制台出现的 `Could not establish connection. Receiving end does not exist.` 是浏览器扩展报错，与应用无关（应用侧 httpFails 为空）。
 
 ---
+
+## 10. 连接点遮挡修复复验（提交 `9fd905a`）—— **未修好**
+
+**复验对象**：`9fd905a`（基线 `b68d1f7`）。**探针**：`scripts/visual_probe_d3.mjs`（Edge，CDP 9666）。
+**步骤**：`steps-dv-47.json`（四张卡命中测试）、`steps-dv-50.json`（top 连接点拖线）、`steps-dv-52.json` / `steps-dv-53.json`（重复复测）、`steps-dv-51.json`（三档回归）。
+
+### 10.1 连接点命中测试：**仍然失败**（阻断未消除）
+
+**四张卡片各测一次**（1440×900，选中后取 top 连接点中心调 `elementFromPoint`）：
+
+    卡片                          卡片 top   工具栏 {top,bottom}   top 连接点中心   命中元素         isPoint
+    c_mux6xxyv13ny8 (x454,y125)     230      {215,247}             (584,237)       card-fold        false  ← 盖住
+    c_mux6xxyw2r7ts (x564,y190)     295      {307,340}             (694,302)       connect-point    true
+    c_mux78x2q1k49x (x628,y60)      165      {177,210}             (758,172)       connect-point    true
+    c_mux78xlb2ff1m (x912,y60)      165      {177,210}             (1042,172)      connect-point    true
+
+**重复复测（同一张卡、每次刷新后重新选中，`steps-dv-53.json`）**：
+
+    card3（c_mux78xlb2ff1m，卡片 top=165）
+      第一次/第二次/第三次：工具栏 {150,182}、inline top=44.6875px、命中 card-edit、isPoint=false
+    card0（c_mux6xxyv13ny8，卡片 top=230）
+      第一次/第二次：工具栏 {215,247}、inline top=109.688px、命中 card-fold、isPoint=false
+
+**结论**：五次重复复测**全部失败**（工具栏底边分别落在卡片顶边下方 17px）。
+上一轮 `steps-dv-47.json` 里 card1/card2/card3 曾出现 `isPoint=true`，但独立单卡复测（`steps-dv-52.json`：card3 命中 card-edit）
+与重复复测都稳定失败 → 那 3 次通过**不可复现**，按「修复不生效」记录。截图 `dv-68-hit-card0.png`、`dv-78-card3-fresh.png`。
+
+### 10.2 从 top 连接点拖线：**建不了链**
+
+    取 top 连接点中心 → elementFromPoint = card-edit（不是连接点）
+    在该点 pointerdown 后拖到另一张卡片：links 1 → 1（没有新建）
+    （`steps-dv-50.json` 原始输出：hitIm="card-edit", linksBefore=1, linksAfter=1）
+
+### 10.3 根因：工具栏坐标系与 `placeOverlay` 坐标系不是同一个（读源码 + 实测印证）
+
+**实测（选中 card0）**：
+
+    .board-shell    屏幕 {top:50,  left:0}
+    .board-surface  屏幕 {top:105, left:0}      ← 工具栏的 offsetParent
+    卡片            板面坐标 {x:454,y:125}，屏幕 {top:230,left:454}
+    工具栏          行内 style="left: 454px; top: 109.688px"，屏幕 {top:215}
+    工具栏 offsetParent = board-surface（position:relative）
+
+`BoardCanvas.placeOverlay()` 把工具栏位置算成**相对 shell** 的坐标：
+
+    const shellRect = shellElement.getBoundingClientRect();   // top=50
+    const offsetY = viewRect.top - shellRect.top;            // 55
+    const screen = toScreenPoint(...);  const cardTop = screen.y - shellRect.top;  // 卡片相对 shell ≈ 55
+    const limitTop = Math.max(minTop, offsetY + 2);          // ≈ 57
+
+但工具栏是 `position:absolute` 挂在 `.board-surface` 里的（offsetParent=board-surface），行内 `top` 是**相对 board-surface** 的。
+于是「卡片相对 shell ≈ 55」被拿去和 `limitTop ≈ 57` 比：`aboveTop = 55 − 33 − 10 = 12 < 57` → 判「上方放不下」→ 走下方分支；
+`belowTop = min(maxTop, 卡片底 + 10) = 190`；最后 `top = Math.max(limitTop, 190)` 再夹一次；
+真正渲染出来就是「卡片上方 15px、底边落在卡片顶边下方 17px」——**工具栏始终压在卡片顶边上**。
+
+**为什么上一轮时好时坏**：`placeOverlay` 每次都会去量 `[data-im="card-toolbar"]` 的真实高度，
+但首次渲染时工具栏可能还不存在（用估算 34），随后才用真实高度 33 重算；叠加坐标系偏差，
+最终位置在几像素量级抖动，命中元素就在「连接点」与「工具栏按钮」之间跳。
+**这说明修法要先把坐标系统一**，否则量多少次真实高度都不稳。
+
+### 10.4 三档回归：**通过**（`9fd905a` 没有引入回归）
+
+    1440×900：toolbar{712,884,h:172}  提交按钮{805,846} 可见可点  批量面板{105,439} 不压工具栏  聊天面板{121,641,h:520} top≥0  无横向溢出
+    1024×768：toolbar{520,756,h:236}  提交按钮{661,702} 可见可点  批量面板{105,439}            聊天面板{49,449,h:400}     无横向溢出
+    800×600 ：toolbar{283,592,h:309}  提交按钮{518,583} 可见可点  批量面板{97,266}             聊天面板{49,212,h:163}     无横向溢出
+
+与第 8/9 节完全一致。截图 `dv-75-reg-1440.png`、`dv-76-reg-1024.png`、`dv-77-reg-800.png`。
+
+### 10.5 局部工具栏本身可见可点：**通过**
+
+选中卡片后工具栏 7/7 个按钮都在视口内（`toolbarButtonsVisible=7`、`toolbarButtonsTotal=7`、`toolbarVisible=true`），没有被挪出视口；只是它压在了卡片顶边上。
+
+### 10.6 结论
+
+1. **阻断未消除**：连接点命中测试 5/5 失败，从 top 连接点建链失败（10.1 / 10.2）。
+2. **根因是坐标系不统一**（10.3）：工具栏在 `.board-surface` 里绝对定位，`placeOverlay` 用 shell 坐标计算并夹取，两者相差 `.board-surface.top − .board-shell.top`（本例 55px）。
+   建议把 `placeOverlay` 的坐标系与工具栏的 offsetParent 对齐（统一用 board-surface 坐标，或把工具栏移到 shell 下），再保留「量真实高度 + 夹取后复验」的逻辑。
+3. 三档回归与工具栏自身可见性没有回归（10.4 / 10.5）。
+4. 判定标准建议：`steps-dv-53.json` 五次重复都要 `isPoint=true`，且 `steps-dv-50.json` 要 `links 0→1`。
+
+---

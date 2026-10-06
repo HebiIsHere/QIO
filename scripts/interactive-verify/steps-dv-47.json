@@ -1,0 +1,56 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify(st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply').map(c=>({id:c.id,x:c.x,y:c.y})))})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];if(!pick)return 'no-card';const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:77,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:77}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");if(!top)return JSON.stringify({card:pick.id,error:'no-top-point'});const tb=top.getBoundingClientRect();const cx=tb.left+tb.width/2,cy=tb.top+tb.height/2;const hit=document.elementFromPoint(cx,cy);const bb=bar?bar.getBoundingClientRect():null;const cb=el.getBoundingClientRect();const vis=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({card:pick.id,boardPos:{x:pick.x,y:pick.y},cardRect:{top:Math.round(cb.top),bottom:Math.round(cb.bottom)},toolbar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),h:Math.round(bb.height),left:Math.round(bb.left),right:Math.round(bb.right)}:null,toolbarOverCardTop:bb?bb.bottom>cb.top:null,topPoint:{x:Math.round(cx),y:Math.round(cy),top:Math.round(tb.top),bottom:Math.round(tb.bottom)},hitIm:hit?hit.getAttribute('data-im'):null,hitTag:hit?hit.tagName:null,hitIsPoint:hit===top,toolbarButtonsVisible:bar?[...bar.querySelectorAll('button')].filter(b=>vis(b)).length:null,toolbarButtonsTotal:bar?[...bar.querySelectorAll('button')].length:null,toolbarVisible:vis(bar)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-68-hit-card0"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[1];if(!pick)return 'no-card';const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:77,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:77}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");if(!top)return JSON.stringify({card:pick.id,error:'no-top-point'});const tb=top.getBoundingClientRect();const cx=tb.left+tb.width/2,cy=tb.top+tb.height/2;const hit=document.elementFromPoint(cx,cy);const bb=bar?bar.getBoundingClientRect():null;const cb=el.getBoundingClientRect();const vis=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({card:pick.id,boardPos:{x:pick.x,y:pick.y},cardRect:{top:Math.round(cb.top),bottom:Math.round(cb.bottom)},toolbar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),h:Math.round(bb.height),left:Math.round(bb.left),right:Math.round(bb.right)}:null,toolbarOverCardTop:bb?bb.bottom>cb.top:null,topPoint:{x:Math.round(cx),y:Math.round(cy),top:Math.round(tb.top),bottom:Math.round(tb.bottom)},hitIm:hit?hit.getAttribute('data-im'):null,hitTag:hit?hit.tagName:null,hitIsPoint:hit===top,toolbarButtonsVisible:bar?[...bar.querySelectorAll('button')].filter(b=>vis(b)).length:null,toolbarButtonsTotal:bar?[...bar.querySelectorAll('button')].length:null,toolbarVisible:vis(bar)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-69-hit-card1"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[2];if(!pick)return 'no-card';const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:77,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:77}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");if(!top)return JSON.stringify({card:pick.id,error:'no-top-point'});const tb=top.getBoundingClientRect();const cx=tb.left+tb.width/2,cy=tb.top+tb.height/2;const hit=document.elementFromPoint(cx,cy);const bb=bar?bar.getBoundingClientRect():null;const cb=el.getBoundingClientRect();const vis=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({card:pick.id,boardPos:{x:pick.x,y:pick.y},cardRect:{top:Math.round(cb.top),bottom:Math.round(cb.bottom)},toolbar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),h:Math.round(bb.height),left:Math.round(bb.left),right:Math.round(bb.right)}:null,toolbarOverCardTop:bb?bb.bottom>cb.top:null,topPoint:{x:Math.round(cx),y:Math.round(cy),top:Math.round(tb.top),bottom:Math.round(tb.bottom)},hitIm:hit?hit.getAttribute('data-im'):null,hitTag:hit?hit.tagName:null,hitIsPoint:hit===top,toolbarButtonsVisible:bar?[...bar.querySelectorAll('button')].filter(b=>vis(b)).length:null,toolbarButtonsTotal:bar?[...bar.querySelectorAll('button')].length:null,toolbarVisible:vis(bar)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-70-hit-card2"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[3];if(!pick)return 'no-card';const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:77,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:77}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");if(!top)return JSON.stringify({card:pick.id,error:'no-top-point'});const tb=top.getBoundingClientRect();const cx=tb.left+tb.width/2,cy=tb.top+tb.height/2;const hit=document.elementFromPoint(cx,cy);const bb=bar?bar.getBoundingClientRect():null;const cb=el.getBoundingClientRect();const vis=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({card:pick.id,boardPos:{x:pick.x,y:pick.y},cardRect:{top:Math.round(cb.top),bottom:Math.round(cb.bottom)},toolbar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),h:Math.round(bb.height),left:Math.round(bb.left),right:Math.round(bb.right)}:null,toolbarOverCardTop:bb?bb.bottom>cb.top:null,topPoint:{x:Math.round(cx),y:Math.round(cy),top:Math.round(tb.top),bottom:Math.round(tb.bottom)},hitIm:hit?hit.getAttribute('data-im'):null,hitTag:hit?hit.tagName:null,hitIsPoint:hit===top,toolbarButtonsVisible:bar?[...bar.querySelectorAll('button')].filter(b=>vis(b)).length:null,toolbarButtonsTotal:bar?[...bar.querySelectorAll('button')].length:null,toolbarVisible:vis(bar)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-71-hit-card3"
+  }
+]

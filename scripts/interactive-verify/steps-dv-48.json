@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:88,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:88}));await new Promise(r=>setTimeout(r,700));const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const surface=document.querySelector('.board-surface');const shell=document.querySelector('.board-shell');const g=(e)=>{if(!e)return null;const b=e.getBoundingClientRect();return {top:Math.round(b.top),left:Math.round(b.left)}};return JSON.stringify({card:pick.id,cardBoard:{x:pick.x,y:pick.y},cardScreen:g(el),toolbarInline:bar?bar.getAttribute('style'):null,toolbarScreen:g(bar),offsetParent:bar&&bar.offsetParent?bar.offsetParent.className:null,surfaceScreen:g(surface),shellScreen:g(shell),viewportScroll:{left:Math.round((document.querySelector('.board-viewport')||{scrollLeft:0}).scrollLeft),top:Math.round((document.querySelector('.board-viewport')||{scrollTop:0}).scrollTop)}})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-72-toolbar-coords"
+  }
+]

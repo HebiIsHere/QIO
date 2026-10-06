@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[3];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:201,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:201}));await new Promise(r=>setTimeout(r,800));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const tb=top.getBoundingClientRect();const cx=tb.left+tb.width/2,cy=tb.top+tb.height/2;const hit=document.elementFromPoint(cx,cy);const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar.getBoundingClientRect();return JSON.stringify({card:pick.id,cardScreenTop:Math.round(el.getBoundingClientRect().top),toolbarScreen:{top:Math.round(bb.top),bottom:Math.round(bb.bottom),h:Math.round(bb.height)},toolbarInline:bar.getAttribute('style'),topPoint:{x:Math.round(cx),y:Math.round(cy)},hit:hit?hit.getAttribute('data-im'):null,isPoint:hit===top})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-78-card3-fresh"
+  }
+]

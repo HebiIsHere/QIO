@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:99,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:99}));await new Promise(r=>setTimeout(r,700));const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const surface=document.querySelector('.board-surface');const shell=document.querySelector('.board-shell');const parent=bar?bar.parentElement:null;const cs=bar?getComputedStyle(bar):null;const csParent=parent?getComputedStyle(parent):null;const csSurface=getComputedStyle(surface);const csShell=getComputedStyle(shell);return JSON.stringify({parentCls:parent?parent.className:null,parentPos:csParent?csParent.position:null,parentTransform:csParent?csParent.transform:null,surfacePos:csSurface.position,surfaceTransform:csSurface.transform,surfaceOverflow:csSurface.overflow,shellPos:csShell.position,toolbarPos:cs?cs.position:null,toolbarOffsetParent:bar&&bar.offsetParent?bar.offsetParent.className:null,barScreenTop:bar?Math.round(bar.getBoundingClientRect().top):null,surfaceScreenTop:Math.round(surface.getBoundingClientRect().top),surfaceRect:{w:Math.round(surface.getBoundingClientRect().width),h:Math.round(surface.getBoundingClientRect().height)}})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-73-dom-structure"
+  }
+]
