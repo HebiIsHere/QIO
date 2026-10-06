@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from agent.core.narrative import parse_narrative
 from agent.core.stage import (
@@ -215,9 +216,28 @@ def test_close_marks_done_and_payload_matches_contract():
     assert payload["stage_id"] == opened.stage.stage_id
     assert payload["status"] == "done" and payload["op"] == "end"
     assert payload["narrative_id"] == "msg_1" and payload["call_ids"] == ["call_1"]
+    assert payload["created_at"] == "2026-10-06T08:00:00+00:00"  # 有值就原样用
 
 
 # ---- 服务层：先落库、再广播 -------------------------------------------------
+
+
+def test_system_synthesized_event_always_has_created_at():
+    """系统合成的边界事件（没有落库行）也必须带可用的 ISO8601 时间戳。"""
+    tracker = StageTracker("turn_ab12cd34ef56")
+    tracker.observe(_narrative("第一步"), None)
+    closed = tracker.close()
+    assert closed is not None
+
+    payload = stage_event_payload("turn_ab12cd34ef56", closed)  # 不传 created_at
+    assert payload["created_at"], "STAGE.created_at 不能是 null / 空串"
+    parsed = datetime.fromisoformat(payload["created_at"])
+    assert parsed.tzinfo is not None  # 与其它事件一致：带时区的 ISO8601
+
+    # 没有落库行的 start/next（例如直接构造的过渡）同样有值
+    fresh = StageTracker("turn_ab12cd34ef56")
+    opened = fresh.observe(_narrative("从零开始"), parse_stage({"op": "start", "name": "开始"}))
+    assert stage_event_payload("turn_ab12cd34ef56", opened)["created_at"]
 
 
 def _app_ctx(tmp_path):
@@ -308,6 +328,9 @@ async def test_turn_end_closes_open_stage_before_turn_end(tmp_path):
     end_event = _stage_events(ctx)[-1]
     assert end_event["op"] == "end" and end_event["status"] == "done"
     assert end_event["text"] == ""  # 纯阶段边界，不带说明
+    # 系统合成的 end 事件同样带可用的时间戳（历史/前端都要能排序）
+    assert end_event["created_at"]
+    assert datetime.fromisoformat(end_event["created_at"]).tzinfo is not None
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["status"] == "done"
     # 这一轮已经收尾：tracker 被取走，重复收尾不会重复发事件
