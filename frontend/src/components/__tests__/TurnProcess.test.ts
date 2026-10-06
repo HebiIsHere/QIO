@@ -186,7 +186,11 @@ describe("展开状态：自动收起 vs 用户的选择", () => {
 });
 
 describe("同一内容只出现一次 / legacy 平铺", () => {
-  it("阶段说明与同一段中间话只渲染一次", async () => {
+  /**
+   * A 最终契约：interim 的 stage_id 让中间话成为**该阶段的历次说明之一**，
+   * 不再单独渲染成一个并列的过程气泡（它的文字由阶段 notes 渲染）。
+   */
+  it("带 stage_id 的中间话不单独渲染（文字作为阶段说明只出现一次）", async () => {
     const text = "正在读取仓库结构";
     const interim = msg({
       id: "a1",
@@ -198,8 +202,36 @@ describe("同一内容只出现一次 / legacy 平铺", () => {
     });
     const { w } = mountProcess({ items: [interim], stages: [RUNNING_STAGE], running: true });
     await nextTick();
+    // 没有并列的过程气泡
+    expect(w.find(".process-line").exists()).toBe(false);
     const html = w.html();
     expect(html.split(text).length - 1).toBe(1);
+    w.unmount();
+  });
+
+  it("没有阶段归属的中间话（旧后端 / 旧记录）仍然渲染成过程说明，且最后一句不重复", async () => {
+    const first = msg({
+      id: "a2",
+      role: "assistant",
+      content: "我先说一句",
+      interim: true,
+      streaming: true,
+    });
+    const second = msg({
+      id: "a3",
+      role: "assistant",
+      content: "再说一句",
+      interim: true,
+      streaming: true,
+    });
+    const { w } = mountProcess({ items: [first, second], stages: [], running: true });
+    await nextTick();
+    // 最后一句是「当前说明」，更早的作为过程说明行渲染：同一句不出现两次
+    expect(w.find(".tp-cur-text").text()).toContain("再说一句");
+    const lines = w.findAll(".process-line");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.text()).toContain("我先说一句");
+    expect(w.html().split("再说一句").length - 1).toBe(1);
     w.unmount();
   });
 
