@@ -9,6 +9,12 @@ from pathlib import Path
 # 认证本身由 tests/test_api_auth.py 专门覆盖（那里显式传入会话令牌，
 # 并且断言无令牌 401 / 恶意 origin 403）。
 os.environ.setdefault("QIO_DEV_INSECURE", "1")
+# 开发机上的 QIO_DATA_DIR 不得泄漏进测试。它是「整个应用的数据落点覆盖」，
+# 而且 agent.config.Settings.__post_init__ 是**无条件**覆盖 —— 连显式传进来的
+# Settings(data_dir=tmp_path) 也会被它改掉。开发机设了 QIO_DATA_DIR 时，用例
+# 会真的写到用户数据目录，断言「临时目录下建了 workspace」也就必然失败。
+# 测试必须自己声明落点：这里直接摘掉它，需要它的用例自己构造子进程环境显式传。
+os.environ.pop("QIO_DATA_DIR", None)
 
 from agent.config import Settings
 from agent.storage.db import connect
