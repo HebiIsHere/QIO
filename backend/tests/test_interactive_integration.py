@@ -224,47 +224,167 @@ def _demo_intents(client: TestClient) -> list[dict]:
     return client.get(f"/api/interactive/boards/{BOARD}/intents").json()["intents"]
 
 
-def test_scenario5_batch_approval_and_conflicts(client: TestClient) -> None:
-    save(client, [_card("n1", "text", "整理这两份材料", checked=True)])
-    intents = _demo_intents(client)
+def _intents(client: TestClient) -> dict[str, dict]:
     listing = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
-    assert listing["batchAvailable"] is True
-
-    conflicting = [item for item in intents if item["conflictsWith"]]
-    assert conflicting, "演示意图里必须有一对互不相容的结果"
-    pair = conflicting[0]["conflictsWith"]
-    decision = client.post("/api/interactive/intents/batch", json={"approve": [conflicting[0]["id"], *pair]}).json()
-    approved = [item["id"] for item in decision["results"] if item.get("ok")]
-    assert len(approved) < 1 + len(pair)  # 互不相容的两项不能一起批准
-
-    rejected = [item for item in intents if item["id"] not in approved][0]
-    before = state(client)
-    client.post(f"/api/interactive/intents/{rejected['id']}/reject")
-    after = state(client)
-    assert _ids(after) == _ids(before)  # 拒绝不改原内容
+    return {item["id"]: item for item in listing["intents"]}
 
 
-def test_scenario6_material_change_blocks_approval(client: TestClient) -> None:
+def _prepare_demo(client: TestClient) -> list[dict]:
+    """材料 + 勾选注释 → 提交一次 → 创建四项演示意图。"""
     save(client, [_card("m1", "file", "材料", meta={"name": "a.txt"}), _card("n1", "text", "整理", checked=True)])
-    intents = _demo_intents(client)
-    target = intents[0]
-    resp = client.post(f"/api/interactive/intents/{target['id']}/approve", json={})
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    assert submit(client)["status"] == "succeeded"
+    return _demo_intents(client)
 
-    # 相关材料改变 → 待审批 / 已批准但未开始的预览标记为需要更新并禁止批准
-    save(
-        client,
-        [
+
+def test_scenario5_batch_approval_and_conflicts(client: TestClient) -> None:
+    intents = _prepare_demo(client)
+    listing = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    assert listing["batchAvailable"] is True  # 同一批达到 4 项 → 提供批量列表
+    assert len(intents) >= 4
+
+    pairs = listing["conflicts"]
+    assert pairs, "演示意图里必须有一对互不相容的结果"
+    first, second = pairs[0][0], pairs[0][1]
+
+    decision = client.post("/api/interactive/intents/batch", json={"approve": [first, second]}).json()
+    assert len(decision["approved"]) <= 1  # 互不相容的两项不能同时批准
+    blocked = [item for item in decision["results"] if not item.get("ok")]
+    assert blocked and blocked[0].get("reason") == "conflict"
+
+    # 未选中的继续等待；被拒绝的不改原内容
+    waiting = [item for item in intents if item["id"] not in decision["approved"]]
+    before = state(client)
+    client.post(f"/api/interactive/intents/{waiting[0]['id']}/reject")
+    assert _ids(state(client)) == _ids(before)
+    assert client.post(f"/api/interactive/intents/{waiting[0]['id']}/approve", json={}).json()["ok"] is False
+
+
+def test_scenario6_preview_move_semantic_change_and_material_change(client: TestClient) -> None:
+    intents = _prepare_demo(client)
+    target = intents[0]
+
+    # (a) 只移动预览位置：工作内容、材料范围与结果关系都没变 → 可以直接批准
+    import copy
+
+    moved = copy.deepcopy(target["preview"])
+    for preview_card in moved["cards"]:
+        preview_card["x"] = float(preview_card.get("x", 0.0)) + 40.0
+    resp = client.post(f"/api/interactive/intents/{target['id']}/preview", json={"preview": moved}).json()
+    assert resp["ok"] is True
+    assert resp["requiresUpdate"] is False
+    assert resp["intent"]["status"] == "pending"
+
+    # (b) 改变工作要求 → 需要更新，且此时不能批准
+    semantic = copy.deepcopy(moved)
+    semantic["cards"][0]["content"] = "换一个完全不同的工作要求"
+    resp2 = client.post(f"/api/interactive/intents/{target['id']}/preview", json={"preview": semantic}).json()
+    assert resp2["requiresUpdate"] is True
+    assert resp2["intent"]["status"] == "needs_update"
+    assert client.post(f"/api/interactive/intents/{target['id']}/approve", json={}).json()["ok"] is False
+
+    # (c) 相关材料变化 → 还没处理的待审批预览标记为需要更新并禁止批准
+    #     （target 在上面已经被标成 needs_update，这里看另一个仍是 pending 的意图）
+    other = next(item for item in intents if item["id"] != target["id"] and not item["dependsOn"])
+    assert _intents(client)[other["id"]]["status"] == "pending"
+    save(client, [_card("m1", "file", "材料（已替换）", meta={"name": "a.txt"}), _card("n1", "text", "整理", checked=True)])
+    result = submit(client)
+    assert other["id"] in result["delivery"]["marking"]["updated"]
+    assert _intents(client)[other["id"]]["status"] == "needs_update"
+    assert client.post(f"/api/interactive/intents/{other['id']}/approve", json={}).json()["ok"] is False
+
+
+def test_scenario7_dependency_and_material_confirmation(client: TestClient) -> None:
+    intents = _prepare_demo(client)
+    dependent = next(item for item in intents if item["dependsOn"])
+    predecessor = dependent["dependsOn"][0]
+
+    # 依赖任务提前批准：不自动开始，一直等前项成功
+    assert client.post(f"/api/interactive/intents/{dependent['id']}/approve", json={}).json()["ok"] is True
+    assert _intents(client)[dependent["id"]]["status"] == "waiting_dependency"
+
+    # 前项成功、实际结果已展示，但依赖项仍需用户再次确认才启动
+    client.post(f"/api/interactive/intents/{predecessor}/approve", json={})
+    client.post(f"/api/interactive/intents/{predecessor}/demo/advance", json={"outcome": "done"})
+    assert _intents(client)[predecessor]["status"] == "done"
+    assert _intents(client)[dependent["id"]]["status"] == "waiting_confirm"
+    assert _intents(client)[dependent["id"]]["status"] != "running"
+    assert client.post(f"/api/interactive/intents/{dependent['id']}/approve", json={}).json()["ok"] is False
+
+    assert (
+        client.post(
+            f"/api/interactive/intents/{dependent['id']}/approve", json={"confirmDependency": True}
+        ).json()["ok"]
+        is True
+    )
+    assert _intents(client)[dependent["id"]]["status"] == "running"
+
+
+def test_scenario7_running_task_pauses_when_material_changes(client: TestClient) -> None:
+    intents = _prepare_demo(client)
+    running = next(item for item in intents if not item["dependsOn"])
+    assert client.post(f"/api/interactive/intents/{running['id']}/approve", json={}).json()["ok"] is True
+    assert _intents(client)[running["id"]]["status"] == "running"
+
+    # 保存前的影响预判：只读，不改任何状态
+    payload = client.post(
+        f"/api/interactive/boards/{BOARD}/material-impact",
+        json={"state": state(client) | {"cards": [
             _card("m1", "file", "材料（已替换）", meta={"name": "a.txt"}),
             _card("n1", "text", "整理", checked=True),
-        ],
+        ]}},
     )
-    listed = {item["id"]: item for item in client.get(f"/api/interactive/boards/{BOARD}/intents").json()["intents"]}
-    assert listed[target["id"]]["status"] in ("needs_update", "pending")
-    if listed[target["id"]]["status"] == "needs_update":
-        again = client.post(f"/api/interactive/intents/{target['id']}/approve", json={})
-        assert again.json()["ok"] is False
+    assert payload.status_code == 200, payload.text
+    affected = {item["intentId"] for item in payload.json()["affected"]}
+    assert running["id"] in affected
+    assert _intents(client)[running["id"]]["status"] == "running"  # 预判不改状态
+
+    # 用户确认后改动生效：相关任务暂停并保留进度
+    saved = save(client, [_card("m1", "file", "材料（已替换）", meta={"name": "a.txt"}), _card("n1", "text", "整理", checked=True)])
+    assert saved is not None
+    impact = client.put(
+        f"/api/interactive/boards/{BOARD}/state",
+        json={"state": state(client), "reason": "op"},
+    ).json()["materialImpact"]
+    assert running["id"] in impact["affected"]
+    paused = _intents(client)[running["id"]]
+    assert paused["status"] == "paused"
+    assert "材料" in paused["reason"]
+
+
+def test_scenario8_result_is_solid_and_failure_keeps_user_edits(client: TestClient) -> None:
+    intents = _prepare_demo(client)
+    target = next(item for item in intents if not item["dependsOn"] and not item["conflictsWith"])
+    preview_cards = {card["id"]: card for card in target["preview"]["cards"]}
+
+    assert client.post(f"/api/interactive/intents/{target['id']}/approve", json={}).json()["ok"] is True
+    assert client.post(f"/api/interactive/intents/{target['id']}/demo/advance", json={"outcome": "done"}).json()["ok"] is True
+
+    done = _intents(client)[target["id"]]
+    assert done["status"] == "done"
+    applied = done["applied"]["cardIds"] + done["applied"]["groupIds"] + done["applied"]["linkIds"]
+    assert applied, "完成后结果要成为正式内容"
+
+    board = state(client)
+    solid = [card for card in board["cards"] if card["id"] in done["applied"]["cardIds"]]
+    assert solid, "结果卡片要真的落在板面上"
+    source = preview_cards[list(done["applied"]["previewIdMap"].keys())[0]]
+    assert solid[0]["x"] == source["x"] and solid[0]["y"] == source["y"]  # 板面结果与预览一致
+    assert solid[0].get("deleted") is not True
+
+    # 用户随后修改了任务产出的卡片 → 失败撤回时必须保留，并说清未撤回的部分
+    edited = dict(solid[0])
+    edited["content"] = "用户后来改过的内容"
+    save(client, [edited if card["id"] == edited["id"] else card for card in board["cards"]])
+
+    reverted = client.post(f"/api/interactive/intents/{target['id']}/demo/advance", json={"outcome": "failed"}).json()
+    assert _intents(client)[target["id"]]["status"] == "failed"
+    report = reverted["revert"]
+    assert set(report) >= {"reverted", "kept", "pendingDecision", "reasonText"}
+    assert any(edited["id"] in item for item in report["kept"])
+    after = state(client)
+    kept = [card for card in after["cards"] if card["id"] == edited["id"] and not card.get("deleted")]
+    assert kept and kept[0]["content"] == "用户后来改过的内容"  # 用户后续修改保留
+    assert report["reasonText"]
 
 
 # --- 场景 9：关闭 / 重新打开 ------------------------------------------------

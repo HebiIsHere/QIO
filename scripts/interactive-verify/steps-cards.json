@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 4500
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-text\"]').click(); document.querySelector('[data-im=\"add-text\"]').click(); document.querySelector('[data-im=\"add-url\"]').click(); document.querySelector('[data-im=\"add-file\"]').click(); \"clicked\""
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "screenshot",
+    "name": "im-02-cards"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({count: document.querySelectorAll('[data-im=\"card\"]').length, first: (document.querySelector('[data-im=\"card\"]')||{}).outerHTML?.slice(0,1200), ims: [...new Set([...document.querySelectorAll('[data-im]')].map(e=>e.getAttribute('data-im')))].sort()})"
+  }
+]
