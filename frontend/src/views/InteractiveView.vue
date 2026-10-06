@@ -84,11 +84,18 @@ const boardSize = computed(() => {
           <span class="impact-text">{{ item.consequence }}</span>
         </li>
       </ul>
-      <p class="impact-actions">
-        <button class="im-btn" type="button" @click="store.confirmImpact()">
+      <!-- 这两个按钮是「保存前的影响确认」，与回复区里针对单个任务的
+           「撤回其余部分 / 保持现状」是两件事，所以钩子名分开，避免自动化点错 -->
+      <p class="impact-actions" data-im="save-impact-notice">
+        <button class="im-btn" type="button" data-im="save-impact-continue" @click="store.confirmImpact()">
           继续：保存改动，相关任务暂停并保留进度
         </button>
-        <button class="im-btn ghost" type="button" @click="store.cancelImpact()">
+        <button
+          class="im-btn ghost"
+          type="button"
+          data-im="save-impact-cancel"
+          @click="store.cancelImpact()"
+        >
           取消：不改动板面，任务继续
         </button>
       </p>

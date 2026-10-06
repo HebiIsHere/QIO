@@ -131,8 +131,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!impactConfirmed && activeIntents.value.length > 0) {
       try {
         const check = await api.previewMaterialImpact(boardId.value, snapshot);
-        if (check.affected?.length) {
-          pendingImpact.value = check;
+        // 只有**执行中**的任务才需要「先说明影响再让用户决定」。
+        // 已经暂停的任务不该拦住保存：它的依据已经失效是历史事实，用户每次编辑都被拦
+        // 会让板面根本存不下去（复核实测过这个后果）。暂停的影响只作为提示显示。
+        const running = new Set(
+          intents.value.filter((item) => item.status === "running").map((item) => item.id),
+        );
+        const blocking = (check.affected ?? []).filter((item) => running.has(item.intentId));
+        if (blocking.length) {
+          pendingImpact.value = { affected: blocking };
           saveStatus.value = "idle";
           return;
         }
@@ -197,7 +204,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     undoStack.value = [];
     redoStack.value = [];
     dirty.value = false;
-    saveStatus.value = "idle";
+    // 重新打开时板面上已经有保存过的东西：状态要说「已保存」，不能说「尚未保存过」。
+    if (payload.seq > 0) {
+      saveStatus.value = "saved";
+      lastSavedAt.value = payload.state?.updatedAt ?? null;
+    } else {
+      saveStatus.value = "idle";
+    }
   }
 
   async function refreshVisibleRange() {
