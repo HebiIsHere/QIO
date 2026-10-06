@@ -17,6 +17,15 @@
    失败、取消、变化都保留重试能力（run_prepare 可以再跑）。
 4. 重启后不猜状态：reconcile() 把「重启前没完成准备」的行标成 failed（可重试），
    把副本丢失标成 missing，并清掉自己留下的 .part 临时文件。
+
+线程纪律（2026-10-06 CI 真事故后写死在这里）:
+
+* 本服务与整个应用**共用同一个 sqlite 连接**（storage/db.py 用 check_same_thread=False），
+  sqlite3 连接对象不是线程安全的：两个线程同时用它会出现 InterfaceError，
+  甚至出现「刚 POST 成功、马上 GET 404」这种幻影状态。
+* 所以：**数据库访问一律在事件循环线程**；工作线程只允许调用 copy_to_disk
+  （纯文件 I/O，返回 DiskOutcome），状态由事件循环线程的 apply_outcome 落库。
+* 后台复制的正确写法见 api/server.py 的 _prepare_attachment_in_background。
 """
 
 from __future__ import annotations
@@ -95,6 +104,22 @@ class Attachment:
     error: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass
+class DiskOutcome:
+    """一次磁盘准备的**纯文件事实**（不含任何数据库动作）。
+
+    工作线程只允许产出它；状态落库由事件循环线程的 apply_outcome 完成 ——
+    这就是「同一个 sqlite 连接永不被两个线程同时使用」这条不变量的分工。
+    """
+
+    state: str
+    error: str | None = None
+    stored_path: str | None = None
+    sha256: str | None = None
+    size_bytes: int | None = None
+    mtime: float | None = None
 
 
 def _now() -> str:
@@ -217,9 +242,13 @@ class AttachmentService:
         self._clock = clock
         # 取消标志：DELETE（或显式 cancel）置位，复制线程在每个分块之间检查
         self._cancel: dict[str, threading.Event] = {}
-        # 同一个 sqlite 连接会被 API 线程池与复制线程触碰：服务层的写操作串行化
+        # 写操作串行化（同一进程内多请求可能交错；连接本身不保证可重入）
         self._db_lock = threading.RLock()
         self._cancel_lock = threading.Lock()
+        # 防回归探针：数据库访问出现在第二个线程时记一条警告（正是 CI 上那次事故的形态）。
+        # 只警告不抛异常：不能因为一条诊断把功能打断。
+        self._db_thread: int | None = None
+        self._db_thread_warned = False
 
     # -- 路径 --------------------------------------------------------------
 
@@ -263,7 +292,29 @@ class AttachmentService:
             updated_at=row["updated_at"],
         )
 
+    def _note_db_thread(self) -> None:
+        """防回归：数据库访问必须始终发生在同一个线程。
+
+        工作线程只被允许跑 copy_to_disk（纯文件 I/O）。一旦这里发现第二个线程，
+        就说明又有人把带数据库的动作丢进了 asyncio.to_thread —— 那条路的终点是
+        sqlite3.InterfaceError 与幻影 404（本机时序运气好，CI 稳定复现）。
+        """
+        ident = threading.get_ident()
+        if self._db_thread is None:
+            self._db_thread = ident
+            return
+        if ident != self._db_thread and not self._db_thread_warned:
+            self._db_thread_warned = True
+            logger.warning(
+                "附件服务的数据库访问出现在第二个线程（%s != %s）："
+                "同一个 sqlite 连接不能被两个线程同时使用；"
+                "工作线程只应调用 copy_to_disk",
+                ident,
+                self._db_thread,
+            )
+
     def get(self, attachment_id: str, *, check: bool = True) -> Attachment | None:
+        self._note_db_thread()
         row = self.conn.execute(
             "SELECT * FROM attachments WHERE id = ?", (str(attachment_id),)
         ).fetchone()
@@ -283,6 +334,7 @@ class AttachmentService:
         limit: int = 50,
         check: bool = True,
     ) -> list[Attachment]:
+        self._note_db_thread()
         sql = "SELECT * FROM attachments"
         clauses: list[str] = []
         params: list[object] = []
@@ -305,6 +357,7 @@ class AttachmentService:
         return items
 
     def _insert(self, att: Attachment) -> Attachment:
+        self._note_db_thread()
         with self._db_lock, transaction(self.conn):
             self.conn.execute(
                 "INSERT INTO attachments (id, message_id, turn_id, topic_id, kind,"
@@ -321,6 +374,7 @@ class AttachmentService:
         return att
 
     def _update(self, attachment_id: str, **fields) -> None:
+        self._note_db_thread()
         if not fields:
             return
         fields["updated_at"] = self._clock()
@@ -469,42 +523,82 @@ class AttachmentService:
         chunk_size: int = CHUNK_BYTES,
         on_chunk: Callable[[int], None] | None = None,
     ) -> Attachment:
-        """真正执行「保存副本」或「登记引用」；失败/取消/源变化都留下可重试的状态。
+        """同步编排（**事件循环线程**）：读行 → 磁盘准备 → 落库。
 
+        失败/取消/源变化都留下可重试的状态。
         chunk_size / on_chunk 是给测试用的缝：让「复制期间源文件变化」与
         「取消」能被确定性地观察到（生产路径用默认值）。
+
+        后台复制不要直接调它：那个场景必须走 copy_to_disk（工作线程，只做文件 I/O）
+        + apply_outcome（回到事件循环线程落库），见本文件顶部「线程纪律」。
         """
         att = self.get(attachment_id, check=False)
         if att is None:
             raise AttachmentError(f"没有这个附件：{attachment_id}")
         self._clear_cancel(att.id)
+        outcome = self.copy_to_disk(att, chunk_size=chunk_size, on_chunk=on_chunk)
+        applied = self.apply_outcome(att.id, outcome)
+        if applied is None:
+            raise AttachmentError(f"没有这个附件：{attachment_id}")
+        return applied
+
+    def copy_to_disk(
+        self,
+        att: Attachment,
+        *,
+        chunk_size: int = CHUNK_BYTES,
+        on_chunk: Callable[[int], None] | None = None,
+    ) -> DiskOutcome:
+        """**纯文件 I/O**：可以在工作线程里调用，绝不碰数据库。
+
+        返回值是磁盘事实（DiskOutcome），由事件循环线程的 apply_outcome 落库。
+        这条边界就是「同一个 sqlite 连接永不被两个线程同时使用」的落点：
+        2026-10-06 CI（py3.12 / windows）真事故 —— 以前把整个 run_prepare 丢进
+        asyncio.to_thread，工作线程既读又写那个共享连接，于是出现
+        sqlite3.InterfaceError 与「刚 POST 成功、马上 GET 404」的幻影状态。
+        """
         if att.kind == "reference":
-            return self._register_reference(att)
+            return self._reference_outcome(att)
         return self._copy_once(att, chunk_size=chunk_size, on_chunk=on_chunk)
 
-    def _register_reference(self, att: Attachment) -> Attachment:
-        """大于阈值：只记位置 + 元数据，不复制内容。"""
+    def _reference_outcome(self, att: Attachment) -> DiskOutcome:
+        """大于阈值：只 stat 位置 + 元数据（不复制内容，也不碰数据库）。"""
         source = Path(att.source_path or "")
         try:
             stat = source.stat()
         except OSError:
-            self._update(
-                att.id,
+            return DiskOutcome(
                 state=STATE_MISSING,
                 error="源文件不在原位了（联网盘断开、被移动或被删除）；可以重新指定位置",
             )
-            return self.get(att.id, check=False)
         if source.is_dir():
-            self._update(att.id, state=STATE_FAILED, error="源路径变成了目录")
-            return self.get(att.id, check=False)
-        self._update(
-            att.id,
-            size_bytes=int(stat.st_size),
-            mtime=float(stat.st_mtime),
+            return DiskOutcome(state=STATE_FAILED, error="源路径变成了目录")
+        return DiskOutcome(
             state=STATE_READY,
             error=None,
+            size_bytes=int(stat.st_size),
+            mtime=float(stat.st_mtime),
         )
-        return self.get(att.id, check=False)
+
+    def apply_outcome(self, attachment_id: str, outcome: DiskOutcome) -> Attachment | None:
+        """把磁盘事实落库（**只允许在事件循环线程调用**）；行已不存在时返回 None。"""
+        if self.get(attachment_id, check=False) is None:
+            # 复制期间附件被删掉了：行已经不在，磁盘结果无处可落。
+            # 但这次复制可能刚好在 delete 之前提交了正式副本 —— 那是 QIO 自己的文件，
+            # 必须一并清掉，否则 attachments 目录里会留下无人认领的副本。
+            if outcome.stored_path and self.is_managed_path(outcome.stored_path):
+                _unlink_quiet(Path(outcome.stored_path))
+            return None
+        fields: dict[str, object] = {"state": outcome.state, "error": outcome.error}
+        if outcome.stored_path is not None:
+            fields["stored_path"] = outcome.stored_path
+            fields["sha256"] = outcome.sha256
+        if outcome.size_bytes is not None:
+            fields["size_bytes"] = int(outcome.size_bytes)
+        if outcome.mtime is not None:
+            fields["mtime"] = float(outcome.mtime)
+        self._update(attachment_id, **fields)
+        return self.get(attachment_id, check=False)
 
     def _copy_once(
         self,
@@ -512,7 +606,7 @@ class AttachmentService:
         *,
         chunk_size: int,
         on_chunk: Callable[[int], None] | None,
-    ) -> Attachment:
+    ) -> DiskOutcome:
         source = Path(att.source_path or "")
         target = self.copy_path(att)
         tmp = target.with_name(target.name + TEMP_SUFFIX)
@@ -550,24 +644,19 @@ class AttachmentService:
             after = source.stat()
         except _Cancelled:
             _unlink_quiet(tmp)
-            self._update(att.id, state=STATE_CANCELLED, error="已取消（可以重试）")
-            return self.get(att.id, check=False)
+            return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
         except OSError as exc:
             _unlink_quiet(tmp)
-            self._update(
-                att.id,
+            return DiskOutcome(
                 state=STATE_FAILED,
                 error=self._describe_oserror(exc, source=source, target=target),
             )
-            return self.get(att.id, check=False)
         except Exception as exc:  # noqa: BLE001 - 任何意外都必须是「失败可重试」，不能半提交
             _unlink_quiet(tmp)
-            self._update(
-                att.id,
+            return DiskOutcome(
                 state=STATE_FAILED,
                 error=f"准备副本失败：{redact_text(type(exc).__name__)}: {redact_text(str(exc))}",
             )
-            return self.get(att.id, check=False)
 
         moved_during = (
             int(after.st_size) != target_size
@@ -578,12 +667,10 @@ class AttachmentService:
             os.replace(tmp, target)
         except OSError as exc:
             _unlink_quiet(tmp)
-            self._update(
-                att.id,
+            return DiskOutcome(
                 state=STATE_FAILED,
                 error=self._describe_oserror(exc, target=target),
             )
-            return self.get(att.id, check=False)
         if moved_during:
             state, error = (
                 STATE_CHANGED,
@@ -598,16 +685,14 @@ class AttachmentService:
             )
         else:
             state, error = STATE_READY, None
-        self._update(
-            att.id,
+        return DiskOutcome(
+            state=state,
+            error=error,
             stored_path=str(target),
             sha256=digest.hexdigest(),
             size_bytes=copied,
             mtime=float(after.st_mtime),
-            state=state,
-            error=error,
         )
-        return self.get(att.id, check=False)
 
     # -- 取消 / 删除 --------------------------------------------------------
 
@@ -622,6 +707,7 @@ class AttachmentService:
 
     def delete(self, attachment_id: str, *, purge_copy: bool = True) -> dict:
         """移除附件记录；**只删 QIO 管理的副本，绝不动用户原文件**。"""
+        self._note_db_thread()
         att = self.get(attachment_id, check=False)
         if att is None:
             return {"removed": False, "deleted_copy": None, "kept_source": None}
