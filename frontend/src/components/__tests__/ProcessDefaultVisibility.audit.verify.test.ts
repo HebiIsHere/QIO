@@ -61,14 +61,26 @@ function stage(partial: Partial<TurnStage> & { stageId: string }): TurnStage {
   return { index: 1, name: "阶段", status: "running", notes: [], callIds: [], ...partial };
 }
 
-const FACTS_DONE: TurnFacts = {
+/**
+ * 旧记录口径的 TURN_END 事实：plan §1.2 新增字段一律为空（旧记录不伪造原因 / 操作）。
+ *
+ * 用 `as TurnFacts` 断言（而不是直接给字面量加类型）是因为本文件要同时在两种树上过
+ * `vue-tsc`：还没有这些新字段的旧 TurnFacts（D 的 worktree）与已经有的新 TurnFacts
+ * （集成分支）。断言只放宽「字面量多出的属性」，取值仍然是旧记录的真实语义。
+ */
+const FACTS_DONE = {
   turnId: "turn_1",
   status: "completed",
   durationMs: 1500,
   queueMs: 0,
   startedAt: "2026-10-06T08:00:00+00:00",
   endedAt: "2026-10-06T08:00:01.500+00:00",
-};
+  reason: null,
+  reasonCode: null,
+  stoppedBy: null,
+  actions: [],
+  errorText: null,
+} as TurnFacts;
 
 async function settle(): Promise<void> {
   await flushPromises();
