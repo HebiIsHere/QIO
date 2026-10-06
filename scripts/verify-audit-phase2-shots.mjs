@@ -40,6 +40,7 @@ const INPUT = 'textarea[aria-label="输入消息"]';
 const results = [];
 const net = [];
 let page = null;
+let browser = null; // S4 的桌面壳桩要另开一个 context，所以浏览器实例放在模块级
 
 function record(name, ok, detail) {
   results.push({ name, ok: !!ok, detail: detail ?? null });
@@ -568,8 +569,29 @@ async function s4HistoryAttachment() {
       attachmentIdsInHistory: withAtt.length,
       apiNote: "GET /api/session/messages 不返回 attachments 字段（只在实时消息里由前端本地带上）",
     });
+  if (histCount > 0) {
+    await histItem.scrollIntoViewIfNeeded().catch(() => {});
+    record("S4 历史行锚点带 id/kind/state",
+      (await histItem.getAttribute("data-id")) === attId,
+      {
+        id: await histItem.getAttribute("data-id"),
+        kind: await histItem.getAttribute("data-kind"),
+        state: await histItem.getAttribute("data-state"),
+      });
+    const histOpen = histItem.locator("button").filter({ hasText: /打开|查看|下载/ }).first();
+    let histResp = null;
+    if ((await histOpen.count()) > 0) {
+      const wait = page.waitForResponse((r) => r.url().includes("/api/attachments/" + attId + "/content"), { timeout: 25000 });
+      await histOpen.click();
+      histResp = await wait.catch(() => null);
+    }
+    await shot("p2-14b-history-open.png");
+    record("S4 历史行点「打开」→ GET /content 200",
+      !!histResp && histResp.status() === 200,
+      { status: histResp ? histResp.status() : null, contentLength: histResp ? histResp.headers()["content-length"] : null });
+  }
 
-  // 失效引用（>100MB 只记位置）：历史行缺失时无法点击 —— 如实记录阻断关系
+  // ---- 引用型：失效（missing / changed）必须在真实历史里如实显示，并给出重新定位入口 ----
   const bigPath = join(ATTACH_DIR, "被引用的大文件.bin");
   const fd = openSync(bigPath, "w");
   ftruncateSync(fd, 100_000_001);
@@ -577,18 +599,105 @@ async function s4HistoryAttachment() {
   const big = await registerAttachment(bigPath, "被引用的大文件.bin");
   const bigMeta = await waitAttachmentSettled(big.id);
   record("S4 引用型附件登记（kind=reference）", bigMeta.kind === "reference", { kind: bigMeta.kind, state: bigMeta.state });
+
+  // 用真实 UI 把它发出去（路径粘贴 → 发送），这样它属于一条真实历史消息
+  await scriptProvider([{ chunks: ["大文件也记下了。"], chunk_delay_ms: 20 }], { chunks: ["（默认）"], chunk_delay_ms: 50 });
+  await page.locator('button[aria-label="粘贴本地文件路径"]').click();
+  const pathInput2 = page.locator('input[aria-label="本地文件路径"]');
+  await pathInput2.waitFor({ state: "visible", timeout: 10000 });
+  await pathInput2.fill(bigPath);
+  await pathInput2.press("Enter");
+  await waitFor(async () => {
+    const text = await page.locator(".composer").first().innerText().catch(() => "");
+    return /已保存副本|引用本地文件/.test(text) ? true : null;
+  }, { timeout: 40000 });
+  await send("这条带一个大文件引用");
+  await waitTurnSettled(90000);
+  await page.waitForTimeout(1000);
+
+  // 源文件被移走 → 引用失效
   renameSync(bigPath, bigPath + ".moved");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(3500);
   const bigItem = page.locator('[data-test="message-attachment"][data-id="' + big.id + '"]').first();
-  const hasRelocate = (await bigItem.count()) > 0;
-  await shot("p2-15-relocate-blocked.png");
-  record("S4 引用失效后历史里出现重新定位入口（真机点击）", false, {
-    blocked: "刷新后的历史消息没有附件行（同上一条缺陷）→ 重新定位入口在真实历史里渲染不出来",
-    bigItemCount: await bigItem.count(),
-    referenceState: bigMeta.state,
-    note: "重新定位的真实链路（选择器 → POST /relocate）在 DOM/后端验收里已被覆盖；浏览器内也没有原生选择器（entry 只存在于 Tauri）",
+  const bigCount = await bigItem.count();
+  await bigItem.scrollIntoViewIfNeeded().catch(() => {});
+  const bigState = bigCount ? await bigItem.getAttribute("data-state") : null;
+  const relocateBtn = bigItem.locator("button").filter({ hasText: /重新定位|指定位置|重新指定/ }).first();
+  const hasRelocate = (await relocateBtn.count()) > 0;
+  await shot("p2-15-reference-missing.png");
+  record("S4 引用源文件被移走后，真实历史如实显示 missing/changed（不是发送时的旧状态）",
+    bigCount > 0 && (bigState === "missing" || bigState === "changed"),
+    { bigCount, state: bigState, note: "UI 必须去问当前可用性，而不是复用发送时的 ready" });
+  record("S4 失效引用在真实历史里有「重新定位」入口", hasRelocate, { bigCount, state: bigState });
+
+  // 浏览器里没有原生选择器：点击不得假装成功（诚实性）
+  if (hasRelocate) {
+    await relocateBtn.click();
+    await page.waitForTimeout(900);
+    const notice = await page.locator('[data-test="attachment-notice"]').first().innerText().catch(() => "");
+    const relocateResp = net.filter((x) => x.url.includes("/relocate"));
+    await shot("p2-15b-relocate-no-picker.png");
+    record("S4 普通浏览器里点重新定位：不得假装成功（无原生选择器）",
+      relocateResp.length === 0 && !/已重新定位|成功/.test(notice),
+      { notice: String(notice).slice(0, 160), relocateRequests: relocateResp.length });
+  }
+
+  // 桌面壳（Tauri）形态：把原生选择器桩成「选到了新位置」→ 必须真的发出 POST /relocate
+  const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await desktop.addInitScript(() => {
+    // 最小可用的 Tauri 内部对象：只让 isDesktopShell() 为真、pick_attachment_file 返回新路径。
+    // 注意：这段跑在浏览器里，必须是纯 JS（不能有 TS 类型标注）。
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (cmd) => (cmd === "pick_attachment_file" ? String(window.__QIO_STUB_PATH || "") : undefined),
+      transformCallback: (cb) => cb,
+      unregisterCallback: () => {},
+      convertFileSrc: (p) => p,
+      metadata: {},
+    };
   });
+  const desktopPage = await desktop.newPage();
+  const priorPage = page;
+  page = desktopPage;
+  try {
+    await desktopPage.goto(BASE, { waitUntil: "domcontentloaded", timeout: 40000 });
+    await desktopPage.waitForTimeout(3000);
+    const stub = await desktopPage.evaluate(() => Boolean(window.__TAURI_INTERNALS__));
+    const dItem = desktopPage.locator('[data-test="message-attachment"][data-id="' + big.id + '"]').first();
+    const dCount = await dItem.count();
+    const dRelocate = dItem.locator("button").filter({ hasText: /重新定位|指定位置|重新指定/ }).first();
+    const dHasRelocate = (await dRelocate.count()) > 0;
+    let relocateResp2 = null;
+    if (dHasRelocate) {
+      const newPath = join(ATTACH_DIR, "被引用的大文件-新位置.bin");
+      writeFileSync(newPath, "");
+      const fd2 = openSync(newPath, "w");
+      ftruncateSync(fd2, 100_000_001);
+      closeSync(fd2);
+      await desktopPage.evaluate((value) => {
+        window.__QIO_STUB_PATH = value;
+      }, newPath);
+      const wait = desktopPage.waitForResponse((r) => r.url().includes("/api/attachments/" + big.id + "/relocate"), { timeout: 25000 });
+      await dRelocate.click();
+      relocateResp2 = await wait.catch(() => null);
+      await desktopPage.waitForTimeout(1500);
+      await desktopPage.screenshot({ path: join(OUT, "p2-15c-relocate-tauri-stub.png") });
+    }
+    record("S4 桌面壳形态（选择器桩）：点重新定位真的发出 POST /relocate 并 200",
+      !!relocateResp2 && relocateResp2.status() === 200,
+      {
+        stubActive: stub,
+        desktopItemCount: dCount,
+        hasRelocate: dHasRelocate,
+        status: relocateResp2 ? relocateResp2.status() : null,
+        note: "浏览器本身没有原生选择器；这条用最小 Tauri 桩驱动同一段前端代码",
+      });
+  } catch (error) {
+    record("S4 桌面壳形态（选择器桩）", false, String(error).slice(0, 300));
+  } finally {
+    page = priorPage;
+    await desktop.close().catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +738,7 @@ async function s5FailureRetry() {
 
 async function main() {
   const ws = prepareWorkspace();
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  browser = await chromium.launch({ channel: "msedge", headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   page = await context.newPage();
   page.on("response", async (resp) => {
@@ -670,7 +779,9 @@ async function main() {
       ["S4 历史附件打开/重新定位", s4HistoryAttachment],
       ["S5 失败入口与重试", s5FailureRetry],
     ];
+    const only = String(process.env.QIO_E2E_ONLY || "").trim();
     for (const [name, fn] of scenarios) {
+      if (only && !name.startsWith(only)) continue;
       await drainQueue(60000);
       try {
         await fn();
