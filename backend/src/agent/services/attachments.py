@@ -292,6 +292,16 @@ def classify_readability(name: str) -> tuple[str, str, str]:
     return ("sniff", "未知类型", "读取时按内容嗅探，不是文本就明确说不可读")
 
 
+def rejected_failure_message(rejected: Iterable[tuple[str, str]]) -> str:
+    """一句人话：哪几个附件没有附上、为什么（结构化失败的 message 用它）。"""
+    rows = list(rejected or [])
+    if not rows:
+        return ""
+    shown = [f"{item}（{reason}）" for item, reason in rows[:3]]
+    extra = "" if len(rows) <= 3 else f"；另有 {len(rows) - 3} 个"
+    return f"有 {len(rows)} 个附件没有附上：" + "；".join(shown) + extra
+
+
 class BindOutcome(list):
     """一次「把附件绑到这一轮」的结果（契约 §1.2 冻结接口）。
 
@@ -327,11 +337,7 @@ class BindOutcome(list):
 
     def failure_message(self) -> str:
         """一句人话（结构化失败响应的 message 用它）。"""
-        if not self.rejected:
-            return ""
-        shown = [item + "（" + reason + "）" for item, reason in self.rejected[:3]]
-        extra = "" if len(self.rejected) <= 3 else "；另有 " + str(len(self.rejected) - 3) + " 个"
-        return "有 " + str(len(self.rejected)) + " 个附件没有附上：" + "；".join(shown) + extra
+        return rejected_failure_message(self.rejected)
 
 
 class AttachmentService:

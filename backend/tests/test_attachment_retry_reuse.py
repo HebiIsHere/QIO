@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.services import attachments as attachments_mod
 from agent.services.attachments import COPY_MAX_BYTES, AttachmentService
 from agent.tools.attachment_tools import ReadAttachmentTool
 
@@ -300,6 +301,10 @@ def test_precheck_reports_the_same_rejections_without_touching_anything(
     assert "没有这个附件" in rejected["att_missing_0001"]
     assert "话题" in rejected[other_topic.id]
     assert "别的一轮" in rejected[bound.id]
+    # 结构化失败的一句话（route 直接用它当 detail.message）
+    message = attachments_mod.rejected_failure_message(list(rejected.items()))
+    assert message.startswith("有 3 个附件没有附上：")
+    assert "话题" in message
     # 只读：没有任何行被改写，也没有产生克隆
     assert svc.get(ready.id).turn_id is None
     assert svc.get(other_topic.id).turn_id is None
