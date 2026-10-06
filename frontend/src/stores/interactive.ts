@@ -71,6 +71,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const batchOpen = ref(false);
   /** 顶部「任务」浮层是否展开 */
   const tasksOpen = ref(false);
+  /**
+   * 板面当前的指针模式：工具栏是控制面、画布是执行面，两边共用同一份状态。
+   * 这是**查看状态**：切换模式不形成表达、不调用 QIO、不触发保存。
+   */
+  const boardMode = ref<"select" | "rect" | "link">("select");
 
   /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
   const pendingImpact = ref<{
@@ -387,6 +392,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return api.previewMaterialImpact(boardId.value, state);
   }
 
+  /** 切换板面指针模式（工具栏与画布共用）。 */
+  function setBoardMode(mode: "select" | "rect" | "link"): void {
+    boardMode.value = mode;
+  }
+
   function intentById(intentId: string): Intent | undefined {
     return intents.value.find((item) => item.id === intentId);
   }
@@ -432,6 +442,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     chatOpen,
     batchOpen,
     tasksOpen,
+    boardMode,
     batches,
     listBatches,
     runningIntents,
@@ -467,6 +478,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     cancelImpact,
     dismissMaterialPaused,
     checkMaterialImpact,
+    setBoardMode,
     intentById,
     statusLabel,
   };

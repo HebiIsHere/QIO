@@ -389,6 +389,19 @@ export function canSend(text: string): { ok: boolean; reason?: string };
 export function sendFailureText(message: string | null): string;
 ```
 
+### 8.4.1 跨组件通道（2026-10-07 裁定）
+
+工具栏与画布现在是**兄弟节点**（页面壳同时渲染），因此约定：
+
+| 交互 | 走哪条通道 | 理由 |
+| --- | --- | --- |
+| 会改板面状态的操作（添加卡片、撤销/重做、成组/移出/解除/有序/合并、删除所选） | 触发方**自己**调 `interactive/board.ts` 的纯函数算出 next，再 `store.commit(next, 中文说明)` | 契约 §4.3 早就规定「组件不直接改 store.board，算好新状态后调 commit」；同一批纯函数谁调都一样，不存在逻辑复制 |
+| 板面指针模式（单选多选 / 区域选择 / 关系模式） | `store.boardMode` + `store.setBoardMode()` | 它是**持久的共享界面状态**，工具栏写、画布读，用 Pinia 而不是事件更不容易失步 |
+| 一次性动作（定位到某张卡片） | window 事件 `qio:interactive:locate-card`（detail `{ cardId }`） | 与既有 `qio:interactive:locate-preview` 同一约定：一次性命令用事件，不用持久状态 |
+
+不做「命令总线」：画布不再要求工具栏把事件发给自己转发，工具栏也不把板面状态传输给画布。
+两者都只依赖 store 与 `board.ts` 纯函数。板内搜索面板由工具栏渲染成浮层（不再常驻右列）。
+
 **data-im 钩子（实机验收依赖）**：`board-toolbar`、`add-menu`、`add-text|add-file|add-image|add-code|add-url`、`undo`、`redo`、
 `search`、`submit`、`save-status`、`submit-status`、`change-list`、`visible-range`、`chat-toggle`、`chat-panel`、`chat-input`、`chat-send`、
 `card-toolbar`、`check`、`connect-point`、`group-merge-hint`、`batch-entry`、`batch-list`、`batch-item`、`batch-approve`、`batch-reject`、
