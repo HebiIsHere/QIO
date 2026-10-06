@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[live.length-1];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:12,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:12}));await new Promise(r=>setTimeout(r,600));const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const pts=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")];const g=(e)=>{if(!e)return null;const b=e.getBoundingClientRect();return {top:Math.round(b.top),bottom:Math.round(b.bottom),left:Math.round(b.left),right:Math.round(b.right)}};const cr=el.getBoundingClientRect();const br=bar?bar.getBoundingClientRect():null;const prs=pts.map(p=>p.getBoundingClientRect());const ov=(a,b)=>!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom);return JSON.stringify({picked:pick.id,card:{top:Math.round(cr.top),bottom:Math.round(cr.bottom)},toolbar:g(bar),points:pts.map(p=>({side:p.getAttribute('data-side'),...g(p)})),covered:br?prs.map((p,i)=>ov(p,br)?pts[i].getAttribute('data-side'):null).filter(Boolean):null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-57-toolbar-mid-card"
+  }
+]

@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const src=live[live.length-1],dst=live[0];const el=document.querySelector('[data-card-id=\"'+src.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:21,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:21}));await new Promise(r=>setTimeout(r,600));const right=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='right');const rb=right.getBoundingClientRect();const px=rb.left+rb.width/2,py=rb.top+rb.height/2;const target=document.querySelector('[data-card-id=\"'+dst.id+'\"]');const tb=target.getBoundingClientRect();const tx=tb.left+tb.width/2,ty=tb.top+tb.height/2;const before=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state.links.length;right.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:px,clientY:py,pointerId:22,buttons:1}));for(let i=1;i<=8;i++){window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:px+(tx-px)*i/8,clientY:py+(ty-py)*i/8,pointerId:22,buttons:1}))}await new Promise(r=>setTimeout(r,400));const draftVisible=!!document.querySelector(\"[data-im=\\\"link-draft\\\"]\");window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:tx,clientY:ty,pointerId:22}));await new Promise(r=>setTimeout(r,1800));const after=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state;return JSON.stringify({src:src.id,dst:dst.id,linksBefore:before,linksAfter:after.links.length,newLink:after.links[after.links.length-1]||null,draftVisibleDuringDrag:draftVisible})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-59-link-created"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const src=live[live.length-1];const el=document.querySelector('[data-card-id=\"'+src.id+'\"]');el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:el.getBoundingClientRect().x+50,clientY:el.getBoundingClientRect().y+12,pointerId:23,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:0,clientY:0,pointerId:23}));await new Promise(r=>setTimeout(r,600));const bottom=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='bottom');const bb=bottom.getBoundingClientRect();const px=bb.left+bb.width/2,py=bb.top+bb.height/2;const before=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state.links.length;bottom.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:px,clientY:py,pointerId:24,buttons:1}));for(let i=1;i<=6;i++){window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:px+i*40,clientY:py+300+i*20,pointerId:24,buttons:1}))}window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:px+240,clientY:py+420,pointerId:24}));await new Promise(r=>setTimeout(r,1500));const after=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state;return JSON.stringify({linksBefore:before,linksAfter:after.links.length,noLinkCreated:before===after.links.length})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-60-invalid-no-link"
+  }
+]

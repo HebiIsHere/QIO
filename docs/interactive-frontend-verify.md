@@ -561,3 +561,79 @@ A 的 shell 又用 `--im-chat-lift` 把面板整体抬高一次；1440×900 下 
 3. 第 7 节 7.3 的「聊天面板被挤出视口」已由 `72ef426` 修好，本节确认关闭。
 
 ---
+
+## 9. 交付前最后复验（提交 `b68d1f7`，含 B 的连接点/局部工具栏修正）
+
+**复验对象**：`b68d1f7`（并入 B 的 `e2109a2` + `d92af26`：卡片局部工具栏移到卡片外侧、连接点移到卡片内侧边缘、坐标以 DOM 真实滚动量为准）。
+**探针**：`scripts/visual_probe_d3.mjs`（Edge 驱动，CDP 9666 + 独立 profile）；**步骤**：`steps-dv-39.json` … `steps-dv-46.json`。
+
+### 9.1 三档回归（通过）
+
+    1440×900
+      toolbar    {top:712, bottom:884, h:172}   提交按钮 {top:805,bottom:846} 可见可点
+      批量面板   {top:105, bottom:439}   panelOverToolbar=false
+      聊天面板   {top:121, bottom:641, h:520}  chatTopOk=true  chatOverToolbar=false   横向溢出=false
+    1024×768
+      toolbar    {top:520, bottom:756, h:236}   提交按钮 {top:661,bottom:702} 可见可点
+      批量面板   {top:105, bottom:439}   panelOverToolbar=false
+      聊天面板   {top:49,  bottom:449, h:400}  chatTopOk=true  chatOverToolbar=false   横向溢出=false
+    800×600
+      toolbar    {top:283, bottom:592, h:309}   提交按钮 {top:518,bottom:583} 可见可点
+      批量面板   {top:97,  bottom:266}   panelOverToolbar=false
+      聊天面板   {top:49,  bottom:212, h:163}  chatTopOk=true  chatOverToolbar=false   横向溢出=false
+
+**结论**：三档的工具栏高度、提交按钮可见可点、聊天面板 top ≥ 0、批量面板不压工具栏、无横向溢出，
+与第 8 节数值完全一致 → B 的改动**没有回归**。截图 `dv-65-final-1440.png`、`dv-66-final-1024.png`、`dv-67-final-800.png`。
+
+### 9.2 板面交互：连接点与局部工具栏（**发现一处阻断**）
+
+**选中卡片后的实测矩形**（1440×900，卡片 x=912,y=60,w=260,h=170）：
+
+    卡片       {top:165, bottom:335, left:912, right:1172}
+    局部工具栏 {top:149, bottom:181, left:912, right:1332, h:32}   （贴在卡片上方外侧）
+    连接点 top {top:166, bottom:178, left:1036, right:1048}  ← 与工具栏重叠 12px（整块被盖住）
+    连接点 right  {top:244, bottom:256, left:1159, right:1171}  未被覆盖
+    连接点 bottom {top:322, bottom:334, left:1036, right:1048}  未被覆盖
+    连接点 left   {top:244, bottom:256, left:913, right:925}    未被覆盖
+
+**命中测试（决定性证据）**：取 top 连接点中心 (1042,172) 调 `document.elementFromPoint`：
+
+    {"hitTag":"BUTTON","hitIm":"card-edit","hitCls":"tb","isConnectPoint":false}
+
+→ 该点命中局部工具栏的「编辑」按钮，**不是连接点**，用户从 top 连接点按不下去。
+换一张位于板面中部的卡片（c_mux78xlb2ff1m，卡片 {top:165,bottom:335}）结果相同：`covered=["top"]`。
+截图 `dv-56-connect-points.png`、`dv-57-toolbar-mid-card.png`、`dv-58-hit-test.png`。
+
+**根因（读源码推断 + 实测印证）**：`BoardCanvas.vue` 里
+
+    const TOOLBAR_H = 34;  const TOOLBAR_GAP = 10;
+    top = cardTop − TOOLBAR_H − TOOLBAR_GAP   （上方放得下时）
+
+按公式工具栏底边应在 `cardTop − 10`；实测工具栏 {top:149,bottom:181}、卡片 top=165，
+底边只到 `cardTop + 16`、实际间距 +3px —— 工具栏落在「卡片上方 3px」而不是「上方 10px」。
+而连接点 top 画在卡片**内侧**边缘（`.connect-point.top { top:0; transform:translateX(-50%) }`），
+落在 [cardTop+1, cardTop+13]，因此只要工具栏底边越到 `cardTop` 以下就会盖住它。
+公式里的 `TOOLBAR_H = 34` 与实测工具栏高度 32px 也不一致，两者建议一起核。
+
+**其余三项（通过）**：
+- **从连接点拖到另一张卡片能建链**：从 right 连接点拖到另一张卡，服务端 links 0 → 1，
+  新链接 `{src:"c_mux78xlb2ff1m", dst:"c_mux6xxyv13ny8", direction:false, meaning:""}`；
+  拖动期间 `data-im="link-draft"` 存在（`draftVisibleDuringDrag=true`）。截图 `dv-59-link-created.png`。
+- **无效位置不建链**：从 bottom 连接点拖到空白板面，links 1 → 1（`noLinkCreated=true`）。截图 `dv-60-invalid-no-link.png`。
+- **连接点在卡片内侧**：四个连接点矩形都完全落在卡片矩形内（`pointsInsideCard=[true,true,true,true]`）。
+
+### 9.3 重叠成组与组名（通过）
+
+- 先把两张卡移出组（界面「移出组」→ 组消失、groups=[]），再把一张拖到另一张上：
+  拖动中提示 `松开后合并成组`、服务端 `groupsDuring=0`（松手前没成组）；
+  松手后 `groupsAfter=1`、组名 `组 1`、`defaultName=true`、members=[两张卡的 id]。截图 `dv-64-merge-hint-and-group.png`。
+- 组名留空：清空 `input.group-name` 并回车/失焦后，组名仍是 `组 1`、`defaultName=true`、组仍成立（2 名成员）。截图 `dv-62-group-default-name.png`。
+
+### 9.4 结论与未解决项（累计）
+
+1. **阻断（新发现，需修）**：卡片顶部连接点被局部工具栏盖住，命中测试落到工具栏按钮上，用户无法从 top 连接点建链；其余三个方向可用。数值与根因见 9.2。
+2. 次要：800×600 同时打开聊天与批量列表时批量面板压住聊天面板上半部分（第 8.3 节，两处交互入口仍可点）。
+3. 第 3 节的 6 项「没能验证」没有变化；第 7 节 7.3 的聊天面板溢出已由 `72ef426` 关闭。
+4. 本轮探针控制台出现的 `Could not establish connection. Receiving end does not exist.` 是浏览器扩展报错，与应用无关（应用侧 httpFails 为空）。
+
+---

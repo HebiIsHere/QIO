@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[live.length-1];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:13,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:13}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const b=top.getBoundingClientRect();const cx=b.left+b.width/2, cy=b.top+b.height/2;const hit=document.elementFromPoint(cx,cy);return JSON.stringify({point:{x:Math.round(cx),y:Math.round(cy)},hitTag:hit?hit.tagName:null,hitIm:hit?hit.getAttribute('data-im'):null,hitCls:hit?hit.className:null,isConnectPoint:hit===top,card:pick.id})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-58-hit-test"
+  }
+]
