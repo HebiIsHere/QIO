@@ -475,9 +475,14 @@ function removeOne(id: string) {
         :aria-live="message.streaming ? 'off' : undefined"
       >
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
+        <!--
+          打字机只用于「一次整段到达」的文本（旧后端整段推送）。
+          已经被增量更新过的消息（assistantGrew）必须立刻显示收到的全文：
+          增量本身就是节奏，再叠一层逐字点亮就等于让用户看不到已经到达的回答。
+        -->
         <MarkdownContent
           :source="message.content"
-          :reveal="!!message.streaming"
+          :reveal="!!message.streaming && !message.assistantGrew"
           :cps="ui.typewriterCps"
           :pace-ms="message.paceMs ?? null"
         />

@@ -558,6 +558,13 @@ export interface StreamMessage {
   assistantDeltaId?: string;
   /** 已收到的最大 seq：(delta_id, seq) 单调，用它丢弃重复 / 迟到的事件 */
   assistantSeq?: number;
+  /**
+   * 这条消息是否**已经被后续增量更新过**（同一 delta_id 又来了一条累计快照）。
+   *
+   * 用途：打字机只用于「一次整段到达」的文本；真正的增量流式里节奏由增量本身给出，
+   * DOM 必须立刻跟上 —— 否则「边生成边显示」会退化成「整段到达后还要再等一拍」。
+   */
+  assistantGrew?: boolean;
   /** 用户消息携带的附件 id（发送时登记的事实） */
   attachmentIds?: string[];
   /** 附件展示元数据（与 C 的 AttachmentRef 同形；拿不到就不编造名称与状态） */
@@ -1685,6 +1692,8 @@ export const useSessionStore = defineStore("session", {
         message.paceMs = Math.min(400, Math.max(40, now - message.deltaAt));
       }
       message.deltaAt = now;
+      // 这条文字已经**被增量更新过**：DOM 不再对它做逐字点亮（见 MessageItem 的 reveal）
+      message.assistantGrew = true;
       if (streaming) message.streaming = true;
       else delete message.streaming;
     },
@@ -1731,10 +1740,18 @@ export const useSessionStore = defineStore("session", {
       const fact = normalizeVerification(verification);
       if (fact) message.verified = fact;
     },
-    /** 没有最终回答（失败/取消）时，别把中间话留在「已落定的最终回答」位置 */
+    /**
+     * 没有最终回答（失败/取消）时，别把**中间话**留在「已落定的最终回答」位置。
+     *
+     * 但已经以正式回答身份发布出去的文字**永不移动**（契约 §1.1）：回答调用是
+     * `interim:false` 的流式正文，断流时用户已经看到了它 —— 把它标回过程区，
+     * 等于把用户看到的回答撤走并换个位置重放。
+     */
     markLastAssistantInterim() {
       const last = this.messages[this.messages.length - 1];
-      if (last && last.role === "assistant" && !last.streaming) last.interim = true;
+      if (!last || last.role !== "assistant" || last.streaming) return;
+      if (last.interim === false) return; // 已发布的正式回答：不动
+      last.interim = true;
     },
     pushTool(
       name: string,
