@@ -672,32 +672,34 @@ async def submit_board(
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
     state = loaded["state"]
-    visible = visible_range(state)
-    visible_ids = {card["id"] for card in visible["cards"]}
-    requested = {str(cid) for cid in (requested_visible or [])}
-    ignored_requested = sorted(requested - visible_ids)
     baseline = last_success_baseline(conn, bid)
     first_submission = baseline is None
     submission_seq = _next_submission_seq(conn, bid)
     submission_id = models.new_id("sub")
     note_text = " ".join(str(note or "").split())[:200]
 
+    # 任何一步出问题都走 failed：不更新基准、不清勾选，但要如实返回一份可读的载荷。
+    visible = _empty_projection()
     before = _empty_projection(first_submission=first_submission)
-    after = project_snapshot(state)
+    after = _empty_projection()
     expressions: list[dict] = []
+    content_hash = ""
     status = "failed"
     error: str | None = None
     try:
+        visible = visible_range(state)
         before = project_baseline(baseline, state)
         after = project_snapshot(state)
         expressions = diff_states(before, after)
+        content_hash = content_fingerprint(after)
         status, error = _decide_status(baseline, expressions, after)
     except Exception as exc:  # noqa: BLE001 - 提交失败要如实返回，保留改动与勾选
         status = "failed"
         error = f"提交处理失败（未调用 QIO，基准未更新，改动与勾选保留）：{exc}"
         expressions = []
 
-    content_hash = content_fingerprint(after)
+    requested = {str(cid) for cid in (requested_visible or [])}
+    ignored_requested = sorted(requested - {card["id"] for card in visible["cards"]})
 
     # QIO 投递位置：第一阶段没有接入模型调用，delivered 必须是 false 且说清原因。
     if status == "succeeded":
