@@ -29,7 +29,12 @@ from pathlib import Path
 
 import pytest
 
-from agent.api.server import UPLOAD_QUEUE_DEPTH, create_app
+from agent.api.server import create_app
+
+try:  # C 的重构把上传队列机制抽到 services/attachment_upload.py（常量 UPLOAD_QUEUE_DEPTH=4）
+    from agent.services.attachment_upload import UPLOAD_QUEUE_DEPTH
+except ImportError:  # 基线（重构前）常量还在 api/server.py —— 两棵树都能跑，红基线可复现
+    from agent.api.server import UPLOAD_QUEUE_DEPTH
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
 from agent.storage.db import connect

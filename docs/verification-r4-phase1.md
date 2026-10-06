@@ -119,3 +119,79 @@ AssertionError: ('写入途中失败：工作线程早已失败，上传请求�
 | **合计** | **26** | **12** | **1** |
 
 阶段二（Lead 集成后）：把上面红行改成 PASS，**保留本文件的 FAIL 行作对照**，并补实机（uvicorn + vite + 假厂商 + msedge/Playwright 截图）与全量复跑。
+
+
+## 6. 合并后复跑（集成分支 `fix/process-stream-retry-upload`）
+
+合并内容：A 的 `9d120f3`（回答阶段协议）、B 的 `3db7ec8`（重试复用附件）、C 的上传队列抽取
+（`services/attachment_upload.py`，`UPLOAD_QUEUE_DEPTH=4`）＋ D 的 `8c396a0`。
+本次复跑还修了两处**装置/旧语义**问题（不是产品结论）：
+
+1. 我的导入失效：`UPLOAD_QUEUE_DEPTH` 已搬到 `agent.services.attachment_upload`，
+   现为「新位置优先、旧位置兜底」的兼容导入（两棵树都能跑，阶段一红基线可复现）。
+2. `test_audit_turn_end_facts_verify.py::test_recoverable_tool_error_is_not_a_failed_turn`
+   的 2 步脚本是 round3 旧语义：§1.1 下一轮调用序列是「工作调用（带工具）→ 工作调用（不带工具
+   调用＝工作阶段结束）→ 回答调用」，第 ③ 步会被耗尽 → 整轮拿不到回答。已补一个空的中间
+   `StreamScript()`（**报的是脚本，不是缺陷**）。
+3. `test_r4_answer_phase_verify.py::test_answer_call_failure_is_honest`：循环层允许把不可恢复的
+   provider 错误抛出去（服务层落成 failed + 原因），改成「抛或如实返回失败都算，但**绝不编造
+   正式回答**」；同时把假 provider 的重试步都钉成 500（FIFO 耗尽会落到 default，掩盖问题）。
+
+**合并后结果：11 红 / 33 绿 / 1 跳过（45 条）**
+
+| 文件 | 红 | 说明 |
+| --- | --- | --- |
+| test_r4_answer_phase_verify.py | 3 | 见下面 F1/F2 |
+| test_r4_attachment_retry_verify.py | 7 | 见下面 F3 |
+| test_r4_upload_convergence_verify.py | **0** | 问题三的 4 条已转绿（含取消/断开/DB 探针）|
+| test_audit_stream_role_verify.py | 1 | 同 F1（多工具轮之后回答不流式）|
+| test_audit_attachment_binding_verify.py | **0** | 两条严格语义断言已转绿 |
+| test_audit_turn_end_facts_verify.py | **0** | 旧语义脚本对齐后转绿 |
+
+### 交 A 的两条真实发现（问题一）
+
+**F1（工具轮之后的回答调用不流式）**：`test_multi_tool_rounds_then_answer_streams` /
+`test_audit_stream_role_verify.py::test_multi_tool_rounds_then_answer` 都红：
+
+```
+AssertionError: ('多轮工具之后，正式回答仍然只在结束时一次性出现（没有流式增量）',
+  [{'content': '两轮工具之后的正式回答。', 'interim': False, 'streaming': False, 'delta_id': 'dl_r4_answe_4'}])
+AssertionError: ('工具后的正式回答没有流式增量（只在结束时一次性出现）',
+  [{'content': '工具跑完了，这是正式回答。', 'interim': False, 'streaming': False, 'delta_id': 'dl_r4_answe_3'}])
+```
+
+即：**纯回答路径已经真流式**（`test_answer_text_visible_in_answer_area_before_call_ends` 绿：
+文字确实在回答调用结束前进回答区），但**工具轮之后的回答调用**只有结束时那一条
+`streaming=false` 快照 —— 契约 §1.1 要求回答调用「从第一个可发布增量起就是
+interim=false / streaming=true」。
+
+**F2（纯回答路径的首个回答事件带 streaming=false）**：
+
+```
+AssertionError: ('第一个正式回答事件不是流式增量（streaming != true）',
+  {'content': '边生成边显示的第一段。', 'interim': False, 'streaming': False, 'delta_id': 'dl_r4_answe_2'})
+```
+
+文字与时机都对（结束前可见那条绿），但**首个发布事件的标志位**不是流式增量 ——
+与 §1.1「从第一个可发布增量起 streaming=true」的字面要求不一致；如果不是有意（例如
+「第一条也当校准」），请 A 确认口径或修正。
+
+### 交 B/C 的发现（问题二）
+
+7 条红全部是同一形态：带 `retry_of_turn_id` 的重试**被拒绝**为「附件没有绑定成功
+（可能已经被别的轮次使用）」，克隆复用没有发生（字段名已核对：路由读的就是
+`body["retry_of_turn_id"]`，与我的请求一致）：
+
+```
+409 {"ok":false,"accepted":false,"error":"attachment_rejected",
+     "detail":"有 1 个附件不能随这条消息发送：附件没有绑定成功（可能已经被别的轮次使用）",
+     "rejected":[{"id":"att_8035590a7284","reason":"附件没有绑定成功（可能已经被别的轮次使用）"}],
+     "turn_id":"turn_35e5e9af1e2b"}
+```
+
+受影响用例：重试克隆并读出内容、跨话题拒绝（我的用例期望「按话题以外的原因拒绝」）、引用型
+missing 复查、多附件混合、连点两次、源轮未结束时重试、resend 中断恢复。请 B/C 检查
+`retry_of_turn_id` 在受理路径上是否真的传到了克隆分支（以及拒绝时为什么响应里已经有 turn_id）。
+
+**保留**：第 1–5 节的阶段一原始 FAIL 行**原样保留**作对照；本节只记录合并后的现状与差值。
+

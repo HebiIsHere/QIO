@@ -239,11 +239,16 @@ def test_recoverable_tool_error_is_not_a_failed_turn(app_client):
     client, app = app_client
     ctx = app.state.ctx
     ctx.registry.register(_FailingTool())
+    # plan §1.1 回答阶段协议：一轮的调用序列是
+    #   ① 工作调用（带工具，返回工具调用）→ ② 工作调用（不带工具调用 = 工作阶段结束）
+    #   → ③ 回答调用 tools=[]（正文才进正式回答区）。
+    # 旧的 2 步脚本（工具调用 + 正文）是 round3 旧语义，第 ③ 步会被耗尽 → 整轮拿不到回答。
     adapter = FakeStreamAdapter(
         [
             StreamScript(
                 tool_calls=[ScriptedToolCall(id="c_fail", name="audit_failing_tool", arguments={})]
             ),
+            StreamScript(),
             StreamScript(text="工具失败了，但我换了个办法，这是正式回答。"),
         ]
     )

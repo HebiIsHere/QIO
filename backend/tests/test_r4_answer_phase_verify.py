@@ -382,17 +382,32 @@ async def test_cancel_mid_answer_keeps_published_text(provider):
 
 async def test_answer_call_failure_is_honest(provider):
     """回答调用失败（断流/厂商 500）必须如实失败，不得把空回答当成成功。"""
-    provider.script.set([{"chunks": []}, {"status": 500, "body": "stream-aborted"}])
+    # 回答调用失败：把所有可能的重试都钉成 500（FIFO 耗尽会落到 provider 的 default，
+    # 那会掩盖「失败被当成成功」这一条 —— 实测踩过）
+    provider.script.set([{"chunks": []}, {"status": 500, "body": "stream-aborted", "repeat": 6}])
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_abort")
-    result = await asyncio.wait_for(loop.run("回答我"), timeout=60)
+    # 循环层可以直接把不可恢复的 provider 错误抛出去（服务层负责落成 failed + 原因），
+    # 也可以返回一个如实标失败的结果 —— 两种都不算错。这里只钉用户可见的那一条：
+    # **绝不编造正式回答**，且失败原因如实出现。
+    result = None
+    failure: str | None = None
+    try:
+        result = await asyncio.wait_for(loop.run("回答我"), timeout=60)
+    except Exception as exc:  # noqa: BLE001 - 失败冒泡是允许的
+        failure = f"{type(exc).__name__}: {exc}"
 
     answers = _non_empty(_answer_events(_assistant(loop)))
     assert not answers, ("回答调用失败了却编出了正式回答", [e.get("content") for e in answers])
-    failed = (
-        getattr(result, "status", None) not in ("done", "completed", None)
-        or bool(getattr(result, "error", None))
-        or not str(getattr(result, "final_content", "") or "").strip()
-    )
-    assert failed, ("回答调用 500，整轮却像正常完成一样交付了空回答", result)
+    if failure is not None:
+        assert "500" in failure or "InternalServer" in failure, (
+            "失败原因必须如实出现（不能是一句没头没尾的错）", failure[:200]
+        )
+    else:
+        failed = (
+            getattr(result, "status", None) not in ("done", "completed", None)
+            or bool(getattr(result, "error", None))
+            or not str(getattr(result, "final_content", "") or "").strip()
+        )
+        assert failed, ("回答调用 500，整轮却像正常完成一样交付了空回答", result)
 
