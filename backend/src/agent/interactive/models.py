@@ -60,8 +60,16 @@ EXPRESSION_KINDS = (
     "layout_only",
 )
 
-#: 这些改动只影响显示，不作为意图依据
-NON_INTENT_EXPRESSIONS = ("layout_only",)
+#: 这些改动不属于「用户提出的工作」，不作为意图依据（但仍然属于板面状态与变动记录）：
+#: 位置 / 大小只影响显示；添加或删除材料本身不等于要求总结、比较、修改、执行；
+#: 删除是撤回材料或关系，不表示否定其内容，也不自动取消任务。
+NON_INTENT_EXPRESSIONS = (
+    "layout_only",
+    "material_added",
+    "material_removed",
+    "note_deleted",
+    "link_removed",
+)
 
 DEFAULT_GROUP_PREFIX = "组"
 
@@ -178,21 +186,32 @@ def is_live(card: dict) -> bool:
     return not card.get("deleted", False)
 
 
-def selectable_cards(state: dict) -> list[dict]:
-    """本次允许 QIO 查看的注释。
+#: 需要「勾选才允许查看」的卡片：注释（文字卡片），包括说明、态度、优先级、任务要求
+CHECKABLE_KINDS = ANNOTATION_KINDS
 
-    未勾选 = QIO 完全看不到其文字及注释链接；明确隐藏 = 退出讨论范围。
-    QIO 自己的结果卡片不参与这个语义（它本来就不是用户的注释）。
+
+def selectable_cards(state: dict) -> list[dict]:
+    """本次允许 QIO 查看的范围（唯一实现，前后端与提交载荷都用它）。
+
+    规则：
+
+    - 文字注释（text）：默认未勾选；**未勾选 = QIO 完全看不到它的文字与注释链接**；
+    - 材料（file / image / code / url）：默认在范围内（添加材料不等于要求总结、比较、
+      修改或执行，那是意图问题，不是可见性问题）；
+    - 任何卡片被明确隐藏（hidden）都退出讨论范围；
+    - `reply` 卡片是 QIO 自己的结果，不是用户的表达，不进提交载荷；
+    - 已删除的卡片不进范围。
     """
     result: list[dict] = []
     for card in state.get("cards", []):
         if not is_live(card):
             continue
-        if card.get("kind") == REPLY_KIND:
-            continue
-        if not card.get("checked", False):
-            continue
         if card.get("hidden", False):
+            continue
+        kind = card.get("kind")
+        if kind == REPLY_KIND:
+            continue
+        if kind in CHECKABLE_KINDS and not card.get("checked", False):
             continue
         result.append(card)
     return result
