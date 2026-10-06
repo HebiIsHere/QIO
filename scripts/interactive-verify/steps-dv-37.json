@@ -1,0 +1,86 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(t)t.click();return 'chat-opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const toggle=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const sub=document.querySelector(\"[data-im=\\\"submit\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right),margin:cs.margin}};const dr=g(dock),pr=g(panel),tr=g(toggle),br=g(bar),sr=g(sub);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"800x600\",viewport:[window.innerWidth,window.innerHeight],dock:dr,panel:pr,toggle:tr,toolbar:br,submitBtn:sr,panelTopOk:pr?pr.top>=0:null,panelVisible:vis(panel),panelScrollable:panel?panel.scrollHeight>panel.clientHeight:null,chatOverToolbar:ov(pr,br),chatOverSubmit:ov(pr,sr),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-51-800-chat-final"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(e)e.click();return 'batch-opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const p=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const c=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {top:Math.round(r.top),bottom:Math.round(r.bottom),left:Math.round(r.left),right:Math.round(r.right)}};const pr=g(p),cr=g(c),br=g(bar);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;return JSON.stringify({label:'800x600-both',panel:pr,chat:cr,toolbar:br,panelOverToolbar:ov(pr,br),chatOverToolbar:ov(cr,br),panelOverChat:ov(pr,cr),chatTopOk:cr?cr.top>=0:null,overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-52-800-both-final"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const toggle=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const sub=document.querySelector(\"[data-im=\\\"submit\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right),margin:cs.margin}};const dr=g(dock),pr=g(panel),tr=g(toggle),br=g(bar),sr=g(sub);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"1024x768\",viewport:[window.innerWidth,window.innerHeight],dock:dr,panel:pr,toggle:tr,toolbar:br,submitBtn:sr,panelTopOk:pr?pr.top>=0:null,panelVisible:vis(panel),panelScrollable:panel?panel.scrollHeight>panel.clientHeight:null,chatOverToolbar:ov(pr,br),chatOverSubmit:ov(pr,sr),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-53-1024-chat-final"
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const toggle=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const sub=document.querySelector(\"[data-im=\\\"submit\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right),margin:cs.margin}};const dr=g(dock),pr=g(panel),tr=g(toggle),br=g(bar),sr=g(sub);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"1440x900\",viewport:[window.innerWidth,window.innerHeight],dock:dr,panel:pr,toggle:tr,toolbar:br,submitBtn:sr,panelTopOk:pr?pr.top>=0:null,panelVisible:vis(panel),panelScrollable:panel?panel.scrollHeight>panel.clientHeight:null,chatOverToolbar:ov(pr,br),chatOverSubmit:ov(pr,sr),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-54-1440-final"
+  }
+]

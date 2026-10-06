@@ -37,15 +37,15 @@ const steps = JSON.parse(rawArg.startsWith("@") ? readFileSync(rawArg.slice(1), 
 const chrome = spawn(
   CHROME,
   [
-    "--headless=new", "--disable-gpu", "--disable-extensions",
+    "--headless=new",
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${PROFILE}`,
     "--no-first-run",
     "--no-default-browser-check",
     "--hide-scrollbars",
-    
-    
-    
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
     "--window-size=1440,900",
     "about:blank",
   ],
