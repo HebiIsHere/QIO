@@ -323,12 +323,14 @@ onBeforeUnmount(() => {
         <span v-if="statusDetail" class="tp-detail">{{ statusDetail }}</span>
         <span v-if="hasDrawer" class="tp-chev" aria-hidden="true">{{ open ? "▾" : "▸" }}</span>
       </button>
+      <!--
+        耗时入口：这里**不传 status** —— 状态词由过程区状态行唯一负责，面板只输出「耗时 X」。
+        否则折叠态会出现「状态词 · 状态词 · 耗时 2.6 秒」（2026-10-06 D 的真机截图实测）。
+        独立使用 TurnTimingPanel 时仍可传 status。
+        （注释里不写状态词本身：DOM 文本计数断言不该被注释污染。）
+      -->
       <span v-if="turnId && !running" class="tp-duration" data-test="turn-process-duration">
-        <TurnTimingPanel
-          :turn-id="turnId"
-          :duration-ms="facts?.durationMs ?? null"
-          :status="facts?.status ?? null"
-        />
+        <TurnTimingPanel :turn-id="turnId" :duration-ms="facts?.durationMs ?? null" />
       </span>
       <span v-if="hasDrawer && drawerSummary" class="tp-count mono">{{ drawerSummary }}</span>
     </div>

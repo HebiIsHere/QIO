@@ -87,7 +87,8 @@ describe("耗时入口的位置（每轮一个，在过程区）", () => {
     await flushPromises();
     const entry = w.find("[data-test='turn-timing']");
     expect(entry.exists()).toBe(true);
-    expect(entry.text()).toContain("已完成");
+    // 状态词由过程区状态行负责，面板只输出「耗时 X」（不重复状态词）
+    expect(entry.text()).not.toContain("已完成");
     expect(entry.text()).toContain("耗时");
     expect(entry.text()).toContain("1.7 秒");
     expect(getTrace).not.toHaveBeenCalled();
