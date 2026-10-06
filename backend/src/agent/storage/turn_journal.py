@@ -30,10 +30,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable
+
+from agent.trace.redact import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,34 @@ REASON_TEXT = {
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _redacted_or_none(value: str | None) -> str | None:
+    """落库前过脱敏：台账里不得出现密钥原文；空串按「没有」处理。"""
+    text = redact_text(value) if value is not None else ""
+    text = (text or "").strip()
+    return text or None
+
+
+def _human_reason(value: Any) -> str | None:
+    """台账里的 reason：历史遗留码（queued_at_restart…）翻成人话，其余原样。"""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    return REASON_TEXT.get(text, text)
+
+
+def _parse_actions(raw: Any) -> list[str]:
+    """actions 列是 JSON 数组字符串；坏数据返回 []（绝不抛、也不猜内容）。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
 
 
 class TurnJournal:
@@ -139,6 +170,87 @@ class TurnJournal:
             "reason = COALESCE(?, reason) WHERE turn_id = ? AND status IN (?, ?)",
             (journal_status, _now(), _now(), reason, str(turn_id), QUEUED, RUNNING),
         )
+
+    # -- 结束事实（R4 S6：刷新 / 换设备后失败轮仍能「重试」）----------------
+
+    def record_facts(
+        self,
+        turn_id: str,
+        *,
+        reason_code: str | None,
+        reason: str | None,
+        stopped_by: str | None,
+        actions: list[str],
+    ) -> None:
+        """把 TURN_END 的结束事实落进台账。
+
+        为什么要落库：这些字段以前只随事件发一次，刷新或换设备后就没了 ——
+        用户看到一轮失败、刷新之后「重试」入口消失，只能重写整段需求。
+
+        * 只写事实本身：reason_code / reason（**落库前过脱敏**）/ stopped_by /
+          actions（JSON 数组字符串）；
+        * 没有这一行时静默不写 —— 台账是旁路，绝不凭空建一条假记录；
+        * 写入失败只记日志（与台账其它写入一致），不能挡住对话。
+        """
+        if not str(turn_id or "").strip():
+            return
+        payload = json.dumps(
+            [str(item).strip() for item in (actions or []) if str(item).strip()],
+            ensure_ascii=False,
+        )
+        self._execute(
+            "UPDATE turn_journal SET reason_code = ?, reason = ?, stopped_by = ?,"
+            " actions = ?, updated_at = ? WHERE turn_id = ?",
+            (
+                _redacted_or_none(reason_code),
+                _redacted_or_none(reason),
+                _redacted_or_none(stopped_by),
+                payload,
+                _now(),
+                str(turn_id),
+            ),
+        )
+
+    def facts(self, turn_ids: Iterable[str]) -> dict[str, dict]:
+        """批量取每轮的结束事实（**一次查询**，不 N+1）。
+
+        返回 ``{turn_id: {turn_id, status, reason_code, reason, stopped_by, actions}}``：
+
+        * 没有这一行 → 不出现（调用方按旧行为显示状态词，绝不伪造原因）；
+        * 旧行（迁移前写入、三列为 NULL）→ 状态与既有 reason 照给，actions 为 []；
+        * reason 是历史遗留码时翻成人话，内部码不上界面；
+        * actions 反序列化失败 → []，绝不抛。
+        """
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for item in turn_ids or []:
+            value = str(item).strip()
+            if value and value not in seen:
+                seen.add(value)
+                wanted.append(value)
+        if not wanted:
+            return {}
+        out: dict[str, dict] = {}
+        # 与附件批量查询同样的分块：SQLite 变量上限以内，一次取回一页。
+        for start in range(0, len(wanted), 400):
+            chunk = wanted[start : start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._query(
+                "SELECT turn_id, status, reason, reason_code, stopped_by, actions"
+                f" FROM turn_journal WHERE turn_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            for row in rows:
+                turn_id = str(row["turn_id"])
+                out[turn_id] = {
+                    "turn_id": turn_id,
+                    "status": str(row["status"] or ""),
+                    "reason_code": str(row["reason_code"]) if row["reason_code"] else None,
+                    "reason": _human_reason(row["reason"]),
+                    "stopped_by": str(row["stopped_by"]) if row["stopped_by"] else None,
+                    "actions": _parse_actions(row["actions"]),
+                }
+        return out
 
     def note_user_message(self, turn_id: str, message_id: str | None) -> None:
         """记下这一轮已经写进历史的用户消息 id（重启后能如实告诉用户）。"""

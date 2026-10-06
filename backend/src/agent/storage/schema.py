@@ -714,6 +714,17 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE attachments ADD COLUMN source_attachment_id TEXT",
         ],
     ),
+    (
+        28,
+        [
+            # R4 S6：TURN_END 的结束事实（reason_code / stopped_by / actions）以前没有落库，
+            # 刷新或换设备后失败轮的「重试」入口就没了（前端只能靠本机留痕兜底）。
+            # 只追加三列，不改历史迁移；旧行的三列为 NULL（= 没有事实，界面按旧行为）。
+            "ALTER TABLE turn_journal ADD COLUMN reason_code TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN stopped_by TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN actions TEXT",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
