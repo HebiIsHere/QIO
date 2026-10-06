@@ -312,54 +312,53 @@ function zoomAtPointer(factor: number, client: { x: number; y: number }) {
   applyScroll(result.scroll);
 }
 
-/** 浮层（局部工具栏 / 合并提示）定位：板面坐标 → 容器坐标，缩放平移后依然跟着卡片。 */
+/**
+ * 浮层（局部工具栏 / 合并提示）定位：板面坐标 → **offsetParent（.board-surface）坐标**。
+ *
+ * 独立复核定位到的根因：工具栏挂在 `.board-surface` 里（它是 position:relative 的 offsetParent），
+ * 行内 `left/top` 是**相对 surface** 的；而这里原来按 shell 坐标算，
+ * 两个坐标系相差 `surface.top − shell.top`（实测 1440×900 下 55px），
+ * 于是工具栏每次都比预期低 55px、压在卡片顶边上，把画在卡片内侧的顶部连接点整块盖住
+ * （命中测试命中的是 card-edit / card-fold，不是连接点）。
+ *
+ * 现在统一成：**先用客户端坐标算好，最后一步再减去 surface 的位置**转成 offsetParent 坐标。
+ * 判定里保留「量真实高度 + 夹取后复验」：工具栏只要会碰到卡片顶边就一律挪到卡片下方。
+ */
 function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   const element = viewportEl.value;
   const shellElement = shell.value;
-  if (!element || !shellElement) {
+  const surfaceElement = surface.value;
+  if (!element || !shellElement || !surfaceElement) {
     overlay.value = { left: 0, top: 0, visible: false };
     return;
   }
   const viewRect = element.getBoundingClientRect();
-  const shellRect = shellElement.getBoundingClientRect();
-  const offsetX = viewRect.left - shellRect.left;
-  const offsetY = viewRect.top - shellRect.top;
+  const surfaceNow = surfaceElement.getBoundingClientRect();
   const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
-  const left = screen.x - shellRect.left;
-  const cardTop = screen.y - shellRect.top;
-  const cardBottom = cardTop + rect.h * view.value.scale;
-  const minTop = viewRect.top - shellRect.top + 2;
-  const maxTop = viewRect.bottom - shellRect.top - 30;
-  const limitTop = Math.max(minTop, offsetY + 2);
-  /**
-   * 局部工具栏的定位：**绝不许压住卡片顶边**。
-   *
-   * 顶部连接点画在卡片内侧（[cardTop+1, cardTop+13]），只要工具栏底边越过 cardTop 就会把它整块盖住，
-   * 真实鼠标按下去命中的是工具栏按钮而不是连接点（独立复核实测：命中 card-edit、连接点不可点）。
-   * 早先的写法是「上方放得下就放上方，否则放下方」，但最后还有一次
-   * `top = Math.max(offsetY + 2, top)` 的钳制，会把工具栏往下推回卡片上 —— 这就是那个缺陷。
-   *
-   * 现在：先量**真实**高度（量不到用估算值），算出的位置只要会碰到卡片顶边就一律挪到卡片下方，
-   * 最后再钳制一次并复验；实在放不下（视口太小）宁可让它贴着下沿，也不盖住连接点。
-   */
+  const cardTopClient = screen.y;
+  const cardBottomClient = cardTopClient + rect.h * view.value.scale;
+  const limitTopClient = viewRect.top + 2;
+  const maxTopClient = viewRect.bottom - 30;
   const toolbarEl = shellElement.querySelector('[data-im="card-toolbar"]');
   const toolbarH = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().height)) : TOOLBAR_H;
-  const aboveTop = cardTop - toolbarH - TOOLBAR_GAP;
-  const belowTop = Math.min(maxTop, cardBottom + TOOLBAR_GAP);
-  const touchesCardTop = (value: number) => value + toolbarH > cardTop - 2 && value < cardTop;
-  let top = aboveTop >= limitTop ? aboveTop : belowTop;
-  if (touchesCardTop(top)) top = belowTop;
-  top = Math.max(limitTop, top);
-  if (touchesCardTop(top)) top = Math.max(limitTop, cardBottom + TOOLBAR_GAP);
+  const aboveTopClient = cardTopClient - toolbarH - TOOLBAR_GAP;
+  const belowTopClient = Math.min(maxTopClient, cardBottomClient + TOOLBAR_GAP);
+  const touchesCardTop = (value: number) => value + toolbarH > cardTopClient - 2 && value < cardTopClient;
+  let topClient = aboveTopClient >= limitTopClient ? aboveTopClient : belowTopClient;
+  if (touchesCardTop(topClient)) topClient = belowTopClient;
+  topClient = Math.max(limitTopClient, topClient);
+  if (touchesCardTop(topClient)) topClient = Math.max(limitTopClient, cardBottomClient + TOOLBAR_GAP);
   // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
   const visible =
     screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
     screen.x < viewRect.right + 40 &&
     screen.y + rect.h * view.value.scale > viewRect.top - 40 &&
     screen.y < viewRect.bottom + 40;
+  const leftClient = Math.max(viewRect.left + 4, Math.min(viewRect.right - 40, screen.x));
   overlay.value = {
-    left: Math.max(offsetX + 4, Math.min(offsetX + viewRect.width - 40, left)),
-    top: Math.max(offsetY + 2, top),
+    // 行内 left/top 是相对 offsetParent（.board-surface）的：最后一步统一减去它的位置
+    left: leftClient - surfaceNow.left,
+    top: topClient - surfaceNow.top,
     visible,
   };
 }
