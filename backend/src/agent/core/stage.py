@@ -12,9 +12,11 @@
 * 阶段只是**展示**：它不改变状态、参数、审批权限与真实结果，也不参与任何判定 ——
   整轮的真实状态只认 TURN_START / TURN_END / TOOL_*（见 plan §1.3）。
 
-一处明确的口径（plan §1.2 规则 4 的「或什么都不做」）：``op=update`` 本身合法但
-不改变阶段集合，因此在「当前没有阶段」时它只落库、不开隐式阶段；隐式阶段只由
-**没有 stage 操作**的说明建立（规则 1）。
+一处口径（Lead 裁决 2026-10-06）：``op=update`` 且**当前没有阶段**时，与「没有
+stage 操作」走同一条安全降级路径 —— 建立隐式阶段并把这条说明发出去（op=start），
+而不是把模型的说明丢掉。「不自动开阶段」约束的是「已有阶段时不要因为新文本
+另开一个」，不是「第一个阶段都不给开」。``op=update`` 也**不改阶段名**（名字只在
+开阶段时确定，start / next / 隐式兜底）。
 """
 
 from __future__ import annotations
@@ -153,10 +155,13 @@ class StageTracker:
             return StageTransition(
                 action="open", op="start", stage=stage, text=text, kind=kind
             )
-        # 规则 4：op=update。当前有阶段 → 更新说明；当前没有 → 什么都不做
-        # （不自动开阶段，见模块开头说明的口径）。
+        # 规则 4：op=update。当前有阶段 → 只更新当前说明；当前没有阶段 →
+        # 安全降级为隐式开阶段（与「没有 stage 操作」同一条路径），不丢模型说明。
         if self._current is None:
-            return StageTransition(action="none", op="update", stage=None, text=text, kind=kind)
+            stage = self._open(text)
+            return StageTransition(
+                action="open", op="start", stage=stage, text=text, kind=kind
+            )
         return StageTransition(
             action="update", op="update", stage=self._current, text=text, kind=kind
         )

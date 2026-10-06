@@ -133,6 +133,9 @@ async def test_guard_window_expiry_classifies_answer():
         "streaming": True,
         "delta_id": "dl_x_1",
         "seq": 1,
+        # 正式回答不属于任何阶段（阶段只服务过程区）
+        "stage_id": None,
+        "call_ids": [],
     }
     # 定角色之后追加增量：直接进正式回答区，累计快照
     await stream.note_text("，世界")
@@ -141,7 +144,8 @@ async def test_guard_window_expiry_classifies_answer():
     assert events[-1]["content"] == "你好，世界" and events[-1]["seq"] == 2
 
 
-async def test_tool_call_delta_classifies_interim():
+async def test_tool_call_delta_defers_until_stage_is_known():
+    """工具轮的文字要等阶段就位后再发：否则会和 STAGE 说明并排成两个气泡。"""
     events: list[dict] = []
 
     async def emit(payload: dict) -> None:
@@ -150,11 +154,34 @@ async def test_tool_call_delta_classifies_interim():
     stream = _AssistantStream(emit, delta_id="dl_x_1")
     await stream.note_text("我先读一下文件")
     await stream.note_tool_call()
+    assert events == []  # 分类已定（interim），但还没有阶段信息 → 先不发
+    await stream.finish(
+        Completion(
+            message=ChatMessage(
+                role="assistant",
+                content="我先读一下文件",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={})],
+            )
+        ),
+        defer_interim=True,
+    )
+    assert events == []
+    await stream.flush_interim(stage_id="st_1_1", call_ids=["c1"])
     assert len(events) == 1
     assert events[0]["content"] == "我先读一下文件"
-    assert events[0]["interim"] is True and events[0]["streaming"] is True
-    await stream.finish(None)
-    assert events[-1]["streaming"] is False and events[-1]["interim"] is True
+    assert events[0]["interim"] is True and events[0]["streaming"] is False
+    assert events[0]["stage_id"] == "st_1_1" and events[0]["call_ids"] == ["c1"]
+    # 没有正文的工具轮不发空气泡
+    empty: list[dict] = []
+
+    async def emit_empty(payload: dict) -> None:
+        empty.append(payload)
+
+    quiet = _AssistantStream(emit_empty, delta_id="dl_x_2")
+    await quiet.note_tool_call()
+    await quiet.finish(None, defer_interim=True)
+    await quiet.flush_interim(stage_id="st_1_1", call_ids=["c9"])
+    assert empty == []
 
 
 async def test_late_tool_call_moves_text_from_answer_to_interim():
@@ -170,11 +197,14 @@ async def test_late_tool_call_moves_text_from_answer_to_interim():
     clock[0] += 0.4
     await stream.on_deadline()
     assert events[-1]["interim"] is False
-    # 唯一允许的改判：同一条 delta_id 的文字移到过程区，不重复、不撤回
+    # 唯一允许的改判：同一条 delta_id 的文字移到过程区，不重复、不撤回；
+    # 改判事件等阶段就位后发出，带上同一个 stage_id。
     await stream.note_tool_call()
+    await stream.flush_interim(stage_id="st_1_2", call_ids=["c1"])
     assert events[-1]["interim"] is True
     assert events[-1]["content"] == "这是一段完整的话，本来像正式回答。"
     assert events[-1]["delta_id"] == events[0]["delta_id"]
+    assert events[-1]["stage_id"] == "st_1_2"
     assert all(e["delta_id"] == "dl_x_1" for e in events)
 
 
@@ -184,19 +214,54 @@ async def test_publish_cadence_merges_by_char_count():
     async def emit(payload: dict) -> None:
         events.append(payload)
 
-    stream = _AssistantStream(emit, delta_id="dl_x_1")
-    await stream.note_tool_call()  # 立刻定角色，避免守卫窗口干扰
+    clock = [0.0]
+    stream = _AssistantStream(emit, delta_id="dl_x_1", clock=lambda: clock[0])
+    # 先用守卫判成 answer（工具轮的文字是延后发布的，不参与节奏测试）
+    await stream.note_text("开头")
+    clock[0] += 0.4
+    await stream.on_deadline()
     for _ in range(60):
         await stream.note_text("a")
     # 60 个单字符增量 → 按 ≥24 字符合并，绝不逐字符发
-    assert len(events) == 2
-    assert [e["seq"] for e in events] == [1, 2]
-    assert events[-1]["content"] == "a" * 48
+    assert len(events) == 3  # 1 条守卫放行 + 2 条按 24 字符合并
+    assert [e["seq"] for e in events] == [1, 2, 3]
+    assert events[-1]["content"] == "开头" + "a" * 48
     await stream.finish(None)
     assert events[-1]["streaming"] is False
-    assert events[-1]["content"] == "a" * 60
+    assert events[-1]["content"] == "开头" + "a" * 60
     seqs = [e["seq"] for e in events]
     assert seqs == sorted(set(seqs))  # seq 单调、不重复、不回退
+
+
+async def test_finish_uses_completion_text_when_no_delta_arrived():
+    """供应商一次性给出整段（没有正文增量）时，不丢文字、也不假装是流式。"""
+    events: list[dict] = []
+
+    async def emit(payload: dict) -> None:
+        events.append(payload)
+
+    interim = Completion(
+        message=ChatMessage(
+            role="assistant",
+            content="我先读一下文件。",
+            tool_calls=[ToolCall(id="c1", name="echo", arguments={})],
+        )
+    )
+    stream = _AssistantStream(emit, delta_id="dl_x_1")
+    await stream.finish(interim)
+    assert len(events) == 1
+    assert events[0]["content"] == "我先读一下文件。"
+    assert events[0]["interim"] is True and events[0]["streaming"] is False
+
+    answer = Completion(message=ChatMessage(role="assistant", content="整段回答"))
+    again: list[dict] = []
+
+    async def emit2(payload: dict) -> None:
+        again.append(payload)
+
+    await _AssistantStream(emit2, delta_id="dl_x_2").finish(answer)
+    assert len(again) == 1 and again[0]["content"] == "整段回答"
+    assert again[0]["interim"] is False and again[0]["streaming"] is False
 
 
 async def test_finish_without_any_text_publishes_nothing():
@@ -498,6 +563,15 @@ async def test_tool_round_keeps_interim_text_and_executes_assembled_arguments():
     assert result.tool_calls_made == 1 and result.final_content == "完成"
     assistant = _events(bus, "ASSISTANT")
     assert any(e["interim"] is True and e["content"] == "我先读一下文件。" for e in assistant)
+    # 过程区文字带上了这一批的 call_ids，且排在 TOOL_START 之前（阶段/归属先就位）；
+    # 同一段文字**只发一次**（延后发布不能与一次性补发重复）。
+    kinds = [e.type.value for e in bus._history]
+    interim = [e for e in assistant if e["interim"]]
+    assert len(interim) == 1
+    assert interim[0]["content"] == "我先读一下文件。"
+    assert interim[0]["call_ids"] == ["c1"]
+    assert all(not e["interim"] for e in assistant if e is not interim[0])
+    assert kinds.index("ASSISTANT") < kinds.index("TOOL_START")
     # 参数碎片只在 adapter 内组装：执行时拿到的是合法 JSON，碎片从未作为正文出现
     starts = _events(bus, "TOOL_START")
     assert starts[0]["arguments"] == {"text": "hi"}
@@ -524,6 +598,10 @@ async def test_stage_id_is_attached_to_tool_events_when_provider_exists():
     await loop.run("hi")
     assert _events(bus, "TOOL_START")[0]["stage_id"] == "st_1_1"
     assert _events(bus, "TOOL_END")[0]["stage_id"] == "st_1_1"
+    # 流式过程区的文字与同批工具、同一条 STAGE 说明共用一个阶段标识
+    interim = [e for e in _events(bus, "ASSISTANT") if e["interim"]]
+    assert interim and interim[-1]["stage_id"] == "st_1_1"
+    assert interim[-1]["call_ids"] == ["c1"]
 
 
 async def test_cancel_mid_stream_keeps_confirmed_text():
@@ -584,6 +662,7 @@ async def test_adapter_without_streaming_gets_one_shot_assistant():
     assert len(published) == 1
     assert published[0]["streaming"] is False and published[0]["interim"] is False
     assert published[0]["delta_id"] == "dl_1_1" and published[0]["seq"] == 1
+    assert published[0]["stage_id"] is None and published[0]["call_ids"] == []
     assert adapter.requests[0]["stream"] is False  # 没有假装流式
 
 
