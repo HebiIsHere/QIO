@@ -382,9 +382,10 @@ node scripts/visual_probe_d.mjs "@scripts/interactive-verify/steps-dv-2.json"
 
 | 文件 | 用途 |
 | --- | --- |
-| `scripts/interactive-verify/steps-dv-1.json` … `steps-dv-23.json` | 本报告各场景的探针步骤（`node scripts/visual_probe_d.mjs "@scripts/interactive-verify/steps-dv-N.json"`） |
-| `scripts/visual_probe_d.mjs` | 独立探针：CDP 端口 9444 + 独立 Chrome profile（可被 `QIO_PROBE_PORT`/`QIO_PROBE_PROFILE` 覆盖） |
-| `%TEMP%\qio-visual\shots\dv-*.png` | 截图证据（dv-1…dv-31） |
+| `scripts/interactive-verify/steps-dv-1.json` … `steps-dv-36.json` | 本报告各场景的探针步骤（`node scripts/visual_probe_d3.mjs "@scripts/interactive-verify/steps-dv-N.json"`） |
+| `scripts/visual_probe_d.mjs` | D 的独立探针（Chrome）：CDP 端口 9444 + 独立 profile |
+| `scripts/visual_probe_d3.mjs` | 第 7 节用的探针（**Edge 驱动**）：CDP 端口 9666 + 独立 profile，避开本机被拖垮的 Chrome |
+| `%TEMP%\qio-visual\shots\dv-*.png` | 截图证据（dv-1…dv-50） |
 
 关键截图对照：
 
@@ -399,11 +400,96 @@ node scripts/visual_probe_d.mjs "@scripts/interactive-verify/steps-dv-2.json"
 | `dv-22-panned.png` | 平移后板面坐标不变 |
 | `dv-23-merge-hint.png` / `dv-24-merged.png` | 松开后合并成组提示 / 松手才成组 |
 | `dv-27-chat-send.png` / `dv-28-chat-draft.png` | 聊天只发文字 / 草稿保留 |
-| `dv-20-integrated-overlap-800.png` / `dv-21-integrated-overlap-1024.png` | **问题 1**：批量面板遮挡底部工具栏 |
-| `dv-17-narrow-fixed-800.png` | 问题 1 的本地实验补丁在 800×600 下 overlap=0（**未提交**） |
-| `dv-30-narrow-light.png` | 800×600 + 浅色主题 |
+| `dv-20-integrated-overlap-800.png` / `dv-21-integrated-overlap-1024.png` | **问题 1**：批量面板遮挡底部工具栏（18736a2） |
+| `dv-32-fix-1440x900.png` / `dv-33-fix-1024x768.png` / `dv-34-fix-800x600.png` | b005a45 复验三档 |
+| `dv-43-1024-after-fix.png` / `dv-45-1024-toolbar.png` | 2deb3d6 复验：1024 工具栏恢复正常 |
+| `dv-46-800-chat-after-fix.png` / `dv-48-chat-dock-measure.png` | 2deb3d6 复验：800×600 聊天面板仍被挤出视口 |
+| `dv-44-1440-regression.png` / `dv-50-1440-chat.png` | 1440×900 回归 |
 
 ---
 
-**报告人**：子智能体 D（`fe-d-approval`）。**验收对象**：`18736a2`。
+**报告人**：子智能体 D（`fe-d-approval`）。
+**第 1–5 节验收对象**：集成提交 `18736a2`；**第 6 节验收对象**：修复提交 `b005a45`；**第 7 节验收对象**：修复提交 `2deb3d6`。
 **本报告只报告、未改产品代码**；验收工作区 `wt/fe-d-verify` 上除了本文件与探针步骤，没有其它改动。
+## 7. 窄窗口两处修复复验（提交 `2deb3d6`）
+
+**复验对象**：`2deb3d6`（基线 `b005a45`）。**工作区**：`D:\qio-dev\qio-fe-d-verify`（`wt/fe-d-verify` 已前移到该提交）。
+**探针**：`scripts/visual_probe_d3.mjs`（**用 Edge 驱动**，独立 CDP 端口 9666 与独立 profile；
+原因：本轮复验时本机 Chrome 已被大量 headless 实例拖垮——12 个 chrome 进程、CPU 91%，
+`Emulation.setDeviceMetricsOverride` / `Runtime.evaluate` 全部超时，about:blank 也不可达；
+Edge 与 Chrome 同为 Chromium 内核、同一套 CDP，几何测量口径一致）。
+
+### 7.1 1024×768：工具栏被提交区撑高（已修好）
+
+    指标                     修复前（b005a45 实测）   修复后（2deb3d6 实测）   结论
+    board-toolbar 高度        709px                    236px                   已修好
+    .texts 宽度               68px（中文逐字竖排）      220px                   已修好
+    .submit-cluster 宽度      533px                    546px（独占一行）        已修好
+    提交按钮                  {w:116,h:41}             {w:116,h:41} 可见        正常
+    批量面板 maxHeight        140px                    398px                   恢复正常
+    批量面板矩形              {105,245,140}            {105,439,334}            恢复正常
+    批量面板与工具栏重叠       —                        0                        无重叠
+    横向溢出                  无                       无                       正常
+
+截图 `dv-43-1024-after-fix.png`、`dv-45-1024-toolbar.png`；步骤 `steps-dv-32.json`、`steps-dv-33.json`。
+
+### 7.2 800×600：提交区与批量面板（正常）
+
+    提交按钮 {w:106,h:65,top:518,bottom:583} 可见；横向溢出 无；
+    批量面板 {top:97,bottom:266} 与工具栏 {top:283} 不重叠；与聊天面板也不重叠。
+
+截图 `dv-46-800-chat-after-fix.png`、`dv-47-800-both-after-fix.png`。
+
+### 7.3 800×600：聊天面板仍被挤出视口（**未修好**，重要）
+
+**实测**（`steps-dv-34.json` / `steps-dv-35.json`）：
+
+    .chat-dock   {top:-141, bottom:259, h:400, bottomCss:"341px"}   --chat-dock-clearance: 325px
+    .panel       {top:-141, bottom:22,  h:163, margin:"0px 0px 190px"}   --chat-panel-max-h: 163px
+    .toggle      {top:220, bottom:259, h:39}
+    toolbar      {top:283}
+    面板顶部可见高度 = 22px（其余 141px 在视口上方）
+
+**Lead 的改法生效了一半**：面板高度确实从 220px 降到了 163px（`max(160, 600−325−112)=163`），
+但**面板仍被顶出视口**，因为面板上还挂着一条 **190px 的下外边距**：
+
+    frontend/src/styles/interactive-shell.css:110   --im-chat-lift: 190px;      （@media (max-width: 800px)）
+    frontend/src/styles/interactive-shell.css:73    margin-bottom: var(--im-chat-lift);
+
+于是容器高度 = 163（面板）+ 190（margin）+ 39（入口按钮）+ 8（gap）= 400px，
+而工具栏上方只剩 283px → 按 bottom 对齐后顶部到 −141px。
+**这是「两套避让叠加」**：ChatDock 自己已经按实测工具栏高度定位（`--chat-dock-clearance`），
+A 的 shell 又用 `--im-chat-lift` 把面板整体抬高一次；1440×900 下 `--im-chat-lift: 0px` 所以看不到问题
+（实测 1440：panel{top:121,bottom:641}、margin:0px、完整可见、与工具栏不重叠，截图 `dv-50-1440-chat.png`）。
+
+**建议的修法（一行）**：在 `interactive-shell.css` 的窄窗口断点里把 `--im-chat-lift` 设成 `0px`
+（文件注释第 43 行本来就写了「C 若已在自己的面板里按实测工具栏高度避让，可以把 --im-chat-lift 设为 0」），
+即 `@media (max-width: 800px)` 与 `@media (max-width: 1024px)` 两处都改成 0；改完容器高度会回到约 210px，可完整放进 283px。
+我没有改产品代码（只报告）。
+
+### 7.4 1440×900 回归（通过）
+
+    board-toolbar {w:786,h:172,top:712,bottom:884}     与修复前一致，没有变高
+    .texts {w:282,h:99}  提交按钮 {w:116,h:41,top:805} 可见
+    聊天面板 {top:121,bottom:641,h:520} 完整可见、与工具栏不重叠、无横向溢出
+
+截图 `dv-44-1440-regression.png`。
+
+### 7.5 三档汇总（本轮）
+
+| 档位 | 提交按钮 | 横向溢出 | 批量面板 | 聊天面板 |
+| --- | --- | --- | --- | --- |
+| 1440×900 | 可见可点 | 无 | 正常（overlap 0） | 完整可见（top 121） |
+| 1024×768 | 可见可点 | 无 | 正常（maxHeight 398px） | 未单独复测（本轮重点在 800） |
+| 800×600 | 可见可点 | 无 | 正常（overlap 0） | **仍被挤出视口（top −141）** |
+
+### 7.6 结论与仍未解决项
+
+- `2deb3d6` **修好了 1024×768 工具栏被撑高**（709px → 236px，文字列 68px → 220px，批量面板 140px → 398px），
+  且 **1440×900 无回归**。这两条可以确认。
+- **800×600 聊天面板仍未修好**：面板高度已经降下来，但 `--im-chat-lift: 190px` 把它又抬出了视口。
+  根因与可复现步骤见 7.3，建议按「窄窗口把 --im-chat-lift 设为 0」处理；改完我可以再复验一次。
+- 复验环境说明：本轮因为本机 Chrome 不可用改用 Edge 驱动探针（同 Chromium / 同 CDP），
+  所有几何数值与 Chrome 时代的口径一致；截图仍写在 `%TEMP%\qio-visual\shots`。
+
+---
