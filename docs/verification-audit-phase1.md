@@ -203,6 +203,58 @@ npx vitest run src/components/__tests__/HistoryAttachmentOpen.audit.verify.test.
 → ✓ 没有溢出时：缓存事件按到达顺序补放，一条都不丢              19ms
 ```
 
+### 集成实现复跑（临时 detached worktree @ `fix/unified-process-audit` `9ddf017`）
+
+Lead 报告集成分支上我的验收有 9 红，其中 2 类属**测试侧**（实现是对的）。已修：
+
+1. **测试隔离**：过程区展开状态在**模块级 store**（键 = 话题|轮|阶段）且会持久化，
+   同一文件前面的用例调过 `openProcessHistory` → `manual=true`，后面同一 `turn_1` 的用例
+   就被「用户手动开合过不再自动改」保护住（该保护是契约要求，不能删）。
+   → `TurnProcess.verify.test.ts` 与 `ProcessDefaultVisibility.audit.verify.test.ts` 的
+   `beforeEach` 现在都调用 `resetProcessState()` + 清 `localStorage`。
+   **没有**放宽「完成之后过程区保持折叠」这条断言；反而把它拆成两条更强的：
+   「用户没碰过 → 完成前后都折叠」+「用户手动展开过 → 完成时不收走（保护阅读）」。
+2. **引用型重定位的 fixture 用错状态**：健康引用（`ready`）本来就没有重新定位需求。
+   → 重新定位断言改用 `missing` 与 `changed`，并**新增**一条正向覆盖：
+   健康的引用型必须显示「引用本地文件」+「不保证内容仍然存在」，且**不**出现假的重新定位入口。
+   → 另加一条：`pickLocalPath` 返回 null（无选择器/用户取消）时**不得**提交重定位、
+   不得宣称成功。
+
+复跑还暴露并修掉 3 处我自己的 fixture 假设错误（同样是我这边的问题，不是实现）：
+- 逐项工具卡在集成实现里位于「本阶段明细」**独立开关**后面（`[data-test="turn-process-stage-toggle"]`
+  → `[data-test="turn-process-stage-tools"]`），不是整轮历史抽屉里 → 断言按新锚点改写
+  （默认收起 = 默认可见区看不到；点开才看得到）；
+- 重新定位断言改为**确定性**：桩掉原生选择器返回一个真实路径 → 断言真的发出
+  `POST /api/attachments/{id}/relocate`（含认证头），而不是靠「点下去有没有反应」猜。
+
+集成实现上的复跑（把本 worktree 的这批测试文件覆盖到临时 detached worktree 后运行；
+临时 worktree 已删除，本 worktree 未因此产生任何提交）：
+
+```
+cd <临时 detached worktree>/frontend
+npx vitest run src/components/__tests__/TurnProcess.verify.test.ts \
+  src/components/__tests__/HistoryAttachmentOpen.audit.verify.test.ts \
+  src/components/__tests__/ProcessDefaultVisibility.audit.verify.test.ts \
+  src/stores/__tests__/streamingDeltas.verify.test.ts \
+  src/stores/__tests__/eventBufferOverflow.verify.test.ts
+→ ✓ TurnProcess.verify.test.ts (5 tests)
+→ ✓ HistoryAttachmentOpen.audit.verify.test.ts (6 tests)
+→ ✓ ProcessDefaultVisibility.audit.verify.test.ts (5 tests)
+→ ✓ streamingDeltas.verify.test.ts (10 tests)
+→ ✓ eventBufferOverflow.verify.test.ts (4 tests) 12873ms（并行；2 万条那条 9306ms）
+→ Test Files  5 passed (5) / Tests  30 passed (30)
+```
+
+同一批文件在**本 worktree（基线实现 e428bb9）**上仍然是红的，符合预期
+（实现修复不在这个 worktree 里）：
+
+```
+cd D:\qio-dev\qio-fix-d\frontend
+npx vitest run src/components/__tests__/TurnProcess.verify.test.ts src/components/__tests__/HistoryAttachmentOpen.audit.verify.test.ts
+→ Test Files  2 failed (2) / Tests  7 failed | 4 passed (11)
+npx vue-tsc --noEmit → EXIT=0
+```
+
 ### 类型检查
 
 ```

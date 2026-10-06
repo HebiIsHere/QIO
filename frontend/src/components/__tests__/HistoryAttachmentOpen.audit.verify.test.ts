@@ -30,6 +30,18 @@ import { nextTick } from "vue";
 import MessageItem from "../MessageItem.vue";
 import type { MessageAttachment, StreamMessage } from "../../stores/session";
 
+/**
+ * 可控的原生选择器替身：默认「选到了新位置」，让「重新定位」这条链路可以被真正断言
+ * （浏览器里 pickLocalPath 返回 null = 没有选择器/用户取消，另有一条用例专门断言
+ * 「不能假装成功」）。只替换这一个函数，其余附件服务保持真实实现。
+ */
+const pickLocalPathMock = vi.fn<() => Promise<string | null>>(async () => "D:\\新位置\\大素材.mov");
+
+vi.mock("../../services/attachments", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/attachments")>();
+  return { ...actual, pickLocalPath: (...args: []) => pickLocalPathMock(...args) };
+});
+
 vi.mock("../../services/backend", () => ({
   resolveBackend: vi.fn(async () => ({ base: "http://127.0.0.1:8799", token: "tk_audit" })),
   authHeaders: vi.fn((token: string) => (token ? { Authorization: "Bearer " + token } : {})),
@@ -61,6 +73,7 @@ const COPY: MessageAttachment = {
   state: "ready",
 };
 
+/** 健康的引用型：只记位置、内容不保证仍在 —— **没有**重新定位需求。 */
 const REFERENCE: MessageAttachment = {
   id: "att_ref_1",
   name: "大素材.mov",
@@ -68,6 +81,28 @@ const REFERENCE: MessageAttachment = {
   kind: "reference",
   display: "引用本地文件",
   state: "ready",
+};
+
+/** 引用失效（文件被移动/删除）：这时才需要「重新定位」。 */
+const REFERENCE_MISSING: MessageAttachment = {
+  id: "att_ref_missing",
+  name: "被移动的大素材.mov",
+  sizeBytes: 300_000_000,
+  kind: "reference",
+  display: "引用本地文件",
+  state: "missing",
+  error: "文件不在原位了（联网盘断开、被移动或被删除）；可以重新指定位置",
+};
+
+/** 引用内容有变化：同样允许重新指定位置。 */
+const REFERENCE_CHANGED: MessageAttachment = {
+  id: "att_ref_changed",
+  name: "换过内容的大素材.mov",
+  sizeBytes: 300_000_000,
+  kind: "reference",
+  display: "引用本地文件",
+  state: "changed",
+  error: "源文件内容与登记时不同",
 };
 
 const MISSING: MessageAttachment = {
@@ -92,10 +127,27 @@ function installFetch() {
         method: String(init?.method ?? "GET"),
         headers: (init?.headers as Record<string, string>) ?? {},
       });
-      return new Response(new Blob(["副本内容"]), {
-        status: 200,
-        headers: { "Content-Type": "application/octet-stream" },
-      });
+      // 取副本内容 → 二进制；其余（relocate / 元数据）→ JSON 信封
+      if (String(url).endsWith("/content")) {
+        return new Response(new Blob(["副本内容"]), {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          attachment: {
+            id: "att_ref_missing",
+            name: "大素材.mov",
+            size_bytes: 300_000_000,
+            kind: "reference",
+            state: "ready",
+            error: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
     }),
   );
 }
@@ -171,6 +223,8 @@ function noticeText(wrapper: VueWrapper): string {
 
 beforeEach(() => {
   installFetch();
+  pickLocalPathMock.mockReset();
+  pickLocalPathMock.mockImplementation(async () => "D:\\新位置\\大素材.mov");
 });
 
 describe("契约 §1.6：历史附件必须有真实入口", () => {
@@ -198,30 +252,73 @@ describe("契约 §1.6：历史附件必须有真实入口", () => {
     wrapper.unmount();
   });
 
-  it("引用型附件：真实可点的重新定位入口，点下去必须有可观察反馈", async () => {
-    const wrapper = await mountItem(userMessage([REFERENCE]));
-    const item = attachmentItem(wrapper, REFERENCE.id);
-    expect(item.attributes("data-kind")).toBe("reference");
+  it("引用失效（missing / changed）：真实可点的重新定位入口，点下去必须有可观察反馈", async () => {
+    for (const fixture of [REFERENCE_MISSING, REFERENCE_CHANGED]) {
+      const wrapper = await mountItem(userMessage([fixture]));
+      const item = attachmentItem(wrapper, fixture.id);
+      expect(item.attributes("data-kind"), "引用型必须标成 reference").toBe("reference");
+      expect(item.attributes("data-state"), "失效状态必须如实写在锚点上").toBe(fixture.state);
 
+      const relocate = findEntry(wrapper, item, /重新定位|指定位置|重新指定|重新选择/);
+      expect(
+        relocate,
+        "契约 §1.6：引用失效时必须给「重新定位」入口（" + fixture.state + "）",
+      ).toBeTruthy();
+
+      pickLocalPathMock.mockResolvedValueOnce("D:\\新位置\\大素材.mov");
+      await relocate!.trigger("click");
+      await settle();
+
+      const hit = fetchCalls.find((call) =>
+        call.url.includes("/api/attachments/" + fixture.id + "/relocate"),
+      );
+      expect(
+        hit,
+        "点了「重新定位」必须把新位置真的交给后端（POST /api/attachments/{id}/relocate），不能是装饰按钮",
+      ).toBeTruthy();
+      expect(hit!.method.toUpperCase()).toBe("POST");
+      expect(
+        JSON.stringify(hit!.headers).toLowerCase(),
+        "重新定位同样要带认证头",
+      ).toContain("authorization");
+      expect(noticeText(wrapper).trim().length, "动作之后必须给用户可观察反馈").toBeGreaterThan(0);
+      wrapper.unmount();
+    }
+  });
+
+  it("没有选择器 / 用户取消（pickLocalPath 返回 null）：不得假装重新定位成功", async () => {
+    const wrapper = await mountItem(userMessage([REFERENCE_MISSING]));
+    const item = attachmentItem(wrapper, REFERENCE_MISSING.id);
     const relocate = findEntry(wrapper, item, /重新定位|指定位置|重新指定|重新选择/);
-    expect(
-      relocate,
-      "引用型附件必须提供「重新定位」入口（前端 relocateAttachment 目前没有任何调用点）",
-    ).toBeTruthy();
+    expect(relocate, "引用失效必须有重新定位入口").toBeTruthy();
 
-    const before = wrapper.text();
+    pickLocalPathMock.mockResolvedValueOnce(null);
     await relocate!.trigger("click");
     await settle();
 
-    const reacted =
-      noticeText(wrapper).trim().length > 0 ||
-      wrapper.findAll("input").length > 0 ||
-      fetchCalls.some((call) => call.url.includes("/relocate")) ||
-      wrapper.text() !== before;
     expect(
-      reacted,
-      "点了「重新定位」必须有可观察反馈（原生选择器 / 路径输入 / 提示），不能是装饰按钮",
-    ).toBe(true);
+      fetchCalls.some((call) => call.url.includes("/relocate")),
+      "没有拿到新路径时不得向后端提交重定位",
+    ).toBe(false);
+    expect(noticeText(wrapper), "不得宣称「已重新定位」").not.toMatch(/已重新定位|成功/);
+    wrapper.unmount();
+  });
+
+  it("健康的引用型：说明保存方式与 caveat，且**不**给假的重新定位入口", async () => {
+    const wrapper = await mountItem(userMessage([REFERENCE]));
+    const item = attachmentItem(wrapper, REFERENCE.id);
+    expect(item.attributes("data-kind")).toBe("reference");
+    expect(item.attributes("data-state")).toBe("ready");
+
+    expect(item.text(), "健康的引用型必须写清保存方式是「引用本地文件」").toContain("引用本地文件");
+    expect(
+      item.html(),
+      "必须给出「历史保留的是位置，不保证内容仍然存在」的说明（契约 §1.6）",
+    ).toContain("不保证内容仍然存在");
+    expect(
+      findEntry(wrapper, item, /重新定位|指定位置|重新指定|重新选择/),
+      "内容仍在原位的引用型没有重新定位需求：不得显示一个假的入口",
+    ).toBeUndefined();
     wrapper.unmount();
   });
 

@@ -32,6 +32,7 @@ import { nextTick } from "vue";
 import MessageStream from "../MessageStream.vue";
 import { useEventStore } from "../../stores/events";
 import { useSessionStore } from "../../stores/session";
+import { resetProcessState } from "../../stores/turnProcess";
 import type { AgentEvent } from "../../services/events";
 
 vi.mock("../../services/api", () => {
@@ -165,6 +166,18 @@ function historyCollapsed(wrapper: VueWrapper): boolean {
 
 beforeEach(() => {
   seq = 0;
+  /**
+   * 测试隔离：过程区的展开状态存在**模块级 store**（键 = 话题|轮|阶段）并会持久化。
+   * 同一文件里前面的用例调过 openProcessHistory → manual=true/open=true，后面同一
+   * turn_id 的用例就会被「用户手动开合过不再自动改」保护住（这条保护本身是契约要求，
+   * 不能删）。所以每条用例都从「用户没碰过」的初始状态开始。
+   */
+  resetProcessState();
+  try {
+    if (typeof localStorage !== "undefined") localStorage.clear();
+  } catch {
+    /* 存不下/读不到都不影响本用例 */
+  }
 });
 
 describe("契约 §1.5：立即出现、安静、无重复", () => {
