@@ -312,6 +312,16 @@ class AnthropicAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001 - normalize transport errors
             raise e.normalize_error(exc) from exc
 
+        # 与 native 同一条兼容性口径：一个内容块都没解析出来、也没有 stop_reason、
+        # 也没有任何 usage，说明这条服务很可能忽略了 stream=true（回了整段 JSON，
+        # SSE 行里什么都没有）。如实声明用不了流式，让上层整段回退一次。
+        if not blocks and stop_reason is None and not input_tokens and not output_tokens:
+            from agent.adapters import errors as e
+
+            raise e.UnsupportedCapability(
+                "stream produced no content blocks (provider likely ignored stream=true)"
+            )
+
         # 组装放在异常处理之外：ToolCallParseError 是解析错误，不该被归一化掉。
         text_parts = [
             blocks[i]["text"]

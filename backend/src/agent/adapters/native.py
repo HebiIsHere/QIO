@@ -140,6 +140,19 @@ class _ToolCallAccumulator:
         return calls
 
 
+def _error_from_status(status: int, body: str) -> Any:
+    """HTTP 状态 → 内部错误分类（整段路径由 SDK 抛，这里给裸响应补上同一口径）。"""
+    from agent.adapters import errors as e
+
+    if status in (401, 403):
+        return e.AuthenticationError(f"provider {status}: {body}")
+    if status == 429:
+        return e.RateLimitError(f"provider {status}: {body}")
+    if 400 <= status < 500:
+        return e.InvalidToolCall(f"provider {status}: {body}")
+    return e.ProviderInternalError(f"provider {status}: {body}")
+
+
 class NativeAdapter(BaseAdapter):
     mode = "native"
     # OpenAI 兼容协议的真流式（见 stream()）。
@@ -310,17 +323,38 @@ class NativeAdapter(BaseAdapter):
             raise
 
     async def _stream_once(self, kwargs: dict[str, Any]) -> AsyncIterator[StreamDelta]:
-        from agent.adapters.errors import normalize_error
+        from agent.adapters.errors import UnsupportedCapability, normalize_error
 
+        # 有 with_raw_response 时用它：**只有这条路能先看到 Content-Type**。
+        # 忽略 stream=true 的服务会回 application/json（整段），而 openai SDK 对这种
+        # 响应会给出一条零 chunk 的流且不报错（实测 3.13.0）。先看到 Content-Type，
+        # 就能把整段 JSON 直接当成这次调用的结果 —— 零额外请求，也不会把按请求
+        # 消费脚本的假厂商/有状态端点打乱。
+        completions = getattr(getattr(self._client, "chat", None), "completions", None)
+        raw_sender = getattr(getattr(completions, "with_raw_response", None), "create", None)
         try:
-            raw = await self._client.chat.completions.create(**kwargs)
+            if raw_sender is not None:
+                response = await raw_sender(**kwargs)
+                status = int(getattr(response.http_response, "status_code", 200) or 200)
+                if status >= 400:
+                    body = (await response.http_response.aread()).decode("utf-8", "replace")
+                    raise _error_from_status(status, body[:500])
+                content_type = str(
+                    getattr(response.http_response, "headers", {}).get("content-type") or ""
+                ).lower()
+                if "text/event-stream" not in content_type:
+                    # 这条服务没有按 SSE 回：整段 JSON 就是权威结果。
+                    body = await response.http_response.aread()
+                    yield StreamDelta(kind=STREAM_DONE, completion=self._completion_from_body(body))
+                    return
+                raw = response.parse()
+            else:
+                raw = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             raise normalize_error(exc) from exc
         if not hasattr(raw, "__aiter__"):
             # 客户端不返回异步流（自定义兼容端点 / 假客户端）：如实降级，
             # 而不是在这里假装拿到了一条流。
-            from agent.adapters.errors import UnsupportedCapability
-
             raise UnsupportedCapability("client did not return an async stream")
 
         accumulator = _ToolCallAccumulator()
@@ -366,6 +400,19 @@ class NativeAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001 - 传输层异常统一归一化
             raise normalize_error(exc) from exc
 
+        if not content_parts and not accumulator.seen and finish_reason is None:
+            # 一次流式调用**什么增量都没产生**，而且我们连 Content-Type 都没看到
+            # （裸客户端 / 假客户端：走不到上面的 with_raw_response 分支）。真实
+            # 事故形态：服务忽略 stream=true、直接回整段 JSON，openai SDK 对这种
+            # 响应给出一条零 chunk 的流且**不报错**，于是每一轮都变成「没有工具
+            # 调用」，而供应商其实回了完整的 tool_calls。
+            #
+            # 那是兼容性问题，不是「模型没说话」：如实声明这条路径用不了流式，
+            # 由 AgentLoop 回退到整段 complete()（**只回退一次**），不假装流式。
+            raise UnsupportedCapability(
+                "stream produced no increments (provider likely ignored stream=true)"
+            )
+
         # 组装在 try 之外：ToolCallParseError 是解析错误，不能被归一化成 provider 错误。
         completion = Completion(
             message=ChatMessage(
@@ -378,6 +425,67 @@ class NativeAdapter(BaseAdapter):
             finish_reason=finish_reason,
         )
         yield StreamDelta(kind=STREAM_DONE, completion=completion)
+
+    # -- 整段响应（供应商忽略 stream=true）-------------------------------
+
+    def _completion_from_body(self, body: bytes) -> Completion:
+        """把一条非 SSE 的整段响应解成 Completion（与 complete() 同一套语义）。"""
+        from agent.adapters.errors import ProviderInternalError
+
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+        except ValueError as exc:
+            raise ProviderInternalError(f"non-stream response is not JSON: {exc}"[:300]) from exc
+        if not isinstance(payload, dict):
+            raise ProviderInternalError("non-stream response is not a JSON object")
+        return self._completion_from_payload(payload)
+
+    @staticmethod
+    def _completion_from_payload(payload: dict[str, Any]) -> Completion:
+        """OpenAI ChatCompletion JSON → Completion；工具参数仍在这里才解析成 JSON。"""
+        from agent.adapters.errors import ProviderInternalError
+        from agent.core.narrative import split_narrative_arguments
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderInternalError("non-stream response carries no choices")
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        tool_calls: list[ToolCall] | None = None
+        for item in message.get("tool_calls") or []:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+            raw_arguments = function.get("arguments") or "{}"
+            try:
+                arguments = parse_arguments(raw_arguments)
+            except Exception:
+                raise ToolCallParseError(
+                    tool_call_id=str(item.get("id") or ""),
+                    name=str(function.get("name") or ""),
+                    raw_arguments=str(raw_arguments),
+                ) from None
+            arguments, narrative = split_narrative_arguments(arguments)
+            if tool_calls is None:
+                tool_calls = []
+            tool_calls.append(
+                ToolCall(
+                    id=str(item.get("id") or ""),
+                    name=str(function.get("name") or ""),
+                    arguments=arguments,
+                    narrative=narrative,
+                )
+            )
+        content = message.get("content")
+        return Completion(
+            message=ChatMessage(
+                role="assistant",
+                content=content if isinstance(content, str) and content else None,
+                tool_calls=tool_calls,
+            ),
+            usage=ModelUsage.from_provider(payload.get("usage")),
+            finish_reason=choice.get("finish_reason"),
+        )
 
     def _to_completion(self, raw: Any) -> Completion:
         message = raw.choices[0].message

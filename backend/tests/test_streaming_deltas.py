@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from typing import Any
 
@@ -732,6 +733,301 @@ def test_stage_is_a_critical_event():
 
     assert EventType.STAGE in CRITICAL_EVENTS
     assert EventType.ASSISTANT not in CRITICAL_EVENTS  # 仍是可合并事件
+
+
+# ---- 兼容性：服务忽略 stream=true（真实 SDK 复现 install e2e 的失败）-------------
+
+
+def _whole_json(*, tool_call: bool) -> str:
+    """一个只回整段 JSON 的 OpenAI 兼容服务（scripts/e2e_fake_provider.py 的形状）。"""
+    message: dict = {"role": "assistant", "content": "整段回答", "tool_calls": None}
+    finish = "stop"
+    if tool_call:
+        message = {
+            "role": "assistant",
+            "content": "我先读一下。",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": '{"text": "hi"}'},
+                }
+            ],
+        }
+        finish = "tool_calls"
+    return json.dumps(
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "m",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+        }
+    )
+
+
+class _StreamIgnoringProvider:
+    """假装忽略 stream=true 的服务：**每个请求**都回 application/json 整段。
+
+    与 scripts/e2e_fake_provider.py 同形：不区分流式，按请求顺序把整段结果发出去
+    （真实 SDK 对这种响应会得到一条零 chunk 的流且不报错）。
+    """
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+        self._last: str | None = None
+        self.requests: list[dict] = []
+
+    def handler(self, request: Any) -> Any:
+        import httpx
+
+        payload = json.loads(request.content.decode() or "{}")
+        self.requests.append(payload)
+        body = self._replies.pop(0) if self._replies else self._last
+        self._last = body
+        return httpx.Response(
+            200, content=(body or "").encode(), headers={"content-type": "application/json"}
+        )
+
+
+class _SseProvider:
+    """同一个 SDK、同一套请求形状，但真的按 SSE 回（对照用例）。"""
+
+    def __init__(self, chunks: list[dict]) -> None:
+        self._chunks = chunks
+        self.requests: list[dict] = []
+
+    def handler(self, request: Any) -> Any:
+        import httpx
+
+        self.requests.append(json.loads(request.content.decode() or "{}"))
+        lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in self._chunks]
+        lines.append("data: [DONE]\n\n")
+        return httpx.Response(
+            200,
+            content="".join(lines).encode(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+
+def _real_openai_client(provider: Any) -> Any:
+    """真实 openai SDK + httpx.MockTransport（不联网）：复现线上的兼容性路径。"""
+    import httpx
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(
+        api_key="sk-test-not-a-real-key",
+        base_url="http://fake-provider.test/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(provider.handler)),
+    )
+
+
+def _sse_chunk(content: str | None = None, finish: str | None = None) -> dict:
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "m",
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}],
+    }
+
+
+async def test_provider_that_ignores_stream_still_runs_tools_without_extra_request():
+    """install e2e 的真实回归：服务只回整段 JSON，QIO 不能因此变成「没有工具调用」。
+
+    有 with_raw_response 的客户端（真实 SDK）先看 Content-Type：不是 SSE 就把整段
+    JSON 当结果 —— **零额外请求**（否则按请求消费脚本的假厂商会被打乱，install e2e
+    的 A-060 依然会红）。回退到 complete() 只在看不到 Content-Type 时才发生。
+    """
+    provider = _StreamIgnoringProvider(
+        [_whole_json(tool_call=True), _whole_json(tool_call=False)]
+    )
+    client = _real_openai_client(provider)
+    adapter = NativeAdapter(client=client, model="m1")
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    try:
+        result = await loop.run("hi")
+    finally:
+        await client.close()
+
+    assert result.tool_calls_made == 1  # 工具调用没有被「零增量流」吃掉
+    assert result.final_content == "整段回答"
+    # 每次模型调用只发一个请求：请求仍带 stream=true（我们并不知道对方会不会流式），
+    # 但响应体被直接当作这次调用的整段结果，没有第二次请求
+    assert [bool(p.get("stream")) for p in provider.requests] == [True, True]
+    # 如实告知：一轮一条 WARNING，前端显示「该模型路径不支持实时生成」
+    warnings = _events(bus, "WARNING")
+    assert [w["code"] for w in warnings] == ["streaming_unsupported"]
+    assert "不支持实时生成" in warnings[0]["message"]
+    assert any("不支持实时生成" in w for w in result.warnings)
+    # 正文以一次性 streaming=false 交付：不假装流式
+    assistant = _events(bus, "ASSISTANT")
+    assert assistant and all(e["streaming"] is False for e in assistant)
+    assert any(e["content"] == "整段回答" for e in assistant)
+    assert _events(bus, "TOOL_START")[0]["arguments"] == {"text": "hi"}
+
+
+async def test_real_sse_provider_streams_without_any_fallback():
+    """对照：真的按 SSE 回时，一次调用只发一个请求，事件是流式增量。"""
+    provider = _SseProvider(
+        [_sse_chunk("流式"), _sse_chunk("回答"), _sse_chunk(None, "stop")]
+    )
+    client = _real_openai_client(provider)
+    adapter = NativeAdapter(client=client, model="m1")
+    try:
+        # 1) 适配器层：真的收到了增量（不是零 chunk，也就不会被判成降级）
+        deltas = await _deltas(adapter)
+        assert [d.text for d in deltas if d.kind == STREAM_TEXT] == ["流式", "回答"]
+        assert deltas[-1].completion is not None
+        assert deltas[-1].completion.message.content == "流式回答"
+
+        # 2) 循环层：一次调用只发一个请求，没有回退、没有 WARNING
+        bus = EventBus()
+        loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+        result = await loop.run("hi")
+    finally:
+        await client.close()
+
+    assert result.final_content == "流式回答"
+    assert [bool(p.get("stream")) for p in provider.requests] == [True, True]
+    assert _events(bus, "WARNING") == []
+    assistant = _events(bus, "ASSISTANT")
+    # 整个响应不到守卫窗口就结束了 → 按「流终止时仍未分类」定论成 answer，
+    # 一条收尾快照；关键差别是它**没有**回退、也没有警告。
+    assert assistant[-1]["streaming"] is False
+    assert assistant[-1]["content"] == "流式回答"
+    assert all(e["content"] in ("流式", "流式回答") for e in assistant)
+
+
+def _load_e2e_fake_provider():
+    """按文件路径加载 CI 用的那个假厂商（它只回整段 JSON、忽略 stream=true）。"""
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "qio_e2e_fake_provider", repo_root / "scripts" / "e2e_fake_provider.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_real_e2e_fake_provider_round_trip_still_runs_tools():
+    """对着 scripts/e2e_fake_provider.py 真跑一轮：这就是 install e2e 的那条路径。"""
+    import threading
+
+    from openai import AsyncOpenAI
+
+    module = _load_e2e_fake_provider()
+    server = module.FakeProvider(("127.0.0.1", 0))
+    server.script.set(
+        [
+            {"text": "我先读一下。", "tool": "echo", "args": {"text": "hi"}},
+            {"text": "完成"},
+        ]
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = AsyncOpenAI(
+        api_key="sk-fake-e2e-not-a-real-key",
+        base_url=f"http://127.0.0.1:{server.server_port}/v1",
+        timeout=10.0,
+    )
+    try:
+        adapter = NativeAdapter(client=client, model="fake-model")
+        bus = EventBus()
+        loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+        result = await loop.run("hi")
+    finally:
+        await client.close()
+        server.shutdown()
+        server.server_close()
+
+    assert result.tool_calls_made == 1  # 工具调用不再被「零增量流」吃掉
+    assert result.final_content == "完成"
+    # 假厂商只回整段 JSON：每次模型调用 1 个请求，脚本队列不会被多打的请求打乱
+    assert len(server.log) == 2
+    warnings = _events(bus, "WARNING")
+    assert [w["code"] for w in warnings] == ["streaming_unsupported"]
+    assistant = _events(bus, "ASSISTANT")
+    assert assistant and all(e["streaming"] is False for e in assistant)
+
+
+def _sse_tool_chunk(
+    index: int,
+    *,
+    call_id: str | None = None,
+    name: str | None = None,
+    arguments: str | None = None,
+) -> dict:
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
+    }
+
+
+async def test_real_sse_provider_assembles_fragmented_tool_arguments():
+    """真实 SDK + 真 SSE（raw 路径）：参数碎片只在 adapter 里拼成合法 JSON。"""
+    provider = _SseProvider(
+        [
+            _sse_tool_chunk(0, call_id="call_1", name="echo", arguments='{"te'),
+            _sse_tool_chunk(0, arguments='xt": "hi"}'),
+            _sse_chunk(None, "tool_calls"),
+        ]
+    )
+    client = _real_openai_client(provider)
+    adapter = NativeAdapter(client=client, model="m1")
+    try:
+        deltas = await _deltas(adapter)
+    finally:
+        await client.close()
+
+    assert any(d.kind == STREAM_TOOL_CALL for d in deltas)
+    assert not any(d.kind == STREAM_TEXT for d in deltas)  # 碎片不当正文
+    done = deltas[-1]
+    assert done.kind == STREAM_DONE and done.completion is not None
+    calls = done.completion.tool_calls or []
+    assert len(calls) == 1 and calls[0].arguments == {"text": "hi"}
+    assert done.completion.finish_reason == "tool_calls"
+    assert len(provider.requests) == 1  # 仍是一次调用，没有被整段降级
+
+
+async def test_native_stream_with_zero_chunks_declares_unsupported():
+    from agent.adapters.errors import UnsupportedCapability
+
+    client = _FakeOpenAIClient([])  # 一条分片都没有：就是「忽略 stream」的形状
+    with pytest.raises(UnsupportedCapability):
+        await _deltas(NativeAdapter(client=client, model="m1"))
+
+
+async def test_anthropic_stream_with_non_sse_body_declares_unsupported():
+    from agent.adapters.errors import UnsupportedCapability
+
+    # 整段 JSON 而不是 SSE：一行 data: 都没有，解析结果为空
+    lines = ['{"id":"msg_1","type":"message","content":[{"type":"text","text":"整段"}],"stop_reason":"end_turn"}']
+    with pytest.raises(UnsupportedCapability):
+        await _anthropic_stream(lines)
 
 
 def test_assistant_delta_payload_shape():

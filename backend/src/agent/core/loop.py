@@ -151,12 +151,16 @@ class _AssistantStream:
         self._deferred = False
         self._stage_id: str | None = None
         self._call_ids: list[str] = []
+        # 这条流有没有真的收到过增量。整段返回（供应商忽略 stream）时为 False ——
+        # 上层据此如实提示「该模型路径不支持实时生成」。
+        self.saw_delta = False
 
     # -- 输入 -------------------------------------------------------------
 
     async def note_text(self, text: str) -> None:
         if not text:
             return
+        self.saw_delta = True
         now = self._clock()
         if self._first_text_at is None:
             self._first_text_at = now
@@ -175,6 +179,7 @@ class _AssistantStream:
         只做分类，**不发布**：工具轮的文字要等这批工具的阶段确定之后再交给过程区
         （见 flush_interim），否则它会和随后的 STAGE 说明并排成两个过程气泡。
         """
+        self.saw_delta = True
         if self.role == "answer":
             # 唯一允许的改判：同一 delta_id 的文字从答案区移到过程区。
             self.role = "interim"
@@ -444,6 +449,8 @@ class AgentLoop:
         # 不能再走一次性的整段补发，否则同一段文字会出现两次（见 _run）。
         self._call_delta_id: str | None = None
         self._stream_emitted = False
+        # 「这条路径不支持实时生成」每轮只广播一次，避免降级后每次调用都刷屏。
+        self._stream_degraded_warned = False
         # 当前这条流式响应的发布器：工具轮的文字要等阶段确定后再由它发出。
         self._active_stream: _AssistantStream | None = None
         # 用量归因：每次模型调用把 (进, 出) 报给调用方（由它记到对应凭据上）。
@@ -890,6 +897,7 @@ class AgentLoop:
     async def _run(self, user_message: str) -> TurnResult:
         messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
         self._warnings = []
+        self._stream_degraded_warned = False
         # 每轮一份新台账：上一轮的失败不能算到这一轮头上。
         self.turn_facts = TurnFacts()
 
@@ -1293,10 +1301,30 @@ class AgentLoop:
             if self._stream_emitted:
                 # 已经透出正文就不能整段重来：那会重复展示同一段文字。
                 raise RuntimeError("模型路径不支持实时生成，但已经显示了部分正文") from exc
-            # 声明支持流式、实际用不了（未实现 / 端点不接受 stream）：整段降级，
-            # 由 _run 发一条 {streaming:false}，**不假装流式**。
-            self._warn("这条模型路径不支持实时生成，本次整段返回")
+            # 声明支持流式、实际用不了（未实现 / 端点不接受 stream / 端点忽略
+            # stream=true 回了整段 JSON）：整段降级，由 _run 发一条
+            # {streaming:false}，**不假装流式**。
+            await self._note_stream_unsupported()
             return await self._await_completion(messages, tools)
+
+    async def _note_stream_unsupported(self) -> None:
+        """如实告知：这条模型路径这次没有真流式（整段返回）。一轮只广播一次。
+
+        TurnResult.warnings 不外发，所以按既有 WARNING 事件口径广播 —— 前端据此
+        显示「该模型路径不支持实时生成」，而不是让用户以为字是慢慢打出来的。
+        """
+        if self._stream_degraded_warned:
+            return
+        self._stream_degraded_warned = True
+        self._warn("这条模型路径不支持实时生成，本次整段返回")
+        await self._emit(
+            EventType.WARNING,
+            {
+                "code": "streaming_unsupported",
+                "message": "这条模型路径不支持实时生成，本次整段返回",
+                "recoverable": True,
+            },
+        )
 
     async def _await_stream(
         self, messages: list[ChatMessage], tools: list[ToolSpec]
@@ -1404,6 +1432,11 @@ class AgentLoop:
         # 有工具调用 → 工具轮的文字延后到批次开始时发（与阶段同一个 stage_id）；
         # 没有工具调用 → 这就是正式回答，立刻收尾。
         await stream.finish(completion, defer_interim=bool(completion.tool_calls))
+        if not stream.saw_delta and (completion.message.content or completion.tool_calls):
+            # 一个增量都没收到、却拿到了完整结果：这条服务是整段回的
+            # （忽略 stream=true，application/json）。如实告知，不假装流式；
+            # _run 会因此走一次性 {streaming:false} 交付。
+            await self._note_stream_unsupported()
         return completion
 
     def _tokens_of(self, completion: Completion) -> int:
