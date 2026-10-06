@@ -309,7 +309,94 @@ group_membership_changed | order_changed | ordered_changed | focus_selection | l
 7. 首次提交无历史基准时，`before` 为「空快照 + `firstSubmission: true`」。
 8. 组名进入提交载荷的条件见 §1.4（至少一名可见成员）。
 
-## 7. 第一阶段不做（不得声称已实现）
+## 7. 第一阶段不做（**在本轮前端改版之后**仍不做）
 
 高亮、指向箭头、自由手写绘制、旋转、标签、筛选、前后遮挡顺序、直接对象包含、独立重点标记控件；
 QIO 的真实模型理解、外部工具执行；多板面协同编辑。
+---
+
+## 8. 前端改版约定（2026-10-07 追加，取代 §6 中与布局相关的初始选择）
+
+本轮只改互动板前端；板面数据、保存、提交、审批、影响判断与恢复的契约（§1–§7）保持不变。
+
+### 8.1 页面结构
+
+- **板面为主体**，材料、注释、分组、关系与虚线预览都在板面上；操作界面浮在板面上，**没有常驻右侧栏**。
+- **顶部**只保留板面身份、回到对话、保存/提交状态、任务入口与演示入口；不放整套编辑按钮，不长期显示大段说明。
+- **底部横向悬浮工具栏**：添加菜单（文字/文件/图片/代码/网址统一入口）、整理（成组/移出/解除/有序/合并）、
+  选择、撤销/重做、板内搜索；**右端是提交区**，与编辑操作留出间距并区分样式。
+- **右下角独立聊天入口**：点击展开/收起悬浮对话框；收起不清消息、不删草稿、不打断进行中的对话。
+  面板背景透明，消息气泡与输入区可用轻量底色；不整块不透明、不重度模糊。
+- **右上角批量列表入口**：只在**同一批**等待审批的意图 ≥4 时出现；默认收起，由用户点击展开；
+  不因数量变化抢占用户的开合决定。
+- **中央影响确认框**：改动执行中任务依赖的材料前，在改动生效前说明影响；确认=改动生效+相关任务暂停并保留进度，
+  取消=改动不生效、任务继续。不再用顶部横幅承担这一步。
+- **卡片局部工具栏**：选中后才在卡片附近出现，取消选择即隐藏；注释卡片的「本次允许 QIO 查看」勾选框在这里。
+
+### 8.2 板面操作（必须真实可用）
+
+| 操作 | 规则 |
+| --- | --- |
+| 拖动空白处 | 平移查看位置（不按修饰键） |
+| 空格 + 拖动空白处 | 框选卡片（不要改成 Shift；其他加选方式可保留，但不替代这条） |
+| 输入框 / 聊天 / 菜单 / 确认框内 | 空格正常输入，不触发板面操作 |
+| 滚轮 | 在板面上以指针附近为缩放中心；聊天、列表、代码区优先滚动自身，不穿透成板面缩放 |
+| 连接点拖线 | 选中卡片显示连接点，拖到另一张卡片建链；拖到无效位置或取消时不建链、不保存半条链接 |
+| 卡片重叠 | 拖到另一张未分组卡片上时提示「松开后合并成组」，松手才成组；靠近不成组、边框相碰不擅自合并 |
+| 组名 | 成组后初始名「默认组名」；输入即用，留空/取消保留默认名，组仍成立并可提交 |
+| 坐标 | 平移缩放后，卡片拖动、框选、连线、预览与局部工具栏必须仍然准确 |
+
+平移与缩放只改变查看状态：不形成表达、不调用 QIO、不触发保存。
+
+### 8.3 聊天与提交互相独立
+
+- 文字发送**只发文字**，沿用当前对话上下文；不得附带板面、未提交改动、注释或选择范围，
+  **不得调用板面提交接口**。
+- 板面提交仍走 `POST /api/interactive/boards/{id}/submissions`（既有前后状态与可见范围规则不变）。
+- 收起/展开聊天不丢消息、不丢回复状态、不丢草稿；同一会话不重复建立事件订阅、不重复写消息、不重复建轮次。
+- Enter 发送、Shift+Enter 换行、中文选字中不发送、空白不发送；失败保留输入并给真实原因。
+
+### 8.4 前端接口与所有权（冻结）
+
+| 组件 / 模块 | 所有权 | 约定 |
+| --- | --- | --- |
+| `views/InteractiveView.vue`、`stores/interactive.ts` | 主智能体 | 组合全部浮层；新增 `chatOpen` / `batchOpen` / `tasksOpen` / `batches` / `listBatches` / `nonPendingIntents` |
+| `components/interactive/BoardToolbar.vue`、`AddMenu.vue`、`BoardSearchPanel.vue`、`styles/interactive-shell.css` | A | 底部工具栏与添加菜单；工具栏右端放 `<SubmitCluster />` |
+| `components/interactive/BoardCanvas.vue`、`BoardCard.vue`、`BoardGroupFrame.vue`、`BoardLinkLayer.vue`、`interactive/viewport.ts`、`interactive/board.ts` | B | 平移/缩放/空格框选/连接点/重叠成组；坐标换算统一走 `viewport.ts` |
+| `components/interactive/ChatDock.vue`、`SubmitCluster.vue`、`BoardChangeList.vue`、`interactive/chat.ts` | C | 聊天与提交状态；直接读 `stores/session.ts` 与互动 store |
+| `components/interactive/IntentBatchTray.vue`、`IntentStatusPopover.vue`、`ImpactConfirmDialog.vue`、`IntentPreviewCard.vue`、`interactive/approval.ts` | D | 批量列表、任务状态浮层、中央影响确认、单项审批 |
+
+**冻结函数签名**
+
+```ts
+// interactive/viewport.ts（B 实现）
+export interface Viewport { scale: number; x: number; y: number }
+export const IDENTITY_VIEWPORT: Viewport;
+export function toBoardPoint(viewport, client: {x,y}, rect): {x,y};
+export function toScreenPoint(viewport, point: {x,y}, rect): {x,y};
+export function zoomAt(viewport, factor: number, client: {x,y}, rect): Viewport;
+export function rectFromDrag(viewport, start: {x,y}, end: {x,y}, rect): {x,y,w,h};
+export function rectsIntersect(a, b): boolean;
+
+// interactive/approval.ts（D 追加，既有函数不动）
+export interface IntentBatch { key: string; intentIds: string[]; pendingIds: string[] }
+export function batchKeyOf(intent: Intent): string;
+export function groupIntentsByBatch(intents: Intent[]): IntentBatch[];
+export function batchesWithList(intents: Intent[]): IntentBatch[];   // 同一批等待审批 ≥4
+
+// interactive/chat.ts（C 实现）
+export function canSend(text: string): { ok: boolean; reason?: string };
+export function sendFailureText(message: string | null): string;
+```
+
+**data-im 钩子（实机验收依赖）**：`board-toolbar`、`add-menu`、`add-text|add-file|add-image|add-code|add-url`、`undo`、`redo`、
+`search`、`submit`、`save-status`、`submit-status`、`change-list`、`visible-range`、`chat-toggle`、`chat-panel`、`chat-input`、`chat-send`、
+`card-toolbar`、`check`、`connect-point`、`group-merge-hint`、`batch-entry`、`batch-list`、`batch-item`、`batch-approve`、`batch-reject`、
+`tasks-entry`、`tasks-popover`、`impact-dialog`、`impact-continue`、`impact-cancel`。
+
+### 8.5 批次判定（前端，不改数据库）
+
+优先级：① 本次会话里由同一次创建动作产生的意图（演示入口一次四项、提交后一次生成的多项）记在
+`localStorage["qio.interactive.intentBatches"]`；② 服务端 `submissionId` 相同；③ `createdAt` 截断到秒相同。
+三条都拿不到时，该意图自成一批（**宁可不出批量列表，也不把不同批次相加**）。
+

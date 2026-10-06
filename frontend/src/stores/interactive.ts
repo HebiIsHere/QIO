@@ -11,6 +11,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
+import { batchesWithList, groupIntentsByBatch } from "../interactive/approval";
 import {
   cloneState,
   emptyBoardState,
@@ -56,8 +57,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const batchAvailable = ref(false);
   const recoverNotice = ref<string[]>([]);
 
+  /**
+   * 浮层开合状态（本轮前端改版）。
+   *
+   * `auxOpen` 是上一版常驻右侧栏的开关，改版后不再有右侧栏，保留字段只为兼容旧引用，
+   * 新代码不要再用它。
+   */
   const auxOpen = ref(true);
   const demoMode = ref(false);
+  /** 右下悬浮聊天是否展开（收起不清消息、不删草稿、不打断对话） */
+  const chatOpen = ref(false);
+  /** 右上批量列表是否展开（默认收起，不因数量变化抢占用户的决定） */
+  const batchOpen = ref(false);
+  /** 顶部「任务」浮层是否展开 */
+  const tasksOpen = ref(false);
 
   /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
   const pendingImpact = ref<{
@@ -83,6 +96,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const settledIntents = computed(() =>
     intents.value.filter((item) => ["done", "rejected", "failed", "cancelled"].includes(item.status)),
   );
+  /** 需要处理的任务（执行中 / 已暂停），顶部「任务」入口显示它们的数量 */
+  const runningIntents = computed(() => activeIntents.value);
+  /** 已结束的任务（已完成 / 已拒绝 / 失败 / 已取消） */
+  const finishedIntents = computed(() => settledIntents.value);
+  /** 按批分组后的全部批次（契约 §8.5：不同批次不累加） */
+  const batches = computed(() => groupIntentsByBatch(intents.value));
+  /** 只有「同一批等待审批 ≥4」才需要批量列表 */
+  const listBatches = computed(() => batchesWithList(intents.value));
+  /** 顶部「任务」入口的数量：等待审批之外的、用户还需要关注的任务 */
+  const taskCount = computed(() => activeIntents.value.length + settledIntents.value.length);
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
@@ -406,6 +429,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
     recoverNotice,
     auxOpen,
     demoMode,
+    chatOpen,
+    batchOpen,
+    tasksOpen,
+    batches,
+    listBatches,
+    runningIntents,
+    finishedIntents,
+    taskCount,
     pendingImpact,
     materialPaused,
     undoStack,

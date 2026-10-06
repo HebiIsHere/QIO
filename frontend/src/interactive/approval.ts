@@ -509,3 +509,49 @@ export function batchSummary(intents: Intent[], selectedIds: string[]): string {
   parts.push(waiting > 0 ? "未选中的 " + waiting + " 项继续等待" : "全部已选中");
   return parts.join("；") + "。";
 }
+
+// --- 批次判定（本轮前端改版新增，D 负责实现；契约 §8.5） ---------------------
+
+/** 同一批等待审批的意图达到这个数量，才提供该批的批量列表 */
+export const BATCH_LIST_MIN = BATCH_MIN;
+
+export interface IntentBatch {
+  /** 批次标识：同一批产生的意图共用一个 key */
+  key: string;
+  intentIds: string[];
+  /** 这一批里仍然等待审批的意图（阈值按它算） */
+  pendingIds: string[];
+}
+
+/**
+ * 一个意图属于哪一批。优先级（契约 §8.5）：
+ * 1) 本次会话记录下来的创建批次（localStorage["qio.interactive.intentBatches"]）；
+ * 2) 服务端 submissionId 相同；
+ * 3) createdAt 截断到秒相同；
+ * 三条都拿不到时，该意图自成一批 —— 宁可不出批量列表，也不把不同批次相加。
+ */
+export function batchKeyOf(intent: Intent): string {
+  return "intent:" + intent.id;
+}
+
+/** 按批分组（顺序稳定，便于界面显示）。 */
+export function groupIntentsByBatch(intents: Intent[]): IntentBatch[] {
+  return intents.map((intent) => ({
+    key: batchKeyOf(intent),
+    intentIds: [intent.id],
+    pendingIds: DECIDABLE_STATUSES.includes(intent.status) ? [intent.id] : [],
+  }));
+}
+
+/** 需要提供批量列表的批次：**同一批**等待审批达到 4 项。 */
+export function batchesWithList(intents: Intent[]): IntentBatch[] {
+  return groupIntentsByBatch(intents).filter((batch) => batch.pendingIds.length >= BATCH_LIST_MIN);
+}
+
+/** 把「某一次创建动作产生的意图」记进本批（演示入口一次四项、提交后一次生成的多项）。 */
+export function recordIntentBatch(batchKey: string, intentIds: string[]): void {
+  if (typeof localStorage === "undefined" || !intentIds.length) return;
+  // D 负责实现：读改写 localStorage["qio.interactive.intentBatches"]，
+  // 记录 intentId → batchKey，并处理容量上限与解析失败（失败时静默降级为「不成批」）。
+}
+

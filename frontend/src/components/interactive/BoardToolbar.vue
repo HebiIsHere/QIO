@@ -8,12 +8,26 @@ import { computed, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import type { BoardGroup, CardKind } from "../../interactive/types";
 
-const props = defineProps<{
-  mode: "select" | "rect" | "link";
-  selectedIds: string[];
-  groups: BoardGroup[];
-  selectedGroupIds: string[];
-}>();
+/**
+ * 【改版过渡】这些 props 原本由 BoardCanvas 传入。
+ * 本轮改版后工具栏由页面壳直接渲染（浮在板面上），A 负责把它改成自包含：
+ * 直接读 store 与板面状态、自己算选中与分组，届时这一整段 props 可以删掉。
+ * 在那之前保留可选 props，保证骨架与两边工作区都能编译。
+ */
+const props = withDefaults(
+  defineProps<{
+    mode?: "select" | "rect" | "link";
+    selectedIds?: string[];
+    groups?: BoardGroup[];
+    selectedGroupIds?: string[];
+  }>(),
+  {
+    mode: "select",
+    selectedIds: () => [],
+    groups: () => [],
+    selectedGroupIds: () => [],
+  },
+);
 
 const emit = defineEmits<{
   (e: "add", kind: CardKind): void;
