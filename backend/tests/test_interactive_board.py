@@ -691,7 +691,7 @@ def test_duplicate_card_offsets_copy_and_resets_confirmation():
     assert len(copied["cards"]) == 2
     new_card = [card for card in copied["cards"] if card["id"] != "a"][0]
     assert new_card["content"] == card_of(state, "a")["content"]
-    assert (new_card["x"], new_card["y"]) == (34.0, 44.0)
+    assert (new_card["x"], new_card["y"]) == (42.0, 52.0)
     assert new_card["checked"] is False, "副本是新材料，需要重新勾选"
     assert new_card["deleted"] is False
     assert members_of(copied, "g1") == ["a", new_card["id"]], "副本留在原来的组里"

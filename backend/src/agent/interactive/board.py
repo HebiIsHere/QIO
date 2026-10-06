@@ -29,18 +29,20 @@ from typing import Any, Iterable
 
 from agent.interactive import models
 
-#: 组框相对成员的留白（组名与序号占顶部一行）。位置只影响显示。
+#: 组框相对成员的留白（顶部留两行：组名一行 + 序号 / 成员一行，序号条不压住卡片）。
+#: 位置只影响显示，不是意图依据。
 GROUP_PAD_X = 16.0
-GROUP_PAD_TOP = 30.0
+GROUP_PAD_TOP = 58.0
 GROUP_PAD_BOTTOM = 16.0
 
-DEFAULT_CARD_W = 240.0
-DEFAULT_CARD_H = 120.0
-#: 新卡片默认错开摆放，避免完全重叠（重叠会触发自动成组）
-DEFAULT_CARD_STEP = 28.0
+DEFAULT_CARD_W = 260.0
+DEFAULT_CARD_H = 170.0
+#: 新卡片默认按网格摆放：不互相压住（压住会让「点这张卡片」点到上面那张）
+DEFAULT_CARD_GAP = 24.0
 DEFAULT_CARD_ORIGIN = 60.0
-#: 复制卡片的偏移
-DUPLICATE_OFFSET = 24.0
+DEFAULT_CARD_COLUMNS = 4
+#: 复制卡片的偏移（故意叠一点，表示这是副本）
+DUPLICATE_OFFSET = 32.0
 
 #: update_card 允许改的字段（id / createdAt 不允许被覆盖）
 _CARD_PATCH_KEYS = (
@@ -338,8 +340,10 @@ def add_card(state: dict, kind: str, content: str = "", **fields: Any) -> dict:
         return normalize_state(state)
     work = normalize_state(state)
     live_count = len([card for card in work["cards"] if not card["deleted"]])
-    default_x = DEFAULT_CARD_ORIGIN + DEFAULT_CARD_STEP * (live_count % 8)
-    default_y = DEFAULT_CARD_ORIGIN + DEFAULT_CARD_STEP * (live_count % 8)
+    column = live_count % DEFAULT_CARD_COLUMNS
+    row = (live_count // DEFAULT_CARD_COLUMNS) % 8
+    default_x = DEFAULT_CARD_ORIGIN + column * (DEFAULT_CARD_W + DEFAULT_CARD_GAP)
+    default_y = DEFAULT_CARD_ORIGIN + row * (DEFAULT_CARD_H + DEFAULT_CARD_GAP)
     card = models.new_card(kind, content)
     card["x"] = _as_float(fields.get("x"), default_x)
     card["y"] = _as_float(fields.get("y"), default_y)

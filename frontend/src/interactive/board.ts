@@ -55,16 +55,20 @@ export const MATERIAL_KINDS: CardKind[] = ["file", "image", "code", "url"];
 /** 需要勾选才允许 QIO 查看的卡片：文字注释（材料默认在范围内）。 */
 export const CHECKABLE_KINDS: CardKind[] = ["text"];
 
-//: 组框相对成员的留白（组名与序号占顶部一行）。位置只影响显示。
+//: 组框相对成员的留白（顶部留两行：组名一行 + 序号 / 成员一行，序号条不压住卡片）。
+//: 位置只影响显示，不是意图依据。
 const GROUP_PAD_X = 16;
-const GROUP_PAD_TOP = 30;
+const GROUP_PAD_TOP = 58;
 const GROUP_PAD_BOTTOM = 16;
 
-const DEFAULT_CARD_W = 240;
-const DEFAULT_CARD_H = 120;
-const DEFAULT_CARD_STEP = 28;
+const DEFAULT_CARD_W = 260;
+const DEFAULT_CARD_H = 170;
+//: 新卡片默认按网格摆放：不互相压住（压住会让「点这张卡片」点到上面那张）
+const DEFAULT_CARD_GAP = 24;
 const DEFAULT_CARD_ORIGIN = 60;
-const DUPLICATE_OFFSET = 24;
+const DEFAULT_CARD_COLUMNS = 4;
+//: 复制卡片的偏移（故意叠一点，表示这是副本）
+const DUPLICATE_OFFSET = 32;
 
 const DEFAULT_GROUP_PREFIX = "组";
 const DEFAULT_NAME_RE = /^组\s*(\d+)$/;
@@ -346,15 +350,18 @@ export function emptyState(boardId: string): BoardState {
 export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: CardKind }): BoardState {
   const work = normalizeState(state);
   const liveCount = work.cards.filter((item) => !item.deleted).length;
-  const offset = DEFAULT_CARD_ORIGIN + DEFAULT_CARD_STEP * (liveCount % 8);
+  const column = liveCount % DEFAULT_CARD_COLUMNS;
+  const row = Math.floor(liveCount / DEFAULT_CARD_COLUMNS) % 8;
+  const defaultX = DEFAULT_CARD_ORIGIN + column * (DEFAULT_CARD_W + DEFAULT_CARD_GAP);
+  const defaultY = DEFAULT_CARD_ORIGIN + row * (DEFAULT_CARD_H + DEFAULT_CARD_GAP);
   const stamp = nowIso();
   work.cards.push({
     id: String(card.id ?? "") || newId("c"),
     kind: card.kind,
     content: asText(card.content),
     meta: card.meta && typeof card.meta === "object" ? { ...card.meta } : {},
-    x: asFloat(card.x, offset),
-    y: asFloat(card.y, offset),
+    x: asFloat(card.x, defaultX),
+    y: asFloat(card.y, defaultY),
     w: Math.max(1, asFloat(card.w, DEFAULT_CARD_W)),
     h: Math.max(1, asFloat(card.h, DEFAULT_CARD_H)),
     checked: card.kind === "reply" ? false : Boolean(card.checked),

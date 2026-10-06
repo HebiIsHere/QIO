@@ -523,7 +523,7 @@ describe("卡片：添加 / 编辑 / 删除 / 复制", () => {
     expect(copied.cards).toHaveLength(2);
     const copy = copied.cards.find((card) => card.id !== "a");
     expect(copy?.content).toBe(board.cardById(state, "a")?.content);
-    expect([copy?.x, copy?.y]).toEqual([34, 44]);
+    expect([copy?.x, copy?.y]).toEqual([42, 52]);
     expect(copy?.checked).toBe(false);
     expect(membersOf(copied, "g1")).toEqual(["a", copy?.id]);
   });
