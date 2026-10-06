@@ -246,10 +246,16 @@ def test_reference_clone_rechecks_state_instead_of_inheriting(
     _bind(svc, "turn_c", [att_c.id])
     vanished.unlink()
     outcome_c = _bind(svc, "turn_new_c", [att_c.id], retry_of_turn_id="turn_c")
+    assert outcome_c.rejected == [], "源文件不可用也要建记录并如实报状态，不能既不建又不报错"
     assert len(outcome_c.bound) == 1
     cloned_c = svc.get(outcome_c.bound[0])
+    assert cloned_c.turn_id == "turn_new_c"
     assert cloned_c.state == "missing"
     assert cloned_c.error and "不在原位" in cloned_c.error
+    # 新轮的上下文如实说「当前不可访问」，模型不会凭文件名猜内容
+    ctx_c = svc.turn_note("turn_new_c") or ""
+    assert cloned_c.id in ctx_c
+    assert "当前不可访问" in ctx_c
     # 原行状态由文件世界决定（check=True），归属不变
     assert svc.get(att_c.id).turn_id == "turn_c"
 
@@ -327,6 +333,38 @@ def test_precheck_ignores_missing_field_fallback(svc: AttachmentService, tmp_pat
     """缺字段 = 旧客户端兜底：没有显式清单可预检（兜底永远能绑或跳过）。"""
     _ready_copy(svc, _write(tmp_path / "fallback.txt", b"f"), topic_id="t1")
     assert svc.precheck_for_turn(attachment_ids=None, topic_id="t1") == []
+
+
+def test_receipt_is_always_accurate(svc: AttachmentService, tmp_path: Path):
+    """Lead 复核项：回执必须永远准确 —— bound 的每一行确实绑到了本轮，
+    rejected 的每一行都没有被绑上（不允许「回执说绑上了但行里没有」）。"""
+    fresh = _ready_copy(svc, _write(tmp_path / "fresh.txt", b"f"), topic_id="t1")
+    old = _ready_copy(svc, _write(tmp_path / "old.txt", b"o"), topic_id="t1")
+    _bind(svc, "turn_old", [old.id])
+    stranger = _ready_copy(svc, _write(tmp_path / "stranger.txt", b"s"), topic_id="t1")
+    _bind(svc, "turn_other", [stranger.id])
+
+    outcome = _bind(
+        svc,
+        "turn_new",
+        [fresh.id, old.id, stranger.id, "att_nope_0002"],
+        message_id="msg_new",
+        retry_of_turn_id="turn_old",
+    )
+
+    receipt = outcome.as_receipt()
+    assert receipt["bound_attachment_ids"] == outcome.bound
+    assert [row["id"] for row in receipt["rejected"]] == [i for i, _ in outcome.rejected]
+    assert len(outcome.bound) == 2, "直接绑的 fresh + 克隆的 old 副本"
+    assert {i for i, _ in outcome.rejected} == {stranger.id, "att_nope_0002"}
+    # bound：每一个 id 在库里确实绑到了这一轮
+    for attachment_id in outcome.bound:
+        row = svc.get(attachment_id, check=False)
+        assert row is not None and row.turn_id == "turn_new"
+    # rejected：每一个 id 都没有被绑到这一轮（归属保持原样）
+    assert svc.get(stranger.id, check=False).turn_id == "turn_other"
+    assert svc.get(fresh.id, check=False).turn_id == "turn_new"
+    assert svc.get("att_nope_0002") is None
 
 
 def test_bind_outcome_is_still_list_shaped_for_existing_callers(svc: AttachmentService, tmp_path: Path):
