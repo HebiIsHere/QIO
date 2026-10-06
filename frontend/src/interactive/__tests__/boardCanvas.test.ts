@@ -233,8 +233,8 @@ describe("BoardCanvas 接线", () => {
     // 预览的卡片 / 组 / 链接元素都带 data-im="preview" 与 data-intent-id
     const marked = wrapper.findAll('[data-im="preview"][data-intent-id="intent_1"]');
     expect(marked.length).toBeGreaterThanOrEqual(4);
-    // 叠加层不吃指针事件（不挡正式卡片操作）
-    expect(wrapper.get(".preview-layer").exists()).toBe(true);
+    // 叠加层不吃指针事件（不挡正式卡片操作）：.preview-layer 的样式是 pointer-events: none
+    expect(wrapper.find(".preview-layer").exists()).toBe(true);
     wrapper.unmount();
   });
 
