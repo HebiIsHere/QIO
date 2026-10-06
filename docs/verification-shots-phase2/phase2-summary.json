@@ -7,7 +7,7 @@
       "ok": true,
       "detail": {
         "ok": true,
-        "root": "C:\\Users\\zxy\\AppData\\Local\\Temp\\qio-phase2-d-20261007-010333\\workspace"
+        "root": "C:\\Users\\zxy\\AppData\\Local\\Temp\\qio-phase2-d-20261007-014050\\workspace"
       }
     },
     {
@@ -37,7 +37,7 @@
       "name": "S1 两个阶段都到达（当前阶段名可见）",
       "ok": true,
       "detail": {
-        "region": "运行中\n已完成 2 次调用\n▸\n2 个阶段 · 2 次调用\n核对实现\n\n第二阶段正在慢慢生成一段\n\n▸\n本阶段 1 次调用"
+        "region": "运行中\n已完成 2 次调用\n▸\n2 个阶段\n核对实现\n\n第二阶段正在慢慢生成一段\n\n▸\n本阶段 1 次调用"
       }
     },
     {
@@ -52,7 +52,7 @@
       "name": "S1 默认可见区有：当前阶段名 + 最新说明 + 一行工具摘要",
       "ok": true,
       "detail": {
-        "region": "运行中\n已完成 2 次调用\n▸\n2 个阶段 · 2 次调用\n核对实现\n\n第二阶段正在慢慢生成一段\n\n▸\n本阶段 1 次调用"
+        "region": "运行中\n已完成 2 次调用\n▸\n2 个阶段\n核对实现\n\n第二阶段正在慢慢生成一段\n\n▸\n本阶段 1 次调用"
       }
     },
     {
@@ -69,7 +69,7 @@
       "ok": true,
       "detail": {
         "shot": "D:\\qio-dev\\qio-fix-v\\docs\\verification-shots-phase2\\p2-02-history-expanded.png",
-        "region": "运行中\n已完成 2 次调用\n▾\n2 个阶段 · 2 次调用\n核对实现\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中\n\n▸\n本阶段 1 次调用\n1\n读取仓库结构\n进行中\n\n正在读取仓库结构\n\n✓\n读取文件\n01:03:47\n▸\n输出\n# 阶段二取样文件 A\n\n用来让 fs_read 真的成功。\n\n整轮\n没有阶段归属\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中",
+        "region": "运行中\n已完成 2 次调用\n▾\n2 个阶段\n核对实现\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中\n\n▸\n本阶段 1 次调用\n1\n读取仓库结构\n进行中\n\n正在读取仓库结构\n\n✓\n读取文件\n01:41:04\n▸\n输出\n# 阶段二取样文件 A\n\n用来让 fs_read 真的成功。\n\n整轮\n没有阶段归属\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中",
         "providerRequests": [
           {
             "step": "tool_chunks",
@@ -754,7 +754,7 @@
       "ok": true,
       "detail": {
         "shot": "D:\\qio-dev\\qio-fix-v\\docs\\verification-shots-phase2\\p2-02b-stage-detail.png",
-        "stageText": "✓\n读取文件\n01:03:47\n▸\n输出\n# 阶段二取样文件 B\n\n第二个阶段的读取对象。\n"
+        "stageText": "✓\n读取文件\n01:41:04\n▸\n输出\n# 阶段二取样文件 B\n\n第二个阶段的读取对象。\n"
       }
     },
     {
@@ -859,7 +859,7 @@
         "respondCalls": [
           {
             "method": "POST",
-            "url": "http://127.0.0.1:8734/api/approvals/appr_a6650bc829b6/respond",
+            "url": "http://127.0.0.1:8734/api/approvals/appr_98a80639cc20/respond",
             "status": 200,
             "bytes": 67
           }
@@ -877,7 +877,7 @@
       "ok": true,
       "detail": {
         "state": "ready",
-        "answers": "热完成。\n\n01:03:46\n复制\n默认话题\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中的窗口留出来观察默认可见区。\n\n01:03:47\n复制\n默认话题\n\n第一句。第二句。第三句。第四句。第五句。第六句。\n\n01:03:49\n复制\n我先说明一下。这一步马上要调用工具。\n默认话题\n\n工具跑完了，这是正式回答。\n\n01:03:58\n复制\n默认话题\n\n命令已经执行完了。\n\n01:04:02\n复制"
+        "answers": "热完成。\n\n01:41:04\n复制\n默认话题\n\n第二阶段正在慢慢生成一段较长的说明，用来把运行中的窗口留出来观察默认可见区。\n\n01:41:04\n复制\n默认话题\n\n第一句。第二句。第三句。第四句。第五句。第六句。\n\n01:41:06\n复制\n我先说明一下。这一步马上要调用工具。\n默认话题\n\n工具跑完了，这是正式回答。\n\n01:41:16\n复制\n默认话题\n\n命令已经执行完了。\n\n01:41:20\n复制"
       }
     },
     {
@@ -908,7 +908,7 @@
       "detail": {
         "chip": true,
         "liveItemCount": 1,
-        "attId": "att_0021a1c3458f",
+        "attId": "att_a87fa19ee672",
         "kind": "copy",
         "state": "ready",
         "shot": "D:\\qio-dev\\qio-fix-v\\docs\\verification-shots-phase2\\p2-12-attachment-live.png"
@@ -935,9 +935,10 @@
     },
     {
       "name": "S4 刷新后（真实历史加载）附件行仍在 —— 历史附件才有可用的打开入口",
-      "ok": false,
+      "ok": true,
       "detail": {
-        "histCount": 0,
+        "histCount": 1,
+        "appReadyAfterReload": true,
         "historyMessageKeys": [
           "id",
           "role",
@@ -947,26 +948,111 @@
           "raw",
           "turn_id"
         ],
-        "attachmentIdsInHistory": 0,
+        "attachmentIdsInHistory": 1,
         "apiNote": "GET /api/session/messages 不返回 attachments 字段（只在实时消息里由前端本地带上）"
       }
     },
     {
-      "name": "S4 引用型附件登记（kind=reference）",
+      "name": "S4 历史行锚点带 id/kind/state",
       "ok": true,
       "detail": {
+        "id": "att_a87fa19ee672",
+        "kind": "copy",
+        "state": "ready"
+      }
+    },
+    {
+      "name": "S4 历史行点「打开」→ GET /content 200",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "contentLength": "79"
+      }
+    },
+    {
+      "name": "S4 引用型附件在真实 UI 里登记并发出（kind=reference）",
+      "ok": true,
+      "detail": {
+        "bigId": "att_226a9ba2c339",
         "kind": "reference",
         "state": "ready"
       }
     },
     {
-      "name": "S4 引用失效后历史里出现重新定位入口（真机点击）",
-      "ok": false,
+      "name": "S4 引用源文件被移走后，真实历史如实显示 missing/changed（不是发送时的旧状态）",
+      "ok": true,
       "detail": {
-        "blocked": "刷新后的历史消息没有附件行（同上一条缺陷）→ 重新定位入口在真实历史里渲染不出来",
-        "bigItemCount": 0,
-        "referenceState": "ready",
-        "note": "重新定位的真实链路（选择器 → POST /relocate）在 DOM/后端验收里已被覆盖；浏览器内也没有原生选择器（entry 只存在于 Tauri）"
+        "bigCount": 1,
+        "state": "missing",
+        "diag": {
+          "allAnchors": [
+            [
+              "att_a87fa19ee672",
+              "ready"
+            ],
+            [
+              "att_226a9ba2c339",
+              "missing"
+            ]
+          ],
+          "bigInHistory": 1,
+          "bigAttachments": [
+            [
+              "att_226a9ba2c339",
+              "missing",
+              "reference"
+            ]
+          ],
+          "pageTail": "\n第 07 轮\n01:41:24\n这条消息带着一个附件\n阶段二附件.txt\n79 B\n已保存副本\n打开\n×\n01:41:24\n复制\n默认话题\n\n收到你带来的文件了。\n\n01:41:24\n复制\n第 08 轮\n01:41:35\n这条带一个大文件引用\n被引用的大文件.bin\n100.0 MB\n文件不在原位\n重新定位\n重试\n×\n01:41:35\n复制\n默认话题\n\n大文件也记下了。\n\n01:41:35\n复制"
+        },
+        "note": "UI 必须去问当前可用性，而不是复用发送时的 ready"
+      }
+    },
+    {
+      "name": "S4 失效引用在真实历史里有「重新定位」入口",
+      "ok": true,
+      "detail": {
+        "bigCount": 1,
+        "state": "missing",
+        "diag": {
+          "allAnchors": [
+            [
+              "att_a87fa19ee672",
+              "ready"
+            ],
+            [
+              "att_226a9ba2c339",
+              "missing"
+            ]
+          ],
+          "bigInHistory": 1,
+          "bigAttachments": [
+            [
+              "att_226a9ba2c339",
+              "missing",
+              "reference"
+            ]
+          ],
+          "pageTail": "\n第 07 轮\n01:41:24\n这条消息带着一个附件\n阶段二附件.txt\n79 B\n已保存副本\n打开\n×\n01:41:24\n复制\n默认话题\n\n收到你带来的文件了。\n\n01:41:24\n复制\n第 08 轮\n01:41:35\n这条带一个大文件引用\n被引用的大文件.bin\n100.0 MB\n文件不在原位\n重新定位\n重试\n×\n01:41:35\n复制\n默认话题\n\n大文件也记下了。\n\n01:41:35\n复制"
+        }
+      }
+    },
+    {
+      "name": "S4 普通浏览器里点重新定位：不得假装成功（无原生选择器）",
+      "ok": true,
+      "detail": {
+        "notice": "",
+        "relocateRequests": 0
+      }
+    },
+    {
+      "name": "S4 桌面壳形态（选择器桩）：点重新定位真的发出 POST /relocate 并 200",
+      "ok": true,
+      "detail": {
+        "stubActive": true,
+        "status": 200,
+        "stateAfterRelocate": "prepared",
+        "note": "浏览器本身没有原生选择器；这条用最小 Tauri 桩（启动后注入）驱动同一段前端代码"
       }
     },
     {
@@ -975,21 +1061,21 @@
       "detail": {
         "state": "failed",
         "shot": "D:\\qio-dev\\qio-fix-v\\docs\\verification-shots-phase2\\p2-16-turn-failed.png",
-        "region": "已失败\n耗时 1.6 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
+        "region": "已失败\n耗时 1.3 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
       }
     },
     {
       "name": "S5 失败原因（系统事实）出现在界面上",
       "ok": true,
       "detail": {
-        "region": "已失败\n耗时 1.6 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
+        "region": "已失败\n耗时 1.3 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
       }
     },
     {
       "name": "S5 失败后有可用操作入口（重试/重发）",
       "ok": true,
       "detail": {
-        "region": "已失败\n耗时 1.6 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
+        "region": "已失败\n耗时 1.3 秒\n\nProviderInternalError: InternalServerError: Error code: 500 - {'error': {'message': 'phase2-fake-provider-boom', 'type': 'verify'}}\n\n重试\n详情"
       }
     },
     {
@@ -997,7 +1083,7 @@
       "ok": true,
       "detail": {
         "doneState": "ready",
-        "tail": "\n\n命令已经执行完了。\n\n01:04:02\n复制\n默认话题\n\n好的，那我不执行了。\n\n—— 系统核对（后端事实，不是模型的说法）： · run_shell 执行失败：命令执行未获批准：你点了拒绝 这几项没有通过验证，不能当作「已完成 / 可使用」。\n\n01:04:03\n复制\n默认话题\n\n收到你带来的文件了。\n\n01:04:06\n复制\n默认话题\n\n重试之后这一轮真的跑通了。\n\n01:04:25\n复制"
+        "tail": "题\n\n好的，那我不执行了。\n\n—— 系统核对（后端事实，不是模型的说法）： · run_shell 执行失败：命令执行未获批准：你点了拒绝 这几项没有通过验证，不能当作「已完成 / 可使用」。\n\n01:41:21\n复制\n默认话题\n\n收到你带来的文件了。\n\n01:41:24\n复制\n默认话题\n\n大文件也记下了。\n\n01:41:35\n复制\n默认话题\n\n重试之后这一轮真的跑通了。\n\n01:42:25\n复制"
       }
     }
   ],
@@ -1034,7 +1120,7 @@
     },
     {
       "method": "POST",
-      "url": "http://127.0.0.1:8734/api/approvals/appr_a6650bc829b6/respond",
+      "url": "http://127.0.0.1:8734/api/approvals/appr_98a80639cc20/respond",
       "status": 200,
       "bytes": 67
     },
@@ -1046,13 +1132,13 @@
     },
     {
       "method": "POST",
-      "url": "http://127.0.0.1:8734/api/approvals/appr_b53cfbd6432b/respond",
+      "url": "http://127.0.0.1:8734/api/approvals/appr_cc52fd4cacf7/respond",
       "status": 200,
       "bytes": 67
     },
     {
       "method": "GET",
-      "url": "http://127.0.0.1:8734/api/attachments/att_0021a1c3458f",
+      "url": "http://127.0.0.1:8734/api/attachments/att_a87fa19ee672",
       "status": 200,
       "bytes": 986
     },
@@ -1064,9 +1150,33 @@
     },
     {
       "method": "GET",
-      "url": "http://127.0.0.1:8734/api/attachments/att_0021a1c3458f/content",
+      "url": "http://127.0.0.1:8734/api/attachments/att_a87fa19ee672/content",
       "status": 200,
       "bytes": 79
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/attachments/att_a87fa19ee672/content",
+      "status": 200,
+      "bytes": 79
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/attachments/att_226a9ba2c339",
+      "status": 200,
+      "bytes": 936
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "status": 200,
+      "bytes": 1095
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/attachments/att_226a9ba2c339/relocate",
+      "status": 200,
+      "bytes": 982
     },
     {
       "method": "POST",

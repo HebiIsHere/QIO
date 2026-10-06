@@ -176,6 +176,21 @@ async function expandStageDetail(region = lastRegion()) {
   return (await region.locator('[data-test="turn-process-stage-tools"]').count()) > 0;
 }
 
+/** 刷新/重进之后等应用真的渲染出来（实测会先白屏几秒，过早断言会拿到空页面）。 */
+async function waitAppReady(timeout = 40000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const stream = await page.locator(".stream").count().catch(() => 0);
+    const input = await page.locator(INPUT).count().catch(() => 0);
+    if (stream > 0 && input > 0) {
+      await page.waitForTimeout(800); // 再给历史分页一拍
+      return true;
+    }
+    await page.waitForTimeout(300);
+  }
+  return false;
+}
+
 async function waitFor(fn, { timeout = 20000, step = 200 } = {}) {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -296,6 +311,10 @@ async function s1RunningCollapsed() {
     });
 
   const stageToolsShown = await expandStageDetail();
+  await waitFor(async () => {
+    const text = await lastRegion().locator('[data-test="turn-process-stage-tools"]').innerText().catch(() => "");
+    return text.trim().length > 0 ? true : null;
+  }, { timeout: 8000 });
   const stageText = await lastRegion().locator('[data-test="turn-process-stage-tools"]').innerText().catch(() => "");
   const stageShot = await shot("p2-02b-stage-detail.png");
   record("S1 本阶段明细（逐项工具卡）展开后可见", stageToolsShown && /fs_read|p2-stage-b|已读取|输出/.test(stageText),
@@ -557,14 +576,16 @@ async function s4HistoryAttachment() {
   const messagesBefore = await sessionMessages();
   const withAtt = messagesBefore.filter((m) => JSON.stringify(m).includes(attId));
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(3500);
+  const readyAfterReload = await waitAppReady();
   const histItem = page.locator('[data-test="message-attachment"][data-id="' + attId + '"]').first();
+  await waitFor(async () => ((await histItem.count()) ? true : null), { timeout: 25000 });
   const histCount = await histItem.count();
   await shot("p2-14-history-after-reload.png");
   record("S4 刷新后（真实历史加载）附件行仍在 —— 历史附件才有可用的打开入口",
     histCount > 0,
     {
       histCount,
+      appReadyAfterReload: readyAfterReload,
       historyMessageKeys: messagesBefore.length ? Object.keys(messagesBefore[messagesBefore.length - 1]) : [],
       attachmentIdsInHistory: withAtt.length,
       apiNote: "GET /api/session/messages 不返回 attachments 字段（只在实时消息里由前端本地带上）",
@@ -596,11 +617,9 @@ async function s4HistoryAttachment() {
   const fd = openSync(bigPath, "w");
   ftruncateSync(fd, 100_000_001);
   closeSync(fd);
-  const big = await registerAttachment(bigPath, "被引用的大文件.bin");
-  const bigMeta = await waitAttachmentSettled(big.id);
-  record("S4 引用型附件登记（kind=reference）", bigMeta.kind === "reference", { kind: bigMeta.kind, state: bigMeta.state });
 
-  // 用真实 UI 把它发出去（路径粘贴 → 发送），这样它属于一条真实历史消息
+  // 只走真实 UI（路径粘贴 → 发送）：composer 自己登记附件，id 也从 DOM 里读
+  // （用 API 预登记会拿到**另一个** id，和消息上绑定的不是同一条 —— 实测踩过）
   await scriptProvider([{ chunks: ["大文件也记下了。"], chunk_delay_ms: 20 }], { chunks: ["（默认）"], chunk_delay_ms: 50 });
   await page.locator('button[aria-label="粘贴本地文件路径"]').click();
   const pathInput2 = page.locator('input[aria-label="本地文件路径"]');
@@ -613,14 +632,37 @@ async function s4HistoryAttachment() {
   }, { timeout: 40000 });
   await send("这条带一个大文件引用");
   await waitTurnSettled(90000);
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1200);
+  const bigRowLive = page
+    .locator('[data-test="message-attachment"]')
+    .filter({ hasText: "被引用的大文件" })
+    .first();
+  await waitFor(async () => ((await bigRowLive.count()) ? true : null), { timeout: 25000 });
+  const bigId = await bigRowLive.getAttribute("data-id");
+  record("S4 引用型附件在真实 UI 里登记并发出（kind=reference）",
+    !!bigId && (await bigRowLive.getAttribute("data-kind")) === "reference",
+    { bigId, kind: await bigRowLive.getAttribute("data-kind"), state: await bigRowLive.getAttribute("data-state") });
 
   // 源文件被移走 → 引用失效
   renameSync(bigPath, bigPath + ".moved");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(3500);
-  const bigItem = page.locator('[data-test="message-attachment"][data-id="' + big.id + '"]').first();
+  await waitAppReady();
+  const bigItem = page.locator('[data-test="message-attachment"][data-id="' + bigId + '"]').first();
+  await waitFor(async () => ((await bigItem.count()) ? true : null), { timeout: 25000 });
   const bigCount = await bigItem.count();
+  // 诊断：页面上到底出现了哪些附件锚点 + 后端那份历史里这条消息带没带附件
+  const allAnchors = await page
+    .locator('[data-test="message-attachment"]')
+    .evaluateAll((nodes) => nodes.map((n) => [n.getAttribute("data-id"), n.getAttribute("data-state")]))
+    .catch(() => []);
+  const histRows = await sessionMessages();
+  const bigMsg = histRows.filter((m) => JSON.stringify(m).includes(String(bigId)));
+  const bigDiag = {
+    allAnchors,
+    bigInHistory: bigMsg.length,
+    bigAttachments: bigMsg.length ? (bigMsg[bigMsg.length - 1].attachments || []).map((a) => [a.id, a.state, a.kind]) : null,
+    pageTail: (await page.locator(".stream").innerText().catch(() => "")).slice(-200),
+  };
   await bigItem.scrollIntoViewIfNeeded().catch(() => {});
   const bigState = bigCount ? await bigItem.getAttribute("data-state") : null;
   const relocateBtn = bigItem.locator("button").filter({ hasText: /重新定位|指定位置|重新指定/ }).first();
@@ -628,8 +670,8 @@ async function s4HistoryAttachment() {
   await shot("p2-15-reference-missing.png");
   record("S4 引用源文件被移走后，真实历史如实显示 missing/changed（不是发送时的旧状态）",
     bigCount > 0 && (bigState === "missing" || bigState === "changed"),
-    { bigCount, state: bigState, note: "UI 必须去问当前可用性，而不是复用发送时的 ready" });
-  record("S4 失效引用在真实历史里有「重新定位」入口", hasRelocate, { bigCount, state: bigState });
+    { bigCount, state: bigState, diag: bigDiag, note: "UI 必须去问当前可用性，而不是复用发送时的 ready" });
+  record("S4 失效引用在真实历史里有「重新定位」入口", hasRelocate, { bigCount, state: bigState, diag: bigDiag });
 
   // 浏览器里没有原生选择器：点击不得假装成功（诚实性）
   if (hasRelocate) {
@@ -643,60 +685,44 @@ async function s4HistoryAttachment() {
       { notice: String(notice).slice(0, 160), relocateRequests: relocateResp.length });
   }
 
-  // 桌面壳（Tauri）形态：把原生选择器桩成「选到了新位置」→ 必须真的发出 POST /relocate
-  const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await desktop.addInitScript(() => {
-    // 最小可用的 Tauri 内部对象：只让 isDesktopShell() 为真、pick_attachment_file 返回新路径。
-    // 注意：这段跑在浏览器里，必须是纯 JS（不能有 TS 类型标注）。
-    window.__TAURI_INTERNALS__ = {
-      invoke: async (cmd) => (cmd === "pick_attachment_file" ? String(window.__QIO_STUB_PATH || "") : undefined),
-      transformCallback: (cb) => cb,
-      unregisterCallback: () => {},
-      convertFileSrc: (p) => p,
-      metadata: {},
-    };
-  });
-  const desktopPage = await desktop.newPage();
-  const priorPage = page;
-  page = desktopPage;
-  try {
-    await desktopPage.goto(BASE, { waitUntil: "domcontentloaded", timeout: 40000 });
-    await desktopPage.waitForTimeout(3000);
-    const stub = await desktopPage.evaluate(() => Boolean(window.__TAURI_INTERNALS__));
-    const dItem = desktopPage.locator('[data-test="message-attachment"][data-id="' + big.id + '"]').first();
-    const dCount = await dItem.count();
-    const dRelocate = dItem.locator("button").filter({ hasText: /重新定位|指定位置|重新指定/ }).first();
-    const dHasRelocate = (await dRelocate.count()) > 0;
-    let relocateResp2 = null;
-    if (dHasRelocate) {
-      const newPath = join(ATTACH_DIR, "被引用的大文件-新位置.bin");
-      writeFileSync(newPath, "");
-      const fd2 = openSync(newPath, "w");
-      ftruncateSync(fd2, 100_000_001);
-      closeSync(fd2);
-      await desktopPage.evaluate((value) => {
-        window.__QIO_STUB_PATH = value;
-      }, newPath);
-      const wait = desktopPage.waitForResponse((r) => r.url().includes("/api/attachments/" + big.id + "/relocate"), { timeout: 25000 });
-      await dRelocate.click();
-      relocateResp2 = await wait.catch(() => null);
-      await desktopPage.waitForTimeout(1500);
-      await desktopPage.screenshot({ path: join(OUT, "p2-15c-relocate-tauri-stub.png") });
-    }
+  // 桌面壳（Tauri）形态：把原生选择器桩成「选到了新位置」→ 必须真的发出 POST /relocate。
+  // 桩**在应用启动之后**注入：pickLocalPath() 是点击时才判断 isDesktopShell()，
+  // 启动时就定义 __TAURI_INTERNALS__ 会让壳里的其它启动路径也走 Tauri 分支（实测页面渲染不出来）。
+  if (hasRelocate) {
+    const newPath = join(ATTACH_DIR, "被引用的大文件-新位置.bin");
+    const fd2 = openSync(newPath, "w");
+    ftruncateSync(fd2, 100_000_001);
+    closeSync(fd2);
+    await page.evaluate((value) => {
+      window.__QIO_STUB_PATH = value;
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (cmd) => (cmd === "pick_attachment_file" ? String(window.__QIO_STUB_PATH || "") : undefined),
+        transformCallback: (cb) => cb,
+        unregisterCallback: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {},
+      };
+    }, newPath);
+    const stubActive = await page.evaluate(() => Boolean(window.__TAURI_INTERNALS__));
+    const relocateBtn2 = bigItem.locator("button").filter({ hasText: /重新定位|指定位置|重新指定/ }).first();
+    const wait = page.waitForResponse((r) => r.url().includes("/api/attachments/" + bigId + "/relocate"), { timeout: 25000 });
+    await relocateBtn2.click();
+    const relocateResp2 = await wait.catch(() => null);
+    await page.waitForTimeout(1500);
+    await shot("p2-15c-relocate-tauri-stub.png");
+    const after = await bigItem.getAttribute("data-state").catch(() => null);
     record("S4 桌面壳形态（选择器桩）：点重新定位真的发出 POST /relocate 并 200",
-      !!relocateResp2 && relocateResp2.status() === 200,
+      stubActive && !!relocateResp2 && relocateResp2.status() === 200,
       {
-        stubActive: stub,
-        desktopItemCount: dCount,
-        hasRelocate: dHasRelocate,
+        stubActive,
         status: relocateResp2 ? relocateResp2.status() : null,
-        note: "浏览器本身没有原生选择器；这条用最小 Tauri 桩驱动同一段前端代码",
+        stateAfterRelocate: after,
+        note: "浏览器本身没有原生选择器；这条用最小 Tauri 桩（启动后注入）驱动同一段前端代码",
       });
-  } catch (error) {
-    record("S4 桌面壳形态（选择器桩）", false, String(error).slice(0, 300));
-  } finally {
-    page = priorPage;
-    await desktop.close().catch(() => {});
+    await page.evaluate(() => {
+      delete window.__TAURI_INTERNALS__;
+      delete window.__QIO_STUB_PATH;
+    });
   }
 }
 
