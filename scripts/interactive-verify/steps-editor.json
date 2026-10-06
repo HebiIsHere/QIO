@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 4500
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "const card=document.querySelector('[data-im=\"card\"]'); const btn=[...card.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑'); btn.click(); \"clicked-edit\""
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "screenshot",
+    "name": "im-03-editor"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({editor: (document.querySelector('[data-im=\"card-editor\"]')||{}).outerHTML?.slice(0,500) || null, inputs: [...document.querySelectorAll('[data-im=\"card-editor\"] *')].slice(0,6).map(e=>e.tagName+':'+(e.getAttribute('data-im')||''))})"
+  }
+]

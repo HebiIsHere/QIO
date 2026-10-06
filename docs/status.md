@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-06（`main` 分支）。核对方法见文末。
+最后核对：2026-10-06（`main` 分支 + `feat/interactive-foundation` 开发分支）。核对方法见文末。
 
 ---
 
@@ -663,12 +663,66 @@
   设计与实现计划见 `docs/superpowers/specs/2026-09-22-updater-design.md`、
   `docs/superpowers/plans/2026-09-22-updater.md`。
 
+### P16 — 互动模式第一阶段（2026-10-06）
+
+- **Status：** partial
+- **起点与分支：** 起点提交 `ee6bbff`（= `origin/main`，已用 `git ls-remote` 核对）；开发分支
+  `feat/interactive-foundation`。**没有合并 main、没有发安装包**。子智能体各自在
+  `wt/int-a-board` / `wt/int-b-persist` / `wt/int-c-approval` 上开发，由主智能体按依赖顺序集成。
+- **约定先冻结：** `docs/interactive-mode-contract.md`（数据含义、可见性边界、提交语义、审批状态机、
+  HTTP 接口与跨模块函数签名、写作用域分工）。实现按冻结签名分头完成，公共文件只有主智能体写。
+- **Implementation（数据）：** 迁移 26 追加互动模式相关的七张表（板面最新状态、状态快照、草稿、
+  提交记录、未提交改动、意图、板面元信息）；只追加、未改历史迁移。
+- **Implementation（可见范围，权限边界）：** `backend/src/agent/interactive/models.py` 的
+  `selectable_cards` 是唯一实现：文字注释默认未勾选、勾选后才允许查看；材料默认在范围内；
+  明确隐藏与已删除一律不在范围内；QIO 自己的结果卡片不进提交载荷。
+  `backend/src/agent/interactive/submission.py` 用它投影 before / after：链接要求两端都可见、
+  组只列可见成员且无可见成员的组整体不出现、服务端从**已保存状态**推导范围（客户端塞未勾选卡片 id 无效）。
+- **Implementation（后端）：** `backend/src/agent/interactive/` 下 `board.py`（分组 / 顺序 / 拖动预演 /
+  关系）、`board_store.py`（保存即落盘 + 快照 + 草稿，保存路径无模型调用）、`submission.py`（可见范围 /
+  有效改动 / 基准 / 空与重复提交幂等）、`intents.py`（意图状态机、冲突、依赖等待与再次确认、
+  材料变化标记需要更新、失败撤回与保留用户修改、重启恢复）；
+  路由聚合在 `backend/src/agent/api/interactive.py`，`server.py` 只加一处注册。
+- **Implementation（前端）：** 与对话模式并列的入口 `#/interactive`（对话页底部一行
+  「互动模式：一起整理材料与关系」）、`frontend/src/views/InteractiveView.vue`（板面为主 + 可收起辅助区 +
+  提交区常驻 + 保存前影响确认）、`frontend/src/stores/interactive.ts`（自动保存、撤销重做、
+  **只有提交才调用 QIO**）、`frontend/src/services/interactive.ts`、
+  `frontend/src/interactive/{types,board,submission,approval}.ts`、
+  `frontend/src/components/interactive/`（板面、卡片、组框、连线、搜索、预览叠加层、提交面板、
+  回复与审批面板）。
+- **Tests（后端）：** `backend/tests/test_interactive_board.py`、`test_interactive_submission.py`、
+  `test_interactive_intents.py`、`test_interactive_integration.py`（后一个是端到端验收：前后状态可见性、
+  勾选自动取消、保存不调用 QIO、只改位置不产生意图、迁移预览、冲突与依赖、材料变化暂停、失败撤回、
+  重启恢复）。
+- **验证（真实界面）：** `scripts/interactive-verify/ui-scenarios.mjs` 驱动真实 Chrome 走
+  加材料 → 写注释 → 只勾选一条 → 多选成组 → 真实鼠标拖动 → 提交 → 演示意图 → 板面虚线预览 → 批量条件，
+  18 项断言全过，截图见该目录说明；字体路径只通过验收专用配置放宽（`scripts/interactive-verify/vite.e2e.config.ts`）。
+- **Known limitations：**
+  - QIO 的真实理解、模型调用与外部执行**没有接入**：提交会落库并标记「第一阶段没有接入 QIO 模型调用，
+    QIO 还没有真正读取或理解这些内容」，`delivery.delivered` 恒为 false；演示意图只走可控状态机，不代表 QIO 判断。
+  - 未做：高亮、指向箭头、自由手写绘制、旋转、标签、筛选、前后遮挡顺序、直接对象包含、独立重点标记控件。
+  - 待审批预览会**同时**画在板面上，多个意图的预览互相叠压，没有逐个显示 / 隐藏开关。
+  - 有序组的成员不会自动重排成一行：序号由成员顺序表达，插入位置按落点计算。
+  - 组框不能单独拖动或缩放（位置由成员推导）。
+  - 撤回只覆盖「任务自己新增的内容」：用户改过的会被保留并列入未撤回部分，会影响其他工作的部分
+    需要用户再决定（`revert.pendingDecision`）。
+  - 「保存前的影响确认」只对**执行中**的任务弹：已暂停任务的材料依据即使已经失效也不再拦住保存
+    （复核实测过：若拦住，板面会长期存不下去），它的影响只作为文字提示。
+  - 暂停的任务有「继续（按当前材料）」入口，没有「放弃 / 拒绝」入口：暂停后只能在原地等待用户决定。
+  - 反复点演示入口、且上一批还有未结束项时可能再生成一组演示意图（实测出现过冲突组里三项并存）。
+  - 板面预览与正式卡片的坐标一致，但没有做缩放 / 平移。
+- **后续：** 真实 QIO 理解与执行接入 `submission.submit_board` 的投递点（当前只落库并把未提交表达交给
+  后续处理入口）。
+
 ---
 
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
 
+- **互动模式只有骨架流程，没有 QIO 的真实理解与执行**（见 P16）：板面、分组与顺序、可见范围、
+  保存与提交、虚线预览与审批边界都是真的；但提交只是把允许查看的表达落库并标出「没有接入模型调用」，
+  演示意图走的是可控演示状态机。**不要把演示结果说成 QIO 的判断。**
 - **斜杠命令体系**：未实现。工具创建没有独立的「入口页面」——按第三阶段的入口原则，
   它在对话里发生（说明需求 → Agent 调 `create_tool` → 同一张工具创建卡推进到「已创建」），
   设置页只放长期配置（电脑操控权限、联网通道），不承担这个动作。

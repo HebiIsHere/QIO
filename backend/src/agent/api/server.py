@@ -2011,6 +2011,12 @@ def create_app(
             await bus.publish(event)
             return {"id": event.id, "type": event.type.value}
 
+    # -- 互动模式（与对话模式并列）-----------------------------------------
+    # 全部路由集中在 agent/api/interactive.py 聚合，server.py 只认这一个入口。
+    from agent.api.interactive import router as interactive_router
+
+    app.include_router(interactive_router)
+
     app.state.bus = bus
     app.state.auth = auth
     app.state.instance_id = instance_id

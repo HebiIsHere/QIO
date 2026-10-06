@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "screenshot",
+    "name": "im-01-entry"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({board: !!document.querySelector('[data-im=\"board\"]'), cards: document.querySelectorAll('[data-im=\"card\"]').length, addButtons: [...document.querySelectorAll('[data-im^=\"add-\"]')].map(e=>e.getAttribute('data-im')), submit: !!document.querySelector('[data-im=\"submit\"]'), reply: !!document.querySelector('[data-im=\"reply-panel\"]'), bodyText: document.body.innerText.slice(0, 700)})"
+  },
+  {
+    "op": "console",
+    "tail": 20
+  }
+]

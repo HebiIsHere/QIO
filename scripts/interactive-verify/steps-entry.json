@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "screenshot",
+    "name": "im-40-conversation-entry"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({entry: !!document.querySelector('.mode-entry'), entryText: (document.querySelector('.mode-entry')||{}).textContent, composer: !!document.querySelector('textarea, .composer'), errors: document.body.innerText.slice(0,200)})"
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('.mode-entry').click(); 'clicked'"
+  },
+  {
+    "op": "wait",
+    "ms": 3000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({hash: location.hash, board: !!document.querySelector('[data-im=\"board\"]')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "im-41-entered-by-link"
+  }
+]
