@@ -407,10 +407,17 @@ def test_bind_for_turn_explicit_and_fallback(svc: AttachmentService, tmp_path: P
     assert {item.id for item in bound} == {att_a.id, att_c.id}
     assert svc.get(att_b.id).turn_id is None
 
-    # 显式：以显式为准，不再自动并入其他附件
-    bound_explicit = svc.bind_for_turn("turn_2", [att_b.id], topic_id="topic_a")
+    # 显式：以显式为准，不再自动并入其他附件（att_b 属于 topic_b，就在 topic_b 的轮次里绑）
+    bound_explicit = svc.bind_for_turn("turn_2", [att_b.id], topic_id="topic_b")
     assert [item.id for item in bound_explicit] == [att_b.id]
     assert svc.get(att_a.id).turn_id == "turn_1"
+    assert svc.get(att_b.id).turn_id == "turn_2"
+
+    # 显式**空列表** = 这一轮没有附件：不得落进兜底分支（审计问题 3）
+    assert svc.bind_for_turn("turn_4", [], topic_id="topic_a") == []
+
+    # 话题归属校验：别的话题的附件不能借显式 id 串到本话题的轮次里
+    assert svc.bind_for_turn("turn_5", [att_b.id], topic_id="topic_a") == []
     assert svc.get(att_b.id).turn_id == "turn_2"
 
     # 兜底不吞别的附件（都已经绑过了）

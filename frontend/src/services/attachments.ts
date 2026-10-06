@@ -58,6 +58,12 @@ export interface AttachmentRef {
   display: string;
   state: AttachmentState;
   error?: string | null;
+  /** 可选事实（后端 payload 有就带上）：打开历史附件、恢复待发列表都要用 */
+  storedPath?: string | null;
+  sourcePath?: string | null;
+  topicId?: string | null;
+  turnId?: string | null;
+  retryable?: boolean;
 }
 
 export const COPY_LABEL = "已保存副本";
@@ -87,7 +93,7 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
   const state = normalizeState(payload.state);
   const rawError = typeof payload.error === "string" && payload.error ? payload.error : null;
   const normalized = state === "failed" && payload.state === "cancelled" ? (rawError ?? "已取消（可以重试）") : rawError;
-  return {
+  const ref: AttachmentRef = {
     id: String(payload.id ?? ""),
     name: String(payload.name ?? "未命名文件"),
     sizeBytes: Number(payload.size_bytes ?? 0),
@@ -96,6 +102,13 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
     state,
     error: normalized,
   };
+  // 可选事实：payload 没给就不写进对象（冻结的 7 字段形状对老调用方逐字不变）
+  if (typeof payload.stored_path === "string") ref.storedPath = payload.stored_path;
+  if (typeof payload.source_path === "string") ref.sourcePath = payload.source_path;
+  if (typeof payload.topic_id === "string") ref.topicId = payload.topic_id;
+  if (typeof payload.turn_id === "string") ref.turnId = payload.turn_id;
+  if (typeof payload.retryable === "boolean") ref.retryable = payload.retryable;
+  return ref;
 }
 
 export function humanSize(bytes: number): string {
@@ -342,3 +355,283 @@ export async function onPathDrop(
     void unlisten();
   };
 }
+// ---------------------------------------------------------------------------
+// 打开 / 下载 / 在文件夹中显示（问题 5）
+// ---------------------------------------------------------------------------
+
+/**
+ * 可执行 / 脚本类扩展名：**绝不自动执行**。
+ *
+ * 桌面壳里这类文件不交给系统默认程序，改为「在文件夹中显示」并说明原因 ——
+ * 附件是数据，不该因为一个点击就变成进程。Rust 侧还有一道同样的拒绝（fail-closed）。
+ */
+export const EXECUTABLE_EXTS = new Set([
+  ".exe", ".com", ".scr", ".msi", ".msix", ".appx", ".bat", ".cmd", ".ps1", ".psm1",
+  ".vbs", ".vbe", ".js", ".jse", ".ws", ".wsf", ".wsh", ".jar", ".lnk", ".reg",
+  ".sh", ".bash", ".zsh", ".py", ".pyw", ".pl", ".rb", ".dll", ".so", ".dylib",
+  ".apk", ".deb", ".rpm", ".run", ".cpl", ".hta", ".inf",
+]);
+
+/** 浏览器里可以安全内联查看的类型（html / svg / xml 会执行脚本或带外链，绝不内联）。 */
+const VIEWABLE_EXTS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".txt", ".md", ".log", ".csv",
+  ".json", ".pdf", ".mp3", ".wav", ".mp4", ".webm", ".ogg",
+]);
+
+function extensionOf(name: string): string {
+  const dot = String(name || "").lastIndexOf(".");
+  return dot < 0 ? "" : String(name).slice(dot).toLowerCase();
+}
+
+export function isExecutableName(name: string): boolean {
+  return EXECUTABLE_EXTS.has(extensionOf(name));
+}
+
+export function isViewableName(name: string): boolean {
+  return VIEWABLE_EXTS.has(extensionOf(name));
+}
+
+export type AttachmentOpenAction = "open" | "reveal" | "view" | "download" | "blocked";
+
+/** 打开方式 = 计划；reason 是给用户看的原因（绝不假装「已打开」）。 */
+export interface AttachmentOpenPlan {
+  action: AttachmentOpenAction;
+  reason: string;
+  path?: string;
+}
+
+export interface AttachmentOpenResult {
+  action: Exclude<AttachmentOpenAction, "blocked">;
+  note: string;
+}
+
+/**
+ * 这个附件点「打开」会发生什么（纯函数，可测）：
+ *
+ * * 桌面 + 有真实路径 + 普通文件 → open（系统默认程序）；
+ * * 桌面 + 可执行/脚本类 → reveal（在文件夹中显示，绝不自动执行）；
+ * * 浏览器 + QIO 副本 → view（安全类型：认证 fetch 出的 Blob 新标签页）或 download；
+ * * 浏览器 + 引用型（没有副本）→ blocked，如实说明拿不到本地路径。
+ */
+export function openPlanFor(ref: AttachmentRef, options: { desktop?: boolean } = {}): AttachmentOpenPlan {
+  const desktop = options.desktop ?? isDesktopShell();
+  if (ref.state !== "ready" && ref.state !== "changed") {
+    return {
+      action: "blocked",
+      reason: "这个附件现在不能打开（" + stateText(ref) + "）：先重试或重新指定位置",
+    };
+  }
+  const path = ref.storedPath || ref.sourcePath || "";
+  if (desktop && path) {
+    if (isExecutableName(ref.name)) {
+      return {
+        action: "reveal",
+        path,
+        reason: "可执行 / 脚本类文件不自动运行：已在文件夹中显示，确认来源后再自行打开",
+      };
+    }
+    return { action: "open", path, reason: "" };
+  }
+  if (ref.kind === "copy") {
+    return isViewableName(ref.name)
+      ? { action: "view", reason: "" }
+      : { action: "download", reason: "这种类型不内联查看（可能带脚本）：改为下载副本" };
+  }
+  return {
+    action: "blocked",
+    reason: "引用型附件没有 QIO 副本，浏览器里打不开本地路径；请在桌面端打开，或用「重新定位」重新指定位置",
+  };
+}
+
+/** 带认证 fetch 副本字节（不新增无认证的裸链接）。 */
+export async function fetchAttachmentContent(
+  id: string,
+  timeoutMs: number = TIMEOUT_MS.long,
+): Promise<Blob> {
+  const { base, token } = await resolveBackend();
+  const path = "/api/attachments/" + encodeURIComponent(id) + "/content";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(base + path, { signal: controller.signal, headers: authHeaders(token) });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      if (resp.status === 401 || resp.status === 403) resetBackend();
+      throw new AttachmentRequestError(resp.status, path, detailOf(text, resp.statusText));
+    }
+    return await resp.blob();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new AttachmentTimeoutError(path, timeoutMs);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function blobUrlOf(blob: Blob): string | null {
+  const create = (URL as unknown as { createObjectURL?: (value: Blob) => string }).createObjectURL;
+  return typeof create === "function" ? create(blob) : null;
+}
+
+/** 把 Blob 存成文件（下载）。环境不支持 Blob 下载时如实报错，不假装成功。 */
+export function downloadBlob(blob: Blob, name: string): void {
+  if (typeof document === "undefined") throw new Error("这个环境不支持下载；请在桌面端使用「打开」");
+  const url = blobUrlOf(blob);
+  if (!url) throw new Error("这个环境不支持 Blob 下载；请在桌面端使用「打开」");
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name || "attachment";
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* 已经释放过就算了 */
+      }
+    }, 1000);
+  }
+}
+
+export async function downloadAttachment(ref: AttachmentRef): Promise<AttachmentOpenResult> {
+  const blob = await fetchAttachmentContent(ref.id);
+  downloadBlob(blob, ref.name);
+  return { action: "download", note: "已开始下载 QIO 保存的副本：" + ref.name };
+}
+
+function openBlobInNewTab(blob: Blob): boolean {
+  if (typeof window === "undefined") return false;
+  const url = blobUrlOf(blob);
+  if (!url) return false;
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    URL.revokeObjectURL(url);
+    return false;
+  }
+  setTimeout(() => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 已经释放过就算了 */
+    }
+  }, 60_000);
+  return true;
+}
+
+async function invokeNativePath(command: string, path: string): Promise<void> {
+  if (!path) throw new Error("这个附件没有可打开的本地路径");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke(command, { path });
+}
+
+/**
+ * 打开一个附件：桌面走原生（可执行类降级为「在文件夹中显示」），浏览器走认证 fetch + Blob。
+ *
+ * 失败一律抛错（调用方如实显示），绝不返回「已打开」的假结果。
+ */
+export async function openAttachment(
+  ref: AttachmentRef,
+  options: { desktop?: boolean } = {},
+): Promise<AttachmentOpenResult> {
+  const plan = openPlanFor(ref, options);
+  if (plan.action === "blocked") throw new Error(plan.reason);
+  if (plan.action === "reveal") {
+    await invokeNativePath("reveal_attachment_path", plan.path ?? "");
+    return { action: "reveal", note: plan.reason };
+  }
+  if (plan.action === "open") {
+    await invokeNativePath("open_attachment_path", plan.path ?? "");
+    return { action: "open", note: "已交给系统默认程序打开：" + ref.name };
+  }
+  const blob = await fetchAttachmentContent(ref.id);
+  if (plan.action === "view" && openBlobInNewTab(blob)) {
+    return { action: "view", note: "" };
+  }
+  downloadBlob(blob, ref.name);
+  return { action: "download", note: plan.reason || "已开始下载 QIO 保存的副本：" + ref.name };
+}
+
+// ---------------------------------------------------------------------------
+// 待发附件：与「话题 + 草稿」绑定并在组件重建 / 刷新后可见恢复（问题 3）
+// ---------------------------------------------------------------------------
+
+const PENDING_KEY = "qio.pending-attachments.v1";
+
+function pendingKey(topicId: string | null | undefined): string {
+  return String(topicId ?? "");
+}
+
+function readPendingBox(): Record<string, AttachmentRef[]> {
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const box: Record<string, AttachmentRef[]> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (Array.isArray(value)) box[key] = value.map((item) => toAttachmentRef(item as Record<string, unknown>));
+    }
+    return box;
+  } catch {
+    return {};
+  }
+}
+
+/** 持久化待发列表（按话题分键：切话题不串）。存不了不打断使用，界面仍如实显示当前列表。 */
+export function savePendingAttachments(topicId: string | null | undefined, items: AttachmentRef[]): void {
+  try {
+    const box = readPendingBox();
+    const key = pendingKey(topicId);
+    if (items.length) box[key] = items;
+    else delete box[key];
+    globalThis.localStorage?.setItem(PENDING_KEY, JSON.stringify(box));
+  } catch {
+    /* 存储不可用时静默降级：列表仍在内存里，发送路径不受影响 */
+  }
+}
+
+export function loadPendingAttachments(topicId: string | null | undefined): AttachmentRef[] {
+  return readPendingBox()[pendingKey(topicId)] ?? [];
+}
+
+/** 能从待发列表发送的状态（与后端绑定校验一致：prepared / ready / changed）。 */
+export function isBindable(ref: AttachmentRef): boolean {
+  return ref.state === "prepared" || ref.state === "ready" || ref.state === "changed";
+}
+
+/**
+ * 恢复待发附件：**用户看到的必须等于将发送的**，所以逐条向后端核对现在的事实：
+ * 还在不在、属不属于本话题、有没有被别的轮次绑走（已被绑走的不能再发）。
+ * 对不上的丢掉并报出名字（调用方显示原因），绝不「显示着但其实发不出去」。
+ */
+export async function restorePendingAttachments(
+  topicId: string | null | undefined,
+): Promise<{ items: AttachmentRef[]; dropped: string[] }> {
+  const stored = loadPendingAttachments(topicId);
+  const items: AttachmentRef[] = [];
+  const dropped: string[] = [];
+  for (const item of stored) {
+    try {
+      const fresh = await getAttachment(item.id);
+      if (fresh.turnId) {
+        dropped.push(item.name);
+        continue;
+      }
+      if (topicId && fresh.topicId && fresh.topicId !== String(topicId)) {
+        dropped.push(item.name);
+        continue;
+      }
+      items.push({ ...fresh, name: fresh.name || item.name, error: fresh.error ?? item.error ?? null });
+    } catch {
+      dropped.push(item.name);
+    }
+  }
+  savePendingAttachments(topicId, items);
+  return { items, dropped };
+}
+

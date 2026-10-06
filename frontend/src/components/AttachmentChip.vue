@@ -18,9 +18,17 @@ const props = defineProps<{ attachment: AttachmentRef; busy?: boolean }>();
 const emit = defineEmits<{
   (e: "remove", id: string): void;
   (e: "retry", id: string): void;
+  (e: "open", id: string): void;
+  (e: "relocate", id: string): void;
 }>();
 
 const retryable = computed(() => props.attachment.state !== "ready" && props.attachment.state !== "prepared");
+/** 能打开：就绪或内容有变化（都读得到）。准备中/失败/丢失不给「打开」这个假入口。 */
+const openable = computed(() => props.attachment.state === "ready" || props.attachment.state === "changed");
+/** 需要重新指定位置：丢失 / 失败 / 内容变了（引用型被移动之后只有这条路）。 */
+const relocatable = computed(
+  () => props.attachment.state === "missing" || props.attachment.state === "failed" || props.attachment.state === "changed",
+);
 
 const title = computed(() => {
   const parts = [props.attachment.name, humanSize(props.attachment.sizeBytes)];
@@ -36,8 +44,30 @@ const title = computed(() => {
     <span class="size mono">{{ humanSize(attachment.sizeBytes) }}</span>
     <span class="state">{{ stateText(attachment) }}</span>
     <button
-      v-if="retryable"
+      v-if="openable"
       class="act"
+      type="button"
+      :disabled="busy"
+      :aria-label="'打开附件 ' + attachment.name"
+      :title="'打开 ' + attachment.name"
+      @click="emit('open', attachment.id)"
+    >
+      打开
+    </button>
+    <button
+      v-if="relocatable"
+      class="act locate"
+      type="button"
+      :disabled="busy"
+      :aria-label="'重新定位附件 ' + attachment.name"
+      title="文件被移动或改名了？重新指定它的位置"
+      @click="emit('relocate', attachment.id)"
+    >
+      重新定位
+    </button>
+    <button
+      v-if="retryable"
+      class="act retry"
       type="button"
       :disabled="busy"
       :aria-label="'重试附件 ' + attachment.name"

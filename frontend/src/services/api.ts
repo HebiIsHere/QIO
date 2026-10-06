@@ -430,8 +430,12 @@ export const api = {
       body: JSON.stringify({
         message,
         topic_id: topicId ?? null,
-        // 附件随这一轮绑定（契约 §4.2）；没有附件时不带这个字段
-        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        // 附件随这一轮绑定（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
+        // 只要调用方给了这个参数就一律带上，**包括空数组**（= 这一轮没有附件）。
+        // 以前写成 attachmentIds?.length ? {...} : {}：空数组被省略成「缺字段」，
+        // 后端于是走旧客户端兜底，把话题下的遗留附件绑到这条纯文字消息上（审计问题 3）。
+        // 只有完全没传这个参数（undefined）才省略字段：那是真正的旧客户端路径。
+        ...(attachmentIds === undefined ? {} : { attachment_ids: attachmentIds }),
       }),
     }),
   getInstance: () =>
