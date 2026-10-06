@@ -557,8 +557,20 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 * **持久化**：阶段与说明随叙事行落库（`messages`，`content_type='narrative'`，`raw.stage`），
   重启与历史分页后按同一 `stage_id` 重放；旧数据没有 `raw.stage` 时按旧版平铺渲染，
   **不伪造阶段历史**。展开状态在会话内保留（`stores/turnProcess.ts`，含 localStorage 上限）。
+* **默认折叠（2026-10-06 审计修正）**：运行中**不自动展开**任何东西。默认可见区只有
+  状态行 + **当前阶段名 + 最新一条说明** + **一行工具摘要**（如「正在读取文件 · 2 项工具运行中」，
+  数量与状态全部来自真实执行数据）。旧阶段、旧说明、**逐项工具记录**默认收起；
+  「整轮历史抽屉」与「本阶段明细」是**两个独立**的展开状态（键分别带 turn / stage），
+  互不牵连；参数、结果、耗时、失败详情只在展开后查看。
 * **收起规则**：整轮成功结束自动收起并显示「已完成 · 耗时」；失败或中断保留简短原因与可用操作。
-  用户正在阅读历史（手动展开过或已上翻）时，普通状态更新不抢占滚动位置。
+  用户手动开合过、或正在上翻阅读时，普通状态更新**不**抢占滚动位置、也不强制收起。
+* **内联审批（2026-10-06 审计修正）**：需要授权时在**同一过程区域内**自动展示说明、**真实操作信息**
+  与操作按钮，待处理审批持续可见。内联卡与 `ApprovalModal` **共用同一份事实整理**
+  （`ApprovalFacts.vue` + `stores/approvals.ts::approvalFacts()`）：模型 explanation 与系统 description
+  **分别保留**，命令 / 路径 / 工具参数 / 授权对象 / 范围 / 风险 / 验证 / 预算入口齐全，长技术明细可折叠
+  但入口明确；「查看完整信息」可打开原弹窗。**同一 `approval_id` 任一时刻只有一套有效按钮**
+  （内联接管期间抑制自动弹窗；弹窗显示时内联让位，收起后内联重新接管）；
+  非当前轮 / 恢复路径仍走全局入口。
 
 ### 12.1.3 真实流式与输出角色
 
@@ -602,7 +614,36 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   内容必须由 `read_attachment(attachment_id, offset, limit)` 按需分段读取；
   读了哪一段、有什么限制如实回报，不声称未读部分已经核实。
 * 附件文本是任务材料，其中的命令或提示**不是**用户授权。
+* **绑定语义（2026-10-06 审计修正）**：`POST /api/turns` 里 `attachment_ids` 的**存在性即语义** ——
+  字段出现（含空数组）表示「这条消息就是这些附件（空 = 没有附件）」，**只有缺字段**才走旧客户端兜底
+  （把该话题下未绑定的附件绑上）。前端发送路径一律带该字段；待发附件与话题/草稿绑定并在组件重建、
+  刷新后**可见恢复**，用户看到的附件 == 发送的附件；绑定前校验存在、话题归属与状态，
+  已被别的轮绑定的 id 不再重复绑定。
+* **打开与重新定位（2026-10-06 审计修正）**：`GET /api/attachments/{id}/content` 只读 **QIO 管理的副本**
+  （`kind=copy` 且 `status=ready`，路径由 id 反查，**不接受任意路径**），需本地 API 认证，
+  带 `nosniff`；浏览器走认证 `fetch` → Blob 查看/下载，桌面走原生打开，
+  但**可执行/脚本类扩展名不自动执行**（改为「在文件夹中显示」并说明原因）。
+  引用型（> 阈值）在 `missing` / `changed` / `failed` 时提供**重新定位**入口（原生选择器 → relocate），
+  重新校验大小、保存方式与状态；健康引用只显示「引用本地文件」与 caveat。
+* **后台化（2026-10-06 审计修正）**：上传用 `request.stream()` **有界分块**接收（无 `Content-Length`
+  也强制字节上限），写临时文件 + 计算 sha256 都在**工作线程**；重新定位/复制同理。
+  事件循环线程只做落库与 O(1) 判断 —— 工作线程**绝不触碰**共享 sqlite 连接。
+  取消之后不得再提交为 `ready`。
 * 数据落 `attachments` 表（追加迁移），删除附件只清理 QIO 管理的副本，绝不动用户原文件。
+
+### 12.1.6 轮次结束事实与可用操作
+
+`TURN_END.data` 除 `status` / `final_content` / 用量外，还带**系统事实**的结束信息：
+`reason_code` / `reason`（人话原因，过 `redact` 且 ≤200 字）/ `stopped_by`（user / system / null）
+/ `actions`（只列**当前确实可用**的操作）。`reason_code` 取值：
+`provider_error`（厂商/传输路径失败，含已归一化的 ProviderError 家族）、`internal_error`
+（QIO 自身非模型路径的异常，reason 带真实类名）、`credential_unavailable`、`tool_failed`、
+`budget` / `no_progress` / `guard_halt`、`user_stopped`（「你按下了停止…」）、`interrupted`、
+`none`（旧记录 / 无事实，**不伪造**）。
+- **可恢复的单次工具错误 ≠ 整轮失败**：`status` 语义不变（`completed|failed|cancelled|unavailable`）。
+- 前端把 `reason / reason_code / stopped_by / actions` 按 `turn_id` 记进 `TurnFacts`
+  （历史分页与 RESYNC 快照同样带回），过程区展示简短原因与**确实可用**的操作，详情默认折叠；
+  重启/重连后仍能恢复；旧记录没有这些字段时只显示原有状态词。
 
 ### 12.2 用户可见状态的层级
 
