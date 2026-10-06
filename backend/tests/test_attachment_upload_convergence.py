@@ -34,8 +34,11 @@ from agent.storage.migrate import apply_migrations
 #: 分块数必须超过队列容量，才能确定性地制造「工作线程已退出、队列没有消费者」
 CHUNKS = 20
 CHUNK_BYTES = 8192
-#: 有限超时只用于判定失败（出现即说明收敛没做到）
+#: 被测**性质**的有界期限（判定都是事件/闸门驱动；超时 = 失败）
 DEADLINE = 5.0
+#: **前置条件**的等待上界（工作线程起跑、请求登记）：这是环境准备不是被测性质，
+#: 负载/CI 共享机器上线程起跑可能远慢于 5s，放宽它不会掩盖任何被测行为。
+SETUP_DEADLINE = 20.0
 
 
 def _pin_attachment_data_dir(app, tmp_path: Path) -> None:
@@ -107,7 +110,7 @@ def _chunked_body(
     return body()
 
 
-async def _wait_for_row(ctx, *, timeout: float = DEADLINE):
+async def _wait_for_row(ctx, *, timeout: float = SETUP_DEADLINE):
     deadline = time.time() + timeout
     while time.time() < deadline:
         rows = ctx.attachments.list(limit=10, check=False)
@@ -133,6 +136,21 @@ def _leftovers(ctx, *ignore: Path) -> list[Path]:
         return []
     ignored = {str(path) for path in ignore}
     return [p for p in root.rglob("*") if p.is_file() and str(p) not in ignored]
+
+
+async def _wait_worker_exit(jobs, *, timeout: float) -> bool:
+    """等工作线程真的退出：优先用作业自己的退出事件（确定性），没有就退回有界轮询。"""
+    waiters = [getattr(job, "wait_worker_exit", None) for job in jobs]
+    if waiters and all(callable(waiter) for waiter in waiters):
+        results = [await waiter(timeout=timeout) for waiter in waiters]
+        return all(results)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        flags = [getattr(job, "worker_done", None) for job in jobs]
+        if flags and all(flag is not None and flag.is_set() for flag in flags):
+            return True
+        await asyncio.sleep(0.01)
+    return False
 
 
 def _active_jobs():
@@ -247,8 +265,18 @@ async def test_write_failure_mid_stream_converges(async_app, monkeypatch):
     await _wait_until(lambda: not _active_jobs(), what="上传作业没有收尾")
 
 
-async def test_cancel_unblocks_the_worker_blocked_on_the_queue(async_app):
-    """用户取消（DELETE）必须解除工作线程在队列上的阻塞读取，并且不留临时文件。"""
+async def test_cancel_unblocks_the_worker_blocked_on_the_queue(async_app, monkeypatch):
+    """用户取消（DELETE）必须解除工作线程在队列上的阻塞读取，并且不留临时文件。
+
+    CI py3.12 唯一失败就是这条：原来等的是「job.terminal 变真」，而取消当时只靠取块循环
+    轮询服务侧的临时取消事件 —— delete() 置位后会把那个事件清掉，轮询落在窗口之外就永远
+    看不到取消。现在判定改成**事件驱动**：
+      * 先把工作线程的 poll 拉大，并等它**确实阻塞在 queue.get 上**（确定性前置条件）；
+      * DELETE 之后断言作业终态 + 工作线程退出事件（都有界超时，只用于判定失败）。
+    """
+    from agent.services import attachment_upload as upload_mod
+
+    monkeypatch.setitem(upload_mod.UploadJob.__init__.__kwdefaults__, "poll_seconds", 30.0)
     ctx = async_app.state.ctx
     gate = asyncio.Event()
 
@@ -261,14 +289,19 @@ async def test_cancel_unblocks_the_worker_blocked_on_the_queue(async_app):
             )
         )
         row = await _wait_for_row(ctx)
-        # 第一块已经发出去：工作线程消费它之后会阻塞在队列读取上，直到取消把它唤醒
+        jobs = _active_jobs()
+        assert jobs, "上传作业没有登记进注册表"
+        # 第一块已经发出去并且被消费：工作线程正阻塞在队列读取上（poll 30s，不会再自己醒）
+        await _wait_until(
+            lambda: all(job.consumed >= 1 and job.snapshot()["reading"] for job in jobs),
+            timeout=SETUP_DEADLINE,
+            what="工作线程没有进入阻塞读（还没消费第一块 / 没在等下一块）",
+        )
+
         removed = await ac.delete(f"/api/attachments/{row.id}")
         assert removed.status_code == 200, removed.text
-
-        await _wait_until(
-            lambda: all(job.terminal for job in _active_jobs()) or not _active_jobs(),
-            what="取消之后工作线程没有从阻塞读取里退出",
-        )
+        assert all(job.terminal for job in jobs), "DELETE 之后作业必须立刻是终态（事件驱动，不靠轮询）"
+        assert await _wait_worker_exit(jobs, timeout=DEADLINE), "取消没有解除工作线程的阻塞读取"
         assert _leftovers(ctx) == [], f"取消之后留下了文件：{_leftovers(ctx)}"
 
         gate.set()
@@ -277,6 +310,68 @@ async def test_cancel_unblocks_the_worker_blocked_on_the_queue(async_app):
     assert done.status_code in (400, 404, 409), done.text
     assert ctx.attachments.get(row.id, check=False) is None
     await _wait_until(lambda: not _active_jobs(), what="上传作业没有收尾")
+
+
+async def test_delete_leaves_the_upload_job_terminal_immediately(async_app, monkeypatch):
+    """DELETE 返回时上传作业必须**已经是终态**，且工作线程要被**事件**唤醒（不靠轮询的运气）。
+
+    CI py3.12 唯一失败（test_cancel_unblocks_the_worker_blocked_on_the_queue）的真缺陷：
+    services/attachments.py 的 delete() 先 cancel() 置位、随后 **pop 掉 _cancel 里的事件**。
+    取块循环用 is_cancel_requested() 事后轮询 —— 轮询落在「置位之后、pop 之前」这个窗口里
+    才看得见取消；窗口只有一次 SQLite DELETE+commit 的时长，Windows 上宽（通常恰好命中）、
+    Linux/py3.12 上窄（轮询落在 pop 之后 → 取消信号永久消失）→ 工作线程一直阻塞在队列读上。
+
+    这里把 poll_seconds 拉大，**让「恰好命中窗口」不可能发生**：修复前作业永远非终态、
+    工作线程永不退出；修复后 DELETE 直接置作业终态并用哨兵把阻塞的读取唤醒。
+    """
+    from agent.services import attachment_upload as upload_mod
+
+    # poll_seconds 是 keyword-only 默认值（定义时就绑定了），要改的是 __kwdefaults__；
+    # 目的只有一个：让「工作线程恰好轮询到取消窗口」不可能发生（不是断言依据）。
+    monkeypatch.setitem(upload_mod.UploadJob.__init__.__kwdefaults__, "poll_seconds", 30.0)
+    ctx = async_app.state.ctx
+    gate = asyncio.Event()
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=_chunked_body(CHUNKS, gate=gate),
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote("删除即取消.bin")},
+            )
+        )
+        row = await _wait_for_row(ctx)
+        jobs = _active_jobs()
+        assert jobs, "上传作业没有登记进注册表"
+
+        # 先确定工作线程**已经**消费掉第一块、正阻塞在 queue.get 上（poll 已拉到 30s）：
+        # 这样「DELETE 之后它还看得见取消」只剩一个可能 —— 作业终态真的留痕了。
+        await _wait_until(
+            lambda: all(job.consumed >= 1 and job.snapshot()["reading"] for job in jobs),
+            timeout=SETUP_DEADLINE,
+            what="工作线程没有进入阻塞读（还没消费第一块 / 没在等下一块）",
+        )
+
+        removed = await ac.delete(f"/api/attachments/{row.id}")
+        assert removed.status_code == 200, removed.text
+
+        # 关键 1：这一刻就必须是终态（同步、事件驱动）
+        assert all(job.terminal for job in jobs), (
+            "DELETE 之后上传作业还不是终态：取消只靠取块循环轮询，"
+            "而 delete() 已经把 _cancel 里的事件清掉了（CI py3.12 红）"
+        )
+        # 关键 2：工作线程必须被**事件/哨兵**唤醒（poll 已被拉到 30s，轮询不可能救场）
+        assert await _wait_worker_exit(jobs, timeout=DEADLINE), (
+            "工作线程没有从阻塞读取里退出：取消没有唤醒阻塞在 queue.get 上的消费者"
+        )
+
+        gate.set()
+        done = await asyncio.wait_for(task, timeout=DEADLINE)
+
+    assert done.status_code in (400, 404, 409), done.text
+    assert ctx.attachments.get(row.id, check=False) is None
+    assert _leftovers(ctx) == [], f"取消之后留下了文件：{_leftovers(ctx)}"
+    await _wait_until(lambda: not _active_jobs(), what="取消后上传作业没有收尾")
 
 
 async def test_client_disconnect_converges(async_app):

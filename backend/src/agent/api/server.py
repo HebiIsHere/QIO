@@ -70,6 +70,7 @@ from agent.services.attachment_upload import (
     UPLOAD_QUEUE_DEPTH,
     UploadJob,
     UploadJobEnded,
+    abort_jobs_for,
     active_jobs as upload_active_jobs,
     run_upload_worker,
 )
@@ -1416,6 +1417,12 @@ def create_app(
 
         正在复制时调用它 = 取消：复制线程在分块之间看到标志就停下并清掉临时文件。
         """
+        # 先中止正在进行的上传作业：删除附件 = 取消这次上传。
+        # 不能只靠服务侧的取消事件 —— services/attachments.py 的 delete() 置位后会把事件从
+        # _cancel 里清掉，事后轮询的取块循环就看不到取消了（CI py3.12 的取消用例红在这里）。
+        abort_jobs_for(
+            attachment_id, "附件已被移除，上传取消；没有保存任何副本"
+        )
         result = attachments.delete(attachment_id)
         if not result["removed"]:
             raise HTTPException(status_code=404, detail="没有这个附件")
