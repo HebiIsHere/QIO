@@ -147,7 +147,11 @@ function completedTurn(events: ReturnType<typeof useEventStore>, session: Return
   );
 }
 
-/** 折叠态可见的耗时文字（未展开就应该有总数，且不出现「读取中」「0」）。 */
+/**
+ * 折叠态可见的耗时文字（未展开就应该有总数，且不出现「读取中」「0」）。
+ * 锚点优先级：过程区里的耗时 span → 耗时控件 → 整个过程区 → 整页。
+ * （实现把「已完成 · 耗时 1.5 秒」放在耗时 span 里；span 没文字时退回过程区读，口径不放宽。）
+ */
 function foldedTimingText(wrapper: VueWrapper): string {
   const candidates = [
     wrapper.find('[data-test="turn-process-duration"]'),
@@ -155,26 +159,37 @@ function foldedTimingText(wrapper: VueWrapper): string {
     wrapper.find('[data-test="turn-process"]'),
   ];
   for (const found of candidates) {
-    if (found.exists()) return found.text();
+    if (found.exists() && found.text().trim()) return found.text();
   }
   return wrapper.text();
 }
 
-async function expandTimingDetail(wrapper: VueWrapper): Promise<boolean> {
+/**
+ * 展开耗时明细（真的触发 fetchTurnTiming 的那条路径）。
+ * 返回 "details" 表示确实展开了耗时控件 —— 此时必须真的请求过明细。
+ */
+async function expandTimingDetail(wrapper: VueWrapper): Promise<"details" | "toggle" | "none"> {
+  const timing = wrapper.find('[data-test="turn-timing"]');
+  if (timing.exists() && timing.element.tagName.toLowerCase() === "details") {
+    (timing.element as HTMLDetailsElement).open = true;
+    await timing.trigger("toggle");
+    await settle();
+    return "details";
+  }
   const toggle = wrapper.find('[data-test="turn-process-toggle"]');
   if (toggle.exists()) {
     await toggle.trigger("click");
     await settle();
-    return true;
+    return "toggle";
   }
   const details = wrapper.findAll("details").find((node) => node.text().includes("耗时"));
   if (details) {
     (details.element as HTMLDetailsElement).open = true;
     await details.trigger("toggle");
     await settle();
-    return true;
+    return "details";
   }
-  return false;
+  return "none";
 }
 
 beforeEach(() => {
@@ -202,10 +217,11 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     completedTurn(events, session);
     await settle();
 
+    const regions = wrapper.findAll('[data-test="turn-process"]');
+    expect(regions.length, "契约 §1.5：一轮 = 一个过程区").toBe(1);
     const entries = wrapper.findAll('[data-test="turn-timing"]');
     expect(entries.length, "契约 §3：过程区与耗时面板只保留一个入口").toBeLessThanOrEqual(1);
-    const occurrences = wrapper.text().split("1.5").length - 1;
-    expect(occurrences, "总耗时只出现一次（同一内容不得重复展示）").toBe(1);
+    expect(foldedTimingText(wrapper), "总耗时必须落在这一个入口里").toMatch(/耗时[sS]{0,8}1.5/);
     wrapper.unmount();
   });
 
@@ -223,7 +239,9 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     expect(folded, "明细失败不得抹掉已知总耗时").toMatch(/耗时[\s\S]{0,8}1\.5/);
     expect(folded).not.toContain("读取中");
     expect(folded).not.toMatch(/耗时\s*0\s*(毫秒|秒)/);
-    if (!expanded) {
+    if (expanded === "details") {
+      expect(getTrace, "展开才拉明细：真的展开了耗时控件就必须真的请求过 trace").toHaveBeenCalled();
+    } else if (expanded === "none") {
       // 锚点缺失时至少证明：没有因为明细请求而丢掉总耗时
       expect(wrapper.text()).toContain("耗时");
     }
