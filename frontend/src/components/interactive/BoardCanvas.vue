@@ -70,6 +70,8 @@ const SURFACE_H = 1600;
 
 /** 工具栏 / 提示与卡片之间的间距（屏幕像素）。 */
 const TOOLBAR_GAP = 10;
+/** 卡片局部工具栏的估算高度（用于判断放在卡片上方还是下方）。 */
+const TOOLBAR_H = 34;
 const HINT_GAP = 8;
 
 type BoardMode = "select" | "rect" | "link";
@@ -224,13 +226,33 @@ const contentStyle = computed(() => ({
 }));
 
 /** 板面内容原点在屏幕上的位置（含滚动量）—— 所有坐标换算都用它。 */
+/**
+ * 真实滚动量：DOM 是最终事实（用户拖滚动条、浏览器自动滚动都会改它）。
+ * 只在容器**真的能滚动**时采用 DOM 值：jsdom 没有真实布局，scrollLeft 会被钳制，
+ * 无条件采用反而会让坐标换算失真（单元测试里就是这种情况）。
+ */
+function liveScroll(): { x: number; y: number } {
+  const element = viewportEl.value;
+  if (!element) return { x: scroll.value.x, y: scroll.value.y };
+  const canScrollX = element.scrollWidth > element.clientWidth + 1;
+  const canScrollY = element.scrollHeight > element.clientHeight + 1;
+  const x = canScrollX ? element.scrollLeft : scroll.value.x;
+  const y = canScrollY ? element.scrollTop : scroll.value.y;
+  if (x !== scroll.value.x || y !== scroll.value.y) {
+    scroll.value = { x, y };
+    view.value = { ...view.value, x: -x, y: -y };
+  }
+  return { x, y };
+}
+
 function surfaceRect(): DOMRectLike {
   const element = viewportEl.value;
   if (!element) return { left: 0, top: 0 };
   const rect = typeof element.getBoundingClientRect === "function"
     ? element.getBoundingClientRect()
     : { left: 0, top: 0 };
-  return effectiveRect(rect, scroll.value.x, scroll.value.y);
+  const live = liveScroll();
+  return effectiveRect(rect, live.x, live.y);
 }
 
 function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
@@ -278,7 +300,7 @@ function onViewportScroll() {
 /** 以指针附近为缩放中心：同时收敛缩放与滚动，指针下的板面点保持不动。 */
 function zoomAtPointer(factor: number, client: { x: number; y: number }) {
   const result = zoomAtScroll(
-    scroll.value,
+    liveScroll(),
     view.value.scale,
     factor,
     client,
@@ -304,7 +326,13 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   const offsetY = viewRect.top - shellRect.top;
   const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
   const left = screen.x - shellRect.left;
-  const top = screen.y - shellRect.top;
+  const cardTop = screen.y - shellRect.top;
+  const cardBottom = cardTop + rect.h * view.value.scale;
+  const minTop = viewRect.top - shellRect.top + 2;
+  const maxTop = viewRect.bottom - shellRect.top - 30;
+  // 默认在卡片上方；上方放不下就放到卡片下方 —— 都不覆盖卡片本身，
+  // 否则会挡住连接点与卡片内容（真实鼠标点不到）
+  const top = cardTop - TOOLBAR_H - TOOLBAR_GAP >= minTop ? cardTop - TOOLBAR_H - TOOLBAR_GAP : Math.min(maxTop, cardBottom + TOOLBAR_GAP);
   // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
   const visible =
     screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
@@ -543,9 +571,14 @@ const mergeHintStyle = computed(() => {
   const viewRect = element.getBoundingClientRect();
   const shellRect = shellElement.getBoundingClientRect();
   const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
+  // 放在目标卡片**上方**：卡片贴近容器顶部时才落到它下方，避免盖住卡片内容
+  const above = screen.y - shellRect.top - 34;
+  const below = screen.y - shellRect.top + rect.h * view.value.scale + 6;
+  const minTop = viewRect.top - shellRect.top + 4;
+  const maxTop = viewRect.bottom - shellRect.top - 30;
   return {
-    left: Math.max(viewRect.left - shellRect.left + 4, screen.x - shellRect.left) + "px",
-    top: Math.max(viewRect.top - shellRect.top + 4, screen.y - shellRect.top - 34) + "px",
+    left: Math.max(viewRect.left - shellRect.left + 4, Math.min(screen.x - shellRect.left, viewRect.right - shellRect.left - 300)) + "px",
+    top: Math.max(minTop, Math.min(maxTop, above < minTop ? below : above)) + "px",
   };
 });
 
@@ -582,7 +615,7 @@ function isBoardInteractive(target: EventTarget | null): boolean {
   if (!element || typeof element.closest !== "function") return false;
   return Boolean(
     element.closest(
-      "article[data-im='card'], button, input, textarea, select, a, label, [data-im='card-toolbar'], [data-im='group'], [data-im='preview'], [data-im='link-draft'], [data-im='search']",
+      "article[data-im='card'], button, input, textarea, select, a, label, [data-im='card-toolbar'], [data-im='group'], [data-im='preview'], [data-im='link-draft'], [data-im='search'], [data-im='group-merge-hint'], [data-im='board-toolbar']",
     ),
   );
 }
@@ -713,10 +746,7 @@ function refreshOverlay() {
 const toolbarStyle = computed(() => {
   const card = primarySelectedCard.value;
   if (!card) return { display: "none" };
-  return {
-    left: overlay.value.left + "px",
-    top: Math.max(0, overlay.value.top - TOOLBAR_GAP) + "px",
-  };
+  return { left: overlay.value.left + "px", top: overlay.value.top + "px" };
 });
 
 // --- 卡片操作 -------------------------------------------------------------
@@ -1131,7 +1161,6 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="shell" class="board-shell" data-im="board">
-    <p data-im="zz-state" style="display: none">{{ JSON.stringify({ scale: view.scale, scroll, space: spaceDown, mode, dragging: Boolean(dragging), panning: Boolean(panning), rect: Boolean(rectSelect), vw: viewportEl ? viewportEl.clientWidth : null, vh: viewportEl ? viewportEl.clientHeight : null, sw: viewportEl ? viewportEl.scrollWidth : null, sh: viewportEl ? viewportEl.scrollHeight : null, dom: viewportEl ? [viewportEl.scrollLeft, viewportEl.scrollTop] : null, content: contentStyle.width }) }}</p>
     <p v-if="mode === 'link'" class="banner" role="status">
       关系模式：从卡片连接点拖到另一张卡片，或依次点两张卡片建立关系。方向只表示你写明的方向，含义由你填写；系统不会把它解释成因果、支持或执行顺序。
     </p>
@@ -1181,7 +1210,7 @@ onBeforeUnmount(() => {
             :group-name="groupNameOf(card.id)"
             :groups="groups.filter((item) => item.id !== groupIdOf(card.id))"
             :toolbar-left="overlay.left"
-            :toolbar-top="Math.max(0, overlay.top - TOOLBAR_GAP)"
+            :toolbar-top="overlay.top"
             :multi="selection.length > 1"
             :connecting="linkDraft !== null && linkDraft.fromId === card.id"
             @select="onSelect"

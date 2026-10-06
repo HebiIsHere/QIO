@@ -111,7 +111,9 @@ function onPointerDown(event: PointerEvent) {
 
 /** 从连接点拖出关系线：交给 BoardCanvas 接管指针（不在这里建链）。 */
 function onConnectDown(event: PointerEvent) {
+  // 连接点在卡片内部，必须同时拦住冒泡与默认行为，否则会先被卡片自己的拖动接走
   event.stopPropagation();
+  event.preventDefault();
   emit("connect-start", props.card.id, event);
 }
 
@@ -380,10 +382,11 @@ function cancelEdit() {
   cursor: crosshair;
   z-index: 2;
 }
-.connect-point.top { left: 50%; top: -6px; transform: translateX(-50%); }
-.connect-point.right { right: -6px; top: 50%; transform: translateY(-50%); }
-.connect-point.bottom { left: 50%; bottom: -6px; transform: translateX(-50%); }
-.connect-point.left { left: -6px; top: 50%; transform: translateY(-50%); }
+/* 卡片是 overflow: hidden，连接点必须留在卡片内侧边缘，否则会被裁掉、真实鼠标点不到 */
+.connect-point.top { left: 50%; top: 0; transform: translateX(-50%); }
+.connect-point.right { right: 0; top: 50%; transform: translateY(-50%); }
+.connect-point.bottom { left: 50%; bottom: 0; transform: translateX(-50%); }
+.connect-point.left { left: 0; top: 50%; transform: translateY(-50%); }
 
 /* 局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算 */
 .card-toolbar {
