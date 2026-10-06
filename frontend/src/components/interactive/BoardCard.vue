@@ -1,10 +1,13 @@
-<!-- 单张板面卡片（子智能体 A 负责）：文字注释 / 文件 / 图片 / 代码 / 网址 / QIO 结果。
+<!-- 单张板面卡片（子智能体 B 负责）：文字注释 / 文件 / 图片 / 代码 / 网址 / QIO 结果。
 
-  契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §4.4。
-  三条与语义有关的显示规则：
-  - 勾选框只出现在文字注释上（材料默认在 QIO 可查看范围内，不需要勾选；reply 不参与）；
+  契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §8.1 / §8.2。
+  这里落地的规则：
+  - 勾选框只出现在**文字注释**上，而且放在「选中后才浮出的局部工具栏」里（§8.1 卡片局部工具栏）；
+    材料默认就在 QIO 可查看范围内，没有这个选择框；reply 不参与勾选；
+  - 选中后卡片四边出现**连接点**（data-im="connect-point"），从连接点拖到另一张卡片建立关系（§8.2）；
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
-  - 卡片本身不做任何状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
+  - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit；
+  - 局部工具栏只对本卡片生效（data-card-id），多选时只显示共同适用的操作（由父组件给 canEdit 决定）。
 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
@@ -22,6 +25,13 @@ const props = defineProps<{
   y: number;
   groupName: string | null;
   groups: BoardGroup[];
+  /** 选中时局部工具栏的位置（板面容器坐标，父组件按视口换算好） */
+  toolbarLeft: number;
+  toolbarTop: number;
+  /** 多选时：只显示共同适用的操作，并且不把单卡片编辑应用到整组 */
+  multi: boolean;
+  /** 正在从本卡片拖出关系线 */
+  connecting: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -33,6 +43,7 @@ const emit = defineEmits<{
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
   (e: "join-group", cardId: string, groupId: string): void;
+  (e: "connect-start", cardId: string, event: PointerEvent): void;
 }>();
 
 const store = useInteractiveStore();
@@ -79,12 +90,29 @@ const style = computed(() => ({
   zIndex: props.dragging ? 30 : props.selected ? 8 : 4,
 }));
 
+/** 局部工具栏跟着卡片走：位置由父组件按视口换算，缩放平移后依然准确。 */
+const toolbarStyle = computed(() => ({
+  left: props.toolbarLeft + "px",
+  top: props.toolbarTop + "px",
+}));
+
+function isInteractive(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.closest !== "function") return false;
+  return Boolean(element.closest("button, input, textarea, select, a, label, [data-im='card-toolbar']"));
+}
+
 function onPointerDown(event: PointerEvent) {
-  const target = event.target as HTMLElement | null;
   // 按钮 / 输入框 / 链接上的按下不算拖动
-  if (target && target.closest("button, input, textarea, select, a, label")) return;
+  if (isInteractive(event.target)) return;
   emit("select", props.card.id, event.shiftKey || event.ctrlKey || event.metaKey);
   emit("drag-start", props.card.id, event);
+}
+
+/** 从连接点拖出关系线：交给 BoardCanvas 接管指针（不在这里建链）。 */
+function onConnectDown(event: PointerEvent) {
+  event.stopPropagation();
+  emit("connect-start", props.card.id, event);
 }
 
 function startEdit() {
@@ -175,7 +203,7 @@ function cancelEdit() {
         </div>
       </template>
       <template v-else>
-        <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，点「编辑」写下来）" }}</p>
+        <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
         <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
         <p v-else-if="card.kind === 'url'" class="content">
           <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || "（还没有网址）" }}</a>
@@ -186,50 +214,91 @@ function cancelEdit() {
       </template>
     </div>
 
-    <footer v-if="!card.folded" class="card-actions">
-      <label v-if="checkable" class="check">
-        <input
-          type="checkbox"
-          :checked="card.checked"
-          data-im="check"
-          :data-card-id="card.id"
-          @change="emit('toggle', card.id, 'checked')"
-        />
-        <span>{{ card.checked ? "已勾选" : "勾选" }}</span>
-      </label>
-      <button class="btn" type="button" @click="startEdit">编辑</button>
-      <button class="btn" type="button" @click="emit('toggle', card.id, 'hidden')">
-        {{ card.hidden ? "取消隐藏" : "隐藏" }}
-      </button>
-      <button class="btn" type="button" @click="emit('toggle', card.id, 'folded')">
-        {{ card.folded ? "展开" : "折叠" }}
-      </button>
-      <button class="btn" type="button" @click="emit('toggle', card.id, 'bookmarked')">
-        {{ card.bookmarked ? "取消书签" : "书签" }}
-      </button>
-      <button class="btn" type="button" data-im="duplicate-card" :data-card-id="card.id" @click="emit('duplicate', card.id)">
-        复制
-      </button>
-      <button class="btn danger" type="button" data-im="delete-card" :data-card-id="card.id" @click="emit('remove', card.id)">
-        删除
-      </button>
-      <button v-if="groupName" class="btn" type="button" @click="emit('leave-group', card.id)">移出组</button>
-      <span v-if="groups.length" class="join">
-        <select v-model="joinTarget" aria-label="选择要加入的组">
-          <option value="">选择组…</option>
-          <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
-        </select>
-        <button
-          class="btn"
-          type="button"
-          :disabled="!joinTarget"
-          @click="joinTarget && emit('join-group', card.id, joinTarget)"
-        >
-          加入组
-        </button>
-      </span>
-    </footer>
+    <!-- 连接点：选中后才出现；从这里拖到另一张卡片建立关系（方向与含义由用户写明） -->
+    <template v-if="selected && !card.folded && !multi">
+      <span
+        v-for="side in ['top', 'right', 'bottom', 'left']"
+        :key="side"
+        class="connect-point"
+        :class="side"
+        data-im="connect-point"
+        :data-card-id="card.id"
+        :data-side="side"
+        :title="'从连接点拖到另一张卡片建立关系'"
+        @pointerdown="onConnectDown"
+      ></span>
+    </template>
   </article>
+
+  <!--
+    卡片局部工具栏：只在选中后浮出，未选中即隐藏；多选时只显示共同适用的操作。
+    它挂在板面容器里（不是卡片内部），所以不会被卡片拖动带走，也不会挡住正在编辑的内容。
+  -->
+  <div
+    v-if="selected"
+    class="card-toolbar"
+    :style="toolbarStyle"
+    data-im="card-toolbar"
+    :data-card-id="card.id"
+    :data-multi="multi ? '1' : '0'"
+    role="toolbar"
+    :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
+    @pointerdown.stop
+  >
+    <label v-if="checkable" class="check" :title="'本次允许 QIO 查看（默认未勾选）'">
+      <input
+        type="checkbox"
+        :checked="card.checked"
+        data-im="check"
+        :data-card-id="card.id"
+        @change="emit('toggle', card.id, 'checked')"
+      />
+      <span>本次允许 QIO 查看</span>
+    </label>
+
+    <template v-if="!multi">
+      <button class="tb" type="button" data-im="card-edit" :data-card-id="card.id" @click="startEdit">编辑</button>
+      <button class="tb" type="button" data-im="card-duplicate" :data-card-id="card.id" @click="emit('duplicate', card.id)">复制</button>
+    </template>
+
+    <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
+      {{ card.folded ? "展开" : "折叠" }}
+    </button>
+    <button class="tb" type="button" :data-card-id="card.id" @click="emit('toggle', card.id, 'hidden')">
+      {{ card.hidden ? "取消隐藏" : "隐藏" }}
+    </button>
+    <button class="tb" type="button" :data-card-id="card.id" @click="emit('toggle', card.id, 'bookmarked')">
+      {{ card.bookmarked ? "取消书签" : "书签" }}
+    </button>
+    <button
+      v-if="groupName"
+      class="tb"
+      type="button"
+      :data-card-id="card.id"
+      @click="emit('leave-group', card.id)"
+    >
+      移出组
+    </button>
+    <span v-if="!multi && groups.length" class="join">
+      <select v-model="joinTarget" :aria-label="'选择要加入的组'" :data-card-id="card.id">
+        <option value="">加入组…</option>
+        <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+      </select>
+      <button
+        class="tb"
+        type="button"
+        :disabled="!joinTarget"
+        :data-card-id="card.id"
+        @click="joinTarget && emit('join-group', card.id, joinTarget)"
+      >
+        加入
+      </button>
+    </span>
+    <button class="tb danger" type="button" data-im="delete-card" :data-card-id="card.id" @click="emit('remove', card.id)">
+      删除
+    </button>
+    <span class="tb-note">{{ multi ? "多选：只显示共同适用的操作" : "缩放/平移后仍可点" }}</span>
+  </div>
 </template>
 
 <style scoped>
@@ -298,8 +367,40 @@ function cancelEdit() {
   padding: 2px var(--sp-1);
 }
 .draft-note { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-faint); }
-.card-actions { display: flex; flex-wrap: wrap; gap: var(--sp-1); align-items: center; }
-.check { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-xs); }
+.row { display: flex; gap: var(--sp-1); }
+
+/* 连接点：四边中点，拖出去建关系 */
+.connect-point {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--accent);
+  cursor: crosshair;
+  z-index: 2;
+}
+.connect-point.top { left: 50%; top: -6px; transform: translateX(-50%); }
+.connect-point.right { right: -6px; top: 50%; transform: translateY(-50%); }
+.connect-point.bottom { left: 50%; bottom: -6px; transform: translateX(-50%); }
+.connect-point.left { left: -6px; top: 50%; transform: translateY(-50%); }
+
+/* 局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算 */
+.card-toolbar {
+  position: absolute;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 420px;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  font-size: var(--fs-xs);
+}
+.check { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--text-secondary); white-space: nowrap; }
 .join { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .join select {
   font: inherit;
@@ -310,19 +411,20 @@ function cancelEdit() {
   border-radius: var(--r-xs);
   max-width: 96px;
 }
-.btn {
+.tb {
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 1px var(--sp-2);
   cursor: pointer;
+  white-space: nowrap;
 }
-.btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
-.btn:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
-.btn:disabled { opacity: 0.5; cursor: default; }
-.btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-.btn.danger { color: var(--danger); }
+.tb:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.tb:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.tb:disabled { opacity: 0.5; cursor: default; }
+.tb.danger { color: var(--danger); }
+.tb-note { color: var(--text-faint); white-space: nowrap; }
 </style>

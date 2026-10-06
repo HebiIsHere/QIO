@@ -1,13 +1,16 @@
-<!-- 组框（子智能体 A 负责）：组名、有序 / 普通切换、解除组、组内顺序。
+<!-- 组框（子智能体 B 负责）：组名、有序 / 普通切换、解除组、组内顺序与拖动插入位置提示。
 
-  契约：docs/interactive-mode-contract.md §1.3 / §4.4。
+  契约：docs/interactive-mode-contract.md §1.3 / §8.2。
   - 普通组：自由摆放不表示先后 → 不显示序号，只列出成员；
-  - 有序组：显示 1..n 序号，顺序调整可作为依据；
+  - 有序组：显示明确 1..n 序号，顺序调整可作为依据；
+  - 组名：初始是系统默认名（「组 N」）；输入即用；留空或取消保留默认名，组仍然成立；
+  - 拖动预演时显示「将加入这一组」与**插入位置**（第 N 位）；
   - 组框本身不吃指针事件（否则卡片拖不动），只有头部两行可交互；
   - 头部高度控制在 board.ts 的 GROUP_PAD_TOP（58px）以内，序号条不会压住成员卡片。
 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref } from "vue";
+import { DEFAULT_GROUP_NAME_PREFIX } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 
 const props = defineProps<{
@@ -18,6 +21,10 @@ const props = defineProps<{
   dropTarget: boolean;
   /** 拖动预演：这个组将被并入落点所在的组 */
   dropMerge: boolean;
+  /** 拖动预演：插入位置（0 起），仅 dropTarget 时有意义 */
+  dropIndex: number | null;
+  /** 拖动预演：被拖动的那张卡片（有序组里要显示它将插到哪两位之间） */
+  dropCardId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -28,6 +35,8 @@ const emit = defineEmits<{
   (e: "leave", groupId: string, cardId: string): void;
   (e: "select-member", cardId: string): void;
 }>();
+
+const nameInput = ref<HTMLInputElement | null>(null);
 
 const style = computed(() => ({
   left: props.group.x + "px",
@@ -42,18 +51,46 @@ const memberCards = computed(() =>
     .filter((card): card is BoardCard => Boolean(card)),
 );
 
+/** 系统默认名的提示：输入框留空时用它说明「留空会保留这个名字」。 */
+const defaultHint = computed(() => props.group.name || DEFAULT_GROUP_NAME_PREFIX + " N");
+
 function titleOf(card: BoardCard): string {
   const text = (card.content || String(card.meta?.name ?? card.meta?.title ?? "")).trim();
   if (!text) return "（无内容）";
   return text.length > 10 ? text.slice(0, 10) + "…" : text;
 }
 
+/** 插入位置的文字说明：有序组要能读出「插到第 N 位」。 */
+const insertText = computed(() => {
+  if (!props.dropTarget || props.dropIndex === null) return "";
+  return "将插入第 " + (props.dropIndex + 1) + " 位";
+});
+
+/** 组名：输入即用（用户敲完即生效）；留空或取消保留原默认名。 */
 function onRename(event: Event) {
   const target = event.target as HTMLInputElement;
   emit("rename", props.group.id, target.value);
-  // 名字没变或为空时把输入框恢复成真实组名（留空不生效）
+  // 名字没变或为空时把输入框恢复成真实组名（留空不生效，组仍然成立）
   target.value = props.group.name;
 }
+
+function onNameKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter") {
+    (event.target as HTMLInputElement).blur();
+  }
+}
+
+/** 拖动中把被拖动卡片临时藏起来，序号条显示的是「放下后的顺序」。 */
+const displayCards = computed(() =>
+  props.dropCardId ? memberCards.value.filter((card) => card.id !== props.dropCardId) : memberCards.value,
+);
+
+async function focusName() {
+  await nextTick();
+  nameInput.value?.focus();
+  nameInput.value?.select();
+}
+defineExpose({ focusName });
 </script>
 
 <template>
@@ -67,14 +104,16 @@ function onRename(event: Event) {
     <div class="group-head">
       <div class="head-row">
         <input
+          ref="nameInput"
           class="group-name"
           type="text"
           :value="group.name"
+          :placeholder="defaultHint"
           data-im="group-name"
           :data-group-id="group.id"
           aria-label="组名"
           @change="onRename"
-          @keydown.enter="onRename"
+          @keydown.enter="onNameKeydown"
         />
         <button
           class="btn"
@@ -90,13 +129,16 @@ function onRename(event: Event) {
           {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
         </span>
         <span class="count mono">成员 {{ group.members.length }}</span>
+        <span v-if="group.defaultName" class="badge default-name">系统默认名，可改</span>
         <span v-if="dropMerge" class="badge merge">拖动中：这一组将被并入落点所在的组</span>
-        <span v-else-if="dropTarget" class="badge">拖动中：将加入这一组</span>
+        <span v-else-if="dropTarget" class="badge" data-im="group-drop-hint">
+          {{ insertText || "将加入这一组" }}
+        </span>
       </div>
 
       <ol v-if="group.ordered" class="sequence" aria-label="组内顺序">
         <li
-          v-for="(card, index) in memberCards"
+          v-for="(card, index) in displayCards"
           :key="card.id"
           class="chip"
           :class="{ selected: selectedIds.includes(card.id) }"
@@ -111,17 +153,20 @@ function onRename(event: Event) {
           <button
             class="btn tiny"
             type="button"
-            :disabled="index === memberCards.length - 1"
+            :disabled="index === displayCards.length - 1"
             @click="emit('move-member', group.id, card.id, index + 1)"
           >
             下移
           </button>
           <button class="btn tiny" type="button" @click="emit('leave', group.id, card.id)">移出</button>
         </li>
+        <li v-if="dropTarget && dropCardId" class="chip insert">
+          <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
+        </li>
       </ol>
       <ul v-else class="sequence plain" aria-label="组成员">
         <li
-          v-for="card in memberCards"
+          v-for="card in displayCards"
           :key="card.id"
           class="chip"
           :class="{ selected: selectedIds.includes(card.id) }"
@@ -130,6 +175,9 @@ function onRename(event: Event) {
             <span class="chip-text">{{ titleOf(card) }}</span>
           </button>
           <button class="btn tiny" type="button" @click="emit('leave', group.id, card.id)">移出</button>
+        </li>
+        <li v-if="dropTarget && dropCardId" class="chip insert">
+          <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
         </li>
       </ul>
     </div>
@@ -157,6 +205,7 @@ function onRename(event: Event) {
   padding: 0 var(--sp-2);
 }
 .badge.merge { background: var(--warning); color: var(--bg-base); }
+.badge.default-name { color: var(--text-muted); background: none; border: 1px solid var(--border-subtle); }
 .group-head {
   display: flex;
   flex-direction: column;
@@ -170,7 +219,7 @@ function onRename(event: Event) {
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   font-size: var(--fs-xs);
 }
-.head-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.head-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
 .group-name {
   flex: none;
   font: inherit;
@@ -209,6 +258,7 @@ function onRename(event: Event) {
   font-size: var(--fs-xs);
 }
 .chip.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
+.chip.insert { border-style: dashed; border-color: var(--accent); color: var(--text-secondary); }
 .chip-title {
   display: inline-flex;
   align-items: center;
