@@ -98,8 +98,10 @@ const queueNote = computed(() => {
 
 <template>
   <details v-if="turnId" class="tt" data-test="turn-timing" @toggle="onToggle">
+    <!-- 折叠态：▸ + 一句「已完成 · 耗时 12 秒」（总耗时来自 TURN_END，不展开也显示）。
+         这里不再单独写一个「耗时」标签，避免同一行出现两次「耗时」。 -->
     <summary class="tt-summary" :aria-label="sentence">
-      <span class="tt-title">耗时</span>
+      <span class="tt-title" aria-hidden="true"></span>
       <span class="tt-total mono" :data-state="state">{{ summaryText }}</span>
     </summary>
 
@@ -176,7 +178,6 @@ const queueNote = computed(() => {
 }
 .tt-title::after {
   content: "▸";
-  margin-left: 4px;
   font-size: 10px;
 }
 .tt[open] .tt-title::after {
