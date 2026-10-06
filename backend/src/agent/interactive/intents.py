@@ -593,8 +593,11 @@ def approve_intent(
 
     - pending 且无未完成前项 → running；有未完成前项 → waiting_dependency（不自动开始）；
     - 前项全部完成后状态变为 waiting_confirm，必须带 confirmDependency=true 才会开始；
+    - paused 的任务带 confirmDependency=true 表示「按当前材料继续」：重新 running 并刷新材料指纹，
+      不带确认则返回 confirm_required（不会自动继续，也不会自动重试）；
     - 互不相容的另一项已被批准（等待 / 执行 / 已完成）时不能批准；
-    - needs_update 的预览禁止批准，必须先更新。
+    - needs_update 的预览禁止批准，必须先更新；
+    - 已拒绝 / 已完成 / 已失败 / 已取消的任务不能通过批准复活。
     """
     row = _get_row(conn, intent_id)
     if row is None:
@@ -619,10 +622,16 @@ def approve_intent(
     if status == "done":
         return {**_fail("done", "这项任务已经完成。"), "intent": payload}
     if status == "paused":
-        return {
-            **_fail("paused", "这项任务处于暂停：需要你确认继续，不会自动重试。"),
-            "intent": payload,
-        }
+        if not confirm_dependency:
+            return {
+                **_fail(
+                    "confirm_required",
+                    "这项任务暂停后材料已经变过，继续之前需要你确认按当前材料继续"
+                    "（不会自动重试，也不会重新执行已完成的部分）。",
+                ),
+                "intent": payload,
+            }
+        return _resume_paused_intent(conn, row, instance_id=instance_id, rows_by_id=rows_by_id)
 
     blockers = _conflict_blockers(conn, row)
     if blockers:
@@ -718,6 +727,38 @@ def approve_intent(
         "intent": _intent_payload(fresh, rows_by_id),
         "reason": "approved",
         "detail": "已批准，任务开始执行。",
+    }
+
+
+def _resume_paused_intent(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    instance_id: str | None,
+    rows_by_id: dict[str, sqlite3.Row],
+) -> dict:
+    """暂停 → 继续：按**当前材料**重新记录指纹，保留进度，不自动重试、不重跑已完成的部分。"""
+    refs = [str(x) for x in models.loads(row["material_refs"], [])]
+    watch = _material_signatures(_load_state(conn, row["board_id"]), refs) if refs else {}
+    _update(
+        conn,
+        row["id"],
+        status="running",
+        reason="已按当前材料继续；这次继续不会自动重试，也不会重新执行已完成的部分。",
+        progress=_stored_progress(
+            row,
+            watch=watch or None,
+            owner=instance_id,
+            drop_owner=not instance_id,
+        ),
+    )
+    fresh = _get_row(conn, row["id"])
+    assert fresh is not None
+    return {
+        "ok": True,
+        "intent": _intent_payload(fresh, rows_by_id),
+        "reason": "resumed",
+        "detail": "已按当前材料继续；不会自动重试，也不会重新执行已完成的部分。",
     }
 
 
@@ -830,8 +871,18 @@ def _conflicts_pair(first: sqlite3.Row | None, second: sqlite3.Row | None) -> bo
     return _conflicts(_intent_payload(first, {}), _intent_payload(second, {}))
 
 
-def batch_decide(conn: sqlite3.Connection, *, approve: list[str], reject: list[str]) -> dict:
-    """批量审批：选择部分或全部。互不相容的两项在同一批里也不能同时批准。"""
+def batch_decide(
+    conn: sqlite3.Connection,
+    *,
+    approve: list[str],
+    reject: list[str],
+    instance_id: str | None = None,
+) -> dict:
+    """批量审批：选择部分或全部。互不相容的两项在同一批里也不能同时批准。
+
+    instance_id 必须一路透传到 approve_intent：批量批准同样会把任务置为 running，
+    没有执行者身份的话，紧接着的一次列表读取就会把它当成「别的进程遗留」暂停掉。
+    """
     approve_ids = [str(x) for x in approve or []]
     reject_ids = [str(x) for x in reject or []]
     rows: dict[str, sqlite3.Row] = {}
@@ -872,7 +923,7 @@ def batch_decide(conn: sqlite3.Connection, *, approve: list[str], reject: list[s
                 }
             )
             continue
-        outcome = approve_intent(conn, intent_id)
+        outcome = approve_intent(conn, intent_id, instance_id=instance_id)
         outcome["intentId"] = intent_id
         results.append(outcome)
         if outcome.get("ok"):

@@ -333,7 +333,9 @@ export function statusText(intent: Intent): StatusText {
     case "paused":
       return {
         label,
-        detail: reason || "重新打开不会自动继续，需要你确认。",
+        detail:
+          reason ||
+          "已暂停：不会自动继续；确认后会按当前材料继续，不会重试、也不会重新执行已完成的部分。",
         tone: "waiting",
       };
     case "done":
@@ -382,7 +384,12 @@ export function approveAvailability(intent: Intent): ApproveAvailability {
         text: intent.reason || "相关材料已变化：不能批准，需要提交后由 QIO 更新预览。",
       };
     case "paused":
-      return { allowed: false, needsConfirm: false, text: "任务已暂停：不会自动重试。" };
+      // 暂停后可以「按当前材料继续」：必须由用户确认，服务端才会重新开始
+      return {
+        allowed: true,
+        needsConfirm: true,
+        text: "暂停后可以按当前材料继续：需要你确认；不会自动重试，也不会重新执行已完成的部分。",
+      };
     case "running":
       return { allowed: false, needsConfirm: false, text: "任务正在执行中。" };
     case "done":
