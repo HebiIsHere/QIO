@@ -288,3 +288,111 @@ async def test_late_tool_increment_does_not_move_answer_text(provider, chunk_del
             )
     assert tool.seen == [{"text": "late"}], tool.seen
     assert result.final_content == "迟到的工具之后，这是正式回答。", result.final_content
+
+# ---- 3. 多工具轮 / 取消 / 回答调用失败（阶段一补齐） -------------------------------
+
+
+async def test_multi_tool_rounds_then_answer_streams(provider):
+    """两轮以上工具之后进入回答阶段：两轮说明都在过程区，正式回答流式进回答区。"""
+    provider.script.set(
+        [
+            {
+                "chunks": ["第一轮说明。"],
+                "chunk_delay_ms": 20,
+                "tool_chunks": [
+                    {"id": "r4_m1", "name": "echo", "args_fragments": ['{"text": "one"}']}
+                ],
+            },
+            {
+                "chunks": ["第二轮说明。"],
+                "chunk_delay_ms": 20,
+                "tool_chunks": [
+                    {"id": "r4_m2", "name": "echo", "args_fragments": ['{"text": "two"}']}
+                ],
+            },
+            {"chunks": []},
+            {"chunks": ["两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
+        ]
+    )
+    registry, tool = _registry()
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_multi")
+    result = await asyncio.wait_for(loop.run("两轮工具后回答"), timeout=60)
+
+    assert tool.seen == [{"text": "one"}, {"text": "two"}], ("两轮工具都要真的执行", tool.seen)
+    events = _non_empty(_assistant(loop))
+    for text in ("第一轮说明。", "第二轮说明。"):
+        hits = [e for e in events if text in str(e.get("content"))]
+        assert hits, ("工具轮的说明没有边生成边显示", text, [e.get("content") for e in events])
+        assert all(e.get("interim") is not False for e in hits), (
+            "工具轮的说明被当成正式回答发布过", text, [e.get("content") for e in hits]
+        )
+    answers = _answer_events(events)
+    assert any(e.get("streaming") is True for e in answers), (
+        "多轮工具之后，正式回答仍然只在结束时一次性出现（没有流式增量）", answers
+    )
+    assert result.final_content == "两轮工具之后的正式回答。", result.final_content
+
+
+async def test_cancel_mid_answer_keeps_published_text(provider):
+    """回答调用流到一半取消：已经显示的回答文字必须保留，不得撤回、不得出现搬家事件。"""
+    provider.script.set(
+        [
+            {"chunks": []},
+            {"chunks": ["已经显示的第一段。", "取消时还没到的第二段。"], "chunk_delay_ms": 3000},
+        ]
+    )
+    registry, _tool = _registry()
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_cancel")
+    task = asyncio.create_task(loop.run("回答我，然后被取消"))
+
+    shown = await _poll(
+        lambda: any(
+            e.get("interim") is False and str(e.get("content") or "").strip()
+            for e in _assistant(loop)
+        ),
+        timeout=20,
+    )
+    assert shown, (
+        "取消之前（provider 还在流）回答区一个字都没有：无从谈「保留已显示文字」",
+        [e.get("content") for e in _non_empty(_assistant(loop))],
+    )
+    before = [e for e in _assistant(loop) if e.get("interim") is False and str(e.get("content") or "").strip()]
+    loop.cancel()
+    await asyncio.wait_for(task, timeout=40)
+
+    after = _assistant(loop)
+    published = {
+        str(e.get("delta_id")): str(e.get("content"))
+        for e in after
+        if e.get("interim") is False and str(e.get("content") or "").strip()
+    }
+    for event in before:
+        delta_id = str(event.get("delta_id"))
+        assert delta_id in published, ("取消把已经显示的回答整条弄丢了", delta_id, list(published))
+        assert published[delta_id].startswith(str(event.get("content"))), (
+            "取消之后的累计文字回退了（用户已经看到的字消失了）", published[delta_id]
+        )
+    for event in after:
+        if event.get("interim") is False or not str(event.get("content") or "").strip():
+            continue
+        assert str(event.get("delta_id")) not in published, (
+            "取消之后又出现 interim=true 的搬家事件（已进入回答区的文字被移回过程区）", event
+        )
+
+
+async def test_answer_call_failure_is_honest(provider):
+    """回答调用失败（断流/厂商 500）必须如实失败，不得把空回答当成成功。"""
+    provider.script.set([{"chunks": []}, {"status": 500, "body": "stream-aborted"}])
+    registry, _tool = _registry()
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_abort")
+    result = await asyncio.wait_for(loop.run("回答我"), timeout=60)
+
+    answers = _non_empty(_answer_events(_assistant(loop)))
+    assert not answers, ("回答调用失败了却编出了正式回答", [e.get("content") for e in answers])
+    failed = (
+        getattr(result, "status", None) not in ("done", "completed", None)
+        or bool(getattr(result, "error", None))
+        or not str(getattr(result, "final_content", "") or "").strip()
+    )
+    assert failed, ("回答调用 500，整轮却像正常完成一样交付了空回答", result)
+

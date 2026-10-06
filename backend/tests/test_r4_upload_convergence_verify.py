@@ -150,13 +150,13 @@ def _controlled_fs(root: Path, action: str):
         builtins.open, io.open = real_open, real_io_open
 
 
-async def _upload(client, name: str, chunks: int = CHUNKS) -> dict:
+async def _upload(client, name: str, chunks: int = CHUNKS, body=None) -> dict:
     started = time.monotonic()
     try:
         resp = await asyncio.wait_for(
             client.post(
                 "/api/attachments/upload",
-                content=_chunked_body(chunks),
+                content=_chunked_body(chunks) if body is None else body,
                 headers={"content-type": "application/octet-stream", "x-qio-name": name},
             ),
             timeout=BOUND_S,
@@ -289,3 +289,58 @@ async def test_other_requests_progress_while_upload_is_gated(app):
 
     assert queue.status_code == 200, queue.text[:200]
     assert elapsed < 2.0, ("上传进行中时其它 API 被卡住", round(elapsed, 3))
+
+# ---- 6. 客户端断开：请求中途抛错也要收敛 -------------------------------------------
+
+
+async def _aborting_body(after: int):
+    for _ in range(after):
+        yield CHUNK
+        await asyncio.sleep(0)
+    raise RuntimeError("受控错误：客户端中途断开")
+
+
+async def test_client_disconnect_midway_converges(app):
+    """客户端在请求体中途断开：上传要结束（不许挂住），状态收敛、不留临时文件。"""
+    root = _root(app)
+    async with _client(app) as client:
+        outcome = await _upload(client, "disconnect.txt", body=_aborting_body(UPLOAD_QUEUE_DEPTH + 2))
+
+    assert outcome["status"] != "timeout", (
+        "客户端断开后上传请求一直没有结束（接收端还在等队列空位）", outcome
+    )
+    acceptable = outcome["status"] == "exception" or (
+        isinstance(outcome["status"], int) and outcome["status"] >= 400
+    ) or outcome.get("state") in ("failed", "cancelled")
+    assert acceptable, ("客户端断开后既没有异常/错误码，也没有如实给出失败状态", outcome)
+    for row in [r for r in _records(app) if r.original_name == "disconnect.txt"]:
+        assert row.state in ("failed", "cancelled"), ("断开后附件停在非终态", row.state, row.error)
+    assert not _temp_files(root), ("断开后留下临时文件", _temp_files(root))
+    assert app.state.ctx.attachments._db_thread_warned is False, "断开流程里出现了跨线程数据库访问"
+
+
+# ---- 7. DB 跨线程探针：失败/取消全程不得有第二个线程碰数据库 ------------------------
+
+
+async def test_no_cross_thread_db_access_during_failures(app):
+    """整个失败/取消流程里不得出现跨线程数据库访问（服务里自带探针 _db_thread_warned）。"""
+    root = _root(app)
+    async with _client(app) as client:
+        with _controlled_fs(root, "write") as state:
+            await _upload(client, "db-probe-write.txt")
+        assert state["fired"], "受控补丁没有拦到写盘（装置失效）"
+
+        with _controlled_fs(root, "gate") as gate:
+            task = asyncio.create_task(_upload(client, "db-probe-gate.txt"))
+            entered = await asyncio.to_thread(gate["inside"].wait, BOUND_S)
+            assert entered, "工作线程没有进入写盘（闸门没生效）"
+            rows = [r for r in _records(app) if r.original_name == "db-probe-gate.txt"]
+            if rows:
+                await client.delete("/api/attachments/%s" % rows[0].id)
+            gate["release"].set()
+            await asyncio.wait_for(task, timeout=BOUND_S + 5)
+
+    assert app.state.ctx.attachments._db_thread_warned is False, (
+        "失败/取消流程里出现了跨线程数据库访问（同一 sqlite 连接被第二个线程碰了）"
+    )
+

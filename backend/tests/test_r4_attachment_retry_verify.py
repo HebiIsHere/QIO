@@ -285,3 +285,161 @@ def test_missing_stored_copy_is_not_silently_accepted(client: TestClient, tmp_pa
         got.status_code,
         resp.text[:200],
     )
+
+# ---- 4. 阶段一补齐：多附件 / 重复点击 / 排队 / 刷新后重试 / resend -------------------
+
+
+def _new_ids(resp, requested: list[str]) -> list[str]:
+    wanted = set(requested)
+    return [x for x in _bound_ids(resp) if x not in wanted]
+
+
+def test_multi_attachment_retry_clones_every_item(client: TestClient, tmp_path: Path):
+    """≥2 个附件、混合 copy/reference：重试要逐个克隆，副本能读出内容，引用如实给状态。"""
+    a = tmp_path / "多附件-A.txt"
+    a.write_text(MARKER + " A", encoding="utf-8")
+    b = tmp_path / "多附件-B.txt"
+    b.write_text(MARKER + " B", encoding="utf-8")
+    big = tmp_path / "多附件-引用.bin"
+    with big.open("wb") as handle:
+        handle.truncate(100_000_001)
+
+    atts = [_register(client, a), _register(client, b), _register(client, big)]
+    assert [x["kind"] for x in atts] == ["copy", "copy", "reference"], atts
+    ids = [x["id"] for x in atts]
+
+    first = _submit(client, "多附件第一轮", ids)
+    assert first.status_code == 200, first.text
+    turn1 = first.json()["turn_id"]
+    assert set(_bound_ids(first)) == set(ids), first.text
+
+    resp = _submit(client, "多附件重试", ids, retry_of=turn1)
+    assert resp.status_code < 400, (resp.status_code, resp.text[:300])
+    new_ids = _new_ids(resp, ids)
+    assert len(new_ids) == len(ids), (
+        "重试没有把每个附件都克隆一遍（契约 §1.2：逐个新建记录、复用已保存副本）",
+        {"requested": ids, "bound": _bound_ids(resp), "rejected": _rejected(resp)},
+    )
+    rows = [client.get(f"/api/attachments/{x}").json()["attachment"] for x in new_ids]
+    copies = [r for r in rows if r["kind"] == "copy"]
+    refs = [r for r in rows if r["kind"] == "reference"]
+    assert len(copies) == 2 and len(refs) == 1, rows
+    for row, source in zip(copies, [atts[0], atts[1]]):
+        assert row["sha256"] == source["sha256"], row
+        got = client.get(f"/api/attachments/{row['id']}/content")
+        assert got.status_code == 200 and MARKER.encode() in got.content, (
+            "克隆出来的副本读不出内容", row["id"], got.status_code, got.text[:200]
+        )
+    for source in atts:
+        old = client.get(f"/api/attachments/{source['id']}").json()["attachment"]
+        assert old["turn_id"] == turn1, ("原行归属被改写", old)
+
+
+def test_double_retry_does_not_error_or_corrupt(client: TestClient, tmp_path: Path):
+    """重复点击重试：不得 5xx、不得把原行归属搞乱（可复用同一份副本，也可结构化拒绝）。"""
+    src = tmp_path / "连点两次.txt"
+    src.write_text(MARKER, encoding="utf-8")
+    att = _register(client, src)
+    first = _submit(client, "第一轮", [att["id"]])
+    turn1 = first.json()["turn_id"]
+
+    r1 = _submit(client, "重试（第一次点击）", [att["id"]], retry_of=turn1)
+    r2 = _submit(client, "重试（第二次点击）", [att["id"]], retry_of=turn1)
+
+    for resp in (r1, r2):
+        assert resp.status_code < 500, (
+            "重复点击重试导致 5xx（用户会看到报错，而不是一个能懂的结果）", resp.status_code, resp.text[:300]
+        )
+    old = client.get(f"/api/attachments/{att['id']}").json()["attachment"]
+    assert old["turn_id"] == turn1, ("重复点击把原行归属改乱了", old)
+    cloned = set(_new_ids(r1, [att["id"]])) | set(_new_ids(r2, [att["id"]]))
+    assert cloned, ("两次点击都没有克隆出新副本（契约 §1.2：至少要能重试一次）", r1.text[:200], r2.text[:200])
+    for cid in cloned:
+        row = client.get(f"/api/attachments/{cid}").json()["attachment"]
+        assert row["sha256"] == att["sha256"], row
+
+
+def test_retry_while_source_turn_still_open(client: TestClient, tmp_path: Path):
+    """上一轮还在跑（或还在排队）时重试：同样要克隆，不能因为源轮没结束就丢附件。"""
+    src = tmp_path / "排队中重试.txt"
+    src.write_text(MARKER, encoding="utf-8")
+    att = _register(client, src)
+
+    first = _submit(client, "第一轮（可能还在跑）", [att["id"]])
+    turn1 = first.json()["turn_id"]
+    snapshot = client.get("/api/turns/queue").json()
+    still_open = bool(
+        (snapshot.get("running") or {}).get("turn_id") == turn1
+        or any((q or {}).get("turn_id") == turn1 for q in snapshot.get("queued") or [])
+    )
+
+    resp = _submit(client, "还在跑就重试", [att["id"]], retry_of=turn1)
+    assert resp.status_code < 400, (resp.status_code, resp.text[:300])
+    assert _new_ids(resp, [att["id"]]), (
+        "源轮还没结束时重试拿不到附件",
+        {"source_turn_still_open_at_submit": still_open, "snapshot": snapshot, "body": resp.text[:300]},
+    )
+
+
+def test_retry_after_history_refresh_uses_message_attachment_ids(client: TestClient, tmp_path: Path):
+    """刷新后重试：前端会用历史里那条消息的附件 id 再发一次 —— 后端必须照契约克隆。"""
+    src = tmp_path / "刷新后重试.txt"
+    src.write_text(MARKER, encoding="utf-8")
+    att = _register(client, src)
+    first = _submit(client, "第一轮", [att["id"]])
+    turn1 = first.json()["turn_id"]
+
+    # 等到那一轮真的写进历史（用户消息落库后历史才带附件）
+    deadline = time.time() + 15
+    from_history: list[str] = []
+    while time.time() < deadline:
+        page = client.get("/api/session/context").json()
+        from_history = [
+            a["id"]
+            for m in page.get("messages") or []
+            for a in (m.get("attachments") or [])
+        ]
+        if att["id"] in from_history:
+            break
+        time.sleep(0.05)
+    if att["id"] not in from_history:
+        pytest.skip(
+            "装置受限：API 级夹具没有能跑通的 provider，turn 不会写用户消息 → 历史里没有附件行。"
+            "「刷新后重试」由阶段二实机（假厂商 + 真实重试入口）覆盖；这里不把装置问题算成产品红。"
+        )
+
+    resp = _submit(client, "刷新后重试", from_history, retry_of=turn1)
+    assert resp.status_code < 400, (resp.status_code, resp.text[:300])
+    assert _new_ids(resp, from_history), (
+        "按历史里的附件 id 重试没有克隆出新副本", resp.text[:300], _rejected(resp)
+    )
+
+
+def test_resend_interrupted_turn_reuses_attachments(client: TestClient, tmp_path: Path):
+    """resend 路径（进程中断恢复）：重发同样不得丢附件。
+
+    装置说明（如实写在这里）：本用例用一条**合成的中断轮**（journal 记 interrupted + 附件绑在它的
+    turn_id 上），避免和后台真实轮次的终态写入竞态。它假设 resend 会按「被中断那一轮的 turn_id」
+    找回当时绑定的附件 —— 这是契约 §1.2「重放时同样按规则重新归属，不得丢附件」的最小可判定写法；
+    若实现改为只认 user_message_id，请告知，我会同步调整装置。
+    """
+    ctx = client.app.state.ctx
+    src = tmp_path / "中断恢复重发.txt"
+    src.write_text(MARKER, encoding="utf-8")
+    att = _register(client, src)
+
+    turn1 = "turn_r4_interrupted_1"
+    ctx.attachments.bind_for_turn(turn1, [att["id"]], topic_id=None)
+    journal = ctx.turn_journal
+    journal.accepted(turn_id=turn1, message="被进程掐断的那一条（带附件）")
+    journal.running(turn1)
+    journal.terminal(turn1, "cancelled", reason="shutdown")
+    assert journal.recoverable(turn1) is not None, "没有造出可恢复记录（测试装置失效）"
+
+    resp = client.post(f"/api/turns/{turn1}/resend")
+    assert resp.status_code == 200, (resp.status_code, resp.text[:300])
+    assert _new_ids(resp, [att["id"]]), (
+        "resend 丢掉了附件（契约 §1.2：中断恢复的重发同样按规则重新归属）",
+        resp.text[:400], _rejected(resp),
+    )
+

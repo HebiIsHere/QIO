@@ -205,23 +205,66 @@ def test_explicit_ids_only_bind_those_ids(app_client, tmp_path):
 
 
 def test_unknown_id_does_not_silently_bind_everything(app_client, tmp_path):
-    """显式给了一个不存在的 id：不能因此退回兜底（那正是老 bug 的形状）。"""
-    client, _app = app_client
-    pending = _make_ready_attachment(client, tmp_path, "存在但没被指定.txt")
+    """显式给了一个不存在的 id：不能退回兜底，也不能静默照常受理。
 
-    body = _submit(client, {"message": "指定了一个不存在的附件", "attachment_ids": ["att_nope_0001"]})
-    bound = [str(item.get("id")) for item in (body.get("attachments") or [])]
-    assert bound == [], ("显式列表里没有可绑对象时不得绑定别的附件", bound)
-    client.post("/api/turns/cancel")
+    旧断言 = 「静默跳过 + 照常受理（200/201/202）」——已被 plan §1.2 的**严格语义**取代：
+    rejected 非空 → **不入队 + 409/422 结构化失败**（带每个附件的人话原因）。
+    """
+    client, app = app_client
+    pending = _make_ready_attachment(client, tmp_path, "存在但没被指定.txt")
+    before_queue = client.get("/api/turns/queue").json()
+    before_traces = getattr(app.state.ctx.trace_store, "count", lambda: None)()
+
+    resp = client.post(
+        "/api/turns",
+        json={"message": "指定了一个不存在的附件", "attachment_ids": ["att_nope_0001"]},
+    )
+    assert resp.status_code in (409, 422), (
+        "不存在的附件 id 必须结构化拒绝（plan §1.2 冻结语义），不得静默跳过后台照常受理",
+        resp.status_code,
+        resp.text[:300],
+    )
+    payload = resp.json()
+    rejected = payload.get("rejected")
+    if not isinstance(rejected, list):
+        detail = payload.get("detail")
+        rejected = detail.get("rejected") if isinstance(detail, dict) else None
+    assert isinstance(rejected, list) and rejected, ("拒绝响应必须带结构化原因 rejected", payload)
+    blob = str(rejected)
+    assert "att_nope_0001" in blob, ("结构化原因要点出是哪个附件", blob)
+    assert any("一" <= ch <= "鿿" for ch in blob), ("原因必须是给人看的话", blob)
+
+    # 没有入队 / 没有开始执行
+    assert not payload.get("turn_id") and not payload.get("accepted"), (
+        "被拒绝的请求不得入队（不得返回 turn_id/accepted）", payload
+    )
+    after_queue = client.get("/api/turns/queue").json()
+    assert after_queue.get("queued") == before_queue.get("queued"), (
+        "被拒绝的请求不得进入队列", {"before": before_queue, "after": after_queue}
+    )
+    after_traces = getattr(app.state.ctx.trace_store, "count", lambda: None)()
+    if before_traces is not None and after_traces is not None:
+        assert after_traces == before_traces, (
+            "被拒绝的请求不得开始执行（模型调用记录变了）", before_traces, after_traces
+        )
+
+    # 原归属与历史不变
     after = _unwrap(client.get(f"/api/attachments/{pending['id']}").json())
-    assert not after.get("turn_id"), after
+    assert not after.get("turn_id"), (
+        "显式列表里没有可绑对象时不得把别的附件绑上去（兜底是缺失字段才有的语义）", after
+    )
 
 
 # ---- 3. 已归属的 id 不再重复绑定 ---------------------------------------------------
 
 
 def test_already_bound_attachment_is_not_rebound_to_another_turn(app_client, tmp_path):
-    client, _app = app_client
+    """已经属于第一轮的附件，第二轮再要它 → 409/422 结构化拒绝。
+
+    旧断言 = 「静默跳过 + 照常受理（200/201/202），第二轮拿到空附件」——
+    已被 plan §1.2 严格语义取代：不许静默丢弃、不许静默照常执行。
+    """
+    client, app = app_client
     att = _make_ready_attachment(client, tmp_path, "已经属于第一轮.txt")
 
     first = _submit(client, {"message": "第一轮带它", "attachment_ids": [att["id"]]})
@@ -230,15 +273,45 @@ def test_already_bound_attachment_is_not_rebound_to_another_turn(app_client, tmp
     client.post("/api/turns/cancel")
     assert str(_unwrap(client.get(f"/api/attachments/{att['id']}").json()).get("turn_id")) == first_turn
 
-    second = _submit(client, {"message": "第二轮又带它", "attachment_ids": [att["id"]]})
-    second_turn = str(second["turn_id"])
-    client.post("/api/turns/cancel")
+    before_queue = client.get("/api/turns/queue").json()
+    before_traces = getattr(app.state.ctx.trace_store, "count", lambda: None)()
+    resp = client.post(
+        "/api/turns", json={"message": "第二轮又带它", "attachment_ids": [att["id"]]}
+    )
+    assert resp.status_code in (409, 422), (
+        "已被别的轮次绑定的附件必须结构化拒绝（plan §1.2），不得静默跳过后台照常受理",
+        resp.status_code,
+        resp.text[:300],
+    )
+    payload = resp.json()
+    rejected = payload.get("rejected")
+    if not isinstance(rejected, list):
+        detail = payload.get("detail")
+        rejected = detail.get("rejected") if isinstance(detail, dict) else None
+    assert isinstance(rejected, list) and rejected, ("拒绝响应必须带结构化原因", payload)
+    blob = str(rejected)
+    assert str(att["id"]) in blob, ("结构化原因要点出是哪个附件", blob)
+    assert any("一" <= ch <= "鿿" for ch in blob), ("原因必须是给人看的话", blob)
+
+    assert not payload.get("turn_id") and not payload.get("accepted"), (
+        "被拒绝的请求不得入队", payload
+    )
+    after_queue = client.get("/api/turns/queue").json()
+    assert after_queue.get("queued") == before_queue.get("queued"), (
+        "被拒绝的请求不得进入队列", {"before": before_queue, "after": after_queue}
+    )
+    after_traces = getattr(app.state.ctx.trace_store, "count", lambda: None)()
+    if before_traces is not None and after_traces is not None:
+        assert after_traces == before_traces, (
+            "被拒绝的请求不得开始执行（模型调用记录变了）", before_traces, after_traces
+        )
+
+    # 原归属与历史不变：仍属于第一轮，且原轮仍能打开自己的副本
     now = _unwrap(client.get(f"/api/attachments/{att['id']}").json())
     assert str(now.get("turn_id") or "") == first_turn, (
-        "已被别的 turn 绑定的附件不得重复绑定到新轮（归属只能有一个）",
-        {"first": first_turn, "second": second_turn, "now": now.get("turn_id")},
+        "已被别的 turn 绑定的附件归属被改写了", {"first": first_turn, "now": now.get("turn_id")}
     )
-    assert second.get("attachments") in (None, [],), (
-        "第二轮不该拿到已经归属别人的附件",
-        second.get("attachments"),
+    content = client.get(f"/api/attachments/{att['id']}/content")
+    assert content.status_code == 200, (
+        "原轮次仍应能打开自己的副本", content.status_code, content.text[:200]
     )
