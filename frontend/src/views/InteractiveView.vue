@@ -75,6 +75,31 @@ const boardSize = computed(() => {
       上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
     </p>
 
+    <!-- 执行中任务依赖的材料被改动：保存前先说清影响，再由用户决定继续或取消 -->
+    <div v-if="store.pendingImpact" class="im-notice warn impact" role="alert">
+      <p class="impact-title">这次改动还没有保存：它会影响到正在执行的任务。</p>
+      <ul class="impact-list">
+        <li v-for="item in store.pendingImpact.affected" :key="item.intentId">
+          <span class="impact-task">{{ item.title }}</span>
+          <span class="impact-text">{{ item.consequence }}</span>
+        </li>
+      </ul>
+      <p class="impact-actions">
+        <button class="im-btn" type="button" @click="store.confirmImpact()">
+          继续：保存改动，相关任务暂停并保留进度
+        </button>
+        <button class="im-btn ghost" type="button" @click="store.cancelImpact()">
+          取消：不改动板面，任务继续
+        </button>
+      </p>
+    </div>
+
+    <p v-if="store.materialPaused.length" class="im-notice warn" role="status">
+      因为你修改了相关材料，这些任务已暂停并保留进度：
+      {{ store.materialPaused.map((item) => item.title).join("、") }}
+      <button class="im-link" type="button" @click="store.dismissMaterialPaused()">知道了</button>
+    </p>
+
     <div class="im-body">
       <main class="im-board">
         <BoardCanvas />
@@ -166,6 +191,31 @@ const boardSize = computed(() => {
 }
 .im-notice.err { color: var(--danger); }
 .im-notice.warn { color: var(--warning); }
+.impact { display: flex; flex-direction: column; gap: var(--sp-2); }
+.impact-title { margin: 0; }
+.impact-list { margin: 0; padding-left: var(--sp-5); }
+.impact-list li { margin: 2px 0; }
+.impact-task { color: var(--text-strong); margin-right: var(--sp-2); }
+.impact-text { color: var(--text-secondary); }
+.impact-actions { margin: 0; display: flex; gap: var(--sp-3); flex-wrap: wrap; }
+.im-btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-4);
+  cursor: pointer;
+}
+.im-btn.ghost {
+  background: none;
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+}
+.im-btn:hover { background: var(--accent-hover); }
+.im-btn.ghost:hover { background: var(--layer-hover); color: var(--text-strong); }
+.im-btn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .im-body {
   flex: 1;
   display: flex;

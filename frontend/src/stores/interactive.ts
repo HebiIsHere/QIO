@@ -59,6 +59,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const auxOpen = ref(true);
   const demoMode = ref(false);
 
+  /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
+  const pendingImpact = ref<{
+    affected: { intentId: string; title: string; materials: string[]; consequence: string }[];
+  } | null>(null);
+  /** 保存后服务端回报「因为这些改动被暂停的任务」 */
+  const materialPaused = ref<Intent[]>([]);
+  let impactConfirmed = false;
+
   const undoStack = ref<string[]>([]);
   const redoStack = ref<string[]>([]);
   const canUndo = computed(() => undoStack.value.length > 0);
@@ -118,6 +126,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveTimer = null;
     }
     const snapshot = cloneState(board.value);
+    // 保存前先问服务端一句：这次改动会不会碰到正在执行任务依赖的材料？
+    // 会 → 不保存，把影响说明交给用户决定（继续=保存并暂停相关任务；取消=不改动，任务继续）。
+    if (!impactConfirmed && activeIntents.value.length > 0) {
+      try {
+        const check = await api.previewMaterialImpact(boardId.value, snapshot);
+        if (check.affected?.length) {
+          pendingImpact.value = check;
+          saveStatus.value = "idle";
+          return;
+        }
+      } catch {
+        // 预判失败不阻塞保存：它只是「多说一句话」，不是保存的前置条件
+      }
+    }
     saveInFlight = (async () => {
       try {
         const result = await api.saveBoardState(boardId.value, snapshot, lastOpLabel.value || "op");
@@ -126,6 +148,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
         saveStatus.value = "saved";
         saveError.value = null;
         dirty.value = false;
+        impactConfirmed = false;
+        const impact = (result as { materialImpact?: { paused?: Intent[] } }).materialImpact;
+        if (impact?.paused?.length) {
+          materialPaused.value = impact.paused;
+          void loadIntents();
+        }
         // 保存只落到本机板面；顺手刷新「本次允许查看的范围」让提交前预览是新的。
         // 这一步同样不调用 QIO。
         void refreshVisibleRange();
@@ -287,7 +315,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   async function advanceDemo(
     intentId: string,
-    outcome: "done" | "failed" | "paused" | "cancelled",
+    outcome: "done" | "failed" | "paused" | "cancelled" | "revert_rest",
   ) {
     const result = await api.advanceIntent(intentId, outcome);
     await settleAfterIntentChange();
@@ -298,6 +326,29 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const result = await api.createDemoIntents(boardId.value);
     await loadIntents();
     return result;
+  }
+
+  /** 用户确认：改动生效，受影响的任务会暂停并保留进度。 */
+  async function confirmImpact(): Promise<void> {
+    impactConfirmed = true;
+    pendingImpact.value = null;
+    await saveNow();
+  }
+
+  /** 用户取消：不改动板面（也不保存），执行中的任务继续。 */
+  function cancelImpact(): void {
+    impactConfirmed = false;
+    pendingImpact.value = null;
+    void refreshBoardFromServer();
+  }
+
+  function dismissMaterialPaused(): void {
+    materialPaused.value = [];
+  }
+
+  /** 保存前的只读预判（给组件用；不改任何状态）。 */
+  async function checkMaterialImpact(state: BoardState) {
+    return api.previewMaterialImpact(boardId.value, state);
   }
 
   function intentById(intentId: string): Intent | undefined {
@@ -342,6 +393,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     recoverNotice,
     auxOpen,
     demoMode,
+    pendingImpact,
+    materialPaused,
     undoStack,
     redoStack,
     canUndo,
@@ -366,6 +419,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     updatePreview,
     advanceDemo,
     createDemoIntents,
+    confirmImpact,
+    cancelImpact,
+    dismissMaterialPaused,
+    checkMaterialImpact,
     intentById,
     statusLabel,
   };

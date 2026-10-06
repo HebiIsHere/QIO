@@ -152,12 +152,28 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
         result = board_store.save_board(conn, bid, state, reason=reason)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 保存生效之后，服务端自己再判定一次「这次改动有没有碰到执行中任务依赖的材料」：
+    # 命中就把那些任务置为 paused（保留进度），并在响应里报出来。
+    # 判定不依赖前端（前端只负责在保存前给用户看影响说明）；
+    # 这里失败也绝不能让保存失败 —— 保存本身是用户的操作，必须落库。
+    material_impact: dict = {"paused": [], "affected": []}
+    try:
+        from agent.interactive import intents as intents_module
+
+        on_saved = getattr(intents_module, "on_board_saved", None)
+        if callable(on_saved):
+            material_impact = on_saved(conn, board_id=bid, state=result["state"], reason=reason)
+    except Exception as exc:  # noqa: BLE001 - 保护性收尾，不能影响保存结果
+        material_impact = {"paused": [], "affected": [], "error": str(exc)}
+
     return {
         "ok": True,
         "seq": result["seq"],
         "savedAt": result["savedAt"],
         "state": result["state"],
         "pending": result.get("pending") or {"baselineSeq": None, "expressions": []},
+        "materialImpact": material_impact,
     }
 
 

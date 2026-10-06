@@ -129,6 +129,20 @@ export function listIntentBoard(boardId: string): Promise<IntentListResponse> {
   return fetchIntents(boardId);
 }
 
+/**
+ * 保存前的只读预判：这次改动会不会影响正在执行的任务（不改任何状态、不落库）。
+ * 用户在保存前据此看到影响说明；取消就不保存，任务继续。
+ */
+export function previewMaterialImpact(
+  boardId: string,
+  state: BoardState,
+): Promise<{ affected: { intentId: string; title: string; materials: string[]; consequence: string }[] }> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/material-impact`, {
+    method: "POST",
+    body: JSON.stringify({ state }),
+  });
+}
+
 export function createDemoIntents(boardId: string): Promise<{ created: Intent[]; demo: boolean }> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intents`, {
     method: "POST",
@@ -163,10 +177,15 @@ export function updateIntentPreview(
   });
 }
 
-/** 演示执行推进（第一阶段没有真实执行；界面上明确标注为演示）。 */
+/**
+ * 演示执行推进（第一阶段没有真实执行；界面上明确标注为演示）。
+ *
+ * `revert_rest` 不是执行结果，而是「撤回会影响其他工作的那部分」的用户决定：
+ * 只有在部分撤回留下 pendingDecision 时才会用到。
+ */
 export function advanceIntent(
   intentId: string,
-  outcome: "done" | "failed" | "paused" | "cancelled",
+  outcome: "done" | "failed" | "paused" | "cancelled" | "revert_rest",
 ): Promise<{ ok: boolean; intent?: Intent; revert?: unknown; detail?: string }> {
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/demo/advance`, {
     method: "POST",

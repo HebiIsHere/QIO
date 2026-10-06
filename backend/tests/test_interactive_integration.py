@@ -62,9 +62,17 @@ def save(client: TestClient, cards, groups=None, links=None, selection=None) -> 
 
 
 def state(client: TestClient) -> dict:
+    """板面状态本体（BoardState）。"""
     resp = client.get(f"/api/interactive/boards/{BOARD}/state")
     assert resp.status_code == 200, resp.text
     return resp.json()["state"]
+
+
+def state_meta(client: TestClient) -> dict:
+    """GET /state 的完整响应：state + baseline + pending + visibleRange + submissions + drafts。"""
+    resp = client.get(f"/api/interactive/boards/{BOARD}/state")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
 def submit(client: TestClient, **body) -> dict:
@@ -99,19 +107,25 @@ def test_scenario1_visibility_boundary_and_checkbox_cleared(client: TestClient) 
     result = submit(client)
 
     assert result["status"] == "succeeded"
-    for snapshot in (result["before"], result["after"]):
-        ids = _ids(snapshot)
-        assert {"m_file", "m_url", "n_visible"} <= ids
-        # 未勾选的注释完全不可见：卡片、链接端点、（除组名外的）成员描述都不出现
-        assert "n_hidden_note" not in ids
+    assert result["baseline"]["firstSubmission"] is True
+    assert result["before"]["cards"] == []  # 首次提交没有历史基准
+
+    after = result["after"]
+    assert {"m_file", "m_url", "n_visible"} <= _ids(after)
+    assert "l_visible" in {link["id"] for link in after["links"]}
+    group = next(item for item in after["groups"] if item["id"] == "g1")
+    assert group["name"] == "成本与材料"  # 组名是独立关系依据
+    assert "n_visible" in group["members"]
+
+    # 未勾选的注释完全不可见：卡片、链接端点、成员描述、文字都不出现（前后状态都一样）
+    for snapshot in (result["before"], after):
+        assert "n_hidden_note" not in _ids(snapshot)
         assert "l_leak" not in {link["id"] for link in snapshot["links"]}
-        assert "l_visible" in {link["id"] for link in snapshot["links"]}
-        group = next(item for item in snapshot["groups"] if item["id"] == "g1")
-        assert group["name"] == "成本与材料"  # 组名是独立关系依据
-        assert "n_hidden_note" not in group["members"]  # 但不用成员描述泄露它
-        assert "n_visible" in group["members"]
+        if snapshot["groups"]:
+            assert "n_hidden_note" not in snapshot["groups"][0]["members"]
         raw = str(snapshot)
         assert "我不太确定要不要继续" not in raw
+        assert "n_hidden_note" not in raw
 
     # 提交成功后自动取消勾选（不是删除）
     after = state(client)
@@ -136,7 +150,7 @@ def test_scenario2_edits_are_saved_but_qio_gets_nothing(client: TestClient) -> N
     save(client, [_card("n1", "text", "第一版", checked=True)])
     first = submit(client)
     assert first["status"] == "succeeded"
-    baseline_after_first = state(client)["baseline"]
+    baseline_after_first = state_meta(client)["baseline"]
     assert baseline_after_first is not None
 
     save(client, [_card("n1", "text", "第二版（还没提交）", checked=True), _card("n2", "text", "新加的想法")])
@@ -145,7 +159,7 @@ def test_scenario2_edits_are_saved_but_qio_gets_nothing(client: TestClient) -> N
 
     submissions = client.get(f"/api/interactive/boards/{BOARD}/submissions").json()["submissions"]
     assert len(submissions) == 1  # 保存不产生提交，QIO 没有拿到新表达
-    assert state(client)["baseline"] == baseline_after_first
+    assert state_meta(client)["baseline"] == baseline_after_first
 
 
 # --- 场景 3：撤销与「最终有效状态」 ---------------------------------------
@@ -179,13 +193,13 @@ def test_scenario3_layout_only_submission_is_empty(client: TestClient) -> None:
     save(client, [_card("n1", "text", "原话", checked=True)])
     first = submit(client)
     assert first["status"] == "succeeded"
-    baseline = state(client)["baseline"]
+    baseline = state_meta(client)["baseline"]
 
     save(client, [_card("n1", "text", "原话", checked=True, x=88.0, y=66.0)])
     result = submit(client)
     assert result["status"] == "empty"
     assert result["baseline"]["updated"] is False
-    assert state(client)["baseline"] == baseline
+    assert state_meta(client)["baseline"] == baseline
 
 
 def test_scenario3_live_selection_is_recorded(client: TestClient) -> None:
