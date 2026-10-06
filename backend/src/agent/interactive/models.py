@@ -190,31 +190,44 @@ def is_live(card: dict) -> bool:
 CHECKABLE_KINDS = ANNOTATION_KINDS
 
 
+def visible_except_deleted(card: dict) -> bool:
+    """可见性判断，但**不看 deleted**。
+
+    两种情况要用它：
+
+    - 正常投影（`selectable_cards`）：先看它，再看 deleted；
+    - 「删除 = 撤回」的表达：一张卡被删掉时，只有它在**当前**可见范围内，
+      才允许把「撤回」这件事本身写进提交载荷 —— 否则未勾选 / 明确隐藏的注释会
+      借着「删除」重新把文字与链接带进 before（实测过的漏洞）。
+    """
+    if card.get("hidden", False):
+        return False
+    kind = card.get("kind")
+    if kind == REPLY_KIND:
+        return False
+    if kind in CHECKABLE_KINDS and not card.get("checked", False):
+        return False
+    return True
+
+
 def selectable_cards(state: dict) -> list[dict]:
     """本次允许 QIO 查看的范围（唯一实现，前后端与提交载荷都用它）。
 
     规则：
 
-    - 文字注释（text）：默认未勾选；**未勾选 = QIO 完全看不到它的文字与注释链接**；
+    - 文字注释（text）：默认未勾选；**未勾选 = QIO 完全看不到它的文字与注释链接**，
+      包括提交的前后状态；
     - 材料（file / image / code / url）：默认在范围内（添加材料不等于要求总结、比较、
       修改或执行，那是意图问题，不是可见性问题）；
     - 任何卡片被明确隐藏（hidden）都退出讨论范围；
     - `reply` 卡片是 QIO 自己的结果，不是用户的表达，不进提交载荷；
     - 已删除的卡片不进范围。
     """
-    result: list[dict] = []
-    for card in state.get("cards", []):
-        if not is_live(card):
-            continue
-        if card.get("hidden", False):
-            continue
-        kind = card.get("kind")
-        if kind == REPLY_KIND:
-            continue
-        if kind in CHECKABLE_KINDS and not card.get("checked", False):
-            continue
-        result.append(card)
-    return result
+    return [
+        card
+        for card in state.get("cards", [])
+        if is_live(card) and visible_except_deleted(card)
+    ]
 
 
 def selectable_ids(state: dict) -> set[str]:
