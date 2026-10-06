@@ -674,6 +674,112 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_turn_journal_created ON turn_journal(created_at)",
         ],
     ),
+    (
+        26,
+        [
+            # 互动模式第一阶段：板面、材料 / 注释卡片、组、关系链接、状态快照、
+            # 提交记录、QIO 意图与草稿。
+            #
+            # 语义见 docs/interactive-mode-contract.md：板面状态是一份 JSON 文档，
+            # 这里只保存必须落库的事实（最新状态 / 快照 / 提交 / 意图 / 草稿）；
+            # 组顺序、可见范围这类判定放在应用层，不用 SQL 表达。
+            """
+            CREATE TABLE IF NOT EXISTS boards (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL DEFAULT '互动板面',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                meta       TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            # 最新板面状态：每完成一次操作就自动写一次（保存不调用 QIO）
+            """
+            CREATE TABLE IF NOT EXISTS board_states (
+                board_id   TEXT PRIMARY KEY REFERENCES boards(id),
+                seq        INTEGER NOT NULL DEFAULT 0,
+                state      TEXT NOT NULL DEFAULT '{}',
+                reason     TEXT NOT NULL DEFAULT 'op',
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # 状态快照：撤销 / 重做与「撤回任务改动」的依据
+            """
+            CREATE TABLE IF NOT EXISTS board_state_snapshots (
+                id         TEXT PRIMARY KEY,
+                board_id   TEXT NOT NULL REFERENCES boards(id),
+                seq        INTEGER NOT NULL,
+                state      TEXT NOT NULL,
+                reason     TEXT NOT NULL DEFAULT 'op',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_snapshots_board"
+            " ON board_state_snapshots(board_id, seq)",
+            # 文字草稿：输入过程中保存的未提交文字（草稿不是提交内容）
+            """
+            CREATE TABLE IF NOT EXISTS board_drafts (
+                board_id   TEXT PRIMARY KEY REFERENCES boards(id),
+                drafts     TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # 提交：before / after 均限于**本次允许查看的范围**
+            """
+            CREATE TABLE IF NOT EXISTS board_submissions (
+                id           TEXT PRIMARY KEY,
+                board_id     TEXT NOT NULL REFERENCES boards(id),
+                seq          INTEGER NOT NULL,
+                status       TEXT NOT NULL,
+                before_state TEXT NOT NULL DEFAULT '{}',
+                after_state  TEXT NOT NULL DEFAULT '{}',
+                visible      TEXT NOT NULL DEFAULT '{}',
+                expressions  TEXT NOT NULL DEFAULT '[]',
+                baseline     TEXT NOT NULL DEFAULT '{}',
+                delivery     TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT NOT NULL DEFAULT '',
+                error        TEXT,
+                created_at   TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_submissions_board"
+            " ON board_submissions(board_id, seq)",
+            # 未提交的有效改动（每次保存后重算，供界面显示；它不进 QIO）
+            """
+            CREATE TABLE IF NOT EXISTS board_pending (
+                board_id     TEXT PRIMARY KEY REFERENCES boards(id),
+                baseline_seq INTEGER,
+                expressions  TEXT NOT NULL DEFAULT '[]',
+                updated_at   TEXT NOT NULL
+            )
+            """,
+            # QIO 意图 / 任务：预览、影响说明、依赖、进度、已应用与撤回记录
+            """
+            CREATE TABLE IF NOT EXISTS board_intents (
+                id             TEXT PRIMARY KEY,
+                board_id       TEXT NOT NULL REFERENCES boards(id),
+                submission_id  TEXT,
+                title          TEXT NOT NULL,
+                summary        TEXT NOT NULL DEFAULT '',
+                status         TEXT NOT NULL,
+                preview        TEXT NOT NULL DEFAULT '{}',
+                impact         TEXT NOT NULL DEFAULT '{}',
+                depends_on     TEXT NOT NULL DEFAULT '[]',
+                conflicts_with TEXT NOT NULL DEFAULT '[]',
+                conflict_key   TEXT NOT NULL DEFAULT '',
+                material_refs  TEXT NOT NULL DEFAULT '[]',
+                progress       TEXT NOT NULL DEFAULT '{}',
+                applied        TEXT NOT NULL DEFAULT '{}',
+                revert         TEXT NOT NULL DEFAULT '{}',
+                reason         TEXT NOT NULL DEFAULT '',
+                demo           INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_intents_board"
+            " ON board_intents(board_id, created_at)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

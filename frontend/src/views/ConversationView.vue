@@ -230,6 +230,10 @@ onMounted(() => {
       @confirm="session.confirmPendingSwitch()"
       @keep="session.rejectPendingSwitch()"
     />
+    <!-- 互动模式入口：与对话模式并列，安静的一行；不改变对话本身的行为 -->
+    <div class="mode-entry-row">
+      <router-link to="/interactive" class="link mode-entry">互动模式：一起整理材料与关系</router-link>
+    </div>
     </div>
     <Composer />
     <SettingsFloat />
@@ -365,4 +369,18 @@ onMounted(() => {
 .notice.fallback {
   padding-right: 84px;
 }
+/* 互动模式入口：安静的一行，居中在输入区上方，不抢消息流与输入焦点 */
+.mode-entry-row {
+  display: flex;
+  justify-content: center;
+  padding: 0 24px 4px;
+  flex-shrink: 0;
+}
+.mode-entry {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.mode-entry:hover { color: var(--link); }
+.mode-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
