@@ -96,56 +96,90 @@ afterEach(() => {
 });
 
 /**
- * 让 connectEvents 内部那串 await 跑完（问壳拿令牌 → 请求票据 → 建 EventSource）。
- * 用**正数**推进：`advanceTimersByTimeAsync(0)` 在精简 runner 里不足以排空这条较深的微任务链
- * （在官方 vitest 里两种写法都对，重连退避 ≥1s，5ms 不会误触发重连）。
+ * 在装假定时器**之前**抓一份真实 setTimeout：`vi.useFakeTimers()` 会把全局那份换掉，
+ * 而 settle() 恰恰需要真实事件循环（见下）。
+ */
+const realSetTimeout = setTimeout;
+
+/**
+ * 等 `connectEvents()` 内部那串 await 真的推进到位（问壳拿令牌 → 请求票据 → 建 EventSource）。
+ *
+ * 为什么不能只推假定时器：`resolveBackend()` 里有 `await import("@tauri-apps/api/core")`，
+ * 动态 import 是**真实 I/O**，必须让真实事件循环转一圈才能完成；而
+ * `for (…) await vi.advanceTimersByTimeAsync(1)` 这种紧凑循环只在微任务里打转、从不给 I/O
+ * 让出机会 —— 实测这么推 30ms 依然一个连接都建不出来（CI 上第 1 个用例就是这么红的，
+ * 与 vitest 版本、操作系统都无关，本机 Windows 一样复现）。
+ *
+ * 判据用**可观察的副作用**（建出了事件源，或至少把票据请求发出去了），不用「推几毫秒」这种猜法；
+ * 假时间每次只推进 1ms、总共至多 50ms，远低于重连退避（≥1000ms），不会误触发重连。
  */
 async function settle() {
-  for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(1);
+  for (let i = 0; i < 50; i += 1) {
+    if (FakeEventSource.instances.length > 0 || fetchCalls.length > 0) return;
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(1);
+  }
+  throw new Error(
+    "connectEvents 没有推进：既没建出事件源，也没发出票据请求" +
+      `（invoke 调用 ${ipcMock.mock.calls.length} 次）`,
+  );
 }
 
 describe("WS1 §5：事件流断开与清理", () => {
   it("断开时会重连（机制本身有效，避免后面的「不重连」断言变成空过）", async () => {
     const handle = connectEvents(() => {});
-    await settle();
-    expect(FakeEventSource.instances.length).toBe(1);
+    // try/finally：断言提前中断时也必须收掉连接 —— 否则这条没跑完的连接会漏进下一个用例，
+    // 表现成「下一个用例数到 2 个事件源」。那是测试互相污染，不是产品行为。
+    try {
+      await settle();
+      expect(FakeEventSource.instances.length).toBe(1);
 
-    FakeEventSource.instances[0].fail(); // 断开
-    await vi.advanceTimersByTimeAsync(2000); // 第一次退避 ~1s + 抖动
+      FakeEventSource.instances[0].fail(); // 断开
+      await vi.advanceTimersByTimeAsync(2000); // 第一次退避 ~1s + 抖动
 
-    expect(FakeEventSource.instances.length).toBe(2); // 真的重连了
-    handle.close();
+      expect(FakeEventSource.instances.length).toBe(2); // 真的重连了
+    } finally {
+      handle.close();
+    }
   });
 
   it("close() 之后断开：**不再**重连，也不留挂着的事件源", async () => {
     const handle = connectEvents(() => {});
-    await settle();
-    const first = FakeEventSource.instances[0];
+    try {
+      await settle();
+      const first = FakeEventSource.instances[0];
 
-    handle.close();
-    expect(first.closed).toBe(true); // 事件源被关掉
+      handle.close();
+      expect(first.closed).toBe(true); // 事件源被关掉
 
-    first.fail(); // 关闭之后再断开
-    await vi.advanceTimersByTimeAsync(60000); // 推进足够久
+      first.fail(); // 关闭之后再断开
+      await vi.advanceTimersByTimeAsync(60000); // 推进足够久
 
-    expect(FakeEventSource.instances.length).toBe(1); // 没有新的连接
+      expect(FakeEventSource.instances.length).toBe(1); // 没有新的连接
+    } finally {
+      handle.close(); // 幂等；断言提前中断时兜底
+    }
   });
 
   it("close() 会立刻取消还在飞的票据请求（不留后台请求）", async () => {
     hangTicket = true;
     const handle = connectEvents(() => {});
-    await settle();
+    try {
+      await settle();
 
-    expect(fetchCalls.length).toBe(1); // 有令牌 → 真的发了票据请求（不是空过）
-    expect(fetchCalls[0].url).toContain("/api/events/ticket");
-    const signal = fetchCalls[0].init.signal;
-    expect(signal).not.toBeUndefined();
-    expect(signal?.aborted).toBe(false); // 还在飞
+      expect(fetchCalls.length).toBe(1); // 有令牌 → 真的发了票据请求（不是空过）
+      expect(fetchCalls[0].url).toContain("/api/events/ticket");
+      const signal = fetchCalls[0].init.signal;
+      expect(signal).not.toBeUndefined();
+      expect(signal?.aborted).toBe(false); // 还在飞
 
-    handle.close();
+      handle.close();
 
-    expect(signal?.aborted).toBe(true); // 关闭时被取消
-    await vi.advanceTimersByTimeAsync(EVENTS_TICKET_TIMEOUT_MS + 1000);
-    expect(FakeEventSource.instances.length).toBe(0); // 关闭后不会再建连接
+      expect(signal?.aborted).toBe(true); // 关闭时被取消
+      await vi.advanceTimersByTimeAsync(EVENTS_TICKET_TIMEOUT_MS + 1000);
+      expect(FakeEventSource.instances.length).toBe(0); // 关闭后不会再建连接
+    } finally {
+      handle.close(); // 幂等
+    }
   });
 });
