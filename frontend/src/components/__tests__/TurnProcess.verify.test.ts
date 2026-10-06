@@ -127,6 +127,16 @@ function occurrenceCount(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+/** 历史体是「可展开」的：需要时点开开关，让历史内容真的渲染出来。 */
+async function openProcessHistory(wrapper: VueWrapper): Promise<void> {
+  if (wrapper.find('[data-test="turn-process-history"]').exists()) return;
+  const toggle = wrapper.find('[data-test="turn-process-toggle"]');
+  if (toggle.exists()) {
+    await toggle.trigger("click");
+    await settle();
+  }
+}
+
 /** 历史体是否处于「收起」状态：缺失 / 不可见 / aria-hidden / 祖先 details 未 open。 */
 function historyCollapsed(wrapper: VueWrapper): boolean {
   const body = wrapper.find('[data-test="turn-process-history"]');
@@ -248,13 +258,39 @@ describe("契约 §1.2 / §1.3：同阶段更新与自主转阶段", () => {
     events.dispatch(
       ev("TOOL_END", { turn_id: "turn_1", call_id: "c2", tool: "fs_write", ok: true, stage_id: "st_turn1_2", duration_ms: 20 }),
     );
+    // 当前阶段的第二次说明：最新一条突出显示，更早一条进可展开历史（同一段文字只出现一次）
+    events.dispatch(
+      ev("STAGE", {
+        turn_id: "turn_1",
+        stage_id: "st_turn1_2",
+        index: 2,
+        status: "running",
+        name: "核对实现",
+        text: "核对完 3 个文件",
+        kind: "progress",
+        op: "update",
+        narrative_id: "msg_4",
+        call_id: null,
+        call_ids: ["c2"],
+        created_at: "2026-10-06T08:00:03+00:00",
+      }),
+    );
     await settle();
+    await openProcessHistory(wrapper);
 
     const region = requireProcessRegion(wrapper);
     const text = region.text();
     expect(text).toContain("核对实现");
+    // 最新说明：只在当前阶段块里出现一次
+    expect(occurrenceCount(wrapper.text(), "核对完 3 个文件")).toBe(1);
+    // 当前阶段的更早说明：必须能回看，且与当前块不重复
+    const earlier = wrapper.find('[data-test="turn-process-current-notes"]');
+    expect(earlier.exists(), "当前阶段有 ≥2 条说明时，更早的说明必须能回看").toBe(true);
+    expect(earlier.text()).toContain("正在核对实现");
     expect(occurrenceCount(wrapper.text(), "正在核对实现")).toBe(1);
-    expect(occurrenceCount(wrapper.text(), "已经读完 12 个文件")).toBeLessThanOrEqual(1);
+    // 上一个阶段的历次说明：在历史里各出现一次
+    expect(occurrenceCount(wrapper.text(), "已经读完 12 个文件")).toBe(1);
+    expect(occurrenceCount(wrapper.text(), "正在读取仓库结构")).toBe(1);
     wrapper.unmount();
   });
 
