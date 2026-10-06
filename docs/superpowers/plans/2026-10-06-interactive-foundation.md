@@ -43,3 +43,31 @@ store / 视图 / 模式入口 + 三个占位组件），因此：
    走完 10 个场景并截图（板面、提交、预览、批量审批、恢复）。
 3. 独立复核子智能体在 `wt/int-verify` 上读实现 + 复现关键场景，输出问题清单。
 4. 文档：`docs/status.md` 增里程碑，`python scripts/check_docs.py` 通过。
+
+---
+
+## 交付记录（2026-10-06）
+
+- **起点提交：** `ee6bbff`（= `origin/main`，用 `git ls-remote origin refs/heads/main` 核对过；本地 `main` 与远端一致）。
+- **总开发分支：** `feat/interactive-foundation`（工作区 `D:\qio-dev\qio-int`），**未合并 main、未发布安装包**。
+- **子分支（都从 `26fa417` 这个含接口骨架的共同起点分出）：**
+  - A 板面：`wt/int-a-board` → `fbf4398`
+  - B 保存与可见范围：`wt/int-b-persist` → `b49a44e`
+  - C 回复与审批：`wt/int-c-approval` → `ea7f2f5`
+  - 独立复核：`wt/int-verify`（只读复核，产出报告与复现用例，不加入产品分支）
+- **集成顺序：** A → B → C，之后是按复核结论的修复（B 的权限边界、C 的恢复身份与批量透传）与 Lead 的文档/验收脚本。
+- **最终提交：** `bf942e5`（集成分支头）。
+- **规模：** 相对起点 `54 files changed, 16673 insertions(+), 1 deletion(-)`。
+
+### 最终验收（都在 `bf942e5` 上跑）
+
+| 检查 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端全量 | `cd backend; uv run --frozen pytest` | `2079 passed, 9 skipped`（exit 0） |
+| 前端类型 | `cd frontend; npx vue-tsc --noEmit` | 无输出（exit 0） |
+| 前端全量 | `cd frontend; npm test` | `106 files / 1041 tests passed`（exit 0） |
+| 文档一致性 | `python scripts/check_docs.py` | 通过（28 个里程碑条目） |
+| 真实界面验收 | `node scripts/interactive-verify/ui-scenarios.mjs` | 21 项断言全过（含真实鼠标拖动、批量审批冲突、重新打开恢复） |
+
+界面验收的截图与说明见 `scripts/interactive-verify/README.md`。
+
