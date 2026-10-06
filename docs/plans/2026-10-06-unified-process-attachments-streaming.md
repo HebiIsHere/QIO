@@ -150,6 +150,7 @@
 ### 2.2 分层改造
 
 - `adapters/base.py`：新增 `StreamDelta` 与 `supports_stream`、`stream()`（默认不支持 → 抛 `NotImplementedError`，由 loop 走整段降级，**不假装流式**）。
+  `StreamDelta` 实际形状（集成后实测）：`kind: str`（`"text"` 正文碎片 / `"tool_call"` 工具调用碎片 / `"done"` 结束，且 `done` 至多一次、必须在最后）、`text: str = ""`、工具调用碎片字段与 `completion`。
 - `adapters/native.py`（OpenAI 兼容，当前主力）与 `adapters/anthropic.py`：真 SSE 增量。
 - `adapters/text.py`（text 兼容档）：明确降级 —— 一次性 `mode:"final"`，前端显示「该模型路径不支持实时生成」。
 - `core/loop.py`：`_plan` 走流式分支；合并渲染节奏（≥40ms 或 ≥24 字符合并一次），
@@ -197,7 +198,9 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 接口（`api/server.py`）：
 
-- `POST /api/attachments` `{source_path, name?, size?}` → 后台复制/登记，返回 `{id, kind, display, state, size_bytes}`
+- 响应统一是**信封**形状（集成后实测，2026-10-06 由 Lead 回填）：`{"ok": true, "attachment": {...}}`，
+  列表是 `{"ok": true, "attachments": [...]}`；`attachment` 内含 `id / kind / display / size_display / state / size_bytes / stored_path / source_path / error`。
+- `POST /api/attachments` `{source_path, name?, size?}` → 后台复制/登记
 - `GET /api/attachments/{id}` → 元数据 + 可用性/变化检查（`missing` / `changed`）
 - `POST /api/attachments/{id}/relocate` `{source_path}` → 重新指定位置
 - `DELETE /api/attachments/{id}` → 只删 QIO 管理的副本，**绝不动用户原文件**

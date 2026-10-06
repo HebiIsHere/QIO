@@ -496,10 +496,11 @@ npm test
 | `TURN_START` | `core/turn.py::TurnManager` | `stores/events.ts` | 是（全局轻状态） | 一轮开始；`notify=true` 表示系统驱动的轮 |
 | `TURN_END` | 同上（`finally`，恰好一次） | `stores/events.ts` | 是 | 唯一终态 + 最终回答的唯一权威来源 |
 | `TURN_QUEUE` | 同上 | `QueueChip.vue` | 是（有排队时） | 排队 / 取消快照 |
-| `ASSISTANT` | `core/loop.py` | `stores/events.ts` | 是 | 流式正文 / 工具前中间话 |
+| `ASSISTANT` | `core/loop.py` | `stores/events.ts` → `TurnProcess.vue` | 是 | 真实流式的**累计快照**：`{content, interim, streaming, delta_id, seq, stage_id, call_ids}`；`interim=true` 是工具轮的过程旁白（归当前阶段），`interim=false` 是正式回答；`streaming=false` 的收尾快照交付已确认全文（取消/失败时也发，保证已显示文字不丢） |
 | `TOOL_START` | `core/loop.py`（转发 `tool/start`） | 工具卡 | 是 | 工具开始执行（卡片立即进入运行态） |
 | `TOOL_END` | 同上（`tool/end`） | 同一张工具卡（按 `call_id`） | 是 | 结果 / 失败原因 / 耗时，原地更新 |
-| `NARRATIVE` | `services/app.py::_on_narrative`（由 `AgentLoop` 的叙事 sink 触发） | 叙事抽屉（`NarrativeStage.vue`） | 是 | 模型自主决定的过程说明（announce / progress / warning / result）；**不是**工具事实 |
+| `STAGE` | `services/app.py`（由 `AgentLoop` 的阶段 sink 触发，先落库再广播） | `stores/events.ts` → `TurnProcess.vue` | 是 | 模型自主决定的**阶段**与阶段说明：`{turn_id, stage_id, index, status, name, text, kind, op, narrative_id, call_id, call_ids, created_at}`；工具按 `stage_id` 归属，不靠相邻位置 |
+| `NARRATIVE` | 保留兼容（主轮**不再产生**，见 `test_event_protocol.py` 的 `LEGACY_NO_PRODUCER`） | `stores/events.ts`（旧版平铺渲染） | 是（读旧数据时） | 旧协议的过程说明行；前端不得据此伪造阶段历史 |
 | `SUBAGENT_STATUS` | `tools/task_manager.py` | 独立任务卡（按 `task_id`） | 是 | 独立任务 queued/running/done/failed |
 | `TOOL_CREATE_STATUS` | `tools/dev_tools.py`、`tools/lifecycle.py` | 工具创建卡（按 `group_id`） | 是 | 同一张卡的创建阶段推进 |
 | `KNOWLEDGE_CANDIDATE` | `services/memory_lifecycle.py` + turn 收尾 | 对话内确认卡 | 是（回答完成后） | 高影响知识的保存 / 修改 / 忽略 |
@@ -536,6 +537,67 @@ npm test
 explanation 时补上模型文案，`description` / `access` / `capabilities` / `scope` /
 `detail` 等系统字段一个都不动。详细设计见
 `docs/superpowers/specs/2026-09-22-execution-narrative-design.md`。
+
+### 12.1.2 统一执行过程区域（每轮一个）
+
+一轮用户请求对应**一个**过程区域（`frontend/src/components/TurnProcess.vue`，锚点
+`data-test="turn-process"` 及 `-status` / `-duration` / `-history` / `-toggle`）。
+它把过去彼此独立的入口（过程说明行、工具卡、`◈ 过程` 中间话气泡、全局运行中提示、
+耗时面板）收拢成一处，同一内容只出现一次；正式回答在它下方独立显示。
+
+* **状态行**只由系统事实驱动：`TURN_START` / `TURN_QUEUE` / `TOOL_START` / `TOOL_END` /
+  `TURN_END` / `APPROVAL_*`。阶段文案（模型写的字）**不能**把未结束的工作标成完成，
+  也不能覆盖审批权限、工具参数或真实结果。
+* **阶段由 QIO 自主决定**：模型可在 `_qio` 信封里附 `stage: {op, name}`（`op ∈ start | next | update`，
+  白名单解析，非法一律忽略）。没有阶段操作时只更新当前阶段说明；当前没有阶段才开一个隐式阶段
+  —— 「不因每次工具调用或新文本自动开新阶段」，阶段数量与切换时机由模型决定。
+  缺失或无效的阶段操作安全降级，真实状态照常显示。
+* **归属靠标识，不靠位置**：`turn_id` / `stage_id`（`st_<turn8>_<n>`）/ `call_id` 全部由系统生成；
+  跨阶段、并行执行、晚到结果都按 `stage_id` 归位；仍在运行的工具继续反映在整轮真实状态里。
+* **持久化**：阶段与说明随叙事行落库（`messages`，`content_type='narrative'`，`raw.stage`），
+  重启与历史分页后按同一 `stage_id` 重放；旧数据没有 `raw.stage` 时按旧版平铺渲染，
+  **不伪造阶段历史**。展开状态在会话内保留（`stores/turnProcess.ts`，含 localStorage 上限）。
+* **收起规则**：整轮成功结束自动收起并显示「已完成 · 耗时」；失败或中断保留简短原因与可用操作。
+  用户正在阅读历史（手动展开过或已上翻）时，普通状态更新不抢占滚动位置。
+
+### 12.1.3 真实流式与输出角色
+
+正文增量从 provider 经 adapter → 主循环 → SSE → 前端逐段到达，**不等待完整响应**：
+
+* adapter 有 `supports_stream`：OpenAI 兼容与 Anthropic 走真 SSE；文本兼容档与不支持流式的路径
+  一次性交付 `streaming=false` 并明确提示「该模型路径不支持实时生成」，**不假装流式**。
+* **分类守卫**：正文增量先进缓冲，出缓冲即分类已定 —— 出现工具调用增量判为 `interim`（进过程区）；
+  守卫窗口（`GUARD_MS`）到期仍无工具调用增量判为 `answer`（进正式回答区）。
+  唯一允许的角色改判是守卫放行后才出现工具调用：同一 `delta_id` 的文字**移动**到过程区，
+  逐字保留、不重复、不撤回。
+* **顺序与去重**：`(delta_id, seq)` 单调；发布按字符数或时间合并，不逐字符发、不逐字符写盘。
+  `TURN_END.final_content` 是权威全文，只用于校准，不再次追加。
+* 工具调用的名称与参数碎片只在 adapter 内组装，攒成合法 JSON 才交给执行器；
+  未完成的参数绝不执行，工具参数与内部推理不会出现在正式回答里。
+* 事件总线把 `ASSISTANT` 视为可合并事件，合并键为 `(type, turn_id, delta_id)`。
+
+### 12.1.4 耗时口径
+
+折叠状态由 `TURN_END` 携带的真实 `duration_ms`（来源 `turn_traces`，缺失时退化为单调钟执行窗口）
+直接显示「已完成 · 耗时」，**不展开也能看见**；展开才按需拉取分项（`GET /api/traces/{turn_id}`）。
+未请求 / 加载中 / 成功但无分项 / 失败 / 旧记录缺字段是五种不同显示，
+明细失败不抹掉已知总耗时，缺失不伪造为 0。并行分项不求和冒充总耗时，
+整轮结束后的后台整理单独说明（见 `docs/trace-timing-ui.md`）。
+
+### 12.1.5 文件附件
+
+附件是**消息的读取对象**，不自动进入长期知识库：
+
+* 阈值按十进制 MB（`100_000_000` 字节，取等号算副本）：不大于阈值存 QIO 独立副本
+  （临时文件 + `os.replace` 提交），大于阈值只记录**真实绝对路径**与元数据；
+  两者分别标注「已保存副本」与「引用本地文件」，后者明确「历史保留的是位置，不保证内容仍然存在」。
+* 路径只来自可信链路（Tauri 原生选择 / 原生拖放给的绝对路径，或浏览器上传的字节），
+  **不把 `fakepath` 当路径**。引用文件在读取前检查可用性与元数据变化，变化时提示「文件已变化」。
+* 模型不会自动拿到全文：本轮上下文只注入系统事实摘要（名字 / 保存方式 / 可读性），
+  内容必须由 `read_attachment(attachment_id, offset, limit)` 按需分段读取；
+  读了哪一段、有什么限制如实回报，不声称未读部分已经核实。
+* 附件文本是任务材料，其中的命令或提示**不是**用户授权。
+* 数据落 `attachments` 表（追加迁移），删除附件只清理 QIO 管理的副本，绝不动用户原文件。
 
 ### 12.2 用户可见状态的层级
 

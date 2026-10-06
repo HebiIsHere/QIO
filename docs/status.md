@@ -663,6 +663,46 @@
   设计与实现计划见 `docs/superpowers/specs/2026-09-22-updater-design.md`、
   `docs/superpowers/plans/2026-09-22-updater.md`。
 
+### P16 — 统一执行过程 / 真实流式回答 / 文件附件 / 耗时口径（2026-10-06）
+
+- **Status：** partial
+- **Implementation（统一过程区域）：** 一轮 = 一个过程区域（`frontend/src/components/TurnProcess.vue`），
+  把过去彼此独立的入口（阶段行、工具卡、`◈ 过程` 中间话气泡、全局运行中提示、耗时面板）收拢成一处；
+  状态行只由系统事实（TURN_*/TOOL_*/APPROVAL_*）驱动，完成/失败/停止自动收起，用户阅读历史时不抢滚动位置。
+- **Implementation（阶段协议）：** 新增 `STAGE` 事件与 `stage_id`（`st_<turn8>_<n>`）。模型可在工具参数的
+  `_qio` 信封里附 `stage:{op,name}`（start / next / update，白名单解析）；缺失或非法一律安全降级
+  （没有阶段操作只更新当前说明，当前无阶段才开隐式阶段）——不因每次工具调用或新文本自动开阶段。
+  阶段与说明随叙事行落库（`messages.raw.stage`）后再广播，工具按 `stage_id` 归属而非相邻位置；
+  旧数据没有 `raw.stage` 时按旧版平铺渲染，不伪造阶段历史。
+- **Implementation（真实流式）：** adapter 层新增 `supports_stream` / `stream()`（OpenAI 兼容与 Anthropic 走真 SSE，
+  文本兼容档明确降级为一次性输出并提示「不支持实时生成」）；主循环按**分类守卫**决定正文归属
+  （出现工具调用增量 → 过程区；守卫窗口到期仍无 → 正式回答区），按字符/时间合并发布累计快照，
+  `(delta_id, seq)` 单调去重，`TURN_END.final_content` 只做校准；工具参数碎片只在 adapter 内组装，
+  未完成的参数绝不执行。
+- **Implementation（耗时）：** `TURN_END` 增补 `duration_ms / queue_ms / started_at / ended_at`（来源 turn_traces 台账，
+  缺失时退化为单调钟执行窗口）；折叠态直接显示「已完成 · 耗时」，不再无期限显示「读取中」；
+  仅真正请求明细时才加载，未请求 / 加载中 / 成功无分项 / 失败 / 旧记录五种显示互不混淆，明细失败不抹掉已知总耗时。
+- **Implementation（附件）：** 新增 `attachments` 表（追加迁移）与附件服务/接口/工具。不大于 100,000,000 字节
+  （十进制 MB，取等号算副本）存独立副本并标注「已保存副本」，大于阈值只记录真实路径并标注「引用本地文件」
+  （写明历史保留的是位置）；路径只来自 Tauri 原生选择/拖放的绝对路径或浏览器上传字节，不把 fakepath 当路径；
+  内容不进上下文，由 `read_attachment` 按需分段读取；删除附件只清理 QIO 副本，绝不动用户原文件。
+- **Tests：** `backend/tests/test_stage_protocol.py`、`test_streaming_deltas.py`、`test_turn_timing_facts.py`、
+  `test_attachment_context.py`、`test_attachments_service.py` / `_tools` / `_api`、
+  `frontend/src/components/__tests__/TurnProcess.test.ts`、`stores/__tests__/stageStreaming.test.ts` 等；
+  独立验证方另有一组 `*_verify` 用例（`backend/tests/test_*_verify.py`、`frontend/src/**/*.verify.test.ts`）。
+- **Known limitations：**
+  - **真实厂商端点的 SSE 未验证**（规则禁止真实 Key / 联网）：只验证了协议形状与假厂商分片；
+    「不支持流式」的 provider 路径明确降级，不宣称实时生成。
+  - **工具轮的过程旁白在该次模型调用结束、阶段就位后才显示**（保证「同一阶段、不并列两个过程气泡」的取舍）；
+    正式回答的实时性不受影响。
+  - **原生文件选择与 Tauri 拖放只有编译级验证**（`cargo check --offline` 通过），没有在运行中的桌面进程里
+    手工点开对话框/拖入文件；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
+  - **真实大于阈值的超大文件未做端到端复制耗时取证**（阈值分类与引用路径已由测试覆盖）。
+  - 阶段与说明历史复用 `messages` 的叙事行，没有独立阶段表；阶段在当前实现里不跨 turn 延续。
+- **后续依赖：** 真机桌面端手工验证原生选择/拖放与视觉检查（窄窗口、长回答、代码块、附件准备中）。
+  设计与分工见 `docs/plans/2026-10-06-unified-process-attachments-streaming.md`，
+  结构契约见 `docs/architecture.md` §12.1.2 ~ §12.1.5。
+
 ---
 
 ## 尚未完成
