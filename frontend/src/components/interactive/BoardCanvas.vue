@@ -39,10 +39,11 @@ import {
   updateLink,
   type DropPreview,
 } from "../../interactive/board";
-import type { BoardCard as BoardCardModel, BoardState, CardKind } from "../../interactive/types";
+import type { BoardCard as BoardCardModel, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
 import BoardLinkLayer from "./BoardLinkLayer.vue";
+import BoardPreviewLayer from "./BoardPreviewLayer.vue";
 import BoardSearchPanel from "./BoardSearchPanel.vue";
 import BoardToolbar from "./BoardToolbar.vue";
 
@@ -85,7 +86,16 @@ const linkMeaning = ref("");
 const linkDirection = ref(false);
 const notice = ref("");
 const highlightId = ref<string | null>(null);
+const locatedIntentId = ref<string | null>(null);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+let locatedTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 仍在等待的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。 */
+const OPEN_INTENT_STATUSES = ["pending", "needs_update", "waiting_dependency", "waiting_confirm", "running"];
+
+const previewIntents = computed<Intent[]>(() =>
+  store.intents.filter((item) => OPEN_INTENT_STATUSES.includes(item.status) && item.preview),
+);
 
 const liveCards = computed(() => (boardState.value?.cards ?? []).filter((card) => !card.deleted));
 const groups = computed(() => boardState.value?.groups ?? []);
@@ -583,6 +593,34 @@ function locate(cardId: string) {
   }, 1600);
 }
 
+// --- 待审批预览：定位事件 --------------------------------------------------
+
+interface LocatePreviewDetail {
+  intentId?: string;
+  bounds?: { x: number; y: number; w: number; h: number };
+}
+
+/** C 的回复区点「在板面上定位」时 dispatch 这个事件；这里高亮 + 滚动到预览范围。 */
+function onLocatePreview(event: Event) {
+  const detail = (event as CustomEvent<LocatePreviewDetail>).detail;
+  if (!detail || !detail.intentId) return;
+  locatedIntentId.value = detail.intentId;
+  if (locatedTimer) clearTimeout(locatedTimer);
+  locatedTimer = setTimeout(() => {
+    locatedIntentId.value = null;
+  }, 2000);
+  const bounds = detail.bounds;
+  const element = viewport.value;
+  if (!bounds || !element) return;
+  const left = Math.max(0, bounds.x - 60);
+  const top = Math.max(0, bounds.y - 60);
+  if (typeof element.scrollTo === "function") element.scrollTo({ left, top, behavior: "smooth" });
+  else {
+    element.scrollLeft = left;
+    element.scrollTop = top;
+  }
+}
+
 // --- 键盘 -----------------------------------------------------------------
 
 function onKeyDown(event: KeyboardEvent) {
@@ -622,12 +660,15 @@ function onKeyDown(event: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   detachPointerListeners();
   if (highlightTimer) clearTimeout(highlightTimer);
+  if (locatedTimer) clearTimeout(locatedTimer);
 });
 </script>
 
@@ -699,6 +740,13 @@ onBeforeUnmount(() => {
             :width="SURFACE_W"
             :height="SURFACE_H"
             @select-link="openLinkEditor"
+          />
+
+          <BoardPreviewLayer
+            :intents="previewIntents"
+            :located-intent-id="locatedIntentId"
+            :width="SURFACE_W"
+            :height="SURFACE_H"
           />
 
           <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
