@@ -489,7 +489,8 @@ async def test_recoverable_tool_error_is_not_a_turn_failure():
                 text="我先试一下这个文件。",
                 tool_calls=[ScriptedToolCall(id="c1", name="boom", arguments={})],
             ),
-            StreamScript(text="这个文件打不开，我换个办法：这是最终回答。"),
+            StreamScript(text="工具失败了，我换个办法。"),  # 工作调用收尾
+            StreamScript(text="这个文件打不开，我换个办法：这是最终回答。"),  # 回答调用
         ]
     )
     loop = AgentLoop(adapter, registry, EventBus(), turn_id="turn_1")

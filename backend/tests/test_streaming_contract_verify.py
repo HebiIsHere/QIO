@@ -1,17 +1,17 @@
-"""D 独立验证：真实流式（契约 §2 + 审计修复 plan §1.1）。
+"""独立验证：真实流式 + 回答阶段协议（第四轮契约 §1.1）。
 
-契约来源：docs/plans/2026-10-06-unified-process-attachments-streaming.md §2，
-以及 docs/plans/2026-10-06-audit-seven-fixes.md §1.1（输出角色边界）。
+契约来源：docs/plans/2026-10-07-three-remaining-fixes.md §1.1（回答阶段协议）。
 验证方式：**不走实现方的内部形状猜测**，而是用本地假厂商端点（真 HTTP + 真 SSE）
 喂给真实的 NativeAdapter + AgentLoop，断言事件层与最终文本的契约。
 
 假厂商端点：scripts/verify_stream_provider.py（本地扮演，不联网、不需要真实 Key）。
 它只证明「QIO 自己的链路对」，不证明任何真实厂商的兼容性。
 
-审计修复后的口径（plan §1.1）：正文增量**先实时进过程区**（interim=true），
-只有「这次调用结束且没有任何工具调用」才把它原样提升为正式回答（interim=false，
-同一 delta_id、同一份文字、不重打）—— 因此本文件断言的是「provider 结束前已经
-看得见字」，不再要求「结束前就已经是正式回答」。
+第四轮口径：角色**只看这次调用带不带工具** —— 工作调用（tools=[...]）的正文进过程区
+（interim=true）；工作调用不再请求工具后，循环发起**一次 tools=[] 的回答调用**，
+它的正文从第一个可发布增量起就是正式回答（interim=false、streaming=true），
+结束时同 delta_id 再补一条 {streaming:false} 做收尾校准。本文件断言：
+正式回答在 provider 结束前就出现在回答区、按节奏合并发布、同一份文字不重复。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_streaming_contract_verify.py -q
 """
@@ -169,14 +169,22 @@ async def test_stream_delta_carries_a_text_fragment():
 # ---- 2. 契约 §2.1：provider 还没结束，回答已经到达（真 SSE 路径） -----------------
 
 
-async def test_streaming_answer_arrives_before_provider_finishes(provider):
-    """审计修复 plan §1.1：正文**先实时进过程区**；调用结束且无工具调用时**原样提升**。
+async def test_answer_streams_into_answer_area_before_provider_finishes(provider):
+    """第四轮契约 §1.1：正式回答来自 tools=[] 的回答调用，**从第一个可发布增量起**
+    就在正式回答区（interim=false、streaming=true），且早于 provider 结束。
 
-    强度不变的三条：provider 结束前已经看得见字 + 按节奏合并发布 + 同一份文字不重复。
+    强度保持：provider 结束前已可见 + 按节奏合并发布 + 同一份文字不重复。
     """
     chunks = [f"第{i:02d}段。" for i in range(1, 21)]
     # 10ms 一片：分片到达比发布节奏（40ms）快 —— 合并发布必须发生，否则就是逐片推送。
-    provider.script.set([{"chunks": chunks, "chunk_delay_ms": 10}])
+    provider.script.set(
+        [
+            # ① 工作调用：没有请求任何工具 → 工作阶段结束
+            {"chunks": ["我先看一下。"], "chunk_delay_ms": 5},
+            # ② 回答调用（tools=[]）：真流式
+            {"chunks": chunks, "chunk_delay_ms": 10},
+        ]
+    )
 
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="turn_stream_verify")
@@ -184,11 +192,14 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
 
     early_event = None
     early_timeline: list[str] = []
+    still_streaming = False
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not task.done():
-        for event in _assistant_events(loop):
+        for event in _assistant_events(loop, interim=False):
             if str(event.data.get("content") or "").strip():
                 early_event = event
+                # 钉住「这一刻」：provider 还没结束、时间线还没到 stream_end
+                still_streaming = not task.done()
                 early_timeline = _timeline_events(provider)
                 break
         if early_event is not None:
@@ -197,45 +208,58 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
 
     result = await asyncio.wait_for(task, timeout=20)
 
-    assert early_event is not None, "契约 §1.1 第 1 条：正文必须边生成边显示，不能等整段响应结束才播放"
-    assert "stream_end" not in early_timeline, (
-        "回答是在 provider 已经发完之后才出现的（假流式）：时间线=%r" % early_timeline
+    assert early_event is not None, (
+        "契约 §1.1：正式回答必须在 provider 结束前就出现在回答区"
     )
-    # 还没有定论：实时展示的是**过程区**文字（不是「先当答案、再移走」）
-    assert early_event.data.get("interim") is True, (
-        "定论之前不得把文字放进正式回答区",
+    assert still_streaming, "不能等整段响应结束才展示正式回答"
+    # 工作调用的流已经结束（它是上一个请求），但**回答调用还在流**：
+    # 时间线最后一条必须是 chunk_sent，而不是回答调用的 stream_end。
+    assert early_timeline and early_timeline[-1] == "chunk_sent", (
+        "正式回答是在 provider 已经发完之后才出现的（假流式）：时间线=%r" % early_timeline
+    )
+    # 首次展示必须是**流式增量**：收尾校准不是首次展示来源
+    assert early_event.data.get("streaming") is True, (
+        "回答调用的第一个回答区事件必须是 streaming=true 的增量（不是收尾校准）",
         early_event.data,
     )
+    assert early_event.data.get("role_evidence") == "tool_free_call", early_event.data
 
     events = _assistant_events(loop)
-    contents = [str(event.data.get("content") or "") for event in events]
+    answer = [e for e in events if e.data.get("interim") is False]
+    work = [e for e in events if e.data.get("interim") is True]
+    contents = [str(event.data.get("content") or "") for event in answer]
     full = "".join(chunks)
 
-    assert contents, "流式路径必须推送 ASSISTANT 增量"
+    assert work, "工作调用的正文必须进过程区（interim=true）"
+    assert contents, "回答调用必须推送 ASSISTANT 增量"
     assert result.final_content == full, (result.final_content, full)
     assert contents[-1] == full, ("最后一段必须是权威全文（累计快照）", contents[-1], full)
     for earlier, later in zip(contents, contents[1:]):
         assert later.startswith(earlier), ("累计快照不得回退/覆盖", earlier, later)
     assert len(contents) >= 2, ("真流式至少要推送两次", contents)
     assert len(contents) < len(chunks), (
-        "契约 §2.1 规则 6：按节奏合并发布，不能逐片推送",
+        "按节奏合并发布，不能逐片推送",
         len(contents),
         len(chunks),
     )
+    # 工作调用的文字永远不进正式回答区（不搬动、不重复）
+    assert all("我先看一下。" not in c for c in contents), contents
 
-    delta_ids = {str(event.data.get("delta_id") or "") for event in events}
-    assert len(delta_ids) == 1 and "" not in delta_ids, ("一次模型调用 = 一条流式消息，delta_id 必须稳定", delta_ids)
-    seqs = [int(event.data["seq"]) for event in events]
+    delta_ids = {str(event.data.get("delta_id") or "") for event in answer}
+    assert len(delta_ids) == 1 and "" not in delta_ids, (
+        "回答调用 = 一条流式消息，delta_id 必须稳定",
+        delta_ids,
+    )
+    seqs = [int(event.data["seq"]) for event in answer]
     assert seqs == sorted(seqs), ("seq 必须单调", seqs)
     assert len(set(seqs)) == len(seqs), ("seq 必须唯一（前端据此丢重复）", seqs)
-    # 增量阶段必须是 streaming=true（真流式）。最后一条是 streaming=false 的**落定 +
-    # 提升**（停打字机、同一份文字进正式回答区）：它必须与上一段内容完全一致、
-    # 同一个 delta_id、只多一条，且绝不能改内容（否则就成了「重打一遍」）。
-    streamed = [event for event in events if event.data.get("streaming") is True]
-    settle = [event for event in events if event.data.get("streaming") is not True]
-    assert streamed, ("流式路径必须至少有 streaming=true 的增量", [e.data for e in events])
-    assert len(settle) == 1, ("流终止时必须有一条 streaming=false 的收尾快照", [e.data for e in settle])
-    assert events[-1] is settle[0], ("收尾快照必须是最后一条", [e.data for e in events])
+    # 增量必须是 streaming=true。最后一条是 streaming=false 的**收尾校准**
+    # （停打字机、同一份文字）：同一个 delta_id、只多一条，且绝不能改内容。
+    streamed = [event for event in answer if event.data.get("streaming") is True]
+    settle = [event for event in answer if event.data.get("streaming") is not True]
+    assert streamed, ("回答调用必须有 streaming=true 的增量", [e.data for e in answer])
+    assert len(settle) == 1, ("回答调用结束时必须只有一条 streaming=false 收尾快照", [e.data for e in settle])
+    assert answer[-1] is settle[0], ("收尾快照必须是最后一条", [e.data for e in answer])
     assert settle[0].data.get("delta_id") == streamed[-1].data.get("delta_id"), (
         "收尾快照必须属于同一个 delta_id",
         settle[0].data,
@@ -244,16 +268,6 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
         "收尾快照必须交付已确认全文（且不改内容）",
         settle[0].data.get("content"),
         full,
-    )
-    # 提升（promotion）：同一 delta_id、同一份文字，从过程区进正式回答区
-    assert settle[0].data.get("interim") is False, ("收尾必须把它提升为正式回答", settle[0].data)
-    assert settle[0].data.get("role_evidence") == "call_closed_without_tools", (
-        "提升的依据必须是「调用结束且无工具调用」，不是时间窗口",
-        settle[0].data,
-    )
-    assert all(event.data.get("interim") is True for event in streamed), (
-        "定论之前不得有任何文字被当成正式回答",
-        [e.data for e in events],
     )
 
 
@@ -271,6 +285,9 @@ async def test_tool_arguments_split_into_fragments_are_assembled_before_executio
                 ],
                 "chunk_delay_ms": 5,
             },
+            # ② 工作调用收尾：不再请求工具
+            {"chunks": ["工具跑完了。"]},
+            # ③ 回答调用（tools=[]）
             {"chunks": ["收到"]},
         ]
     )
@@ -294,10 +311,18 @@ async def test_tool_arguments_split_into_fragments_are_assembled_before_executio
 
 
 async def test_stream_that_ends_without_finish_reason_keeps_confirmed_text(provider):
-    """契约 §2.1 规则 7：断线保留已确认文本；没有发出来的后缀不得凭空出现。"""
+    """断线保留已确认文本（过程区），且没有发出来的后缀不得凭空出现。
+
+    第四轮起工作调用的文字留在过程区；正式回答由随后那次不带工具的调用产出。
+    """
     confirmed = "前两句。第二句。"
     provider.script.set(
-        [{"abort_after": 2, "chunks": ["前两句。", "第二句。", "永远不会发出的后缀"]}]
+        [
+            # ① 工作调用：发两片后断线（没有 finish_reason）
+            {"abort_after": 2, "chunks": ["前两句。", "第二句。", "永远不会发出的后缀"]},
+            # ② 回答调用（tools=[]）：正式回答
+            {"chunks": ["完整回答。"]},
+        ]
     )
 
     registry, _tool = _registry()
@@ -305,13 +330,30 @@ async def test_stream_that_ends_without_finish_reason_keeps_confirmed_text(provi
     result = await asyncio.wait_for(loop.run("请回答"), timeout=20)
 
     text = result.final_content or ""
-    assert "永远不会发出的后缀" not in text, ("未确认的内容不得出现", text)
-    assert confirmed in text, ("已确认文本必须保留", text)
-    assert text.count("前两句。") == 1, ("已确认文本不得重复", text)
+    assert text == "完整回答。", ("正式回答来自回答调用", text)
 
-    contents = [str(e.data.get("content") or "") for e in _assistant_events(loop)]
-    for earlier, later in zip(contents, contents[1:]):
-        assert later.startswith(earlier), ("断流也不能回退已发布内容", earlier, later)
+    events = _assistant_events(loop)
+    work_text = "".join(
+        str(e.data.get("content") or "") for e in events if e.data.get("interim") is True
+    )
+    assert "永远不会发出的后缀" not in work_text, ("未确认的内容不得出现", work_text)
+    assert confirmed in work_text, ("已确认文本必须保留在过程区", work_text)
+    assert work_text.count("前两句。") == 1, ("已确认文本不得重复", work_text)
+
+    # 累计快照按 delta_id 各自单调（工作调用与回答调用是两条流，不能跨流比较）
+    by_delta: dict[str, list[str]] = {}
+    for event in events:
+        by_delta.setdefault(str(event.data.get("delta_id") or ""), []).append(
+            str(event.data.get("content") or "")
+        )
+    for delta_id, contents in by_delta.items():
+        for earlier, later in zip(contents, contents[1:]):
+            assert later.startswith(earlier), (
+                "断流也不能回退已发布内容",
+                delta_id,
+                earlier,
+                later,
+            )
 
 
 async def test_text_compatible_path_never_claims_streaming():

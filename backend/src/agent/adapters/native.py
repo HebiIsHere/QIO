@@ -219,8 +219,12 @@ class NativeAdapter(BaseAdapter):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self.to_openai_messages(messages),
-            "tools": self.to_openai_tools(tools),
         }
+        # 空工具列表**不发送** tools 字段（第四轮契约 §1.1）：空数组在部分兼容端点
+        # 会被直接拒（400），而「没有 tools 字段」才是明确的「本次没有工具」——
+        # 回答调用（tools=[]）必须能在 native 档正确下发。
+        if tools:
+            kwargs["tools"] = self.to_openai_tools(tools)
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -289,10 +293,12 @@ class NativeAdapter(BaseAdapter):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self.to_openai_messages(messages),
-            "tools": self.to_openai_tools(tools),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # 同 complete()：空工具列表不发 tools 字段（回答调用不带工具）。
+        if tools:
+            kwargs["tools"] = self.to_openai_tools(tools)
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:

@@ -376,6 +376,9 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
                     )
                 ],
             ),
+            # 工作调用收尾：不再请求工具（契约 §1.1）
+            StreamScript(text="工具跑完了。"),
+            # 回答调用（tools=[]）：正式回答
             StreamScript(text="完成"),
         ]
     )
@@ -395,15 +398,16 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         for e in ctx.bus._history
         if e.type.value == "ASSISTANT" and e.data.get("interim")
     ]
-    # ① 实时事件：字数过了发布阈值就发，此时还不知道这批工具的阶段
-    assert len(interim) == 2, "工具轮正文先实时出现，阶段就位后补归属（同一份文字，不发第二次）"
-    assert interim[0]["content"] == said and interim[0]["stage_id"] is None
-    assert interim[0]["delta_id"] == interim[-1]["delta_id"]
-    # ② 阶段就位后的同一条累计快照：同一份文字 + 同一个阶段、同一批调用
-    assert interim[-1]["content"] == said
-    assert interim[-1]["stage_id"] == opened["stage_id"]
-    assert interim[-1]["call_ids"] == opened["call_ids"] == ["c1"]
-    assert [e["seq"] for e in interim] == sorted({e["seq"] for e in interim})
+    # 工具轮（delta 1）的正文：先实时出现、阶段就位后补归属（同一份文字，不发第二次）
+    tool_round = [e for e in interim if e["content"] == said]
+    assert len(tool_round) == 2, "工具轮正文先实时出现，阶段就位后补归属（同一份文字，不发第二次）"
+    assert tool_round[0]["stage_id"] is None
+    assert tool_round[0]["delta_id"] == tool_round[-1]["delta_id"]
+    assert tool_round[-1]["stage_id"] == opened["stage_id"]
+    assert tool_round[-1]["call_ids"] == opened["call_ids"] == ["c1"]
+    assert [e["seq"] for e in tool_round] == sorted({e["seq"] for e in tool_round})
+    # 工作调用收尾的正文同样是过程说明（契约 §1.1），不是正式回答
+    assert any(e["content"] == "工具跑完了。" for e in interim)
     # 工具轮的正文**永不**进正式回答区（审计问题 2）
     answers = [
         e.data
@@ -411,6 +415,8 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         if e.type.value == "ASSISTANT" and not e.data.get("interim")
     ]
     assert all(said not in (a["content"] or "") for a in answers), answers
+    # 正式回答来自回答调用（tools=[]）
+    assert [a["content"] for a in answers] == ["完成"]
     # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]

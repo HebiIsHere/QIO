@@ -92,7 +92,9 @@ async def test_abc_fifo_single_planner_and_message_order(ctx: AppContext):
     await asyncio.wait_for(asyncio.gather(t_a, t_b, t_c), timeout=20)
     mp.undo()
 
-    assert adapter.order == ["A", "B", "C"]  # FIFO
+    # 契约 §1.1 变更：一轮有两次模型调用（工作调用 + 回答调用），两次都带同一条
+    # 当前查询 → 每个 tag 各出现两次；执行顺序仍然等于提交顺序（FIFO）。
+    assert adapter.order == ["A", "A", "B", "B", "C", "C"]
     assert adapter.peak == 1
     assert ctx.turns.active is None
 
