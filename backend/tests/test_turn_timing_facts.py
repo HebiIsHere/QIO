@@ -13,6 +13,7 @@ import asyncio
 from datetime import datetime
 
 from agent.core.turn import TurnManager
+from agent.tools.base import Tool, ToolResult
 
 
 class _LedgerStore:
@@ -368,3 +369,45 @@ async def test_app_turn_end_without_ledger_keeps_core_values(tmp_path):
     data = ctx.bus._history[-1].data
     assert data["duration_ms"] == 42  # 台账没有这一行：不覆盖成因 null / 0
     assert data["queue_ms"] == 3
+
+# ---- 可恢复工具错误 ≠ 整轮失败（plan §1.2）-----------------------------------
+
+
+class _BoomTool(Tool):
+    name = "boom"
+    description = "总是失败（可恢复）"
+    parameters = {"type": "object", "properties": {}}
+
+    async def run(self, **kwargs):
+        return ToolResult(
+            ok=False, error="boom: 打不开这个文件", category="io", recoverable=True
+        )
+
+
+async def test_recoverable_tool_error_is_not_a_turn_failure():
+    """一次可恢复的工具错误不等于整轮失败：完成就是完成，原因仍是 none。"""
+    from agent.adapters.fake import FakeStreamAdapter, ScriptedToolCall, StreamScript
+    from agent.api.bus import EventBus
+    from agent.core.loop import AgentLoop
+    from agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_BoomTool())
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text="我先试一下这个文件。",
+                tool_calls=[ScriptedToolCall(id="c1", name="boom", arguments={})],
+            ),
+            StreamScript(text="这个文件打不开，我换个办法：这是最终回答。"),
+        ]
+    )
+    loop = AgentLoop(adapter, registry, EventBus(), turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.tool_calls_made == 1
+    assert result.cancelled is False
+    assert result.phase.value == "done"
+    assert result.stop_reason_code == "none"  # 工具失败没有变成整轮失败
+    assert result.stopped_by is None
+    assert "这是最终回答" in (result.final_content or "")
