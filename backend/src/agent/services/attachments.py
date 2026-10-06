@@ -35,7 +35,6 @@ import hashlib
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -577,6 +576,13 @@ class AttachmentService:
           所以「取消之后不得提交为 ready」在复制线程与落库线程两侧都成立。
 
         这里**不碰数据库**：状态由事件循环线程的 apply_outcome 落库。
+
+        阻塞型调用审计（2026-10-07，问题 6 的 CI 尾延迟）：本函数里剩下的都是**同卷、一次性、
+        必需**的元数据/提交调用 —— mkdir（目标目录）、open（建 .part）、write（大块写入，
+        CPython 会释放 GIL）、os.replace（原子提交，删了就没有「先临时后改名」的不变量）、
+        target.stat()（记 mtime）。它们无法回避，也不在热循环里；热循环里只有分块 read/write
+        与 sha256（都会释放 GIL）并按 YIELD_EVERY_BYTES 主动让出。可选的**卷范围查询**
+        （shutil.disk_usage）已经删掉 —— 它不释放 GIL 且能整段占住事件循环（见下面的说明）。
         """
         limit = int(self.max_upload_bytes if max_bytes is None else max_bytes)
         target = self.copy_path(att)
@@ -723,6 +729,14 @@ class AttachmentService:
         2026-10-06 CI（py3.12 / windows）真事故 —— 以前把整个 run_prepare 丢进
         asyncio.to_thread，工作线程既读又写那个共享连接，于是出现
         sqlite3.InterfaceError 与「刚 POST 成功、马上 GET 404」的幻影状态。
+
+        阻塞型调用审计（2026-10-07）：保留的都是**同卷、一次性、必需**的元数据调用 ——
+        source.stat()（判「登记后被改动过」与本次目标大小）、target.parent.mkdir()
+        （目录不在就写不了）、open()（建 .part）、os.replace()（原子提交，不变量的一部分）。
+        热循环里只有 read/write 与 sha256（均释放 GIL），并按 YIELD_EVERY_BYTES 主动让出。
+        已删除：复制前的 shutil.disk_usage 剩余空间预检 —— GetDiskFreeSpaceExW 在 CPython 里
+        不释放 GIL，CI 虚拟盘上它单独就能把事件循环占住 228-459ms（CI 上重定位红、上传绿，
+        因为上传路径没有这个调用）；现在空间不足由真实 write 失败如实上报。
         """
         if att.kind == "reference":
             return self._reference_outcome(att)
@@ -804,10 +818,14 @@ class AttachmentService:
             )
             # 本次复制的目标大小 = **当前**真实大小：重试要能收敛，而不是永远追一个旧数字
             target_size = int(before.st_size)
+            # 目标目录：一次性元数据 syscall（本地 <1ms），必须保留（目录不在就写不了）。
             target.parent.mkdir(parents=True, exist_ok=True)
-            free = shutil.disk_usage(target.parent).free
-            if free < target_size:
-                raise OSError(errno.ENOSPC, "复制前检查：目标磁盘剩余空间不足")
+            # 这里**故意没有**「复制前查剩余空间」的预检。
+            # 2026-10-07 CI 真缺陷：shutil.disk_usage → GetDiskFreeSpaceExW 在 CPython 里
+            # 不释放 GIL，工作线程卡在它里面时事件循环整段拿不到 GIL —— CI 上重定位
+            # 最大单次停顿 228-459ms（上传路径没有这个调用，所以那条绿），而本机快盘 <1ms
+            # 永远看不见。空间不足现在由**真实写入失败**如实上报（见 _describe_oserror 的
+            # ENOSPC 分支：人话原因 + 系统错误码），不猜、也不占住事件循环。
             # 只复制这一份大小：源文件在被写入（日志、下载中）时，无界复制会永远追不上
             # 文件末尾 —— 既可能吞掉磁盘，也会让「取消」失去意义。
             remaining = target_size
@@ -1404,7 +1422,8 @@ class AttachmentService:
         code = getattr(exc, "errno", None)
         detail = redact_text(str(exc.strerror or exc))
         if code == errno.ENOSPC:
-            return "磁盘空间不足：无法保存副本（可以清理空间后重试）"
+            # 真实写入失败才走到这里（预检已删）：给一句人话 + 系统错误码，便于排查
+            return f"磁盘空间不足：无法保存副本（系统错误码 {code}，可以清理空间后重试）"
         if code in (errno.EACCES, errno.EPERM):
             where = f"（{target}）" if target is not None else ""
             return f"没有权限写入{where}：副本没有保存（可以换目录或检查权限后重试）"
