@@ -196,6 +196,14 @@ def create_app(
         → （真实入口才）关 DB。DB 放在最后，避免后台任务还在写时连接先断了。
         """
         ctx.maintenance.start()
+        # 附件：重启收敛 —— 上次没完成准备的标成 failed（可重试）、副本丢了标 missing、
+        # 清掉自己留下的 .part 临时文件。不猜状态，只写文件世界的事实。
+        try:
+            recovered = ctx.attachments.reconcile()
+            if recovered.get("recovered_prepared") or recovered.get("temp_files_removed"):
+                logging.getLogger(__name__).info("attachments reconciled: %s", recovered)
+        except Exception:  # noqa: BLE001 - 收敛失败不该让应用起不来
+            logging.getLogger(__name__).warning("attachment reconcile failed", exc_info=True)
         # 阶段 2：进程重启后把「卡在 running」的派生任务放回可重试状态，
         # 并把上次没做完的补齐（幂等，不重放任何外部副作用）。
         try:
@@ -228,6 +236,23 @@ def create_app(
     # 前端据此知道旧基准作废、要完整 resync（见 /api/runtime/state）。
     ctx.instance_id = instance_id
     ctx.turns.instance_id = instance_id
+    # 附件服务：登记 / 副本 / 引用 / 可用性检查的唯一入口（见 services/attachments.py）。
+    # 注册放在 create_app（而不是 AppContext.__init__）：附件相关的文件都归本模块所有，
+    # 不改 A 名下的 services/app.py。
+    from agent.services.attachments import AttachmentError, AttachmentService
+
+    attachments = AttachmentService(conn, settings.data_dir)
+    ctx.attachments = attachments
+    ctx.services.register("attachments", attachments)
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    ctx.registry.register(
+        ReadAttachmentTool(
+            attachments,
+            # 工具执行时处于 single-flight 的 active turn：这就是本轮的真实 turn_id
+            active_turn_id=lambda: (ctx.turns.active.turn_id if ctx.turns.active else None),
+        )
+    )
     app.add_middleware(
         CORSMiddleware,
         # 只信任 QIO 自己的 WebView origin；开发模式额外允许本机 dev server。
@@ -1037,6 +1062,113 @@ def create_app(
             "source_fragment_id": result.source_fragment_id,
         }
 
+    # -- attachments -------------------------------------------------------
+
+    @app.post("/api/attachments")
+    async def create_attachment(body: dict) -> dict:
+        """登记一个本地文件：**按服务端 stat 出来的真实大小**决定存副本还是记引用。
+
+        ≤ 100_000_000 字节 → 存独立副本（后台复制，先写 .part 再改名提交）；
+        >  100_000_000 字节 → 只记路径 + 元数据（历史保留的是位置，不保证内容仍在）。
+        复制在后台线程里做，这里立刻返回登记事实（state=prepared），
+        前端按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        """
+        source_path = str(body.get("source_path") or "")
+        raw_name = body.get("name")
+        topic_id = body.get("topic_id")
+        try:
+            att = attachments.prepare(
+                source_path,
+                name=str(raw_name) if raw_name else None,
+                size=body.get("size"),
+                topic_id=str(topic_id) if topic_id else None,
+            )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        asyncio.create_task(asyncio.to_thread(attachments.run_prepare, att.id))
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.post("/api/attachments/upload")
+    async def upload_attachment(request: Request) -> dict:
+        """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
+
+        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）。
+        没有真实路径：只存副本；超过阈值的字节明确拒绝，不偷偷存一个大副本。
+        """
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > 100_000_000:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "浏览器上传只用于 <= 100 MB 的文件；更大的文件请用桌面端拖入或"
+                    "选择本地路径（超过 100 MB 只记位置，不复制内容）"
+                ),
+            )
+        payload = await request.body()
+        raw_name = request.headers.get("x-qio-name") or "attachment"
+        try:
+            from urllib.parse import unquote
+
+            name = unquote(raw_name)
+        except Exception:  # noqa: BLE001 - 头里的名字解不出来就退回原名
+            name = raw_name
+        topic_id = request.headers.get("x-qio-topic-id") or None
+        try:
+            att = attachments.register_upload(
+                payload, name=name, topic_id=str(topic_id) if topic_id else None
+            )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.get("/api/attachments")
+    async def list_attachments(
+        topic_id: str | None = None,
+        turn_id: str | None = None,
+        unbound: bool = False,
+    ) -> dict:
+        items = attachments.list(
+            topic_id=topic_id, turn_id=turn_id, unbound=bool(unbound), limit=100
+        )
+        return {"ok": True, "attachments": [attachments.payload(a) for a in items]}
+
+    @app.get("/api/attachments/{attachment_id}")
+    async def get_attachment(attachment_id: str) -> dict:
+        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。"""
+        att = attachments.get(attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        return {"ok": True, "attachment": attachments.payload(att)}
+
+    @app.post("/api/attachments/{attachment_id}/relocate")
+    async def relocate_attachment(attachment_id: str, body: dict) -> dict:
+        """文件被移动/改名之后重新指定位置；副本会按新来源重做。"""
+        try:
+            att = attachments.relocate(attachment_id, str(body.get("source_path") or ""))
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "attachment": attachments.payload(att)}
+
+    @app.post("/api/attachments/{attachment_id}/retry")
+    async def retry_attachment(attachment_id: str) -> dict:
+        """失败/取消/变化之后重试：同一行重做副本，不新建附件。"""
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        asyncio.create_task(asyncio.to_thread(attachments.run_prepare, att.id))
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.delete("/api/attachments/{attachment_id}")
+    async def delete_attachment(attachment_id: str) -> dict:
+        """移除附件：**只删 QIO 自己管理的副本，绝不动用户原文件**。
+
+        正在复制时调用它 = 取消：复制线程在分块之间看到标志就停下并清掉临时文件。
+        """
+        result = attachments.delete(attachment_id)
+        if not result["removed"]:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        return {"ok": True, **result}
+
     # -- turns -------------------------------------------------------------
 
     @app.post("/api/anchor/continue/cancel")
@@ -1064,8 +1196,17 @@ def create_app(
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
         # （排队中的这条消息不被追溯改向）。
         pending = ctx.bindings.peek_intent()
+        # 附件：显式给 attachment_ids 就只绑这些（以显式为准）；没给则兜底把
+        # 「本话题下还没绑定任何轮次」的附件绑到这一轮 —— 两条路径都在**执行前**完成绑定，
+        # 因此本轮上下文/工具看到的就是这一轮真实的附件。
+        raw_ids = body.get("attachment_ids") or []
+        if not isinstance(raw_ids, list):
+            raise HTTPException(status_code=400, detail="attachment_ids must be a list")
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
+        )
+        bound = attachments.bind_for_turn(
+            turn.turn_id, [str(item) for item in raw_ids], topic_id=topic_id
         )
         return {
             "ok": True,
@@ -1074,6 +1215,7 @@ def create_app(
             "status": turn.status,
             "message": message,
             "topic_id": topic_id,
+            "attachments": [attachments.payload(a, check=False) for a in bound],
         }
 
     @app.post("/api/turns/cancel")

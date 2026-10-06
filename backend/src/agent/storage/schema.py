@@ -674,6 +674,38 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_turn_journal_created ON turn_journal(created_at)",
         ],
     ),
+    (
+        26,
+        [
+            # 附件（见 services/attachments.py）：≤100_000_000 字节存独立副本，> 只记引用。
+            # 以前完全没有附件能力：用户给了路径，模型只能靠文件名猜内容。
+            # 本表只记**事实**：保存方式（copy/reference）、位置、大小、摘要、
+            # 以及它到底处于什么状态（prepared/ready/failed/cancelled/missing/changed）。
+            # 副本落在 <QIO_DATA_DIR>/attachments/<yyyy>/<mm>/，用户原文件永不被移动或删除。
+            """
+            CREATE TABLE IF NOT EXISTS attachments (
+                id            TEXT PRIMARY KEY,
+                message_id    TEXT,
+                turn_id       TEXT,
+                topic_id      TEXT,
+                kind          TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                stored_path   TEXT,
+                source_path   TEXT,
+                size_bytes    INTEGER NOT NULL DEFAULT 0,
+                mtime         REAL,
+                sha256        TEXT,
+                state         TEXT NOT NULL,
+                error         TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_attachments_turn ON attachments(turn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_topic ON attachments(topic_id, state)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
