@@ -14,6 +14,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import TurnProcess from "../TurnProcess.vue";
+import { useApprovalsStore } from "../../stores/approvals";
 import { useSessionStore, type StreamMessage, type TurnFacts, type TurnStage } from "../../stores/session";
 import { processKey, resetProcessState, setProcessExpanded } from "../../stores/turnProcess";
 
@@ -289,6 +290,55 @@ describe("问题 4：状态行的失败摘要是系统事实，不是模型文�
     expect(status).toContain("1 项失败");
     expect(status).not.toContain("这次执行没有成功"); // 不替失败编一句原因
     expect(status).not.toContain("：");
+    w.unmount();
+  });
+});
+
+describe("问题 1：同一 approval_id 任一时刻只有一套有效按钮", () => {
+  function mountWithApproval(autoOpen = false) {
+    const mounted = mountProcess({ items: [], stages: [], running: true });
+    mounted.session.activeTurnId = "turn_1";
+    mounted.session.turnRunning = true;
+    useApprovalsStore().enqueue(
+      "ap_full",
+      "tool_execution",
+      { description: "删除临时目录", access: ["删除：/tmp/qio-scratch"], capabilities: ["副作用：destructive"] },
+      { turnId: "turn_1", autoOpen },
+    );
+    return mounted;
+  }
+
+  it("「查看完整信息」→ 弹窗接管（内联不再出按钮）；「稍后处理」→ 内联重新接管", async () => {
+    const { w } = mountWithApproval(false);
+    const approvals = useApprovalsStore();
+    await nextTick();
+
+    const card = () => w.find("[data-test='turn-process-approval']");
+    expect(card().find("[data-test='turn-process-approval-allow']").exists()).toBe(true);
+    expect(approvals.inlineClaimed).toBe(true);
+
+    await card().find("[data-test='turn-process-approval-full']").trigger("click");
+    await nextTick();
+    // 交给原弹窗：窗口可见、内联声明释放、内联不再显示批准/拒绝
+    expect(approvals.visible).toBe(true);
+    expect(approvals.inlineClaimed).toBe(false);
+    expect(card().find("[data-test='turn-process-approval-allow']").exists()).toBe(false);
+    expect(card().find("[data-test='turn-process-approval-in-modal']").exists()).toBe(true);
+
+    approvals.defer(); // 用户「稍后处理」：窗口收起
+    await nextTick();
+    expect(card().find("[data-test='turn-process-approval-allow']").exists()).toBe(true);
+    expect(approvals.inlineClaimed).toBe(true);
+    w.unmount();
+  });
+
+  it("审批已经由弹窗打开时（autoOpen），内联只显示事实、不出第二套按钮", async () => {
+    const { w } = mountWithApproval(true);
+    await nextTick();
+    const card = w.find("[data-test='turn-process-approval']");
+    expect(card.find("[data-test='approval-facts']").exists()).toBe(true);
+    expect(card.find("[data-test='turn-process-approval-allow']").exists()).toBe(false);
+    expect(useApprovalsStore().inlineClaimed).toBe(false);
     w.unmount();
   });
 });
