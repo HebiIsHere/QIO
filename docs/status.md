@@ -690,6 +690,8 @@
   `test_attachment_context.py`、`test_attachments_service.py` / `_tools` / `_api`、
   `frontend/src/components/__tests__/TurnProcess.test.ts`、`stores/__tests__/stageStreaming.test.ts` 等；
   独立验证方另有一组 `*_verify` 用例（`backend/tests/test_*_verify.py`、`frontend/src/**/*.verify.test.ts`）。
+  附件边界的真机取证另有一个手工脚本 `scripts/verify_attachment_boundaries.py`（含**真实 100MB 复制**的精确等号边界，
+  不进 CI，避免每次全量都写 100MB）。
 - **Known limitations：**
   - **真实厂商端点的 SSE 未验证**（规则禁止真实 Key / 联网）：只验证了协议形状与假厂商分片；
     「不支持流式」的 provider 路径明确降级，不宣称实时生成。
