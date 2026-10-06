@@ -523,7 +523,7 @@ async function main() {
     { op: "wait", ms: 1000 },
     { op: "screenshot", name: "im-b-51-link-created" },
   ]);
-  const draftInfo = evalAt(linkDraftRun, NAV_EVALS);
+  const draftInfo = evalAt(linkDraftRun, NAV_EVALS + 1);
   check("拖线期间显示待建连线与有效目标", draftInfo.draft === true && draftInfo.target === "b_card_b", JSON.stringify(draftInfo));
   const savedAfterLink = await boardState();
   const liveLinks = savedAfterLink.state.links.filter((l) => !l.deleted);
