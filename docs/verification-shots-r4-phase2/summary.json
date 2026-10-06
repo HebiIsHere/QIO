@@ -17,7 +17,7 @@
       "ok": true,
       "detail": {
         "observed": true,
-        "answers": "默认话题\n\n（假模型默认回复）\n\n05:55:44\n复制\n默认话题\n\n正式回答第一句。\n\n05:55:44\n复制",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。\n\n06:06:44\n复制",
         "streamEndSeenAtObservation": true,
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-01-answer-live-before-provider-end.png"
       }
@@ -26,16 +26,16 @@
       "name": "S1 命中时刻过程区不含这段正式回答",
       "ok": true,
       "detail": {
-        "process": "已完成\n▸\n耗时 198 毫秒\n运行中"
+        "process": "已完成\n▸\n耗时 121 毫秒\n运行中"
       }
     },
     {
       "name": "S1 端到端时间线：首个正文显示时刻早于 provider 结束",
       "ok": true,
       "detail": {
-        "firstTextVisibleAtMs": 1791323744936,
-        "providerStreamEndAtMs": 1791323746753,
-        "leadMs": 1817,
+        "firstTextVisibleAtMs": 1791324404894,
+        "providerStreamEndAtMs": 1791324406828,
+        "leadMs": 1934,
         "answerCallStillOpenAtObservation": true,
         "chunksSent": 3,
         "timelineEvents": [
@@ -62,8 +62,8 @@
       "name": "S2 断流前：已显示的正式回答在 .message.assistant 里、过程区不含",
       "ok": true,
       "detail": {
-        "answers": "默认话题\n\n（假模型默认回复）\n\n05:55:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n05:55:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n05:55:47\n复制",
-        "process": "已完成\n▸\n耗时 198 毫秒\n已完成\n耗时 2.2 秒\n运行中",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制",
+        "process": "已完成\n▸\n耗时 121 毫秒\n已完成\n耗时 2.2 秒\n运行中",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-03-answer-before-abort.png"
       }
     },
@@ -71,7 +71,7 @@
       "name": "S2 断流：未到达的那一句一个字都没出现（真的断在中间）",
       "ok": true,
       "detail": {
-        "answers": "默认话题\n\n（假模型默认回复）\n\n05:55:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n05:55:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n05:55:47\n复制"
+        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制"
       }
     },
     {
@@ -80,7 +80,7 @@
       "detail": {
         "duplicateCount": 1,
         "inProcess": false,
-        "answers": "默认话题\n\n（假模型默认回复）\n\n05:55:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n05:55:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n05:55:47\n复制",
+        "answers": "默认话题\n\n（假模型默认回复）\n\n06:06:44\n复制\n默认话题\n\n正式回答第一句。正式回答第二句。正式回答第三句。\n\n06:06:44\n复制\n默认话题\n\n断流之前已经显示的一句。\n\n06:06:47\n复制",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-04-answer-after-abort.png"
       }
     },
@@ -97,9 +97,9 @@
       "name": "S3 点「重试」真的开了新轮，且新轮附件是**克隆**（新 id、原文件已删除）",
       "ok": true,
       "detail": {
-        "originalId": "att_ce669a87be71",
+        "originalId": "att_09ccb7fa1f6a",
         "newIds": [
-          "att_f7ba3fb1ea81"
+          "att_c5e402faeb28"
         ],
         "state": "ready",
         "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-06-after-retry.png"
@@ -151,15 +151,41 @@
       }
     },
     {
-      "name": "S6 刷新（历史恢复）之后，失败那一轮的「重试」入口仍然可用",
+      "name": "S6 前置：这一轮以 provider 错误失败并出现真实「重试」入口",
+      "ok": true,
+      "detail": {
+        "retryBeforeRefresh": true,
+        "processRegionsBeforeRefresh": 2,
+        "leftoverChipsBeforeSend": 0,
+        "composerText": "默认话题 Enter 发送 · Shift+Enter 换行 附件 路径 ↑"
+      }
+    },
+    {
+      "name": "S6 刷新（历史恢复）之后：结束原因/过程区仍在，且「重试」入口仍在",
       "ok": false,
       "detail": {
-        "retryBeforeRefresh": false,
-        "processRegionsBeforeRefresh": 0,
-        "processRegionsAfterRefresh": 0,
+        "retryBeforeRefresh": true,
+        "processRegionsBeforeRefresh": 2,
+        "processRegionsAfterRefresh": 1,
         "retryAfterRefresh": false,
-        "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-11-after-refresh-retry-entry.png",
-        "note": "这条是 Lead 点名的「刷新后重试」实机路径；红了就是这一层缺失，不是装置问题"
+        "netTail": [
+          {
+            "method": "POST",
+            "status": 200,
+            "url": "http://127.0.0.1:8734/api/turns"
+          },
+          {
+            "method": "POST",
+            "status": 200,
+            "url": "http://127.0.0.1:8734/api/turns"
+          },
+          {
+            "method": "POST",
+            "status": 200,
+            "url": "http://127.0.0.1:8734/api/turns"
+          }
+        ],
+        "shot": "D:\\qio-dev\\qio-r4-v\\docs\\verification-shots-r4-phase2\\r4-11-after-refresh-retry-entry.png"
       }
     }
   ],
@@ -187,7 +213,7 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_ce669a87be71"
+      "url": "http://127.0.0.1:8734/api/attachments/att_09ccb7fa1f6a"
     },
     {
       "method": "POST",
@@ -207,22 +233,37 @@
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_79a958740952"
+      "url": "http://127.0.0.1:8734/api/attachments/att_98e0dea6a0db"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_98e0dea6a0db"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_79a958740952"
+      "url": "http://127.0.0.1:8734/api/attachments/att_09ccb7fa1f6a/content"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_ce669a87be71/content"
+      "url": "http://127.0.0.1:8734/api/attachments/att_696d33e6dae7"
     },
     {
-      "method": "GET",
+      "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:8734/api/attachments/att_79a958740952"
+      "url": "http://127.0.0.1:8734/api/turns"
     }
   ],
   "provider": "http://127.0.0.1:8798",

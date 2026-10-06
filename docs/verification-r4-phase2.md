@@ -7,7 +7,7 @@
   产出：`docs/verification-shots-r4-phase2/*.png`（11 张）、`summary.json`（17 条断言 + 真实网络台账）
 - **口径**：provider 是本机扮演的假厂商，结论只能读成「QIO 自己的链路对」，**不证明任何真实厂商行为**。
 
-## 1. 实机结果：16 / 17 通过（1 条未验证，见 §1.6）
+## 1. 实机结果：17 / 18 通过（唯一红 = §1.6 已确认的产品缺陷）
 
 ### 1.1 S1 正式回答流式 + 端到端时间线（Lead 点名）
 
@@ -76,21 +76,33 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 [PASS] S5 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200 :: {"rowCount":1,"contentStatus":200,"shot":"r4-09-history-attachment-open.png"}
 ```
 
-### 1.6 S6「刷新后重试」= **未验证**（前置条件没复现，如实记红）
+### 1.6 S6「刷新后重试」= **已确认的产品缺陷**（稳定前置后复现，交 B）
+
+**稳定前置后的最终结果（17/18，唯一红 = 这条）**：
 
 ```
-[FAIL] S6 刷新（历史恢复）之后，失败那一轮的「重试」入口仍然可用
-       :: {"retryBeforeRefresh":false,"processRegionsBeforeRefresh":0,
-           "processRegionsAfterRefresh":0,"retryAfterRefresh":false,
+[PASS] S6 前置：这一轮以 provider 错误失败并出现真实「重试」入口
+       :: {"retryBeforeRefresh":true,"processRegionsBeforeRefresh":2,"leftoverChipsBeforeSend":0,
+           "composerText":"默认话题 Enter 发送 · Shift+Enter 换行 附件 路径 ↑"}
+[FAIL] S6 刷新（历史恢复）之后：结束原因/过程区仍在，且「重试」入口仍在
+       :: {"retryBeforeRefresh":true,"processRegionsBeforeRefresh":2,
+           "processRegionsAfterRefresh":1,          ← 失败轮的过程区没有从历史恢复
+           "retryAfterRefresh":false,               ← 刷新后「重试」入口消失
+           "netTail":[{"method":"POST","status":200,"url":"…/api/turns"}×3],
            "shot":"r4-11-after-refresh-retry-entry.png"}
 ```
 
-**不能据此说「刷新会丢入口」**：这一轮里 `retryBeforeRefresh:false`、`processRegionsBeforeRefresh:0` ——
-**刷新之前**那条失败轮的过程区/重试入口就没有出现在 DOM 里，属于我的场景前置条件没复现
-（S3 在同一台机器上证明了刚失败时「重试」入口是有的：`hasRetry:true`）。
-所以这条的结论只能是：**「刷新后重试」实机路径未验证**（需要先让它稳定复现「失败 + 入口可见」再断言）。
-后端 API 级那条 `test_retry_after_history_refresh_uses_message_attachment_ids` 仍是 skip（装置受限），
-两者一致：这条路径**未验证**，不当作通过。
+**这是一条真缺陷（不是装置问题）**：前置已按 Lead 要求做成稳定——
+① 带附件的一轮以模拟 provider 错误失败（界面出现真实「重试」）→ ②确认入口可见
+（`retryBeforeRefresh:true`、过程区 2 个）→ ③再刷新 → ④刷新后过程区只剩 1 个、**「重试」入口消失**。
+
+早期那一轮我没有下这个结论是对的：当时前置没复现（`retryBeforeRefresh:false`），
+根因是我自己的场景卫生问题——S4 失败上传留下的 chip 挡住了发送闸门
+（输入区如实显示「这些附件没有准备好，不能当作发送成功：「r4-写盘失败.txt」文件不在原位」），
+于是那一轮根本没发出去。修掉场景卫生（用产品自己的 chip「×」移除）之后前置稳定，缺陷随之复现。
+
+**影响**：失败/中断的一轮在**刷新（历史恢复）之后失去「重试」入口**，用户只能重写；
+这与 round3 `TURN_END` facts/actions 在历史恢复后的可用性同源。交 B（前端历史恢复/入口）。
 
 ## 2. 闸门（阶段二 worktree 实跑）
 
@@ -101,14 +113,14 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 | 前端全量 vitest | `cd frontend; npx vitest run` | **Test Files … Tests 1140 passed (1140)**，EXIT=0 |
 | 前端类型检查 | `npx vue-tsc --noEmit` | **EXIT=0** |
 | 文档一致性 | `python scripts/check_docs.py` | **EXIT=0**（文档一致性检查通过，29 个里程碑条目） |
-| 实机取证 | `powershell -File scripts/verify-r4-phase2.ps1` | **16 / 17**（唯一红 = §1.6 未验证项） |
+| 实机取证 | `powershell -File scripts/verify-r4-phase2.ps1` | **17 / 18**（唯一红 = §1.6 已确认的产品缺陷：刷新后失败轮的「重试」入口消失） |
 
 ## 3. 逐项对照 plan §3
 
 | plan §3 | 证据 | 结论 |
 | --- | --- | --- |
 | 问题一：回答区在 provider 结束前已有字 / 过程区无副本 / interim=false 且在调用结束前 / 前端渲染在正式回答容器 | §1.1（leadMs=1912ms、answerCallStillOpenAtObservation=true、3 片 700ms）、§1.2（断流前后）；后端事件层 `test_r4_answer_phase_verify.py` + `test_audit_stream_role_verify.py`（含「一轮请求台账：tools=[] 确实发起」诊断） | **已验证**（后端事件层 + 实机界面层） |
-| 问题二：界面重试 → 新轮读出原附件内容 / 原文件删除后仍可读 / 原轮历史归属不变 / 结构化拒绝 | §1.3；后端 `test_r4_attachment_retry_verify.py`（克隆 + 真实读取工具 + 跨话题/已绑他轮 409 + 引用型 missing + resend） | **已验证**；「刷新后重试」子路径未验证（§1.6） |
+| 问题二：界面重试 → 新轮读出原附件内容 / 原文件删除后仍可读 / 原轮历史归属不变 / 结构化拒绝 | §1.3；后端 `test_r4_attachment_retry_verify.py`（克隆 + 真实读取工具 + 跨话题/已绑他轮 409 + 引用型 missing + resend） | **已验证**；「**刷新后**重试」子路径 = 已确认缺陷（§1.6），未通过 |
 | 问题三：三类受控失败 + 队列超容 + 状态/临时文件/线程收敛 + 取消/断开 + 同期 API | §1.4（界面层）；后端 `test_r4_upload_convergence_verify.py`（写入途中/建目录/开临时文件/取消/断开/队列超容/DB 跨线程探针）+ C 的 `test_attachment_upload_convergence.py` | **已验证** |
 | 回归：默认折叠、历史附件打开、结束原因与耗时 | §1.5 + 阶段一 `test_audit_turn_end_facts_verify.py`（45 passed 里含它） | **已验证** |
 
@@ -121,7 +133,8 @@ mkdir 必失败；收尾还原，不影响后续场景。界面给出「文件�
 带附件重试（含原文件删除）、上传失败界面反馈、默认折叠与历史附件打开）。
 
 **未验证（不当作通过）**：
-1. **刷新后重试（实机）** —— §1.6，前置条件未复现；后端 API 级同名用例仍是 skip。
+1. **刷新后重试（实机）** —— §1.6 现在是**已确认的产品缺陷**（刷新后失败轮的「重试」入口消失），
+   等 B 修好后再复跑这一条；后端 API 级同名用例仍是 skip（装置受限）。
 2. **真实厂商**（OpenAI/Anthropic/兼容档）—— 全程假厂商，结论不外推。
 3. **断流后的自动重连**（网络层重连）—— 本轮只覆盖「断流后已显示文字不丢」。
 4. **前端在窄窗口/大量历史下的视觉**（滚动、代码块溢出）—— 本轮截图固定 1440×900。
