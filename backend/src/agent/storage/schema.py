@@ -1,4 +1,4 @@
-﻿"""Schema definitions and ordered migrations.
+"""Schema definitions and ordered migrations.
 
 Schema version 1 covers the 9 tables agreed in design review:
 nodes / edges / fragments / messages / memory_index / knowledge /
@@ -604,6 +604,16 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                     WHERE status = 'active' AND enabled = 1
                       AND tags LIKE '%"main-loop"%'
                     ORDER BY created_at, id LIMIT 1)""",
+        ],
+    ),
+    (
+        22,
+        [
+            # 用量归因：以前只有 budget_used 一个数字（而且运行期从不回写），
+            # 「已用量」永远是 0，上限也就不可能生效。这里补上「进 / 出」两列，
+            # 让界面能分开显示；budget_used 仍然保留为合计，预算闸门只认它。
+            "ALTER TABLE credentials ADD COLUMN usage_input REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE credentials ADD COLUMN usage_output REAL NOT NULL DEFAULT 0",
         ],
     ),
 ]

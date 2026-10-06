@@ -108,7 +108,7 @@ def test_default_does_not_bypass_limits(db_conn):
     assert policy.resolve("main-loop", MAIN_LOOP_USAGE_TAGS) == []
     store.set_enabled("star", True)
 
-    store.record_usage("star", tokens=500)
+    store.record_usage("star", input_tokens=400, output_tokens=100)
     assert policy.resolve("main-loop", MAIN_LOOP_USAGE_TAGS) == []
     store.update_metadata("star", budget=10_000)
 
