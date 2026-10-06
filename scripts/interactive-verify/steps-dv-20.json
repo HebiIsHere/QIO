@@ -1,0 +1,92 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{window.__dPosts=[];const orig=window.fetch.bind(window);window.fetch=function(){const a=arguments[0];const url=String(a&&a.url?a.url:a);const init=arguments[1]||{};if(url.indexOf('/api/interactive')>=0){window.__dPosts.push((init.method||'GET')+' '+url.split('/api/interactive')[1])}return orig.apply(null,arguments)};return 'hooked'})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();window.__dSeqBefore=st.seq;window.__dPosts=[];return 'seq='+st.seq})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(!t)return 'no-toggle';t.click();return 'chat-opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const input=document.querySelector(\"[data-im=\\\"chat-input\\\"]\");if(!input)return 'no-input';const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(input,'（D 独立验收）只发文字，不带板面');input.dispatchEvent(new Event('input',{bubbles:true}));return 'typed:'+input.value})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const b=document.querySelector(\"[data-im=\\\"chat-send\\\"]\");if(!b)return 'no-send';b.click();return 'sent'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 3000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const posts=window.__dPosts.filter(p=>p.indexOf('/boards/')>=0);return JSON.stringify({posts:window.__dPosts,boardPosts:posts,seqBefore:window.__dSeqBefore,seqAfter:st.seq,panel:!!document.querySelector(\"[data-im=\\\"chat-panel\\\"]\"),scope:(document.querySelector(\"[data-im=\\\"chat-scope\\\"]\")||{}).textContent,status:(document.querySelector(\"[data-im=\\\"chat-status\\\"]\")||{}).textContent,failure:(document.querySelector(\"[data-im=\\\"chat-failure\\\"]\")||{}).textContent})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-27-chat-send"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const input=document.querySelector(\"[data-im=\\\"chat-input\\\"]\");const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(input,'（D 验收草稿）未发送的文字');input.dispatchEvent(new Event('input',{bubbles:true}));return 'draft-typed'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\").click();return 'collapsed'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");t.click();return 'reopened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const input=document.querySelector(\"[data-im=\\\"chat-input\\\"]\");return JSON.stringify({draftAfterReopen:input?input.value:null,panel:!!document.querySelector(\"[data-im=\\\"chat-panel\\\"]\")})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-28-chat-draft"
+  }
+]

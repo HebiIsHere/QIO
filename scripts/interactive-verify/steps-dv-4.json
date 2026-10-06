@@ -1,0 +1,84 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const card=document.querySelector('[data-card-id=\"c_mux6xxyv13ny8\"]');if(!card)return 'no-card';card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await new Promise(r=>setTimeout(r,300));const bar=document.querySelector('[data-im=\"card-toolbar\"]');const btn=bar?[...bar.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑'):null;if(!btn)return JSON.stringify({toolbar:!!bar,buttons:bar?[...bar.querySelectorAll('button')].map(b=>b.textContent.trim()):null});btn.click();return 'editing'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const ta=document.querySelector('[data-im=\"card-editor\"][data-card-id=\"c_mux6xxyv13ny8\"]');if(!ta)return 'no-editor';const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(ta,'（D 独立验收）改过的材料 A');ta.dispatchEvent(new Event('input',{bubbles:true}));return 'typed'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 300
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-card-id=\"c_mux6xxyv13ny8\"]');const btns=[...card.querySelectorAll('button')];const done=btns.find(b=>b.textContent.trim()==='完成编辑');if(!done)return JSON.stringify({buttons:btns.map(b=>b.textContent.trim())});done.click();return 'confirmed-edit'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 3000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({dialog:!!document.querySelector('[data-im=\"impact-dialog\"]'),title:(document.querySelector('#im-impact-title')||{}).textContent,items:[...document.querySelectorAll('[data-im=\"impact-item\"]')].map(e=>e.innerText.replace(/\\n/g,' | ')),focused:(document.activeElement||{}).getAttribute?document.activeElement.getAttribute('data-im'):null})"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-5-impact-shown"
+  },
+  {
+    "op": "key",
+    "key": "Tab"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({afterTab:(document.activeElement||{}).getAttribute?document.activeElement.getAttribute('data-im'):null})"
+  },
+  {
+    "op": "key",
+    "key": "Tab"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({afterTab2:(document.activeElement||{}).getAttribute?document.activeElement.getAttribute('data-im'):null})"
+  },
+  {
+    "op": "key",
+    "key": "Escape"
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const c=st.state.cards.find(x=>x.id==='c_mux6xxyv13ny8');const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();return JSON.stringify({dialog:!!document.querySelector('[data-im=\"impact-dialog\"]'),savedContent:c?c.content:null,running:j.intents.filter(i=>i.status==='running').length})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-6-impact-cancelled"
+  }
+]

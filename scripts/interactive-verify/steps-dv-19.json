@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const input=document.querySelector('input.group-name');if(!input)return 'no-input';input.focus();input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));input.blur();await new Promise(r=>setTimeout(r,2000));const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify({groups:st.state.groups.map(g=>({name:g.name,defaultName:g.defaultName,members:g.members.length}))})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-26-group-name-blank"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{window.__dPosts=[];const orig=window.fetch;window.fetch=function(...args){const url=String(args[0]&&args[0].url?args[0].url:args[0]);if(url.includes('/api/interactive')){window.__dPosts.push((args[1]&&args[1].method)||'GET')+' '+url.split('/api/interactive')[1])}return orig.apply(this,args)};const stBefore=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();window.__dSeqBefore=stBefore.seq;const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");t.click();await new Promise(r=>setTimeout(r,600));const input=document.querySelector(\"[data-im=\\\"chat-input\\\"]\");const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(input,'（D 独立验收）只发文字，不带板面');input.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,300));document.querySelector(\"[data-im=\\\"chat-send\\\"]\").click();await new Promise(r=>setTimeout(r,2500));const stAfter=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify({posts:window.__dPosts,seqBefore:window.__dSeqBefore,seqAfter:stAfter.seq,chatPanel:!!document.querySelector(\"[data-im=\\\"chat-panel\\\"]\"),scope:(document.querySelector(\"[data-im=\\\"chat-scope\\\"]\")||{}).textContent,status:(document.querySelector(\"[data-im=\\\"chat-status\\\"]\")||{}).textContent})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-27-chat-send"
+  }
+]

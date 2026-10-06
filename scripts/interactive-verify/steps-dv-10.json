@@ -1,0 +1,56 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const c=st.state.cards.find(x=>x.id==='c_mux6xxyw2r7ts');const el=document.querySelector('[data-card-id=\"c_mux6xxyw2r7ts\"]');const r=el.getBoundingClientRect();return JSON.stringify({before:{x:c.x,y:c.y},rect:{x:Math.round(r.x),y:Math.round(r.y)}})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const el=document.querySelector('[data-card-id=\"c_mux6xxyw2r7ts\"]');const r=el.getBoundingClientRect();const sx=r.x+30,sy=r.y+20;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:sx,clientY:sy,pointerId:1}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:sx+220,clientY:sy+140,pointerId:1}));return 'dragging'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const c=st.state.cards.find(x=>x.id==='c_mux6xxyw2r7ts');return JSON.stringify({savedDuringDrag:{x:c.x,y:c.y},hint:(document.body.innerText.match(/松开后合并成组|拖动/)||['无'])[0]})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-12-dragging"
+  },
+  {
+    "op": "key",
+    "key": "Escape"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const c=st.state.cards.find(x=>x.id==='c_mux6xxyw2r7ts');return JSON.stringify({afterEscape:{x:c.x,y:c.y}})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-13-drag-cancelled"
+  }
+]

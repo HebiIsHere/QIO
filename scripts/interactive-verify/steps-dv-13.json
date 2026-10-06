@@ -1,0 +1,78 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});return JSON.stringify({created:(await r.json()).created.length})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(e)e.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const submit=document.querySelector(\"[data-im=\\\"submit\\\"]\");const pr=panel?panel.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom)}:null,toolbar:br?{top:Math.round(br.top)}:null,panelOverToolbar:pr&&br?pr.bottom>br.top:null,entryVisible:vis(document.querySelector(\"[data-im=\\\"batch-entry\\\"]\")),submitVisible:vis(submit),panelScrollable:panel?panel.scrollHeight>panel.clientHeight:null,overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-17-narrow-fixed-800"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const submit=document.querySelector(\"[data-im=\\\"submit\\\"]\");const pr=panel?panel.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom)}:null,toolbar:br?{top:Math.round(br.top)}:null,panelOverToolbar:pr&&br?pr.bottom>br.top:null,entryVisible:vis(document.querySelector(\"[data-im=\\\"batch-entry\\\"]\")),submitVisible:vis(submit),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-18-narrow-fixed-1024"
+  }
+]

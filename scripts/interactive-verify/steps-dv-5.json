@@ -1,0 +1,52 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const card=document.querySelector('[data-card-id=\"c_mux6xxyv13ny8\"]');card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await new Promise(r=>setTimeout(r,300));const bar=document.querySelector('[data-im=\"card-toolbar\"]');[...bar.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑').click();return 'editing'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const ta=document.querySelector('[data-im=\"card-editor\"][data-card-id=\"c_mux6xxyv13ny8\"]');const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(ta,'（D 独立验收）改过的材料 B');ta.dispatchEvent(new Event('input',{bubbles:true}));return 'typed'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 300
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-card-id=\"c_mux6xxyv13ny8\"]');[...card.querySelectorAll('button')].find(b=>b.textContent.trim()==='完成编辑').click();return 'edit-confirmed'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 3000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"impact-continue\"]').click();await new Promise(r=>setTimeout(r,2200));const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const c=st.state.cards.find(x=>x.id==='c_mux6xxyv13ny8');const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();return JSON.stringify({dialog:!!document.querySelector('[data-im=\"impact-dialog\"]'),savedContent:c?c.content:null,statuses:j.intents.map(i=>i.status)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-7-impact-confirmed"
+  }
+]

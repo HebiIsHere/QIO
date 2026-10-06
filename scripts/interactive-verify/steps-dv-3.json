@@ -1,0 +1,48 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);const run=j.intents.filter(i=>i.status==='running').map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});for(const id of run){await fetch(base+'/intents/'+id+'/demo/advance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({outcome:'cancelled'})})}try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const c=(await r.json()).created;return JSON.stringify({rejected:open.length,cancelled:run.length,created:c.length,refs:c[0]?c[0].materialRefs:null})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const target=j.intents.find(i=>i.status==='pending'&&i.title.includes('归为一组'));if(!target)return 'no-target:'+JSON.stringify(j.intents.map(i=>i.status));const r=await fetch(base+'/intents/'+target.id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmDependency:true})});const jj=await r.json();return JSON.stringify({id:target.id,ok:jj.ok,status:jj.intent&&jj.intent.status,refs:target.materialRefs})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();const run=j.intents.find(i=>i.status==='running');const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const mat=st.state.cards.find(c=>run&&run.materialRefs.includes(c.id));return JSON.stringify({running:run?{id:run.id,refs:run.materialRefs}:null,material:mat?{id:mat.id,kind:mat.kind}:null})})()"
+  }
+]

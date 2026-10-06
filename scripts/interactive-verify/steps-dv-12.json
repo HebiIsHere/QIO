@@ -1,0 +1,45 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(e)e.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bars=[...document.querySelectorAll(\"[role=\\\"toolbar\\\"]\")].map(e=>({label:e.getAttribute('aria-label'),im:e.getAttribute('data-im'),top:Math.round(e.getBoundingClientRect().top)}));return JSON.stringify({inline:panel?panel.getAttribute('style'):null,h:panel?Math.round(panel.getBoundingClientRect().height):null,bars})})()"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bars=[...document.querySelectorAll(\"[role=\\\"toolbar\\\"]\")].map(e=>({label:e.getAttribute('aria-label'),im:e.getAttribute('data-im'),top:Math.round(e.getBoundingClientRect().top),bottom:Math.round(e.getBoundingClientRect().bottom)}));const r=panel?panel.getBoundingClientRect():null;return JSON.stringify({inline:panel?panel.getAttribute('style'):null,rect:r?{top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height)}:null,maxH:panel?getComputedStyle(panel).maxHeight:null,bars,innerH:window.innerHeight})})()"
+  }
+]
