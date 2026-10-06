@@ -156,21 +156,69 @@ def test_commit_failure_leaves_no_partial_copy_and_can_retry(
     assert Path(retried.stored_path).read_bytes() == b"x" * 64
 
 
-def test_disk_full_precheck_fails_before_writing(svc, tmp_path, monkeypatch):
-    """复制前的剩余空间检查：不足就直接失败（不留半个文件）。"""
+def test_disk_full_is_reported_from_the_real_write_failure(svc, tmp_path, monkeypatch):
+    """空间不足必须如实报错，而且**不做**「复制前查剩余空间」的预检。
+
+    为什么删掉预检（2026-10-07 CI 真缺陷）：Windows 上 shutil.disk_usage →
+    GetDiskFreeSpaceExW 在 CPython 里**不释放 GIL**；工作线程卡在这个阻塞型系统调用里时，
+    事件循环线程整段拿不到 GIL —— CI 上重定位最大单次停顿 228-459ms（上传路径没有这个
+    调用，所以那条用例是绿的），而本机快盘 <1ms，本地永远看不见。预检只是「更早给出同一句
+    错误」的便利，代价却是不可控的停顿；空间不足改由**真实写入失败**上报。
+
+    本用例把 write 换成抛 ENOSPC 的真实失败路径，断言：状态 failed、人话原因 + 系统错误码、
+    不留 .part、不留正式副本、原文件不动，且全程**不查卷**（disk_usage 调用次数为 0）。
+    """
+    import shutil as shutil_mod
+
     source = _write(tmp_path / "big.bin", b"y" * 1024)
-
-    class _Usage:
-        free = 0
-        total = 0
-        used = 0
-
-    monkeypatch.setattr(attachments_mod.shutil, "disk_usage", lambda _p: _Usage())
     att = svc.prepare(str(source))
+
+    usage_calls: list[str] = []
+    real_disk_usage = shutil_mod.disk_usage
+    monkeypatch.setattr(
+        shutil_mod, "disk_usage", lambda path: (usage_calls.append(str(path)), real_disk_usage(path))[1]
+    )
+
+    real_open = open
+
+    class _NoSpaceWriter:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, _data) -> int:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            self._handle.close()
+            return False
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        return _NoSpaceWriter(handle) if "w" in str(mode) else handle
+
+    monkeypatch.setattr(attachments_mod, "open", fake_open, raising=False)
+
     failed = svc.run_prepare(att.id)
+
     assert failed.state == "failed"
     assert "磁盘空间不足" in (failed.error or "")
+    assert str(errno.ENOSPC) in (failed.error or ""), "真实失败要带上系统错误码"
     assert not _parts_under(svc.root)
+    assert not list(svc.root.rglob(f"{att.id}__*"))
+    assert source.read_bytes() == b"y" * 1024  # 用户原文件不动
+    assert usage_calls == [], (
+        "复制路径不得再查卷（disk_usage 不释放 GIL，会把事件循环饿住）："
+        f"实际调用了 {len(usage_calls)} 次"
+    )
+
+    # 预检删掉之后，空间恢复（写入不再失败）仍然能重试成功
+    monkeypatch.setattr(attachments_mod, "open", real_open, raising=False)
+    retried = svc.run_prepare(att.id)
+    assert retried.state == "ready"
+    assert Path(retried.stored_path).read_bytes() == b"y" * 1024
 
 
 def test_target_dir_unavailable_reports_failure(svc: AttachmentService, tmp_path: Path):
