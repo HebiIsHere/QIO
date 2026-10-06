@@ -166,7 +166,10 @@ def project_baseline(baseline: dict | None, state: dict) -> dict:
     stored = baseline.get("snapshot")
     if not isinstance(stored, dict):
         return _empty_projection(first_submission=True)
-    live = {card["id"]: card for card in state.get("cards", []) if models.is_live(card)}
+    current_cards = {
+        card["id"]: card for card in state.get("cards", []) if card.get("id")
+    }
+    live = {cid: card for cid, card in current_cards.items() if models.is_live(card)}
     visible_now = models.selectable_ids(state)
     keep: dict[str, dict] = {}
     for card in stored.get("cards", []):
@@ -177,8 +180,12 @@ def project_baseline(baseline: dict | None, state: dict) -> dict:
             # 仍然允许查看：保留上次交给 QIO 的原文，才能求出「改了什么」
             keep[cid] = dict(card)
         elif cid not in live:
-            # 已被删除：保留下来表达「撤回」（内容此前已经提交过，不是新的泄露）
-            keep[cid] = dict(card)
+            # 已被删除：判据必须用**当前**卡片，而且**忽略 deleted 也仍然可见**才保留
+            # （契约 §1.4 硬边界：未勾选 / 明确隐藏的注释，连「撤回」也不能把它带回
+            #  before —— 否则删掉一条未勾选注释就会让它的文字、id 与链接重新进入载荷）。
+            current = current_cards.get(cid)
+            if current is not None and models.visible_except_deleted(current):
+                keep[cid] = dict(card)
         # 未勾选 / 被隐藏：整条丢弃，文字与链接都不得重新进入载荷
     groups: list[dict] = []
     for group in stored.get("groups", []):
