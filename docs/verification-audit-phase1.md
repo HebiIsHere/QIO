@@ -141,6 +141,68 @@ npx vitest run src/components/__tests__/TurnProcess.verify.test.ts --reporter=ve
 （该文件的「运行中工具行必须看得见」这条**旧**断言本身与 §1.5 冲突，已改为
 「状态行必须给出一行工具摘要 + 逐项工具卡不得出现在默认可见区」。）
 
+#### 流式 store 层：废止「答案 → 过程」方向（§1.1 最终版）
+
+`frontend/src/stores/__tests__/streamingDeltas.verify.test.ts` 里
+「守卫放行后把同一段文字**移到**过程区」是旧规则，§1.1 已**永久废止该方向**。已改写为：
+
+- 正文一开始就以 `interim=true` 在**过程区**实时可见；
+- 调用结束且无工具调用 → **同一 delta_id** 用 `{interim:false, streaming:false}` 原样**提升**
+  到答案区（全局只有一份，不重打、不重复）；
+- 工具轮正文留在过程区；**答案区文字不因后来的工具增量消失或转移**；
+- 原有强度全部保留：**顺序去重**（回退/重复 seq 丢弃）、**累计快照**（就地更新、不回退、
+  不追加第二条气泡）、不同 delta_id 互不覆盖、TURN_END 只校准、取消保留已确认文本。
+
+```
+npx vitest run src/stores/__tests__/streamingDeltas.verify.test.ts --reporter=verbose
+→ × 无工具调用：同一 delta_id 用 {interim:false, streaming:false} 原样提升到答案区
+   → 提升之后必须是正式回答: expected true to be false
+→ × §1.1 废止的方向：迟到的 interim=true 不得把答案区文字搬回过程区
+   → 文字必须留在答案区，不得被搬回过程区: expected false to be true
+→ ✓ 正文一开始就在过程区实时可见（不是等 provider 结束才出现）
+→ ✓ 工具轮：正文留在过程区；答案区文字不因后来的工具增量消失或转移
+→ ✓ provider 还没结束：正式回答已非空、处于 streaming、且不是「过程」
+→ ✓ 累计快照就地更新：不追加第二个气泡、不回退
+→ ✓ 回退 / 重复 seq 必须丢弃（重连补发不得让文字倒退或重复）
+→ ✓ 不同 delta_id 互不覆盖：seq 去重必须按 delta_id 各算各的
+→ ✓ TURN_END.final_content 只做校准：替换不追加、全文只出现一次
+→ ✓ 取消：已确认文本保留、不当成最终答案、状态如实
+```
+
+#### 历史附件 DOM 锚点（B 提供）+ 真实点击
+
+`HistoryAttachmentOpen.audit.verify.test.ts` 已改用 B 的锚点断言**真实可点击**：
+`[data-test="message-attachments"]` 行容器、`[data-test="message-attachment"]`
+单附件（带 `data-id`/`data-kind`/`data-state`）、`[data-test="attachment-notice"]` 反馈、
+`.attach-note` 无元数据兜底；打开入口必须真的触发 C 的
+`GET /api/attachments/{id}/content`（断言 URL + Authorization + GET），重新定位入口点下去
+必须有可观察反馈（选择器 / 路径输入 / 提示 / `/relocate` 请求），不能是装饰按钮。
+
+```
+npx vitest run src/components/__tests__/HistoryAttachmentOpen.audit.verify.test.ts --reporter=verbose
+→ × 副本附件：真实可点，并且真的去取 /api/attachments/{id}/content（带认证头）
+   → 每个附件都要有 [data-test="message-attachment"] 锚点: expected 0 to be greater than 0
+→ × 引用型附件：真实可点的重新定位入口，点下去必须有可观察反馈   → 同上（缺锚点）
+→ × 状态诚实：missing 的附件不得被当成可以打开（状态可机器检查） → 同上（缺锚点）
+→ ✓ 只有 id 没有元数据：如实说「元数据未加载」，不编造文件名
+```
+
+#### eventBufferOverflow：超时上限放宽（负载问题，不是功能回归）
+
+`frontend/src/stores/__tests__/eventBufferOverflow.verify.test.ts` 在**整套并行跑**时
+曾顶掉 30s 上限（单跑约 7–10s）。已在文件头写明口径并把上限放宽到负载下也够用：
+压力用例（2 万条）90s、其余两条 60s。**功能断言一个字都没放宽**
+（上限必须存在 / 溢出必须标记重新同步 / 无溢出时一条不丢）。
+
+实测（本次同批并行跑，机器同时在跑别的验收套件）：
+
+```
+→ ✓ 同步期间灌入 2 万条事件：缓存必须有界，不能无限增长     49517ms
+→ ✓ 溢出时必须标记「需要重新同步」，不能静默丢事件           11579ms
+→ ✓ 溢出之后不得宣称已同步（resyncState 不能停在 normal）    14123ms
+→ ✓ 没有溢出时：缓存事件按到达顺序补放，一条都不丢              19ms
+```
+
 ### 类型检查
 
 ```
@@ -176,14 +238,23 @@ cd D:\qio-dev\qio-fix-d\frontend; npx vue-tsc --noEmit   → EXIT=0
 - `frontend/src/stores/__tests__/SendAttachmentIds.audit.verify.test.ts`（3 条）
 - `frontend/src/components/__tests__/TurnProcess.verify.test.ts`（D 上一轮资产，按 §1.5 最终版
   改写「运行中默认展开」的旧断言；事件驱动 + 真挂载）
+- `frontend/src/stores/__tests__/streamingDeltas.verify.test.ts`（D 上一轮资产，按 §1.1 最终版
+  改写「答案 → 过程」的废止方向，新增提升与不转移断言）
+- `frontend/src/components/__tests__/HistoryAttachmentOpen.audit.verify.test.ts`（改用 B 的 DOM
+  锚点，断言真实点击 + 触发 C 的 `/content` 接口）
+- `frontend/src/stores/__tests__/eventBufferOverflow.verify.test.ts`（只放宽超时上限并写明负载口径，
+  功能断言不变）
 - `scripts/verify-audit-phase1.ps1`（一键复跑本文件的所有命令）
 
 **已验证**
 
 - 上述 **35 条**用例在基线 e428bb9 上**真的变红**，且红在**产品规则**上（不是语法/导入/mock 写错）：
   红点覆盖问题 1/2/3/4/5/6/7 七项；原始输出见 §1。
-- 另有 `TurnProcess.verify.test.ts` 按新契约改写后 **2 红 / 3 绿**（旧断言被 §1.5 取代，
-  红证据见 §1「旧验证资产按新契约改写」）。合计 **37 条红 / 12 条绿守卫**。
+- 按新契约改写的两处旧验证资产同样**真的变红**：`TurnProcess.verify.test.ts` **2 红 / 3 绿**、
+  `streamingDeltas.verify.test.ts` **2 红 / 5 绿**（旧断言分别被 §1.5 / §1.1 最终版取代），
+  且 `HistoryAttachmentOpen.audit.verify.test.ts` 改用 B 的锚点后为 **3 红 / 1 绿**。
+- 合计：**40 条红 / 24 条绿守卫**（后端 20 红 / 5 绿；前端 20 红 / 19 绿）。
+- `eventBufferOverflow.verify.test.ts` 4 条全绿（只放宽了超时上限，功能断言未动）。
 - 每条用例失败信息都写明「缺什么」，没有静默跳过（无 try/catch 吞断言、无 `--passWithNoTests`）。
 - `npx vue-tsc --noEmit` 在加入这些用例后仍然通过（EXIT=0）。
 - 附加约束：模型调用全部为假 adapter / 假厂商端点；没有联网、没有真实 Key；
