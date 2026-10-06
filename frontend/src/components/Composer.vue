@@ -1,7 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
+import AttachmentChip from "./AttachmentChip.vue";
+import {
+  isDesktopShell,
+  isSendable,
+  onPathDrop,
+  pickLocalPath,
+  prepareAttachment,
+  removeAttachment,
+  retryAttachment,
+  stateText,
+  uploadAttachment,
+  waitUntilSettled,
+  type AttachmentRef,
+} from "../services/attachments";
 
 const session = useSessionStore();
 /**
@@ -85,21 +99,247 @@ async function cancelContinuation() {
 async function submit() {
   const value = text.value.trim();
   if (!value) return;
+  // 附件闸门：没准备好就不能当作「发送成功」——文本与附件都留在原地，并说清卡在哪一个
+  const blocked = attachmentBlockReason();
+  if (blocked) {
+    attachError.value = blocked;
+    return;
+  }
   const draftSnapshot = text.value;
+  const sentAttachments = pending.value.slice();
   // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
   text.value = "";
   // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再测量，
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
-  const ok = await session.send(value);
-  // 失败恢复：把草稿放回去，用户不必重写（若期间已输入新内容则不覆盖）
-  if (!ok && !text.value.trim()) {
-    text.value = draftSnapshot;
-    await nextTick();
-    autosize();
+  const ok = await sendWithAttachments(
+    value,
+    sentAttachments.map((item) => item.id),
+    sentAttachments,
+  );
+  if (!ok) {
+    // 发送失败：草稿放回去（用户不必重写），附件也留着（失败不是附件的错）。
+    // 若期间已输入新内容则不覆盖。
+    if (!text.value.trim()) {
+      text.value = draftSnapshot;
+      await nextTick();
+      autosize();
+    }
+    return;
+  }
+  // 已被受理：后端在受理时就把这批附件绑到了这一轮，chip 可以清掉
+  const sentIds = new Set(sentAttachments.map((item) => item.id));
+  pending.value = pending.value.filter((item) => !sentIds.has(item.id));
+  attachError.value = "";
+}
+
+// ---------------------------------------------------------------------------
+// 附件（选择 / 拖放 / 粘贴路径 → 登记 → 准备状态 → 发送前移除 / 失败重试）
+// ---------------------------------------------------------------------------
+
+/** 待发送附件（chip 列表）：发送成功后才清掉，发送失败连文本一起留着。 */
+const pending = ref<AttachmentRef[]>([]);
+/** 正在登记（POST 在途）：只是提示，不代表准备好 */
+const attaching = ref(false);
+const attachError = ref("");
+const dragging = ref(false);
+const pathOpen = ref(false);
+const pathDraft = ref("");
+const fileInputRef = ref<HTMLInputElement | null>(null);
+let stopDropWatch: (() => void) | null = null;
+
+function upsert(item: AttachmentRef) {
+  const index = pending.value.findIndex((a) => a.id === item.id);
+  if (index >= 0) pending.value.splice(index, 1, item);
+  else pending.value.push(item);
+}
+
+/** 跟进一个附件的准备状态：prepared → ready / failed / changed / missing。 */
+async function track(item: AttachmentRef) {
+  upsert(item);
+  try {
+    const settled = await waitUntilSettled(item, { onUpdate: upsert });
+    upsert(settled);
+  } catch (err) {
+    // 跟进失败 ≠ 附件失败：如实说「状态没跟到」，让用户刷新或重试
+    attachError.value = `附件「${item.name}」的准备状态没有跟到：${(err as Error).message}`;
   }
 }
+
+/** 真实路径（拖放 / 原生选择器 / 粘贴）：登记后由后台复制或记引用。 */
+async function addPaths(paths: string[]) {
+  if (!paths.length) return;
+  attachError.value = "";
+  attaching.value = true;
+  try {
+    for (const path of paths) {
+      try {
+        const created = await prepareAttachment(path, { topicId: session.currentTopicId ?? null });
+        void track(created);
+      } catch (err) {
+        attachError.value = `「${path}」没有登记成功：${(err as Error).message}`;
+      }
+    }
+  } finally {
+    attaching.value = false;
+  }
+}
+
+/** 浏览器回退：只有字节（没有真实路径）时走上传；绝不用 input[type=file] 的 fakepath。 */
+async function addFiles(files: FileList | File[]) {
+  const list = Array.from(files);
+  if (!list.length) return;
+  attachError.value = "";
+  attaching.value = true;
+  try {
+    for (const file of list) {
+      try {
+        upsert(await uploadAttachment(file, { topicId: session.currentTopicId ?? null }));
+      } catch (err) {
+        attachError.value = `「${file.name}」没有上传成功：${(err as Error).message}`;
+      }
+    }
+  } finally {
+    attaching.value = false;
+  }
+}
+
+/** 点击「附件」：桌面端用原生选择器拿真实路径；失败或不支持时退回文件选择/粘贴路径。 */
+async function pickFile() {
+  attachError.value = "";
+  if (isDesktopShell()) {
+    try {
+      const path = await pickLocalPath();
+      if (path) {
+        await addPaths([path]);
+        return;
+      }
+      // 用户取消：什么都不做（不算失败）
+      if (await desktopPickerAvailable()) return;
+    } catch (err) {
+      attachError.value = `原生文件选择器不可用（${(err as Error).message}）：已退回文件选择`;
+    }
+  }
+  fileInputRef.value?.click();
+}
+
+/** 桌面壳是否真的有原生选择命令（没有就退回字节上传，不假装能拿路径）。 */
+let pickerProbe: Promise<boolean> | null = null;
+async function desktopPickerAvailable(): Promise<boolean> {
+  if (!isDesktopShell()) return false;
+  if (!pickerProbe) {
+    pickerProbe = import("@tauri-apps/api/core")
+      .then(async ({ invoke }) => {
+        const available = await invoke<boolean>("pick_attachment_file_available");
+        return Boolean(available);
+      })
+      .catch(() => false);
+  }
+  return pickerProbe;
+}
+
+function onFileInput(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.length) void addFiles(input.files);
+  input.value = ""; // 同一个文件可以再次选择
+}
+
+async function submitPath() {
+  const value = pathDraft.value.trim().replace(/^"|"$/g, "");
+  if (!value) return;
+  pathDraft.value = "";
+  pathOpen.value = false;
+  await addPaths([value]);
+}
+
+async function removeOne(id: string) {
+  const before = pending.value;
+  pending.value = pending.value.filter((a) => a.id !== id);
+  try {
+    await removeAttachment(id);
+  } catch (err) {
+    pending.value = before; // 没删掉就还在：不制造「已经移除」的假象
+    attachError.value = `移除附件失败：${(err as Error).message}`;
+  }
+}
+
+async function retryOne(id: string) {
+  attachError.value = "";
+  try {
+    void track(await retryAttachment(id));
+  } catch (err) {
+    attachError.value = `重试失败：${(err as Error).message}`;
+  }
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault();
+  dragging.value = true;
+}
+
+function onDragLeave(e: DragEvent) {
+  const el = e.currentTarget as HTMLElement | null;
+  const next = e.relatedTarget as Node | null;
+  if (!el || !next || !el.contains(next)) dragging.value = false;
+}
+
+function onDrop(e: DragEvent) {
+  e.preventDefault();
+  dragging.value = false;
+  // 桌面壳里拖放的真实路径由 Tauri 的 onDragDropEvent 给出（DOM 拿不到路径）；
+  // 浏览器里 dataTransfer 只有字节，走上传。
+  if (!isDesktopShell() && e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
+}
+
+onMounted(async () => {
+  // Tauri 核心拖放事件：给的是真实路径，不需要新 crate
+  const stop = await onPathDrop(
+    (paths) => {
+      dragging.value = false;
+      void addPaths(paths);
+    },
+    (state) => {
+      dragging.value = state === "over";
+    },
+  );
+  if (stop) stopDropWatch = stop;
+});
+
+onBeforeUnmount(() => {
+  stopDropWatch?.();
+  stopDropWatch = null;
+});
+
+/** 发送前的闸门：附件没准备好就不能当作发送成功（文本与附件都留着）。 */
+const blockedAttachments = computed(() => pending.value.filter((a) => !isSendable(a)));
+
+function attachmentBlockReason(): string {
+  const preparing = pending.value.filter((a) => a.state === "prepared");
+  if (preparing.length) {
+    return `附件还在准备中（${preparing.map((a) => a.name).join("、")}）：准备好再发送，或先移除`;
+  }
+  const blocked = blockedAttachments.value;
+  if (blocked.length) {
+    return `这些附件没有准备好，不能当作发送成功：${blocked
+      .map((a) => `「${a.name}」${stateText(a)}`)
+      .join("；")}`;
+  }
+  return "";
+}
+
+/**
+ * session.send 的第二/第三参数由 B 按 Lead 裁决加（send(text, attachmentIds?, attachments?)）。
+ * 本 worktree 里 session.ts 还是单参，这里做一次最小收窄适配：多传的参数在 B 的改动落地前
+ * 会被 JS 忽略，而**后端受理时会把本话题下尚未绑定的附件绑到这一轮**，所以附件不会静默丢失。
+ * 集成（B 的 session.ts 落地）之后可以直接删掉这个适配器。
+ */
+type SendWithAttachments = (
+  text: string,
+  attachmentIds?: string[],
+  attachments?: AttachmentRef[],
+) => Promise<boolean>;
+const sendWithAttachments = session.send as unknown as SendWithAttachments;
 
 function onKeydown(e: KeyboardEvent) {
   // IME：选词/组字过程中的 Enter 属于输入法，不能当发送
@@ -143,7 +383,12 @@ async function stopTurn() {
 </script>
 
 <template>
-  <div class="composer bubble">
+  <div
+    class="composer bubble"
+    @dragover.prevent="onDragOver"
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
     <div class="topicbar">
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <!-- 有「待落实」的接续选择时不再并排显示「位置就在历史上」那一条：
@@ -165,7 +410,58 @@ async function stopTurn() {
       <span class="kbd-hint mono">Enter 发送 · Shift+Enter 换行</span>
     </div>
 
+    <div
+      v-if="pending.length || attaching || attachError || pathOpen"
+      class="attach-area"
+    >
+      <div class="attach-row">
+        <AttachmentChip
+          v-for="item in pending"
+          :key="item.id"
+          :attachment="item"
+          :busy="attaching"
+          @remove="removeOne"
+          @retry="retryOne"
+        />
+        <span v-if="attaching" class="attach-hint mono">正在登记附件…</span>
+      </div>
+      <div v-if="pathOpen" class="path-row">
+        <input
+          v-model="pathDraft"
+          class="path-input mono"
+          type="text"
+          aria-label="本地文件路径"
+          placeholder="粘贴本地文件路径后回车（桌面端拖入更方便）"
+          @keydown.enter.prevent="submitPath"
+        />
+        <button class="path-btn primary" type="button" @click="submitPath">添加</button>
+        <button class="path-btn" type="button" @click="pathOpen = false; pathDraft = ''">
+          取消
+        </button>
+      </div>
+      <p v-if="attachError" class="attach-error" role="alert">{{ attachError }}</p>
+    </div>
+
     <div class="input-row">
+      <button
+        class="attach-btn"
+        type="button"
+        :disabled="attaching"
+        title="添加附件（桌面端选择本地文件；也可以拖入或粘贴路径）"
+        aria-label="添加附件"
+        @click="pickFile"
+      >
+        附件
+      </button>
+      <button
+        class="attach-btn ghost"
+        type="button"
+        title="粘贴本地文件路径（拖入不方便时用；不会把浏览器给的假路径当路径）"
+        aria-label="粘贴本地文件路径"
+        @click="pathOpen = !pathOpen"
+      >
+        路径
+      </button>
       <textarea
         ref="inputRef"
         id="composer-input"
@@ -200,6 +496,17 @@ async function stopTurn() {
       </button>
     </div>
     <p v-if="cancelError" class="cancel-error" role="alert">{{ cancelError }}</p>
+    <!-- 浏览器回退：只拿字节上传；fakepath 绝不当路径 -->
+    <input
+      ref="fileInputRef"
+      class="file-input"
+      type="file"
+      multiple
+      aria-hidden="true"
+      tabindex="-1"
+      @change="onFileInput"
+    />
+    <div v-if="dragging" class="drop-hint">松开即可添加为附件</div>
   </div>
 </template>
 
@@ -372,5 +679,101 @@ async function stopTurn() {
 .send-btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+/* ---- 附件：入口按钮 / chip 行 / 路径输入 / 拖放提示 ---- */
+.attach-btn {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
+}
+.attach-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.attach-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.attach-area {
+  margin-bottom: 8px;
+}
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.attach-hint {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.path-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: 11.5px;
+}
+.path-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.path-btn {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.path-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.attach-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--danger);
+}
+.file-input {
+  display: none;
+}
+/* 拖放提示：只在真的把文件拖到输入区上方时出现 */
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--accent);
+  border-radius: var(--r-lg);
+  background: var(--accent-soft);
+  color: var(--text-strong);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  pointer-events: none;
 }
 </style>
