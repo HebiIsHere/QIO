@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 14000
+  },
+  {
+    "op": "wait",
+    "ms": 3000
+  },
+  {
+    "op": "eval",
+    "js": "document.title + '|' + (document.querySelector('#app') ? document.querySelector('#app').children.length : -1)"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "'after-viewport'"
+  }
+]

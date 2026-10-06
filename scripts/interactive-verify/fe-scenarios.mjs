@@ -435,7 +435,8 @@ async function scenario6() {
   const hooks = sess([
     ...click(first.cx, first.cy), { op: "wait", ms: 260 },
     { op: "eval", js: `JSON.stringify((function(){const c=document.querySelector('[data-im="check"]');if(!c)return {check:false};const label=c.closest('label');return {check:true, toolbar:!!document.querySelector('[data-im="card-toolbar"]'), text:(c.textContent||'').trim(), aria:c.getAttribute('aria-label')||'', title:c.getAttribute('title')||'', labelText:label?(label.textContent||'').trim():'', near:(c.parentElement?(c.parentElement.textContent||'').trim():'').slice(0,80)};})())` },
-    clickHook("check"), { op: "wait", ms: 700 },
+    clickHook("check"), { op: "wait", ms: 1800 },
+    stateRead(),
     { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||''})" },
     { op: "screenshot", name: "fe-61-checked" },
   ]);
@@ -447,9 +448,10 @@ async function scenario6() {
   const preSubmitRange = lastJson(evals(hooks), {}).range || "";
   check("6 提交前允许查看范围里就有这条勾选的注释（注释 1 条）", /注释\s*1\s*条/.test(preSubmitRange), preSubmitRange.slice(0, 140));
 
+  const checkedRead = lastJson(evals(hooks), {});
   const stateChecked = await boardState();
   const checked = (stateChecked.cards || []).filter((c) => c.checked);
-  check("6 勾选后状态里只有这一张被允许查看", checked.length === 1, JSON.stringify(checked.map((c) => c.id)));
+  check("6 勾选后状态里只有这一张被允许查看", checked.length === 1, JSON.stringify({ saved: checked.map((c) => c.id), inPage: checkedRead.checked, meta }));
 
   const submitted = sess([clickHook("submit"), { op: "wait", ms: 2000 }, { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||'', status: (document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-62-submitted" }]);
   const submitInfo = last(submitted, {});
@@ -589,7 +591,8 @@ async function scenario12() {
         const g=(s)=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();const el=document.elementFromPoint(Math.round(r.left+r.width/2),Math.round(r.top+r.height/2));return {l:Math.round(r.left),t:Math.round(r.top),r:Math.round(r.right),b:Math.round(r.bottom),hit:!!(el&&(el===e||e.contains(el)))};};
         const overlap=(a,b)=>!!a&&!!b&&a.l<b.r&&b.l<a.r&&a.t<b.b&&b.t<a.b;
         const toolbar=g('[data-im="board-toolbar"]'), submit=g('[data-im="submit"]'), chat=g('[data-im="chat-toggle"]'), batch=g('[data-im="batch-entry"]');
-        return {toolbar:!!toolbar, submit, chat, batch, overlapChatToolbar:overlap(chat,toolbar), overflowX: document.documentElement.scrollWidth>window.innerWidth};
+        const panel=g('[data-im="batch-list"]');
+        return {toolbar:!!toolbar, submit, chat, batch, panel, overlapChatToolbar:overlap(chat,toolbar), overlapPanelToolbar:panel?overlap(panel,toolbar):false, overflowX: document.documentElement.scrollWidth>window.innerWidth};
       })())` },
       { op: "screenshot", name: "fe-12-" + w + "x" + size[1] },
     ]);
@@ -598,6 +601,7 @@ async function scenario12() {
     check("12 " + w + "×" + size[1] + "：工具栏/提交/聊天入口都在且可点", m.toolbar === true && !!m.submit && m.submit.hit === true && !!m.chat && m.chat.hit === true, JSON.stringify({ toolbar: m.toolbar, submit: m.submit, chat: m.chat }));
     check("12 " + w + "×" + size[1] + "：聊天入口不压工具栏", m.overlapChatToolbar === false, JSON.stringify(m.overlapChatToolbar));
     check("12 " + w + "×" + size[1] + "：不横向溢出", m.overflowX === false);
+    check("12 " + w + "×" + size[1] + "：批量面板（若已展开）不压工具栏", m.overlapPanelToolbar === false, JSON.stringify({ panel: m.panel, toolbar: m.toolbar }));
   }
   sess([
     { op: "viewport", width: 1440, height: 900 }, { op: "wait", ms: 500 },
@@ -635,7 +639,7 @@ async function scenario5() {
   const linked = sess([
     // 连接点只在选中卡片后出现：新会话要先选中，否则按下的位置落在卡片身上会变成拖动卡片
     ...click(a.cx, a.cy), { op: "wait", ms: 420 },
-    { op: "eval", js: `JSON.stringify({points:[...document.querySelectorAll('[data-im="connect-point"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})})` },
+    { op: "eval", js: `JSON.stringify({points:[...document.querySelectorAll('[data-im="connect-point"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};}), cards:[...document.querySelectorAll('[data-im="card"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'),l:Math.round(r.left),t:Math.round(r.top)};}), expected:{from:point,to:{x:b.cx,y:b.cy}}})` },
     mouse("mousePressed", point.x, point.y), { op: "wait", ms: 120 },
     mouse("mouseMoved", (point.x + b.cx) / 2, (point.y + b.cy) / 2), { op: "wait", ms: 100 },
     mouse("mouseMoved", b.cx, b.cy), { op: "wait", ms: 160 },
@@ -645,8 +649,10 @@ async function scenario5() {
     stateRead(),
     { op: "screenshot", name: "fe-52-link-created" },
   ]);
+  const linkValues = evals(linked).filter((v) => typeof v === "string" && v.includes("points"));
+  const linkDiag = lastJson(linkValues, {});
   const linkState = lastJson(evals(linked), {});
-  check("5 从连接点拖到另一张卡片建立关系链接", Number(linkState.links) >= 1, JSON.stringify({ links: linkState.links }));
+  check("5 从连接点拖到另一张卡片建立关系链接", Number(linkState.links) >= 1, JSON.stringify({ links: linkState.links, diag: linkDiag }));
 
   // 无效位置松手：不建链
   const beforeInvalid = (await boardState()).links.length;
@@ -712,6 +718,28 @@ async function scenario11() {
   check("11 未确认的草稿没有变成正式内容（仍是草稿）", !state.cards.some((c) => String(c.content || "").includes(draftTag)), JSON.stringify(state.cards.map((c) => String(c.content || "").slice(0, 12))));
 }
 
+
+// --- 诊断用（--only=99）：窄窗口下的盒模型 ---------------
+async function scenario99() {
+  const dump = (sel) => `JSON.stringify((function(){const root=document.querySelector('${sel}');if(!root)return {missing:true};const r=root.getBoundingClientRect();return {root:{t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),w:Math.round(r.width)},children:[...root.children].map(c=>{const x=c.getBoundingClientRect();const cs=getComputedStyle(c);return {cls:String(c.className).slice(0,30),t:Math.round(x.top),h:Math.round(x.height),w:Math.round(x.width),flex:cs.flex,minH:cs.minHeight};})};})())`;
+  const p = sess([
+    { op: "viewport", width: 1024, height: 768 }, { op: "wait", ms: 1200 },
+    { op: "eval", js: dump('[data-im="board-toolbar"]') },
+    { op: "eval", js: dump('.tb-submit') },
+    { op: "eval", js: dump('.submit-cluster') },
+    { op: "eval", js: dump('.tb-main') },
+    { op: "screenshot", name: "fe-99-toolbar-1024" },
+    { op: "viewport", width: 800, height: 600 }, { op: "wait", ms: 1200 },
+    { op: "eval", js: dump('[data-im="board-toolbar"]') },
+    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="chat-panel"]')){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'open-chat';})()` },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: dump('.chat-dock') },
+    { op: "eval", js: `JSON.stringify({clearance:(document.querySelector('.chat-dock')||{style:{}}).style.getPropertyValue('--chat-dock-clearance'),panelMax:(document.querySelector('.chat-dock')||{style:{}}).style.getPropertyValue('--chat-panel-max-h')})` },
+    { op: "screenshot", name: "fe-99-chat-800" },
+  ]);
+  for (const value of evals(p)) console.log("DIAG " + String(value).slice(0, 900));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -726,6 +754,7 @@ const main = async () => {
     [9, scenario9],
     [11, scenario11],
     [12, scenario12],
+    [99, scenario99],
   ];
   for (const entry of scenarios) {
     const id = entry[0];

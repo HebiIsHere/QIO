@@ -162,9 +162,15 @@ function measureToolbar() {
   }
   const rect = el.getBoundingClientRect();
   const clearance = Math.max(0, Math.round(window.innerHeight - rect.top)) + 8;
-  // 面板最高只能到「工具栏上方剩下的空间」：否则窄窗口里工具栏一高，
-  // 面板顶部会被挤出视口（实测 360x720 时顶部到 -35px）。
-  const panelMax = Math.max(220, Math.round(window.innerHeight - clearance - 64));
+  /**
+   * 面板最高只能到「工具栏上方剩下的空间」：否则窄窗口里工具栏一高，面板顶部会被挤出视口。
+   *
+   * 独立复核实测（800×600）：工具栏占了下半屏 304px，剩下的空间装不下 220px 的面板 +
+   * 入口按钮，容器顶部被顶到 -193px，聊天内容完全看不到。
+   * 所以这里**不再给 220px 的下限**：空间不够就让面板变矮、由它自己滚动（下限 160px，
+   * 并且预留入口按钮 + 顶部身份栏的高度）。
+   */
+  const panelMax = Math.max(160, Math.round(window.innerHeight - clearance - 112));
   dockStyle.value = {
     "--chat-dock-clearance": clearance + "px",
     "--chat-panel-max-h": panelMax + "px",

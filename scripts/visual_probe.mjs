@@ -20,7 +20,7 @@
  * 截图输出目录：%TEMP%\qio-visual\shots；Chrome 用户目录：%TEMP%\qio-chrome-profile。
  * 需要 Chrome（脚本顶部 CHROME 常量，可按机器修改）。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -41,6 +41,31 @@ mkdirSync(OUT, { recursive: true });
 import { readFileSync } from "node:fs";
 const rawArg = process.argv[2] ?? "[]";
 const steps = JSON.parse(rawArg.startsWith("@") ? readFileSync(rawArg.slice(1), "utf8") : rawArg);
+
+/**
+ * 调试端口已被占用 = 上一次探针留下的 Chrome 还活着（它可能已经卡住，
+ * 这时新实例连不上端口，表现为「探针卡住不返回」）。先清掉同 profile 的僵尸再启动。
+ *
+ * 只在端口被占用时才做这件事：正常情况下不引入额外开销。
+ */
+function killStaleChrome() {
+  if (process.platform !== "win32") return;
+  const probe = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      `$p = Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue; if (-not $p) { 'free' } else { Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*${PROFILE}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; 'killed' }`,
+    ],
+    { encoding: "utf8" },
+  );
+  if ((probe.stdout || "").includes("killed")) {
+    // 给系统一点时间释放端口与 profile 锁
+    const until = Date.now() + 1500;
+    while (Date.now() < until) { /* 串行等待 */ }
+  }
+}
+killStaleChrome();
 
 const chrome = spawn(
   CHROME,

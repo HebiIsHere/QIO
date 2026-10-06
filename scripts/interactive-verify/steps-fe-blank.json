@@ -1,0 +1,20 @@
+[
+  {
+    "op": "navigate",
+    "url": "about:blank",
+    "ms": 1500
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "'blank-ok'"
+  }
+]

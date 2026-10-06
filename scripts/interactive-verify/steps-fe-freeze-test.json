@@ -1,0 +1,41 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "'at-1440-ok'"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({toolbarH: Math.round(document.querySelector('[data-im=\"board-toolbar\"]').getBoundingClientRect().height)})"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "'after-viewport-change'"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({toolbarH: Math.round(document.querySelector('[data-im=\"board-toolbar\"]').getBoundingClientRect().height), dockH: (document.querySelector('.chat-dock')||{getBoundingClientRect:()=>({height:0})}).getBoundingClientRect().height})"
+  }
+]

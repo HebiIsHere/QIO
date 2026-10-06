@@ -409,6 +409,9 @@ function toggleSearch(): void {
   box-shadow: var(--shadow-2);
   z-index: 30;
   font-family: var(--sans);
+  /* 说明：这里曾经加过 max-height + overflow-y:auto，实测会和「量工具栏高度做避让」的
+     观察器形成尺寸震荡（滚动条出现→换行变化→高度变化→…），把渲染进程卡死。
+     高度问题改由下面的布局修法解决：提交区在窄窗口独占一行 + 文字列有下限宽度。 */
 }
 
 .tb-notice {
@@ -464,9 +467,12 @@ function toggleSearch(): void {
 .tb-submit {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   padding-left: var(--sp-3);
   border-left: 1px solid var(--border-strong);
+  /* 文字列不许被挤成一条竖线：低于这个宽度就整体换行到下一行 */
+  min-width: min(320px, 100%);
 }
 
 /* 1024×768：标签与间距收一档，按钮全部保留（主要入口必须可见可点） */
@@ -478,6 +484,8 @@ function toggleSearch(): void {
     padding: var(--sp-2);
   }
   .tb-label { display: none; }
+  /* 提交区单独占一行：这一档宽度下和编辑按钮抢一行会把文字列挤没 */
+  .tb-submit { flex: 1 1 100%; margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid var(--border-subtle); padding-top: var(--sp-1); }
 }
 /* 800×600：隐藏纯装饰的「已选 N」计数与分隔线，按钮继续换行显示 */
 @media (max-width: 800px) {

@@ -171,7 +171,8 @@ function onSubmit() {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  min-width: 0;
+  /* 下限宽度：窄窗口里宁可让整个提交区换行，也不让中文被逐字竖排（实测被挤到 68px 宽 → 609px 高） */
+  min-width: min(220px, 100%);
   max-width: min(420px, 46vw);
 }
 .line {
