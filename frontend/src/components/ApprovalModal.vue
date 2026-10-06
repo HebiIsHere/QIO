@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useApprovalsStore } from "../stores/approvals";
+import { useApprovalsStore, approvalIntent, approvalCapabilities } from "../stores/approvals";
 import type { ApprovalItem } from "../stores/approvals";
 import { usePresence } from "../composables/usePresence";
 import QNumber from "./ui/QNumber.vue";
@@ -107,25 +107,18 @@ const payloadView = computed(() => {
 });
 
 /** 该工具会访问什么（人话能力清单，来自后端 policy.describe()）。 */
-const capabilities = computed<string[]>(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const raw = p.capabilities;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((x) => String(x));
-});
+const capabilities = computed<string[]>(() =>
+  approvalCapabilities((item.value?.payload ?? {}) as Record<string, unknown>),
+);
 
 /**
  * 它想做什么：一句人类语言。
  * 顺序上先取「这个工具是干什么的」（description/工具名），把 explanation/reason
  * 留给下面单独的「为什么需要」一行，避免两行说同一句话。
  */
-const intent = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const first = [p.description, p.tool_name, p.name, p.explanation, p.reason]
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .find((v) => v.length > 0);
-  return first ?? "该操作需要你的授权";
-});
+const intent = computed(() =>
+  approvalIntent((item.value?.payload ?? {}) as Record<string, unknown>),
+);
 
 /** 后端 policy.describe() 里的「副作用：read|write|destructive|pure」，用于回答「它会改变什么」 */
 const sideEffect = computed(() => {

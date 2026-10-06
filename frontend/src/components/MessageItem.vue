@@ -2,11 +2,10 @@
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
-import TurnTimingPanel from "./TurnTimingPanel.vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
-import type { StreamMessage } from "../stores/session";
+import type { MessageAttachment, StreamMessage } from "../stores/session";
 
 const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
 const session = useSessionStore();
@@ -203,6 +202,36 @@ const verifiedText = computed(() => {
   if (!fact) return "";
   return fact.basis ? `后端已核对：${fact.basis}` : "后端已核对";
 });
+
+/**
+ * 用户消息上的附件行。
+ *
+ * 只展示**真实拿到的元数据**（名称 / 大小 / 保存方式 / 可用性 / 失败原因）；
+ * 只有 id 没有元数据时如实说「元数据未加载」，绝不编造文件名或状态。
+ */
+const attachmentChips = computed(() => props.message.attachments ?? []);
+
+/** 字节 → 十进制单位（契约 §4.1：阈值与显示都用十进制 MB） */
+function sizeText(a: MessageAttachment): string {
+  const bytes = a.sizeBytes;
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+}
+
+const ATTACH_STATE_TEXT: Record<string, string> = {
+  prepared: "准备中",
+  ready: "",
+  failed: "准备失败",
+  missing: "文件不在了",
+  changed: "文件已变化",
+};
+
+function attachmentStateText(state: string): string {
+  return ATTACH_STATE_TEXT[state] ?? "";
+}
 </script>
 
 <template>
@@ -211,6 +240,27 @@ const verifiedText = computed(() => {
       <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
       </div>
+      <!-- 附件行：名称 / 大小 / 「已保存副本」或「引用本地文件」/ 可用性 -->
+      <div v-if="attachmentChips.length" class="attach-row" data-test="message-attachments">
+        <span
+          v-for="a in attachmentChips"
+          :key="a.id"
+          class="attach-chip"
+          :data-state="a.state"
+          :title="a.error || a.display"
+        >
+          <span class="at-name">{{ a.name || "附件" }}</span>
+          <span class="at-meta mono">
+            <template v-if="a.display">{{ a.display }}</template>
+            <template v-if="a.display && sizeText(a)"> · </template>
+            <template v-if="sizeText(a)">{{ sizeText(a) }}</template>
+          </span>
+          <span v-if="attachmentStateText(a.state)" class="at-state">{{ attachmentStateText(a.state) }}</span>
+        </span>
+      </div>
+      <p v-else-if="message.attachmentIds?.length" class="attach-note mono">
+        带了 {{ message.attachmentIds.length }} 个附件（元数据未加载）
+      </p>
       <div class="meta mono">
         <span v-if="message.queued" class="queued-tag">等待中</span>
         <span class="ts">{{ formatTime(message.createdAt) }}</span>
@@ -319,16 +369,22 @@ const verifiedText = computed(() => {
       <ToolCreationCard :message="message" />
     </template>
 
+    <!--
+      中间话（interim）**不是气泡**：它是过程说明，统一由过程区（TurnProcess）渲染。
+      这里保留同一条渲染路径，所以整段文字在 DOM 里只出现一次。
+    -->
+    <template v-else-if="message.role === 'assistant' && message.interim">
+      <p class="process-line" data-test="process-line">{{ message.content }}</p>
+    </template>
+
     <template v-else>
       <!-- 流式生成中的正文不逐字播报给辅助阅读工具（aria-busy + 不设 live 区域），
            落定后由正常文档流阅读即可。 -->
       <div
         class="bubble assist-bubble"
-        :class="{ interim: message.interim }"
         :aria-busy="message.streaming ? 'true' : undefined"
         :aria-live="message.streaming ? 'off' : undefined"
       >
-        <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
         <MarkdownContent
           :source="message.content"
@@ -338,9 +394,6 @@ const verifiedText = computed(() => {
         />
         <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
       </div>
-      <!-- 「这次为什么等这么久」：只在轮次结束、且这一轮有自己的 turn_id 时出现；
-           没有 phases 的旧轮次由面板自己降级说明，不占对话正文的注意力 -->
-      <TurnTimingPanel v-if="message.turnId && !message.streaming" :turn-id="message.turnId" />
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
         <button class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
@@ -414,17 +467,59 @@ const verifiedText = computed(() => {
   color: var(--text-strong);
   margin-bottom: 6px;
 }
-.assist-bubble.interim {
-  background: transparent;
-  border-style: dashed;
+/* 过程说明行：安静的一行文字，不是气泡（interim 不再单独成气泡） */
+.process-line {
+  margin: 1px 0 1px 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-subtle);
+  max-width: min(760px, 100%);
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  line-height: 1.75;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
 }
-.interim-tag {
+/* 附件行：用户消息下方的一排小签，数据用等宽字体 */
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  max-width: min(620px, 100%);
+}
+.attach-chip {
   display: inline-flex;
-  align-items: center;
-  margin-bottom: 6px;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.attach-chip[data-state="failed"],
+.attach-chip[data-state="missing"] {
+  border-color: var(--border-danger);
+  color: var(--danger);
+}
+.attach-chip[data-state="changed"] {
+  border-color: var(--warning-soft);
+  color: var(--warning);
+}
+.at-meta {
   font-size: 10.5px;
   color: var(--text-muted);
-  letter-spacing: 0.05em;
+}
+.at-state {
+  color: var(--danger);
+}
+.attach-note {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  text-align: right;
 }
 /* 元数据：低调存在，hover / focus 时才完全显形（第一眼只看内容） */
 .meta {

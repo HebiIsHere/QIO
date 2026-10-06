@@ -383,21 +383,32 @@ describe("MessageItem 生成中的可访问性（任务02 D）", () => {
   });
 });
 
-describe("中间话与最终回答在视觉上分开", () => {
-  it("interim 消息带「◈ 过程」标记", () => {
+/**
+ * 契约 §1.5：中间话（interim）不再单独成气泡 —— 它是过程说明，
+ * 统一在过程区（TurnProcess）里渲染；这里保留的是同一条渲染路径。
+ */
+describe("中间话与最终回答在视觉上分开（契约 §1.5）", () => {
+  it("interim 消息不再是气泡，而是一行过程说明", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const w = mountItem(makeMessage({ role: "assistant", content: "我先查一下", interim: true }), pinia);
-    expect(w.find(".interim-tag").text()).toContain("过程");
-    expect(w.find(".assist-bubble").classes()).toContain("interim");
+    expect(w.find(".assist-bubble").exists()).toBe(false);
+    expect(w.find(".interim-tag").exists()).toBe(false);
+    const line = w.find(".process-line");
+    expect(line.exists()).toBe(true);
+    expect(line.text()).toContain("我先查一下");
+    // 不再出现「◈ 过程」这类重复标记（过程说明由过程区统一表达）
+    expect(w.text()).not.toContain("◈");
     w.unmount();
   });
 
-  it("最终回答不带「过程」标记", () => {
+  it("最终回答仍然是气泡，且没有过程标记", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const w = mountItem(makeMessage({ role: "assistant", content: "检查完成，真正的问题是…" }), pinia);
     expect(w.find(".interim-tag").exists()).toBe(false);
+    expect(w.find(".process-line").exists()).toBe(false);
+    expect(w.find(".assist-bubble").exists()).toBe(true);
     expect(w.find(".assist-bubble").classes()).not.toContain("interim");
     w.unmount();
   });

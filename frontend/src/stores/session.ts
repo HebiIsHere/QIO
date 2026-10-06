@@ -57,6 +57,83 @@ export interface NarrativeCallRecord {
   durationMs?: number | null;
 }
 
+/**
+ * 消息上的附件展示形状（契约 §4.2）。
+ *
+ * 与 C 的 `services/attachments.ts::AttachmentRef` **逐字同形**（Lead 已冻结形状）。
+ * 为什么这里再声明一份：附件服务由 C 落地，B 的 worktree 里还没有那个文件；
+ * 集成时把这一处换成 `import type { AttachmentRef } from "../services/attachments";`
+ * 即可（改一处，不要两边各改一半）。
+ */
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  /** copy = QIO 保存了副本；reference = 只记住位置（不保证内容仍然存在） */
+  kind: "copy" | "reference";
+  /** 用户看到的保存方式：只有「已保存副本」/「引用本地文件」两种 */
+  display: string;
+  state: "prepared" | "ready" | "failed" | "missing" | "changed";
+  error?: string | null;
+}
+
+/** 阶段自身状态（契约 §1.3）：只表达这个阶段，不代表整轮。 */
+export type StageStatus = "running" | "done";
+
+/** 阶段内的一次说明（来自 STAGE.text，按 narrative_id 去重）。 */
+export interface StageNote {
+  narrativeId: string;
+  text: string;
+  kind: NarrativeKind;
+  at: string;
+}
+
+/** 一轮里的一个过程阶段：顺序、名称、状态、历次说明、关联工具（契约 §1.1/§1.3）。 */
+export interface TurnStage {
+  stageId: string;
+  /** 从 1 开始、单调（后端给；缺失时按到达顺序补） */
+  index: number;
+  name: string;
+  status: StageStatus;
+  notes: StageNote[];
+  /** 归属只看 stage_id 的 call_id（工具归属不靠消息相邻位置） */
+  callIds: string[];
+}
+
+/** TURN_END 的权威事实（契约 §3）：总耗时只在轮次结束后才存在。 */
+export interface TurnFacts {
+  turnId: string;
+  status: string;
+  durationMs: number | null;
+  queueMs: number | null;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+/**
+ * 按 turn 记录的过程数据（阶段 / 事实）保留上限。
+ *
+ * 长会话 + 历史分页会带来很多 turn：不能因为「过程区要能回看」就让这两张表无界增长。
+ * 保留最近的一批（正在跑的那一轮永远在最后，不会被裁掉）。
+ */
+const TURN_PROCESS_LIMIT = 200;
+function trimTurnMap<T>(map: Record<string, T>): Record<string, T> {
+  const keys = Object.keys(map);
+  if (keys.length <= TURN_PROCESS_LIMIT) return map;
+  const out: Record<string, T> = {};
+  for (const key of keys.slice(keys.length - TURN_PROCESS_LIMIT)) out[key] = map[key] as T;
+  return out;
+}
+
+/** 当前阶段：还在跑的最后一个是「当前」；都结束了就是最后一个。 */
+export function currentStageOf(stages: TurnStage[]): TurnStage | null {
+  if (!stages.length) return null;
+  for (let i = stages.length - 1; i >= 0; i -= 1) {
+    if (stages[i].status === "running") return stages[i];
+  }
+  return stages[stages.length - 1] ?? null;
+}
+
 /** 消息流里的一个渲染分组：叙事行 + 它收纳的调用卡。 */
 export type TurnItemGroup =
   | { kind: "stage"; narrative: StreamMessage; calls: StreamMessage[] }
@@ -99,6 +176,37 @@ export function groupTurnItems(items: StreamMessage[]): TurnItemGroup[] {
   return groups;
 }
 
+/** 一轮里的条目分别进哪一块（过程区 / 正文区）—— 组件与测试共用这一份规则。 */
+export interface TurnItemsView {
+  /** 用户消息（轮首） */
+  user: StreamMessage[];
+  /** 过程区：中间话 + 工具卡 + legacy 叙事行（按到达顺序） */
+  process: StreamMessage[];
+  /** 正文区：正式回答（interim 不为 true 的助手消息） */
+  answers: StreamMessage[];
+  /** 其余卡片（独立任务 / 工具创建 / system）：它们有自己的生命周期，不进过程区 */
+  other: StreamMessage[];
+}
+
+/**
+ * 把一轮的消息分成「过程」与「正文」。
+ *
+ * * 中间话（interim）**不再单独成气泡**，统一进过程区（契约 §1.5）；
+ * * 工具卡进过程区（同一内容只出现一次，不再散落在一轮里）；
+ * * 独立任务 / 工具创建卡留在过程区外：它们的生命周期比一轮的过程说明长，
+ *   被过程区收起会看不见（它们各自已有明确的卡与状态）。
+ */
+export function splitTurnItems(items: StreamMessage[]): TurnItemsView {
+  const view: TurnItemsView = { user: [], process: [], answers: [], other: [] };
+  for (const m of items) {
+    if (m.role === "user") view.user.push(m);
+    else if (m.role === "assistant") (m.interim ? view.process : view.answers).push(m);
+    else if (m.role === "tool" || m.role === "narrative") view.process.push(m);
+    else view.other.push(m);
+  }
+  return view;
+}
+
 function normalizeNarrativeKind(raw: unknown): NarrativeKind {
   return raw === "announce" || raw === "warning" || raw === "result" ? raw : "progress";
 }
@@ -122,19 +230,41 @@ function narrativeCallRecords(raw: unknown): NarrativeCallRecord[] {
   return out;
 }
 
+/** 历史行 raw 里的阶段元数据（契约 §1.4：阶段沿用 messages，raw.stage 记录顺序与状态）。 */
+interface RawStageMeta {
+  stageId: string;
+  index: number | null;
+  name: string;
+  status: string;
+}
+
 /** 历史行的 `raw`（JSON 字符串）→ 叙事元数据；解析失败一律当作"没有"。 */
 function parseNarrativeRaw(raw?: string | null): {
   kind?: NarrativeKind;
   calls?: NarrativeCallRecord[];
+  stage?: RawStageMeta;
 } {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const meta = (parsed.narrative ?? {}) as Record<string, unknown>;
     const calls = narrativeCallRecords(parsed.calls);
+    const rawStage = (parsed.stage ?? null) as Record<string, unknown> | null;
+    const stageId = rawStage ? String(rawStage.stage_id ?? "").trim() : "";
+    const index = rawStage?.index;
     return {
       ...(meta.kind === undefined ? {} : { kind: normalizeNarrativeKind(meta.kind) }),
       ...(calls.length ? { calls } : {}),
+      ...(stageId
+        ? {
+            stage: {
+              stageId,
+              index: typeof index === "number" && Number.isFinite(index) ? Math.trunc(index) : null,
+              name: String(rawStage?.name ?? ""),
+              status: String(rawStage?.status ?? ""),
+            },
+          }
+        : {}),
     };
   } catch {
     return {};
@@ -336,6 +466,16 @@ export interface StreamMessage {
   toolOutputMissing?: boolean;
   /** 为什么没有：'setting'（关闭了保存全文） / 'retention'（按保留期清掉） */
   toolMissingReason?: string;
+  /** 工具归属的阶段（契约 §1.1：只看 stage_id；缺省 = 归入「整轮」） */
+  stageId?: string | null;
+  /** 这条流式正文属于哪一次模型调用（delta_id）：同一轮的多个 delta 绝不互相覆盖 */
+  assistantDeltaId?: string;
+  /** 已收到的最大 seq：(delta_id, seq) 单调，用它丢弃重复 / 迟到的事件 */
+  assistantSeq?: number;
+  /** 用户消息携带的附件 id（发送时登记的事实） */
+  attachmentIds?: string[];
+  /** 附件展示元数据（与 C 的 AttachmentRef 同形；拿不到就不编造名称与状态） */
+  attachments?: MessageAttachment[];
   /** 中间助手消息（工具调用前的可见评论，区别于最终答复） */
   interim?: boolean;
   /** 后端核对通过的完成结论（有就显示「后端已核对」，没有就不显示） */
@@ -561,6 +701,10 @@ export const useSessionStore = defineStore("session", {
      * 直接改对象属性不会经过响应式代理，界面不会更新。
      */
     freshIds: [] as string[],
+    /** 按 turn_id 组织的阶段（契约 §1.3：系统生成，前端只消费，不能自己造） */
+    stagesByTurn: {} as Record<string, TurnStage[]>,
+    /** 每轮 TURN_END 的权威事实（总耗时 / 状态）：折叠态不展开也要显示 */
+    turnFacts: {} as Record<string, TurnFacts>,
   }),
   getters: {
     /**
@@ -580,6 +724,12 @@ export const useSessionStore = defineStore("session", {
      */
     unfinishedDevTasks: (state): DevTaskRow[] =>
       state.devTasks.filter((task) => !task.submitted && !task.abandoned),
+    /** 某一轮的阶段（按 index 顺序；没有就是空数组 = legacy 平铺） */
+    stagesFor: (state) => (turnId?: string | null): TurnStage[] =>
+      turnId ? (state.stagesByTurn[turnId] ?? []) : [],
+    /** 某一轮 TURN_END 的权威事实（没有 = 还在跑 / 旧记录） */
+    factsFor: (state) => (turnId?: string | null): TurnFacts | null =>
+      turnId ? (state.turnFacts[turnId] ?? null) : null,
   },
   actions: {
     _nextId() {
@@ -1185,37 +1335,112 @@ export const useSessionStore = defineStore("session", {
         }, 600);
       }
     },
-    pushUser(text: string) {
-      this.pushMessage({ role: "user", content: text, contentType: "text" });
+    pushUser(text: string, attachmentIds: string[] = [], attachments: MessageAttachment[] = []) {
+      const ids = attachmentIds.map((x) => String(x)).filter(Boolean);
+      const refs = attachments.filter((a) => a && a.id && (!ids.length || ids.includes(a.id)));
+      this.pushMessage({
+        role: "user",
+        content: text,
+        contentType: "text",
+        ...(ids.length ? { attachmentIds: ids } : {}),
+        ...(refs.length ? { attachments: refs } : {}),
+      });
     },
-    pushAssistant(text: string, interim = false, streaming = false) {
-      // 若本轮正在产出且最后一条是流式助手消息，则就地更新（避免"过程+最终"两条）
-      const last = this.messages[this.messages.length - 1];
-      if (streaming && last && last.role === "assistant" && last.streaming) {
-        // 记录真实到达节奏：下一段文字按「上一次增量到这次增量的间隔」显示，
-        // 这样逐字进度跟的是模型实际速度，而不是一个固定的字/秒估计值。
-        const now = Date.now();
-        if (last.deltaAt) {
-          last.paceMs = Math.min(400, Math.max(40, now - last.deltaAt));
+    /**
+     * 一条助手正文到达（ASSISTANT 事件）。
+     *
+     * 契约 §2.1 / §2.2：
+     * * `content` 是**累计全文**（同一个 delta_id 每次替换，不做增量拼接）；
+     * * `delta_id` 标识一次模型调用，`seq` 单调，(delta_id, seq) 用来丢弃重复 / 迟到事件；
+     * * 同一轮里**不同 delta 绝不互相覆盖**：换 delta 之前先把上一条落定，
+     *   否则第二次 interim 会把第一段过程说明吃掉（task-2 要求修掉的缺陷）；
+     * * 角色只允许「正文 → 过程」改判：interim 一旦为 true 就不再回到正文区
+     *   （唯一例外是 TURN_END 的 final_content 校准，见 applyFinalAnswer）。
+     */
+    pushAssistant(
+      text: string,
+      interim = false,
+      streaming = false,
+      meta: { deltaId?: string | null; seq?: number | null } = {},
+    ) {
+      const deltaId = String(meta.deltaId ?? "");
+      const seq =
+        typeof meta.seq === "number" && Number.isFinite(meta.seq) ? Math.trunc(meta.seq) : null;
+      // 中间话归属「到达时的当前阶段」（归属只看 stage_id，不靠消息相邻位置）
+      const stageId = interim ? this._currentStageIdFor(this.activeTurnId) : null;
+
+      // 1) 同一个 delta_id：累计快照**就地更新**，绝不新建第二条
+      const existing = deltaId
+        ? this.messages.find((m) => m.role === "assistant" && m.assistantDeltaId === deltaId)
+        : undefined;
+      if (existing) {
+        // 去重：seq 不大于已收最大值的一律丢弃（重连重放 / 重复事件不回退）
+        if (seq !== null && existing.assistantSeq !== undefined && seq <= existing.assistantSeq) {
+          return;
         }
-        last.deltaAt = now;
-        last.content = text;
-        last.interim = true;
+        this._touchAssistantDelta(existing, streaming);
+        existing.content = text;
+        if (seq !== null) existing.assistantSeq = seq;
+        // 只允许 正文 → 过程 这一个方向
+        if (interim) {
+          existing.interim = true;
+          if (stageId) existing.stageId = stageId;
+        }
         return;
       }
+
+      // 2) 没有 delta_id（旧后端整段推送）：沿用「最后一条流式消息就地更新」的既有行为
+      const last = this.messages[this.messages.length - 1];
+      if (!deltaId && streaming && last && last.role === "assistant" && last.streaming) {
+        this._touchAssistantDelta(last, true);
+        last.content = text;
+        if (interim) {
+          last.interim = true;
+          if (stageId) last.stageId = stageId;
+        }
+        return;
+      }
+
+      // 3) 新的一次模型调用：先落定上一条，再另起一条 —— 两段过程说明各自保留
+      if (deltaId) this.finalizeAssistant();
       this.pushMessage({
         role: "assistant",
         content: text,
         contentType: "text",
         ...(interim ? { interim: true } : {}),
         ...(streaming ? { streaming: true } : {}),
+        ...(deltaId ? { assistantDeltaId: deltaId } : {}),
+        ...(seq !== null ? { assistantSeq: seq } : {}),
+        ...(stageId ? { stageId } : {}),
       });
     },
+    /**
+     * 记一次增量到达的真实节奏（相邻两次增量的间隔），并同步 streaming 标记。
+     * 明确说「这条路径不支持实时生成」（streaming=false）时不假装在逐字输出。
+     */
+    _touchAssistantDelta(message: StreamMessage, streaming: boolean) {
+      const now = Date.now();
+      if (message.deltaAt) {
+        message.paceMs = Math.min(400, Math.max(40, now - message.deltaAt));
+      }
+      message.deltaAt = now;
+      if (streaming) message.streaming = true;
+      else delete message.streaming;
+    },
+    /**
+     * 落定**最近一条还在流式输出**的助手消息（停止逐字；interim 标记保留 ——
+     * 中间话不是最终答案）。
+     *
+     * 为什么不能只看最后一条：工具卡会插在正文之后（正文 → 工具 → 下一段正文），
+     * 只看最后一条就会漏掉那条还在 streaming 的正文 —— 它会一直显示成「正在生成」，
+     * 而且换 delta 时也不会被落定（task-2 的覆盖缺陷就是从这里开始的）。
+     */
     finalizeAssistant() {
-      const last = this.messages[this.messages.length - 1];
-      if (last && last.role === "assistant" && last.streaming) {
-        // 落定（停止逐字），但保留 interim 标记：中间话不是最终答案
-        delete last.streaming;
+      for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+        const message = this.messages[i];
+        if (!message || message.role !== "assistant") continue;
+        if (message.streaming) delete message.streaming;
+        return;
       }
     },
     /**
@@ -1313,6 +1538,129 @@ export const useSessionStore = defineStore("session", {
       });
     },
 
+    // -- 过程阶段（STAGE 事件，契约 §1.3） --------------------------------
+
+    /**
+     * 应用一个 STAGE 事件：阶段集合、顺序、阶段内说明、阶段状态。
+     *
+     * 规则：
+     * * 阶段由**系统**生成 —— 前端只消费，绝不根据模型文案自己造阶段；
+     * * 没有 stage_id 的事件不产生阶段（旧 NARRATIVE 走 legacy 平铺渲染，不伪造阶段）；
+     * * 同一 stage_id 原地推进；`done` 是终态（后续 update 不会把它改回 running）；
+     * * 说明按 narrative_id 去重（断线重连会重放同一事件）。
+     */
+    upsertStage(payload: {
+      stage_id?: string;
+      turn_id?: string | null;
+      index?: number | null;
+      status?: string;
+      name?: string;
+      text?: string;
+      kind?: string;
+      op?: string;
+      narrative_id?: string | null;
+      call_ids?: string[];
+      created_at?: string | null;
+    }) {
+      const stageId = String(payload.stage_id ?? "").trim();
+      if (!stageId) return;
+      const turnId = payload.turn_id ? String(payload.turn_id) : (this.activeTurnId ?? "");
+      const list = [...(this.stagesByTurn[turnId] ?? [])];
+      let stage = list.find((s) => s.stageId === stageId);
+      if (!stage) {
+        stage = {
+          stageId,
+          index:
+            typeof payload.index === "number" && Number.isFinite(payload.index) && payload.index > 0
+              ? Math.trunc(payload.index)
+              : list.length + 1,
+          name: "",
+          status: "running",
+          notes: [],
+          callIds: [],
+        };
+        list.push(stage);
+      }
+      const name = String(payload.name ?? "").trim();
+      if (name) stage.name = name;
+      // 状态单调：done 之后不再回到 running（阶段文案不能重开一整轮）
+      if (payload.status === "done") stage.status = "done";
+      else if (payload.status === "running" && stage.status !== "done") stage.status = "running";
+
+      const text = String(payload.text ?? "").trim();
+      if (text) {
+        const noteId = String(payload.narrative_id ?? "");
+        const duplicate = stage.notes.some((n) =>
+          noteId ? n.narrativeId === noteId : n.text === text,
+        );
+        if (!duplicate) {
+          stage.notes.push({
+            narrativeId: noteId,
+            text,
+            kind: normalizeNarrativeKind(payload.kind),
+            at: String(payload.created_at ?? new Date().toISOString()),
+          });
+        }
+      }
+      const callIds = Array.isArray(payload.call_ids) ? payload.call_ids.map(String) : [];
+      for (const callId of callIds) {
+        if (callId && !stage.callIds.includes(callId)) stage.callIds.push(callId);
+      }
+      list.sort((a, b) => a.index - b.index || (a.stageId < b.stageId ? -1 : 1));
+      this.stagesByTurn = trimTurnMap({ ...this.stagesByTurn, [turnId]: list });
+    },
+
+    /** 当前阶段 id（没有阶段时 null）：中间话归属用它。 */
+    _currentStageIdFor(turnId?: string | null): string | null {
+      const id = turnId ? String(turnId) : (this.activeTurnId ?? "");
+      return currentStageOf(this.stagesByTurn[id] ?? [])?.stageId ?? null;
+    },
+
+    /** 工具归属（契约 §1.1：只看 stage_id，不靠消息相邻位置）。 */
+    attachCallToStage(turnId: string | null | undefined, stageId: string | null | undefined, callId: string) {
+      if (!stageId || !callId) return;
+      const id = turnId ? String(turnId) : (this.activeTurnId ?? "");
+      const list = this.stagesByTurn[id];
+      if (!list) return;
+      const stage = list.find((s) => s.stageId === stageId);
+      if (!stage || stage.callIds.includes(callId)) return;
+      stage.callIds.push(callId);
+    },
+
+    /**
+     * 一轮结束：把还挂着的阶段收口。
+     *
+     * 阶段状态不代表整轮（阶段文案不能结束整轮），但整轮已经结束了，
+     * 就不该再有阶段显示「运行中」——那是过期的界面状态。
+     */
+    endRunningStages(turnId?: string | null) {
+      const id = turnId ? String(turnId) : (this.activeTurnId ?? "");
+      const list = this.stagesByTurn[id];
+      if (!list?.some((s) => s.status === "running")) return;
+      this.stagesByTurn = {
+        ...this.stagesByTurn,
+        [id]: list.map((s) => (s.status === "running" ? { ...s, status: "done" as const } : s)),
+      };
+    },
+
+    /** TURN_END 的权威事实（契约 §3）：总耗时等只在这里落地，缺失就是 null（不是 0）。 */
+    recordTurnFacts(turnId: string, d: Record<string, unknown>) {
+      if (!turnId) return;
+      const num = (value: unknown): number | null =>
+        typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+      this.turnFacts = trimTurnMap({
+        ...this.turnFacts,
+        [turnId]: {
+          turnId,
+          status: String(d.status ?? "completed"),
+          durationMs: num(d.duration_ms),
+          queueMs: num(d.queue_ms),
+          startedAt: typeof d.started_at === "string" ? d.started_at : null,
+          endedAt: typeof d.ended_at === "string" ? d.ended_at : null,
+        },
+      });
+    },
+
     /**
      * RESYNC 恢复：把服务器已经落库的叙事补进消息流。
      *
@@ -1373,6 +1721,7 @@ export const useSessionStore = defineStore("session", {
       presentation?: ToolPresentation | null,
       turnId?: string | null,
       arguments_?: Record<string, unknown> | null,
+      stageId?: string | null,
     ) {
       const key = callId || toolName;
       // 工具创建流程：折叠进创建卡（进度由 TOOL_CREATE_STATUS 提供）
@@ -1389,6 +1738,8 @@ export const useSessionStore = defineStore("session", {
         existing.toolOk = undefined;
         existing.toolError = null;
         existing.presentation = presentation ?? existing.presentation;
+        if (stageId) existing.stageId = stageId;
+        this.attachCallToStage(turnId ?? this.activeTurnId, stageId ?? existing.stageId, key);
         return;
       }
       this.pushMessage({
@@ -1401,7 +1752,9 @@ export const useSessionStore = defineStore("session", {
         toolStatus: "running",
         ...(key ? { callId: key } : {}),
         ...(turnId ? { turnId } : {}),
+        ...(stageId ? { stageId } : {}),
       });
+      this.attachCallToStage(turnId ?? this.activeTurnId, stageId, key);
     },
     /**
      * 工具结束（TOOL_END）：按 `call_id` 更新**同一张**卡。
@@ -1417,6 +1770,7 @@ export const useSessionStore = defineStore("session", {
       durationMs?: number,
       status?: ToolStatus | null,
       recordId?: string | null,
+      stageId?: string | null,
     ) {
       const key = callId || toolName;
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
@@ -1451,6 +1805,8 @@ export const useSessionStore = defineStore("session", {
         }
         // 工具调用历史的记录 id：卡片展开时靠它取参数与输出全文
         if (recordId) target.toolRecordId = recordId;
+        if (stageId) target.stageId = stageId;
+        this.attachCallToStage(null, stageId ?? target.stageId, key);
         return;
       }
       this.pushMessage({
@@ -1466,7 +1822,9 @@ export const useSessionStore = defineStore("session", {
         ...(key ? { callId: key } : {}),
         ...(typeof durationMs === "number" ? { toolDurationMs: durationMs } : {}),
         ...(recordId ? { toolRecordId: recordId } : {}),
+        ...(stageId ? { stageId } : {}),
       });
+      this.attachCallToStage(null, stageId, key);
     },
     /**
      * 独立任务状态（SUBAGENT_STATUS）：同一 `task_id` 只有一张卡。
@@ -1638,6 +1996,8 @@ export const useSessionStore = defineStore("session", {
       this.turnPhase = "idle";
       this.activity = "idle";
       this.cancelling = null;
+      // 整轮结束 = 阶段不可能还在跑（阶段状态本身不代表整轮，这里只是收口）
+      this.endRunningStages(this.activeTurnId);
     },
     async loadHistory() {
       const seq = ++this._historyRequestSeq;
@@ -1709,10 +2069,13 @@ export const useSessionStore = defineStore("session", {
         content: string;
         content_type: string;
         created_at: string;
+        turn_id?: string | null;
         raw?: string;
       }[],
       records: ToolRecordPreview[],
     ): StreamMessage[] {
+      // 先重放阶段（契约 §1.4）：工具归属要按 stage_id 找得到阶段，再建工具卡
+      this._replayHistoryStages(messages);
       const items: StreamMessage[] = messages.map((m) => this._historyMessage(m));
       const known = new Set(items.map((i) => i.toolRecordId).filter(Boolean) as string[]);
       for (const record of records) {
@@ -1724,8 +2087,48 @@ export const useSessionStore = defineStore("session", {
       items.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
       return items;
     },
+    /**
+     * 历史重放：按时间顺序读 `raw.stage`，恢复阶段顺序 / 历次说明 / 关联工具（契约 §1.4）。
+     *
+     * 没有 `raw.stage` 的旧数据**不伪造阶段**（继续走 legacy 平铺）；
+     * 没有 turn_id 的行无法归属到某一轮，同样跳过（不把不同轮混进一个阶段）。
+     */
+    _replayHistoryStages(rows: { id: string; content: string; content_type: string; created_at: string; turn_id?: string | null; raw?: string }[]) {
+      const ordered = [...rows].sort((a, b) =>
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+      );
+      for (const row of ordered) {
+        if (row.content_type !== "narrative" || !row.raw) continue;
+        const turnId = row.turn_id ? String(row.turn_id) : "";
+        if (!turnId) continue;
+        const meta = parseNarrativeRaw(row.raw);
+        const stage = meta.stage;
+        if (!stage) continue;
+        this.upsertStage({
+          stage_id: stage.stageId,
+          turn_id: turnId,
+          index: stage.index,
+          status: stage.status,
+          name: stage.name,
+          text: row.content,
+          kind: meta.kind,
+          narrative_id: row.id,
+          call_ids: (meta.calls ?? []).map((c) => c.callId).filter(Boolean),
+          created_at: row.created_at,
+        });
+      }
+    },
+
+    /** 某个 call_id 属于哪一阶段（历史工具卡按它归属；找不到就归「整轮」）。 */
+    _stageIdForCall(turnId: string | null | undefined, callId: string | null | undefined): string | null {
+      if (!turnId || !callId) return null;
+      const stage = (this.stagesByTurn[String(turnId)] ?? []).find((s) => s.callIds.includes(String(callId)));
+      return stage?.stageId ?? null;
+    },
+
     /** 一条工具调用记录 → 消息流里的工具卡（预览态；展开时才取全文） */
     _historyToolRecord(r: ToolRecordPreview): StreamMessage {
+      const stageId = this._stageIdForCall(r.turn_id, r.call_id);
       return {
         id: `toolrec_${r.id}`,
         role: "tool",
@@ -1734,6 +2137,8 @@ export const useSessionStore = defineStore("session", {
         createdAt: r.created_at,
         topicName: this.topicName,
         fresh: false,
+        ...(r.turn_id ? { turnId: r.turn_id } : {}),
+        ...(stageId ? { stageId } : {}),
         toolName: r.tool_name,
         callId: r.call_id,
         toolRecordId: r.id,
@@ -1783,6 +2188,7 @@ export const useSessionStore = defineStore("session", {
       content: string;
       content_type: string;
       created_at: string;
+      turn_id?: string | null;
       raw?: string;
     }): StreamMessage {
       if (m.content_type === "narrative") {
@@ -1798,6 +2204,7 @@ export const useSessionStore = defineStore("session", {
           fresh: false,
           narrativeKind: meta.kind ?? "progress",
           ...(meta.calls ? { narrativeCalls: meta.calls } : {}),
+          ...(m.turn_id ? { turnId: String(m.turn_id) } : {}),
         };
       }
       return {
@@ -1808,6 +2215,7 @@ export const useSessionStore = defineStore("session", {
         createdAt: m.created_at,
         topicName: this.topicName,
         fresh: false,
+        ...(m.turn_id ? { turnId: String(m.turn_id) } : {}),
         ...(m.role === "tool"
           ? { toolName: "tool", toolOk: true, toolStatus: "success" as const, toolError: null }
           : {}),
@@ -1842,6 +2250,8 @@ export const useSessionStore = defineStore("session", {
         const knownRecords = new Set(
           this.messages.map((m) => m.toolRecordId).filter(Boolean) as string[],
         );
+        // 更早的一页同样按 raw.stage 重放阶段（顺序 / 说明 / 关联工具）
+        this._replayHistoryStages(page.messages);
         const older = page.messages
           .filter((m) => !known.has(m.id))
           .map((m) => this._historyMessage(m));
@@ -1876,11 +2286,16 @@ export const useSessionStore = defineStore("session", {
      * 发送一轮消息。turnRunning 时后端会排队（TURN_QUEUE 事件回执），
      * 因此仍然允许提交：本地先以「等待中」状态呈现，不阻塞用户写下一条。
      */
-    async send(text: string): Promise<boolean> {
+    async send(
+      text: string,
+      attachmentIds?: string[],
+      attachments?: MessageAttachment[],
+    ): Promise<boolean> {
       const message = text.trim();
       if (!message) return false;
+      const ids = (attachmentIds ?? []).map((x) => String(x)).filter(Boolean);
       const queued = this.turnRunning;
-      this.pushUser(message);
+      this.pushUser(message, ids, attachments ?? []);
       const optimistic = this.messages[this.messages.length - 1];
       if (queued) {
         optimistic.queued = true;
@@ -1891,7 +2306,10 @@ export const useSessionStore = defineStore("session", {
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
       try {
-        const res = await api.sendTurn(message, this.currentTopicId);
+        // 没有附件时保持既有调用形状（两个参数）——附件是**增量**，不该改变原有链路
+        const res = ids.length
+          ? await api.sendTurn(message, this.currentTopicId, ids)
+          : await api.sendTurn(message, this.currentTopicId);
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。

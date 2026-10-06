@@ -21,6 +21,26 @@ export interface ApprovalItem {
   stale?: boolean;
 }
 
+/**
+ * 「它想做什么」：审批里最该先读的一句人话。
+ *
+ * 与 ApprovalModal 的 intent 共用这一份取值顺序
+ * （description → tool_name → name → explanation → reason）——
+ * 内联卡与弹窗必须说同一句话，不能各写一套。
+ */
+export function approvalIntent(payload: Record<string, unknown>): string {
+  const first = [payload.description, payload.tool_name, payload.name, payload.explanation, payload.reason]
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .find((v) => v.length > 0);
+  return first ?? "该操作需要你的授权";
+}
+
+/** 后端 policy.describe() 的能力清单（人话）；没有就不显示，不编造。 */
+export function approvalCapabilities(payload: Record<string, unknown>): string[] {
+  const raw = payload.capabilities;
+  return Array.isArray(raw) ? raw.map((x) => String(x)) : [];
+}
+
 export const useApprovalsStore = defineStore("approvals", {
   state: () => ({
     queue: [] as ApprovalItem[],
@@ -33,6 +53,13 @@ export const useApprovalsStore = defineStore("approvals", {
      * 无条件弹出，会在用户正编辑表单时抢走焦点（历史录像：工具确认盖住凭据编辑）。
      */
     deferred: false,
+    /**
+     * 过程区里已经**内联显示按钮**的那条审批 id。
+     *
+     * 同一时刻只允许一套按钮：内联卡在显示时，全局 ApprovalEntry / ApprovalModal
+     * 不再对同一个 approval_id 显示按钮（按 id 门控，不是按「有没有审批」）。
+     */
+    inlineId: null as string | null,
   }),
   getters: {
     current: (state) => state.queue[0] ?? null,
@@ -40,6 +67,9 @@ export const useApprovalsStore = defineStore("approvals", {
     visible: (state) => state.queue.length > 0 && !state.deferred,
     /** 待确认数量（入口文案用） */
     pendingCount: (state) => state.queue.length,
+    /** 内联卡正在显示的就是当前这条审批 */
+    inlineClaimed: (state) =>
+      !!state.inlineId && state.queue.length > 0 && state.queue[0]?.approval_id === state.inlineId,
   },
   actions: {
     enqueue(
@@ -66,6 +96,14 @@ export const useApprovalsStore = defineStore("approvals", {
       // 编辑中到达的确认不抢焦点：保留待办并亮出可发现的入口，由用户主动打开。
       if (first) this.deferred = opts.autoOpen === false;
       else if (opts.autoOpen !== false) this.deferred = false;
+    },
+    /** 过程区内联卡声明「这条审批的按钮由我显示」（按 approval_id） */
+    claimInline(approvalId: string) {
+      if (approvalId) this.inlineId = approvalId;
+    },
+    /** 释放内联声明（内联卡卸载 / 轮次结束）：全局入口恢复显示 */
+    releaseInline(approvalId?: string | null) {
+      if (!approvalId || this.inlineId === approvalId) this.inlineId = null;
     },
     /** 用户主动打开（入口点击 / 直接相关的确认） */
     openNow() {
@@ -105,8 +143,33 @@ export const useApprovalsStore = defineStore("approvals", {
     },
     async respond(decision: "approved" | "rejected", overrides?: Record<string, unknown>) {
       const item = this.current;
+      if (!item) return;
+      await this._respondItem(item, decision, overrides);
+    },
+    /**
+     * 按 approval_id 应答（过程区内联卡用）。
+     *
+     * 为什么不能直接用 respond()：内联卡上的按钮属于**那一条**审批；
+     * 请求在飞或审批已被别处处理时 current 可能已经换成下一条 ——
+     * 按 id 定位，绝不误伤下一项；重复点击也只会命中同一条，被 responding 挡住。
+     */
+    async respondById(
+      approvalId: string,
+      decision: "approved" | "rejected",
+      overrides?: Record<string, unknown>,
+    ) {
+      const item = this.queue.find((a) => a.approval_id === approvalId);
+      if (!item) return;
+      await this._respondItem(item, decision, overrides);
+    },
+    /** 一条审批的应答（respond / respondById 共用，语义完全一致） */
+    async _respondItem(
+      item: ApprovalItem,
+      decision: "approved" | "rejected",
+      overrides?: Record<string, unknown>,
+    ) {
       // 双提交防护：请求进行中忽略后续点击（按钮同时 disabled）
-      if (!item || this.responding) return;
+      if (this.responding) return;
       // 已经判定失效的项不再发请求：后端已经没有它了，重试只会一直 404
       if (item.stale) return;
       this.responding = item.approval_id;
@@ -120,6 +183,8 @@ export const useApprovalsStore = defineStore("approvals", {
         // 成功才出队（按 id 过滤，避免并发事件让 shift 移除错项）
         this.queue = this.queue.filter((a) => a.approval_id !== item.approval_id);
         if (!this.queue.length) this.deferred = false;
+        // 这条已经没有待办了：内联声明一起释放，避免门控残留
+        if (this.inlineId === item.approval_id) this.inlineId = null;
       } catch (e) {
         const status = (e as { status?: number }).status;
         if (status === 404) {

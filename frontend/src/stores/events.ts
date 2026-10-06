@@ -232,6 +232,8 @@ export const useEventStore = defineStore("events", {
             if (this.endedTurns.length > 200) this.endedTurns.shift();
           }
           this.recordUsage(tid, d);
+          // 权威耗时事实（契约 §3）：折叠态不展开也要显示总耗时
+          if (tid) session.recordTurnFacts(tid, d);
           const status = String(d.status ?? "completed");
           const final = typeof d.final_content === "string" ? d.final_content : "";
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
@@ -363,7 +365,16 @@ export const useEventStore = defineStore("events", {
             // 已经有真实内容到达：阶段从「等待响应」转为「正在生成」
             session.turnPhase = "generating";
             if (session.activity !== "approval") session.activity = "generating";
-            session.pushAssistant(content, true, true);
+            /**
+             * 契约 §2.1：interim 由**事件字段**决定 —— 旧代码把它写死成 true，
+             * 结果正式回答也被标成「过程」。streaming 缺省 true 保持旧后端
+             * 「整段推送 + 打字机」的行为；显式 false（text 兼容档）时不假装实时生成。
+             * delta_id / seq：同轮多段正文各自保真，重复 / 迟到事件按 seq 丢弃。
+             */
+            session.pushAssistant(content, d.interim === true, d.streaming !== false, {
+              deltaId: stringOrNull(d.delta_id),
+              seq: numberOrNull(d.seq),
+            });
           }
           break;
         }
@@ -379,6 +390,8 @@ export const useEventStore = defineStore("events", {
             (d.presentation as ToolPresentation | null) ?? null,
             (d.turn_id as string | null) ?? null,
             (d.arguments as Record<string, unknown> | undefined) ?? null,
+            // 契约 §1.3：可选 stage_id（缺省 null = 归入「整轮」）
+            (d.stage_id as string | null) ?? null,
           );
           if (session.turnRunning) session.activity = "tool";
           break;
@@ -398,6 +411,8 @@ export const useEventStore = defineStore("events", {
             (d.status as ToolStatus | undefined) ?? null,
             // 工具调用历史的记录 id：卡片展开时按它取全文（实时与历史同一条路径）
             (d.record_id as string | null) ?? null,
+            // 契约 §1.3：可选 stage_id（缺省 null = 归入「整轮」）
+            (d.stage_id as string | null) ?? null,
           );
           if (session.turnRunning) {
             session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
@@ -418,6 +433,28 @@ export const useEventStore = defineStore("events", {
             turn_id: (d.turn_id as string | null) ?? null,
             kind: String(d.kind ?? "progress"),
             text: String(d.text ?? ""),
+            call_ids: Array.isArray(d.call_ids) ? (d.call_ids as string[]) : [],
+            created_at: (d.created_at as string | null) ?? null,
+          });
+          break;
+        }
+        case "STAGE": {
+          /**
+           * 过程阶段（契约 §1.3）：系统生成，前端只消费 —— 阶段集合、顺序、说明、状态。
+           * 归属规则同其它主轮事件：子任务内部的阶段不进主对话。
+           */
+          const d = event.data as Record<string, unknown>;
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
+          session.upsertStage({
+            stage_id: String(d.stage_id ?? ""),
+            turn_id: (d.turn_id as string | null) ?? null,
+            index: numberOrNull(d.index),
+            status: String(d.status ?? ""),
+            name: String(d.name ?? ""),
+            text: String(d.text ?? ""),
+            kind: String(d.kind ?? ""),
+            op: String(d.op ?? ""),
+            narrative_id: (d.narrative_id as string | null) ?? null,
             call_ids: Array.isArray(d.call_ids) ? (d.call_ids as string[]) : [],
             created_at: (d.created_at as string | null) ?? null,
           });
