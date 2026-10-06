@@ -509,11 +509,144 @@ export function batchSummary(intents: Intent[], selectedIds: string[]): string {
   parts.push(waiting > 0 ? "未选中的 " + waiting + " 项继续等待" : "全部已选中");
   return parts.join("；") + "。";
 }
-
-// --- 批次判定（本轮前端改版新增，D 负责实现；契约 §8.5） ---------------------
+// --- 批次判定（本轮前端改版新增，D 实现；契约 §8.5） ----------------------
+//
+// 契约 §8.5 的优先级：
+//   ① 本次会话里由**同一次创建动作**产生的意图（演示入口一次四项、提交后一次生成的多项）
+//      由调用方调 recordIntentBatch 记进 localStorage["qio.interactive.intentBatches"]；
+//   ② 服务端 submissionId 相同；
+//   ③ createdAt 截断到秒相同；
+//   三条都拿不到时，该意图**自成一批** —— 宁可不出批量列表，也不把不同批次相加。
+//
+// 这一层只做「哪些意图属于同一批」，不做任何审批判定；冲突、依赖、材料变化仍然由服务端决定。
 
 /** 同一批等待审批的意图达到这个数量，才提供该批的批量列表 */
 export const BATCH_LIST_MIN = BATCH_MIN;
+
+/** 本次会话的创建批次记录（意图 id → 批次键）；解析失败或写满时静默降级为「不成批」 */
+export const INTENT_BATCH_STORAGE_KEY = "qio.interactive.intentBatches";
+
+/** 上限：只保留最近的若干批，避免 localStorage 无限增长（写满时同样静默降级） */
+const BATCH_MAX_GROUPS = 60;
+const BATCH_MAX_IDS = 400;
+
+/** 服务端来源的键前缀（直观区分一个键是怎么来的） */
+const SUBMISSION_BATCH_PREFIX = "submission:";
+const SECOND_BATCH_PREFIX = "second:";
+/** 自成一批：键里带意图 id，保证不同意图一定不同批 */
+const SOLO_BATCH_PREFIX = "solo:";
+
+interface BatchRecord {
+  id: string;
+  key: string;
+}
+
+interface BatchStore {
+  groups: { key: string; ids: string[] }[];
+  byId: Map<string, string>;
+}
+
+/** 能拿到哪个 Web Storage；都拿不到（或访问就抛错）时返回 null */
+function batchStorage(): Storage | null {
+  for (const name of ["localStorage", "sessionStorage"] as const) {
+    try {
+      const store = (globalThis as Record<string, unknown>)[name] as Storage | undefined;
+      if (store && typeof store.getItem === "function" && typeof store.setItem === "function") {
+        return store;
+      }
+    } catch {
+      // 隐私模式 / 被策略禁用：换下一个，拿不到就降级
+    }
+  }
+  return null;
+}
+
+function isBatchRecord(value: unknown): value is BatchRecord {
+  if (!value || typeof value !== "object") return false;
+  const item = value as { id?: unknown; key?: unknown };
+  return typeof item.id === "string" && item.id.length > 0 && typeof item.key === "string";
+}
+
+/** 读会话批次记录。任何异常（解析失败 / 结构损坏 / 存储不可用）都当「没有记录」，不抛错。 */
+function readBatchStore(): BatchStore {
+  const empty: BatchStore = { groups: [], byId: new Map() };
+  const store = batchStorage();
+  if (!store) return empty;
+  let raw: string | null = null;
+  try {
+    raw = store.getItem(INTENT_BATCH_STORAGE_KEY);
+  } catch {
+    return empty;
+  }
+  if (!raw) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  const source = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object" && Array.isArray((parsed as { records?: unknown }).records)
+      ? (parsed as { records: unknown[] }).records
+      : [];
+  const groups: { key: string; ids: string[] }[] = [];
+  const byId = new Map<string, string>();
+  for (const entry of source) {
+    if (!isBatchRecord(entry)) continue;
+    if (byId.has(entry.id)) continue;
+    byId.set(entry.id, entry.key);
+    const group = groups.find((item) => item.key === entry.key);
+    if (group) group.ids.push(entry.id);
+    else groups.push({ key: entry.key, ids: [entry.id] });
+  }
+  return { groups, byId };
+}
+
+function writeBatchStore(store: BatchStore): boolean {
+  const target = batchStorage();
+  if (!target) return false;
+  const payload = JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    records: store.groups.flatMap((group) => group.ids.map((id) => ({ id, key: group.key }))),
+  });
+  try {
+    target.setItem(INTENT_BATCH_STORAGE_KEY, payload);
+    return true;
+  } catch {
+    // 写满 / 被禁用：降级为「本次会话的批次没有记全」，下次调用再试，绝不抛错
+    return false;
+  }
+}
+
+function isValidDate(value: unknown): boolean {
+  if (typeof value !== "string" || !value) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
+function batchKeyFromIntent(intent: Intent): string | null {
+  const id = intent?.id;
+  if (!id) return null;
+  const bySession = readBatchStore().byId.get(id);
+  if (bySession) return bySession; // ① 本次会话记录的创建批次优先
+  if (typeof intent.submissionId === "string" && intent.submissionId) {
+    return SUBMISSION_BATCH_PREFIX + intent.submissionId; // ② 服务端同一次提交
+  }
+  if (isValidDate(intent.createdAt)) {
+    return SECOND_BATCH_PREFIX + Math.floor(Date.parse(intent.createdAt) / 1000); // ③ 创建秒
+  }
+  return null;
+}
+
+/**
+ * 一个意图属于哪一批。优先级见文件头（契约 §8.5）。
+ * 三条都拿不到时返回带意图 id 的独立键：**不同批次绝不合并**。
+ */
+export function batchKeyOf(intent: Intent): string {
+  const id = intent?.id ?? "";
+  return batchKeyFromIntent(intent) ?? SOLO_BATCH_PREFIX + id;
+}
 
 export interface IntentBatch {
   /** 批次标识：同一批产生的意图共用一个 key */
@@ -523,35 +656,137 @@ export interface IntentBatch {
   pendingIds: string[];
 }
 
-/**
- * 一个意图属于哪一批。优先级（契约 §8.5）：
- * 1) 本次会话记录下来的创建批次（localStorage["qio.interactive.intentBatches"]）；
- * 2) 服务端 submissionId 相同；
- * 3) createdAt 截断到秒相同；
- * 三条都拿不到时，该意图自成一批 —— 宁可不出批量列表，也不把不同批次相加。
- */
-export function batchKeyOf(intent: Intent): string {
-  return "intent:" + intent.id;
-}
-
-/** 按批分组（顺序稳定，便于界面显示）。 */
+/** 按批分组（保持传入顺序，便于界面稳定显示）。 */
 export function groupIntentsByBatch(intents: Intent[]): IntentBatch[] {
-  return intents.map((intent) => ({
-    key: batchKeyOf(intent),
-    intentIds: [intent.id],
-    pendingIds: DECIDABLE_STATUSES.includes(intent.status) ? [intent.id] : [],
-  }));
+  const groups = new Map<string, IntentBatch>();
+  for (const intent of intents ?? []) {
+    if (!intent?.id) continue;
+    const key = batchKeyOf(intent);
+    let batch = groups.get(key);
+    if (!batch) {
+      batch = { key, intentIds: [], pendingIds: [] };
+      groups.set(key, batch);
+    }
+    if (batch.intentIds.includes(intent.id)) continue;
+    batch.intentIds.push(intent.id);
+    if (isDecidable(intent.status)) batch.pendingIds.push(intent.id);
+  }
+  return [...groups.values()];
 }
 
-/** 需要提供批量列表的批次：**同一批**等待审批达到 4 项。 */
+/** 需要提供批量列表的批次：**同一批**等待审批达到 4 项（不同批次不累加）。 */
 export function batchesWithList(intents: Intent[]): IntentBatch[] {
   return groupIntentsByBatch(intents).filter((batch) => batch.pendingIds.length >= BATCH_LIST_MIN);
 }
 
-/** 把「某一次创建动作产生的意图」记进本批（演示入口一次四项、提交后一次生成的多项）。 */
+/**
+ * 把「某一次创建动作产生的意图」记进本批（演示入口一次四项、提交后一次生成的多项）。
+ *
+ * - 优先写 localStorage，拿不到就退回 sessionStorage，都拿不到就静默跳过；
+ * - 解析失败 / 写满 / 被策略禁用一律静默降级为「这批没有被记下来」（不抛错，
+ *   最多只是这批不出现批量列表，绝不会把不同批次错误合并）；
+ * - 只保留最近 BATCH_MAX_GROUPS 批、BATCH_MAX_IDS 条。
+ */
 export function recordIntentBatch(batchKey: string, intentIds: string[]): void {
-  if (typeof localStorage === "undefined" || !intentIds.length) return;
-  // D 负责实现：读改写 localStorage["qio.interactive.intentBatches"]，
-  // 记录 intentId → batchKey，并处理容量上限与解析失败（失败时静默降级为「不成批」）。
+  const key = typeof batchKey === "string" ? batchKey.trim() : "";
+  const ids = [...new Set((intentIds ?? []).filter((id) => typeof id === "string" && id.length > 0))];
+  // 没有可用的批次键时不写：写了只会让这些意图被算成「同一批」，不如让它们各自成批
+  if (!key || !ids.length) return;
+  try {
+    const store = readBatchStore();
+    const group = store.groups.find((item) => item.key === key);
+    if (group) {
+      for (const id of ids) if (!group.ids.includes(id)) group.ids.push(id);
+    } else {
+      store.groups.push({ key, ids });
+    }
+    for (const id of ids) store.byId.set(id, key);
+    while (store.groups.length > BATCH_MAX_GROUPS) {
+      const dropped = store.groups.shift();
+      for (const id of dropped?.ids ?? []) store.byId.delete(id);
+    }
+    let total = store.groups.reduce((sum, item) => sum + item.ids.length, 0);
+    while (total > BATCH_MAX_IDS && store.groups.length > 1) {
+      const dropped = store.groups.shift();
+      const count = dropped?.ids.length ?? 0;
+      total -= count;
+      for (const id of dropped?.ids ?? []) store.byId.delete(id);
+    }
+    writeBatchStore(store);
+  } catch {
+    // 兜底：任何意外都不许让调用方的界面崩掉（降级为「这批不成批」）
+  }
 }
 
+// --- 批量列表的本地视图（选择状态、定位） --------------------------------
+
+/** 已经在等待审批的意图 id（批量列表里可以勾选的项） */
+export function decidableIds(intents: Intent[]): string[] {
+  return (intents ?? []).filter((intent) => isDecidable(intent?.status)).map((intent) => intent.id);
+}
+
+/** 批次里还能处理的项：只保留传进来的范围（未选中的不处理） */
+export function inBatchSelection(batch: IntentBatch, ids: string[]): string[] {
+  return batch.pendingIds.filter((id) => ids.includes(id));
+}
+
+/** 清掉已经不在列表里的选择：数量变化不改变「你选了哪些还在的项」 */
+export function pruneBatchSelection(batch: IntentBatch, ids: string[]): string[] {
+  return inBatchSelection(batch, ids);
+}
+
+/** 选择部分或全部：同一批里勾选 / 取消；未选中的继续等待审批 */
+export function toggleBatchSelectionIn(batch: IntentBatch, ids: string[], id: string): string[] {
+  const kept = inBatchSelection(batch, ids).filter((item) => item !== id);
+  if (!batch.pendingIds.includes(id)) return kept;
+  return ids.includes(id) ? kept : [...kept, id];
+}
+
+export function selectAllInBatch(batch: IntentBatch): string[] {
+  return [...batch.pendingIds];
+}
+
+export function clearBatchSelectionIn(): string[] {
+  return [];
+}
+
+/** 把选中项拆成「可以提交给服务端的」与「本批不能这样处理的」（沿用既有判定） */
+export interface BatchDecisionSplit {
+  ids: string[];
+  blocked: { id: string; reason: string }[];
+}
+
+export function splitBatchIn(
+  intents: Intent[],
+  batch: IntentBatch,
+  selectedIds: string[],
+  decision: "approve" | "reject",
+): BatchDecisionSplit {
+  return splitBatchDecision(intents, inBatchSelection(batch, selectedIds), decision);
+}
+
+/** 批量列表顶部的一句话说明：选中了多少、未选中的会怎样 */
+export function batchSummaryIn(intents: Intent[], batch: IntentBatch, selectedIds: string[]): string {
+  return batchSummary(intents, inBatchSelection(batch, selectedIds));
+}
+
+/** 批量入口要显示的文字：这一批等待审批的数量 + 其他批次还在等的数量（不累加） */
+export function batchEntryText(batch: IntentBatch, extraPending = 0): string {
+  const parts = ["这一批待审批 " + batch.pendingIds.length + " 项"];
+  if (extraPending > 0) parts.push("另有 " + extraPending + " 项在其他批次等待");
+  return parts.join("；");
+}
+
+/** 点击条目 / 在板面上定位这项预览：沿用 window 事件 qio:interactive:locate-preview */
+export function locatePreview(intentId: string, bounds: PreviewBounds | null): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  try {
+    const event =
+      typeof CustomEvent === "function"
+        ? new CustomEvent("qio:interactive:locate-preview", { detail: { intentId, bounds } })
+        : new Event("qio:interactive:locate-preview");
+    window.dispatchEvent(event);
+  } catch {
+    // 事件派发失败不该影响审批操作本身
+  }
+}
