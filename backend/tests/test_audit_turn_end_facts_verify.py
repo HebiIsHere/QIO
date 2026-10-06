@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.adapters.base import ChatMessage, Completion
+from agent.adapters.errors import ProviderInternalError
 from agent.adapters.fake import FakeStreamAdapter, ScriptedToolCall, StreamScript
 from agent.credentials.store import MemoryKeyring
 from agent.tools.base import Tool, ToolResult
@@ -37,6 +38,9 @@ REASON_CODES = {
     "guard_halt",
     "user_stopped",
     "interrupted",
+    # 运行时/配置类失败（Lead 2026-10-06 批准加入枚举，A 已实现）：
+    "internal_error",
+    "credential_unavailable",
     "none",
 }
 ACTIONS = {"retry", "resend", "continue"}
@@ -53,14 +57,30 @@ class _FailingTool(Tool):
 
 
 class _BoomAdapter:
-    """厂商故障：模型调用直接抛错。"""
+    """厂商故障：模型调用抛出**归一化后的**供应商错误（adapters/errors.py 的家族）。
+
+    分类口径（core/turn.py::_failure_facts）：按**异常类名**判定 ——
+    ProviderError 家族 → provider_error；其它未知异常 → internal_error（那是内部故障，
+    不是厂商故障，两者不能混为一谈）。
+    """
 
     mode = "text"
     model = "fake-boom"
     supports_stream = False
 
     async def complete(self, messages, tools, **kwargs):
-        raise RuntimeError("厂商返回 500：上游错误（fake provider）")
+        raise ProviderInternalError("厂商返回 500：上游错误（fake provider）")
+
+
+class _UnexpectedBoomAdapter:
+    """未归一化的意外异常：必须如实归成 internal_error，不能谎报成厂商故障。"""
+
+    mode = "text"
+    model = "fake-unexpected"
+    supports_stream = False
+
+    async def complete(self, messages, tools, **kwargs):
+        raise RuntimeError("验证用的意外内部错误")
 
 
 class _SlowAdapter:
@@ -164,6 +184,28 @@ def test_provider_error_is_reported_on_the_right_turn(app_client):
     )
 
 
+def test_unexpected_exception_is_reported_as_internal_error(app_client):
+    """未归一化的意外异常 = 内部故障（internal_error），不得冒充成厂商故障。"""
+    client, app = app_client
+    app.state.ctx.build_adapter = AsyncMock(return_value=_UnexpectedBoomAdapter())
+
+    turn_id = _submit(client, "这一轮会抛一个未归一化的异常")
+    end = _turn_end(app, turn_id)
+    assert end is not None, "TURN_END 没有到达"
+    _check_common_fields(end)
+    assert end["status"] == "failed", end["status"]
+    assert end["reason_code"] == "internal_error", (
+        "未知异常必须归成 internal_error（按异常类名判定，不猜厂商）",
+        end["reason_code"],
+    )
+    assert "RuntimeError" in str(end.get("reason") or ""), (
+        "原因必须来自系统事实（异常类名），不是编出来的"
+        ,
+        end.get("reason"),
+    )
+    assert "retry" in [str(a) for a in end["actions"]], end["actions"]
+
+
 # ---- 2. 用户停止 -------------------------------------------------------------------
 
 
@@ -223,9 +265,23 @@ def test_recoverable_tool_error_is_not_a_failed_turn(app_client):
     assert end["actions"] == [], ("没有失败就不该给「重试」之类入口", end["actions"])
     assert isinstance(end.get("duration_ms"), int) and end["duration_ms"] >= 0, end.get("duration_ms")
     assert isinstance(end.get("queue_ms"), int) and end["queue_ms"] >= 0, end.get("queue_ms")
-    assert end.get("final_content") == "工具失败了，但我换了个办法，这是正式回答。", end.get(
-        "final_content"
+
+    # 模型正文必须原样保留；末尾追加的系统核对注记是**既有产品行为**
+    # （core/turn_facts.py::ANNOTATION_HEADER，round-1 就有，A 没改）。
+    # 这里要证的是「可恢复工具错误 ≠ 整轮失败」，不是「答复里一个字都不许多」。
+    model_text = "工具失败了，但我换了个办法，这是正式回答。"
+    final = str(end.get("final_content") or "")
+    assert final.startswith(model_text), (
+        "模型正文必须原样保留在 final_content 开头（不得被注记改写/截断）",
+        final,
     )
+    appended = final[len(model_text):]
+    if appended.strip():
+        assert appended.strip().startswith("—— 系统核对"), (
+            "末尾追加的只能是既有的系统核对注记（后端事实），不得是别的东西",
+            appended,
+        )
+    assert end["status"] in ("completed",), ("可恢复的工具失败绝不能让整轮变成 failed", end)
 
 
 # ---- 4. 程序中断（应用关闭） -------------------------------------------------------

@@ -16,6 +16,16 @@ relocate 的 run_prepare 也在事件循环里同步复制 —— 因此本文�
 本文件用 httpx.ASGITransport 把应用跑在**同一个事件循环**里：只有这样，
 「同步文件 I/O 占住事件循环」才能被真实测到（TestClient 的 portal 线程测不到）。
 
+**判定口径（Lead 2026-10-06 裁决，C 已先确认没有同步重活）**：不用「累计 blocked 时间」
+当硬阈值 —— 累计值是**许多小停顿的和**（心跳抖动也会计入），修复后实测最大单次停顿只有
+18 / 29 ms，而累计仍有 352 / 608 ms。真正要防的是「主循环被**一次**同步 I/O 占住」，
+所以硬指标是：
+
+1. **最大单次停顿 ≤ MAX_STALL_MS（120 ms）**；
+2. **工作期间其它请求确实在推进**（探针请求在窗口内持续完成，且探针延迟不越同一个上限）。
+
+累计 blocked 时间与探针统计**打印出来作诊断**，不参与判定。
+
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_audit_attachment_io_verify.py -q
 """
 
@@ -28,18 +38,34 @@ import pytest
 
 MB = 1_000_000
 COPY_MAX = 100 * MB
+# 硬指标：主循环被**一次**同步 I/O 占住的上限（累计 blocked 只作诊断）。
+MAX_STALL_MS = 120.0
 
 
-async def _measure_loop_lag(work, *, tick: float = 0.005):
-    """跑 work()，同时测事件循环的停顿：返回 (结果, 最大停顿 ms, 累计停顿 ms)。
+def _report(label: str, max_gap_ms: float, blocked_ms: float, stats: dict) -> None:
+    """诊断输出（不参与判定）：最大单次停顿 / 累计停顿 / 探针推进情况。"""
+    print(
+        "[诊断] %s：最大单次停顿 %.0f ms；累计 blocked %.0f ms；"
+        "探针请求 %d 次（工作窗口内 %d 次，最大延迟 %.0f ms）"
+        % (label, max_gap_ms, blocked_ms, stats["count"], stats["during"], stats["max_ms"])
+    )
 
-    口径与 tests/test_interactive_during_heavy_work.py 一致：两次 5ms 心跳之间实际
-    过去的时间就是「这一段时间里其它请求要等多久」。同步文件 I/O 占住事件循环时，
-    停顿就等于那段 I/O 的时长。
+
+async def _measure_loop_lag(work, *, probe_factory=None, tick: float = 0.005):
+    """跑 work()，同时量事件循环的**最大单次停顿**、累计停顿（诊断）与探针推进情况。
+
+    返回 (work 的结果, 最大停顿 ms, 累计 blocked ms, 探针统计 dict)。
+
+    * 心跳口径与 tests/test_interactive_during_heavy_work.py 一致：两次 5ms 心跳之间
+      实际过去的时间 = 这一段时间里其它请求要等多久；
+    * 探针 = 工作期间不断发的轻请求（/api/attachments）：它证明「期间其它请求确实能推进」，
+      而不只是「循环没停顿」。探针统计只作证据，与最大停顿同用一个上限。
     """
     gaps: list[float] = []
     stop = False
     last = time.perf_counter()
+    stats = {"count": 0, "during": 0, "max_ms": 0.0}
+    window = {"started": None, "finished": None}
 
     async def _ticker() -> None:
         nonlocal last
@@ -49,10 +75,35 @@ async def _measure_loop_lag(work, *, tick: float = 0.005):
             gaps.append(now - last)
             last = now
 
+    async def _probe() -> None:
+        if probe_factory is None:
+            return
+        async with probe_factory() as client:
+            while not stop:
+                started = time.perf_counter()
+                resp = await client.get("/api/attachments")
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                assert resp.status_code == 200, (resp.status_code, resp.text[:120])
+                stats["count"] += 1
+                stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
+                if window["started"] is not None and window["finished"] is None:
+                    stats["during"] += 1
+                await asyncio.sleep(0.002)
+
+    async def _wrapped():
+        window["started"] = time.perf_counter()
+        try:
+            return await work()
+        finally:
+            window["finished"] = time.perf_counter()
+
+    import contextlib
+
     ticker = asyncio.create_task(_ticker())
+    prober = asyncio.create_task(_probe())
     try:
         await asyncio.sleep(0)
-        result = await work()
+        result = await _wrapped()
         for _ in range(50):
             seen = len(gaps)
             await asyncio.sleep(0)
@@ -60,14 +111,12 @@ async def _measure_loop_lag(work, *, tick: float = 0.005):
                 break
     finally:
         stop = True
-        ticker.cancel()
-        import contextlib
-
-        with contextlib.suppress(asyncio.CancelledError):
-            await ticker
-    # 心跳本身 5ms：只把明显超过一个心跳的间隔算成「被占住」
+        for task in (ticker, prober):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     blocked = [max(0.0, (gap - tick) * 1000) for gap in gaps]
-    return result, max(gaps or [0.0]) * 1000, sum(blocked)
+    return result, max(gaps or [0.0]) * 1000, sum(blocked), stats
 
 
 @pytest.fixture()
@@ -143,15 +192,17 @@ async def test_upload_without_content_length_is_bounded(async_app):
 async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
     """一次真实上传（含落盘 + 哈希）期间，事件循环不能被占住。
 
-    基线：写盘与 hash 都在事件循环线程上同步做 —— 停顿随文件大小线性增长。
+    基线：写盘与 hash 都在事件循环线程上同步做 —— 单次停顿随文件大小增长。
+    这里故意用接近副本上限（99 MB）的负载，让「一次同步 I/O」的停顿明确越线；
+    修复后同样的负载只应该留下心跳级别的间隙（集成实测量级 18–29 ms）。
     """
-    payload_total = 60 * MB
+    payload_total = 99 * MB
     payload = b"y" * payload_total
 
     async def _work():
         results = []
         async with _client(async_app) as client:
-            for index in range(3):
+            for index in range(2):
                 resp = await client.post(
                     "/api/attachments/upload",
                     content=payload,
@@ -163,11 +214,20 @@ async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
                 results.append(resp.status_code)
         return results
 
-    statuses, max_gap_ms, blocked_ms = await _measure_loop_lag(_work)
-    assert statuses == [200, 200, 200], ("上传本身应当成功", statuses)
-    assert blocked_ms < 120, (
-        "上传期间事件循环被同步文件 I/O 占住的总时长 %.0f ms（最大单次停顿 %.0f ms）："
-        "期间其它请求/SSE/停止都会卡住" % (blocked_ms, max_gap_ms)
+    statuses, max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
+        _work, probe_factory=lambda: _client(async_app)
+    )
+    _report("上传（2 × 99 MB）", max_gap_ms, blocked_ms, stats)
+    assert statuses == [200, 200], ("上传本身应当成功", statuses)
+    assert max_gap_ms <= MAX_STALL_MS, (
+        "上传期间事件循环被一次同步文件 I/O 占住 %.0f ms（累计 %.0f ms）："
+        "期间其它请求 / SSE / 停止都要等这么久" % (max_gap_ms, blocked_ms)
+    )
+    assert stats["during"] >= 3, (
+        "上传期间其它请求必须确实在推进（工作窗口内完成的探针请求数 %d）" % stats["during"]
+    )
+    assert stats["max_ms"] <= MAX_STALL_MS, (
+        "探针请求在文件 I/O 期间的最大延迟 %.0f ms" % stats["max_ms"]
     )
 
 
@@ -217,12 +277,20 @@ async def test_relocate_does_not_block_the_event_loop(async_app, tmp_path):
                     await asyncio.sleep(0.02)
         return status, state
 
-    (status, state), max_gap_ms, blocked_ms = await _measure_loop_lag(_work)
+    (status, state), max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
+        _work, probe_factory=lambda: _client(async_app)
+    )
+    _report("重定位（3 × 90 MB）", max_gap_ms, blocked_ms, stats)
     assert status in (200, 201, 202), (status, state)
     assert state == "ready", ("重定位最终必须真的把副本做出来", state)
-    assert blocked_ms < 120, (
-        "重定位期间事件循环被同步复制占住的总时长 %.0f ms（最大单次停顿 %.0f ms）"
-        % (blocked_ms, max_gap_ms)
+    assert max_gap_ms <= MAX_STALL_MS, (
+        "重定位期间事件循环被一次同步复制占住 %.0f ms（累计 %.0f ms）" % (max_gap_ms, blocked_ms)
+    )
+    assert stats["during"] >= 3, (
+        "重定位期间其它请求必须确实在推进（工作窗口内完成的探针请求数 %d）" % stats["during"]
+    )
+    assert stats["max_ms"] <= MAX_STALL_MS, (
+        "探针请求在重定位期间的最大延迟 %.0f ms" % stats["max_ms"]
     )
 
 

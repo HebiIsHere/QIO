@@ -65,8 +65,24 @@ uv run --frozen --extra dev pytest tests/test_audit_stream_role_verify.py tests/
 #### 问题 6 · 附件后台化 / 有界接收（事件层，httpx.ASGITransport 同事件循环实测）
 
 - `E   AssertionError: ('服务器把整个请求体都读完了（没有 Content-Length 时无字节上限）：客户端已发 105000000 字节',)`
-- `E   AssertionError: 上传期间事件循环被同步文件 I/O 占住的总时长 301 ms（最大单次停顿 142 ms）：期间其它请求/SSE/停止都会卡住`
-- `E   AssertionError: 重定位期间事件循环被同步复制占住的总时长 312 ms（最大单次停顿 111 ms）`
+- `E   AssertionError: 上传期间事件循环被一次同步文件 I/O 占住 180 ms（累计 349 ms）：期间其它请求 / SSE / 停止都要等这么久`
+- `E   AssertionError: 重定位期间事件循环被一次同步复制占住 147 ms（累计 382 ms）`
+
+**口径修正（Lead 2026-10-06 裁决，C 已先确认没有同步重活）**：不再用「累计 blocked 时间」
+当硬阈值 —— 累计值是许多小停顿的和（心跳抖动也计入），修复后实测最大单次停顿只有 18/29 ms，
+累计却仍有 352/608 ms。真正要防的是「主循环被**一次**同步 I/O 占住」，所以硬指标改为：
+
+1. **最大单次停顿 ≤ 120 ms**；
+2. **工作期间其它请求确实在推进**（探针请求在窗口内持续完成，探针延迟不越同一上限）。
+
+累计 blocked 与探针统计**打印出来作诊断**，不参与判定。这不是放宽功能要求：
+「一次同步 I/O 把主循环占住」仍然会被抓出来（基线 180 ms / 147 ms → 集成实现 14 ms / 15 ms）。
+基线诊断输出（`pytest -s`）：
+
+```
+[诊断] 上传（2 × 99 MB）：最大单次停顿 180 ms；累计 blocked 349 ms；探针请求 3 次（工作窗口内 3 次，最大延迟 166 ms）
+[诊断] 重定位（3 × 90 MB）：最大单次停顿 147 ms；累计 blocked 382 ms；探针请求 7 次（工作窗口内 7 次，最大延迟 149 ms）
+```
 
 （另有一条**绿守卫**：附件服务的数据库访问始终在同一个线程 → 修复方案不得把整个 service
 方法丢进工作线程而重新引入 CI 抓到的共享 sqlite 并发缺陷。）
@@ -77,6 +93,17 @@ uv run --frozen --extra dev pytest tests/test_audit_stream_role_verify.py tests/
 - `E   AssertionError: ('TURN_END 必须带 reason_code（plan §1.2）', {'status': 'cancelled', ...})`（用户停止）
 - `E   AssertionError: ('TURN_END 必须带 reason_code（plan §1.2）', {'status': 'completed', 'keys': [..., 'iterations', ...]})`（可恢复工具错误）
 - 程序中断用例走真实应用关闭（TestClient 退出 = lifespan shutdown），TURN_END 到达但同样缺字段。
+
+枚举与分类口径（Lead 已批准的补齐 + A 的实现口径）：
+
+* `REASON_CODES` 增加 `internal_error` 与 `credential_unavailable`（保留「取值必须在枚举里」断言）；
+* 失败按**异常类名**分类：`adapters/errors.py` 的 ProviderError 家族 → `provider_error`，
+  其它未知异常 → `internal_error`（**不得**把内部故障谎报成厂商故障）。因此本文件现在有两条用例：
+  假 adapter 抛 `ProviderInternalError` → provider_error；抛裸 `RuntimeError` → internal_error
+  （原因里必须带上异常类名这条系统事实）；
+* 可恢复工具错误的 `final_content` **允许**在模型正文之后追加既有的系统核对注记
+  （`core/turn_facts.py::ANNOTATION_HEADER`，round-1 就有）：断言改为「模型正文是前缀 +
+  追加段只能是该注记 + status 不是 failed」——这才是「可恢复工具错误 ≠ 整轮失败」的要点。
 
 ### 前端（DOM 层，15 红 / 7 绿守卫）
 
@@ -245,6 +272,20 @@ npx vitest run src/components/__tests__/TurnProcess.verify.test.ts \
 → Test Files  5 passed (5) / Tests  30 passed (30)
 ```
 
+后端两条也在集成实现上复跑过（临时 detached worktree，用本 worktree 的 venv +
+`PYTHONPATH` 指向集成源码；跑完即删）：
+
+```
+[诊断] 上传（2 × 99 MB）：最大单次停顿 14 ms；累计 blocked 145 ms；探针请求 43 次（窗口内 42 次，最大延迟 10 ms）
+[诊断] 重定位（3 × 90 MB）：最大单次停顿 15 ms；累计 blocked 146 ms；探针请求 106 次（窗口内 106 次，最大延迟 16 ms）
+tests/test_audit_attachment_io_verify.py ....（4 条全绿）
+tests/test_audit_turn_end_facts_verify.py ..F... → 唯一红：user_stopped 缺 reason（Lead 已派给 A）
+```
+
+即：附件 I/O 的「一次同步 I/O 占住主循环」在集成实现上已消失（180/147 ms → 14/15 ms），
+而 reason_code 的 5 条里 4 条通过；剩下的 `user_stopped` 缺 `reason` 是 A 名下的实现项
+（本文件**不放宽**这条断言）。
+
 同一批文件在**本 worktree（基线实现 e428bb9）**上仍然是红的，符合预期
 （实现修复不在这个 worktree 里）：
 
@@ -281,7 +322,7 @@ cd D:\qio-dev\qio-fix-d\frontend; npx vue-tsc --noEmit   → EXIT=0
 - `backend/tests/test_audit_attachment_binding_verify.py`（6 条）
 - `backend/tests/test_audit_attachment_io_verify.py`（4 条）
 - `backend/tests/test_audit_attachment_content_verify.py`（4 条）
-- `backend/tests/test_audit_turn_end_facts_verify.py`（4 条）
+- `backend/tests/test_audit_turn_end_facts_verify.py`（5 条；含 provider_error / internal_error 两条分类用例）
 - `frontend/src/components/__tests__/ProcessDefaultVisibility.audit.verify.test.ts`（4 条）
 - `frontend/src/components/__tests__/ApprovalFacts.audit.verify.test.ts`（4 条）
 - `frontend/src/components/__tests__/AnswerRoleStability.audit.verify.test.ts`（3 条）
@@ -305,7 +346,8 @@ cd D:\qio-dev\qio-fix-d\frontend; npx vue-tsc --noEmit   → EXIT=0
 - 按新契约改写的两处旧验证资产同样**真的变红**：`TurnProcess.verify.test.ts` **2 红 / 3 绿**、
   `streamingDeltas.verify.test.ts` **2 红 / 5 绿**（旧断言分别被 §1.5 / §1.1 最终版取代），
   且 `HistoryAttachmentOpen.audit.verify.test.ts` 改用 B 的锚点后为 **3 红 / 1 绿**。
-- 合计：**40 条红 / 24 条绿守卫**（后端 20 红 / 5 绿；前端 20 红 / 19 绿）。
+- 合计：**44 条红 / 24 条绿守卫**（后端 21 红 / 5 绿；前端 23 红 / 19 绿）。
+  后端比上一版多 1 红：问题 7 拆出「未归一化异常 → internal_error」这条新用例。
 - `eventBufferOverflow.verify.test.ts` 4 条全绿（只放宽了超时上限，功能断言未动）。
 - 每条用例失败信息都写明「缺什么」，没有静默跳过（无 try/catch 吞断言、无 `--passWithNoTests`）。
 - `npx vue-tsc --noEmit` 在加入这些用例后仍然通过（EXIT=0）。
