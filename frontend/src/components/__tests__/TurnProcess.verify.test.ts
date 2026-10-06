@@ -15,6 +15,11 @@
  *   立即出现 / 安静（没有阶段也要显示真实状态） / 同阶段更新 / 自主转阶段 /
  *   并行工具与晚到结果 / 无重复气泡 / 完成自动收起。
  *
+ * **2026-10-06 Lead 裁决（plan §1.5 最终版）**：运行中**默认不展开历史**。
+ * 默认可见区 = 状态行 + 当前阶段名 + 最新一条说明 + **一行**工具摘要；
+ * 旧阶段说明、同一阶段更早的说明、逐项工具卡默认都不可见，展开后完整可回看。
+ * 本文件里「运行中默认展开」的旧断言已被这条产品规则取代（不是因为实现变了）。
+ *
  * 基线（ee6bbff）现状：没有 TurnProcess、interim 会单独成泡、耗时按消息出现 ——
  * 本文件在实现合并前应当是**红的**。
  *
@@ -128,7 +133,8 @@ function occurrenceCount(haystack: string, needle: string): number {
 }
 
 /**
- * 历史体是「可展开」的，但 toggle 是**真切换**（运行中默认展开，点一次 = 收起）。
+ * 历史体是「可展开」的，toggle 是**真切换**（运行中默认收起，点一次 = 展开；
+ * 用户手动开合过之后不再被自动收起 —— 见 plan §1.5）。
  * 所以这里先读 aria-expanded 再决定要不要点 —— 绝不把已经展开的历史点掉。
  */
 async function openProcessHistory(wrapper: VueWrapper): Promise<void> {
@@ -176,7 +182,18 @@ describe("契约 §1.5：立即出现、安静、无重复", () => {
     const region = requireProcessRegion(wrapper);
     const text = region.text();
     expect(text, "过程区必须显示系统事实（运行中/正在做什么），不能空着").toMatch(/运行中|正在|读取/);
-    expect(processExpanded(wrapper), "运行中过程区默认展开：这一轮的工具行必须看得见").toBe(true);
+    // 旧断言「运行中过程区默认展开：这一轮的工具行必须看得见」已被产品规则取代：
+    // 运行中默认不展开历史，但「正在跑什么」必须由状态行里的一行工具摘要承担。
+    expect(
+      processExpanded(wrapper),
+      "运行中默认不展开历史（plan §1.5 最终版取代了「运行中默认展开」）",
+    ).toBe(false);
+    expect(historyCollapsed(wrapper), "默认可见区不得出现历史抽屉").toBe(true);
+    expect(text, "状态行必须给出一行工具摘要（正在跑什么）").toMatch(/工具运行中|正在读取|正在执行/);
+    expect(
+      wrapper.findAll(".tool-card").length,
+      "逐项工具卡默认不得出现在可见区（收起时 DOM 里都不该有）",
+    ).toBe(0);
     wrapper.unmount();
   });
 
@@ -286,7 +303,21 @@ describe("契约 §1.2 / §1.3：同阶段更新与自主转阶段", () => {
       }),
     );
     await settle();
-    expect(processExpanded(wrapper), "运行中过程区默认展开（历史里的历次说明看得见）").toBe(true);
+    // 旧断言「运行中过程区默认展开（历史里的历次说明看得见）」已被产品规则取代。
+    expect(
+      processExpanded(wrapper),
+      "运行中默认不展开历史（plan §1.5 最终版取代了「运行中默认展开」）",
+    ).toBe(false);
+    const collapsedText = requireProcessRegion(wrapper).text();
+    expect(collapsedText, "当前阶段名必须默认可见").toContain("核对实现");
+    expect(collapsedText, "当前阶段最新一条说明必须默认可见").toContain("核对完 3 个文件");
+    expect(collapsedText, "上一个阶段的历次说明默认不该可见").not.toContain("正在读取仓库结构");
+    expect(collapsedText, "当前阶段更早的说明默认不该可见").not.toContain("正在核对实现");
+    expect(
+      wrapper.findAll(".tool-card").length,
+      "逐项工具卡默认不得出现在可见区",
+    ).toBe(0);
+
     await openProcessHistory(wrapper);
     expect(wrapper.find('[data-test="turn-process-history"]').exists()).toBe(true);
 
