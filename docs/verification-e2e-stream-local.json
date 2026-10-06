@@ -1,0 +1,45 @@
+{
+  "base": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8798",
+  "turn_id": "turn_002bd1ffd62f",
+  "message": "请分多次回答，讲清楚每一步。",
+  "provider_chunks": 0,
+  "sse_events": 6,
+  "sse_error": null,
+  "turn_end_status": "completed",
+  "checks": [
+    {
+      "name": "provider 真的分片发送",
+      "ok": false,
+      "detail": {
+        "chunks": 0,
+        "stream_end": false
+      }
+    },
+    {
+      "name": "SSE 收到非空正式回答增量",
+      "ok": false,
+      "detail": {
+        "assistant_events": 0,
+        "answer_events": 0
+      }
+    },
+    {
+      "name": "TURN_END 的最终全文与 provider 发出的完全一致",
+      "ok": true,
+      "detail": {
+        "final_len": 100,
+        "provider_len": 100
+      }
+    },
+    {
+      "name": "SSE 全流里没有出现重复的完整回答",
+      "ok": true,
+      "detail": null
+    }
+  ],
+  "failed": [
+    "provider 真的分片发送",
+    "SSE 收到非空正式回答增量"
+  ]
+}
