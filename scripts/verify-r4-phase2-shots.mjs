@@ -364,6 +364,13 @@ async function s4UploadFailureFeedback() {
   record("S4 写盘失败：没有停在「准备中」的残留记录", stuck.every((a) => a.state !== "prepared"), {
     rows: stuck.map((a) => [a.name, a.state]),
   });
+  // 收尾：把失败 chip 从输入区移除，否则它会挡住后面场景的发送（发送闸门会如实拒绝 —— 实测踩过）
+  await page.evaluate(() => {
+    Array.from(document.querySelectorAll(".composer button"))
+      .filter((b) => (b.textContent || "").trim() === "×")
+      .forEach((b) => b.click());
+  });
+  await page.waitForTimeout(400);
 }
 
 // ---- S5：回归（默认折叠 + 历史附件打开） ---------------------------------------------
@@ -416,27 +423,106 @@ async function s5Regressions() {
 // ---- S6：刷新后重试（失败那一轮的入口在历史恢复后还在不在） ---------------------------
 
 async function s6RetryAfterRefresh() {
-  await scriptProvider([{ status: 500, body: "r4-refresh-retry-boom", repeat: 6 }]);
+  // 稳定前置：①带附件的一轮以模拟 provider 错误失败 → ②确认「重试」入口可见 → ③再刷新
+  const src = join(ATTACH_DIR, "r4-刷新后重试.txt");
+  writeFileSync(src, MARKER + "\n", "utf-8");
+
+  // 这一条要独立于前面几个场景：先重载一次，再清掉可能残留的待发附件 chip
+  // （S4 的失败 chip 会挡住发送闸门 → 这一轮根本没发出去，看起来就像「没有重试入口」——实测踩过）
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitAppReady();
+  // 点产品自己的 chip 「×」按钮（选择器按文案找，避免依赖内部 class）
+  const clearChips = async () => {
+    for (let i = 0; i < 6; i++) {
+      const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll(".composer button"));
+        const removeBtn = buttons.find((b) => (b.textContent || "").trim() === "×");
+        if (removeBtn) {
+          removeBtn.click();
+          return true;
+        }
+        return false;
+      });
+      if (!clicked) break;
+      await page.waitForTimeout(300);
+    }
+  };
+  await clearChips();
+  const chipsLeft = (await page.locator(".composer").first().innerText()).match(/\d+(\.\d+)?\s?(B|KB|MB)/g)?.length ?? 0;
+
+  await scriptProvider([{ status: 500, body: "r4-refresh-retry-boom", repeat: 8 }]);
+  await page.locator('button[aria-label="粘贴本地文件路径"]').click();
+  const pathInput = page.locator('input[aria-label="本地文件路径"]');
+  await pathInput.waitFor({ state: "visible", timeout: 10000 });
+  await pathInput.fill(src);
+  await pathInput.press("Enter");
+  await waitFor(async () => {
+    const text = await page.locator(".composer").first().innerText().catch(() => "");
+    return /已保存副本/.test(text) && !/还在准备中/.test(text) ? true : null;
+  }, { timeout: 40000 });
   await send("刷新后重试取证（第一轮会失败）");
-  await waitIdle();
-  await page.waitForTimeout(1500);
-  const beforeReload = (await page.getByRole("button", { name: /^重试$/ }).count()) > 0;
+
+  // 等真实入口出现（失败轮的「重试」按钮）——不能用 waitIdle 当信号（后端重试期间队列会短暂为空）
+  const failedBefore = await waitFor(
+    async () => ((await page.getByRole("button", { name: /^重试$/ }).count()) > 0 ? true : null),
+    { timeout: 90000 },
+  );
   const processBefore = await page.locator('[data-test="turn-process"]').count();
   await shot("r4-10-failed-before-refresh.png");
+  record("S6 前置：这一轮以 provider 错误失败并出现真实「重试」入口", !!failedBefore && processBefore > 0, {
+    retryBeforeRefresh: !!failedBefore,
+    processRegionsBeforeRefresh: processBefore,
+    leftoverChipsBeforeSend: chipsLeft,
+    composerText: (await page.locator(".composer").first().innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 160),
+  });
+  if (!failedBefore) return; // 前置不成立就停在这里，不把装置问题当作产品结论
+
+  const before = await sessionMessages();
+  const idsBefore = before.flatMap((m) => (m.attachments || []).map((a) => a.id));
+  const originalId = idsBefore[idsBefore.length - 1] || null;
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await waitAppReady();
   const processAfter = await page.locator('[data-test="turn-process"]').count();
   const retryAfter = (await page.getByRole("button", { name: /^重试$/ }).count()) > 0;
   const afterShot = await shot("r4-11-after-refresh-retry-entry.png");
-  record("S6 刷新（历史恢复）之后，失败那一轮的「重试」入口仍然可用", retryAfter, {
-    retryBeforeRefresh: beforeReload,
+  record("S6 刷新（历史恢复）之后：结束原因/过程区仍在，且「重试」入口仍在", retryAfter && processAfter > 0, {
+    retryBeforeRefresh: true,
     processRegionsBeforeRefresh: processBefore,
     processRegionsAfterRefresh: processAfter,
     retryAfterRefresh: retryAfter,
+    netTail: net.filter((x) => x.url.includes("/api/turns")).slice(-3),
     shot: afterShot,
-    note: "这条是 Lead 点名的「刷新后重试」实机路径；红了就是这一层缺失，不是装置问题",
   });
+  if (!retryAfter) return; // 刷新后真的不在 → 上面的红就是产品缺陷证据，交 Lead 转 B
+
+  // 点它：新轮必须带上原附件（新 id 克隆），且原文件删除后仍读出原内容
+  unlinkSync(src);
+  await scriptProvider([{ chunks: ["刷新之后我照样能看到你带来的文件。"] }]);
+  const retryBtn = page.getByRole("button", { name: /^重试$/ }).last();
+  await retryBtn.click();
+  const started = await waitFor(async () => {
+    const snap = await queue();
+    return snap.running || (snap.queued || []).length ? true : null;
+  }, { timeout: 30000 });
+  await waitIdle();
+  await page.waitForTimeout(1500);
+  const after = await sessionMessages();
+  const idsAfter = after.flatMap((m) => (m.attachments || []).map((a) => a.id));
+  const newIds = idsAfter.filter((id) => id !== originalId);
+  let state = null;
+  let content = null;
+  if (newIds.length) {
+    const meta = await (await fetch(API + "/api/attachments/" + newIds[newIds.length - 1])).json();
+    state = (meta.attachment || {}).state;
+    const resp = await fetch(API + "/api/attachments/" + newIds[newIds.length - 1] + "/content");
+    content = resp.ok ? await resp.text() : null;
+  }
+  const retriedShot = await shot("r4-12-retry-after-refresh-result.png");
+  record("S6 刷新后点「重试」：新轮附件是克隆（新 id、原文件已删除）且内容读得回来",
+    !!started && newIds.length > 0 && !!content && content.includes(MARKER), {
+      originalId, newIds, state, content: (content || "").slice(0, 80), shot: retriedShot,
+    });
 }
 
 const scenarios = [
