@@ -104,6 +104,8 @@ class ScriptedClient:
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
         self.calls = 0
+        # 每次请求的 kwargs（只读记录）：断言「工作调用带工具 / 回答调用不带工具」
+        self.requests: list[dict[str, Any]] = []
 
     @property
     def chat(self) -> "ScriptedClient":
@@ -120,6 +122,7 @@ class ScriptedClient:
 
     async def create(self, **kwargs: Any) -> Any:
         self.calls += 1
+        self.requests.append(dict(kwargs))
         completion = self._next_completion()
         if kwargs.get("stream"):
             return _stream_of(completion)
@@ -152,7 +155,9 @@ async def test_single_tool_turn():
     result = await loop.run("say hi")
     assert result.tool_calls_made == 1
     assert result.final_content == "final answer"
-    assert client.calls == 2  # tool round + final
+    # 契约 §1.1 变更：回答由一次**不带工具**的专用调用产出 ——
+    # 工作调用（带工具）+ 工作调用收尾 + 回答调用 = 3 次
+    assert client.calls == 3
 
 
 async def test_budget_stops_runaway_loop():
@@ -280,7 +285,8 @@ async def test_interim_assistant_event_emitted_for_native_commentary():
     assert joined.index("我先查一下仓库") < joined.index("USAGE")
 
 
-async def test_plain_text_turn_streams_answer_without_interim():
+async def test_plain_text_turn_streams_answer_in_the_answer_area():
+    """契约 §1.1：工作调用的正文进过程区；正式回答由 tools=[] 的回答调用流式产出。"""
     client = ScriptedClient([])
     loop, bus = _make_loop(client)
 
@@ -301,9 +307,14 @@ async def test_plain_text_turn_streams_answer_without_interim():
         pass
 
     joined = "\n".join(collected)
-    # 纯回答整轮走真流式：正文以 ASSISTANT 增量出现，但**不是** interim（plan §2.1），
-    # 也不再有一条「等整段结束才出现」的假增量。
+    # 工作调用的正文（interim=true，过程区）与回答调用的正文（interim=false，回答区）
+    # 都会出现；正式回答必须来自回答调用（契约 §1.1），不再有「等整段结束才提升」。
     assert "event: ASSISTANT" in joined
     assert "final answer" in joined
     assert "\"interim\": false" in joined or "\"interim\":false" in joined
-    assert "\"interim\": true" not in joined and "\"interim\":true" not in joined
+    assert "\"interim\": true" in joined or "\"interim\":true" in joined
+    # 两次调用：工作调用 + 回答调用（回答调用不带工具）
+    assert client.calls == 2
+    # 工作调用带工具；回答调用**不带工具**（native 档不发空 tools 字段）
+    assert client.requests[0].get("tools")
+    assert not client.requests[1].get("tools")

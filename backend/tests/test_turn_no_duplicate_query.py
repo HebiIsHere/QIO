@@ -35,12 +35,12 @@ class _CapturingAdapter:
     model = "deepseek-v4-flash"
 
     def __init__(self) -> None:
-        self.seen: list[str] = []
+        # 每次调用的消息正文（按调用分组）：契约 §1.1 起一轮有两次调用
+        # （工作调用 + 回答调用），不变量是「**每次调用里**当前查询只出现一次」。
+        self.requests: list[list[str]] = []
 
     async def complete(self, messages, tools, **kwargs):
-        for m in messages:
-            if m.content:
-                self.seen.append(m.content)
+        self.requests.append([m.content for m in messages if m.content])
         return Completion(message=ChatMessage(role="assistant", content="好的"))
 
 
@@ -64,10 +64,15 @@ async def test_current_query_appears_once_with_history(ctx: AppContext):
     await ctx.run_turn(query, topic_id=topic)
     monkeypatch.undo()
 
-    joined = "\n".join(adapter.seen)
+    assert len(adapter.requests) == 2, "工作调用 + 回答调用（契约 §1.1）"
+    joined = "\n".join(adapter.requests[0])
     assert joined.count(query) == 1, f"query injected {joined.count(query)} times"
     # 历史仍在（未被误删）
     assert "历史消息 0" in joined
+    # 每一次调用里，当前查询都只能出现一次
+    for seen in adapter.requests:
+        text = "\n".join(seen)
+        assert text.count(query) == 1, f"query injected {text.count(query)} times"
 
 
 async def test_current_query_appears_once_empty_history(ctx: AppContext):
@@ -79,5 +84,6 @@ async def test_current_query_appears_once_empty_history(ctx: AppContext):
     query = "第一次问ABCD"
     await ctx.run_turn(query, topic_id=topic)
     monkeypatch.undo()
-    joined = "\n".join(adapter.seen)
-    assert joined.count(query) == 1
+    for seen in adapter.requests:
+        text = "\n".join(seen)
+        assert text.count(query) == 1, f"query injected {text.count(query)} times"

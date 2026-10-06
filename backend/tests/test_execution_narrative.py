@@ -703,10 +703,19 @@ async def test_loop_skips_interim_when_batch_has_narrative():
     await loop.run("hi")
 
     published = [e for e in bus._history if e.type == EventType.ASSISTANT]
-    # 有叙事 → 不推 interim（同一阶段只保留一种过程表达）；
-    # 收尾的正式回答仍以一次性 {streaming:false} 出现（plan §2.1 第 8 条）。
-    assert all(not e.data.get("interim") for e in published)
+    # 有叙事 → 这一批工具的正文不再单独推 interim（同一阶段只保留一种过程表达）。
+    # 契约 §1.1 变更：工作调用收尾的正文（"完成"）是过程说明，正式回答由一次
+    # **不带工具**的专用调用产出（一次性 {streaming:false}）。
+    assert not any(
+        e.data.get("content") == "我先看几个文件再说。" for e in published
+    )
     assert events == [{"narrative": "我先确认审批链路。"}]
+    assert any(
+        e.data.get("interim") and e.data.get("content") == "完成" for e in published
+    )
+    assert any(
+        not e.data.get("interim") and e.data.get("content") == "完成" for e in published
+    )
 
 
 async def test_loop_keeps_interim_when_batch_has_no_narrative():
@@ -744,8 +753,17 @@ async def test_loop_keeps_interim_when_batch_has_no_narrative():
     interim = [
         e for e in loop.bus._history if e.type == EventType.ASSISTANT and e.data.get("interim")
     ]
-    assert len(interim) == 1
+    # 工具轮的正文（没有叙事时）与工作调用收尾的正文都是过程说明；
+    # 正式回答来自回答调用（契约 §1.1）。
+    assert len(interim) == 2
     assert interim[0].data["content"] == "我先看几个文件再说。"
+    assert interim[1].data["content"] == "完成"
+    answer = [
+        e
+        for e in loop.bus._history
+        if e.type == EventType.ASSISTANT and not e.data.get("interim")
+    ]
+    assert [e.data["content"] for e in answer] == ["完成"]
 
 
 # ---- AppContext：先落库、再广播；批次结束补写系统调用摘要 ------------------------

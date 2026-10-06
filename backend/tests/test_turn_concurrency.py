@@ -60,8 +60,10 @@ async def test_rapid_turns_serialize_in_submit_order(ctx: AppContext):
     )
     monkeypatch.undo()
 
-    # 1. 执行顺序确定 = 提交顺序
-    assert adapter.order[:3] == ["A", "B", "C"]
+    # 1. 执行顺序确定 = 提交顺序。
+    #    契约 §1.1 变更：一轮有两次模型调用（工作调用 + 回答调用），两次都带同一条
+    #    当前查询 → 每个 tag 各出现两次。
+    assert adapter.order == ["A", "A", "B", "B", "C", "C"]
     # 2. 主循环最大并发数 = 1
     assert adapter.peak == 1
     # 3. 结束后无 active turn（无 runtime 残留/覆盖）
