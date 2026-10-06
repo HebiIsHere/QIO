@@ -197,8 +197,11 @@ async def test_start_then_next_creates_two_ordered_stages(tmp_path):
         assert int(event.data["index"]) >= 1
         assert event.data["status"] in {"running", "done"}, event.data
         assert isinstance(event.data["call_ids"], list)
-        assert str(event.data["created_at"] or ""), event.data
         assert re.match(r"^st_.+_\d+$", str(event.data["stage_id"])), event.data["stage_id"]
+        # 模型叙事带出来的阶段事件必须带时间戳（历史排序靠它）。
+        # 系统收口事件（op=end，narrative_id=None）单独在下面那条用例里核对。
+        if event.data.get("narrative_id"):
+            assert str(event.data["created_at"] or ""), event.data
 
     # 工具归属只看 stage_id（契约 §1.1）
     by_call: dict[str, str | None] = {}
@@ -206,6 +209,31 @@ async def test_start_then_next_creates_two_ordered_stages(tmp_path):
         by_call[str(event.data.get("call_id"))] = event.data.get("stage_id")
     assert by_call.get("c1") == first_id, by_call
     assert by_call.get("c2") == second_id, by_call
+
+
+async def test_stage_events_always_carry_created_at(tmp_path):
+    """契约 §1.3 的字段表把 created_at 写成时间字符串：每个 STAGE 事件都该带。
+
+    实测（2026-10-06，集成分支 8d52634）：一轮的收口事件
+    {op: "end", status: "done", narrative_id: null, text: "", created_at: null}
+    的 created_at 是 null。前端排序有兜底，所以影响小；但这是字段级偏差，如实记录。
+    """
+    ctx = _app_ctx(tmp_path)
+    topic = ctx.topics.nodes.create_topic("阶段时间戳").id
+    adapter = _PlanAdapter(
+        [
+            _tool_step(
+                "c1",
+                {"kind": "progress", "text": "先看仓库结构", "stage": {"op": "start", "name": "读取仓库结构"}},
+            ),
+            _final("完成"),
+        ]
+    )
+    await _run(ctx, topic, adapter)
+    stage_events = _stage_events(ctx)
+    assert stage_events, "有阶段就必须有 STAGE 事件"
+    missing = [event.data for event in stage_events if not str(event.data.get("created_at") or "")]
+    assert not missing, ("契约 §1.3：每个 STAGE 事件都要带 created_at", missing)
 
 
 async def test_stage_start_does_not_open_second_stage(tmp_path):

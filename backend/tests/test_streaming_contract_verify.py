@@ -142,31 +142,25 @@ async def test_base_adapter_declares_stream_surface():
 
 
 async def test_stream_delta_carries_a_text_fragment():
-    """契约 §2.2 明列新增 StreamDelta：正文增量必须能表达「一段文字」。"""
-    from agent.adapters import base as base_module
+    """契约 §2.2 明列新增 StreamDelta：正文增量必须能表达「一段文字」。
 
-    delta_cls = getattr(base_module, "StreamDelta", None)
-    assert delta_cls is not None, "契约 §2.2 要求 adapters/base.py 提供 StreamDelta"
+    实现形状（A 最终版，Lead 已确认）：StreamDelta(kind=..., text=...)，kind ∈
+    {text, tool_call, done}；这里按这个形状直接构造，不再靠 **kwargs 猜参数。
+    """
+    from agent.adapters.base import StreamDelta
 
-    fields = getattr(delta_cls, "__dataclass_fields__", None)
-    field_names = list(fields or [])
-    text_field = next(
-        (name for name in ("content", "text", "delta", "text_delta") if name in field_names),
-        None,
-    )
-    if text_field is None:
-        pytest.fail(f"StreamDelta 没有可识别的正文增量字段：{field_names}")
+    text_delta = StreamDelta(kind="text", text="一段文字")
+    assert text_delta.kind == "text"
+    assert text_delta.text == "一段文字"
 
-    kwargs = {}
-    for name, spec in (fields or {}).items():
-        if name == text_field:
-            continue
-        if spec.default is not inspect.Parameter.empty or getattr(spec, "default_factory", None):
-            continue
-        kwargs[name] = None
-    delta = delta_cls(**{text_field: "一段文字"}, **kwargs)
-    got = getattr(delta, text_field)
-    assert got == "一段文字", (text_field, got)
+    # 工具调用增量只用于「这条响应是工具轮」的判定：碎片参数不在这里暴露
+    tool_delta = StreamDelta(kind="tool_call", text="", call_id="call_1", name="echo")
+    assert tool_delta.kind == "tool_call"
+    assert tool_delta.call_id == "call_1"
+
+    # 结束段携带组装完成的整段结果（唯一可以交给工具执行的入口）
+    done = StreamDelta(kind="done")
+    assert done.kind == "done"
 
 
 # ---- 2. 契约 §2.1：provider 还没结束，回答已经到达（真 SSE 路径） -----------------
@@ -221,7 +215,23 @@ async def test_streaming_answer_arrives_before_provider_finishes(provider):
     seqs = [int(event.data["seq"]) for event in events]
     assert seqs == sorted(seqs), ("seq 必须单调", seqs)
     assert len(set(seqs)) == len(seqs), ("seq 必须唯一（前端据此丢重复）", seqs)
-    assert all(event.data.get("streaming") is True for event in events), [event.data for event in events]
+    # 增量阶段必须是 streaming=true（真流式）。实现允许在最后补一条 streaming=false 的
+    # **落定标记**（停打字机）：它必须与上一段内容完全一致、同一个 delta_id、只多一条，
+    # 且绝不能改内容（否则就成了「重打一遍」）。
+    streamed = [event for event in events if event.data.get("streaming") is True]
+    settle = [event for event in events if event.data.get("streaming") is not True]
+    assert streamed, ("流式路径必须至少有 streaming=true 的增量", [e.data for e in events])
+    assert len(settle) == 1, ("流终止时必须有一条 streaming=false 的收尾快照", [e.data for e in settle])
+    assert events[-1] is settle[0], ("收尾快照必须是最后一条", [e.data for e in events])
+    assert settle[0].data.get("delta_id") == streamed[-1].data.get("delta_id"), (
+        "收尾快照必须属于同一个 delta_id",
+        settle[0].data,
+    )
+    assert str(settle[0].data.get("content") or "") == full, (
+        "收尾快照必须交付已确认全文（且不改内容）",
+        settle[0].data.get("content"),
+        full,
+    )
 
 
 async def test_tool_arguments_split_into_fragments_are_assembled_before_execution(provider):

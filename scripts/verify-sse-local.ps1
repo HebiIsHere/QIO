@@ -18,7 +18,8 @@ param(
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
-$dataDir = Join-Path $env:TEMP "qio-verify-local"
+# 每次用干净数据目录：复用旧目录会把上一轮留下的凭据带进来（实测过一次误判）
+$dataDir = Join-Path $env:TEMP ("qio-verify-local-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 $providerLog = Join-Path $env:TEMP "qio-verify-provider.log"
 $backendLog = Join-Path $env:TEMP "qio-verify-backend.log"
 $providerPy = Join-Path $root "scripts\verify_stream_provider.py"
@@ -29,6 +30,28 @@ $provider = $null
 $server = $null
 
 function Step([string]$text) { Write-Output ""; Write-Output ("== " + $text + " ==") }
+
+# 端口预检：8734 上可能还留着上一轮/别人启动的后端。旧进程会**代替**我们应答
+# /api/health（假成功），然后我们用新代码去测旧进程 —— 实测踩过一次（基线遗留进程
+# 一直占着 8734，导致「真实链路没有流式」的误判）。
+function Assert-PortFree([int]$port, [string]$what) {
+  $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($conn) {
+    $owner = ($conn | Select-Object -First 1).OwningProcess
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $owner) | Select-Object -First 1
+    throw ($what + " 端口 " + $port + " 已被占用（pid=" + $owner + " " + $proc.Name + "）：先清掉旧进程再跑")
+  }
+}
+
+# 杀进程树：uv/cmd 会再起 python 子进程，只杀包装进程会留下僵尸占着端口
+function Stop-Tree($proc) {
+  if ($proc -and -not $proc.HasExited) {
+    & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+  }
+}
+
+Assert-PortFree $ProviderPort "假厂商端点"
+Assert-PortFree $BackendPort "后端"
 
 try {
   Step "1. 起假厂商端点"
@@ -57,7 +80,9 @@ try {
       if ($h.status -eq "ok") { $ready = $true; break }
     } catch { Start-Sleep -Milliseconds 500 }
   }
-  Write-Output ("backend_ready=" + $ready)
+  # 端口预检之后这里应答的应当就是我们刚起的进程；进程已退出却还能探测到就说明有人抢答
+  if ($server.HasExited -and $ready) { throw "后端进程已退出但端口仍有应答：端口被别的进程占用" }
+  Write-Output ("backend_ready=" + $ready + " pid=" + $server.Id)
   if (-not $ready) { throw "后端没起来（日志 " + $backendLog + "）" }
 
   Step "3. 建一条指向本机假厂商的凭据"
@@ -86,9 +111,8 @@ catch {
 }
 finally {
   Step "5. 收尾"
-  if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
-  if ($provider -and -not $provider.HasExited) { Stop-Process -Id $provider.Id -Force -ErrorAction SilentlyContinue }
-  Get-Process uvicorn -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Stop-Tree $server
+  Stop-Tree $provider
 }
 
 Step "结论"

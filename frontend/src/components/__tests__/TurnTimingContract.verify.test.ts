@@ -208,6 +208,8 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     const folded = foldedTimingText(wrapper);
     expect(folded, "未展开必须看得见总耗时").toMatch(/耗时[\s\S]{0,8}1\.5/);
     expect(wrapper.text()).not.toContain("读取中");
+    // 本文件把 services/trace.fetchTurnTiming mock 成 fetchTiming，所以「有没有请求明细」看它
+    expect(fetchTiming, "未展开不得请求明细").not.toHaveBeenCalled();
     expect(getTrace).not.toHaveBeenCalled();
     wrapper.unmount();
   });
@@ -221,7 +223,7 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     expect(regions.length, "契约 §1.5：一轮 = 一个过程区").toBe(1);
     const entries = wrapper.findAll('[data-test="turn-timing"]');
     expect(entries.length, "契约 §3：过程区与耗时面板只保留一个入口").toBeLessThanOrEqual(1);
-    expect(foldedTimingText(wrapper), "总耗时必须落在这一个入口里").toMatch(/耗时[sS]{0,8}1.5/);
+    expect(foldedTimingText(wrapper), "总耗时必须落在这一个入口里").toMatch(/耗时[\s\S]{0,8}1\.5/);
     wrapper.unmount();
   });
 
@@ -230,7 +232,7 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     completedTurn(events, session);
     await settle();
 
-    getTrace.mockRejectedValue(new Error("trace 读取失败（验证注入）"));
+    fetchTiming.mockRejectedValue(new Error("trace 读取失败（验证注入）"));
     const expanded = await expandTimingDetail(wrapper);
     await flushPromises();
     await nextTick();
@@ -240,7 +242,7 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     expect(folded).not.toContain("读取中");
     expect(folded).not.toMatch(/耗时\s*0\s*(毫秒|秒)/);
     if (expanded === "details") {
-      expect(getTrace, "展开才拉明细：真的展开了耗时控件就必须真的请求过 trace").toHaveBeenCalled();
+      expect(fetchTiming, "展开才拉明细：真的展开了耗时控件就必须真的请求过明细").toHaveBeenCalled();
     } else if (expanded === "none") {
       // 锚点缺失时至少证明：没有因为明细请求而丢掉总耗时
       expect(wrapper.text()).toContain("耗时");

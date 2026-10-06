@@ -23,7 +23,7 @@ $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
 $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-if (-not $DataDir) { $DataDir = Join-Path $env:TEMP "qio-verify-d" }
+if (-not $DataDir) { $DataDir = Join-Path $env:TEMP ("qio-verify-d-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
 $evidence = Join-Path $root "docs\verification-e2e-stream.json"
 $shots = Join-Path $root $OutDir
 $providerLog = Join-Path $env:TEMP "qio-verify-provider.log"
@@ -33,7 +33,20 @@ $upPy = Join-Path $root "scripts\e2e_up.py"
 $downPy = Join-Path $root "scripts\e2e_down.py"
 $failures = @()
 
-function Step([string]$text) { Write-Output ""; Write-Output ("== " + $text) }
+function Step([string]$text) { Write-Output ""; Write-Output ("== " + $text + " ==") }
+
+# 端口预检 + 杀进程树：旧进程会替我们应答 /api/health（假成功），实测踩过一次
+function Assert-PortFree([int]$port, [string]$what) {
+  $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($conn) {
+    $owner = ($conn | Select-Object -First 1).OwningProcess
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $owner) | Select-Object -First 1
+    throw ($what + " 端口 " + $port + " 已被占用（pid=" + $owner + " " + $proc.Name + "）：先跑 scripts/e2e_down.py 清掉旧进程")
+  }
+}
+function Stop-Tree($proc) {
+  if ($proc -and -not $proc.HasExited) { & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null }
+}
 
 Step "0. 环境"
 if (Test-Path $edge) {
@@ -44,6 +57,10 @@ if (Test-Path $edge) {
   Write-Output ("[WARN] 找不到 msedge（" + $edge + "）：截图这一步**未验证**，如实记录。")
 }
 Write-Output ("data dir: " + $DataDir)
+
+Assert-PortFree $ProviderPort "假厂商端点"
+Assert-PortFree 8734 "后端"
+Assert-PortFree 5199 "前端"
 
 Step "1. 起假厂商端点（真 SSE 分片）"
 $providerCmd = 'uv run --frozen python "' + $providerPy + '" --port ' + $ProviderPort + ' > "' + $providerLog + '" 2>&1'
@@ -90,18 +107,31 @@ try {
   if ($captureExit -ne 0) { $failures += "SSE 取证有失败项（见 " + $evidence + "）" }
 
   if (-not $SkipShots) {
-    Step "5. 无头截图（宽窗口 / 窄窗口）"
+    Step "5. 状态截图（Playwright 驱动真实交互，msedge 无头）"
     New-Item -ItemType Directory -Force -Path $shots | Out-Null
-    & $edge --headless=new --disable-gpu --hide-scrollbars --window-size=1440,900 --screenshot="$shots\conversation-wide.png" "http://127.0.0.1:5199/" | Out-Null
-    Start-Sleep -Seconds 3
-    & $edge --headless=new --disable-gpu --hide-scrollbars --window-size=480,900 --screenshot="$shots\conversation-narrow.png" "http://127.0.0.1:5199/" | Out-Null
+    $shotsJs = Join-Path $root "scripts\verify-e2e-shots.mjs"
+    $env:QIO_E2E_BASE = "http://127.0.0.1:5199"
+    $env:QIO_E2E_PROVIDER = ("http://127.0.0.1:" + $ProviderPort)
+    $env:QIO_E2E_SHOTS = $shots
+    Push-Location $root
+    $shotOut = (& node $shotsJs 2>&1 | Out-String)
+    $shotExit = $LASTEXITCODE
+    Pop-Location
+    Write-Output $shotOut
+    if ($shotExit -ne 0) {
+      $failures += "状态截图有失败项（见 " + (Join-Path $shots "shots-summary.json") + "）"
+      Step "5b. 回退：msedge 静态截图"
+      & $edge --headless=new --disable-gpu --hide-scrollbars --window-size=1440,900 --screenshot="$shots\conversation-wide.png" "http://127.0.0.1:5199/" | Out-Null
+      Start-Sleep -Seconds 3
+      & $edge --headless=new --disable-gpu --hide-scrollbars --window-size=480,900 --screenshot="$shots\conversation-narrow.png" "http://127.0.0.1:5199/" | Out-Null
+    }
     Get-ChildItem $shots -Filter *.png | ForEach-Object { Write-Output ("shot: " + $_.Name + " (" + $_.Length + " bytes)") }
   }
 }
 finally {
   Step "6. 收尾"
   & python $downPy 2>&1 | Out-String | Write-Output
-  if ($provider -and -not $provider.HasExited) { Stop-Process -Id $provider.Id -Force -ErrorAction SilentlyContinue }
+  Stop-Tree $provider
 }
 
 Step "结论"

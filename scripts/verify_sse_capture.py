@@ -134,6 +134,11 @@ def main() -> int:
     timeline = _request(provider + "/__timeline").get("timeline") or []
     provider_end = next((item for item in timeline if item["event"] == "stream_end"), None)
     provider_chunks = [item for item in timeline if item["event"] == "chunk_sent"]
+    # 请求台账：QIO 到底有没有向 provider 请求流式（stream:true）。诊断「没流式」时
+    # 必须能区分「QIO 没请求」和「请求了但 provider 没发」。
+    provider_requests = _request(provider + "/__log").get("requests") or []
+    stream_requests = [item for item in provider_requests if item.get("stream_requested")]
+    plain_requests = [item for item in provider_requests if not item.get("stream_requested")]
 
     assistant = [
         item
@@ -144,12 +149,36 @@ def main() -> int:
     first_answer = answers[0] if answers else None
     final_content = str(((ended or {}).get("event", {}).get("data") or {}).get("final_content") or "")
     full_text = "".join(chunks)
+    event_types = [str(item["event"].get("type")) for item in capture.events]
+    # trace 台账：adapter_mode 直接回答「这一轮走的是 native 还是 text 档」
+    trace_adapter_modes: list[str] = []
+    trace_warnings: list[str] = []
+    if turn_id:
+        try:
+            trace = _request(args.base.rstrip("/") + "/api/traces/" + turn_id)
+            trace_adapter_modes = [
+                str(call.get("adapter_mode")) for call in (trace.get("model_calls") or [])
+            ]
+            trace_warnings = [
+                str(item.get("code")) for item in (trace.get("warnings") or [])
+            ]
+        except Exception as exc:  # noqa: BLE001 - 取证脚本：拿不到就如实空着
+            trace_warnings = ["trace_unavailable: %s" % exc]
 
     checks: list[dict] = []
 
     def check(name: str, ok: bool, detail) -> None:
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
+    check(
+        "QIO 向 provider 请求了流式（stream=true）",
+        bool(stream_requests),
+        {
+            "requests": len(provider_requests),
+            "stream": len(stream_requests),
+            "plain": len(plain_requests),
+        },
+    )
     check(
         "provider 真的分片发送",
         len(provider_chunks) >= 2 and provider_end is not None,
@@ -184,10 +213,26 @@ def main() -> int:
         final_content == full_text,
         {"final_len": len(final_content), "provider_len": len(full_text)},
     )
+    # 收尾快照（streaming=false，交付已确认全文并标记流已停）不算重复交付。
+    settle = [
+        item for item in answers if (item["event"].get("data") or {}).get("streaming") is False
+    ]
+    streamed_answers = [item for item in answers if item not in settle]
+    full_deliveries = [
+        item for item in streamed_answers if _assistant_text(item["event"]) == full_text
+    ]
     check(
-        "SSE 全流里没有出现重复的完整回答",
-        sum(1 for item in answers if _assistant_text(item["event"]) == full_text) <= 1,
-        None,
+        "完整回答只交付一次（收尾快照不算重复）",
+        len(full_deliveries) <= 1,
+        {"deliveries": len(full_deliveries), "settle": len(settle)},
+    )
+    check(
+        "收尾快照是最后一条且交付全文",
+        bool(settle) and settle[-1] is answers[-1] and _assistant_text(settle[-1]["event"]) == full_text,
+        {
+            "settle_count": len(settle),
+            "is_last": bool(settle) and settle[-1] is answers[-1],
+        },
     )
 
     report = {
@@ -195,6 +240,12 @@ def main() -> int:
         "provider": provider,
         "turn_id": turn_id,
         "message": args.message,
+        "sse_event_types": event_types,
+        "trace_adapter_modes": trace_adapter_modes,
+        "trace_warnings": trace_warnings,
+        "provider_requests": len(provider_requests),
+        "stream_requests": len(stream_requests),
+        "plain_requests": len(plain_requests),
         "provider_chunks": len(provider_chunks),
         "sse_events": len(capture.events),
         "sse_error": capture.error,
