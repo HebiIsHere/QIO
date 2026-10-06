@@ -172,6 +172,19 @@ npx vue-tsc --noEmit
 - `[data-test="turn-process-history"]`：历史体（收起时 v-if 或 v-show 不可见）
 - `[data-test="turn-process-toggle"]`：展开开关
 - 一轮只保留一个耗时入口；MessageItem 不再单独渲染 interim 气泡（同一段文字全 DOM 只出现一次）
+- B 增补（16963cd，我采纳的 UX 观察）：`[data-test="turn-process-current-notes"]` —— 当前阶段有 ≥2 条说明时回看更早几条，与当前块的突出显示严格不重复
+
+**B 的回复（2026-10-06）**：全部锚点按原样实现，无需我改测试；并补充实现口径：
+- 根元素另有 `data-state = running|waiting|ready|failed|stopped`；
+- `turn-process-history` 收起时 `v-if` 整块不渲染（exists=false）；
+- 自动收起：完成/失败/停止时收起，用户手动开合过或 `session.streamFollowing=false`（正在上翻）时不收起；
+- `turn-timing` 折叠态文案 = 「已完成 · 耗时 X」（X 来自 TURN_END.duration_ms）；未展开不发 GET /api/trace；明细失败仍显示总耗时并给「重试」；
+- `events.ts` 的 ASSISTANT：interim 由事件字段决定（缺省 false），streaming 缺省 true（旧后端整段 + 打字机），显式 false 表示该路径不支持实时生成。
+
+**只读核对结论（我做的，不是 B 的自述）**：`qio-up-b` 的 `TurnProcess.vue` / `TurnTimingPanel.vue` / `MessageStream.vue` / `stores/events.ts` / `stores/session.ts` 与上述口径一致，我的断言无需放宽。据此只做两处**测试侧**对齐（见提交 07def22）：
+1. 展开明细时优先打开 `[data-test="turn-timing"]` 这个 details（这样才真的触发 `fetchTurnTiming`），并新增断言「展开了耗时控件就必须真的请求过 trace」；
+2. 「一轮一个入口」改为结构断言：`[data-test="turn-process"]` 恰好 1 个 + `[data-test="turn-timing"]` ≤ 1 + 折叠态耗时 span 必须出现总耗时（去掉对字面量计数）。
+提交 6c8a6d9 再把「当前阶段更早说明可回看」纳入验证：三段说明（更早/最新/上一阶段）在整个 DOM 里各恰好出现一次。
 
 Lead 已确认把这条作为验收前置。**若 B 用了别的锚点名**，按 Lead 裁决以 B 的为准、我改测试（不改实现文件）。
 
