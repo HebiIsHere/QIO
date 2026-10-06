@@ -448,17 +448,19 @@ async def _make_ready_attachment(ac, ctx, tmp_path, name="回执.txt") -> dict:
 
 
 async def test_turn_rejects_and_does_not_enqueue_when_receipt_has_rejects(async_app, tmp_path, monkeypatch):
-    """B 的冻结回执里 rejected 非空 → 409/422 + 人话原因，且**不入队**。"""
+    """预检通过、但绑定回执 rejected 非空（受理瞬间竞态）→ 409 结构化 detail 且**不入队**。"""
     ctx = async_app.state.ctx
+    from agent.services.attachments import BindOutcome
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path)
-
-        class _Receipt:
-            bound: list[str] = []
-            rejected = [(att["id"], "附件已经绑到别的轮次（请移除后重发）")]
-
-        monkeypatch.setattr(ctx.attachments, "bind_for_turn", lambda **kwargs: _Receipt())
+        monkeypatch.setattr(
+            ctx.attachments,
+            "bind_for_turn",
+            lambda **kwargs: BindOutcome(
+                bound=[], rejected=[(att["id"], "附件已经绑到别的轮次（请移除后重发）")]
+            ),
+        )
 
         before = ctx.turns.snapshot()
         resp = await ac.post(
@@ -467,11 +469,13 @@ async def test_turn_rejects_and_does_not_enqueue_when_receipt_has_rejects(async_
         )
         after = ctx.turns.snapshot()
 
-    assert resp.status_code in (409, 422), resp.text
-    body = resp.json()
-    rejected = body.get("rejected") or []
-    assert [item[0] if isinstance(item, (list, tuple)) else item.get("id") for item in rejected] == [att["id"]]
-    assert "别的轮次" in str(body)
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "attachment_binding_failed"
+    assert [row["id"] for row in detail["rejected"]] == [att["id"]]
+    assert "别的轮次" in detail["rejected"][0]["reason"]
+    assert detail["message"], "结构化失败必须带一句人话"
+    assert detail["bound_attachment_ids"] == []
     assert after["running"] == before["running"], "被拒绝的请求不得开始执行"
     assert after["queued"] == before["queued"], "被拒绝的请求不得入队"
 
@@ -482,13 +486,6 @@ async def test_turn_response_carries_the_real_binding_receipt(async_app, tmp_pat
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path, name="回执2.txt")
-
-        class _Receipt:
-            bound = [att["id"]]
-            rejected: list = []
-
-        monkeypatch.setattr(ctx.attachments, "bind_for_turn", lambda **kwargs: _Receipt())
-
         resp = await ac.post(
             "/api/turns",
             json={"message": "带上它", "topic_id": att["topic_id"], "attachment_ids": [att["id"]]},
@@ -498,10 +495,11 @@ async def test_turn_response_carries_the_real_binding_receipt(async_app, tmp_pat
 
     assert resp.status_code == 200, resp.text
     assert body["accepted"] is True
+    # 回执来自 B 的真实 bind_for_turn（不是路由自己拼的）
     assert body["bound_attachment_ids"] == [att["id"]]
     assert body["rejected"] == []
     assert [item["id"] for item in body["attachments"]] == [att["id"]]
-    ctx.turns.cancel(body["turn_id"])
+    assert ctx.attachments.get(att["id"], check=False).turn_id == body["turn_id"]
 
 
 async def test_turn_rejects_attachment_owned_by_another_turn_without_enqueue(async_app, tmp_path):
@@ -522,8 +520,11 @@ async def test_turn_rejects_attachment_owned_by_another_turn_without_enqueue(asy
             json={"message": "第二轮不该抢", "topic_id": att["topic_id"], "attachment_ids": [att["id"]]},
         )
 
-    assert resp.status_code in (409, 422), resp.text
-    assert "别的轮次" in resp.text or "已绑" in resp.text
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "attachment_binding_failed"
+    assert [row["id"] for row in detail["rejected"]] == [att["id"]]
+    assert "别的一轮" in detail["rejected"][0]["reason"]
     after = ctx.turns.snapshot()
     assert after["queued"] == before["queued"] and after["running"] == before["running"]
     assert ctx.attachments.get(att["id"], check=False).turn_id == "turn_owner", "原归属不得被改写"

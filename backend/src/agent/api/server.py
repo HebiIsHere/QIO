@@ -55,19 +55,19 @@ from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 from agent.services.attachments import (
     TEMP_SUFFIX,
     STATE_CANCELLED as DISK_CANCELLED,
-    STATE_CHANGED as DISK_CHANGED,
     STATE_FAILED as DISK_FAILED,
-    STATE_PREPARED as DISK_PREPARED,
-    STATE_READY as DISK_READY,
     AttachmentContentError,
     AttachmentError,
     DiskOutcome,
     UploadAborted,
     UploadTooLarge,
+    rejected_failure_message,
 )
 # 上传作业：接收端 / 工作线程 / 收尾共享同一份终态（round 4 问题三）
 from agent.services.attachment_upload import (
     SETTLE_SECONDS as UPLOAD_SETTLE_SECONDS,
+    # 桥接队列深度搬进了作业模块；名字继续在这里可用（容量口径的唯一来源，验收用例读它）
+    UPLOAD_QUEUE_DEPTH,
     UploadJob,
     UploadJobEnded,
     active_jobs as upload_active_jobs,
@@ -1259,6 +1259,7 @@ def create_app(
         job = UploadJob(
             label=att.id,
             loop=asyncio.get_running_loop(),
+            depth=UPLOAD_QUEUE_DEPTH,
             cancel_requested=lambda: attachments.is_cancel_requested(att.id),
         )
         worker = asyncio.create_task(
@@ -1420,113 +1421,28 @@ def create_app(
             raise HTTPException(status_code=404, detail="没有这个附件")
         return {"ok": True, **result}
 
-    # -- 轮次绑定：B 的冻结回执 + 受理前校验（round4 §1.2） -------------------
+    # -- 轮次绑定：B 的冻结回执 + 受理前预检（round4 §1.2） -------------------
 
-    def _attachment_rejection(
+    def _attachment_failure(
         rejected: list[tuple[str, str]],
         *,
-        topic_id: str | None,
-        turn_id: str | None = None,
-    ) -> JSONResponse:
-        """结构化拒绝（409）：每个附件一句人话原因；调用方保证这一轮没有入队（或已撤销）。"""
-        items = [{"id": str(aid), "reason": str(reason)} for aid, reason in rejected]
-        summary = "；".join(reason for _aid, reason in rejected)
-        return JSONResponse(
+        message: str | None = None,
+    ) -> HTTPException:
+        """结构化失败（409）：受理前拒绝、不入队、不消费 resend claim。
+
+        detail 的形状是前端契约（stores/session.ts 读 detail.rejected；
+        message 用 B 的 rejected_failure_message 生成一句话），不要改。
+        """
+        rows = [(str(item), str(reason)) for item, reason in (rejected or [])]
+        return HTTPException(
             status_code=409,
-            content={
-                "ok": False,
-                "accepted": False,
-                "error": "attachment_rejected",
-                "detail": f"有 {len(items)} 个附件不能随这条消息发送：{summary}",
-                "rejected": items,
-                "topic_id": topic_id,
-                "turn_id": turn_id,
+            detail={
+                "code": "attachment_binding_failed",
+                "message": message or rejected_failure_message(rows),
+                "rejected": [{"id": item, "reason": reason} for item, reason in rows],
+                "bound_attachment_ids": [],
             },
         )
-
-    def _attachment_preflight(
-        attachment_ids: list[str] | None,
-        *,
-        topic_id: str | None,
-        retry_of_turn_id: str | None,
-    ) -> list[tuple[str, str]]:
-        """受理前校验（镜像 §1.2 的冻结规则）：返回 [(id, 人话原因)]。
-
-        为什么路由侧还要挡一次：turn_id 只有 submit 之后才有，而绑定需要 turn_id；
-        「rejected 非空 → 不入队」要求在提交**之前**就知道会被拒。最终判据仍是 B 的
-        bind_for_turn 回执（它更严时以回执为准，这里挡住的是明显不该发的）。
-        """
-        if attachment_ids is None:
-            return []
-        rejected: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for raw in attachment_ids:
-            attachment_id = str(raw).strip()
-            if not attachment_id or attachment_id in seen:
-                continue
-            seen.add(attachment_id)
-            att = attachments.get(attachment_id)  # check=True：missing/changed 按现在的事实
-            if att is None:
-                rejected.append((attachment_id, "没有这个附件（可能已经被移除）"))
-                continue
-            if att.topic_id and str(att.topic_id) != str(topic_id or ""):
-                rejected.append((attachment_id, "附件不属于当前话题"))
-                continue
-            if att.state not in (DISK_PREPARED, DISK_READY, DISK_CHANGED):
-                rejected.append(
-                    (attachment_id, f"附件当前不可用（{att.state}）：先重试或重新定位")
-                )
-                continue
-            if att.turn_id and str(att.turn_id) != str(retry_of_turn_id or ""):
-                rejected.append((attachment_id, "附件已经绑到别的轮次（可以移除后重发）"))
-        return rejected
-
-    def _bind_attachments(
-        turn_id: str,
-        attachment_ids: list[str] | None,
-        *,
-        topic_id: str | None,
-        retry_of_turn_id: str | None,
-    ) -> tuple[list[str], list[tuple[str, str]], list]:
-        """调用 B 的冻结签名，返回 (bound_ids, rejected, bound_attachments)。
-
-        接口还没落地时退回当前签名（try/except TypeError，不阻塞本模块开发）：
-        此时按「请求了但没绑上」自己记 rejected —— 绝不静默丢弃。
-        空数组 = 显式没有附件；attachment_ids=None（缺字段）= 旧客户端兜底。
-        """
-        requested = [str(item).strip() for item in (attachment_ids or []) if str(item).strip()]
-        try:
-            outcome = attachments.bind_for_turn(
-                turn_id=str(turn_id),
-                message_id=None,
-                attachment_ids=attachment_ids,
-                topic_id=topic_id,
-                retry_of_turn_id=retry_of_turn_id,
-            )
-        except TypeError:
-            logging.getLogger(__name__).info(
-                "bind_for_turn 还没有冻结签名（B 未落地）：退回当前签名"
-            )
-            bound_list = attachments.bind_for_turn(turn_id, attachment_ids, topic_id=topic_id)
-            bound_ids = [str(att.id) for att in bound_list]
-            known = set(bound_ids)
-            rejected = [
-                (aid, "附件没有绑定成功（可能已经被别的轮次使用）")
-                for aid in requested
-                if aid not in known
-            ]
-            return bound_ids, rejected, list(bound_list)
-        bound_ids = [str(item) for item in (getattr(outcome, "bound", None) or [])]
-        rejected = [
-            (str(item[0]), str(item[1]))
-            for item in (getattr(outcome, "rejected", None) or [])
-        ]
-        bound_attachments = [
-            att
-            for att in (attachments.get(aid, check=False) for aid in bound_ids)
-            if att is not None
-        ]
-        return bound_ids, rejected, bound_attachments
 
     # -- turns -------------------------------------------------------------
 
@@ -1567,27 +1483,33 @@ def create_app(
                 raise HTTPException(status_code=400, detail="attachment_ids must be a list")
             explicit_ids = [str(item) for item in raw_ids]
         # 重试复用（round4 §1.2）：重试时必须带上原轮 turn_id，B 据此克隆可复用的附件；
-        # 严格语义「rejected 非空 → 不入队」：受理前先校验一次，避免「已经开始执行才发现附件丢了」。
-        retry_of_turn_id = body.get("retry_of_turn_id")
-        retry_of_turn_id = str(retry_of_turn_id) if retry_of_turn_id else None
-        preflight = _attachment_preflight(
-            explicit_ids, topic_id=topic_id, retry_of_turn_id=retry_of_turn_id
+        # 严格语义「rejected 非空 → 不入队」：**submit 之前**用 B 的只读预检挡一次
+        # （判据与 bind_for_turn 共用同一份 _reject_reason，两处规则不会漂移）。
+        retry_raw = body.get("retry_of_turn_id")
+        retry_of = (
+            str(retry_raw).strip()
+            if isinstance(retry_raw, str) and retry_raw.strip()
+            else None
         )
-        if preflight:
-            return _attachment_rejection(preflight, topic_id=topic_id)
+        precheck = attachments.precheck_for_turn(
+            attachment_ids=explicit_ids, topic_id=topic_id, retry_of_turn_id=retry_of
+        )
+        if precheck:
+            raise _attachment_failure(precheck)
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        bound_ids, rejected, bound_attachments = _bind_attachments(
-            turn.turn_id,
-            explicit_ids,
+        outcome = attachments.bind_for_turn(
+            turn_id=turn.turn_id,
+            message_id=None,
+            attachment_ids=explicit_ids,
             topic_id=topic_id,
-            retry_of_turn_id=retry_of_turn_id,
+            retry_of_turn_id=retry_of,
         )
-        if rejected:
-            # B 的回执拒绝（例如受理瞬间被别的轮次抢走）：撤销刚提交的这一轮并结构化失败。
+        if outcome.rejected:
+            # 预检之后的竞态（刚被删 / 被别的轮次抢走）：撤销刚提交的这一轮，不入队。
             ctx.turns.cancel(turn.turn_id)
-            return _attachment_rejection(rejected, topic_id=topic_id, turn_id=turn.turn_id)
+            raise _attachment_failure(outcome.rejected)
         return {
             "ok": True,
             "accepted": True,
@@ -1596,11 +1518,8 @@ def create_app(
             "message": message,
             "topic_id": topic_id,
             # 实际绑定回执（§1.2）：前端以它为准更新界面，未绑定不得显示为「已带上」
-            "bound_attachment_ids": bound_ids,
-            "rejected": [],
-            "attachments": [
-                attachments.payload(a, check=False) for a in bound_attachments
-            ],
+            **outcome.as_receipt(),
+            "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
 
     @app.post("/api/turns/cancel")
@@ -1791,6 +1710,16 @@ def create_app(
                 status_code=409,
                 detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
             )
+        # 附件（§1.2）：重发按**原来那一轮**的清单重新归属（retry_of_turn_id=原轮），
+        # 所以原轮附件可以克隆复用。预检必须在 claim **之前**：被拒绝的重发不消费 claim。
+        retry_ids = attachments.retry_attachment_ids(turn_id)
+        precheck = attachments.precheck_for_turn(
+            attachment_ids=retry_ids,
+            topic_id=record["topic_id"],
+            retry_of_turn_id=turn_id,
+        )
+        if precheck:
+            raise _attachment_failure(precheck)
         if not ctx.turn_journal.claim(turn_id):
             raise HTTPException(status_code=409, detail="这一条已经被处理过了")
         pending = ctx.bindings.peek_intent()
@@ -1800,15 +1729,30 @@ def create_app(
                 record["topic_id"],
                 intent_id=pending.intent_id if pending else None,
             )
+            outcome = attachments.bind_for_turn(
+                turn_id=turn.turn_id,
+                message_id=None,
+                attachment_ids=retry_ids,
+                topic_id=record["topic_id"],
+                retry_of_turn_id=turn_id,
+            )
         except Exception:
             ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
             raise
+        if outcome.rejected:
+            # 预检之后的竞态：撤销刚提交的这一轮、退回 claim，结构化失败（不静默丢附件）。
+            ctx.turns.cancel(turn.turn_id)
+            ctx.turn_journal.release_claim(turn_id)
+            raise _attachment_failure(outcome.rejected)
         ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
         return {
             "ok": True,
             "recovered_turn_id": turn_id,
             "turn_id": turn.turn_id,
             "status": turn.status,
+            # 重发同样要带回执：重试复用的克隆是**新 id**，前端以回执为准
+            **outcome.as_receipt(),
+            "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
 
     @app.post("/api/turns/{turn_id}/dismiss")
