@@ -437,28 +437,63 @@ function respond(decision: "approved" | "rejected") {
   void approvals.respondById(item.approval_id, decision, overrides);
 }
 
+/**
+ * 用户**显式**要求看完整信息（区别于 enqueue 的 autoOpen）。
+ *
+ * 契约 §1.3 第 1 项：当前轮的审批必须「在同一个过程区域内自动展示说明、真实操作信息
+ * **与操作按钮**」。所以内联卡接管这条审批期间要**抑制 autoOpen** —— 弹窗一自动显示，
+ * 按钮就会按 id 让位给弹窗，过程区里只剩一句说明。
+ * 只有用户点了「查看完整信息」才把按钮交给弹窗。
+ */
+const fullViewRequested = ref(false);
+
 /** 「查看完整信息」：把这条交给原弹窗（内联卡按钮让位，复用既有 claim 机制） */
 function openFull() {
   const item = inlineApproval.value;
-  if (item) approvals.showFull(item.approval_id);
+  if (!item) return;
+  fullViewRequested.value = true;
+  approvals.showFull(item.approval_id);
 }
 
 /** 内联声明：本组件显示这条审批的按钮时，全局入口 / 弹窗让位（按 approval_id 门控） */
 const claimedId = computed(() => inlineApproval.value?.approval_id ?? null);
 /**
- * 弹窗正在显示这一条 → 内联卡不再显示批准/拒绝（同一 approval_id 只有一套有效按钮）。
- * 弹窗被「稍后处理」/ Esc 收起后，内联卡重新声明并接管。
+ * 弹窗正在显示这一条、**并且是用户显式点开的** → 内联卡不再显示批准/拒绝
+ * （同一 approval_id 只有一套有效按钮）。弹窗被「稍后处理」/ Esc 收起后，
+ * 内联卡重新声明并接管。
  */
 const modalOwnsApproval = computed(() => {
   const id = claimedId.value;
-  return !!id && approvals.visible && approvals.current?.approval_id === id;
+  return (
+    !!id &&
+    fullViewRequested.value &&
+    approvals.visible &&
+    approvals.current?.approval_id === id
+  );
 });
 const inlineOwnsButtons = computed(() => !!claimedId.value && !modalOwnsApproval.value);
+
+/** 上一次声明/接管的审批 id：换了一条就释放旧声明并清掉「显式查看」标记 */
+let lastClaimedId: string | null = null;
 
 watch(
   [claimedId, () => approvals.visible, () => approvals.current?.approval_id ?? ""],
   ([id]) => {
+    if (id !== lastClaimedId) {
+      if (lastClaimedId) approvals.releaseInline(lastClaimedId);
+      fullViewRequested.value = false;
+      lastClaimedId = id;
+    }
     if (!id) return;
+    // 弹窗没显示（含「稍后处理」/ Esc 之后）→ 内联卡是唯一的按钮；显式查看标记随之作废
+    if (!approvals.visible) fullViewRequested.value = false;
+    /**
+     * 内联卡接管期间抑制 autoOpen：弹窗不自动弹，按钮留在过程区。
+     * 用户随后仍可用「查看完整信息」显式打开弹窗（那时按钮才交给弹窗）。
+     */
+    if (approvals.visible && approvals.current?.approval_id === id && !fullViewRequested.value) {
+      approvals.defer();
+    }
     if (modalOwnsApproval.value) approvals.releaseInline(id);
     else approvals.claimInline(id);
   },

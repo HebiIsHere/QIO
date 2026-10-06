@@ -332,13 +332,26 @@ describe("问题 1：同一 approval_id 任一时刻只有一套有效按钮", (
     w.unmount();
   });
 
-  it("审批已经由弹窗打开时（autoOpen），内联只显示事实、不出第二套按钮", async () => {
+  it("autoOpen 也不能把按钮从过程区拿走：内联卡接管并抑制自动弹窗（显式查看仍可打开）", async () => {
     const { w } = mountWithApproval(true);
+    const approvals = useApprovalsStore();
     await nextTick();
     const card = w.find("[data-test='turn-process-approval']");
     expect(card.find("[data-test='approval-facts']").exists()).toBe(true);
+    // 契约 §1.3 第 1 项：操作按钮留在同一个过程区域内
+    expect(card.find("[data-test='turn-process-approval-allow']").exists()).toBe(true);
+    expect(card.find("[data-test='turn-process-approval-reject']").exists()).toBe(true);
+    expect(approvals.inlineClaimed).toBe(true);
+    // 自动弹窗被抑制（审批没有消失：内联卡就是那个可见入口）
+    expect(approvals.visible).toBe(false);
+    expect(approvals.deferred).toBe(true);
+
+    // 用户显式点「查看完整信息」→ 弹窗打开，按钮交给弹窗（仍然只有一套）
+    await card.find("[data-test='turn-process-approval-full']").trigger("click");
+    await nextTick();
+    expect(approvals.visible).toBe(true);
     expect(card.find("[data-test='turn-process-approval-allow']").exists()).toBe(false);
-    expect(useApprovalsStore().inlineClaimed).toBe(false);
+    expect(card.find("[data-test='turn-process-approval-in-modal']").exists()).toBe(true);
     w.unmount();
   });
 });
