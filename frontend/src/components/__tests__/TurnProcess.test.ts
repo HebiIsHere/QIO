@@ -203,6 +203,29 @@ describe("同一内容只出现一次 / legacy 平铺", () => {
     w.unmount();
   });
 
+  it("当前阶段的历次说明：最新一条突出显示，更早的进可展开历史（每句只出现一次）", async () => {
+    const multi = stage({
+      ...RUNNING_STAGE,
+      notes: [
+        { narrativeId: "m1", text: "先看目录", kind: "progress", at: "" },
+        { narrativeId: "m2", text: "再读入口文件", kind: "progress", at: "" },
+        { narrativeId: "m3", text: "正在读取仓库结构", kind: "progress", at: "" },
+      ],
+    });
+    const { w } = mountProcess({ items: [], stages: [multi], running: true });
+    await nextTick();
+    expect(w.find(".tp-cur-text").text()).toBe("正在读取仓库结构");
+    const earlier = w.find("[data-test='turn-process-current-notes']");
+    expect(earlier.exists()).toBe(true);
+    expect(earlier.text()).toContain("先看目录");
+    expect(earlier.text()).toContain("再读入口文件");
+    const html = w.html();
+    for (const text of ["先看目录", "再读入口文件", "正在读取仓库结构"]) {
+      expect(html.split(text).length - 1).toBe(1);
+    }
+    w.unmount();
+  });
+
   it("legacy（没有阶段）：平铺渲染旧叙事行，不伪造阶段", async () => {
     const narrative = msg({
       id: "n1",

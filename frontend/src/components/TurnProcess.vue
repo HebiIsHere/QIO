@@ -116,6 +116,18 @@ const currentNote = computed(() => {
   const stage = currentStage.value;
   return stage?.notes.length ? stage.notes[stage.notes.length - 1]?.text ?? "" : "";
 });
+/**
+ * 当前阶段**更早的说明**（最新一条已经在当前阶段块里突出显示）。
+ *
+ * 没有它时，运行中的用户只能看到本阶段的最后一句；前几句要等转阶段后才进历史。
+ * 这里把它们放进可展开历史，且与当前块不重复（同一段文字只出现一次）。
+ */
+const currentStageEarlierNotes = computed(() => {
+  const stage = currentStage.value;
+  if (!stage || stage.notes.length <= 1) return [];
+  return stage.notes.slice(0, -1);
+});
+
 /** 当前阶段里的中间话（与阶段说明同文时不重复显示） */
 const currentInterims = computed(() => {
   const stage = currentStage.value;
@@ -378,6 +390,22 @@ onBeforeUnmount(() => {
               </p>
               <MessageItem v-for="m in interimsOf(stage)" :key="m.id" :message="m" />
               <MessageItem v-for="m in toolsOf(stage.stageId)" :key="m.id" :message="m" />
+            </section>
+            <!-- 当前阶段更早的说明：运行中也能回看（最新一条在上面突出显示） -->
+            <section v-if="currentStageEarlierNotes.length" class="tp-stage" data-test="turn-process-current-notes">
+              <div class="tp-stage-head">
+                <span v-if="currentStage" class="tp-stage-index mono">{{ currentStage.index }}</span>
+                <span class="tp-stage-name serif">{{ currentStage?.name || "当前阶段" }}</span>
+                <span class="tp-stage-state mono" data-state="running">更早的说明</span>
+              </div>
+              <p
+                v-for="note in currentStageEarlierNotes"
+                :key="note.narrativeId || note.text"
+                class="tp-note"
+                :data-kind="note.kind"
+              >
+                {{ note.text }}
+              </p>
             </section>
             <section v-if="looseTools.length || looseInterims.length" class="tp-stage">
               <div class="tp-stage-head">
