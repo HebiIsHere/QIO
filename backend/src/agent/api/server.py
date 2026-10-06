@@ -1662,12 +1662,40 @@ def create_app(
 
     # -- graph -------------------------------------------------------------
 
+    def _history_page_with_attachments(page: dict) -> dict:
+        """给一页历史消息补上附件（问题 5：刷新 / 重进历史后附件行必须还在）。
+
+        * 形状与实时发送路径**完全一致**：就是 attachments.payload()，前端 session.ts
+          用同一个 toAttachmentRef 收敛，不需要第二套解析；
+        * 整页一次批量查询（services/attachments.payloads_for_messages），不做 N+1；
+        * 状态是**现在的事实**（payload(check=True)）：missing / changed / failed 在重新
+          打开历史时如实呈现，而不是发送时写死的旧状态（契约 §1.6）；
+        * 没有附件的消息不带这个字段（与实时路径 ...(refs.length ? {attachments} : {}) 一致），
+          分页字段与 before 游标原样不动。
+        """
+        messages = page.get("messages") or []
+        by_message = attachments.payloads_for_messages(messages)
+        if not by_message:
+            return page
+        enriched: list[dict] = []
+        for message in messages:
+            items = by_message.get(str(message.get("id") or ""))
+            if items:
+                updated = dict(message)
+                updated["attachments"] = items
+                enriched.append(updated)
+            else:
+                enriched.append(message)
+        return {**page, "messages": enriched}
+
     @app.get("/api/session/context")
     async def session_context(limit: int | None = None) -> dict:
         topic_id = ctx.current_topic()
         node = ctx.topics.nodes.get_topic(topic_id)
         # 首次只给最近一页（默认 200 条）：不再随历史长度线性增长
-        page = ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+        page = _history_page_with_attachments(
+            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+        )
         return {
             "topic_id": topic_id,
             "topic_name": node.name if node else topic_id,
@@ -1683,10 +1711,15 @@ def create_app(
     async def session_messages_before(
         topic_id: str | None = None, before: str | None = None, limit: int | None = None
     ) -> dict:
-        """更早的一页历史（用户向上读时按需加载）。"""
+        """更早的一页历史（用户向上读时按需加载）。
+
+        每条消息同样带上 attachments（问题 5）：翻页翻到的历史附件也要能打开 / 重新定位。
+        """
         target = topic_id or ctx.current_topic()
-        page = ctx.session_messages_page(
-            target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
+        page = _history_page_with_attachments(
+            ctx.session_messages_page(
+                target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
+            )
         )
         return {"topic_id": target, **page}
 

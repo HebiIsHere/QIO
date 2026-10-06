@@ -720,6 +720,50 @@
   结构契约见 `docs/architecture.md` §12.1.2 ~ §12.1.5；
   独立验证方的取证记录见 `docs/verification-d-phase2.md`（含七组验收结论与截图 `docs/verification-shots/`）。
 
+### P17 — 审计七项修复（统一过程区 / 流式输出 / 附件，2026-10-06）
+
+- **Status：** partial
+- **背景：** 对 P16 交付做独立审计，确认七项与产品规则冲突的问题并逐项修复；本轮**废止**了 P16 引入的两处错误规则：
+  300ms 输出角色守卫，以及「正式回答→过程区」的文字移动例外。
+- **Implementation（问题 2 · 输出角色）：** 删除 `GUARD_MS` 守卫与 answer→interim 移动。正文增量**一到达就以
+  `interim=true` 实时发布**（过程区「生成中」说明，边生成边显示）；**唯一可靠判据 = 该次模型调用结束且没有
+  任何工具调用** → 同一 `delta_id` 发 `{interim:false, streaming:false, content=累计全文}` 收尾快照，
+  文字**原样提升**为正式回答；有工具调用则留在过程区，阶段就位后同 `delta_id` 补 `stage_id`/`call_ids`。
+  工具阶段收尾零正文时补**一次** `tools=[]` 的调用专门产出正式回答（每轮最多一次，成本计入迭代/用量）。
+  **已进入正式回答区的文字永不移动**；判据不含时间、文案猜测或 `kind` 变化。
+- **Implementation（问题 1 · 内联审批）：** 抽出共用 `ApprovalFacts.vue` + `approvalFacts()`，弹窗与内联卡同一份事实；
+  内联展示模型 explanation 与系统 description（分别保留）、真实操作事实（命令/路径/工具参数/授权对象/范围/风险）、
+  验证与预算入口，长技术明细可折叠；「查看完整信息」打开原弹窗；内联接管期间**抑制自动弹窗**，
+  **同一 `approval_id` 任一时刻只有一套有效按钮**；非当前轮/恢复路径仍走全局入口。
+- **Implementation（问题 3 · 附件绑定）：** `attachment_ids` 的**存在性即语义**（出现，含 `[]`，表示这条消息就是这些附件；
+  只有**缺字段**才走旧客户端兜底）。前端发送路径一律带该字段；待发附件与话题/草稿绑定并在重建/刷新后可见恢复；
+  绑定前校验存在、话题归属与状态，已被别的轮绑定的不再重复绑定。
+- **Implementation（问题 4 · 默认折叠）：** 运行中**不自动展开**；默认可见区 = 状态行 + 当前阶段名 + 最新一条说明 +
+  **一行**工具摘要；旧阶段/旧说明/逐项工具记录默认收起；整轮历史抽屉与本阶段明细**两个独立**展开状态；
+  完成/失败/停止自动收起，手动开合或正在阅读时不被抢占。
+- **Implementation（问题 5 · 历史附件）：** 新增 `GET /api/attachments/{id}/content`（只读 QIO 管理的副本、需认证、
+  路径由 id 反查、不接受任意路径、`nosniff`）；浏览器认证 `fetch` → Blob 查看/下载；桌面原生打开，
+  **可执行/脚本类不自动执行**（改「在文件夹中显示」）；引用型在 missing/changed/failed 时提供**重新定位**入口。
+- **Implementation（问题 6 · 后台化）：** 上传改 `request.stream()` **有界分块**（无 `Content-Length` 也强制上限），
+  写临时文件 + sha256 在**工作线程**；重新定位/复制同理；事件循环只做落库与 O(1) 判断，
+  工作线程**不触碰**共享 sqlite 连接；取消后不得提交为 ready。
+- **Implementation（问题 7 · 结束事实）：** `TURN_END` 增补 `reason_code / reason / stopped_by / actions`
+  （系统事实、过 redact、≤200 字、只列确实可用的操作）；`reason_code` 含 `provider_error`（仅厂商/传输路径失败）/
+  `internal_error`（QIO 自身异常，reason 带真实类名）/ `credential_unavailable` / `tool_failed` /
+  `budget|no_progress|guard_halt` / `user_stopped` / `interrupted` / `none`（旧记录不伪造）；
+  可恢复的单次工具错误**不等于**整轮失败。前端按 `turn_id` 记进 `TurnFacts` 并展示原因与可用操作。
+- **Tests：** 独立验证方（D）先建立 **44 条红 / 24 条绿守卫**的基线（按产品规则而非实现文档），修复后逐项转绿；
+  实现方补充 `test_streaming_deltas.py` / `test_turn_timing_facts.py` / `test_attachment_explicit_binding.py` /
+  `test_attachment_content_and_background.py` 与前端 `TurnProcessCollapse` / `ApprovalFacts` /
+  `assistantPromotion` / `turnFactsReason` / `MessageItemAttachments` 等用例。
+- **Known limitations：**
+  - 实机交互（默认折叠 / 正式回答稳定性 / 内联审批点击 / 历史附件打开与重定位 / 失败入口）的浏览器级证据见阶段二报告；
+    原生选择器、拖放与原生打开仍需在运行中的桌面端手工验证（`cargo check` 不能替代）。
+  - 工作线程与事件循环共享 GIL 会带来 10–30ms 抖动（最大单次停顿实测 14–21ms，**不随文件大小增长**；
+    累计值随负载波动）。已用对照实验归因，未做「每 N 块主动让出 GIL」的优化（吞吐代价不划算）。
+  - 真实厂商端点的流式与兼容行为仍未验证（规则禁止真实 Key / 联网）。
+- **后续依赖：** 阶段二实机截图与操作证据（由独立验证方 D 产出的阶段二报告，验收完成后回填路径）。
+
 ---
 
 ## 尚未完成

@@ -1030,6 +1030,79 @@ class AttachmentService:
                 bound.append(self._check(refreshed))
         return bound
 
+    def payloads_for_messages(self, messages: Iterable[dict]) -> dict[str, list[dict]]:
+        """一页历史消息的附件（问题 5：刷新 / 重进历史后附件行必须还在）。
+
+        先按 message_id **一次批量取**，再按 turn_id 兜底一次（绑定发生在消息 id 落库之前时，
+        attachments.message_id 还是空的）—— 一页历史只有这两条 SELECT，不做 N+1。
+
+        每条都走 payload(check=True)：missing / changed / failed 是**现在的事实**，
+        不是发送时写死的旧状态（契约 §1.6）。返回 {message_id: [payload, ...]}，
+        组内按 created_at, id 稳定排序；没有附件的消息不在返回里（调用方不伪造字段）。
+        """
+        page = [m for m in messages if isinstance(m, dict)]
+        message_ids: list[str] = []
+        turn_to_message: dict[str, str] = {}
+        for message in page:
+            message_id = str(message.get("id") or "").strip()
+            if not message_id:
+                continue
+            message_ids.append(message_id)
+            turn_id = str(message.get("turn_id") or "").strip()
+            if turn_id and turn_id not in turn_to_message:
+                turn_to_message[turn_id] = message_id
+        if not message_ids:
+            return {}
+        known = set(message_ids)
+        found: dict[str, Attachment] = {}
+        for att in self._select_attachments("message_id", message_ids):
+            if str(att.message_id or "") in known:
+                found[att.id] = att
+        if turn_to_message:
+            for att in self._select_attachments("turn_id", list(turn_to_message)):
+                if att.id in found:
+                    continue
+                target = turn_to_message.get(str(att.turn_id or ""))
+                if target is None:
+                    continue
+                # 页面里已经知道这一轮的 message_id：直接补到内存对象上，
+                # 既不为每条附件再查一次 turn_journal（N+1），也不改数据库事实。
+                att.message_id = target
+                found[att.id] = att
+        grouped: dict[str, list[Attachment]] = {}
+        for att in found.values():
+            grouped.setdefault(str(att.message_id or ""), []).append(att)
+        result: dict[str, list[dict]] = {}
+        for message_id, items in grouped.items():
+            if not message_id:
+                continue
+            items.sort(key=lambda a: (str(a.created_at or ""), str(a.id)))
+            payloads = [self.payload(att, check=True) for att in items]
+            if payloads:
+                result[message_id] = payloads
+        return result
+
+    def _select_attachments(
+        self, column: str, values: list[str], *, chunk: int = 400
+    ) -> list[Attachment]:
+        """按 message_id / turn_id 批量取行（分块拼 IN，避免超出 sqlite 参数上限）。"""
+        if column not in ("message_id", "turn_id"):
+            raise ValueError(f"不支持的批量查询列：{column}")
+        self._note_db_thread()
+        out: list[Attachment] = []
+        for start in range(0, len(values), chunk):
+            part = [str(value) for value in values[start : start + chunk]]
+            if not part:
+                continue
+            placeholders = ",".join("?" for _ in part)
+            rows = self.conn.execute(
+                f"SELECT * FROM attachments WHERE {column} IN ({placeholders})"
+                " ORDER BY created_at, id",
+                tuple(part),
+            ).fetchall()
+            out.extend(self._row_to_attachment(row) for row in rows)
+        return out
+
     def _unbound(self, topic_id: str | None) -> list[Attachment]:
         """本话题下还没绑定任何轮次的附件（topic_id 为 None 时只认「无话题」的那些）。
 

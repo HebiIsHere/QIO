@@ -247,6 +247,17 @@ const statusWord = computed(() => {
   return "已结束";
 });
 
+/**
+ * 状态行是否已经给出了「工具 / 调用数量」这一事实。
+ *
+ * 契约 §1.5 要求「一行简短状态和真实数量」，且同一内容只出现一次：
+ * 状态行已经说过数量时，历史抽屉摘要不再重复同一个数字
+ * （真机截图缺陷：`已完成 2 次调用 · 2 个阶段 · 2 次调用`）。
+ */
+const statusHasToolCount = computed(
+  () => runningTools.value.length > 0 || (props.running && tools.value.length > 0),
+);
+
 /** 状态行里的工具 / 阶段事实（**一行**，不堆状态） */
 const statusDetail = computed(() => {
   const bits: string[] = [];
@@ -343,10 +354,17 @@ function runAction(kind: "retry" | "resend") {
 // -- 展开历史 ---------------------------------------------------------
 
 const hasDrawer = computed(() => props.items.length > 0 || stages.value.length > 0);
+/**
+ * 历史抽屉的规模摘要（阶段数 + 调用数）。
+ *
+ * 「同一内容只出现一次」：状态行已经给出调用数量时，这里只补它没有的阶段数 ——
+ * 否则折叠态会出现「已完成 2 次调用 · 2 个阶段 · 2 次调用」（D 的真机截图实测缺陷）。
+ * 状态行没有数量（例如完成态只给了最后阶段名）时才补调用数。
+ */
 const drawerSummary = computed(() => {
   const bits: string[] = [];
   if (stages.value.length) bits.push(`${stages.value.length} 个阶段`);
-  if (tools.value.length) bits.push(`${tools.value.length} 次调用`);
+  if (tools.value.length && !statusHasToolCount.value) bits.push(`${tools.value.length} 次调用`);
   return bits.join(" · ");
 });
 
