@@ -370,8 +370,8 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         for e in ctx.bus._history
         if e.type.value == "ASSISTANT" and e.data.get("interim")
     ]
-    assert interim, "工具轮正文没有进过程区"
-    assert interim[-1]["content"] == "我先读一下文件。"
+    assert len(interim) == 1, "工具轮正文必须恰好出现一次（延后发布不能重复）"
+    assert interim[0]["content"] == "我先读一下文件。"
     # 同一个阶段、同一批调用：前端表现为「同一阶段的历次说明」
     assert interim[-1]["stage_id"] == opened["stage_id"]
     assert interim[-1]["call_ids"] == opened["call_ids"] == ["c1"]

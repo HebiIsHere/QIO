@@ -563,10 +563,14 @@ async def test_tool_round_keeps_interim_text_and_executes_assembled_arguments():
     assert result.tool_calls_made == 1 and result.final_content == "完成"
     assistant = _events(bus, "ASSISTANT")
     assert any(e["interim"] is True and e["content"] == "我先读一下文件。" for e in assistant)
-    # 过程区文字带上了这一批的 call_ids，且排在 TOOL_START 之前（阶段/归属先就位）
+    # 过程区文字带上了这一批的 call_ids，且排在 TOOL_START 之前（阶段/归属先就位）；
+    # 同一段文字**只发一次**（延后发布不能与一次性补发重复）。
     kinds = [e.type.value for e in bus._history]
     interim = [e for e in assistant if e["interim"]]
-    assert interim[-1]["call_ids"] == ["c1"]
+    assert len(interim) == 1
+    assert interim[0]["content"] == "我先读一下文件。"
+    assert interim[0]["call_ids"] == ["c1"]
+    assert all(not e["interim"] for e in assistant if e is not interim[0])
     assert kinds.index("ASSISTANT") < kinds.index("TOOL_START")
     # 参数碎片只在 adapter 内组装：执行时拿到的是合法 JSON，碎片从未作为正文出现
     starts = _events(bus, "TOOL_START")

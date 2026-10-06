@@ -205,6 +205,11 @@ class _AssistantStream:
             return
         await self._flush(force=False)
 
+    @property
+    def deferred(self) -> bool:
+        """工具轮的文字是否还在等阶段就位（见 flush_interim）。"""
+        return self._deferred
+
     # -- 收尾 -------------------------------------------------------------
 
     async def finish(
@@ -427,9 +432,11 @@ class AgentLoop:
         # 当前阶段 id（plan §1.3）：TOOL_START / TOOL_END 带上它；工具归属只看 stage_id，
         # 不靠消息相邻位置。没有阶段（子任务 / 无叙事的主轮）时如实为 None。
         self.stage_id_provider = stage_id_provider
-        # 本次模型调用的稳定流式标识与「是否已经真流式发过正文」（见 _plan / _run）。
+        # 本次模型调用的稳定流式标识，以及「这一次调用的正文是否已经**有人负责发**」：
+        # 真流式已发，或工具轮的正文正在等阶段就位（延后发）都算 —— 两种情况都
+        # 不能再走一次性的整段补发，否则同一段文字会出现两次（见 _run）。
         self._call_delta_id: str | None = None
-        self._last_stream_published = False
+        self._stream_emitted = False
         # 当前这条流式响应的发布器：工具轮的文字要等阶段确定后再由它发出。
         self._active_stream: _AssistantStream | None = None
         # 用量归因：每次模型调用把 (进, 出) 报给调用方（由它记到对应凭据上）。
@@ -638,6 +645,24 @@ class AgentLoop:
                 return None
         return None
 
+    async def _flush_active_stream(self, calls=None) -> None:
+        """把这条流延后的过程区文字交出去（阶段就位之后，或不再有后续批次时）。
+
+        ``calls`` 给出这一批工具时，带上它们的 id；没有后续批次（取消）时两者都为空。
+        失败只记日志：过程区文字不该影响工具执行。
+        """
+        stream = self._active_stream
+        if stream is None:
+            return
+        self._active_stream = None
+        try:
+            await stream.flush_interim(
+                stage_id=self._current_stage_id() if calls else None,
+                call_ids=[c.id for c in calls] if calls else [],
+            )
+        except Exception:  # noqa: BLE001 - 过程区失败不得影响执行
+            logger.warning("interim flush failed", exc_info=True)
+
     async def _dispatch_tool_calls(self, calls) -> dict[str, Any]:
         """并发安全工具并行（受 max_parallel_tools 限制），其余串行。
 
@@ -653,16 +678,7 @@ class AgentLoop:
         # 流式工具轮的正文在**阶段就位之后**才交给过程区：它与刚才这条 STAGE 说明
         # 带同一个 stage_id / call_ids，表现为「同一阶段的历次说明」，
         # 而不是两个并列的过程气泡（Lead 裁决 2026-10-06）。
-        stream = self._active_stream
-        if stream is not None:
-            self._active_stream = None
-            try:
-                await stream.flush_interim(
-                    stage_id=self._current_stage_id(),
-                    call_ids=[c.id for c in calls],
-                )
-            except Exception:  # noqa: BLE001 - 过程区文字失败不影响工具执行
-                logger.warning("interim flush failed", exc_info=True)
+        await self._flush_active_stream(calls)
         from agent.tools.policy import Concurrency, effective_concurrency
 
         safe_calls = []
@@ -1006,13 +1022,16 @@ class AgentLoop:
                 phase = LoopPhase.STOPPED
                 break
 
-            # 真流式路径已经在收到增量时边收边发（见 _AssistantStream）；这里只处理
-            # 「这一次调用一个正文增量都没发过」的情况（text 兼容档 / 未实现的降级），
-            # 一次性给出 {streaming: false} —— 不假装流式（plan §2.1 第 8 条）。
-            if not self._last_stream_published:
+            # 真流式路径已经在收到增量时边收边发；工具轮的正文延后到阶段就位后发
+            # （见 _AssistantStream.flush_interim）。这里只处理「这一次调用的正文还
+            # 没有任何人负责发」的情况（text 兼容档 / 未实现的降级），一次性给出
+            # {streaming: false} —— 不假装流式（plan §2.1 第 8 条）。
+            if not self._stream_emitted:
                 await self._emit_one_shot_assistant(completion)
 
             if not completion.tool_calls:
+                # 没有工具调用 → 这条流是正式回答（不可能存在延后的过程区文字），
+                # 直接收口。
                 phase = LoopPhase.DONE
                 final_content = completion.message.content
                 break
@@ -1023,6 +1042,9 @@ class AgentLoop:
             messages.append(completion.message)
             # 取消检查点：不启动新的工具
             if self.is_cancelled():
+                # 已经不打算执行工具：延后的过程区文字立刻交出去（没有阶段可归），
+                # 宁可把它放在「整轮」里，也不能丢掉用户已经看到的模型说明。
+                await self._flush_active_stream(None)
                 phase = LoopPhase.STOPPED
                 break
             results = await self._dispatch_tool_calls(completion.tool_calls)
@@ -1177,7 +1199,7 @@ class AgentLoop:
         self._model_seq += 1
         # 一次模型调用 = 一条流式消息：稳定标识 dl_<turn8>_<call_seq>（plan §2.1）。
         self._call_delta_id = f"dl_{short_turn_id(self.turn_id)}_{self._model_seq}"
-        self._last_stream_published = False
+        self._stream_emitted = False
         _t0 = _time.perf_counter()
         try:
             with self._phase("model_wait", f"call#{self._model_seq}"):
@@ -1261,7 +1283,7 @@ class AgentLoop:
         try:
             return await self._await_stream(messages, tools)
         except (NotImplementedError, UnsupportedCapability) as exc:
-            if self._last_stream_published:
+            if self._stream_emitted:
                 # 已经透出正文就不能整段重来：那会重复展示同一段文字。
                 raise RuntimeError("模型路径不支持实时生成，但已经显示了部分正文") from exc
             # 声明支持流式、实际用不了（未实现 / 端点不接受 stream）：整段降级，
@@ -1348,7 +1370,7 @@ class AgentLoop:
                     break
                 await stream.on_deadline()
         finally:
-            self._last_stream_published = stream.published
+            self._stream_emitted = stream.published or stream.deferred
             cancel_waiter.cancel()
             if getter is not None:
                 getter.cancel()
