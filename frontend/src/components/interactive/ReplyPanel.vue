@@ -155,6 +155,28 @@ function dismissDecision(intentId: string): void {
   decided.value = [...decided.value, intentId];
   note.value = "已结束这条提示：板面没有任何自动改动。";
 }
+
+/**
+ * 撤回「等待你决定」的其余部分。
+ *
+ * 后端 intents.advance_intent 支持 outcome="revert_rest"；services/interactive.ts 的
+ * outcome 联合类型由 Lead 扩展为含 "revert_rest"。这里对参数做一次窄化转换，
+ * 让本分支在 Lead 的类型扩展合并前后都能编译通过。
+ */
+async function revertRest(intentId: string): Promise<void> {
+  busy.value = true;
+  error.value = null;
+  try {
+    const outcome = "revert_rest" as unknown as Parameters<typeof store.advanceDemo>[1];
+    const result = await store.advanceDemo(intentId, outcome);
+    note.value = result.detail ?? "已按你的决定撤回其余部分。";
+    decided.value = [...decided.value, intentId];
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -212,10 +234,10 @@ function dismissDecision(intentId: string): void {
         :title="'「' + intent.title + '」失败后还有改动没有撤回'"
         :sections="revertSections(intent.revert)"
         tone="warning"
-        confirm-label="继续（保留这些改动）"
-        cancel-label="取消（暂不撤回）"
-        note="本阶段没有单独的「决定」接口：这两个按钮只结束提示、不会自动改动板面。要撤回其余部分，可以先在板面上手动删除。"
-        @confirm="dismissDecision(intent.id)"
+        confirm-label="撤回其余部分"
+        cancel-label="保持现状（不撤回其余部分）"
+        note="「撤回其余部分」会撤回上面「等待你决定」里列出的内容（板面会改动，你后来的修改仍然保留）；「保持现状」只结束这条提示，不做任何改动。"
+        @confirm="revertRest(intent.id)"
         @cancel="dismissDecision(intent.id)"
       />
     </section>

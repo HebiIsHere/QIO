@@ -66,6 +66,20 @@ async def create_intents(request: Request, board_id: str, body: dict | None = No
     raise HTTPException(status_code=400, detail="本阶段只开放演示意图入口（demo=true）")
 
 
+@router.post("/api/interactive/boards/{board_id}/material-impact")
+async def material_impact(request: Request, board_id: str, body: dict) -> dict:
+    """保存前的只读预判：用**待保存**的 state 判断这次改动会不会影响执行中的任务。
+
+    纯只读：不改任何状态、不落库。真正生效的判定在保存时的 intents.on_board_saved。
+    """
+    conn = _conn(request)
+    payload = _body_dict(body)
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=400, detail="state 必须是板面状态对象")
+    return intents.preview_material_impact(conn, board_id=board_id, state=state)
+
+
 @router.post("/api/interactive/intents/{intent_id}/approve")
 async def approve(intent_id: str, request: Request, body: dict | None = None) -> dict:
     """批准。confirmDependency=true 表示「前项已完成，我确认开始」。"""

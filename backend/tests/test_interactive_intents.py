@@ -626,3 +626,55 @@ def test_on_board_saved_ignores_layout_and_unrelated_cards(db_conn):
     assert intents.on_board_saved(db_conn, board_id=BOARD, state=state)["paused"] == []
     assert _listed(db_conn)[target["id"]]["status"] == "running"
 
+
+def test_on_board_saved_without_running_tasks_returns_empty(db_conn):
+    """没有任何 running 任务时：空结果、不报错（保存不能被它拖垮）。"""
+    _seed(db_conn)
+    _demo(db_conn)
+    state = _state(db_conn)
+    assert intents.on_board_saved(db_conn, board_id=BOARD, state=state) == {
+        "paused": [],
+        "affected": [],
+    }
+    # 板面上根本没有这个板面记录时同样安全
+    assert intents.on_board_saved(db_conn, board_id="board_missing", state=state) == {
+        "paused": [],
+        "affected": [],
+    }
+
+def test_material_impact_route_is_read_only(db_conn):
+    """保存前的只读预判路由：返回受影响任务，且不改任何状态。"""
+    seed = _seed(db_conn)
+    target = _demo(db_conn)[_t("failing")]
+    intents.approve_intent(db_conn, target["id"])
+    before = _state(db_conn)
+
+    pending = _state(db_conn)
+    for card in pending["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料 A（用户改过）"
+
+    client = _client(db_conn)
+    response = client.post(
+        f"/api/interactive/boards/{BOARD}/material-impact", json={"state": pending}
+    )
+    assert response.status_code == 200
+    affected = response.json()["affected"]
+    assert [item["intentId"] for item in affected] == [target["id"]]
+    assert affected[0]["consequence"]
+
+    # 只读：状态与板面都没有变化
+    assert _state(db_conn)["cards"] == before["cards"]
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
+    # 没有任何执行中任务受影响时：空结果、不报错
+    empty = client.post(
+        f"/api/interactive/boards/{BOARD}/material-impact", json={"state": before}
+    )
+    assert empty.status_code == 200
+    assert empty.json() == {"affected": []}
+
+    # 参数校验
+    assert client.post(f"/api/interactive/boards/{BOARD}/material-impact", json={}).status_code == 400
+
+
