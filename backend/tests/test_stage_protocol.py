@@ -137,11 +137,24 @@ def test_next_without_name_uses_text():
     assert tracker.current is not None and tracker.current.index == 2
 
 
-def test_update_without_stage_does_nothing():
+def test_update_without_stage_opens_implicit_stage():
+    """Lead 裁决：op=update 且当前没有阶段 → 安全降级为隐式开阶段，不丢说明。
+
+    「不自动开阶段」约束的是「已有阶段时不要因新文本另开一个」，不是「第一个
+    阶段都不给开」。
+    """
     tracker = StageTracker("turn_ab12cd34ef56")
-    out = tracker.observe(_narrative("我在做事"), parse_stage({"op": "update", "name": "x"}))
-    assert out.action == "none" and out.stage is None
-    assert tracker.current is None  # 不自动开阶段
+    out = tracker.observe(_narrative("我在做事"), parse_stage({"op": "update", "name": "想改的名字"}))
+    assert out.action == "open" and out.op == "start"
+    assert out.stage is not None
+    assert out.stage.stage_id == "st_ab12cd34_1" and out.stage.index == 1
+    assert out.stage.status == "running"
+    assert out.stage.name == "我在做事"  # update 不改名：名字取本条说明
+    assert out.text == "我在做事"
+    # 已有阶段之后，update 仍然只更新说明、不开新阶段
+    again = tracker.observe(_narrative("继续做事"), parse_stage({"op": "update"}))
+    assert again.action == "update" and again.stage is not None
+    assert again.stage.stage_id == out.stage.stage_id and again.stage.index == 1
 
 
 def test_empty_text_never_changes_the_stage_set():
@@ -307,6 +320,65 @@ async def test_turn_end_without_stage_publishes_nothing_extra(tmp_path):
     await ctx._publish_turn_event("TURN_END", {"turn_id": "turn_2", "status": "completed"})
     assert _stage_events(ctx) == []
     assert [e.type.value for e in ctx.bus._history] == ["TURN_END"]
+
+
+async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path):
+    """Lead 裁决：流式工具轮的正文与随之而来的 STAGE 说明必须同属一个阶段。
+
+    端到端：真 AppContext（真的落库 + 真阶段状态机）+ 脚本化流式 provider。
+    """
+    from unittest.mock import AsyncMock
+
+    from agent.adapters.fake import FakeStreamAdapter, ScriptedToolCall, StreamScript
+    from agent.credentials.store import MemoryKeyring
+
+    ctx = _app_ctx(tmp_path)
+    ctx.credentials._kr = MemoryKeyring()
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text="我先读一下文件。",
+                tool_calls=[
+                    ScriptedToolCall(
+                        id="c1",
+                        name="echo",
+                        arguments={"text": "hi"},
+                        narrative={
+                            "kind": "progress",
+                            "text": "正在读取文件",
+                            "stage": {"op": "start", "name": "读取文件"},
+                        },
+                    )
+                ],
+            ),
+            StreamScript(text="完成"),
+        ]
+    )
+    ctx.build_adapter = AsyncMock(return_value=adapter)
+    topic = ctx.topics.nodes.create_topic("流式阶段").id
+    tctx = ctx.turns.submit("读一下", topic)
+    await ctx.turns.wait(tctx.turn_id, timeout=10)
+
+    stages = _stage_events(ctx)
+    assert [e["op"] for e in stages] == ["start", "end"]  # turn 收尾补一条 end
+    opened = stages[0]
+    assert opened["status"] == "running" and opened["name"] == "读取文件"
+    assert opened["text"] == "正在读取文件" and opened["call_ids"] == ["c1"]
+
+    interim = [
+        e.data
+        for e in ctx.bus._history
+        if e.type.value == "ASSISTANT" and e.data.get("interim")
+    ]
+    assert interim, "工具轮正文没有进过程区"
+    assert interim[-1]["content"] == "我先读一下文件。"
+    # 同一个阶段、同一批调用：前端表现为「同一阶段的历次说明」
+    assert interim[-1]["stage_id"] == opened["stage_id"]
+    assert interim[-1]["call_ids"] == opened["call_ids"] == ["c1"]
+    # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
+    rows = _narrative_rows(ctx)
+    assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]
+    assert rows[0]["raw"]["stage"]["status"] == "done"  # turn 收尾已经收口
 
 
 async def test_current_stage_id_is_null_without_stage(tmp_path):
