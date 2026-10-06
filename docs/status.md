@@ -703,7 +703,8 @@
   - 阶段与说明历史复用 `messages` 的叙事行，没有独立阶段表；阶段在当前实现里不跨 turn 延续。
 - **后续依赖：** 真机桌面端手工验证原生选择/拖放与视觉检查（窄窗口、长回答、代码块、附件准备中）。
   设计与分工见 `docs/plans/2026-10-06-unified-process-attachments-streaming.md`，
-  结构契约见 `docs/architecture.md` §12.1.2 ~ §12.1.5。
+  结构契约见 `docs/architecture.md` §12.1.2 ~ §12.1.5；
+  独立验证方的取证记录见 `docs/verification-d-phase2.md`（含七组验收结论与截图 `docs/verification-shots/`）。
 
 ---
 
