@@ -1,0 +1,119 @@
+/*
+  互动板浮层层级与避让（子智能体 A 负责；主智能体在集成时导入 main.ts）。
+
+  为什么单独一个文件：底部工具栏（A）、右下聊天（C）、右上批量列表与任务浮层（D）、
+  板内搜索（A）、中央确认框（D）分别由不同工作区实现，各自只写自己的 scoped 样式。
+  如果没有一处统一规定「谁在上面、窄窗口谁给谁让位」，集成后就会互相遮挡。
+  本文件只做两件事：
+    1) 用 --im-z-* 固定浮层层级，浮层不各自发明 z-index；
+    2) 用 --im-chat-reserve / --im-toolbar-* 规定底部避让，并给出 1024×768 与 800×600 的收纳规则。
+
+  约定：
+  - 只写层级与避让，不重写任何组件外观；颜色一律 var(--*)，不新建色板。
+  - 选择器用契约 §8.4 冻结的 data-im 钩子，不依赖任何工作区的 scoped 类名。
+  - 层级 / 避让声明用「重复属性选择器」把特异度提到 0,3,0，压过组件 scoped 规则
+    （.class[data-v-x] = 0,2,0）。理由：这两类属性是跨组件共享的，不该由单个组件自己决定；
+    重复同一个属性选择器只是为了提特异度，不改变匹配范围。
+  - 组件内保留同样的几何作为「本文件尚未导入」时的兜底；两处数值必须一致：
+      BoardToolbar.vue 的 --tb-chat-reserve  ↔  这里的 --im-chat-reserve
+      BoardToolbar.vue 的 --tb-max-width     ↔  这里的 --im-toolbar-max-width
+
+  避让矩阵（谁和谁不能叠）：
+    底部工具栏 ↔ 右下聊天入口：工具栏在「扣掉聊天保留宽度后的剩余空间」里居中（见 --im-chat-reserve）
+    底部工具栏 ↔ 板内搜索浮层：搜索浮层固定在工具栏正上方、左对齐（工具栏自己的 scoped 样式）
+    板内搜索 ↔ 右上批量列表：搜索在左下向上展开，批量列表在右上
+    中央确认框 ↔ 其它浮层：确认框在最上层，且不改变其它浮层的位置
+*/
+:root {
+  /* 层级：数值越大越靠上。板面 0 → 聊天 25 → 工具栏 30 → 搜索 35 → 批量/任务 40 → 中央确认框 60 */
+  --im-z-board: 0;
+  --im-z-chat: 25;
+  --im-z-toolbar: 30;
+  --im-z-search: 35;
+  --im-z-batch: 40;
+  --im-z-tasks: 40;
+  --im-z-dialog: 60;
+
+  /* 底部避让：工具栏在剩余空间里居中，右端给右下角聊天入口留出 --im-chat-reserve */
+  --im-chat-reserve: 132px;
+  --im-toolbar-bottom: var(--sp-4);
+  --im-toolbar-max-width: 1180px;
+  /* 窄窗口里聊天面板要整体抬到工具栏之上（工具栏会换行变高，最坏约 170px）。
+     宽窗口不需要抬升：实测 1440×900 下工具栏右边缘 1047 < 聊天面板左边缘 1064，本来就不重叠。
+     C 若已在自己的面板里按实测工具栏高度避让，可以把 --im-chat-lift 设为 0（或告诉我删掉这条）。 */
+  --im-chat-lift: 0px;
+}
+
+/* --- 底部工具栏：贴底居中，在剩余空间里居中，右端不压聊天 ------------------- */
+[data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
+  position: absolute;
+  left: calc(50% - var(--im-chat-reserve) / 2);
+  transform: translateX(-50%);
+  bottom: var(--im-toolbar-bottom);
+  max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-chat-reserve) - var(--sp-8)));
+  z-index: var(--im-z-toolbar);
+}
+
+/* --- 板内搜索：在工具栏正上方（工具栏自身是定位上下文） ---------------------- */
+[data-im="search-panel"][data-im="search-panel"][data-im="search-panel"] {
+  z-index: var(--im-z-search);
+}
+
+/* --- 右下聊天：在工具栏之上，但不占用工具栏的居中空间 ---------------------- */
+[data-im="chat-toggle"][data-im="chat-toggle"][data-im="chat-toggle"],
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+  z-index: var(--im-z-chat);
+}
+/*
+  实测（800×600，骨架版 ChatDock）：聊天面板 rect = {l:424,t:508,r:784,b:584}，
+  底部工具栏 rect = {l:134,t:423,r:578,b:592} —— 面板压住了工具栏右端（含提交区）。
+  面板是底部对齐列里的最后一个子元素，用 margin-bottom 把它整体抬起来即可避开。
+*/
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+  margin-bottom: var(--im-chat-lift);
+}
+
+/* --- 右上批量列表 / 任务浮层 / 中央确认框 ---------------------------------- */
+[data-im="batch-entry"][data-im="batch-entry"][data-im="batch-entry"],
+[data-im="batch-list"][data-im="batch-list"][data-im="batch-list"] {
+  z-index: var(--im-z-batch);
+}
+[data-im="tasks-popover"][data-im="tasks-popover"][data-im="tasks-popover"] {
+  z-index: var(--im-z-tasks);
+}
+[data-im="impact-dialog"][data-im="impact-dialog"][data-im="impact-dialog"] {
+  z-index: var(--im-z-dialog);
+}
+
+/* --- 1024×768：工具栏收窄间距、去掉分组标签，按钮全部保留 ------------------- */
+@media (max-width: 1024px) {
+  :root {
+    --im-chat-reserve: 104px;
+    --im-toolbar-bottom: var(--sp-3);
+    --im-toolbar-max-width: 100%;
+    --im-chat-lift: 180px;
+  }
+  [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
+    padding: var(--sp-2);
+  }
+  /* 聊天面板不让高度把工具栏挤掉：最多占视口七成，且从聊天按钮上方展开 */
+  [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+    max-height: 70vh;
+  }
+}
+
+/* --- 800×600：进一步压缩，聊天面板更窄；主要入口仍然可见可点 ---------------- */
+@media (max-width: 800px) {
+  :root {
+    --im-chat-reserve: 88px;
+    --im-toolbar-bottom: var(--sp-2);
+    --im-chat-lift: 190px;
+  }
+  [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+    max-width: calc(100vw - var(--im-chat-reserve) - var(--sp-4));
+    max-height: 60vh;
+  }
+  [data-im="search-panel"][data-im="search-panel"][data-im="search-panel"] {
+    width: min(300px, calc(100vw - var(--sp-6)));
+  }
+}
