@@ -126,6 +126,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
         saveStatus.value = "saved";
         saveError.value = null;
         dirty.value = false;
+        // 保存只落到本机板面；顺手刷新「本次允许查看的范围」让提交前预览是新的。
+        // 这一步同样不调用 QIO。
+        void refreshVisibleRange();
       } catch (err) {
         saveStatus.value = "error";
         saveError.value = (err as Error).message;
@@ -229,6 +232,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitError.value = null;
     submitStatus.value = "submitting";
     await saveNow();
+    if (saveStatus.value === "error") {
+      // 保存没成功就不提交：宁可让用户再点一次，也不能拿旧板面当「本次提交」。
+      submitStatus.value = "failed";
+      submitError.value = `板面没有保存成功，本次未提交（${saveError.value ?? "原因未知"}）`;
+      return null;
+    }
     try {
       const result = await api.submitBoard(boardId.value);
       lastSubmission.value = result;

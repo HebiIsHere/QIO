@@ -157,6 +157,10 @@ export interface BoardStateResponse {
   baseline: { seq: number; submittedAt: string } | null;
   submissions: SubmissionRecord[];
   drafts: { drafts: Record<string, string>; updatedAt: string | null };
+  /** 未提交的有效改动（服务端每次保存后重算；它不进 QIO） */
+  pending?: Expression[];
+  /** 本次允许查看的范围（服务端以已保存状态推导） */
+  visibleRange?: VisibleRange;
 }
 
 export interface IntentPreview {
