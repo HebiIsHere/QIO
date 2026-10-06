@@ -179,7 +179,8 @@ npx vue-tsc --noEmit
 - `turn-process-history` 收起时 `v-if` 整块不渲染（exists=false）；
 - 自动收起：完成/失败/停止时收起，用户手动开合过或 `session.streamFollowing=false`（正在上翻）时不收起；
 - `turn-timing` 折叠态文案 = 「已完成 · 耗时 X」（X 来自 TURN_END.duration_ms）；未展开不发 GET /api/trace；明细失败仍显示总耗时并给「重试」；
-- `events.ts` 的 ASSISTANT：interim 由事件字段决定（缺省 false），streaming 缺省 true（旧后端整段 + 打字机），显式 false 表示该路径不支持实时生成。
+- `events.ts` 的 ASSISTANT：interim 由事件字段决定（缺省 false），streaming 缺省 true（旧后端整段 + 打字机），显式 false 表示该路径不支持实时生成；
+- toggle 是**真切换**：运行中过程区默认展开（工具行必须看得见），点一次 = 收起；已结束默认收起，点一次 = 展开。我的用例读 `aria-expanded` 再决定是否点击，并把「运行中默认展开」也变成断言（提交 6c8a6d9 之后）。
 
 **只读核对结论（我做的，不是 B 的自述）**：`qio-up-b` 的 `TurnProcess.vue` / `TurnTimingPanel.vue` / `MessageStream.vue` / `stores/events.ts` / `stores/session.ts` 与上述口径一致，我的断言无需放宽。据此只做两处**测试侧**对齐（见提交 07def22）：
 1. 展开明细时优先打开 `[data-test="turn-timing"]` 这个 details（这样才真的触发 `fetchTurnTiming`），并新增断言「展开了耗时控件就必须真的请求过 trace」；

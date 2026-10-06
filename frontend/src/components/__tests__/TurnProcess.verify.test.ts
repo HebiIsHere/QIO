@@ -127,14 +127,23 @@ function occurrenceCount(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/** 历史体是「可展开」的：需要时点开开关，让历史内容真的渲染出来。 */
+/**
+ * 历史体是「可展开」的，但 toggle 是**真切换**（运行中默认展开，点一次 = 收起）。
+ * 所以这里先读 aria-expanded 再决定要不要点 —— 绝不把已经展开的历史点掉。
+ */
 async function openProcessHistory(wrapper: VueWrapper): Promise<void> {
-  if (wrapper.find('[data-test="turn-process-history"]').exists()) return;
   const toggle = wrapper.find('[data-test="turn-process-toggle"]');
-  if (toggle.exists()) {
+  if (!toggle.exists()) return;
+  if (toggle.attributes("aria-expanded") !== "true") {
     await toggle.trigger("click");
     await settle();
   }
+}
+
+/** 过程区开关当前是否展开（没有开关时视为没有可展开内容）。 */
+function processExpanded(wrapper: VueWrapper): boolean {
+  const toggle = wrapper.find('[data-test="turn-process-toggle"]');
+  return toggle.exists() && toggle.attributes("aria-expanded") === "true";
 }
 
 /** 历史体是否处于「收起」状态：缺失 / 不可见 / aria-hidden / 祖先 details 未 open。 */
@@ -167,6 +176,7 @@ describe("契约 §1.5：立即出现、安静、无重复", () => {
     const region = requireProcessRegion(wrapper);
     const text = region.text();
     expect(text, "过程区必须显示系统事实（运行中/正在做什么），不能空着").toMatch(/运行中|正在|读取/);
+    expect(processExpanded(wrapper), "运行中过程区默认展开：这一轮的工具行必须看得见").toBe(true);
     wrapper.unmount();
   });
 
@@ -276,7 +286,9 @@ describe("契约 §1.2 / §1.3：同阶段更新与自主转阶段", () => {
       }),
     );
     await settle();
+    expect(processExpanded(wrapper), "运行中过程区默认展开（历史里的历次说明看得见）").toBe(true);
     await openProcessHistory(wrapper);
+    expect(wrapper.find('[data-test="turn-process-history"]').exists()).toBe(true);
 
     const region = requireProcessRegion(wrapper);
     const text = region.text();
