@@ -272,7 +272,38 @@ npx vitest run src/components/__tests__/TurnProcess.verify.test.ts \
 → Test Files  5 passed (5) / Tests  30 passed (30)
 ```
 
-后端两条也在集成实现上复跑过（临时 detached worktree，用本 worktree 的 venv +
+**第二次集成复跑（HEAD `1aec65b` / `771c7b6`）**：修掉 3 处**测试侧**问题后，整套 D 验收
+在集成实现上是绿的（只剩 A 名下的 `user_stopped` 缺 reason 一条）：
+
+1. **vue-tsc 硬门槛（阻塞项）**：`ProcessDefaultVisibility.audit.verify.test.ts` 的
+   `FACTS_DONE` fixture 缺 plan §1.2 新增的 `reason` / `reasonCode` / `stoppedBy` /
+   `actions` / `errorText` → 集成分支上 `vue-tsc` exit=2。已按「旧记录口径」（一律 null / []）
+   补全，并用 `as TurnFacts` 断言，使同一份文件在「还没有这些新字段的旧 TurnFacts（本 worktree）」
+   与「已有这些字段的新 TurnFacts（集成分支）」两种树上都能过类型检查。
+   实测：本 worktree `npx vue-tsc --noEmit` → **EXIT=0**；集成分支（临时 worktree + 本文件的
+   修正版）→ **EXIT=0**。
+2. **`api.sendTurn` 旧形状的口径**：`SendAttachmentIds.audit.verify.test.ts` 不再断言
+   「不传第三参也要带空数组」。按 Lead 裁决改为两条**刻意分开**的用例：
+   真实发送路径 `session.send`（无待发附件）⇒ 请求体含 `attachment_ids: []`（绿，产品规则）；
+   旧调用形状 `api.sendTurn(msg, topic)` ⇒ **省略**字段，注释写明这是后端兜底路径的
+   **隔离依据**（后端兜底由 `test_missing_field_still_falls_back_for_old_clients` 覆盖），不是漏发。
+3. **提升断言的发布节奏口径**：`test_promotion_to_answer_happens_once_with_the_full_text`
+   原来要求「提升内容 == 最后一条 interim 快照」，与契约的**合并发布**（≥40ms 或 ≥24 字符
+   才发一次）冲突 —— 尾巴可能还在待发窗口里，提升的收尾快照会一起交付。
+   改为**更强**的五条：① 提升内容 == 累计全文；② 最后一条 interim 必须是它的前缀（单调，不回退）；
+   ③ 提升只有一条事件、`streaming=false`、同一 `delta_id`；④ 答案区只有一个 delta_id
+   （不重复交付）；⑤ 提升之后**不得**再有同 delta_id 的 `interim=true`（禁止反向移动）。
+   文件头也写明了「为什么不能要求逐字相等」。
+
+```
+# 集成分支（临时 detached worktree，跑完即删）
+frontend: npx vue-tsc --noEmit → EXIT=0
+frontend: 9 个 D 验收文件 → Test Files 9 passed (9) / Tests 45 passed (45)
+backend : 5 个 D 验收文件 → 26 条里 25 绿，唯一红 = user_stopped 缺 reason（A 名下，本文件不放宽）
+          含 [诊断] 上传最大停顿 14 ms / 探针 34 次；重定位 16 ms / 探针 79 次
+```
+
+后端更早一轮也在集成实现上复跑过（临时 detached worktree，用本 worktree 的 venv +
 `PYTHONPATH` 指向集成源码；跑完即删）：
 
 ```

@@ -10,6 +10,10 @@
    （同一条消息，不重打、不重复）；
 3. 调用结束时**有**工具调用 → 该段留在过程区；**任何情况下都不允许
    「正式回答 → 过程区」的移动**，也不允许已显示文字消失；
+   发布本身是**按 ≥40ms 或 ≥24 字符合并**的（契约的节奏要求，不逐字符发），所以
+   「最后一条已发布的 interim」**本来就可能比累计全文短** —— 提升的收尾快照会把还在
+   待发窗口里的尾巴一起交付。**这不是改写、不是重复、不是丢字**，因此断言只能是
+   「最后一条 interim 是提升内容的前缀 + 提升内容 == 累计全文」，不能要求逐字相等；
 4. 工具阶段收尾的调用**没有产出任何正文**时，最多补**一次** tools=[] 的调用专门产出正式回答，
    它的正文从**第一个增量起**就是 interim=false；
 5. 判据里不得出现：经过多少时间 / 文案像不像答案 / 暂未收到工具增量。
@@ -322,15 +326,36 @@ async def test_promotion_to_answer_happens_once_with_the_full_text(provider):
         [(e.get("content"), e.get("streaming"), e.get("seq")) for e in answers],
     )
     promoted = answers[0]
+    # (1) 提升的必须是**累计全文**（三段拼接），不是某个残缺前缀
     assert str(promoted.get("content")) == full, ("提升的必须是累计全文", promoted.get("content"))
-    assert promoted.get("streaming") is False, "提升事件是收尾事实（streaming=false），不是新打字"
-    assert str(promoted.get("content")) == str(interim_events[-1].get("content")), (
-        "提升必须原样（同一份文字），不得改写或重复追加",
+    # (2) 最后一条已发布的 interim 必须是它的**前缀**：单调累积，绝不回退/改写。
+    #     不能要求逐字相等 —— 合并发布（≥40ms / ≥24 字符）意味着尾巴可能还在待发窗口里。
+    assert str(promoted.get("content")).startswith(str(interim_events[-1].get("content"))), (
+        "提升只能在已显示文字之后追加（同一份文字：不重写、不回退）",
         (interim_events[-1].get("content"), promoted.get("content")),
     )
+    # (3) 收尾事实：streaming=false、同一 delta_id
+    assert promoted.get("streaming") is False, "提升事件是收尾事实（streaming=false），不是新打字"
     assert str(promoted.get("delta_id")) == str(interim_events[-1].get("delta_id")), (
         "提升必须用同一个 delta_id（同一条消息）",
         (interim_events[-1].get("delta_id"), promoted.get("delta_id")),
+    )
+    # (4) 这份文字在答案区**全局只有一条**（不得另起一条重复交付）
+    assert len({str(e.get("delta_id") or "") for e in answers}) == 1, (
+        "同一份回答只能有一条答案事件（不得另起 delta_id 重复交付）",
+        [(e.get("delta_id"), e.get("content")) for e in answers],
+    )
+    # (5) 提升之后**不得**再有同 delta_id 的 interim=true 事件（§1.1 禁止反向移动）
+    promotion_index = next(i for i, event in enumerate(events) if event is promoted)
+    later_interim = [
+        event
+        for event in events[promotion_index + 1 :]
+        if str(event.get("delta_id") or "") == str(promoted.get("delta_id"))
+        and event.get("interim") is True
+    ]
+    assert not later_interim, (
+        "提升之后不得再有同 delta_id 的 interim=true 事件（正式回答 → 过程区被永久废止）",
+        [e.get("content") for e in later_interim],
     )
     assert result.final_content == full, result.final_content
 

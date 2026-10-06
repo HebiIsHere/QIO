@@ -4,13 +4,23 @@
  * 契约来源：docs/plans/2026-10-06-audit-seven-fixes.md §0 第 3 条 + §1.4。
  * 只依据产品规则：
  *
- *   请求体里 attachment_ids 的**存在性**即语义（出现含空列表 = 显式声明没有附件）；
- *   前端**一律发送该字段**（即使为空），否则后端只能走「缺字段」的旧客户端兜底，
- *   把话题下未绑定的待发附件误绑到一条纯文字消息上。
+ *   请求体里 attachment_ids 的**存在性**即语义：**出现**（含空列表）= 显式声明没有附件；
+ *   **缺字段** = 旧客户端，后端才走兜底（把话题下未绑定的待发附件绑到这一轮）。
  *
- * 基线（e428bb9）现状：services/api.ts:434 是
+ * 于是前端有两条**刻意分开**的路径（Lead 2026-10-06 裁决）：
+ *
+ *   1. **真实发送路径** `session.send(text)`（没有待发附件）：一律发送该字段 →
+ *      请求体必须含 `attachment_ids: []`，后端因此**不会**兜底误绑；
+ *   2. **旧调用形状** `api.sendTurn(msg, topic)`（不传第三参 = 省略字段）：这是保留给
+ *      旧客户端的兼容形状，「不传第三参 ⇒ 省略字段」正是后端兜底路径的**隔离依据**
+ *      （后端那条兜底由 backend/tests/test_audit_attachment_binding_verify.py 的
+ *      绿守卫 `test_missing_field_still_falls_back_for_old_clients` 覆盖）。
+ *      第 2 条**不是**漏发，也不是缺陷 —— 不要把它改回「总是带上空数组」。
+ *
+ * 基线（e428bb9）现状：services/api.ts 用
  *   ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {})
- * 空列表被整个丢掉 —— 因此本文件在修复前应当是**红的**。
+ * 取值，且真实发送路径 session.send 在没有附件时**根本不传第三参**（第 4254 行附近的
+ * 「没有附件时保持既有调用形状」）—— 因此第 1 条用例在修复前应当是**红的**。
  *
  * 验证方式：不 mock api.ts，只 mock 后端地址解析 + 记录真实 fetch 的请求体。
  *
@@ -65,29 +75,34 @@ beforeEach(() => {
 });
 
 describe("契约 §1.4：attachment_ids 一律发送", () => {
-  it("api.sendTurn 不带附件时，请求体里仍然有 attachment_ids（空数组）", async () => {
-    setup();
-    const { api } = await import("../../services/api");
-    await api.sendTurn("只发纯文字", null);
-
-    const bodies = turnBodies();
-    expect(bodies.length, "必须真的发出了一次 /api/turns").toBe(1);
-    expect(
-      Object.prototype.hasOwnProperty.call(bodies[0], "attachment_ids"),
-      "空列表也必须出现在请求体里：后端要靠「字段存在」区分「显式没有附件」与「旧客户端没给」",
-    ).toBe(true);
-    expect(bodies[0].attachment_ids).toEqual([]);
-  });
-
-  it("会话发送纯文字（没有待发附件）时，线上请求也带 attachment_ids: []", async () => {
+  it("真实发送路径：纯文字消息（没有待发附件）线上请求带 attachment_ids: []", async () => {
     setup();
     const { useSessionStore } = await import("../session");
     const session = useSessionStore();
     await session.send("只发纯文字");
 
     const bodies = turnBodies();
-    expect(bodies.length).toBe(1);
-    expect(bodies[0].attachment_ids, "发送路径必须把这个字段传到底").toEqual([]);
+    expect(bodies.length, "必须真的发出了一次 /api/turns").toBe(1);
+    expect(
+      Object.prototype.hasOwnProperty.call(bodies[0], "attachment_ids"),
+      "真实发送路径必须发送该字段：后端靠「字段存在」区分「显式没有附件」与「旧客户端没给」",
+    ).toBe(true);
+    expect(bodies[0].attachment_ids, "没有附件 → 空数组，后端因此不会兜底误绑").toEqual([]);
+  });
+
+  it("旧调用形状（api.sendTurn 不传第三参）：**省略**字段 —— 这是后端兜底的隔离依据，不是漏发", async () => {
+    setup();
+    const { api } = await import("../../services/api");
+    await api.sendTurn("旧客户端的纯文字消息", null);
+
+    const bodies = turnBodies();
+    expect(bodies.length, "必须真的发出了一次 /api/turns").toBe(1);
+    expect(
+      Object.prototype.hasOwnProperty.call(bodies[0], "attachment_ids"),
+      "旧形状（不传第三参）必须省略该字段：这是「旧客户端走兜底」的隔离依据，"
+        + "刻意与真实发送路径分开；把它改成「总是带空数组」会让旧客户端兜底路径消失",
+    ).toBe(false);
+    expect(bodies[0].message, "消息本身照常发送").toBe("旧客户端的纯文字消息");
   });
 
   it("用户看到的附件 == 发送的附件：纯文字消息的本地消息里没有附件", async () => {
