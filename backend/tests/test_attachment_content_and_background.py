@@ -440,6 +440,37 @@ async def test_delete_during_upload_never_commits_ready(async_app, tmp_path: Pat
         assert leftovers == [], f"取消之后留下了副本文件：{leftovers}"
 
 
+
+
+def test_copy_and_upload_yield_to_the_event_loop(svc: AttachmentService, tmp_path: Path, monkeypatch):
+    """防回归（2026-10-07 CI 真缺陷）：写盘 / 哈希的分块循环必须定期主动让出。
+
+    CI 共享 CPU 上，工作线程连续做 memcpy/哈希会反复抢到 GIL，把事件循环饿住
+    228-459ms（停止 / SSE / 其它请求都卡住）。让出点用计数器锁住：
+    以后谁把让出删掉，这条用例就会红。
+    """
+    yields: list[int] = []
+    monkeypatch.setattr(attachments_mod, "_yield_to_event_loop", lambda: yields.append(1))
+    per_yield = attachments_mod.YIELD_EVERY_BYTES
+    size = per_yield * 3 + per_yield // 2  # 3.5 个让出周期
+
+    # 复制路径：3.5 个周期必须让出 >= 3 次
+    source = tmp_path / "让出.txt"
+    source.write_bytes(b"y" * size)
+    att = svc.prepare(str(source))
+    outcome = svc.copy_to_disk(att)
+    assert outcome.state == "ready", outcome
+    assert len(yields) >= 3, f"复制 {size} 字节只让出了 {len(yields)} 次"
+
+    # 上传路径：调用方一次给一整包（ASGI 客户端可能就是这么大），也要切块并让出
+    yields.clear()
+    upload = svc.begin_upload(name="让出-上传.bin")
+    uploaded = svc.write_upload_stream(upload, iter([b"z" * size]))
+    assert uploaded.state == "ready", uploaded
+    assert len(yields) >= 3, (
+        f"一整包 {size} 字节的上传只让出了 {len(yields)} 次："
+        "单块再切与让出都不能少"
+    )
 def test_cancel_between_copy_and_apply_is_never_ready(svc: AttachmentService, tmp_path: Path):
     """复制线程与落库线程是两段：「复制成功、取消随后到达」也不得落成 ready。"""
     source = tmp_path / "取消.txt"
