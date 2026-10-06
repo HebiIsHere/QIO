@@ -341,6 +341,8 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   const maxTopClient = viewRect.bottom - 30;
   const toolbarEl = shellElement.querySelector('[data-im="card-toolbar"]');
   const toolbarH = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().height)) : TOOLBAR_H;
+  // 工具栏宽度也要量：只夹左边缘的话，窄窗口里右侧按钮会被视口裁掉（复核实测 800×600 下超出 74px）
+  const toolbarW = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().width)) : 420;
   const aboveTopClient = cardTopClient - toolbarH - TOOLBAR_GAP;
   const belowTopClient = Math.min(maxTopClient, cardBottomClient + TOOLBAR_GAP);
   const touchesCardTop = (value: number) => value + toolbarH > cardTopClient - 2 && value < cardTopClient;
@@ -354,7 +356,7 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
     screen.x < viewRect.right + 40 &&
     screen.y + rect.h * view.value.scale > viewRect.top - 40 &&
     screen.y < viewRect.bottom + 40;
-  const leftClient = Math.max(viewRect.left + 4, Math.min(viewRect.right - 40, screen.x));
+  const leftClient = Math.max(viewRect.left + 4, Math.min(viewRect.right - toolbarW - 4, screen.x));
   overlay.value = {
     // 行内 left/top 是相对 offsetParent（.board-surface）的：最后一步统一减去它的位置
     left: leftClient - surfaceNow.left,

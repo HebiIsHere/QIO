@@ -394,8 +394,11 @@ function cancelEdit() {
   z-index: 60;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--sp-1);
-  max-width: 420px;
+  /* 窄窗口里工具栏不能比视口还宽：独立复核实测 800×600 下 420px 的工具栏超出视口 74px，
+     最右的「删除」被屏幕裁掉一部分。这里允许它换行收窄。 */
+  max-width: min(420px, calc(100vw - var(--sp-4)));
   padding: var(--sp-1) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
