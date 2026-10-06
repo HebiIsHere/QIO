@@ -14,7 +14,7 @@ import sys
 import time
 from ctypes import wintypes
 
-wt = r"C:\Users\zxy\Documents\Front agent\qio-p3-c"
+wt = sys.argv[1] if len(sys.argv) > 1 else r"D:\qio-dev\qio-p3-c"
 VENV_PY = wt + r"\backend\.venv\Scripts\python.exe"
 
 adv = ctypes.WinDLL("advapi32")

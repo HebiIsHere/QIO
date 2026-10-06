@@ -5,14 +5,20 @@
 # 这里把变量名固定在脚本里，调用者只需要提供口令即可。
 #
 # 用法（口令推荐交互输入，不落进命令历史）：
-#   & "C:\Users\zxy\Documents\Front agent\qio\scripts\run_build.ps1"
+#   & "D:\qio-dev\qio-wt-fixes\scripts\run_build.ps1"
 #   或一次性传入： -Password "你的口令"
 param(
   [string]$Password = "",
-  [string]$KeyPath = "C:\Users\zxy\Documents\Front agent\dist\qio-updater.key"
+  [string]$KeyPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# 私钥默认位置：脚本在 <检出>\scripts\ 下，发布产物在 <检出的上一级>\dist\。
+# 按脚本位置推导，检出换盘/换目录都不用改这里。
+if (-not $KeyPath) {
+  $KeyPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "dist\qio-updater.key"
+}
 
 if (-not (Test-Path $KeyPath)) {
   throw "找不到更新私钥：$KeyPath"

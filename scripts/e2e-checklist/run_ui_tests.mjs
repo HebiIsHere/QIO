@@ -1,6 +1,7 @@
 // 自主 e2e：前端 UI 用例（Playwright + 系统 Edge），输出 results_ui.json
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const PW = "C:\\Users\\zxy\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node_modules\\playwright";
@@ -117,4 +118,4 @@ try {
 } finally {
   await browser.close();
 }
-writeFileSync("C:/Users/zxy/Documents/Front agent/qio/scripts/e2e-checklist/results_ui.json", JSON.stringify(RESULTS, null, 2), "utf8");
+writeFileSync(fileURLToPath(new URL("./results_ui.json", import.meta.url)), JSON.stringify(RESULTS, null, 2), "utf8");

@@ -112,16 +112,20 @@ https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json
 发一版的完整顺序：
 
 ```powershell
-# 1) 改版本号（6 处：tauri.conf.json / Cargo.toml+lock / package.json+lock /
-#    pyproject.toml / agent/__init__.py / api/server.py 的 FastAPI title），
+# 1) 改版本号（7 处：tauri.conf.json / Cargo.toml / Cargo.lock 里 name="qio" 那一条 /
+#    package.json / pyproject.toml / agent/__init__.py / api/server.py 的 FastAPI title），
 #    并写 docs/releases/vX.Y.Z.md
+#    注意：Cargo.lock 只能按包名定位 —— 批量替换曾把 winapi-util 的版本一起改错，cargo 直接解析失败。
+#    （package-lock.json 的 version 不在这 7 处里，历史上一直没跟着变。）
 
 # 2) 让签名私钥与口令进环境（只在你本机；绝不写进仓库）
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH     = "C:\Users\zxy\Documents\Front agent\dist\qio-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH     = "D:\qio-dev\dist\qio-updater.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<你的口令>"
 
 # 3) 构建（取模型 → 重建 sidecar → tauri build → 签名 + latest.json + 落 dist/）
-powershell -File scripts\build_installer.ps1
+#    检出不在 C 盘时要显式指定 C 盘上的临时目录（脚本头写明：临时目录放在 D 盘会让 esbuild
+#    删不掉自己的临时文件，报一堆与代码无关的假故障）：
+powershell -File scripts\build_installer.ps1 -TempDir "$env:LOCALAPPDATA\Temp\qio-build"
 
 # 4) 发布到 GitHub Releases（上传 exe / exe.sig / latest.json 三个资产）
 powershell -File scripts\publish_release.ps1 -Version X.Y.Z

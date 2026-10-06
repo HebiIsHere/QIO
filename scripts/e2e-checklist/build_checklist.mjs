@@ -1,5 +1,6 @@
 // 端到端测试清单生成器
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
 import { CASES } from "./cases.js";
 
@@ -137,7 +138,8 @@ guide.getRange("A1:A22").format.columnWidth = 26;
 guide.getRange("B1:D22").format.columnWidth = 100;
 
 // ---- 导出 ----
-const outDir = "C:/Users/zxy/Documents/Front agent/qio/docs";
+// 导出到 <检出>\docs\：按脚本位置推导，检出换盘不用改。
+const outDir = fileURLToPath(new URL("../../docs", import.meta.url));
 await fs.mkdir(outDir, { recursive: true });
 const output = await SpreadsheetFile.exportXlsx(wb);
 await output.save(`${outDir}/e2e-test-checklist.xlsx`);

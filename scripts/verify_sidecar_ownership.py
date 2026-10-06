@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / ".repro" / "helper-e2e"
-SIDECAR = Path(r"C:\Users\zxy\Documents\Front agent\qio-wt-fixes\frontend\src-tauri\binaries\qio-backend-x86_64-pc-windows-msvc.exe")
+SIDECAR = ROOT / "frontend" / "src-tauri" / "binaries" / "qio-backend-x86_64-pc-windows-msvc.exe"
 HELPER = ROOT / "frontend" / "src-tauri" / "target" / "release" / "qio-uninstall-helper.exe"
 
 def log(m): print(m, flush=True)
