@@ -47,6 +47,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def short_turn_id(turn_id: str | None) -> str:
+    """turn_id 的 8 位短标识：阶段 id / 流式 delta id 的前缀（plan §1.1、§2.1）。
+
+    ``turn_ab12cd34ef56`` → ``ab12cd34``。拿不到 turn_id 时返回 ``local`` ——
+    标识仍然稳定可达，但不伪造一个看起来像 turn 的假 id。
+    """
+    raw = str(turn_id or "").strip()
+    if not raw:
+        return "local"
+    core = raw[5:] if raw.startswith("turn_") else raw
+    return core[:8] or "local"
+
+
 TurnRunner = Callable[["TurnContext"], Awaitable[None]]
 EventEmitter = Callable[[str, dict], Awaitable[None]]
 
@@ -72,6 +85,9 @@ class TurnContext:
     # 用 perf_counter 而不是墙钟：它测的是「等了多久」，不受系统时间调整影响。
     accepted_perf: float = field(default_factory=time.perf_counter)
     started_perf: float | None = None
+    # 真正开始执行的墙钟时刻（TURN_END 的 started_at；台账里也有同一时刻，
+    # 台账拿不到时用它兜底，不让前端拿到 null）。
+    started_at: str | None = None
     initial_topic: str | None = None
     current_topic: str | None = None
     # accepted | queued | running | completed | failed | cancelled | unavailable
@@ -307,6 +323,7 @@ class TurnManager:
             self._active = ctx
             ctx.status = "running"
             ctx.started_perf = time.perf_counter()
+            ctx.started_at = _now()
             self._journal_call("running", ctx.turn_id)
             self._bump_revision()
             self._schedule_emit()
@@ -395,11 +412,54 @@ class TurnManager:
             "final_content": ctx.final_content,
             "error": ctx.error,
         }
+        # 耗时事实（plan §3）：duration_ms 权威来自 trace 台账；台账还没收口时
+        # 退回进程内单调钟测得的执行时长 —— 缺失 ≠ 0，也不给一个假的 0。
+        payload.update(self._turn_timing(ctx))
         if ctx.final_verification:
             payload["verification"] = ctx.final_verification
         if ctx.usage:
             payload.update(ctx.usage)
         await self._emit_event(TURN_END, payload)
+
+    # -- 耗时事实（plan §3）-------------------------------------------------
+
+    @staticmethod
+    def _trace_ledger(ctx: TurnContext) -> dict:
+        """trace 台账里的这一行（duck-typed，core/ 不认识 trace 的具体实现）。
+
+        拿不到就返回空 dict —— 台账是旁路，不能挡住 TURN_END。
+        """
+        tracer = getattr(ctx, "trace", None)
+        store = getattr(tracer, "store", None)
+        getter = getattr(store, "get", None)
+        if getter is None:
+            return {}
+        try:
+            row = getter(ctx.turn_id)
+        except Exception:  # noqa: BLE001 - 台账异常不得影响 turn 收尾
+            return {}
+        return dict(row) if isinstance(row, dict) else {}
+
+    def _turn_timing(self, ctx: TurnContext) -> dict[str, Any]:
+        """TURN_END 的耗时字段：duration_ms / queue_ms / started_at / ended_at。
+
+        * queue_ms = 受理到真正开跑（用户等的时间，不是执行时间）；
+        * duration_ms 优先取台账（trace/store.py 已有 duration_ms，与「时间去哪了」
+          同一口径）；台账没写（例如 runner 抛异常前就结束了）时退回 perf_counter
+          测得的执行窗口；
+        * started_at / ended_at 用台账的墙钟；台账没有就先用开跑时刻 / 现在。
+        """
+        facts: dict[str, Any] = {}
+        started_perf = ctx.started_perf
+        if started_perf is not None:
+            facts["duration_ms"] = max(0, int((time.perf_counter() - started_perf) * 1000))
+            facts["queue_ms"] = max(0, int((started_perf - ctx.accepted_perf) * 1000))
+        ledger = self._trace_ledger(ctx)
+        if ledger.get("duration_ms") is not None:
+            facts["duration_ms"] = max(0, int(ledger["duration_ms"]))
+        facts["started_at"] = ledger.get("started_at") or ctx.started_at or ctx.created_at
+        facts["ended_at"] = ledger.get("ended_at") or _now()
+        return facts
 
     async def _emit_event(self, name: str, data: dict) -> None:
         if self._emitter is None:

@@ -21,17 +21,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from agent.adapters.base import AdapterMode, BaseAdapter, ChatMessage, Completion, ToolSpec
+from agent.adapters.errors import UnsupportedCapability
+from agent.adapters.base import (
+    STREAM_DONE,
+    STREAM_TEXT,
+    STREAM_TOOL_CALL,
+    AdapterMode,
+    BaseAdapter,
+    ChatMessage,
+    Completion,
+    StreamDelta,
+    ToolSpec,
+)
 from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
 from agent.core.budget import IterationBudget, default_iterations
 from agent.core.guard import GuardVerdict, RunawayGuard
 from agent.core.narrative import parse_narrative
+from agent.core.turn import short_turn_id
 from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.core.turn_facts import TurnFacts
@@ -50,6 +63,202 @@ def _terminal_tool_status(data: dict) -> str:
     if data.get("cancelled"):
         return CANCELLED
     return SUCCESS if data.get("ok") else FAILED
+
+
+# 分类守卫与发布节奏（plan §2.1）：
+#   GUARD_MS    —— 守卫窗口：收到首段正文后多久仍无工具调用增量就判为 answer；
+#   PUBLISH_MS  —— 已定角色的增量最多攒这么久就发一次；
+#   PUBLISH_CHARS —— 或者攒够这么多字符就发（两者取先到者）。
+GUARD_MS = 300
+PUBLISH_MS = 40
+PUBLISH_CHARS = 24
+
+
+class _StreamEnd:
+    """流结束哨兵（消费侧据此收口）。"""
+
+    __slots__ = ()
+
+
+class _StreamError:
+    """adapter 在流中抛出的异常（原样交给消费侧，不在这里吞掉）。"""
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
+class _UnsupportedStream:
+    """adapter 声明支持流式、实际抛了 NotImplementedError（走整段降级）。"""
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
+_STREAM_END = _StreamEnd()
+
+
+class _AssistantStream:
+    """一条模型调用（一个 delta_id）对应的流式发布器。
+
+    分类守卫（plan §2.1）：正文增量先进缓冲，**分类确定才出缓冲**：
+
+    * 出现任何工具调用增量 → 这条响应是工具轮：整段（含已缓冲正文）判为 interim，
+      之后所有增量都进过程区；
+    * 守卫窗口到期（GUARD_MS 且已收到 ≥1 个正文增量）仍无工具调用增量 → 判为
+      answer：缓冲文字**一次性**进入正式回答区，之后增量直接进正式回答区；
+    * 流终止时仍未分类 → 按「有工具调用 / 无工具调用」定论（无工具调用即 answer）。
+
+    唯一允许的角色改判：守卫放行之后才出现工具调用增量 —— 该 delta_id 的文字从
+    答案区**移动**到过程区：同一 delta_id、同一份文字，不重复、不撤回。
+
+    发布节奏：定角色之后按 ≥PUBLISH_MS 或 ≥PUBLISH_CHARS 合并一次，不逐字符发。
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[dict], Any],
+        *,
+        delta_id: str,
+        guard_ms: int = GUARD_MS,
+        publish_ms: int = PUBLISH_MS,
+        publish_chars: int = PUBLISH_CHARS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._emit = emit
+        self.delta_id = delta_id
+        self._guard_ms = guard_ms
+        self._publish_ms = publish_ms
+        self._publish_chars = publish_chars
+        self._clock = clock
+        # None（未分类）/ "answer" / "interim"
+        self.role: str | None = None
+        self._buffer: list[str] = []
+        self._first_text_at: float | None = None
+        self._pending = ""
+        self._pending_since: float | None = None
+        self._confirmed = ""
+        self._seq = 0
+        # 是否已经向前端发过任何 ASSISTANT 事件（决定是否需要一次性降级）。
+        self.published = False
+
+    # -- 输入 -------------------------------------------------------------
+
+    async def note_text(self, text: str) -> None:
+        if not text:
+            return
+        now = self._clock()
+        if self._first_text_at is None:
+            self._first_text_at = now
+        if self.role is None:
+            self._buffer.append(text)
+            return
+        self._pending += text
+        if self._pending_since is None:
+            self._pending_since = now
+        if len(self._pending) >= self._publish_chars:
+            await self._flush(force=True)
+
+    async def note_tool_call(self) -> None:
+        if self.role == "answer":
+            # 唯一允许的改判：同一 delta_id 的文字从答案区移到过程区。
+            self.role = "interim"
+            self._pending = self._confirmed + self._pending
+            self._confirmed = ""
+            await self._flush(force=True)
+            return
+        if self.role is None:
+            await self._classify("interim")
+
+    # -- 时间 -------------------------------------------------------------
+
+    def next_deadline(self) -> float | None:
+        """下一个必须处理的时间点；None = 可以一直等下一段增量。"""
+        if self.role is None:
+            if self._buffer and self._first_text_at is not None:
+                return self._first_text_at + self._guard_ms / 1000.0
+            return None
+        if self._pending and self._pending_since is not None:
+            return self._pending_since + self._publish_ms / 1000.0
+        return None
+
+    async def on_deadline(self) -> None:
+        """到点：守卫窗口到期判 answer，或者把攒下的文字按节奏发出去。"""
+        if self.role is None:
+            if self._buffer:
+                await self._classify("answer")
+            return
+        await self._flush(force=False)
+
+    # -- 收尾 -------------------------------------------------------------
+
+    async def finish(self, completion: Completion | None) -> None:
+        """流结束 / 中断：定论，并用**一条** streaming=false 的收尾快照交出全部文字。
+
+        取消（completion=None）时同样收尾：已确认文本保留，只是不再增长。
+        收尾快照同时起两个作用：把还没到发布节奏的文字补齐、并让前端知道流已经停了
+        （同一 delta_id 的 seq 只前进、不回退）。没有任何正文时什么都不发。
+        """
+        if self.role is None:
+            has_tools = bool(completion is not None and completion.tool_calls)
+            self.role = "interim" if has_tools else "answer"
+            text = "".join(self._buffer)
+            self._buffer.clear()
+            if not text and completion is not None and not has_tools:
+                # 一段正文增量都没收到、但整段结果里有正文（供应商一次性给出）：
+                # 直接给出整段，不假装是一帧一帧来的。
+                text = completion.message.content or ""
+            self._pending = text + self._pending
+        if not self._pending and not self.published:
+            return
+        self._confirmed += self._pending
+        self._pending = ""
+        self._pending_since = None
+        self._seq += 1
+        self.published = True
+        await self._emit(self._payload(streaming=False))
+
+    # -- 内部 -------------------------------------------------------------
+
+    async def _classify(self, role: str) -> None:
+        self.role = role
+        text = "".join(self._buffer)
+        self._buffer.clear()
+        if text:
+            self._pending = text + self._pending
+            if self._pending_since is None:
+                self._pending_since = self._clock()
+        # 出缓冲是一次性的：整段已确认文字一条事件发完。
+        await self._flush(force=True)
+
+    async def _flush(self, *, force: bool) -> None:
+        if not self._pending:
+            return
+        if not force:
+            elapsed = (
+                (self._clock() - self._pending_since) if self._pending_since is not None else 0.0
+            )
+            if len(self._pending) < self._publish_chars and elapsed * 1000 < self._publish_ms:
+                return
+        self._confirmed += self._pending
+        self._pending = ""
+        self._pending_since = None
+        self._seq += 1
+        self.published = True
+        await self._emit(self._payload(streaming=True))
+
+    def _payload(self, *, streaming: bool) -> dict:
+        """累计快照（与既有 ASSISTANT 语义一致）：content = 该 delta_id 全部已确认文字。"""
+        return {
+            "content": self._confirmed,
+            "interim": self.role == "interim",
+            "streaming": streaming,
+            "delta_id": self.delta_id,
+            "seq": self._seq,
+        }
 
 
 class LoopPhase(str, Enum):
@@ -101,6 +310,7 @@ class AgentLoop:
         tool_state: ToolExecutionState | None = None,
         narrative_sink: Callable[..., Any] | None = None,
         narrative_settler: Callable[..., Any] | None = None,
+        stage_id_provider: Callable[[], str | None] | None = None,
         usage_sink: Callable[[int, int], None] | None = None,
     ) -> None:
         self.adapter = adapter
@@ -162,6 +372,12 @@ class AgentLoop:
         # 循环不注入，因此不会往主对话里写过程说明。
         self.narrative_sink = narrative_sink
         self.narrative_settler = narrative_settler
+        # 当前阶段 id（plan §1.3）：TOOL_START / TOOL_END 带上它；工具归属只看 stage_id，
+        # 不靠消息相邻位置。没有阶段（子任务 / 无叙事的主轮）时如实为 None。
+        self.stage_id_provider = stage_id_provider
+        # 本次模型调用的稳定流式标识与「是否已经真流式发过正文」（见 _plan / _run）。
+        self._call_delta_id: str | None = None
+        self._last_stream_published = False
         # 用量归因：每次模型调用把 (进, 出) 报给调用方（由它记到对应凭据上）。
         # 放在每次调用之后而不是整轮结束 —— 中途失败/取消的那部分也已经计费。
         self.usage_sink = usage_sink
@@ -227,6 +443,9 @@ class AgentLoop:
                 "call_id": call_id,
                 "arguments": data.get("arguments", {}),
                 "presentation": presentation,
+                # 工具归属只看阶段标识（plan §1.1）；没有阶段时如实为 null，
+                # 前端归入「整轮」，而不是就近猜一个阶段。
+                "stage_id": self._current_stage_id(),
             },
         )
 
@@ -283,6 +502,7 @@ class AgentLoop:
                 "presentation": data.get("presentation"),
                 # 工具调用历史的记录 id：实时卡片靠它取全文（与历史卡片同一条路径）
                 "record_id": record_id,
+                "stage_id": self._current_stage_id(),
             },
         )
 
@@ -719,24 +939,11 @@ class AgentLoop:
                 phase = LoopPhase.STOPPED
                 break
 
-            # native 模式：模型在工具调用前先说话时，把内容作为 interim 事件推给前端
-            # 但这一批工具已经带了叙事（`_qio`）时不再推 interim：同一阶段只保留一种
-            # 过程表达，否则用户会看到「◈ 过程」气泡和叙事行各说一遍（2026-09-22 合并规则）。
-            batch_has_narrative = any(
-                parse_narrative(getattr(c, "narrative", None)) is not None
-                for c in (completion.tool_calls or [])
-            )
-            if (
-                self.adapter.mode == AdapterMode.NATIVE
-                and completion.tool_calls
-                and completion.message.content
-                and completion.message.content.strip()
-                and not batch_has_narrative
-            ):
-                await self._emit(
-                    EventType.ASSISTANT,
-                    {"content": completion.message.content, "interim": True},
-                )
+            # 真流式路径已经在收到增量时边收边发（见 _AssistantStream）；这里只处理
+            # 「这一次调用一个正文增量都没发过」的情况（text 兼容档 / 未实现的降级），
+            # 一次性给出 {streaming: false} —— 不假装流式（plan §2.1 第 8 条）。
+            if not self._last_stream_published:
+                await self._emit_one_shot_assistant(completion)
 
             if not completion.tool_calls:
                 phase = LoopPhase.DONE
@@ -843,6 +1050,51 @@ class AgentLoop:
             logger.warning("tool routing failed; falling back to full set", exc_info=True)
             return tools
 
+    # -- 流式（plan §2.1）--------------------------------------------------
+
+    def _current_stage_id(self) -> str | None:
+        """当前阶段 id（服务层注入）；拿不到就 None，绝不猜一个。"""
+        provider = self.stage_id_provider
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except Exception:  # noqa: BLE001 - 阶段标识失败不能影响工具执行
+            return None
+
+    async def _emit_assistant(self, payload: dict) -> None:
+        await self._emit(EventType.ASSISTANT, payload)
+
+    async def _emit_one_shot_assistant(self, completion: Completion) -> None:
+        """一次性正文事件（plan §2.1 第 8 条）：不支持流式的路径**不假装流式**。
+
+        * 没有工具调用 → 这就是正式回答，interim=false、streaming=false；
+        * 有工具调用（native 档）→ 与既有规则一致，interim=true；这一批工具带了
+          `_qio` 叙事时不再推 interim（同一阶段只保留一种过程表达）；
+        * text 兼容档的 content 是 JSON 协议块，任何情况下都不当作正文展示。
+        """
+        content = completion.message.content
+        if not content or not content.strip():
+            return
+        calls = completion.tool_calls or []
+        if calls and self.adapter.mode != AdapterMode.NATIVE:
+            return
+        if calls:
+            batch_has_narrative = any(
+                parse_narrative(getattr(c, "narrative", None)) is not None for c in calls
+            )
+            if batch_has_narrative:
+                return
+        await self._emit_assistant(
+            {
+                "content": content,
+                "interim": bool(calls),
+                "streaming": False,
+                "delta_id": self._call_delta_id or "",
+                "seq": 1,
+            }
+        )
+
     async def _plan(self, messages: list[ChatMessage]) -> Completion | None:
         # 工具路由（含 query 嵌入）以前在模型计时**之前**发生：它既不算模型耗时，
         # 也没有任何分区 —— 慢的路由曾经是完全不可见的等待。
@@ -851,10 +1103,13 @@ class AgentLoop:
         import time as _time
 
         self._model_seq += 1
+        # 一次模型调用 = 一条流式消息：稳定标识 dl_<turn8>_<call_seq>（plan §2.1）。
+        self._call_delta_id = f"dl_{short_turn_id(self.turn_id)}_{self._model_seq}"
+        self._last_stream_published = False
         _t0 = _time.perf_counter()
         try:
             with self._phase("model_wait", f"call#{self._model_seq}"):
-                completion = await self._await_completion(messages, tools)
+                completion = await self._completion_step(messages, tools)
             if completion is None:
                 # 被用户取消：这次调用没有结果，也不再记一条「假成功」的 trace
                 return None
@@ -917,6 +1172,129 @@ class AgentLoop:
             pass
         self._request_aborted = True
         return None
+
+    async def _completion_step(
+        self, messages: list[ChatMessage], tools: list[ToolSpec]
+    ) -> Completion | None:
+        """一次模型调用：能真流式就真流式，否则整段降级（plan §2.2）。
+
+        降级发生在「声明支持流式、实际用不了」的两种证据上：adapter 抛
+        NotImplementedError（没实现），或抛 UnsupportedCapability（端点不接受
+        stream / 客户端不返回异步流）。前提是**还没有任何正文被发出去** ——
+        否则整段重来会重复展示，只能如实失败。降级后由 _run 发一条
+        {streaming:false}，前端如实提示「该模型路径不支持实时生成」。
+        """
+        if not getattr(self.adapter, "supports_stream", False):
+            return await self._await_completion(messages, tools)
+        try:
+            return await self._await_stream(messages, tools)
+        except (NotImplementedError, UnsupportedCapability) as exc:
+            if self._last_stream_published:
+                # 已经透出正文就不能整段重来：那会重复展示同一段文字。
+                raise RuntimeError("模型路径不支持实时生成，但已经显示了部分正文") from exc
+            # 声明支持流式、实际用不了（未实现 / 端点不接受 stream）：整段降级，
+            # 由 _run 发一条 {streaming:false}，**不假装流式**。
+            self._warn("这条模型路径不支持实时生成，本次整段返回")
+            return await self._await_completion(messages, tools)
+
+    async def _await_stream(
+        self, messages: list[ChatMessage], tools: list[ToolSpec]
+    ) -> Completion | None:
+        """真流式模型调用：边收边发（plan §2.1）。
+
+        返回 None = 被用户取消（已确认文本保留在界面上，状态由 TURN_END 给出）。
+        adapter 抛的异常原样上抛给 _plan 的错误路径 —— 取消/失败/断线都不吞。
+        """
+        if self._cancel_event.is_set():
+            return None  # 还没发出请求就被取消：不产生任何新的模型调用
+        delta_id = self._call_delta_id or f"dl_{short_turn_id(self.turn_id)}_1"
+        stream = _AssistantStream(self._emit_assistant, delta_id=delta_id)
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def _pump() -> None:
+            try:
+                async for delta in self.adapter.stream(messages, tools):
+                    await queue.put(delta)
+            except asyncio.CancelledError:
+                raise
+            except NotImplementedError as exc:
+                await queue.put(_UnsupportedStream(exc))
+            except Exception as exc:  # noqa: BLE001 - 交给消费侧如实处理
+                await queue.put(_StreamError(exc))
+            finally:
+                await queue.put(_STREAM_END)
+
+        pump = asyncio.ensure_future(_pump())
+        cancel_waiter = asyncio.ensure_future(self._cancel_event.wait())
+        getter: asyncio.Future | None = None
+        completion: Completion | None = None
+        failure: Exception | None = None
+        unsupported: Exception | None = None
+        aborted = False
+        try:
+            while True:
+                if getter is None:
+                    # 取事件用同一个 future 反复等：超时（守卫/节奏）不会丢掉已经
+                    # 到达的那一段 —— asyncio.Queue.get 被取消时可能吞掉一条增量。
+                    getter = asyncio.ensure_future(queue.get())
+                deadline = stream.next_deadline()
+                timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+                done, _ = await asyncio.wait(
+                    {getter, cancel_waiter},
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if getter in done:
+                    item = getter.result()
+                    getter = None
+                    if item is _STREAM_END:
+                        break
+                    if isinstance(item, _StreamError):
+                        failure = item.error
+                        break
+                    if isinstance(item, _UnsupportedStream):
+                        unsupported = item.error
+                        break
+                    if item.kind == STREAM_TEXT:
+                        await stream.note_text(item.text)
+                    elif item.kind == STREAM_TOOL_CALL:
+                        # 工具参数碎片不在这里处理：只有 adapter 组装完成的合法
+                        # JSON 才允许执行（见 StreamDelta 的契约）。
+                        await stream.note_tool_call()
+                    elif item.kind == STREAM_DONE:
+                        completion = item.completion
+                    continue
+                if cancel_waiter in done:
+                    aborted = True
+                    break
+                await stream.on_deadline()
+        finally:
+            self._last_stream_published = stream.published
+            cancel_waiter.cancel()
+            if getter is not None:
+                getter.cancel()
+            pump.cancel()
+            try:
+                await pump
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 中断后不再需要它
+                pass
+
+        if aborted:
+            self._request_aborted = True
+            await stream.finish(None)
+            return None
+        if unsupported is not None:
+            await stream.finish(None)
+            # 交给 _completion_step 定夺：没透出正文就整段降级，透出了就如实失败。
+            raise unsupported
+        if failure is not None:
+            await stream.finish(None)
+            raise failure
+        if completion is None:
+            await stream.finish(None)
+            raise RuntimeError("模型流在给出完整结果之前就结束了")
+        await stream.finish(completion)
+        return completion
 
     def _tokens_of(self, completion: Completion) -> int:
         """该次模型调用的**输出** token 数。

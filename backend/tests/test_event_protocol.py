@@ -30,6 +30,11 @@ EVENT_STORE_TS = FRONTEND_SRC / "stores" / "events.ts"
 # - TURN_START / TURN_END 等都有分支；这里留空表示「所有事件都必须被前端处理」。
 FRONTEND_ROUTE_EXEMPT: set[str] = set()
 
+# 保留但**主轮不再产生**的兼容事件（plan §1.3）：NARRATIVE 是旧版平铺协议的载荷，
+# 主轮改发 STAGE；前端对旧数据/旧客户端的渲染路径仍然保留。
+# 「没有生产代码」是设计结果，不是半协议 —— 所以这里显式豁免，而不是悄悄删掉枚举。
+LEGACY_NO_PRODUCER: set[str] = {"NARRATIVE"}
+
 
 def _backend_event_names() -> set[str]:
     return {e.value for e in EventType}
@@ -84,7 +89,9 @@ def test_every_event_has_a_producer_in_backend():
         for name in names:
             if _has_producer(text, name):
                 sources[name].append(str(path.relative_to(REPO_ROOT)))
-    missing = sorted(name for name, hits in sources.items() if not hits)
+    missing = sorted(
+        name for name, hits in sources.items() if not hits and name not in LEGACY_NO_PRODUCER
+    )
     assert not missing, f"这些事件只有枚举定义、没有生产代码：{missing}"
 
 

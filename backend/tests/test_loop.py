@@ -48,8 +48,58 @@ def _tc(tool_id: str, name: str, arguments: str) -> Any:
     )()
 
 
+def _chunk(
+    content: str | None = None,
+    tool_calls: list[Any] | None = None,
+    finish_reason: str | None = None,
+) -> Any:
+    """OpenAI 兼容的流式分片形状（delta / finish_reason）。"""
+    return type(
+        "Chunk",
+        (),
+        {
+            "choices": [
+                type(
+                    "Choice",
+                    (),
+                    {
+                        "delta": type(
+                            "Delta", (), {"content": content, "tool_calls": tool_calls}
+                        )(),
+                        "finish_reason": finish_reason,
+                    },
+                )()
+            ],
+            "usage": None,
+        },
+    )()
+
+
+def _tc_delta(tc: Any) -> Any:
+    return type(
+        "TCDelta",
+        (),
+        {"index": 0, "id": tc.id, "function": tc.function},
+    )()
+
+
+async def _stream_of(completion: FakeCompletion):
+    """把一条整段响应变成流式分片（真 provider 走的就是这条路径）。"""
+    for choice in completion.choices:
+        message = choice.message
+        if message.content:
+            yield _chunk(content=message.content)
+        for tc in message.tool_calls or []:
+            yield _chunk(tool_calls=[_tc_delta(tc)])
+        yield _chunk(finish_reason="tool_calls" if message.tool_calls else "stop")
+
+
 class ScriptedClient:
-    """Plays a script of raw responses, then falls back to plain text."""
+    """Plays a script of raw responses, then falls back to plain text.
+
+    `stream=True` 时返回异步分片（与真实 OpenAI 兼容端点一致）：整段响应被切成
+    「正文 → 工具调用 → 结束」三片，AgentLoop 的真流式分支才能被真正走到。
+    """
 
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
@@ -63,11 +113,17 @@ class ScriptedClient:
     def completions(self) -> "ScriptedClient":
         return self
 
-    async def create(self, **kwargs: Any) -> FakeCompletion:
-        self.calls += 1
+    def _next_completion(self) -> FakeCompletion:
         if self.script:
             return self.script.pop(0)
         return FakeCompletion([FakeChoice(FakeMessage("final answer", None))])
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        completion = self._next_completion()
+        if kwargs.get("stream"):
+            return _stream_of(completion)
+        return completion
 
 
 def _make_loop(client: ScriptedClient, **loop_kwargs: Any):
@@ -219,11 +275,12 @@ async def test_interim_assistant_event_emitted_for_native_commentary():
     joined = "\n".join(collected)
     assert "event: ASSISTANT" in joined
     assert "我先查一下仓库" in joined
+    assert "\"interim\":true" in joined or "\"interim\": true" in joined
     # interim 文本先到，收尾的 USAGE 后到；TURN_END 不再由本循环发出
     assert joined.index("我先查一下仓库") < joined.index("USAGE")
 
 
-async def test_plain_text_turn_no_interim_assistant_event():
+async def test_plain_text_turn_streams_answer_without_interim():
     client = ScriptedClient([])
     loop, bus = _make_loop(client)
 
@@ -243,4 +300,10 @@ async def test_plain_text_turn_no_interim_assistant_event():
     except asyncio.CancelledError:
         pass
 
-    assert "event: ASSISTANT" not in "\n".join(collected)
+    joined = "\n".join(collected)
+    # 纯回答整轮走真流式：正文以 ASSISTANT 增量出现，但**不是** interim（plan §2.1），
+    # 也不再有一条「等整段结束才出现」的假增量。
+    assert "event: ASSISTANT" in joined
+    assert "final answer" in joined
+    assert "\"interim\": false" in joined or "\"interim\":false" in joined
+    assert "\"interim\": true" not in joined and "\"interim\":true" not in joined

@@ -488,9 +488,15 @@ class TurnOrchestrator:
             },
             dropped=[],
         )
+        # 附件事实（C 的 AttachmentService）：只说明「本轮附加了哪些文件对象」，
+        # 内容不进上下文（模型必须按需 read_attachment），也不影响审批权限与工具参数。
+        # 走既有的「系统通知」措辞路径；没有附件/没有服务时什么都不加。
+        attachment_note = app.attachment_turn_note(ctx.turn_id)
         prompt = message
         if payload.text:
             prompt = f"{payload.text}\n\n【用户消息】\n{message}"
+        if attachment_note:
+            prompt = f"{prompt}\n\n【系统通知】\n{attachment_note}"
         return _Plan(
             topic=topic,
             prediction=prediction,
@@ -561,9 +567,12 @@ class TurnOrchestrator:
             tool_state=app.tool_state,
             # 取消检查点：本 turn 被取消后循环不再发起新的模型/工具调用
             is_cancelled=lambda: ctx.cancelled,
-            # 执行叙事：模型决定说不说，AppContext 负责落库 + 广播 + 批次结束补写系统摘要
+            # 执行叙事与阶段：模型决定说不说，AppContext 负责落库 + 广播 + 批次结束
+            # 补写系统摘要；阶段标识由服务层的状态机给出（plan §1.2）。
             narrative_sink=app._on_narrative,
             narrative_settler=app._settle_narrative,
+            # 工具归属只看 stage_id（plan §1.1）：没有阶段时如实为 None。
+            stage_id_provider=lambda: app.current_stage_id(ctx.turn_id),
         )
         ctx.loop = loop
         try:

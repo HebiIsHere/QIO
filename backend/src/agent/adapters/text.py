@@ -42,6 +42,10 @@ class TextAdapter(BaseAdapter):
     mode = "text"
     # 没有原生工具协议：工具定义只能拼进 system prompt
     tools_in_prompt = True
+    # 明确降级（plan §2.1 第 8 条）：这条路径**不支持**实时生成，
+    # AgentLoop 会一次性给出 {streaming: false}，前端如实提示
+    # 「该模型路径不支持实时生成」，而不是假装一片一片地出字。
+    supports_stream = False
 
     def __init__(
         self,
