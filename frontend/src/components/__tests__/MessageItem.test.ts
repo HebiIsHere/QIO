@@ -397,6 +397,8 @@ describe("中间话与最终回答在视觉上分开（契约 §1.5）", () => {
     const line = w.find(".process-line");
     expect(line.exists()).toBe(true);
     expect(line.text()).toContain("我先查一下");
+    // 不再出现「◈ 过程」这类重复标记（过程说明由过程区统一表达）
+    expect(w.text()).not.toContain("◈");
     w.unmount();
   });
 

@@ -155,7 +155,9 @@ const STATUS_WORD: Record<string, string> = {
 
 const statusWord = computed(() => {
   if (props.running) {
-    if (approvals.pendingCount > 0) return "等待确认";
+    // 只有这条审批**确实内联在本轮过程区**时才说「等待确认」；
+    // 非当前轮 / 恢复路径的审批仍由全局状态条说那句话
+    if (inlineApproval.value) return "等待确认";
     return session.turnPhase === "generating" ? "运行中" : "正在处理";
   }
   if (props.queued) return "等待开始";

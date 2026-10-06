@@ -232,6 +232,28 @@ describe("ASSISTANT：interim 按字段、按 delta 保真、按 seq 去重", ()
     expect(assistants(session)[0]?.content).toBe("我先说一句");
   });
 
+  it("按 turn 记录的过程数据有界：阶段与事实都只保留最近 200 轮", () => {
+    const { session } = setup();
+    for (let i = 0; i < 260; i += 1) {
+      session.upsertStage({
+        stage_id: `st_${i}_1`,
+        turn_id: `turn_${i}`,
+        index: 1,
+        name: "阶段",
+        status: "running",
+      });
+      session.recordTurnFacts(`turn_${i}`, { status: "completed", duration_ms: i });
+    }
+    // 有界性本身是要求：长会话 + 历史分页不能让这两张表无界增长
+    expect(Object.keys(session.stagesByTurn)).toHaveLength(200);
+    expect(Object.keys(session.turnFacts)).toHaveLength(200);
+    // 最近的一轮一定在（正在跑的那一轮不会被裁掉）
+    expect(session.stagesByTurn["turn_259"]).toBeTruthy();
+    expect(session.turnFacts["turn_259"]?.durationMs).toBe(259);
+    expect(session.stagesByTurn["turn_0"]).toBeUndefined();
+    expect(session.turnFacts["turn_0"]).toBeUndefined();
+  });
+
   it("取消 / 失败（final_content 为 null）不清空已经确认的流式文本", () => {
     const { events, session } = setup();
     events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });

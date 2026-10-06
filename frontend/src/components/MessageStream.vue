@@ -531,17 +531,35 @@ function formatTime(iso?: string): string {
  *   （机械的"正在使用工具"是待替换的旧提示，见 spec 2026-09-22）；
  * - 等待响应 / 等待确认 / 正在处理独立任务时，说一句就够了。
  */
+/**
+ * 当前轮是否已经有过程区，并且这一轮的运行状态由过程区状态行表达。
+ *
+ * 契约 §1.5 的归并要求：有过程区时，全局状态条不再显示同一条状态 ——
+ * 否则「已受理」与「正在处理」会同时出现在页面上。
+ */
+const processRegionSpeaks = computed(() => {
+  const last = turns.value[turns.value.length - 1];
+  return Boolean(last?.showProcess && last.running);
+});
+
 const showGlobalStatus = computed(() => {
+  // 「正在使用工具」「正在生成」本来就不显示（过程由过程区 / 工具卡表达）
+  if (
+    session.activity === "idle" ||
+    session.activity === "generating" ||
+    session.activity === "tool"
+  ) {
+    return false;
+  }
+  // 当前轮的过程区已经在说「已受理」：全局条不再重复「正在处理」
+  if (processRegionSpeaks.value && session.activity === "waiting") return false;
   /**
    * 内联审批卡已经在过程区里承担了「等待确认」这件事（含按钮），
    * 全局状态条不再重复说一遍；没有内联卡（非当前轮 / 恢复路径）时照旧显示。
    */
   if (session.activity === "approval" && approvals.inlineClaimed) return false;
-  return (
-    session.activity !== "idle" &&
-    session.activity !== "generating" &&
-    session.activity !== "tool"
-  );
+  // 其余仍然显示：排队等待 / 独立任务 / 系统通知 / 没有过程区的旧记录
+  return true;
 });
 /** 只有「还在等」才播三圆点；其它状态是安静的说明文字 */
 const showWaitingDots = computed(

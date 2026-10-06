@@ -43,6 +43,16 @@ describe("过程区展开状态", () => {
     expect(mod.isProcessManual(key)).toBe(false);
   });
 
+  it("localStorage 只保留最近 300 个键（长期使用不无界增长）", async () => {
+    const mod = await import("../turnProcess");
+    for (let i = 0; i < 340; i += 1) mod.toggleProcess(mod.processKey("topic", `turn_${i}`), true);
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Record<string, unknown>;
+    expect(Object.keys(raw).length).toBeLessThanOrEqual(300);
+    // 最近的键在，最旧的被裁掉
+    expect(raw[mod.processKey("topic", "turn_339")]).toBeTruthy();
+    expect(raw[mod.processKey("topic", "turn_0")]).toBeUndefined();
+  });
+
   it("跨刷新：localStorage 里的记录会被读回来（键里带 turn_id / stage_id）", async () => {
     const key = "topic_1|turn_9|st_9";
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ [key]: { open: true, manual: true } }));
