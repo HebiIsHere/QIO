@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
 import AttachmentChip from "./AttachmentChip.vue";
@@ -7,10 +7,14 @@ import {
   isDesktopShell,
   isSendable,
   onPathDrop,
+  openAttachment,
   pickLocalPath,
   prepareAttachment,
+  relocateAttachment,
   removeAttachment,
+  restorePendingAttachments,
   retryAttachment,
+  savePendingAttachments,
   stateText,
   uploadAttachment,
   waitUntilSettled,
@@ -147,6 +151,10 @@ const dragging = ref(false);
 const pathOpen = ref(false);
 const pathDraft = ref("");
 const fileInputRef = ref<HTMLInputElement | null>(null);
+/** 打开/重新定位之后的事实说明（例如「已在文件夹中显示：可执行文件不自动运行」） */
+const attachNote = ref("");
+/** 浏览器里没有原生选择器时，「粘贴路径 → 重新定位」的目标附件 id */
+const relocateTargetId = ref("");
 let stopDropWatch: (() => void) | null = null;
 
 function upsert(item: AttachmentRef) {
@@ -250,11 +258,22 @@ async function submitPath() {
   if (!value) return;
   pathDraft.value = "";
   pathOpen.value = false;
+  // 「重新定位」模式：这条路径是某个待发附件的新位置，不是新附件
+  if (relocateTargetId.value) {
+    const target = relocateTargetId.value;
+    relocateTargetId.value = "";
+    await applyRelocate(target, value);
+    return;
+  }
   await addPaths([value]);
 }
 
 async function removeOne(id: string) {
   const before = pending.value;
+  if (relocateTargetId.value === id) {
+    relocateTargetId.value = "";
+    pathOpen.value = false;
+  }
   pending.value = pending.value.filter((a) => a.id !== id);
   try {
     await removeAttachment(id);
@@ -266,12 +285,115 @@ async function removeOne(id: string) {
 
 async function retryOne(id: string) {
   attachError.value = "";
+  attachNote.value = "";
   try {
     void track(await retryAttachment(id));
   } catch (err) {
     attachError.value = `重试失败：${(err as Error).message}`;
   }
 }
+
+/**
+ * 打开一个待发附件（问题 5）：桌面走原生（可执行/脚本类只「在文件夹中显示」），
+ * 浏览器走认证 fetch 出来的 Blob（查看或下载）。失败如实说原因，不假装已打开。
+ */
+async function openOne(id: string) {
+  const item = pending.value.find((a) => a.id === id);
+  if (!item) return;
+  attachError.value = "";
+  attachNote.value = "";
+  try {
+    const result = await openAttachment(item);
+    if (result.note) attachNote.value = result.note;
+  } catch (err) {
+    attachError.value = `打开「${item.name}」失败：${(err as Error).message}`;
+  }
+}
+
+async function applyRelocate(id: string, path: string) {
+  try {
+    const accepted = await relocateAttachment(id, path);
+    attachError.value = "";
+    attachNote.value = "已受理重新定位：状态跟到 ready 才算成功（准备中不是成功）";
+    void track(accepted);
+  } catch (err) {
+    attachError.value = `重新定位失败：${(err as Error).message}`;
+  }
+}
+
+/**
+ * 重新定位（问题 5）：桌面壳用原生选择器拿真实路径；浏览器里退回「粘贴真实路径」。
+ * 不校验大小/方式的责任在后端（按真实大小重算 copy/reference）；这里只负责拿到路径。
+ */
+async function relocateOne(id: string) {
+  const item = pending.value.find((a) => a.id === id);
+  if (!item) return;
+  attachError.value = "";
+  attachNote.value = "";
+  if (isDesktopShell()) {
+    try {
+      const path = await pickLocalPath();
+      if (!path) return; // 用户取消：什么都不做（不算失败）
+      await applyRelocate(id, path);
+      return;
+    } catch (err) {
+      attachError.value = `原生选择器不可用（${(err as Error).message}）：请用「路径」粘贴真实路径`;
+    }
+  }
+  relocateTargetId.value = id;
+  pathOpen.value = true;
+  attachNote.value = `把「${item.name}」的新位置粘到下面，回车即可重新定位`;
+}
+
+// ---------------------------------------------------------------------------
+// 待发附件恢复（问题 3）：组件重建 / 刷新之后，看到的 == 将发送的
+// ---------------------------------------------------------------------------
+
+function pendingTopicKey(): string | null {
+  return session.currentTopicId ?? null;
+}
+
+let restoring = false;
+
+/**
+ * 恢复待发列表：逐条向后端核对现在的事实（还在不在 / 属不属于本话题 / 有没有被别的轮次绑走）。
+ * 对不上的丢掉并说明原因 —— 绝不出现「界面上有、其实发不出去」。
+ */
+async function restorePending() {
+  restoring = true;
+  try {
+    const { items, dropped } = await restorePendingAttachments(pendingTopicKey());
+    pending.value = items;
+    if (dropped.length) {
+      attachError.value = `这些附件已经不在待发列表里（已删除、已随别的消息发出，或不属于本话题）：${dropped.join("、")}`;
+    }
+  } finally {
+    restoring = false;
+  }
+}
+
+// 待发列表一变就落盘（按话题分键）：刷新、切话题、组件重建之后都能恢复
+watch(
+  pending,
+  (items) => {
+    if (restoring) return;
+    savePendingAttachments(pendingTopicKey(), items);
+  },
+  { deep: true },
+);
+
+// 切话题绝不串：先把旧话题的列表落盘，再恢复新话题自己的那份
+watch(
+  () => session.currentTopicId,
+  async (next, prev) => {
+    savePendingAttachments(prev ?? null, pending.value);
+    pending.value = [];
+    attachNote.value = "";
+    relocateTargetId.value = "";
+    pathOpen.value = false;
+    await restorePending();
+  },
+);
 
 function onDragOver(e: DragEvent) {
   e.preventDefault();
@@ -293,6 +415,8 @@ function onDrop(e: DragEvent) {
 }
 
 onMounted(async () => {
+  // 恢复本话题的待发附件（组件重建 / 刷新后「看到的 == 将发送的」）
+  void restorePending();
   // Tauri 核心拖放事件：给的是真实路径，不需要新 crate
   const stop = await onPathDrop(
     (paths) => {
@@ -411,7 +535,7 @@ async function stopTurn() {
     </div>
 
     <div
-      v-if="pending.length || attaching || attachError || pathOpen"
+      v-if="pending.length || attaching || attachError || attachNote || pathOpen"
       class="attach-area"
     >
       <div class="attach-row">
@@ -422,6 +546,8 @@ async function stopTurn() {
           :busy="attaching"
           @remove="removeOne"
           @retry="retryOne"
+          @open="openOne"
+          @relocate="relocateOne"
         />
         <span v-if="attaching" class="attach-hint mono">正在登记附件…</span>
       </div>
@@ -431,15 +557,26 @@ async function stopTurn() {
           class="path-input mono"
           type="text"
           aria-label="本地文件路径"
-          placeholder="粘贴本地文件路径后回车（桌面端拖入更方便）"
+          :placeholder="
+            relocateTargetId
+              ? '粘贴这个附件的新位置后回车（重新定位）'
+              : '粘贴本地文件路径后回车（桌面端拖入更方便）'
+          "
           @keydown.enter.prevent="submitPath"
         />
-        <button class="path-btn primary" type="button" @click="submitPath">添加</button>
-        <button class="path-btn" type="button" @click="pathOpen = false; pathDraft = ''">
+        <button class="path-btn primary" type="button" @click="submitPath">
+          {{ relocateTargetId ? "重新定位" : "添加" }}
+        </button>
+        <button
+          class="path-btn"
+          type="button"
+          @click="pathOpen = false; pathDraft = ''; relocateTargetId = ''"
+        >
           取消
         </button>
       </div>
       <p v-if="attachError" class="attach-error" role="alert">{{ attachError }}</p>
+      <p v-if="attachNote" class="attach-note" role="status">{{ attachNote }}</p>
     </div>
 
     <div class="input-row">
@@ -757,6 +894,12 @@ async function stopTurn() {
   margin-top: 6px;
   font-size: 12px;
   color: var(--danger);
+}
+/* 事实说明（例如「已在文件夹中显示：可执行文件不自动运行」）：不是错误，也不能当成功 */
+.attach-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 .file-input {
   display: none;

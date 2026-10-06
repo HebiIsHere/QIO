@@ -10,18 +10,24 @@ vi.mock("../backend", () => backendMock);
 import {
   COPY_MAX_BYTES,
   humanSize,
+  isBindable,
   isSendable,
   isDesktopShell,
   listAttachments,
+  loadPendingAttachments,
   onPathDrop,
+  openPlanFor,
   pickLocalPath,
   prepareAttachment,
   removeAttachment,
+  restorePendingAttachments,
   retryAttachment,
+  savePendingAttachments,
   stateText,
   toAttachmentRef,
   uploadAttachment,
   waitUntilSettled,
+  fetchAttachmentContent,
   type AttachmentRef,
 } from "../attachments";
 
@@ -187,6 +193,171 @@ describe("等待准备完成（prepared 不算完成）", () => {
       { intervalMs: 1, timeoutMs: 5 },
     );
     expect(settled.state).toBe("prepared");
+  });
+});
+
+function attachmentRef(over: Partial<AttachmentRef> = {}): AttachmentRef {
+  return {
+    id: "att_1",
+    name: "报告.pdf",
+    sizeBytes: 10,
+    kind: "copy",
+    display: "已保存副本",
+    state: "ready",
+    error: null,
+    ...over,
+  };
+}
+
+describe("打开方式（问题 5）：可执行 / 脚本类绝不自动执行", () => {
+  it("桌面 + 普通文件 → 交给系统默认程序打开（用真实路径）", () => {
+    const plan = openPlanFor(attachmentRef({ storedPath: "D:\\data\\attachments\\a.pdf" }), { desktop: true });
+    expect(plan.action).toBe("open");
+    expect(plan.path).toBe("D:\\data\\attachments\\a.pdf");
+  });
+
+  it("桌面 + 可执行/脚本类 → 改为「在文件夹中显示」并说明原因", () => {
+    for (const name of ["安装包.exe", "脚本.ps1", "run.bat", "hook.py", "lib.dll", "setup.msi"]) {
+      const plan = openPlanFor(attachmentRef({ name, storedPath: "D:\\x\\" + name }), { desktop: true });
+      expect(plan.action, name).toBe("reveal");
+      expect(plan.reason).toContain("不自动运行");
+      expect(plan.path).toContain(name);
+    }
+  });
+
+  it("浏览器 + QIO 副本 → 安全类型查看；会执行脚本的类型改为下载", () => {
+    expect(openPlanFor(attachmentRef({ name: "图.png" }), { desktop: false }).action).toBe("view");
+    expect(openPlanFor(attachmentRef({ name: "数据.pdf" }), { desktop: false }).action).toBe("view");
+    const html = openPlanFor(attachmentRef({ name: "页.html" }), { desktop: false });
+    expect(html.action).toBe("download");
+    expect(html.reason).toContain("不内联");
+    expect(openPlanFor(attachmentRef({ name: "图.svg" }), { desktop: false }).action).toBe("download");
+  });
+
+  it("浏览器 + 引用型 → 明确 blocked：拿不到本地路径，指引去桌面端或重新定位", () => {
+    const plan = openPlanFor(
+      attachmentRef({ name: "大视频.mp4", kind: "reference", sourcePath: "D:\\v\\大视频.mp4" }),
+      { desktop: false },
+    );
+    expect(plan.action).toBe("blocked");
+    expect(plan.reason).toContain("桌面端");
+  });
+
+  it("没就绪的附件不给「打开」这个假入口（准备中/失败/丢失）", () => {
+    for (const state of ["prepared", "failed", "missing", "changed"] as const) {
+      const plan = openPlanFor(attachmentRef({ state }), { desktop: false });
+      if (state === "changed") {
+        expect(plan.action).toBe("view"); // changed 仍读得到：允许打开
+      } else {
+        expect(plan.action, state).toBe("blocked");
+      }
+    }
+  });
+});
+
+describe("认证 fetch 副本内容（问题 5）", () => {
+  it("带认证头 GET /content，返回 Blob", async () => {
+    const blob = new Blob(["hello"]);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      blob: async () => blob,
+    } as unknown as Response);
+
+    const got = await fetchAttachmentContent("att_1");
+
+    expect(got).toBe(blob);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("http://127.0.0.1:1/api/attachments/att_1/content");
+    expect((init as RequestInit).headers).toEqual({ Authorization: "Bearer t0ken" });
+  });
+
+  it("409（引用型 / 副本丢失）带出真实原因，不当成功", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      text: async () => JSON.stringify({ detail: "这是「引用本地文件」的附件：QIO 没有保存副本" }),
+      json: async () => ({}),
+    } as unknown as Response);
+
+    await expect(fetchAttachmentContent("att_ref")).rejects.toThrow(/引用本地文件/);
+  });
+
+  it("401 会重置后端连接（令牌可能已经换了）", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => JSON.stringify({ detail: "unauthorized" }),
+      json: async () => ({}),
+    } as unknown as Response);
+
+    await expect(fetchAttachmentContent("att_1")).rejects.toThrow(/本机 API 拒绝了这次请求/);
+    expect(backendMock.resetBackend).toHaveBeenCalled();
+  });
+});
+
+describe("待发附件绑定话题 / 刷新后恢复（问题 3）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("按话题分键保存：切话题不串", () => {
+    savePendingAttachments("t1", [attachmentRef({ id: "att_t1" })]);
+    expect(loadPendingAttachments("t1").map((item) => item.id)).toEqual(["att_t1"]);
+    expect(loadPendingAttachments("t2")).toEqual([]);
+    expect(loadPendingAttachments(null)).toEqual([]);
+  });
+
+  it("恢复时逐条核对后端事实：删掉的、被别的轮次绑走的、别的类型都丢掉并报出名字", async () => {
+    savePendingAttachments("t1", [
+      attachmentRef({ id: "att_ok", name: "还在.txt" }),
+      attachmentRef({ id: "att_gone", name: "删掉了.txt" }),
+      attachmentRef({ id: "att_bound", name: "已随别的消息发出.txt" }),
+      attachmentRef({ id: "att_other", name: "别的话题.txt" }),
+    ]);
+    fetchMock.mockImplementation(async (url: string) => {
+      const id = String(url).split("/").pop();
+      if (id === "att_ok") {
+        return jsonResponse({
+          attachment: { id, name: "还在.txt", kind: "copy", state: "ready", topic_id: "t1", stored_path: "D:\\x" },
+        });
+      }
+      if (id === "att_bound") {
+        return jsonResponse({
+          attachment: { id, name: "已随别的消息发出.txt", kind: "copy", state: "ready", topic_id: "t1", turn_id: "turn_9" },
+        });
+      }
+      if (id === "att_other") {
+        return jsonResponse({
+          attachment: { id, name: "别的话题.txt", kind: "copy", state: "ready", topic_id: "t_other" },
+        });
+      }
+      return {
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        text: async () => JSON.stringify({ detail: "没有这个附件" }),
+        json: async () => ({}),
+      } as unknown as Response;
+    });
+
+    const { items, dropped } = await restorePendingAttachments("t1");
+
+    expect(items.map((item) => item.id)).toEqual(["att_ok"]);
+    expect(dropped).toEqual(["删掉了.txt", "已随别的消息发出.txt", "别的话题.txt"]);
+    // 恢复之后落盘的只剩真的能发的那些：刷新再看到的就是这个
+    expect(loadPendingAttachments("t1").map((item) => item.id)).toEqual(["att_ok"]);
+  });
+
+  it("能从待发列表发送的状态与后端绑定校验一致（prepared/ready/changed）", () => {
+    expect(isBindable(attachmentRef({ state: "ready" }))).toBe(true);
+    expect(isBindable(attachmentRef({ state: "prepared" }))).toBe(true);
+    expect(isBindable(attachmentRef({ state: "changed" }))).toBe(true);
+    expect(isBindable(attachmentRef({ state: "failed" }))).toBe(false);
+    expect(isBindable(attachmentRef({ state: "missing" }))).toBe(false);
   });
 });
 

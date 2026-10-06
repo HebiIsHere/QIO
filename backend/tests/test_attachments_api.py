@@ -173,7 +173,10 @@ def test_relocate_after_user_moved_the_file(client: TestClient, tmp_path: Path):
         f"/api/attachments/{created['id']}/relocate", json={"source_path": str(moved)}
     )
     assert resp.status_code == 200, resp.text
-    relocated = resp.json()["attachment"]
+    # 重定位现在是**受理事实**（文件 I/O 在工作线程、状态回事件循环线程落库，见问题 6）：
+    # prepared 不是成功，必须按 GET 跟到终态之后再断言内容。
+    assert resp.json()["attachment"]["id"] == created["id"]
+    relocated = _wait_terminal(client, created["id"])
     assert relocated["state"] == "ready"
     assert relocated["source_path"] == str(moved)
     assert Path(relocated["stored_path"]).read_bytes() == "移动前".encode("utf-8")
@@ -202,10 +205,12 @@ def test_reference_file_moved_away_is_missing_and_relocatable(client: TestClient
     restored = tmp_path / "换了个地方" / "大文件.bin"
     restored.parent.mkdir(parents=True, exist_ok=True)
     restored.write_bytes(b"v" * 32)
-    fixed = client.post(
+    assert client.post(
         f"/api/attachments/{created['id']}/relocate", json={"source_path": str(restored)}
-    ).json()["attachment"]
+    ).status_code == 200
+    fixed = _wait_terminal(client, created["id"])  # 受理事实 → 跟到终态（问题 6：后台化）
     assert fixed["state"] == "ready"
+    assert fixed["source_path"] == str(restored)
 
 
 def test_retry_failed_attachment_reuses_the_same_record(client: TestClient, tmp_path: Path):

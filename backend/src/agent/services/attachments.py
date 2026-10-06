@@ -87,6 +87,31 @@ class AttachmentError(Exception):
     """调用方错误（路径不存在、不是文件……）——接口层映射成 400 而不是 500。"""
 
 
+class AttachmentContentError(AttachmentError):
+    """取副本内容失败（不存在 / 不是副本 / 还没就绪）——带上接口层该用的状态码。"""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class UploadTooLarge(AttachmentError):
+    """上传字节超过上限（浏览器回退只收 <= COPY_MAX_BYTES）：接口层映射成 413。"""
+
+    def __init__(self, size: int, limit: int) -> None:
+        self.size = int(size)
+        self.limit = int(limit)
+        super().__init__(
+            f"浏览器上传只用于 <= {human_size(limit)} 的文件；"
+            f"这个文件 {human_size(size)}，请用桌面端拖入或选择本地路径"
+            f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
+        )
+
+
+class UploadAborted(AttachmentError):
+    """上传被主动中止（客户端断开 / 接收端已判定超限）：不提交任何副本。"""
+
+
 @dataclass
 class Attachment:
     id: str
@@ -240,6 +265,8 @@ class AttachmentService:
         self.conn = conn
         self.data_dir = Path(data_dir)
         self._clock = clock
+        # 浏览器回退的上限：接口层读它（不各自硬编码 100_000_000），测试也能收紧成小值
+        self.max_upload_bytes = COPY_MAX_BYTES
         # 取消标志：DELETE（或显式 cancel）置位，复制线程在每个分块之间检查
         self._cancel: dict[str, threading.Event] = {}
         # 写操作串行化（同一进程内多请求可能交错；连接本身不保证可重入）
@@ -488,6 +515,113 @@ class AttachmentService:
         self._write_upload(att, payload)
         return self.get(att.id, check=False)
 
+    def begin_upload(self, *, name: str | None = None, topic_id: str | None = None) -> Attachment:
+        """上传第一步（**事件循环线程**）：先登记一行 prepared。
+
+        字节由工作线程的 write_upload_stream 落盘 ——「有行」与「有文件」分成两步，
+        与路径登记 + 后台复制同一条纪律：中途失败留下的是可重试/可删除的行，不是半个副本。
+        """
+        now = self._clock()
+        att = Attachment(
+            id=f"att_{uuid.uuid4().hex[:12]}",
+            message_id=None,
+            turn_id=None,
+            topic_id=topic_id,
+            kind="copy",
+            original_name=safe_name(name or "attachment"),
+            stored_path=None,
+            source_path=None,
+            size_bytes=0,
+            mtime=None,
+            sha256=None,
+            state=STATE_PREPARED,
+            error=None,
+            created_at=now,
+            updated_at=now,
+        )
+        return self._insert(att)
+
+    def write_upload_stream(
+        self,
+        att: Attachment,
+        chunks: Iterable[bytes],
+        *,
+        max_bytes: int | None = None,
+    ) -> DiskOutcome:
+        """**纯文件 I/O**（工作线程）：有界接收字节 → 临时文件 → sha256 → 改名提交。
+
+        * 没有 Content-Length 也强制上限：每收一块都累加校验，超限立刻停（UploadTooLarge），
+          调用方判定超限时通过 UploadAborted 中止；两条路都不提交任何东西。
+        * 先写 <目标名>.part，全部成功后才 os.replace 提交 —— 不会出现半个正式副本。
+        * 取消（cancel / delete 置位）在分块之间生效；提交前的最后一道闸也检查一次，
+          所以「取消之后不得提交为 ready」在复制线程与落库线程两侧都成立。
+
+        这里**不碰数据库**：状态由事件循环线程的 apply_outcome 落库。
+        """
+        limit = int(self.max_upload_bytes if max_bytes is None else max_bytes)
+        target = self.copy_path(att)
+        tmp = target.with_name(target.name + TEMP_SUFFIX)
+        event = self._cancel_event(att.id)
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "wb") as handle:
+                for chunk in chunks:
+                    if event.is_set():
+                        raise _Cancelled()
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > limit:
+                        raise UploadTooLarge(written, limit)
+                    handle.write(chunk)
+                    digest.update(chunk)
+                if written == 0:
+                    raise UploadAborted("上传内容为空")
+        except _Cancelled:
+            _unlink_quiet(tmp)
+            return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
+        except (UploadTooLarge, UploadAborted):
+            _unlink_quiet(tmp)
+            raise
+        except OSError as exc:
+            _unlink_quiet(tmp)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=self._describe_oserror(exc, target=target),
+            )
+        except Exception as exc:  # noqa: BLE001 - 任何意外都必须是「失败可重试」，不能半提交
+            _unlink_quiet(tmp)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=f"上传失败：{redact_text(type(exc).__name__)}: {redact_text(str(exc))}",
+            )
+        if event.is_set():
+            # 最后一道闸：取消/删除已经发生，绝不把这份字节提交成 ready
+            _unlink_quiet(tmp)
+            return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
+        try:
+            os.replace(tmp, target)
+        except OSError as exc:
+            _unlink_quiet(tmp)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=self._describe_oserror(exc, target=target),
+            )
+        try:
+            mtime = float(target.stat().st_mtime)
+        except OSError:
+            mtime = None
+        return DiskOutcome(
+            state=STATE_READY,
+            error=None,
+            stored_path=str(target),
+            sha256=digest.hexdigest(),
+            size_bytes=written,
+            mtime=mtime,
+        )
+
     def _write_upload(self, att: Attachment, payload: bytes) -> Attachment:
         target = self.copy_path(att)
         tmp = target.with_name(target.name + TEMP_SUFFIX)
@@ -581,7 +715,12 @@ class AttachmentService:
         )
 
     def apply_outcome(self, attachment_id: str, outcome: DiskOutcome) -> Attachment | None:
-        """把磁盘事实落库（**只允许在事件循环线程调用**）；行已不存在时返回 None。"""
+        """把磁盘事实落库（**只允许在事件循环线程调用**）；行已不存在时返回 None。
+
+        取消纪律（审计问题 6）：**取消之后不得提交为 ready**。复制线程与落库线程是两段，
+        「复制刚好成功、取消在其后到达」是真实存在的时序 —— 所以落库前再看一次取消标志：
+        已取消就丢掉这次结果（连刚提交的那份副本一起清掉），把行留在 cancelled（可重试）。
+        """
         if self.get(attachment_id, check=False) is None:
             # 复制期间附件被删掉了：行已经不在，磁盘结果无处可落。
             # 但这次复制可能刚好在 delete 之前提交了正式副本 —— 那是 QIO 自己的文件，
@@ -589,6 +728,17 @@ class AttachmentService:
             if outcome.stored_path and self.is_managed_path(outcome.stored_path):
                 _unlink_quiet(Path(outcome.stored_path))
             return None
+        if outcome.state in (STATE_READY, STATE_CHANGED) and self.is_cancel_requested(attachment_id):
+            if outcome.stored_path and self.is_managed_path(outcome.stored_path):
+                _unlink_quiet(Path(outcome.stored_path))
+            self._update(
+                attachment_id,
+                state=STATE_CANCELLED,
+                error="已取消（可以重试）",
+                stored_path=None,
+                sha256=None,
+            )
+            return self.get(attachment_id, check=False)
         fields: dict[str, object] = {"state": outcome.state, "error": outcome.error}
         if outcome.stored_path is not None:
             fields["stored_path"] = outcome.stored_path
@@ -697,13 +847,23 @@ class AttachmentService:
     # -- 取消 / 删除 --------------------------------------------------------
 
     def cancel(self, attachment_id: str) -> bool:
-        """请求取消正在进行的复制（复制线程在分块之间退出）。"""
+        """请求取消正在进行的复制（复制线程在分块之间退出，落库线程也会再看一次）。"""
         with self._cancel_lock:
             event = self._cancel.get(str(attachment_id))
             if event is not None:
                 event.set()
                 return True
         return False
+
+    def is_cancel_requested(self, attachment_id: str) -> bool:
+        """这个附件是否已被请求取消（DELETE 或 cancel 置位）。
+
+        复制线程在分块之间读它；apply_outcome 在落库前再读一次 —— 两道闸都成立，
+        才谈得上「取消之后不得提交为 ready」。
+        """
+        with self._cancel_lock:
+            event = self._cancel.get(str(attachment_id))
+            return bool(event is not None and event.is_set())
 
     def delete(self, attachment_id: str, *, purge_copy: bool = True) -> dict:
         """移除附件记录；**只删 QIO 管理的副本，绝不动用户原文件**。"""
@@ -734,8 +894,14 @@ class AttachmentService:
 
     # -- 重定位 ------------------------------------------------------------
 
-    def relocate(self, attachment_id: str, source_path: str) -> Attachment:
-        """重新指定位置：文件被移动/改名之后，把它重新指到真实路径上。"""
+    def plan_relocate(self, attachment_id: str, source_path: str) -> Attachment:
+        """重定位第一步（**事件循环线程**）：重新校验新位置 + 把行改成「准备中」。
+
+        重新校验（契约 §1.6）：按服务端 stat 出来的**真实大小**重算 copy / reference，
+        状态回到 prepared、sha256 清空等重算；新位置不存在 → missing；是目录 → failed。
+        真正的复制/stat 由工作线程的 copy_to_disk 完成、apply_outcome 落库 ——
+        见本文件头部的线程纪律（工作线程只做文件 I/O）。
+        """
         att = self.get(attachment_id, check=False)
         if att is None:
             raise AttachmentError(f"没有这个附件：{attachment_id}")
@@ -763,7 +929,47 @@ class AttachmentService:
             state=STATE_PREPARED,
             sha256=None,
         )
+        return self.get(att.id, check=False)
+
+    def relocate(self, attachment_id: str, source_path: str) -> Attachment:
+        """同步编排（事件循环线程）：plan_relocate + run_prepare。
+
+        给直接调用者（脚本/测试）用。API 路由不要用它：那条路必须走
+        plan_relocate → 后台 _schedule_prepare，工作线程只做文件 I/O，落库回事件循环线程。
+        """
+        att = self.plan_relocate(attachment_id, source_path)
+        if att.state != STATE_PREPARED:
+            return att
         return self.run_prepare(att.id)
+
+    def content_target(self, attachment_id: str) -> tuple[Path, str]:
+        """GET /api/attachments/{id}/content 的唯一取路径入口。
+
+        只认 **QIO 自己管理的副本**：kind=copy 且 state=ready，且路径必须落在
+        attachments 根目录之下（is_managed_path 会做 resolve 校验）。
+        调用方给的是 id，**永远不接受任意路径**。
+        返回 (副本路径, 下载/查看用的原始文件名)；不可用时抛 AttachmentContentError（带状态码）。
+        """
+        att = self.get(attachment_id)  # check=True：以文件世界的事实为准（副本丢了就是 missing）
+        if att is None:
+            raise AttachmentContentError("没有这个附件", 404)
+        if att.kind != "copy":
+            raise AttachmentContentError(
+                "这是「引用本地文件」的附件：QIO 没有保存副本，不能从这里打开；"
+                "请在原文件所在的位置用「重新定位」重新指定，或在桌面端打开原文件",
+                409,
+            )
+        if att.state != STATE_READY:
+            raise AttachmentContentError(
+                f"这个附件当前不可用（{att.state}）：{att.error or '没有可打开的副本'}",
+                409,
+            )
+        if not att.stored_path or not self.is_managed_path(att.stored_path):
+            raise AttachmentContentError("这个附件没有 QIO 管理的副本文件", 409)
+        path = Path(att.stored_path)
+        if not path.is_file():
+            raise AttachmentContentError("QIO 保存的副本文件已经不在了", 409)
+        return path, att.original_name
 
     # -- 轮次/消息绑定 ------------------------------------------------------
 
@@ -776,23 +982,43 @@ class AttachmentService:
     ) -> list[Attachment]:
         """把附件绑到这一轮。
 
-        * 显式给了 attachment_ids → 只绑这些（以显式为准，不再自动并入别的附件）；
-        * 没给 → 兜底：把**本话题下尚未绑定任何轮次**的附件绑给这一轮
-          （前端 chip 就在这一步被消费；移除的 chip 已经 DELETE，不会误绑）。
+        判据是 **None（缺字段） vs 列表（显式，含空列表）**，不是「空不空」：
+
+        * attachment_ids is None → 旧客户端兜底：把**本话题下尚未绑定任何轮次**的
+          附件绑给这一轮（移除的 chip 已经 DELETE，不会误绑）；
+        * 列表（**包括空列表**）→ 显式：只绑列出的这些，空列表 = 这一轮没有附件。
+          2026-10-06 审计问题 3：以前写成 body.get("attachment_ids") or []，
+          显式空列表被压成 falsy 落进兜底分支 —— 用户清空附件后发纯文字，
+          遗留附件仍被绑进这一轮（模型上下文与历史里都出现了它）。
+
+        显式绑定前逐条校验，不满足就静默跳过（绝不把不属于这一轮的附件塞进上下文）：
+
+        * 附件存在（不存在的 id 只记一条日志，不 500）；
+        * 属于当前话题，或还没有话题归属；
+        * 状态可绑：prepared / ready / changed；failed / cancelled / missing 不绑；
+        * 没有绑到**别的**轮次（已被别的 turn 绑定的 id 不得重复绑；同一轮重复提交幂等）。
         """
-        explicit = [str(i) for i in (attachment_ids or []) if str(i).strip()]
-        # 去重但保持顺序
-        seen: set[str] = set()
-        explicit = [i for i in explicit if not (i in seen or seen.add(i))]
-        if explicit:
-            targets = [self.get(i, check=False) for i in explicit]
-            targets = [t for t in targets if t is not None]
+        if attachment_ids is None:
+            targets = [self._check(a) for a in self._unbound(topic_id)]
+            targets = [a for a in targets if self._bindable(a, turn_id=turn_id, topic_id=topic_id)]
         else:
-            targets = [
-                a
-                for a in self._unbound(topic_id)
-                if a.state not in (STATE_FAILED, STATE_CANCELLED)
-            ]
+            seen: set[str] = set()
+            wanted: list[str] = []
+            for item in attachment_ids:
+                value = str(item).strip()
+                if value and value not in seen:
+                    seen.add(value)
+                    wanted.append(value)
+            targets = []
+            for attachment_id in wanted:
+                # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
+                att = self.get(attachment_id)
+                if att is None:
+                    logger.info("显式附件 id 不存在，已跳过：%s", attachment_id)
+                    continue
+                if not self._bindable(att, turn_id=turn_id, topic_id=topic_id):
+                    continue
+                targets.append(att)
         bound: list[Attachment] = []
         for att in targets:
             fields: dict[str, object] = {"turn_id": str(turn_id)}
@@ -816,6 +1042,21 @@ class AttachmentService:
             ).fetchall()
             return [self._row_to_attachment(r) for r in rows]
         return self.list(topic_id=str(topic_id), unbound=True, limit=50, check=False)
+
+    def _bindable(self, att: Attachment, *, turn_id: str, topic_id: str | None) -> bool:
+        """这条附件现在能不能绑到这一轮（三条事实，缺一不可）：
+
+        1. 状态有效：prepared / ready / changed 可绑，failed / cancelled / missing 不绑；
+        2. 话题对得上：属于当前话题，或还没有话题归属（无归属的会补上当前话题）；
+        3. 没被别的轮次占着：att.turn_id 为空或就是这一轮（同一轮重复提交幂等）。
+        """
+        if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
+            return False
+        if att.turn_id is not None and str(att.turn_id) != str(turn_id):
+            return False
+        if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
+            return False
+        return True
 
     def message_id_for_turn(self, turn_id: str) -> str | None:
         """这一轮的用户消息 id：权威来源是 turn_journal（不猜、不编造）。"""

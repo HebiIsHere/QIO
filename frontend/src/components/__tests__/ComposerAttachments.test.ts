@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   waitUntilSettled: vi.fn(),
   pickLocalPath: vi.fn(),
   onPathDrop: vi.fn(),
+  openAttachment: vi.fn(),
+  relocateAttachment: vi.fn(),
+  restorePendingAttachments: vi.fn(),
+  savePendingAttachments: vi.fn(),
 }));
 
 vi.mock("../../services/api", () => ({
@@ -35,6 +39,11 @@ vi.mock("../../services/attachments", async (importOriginal) => {
     waitUntilSettled: mocks.waitUntilSettled,
     pickLocalPath: mocks.pickLocalPath,
     onPathDrop: mocks.onPathDrop,
+    // 打开 / 重新定位 / 待发恢复：组件只负责调用与如实显示，事实核对在 service 用例里
+    openAttachment: mocks.openAttachment,
+    relocateAttachment: mocks.relocateAttachment,
+    restorePendingAttachments: mocks.restorePendingAttachments,
+    savePendingAttachments: mocks.savePendingAttachments,
     isDesktopShell: () => false,
   };
 });
@@ -102,6 +111,11 @@ beforeEach(() => {
   mocks.pickLocalPath.mockResolvedValue(null as never);
   mocks.onPathDrop.mockResolvedValue(null as never);
   mocks.waitUntilSettled.mockImplementation(async (item: AttachmentRef) => item);
+  // 默认：本话题没有待发附件（单独用例里再给恢复结果）
+  mocks.restorePendingAttachments.mockResolvedValue({ items: [], dropped: [] } as never);
+  mocks.openAttachment.mockResolvedValue({ action: "view", note: "" } as never);
+  mocks.relocateAttachment.mockImplementation((async (id: string) => ref({ id, state: "prepared" })) as never);
+  mocks.savePendingAttachments.mockImplementation(() => undefined);
   // 默认：登记返回「按路径取名」的准备中引用
   mocks.prepareAttachment.mockImplementation(async (path: string) =>
     ref({ name: String(path).split(/[\\/]/).pop() || "a.txt", state: "prepared" }),
@@ -182,7 +196,7 @@ describe("Composer 附件入口", () => {
     // 重试成功后同一行变回就绪，可以正常发送
     mocks.retryAttachment.mockResolvedValue(ref({ name: "坏的.bin", state: "prepared" }));
     mocks.waitUntilSettled.mockResolvedValue(ref({ name: "坏的.bin", state: "ready" }));
-    await w.find(".chip .act").trigger("click");
+    await w.find(".chip .act.retry").trigger("click");
     await flushPromises();
     expect(mocks.retryAttachment).toHaveBeenCalledWith("att_1");
     expect(w.find(".chip").text()).toContain("已保存副本");
@@ -265,6 +279,94 @@ describe("Composer 附件入口", () => {
     expect(w.find(".chip").exists()).toBe(false);
     expect(w.find(".attach-error").text()).toContain("没有登记成功");
     expect(w.find(".attach-error").text()).toContain("找不到这个文件");
+    w.unmount();
+  });
+
+  it("刷新/组件重建：待发附件从服务端事实里恢复（看到的 == 将发送的）", async () => {
+    mocks.restorePendingAttachments.mockResolvedValue({
+      items: [ref({ id: "att_9", name: "恢复.txt", state: "ready", display: "已保存副本" })],
+      dropped: [],
+    } as never);
+    const { w } = await mountComposer();
+    await flushPromises();
+
+    const chip = w.find(".chip");
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toContain("恢复.txt");
+    expect(mocks.restorePendingAttachments).toHaveBeenCalled();
+    w.unmount();
+  });
+
+  it("恢复时对不上的附件被丢掉，并说明原因（不显示发不出去的东西）", async () => {
+    mocks.restorePendingAttachments.mockResolvedValue({ items: [], dropped: ["没了.txt"] } as never);
+    const { w } = await mountComposer();
+    await flushPromises();
+
+    expect(w.find(".chip").exists()).toBe(false);
+    expect(w.find(".attach-error").text()).toContain("没了.txt");
+    w.unmount();
+  });
+
+  it("发送纯文字时也把（空）附件列表交给 session.send：空列表 = 这一轮没有附件", async () => {
+    const pinia = freshPinia();
+    const { sendMock } = stubSend(true);
+    const { w } = await mountComposer(pinia);
+    await w.find("textarea").setValue("没有附件");
+    await w.find(".send-btn").trigger("click");
+    await flushPromises();
+
+    const [text, ids] = sendMock.mock.calls[0] as unknown as [string, string[]];
+    expect(text).toBe("没有附件");
+    expect(ids).toEqual([]); // 必须是数组（字段存在性即语义），不是 undefined
+    w.unmount();
+  });
+
+  it("打开待发附件：调用 openAttachment，并把事实说明如实显示（可执行类只在文件夹中显示）", async () => {
+    mocks.uploadAttachment.mockResolvedValue(ref({ name: "run.exe", state: "ready" }));
+    mocks.openAttachment.mockResolvedValue({
+      action: "reveal",
+      note: "可执行 / 脚本类文件不自动运行：已在文件夹中显示，确认来源后再自行打开",
+    } as never);
+    const { w } = await mountComposer();
+    await chooseFiles(w, "run.exe");
+
+    await w.find(".chip .act").trigger("click"); // 第一个动作 = 打开
+    await flushPromises();
+
+    expect(mocks.openAttachment).toHaveBeenCalledTimes(1);
+    expect(mocks.openAttachment.mock.calls[0][0]).toMatchObject({ id: "att_1", name: "run.exe" });
+    expect(w.find(".attach-note").text()).toContain("不自动运行");
+    w.unmount();
+  });
+
+  it("打开失败：如实显示原因，不出现「已打开」的说明", async () => {
+    mocks.openAttachment.mockRejectedValue(new Error("引用型附件没有 QIO 副本，浏览器里打不开本地路径") as never);
+    const { w } = await mountComposer();
+    await chooseFiles(w, "a.txt");
+    await w.find(".chip .act").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".attach-error").text()).toContain("打开");
+    expect(w.find(".attach-error").text()).toContain("引用型附件");
+    expect(w.find(".attach-note").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("浏览器里重新定位：没有原生选择器时退回粘贴真实路径，回车走 relocate", async () => {
+    mocks.waitUntilSettled.mockResolvedValue(ref({ name: "丢了.txt", state: "missing" }));
+    const { w } = await mountComposer();
+    await pastePath(w, "D:\\tmp\\丢了.txt");
+    expect(w.find(".chip").text()).toContain("文件不在原位");
+
+    await w.find(".chip .act.locate").trigger("click");
+    await flushPromises();
+    expect(w.find(".path-input").exists()).toBe(true);
+
+    await w.find(".path-input").setValue("D:\\new\\丢了.txt");
+    await w.find(".path-input").trigger("keydown.enter");
+    await flushPromises();
+
+    expect(mocks.relocateAttachment).toHaveBeenCalledWith("att_1", "D:\\new\\丢了.txt");
     w.unmount();
   });
 });

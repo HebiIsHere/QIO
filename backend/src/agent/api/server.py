@@ -15,17 +15,19 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import secrets
 import sqlite3
 import uuid
 from collections import Counter, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from pathlib import Path
+from typing import AsyncIterator, Iterable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
@@ -49,6 +51,13 @@ from agent.memory.fragment import (
     resolve_max_turns,
 )
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
+# 附件路由的错误类型：模块级导入让上传桥接的哨兵迭代器也能用（无循环依赖）
+from agent.services.attachments import (
+    AttachmentContentError,
+    AttachmentError,
+    UploadAborted,
+    UploadTooLarge,
+)
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 from agent.storage.db_identity import (
     accept_current,
@@ -60,6 +69,56 @@ from agent.storage.db_identity import (
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+#: 上传桥接：读取端（事件循环）与写盘端（工作线程）之间的有界队列深度。
+#: 深度 × 单块大小 = 内存上界；工作线程慢时读取端会自然减速（背压），不丢块也不涨内存。
+UPLOAD_QUEUE_DEPTH = 4
+
+#: 队列哨兵：让工作线程立刻停下来（超出上限 / 客户端断开），不提交任何字节。
+_UPLOAD_ABORT = object()
+
+#: GET /content 只把「确定安全、可内联查看」的类型如实告诉浏览器（并始终带 nosniff）。
+#: HTML / SVG / XML 这类会执行脚本或带外链的类型**不内联**：一律 application/octet-stream。
+INLINE_SAFE_SUFFIXES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".log": "text/plain; charset=utf-8",
+    ".csv": "text/plain; charset=utf-8",
+    ".json": "application/json",
+    ".pdf": "application/pdf",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".ogg": "audio/ogg; codecs=opus",
+}
+
+
+async def _upload_queue_put(box: "queue.Queue", item: object) -> None:
+    """把一块字节放进桥接队列：满时让出事件循环（有界、不阻塞、不丢块）。"""
+    while True:
+        try:
+            box.put_nowait(item)
+            return
+        except queue.Full:
+            await asyncio.sleep(0.005)
+
+
+def _iter_upload_chunks(box: "queue.Queue") -> Iterable[bytes]:
+    """工作线程侧的分块迭代器：None = 正常结束；哨兵 = 立刻中止（不提交）。"""
+    while True:
+        item = box.get()
+        if item is None:
+            return
+        if item is _UPLOAD_ABORT:
+            raise UploadAborted("上传被中止（超出上限或客户端断开）；没有保存任何副本")
+        yield item  # type: ignore[misc]
 
 # 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
 _SENTENCE_END = "。！？!?\n"
@@ -240,7 +299,7 @@ def create_app(
     # 注册放在 create_app（而不是 AppContext.__init__）：附件相关的文件都归本模块所有，
     # 不改 A 名下的 services/app.py。
     from agent.trace.redact import redact_text
-    from agent.services.attachments import AttachmentError, AttachmentService
+    from agent.services.attachments import AttachmentService
 
     attachments = AttachmentService(conn, settings.data_dir)
     ctx.attachments = attachments
@@ -1119,23 +1178,32 @@ def create_app(
         _schedule_prepare(att.id)
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
+    def _upload_limit_detail() -> str:
+        from agent.services.attachments import human_size
+
+        limit = attachments.max_upload_bytes
+        return (
+            f"浏览器上传只用于 <= {human_size(limit)} 的文件；这个文件更大，"
+            "请用桌面端拖入或选择本地路径"
+            f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
+        )
+
     @app.post("/api/attachments/upload")
     async def upload_attachment(request: Request) -> dict:
         """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
 
         头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）。
         没有真实路径：只存副本；超过阈值的字节明确拒绝，不偷偷存一个大副本。
+
+        有界接收（审计问题 6）：**不把整包读进内存**，没有 Content-Length 时照样强制上限
+        （每收一块累加校验，超限立刻中止并清理）。写临时文件 + 算 sha256 在工作线程
+        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰，
+        见 services/attachments.py 顶部的线程纪律。
         """
+        limit = attachments.max_upload_bytes
         declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > 100_000_000:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    "浏览器上传只用于 <= 100 MB 的文件；更大的文件请用桌面端拖入或"
-                    "选择本地路径（超过 100 MB 只记位置，不复制内容）"
-                ),
-            )
-        payload = await request.body()
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise HTTPException(status_code=413, detail=_upload_limit_detail())
         raw_name = request.headers.get("x-qio-name") or "attachment"
         try:
             from urllib.parse import unquote
@@ -1144,13 +1212,53 @@ def create_app(
         except Exception:  # noqa: BLE001 - 头里的名字解不出来就退回原名
             name = raw_name
         topic_id = request.headers.get("x-qio-topic-id") or None
-        try:
-            att = attachments.register_upload(
-                payload, name=name, topic_id=str(topic_id) if topic_id else None
+        # 先登记一行（prepared）：字节由工作线程落盘，状态由事件循环线程落库
+        att = attachments.begin_upload(
+            name=name, topic_id=str(topic_id) if topic_id else None
+        )
+        box: "queue.Queue" = queue.Queue(maxsize=UPLOAD_QUEUE_DEPTH)
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                attachments.write_upload_stream,
+                att,
+                _iter_upload_chunks(box),
+                max_bytes=limit,
             )
-        except AttachmentError as exc:
+        )
+        received = 0
+        too_large = False
+        read_error: BaseException | None = None
+        try:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > limit:
+                    too_large = True
+                    break
+                await _upload_queue_put(box, chunk)
+        except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
+            read_error = exc
+        finally:
+            await _upload_queue_put(box, _UPLOAD_ABORT if (too_large or read_error) else None)
+        try:
+            outcome = await worker
+        except (UploadTooLarge, UploadAborted) as exc:
+            # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
+            attachments.delete(att.id)
+            if too_large or isinstance(exc, UploadTooLarge):
+                raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+        except AttachmentError as exc:
+            attachments.delete(att.id)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if too_large:
+            attachments.delete(att.id)
+            raise HTTPException(status_code=413, detail=_upload_limit_detail())
+        applied = attachments.apply_outcome(att.id, outcome)
+        if applied is None:
+            raise HTTPException(status_code=404, detail="上传期间附件已被移除")
+        return {"ok": True, "attachment": attachments.payload(applied, check=False)}
 
     @app.get("/api/attachments")
     async def list_attachments(
@@ -1171,14 +1279,44 @@ def create_app(
             raise HTTPException(status_code=404, detail="没有这个附件")
         return {"ok": True, "attachment": attachments.payload(att)}
 
+    @app.get("/api/attachments/{attachment_id}/content")
+    async def attachment_content(attachment_id: str) -> FileResponse:
+        """打开/下载一个附件：**只读 QIO 自己管理的副本**。
+
+        * 只认 kind=copy 且 state=ready 的副本，路径由 id 从数据库取，
+          **绝不接受调用方给的任意路径** —— 这是「打开历史附件」与「任意文件读取」的分界线；
+        * 沿用 /api/* 的会话令牌认证（session_guard 中间件），没有裸链接；
+        * 文件名只用 QIO 清洗过的 original_name（safe_name 落盘名，不含路径），
+          并带 X-Content-Type-Options: nosniff；HTML/SVG 这类会执行脚本的类型不内联。
+        """
+        try:
+            path, name = attachments.content_target(attachment_id)
+        except AttachmentContentError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        media_type = INLINE_SAFE_SUFFIXES.get(Path(name).suffix.lower(), "application/octet-stream")
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=name,
+            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+        )
+
     @app.post("/api/attachments/{attachment_id}/relocate")
     async def relocate_attachment(attachment_id: str, body: dict) -> dict:
-        """文件被移动/改名之后重新指定位置；副本会按新来源重做。"""
+        """文件被移动/改名之后重新指定位置；副本按新来源重做。
+
+        重新校验（真实大小 → copy / reference、状态、位置）后把准备交给后台：
+        工作线程只做文件 I/O，状态回事件循环线程落库（审计问题 6）。
+        响应是**受理事实**（prepared / missing / failed）：不要当成功，
+        按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        """
         try:
-            att = attachments.relocate(attachment_id, str(body.get("source_path") or ""))
+            att = attachments.plan_relocate(attachment_id, str(body.get("source_path") or ""))
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "attachment": attachments.payload(att)}
+        if att.state == "prepared":
+            _schedule_prepare(att.id)
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
     @app.post("/api/attachments/{attachment_id}/retry")
     async def retry_attachment(attachment_id: str) -> dict:
@@ -1227,18 +1365,21 @@ def create_app(
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
         # （排队中的这条消息不被追溯改向）。
         pending = ctx.bindings.peek_intent()
-        # 附件：显式给 attachment_ids 就只绑这些（以显式为准）；没给则兜底把
-        # 「本话题下还没绑定任何轮次」的附件绑到这一轮 —— 两条路径都在**执行前**完成绑定，
-        # 因此本轮上下文/工具看到的就是这一轮真实的附件。
-        raw_ids = body.get("attachment_ids") or []
-        if not isinstance(raw_ids, list):
-            raise HTTPException(status_code=400, detail="attachment_ids must be a list")
+        # 附件（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
+        # 字段出现（含空列表）= 显式，只绑列出的这些，[] 表示这一轮没有附件；
+        # 字段缺失才走旧客户端兜底（把本话题下还没绑定任何轮次的附件绑上来）。
+        # 以前写成 body.get("attachment_ids") or []：显式空列表被压成 falsy 落进兜底分支，
+        # 用户清空附件后发纯文字，遗留附件仍被绑进这一轮（审计问题 3）。
+        explicit_ids: list[str] | None = None
+        if "attachment_ids" in body:
+            raw_ids = body.get("attachment_ids")
+            if not isinstance(raw_ids, list):
+                raise HTTPException(status_code=400, detail="attachment_ids must be a list")
+            explicit_ids = [str(item) for item in raw_ids]
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        bound = attachments.bind_for_turn(
-            turn.turn_id, [str(item) for item in raw_ids], topic_id=topic_id
-        )
+        bound = attachments.bind_for_turn(turn.turn_id, explicit_ids, topic_id=topic_id)
         return {
             "ok": True,
             "accepted": True,
