@@ -909,6 +909,36 @@ async def test_stream_error_keeps_confirmed_text_and_emits_error():
     assert published[-1]["interim"] is True
 
 
+async def test_model_call_failure_is_normalized_to_a_provider_error():
+    """模型调用路径上的异常一律归一化成供应商错误（原类名/原文如实保留）。
+
+    上层（TURN_END）只拿得到异常类名；不归一化的话，一个没有走适配器错误分类的
+    RuntimeError 会被误报成「内部错误」，而它其实是供应商路径的失败。
+    """
+    from agent.adapters.errors import ProviderError
+
+    class _BoomAdapter(BaseAdapter):
+        mode = AdapterMode.TEXT
+        supports_stream = False
+
+        def __init__(self) -> None:
+            self.model = "boom"
+            self.endpoint = None
+
+        async def complete(self, messages, tools, **kwargs):
+            raise RuntimeError("厂商返回 500：上游错误")
+
+    bus = EventBus()
+    loop = AgentLoop(_BoomAdapter(), _registry(), bus, turn_id="turn_1")
+    with pytest.raises(ProviderError) as excinfo:
+        await loop.run("hi")
+
+    # 原类名与原文都在：包一层不是为了掩盖，而是为了把「哪条路径失败」说清楚
+    assert "RuntimeError" in str(excinfo.value)
+    assert "厂商返回 500" in str(excinfo.value)
+    # 归一化后的类名足以让 core/turn.py 归到 provider_error（见 test_turn_timing_facts）
+
+
 async def test_adapter_without_streaming_gets_one_shot_assistant():
     adapter = FakeStreamAdapter(
         [StreamScript(text="不支持流式也能回答")], stream_supported=False

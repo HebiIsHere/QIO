@@ -245,6 +245,11 @@ async def test_user_stop_is_reported_as_user_stopped():
     assert end["status"] == "cancelled"
     assert end["reason_code"] == "user_stopped"
     assert end["stopped_by"] == "user"
+    # 用户停止也必须给出人话原因（plan §1.2：除 none 外都要有事实原因），
+    # 不能只重复状态词、更不能让前端拿到 null 而只能显示「已停止」。
+    assert isinstance(end["reason"], str) and end["reason"].strip()
+    assert "停止" in end["reason"]
+    assert len(end["reason"]) <= 200
     assert end["actions"] == ["resend"]
 
 
@@ -265,7 +270,8 @@ async def test_shutdown_interruption_is_not_a_user_stop():
     assert end["status"] == "cancelled"
     assert end["reason_code"] == "interrupted"  # 进程掐断 ≠ 用户按的停止
     assert end["stopped_by"] == "system"
-    assert end["reason"]
+    assert isinstance(end["reason"], str) and end["reason"].strip()
+    assert "中断" in end["reason"]
     assert end["actions"] == ["resend"]
 
 
@@ -325,6 +331,48 @@ def test_provider_error_names_cover_the_adapter_taxonomy():
     }
     assert declared
     assert declared <= set(PROVIDER_ERROR_NAMES)
+
+
+async def test_plain_exception_from_the_model_call_is_a_provider_error():
+    """模型调用抛出的普通异常也必须归到 provider_error（与 D 的独立验证同一口径）。
+
+    适配器没有走 errors.py 归一化时（自定义端点 / 假厂商），上层只看得到类名；
+    循环必须在**模型调用这条路径**上就把失败说清楚，不能让它冒充内部故障。
+    """
+
+    class _BoomAdapter:
+        mode = "text"
+        model = "boom"
+        supports_stream = False
+
+        async def complete(self, messages, tools, **kwargs):
+            raise RuntimeError("厂商返回 500：上游错误")
+
+    events, emitter = _collector()
+
+    async def runner(ctx):
+        from agent.api.bus import EventBus
+        from agent.core.loop import AgentLoop
+        from agent.tools.registry import ToolRegistry
+
+        loop = AgentLoop(_BoomAdapter(), ToolRegistry(), EventBus(), turn_id=ctx.turn_id)
+        ctx.loop = loop
+        try:
+            await loop.run("hi")
+        finally:
+            ctx.loop = None
+
+    manager = TurnManager(runner=runner, emitter=emitter)
+    ctx = manager.submit("hi")
+    await manager.wait(ctx.turn_id, timeout=3)
+    await manager.shutdown()
+
+    end = _end_event(events)
+    assert end["status"] == "failed"
+    assert end["reason_code"] == "provider_error"  # 不是 internal_error
+    assert "厂商返回 500" in end["reason"]
+    assert end["stopped_by"] == "system"
+    assert end["actions"] == ["retry"]
 
 
 # ---- 服务层：TURN_END 出口用台账覆盖 core 的值 -------------------------------
