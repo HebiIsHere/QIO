@@ -718,3 +718,90 @@ A 的 shell 又用 `--im-chat-lift` 把面板整体抬高一次；1440×900 下 
 4. 判定标准建议：`steps-dv-53.json` 五次重复都要 `isPoint=true`，且 `steps-dv-50.json` 要 `links 0→1`。
 
 ---
+
+## 11. 坐标系修复复验（提交 `477973e`）—— **通过**
+
+**复验对象**：`477973e`（基线 `9fd905a`；把 `placeOverlay` 改成「先用客户端坐标算、最后减去 `.board-surface` 位置转成 offsetParent 坐标」）。
+**探针**：`scripts/visual_probe_d3.mjs`（Edge，CDP 9666）。**步骤**：`steps-dv-53.json`（五次重复命中）、`steps-dv-50.json`（top 拖线）、`steps-dv-51.json`（三档回归）、`steps-dv-54.json`（800 工具栏）。
+
+### 11.1 五次重复命中测试：**5/5 通过**（不再时好时坏）
+
+    轮次      卡片                       卡片top  工具栏{top,bottom}  行内 style              命中元素         isPoint  按钮
+    card3-1  c_mux78xlb2ff1m (912,60)   165     {122,155}        left:912px; top:17px    connect-point   true     7/7
+    card3-2  同上                        165     {122,155}        同上                     connect-point   true     7/7
+    card3-3  同上                        165     {122,155}        同上                     connect-point   true     7/7
+    card0-1  c_mux6xxyv13ny8 (454,125)  230     {187,220}        left:454px; top:82px    connect-point   true     7/7
+    card0-2  同上                        230     {187,220}        同上                     connect-point   true     7/7
+
+**结论**：五次全部 `isPoint=true`、`barOverCardTop=false`；工具栏稳定落在卡片上方（底边 155 vs 卡片顶 165、220 vs 230，间距 10px），
+行内 `top` 也稳定（17px / 82px），不再有上一轮那种 ±6px 抖动。截图 `dv-79-repeat-fixed.png`。
+
+### 11.2 从 top 连接点拖线：**通过**
+
+    取 top 连接点中心 → elementFromPoint = **connect-point**（上一轮是 card-edit）
+    从该点拖到另一张卡：links 1 → 2，新链接 {id:l_muxb6pen13ctb, src:c_mux78xlb2ff1m, dst:c_mux78x2q1k49x, direction:false, meaning:""}
+    拖动期间 data-im="link-draft" 存在（draftVisible=true）
+
+截图 `dv-80-top-drag-fixed.png`。
+
+### 11.3 三档回归：**通过**（与第 8–10 节一致）
+
+    1440×900：toolbar{712,884,h:172}  提交按钮{805,846} 可见可点  批量面板{105,439} 不压工具栏  聊天面板{121,641,h:520} top≥0  无横向溢出
+    1024×768：toolbar{520,756,h:236}  提交按钮{661,702} 可见可点  批量面板{105,439}            聊天面板{49,449,h:400}     无横向溢出
+    800×600 ：toolbar{283,592,h:309}  提交按钮{518,583} 可见可点  批量面板{97,266}             聊天面板{49,212,h:163}     无横向溢出
+
+截图 `dv-81-reg-1440.png`、`dv-82-reg-1024.png`、`dv-83-reg-800.png`。
+
+### 11.4 局部工具栏按钮可见性
+
+- 1440×900（四张卡、五次复测）：**7/7 按钮都在视口内**，工具栏完整可见。
+- 800×600：**7/7 按钮都在视口内**（`buttonsVisible=7`），连接点命中同样 `isPoint=true`；
+  但工具栏矩形 `{left:454, right:874}` 比 800px 视口宽 74px，最右的「删除」按钮在屏幕右缘被裁掉一部分
+  （`barInViewport=false`；页面本身无横向溢出，`overflowX=false`）。
+  这是**次要**问题（窄窗口下工具栏比视口宽），其余按钮可用；是否处理由 Lead 决定。截图 `dv-84-800-toolbar.png`。
+
+### 11.5 结论
+
+1. **第 9/10 节的阻断已消除**：命中测试 5/5 通过、top 连接点可以拖出连线（links 1→2）、行内坐标稳定。
+2. 三档回归与工具栏按钮可见性没有回归；仅 800×600 下工具栏比视口宽 74px（次要，删除按钮部分被裁）。
+3. 累计未解决项：800×600 两浮层视觉遮挡（8.3）、800×600 局部工具栏超宽（11.4）、第 3 节 6 项「没能验证」。
+
+---
+
+## 12. 窄窗口局部工具栏超宽修复确认（提交 `22b488a`）—— **通过**
+
+**复验对象**：`22b488a`（在 `477973e` 之后；`placeOverlay` 也量工具栏宽度、左边缘改成 `min(viewRect.right − 宽度 − 4, …)`，
+`BoardCard` 的 `.card-toolbar` 加 `flex-wrap: wrap` 与 `max-width: min(420px, calc(100vw − var(--sp-4)))`）。
+**探针**：`scripts/visual_probe_d3.mjs`（Edge，CDP 9666）。**步骤**：`steps-dv-55.json`。
+
+### 12.1 800×600：工具栏完整落在视口内、7 个按钮都可见可点（通过）
+
+    工具栏矩形 {left:376, right:796, top:165, bottom:220, w:420, h:55}   barInViewport=true
+      （right 796 ≤ 800；高度从 33 变成 55，说明 flex-wrap 生效、按钮换行了）
+    按钮（7/7 全部 inside=true）：
+      编辑    {385,425}   复制   {429,469}   折叠   {473,513}   隐藏   {517,557}
+      书签    {561,601}   移出组 {605,656}   删除   {660,700}
+    删除按钮中心 elementFromPoint = **delete-card**（deleteClickable=true）
+
+上一轮同一档位的实测是 `{left:454, right:874}`（比视口宽 74px、删除按钮被裁）；现在整体收进视口，
+最右的「删除」按钮完整可见、命中测试就是它自己。截图 `dv-85-800-toolbar-fixed.png`。
+
+### 12.2 连接点命中测试：800×600 两次 + 1440×900 两次，全部 isPoint=true（通过）
+
+    轮次        视口      卡片                       卡片top  工具栏{top,bottom,left,right}   命中元素         isPoint
+    800-第一次  800×600  c_mux6xxyv13ny8 (454,125)   230     {165,220,376,796}             connect-point   true
+    800-第二次  800×600  同上                        230     {165,220,376,796}             connect-point   true
+    1440-第一次 1440×900 c_mux6xxyv13ny8 (454,125)   230     {165,220,454,874}             connect-point   true
+    1440-第二次 1440×900 c_mux78xlb2ff1m (912,60)    165     {345,404,912,1332}            connect-point   true
+
+四次全部 `isPoint=true`：坐标系修复没有被这次改动弄回去。
+注：1440-第二次那张卡（板面 y=60，靠近视口上沿）上方放不下工具栏，按设计挪到了卡片下方（`{345,404}` vs 卡片 top 165），
+没有压住卡片顶边，连接点照常可点。截图 `dv-86-800-hit.png`、`dv-87-1440-hit.png`。
+
+### 12.3 结论
+
+1. 800×600 局部工具栏超宽（第 11.4 节的次要问题）**已修复**：`{376,796}` 完整在视口内、7/7 按钮可见、删除按钮可点。
+2. 连接点命中测试 800×600 两次 + 1440×900 两次全部通过，坐标系修复没有回归。
+3. 累计未解决项只剩：800×600 两浮层视觉遮挡（8.3）与第 3 节 6 项「没能验证」（均为次要/未验证，不影响交付判定）。
+
+---
