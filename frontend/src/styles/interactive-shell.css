@@ -91,7 +91,9 @@
     --im-chat-reserve: 104px;
     --im-toolbar-bottom: var(--sp-3);
     --im-toolbar-max-width: 100%;
-    --im-chat-lift: 180px;
+    /* 抬升量归零：聊天面板自己按实测工具栏顶边避让（--chat-dock-clearance）。
+       两套避让叠加会把面板顶出视口（独立复核实测 800×600 下容器 top=-141px）。 */
+    --im-chat-lift: 0px;
   }
   [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
     padding: var(--sp-2);
@@ -107,7 +109,8 @@
   :root {
     --im-chat-reserve: 88px;
     --im-toolbar-bottom: var(--sp-2);
-    --im-chat-lift: 190px;
+    /* 同上：避免与 ChatDock 自己的避让叠加（复核实测面板被顶到视口外 141px） */
+    --im-chat-lift: 0px;
   }
   [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
     max-width: calc(100vw - var(--im-chat-reserve) - var(--sp-4));
