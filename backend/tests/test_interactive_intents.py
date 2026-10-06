@@ -444,21 +444,37 @@ def test_partial_revert_reverts_safe_parts_and_waits_for_decision(db_conn):
 # --- 重启恢复 -----------------------------------------------------------
 
 
-def test_recover_running_intents_pauses_and_stays_paused(db_conn):
+def _stored_progress_of(conn, intent_id: str) -> dict:
+    row = conn.execute("SELECT progress FROM board_intents WHERE id = ?", (intent_id,)).fetchone()
+    return json.loads(row["progress"])
+
+
+def test_recover_running_intents_respects_process_identity(db_conn):
+    """只有**别的进程实例**遗留的 running 才降级为 paused。"""
     _seed(db_conn)
     target = _demo(db_conn)[_t("failing")]
-    approved = intents.approve_intent(db_conn, target["id"])
+    approved = intents.approve_intent(db_conn, target["id"], instance_id="proc-1")
     assert approved["intent"]["status"] == "running"
 
-    # 模拟进程重启：running → paused，不自动继续
-    recovery = intents.recover_running_intents(db_conn, BOARD)
-    assert recovery["paused"] == [target["id"]]
+    # 同一进程：读列表（调恢复）不会暂停自己正在执行的任务
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-1") == {"paused": []}
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
+    # 拿不到进程身份：不暂停任何东西
+    assert intents.recover_running_intents(db_conn, BOARD) == {"paused": []}
+    assert _listed(db_conn)[target["id"]]["status"] == "running"
+
+    # 换一个进程（模拟重启）：降级为 paused，且保留材料指纹
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-2") == {
+        "paused": [target["id"]]
+    }
     paused = _listed(db_conn)[target["id"]]
     assert paused["status"] == "paused"
     assert "不会自动继续" in paused["reason"]
+    assert _stored_progress_of(db_conn, target["id"]).get("__materialWatch"), "恢复流程不能清掉指纹"
 
     # 再读一次不会重复报告，状态保持暂停
-    assert intents.recover_running_intents(db_conn, BOARD)["paused"] == []
+    assert intents.recover_running_intents(db_conn, BOARD, instance_id="proc-3")["paused"] == []
     assert _listed(db_conn)[target["id"]]["status"] == "paused"
 
     # 暂停的任务不会因为「批准」而自动接着跑
@@ -470,11 +486,52 @@ def test_recover_running_intents_pauses_and_stays_paused(db_conn):
 # --- HTTP 路由（冻结路径） ------------------------------------------------
 
 
-def _client(conn) -> TestClient:
+def _client(conn, instance_id: str | None = None) -> TestClient:
     app = FastAPI()
     app.state.ctx = SimpleNamespace(conn=conn)
+    if instance_id is not None:
+        app.state.instance_id = instance_id
     app.include_router(api_module.router)
     return TestClient(app)
+
+
+def test_list_does_not_pause_own_running_task(db_conn):
+    """Lead 报的缺陷：同进程刷列表不能暂停正在执行的任务，材料保护也不能被打断。"""
+    seed = _seed(db_conn)
+    client = _client(db_conn, "instance-A")
+    assert (
+        client.post(f"/api/interactive/boards/{BOARD}/intents", json={"demo": True}).status_code
+        == 200
+    )
+
+    listed = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    combine = _by_title(listed["intents"])[_t("combine")]
+    approved = client.post(f"/api/interactive/intents/{combine['id']}/approve", json={}).json()
+    assert approved["ok"] is True
+    assert approved["intent"]["status"] == "running"
+
+    # 反复刷列表：仍然是 running，恢复信息为空
+    for _ in range(3):
+        again = client.get(f"/api/interactive/boards/{BOARD}/intents").json()
+        assert _by_title(again["intents"])[_t("combine")]["status"] == "running"
+        assert again["recovery"] == {"paused": []}
+
+    # 材料被改动仍然能被识别（指纹没有被恢复流程清掉）
+    pending = _state(db_conn)
+    for card in pending["cards"]:
+        if card["id"] == seed["a"]["id"]:
+            card["content"] = "材料（已替换）"
+    impact = client.post(
+        f"/api/interactive/boards/{BOARD}/material-impact", json={"state": pending}
+    ).json()
+    assert [item["intentId"] for item in impact["affected"]] == [combine["id"]]
+
+    # 重启（换一个进程身份）后读列表：这一项才被降级为暂停，指纹仍然保留
+    restarted = _client(db_conn, "instance-B")
+    recovery = restarted.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    assert recovery["recovery"]["paused"] == [combine["id"]]
+    assert _by_title(recovery["intents"])[_t("combine")]["status"] == "paused"
+    assert _stored_progress_of(db_conn, combine["id"]).get("__materialWatch")
 
 
 def test_intents_routes_follow_frozen_paths(db_conn):
@@ -603,10 +660,11 @@ def test_on_board_saved_pauses_running_intent_when_material_changes(db_conn):
     # 等待审批的意图不受影响
     assert _listed(db_conn)[waiting["id"]]["status"] == "pending"
 
-    # 再保存一次不会重复暂停
-    assert intents.on_board_saved(
-        db_conn, board_id=BOARD, state=_state(db_conn), reason="op"
-    ) == {"paused": [], "affected": []}
+    # 再保存一次不会重复暂停；但它的材料依据仍然不一致，所以继续报告受影响
+    again = intents.on_board_saved(db_conn, board_id=BOARD, state=_state(db_conn), reason="op")
+    assert again["paused"] == []
+    assert again["affected"] == [running["id"]]
+    assert _listed(db_conn)[running["id"]]["status"] == "paused"
 
 
 def test_on_board_saved_ignores_layout_and_unrelated_cards(db_conn):
