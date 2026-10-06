@@ -155,6 +155,8 @@ async def test_tool_call_delta_defers_until_stage_is_known():
     await stream.note_text("我先读一下文件")
     await stream.note_tool_call()
     assert events == []  # 分类已定（interim），但还没有阶段信息 → 先不发
+    # 也不该给发布定时器：到点也发不出去，只会让消费循环空转
+    assert stream.next_deadline() is None
     await stream.finish(
         Completion(
             message=ChatMessage(
