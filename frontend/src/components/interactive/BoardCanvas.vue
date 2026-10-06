@@ -330,9 +330,27 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   const cardBottom = cardTop + rect.h * view.value.scale;
   const minTop = viewRect.top - shellRect.top + 2;
   const maxTop = viewRect.bottom - shellRect.top - 30;
-  // 默认在卡片上方；上方放不下就放到卡片下方 —— 都不覆盖卡片本身，
-  // 否则会挡住连接点与卡片内容（真实鼠标点不到）
-  const top = cardTop - TOOLBAR_H - TOOLBAR_GAP >= minTop ? cardTop - TOOLBAR_H - TOOLBAR_GAP : Math.min(maxTop, cardBottom + TOOLBAR_GAP);
+  const limitTop = Math.max(minTop, offsetY + 2);
+  /**
+   * 局部工具栏的定位：**绝不许压住卡片顶边**。
+   *
+   * 顶部连接点画在卡片内侧（[cardTop+1, cardTop+13]），只要工具栏底边越过 cardTop 就会把它整块盖住，
+   * 真实鼠标按下去命中的是工具栏按钮而不是连接点（独立复核实测：命中 card-edit、连接点不可点）。
+   * 早先的写法是「上方放得下就放上方，否则放下方」，但最后还有一次
+   * `top = Math.max(offsetY + 2, top)` 的钳制，会把工具栏往下推回卡片上 —— 这就是那个缺陷。
+   *
+   * 现在：先量**真实**高度（量不到用估算值），算出的位置只要会碰到卡片顶边就一律挪到卡片下方，
+   * 最后再钳制一次并复验；实在放不下（视口太小）宁可让它贴着下沿，也不盖住连接点。
+   */
+  const toolbarEl = shellElement.querySelector('[data-im="card-toolbar"]');
+  const toolbarH = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().height)) : TOOLBAR_H;
+  const aboveTop = cardTop - toolbarH - TOOLBAR_GAP;
+  const belowTop = Math.min(maxTop, cardBottom + TOOLBAR_GAP);
+  const touchesCardTop = (value: number) => value + toolbarH > cardTop - 2 && value < cardTop;
+  let top = aboveTop >= limitTop ? aboveTop : belowTop;
+  if (touchesCardTop(top)) top = belowTop;
+  top = Math.max(limitTop, top);
+  if (touchesCardTop(top)) top = Math.max(limitTop, cardBottom + TOOLBAR_GAP);
   // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
   const visible =
     screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
