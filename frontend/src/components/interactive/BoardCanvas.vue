@@ -201,7 +201,8 @@ function onPointerUp() {
     detachPointerListeners();
     dragging.value = null;
     commit(result.state, label);
-    notice.value = label + "：" + (result.groupId ? "已放入组并保存。" : "只改变位置（位置不构成意图依据）。");
+    notice.value =
+      label + "：" + (result.groupId ? "已放入组（板面会自动保存，不会调用 QIO）。" : "只改变位置（位置不构成意图依据）。");
     return;
   }
   const rect = rectSelect.value;
@@ -660,6 +661,8 @@ onBeforeUnmount(() => {
             :group="group"
             :cards="liveCards"
             :selected-ids="selection"
+            :drop-target="dragging !== null && dragging.preview.groupId === group.id"
+            :drop-merge="dragging !== null && dragging.preview.mergesWith === group.id"
             @rename="onGroupRename"
             @toggle-ordered="onToggleOrdered"
             @dissolve="onDissolveGroup"

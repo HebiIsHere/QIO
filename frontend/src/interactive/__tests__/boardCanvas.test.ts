@@ -106,6 +106,35 @@ describe("BoardCanvas 接线", () => {
     wrapper.unmount();
   });
 
+  it("拖到已有组上：拖动期间组框显示「将加入这一组」，放下后加入该组并保留组名", async () => {
+    const base = board.addCard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "A" }), {
+      kind: "text",
+      content: "C",
+    });
+    const grouped = board.createGroup(base, [base.cards[0].id], "发布计划");
+    const groupId = grouped.groups[0].id;
+    setBoard({
+      ...grouped,
+      cards: [
+        { ...grouped.cards[0], x: 0, y: 0, w: 100, h: 60 },
+        { ...grouped.cards[1], id: "c", x: 900, y: 0, w: 100, h: 60 },
+      ],
+    });
+    const wrapper = mount(BoardCanvas);
+    const free = wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === "c");
+    free?.element.dispatchEvent(pointer("pointerdown", 900, 0));
+    window.dispatchEvent(pointer("pointermove", 50, 30));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-im="group"]').text()).toContain("将加入这一组");
+    expect(store.board?.cards.find((card) => card.id === "c")?.x).toBe(900);
+
+    window.dispatchEvent(pointer("pointerup", 50, 30));
+    await wrapper.vm.$nextTick();
+    expect(store.board?.groups[0].members).toContain("c");
+    expect(store.board?.groups[0].name).toBe("发布计划");
+    wrapper.unmount();
+  });
+
   it("Esc 中断拖动：不提交，卡片回到操作前位置", async () => {
     setBoard({
       ...board.emptyState("board_t"),

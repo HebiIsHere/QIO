@@ -14,6 +14,10 @@ const props = defineProps<{
   group: BoardGroup;
   cards: BoardCard[];
   selectedIds: string[];
+  /** 拖动预演：卡片将落入这个组 */
+  dropTarget: boolean;
+  /** 拖动预演：这个组将被并入落点所在的组 */
+  dropMerge: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -53,7 +57,13 @@ function onRename(event: Event) {
 </script>
 
 <template>
-  <div class="group" :class="{ ordered: group.ordered }" :style="style" data-im="group" :data-group-id="group.id">
+  <div
+    class="group"
+    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
+    :style="style"
+    data-im="group"
+    :data-group-id="group.id"
+  >
     <div class="group-head">
       <div class="head-row">
         <input
@@ -80,6 +90,8 @@ function onRename(event: Event) {
           {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
         </span>
         <span class="count mono">成员 {{ group.members.length }}</span>
+        <span v-if="dropMerge" class="badge merge">拖动中：这一组将被并入落点所在的组</span>
+        <span v-else-if="dropTarget" class="badge">拖动中：将加入这一组</span>
       </div>
 
       <ol v-if="group.ordered" class="sequence" aria-label="组内顺序">
@@ -134,6 +146,17 @@ function onRename(event: Event) {
   z-index: 2;
 }
 .group.ordered { border-color: var(--accent); }
+.group.drop-target { border-style: solid; border-color: var(--accent); background: var(--accent-soft); }
+.group.drop-merge { border-style: solid; border-color: var(--warning); }
+.badge {
+  flex: none;
+  font-size: var(--fs-tech, var(--fs-xs));
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2);
+}
+.badge.merge { background: var(--warning); color: var(--bg-base); }
 .group-head {
   display: flex;
   flex-direction: column;
