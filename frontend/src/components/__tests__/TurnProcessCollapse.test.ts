@@ -109,6 +109,23 @@ const TOOL_3 = msg({
   presentation: { title: "搜索代码" },
 });
 
+/** 可见文本里出现几次 needle（不用 html：模板注释不该参与计数） */
+function count(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+/** 折叠行里的「调用 / 工具数量」token（问题 4：同一行只允许一个） */
+function callCountTokens(text: string): string[] {
+  return text.match(/\d+\s*次调用|\d+\s*项工具运行中/g) ?? [];
+}
+
+/** 全部结束的工具（截图场景：一轮跑完，没有运行中的调用） */
+const DONE_TOOLS: StreamMessage[] = [
+  msg({ id: "d1", role: "tool", callId: "c1", stageId: "st_1", toolName: "fs_list", toolStatus: "success", toolOk: true, presentation: { title: "列目录" } }),
+  msg({ id: "d2", role: "tool", callId: "c2", stageId: "st_2", toolName: "fs_read", toolStatus: "success", toolOk: true, presentation: { title: "读取文件" } }),
+  msg({ id: "d3", role: "tool", callId: "c3", stageId: "st_2", toolName: "grep", toolStatus: "success", toolOk: true, presentation: { title: "搜索代码" } }),
+];
+
 function mountProcess(props: Record<string, unknown> = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -189,6 +206,69 @@ describe("问题 4：运行中默认可见区 = 状态行 + 当前阶段名 + �
     await toggle.trigger("click");
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
     expect(w.find("[data-test='turn-process-stage-tools']").exists()).toBe(true);
+    w.unmount();
+  });
+
+  /**
+   * D 的真机截图缺陷：折叠态一行里「2 次调用」出现两次
+   * （状态行「已完成 2 次调用」+ 抽屉摘要「2 个阶段 · 2 次调用」）。
+   * 断言用**可见文本**计数，不看 html。
+   */
+  it("折叠态：调用数量只出现一次（截图场景：已完成 N 次调用 + N 个阶段）", async () => {
+    const done1 = stage({ ...STAGE_1, status: "done" });
+    const done2 = stage({ ...STAGE_2, status: "done", name: "核对实现" });
+    const { w, session } = mountProcess({
+      items: DONE_TOOLS,
+      stages: [done1, done2],
+      running: true,
+    });
+    session.turnPhase = "generating";
+    await nextTick();
+
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("已完成 3 次调用"); // 状态行给真实数量（一行摘要）
+    expect(callCountTokens(status), "折叠态里调用/工具数量只能出现一次").toHaveLength(1);
+    expect(count(status, "3 次调用")).toBe(1);
+    expect(status).toContain("2 个阶段"); // 抽屉规模仍可见，但不重复数量
+    w.unmount();
+  });
+
+  it("折叠态：正在跑工具时数量也只出现一次（截图场景②）", async () => {
+    const { w, session } = mountProcess({
+      items: [TOOL_1, TOOL_2, TOOL_3],
+      stages: [STAGE_1, STAGE_2],
+      running: true,
+    });
+    session.turnPhase = "generating";
+    await nextTick();
+
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("读取文件 · 2 项工具运行中");
+    expect(callCountTokens(status)).toHaveLength(1);
+    expect(status).toContain("2 个阶段");
+    expect(status, "总数不在折叠行里重复").not.toContain("3 次调用");
+    w.unmount();
+  });
+
+  it("折叠态：完成后数量只出现一次，耗时仍在（截图场景③）", async () => {
+    const done1 = stage({ ...STAGE_1, status: "done" });
+    const done2 = stage({ ...STAGE_2, status: "done" });
+    const { w } = mountProcess({
+      items: DONE_TOOLS,
+      stages: [done1, done2],
+      running: false,
+      facts: facts({ status: "completed", durationMs: 2600 }),
+    });
+    await nextTick();
+
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("已完成");
+    expect(status).toContain("耗时");
+    expect(status).toContain("2.6 秒");
+    expect(callCountTokens(status)).toHaveLength(1);
+    // 完成态状态行没有数量（只有阶段名），抽屉摘要补「3 次调用」这一次
+    expect(status).toContain("3 次调用");
+    expect(count(status, "3 次调用")).toBe(1);
     w.unmount();
   });
 
