@@ -237,6 +237,26 @@ async function scenarioApproval() {
   return payload;
 }
 
+/** 场景 4：界面上真的点批量批准 —— 互不相容的两项不能一起批准。 */
+async function scenarioBatchApproval() {
+  const pick = runSteps([...NAV,
+    { op: "eval", js: "(async()=>{const r=await fetch('" + BACKEND + "/api/interactive/boards/" + BOARD + "/intents');const j=await r.json();const pair=j.conflicts[0];document.querySelector('[data-im=\"batch-clear\"]').click();let missing=[];for(const id of pair){const row=document.querySelector('[data-im=\"batch-item\"][data-intent-id=\"'+id+'\"]');if(!row){missing.push(id);continue;}const box=row.querySelector('input');(box||row).click();}return JSON.stringify({pair:pair,missing:missing,checked:document.querySelectorAll('[data-im=\"batch-item\"] input:checked').length});})()" },
+    { op: "eval", js: "document.querySelector('[data-im=\"batch-approve\"]').click(); 'batch-approved'" },
+    { op: "wait", ms: 2500 },
+    { op: "screenshot", name: "im-31-batch-conflict-blocked" },
+  ]);
+  const info = lastJson(evals(pick).filter((v) => typeof v === "string" && v.startsWith("{")), {});
+  check("批量列表里能选中互不相容的两项", (info.checked || 0) >= 1, JSON.stringify(info));
+
+  const listing = await intentsApi();
+  const pair = (listing.conflicts || [])[0] || [];
+  const states = pair.map((id) => (listing.intents.find((i) => i.id === id) || {}).status);
+  const started = states.filter((s) => ["running", "done", "paused"].includes(s)).length;
+  check("互不相容的两项不能一起批准", started <= 1, "两项状态：" + JSON.stringify(states));
+  const other = listing.intents.filter((i) => pair.indexOf(i.id) < 0);
+  check("未选中的意图继续等待（没有被顺手处理）", other.some((i) => i.status === "pending"), other.map((i) => i.status).join(","));
+}
+
 const main = async () => {
   console.log("=== 互动模式界面验收（app=" + APP + " backend=" + BACKEND + "）===");
   try {
@@ -244,6 +264,7 @@ const main = async () => {
     const authored = await phaseAuthor();
     await phaseGroupAndSubmit(authored.notes);
     await scenarioApproval();
+    await scenarioBatchApproval();
   } catch (error) {
     check("验收脚本执行完成", false, String(error));
   }
