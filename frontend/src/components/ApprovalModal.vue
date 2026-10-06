@@ -1,9 +1,16 @@
 <script setup lang="ts">
+/**
+ * 审批弹窗（完整窗口）。
+ *
+ * 契约 §1.3：审批事实的整理**只有一处** —— 这里与过程区内联卡共用
+ * `ApprovalFacts.vue`（同一份 approvalFacts）。弹窗自己只负责：
+ * 出现/退出、焦点管理、队列门控与按钮层级；不再自己算一套显示规则。
+ */
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useApprovalsStore, approvalIntent, approvalCapabilities } from "../stores/approvals";
-import type { ApprovalItem } from "../stores/approvals";
+import { useApprovalsStore, approvalFacts } from "../stores/approvals";
+import type { ApprovalItem, ApprovalBudget } from "../stores/approvals";
 import { usePresence } from "../composables/usePresence";
-import QNumber from "./ui/QNumber.vue";
+import ApprovalFacts from "./ApprovalFacts.vue";
 
 const approvals = useApprovalsStore();
 /** 退出动画期间还要渲染内容：保留一份「最后显示的审批」快照 */
@@ -37,30 +44,40 @@ function kindTitle(kind: string): string {
   return KIND_LABELS[kind] ?? "需要你确认的操作";
 }
 
-const isSubagentCreate = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  return item.value?.kind === "tool_create" && p.tool_type === "subagent";
-});
+/** 共用事实（与内联卡同一份整理） */
+const facts = computed(() => approvalFacts(item.value));
 
-// 子 agent 预算（编辑后批准时随 overrides 提交）
-const budgetForm = ref({
-  max_iterations: 5,
-  max_tokens: 100000,
-  output_limit_chars: 2000,
-});
+/**
+ * 子 agent 预算（编辑后批准时随 overrides 提交）。
+ *
+ * 初值取这一条审批真实带的预算；编辑入口由 ApprovalFacts 渲染并回传。
+ */
+const budgetForm = ref<ApprovalBudget | null>(null);
 watch(
   () => item.value?.approval_id,
   () => {
-    const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-    const b = (p.subagent_budget ?? {}) as Record<string, unknown>;
-    budgetForm.value = {
-      max_iterations: Number(b.max_iterations ?? 5),
-      max_tokens: Number(b.max_tokens ?? 100000),
-      output_limit_chars: Number(b.output_limit_chars ?? 2000),
-    };
+    budgetForm.value = facts.value?.budget ?? null;
   },
   { immediate: true },
 );
+
+function approveWithBudget() {
+  const b = budgetForm.value ??
+    facts.value?.budget ?? { maxIterations: 5, maxTokens: 100000, outputLimitChars: 2000 };
+  approvals.respond("approved", {
+    subagent_budget: {
+      max_iterations: b.maxIterations,
+      max_tokens: b.maxTokens,
+      output_limit_chars: b.outputLimitChars,
+    },
+  });
+}
+
+/**
+ * 高风险（会联网 / 写文件 / 执行命令 / 用凭据）：
+ * 用于给批准按钮降调 —— 高风险操作不该看起来像「推荐你点它」。
+ */
+const highRisk = computed(() => facts.value?.highRisk === true);
 
 /**
  * 提交失败时把焦点收回对话框：失败会保留待审批项，用户应当能立刻用键盘重试，
@@ -74,200 +91,6 @@ watch(
     dialogRef.value?.focus();
   },
 );
-
-function approveWithBudget() {
-  approvals.respond("approved", {
-    subagent_budget: {
-      max_iterations: budgetForm.value.max_iterations ?? 5,
-      max_tokens: budgetForm.value.max_tokens ?? 100000,
-      output_limit_chars: budgetForm.value.output_limit_chars ?? 2000,
-    },
-  });
-}
-
-const payloadView = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const lines: { label: string; value: string }[] = [];
-  if (p.name) lines.push({ label: "工具", value: String(p.name) });
-  if (p.tool_type) {
-    const typeLabel = p.tool_type === "subagent" ? "子 agent 型" : "函数型";
-    lines.push({ label: "类型", value: typeLabel });
-  }
-  if (p.key_id) lines.push({ label: "凭据", value: String(p.key_id) });
-  if (p.tool_name) lines.push({ label: "授权工具", value: String(p.tool_name) });
-  if (p.content) lines.push({ label: "知识内容", value: String(p.content) });
-  // `action` 是机器可读的动作名（run_shell 这类）。有行为化描述时就不再把它
-  // 当首屏信息展示 —— 它属于高级详情（spec 第 29、69 条）。
-  if (p.action && !p.description) lines.push({ label: "建议动作", value: String(p.action) });
-  if (p.example) lines.push({ label: "示例请求", value: String(p.example) });
-  if (p.source_count) lines.push({ label: "相似请求数", value: String(p.source_count) });
-  // 说明/原因/测试摘要已由上面的结构化行（它想做什么 / 为什么需要 / 验证情况）回答，
-  // 这里不再重复一遍；技术明细统一进默认折叠的「高级详情」。
-  return lines.filter((l) => l.value !== intent.value);
-});
-
-/** 该工具会访问什么（人话能力清单，来自后端 policy.describe()）。 */
-const capabilities = computed<string[]>(() =>
-  approvalCapabilities((item.value?.payload ?? {}) as Record<string, unknown>),
-);
-
-/**
- * 它想做什么：一句人类语言。
- * 顺序上先取「这个工具是干什么的」（description/工具名），把 explanation/reason
- * 留给下面单独的「为什么需要」一行，避免两行说同一句话。
- */
-const intent = computed(() =>
-  approvalIntent((item.value?.payload ?? {}) as Record<string, unknown>),
-);
-
-/** 后端 policy.describe() 里的「副作用：read|write|destructive|pure」，用于回答「它会改变什么」 */
-const sideEffect = computed(() => {
-  const raw = capabilities.value.find((c) => c.startsWith("副作用："));
-  return raw ? raw.slice("副作用：".length).trim().toLowerCase() : "";
-});
-
-/** 它会改变什么：把内部枚举翻成具体行为，不把 pure/write 这类英文值丢给用户 */
-const changeSummary = computed(() => {
-  switch (sideEffect.value) {
-    case "destructive":
-      return "会删除或覆盖已有数据";
-    case "write":
-      return "会写入或修改数据";
-    case "read":
-      return "只读取，不修改数据";
-    case "pure":
-      return "不修改任何数据";
-    default:
-      return "";
-  }
-});
-
-/**
- * QIO 的说明（模型生成）：
- *
- * 它**只**回答"为什么需要 / 准备做什么"，并且单独成段、标注来源 ——
- * 系统事实（想做什么 / 会访问什么 / 会改变什么 / 授权范围）仍然由下面的字段承担，
- * 模型文案不能替换它们。缺失时整段不渲染，审批照常。
- */
-const qioExplanation = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const text = typeof p.explanation === "string" ? p.explanation.trim() : "";
-  return text && text !== intent.value ? text : "";
-});
-
-/** 为什么需要：解释/原因，与「它想做什么」重复时不再重复显示；
- *  explanation 已经在「QIO 的说明」里出现过，这里不再重复一遍。 */
-const whyNeeded = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const first = [qioExplanation.value ? "" : p.explanation, p.reason]
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .find((v) => v.length > 0);
-  return first && first !== intent.value ? first : "";
-});
-
-/**
- * 测试了吗：verified / unverified。
- * 后端在 tool_create 里给 test_summary（子 agent 型工具是 "n/a (subagent)"）。
- * 拿不到任何测试信息时返回 null —— 宁可不显示，也不假装「已验证」。
- */
-const verification = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const summary = typeof p.test_summary === "string" ? p.test_summary.trim() : "";
-  const details = Array.isArray(p.test_details) ? (p.test_details as unknown[]) : [];
-  if (!summary && !details.length) return null;
-  const unverified = summary === "" || /^n\/a/i.test(summary);
-  return {
-    verified: !unverified,
-    label: unverified ? "未验证" : "已验证",
-    detail: unverified && /subagent/i.test(summary) ? "子 agent 型工具，没有自动测试报告" : summary,
-  };
-});
-
-/**
- * 高级详情（默认折叠）：raw params / 策略指纹 / 逐条测试结果。
- * 普通用户第一眼只需要「做什么 / 会改变什么 / 为什么 / 验证了吗」。
- */
-const advanced = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const lines: string[] = [];
-  if (p.policy_fingerprint) lines.push(`策略指纹：${String(p.policy_fingerprint)}`);
-  if (p.action) lines.push(`内部动作名：${String(p.action)}`);
-  if (p.risk) lines.push(`沙箱判定：${String(p.risk)}`);
-  const details = Array.isArray(p.test_details) ? (p.test_details as Record<string, unknown>[]) : [];
-  for (const d of details) {
-    const name = String(d.name ?? "未命名检查");
-    const passed = d.passed ? "通过" : "失败";
-    const detail = d.detail ? ` · ${String(d.detail)}` : "";
-    lines.push(`测试 ${name}：${passed}${detail}`);
-  }
-  let raw = "";
-  try {
-    raw = JSON.stringify(p, null, 2);
-  } catch {
-    raw = String(p);
-  }
-  return { lines, raw };
-});
-
-/** 风险描述：不用 Low/Medium/High，用具体行为描述（来自后端能力清单）。 */
-const risks = computed<string[]>(() => {
-  const out: string[] = [];
-  const has = (prefix: string) => capabilities.value.some((c) => c.startsWith(prefix));
-  const yes = (prefix: string) => capabilities.value.some((c) => c.startsWith(prefix) && c.includes("是"));
-  if (yes("联网：")) out.push("会联网");
-  if (yes("写入文件：")) out.push("会修改文件");
-  if (capabilities.value.some((c) => /读取文件：是/.test(c))) out.push("会读取文件");
-  if (yes("启动进程：")) out.push("会执行命令");
-  if (capabilities.value.some((c) => c.startsWith("使用凭据：") && !c.endsWith("无"))) {
-    out.push("会使用凭据");
-  }
-  if (!out.length && capabilities.value.length) out.push("只读");
-  return out;
-});
-
-/**
- * 高风险（会联网 / 写文件 / 执行命令 / 用凭据）：
- * 用于给批准按钮降调 —— 高风险操作不该看起来像「推荐你点它」。
- */
-const highRisk = computed(() => risks.value.some((r) => r !== "只读" && r !== "会读取文件"));
-
-/**
- * 「它会访问什么」的展示清单：去掉「副作用：write」这类内部枚举，
- * 因为「会改变什么」已经用中文回答过了；原始值仍可在高级详情里看到。
- */
-const capabilityList = computed(() => capabilities.value.filter((c) => !c.startsWith("副作用：")));
-
-/**
- * 「它会访问什么」优先用后端给出的**具体**清单（路径 / 命令 / 网址），
- * 拿不到才回落到能力枚举的中文串（spec 第 68~69 条：不要只显示
- * `fs_write path=/xxx`，也不要显示内部枚举名）。
- */
-const accessList = computed<string[]>(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const raw = p.access;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((x) => String(x)).filter((x) => x.trim().length > 0);
-});
-
-/**
- * 授权范围：用户必须知道这是一次性授权还是长期生效（spec 第 67 条第 5 问）。
- *
- * - 后端给了 `scope` 就用它（工具执行审批现在都会带）；
- * - 工具注册 / 凭据授权 / 保存长期知识本身就是长期动作，按 kind 判定；
- * - 都拿不到时按「仅这一次」表达 —— 这是当前系统真实的授权语义
- *   （审批单次使用、过期即失效），比含糊其辞诚实。
- */
-const scopeLabel = computed(() => {
-  const p = (item.value?.payload ?? {}) as Record<string, unknown>;
-  const rawScope = typeof p.scope === "string" ? p.scope : "";
-  const kind = item.value?.kind ?? "";
-  const longTerm =
-    rawScope === "long_term" ||
-    (!rawScope && ["tool_create", "credential_grant", "high_impact_knowledge"].includes(kind));
-  return longTerm
-    ? "长期生效：同意后它会一直可用（或一直生效），直到你撤销"
-    : "仅这一次：只对本次操作有效，之后同类操作会再问你";
-});
 
 /**
  * 焦点管理：
@@ -359,74 +182,8 @@ function onKeydown(e: KeyboardEvent) {
     >
       <h3 id="approval-title" :title="item.kind">{{ kindTitle(item.kind) }}</h3>
       <div class="body">
-        <!-- 1) 它想做什么 -->
-        <p class="intent">{{ intent }}</p>
-        <!-- 2) 它会访问什么：具体行为，不用 Low/Medium/High -->
-        <div v-if="risks.length" class="risk-row">
-          <span v-for="r in risks" :key="r" class="risk qio-state warn">{{ r }}</span>
-        </div>
-        <!-- 2.5) QIO 的说明（模型生成，单独成段并标注来源；缺失时不渲染） -->
-        <div v-if="qioExplanation" class="qio-explanation">
-          <div class="tag mono">◈ QIO 的说明</div>
-          <p>{{ qioExplanation }}</p>
-        </div>
-        <!-- 3) 会改变什么 / 为什么需要 / 验证了吗 -->
-        <dl v-if="changeSummary || whyNeeded || verification" class="facts">
-          <template v-if="changeSummary">
-            <dt>会改变什么</dt>
-            <dd>{{ changeSummary }}</dd>
-          </template>
-          <template v-if="whyNeeded">
-            <dt>为什么需要</dt>
-            <dd>{{ whyNeeded }}</dd>
-          </template>
-          <dt>授权范围</dt>
-          <dd>{{ scopeLabel }}</dd>
-          <template v-if="verification">
-            <dt>验证情况</dt>
-            <dd>
-              <span class="verdict qio-state" :class="verification.verified ? 'ok' : 'warn'">
-                {{ verification.label }}
-              </span>
-              <span v-if="verification.detail" class="verdict-detail">{{ verification.detail }}</span>
-            </dd>
-          </template>
-        </dl>
-        <div v-for="line in payloadView" :key="line.label" class="row">
-          <span class="label">{{ line.label }}</span>
-          <span class="value">{{ line.value }}</span>
-        </div>
-        <p v-if="!payloadView.length && !capabilities.length" class="hint">无附加信息</p>
-        <div v-if="accessList.length || capabilityList.length" class="cap-box">
-          <div class="cap-title">它会访问什么</div>
-          <ul class="cap-list">
-            <template v-if="accessList.length">
-              <li v-for="a in accessList" :key="a">{{ a }}</li>
-            </template>
-            <template v-else>
-              <li v-for="c in capabilityList" :key="c">{{ c }}</li>
-            </template>
-          </ul>
-        </div>
-        <!-- 4) 高级详情：raw params / 策略指纹 / 逐条测试结果，默认折叠 -->
-        <details v-if="advanced.lines.length || advanced.raw" class="adv">
-          <summary>高级详情</summary>
-          <ul v-if="advanced.lines.length" class="adv-list">
-            <li v-for="l in advanced.lines" :key="l">{{ l }}</li>
-          </ul>
-          <pre class="adv-raw mono">{{ advanced.raw }}</pre>
-        </details>
-        <div v-if="isSubagentCreate" class="budget-box">
-          <div class="budget-title">子 agent 执行预算（可修改后批准）</div>
-          <div class="budget-row">
-            <label>最大迭代</label>
-            <QNumber v-model="budgetForm.max_iterations" :min="1" :max="50" mono label="最大迭代" />
-            <label>最大 token</label>
-            <QNumber v-model="budgetForm.max_tokens" :min="1000" :step="1000" mono label="最大 token" />
-            <label>输出上限(字)</label>
-            <QNumber v-model="budgetForm.output_limit_chars" :min="100" mono label="输出上限" />
-          </div>
-        </div>
+        <!-- 共用事实：内联卡与本弹窗说同样的话（契约 §1.3） -->
+        <ApprovalFacts :item="item" :budget="budgetForm" @update:budget="budgetForm = $event" />
       </div>
       <p v-if="approvals.error" class="approval-error" role="alert">{{ approvals.error }}</p>
       <div class="actions">
@@ -452,7 +209,7 @@ function onKeydown(e: KeyboardEvent) {
             稍后处理
           </button>
           <button
-            v-if="isSubagentCreate"
+            v-if="facts?.isSubagentCreate"
             class="approve"
             :disabled="submitting"
             @click="approveWithBudget"
@@ -493,69 +250,12 @@ function onKeydown(e: KeyboardEvent) {
 .modal:focus { outline: none; }
 .modal:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--text-strong); }
-/* 内容变多（.facts 与高级详情）后，320px 会把「它想做什么」挤出首屏——
+/* 内容变多（事实与高级详情）后，320px 会把「它想做什么」挤出首屏——
    审批弹窗的第一句必须一眼可见，所以按视口给高度，仍然允许内部滚动。 */
 .body { max-height: min(58vh, 420px); overflow-y: auto; }
-.intent { font-size: 13.5px; line-height: 1.6; color: var(--text-primary); margin-bottom: 8px; }
-.risk-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-/* 「它会访问什么」的行为标签走统一状态徽章（warn 语义 = 需要你留意），
-   不再自己写一套底色与边框。 */
-.risk { font-family: var(--mono); letter-spacing: 0.03em; }
-/* QIO 的说明：模型文案，与系统事实在视觉上明确分开（左/右/下都是系统字段） */
-.qio-explanation {
-  margin: 10px 0 12px; padding: 10px 12px;
-  border: 1px solid var(--accent-soft); background: var(--accent-softer);
-  border-radius: var(--r-md);
-}
-.qio-explanation .tag {
-  display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
-  font-size: 10px; letter-spacing: 0.08em; color: var(--link);
-}
-.qio-explanation p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-primary); }
-.row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13px; }
-.label { color: var(--text-secondary); min-width: 64px; flex-shrink: 0; }
-.value { color: var(--text-primary); }
-.hint { color: var(--text-muted); font-size: 12px; }
-/* 「会改变什么 / 为什么需要 / 验证情况」：固定两列，标签用次要色，值必须可读 */
-.facts { margin: 0 0 10px; display: grid; grid-template-columns: 76px 1fr; gap: 4px 10px; }
-.facts dt { color: var(--text-secondary); font-size: 12.5px; }
-.facts dd { margin: 0; color: var(--text-primary); font-size: 12.5px; line-height: 1.5; }
-.verdict {
-  font-family: var(--mono); letter-spacing: 0.03em;
-}
-.verdict-detail { color: var(--text-secondary); margin-left: 8px; }
-/* 高级详情：默认折叠，普通用户不第一眼看到 raw params */
-.adv { margin-top: 10px; border-top: 1px solid var(--border-subtle); padding-top: 8px; }
-.adv > summary {
-  cursor: pointer; font-size: 12.5px; color: var(--text-secondary);
-  list-style: none; display: flex; align-items: center; gap: 6px;
-}
-.adv > summary::-webkit-details-marker { display: none; }
-.adv > summary::before {
-  content: "›"; display: inline-block; color: var(--text-muted);
-  transition: transform var(--dur-toggle) var(--ease);
-}
-.adv[open] > summary::before { transform: rotate(90deg); }
-.adv > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.adv-list { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
-.adv-raw {
-  margin: 8px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto;
-  background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: var(--r-sm);
-  font-size: 11.5px; line-height: 1.5; color: var(--text-secondary);
-  white-space: pre-wrap; word-break: break-all;
-}
-.budget-box { margin-top: 10px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; }
-.cap-box { margin-top: 10px; padding: 10px; border: 1px solid var(--border-subtle); background: var(--bg-inset); border-radius: 8px; }
-.cap-title { font-size: 12.5px; color: var(--text-strong); margin-bottom: 6px; }
-.cap-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
-.cap-list li { margin: 2px 0; }
-.budget-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
-.budget-row { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
-.budget-row label { color: var(--text-secondary); }
-.budget-row .q-number { width: 108px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 /* 按钮尺寸对齐统一按钮原语（.qio-btn）：高度 34、圆角 r-md、内边距 18。
-   以前这里是 18px 圆角 + 26px 内边距，看起来像另一个产品里的按钮。 */
+    以前这里是 18px 圆角 + 26px 内边距，看起来像另一个产品里的按钮。 */
 .actions button {
   border: none; border-radius: var(--r-md); padding: 0 18px; height: 34px;
   cursor: pointer; font-size: 13px; font-family: var(--sans);

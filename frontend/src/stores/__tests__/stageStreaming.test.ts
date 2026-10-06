@@ -340,7 +340,7 @@ describe("ASSISTANT：interim 按字段、按 delta 保真、按 seq 去重", ()
     expect(assistants(session)[1]?.streaming).toBe(true);
   });
 
-  it("守卫放行后才发现工具调用：同一段文字从正文改判为过程，不重复、不丢字", () => {
+  it("正文 → 过程的改判已废止（契约 §1.1）：同一 delta 的后续 interim 不得把正式回答移回过程区", () => {
     const { events, session } = setup();
     events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "t1" } });
     events.route({
@@ -356,7 +356,8 @@ describe("ASSISTANT：interim 按字段、按 delta 保真、按 seq 去重", ()
       data: { content: "我先说一句", interim: true, streaming: true, delta_id: "dl_c", seq: 2 },
     });
     expect(assistants(session)).toHaveLength(1);
-    expect(assistants(session)[0]?.interim).toBe(true);
+    // 已经进入正文区的文字永远不回过程区（300ms 守卫的旧行为已删除）
+    expect(assistants(session)[0]?.interim).not.toBe(true);
     expect(assistants(session)[0]?.content).toBe("我先说一句");
   });
 

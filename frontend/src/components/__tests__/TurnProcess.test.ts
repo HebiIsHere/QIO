@@ -54,15 +54,20 @@ function stage(partial: Partial<TurnStage> & { stageId: string }): TurnStage {
 }
 
 function facts(partial: Partial<TurnFacts> = {}): TurnFacts {
-  return {
+  const base: TurnFacts = {
     turnId: "turn_1",
     status: "completed",
     durationMs: null,
     queueMs: null,
     startedAt: null,
     endedAt: null,
-    ...partial,
+    reason: null,
+    reasonCode: null,
+    stoppedBy: null,
+    actions: [],
+    errorText: null,
   };
+  return { ...base, ...partial };
 }
 
 function mountProcess(props: Record<string, unknown> = {}) {
@@ -111,7 +116,7 @@ beforeEach(() => {
 });
 
 describe("过程区：状态行与当前阶段", () => {
-  it("运行中：状态行是系统事实（工具行），当前阶段突出显示，工具就在当前阶段里", async () => {
+  it("运行中：状态行给一行工具摘要、当前阶段名与最新说明可见；逐项工具卡默认收起", async () => {
     const { w, session } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
     session.turnPhase = "generating";
     await nextTick();
@@ -120,7 +125,11 @@ describe("过程区：状态行与当前阶段", () => {
     expect(status).toContain("运行中");
     expect(status).toContain("读取文件 · 1 项工具运行中");
     expect(w.find(".tp-current").text()).toContain("读取仓库结构");
-    // 运行中的工具看得见（不是被收起藏起来）
+    // 契约 §1.5：运行中不再自动展开历史，逐项工具卡不进默认可见区
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
+    expect(w.findAll(".tool-card")).toHaveLength(0);
+    // 需要时用**独立**的当前阶段明细开关展开
+    await w.find("[data-test='turn-process-stage-toggle']").trigger("click");
     expect(w.findAll(".tool-card")).toHaveLength(1);
     w.unmount();
   });
@@ -174,9 +183,8 @@ describe("展开状态：自动收起 vs 用户的选择", () => {
     const { w } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
     await nextTick();
     const toggle = w.find("[data-test='turn-process-toggle']");
-    await toggle.trigger("click"); // 收起（记为用户手动）
-    expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
-    await toggle.trigger("click"); // 再展开（用户正在阅读历史）
+    expect(toggle.attributes("aria-expanded"), "运行中不再自动展开历史").toBe("false");
+    await toggle.trigger("click"); // 用户手动展开（正在阅读历史）
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
 
     await w.setProps({ running: false, facts: facts({ status: "completed", durationMs: 1000 }) });
@@ -188,6 +196,7 @@ describe("展开状态：自动收起 vs 用户的选择", () => {
   it("用户正在上翻阅读（没在跟随底部）时，普通状态更新不强制收起", async () => {
     const { w, session } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
     await nextTick();
+    await w.find("[data-test='turn-process-toggle']").trigger("click"); // 用户手动展开
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
     session.streamFollowing = false;
     await w.setProps({ running: false, facts: facts({ status: "completed", durationMs: 1000 }) });
@@ -238,8 +247,9 @@ describe("同一内容只出现一次 / legacy 平铺", () => {
     });
     const { w } = mountProcess({ items: [first, second], stages: [], running: true });
     await nextTick();
-    // 最后一句是「当前说明」，更早的作为过程说明行渲染：同一句不出现两次
+    // 最后一句是「当前说明」；更早的在可展开历史里（默认收起）
     expect(w.find(".tp-cur-text").text()).toContain("再说一句");
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
     const lines = w.findAll(".process-line");
     expect(lines).toHaveLength(1);
     expect(lines[0]?.text()).toContain("我先说一句");
@@ -259,6 +269,8 @@ describe("同一内容只出现一次 / legacy 平铺", () => {
     const { w } = mountProcess({ items: [], stages: [multi], running: true });
     await nextTick();
     expect(w.find(".tp-cur-text").text()).toBe("正在读取仓库结构");
+    expect(w.find("[data-test='turn-process-current-notes']").exists(), "默认收起").toBe(false);
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
     const earlier = w.find("[data-test='turn-process-current-notes']");
     expect(earlier.exists()).toBe(true);
     expect(earlier.text()).toContain("先看目录");
@@ -282,6 +294,7 @@ describe("同一内容只出现一次 / legacy 平铺", () => {
     const { w } = mountProcess({ items: [narrative, tool], stages: [], running: true });
     await nextTick();
     expect(w.find(".tp-stage").exists()).toBe(false);
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
     expect(w.find("[data-test='turn-process-history']").text()).toContain("旧版过程说明");
     expect(w.findAll(".tool-card")).toHaveLength(1);
     w.unmount();
@@ -314,7 +327,7 @@ describe("内联审批：复用既有 approvals store，同一时刻只允许一
     // 内联声明生效：全局入口 / 弹窗不得再对同一条显示按钮
     expect(approvals.inlineClaimed).toBe(true);
 
-    await card.findAll(".qio-btn")[0]?.trigger("click");
+    await card.find("[data-test='turn-process-approval-allow']").trigger("click");
     expect(respondApproval).toHaveBeenCalledWith(
       "ap_1",
       "approved",

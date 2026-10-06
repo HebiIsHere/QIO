@@ -91,6 +91,44 @@ export function setProcessExpanded(key: string, open: boolean): void {
   persist();
 }
 
+/**
+ * 当前阶段**明细**（更早的说明 / 逐项调用）的展开状态。
+ *
+ * 契约 §1.5：它与整轮的「历史」抽屉**分开管理** —— 键里带 stage_id，
+ * 所以「展开历史」不会顺带展开当前阶段明细，反之亦然。
+ */
+export function stageDetailKey(
+  topicId: string | null | undefined,
+  turnId: string,
+  stageId: string,
+): string {
+  return processKey(topicId, turnId, stageId);
+}
+
+export function isStageDetailOpen(key: string): boolean {
+  load();
+  return state[key]?.open === true;
+}
+
+export function isStageDetailManual(key: string): boolean {
+  load();
+  return state[key]?.manual === true;
+}
+
+/** 用户自己点开 / 收起当前阶段明细：记 manual。 */
+export function toggleStageDetail(key: string, open: boolean): void {
+  load();
+  state[key] = { open, manual: true };
+  persist();
+}
+
+/** 自动收起当前阶段明细：不覆盖用户的手动选择。 */
+export function setStageDetailOpen(key: string, open: boolean): void {
+  load();
+  state[key] = { open, manual: false };
+  persist();
+}
+
 /** 测试用：清空会话内状态与持久化记录。 */
 export function resetProcessState(): void {
   for (const key of Object.keys(state)) delete state[key];
