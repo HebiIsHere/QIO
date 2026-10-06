@@ -2,10 +2,17 @@
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
+import AttachmentChip from "./AttachmentChip.vue";
 import { useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
 import type { MessageAttachment, StreamMessage } from "../stores/session";
+import {
+  pickLocalPath,
+  relocateAttachment,
+  retryAttachment,
+  type AttachmentRef,
+} from "../services/attachments";
 
 const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
 const session = useSessionStore();
@@ -211,26 +218,90 @@ const verifiedText = computed(() => {
  */
 const attachmentChips = computed(() => props.message.attachments ?? []);
 
-/** 字节 → 十进制单位（契约 §4.1：阈值与显示都用十进制 MB） */
-function sizeText(a: MessageAttachment): string {
-  const bytes = a.sizeBytes;
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return "";
-  if (bytes < 1000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+// -- 附件行（契约 §1.6）：显示交给 AttachmentChip，动作接在这里 ----------
+
+/** 正在处理的附件 id（打开 / 重新定位 / 重试共用）：防重复点击 */
+const attachBusyId = ref<string | null>(null);
+/** 附件操作的结果：失败必须留在这一行上，不能只写控制台 */
+const attachNotice = ref("");
+
+/** 就地更新一条附件（重新定位 / 重试会返回后端确认过的新状态） */
+function applyAttachment(next: AttachmentRef) {
+  const list = props.message.attachments;
+  if (!list) return;
+  const index = list.findIndex((a) => a.id === next.id);
+  if (index >= 0) list[index] = next;
 }
 
-const ATTACH_STATE_TEXT: Record<string, string> = {
-  prepared: "准备中",
-  ready: "",
-  failed: "准备失败",
-  missing: "文件不在了",
-  changed: "文件已变化",
-};
+/**
+ * 打开附件副本（契约 §1.6）：走附件服务（浏览器 fetch 副本 / 桌面原生打开），
+ * **绝不接受任意路径**。服务还没提供这个入口时如实说明，不给一个假动作。
+ */
+async function openOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const mod = (await import("../services/attachments")) as unknown as {
+      openAttachment?: (attachment: AttachmentRef) => Promise<void> | void;
+    };
+    if (typeof mod.openAttachment !== "function") {
+      attachNotice.value = "这个版本还没有提供「打开副本」的入口（缺少附件内容接口）";
+      return;
+    }
+    await mod.openAttachment(ref);
+  } catch (e) {
+    attachNotice.value = `打开没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
 
-function attachmentStateText(state: string): string {
-  return ATTACH_STATE_TEXT[state] ?? "";
+/**
+ * 重新定位引用型附件（契约 §1.6）：原生选择器给新路径 → 后端重新校验
+ * 大小 / 保存方式 / 状态；失败如实显示，仍可再试。
+ */
+async function relocateOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const path = await pickLocalPath();
+    if (!path) return; // 用户取消：什么也没发生，不能假装成功
+    const updated = await relocateAttachment(id, path);
+    applyAttachment(updated);
+    attachNotice.value = `已重新定位：${updated.name}`;
+  } catch (e) {
+    attachNotice.value = `重新定位没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/** 失败 / 变化后重试同一行（不新建附件） */
+async function retryOne(id: string) {
+  if (attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const updated = await retryAttachment(id);
+    applyAttachment(updated);
+  } catch (e) {
+    attachNotice.value = `重试没有成功：${(e as Error).message}`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/**
+ * 已发出消息上的「移除」：附件是这条消息的一部分，不能在这里抹掉。
+ * 说清楚而不是让按钮看起来能点却没反应。
+ */
+function removeOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  attachNotice.value = `这条消息已经发出：${ref?.name ?? "附件"} 是消息的一部分，不能在这里移除`;
 }
 </script>
 
@@ -240,25 +311,34 @@ function attachmentStateText(state: string): string {
       <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
       </div>
-      <!-- 附件行：名称 / 大小 / 「已保存副本」或「引用本地文件」/ 可用性 -->
+      <!--
+        附件行（契约 §1.6）：显示与「打开 / 重新定位 / 重试 / ×」入口由 C 的
+        AttachmentChip 负责，这里把事件接到真实动作，并把结果就地反馈。
+      -->
       <div v-if="attachmentChips.length" class="attach-row" data-test="message-attachments">
         <span
           v-for="a in attachmentChips"
           :key="a.id"
-          class="attach-chip"
+          class="attach-item"
+          data-test="message-attachment"
+          :data-id="a.id"
+          :data-kind="a.kind"
           :data-state="a.state"
-          :title="a.error || a.display"
         >
-          <span class="at-name">{{ a.name || "附件" }}</span>
-          <span class="at-meta mono">
-            <template v-if="a.display">{{ a.display }}</template>
-            <template v-if="a.display && sizeText(a)"> · </template>
-            <template v-if="sizeText(a)">{{ sizeText(a) }}</template>
-          </span>
-          <span v-if="attachmentStateText(a.state)" class="at-state">{{ attachmentStateText(a.state) }}</span>
+          <AttachmentChip
+            :attachment="a"
+            :busy="attachBusyId === a.id"
+            @open="openOne"
+            @relocate="relocateOne"
+            @retry="retryOne"
+            @remove="removeOne"
+          />
         </span>
       </div>
-      <p v-else-if="message.attachmentIds?.length" class="attach-note mono">
+      <p v-if="attachNotice" class="attach-notice" role="status" data-test="attachment-notice">
+        {{ attachNotice }}
+      </p>
+      <p v-else-if="!attachmentChips.length && message.attachmentIds?.length" class="attach-note mono">
         带了 {{ message.attachmentIds.length }} 个附件（元数据未加载）
       </p>
       <div class="meta mono">
@@ -488,32 +568,19 @@ function attachmentStateText(state: string): string {
   margin-top: 4px;
   max-width: min(620px, 100%);
 }
-.attach-chip {
+.attach-item {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  background: var(--bg-elevated);
+  align-items: center;
+  max-width: 100%;
+}
+/* 附件操作的结果（打开 / 重新定位 / 重试）：留住，不静默 */
+.attach-notice {
+  margin: 4px 0 0;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
-}
-.attach-chip[data-state="failed"],
-.attach-chip[data-state="missing"] {
-  border-color: var(--border-danger);
-  color: var(--danger);
-}
-.attach-chip[data-state="changed"] {
-  border-color: var(--warning-soft);
-  color: var(--warning);
-}
-.at-meta {
-  font-size: 10.5px;
-  color: var(--text-muted);
-}
-.at-state {
-  color: var(--danger);
+  text-align: right;
+  max-width: min(620px, 100%);
+  overflow-wrap: anywhere;
 }
 .attach-note {
   margin: 4px 0 0;

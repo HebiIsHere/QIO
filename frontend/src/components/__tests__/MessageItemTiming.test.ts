@@ -37,6 +37,11 @@ const FACTS: TurnFacts = {
   queueMs: 0,
   startedAt: null,
   endedAt: null,
+  reason: null,
+  reasonCode: null,
+  stoppedBy: null,
+  actions: [],
+  errorText: null,
 };
 
 function mountProcess() {

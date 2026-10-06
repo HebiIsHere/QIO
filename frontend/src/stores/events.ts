@@ -375,8 +375,17 @@ export const useEventStore = defineStore("events", {
               deltaId: stringOrNull(d.delta_id),
               seq: numberOrNull(d.seq),
               // 契约最终版：interim 时后端给同批 STAGE 的 stage_id 与这一批的 call_ids
-              // （正式回答 stage_id=null、call_ids=[]）
-              stageId: stringOrNull(d.stage_id),
+              // （正式回答 stage_id=null、call_ids=[]）。
+              //
+              // 显式 null 与「事件里没有这个键」语义不同（Lead 追加契约 task-6）：
+              // 显式 null = 这段文字**未归属**（等同一 delta_id 的累计快照就地归位）；
+              // 缺字段才是旧后端，才允许回落到「到达时的当前阶段」。
+              stageId:
+                d.stage_id === null
+                  ? null
+                  : typeof d.stage_id === "string" && d.stage_id.trim()
+                    ? d.stage_id
+                    : undefined,
               callIds: Array.isArray(d.call_ids) ? (d.call_ids as string[]).map(String) : [],
             });
           }
@@ -775,6 +784,11 @@ export const useEventStore = defineStore("events", {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
+      /**
+       * 每轮结束事实（契约 §1.2）：重连恢复要把 reason / actions 一起带回来 ——
+       * 旧后端没有这个字段 → 什么也不写（不伪造原因）。
+       */
+      turn_facts?: unknown;
       narratives?: {
         narrative_id?: string;
         turn_id?: string | null;
@@ -792,6 +806,8 @@ export const useEventStore = defineStore("events", {
       }[];
     }) {
       const session = useSessionStore();
+      // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
+      session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
       for (const approval of state.approvals) {
         // 恢复出来的审批不抢焦点：保留待办 + 亮出入口

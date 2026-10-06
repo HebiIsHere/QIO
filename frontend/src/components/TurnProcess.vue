@@ -2,24 +2,29 @@
 /**
  * 一轮的**唯一**过程区域（契约 §1.5）。
  *
- * 三块内容：
- * 1. 状态行：系统事实（受理中 / 运行中 / 等待确认 / 已停止 / 已完成 · 耗时）
- *    + 工具行（「正在读取文件 · 2 项工具运行中」）+ 耗时入口；
- * 2. 当前阶段：名字 + 当前说明（运行中突出显示；legacy 记录不伪造阶段）；
- * 3. 可展开历史：之前的阶段（顺序、历次说明、关联工具）+ 没有阶段归属的工具（「整轮」）。
+ * 默认可见区（运行中也不例外）= 状态行 + 当前阶段名 + 最新一条说明 + 一行工具摘要：
+ * * 运行中**不再自动展开**历史（问题 4：旧阶段 / 旧说明 / 逐项工具卡都不该默认可见）；
+ * * 历史抽屉与「当前阶段明细（逐项调用）」是**两个独立状态**，各自记自己的展开键；
+ * * 完成 / 失败 / 停止自动收起，但用户手动开过、或正在上翻阅读时不动；
+ * * 失败 / 停止显示后端给的一句话原因 + **确实可用**的操作（问题 7），详情默认折叠。
  *
- * 归并：散落的工具卡、NarrativeStage 平铺、interim 气泡、耗时面板都收进这里，
- * 同一内容只出现一次。
+ * 内联审批与弹窗共用 `ApprovalFacts.vue`（问题 1）：内联卡说完整的
+ * 「做什么 / 为什么 / 真实操作 / 范围 / 风险 / 验证 / 预算」，并提供
+ * 「查看完整信息」打开原弹窗；任一时刻同一 approval_id 只有一套有效按钮。
  *
  * 展开状态存在 store（stores/turnProcess.ts）：虚拟列表会卸载条目，组件内的 ref
  * 会在滚出视野时丢掉；键里带 topic / turn_id / stage_id，跨刷新也能恢复。
- * 完成 / 失败 / 停止时自动收起，但**用户手动展开过、或正在上翻阅读时不动**。
  */
-import { computed, onBeforeUnmount, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import MessageItem from "./MessageItem.vue";
 import NarrativeStage from "./NarrativeStage.vue";
 import TurnTimingPanel from "./TurnTimingPanel.vue";
-import { useApprovalsStore, approvalCapabilities, approvalIntent } from "../stores/approvals";
+import ApprovalFacts from "./ApprovalFacts.vue";
+import {
+  approvalFacts,
+  useApprovalsStore,
+  type ApprovalBudget,
+} from "../stores/approvals";
 import {
   currentStageOf,
   groupTurnItems,
@@ -31,9 +36,13 @@ import {
 import {
   isProcessExpanded,
   isProcessManual,
+  isStageDetailManual,
+  isStageDetailOpen,
   processKey,
   setProcessExpanded,
+  setStageDetailOpen,
   toggleProcess,
+  toggleStageDetail as toggleStageDetailState,
 } from "../stores/turnProcess";
 
 const props = defineProps<{
@@ -54,32 +63,49 @@ const props = defineProps<{
 const session = useSessionStore();
 const approvals = useApprovalsStore();
 
-/** 展开状态键：话题 + 轮（整轮级区域）—— 跨轮 / 跨话题不串 */
-const stateKey = computed(() =>
+// -- 展开状态：历史抽屉 / 当前阶段明细 分开管理 -------------------------
+
+/** 历史抽屉的键：话题 + 轮（整轮级区域）—— 跨轮 / 跨话题不串 */
+const historyKey = computed(() =>
   processKey(session.currentTopicId, props.turnId || props.items[0]?.id || "-"),
 );
-/** 用户手动开合过就尊重用户；否则运行中展开、结束后收起 */
-const manual = computed(() => isProcessManual(stateKey.value));
-const open = computed(() => isProcessExpanded(stateKey.value));
+const historyManual = computed(() => isProcessManual(historyKey.value));
+const historyOpen = computed(() => isProcessExpanded(historyKey.value));
 
-function toggle() {
-  toggleProcess(stateKey.value, !open.value);
+/** 当前阶段明细（逐项调用）的键：**带 stage_id** —— 与历史抽屉是两个独立状态 */
+const stageKey = computed(() => {
+  const stage = currentStageOf(props.stages);
+  return props.turnId && stage
+    ? processKey(session.currentTopicId, props.turnId, stage.stageId)
+    : "";
+});
+const stageDetailOpen = computed(() => !!stageKey.value && isStageDetailOpen(stageKey.value));
+
+function toggleHistory() {
+  toggleProcess(historyKey.value, !historyOpen.value);
+}
+
+function toggleStageDetail() {
+  if (!stageKey.value) return;
+  toggleStageDetailState(stageKey.value, !stageDetailOpen.value);
 }
 
 /**
- * 默认展开策略：
- * * 运行中 → 展开（工具行必须看得见，不能把「正在跑」藏起来）；
- * * 完成 / 失败 / 停止 → 收起，只留状态 + 总耗时；
- * * 用户手动开合过 → 不再自动改；
+ * 默认展开策略（契约 §1.5）：
+ * * 运行中**不自动展开**任何东西 —— 默认可见区已经够用；
+ * * 完成 / 失败 / 停止 → 自动收起历史与当前阶段明细；
+ * * 用户手动开合过 → 不再自动改（保留既有保护）；
  * * 用户正在上翻阅读（没在跟随底部）→ 不强制收起，避免把正在读的内容抽走。
  */
 watch(
   () => props.running,
   (now, before) => {
     if (now === before) return;
-    if (manual.value) return;
-    if (!now && !session.streamFollowing) return;
-    setProcessExpanded(stateKey.value, now);
+    if (now) return;
+    if (!session.streamFollowing) return;
+    if (!historyManual.value) setProcessExpanded(historyKey.value, false);
+    const key = stageKey.value;
+    if (key && !isStageDetailManual(key)) setStageDetailOpen(key, false);
   },
   { immediate: true },
 );
@@ -102,6 +128,23 @@ function toolsOf(stageId: string): StreamMessage[] {
   return tools.value.filter((m) => (m.stageId ?? "") === stageId);
 }
 const looseTools = computed(() => tools.value.filter((m) => !m.stageId));
+
+/** 当前阶段的逐项调用（默认收起：逐项工具卡不进默认可见区） */
+const currentStageTools = computed(() =>
+  currentStage.value ? toolsOf(currentStage.value.stageId) : [],
+);
+const currentStageRunningTools = computed(() =>
+  currentStageTools.value.filter((m) => m.toolStatus === "running" || m.toolRunning === true),
+);
+const currentStageDetailLabel = computed(() => {
+  const all = currentStageTools.value;
+  const bits = [`本阶段 ${all.length} 次调用`];
+  if (currentStageRunningTools.value.length) {
+    bits.push(`${currentStageRunningTools.value.length} 项运行中`);
+  }
+  return bits.join(" · ");
+});
+
 /**
  * 没有阶段归属的中间话（旧后端 / 旧记录）：仍然按过程说明行渲染。
  *
@@ -121,10 +164,33 @@ const looseInterims = computed(() => {
   });
 });
 
-/** 当前阶段的说明：STAGE 的最后一条 text（模型文案，不参与任何判定） */
+/** 这条中间话归属的阶段（找不到 = 未归属，显式 stage_id=null 的生成中文字就是这种） */
+function assignedStageId(m: StreamMessage): string {
+  const id = String(m.stageId ?? "").trim();
+  return id && stages.value.some((s) => s.stageId === id) ? id : "";
+}
+/** 未归属的中间话：它是「正在生成」的说明（契约 §1.1：等带 stage_id 的快照就地归位） */
+const unassignedInterims = computed(() =>
+  interims.value.filter((m) => m.content.trim() && !assignedStageId(m)),
+);
+const looseLiveNote = computed(
+  () => unassignedInterims.value[unassignedInterims.value.length - 1]?.content.trim() ?? "",
+);
+
+/**
+ * 当前说明（默认可见的那一句）：当前阶段的最新说明与「未归属的生成中文字」谁更新就显示谁。
+ * 两者都可能出现（先实时到达、后补 stage_id），所以按到达顺序比一次，不做猜测。
+ */
 const currentNote = computed(() => {
   const stage = currentStage.value;
-  return stage?.notes.length ? stage.notes[stage.notes.length - 1]?.text ?? "" : "";
+  const note = stage?.notes.length ? stage.notes[stage.notes.length - 1] : null;
+  const loose = unassignedInterims.value[unassignedInterims.value.length - 1];
+  if (!note) return loose?.content.trim() ?? "";
+  if (!loose) return note.text;
+  const noteIndex = props.items.findIndex((m) => m.id === note.narrativeId);
+  const looseIndex = props.items.indexOf(loose);
+  if (noteIndex === -1) return loose.content.trim();
+  return looseIndex > noteIndex ? loose.content.trim() : note.text;
 });
 /**
  * 当前阶段**更早的说明**（最新一条已经在当前阶段块里突出显示）。
@@ -173,7 +239,7 @@ const statusWord = computed(() => {
   if (props.running) {
     // 只有这条审批**确实内联在本轮过程区**时才说「等待确认」；
     // 非当前轮 / 恢复路径的审批仍由全局状态条说那句话
-    if (inlineApproval.value) return "等待确认";
+    if (inlineApproval.value && modalOwnsApproval.value === false) return "等待确认";
     return session.turnPhase === "generating" ? "运行中" : "正在处理";
   }
   if (props.queued) return "等待开始";
@@ -181,18 +247,28 @@ const statusWord = computed(() => {
   return "已结束";
 });
 
-/** 状态行里的工具 / 阶段事实（一句话，不堆状态） */
+/** 状态行里的工具 / 阶段事实（**一行**，不堆状态） */
 const statusDetail = computed(() => {
   const bits: string[] = [];
   if (runningTools.value.length) {
     const label = runningToolLabel.value || "工具";
     bits.push(`${label} · ${runningTools.value.length} 项工具运行中`);
+  } else if (props.running && tools.value.length) {
+    bits.push(`已完成 ${tools.value.length} 次调用`);
   } else if (!props.running && stages.value.length) {
     // 当前阶段块会显示阶段名，这里只在收起后（没有当前阶段块）才补一句
     const last = stages.value[stages.value.length - 1];
     if (last?.name) bits.push(last.name);
   }
-  if (failedTools.value.length) bits.push(`${failedTools.value.length} 项失败`);
+  if (failedTools.value.length) {
+    /**
+     * 失败不能只留一个计数：状态行是默认可见区，把**第一项**失败的一句话原因带上
+     * （工具参数 / 完整输出仍在展开后）。可恢复的单次工具错误由此一眼可见。
+     */
+    const reason = (failedTools.value[0]?.toolError ?? "").trim();
+    const short = reason.length > 40 ? `${reason.slice(0, 40)}…` : reason;
+    bits.push(reason ? `${failedTools.value.length} 项失败：${short}` : `${failedTools.value.length} 项失败`);
+  }
   if (cancelledTools.value.length) bits.push(`${cancelledTools.value.length} 项已取消`);
   if (unknownTools.value.length) bits.push(`${unknownTools.value.length} 项结果未收到`);
   return bits.join(" · ");
@@ -205,6 +281,64 @@ const dataState = computed(() => {
   if (props.facts?.status === "cancelled" || props.facts?.status === "stopped") return "stopped";
   return "ready";
 });
+
+// -- 问题 7：结束原因 + 确实可用的操作 ---------------------------------
+
+/** 后端给的一句话人话原因；没有就是空串（旧记录不伪造原因） */
+const reasonLine = computed(() => props.facts?.reason ?? "");
+/** 重试要重发的就是这一轮的用户消息：找不到它，按钮就不该出现 */
+const retrySource = computed(() => (props.turnId ? session.userMessageFor(props.turnId) : null));
+const canRetry = computed(
+  () => (props.facts?.actions ?? []).includes("retry") && !!retrySource.value?.content.trim(),
+);
+const canResend = computed(() => (props.facts?.actions ?? []).includes("resend"));
+const actionButtons = computed<{ key: "retry" | "resend"; label: string }[]>(() => {
+  const out: { key: "retry" | "resend"; label: string }[] = [];
+  if (canRetry.value) out.push({ key: "retry", label: "重试" });
+  if (canResend.value) out.push({ key: "resend", label: "重新发送" });
+  return out;
+});
+/** 后端列了 retry、但本地找不到这一轮的用户消息：说清为什么没有这个入口 */
+const actionNote = computed(() =>
+  (props.facts?.actions ?? []).includes("retry") && !canRetry.value
+    ? "找不到这一轮的用户消息，无法重试"
+    : "",
+);
+const actionBusy = computed(
+  () => !!props.turnId && (session.turnActionBusy ?? "").startsWith(`${props.turnId}:`),
+);
+const actionFeedback = computed(() =>
+  props.turnId ? (session.turnActionFeedback[props.turnId] ?? "") : "",
+);
+/** continue 由既有的「继续 / 停止」操作条承担：过程区只提示入口位置，绝不重复出按钮 */
+const continueHint = computed(() =>
+  (props.facts?.actions ?? []).includes("continue") && session.pendingContinue
+    ? "继续或停止请用下方的操作条"
+    : "",
+);
+/** 详情（默认折叠）：完整原因 / 错误原文 / 原因码 —— 只放真实拿到的字段 */
+const outcomeDetail = computed(() => {
+  const facts = props.facts;
+  if (!facts) return "";
+  return [
+    facts.reason ? `原因：${facts.reason}` : "",
+    facts.errorText ? `错误：${facts.errorText}` : "",
+    facts.reasonCode ? `原因码：${facts.reasonCode}` : "",
+    facts.stoppedBy ? `由谁停止：${facts.stoppedBy === "user" ? "你" : "系统"}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+});
+const hasActions = computed(
+  () => actionButtons.value.length > 0 || !!actionNote.value || !!actionFeedback.value,
+);
+const hasOutcome = computed(() => !!reasonLine.value || hasActions.value || !!continueHint.value);
+
+function runAction(kind: "retry" | "resend") {
+  const id = props.turnId;
+  if (!id || actionBusy.value) return;
+  void (kind === "retry" ? session.retryTurn(id) : session.resendTurn(id));
+}
 
 // -- 展开历史 ---------------------------------------------------------
 
@@ -221,9 +355,11 @@ const drawerSummary = computed(() => {
  * 避免同一段文字在折叠头与历史里各出现一次。
  */
 const legacyItems = computed(() => {
-  if (!props.running || !lastLooseLine.value) return props.items;
-  const last = props.items[props.items.length - 1];
-  return last ? props.items.filter((m) => m.id !== last.id) : props.items;
+  if (!props.running) return props.items;
+  // 正在显示的那一条（未归属的生成中文字）不再在历史里重复一遍
+  const live = unassignedInterims.value[unassignedInterims.value.length - 1];
+  if (!live) return props.items;
+  return props.items.filter((m) => m.id !== live.id);
 });
 
 /** legacy 平铺：一行叙事收纳它之后的调用卡（不伪造阶段） */
@@ -266,30 +402,65 @@ const approvalTitle = computed(() =>
     ? (APPROVAL_KIND_LABELS[inlineApproval.value.kind] ?? "需要你确认的操作")
     : "",
 );
-const approvalLine = computed(() =>
-  inlineApproval.value ? approvalIntent(inlineApproval.value.payload) : "",
-);
-const approvalCaps = computed(() =>
-  inlineApproval.value ? approvalCapabilities(inlineApproval.value.payload) : [],
-);
+/** 共用事实里也带着标题用的 kind；这里只取一次，供模板与提交复用 */
+const inlineFacts = computed(() => approvalFacts(inlineApproval.value));
 const approvalBusy = computed(
   () => !!inlineApproval.value && approvals.responding === inlineApproval.value.approval_id,
+);
+
+/** 子 agent 预算（内联卡里也能改后批准） */
+const approvalBudget = ref<ApprovalBudget | null>(null);
+watch(
+  () => inlineApproval.value?.approval_id,
+  () => {
+    approvalBudget.value = inlineFacts.value?.budget ?? null;
+  },
+  { immediate: true },
 );
 
 function respond(decision: "approved" | "rejected") {
   const item = inlineApproval.value;
   if (!item) return;
+  const facts = inlineFacts.value;
+  const overrides =
+    decision === "approved" && facts?.isSubagentCreate
+      ? {
+          subagent_budget: {
+            max_iterations: approvalBudget.value?.maxIterations ?? facts.budget?.maxIterations ?? 5,
+            max_tokens: approvalBudget.value?.maxTokens ?? facts.budget?.maxTokens ?? 100000,
+            output_limit_chars:
+              approvalBudget.value?.outputLimitChars ?? facts.budget?.outputLimitChars ?? 2000,
+          },
+        }
+      : undefined;
   // 按 approval_id 应答：绝不误伤队列里的下一项（重复点击由 store 挡住）
-  void approvals.respondById(item.approval_id, decision);
+  void approvals.respondById(item.approval_id, decision, overrides);
+}
+
+/** 「查看完整信息」：把这条交给原弹窗（内联卡按钮让位，复用既有 claim 机制） */
+function openFull() {
+  const item = inlineApproval.value;
+  if (item) approvals.showFull(item.approval_id);
 }
 
 /** 内联声明：本组件显示这条审批的按钮时，全局入口 / 弹窗让位（按 approval_id 门控） */
 const claimedId = computed(() => inlineApproval.value?.approval_id ?? null);
+/**
+ * 弹窗正在显示这一条 → 内联卡不再显示批准/拒绝（同一 approval_id 只有一套有效按钮）。
+ * 弹窗被「稍后处理」/ Esc 收起后，内联卡重新声明并接管。
+ */
+const modalOwnsApproval = computed(() => {
+  const id = claimedId.value;
+  return !!id && approvals.visible && approvals.current?.approval_id === id;
+});
+const inlineOwnsButtons = computed(() => !!claimedId.value && !modalOwnsApproval.value);
+
 watch(
-  claimedId,
-  (now, before) => {
-    if (before && before !== now) approvals.releaseInline(before);
-    if (now) approvals.claimInline(now);
+  [claimedId, () => approvals.visible, () => approvals.current?.approval_id ?? ""],
+  ([id]) => {
+    if (!id) return;
+    if (modalOwnsApproval.value) approvals.releaseInline(id);
+    else approvals.claimInline(id);
   },
   { immediate: true },
 );
@@ -302,7 +473,7 @@ onBeforeUnmount(() => {
 <template>
   <section
     class="turn-process"
-    :class="{ open, running, failed: failedTools.length > 0 }"
+    :class="{ open: historyOpen, running, failed: failedTools.length > 0 }"
     :data-state="dataState"
     :data-turn="turnId || undefined"
     data-test="turn-process"
@@ -314,19 +485,17 @@ onBeforeUnmount(() => {
         class="tp-toggle"
         type="button"
         data-test="turn-process-toggle"
-        :aria-expanded="open ? 'true' : 'false'"
-        :title="open ? '收起过程历史' : '展开过程历史'"
-        @click="toggle"
+        :aria-expanded="historyOpen ? 'true' : 'false'"
+        :title="historyOpen ? '收起过程历史' : '展开过程历史'"
+        @click="toggleHistory"
       >
         <span class="tp-dot" aria-hidden="true"></span>
         <span class="tp-state">{{ statusWord }}</span>
         <span v-if="statusDetail" class="tp-detail">{{ statusDetail }}</span>
-        <span v-if="hasDrawer" class="tp-chev" aria-hidden="true">{{ open ? "▾" : "▸" }}</span>
+        <span v-if="hasDrawer" class="tp-chev" aria-hidden="true">{{ historyOpen ? "▾" : "▸" }}</span>
       </button>
       <!--
         耗时入口：这里**不传 status** —— 状态词由过程区状态行唯一负责，面板只输出「耗时 X」。
-        否则折叠态会出现「状态词 · 状态词 · 耗时 2.6 秒」（2026-10-06 D 的真机截图实测）。
-        独立使用 TurnTimingPanel 时仍可传 status。
         （注释里不写状态词本身：DOM 文本计数断言不该被注释污染。）
       -->
       <span v-if="turnId && !running" class="tp-duration" data-test="turn-process-duration">
@@ -335,51 +504,116 @@ onBeforeUnmount(() => {
       <span v-if="hasDrawer && drawerSummary" class="tp-count mono">{{ drawerSummary }}</span>
     </div>
 
-    <!-- 当前阶段：名字 + 当前说明，突出显示；当前阶段的工具也在这里（运行中看得见） -->
-    <div v-if="currentStage" class="tp-current">
-      <div class="tp-cur-name serif">{{ currentStage.name || "当前阶段" }}</div>
-      <!-- 当前说明：STAGE.text 或这一批中间话的最新一句（中间话是该阶段的说明，不是并列气泡） -->
-      <p v-if="currentNote" class="tp-cur-text">{{ currentNote }}</p>
-      <MessageItem v-for="m in toolsOf(currentStage.stageId)" :key="m.id" :message="m" />
-    </div>
-    <div v-else-if="running && lastLooseLine" class="tp-current">
-      <p class="tp-cur-text">{{ lastLooseLine }}</p>
+    <!-- 问题 7：失败 / 停止的一句话原因 + 确实可用的操作；详情默认折叠 -->
+    <div v-if="hasOutcome" class="tp-outcome" data-test="turn-process-outcome">
+      <p v-if="reasonLine" class="tp-reason" data-test="turn-process-reason">{{ reasonLine }}</p>
+      <div v-if="hasActions" class="tp-outcome-actions" data-test="turn-process-actions">
+        <button
+          v-for="action in actionButtons"
+          :key="action.key"
+          class="qio-btn quiet"
+          type="button"
+          :data-test="`turn-process-action-${action.key}`"
+          :disabled="actionBusy"
+          :aria-busy="actionBusy ? 'true' : undefined"
+          @click="runAction(action.key)"
+        >
+          {{ action.label }}
+        </button>
+        <span v-if="actionNote" class="tp-outcome-note" data-test="turn-process-action-note">
+          {{ actionNote }}
+        </span>
+      </div>
+      <p v-if="continueHint" class="tp-outcome-hint" data-test="turn-process-continue-hint">
+        {{ continueHint }}
+      </p>
+      <p v-if="actionFeedback" class="tp-outcome-err" role="status" data-test="turn-process-action-error">
+        {{ actionFeedback }}
+      </p>
+      <details v-if="outcomeDetail" class="tp-outcome-detail" data-test="turn-process-outcome-detail">
+        <summary>详情</summary>
+        <pre class="tp-outcome-pre mono">{{ outcomeDetail }}</pre>
+      </details>
     </div>
 
-    <!-- 内联审批：同一过程区域内自动展开，保持可见直到用户选择 -->
+    <!-- 当前阶段：名字 + 最新说明，突出显示；逐项调用在独立开关后面（默认收起） -->
+    <div v-if="currentStage" class="tp-current" data-test="turn-process-current">
+      <div class="tp-cur-name serif">{{ currentStage.name || "当前阶段" }}</div>
+      <p v-if="currentNote" class="tp-cur-text">{{ currentNote }}</p>
+      <div v-if="currentStageTools.length" class="tp-cur-detail">
+        <button
+          class="tp-cur-detail-toggle"
+          type="button"
+          data-test="turn-process-stage-toggle"
+          :aria-expanded="stageDetailOpen ? 'true' : 'false'"
+          :title="stageDetailOpen ? '收起本阶段明细' : '展开本阶段明细'"
+          @click="toggleStageDetail"
+        >
+          <span class="tp-chev" aria-hidden="true">{{ stageDetailOpen ? "▾" : "▸" }}</span>
+          <span>{{ stageDetailOpen ? "收起本阶段明细" : currentStageDetailLabel }}</span>
+        </button>
+        <div v-if="stageDetailOpen" class="tp-cur-detail-body" data-test="turn-process-stage-tools">
+          <MessageItem v-for="m in currentStageTools" :key="m.id" :message="m" />
+        </div>
+      </div>
+    </div>
+    <!-- legacy（没有阶段）：未归属的生成中说明就是「当前说明」 -->
+    <div v-else-if="running && looseLiveNote" class="tp-current" data-test="turn-process-current">
+      <p class="tp-cur-text">{{ looseLiveNote }}</p>
+    </div>
+
+    <!-- 内联审批：事实与弹窗共用 ApprovalFacts；同一 approval_id 只有一套有效按钮 -->
     <div v-if="inlineApproval" class="tp-approval" data-test="turn-process-approval" role="group">
       <div class="tp-ap-head">
         <span class="tp-ap-mark" aria-hidden="true">!</span>
         <span class="tp-ap-title serif">{{ approvalTitle }}</span>
       </div>
-      <p class="tp-ap-intent">{{ approvalLine }}</p>
-      <p v-if="approvalCaps.length" class="tp-ap-caps mono">{{ approvalCaps.join(" · ") }}</p>
+      <ApprovalFacts
+        :item="inlineApproval"
+        :budget="approvalBudget"
+        @update:budget="approvalBudget = $event"
+      />
       <p v-if="approvals.error" class="tp-ap-err" role="status">{{ approvals.error }}</p>
       <div class="tp-ap-actions">
-        <button
-          class="qio-btn primary"
-          type="button"
-          :disabled="approvalBusy"
-          :aria-busy="approvalBusy ? 'true' : undefined"
-          @click="respond('approved')"
-        >
-          允许
-        </button>
-        <button
-          class="qio-btn"
-          type="button"
-          :disabled="approvalBusy"
-          :aria-busy="approvalBusy ? 'true' : undefined"
-          @click="respond('rejected')"
-        >
-          拒绝
-        </button>
+        <template v-if="inlineOwnsButtons">
+          <button
+            class="qio-btn"
+            type="button"
+            data-test="turn-process-approval-full"
+            @click="openFull"
+          >
+            查看完整信息
+          </button>
+          <button
+            class="qio-btn"
+            type="button"
+            data-test="turn-process-approval-reject"
+            :disabled="approvalBusy"
+            :aria-busy="approvalBusy ? 'true' : undefined"
+            @click="respond('rejected')"
+          >
+            拒绝
+          </button>
+          <button
+            class="qio-btn primary"
+            type="button"
+            data-test="turn-process-approval-allow"
+            :disabled="approvalBusy"
+            :aria-busy="approvalBusy ? 'true' : undefined"
+            @click="respond('approved')"
+          >
+            允许
+          </button>
+        </template>
+        <p v-else class="tp-ap-inmodal" data-test="turn-process-approval-in-modal">
+          这次确认已经在完整窗口中打开：按钮在那里，这里不再重复一套。
+        </p>
       </div>
     </div>
 
     <!-- 可展开历史：阶段顺序 + 历次说明 + 关联工具；legacy 记录平铺。
          收起时整块不渲染（DOM 里不存在）——「同一内容只出现一次」也包括不可见的重复。 -->
-    <div v-if="hasDrawer && open" class="tp-drawer open" data-test="turn-process-history">
+    <div v-if="hasDrawer && historyOpen" class="tp-drawer open" data-test="turn-process-history">
       <div class="tp-drawer-clip">
         <div class="tp-drawer-body">
           <template v-if="stages.length">
@@ -523,6 +757,88 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: baseline;
 }
+/* 结束原因与可用操作：失败/停止时最该先看到的东西 */
+.tp-outcome {
+  margin: 2px 0 2px 4px;
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--border-danger);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.turn-process[data-state="stopped"] .tp-outcome {
+  border-left-color: var(--border-strong);
+}
+.tp-reason {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  line-height: 1.6;
+}
+.turn-process[data-state="stopped"] .tp-reason {
+  color: var(--text-secondary);
+}
+.tp-outcome-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.tp-outcome-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.tp-outcome-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.tp-outcome-err {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+}
+.tp-outcome-detail {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.tp-outcome-detail > summary {
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  list-style: none;
+}
+.tp-outcome-detail > summary::-webkit-details-marker {
+  display: none;
+}
+.tp-outcome-detail > summary::before {
+  content: "›";
+  display: inline-block;
+  color: var(--text-muted);
+  transition: transform var(--dur-toggle) var(--ease);
+}
+.tp-outcome-detail[open] > summary::before {
+  transform: rotate(90deg);
+}
+.tp-outcome-detail > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.tp-outcome-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 /* 当前阶段：突出但不喧哗 */
 .tp-current {
   margin: 2px 0 2px 4px;
@@ -540,7 +856,36 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   line-height: 1.7;
 }
-/* 内联审批：真实操作信息 + 同一套 store 的按钮 */
+.tp-cur-detail {
+  margin-top: 2px;
+}
+.tp-cur-detail-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.tp-cur-detail-toggle:hover {
+  color: var(--text-secondary);
+}
+.tp-cur-detail-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.tp-cur-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+/* 内联审批：真实操作信息 + 与弹窗共用的按钮门控 */
 .tp-approval {
   margin: var(--sp-2) 0 var(--sp-2) var(--sp-3);
   padding: var(--sp-3);
@@ -554,6 +899,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
 }
 .tp-ap-mark {
   display: inline-flex;
@@ -572,18 +918,6 @@ onBeforeUnmount(() => {
   font-size: var(--fs-base);
   color: var(--text-strong);
 }
-.tp-ap-intent {
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  line-height: 1.7;
-}
-.tp-ap-caps {
-  margin: 2px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  word-break: break-word;
-}
 .tp-ap-err {
   margin: var(--sp-2) 0 0;
   font-size: var(--fs-sm);
@@ -593,6 +927,13 @@ onBeforeUnmount(() => {
   display: flex;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
+  flex-wrap: wrap;
+}
+.tp-ap-inmodal {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.6;
 }
 /* 展开历史：0fr→1fr 网格行做真实高度过渡（与工具卡一致） */
 .tp-drawer {

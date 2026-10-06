@@ -7,6 +7,24 @@ import {
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
+import { toAttachmentRef, type AttachmentRef } from "../services/attachments";
+
+/**
+ * 历史消息里的附件（契约 §1.6）：后端 payload 已带 id / name / size_bytes / kind / state / error，
+ * 用 C 的 `toAttachmentRef` 收敛成冻结形状 —— 历史与输入区不再各写一套解析。
+ * 形状不对的整条跳过：宁可没有这一条，也不编造文件名或状态。
+ */
+function historyAttachmentRefs(raw: unknown): MessageAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MessageAttachment[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const payload = row as Record<string, unknown>;
+    if (!String(payload.id ?? "").trim()) continue;
+    out.push(toAttachmentRef(payload));
+  }
+  return out;
+}
 
 export interface ToolPresentation {
   title?: string;
@@ -58,24 +76,11 @@ export interface NarrativeCallRecord {
 }
 
 /**
- * 消息上的附件展示形状（契约 §4.2）。
+ * 消息上的附件展示形状（契约 §4.2）：**逐字复用** C 的 `AttachmentRef`。
  *
- * 与 C 的 `services/attachments.ts::AttachmentRef` **逐字同形**（Lead 已冻结形状）。
- * 为什么这里再声明一份：附件服务由 C 落地，B 的 worktree 里还没有那个文件；
- * 集成时把这一处换成 `import type { AttachmentRef } from "../services/attachments";`
- * 即可（改一处，不要两边各改一半）。
+ * 不再自己声明一份：两份形状一旦漂移，历史附件与输入区附件就会各说一套。
  */
-export interface MessageAttachment {
-  id: string;
-  name: string;
-  sizeBytes: number;
-  /** copy = QIO 保存了副本；reference = 只记住位置（不保证内容仍然存在） */
-  kind: "copy" | "reference";
-  /** 用户看到的保存方式：只有「已保存副本」/「引用本地文件」两种 */
-  display: string;
-  state: "prepared" | "ready" | "failed" | "missing" | "changed";
-  error?: string | null;
-}
+export type MessageAttachment = AttachmentRef;
 
 /** 阶段自身状态（契约 §1.3）：只表达这个阶段，不代表整轮。 */
 export type StageStatus = "running" | "done";
@@ -107,7 +112,36 @@ export interface TurnStage {
   callIds: string[];
 }
 
-/** TURN_END 的权威事实（契约 §3）：总耗时只在轮次结束后才存在。 */
+/**
+ * 一轮结束后**确实可用**的操作（契约 §1.2）。
+ *
+ * 白名单由后端给的动作名冻结在这里：未知动作一律丢弃 —— 界面上不能出现
+ * 一个点了没有反应的按钮。
+ */
+export type TurnAction = "retry" | "resend" | "continue";
+export const TURN_ACTIONS: readonly TurnAction[] = ["retry", "resend", "continue"];
+
+/** 后端 actions 数组 → 去重、过白名单的动作列表（顺序保留）。 */
+function normalizeTurnActions(raw: unknown): TurnAction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TurnAction[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const action = item.trim() as TurnAction;
+    if (!TURN_ACTIONS.includes(action)) continue;
+    if (!out.includes(action)) out.push(action);
+  }
+  return out;
+}
+
+/**
+ * TURN_END 的权威事实（契约 §3 / §1.2）：总耗时与结束原因都只在轮次结束后才存在。
+ *
+ * 结束原因/可用操作全部来自后端（已脱敏）：
+ * * 旧记录没有这些字段 → reason/reasonCode 为 null、actions 为空，
+ *   界面**不伪造**原因，也不给一个点不动的按钮；
+ * * 单次可恢复的工具错误不等于整轮失败（status 语义不变）。
+ */
 export interface TurnFacts {
   turnId: string;
   status: string;
@@ -115,6 +149,16 @@ export interface TurnFacts {
   queueMs: number | null;
   startedAt: string | null;
   endedAt: string | null;
+  /** 一句话人话原因（后端 redact 过）；没有就是 null */
+  reason: string | null;
+  /** 机器可读原因码（provider_error / tool_failed / budget / no_progress / guard_halt / user_stopped / interrupted / none） */
+  reasonCode: string | null;
+  /** 谁停的：user / system；没有就是 null */
+  stoppedBy: "user" | "system" | null;
+  /** 后端明确「当前确实可用」的操作（只渲染这些） */
+  actions: TurnAction[];
+  /** 失败/停止的完整错误文本：只进默认折叠的「详情」 */
+  errorText: string | null;
 }
 
 /**
@@ -710,8 +754,12 @@ export const useSessionStore = defineStore("session", {
     freshIds: [] as string[],
     /** 按 turn_id 组织的阶段（契约 §1.3：系统生成，前端只消费，不能自己造） */
     stagesByTurn: {} as Record<string, TurnStage[]>,
-    /** 每轮 TURN_END 的权威事实（总耗时 / 状态）：折叠态不展开也要显示 */
+    /** 每轮 TURN_END 的权威事实（总耗时 / 状态 / 结束原因）：折叠态不展开也要显示 */
     turnFacts: {} as Record<string, TurnFacts>,
+    /** 问题 7 的可用操作失败反馈：按 turn_id 留在那一轮上（不静默、可重试） */
+    turnActionFeedback: {} as Record<string, string>,
+    /** 正在提交的操作（`turnId:action`）：防重复提交 */
+    turnActionBusy: null as string | null,
   }),
   getters: {
     /**
@@ -737,6 +785,14 @@ export const useSessionStore = defineStore("session", {
     /** 某一轮 TURN_END 的权威事实（没有 = 还在跑 / 旧记录） */
     factsFor: (state) => (turnId?: string | null): TurnFacts | null =>
       turnId ? (state.turnFacts[turnId] ?? null) : null,
+    /**
+     * 某一轮的**用户消息**：问题 7 的「重试」要重发的就是它。
+     * 旧记录没有 turn_id / 已经不在消息流里 → null（界面据此不显示重试按钮）。
+     */
+    userMessageFor: (state) => (turnId?: string | null): StreamMessage | null =>
+      turnId
+        ? (state.messages.find((m) => m.role === "user" && m.turnId === turnId) ?? null)
+        : null,
   },
   actions: {
     _nextId() {
@@ -1356,13 +1412,15 @@ export const useSessionStore = defineStore("session", {
     /**
      * 一条助手正文到达（ASSISTANT 事件）。
      *
-     * 契约 §2.1 / §2.2：
+     * 契约 §1.1 / §2.1（Lead 追加契约 task-6）：
      * * `content` 是**累计全文**（同一个 delta_id 每次替换，不做增量拼接）；
      * * `delta_id` 标识一次模型调用，`seq` 单调，(delta_id, seq) 用来丢弃重复 / 迟到事件；
      * * 同一轮里**不同 delta 绝不互相覆盖**：换 delta 之前先把上一条落定，
-     *   否则第二次 interim 会把第一段过程说明吃掉（task-2 要求修掉的缺陷）；
-     * * 角色只允许「正文 → 过程」改判：interim 一旦为 true 就不再回到正文区
-     *   （唯一例外是 TURN_END 的 final_content 校准，见 applyFinalAnswer）。
+     *   否则第二次 interim 会把第一段过程说明吃掉；
+     * * 唯一允许的角色改判是 **interim → 正式回答**（提升）：该次调用结束且没有工具调用时，
+     *   后端对同一个 delta_id 再发一条 `{interim:false, content:累计全文}`，这段文字
+     *   原样升到正文区（同一条消息、不重打、不重复）；**正式回答 → 过程区永远不允许**；
+     * * 显式 `stage_id=null` 表示「未归属」，不按「到达时的当前阶段」猜；缺字段才是旧后端。
      */
     pushAssistant(
       text: string,
@@ -1381,11 +1439,18 @@ export const useSessionStore = defineStore("session", {
       const seq =
         typeof meta.seq === "number" && Number.isFinite(meta.seq) ? Math.trunc(meta.seq) : null;
       /**
-       * 中间话归属：优先用事件自带的 stage_id（契约最终版）；旧后端没有这个字段时
-       * 才退回「到达时的当前阶段」。归属只看 stage_id，不靠消息相邻位置。
+       * 中间话归属：显式给的 stage_id 优先；**只有缺字段**（旧后端）才回落到
+       * 「到达时的当前阶段」。归属只看 stage_id，不靠消息相邻位置。
+       *
+       * 显式 `null` 是「这段文字暂时未归属」：后端随后会用同一 delta_id 补发带
+       * stage_id 的累计快照，那时就地归位（见下面 existing 分支）。若在这里按
+       * 「当前阶段」猜归属，同一段字会在两个阶段各留一条说明（Lead 追加契约 task-6）。
        */
+      const explicitStage = meta.stageId === null ? null : String(meta.stageId ?? "").trim();
       const stageId = interim
-        ? String(meta.stageId ?? "").trim() || this._currentStageIdFor(this.activeTurnId)
+        ? explicitStage === null
+          ? null
+          : explicitStage || this._currentStageIdFor(this.activeTurnId)
         : null;
       /**
        * 这一批的工具调用 id：系统事实，登记到阶段上（TOOL_START 没给 stage_id 时补归属）。
@@ -1405,20 +1470,50 @@ export const useSessionStore = defineStore("session", {
         ? this.messages.find((m) => m.role === "assistant" && m.assistantDeltaId === deltaId)
         : undefined;
       if (existing) {
-        // 去重：seq 不大于已收最大值的一律丢弃（重连重放 / 重复事件不回退）
-        if (seq !== null && existing.assistantSeq !== undefined && seq <= existing.assistantSeq) {
+        /**
+         * 唯一允许的角色改判：**interim → 正式回答**（提升）。
+         *
+         * 该次调用结束且没有工具调用时，后端对同一个 delta_id 再发一条
+         * `{interim:false, streaming:false, content:累计全文}`：这段文字原样升到正文区，
+         * 同一条消息、不重打、不重复。反向（正式回答 → 过程区）**永远不允许**。
+         */
+        const promoting = interim === false && existing.interim === true;
+        // 去重：seq 不大于已收最大值的一律丢弃（重连重放 / 重复事件不回退）。
+        // 提升是角色变化而不是重复：后端补发的累计快照可能带同一个 seq，必须放行。
+        if (
+          !promoting &&
+          seq !== null &&
+          existing.assistantSeq !== undefined &&
+          seq <= existing.assistantSeq
+        ) {
           return;
         }
         this._touchAssistantDelta(existing, streaming);
         existing.content = text;
-        if (seq !== null) existing.assistantSeq = seq;
-        // 只允许 正文 → 过程 这一个方向
-        if (interim) {
+        if (seq !== null) {
+          existing.assistantSeq = Math.max(seq, existing.assistantSeq ?? seq);
+        }
+        if (promoting) {
+          existing.interim = false;
+          // 正式回答永远不挂阶段，而且这段文字不能再作为阶段说明出现（否则出现两次）
+          const before = String(existing.stageId ?? "");
+          delete existing.stageId;
+          if (before) this._detachInterimNote(existing, before);
+          return;
+        }
+        // 提升之后不再接受任何往过程区的改判（interim === false 是明确的正式回答）
+        if (interim && existing.interim !== false) {
           existing.interim = true;
+          const before = String(existing.stageId ?? "");
           if (stageId) {
+            if (before && before !== stageId) this._detachInterimNote(existing, before);
             existing.stageId = stageId;
             // 说明挂到该阶段（累计快照：同一条说明原地更新，不新增）
             this._attachInterimNote(existing, stageId);
+          } else if (explicitStage === null && before) {
+            // 显式未归属：先摘掉旧阶段的说明，等带 stage_id 的快照归位
+            delete existing.stageId;
+            this._detachInterimNote(existing, before);
           }
         }
         return;
@@ -1445,7 +1540,8 @@ export const useSessionStore = defineStore("session", {
         role: "assistant",
         content: text,
         contentType: "text",
-        ...(interim ? { interim: true } : {}),
+        // interim 显式写成布尔：缺省的 undefined 无法区分「正式回答」与「还没定角色」
+        interim: interim === true,
         ...(streaming ? { streaming: true } : {}),
         ...(deltaId ? { assistantDeltaId: deltaId } : {}),
         ...(seq !== null ? { assistantSeq: seq } : {}),
@@ -1486,6 +1582,23 @@ export const useSessionStore = defineStore("session", {
         at: message.createdAt,
       });
       // 重新赋值一次：让嵌套改动也走一遍响应式更新（与 upsertStage 保持一致）
+      this.stagesByTurn = { ...this.stagesByTurn, [turnId]: [...(list ?? [])] };
+    },
+    /**
+     * 把一条中间话从它的阶段说明里摘掉（按消息 id 认）。
+     *
+     * 用到它的两种情形都属于**归属变化**，不是「丢掉内容」：
+     * * interim → 正式回答提升：这段文字改由正文区承担，过程区不能再留一份；
+     * * 同一 delta 的累计快照换了 stage_id（或变成显式未归属）：旧阶段不该留旧文字。
+     */
+    _detachInterimNote(message: StreamMessage, stageId: string) {
+      const turnId = message.turnId ?? this.activeTurnId ?? "";
+      const list = this.stagesByTurn[turnId];
+      const stage = list?.find((s) => s.stageId === stageId);
+      if (!stage) return;
+      const before = stage.notes.length;
+      stage.notes = stage.notes.filter((n) => n.narrativeId !== message.id);
+      if (stage.notes.length === before) return;
       this.stagesByTurn = { ...this.stagesByTurn, [turnId]: [...(list ?? [])] };
     },
     /**
@@ -1755,11 +1868,18 @@ export const useSessionStore = defineStore("session", {
       };
     },
 
-    /** TURN_END 的权威事实（契约 §3）：总耗时等只在这里落地，缺失就是 null（不是 0）。 */
+    /**
+     * TURN_END 的权威事实（契约 §3 / §1.2）：耗时与结束原因只在这里落地，
+     * 缺失就是 null（不是 0），**旧记录不伪造原因**。
+     */
     recordTurnFacts(turnId: string, d: Record<string, unknown>) {
       if (!turnId) return;
       const num = (value: unknown): number | null =>
         typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+      const text = (value: unknown): string | null => {
+        const s = typeof value === "string" ? value.trim() : "";
+        return s ? s : null;
+      };
       this.turnFacts = trimTurnMap({
         ...this.turnFacts,
         [turnId]: {
@@ -1769,8 +1889,30 @@ export const useSessionStore = defineStore("session", {
           queueMs: num(d.queue_ms),
           startedAt: typeof d.started_at === "string" ? d.started_at : null,
           endedAt: typeof d.ended_at === "string" ? d.ended_at : null,
+          // 结束原因：只写后端真实给过的字段；旧记录没有 → null，界面不编造
+          reason: text(d.reason),
+          reasonCode: text(d.reason_code),
+          stoppedBy: d.stopped_by === "user" || d.stopped_by === "system" ? d.stopped_by : null,
+          // 只列后端说「当前确实可用」的操作（未知 / 重复 / 非字符串丢弃）
+          actions: normalizeTurnActions(d.actions),
+          errorText: text(d.error ?? d.message),
         },
       });
+    },
+    /**
+     * 历史分页 / RESYNC 快照里的每轮结束事实（契约 §1.2）。
+     *
+     * 形状不对的整条跳过：宁可没有原因，也不伪造一个原因。
+     */
+    applyTurnFactsSnapshot(rows: unknown) {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const turnId = typeof r.turn_id === "string" ? r.turn_id.trim() : "";
+        if (!turnId) continue;
+        this.recordTurnFacts(turnId, r);
+      }
     },
 
     /**
@@ -2123,6 +2265,11 @@ export const useSessionStore = defineStore("session", {
         const ctx = await api.getSessionContext(HISTORY_PAGE_SIZE);
         // 归属校验（成功路径）：期间换了话题 / 又发起了新的加载 → 这一份是旧答案
         if (!this._historyResultBelongs(seq, topicAtStart)) return;
+        /**
+         * 每轮结束事实（契约 §1.2）：历史分页同样要带回 reason / actions ——
+         * 刷新后失败的那一轮仍然说得出为什么。旧记录没有这个字段 → 什么也不写。
+         */
+        this.applyTurnFactsSnapshot((ctx as unknown as { turn_facts?: unknown }).turn_facts);
         this.currentTopicId = ctx.topic_id;
         this.topicName = ctx.topic_name ?? null;
         this.anchorFragment = ctx.anchor_fragment ?? null;
@@ -2302,7 +2449,10 @@ export const useSessionStore = defineStore("session", {
       created_at: string;
       turn_id?: string | null;
       raw?: string;
+      /** 附件（契约 §1.6）：历史消息同样要能打开副本 / 重新定位 */
+      attachments?: unknown;
     }): StreamMessage {
+      const attachments = historyAttachmentRefs(m.attachments);
       if (m.content_type === "narrative") {
         // 历史里的叙事行：模型文案 + 系统生成的调用摘要（工具卡本身不进历史）
         const meta = parseNarrativeRaw(m.raw);
@@ -2334,6 +2484,8 @@ export const useSessionStore = defineStore("session", {
         ...(m.role === "assistant" && parseVerifiedRaw(m.raw)
           ? { verified: parseVerifiedRaw(m.raw) as VerifiedFact }
           : {}),
+        // 附件行：名称/大小/保存方式/可用性（打开与重新定位入口在 MessageItem）
+        ...(attachments.length ? { attachments } : {}),
       };
     },
     /**
@@ -2394,6 +2546,66 @@ export const useSessionStore = defineStore("session", {
       if (this.history.status === "loading") return;
       await this.loadHistory();
     },
+    /** 清掉某一轮的操作反馈（新的尝试开始时旧错误不再显示） */
+    clearTurnActionFeedback(turnId: string) {
+      if (!turnId || !this.turnActionFeedback[turnId]) return;
+      const next = { ...this.turnActionFeedback };
+      delete next[turnId];
+      this.turnActionFeedback = next;
+    },
+    /** 记一次可用操作的失败：留在那一轮上，用户能看见，也能再点一次 */
+    setTurnActionFeedback(turnId: string, message: string) {
+      if (!turnId) return;
+      this.turnActionFeedback = { ...this.turnActionFeedback, [turnId]: message };
+    },
+    /**
+     * 问题 7 的「重试」：用现有发送接口重发**这一轮的用户消息**（新开一轮）。
+     *
+     * 找不到这一轮的用户消息（旧记录没有 turn_id、或它已经不在消息流里）时
+     * **不发请求**，如实反馈「找不到」—— 过程区也不会显示这个按钮。
+     */
+    async retryTurn(turnId: string): Promise<boolean> {
+      if (!turnId || this.turnActionBusy === `${turnId}:retry`) return false;
+      const source = this.userMessageFor(turnId);
+      const text = (source?.content ?? "").trim();
+      if (!text) {
+        this.setTurnActionFeedback(turnId, "找不到这一轮的用户消息，无法重试");
+        return false;
+      }
+      this.turnActionBusy = `${turnId}:retry`;
+      this.clearTurnActionFeedback(turnId);
+      try {
+        const ok = await this.send(text, source?.attachmentIds, source?.attachments);
+        if (!ok) {
+          this.setTurnActionFeedback(
+            turnId,
+            `重试没有发出去：${this.lastError ?? "请求未被受理"}（可以再试一次）`,
+          );
+        }
+        return ok;
+      } finally {
+        this.turnActionBusy = null;
+      }
+    },
+    /**
+     * 问题 7 的「重新发送」：走既有的 `POST /api/turns/{id}/resend`（后端一次性 claim）。
+     *
+     * 409（已经有结局 / 已被抢占）如实说明；失败保留可重试，绝不静默。
+     */
+    async resendTurn(turnId: string): Promise<boolean> {
+      if (!turnId || this.turnActionBusy === `${turnId}:resend`) return false;
+      this.turnActionBusy = `${turnId}:resend`;
+      this.clearTurnActionFeedback(turnId);
+      try {
+        await api.resendInterruptedTurn(turnId);
+        return true;
+      } catch (e) {
+        this.setTurnActionFeedback(turnId, `重新发送没有成功：${(e as Error).message}（可以重试）`);
+        return false;
+      } finally {
+        this.turnActionBusy = null;
+      }
+    },
     /**
      * 发送一轮消息。turnRunning 时后端会排队（TURN_QUEUE 事件回执），
      * 因此仍然允许提交：本地先以「等待中」状态呈现，不阻塞用户写下一条。
@@ -2418,10 +2630,12 @@ export const useSessionStore = defineStore("session", {
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
       try {
-        // 没有附件时保持既有调用形状（两个参数）——附件是**增量**，不该改变原有链路
-        const res = ids.length
-          ? await api.sendTurn(message, this.currentTopicId, ids)
-          : await api.sendTurn(message, this.currentTopicId);
+        /**
+         * 附件显式绑定（契约 §1.4）：**无条件**带第三个参数 —— 空数组也是
+         * 「这条消息没有附件」的显式语义。不传参数 = 缺字段 = 旧客户端，
+         * 后端会走兜底把该话题下遗留的未绑定附件绑上（审计问题 3）。
+         */
+        const res = await api.sendTurn(message, this.currentTopicId, ids);
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
