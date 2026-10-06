@@ -11,7 +11,7 @@
   - 冲突、依赖、材料变化与权限都由服务端判定，这里只显示结果，不自己下结论。
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
   batchesWithList,
@@ -39,6 +39,39 @@ const selectedByBatch = ref<Record<string, string[]>>({});
 const busy = ref(false);
 const notice = ref<string | null>(null);
 const error = ref<string | null>(null);
+
+/**
+ * 面板可用的最大高度：不能越过底部悬浮工具栏，入口与提交区必须始终可见可点。
+ *
+ * 优先用页面壳维护的 --im-toolbar-clearance；拿不到就自己量页面上**最下面那条**工具栏
+ * （[role="toolbar"]，即页面壳底部工具栏）的顶边；工具栏由别的组件渲染，这里只读不写。
+ */
+const panelMax = ref<string | null>(null);
+
+function measureClearance(): void {
+  if (typeof document === "undefined") return;
+  // 取最下面那条工具栏（页面壳底部工具栏）：面板不许越过它；拿不到就退回 CSS 变量兜底
+  const bars = Array.from(document.querySelectorAll('[role="toolbar"]'));
+  let bottom: Element | null = null;
+  for (const el of bars) {
+    if (!bottom || el.getBoundingClientRect().top > bottom.getBoundingClientRect().top) bottom = el;
+  }
+  const clearance = bottom
+    ? Math.round(Math.max(0, window.innerHeight - bottom.getBoundingClientRect().top) + 16)
+    : null;
+  panelMax.value = "min(60vh, calc(100% - " + (clearance ?? 120) + "px - var(--sp-4)))";
+}
+
+const onResize = () => window.setTimeout(measureClearance, 0);
+
+onMounted(() => {
+  measureClearance();
+  window.addEventListener("resize", onResize);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
+});
 
 /** 入口只说明「这一批」与「其他批次还等着多少」，不把不同批次相加 */
 function entryText(batch: IntentBatch): string {
@@ -163,7 +196,13 @@ watch(
       <span class="entry-arrow" aria-hidden="true">{{ store.batchOpen ? "收起" : "展开" }}</span>
     </button>
 
-    <section v-if="store.batchOpen" id="im-batch-list" class="panel" data-im="batch-list">
+    <section
+      v-if="store.batchOpen"
+      id="im-batch-list"
+      class="panel"
+      data-im="batch-list"
+      :style="panelMax ? { maxHeight: panelMax } : undefined"
+    >
       <header class="panel-head">
         <h2 class="panel-title">同一批的待审批条目</h2>
         <button class="close" type="button" data-im="batch-close" @click="store.batchOpen = false">
