@@ -72,10 +72,18 @@
 
 ### 1.4 可见范围（权限边界，B 负责实现）
 
-**允许查看的注释** = `checked && !hidden && !deleted && kind !== 'reply'`（`models.py:selectable_cards`）。
+**允许查看的范围**由 `models.py:selectable_cards` **唯一实现**（前后端与提交载荷都用它）：
 
-- 未勾选 = QIO 完全看不到它的文字与注释链接，包括提交的前后状态。
+| 卡片 | 默认是否允许查看 | 说明 |
+| --- | --- | --- |
+| 文字注释 `text`（说明 / 态度 / 优先级 / 任务要求） | **否**，勾选后才允许 | 未勾选 = QIO 完全看不到它的文字与注释链接，包括提交的前后状态 |
+| 材料 `file` / `image` / `code` / `url` | 是 | 添加材料本身不等于要求总结、比较、修改或执行（那是意图问题，不是可见性问题） |
+| QIO 结果 `reply` | — | 是 QIO 自己的产出，不是用户表达，不进提交载荷 |
+| 任意卡片 `hidden=true` | 否 | 明确隐藏 = 退出讨论范围 |
+| `deleted=true` | 否 | 已删除的卡片不进范围 |
+
 - 勾选只表示本次允许查看，仍须提交；提交成功后自动取消勾选（不是删除或撤回）。
+- 勾选框只出现在文字注释上（材料没有这个选择框）。
 - 提交时两份状态都**限于本次允许查看的范围**；范围外的一切都不进提交载荷。
 - 组名是独立关系依据：组内至少有一名可见成员时，提交载荷包含该组名，但**只列出可见成员**；
   一名可见成员都没有的组整体不出现（否则组名会间接暴露被隐藏注释的存在）。
@@ -99,7 +107,10 @@
 `kind` 取值：`note_added | note_edited | note_deleted | material_added | material_removed |
 link_added | link_removed | link_meaning_changed | group_formed | group_merged | group_renamed |
 group_membership_changed | order_changed | ordered_changed | focus_selection | layout_only`。
-`layout_only` 与 `focus_selection` 的 `intentBearing` 为 `false`（位置 / 大小不构成意图依据）。
+`intentBearing=false`（不作为意图依据，但仍记录为板面变化）：
+`layout_only`、`material_added`、`material_removed`、`note_deleted`、`link_removed`。
+其余表达式 `intentBearing=true`；`focus_selection` 表示仍然有效的关注范围。
+见 `models.NON_INTENT_EXPRESSIONS`。
 
 ### 1.6 意图与审批（C 负责实现）
 
