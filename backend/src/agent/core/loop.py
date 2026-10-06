@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from agent.adapters.errors import UnsupportedCapability
+from agent.adapters.errors import ProviderError, ProviderInternalError, UnsupportedCapability
 from agent.adapters.base import (
     STREAM_DONE,
     STREAM_TEXT,
@@ -1343,7 +1343,15 @@ class AgentLoop:
                 EventType.ERROR,
                 {"code": "planning_failed", "message": str(exc)[:200], "recoverable": False},
             )
-            raise
+            # 这个 try 里只跑**模型调用**（工具、存储、审批都在它之外）：从这条
+            # 路径逃出来的任何异常都是**供应商路径**的失败。适配器已经归一化过的
+            # 错误原样上抛；其它异常如实包一层 ProviderInternalError（原类名与原
+            # 文都保留在消息里），否则上层只拿得到一个普通 RuntimeError 的类名，
+            # 会把「厂商返回 500」误报成内部故障（TURN_END 的 reason_code 是产品
+            # 事实，不能靠猜）。
+            if isinstance(exc, ProviderError):
+                raise
+            raise ProviderInternalError(f"{type(exc).__name__}: {exc}") from exc
 
     async def _await_completion(
         self, messages: list[ChatMessage], tools: list[ToolSpec]

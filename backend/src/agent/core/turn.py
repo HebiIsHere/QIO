@@ -106,8 +106,11 @@ ACTIONS_BY_REASON: dict[str, tuple[str, ...]] = {
     "none": (),
 }
 
-# 没有「更具体原因」可用时的系统事实文案（与 services/app.py 的既有口径一致）。
-INTERRUPTED_REASON = "进程结束前这一轮还没有跑完。"
+# 没有「更具体原因」可用时的**系统事实**文案（不猜原因、不重复状态词）。
+# 用户停止 / 程序中断同样必须有人话原因：plan §1.2 要求除 none 之外的每个
+# reason_code 都能回答「为什么停下来」，否则前端只能显示一个状态词。
+USER_STOPPED_REASON = "你按下了停止，这一轮不再继续生成。"
+INTERRUPTED_REASON = "程序在这次回答结束前中断了。"
 NO_CREDENTIAL_REASON = "还没有配置可用的模型凭据（设置 → 凭据），这一轮没有开始。"
 
 # 人话原因的上限（plan §1.2：≤200 字）。
@@ -489,7 +492,11 @@ class TurnManager:
             # 谁停的：用户按的停止优先（进程恰好也在收尾不影响这个事实）；
             # 只有「没有任何人按停止、进程自己掐断」才是 interrupted。
             if ctx.cancelled:
-                code, stopped_by, reason = "user_stopped", "user", None
+                code, stopped_by, reason = (
+                    "user_stopped",
+                    "user",
+                    USER_STOPPED_REASON,
+                )
             else:
                 code, stopped_by, reason = "interrupted", "system", INTERRUPTED_REASON
         elif status == "unavailable":
