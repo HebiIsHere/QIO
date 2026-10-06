@@ -211,6 +211,52 @@ def _progress_shape(progress: Any, preview: dict | None = None) -> dict:
     return {"done": done, "total": total, "text": str(data.get("text") or "")}
 
 
+#: progress 里的私有键：材料指纹与执行者身份。它们不进接口负载（_progress_shape 会剥离），
+#: 但必须跨状态保留——恢复流程一旦重建 progress，材料保护就会失效。
+_PRIVATE_PROGRESS_KEYS = ("__materialWatch", "__ownerInstance")
+
+
+def _progress_private(row: sqlite3.Row) -> dict:
+    progress = models.loads(row["progress"], {})
+    if not isinstance(progress, dict):
+        return {}
+    return {key: progress[key] for key in _PRIVATE_PROGRESS_KEYS if key in progress}
+
+
+def _owner_instance(row: sqlite3.Row) -> str | None:
+    """这项 running 任务属于哪个进程实例（没有记录时返回 None）。"""
+    owner = _progress_private(row).get("__ownerInstance")
+    return str(owner) if owner else None
+
+
+def _stored_progress(
+    row: sqlite3.Row,
+    *,
+    text: str | None = None,
+    done: int | None = None,
+    total: int | None = None,
+    watch: dict | None = None,
+    owner: str | None = None,
+    drop_owner: bool = False,
+) -> dict:
+    """构造写回数据库的 progress（保留私有键）；接口负载仍由 _progress_shape 剥离私有键。"""
+    base = _progress_shape(models.loads(row["progress"], {}))
+    payload = {
+        "done": base["done"] if done is None else done,
+        "total": base["total"] if total is None else total,
+        "text": base["text"] if text is None else text,
+    }
+    private = _progress_private(row)
+    if watch is not None:
+        private["__materialWatch"] = watch
+    if owner is not None:
+        private["__ownerInstance"] = owner
+    if drop_owner:
+        private.pop("__ownerInstance", None)
+    payload.update(private)
+    return payload
+
+
 def _card_semantic(card: dict) -> dict:
     """卡片语义：位置、大小、折叠、书签都不算语义（只影响显示）。"""
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
@@ -537,7 +583,11 @@ def list_intents(conn: sqlite3.Connection, board_id: str) -> dict:
 
 
 def approve_intent(
-    conn: sqlite3.Connection, intent_id: str, *, confirm_dependency: bool = False
+    conn: sqlite3.Connection,
+    intent_id: str,
+    *,
+    confirm_dependency: bool = False,
+    instance_id: str | None = None,
 ) -> dict:
     """批准一项意图。
 
@@ -610,17 +660,20 @@ def approve_intent(
                 "intent": payload,
                 "waitingFor": [],
             }
-        running_progress = dict(_progress_shape({"done": 0, "text": "执行中"}, preview))
-        # 开始执行时记下材料的指纹：之后用户改动这些材料就能被保护住（§1.6）
-        watch = _watch_for(conn, row)
-        if watch:
-            running_progress["__materialWatch"] = watch
+        # 开始执行时记下材料指纹与执行者身份（§1.6）：材料保护靠指纹，
+        # 「重启才降级为暂停」靠身份，否则刷一次列表就会把自己正在执行的任务暂停掉。
         _update(
             conn,
             row["id"],
             status="running",
             reason="已确认开始：前项已完成，任务开始执行。",
-            progress=running_progress,
+            progress=_stored_progress(
+                row,
+                text="执行中",
+                done=0,
+                watch=_watch_for(conn, row) or None,
+                owner=instance_id,
+            ),
         )
         fresh = _get_row(conn, intent_id)
         assert fresh is not None
@@ -649,16 +702,14 @@ def approve_intent(
             "detail": "已批准；前项成功完成后还需要你再次确认才会开始。",
             "waitingFor": pending_deps,
         }
-    pending_progress = dict(_progress_shape({"done": 0, "text": "执行中"}, preview))
-    watch = _watch_for(conn, row)
-    if watch:
-        pending_progress["__materialWatch"] = watch
     _update(
         conn,
         row["id"],
         status="running",
         reason="已批准：任务开始执行。",
-        progress=pending_progress,
+        progress=_stored_progress(
+            row, text="执行中", done=0, watch=_watch_for(conn, row) or None, owner=instance_id
+        ),
     )
     fresh = _get_row(conn, intent_id)
     assert fresh is not None
@@ -1267,7 +1318,7 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
             row["id"],
             status="paused",
             reason="演示：任务已暂停并保留进度；重新打开不会自动继续，需要你确认。",
-            progress=_progress_shape({"done": 0, "text": "已暂停（演示）"}, preview),
+            progress=_stored_progress(row, text="已暂停（演示）"),
         )
         fresh = _get_row(conn, intent_id)
         assert fresh is not None
@@ -1284,7 +1335,7 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
                 "演示：任务已完成，预览已经成为正式内容（新增结果卡片 / 组 / 链接与用户手动操作一致）。"
                 "第一阶段没有真实模型执行，所以这里的结果是可控演示，不代表真实 QIO 判断。"
             ),
-            progress=_progress_shape({"done": total, "total": total, "text": "已完成（演示）"}, preview),
+            progress=_stored_progress(row, text="已完成（演示）", done=total, total=total),
         )
         _refresh_dependency_states(conn, row["board_id"])
         fresh = _get_row(conn, intent_id)
@@ -1309,13 +1360,11 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
         status=outcome,
         revert=report,
         reason=f"{failure_text}{report['reasonText']}不会自动重试。",
-        progress=_progress_shape(
-            {
-                "done": 0,
-                "total": total,
-                "text": "失败（演示）：已撤回" if outcome == "failed" else "已取消（演示）",
-            },
-            preview,
+        progress=_stored_progress(
+            row,
+            done=0,
+            total=total,
+            text="失败（演示）：已撤回" if outcome == "failed" else "已取消（演示）",
         ),
     )
     fresh = _get_row(conn, intent_id)
@@ -1329,19 +1378,30 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
     }
 
 
-def recover_running_intents(conn: sqlite3.Connection, board_id: str) -> dict:
-    """重启恢复：上次进程遗留的 running 降级为 paused（重新打开不自动继续）。"""
+def recover_running_intents(
+    conn: sqlite3.Connection, board_id: str, *, instance_id: str | None = None
+) -> dict:
+    """重启恢复：把**不属于当前进程**的 running 降级为 paused（重新打开不自动继续）。
+
+    - owner（progress 私有键 __ownerInstance）就是当前 instance_id 的，是本进程自己的任务，
+      什么都不改——否则每读一次意图列表都会把自己正在执行的任务暂停掉；
+    - instance_id 为 None（拿不到进程身份）时不暂停任何东西，只返回空结果；
+    - 降级时**保留 __materialWatch**：材料保护与撤回记录不能被恢复流程清掉。
+    """
+    if not instance_id:
+        return {"paused": []}
     paused: list[str] = []
     for row in _board_rows(conn, board_id):
         if row["status"] != "running":
             continue
-        preview = _preview_shape(models.loads(row["preview"], {}))
+        if _owner_instance(row) == instance_id:
+            continue
         _update(
             conn,
             row["id"],
             status="paused",
             reason="上次没有正常结束（进程重启）：任务已暂停，重新打开不会自动继续，需要你确认。",
-            progress=_progress_shape({"done": 0, "text": "已暂停：等待你确认继续"}, preview),
+            progress=_stored_progress(row, text="已暂停：等待你确认继续", drop_owner=True),
         )
         paused.append(row["id"])
     return {"paused": paused}
@@ -1368,13 +1428,6 @@ def _material_watch(row: sqlite3.Row) -> dict[str, str]:
     if not isinstance(watch, dict):
         return {}
     return {str(key): str(value) for key, value in watch.items()}
-
-
-def _progress_with_watch(row: sqlite3.Row, signatures: dict[str, str]) -> dict:
-    payload = dict(_progress_shape(models.loads(row["progress"], {})))
-    if signatures:
-        payload["__materialWatch"] = signatures
-    return payload
 
 
 def _watch_for(conn: sqlite3.Connection, row: sqlite3.Row, state: dict | None = None) -> dict:
@@ -1411,20 +1464,29 @@ def preview_material_impact(conn: sqlite3.Connection, *, board_id: str, state: d
     """
     affected: list[dict] = []
     for row in _board_rows(conn, board_id):
-        if row["status"] != "running" or not _material_watch(row):
+        status = row["status"]
+        if status not in ("running", "paused") or not _material_watch(row):
             continue
         changed = _changed_materials(row, state)
         if not changed:
             continue
+        if status == "running":
+            consequence = (
+                "继续保存会让这项任务暂停并保留当前进度；取消则不改动板面，任务继续。"
+                "暂停后不会自动继续，需要你确认。"
+            )
+        else:
+            # 已经暂停的任务：不再重复暂停，但它的材料依据仍然和当前板面不一致，要如实说明
+            consequence = (
+                "这项任务已经因为材料变化暂停：继续保存不会自动继续它，需要你确认；"
+                "它的材料依据与当前板面仍然不一致。"
+            )
         affected.append(
             {
                 "intentId": row["id"],
                 "title": row["title"],
                 "materials": [_material_label(state, card_id) for card_id in changed],
-                "consequence": (
-                    "继续保存会让这项任务暂停并保留当前进度；取消则不改动板面，任务继续。"
-                    "暂停后不会自动继续，需要你确认。"
-                ),
+                "consequence": consequence,
             }
         )
     return {"affected": affected}
@@ -1436,7 +1498,8 @@ def on_board_saved(
     """保存板面之后被调用（保存本身仍然不调用 QIO）。
 
     服务端**自己再判定一次**，不依赖前端的预判：凡是 materialRefs 与本次改动相交的
-    running 意图，置为 paused 并保留进度。第一次观察到的任务只记基线，不算改动。
+    running 意图，置为 paused 并保留进度。已经因为材料变化暂停的意图只报告、不重复暂停
+    （它的材料依据在被确认更新之前一直是不一致的）。第一次观察到的任务只记基线，不算改动。
     """
     rows = _board_rows(conn, board_id)
     if not rows:
@@ -1444,17 +1507,27 @@ def on_board_saved(
     paused: list[dict] = []
     affected: list[str] = []
     for row in rows:
-        if row["status"] != "running":
+        status = row["status"]
+        if status not in ("running", "paused"):
             continue
         refs = [str(x) for x in models.loads(row["material_refs"], [])]
         if not refs:
             continue
         if not _material_watch(row):
             # 还没有基线（例如任务在这套保护生效之前就开始）：记下指纹，本次不误伤
-            _update(conn, row["id"], progress=_progress_with_watch(row, _material_signatures(state, refs)))
+            if status == "running":
+                _update(
+                    conn,
+                    row["id"],
+                    progress=_stored_progress(row, watch=_material_signatures(state, refs)),
+                )
             continue
         changed = _changed_materials(row, state)
         if not changed:
+            continue
+        if status == "paused":
+            # 已经暂停：只报告，不再改状态（重复保存不该产生新的暂停动作）
+            affected.append(row["id"])
             continue
         labels = "、".join(_material_label(state, card_id) for card_id in changed)
         text = (
@@ -1463,9 +1536,15 @@ def on_board_saved(
         )
         base = _progress_shape(models.loads(row["progress"], {}))
         api_progress = _progress_shape({"done": base["done"], "total": base["total"], "text": text})
-        stored = dict(api_progress)
-        stored["__materialWatch"] = _material_signatures(state, refs)
-        _update(conn, row["id"], status="paused", reason=text, progress=stored)
+        _update(
+            conn,
+            row["id"],
+            status="paused",
+            reason=text,
+            # 保留原始材料基线（不刷新）：在被确认更新之前，这项任务的依据一直与板面不一致，
+            # 重复保存会继续报告它受影响，但不会重复暂停
+            progress=_stored_progress(row, text=text, drop_owner=True),
+        )
         affected.append(row["id"])
         paused.append(
             {

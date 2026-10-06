@@ -28,6 +28,14 @@ def _body_dict(body: dict | None) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _instance_id(request: Request) -> str | None:
+    """当前进程实例的标识（create_app 写入 app.state.instance_id）。
+
+    拿不到时不猜：恢复流程只会在「确认是别的进程遗留」时才暂停任务。
+    """
+    return getattr(request.app.state, "instance_id", None)
+
+
 def _id_list(payload: dict, key: str) -> list[str]:
     value = payload.get(key) or []
     if not isinstance(value, list):
@@ -39,12 +47,16 @@ def _id_list(payload: dict, key: str) -> list[str]:
 async def list_intents(request: Request, board_id: str) -> dict:
     """意图列表 + 冲突分组 + 批量可用性 + 恢复信息。
 
-    恢复信息在这里给出：上次进程遗留的 running 会降级为 paused，
-    重新打开不会自动继续，由用户决定。
+    恢复信息在这里给出：只有**别的进程实例**遗留的 running 才降级为 paused，
+    本进程自己正在执行的任务不受影响（否则刷一次列表就会把任务暂停掉）。
     """
     conn = _conn(request)
+    # 先恢复、再取列表：否则同一次响应里会给出「已经暂停、却仍显示执行中」的过期状态
+    recovery = intents.recover_running_intents(
+        conn, board_id, instance_id=_instance_id(request)
+    )
     payload = intents.list_intents(conn, board_id)
-    payload["recovery"] = intents.recover_running_intents(conn, board_id)
+    payload["recovery"] = recovery
     return payload
 
 
@@ -82,10 +94,15 @@ async def material_impact(request: Request, board_id: str, body: dict) -> dict:
 
 @router.post("/api/interactive/intents/{intent_id}/approve")
 async def approve(intent_id: str, request: Request, body: dict | None = None) -> dict:
-    """批准。confirmDependency=true 表示「前项已完成，我确认开始」。"""
+    """批准。confirmDependency=true 表示「前项已完成，我确认开始」。
+
+    开始执行时记录执行者身份：只有重启后（换了 instance_id）才会被降级为暂停。
+    """
     conn = _conn(request)
     confirm = bool(_body_dict(body).get("confirmDependency"))
-    return intents.approve_intent(conn, intent_id, confirm_dependency=confirm)
+    return intents.approve_intent(
+        conn, intent_id, confirm_dependency=confirm, instance_id=_instance_id(request)
+    )
 
 
 @router.post("/api/interactive/intents/{intent_id}/reject")
