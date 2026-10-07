@@ -1,0 +1,231 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5413/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){try{localStorage.clear();}catch(e){}return 'cleared';})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b&&!document.querySelector('[data-im=\"chat-panel\"]'))b.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');if(!t)return 'no-input';t.focus();t.value='中文草稿：刷新之后我还在吗？先别发出去';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var keys=Object.keys(localStorage).filter(function(k){return k.indexOf('qio.draft.chat.')===0;});return JSON.stringify(keys.map(function(k){return [k,localStorage.getItem(k)];}));})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-01-chat-draft-typed"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b&&!document.querySelector('[data-im=\"chat-panel\"]'))b.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-02-draft-after-reload"
+  },
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5413/#/",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('#composer-input');return JSON.stringify({composerValue:t?t.value:null});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-03-draft-shared-with-chat-page"
+  },
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5413/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b&&!document.querySelector('[data-im=\"chat-panel\"]'))b.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){window.__origFetch=window.__origFetch||window.fetch.bind(window);window.fetch=function(input,init){var url=String((input&&input.url)||input);if(/\\/api\\/turns$/.test(url)){return Promise.reject(new TypeError('Failed to fetch（模拟：发送失败）'));}return window.__origFetch(input,init);};return 'simulated-send-failure';})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyDown",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13,
+      "text": "\r"
+    }
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyUp",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var keys=Object.keys(localStorage).filter(function(k){return k.indexOf('qio.draft.chat.')===0;});return JSON.stringify(keys.map(function(k){return [k,localStorage.getItem(k)];}));})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-04-send-failed-draft-kept"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){if(window.__origFetch){window.fetch=window.__origFetch;}return 'fetch-restored';})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyDown",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13,
+      "text": "\r"
+    }
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyUp",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 3500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var keys=Object.keys(localStorage).filter(function(k){return k.indexOf('qio.draft.chat.')===0;});return JSON.stringify(keys.map(function(k){return [k,localStorage.getItem(k)];}));})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-05-draft-deleted-after-accepted-send"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var real=window.localStorage;window.__realStorage=real;var stub={getItem:function(k){return real.getItem(k);},setItem:function(k,v){if(String(k).indexOf('qio.draft.')===0){var e=new Error('quota');e.name='QuotaExceededError';throw e;}return real.setItem(k,v);},removeItem:function(k){return real.removeItem(k);},clear:function(){return real.clear();},key:function(i){return real.key(i);}};Object.defineProperty(window,'localStorage',{configurable:true,get:function(){return stub;}});return 'simulated-storage-full';})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');if(!t)return 'no-input';t.focus();t.value='模拟存储写不进去时的草稿：文字必须留在输入框';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-06-draft-storage-failed-retry"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){if(window.__realStorage){Object.defineProperty(window,'localStorage',{configurable:true,get:function(){return window.__realStorage;}});}return 'storage-restored';})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-draft-retry\"]');if(!b)return 'no-retry';b.click();return 'clicked-retry';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var t=document.querySelector('[data-im=\"chat-input\"]');var st=document.querySelector('[data-im=\"chat-draft-status\"]');var f=document.querySelector('[data-im=\"chat-failure\"]');var s=document.querySelector('[data-im=\"chat-stream\"]');var w=document.querySelector('[data-im=\"chat-warning\"]');return JSON.stringify({draft:t?t.value:null,draftStatus:st?st.textContent.trim():null,failure:f?f.textContent.trim():null,warning:w?w.textContent.trim():null,stream:(s?s.textContent:'').replace(/\\s+/g,' ').slice(0,120)});})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var keys=Object.keys(localStorage).filter(function(k){return k.indexOf('qio.draft.chat.')===0;});return JSON.stringify(keys.map(function(k){return [k,localStorage.getItem(k)];}));})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "c-07-draft-retry-succeeded"
+  },
+  {
+    "op": "console"
+  }
+]

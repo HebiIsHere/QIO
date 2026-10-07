@@ -12,6 +12,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
 import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../interactive/approval";
+import { isStaleReceipt } from "../interactive/drafts";
 import {
   cloneState,
   emptyBoardState,
@@ -29,6 +30,13 @@ const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
 
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
+/** 卡片草稿的保存状态（契约 §9.5）：失败必须能被看见并可重试，不许静默 */
+export type DraftSaveState = "idle" | "saving" | "saved" | "error";
+
+/** 草稿防抖：停下输入多久后写回服务端 */
+const DRAFT_SAVE_DEBOUNCE_MS = 600;
+/** 一次 flush 最多连存几轮（连续输入时避免把它变成停不下来的循环） */
+const DRAFT_FLUSH_MAX_ROUNDS = 8;
 export type SubmitStatus = "idle" | "submitting" | "succeeded" | "failed" | "empty" | "duplicate";
 
 export const useInteractiveStore = defineStore("interactive", () => {
@@ -37,6 +45,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const loading = ref(false);
   const loadError = ref<string | null>(null);
   const drafts = ref<Record<string, string>>({});
+  /**
+   * 每个草稿键的保存状态（契约 §9.5）。按 key 分别记录：
+   * 提示要贴近**当前编辑的那张卡**，不能用一个全局状态糊过去。
+   */
+  const draftStates = ref<Record<string, { status: DraftSaveState; error: string | null }>>({});
+  /** 最近编辑过的草稿键（提示组件没拿到 cardId 时的兜底） */
+  const lastDraftKey = ref("");
 
   const saveStatus = ref<SaveStatus>("idle");
   const lastSavedAt = ref<string | null>(null);
@@ -115,6 +130,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let saveInFlight: Promise<void> | null = null;
+
+  /** 草稿的写入代次（单调递增）：每个键记最后一次修改的序号，旧请求的返回据此丢弃 */
+  let draftSeq = 0;
+  const draftKeySeq = new Map<string, number>();
+  const draftSavedKeySeq = new Map<string, number>();
+  /** 同一时刻只允许一个草稿保存请求在飞（并发 PUT 会让旧内容盖掉新内容） */
+  let draftInFlight: Promise<void> | null = null;
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -228,7 +250,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
     board.value = payload.state;
     boardId.value = payload.board.id;
     submissions.value = payload.submissions ?? [];
-    drafts.value = payload.drafts?.drafts ?? {};
+    // 服务端是已保存内容的事实来源，但**本地还没保存成功的编辑内容**优先：
+    // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」）。
+    const serverDrafts = payload.drafts?.drafts ?? {};
+    const mergedDrafts: Record<string, string> = { ...serverDrafts };
+    for (const key of unsavedDraftKeys()) mergedDrafts[key] = drafts.value[key] ?? "";
+    drafts.value = mergedDrafts;
+    // 已经保存成功、且服务端也有的键：状态回到 idle；未保存/失败的键保留自己的状态
+    const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
+    for (const key of Object.keys(mergedDrafts)) {
+      if ((draftKeySeq.get(key) ?? 0) > (draftSavedKeySeq.get(key) ?? 0)) {
+        keptStates[key] = draftStateFor(key);
+      }
+    }
+    draftStates.value = keptStates;
     undoStack.value = [];
     redoStack.value = [];
     dirty.value = false;
@@ -292,17 +327,140 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
   }
 
+  /** 某个草稿键当前的保存状态（没有记录就是 idle）。 */
+  function draftStateFor(key: string): { status: DraftSaveState; error: string | null } {
+    return draftStates.value[key] ?? { status: "idle", error: null };
+  }
+
+  function setDraftState(key: string, status: DraftSaveState, error: string | null = null): void {
+    draftStates.value = { ...draftStates.value, [key]: { status, error } };
+  }
+
+  /**
+   * 有内容还没保存成功的草稿键。
+   * 失败也算「没保存成功」：内容留在内存里，用户点重试时还要再存一次。
+   */
+  function unsavedDraftKeys(): string[] {
+    return Object.keys(drafts.value).filter(
+      (key) => (draftKeySeq.get(key) ?? 0) > (draftSavedKeySeq.get(key) ?? 0),
+    );
+  }
+
+  function hasUnsavedDrafts(): boolean {
+    return unsavedDraftKeys().length > 0;
+  }
+
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
   function setDraft(key: string, text: string) {
     drafts.value = { ...drafts.value, [key]: text };
-    if (draftTimer) clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => {
-      void api.saveDrafts(boardId.value, drafts.value).catch(() => undefined);
-    }, 600);
+    lastDraftKey.value = key;
+    draftKeySeq.set(key, ++draftSeq);
+    // 一有输入就进「保存中」：失败时才会被改成 error（绝不停在「已保存」）
+    setDraftState(key, "saving");
+    scheduleDraftSave();
   }
 
   function draftFor(key: string): string {
     return drafts.value[key] ?? "";
+  }
+
+  function scheduleDraftSave(): void {
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      draftTimer = null;
+      void flushDrafts();
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+  }
+
+  /**
+   * 把未保存的草稿写回服务端（**只保存草稿**：不建卡、不提交板面、不调用 QIO）。
+   *
+   * 同一时刻只允许一个请求在飞：两个并发 PUT 会按返回顺序落库，先发出、后返回的
+   * 旧内容会把新内容盖掉。一个请求结束后如果又有了新输入，就再存一轮（有上限）。
+   * 失败**不自动重试**：内存内容与错误原因都留着，等用户点重试或下一次输入。
+   */
+  async function flushDrafts(): Promise<void> {
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    if (draftInFlight) {
+      await draftInFlight;
+      return;
+    }
+    if (!hasUnsavedDrafts()) return;
+    draftInFlight = (async () => {
+      try {
+        for (let round = 0; round < DRAFT_FLUSH_MAX_ROUNDS; round += 1) {
+          if (!hasUnsavedDrafts()) return;
+          const payload = { ...drafts.value };
+          const atSeq = draftSeq;
+          const keys = Object.keys(payload);
+          for (const key of keys) {
+            if ((draftKeySeq.get(key) ?? 0) <= atSeq) setDraftState(key, "saving");
+          }
+          try {
+            await api.saveDrafts(boardId.value, payload);
+          } catch (err) {
+            const reason = (err as Error).message || "原因未知";
+            for (const key of keys) {
+              const keySeq = draftKeySeq.get(key) ?? 0;
+              // 期间又改了内容：它属于下一轮，状态保持「保存中」，不要标成这次的失败
+              if (isStaleReceipt(atSeq, keySeq)) continue;
+              setDraftState(key, "error", reason);
+            }
+            return;
+          }
+          for (const key of keys) {
+            const keySeq = draftKeySeq.get(key) ?? 0;
+            // 请求在飞时用户又改了：这次返回不算数，留给下一轮
+            if (isStaleReceipt(atSeq, keySeq)) continue;
+            draftSavedKeySeq.set(key, keySeq);
+            setDraftState(key, "saved");
+          }
+        }
+      } finally {
+        draftInFlight = null;
+      }
+      // 到轮次上限还有新内容：交给下一次防抖，别在这里空转
+      if (hasUnsavedDrafts()) scheduleDraftSave();
+    })();
+    await draftInFlight;
+  }
+
+  /**
+   * 用户点「重试保存」：只重写草稿，**不建卡、不提交板面、不调用 QIO**。
+   * 不传 key 就重试所有还没保存成功的草稿。
+   */
+  async function retryDraftSave(key?: string): Promise<void> {
+    const keys = key ? [key] : unsavedDraftKeys();
+    for (const item of keys) {
+      if (draftStateFor(item).status === "error") setDraftState(item, "saving");
+    }
+    await flushDrafts();
+  }
+
+  /** 草稿保存的整体状态（错误 > 保存中 > 已保存 > 空闲），给整体性提示用 */
+  const draftSaveStatus = computed<DraftSaveState>(() => {
+    const states = Object.values(draftStates.value).map((item) => item.status);
+    if (states.includes("error")) return "error";
+    if (states.includes("saving")) return "saving";
+    if (states.includes("saved")) return "saved";
+    return "idle";
+  });
+  /** 最近一次草稿保存失败的原因（没有失败时为 null） */
+  const draftSaveError = computed<string | null>(() => {
+    const failed = Object.values(draftStates.value).find((item) => item.status === "error");
+    return failed?.error ?? null;
+  });
+
+  if (typeof window !== "undefined") {
+    // 离开编辑器/页面时防抖可能还没到点：这里再推一次（尽力而为 —— 浏览器可能来不及完成
+    // 这次请求；那部分内容仍留在内存里，下一次编辑会再存，状态不会假装「已保存」）。
+    window.addEventListener("pagehide", () => void flushDrafts());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") void flushDrafts();
+    });
   }
 
   /**
@@ -486,6 +644,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     refreshBoardFromServer,
     setDraft,
     draftFor,
+    draftStates,
+    lastDraftKey,
+    draftSaveStatus,
+    draftSaveError,
+    draftStateFor,
+    flushDrafts,
+    retryDraftSave,
     submit,
     approve,
     reject,

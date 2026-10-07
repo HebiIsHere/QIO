@@ -88,6 +88,29 @@ const turnError = computed(() => (failure.value ? "" : (session.lastError ?? "")
  */
 const sessionWarning = computed(() => session.warning ?? "");
 
+/**
+ * 草稿保存状态（契约 §9.4）：失败必须显示真实原因并可重试，
+ * 保存成功才说「已保存在本机」—— 绝不把失败说成已保存。
+ */
+const draftStatusText = computed(() => {
+  if (session.draftSaveStatus === "saving") return "草稿保存中…";
+  if (session.draftSaveStatus === "saved") return "草稿已保存在本机";
+  return "";
+});
+const draftSaveError = computed(() =>
+  session.draftSaveStatus === "error"
+    ? "草稿未保存：" + (session.draftSaveError || "原因未知") + "（文字还在输入框里，可以重试）"
+    : "",
+);
+
+/** 收起面板时把还没到防抖时间的内容落盘（草稿不清、也不丢） */
+watch(
+  () => store.chatOpen,
+  (open) => {
+    if (!open) session.flushDraft();
+  },
+);
+
 function nearBottom(): boolean {
   const el = streamRef.value;
   if (!el) return true;
@@ -207,6 +230,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  // 面板被路由切换卸载：把待保存的草稿落盘（本机写入同步完成，不依赖网络）
+  session.flushDraft();
   resizeObserver?.disconnect();
   resizeObserver = null;
   toolbarObserver?.disconnect();
@@ -313,6 +338,16 @@ function onKeydown(event: KeyboardEvent) {
       <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
       <p v-if="failure" class="notice err" role="alert" data-im="chat-failure">{{ failure }}</p>
       <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
+
+      <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">
+        <span>{{ draftSaveError }}</span>
+        <button class="draft-retry" type="button" data-im="chat-draft-retry" @click="session.retryDraftSave()">
+          重试保存
+        </button>
+      </p>
+      <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status">
+        {{ draftStatusText }}
+      </p>
 
       <div class="input-row">
         <textarea
@@ -499,6 +534,32 @@ function onKeydown(event: KeyboardEvent) {
 }
 .notice.err { color: var(--danger); }
 .notice.warn { color: var(--warning); }
+/* 草稿状态：贴着输入区的一行小字，不抢消息区的空间 */
+.draft-status {
+  flex: none;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.draft-status.err { color: var(--danger); }
+.draft-retry {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.draft-retry:hover { border-color: var(--link); }
+.draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .input-row {
   flex: none;
   display: flex;
