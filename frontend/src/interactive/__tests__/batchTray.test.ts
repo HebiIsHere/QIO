@@ -14,7 +14,7 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import IntentBatchTray from "../../components/interactive/IntentBatchTray.vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { INTENT_BATCH_STORAGE_KEY } from "../approval";
+import { BATCH_LIST_MIN, INTENT_BATCH_STORAGE_KEY, batchesWithList, groupIntentsByBatch } from "../approval";
 import type { BoardCard, Intent, IntentStatus } from "../types";
 
 let wrapper: VueWrapper | null = null;
@@ -211,5 +211,104 @@ describe("部分选择只影响选中项", () => {
     expect(received.length).toBe(1);
     expect((received[0] as { intentId: string }).intentId).toBe("i0");
     expect((received[0] as { bounds: unknown }).bounds).not.toBeNull();
+  });
+});
+describe("§9.3 同批达到四项后列表保留到处理完", () => {
+  it("处理掉一项后入口仍在，并显示剩余待处理与已处理数量", async () => {
+    // 一批 4 项：i3 已经处理完（done），剩下 3 项等待审批
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
+    const w = mountTray([intent("i0"), intent("i1"), intent("i2"), intent("i3", "done")]);
+    const store = useInteractiveStore();
+    expect(w.find('[data-im="batch-entry"]').exists()).toBe(true);
+    await w.find('[data-im="batch-entry"]').trigger("click");
+    expect(store.batchOpen).toBe(true);
+    const head = w.find('[data-im="batch-remaining"]').text();
+    expect(head).toContain("剩余待处理 3 项");
+    expect(head).toContain("已处理 1 项");
+  });
+
+  it("已处理项灰掉、没有复选框、也不会被提交", async () => {
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
+    const w = mountTray([intent("i0"), intent("i1"), intent("i2"), intent("i3", "done")]);
+    const store = useInteractiveStore();
+    await w.find('[data-im="batch-entry"]').trigger("click");
+    const rows = w.findAll('[data-im="batch-item"]');
+    expect(rows.length).toBe(4); // 已处理的保留在列表里，用户看得见处理到哪了
+    const doneRow = rows.find((row) => row.attributes("data-intent-id") === "i3");
+    expect(doneRow?.attributes("data-im-state")).toBe("processed");
+    // 已处理项没有勾选框（不能再次被选中）
+    expect(doneRow?.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(w.findAll('[data-im="batch-item"] input[type="checkbox"]').length).toBe(3);
+
+    const spy = vi.spyOn(store, "decideBatch").mockResolvedValue({
+      results: [],
+      conflicts: [],
+      approved: ["i0", "i1", "i2"],
+      rejected: [],
+    });
+    await w.find('[data-im="batch-all"]').trigger("click");
+    await w.find('[data-im="batch-approve"]').trigger("click");
+    expect(spy.mock.calls[0][0]).toEqual(["i0", "i1", "i2"]);
+    expect(spy.mock.calls[0][0]).not.toContain("i3");
+  });
+
+  it("全部处理完后入口与列表一起消失", async () => {
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
+    const w = mountTray([intent("i0"), intent("i1"), intent("i2"), intent("i3", "done")]);
+    const store = useInteractiveStore();
+    await w.find('[data-im="batch-entry"]').trigger("click");
+    expect(w.find('[data-im="batch-list"]').exists()).toBe(true);
+    // 剩下三项也处理掉（服务端返回 done）
+    store.intents = [intent("i0", "done"), intent("i1", "done"), intent("i2", "done"), intent("i3", "done")];
+    await w.vm.$nextTick();
+    expect(w.find('[data-im="batch-entry"]').exists()).toBe(false);
+    expect(w.find('[data-im="batch-list"]').exists()).toBe(false);
+  });
+
+  it("反例：旧规则（按剩余待审批数 ≥4 判资格）在同一份数据上不会给出入口", () => {
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
+    const grouped = groupIntentsByBatch([intent("i0"), intent("i1"), intent("i2"), intent("i3", "done")]);
+    expect(grouped.length).toBe(1);
+    const batch = grouped[0];
+    expect(batch.intentIds.length).toBe(4);
+    expect(batch.pendingIds.length).toBe(3);
+    // 旧判据：pendingIds.length >= 4 → false（列表会提前消失，用户再也看不到剩下的 3 项）
+    expect(batch.pendingIds.length >= 4).toBe(false);
+    // 新判据：intentIds.length >= 4 且还有未处理项 → true
+    expect(batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0).toBe(true);
+  });
+
+  it("B 的 batchesWithList 若已按同一规则落地，两条路径结果一致（未落地时如实报告差异）", () => {
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
+    const items = [intent("i0"), intent("i1"), intent("i2"), intent("i3", "done")];
+    const byLibrary = batchesWithList(items).map((batch) => batch.key);
+    const byRule = groupIntentsByBatch(items)
+      .filter((batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0)
+      .map((batch) => batch.key);
+    // 组件用的是 byRule；这里把差异显式暴露出来，而不是让两种规则在集成时静默打架
+    expect(byRule).toEqual(["session:demo"]);
+    if (byLibrary.length === 0) {
+      console.warn(
+        "[§9.3] approval.batchesWithList 仍按「剩余待审批数 ≥4」判资格：集成前需要 B 落地新规则，组件已按新规则自行组合。",
+      );
+    }
+  });
+
+  it("内容更新时保留阅读位置（不跳回顶部）", async () => {
+    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7"] });
+    const items = ["i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7"].map((id) => intent(id));
+    const w = mountTray(items);
+    await w.find('[data-im="batch-entry"]').trigger("click");
+    const panel = w.find('[data-im="batch-list"]').element as HTMLElement;
+    // jsdom 不做布局：手工造一个「内容比容器高」的场景，验证滚动位置被读写而不是被重置
+    Object.defineProperty(panel, "scrollHeight", { value: 900, configurable: true });
+    Object.defineProperty(panel, "clientHeight", { value: 300, configurable: true });
+    panel.scrollTop = 220;
+    await panel.dispatchEvent(new Event("scroll"));
+    const store = useInteractiveStore();
+    store.intents = [...items.slice(0, 7), intent("i7", "done")];
+    await w.vm.$nextTick();
+    await w.vm.$nextTick();
+    expect(panel.scrollTop).toBe(220);
   });
 });

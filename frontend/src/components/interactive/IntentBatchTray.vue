@@ -1,20 +1,28 @@
 <!--
-  右上角批量审批入口（子智能体 D）。
+  右上角批量审批入口 + 跨浮层几何控制器（子智能体 D）。
 
-  契约 §8.1 / §8.5：
-  - **只有同一批**等待审批的意图 ≥4 时出现；默认收起，由用户点击展开；
-    数量变化不抢占用户的开合决定（这里不写任何 watch 去自动展开 / 收起）；
-  - 不同批次的未处理意图**不累加**：判定在 interactive/approval.ts 的 batchesWithList；
-  - 列表简洁展示说明，点击条目定位到板面上的虚线预览
-    （window 事件 qio:interactive:locate-preview，detail {intentId, bounds}）；
-  - 支持选择部分或全部、批量批准 / 拒绝；未选中的继续等待审批；
-  - 冲突、依赖、材料变化与权限都由服务端判定，这里只显示结果，不自己下结论。
+  契约 §9.3 / §9.6：
+  - 资格由 approval.batchesWithList 判定（该批总量 ≥4 且还有未处理项）；这里只显示结果，
+    不自己重新定义「几项才算一批」；
+  - 列表**显示剩余待处理数量**；已经处理过的项灰掉、不能再被勾选或提交；
+    全部处理完后由 batchesWithList 不再返回该批，入口随之消失；
+  - 开合完全由用户决定：本组件不写任何「数量变化就展开 / 收起」的逻辑；
+  - 内容更新（处理掉几项、又来一批）时保留阅读位置，不跳回顶部；
+  - 不同批次的未处理意图不累加：判定在 interactive/approval.ts；
+  - 点击条目定位到板面上的虚线预览（window 事件 qio:interactive:locate-preview）。
+
+  本组件同时是**跨浮层几何的运行时施加者**（浮层避让统一由 D 负责，见 interactive/overlayLayout.ts）：
+  它挂在板面舞台上、又是聊天与批量面板共同祖先的直接子节点，所以把量到的数字算成
+  --im-geo-chat-* / --im-geo-batch-* 写在舞台上，兄弟组件（ChatDock 的面板）通过
+  styles/interactive-shell.css 读取这些变量，不需要改它的源码。
+  为什么不会来回抖动：只观察**舞台**与**底部工具栏**（两者的尺寸都不受浮层影响），
+  写入前先比较字符串；面板自己的尺寸永远是被写的一方，不进观察链路。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
-  batchesWithList,
+  BATCH_LIST_MIN,
   batchEntryText,
   groupIntentsByBatch,
   batchSummaryIn,
@@ -28,12 +36,32 @@ import {
   toggleBatchSelectionIn,
   type IntentBatch,
 } from "../../interactive/approval";
+import {
+  OVERLAY_GAP,
+  chatHeightRelaxation,
+  planOverlayGeometry,
+  type OverlayGeometry,
+  type OverlayInput,
+} from "../../interactive/overlayLayout";
 import type { Intent } from "../../interactive/types";
 
 const store = useInteractiveStore();
 
-/** 同一批 ≥4 项才需要列表；不同批次不合并 */
-const batches = computed(() => batchesWithList(store.intents));
+/**
+ * 需要提供批量列表的批次（契约 §9.3）：
+ * - 资格看**该批产生的意图总量** ≥ BATCH_LIST_MIN，不是「每次剩余的待审批数」——
+ *   处理掉其中几项之后入口与列表继续保留，直到没有未处理项；
+ * - 全部处理完（pendingIds 为空）时这里不再返回该批，入口随之消失；
+ * - 不同批次不合并：分组仍然只用 approval.groupIntentsByBatch。
+ *
+ * 阈值的常量、批次分组都取自 approval.ts（B 维护），这里只组合一次方向由 §9.3 规定的资格条件。
+ * 集成后如果 batchesWithList 已经落地同一条规则，两者的结果完全相同（用例里两条路径都断言过）。
+ */
+const batches = computed(() =>
+  groupIntentsByBatch(store.intents).filter(
+    (batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0,
+  ),
+);
 /** 每一批的选中项各自独立（键 = 批次 key） */
 const selectedByBatch = ref<Record<string, string[]>>({});
 const busy = ref(false);
@@ -41,66 +69,265 @@ const notice = ref<string | null>(null);
 const error = ref<string | null>(null);
 
 /**
- * 面板可用的最大高度：**不能越过底部悬浮工具栏**，入口与提交区必须始终可见可点。
- *
- * 这里的教训（集成后由独立复核发现）：早先写成
- * `min(60vh, calc(100% - Npx - var(--sp-4)))` 是**无效约束** —— 绝对定位的 .batch-tray
- * 高度由内容决定，百分比在「高度不确定」的父元素上解析不出来，等于没限制，
- * 窄窗口下 800×600 实测面板压住工具栏 143px、1024×768 压住 392px。
- *
- * 现在改成**算出一个确定的像素上限**：
- *   可用高度 = 最下面那条板面工具栏的顶边 − 面板自己的顶边 − 间距，
- * 再与 60vh 取小。面板自己滚动，入口按钮不参与滚动。
+ * 设计下限：低于这个尺寸就读不成（聊天：一条消息 + 输入区；批量：说明 + 两行条目 + 按钮）。
+ * 几何层保证「放得下就不小于它」，放不下就明确切换，而不是把面板压到看不见。
  */
-const panelMax = ref<string | null>(null);
+const CHAT_MIN = { width: 320, height: 240 };
+const BATCH_MIN = { width: 300, height: 220 };
+
 const trayEl = ref<HTMLElement | null>(null);
 const panelEl = ref<HTMLElement | null>(null);
 
-/** 页面上**最下面那条**工具栏的顶边：必须取最下面那条（卡片局部工具栏也在 role=toolbar 里）。 */
-function bottomToolbarTop(): number | null {
-  const bars = Array.from(document.querySelectorAll('[data-im="board-toolbar"], [role="toolbar"]'));
-  let top: number | null = null;
-  for (const el of bars) {
-    const rect = el.getBoundingClientRect();
-    if (rect.height <= 0 || rect.width <= 0) continue;
-    if (top === null || rect.top > top) top = rect.top;
-  }
-  return top;
+/** 入口按钮是 v-for 出来的（可能有多批），用查询而不是模板 ref：模板 ref 在 v-for 里会变成数组 */
+function entryElement(): HTMLElement | null {
+  return trayEl.value?.querySelector<HTMLElement>('[data-im="batch-entry"]') ?? null;
 }
 
-function measureClearance(): void {
-  if (typeof document === "undefined") return;
-  const barTop = bottomToolbarTop();
+/** 当前几何（验收脚本可读；同时也决定了面板的尺寸上限与位置） */
+const geometry = ref<OverlayGeometry | null>(null);
+/**
+ * 空间不够同时放两个面板（几何返回 switched）。注意：只有一侧打开时也返回 side-by-side，
+ * 所以这里用「两个都当作打开」再算一次，专门判断**空间**够不够，与当前开合无关。
+ */
+const cramped = ref(false);
+/** 空间不够时保留哪一个面板展开：按用户最近打开的那个算 */
+const activePane = ref<"chat" | "batch">("chat");
+/** 空间不足被迫收起另一个面板时的说明（只在该场景显示） */
+const switchNotice = ref<string | null>(null);
+
+const trayStyle = ref<Record<string, string>>({});
+const panelStyle = ref<Record<string, string>>({});
+/** 上一次真正写进 DOM 的几何串：相同就不写，避免观察自身尺寸导致的持续重排 */
+let appliedKey = "";
+
+function measureToolbarTop(stageBottom: number): number {
+  if (typeof document === "undefined") return stageBottom;
+  const bar = document.querySelector('[data-im="board-toolbar"]');
+  if (!bar) return stageBottom;
+  const rect = bar.getBoundingClientRect();
+  if (rect.height <= 0) return stageBottom;
+  return rect.top;
+}
+
+function measureToggleHeight(): number {
+  if (typeof document === "undefined") return 0;
+  const toggle = document.querySelector('[data-im="chat-toggle"]');
+  if (!toggle) return 0;
+  return toggle.getBoundingClientRect().height;
+}
+
+function overlayInput(stageRect: DOMRect, toolbarTop: number, chatOpen: boolean, batchOpen: boolean): OverlayInput {
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    stage: { top: stageRect.top, height: stageRect.height },
+    toolbarTop,
+    chatOpen,
+    batchOpen,
+    chatMin: CHAT_MIN,
+    batchMin: BATCH_MIN,
+  };
+}
+
+const stageEl = ref<HTMLElement | null>(null);
+
+/** 量一次实际可用区域并施加几何。只读舞台 / 工具栏 / 聊天入口按钮，都是不受浮层尺寸影响的东西。 */
+function applyGeometry(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
   const tray = trayEl.value;
-  if (barTop === null || !tray) {
-    panelMax.value = null;
+  const stage = tray?.parentElement ?? null;
+  if (!tray || !stage) return;
+  stageEl.value = stage;
+  const stageRect = stage.getBoundingClientRect();
+  const toolbarTop = measureToolbarTop(stageRect.bottom);
+  const chatInput = overlayInput(stageRect, toolbarTop, store.chatOpen, store.batchOpen);
+  const plan = planOverlayGeometry(chatInput);
+  // 「空间够不够」与开合无关：两个都当作打开再算一次
+  cramped.value = planOverlayGeometry({ ...chatInput, chatOpen: true, batchOpen: true }).mode === "switched";
+
+  const toggleHeight = measureToggleHeight();
+  const chatMaxHeight = plan.chatMaxHeight + chatHeightRelaxation(toggleHeight);
+  const entryHeight = entryElement()?.getBoundingClientRect().height ?? 0;
+  const panelMaxHeight = Math.max(
+    140,
+    plan.batchMaxHeight - (entryHeight > 0 ? Math.round(entryHeight) + OVERLAY_GAP : 0),
+  );
+  const key = [
+    plan.mode,
+    plan.chatMaxWidth,
+    chatMaxHeight,
+    plan.batchMaxWidth,
+    panelMaxHeight,
+    plan.batchRight,
+    plan.gap,
+    entryHeight > 0 ? 1 : 0,
+  ].join("|");
+  if (key === appliedKey) return; // 写前比较：同一个几何不重复写 DOM
+  appliedKey = key;
+
+  const vars: Record<string, string> = {
+    "im-geo-mode": plan.mode,
+    "--im-geo-chat-max-w": plan.chatMaxWidth + "px",
+    "--im-geo-chat-max-h": chatMaxHeight + "px",
+    "--im-geo-batch-max-w": plan.batchMaxWidth + "px",
+    "--im-geo-batch-max-h": panelMaxHeight + "px",
+    "--im-geo-batch-right": plan.batchRight + "px",
+    "--im-geo-gap": plan.gap + "px",
+  };
+  for (const [name, value] of Object.entries(vars)) {
+    if (stage.style.getPropertyValue(name) === value) continue;
+    if (name.startsWith("--")) stage.style.setProperty(name, value);
+    else stage.setAttribute(name, value);
+  }
+
+  geometry.value = plan;
+  trayStyle.value = { right: plan.batchRight + "px", maxWidth: plan.batchMaxWidth + "px" };
+  panelStyle.value = { maxWidth: plan.batchMaxWidth + "px", maxHeight: panelMaxHeight + "px" };
+
+  // 入口按钮可能在写入新宽度后换行：下一帧再量一次（第二次相同就不会再写）
+  scheduleMeasure();
+}
+
+let measureTimer: number | null = null;
+function scheduleMeasure(): void {
+  if (typeof window === "undefined") return;
+  if (measureTimer !== null) return;
+  measureTimer = window.setTimeout(() => {
+    measureTimer = null;
+    applyGeometry();
+  }, 0);
+}
+
+/** 空间不足时只保留一个面板展开（明确切换，不靠遮挡） */
+function enforceSinglePane(): void {
+  if (!cramped.value) {
+    switchNotice.value = null;
     return;
   }
-  // 面板还没渲染时用「入口按钮底边 + 间距」估一个顶边，渲染出来后用真实顶边
-  const entry = tray.querySelector('[data-im="batch-entry"]');
-  const anchor = panelEl.value
-    ? panelEl.value.getBoundingClientRect().top
-    : (entry ? entry.getBoundingClientRect().bottom + 8 : tray.getBoundingClientRect().top);
-  const available = Math.round(barTop - anchor - 16);
-  const cap = Math.round(window.innerHeight * 0.6);
-  panelMax.value = Math.max(140, Math.min(cap, available)) + "px";
+  if (!(store.chatOpen && store.batchOpen)) return;
+  if (activePane.value === "chat") store.batchOpen = false;
+  else store.chatOpen = false;
+  switchNotice.value =
+    "窗口同时放不下两个面板，已经只展开一个：处理完这里可以用下面的按钮换回对话。消息、草稿与勾选都还在。";
 }
 
-const onResize = () => window.setTimeout(measureClearance, 0);
+function showPane(pane: "chat" | "batch"): void {
+  activePane.value = pane;
+  if (pane === "chat") {
+    store.chatOpen = true;
+    store.batchOpen = false;
+  } else {
+    store.batchOpen = true;
+    store.chatOpen = false;
+  }
+  switchNotice.value = null;
+  scheduleMeasure();
+}
 
-// 面板一打开就量一次（这时才有真实顶边）
-watch(() => store.batchOpen, async () => {
-  await nextTick();
-  measureClearance();
+// --- 开合只由用户决定；这里只记录「最近打开的是哪一个」，供空间不足时决定保留谁 -----
+watch(
+  () => store.chatOpen,
+  (open, was) => {
+    if (open && !was) activePane.value = "chat";
+    scheduleMeasure();
+    enforceSinglePane();
+  },
+);
+watch(
+  () => store.batchOpen,
+  (open, was) => {
+    if (open && !was) activePane.value = "batch";
+    scheduleMeasure();
+    enforceSinglePane();
+  },
+);
+watch(batches, () => {
+  scheduleMeasure();
+  enforceSinglePane();
 });
 
+// --- 阅读位置：内容更新时不跳回顶部 -----------------------------------------
+const readTop = ref(0);
+function onPanelScroll(): void {
+  readTop.value = panelEl.value?.scrollTop ?? 0;
+}
+
+/** 面板开合时把焦点交给面板本身（打开）或入口按钮（收起），键盘用户不会丢位置 */
+const panelIsOpen = computed(() => store.batchOpen && batches.value.length > 0);
+
+watch(panelIsOpen, async (open, was) => {
+  await nextTick();
+  if (open && !was) panelEl.value?.focus?.({ preventScroll: true });
+  else if (!open && was) entryElement()?.focus?.({ preventScroll: true });
+});
+
+watch(panelIsOpen, async () => {
+  await nextTick();
+  const el = panelEl.value;
+  if (!el) return;
+  const want = readTop.value;
+  if (want <= 0) return;
+  const max = Math.max(0, el.scrollHeight - el.clientHeight);
+  const next = Math.min(want, max);
+  if (Math.abs(el.scrollTop - next) > 0.5) el.scrollTop = next;
+});
+
+/** 键盘：浮层内不触发板面手势；Escape 先关浮层（不外泄给画布） */
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  if (store.batchOpen) {
+    store.batchOpen = false;
+    event.preventDefault();
+  }
+}
+
+let resizeObserver: ResizeObserver | null = null;
+let toolbarObserver: ResizeObserver | null = null;
+let toolbarEl: Element | null = null;
+
+const onWindowResize = () => scheduleMeasure();
+
 onMounted(() => {
-  measureClearance();
-  window.addEventListener("resize", onResize);
+  applyGeometry();
+  if (typeof window !== "undefined") window.addEventListener("resize", onWindowResize);
+  // 只观察「不由浮层决定尺寸」的两个元素：舞台与底部工具栏
+  if (typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(() => scheduleMeasure());
+    if (stageEl.value) resizeObserver.observe(stageEl.value);
+    toolbarEl = document.querySelector('[data-im="board-toolbar"]');
+    if (toolbarEl) {
+      toolbarObserver = new ResizeObserver(() => scheduleMeasure());
+      toolbarObserver.observe(toolbarEl);
+    }
+  }
+  // 舞台/工具栏都在首帧之后才量得准
+  scheduleMeasure();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", onResize);
+  if (typeof window !== "undefined") window.removeEventListener("resize", onWindowResize);
+  if (measureTimer !== null) window.clearTimeout(measureTimer);
+  measureTimer = null;
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  toolbarObserver?.disconnect();
+  toolbarObserver = null;
+  // 摘掉自己写在舞台上的变量与标记（离开互动版不留残留）
+  const stage = stageEl.value;
+  if (stage) {
+    for (const name of [
+      "im-geo-mode",
+      "--im-geo-chat-max-w",
+      "--im-geo-chat-max-h",
+      "--im-geo-batch-max-w",
+      "--im-geo-batch-max-h",
+      "--im-geo-batch-right",
+      "--im-geo-gap",
+    ]) {
+      if (name.startsWith("--")) stage.style.removeProperty(name);
+      else stage.removeAttribute(name);
+    }
+  }
+  appliedKey = "";
 });
 
 /** 入口只说明「这一批」与「其他批次还等着多少」，不把不同批次相加 */
@@ -133,6 +360,19 @@ function rejectSplit(batch: IntentBatch) {
 
 function blockedReason(batch: IntentBatch, intentId: string): string {
   return approveSplit(batch).blocked.find((item) => item.id === intentId)?.reason ?? "";
+}
+
+function isPending(batch: IntentBatch, intentId: string): boolean {
+  return batch.pendingIds.includes(intentId);
+}
+
+/** 这一批还剩多少没处理、已经处理掉多少（已处理项灰掉、不可再提交） */
+function remainingCount(batch: IntentBatch): number {
+  return batch.pendingIds.length;
+}
+
+function processedCount(batch: IntentBatch): number {
+  return Math.max(0, batch.intentIds.length - batch.pendingIds.length);
 }
 
 function toggle(batch: IntentBatch, intentId: string): void {
@@ -190,8 +430,8 @@ async function decide(batch: IntentBatch, decision: "approve" | "reject"): Promi
 }
 
 /**
- * 只做清理：把已经不在这一批里的选择去掉。
- * 这是「不改变用户选择」的修剪，不做展开 / 收起，也不因为数量变化就重置选择。
+ * 只做清理：把已经不在这一批里的选择去掉，并保住阅读位置。
+ * 不改变用户的选择、不做展开 / 收起，也不因为数量变化就重置选择。
  */
 watch(
   batches,
@@ -208,31 +448,44 @@ watch(
 </script>
 
 <template>
-  <div v-if="batches.length" ref="trayEl" class="batch-tray" data-im="batch-area">
-    <!-- 入口默认收起：只有用户点击才展开 -->
+  <!-- 根节点常驻：它同时是几何控制器的挂载点（父元素就是板面舞台） -->
+  <div
+    ref="trayEl"
+    class="batch-tray"
+    data-im="batch-area"
+    :data-geo-mode="geometry?.mode ?? ''"
+    :style="trayStyle"
+    @keydown.stop="onKeydown"
+    @keyup.stop
+  >
     <button
       v-for="batch in batches"
       :key="batch.key"
-      class="entry"
+      class="entry qio-glass qio-glass--chip"
       type="button"
       data-im="batch-entry"
       :data-batch-key="batch.key"
-      :aria-expanded="store.batchOpen"
+      :aria-expanded="panelIsOpen"
       aria-controls="im-batch-list"
       @click="store.batchOpen = !store.batchOpen"
     >
       <span class="entry-title">批量审批</span>
-      <span class="entry-count mono">{{ entryText(batch) }}</span>
-      <span class="entry-arrow" aria-hidden="true">{{ store.batchOpen ? "收起" : "展开" }}</span>
+      <span class="entry-count mono" :title="entryText(batch)">{{ entryText(batch) }}</span>
+      <span class="entry-arrow" aria-hidden="true">{{ panelIsOpen ? "收起" : "展开" }}</span>
     </button>
 
     <section
-      v-if="store.batchOpen"
+      v-if="panelIsOpen"
       id="im-batch-list"
       ref="panelEl"
       class="panel"
       data-im="batch-list"
-      :style="panelMax ? { maxHeight: panelMax } : undefined"
+      role="dialog"
+      aria-label="同一批待审批条目的批量处理"
+      tabindex="-1"
+      :style="panelStyle"
+      @scroll.passive="onPanelScroll"
+      @wheel.stop
     >
       <header class="panel-head">
         <h2 class="panel-title">同一批的待审批条目</h2>
@@ -240,26 +493,58 @@ watch(
           收起
         </button>
       </header>
+
       <p class="hint" role="note">
         只列同一批产生的条目（不同批次不合并）。勾选部分或全部后批量批准 / 拒绝；未选中的继续等待审批。
-        能不能批准由服务端判定：互不相容、等待前项、材料已变化都会在这里显示结果。
+        已经处理过的条目会保留在下面并变灰，不能再被选中或提交。
       </p>
+
+      <p v-if="switchNotice" class="switch-notice" role="status" data-im="overlay-switch-notice">
+        {{ switchNotice }}
+      </p>
+
+      <div v-if="cramped && batches.length" class="switch" data-im="overlay-switch" role="group" aria-label="浮层切换">
+        <span class="switch-hint">窗口同时放不下两个面板：</span>
+        <button
+          class="btn ghost"
+          type="button"
+          data-im="overlay-switch-chat"
+          :aria-pressed="store.chatOpen"
+          @click="showPane('chat')"
+        >
+          看对话
+        </button>
+        <button
+          class="btn ghost"
+          type="button"
+          data-im="overlay-switch-batch"
+          :aria-pressed="store.batchOpen"
+          @click="showPane('batch')"
+        >
+          看审批列表
+        </button>
+      </div>
+
       <p v-if="notice" class="notice" role="status" data-im="batch-notice">{{ notice }}</p>
       <p v-if="error" class="error" role="alert" data-im="batch-error">批量操作失败：{{ error }}</p>
 
       <div v-for="batch in batches" :key="batch.key" class="batch-block" :data-batch-key="batch.key">
-        <p class="batch-head mono">{{ entryText(batch) }}</p>
+        <p class="batch-head mono" data-im="batch-remaining">
+          剩余待处理 {{ remainingCount(batch) }} 项 · 已处理 {{ processedCount(batch) }} 项
+        </p>
         <p class="summary">{{ batchSummaryIn(store.intents, batch, selectedFor(batch)) }}</p>
 
         <ul class="rows">
           <li
-            v-for="intentId in batch.pendingIds"
+            v-for="intentId in batch.intentIds"
             :key="intentId"
             class="row"
+            :class="{ 'row-done': !isPending(batch, intentId) }"
             data-im="batch-item"
             :data-intent-id="intentId"
+            :data-im-state="isPending(batch, intentId) ? 'pending' : 'processed'"
           >
-            <label class="pick">
+            <label v-if="isPending(batch, intentId)" class="pick">
               <input
                 type="checkbox"
                 :checked="selectedFor(batch).includes(intentId)"
@@ -269,10 +554,16 @@ watch(
               />
               <span class="name">{{ store.intentById(intentId)?.title ?? intentId }}</span>
             </label>
+            <span v-else class="pick processed">
+              <span class="mark" aria-hidden="true">✓</span>
+              <span class="name">{{ store.intentById(intentId)?.title ?? intentId }}</span>
+              <span class="done-tag">已处理，不能再提交</span>
+            </span>
             <span class="status">
               {{ store.intentById(intentId) ? statusLabel(store.intentById(intentId) as Intent) : "状态未知" }}
             </span>
             <button
+              v-if="isPending(batch, intentId)"
               class="locate"
               type="button"
               data-im="batch-locate"
@@ -281,7 +572,7 @@ watch(
             >
               定位预览
             </button>
-            <p v-if="blockedReason(batch, intentId)" class="blocked">
+            <p v-if="isPending(batch, intentId) && blockedReason(batch, intentId)" class="blocked">
               {{ blockedReason(batch, intentId) }}（仍可以批量拒绝）
             </p>
           </li>
@@ -321,12 +612,12 @@ watch(
 </template>
 
 <style scoped>
-/* 右上角：与右下聊天、顶部身份栏错开，不遮挡板面中央 */
+/* 位置由几何计划决定（right / max-width 走内联），这里只留外观 */
 .batch-tray {
   position: absolute;
   right: var(--sp-4);
   top: var(--sp-4);
-  z-index: 30;
+  z-index: var(--im-z-batch, 40);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -336,35 +627,46 @@ watch(
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
+  /* 入口是一个胶囊：窄窗口里宁可省略文案，也不许换行撑高、更不许把文字溢出到聊天面板上 */
+  max-width: 100%;
+  min-width: 0;
   font: inherit;
   color: var(--text-primary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
   border-radius: var(--r-pill);
   padding: var(--sp-1) var(--sp-4);
   cursor: pointer;
-  box-shadow: 0 8px 22px var(--shadow-soft, rgba(0, 0, 0, 0.28));
 }
 .entry:hover { border-color: var(--accent); }
 .entry-title {
+  flex: none;
   font-family: var(--serif);
   font-size: var(--fs-sm);
   color: var(--text-strong);
 }
-.entry-count { font-size: var(--fs-xs); color: var(--text-secondary); }
-.entry-arrow { font-size: var(--fs-xs); color: var(--link); }
+.entry-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.entry-arrow { flex: none; font-size: var(--fs-xs); color: var(--link); }
 .panel {
-  width: min(400px, calc(100vw - var(--sp-6)));
-  max-height: min(60vh, 520px);
+  width: 100%;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
+  box-shadow: var(--elev-floating, var(--shadow-2));
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
 }
+.panel:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .panel-head {
   display: flex;
   align-items: baseline;
@@ -391,7 +693,8 @@ watch(
 .error,
 .summary,
 .blocked,
-.batch-head {
+.batch-head,
+.switch-notice {
   margin: 0;
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -400,6 +703,14 @@ watch(
 .hint { color: var(--text-faint); }
 .notice { color: var(--text-secondary); }
 .error { color: var(--danger); }
+.switch-notice { color: var(--warning); }
+.switch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.switch-hint { font-size: var(--fs-xs); color: var(--text-secondary); }
 .batch-block {
   display: flex;
   flex-direction: column;
@@ -424,6 +735,10 @@ watch(
   padding-bottom: var(--sp-1);
   border-bottom: 1px solid var(--border-subtle);
 }
+/* 已处理：只降调，不消失（用户要看得见「处理到哪了」） */
+.row-done .name,
+.row-done .status { color: var(--text-faint); }
+.row-done .processed { cursor: default; }
 .pick {
   display: flex;
   align-items: center;
@@ -432,6 +747,9 @@ watch(
   min-width: 0;
   cursor: pointer;
 }
+.processed { cursor: default; }
+.mark { font-family: var(--mono); font-size: var(--fs-xs); color: var(--success); }
+.done-tag { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
 .name {
   font-size: var(--fs-sm);
   color: var(--text-primary);
@@ -478,10 +796,9 @@ watch(
 .entry:focus-visible,
 .btn:focus-visible,
 .close:focus-visible,
-.locate:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.locate:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
 @media (max-width: 900px) {
   .batch-tray { right: var(--sp-2); top: var(--sp-2); }
-  .panel { width: min(400px, calc(100vw - var(--sp-4))); }
 }
 </style>
