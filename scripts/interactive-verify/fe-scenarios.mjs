@@ -66,6 +66,35 @@ const stateRead = (extra = "") => ({
   js: `(async()=>{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;return JSON.stringify({selected:(j.selection||[]),cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted).map(g=>({name:g.name,members:g.members,ordered:g.ordered})),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length${extra}});})()`,
 });
 
+/**
+ * 在页面里**轮询等待真实结果**，而不是固定睡一段时间。
+ *
+ * 上一轮验收脚本的毛病就是「睡 1500ms 然后读状态」：防抖自动保存（450ms + 往返）偶尔还没落盘，
+ * 就把「还没保存」误判成「操作没生效」，于是出现连跑失败、单跑通过。这里改成：
+ * 给一个条件表达式，页面里每 120ms 求值一次，满足即返回（带耗时），超时才失败。
+ *
+ * 用法：`waitFor("JSON.parse(window.__x).cards===2")`；条件里抛异常会被当成「还没满足」继续等。
+ */
+const waitFor = (expr, timeoutMs = 8000) => ({
+  op: "eval",
+  await: true,
+  js: `(async()=>{const t0=Date.now();let last=null;for(;;){try{const v=(${expr});last=v;if(v)return JSON.stringify({ok:true,value:v,ms:Date.now()-t0});}catch(e){last=String(e&&e.message?e.message:e);}if(Date.now()-t0>${timeoutMs})return JSON.stringify({ok:false,last:last,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,120));}})()`,
+});
+
+/** 等服务端板面状态满足条件（真的落盘了再断言，不用固定延迟） */
+const waitForState = (predicate, timeoutMs = 8000) => ({
+  op: "eval",
+  await: true,
+  js: `(async()=>{const t0=Date.now();let snap=null;for(;;){try{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;snap={cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length,selection:(j.selection||[])};if(${predicate})return JSON.stringify({ok:true,snap:snap,ms:Date.now()-t0});}catch(e){snap={error:String(e&&e.message?e.message:e)};}if(Date.now()-t0>${timeoutMs})return JSON.stringify({ok:false,snap:snap,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()`,
+});
+
+/** 等页面上的某个钩子出现/消失或文案满足条件 */
+const waitForHook = (expr, timeoutMs = 8000) => ({
+  op: "eval",
+  await: true,
+  js: `(async()=>{const t0=Date.now();let last=null;for(;;){try{const v=(${expr});last=v;if(v)return JSON.stringify({ok:true,value:v,ms:Date.now()-t0});}catch(e){last=String(e&&e.message?e.message:e);}if(Date.now()-t0>${timeoutMs})return JSON.stringify({ok:false,last:last,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,120));}})()`,
+});
+
 /** 探针每次都会新起一个 Chrome：**任何一步交互都必须先导航到应用**，否则页面是 about:blank。 */
 const sess = (steps) => runSteps([...NAV, ...steps]);
 
@@ -362,8 +391,8 @@ async function scenario4() {
   dragSteps.push({ op: "eval", js: "JSON.stringify({hint: !!document.querySelector('[data-im=\"group-merge-hint\"]'), hintText: (document.querySelector('[data-im=\"group-merge-hint\"]')||{}).textContent||''})" });
   dragSteps.push({ op: "screenshot", name: "fe-40-merge-hint" });
   dragSteps.push(mouse("mouseReleased", b.x + 12, b.y + 12));
-  dragSteps.push({ op: "wait", ms: 1800 });
-  dragSteps.push(stateRead());
+  // 等**真的落盘**（防抖自动保存 450ms + 往返），不用固定延迟
+  dragSteps.push(waitForState("snap.groups.length===1"));
   dragSteps.push({ op: "screenshot", name: "fe-41-grouped" });
   const dragged = sess(dragSteps);
   const hint = lastJson(evals(dragged).filter((v) => typeof v === "string" && v.includes("hint")), {});
@@ -381,8 +410,7 @@ async function scenario4() {
     { op: "cdp", method: "Input.insertText", params: { text: "材料准备" } },
     { op: "wait", ms: 220 },
     ...typeKey(KEY.enter, undefined),
-    { op: "wait", ms: 1800 },
-    stateRead(),
+    waitForState("snap.groups.some(g=>g.name==='材料准备')"),
     { op: "screenshot", name: "fe-42-renamed" },
   ]);
   const afterRenameState = await boardState();
@@ -403,8 +431,7 @@ async function scenario4() {
     { op: "cdp", method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 } },
     { op: "wait", ms: 200 },
     ...typeKey(KEY.enter, undefined),
-    { op: "wait", ms: 1600 },
-    stateRead(),
+    waitForState("snap.groups.length===1 && String(snap.groups[0].name||'').trim().length>0"),
     { op: "screenshot", name: "fe-44-name-cleared" },
   ]);
   const clearedGroups = lastJson(evals(cleared), {}).groups || [];
@@ -430,13 +457,13 @@ async function scenario6() {
   ];
   const checkedText = "甲己勾选的注释" + RUN_TAG;
   const uncheckedText = "乙未勾选的注释" + RUN_TAG;
-  sess([...write(first, checkedText), { op: "wait", ms: 1400 }, ...write(second, uncheckedText), { op: "wait", ms: 1600 }, { op: "screenshot", name: "fe-60-two-notes" }]);
+  sess([...write(first, checkedText), ...write(second, uncheckedText), waitForState("snap.cards===2"), { op: "screenshot", name: "fe-60-two-notes" }]);
 
   const hooks = sess([
     ...click(first.cx, first.cy), { op: "wait", ms: 260 },
     { op: "eval", js: `JSON.stringify((function(){const c=document.querySelector('[data-im="check"]');if(!c)return {check:false};const label=c.closest('label');return {check:true, toolbar:!!document.querySelector('[data-im="card-toolbar"]'), text:(c.textContent||'').trim(), aria:c.getAttribute('aria-label')||'', title:c.getAttribute('title')||'', labelText:label?(label.textContent||'').trim():'', near:(c.parentElement?(c.parentElement.textContent||'').trim():'').slice(0,80)};})())` },
-    clickHook("check"), { op: "wait", ms: 1800 },
-    stateRead(),
+    clickHook("check"),
+    waitForState("snap.checked===1"),
     { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||''})" },
     { op: "screenshot", name: "fe-61-checked" },
   ]);
@@ -453,7 +480,7 @@ async function scenario6() {
   const checked = (stateChecked.cards || []).filter((c) => c.checked);
   check("6 勾选后状态里只有这一张被允许查看", checked.length === 1, JSON.stringify({ saved: checked.map((c) => c.id), inPage: checkedRead.checked, meta }));
 
-  const submitted = sess([clickHook("submit"), { op: "wait", ms: 2000 }, { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||'', status: (document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-62-submitted" }]);
+  const submitted = sess([clickHook("submit"), waitForHook("/已提交|提交失败|未重复/.test((document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||'')"), { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||'', status: (document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-62-submitted" }]);
   const submitInfo = last(submitted, {});
   const submissions = await api("/api/interactive/boards/" + BOARD + "/submissions");
   const payloadText = JSON.stringify(submissions);
@@ -638,15 +665,16 @@ async function scenario5() {
   // 从连接点拖到另一张卡片 → 建链
   const linked = sess([
     // 连接点只在选中卡片后出现：新会话要先选中，否则按下的位置落在卡片身上会变成拖动卡片
-    ...click(a.cx, a.cy), { op: "wait", ms: 420 },
+    ...click(a.cx, a.cy),
+    waitForHook("document.querySelectorAll('[data-im=\"connect-point\"]').length>=4"),
     { op: "eval", js: `JSON.stringify({points:[...document.querySelectorAll('[data-im="connect-point"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};}), cards:[...document.querySelectorAll('[data-im="card"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'),l:Math.round(r.left),t:Math.round(r.top)};}), expected:{from:point,to:{x:b.cx,y:b.cy}}})` },
     mouse("mousePressed", point.x, point.y), { op: "wait", ms: 120 },
     mouse("mouseMoved", (point.x + b.cx) / 2, (point.y + b.cy) / 2), { op: "wait", ms: 100 },
     mouse("mouseMoved", b.cx, b.cy), { op: "wait", ms: 160 },
     { op: "eval", js: `JSON.stringify({draft: !!document.querySelector('[data-im="link-draft"]')})` },
     { op: "screenshot", name: "fe-51-link-dragging" },
-    mouse("mouseReleased", b.cx, b.cy), { op: "wait", ms: 1600 },
-    stateRead(),
+    mouse("mouseReleased", b.cx, b.cy),
+    waitForState("snap.links>=1"),
     { op: "screenshot", name: "fe-52-link-created" },
   ]);
   const linkValues = evals(linked).filter((v) => typeof v === "string" && v.includes("points"));

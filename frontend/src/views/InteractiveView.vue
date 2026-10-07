@@ -1,12 +1,14 @@
 <!--
   互动模式入口与页面组合（主智能体维护）。
 
-  契约：docs/interactive-mode-contract.md §8（前端改版约定）。这一版把结构定成：
+  契约：docs/interactive-mode-contract.md §8 / §9.6（信息层级）。
+  这一版的结构：
   - 板面为主体，所有操作浮在板面上，**没有常驻右侧栏**；
-  - 顶部只留身份、回到对话、准确的保存状态、任务入口与演示入口；
+  - 顶部只留板面名、**唯一的准确保存状态**与必要入口；数量等次要信息退到次级层，不与主状态同样显眼；
+  - 「已保存」在顶部说一次；「已提交」由工具栏右端的提交区说一次（两处各只一处主要状态）；
+  - 未接入状态如实可见（QIO 还没有读取板面），不用开发用语；
   - 底部是横向悬浮工具栏（A 负责），右端是提交区（C 负责）；
-  - 右下角独立聊天入口（C 负责），右上角批量列表入口（D 负责）；
-  - 影响确认改成页面中央对话框（D 负责）。
+  - 右下角独立聊天入口（C 负责），右上角批量列表入口（D 负责），影响确认是页面中央对话框（D 负责）。
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
@@ -27,8 +29,8 @@ onMounted(() => {
 });
 
 /**
- * 保存状态必须说准：**「已保存」不等于「QIO 已收到」**。
- * 提交是否成功由工具栏右端的提交区单独说明。
+ * 顶部是**唯一**的保存状态：说准「已保存 ≠ QIO 已收到」。
+ * 提交是否成功由提交区单独说明，两处不重复解释同一件事。
  */
 const saveText = computed(() => {
   if (store.saveStatus === "saving") return "正在保存…";
@@ -38,13 +40,24 @@ const saveText = computed(() => {
   return "尚未保存过";
 });
 
+const saveTone = computed(() => {
+  if (store.saveStatus === "error") return "err";
+  if (store.saveStatus === "saving" || store.dirty) return "busy";
+  return "ok";
+});
+
+/** 次要信息：数量退到次级层（空板面时不显示，避免一排同样显眼的标签） */
 const boardSize = computed(() => {
   const state = store.board;
   if (!state) return "";
   const cards = state.cards.filter((card) => !card.deleted).length;
+  if (!cards) return "";
   const groups = state.groups.filter((group) => !group.deleted).length;
   const links = state.links.filter((link) => !link.deleted).length;
-  return `卡片 ${cards} · 组 ${groups} · 关系 ${links}`;
+  const parts = [`${cards} 张卡片`];
+  if (groups) parts.push(`${groups} 个组`);
+  if (links) parts.push(`${links} 条关系`);
+  return parts.join(" · ");
 });
 </script>
 
@@ -52,12 +65,19 @@ const boardSize = computed(() => {
   <div class="interactive">
     <header class="im-top">
       <div class="im-identity">
-        <span class="im-mode mono">互动模式</span>
         <h1 class="im-title">互动板面</h1>
-        <span class="im-count mono">{{ boardSize }}</span>
+        <span v-if="boardSize" class="im-count" data-im="board-counts">{{ boardSize }}</span>
       </div>
+
       <div class="im-top-right">
-        <p class="im-save" data-im="save-status" role="status">{{ saveText }}</p>
+        <!-- 唯一的保存状态（顶部） -->
+        <p class="im-save" :class="saveTone" data-im="save-status" role="status">
+          <span class="im-dot" aria-hidden="true"></span>{{ saveText }}
+        </p>
+        <!-- 未接入状态如实可见，且不用开发用语 -->
+        <span class="im-note" data-im="not-connected" title="提交只会记录在本地，QIO 还没有真正读取或理解板面内容">
+          QIO 还没有读取板面
+        </span>
         <button
           class="im-chip"
           type="button"
@@ -65,7 +85,7 @@ const boardSize = computed(() => {
           :aria-expanded="store.tasksOpen"
           @click="store.tasksOpen = !store.tasksOpen"
         >
-          任务 {{ store.taskCount }}
+          任务{{ store.taskCount ? " " + store.taskCount : "" }}
         </button>
         <button
           class="im-chip"
@@ -115,10 +135,10 @@ const boardSize = computed(() => {
   color: var(--text-primary);
   font-family: var(--sans);
 }
-/* 顶部只放身份、导航与简洁状态；不放编辑按钮，也不长期显示大段说明 */
+/* 顶部：板面名 + 唯一保存状态 + 必要入口；不放编辑按钮，也不长期显示大段说明 */
 .im-top {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: var(--sp-4);
   padding: var(--sp-2) var(--sp-5);
@@ -132,47 +152,67 @@ const boardSize = computed(() => {
   gap: var(--sp-3);
   min-width: 0;
 }
-.im-mode {
-  font-size: var(--fs-xs);
-  color: var(--link);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
-  padding: 1px var(--sp-2);
-}
 .im-title {
   margin: 0;
   font-family: var(--serif);
   font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text-strong);
+  white-space: nowrap;
 }
+/* 次要信息：比主状态更小更淡，不与标题抢注意力 */
 .im-count {
   font-size: var(--fs-xs);
   color: var(--text-faint);
+  font-family: var(--mono);
+  white-space: nowrap;
 }
 .im-top-right {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
   flex: none;
 }
 .im-save {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+/* 状态不只靠颜色：文字已经说明，这里只做辅助色点 */
+.im-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.im-save.ok .im-dot { background: var(--success); }
+.im-save.busy .im-dot { background: var(--warning); }
+.im-save.err { color: var(--danger); }
+.im-save.err .im-dot { background: var(--danger); }
+/* 未接入状态：安静但真实可见 */
+.im-note {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  border-bottom: 1px dashed var(--border-subtle);
+  cursor: help;
+  white-space: nowrap;
 }
 .im-chip {
   font: inherit;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
+  background: none;
+  border: 1px solid transparent;
   border-radius: var(--r-pill);
   padding: 2px var(--sp-3);
   cursor: pointer;
 }
-.im-chip:hover { color: var(--text-strong); border-color: var(--border-strong); }
-.im-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.im-chip:hover { color: var(--text-strong); border-color: var(--border-subtle); }
+.im-chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .im-link {
   font: inherit;
   font-size: var(--fs-sm);
@@ -184,7 +224,7 @@ const boardSize = computed(() => {
   text-decoration: none;
 }
 .im-link:hover { color: var(--accent-hover); }
-.im-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.im-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* 演示浮层挂在顶部下方，独立于板面操作 */
 .im-demo-pop {
   position: absolute;
@@ -195,7 +235,7 @@ const boardSize = computed(() => {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
+  box-shadow: var(--shadow-2);
 }
 /* 板面舞台：所有浮层都相对它定位 */
 .im-stage {
@@ -222,7 +262,7 @@ const boardSize = computed(() => {
 .im-notice.warn { color: var(--warning); }
 
 @media (max-width: 900px) {
-  .im-count { display: none; }
+  .im-count, .im-note { display: none; }
   .im-top { padding: var(--sp-2) var(--sp-3); gap: var(--sp-2); }
   .im-top-right { gap: var(--sp-2); }
 }
