@@ -81,9 +81,9 @@ def _create_ready(
     return ready
 
 
-def _bind_and_append(ctx: AppContext, topic_id: str, turn_id: str, attachment_ids: list[str], text: str):
+async def _bind_and_append(ctx: AppContext, topic_id: str, turn_id: str, attachment_ids: list[str], text: str):
     """走真实的绑定路径 + 写一条历史消息（与 test_tool_record_api.py 造历史的姿势一致）。"""
-    bound = ctx.attachments.bind_for_turn(turn_id, attachment_ids, topic_id=topic_id)
+    bound = await ctx.attachments.bind_for_turn(turn_id, attachment_ids, topic_id=topic_id)
     assert [a.id for a in bound] == attachment_ids
     message_id, _fragment = ctx.memory.append_message(
         topic_id=topic_id, role="user", content=text, turn_id=turn_id
@@ -91,10 +91,10 @@ def _bind_and_append(ctx: AppContext, topic_id: str, turn_id: str, attachment_id
     return message_id
 
 
-def test_history_context_messages_carry_the_same_attachment_shape(client, ctx, tmp_path):
+async def test_history_context_messages_carry_the_same_attachment_shape(client, ctx, tmp_path):
     topic = ctx.topics.nodes.create_topic("历史附件A").id
     att = _create_ready(client, tmp_path, "历史纪要.txt", topic)
-    message_id = _bind_and_append(ctx, topic, "turn_hist_a", [att["id"]], "带附件发一条")
+    message_id = await _bind_and_append(ctx, topic, "turn_hist_a", [att["id"]], "带附件发一条")
     ctx.navigation.anchors.set_active(topic)
 
     body = client.get("/api/session/context").json()
@@ -116,10 +116,10 @@ def test_history_context_messages_carry_the_same_attachment_shape(client, ctx, t
     assert one["availability"]["readable_by_tool"] is True
 
 
-def test_history_messages_route_carries_attachments_and_keeps_cursor_semantics(client, ctx, tmp_path):
+async def test_history_messages_route_carries_attachments_and_keeps_cursor_semantics(client, ctx, tmp_path):
     topic = ctx.topics.nodes.create_topic("历史附件B").id
     att = _create_ready(client, tmp_path, "第二个.txt", topic)
-    _bind_and_append(ctx, topic, "turn_hist_b", [att["id"]], "第一条带附件")
+    await _bind_and_append(ctx, topic, "turn_hist_b", [att["id"]], "第一条带附件")
     plain_id, _ = ctx.memory.append_message(topic_id=topic, role="user", content="第二条没有附件", turn_id=None)
     ctx.navigation.anchors.set_active(topic)
 
@@ -146,7 +146,7 @@ def test_history_messages_route_carries_attachments_and_keeps_cursor_semantics(c
     assert older["messages"][0]["attachments"][0]["id"] == att["id"]
 
 
-def test_history_attachment_state_is_current_not_send_time(client, ctx, tmp_path, monkeypatch):
+async def test_history_attachment_state_is_current_not_send_time(client, ctx, tmp_path, monkeypatch):
     """状态必须按**现在的事实**算：引用型源文件删掉之后，重新打开历史要如实显示 missing。"""
     monkeypatch.setattr(attachments_mod, "COPY_MAX_BYTES", 16)
     topic = ctx.topics.nodes.create_topic("历史附件C").id
@@ -158,7 +158,7 @@ def test_history_attachment_state_is_current_not_send_time(client, ctx, tmp_path
     ready = _wait_terminal(client, created["id"])
     assert ready["kind"] == "reference" and ready["state"] == "ready"
 
-    _bind_and_append(ctx, topic, "turn_hist_c", [ready["id"]], "引用型附件")
+    await _bind_and_append(ctx, topic, "turn_hist_c", [ready["id"]], "引用型附件")
     ctx.navigation.anchors.set_active(topic)
 
     # 发送之后源文件被删掉：历史里必须显示 missing（不能是发送时的旧状态 ready）
@@ -174,7 +174,7 @@ def test_history_attachment_state_is_current_not_send_time(client, ctx, tmp_path
 
     # 副本型同理：删掉 QIO 自己的副本 → 历史里 missing
     copy_att = _create_ready(client, tmp_path, "副本型.txt", topic)
-    _bind_and_append(ctx, topic, "turn_hist_c2", [copy_att["id"]], "副本型附件")
+    await _bind_and_append(ctx, topic, "turn_hist_c2", [copy_att["id"]], "副本型附件")
     from pathlib import Path
 
     Path(copy_att["stored_path"]).unlink()
@@ -185,12 +185,12 @@ def test_history_attachment_state_is_current_not_send_time(client, ctx, tmp_path
     assert copy_item["state"] == "missing", copy_item
 
 
-def test_history_page_uses_a_batch_query_not_n_plus_one(client, ctx, tmp_path, monkeypatch):
+async def test_history_page_uses_a_batch_query_not_n_plus_one(client, ctx, tmp_path, monkeypatch):
     """一页里有多少条带附件的消息，都只允许 1 次批量查询（message_id）+ 1 次兜底（turn_id）。"""
     topic = ctx.topics.nodes.create_topic("历史附件D").id
     for index in range(8):
         att = _create_ready(client, tmp_path, f"批量{index}.txt", topic)
-        _bind_and_append(ctx, topic, f"turn_batch_{index}", [att["id"]], f"第 {index} 条")
+        await _bind_and_append(ctx, topic, f"turn_batch_{index}", [att["id"]], f"第 {index} 条")
     ctx.navigation.anchors.set_active(topic)
 
     service = ctx.attachments
