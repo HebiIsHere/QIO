@@ -98,7 +98,7 @@ class _FailHandle:
 
 
 @contextlib.contextmanager
-def _injected_failure(root: Path, kind: str):
+def _injected_failure(root: Path, kind: str, *, fail_at: int = 1):
     """在附件根目录内注入受控失败：kind ∈ {mkdir, open, write}。"""
     real_mkdir = Path.mkdir
     real_open, real_io_open = builtins.open, io.open
@@ -124,7 +124,7 @@ def _injected_failure(root: Path, kind: str):
                 handle = real(file, mode, *args, **kwargs)
                 if kind == "write":
                     state["fired"] = True
-                    return _FailHandle(handle)
+                    return _FailHandle(handle, fail_at=fail_at)
                 return handle
             return real(file, mode, *args, **kwargs)
 
@@ -338,6 +338,67 @@ async def test_many_chunks_with_dead_worker_converges(app):
     assert injected["fired"], "受控错误没有触发（装置失效）"
     assert finished, ("工作线程提前退出后，客户端继续发送也收不了尾", detail)
     _assert_converged(app)
+
+
+# ---- 4b. 竞态：失败与「最后一块」同时到达 -------------------------------------------
+
+
+async def test_failure_racing_with_last_chunk_never_leaves_half_state(app):
+    """最后一块与工作线程失败同时到达：要么干净成功（内容完整），要么干净失败；绝不半途。
+
+    构造：请求体第一块 → 闸门；释放闸门后**立刻**发第二块（最后一块），而写入注入让**第 2 次写入**失败
+    —— 失败与最后一块落在同一个瞬间。
+    """
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    sent: dict = {"count": 0}
+    payload_head = CHUNK
+    payload_tail = b"t" * 65536
+
+    async def _body():
+        sent["count"] = 1
+        started.set()
+        yield payload_head
+        await gate.wait()  # 客户端闸门
+        sent["count"] = 2
+        yield payload_tail
+
+    async with _client(app) as client:
+        with _injected_failure(_root(app), "write", fail_at=2) as injected:
+            post = asyncio.create_task(
+                client.post(
+                    "/api/attachments/upload",
+                    content=_body(),
+                    headers={"content-type": "application/octet-stream", "x-qio-name": NAME},
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=GATE_TIMEOUT)
+            gate.set()  # 释放 → 最后一块立刻到达（竞态窗口）
+            finished = True
+            try:
+                response = await asyncio.wait_for(asyncio.shield(post), timeout=GATE_TIMEOUT)
+                outcome = {"status": response.status_code, "text": response.text[:200]}
+            except asyncio.TimeoutError:
+                finished = False
+                outcome = {"status": "timeout"}
+            except Exception as exc:  # noqa: BLE001
+                outcome = {"status": "exception", "text": "%s: %s" % (type(exc).__name__, exc)}
+            state = _converged(app)
+
+    assert injected["fired"], "受控错误没有触发（装置失效）"
+    assert finished, ("失败与最后一块同时到达后请求不返回", outcome)
+    assert not state["stuck_prepared"], ("竞态后附件停在 prepared", state)
+    assert not state["temp_files"], ("竞态后留下临时文件", state)
+    assert not state["active_jobs"], ("竞态后仍有活动作业", state)
+    if state["ready"]:
+        # 若最终提交成功，内容必须是**完整**的（头部 + 尾部），不能是半截
+        attachment_id = state["ready"][0]
+        rows = [r for r in _rows(app) if r.id == attachment_id]
+        assert rows and int(rows[0].size_bytes) == len(payload_head) + len(payload_tail), (
+            "提交成 ready 但大小不是完整内容（半截副本）",
+            [(r.id, r.size_bytes) for r in rows],
+        )
+    print("[诊断] 竞态收尾：outcome=%s；states=%s" % (outcome, state["states"]))
 
 
 # ---- 5. 同期其它 API 仍能推进（闸门关闭、工作线程活着） ------------------------------
