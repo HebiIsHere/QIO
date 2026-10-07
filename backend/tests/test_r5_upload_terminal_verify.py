@@ -142,11 +142,15 @@ def _injected_failure(root: Path, kind: str):
 # ---- 请求体：第一块之后暂停（闸门），由测试决定何时继续 -------------------------------
 
 
-async def _gated_body(gate: asyncio.Event, started: asyncio.Event, *, chunks: int = 4):
+async def _gated_body(gate: asyncio.Event, started: asyncio.Event, *, chunks: int = 4, sent: dict | None = None):
+    """分块请求体：第一块之后暂停在闸门；sent 记录**实际被拉走的块数**（用于断言没发第二块）。"""
     for index in range(chunks):
+        if sent is not None:
+            sent["count"] = sent.get("count", 0) + 1
+        if index == 0:
+            started.set()  # 第一块已经被传输层拉走（生成器只被拉时才前进）
         yield CHUNK
         if index == 0:
-            started.set()
             await gate.wait()  # 客户端闸门：请求体暂停在这里
         await asyncio.sleep(0)
 
@@ -179,19 +183,25 @@ def _assert_converged(app, *, name: str = NAME, expect_ready: bool = False) -> d
 
 @pytest.mark.parametrize("kind", ["mkdir", "open", "write"])
 async def test_worker_failure_unblocks_receiver_while_gate_closed(app, kind: str):
+    """工作线程失败后收尾：**不依赖第一块被消费**，两种合法形态都接受，强度不降。
+
+    合法形态：
+      (a) 请求在**第一块被消费之前**就返回（最强：客户端一个字节都不用发）；
+      (b) 第一块被消费之后返回，且**闸门全程未打开**（客户端没发第二块）。
+    两种都必须：请求在有限时间内返回（不是 timeout）、闸门全程未开、已发送块数 ≤ 1、收尾干净。
+    """
     gate = asyncio.Event()
     started = asyncio.Event()
+    sent: dict = {"count": 0}
     async with _client(app) as client:
         with _injected_failure(_root(app), kind) as injected:
             post = asyncio.create_task(
                 client.post(
                     "/api/attachments/upload",
-                    content=_gated_body(gate, started),
+                    content=_gated_body(gate, started, sent=sent),
                     headers={"content-type": "application/octet-stream", "x-qio-name": NAME},
                 )
             )
-            await asyncio.wait_for(started.wait(), timeout=GATE_TIMEOUT)
-            assert not gate.is_set(), "闸门应当仍然关闭（客户端还在暂停）"
             finished = True
             try:
                 response = await asyncio.wait_for(asyncio.shield(post), timeout=GATE_TIMEOUT)
@@ -202,20 +212,30 @@ async def test_worker_failure_unblocks_receiver_while_gate_closed(app, kind: str
             except Exception as exc:  # noqa: BLE001 - 服务端异常也算「没有干净收尾」
                 detail = {"status": "exception", "text": "%s: %s" % (type(exc).__name__, exc)}
 
-            # 关键断言：闸门**仍然关闭**时就要成立
-            still_closed = not gate.is_set()
+            # 关键断言：闸门**全程未打开**时就要成立
+            gate_never_opened = not gate.is_set()
+            first_chunk_consumed = started.is_set()  # 只作诊断，不作通过条件
+            chunks_sent = sent["count"]
             state = _converged(app)
             gate.set()  # 收尾：放行客户端，避免留下悬挂任务
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(post, timeout=GATE_TIMEOUT)
 
     assert injected["fired"], ("受控错误没有触发（装置失效）", kind)
-    assert still_closed, "断言时闸门已被打开 —— 证据不成立（必须「客户端闸门仍关闭时」）"
     assert finished, (
-        "工作线程已经失败，客户端仍在暂停发送（闸门关闭），上传请求却不返回 —— 接收端没有观察作业终态",
+        "工作线程已经失败、客户端闸门全程关闭，上传请求却不返回 —— 接收端没有观察作业终态",
         {"injection": kind, **detail, "state": state},
     )
+    assert gate_never_opened, "断言时闸门已被打开 —— 证据不成立（必须「客户端闸门仍关闭时」）"
+    assert chunks_sent <= 1, (
+        "客户端在闸门关闭期间又发了第二块（收尾不需要客户端继续发送）",
+        {"injection": kind, "chunks_sent": chunks_sent},
+    )
     _assert_converged(app)
+    print(
+        "[诊断] 注入=%s；第一块是否被消费=%s；已发送块数=%d；形态=%s"
+        % (kind, first_chunk_consumed, chunks_sent, "(a) 未消费第一块就收尾" if not first_chunk_consumed else "(b) 消费第一块后收尾")
+    )
 
 
 # ---- 2. 用户删除（取消）上传中的附件：闸门仍关闭时收尾 -------------------------------
