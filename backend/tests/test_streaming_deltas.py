@@ -1420,6 +1420,339 @@ async def test_undeclared_full_answer_is_not_duplicated_and_not_regenerated():
     assert not [e for e in _process_area(bus) if answer in (e["content"] or "")]
 
 
+async def test_declaration_with_a_long_body_in_one_chunk_is_recognised():
+    """反例（第六轮问题二，今天必红）：合法声明 + 长正文落在**同一个大分块**里。
+
+    旧实现把「累计收到的正文长度」当成「声明是否有效」的证据（len(probe) > 32 →
+    未声明）：整段被当未声明 —— 回答区在调用结束前是空的，结束后连声明一起泄漏。
+    修正版：_probe 只保存识别控制前缀所需的部分，任何超出部分都是正文；匹配成功后
+    同一分块里剩下的正文**立即**交给回答流（实时发布）。
+    """
+    body = "这是声明之后的长正文，必须实时进正式回答区。" * 3  # 60 字符
+    chunk = ANSWER_MARKER + "\n" + body
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[chunk], hold=hold, hold_after=1)]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    task = asyncio.create_task(loop.run("直接回答我"))
+    try:
+        await asyncio.sleep(0.2)
+        published = _events(bus, "ASSISTANT")
+        assert published, (
+            "合法声明 + 长正文同一分块：正文必须已经实时进回答区（这里为空 = 被当成未声明）"
+        )
+        assert not task.done(), "provider 还开着（hold）：这一刻正文就该可见"
+        assert published[0]["interim"] is False and published[0]["streaming"] is True
+        assert published[0]["content"] == body
+        assert ANSWER_MARKER not in published[0]["content"]
+        assert published[0]["role_evidence"] == "declared_answer"
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 3)
+
+    assert result.final_content == body
+    events = _events(bus, "ASSISTANT")
+    assert all(ANSWER_MARKER not in (e["content"] or "") for e in events), (
+        "声明泄漏到正文里了",
+        [e["content"] for e in events],
+    )
+    assert all(e["interim"] is False for e in events)
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.parametrize("split_at", list(range(0, len(ANSWER_MARKER) + 2)))
+async def test_declaration_split_at_any_position_with_a_long_body(split_at):
+    """分块无关性：声明在**每个位置**被拆开、后面跟着长正文，结果必须完全一致。"""
+    body = "正文很长的一段内容，用来验证分块无关性。" * 2
+    text = ANSWER_MARKER + "\n" + body
+    chunks = [c for c in (text[:split_at], text[split_at:]) if c]
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=chunks)])
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("直接回答我")
+
+    assert result.final_content == body
+    events = _events(bus, "ASSISTANT")
+    assert events, "一个字都没有展示"
+    assert all(ANSWER_MARKER not in (e["content"] or "") for e in events), (
+        "声明泄漏",
+        [e["content"] for e in events],
+    )
+    assert not _process_area(bus), "声明回答不该出现在过程区"
+    assert len(adapter.requests) == 1
+
+
+async def test_undeclared_long_answer_is_delivered_once_without_regeneration(
+    tmp_path, monkeypatch
+):
+    """反例（第六轮问题三，今天必红）：未声明 262,165 字符完整答案、不请求工具。
+
+    旧实现：字符数超过 256*1024 即改判工作调用 → 放行到过程区；调用结束没有可交付
+    回答内容 → _maybe_fallback 再生成一次 → 2 次调用、过程区与回答区各一份。
+    修正版：上限只管理资源（内存 + 临时暂存），不改角色；结束后一次性交付回答区。
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    answer = "长" * 262_165
+    # 分两块到达：第一块定角色（未声明），第二块让缓冲越过旧上限 —— 旧实现正是在
+    # _feed 里把「超过 256*1024 字符」改判成工作调用，于是过程区一份 + 再生成一份。
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]]), StreamScript(text=answer)]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert len(adapter.requests) == 1, "不得为同一段答案再发一次调用（禁止重复生成）"
+    assert result.final_content == answer
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1, [e["content"][:20] for e in events]
+    assert events[0]["content"] == answer
+    assert events[0]["interim"] is False and events[0]["streaming"] is False
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    assert _process_area(bus) == [], "过程区不得留副本"
+
+
+async def test_undeclared_memory_limit_is_measured_in_utf8_bytes(tmp_path, monkeypatch):
+    """缓冲上限按 **UTF-8 字节** 计量，超出部分落临时暂存（旧实现按字符数，中文差 3 倍）。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    memory_limit = 256 * 1024
+    answer = "汉" * 87_382  # 262,146 字节 > 256 KiB，但字符数远小于上限
+    assert len(answer) < memory_limit < len(answer.encode("utf-8"))
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    spill_dir = tmp_path / "qio" / "tmp"
+    task = asyncio.create_task(loop.run("hi"))
+    try:
+        await asyncio.sleep(0.3)  # provider 卡在 hold：暂存文件此刻应该已经在
+        assert not task.done()
+        assert spill_dir.is_dir(), "超出内存上限的正文必须落到 <data_dir>/tmp 暂存"
+        assert list(spill_dir.glob("*.spill")), "暂存文件没有创建（上限按 UTF-8 字节算）"
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 5)
+
+    assert result.final_content == answer
+    assert len(adapter.requests) == 1
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1 and events[0]["content"] == answer
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    # 收尾后不留暂存文件（内存 + 暂存按序拼回，一个字都不少）
+    assert not list(spill_dir.glob("*.spill")), "收尾后暂存文件没有清理"
+
+
+async def test_declaration_recognition_is_chunking_invariant():
+    """分块无关性（契约 §1.2 核心不变量）：同一文本，无论怎样拆分/合并，结果完全一致。
+
+    覆盖：整段一块、一字符一块、空块混入、确定性随机、声明单独一块、声明拆两半、
+    小写声明 + CRLF、中文 + 代码块 + 表格 + 长英文。
+    """
+    import random
+
+    body = (
+        "第一段中文。\n\n"
+        "```python\nprint('hi')\n```\n\n"
+        "| 列 | 值 |\n| - | - |\n| 1 | 2 |\n\n"
+        "Long English tail: " + "lorem ipsum " * 8
+    )
+    text = ANSWER_MARKER + "\n" + body
+    rng = random.Random(20261008)
+    random_chunks: list[str] = []
+    index = 0
+    while index < len(text):
+        size = rng.randint(1, 9)
+        random_chunks.append(text[index : index + size])
+        index += size
+    empty_mixed: list[str] = []
+    for i, char in enumerate(text):
+        if i % 7 == 0:
+            empty_mixed.append("")
+        empty_mixed.append(char)
+    strategies = {
+        "整段一块": [text],
+        "一字符一块": list(text),
+        "空块混入": empty_mixed,
+        "确定性随机": random_chunks,
+        "声明单独一块": [ANSWER_MARKER, "\n" + body],
+        "声明拆两半": [text[:7], text[7:]],
+        "小写声明+CRLF": ["[[qio:answer]]\r\n", body],
+    }
+    for seq, (name, chunks) in enumerate(strategies.items()):
+        adapter = FakeStreamAdapter(
+            [StreamScript(text_chunks=[c for c in chunks if c] or [""])]
+        )
+        bus = EventBus()
+        result = await AgentLoop(
+            adapter, _registry(), bus, turn_id=f"turn_inv_{seq}"
+        ).run("hi")
+        events = _events(bus, "ASSISTANT")
+        shown = "".join(str(e["content"] or "") for e in events)
+        assert result.final_content == body, (name, (result.final_content or "")[:40])
+        assert "[[qio" not in shown.lower(), (name, shown[:80])
+        assert all(e["interim"] is False for e in events), (name, [e["interim"] for e in events])
+        assert not _process_area(bus), name
+        assert len(adapter.requests) == 1, name
+
+
+@pytest.mark.parametrize("unit", ["ascii", "cjk"])
+async def test_memory_threshold_boundaries_spill_only_beyond_the_byte_limit(
+    tmp_path, monkeypatch, unit
+):
+    """阈值前 / 等号 / 阈值后：只有 **UTF-8 字节数超过** 256 KiB 才落暂存。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    limit = 256 * 1024
+    char, per_char = ("a", 1) if unit == "ascii" else ("汉", 3)
+    equal_chars = limit // per_char  # ASCII 恰好等号；CJK 取「还放得下」的最大字符数
+    spill_dir = tmp_path / "qio" / "tmp"
+    for seq, (label, count) in enumerate(
+        [("阈值前", equal_chars - 1), ("等号", equal_chars), ("阈值后", equal_chars + 1)]
+    ):
+        answer = char * count
+        expect_spill = len(answer.encode("utf-8")) > limit
+        hold = asyncio.Event()
+        adapter = FakeStreamAdapter(
+            [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+        )
+        bus = EventBus()
+        loop = AgentLoop(adapter, _registry(), bus, turn_id=f"turn_th_{unit}_{seq}")
+        task = asyncio.create_task(loop.run("hi"))
+        try:
+            await asyncio.sleep(0.25)
+            spilled = bool(list(spill_dir.glob("*.spill")))
+            assert spilled is expect_spill, (
+                f"{unit} {label}：字节数 {len(answer.encode('utf-8'))} vs 上限 {limit}",
+                spilled,
+            )
+        finally:
+            hold.set()
+        result = await asyncio.wait_for(task, 5)
+        assert result.final_content == answer, (unit, label)
+        assert len(adapter.requests) == 1, (unit, label)
+        events = _events(bus, "ASSISTANT")
+        assert len(events) == 1 and events[0]["content"] == answer, (unit, label)
+        assert events[0]["role_evidence"] == "undeclared_answer"
+        assert not list(spill_dir.glob("*.spill")), (unit, label, "收尾后暂存未清理")
+
+
+async def test_spill_write_failure_is_reported_honestly(tmp_path, monkeypatch):
+    """暂存不可用：如实报告（可见 WARNING + 截断事实进交付内容），不改角色、不丢字不重发。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from agent.core import answer_buffer as buffer_module
+
+    def _boom(self, data):  # noqa: ANN001 - 模拟磁盘写失败
+        raise OSError("disk full (test)")
+
+    monkeypatch.setattr(buffer_module.AnswerBuffer, "_write_sync", _boom)
+    answer = "汉" * 90_000  # 270,000 字节 > 256 KiB → 必须走暂存
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]]), StreamScript(text=answer)]
+    )
+    bus = EventBus()
+    result = await AgentLoop(adapter, _registry(), bus, turn_id="turn_spill_fail").run("hi")
+
+    assert len(adapter.requests) == 1, "暂存失败也不得再生成一次"
+    text = result.final_content or ""
+    assert text.startswith("汉" * 87_381), "内存里的部分必须完整交付"
+    assert "截断" in text, "截断事实必须写进交付内容"
+    assert _process_area(bus) == [], "过程区不得留副本"
+    warnings = _events(bus, "WARNING")
+    assert [w["code"] for w in warnings] == ["answer_truncated"], warnings
+    assert any("截断" in w for w in result.warnings)
+
+
+async def test_spill_hard_limit_truncates_and_reports(tmp_path, monkeypatch):
+    """达到暂存硬上限：如实截断 + 可见 WARNING + 截断事实写进交付内容（绝不无界增长）。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from agent.core import answer_buffer as buffer_module
+
+    monkeypatch.setattr(buffer_module, "UNDECLARED_SPILL_LIMIT", 1024)
+    answer = "汉" * 90_000  # 内存 256 KiB + 暂存 1 KiB 之后必须停下并如实报告
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]])]
+    )
+    bus = EventBus()
+    result = await AgentLoop(adapter, _registry(), bus, turn_id="turn_spill_cap").run("hi")
+
+    assert len(adapter.requests) == 1
+    text = result.final_content or ""
+    delivered = text.split("\n\n—— 系统事实")[0]
+    assert len(delivered.encode("utf-8")) <= 256 * 1024 + 1024 + 8, len(
+        delivered.encode("utf-8")
+    )
+    assert "截断" in text
+    assert [w["code"] for w in _events(bus, "WARNING")] == ["answer_truncated"]
+    assert _process_area(bus) == []
+
+
+async def test_stream_break_with_spilled_text_releases_it_and_cleans_up(tmp_path, monkeypatch):
+    """断流：缓冲（内存 + 暂存）按序完整放行到过程区，暂存文件清理，不猜角色。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from agent.adapters import errors as adapter_errors
+
+    answer = "汉" * 90_000
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text_chunks=[answer[:1], answer[1:]],
+                error=adapter_errors.NetworkError("连接断了"),
+                error_after=2,
+            )
+        ]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "qio" / "tmp"
+    with pytest.raises(adapter_errors.NetworkError):
+        await AgentLoop(adapter, _registry(), bus, turn_id="turn_spill_break").run("hi")
+
+    process = _process_area(bus)
+    assert "".join(str(e["content"] or "") for e in process) == answer, "断流不得丢字"
+    assert _answer_area(bus) == [], "断流不猜角色：不进正式回答区"
+    assert not list(spill_dir.glob("*.spill")), "断流后暂存文件必须清理"
+
+
+async def test_stale_spill_files_are_cleaned_before_the_first_spill(tmp_path, monkeypatch):
+    """启动清理：新进程第一次要写暂存前，先把上一进程残留的 .spill 清掉。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    spill_dir = tmp_path / "qio" / "tmp"
+    spill_dir.mkdir(parents=True)
+    stale = spill_dir / "dl_previous_process.spill"
+    stale.write_text("上一进程残留", encoding="utf-8")
+
+    answer = "汉" * 90_000
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=[answer[:1], answer[1:]])])
+    result = await AgentLoop(
+        adapter, _registry(), EventBus(), turn_id="turn_stale"
+    ).run("hi")
+
+    assert result.final_content == answer
+    assert not stale.exists(), "陈旧暂存文件必须在第一次写暂存前清理"
+    assert not list(spill_dir.glob("*.spill"))
+
+
+async def test_non_streaming_long_undeclared_answer_is_delivered_once(tmp_path, monkeypatch):
+    """整段响应（不支持流式）里的未声明长正文：一次性交付、1 次调用、暂存清理。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    answer = "汉" * 90_000
+    adapter = FakeStreamAdapter([StreamScript(text=answer)], stream_supported=False)
+    bus = EventBus()
+    result = await AgentLoop(
+        adapter, _registry(), bus, turn_id="turn_whole_long"
+    ).run("hi")
+
+    assert result.final_content == answer
+    assert len(adapter.requests) == 1
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1
+    assert events[0]["interim"] is False and events[0]["streaming"] is False
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    assert not list((tmp_path / "qio" / "tmp").glob("*.spill"))
+
+
 async def test_undeclared_answer_is_invisible_until_the_call_ends():
     """未声明正文在**调用结束前不得出现在任何容器里**，结束后只出现在正式回答区一次。
 
