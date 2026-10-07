@@ -401,7 +401,8 @@ async function scenario4() {
   const groups = groupRead.groups || [];
   const group = groups[0] || {};
   check("4 松手后才成组，组里有两张卡片", groups.length === 1 && (group.members || []).length === 2, JSON.stringify(groups.map((g) => ({ name: g.name, members: g.members }))));
-  check("4 初始组名是系统默认名「组 N」", /^组\s*\d+$/.test(group.name || ""), String(group.name));
+  // 用户规则（契约 §9.1）：系统默认名是「默认组名」；历史「组 N」只在老数据里出现
+  check("4 初始组名是「默认组名」", group.name === "默认组名", JSON.stringify({ name: group.name }));
 
   // 组名是组框头上那个输入框（data-im="group-name"），真键盘输入 + 回车提交
   const renamed = sess([
@@ -597,13 +598,38 @@ async function scenario9() {
   const expandedState = last(expanded, {});
   check("9 点击后展开该批列表，条目数与这一批一致", expandedState.list === true && Number(expandedState.items) >= 4, JSON.stringify({ items: expandedState.items, text: expandedState.text }));
 
-  const target = list.find((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status)) || list[0];
+  // 规则（契约 §9.3）：同一批达到四项后，处理掉一项**仍然保留**入口，显示剩余待处理数量
+  const pendingList = list.filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  const target = pendingList[0];
   const decision = await api("/api/interactive/intents/" + target.id + "/reject", { method: "POST", body: JSON.stringify({}) });
-  const afterReject = sess([{ op: "wait", ms: 900 }, { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]')})" }, { op: "screenshot", name: "fe-92-batch-after-reject" }]);
-  const rejectState = last(afterReject, {});
-  const intentsAfterReject = await intentsApi();
-  const pending = (intentsAfterReject.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
-  check("9 同批剩三项时批量入口消失（不同批次不累加）", pending.length === 3 && rejectState.entry === false, JSON.stringify({ pending: pending.length, entry: rejectState.entry, decision: decision && decision.status }));
+  const afterOne = sess([
+    { op: "wait", ms: 900 },
+    waitForHook("!!document.querySelector('[data-im=\"batch-entry\"]')"),
+    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]'), entryText: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" },
+    { op: "screenshot", name: "fe-92-batch-after-one" },
+  ]);
+  const oneState = lastJson(evals(afterOne).filter((v) => typeof v === "string" && v.includes("entry")), {});
+  const intentsAfterOne = await intentsApi();
+  const pendingAfterOne = (intentsAfterOne.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  check("9 同批处理掉一项后入口仍在（不是按剩余待审批数判资格）", pendingAfterOne.length === 3 && oneState.entry === true, JSON.stringify({ pending: pendingAfterOne.length, entry: oneState.entry, decision: decision && decision.status }));
+  check("9 入口显示剩余待处理数量", /3|三/.test(String(oneState.entryText || "")), String(oneState.entryText || "").slice(0, 80));
+
+  // 继续处理到只剩一项：入口仍应在
+  const second = pendingAfterOne[0];
+  await api("/api/interactive/intents/" + second.id + "/reject", { method: "POST", body: JSON.stringify({}) });
+  const afterTwo = sess([{ op: "wait", ms: 900 }, { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), text: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-93-batch-after-two" }]);
+  const twoState = last(afterTwo, {});
+  const intentsAfterTwo = await intentsApi();
+  const pendingAfterTwo = (intentsAfterTwo.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  check("9 剩两项时入口仍在", pendingAfterTwo.length === 2 && twoState.entry === true, JSON.stringify({ pending: pendingAfterTwo.length, entry: twoState.entry, text: String(twoState.text || "").slice(0, 60) }));
+
+  // 全部处理完：入口消失
+  for (const item of pendingAfterTwo) {
+    await api("/api/interactive/intents/" + item.id + "/reject", { method: "POST", body: JSON.stringify({}) });
+  }
+  const afterAll = sess([{ op: "wait", ms: 1200 }, waitForHook("!document.querySelector('[data-im=\"batch-entry\"]')", 6000), { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]')})" }, { op: "screenshot", name: "fe-94-batch-after-all" }]);
+  const allState = last(afterAll, {});
+  check("9 全部处理完后入口消失", allState.entry === false, JSON.stringify(allState));
 }
 
 // --- 场景 12：窄窗口 + 两种主题 ---------------------------------------------
@@ -768,6 +794,95 @@ async function scenario99() {
   for (const value of evals(p)) console.log("DIAG " + String(value).slice(0, 900));
 }
 
+
+// --- 场景 13：同一秒创建的两批各两项，清掉本地记录后不能误并成四项 -------------
+
+async function scenario13() {
+  await resetBoard();
+  await clearPendingIntents();
+  // 一次创建动作产生四项（它们必然落在同一秒）——旧实现会靠「同一秒」把它们当成一批，
+  // 而它们本来只是「一次创建」，所以这里正好用来做反例：**清掉本地记录后不许再靠时间猜**。
+  const created = sess([
+    clickHook("demo-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('.im-demo-pop, [data-im="demo-popover"]'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
+    { op: "wait", ms: 2400 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="demo-entry"]');if(b)b.click();return 'close-pop';})()` },
+    { op: "wait", ms: 600 },
+    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]')})" },
+  ]);
+  const createdState = last(created, {});
+  const all = await intentsApi();
+  const mine = (all.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
+  const seconds = [...new Set(mine.map((i) => String(i.createdAt || "").slice(0, 19)))];
+  check("13 前置：一次创建动作产生四项，且创建时间落在同一秒", mine.length >= 4 && seconds.length === 1, JSON.stringify({ count: mine.length, seconds, entry: createdState.entry }));
+  check("13 有本地记录时该批正常出现", createdState.entry === true, JSON.stringify(createdState));
+
+  // 清掉本地批次记录（模拟「记录丢失」），再看界面是否会把四项当成一批
+  const cleared = sess([
+    { op: "eval", js: "try{localStorage.removeItem('qio.interactive.intentBatches');sessionStorage.removeItem('qio.interactive.intentBatches');}catch(e){} 'cleared'" },
+    { op: "eval", js: "location.reload(); 'reload'" },
+    { op: "wait", ms: 5200 },
+    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]'), text: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" },
+    { op: "screenshot", name: "fe-130-two-batches-same-second" },
+  ]);
+  const state = last(cleared, {});
+  check("13 记录丢失后同一秒的四项**不会**被当成一批（不按创建时间猜）", state.entry === false, JSON.stringify({ ...state, seconds }));
+}
+
+// --- 场景 14：聊天草稿跨刷新恢复，且不自动发送 -------------------------------
+
+async function scenario14() {
+  const draftText = "中文草稿：刷新之后还要在（" + RUN_TAG + "）";
+  const typed = sess([
+    { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(!p){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'ensure-open';})()` },
+    waitForHook("!!document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')"),
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');t.focus();t.value=${JSON.stringify(draftText)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "wait", ms: 900 },
+    { op: "screenshot", name: "fe-140-chat-draft-typed" },
+  ]);
+  void typed;
+  const reloaded = sess([
+    SPY_ON, SPY_RESET,
+    waitForHook("!!document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')"),
+    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');return JSON.stringify({draft:t?t.value:null});})()` },
+    { op: "wait", ms: 1500 },
+    SPY_READ,
+    { op: "screenshot", name: "fe-141-chat-draft-after-reload" },
+  ]);
+  const afterReload = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.includes("draft")), {});
+  const calls = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  check("14 刷新后聊天草稿仍在", String(afterReload.draft || "").includes(draftText), JSON.stringify(afterReload));
+  check("14 恢复草稿不会自动发送（没有 /api/turns 请求）", !calls.some((c) => /\/api\/turns$/.test(c.url)), JSON.stringify(calls.map((c) => c.method + " " + c.url).slice(0, 6)));
+}
+
+// --- 场景 15：卡片草稿保存失败要有提示与重试，且不建卡不提交 -----------------
+
+async function scenario15() {
+  await resetBoard();
+  await addNoteCards(1);
+  const cards = await cardScreens();
+  if (!cards.length) { check("15 前置：一张卡片", false); return; }
+  const card = cards[0];
+  const draftText = "草稿保存会失败的内容" + RUN_TAG;
+  const failed = sess([
+    // 只让草稿保存接口失败（其余请求照常）——明确标注为「模拟保存失败」
+    { op: "eval", js: `(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/api\\/interactive\\/drafts\\//.test(url)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed';})()` },
+    ...click(card.cx, card.cy),
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"], [data-im="card-toolbar"] button');if(b)b.click();return !!b;})()` },
+    waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"], textarea')"),
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');t.focus();t.value=${JSON.stringify(draftText)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "wait", ms: 1500 },
+    { op: "eval", js: `JSON.stringify({hint: (document.querySelector('[data-im="card-draft-hint"]')||{}).textContent||'', retry: !!document.querySelector('[data-im="card-draft-retry"]'), editorValue: (document.querySelector('textarea[data-im="card-editor"], textarea')||{}).value||''})` },
+    { op: "screenshot", name: "fe-150-card-draft-failed" },
+  ]);
+  const state = lastJson(evals(failed).filter((v) => typeof v === "string" && v.includes("hint")), {});
+  check("15 卡片草稿保存失败有明确提示", /失败|没能|无法/.test(String(state.hint || "")), String(state.hint || "").slice(0, 80));
+  check("15 失败时保留编辑内容", String(state.editorValue || "").includes(draftText), JSON.stringify({ value: String(state.editorValue || "").slice(0, 40) }));
+  check("15 提供可用的重试入口", state.retry === true, JSON.stringify({ retry: state.retry }));
+  const after = await boardState();
+  check("15 草稿失败不会创建正式卡片、也不会变成正式内容", !after.cards.some((c) => String(c.content || "").includes(draftText)), JSON.stringify(after.cards.map((c) => String(c.content || "").slice(0, 10))));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -782,6 +897,9 @@ const main = async () => {
     [9, scenario9],
     [11, scenario11],
     [12, scenario12],
+    [13, scenario13],
+    [14, scenario14],
+    [15, scenario15],
     [99, scenario99],
   ];
   for (const entry of scenarios) {
