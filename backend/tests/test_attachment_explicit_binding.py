@@ -182,6 +182,10 @@ def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path
     failed = _create(client, tmp_path, "失败.txt", topic_id="t_bad")
     missing = _create(client, tmp_path, "丢了副本.txt", topic_id="t_bad")
     ctx = client.app.state.ctx
+    # 造一个**真实的**失败：副本不在 + 记录 failed。
+    # （只改状态列、副本还在且 sha256 一致时，按契约 §1.4 属于「可验证的恢复」，
+    #   GET 会如实转 ready —— 那样它就不是 failed，用例的前提也不成立。）
+    Path(failed["stored_path"]).unlink()
     ctx.attachments._update(failed["id"], state="failed", error="模拟失败")
     # missing 必须是**文件世界**的事实：把 QIO 的副本删掉，GET 之后状态就是 missing
     Path(missing["stored_path"]).unlink()

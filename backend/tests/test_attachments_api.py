@@ -220,6 +220,13 @@ def test_retry_failed_attachment_reuses_the_same_record(client: TestClient, tmp_
     _wait_terminal(client, created["id"])
 
     ctx = client.app.state.ctx
+    # 造一个**真实的**失败：副本不在 + 记录 failed。
+    # （只改状态列、副本还在且 sha256 一致时，按契约 §1.4 属于「可验证的恢复」，
+    #   GET 会如实转 ready —— 那样就不是失败态了。）
+    stored = Path(created["stored_path"]) if created.get("stored_path") else None
+    ready_row = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
+    stored = Path(ready_row["stored_path"])
+    stored.unlink()
     ctx.attachments._update(created["id"], state="failed", error="模拟失败")
     failed = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
     assert failed["state"] == "failed" and failed["retryable"] is True
