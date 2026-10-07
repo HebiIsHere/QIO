@@ -40,7 +40,7 @@ function mkGroup(id: string, members: string[], patch: Partial<BoardGroup> = {})
   const stamp = "2026-10-06T00:00:00.000Z";
   return {
     id,
-    name: patch.name ?? "组 1",
+    name: patch.name ?? "默认组名",
     defaultName: patch.defaultName ?? true,
     ordered: patch.ordered ?? false,
     x: patch.x ?? 0,
@@ -229,25 +229,30 @@ describe("previewDrop：拖动期间只预演", () => {
 });
 
 describe("dropCard：放下才完成操作", () => {
-  it("两张未分组卡片重叠自动成组，默认名「组 1」", () => {
+  it("两张未分组卡片重叠自动成组，默认名「默认组名」（反例：旧实现给「组 1」）", () => {
     const result = board.dropCard(twoFreeCards(), "a", 250, 10);
     expect(result.merged).toBe(false);
     expect(result.groupId).not.toBeNull();
     const group = board.groupById(result.state, result.groupId as string);
-    expect(group?.name).toBe("组 1");
+    expect(group?.name).toBe("默认组名");
     expect(group?.defaultName).toBe(true);
     expect(group?.ordered).toBe(false);
     expect([...(group?.members ?? [])].sort()).toEqual(["a", "b"]);
     expect(board.cardById(result.state, "a")?.x).toBe(250);
   });
 
-  it("默认组名跳过已用编号", () => {
+  it("默认名不再编号：已有「组 7」也照样用「默认组名」（反例：旧实现给「组 8」）", () => {
     const state = mkState(
       [mkCard("a", 0, 0), mkCard("b", 240, 0), mkCard("c", 2000, 0), mkCard("d", 2040, 0)],
       [mkGroup("g7", ["c", "d"], { name: "组 7" })],
     );
     const result = board.dropCard(state, "a", 250, 10);
-    expect(board.groupById(result.state, result.groupId as string)?.name).toBe("组 8");
+    const created = board.groupById(result.state, result.groupId as string);
+    expect(created?.name).toBe("默认组名");
+    expect(created?.defaultName).toBe(true);
+    // 两个组同名并存：组身份按 id，不因重名被合并或丢弃（契约 §9.1）
+    expect(result.state.groups.map((group) => group.id).sort()).toEqual(["g7", created?.id].sort());
+    expect(result.state.groups.filter((group) => group.name === "默认组名")).toHaveLength(1);
   });
 
   it("未分组卡片拖入已有组：保留原组名并按落点插入", () => {
@@ -283,7 +288,8 @@ describe("dropCard：放下才完成操作", () => {
     expect(result.merged).toBe(true);
     expect(groupIds(result.state)).toEqual(["g1"]);
     const group = board.groupById(result.state, "g1");
-    expect(group?.name).toBe("组 1");
+    expect(group?.name).toBe("默认组名");
+    expect(group?.defaultName).toBe(true);
     expect(group?.members).toEqual(["a", "c", "d", "b"]);
   });
 
@@ -296,7 +302,7 @@ describe("dropCard：放下才完成操作", () => {
     const group = board.groupById(result.state, "g1");
     expect(group?.ordered).toBe(true);
     expect(group?.members).toEqual(["a", "c", "d", "e", "b"]);
-    expect(group?.name).toBe("组 1");
+    expect(group?.name).toBe("默认组名");
   });
 
   it("有序组与普通组合并后成为普通组，可重新设为有序", () => {
@@ -402,7 +408,8 @@ describe("分组与顺序操作", () => {
     const newId = groupIds(created).find((id) => id !== "g1") as string;
     expect(membersOf(created, newId)).toEqual(["a", "b", "c"]);
     expect(groupIds(created)).toEqual([newId]);
-    expect(board.groupById(created, newId)?.name).toBe("组 1");
+    expect(board.groupById(created, newId)?.name).toBe("默认组名");
+    expect(board.groupById(created, newId)?.defaultName).toBe(true);
     expect(board.createGroup(mkState([mkCard("a", 0, 0, { deleted: true })]), ["a", "ghost"]).groups).toEqual([]);
   });
 
@@ -417,13 +424,21 @@ describe("分组与顺序操作", () => {
     expect(dissolved.cards[0].id).toBe("a");
   });
 
-  it("renameGroup：空名字不生效，默认名由名字本身决定", () => {
+  it("renameGroup：输入即用；留空 / 取消不改动，组仍成立并保留默认名", () => {
     const state = mkState([mkCard("a")], [mkGroup("g1", ["a"])]);
     const renamed = board.renameGroup(state, "g1", "  发布计划  ");
     expect(renamed.groups[0].name).toBe("发布计划");
     expect(renamed.groups[0].defaultName).toBe(false);
+    // 改回系统默认名 / 历史「组 N」形态都算默认名（isDefaultGroupName 同时认两种）
+    expect(board.renameGroup(renamed, "g1", "默认组名").groups[0].defaultName).toBe(true);
     expect(board.renameGroup(renamed, "g1", "组 3").groups[0].defaultName).toBe(true);
-    expect(board.renameGroup(state, "g1", "   ").groups[0].name).toBe("组 1");
+    // 留空 = 不改动：默认名的组保留「默认组名」，组仍然成立
+    const blank = board.renameGroup(state, "g1", "   ");
+    expect(blank.groups[0].name).toBe("默认组名");
+    expect(blank.groups[0].defaultName).toBe(true);
+    expect(blank.groups[0].members).toEqual(["a"]);
+    // 已经改过名的组，留空同样不改动（不把用户写的名字抹掉）
+    expect(board.renameGroup(renamed, "g1", "").groups[0].name).toBe("发布计划");
   });
 
   it("moveWithinGroup 越界收敛，组外卡片不动", () => {
@@ -442,7 +457,7 @@ describe("分组与顺序操作", () => {
     expect(groupIds(merged)).toEqual(["g1"]);
     const group = board.groupById(merged, "g1");
     expect(group?.members).toEqual(["a", "c", "d", "b"]);
-    expect(group?.name).toBe("组 1");
+    expect(group?.name).toBe("默认组名");
     expect(group?.defaultName).toBe(true);
     expect(membersOf(board.mergeGroups(state, "g2", "g1"), "g1")).toEqual(["a", "b", "c", "d"]);
   });
@@ -681,5 +696,122 @@ describe("重叠阈值：rectOverlapRatio / rectCenterCovered / bestMergeTarget"
     const dropped = board.dropCard(state, "b", 50, 10);
     expect(dropped.state.groups).toHaveLength(1);
     expect(dropped.state.groups[0].members.sort()).toEqual(["a", "b"]);
+  });
+});
+// --- 契约 §9.1：默认组名是「默认组名」（覆盖 §1.3 / §6.1 的「组 N」）---------
+
+describe("默认组名：系统命名路径统一用「默认组名」（契约 §9.1）", () => {
+  it("isDefaultGroupName 同时认「默认组名」与历史「组 N」", () => {
+    expect(board.isDefaultGroupName("默认组名")).toBe(true);
+    expect(board.isDefaultGroupName("  默认组名  ")).toBe(true);
+    expect(board.isDefaultGroupName("组 1")).toBe(true);
+    expect(board.isDefaultGroupName("组12")).toBe(true);
+    expect(board.isDefaultGroupName("发布计划")).toBe(false);
+    expect(board.isDefaultGroupName("默认组名 2")).toBe(false);
+    expect(board.isDefaultGroupName("")).toBe(false);
+  });
+
+  it("nextDefaultGroupName 固定返回「默认组名」，不再编号（默认名可以重复）", () => {
+    expect(board.nextDefaultGroupName([])).toBe("默认组名");
+    expect(board.nextDefaultGroupName(["组 7", "默认组名"])).toBe("默认组名");
+    expect(board.DEFAULT_GROUP_NAME_PREFIX).toBe("默认组名");
+    expect(board.DEFAULT_GROUP_NAME).toBe("默认组名");
+  });
+
+  it("三条系统命名路径（重叠成组 / 手动新建组 / 合并组）都用「默认组名」", () => {
+    // ① 两张未分组卡片重叠自动成组
+    const dropped = board.dropCard(twoFreeCards(), "a", 250, 10);
+    const auto = board.groupById(dropped.state, dropped.groupId as string);
+    expect(auto?.name).toBe("默认组名");
+    expect(auto?.defaultName).toBe(true);
+    // ② 手动新建组
+    const manual = board.createGroup(mkState([mkCard("a"), mkCard("b")]), ["a", "b"]);
+    expect(manual.groups[0].name).toBe("默认组名");
+    expect(manual.groups[0].defaultName).toBe(true);
+    // ③ 两个已有组合并
+    const merged = board.mergeGroups(
+      mkState(
+        [mkCard("a"), mkCard("b"), mkCard("c"), mkCard("d")],
+        [
+          mkGroup("g1", ["a", "b"], { name: "目标组", defaultName: false }),
+          mkGroup("g2", ["c", "d"], { name: "来源组", defaultName: false }),
+        ],
+      ),
+      "g2",
+      "g1",
+    );
+    expect(merged.groups[0].name).toBe("默认组名");
+    expect(merged.groups[0].defaultName).toBe(true);
+  });
+
+  it("历史「组 N」不被批量覆盖：重新读取保留原名字与 defaultName", () => {
+    const state = mkState(
+      [mkCard("a"), mkCard("b"), mkCard("c"), mkCard("d")],
+      [
+        mkGroup("g1", ["a", "b"], { name: "组 7", defaultName: true }),
+        mkGroup("g2", ["c"], { name: "组 3", defaultName: false }),
+        mkGroup("g3", ["d"], { name: "发布计划", defaultName: false }),
+      ],
+    );
+    const result = board.normalizeState(state);
+    expect(result.groups.map((group) => group.name)).toEqual(["组 7", "组 3", "发布计划"]);
+    expect(result.groups.map((group) => group.defaultName)).toEqual([true, false, false]);
+    // defaultName 缺失时才按名字形态推断：两种默认名形态都算「系统给的名字」
+    const inferred = board.normalizeState(
+      mkState(
+        [mkCard("a"), mkCard("b")],
+        [
+          { ...mkGroup("g1", ["a"], { name: "默认组名" }), defaultName: undefined as unknown as boolean },
+          { ...mkGroup("g2", ["b"], { name: "组 5" }), defaultName: undefined as unknown as boolean },
+        ],
+      ),
+    );
+    expect(inferred.groups.map((group) => group.defaultName)).toEqual([true, true]);
+  });
+
+  it("组身份按 id：两个「默认组名」的组各自保留成员与顺序", () => {
+    const state = mkState(
+      [mkCard("a"), mkCard("b"), mkCard("c"), mkCard("d")],
+      [
+        mkGroup("g1", ["a", "b"], { name: "默认组名", defaultName: true, ordered: true }),
+        mkGroup("g2", ["c", "d"], { name: "默认组名", defaultName: true, ordered: true }),
+      ],
+    );
+    const result = board.normalizeState(state);
+    expect(result.groups).toHaveLength(2);
+    expect(membersOf(result, "g1")).toEqual(["a", "b"]);
+    expect(membersOf(result, "g2")).toEqual(["c", "d"]);
+    // 按 id 操作：改名 / 解除只影响目标组，同名组不受影响
+    const renamed = board.renameGroup(result, "g1", "发布计划");
+    expect(membersOf(renamed, "g2")).toEqual(["c", "d"]);
+    expect(board.groupById(renamed, "g2")?.name).toBe("默认组名");
+    const dissolved = board.dissolveGroup(renamed, "g1");
+    expect(groupIds(dissolved)).toEqual(["g2"]);
+  });
+
+  it("加入已有组保留已有组名；改名 / 留空不破坏成员、链接与顺序", () => {
+    const state = mkState(
+      [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 600, 0)],
+      [mkGroup("g1", ["a", "b"], { name: "发布计划", defaultName: false, ordered: true })],
+    );
+    const linked = board.addLink(state, "a", "c", false, "同一批材料");
+    // 加入已有组：保留已有组名
+    const joined = board.joinGroup(linked, "c", "g1", 1);
+    expect(board.groupById(joined, "g1")?.name).toBe("发布计划");
+    expect(membersOf(joined, "g1")).toEqual(["a", "c", "b"]);
+    expect(joined.links).toHaveLength(1);
+    // 改名：成员、链接、顺序都不动
+    const renamed = board.renameGroup(joined, "g1", "发布计划（第二轮）");
+    expect(membersOf(renamed, "g1")).toEqual(["a", "c", "b"]);
+    expect(renamed.links).toHaveLength(1);
+    expect(board.groupById(renamed, "g1")?.ordered).toBe(true);
+    // 留空：不改动任何东西（组仍然成立、名字保留）
+    const blank = board.renameGroup(renamed, "g1", "   ");
+    expect(board.groupById(blank, "g1")?.name).toBe("发布计划（第二轮）");
+    expect(membersOf(blank, "g1")).toEqual(["a", "c", "b"]);
+    expect(blank.links).toHaveLength(1);
+    // 系统默认名的组留空后仍然是「默认组名」
+    const fresh = board.createGroup(mkState([mkCard("x"), mkCard("y")]), ["x", "y"]);
+    expect(board.renameGroup(fresh, fresh.groups[0].id, "").groups[0].name).toBe("默认组名");
   });
 });

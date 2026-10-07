@@ -1,7 +1,8 @@
 /**
  * 板面操作语义（纯函数）：卡片、选择、拖动、分组、顺序、关系链接。
  *
- * 契约：docs/interactive-mode-contract.md §1.2 / §1.3 / §4.2。
+ * 契约：docs/interactive-mode-contract.md §1.2 / §1.3 / §4.2，默认组名以 §9.1 为准
+ * （覆盖 §1.3 / §6.1 的「组 N」写法）。
  * 与后端 backend/src/agent/interactive/board.py **语义一致**：同一批规则、同一批默认值；
  * 两边改动必须同步，否则前端的预演会和服务端归一化结果对不上。
  *
@@ -94,11 +95,21 @@ const DEFAULT_CARD_COLUMNS = 4;
 //: 复制卡片的偏移（故意叠一点，表示这是副本）
 const DUPLICATE_OFFSET = 32;
 
-/** 系统默认组名的前缀：契约 §1.3 / §6.1「默认组名使用『组 N』」。 */
-export const DEFAULT_GROUP_NAME_PREFIX = "组";
+/**
+ * 系统默认组名（契约 §9.1，覆盖 §1.3 / §6.1 的「组 N」）：
+ * 需要系统给名字的所有路径统一用它。它只表示「这个名字是系统给的」，
+ * 不替用户表达任何关系判断，也不承诺名字唯一。
+ */
+export const DEFAULT_GROUP_NAME = "默认组名";
 
-const DEFAULT_GROUP_PREFIX = DEFAULT_GROUP_NAME_PREFIX;
-const DEFAULT_NAME_RE = /^组\s*(\d+)$/;
+/** 兼容名：默认组名的判定前缀就是它本身（组件拼提示文字时用）。 */
+export const DEFAULT_GROUP_NAME_PREFIX = DEFAULT_GROUP_NAME;
+
+/** 历史默认名「组 N」的前缀：只用于**识别**旧数据，不再用于生成新名字。 */
+export const LEGACY_GROUP_NAME_PREFIX = "组";
+
+//: 默认名判定同时认两种形态：新的「默认组名」与历史数据里的「组 N」（契约 §9.1）。
+const DEFAULT_NAME_RE = /^(?:默认组名|组\s*\d+)$/;
 
 let idCounter = 0;
 
@@ -134,18 +145,23 @@ function dedupe(values: readonly unknown[]): string[] {
   return result;
 }
 
-function isDefaultName(name: string): boolean {
-  return DEFAULT_NAME_RE.test(name);
+/**
+ * 这个名字是不是系统默认名：同时认「默认组名」与历史「组 N」（契约 §9.1）。
+ * 只表示「系统给的名字」，不代表任何关系含义。
+ */
+export function isDefaultGroupName(name: string): boolean {
+  return DEFAULT_NAME_RE.test(String(name ?? "").trim());
 }
 
-/** 下一个没人用过的默认组名「组 N」；N 只增不减，避免重名。 */
-export function nextDefaultGroupName(taken: Iterable<string>): string {
-  let highest = 0;
-  for (const name of taken) {
-    const match = DEFAULT_NAME_RE.exec(String(name ?? ""));
-    if (match) highest = Math.max(highest, Number(match[1]));
-  }
-  return DEFAULT_GROUP_PREFIX + " " + String(highest + 1);
+/**
+ * 系统默认组名：**固定返回「默认组名」**，不再编号。
+ *
+ * 契约 §9.1：组身份按 id 区分，不依赖名称唯一性，默认名可以重复；
+ * 因此不再按已有名字生成「组 N」。`_taken` 只保留参数位，
+ * 避免调用方（组件 / 用例）改动，且不影响任何行为。
+ */
+export function nextDefaultGroupName(_taken: Iterable<string> = []): string {
+  return DEFAULT_GROUP_NAME;
 }
 
 function clampIndex(index: number | null | undefined, size: number): number {
@@ -264,8 +280,10 @@ function normalizeGroup(
   }
   // G3 成员全被移除或删除的组自动消失（不存在空组）
   if (!members.length) return null;
+  // 历史「组 N」不被批量覆盖：defaultName 按存储值保留，缺失时才按名字形态推断（契约 §9.1）
   let name = asText(source.name).trim();
-  let defaultName = typeof source.defaultName === "boolean" ? source.defaultName : isDefaultName(name);
+  let defaultName =
+    typeof source.defaultName === "boolean" ? source.defaultName : isDefaultGroupName(name);
   if (!name) {
     name = nextDefaultGroupName(ctx.takenNames);
     defaultName = true;
@@ -498,7 +516,7 @@ export function createGroup(state: BoardState, cardIds: string[], name?: string)
   work.groups.push({
     id: newId("g"),
     name: cleaned || nextDefaultGroupName(work.groups.map((item) => item.name)),
-    defaultName: !cleaned || isDefaultName(cleaned),
+    defaultName: !cleaned || isDefaultGroupName(cleaned),
     ordered: false,
     x: 0,
     y: 0,
@@ -564,7 +582,11 @@ export function dissolveGroup(state: BoardState, groupId: string): BoardState {
   return normalizeState(work);
 }
 
-/** 改组名。留空不生效；名字是否还是默认名由名字本身决定（保留默认名也能提交）。 */
+/**
+ * 改组名。输入即用；留空 / 取消改名不改动任何东西 —— 组仍然成立并保留原来的名字
+ * （本来就是默认名的组继续保留「默认组名」，契约 §9.1 / §8.2）。
+ * 名字是不是系统默认名由名字本身决定（保留默认名也能提交）。
+ */
 export function renameGroup(state: BoardState, groupId: string, name: string): BoardState {
   const work = normalizeState(state);
   const group = groupById(work, groupId);
@@ -572,7 +594,7 @@ export function renameGroup(state: BoardState, groupId: string, name: string): B
   const cleaned = asText(name).trim();
   if (!cleaned || cleaned === group.name) return work;
   group.name = cleaned;
-  group.defaultName = isDefaultName(cleaned);
+  group.defaultName = isDefaultGroupName(cleaned);
   group.updatedAt = nowIso();
   work.updatedAt = group.updatedAt;
   return normalizeState(work);
@@ -604,7 +626,8 @@ export function moveWithinGroup(state: BoardState, groupId: string, cardId: stri
 }
 
 /**
- * 合并两个组：目标组保留 id 但换成默认名（原组不再独立保留）。
+ * 合并两个组：目标组保留 id 但换成系统默认名「默认组名」（原组不再独立保留，
+ * 契约 §9.1：合并等所有系统命名路径统一用它；组身份仍按 id）。
  * - 被拖入组的成员**连续插入**目标位置；
  * - 两个有序组 → 仍是有序，各自内部顺序保留，统一编号；
  * - 有序组与普通组合并 → 普通组（取消序号），用户可重新设为有序。
@@ -1016,7 +1039,7 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
     const best = bestMergeTarget(work, cardId, px, py);
     if (best) {
       const partner = cardById(work, best.cardId);
-      // 两张未分组卡片明确重叠 → 自动成组，默认组名（组框由成员推导，位置只影响显示）
+      // 两张未分组卡片明确重叠 → 自动成组，系统默认名「默认组名」（组框由成员推导，位置只影响显示）
       work.groups.push({
         id: newId("g"),
         name: nextDefaultGroupName(work.groups.map((item) => item.name)),

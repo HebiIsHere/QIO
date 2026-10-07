@@ -71,7 +71,12 @@ NON_INTENT_EXPRESSIONS = (
     "link_removed",
 )
 
-DEFAULT_GROUP_PREFIX = "组"
+#: 系统默认组名（契约 §9.1，覆盖 §1.3 / §6.1 的「组 N」）：
+#: 需要系统给名字的所有路径统一用它。它只表示「这个名字是系统给的」，
+#: 不替用户表达任何关系判断，也不承诺名字唯一（组身份按 id 区分）。
+DEFAULT_GROUP_NAME = "默认组名"
+#: 历史默认名「组 N」的前缀：只用于**识别**旧数据，不再用于生成新名字。
+LEGACY_GROUP_NAME_PREFIX = "组"
 
 
 def now_iso() -> str:
@@ -82,9 +87,13 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def default_group_name(index: int) -> str:
-    """默认组名只用于识别，不替用户补充关系含义。"""
-    return f"{DEFAULT_GROUP_PREFIX} {index}"
+def default_group_name(index: int = 1) -> str:
+    """系统默认组名：固定返回「默认组名」，不再编号（契约 §9.1）。
+
+    组身份按 id 区分，不依赖名称唯一性，默认名可以重复；
+    index 只保留参数位，避免调用方（intents 等）改动，且不影响任何行为。
+    """
+    return DEFAULT_GROUP_NAME
 
 
 def dumps(value: Any) -> str:
