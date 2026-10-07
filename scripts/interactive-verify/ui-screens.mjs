@@ -117,6 +117,37 @@ const selectFirstCard = {
 const openChat = { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(p)return 'already';const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();return b?'clicked':'missing';})()` };
 const openBatch = { op: "eval", js: `(function(){const l=document.querySelector('[data-im="batch-list"]');if(l)return 'already';const b=document.querySelector('[data-im="batch-entry"]');if(b)b.click();return b?'clicked':'missing';})()` };
 /** 制造一次保存失败：只拦板面状态写入，其他请求照常 */
+/**
+ * 等到两个面板**真的不相交**再截图。
+ *
+ * 为什么要等：面板刚打开的瞬间几何还没应用，直接截会拍到两面板叠在一起的过渡帧 ——
+ * 那种图会被误读成「避让没生效」，实际测量（以及独立复核）都是 0 px²。
+ */
+const waitNoOverlap = {
+  op: "eval",
+  await: true,
+  js: `(async () => {
+    const rect = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { l: r.left, t: r.top, r: r.right, b: r.bottom };
+    };
+    const t0 = Date.now();
+    for (;;) {
+      const a = rect('[data-im="chat-panel"]');
+      const b = rect('[data-im="batch-list"]');
+      if (a && b) {
+        const w = Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l));
+        const h = Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+        if (w * h === 0) return JSON.stringify({ ok: true, ms: Date.now() - t0 });
+      }
+      if (Date.now() - t0 > 8000) return JSON.stringify({ ok: false, ms: Date.now() - t0 });
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  })()`,
+};
+
 const breakSave = {
   op: "eval",
   js: `(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/api\\/interactive\\/boards\\/[^/]+\\/state$/.test(url)&&(init&&String(init.method||'').toUpperCase()==='PUT')){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed';})()`,
@@ -136,7 +167,9 @@ async function captureScene(w, h, theme, scene) {
   ];
   if (scene === "selected") steps.push(selectFirstCard, { op: "wait", ms: 600 });
   if (scene === "approval") steps.push({ op: "wait", ms: 1200 });
-  if (scene === "overlays") steps.push(openChat, { op: "wait", ms: 700 }, openBatch, { op: "wait", ms: 900 });
+  if (scene === "overlays") {
+    steps.push(openChat, { op: "wait", ms: 700 }, openBatch, waitNoOverlap, { op: "wait", ms: 250 });
+  }
   if (scene === "error") steps.push(breakSave, { op: "wait", ms: 300 }, addCard, { op: "wait", ms: 500 }, addText, { op: "wait", ms: 1800 });
   steps.push(shot(tag));
   runSteps(steps, tag);

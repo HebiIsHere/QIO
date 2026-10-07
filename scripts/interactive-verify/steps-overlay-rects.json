@@ -1,0 +1,68 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "document.documentElement.setAttribute('data-theme','dark'); 'dark'"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const b=document.querySelector('[data-im=\"demo-entry\"]');if(b)b.click();return 'opened';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im=\"demo-popover\"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 2600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const b=document.querySelector('[data-im=\"demo-entry\"]');if(b)b.click();return 'close';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const p=document.querySelector('[data-im=\"chat-panel\"]');if(!p){const b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();}return 'chat';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const l=document.querySelector('[data-im=\"batch-list\"]');if(!l){const b=document.querySelector('[data-im=\"batch-entry\"]');if(b)b.click();}return l?'already':'clicked';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){\n    document.querySelectorAll('.probe-mark').forEach(e=>e.remove());\n    const mark=(sel,color,label)=>{const e=document.querySelector(sel);if(!e)return null;const r=e.getBoundingClientRect();const d=document.createElement('div');d.className='probe-mark';d.style.cssText='position:fixed;z-index:99999;pointer-events:none;border:3px solid '+color+';left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;';const t=document.createElement('div');t.textContent=label;t.style.cssText='position:absolute;left:0;top:-22px;background:'+color+';color:#fff;font:12px/18px monospace;padding:0 6px;border-radius:3px;white-space:nowrap;';d.appendChild(t);document.body.appendChild(d);return {l:Math.round(r.left),t:Math.round(r.top),r:Math.round(r.right),b:Math.round(r.bottom)};};\n    const a=mark('[data-im=\"chat-panel\"]','#e879bd','聊天面板 '+Math.round(document.querySelector('[data-im=\"chat-panel\"]').getBoundingClientRect().left)+'-'+Math.round(document.querySelector('[data-im=\"chat-panel\"]').getBoundingClientRect().right));\n    const b=mark('[data-im=\"batch-list\"]','#3fa9f5','批量列表');\n    const tb=mark('[data-im=\"board-toolbar\"]','#7ed321','底部工具栏');\n    const inter=(x,y)=>{if(!x||!y)return 0;return Math.max(0,Math.min(x.r,y.r)-Math.max(x.l,y.l))*Math.max(0,Math.min(x.b,y.b)-Math.max(x.t,y.t));};\n    const s=document.createElement('div');s.className='probe-mark';s.textContent='聊天×批量相交 = '+inter(a,b)+' px²';s.style.cssText='position:fixed;z-index:99999;left:16px;top:8px;background:#111;color:#fff;font:14px/22px monospace;padding:2px 10px;border-radius:4px;';\n    document.body.appendChild(s);\n    return JSON.stringify({chat:a,batch:b,toolbar:tb,inter:inter(a,b)});\n  })()"
+  },
+  {
+    "op": "screenshot",
+    "name": "after-overlay-rects-800x600-dark"
+  }
+]
