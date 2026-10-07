@@ -81,6 +81,10 @@ YIELD_EVERY_BYTES = 4 * 1024 * 1024
 #: 确定地拿到 GIL。Windows 上 Python 3.11 用高精度可等待定时器，实测平均 ~1.7ms/次。
 YIELD_SECONDS = 0.001
 
+#: 可验证恢复（failed → ready）时允许在事件循环线程上核对的副本大小上限。
+#: 超过它不硬算 sha256：交给显式重试重新写一份副本（见 _copy_recovery_verified）。
+RECOVERY_VERIFY_MAX_BYTES = 8 * 1024 * 1024
+
 STATE_PREPARED = "prepared"
 STATE_READY = "ready"
 STATE_FAILED = "failed"
@@ -1682,8 +1686,19 @@ class AttachmentService:
         if att.kind == "copy":
             stored_exists = bool(att.stored_path) and Path(att.stored_path).is_file()
             if not stored_exists:
+                # 契约 §1.4：区分两个事实 ——
+                # (a) **保存失败、从未产生有效副本**（failed）：**粘性**，不得自动改成
+                #     missing/ready，原始 error 也不得被通用文案覆盖（那是用户唯一能看到的
+                #     原因，覆盖掉就成了「QIO 保存的副本文件已经不在了」这种误导性说法）；
+                # (b) 曾成功保存、后来副本丢失：继续如实 missing（行为不变）。
+                if att.state in (STATE_FAILED, STATE_MISSING):
+                    return att
                 return self._transition(att, STATE_MISSING, "QIO 保存的副本文件已经不在了")
+            # 副本在：missing → ready 照旧；failed 只有在**可验证的恢复**下才允许转 ready
+            # （记录路径存在**且** sha256 与登记值一致），否则保持 failed 与原始原因。
             if att.state == STATE_MISSING:
+                return self._transition(att, STATE_READY, None)
+            if att.state == STATE_FAILED and self._copy_recovery_verified(att):
                 return self._transition(att, STATE_READY, None)
             return att
         # reference：位置是唯一依据；大小/修改时间是「内容是否还是当初那个」的证据
@@ -1708,6 +1723,67 @@ class AttachmentService:
         if att.state in (STATE_MISSING, STATE_CHANGED, STATE_FAILED):
             return self._transition(att, STATE_READY, None)
         return att
+
+    def _copy_recovery_verified(self, att: Attachment) -> bool:
+        """可验证的恢复：记录的副本文件在**且** sha256 与登记值一致（契约 §1.4）。
+
+        只有内容对得上才叫「恢复」：sha256 缺失、算不出来、或者对不上 → 不认，
+        保持 failed 与原始原因（用户仍可显式重试，重试会重新写一份副本）。
+
+        为什么设上限：这个方法跑在事件循环线程上（GET / list / history 都会走 _check）。
+        超大文件逐字节核对会把事件循环占住；超过上限就交给**显式重试**，不在这里硬算。
+        """
+        if not att.stored_path or not att.sha256:
+            return False
+        path = Path(att.stored_path)
+        try:
+            if not path.is_file():
+                return False
+            if path.stat().st_size > RECOVERY_VERIFY_MAX_BYTES:
+                return False
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(IO_PIECE_BYTES), b""):
+                    digest.update(chunk)
+        except OSError:
+            return False
+        return digest.hexdigest() == att.sha256
+
+    def available_actions(self, att: Attachment) -> list[str]:
+        """这一条附件现在**确实可用**的操作（界面按钮的唯一依据，契约 §1.4）。
+
+        * copy 从未保存成功（failed，手里没有内容）→ 只有 ``retry``：浏览器上传没有
+          原文件地址，「重新定位」指不了任何地方；
+        * copy 有真实 ``source_path``（老式本地文件复制）→ 可以 ``relocate`` 重新指定位置；
+        * reference + failed/missing/changed → ``relocate``（位置是引用型附件的唯一依据）；
+        * ``prepared`` / ``ready`` → 空（准备中与已就绪都不需要这些动作）。
+
+        「QIO 能不能自己把内容找回来」由 ``recoverable_from_source`` 单独表达：
+        浏览器字节上传（没有 source_path）永远是 False —— 界面不得暗示能从原地址恢复。
+        """
+        if att.state in (STATE_PREPARED, STATE_READY):
+            return []
+        actions: list[str] = []
+        if att.state in (STATE_FAILED, STATE_MISSING, STATE_CHANGED, STATE_CANCELLED):
+            if att.kind == "reference":
+                actions.append("relocate")
+            elif att.source_path:
+                # 有真实原路径的本地文件：重试会重新读它；也可以换一个位置
+                actions.append("retry")
+                actions.append("relocate")
+            else:
+                # 浏览器字节上传：内容只在客户端手里 —— 服务端重试**拿不到内容**，
+                # 唯一真能成功的动作是重新上传（界面不得暗示 QIO 能自己找回）。
+                actions.append("reupload")
+        return actions
+
+    def recoverable_from_source(self, att: Attachment) -> bool:
+        """QIO 能不能**自己**从已知位置把内容找回来（不能就是「重新上传」）。
+
+        有真实 ``source_path`` 就行：引用型按位置读，copy 型按位置重新复制；
+        浏览器字节上传没有源路径 —— 永远不能（界面不得暗示能从原地址恢复）。
+        """
+        return bool(att.source_path)
 
     def _transition(self, att: Attachment, state: str, error: str | None) -> Attachment:
         if att.state == state and (att.error or None) == (error or None):
@@ -1800,6 +1876,10 @@ class AttachmentService:
             "readability_note": note,
             "caveat": REFERENCE_CAVEAT if att.kind == "reference" else None,
             "retryable": att.state in (STATE_FAILED, STATE_CANCELLED, STATE_CHANGED, STATE_MISSING),
+            # 契约 §1.4：可用操作按 kind 区分（界面按钮的唯一依据），
+            # 以及「QIO 能不能自己从已知位置恢复」（浏览器上传永远不能）。
+            "actions": self.available_actions(att),
+            "recoverable_from_source": self.recoverable_from_source(att),
             "sha256": att.sha256,
             "stored_path": att.stored_path,
             "source_path": att.source_path,
