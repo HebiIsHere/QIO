@@ -1,16 +1,17 @@
-<!-- 组框（子智能体 B 负责）：组名、有序 / 普通切换、解除组、组内顺序与拖动插入位置提示。
+<!-- 组框（子智能体 A 负责视觉，规则见契约 §1.3 / §9.6）：组名、有序 / 普通切换、解除组、
+  组内顺序与拖动插入位置提示。
 
-  契约：docs/interactive-mode-contract.md §1.3 / §8.2。
+  - 视觉层级：**组框比卡片更轻** —— 一条 1px 细线 + 很淡的底，没有第二层厚边框与阴影；
+    正式内容用实线（虚线只留给待审批完成后消失的预览，并配文字说明）；
   - 普通组：自由摆放不表示先后 → 不显示序号，只列出成员；
   - 有序组：显示明确 1..n 序号，顺序调整可作为依据；
-  - 组名：初始是系统默认名（「组 N」）；输入即用；留空或取消保留默认名，组仍然成立；
-  - 拖动预演时显示「将加入这一组」与**插入位置**（第 N 位）；
+  - 组名：初始是系统给的默认名；输入即用；留空或取消保留默认名，组仍然成立；
+  - 拖动预演时显示「将加入这一组」与**插入位置**（第 N 位），落地成事时才有；
   - 组框本身不吃指针事件（否则卡片拖不动），只有头部两行可交互；
   - 头部高度控制在 board.ts 的 GROUP_PAD_TOP（58px）以内，序号条不会压住成员卡片。
 -->
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import { DEFAULT_GROUP_NAME_PREFIX } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 
 const props = defineProps<{
@@ -51,8 +52,8 @@ const memberCards = computed(() =>
     .filter((card): card is BoardCard => Boolean(card)),
 );
 
-/** 系统默认名的提示：输入框留空时用它说明「留空会保留这个名字」。 */
-const defaultHint = computed(() => props.group.name || DEFAULT_GROUP_NAME_PREFIX + " N");
+/** 输入框留空时的提示：留空不生效，组名仍是系统给的默认名，组依然成立。 */
+const nameHint = computed(() => props.group.name || "组名");
 
 function titleOf(card: BoardCard): string {
   const text = (card.content || String(card.meta?.name ?? card.meta?.title ?? "")).trim();
@@ -108,7 +109,7 @@ defineExpose({ focusName });
           class="group-name"
           type="text"
           :value="group.name"
-          :placeholder="defaultHint"
+          :placeholder="nameHint"
           data-im="group-name"
           :data-group-id="group.id"
           aria-label="组名"
@@ -185,17 +186,21 @@ defineExpose({ focusName });
 </template>
 
 <style scoped>
+/*
+  组框比卡片更轻：一条 1px 细线 + 一层很淡的底，没有阴影、没有第二层厚边框。
+  正式内容用实线；虚线只属于「待审批完成后才会出现的预览」，并且一定配文字说明。
+*/
 .group {
   position: absolute;
-  border: 1px dashed var(--border-strong);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--bg-inset);
   pointer-events: none; /* 卡片要能拖动：只有头部两行接管指针 */
   z-index: 2;
 }
-.group.ordered { border-color: var(--accent); }
-.group.drop-target { border-style: solid; border-color: var(--accent); background: var(--accent-soft); }
-.group.drop-merge { border-style: solid; border-color: var(--warning); }
+.group.ordered { border-color: var(--border-strong); }
+.group.drop-target { border-color: var(--accent); background: var(--accent-soft); }
+.group.drop-merge { border-color: var(--warning); }
 .badge {
   flex: none;
   font-size: var(--fs-tech, var(--fs-xs));
@@ -214,7 +219,8 @@ defineExpose({ focusName });
   overflow: hidden;
   padding: 2px var(--sp-2);
   pointer-events: auto;
-  background: var(--bg-elevated);
+  /* 头部不再压一块实心背景：组框整体比卡片轻，分隔只靠一条细线 */
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   font-size: var(--fs-xs);
@@ -233,8 +239,11 @@ defineExpose({ focusName });
   min-width: 80px;
   max-width: 160px;
 }
+.group-name:hover { border-color: var(--border-strong); }
+.group-name:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .mode { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
-.count { flex: none; color: var(--text-faint); }
+/* 成员数量是次级信息：小、灰，但不至于看不清 */
+.count { flex: none; color: var(--text-muted); }
 .sequence {
   display: flex;
   flex-wrap: nowrap;
@@ -256,6 +265,7 @@ defineExpose({ focusName });
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 .chip.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
 .chip.insert { border-style: dashed; border-color: var(--accent); color: var(--text-secondary); }
@@ -276,14 +286,14 @@ defineExpose({ focusName });
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
-  background: var(--bg-elevated);
+  background: none;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
-.btn:hover { color: var(--text-strong); }
-.btn:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.tiny { font-size: var(--fs-tech, var(--fs-xs)); }
 </style>

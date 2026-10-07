@@ -97,7 +97,7 @@ onMounted(async () => {
 
     <p class="note">
       只查你自己的板面：能搜到未勾选的注释，<strong>这不等于交给 QIO</strong>。
-      当前有 {{ uncheckedNotes }} 条未勾选注释，它们不会进入提交。
+      现在有 {{ uncheckedNotes }} 条未勾选注释，它们不会进入提交。
     </p>
 
     <ul v-if="hits.length" class="results">
@@ -149,11 +149,11 @@ onMounted(async () => {
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--elev-floating, var(--shadow-2));
 }
 
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
-.panel-title { margin: 0; font-family: var(--serif); font-size: var(--fs-base); font-weight: 600; color: var(--text-strong); }
+.panel-title { margin: 0; font-family: var(--serif); font-size: var(--fs-md); font-weight: 600; color: var(--text-strong); }
 .close {
   font: inherit;
   font-size: var(--fs-xs);
@@ -199,7 +199,7 @@ input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px;
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
 }
-.result:hover { border-color: var(--accent); }
+.result:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
 .result:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .result.located { border-color: var(--warning); }
 .row { display: flex; align-items: baseline; gap: var(--sp-1); min-width: 0; }
