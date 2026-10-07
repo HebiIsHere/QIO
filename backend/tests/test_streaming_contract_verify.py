@@ -1,17 +1,19 @@
-"""独立验证：真实流式 + 回答阶段协议（第四轮契约 §1.1）。
+"""独立验证：真实流式 + 内容角色协议（第五轮契约 §1.1）。
 
-契约来源：docs/plans/2026-10-07-three-remaining-fixes.md §1.1（回答阶段协议）。
+契约来源：docs/plans/2026-10-07-final-convergence.md §1.1（内容角色协议）。
 验证方式：**不走实现方的内部形状猜测**，而是用本地假厂商端点（真 HTTP + 真 SSE）
 喂给真实的 NativeAdapter + AgentLoop，断言事件层与最终文本的契约。
 
 假厂商端点：scripts/verify_stream_provider.py（本地扮演，不联网、不需要真实 Key）。
 它只证明「QIO 自己的链路对」，不证明任何真实厂商的兼容性。
 
-第四轮口径：角色**只看这次调用带不带工具** —— 工作调用（tools=[...]）的正文进过程区
-（interim=true）；工作调用不再请求工具后，循环发起**一次 tools=[] 的回答调用**，
-它的正文从第一个可发布增量起就是正式回答（interim=false、streaming=true），
-结束时同 delta_id 再补一条 {streaming:false} 做收尾校准。本文件断言：
-正式回答在 provider 结束前就出现在回答区、按节奏合并发布、同一份文字不重复。
+第五轮口径：角色**只由模型在正文开头的声明决定**（[[QIO:ANSWER]]，大小写不敏感，
+声明本身不展示）：声明匹配 → 该调用是回答调用，正文从第一个可发布增量起就是
+正式回答（interim=false、streaming=true），结束时同 delta_id 再补一条
+{streaming:false} 做收尾校准；前缀不匹配 + 调用结束有工具调用 → 工作调用
+（正文进过程区）；未声明且调用结束无工具调用 → 一次性交付到回答区（降级路径）。
+本文件断言：正式回答在 provider 结束前就出现在回答区、按节奏合并发布、
+同一份文字不重复、工具参数碎片不当正文。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_streaming_contract_verify.py -q
 """
@@ -34,6 +36,9 @@ from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# 冻结协议串（测试里写死字面量：契约改了就应当红）
+ANSWER_MARKER = "[[QIO:ANSWER]]"
 
 
 # ---- 假厂商端点（与 scripts/verify_stream_provider.py 同源，避免两份实现漂移） ----
@@ -170,8 +175,8 @@ async def test_stream_delta_carries_a_text_fragment():
 
 
 async def test_answer_streams_into_answer_area_before_provider_finishes(provider):
-    """第四轮契约 §1.1：正式回答来自 tools=[] 的回答调用，**从第一个可发布增量起**
-    就在正式回答区（interim=false、streaming=true），且早于 provider 结束。
+    """第五轮契约 §1.1：正文声明了回答 → **从第一个可发布增量起**就在正式回答区
+    （interim=false、streaming=true），且早于 provider 结束；标记本身不展示。
 
     强度保持：provider 结束前已可见 + 按节奏合并发布 + 同一份文字不重复。
     """
@@ -179,10 +184,20 @@ async def test_answer_streams_into_answer_area_before_provider_finishes(provider
     # 10ms 一片：分片到达比发布节奏（40ms）快 —— 合并发布必须发生，否则就是逐片推送。
     provider.script.set(
         [
-            # ① 工作调用：没有请求任何工具 → 工作阶段结束
-            {"chunks": ["我先看一下。"], "chunk_delay_ms": 5},
-            # ② 回答调用（tools=[]）：真流式
-            {"chunks": chunks, "chunk_delay_ms": 10},
+            # ① 工作轮：正文是过程说明，并且真的调用一次工具
+            {
+                "chunks": ["我先看一下。"],
+                "tool_chunks": [
+                    {
+                        "id": "call_live",
+                        "name": "echo",
+                        "args_fragments": ['{"text": "hi"}'],
+                    }
+                ],
+                "chunk_delay_ms": 5,
+            },
+            # ② 声明回答：真流式（声明单独一片，正文按节奏合并）
+            {"chunks": [ANSWER_MARKER + "\n", *chunks], "chunk_delay_ms": 10},
         ]
     )
 
@@ -222,7 +237,7 @@ async def test_answer_streams_into_answer_area_before_provider_finishes(provider
         "回答调用的第一个回答区事件必须是 streaming=true 的增量（不是收尾校准）",
         early_event.data,
     )
-    assert early_event.data.get("role_evidence") == "tool_free_call", early_event.data
+    assert early_event.data.get("role_evidence") == "declared_answer", early_event.data
 
     events = _assistant_events(loop)
     answer = [e for e in events if e.data.get("interim") is False]
@@ -285,10 +300,8 @@ async def test_tool_arguments_split_into_fragments_are_assembled_before_executio
                 ],
                 "chunk_delay_ms": 5,
             },
-            # ② 工作调用收尾：不再请求工具
-            {"chunks": ["工具跑完了。"]},
-            # ③ 回答调用（tools=[]）
-            {"chunks": ["收到"]},
+            # ② 声明回答（工具轮之后）
+            {"chunks": [ANSWER_MARKER + "\n收到"]},
         ]
     )
 
@@ -311,17 +324,16 @@ async def test_tool_arguments_split_into_fragments_are_assembled_before_executio
 
 
 async def test_stream_that_ends_without_finish_reason_keeps_confirmed_text(provider):
-    """断线保留已确认文本（过程区），且没有发出来的后缀不得凭空出现。
+    """断线保留已确认文本，且没有发出来的后缀不得凭空出现。
 
-    第四轮起工作调用的文字留在过程区；正式回答由随后那次不带工具的调用产出。
+    第五轮起未声明的正文在断线时一次性交付到正式回答区（降级路径）：它是这一轮
+    唯一拿到的文字，不能丢、不能凭空补后缀、也不能重新生成一遍。
     """
     confirmed = "前两句。第二句。"
     provider.script.set(
         [
-            # ① 工作调用：发两片后断线（没有 finish_reason）
+            # ① 一条流：发两片后断线（没有 finish_reason）
             {"abort_after": 2, "chunks": ["前两句。", "第二句。", "永远不会发出的后缀"]},
-            # ② 回答调用（tools=[]）：正式回答
-            {"chunks": ["完整回答。"]},
         ]
     )
 
@@ -330,15 +342,15 @@ async def test_stream_that_ends_without_finish_reason_keeps_confirmed_text(provi
     result = await asyncio.wait_for(loop.run("请回答"), timeout=20)
 
     text = result.final_content or ""
-    assert text == "完整回答。", ("正式回答来自回答调用", text)
+    assert text == confirmed, ("断线保留已确认文本（不丢字、不补后缀）", text)
 
     events = _assistant_events(loop)
-    work_text = "".join(
-        str(e.data.get("content") or "") for e in events if e.data.get("interim") is True
+    delivered = "".join(
+        str(e.data.get("content") or "") for e in events if e.data.get("interim") is False
     )
-    assert "永远不会发出的后缀" not in work_text, ("未确认的内容不得出现", work_text)
-    assert confirmed in work_text, ("已确认文本必须保留在过程区", work_text)
-    assert work_text.count("前两句。") == 1, ("已确认文本不得重复", work_text)
+    assert "永远不会发出的后缀" not in delivered, ("未确认的内容不得出现", delivered)
+    assert confirmed in delivered, ("已确认文本必须交付", delivered)
+    assert delivered.count("前两句。") == 1, ("已确认文本不得重复", delivered)
 
     # 累计快照按 delta_id 各自单调（工作调用与回答调用是两条流，不能跨流比较）
     by_delta: dict[str, list[str]] = {}
