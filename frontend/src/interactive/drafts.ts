@@ -149,6 +149,17 @@ export function writeDraft(key: string, text: string, seq: number): { ok: boolea
 }
 
 /** 删除一条草稿（例如发送成功后）。删不掉时不能假装删掉了，但也没有更好的补救。 */
+/**
+ * 记录是否存在（**正文为空也算存在**）。
+ *
+ * 为什么需要：`readDraft(key)?.text || card.content` 这种写法会把「用户把正文删空后保存的草稿」
+ * 当成「没有草稿」，于是重开编辑器时旧正文又冒出来、把空草稿盖掉。
+ * 判断存在性要用这个函数，不要用空字符串的真假值。
+ */
+export function hasDraftRecord(key: string): boolean {
+  return readDraft(key) !== null;
+}
+
 export function removeDraft(key: string): void {
   const { storage } = resolveStorage();
   if (!storage) return;
