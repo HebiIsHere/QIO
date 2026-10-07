@@ -1,19 +1,24 @@
-<!-- 单张板面卡片（子智能体 B 负责）：文字注释 / 文件 / 图片 / 代码 / 网址 / QIO 结果。
+<!--
+  单张板面卡片（子智能体 A 负责）：文字注释 / 文件 / 图片 / 代码 / 网址 / QIO 结果。
 
-  契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §8.1 / §8.2。
+  契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §9.6。
   这里落地的规则：
-  - 勾选框只出现在**文字注释**上，而且放在「选中后才浮出的局部工具栏」里（§8.1 卡片局部工具栏）；
+  - 信息分层：**材料类型 → 标题 → 正文 → 元信息**（元信息含状态文字、所在组、更新时间）；
+  - 勾选框只出现在**文字注释**上，而且放在「选中后才浮出的局部工具栏」里；
     材料默认就在 QIO 可查看范围内，没有这个选择框；reply 不参与勾选；
-  - 选中后卡片四边出现**连接点**（data-im="connect-point"），从连接点拖到另一张卡片建立关系（§8.2）；
+  - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
+    （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
+  - 选中后卡片四边出现**连接点**（data-im="connect-point"）。工具栏与整理菜单都朝卡片外侧展开，
+    实测不盖标题、连接点与正在编辑的正文；
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
-  - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit；
-  - 局部工具栏只对本卡片生效（data-card-id），多选时只显示共同适用的操作（由父组件给 canEdit 决定）。
+  - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
+import SelectionMenu from "./SelectionMenu.vue";
 
 const props = defineProps<{
   card: BoardCard;
@@ -34,6 +39,10 @@ const props = defineProps<{
   connecting: boolean;
 }>();
 
+/**
+  事件签名保持不变：BoardCanvas 仍在监听 leave-group / join-group，
+  分组操作改由 SelectionMenu 直接算状态并 commit（契约 §8.4.1），这两个事件保留只为不打断画布接线。
+*/
 const emit = defineEmits<{
   (e: "select", cardId: string, additive: boolean): void;
   (e: "drag-start", cardId: string, event: PointerEvent): void;
@@ -53,7 +62,6 @@ const metaName = ref("");
 const metaLanguage = ref("");
 const metaHref = ref("");
 const metaTitle = ref("");
-const joinTarget = ref("");
 
 const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
 const kindLabel = computed(() => CARD_KIND_LABELS[props.card.kind]);
@@ -62,13 +70,21 @@ const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
 const linkTitle = computed(() => String(props.card.meta?.title ?? "") || href.value);
 
-const headline = computed(() => {
-  const text = (props.card.content || name.value || linkTitle.value).trim();
-  if (!text) return "（还没有内容）";
-  return text.length > 24 ? text.slice(0, 24) + "…" : text;
+/** 正文首行：折叠时当标题用，避免折叠后只剩一个类型标签 */
+const firstLine = computed(() => (props.card.content || "").trim().split("\n")[0].trim());
+
+/**
+  标题层：材料自己的名字 / 网址标题 / 代码语言；文字注释没有独立标题（正文就是它本身），
+  只有折叠后才用首行顶上，保证折叠卡片仍然认得出是哪一条。
+*/
+const titleText = computed(() => {
+  if (props.card.kind === "file" || props.card.kind === "image") return name.value || "未命名" + kindLabel.value;
+  if (props.card.kind === "url") return linkTitle.value || "（还没有网址）";
+  if (props.card.kind === "code") return language.value ? language.value + " 代码" : "代码";
+  return props.card.folded ? firstLine.value : "";
 });
 
-/** 状态说明：颜色之外必须能读出来。 */
+/** 元信息层：状态必须能读出来，不能只靠颜色。 */
 const statusText = computed(() => {
   const parts: string[] = [];
   if (props.card.hidden) parts.push("已隐藏：退出讨论范围");
@@ -82,6 +98,30 @@ const statusText = computed(() => {
   return parts.join(" · ");
 });
 
+/** 更新时间：数据用等宽字体（三声部里的第三声部），解析失败时如实显示原值 */
+const updatedText = computed(() => {
+  const raw = props.card.updatedAt;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+});
+
+/**
+  局部工具栏与整理菜单**只由一张卡片渲染**：selection 里最后点中的那张。
+  之前每张选中卡片都渲染同一份工具栏、位置又相同，多选时叠成一摞，
+  点击命中的是最上面那张（板面顺序最后的一张），可能作用到用户没在看的卡片上。
+*/
+const isToolbarOwner = computed(() => {
+  if (!props.selected) return false;
+  const ids = store.board?.selection ?? [];
+  if (!ids.length) return false;
+  return ids[ids.length - 1] === props.card.id;
+});
+
+/** 工具栏在卡片上方时，整理菜单向上展开（朝卡片外侧），不盖标题与连接点 */
+const menuOpensUp = computed(() => props.toolbarTop < props.y);
+
 const style = computed(() => ({
   left: props.x + "px",
   top: props.y + "px",
@@ -90,7 +130,6 @@ const style = computed(() => ({
   zIndex: props.dragging ? 30 : props.selected ? 8 : 4,
 }));
 
-/** 局部工具栏跟着卡片走：位置由父组件按视口换算，缩放平移后依然准确。 */
 const toolbarStyle = computed(() => ({
   left: props.toolbarLeft + "px",
   top: props.toolbarTop + "px",
@@ -162,18 +201,17 @@ function cancelEdit() {
   >
     <header class="card-head">
       <span class="kind mono">{{ kindLabel }}</span>
-      <span class="headline">{{ headline }}</span>
+      <span v-if="titleText" class="title">{{ titleText }}</span>
       <button
         v-if="card.folded"
-        class="btn"
+        class="chip-btn"
         type="button"
+        :data-card-id="card.id"
         @click="emit('toggle', card.id, 'folded')"
       >
         展开
       </button>
     </header>
-
-    <p class="card-status" role="status">{{ statusText }}</p>
 
     <div v-if="!card.folded" class="card-body">
       <template v-if="editing">
@@ -207,14 +245,21 @@ function cancelEdit() {
       <template v-else>
         <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
         <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
-        <p v-else-if="card.kind === 'url'" class="content">
-          <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || "（还没有网址）" }}</a>
+        <p v-else-if="card.kind === 'url'" class="content url">
+          <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
         </p>
         <p v-else class="content">
-          {{ name || kindLabel }}<span v-if="card.content"> · {{ card.content }}</span>
+          <span v-if="card.content" class="desc">{{ card.content }}</span>
+          <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
         </p>
       </template>
     </div>
+
+    <!-- 元信息：状态文字 + 更新时间 + 组 + 书签。数量与时间退到次级视觉层。 -->
+    <footer class="card-meta">
+      <span class="status" role="status">{{ statusText }}</span>
+      <span class="time mono">{{ updatedText }}</span>
+    </footer>
 
     <!-- 连接点：选中后才出现；从这里拖到另一张卡片建立关系（方向与含义由用户写明） -->
     <template v-if="selected && !card.folded && !multi">
@@ -233,11 +278,12 @@ function cancelEdit() {
   </article>
 
   <!--
-    卡片局部工具栏：只在选中后浮出，未选中即隐藏；多选时只显示共同适用的操作。
-    它挂在板面容器里（不是卡片内部），所以不会被卡片拖动带走，也不会挡住正在编辑的内容。
+    卡片局部工具栏：只在选中后浮出，未选中即隐藏；由所选里的最后一张卡片渲染（不叠成一摞）。
+    它挂在板面容器里（不是卡片内部），位置由画布按视口换算，所以不会挡住卡片标题与正文。
+    这里是**卡片自己的操作**；成组 / 移出组 / 解除组 / 序号 / 合并 / 删除所选在 SelectionMenu 里。
   -->
   <div
-    v-if="selected"
+    v-if="isToolbarOwner"
     class="card-toolbar"
     :style="toolbarStyle"
     data-im="card-toolbar"
@@ -247,7 +293,7 @@ function cancelEdit() {
     :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
     @pointerdown.stop
   >
-    <label v-if="checkable" class="check" :title="'本次允许 QIO 查看（默认未勾选）'">
+    <label v-if="checkable" class="check" title="本次允许 QIO 查看（默认未勾选）">
       <input
         type="checkbox"
         :checked="card.checked"
@@ -272,34 +318,14 @@ function cancelEdit() {
     <button class="tb" type="button" :data-card-id="card.id" @click="emit('toggle', card.id, 'bookmarked')">
       {{ card.bookmarked ? "取消书签" : "书签" }}
     </button>
-    <button
-      v-if="groupName"
-      class="tb"
-      type="button"
-      :data-card-id="card.id"
-      @click="emit('leave-group', card.id)"
-    >
-      移出组
-    </button>
-    <span v-if="!multi && groups.length" class="join">
-      <select v-model="joinTarget" :aria-label="'选择要加入的组'" :data-card-id="card.id">
-        <option value="">加入组…</option>
-        <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
-      </select>
-      <button
-        class="tb"
-        type="button"
-        :disabled="!joinTarget"
-        :data-card-id="card.id"
-        @click="joinTarget && emit('join-group', card.id, joinTarget)"
-      >
-        加入
-      </button>
-    </span>
+
+    <span class="divider" aria-hidden="true"></span>
+    <SelectionMenu :open-up="menuOpensUp" />
+
     <button class="tb danger" type="button" data-im="delete-card" :data-card-id="card.id" @click="emit('remove', card.id)">
       删除
     </button>
-    <span class="tb-note">{{ multi ? "多选：只显示共同适用的操作" : "缩放/平移后仍可点" }}</span>
+    <span v-if="multi" class="tb-note">多选：只显示共同适用的操作</span>
   </div>
 </template>
 
@@ -308,68 +334,138 @@ function cancelEdit() {
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-2);
+  gap: var(--sp-2);
+  padding: var(--sp-3);
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-1);
   color: var(--text-primary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   cursor: grab;
   /* 拖动要跟手：卡片上不加过渡动画 */
 }
-.card.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
+/* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
+.card:hover { border-color: var(--border-strong); }
+.card.selected {
+  border-color: var(--accent);
+  background: var(--bg-accent-subtle);
+  box-shadow: var(--shadow-1), 0 0 0 2px var(--accent-soft);
+}
 .card.highlight { outline: 2px dashed var(--warning); outline-offset: 2px; }
 .card.dragging { cursor: grabbing; opacity: 0.92; border-style: dashed; border-color: var(--accent); }
 .card.hidden { border-style: dashed; }
 .card.reply { border-left: 3px solid var(--link); }
-.card-head { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+
+/* 第一层：材料类型 + 标题 */
+.card-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .kind {
   flex: none;
   font-size: var(--fs-tech, var(--fs-xs));
+  letter-spacing: 0.02em;
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   padding: 0 var(--sp-2);
 }
-.headline {
+.title {
+  min-width: 0;
   font-family: var(--serif);
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
   color: var(--text-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.card-status { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.chip-btn {
+  flex: none;
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.chip-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.chip-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* 第二层：正文。长名称 / 网址 / 代码要么换行要么自己滚动，不许横向溢出卡片 */
 .card-body { flex: 1; min-height: 0; overflow: auto; }
-.content { margin: 0; white-space: pre-wrap; word-break: break-word; }
-.content.code { font-family: var(--mono); font-size: var(--fs-xs); }
-.content a { color: var(--link); }
+.content {
+  margin: 0;
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.content.code {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.content.url a { color: var(--link); overflow-wrap: anywhere; }
+.desc { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { color: var(--text-muted); }
 .editor {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
+  font-size: var(--fs-base);
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xs);
-  padding: var(--sp-1);
+  padding: var(--sp-2);
   resize: vertical;
 }
-.field { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); }
+.field { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); font-size: var(--fs-sm); }
 .field input {
   flex: 1;
   min-width: 0;
   font: inherit;
+  font-size: var(--fs-sm);
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xs);
-  padding: 2px var(--sp-1);
+  padding: 2px var(--sp-2);
 }
-.draft-note { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-faint); }
-.row { display: flex; gap: var(--sp-1); }
+.draft-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); }
+.row { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
+.btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 2px var(--sp-3);
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--border-strong); }
+.btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+
+/* 第四层：元信息（状态文字 + 时间）。比正文小一档，但仍是可读文本，不用装饰级颜色。 */
+.card-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.time { flex: none; color: var(--text-faint); }
 
 /* 连接点：四边中点，拖出去建关系 */
 .connect-point {
@@ -388,7 +484,10 @@ function cancelEdit() {
 .connect-point.bottom { left: 50%; bottom: 0; transform: translateX(-50%); }
 .connect-point.left { left: 0; top: 50%; transform: translateY(-50%); }
 
-/* 局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算 */
+/*
+  局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算。
+  按钮字号用 --fs-sm：编辑 / 删除这些是主要操作，不缩成元信息字号。
+*/
 .card-toolbar {
   position: absolute;
   z-index: 60;
@@ -396,30 +495,20 @@ function cancelEdit() {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-1);
-  /* 窄窗口里工具栏不能比视口还宽：独立复核实测 800×600 下 420px 的工具栏超出视口 74px，
-     最右的「删除」被屏幕裁掉一部分。这里允许它换行收窄。 */
-  max-width: min(420px, calc(100vw - var(--sp-4)));
+  max-width: min(560px, calc(100vw - var(--sp-4)));
   padding: var(--sp-1) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
-  box-shadow: var(--shadow-2);
-  font-size: var(--fs-xs);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  font-size: var(--fs-sm);
 }
 .check { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--text-secondary); white-space: nowrap; }
-.join { display: inline-flex; align-items: center; gap: var(--sp-1); }
-.join select {
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--text-primary);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
-  max-width: 96px;
-}
+.check input { accent-color: var(--accent); }
+.divider { width: 1px; height: 16px; background: var(--border-subtle); flex: none; }
 .tb {
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
@@ -429,8 +518,7 @@ function cancelEdit() {
   white-space: nowrap;
 }
 .tb:hover { color: var(--text-strong); border-color: var(--border-strong); }
-.tb:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
-.tb:disabled { opacity: 0.5; cursor: default; }
+.tb:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .tb.danger { color: var(--danger); }
-.tb-note { color: var(--text-faint); white-space: nowrap; }
+.tb-note { color: var(--text-muted); white-space: nowrap; }
 </style>

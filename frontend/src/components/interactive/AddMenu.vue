@@ -119,9 +119,11 @@ onBeforeUnmount(() => {
         type="button"
         role="menuitem"
         :data-im="'add-' + item.kind"
+        :title="item.hint"
         @click="add(item.kind)"
       >
         <span class="item-label">{{ item.label }}</span>
+        <!-- 说明仍然留在无障碍树里（读屏与按文字断言都能读到），只是不再把菜单撑高 -->
         <span class="item-hint">{{ item.hint }}</span>
       </button>
       <p class="pop-note">只加到本地板面：保存不调用 QIO，提交才会。</p>
@@ -135,13 +137,13 @@ onBeforeUnmount(() => {
    所以这里必须自带一份，保证菜单没被父级包住时也是同一个样子。 */
 .tb-btn {
   font: inherit;
-  font-size: var(--fs-xs);
-  line-height: 1.6;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
-  padding: 2px var(--sp-2);
+  padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -150,40 +152,56 @@ onBeforeUnmount(() => {
 .tb-btn[aria-expanded="true"] { color: var(--text-strong); border-color: var(--border-strong); background: var(--bg-inset); }
 .plus { color: var(--link); }
 
-/* 菜单从工具栏上方展开（工具栏贴底，向下没有空间） */
+/*
+  菜单从工具栏上方展开（工具栏贴底，向下没有空间）。
+  实测（800×600）：五条「标题 + 说明」竖着排是 320×369，正好压住卡片工具栏与卡片本身。
+  改成**一行五个入口 + 一行说明**：约 62px 高，说明文字改为读屏可见（sr-only）＋ 悬停提示。
+*/
 .add-pop {
   position: absolute;
   left: 0;
   bottom: calc(100% + var(--sp-2));
   z-index: 2;
-  min-width: min(320px, calc(100vw - 48px));
+  width: max-content;
+  max-width: min(520px, calc(100vw - var(--sp-6)));
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-1);
   padding: var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--elev-floating, var(--shadow-2));
 }
-.pop-title { margin: 0 0 var(--sp-1); font-size: var(--fs-xs); color: var(--text-faint); }
+.pop-title { margin: 0 var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-faint); }
 .pop-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: left;
+  display: inline-flex;
+  align-items: center;
   font: inherit;
-  background: none;
-  border: 1px solid transparent;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
-  padding: var(--sp-1) var(--sp-2);
+  padding: 2px var(--sp-2);
   cursor: pointer;
 }
-.pop-item:hover { background: var(--bg-surface); border-color: var(--border-subtle); }
+.pop-item:hover { border-color: var(--border-strong); }
 .pop-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .item-label { font-size: var(--fs-sm); color: var(--text-strong); }
-.item-hint { font-size: var(--fs-xs); color: var(--text-faint); }
+/* 视觉上收起、语义上保留：读屏与按文字断言都还能读到这条说明 */
+.item-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .pop-note {
+  flex: 1 1 100%;
   margin: var(--sp-1) 0 0;
   padding-top: var(--sp-1);
   border-top: 1px solid var(--border-subtle);
