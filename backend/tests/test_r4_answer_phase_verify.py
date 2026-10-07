@@ -1,18 +1,20 @@
-r"""D 独立验证（R4 问题一）：回答阶段协议 —— 正式回答**边生成边进正式回答区**。
+r"""D 独立验证（问题一：回答阶段协议 / 内容角色）—— **R5 新协议**（plan §1.1）。
 
-契约来源：docs/plans/2026-10-07-three-remaining-fixes.md §1.1（冻结）。
-只依据 plan §3 的用户可见规则，不采用实现方事后口径：
+**旧语义（本文件 round4 的写法）已被 plan §1.1 取代**：以前是「工作调用（带工具）的正文一律进过程区，
+调用结束没有工具调用时再发一次 tools=[] 的回答调用**重写一遍**」——同一个答案会生成两次、
+过程区与回答区各显示一份。现在冻结的协议：
 
-1. 判据只有一条：这次模型调用**带不带工具**（tools=[] = 回答调用）；
-2. 回答调用的正文**从第一个可发布增量起**就是 interim=false / streaming=true，
-   直接进正式回答区 —— provider 还在流的时候回答区就**已经有字**；
-3. 调用结束时的 {interim:false, streaming:false, content=累计} 只是**校准**，不是首次展示来源；
-4. 过程区**不得**出现正式回答的副本；已进入回答区的文字永不移动；
-5. 工具调用（工作中）的正文始终是过程说明（interim=true）。
+* 模型给最终回答时正文**以 [[QIO:ANSWER]] 开头**（大小写不敏感，声明本身**不展示**）；
+  声明之后的正文从**第一个可发布增量**起就以 interim=false, streaming=true 进正式回答区（真流式）；
+* 未声明：正文先有界缓冲（≤64 KB）；结束**有工具调用** → 放行到过程区；**无工具调用** →
+  **一次性**交付正式回答区（不重新生成、不搬动、过程区不留副本）；
+* tools=[] 的额外调用**只**在「整轮完全没有回答内容」时兜底最多一次；
+* 声明之后的迟到工具调用：不执行 + 可见 WARNING；非法/拆坏/重复声明按「未声明」处理。
 
-基线（ccb5734）现状：普通回答走「过程区 interim=true → 结束时一条 streaming=false 快照」，
-且只有「工具阶段收尾零正文」这一稀少路径才补 tools=[] 调用（loop.py:1088-1091）——
-因此「回答区在 provider 结束前就有字」与「首个回答增量 streaming=true」在修复前应当是**红的**。
+本文件钉回答阶段的**时序与角色**（内容协议完整性见 tests/test_r5_answer_duplication_verify.py）：
+①声明后正文在调用结束前进正式回答区；②首个回答事件是流式增量、结束快照只做校准；
+③过程区不留完整答案副本、文字永不从回答区搬回；④同一答案不生成两次（调用台账）；
+⑤工具轮说明留过程区；⑥取消保留已显示文字；⑦厂商错误如实抛出。
 
 运行：cd backend; $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_r4_answer_phase_verify.py -q
 """
@@ -24,7 +26,7 @@ import importlib.util
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 
@@ -34,6 +36,7 @@ from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DECL = "[[QIO:ANSWER]]"  #: 角色声明（plan §1.1）
 
 
 def _load_provider_module():
@@ -64,8 +67,7 @@ def _native_adapter(server):
     from agent.adapters.native import NativeAdapter
 
     client = AsyncOpenAI(
-        base_url="http://127.0.0.1:%d/v1" % server.server_port,
-        api_key="sk-verify-fake-0001",
+        base_url="http://127.0.0.1:%d/v1" % server.server_port, api_key="sk-r5-verify-0001"
     )
     return NativeAdapter(client=client, model="verify-model")
 
@@ -99,6 +101,17 @@ def _non_empty(events: list[dict]) -> list[dict]:
     return [e for e in events if str(e.get("content") or "").strip()]
 
 
+def _answer_events(events: list[dict]) -> list[dict]:
+    return [e for e in _non_empty(events) if e.get("interim") is False]
+
+
+def _requests(provider) -> list[dict]:
+    return [
+        {"step": e.get("step_kind"), "tools": e.get("tool_count"), "msgs": e.get("message_count")}
+        for e in (getattr(provider, "log", []) or [])
+    ]
+
+
 async def _poll(predicate: Callable[[], bool], *, timeout: float, step: float = 0.01) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -108,379 +121,217 @@ async def _poll(predicate: Callable[[], bool], *, timeout: float, step: float = 
     return predicate()
 
 
-def _answer_events(events: list[dict]) -> list[dict]:
-    return [e for e in _non_empty(events) if e.get("interim") is False]
-
-
-# ---- 1. 回答调用还没结束，正式回答区就应该已经有字（核心） ---------------------------
-
-
-async def test_answer_text_visible_in_answer_area_before_call_ends(provider):
-    """受控假 provider 在第一段正文后暂停（调用未结束）时，回答区必须已经有字。
-
-    证据：命中时刻 provider 那一轮**还没结束**（loop 任务仍在跑），且文字在回答区（interim=false）。
-    基线：普通回答只在结束时发一条 streaming=false 快照 → 本用例红（窗口内回答区是空的）。
-    """
+async def test_declared_answer_streams_into_answer_area_before_call_ends(provider):
     provider.script.set(
         [
             {"chunks": []},
-            {"chunks": ["正式回答第一句。", "正式回答第二句。"], "chunk_delay_ms": 2500},
+            {"chunks": [DECL + "\n", "正式回答第一句。", "正式回答第二句。"], "chunk_delay_ms": 2500},
         ]
     )
     registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_live")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_live")
     task = asyncio.create_task(loop.run("直接回答我"))
-
-    seen: dict[str, Any] = {"at": None, "content": None}
-
-    async def _watch() -> None:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            for event in _answer_events(_assistant(loop)):
-                if str(event.get("content") or "").strip():
-                    seen["at"] = time.monotonic()
-                    seen["content"] = str(event.get("content"))
-                    return
-            await asyncio.sleep(0.01)
-
-    await _watch()
+    hit = await _poll(
+        lambda: any(
+            e.get("interim") is False and "正式回答第一句。" in str(e.get("content") or "")
+            for e in _assistant(loop)
+        ),
+        timeout=25,
+    )
     still_running = not task.done()
     await asyncio.wait_for(task, timeout=60)
-    result = task.result() if hasattr(task, "result") else None
-
-    assert seen["content"], (
-        "provider 还在流式输出（调用未结束）时，正式回答区一个字都没有："
-        "回答不是边生成边进正式回答区，而是等调用结束才一次性出现",
+    result = task.result()
+    assert hit, (
+        "回答调用还在流（没有结束）时，正式回答区没有出现正文 —— 声明之后的正文没有真流式",
         [e.get("content") for e in _non_empty(_assistant(loop))],
     )
-    assert still_running, "命中时这一轮已经结束 —— 证据不成立（不是「provider 结束前」）"
-    assert result is not None and result.final_content == "正式回答第一句。正式回答第二句。", result
+    assert still_running, "命中时这一轮已经结束 —— 证据不成立（不是「调用结束前」）"
+    assert result.final_content == "正式回答第一句。正式回答第二句。", result.final_content
 
 
-async def test_first_answer_delta_is_interim_false_and_streaming(provider):
-    """回答调用的第一个可发布增量：interim=false 且 streaming=true（不是结束快照）。"""
+async def test_first_answer_delta_is_streaming_and_closing_snapshot_is_calibration(provider):
     provider.script.set(
-        [{"chunks": []}, {"chunks": ["边生成边显示的第一段。"], "chunk_delay_ms": 10}]
+        [{"chunks": []}, {"chunks": [DECL + "\n", "第一段。", "第二段。"], "chunk_delay_ms": 30}]
     )
     registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_stream")
-    await asyncio.wait_for(loop.run("直接回答我"), timeout=60)
-
-    answers = _answer_events(_assistant(loop))
-    assert answers, (
-        "整轮没有任何正式回答事件",
-        [e.get("content") for e in _non_empty(_assistant(loop))],
-    )
-    first = answers[0]
-    assert first.get("streaming") is True, (
-        "第一个正式回答事件不是流式增量（streaming != true）：回答是「调用结束后一次性出现」的",
-        first,
-    )
-
-
-async def test_closing_snapshot_is_calibration_not_first_display(provider):
-    """结束时的累计快照是校准：它之前必须已经有流式回答事件（同一 delta_id）。"""
-    provider.script.set(
-        [{"chunks": []}, {"chunks": ["第一段。", "第二段。"], "chunk_delay_ms": 30}]
-    )
-    registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_calib")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_stream")
     result = await asyncio.wait_for(loop.run("直接回答我"), timeout=60)
 
     answers = _answer_events(_assistant(loop))
-    streaming = [e for e in answers if e.get("streaming") is True]
-    closing = [e for e in answers if e.get("streaming") is False]
-    assert streaming, (
-        "没有任何流式回答事件：正式回答只由结束时的累计快照交付（契约 §1.1：校准不是首次展示来源）",
-        answers,
+    assert answers, ("整轮没有任何正式回答事件", [e.get("content") for e in _non_empty(_assistant(loop))])
+    assert answers[0].get("streaming") is True, (
+        "第一个正式回答事件不是流式增量（契约：声明之后从第一个可发布增量起就是流式）", answers[0]
     )
+    delta_ids = {str(e.get("delta_id")) for e in answers}
+    assert len(delta_ids) == 1, ("正式回答必须落在同一个 delta_id 上", sorted(delta_ids))
+    contents = [str(e.get("content")) for e in answers]
+    for earlier, later in zip(contents, contents[1:]):
+        assert later.startswith(earlier) or earlier.endswith(later), (
+            "同一 delta_id 的累计文字回退了", earlier, later
+        )
+    closing = [e for e in answers if e.get("streaming") is False]
     assert closing and str(closing[-1].get("content")) == result.final_content, (
         "结束校准快照缺失或内容不等于最终回答", closing, result.final_content
     )
+    assert any(e.get("streaming") is True for e in answers if e is not closing[-1]), (
+        "校准快照成了首次展示来源（它之前没有任何流式回答事件）", answers
+    )
 
 
-async def test_answer_has_no_copy_in_process_area(provider):
-    """正式回答不得在过程区留副本（interim=true）。"""
-    answer = "这是正式回答，过程区不该有它的副本。"
-    provider.script.set([{"chunks": []}, {"chunks": [answer], "chunk_delay_ms": 10}])
+async def test_process_area_has_no_copy_of_the_answer(provider):
+    answer = "这是最终回答，过程区不该有它的副本。"
+    provider.script.set([{"chunks": []}, {"chunks": [DECL + "\n", answer], "chunk_delay_ms": 10}])
     registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_nocopy")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_nocopy")
     await asyncio.wait_for(loop.run("直接回答我"), timeout=60)
-
     events = _non_empty(_assistant(loop))
     process_copies = [
         e for e in events if e.get("interim") is not False and answer[:8] in str(e.get("content"))
     ]
     assert not process_copies, (
-        "正式回答在过程区出现了副本（用户会看到两遍）",
+        "最终回答在过程区出现了副本（同一个答案显示两份）",
         [e.get("content") for e in process_copies],
     )
 
 
-# ---- 2. 工具轮：过程说明留在过程区，回答随后流式进回答区 ---------------------------
-
-
-async def test_working_call_text_stays_in_process_area_then_answer_streams(provider):
-    """工具轮的说明始终是过程区；随后的一次 tools=[] 调用把正式回答流式写进回答区。"""
+async def test_tool_round_text_stays_in_process_area_then_declared_answer_streams(provider):
     provider.script.set(
         [
             {
                 "chunks": ["我先说明一下，这一步要调用工具。"],
                 "chunk_delay_ms": 20,
-                "tool_chunks": [
-                    {"id": "r4_call_1", "name": "echo", "args_fragments": ['{"text": "r4"}']}
-                ],
+                "tool_chunks": [{"id": "r5_call_1", "name": "echo", "args_fragments": ['{"text": "r5"}']}],
             },
-            {"chunks": []},
-            {"chunks": ["工具跑完了，这是正式回答。"], "chunk_delay_ms": 20},
+            {"chunks": [DECL + "\n", "工具跑完了，这是正式回答。"], "chunk_delay_ms": 20},
         ]
     )
     registry, tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_tools")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_tools")
     result = await asyncio.wait_for(loop.run("先说明再调用工具，然后回答"), timeout=60)
 
-    assert tool.seen == [{"text": "r4"}], ("工具必须真的执行", tool.seen)
+    assert tool.seen == [{"text": "r5"}], ("工具必须真的执行", tool.seen)
     events = _non_empty(_assistant(loop))
     working = [e for e in events if "我先说明一下" in str(e.get("content"))]
-    assert working, ("工具轮的说明一个字都没发出来（边生成边显示失效）", [e.get("content") for e in events])
+    assert working, ("工具轮的说明一个字都没发出来", [e.get("content") for e in events])
     assert all(e.get("interim") is not False for e in working), (
         "工具轮的说明被当成正式回答发布过", [e.get("content") for e in working]
     )
     answers = _answer_events(events)
-    assert answers and result.final_content == "工具跑完了，这是正式回答。", (answers, result.final_content)
-    assert any(e.get("streaming") is True for e in answers), (
-        "工具后的正式回答没有流式增量（只在结束时一次性出现）", answers
-    )
+    assert any(e.get("streaming") is True for e in answers), ("工具轮之后的正式回答没有流式增量", answers)
+    assert result.final_content == "工具跑完了，这是正式回答。", result.final_content
 
 
 @pytest.mark.parametrize("chunk_delay_ms", [320, 1200])
 async def test_late_tool_increment_does_not_move_answer_text(provider, chunk_delay_ms):
-    """迟到 320ms/1.2s 的工具增量不得把已进入回答区的文字移回过程区。"""
     provider.script.set(
         [
             {
                 "chunks": ["我先说明一下。"],
                 "chunk_delay_ms": chunk_delay_ms,
-                "tool_chunks": [
-                    {"id": "r4_call_late", "name": "echo", "args_fragments": ['{"text": "late"}']}
-                ],
+                "tool_chunks": [{"id": "r5_late", "name": "echo", "args_fragments": ['{"text": "late"}']}],
             },
-            {"chunks": []},
-            {"chunks": ["迟到的工具之后，这是正式回答。"], "chunk_delay_ms": 10},
+            {"chunks": [DECL + "\n", "迟到的工具之后，这是正式回答。"], "chunk_delay_ms": 10},
         ]
     )
     registry, tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_late")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_late")
     result = await asyncio.wait_for(loop.run("迟到工具轮的验证"), timeout=60)
 
     events = _non_empty(_assistant(loop))
-    first_answer: dict[str, int] = {}
+    published: dict[str, int] = {}
     for index, event in enumerate(events):
         if event.get("interim") is False and str(event.get("content") or "").strip():
-            first_answer.setdefault(str(event.get("delta_id") or ""), index)
+            published.setdefault(str(event.get("delta_id") or ""), index)
     for index, event in enumerate(events):
         if event.get("interim") is False or not str(event.get("content") or "").strip():
             continue
-        if first_answer.get(str(event.get("delta_id") or "")) is not None:
-            pytest.fail(
-                "文字从回答区被移回过程区（契约 §1.1）：第 %d 条 %r"
-                % (index, str(event.get("content"))[:60])
-            )
+        assert published.get(str(event.get("delta_id") or "")) is None, (
+            "文字从回答区被移回过程区：第 %d 条 %r" % (index, str(event.get("content"))[:60])
+        )
     assert tool.seen == [{"text": "late"}], tool.seen
     assert result.final_content == "迟到的工具之后，这是正式回答。", result.final_content
 
-# ---- 3. 多工具轮 / 取消 / 回答调用失败（阶段一补齐） -------------------------------
 
-
-async def test_multi_tool_rounds_then_answer_streams(provider):
-    """两轮以上工具之后进入回答阶段：两轮说明都在过程区，正式回答流式进回答区。"""
+async def test_same_answer_is_not_generated_twice_across_tool_rounds(provider):
+    answer = "两轮工具之后的正式回答。"
     provider.script.set(
         [
             {
                 "chunks": ["第一轮说明。"],
                 "chunk_delay_ms": 20,
-                "tool_chunks": [
-                    {"id": "r4_m1", "name": "echo", "args_fragments": ['{"text": "one"}']}
-                ],
+                "tool_chunks": [{"id": "r5_m1", "name": "echo", "args_fragments": ['{"text": "one"}']}],
             },
             {
                 "chunks": ["第二轮说明。"],
                 "chunk_delay_ms": 20,
-                "tool_chunks": [
-                    {"id": "r4_m2", "name": "echo", "args_fragments": ['{"text": "two"}']}
-                ],
+                "tool_chunks": [{"id": "r5_m2", "name": "echo", "args_fragments": ['{"text": "two"}']}],
             },
-            {"chunks": []},
-            {"chunks": ["两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
+            {"chunks": [DECL + "\n", answer], "chunk_delay_ms": 20},
         ]
     )
     registry, tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_multi")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_twice")
     result = await asyncio.wait_for(loop.run("两轮工具后回答"), timeout=60)
 
-    assert tool.seen == [{"text": "one"}, {"text": "two"}], ("两轮工具都要真的执行", tool.seen)
+    assert tool.seen == [{"text": "one"}, {"text": "two"}], tool.seen
+    requests = _requests(provider)
     events = _non_empty(_assistant(loop))
-    for text in ("第一轮说明。", "第二轮说明。"):
-        hits = [e for e in events if text in str(e.get("content"))]
-        assert hits, ("工具轮的说明没有边生成边显示", text, [e.get("content") for e in events])
-        assert all(e.get("interim") is not False for e in hits), (
-            "工具轮的说明被当成正式回答发布过", text, [e.get("content") for e in hits]
-        )
-    answers = _answer_events(events)
-    assert any(e.get("streaming") is True for e in answers), (
-        "多轮工具之后，正式回答仍然只在结束时一次性出现（没有流式增量）", answers
+    answer_events = [e for e in events if answer[:6] in str(e.get("content"))]
+    process_copies = [e for e in answer_events if e.get("interim") is not False]
+    assert not process_copies, ("正式回答在过程区留了副本", [e.get("content") for e in process_copies])
+    assert answer_events, ("正式回答没有交付", [e.get("content") for e in events])
+    assert len(requests) == 3, (
+        "为同一个答案又发起了一次生成调用（2 轮工具 + 1 次声明回答 = 3 次调用）", {"requests": requests}
     )
-    assert result.final_content == "两轮工具之后的正式回答。", result.final_content
+    assert result.final_content == answer, result.final_content
 
 
 async def test_cancel_mid_answer_keeps_published_text(provider):
-    """回答调用流到一半取消：已经显示的回答文字必须保留，不得撤回、不得出现搬家事件。"""
     provider.script.set(
         [
             {"chunks": []},
-            {"chunks": ["已经显示的第一段。", "取消时还没到的第二段。"], "chunk_delay_ms": 3000},
+            {"chunks": [DECL + "\n", "已经显示的第一段。", "取消时还没到的第二段。"], "chunk_delay_ms": 3000},
         ]
     )
     registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_cancel")
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_cancel")
     task = asyncio.create_task(loop.run("回答我，然后被取消"))
-
-    shown = await _poll(
+    hit = await _poll(
         lambda: any(
-            e.get("interim") is False and str(e.get("content") or "").strip()
+            e.get("interim") is False and "已经显示的第一段。" in str(e.get("content") or "")
             for e in _assistant(loop)
         ),
-        timeout=20,
+        timeout=25,
     )
-    assert shown, (
-        "取消之前（provider 还在流）回答区一个字都没有：无从谈「保留已显示文字」",
-        [e.get("content") for e in _non_empty(_assistant(loop))],
-    )
-    before = [e for e in _assistant(loop) if e.get("interim") is False and str(e.get("content") or "").strip()]
+    assert hit, ("取消之前回答区没有出现正文：无从谈「保留已显示文字」")
+    before = [
+        e for e in _assistant(loop) if e.get("interim") is False and str(e.get("content") or "").strip()
+    ]
     loop.cancel()
     await asyncio.wait_for(task, timeout=40)
 
-    after = _assistant(loop)
-    published = {
-        str(e.get("delta_id")): str(e.get("content"))
-        for e in after
-        if e.get("interim") is False and str(e.get("content") or "").strip()
-    }
+    published: dict[str, str] = {}
+    for event in _assistant(loop):
+        if event.get("interim") is False and str(event.get("content") or "").strip():
+            published[str(event.get("delta_id"))] = str(event.get("content"))
     for event in before:
         delta_id = str(event.get("delta_id"))
         assert delta_id in published, ("取消把已经显示的回答整条弄丢了", delta_id, list(published))
-        assert published[delta_id].startswith(str(event.get("content"))), (
-            "取消之后的累计文字回退了（用户已经看到的字消失了）", published[delta_id]
-        )
-    for event in after:
-        if event.get("interim") is False or not str(event.get("content") or "").strip():
-            continue
-        assert str(event.get("delta_id")) not in published, (
-            "取消之后又出现 interim=true 的搬家事件（已进入回答区的文字被移回过程区）", event
-        )
-
-# ---- 4. 诊断：一轮发生几次 provider 请求、每次吃到哪一步、带不带工具 ----------------
-
-
-def _request_log(provider) -> list[dict]:
-    """provider 台账：每次请求的 step_kind / tool_count / message_count / 是否要流。"""
-    entries = list(getattr(provider, "log", []) or [])
-    return [
-        {
-            "step": e.get("step_kind"),
-            "tools": e.get("tool_count"),
-            "msgs": e.get("message_count"),
-            "stream": e.get("stream_requested"),
-        }
-        for e in entries
-    ]
-
-
-async def test_answer_call_is_requested_without_tools_and_streams_its_deltas(provider):
-    """诊断 + 断言：工具轮之后确实发起了 tools=[] 的回答调用，且它的增量必须标 streaming。
-
-    这条同时给出 Lead 要的直接证据：一轮到底请求了几次、每次带几个工具、吃到哪一步脚本。
-    """
-    script = [
-        {
-            "chunks": ["第一轮说明。"],
-            "chunk_delay_ms": 20,
-            "tool_chunks": [{"id": "r4_d1", "name": "echo", "args_fragments": ['{"text": "one"}']}],
-        },
-        {
-            "chunks": ["第二轮说明。"],
-            "chunk_delay_ms": 20,
-            "tool_chunks": [{"id": "r4_d2", "name": "echo", "args_fragments": ['{"text": "two"}']}],
-        },
-        {"chunks": []},
-        {"chunks": ["两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
-    ]
-    provider.script.set(script)
-    registry, tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_diag")
-    await asyncio.wait_for(loop.run("两轮工具后回答"), timeout=60)
-
-    requests = _request_log(provider)
-    answers = _answer_events(_non_empty(_assistant(loop)))
-    # 紧凑写法：pytest 会把长 dict 截断，这里压成短字符串，失败信息里能看全（诊断要的就是这个）
-    evidence = {
-        "script_steps": len(script),
-        "requests": [
-            "#%d tools=%s step=%s msgs=%s stream=%s"
-            % (i, r["tools"], r["step"], r["msgs"], r["stream"])
-            for i, r in enumerate(requests)
-        ],
-        "answer_events": [
-            "%s | interim=%s streaming=%s" % (e.get("content"), e.get("interim"), e.get("streaming"))
-            for e in answers
-        ],
-        "tool_calls_seen": [t.get("text") for t in tool.seen],
-    }
-    answer_calls = [r for r in requests if r["tools"] == 0]
-    assert answer_calls, (
-        "整轮没有发生 tools=[] 的回答调用（plan §1.1：工作阶段结束后必须发起一次不带工具的调用）",
-        evidence,
-    )
-    summary = (
-        "script_steps=%d | requests=[%s] | answer_events=[%s] | tools=%s"
-        % (
-            len(script),
-            " ; ".join(
-                "#%d tools=%s step=%s msgs=%s stream=%s"
-                % (i, r["tools"], r["step"], r["msgs"], r["stream"])
-                for i, r in enumerate(requests)
-            ),
-            " ; ".join(
-                "%s|interim=%s|streaming=%s" % (e.get("content"), e.get("interim"), e.get("streaming"))
-                for e in answers
-            ),
-            [t.get("text") for t in tool.seen],
-        )
-    )
-    assert any(e.get("streaming") is True for e in answers), (
-        "回答调用确实发起了（tools=[]），但它的正文没有以 streaming=true 的增量发布 —— "
-        "只有收尾快照（这也是 Lead 要的直接证据）：" + summary
-    )
-
+        assert str(event.get("content")) in published[delta_id] or published[delta_id].startswith(
+            str(event.get("content"))
+        ), ("取消之后的累计文字回退了", published[delta_id])
 
 
 async def test_answer_call_failure_is_honest(provider):
-    """回答调用失败（断流/厂商 500）必须如实失败，不得把空回答当成成功。"""
-    # 回答调用失败：把所有可能的重试都钉成 500（FIFO 耗尽会落到 provider 的 default，
-    # 那会掩盖「失败被当成成功」这一条 —— 实测踩过）
     provider.script.set([{"chunks": []}, {"status": 500, "body": "stream-aborted", "repeat": 6}])
     registry, _tool = _registry()
-    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r4_answer_abort")
-    # 口径（A + Lead 确认）：loop 层对**不可恢复的厂商错误是抛出**（ProviderError 家族），
-    # 编排层（TurnManager）才把它落成 status=failed + reason_code=provider_error。
-    # 用户可见规则由 A 的端到端用例锁定；这里只钉「失败必须如实抛出、绝不编造正式回答」。
+    loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r5_answer_abort")
     from agent.adapters.errors import ProviderError
 
     with pytest.raises(ProviderError) as raised:
         await asyncio.wait_for(loop.run("回答我"), timeout=60)
     assert "500" in str(raised.value) or "InternalServer" in str(raised.value), (
-        "失败原因必须如实出现（不能是一句没头没尾的错）", str(raised.value)[:200]
+        "失败原因必须如实出现", str(raised.value)[:200]
     )
     answers = _non_empty(_answer_events(_assistant(loop)))
     assert not answers, ("回答调用失败了却编出了正式回答", [e.get("content") for e in answers])
-

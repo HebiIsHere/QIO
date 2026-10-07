@@ -1,6 +1,8 @@
 r"""D 独立验证：输出角色（plan §1.1 回答阶段协议）。
 
-**旧语义（本文件 round3 的写法）已被 plan §1.1 取代**：以前是「工作调用的正文先
+**旧语义（本文件 round3/round4 的写法）已被 plan §1.1 取代**（R5 内容角色协议：模型用
+[[QIO:ANSWER]] 声明最终回答，声明之后正文真流式进正式回答区；未声明走有界缓冲降级；
+tools=[] 只在「整轮完全没有回答内容」时兜底一次）：以前是「工作调用的正文先
 interim=true 进过程区，等这次调用结束、且没有工具调用时再用一条快照把它提升成正式回答」。
 现在冻结的协议是：
 
@@ -32,6 +34,8 @@ from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DECL = "[[QIO:ANSWER]]"  #: 角色声明（plan §1.1）：声明之后才是正式回答正文
+
 
 
 def _load_provider_module():
@@ -115,7 +119,7 @@ async def _poll(predicate: Callable[[], bool], *, timeout: float, step: float = 
 
 async def test_answer_area_has_text_before_answer_call_ends(provider):
     provider.script.set(
-        [{"chunks": []}, {"chunks": ["正式第一句。", "正式第二句。"], "chunk_delay_ms": 2500}]
+        [{"chunks": []}, {"chunks": [DECL + "\n", "正式第一句。", "正式第二句。"], "chunk_delay_ms": 2500}]
     )
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r3_answer_live")
@@ -143,7 +147,9 @@ async def test_answer_area_has_text_before_answer_call_ends(provider):
 
 
 async def test_answer_is_streaming_single_delta_and_calibrated(provider):
-    provider.script.set([{"chunks": []}, {"chunks": ["第一段。", "第二段。"], "chunk_delay_ms": 30}])
+    provider.script.set(
+        [{"chunks": []}, {"chunks": [DECL + "\n", "第一段。", "第二段。"], "chunk_delay_ms": 30}]
+    )
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r3_answer_stream")
     result = await asyncio.wait_for(loop.run("直接回答我"), timeout=60)
@@ -174,7 +180,9 @@ async def test_answer_is_streaming_single_delta_and_calibrated(provider):
 
 async def test_no_retraction_and_no_cross_area_move(provider):
     answer = "这段文字进了回答区就不许再动。"
-    provider.script.set([{"chunks": []}, {"chunks": [answer], "chunk_delay_ms": 320}])
+    provider.script.set(
+        [{"chunks": []}, {"chunks": [DECL + "\n", answer], "chunk_delay_ms": 320}]
+    )
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r3_answer_move")
     await asyncio.wait_for(loop.run("直接回答我"), timeout=60)
@@ -211,8 +219,7 @@ async def test_tool_turn_text_stays_in_process_area(provider, chunk_delay_ms):
                     {"id": "r3_late", "name": "echo", "args_fragments": ['{"text": "late"}']}
                 ],
             },
-            {"chunks": []},
-            {"chunks": ["工具跑完了，这是正式回答。"]},
+            {"chunks": [DECL + "\n", "工具跑完了，这是正式回答。"]},
         ]
     )
     registry, tool = _registry()
@@ -250,8 +257,7 @@ async def test_multi_tool_rounds_then_answer(provider):
                     {"id": "r3_m2", "name": "echo", "args_fragments": ['{"text": "two"}']}
                 ],
             },
-            {"chunks": []},
-            {"chunks": ["两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
+            {"chunks": [DECL + "\n", "两轮工具之后的正式回答。"], "chunk_delay_ms": 20},
         ]
     )
     registry, tool = _registry()
@@ -259,6 +265,11 @@ async def test_multi_tool_rounds_then_answer(provider):
     result = await asyncio.wait_for(loop.run("两轮工具后回答"), timeout=60)
 
     assert tool.seen == [{"text": "one"}, {"text": "two"}], tool.seen
+    # R5：2 轮工具 + 1 次声明回答 = 3 次调用（不再有「结束后再生成一次」的额外回答调用）
+    assert len(getattr(provider, "log", []) or []) == 3, (
+        "同一个答案被生成了两次（调用台账）",
+        [e.get("step_kind") for e in (getattr(provider, "log", []) or [])],
+    )
     answers = _answer_events(_non_empty(_assistant(loop)))
     assert any(e.get("streaming") is True for e in answers), (
         "多轮工具之后正式回答仍然只在结束时一次性出现", answers
@@ -271,7 +282,10 @@ async def test_multi_tool_rounds_then_answer(provider):
 
 async def test_cancel_mid_answer_keeps_published_text(provider):
     provider.script.set(
-        [{"chunks": []}, {"chunks": ["已经显示的第一段。", "取消时还没到的第二段。"], "chunk_delay_ms": 3000}]
+        [
+            {"chunks": []},
+            {"chunks": [DECL + "\n", "已经显示的第一段。", "取消时还没到的第二段。"], "chunk_delay_ms": 3000},
+        ]
     )
     registry, _tool = _registry()
     loop = AgentLoop(_native_adapter(provider), registry, EventBus(), turn_id="r3_cancel")
