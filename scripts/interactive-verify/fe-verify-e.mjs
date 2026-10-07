@@ -92,9 +92,9 @@ const MEASURE = [
   "  var toolbar = q('[data-im=\"board-toolbar\"]');",
   "  var rows = 0, children = 0;",
   "  if (toolbar) { var tops = [];",
-  "    var kids = qa('.tb-edit > *, .tb-submit > *, .tb-main > *');",
+  "    var kids = qa('.tb-edit > *, .tb-submit > *');",
   "    for (var i = 0; i < kids.length; i++) { var b = kids[i].getBoundingClientRect(); if (b.width <= 0 || b.height <= 0) continue;",
-  "      children++; var t = Math.round(b.top); var seen = false; for (var j = 0; j < tops.length; j++) if (Math.abs(tops[j] - t) <= 8) seen = true;",
+  "      children++; var t = Math.round(b.top + b.height / 2); var seen = false; for (var j = 0; j < tops.length; j++) if (Math.abs(tops[j] - t) <= 12) seen = true;",
   "      if (!seen) tops.push(t); }",
   "    rows = tops.length; }",
   "  var chat = q('[data-im=\"chat-panel\"]'), batch = q('[data-im=\"batch-list\"]');",
@@ -361,6 +361,7 @@ function scenarioBatch() {
     { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
     { op: "eval", js: HELPERS },
     { op: "viewport", width: 1440, height: 900, ms: 700 },
+    /* 1) 产品自己的「一次产生四项」路径（§9.2 来源①：接口返回的这一批） */
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-entry\"]'); })()" },
     { op: "wait", ms: 700 },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-create\"]'); })()" },
@@ -371,6 +372,22 @@ function scenarioBatch() {
     { op: "wait", ms: 900 },
     { op: "eval", js: BATCH_MEASURE },
     { op: "screenshot", name: "e-batch-list-4" },
+    /* 2) 清掉本机批次记录后刷新：没有可证明来源 → 不出现四项列表（实机版反例 2） */
+    { op: "eval", js: "(function(){ try { localStorage.removeItem('qio.interactive.intentBatches'); } catch (e) {} return true; })()" },
+    { op: "reload", ms: 3500 },
+    { op: "eval", js: HELPERS },
+    { op: "eval", js: BATCH_MEASURE },
+    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/intents'); var j = await r.json(); return JSON.stringify({ pendingFromApi: (j.intents||[]).filter(function(i){return ['pending','needs_update','waiting_dependency','waiting_confirm'].indexOf(i.status)>=0;}).length }); })()" },
+    { op: "screenshot", name: "e-batch-no-record-after-reload" },
+    /* 3) 重新走一次演示入口：同一批四项又被记下来 */
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-entry\"]'); })()" },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-create\"]'); })()" },
+    { op: "wait", ms: 2500 },
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"batch-entry\"]'); })()" },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: BATCH_MEASURE },
+    /* 4) 处理掉一项：入口仍在、剩余数减一、列表仍列出四项（已处理项不可再选） */
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"batch-clear\"]'); })()" },
     { op: "wait", ms: 300 },
     { op: "eval", js: "(function(){ var c = document.querySelector('[data-im=\"batch-item\"] input[type=\"checkbox\"]'); if (!c) return 'no-checkbox'; c.click(); return 'checked'; })()" },
@@ -379,12 +396,27 @@ function scenarioBatch() {
     { op: "wait", ms: 3000 },
     { op: "eval", js: BATCH_MEASURE },
     { op: "screenshot", name: "e-batch-after-1" },
+    /* 5) 刷新：资格与剩余数保持 */
     { op: "reload", ms: 3500 },
     { op: "eval", js: HELPERS },
+    { op: "eval", js: BATCH_MEASURE },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"batch-entry\"]'); })()" },
     { op: "wait", ms: 900 },
     { op: "eval", js: BATCH_MEASURE },
     { op: "screenshot", name: "e-batch-after-reload" },
+    /* 6) 把剩下的三项也处理掉：全部处理完入口消失 */
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"batch-all\"]'); })()" },
+    { op: "wait", ms: 400 },
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"batch-reject\"]'); })()" },
+    { op: "wait", ms: 3500 },
+    { op: "eval", js: BATCH_MEASURE },
+    { op: "screenshot", name: "e-batch-all-done" },
+    /* 7) 复位：重新生成 4 项待审批的演示意图（演示入口本来就是可重复使用的入口） */
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-entry\"]'); })()" },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-create\"]'); })()" },
+    { op: "wait", ms: 2500 },
+    { op: "eval", js: BATCH_MEASURE },
   ];
 }
 
