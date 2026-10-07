@@ -489,9 +489,13 @@ export function sendFailureText(message: string | null): string;
 
 冻结签名见 `docs/superpowers/plans/2026-10-07-interactive-ui-refinement.md` §4。
 
-### 8.5 批次判定（前端，不改数据库）【已被 §9.2 覆盖，仅作历史记录】
+### 8.5 批次判定（前端，不改数据库）—— **本条已被 §9.2 取代，下面保留的是写错的历史版本**
 
-优先级：① 本次会话里由同一次创建动作产生的意图（演示入口一次四项、提交后一次生成的多项）记在
-`localStorage["qio.interactive.intentBatches"]`；② 服务端 `submissionId` 相同；③ `createdAt` 截断到秒相同。
-三条都拿不到时，该意图自成一批（**宁可不出批量列表，也不把不同批次相加**）。
+> **已作废**：这一版把「`createdAt` 截断到秒相同」当作第三级归批依据，并声称「宁可不出批量列表，
+> 也不把不同批次相加」。**该声称是错的**：独立复现证明，两个不同批次各两项、在本地记录丢失后
+> 会因创建时间落在同一秒而被误并成一个四项批次。正确规则见 §9.2（只用可证明的来源，禁止时间推断）。
+> 保留这段文字只为说明「为什么改」，实现与测试不得再按它写。
+
+~~优先级：① 本次会话里由同一次创建动作产生的意图记在 `localStorage["qio.interactive.intentBatches"]`；
+② 服务端 `submissionId` 相同；③ `createdAt` 截断到秒相同。三条都拿不到时，该意图自成一批。~~
 
