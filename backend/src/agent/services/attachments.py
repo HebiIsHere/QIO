@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import logging
@@ -39,7 +40,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -302,6 +303,36 @@ def rejected_failure_message(rejected: Iterable[tuple[str, str]]) -> str:
     return f"有 {len(rows)} 个附件没有附上：" + "；".join(shown) + extra
 
 
+@dataclass
+class ClonePlan:
+    """重试克隆的**计划**（R5 §1.3 三段式的第一段产物）。
+
+    第一段在**事件循环线程**上完成：校验 + 建新行（STATE_PREPARED）+ 算目标路径。
+    第二段（工作线程）只按这份计划做文件 I/O —— 它**绝不触碰 sqlite**：
+    连接只在事件循环线程上使用（见 storage/db.py 的线程约定）。
+    """
+
+    source_id: str
+    clone_id: str
+    source_copy: Path
+    target: Path
+    expect_size: int
+    #: 取消标记：调用方置位后，工作线程写完也会自己清掉目标文件（迟到结果不得提交 ready）
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    #: 工作线程真正结束（成功/失败/取消都置位）：取消后的收尾据此再清一次
+    finished: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass
+class CloneResult:
+    """第二段（工作线程）的结构化结果：只描述文件 I/O 的事实。"""
+
+    ok: bool
+    reason: str | None = None
+    cancelled: bool = False
+    attachment: object | None = None
+
+
 class BindOutcome(list):
     """一次「把附件绑到这一轮」的结果（契约 §1.2 冻结接口）。
 
@@ -358,6 +389,8 @@ class AttachmentService:
         # 只警告不抛异常：不能因为一条诊断把功能打断。
         self._db_thread: int | None = None
         self._db_thread_warned = False
+        # 取消后的收尾任务（等工作线程真正结束再清目标文件）：持有强引用，别被 GC 掉
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     # -- 路径 --------------------------------------------------------------
 
@@ -1097,7 +1130,7 @@ class AttachmentService:
 
     # -- 轮次/消息绑定 ------------------------------------------------------
 
-    def bind_for_turn(
+    async def bind_for_turn(
         self,
         turn_id: str | None = None,
         attachment_ids: Iterable[str] | None = None,
@@ -1106,7 +1139,13 @@ class AttachmentService:
         topic_id: str | None = None,
         retry_of_turn_id: str | None = None,
     ) -> BindOutcome:
-        """把附件绑到这一轮（契约 §1.2 冻结接口）。
+        """把附件绑到这一轮（契约 §1.2 / §1.3 冻结接口，**async**）。
+
+        R5 §1.3：重试克隆的文件 I/O 分三段 ——
+        ① 事件循环线程校验 + 建新行（prepared）+ 算目标路径 → ClonePlan；
+        ② asyncio.to_thread 里只做文件 I/O（os.link 优先，失败退化为复制）；
+        ③ 回到事件循环线程定稿（ready / failed + 原因）并完成绑定。
+        以前整段同步跑在事件循环线程上：接近 100MB 的副本复制会卡住其它 API 与 SSE。
 
         判据是 **None（缺字段） vs 列表（显式，含空列表）**，不是「空不空」：
 
@@ -1162,13 +1201,29 @@ class AttachmentService:
                 continue
             owner = str(att.turn_id or "")
             if owner and owner != turn:
-                cloned = self._clone_for_retry(
-                    att, turn_id=turn, topic_id=topic_id, message_id=message_id
-                )
-                if isinstance(cloned, str):
-                    outcome.reject(attachment_id, cloned)
+                if att.kind == "copy":
+                    # 三段式：① 计划（事件循环）→ ② 文件 I/O（工作线程）→ ③ 定稿（事件循环）
+                    plan = self._plan_copy_clone(
+                        att, turn_id=turn, topic_id=topic_id, message_id=message_id
+                    )
+                    if isinstance(plan, str):
+                        outcome.reject(attachment_id, plan)
+                        continue
+                    result = await self._finish_copy_clone(plan)
                 else:
-                    outcome.accept(cloned)
+                    # 引用型没有文件 I/O：重新检查当前可用性后就地登记新行
+                    cloned = self._clone_reference_for_retry(
+                        att, turn_id=turn, topic_id=topic_id, message_id=message_id
+                    )
+                    result = (
+                        CloneResult(True, attachment=cloned)
+                        if not isinstance(cloned, str)
+                        else CloneResult(False, cloned)
+                    )
+                if not result.ok:
+                    outcome.reject(attachment_id, result.reason or "复用已保存的副本失败")
+                else:
+                    outcome.accept(result.attachment)
                 continue
             self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
             refreshed = self.get(att.id, check=False)
@@ -1236,7 +1291,7 @@ class AttachmentService:
         return None
 
     def _clone_reason(self, att: Attachment) -> str | None:
-        """重试克隆的**只读**可行性检查（真正落盘在 _clone_for_retry）。"""
+        """重试克隆的**只读**可行性检查（真正的落盘在 _plan_copy_clone + _run_clone_io）。"""
         if att.kind == "copy":
             if not att.stored_path or not self.is_managed_path(att.stored_path):
                 return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
@@ -1274,27 +1329,141 @@ class AttachmentService:
             return "这个附件的准备已取消；请重试准备后再发送"
         return "这个附件当前的准备状态不允许发送（" + str(att.state) + "）"
 
-    def _clone_for_retry(
+    def _plan_copy_clone(
         self,
         source: Attachment,
         *,
         turn_id: str,
         topic_id: str | None,
         message_id: str | None,
-    ) -> Attachment | str:
-        """重试复用：为新一轮**新建记录**并复用已保存的副本；失败返回人话原因。
+    ) -> ClonePlan | str:
+        """三段式第①段（**事件循环线程**）：校验 + 建新行（prepared）+ 算目标路径。
 
         * copy：优先 os.link 硬链接同一份副本，失败退化为复制；
           **绝不重新读用户原文件**（原文件可能已经不在、或者已经变了）；
-        * reference：重新检查当前可用性与变化，**不沿用旧状态**。
+        * 这里只登记与算路径：真正的文件 I/O 在 _run_clone_io（工作线程）。
+        * 行先落 prepared（冻结状态值；契约里写作 preparing 的就是它）：
+          界面能如实看到「正在准备」，而复制还没完成时**不得** ready。
         """
-        if source.kind == "copy":
-            return self._clone_copy_for_retry(
-                source, turn_id=turn_id, topic_id=topic_id, message_id=message_id
-            )
-        return self._clone_reference_for_retry(
-            source, turn_id=turn_id, topic_id=topic_id, message_id=message_id
+        if not source.stored_path or not self.is_managed_path(source.stored_path):
+            return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
+        source_copy = Path(source.stored_path)
+        if not source_copy.is_file():
+            return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
+        clone = self._new_clone(
+            source,
+            turn_id=turn_id,
+            topic_id=topic_id,
+            message_id=message_id,
+            kind="copy",
+            state=STATE_PREPARED,
+            error=None,
+            size_bytes=source.size_bytes,
+            mtime=source.mtime,
         )
+        self._insert(clone)
+        return ClonePlan(
+            source_id=source.id,
+            clone_id=clone.id,
+            source_copy=source_copy,
+            target=self.copy_path(clone),
+            expect_size=int(source.size_bytes),
+        )
+
+    def _run_clone_io(self, plan: ClonePlan) -> CloneResult:
+        """三段式第②段（**工作线程**）：只做文件 I/O —— 绝不触碰 sqlite。
+
+        成功条件：目标文件写出且大小与登记一致；失败一律清掉半截文件再返回原因。
+        取消（调用方置位 plan.cancelled）：写完了也要自己清掉，迟到结果不得提交 ready。
+        """
+        try:
+            if plan.cancelled.is_set():
+                return CloneResult(False, "这一轮在复制开始前已经结束", cancelled=True)
+            if not plan.source_copy.is_file():
+                return CloneResult(False, "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送")
+            plan.target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(plan.source_copy, plan.target)
+            except OSError:
+                # 硬链接不可用（跨卷 / 权限 / 文件系统不支持）→ 复制同一份已保存副本
+                shutil.copyfile(plan.source_copy, plan.target)
+            try:
+                written = plan.target.stat().st_size
+            except OSError as exc:
+                _unlink_quiet(plan.target)
+                return CloneResult(False, "复用已保存的副本失败：" + self._describe_oserror(exc, target=plan.target))
+            if written != int(plan.expect_size):
+                _unlink_quiet(plan.target)
+                return CloneResult(
+                    False,
+                    "复用已保存的副本失败：写出的副本大小不对（"
+                    + human_size(written)
+                    + "，应为 "
+                    + human_size(int(plan.expect_size))
+                    + "）",
+                )
+            if plan.cancelled.is_set():
+                # 取消发生在写完之后：自己清掉刚写出的文件
+                _unlink_quiet(plan.target)
+                return CloneResult(False, "这一轮在复制期间被取消", cancelled=True)
+            return CloneResult(True)
+        except OSError as exc:
+            _unlink_quiet(plan.target)
+            return CloneResult(False, "复用已保存的副本失败：" + self._describe_oserror(exc, target=plan.target))
+        finally:
+            plan.finished.set()
+
+    async def _finish_copy_clone(self, plan: ClonePlan) -> CloneResult:
+        """三段式第③段（回到**事件循环线程**）：按文件 I/O 的结果定稿并完成绑定。
+
+        * 只有文件真的写出且这一行还在 prepared 时才提交 ready；
+        * 行在复制期间被删/被取消 → 迟到结果不得提交 ready，并清掉刚写出的副本；
+        * 取消（客户端断开）：置位取消标记、删行、尽力清文件，并安排线程结束后再清一次。
+        """
+        try:
+            result = await asyncio.to_thread(self._run_clone_io, plan)
+        except asyncio.CancelledError:
+            plan.cancelled.set()
+            self._discard_clone(plan)
+            self._schedule_orphan_cleanup(plan)
+            raise
+        current = self.get(plan.clone_id, check=False)
+        if current is None or current.state != STATE_PREPARED:
+            # 代次/取消校验：这一行已经不是「正在准备的这一条」了 —— 迟到结果不得提交 ready
+            _unlink_quiet(plan.target)
+            return CloneResult(False, "这一轮在复制期间已经结束（附件记录已不在），没有留下副本")
+        if not result.ok:
+            _unlink_quiet(plan.target)
+            self.delete(plan.clone_id, purge_copy=True)
+            return CloneResult(False, result.reason or "复用已保存的副本失败")
+        self._update(plan.clone_id, stored_path=str(plan.target), state=STATE_READY, error=None)
+        refreshed = self.get(plan.clone_id, check=False)
+        if refreshed is None:
+            _unlink_quiet(plan.target)
+            return CloneResult(False, "这一轮在复制期间已经结束（附件记录已不在），没有留下副本")
+        return CloneResult(True, attachment=refreshed)
+
+    def _discard_clone(self, plan: ClonePlan) -> None:
+        """取消/失败时立刻收尾：删行 + 尽力删目标文件（不留 prepared、不留无人认领副本）。"""
+        _unlink_quiet(plan.target)
+        try:
+            self.delete(plan.clone_id, purge_copy=True)
+        except Exception:  # noqa: BLE001 - 收尾本身不得再抛
+            logger.warning("clone discard failed", exc_info=True)
+
+    def _schedule_orphan_cleanup(self, plan: ClonePlan) -> None:
+        """取消之后工作线程可能还在写：等它真正结束，再清一次目标文件。"""
+
+        async def cleanup() -> None:
+            await asyncio.to_thread(plan.finished.wait, 10)
+            _unlink_quiet(plan.target)
+
+        try:
+            task = asyncio.get_running_loop().create_task(cleanup())
+        except RuntimeError:  # 没有运行中的事件循环（同步上下文）：文件已尽力清过
+            return
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     def _new_clone(
         self,
@@ -1310,6 +1479,7 @@ class AttachmentService:
         mtime: float | None,
         stored_path: str | None = None,
     ) -> Attachment:
+        """克隆的新行：新 id + 指向源行（source_attachment_id），源行归属与历史都不动。"""
         now = self._clock()
         return Attachment(
             id=f"att_{uuid.uuid4().hex[:12]}",
@@ -1329,41 +1499,6 @@ class AttachmentService:
             updated_at=now,
             source_attachment_id=source.id,
         )
-
-    def _clone_copy_for_retry(
-        self, source: Attachment, *, turn_id: str, topic_id: str | None, message_id: str | None
-    ) -> Attachment | str:
-        if not source.stored_path or not self.is_managed_path(source.stored_path):
-            return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
-        source_copy = Path(source.stored_path)
-        if not source_copy.is_file():
-            return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
-        clone = self._new_clone(
-            source,
-            turn_id=turn_id,
-            topic_id=topic_id,
-            message_id=message_id,
-            kind="copy",
-            state=STATE_PREPARED,
-            error=None,
-            size_bytes=source.size_bytes,
-            mtime=source.mtime,
-        )
-        self._insert(clone)
-        target = self.copy_path(clone)
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(source_copy, target)
-            except OSError:
-                shutil.copyfile(source_copy, target)
-        except OSError as exc:
-            reason = "复用已保存的副本失败：" + self._describe_oserror(exc, target=target)
-            _unlink_quiet(target)
-            self.delete(clone.id, purge_copy=True)
-            return reason
-        self._update(clone.id, stored_path=str(target), state=STATE_READY, error=None)
-        return self.get(clone.id, check=False) or clone
 
     def _clone_reference_for_retry(
         self, source: Attachment, *, turn_id: str, topic_id: str | None, message_id: str | None

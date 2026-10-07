@@ -17,7 +17,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import errno
+import inspect
 import os
+import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -50,9 +55,9 @@ def _ready_copy(svc: AttachmentService, path: Path, *, topic_id: str = "t1"):
     return svc.run_prepare(att.id)
 
 
-def _bind(svc: AttachmentService, turn_id: str, ids, *, topic_id: str = "t1", **kw):
-    """按冻结接口调用（全关键字）。"""
-    return svc.bind_for_turn(
+async def _bind(svc: AttachmentService, turn_id: str, ids, *, topic_id: str = "t1", **kw):
+    """按冻结接口调用（全关键字）。R5 §1.3 起 bind_for_turn 是 async。"""
+    return await svc.bind_for_turn(
         turn_id=turn_id, attachment_ids=ids, topic_id=topic_id, **kw
     )
 
@@ -64,13 +69,13 @@ def _tool(svc: AttachmentService, turn_id: str) -> ReadAttachmentTool:
 # -- 1. 静默丢弃 → 结构化拒绝 ------------------------------------------------
 
 
-def test_bind_reports_rejection_instead_of_silently_dropping(svc: AttachmentService, tmp_path: Path):
+async def test_bind_reports_rejection_instead_of_silently_dropping(svc: AttachmentService, tmp_path: Path):
     """重试没带上 retry_of_turn_id：必须进 rejected，而不是「返回空列表、请求照旧 accepted」。"""
     source = _write(tmp_path / "原轮附件.txt", b"\xe5\x86\x85\xe5\xae\xb9")
     att = _ready_copy(svc, source)
-    _bind(svc, "turn_old", [att.id])
+    await _bind(svc, "turn_old", [att.id])
 
-    outcome = _bind(svc, "turn_new", [att.id], message_id="msg_new")
+    outcome = await _bind(svc, "turn_new", [att.id], message_id="msg_new")
 
     assert outcome.bound == [], "没有 retry_of_turn_id 时不得把别轮的附件绑到新轮"
     assert [item[0] for item in outcome.rejected] == [att.id]
@@ -88,9 +93,9 @@ async def test_retry_clones_copy_attachment_and_new_turn_reads_real_content(
     body = "第一行\n第二行\n".encode("utf-8")
     source = _write(tmp_path / "报告.txt", body)
     att = _ready_copy(svc, source)
-    _bind(svc, "turn_old", [att.id])
+    await _bind(svc, "turn_old", [att.id])
 
-    outcome = _bind(
+    outcome = await _bind(
         svc, "turn_new", [att.id], message_id="msg_new", retry_of_turn_id="turn_old"
     )
 
@@ -135,17 +140,17 @@ async def test_retry_clones_copy_attachment_and_new_turn_reads_real_content(
     assert clone.id not in old_ctx
 
 
-def test_retry_clone_does_not_re_read_user_source_file(
+async def test_retry_clone_does_not_re_read_user_source_file(
     svc: AttachmentService, tmp_path: Path, monkeypatch
 ):
     """克隆必须复用 QIO 的副本：即使用户原文件被换掉，新轮拿到的仍是当初那份。"""
     source = _write(tmp_path / "原始.txt", "原始内容".encode("utf-8"))
     att = _ready_copy(svc, source)
-    _bind(svc, "turn_old", [att.id])
+    await _bind(svc, "turn_old", [att.id])
     # 用户把原文件换成别的内容（副本已经与它无关）
     source.write_bytes("换掉的内容".encode("utf-8"))
 
-    outcome = _bind(
+    outcome = await _bind(
         svc, "turn_new", [att.id], message_id="msg_new", retry_of_turn_id="turn_old"
     )
     clone = svc.get(outcome.bound[0])
@@ -155,12 +160,12 @@ def test_retry_clone_does_not_re_read_user_source_file(
 # -- 3. 防偷换：只接受「未绑定」或「绑定在 retry_of_turn_id 那一轮」 ----------
 
 
-def test_retry_never_steals_attachment_bound_to_another_turn(svc: AttachmentService, tmp_path: Path):
+async def test_retry_never_steals_attachment_bound_to_another_turn(svc: AttachmentService, tmp_path: Path):
     source = _write(tmp_path / "别人的.txt", b"x")
     att = _ready_copy(svc, source)
-    _bind(svc, "turn_a", [att.id])
+    await _bind(svc, "turn_a", [att.id])
 
-    outcome = _bind(svc, "turn_new", [att.id], retry_of_turn_id="turn_b")
+    outcome = await _bind(svc, "turn_new", [att.id], retry_of_turn_id="turn_b")
 
     assert outcome.bound == []
     assert [item[0] for item in outcome.rejected] == [att.id]
@@ -169,14 +174,14 @@ def test_retry_never_steals_attachment_bound_to_another_turn(svc: AttachmentServ
     assert [a.id for a in svc.list(turn_id="turn_new")] == []
 
 
-def test_retry_rejects_unknown_cross_topic_and_not_bindable_ids(svc: AttachmentService, tmp_path: Path):
+async def test_retry_rejects_unknown_cross_topic_and_not_bindable_ids(svc: AttachmentService, tmp_path: Path):
     ready = _ready_copy(svc, _write(tmp_path / "ready.txt", b"r"), topic_id="t1")
     other_topic = _ready_copy(svc, _write(tmp_path / "other.txt", b"o"), topic_id="t2")
     broken_source = _write(tmp_path / "gone.txt", b"g")
     broken = _ready_copy(svc, broken_source)
     Path(broken.stored_path).unlink()  # 副本丢了 → missing，不允许绑定
 
-    outcome = _bind(
+    outcome = await _bind(
         svc,
         "turn_new",
         ["att_missing_0001", other_topic.id, broken.id],
@@ -193,11 +198,11 @@ def test_retry_rejects_unknown_cross_topic_and_not_bindable_ids(svc: AttachmentS
     assert svc.get(other_topic.id).turn_id is None
 
 
-def test_retry_bound_ids_are_deduplicated(svc: AttachmentService, tmp_path: Path):
+async def test_retry_bound_ids_are_deduplicated(svc: AttachmentService, tmp_path: Path):
     att = _ready_copy(svc, _write(tmp_path / "dup.txt", b"d"))
-    _bind(svc, "turn_old", [att.id])
+    await _bind(svc, "turn_old", [att.id])
 
-    outcome = _bind(
+    outcome = await _bind(
         svc,
         "turn_new",
         [att.id, att.id],
@@ -212,7 +217,7 @@ def test_retry_bound_ids_are_deduplicated(svc: AttachmentService, tmp_path: Path
 # -- 4. reference 克隆：重新检查当前可用性与变化，不沿用旧状态 ----------------
 
 
-def test_reference_clone_rechecks_state_instead_of_inheriting(
+async def test_reference_clone_rechecks_state_instead_of_inheriting(
     svc: AttachmentService, tmp_path: Path
 ):
     # (a) 位置没变 → 克隆 ready
@@ -220,8 +225,8 @@ def test_reference_clone_rechecks_state_instead_of_inheriting(
     att_a = svc.prepare(str(unchanged), topic_id="t1")
     att_a = svc.run_prepare(att_a.id)
     assert att_a.kind == "reference"
-    _bind(svc, "turn_a", [att_a.id])
-    cloned_a = svc.get(_bind(svc, "turn_new_a", [att_a.id], retry_of_turn_id="turn_a").bound[0])
+    await _bind(svc, "turn_a", [att_a.id])
+    cloned_a = svc.get((await _bind(svc, "turn_new_a", [att_a.id], retry_of_turn_id="turn_a")).bound[0])
     assert cloned_a.kind == "reference"
     assert cloned_a.state == "ready"
     assert cloned_a.source_attachment_id == att_a.id
@@ -231,10 +236,10 @@ def test_reference_clone_rechecks_state_instead_of_inheriting(
     changing = _sparse(tmp_path / "moving.bin", COPY_MAX_BYTES + 1)
     att_b = svc.prepare(str(changing), topic_id="t1")
     att_b = svc.run_prepare(att_b.id)
-    _bind(svc, "turn_b", [att_b.id])
+    await _bind(svc, "turn_b", [att_b.id])
     later = os.stat(changing).st_mtime + 60
     os.utime(changing, (later, later))
-    outcome_b = _bind(svc, "turn_new_b", [att_b.id], retry_of_turn_id="turn_b")
+    outcome_b = await _bind(svc, "turn_new_b", [att_b.id], retry_of_turn_id="turn_b")
     cloned_b = svc.get(outcome_b.bound[0])
     assert cloned_b.state == "changed"
     assert cloned_b.error and "变了" in cloned_b.error
@@ -243,9 +248,9 @@ def test_reference_clone_rechecks_state_instead_of_inheriting(
     vanished = _sparse(tmp_path / "vanish.bin", COPY_MAX_BYTES + 1)
     att_c = svc.prepare(str(vanished), topic_id="t1")
     att_c = svc.run_prepare(att_c.id)
-    _bind(svc, "turn_c", [att_c.id])
+    await _bind(svc, "turn_c", [att_c.id])
     vanished.unlink()
-    outcome_c = _bind(svc, "turn_new_c", [att_c.id], retry_of_turn_id="turn_c")
+    outcome_c = await _bind(svc, "turn_new_c", [att_c.id], retry_of_turn_id="turn_c")
     assert outcome_c.rejected == [], "源文件不可用也要建记录并如实报状态，不能既不建又不报错"
     assert len(outcome_c.bound) == 1
     cloned_c = svc.get(outcome_c.bound[0])
@@ -263,23 +268,23 @@ def test_reference_clone_rechecks_state_instead_of_inheriting(
 # -- 5. 语义保留：空列表 / 缺字段 / 旧调用形状 -------------------------------
 
 
-def test_empty_list_and_missing_field_semantics_are_preserved(svc: AttachmentService, tmp_path: Path):
+async def test_empty_list_and_missing_field_semantics_are_preserved(svc: AttachmentService, tmp_path: Path):
     unbound = _ready_copy(svc, _write(tmp_path / "pending.txt", b"p"))
 
-    empty = _bind(svc, "turn_x", [])
+    empty = await _bind(svc, "turn_x", [])
     assert empty.bound == [] and empty.rejected == []
     assert svc.get(unbound.id).turn_id is None, "显式空列表不得落进兜底分支"
 
-    fallback = _bind(svc, "turn_y", None)
+    fallback = await _bind(svc, "turn_y", None)
     assert fallback.bound == [unbound.id]
     assert fallback.rejected == []
     assert svc.get(unbound.id).turn_id == "turn_y"
 
 
-def test_retry_attachment_ids_lists_what_the_source_turn_bound(svc: AttachmentService, tmp_path: Path):
+async def test_retry_attachment_ids_lists_what_the_source_turn_bound(svc: AttachmentService, tmp_path: Path):
     first = _ready_copy(svc, _write(tmp_path / "one.txt", b"1"))
     second = _ready_copy(svc, _write(tmp_path / "two.txt", b"2"))
-    _bind(svc, "turn_old", [first.id, second.id])
+    await _bind(svc, "turn_old", [first.id, second.id])
 
     assert svc.retry_attachment_ids("turn_old") == [first.id, second.id]
     assert svc.retry_attachment_ids("turn_absent") == []
@@ -288,14 +293,14 @@ def test_retry_attachment_ids_lists_what_the_source_turn_bound(svc: AttachmentSe
 # -- 6. 受理前预检（route 在 submit 之前调用：rejected 非空就不入队） ------------------
 
 
-def test_precheck_reports_the_same_rejections_without_touching_anything(
+async def test_precheck_reports_the_same_rejections_without_touching_anything(
     svc: AttachmentService, tmp_path: Path
 ):
     """预检只读：判据与 bind_for_turn 同一份，且不落库、不克隆。"""
     ready = _ready_copy(svc, _write(tmp_path / "ok.txt", b"ok"), topic_id="t1")
     other_topic = _ready_copy(svc, _write(tmp_path / "other.txt", b"o"), topic_id="t2")
     bound = _ready_copy(svc, _write(tmp_path / "bound.txt", b"b"), topic_id="t1")
-    _bind(svc, "turn_old", [bound.id])
+    await _bind(svc, "turn_old", [bound.id])
 
     rejected = dict(
         svc.precheck_for_turn(
@@ -317,9 +322,9 @@ def test_precheck_reports_the_same_rejections_without_touching_anything(
     assert svc.get(bound.id).turn_id == "turn_old"
 
 
-def test_precheck_accepts_retry_of_turn_and_stays_read_only(svc: AttachmentService, tmp_path: Path):
+async def test_precheck_accepts_retry_of_turn_and_stays_read_only(svc: AttachmentService, tmp_path: Path):
     att = _ready_copy(svc, _write(tmp_path / "retry.txt", b"r"), topic_id="t1")
-    _bind(svc, "turn_old", [att.id])
+    await _bind(svc, "turn_old", [att.id])
 
     assert svc.precheck_for_turn(
         attachment_ids=[att.id], topic_id="t1", retry_of_turn_id="turn_old"
@@ -335,16 +340,16 @@ def test_precheck_ignores_missing_field_fallback(svc: AttachmentService, tmp_pat
     assert svc.precheck_for_turn(attachment_ids=None, topic_id="t1") == []
 
 
-def test_receipt_is_always_accurate(svc: AttachmentService, tmp_path: Path):
+async def test_receipt_is_always_accurate(svc: AttachmentService, tmp_path: Path):
     """Lead 复核项：回执必须永远准确 —— bound 的每一行确实绑到了本轮，
     rejected 的每一行都没有被绑上（不允许「回执说绑上了但行里没有」）。"""
     fresh = _ready_copy(svc, _write(tmp_path / "fresh.txt", b"f"), topic_id="t1")
     old = _ready_copy(svc, _write(tmp_path / "old.txt", b"o"), topic_id="t1")
-    _bind(svc, "turn_old", [old.id])
+    await _bind(svc, "turn_old", [old.id])
     stranger = _ready_copy(svc, _write(tmp_path / "stranger.txt", b"s"), topic_id="t1")
-    _bind(svc, "turn_other", [stranger.id])
+    await _bind(svc, "turn_other", [stranger.id])
 
-    outcome = _bind(
+    outcome = await _bind(
         svc,
         "turn_new",
         [fresh.id, old.id, stranger.id, "att_nope_0002"],
@@ -367,12 +372,246 @@ def test_receipt_is_always_accurate(svc: AttachmentService, tmp_path: Path):
     assert svc.get("att_nope_0002") is None
 
 
-def test_bind_outcome_is_still_list_shaped_for_existing_callers(svc: AttachmentService, tmp_path: Path):
+async def test_bind_outcome_is_still_list_shaped_for_existing_callers(svc: AttachmentService, tmp_path: Path):
     """旧调用点（server.py / 既有测试）按 list[Attachment] 消费：迁移期不能突然 500。"""
     att = _ready_copy(svc, _write(tmp_path / "compat.txt", b"c"))
 
-    outcome = _bind(svc, "turn_compat", [att.id])
+    outcome = await _bind(svc, "turn_compat", [att.id])
 
     assert [item.id for item in outcome] == [att.id]
     assert outcome.bound == [att.id]
     assert outcome.rejected == []
+
+# -- 7. 复制退路必须离开事件循环线程（R5 §1.3）--------------------------------
+#
+# 缺陷：`os.link` 失败后退化为同步 `shutil.copyfile`，而 `bind_for_turn` 被 async 路由
+# 在**主事件循环线程**同步调用 —— 接近 100MB 的副本复制会卡住其它 API 与 SSE。
+# 判据用**线程身份 + 事件循环是否仍在推进**，不用毫秒阈值。
+
+
+async def _maybe_await(result):
+    """兼容旧同步实现：今天的实现返回 BindOutcome（不是协程），
+    这样反例断言的是**真实缺陷（跑在事件循环线程上）**，而不是「忘了 await」的 API 形状。"""
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _gated_copyfile(monkeypatch, *, fail_with: OSError | None = None):
+    """把复制退路换成「进门先关门、记录线程、等闸门」的桩。返回 (entered, release, seen)。"""
+    real = shutil.copyfile
+    entered = threading.Event()
+    release = threading.Event()
+    seen: dict[str, object] = {}
+
+    def gated(src_path, dst_path, *args, **kwargs):
+        seen["thread"] = threading.current_thread()
+        seen["ident"] = threading.get_ident()
+        entered.set()
+        if not release.wait(10):  # 测试自己的闸门，不会永远挂着
+            raise AssertionError("闸门没有被放开（测试装置问题）")
+        if fail_with is not None:
+            raise fail_with
+        return real(src_path, dst_path, *args, **kwargs)
+
+    monkeypatch.setattr(attachments_mod.shutil, "copyfile", gated)
+    return entered, release, seen
+
+
+def _force_copy_fallback(monkeypatch):
+    """强制 os.link 抛 OSError：确保真的走复制退路。"""
+
+    def refuse_link(*args, **kwargs):
+        raise OSError(errno.EPERM, "hardlink not permitted")
+
+    monkeypatch.setattr(attachments_mod.os, "link", refuse_link)
+
+
+def test_bind_for_turn_is_async():
+    """冻结接口：路由必须能 `await`（三段式的第一步与第三步都在事件循环线程上）。"""
+    assert inspect.iscoroutinefunction(AttachmentService.bind_for_turn), (
+        "R5 §1.3 冻结接口：bind_for_turn 必须是 async（文件 I/O 交给 asyncio.to_thread）"
+    )
+
+
+async def test_copy_fallback_runs_off_the_event_loop_thread_and_loop_keeps_running(
+    svc: AttachmentService, tmp_path: Path, monkeypatch
+):
+    """复制退路必须在工作线程里跑；闸门关着时事件循环仍在推进、行停在 prepared（不是 ready）。"""
+    att = _ready_copy(svc, _write(tmp_path / "重试.bin", b"x" * 8192))
+    await _bind(svc, "turn_old", [att.id])
+    _force_copy_fallback(monkeypatch)
+    entered, release, seen = _gated_copyfile(monkeypatch)
+
+    task = asyncio.create_task(
+        _maybe_await(
+            svc.bind_for_turn(
+                turn_id="turn_new",
+                attachment_ids=[att.id],
+                topic_id="t1",
+                retry_of_turn_id="turn_old",
+            )
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 10), "复制退路没有被走到（装置问题）"
+
+    # 1) 线程身份：复制必须不在事件循环线程上
+    loop_ident = threading.get_ident()
+    assert seen["ident"] != loop_ident, (
+        "复制退路跑在事件循环线程上 —— 大副本会卡住其它 API 与 SSE（R5 §1.3 缺陷）"
+    )
+    assert seen["thread"] is not threading.current_thread()
+
+    # 2) 闸门仍关着：事件循环必须能推进（今天的实现会在这里卡死）
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(20):
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(ticker(), timeout=5)
+    assert ticks == 20, "复制期间事件循环必须继续推进"
+
+    # 3) 复制没完成之前，这一行只能停在 prepared（不得提前 ready）
+    rows = svc.list(turn_id="turn_new", check=False)
+    assert len(rows) == 1 and rows[0].state == "prepared", rows
+
+    release.set()
+    outcome = await asyncio.wait_for(task, timeout=10)
+
+    assert outcome.rejected == [], outcome.rejected
+    assert len(outcome.bound) == 1
+    cloned = svc.get(outcome.bound[0], check=False)
+    assert cloned.state == "ready"
+    assert Path(cloned.stored_path).read_bytes() == b"x" * 8192
+    # 原行归属不变
+    assert svc.get(att.id).turn_id == "turn_old"
+
+
+async def test_clone_row_deleted_during_copy_is_not_committed_ready(
+    svc: AttachmentService, tmp_path: Path, monkeypatch
+):
+    """复制途中这一行被删（用户删附件/取消）：迟到结果不得提交 ready，也不留无人认领副本。"""
+    att = _ready_copy(svc, _write(tmp_path / "半路被删.bin", b"y" * 4096))
+    await _bind(svc, "turn_old", [att.id])
+    _force_copy_fallback(monkeypatch)
+    entered, release, seen = _gated_copyfile(monkeypatch)
+
+    task = asyncio.create_task(
+        _maybe_await(
+            svc.bind_for_turn(
+                turn_id="turn_new",
+                attachment_ids=[att.id],
+                topic_id="t1",
+                retry_of_turn_id="turn_old",
+            )
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 10)
+    rows = svc.list(turn_id="turn_new", check=False)
+    assert len(rows) == 1
+    target = svc.copy_path(rows[0])
+    svc.delete(rows[0].id, purge_copy=True)  # 复制还在跑的时候行被删掉
+
+    release.set()
+    outcome = await asyncio.wait_for(task, timeout=10)
+
+    assert outcome.bound == [], "行已经不在了，绝不能把迟到结果写成 bound"
+    assert [item[0] for item in outcome.rejected] == [att.id]
+    assert svc.get(rows[0].id) is None
+    assert not target.exists(), f"无人认领的副本必须清掉：{target}"
+    assert svc.list(turn_id="turn_new", check=False) == []
+
+
+async def test_copy_failure_leaves_no_prepared_row_and_no_file(
+    svc: AttachmentService, tmp_path: Path, monkeypatch
+):
+    """复制失败：不留 prepared 行、不留半截文件，原因结构化返回。"""
+    att = _ready_copy(svc, _write(tmp_path / "复制失败.bin", b"z" * 4096))
+    await _bind(svc, "turn_old", [att.id])
+    _force_copy_fallback(monkeypatch)
+    _gated_copyfile(monkeypatch, fail_with=OSError(errno.ENOSPC, "no space left on device"))
+    # 闸门立即放开：这里不测暂停，只测失败收尾
+    entered, release, _ = _gated_copyfile(monkeypatch, fail_with=OSError(errno.ENOSPC, "no space"))
+    release.set()
+
+    outcome = await svc.bind_for_turn(
+        turn_id="turn_new", attachment_ids=[att.id], topic_id="t1", retry_of_turn_id="turn_old"
+    )
+
+    assert outcome.bound == []
+    assert [item[0] for item in outcome.rejected] == [att.id]
+    assert "副本" in outcome.rejected[0][1] or "失败" in outcome.rejected[0][1]
+    assert svc.list(turn_id="turn_new", check=False) == [], "不得留下 prepared 行"
+    data_dir = tmp_path / "data"
+    source_copy = Path(att.stored_path)
+    leftovers = [p for p in data_dir.rglob("*") if p.is_file() and p != source_copy]
+    assert leftovers == [], f"不得留下无人认领的副本：{leftovers}"
+
+
+async def test_concurrent_retries_of_same_source_both_succeed(
+    svc: AttachmentService, tmp_path: Path, monkeypatch
+):
+    """同一源副本并发重试：各自新 id、内容正确、都 ready（互不抢）。"""
+    att = _ready_copy(svc, _write(tmp_path / "并发.bin", b"c" * 2048))
+    await _bind(svc, "turn_old", [att.id])
+    _force_copy_fallback(monkeypatch)
+
+    first, second = await asyncio.gather(
+        svc.bind_for_turn(
+            turn_id="turn_new_1", attachment_ids=[att.id], topic_id="t1", retry_of_turn_id="turn_old"
+        ),
+        svc.bind_for_turn(
+            turn_id="turn_new_2", attachment_ids=[att.id], topic_id="t1", retry_of_turn_id="turn_old"
+        ),
+    )
+
+    assert len(first.bound) == 1 and len(second.bound) == 1
+    assert first.bound[0] != second.bound[0]
+    for outcome in (first, second):
+        cloned = svc.get(outcome.bound[0], check=False)
+        assert cloned.state == "ready"
+        assert Path(cloned.stored_path).read_bytes() == b"c" * 2048
+    assert svc.get(att.id).turn_id == "turn_old"
+
+
+async def test_cancelled_bind_leaves_no_prepared_row_and_no_orphan_copy(
+    svc: AttachmentService, tmp_path: Path, monkeypatch
+):
+    """复制途中取消（客户端断开）：不得留下 prepared 行，也不得留下无人认领的副本。"""
+    att = _ready_copy(svc, _write(tmp_path / "取消.bin", b"q" * 4096))
+    await _bind(svc, "turn_old", [att.id])
+    _force_copy_fallback(monkeypatch)
+    entered, release, _ = _gated_copyfile(monkeypatch)
+
+    task = asyncio.create_task(
+        _maybe_await(
+            svc.bind_for_turn(
+                turn_id="turn_new",
+                attachment_ids=[att.id],
+                topic_id="t1",
+                retry_of_turn_id="turn_old",
+            )
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 10)
+    rows = svc.list(turn_id="turn_new", check=False)
+    assert len(rows) == 1
+    target = svc.copy_path(rows[0])
+
+    task.cancel()
+    release.set()  # 工作线程会照常写完，但迟到结果不得提交 ready
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # 给「取消后的收尾」一点时间（它等的是工作线程真正结束）
+    for _ in range(100):
+        if svc.list(turn_id="turn_new", check=False) == [] and not target.exists():
+            break
+        await asyncio.sleep(0.05)
+
+    assert svc.list(turn_id="turn_new", check=False) == [], "取消后不得留下 prepared 行"
+    assert not target.exists(), f"取消后不得留下无人认领的副本：{target}"
+
+
