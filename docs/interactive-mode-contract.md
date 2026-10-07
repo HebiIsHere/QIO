@@ -405,7 +405,8 @@ export function sendFailureText(message: string | null): string;
 **data-im 钩子（实机验收依赖）**：`board-toolbar`、`add-menu`、`add-text|add-file|add-image|add-code|add-url`、`undo`、`redo`、
 `search`、`submit`、`save-status`、`submit-status`、`change-list`、`visible-range`、`chat-toggle`、`chat-panel`、`chat-input`、`chat-send`、
 `card-toolbar`、`check`、`connect-point`、`group-merge-hint`、`batch-entry`、`batch-list`、`batch-item`、`batch-approve`、`batch-reject`、
-`tasks-entry`、`tasks-popover`、`impact-dialog`、`impact-continue`、`impact-cancel`。
+`tasks-entry`、`tasks-popover`、`impact-dialog`、`impact-continue`、`impact-cancel`、
+`card-draft-hint`、`card-draft-retry`、`chat-draft-status`、`chat-draft-retry`（§9.4 / §9.5 的草稿状态与重试入口）。
 
 ---
 

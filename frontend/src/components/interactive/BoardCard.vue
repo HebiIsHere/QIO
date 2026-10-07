@@ -19,6 +19,7 @@ import { useInteractiveStore } from "../../stores/interactive";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
+import CardDraftHint from "./CardDraftHint.vue";
 
 const props = defineProps<{
   card: BoardCard;
@@ -182,11 +183,14 @@ function confirmEdit() {
   }
   emit("patch", props.card.id, patch, "编辑" + kindLabel.value);
   store.setDraft("card:" + props.card.id, "");
+  store.flushDrafts();
   editing.value = false;
 }
 
 function cancelEdit() {
   editing.value = false;
+  // 防抖可能还没触发：离开编辑器前把待保存的草稿落盘（失败会有状态与重试入口）
+  store.flushDrafts();
 }
 </script>
 
@@ -237,6 +241,8 @@ function cancelEdit() {
           <label class="field"><span>标题</span><input v-model="metaTitle" type="text" /></label>
         </template>
         <p class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
+        <!-- 草稿保存失败不能静默：状态与重试入口就近显示（C 的组件，A 的卡片接线） -->
+        <CardDraftHint :card-id="card.id" />
         <div class="row">
           <button class="btn primary" type="button" @click="confirmEdit">完成编辑</button>
           <button class="btn" type="button" @click="cancelEdit">取消</button>

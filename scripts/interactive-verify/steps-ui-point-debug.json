@@ -1,0 +1,44 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5431/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1300
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const c=document.querySelector('[data-im=\"card\"]');const r=c.getBoundingClientRect();const o={bubbles:true,cancelable:true,composed:true,clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+18),button:0,buttons:1,pointerId:1,pointerType:'mouse',isPrimary:true};c.dispatchEvent(new PointerEvent('pointerdown',o));document.dispatchEvent(new PointerEvent('pointerup',Object.assign({},o,{buttons:0})));return 'selected';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const p=document.querySelector('[data-im=\"chat-panel\"]');if(!p){const b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();}return 'chat';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const l=document.querySelector('[data-im=\"batch-list\"]');if(!l){const b=document.querySelector('[data-im=\"batch-entry\"]');if(b)b.click();}return 'batch';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){\n    const R=(e)=>{const r=e.getBoundingClientRect();return {l:Math.round(r.left),t:Math.round(r.top),r:Math.round(r.right),b:Math.round(r.bottom)};};\n    const out=[...document.querySelectorAll('[data-im=\"connect-point\"]')].map(p=>{const r=p.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);const el=document.elementFromPoint(x,y);return {cls:p.className,x,y,hitTag:el?el.tagName:null,hitIm:el&&el.getAttribute?el.getAttribute('data-im'):null,hitCls:el?String(el.className):null,hitRect:el?R(el):null,hitText:el?(el.textContent||'').slice(0,30):null};});\n    return {out, panels:{chat: (function(){const e=document.querySelector('[data-im=\"chat-panel\"]');return e?R(e):null;})(), batch: (function(){const e=document.querySelector('[data-im=\"batch-list\"]');return e?R(e):null;})()}};\n  })())"
+  }
+]

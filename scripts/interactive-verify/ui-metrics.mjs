@@ -45,12 +45,20 @@ function runSteps(steps, tag) {
   if (start < 0) throw new Error("探针没有返回结果（" + tag + "）：" + (raw + (probe.stderr || "")).slice(0, 300));
   const parsed = JSON.parse(raw.slice(start));
   const values = (parsed.results || []).filter((r) => r.op === "eval").map((r) => r.value);
-  for (let i = values.length - 1; i >= 0; i -= 1) {
-    const text = typeof values[i] === "string" ? values[i].trim() : "";
+  const parsedValues = [];
+  for (const value of values) {
+    const text = typeof value === "string" ? value.trim() : "";
     if (!text.startsWith("{")) continue;
-    try { return JSON.parse(text); } catch { /* 继续往前找 */ }
+    try { parsedValues.push(JSON.parse(text)); } catch { /* 忽略非 JSON */ }
   }
-  throw new Error("没有取到 JSON 指标（" + tag + "）");
+  if (!parsedValues.length) throw new Error("没有取到 JSON 指标（" + tag + "）");
+  // 取「开浮层前」的那次测量（连接点命中只有在没有被浮层遮挡时才有意义）
+  const selection = parsedValues.find((v) => v && v.note === "selection-metrics") ? parsedValues[parsedValues.length - 2] : null;
+  const panels = parsedValues[parsedValues.length - 1];
+  return Object.assign({}, panels, {
+    connectPoint: selection ? selection.connectPoint : panels.connectPoint,
+    cardToolbar: selection ? selection.cardToolbar : panels.cardToolbar,
+  });
 }
 
 async function api(path, init) {
@@ -119,7 +127,9 @@ async function measure(w, h) {
     // 选中第一张卡片后再量局部工具栏与连接点
     { op: "eval", js: `(function(){const c=document.querySelector('[data-im="card"]');if(!c)return 'no-card';const r=c.getBoundingClientRect();const o={bubbles:true,cancelable:true,composed:true,clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+18),button:0,buttons:1,pointerId:1,pointerType:'mouse',isPrimary:true};c.dispatchEvent(new PointerEvent('pointerdown',o));document.dispatchEvent(new PointerEvent('pointerup',Object.assign({},o,{buttons:0})));return 'selected';})()` },
     { op: "wait", ms: 600 },
+    // 注意：连接点命中要在**开浮层之前**量 —— 面板浮在板面上本来就盖住卡片，那不是缺陷
     { op: "eval", js: MEASURE_JS },
+    { op: "eval", js: "JSON.stringify({note:'selection-metrics'})" },
     // 同时展开聊天与批量列表再量一次
     { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(!p){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'chat';})()` },
     { op: "wait", ms: 700 },
