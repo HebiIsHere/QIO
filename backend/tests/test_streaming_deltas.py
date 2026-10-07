@@ -1420,6 +1420,45 @@ async def test_undeclared_full_answer_is_not_duplicated_and_not_regenerated():
     assert not [e for e in _process_area(bus) if answer in (e["content"] or "")]
 
 
+async def test_undeclared_answer_is_invisible_until_the_call_ends():
+    """未声明正文在**调用结束前不得出现在任何容器里**，结束后只出现在正式回答区一次。
+
+    契约 §1.1 修正版第 2、3 条：前缀不匹配**不等于**工作调用 —— 不得因为前缀不匹配
+    就立刻放进过程区；未声明正文先有界缓冲，调用结束无工具调用时一次性交付到正式
+    回答区（同一 delta_id、interim=false、streaming=false、role_evidence=undeclared_answer）。
+    """
+    answer = "结论：这个问题的答案是 42。"
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer], hold=hold, hold_after=1)]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    task = asyncio.create_task(loop.run("直接回答我"))
+
+    # 等流真的开起来（provider 卡在 hold）：这段时间里任何容器都不该有正文
+    await asyncio.sleep(0.15)
+    assert not task.done(), "provider 还开着，这一轮不该结束"
+    assert _events(bus, "ASSISTANT") == [], (
+        "未声明的正文在调用结束前就出现在容器里了（过程区也不行）",
+        _events(bus, "ASSISTANT"),
+    )
+    assert _process_area(bus) == [] and _answer_area(bus) == []
+
+    hold.set()
+    result = await asyncio.wait_for(task, 3)
+
+    # 结束后：只出现在正式回答区一次（一次性交付，不冒充流式）
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1, events
+    assert events[0]["content"] == answer
+    assert events[0]["interim"] is False and events[0]["streaming"] is False
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    assert _process_area(bus) == [], "过程区不得留副本"
+    assert result.final_content == answer
+    assert len(adapter.requests) == 1, "不得为同一段答案再发一次调用"
+
+
 async def test_declared_answer_streams_live_and_costs_one_call():
     """合法直接回答：声明被识别（标记不展示）、正文实时进回答区、整轮 1 次调用。"""
     hold = asyncio.Event()

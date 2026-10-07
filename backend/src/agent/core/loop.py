@@ -77,8 +77,10 @@ PUBLISH_CHARS = 24
 # 说明文字集中在 agent/prompts.py，由这一个常量注入三档（text 档进 system prompt，
 # native / anthropic 由 _call_hint() 每次调用作为最后一条 system 消息发出）。
 #
-# 未声明正文的有界缓冲上限：超过它即判定为工作调用并实时放行（绝不无界缓存）。
-UNDECLARED_BUFFER_LIMIT = 64 * 1024
+# 未声明正文的有界缓冲上限（契约 §1.1 第 3 条修正版：256 KB）：超过它即判定为
+# 工作调用并实时放行（绝不无界缓存）。除此之外，只有**出现工具调用**才会让缓冲中的
+# 未声明正文提前进过程区 —— 前缀不匹配本身不构成「这是工作调用」的证据。
+UNDECLARED_BUFFER_LIMIT = 256 * 1024
 # 判定声明所需的最长前缀（声明本身只有 len(ANSWER_MARKER) 个字符，留余量到 32）。
 MARKER_PROBE_CHARS = 32
 
@@ -143,14 +145,16 @@ class _AssistantStream:
     * 缓冲与声明**完全匹配** → role = "answer"：声明之后的正文**实时**进正式回答区
       （``interim=false, streaming=true``）；调用结束时同一 delta_id 再发一条
       ``streaming=false`` 的累计快照做**收尾校准**（校准不是首次展示来源）。
-    * 缓冲与声明**前缀不再匹配** → role = "interim"：正文是进度说明，实时进过程区；
+    * 缓冲与声明**前缀不再匹配** → **暂时按「未声明」处理**（契约 §1.1 修正版第 2 条：
+      不得因为前缀不匹配就立刻把正文放进过程区）：role = "undeclared"，正文先有界缓冲
+      （上限 UNDECLARED_BUFFER_LIMIT，超限即判定为工作调用并实时放行）。
+      只有**出现工具调用**才会让缓冲中的正文提前按工作调用实时放行到过程区；
       这一批工具的阶段就位后由 flush_interim 用同一个 delta_id 补上
       ``stage_id`` / ``call_ids``（同一份文字，不产生第二个气泡）。
-    * **未声明**（无标记）→ role = "undeclared"：正文**先不展示**（有界缓冲，
-      上限 UNDECLARED_BUFFER_LIMIT；超过即判定为工作调用并实时放行）。调用结束时：
-      有工具调用 → 缓冲文字是过程说明，放行到过程区（不丢字）；无工具调用 →
-      缓冲文字是正式回答，**一次性**交付到正式回答区（``interim=false,
-      streaming=false``，协议未遵守的降级路径，不冒充流式）。
+    * 未声明正文在调用结束时：有工具调用 → 过程说明，放行到过程区（不丢字）；
+      无工具调用 → 正式回答，**一次性**交付到正式回答区（``interim=false,
+      streaming=false``、``role_evidence="undeclared_answer"``，协议未遵守的
+      降级路径，不冒充流式、不重新生成、过程区不留副本）。
     * 非法（不在开头 / 被拆坏 / 重复）→ 按「未声明」处理。
     * 取消 / 断流 / 失败（completion=None）→ 已收到的文字放行到过程区（不丢字、
       不猜角色）。
