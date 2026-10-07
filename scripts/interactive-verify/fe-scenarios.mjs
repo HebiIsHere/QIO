@@ -1002,6 +1002,94 @@ async function scenario15() {
   check("15 草稿失败不会创建正式卡片、也不会变成正式内容", !after.cards.some((c) => String(c.content || "").includes(draftText)), JSON.stringify(after.cards.map((c) => String(c.content || "").slice(0, 10))));
 }
 
+// --- 场景 16：空草稿是有效编辑状态（提示词 §4 / 契约 §10.4）-------------------
+
+/**
+ * 把卡片正文删空并保存未完成输入 → 取消 → 重新编辑：输入框必须**仍是空的**，
+ * 不能把原正式正文又冒出来（旧实现用 `draftFor(key) || card.content`，空草稿被判成「没有草稿」）。
+ */
+async function scenario16() {
+  await resetBoard();
+  await addNoteCards(1);
+  const state = await boardState();
+  const card = (state.cards || [])[0];
+  if (!card) { check("16 前置：一张卡片", false); return; }
+  const original = String(card.content || "");
+  const clickCard = { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, steps: 1, moveMs: 20, hold: 120, after: 600 };
+  const openEditor = { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"]');if(!b)return 'no-edit';b.click();return 'clicked';})()` };
+  const clearEditor = { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');if(!t)return 'no-editor';t.focus();t.value='';t.dispatchEvent(new Event('input',{bubbles:true}));return 'cleared';})()` };
+  const readEditor = (mark) => ({ op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');return JSON.stringify({mark:"${mark}", has:t!==null, value:t?t.value:null});})()` });
+
+  const flow = sess([
+    clickCard,
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    openEditor,
+    waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"]')"),
+    clearEditor,
+    // 等**真的落盘**：服务端草稿里出现空正文
+    { op: "eval", await: true, js: `(async()=>{const B=${JSON.stringify(BACKEND)};const t0=Date.now();for(;;){try{const r=await (await fetch(B+'/api/interactive/boards/${BOARD}/drafts')).json();const d=(r&&r.drafts)||r||{};if(Object.prototype.hasOwnProperty.call(d,'card:${card.id}')&&String(d['card:${card.id}'])==='')return JSON.stringify({mark:'draft-empty',ok:true,ms:Date.now()-t0});}catch(e){}if(Date.now()-t0>8000)return JSON.stringify({mark:'draft-empty',ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,200));}})()` },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('[data-im="card-editor"] ~ * button, .row button')].find(x=>/取消/.test(x.textContent));if(!b)return 'no-cancel';b.click();return 'cancelled';})()` },
+    { op: "wait", ms: 600 },
+    // 重新打开编辑器：必须是空输入，而不是原正文
+    clickCard,
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    openEditor,
+    waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"]')"),
+    readEditor("reopen"),
+    { op: "screenshot", name: "fe-16-empty-draft-reopen" },
+  ]);
+  const saved = markedFrom(flow, "draft-empty") || {};
+  const reopen = markedFrom(flow, "reopen") || {};
+  check("16 删空正文后草稿真的落盘（空正文也是一条草稿）", saved.ok === true, JSON.stringify(saved));
+  check("16 取消后重新编辑：输入框是空的（原正文不回来）", reopen.has === true && reopen.value === "", JSON.stringify({ value: reopen.value, originalHead: original.slice(0, 20) }));
+  const after = await boardState();
+  const same = (after.cards || []).find((c) => c.id === card.id) || {};
+  check("16 未确认的空草稿不改变正式正文", String(same.content || "") === original, JSON.stringify({ now: String(same.content || "").slice(0, 20) }));
+}
+
+// --- 场景 17：几何变成空间不足时必须落实单面板切换（提示词 §5 / 契约 §10.6）-----
+
+/**
+ * 宽窗口把聊天与批量列表都展开 → 缩到 480px：几何变成 switched，**只能显示一个**面板
+ * （用户最近打开的那个），并给出可切换的提示；再放大回去不自动弹出第二个。
+ */
+async function scenario17() {
+  await resetBoard();
+  await clearPendingIntents();
+  const flow = sess([
+    // 同一会话里用应用自己的演示入口产生四项（批次记录要落在本会话）
+    clickHook("demo-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
+    { op: "wait", ms: 2600 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="demo-entry"]');if(b)b.click();return 'close';})()` },
+    { op: "wait", ms: 400 },
+    // 宽窗口：先开聊天，再开批量（批量是「最近打开的」）
+    { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(!p){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'chat';})()` },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: `(function(){const l=document.querySelector('[data-im="batch-list"]');if(!l){const b=document.querySelector('[data-im="batch-entry"]');if(b)b.click();}return 'batch';})()` },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: `JSON.stringify({mark:"wide", chat: !!document.querySelector('[data-im="chat-panel"]'), batch: !!document.querySelector('[data-im="batch-list"]'), mode: (document.querySelector('.im-stage')||{}).getAttribute?document.querySelector('.im-stage').getAttribute('im-geo-mode'):null})` },
+    // 缩到 480px（浏览器窄窗口边界，与桌面最小窗口 800×600 不同）
+    { op: "viewport", width: 480, height: 720 },
+    { op: "wait", ms: 1500 },
+    { op: "eval", js: `JSON.stringify({mark:"narrow", chat: !!document.querySelector('[data-im="chat-panel"]'), batch: !!document.querySelector('[data-im="batch-list"]'), mode: (document.querySelector('.im-stage')||{}).getAttribute?document.querySelector('.im-stage').getAttribute('im-geo-mode'):null, hint: (document.querySelector('[data-im="pane-switch"]')||{}).textContent||''})` },
+    { op: "screenshot", name: "fe-17-narrow-480" },
+    // 放大回去：不自动弹出第二个面板
+    { op: "viewport", width: 1200, height: 800 },
+    { op: "wait", ms: 1500 },
+    { op: "eval", js: `JSON.stringify({mark:"back", chat: !!document.querySelector('[data-im="chat-panel"]'), batch: !!document.querySelector('[data-im="batch-list"]'), mode: (document.querySelector('.im-stage')||{}).getAttribute?document.querySelector('.im-stage').getAttribute('im-geo-mode'):null})` },
+    { op: "screenshot", name: "fe-17-back-wide" },
+  ]);
+  const wide = markedFrom(flow, "wide") || {};
+  const narrow = markedFrom(flow, "narrow") || {};
+  const back = markedFrom(flow, "back") || {};
+  check("17 前置：宽窗口两面板都在", wide.chat === true && wide.batch === true, JSON.stringify(wide));
+  check("17 480px 下几何变成空间不足且只显示一个面板", narrow.mode === "switched" && narrow.chat !== narrow.batch, JSON.stringify(narrow));
+  check("17 保留的是最近打开的面板（批量）", narrow.batch === true && narrow.chat === false, JSON.stringify({ chat: narrow.chat, batch: narrow.batch }));
+  check("17 给出可切换的提示", /切换|显示|另一个/.test(String(narrow.hint || "")), String(narrow.hint || "").slice(0, 80));
+  check("17 放大回去不自动弹出第二个面板", back.chat === false || back.batch === false, JSON.stringify(back));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -1020,6 +1108,8 @@ const main = async () => {
     [13, scenario13],
     [14, scenario14],
     [15, scenario15],
+    [16, scenario16],
+    [17, scenario17],
     [99, scenario99],
   ];
   for (const entry of scenarios) {
