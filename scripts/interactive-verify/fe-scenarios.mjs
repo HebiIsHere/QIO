@@ -406,6 +406,48 @@ async function scenario3() {
   void beforeCard;
 }
 
+// --- 场景 4 前置反例：纯单击重叠的卡片**不成组**（独立复核发现的重要问题） ------
+
+/**
+ * 独立复核发现：卡片拖动没有位移门槛，于是「单击选中」也会走一次落点判定 ——
+ * 只要点中的卡片与另一张未分组卡片重叠 ≥25%，单击就会静默成组并自动保存。
+ * 这条反例要求：**没有位移的按下—松开不许改变板面**。
+ */
+async function scenario4a() {
+  await resetBoard();
+  await addNoteCards(1);
+  await addNoteCards(1);
+  // 把第二张卡片移到与第一张明确重叠的位置（用接口摆位，保证重叠 ≥25% 且目标中心被覆盖）
+  const state = await boardState();
+  const [first, second] = state.cards;
+  const moved = await api("/api/interactive/boards/" + BOARD + "/state", {
+    method: "PUT",
+    body: JSON.stringify({
+      state: {
+        ...state,
+        cards: state.cards.map((c) => (c.id === second.id ? { ...c, x: Number(first.x) + 30, y: Number(first.y) + 30 } : c)),
+      },
+      reason: "scenario4a-overlap",
+    }),
+  });
+  void moved;
+  const before = await boardState();
+  const clicked = sess([
+    // 真实鼠标：按下即松开，位移 0（纯单击）
+    { op: "drag", from: { selector: '[data-im="card"]:nth-of-type(2)', fx: 0.5, fy: 0.12 }, to: { selector: '[data-im="card"]:nth-of-type(2)', fx: 0.5, fy: 0.12 }, steps: 1, moveMs: 20, hold: 120, after: 900 },
+    { op: "eval", js: "JSON.stringify({mark:'after-click', groups: document.querySelectorAll('[data-im=\"group-frame\"]').length, notice: (document.querySelector('[data-im=\"board-notice\"], .notice, .banner')||{}).textContent||''})" },
+    { op: "screenshot", name: "fe-45-click-does-not-group" },
+  ]);
+  const after = await boardState();
+  const groupsBefore = (before.groups || []).filter((g) => !g.deleted).length;
+  const groupsAfter = (after.groups || []).filter((g) => !g.deleted).length;
+  check("4a 纯单击重叠的卡片不成组（选择手势不改动板面）", groupsBefore === 0 && groupsAfter === 0, JSON.stringify({ groupsBefore, groupsAfter, notice: String((markedFrom(clicked, "after-click") || {}).notice || "").slice(0, 60) }));
+  check("4a 纯单击不改变卡片数量与位置", (after.cards || []).length === (before.cards || []).length && (after.cards || []).every((c) => {
+    const old = (before.cards || []).find((x) => x.id === c.id) || {};
+    return Number(old.x) === Number(c.x) && Number(old.y) === Number(c.y);
+  }), JSON.stringify((after.cards || []).map((c) => [c.id, c.x, c.y])));
+}
+
 // --- 场景 4：两张卡片明确重叠 → 松手成组；改名；刷新后仍在 -------------------
 
 async function scenario4() {
@@ -967,6 +1009,7 @@ const main = async () => {
     [2, scenario2],
     [3, scenario3],
     [4, scenario4],
+    [40, scenario4a],
     [5, scenario5],
     [6, scenario6],
     [7, scenario7],

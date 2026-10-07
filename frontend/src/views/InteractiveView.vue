@@ -36,7 +36,8 @@ const saveText = computed(() => {
   if (store.saveStatus === "saving") return "正在保存…";
   if (store.saveStatus === "error") return `保存失败：${store.saveError ?? "原因未知"}`;
   if (store.dirty) return "有改动尚未保存";
-  if (store.saveStatus === "saved") return "已保存（尚未提交）";
+  // 顶部只说「保存」这一件事；「提交」由工具栏右端的提交区单独表达（§9.6：各自只设一处主状态）
+  if (store.saveStatus === "saved") return "已保存";
   return "尚未保存过";
 });
 
@@ -160,10 +161,10 @@ const boardSize = computed(() => {
   color: var(--text-strong);
   white-space: nowrap;
 }
-/* 次要信息：比主状态更小更淡，不与标题抢注意力 */
+/* 次要信息：比主状态更小，但不低于可读对比度（独立复核量到 --text-faint 只有 3.1/3.28:1） */
 .im-count {
   font-size: var(--fs-xs);
-  color: var(--text-faint);
+  color: var(--text-secondary);
   font-family: var(--mono);
   white-space: nowrap;
 }

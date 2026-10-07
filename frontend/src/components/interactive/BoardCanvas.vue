@@ -85,6 +85,10 @@ interface DragState {
   y: number;
   preview: DropPreview;
   fromGroupId: string | null;
+  /** 是否真的移动过（超过 3px）：纯单击只是选中，松手时不许判落点、不许成组、不许保存 */
+  moved: boolean;
+  /** 按下时的客户端坐标，用来判断有没有真的移动 */
+  startClient: { x: number; y: number };
 }
 
 interface PanState {
