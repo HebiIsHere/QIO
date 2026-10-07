@@ -113,7 +113,9 @@ def _texts(events: list[dict], *, interim: bool | None = None) -> list[str]:
         content = str(event.get("content") or "")
         if not content.strip():
             continue
-        if interim is not None and (event.get("interim") is False) is not interim:
+        # 修：原写法 (event.get("interim") is False) is not interim 对 interim=False 会算出 True，
+        # 把**正是要找的事件**跳过（Lead 2026-10-07 用合成事件复现）。按语义用真值比较：
+        if interim is not None and bool(event.get("interim")) is not interim:
             continue
         out.append(content)
     return out
