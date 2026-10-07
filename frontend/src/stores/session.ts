@@ -7,6 +7,17 @@ import {
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
+import { effectScope, watch } from "vue";
+import {
+  draftStorageAvailable,
+  draftStorageKey,
+  isStaleReceipt,
+  readDraft,
+  removeDraft,
+  UNBOUND_DRAFT_ID,
+  writeDraft,
+} from "../interactive/drafts";
+import { isBlankText } from "../interactive/chat";
 
 export interface ToolPresentation {
   title?: string;
@@ -356,7 +367,7 @@ export interface StreamMessage {
   queued?: boolean;
 }
 
-export const useSessionStore = defineStore("session", {
+const sessionStoreDefinition = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
     /**
@@ -421,6 +432,14 @@ export const useSessionStore = defineStore("session", {
      * 打开设置/星球会让对话页组件卸载重建，局部状态会随之丢失。
      */
     draft: "",
+    /**
+     * 聊天草稿的保存状态（契约 §9.4）：
+     * saving = 有内容还没落盘；saved = 已经保存进本机存储；
+     * error = 保存失败，必须显示真实原因并允许重试 —— 这时绝不能显示「已保存」。
+     */
+    draftSaveStatus: "idle" as "idle" | "saving" | "saved" | "error",
+    /** 最近一次草稿保存失败的真实原因（保存成功或没有草稿时为空） */
+    draftSaveError: null as string | null,
     /**
      * 本机发起的发送序号。只有本机发送才允许把消息流强制拉回底部；
      * 后台/排队任务开始时用户可能正在往上读，不能被拽走。
@@ -593,6 +612,20 @@ export const useSessionStore = defineStore("session", {
     _nextId() {
       this._msgSeq += 1;
       return `local_${Date.now()}_${this._msgSeq}`;
+    },
+    /**
+     * 立即把内存里的聊天草稿写进本机存储（不等防抖）。
+     * 用于离开编辑器 / 页面隐藏这类「可能来不及等 400ms」的时刻。
+     */
+    flushDraft() {
+      chatDraftKeeperFor(this as object)?.flushNow();
+    },
+    /**
+     * 草稿保存失败后的重试：只重写本机存储，
+     * **不发送消息、不碰板面、不提交、不调用 QIO**。
+     */
+    retryDraftSave() {
+      chatDraftKeeperFor(this as object)?.retry();
     },
     /**
      * 设置锚点话题。name/fragment 可选：传入则刷新话题名与锚点片段，
@@ -1892,6 +1925,15 @@ export const useSessionStore = defineStore("session", {
     async send(text: string): Promise<boolean> {
       const message = text.trim();
       if (!message) return false;
+      /**
+       * 这条消息属于哪个会话的草稿（契约 §9.4）：
+       * 只有**受理成功**才删这个键；发送期间用户切了话题、或又输入了新文字，
+       * 都不许被这次回执覆盖。
+       */
+      const draftKeeper = chatDraftKeeperFor(this as object);
+      const draftKeyAtSend = draftKeeper?.currentKey ?? "";
+      // 清空输入框会引起一次「删草稿」的防抖写入：在拿到受理结果之前先按住它
+      draftKeeper?.holdForSend();
       const queued = this.turnRunning;
       this.pushUser(message);
       const optimistic = this.messages[this.messages.length - 1];
@@ -1919,6 +1961,8 @@ export const useSessionStore = defineStore("session", {
             this.turnPhase = "waiting";
           }
         }
+        // 受理成功：这条消息已经交给后端，对应的草稿可以删了
+        draftKeeper?.discardAfterSend(draftKeyAtSend);
         return true;
       } catch (e) {
         this.lastError = (e as Error).message;
@@ -1947,3 +1991,291 @@ export const useSessionStore = defineStore("session", {
     },
   },
 });
+
+/* ============================================================================
+ * 聊天草稿的持久化（契约 §9.4）
+ *
+ * 为什么要包一层 useSessionStore：
+ * - 草稿的读写入口是 `session.draft`：Composer.vue（对话页）与 ChatDock.vue（悬浮聊天）
+ *   都用 v-model 直接读写它。**不能**把它改成 getter/方法（会打断这两个既有组件），
+ *   也**不能**再建一份草稿状态（§9.4 要求单一写者），所以持久化只能挂在 store 上。
+ * - 没有任何一个 action 会在「每次击键」时被调用，所以草稿与本机存储的连线由 watch 建立。
+ *   这一层只加草稿持久化，**不新建事件订阅、不碰轮次管理、不发消息**。
+ *
+ * 单一写者：同一 pinia 实例的所有草稿读写都经过同一个保存器（WeakMap 按实例存放，
+ * 测试里同时建多个 pinia 也不会互相串）。
+ * ========================================================================== */
+
+/** 聊天草稿防抖：停下输入多久后落盘（不阻塞输入，也不至于刷新丢一大段） */
+const CHAT_DRAFT_DEBOUNCE_MS = 400;
+
+/** 保存器需要的最小 store 形状（只管草稿与本机存储状态，不碰会话的网络能力） */
+interface SessionDraftHost {
+  draft: string;
+  currentTopicId: string | null;
+  draftSaveStatus: "idle" | "saving" | "saved" | "error";
+  draftSaveError: string | null;
+}
+
+/** 话题 → 存储键；话题还没确定（currentTopicId 为 null）时用占位键，等话题确定后迁移。 */
+function chatDraftKeyFor(topicId: string | null): string {
+  return draftStorageKey("chat", topicId || UNBOUND_DRAFT_ID);
+}
+
+function createChatDraftKeeper(host: SessionDraftHost) {
+  const scope = effectScope();
+  /** 防抖计时器（null = 没有待写内容） */
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** 当前草稿绑定的存储键（始终有效：话题未知时是占位键） */
+  let key = chatDraftKeyFor(host.currentTopicId);
+  /** 本保存器上单调递增的写入序号：迟到的写入用它判断自己是否已经过期 */
+  let seq = 0;
+  /** 当前键上最后一次**成功写进存储**的正文（null = 存储里还没有记录） */
+  let savedText: string | null = null;
+  /** 正在把存储内容装回输入框：这次赋值不算用户输入，不该再写一次 */
+  let loadingStored = false;
+
+  function setStatus(status: SessionDraftHost["draftSaveStatus"], error: string | null): void {
+    host.draftSaveStatus = status;
+    host.draftSaveError = error;
+  }
+
+  function cancelTimer(): void {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  /**
+   * 真正写一次存储。atSeq 对应这次写入的内容：如果期间又有了更新的输入
+   * （seq 已经往前走），这次写入整段丢弃 —— 旧内容不许覆盖新内容。
+   */
+  function commit(atSeq: number, atKey: string, text: string): void {
+    // 已经有更新的写入在排队：这次整段丢弃，状态由那次写入决定
+    if (isStaleReceipt(atSeq, seq)) return;
+    if (atKey !== key) {
+      // 防抖期间话题被换掉：这段内容属于旧键，不能写进新键。
+      // 但也不能把状态永远停在「保存中」——按当前键重新安排一次保存。
+      armTimer();
+      return;
+    }
+    if (isBlankText(text)) {
+      // 空草稿就是「没有草稿」：删掉记录，不留一条看着像有草稿的空记录
+      removeDraft(atKey);
+      savedText = null;
+      setStatus("idle", null);
+      return;
+    }
+    const result = writeDraft(atKey, text, atSeq);
+    if (result.ok) {
+      savedText = text;
+      setStatus("saved", null);
+      return;
+    }
+    // 保存失败：内存里的文字一个字都不动，状态如实说失败（绝不说「已保存」）
+    setStatus("error", result.error ?? "草稿没有保存成功（原因未知）");
+  }
+
+  /** 记下「输入变了」，等防抖到点再写 */
+  function armTimer(): void {
+    seq += 1;
+    const atSeq = seq;
+    const atKey = key;
+    cancelTimer();
+    setStatus("saving", null);
+    timer = setTimeout(() => {
+      timer = null;
+      commit(atSeq, atKey, host.draft);
+    }, CHAT_DRAFT_DEBOUNCE_MS);
+  }
+
+  /** 把存储里的草稿装回输入框（这次赋值不是用户输入，不该触发保存） */
+  function loadInto(text: string): void {
+    loadingStored = true;
+    try {
+      host.draft = text;
+    } finally {
+      loadingStored = false;
+    }
+  }
+
+  /**
+   * 首次绑定：把当前键上**已经存好**的草稿装回输入框（刷新 / 关闭重开后的恢复）。
+   *
+   * 为什么单独做这一步：话题没有变化时 bind() 不会被调用（例如整个会话里
+   * currentTopicId 一直是 null，草稿存在占位键上），只等 bind 就永远恢复不出来。
+   */
+  function restore(): void {
+    if (!isBlankText(host.draft)) return; // 用户已经在输入了：绝不覆盖
+    const stored = readDraft(key);
+    if (!stored || !stored.text) return;
+    savedText = stored.text;
+    seq = stored.seq;
+    loadInto(stored.text);
+    setStatus("saved", null);
+  }
+
+  /** 输入变化（由 watch 调用） */
+  function onDraftChanged(): void {
+    if (loadingStored) return;
+    armTimer();
+  }
+
+  /** 立即落盘（不等防抖）：离开编辑器 / 页面隐藏 / 切换话题之前用 */
+  function flushNow(): void {
+    cancelTimer();
+    if (host.draft === savedText) return;
+    seq += 1;
+    commit(seq, key, host.draft);
+  }
+
+  /**
+   * 话题变了：先把旧键落盘，再装载新键的草稿。
+   *
+   * 话题还没确定时（占位键）写的字会跟着用户进入这个话题 —— 既不丢，
+   * 也不会被搬到用户后来切换到的**别的**话题。
+   */
+  function bind(topicId: string | null): void {
+    const nextKey = chatDraftKeyFor(topicId);
+    if (nextKey === key) return;
+    const previousKey = key;
+    const previousUnbound = previousKey === chatDraftKeyFor(null);
+    const buffer = host.draft;
+    flushNow();
+    const stored = readDraft(nextKey);
+    const carry = previousUnbound
+      ? (isBlankText(buffer) ? (readDraft(previousKey)?.text ?? "") : buffer)
+      : "";
+    key = nextKey;
+    savedText = stored ? stored.text : null;
+    seq = stored?.seq ?? 0;
+    // 用户刚打的字比存储里的旧草稿新：以用户输入为准，不拿旧稿盖掉它
+    const text = !isBlankText(carry) ? carry : (stored ? stored.text : "");
+    loadInto(text);
+    // 从存储里读回来的草稿：它本来就是保存好的，状态如实说「已保存」
+    if (stored && stored.text) setStatus("saved", null);
+    if (!isBlankText(carry) && carry !== savedText) {
+      seq += 1;
+      commit(seq, nextKey, carry);
+    }
+    if (previousUnbound) removeDraft(previousKey);
+    // 存储不可用要立刻说清，而不是等用户打了字再发现
+    const available = draftStorageAvailable();
+    if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
+  }
+
+  /**
+   * 发送请求在飞：先按住「清空输入框 → 删草稿」的防抖写入。
+   * 受理成功才删（discardAfterSend），失败时草稿必须原样还在。
+   */
+  function holdForSend(): void {
+    cancelTimer();
+    // 输入框已经清空（消息正在飞）：这一小段时间没有草稿在等保存，别把状态停在「保存中」。
+    // 存好的草稿先留着 —— 受理成功才删，失败还要原样恢复。
+    if (isBlankText(host.draft)) setStatus("idle", null);
+  }
+
+  /** 受理成功：删掉这条消息对应的草稿；用户后来输入的新文字一个字都不动。 */
+  function discardAfterSend(sentKey: string): void {
+    if (!sentKey) return;
+    if (sentKey !== key) {
+      // 发送期间换了话题：只删属于那条消息的键，当前草稿不受影响
+      removeDraft(sentKey);
+      return;
+    }
+    if (!isBlankText(host.draft)) {
+      // 发送期间用户又打了字：那是更新的草稿，重新安排保存
+      armTimer();
+      return;
+    }
+    cancelTimer();
+    // 序号 +1：任何还在等防抖的旧写入都判定为过期，不许把草稿又写回去
+    seq += 1;
+    removeDraft(key);
+    savedText = "";
+    setStatus("idle", null);
+  }
+
+  /** 保存失败后的重试：立刻重写一次，不等防抖 */
+  function retry(): void {
+    cancelTimer();
+    seq += 1;
+    commit(seq, key, host.draft);
+  }
+
+  return {
+    scope,
+    get currentKey(): string {
+      return key;
+    },
+    bind,
+    restore,
+    onDraftChanged,
+    flushNow,
+    holdForSend,
+    discardAfterSend,
+    retry,
+  };
+}
+
+type ChatDraftKeeper = ReturnType<typeof createChatDraftKeeper>;
+
+/**
+ * 保存器挂在 store 实例上的符号键。
+ *
+ * 为什么不用 WeakMap 按 store 对象取：Pinia 的 store 是 reactive 代理，而 action 里的
+ * `this` 在真实浏览器里并不保证与 `useSessionStore()` 返回的那个代理是**同一个对象**
+ * （实测：动作里读实例属性正常，WeakMap.get(this) 却是 undefined）。符号属性走的是
+ * 对象本身，代理与原始对象都能取到同一个保存器 —— 单一写者不会因此变成两个。
+ */
+const CHAT_DRAFT_KEEPER: unique symbol = Symbol("qio.chatDraftKeeper");
+
+function chatDraftKeeperFor(store: object): ChatDraftKeeper | undefined {
+  return (store as { [CHAT_DRAFT_KEEPER]?: ChatDraftKeeper })[CHAT_DRAFT_KEEPER];
+}
+
+/**
+ * 会话 store 的取用入口：对外仍是同一个名字、同一份状态、同一套行为，
+ * 只在**第一次取用时**给这个实例装上聊天草稿的持久化（watch 草稿与话题、防抖落盘、离开时落盘）。
+ */
+export function useSessionStore(): ReturnType<typeof sessionStoreDefinition> {
+  const store = sessionStoreDefinition();
+  if (!chatDraftKeeperFor(store)) {
+    const keeper = createChatDraftKeeper(store as unknown as SessionDraftHost);
+    Object.defineProperty(store, CHAT_DRAFT_KEEPER, {
+      value: keeper,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+
+    keeper.scope.run(() => {
+      watch(() => (store as unknown as SessionDraftHost).draft, () => keeper.onDraftChanged(), {
+        flush: "sync",
+      });
+      watch(
+        () => (store as unknown as SessionDraftHost).currentTopicId,
+        (topicId: string | null) => keeper.bind(topicId),
+        { flush: "sync" },
+      );
+    });
+    // 刷新 / 关闭重开：先把本机存好的草稿装回输入框（不发送、不动板面）
+    keeper.restore();
+    // 打开应用时就检查一次存储可用性：不可用要能说清，而不是等用户打完字才发现
+    const available = draftStorageAvailable();
+    if (!available.ok) {
+      store.draftSaveStatus = "error";
+      store.draftSaveError = available.error ?? "本地存储不可用，草稿无法保存";
+    }
+    if (typeof window !== "undefined") {
+      // 正常离开 / 关闭页面：本机存储是同步写，来得及把还没到防抖时间的内容落盘
+      window.addEventListener("pagehide", () => keeper.flushNow());
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") keeper.flushNow();
+      });
+    }
+  }
+  return store;
+}
+
