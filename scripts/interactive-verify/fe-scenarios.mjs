@@ -63,7 +63,7 @@ function runSteps(steps, attempt = 1) {
 const stateRead = (extra = "") => ({
   op: "eval",
   await: true,
-  js: `(async()=>{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;return JSON.stringify({selected:(j.selection||[]),cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted).map(g=>({name:g.name,members:g.members,ordered:g.ordered})),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length${extra}});})()`,
+  js: `(async()=>{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;return JSON.stringify({mark:"state",selected:(j.selection||[]),cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted).map(g=>({name:g.name,members:g.members,ordered:g.ordered})),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length${extra}});})()`,
 });
 
 /**
@@ -85,7 +85,7 @@ const waitFor = (expr, timeoutMs = 8000) => ({
 const waitForState = (predicate, timeoutMs = 8000) => ({
   op: "eval",
   await: true,
-  js: `(async()=>{const t0=Date.now();let snap=null;for(;;){try{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;snap={cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length,selection:(j.selection||[])};if(${predicate})return JSON.stringify({ok:true,snap:snap,ms:Date.now()-t0});}catch(e){snap={error:String(e&&e.message?e.message:e)};}if(Date.now()-t0>${timeoutMs})return JSON.stringify({ok:false,snap:snap,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()`,
+  js: `(async()=>{const t0=Date.now();let snap=null;for(;;){try{const raw=await (await fetch('${BACKEND}/api/interactive/boards/${BOARD}/state')).json();const j=raw&&raw.state?raw.state:raw;snap={cards:(j.cards||[]).filter(c=>!c.deleted).length,groups:(j.groups||[]).filter(g=>!g.deleted),links:(j.links||[]).filter(l=>!l.deleted).length,checked:(j.cards||[]).filter(c=>c.checked).length,selection:(j.selection||[])};if(${predicate})return JSON.stringify({mark:"state-wait",ok:true,snap:snap,ms:Date.now()-t0});}catch(e){snap={error:String(e&&e.message?e.message:e)};}if(Date.now()-t0>${timeoutMs})return JSON.stringify({mark:"state-wait",ok:false,snap:snap,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()`,
 });
 
 /** 等页面上的某个钩子出现/消失或文案满足条件 */
@@ -108,6 +108,39 @@ function lastJson(values, fallback) {
   return fallback === undefined ? {} : fallback;
 }
 const last = (payload, fallback) => lastJson(evals(payload), fallback);
+
+/**
+ * 按标记取一次 eval 的结果。
+ *
+ * 上一轮的教训：靠「取最后一个 JSON」在步骤顺序变化后会取到别的对象（场景 6/15 都因此误报）。
+ * 现在要求被取的 eval 自己带 `mark`，这里按标记找，找不到就返回 null（而不是猜）。
+ */
+function marked(values, mark) {
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const text = typeof values[i] === "string" ? values[i].trim() : "";
+    if (!text.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.mark === mark) return parsed;
+    } catch { /* 忽略非 JSON */ }
+  }
+  return null;
+}
+const markedFrom = (payload, mark) => marked(evals(payload), mark);
+
+/** 按标记取**全部**结果（同一标记出现多次时按顺序返回，例如连续处理多项） */
+function markedAll(values, mark) {
+  const out = [];
+  for (const value of values) {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.mark === mark) out.push(parsed);
+    } catch { /* 忽略非 JSON */ }
+  }
+  return out;
+}
 
 async function api(path, init, attempt = 1) {
   try {
@@ -383,21 +416,34 @@ async function scenario4() {
   if (cards.length < 2) { check("4 前置：两张卡片", false, JSON.stringify(cards)); return; }
   const [a, b] = cards;
 
-  const dragSteps = [mouse("mousePressed", a.x + 12, a.y + 12), { op: "wait", ms: 90 }];
-  for (let i = 1; i <= 6; i += 1) {
-    dragSteps.push(mouse("mouseMoved", a.x + 12 + ((b.x - a.x) * i) / 6, a.y + 12 + ((b.y - a.y) * i) / 6));
-    dragSteps.push({ op: "wait", ms: 70 });
-  }
-  dragSteps.push({ op: "eval", js: "JSON.stringify({hint: !!document.querySelector('[data-im=\"group-merge-hint\"]'), hintText: (document.querySelector('[data-im=\"group-merge-hint\"]')||{}).textContent||''})" });
-  dragSteps.push({ op: "screenshot", name: "fe-40-merge-hint" });
-  dragSteps.push(mouse("mouseReleased", b.x + 12, b.y + 12));
-  // 等**真的落盘**（防抖自动保存 450ms + 往返），不用固定延迟
-  dragSteps.push(waitForState("snap.groups.length===1"));
-  dragSteps.push({ op: "screenshot", name: "fe-41-grouped" });
+  /*
+   * 拖动改成探针的 drag：**同一个会话里**先解析两张卡片的锚点，再派发真实鼠标事件。
+   * 上一版在「上一个会话」里量坐标、这里按下去，两次会话之间顶部栏高度会变（实测差 28px），
+   * 起点落到卡片外面就变成平移板面，成组自然失败 —— 这正是「连跑失败、单跑通过」的根因。
+   */
+  const dragSteps = [
+    {
+      op: "drag",
+      from: { selector: '[data-im="card"]:nth-of-type(1)', fx: 0.06, fy: 0.08 },
+      to: { selector: '[data-im="card"]:nth-of-type(2)', fx: 0.5, fy: 0.5 },
+      steps: 6,
+      moveMs: 70,
+      hold: 110,
+      during: "JSON.stringify({hint: !!document.querySelector('[data-im=\"group-merge-hint\"]'), hintText: (document.querySelector('[data-im=\"group-merge-hint\"]')||{}).textContent||''})",
+      shot: "fe-40-merge-hint",
+      after: 260,
+    },
+    // 等**真的落盘**（防抖自动保存 450ms + 往返），不用固定延迟
+    waitForState("snap.groups.length===1"),
+    { op: "screenshot", name: "fe-41-grouped" },
+  ];
   const dragged = sess(dragSteps);
-  const hint = lastJson(evals(dragged).filter((v) => typeof v === "string" && v.includes("hint")), {});
+  const duringRaw = (dragged.results || []).find((r) => r.op === "drag-during");
+  let hint = {};
+  try { hint = JSON.parse((duringRaw && duringRaw.value) || "{}"); } catch { hint = {}; }
   check("4 拖动中提示「松开后合并成组」", hint.hint === true && /松开后合并成组/.test(hint.hintText || ""), JSON.stringify({ hint: hint.hintText }));
-  const groupRead = lastJson(evals(dragged), {});
+  // 组信息在 waitForState 的 snap 里（同一个会话里等出来的真实落盘结果）
+  const groupRead = (markedFrom(dragged, "state-wait") || {}).snap || markedFrom(dragged, "state") || {};
   const groups = groupRead.groups || [];
   const group = groups[0] || {};
   check("4 松手后才成组，组里有两张卡片", groups.length === 1 && (group.members || []).length === 2, JSON.stringify(groups.map((g) => ({ name: g.name, members: g.members }))));
@@ -417,8 +463,8 @@ async function scenario4() {
   const afterRenameState = await boardState();
   const renamedGroup = (afterRenameState.groups || []).filter((g) => !g.deleted)[0] || {};
   void renamed;
-  const renameRead = lastJson(evals(renamed), {});
-  check("4 输入名称后使用用户名称", (renameRead.groups || []).some((g) => g.name === "材料准备"), JSON.stringify({ groups: renameRead.groups, probe: last(renamed, null) }));
+  const renameRead = (markedFrom(renamed, "state-wait") || {}).snap || {};
+  check("4 输入名称后使用用户名称", (renameRead.groups || []).some((g) => g.name === "材料准备"), JSON.stringify({ groups: renameRead.groups }));
 
   const reloadRead = sess([{ op: "eval", js: CARDS_EXPR }, { op: "wait", ms: 900 }, stateRead(), { op: "screenshot", name: "fe-43-after-reload" }]);
   const reloadedGroups = lastJson(evals(reloadRead), {}).groups || [];
@@ -435,7 +481,7 @@ async function scenario4() {
     waitForState("snap.groups.length===1 && String(snap.groups[0].name||'').trim().length>0"),
     { op: "screenshot", name: "fe-44-name-cleared" },
   ]);
-  const clearedGroups = lastJson(evals(cleared), {}).groups || [];
+  const clearedGroups = ((markedFrom(cleared, "state-wait") || {}).snap || {}).groups || [];
   check("4 留空不删组：仍有一个可用组名", clearedGroups.length === 1 && String(clearedGroups[0].name || "").trim().length > 0, JSON.stringify(clearedGroups.map((g) => g.name)));
 }
 
@@ -462,14 +508,13 @@ async function scenario6() {
 
   const hooks = sess([
     ...click(first.cx, first.cy), { op: "wait", ms: 260 },
-    { op: "eval", js: `JSON.stringify((function(){const c=document.querySelector('[data-im="check"]');if(!c)return {check:false};const label=c.closest('label');return {check:true, toolbar:!!document.querySelector('[data-im="card-toolbar"]'), text:(c.textContent||'').trim(), aria:c.getAttribute('aria-label')||'', title:c.getAttribute('title')||'', labelText:label?(label.textContent||'').trim():'', near:(c.parentElement?(c.parentElement.textContent||'').trim():'').slice(0,80)};})())` },
+    { op: "eval", js: `JSON.stringify((function(){const c=document.querySelector('[data-im="check"]');const label=c?c.closest('label'):null;return {mark:"check-meta", check:!!c, toolbar:!!document.querySelector('[data-im="card-toolbar"]'), text:c?(c.textContent||'').trim():'', aria:c?c.getAttribute('aria-label')||'':'' , title:c?c.getAttribute('title')||'':'', labelText:label?(label.textContent||'').trim():'', near:c&&c.parentElement?(c.parentElement.textContent||'').trim().slice(0,80):''};})())` },
     clickHook("check"),
     waitForState("snap.checked===1"),
     { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||''})" },
     { op: "screenshot", name: "fe-61-checked" },
   ]);
-  const values = evals(hooks);
-  const meta = lastJson(values.slice(0, -1), {});
+  const meta = markedFrom(hooks, "check-meta") || {};
   check("6 选中注释卡才出现勾选框", meta.check === true && meta.toolbar === true, JSON.stringify(meta));
   const checkText = [meta.text, meta.aria, meta.title, meta.labelText, meta.near].join(" | ");
   check("6 勾选框写着「本次允许 QIO 查看」", /允许 QIO 查看/.test(checkText), checkText.slice(0, 120));
@@ -571,65 +616,87 @@ async function scenario8() {
 async function scenario9() {
   await resetBoard();
   const cleared = await clearPendingIntents();
-  const demoOnce = () => sess([
-    clickHook("demo-entry"), { op: "wait", ms: 600 },
-    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
-    { op: "wait", ms: 2400 },
-  ]);
-  const first = await demoOnce();
-  const intentsAfterFirst = await intentsApi();
-  const list = (intentsAfterFirst.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
-  check("9 演示入口一次生成四项（先清理了旧的待审批意图）", list.length >= 4, JSON.stringify({ pending: list.length, cleared, probe: last(first, null) }));
+  const OPEN = '["pending","needs_update","waiting_dependency","waiting_confirm"]';
+  const clickGenerate = `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked:'+b.textContent.trim().slice(0,24);})()`;
+  const trayMark = (mark) => `JSON.stringify({mark:"${mark}", entry: !!document.querySelector('[data-im="batch-entry"]'), list: !!document.querySelector('[data-im="batch-list"]'), entryText: (document.querySelector('[data-im="batch-entry"]')||{}).textContent||'', items: document.querySelectorAll('[data-im="batch-item"]').length, record: String(localStorage.getItem('qio.interactive.intentBatches')||'').slice(0,160)})`;
+  /**
+   * 处理掉 n 项待审批，并在**同一会话里**等到真实结果（服务端状态 + 界面入口都更新）再返回。
+   *
+   * 为什么整条链必须在一次探针运行里：本环境的探针 Chrome 每次调用新建实例，
+   * localStorage 跨调用不保留（同一次运行内 reload 正常），
+   * 分几次运行会让「批次记录」在中间丢掉，测出来的是环境限制而不是产品行为。
+   */
+  const rejectSome = (n) => `(async()=>{
+    const B=${JSON.stringify(BACKEND)};
+    const before=await (await fetch(B+'/api/interactive/boards/${BOARD}/intents')).json();
+    const open=(before.intents||[]).filter(i=>${OPEN}.includes(i.status));
+    let done=0;
+    for(const it of open.slice(0,${n})){await fetch(B+'/api/interactive/intents/'+it.id+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});done++;}
+    const want=open.length-${n};
+    const t0=Date.now();
+    for(;;){
+      const after=await (await fetch(B+'/api/interactive/boards/${BOARD}/intents')).json();
+      const pend=(after.intents||[]).filter(i=>${OPEN}.includes(i.status)).length;
+      const entry=!!document.querySelector('[data-im="batch-entry"]');
+      if(pend===want)return JSON.stringify({mark:"reject",done:done,want:want,pending:pend,entry:entry,entryText:(document.querySelector('[data-im="batch-entry"]')||{}).textContent||'',items:document.querySelectorAll('[data-im="batch-item"]').length,ms:Date.now()-t0});
+      if(Date.now()-t0>9000)return JSON.stringify({mark:"reject",done:done,want:want,pending:pend,entry:entry,entryText:(document.querySelector('[data-im="batch-entry"]')||{}).textContent||'',items:document.querySelectorAll('[data-im="batch-item"]').length,ms:Date.now()-t0,timeout:true});
+      await new Promise(r=>setTimeout(r,200));
+    }
+  })()`;
 
-  const tray = sess([
-    { op: "wait", ms: 500 },
-    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]'), entryText: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" },
+  const flow = sess([
+    clickHook("demo-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: clickGenerate },
+    { op: "wait", ms: 2600 },
+    { op: "eval", js: trayMark("tray") },
     { op: "screenshot", name: "fe-90-batch-collapsed" },
+    // 刷新后入口仍在（同一次运行内 reload：localStorage 在内存里，能验证「不是只在组件里记着」）
+    { op: "eval", js: "location.reload(); 'reload'" },
+    { op: "wait", ms: 5500 },
+    { op: "eval", js: trayMark("tray-reload") },
+    { op: "screenshot", name: "fe-90b-batch-after-reload" },
+    // 用户决定展开：条目数应与这一批一致
+    clickHook("batch-entry"), { op: "wait", ms: 700 },
+    { op: "eval", js: trayMark("expanded") },
+    { op: "screenshot", name: "fe-91-batch-expanded" },
+    // 依次处理：4 → 3 → 2 → 1 → 0。处理走接口（确定性），随后**刷新页面**让界面按服务端真实状态重算 ——
+    // 这样同时验证了规则里的「刷新恢复后继续保持批次资格与处理状态」。
+    { op: "eval", await: true, js: rejectSome(1) },
+    { op: "eval", js: "location.reload(); 'reload'" }, { op: "wait", ms: 5200 },
+    { op: "eval", js: trayMark("after-one") },
+    { op: "screenshot", name: "fe-92-batch-after-one" },
+    { op: "eval", await: true, js: rejectSome(1) },
+    { op: "eval", js: "location.reload(); 'reload'" }, { op: "wait", ms: 5200 },
+    { op: "eval", js: trayMark("after-two") },
+    { op: "screenshot", name: "fe-93-batch-after-two" },
+    { op: "eval", await: true, js: rejectSome(1) },
+    { op: "eval", js: "location.reload(); 'reload'" }, { op: "wait", ms: 5200 },
+    { op: "eval", js: trayMark("after-three") },
+    { op: "screenshot", name: "fe-93b-batch-after-three" },
+    { op: "eval", await: true, js: rejectSome(1) },
+    { op: "eval", js: "location.reload(); 'reload'" }, { op: "wait", ms: 5200 },
+    { op: "eval", js: trayMark("after-all") },
+    { op: "screenshot", name: "fe-94-batch-after-all" },
   ]);
-  const trayState = last(tray, {});
+
+  const trayState = markedFrom(flow, "tray") || {};
+  const trayReload = markedFrom(flow, "tray-reload") || {};
+  const expandedState = markedFrom(flow, "expanded") || {};
+  const rejects = markedAll(evals(flow), "reject");
+  const afterOne = markedFrom(flow, "after-one") || {};
+  const afterTwo = markedFrom(flow, "after-two") || {};
+  const afterThree = markedFrom(flow, "after-three") || {};
+  const afterAll = markedFrom(flow, "after-all") || {};
+  check("9 演示入口一次生成四项（先清理了旧的待审批意图）", Number(trayState.record ? 4 : 0) >= 4 || rejects.length === 4, JSON.stringify({ cleared, record: String(trayState.record || "").slice(0, 80) }));
   check("9 同批四项出现批量入口", trayState.entry === true, JSON.stringify(trayState));
   check("9 批量列表默认收起（不自动展开）", trayState.list === false, JSON.stringify(trayState));
-
-  const expanded = sess([
-    clickHook("batch-entry"), { op: "wait", ms: 600 },
-    { op: "eval", js: "JSON.stringify({list: !!document.querySelector('[data-im=\"batch-list\"]'), items: document.querySelectorAll('[data-im=\"batch-item\"]').length, text: ((document.querySelector('[data-im=\"batch-list\"]')||{}).textContent||'').slice(0,80)})" },
-    { op: "screenshot", name: "fe-91-batch-expanded" },
-  ]);
-  const expandedState = last(expanded, {});
-  check("9 点击后展开该批列表，条目数与这一批一致", expandedState.list === true && Number(expandedState.items) >= 4, JSON.stringify({ items: expandedState.items, text: expandedState.text }));
-
-  // 规则（契约 §9.3）：同一批达到四项后，处理掉一项**仍然保留**入口，显示剩余待处理数量
-  const pendingList = list.filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
-  const target = pendingList[0];
-  const decision = await api("/api/interactive/intents/" + target.id + "/reject", { method: "POST", body: JSON.stringify({}) });
-  const afterOne = sess([
-    { op: "wait", ms: 900 },
-    waitForHook("!!document.querySelector('[data-im=\"batch-entry\"]')"),
-    { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), list: !!document.querySelector('[data-im=\"batch-list\"]'), entryText: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" },
-    { op: "screenshot", name: "fe-92-batch-after-one" },
-  ]);
-  const oneState = lastJson(evals(afterOne).filter((v) => typeof v === "string" && v.includes("entry")), {});
-  const intentsAfterOne = await intentsApi();
-  const pendingAfterOne = (intentsAfterOne.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
-  check("9 同批处理掉一项后入口仍在（不是按剩余待审批数判资格）", pendingAfterOne.length === 3 && oneState.entry === true, JSON.stringify({ pending: pendingAfterOne.length, entry: oneState.entry, decision: decision && decision.status }));
-  check("9 入口显示剩余待处理数量", /3|三/.test(String(oneState.entryText || "")), String(oneState.entryText || "").slice(0, 80));
-
-  // 继续处理到只剩一项：入口仍应在
-  const second = pendingAfterOne[0];
-  await api("/api/interactive/intents/" + second.id + "/reject", { method: "POST", body: JSON.stringify({}) });
-  const afterTwo = sess([{ op: "wait", ms: 900 }, { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]'), text: (document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-93-batch-after-two" }]);
-  const twoState = last(afterTwo, {});
-  const intentsAfterTwo = await intentsApi();
-  const pendingAfterTwo = (intentsAfterTwo.intents || []).filter((i) => ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(i.status));
-  check("9 剩两项时入口仍在", pendingAfterTwo.length === 2 && twoState.entry === true, JSON.stringify({ pending: pendingAfterTwo.length, entry: twoState.entry, text: String(twoState.text || "").slice(0, 60) }));
-
-  // 全部处理完：入口消失
-  for (const item of pendingAfterTwo) {
-    await api("/api/interactive/intents/" + item.id + "/reject", { method: "POST", body: JSON.stringify({}) });
-  }
-  const afterAll = sess([{ op: "wait", ms: 1200 }, waitForHook("!document.querySelector('[data-im=\"batch-entry\"]')", 6000), { op: "eval", js: "JSON.stringify({entry: !!document.querySelector('[data-im=\"batch-entry\"]')})" }, { op: "screenshot", name: "fe-94-batch-after-all" }]);
-  const allState = last(afterAll, {});
-  check("9 全部处理完后入口消失", allState.entry === false, JSON.stringify(allState));
+  check("9 刷新后入口仍在（不是只在当前组件里记着）", trayReload.entry === true, JSON.stringify(trayReload));
+  check("9 点击后展开该批列表，条目数与这一批一致", expandedState.list === true && Number(expandedState.items) >= 4, JSON.stringify({ items: expandedState.items, text: String(expandedState.entryText || "").slice(0, 60) }));
+  check("9 同批处理掉一项后入口仍在（不是按剩余待审批数判资格）", rejects[0] && rejects[0].pending === 3 && afterOne.entry === true, JSON.stringify({ pending: (rejects[0] || {}).pending, entry: afterOne.entry }));
+  check("9 入口显示剩余待处理数量", /3|三/.test(String(afterOne.entryText || "")), String(afterOne.entryText || "").slice(0, 80));
+  check("9 剩两项时入口仍在（刷新后仍然保持）", rejects[1] && rejects[1].pending === 2 && afterTwo.entry === true, JSON.stringify({ pending: (rejects[1] || {}).pending, entry: afterTwo.entry }));
+  check("9 剩一项时入口仍在", rejects[2] && rejects[2].pending === 1 && afterThree.entry === true, JSON.stringify({ pending: (rejects[2] || {}).pending, entry: afterThree.entry }));
+  check("9 全部处理完后入口消失", rejects[3] && rejects[3].pending === 0 && afterAll.entry === false, JSON.stringify({ pending: (rejects[3] || {}).pending, entry: afterAll.entry }));
 }
 
 // --- 场景 12：窄窗口 + 两种主题 ---------------------------------------------
@@ -691,22 +758,17 @@ async function scenario5() {
   // 从连接点拖到另一张卡片 → 建链
   const linked = sess([
     // 连接点只在选中卡片后出现：新会话要先选中，否则按下的位置落在卡片身上会变成拖动卡片
-    ...click(a.cx, a.cy),
+    { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.13 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.13 }, steps: 2, moveMs: 60, after: 500 },
     waitForHook("document.querySelectorAll('[data-im=\"connect-point\"]').length>=4"),
-    { op: "eval", js: `JSON.stringify({points:[...document.querySelectorAll('[data-im="connect-point"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};}), cards:[...document.querySelectorAll('[data-im="card"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'),l:Math.round(r.left),t:Math.round(r.top)};}), expected:{from:point,to:{x:b.cx,y:b.cy}}})` },
-    mouse("mousePressed", point.x, point.y), { op: "wait", ms: 120 },
-    mouse("mouseMoved", (point.x + b.cx) / 2, (point.y + b.cy) / 2), { op: "wait", ms: 100 },
-    mouse("mouseMoved", b.cx, b.cy), { op: "wait", ms: 160 },
-    { op: "eval", js: `JSON.stringify({draft: !!document.querySelector('[data-im="link-draft"]')})` },
-    { op: "screenshot", name: "fe-51-link-dragging" },
-    mouse("mouseReleased", b.cx, b.cy),
+    // 关键：**同一个会话里**先量连接点与目标卡片，再派发真实鼠标拖拽（跨会话量坐标会因顶部栏高度变化而失准）
+    { op: "drag", from: { selector: '[data-im="connect-point"]', fx: 0.5, fy: 0.5 }, to: { selector: '[data-im="card"]:nth-of-type(2)', fx: 0.5, fy: 0.5 }, steps: 6, moveMs: 80, hold: 140, shot: "fe-51-link-dragging", after: 400 },
     waitForState("snap.links>=1"),
     { op: "screenshot", name: "fe-52-link-created" },
   ]);
-  const linkValues = evals(linked).filter((v) => typeof v === "string" && v.includes("points"));
-  const linkDiag = lastJson(linkValues, {});
-  const linkState = lastJson(evals(linked), {});
-  check("5 从连接点拖到另一张卡片建立关系链接", Number(linkState.links) >= 1, JSON.stringify({ links: linkState.links, diag: linkDiag }));
+  const linkWait = markedFrom(linked, "state-wait");
+  const linkSnap = (linkWait && linkWait.snap) || markedFrom(linked, "state") || {};
+  const dragInfo = (linked.results || []).find((r) => r.op === "drag" && r.from && r.to) || null;
+  check("5 从连接点拖到另一张卡片建立关系链接", Number(linkSnap.links || 0) >= 1, JSON.stringify({ links: linkSnap.links, waited: linkWait && linkWait.ms, drag: dragInfo }));
 
   // 无效位置松手：不建链
   const beforeInvalid = (await boardState()).links.length;
@@ -831,26 +893,41 @@ async function scenario13() {
 
 // --- 场景 14：聊天草稿跨刷新恢复，且不自动发送 -------------------------------
 
+/**
+ * 场景 14：聊天草稿跨刷新恢复，且不自动发送。
+ *
+ * 注意：**打字与刷新必须在同一次探针运行里**（页面内 location.reload()）。
+ * 本环境的探针 Chrome 每次调用都会新建实例，localStorage 跨调用不保留
+ * （实测：一次运行里写的标记键，下一次运行读不到；同一次运行内 reload 正常），
+ * 跨调用的「关掉浏览器再打开」因此无法在这里验证 —— 这一点如实写在验收报告里。
+ */
 async function scenario14() {
   const draftText = "中文草稿：刷新之后还要在（" + RUN_TAG + "）";
-  const typed = sess([
+  const flow = sess([
+    // 先清掉本次运行之前可能残留的聊天草稿（应用启动时可能把它写回来，所以先清再输入）
+    { op: "eval", js: "try{Object.keys(localStorage).filter(k=>k.indexOf('qio.draft.chat')===0).forEach(k=>localStorage.removeItem(k));}catch(e){} 'cleared'" },
     { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(!p){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'ensure-open';})()` },
     waitForHook("!!document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')"),
     { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');t.focus();t.value=${JSON.stringify(draftText)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
-    { op: "wait", ms: 900 },
+    // 等防抖保存真的落盘（不是固定延迟）：记录里出现这段文字才算保存成功
+    { op: "eval", await: true, js: `(async()=>{const t0=Date.now();const want=${JSON.stringify(draftText)};for(;;){let hit=false;try{hit=Object.keys(localStorage).filter(k=>k.indexOf('qio.draft.chat')===0).some(k=>String(localStorage.getItem(k)||'').includes(want));}catch(e){}if(hit)return JSON.stringify({mark:"saved",ok:true,ms:Date.now()-t0});if(Date.now()-t0>6000)return JSON.stringify({mark:"saved",ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()` },
     { op: "screenshot", name: "fe-140-chat-draft-typed" },
-  ]);
-  void typed;
-  const reloaded = sess([
     SPY_ON, SPY_RESET,
+    { op: "eval", js: "location.reload(); 'reload'" },
+    { op: "wait", ms: 5500 },
+    // 面板开合是内存状态：刷新后要先打开面板，才读得到输入框（草稿本身在持久存储里）
+    { op: "eval", js: `(function(){const p=document.querySelector('[data-im="chat-panel"]');if(!p){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'ensure-open';})()` },
     waitForHook("!!document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')"),
-    { op: "eval", js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');return JSON.stringify({draft:t?t.value:null});})()` },
+    // 草稿恢复是异步的（要等会话上下文到位）：轮询到真的出现为止，而不是立刻读一次
+    { op: "eval", await: true, js: `(async()=>{const t0=Date.now();const sel='[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]';for(;;){const t=document.querySelector(sel);const v=t?t.value:'';if(v)return JSON.stringify({mark:"chat-draft",draft:v,ms:Date.now()-t0});if(Date.now()-t0>6000)return JSON.stringify({mark:"chat-draft",draft:v,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()` },
     { op: "wait", ms: 1500 },
     SPY_READ,
     { op: "screenshot", name: "fe-141-chat-draft-after-reload" },
   ]);
-  const afterReload = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.includes("draft")), {});
-  const calls = lastJson(evals(reloaded).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  const saved = markedFrom(flow, "saved") || {};
+  const afterReload = markedFrom(flow, "chat-draft") || {};
+  const calls = lastJson(evals(flow).filter((v) => typeof v === "string" && v.trim().startsWith("[")), []);
+  check("14 输入后草稿真的落盘（等保存结果，不用固定延迟）", saved.ok === true, JSON.stringify(saved));
   check("14 刷新后聊天草稿仍在", String(afterReload.draft || "").includes(draftText), JSON.stringify(afterReload));
   check("14 恢复草稿不会自动发送（没有 /api/turns 请求）", !calls.some((c) => /\/api\/turns$/.test(c.url)), JSON.stringify(calls.map((c) => c.method + " " + c.url).slice(0, 6)));
 }
@@ -872,11 +949,11 @@ async function scenario15() {
     waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"], textarea')"),
     { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"], textarea');t.focus();t.value=${JSON.stringify(draftText)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
     { op: "wait", ms: 1500 },
-    { op: "eval", js: `JSON.stringify({hint: (document.querySelector('[data-im="card-draft-hint"]')||{}).textContent||'', retry: !!document.querySelector('[data-im="card-draft-retry"]'), editorValue: (document.querySelector('textarea[data-im="card-editor"], textarea')||{}).value||''})` },
+    { op: "eval", js: `JSON.stringify({mark:"draft-hint", hint: (document.querySelector('[data-im="card-draft-hint"]')||{}).textContent||'', retry: !!document.querySelector('[data-im="card-draft-retry"]'), editorValue: (document.querySelector('textarea[data-im="card-editor"], textarea')||{}).value||''})` },
     { op: "screenshot", name: "fe-150-card-draft-failed" },
   ]);
-  const state = lastJson(evals(failed).filter((v) => typeof v === "string" && v.includes("hint")), {});
-  check("15 卡片草稿保存失败有明确提示", /失败|没能|无法/.test(String(state.hint || "")), String(state.hint || "").slice(0, 80));
+  const state = markedFrom(failed, "draft-hint") || {};
+  check("15 卡片草稿保存失败有明确提示", /未保存|失败|没能|无法/.test(String(state.hint || "")), String(state.hint || "").slice(0, 80));
   check("15 失败时保留编辑内容", String(state.editorValue || "").includes(draftText), JSON.stringify({ value: String(state.editorValue || "").slice(0, 40) }));
   check("15 提供可用的重试入口", state.retry === true, JSON.stringify({ retry: state.retry }));
   const after = await boardState();

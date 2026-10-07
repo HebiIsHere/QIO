@@ -199,6 +199,64 @@ for (const step of steps) {
         results.push({ op: "eval", value: r.result?.value, error: r.exceptionDetails?.text });
         break;
       }
+      /**
+       * 真实鼠标拖拽，**锚点在页面里现量**。
+       *
+       * 为什么需要：验收脚本过去在「上一个会话」里量卡片坐标、在「这个会话」里按下去，
+       * 两次会话之间顶部栏高度可能变（实测差 28px），落点就跑到卡片上方，链接/成组都做不出来，
+       * 表现为「时好时坏」。这个操作在**同一个会话里**先解析锚点再派发真实鼠标事件。
+       *
+       * 用法：{ op:"drag", from:{selector,fx,fy} | {x,y}, to:{selector,fx,fy} | {x,y}, steps?:6, hold?:ms, shot?:name }
+       * fx/fy 是相对锚点矩形的位置比例（默认 0.5 居中）。
+       */
+      case "drag": {
+        const resolve = async (spec) => {
+          if (spec && typeof spec.x === "number" && typeof spec.y === "number") return { x: spec.x, y: spec.y };
+          if (!spec || !spec.selector) return null;
+          const expr =
+            "(function(){const e=document.querySelector(" + JSON.stringify(spec.selector) + ");" +
+            "if(!e)return null;const r=e.getBoundingClientRect();" +
+            "return JSON.stringify({x:Math.round(r.left+r.width*" + (spec.fx ?? 0.5) + "),y:Math.round(r.top+r.height*" + (spec.fy ?? 0.5) + ")});})()";
+          const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true });
+          const value = r.result?.value;
+          return value ? JSON.parse(value) : null;
+        };
+        const from = await resolve(step.from);
+        const to = await resolve(step.to);
+        if (!from || !to) {
+          results.push({ op: "drag", error: "锚点没找到", from: !!from, to: !!to });
+          break;
+        }
+        await send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", clickCount: 1, buttons: 1 });
+        await sleep(step.hold ?? 110);
+        const n = step.steps ?? 6;
+        for (let i = 1; i <= n; i += 1) {
+          await send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: Math.round(from.x + ((to.x - from.x) * i) / n),
+            y: Math.round(from.y + ((to.y - from.y) * i) / n),
+            button: "left",
+            buttons: 1,
+          });
+          await sleep(step.moveMs ?? 70);
+        }
+        if (step.during) {
+          // 拖动**尚未松手**时求值（例如读「松开后合并成组」提示）
+          const during = await send("Runtime.evaluate", { expression: step.during, awaitPromise: true, returnByValue: true });
+          results.push({ op: "drag-during", value: during.result?.value, error: during.exceptionDetails?.text });
+        }
+        if (step.shot) {
+          await send("Page.captureScreenshot", { format: "png" });
+          await sleep(200);
+          const shot = await send("Page.captureScreenshot", { format: "png" });
+          writeFileSync(`${OUT}\\${step.shot}.png`, Buffer.from(shot.data, "base64"));
+          results.push({ op: "screenshot", name: step.shot });
+        }
+        await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", clickCount: 0, buttons: 0 });
+        await sleep(step.after ?? 320);
+        results.push({ op: "drag", from, to });
+        break;
+      }
       case "screenshot": {
         // 视口尺寸变化后首帧可能仍是旧缓冲：多截一次，取后一张
         await send("Page.captureScreenshot", { format: "png" });
@@ -270,6 +328,29 @@ process.stdout.write(
     2,
   ),
 );
+/*
+ * 收尾：先让浏览器**自己关掉**，再杀进程。
+ *
+ * 为什么必须这样：localStorage（草稿、批次记录）是异步落盘的，直接 kill 会丢掉刚写入的内容 ——
+ * 实测「本次会话里写进去、下一个探针会话读不到」，把「刷新后草稿还在吗」「批次记录跨会话还在吗」
+ * 这类验收全部带偏（同一个会话内 reload 是好的，跨会话就丢）。
+ * 这里先发 Browser.close 并留出落盘时间，再兜底 kill。
+ */
+try {
+  // Browser.close 属于**浏览器级**域：页面会话发它会报 "wasn't found"，所以另开一条浏览器级连接
+  const versionRes = await fetch(`http://127.0.0.1:${PORT}/json/version`);
+  const version = await versionRes.json();
+  const browserWs = new WebSocket(version.webSocketDebuggerUrl);
+  await new Promise((res) => {
+    browserWs.addEventListener("open", res);
+    browserWs.addEventListener("error", res);
+  });
+  browserWs.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+  await sleep(2000);
+  browserWs.close();
+} catch {
+  // 浏览器已经退出或不允许关闭：继续兜底
+}
 ws.close();
 chrome.kill();
 process.exit(0);

@@ -1,0 +1,44 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5431/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){try{Object.keys(localStorage).filter(k=>k.indexOf('qio.draft.chat')===0).forEach(k=>localStorage.removeItem(k));}catch(e){}const p=document.querySelector('[data-im=\"chat-panel\"]');if(!p){const b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();}return 'cleared+open';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const t=document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]');if(!t)return 'no-input';t.focus();t.value='新草稿-调试-'+Date.now();t.dispatchEvent(new Event('input',{bubbles:true}));window.__typed=t.value;return 'typed:'+t.value;})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({mark:\"t1\", typed:window.__typed, value:(document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')||{}).value||null, record:Object.keys(localStorage).filter(k=>k.indexOf('qio.draft.chat')===0).map(k=>k+'='+String(localStorage.getItem(k)).slice(0,90))})"
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({mark:\"t2\", typed:window.__typed, value:(document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]')||{}).value||null, record:Object.keys(localStorage).filter(k=>k.indexOf('qio.draft.chat')===0).map(k=>k+'='+String(localStorage.getItem(k)).slice(0,90))})"
+  }
+]

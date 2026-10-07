@@ -627,7 +627,7 @@ describe("BoardCanvas 接线", () => {
     setBoard(board.createGroup(base, [base.cards[0].id, base.cards[1].id]));
     const wrapper = mountCanvas();
     const input = wrapper.get('[data-im="group-name"]');
-    expect((input.element as HTMLInputElement).value).toBe("组 1");
+    expect((input.element as HTMLInputElement).value).toBe("默认组名");
     expect(wrapper.get('[data-im="group"]').text()).toContain("系统默认名，可改");
 
     await input.setValue("发布计划");

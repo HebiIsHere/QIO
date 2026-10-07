@@ -1,0 +1,121 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5431/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){window.__pm=[];window.addEventListener('pointermove',e=>{window.__pm.push({x:e.clientX,y:e.clientY,target:(e.target.getAttribute&&e.target.getAttribute('data-im'))||e.target.className});},{capture:true});return 'instrumented';})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 161,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 190,
+      "y": 161,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 174,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 140
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 330,
+      "y": 166,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 120
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 474,
+      "y": 161,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 200
+  },
+  {
+    "op": "eval",
+    "await": true,
+    "js": "(async()=>{const raw=await (await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state')).json();const j=raw.state||raw;const s=document.querySelector('.board-surface').getBoundingClientRect();const surf={l:Math.round(s.left),t:Math.round(s.top),w:Math.round(s.width),h:Math.round(s.height)};const tf=getComputedStyle(document.querySelector('.board-surface')).transform;const vp=document.querySelector('.board-viewport');const cards=(j.cards||[]).filter(c=>!c.deleted).map(c=>({id:c.id,x:c.x,y:c.y,w:c.w,h:c.h}));const last=(window.__pm||[]).slice(-3);const lastPt=last.length?last[last.length-1]:null;const board=lastPt?{x:lastPt.x-surf.l,y:lastPt.y-surf.t}:null;const hit=board?cards.filter(c=>board.x>=c.x&&board.x<=c.x+c.w&&board.y>=c.y&&board.y<=c.y+c.h).map(c=>c.id):[];return JSON.stringify({mark:\"probe\", surf, transform:tf, scroll:[vp.scrollLeft,vp.scrollTop], lastMoves:last, boardPoint:board, cards, hit});})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 474,
+      "y": 161,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  }
+]

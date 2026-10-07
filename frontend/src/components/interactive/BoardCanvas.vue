@@ -544,7 +544,7 @@ function dragHintText(): string {
   }
   if (preview.mergesWith) {
     const other = cardById(current, preview.mergesWith);
-    return "将与「" + cardSummary(other) + "」自动成组（默认组名「组 N」）。";
+    return "将与「" + cardSummary(other) + "」自动成组（默认组名「默认组名」）。";
   }
   if (drag.fromGroupId) return "松手后移出组（自由摆放，组空了会自动消失）。";
   return "松手后只移动位置：位置不构成意图依据。";

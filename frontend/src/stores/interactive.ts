@@ -541,8 +541,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const before = intentIdSet();
     const result = await api.createDemoIntents(boardId.value);
     await loadIntents();
-    // 演示入口一次生成的（可能不止四项）：记成同一批
-    recordNewIntents(before, "session:demo:" + Date.now());
+    /*
+     * 演示入口一次产生的（可能不止四项）：记成同一批。
+     *
+     * 注意不能只看「新出现的 id」：后端对**尚未结束的同名演示项会复用**（不重复创建），
+     * 复用时新 id 是 0 个，只按新 id 记就会漏掉整批 —— 实测表现为「点了生成 4 项，批量入口却不出现」。
+     * 这里以**接口返回的这一批**为准（这正是「一次产生过程」的可证明来源，契约 §9.2）：
+     * 有返回值就用返回值，没有才退回「新出现的 id」。
+     */
+    const produced = (result?.created ?? [])
+      .map((item) => item?.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    if (produced.length) recordIntentBatch("session:demo:" + Date.now(), produced);
+    else recordNewIntents(before, "session:demo:" + Date.now());
     return result;
   }
 

@@ -590,7 +590,7 @@ async function main() {
   check("松手后自动成组", mergeAfterInfo.groups >= 1, JSON.stringify(mergeAfterInfo));
   const mergedState = await boardState();
   const mergedGroups = mergedState.state.groups.filter((g) => !g.deleted);
-  check("成组结果保存到后端：一个组、两名成员、系统默认名", mergedGroups.length === 1 && mergedGroups[0].members.length === 2 && /^组 ?[0-9]+$/.test(mergedGroups[0].name), JSON.stringify(mergedGroups.map((g) => ({ name: g.name, members: g.members }))));
+  check("成组结果保存到后端：一个组、两名成员、系统默认名", mergedGroups.length === 1 && mergedGroups[0].members.length === 2 && mergedGroups[0].name === "默认组名", JSON.stringify(mergedGroups.map((g) => ({ name: g.name, members: g.members }))));
 
   // 靠近但没重叠：不提示、不成组
   await resetBoard();
@@ -639,7 +639,7 @@ async function main() {
   ]);
   const afterGroup = await boardState();
   const groupName = (afterGroup.state.groups.filter((g) => !g.deleted)[0] || {}).name;
-  check("重叠成组后组名是系统默认名（组 N）", /^组 ?[0-9]+$/.test(groupName || ""), groupName);
+  check("重叠成组后组名是系统默认名（默认组名）", groupName === "默认组名", groupName);
 
   const setValue = (value) =>
     "const input=document.querySelector('[data-im=\\\"group-name\\\"]');const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;set.call(input," + JSON.stringify(value) + ");input.dispatchEvent(new Event('change',{bubbles:true}));'renamed'";
