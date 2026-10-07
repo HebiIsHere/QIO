@@ -2,7 +2,7 @@
   "label": "after",
   "app": "http://127.0.0.1:5431",
   "backend": "http://127.0.0.1:8931",
-  "measuredAt": "2026-10-07T08:50:47.115Z",
+  "measuredAt": "2026-10-07T10:14:53.998Z",
   "results": {
     "1440x900": {
       "toolbar": {
@@ -31,14 +31,7 @@
         "w": 420,
         "h": 520
       },
-      "batch": {
-        "l": 592,
-        "t": 107,
-        "r": 992,
-        "b": 441,
-        "w": 400,
-        "h": 334
-      },
+      "batch": null,
       "overlapChatBatch": 0,
       "cardToolbar": {
         "l": 60,
@@ -83,14 +76,7 @@
         "w": 420,
         "h": 476
       },
-      "batch": {
-        "l": 176,
-        "t": 107,
-        "r": 576,
-        "b": 441,
-        "w": 400,
-        "h": 334
-      },
+      "batch": null,
       "overlapChatBatch": 0,
       "cardToolbar": {
         "l": 60,
@@ -135,14 +121,7 @@
         "w": 420,
         "h": 365
       },
-      "batch": {
-        "l": 16,
-        "t": 99,
-        "r": 352,
-        "b": 470,
-        "w": 336,
-        "h": 370
-      },
+      "batch": null,
       "overlapChatBatch": 0,
       "cardToolbar": {
         "l": 60,
