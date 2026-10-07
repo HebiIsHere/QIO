@@ -48,6 +48,7 @@ from agent.core.turn import short_turn_id
 from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.core.turn_facts import TurnFacts
+from agent.core.answer_buffer import AnswerBuffer
 from agent.core.progress import ProgressTracker
 from agent.prompts import ANSWER_FALLBACK_HINT, ANSWER_MARKER, CONTENT_ROLE_PROTOCOL
 from agent.tools.registry import ToolRegistry
@@ -77,12 +78,11 @@ PUBLISH_CHARS = 24
 # 说明文字集中在 agent/prompts.py，由这一个常量注入三档（text 档进 system prompt，
 # native / anthropic 由 _call_hint() 每次调用作为最后一条 system 消息发出）。
 #
-# 未声明正文的有界缓冲上限（契约 §1.1 第 3 条修正版：256 KB）：超过它即判定为
-# 工作调用并实时放行（绝不无界缓存）。除此之外，只有**出现工具调用**才会让缓冲中的
-# 未声明正文提前进过程区 —— 前缀不匹配本身不构成「这是工作调用」的证据。
-UNDECLARED_BUFFER_LIMIT = 256 * 1024
-# 判定声明所需的最长前缀（声明本身只有 len(ANSWER_MARKER) 个字符，留余量到 32）。
-MARKER_PROBE_CHARS = 32
+# 控制前缀（判定声明所需的全部字符）：声明本身 + 其后可能的 LF / CRLF。
+# **只有这些字符参与角色判定**，任何超出部分都是正文（契约 §1.2）—— 旧实现把
+# 「累计收到的正文长度」当成「声明是否有效」的证据（len(probe) > 32 → 未声明），
+# 于是「合法声明 + 长正文同一大分块」被整段判成未声明，连声明一起泄漏。
+PROBE_LIMIT = len(ANSWER_MARKER) + 2
 
 
 def _split_declared_answer(text: str) -> tuple[bool, str]:
@@ -145,9 +145,10 @@ class _AssistantStream:
     * 缓冲与声明**完全匹配** → role = "answer"：声明之后的正文**实时**进正式回答区
       （``interim=false, streaming=true``）；调用结束时同一 delta_id 再发一条
       ``streaming=false`` 的累计快照做**收尾校准**（校准不是首次展示来源）。
-    * 缓冲与声明**前缀不再匹配** → **暂时按「未声明」处理**（契约 §1.1 修正版第 2 条：
-      不得因为前缀不匹配就立刻把正文放进过程区）：role = "undeclared"，正文先有界缓冲
-      （上限 UNDECLARED_BUFFER_LIMIT，超限即判定为工作调用并实时放行）。
+    * 缓冲与声明**前缀不再匹配** → **按「未声明」处理**（契约 §1.2：不得因为前缀
+      不匹配就立刻把正文放进过程区）：role = "undeclared"，正文进有界缓冲
+      （内存 ≤ UNDECLARED_MEMORY_LIMIT 个 UTF-8 字节，超出部分落临时暂存 ——
+      上限**只管理资源、不决定角色**，超限不改判、也不构成「有工具调用」的证据）。
       只有**出现工具调用**才会让缓冲中的正文提前按工作调用实时放行到过程区；
       这一批工具的阶段就位后由 flush_interim 用同一个 delta_id 补上
       ``stage_id`` / ``call_ids``（同一份文字，不产生第二个气泡）。
@@ -175,12 +176,20 @@ class _AssistantStream:
         publish_chars: int = PUBLISH_CHARS,
         clock: Callable[[], float] = time.monotonic,
         answer_expected: bool = False,
+        spill_dir: Path | str | None = None,
+        memory_limit: int | None = None,
+        spill_limit: int | None = None,
     ) -> None:
         self._emit = emit
         self.delta_id = delta_id
         self._publish_ms = publish_ms
         self._publish_chars = publish_chars
         self._clock = clock
+        # 未声明正文的退路（契约 §1.3）：有界内存 + 溢出暂存。上限只管理资源，
+        # 不决定角色；暂存目录缺省时按 <data_dir>/tmp 惰性解析。
+        self._spill_dir = spill_dir
+        self._memory_limit = memory_limit
+        self._spill_limit = spill_limit
         # 这次调用**是否被要求给出回答**（tools=[]：兜底调用）。它不决定角色
         # （角色只看正文声明），只决定「未声明正文」在调用结束时去哪：被要求回答的
         # 调用不可能产出过程说明，未声明也按正式回答一次性交付。
@@ -188,10 +197,12 @@ class _AssistantStream:
         # None（还没判定）/ "interim"（过程区）/ "answer"（正式回答）/
         # "undeclared"（未声明：有界缓冲，调用结束时再决定去哪）
         self.role: str | None = None
-        # 开头判定缓冲（仍是声明的可能前缀时先不展示）
+        # 控制前缀缓冲（≤ PROBE_LIMIT 个字符；只用于判定声明，不承载正文）
         self._probe = ""
-        # 未声明正文的有界缓冲（超过上限即按工作调用实时放行）
-        self._undeclared = ""
+        # 未声明正文的缓冲（有界内存 + 溢出暂存；上限不改角色）
+        self._undeclared: AnswerBuffer | None = None
+        # 缓冲被截断的原因（取走缓冲后仍要如实报告给用户）
+        self._truncation: str | None = None
         # 这条流交付到正式回答区的正文（声明本身已经去掉）；循环用它做 final_content
         self.answer_text = ""
         # 是否走了「未声明 → 一次性交付」的降级路径（如实记录，不冒充流式）
@@ -228,13 +239,28 @@ class _AssistantStream:
         self.saw_delta = True
         self._saw_text = True
         if self.role is None:
-            self._probe += text
-            feed = self._resolve_probe()
-            if self.role is None:
-                return  # 还在判定开头：一个字都不展示
-            await self._feed(feed)
+            await self._feed(self._consume_prefix(text))
             return
         await self._feed(text)
+
+    def _consume_prefix(self, text: str) -> str:
+        """只把**控制前缀**放进 _probe；返回这一块里要交付的正文（可能为空串）。
+
+        契约 §1.2：判定只依赖控制前缀（≤ PROBE_LIMIT 个字符），任何超出部分都是
+        正文；匹配成功后**同一分块里剩下的正文立即交给回答流**（实时发布）。
+        """
+        need = PROBE_LIMIT - len(self._probe)
+        head, tail = text[:need], text[need:]
+        self._probe += head
+        feed = self._resolve_probe()
+        if feed is None:
+            # 还没判定 ⟺ 这一块整体没超出控制前缀（判定所需长度是 PROBE_LIMIT，
+            # 吃满就一定有结论）→ 没有正文被丢掉。
+            if tail:  # pragma: no cover - 防御：真到了这里也绝不丢字、绝不提前展示
+                self._start_undeclared()
+                return self._probe + tail
+            return ""
+        return feed + tail
 
     async def note_tool_call(self) -> None:
         """出现工具调用增量：未声明的正文按工作调用**实时放行**。
@@ -248,9 +274,10 @@ class _AssistantStream:
         if self.role in (None, "undeclared"):
             self.role = "interim"
             self.role_evidence = None
-            text = self._probe + self._undeclared
+            # 工具调用是「这条响应是工具轮」的直接证据：缓冲正文按过程规则
+            # **按序完整**放行到过程区（内存 + 暂存一起），不丢字。
+            text = self._probe + await self._take_buffered()
             self._probe = ""
-            self._undeclared = ""
             self._pending += text
             if self._pending_since is None:
                 self._pending_since = self._clock()
@@ -258,67 +285,54 @@ class _AssistantStream:
 
     # -- 角色判定（内容角色协议）------------------------------------------
 
-    def _resolve_probe(self) -> str:
-        """按最长可能前缀判定内容角色；返回还没交付的正文（交给 _feed）。
+    def _resolve_probe(self) -> str | None:
+        """判定内容角色：None = 还不能判定（继续等）；否则返回要交付的正文。
 
-        契约 §1.1 第 1、2、5 条：完全匹配声明 → "answer"（声明本身吃掉）；
-        前缀不再匹配 → "interim"（工作调用，已缓冲的正文整体实时放行）；
-        仍是声明的可能前缀 → 继续等（不展示）；重复声明 → 非法，按未声明处理。
+        契约 §1.2 规则：完全匹配声明 → "answer"（声明本身吃掉，剩下的正文立刻交付）；
+        前缀不匹配 / 重复声明 → "undeclared"（进缓冲，**不是**立刻当工作调用）；
+        仍是声明的可能前缀 → None（不展示、不丢字）。
         """
         probe = self._probe
         marker = ANSWER_MARKER.lower()
         lowered = probe.lower()
-        if len(probe) > MARKER_PROBE_CHARS:
-            # 判定只依赖 ≤len(ANSWER_MARKER)+2 个字符；到这里说明声明串被改坏了。
-            # 有界缓冲是硬要求：按未声明处理，绝不无界缓存。
-            self._start_undeclared(probe)
-            return ""
         if len(probe) < len(ANSWER_MARKER):
             if marker.startswith(lowered):
-                return ""  # 还可能是声明：等更多字符
-            self._start_undeclared(probe)
-            return ""
+                return None  # 还可能是声明：等更多字符
+            self._start_undeclared()
+            return probe
         if not lowered.startswith(marker):
-            self._start_undeclared(probe)
-            return ""
+            self._start_undeclared()
+            return probe
         rest = probe[len(ANSWER_MARKER):]
         if rest == "" or rest == "\r":
             # 声明后可能跟一个换行：再等一个字符（收尾时按「没有换行」处理）
-            return ""
+            return None
         if rest.startswith("\r\n"):
             rest = rest[2:]
         elif rest.startswith("\n") or rest.startswith("\r"):
             rest = rest[1:]
         if rest[: len(ANSWER_MARKER)].lower() == marker:
             # 重复声明 = 非法：按未声明处理（原文照实保留，不猜测、不改写）
-            self._start_undeclared(probe)
-            return ""
+            self._start_undeclared()
+            return probe
         self.role = "answer"
         self.role_evidence = "declared_answer"
         self._probe = ""
         return rest
 
-    def _start_undeclared(self, text: str) -> None:
-        """未声明（无标记 / 非法）：正文先有界缓冲，调用结束时再决定去哪。"""
+    def _start_undeclared(self) -> None:
+        """未声明（无标记 / 非法）：正文进有界缓冲，调用结束时再决定去哪。"""
         self.role = "undeclared"
         self.role_evidence = None
         self._probe = ""
-        self._undeclared = text
 
     async def _feed(self, text: str) -> None:
-        """按已判定的角色分发正文：实时发布 / 有界缓冲 / 超限放行。"""
+        """按已判定的角色分发正文：实时发布 / 有界缓冲（内存 + 暂存）。"""
         if not text:
             return
         if self.role == "undeclared":
-            self._undeclared += text
-            if len(self._undeclared) > UNDECLARED_BUFFER_LIMIT:
-                # 超过上限：判定为工作调用并实时放行（绝不无界缓存）
-                self.role = "interim"
-                self.role_evidence = None
-                text = self._undeclared
-                self._undeclared = ""
-                self._pending += text
-                await self._flush(force=True)
+            # 上限只管理资源（内存 + 溢出暂存），**不决定角色**（契约 §1.3）。
+            await self._buffer().append(text)
             return
         self._pending += text
         if self._pending_since is None:
@@ -326,32 +340,59 @@ class _AssistantStream:
         if len(self._pending) >= self._publish_chars:
             await self._flush(force=True)
 
+    def _buffer(self) -> AnswerBuffer:
+        """未声明正文的缓冲（惰性创建：只走未声明路径时才分配）。"""
+        if self._undeclared is None:
+            self._undeclared = AnswerBuffer(
+                self.delta_id,
+                self._spill_dir,
+                memory_limit=self._memory_limit,
+                spill_limit=self._spill_limit,
+            )
+        return self._undeclared
+
+    async def _take_buffered(self) -> str:
+        """取走缓冲里的全部正文（内存 + 暂存），并清理暂存文件。"""
+        buffer = self._undeclared
+        if buffer is None:
+            return ""
+        if buffer.truncated and self._truncation is None:
+            # 缓冲被取走后还要如实报告截断：原因留在流上（AgentLoop 读它）
+            self._truncation = buffer.truncation_reason
+        text = await buffer.collect()
+        await buffer.discard()
+        self._undeclared = None
+        return text
+
+    @property
+    def truncation_reason(self) -> str | None:
+        """未声明正文被截断的原因（没有截断就是 None）——由 AgentLoop 如实报告。"""
+        if self._truncation is not None:
+            return self._truncation
+        return self._undeclared.truncation_reason if self._undeclared is not None else None
+
     async def _absorb_whole_text(self, text: str) -> None:
         """整段正文（一个增量都没收到）也走同一套内容角色判定。"""
         if self.role is not None:
             await self._feed(text)
             return
-        self._probe += text
-        feed = self._resolve_probe()
+        feed = self._consume_prefix(text)
         if self.role is None:
             # 整段就到这里：仍是声明的可能前缀（如「[[QIO」）→ 未声明
-            self.role = "undeclared"
-            self._undeclared = self._probe
-            self._probe = ""
+            self._start_undeclared()
+            await self._feed(feed)
             return
         await self._feed(feed)
 
-    def _settle_undeclared(self, *, tool_calls: bool, interrupted: bool) -> None:
-        """未声明的缓冲文字在调用结束时去哪（契约 §1.1 第 3、5 条）。
+    async def _settle_undeclared(self, *, tool_calls: bool, interrupted: bool) -> None:
+        """未声明的缓冲正文在调用结束时去哪（契约 §1.3）。
 
         * 取消 / 断流 / 失败 → 已收到的文字放行到过程区（不猜角色、不丢字）；
-        * 有工具调用（且不是被要求回答的调用）→ 缓冲文字是过程说明：放行到过程区；
-        * 其余（无工具调用 / 被要求回答的调用）→ 缓冲文字是正式回答：**一次性**
-          交付到正式回答区（降级路径，如实记录，不冒充流式）。
+        * 有工具调用（且不是被要求回答的调用）→ 按过程规则**按序完整**放行到过程区；
+        * 其余（无工具调用 / 被要求回答的调用）→ 该正文是正式回答：**一次性**
+          交付到正式回答区（降级路径，如实记录，不冒充流式、不重新生成）。
         """
-        text = self._probe + self._undeclared
-        self._probe = ""
-        self._undeclared = ""
+        text = await self._take_buffered()
         if interrupted or (tool_calls and not self._answer_expected):
             self.role = "interim"
             self.role_evidence = None
@@ -382,10 +423,11 @@ class _AssistantStream:
         或者收尾会一次性交付（_pending 里的文字）。上层据此决定要不要走一次性补发 ——
         只要有正文，就绝不能补发第二次（同一段字会出现两次）。
         """
+        buffered = self._undeclared.total_bytes if self._undeclared is not None else 0
         return (
             bool(self._confirmed)
             or bool(self._pending)
-            or bool(self._undeclared)
+            or buffered > 0
             or self.published
         )
 
@@ -401,8 +443,8 @@ class _AssistantStream:
           streaming=false 的累计快照做**收尾校准** —— 首次展示永远不是校准快照。
         * 已判为工作调用 / 有工具调用 → 正文是进度说明：留在过程区；这一批带工具时
           等 flush_interim 补 stage_id / call_ids，其余情况直接收尾。
-        * 未判定（未声明）→ 按契约 §1.1 第 3 条：有工具调用 → 放行到过程区；
-          无工具调用 → **一次性**交付到正式回答区（降级路径）。
+        * 未判定（未声明）→ 按契约 §1.3：有工具调用 → 按序完整放行到过程区；
+          无工具调用 → 内存 + 暂存里的正文**一次性**交付到正式回答区（降级路径）。
         * completion=None（取消 / 失败 / 断流）→ 已收到的文字放行到过程区，只收尾
           （streaming=false：不再增长）。
 
@@ -416,12 +458,12 @@ class _AssistantStream:
                 await self._absorb_whole_text(text)
         tool_calls = bool(completion.tool_calls) if completion is not None else False
         if self.role is None:
-            # 判定没走完（缓冲仍是声明的可能前缀）→ 按「未声明」处理
-            self.role = "undeclared"
-            self._undeclared = self._probe
-            self._probe = ""
+            # 判定没走完（缓冲仍是声明的可能前缀）→ 按「未声明」处理；
+            # 前缀里已经收到的字符也是正文（原文照实保留）。
+            self._start_undeclared()
+            await self._feed(self._probe)
         if self.role == "undeclared":
-            self._settle_undeclared(tool_calls=tool_calls, interrupted=completion is None)
+            await self._settle_undeclared(tool_calls=tool_calls, interrupted=completion is None)
             if self.role == "interim" and tool_calls:
                 return  # 工具轮：等 flush_interim 补阶段信息
             await self._settle()
@@ -573,6 +615,11 @@ class AgentLoop:
         narrative_settler: Callable[..., Any] | None = None,
         stage_id_provider: Callable[[], str | None] | None = None,
         usage_sink: Callable[[int, int], None] | None = None,
+        # 未声明长正文的退路（第六轮契约 §1.3）：暂存目录缺省 = <data_dir>/tmp
+        # （惰性解析，正常轮次不碰磁盘）；两个上限只管理资源，不决定角色。
+        spill_dir: Path | str | None = None,
+        undeclared_memory_limit: int | None = None,
+        undeclared_spill_limit: int | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -614,12 +661,19 @@ class AgentLoop:
         self._call_role: str | None = None
         # 这次调用交付到正式回答区的正文（声明本身已去掉）；循环用它做 final_content。
         self._call_answer_text = ""
-        # 这次调用是否走了「未声明 → 一次性交付」的降级路径（如实记录 + 可见警告）。
+        # 这次调用是否走了「未声明 → 一次性交付」的降级路径（如实记录）。
         self._call_undeclared = False
+        # 这次调用的未声明正文被截断的原因（达到暂存硬上限 / 暂存不可用）；有值时
+        # 如实报告：可见 WARNING + 截断事实写进交付内容。
+        self._call_truncation: str | None = None
+        self._spill_dir = spill_dir
+        self._undeclared_memory_limit = undeclared_memory_limit
+        self._undeclared_spill_limit = undeclared_spill_limit
         # 每轮最多一次兜底调用；可见警告每轮最多一条。
         self._fallback_used = False
         self._late_tool_warned = False
         self._undeclared_warned = False
+        self._truncation_warned = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
         # 统一用量累计（输入 / 输出 / 总量）：供应商差异已经在 Adapter 层消掉
@@ -1286,10 +1340,13 @@ class AgentLoop:
 
             if self._call_undeclared:
                 # 协议未遵守（模型没有声明回答角色）：未声明的正文按一次性回答交付，
-                # 如实记录这条降级路径，不冒充流式（契约 §1.1 第 3 条）。
+                # 如实记录这条降级路径，不冒充流式（契约 §1.2/§1.3）。
                 self._note_undeclared_answer()
+            if self._call_truncation:
+                # 长正文达到保存上限：如实报告（可见 WARNING + 截断事实进交付内容）
+                await self._note_truncated_answer(self._call_truncation)
 
-            answer_text = self._call_answer_text or ""
+            answer_text = self._deliverable_answer_text()
             if self._call_role == "answer":
                 # 模型用正文声明了「这是最终回答」：它就是正式回答（带工具也一样）。
                 if completion.tool_calls:
@@ -1450,6 +1507,7 @@ class AgentLoop:
         self._call_role = stream.role
         self._call_answer_text = stream.answer_text
         self._call_undeclared = stream.undeclared_answer_used
+        self._call_truncation = stream.truncation_reason
 
     def _call_hint(self) -> str | None:
         """每次调用附带的系统提示：内容角色协议（第五轮契约 §1.1）。
@@ -1587,6 +1645,36 @@ class AgentLoop:
             self.turn_id,
         )
 
+    def _deliverable_answer_text(self) -> str:
+        """本次调用交付到正式回答区的正文。
+
+        未声明长正文被截断时，**截断事实写进交付内容**（契约 §1.3：如实报告，
+        绝不偷偷丢字），用户看到的最后一段会说明后面还有没保存的内容。
+        """
+        text = self._call_answer_text or ""
+        if text and self._call_truncation:
+            text = f"{text}\n\n{self._truncation_note(self._call_truncation)}"
+        return text
+
+    @staticmethod
+    def _truncation_note(reason: str) -> str:
+        return (
+            "—— 系统事实（后端记录，不是模型的说法）：这段正文太长，已按上限截断"
+            f"（{reason}）；上面是完整的部分，后面的内容没有保存。"
+        )
+
+    async def _note_truncated_answer(self, reason: str) -> None:
+        """未声明正文被截断：发**可见** WARNING + 轮次警告（绝不无界增长、偷偷丢字）。"""
+        if self._truncation_warned:
+            return
+        self._truncation_warned = True
+        message = f"这段正文超出保存上限，已如实截断：{reason}"
+        self._warn(message)
+        await self._emit(
+            EventType.WARNING,
+            {"code": "answer_truncated", "message": message, "recoverable": False},
+        )
+
     async def _fallback_answer_call(self, messages: list[ChatMessage]) -> str | None:
         """兜底调用（第五轮契约 §1.1 第 6 条）：tools=[]，**每轮最多一次**。
 
@@ -1605,11 +1693,13 @@ class AgentLoop:
             await self._emit_one_shot_assistant(completion)
         if self._call_undeclared:
             self._note_undeclared_answer()
+        if self._call_truncation:
+            await self._note_truncated_answer(self._call_truncation)
         if completion.tool_calls:
             # 这次调用没有提供任何工具定义：即使模型仍返回工具调用也不执行
             # （它没有被授予这些工具），只把正文当正式回答，并如实记一条可见警告。
             await self._warn_late_tool_calls(completion.tool_calls)
-        return self._call_answer_text or None
+        return self._deliverable_answer_text() or None
 
     async def _plan(
         self,
@@ -1631,6 +1721,7 @@ class AgentLoop:
         self._call_role = None
         self._call_answer_text = ""
         self._call_undeclared = False
+        self._call_truncation = None
         # 系统提示只发给这一次调用（不写回对话记录）：内容角色协议 / 兜底要求。
         request_messages = messages
         if hint:
@@ -1784,7 +1875,12 @@ class AgentLoop:
             return None  # 还没发出请求就被取消：不产生任何新的模型调用
         delta_id = self._call_delta_id or f"dl_{short_turn_id(self.turn_id)}_1"
         stream = _AssistantStream(
-            self._emit_assistant, delta_id=delta_id, answer_expected=self._answer_expected
+            self._emit_assistant,
+            delta_id=delta_id,
+            answer_expected=self._answer_expected,
+            spill_dir=self._spill_dir,
+            memory_limit=self._undeclared_memory_limit,
+            spill_limit=self._undeclared_spill_limit,
         )
         # 工具轮的正文要等阶段就位后再补 stage_id / call_ids（见 _dispatch_tool_calls）。
         self._active_stream = stream
