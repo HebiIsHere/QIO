@@ -85,13 +85,13 @@
 | --- | --- | --- |
 | `cd frontend; npx vue-tsc --noEmit` | 无输出（exit 0） | 静态 |
 | `cd frontend; npx vitest run src/interactive src/components/interactive src/stores` | 40 文件 / **510 用例全绿** | 组件与纯函数 |
-| `cd frontend; npx vitest run`（全量，各子工作区） | 114 文件 / 1185 用例全绿（B 报告 1174 passed + 1 个负载敏感用例） | 组件 |
+| `cd frontend; npx vitest run`（集成后全量） | 115 文件 / **1223 用例全绿** | 组件 |
 | `cd backend; uv run --frozen pytest -q` | **PYTEST_EXIT=0，failed=0** | 后端回归 |
 | `python scripts/check_docs.py` | 通过（30 个里程碑条目） | 文档一致性 |
 | `node scripts/interactive-verify/fe-scenarios.mjs` | **69/69 通过**（场景 1–15） | **实机**（真实鼠标/键盘/滚轮 + 真实接口） |
 | `node scripts/interactive-verify/ui-metrics.mjs` | 见上表 | **实机**测量 |
 | `node scripts/interactive-verify/ui-screens.mjs` | 72 张对照图 | **实机**截图 |
-| `powershell -File scripts/interactive-verify/rerun-health-probe.ps1` | 5/5 通过（CPU 48–91%） | 稳定性复核 |
+| `powershell -File scripts/interactive-verify/rerun-health-probe.ps1` | **10/10 通过**（CPU 33–91%、空闲 9.8–15.2GB） | 稳定性复核 |
 
 **模拟项（明确标注）：** 发送失败、存储写入失败是页面级 `fetch`/`localStorage` 拦截；
 本机没有模型凭据，真实 QIO 回复不可验证。
@@ -110,7 +110,13 @@
    （同一次运行内 `location.reload()` 正常）。因此「关掉浏览器再打开」这一条没有实机证据；
    草稿与批次记录的恢复证据都是同一次运行内刷新。存储层本身是 `localStorage`，单元用例覆盖了损坏/禁用/写满降级。
 2. **真实 QIO 未接入：** `delivery.delivered` 恒为 false，提交只落库并标记未接入；界面与文档都如实显示。
-3. **健康探测 130ms：** 相关用例复跑 5 次全过，未复现；作为待确认的稳定性现象记录，未降低门槛、未删测试。
+3. **健康探测 130ms（待确认的稳定性现象，未复现）：** `backend/tests/test_interactive_during_heavy_work.py` 里
+   `test_health_probe_stays_responsive_while_slow_prediction_runs`（门槛 `gap_ms < 100`）在相同环境复跑 **10 次全部通过**：
+   第一批 5 次（CPU 48–91%、空闲内存 9.8–10.8GB）、第二批 5 次（CPU 33–40%、空闲内存 14.9–15.2GB），
+   单次用时 3.1–6.5s。**没有查明原报告里那次 130ms 的原因，也不能断言只是机器负载问题**；
+   门槛与测试都保持原样（未降低、未删除），按待确认现象记录，复跑脚本 `scripts/interactive-verify/rerun-health-probe.ps1`。
+   另有一个**负载敏感**的前端用例：`stores/__tests__/eventBufferOverflow.verify.test.ts` 的性能预算用例
+   在多个子智能体并发跑全量时曾超时（32–34s），本轮集成后单跑全量 115 文件 / 1223 用例全绿。
 4. **未做：** 触摸 / 高 DPI / 最小窗口的像素级检查；批量列表与聊天面板的拖拽调整大小；
    三浮层（聊天 + 批量 + 任务浮层）同开时的连续采样。
 5. **依赖别人的小项：** 提交区（`SubmitCluster.vue`）自身仍偏高，工具栏用容器级 `:deep()` 收束才达到 84px；

@@ -289,46 +289,61 @@ const GROUP_MEASURE = [
 ].join("\n");
 
 function scenarioGroup() {
-  var steps = [
+  /* 用两张**未分组**的卡片（s_note_b / s_long）：把它们拖到重叠，走「重叠成组」这条路径。
+     拖到已有分组的卡片上会走「加入组」，那验证的是另一条规则。 */
+  return [
     { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
     { op: "eval", js: HELPERS },
-    { op: "viewport", width: 1440, height: 900, ms: 700 },
-    { op: "eval", js: "(function(){ window.__e.click('[data-im=\"add-menu\"]'); return true; })()" },
-    { op: "wait", ms: 400 },
-    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"add-text\"]'); })()" },
-    { op: "wait", ms: 1000 },
-    { op: "eval", js: "(function(){ window.__e.click('[data-im=\"add-menu\"]'); return true; })()" },
-    { op: "wait", ms: 400 },
-    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"add-text\"]'); })()" },
+    { op: "viewport", width: 1440, height: 900, ms: 800 },
+    { op: "eval", js: GROUP_MEASURE },
+    { op: "eval", js: "(function(){ var a = document.querySelector('[data-im=\"card\"][data-card-id=\"s_long\"]'); var b = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_b\"]'); if (!a || !b) return 'missing-card'; a.setAttribute('data-e-src','1'); b.setAttribute('data-e-dst','1'); return JSON.stringify({ src: 's_long', dst: 's_note_b' }); })()" },
+    { op: "drag", from: { selector: '[data-e-src="1"]', fx: 0.5, fy: 0.25 }, to: { selector: '[data-e-dst="1"]', fx: 0.5, fy: 0.5 }, steps: 8, after: 800 },
     { op: "wait", ms: 1200 },
     { op: "eval", js: GROUP_MEASURE },
-    /* 给最后两张卡片打上临时标记：探针的 drag 只能按选择器锚定，id 要运行时才知道 */
-    { op: "eval", js: "(function(){ var els = window.__e.qa('[data-im=\"card\"][data-card-id]'); if (els.length < 2) return 'too-few'; els[els.length-1].setAttribute('data-e-src','1'); els[els.length-2].setAttribute('data-e-dst','1'); return JSON.stringify([els[els.length-2].getAttribute('data-card-id'), els[els.length-1].getAttribute('data-card-id')]); })()" },
-    { op: "drag", from: { selector: '[data-e-src="1"]', fx: 0.5, fy: 0.25 }, to: { selector: '[data-e-dst="1"]', fx: 0.5, fy: 0.35 }, steps: 8, after: 700 },
-    { op: "wait", ms: 900 },
-    { op: "eval", js: GROUP_MEASURE },
+    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
     { op: "screenshot", name: "e-group-after-drop" },
-    /* 改名：先改成自定义名，再留空（留空不改动），再用撤销/重做验前后一致 */
-    { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = 'E-复核-自定义组名'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
-    { op: "wait", ms: 1500 },
-    { op: "eval", js: GROUP_MEASURE },
-    { op: "screenshot", name: "e-group-renamed" },
+    /* 留空：不改名，组仍然成立并保留默认名 */
     { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = ''; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
     { op: "wait", ms: 1200 },
     { op: "eval", js: GROUP_MEASURE },
+    /* 输入自定义名：输入即用 */
+    { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = 'E-复核-自定义组名'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
+    { op: "wait", ms: 1600 },
+    { op: "eval", js: GROUP_MEASURE },
+    { op: "screenshot", name: "e-group-renamed" },
+    /* 撤销 / 重做：组名与成员一起回到上一步 */
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"undo\"]'); })()" },
-    { op: "wait", ms: 1200 },
+    { op: "wait", ms: 1600 },
     { op: "eval", js: GROUP_MEASURE },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"redo\"]'); })()" },
-    { op: "wait", ms: 1200 },
+    { op: "wait", ms: 1600 },
+    { op: "eval", js: GROUP_MEASURE },
+    /* 刷新：名字与分组都还在 */
+    { op: "reload", ms: 3500 },
+    { op: "eval", js: HELPERS },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: GROUP_MEASURE },
+    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
+    { op: "screenshot", name: "e-group-after-reload" },
+    /* 历史形态「组 N」不被批量覆盖：把组名改成「组 7」，刷新后仍然必须是「组 7」 */
+    { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = '组 7'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
+    { op: "wait", ms: 1600 },
     { op: "eval", js: GROUP_MEASURE },
     { op: "reload", ms: 3500 },
     { op: "eval", js: HELPERS },
-    { op: "wait", ms: 800 },
+    { op: "wait", ms: 900 },
     { op: "eval", js: GROUP_MEASURE },
-    { op: "screenshot", name: "e-group-after-reload" },
+    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName }; })); })()" },
+    { op: "screenshot", name: "e-group-legacy-name-kept" },
+    /* 改回默认名（复核结束后的板面状态与复核前一致） */
+    { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = '默认组名'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
+    { op: "wait", ms: 1600 },
+    /* 复位：解除复核期间新建的那一组，板面回到复核前的分组 */
+    { op: "eval", js: "(function(){ var groups = window.__e.qa('[data-im=\"group\"]'); var el = groups[groups.length-1]; if (!el) return 'no-group'; var btns = Array.from(el.querySelectorAll('button')); var b = btns.find(function (x) { return (x.innerText || '').indexOf('解除组') >= 0; }); if (!b) return 'no-dissolve'; b.click(); return 'dissolved'; })()" },
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: GROUP_MEASURE },
+    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify({ groups: (j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name }; }), cardCount: (j.state.cards||[]).length }); })()" },
   ];
-  return steps;
 }
 
 /* -------------------------------------------------------------- 批量场景 */
