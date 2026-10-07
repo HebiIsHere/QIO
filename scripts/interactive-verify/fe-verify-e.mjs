@@ -183,7 +183,14 @@ const CONNECT_MEASURE = [
   "    return { cls: el.className, rect: b, overlap: window.__e.rectArea(b, bar),",
   "      hit: !!top && (el === top || el.contains(top)), topAt: top ? (top.getAttribute('data-im') || top.className || top.tagName) : null };",
   "  });",
-  "  return JSON.stringify({ toolbar: bar, points: points, covered: points.filter(function (p) { return p.overlap > 0 || !p.hit; }).length });",
+  "  var boardBar = R(q('[data-im=\"board-toolbar\"]'));",
+  "  var title = R(q('[data-im=\"card\"] .title'));",
+  "  var content = R(q('[data-im=\"card\"] .content'));",
+  "  var boardOverlap = points.filter(function (p) { return window.__e.rectArea(p.rect, boardBar) > 0; }).length;",
+  "  return JSON.stringify({ toolbar: bar, boardToolbar: boardBar,",
+  "    toolbarVsTitle: window.__e.rectArea(bar, title), toolbarVsContent: window.__e.rectArea(bar, content),",
+  "    boardToolbarOverlapPoints: boardOverlap,",
+  "    points: points, covered: points.filter(function (p) { return p.overlap > 0 || !p.hit; }).length });",
   "})()",
 ].join("\n");
 
@@ -300,7 +307,7 @@ function scenarioGroup() {
     { op: "drag", from: { selector: '[data-e-src="1"]', fx: 0.5, fy: 0.25 }, to: { selector: '[data-e-dst="1"]', fx: 0.5, fy: 0.5 }, steps: 8, after: 800 },
     { op: "wait", ms: 1200 },
     { op: "eval", js: GROUP_MEASURE },
-    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
     { op: "screenshot", name: "e-group-after-drop" },
     /* 留空：不改名，组仍然成立并保留默认名 */
     { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = ''; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
@@ -323,7 +330,7 @@ function scenarioGroup() {
     { op: "eval", js: HELPERS },
     { op: "wait", ms: 900 },
     { op: "eval", js: GROUP_MEASURE },
-    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members }; })); })()" },
     { op: "screenshot", name: "e-group-after-reload" },
     /* 历史形态「组 N」不被批量覆盖：把组名改成「组 7」，刷新后仍然必须是「组 7」 */
     { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = '组 7'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
@@ -333,7 +340,7 @@ function scenarioGroup() {
     { op: "eval", js: HELPERS },
     { op: "wait", ms: 900 },
     { op: "eval", js: GROUP_MEASURE },
-    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName }; })); })()" },
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify((j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name, defaultName: g.defaultName }; })); })()" },
     { op: "screenshot", name: "e-group-legacy-name-kept" },
     /* 改回默认名（复核结束后的板面状态与复核前一致） */
     { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var el = inputs[inputs.length-1]; el.value = '默认组名'; el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; })()" },
@@ -342,7 +349,7 @@ function scenarioGroup() {
     { op: "eval", js: "(function(){ var groups = window.__e.qa('[data-im=\"group\"]'); var el = groups[groups.length-1]; if (!el) return 'no-group'; var btns = Array.from(el.querySelectorAll('button')); var b = btns.find(function (x) { return (x.innerText || '').indexOf('解除组') >= 0; }); if (!b) return 'no-dissolve'; b.click(); return 'dissolved'; })()" },
     { op: "wait", ms: 1800 },
     { op: "eval", js: GROUP_MEASURE },
-    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify({ groups: (j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name }; }), cardCount: (j.state.cards||[]).length }); })()" },
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); return JSON.stringify({ groups: (j.state.groups||[]).map(function(g){ return { id: g.id, name: g.name }; }), cardCount: (j.state.cards||[]).length }); })()" },
   ];
 }
 
@@ -392,7 +399,7 @@ function scenarioBatch() {
     { op: "reload", ms: 3500 },
     { op: "eval", js: HELPERS },
     { op: "eval", js: BATCH_MEASURE },
-    { op: "eval", js: "(async function(){ var r = await fetch('/api/interactive/boards/board_default/intents'); var j = await r.json(); return JSON.stringify({ pendingFromApi: (j.intents||[]).filter(function(i){return ['pending','needs_update','waiting_dependency','waiting_confirm'].indexOf(i.status)>=0;}).length }); })()" },
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/intents'); var j = await r.json(); return JSON.stringify({ pendingFromApi: (j.intents||[]).filter(function(i){return ['pending','needs_update','waiting_dependency','waiting_confirm'].indexOf(i.status)>=0;}).length }); })()" },
     { op: "screenshot", name: "e-batch-no-record-after-reload" },
     /* 3) 重新走一次演示入口：同一批四项又被记下来 */
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"demo-entry\"]'); })()" },
@@ -528,7 +535,7 @@ function scenarioChatFail() {
 const CARD_DRAFT_MEASURE = [
   "(function(){",
   "  var q = window.__e.q, qa = window.__e.qa;",
-  "  var ta = q('[data-im=\"card-editor\"] textarea');",
+  "  var ta = q('[data-im=\"card-editor\"]');",
   "  return JSON.stringify({",
   "    cardCount: qa('[data-im=\"card\"]').length,",
   "    editorOpen: !!q('[data-im=\"card-editor\"]'),",
@@ -548,19 +555,19 @@ function scenarioCardDraft() {
     { op: "eval", js: HELPERS },
     { op: "viewport", width: 1440, height: 900, ms: 700 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
-    { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.25 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.25 }, steps: 2, after: 600 },
+    { op: "drag", from: { selector: '[data-im="card"][data-card-id="s_note_b"]', fx: 0.5, fy: 0.25 }, to: { selector: '[data-im="card"][data-card-id="s_note_b"]', fx: 0.5, fy: 0.25 }, steps: 2, after: 600 },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"card-edit\"]'); })()" },
     { op: "wait", ms: 600 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
     { op: "eval", js: "(function(){ var of = window.fetch; window.__eRealFetch = of; window.__eSim2 = true; window.fetch = function () { var m = String(arguments[1] && arguments[1].method || '').toUpperCase(); if (String(arguments[0]).indexOf('/drafts') >= 0 && m === 'PUT') { return Promise.reject(new Error('模拟：草稿写入失败（页面级拦截）')); } return of.apply(this, arguments); }; return true; })()" },
-    { op: "eval", js: "(function(){ var ta = document.querySelector('[data-im=\"card-editor\"] textarea'); if (!ta) return false; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, 'E-复核-卡片草稿'); ta.dispatchEvent(new Event('input', { bubbles: true })); return true; })()" },
+    { op: "eval", js: "(function(){ var ta = document.querySelector('[data-im=\"card-editor\"]'); if (!ta) return false; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, 'E-复核-卡片草稿'); ta.dispatchEvent(new Event('input', { bubbles: true })); return true; })()" },
     { op: "wait", ms: 2200 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
     { op: "screenshot", name: "e-card-draft-failure" },
     { op: "eval", js: "(function(){ var b = document.querySelector('[data-im=\"card-draft-retry\"]'); if (!b) return 'no-retry'; b.click(); return 'clicked'; })()" },
     { op: "wait", ms: 1500 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
-    { op: "eval", js: "(function(){ return window.__e.clickText('[data-im=\"card-editor\"] button', '取消'); })()" },
+    { op: "eval", js: "(function(){ return window.__e.clickText('[data-im=\"card\"] button', '取消'); })()" },
     { op: "wait", ms: 600 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"card-edit\"]'); })()" },
@@ -571,6 +578,14 @@ function scenarioCardDraft() {
     { op: "wait", ms: 1600 },
     { op: "eval", js: CARD_DRAFT_MEASURE },
     { op: "screenshot", name: "e-card-draft-retry-ok" },
+    /* 未确认的草稿不能变成正式卡片：用真实接口对照卡片数量与这张卡的内容 */
+    { op: "eval", js: "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); var live = (j.state.cards||[]).filter(function(c){return !c.deleted;}); var target = live.filter(function(c){return c.id==='s_note_b';})[0]; return JSON.stringify({ liveCards: live.length, ids: live.map(function(c){return c.id;}), sNoteB: target ? target.content : null, groupNames: (j.state.groups||[]).map(function(g){return g.name;}) }); })()" },
+    /* 收尾：把这条草稿清空（写空串 ≠ 建卡），再正常关闭编辑器 */
+    { op: "eval", js: "(function(){ var ta = document.querySelector('[data-im=\"card-editor\"]'); if (!ta) return 'no-editor'; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, ''); ta.dispatchEvent(new Event('input', { bubbles: true })); return 'cleared'; })()" },
+    { op: "wait", ms: 1600 },
+    { op: "eval", js: "(function(){ return window.__e.clickText('[data-im=\"card\"] button', '取消'); })()" },
+    { op: "wait", ms: 600 },
+    { op: "eval", js: CARD_DRAFT_MEASURE },
   ];
 }
 
@@ -690,28 +705,166 @@ const VIS_MEASURE = [
   "})()",
 ].join("\n");
 
+/* 用产品真实的指针处理路径选中一张卡片：先把它定位到视口里，再在卡片内找一个没被别的
+   浮层盖住的点，派发 pointerdown/pointerup（合成的指针手势，走的是组件的真实处理函数）。 */
+const SELECT_CARD = "(function(){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_a\"]'); if (!el) return 'no-card';" +
+  " window.dispatchEvent(new CustomEvent('qio:interactive:locate-card', { detail: { cardId: 's_note_a' } })); return 'located'; })()";
+const CLICK_CARD = "(function(){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_a\"]'); if (!el) return 'no-card';" +
+  " var r = el.getBoundingClientRect(); var pts = [];" +
+  " for (var fy = 0.15; fy <= 0.9; fy += 0.15) { for (var fx = 0.2; fx <= 0.85; fx += 0.2) { pts.push([Math.round(r.left + r.width * fx), Math.round(r.top + r.height * fy)]); } }" +
+  " var pick = null;" +
+  " for (var i = 0; i < pts.length; i++) { var t = document.elementFromPoint(pts[i][0], pts[i][1]); if (t && (el === t || el.contains(t))) { pick = pts[i]; break; } }" +
+  " if (!pick) return JSON.stringify({ error: 'no-free-point', rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } });" +
+  " function pe(type, target, buttons) { target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: pick[0], clientY: pick[1], pointerId: 1, isPrimary: true, button: 0, buttons: buttons })); }" +
+  " pe('pointerdown', el, 1); pe('pointerup', window, 0);" +
+  " return JSON.stringify({ point: pick, toolbar: !!document.querySelector('[data-im=\"card-toolbar\"]'), check: !!document.querySelector('[data-im=\"check\"]') }); })()";
+
 function scenarioVisibility() {
   return [
     { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
     { op: "eval", js: HELPERS },
     { op: "viewport", width: 1440, height: 900, ms: 700 },
     { op: "eval", js: VIS_MEASURE },
-    { op: "drag", from: { selector: '[data-im="card"][data-card-id="s_note_a"]', fx: 0.5, fy: 0.2 }, to: { selector: '[data-im="card"][data-card-id="s_note_a"]', fx: 0.5, fy: 0.2 }, steps: 2, after: 600 },
-    { op: "eval", js: "(function(){ var c = document.querySelector('[data-im=\"check\"]'); if (!c) return 'no-checkbox'; if (c.checked) { c.click(); return 'unchecked'; } return 'already-unchecked'; })()" },
-    { op: "wait", ms: 1800 },
-    { op: "eval", js: VIS_MEASURE },
-    { op: "screenshot", name: "e-visibility-unchecked" },
+    { op: "eval", js: SELECT_CARD },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: CLICK_CARD },
+    { op: "wait", ms: 600 },
     { op: "eval", js: "(function(){ var c = document.querySelector('[data-im=\"check\"]'); if (!c) return 'no-checkbox'; if (!c.checked) { c.click(); return 'checked'; } return 'already-checked'; })()" },
     { op: "wait", ms: 1800 },
     { op: "eval", js: VIS_MEASURE },
-    { op: "eval", js: "(function(){ window.__eSub = null; var of = window.fetch; window.fetch = function () { var args = arguments; return of.apply(this, args).then(function (r) { if (String(args[0]).indexOf('/submissions') >= 0) { r.clone().json().then(function (j) { window.__eSub = j; }).catch(function () {}); } return r; }); }; return true; })()" },
+    { op: "screenshot", name: "e-visibility-checked" },
+    /* 模拟：提交接口失败（页面级拦截）→ 勾选必须保留 */
+    { op: "eval", js: "(function(){ var of = window.fetch; window.__eRealFetch3 = of; window.fetch = function () { if (String(arguments[0]).indexOf('/submissions') >= 0) { return Promise.resolve(new Response(JSON.stringify({ detail: '模拟：提交失败（页面级拦截）' }), { status: 500, headers: { 'Content-Type': 'application/json' } })); } return of.apply(this, arguments); }; return true; })()" },
+    { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"submit\"]'); })()" },
+    { op: "wait", ms: 3000 },
+    { op: "eval", js: VIS_MEASURE },
+    { op: "screenshot", name: "e-visibility-submit-failed" },
+    /* 恢复网络后真实提交：成功后勾选被取消，载荷里不含未勾选注释 */
+    { op: "eval", js: "(function(){ if (window.__eRealFetch3) window.fetch = window.__eRealFetch3; window.__eSub = null; var of = window.fetch; window.fetch = function () { var args = arguments; return of.apply(this, args).then(function (r) { if (String(args[0]).indexOf('/submissions') >= 0) { r.clone().json().then(function (j) { window.__eSub = j; }).catch(function () {}); } return r; }); }; return true; })()" },
     { op: "eval", js: "(function(){ return window.__e.click('[data-im=\"submit\"]'); })()" },
     { op: "wait", ms: 5000 },
     { op: "eval", js: VIS_MEASURE },
     { op: "screenshot", name: "e-visibility-after-submit" },
+    /* 复位：本次复核开始时 s_note_a 是勾选状态，恢复它 */
+    { op: "eval", js: "(function(){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_a\"]'); if (!el) return 'no-card';" +
+      " window.dispatchEvent(new CustomEvent('qio:interactive:locate-card', { detail: { cardId: 's_note_a' } })); return 'located'; })()" },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: "(function(){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_a\"]'); if (!el) return 'no-card'; var r = el.getBoundingClientRect();" +
+      " var pts = []; for (var fy = 0.15; fy <= 0.9; fy += 0.15) { for (var fx = 0.2; fx <= 0.85; fx += 0.2) { pts.push([Math.round(r.left + r.width * fx), Math.round(r.top + r.height * fy)]); } }" +
+      " var pick = null; for (var i = 0; i < pts.length; i++) { var t = document.elementFromPoint(pts[i][0], pts[i][1]); if (t && (el === t || el.contains(t))) { pick = pts[i]; break; } }" +
+      " if (!pick) return 'no-free-point';" +
+      " function pe(type, target, buttons) { target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: pick[0], clientY: pick[1], pointerId: 1, isPrimary: true, button: 0, buttons: buttons })); }" +
+      " pe('pointerdown', el, 1); pe('pointerup', window, 0); return 'clicked'; })()" },
+    { op: "wait", ms: 500 },
+    { op: "eval", js: "(function(){ var c = document.querySelector('[data-im=\"check\"]'); if (!c) return 'no-checkbox'; if (!c.checked) { c.click(); return 'restored-checked'; } return 'already-checked'; })()" },
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: VIS_MEASURE },
   ];
 }
 
+
+/* --------------------------------------------------- 复核收尾：把我造出来的卡片删掉 */
+
+const STATE_REPORT = "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json(); window.__eBoard = j.state;" +
+  " return JSON.stringify({ cards: (j.state.cards||[]).filter(function(c){return !c.deleted;}).map(function(c){return c.id;})," +
+  " groups: (j.state.groups||[]).filter(function(g){return !g.deleted;}).map(function(g){return { id: g.id, name: g.name, defaultName: g.defaultName, members: g.members };})," +
+  " links: (j.state.links||[]).filter(function(l){return !l.deleted;}).length }); })()";
+
+function scenarioCleanup() {
+  var originals = ["s_note_a", "s_note_b", "s_code", "s_long"];
+  return [
+    { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
+    { op: "eval", js: HELPERS },
+    { op: "viewport", width: 1440, height: 900, ms: 700 },
+    { op: "eval", js: STATE_REPORT },
+    /* 找出复核期间新增的卡片（原始板面只有四张 s_* 卡片），逐个选中并删除 */
+    { op: "eval", js: "(function(){ var keep = " + JSON.stringify(originals) + "; var extras = window.__e.qa('[data-im=\"card\"][data-card-id]').map(function(e){return e.getAttribute('data-card-id');}).filter(function(id){ return keep.indexOf(id) < 0; }); extras.forEach(function(id, i){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"' + id + '\"]'); if (el) el.setAttribute('data-e-clean', String(i)); }); return JSON.stringify(extras); })()" },
+    { op: "drag", from: { selector: '[data-e-clean="0"]', fx: 0.5, fy: 0.2 }, to: { selector: '[data-e-clean="0"]', fx: 0.5, fy: 0.2 }, steps: 2, after: 500 },
+    { op: "eval", js: "(function(){ var b = document.querySelector('[data-im=\"delete-card\"]'); if (!b) return 'no-delete-button'; b.click(); return 'deleted-1'; })()" },
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: "(function(){ var keep = " + JSON.stringify(originals) + "; var extras = window.__e.qa('[data-im=\"card\"][data-card-id]').map(function(e){return e.getAttribute('data-card-id');}).filter(function(id){ return keep.indexOf(id) < 0; }); extras.forEach(function(id, i){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"' + id + '\"]'); if (el) el.setAttribute('data-e-clean', String(i)); }); return JSON.stringify(extras); })()" },
+    { op: "drag", from: { selector: '[data-e-clean="0"]', fx: 0.5, fy: 0.2 }, to: { selector: '[data-e-clean="0"]', fx: 0.5, fy: 0.2 }, steps: 2, after: 500 },
+    { op: "eval", js: "(function(){ var b = document.querySelector('[data-im=\"delete-card\"]'); if (!b) return 'no-delete-button'; b.click(); return 'deleted-2'; })()" },
+    { op: "wait", ms: 1800 },
+    /* 组名改回复核前的「默认组名」（用户自己改名，走真实路径） */
+    { op: "eval", js: "(function(){ var inputs = window.__e.qa('[data-im=\"group-name\"]'); var target = null; for (var i=0;i<inputs.length;i++){ if (inputs[i].value === 'E-复核-自定义组名' || inputs[i].value === '组 7') target = inputs[i]; } if (!target) return 'no-target-group'; target.value = '默认组名'; target.dispatchEvent(new Event('change', { bubbles: true })); return 'renamed-back'; })()" },
+    { op: "wait", ms: 2000 },
+    { op: "eval", js: STATE_REPORT },
+    { op: "screenshot", name: "e-cleanup-final" },
+  ];
+}
+
+/* ------------------------------------------- 单击重叠卡片是否擅自成组（复核发现的疑点） */
+
+/* 复位：把复核期间被拖动的 s_long 放回原位（合成指针手势，走组件真实拖动逻辑） */
+
+function scenarioRestore() {
+  return [
+    { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
+    { op: "eval", js: HELPERS },
+    { op: "viewport", width: 1440, height: 900, ms: 700 },
+    { op: "eval", js: STATE_REPORT },
+    { op: "eval", js: "(function(){ window.dispatchEvent(new CustomEvent('qio:interactive:locate-card', { detail: { cardId: 's_long' } })); return 'located'; })()" },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: "(function(){ var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_long\"]'); if (!el) return 'no-card';" +
+      " var r = el.getBoundingClientRect(); var pts = []; for (var fy = 0.2; fy <= 0.9; fy += 0.15) { for (var fx = 0.2; fx <= 0.85; fx += 0.2) { pts.push([Math.round(r.left + r.width * fx), Math.round(r.top + r.height * fy)]); } }" +
+      " var pick = null; for (var i = 0; i < pts.length; i++) { var t = document.elementFromPoint(pts[i][0], pts[i][1]); if (t && (el === t || el.contains(t))) { pick = pts[i]; break; } }" +
+      " if (!pick) return 'no-free-point';" +
+      " var board = window.__eBoard; if (!board) return 'no-board-data';" +
+      " var card = null; for (var k = 0; k < board.cards.length; k++) { if (board.cards[k].id === 's_long') card = board.cards[k]; }" +
+      " if (!card) return 'no-card-data';" +
+      " var dx = 380 - card.x, dy = 379 - card.y;" +
+      " function pe(type, target, x, y, buttons) { target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, buttons: buttons })); }" +
+      " pe('pointerdown', el, pick[0], pick[1], 1);" +
+      " for (var s = 1; s <= 5; s++) { pe('pointermove', window, Math.round(pick[0] + dx * s / 5), Math.round(pick[1] + dy * s / 5), 1); }" +
+      " pe('pointerup', window, Math.round(pick[0] + dx), Math.round(pick[1] + dy), 0);" +
+      " return JSON.stringify({ from: pick, dx: dx, dy: dy }); })()" },
+    { op: "wait", ms: 2000 },
+    { op: "eval", js: STATE_REPORT },
+    { op: "screenshot", name: "e-restore-final" },
+  ];
+}
+
+const MERGE_PROBE = [
+  "(async function(){ var r = await fetch('http://127.0.0.1:8931/api/interactive/boards/board_default/state'); var j = await r.json();",
+  " return JSON.stringify({ groups: (j.state.groups||[]).filter(function(g){return !g.deleted;}).map(function(g){return { id: g.id, members: g.members };}),",
+  " toolbars: document.querySelectorAll('[data-im=\"card-toolbar\"]').length, notice: window.__e.text('.tb-notice') }); })()",
+].join("\n");
+
+function scenarioClickMerge() {
+  return [
+    { op: "navigate", url: FE + "/#/interactive", ms: 4000 },
+    { op: "eval", js: HELPERS },
+    { op: "viewport", width: 1440, height: 900, ms: 700 },
+    { op: "eval", js: MERGE_PROBE },
+    /* 先把这一组解除：成员留在原地（仍然重叠），但已经不是一组 */
+    { op: "eval", js: "(function(){ var groups = window.__e.qa('[data-im=\"group\"]'); for (var i = 0; i < groups.length; i++) { var members = groups[i].querySelector('.count'); var id = groups[i].getAttribute('data-group-id'); if (id === 'g_muxyu67g1i9vt') { var btns = Array.prototype.slice.call(groups[i].querySelectorAll('button')); var b = btns.filter(function (x) { return (x.innerText || '').indexOf('解除组') >= 0; })[0]; if (b) { b.click(); return 'dissolved'; } } } return 'not-found'; })()" },
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: MERGE_PROBE },
+    { op: "screenshot", name: "e-click-merge-before" },
+    { op: "eval", js: "(function(){ window.dispatchEvent(new CustomEvent('qio:interactive:locate-card', { detail: { cardId: 's_note_b' } })); return 'located-b'; })()" },
+    { op: "wait", ms: 900 },
+    /* 纯单击：pointerdown 之后**没有任何移动**就 pointerup（合成指针手势，走组件真实处理函数） */
+    { op: "eval", js: "(function(){ function pointsFor(el){ var r = el.getBoundingClientRect(); var pts = []; for (var fy = 0.15; fy <= 0.9; fy += 0.15) { for (var fx = 0.2; fx <= 0.85; fx += 0.2) { pts.push([Math.round(r.left + r.width * fx), Math.round(r.top + r.height * fy)]); } } return pts; }" +
+      " function freePoint(el){ var pts = pointsFor(el); for (var i = 0; i < pts.length; i++) { var t = document.elementFromPoint(pts[i][0], pts[i][1]); if (t && (el === t || el.contains(t))) return pts[i]; } return null; }" +
+      " var el = document.querySelector('[data-im=\"card\"][data-card-id=\"s_note_b\"]'); if (!el) return 'no-card';" +
+      " var pick = freePoint(el);" +
+      " if (!pick) { var vp = document.querySelector('.board-viewport'); if (vp) { var rr = el.getBoundingClientRect(); vp.scrollTop = vp.scrollTop + Math.round(rr.top) - 140; pick = freePoint(el); } }" +
+      " if (!pick) return 'no-free-point';" +
+      " function pe(type, target, buttons) { target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: pick[0], clientY: pick[1], pointerId: 1, isPrimary: true, button: 0, buttons: buttons })); }" +
+      " pe('pointerdown', el, 1); pe('pointerup', window, 0); return JSON.stringify({ point: pick }); })()" },
+    { op: "eval", js: "(function(){ window.dispatchEvent(new CustomEvent('qio:interactive:locate-card', { detail: { cardId: 's_note_b' } })); return 'located-b'; })()" },
+    { op: "wait", ms: 900 },
+    /* 纯单击：pointerdown 之后**没有任何移动**就 pointerup */
+    { op: "wait", ms: 1500 },
+    { op: "eval", js: MERGE_PROBE },
+    { op: "screenshot", name: "e-click-merge-after" },
+    /* 复位：如果又被并成一组，再次解除 */
+    { op: "eval", js: "(function(){ var groups = window.__e.qa('[data-im=\"group\"]'); for (var i = 0; i < groups.length; i++) { var id = groups[i].getAttribute('data-group-id'); if (id !== 's_group') { var btns = Array.prototype.slice.call(groups[i].querySelectorAll('button')); var b = btns.filter(function (x) { return (x.innerText || '').indexOf('解除组') >= 0; })[0]; if (b) { b.click(); return 'dissolved-again'; } } } return 'nothing-to-dissolve'; })()" },
+    { op: "wait", ms: 1800 },
+    { op: "eval", js: MERGE_PROBE },
+  ];
+}
 const SCENARIOS = {
   layout: { steps: scenarioLayout, note: "布局：3 尺寸 × 暗/亮" },
   connect: { steps: scenarioConnect, note: "连接点是否被局部工具栏盖住（每尺寸重复 3 次）" },
@@ -723,6 +876,9 @@ const SCENARIOS = {
   "card-draft": { steps: scenarioCardDraft, note: "卡片草稿保存失败与重试（模拟）" },
   pure: { steps: scenarioPure, note: "纯函数级反例（默认组名 / 按秒归批 / 剩余数判资格）" },
   visibility: { steps: scenarioVisibility, note: "未勾选注释的可见范围与提交后的勾选" },
+  cleanup: { steps: scenarioCleanup, note: "收尾：删除复核期间新增的卡片、组名改回默认" },
+  "click-merge": { steps: scenarioClickMerge, note: "单击重叠卡片是否擅自成组" },
+  restore: { steps: scenarioRestore, note: "复位：把被拖动的 s_long 放回原位" },
 };
 
 const wanted = process.argv[2] || "layout";

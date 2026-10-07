@@ -386,6 +386,9 @@ function onDragStart(cardId: string, event: PointerEvent) {
     y: card.y,
     preview: previewDrop(current, cardId, card.x, card.y),
     fromGroupId: from ? from.id : null,
+    // 是否真的移动过：纯单击（用来选中卡片）**不是**拖动，松手时不许判落点、不许成组、不许保存
+    moved: false,
+    startClient: { x: event.clientX, y: event.clientY },
   };
   panning.value = null;
   notice.value = "";
@@ -405,6 +408,11 @@ function onPointerMove(event: PointerEvent) {
   }
   const drag = dragging.value;
   if (drag && current) {
+    // 与平移/框选一致：超过 3px 才算拖动；在此之前不移动卡片、不预演落点
+    if (!drag.moved && (Math.abs(event.clientX - drag.startClient.x) > 3 || Math.abs(event.clientY - drag.startClient.y) > 3)) {
+      drag.moved = true;
+    }
+    if (!drag.moved) return;
     const point = boardPointOf(event);
     const x = point.x - drag.offsetX;
     const y = point.y - drag.offsetY;
@@ -437,6 +445,11 @@ function onPointerUp() {
   if (drag && current) {
     detachPointerListeners();
     dragging.value = null;
+    if (!drag.moved) {
+      // 纯单击：只当作选中（选中逻辑在 pointerdown 里已经处理），板面**不产生任何改动**
+      refreshOverlay();
+      return;
+    }
     const result = dropCard(current, drag.cardId, drag.x, drag.y);
     const formed = !drag.fromGroupId && Boolean(result.groupId);
     const label = dragLabel(drag, result.groupId, result.merged, formed);
