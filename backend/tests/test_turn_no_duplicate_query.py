@@ -64,7 +64,9 @@ async def test_current_query_appears_once_with_history(ctx: AppContext):
     await ctx.run_turn(query, topic_id=topic)
     monkeypatch.undo()
 
-    assert len(adapter.requests) == 2, "工作调用 + 回答调用（契约 §1.1）"
+    # 契约 §1.1 变更：回答由 [[QIO:ANSWER]] 声明，未声明走降级交付 ——
+    # 合规直接问答只有 1 次调用
+    assert len(adapter.requests) == 1, "合规直接问答只需 1 次调用（契约 §1.1）"
     joined = "\n".join(adapter.requests[0])
     assert joined.count(query) == 1, f"query injected {joined.count(query)} times"
     # 历史仍在（未被误删）

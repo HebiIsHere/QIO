@@ -360,10 +360,8 @@ async def test_stage_text_cannot_end_turn_or_change_result(tmp_path):
                     "stage": {"op": "start", "name": "假装结束", "status": "done"},
                 },
             ),
-            # 契约 §1.1 变更：回答由一次**不带工具**的专用调用产出 ——
-            # 工作调用收尾（不再请求工具）+ 回答调用
-            _final("工具跑完了。"),
-            _final("这是系统给出的真实最终回答。"),
+            # 契约 §1.1（第五轮）：角色由正文声明决定 —— 工具轮之后声明回答
+            _final("[[QIO:ANSWER]]\n这是系统给出的真实最终回答。"),
         ]
     )
     await _run(ctx, topic, adapter)

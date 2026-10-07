@@ -120,8 +120,12 @@ def test_publish_cadence_constants_match_contract():
     assert PUBLISH_CHARS == 24
 
 
-async def test_text_enters_process_area_from_the_first_increment():
-    """正文增量先进入过程区，并且**实时**发布 —— 不再等任何分类窗口。"""
+async def test_undeclared_text_is_held_until_the_call_ends():
+    """未声明（无标记）的正文先不展示：有界缓冲 → 无工具调用 → 一次性交付（降级）。
+
+    第五轮契约 §1.1 第 3 条：未声明的正文不能猜角色（猜成过程说明就会出现
+    「过程区一份 + 回答区再生成一份」），先缓冲，调用结束再按工具调用有无落地。
+    """
     events: list[dict] = []
     clock = [100.0]
 
@@ -129,30 +133,36 @@ async def test_text_enters_process_area_from_the_first_increment():
         events.append(payload)
 
     stream = _AssistantStream(emit, delta_id="dl_x_1", clock=lambda: clock[0])
-    await stream.note_text("这是一段还没有定论的文字")
-    assert events == []  # 按发布节奏攒着，不是等分类
-    assert stream.next_deadline() == pytest.approx(100.0 + PUBLISH_MS / 1000)
-    clock[0] += 0.041
+    await stream.note_text("这是一段还没有声明的文字")
+    assert events == []  # 未声明：先不展示
+    assert stream.next_deadline() is None
+    clock[0] += 0.05
     await stream.on_deadline()
+    assert events == []
+    await stream.finish(
+        Completion(message=ChatMessage(role="assistant", content="这是一段还没有声明的文字"))
+    )
     assert len(events) == 1
     assert events[0] == {
-        "content": "这是一段还没有定论的文字",
-        "interim": True,
-        "streaming": True,
+        "content": "这是一段还没有声明的文字",
+        "interim": False,
+        "streaming": False,
         "delta_id": "dl_x_1",
         "seq": 1,
         "stage_id": None,
         "call_ids": [],
-        "role_evidence": None,
+        "role_evidence": "undeclared_answer",
     }
+    assert stream.answer_text == "这是一段还没有声明的文字"
+    assert stream.undeclared_answer_used is True
 
 
-async def test_work_call_text_stays_in_process_area_after_the_call_closes():
-    """工作调用结束**不提升**：那段文字按事实留在过程区（第四轮 §1.1）。
+async def test_work_call_text_stays_in_process_area_and_is_never_promoted():
+    """工作调用（出现工具调用）的正文按事实留在过程区：不提升、不搬动、不丢字。
 
-    工作调用的正文永远不是正式回答 —— 只有等这次调用结束才知道它是不是回答，
-    而「先整体搬入 / 缓存整段再播放」正是要修掉的旧行为。正式回答由随后那次
-    **不带工具**的调用产出（见 test_answer_call_streams_...）。
+    工具调用是「这条响应是工具轮」的直接证据：缓冲中的正文此刻按进度说明实时
+    放行；调用结束时它留在过程区，等 flush_interim 补阶段信息。正式回答只能由
+    **声明过的**正文产出（见 test_declared_answer_streams_...）。
     """
     events: list[dict] = []
     clock = [0.0]
@@ -162,53 +172,65 @@ async def test_work_call_text_stays_in_process_area_after_the_call_closes():
 
     stream = _AssistantStream(emit, delta_id="dl_x_1", clock=lambda: clock[0])
     await stream.note_text("第一句。")
-    clock[0] += 0.05
-    await stream.on_deadline()
-    await stream.note_text("第二句。")
-    clock[0] += 0.05
-    await stream.on_deadline()
-    assert [e["interim"] for e in events] == [True, True]
-    assert all(e["streaming"] is True for e in events)
+    assert events == []  # 还没出现工具调用：先缓冲（不猜角色）
+    await stream.note_tool_call()  # 工具调用 → 工作调用 → 实时进过程区
+    assert len(events) == 1
+    assert events[0]["interim"] is True and events[0]["streaming"] is True
+    assert events[0]["content"] == "第一句。"
 
-    # 工作调用结束（这次没有请求任何工具）
+    # 工作调用结束（这次请求了工具）：文字留在过程区，等阶段信息
     await stream.finish(
-        Completion(message=ChatMessage(role="assistant", content="第一句。第二句。"))
+        Completion(
+            message=ChatMessage(
+                role="assistant",
+                content="第一句。",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={})],
+            )
+        )
     )
+    assert len(events) == 1
+    await stream.flush_interim(stage_id=None, call_ids=["c1"])
     closed = events[-1]
     assert closed["interim"] is True  # 留在过程区：不搬动、不删除
     assert closed["streaming"] is False  # 收尾（不再增长）
-    assert closed["content"] == "第一句。第二句。"
+    assert closed["content"] == "第一句。"
     assert closed["delta_id"] == events[0]["delta_id"]
-    assert closed["seq"] == events[-2]["seq"] + 1
+    assert closed["seq"] == events[0]["seq"] + 1
     assert closed["role_evidence"] is None  # 工作调用没有任何角色证据
-    assert closed["stage_id"] is None and closed["call_ids"] == []
-    # 整个过程没有任何一条事件进过正式回答区
+    assert closed["stage_id"] is None and closed["call_ids"] == ["c1"]
+    # 整个过程没有任何一条事件进过正式回答区，工作正文也没有变成回答
     assert all(e["interim"] for e in events)
+    assert stream.answer_text == ""
 
 
 async def test_answer_stream_publishes_answer_area_events_from_the_first_increment():
-    """回答调用（tools=[]）：正文从第一个可发布增量起就是正式回答。"""
+    """声明回答：标记不展示，正文从第一个可发布增量起实时进正式回答区。"""
     events: list[dict] = []
     clock = [0.0]
 
     async def emit(payload: dict) -> None:
         events.append(payload)
 
-    stream = _AssistantStream(
-        emit, delta_id="dl_x_2", clock=lambda: clock[0], answer_from_start=True
-    )
-    await stream.note_text("第一句。")
+    stream = _AssistantStream(emit, delta_id="dl_x_2", clock=lambda: clock[0])
+    await stream.note_text(ANSWER_MARKER + "\n第一句。")
     clock[0] += 0.05
     await stream.on_deadline()
+    assert len(events) == 1
     assert events[-1]["interim"] is False and events[-1]["streaming"] is True
-    assert events[-1]["role_evidence"] == "tool_free_call"
+    assert events[-1]["content"] == "第一句。"  # 声明本身不展示
+    assert events[-1]["role_evidence"] == "declared_answer"
+    await stream.note_text("第二句。")
     await stream.finish(
-        Completion(message=ChatMessage(role="assistant", content="第一句。第二句。"))
+        Completion(
+            message=ChatMessage(role="assistant", content=ANSWER_MARKER + "\n第一句。第二句。")
+        )
     )
     # 结束时的收尾校准：同一 delta_id、同一份累计文字
     assert events[-1]["interim"] is False and events[-1]["streaming"] is False
-    assert events[-1]["content"] == "第一句。"
+    assert events[-1]["content"] == "第一句。第二句。"
     assert events[-1]["delta_id"] == "dl_x_2"
+    assert all(e["interim"] is False for e in events)
+    assert stream.answer_text == "第一句。第二句。"
 
 
 async def test_tool_round_text_stays_in_process_area_and_gets_stage_later():
@@ -221,12 +243,12 @@ async def test_tool_round_text_stays_in_process_area_and_gets_stage_later():
 
     stream = _AssistantStream(emit, delta_id="dl_x_1", clock=lambda: clock[0])
     await stream.note_text("这是一段完整的话，本来像正式回答。")
-    clock[0] += 0.05
-    await stream.on_deadline()
-    assert events[-1]["interim"] is True  # 不能先当正式回答再移走
+    assert events == []  # 未声明：先缓冲，绝不先当正式回答再移走
 
-    # 正文之后才出现的工具调用：只记事实，不改任何已发布文字的角色
+    # 正文之后才出现的工具调用：这条响应是工具轮 → 缓冲正文按进度说明实时放行
     await stream.note_tool_call()
+    assert events[-1]["interim"] is True
+    assert events[-1]["content"] == "这是一段完整的话，本来像正式回答。"
     assert all(e["interim"] is True for e in events)
 
     await stream.finish(
@@ -286,21 +308,22 @@ async def test_answer_from_start_streams_into_answer_area():
     async def emit(payload: dict) -> None:
         events.append(payload)
 
-    stream = _AssistantStream(
-        emit, delta_id="dl_x_2", clock=lambda: clock[0], answer_from_start=True
-    )
-    await stream.note_text("直接回答你。")
+    stream = _AssistantStream(emit, delta_id="dl_x_2", clock=lambda: clock[0])
+    await stream.note_text(ANSWER_MARKER + "\n直接回答你。")
     clock[0] += 0.05
     await stream.on_deadline()
     assert events[-1]["interim"] is False and events[-1]["streaming"] is True
-    assert events[-1]["role_evidence"] == "tool_free_call"
+    assert events[-1]["role_evidence"] == "declared_answer"
     await stream.finish(
-        Completion(message=ChatMessage(role="assistant", content="直接回答你。"))
+        Completion(
+            message=ChatMessage(role="assistant", content=ANSWER_MARKER + "\n直接回答你。")
+        )
     )
     assert events[-1]["interim"] is False and events[-1]["streaming"] is False
     assert events[-1]["content"] == "直接回答你。"
-    assert events[-1]["role_evidence"] == "tool_free_call"
+    assert events[-1]["role_evidence"] == "declared_answer"
     assert {e["interim"] for e in events} == {False}
+    assert all(ANSWER_MARKER not in e["content"] for e in events)
 
 
 async def test_publish_cadence_merges_by_char_count():
@@ -311,7 +334,8 @@ async def test_publish_cadence_merges_by_char_count():
 
     clock = [0.0]
     stream = _AssistantStream(emit, delta_id="dl_x_1", clock=lambda: clock[0])
-    await stream.note_text("开头")
+    # 声明回答：标记本身不展示，声明之后的正文按发布节奏合并
+    await stream.note_text(ANSWER_MARKER + "\n开头")
     for _ in range(60):
         await stream.note_text("a")
     # 62 个字符 → 按 ≥24 字符合并，绝不逐字符发
@@ -321,9 +345,10 @@ async def test_publish_cadence_merges_by_char_count():
     await stream.finish(None)
     assert events[-1]["streaming"] is False
     assert events[-1]["content"] == "开头" + "a" * 60
-    # 流断（没有「调用结束且无工具调用」这个判据）→ 已确认文字留在过程区
-    assert all(e["interim"] is True for e in events)
-    assert all(e["role_evidence"] is None for e in events)
+    # 声明回答 → 全部进正式回答区；声明本身不出现
+    assert all(e["interim"] is False for e in events)
+    assert all(e["role_evidence"] == "declared_answer" for e in events)
+    assert all(ANSWER_MARKER not in e["content"] for e in events)
     seqs = [e["seq"] for e in events]
     assert seqs == sorted(set(seqs))  # seq 单调、不重复、不回退
 
@@ -354,30 +379,31 @@ async def test_finish_uses_completion_text_when_no_delta_arrived():
     # 工具轮的正文不是正式回答：没有任何角色证据
     assert events[0]["role_evidence"] is None
 
-    # 回答调用（tools=[]）整段返回：正文是正式回答
-    answer = Completion(message=ChatMessage(role="assistant", content="整段回答"))
+    # 声明回答、整段返回：正文是正式回答（标记不展示）
+    answer = Completion(
+        message=ChatMessage(role="assistant", content=ANSWER_MARKER + "\n整段回答")
+    )
     again: list[dict] = []
 
     async def emit2(payload: dict) -> None:
         again.append(payload)
 
-    await _AssistantStream(
-        emit2, delta_id="dl_x_2", answer_from_start=True
-    ).finish(answer)
+    await _AssistantStream(emit2, delta_id="dl_x_2").finish(answer)
     assert len(again) == 1 and again[0]["content"] == "整段回答"
     assert again[0]["interim"] is False and again[0]["streaming"] is False
-    assert again[0]["role_evidence"] == "tool_free_call"
+    assert again[0]["role_evidence"] == "declared_answer"
 
-    # 工作调用（tools=[...]）整段返回、且没有工具调用：按事实留在过程区，**不提升**
+    # 未声明、整段返回、且没有工具调用：正式回答（降级路径，一次性交付）
+    undeclared = Completion(message=ChatMessage(role="assistant", content="整段回答"))
     work: list[dict] = []
 
     async def emit3(payload: dict) -> None:
         work.append(payload)
 
-    await _AssistantStream(emit3, delta_id="dl_x_3").finish(answer)
+    await _AssistantStream(emit3, delta_id="dl_x_3").finish(undeclared)
     assert len(work) == 1 and work[0]["content"] == "整段回答"
-    assert work[0]["interim"] is True and work[0]["streaming"] is False
-    assert work[0]["role_evidence"] is None
+    assert work[0]["interim"] is False and work[0]["streaming"] is False
+    assert work[0]["role_evidence"] == "undeclared_answer"
 
 
 async def test_finish_without_any_text_publishes_nothing():
@@ -634,21 +660,25 @@ async def test_anthropic_stream_rejects_http_error_before_any_text():
 # ---- AgentLoop：真流式端到端 -------------------------------------------------
 
 
-async def test_answer_call_streams_into_answer_area_from_the_first_increment():
-    """第四轮契约 §1.1：角色只看「这次调用带不带工具」。
+async def test_answer_after_a_tool_round_streams_live_from_the_first_increment():
+    """工具轮之后的回答：正文声明 → 从**第一个可发布增量**起实时进正式回答区。
 
-    工作调用（tools=[...]）没有请求任何工具 → 工作阶段结束 → 发起一次 tools=[]
-    的回答调用；它的正文从**第一个可发布增量**起就是 interim=false、streaming=true，
-    而且**早于这次调用结束**（真流式，不是「先过程区、结束后提升」）。
+    第五轮契约 §1.1：角色只看正文声明，不看这次调用带不带工具 —— 工具列表非空时
+    同样成立。声明之后的第一段回答**早于这次调用结束**就出现在回答区（真流式）。
     """
     hold = asyncio.Event()
     adapter = FakeStreamAdapter(
         [
-            # ① 工作调用：带全套工具，但没有请求工具 → 工作阶段结束
-            StreamScript(text="我先看一下。"),
-            # ② 回答调用：不带工具、真流式；第一段之后**暂停**（provider 还没结束）
+            # ① 工作轮：带工具、真的调用了工具（正文是过程说明）
             StreamScript(
-                text_chunks=["第一段回答", "第二段回答"], hold=hold, hold_after=1
+                text="我先看一下。",
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            ),
+            # ② 声明回答：真流式；第一段之后**暂停**（provider 还没结束）
+            StreamScript(
+                text_chunks=[ANSWER_MARKER + "\n", "第一段回答", "第二段回答"],
+                hold=hold,
+                hold_after=2,
             ),
         ]
     )
@@ -670,15 +700,15 @@ async def test_answer_call_streams_into_answer_area_from_the_first_increment():
     try:
         assert early is not None, "正式回答必须在 provider 结束前就出现在回答区"
         assert not task.done(), "不能等整段响应结束才展示正式回答"
-        assert early["content"] == "第一段回答"
+        assert early["content"] == "第一段回答"  # 声明本身不展示
         assert early["streaming"] is True and early["interim"] is False
-        assert early["delta_id"] == "dl_1_2"  # 第二次调用 = 回答调用
-        assert early["role_evidence"] == "tool_free_call"
-        # 工作调用必须带工具；回答调用**不带任何工具**（所以不会再被工具调用打断）
+        assert early["delta_id"] == "dl_1_2"  # 第二次调用
+        assert early["role_evidence"] == "declared_answer"
+        # 成本：工具轮 + 声明回答，一共 2 次调用；两次都带全套工具（角色由声明决定）
         assert len(adapter.requests) == 2
         assert [t.name for t in adapter.requests[0]["tools"]] != []
-        assert [t.name for t in adapter.requests[1]["tools"]] == []
-        # 工作调用的文字按事实留在过程区：不搬动、不删除、也不会出现在回答区
+        assert [t.name for t in adapter.requests[1]["tools"]] != []
+        # 工作轮的正文按事实留在过程区：不搬动、不删除、也不会出现在回答区
         work_notes = [e for e in _events(bus, "ASSISTANT") if e["interim"]]
         assert work_notes and work_notes[0]["content"] == "我先看一下。"
         assert all("我先看一下。" not in (e["content"] or "") for e in _events(bus, "ASSISTANT") if not e["interim"])
@@ -709,10 +739,8 @@ async def test_tool_round_keeps_interim_text_and_executes_assembled_arguments():
                 text="我先读一下文件。",
                 tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
             ),
-            # 工作调用收尾：没有请求工具（也没有正文）→ 工作阶段结束
-            StreamScript(text=""),
-            # 回答调用（tools=[]）：正式回答
-            StreamScript(text="完成"),
+            # 声明回答：正式回答（声明本身不展示）
+            StreamScript(text=ANSWER_MARKER + "\n完成"),
         ]
     )
     bus = EventBus()
@@ -720,19 +748,22 @@ async def test_tool_round_keeps_interim_text_and_executes_assembled_arguments():
     result = await loop.run("hi")
 
     assert result.tool_calls_made == 1 and result.final_content == "完成"
-    # 成本如实（第四轮 §1.1）：2 次工作调用 + 1 次不带工具的回答调用
-    assert len(adapter.requests) == 3
-    assert [t.name for t in adapter.requests[2]["tools"]] == []
+    # 成本如实（第五轮 §1.1）：工具轮 + 声明回答，一共 2 次调用（不再固定 +1）
+    assert len(adapter.requests) == 2
+    assert [t.name for t in adapter.requests[1]["tools"]] != []  # 角色由声明决定
     assistant = _events(bus, "ASSISTANT")
     assert any(e["interim"] is True and e["content"] == "我先读一下文件。" for e in assistant)
     # 过程区文字带上了这一批的 call_ids，且排在 TOOL_START 之前（阶段/归属先就位）；
     # 工具轮的正文**永不**出现在正式回答区（审计问题 2）。
     kinds = [e.type.value for e in bus._history]
     interim = [e for e in assistant if e["interim"]]
-    assert len(interim) == 1
-    assert interim[0]["content"] == "我先读一下文件。"
-    assert interim[0]["call_ids"] == ["c1"]
-    assert all(not e["interim"] for e in assistant if e is not interim[0])
+    # 过程区两条：工具调用出现时的实时放行 + 阶段就位后的累计快照（同一 delta_id）
+    assert len(interim) == 2
+    assert all(e["content"] == "我先读一下文件。" for e in interim)
+    assert interim[0]["streaming"] is True and interim[-1]["streaming"] is False
+    assert interim[-1]["call_ids"] == ["c1"]
+    assert {e["delta_id"] for e in interim} == {"dl_1_1"}
+    assert all(not e["interim"] for e in assistant if e not in interim)
     assert not any(
         e["content"] == "我先读一下文件。" and not e["interim"] for e in assistant
     )
@@ -760,8 +791,7 @@ async def test_one_second_late_tool_call_never_shows_answer_then_moves_it():
                 tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
                 gap_ms=1000,
             ),
-            StreamScript(text=""),  # 工作调用收尾：没有请求工具
-            StreamScript(text="完成"),  # 回答调用（tools=[]）
+            StreamScript(text=ANSWER_MARKER + "\n完成"),  # 声明回答
         ]
     )
     bus = EventBus()
@@ -783,22 +813,23 @@ async def test_one_second_late_tool_call_never_shows_answer_then_moves_it():
     assert tool_round[-1]["content"] == said
     assert tool_round[-1]["call_ids"] == ["c1"]
     assert tool_round[-1]["streaming"] is False  # 收尾快照
-    # 正式回答只属于**回答调用**（不带工具的那一次）；工具轮的正文一个字都没进回答区。
-    # 回答调用会发两条：未到发布阈值的增量先补一条 streaming=true，再一条收尾校准。
+    # 正式回答只属于**声明过的那次调用**；工具轮的正文一个字都没进回答区。
+    # 声明回答会发两条：未到发布阈值的增量先补一条 streaming=true，再一条收尾校准。
     answers = [e for e in assistant if not e["interim"]]
-    assert {e["delta_id"] for e in answers} == {"dl_1_3"}
+    assert {e["delta_id"] for e in answers} == {"dl_1_2"}
     assert answers[0]["streaming"] is True and answers[-1]["streaming"] is False
     assert all(said not in (e["content"] or "") for e in answers)
 
 
 async def test_anthropic_path_follows_the_same_role_rules():
-    """Anthropic SSE → AgentLoop：同一套角色规则（正文先过程区，调用结束提升）。"""
+    """Anthropic SSE → AgentLoop：同一套内容角色协议（声明 → 回答区，标记不展示）。"""
     from agent.adapters.anthropic import AnthropicAdapter
 
     lines = [
         'data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}',
         'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
-        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"先看"}}',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta",'
+        '"text":"[[QIO:ANSWER]]\\n先看"}}',
         'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"一下"}}',
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}',
         'data: {"type":"message_stop"}',
@@ -813,28 +844,27 @@ async def test_anthropic_path_follows_the_same_role_rules():
     finally:
         await adapter.close()
 
-    assert result.final_content == "先看一下"
+    assert result.final_content == "先看一下"  # 声明本身不展示
     assistant = _events(bus, "ASSISTANT")
     assert assistant
-    # 工作调用（带工具）：正文进过程区
-    work = [e for e in assistant if e["delta_id"] == "dl_1_1"]
-    assert work and all(e["interim"] is True for e in work)
-    # 回答调用（tools=[]）：正文从第一段起就进正式回答区，结束再补一条收尾校准
-    answer = [e for e in assistant if e["delta_id"] == "dl_1_2"]
+    # 声明回答：正文从第一段起就进正式回答区，结束再补一条收尾校准
+    answer = [e for e in assistant if e["delta_id"] == "dl_1_1"]
     assert answer and all(e["interim"] is False for e in answer)
+    assert answer[0]["streaming"] is True
     assert answer[-1]["streaming"] is False
     assert answer[-1]["content"] == "先看一下"
-    assert answer[-1]["role_evidence"] == "tool_free_call"
-    # 成本如实：工作调用 + 回答调用；回答调用**不下发 tools 字段**（本次没有工具）
-    assert len(fake.payloads) == 2
-    assert "tools" in fake.payloads[0] and fake.payloads[0]["tools"]
-    assert "tools" not in fake.payloads[1]
+    assert answer[-1]["role_evidence"] == "declared_answer"
+    assert all("[[QIO:ANSWER]]" not in e["content"] for e in answer)
+    # 成本如实：合规直接回答只需 1 次调用（不再固定 +1）
+    assert len(fake.payloads) == 1
+    assert fake.payloads[0]["tools"]
 
 
 # ---- 回答阶段：工作调用不再请求工具 → 一次 tools=[] 的回答调用（§1.1）--------------
 
 
-async def test_tool_phase_without_text_gets_one_tool_free_answer_call():
+async def test_tool_phase_without_text_gets_one_fallback_call():
+    """整轮完全没有回答内容 → 最多一次兜底调用（tools=[]）要求最终回答。"""
     adapter = FakeStreamAdapter(
         [
             # 1) 工具轮：一个字都没说，只调用工具
@@ -843,8 +873,8 @@ async def test_tool_phase_without_text_gets_one_tool_free_answer_call():
             ),
             # 2) 工具阶段收尾的调用：同样没有正文
             StreamScript(text=""),
-            # 3) 补的显式回答调用：正文从第一个增量起就是正式回答
-            StreamScript(text="这是正式回答"),
+            # 3) 兜底调用（tools=[]）：模型声明了回答
+            StreamScript(text=ANSWER_MARKER + "\n这是正式回答"),
         ]
     )
     bus = EventBus()
@@ -853,16 +883,15 @@ async def test_tool_phase_without_text_gets_one_tool_free_answer_call():
 
     assert result.tool_calls_made == 1
     assert result.final_content == "这是正式回答"
-    # 每轮恰好一次回答调用：3 次模型调用，最后一次**不带工具**
+    # 唯一允许的额外调用：3 次模型调用，最后一次**不带工具**
     assert len(adapter.requests) == 3
     assert [bool(r["tools"]) for r in adapter.requests] == [True, True, False]
-    assert result.iterations_used == 3  # 回答调用如实计入用量
+    assert result.iterations_used == 3  # 兜底调用如实计入用量
     answers = [e for e in _events(bus, "ASSISTANT") if not e["interim"]]
     assert answers and answers[-1]["content"] == "这是正式回答"
     assert answers[-1]["delta_id"] == "dl_1_3"
-    # 角色证据来自「这是不带工具的显式回答调用」本身，不是时间窗口
-    assert all(a["role_evidence"] == "tool_free_call" for a in answers)
-    # 前两次调用一个字都没有 → 不伪造过程区气泡；回答调用发两条（增量 + 收尾校准）
+    assert all(a["role_evidence"] == "declared_answer" for a in answers)
+    # 前两次调用一个字都没有 → 不伪造过程区气泡；声明回答发两条（增量 + 收尾校准）
     published = _events(bus, "ASSISTANT")
     assert [e["content"] for e in published] == ["这是正式回答", "这是正式回答"]
     assert published[0]["streaming"] is True and published[-1]["streaming"] is False
@@ -895,19 +924,20 @@ async def test_work_call_without_text_still_gets_the_answer_call():
     assert "没有产生回答" in (result.final_content or "")
 
 
-async def test_loop_without_any_tool_gets_a_single_answer_call():
-    """没有任何可用工具时，那次调用本来就不带工具 → 它已经是回答调用，不再多发。"""
+async def test_loop_without_any_tool_gets_a_single_call():
+    """没有任何可用工具时同样只调用一次：未声明的正文就是本轮回答（降级路径）。"""
     adapter = FakeStreamAdapter([StreamScript(text="直接回答")])
     bus = EventBus()
     result = await AgentLoop(adapter, ToolRegistry(), bus, turn_id="turn_1").run("hi")
     assert len(adapter.requests) == 1
     assert [r["tools"] for r in adapter.requests] == [[]]
     assert result.final_content == "直接回答"
-    # 回答调用发两条：先 streaming=true 的累计增量，再 streaming=false 的收尾校准
+    # 未声明 → 一次性交付到正式回答区（不冒充流式），不重新生成
     published = _events(bus, "ASSISTANT")
-    assert [e["interim"] for e in published] == [False, False]
-    assert published[0]["streaming"] is True and published[-1]["streaming"] is False
-    assert published[-1]["content"] == "直接回答"
+    assert len(published) == 1
+    assert published[0]["interim"] is False and published[0]["streaming"] is False
+    assert published[0]["content"] == "直接回答"
+    assert published[0]["role_evidence"] == "undeclared_answer"
 
 
 async def test_stage_id_is_attached_to_tool_events_when_provider_exists():
@@ -938,10 +968,17 @@ async def test_stage_id_is_attached_to_tool_events_when_provider_exists():
     assert answer and all(e["stage_id"] is None for e in answer)
 
 
-async def test_cancel_mid_stream_keeps_confirmed_text():
+async def test_cancel_mid_stream_keeps_confirmed_answer_text():
+    """取消时已经显示的**正式回答**文字不丢、不回退（声明回答的真流式路径）。"""
     hold = asyncio.Event()
     adapter = FakeStreamAdapter(
-        [StreamScript(text_chunks=["已经确认的一段"], hold=hold, hold_after=1)]
+        [
+            StreamScript(
+                text_chunks=[ANSWER_MARKER + "\n已经确认的一段"],
+                hold=hold,
+                hold_after=1,
+            )
+        ]
     )
     bus = EventBus()
     loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
@@ -954,14 +991,32 @@ async def test_cancel_mid_stream_keeps_confirmed_text():
 
     assert result.cancelled is True and result.phase.value == "stopped"
     published = _events(bus, "ASSISTANT")
-    assert published[0]["content"] == "已经确认的一段"
-    # 被取消的是**工作调用**：已确认文字保留在过程区（不搬动、不删除）
-    assert published[0]["interim"] is True and published[0]["streaming"] is True
+    assert published[0]["content"] == "已经确认的一段"  # 声明不展示
+    # 已经进入正式回答区的文字保留在原地：不搬动、不删除、不回退
+    assert published[0]["interim"] is False and published[0]["streaming"] is True
     assert published[-1]["streaming"] is False  # 收尾快照：状态由 TURN_END 给出
     assert published[-1]["content"] == "已经确认的一段"
-    assert published[-1]["interim"] is True
-    assert published[-1]["role_evidence"] is None
+    assert published[-1]["interim"] is False
+    assert published[-1]["role_evidence"] == "declared_answer"
     assert result.final_content is None  # 取消不落成「正常回答」
+
+
+async def test_cancel_with_undeclared_text_releases_it_to_the_process_area():
+    """取消时未声明的缓冲正文放行到过程区：不猜角色、不丢字。"""
+    events: list[dict] = []
+
+    async def emit(payload: dict) -> None:
+        events.append(payload)
+
+    stream = _AssistantStream(emit, delta_id="dl_x_1")
+    await stream.note_text("还没声明的一段")
+    assert events == []  # 未声明：先缓冲
+    await stream.finish(None)  # 取消 / 断流
+    assert len(events) == 1
+    assert events[0]["content"] == "还没声明的一段"
+    assert events[0]["interim"] is True and events[0]["streaming"] is False
+    assert events[0]["role_evidence"] is None
+    assert stream.answer_text == ""
 
 
 async def test_cancel_after_tool_round_call_keeps_the_text_in_the_process_area():
@@ -1069,10 +1124,16 @@ async def test_plain_adapter_exception_is_not_disguised_as_a_provider_error():
         await AgentLoop(normalized, _registry(), EventBus(), turn_id="turn_2").run("hi")
 
 
-async def test_adapter_without_streaming_gets_one_shot_assistant():
-    """不支持流式：工作调用与回答调用都一次性交付，且**不假装流式**。"""
+async def test_adapter_without_streaming_delivers_declared_and_undeclared_answers():
+    """不支持流式：整段交付；声明被识别，未声明走降级路径（都**不假装流式**）。"""
     adapter = FakeStreamAdapter(
-        [StreamScript(text="我先看一下。"), StreamScript(text="不支持流式也能回答")],
+        [
+            StreamScript(
+                text="我先看一下。",
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            ),
+            StreamScript(text=ANSWER_MARKER + "\n不支持流式也能回答"),
+        ],
         stream_supported=False,
     )
     bus = EventBus()
@@ -1081,17 +1142,31 @@ async def test_adapter_without_streaming_gets_one_shot_assistant():
     assert result.final_content == "不支持流式也能回答"
     published = _events(bus, "ASSISTANT")
     assert len(published) == 2
-    # 工作调用：进度说明（过程区）
+    # 工作轮：进度说明（过程区）
     assert published[0]["interim"] is True and published[0]["streaming"] is False
     assert published[0]["content"] == "我先看一下。"
     assert published[0]["delta_id"] == "dl_1_1" and published[0]["seq"] == 1
     assert published[0]["role_evidence"] is None
-    # 回答调用：正式回答
+    # 声明回答：整段交付（声明不展示、不假装流式）
     assert published[1]["streaming"] is False and published[1]["interim"] is False
+    assert published[1]["content"] == "不支持流式也能回答"
     assert published[1]["delta_id"] == "dl_1_2" and published[1]["seq"] == 1
     assert published[1]["stage_id"] is None and published[1]["call_ids"] == []
-    assert published[1]["role_evidence"] == "tool_free_call"
+    assert published[1]["role_evidence"] == "declared_answer"
     assert [r["stream"] for r in adapter.requests] == [False, False]  # 没有假装流式
+
+    # 未声明 + 没有工具调用：一次性交付到正式回答区（降级路径），不重新生成
+    undeclared = FakeStreamAdapter(
+        [StreamScript(text="没声明的整段回答")], stream_supported=False
+    )
+    bus2 = EventBus()
+    result2 = await AgentLoop(undeclared, _registry(), bus2, turn_id="turn_2").run("hi")
+    assert result2.final_content == "没声明的整段回答"
+    published2 = _events(bus2, "ASSISTANT")
+    assert len(published2) == 1
+    assert published2[0]["interim"] is False and published2[0]["streaming"] is False
+    assert published2[0]["role_evidence"] == "undeclared_answer"
+    assert len(undeclared.requests) == 1
 
 
 class _LyingAdapter(BaseAdapter):
@@ -1121,51 +1196,88 @@ async def test_adapter_claiming_streaming_but_not_implementing_it_degrades():
     result = await loop.run("hi")
 
     assert result.final_content == "整段回答"
-    # 工作调用 + 回答调用各降级一次（都整段返回，都不假装流式）
-    assert adapter.calls == 2
+    # 一次调用：整段返回（降级）；未声明的正文就是本轮回答，不重新生成
+    assert adapter.calls == 1
     published = _events(bus, "ASSISTANT")
-    assert len(published) == 2
+    assert len(published) == 1
     assert all(e["streaming"] is False for e in published)
-    assert published[-1]["interim"] is False  # 正式回答来自回答调用
+    assert published[0]["interim"] is False
+    assert published[0]["role_evidence"] == "undeclared_answer"
     assert any("不支持实时生成" in w for w in result.warnings)
 
 
 # ---- 回答阶段协议：阶段提示与各档位下发（§1.1）--------------------------------
 
 
-async def test_phase_hints_are_sent_with_each_call():
-    """工作 / 回答阶段各有一句 system 提示，随**对应**调用发出去（可被断言）。"""
-    from agent.core.loop import ANSWER_PHASE_HINT, WORK_PHASE_HINT
+async def test_content_role_protocol_is_sent_with_every_call():
+    """内容角色协议随**每次**调用发出（native 档作为最后一条 system 消息），可断言。"""
+    from agent.prompts import ANSWER_MARKER as PROTOCOL_MARKER
+    from agent.prompts import CONTENT_ROLE_PROTOCOL
 
-    # 提示的意图必须写在文本里：工作阶段只写进度说明，回答阶段不再有工具
-    assert "进度说明" in WORK_PHASE_HINT
-    assert "不带工具" in WORK_PHASE_HINT
-    assert "不提供任何工具" in ANSWER_PHASE_HINT
+    # 协议语义三件事必须写在文本里（措辞可改，语义不能少）
+    assert PROTOCOL_MARKER in CONTENT_ROLE_PROTOCOL
+    assert "进度说明" in CONTENT_ROLE_PROTOCOL
+    assert "开头" in CONTENT_ROLE_PROTOCOL
+    assert "工具" in CONTENT_ROLE_PROTOCOL  # 声明之后不要再请求工具
 
-    adapter = FakeStreamAdapter([StreamScript(text=""), StreamScript(text="正式回答")])
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})]
+            ),
+            StreamScript(text=ANSWER_MARKER + "\n正式回答"),
+        ]
+    )
     bus = EventBus()
     result = await AgentLoop(adapter, _registry(), bus, turn_id="turn_1").run("hi")
 
     assert result.final_content == "正式回答"
     assert len(adapter.requests) == 2
-    work_messages = adapter.requests[0]["messages"]
-    answer_messages = adapter.requests[1]["messages"]
-    assert work_messages[-1].role == "system"
-    assert work_messages[-1].content == WORK_PHASE_HINT
-    assert answer_messages[-1].role == "system"
-    assert answer_messages[-1].content == ANSWER_PHASE_HINT
-    # 提示只发给这一次调用，不写回对话记录
-    assert not any(m.content == ANSWER_PHASE_HINT for m in work_messages)
+    for request in adapter.requests:
+        messages = request["messages"]
+        assert messages[-1].role == "system"
+        assert messages[-1].content == CONTENT_ROLE_PROTOCOL
+        # 协议只发给这一次调用，不写回对话记录
+        assert not any(m.content == CONTENT_ROLE_PROTOCOL for m in messages[:-1])
 
 
-async def test_text_compat_answer_call_has_no_tools_and_ignores_tool_blocks():
-    """text 兼容档与 native / anthropic 一致：回答调用不带工具，返回的工具块不执行。"""
+async def test_text_tier_carries_the_protocol_in_its_own_system_prompt():
+    """text 兼容档：协议拼进它自己的 system prompt，循环不再重复注入（同一份措辞）。"""
     from agent.adapters.text import TextAdapter
-    from agent.tools.base import Tool, ToolResult
+    from agent.prompts import CONTENT_ROLE_PROTOCOL
 
     text_adapter = TextAdapter(client=object(), model="m")
-    assert "Available tools" not in text_adapter.build_system_prompt([])
-    assert "Available tools" in text_adapter.build_system_prompt(TOOLS)
+    prompt = text_adapter.build_system_prompt(TOOLS)
+    assert CONTENT_ROLE_PROTOCOL in prompt
+    assert prompt.count(CONTENT_ROLE_PROTOCOL) == 1
+    assert text_adapter.protocol_in_prompt is True
+
+    class _TextOnce(BaseAdapter):
+        mode = AdapterMode.TEXT
+        supports_stream = False
+        protocol_in_prompt = True
+
+        def __init__(self) -> None:
+            self.model = "text"
+            self.endpoint = None
+            self.requests: list[list[ChatMessage]] = []
+
+        async def complete(self, messages, tools, **kwargs):
+            self.requests.append(list(messages))
+            return Completion(
+                message=ChatMessage(role="assistant", content=ANSWER_MARKER + "\n回答")
+            )
+
+    adapter = _TextOnce()
+    result = await AgentLoop(adapter, _registry(), EventBus(), turn_id="turn_1").run("hi")
+    assert result.final_content == "回答"
+    assert len(adapter.requests) == 1
+    assert not any(m.content == CONTENT_ROLE_PROTOCOL for m in adapter.requests[0])
+
+
+async def test_text_compat_declared_answer_ignores_late_tool_blocks():
+    """text 兼容档与 native / anthropic 一致：声明回答之后请求的工具不执行（可见警告）。"""
+    from agent.tools.base import Tool, ToolResult
 
     class _CountingEcho(Tool):
         name = "echo"
@@ -1202,15 +1314,11 @@ async def test_text_compat_answer_call_has_no_tools_and_ignores_tool_blocks():
                         tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "hi"})],
                     )
                 )
-            if len(self.calls) == 2:
-                return Completion(
-                    message=ChatMessage(role="assistant", content="工作阶段结束。")
-                )
-            # 回答调用：模型违反「本次没有工具」，仍回了一个工具调用
+            # 声明回答：模型违反「声明之后不要再请求工具」，仍回了一个工具调用
             return Completion(
                 message=ChatMessage(
                     role="assistant",
-                    content="这是正式回答",
+                    content=ANSWER_MARKER + "\n这是正式回答",
                     tool_calls=[ToolCall(id="c9", name="echo", arguments={"text": "again"})],
                 )
             )
@@ -1219,14 +1327,25 @@ async def test_text_compat_answer_call_has_no_tools_and_ignores_tool_blocks():
     tool = _CountingEcho()
     registry.register(tool)
     adapter = _TextAdapter()
-    loop = AgentLoop(adapter, registry, EventBus(), turn_id="turn_1")
+    bus = EventBus()
+    loop = AgentLoop(adapter, registry, bus, turn_id="turn_1")
     result = await loop.run("hi")
 
-    # 两次工作调用都带全套工具；回答调用**不带任何工具**（与 native / anthropic 一致）
-    assert adapter.calls == [["echo"], ["echo"], []]
-    assert tool.runs == 1  # 回答调用返回的工具调用没有被执行
+    # 两次调用都带全套工具（角色只看声明）；迟到的工具调用**不执行**
+    assert adapter.calls == [["echo"], ["echo"]]
+    assert tool.runs == 1
     assert result.final_content == "这是正式回答"
-    assert any("已忽略" in w for w in result.warnings)
+    assert len(_events(bus, "TOOL_START")) == 1  # 只执行了工作轮那一次
+    assert any("工具" in w for w in result.warnings)
+    warnings = _events(bus, "WARNING")
+    assert any(w["code"] == "answer_declared_with_tool_calls" for w in warnings)
+    # 声明不展示；text 档的 JSON 协议块也不当作正文
+    assistant = _events(bus, "ASSISTANT")
+    assert all(ANSWER_MARKER not in (e["content"] or "") for e in assistant)
+    assert all("tool_calls" not in (e["content"] or "") for e in assistant)
+    answers = [e for e in assistant if not e["interim"]]
+    assert answers and answers[-1]["content"] == "这是正式回答"
+    assert answers[-1]["role_evidence"] == "declared_answer"
 
 
 # ---- 去重与合并键 -----------------------------------------------------------
@@ -1260,6 +1379,198 @@ def test_stage_is_a_critical_event():
 
     assert EventType.STAGE in CRITICAL_EVENTS
     assert EventType.ASSISTANT not in CRITICAL_EVENTS  # 仍是可合并事件
+
+
+# ---- 内容角色协议（第五轮 §1.1）：角色由模型声明，不由调用类型猜 -----------------
+
+# 冻结协议串（测试里写死字面量：契约改了就应当红）
+ANSWER_MARKER = "[[QIO:ANSWER]]"
+
+
+def _answer_area(bus: EventBus) -> list[dict]:
+    return [e for e in _events(bus, "ASSISTANT") if e["interim"] is False]
+
+
+def _process_area(bus: EventBus) -> list[dict]:
+    return [e for e in _events(bus, "ASSISTANT") if e["interim"] is True]
+
+
+async def test_undeclared_full_answer_is_not_duplicated_and_not_regenerated():
+    """反例（今天必红）：模型第一次就写出完整答案、没有声明、工具列表非空。
+
+    旧行为：工作调用正文进过程区 → 结束无 tool_calls → 再发一次 tools=[] 重写一遍
+    → 过程区与正式回答区各一份。新协议：未声明正文先有界缓冲 → 调用结束没有工具
+    调用 → **一次性**交付到正式回答区（降级路径），不重新生成、过程区不留副本。
+    """
+    answer = "这是完整答案，模型没有发声明。"
+    adapter = FakeStreamAdapter([StreamScript(text=answer), StreamScript(text=answer)])
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.final_content == answer
+    assert len(adapter.requests) == 1, "不得为同一段答案再发一次调用（禁止重复生成）"
+    assert [bool(r["tools"]) for r in adapter.requests] == [True]  # 唯一一次调用带工具
+    events = _events(bus, "ASSISTANT")
+    assert [e["content"] for e in events] == [answer]
+    # 降级路径：一次性交付，不冒充流式
+    assert events[0]["interim"] is False and events[0]["streaming"] is False
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    # 过程区没有这份完整答案的副本
+    assert not [e for e in _process_area(bus) if answer in (e["content"] or "")]
+
+
+async def test_declared_answer_streams_live_and_costs_one_call():
+    """合法直接回答：声明被识别（标记不展示）、正文实时进回答区、整轮 1 次调用。"""
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text_chunks=[ANSWER_MARKER[:7], ANSWER_MARKER[7:] + "\n", "第一段回答。", "第二段回答。"],
+                hold=hold,
+                hold_after=3,
+            )
+        ]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    task = asyncio.create_task(loop.run("直接回答我"))
+    try:
+        published = await _wait_for(bus, "ASSISTANT", count=1)
+        # provider 还没结束，正式回答区已经有字（真流式，且不是收尾校准）
+        assert not task.done()
+        assert published[0]["interim"] is False and published[0]["streaming"] is True
+        assert published[0]["content"] == "第一段回答。"
+        assert published[0]["role_evidence"] == "declared_answer"
+        assert ANSWER_MARKER not in published[0]["content"]
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 3)
+
+    assert result.final_content == "第一段回答。第二段回答。"
+    assert len(adapter.requests) == 1, "合规直接回答只需 1 次调用"
+    events = _events(bus, "ASSISTANT")
+    assert all(e["interim"] is False for e in events)
+    assert events[-1]["streaming"] is False  # 收尾校准
+    assert events[-1]["content"] == "第一段回答。第二段回答。"
+    assert not _process_area(bus)
+
+
+async def test_work_note_then_tool_then_declared_answer():
+    """合法过程说明 + 工具 + 声明回答：过程区一份、回答区一份，互不重复。"""
+    answer = "这是读完之后给出的正式回答。"
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text="我先读一下文件。",
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            ),
+            StreamScript(text=f"{ANSWER_MARKER}\n{answer}"),
+        ]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.tool_calls_made == 1
+    assert result.final_content == answer
+    assert len(adapter.requests) == 2
+    work = _process_area(bus)
+    answers = _answer_area(bus)
+    assert any(e["content"] == "我先读一下文件。" for e in work)
+    assert answers and answers[-1]["content"] == answer
+    assert all(ANSWER_MARKER not in (e["content"] or "") for e in work + answers)
+    assert not [e for e in work if answer in (e["content"] or "")], "答案不得在过程区留副本"
+
+
+async def test_late_tool_call_after_declaration_is_not_executed_and_warns():
+    """声明之后的迟到工具调用：不执行 + 可见警告，按已声明的回答收尾。"""
+    answer = "这是正式回答，工具不会再执行。"
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text=f"{ANSWER_MARKER}\n{answer}",
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            )
+        ]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.tool_calls_made == 0, "声明之后的工具调用不得执行"
+    assert result.final_content == answer
+    assert len(adapter.requests) == 1
+    assert _events(bus, "TOOL_START") == []
+    warnings = _events(bus, "WARNING")
+    assert warnings, "必须给出可见警告，不能静默忽略工具调用"
+    assert any("工具" in str(w.get("message") or "") for w in warnings), warnings
+
+
+async def test_turn_without_any_answer_gets_at_most_one_fallback_call():
+    """兜底：整轮完全没有回答内容 → 最多一次 tools=[] 调用要求最终回答。"""
+    answer = "兜底给出的最终回答。"
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})]
+            ),
+            StreamScript(text=""),  # 工作调用：一个字都没有
+            StreamScript(text=f"{ANSWER_MARKER}\n{answer}"),  # 兜底调用（tools=[]）
+        ]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.tool_calls_made == 1
+    assert result.final_content == answer
+    assert [bool(r["tools"]) for r in adapter.requests] == [True, True, False]
+    assert len(adapter.requests) == 3, "兜底只允许一次"
+    assert _answer_area(bus)[-1]["content"] == answer
+
+
+async def test_marker_not_at_the_start_is_treated_as_undeclared():
+    """非法声明（不在开头）：按未声明处理 —— 不猜测、不改写、不重复生成。"""
+    text = "先说明一下。" + ANSWER_MARKER + "后面的字不算声明。"
+    adapter = FakeStreamAdapter([StreamScript(text=text), StreamScript(text=text)])
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    # 声明不在开头 → 非法：不当作声明（标记原样留在正文里，不剥离、不改写）
+    assert result.final_content == text
+    assert ANSWER_MARKER in (result.final_content or "")
+    # 未声明的正文一次性交付到正式回答区（降级路径）：不重新生成、过程区不留副本
+    assert len(adapter.requests) == 1, "不得为同一段文字重复生成"
+    answers = _answer_area(bus)
+    assert answers and answers[-1]["content"] == text
+    assert answers[-1]["role_evidence"] == "undeclared_answer"
+    assert _process_area(bus) == []
+
+
+async def test_undeclared_text_with_a_tool_call_goes_to_the_process_area():
+    """未声明正文 + 工具调用：缓冲文字是过程说明，放行到过程区（不丢字）。"""
+    note = "我先看一下文件。" + ANSWER_MARKER  # 非法声明，按未声明处理
+    answer = "这是正式回答。"
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                text=note,
+                tool_calls=[ScriptedToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            ),
+            StreamScript(text=f"{ANSWER_MARKER}\n{answer}"),
+        ]
+    )
+    bus = EventBus()
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_1")
+    result = await loop.run("hi")
+
+    assert result.tool_calls_made == 1
+    assert result.final_content == answer
+    work = _process_area(bus)
+    assert any(e["content"] == note for e in work), "过程说明不得丢字"
+    assert not [e for e in work if answer in (e["content"] or "")]
 
 
 # ---- 明确的厂商错误：不得被 SDK 自动重试换成一个假答案（第五轮复核 ②）--------
@@ -1449,13 +1760,13 @@ def _sse_chunk(content: str | None = None, finish: str | None = None) -> dict:
     }
 
 
-async def test_provider_that_ignores_stream_still_runs_tools_with_the_answer_call():
+async def test_provider_that_ignores_stream_still_runs_tools_and_delivers_the_answer():
     """install e2e 的真实回归：服务只回整段 JSON，QIO 不能因此变成「没有工具调用」。
 
     有 with_raw_response 的客户端（真实 SDK）先看 Content-Type：不是 SSE 就把整段
     JSON 当结果 —— 每次模型调用**只发一个请求**（否则按请求消费脚本的假厂商会被
     打乱）。回退到 complete() 只在看不到 Content-Type 时才发生。
-    第四轮 §1.1 起每轮固定多一次 tools=[] 的回答调用，所以这里一共 3 个请求。
+    第五轮 §1.1 起不再有固定的回答调用：这里一共 2 个请求（工具轮 + 整段回答）。
     """
     provider = _StreamIgnoringProvider(
         [_whole_json(tool_call=True), _whole_json(tool_call=False)]
@@ -1472,17 +1783,19 @@ async def test_provider_that_ignores_stream_still_runs_tools_with_the_answer_cal
     assert result.tool_calls_made == 1  # 工具调用没有被「零增量流」吃掉
     assert result.final_content == "整段回答"
     # 每次模型调用只发一个请求：请求仍带 stream=true（我们并不知道对方会不会流式），
-    # 但响应体被直接当作这次调用的整段结果 —— 2 次工作调用 + 1 次回答调用
-    assert [bool(p.get("stream")) for p in provider.requests] == [True, True, True]
-    # 如实告知：一轮一条 WARNING，前端显示「该模型路径不支持实时生成」
+    # 但响应体被直接当作这次调用的整段结果 —— 2 次调用（工具轮 + 未声明的整段回答）
+    assert [bool(p.get("stream")) for p in provider.requests] == [True, True]
+    # 如实告知：一轮一条 WARNING（该模型路径不支持实时生成）
     warnings = _events(bus, "WARNING")
     assert [w["code"] for w in warnings] == ["streaming_unsupported"]
     assert "不支持实时生成" in warnings[0]["message"]
     assert any("不支持实时生成" in w for w in result.warnings)
-    # 正文以一次性 streaming=false 交付：不假装流式
+    # 正文以一次性 streaming=false 交付：不假装流式；未声明 → 降级路径如实标记
     assistant = _events(bus, "ASSISTANT")
     assert assistant and all(e["streaming"] is False for e in assistant)
-    assert any(e["content"] == "整段回答" for e in assistant)
+    answer = [e for e in assistant if not e["interim"]]
+    assert answer and answer[-1]["content"] == "整段回答"
+    assert answer[-1]["role_evidence"] == "undeclared_answer"
     assert _events(bus, "TOOL_START")[0]["arguments"] == {"text": "hi"}
 
 
@@ -1508,18 +1821,17 @@ async def test_real_sse_provider_streams_without_any_fallback():
         await client.close()
 
     assert result.final_content == "流式回答"
-    # 1 次适配器直连 + 1 次工作调用 + 1 次回答调用，全部带 stream=true
-    assert [bool(p.get("stream")) for p in provider.requests] == [True, True, True]
+    # 1 次适配器直连 + 1 次循环调用（未声明的正文就是回答：不重新生成、没有回退）
+    assert [bool(p.get("stream")) for p in provider.requests] == [True, True]
+    # 真 SSE 路径没有警告：未声明的降级如实记录在事件字段里（role_evidence），
+    # 不进 WARNING（契约只要求「迟到工具调用」发可见警告）
     assert _events(bus, "WARNING") == []
     assistant = _events(bus, "ASSISTANT")
-    # 工作调用的正文进过程区，回答调用的正文进正式回答区；都没有回退、没有警告
-    assert assistant[-1]["streaming"] is False and assistant[-1]["interim"] is False
-    assert assistant[-1]["content"] == "流式回答"
-    assert all(e["content"] in ("流式", "流式回答") for e in assistant)
-    work = [e for e in assistant if e["delta_id"] == "dl_1_1"]
-    answer = [e for e in assistant if e["delta_id"] == "dl_1_2"]
-    assert work and all(e["interim"] is True for e in work)
-    assert answer and all(e["interim"] is False for e in answer)
+    assert len(assistant) == 1
+    assert assistant[0]["streaming"] is False and assistant[0]["interim"] is False
+    assert assistant[0]["content"] == "流式回答"
+    assert assistant[0]["delta_id"] == "dl_1_1"
+    assert assistant[0]["role_evidence"] == "undeclared_answer"
 
 
 def _load_e2e_fake_provider():
@@ -1547,12 +1859,10 @@ async def test_real_e2e_fake_provider_round_trip_still_runs_tools():
     server = module.FakeProvider(("127.0.0.1", 0))
     server.script.set(
         [
-            # ① 工作调用：先说明再调用工具
+            # ① 工作轮：先说明再调用工具
             {"text": "我先读一下。", "tool": "echo", "args": {"text": "hi"}},
-            # ② 工作调用收尾：不再请求工具
-            {"text": "工具跑完了。"},
-            # ③ 回答调用（tools=[]）：正式回答
-            {"text": "完成"},
+            # ② 声明回答：正式回答（声明本身不展示）
+            {"text": "[[QIO:ANSWER]]\n完成"},
         ]
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1573,9 +1883,9 @@ async def test_real_e2e_fake_provider_round_trip_still_runs_tools():
 
     assert result.tool_calls_made == 1  # 工具调用不再被「零增量流」吃掉
     assert result.final_content == "完成"
-    # 假厂商只回整段 JSON：每次模型调用 1 个请求 —— 2 次工作调用 + 1 次回答调用，
+    # 假厂商只回整段 JSON：每次模型调用 1 个请求 —— 工具轮 + 声明回答，
     # 脚本队列不会被多打的请求打乱（install e2e 的假厂商脚本要按同一口径准备）
-    assert len(server.log) == 3
+    assert len(server.log) == 2
     warnings = _events(bus, "WARNING")
     assert [w["code"] for w in warnings] == ["streaming_unsupported"]
     assistant = _events(bus, "ASSISTANT")

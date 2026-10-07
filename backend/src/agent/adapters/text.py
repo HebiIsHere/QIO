@@ -23,6 +23,7 @@ from agent.adapters.base import (
     ToolSpec,
 )
 from agent.prompts import (
+    CONTENT_ROLE_PROTOCOL,
     SYSTEM_PROMPT_TEXT_MODE,
     SYSTEM_PROMPT_TOOLS_HEADER,
     TEXT_TOOL_ENTRY,
@@ -86,11 +87,16 @@ class TextAdapter(BaseAdapter):
             )
         return "\n".join(lines)
 
+    # text 档自己把内容角色协议拼进 system prompt（见 build_system_prompt）：
+    # core/loop.py 据此不再重复注入（同一份措辞只出现一次）。
+    protocol_in_prompt = True
+
     def build_system_prompt(self, tools: list[ToolSpec]) -> str:
         tools_block = self.build_text_tools(tools)
         if tools_block:
             tools_block = f"{SYSTEM_PROMPT_TOOLS_HEADER}\n{tools_block}"
-        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{tools_block}"
+        # 内容角色协议（第五轮契约 §1.1）：三档都要能看到，text 档拼在这里。
+        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{CONTENT_ROLE_PROTOCOL}\n\n{tools_block}"
 
     def system_prompt_text(self, tools: list[ToolSpec]) -> str:
         """text 档真正会发出去的 system prompt（含全部工具 schema）。"""

@@ -49,6 +49,7 @@ from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.core.turn_facts import TurnFacts
 from agent.core.progress import ProgressTracker
+from agent.prompts import ANSWER_FALLBACK_HINT, ANSWER_MARKER, CONTENT_ROLE_PROTOCOL
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
@@ -71,20 +72,37 @@ def _terminal_tool_status(data: dict) -> str:
 PUBLISH_MS = 40
 PUBLISH_CHARS = 24
 
-# 回答阶段协议的系统提示（第四轮契约 §1.1）：每次调用作为**最后一条 system 消息**
-# 发出去。它不是分类判据 —— 判据只有「这次调用带不带工具」；这段文字只是让模型
-# 尽量别在工作阶段写成段答案，并知道回答阶段不会再给它工具。
-# 约定：给模型看的文本集中在 agent/prompts.py；本轮 A 的写入范围不含该文件，
-# 故先放在这里（两处引用，Lead 若要搬到 prompts.py 只需改这两个常量）。
-WORK_PHASE_HINT = (
-    "【工作阶段】你现在的文字是**进度说明**（显示在过程区），不是最终回答。"
-    "不需要工具时请直接结束工作阶段，不要写成段答案；"
-    "系统会在工作阶段结束后再给你一次**不带工具**的调用，用来产出最终回答。"
-)
-ANSWER_PHASE_HINT = (
-    "【回答阶段】工作阶段已经结束；本次调用不提供任何工具，也不会再执行工具。"
-    "请直接给出面向用户的最终回答。"
-)
+# 内容角色协议（第五轮契约 §1.1）：**角色只由模型在正文开头的声明决定**
+# （prompts.ANSWER_MARKER），不由调用类型、延迟、字数、是否含代码块猜。
+# 说明文字集中在 agent/prompts.py，由这一个常量注入三档（text 档进 system prompt，
+# native / anthropic 由 _call_hint() 每次调用作为最后一条 system 消息发出）。
+#
+# 未声明正文的有界缓冲上限：超过它即判定为工作调用并实时放行（绝不无界缓存）。
+UNDECLARED_BUFFER_LIMIT = 64 * 1024
+# 判定声明所需的最长前缀（声明本身只有 len(ANSWER_MARKER) 个字符，留余量到 32）。
+MARKER_PROBE_CHARS = 32
+
+
+def _split_declared_answer(text: str) -> tuple[bool, str]:
+    """整段正文按内容角色协议解析：返回 (是否声明了回答, 去掉声明后的正文)。
+
+    契约 §1.1 第 1、5 条：声明必须**在开头**（大小写不敏感，其后可跟一个换行）；
+    不在开头 / 被拆坏 / 重复出现 → 非法，按「未声明」处理（原文照实保留，
+    不猜测、不改写、不丢字）。
+    """
+    if not text:
+        return False, text
+    marker = ANSWER_MARKER.lower()
+    if text[: len(ANSWER_MARKER)].lower() != marker:
+        return False, text
+    rest = text[len(ANSWER_MARKER):]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n") or rest.startswith("\r"):
+        rest = rest[1:]
+    if rest[: len(ANSWER_MARKER)].lower() == marker:
+        return False, text  # 重复声明 = 非法
+    return True, rest
 
 
 class _StreamEnd:
@@ -119,17 +137,26 @@ class _AssistantStream:
 
     角色规则：**只看这次调用带不带工具** —— 发起之前就知道，不含任何启发式：
 
-    * 工作调用（``tools=[...]``）→ role = "interim"：正文是进度说明，实时进过程区
-      （``interim=true, streaming=true``）；这一批工具的阶段就位后由 flush_interim
-      用同一个 delta_id 补上 ``stage_id`` / ``call_ids``（同一份文字，不产生第二个
-      气泡）。工作调用的正文**永不**被提升成正式回答 —— 只有等这次调用结束才知道
-      它是不是回答，而「先整体搬入 / 缓存整段再播放」正是要修掉的旧行为。
-    * 回答调用（``tools=[]``，``answer_from_start=True``）→ role = "answer"：正文
-      **从第一个可发布增量起**就是正式回答（``interim=false, streaming=true``），
-      边生成边显示；调用结束时同一 delta_id 再发一条 ``streaming=false`` 的累计
-      快照做**收尾校准**（校准不是首次展示来源）。
+    角色**只由模型在正文开头的声明决定**（第五轮契约 §1.1），按最长可能前缀
+    流式判定（最多 MARKER_PROBE_CHARS 字节即可判定）：
 
-    判据里没有：经过多少时间、文案像不像答案、暂未收到工具增量、某 kind 变化。
+    * 缓冲与声明**完全匹配** → role = "answer"：声明之后的正文**实时**进正式回答区
+      （``interim=false, streaming=true``）；调用结束时同一 delta_id 再发一条
+      ``streaming=false`` 的累计快照做**收尾校准**（校准不是首次展示来源）。
+    * 缓冲与声明**前缀不再匹配** → role = "interim"：正文是进度说明，实时进过程区；
+      这一批工具的阶段就位后由 flush_interim 用同一个 delta_id 补上
+      ``stage_id`` / ``call_ids``（同一份文字，不产生第二个气泡）。
+    * **未声明**（无标记）→ role = "undeclared"：正文**先不展示**（有界缓冲，
+      上限 UNDECLARED_BUFFER_LIMIT；超过即判定为工作调用并实时放行）。调用结束时：
+      有工具调用 → 缓冲文字是过程说明，放行到过程区（不丢字）；无工具调用 →
+      缓冲文字是正式回答，**一次性**交付到正式回答区（``interim=false,
+      streaming=false``，协议未遵守的降级路径，不冒充流式）。
+    * 非法（不在开头 / 被拆坏 / 重复）→ 按「未声明」处理。
+    * 取消 / 断流 / 失败（completion=None）→ 已收到的文字放行到过程区（不丢字、
+      不猜角色）。
+
+    判据里没有：经过多少时间、文案像不像答案、暂未收到工具增量、某 kind 变化，
+    也**没有**「这次调用带不带工具」——带工具同样可以给出正式回答。
     已经进入正式回答区的文字**永不**移动。
 
     发布节奏：按 ≥PUBLISH_MS 或 ≥PUBLISH_CHARS 合并一次，不逐字符发。
@@ -143,17 +170,28 @@ class _AssistantStream:
         publish_ms: int = PUBLISH_MS,
         publish_chars: int = PUBLISH_CHARS,
         clock: Callable[[], float] = time.monotonic,
-        answer_from_start: bool = False,
+        answer_expected: bool = False,
     ) -> None:
         self._emit = emit
         self.delta_id = delta_id
         self._publish_ms = publish_ms
         self._publish_chars = publish_chars
         self._clock = clock
-        # 显式回答调用（不带工具）：角色从一开始就可靠（见类文档最后一条）。
-        self._answer_from_start = answer_from_start
-        # None（还没有增量）/ "interim"（过程区）/ "answer"（正式回答）
+        # 这次调用**是否被要求给出回答**（tools=[]：兜底调用）。它不决定角色
+        # （角色只看正文声明），只决定「未声明正文」在调用结束时去哪：被要求回答的
+        # 调用不可能产出过程说明，未声明也按正式回答一次性交付。
+        self._answer_expected = answer_expected
+        # None（还没判定）/ "interim"（过程区）/ "answer"（正式回答）/
+        # "undeclared"（未声明：有界缓冲，调用结束时再决定去哪）
         self.role: str | None = None
+        # 开头判定缓冲（仍是声明的可能前缀时先不展示）
+        self._probe = ""
+        # 未声明正文的有界缓冲（超过上限即按工作调用实时放行）
+        self._undeclared = ""
+        # 这条流交付到正式回答区的正文（声明本身已经去掉）；循环用它做 final_content
+        self.answer_text = ""
+        # 是否走了「未声明 → 一次性交付」的降级路径（如实记录，不冒充流式）
+        self.undeclared_answer_used = False
         # 角色判据的**证据**：只用于取证与测试断言，不参与任何判定。
         self.role_evidence: str | None = None
         self._pending = ""
@@ -174,36 +212,151 @@ class _AssistantStream:
     # -- 输入 -------------------------------------------------------------
 
     async def note_text(self, text: str) -> None:
-        """一段正文增量：按发布节奏实时发出去。
+        """一段正文增量：先按内容角色协议判定角色，再按发布节奏实时发出去。
 
-        角色在**发起这次调用之前**就定了（带不带工具），不在这里改判：工作调用的
-        增量进过程区，回答调用的增量从第一段起就进正式回答区。
+        角色由**模型在正文开头的声明**决定（第五轮契约 §1.1）：声明匹配 → 回答
+        调用（正式回答区）；前缀不再匹配 → 工作调用（过程区）；还判不出来（缓冲
+        仍是声明的可能前缀）→ 先不展示。未声明的正文先有界缓冲，调用结束时再决定
+        去过程区还是回答区。
         """
         if not text:
             return
         self.saw_delta = True
         self._saw_text = True
         if self.role is None:
-            self.role = "answer" if self._answer_from_start else "interim"
-            if self.role == "answer":
-                self.role_evidence = "tool_free_call"
+            self._probe += text
+            feed = self._resolve_probe()
+            if self.role is None:
+                return  # 还在判定开头：一个字都不展示
+            await self._feed(feed)
+            return
+        await self._feed(text)
+
+    async def note_tool_call(self) -> None:
+        """出现工具调用增量：未声明的正文按工作调用**实时放行**。
+
+        角色只由正文声明决定，但工具调用是「这条响应是工具轮」的直接证据：还在
+        缓冲的正文（未声明）此刻按进度说明实时进过程区（不丢字、不猜角色）。
+        声明之后的迟到工具调用不改任何已发布文字的角色 —— 由 AgentLoop 发可见
+        警告并按已声明回答收尾（绝不隐藏真实工具调用、绝不把回答移回过程区）。
+        """
+        self.saw_delta = True
+        if self.role in (None, "undeclared"):
+            self.role = "interim"
+            self.role_evidence = None
+            text = self._probe + self._undeclared
+            self._probe = ""
+            self._undeclared = ""
+            self._pending += text
+            if self._pending_since is None:
+                self._pending_since = self._clock()
+            await self._flush(force=True)
+
+    # -- 角色判定（内容角色协议）------------------------------------------
+
+    def _resolve_probe(self) -> str:
+        """按最长可能前缀判定内容角色；返回还没交付的正文（交给 _feed）。
+
+        契约 §1.1 第 1、2、5 条：完全匹配声明 → "answer"（声明本身吃掉）；
+        前缀不再匹配 → "interim"（工作调用，已缓冲的正文整体实时放行）；
+        仍是声明的可能前缀 → 继续等（不展示）；重复声明 → 非法，按未声明处理。
+        """
+        probe = self._probe
+        marker = ANSWER_MARKER.lower()
+        lowered = probe.lower()
+        if len(probe) > MARKER_PROBE_CHARS:
+            # 判定只依赖 ≤len(ANSWER_MARKER)+2 个字符；到这里说明声明串被改坏了。
+            # 有界缓冲是硬要求：按未声明处理，绝不无界缓存。
+            self._start_undeclared(probe)
+            return ""
+        if len(probe) < len(ANSWER_MARKER):
+            if marker.startswith(lowered):
+                return ""  # 还可能是声明：等更多字符
+            self._start_undeclared(probe)
+            return ""
+        if not lowered.startswith(marker):
+            self._start_undeclared(probe)
+            return ""
+        rest = probe[len(ANSWER_MARKER):]
+        if rest == "" or rest == "\r":
+            # 声明后可能跟一个换行：再等一个字符（收尾时按「没有换行」处理）
+            return ""
+        if rest.startswith("\r\n"):
+            rest = rest[2:]
+        elif rest.startswith("\n") or rest.startswith("\r"):
+            rest = rest[1:]
+        if rest[: len(ANSWER_MARKER)].lower() == marker:
+            # 重复声明 = 非法：按未声明处理（原文照实保留，不猜测、不改写）
+            self._start_undeclared(probe)
+            return ""
+        self.role = "answer"
+        self.role_evidence = "declared_answer"
+        self._probe = ""
+        return rest
+
+    def _start_undeclared(self, text: str) -> None:
+        """未声明（无标记 / 非法）：正文先有界缓冲，调用结束时再决定去哪。"""
+        self.role = "undeclared"
+        self.role_evidence = None
+        self._probe = ""
+        self._undeclared = text
+
+    async def _feed(self, text: str) -> None:
+        """按已判定的角色分发正文：实时发布 / 有界缓冲 / 超限放行。"""
+        if not text:
+            return
+        if self.role == "undeclared":
+            self._undeclared += text
+            if len(self._undeclared) > UNDECLARED_BUFFER_LIMIT:
+                # 超过上限：判定为工作调用并实时放行（绝不无界缓存）
+                self.role = "interim"
+                self.role_evidence = None
+                text = self._undeclared
+                self._undeclared = ""
+                self._pending += text
+                await self._flush(force=True)
+            return
         self._pending += text
         if self._pending_since is None:
             self._pending_since = self._clock()
         if len(self._pending) >= self._publish_chars:
             await self._flush(force=True)
 
-    async def note_tool_call(self) -> None:
-        """出现工具调用增量：只记事实，**不改任何已发布文字的角色**。
-
-        这条响应是工具轮：正文（如果有）留在过程区，等这批工具的阶段就位后由
-        flush_interim 补上 stage_id / call_ids —— 不再「先当答案、再移回过程」。
-        显式回答调用（不带工具）不会走到这里；万一走到，也绝不允许把已经进入
-        答案区的文字移回过程区（永不移动）。
-        """
-        self.saw_delta = True
+    async def _absorb_whole_text(self, text: str) -> None:
+        """整段正文（一个增量都没收到）也走同一套内容角色判定。"""
+        if self.role is not None:
+            await self._feed(text)
+            return
+        self._probe += text
+        feed = self._resolve_probe()
         if self.role is None:
+            # 整段就到这里：仍是声明的可能前缀（如「[[QIO」）→ 未声明
+            self.role = "undeclared"
+            self._undeclared = self._probe
+            self._probe = ""
+            return
+        await self._feed(feed)
+
+    def _settle_undeclared(self, *, tool_calls: bool, interrupted: bool) -> None:
+        """未声明的缓冲文字在调用结束时去哪（契约 §1.1 第 3、5 条）。
+
+        * 取消 / 断流 / 失败 → 已收到的文字放行到过程区（不猜角色、不丢字）；
+        * 有工具调用（且不是被要求回答的调用）→ 缓冲文字是过程说明：放行到过程区；
+        * 其余（无工具调用 / 被要求回答的调用）→ 缓冲文字是正式回答：**一次性**
+          交付到正式回答区（降级路径，如实记录，不冒充流式）。
+        """
+        text = self._probe + self._undeclared
+        self._probe = ""
+        self._undeclared = ""
+        if interrupted or (tool_calls and not self._answer_expected):
             self.role = "interim"
+            self.role_evidence = None
+            self._pending += text
+            return
+        self.role = "answer"
+        self.role_evidence = "undeclared_answer"
+        self.undeclared_answer_used = True
+        self._pending += text
 
     # -- 时间 -------------------------------------------------------------
 
@@ -225,46 +378,69 @@ class _AssistantStream:
         或者收尾会一次性交付（_pending 里的文字）。上层据此决定要不要走一次性补发 ——
         只要有正文，就绝不能补发第二次（同一段字会出现两次）。
         """
-        return bool(self._confirmed) or bool(self._pending) or self.published
+        return (
+            bool(self._confirmed)
+            or bool(self._pending)
+            or bool(self._undeclared)
+            or self.published
+        )
 
     # -- 收尾 -------------------------------------------------------------
 
     async def finish(self, completion: Completion | None) -> None:
         """流结束 / 中断：收尾，并把没到节奏的文字补齐。
 
-        角色**在发起前就定了**，这里不做任何角色改判（也不存在「提升」这一步）：
+        角色由正文声明在流式过程中判定（见 note_text），这里只做收尾：
 
-        * 回答调用（tools=[]）→ 正文是正式回答：先保证它已经以 streaming=true 的
-          增量出现过（没到发布阈值的真实增量在这里补发一次），再补一条
-          interim=false、streaming=false 的累计快照做**收尾校准** —— 首次展示
-          永远不是校准快照。
-        * 工作调用（tools=[...] 或取消/失败）→ 正文是进度说明：留在过程区；这一批
-          带工具时等 flush_interim 补 stage_id / call_ids，其余情况直接收尾。
-        * completion=None（取消 / 失败 / 断流）→ 已确认文字原样保留在过程区，只收尾
+        * 已声明回答 → 正文是正式回答：先保证它已经以 streaming=true 的增量出现过
+          （没到发布阈值的真实增量在这里补发一次），再补一条 interim=false、
+          streaming=false 的累计快照做**收尾校准** —— 首次展示永远不是校准快照。
+        * 已判为工作调用 / 有工具调用 → 正文是进度说明：留在过程区；这一批带工具时
+          等 flush_interim 补 stage_id / call_ids，其余情况直接收尾。
+        * 未判定（未声明）→ 按契约 §1.1 第 3 条：有工具调用 → 放行到过程区；
+          无工具调用 → **一次性**交付到正式回答区（降级路径）。
+        * completion=None（取消 / 失败 / 断流）→ 已收到的文字放行到过程区，只收尾
           （streaming=false：不再增长）。
 
         没有任何正文时什么都不发（空气泡是无意义噪声）。
         """
-        if self.role is None:
-            self.role = "answer" if self._answer_from_start else "interim"
-        if self._answer_from_start and self.role_evidence is None:
-            # 角色证据：这次调用**没有工具**（判据本身就是它）。
-            self.role_evidence = "tool_free_call"
         if not self._saw_text and completion is not None:
             # 一段正文增量都没收到、但整段结果里有正文（供应商一次性给出）：
-            # 直接给出整段，不假装是一帧一帧来的。
+            # 走同一套内容角色判定，不假装是一帧一帧来的。
             text = completion.message.content or ""
             if text:
-                self._pending += text
-        if completion is not None and completion.tool_calls and not self._answer_from_start:
+                await self._absorb_whole_text(text)
+        tool_calls = bool(completion.tool_calls) if completion is not None else False
+        if self.role is None:
+            # 判定没走完（缓冲仍是声明的可能前缀）→ 按「未声明」处理
+            self.role = "undeclared"
+            self._undeclared = self._probe
+            self._probe = ""
+        if self.role == "undeclared":
+            self._settle_undeclared(tool_calls=tool_calls, interrupted=completion is None)
+            if self.role == "interim" and tool_calls:
+                return  # 工具轮：等 flush_interim 补阶段信息
+            await self._settle()
+            if self.role == "answer":
+                self.answer_text = self._confirmed
+            return
+        if self.role == "interim" and tool_calls:
             return  # 工具轮：文字已经实时发过，等 flush_interim 补阶段信息
-        if self._answer_from_start and self._pending and self._saw_text:
-            # 回答调用收尾前还有**没到发布阈值**的真实增量：先按累计快照发一条
+        if (
+            self.role == "answer"
+            and self._pending
+            and self._saw_text
+            and not self.undeclared_answer_used
+        ):
+            # 声明回答收尾前还有**没到发布阈值**的真实增量：先按累计快照发一条
             # streaming=true，再发 streaming=false 的收尾校准 —— 保证「首次展示
-            # 永远不是校准快照」（契约 §1.1）。没有收到任何增量、整段返回的路径
-            # 不在此列：那种情况不许假装流式。
+            # 永远不是校准快照」（契约 §1.1）。未声明的降级路径不在此列：
+            # 那是一次性交付，不冒充流式。
             await self._flush(force=True)
         await self._settle()
+        if self.role == "answer":
+            # 这条流交付到正式回答区的正文（声明本身已经去掉）
+            self.answer_text = self._confirmed
 
     async def _settle(self) -> None:
         """一次性交出全部已确认文字（同一 delta_id 的累计快照，streaming=false）。"""
@@ -425,9 +601,21 @@ class AgentLoop:
         self._stop_code: str | None = None
         self._stop_reason: str | None = None
         self._stop_by: str | None = None
-        # 当前这次调用是不是**回答调用**（tools=[]）——角色判据，由 _plan 设定。
-        # 角色只看这个事实：不看时间、不看文案、不看「暂未收到工具增量」。
-        self._call_is_answer = False
+        # 当前这次调用是不是**被要求给出回答**（tools=[]：兜底调用）。它**不是**
+        # 角色判据（第五轮契约 §1.1：角色只看正文声明），只决定「未声明的正文」
+        # 在调用结束时去哪 —— 被要求回答的调用不可能产出过程说明。
+        self._answer_expected = False
+        # 当前这次调用的**内容角色**（由 _AssistantStream / _emit_one_shot_assistant
+        # 按正文声明判定）："answer" / "interim" / None。
+        self._call_role: str | None = None
+        # 这次调用交付到正式回答区的正文（声明本身已去掉）；循环用它做 final_content。
+        self._call_answer_text = ""
+        # 这次调用是否走了「未声明 → 一次性交付」的降级路径（如实记录 + 可见警告）。
+        self._call_undeclared = False
+        # 每轮最多一次兜底调用；可见警告每轮最多一条。
+        self._fallback_used = False
+        self._late_tool_warned = False
+        self._undeclared_warned = False
         self._warnings: list[str] = []
         self._notices: list[str] = []
         # 统一用量累计（输入 / 输出 / 总量）：供应商差异已经在 Adapter 层消掉
@@ -1064,10 +1252,12 @@ class AgentLoop:
                 )
                 self._notices.clear()
 
-            # ── 工作调用（tools=[...]）：正文是进度说明，可以调工具（plan §1.1）
+            # ── 模型调用（带全套工具）：角色由**正文开头的声明**决定（第五轮契约 §1.1）
+            # —— 带工具同样可以给出正式回答；不再「工作调用正文一律进过程区 + 结束
+            # 无 tool_calls 就再发一次 tools=[] 重写一遍」（那会让同一段答案出现两份）。
             with self._phase("tool_routing"):
                 work_tools = self._routed_tools(messages)
-            completion = await self._plan(messages, tools=work_tools, hint=WORK_PHASE_HINT)
+            completion = await self._plan(messages, tools=work_tools, hint=self._call_hint())
             if completion is None:
                 # 这一轮在等待模型时被用户停掉：请求已经中断，没有结果可用。
                 phase = LoopPhase.STOPPED
@@ -1090,22 +1280,36 @@ class AgentLoop:
             if not self._stream_emitted:
                 await self._emit_one_shot_assistant(completion)
 
-            if not completion.tool_calls:
-                # 工作调用没有请求任何工具 → 工作阶段结束（plan §1.1）。
-                if not work_tools:
-                    # 这次调用本来就不带工具（没有任何可用工具）→ 它已经是回答调用：
-                    # 正文已经在正式回答区里，直接用它的结果收口，不再多发一次调用。
+            if self._call_undeclared:
+                # 协议未遵守（模型没有声明回答角色）：未声明的正文按一次性回答交付，
+                # 如实记录这条降级路径，不冒充流式（契约 §1.1 第 3 条）。
+                self._note_undeclared_answer()
+
+            answer_text = self._call_answer_text or ""
+            if self._call_role == "answer":
+                # 模型用正文声明了「这是最终回答」：它就是正式回答（带工具也一样）。
+                if completion.tool_calls:
+                    # 声明之后的迟到工具调用：不执行 + 可见警告，按已声明回答收尾。
+                    await self._warn_late_tool_calls(completion.tool_calls)
+                if answer_text.strip():
                     phase = LoopPhase.DONE
-                    final_content = completion.message.content
+                    final_content = answer_text
                     break
-                # 工作阶段的文字按事实留在过程区（不搬动、不删除）。把它作为对话的
-                # 一部分交给回答调用，模型才知道自己已经说过什么（空内容不追加空消息）。
-                if (completion.message.content or "").strip():
-                    messages.append(completion.message)
-                # ── 回答阶段：一次 tools=[] 的调用，产出正式回答 ──────────────
-                # 成本如实记录：每轮固定多一次纯回答调用（最简单的问答也由 1 次变 2 次）。
+                # 声明了回答却一个字都没有 → 与「整轮没有回答内容」同路（兜底一次）
                 phase = LoopPhase.DONE
-                final_content = await self._answer_call(messages)
+                final_content = await self._maybe_fallback(messages, completion)
+                break
+
+            if not completion.tool_calls:
+                # 没有请求工具 → 这一段正文（如果有）就是本轮的回答：声明过 → 已经
+                # 实时进回答区；未声明 → 已经一次性交付（降级路径）。
+                if answer_text.strip():
+                    phase = LoopPhase.DONE
+                    final_content = answer_text
+                    break
+                # 整轮**完全没有回答内容** → 唯一允许的额外调用：兜底要一次最终回答
+                phase = LoopPhase.DONE
+                final_content = await self._maybe_fallback(messages, completion)
                 break
 
             # TOOL_EXEC + OBSERVING（执行走 registry 管线，事件由监听器转发；
@@ -1237,70 +1441,171 @@ class AgentLoop:
     async def _emit_assistant(self, payload: dict) -> None:
         await self._emit(EventType.ASSISTANT, payload)
 
+    def _absorb_stream_role(self, stream: _AssistantStream) -> None:
+        """把这条流的内容角色与交付正文收进本次调用的状态（_run 据此收口）。"""
+        self._call_role = stream.role
+        self._call_answer_text = stream.answer_text
+        self._call_undeclared = stream.undeclared_answer_used
+
+    def _call_hint(self) -> str | None:
+        """每次调用附带的系统提示：内容角色协议（第五轮契约 §1.1）。
+
+        text 兼容档已经把它拼进自己的 system prompt（adapter.protocol_in_prompt），
+        这里就不再重复一遍；native / anthropic 本来不自己拼 system prompt，由这里
+        作为**最后一条 system 消息**发出去 —— 三档看到的是同一份措辞（同一个常量）。
+        """
+        if getattr(self.adapter, "protocol_in_prompt", False):
+            return None
+        return CONTENT_ROLE_PROTOCOL
+
     async def _emit_one_shot_assistant(self, completion: Completion) -> None:
         """一次性正文事件（不支持流式的路径**不假装流式**）。
 
-        角色由**这次调用的类型**决定（self._call_is_answer，_plan 里按「带不带工具」设定）：
+        角色同样只由**正文开头的声明**决定（第五轮契约 §1.1），这里对整段解析：
 
-        * 回答调用（tools=[]）→ 正文是正式回答：interim=false、streaming=false；
-        * 工作调用（tools=[...]）→ 正文是进度说明：interim=true；这一批工具带了
-          `_qio` 叙事时不再推 interim（同一阶段只保留一种过程表达）；
+        * 声明在开头 → 正式回答：interim=false、streaming=false（声明不展示）；
+        * 没有声明、但有工具调用 → 工作轮：正文是进度说明（interim=true，带阶段归属）；
+          这一批工具带了 `_qio` 叙事时不再推 interim（同一阶段只保留一种过程表达）；
+        * 没有声明、也没有工具调用 → **未声明的正式回答**：一次性交付到正式回答区
+          （interim=false、streaming=false，降级路径，如实记录）；
         * text 兼容档的 content 是 JSON 协议块，任何情况下都不当作正文展示。
         """
-        content = completion.message.content
-        if not content or not content.strip():
-            return
+        content = completion.message.content or ""
         calls = completion.tool_calls or []
-        if not self._call_is_answer:
-            if calls and self.adapter.mode != AdapterMode.NATIVE:
+        declared, body = _split_declared_answer(content)
+        if declared:
+            self._call_role = "answer"
+            self._call_answer_text = body
+            if not body.strip():
                 return
-            if calls:
-                batch_has_narrative = any(
-                    parse_narrative(getattr(c, "narrative", None)) is not None for c in calls
-                )
-                if batch_has_narrative:
-                    return
-        interim = not self._call_is_answer
+            await self._emit_assistant(
+                self._one_shot_payload(body, interim=False, evidence="declared_answer")
+            )
+            return
+        if calls:
+            self._call_role = "interim"
+            if not content.strip() or self.adapter.mode != AdapterMode.NATIVE:
+                return  # text 档的 content 是 JSON 协议块：不当作正文展示
+            batch_has_narrative = any(
+                parse_narrative(getattr(c, "narrative", None)) is not None for c in calls
+            )
+            if batch_has_narrative:
+                return
+            await self._emit_assistant(
+                self._one_shot_payload(content, interim=True, evidence=None, calls=calls)
+            )
+            return
+        # 没有声明、也没有工具调用：未声明的正文就是正式回答（降级路径，一次性交付）
+        self._call_role = "answer"
+        self._call_answer_text = content
+        self._call_undeclared = bool(content.strip())
+        if not content.strip():
+            return
         await self._emit_assistant(
-            {
-                "content": content,
-                "interim": interim,
-                "streaming": False,
-                "delta_id": self._call_delta_id or "",
-                "seq": 1,
-                # 工作调用的正文与这一批工具同属一个阶段（plan §1.1）；没有工具调用
-                # 的工作说明归入「整轮」，正式回答不属于任何阶段。
-                "stage_id": self._current_stage_id() if interim and calls else None,
-                "call_ids": [c.id for c in calls] if interim and calls else [],
-                # 角色证据：回答调用的判据就是「这次调用没有工具」。
-                "role_evidence": "tool_free_call" if self._call_is_answer else None,
-            }
+            self._one_shot_payload(content, interim=False, evidence="undeclared_answer")
         )
 
-    async def _answer_call(self, messages: list[ChatMessage]) -> str | None:
-        """回答阶段的**那一次**调用（第四轮契约 §1.1）：tools=[]。
+    def _one_shot_payload(
+        self,
+        content: str,
+        *,
+        interim: bool,
+        evidence: str | None,
+        calls: list | None = None,
+    ) -> dict:
+        """整段交付的 ASSISTANT 载荷（与流式路径同一套字段语义）。"""
+        calls = calls or []
+        return {
+            "content": content,
+            "interim": interim,
+            "streaming": False,
+            "delta_id": self._call_delta_id or "",
+            "seq": 1,
+            # 工作调用的正文与这一批工具同属一个阶段（plan §1.1）；没有工具调用
+            # 的工作说明归入「整轮」，正式回答不属于任何阶段。
+            "stage_id": self._current_stage_id() if interim and calls else None,
+            "call_ids": [c.id for c in calls] if interim and calls else [],
+            "role_evidence": evidence,
+        }
 
-        角色在发起之前就确定了（这次调用没有工具可以用），所以正文从**第一个可发布
-        增量**起就以 interim=false、streaming=true 直接进正式回答区 —— 真正边生成
-        边显示；调用结束时同一 delta_id 再补一条 {streaming:false} 累计快照做收尾校准
-        （校准不是首次展示来源）。它不可能再产出工具调用，因此正式回答不会被后到的
-        工具调用打断或搬走。
+    async def _maybe_fallback(
+        self, messages: list[ChatMessage], completion: Completion
+    ) -> str | None:
+        """整轮完全没有回答内容 → 最多补一次 tools=[] 的调用要求最终回答。
 
-        成本如实记录：每轮固定多一次模型调用（最简单的问答也由 1 次变 2 次）。
+        触发条件（契约 §1.1 第 6 条，唯一允许的额外回答调用，每轮最多一次）：
+        走到这里时本轮既没有声明过的回答、也没有可交付的正文 —— 模型只调用过工具、
+        或者一个字都没说。合规模型下直接问答只需 1 次调用；这里只补一次。
+        """
+        if self._fallback_used or self.is_cancelled():
+            return None
+        self._fallback_used = True
+        # 把模型已经说过的话交给它自己（空内容不追加空消息），否则兜底调用会
+        # 看不到自己刚写过什么。
+        if (completion.message.content or "").strip():
+            messages.append(completion.message)
+        return await self._fallback_answer_call(messages)
+
+    async def _warn_late_tool_calls(self, calls: list) -> None:
+        """声明回答之后仍请求工具：不执行 + 可见警告（契约 §1.1 第 4 条）。
+
+        绝不静默忽略真实工具调用：警告是**可见事件**（WARNING），本轮按已声明的
+        回答收尾，工具一次都不执行。
+        """
+        names = ", ".join(str(getattr(c, "name", "?")) for c in calls)
+        message = (
+            f"模型在声明最终回答之后仍请求了工具（{names}）：本轮不执行这些调用，"
+            "按已声明的回答收尾。"
+        )
+        self._warn(message)
+        if self._late_tool_warned:
+            return
+        self._late_tool_warned = True
+        await self._emit(
+            EventType.WARNING,
+            {"code": "answer_declared_with_tool_calls", "message": message, "recoverable": True},
+        )
+
+    def _note_undeclared_answer(self) -> None:
+        """协议未遵守：未声明的正文按一次性回答交付（降级路径，不冒充流式）。
+
+        如实记录的方式是**事件本身的字段**（`role_evidence="undeclared_answer"` +
+        `streaming=false`），外加一条服务端日志。**不**发 WARNING 事件、也不进
+        TurnResult.warnings：契约 §1.1 只对「声明之后的迟到工具调用」要求可见警告；
+        未声明是模型侧尚未遵守新协议，每轮一条可见警告会变成噪声，而
+        「干净的一轮没有警告」是这个项目已有的不变量（trace 用它判断异常）。
+        """
+        if self._undeclared_warned:
+            return
+        self._undeclared_warned = True
+        logger.info(
+            "answer role undeclared (turn=%s): 正文按一次性回答交付，未实时生成",
+            self.turn_id,
+        )
+
+    async def _fallback_answer_call(self, messages: list[ChatMessage]) -> str | None:
+        """兜底调用（第五轮契约 §1.1 第 6 条）：tools=[]，**每轮最多一次**。
+
+        触发条件见 _maybe_fallback：整轮结束时完全没有回答内容（没有声明、也没有
+        可交付的正文）。这是唯一允许的额外回答调用 —— 合规模型下直接问答只需
+        1 次调用，不再「每轮固定 +1」。这次调用的正文仍按同一套内容角色协议解析：
+        声明 → 实时进回答区；未声明 → 一次性交付（降级路径，不冒充流式）。
         每次调用都计入迭代与用量，不隐藏。
         """
-        completion = await self._plan(messages, tools=[], hint=ANSWER_PHASE_HINT)
+        completion = await self._plan(messages, tools=[], hint=ANSWER_FALLBACK_HINT)
         if completion is None:
             return None  # 被取消：这次调用没有结果
         self._account_usage(completion)
         self.budget.consume_iteration()
         if not self._stream_emitted:
             await self._emit_one_shot_assistant(completion)
+        if self._call_undeclared:
+            self._note_undeclared_answer()
         if completion.tool_calls:
             # 这次调用没有提供任何工具定义：即使模型仍返回工具调用也不执行
-            # （它没有被授予这些工具），只把正文当正式回答，并如实记一条警告。
-            self._warn("回答调用没有提供任何工具，却返回了工具调用；已忽略这些调用")
-        return completion.message.content
+            # （它没有被授予这些工具），只把正文当正式回答，并如实记一条可见警告。
+            await self._warn_late_tool_calls(completion.tool_calls)
+        return self._call_answer_text or None
 
     async def _plan(
         self,
@@ -1315,10 +1620,14 @@ class AgentLoop:
         if tools is None:
             with self._phase("tool_routing"):
                 tools = self._routed_tools(messages)
-        # 角色判据（第四轮契约 §1.1）：**这次调用带不带工具**。发起前就知道，
-        # 不看时间、不看文案、不看「暂未收到工具增量」。
-        self._call_is_answer = not tools
-        # 阶段提示只发给这一次调用（不写回对话记录）：工作 / 回答各一句。
+        # 这次调用**是不是被要求给出回答**（tools=[] 的兜底调用）。角色判据不在这里
+        # —— 第五轮契约 §1.1：角色只由正文开头的声明决定（_AssistantStream 判定）。
+        self._answer_expected = not tools
+        # 每次调用都重置内容角色状态：上一次调用的角色绝不泄漏到这一次。
+        self._call_role = None
+        self._call_answer_text = ""
+        self._call_undeclared = False
+        # 系统提示只发给这一次调用（不写回对话记录）：内容角色协议 / 兜底要求。
         request_messages = messages
         if hint:
             request_messages = [*messages, ChatMessage(role="system", content=hint)]
@@ -1471,7 +1780,7 @@ class AgentLoop:
             return None  # 还没发出请求就被取消：不产生任何新的模型调用
         delta_id = self._call_delta_id or f"dl_{short_turn_id(self.turn_id)}_1"
         stream = _AssistantStream(
-            self._emit_assistant, delta_id=delta_id, answer_from_start=self._call_is_answer
+            self._emit_assistant, delta_id=delta_id, answer_expected=self._answer_expected
         )
         # 工具轮的正文要等阶段就位后再补 stage_id / call_ids（见 _dispatch_tool_calls）。
         self._active_stream = stream
@@ -1548,26 +1857,31 @@ class AgentLoop:
             self._request_aborted = True
             await stream.finish(None)
             self._stream_emitted = stream.emitted
+            self._absorb_stream_role(stream)
             return None
         if unsupported is not None:
             await stream.finish(None)
             self._stream_emitted = stream.emitted
+            self._absorb_stream_role(stream)
             # 交给 _completion_step 定夺：没透出正文就整段降级，透出了就如实失败。
             raise unsupported
         if failure is not None:
             await stream.finish(None)
             self._stream_emitted = stream.emitted
+            self._absorb_stream_role(stream)
             raise failure
         if completion is None:
             await stream.finish(None)
             self._stream_emitted = stream.emitted
+            self._absorb_stream_role(stream)
             raise RuntimeError("模型流在给出完整结果之前就结束了")
-        # 有工具调用 → 工具轮的文字留在过程区，阶段就位后由 flush_interim 补
-        # stage_id / call_ids；没有工具调用 → 这就是正式回答，原样提升。
+        # 收尾：角色由正文声明在流式过程中判定（契约 §1.1）；有工具调用时过程区
+        # 文字留在原地，等 flush_interim 补 stage_id / call_ids。
         await stream.finish(completion)
-        # 收尾之后才算：finish 可能刚刚把正文一次性交付（整段返回的路径），
+        # 收尾之后才算：finish 可能刚刚把正文一次性交付（整段返回 / 未声明的路径），
         # 这时上层**不能**再补发第二条（同一段字会出现两次）。
         self._stream_emitted = stream.emitted
+        self._absorb_stream_role(stream)
         if not stream.saw_delta and (completion.message.content or completion.tool_calls):
             # 一个增量都没收到、却拿到了完整结果：这条服务是整段回的
             # （忽略 stream=true，application/json）。如实告知，不假装流式；
