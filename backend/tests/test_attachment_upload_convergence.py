@@ -844,13 +844,13 @@ async def test_turn_rejects_and_does_not_enqueue_when_receipt_has_rejects(async_
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path)
-        monkeypatch.setattr(
-            ctx.attachments,
-            "bind_for_turn",
-            lambda **kwargs: BindOutcome(
+        # bind_for_turn 现在是 async（R5 §1.3）：桩也要 async，否则路由 await 不了
+        async def _rejected_receipt(**_kwargs) -> BindOutcome:
+            return BindOutcome(
                 bound=[], rejected=[(att["id"], "附件已经绑到别的轮次（请移除后重发）")]
-            ),
-        )
+            )
+
+        monkeypatch.setattr(ctx.attachments, "bind_for_turn", _rejected_receipt)
 
         before = ctx.turns.snapshot()
         resp = await ac.post(
@@ -901,7 +901,9 @@ async def test_turn_rejects_attachment_owned_by_another_turn_without_enqueue(asy
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path, name="先到先得.txt")
-        ctx.attachments.bind_for_turn("turn_owner", [att["id"]], topic_id=att["topic_id"])
+        await ctx.attachments.bind_for_turn(
+            "turn_owner", [att["id"]], topic_id=att["topic_id"]
+        )
         assert ctx.attachments.get(att["id"], check=False).turn_id == "turn_owner"
 
         before = ctx.turns.snapshot()
