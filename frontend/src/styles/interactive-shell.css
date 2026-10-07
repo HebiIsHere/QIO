@@ -1,26 +1,37 @@
 /*
-  互动板浮层层级与避让（子智能体 A 负责；主智能体在集成时导入 main.ts）。
+  互动板浮层层级与避让（子智能体 D 负责；主智能体在集成时导入 main.ts）。
 
   为什么单独一个文件：底部工具栏（A）、右下聊天（C）、右上批量列表与任务浮层（D）、
   板内搜索（A）、中央确认框（D）分别由不同工作区实现，各自只写自己的 scoped 样式。
-  如果没有一处统一规定「谁在上面、窄窗口谁给谁让位」，集成后就会互相遮挡。
-  本文件只做两件事：
+  如果没有一处统一规定「谁在上面、谁给谁让位」，集成后就会互相遮挡。
+  本文件只做三件事：
     1) 用 --im-z-* 固定浮层层级，浮层不各自发明 z-index；
-    2) 用 --im-chat-reserve / --im-toolbar-* 规定底部避让，并给出 1024×768 与 800×600 的收纳规则。
+    2) 用 --im-chat-reserve / --im-toolbar-* 规定底部避让；
+    3) 把**跨浮层几何**的运行时结果（由 IntentBatchTray 写在舞台元素上的 --im-geo-*）
+       接到聊天面板上 —— 聊天组件不由 D 维护，所以只能通过样式表消费这些变量。
 
   约定：
-  - 只写层级与避让，不重写任何组件外观；颜色一律 var(--*)，不新建色板。
+  - 只写层级、避让与尺寸上限，不重写任何组件外观；颜色一律 var(--*)，不新建色板。
   - 选择器用契约 §8.4 冻结的 data-im 钩子，不依赖任何工作区的 scoped 类名。
   - 层级 / 避让声明用「重复属性选择器」把特异度提到 0,3,0，压过组件 scoped 规则
-    （.class[data-v-x] = 0,2,0）。理由：这两类属性是跨组件共享的，不该由单个组件自己决定；
-    重复同一个属性选择器只是为了提特异度，不改变匹配范围。
-  - 组件内保留同样的几何作为「本文件尚未导入」时的兜底；两处数值必须一致：
-      BoardToolbar.vue 的 --tb-chat-reserve  ↔  这里的 --im-chat-reserve
-      BoardToolbar.vue 的 --tb-max-width     ↔  这里的 --im-toolbar-max-width
+    （.class[data-v-x] = 0,2,0）。重复同一个属性选择器只是为了提特异度，不改变匹配范围。
+  - 跨浮层尺寸声明放在文件**最末**：与组件自己的媒体查询同特异度时按源码顺序取胜。
+
+  --- 运行时几何变量（--im-geo-*，写在板面舞台元素上，仅互动版有效）-----------------
+    --im-geo-mode            当前模式：side-by-side / stacked / switched
+    --im-geo-chat-max-w      聊天面板宽度上限
+    --im-geo-chat-max-h      聊天面板高度上限（已扣掉聊天入口按钮所占的一行）
+    --im-geo-batch-max-w     批量列表宽度上限
+    --im-geo-batch-max-h     批量列表面板高度上限（已扣掉入口按钮）
+    --im-geo-batch-right     批量列表右边距（并排时 = 左边距 + 聊天宽 + 间距）
+    --im-geo-gap             两面板之间的间距
+  这些数字来自 interactive/overlayLayout.ts 的纯几何计划；变量缺失（例如本文件没被导入、
+  或几何控制器还没量到）时全部退回旧行为，组件自己也不会崩。
 
   避让矩阵（谁和谁不能叠）：
-    底部工具栏 ↔ 右下聊天入口：工具栏在「扣掉聊天保留宽度后的剩余空间」里居中（见 --im-chat-reserve）
-    底部工具栏 ↔ 板内搜索浮层：搜索浮层固定在工具栏正上方、左对齐（工具栏自己的 scoped 样式）
+    底部工具栏 ↔ 右下聊天入口：工具栏在「扣掉聊天保留宽度后的剩余空间」里居中（--im-chat-reserve）
+    聊天面板 ↔ 批量列表：由 --im-geo-* 决定并排还是上下；空间不足时只展开一个（switched）
+    底部工具栏 ↔ 所有浮层：浮层高度上限全部从工具栏顶边倒推
     板内搜索 ↔ 右上批量列表：搜索在左下向上展开，批量列表在右上
     中央确认框 ↔ 其它浮层：确认框在最上层，且不改变其它浮层的位置
 */
@@ -38,9 +49,11 @@
   --im-chat-reserve: 132px;
   --im-toolbar-bottom: var(--sp-4);
   --im-toolbar-max-width: 1180px;
-  /* 窄窗口里聊天面板要整体抬到工具栏之上（工具栏会换行变高，最坏约 170px）。
-     宽窗口不需要抬升：实测 1440×900 下工具栏右边缘 1047 < 聊天面板左边缘 1064，本来就不重叠。
-     C 若已在自己的面板里按实测工具栏高度避让，可以把 --im-chat-lift 设为 0（或告诉我删掉这条）。 */
+  /*
+    聊天面板的额外抬升：保持 0。
+    纵向避让现在统一由几何计划（--im-geo-chat-max-h，从工具栏顶边倒推）负责，
+    再叠一层抬升会把面板顶出可用区间（独立复核实测过 800×600 下容器 top=-141px）。
+  */
   --im-chat-lift: 0px;
 }
 
@@ -64,11 +77,7 @@
 [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
   z-index: var(--im-z-chat);
 }
-/*
-  实测（800×600，骨架版 ChatDock）：聊天面板 rect = {l:424,t:508,r:784,b:584}，
-  底部工具栏 rect = {l:134,t:423,r:578,b:592} —— 面板压住了工具栏右端（含提交区）。
-  面板是底部对齐列里的最后一个子元素，用 margin-bottom 把它整体抬起来即可避开。
-*/
+/* 抬升量固定为 0（见 :root 的说明） */
 [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
   margin-bottom: var(--im-chat-lift);
 }
@@ -91,32 +100,29 @@
     --im-chat-reserve: 104px;
     --im-toolbar-bottom: var(--sp-3);
     --im-toolbar-max-width: 100%;
-    /* 抬升量归零：聊天面板自己按实测工具栏顶边避让（--chat-dock-clearance）。
-       两套避让叠加会把面板顶出视口（独立复核实测 800×600 下容器 top=-141px）。 */
-    --im-chat-lift: 0px;
   }
   [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
     padding: var(--sp-2);
   }
-  /* 聊天面板不让高度把工具栏挤掉：最多占视口七成，且从聊天按钮上方展开 */
-  [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
-    max-height: 70vh;
-  }
 }
 
-/* --- 800×600：进一步压缩，聊天面板更窄；主要入口仍然可见可点 ---------------- */
+/* --- 800×600：进一步压缩，主要入口仍然可见可点 ------------------------------ */
 @media (max-width: 800px) {
   :root {
     --im-chat-reserve: 88px;
     --im-toolbar-bottom: var(--sp-2);
-    /* 同上：避免与 ChatDock 自己的避让叠加（复核实测面板被顶到视口外 141px） */
-    --im-chat-lift: 0px;
-  }
-  [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
-    max-width: calc(100vw - var(--im-chat-reserve) - var(--sp-4));
-    max-height: 60vh;
   }
   [data-im="search-panel"][data-im="search-panel"][data-im="search-panel"] {
     width: min(300px, calc(100vw - var(--sp-6)));
   }
+}
+
+/* ==========================================================================
+   跨浮层尺寸上限（放在最后：同特异度时按源码顺序压过上面与组件内的媒体查询）
+   说明：这里只**限制上限**，不设置具体宽高 —— 面板仍然按自己的偏好尺寸显示，
+   空间不足时才被压到上限；面板内部滚动，绝不越到工具栏下面或另一个面板身上。
+   ========================================================================== */
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+  max-width: var(--im-geo-chat-max-w, none);
+  max-height: var(--im-geo-chat-max-h, none);
 }

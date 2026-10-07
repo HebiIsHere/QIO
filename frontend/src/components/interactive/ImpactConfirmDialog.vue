@@ -144,16 +144,20 @@ function dismiss(): void {
 </script>
 
 <template>
-  <div v-if="open" class="backdrop">
+  <div v-if="open" class="backdrop qio-confirm-scrim" data-im="impact-scrim" data-im-scrim="impact">
     <div
       ref="dialog"
-      class="dialog"
+      class="dialog qio-confirm qio-confirm--layer"
       data-im="impact-dialog"
       :data-impact-mode="mode"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="im-impact-title"
       aria-describedby="im-impact-body"
+      tabindex="-1"
+      @keydown.stop
+      @keyup.stop
+      @wheel.stop
     >
       <h2 id="im-impact-title" class="title">{{ title }}</h2>
 
@@ -198,11 +202,11 @@ function dismiss(): void {
       <p v-if="notice" class="notice" role="status" data-im="impact-notice">{{ notice }}</p>
       <p v-if="error" class="error" role="alert" data-im="impact-error">操作失败：{{ error }}</p>
 
-      <div class="actions">
+      <div class="actions qio-confirm__actions">
         <!-- 打开时聚焦这个按钮：默认动作是「不改动」 -->
         <button
           ref="firstAction"
-          class="btn ghost"
+          class="btn qio-btn quiet"
           type="button"
           data-im="impact-cancel"
           :disabled="busy"
@@ -211,7 +215,7 @@ function dismiss(): void {
           {{ mode === "impact" ? "取消：改动不生效，任务继续" : "取消：保持现状，不做改动" }}
         </button>
         <button
-          class="btn primary"
+          class="btn qio-btn primary"
           type="button"
           data-im="impact-continue"
           :disabled="busy"
@@ -229,27 +233,23 @@ function dismiss(): void {
 </template>
 
 <style scoped>
+/* 遮罩与层级走既有原语（.qio-confirm-scrim 用令牌 --bg-overlay，不再自带 rgba 兜底） */
 .backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--sp-4);
-  background: var(--backdrop, rgba(0, 0, 0, 0.42));
+  z-index: var(--im-z-dialog, 60);
 }
 .dialog {
   width: min(560px, calc(100vw - var(--sp-6)));
   max-height: min(80vh, 640px);
   overflow: auto;
+  overscroll-behavior: contain;
   padding: var(--sp-5);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
   color: var(--text-primary);
-  box-shadow: 0 24px 60px var(--shadow-strong, rgba(0, 0, 0, 0.45));
+  box-shadow: var(--elev-overlay, var(--shadow-3));
 }
+.dialog:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .title {
   margin: 0 0 var(--sp-3);
   font-family: var(--serif);
@@ -257,9 +257,10 @@ function dismiss(): void {
   color: var(--text-strong);
 }
 .body { display: flex; flex-direction: column; gap: var(--sp-2); }
+/* 说明文字是用户做决定要读的东西：用正文级字号，不缩成元信息级 */
 .lead {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   line-height: var(--lh-base);
   color: var(--text-secondary);
 }
@@ -278,26 +279,26 @@ function dismiss(): void {
   flex-direction: column;
   gap: 2px;
 }
-.task { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
-.materials { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); }
+.task { margin: 0; font-size: var(--fs-base); color: var(--text-strong); }
+.materials { margin: 0; font-size: var(--fs-sm); color: var(--text-secondary); }
 .consequence {
   margin: 0;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   line-height: var(--lh-base);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 .pending {
   margin: 0;
   padding-left: var(--sp-4);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
   line-height: var(--lh-base);
 }
 .impact { color: var(--warning); }
 .notice,
 .error {
   margin: var(--sp-3) 0 0;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   line-height: var(--lh-base);
 }
 .notice { color: var(--text-secondary); }
@@ -309,19 +310,18 @@ function dismiss(): void {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+/*
+  按钮复用全局原语 .qio-btn（圆角 / 边框 / 语义色 / 悬停 / 禁用都来自同一套语言），
+  这里只把高度放开：两个按钮的文案是一句完整的话，写死 34px 会把第二行裁掉。
+*/
 .btn {
-  font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--on-accent);
-  background: var(--accent);
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  height: auto;
+  min-height: 34px;
   padding: var(--sp-2) var(--sp-4);
-  cursor: pointer;
+  line-height: var(--lh-tight);
+  text-align: left;
 }
-.btn.ghost { background: none; color: var(--text-secondary); border-color: var(--border-strong); }
-.btn.primary:hover:enabled { background: var(--accent-hover); }
-.btn.ghost:hover:enabled { background: var(--layer-hover); color: var(--text-strong); }
-.btn:disabled { opacity: 0.55; cursor: default; }
-.btn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.btn.quiet { border-color: transparent; background: none; color: var(--text-secondary); }
+.btn.quiet:hover:enabled { background: var(--layer-hover); color: var(--text-strong); }
+.btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 </style>
