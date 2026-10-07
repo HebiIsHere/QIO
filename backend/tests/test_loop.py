@@ -29,6 +29,10 @@ class FakeMessage:
     tool_calls: list[Any] | None = None
 
 
+# 冻结协议串（第五轮契约 §1.1；测试里写死字面量：契约改了就应当红）
+ANSWER_MARKER = "[[QIO:ANSWER]]"
+
+
 @dataclass
 class FakeChoice:
     message: FakeMessage
@@ -149,15 +153,19 @@ async def test_plain_text_turn():
 
 async def test_single_tool_turn():
     client = ScriptedClient(
-        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc("c1", "echo", '{"text": "hi"}')]))])]
+        [
+            FakeCompletion([FakeChoice(FakeMessage(None, [_tc("c1", "echo", '{"text": "hi"}')]))]),
+            # 契约 §1.1（第五轮）变更：角色由正文声明决定 —— 工具轮之后声明回答
+            FakeCompletion([FakeChoice(FakeMessage(ANSWER_MARKER + "\nfinal answer", None))]),
+        ]
     )
     loop, _ = _make_loop(client)
     result = await loop.run("say hi")
     assert result.tool_calls_made == 1
     assert result.final_content == "final answer"
-    # 契约 §1.1 变更：回答由一次**不带工具**的专用调用产出 ——
-    # 工作调用（带工具）+ 工作调用收尾 + 回答调用 = 3 次
-    assert client.calls == 3
+    # 工具轮（带工具、真的调用工具）+ 声明回答 = 2 次（不再固定 +1）
+    assert client.calls == 2
+    assert [bool(r.get("tools")) for r in client.requests] == [True, True]
 
 
 async def test_budget_stops_runaway_loop():
@@ -219,7 +227,11 @@ async def test_force_continue_overrides_budget():
 
 async def test_unknown_tool_failure_isolated_and_warns():
     client = ScriptedClient(
-        [FakeCompletion([FakeChoice(FakeMessage(None, [_tc("c1", "ghost", "{}")]))])]
+        [
+            FakeCompletion([FakeChoice(FakeMessage(None, [_tc("c1", "ghost", "{}")]))]),
+            # 声明回答：这一轮的警告只应该有一条（工具失败），不带协议降级的噪声
+            FakeCompletion([FakeChoice(FakeMessage(ANSWER_MARKER + "\nfinal answer", None))]),
+        ]
     )
     loop, _ = _make_loop(client)
     result = await loop.run("call ghost")
@@ -286,8 +298,10 @@ async def test_interim_assistant_event_emitted_for_native_commentary():
 
 
 async def test_plain_text_turn_streams_answer_in_the_answer_area():
-    """契约 §1.1：工作调用的正文进过程区；正式回答由 tools=[] 的回答调用流式产出。"""
-    client = ScriptedClient([])
+    """契约 §1.1：声明的正文从第一个可发布增量起实时进正式回答区（标记不展示）。"""
+    client = ScriptedClient(
+        [FakeCompletion([FakeChoice(FakeMessage(ANSWER_MARKER + "\nfinal answer", None))])]
+    )
     loop, bus = _make_loop(client)
 
     collected: list[str] = []
@@ -307,14 +321,12 @@ async def test_plain_text_turn_streams_answer_in_the_answer_area():
         pass
 
     joined = "\n".join(collected)
-    # 工作调用的正文（interim=true，过程区）与回答调用的正文（interim=false，回答区）
-    # 都会出现；正式回答必须来自回答调用（契约 §1.1），不再有「等整段结束才提升」。
+    # 声明回答：正文进正式回答区（interim=false），声明本身不展示
     assert "event: ASSISTANT" in joined
     assert "final answer" in joined
     assert "\"interim\": false" in joined or "\"interim\":false" in joined
-    assert "\"interim\": true" in joined or "\"interim\":true" in joined
-    # 两次调用：工作调用 + 回答调用（回答调用不带工具）
-    assert client.calls == 2
-    # 工作调用带工具；回答调用**不带工具**（native 档不发空 tools 字段）
-    assert client.requests[0].get("tools")
-    assert not client.requests[1].get("tools")
+    assert "\"interim\": true" not in joined and "\"interim\":true" not in joined
+    assert "[[QIO:ANSWER]]" not in joined
+    # 合规直接回答只需 1 次调用（不再有固定的回答调用）
+    assert client.calls == 1
+    assert client.requests[0].get("tools")  # 角色由声明决定，不看带不带工具

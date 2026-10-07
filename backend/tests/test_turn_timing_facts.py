@@ -417,15 +417,15 @@ async def test_normalized_provider_error_from_the_model_call_is_provider_error()
     assert end["actions"] == ["retry"]
 
 
-async def test_answer_call_provider_error_fails_the_turn_honestly(tmp_path):
-    """回答调用的明确厂商错误 → 整轮 failed + provider_error，不重试出一个假答案。
+async def test_provider_error_after_a_tool_round_fails_the_turn_honestly(tmp_path):
+    """工具轮之后的明确厂商错误 → 整轮 failed + provider_error，不重试出一个假答案。
 
-    复现（第五轮复核 ②）：SDK 默认 max_retries=2 会把 5xx 静默重试，有状态假厂商的
+    复现（第四轮复核 ②）：SDK 默认 max_retries=2 会把 5xx 静默重试，有状态假厂商的
     下一个脚本步骤会被当成成功返回 —— 「厂商错误」于是变成一个假答案。
     """
     from unittest.mock import AsyncMock
 
-    from agent.adapters.base import ChatMessage, Completion
+    from agent.adapters.base import ChatMessage, Completion, ToolCall
     from agent.adapters.errors import ProviderInternalError
     from agent.credentials.store import MemoryKeyring
 
@@ -440,9 +440,15 @@ async def test_answer_call_provider_error_fails_the_turn_honestly(tmp_path):
         async def complete(self, messages, tools, **kwargs):
             self.calls += 1
             if self.calls == 1:
+                # 工具轮：真的调用一次工具（这样本轮才有「需要回答」的下一轮）
                 return Completion(
-                    message=ChatMessage(role="assistant", content="我先看一下。")
+                    message=ChatMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+                    )
                 )
+            # 之后每一次（工作收尾 / 兜底调用）都如实失败
             raise ProviderInternalError("厂商返回 500：stream-aborted")
 
     ctx = _app_ctx(tmp_path)
@@ -460,7 +466,8 @@ async def test_answer_call_provider_error_fails_the_turn_honestly(tmp_path):
     assert end["reason_code"] == "provider_error"
     assert "500" in (end["reason"] or "")
     assert end["actions"] == ["retry"]
-    # 失败的回答调用不得编出正式回答；两次调用各一次，没有被重试
+    # 失败的调用不得编出正式回答；两次调用各一次（工具轮 + 之后的模型调用），
+    # 没有被 SDK 静默重试（有状态假厂商的下一个脚本步骤没有被当成成功返回）
     answers = [
         e.data
         for e in ctx.bus._history
@@ -542,8 +549,8 @@ async def test_recoverable_tool_error_is_not_a_turn_failure():
                 text="我先试一下这个文件。",
                 tool_calls=[ScriptedToolCall(id="c1", name="boom", arguments={})],
             ),
-            StreamScript(text="工具失败了，我换个办法。"),  # 工作调用收尾
-            StreamScript(text="这个文件打不开，我换个办法：这是最终回答。"),  # 回答调用
+            # 契约 §1.1（第五轮）：角色由正文声明决定 —— 工具轮之后声明回答
+            StreamScript(text="[[QIO:ANSWER]]\n这个文件打不开，我换个办法：这是最终回答。"),
         ]
     )
     loop = AgentLoop(adapter, registry, EventBus(), turn_id="turn_1")

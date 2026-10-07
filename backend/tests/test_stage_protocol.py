@@ -376,10 +376,8 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
                     )
                 ],
             ),
-            # 工作调用收尾：不再请求工具（契约 §1.1）
-            StreamScript(text="工具跑完了。"),
-            # 回答调用（tools=[]）：正式回答
-            StreamScript(text="完成"),
+            # 契约 §1.1（第五轮）：角色由正文声明决定 —— 工具轮之后声明回答
+            StreamScript(text="[[QIO:ANSWER]]\n完成"),
         ]
     )
     ctx.build_adapter = AsyncMock(return_value=adapter)
@@ -406,8 +404,8 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
     assert tool_round[-1]["stage_id"] == opened["stage_id"]
     assert tool_round[-1]["call_ids"] == opened["call_ids"] == ["c1"]
     assert [e["seq"] for e in tool_round] == sorted({e["seq"] for e in tool_round})
-    # 工作调用收尾的正文同样是过程说明（契约 §1.1），不是正式回答
-    assert any(e["content"] == "工具跑完了。" for e in interim)
+    # 工具轮只有这一份过程说明（契约 §1.1），它不是正式回答
+    assert {e["content"] for e in interim} == {said}
     # 工具轮的正文**永不**进正式回答区（审计问题 2）
     answers = [
         e.data
@@ -415,11 +413,12 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         if e.type.value == "ASSISTANT" and not e.data.get("interim")
     ]
     assert all(said not in (a["content"] or "") for a in answers), answers
-    # 正式回答来自回答调用（tools=[]）：先一条 streaming=true 的累计增量，
+    # 正式回答来自**声明过**的那次调用：先一条 streaming=true 的累计增量，
     # 再一条 streaming=false 的收尾校准（同一 delta_id、同一份文字）
     assert [a["content"] for a in answers] == ["完成", "完成"]
     assert answers[0]["streaming"] is True and answers[-1]["streaming"] is False
     assert answers[0]["delta_id"] == answers[-1]["delta_id"]
+    assert all(a["role_evidence"] == "declared_answer" for a in answers)
     # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]

@@ -160,6 +160,301 @@ def _active_jobs():
     return active_jobs()
 
 
+async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_app):
+    """§1.2 关键断言：工作线程失败后，**客户端一个字节都不再发**，请求也必须自己失败收尾。
+
+    修复前（api/server.py 的 async for chunk in request.stream()）接收端在等下一块网络数据时
+    不观察作业终态 → 请求挂住、附件停在 prepared、活动作业仍有 1 个（客户端恢复发送才 500）。
+    """
+    ctx = async_app.state.ctx
+    placeholder = _break_target_dir(ctx)  # 目标父路径是普通文件 → 工作线程 mkdir 真失败
+    gate = asyncio.Event()  # 客户端闸门：保持关闭 = 不再发任何字节
+    first_sent = asyncio.Event()
+
+    async def paused_body():
+        first_sent.set()  # 请求体已经开始（不等第二次拉取：修复后终态到了就不再拉）
+        yield b"x" * CHUNK_BYTES  # 只发第一块
+        await gate.wait()  # 暂停：不再产生任何字节
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=paused_body(),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-QIO-Name": quote("暂停收尾.bin"),
+                },
+            )
+        )
+        await _wait_until(
+            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="第一块没有发出去"
+        )
+        jobs = _active_jobs()
+        assert jobs, "上传作业没有登记进注册表"
+        # 工作线程必须**真的退出**（退出事实由工作线程自己置位，不由接收端猜）
+        assert await _wait_worker_exit(jobs, timeout=SETUP_DEADLINE), (
+            "工作线程没有退出：写盘失败应当让它立刻退出"
+        )
+        assert not gate.is_set(), "闸门必须仍然关闭：这一刻客户端不会再发任何字节"
+
+        try:
+            resp = await asyncio.wait_for(task, timeout=DEADLINE)
+        except asyncio.TimeoutError:
+            raise AssertionError(
+                "客户端暂停时工作线程失败，上传请求没有自己收尾"
+                "（接收端还在等下一块网络数据，不看作业终态）"
+            ) from None
+
+        assert resp.status_code == 500, resp.text
+        assert str(resp.json().get("detail") or "").strip(), "失败必须带人话原因"
+        rows = ctx.attachments.list(limit=10, check=False)
+        assert all(row.state not in ("prepared", "ready") for row in rows), (
+            f"失败后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+        )
+        assert not _active_jobs(), "失败收尾后活动作业必须注销"
+        assert _leftovers(ctx, placeholder) == [], f"留下了文件：{_leftovers(ctx, placeholder)}"
+
+    gate.set()  # 收尾：放行挂起的请求体生成器，避免留下未关闭的异步生成器
+
+
+def _paused_body(gate: asyncio.Event, started: asyncio.Event | None = None, *, chunks: int = 1):
+    """先发 `chunks` 块，然后等闸门：客户端**不再产生任何字节**（除非测试释放闸门）。
+
+    `started` 在**第一块之前**置位（「请求体已经开始」）：不能等生成器第二次被拉取才置位 ——
+    修复后接收端在作业终态到达时就不再拉取请求体了，那样置位会永远等不到（这正是修好的行为）。
+    """
+
+    async def body():
+        if started is not None:
+            started.set()
+        for _ in range(max(1, int(chunks))):
+            yield b"x" * CHUNK_BYTES
+        await gate.wait()
+
+    return body()
+
+
+async def _paused_request_ends_with_failure(async_app, name: str, *, chunks: int = 1, status: int = 500):
+    """闸门仍关闭（客户端不再发字节）时，上传请求必须自己失败收尾。
+
+    返回响应；收尾后检查：行不停 prepared/ready、活动作业为 0、不留文件。
+    """
+    ctx = async_app.state.ctx
+    gate = asyncio.Event()
+    first_sent = asyncio.Event()
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=_paused_body(gate, first_sent, chunks=chunks),
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote(name)},
+            )
+        )
+        await _wait_until(
+            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="请求体没有开始"
+        )
+        await _wait_for_row(ctx)  # 上传已经登记（prepared 行已出现）
+        jobs = _active_jobs()
+        assert jobs, "上传作业没有登记进注册表"
+        # 工作线程必须**真的退出**（退出事实由工作线程自己置位）
+        assert await _wait_worker_exit(jobs, timeout=SETUP_DEADLINE), "工作线程没有退出"
+        assert not gate.is_set(), "闸门必须仍然关闭：这一刻客户端不会再发任何字节"
+
+        try:
+            resp = await asyncio.wait_for(task, timeout=DEADLINE)
+        except asyncio.TimeoutError:
+            raise AssertionError(
+                "客户端暂停时工作线程已失败，上传请求没有自己收尾"
+                "（接收端还在等下一块网络数据，不看作业终态）"
+            ) from None
+
+        assert resp.status_code == status, resp.text
+        rows = ctx.attachments.list(limit=10, check=False)
+        assert all(row.state not in ("prepared", "ready") for row in rows), (
+            f"失败后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+        )
+        assert not _active_jobs(), "失败收尾后活动作业必须注销"
+        assert _leftovers(ctx) == [], f"留下了文件：{_leftovers(ctx)}"
+
+    gate.set()  # 收尾：放行挂起的请求体生成器
+    return resp
+
+
+async def test_open_failure_ends_the_request_while_the_client_is_paused(async_app, monkeypatch):
+    """打开临时文件失败（权限） + 客户端暂停：请求必须自己收尾。"""
+    real_open = open
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        if "w" in str(mode):
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(attachments_mod, "open", fake_open, raising=False)
+    resp = await _paused_request_ends_with_failure(async_app, "打开失败暂停.bin")
+    assert "权限" in str(resp.json().get("detail") or ""), resp.text
+
+
+async def test_mid_write_failure_ends_the_request_while_the_client_is_paused(async_app, monkeypatch):
+    """写入中途失败（ENOSPC） + 客户端暂停（已发两块）：请求必须自己收尾。"""
+    real_open = open
+    state = {"writes": 0}
+
+    class _NoSpaceWriter:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, data) -> int:
+            state["writes"] += 1
+            if state["writes"] > 1:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return self._handle.write(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            self._handle.close()
+            return False
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        return _NoSpaceWriter(handle) if "w" in str(mode) else handle
+
+    monkeypatch.setattr(attachments_mod, "open", fake_open, raising=False)
+    resp = await _paused_request_ends_with_failure(async_app, "途中失败暂停.bin", chunks=2)
+    assert "磁盘空间不足" in str(resp.json().get("detail") or ""), resp.text
+
+
+async def test_delete_while_the_client_is_paused_finalizes_without_more_bytes(async_app):
+    """用户删除上传中的附件、客户端又暂停发送：接收任务同样必须收尾（§1.2）。"""
+    ctx = async_app.state.ctx
+    gate = asyncio.Event()
+    first_sent = asyncio.Event()
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=_paused_body(gate, first_sent, chunks=1),
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote("删除暂停.bin")},
+            )
+        )
+        await _wait_until(
+            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="请求体没有发出去"
+        )
+        row = await _wait_for_row(ctx)
+        removed = await ac.delete(f"/api/attachments/{row.id}")
+        assert removed.status_code == 200, removed.text
+        assert not gate.is_set(), "闸门必须仍然关闭"
+
+        try:
+            resp = await asyncio.wait_for(task, timeout=DEADLINE)
+        except asyncio.TimeoutError:
+            raise AssertionError("删除后客户端暂停，上传请求没有收尾") from None
+
+        assert resp.status_code in (400, 404, 409), resp.text
+        assert ctx.attachments.get(row.id, check=False) is None
+        assert not _active_jobs(), "收尾后活动作业必须注销"
+        assert _leftovers(ctx) == [], f"留下了文件：{_leftovers(ctx)}"
+
+    gate.set()
+
+
+async def test_late_worker_result_cannot_commit_ready(async_app, monkeypatch):
+    """工作线程卡在不可中断的磁盘调用（os.replace）里：不谎报已退出、如实收尾、迟到结果不提交 ready。
+
+    收尾超时后：行转 failed、请求返回 500、副本被清；等闸门放行、工作线程真正退出后，
+    它迟到的 READY 结果**不得**把行翻成 ready，也不得留下孤儿副本。
+    """
+    from agent.api import server as server_mod
+
+    monkeypatch.setattr(server_mod, "UPLOAD_SETTLE_SECONDS", 0.5)
+    ctx = async_app.state.ctx
+    gate = threading.Event()
+    release = threading.Event()
+    real_replace = attachments_mod.os.replace
+
+    def gated_replace(src, dst):
+        gate.set()
+        assert release.wait(15), "测试没有放行 os.replace"
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(attachments_mod.os, "replace", gated_replace)
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=_chunked_body(4),
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote("迟到提交.bin")},
+            )
+        )
+        # 等工作线程真的走到**不可中断的提交调用**，并先抓住作业对象（响应返回后它会被注销）
+        await _wait_until(
+            lambda: gate.is_set() and bool(_active_jobs()),
+            timeout=SETUP_DEADLINE,
+            what="工作线程没有走到 os.replace",
+        )
+        jobs = _active_jobs()
+
+        resp = await asyncio.wait_for(task, timeout=DEADLINE)
+        assert resp.status_code == 500, resp.text
+        rows = ctx.attachments.list(limit=10, check=False)
+        assert all(row.state not in ("prepared", "ready") for row in rows), (
+            f"收尾超时后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+        )
+        # 不谎报「已退出」：工作线程还卡在磁盘调用里，退出事实只有它自己能置位
+        assert jobs and not any(job.worker_done.is_set() for job in jobs), (
+            "工作线程还卡在 os.replace 里，不该被报告为已退出"
+        )
+        assert not _active_jobs(), "响应返回后活动作业必须注销"
+
+    release.set()  # 放行：工作线程会真的提交，但迟到的结果不得改变行状态
+    await _wait_until(lambda: not _active_jobs(), timeout=SETUP_DEADLINE, what="上传作业没有收尾")
+    await _wait_until(
+        lambda: _leftovers(ctx) == [], timeout=SETUP_DEADLINE, what="迟到提交留下了孤儿副本"
+    )
+    rows = ctx.attachments.list(limit=10, check=False)
+    assert all(row.state != "ready" for row in rows), (
+        f"迟到的结果把行提交成 ready 了：{[(r.id, r.state) for r in rows]}"
+    )
+
+
+async def test_other_apis_keep_progressing_while_an_upload_is_paused(async_app):
+    """上传暂停（工作线程阻塞在队列读上）时，其它 API 必须照常返回。"""
+    ctx = async_app.state.ctx
+    gate = asyncio.Event()
+    first_sent = asyncio.Event()
+
+    async with _live(async_app) as ac:
+        task = asyncio.create_task(
+            ac.post(
+                "/api/attachments/upload",
+                content=_paused_body(gate, first_sent, chunks=1),
+                headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote("暂停推进.bin")},
+            )
+        )
+        await _wait_until(
+            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="请求体没有发出去"
+        )
+        row = await _wait_for_row(ctx)
+
+        started = time.perf_counter()
+        assert (await ac.get("/api/attachments")).status_code == 200
+        assert (await ac.get("/api/runtime/state")).status_code == 200
+        assert (await ac.get("/api/turns/queue")).status_code == 200
+        elapsed = time.perf_counter() - started
+        assert elapsed < DEADLINE, f"暂停上传时其它 API 被挡住了：{elapsed:.3f}s"
+
+        assert (await ac.delete(f"/api/attachments/{row.id}")).status_code == 200
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(task, timeout=DEADLINE)
+
+    gate.set()
+
+
 async def test_upload_write_failure_finishes_within_the_deadline(async_app):
     """写盘失败（建目录失败）必须让请求在有限时间内结束 —— 修复前它会永远等一个没人消费的队列。"""
     ctx = async_app.state.ctx
@@ -549,13 +844,13 @@ async def test_turn_rejects_and_does_not_enqueue_when_receipt_has_rejects(async_
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path)
-        monkeypatch.setattr(
-            ctx.attachments,
-            "bind_for_turn",
-            lambda **kwargs: BindOutcome(
+        # bind_for_turn 现在是 async（R5 §1.3）：桩也要 async，否则路由 await 不了
+        async def _rejected_receipt(**_kwargs) -> BindOutcome:
+            return BindOutcome(
                 bound=[], rejected=[(att["id"], "附件已经绑到别的轮次（请移除后重发）")]
-            ),
-        )
+            )
+
+        monkeypatch.setattr(ctx.attachments, "bind_for_turn", _rejected_receipt)
 
         before = ctx.turns.snapshot()
         resp = await ac.post(
@@ -606,7 +901,9 @@ async def test_turn_rejects_attachment_owned_by_another_turn_without_enqueue(asy
 
     async with _live(async_app) as ac:
         att = await _make_ready_attachment(ac, ctx, tmp_path, name="先到先得.txt")
-        ctx.attachments.bind_for_turn("turn_owner", [att["id"]], topic_id=att["topic_id"])
+        await ctx.attachments.bind_for_turn(
+            "turn_owner", [att["id"]], topic_id=att["topic_id"]
+        )
         assert ctx.attachments.get(att["id"], check=False).turn_id == "turn_owner"
 
         before = ctx.turns.snapshot()

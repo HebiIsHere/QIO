@@ -1270,8 +1270,37 @@ def create_app(
         too_large = False
         read_error: BaseException | None = None
         ended: UploadJobEnded | None = None
+        stream = request.stream()
+        # 终态等待任务：**等下一块网络数据时也必须观察它**（契约 §1.2）——
+        # 否则工作线程一死、客户端一暂停，接收端就永远挂在这里（附件停在 prepared、
+        # 活动作业不注销，客户端恢复发送才 500）。
+        end_wait = asyncio.ensure_future(job.wait_end())
+        read_task: asyncio.Task | None = None
         try:
-            async for chunk in request.stream():
+            while not job.terminal:
+                read_task = asyncio.ensure_future(stream.__anext__())
+                try:
+                    await asyncio.wait(
+                        {read_task, end_wait}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    if not read_task.done():
+                        read_task.cancel()  # 终态先到：待决读取立刻取消，不泄漏
+                chunk_ready = read_task.done() and not read_task.cancelled()
+                if not chunk_ready:
+                    read_task = None
+                    if end_wait.done():
+                        break  # 作业已终态：**不需要客户端再发任何字节**
+                    continue  # 竞态：下一轮重新竞争
+                try:
+                    chunk = read_task.result()
+                except StopAsyncIteration:
+                    read_task = None
+                    break
+                finally:
+                    read_task = None
+                if job.terminal:
+                    break  # 终态优先：这一块不再入队（原因归属由作业终态说了算）
                 if not chunk:
                     continue
                 received += len(chunk)
@@ -1293,13 +1322,39 @@ def create_app(
         except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
             read_error = exc
         finally:
+            # 收尾（§1.2）：取消并回收读取 / 等待任务，关闭请求体生成器 —— 一个都不留
+            for pending in (read_task, end_wait):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            for pending in (read_task, end_wait):
+                if pending is not None:
+                    with contextlib.suppress(BaseException):
+                        await pending
+            with contextlib.suppress(BaseException):
+                await stream.aclose()
             if read_error is not None:
                 job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何副本")
             with contextlib.suppress(UploadJobEnded):
                 await job.close_input(abort=bool(too_large or read_error))
         try:
             try:
-                outcome = await worker
+                # 有界等工作线程收尾：它可能卡在**不可中断的磁盘调用**里（契约 §1.2）。
+                # 卡住时不谎报「已退出」，保留真实状态（worker_done 不会被置位），
+                # 如实收尾、清掉可能已落盘的副本，并让迟到的结果无法提交 ready。
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+                )
+            except asyncio.TimeoutError:
+                attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
+                _converge_upload(att.id, "上传收尾超时（磁盘调用没有返回）；没有提交副本")
+                _purge_uncommitted_copy(att)
+                # 安排可靠清理：工作线程真正退出时再清一次 —— 它可能刚好在 os.replace
+                # 里（提交发生在我们的清理之后），那一份副本同样不能留成孤儿。
+                worker.add_done_callback(lambda _task: _purge_uncommitted_copy(att))
+                raise HTTPException(
+                    status_code=500,
+                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存副本",
+                ) from None
             except (UploadTooLarge, UploadAborted) as exc:
                 # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
                 if too_large or isinstance(exc, UploadTooLarge):
@@ -1325,19 +1380,24 @@ def create_app(
                 _converge_upload(att.id, "上传被取消（服务关闭或请求中断）；没有保存任何副本")
                 _purge_uncommitted_copy(att)
                 raise
+            # 原因归属互不覆盖（契约 §1.2）：写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭。
+            # 作业终态是「第一个到达的原因」（UploadJob._mark 幂等），这里按同一优先级映射 HTTP。
+            if outcome.state == DISK_FAILED:
+                # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
+                # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
+                applied = attachments.apply_outcome(att.id, outcome)
+                if applied is None:
+                    raise HTTPException(status_code=404, detail="上传期间附件已被移除")
+                raise HTTPException(
+                    status_code=500,
+                    detail=outcome.error or "上传失败：没有保存副本",
+                )
             if too_large:
                 attachments.delete(att.id)
                 raise HTTPException(status_code=413, detail=_upload_limit_detail())
             applied = attachments.apply_outcome(att.id, outcome)
             if applied is None:
                 raise HTTPException(status_code=404, detail="上传期间附件已被移除")
-            if outcome.state == DISK_FAILED:
-                # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
-                # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
-                raise HTTPException(
-                    status_code=500,
-                    detail=outcome.error or "上传失败：没有保存副本",
-                )
             if outcome.state == DISK_CANCELLED:
                 raise HTTPException(status_code=409, detail=outcome.error or "上传已取消")
             return {"ok": True, "attachment": attachments.payload(applied, check=False)}
@@ -1506,7 +1566,9 @@ def create_app(
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        outcome = attachments.bind_for_turn(
+        # bind_for_turn 现在是 async：校验/建行/定稿都在事件循环线程，
+        # 只有文件 I/O（硬链接失败后的复制退路）在 to_thread 里（R5 §1.3）。
+        outcome = await attachments.bind_for_turn(
             turn_id=turn.turn_id,
             message_id=None,
             attachment_ids=explicit_ids,
@@ -1739,7 +1801,7 @@ def create_app(
                 record["topic_id"],
                 intent_id=pending.intent_id if pending else None,
             )
-            outcome = attachments.bind_for_turn(
+            outcome = await attachments.bind_for_turn(
                 turn_id=turn.turn_id,
                 message_id=None,
                 attachment_ids=retry_ids,

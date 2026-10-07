@@ -231,8 +231,17 @@ class BaseAdapter(ABC):
         原生工具调用协议把 system prompt 交给调用方（messages 里自带），
         返回空串；text 兼容档需要把工具说明写进 prompt，必须如实返回，
         否则预算会高估可用空间。
+
+        注意：内容角色协议（prompts.CONTENT_ROLE_PROTOCOL）不在这里返回 ——
+        它不是本 Adapter 拼的：native / anthropic 由 core/loop.py 作为 system
+        消息注入（见 protocol_in_prompt），text 档由 build_system_prompt 拼进去。
         """
         return ""
+
+    # 本档位是否**自己**把内容角色协议拼进了 system prompt（第五轮契约 §1.1）。
+    # False = 由 core/loop.py 每次调用作为最后一条 system 消息注入；
+    # True  = 已经在自己的 system prompt 里（text 兼容档），循环不再重复注入。
+    protocol_in_prompt: bool = False
 
     def protocol_overhead_tokens(self, tools: list[ToolSpec]) -> int:
         """协议本身带来的固定开销（角色标记、工具调用信封等）。"""
