@@ -372,7 +372,7 @@ run 5 : exit=0 用时=3847ms CPU前/后=46/100%
 ### 7.1 只写了这两个文件（+ 截图）
 
 - `docs/interactive-ui-verify-integrated.md`（本报告）
-- `scripts/interactive-verify/fe-verify-e.mjs`（我的探针脚本，14 个场景）
+- `scripts/interactive-verify/fe-verify-e.mjs`（我的探针脚本，13 个场景：layout / connect / aesthetics / group / batch / chat / chat-fail / card-draft / pure / visibility / cleanup / click-merge / restore）
 - 截图：`docs/interactive-ui-screenshots/e-*.png`（`e-layout-*`、`e-connect-*`、`e-aesthetic-*`、`e-batch-*`、`e-chat-*`、`e-card-draft-*`、`e-visibility-*`、`e-group-*`、`e-click-merge-*`、`e-cleanup-final`、`e-restore-final`），随提交进仓库。
 - 临时文件都在 `%TEMP%\qio-e-verify\`（步骤 JSON、原始 JSON、只读 python 检查脚本），不在仓库里。
 
@@ -396,6 +396,14 @@ Invoke-RestMethod http://127.0.0.1:8931/api/interactive/boards/board_default/sta
 Invoke-RestMethod http://127.0.0.1:8931/api/interactive/boards/board_default/intents
 # pending=0，needs_update=4（i_f11bf6258b4b / i_84fdf689a94b / i_f09780b41d67 / i_256721caa6bb，全部 demo=True）
 ```
+
+### 7.3 关于提交 `adb0c13` 里混入的 `BoardCanvas.vue`
+
+我执行的提交命令是主智能体指定的 `git add -A && git commit`。提交时工作区里**恰好有另一个智能体对
+`frontend/src/components/interactive/BoardCanvas.vue` 的未提交改动（+13 行：给卡片拖动加 `moved` 位移门槛，
+正是本报告 §5 重要 1 建议的方向）**，因此它被 `git add -A` 一并带进了我的提交。
+我本人**没有修改任何产品代码**；为避免打断对方正在进行的改动，我**没有**改写 git 历史（没有 `reset`/`amend`），
+只在这里如实记录，需要拆分提交时由分支负责人处理。提交时工作区仍有未提交的 `BoardCanvas.vue` 与 `InteractiveView.vue`。
 
 **关于这 4 项演示意图**：复核开始时它们是 `pending`。我在 A7 里做了一次**真实提交**，
 服务端按设计把「受这次提交影响的意图」标成 `needs_update`（§1.6：提交后由 QIO 判断是否需要更新预览），
