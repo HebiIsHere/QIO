@@ -858,6 +858,17 @@
 - **Tests：** 独立验证方按用户可见规则先建立反例（问题一 4 红走**真实 ASGI 上传路由**、问题二 6 红、
   问题三 1 红含**线程身份**证据），修复后逐项转绿；问题三另有**100,000,000 字节等号边界**的真实文件验证
   （kind=copy、sha 一致、原轮与新轮都能读出、删除原文件后仍可读、无 `.part` 残留）。
+- **验证（2026-10-07）：** 独立验证方按用户可见规则先建立反例（问题一 4 红走**真实 ASGI 上传路由**、
+  问题二 6 红、问题三 1 红含线程身份），修复后 **36 条验收全绿**；**实机 15/15**（假 provider + uvicorn + vite +
+  msedge/Playwright，10 张截图与网络台账见阶段二报告）；Lead 亲自用**仓外独立探针**复核三条关键：
+  客户端暂停时上传请求自己返回且无残留、未声明完整答案进回答区且只 **1 次调用**、硬链接失败后复制线程
+  为 `asyncio_1`（非事件循环线程）且闸门关闭期间循环仍在推进。闸门：后端全量 **EXIT=0**、
+  前端 **134 files / 1148 tests** + `vue-tsc` 0、`check_docs` 通过。
+- **CI 已知 flake（非本轮引入）：** `backend (windows-latest)` 上既有测试
+  `test_interactive_during_heavy_work::test_health_probe_stays_responsive_while_slow_prediction_runs`
+  （阈值 100ms）在共享 runner 上越线（观测到 1191ms / 121ms），而本轮**未改动**该文件、本机带 6 个抢核进程
+  连跑 5 次全绿、上一轮 CI 亦曾通过 —— 判为负载敏感的既有 flake；**未改阈值、未 skip**。
+  其余 8 个 job（py3.11 / py3.12 / frontend / install e2e / rust×2 / frozen worker / docs）全绿。
 - **Known limitations：**
   - 真实厂商模型是否按协议发出 `[[QIO:ANSWER]]` 未验证（无外网/无真实 Key）；不遵守时走**降级路径**
     （一次性交付、不重复生成），但该次回答**不是流式**。
