@@ -52,8 +52,10 @@ function runSteps(steps, tag) {
     try { parsedValues.push(JSON.parse(text)); } catch { /* 忽略非 JSON */ }
   }
   if (!parsedValues.length) throw new Error("没有取到 JSON 指标（" + tag + "）");
-  // 取「开浮层前」的那次测量（连接点命中只有在没有被浮层遮挡时才有意义）
-  const selection = parsedValues.find((v) => v && v.note === "selection-metrics") ? parsedValues[parsedValues.length - 2] : null;
+  // 取「开浮层前」的那次测量（连接点命中只有在没有被浮层遮挡时才有意义）：
+  // 哨兵 {note:'selection-metrics'} 紧跟在那次测量之后，所以取它前面那一条。
+  const sentinelAt = parsedValues.findIndex((v) => v && v.note === "selection-metrics");
+  const selection = sentinelAt > 0 ? parsedValues[sentinelAt - 1] : null;
   const panels = parsedValues[parsedValues.length - 1];
   return Object.assign({}, panels, {
     connectPoint: selection ? selection.connectPoint : panels.connectPoint,
@@ -109,10 +111,15 @@ const MEASURE_JS = `JSON.stringify((function(){
   const submit=rect('[data-im="submit"]');
   const chat=rect('[data-im="chat-panel"]');
   const batch=rect('[data-im="batch-list"]');
-  // 工具栏行数：按子元素顶边聚类（同一行算一行）
+  // 工具栏行数：把可见控件的顶边按 8px 容差聚类（同一行算一行）
   let rows=0;
   const bar=document.querySelector('[data-im="board-toolbar"]');
-  if(bar){const tops=new Set();[...bar.querySelectorAll('button, input, select')].forEach((el)=>{const r=el.getBoundingClientRect();if(r.height>0)tops.add(Math.round(r.top/8));});rows=tops.size;}
+  if(bar){
+    const tops=[...bar.querySelectorAll('button, input, select')].map((el)=>el.getBoundingClientRect()).filter((r)=>r.height>0&&r.width>0).map((r)=>r.top).sort((a,b)=>a-b);
+    const groups=[];
+    for(const t of tops){const g=groups[groups.length-1];if(g&&t-g[0]<=8){g.push(t);}else{groups.push([t]);}}
+    rows=groups.length;
+  }
   const point=(function(){const p=document.querySelector('[data-im="connect-point"]');if(!p)return null;const r=p.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);const el=document.elementFromPoint(x,y);return {x,y,hitIm:(el&&el.getAttribute&&el.getAttribute('data-im'))||(el?el.className:null),isPoint:!!(el&&el.getAttribute&&el.getAttribute('data-im')==='connect-point')};})();
   return {toolbar, toolbarRows:rows, submit, submitHit:hit('[data-im="submit"]'), chat, batch, overlapChatBatch:area(chat,batch), cardToolbar:rect('[data-im="card-toolbar"]'), connectPoint:point, overflowX: document.documentElement.scrollWidth>window.innerWidth};
 })())`;
