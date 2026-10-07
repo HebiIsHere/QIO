@@ -19,6 +19,7 @@ bound_attachment_ids / rejected 回执 —— 因此「重试拿到新 id 并能
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from pathlib import Path
 
@@ -432,7 +433,10 @@ def test_resend_interrupted_turn_reuses_attachments(client: TestClient, tmp_path
     att = _register(client, src)
 
     turn1 = "turn_r4_interrupted_1"
-    ctx.attachments.bind_for_turn(turn1, [att["id"]], topic_id=None)
+    # R5：bind_for_turn 改成 async（plan §1.3），这里兼容两棵树（基线同步 / 集成分支 async）
+    bound = ctx.attachments.bind_for_turn(turn1, [att["id"]], topic_id=None)
+    if inspect.isawaitable(bound):
+        asyncio.run(bound)
     journal = ctx.turn_journal
     journal.accepted(turn_id=turn1, message="被进程掐断的那一条（带附件）")
     journal.running(turn1)
