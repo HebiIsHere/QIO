@@ -61,7 +61,10 @@ _CARD_PATCH_KEYS = (
 )
 _LINK_PATCH_KEYS = ("src", "dst", "direction", "meaning", "deleted")
 
-_DEFAULT_NAME_RE = re.compile(rf"^{re.escape(models.DEFAULT_GROUP_PREFIX)}\s*(\d+)$")
+#: 默认名判定同时认两种形态：新的「默认组名」与历史数据里的「组 N」（契约 §9.1）。
+_DEFAULT_NAME_RE = re.compile(
+    rf"^(?:{re.escape(models.DEFAULT_GROUP_NAME)}|{re.escape(models.LEGACY_GROUP_NAME_PREFIX)}\s*\d+)$"
+)
 
 
 # --- 小工具 ---------------------------------------------------------------
@@ -98,17 +101,17 @@ def _dedupe(values: Iterable[Any]) -> list[str]:
 
 
 def _is_default_name(name: str) -> bool:
-    return bool(_DEFAULT_NAME_RE.match(name))
+    """这个名字是不是系统默认名：同时认「默认组名」与历史「组 N」（契约 §9.1）。"""
+    return bool(_DEFAULT_NAME_RE.match(str(name or "").strip()))
 
 
-def _next_default_name(taken: Iterable[str]) -> str:
-    """下一个没人用过的默认组名「组 N」；N 只增不减，避免重名。"""
-    highest = 0
-    for name in taken:
-        match = _DEFAULT_NAME_RE.match(str(name or ""))
-        if match:
-            highest = max(highest, int(match.group(1)))
-    return models.default_group_name(highest + 1)
+def _next_default_name(_taken: Iterable[str] = ()) -> str:
+    """系统默认组名：固定返回「默认组名」，不再编号（契约 §9.1）。
+
+    组身份按 id 区分，不依赖名称唯一性，默认名可以重复；
+    _taken 只保留参数位，避免调用方改动，且不影响任何行为。
+    """
+    return models.default_group_name()
 
 
 def _clamp_index(index: Any, size: int) -> int:
@@ -236,6 +239,7 @@ def _normalize_group(
         name = _next_default_name(taken_names)
         group["defaultName"] = True
     group["name"] = name
+    # 历史「组 N」不被批量覆盖：defaultName 按存储值保留，缺失时才按名字形态推断（契约 §9.1）
     if not isinstance(group.get("defaultName"), bool):
         group["defaultName"] = _is_default_name(name)
     group["ordered"] = bool(group.get("ordered", False))
@@ -509,7 +513,11 @@ def dissolve_group(state: dict, group_id: str) -> dict:
 
 
 def rename_group(state: dict, group_id: str, name: str) -> dict:
-    """改组名。留空不生效；名字是否还是默认名由名字本身决定（保留默认名也能提交）。"""
+    """改组名。输入即用；留空 / 取消改名不改动任何东西 —— 组仍然成立并保留原来的名字
+
+    （本来就是默认名的组继续保留「默认组名」，契约 §9.1 / §8.2）。
+    名字是不是系统默认名由名字本身决定（保留默认名也能提交）。
+    """
     work = normalize_state(state)
     group = group_by_id(work, group_id)
     if group is None:
@@ -553,7 +561,9 @@ def move_within_group(state: dict, group_id: str, card_id: str, index: int) -> d
 
 
 def merge_groups(state: dict, source_group_id: str, target_group_id: str, insert_index: int | None = None) -> dict:
-    """合并两个组：目标组保留 id 但换成默认名（原组不再独立保留）。
+    """合并两个组：目标组保留 id 但换成系统默认名「默认组名」（原组不再独立保留）。
+
+    契约 §9.1：合并等所有系统命名路径统一用「默认组名」；组身份仍按 id。
 
     - 被拖入组的成员**连续插入**目标位置；
     - 两个有序组 → 仍是有序，各自内部顺序保留，统一编号；
@@ -907,7 +917,7 @@ def drop_card(state: dict, card_id: str, x: float, y: float) -> dict:
             work = remove_from_group(work, card_id)
         partners = _overlapping_free_cards(work, card_id, px, py)
         if partners:
-            # 未分组卡片拖到另一张未分组卡片上 → 自动成组，默认组名。
+            # 未分组卡片拖到另一张未分组卡片上 → 自动成组，系统默认名「默认组名」。
             # 只认**一张**最明确的目标卡：一叠卡片不整堆合并（契约 §1.3 与前端一致）。
             partner = partners[0]
             group = models.new_group(_next_default_name(group["name"] for group in work["groups"]))

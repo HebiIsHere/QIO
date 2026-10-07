@@ -41,7 +41,7 @@ def mk_group(
     gid: str,
     members: list[str],
     *,
-    name: str = "组 1",
+    name: str = "默认组名",
     ordered: bool = False,
     default_name: bool = True,
     **extra: object,
@@ -299,28 +299,33 @@ def test_preview_drop_of_deleted_or_unknown_card_is_empty():
 
 
 def test_drop_two_free_cards_overlapping_forms_group_with_default_name():
-    """两张未分组卡片重叠 → 自动成组，默认组名「组 1」。"""
+    """两张未分组卡片重叠 → 自动成组，默认组名「默认组名」（反例：旧实现给「组 1」）。"""
     state = two_free_cards()
     result = board.drop_card(state, "a", 250, 10)
     next_state = result["state"]
     assert result["merged"] is False
     assert result["groupId"] is not None
     group = group_of(next_state, result["groupId"])
-    assert group["name"] == models.default_group_name(1)
+    assert group["name"] == "默认组名"
+    assert group["name"] == models.DEFAULT_GROUP_NAME
     assert group["defaultName"] is True
     assert group["ordered"] is False
     assert sorted(group["members"]) == ["a", "b"]
     assert card_of(next_state, "a")["x"] == 250
 
 
-def test_default_group_name_skips_existing_numbers():
+def test_default_group_name_is_not_numbered_and_may_repeat():
+    """默认名不再编号：已有「组 7」也照样用「默认组名」（反例：旧实现给「组 8」）。"""
     state = mk_state(
         cards=[mk_card("a", 0, 0), mk_card("b", 240, 0), mk_card("c", 2000, 0), mk_card("d", 2040, 0)],
         groups=[mk_group("g7", ["c", "d"], name="组 7", default_name=True)],
     )
     result = board.drop_card(state, "a", 250, 10)
     group = group_of(result["state"], result["groupId"])
-    assert group["name"] == models.default_group_name(8), "默认名不与现有「组 N」重名"
+    assert group["name"] == "默认组名"
+    assert group["defaultName"] is True
+    # 组身份按 id：两个组可以同名并存，不因重名被合并或丢弃（契约 §9.1）
+    assert sorted(group_ids(result["state"])) == sorted(["g7", group["id"]])
 
 
 def test_drop_free_card_into_existing_group_keeps_group_name():
@@ -364,7 +369,7 @@ def test_drop_grouped_card_onto_other_group_merges_with_default_name():
     assert result["merged"] is True
     assert group_ids(next_state) == ["g1"], "原组不再独立保留"
     group = group_of(next_state, "g1")
-    assert group["name"] == models.default_group_name(1)
+    assert group["name"] == models.DEFAULT_GROUP_NAME
     assert group["defaultName"] is True
     assert group["members"] == ["a", "c", "d", "b"], "被拖入组的成员连续插入目标位置"
 
@@ -389,7 +394,7 @@ def test_drop_ordered_card_onto_ordered_group_preserves_internal_orders_and_renu
     group = group_of(result["state"], "g1")
     assert group["ordered"] is True
     assert group["members"] == ["a", "c", "d", "e", "b"]
-    assert group["name"] == models.default_group_name(1), "合并后的新组用默认名（来源组不再占号）"
+    assert group["name"] == models.DEFAULT_GROUP_NAME, "合并后的新组用默认名「默认组名」"
     assert group["defaultName"] is True
 
 
@@ -465,7 +470,7 @@ def test_drop_overlapping_several_free_cards_picks_single_best_target():
     result = board.drop_card(state, "c", 60, 10)
     group = group_of(result["state"], result["groupId"])
     assert sorted(group["members"]) == ["a", "c"], "只与最明确的那一张成组"
-    assert group["name"] == models.default_group_name(1)
+    assert group["name"] == models.DEFAULT_GROUP_NAME
 
 
 def test_drop_border_touch_does_not_form_group():
@@ -545,7 +550,7 @@ def test_create_group_moves_cards_out_of_previous_groups():
     assert members_of(created, new_id) == ["a", "b", "c"]
     assert members_of(created, "g1") == []
     assert group_ids(created) == [new_id], "原来的组空了 → 消失"
-    assert group_of(created, new_id)["name"] == models.default_group_name(1)
+    assert group_of(created, new_id)["name"] == models.DEFAULT_GROUP_NAME
 
 
 def test_create_group_without_live_cards_does_nothing():
@@ -565,16 +570,20 @@ def test_remove_from_group_and_dissolve_group():
     assert board.dissolve_group(state, "g1")["cards"][0]["id"] == "a", "解除组不动卡片"
 
 
-def test_rename_group_marks_default_name_only_for_default_pattern():
+def test_rename_group_marks_both_default_name_shapes_and_blank_keeps_name():
+    """输入即用；两种默认名形态都认；留空 / 取消不改动，组仍成立并保留名字（§9.1）。"""
     state = mk_state(cards=[mk_card("a")], groups=[mk_group("g1", ["a"])])
     renamed = board.rename_group(state, "g1", "  发布计划  ")
     group = group_of(renamed, "g1")
     assert group["name"] == "发布计划"
     assert group["defaultName"] is False
+    assert group_of(board.rename_group(renamed, "g1", "默认组名"), "g1")["defaultName"] is True
     back = board.rename_group(renamed, "g1", "组 3")
-    assert group_of(back, "g1")["defaultName"] is True
+    assert group_of(back, "g1")["defaultName"] is True, "历史「组 N」形态也算系统默认名"
     unchanged = board.rename_group(state, "g1", "   ")
-    assert group_of(unchanged, "g1")["name"] == "组 1", "空名字不生效"
+    assert group_of(unchanged, "g1")["name"] == "默认组名", "空名字不改动：默认名的组保留默认名"
+    assert group_of(unchanged, "g1")["members"] == ["a"], "组仍然成立"
+    assert group_of(board.rename_group(renamed, "g1", ""), "g1")["name"] == "发布计划", "留空不抹掉用户写的名字"
 
 
 def test_move_within_group_clamps_and_ignores_outsiders():
@@ -602,7 +611,7 @@ def test_merge_groups_keeps_target_id_and_uses_default_name():
     assert group_ids(merged) == ["g1"]
     group = group_of(merged, "g1")
     assert group["members"] == ["a", "c", "d", "b"]
-    assert group["name"] == models.default_group_name(1)
+    assert group["name"] == models.DEFAULT_GROUP_NAME
     assert group["defaultName"] is True
 
 
@@ -794,3 +803,111 @@ def test_search_cards_finds_unchecked_notes_and_meta_and_prioritizes_bookmarks()
     assert board.search_cards(state, "ROADMAP") == ["u1"], "大小写不敏感，且能搜 meta"
     assert board.search_cards(state, "   ") == []
     assert board.search_cards(state, "不存在的词") == []
+
+
+# --- 契约 §9.1：默认组名是「默认组名」（覆盖 §1.3 / §6.1 的「组 N」）--------
+
+
+def test_default_group_name_is_fixed_and_index_is_only_compatibility():
+    """系统默认组名固定为「默认组名」；index 参数只为兼容调用方，不影响结果。"""
+    assert models.DEFAULT_GROUP_NAME == "默认组名"
+    assert models.default_group_name() == "默认组名"
+    assert models.default_group_name(1) == "默认组名"
+    assert models.default_group_name(8) == "默认组名"
+
+
+def test_three_system_naming_paths_all_use_default_group_name():
+    """三条系统命名路径（重叠成组 / 手动新建组 / 合并组）统一用「默认组名」。"""
+    # ① 两张未分组卡片重叠自动成组
+    dropped = board.drop_card(two_free_cards(), "a", 250, 10)
+    auto = group_of(dropped["state"], dropped["groupId"])
+    assert auto["name"] == "默认组名"
+    assert auto["defaultName"] is True
+    # ② 手动新建组
+    manual = board.create_group(mk_state(cards=[mk_card("a"), mk_card("b")]), ["a", "b"])
+    assert manual["groups"][0]["name"] == "默认组名"
+    assert manual["groups"][0]["defaultName"] is True
+    # ③ 两个已有组合并
+    merged = board.merge_groups(
+        mk_state(
+            cards=[mk_card("a"), mk_card("b"), mk_card("c"), mk_card("d")],
+            groups=[
+                mk_group("g1", ["a", "b"], name="目标组", default_name=False),
+                mk_group("g2", ["c", "d"], name="来源组", default_name=False),
+            ],
+        ),
+        "g2",
+        "g1",
+    )
+    assert group_of(merged, "g1")["name"] == "默认组名"
+    assert group_of(merged, "g1")["defaultName"] is True
+
+
+def test_legacy_group_names_are_preserved_on_normalize():
+    """历史「组 N」不被批量覆盖：重新读取保留原名字与 defaultName（契约 §9.1）。"""
+    state = mk_state(
+        cards=[mk_card("a"), mk_card("b"), mk_card("c"), mk_card("d")],
+        groups=[
+            mk_group("g1", ["a", "b"], name="组 7", default_name=True),
+            mk_group("g2", ["c"], name="组 3", default_name=False),
+            mk_group("g3", ["d"], name="发布计划", default_name=False),
+        ],
+    )
+    result = board.normalize_state(state)
+    assert [group["name"] for group in result["groups"]] == ["组 7", "组 3", "发布计划"]
+    assert [group["defaultName"] for group in result["groups"]] == [True, False, False]
+    # defaultName 缺失时才按名字形态推断：两种默认名形态都算「系统给的名字」
+    legacy_missing = mk_group("g1", ["a"], name="组 5", default_name=True)
+    legacy_missing.pop("defaultName")
+    fresh_missing = mk_group("g2", ["b"], name="默认组名", default_name=True)
+    fresh_missing.pop("defaultName")
+    inferred = board.normalize_state(
+        mk_state(cards=[mk_card("a"), mk_card("b")], groups=[legacy_missing, fresh_missing])
+    )
+    assert [group["defaultName"] for group in inferred["groups"]] == [True, True]
+
+
+def test_duplicate_default_names_keep_separate_groups_by_id():
+    """组身份按 id：两个「默认组名」的组各自保留成员与顺序，按 id 操作只影响目标组。"""
+    state = mk_state(
+        cards=[mk_card("a"), mk_card("b"), mk_card("c"), mk_card("d")],
+        groups=[
+            mk_group("g1", ["a", "b"], name="默认组名", ordered=True),
+            mk_group("g2", ["c", "d"], name="默认组名", ordered=True),
+        ],
+    )
+    result = board.normalize_state(state)
+    assert group_ids(result) == ["g1", "g2"]
+    assert members_of(result, "g1") == ["a", "b"]
+    assert members_of(result, "g2") == ["c", "d"]
+    renamed = board.rename_group(result, "g1", "发布计划")
+    assert group_of(renamed, "g2")["name"] == "默认组名", "同名组不受另一组的改名影响"
+    assert members_of(renamed, "g2") == ["c", "d"]
+    dissolved = board.dissolve_group(renamed, "g1")
+    assert group_ids(dissolved) == ["g2"]
+
+
+def test_join_existing_group_keeps_name_and_rename_does_not_break_members_links_order():
+    """加入已有组保留组名；改名 / 留空不破坏成员、链接与顺序（契约 §9.1）。"""
+    state = mk_state(
+        cards=[mk_card("a", 0, 0), mk_card("b", 200, 0), mk_card("c", 600, 0)],
+        groups=[mk_group("g1", ["a", "b"], name="发布计划", default_name=False, ordered=True)],
+    )
+    linked = board.add_link(state, "a", "c", meaning="同一批材料")
+    joined = board.join_group(linked, "c", "g1", 1)
+    assert group_of(joined, "g1")["name"] == "发布计划", "加入已有组保留已有组名"
+    assert members_of(joined, "g1") == ["a", "c", "b"]
+    assert link_pairs(joined) == [("a", "c")]
+
+    renamed = board.rename_group(joined, "g1", "发布计划（第二轮）")
+    assert members_of(renamed, "g1") == ["a", "c", "b"], "改名不破坏成员与顺序"
+    assert link_pairs(renamed) == [("a", "c")], "改名不破坏链接"
+    assert group_of(renamed, "g1")["ordered"] is True
+
+    blank = board.rename_group(renamed, "g1", "   ")
+    assert group_of(blank, "g1")["name"] == "发布计划（第二轮）", "留空不改动任何东西"
+    assert members_of(blank, "g1") == ["a", "c", "b"]
+    assert link_pairs(blank) == [("a", "c")]
+
+    fresh = board.create_group(mk_state(cards=[mk_card("x"), mk_card("y")]), ["x", "y"])
+    assert board.rename_group(fresh, fresh["groups"][0]["id"], "")["groups"][0]["name"] == "默认组名"

@@ -2,14 +2,21 @@
  * 审批纯函数的用例（子智能体 C 原有 + 子智能体 D 追加批次判定）。
  *
  * 重点：预览语义比较（只改位置 vs 改语义）、状态文案、批量选择，
- * 以及契约 §8.5 的批次判定（会话记录 / submissionId / 创建秒 / 不成批）与部分选择。
+ * 以及契约 §9.2 / §9.3 的批次判定（本地按次记录 / 真实 submissionId / 不成批）、
+ * 批量列表资格（该批总量 ≥4，保留到处理完）与部分选择。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { computed, ref } from "vue";
 import {
   approveAvailability,
   batchEntryText,
+  batchHandledCount,
+  batchRemainingCount,
   batchesWithList,
   batchKeyOf,
+  BATCH_RECORD_TTL_MS,
+  hasRecoverableBatch,
+  isBatchItemSelectable,
   clearBatchSelectionIn,
   groupIntentsByBatch,
   INTENT_BATCH_STORAGE_KEY,
@@ -390,10 +397,13 @@ describe("影响说明与依赖", () => {
     expect(waitingForLabels(dependent, [])).toEqual(["a"]);
   });
 });
-// --- 批次判定（D 实现；契约 §8.5） ------------------------------------------
+// --- 批次判定（契约 §9.2 / §9.3，覆盖 §8.5） ---------------------------------
 //
-// 重点覆盖验收要求的六条：同批 3 项不出列表、同批 4 项出列表、不同批 3+1 不误触发、
-// 三种来源的优先级、localStorage 异常时降级、部分选择只影响选中项。
+// 重点覆盖：
+// - 只认可证明的来源：① 前端按次记录的创建批次、② 真实 submissionId；
+// - **反例**：同一秒内两批各两项，清掉本地记录后不能变成四项一批（旧实现按创建秒归批会误合并）；
+// - 本地记录被禁用 / 抛异常 / 损坏 / 写满 / 过期时一律降级为「各自成批」，绝不混批；
+// - 批量列表资格按**该批总量** ≥4，保留到处理完；另一批 3 项 + 这批 1 项不会凑成四项。
 
 /** 每个用例都从「没有会话批次记录」开始 */
 function clearBatchStorage(): void {
@@ -404,87 +414,41 @@ function clearBatchStorage(): void {
   }
 }
 
-/** 一次创建动作产生的 4 项：同一秒、同一 submissionId */
-function sameBatch(count: number, overrides: Partial<Intent> = {}): Intent[] {
-  return Array.from({ length: count }, (_, index) =>
-    intent({
-      id: "b" + index,
-      status: "pending",
-      submissionId: "sub_1",
-      createdAt: "2026-10-07T04:00:00.500Z",
-      ...overrides,
-    }),
-  );
+/** 同一批产生的若干项：不写 submissionId，只能靠本地按次记录（①）归批 */
+function batchItems(ids: string[], status: IntentStatus = "pending"): Intent[] {
+  return ids.map((id) => intent({ id, status, submissionId: null, createdAt: "2026-10-07T04:00:00.500Z" }));
 }
 
-describe("批次判定：会话记录（①）", () => {
+describe("批次判定：只认可证明的来源（契约 §9.2）", () => {
   beforeEach(clearBatchStorage);
 
-  it("同一次创建动作记下的四项属于同一批", () => {
+  it("① 同一次创建动作记下的四项属于同一批", () => {
     recordIntentBatch("session:demo-1", ["b0", "b1", "b2", "b3"]);
-    const batches = groupIntentsByBatch(sameBatch(4, { submissionId: null }));
+    const batches = groupIntentsByBatch(batchItems(["b0", "b1", "b2", "b3"]));
     expect(batches.length).toBe(1);
     expect(batches[0].intentIds).toEqual(["b0", "b1", "b2", "b3"]);
     expect(batches[0].pendingIds.length).toBe(4);
-    expect(batchKeyOf(sameBatch(1)[0])).toContain("demo-1");
+    expect(batchKeyOf(batchItems(["b0"])[0])).toBe("session:demo-1");
   });
 
-  it("同批 3 项：不出批量列表", () => {
-    recordIntentBatch("session:demo-3", ["b0", "b1", "b2"]);
-    const items = sameBatch(3, { submissionId: null });
-    expect(groupIntentsByBatch(items).length).toBe(1);
-    expect(batchesWithList(items)).toEqual([]);
-  });
-
-  it("同批 4 项：出批量列表", () => {
-    recordIntentBatch("session:demo-4", ["b0", "b1", "b2", "b3"]);
-    const batches = batchesWithList(sameBatch(4, { submissionId: null }));
-    expect(batches.length).toBe(1);
-    expect(batches[0].pendingIds.length).toBe(4);
-  });
-
-  it("不同批次 3+1 不误触发（不同批次绝不累加）", () => {
-    recordIntentBatch("session:demo-a", ["b0", "b1", "b2"]);
-    recordIntentBatch("session:demo-b", ["b3"]);
-    const items = sameBatch(4, { submissionId: null });
-    const batches = groupIntentsByBatch(items);
-    expect(batches.length).toBe(2);
-    expect(batches.map((batch) => batch.pendingIds.length)).toEqual([3, 1]);
-    expect(batchesWithList(items)).toEqual([]);
-  });
-
-  it("已经结束的项不计入这一批的等待数量", () => {
-    recordIntentBatch("session:demo-mix", ["b0", "b1", "b2", "b3"]);
-    const items = [
-      ...sameBatch(3, { submissionId: null }),
-      intent({ id: "b3", status: "done", submissionId: null, createdAt: "2026-10-07T04:00:00.500Z" }),
-    ];
-    const batches = groupIntentsByBatch(items);
-    expect(batches.length).toBe(1);
-    expect(batches[0].intentIds.length).toBe(4);
-    expect(batches[0].pendingIds.length).toBe(3);
-    expect(batchesWithList(items)).toEqual([]);
-  });
-});
-
-describe("批次判定：来源优先级（① > ② > ③）", () => {
-  beforeEach(clearBatchStorage);
-
-  it("① 会话记录压过服务端 submissionId", () => {
+  it("① 本地记录压过服务端 submissionId", () => {
     recordIntentBatch("session:demo-x", ["b0"]);
     const item = intent({ id: "b0", status: "pending", submissionId: "sub_9" });
     expect(batchKeyOf(item)).toBe("session:demo-x");
   });
 
-  it("② 没有会话记录时用 submissionId", () => {
+  it("② 没有本地记录时用真实 submissionId（同一次提交产生的多项）", () => {
     const items = [
       intent({ id: "b0", status: "pending", submissionId: "sub_7", createdAt: "2026-10-07T04:00:00.000Z" }),
       intent({ id: "b1", status: "pending", submissionId: "sub_7", createdAt: "2026-10-07T04:00:03.000Z" }),
+      intent({ id: "b2", status: "pending", submissionId: "sub_7" }),
+      intent({ id: "b3", status: "pending", submissionId: "sub_7" }),
     ];
     const batches = groupIntentsByBatch(items);
     expect(batches.length).toBe(1);
-    expect(batches[0].key).toBe(batchKeyOf(items[0]));
-    expect(batchesWithList([...items, intent({ id: "b2", status: "pending", submissionId: "sub_7" }), intent({ id: "b3", status: "pending", submissionId: "sub_7" })])[0].pendingIds.length).toBe(4);
+    expect(batches[0].key).toBe("submission:sub_7");
+    expect(batchesWithList(items)).toHaveLength(1);
+    expect(batchesWithList(items)[0].pendingIds.length).toBe(4);
   });
 
   it("不同 submissionId 不属于同一批", () => {
@@ -494,79 +458,118 @@ describe("批次判定：来源优先级（① > ② > ③）", () => {
       intent({ id: "b2", status: "pending", submissionId: "sub_2" }),
       intent({ id: "b3", status: "pending", submissionId: "sub_2" }),
     ];
-    const batches = groupIntentsByBatch(items);
-    expect(batches.length).toBe(2);
+    expect(groupIntentsByBatch(items).length).toBe(2);
     expect(batchesWithList(items)).toEqual([]);
   });
 
-  it("③ 没有会话记录与 submissionId 时，按创建秒相同分组", () => {
+  it("反例：同一秒内两批各两项，清掉本地记录后不能变成四项一批", () => {
+    // 两批本来各自有本地创建记录；记录被清掉（换浏览器 / 清存储 / 记录过期）后，
+    // 旧实现只剩「创建秒相同」这一条推断，会把两批并成 4 项并给出批量列表 —— 必须避免。
     const items = [
-      intent({ id: "b0", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.100Z" }),
-      intent({ id: "b1", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.900Z" }),
-      intent({ id: "b2", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:01.000Z" }),
-      intent({ id: "b3", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:01.500Z" }),
+      intent({ id: "a0", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.100Z" }),
+      intent({ id: "a1", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.900Z" }),
+      intent({ id: "b0", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.200Z" }),
+      intent({ id: "b1", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.800Z" }),
     ];
     const batches = groupIntentsByBatch(items);
-    expect(batches.length).toBe(2);
-    expect(batches[0].intentIds).toEqual(["b0", "b1"]);
-    expect(batches[1].intentIds).toEqual(["b2", "b3"]);
+    expect(batches).toHaveLength(4);
+    expect(new Set(batches.map((batch) => batch.key)).size).toBe(4);
+    expect(batches.map((batch) => batch.pendingIds.length)).toEqual([1, 1, 1, 1]);
     expect(batchesWithList(items)).toEqual([]);
   });
 
-  it("三条都拿不到（含 createdAt 非法）：每个意图自成一批，永不合并", () => {
+  it("创建时间非法或相同都不猜：没有可证明来源就各自成批（intent:<id>）", () => {
     const items = [
       intent({ id: "b0", status: "pending", submissionId: null, createdAt: "" }),
       intent({ id: "b1", status: "pending", submissionId: null, createdAt: "不是时间" }),
-      intent({ id: "b2", status: "pending", submissionId: null, createdAt: "" }),
-      intent({ id: "b3", status: "pending", submissionId: null, createdAt: "" }),
+      intent({ id: "b2", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.100Z" }),
+      intent({ id: "b3", status: "pending", submissionId: null, createdAt: "2026-10-07T04:00:00.100Z" }),
     ];
     const batches = groupIntentsByBatch(items);
-    expect(batches.length).toBe(4);
-    expect(new Set(batches.map((batch) => batch.key)).size).toBe(4);
+    expect(batches).toHaveLength(4);
+    expect(batches.every((batch) => batch.key.startsWith("intent:"))).toBe(true);
     expect(batchesWithList(items)).toEqual([]);
+  });
+
+  it("写入本地记录后，基于 batchesWithList 的 computed 会重新计算（实机回归）", () => {
+    // 实机现象：演示入口一次生成四项时，组件先因 intents 更新重算过一次（那时记录还没写入），
+    // 记录随后写入却没有任何响应式变化 → 批量入口要等刷新才出现。
+    // 现在读取路径会 touch 模块内的版本号，computed 必须能感知到这次写入。
+    const intents = ref(batchItems(["b0", "b1", "b2", "b3"]));
+    const list = computed(() => batchesWithList(intents.value));
+    expect(list.value).toEqual([]);
+    recordIntentBatch("session:reactive", ["b0", "b1", "b2", "b3"]);
+    expect(list.value).toHaveLength(1);
+    expect(list.value[0].pendingIds).toHaveLength(4);
+    // 只碰存储、没有经过本模块写入时，不谎报「已变化」；重新求值才看到真实内容
+    localStorage.setItem(INTENT_BATCH_STORAGE_KEY, "{坏数据");
+    expect(computed(() => batchesWithList(intents.value)).value).toEqual([]);
+  });
+
+  it("hasRecoverableBatch：没有可证明来源时界面要如实说「批次不可恢复」", () => {
+    expect(hasRecoverableBatch(intent({ id: "x", status: "pending", submissionId: "sub_1" }))).toBe(true);
+    recordIntentBatch("session:demo", ["y"]);
+    expect(hasRecoverableBatch(batchItems(["y"])[0])).toBe(true);
+    expect(hasRecoverableBatch(batchItems(["z"])[0])).toBe(false);
   });
 });
 
-describe("批次判定：localStorage 异常时降级", () => {
+describe("批次判定：本地记录异常一律降级，绝不混批", () => {
   beforeEach(clearBatchStorage);
 
   it("解析失败：不抛错，退回服务端来源", () => {
     localStorage.setItem(INTENT_BATCH_STORAGE_KEY, "{不是 JSON");
     const item = intent({ id: "b0", status: "pending", submissionId: "sub_3" });
     expect(() => batchKeyOf(item)).not.toThrow();
-    expect(groupIntentsByBatch([item]).length).toBe(1);
-    expect(batchKeyOf(item)).not.toContain("session:");
+    expect(batchKeyOf(item)).toBe("submission:sub_3");
+    expect(() => groupIntentsByBatch([item])).not.toThrow();
   });
 
-  it("结构损坏（数组里是垃圾值）：不抛错，只忽略坏记录", () => {
-    localStorage.setItem(INTENT_BATCH_STORAGE_KEY, JSON.stringify([1, null, { id: "b0" }, "x"]));
-    expect(() => groupIntentsByBatch(sameBatch(2, { submissionId: null }))).not.toThrow();
-    expect(() => recordIntentBatch("session:demo", ["b1"])).not.toThrow();
-    // 坏记录被忽略：b1 用新记下的会话批次，b0 三条来源都拿不到 → 自成一批（不合并）
-    const batches = groupIntentsByBatch(sameBatch(2, { submissionId: null }));
-    expect(batches.map((batch) => batch.intentIds)).toEqual([["b0"], ["b1"]]);
-    expect(batches[0].key.startsWith("session:")).toBe(false);
-    expect(batches[0].key).not.toBe(batches[1].key);
-    expect(batchKeyOf(intent({ id: "b1", status: "pending", submissionId: null, createdAt: "" }))).toBe(
-      "session:demo",
+  it("结构损坏（数组里是垃圾值 / 键为空）：不抛错，只忽略坏记录", () => {
+    localStorage.setItem(
+      INTENT_BATCH_STORAGE_KEY,
+      JSON.stringify([1, null, { id: "b0" }, { id: "b1", key: "" }, "x", { key: "session:x" }]),
     );
+    expect(() => groupIntentsByBatch(batchItems(["b0", "b1"]))).not.toThrow();
+    expect(() => recordIntentBatch("session:demo", ["b2"])).not.toThrow();
+    // 坏记录被忽略：b0 / b1 没有可证明来源 → 各自成批（不合并），b2 用新记下的会话批次
+    const batches = groupIntentsByBatch(batchItems(["b0", "b1", "b2"]));
+    expect(batches.map((batch) => batch.intentIds)).toEqual([["b0"], ["b1"], ["b2"]]);
+    expect(batches[2].key).toBe("session:demo");
+    expect(batchKeyOf(batchItems(["b2"])[0])).toBe("session:demo");
   });
 
-  it("写满 / 被禁用：静默降级，不抛错也不影响后续读取", () => {
+  it("写入抛异常（写满 / 被禁用）：静默降级，不混批", () => {
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("quota", "QuotaExceededError");
     });
     try {
       expect(() => recordIntentBatch("session:demo", ["b0", "b1", "b2", "b3"])).not.toThrow();
       // 没有记下来 → 这批退回服务端来源，不会把不同批次相加
-      expect(batchKeyOf(intent({ id: "b0", status: "pending", submissionId: "sub_5" }))).not.toContain(
-        "session:",
-      );
-      expect(batchKeyOf(intent({ id: "b9", status: "pending", submissionId: null, createdAt: "" }))).toBe(
-        "solo:b9",
-      );
+      expect(batchKeyOf(intent({ id: "b0", status: "pending", submissionId: "sub_5" }))).toBe("submission:sub_5");
+      expect(batchKeyOf(intent({ id: "b9", status: "pending", submissionId: null, createdAt: "" }))).toBe("intent:b9");
+      expect(batchesWithList(batchItems(["b0", "b1", "b2", "b3"]))).toEqual([]);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("读取抛异常（隐私模式 / 被策略禁用）：静默降级，不混批", () => {
+    const getSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    const setSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    try {
+      expect(() => recordIntentBatch("session:demo", ["b0", "b1", "b2", "b3"])).not.toThrow();
+      expect(() => batchKeyOf(batchItems(["b0"])[0])).not.toThrow();
+      const batches = groupIntentsByBatch(batchItems(["b0", "b1", "b2", "b3"]));
+      expect(batches).toHaveLength(4);
+      expect(new Set(batches.map((batch) => batch.key)).size).toBe(4);
+    } finally {
+      getSpy.mockRestore();
+      setSpy.mockRestore();
     }
   });
 
@@ -576,16 +579,176 @@ describe("批次判定：localStorage 异常时降级", () => {
     expect(() => recordIntentBatch("session:demo", [])).not.toThrow();
     expect(localStorage.getItem(INTENT_BATCH_STORAGE_KEY)).toBeNull();
   });
+
+  it("过期记录不再参与归批，并在读写时被清掉（有界）", () => {
+    const expiredAt = Date.now() - BATCH_RECORD_TTL_MS - 1000;
+    localStorage.setItem(
+      INTENT_BATCH_STORAGE_KEY,
+      JSON.stringify({ version: 2, records: [{ id: "b0", key: "session:old", at: expiredAt }] }),
+    );
+    // 过期 → 没有可证明来源 → 自成一批
+    expect(batchKeyOf(batchItems(["b0"])[0])).toBe("intent:b0");
+    // 新记录写入时把过期记录一起清掉，存储不会无限增长
+    recordIntentBatch("session:new", ["b1"]);
+    const raw = localStorage.getItem(INTENT_BATCH_STORAGE_KEY) ?? "";
+    expect(raw).not.toContain("session:old");
+    expect(raw).toContain("session:new");
+  });
+
+  it("旧格式（没有时间戳）仍可用：下一次写入补上时间戳，之后按 TTL 过期", () => {
+    localStorage.setItem(INTENT_BATCH_STORAGE_KEY, JSON.stringify([{ id: "b0", key: "session:legacy" }]));
+    // 旧版本写下的是有效记录，不因为缺时间戳就被丢掉（否则升级一次就丢一批）
+    expect(batchKeyOf(batchItems(["b0"])[0])).toBe("session:legacy");
+    // 写一次之后补上时间戳，从此按 TTL 过期；条数上限始终有效
+    recordIntentBatch("session:new", ["b1"]);
+    const parsed = JSON.parse(localStorage.getItem(INTENT_BATCH_STORAGE_KEY) ?? "{}") as {
+      records: { id: string; key: string; at?: number }[];
+    };
+    expect(typeof parsed.records.find((record) => record.id === "b0")?.at).toBe("number");
+  });
+
+  it("读侧也有条数上限：存储被塞进超大内容时不会无限读取", () => {
+    const records = Array.from({ length: 500 }, (_, index) => ({
+      id: "h" + index,
+      key: "session:bulk",
+      at: Date.now(),
+    }));
+    localStorage.setItem(INTENT_BATCH_STORAGE_KEY, JSON.stringify({ version: 2, records }));
+    // 前 400 条仍然可用；超出上限的部分退回「各自成批」，不会把不同批次混在一起
+    expect(batchKeyOf(batchItems(["h0"])[0])).toBe("session:bulk");
+    expect(batchKeyOf(batchItems(["h499"])[0])).toBe("intent:h499");
+  });
+
+  it("条数上限：写满后丢最旧的批，剩下的批次键仍然互不混淆", () => {
+    for (let index = 0; index < 61; index += 1) {
+      recordIntentBatch("session:g" + index, ["id" + index]);
+    }
+    // 最旧的一批被丢掉 → 退回「各自成批」；最近的一批仍然有效
+    expect(batchKeyOf(batchItems(["id0"])[0])).toBe("intent:id0");
+    expect(batchKeyOf(batchItems(["id60"])[0])).toBe("session:g60");
+    const raw = localStorage.getItem(INTENT_BATCH_STORAGE_KEY) ?? "";
+    const parsed = JSON.parse(raw) as { records: { id: string; key: string; at: number }[] };
+    expect(parsed.records.length).toBeLessThanOrEqual(400);
+    expect(new Set(parsed.records.map((record) => record.key)).size).toBeLessThanOrEqual(60);
+  });
+});
+
+describe("批量列表资格：该批总量 ≥4，保留到处理完（契约 §9.3）", () => {
+  beforeEach(clearBatchStorage);
+
+  it("同批 4 项 → 处理 1 项仍在（3 项）→ 2 项 → 1 项仍在 → 0 项消失", () => {
+    recordIntentBatch("session:demo-4", ["b0", "b1", "b2", "b3"]);
+    const withStatuses = (statuses: IntentStatus[]) =>
+      statuses.map((status, index) =>
+        intent({ id: "b" + index, status, submissionId: null, createdAt: "2026-10-07T04:00:00.500Z" }),
+      );
+
+    let items = withStatuses(["pending", "pending", "pending", "pending"]);
+    let batches = batchesWithList(items);
+    expect(batches).toHaveLength(1);
+    expect(batchRemainingCount(batches[0])).toBe(4);
+    expect(batchHandledCount(batches[0])).toBe(0);
+
+    items = withStatuses(["done", "pending", "pending", "pending"]);
+    batches = batchesWithList(items);
+    expect(batches).toHaveLength(1);
+    expect(batchRemainingCount(batches[0])).toBe(3);
+    expect(batchHandledCount(batches[0])).toBe(1);
+
+    items = withStatuses(["done", "rejected", "pending", "pending"]);
+    expect(batchRemainingCount(batchesWithList(items)[0])).toBe(2);
+
+    items = withStatuses(["done", "rejected", "running", "pending"]);
+    batches = batchesWithList(items);
+    expect(batches).toHaveLength(1);
+    expect(batchRemainingCount(batches[0])).toBe(1);
+
+    items = withStatuses(["done", "rejected", "running", "failed"]);
+    expect(batchesWithList(items)).toEqual([]);
+  });
+
+  it("反例：处理掉 1 项后入口与列表仍在（旧实现按剩余待审批 ≥4 会提前消失）", () => {
+    recordIntentBatch("session:demo-4", ["b0", "b1", "b2", "b3"]);
+    const items = [
+      intent({ id: "b0", status: "done", submissionId: null }),
+      intent({ id: "b1", status: "pending", submissionId: null }),
+      intent({ id: "b2", status: "pending", submissionId: null }),
+      intent({ id: "b3", status: "pending", submissionId: null }),
+    ];
+    const batches = batchesWithList(items);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].intentIds).toEqual(["b0", "b1", "b2", "b3"]);
+    expect(batches[0].pendingIds).toEqual(["b1", "b2", "b3"]);
+  });
+
+  it("反例：另一批 3 项 + 这批 1 项不会凑成 4 项列表", () => {
+    recordIntentBatch("session:three", ["t0", "t1", "t2"]);
+    recordIntentBatch("session:one", ["o0"]);
+    const items = batchItems(["t0", "t1", "t2", "o0"]);
+    expect(groupIntentsByBatch(items).map((batch) => batch.intentIds.length)).toEqual([3, 1]);
+    expect(batchesWithList(items)).toEqual([]);
+  });
+
+  it("刷新（重新分组）后资格与处理状态保持：资格只看总量，不靠组件内临时标记", () => {
+    recordIntentBatch("session:demo-4", ["b0", "b1", "b2", "b3"]);
+    const items = [
+      intent({ id: "b0", status: "done", submissionId: null }),
+      intent({ id: "b1", status: "pending", submissionId: null }),
+      intent({ id: "b2", status: "pending", submissionId: null }),
+      intent({ id: "b3", status: "pending", submissionId: null }),
+    ];
+    const first = batchesWithList(items);
+    const afterReload = batchesWithList([...items]);
+    expect(afterReload).toHaveLength(1);
+    expect(afterReload[0].key).toBe(first[0].key);
+    expect(afterReload[0].intentIds).toEqual(first[0].intentIds);
+    expect(batchRemainingCount(afterReload[0])).toBe(3);
+  });
+
+  it("已处理项不能再次被选中 / 提交", () => {
+    recordIntentBatch("session:demo-4", ["b0", "b1", "b2", "b3"]);
+    const items = [
+      intent({ id: "b0", status: "done", submissionId: null }),
+      intent({ id: "b1", status: "pending", submissionId: null }),
+      intent({ id: "b2", status: "pending", submissionId: null }),
+      intent({ id: "b3", status: "pending", submissionId: null }),
+    ];
+    const batch = batchesWithList(items)[0];
+    expect(isBatchItemSelectable(batch, "b0")).toBe(false);
+    expect(isBatchItemSelectable(batch, "b1")).toBe(true);
+    expect(isBatchItemSelectable(batch, "不属于这批")).toBe(false);
+    // 选中已处理项不生效；提交时被挡下并给出真实原因
+    expect(toggleBatchSelectionIn(batch, [], "b0")).toEqual([]);
+    const split = splitBatchIn(items, batch, ["b0", "b1"], "approve");
+    expect(split.ids).toEqual(["b1"]);
+    expect(split.blocked.map((item) => item.id)).toEqual(["b0"]);
+  });
+
+  it("入口文案显示总量、剩余待处理数与已处理数", () => {
+    const batch = {
+      key: "session:x",
+      intentIds: ["b0", "b1", "b2", "b3"],
+      pendingIds: ["b1", "b2", "b3"],
+    };
+    // 剩余待处理数写清楚，同时给出总量与已处理数（契约 §9.3）
+    expect(batchEntryText(batch)).toContain("这一批待审批 3 项");
+    expect(batchEntryText(batch)).toContain("共 4 项");
+    expect(batchEntryText(batch)).toContain("已处理 1 项");
+    expect(batchEntryText(batch, 1)).toContain("另有 1 项在其他批次等待");
+  });
 });
 
 describe("批量列表：部分选择只影响选中项", () => {
-  beforeEach(clearBatchStorage);
+  beforeEach(() => {
+    clearBatchStorage();
+    recordIntentBatch("session:partial", ["b0", "b1", "b2", "b3"]);
+  });
 
   const items = () => [
-    intent({ id: "b0", status: "pending", title: "合并材料" }),
-    intent({ id: "b1", status: "pending", title: "分开整理" }),
-    intent({ id: "b2", status: "needs_update", title: "需要更新" }),
-    intent({ id: "b3", status: "pending", title: "后续步骤" }),
+    intent({ id: "b0", status: "pending", title: "合并材料", submissionId: null }),
+    intent({ id: "b1", status: "pending", title: "分开整理", submissionId: null }),
+    intent({ id: "b2", status: "needs_update", title: "需要更新", submissionId: null }),
+    intent({ id: "b3", status: "pending", title: "后续步骤", submissionId: null }),
   ];
 
   it("批次内勾选 / 取消只动这一项，其它项保持原选择", () => {
@@ -612,7 +775,6 @@ describe("批量列表：部分选择只影响选中项", () => {
     const approve = splitBatchIn(list, batch, selected, "approve");
     expect(approve.ids).toEqual(["b0", "b3"]);
     expect(approve.blocked).toEqual([]);
-    // 未选中的 b1 / b2 不在这份决定里
     expect(approve.ids).not.toContain("b1");
     expect(approve.ids).not.toContain("b2");
     expect(batchSummaryIn(list, batch, selected)).toContain("已选 2 项");
@@ -635,12 +797,6 @@ describe("批量列表：部分选择只影响选中项", () => {
     const batch = batchesWithList(list)[0];
     const afterOneApproved = { ...batch, pendingIds: ["b0", "b2", "b3"] };
     expect(pruneBatchSelection(afterOneApproved, ["b0", "b1", "b3"])).toEqual(["b0", "b3"]);
-  });
-
-  it("入口文案分开说明「这一批」与「其他批次」，不累加", () => {
-    const batch = { key: "session:x", intentIds: ["b0", "b1", "b2", "b3"], pendingIds: ["b0", "b1", "b2", "b3"] };
-    expect(batchEntryText(batch)).toContain("这一批待审批 4 项");
-    expect(batchEntryText(batch, 1)).toContain("另有 1 项在其他批次等待");
   });
 });
 
