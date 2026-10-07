@@ -160,7 +160,57 @@ def _active_jobs():
     return active_jobs()
 
 
-async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_app):
+def _spy_jobs(monkeypatch) -> list:
+    """抓住这次请求创建的作业对象（不依赖注册表 —— 修复后作业可能已经收尾注销）。
+
+    注册表是「当前在飞」的视图，不能当前置条件用：写盘失败可能快到请求返回时作业已经注销。
+    这里只做观察，断言仍然打在**产品行为**上（请求是否收尾、行状态、文件、活动作业）。
+    """
+    from agent.api import server as server_mod
+
+    created: list = []
+    real = server_mod.UploadJob
+
+    def _factory(*args, **kwargs):
+        job = real(*args, **kwargs)
+        created.append(job)
+        return job
+
+    monkeypatch.setattr(server_mod, "UploadJob", _factory)
+    return created
+
+
+async def _worker_exited(created, *, timeout: float) -> bool:
+    """等工作线程退出；返回「是否还能在注册表里观察到它」（**只作诊断**）。
+
+    * 注册表里还有作业 → 等它的退出事件（退出事实由工作线程自己置位）；
+    * 注册表已经空了 → 作业已收尾注销，这本身就是「工作线程已经退出」的另一种证据，
+      但仍然要求它真的置过退出事件（不许把「注销」当成「退出」）。
+    """
+    live = _active_jobs()
+    if live:
+        assert await _wait_worker_exit(live, timeout=timeout), "工作线程没有退出"
+        return True
+    await _wait_until(
+        lambda: bool(created) and all(job.worker_done.is_set() for job in created),
+        timeout=timeout,
+        what="作业已从注册表注销，但工作线程没有被报告为已退出",
+    )
+    return False
+
+
+def _assert_converged(ctx, *ignore: Path) -> None:
+    """收尾后的共同断言：行不停在 prepared/ready、不留文件、活动作业为 0。"""
+    rows = ctx.attachments.list(limit=10, check=False)
+    assert all(row.state not in ("prepared", "ready") for row in rows), (
+        f"收尾后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+    )
+    assert not _active_jobs(), "收尾后活动作业必须注销"
+    leftovers = _leftovers(ctx, *ignore)
+    assert leftovers == [], f"收尾后留下了文件：{leftovers}"
+
+
+async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_app, monkeypatch):
     """§1.2 关键断言：工作线程失败后，**客户端一个字节都不再发**，请求也必须自己失败收尾。
 
     修复前（api/server.py 的 async for chunk in request.stream()）接收端在等下一块网络数据时
@@ -168,19 +218,16 @@ async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_
     """
     ctx = async_app.state.ctx
     placeholder = _break_target_dir(ctx)  # 目标父路径是普通文件 → 工作线程 mkdir 真失败
+    created = _spy_jobs(monkeypatch)
     gate = asyncio.Event()  # 客户端闸门：保持关闭 = 不再发任何字节
     first_sent = asyncio.Event()
-
-    async def paused_body():
-        first_sent.set()  # 请求体已经开始（不等第二次拉取：修复后终态到了就不再拉）
-        yield b"x" * CHUNK_BYTES  # 只发第一块
-        await gate.wait()  # 暂停：不再产生任何字节
+    sent = {"count": 0}
 
     async with _live(async_app) as ac:
         task = asyncio.create_task(
             ac.post(
                 "/api/attachments/upload",
-                content=paused_body(),
+                content=_paused_body(gate, first_sent, sent=sent),
                 headers={
                     "Content-Type": "application/octet-stream",
                     "X-QIO-Name": quote("暂停收尾.bin"),
@@ -188,14 +235,12 @@ async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_
             )
         )
         await _wait_until(
-            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="第一块没有发出去"
+            lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="请求体没有开始"
         )
-        jobs = _active_jobs()
-        assert jobs, "上传作业没有登记进注册表"
-        # 工作线程必须**真的退出**（退出事实由工作线程自己置位，不由接收端猜）
-        assert await _wait_worker_exit(jobs, timeout=SETUP_DEADLINE), (
-            "工作线程没有退出：写盘失败应当让它立刻退出"
-        )
+        await _wait_for_row(ctx)  # 上传已经登记（prepared 行已出现）
+        # 「还能不能观察到作业」只作诊断：修复后写盘失败可能快到请求返回时作业已经收尾注销。
+        # 观察不到作业不是失败 —— 它恰恰是「工作线程已经退出」的另一种证据（真断言在下面）。
+        observed = await _worker_exited(created, timeout=SETUP_DEADLINE)
         assert not gate.is_set(), "闸门必须仍然关闭：这一刻客户端不会再发任何字节"
 
         try:
@@ -208,47 +253,63 @@ async def test_worker_failure_ends_the_request_while_the_client_is_paused(async_
 
         assert resp.status_code == 500, resp.text
         assert str(resp.json().get("detail") or "").strip(), "失败必须带人话原因"
-        rows = ctx.attachments.list(limit=10, check=False)
-        assert all(row.state not in ("prepared", "ready") for row in rows), (
-            f"失败后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+        _assert_converged(ctx, placeholder)
+        assert sent["count"] <= 1, f"客户端不该发第二块：已发 {sent['count']} 块"
+        print(
+            f"[paused-upload] mkdir-failure: job_observed={observed} "
+            f"already_exited={not observed} sent={sent['count']} status={resp.status_code}",
+            flush=True,
         )
-        assert not _active_jobs(), "失败收尾后活动作业必须注销"
-        assert _leftovers(ctx, placeholder) == [], f"留下了文件：{_leftovers(ctx, placeholder)}"
 
     gate.set()  # 收尾：放行挂起的请求体生成器，避免留下未关闭的异步生成器
 
 
-def _paused_body(gate: asyncio.Event, started: asyncio.Event | None = None, *, chunks: int = 1):
+def _paused_body(
+    gate: asyncio.Event,
+    started: asyncio.Event | None = None,
+    *,
+    chunks: int = 1,
+    sent: dict | None = None,
+):
     """先发 `chunks` 块，然后等闸门：客户端**不再产生任何字节**（除非测试释放闸门）。
 
     `started` 在**第一块之前**置位（「请求体已经开始」）：不能等生成器第二次被拉取才置位 ——
     修复后接收端在作业终态到达时就不再拉取请求体了，那样置位会永远等不到（这正是修好的行为）。
+    `sent["count"]` 记录**实际交给 ASGI 的分块数**（用来断言客户端没有发第二块）。
     """
 
     async def body():
         if started is not None:
             started.set()
-        for _ in range(max(1, int(chunks))):
+        for index in range(max(1, int(chunks))):
+            if sent is not None:
+                sent["count"] = index + 1
             yield b"x" * CHUNK_BYTES
         await gate.wait()
 
     return body()
 
 
-async def _paused_request_ends_with_failure(async_app, name: str, *, chunks: int = 1, status: int = 500):
+async def _paused_request_ends_with_failure(
+    async_app, monkeypatch, name: str, *, chunks: int = 1, status: int = 500
+):
     """闸门仍关闭（客户端不再发字节）时，上传请求必须自己失败收尾。
 
-    返回响应；收尾后检查：行不停 prepared/ready、活动作业为 0、不留文件。
+    前置只等两件**确定**的事：请求体已经开始、上传已经登记（prepared 行出现）。
+    「作业还在注册表里」**不是**前置条件 —— 修复后失败可能快到请求返回时作业已收尾注销；
+    观察不到作业反而是「工作线程已经退出」的另一种证据（见 _worker_exited，仍要求它真置过退出事件）。
     """
     ctx = async_app.state.ctx
+    created = _spy_jobs(monkeypatch)
     gate = asyncio.Event()
     first_sent = asyncio.Event()
+    sent = {"count": 0}
 
     async with _live(async_app) as ac:
         task = asyncio.create_task(
             ac.post(
                 "/api/attachments/upload",
-                content=_paused_body(gate, first_sent, chunks=chunks),
+                content=_paused_body(gate, first_sent, chunks=chunks, sent=sent),
                 headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote(name)},
             )
         )
@@ -256,10 +317,7 @@ async def _paused_request_ends_with_failure(async_app, name: str, *, chunks: int
             lambda: first_sent.is_set(), timeout=SETUP_DEADLINE, what="请求体没有开始"
         )
         await _wait_for_row(ctx)  # 上传已经登记（prepared 行已出现）
-        jobs = _active_jobs()
-        assert jobs, "上传作业没有登记进注册表"
-        # 工作线程必须**真的退出**（退出事实由工作线程自己置位）
-        assert await _wait_worker_exit(jobs, timeout=SETUP_DEADLINE), "工作线程没有退出"
+        observed = await _worker_exited(created, timeout=SETUP_DEADLINE)
         assert not gate.is_set(), "闸门必须仍然关闭：这一刻客户端不会再发任何字节"
 
         try:
@@ -271,12 +329,13 @@ async def _paused_request_ends_with_failure(async_app, name: str, *, chunks: int
             ) from None
 
         assert resp.status_code == status, resp.text
-        rows = ctx.attachments.list(limit=10, check=False)
-        assert all(row.state not in ("prepared", "ready") for row in rows), (
-            f"失败后附件停在 prepared/ready：{[(r.id, r.state) for r in rows]}"
+        _assert_converged(ctx)
+        assert sent["count"] <= chunks, f"客户端不该多发块：已发 {sent['count']} 块"
+        print(
+            f"[paused-upload] {name}: job_observed={observed} already_exited={not observed} "
+            f"sent={sent['count']} status={resp.status_code}",
+            flush=True,
         )
-        assert not _active_jobs(), "失败收尾后活动作业必须注销"
-        assert _leftovers(ctx) == [], f"留下了文件：{_leftovers(ctx)}"
 
     gate.set()  # 收尾：放行挂起的请求体生成器
     return resp
@@ -292,7 +351,7 @@ async def test_open_failure_ends_the_request_while_the_client_is_paused(async_ap
         return real_open(file, mode, *args, **kwargs)
 
     monkeypatch.setattr(attachments_mod, "open", fake_open, raising=False)
-    resp = await _paused_request_ends_with_failure(async_app, "打开失败暂停.bin")
+    resp = await _paused_request_ends_with_failure(async_app, monkeypatch, "打开失败暂停.bin")
     assert "权限" in str(resp.json().get("detail") or ""), resp.text
 
 
@@ -323,7 +382,9 @@ async def test_mid_write_failure_ends_the_request_while_the_client_is_paused(asy
         return _NoSpaceWriter(handle) if "w" in str(mode) else handle
 
     monkeypatch.setattr(attachments_mod, "open", fake_open, raising=False)
-    resp = await _paused_request_ends_with_failure(async_app, "途中失败暂停.bin", chunks=2)
+    resp = await _paused_request_ends_with_failure(
+        async_app, monkeypatch, "途中失败暂停.bin", chunks=2
+    )
     assert "磁盘空间不足" in str(resp.json().get("detail") or ""), resp.text
 
 
@@ -370,7 +431,8 @@ async def test_late_worker_result_cannot_commit_ready(async_app, monkeypatch):
     """
     from agent.api import server as server_mod
 
-    monkeypatch.setattr(server_mod, "UPLOAD_SETTLE_SECONDS", 0.5)
+    monkeypatch.setattr(server_mod, "UPLOAD_SETTLE_SECONDS", 3.0)
+    created = _spy_jobs(monkeypatch)
     ctx = async_app.state.ctx
     gate = threading.Event()
     release = threading.Event()
@@ -391,13 +453,14 @@ async def test_late_worker_result_cannot_commit_ready(async_app, monkeypatch):
                 headers={"Content-Type": "application/octet-stream", "X-QIO-Name": quote("迟到提交.bin")},
             )
         )
-        # 等工作线程真的走到**不可中断的提交调用**，并先抓住作业对象（响应返回后它会被注销）
+        # 等工作线程真的走到**不可中断的提交调用**；作业对象由 _spy_jobs 直接抓，
+        # 不依赖注册表（响应返回后它会注销，不能当前置条件用）
         await _wait_until(
-            lambda: gate.is_set() and bool(_active_jobs()),
+            lambda: gate.is_set() and bool(created),
             timeout=SETUP_DEADLINE,
             what="工作线程没有走到 os.replace",
         )
-        jobs = _active_jobs()
+        jobs = created
 
         resp = await asyncio.wait_for(task, timeout=DEADLINE)
         assert resp.status_code == 500, resp.text
