@@ -1566,7 +1566,9 @@ def create_app(
         turn = ctx.turns.submit(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        outcome = attachments.bind_for_turn(
+        # bind_for_turn 现在是 async：校验/建行/定稿都在事件循环线程，
+        # 只有文件 I/O（硬链接失败后的复制退路）在 to_thread 里（R5 §1.3）。
+        outcome = await attachments.bind_for_turn(
             turn_id=turn.turn_id,
             message_id=None,
             attachment_ids=explicit_ids,
@@ -1799,7 +1801,7 @@ def create_app(
                 record["topic_id"],
                 intent_id=pending.intent_id if pending else None,
             )
-            outcome = attachments.bind_for_turn(
+            outcome = await attachments.bind_for_turn(
                 turn_id=turn.turn_id,
                 message_id=None,
                 attachment_ids=retry_ids,
