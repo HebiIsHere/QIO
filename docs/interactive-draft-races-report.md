@@ -78,11 +78,12 @@ C 只改了 `IntentBatchTray.vue` + `overlayLayout.ts`、D 只留下两份未完
 | `cd frontend; npx vue-tsc --noEmit` | exit 0（无输出） | 静态 |
 | `npx vitest run src/stores/__tests__/d4ChatDraftRace.verify.test.ts` | **18/18 通过** | 独立用例（含模拟失败） |
 | `npx vitest run src/stores/__tests__/d4CardDraftRace.verify.test.ts` | **10/10 通过** | 独立用例（含受控慢请求） |
-| `npx vitest run`（全量） | 117 文件 / 1251 用例；唯一失败是**负载敏感**的 `eventBufferOverflow.verify.test.ts` 性能预算用例（与验收脚本并发时 67s 超时，单独跑通过） | 组件 |
+| `npx vitest run`（全量，机器安静时） | **117 文件 / 1251 用例全绿** | 组件 |
+| `npx vitest run src/stores/__tests__/eventBufferOverflow.verify.test.ts`（单独） | 4/4 通过（13.4s） | 负载敏感用例 |
 | `node scripts/interactive-verify/fe-scenarios.mjs`（集成实例） | **79/79 通过**（场景 1–17） | **实机**（真实鼠标/键盘/滚轮 + 真实接口） |
 | `node scripts/interactive-verify/ui-metrics.mjs` | 见 §5 数字 | **实机**测量 |
 | `node scripts/interactive-verify/ui-screens-races.mjs` | 改前/改后各 24 张（四场景 × 三档 × 暗亮） | **实机**截图 |
-| `cd backend; uv run --frozen pytest` | 见交付时的实跑结果 | 后端回归 |
+| `cd backend; uv run --frozen pytest -q` | `PYTEST_EXIT=0`（无失败） | 后端回归 |
 | `python scripts/check_docs.py` | 通过（31 个里程碑条目） | 文档一致性 |
 
 **模拟项（明确标注）：** 发送失败、存储写入失败是页面级 `fetch`/`localStorage` 拦截；
@@ -106,8 +107,10 @@ C 只改了 `IntentBatchTray.vue` + `overlayLayout.ts`、D 只留下两份未完
 2. **强制结束与崩溃未验证：** 只覆盖正常离开（编辑器取消、页面刷新、隐藏）。
 3. **话题切换实机受限：** 实例只有一个话题，跨话题竞态主要靠会话层/组件级用例（18 条）覆盖。
 4. **真实 QIO 未接入：** `delivery.delivered` 恒为 false，界面如实显示；发送失败与存储失败是模拟。
-5. **负载敏感用例：** `eventBufferOverflow.verify.test.ts` 的性能预算用例在并发跑验收时超时（67s），
-   单独跑通过；没有降低门槛、没有删测试，按待确认的稳定性现象记录。
+5. **负载敏感用例（不是本轮回归）：** `eventBufferOverflow.verify.test.ts` 的性能预算用例
+   在**并发**跑验收脚本、多个 dev server 同时运行时超时（67s / 58s），把它单独跑 **4/4 通过（13.4s）**，
+   机器安静时全量 `npx vitest run` **117 文件 / 1251 用例全绿**；没有降低门槛、没有删测试，
+   按「负载敏感的稳定性现象」记录（与本轮改动无关：它在上一轮就出现过同样表现）。
 6. **480px 与 800×600 分开：** 480px 属于浏览器窄窗口边界（本轮专门验证切换路径），
    800×600 仍是桌面最小窗口，两者结论不混用。
 
