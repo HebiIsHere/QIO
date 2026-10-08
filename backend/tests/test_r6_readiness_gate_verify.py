@@ -156,7 +156,13 @@ def _bound_ids(resp) -> list[str]:
 
 
 @contextlib.contextmanager
-def _gated_clone(entered: threading.Event, gate: threading.Event, *, force_copy: bool = True):
+def _gated_clone(
+    entered: threading.Event,
+    gate: threading.Event,
+    *,
+    force_copy: bool = True,
+    hold_after: int = 1,
+):
     """在**副本写入开始处**放线程闸门（工作线程内）；顺带强制走复制路径。
 
     说明：重试克隆走的是 `_clone_copy_for_retry`（os.link 失败 → shutil.copyfile **直接写目标**，
@@ -164,15 +170,15 @@ def _gated_clone(entered: threading.Event, gate: threading.Event, *, force_copy:
     """
     real_open, real_io_open = builtins.open, io.open
     real_link = os.link
-    sm = {"armed": True}
-    needle = str(Path(os.environ.get("TEMP", "/tmp"))).lower()  # 只用于占位，真实判定看下面
+    sm = {"writes": 0}
 
     def _wrap(real):  # noqa: ANN001, ANN202
         def _patched(file, mode="r", *args, **kwargs):  # noqa: ANN001
-            if sm["armed"] and "w" in str(mode):
-                sm["armed"] = False
-                entered.set()
-                gate.wait(timeout=60)  # 磁盘闸门：由测试释放
+            if "w" in str(mode):
+                sm["writes"] += 1
+                if sm["writes"] >= hold_after:
+                    entered.set()
+                    gate.wait(timeout=60)  # 磁盘闸门：由测试释放
             return real(file, mode, *args, **kwargs)
 
         return _patched
@@ -239,6 +245,22 @@ def _failing_clone():
         with contextlib.suppress(AttributeError):
             del attachments_mod.open
         os.link = real_link
+
+
+async def _make_recoverable_turn(app, attachment_id: str, turn_id: str) -> str:
+    """手工造一条「被掐断但可恢复」的台账行，并把 ready 副本绑到它上面（r4 验收件同款装置）。"""
+    import inspect as _inspect
+
+    ctx = app.state.ctx
+    bound = ctx.attachments.bind_for_turn(turn_id, [attachment_id], topic_id=None)
+    if _inspect.isawaitable(bound):
+        await bound
+    journal = ctx.turn_journal
+    journal.accepted(turn_id=turn_id, message="被进程掐断的那一条（带附件）")
+    journal.running(turn_id)
+    journal.terminal(turn_id, "cancelled", reason="shutdown")
+    assert journal.recoverable(turn_id) is not None, "没有造出可恢复记录（装置失效）"
+    return turn_id
 
 
 async def _first_turn_with_attachment(client, provider, attachment_id: str) -> str:
@@ -424,3 +446,196 @@ async def test_source_turn_attribution_stays_correct(app, provider, tmp_path: Pa
             "原轮历史副本在原文件删除后仍必须可读", ok.status_code, ok.text[:60]
         )
         print("[诊断] 原轮归属：turn=%s；副本仍可读=%s" % (turn1, ok.status_code))
+
+
+# ---- 5. 多附件：**最后一个**还没就绪时不得开始执行 -----------------------------------
+
+
+async def test_multi_attachment_last_not_ready_blocks_start(app, provider, tmp_path: Path):
+    """两个附件都要克隆：第 2 个（最后一个）仍在复制时，模型调用必须仍为 0。"""
+    src1 = tmp_path / "r6-multi-1.txt"
+    src2 = tmp_path / "r6-multi-2.txt"
+    src1.write_text(MARKER + "\n", encoding="utf-8")
+    src2.write_text(MARKER + " second\n", encoding="utf-8")
+    entered = threading.Event()
+    gate = threading.Event()
+    async with _client(app) as client:
+        await _prepare_credential(client, provider)
+        att1 = await _register(client, src1)
+        att2 = await _register(client, src2)
+        await _script_provider(provider, [{"chunks": ["第一轮回答。"]}])
+        first = await client.post(
+            "/api/turns", json={"message": "第一轮带两个附件", "attachment_ids": [att1["id"], att2["id"]]}
+        )
+        assert first.status_code == 200, (first.status_code, first.text[:300])
+        turn1 = str(first.json()["turn_id"])
+        assert await _wait_idle(client), "第一轮没有跑完"
+        calls_before = await _provider_calls(provider)
+        src1.unlink()
+        src2.unlink()
+
+        with _gated_clone(entered, gate, hold_after=2):  # 第 2 个克隆才暂停
+            retry = asyncio.create_task(
+                client.post(
+                    "/api/turns",
+                    json={
+                        "message": "重试（最后一个附件还没就绪）",
+                        "attachment_ids": [att1["id"], att2["id"]],
+                        "retry_of_turn_id": turn1,
+                    },
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 45), "第 2 个克隆没有进入闸门（装置失效）"
+            still_closed = not gate.is_set()
+            calls_while_gated = (await _provider_calls(provider)) - calls_before
+            queue = await client.get("/api/turns/queue")
+            gate.set()
+            response = await asyncio.wait_for(retry, timeout=120)
+        queue_json = queue.json()
+        new_ids = [x for x in _bound_ids(response) if x not in (att1["id"], att2["id"])]
+        contents = []
+        for new_id in new_ids:
+            await _wait_ready(client, new_id)
+            body = await client.get("/api/attachments/%s/content" % new_id)
+            contents.append(body.status_code == 200 and MARKER in body.text)
+
+    assert still_closed, "断言时闸门已被打开 —— 证据不成立"
+    assert calls_while_gated == 0, (
+        "多附件里**最后一个还没就绪**时模型已经被调用了",
+        {"calls_while_gated": calls_while_gated, "queue": queue_json, "new_ids": new_ids},
+    )
+    assert response.status_code == 200, (response.status_code, response.text[:300])
+    assert len(new_ids) == 2 and all(contents), ("两个克隆都必须就绪且内容正确", new_ids, contents)
+    print("[诊断] 多附件：闸门关闭期间调用=%d；释放后克隆=%s；内容校验=%s" % (calls_while_gated, new_ids, contents))
+
+
+# ---- 6. 排队期间准备失败：不启动、不留孤儿队列项 -------------------------------------
+
+
+async def test_prepare_failure_while_queued_starts_nothing(app, provider, tmp_path: Path):
+    src = tmp_path / "r6-queued.txt"
+    src.write_text(MARKER + "\n", encoding="utf-8")
+    async with _client(app) as client:
+        await _prepare_credential(client, provider)
+        att = await _register(client, src)
+        source_turn = await _make_recoverable_turn(app, att["id"], "turn_r6_queued_source")
+        src.unlink()
+        # 另起一轮故意跑得慢，占住 worker（排队压力）
+        await _script_provider(provider, [{"chunks": ["慢慢来。", "继续。"], "chunk_delay_ms": 3000}])
+        first = await client.post("/api/turns", json={"message": "慢的占用轮", "attachment_ids": []})
+        assert first.status_code == 200
+        deadline = time.monotonic() + 30
+        calls_first = 0
+        while time.monotonic() < deadline:
+            calls_first = await _provider_calls(provider)
+            if calls_first >= 1:
+                break
+            await asyncio.sleep(0.1)
+        assert calls_first >= 1, "第一轮没有启动（装置失效）"
+        with _failing_clone() as injected:
+            second = await client.post("/api/turns/%s/resend" % source_turn)
+        calls_after_failure = await _provider_calls(provider)
+        queue = (await client.get("/api/turns/queue")).json()
+        queued_ids = [q.get("turn_id") for q in (queue.get("queued") or [])]
+        # 被拒绝的那一轮**没有被接受**（没有 turn_id），且来源轮的 claim 没有被消耗
+        rejected_body = second.json() if second.headers.get("content-type", "").startswith("application/json") else {}
+        accepted_turn_id = str((rejected_body or {}).get("turn_id") or "")
+        claim_intact = app.state.ctx.turn_journal.recoverable(source_turn) is not None
+        await _wait_idle(client, timeout=120)
+
+    assert injected["fired"], "受控写入错误没有触发（装置失效）"
+    assert second.status_code >= 400, ("准备失败必须明确拒绝", second.status_code, second.text[:200])
+    assert "attachment_binding_failed" in second.text, (
+        "拒绝原因必须是附件准备失败（结构化）", second.text[:200]
+    )
+    assert not accepted_turn_id, ("准备失败却仍然被接受了（会去执行）", accepted_turn_id, second.text[:160])
+    assert claim_intact, "准备失败把来源轮的 claim 消耗掉了（无法再次恢复）"
+    assert calls_first >= 1 and calls_after_failure >= calls_first, (
+        "占用轮的调用应当照常推进（诊断字段）", calls_first, calls_after_failure
+    )
+    assert str((second.json() or {}).get("turn_id") or "") not in queued_ids, (
+        "被拒绝的那一轮留下了孤儿队列项", queued_ids
+    )
+    assert source_turn not in queued_ids, ("被拒绝的 resend 留下了孤儿队列项", queued_ids)
+    print("[诊断] 排队期间准备失败：HTTP=%d；模型调用 %d→%d；queued=%s" % (
+        second.status_code, calls_first, calls_after_failure, queued_ids))
+
+
+# ---- 7. resend 准备失败后**再次恢复**（claim 不能被永久消耗） --------------------------
+
+
+async def test_resend_prepare_failure_then_recovery(app, provider, tmp_path: Path):
+    src = tmp_path / "r6-resend.txt"
+    src.write_text(MARKER + "\n", encoding="utf-8")
+    async with _client(app) as client:
+        await _prepare_credential(client, provider)
+        att = await _register(client, src)
+        turn1 = await _make_recoverable_turn(app, att["id"], "turn_r6_resend_source")
+        src.unlink()
+        calls_before = await _provider_calls(provider)
+
+        with _failing_clone() as injected:
+            first_try = await client.post("/api/turns/%s/resend" % turn1)
+        assert injected["fired"], "受控写入错误没有触发（装置失效）"
+        assert first_try.status_code >= 400, (
+            "resend 准备失败必须明确拒绝", first_try.status_code, first_try.text[:200]
+        )
+        calls_after_failure = await _provider_calls(provider)
+        assert calls_after_failure == calls_before, (
+            "resend 准备失败却调用了模型", {"before": calls_before, "after": calls_after_failure}
+        )
+
+        second_try = await client.post("/api/turns/%s/resend" % turn1)
+        assert second_try.status_code == 200, (
+            "resend 第一次准备失败后 claim 被永久消耗（再次恢复失败）",
+            second_try.status_code, second_try.text[:300],
+        )
+        new_turn = str((second_try.json() or {}).get("turn_id") or "")
+        assert new_turn and new_turn != turn1, second_try.text[:200]
+        assert await _wait_idle(client), "恢复的 resend 没有跑完"
+        calls_after_recovery = await _provider_calls(provider)
+        assert calls_after_recovery > calls_after_failure, ("恢复后的 resend 必须真的执行一次", calls_after_recovery)
+        print("[诊断] resend 恢复：首次=%d；再次=%d；新轮=%s；调用 %d→%d" % (
+            first_try.status_code, second_try.status_code, new_turn, calls_after_failure, calls_after_recovery))
+
+
+# ---- 8. 服务关闭发生在准备期间：释放闸门后仍不能开始执行 ------------------------------
+
+
+async def test_shutdown_during_preparation_never_starts_execution(app, provider, tmp_path: Path):
+    src = tmp_path / "r6-shutdown.txt"
+    src.write_text(MARKER + "\n", encoding="utf-8")
+    entered = threading.Event()
+    gate = threading.Event()
+    async with _client(app) as client:
+        await _prepare_credential(client, provider)
+        att = await _register(client, src)
+        turn1 = await _first_turn_with_attachment(client, provider, att["id"])
+        calls_before = await _provider_calls(provider)
+        src.unlink()
+
+        with _gated_clone(entered, gate):
+            retry = asyncio.create_task(
+                client.post(
+                    "/api/turns",
+                    json={
+                        "message": "重试（准备期间服务关闭）",
+                        "attachment_ids": [att["id"]],
+                        "retry_of_turn_id": turn1,
+                    },
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 45), "复制没有进入闸门（装置失效）"
+            await app.state.ctx.turns.shutdown()  # 服务关闭
+            gate.set()  # 关闭之后释放磁盘闸门：不得因此开始执行
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(retry, timeout=60)
+            await asyncio.sleep(1.0)
+        calls_after = (await _provider_calls(provider)) - calls_before
+        queue = (await client.get("/api/turns/queue")).json()
+
+    assert calls_after == 0, (
+        "服务关闭（准备期间）后释放磁盘闸门仍然开始执行了", {"calls": calls_after, "queue": queue}
+    )
+    print("[诊断] 准备期服务关闭：模型调用=%d；queue=%s" % (calls_after, queue))
+
