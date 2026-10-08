@@ -9,6 +9,8 @@
  * 组件只消费结果，不各自猜。
  *
  * 纯函数、无副作用、可单测；不读 DOM，由调用方把量到的数字传进来。
+ * 空间不足（switched）时**保留哪一个面板**也在这里判（{@link resolveOverlayPanes}），
+ * 组件只负责把结果写回 store 并渲染切换入口，不自己写一套「谁该被收起」的判断。
  *
  * 三条几何事实（本模块的全部假设，改版面时必须一起改）：
  * 1. 浮层挂在板面舞台上，舞台上沿 + {@link OVERLAY_EDGE} 是最高的可用行；
@@ -59,6 +61,16 @@ export const OVERLAY_GAP = 12;
 export const OVERLAY_CHAT_FOOTER = 78;
 /** 聊天容器的底边：工具栏顶边往上 16px 边距 + 8px 余量（ChatDock 自己的口径） */
 export const OVERLAY_CHAT_DOCK_LIFT = 24;
+/** 面板标识：右侧聊天 / 右上批量列表 */
+export type OverlayPane = "chat" | "batch";
+/**
+ * 空间不足（switched）时「面板切换条」占用的高度（契约 §10.6）。
+ *
+ * 为什么要有它：二选一时必须**明确告诉用户还能切换**，这条提示不能压在面板或工具栏上。
+ * 它占用聊天面板下方的一行（见 bandsOf 的 reserveSwitchBar）：位置在未预留的底边之上、
+ * 聊天入口按钮之上，所以两个面板的实际高度都不会碰到它，也不需要观察它自己的尺寸。
+ */
+export const OVERLAY_SWITCH_BAR_HEIGHT = 34;
 /** 低于这个视口宽度不与聊天并排：ChatDock 在 ≤560px 会变成左右各 12px 的整宽布局 */
 export const OVERLAY_SIDE_BY_SIDE_MIN_WIDTH = 640;
 /** 聊天面板的偏好宽度（与 ChatDock 自己的 420px 一致） */
@@ -103,8 +115,13 @@ interface Bands {
   availWidth: number;
 }
 
-/** 按实际可用区域算竖直区间与可用宽度（planOverlayGeometry 与 overlayRects 共用，避免两处算法漂移）。 */
-function bandsOf(input: OverlayInput): Bands {
+/**
+ * 按实际可用区域算竖直区间与可用宽度（planOverlayGeometry 与 overlayRects 共用，避免两处算法漂移）。
+ *
+ * reserveSwitchBar = true 时把聊天区间再抬高一个「面板切换条」的高度：只有二选一模式才需要，
+ * 而且**必然**是缩小可用高度（先判定够不够、再留位置），所以不会出现「留位置反而放得下」的循环依赖。
+ */
+function bandsOf(input: OverlayInput, reserveSwitchBar = false): Bands {
   const viewportWidth = Math.max(0, px(num(input?.viewport?.width)));
   const viewportHeight = Math.max(0, px(num(input?.viewport?.height)));
   const stageHeight = Math.max(0, px(num(input?.stage?.height, viewportHeight)));
@@ -113,7 +130,8 @@ function bandsOf(input: OverlayInput): Bands {
   // 工具栏量不到时按「舞台下沿」算：宁可把浮层排在舞台里，也不越过视口
   const toolbarTop = clamp(px(num(input?.toolbarTop, stageBottom)), stageTop, Math.max(stageTop, stageBottom));
   const top = stageTop + OVERLAY_EDGE;
-  const chatBottom = Math.max(top, toolbarTop - OVERLAY_CHAT_FOOTER);
+  const switchReserve = reserveSwitchBar ? OVERLAY_SWITCH_BAR_HEIGHT + OVERLAY_GAP : 0;
+  const chatBottom = Math.max(top, toolbarTop - OVERLAY_CHAT_FOOTER - switchReserve);
   const batchBottom = Math.max(top, toolbarTop - OVERLAY_EDGE);
   return {
     viewportWidth,
@@ -214,10 +232,12 @@ export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
   }
 
   // 二选一：两个都可以拿满各自的区间，但不允许同时出现
+  // 聊天区间要让出「面板切换条」那一行（上面已判定空间不够，让出后只会更不够，不会翻回 stacked）
+  const reserved = bandsOf(input, true);
   return {
     mode: "switched",
     chatMaxWidth: Math.max(mins.chat.width, Math.min(chatCap, bands.availWidth)),
-    chatMaxHeight: bands.chatBand,
+    chatMaxHeight: reserved.chatBand,
     chatRight: OVERLAY_EDGE,
     batchMaxWidth: Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth)),
     batchMaxHeight: bands.batchBand,
@@ -236,7 +256,8 @@ export function overlayRects(
   input: OverlayInput,
   geometry: OverlayGeometry,
 ): { chat: OverlayRect; batch: OverlayRect } {
-  const bands = bandsOf(input);
+  // 模式决定要不要为切换条留位置：与 planOverlayGeometry 用同一条判据，两处不会漂移
+  const bands = bandsOf(input, geometry?.mode === "switched");
   const chatWidth = Math.max(0, px(geometry?.chatMaxWidth));
   const chatHeight = Math.max(0, px(geometry?.chatMaxHeight));
   const batchWidth = Math.max(0, px(geometry?.batchMaxWidth));
@@ -280,4 +301,66 @@ export function chatHeightRelaxation(toggleHeight: number): number {
   if (!Number.isFinite(height) || height <= 0) return 0;
   const measured = OVERLAY_CHAT_DOCK_LIFT + OVERLAY_GAP + height;
   return Math.max(0, OVERLAY_CHAT_FOOTER - measured);
+}
+
+/**
+ * 空间同时放不下两个面板：把两个都当作打开再算一次，模式为 switched 就是不够。
+ *
+ * 刻意**与当前开合无关** —— 契约 §10.6 要求「窗口缩放 / 工具栏变高」立即按最新几何决定，
+ * 不能等用户再点一次面板才发现空间不够。
+ */
+export function overlaysAreCramped(input: OverlayInput): boolean {
+  return planOverlayGeometry({ ...input, chatOpen: true, batchOpen: true }).mode === "switched";
+}
+
+export interface PaneResolution {
+  chatOpen: boolean;
+  batchOpen: boolean;
+  /** 因为空间不足而被收起的面板（null = 没有被迫改变任何开合） */
+  closed: OverlayPane | null;
+  /** 空间不足时保留的那一个（空间够时等于传入的 preferred，不改变它） */
+  preferred: OverlayPane;
+}
+
+/**
+ * 空间不足时按「用户最近打开的面板」只保留一个（契约 §10.6）。
+ *
+ * 三条硬规则都落在这里，所以可以被单测直接证明：
+ * 1. **幂等**：同样的输入永远得到同样的输出；把结果再喂回来不会再收任何东西 ——
+ *    这是「开合不来回反弹」的根据（组件只在结果与当前状态不同时才写 store）。
+ * 2. 空间够（cramped=false）时**绝不改开合**：从小窗口恢复大窗口不会自动弹出面板。
+ * 3. 只关闭不打开：任何情况下都不会把 close 的面板自己打开（只保留其中一个）。
+ *
+ * batchAvailable=false（这一批已经处理完、没有可展示的列表）时不会保留批量列表，
+ * 否则会出现「保留了一个其实不存在的东西、另一个被关掉」的黑洞。
+ */
+export function resolveOverlayPanes(input: {
+  cramped: boolean;
+  chatOpen: boolean;
+  batchOpen: boolean;
+  preferred: OverlayPane;
+  batchAvailable?: boolean;
+}): PaneResolution {
+  const chatOpen = Boolean(input?.chatOpen);
+  const batchOpen = Boolean(input?.batchOpen);
+  const preferred: OverlayPane = input?.preferred === "batch" ? "batch" : "chat";
+  const batchAvailable = input?.batchAvailable !== false;
+  const unchanged = { chatOpen, batchOpen, closed: null as OverlayPane | null, preferred };
+
+  if (!input?.cramped) return unchanged;
+  if (!chatOpen && !batchOpen) return unchanged;
+  if (chatOpen !== batchOpen) {
+    // 只有一个打开：保留它自己，绝不顺手打开另一个
+    return unchanged;
+  }
+  // 两个都开：按最近打开的决定保留谁
+  let keep: OverlayPane = preferred;
+  if (keep === "batch" && !batchAvailable) keep = "chat";
+  const closed: OverlayPane = keep === "chat" ? "batch" : "chat";
+  return {
+    chatOpen: keep === "chat",
+    batchOpen: keep === "batch",
+    closed,
+    preferred: keep,
+  };
 }

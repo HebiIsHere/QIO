@@ -52,7 +52,7 @@ describe("BoardToolbar 接线", () => {
 
   it("常态只留必要入口：添加 / 搜索 / 撤销重做 / 视图 / 提交，没有一组常驻的分组按钮", () => {
     const wrapper = mount(BoardToolbar);
-    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "mode-select", "mode-rect", "mode-link", "submit"]) {
+    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "help-toggle", "submit"]) {
       expect(wrapper.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
     // 反例（旧实现会挂）：分组类操作曾经常驻工具栏，且未选中时是一排禁用按钮
@@ -101,18 +101,24 @@ describe("BoardToolbar 接线", () => {
     wrapper.unmount();
   });
 
-  it("视图控制写 store.boardMode（画布共用），按下态跟着变", async () => {
+  it("手势固定：工具栏不再有会改变手势的常驻模式，只留操作说明（契约 §10.7）", async () => {
     const wrapper = mount(BoardToolbar);
-    expect(store.boardMode).toBe("select");
-    expect(wrapper.get('[data-im="mode-select"]').attributes("aria-pressed")).toBe("true");
+    // 反例（旧实现会挂）：选择 / 框选 / 连线 三个常驻模式按钮
+    for (const old of ["mode-select", "mode-rect", "mode-link"]) {
+      expect(wrapper.find('[data-im="' + old + '"]').exists(), "工具栏不应再有常驻模式 " + old).toBe(false);
+    }
+    expect(
+      (store as unknown as { boardMode?: unknown }).boardMode,
+      "store 不应再暴露可切换的指针模式",
+    ).toBeUndefined();
 
-    await wrapper.get('[data-im="mode-rect"]').trigger("click");
-    expect(store.boardMode).toBe("rect");
-    expect(wrapper.get('[data-im="mode-rect"]').attributes("aria-pressed")).toBe("true");
-    expect(wrapper.get('[data-im="mode-select"]').attributes("aria-pressed")).toBe("false");
-
-    await wrapper.get('[data-im="mode-link"]').trigger("click");
-    expect(store.boardMode).toBe("link");
+    // 说明入口默认收起，点开后把三条固定手势讲清楚
+    expect(wrapper.find('[data-im="help-popover"]').exists()).toBe(false);
+    await wrapper.get('[data-im="help-toggle"]').trigger("click");
+    const pop = wrapper.get('[data-im="help-popover"]');
+    expect(pop.text()).toContain("空格");
+    expect(pop.text()).toContain("连接点");
+    expect(pop.text()).toContain("平移");
     wrapper.unmount();
   });
 

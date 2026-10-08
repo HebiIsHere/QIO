@@ -74,7 +74,6 @@ const TOOLBAR_GAP = 10;
 const TOOLBAR_H = 34;
 const HINT_GAP = 8;
 
-type BoardMode = "select" | "rect" | "link";
 type GroupOp = "form" | "join" | "leave" | "dissolve" | "ordered" | "unordered" | "merge";
 
 interface DragState {
@@ -124,7 +123,7 @@ const shell = ref<HTMLElement | null>(null);
  */
 const view = ref<Viewport>({ ...IDENTITY_VIEWPORT });
 const scroll = ref({ x: 0, y: 0 });
-const localMode = ref<BoardMode>("select");
+
 const dragging = ref<DragState | null>(null);
 const panning = ref<PanState | null>(null);
 const rectSelect = ref<RectDrag | null>(null);
@@ -143,19 +142,10 @@ let locatedTimer: ReturnType<typeof setTimeout> | null = null;
 let scrollSyncLock = false;
 
 /**
- * 板面指针模式：lead 已裁定走 store（工具栏写、画布读）。
- * 骨架阶段 store 还没有这个字段，所以这里做兼容读取 + 监听事件，两者都能工作。
+ * 手势是固定的（契约 §10.7），画布不再有「指针模式」：
+ * 不按空格拖空白＝平移；空格＋拖空白＝框选；从连接点拖线＝建立关系。
+ * 以前工具栏的常驻模式会改变同一个手势的含义（选了「框选」后不按空格也框选），已移除。
  */
-const mode = computed<BoardMode>(() => {
-  const fromStore = (store as unknown as { boardMode?: BoardMode }).boardMode;
-  return fromStore ?? localMode.value;
-});
-
-function setMode(next: BoardMode) {
-  const setter = (store as unknown as { setBoardMode?: (value: BoardMode) => void }).setBoardMode;
-  if (typeof setter === "function") setter.call(store, next);
-  localMode.value = next;
-}
 
 /** 仍在等待的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。 */
 const OPEN_INTENT_STATUSES = ["pending", "needs_update", "waiting_dependency", "waiting_confirm", "running"];
@@ -374,10 +364,6 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
 function onDragStart(cardId: string, event: PointerEvent) {
   const current = boardState.value;
   if (!current) return;
-  if (mode.value === "link") {
-    pickLinkCard(cardId);
-    return;
-  }
   const card = cardById(current, cardId);
   if (!card) return;
   const point = boardPointOf(event);
@@ -686,7 +672,8 @@ function onSurfacePointerDown(event: PointerEvent) {
   if (rect) return;
   if (dragging.value || panning.value || linkDraft.value) return;
   const current = boardState.value;
-  const wantsRect = mode.value === "rect" || spaceDown.value;
+  // 框选只由空格决定：没有常驻模式，同一个手势在任何时刻含义都一样
+  const wantsRect = spaceDown.value;
   if (wantsRect) {
     rectSelect.value = {
       startClient: { x: event.clientX, y: event.clientY },
@@ -739,7 +726,6 @@ const rectStyle = computed(() => {
 // --- 选择 -----------------------------------------------------------------
 
 function onSelect(cardId: string, additive: boolean) {
-  if (mode.value === "link") return;
   const current = boardState.value;
   if (!current) return;
   const currentSelection = current.selection;
@@ -1082,13 +1068,6 @@ function onLocateCard(event: Event) {
   locate(detail.cardId);
 }
 
-function onBoardMode(event: Event) {
-  const detail = (event as CustomEvent<{ mode?: BoardMode }>).detail;
-  if (!detail || !detail.mode) return;
-  if (detail.mode !== "select" && detail.mode !== "rect" && detail.mode !== "link") return;
-  setMode(detail.mode);
-}
-
 // --- 待审批预览：定位事件 --------------------------------------------------
 
 interface LocatePreviewDetail {
@@ -1177,7 +1156,6 @@ onMounted(() => {
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
-  window.addEventListener("qio:interactive:board-mode", onBoardMode as EventListener);
   refreshOverlay();
 });
 
@@ -1188,7 +1166,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("keyup", onKeyUp);
   window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.removeEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
-  window.removeEventListener("qio:interactive:board-mode", onBoardMode as EventListener);
   detachPointerListeners();
   if (highlightTimer) clearTimeout(highlightTimer);
   if (locatedTimer) clearTimeout(locatedTimer);
@@ -1197,9 +1174,6 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="shell" class="board-shell" data-im="board">
-    <p v-if="mode === 'link'" class="banner" role="status">
-      关系模式：从卡片连接点拖到另一张卡片，或依次点两张卡片建立关系。方向只表示你写明的方向，含义由你填写；系统不会把它解释成因果、支持或执行顺序。
-    </p>
     <p v-if="dragging" class="banner drag" role="status">{{ dragHint }}</p>
     <p v-if="notice" class="banner" role="status">{{ notice }}</p>
     <p class="banner view-hint" role="status">

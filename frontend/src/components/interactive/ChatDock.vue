@@ -564,7 +564,38 @@ function onKeydown(event: KeyboardEvent) {
   flex-direction: column;
   min-width: 0;
 }
+/*
+  可读性（契约 §10.8）：聊天**外层保持透明**（仍能看见板面），
+  但消息与过程说明各自带一层轻底色 —— 板面上有长注释、代码块与虚线预览时，
+  文字不能和后方文字混在一起。样式只作用于互动聊天（:deep 限定在 .stream 内），
+  普通对话页的 MessageItem 外观不受影响。
+*/
 .stream-item { max-width: 100%; }
+.stream :deep(.message .plain) {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+.stream :deep(.message.user .plain) {
+  /* 用户消息给更强的底色：它是「我说过的话」，最不该被背景吃掉 */
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+}
+.stream :deep(.message .meta) {
+  background: var(--glass-bg);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+.stream :deep(.tool-card),
+.stream :deep(.qio-card) {
+  background: var(--glass-bg-strong);
+}
+.stream :deep(.tool-detail-wrap) {
+  background: var(--glass-bg);
+}
 .stream-empty,
 .stream-older {
   margin: var(--sp-2) 0;

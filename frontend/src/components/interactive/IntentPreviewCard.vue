@@ -350,7 +350,8 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
   border-style: dashed;
   border-color: var(--link);
   background: var(--bg-elevated);
-  box-shadow: 0 12px 30px var(--shadow-soft, rgba(0, 0, 0, 0.32));
+  /* 备用阴影也必须走令牌（契约 §10.8）：双主题各有自己的阴影，硬编码色值会把暗色阴影搬到亮色上 */
+  box-shadow: var(--shadow-2);
 }
 .intent-card.docked .preview-wrap,
 .intent-card.docked .summary,

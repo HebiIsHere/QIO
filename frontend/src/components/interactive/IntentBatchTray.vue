@@ -11,7 +11,9 @@
   - 不同批次的未处理意图不累加：判定在 interactive/approval.ts；
   - 点击条目定位到板面上的虚线预览（window 事件 qio:interactive:locate-preview）。
 
-  本组件同时是**跨浮层几何的运行时施加者**（浮层避让统一由 D 负责，见 interactive/overlayLayout.ts）：
+  本组件同时是**跨浮层几何的运行时施加者**（几何计划见 interactive/overlayLayout.ts）：
+  - 契约 §10.6：几何一变（首次挂载 / 恢复开合 / 窗口缩放 / 工具栏变高）就按**最新几何**落实
+    「空间不足只展开一个面板」，并给出明确的切换入口；从小窗口恢复大窗口**不会自动弹出**面板；
   它挂在板面舞台上、又是聊天与批量面板共同祖先的直接子节点，所以把量到的数字算成
   --im-geo-chat-* / --im-geo-batch-* 写在舞台上，兄弟组件（ChatDock 的面板）通过
   styles/interactive-shell.css 读取这些变量，不需要改它的源码。
@@ -37,11 +39,17 @@ import {
   type IntentBatch,
 } from "../../interactive/approval";
 import {
+  OVERLAY_CHAT_FOOTER,
+  OVERLAY_EDGE,
   OVERLAY_GAP,
+  OVERLAY_SWITCH_BAR_HEIGHT,
   chatHeightRelaxation,
+  overlaysAreCramped,
   planOverlayGeometry,
+  resolveOverlayPanes,
   type OverlayGeometry,
   type OverlayInput,
+  type OverlayPane,
 } from "../../interactive/overlayLayout";
 import type { Intent } from "../../interactive/types";
 
@@ -87,13 +95,15 @@ function entryElement(): HTMLElement | null {
 const geometry = ref<OverlayGeometry | null>(null);
 /**
  * 空间不够同时放两个面板（几何返回 switched）。注意：只有一侧打开时也返回 side-by-side，
- * 所以这里用「两个都当作打开」再算一次，专门判断**空间**够不够，与当前开合无关。
+ * 所以判据是「两个都当作打开」再算一次（overlaysAreCramped），与当前开合无关。
+ *
+ * 这个值**每次测量都重算**；落实面板切换也只用这一轮的新值，不用上一轮留下的结果。
  */
 const cramped = ref(false);
-/** 空间不够时保留哪一个面板展开：按用户最近打开的那个算 */
-const activePane = ref<"chat" | "batch">("chat");
-/** 空间不足被迫收起另一个面板时的说明（只在该场景显示） */
-const switchNotice = ref<string | null>(null);
+/** 空间不够时保留哪一个面板展开：按用户最近打开的那个算（见下面的 watch） */
+const activePane = ref<OverlayPane>("chat");
+/** 切换条的视口坐标（position: fixed；高度用常量，避免观察自己造成重排） */
+const switchBarStyle = ref<Record<string, string>>({});
 
 const trayStyle = ref<Record<string, string>>({});
 const panelStyle = ref<Record<string, string>>({});
@@ -130,6 +140,27 @@ function overlayInput(stageRect: DOMRect, toolbarTop: number, chatOpen: boolean,
 
 const stageEl = ref<HTMLElement | null>(null);
 
+/**
+ * 落地「空间不足只保留一个面板」（契约 §10.6），并把结果写回 store。
+ *
+ * 幂等：只有在结果与当前开合不同时才写 —— 写完会再触发一次测量，那一轮就没有可改的了，
+ * 所以不会出现开合来回反弹。只关闭、不打开：空间变宽时这里什么都不做。
+ */
+function settlePanes(crampedNow: boolean): ReturnType<typeof resolveOverlayPanes> {
+  const resolved = resolveOverlayPanes({
+    cramped: crampedNow,
+    chatOpen: store.chatOpen,
+    batchOpen: store.batchOpen,
+    preferred: activePane.value,
+    batchAvailable: batches.value.length > 0,
+  });
+  if (resolved.chatOpen !== store.chatOpen || resolved.batchOpen !== store.batchOpen) {
+    store.chatOpen = resolved.chatOpen;
+    store.batchOpen = resolved.batchOpen;
+  }
+  return resolved;
+}
+
 /** 量一次实际可用区域并施加几何。只读舞台 / 工具栏 / 聊天入口按钮，都是不受浮层尺寸影响的东西。 */
 function applyGeometry(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -140,9 +171,23 @@ function applyGeometry(): void {
   const stageRect = stage.getBoundingClientRect();
   const toolbarTop = measureToolbarTop(stageRect.bottom);
   const chatInput = overlayInput(stageRect, toolbarTop, store.chatOpen, store.batchOpen);
-  const plan = planOverlayGeometry(chatInput);
-  // 「空间够不够」与开合无关：两个都当作打开再算一次
-  cramped.value = planOverlayGeometry({ ...chatInput, chatOpen: true, batchOpen: true }).mode === "switched";
+  // ★ 先按**本次量到的**几何判定空间并落实开合，再算几何变量；
+  //   绝不能拿上一轮的 cramped 决定（那正是「480px 下两个面板都还开着」的原因）
+  cramped.value = overlaysAreCramped(chatInput);
+  const resolved = settlePanes(cramped.value);
+  const plan = planOverlayGeometry({
+    ...chatInput,
+    chatOpen: resolved.chatOpen,
+    batchOpen: resolved.batchOpen,
+  });
+
+  // 切换条固定占用「未预留时的聊天面板底边」那一行：面板底边已在几何里让开它
+  const barBottom = Math.max(stageRect.top, toolbarTop - OVERLAY_CHAT_FOOTER);
+  switchBarStyle.value = {
+    left: Math.round(stageRect.left + OVERLAY_EDGE) + "px",
+    bottom: Math.round(window.innerHeight - barBottom) + "px",
+    height: OVERLAY_SWITCH_BAR_HEIGHT + "px",
+  };
 
   const toggleHeight = measureToggleHeight();
   const chatMaxHeight = plan.chatMaxHeight + chatHeightRelaxation(toggleHeight);
@@ -197,52 +242,29 @@ function scheduleMeasure(): void {
   }, 0);
 }
 
-/** 空间不足时只保留一个面板展开（明确切换，不靠遮挡） */
-function enforceSinglePane(): void {
-  if (!cramped.value) {
-    switchNotice.value = null;
-    return;
-  }
-  if (!(store.chatOpen && store.batchOpen)) return;
-  if (activePane.value === "chat") store.batchOpen = false;
-  else store.chatOpen = false;
-  switchNotice.value =
-    "窗口同时放不下两个面板，已经只展开一个：处理完这里可以用下面的按钮换回对话。消息、草稿与勾选都还在。";
-}
-
-function showPane(pane: "chat" | "batch"): void {
+/** 用户明确点「看对话 / 看审批列表」：切换过去，另一个收起（不产生第二套状态） */
+function showPane(pane: OverlayPane): void {
   activePane.value = pane;
-  if (pane === "chat") {
-    store.chatOpen = true;
-    store.batchOpen = false;
-  } else {
-    store.batchOpen = true;
-    store.chatOpen = false;
-  }
-  switchNotice.value = null;
+  store.chatOpen = pane === "chat";
+  store.batchOpen = pane === "batch";
   scheduleMeasure();
 }
 
 // --- 开合只由用户决定；这里只记录「最近打开的是哪一个」，供空间不足时决定保留谁 -----
+// 用一次 watch 同时看两个：无论用户打开哪一个，都按「最近打开」更新，并在**当次**就落实切换。
 watch(
-  () => store.chatOpen,
-  (open, was) => {
-    if (open && !was) activePane.value = "chat";
+  () => [store.chatOpen, store.batchOpen] as const,
+  ([chatOpen, batchOpen], [wasChat, wasBatch]) => {
+    if (chatOpen && !wasChat) activePane.value = "chat";
+    if (batchOpen && !wasBatch) activePane.value = "batch";
+    // 空间判定用最近一次量到的几何（几何本身没变，不必等下一次测量）；
+    // 真正的「窗口缩放 / 工具栏变高」走 applyGeometry，那里一定用最新量到的数字。
+    settlePanes(cramped.value);
     scheduleMeasure();
-    enforceSinglePane();
-  },
-);
-watch(
-  () => store.batchOpen,
-  (open, was) => {
-    if (open && !was) activePane.value = "batch";
-    scheduleMeasure();
-    enforceSinglePane();
   },
 );
 watch(batches, () => {
   scheduleMeasure();
-  enforceSinglePane();
 });
 
 // --- 阅读位置：内容更新时不跳回顶部 -----------------------------------------
@@ -287,6 +309,8 @@ let toolbarEl: Element | null = null;
 const onWindowResize = () => scheduleMeasure();
 
 onMounted(() => {
+  // 恢复出来的开合状态：先认「当前开着的那个」为最近打开的，再按最新几何落实
+  if (store.batchOpen && !store.chatOpen) activePane.value = "batch";
   applyGeometry();
   if (typeof window !== "undefined") window.addEventListener("resize", onWindowResize);
   // 只观察「不由浮层决定尺寸」的两个元素：舞台与底部工具栏
@@ -458,6 +482,42 @@ watch(
     @keydown.stop="onKeydown"
     @keyup.stop
   >
+    <!--
+      空间不足（二选一）时的切换条：常驻、明确告知，不压在面板或工具栏上。
+      位置由几何计划给出（面板底边已经让开这一行），内容与高度固定，所以不参与尺寸观察。
+    -->
+    <div
+      v-if="cramped && (store.chatOpen || store.batchOpen)"
+      class="overlay-switch"
+      data-im="overlay-switch"
+      role="group"
+      aria-label="浮层切换"
+      :style="switchBarStyle"
+    >
+      <span class="switch-hint" data-im="overlay-switch-notice">空间不足，只展开一个面板（内容都还在）</span>
+      <button
+        class="switch-btn"
+        type="button"
+        data-im="overlay-switch-chat"
+        :aria-pressed="store.chatOpen"
+        title="消息与草稿都保留，切换不丢内容"
+        @click="showPane('chat')"
+      >
+        看对话
+      </button>
+      <button
+        v-if="batches.length"
+        class="switch-btn"
+        type="button"
+        data-im="overlay-switch-batch"
+        :aria-pressed="store.batchOpen"
+        title="勾选与阅读位置都保留，切换不丢内容"
+        @click="showPane('batch')"
+      >
+        看审批列表
+      </button>
+    </div>
+
     <button
       v-for="batch in batches"
       :key="batch.key"
@@ -499,31 +559,6 @@ watch(
         已经处理过的条目会保留在下面并变灰，不能再被选中或提交。
       </p>
 
-      <p v-if="switchNotice" class="switch-notice" role="status" data-im="overlay-switch-notice">
-        {{ switchNotice }}
-      </p>
-
-      <div v-if="cramped && batches.length" class="switch" data-im="overlay-switch" role="group" aria-label="浮层切换">
-        <span class="switch-hint">窗口同时放不下两个面板：</span>
-        <button
-          class="btn ghost"
-          type="button"
-          data-im="overlay-switch-chat"
-          :aria-pressed="store.chatOpen"
-          @click="showPane('chat')"
-        >
-          看对话
-        </button>
-        <button
-          class="btn ghost"
-          type="button"
-          data-im="overlay-switch-batch"
-          :aria-pressed="store.batchOpen"
-          @click="showPane('batch')"
-        >
-          看审批列表
-        </button>
-      </div>
 
       <p v-if="notice" class="notice" role="status" data-im="batch-notice">{{ notice }}</p>
       <p v-if="error" class="error" role="alert" data-im="batch-error">批量操作失败：{{ error }}</p>

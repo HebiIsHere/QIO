@@ -19,8 +19,6 @@ import AddMenu from "./AddMenu.vue";
 import BoardSearchPanel from "./BoardSearchPanel.vue";
 import SubmitCluster from "./SubmitCluster.vue";
 
-type BoardMode = "select" | "rect" | "link";
-
 const store = useInteractiveStore();
 
 /** 板内搜索浮层是否展开（只影响查看，不改板面数据）。 */
@@ -45,21 +43,22 @@ onBeforeUnmount(() => {
 });
 
 // --- 视图控制 -------------------------------------------------------------
-// 已经确认的手势不需要模式：拖动空白处平移、空格 + 拖动框选、从连接点拖线。
-// 这三个开关只是把同一件事固定成常驻方式（给不习惯修饰键的人用），所以做得紧凑、不抢位置。
-
-const MODES: { mode: BoardMode; label: string; title: string; hint: string }[] = [
-  { mode: "select", label: "选择", title: "点卡片选择，Shift 点可以加选；拖动空白处平移", hint: "选择：点卡片选中，Shift 加选；拖动空白处平移。" },
-  { mode: "rect", label: "框选", title: "拖动空白处框选卡片（也可以随时按住空格拖动，不用先切这里）", hint: "框选：拖动空白处把卡片框起来；按空格再拖也一样。" },
-  { mode: "link", label: "连线", title: "从卡片连接点拖到另一张卡片建立关系", hint: "连线：从卡片连接点拖到另一张卡片；方向与含义由你写。" },
+/**
+ * 手势是**固定**的，没有常驻模式（契约 §10.7）：
+ * 不按空格拖空白＝平移；空格＋拖空白＝框选；从连接点拖到另一张卡片＝建立关系。
+ *
+ * 以前这里有一排「选择 / 框选 / 连线」开关，切到「框选」后不按空格拖空白也会框选 ——
+ * 那会让同一个手势在不同时刻含义不同（用户忘了退出模式就会误操作）。现在只留一个
+ * 「操作说明」，把三条规则写清楚，不再提供会改变手势的入口。
+ */
+const HELP_GESTURES = [
+  "拖动空白处：平移查看位置（不改变板面，也不调用 QIO）",
+  "按住空格再拖空白处：框选卡片（松开空格回到平移）",
+  "从卡片连接点拖到另一张卡片：建立关系；拖到无效位置不建链",
+  "点卡片：选中；Shift 点：加选；空白处单击：取消选择",
 ];
 
-function setMode(next: BoardMode): void {
-  if (store.boardMode === next) return;
-  store.setBoardMode(next);
-  const entry = MODES.find((item) => item.mode === next);
-  if (entry) say(entry.hint);
-}
+const helpOpen = ref(false);
 
 function toggleSearch(): void {
   searchOpen.value = !searchOpen.value;
@@ -99,20 +98,25 @@ function toggleSearch(): void {
 
         <span class="tb-sep" aria-hidden="true"></span>
 
-        <div class="tb-modes" role="group" aria-label="视图">
+        <div class="tb-help">
           <button
-            v-for="item in MODES"
-            :key="item.mode"
-            class="tb-btn mode"
+            class="tb-btn"
             type="button"
-            :data-im="'mode-' + item.mode"
-            :class="{ on: store.boardMode === item.mode }"
-            :aria-pressed="store.boardMode === item.mode"
-            :title="item.title"
-            @click="setMode(item.mode)"
+            data-im="help-toggle"
+            :class="{ on: helpOpen }"
+            :aria-expanded="helpOpen"
+            title="操作说明：手势是固定的，不需要切换模式"
+            @click="helpOpen = !helpOpen"
           >
-            {{ item.label }}
+            操作说明
           </button>
+          <div v-if="helpOpen" class="tb-help-pop" data-im="help-popover" role="note">
+            <p class="help-title">板面手势（固定，不需要切模式）</p>
+            <ul>
+              <li v-for="line in HELP_GESTURES" :key="line">{{ line }}</li>
+            </ul>
+            <p class="help-note">保存与编辑都不会调用 QIO；板面内容要你点「提交」才会交出去。</p>
+          </div>
         </div>
       </div>
 
@@ -209,23 +213,24 @@ function toggleSearch(): void {
 .tb-btn:disabled { opacity: 0.45; cursor: default; }
 .tb-btn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 
-/* 三个视图开关收成一段：共用一个边框与圆角，减少一组按钮的碎片感 */
-.tb-modes {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
-  overflow: hidden;
-  background: var(--bg-surface);
+/* 操作说明：默认收起，点开后浮在工具栏上方（不参与工具栏高度） */
+.tb-help { position: relative; display: inline-flex; }
+.tb-help-pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 20;
+  width: min(420px, 80vw);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
 }
-.tb-modes .tb-btn {
-  border: none;
-  border-radius: 0;
-  background: none;
-  padding: 0 var(--sp-2);
-}
-.tb-modes .tb-btn + .tb-btn { border-left: 1px solid var(--border-subtle); }
-.tb-modes .tb-btn.on { color: var(--on-accent); background: var(--accent); }
+.tb-help-pop .help-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); color: var(--text-strong); }
+.tb-help-pop ul { margin: 0; padding-left: 1.1em; }
+.tb-help-pop li { font-size: var(--fs-xs); line-height: 1.6; color: var(--text-secondary); }
+.tb-help-pop .help-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); }
 
 /*
   右端提交区：只给位置与分界 —— 分隔线**只画一条**。
@@ -241,34 +246,13 @@ function toggleSearch(): void {
 }
 
 /*
-  下面几条 :deep() 是对 C 的 SubmitCluster 的**容器级收束**：编辑器与提交区各占一行、
-  提交区里不再把三行文字竖着摞起来。为什么必须由容器管：可测量目标是
-  「800×600 下工具栏总高 ≤ 约 96px、最多两行」，而提交区内部排布由子组件决定。
-    1) 排成一行：状态文字在左、提交操作在右；
-    2) 收起与顶栏 save-status 重复的「已保存…」长句（§9.6：各自只设一处主状态），
-       提交状态与允许查看范围都还在，边界说法也在提交状态里；
-    3) 可见范围最多两行显示，全文仍留在页面里（自动化读到的文字不变）。
-  只按冻结的 data-im 钩子与 .texts 布局钩子选中；C 把 SubmitCluster 自己做短之后可以整块删掉。
+  提交区在 SubmitCluster 内部已经是「一行范围 + 一行状态 + 提交按钮 + 详情」，
+  这里**不再用 :deep() 去压缩子组件的文字**（契约 §10.8：不靠容器隐藏或压缩多段文字维持高度）。
+  只保留一条分界线与位置：
 */
 .tb-submit :deep([data-im="submit-cluster"]) {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--sp-3);
-  min-width: 0;
-  padding-left: 0;
   border-left: none;
 }
-.tb-submit :deep([data-im="submit-save-status"]) { display: none; }
-.tb-submit :deep(.texts) {
-  flex: 1 1 auto;
-  min-width: min(240px, 100%);
-  max-width: min(460px, 46vw);
-  gap: 0;
-}
-.tb-submit :deep([data-im="visible-range"]) { -webkit-line-clamp: 2; }
-/* 改动条数摘要只在宽窗口显示：窄窗口它会把状态文字挤成三行（实测 800×600 下 240px 宽 → 49px 高）。
-   完整的「本次改动」本来就在「查看本次改动」里，这里收起不影响可达性。 */
-.tb-submit :deep([data-im="submit-cluster"] .count) { display: none; }
 
 /*
   窄窗口（≤1080，涵盖 1024×768 与 800×600）：提交区独占一行，编辑操作在上、提交在下。
@@ -285,8 +269,6 @@ function toggleSearch(): void {
     border-left: none;
     border-top: 1px solid var(--border-subtle);
   }
-  .tb-submit :deep(.texts) { max-width: none; }
-  .tb-submit :deep([data-im="visible-range"]) { -webkit-line-clamp: 1; }
   /* 这一档按钮不必那么大：提交按钮保持可点面积（高度 ≥ 28px）但不再撑高整条栏 */
   .tb-submit :deep([data-im="submit"]) { font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-4); }
 }

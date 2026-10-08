@@ -1016,7 +1016,8 @@ async function scenario16() {
   if (!card) { check("16 前置：一张卡片", false); return; }
   const original = String(card.content || "");
   const clickCard = { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, steps: 1, moveMs: 20, hold: 120, after: 600 };
-  const openEditor = { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-toolbar"] button[data-im="edit"]');if(!b)return 'no-edit';b.click();return 'clicked';})()` };
+  // 第三轮的局部工具栏里，编辑入口的钩子是 data-im="card-edit"
+  const openEditor = { op: "eval", js: `(function(){const b=document.querySelector('[data-im="card-edit"]');if(!b)return 'no-edit';b.click();return 'clicked';})()` };
   const clearEditor = { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');if(!t)return 'no-editor';t.focus();t.value='';t.dispatchEvent(new Event('input',{bubbles:true}));return 'cleared';})()` };
   const readEditor = (mark) => ({ op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');return JSON.stringify({mark:"${mark}", has:t!==null, value:t?t.value:null});})()` });
 
@@ -1027,8 +1028,8 @@ async function scenario16() {
     waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"]')"),
     clearEditor,
     // 等**真的落盘**：服务端草稿里出现空正文
-    { op: "eval", await: true, js: `(async()=>{const B=${JSON.stringify(BACKEND)};const t0=Date.now();for(;;){try{const r=await (await fetch(B+'/api/interactive/boards/${BOARD}/drafts')).json();const d=(r&&r.drafts)||r||{};if(Object.prototype.hasOwnProperty.call(d,'card:${card.id}')&&String(d['card:${card.id}'])==='')return JSON.stringify({mark:'draft-empty',ok:true,ms:Date.now()-t0});}catch(e){}if(Date.now()-t0>8000)return JSON.stringify({mark:'draft-empty',ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,200));}})()` },
-    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('[data-im="card-editor"] ~ * button, .row button')].find(x=>/取消/.test(x.textContent));if(!b)return 'no-cancel';b.click();return 'cancelled';})()` },
+    { op: "eval", await: true, js: `(async()=>{const B=${JSON.stringify(BACKEND)};const t0=Date.now();for(;;){try{const r=await (await fetch(B+'/api/interactive/drafts/${BOARD}')).json();const d=(r&&r.drafts)||r||{};if(Object.prototype.hasOwnProperty.call(d,'card:${card.id}')&&String(d['card:${card.id}'])==='')return JSON.stringify({mark:'draft-empty',ok:true,ms:Date.now()-t0});}catch(e){}if(Date.now()-t0>8000)return JSON.stringify({mark:'draft-empty',ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,200));}})()` },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='取消'&&x.closest('[data-im="card"]'));if(!b)return 'no-cancel';b.click();return 'cancelled';})()` },
     { op: "wait", ms: 600 },
     // 重新打开编辑器：必须是空输入，而不是原正文
     clickCard,
@@ -1072,7 +1073,7 @@ async function scenario17() {
     // 缩到 480px（浏览器窄窗口边界，与桌面最小窗口 800×600 不同）
     { op: "viewport", width: 480, height: 720 },
     { op: "wait", ms: 1500 },
-    { op: "eval", js: `JSON.stringify({mark:"narrow", chat: !!document.querySelector('[data-im="chat-panel"]'), batch: !!document.querySelector('[data-im="batch-list"]'), mode: (document.querySelector('.im-stage')||{}).getAttribute?document.querySelector('.im-stage').getAttribute('im-geo-mode'):null, hint: (document.querySelector('[data-im="pane-switch"]')||{}).textContent||''})` },
+    { op: "eval", js: `JSON.stringify({mark:"narrow", chat: !!document.querySelector('[data-im="chat-panel"]'), batch: !!document.querySelector('[data-im="batch-list"]'), mode: (document.querySelector('.im-stage')||{}).getAttribute?document.querySelector('.im-stage').getAttribute('im-geo-mode'):null, hint: (document.querySelector('[data-im="overlay-switch"]')||{}).textContent||''})` },
     { op: "screenshot", name: "fe-17-narrow-480" },
     // 放大回去：不自动弹出第二个面板
     { op: "viewport", width: 1200, height: 800 },
@@ -1084,9 +1085,11 @@ async function scenario17() {
   const narrow = markedFrom(flow, "narrow") || {};
   const back = markedFrom(flow, "back") || {};
   check("17 前置：宽窗口两面板都在", wide.chat === true && wide.batch === true, JSON.stringify(wide));
-  check("17 480px 下几何变成空间不足且只显示一个面板", narrow.mode === "switched" && narrow.chat !== narrow.batch, JSON.stringify(narrow));
+  // 观察点是「只显示一个 + 明确告知可切换」，不是内部模式字符串：
+  // 落实二选一之后，剩下的那个面板本来就放得下（此时内部几何可以是 side-by-side）。
+  check("17 480px 下只显示一个面板", narrow.chat !== narrow.batch, JSON.stringify(narrow));
   check("17 保留的是最近打开的面板（批量）", narrow.batch === true && narrow.chat === false, JSON.stringify({ chat: narrow.chat, batch: narrow.batch }));
-  check("17 给出可切换的提示", /切换|显示|另一个/.test(String(narrow.hint || "")), String(narrow.hint || "").slice(0, 80));
+  check("17 给出可切换的提示", /切换|只展开一个|另一个/.test(String(narrow.hint || "")), String(narrow.hint || "").slice(0, 90));
   check("17 放大回去不自动弹出第二个面板", back.chat === false || back.batch === false, JSON.stringify(back));
 }
 

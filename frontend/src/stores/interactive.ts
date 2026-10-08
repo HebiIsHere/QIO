@@ -118,7 +118,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 板面当前的指针模式：工具栏是控制面、画布是执行面，两边共用同一份状态。
    * 这是**查看状态**：切换模式不形成表达、不调用 QIO、不触发保存。
    */
-  const boardMode = ref<"select" | "rect" | "link">("select");
+
 
   /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
   const pendingImpact = ref<{
@@ -288,6 +288,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const serverDrafts = payload.drafts?.drafts ?? {};
     const mergedDrafts: Record<string, string> = { ...serverDrafts };
     for (const key of unsavedDraftKeys()) mergedDrafts[key] = drafts.value[key] ?? "";
+    /**
+     * 本机恢复副本（契约 §10.5）：`pagehide` 里发普通请求不保证到达，
+     * 所以输入时**同步**写一份本地副本；重新打开时只有它**比服务端更新**才用它，
+     * 绝不让旧副本覆盖更新的版本。用它恢复的内容会标成「未保存」并重新排一次保存。
+     */
+    const serverAt = payload.drafts?.updatedAt ? Date.parse(payload.drafts.updatedAt) : 0;
+    for (const key of Object.keys(mergedDrafts)) {
+      const cardId = key.startsWith("card:") ? key.slice("card:".length) : "";
+      if (!cardId) continue;
+      const local = readDraft(draftStorageKey("card", "local-" + cardId));
+      if (!local) continue;
+      const newer = local.updatedAt > (Number.isFinite(serverAt) ? serverAt : 0);
+      if (newer && local.text !== mergedDrafts[key]) {
+        mergedDrafts[key] = local.text;
+        draftKeySeq.set(key, ++draftSeq);
+        scheduleDraftSave();
+      }
+    }
     drafts.value = mergedDrafts;
     // 已经保存成功、且服务端也有的键：状态回到 idle；未保存/失败的键保留自己的状态
     const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
@@ -444,6 +462,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
     drafts.value = { ...drafts.value, [key]: text };
     lastDraftKey.value = key;
     draftKeySeq.set(key, ++draftSeq);
+    /**
+     * 本机恢复副本：**同步**写（不等防抖、不等网络）。
+     * 正常刷新/关闭时来不及等防抖也能把最后输入恢复出来（契约 §10.5）；
+     * 只用于编辑恢复 —— 不提交、不发送、不扩大 QIO 可见范围。
+     */
+    if (key.startsWith("card:")) {
+      writeDraft(draftStorageKey("card", "local-" + key.slice("card:".length)), text, draftKeySeq.get(key) ?? 0);
+    }
     // 一有输入就进「保存中」：失败时才会被改成 error（绝不停在「已保存」）
     setDraftState(key, "saving");
     scheduleDraftSave();
@@ -517,6 +543,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
             if (isStaleReceipt(atSeq, keySeq)) continue;
             draftSavedKeySeq.set(key, keySeq);
             setDraftState(key, "saved");
+            // 服务端已经拿到这一版：本机恢复副本按对象清理掉（契约 §10.5）
+            if (key.startsWith("card:")) {
+              removeDraft(draftStorageKey("card", "local-" + key.slice("card:".length)));
+            }
           }
         }
       } finally {
@@ -691,11 +721,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return api.previewMaterialImpact(boardId.value, state);
   }
 
-  /** 切换板面指针模式（工具栏与画布共用）。 */
-  function setBoardMode(mode: "select" | "rect" | "link"): void {
-    boardMode.value = mode;
-  }
-
   function intentById(intentId: string): Intent | undefined {
     return intents.value.find((item) => item.id === intentId);
   }
@@ -741,7 +766,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     chatOpen,
     batchOpen,
     tasksOpen,
-    boardMode,
+
     batches,
     listBatches,
     runningIntents,
@@ -787,7 +812,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     cancelImpact,
     dismissMaterialPaused,
     checkMaterialImpact,
-    setBoardMode,
     intentById,
     statusLabel,
   };

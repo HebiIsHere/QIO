@@ -24,6 +24,7 @@ import {
   submitStateLabel,
   submitStatusText,
   summarizeChanges,
+  visibleRangeCounts,
   visibleRangeText,
 } from "../../interactive/submission";
 import BoardChangeList from "./BoardChangeList.vue";
@@ -91,7 +92,17 @@ const statusText = computed(() =>
     error: store.submitError,
   }),
 );
-const rangeText = computed(() => visibleRangeText(localVisibleRange(store.board)));
+const range = computed(() => localVisibleRange(store.board));
+const rangeText = computed(() => visibleRangeText(range.value));
+/**
+ * 常态只留一行**简短**范围（契约 §10.8）：完整排除清单与说明放进「详情」，
+ * 不再靠父组件 :deep() 压缩多段文字来维持高度。
+ */
+const rangeShort = computed(() => {
+  const counts = visibleRangeCounts(range.value);
+  if (!range.value) return "本次可见：还没有可提交的内容";
+  return `本次可见：材料 ${counts.materials} 项 · 注释 ${counts.notes} 条`;
+});
 const isFailed = computed(
   () => store.submitStatus === "failed" || store.lastSubmission?.status === "failed",
 );
@@ -111,18 +122,23 @@ function onSubmit() {
 </script>
 
 <template>
+  <!--
+    常态只有三样东西（契约 §10.8）：一行简短范围、一行简短提交状态、提交按钮（外加「详情」）。
+    完整排除清单、改动列表、保存与提交的边界说明、草稿提示都收进按需打开的详情里。
+  -->
   <div class="submit-cluster" data-im="submit-cluster">
-    <div class="texts">
-      <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
-      <p class="line strong" data-im="submit-status" role="status">
-        <strong class="label" :class="{ ok: store.submitStatus === 'succeeded', warn: isFailed }">
-          {{ stateLabel }}
-        </strong>
-        <span class="detail">{{ statusText }}</span>
-      </p>
-      <p class="line range" data-im="visible-range">{{ rangeText }}</p>
-      <p v-if="isFailed" class="line retain" role="alert" data-im="submit-failure">{{ failureText }}</p>
-    </div>
+    <p class="range" data-im="visible-range">{{ rangeShort }}</p>
+
+    <p class="status" data-im="submit-status" role="status">
+      <strong class="label" :class="{ ok: store.submitStatus === 'succeeded', warn: isFailed }">
+        {{ stateLabel }}
+      </strong>
+      <!-- 常态只说「几项改动」；完整摘要与边界说明在「详情」里（§10.8） -->
+      <span class="detail">{{ summary.hasContent ? summary.total + " 项改动" : "没有可提交的改动" }}</span>
+    </p>
+
+    <!-- 失败必须立刻可见（真实错误不许藏进详情） -->
+    <p v-if="isFailed" class="failure" role="alert" data-im="submit-failure">{{ failureText }}</p>
 
     <div class="actions">
       <button
@@ -132,15 +148,17 @@ function onSubmit() {
         :aria-expanded="detailsOpen"
         @click="detailsOpen = !detailsOpen"
       >
-        {{ detailsOpen ? "收起改动" : "查看本次改动" }}
+        {{ detailsOpen ? "收起详情" : "详情" }}
       </button>
-      <span class="count mono">{{ summary.headline }}</span>
       <button class="submit" type="button" data-im="submit" :disabled="busy || !store.board" @click="onSubmit">
         {{ submitLabel }}
       </button>
     </div>
 
     <section v-if="detailsOpen" class="details-box" data-im="submit-details-box">
+      <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
+      <p class="line range" data-im="visible-range-full">{{ rangeText }}</p>
+      <p class="line strong">{{ statusText }}</p>
       <BoardChangeList
         :expressions="pendingExpressions"
         title="本次有效改动（尚未提交）"
@@ -167,14 +185,16 @@ function onSubmit() {
   background: transparent;
   font-family: var(--sans);
 }
-.texts {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  /* 下限宽度：窄窗口里宁可让整个提交区换行，也不让中文被逐字竖排（实测被挤到 68px 宽 → 609px 高） */
-  min-width: min(220px, 100%);
-  max-width: min(420px, 46vw);
+/* 常态排成一行：简短范围 + 简短状态 + 操作（契约 §10.8），窄窗口也尽量不竖排 */
+.range,
+.status {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.range { flex: 0 1 auto; }
+.status { flex: 1 1 auto; }
 .line {
   margin: 0;
   font-size: var(--fs-xs);
@@ -268,7 +288,13 @@ function onSubmit() {
   box-shadow: var(--shadow-2);
 }
 @media (max-width: 900px) {
-  .submit-cluster { flex-direction: column; align-items: stretch; padding-left: 0; border-left: none; }
+  /* 窄窗口仍排成一行；实在放不下才换行（换行也不会超过两行，工具栏总高目标 ≤96px 仍满足） */
+  .submit-cluster {
+    flex-wrap: wrap;
+    row-gap: var(--sp-1);
+    padding-left: 0;
+    border-left: none;
+  }
   .texts { max-width: none; }
   .actions { justify-content: flex-end; }
   .details-box { width: min(420px, 92vw); }
