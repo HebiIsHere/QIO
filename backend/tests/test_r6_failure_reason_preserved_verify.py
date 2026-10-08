@@ -28,6 +28,7 @@ import pytest
 
 from agent.api.server import create_app
 from agent.config import Settings
+from agent.services import attachments as attachments_mod
 from agent.credentials.store import MemoryKeyring
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
@@ -164,9 +165,22 @@ def _inject(root: Path, kind: str):
             return _FailHandle(handle)
         return handle
 
+    # 真正的写盘 seam：services/attachments.py 里用的是**模块级 open**（遮蔽内建）
+    had_mod_open = hasattr(attachments_mod, "open")
+    real_mod_open = getattr(attachments_mod, "open", None)
+    real_mod_replace = attachments_mod.os.replace
+
+    def _patched_mod_replace(src, dst):  # noqa: ANN001
+        if kind.startswith("replace") and needle in str(dst).replace(chr(92), "/").lower():
+            state["fired"] = True
+            raise _error()
+        return real_mod_replace(src, dst)
+
     Path.mkdir = _patched_mkdir
     builtins.open, io.open = _wrap(real_open), _wrap(real_io_open)
     Path.open = _patched_path_open
+    attachments_mod.open = _wrap(real_open)  # 模块级遮蔽内建（raising=False 的等价写法）
+    attachments_mod.os.replace = _patched_mod_replace
     _shutil.copyfile, _shutil.copy2 = _fail_copy(real_copyfile), _fail_copy(real_copy2)
     os.link = _no_link
     try:
@@ -175,6 +189,11 @@ def _inject(root: Path, kind: str):
         Path.mkdir = real_mkdir
         builtins.open, io.open = real_open, real_io_open
         Path.open = real_path_open
+        if had_mod_open:
+            attachments_mod.open = real_mod_open
+        else:
+            delattr(attachments_mod, "open")
+        attachments_mod.os.replace = real_mod_replace
         _shutil.copyfile, _shutil.copy2 = real_copyfile, real_copy2
         os.link = real_link
 
@@ -202,9 +221,24 @@ async def _wait_terminal(client, attachment_id: str, timeout: float = 60.0) -> d
     raise AssertionError("附件没有在 %.0fs 内进入终态：%r" % (timeout, last))
 
 
-async def _first_row(client) -> dict:
+async def _wait_change(client, attachment_id: str, *, prev_state: str, prev_reason: str, timeout: float = 60.0) -> dict:
+    """等「这次重试」产生可见变化：状态或原因与重试前不同。
+
+    注意：重试是从 failed 重新开始，直接轮询「终态」会在旧状态上立刻返回（装置陷阱）。
+    """
+    deadline = time.monotonic() + timeout
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = (await client.get("/api/attachments/%s" % attachment_id)).json().get("attachment") or {}
+        if str(last.get("state")) != prev_state or _reason_of(last) != prev_reason:
+            return last
+        await asyncio.sleep(0.05)
+    return last
+
+
+async def _first_row(client, name: str = NAME) -> dict:
     body = (await client.get("/api/attachments?unbound=true")).json()
-    rows = [a for a in body.get("attachments", []) if a.get("name") == NAME]
+    rows = [a for a in body.get("attachments", []) if a.get("name") == name]
     assert rows, ("列表里找不到刚失败的附件", body)
     return rows[0]
 
@@ -324,48 +358,58 @@ async def test_retry_after_failure_sets_ready_or_keeps_new_reason(app, tmp_path:
     source = tmp_path / "r6-retry-source.bin"
     source.write_bytes(PAYLOAD)
     async with _client(app) as client:
+        # ① 首次复制写入失败 → 注入必须**保持到后台复制跑完**（登记是后台复制，先返回后落库）
         with _inject(Path(app.state.ctx.attachments.root), "write_nospace") as injected:
             response = await client.post("/api/attachments", json={"source_path": str(source)})
-        assert response.status_code == 200, (response.status_code, response.text[:200])
-        attachment_id = str(response.json()["attachment"]["id"])
-        await _wait_terminal(client, attachment_id)  # 后台复制先跑完
+            assert response.status_code == 200, (response.status_code, response.text[:200])
+            attachment_id = str(response.json()["attachment"]["id"])
+            await _wait_terminal(client, attachment_id)  # 后台复制先跑完
         assert injected["fired"], "受控写入错误没有被触发（装置失效：没走到复制）"
-        row = await _first_row(client)
+        row = await _first_row(client, "r6-retry-source.bin")
         assert str(row["id"]) == attachment_id
         first_reason = _reason_of((await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"])
 
-        # 仍然坏着的时候重试：状态仍是 failed，原因更新为**这一次**尝试的（不能退回通用文案）
-        with _inject(Path(app.state.ctx.attachments.root), "mkdir_permission") as injected2:
-            retry = await client.post("/api/attachments/%s/retry" % attachment_id)
-        after_retry = (await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"]
+        # ② 仍然坏着、但换一种错误 → 重试失败必须保留**新的**原因（不是旧原因、也不是通用文案）
+        with _inject(Path(app.state.ctx.attachments.root), "open_permission") as injected2:
+            third = await client.post("/api/attachments/%s/retry" % attachment_id)
+            after_retry = await _wait_change(
+                client, attachment_id, prev_state="failed", prev_reason=first_reason
+            )
+        assert injected2["fired"], "第二次注入没有触发（装置失效）"
         assert str(after_retry.get("state")) == "failed", (
-            "重试仍然失败时状态必须如实保持 failed", after_retry, retry.status_code
+            "重试仍然失败时状态必须如实保持 failed", after_retry, third.status_code
         )
+
+        # ③ 解除注入 → 显式重试 → 必须准确变 ready 且原因清空
+        retry_ok = await client.post("/api/attachments/%s/retry" % attachment_id)
+        assert retry_ok.status_code < 400, (retry_ok.status_code, retry_ok.text[:200])
+        fixed = await _wait_change(
+            client, attachment_id, prev_state="failed", prev_reason=_reason_of(after_retry)
+        )
+        assert str(fixed.get("state")) == "ready", ("修好后显式重试必须准确变 ready", fixed)
+        assert not _reason_of(fixed).strip(), ("ready 记录不该还挂着失败原因", fixed)
         second_reason = _reason_of(after_retry)
         assert second_reason and not any(m in second_reason for m in GENERIC_MARKERS), second_reason
         assert second_reason != first_reason, (
             "重试失败后保留的应该是**新的**原因（不是上一次的）",
-            {"first": first_reason, "second": second_reason, "injected2_fired": injected2["fired"]},
+            {"first": first_reason, "second": second_reason},
         )
 
-        # 字节上传（没有 source_path）不能自行恢复：重试不得静默成功，原因必须如实
+        # 字节上传（没有 source_path）不能自行从原地址恢复：重试不得静默成功，原因必须如实
         with _inject(Path(app.state.ctx.attachments.root), "write_nospace") as injected_bytes:
-            bytes_upload = await _upload(client, name="r6-no-source.bin")
+            bytes_response = await _upload(client, name="r6-no-source.bin")
+            assert bytes_response.status_code >= 400
         assert injected_bytes["fired"]
         bytes_rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
         bytes_row = [a for a in bytes_rows if a.get("name") == "r6-no-source.bin"][0]
-        bytes_retry = await client.post("/api/attachments/%s/retry" % bytes_row["id"])
-        bytes_after = (await client.get("/api/attachments/%s" % bytes_row["id"])).json()["attachment"]
+        await client.post("/api/attachments/%s/retry" % bytes_row["id"])
+        bytes_after = await _wait_terminal(client, str(bytes_row["id"]))
         assert str(bytes_after.get("state")) == "failed", (
             "没有来源路径的字节上传，重试不得静默变成成功", bytes_after
         )
-        assert _reason_of(bytes_after).strip(), bytes_after
-        assert "source_path" not in str(bytes_after) or True  # 仅表明无来源路径（诊断用）
-
-        # 修好之后重试：必须准确变成 ready
-        retry_ok = await client.post("/api/attachments/%s/retry" % attachment_id)
-        fixed = (await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"]
-        assert retry_ok.status_code < 400, (retry_ok.status_code, retry_ok.text[:200])
-        assert str(fixed.get("state")) == "ready", ("修好后重试必须准确变 ready", fixed)
-        assert _reason_of(fixed) in ("", "None"), ("ready 记录不该还挂着失败原因", fixed)
-        print("[诊断] 重试：失败原因#1=%s；#2=%s；修好后 state=ready" % (first_reason[:60], second_reason[:60]))
+        assert _reason_of(bytes_after).strip(), ("字节上传重试失败后原因必须如实可见", bytes_after)
+        assert not any(m in _reason_of(bytes_after) for m in GENERIC_MARKERS), bytes_after
+        print(
+            "[诊断] 重试：原因#1=%s；原因#2=%s；修好后 state=ready；无来源路径重试后=%s"
+            % (first_reason[:50], second_reason[:50], bytes_after.get("state"))
+        )
