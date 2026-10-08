@@ -269,7 +269,8 @@ function onSubmit() {
   所以既不会撑坏右边的提交按钮，也不会把板面盖住；颜色走令牌，明暗两主题都成立。
 */
 .failure {
-  flex: 1 1 auto;
+  /* 基础尺寸给小值：长原因与按钮同排、由自己换行，而不是把整条操作行挤到下一行 */
+  flex: 1 1 12ch;
   min-width: 0;
   display: flex;
   flex-direction: column;

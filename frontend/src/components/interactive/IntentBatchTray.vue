@@ -44,6 +44,7 @@ import {
   OVERLAY_EDGE,
   OVERLAY_GAP,
   chatHeightRelaxation,
+  chatSwitchLift,
   overlaysAreCramped,
   planOverlayGeometry,
   resolveOverlayPanes,
@@ -211,6 +212,9 @@ function applyGeometry(): void {
 
   const toggleHeight = measureToggleHeight();
   const chatMaxHeight = plan.chatMaxHeight + chatHeightRelaxation(toggleHeight);
+  // 切换显示时把聊天面板抬到切换条上方（ChatDock 的面板底边由它自己的定位决定，
+  // 只压 max-height 会让它从自己的底边向上长、仍然压住切换条 —— 实机实测过相交 11934px²）
+  const chatLift = plan.mode === "switched" ? chatSwitchLift(toggleHeight) : 0;
   const entryHeight = entryElement()?.getBoundingClientRect().height ?? 0;
   const panelMaxHeight = Math.max(
     140,
@@ -220,6 +224,7 @@ function applyGeometry(): void {
     plan.mode,
     plan.chatMaxWidth,
     chatMaxHeight,
+    chatLift,
     plan.batchMaxWidth,
     panelMaxHeight,
     plan.batchRight,
@@ -237,6 +242,7 @@ function applyGeometry(): void {
     "--im-geo-batch-max-h": panelMaxHeight + "px",
     "--im-geo-batch-right": plan.batchRight + "px",
     "--im-geo-gap": plan.gap + "px",
+    "--im-geo-chat-lift": chatLift + "px",
   };
   for (const [name, value] of Object.entries(vars)) {
     if (stage.style.getPropertyValue(name) === value) continue;
@@ -373,6 +379,7 @@ onBeforeUnmount(() => {
       "--im-geo-batch-max-h",
       "--im-geo-batch-right",
       "--im-geo-gap",
+      "--im-geo-chat-lift",
     ]) {
       if (name.startsWith("--")) stage.style.removeProperty(name);
       else stage.removeAttribute(name);

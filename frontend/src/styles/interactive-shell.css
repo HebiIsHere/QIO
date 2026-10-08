@@ -25,6 +25,7 @@
     --im-geo-batch-max-h     批量列表面板高度上限（已扣掉入口按钮）
     --im-geo-batch-right     批量列表右边距（并排时 = 左边距 + 聊天宽 + 间距）
     --im-geo-gap             两面板之间的间距
+    --im-geo-chat-lift       需要切换显示时聊天面板要抬多高（让它停在切换条上方；否则 0）
   这些数字来自 interactive/overlayLayout.ts 的纯几何计划；变量缺失（例如本文件没被导入、
   或几何控制器还没量到）时全部退回旧行为，组件自己也不会崩。
 
@@ -50,9 +51,14 @@
   --im-toolbar-bottom: var(--sp-4);
   --im-toolbar-max-width: 1180px;
   /*
-    聊天面板的额外抬升：保持 0。
+    聊天面板的额外抬升（固定部分）：保持 0。
     纵向避让现在统一由几何计划（--im-geo-chat-max-h，从工具栏顶边倒推）负责，
-    再叠一层抬升会把面板顶出可用区间（独立复核实测过 800×600 下容器 top=-141px）。
+    再叠一层固定抬升会把面板顶出可用区间（独立复核实测过 800×600 下容器 top=-141px）。
+
+    但「需要切换显示」时还要再抬一段：聊天面板的底边由 ChatDock 自己锚在工具栏上方
+    （面板底边 = 工具栏顶边 - 24 - 间距 - 入口按钮高度），只限制 max-height 时它仍然
+    从自己的底边向上长、压在切换条上（实机实测相交 11934px²）。所以几何控制器会把
+    --im-geo-chat-lift 写在舞台元素上（0px = 不需要切换条），这里两段相加。
   */
   --im-chat-lift: 0px;
 }
@@ -77,9 +83,9 @@
 [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
   z-index: var(--im-z-chat);
 }
-/* 抬升量固定为 0（见 :root 的说明） */
+/* 抬升量 = 固定部分（0）+ 几何计划给的切换显示抬升（--im-geo-chat-lift，见 :root 的说明） */
 [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
-  margin-bottom: var(--im-chat-lift);
+  margin-bottom: calc(var(--im-chat-lift) + var(--im-geo-chat-lift, 0px));
 }
 
 /* --- 右上批量列表 / 任务浮层 / 中央确认框 ---------------------------------- */
