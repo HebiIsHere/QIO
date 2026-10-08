@@ -12,7 +12,8 @@
 | 集成工作区 | `D:\\qio-dev\\qio-recover`；子工作区 `qio-recover-a/b/c/d`（`wt/rec-a-card` / `wt/rec-b-send` / `wt/rec-c-layout` / `wt/rec-d-verify`） |
 | 基线实例 | 前端 `5461` / 后端 `8961`（代码 = `4b16595`） |
 | 集成实例 | 前端 `5471` / 后端 `8971` |
-| 未做 | 不合并 `main`；不合并 `fix/unified-process-audit` 与 `feat/unified-process-attachments-streaming`；不改数据库结构与迁移 |
+| 最终 SHA | **`e2cbd7f`**（本地 = 远端；自基线起 36 个提交；工作区干净） |
+| 未做 | 不合并 `main`（仍 `6e073e9`）；不合并 `fix/unified-process-audit` 与 `feat/unified-process-attachments-streaming`；不改数据库结构与迁移 |
 
 ## 2. 子智能体的实际分工与完成情况（如实记录）
 
@@ -106,11 +107,11 @@
 | 命令 | 结果 | 层级 |
 | --- | --- | --- |
 | `cd frontend; npx vue-tsc --noEmit` | exit 0（无输出） | 静态 |
-| `npx vitest run`（全量） | **130 文件 / 1348 用例通过**；唯一失败是负载敏感的 `eventBufferOverflow.verify.test.ts`（与实机验收并发时超时，单独跑 4/4 通过） | 组件/状态 |
+| `npx vitest run`（全量，最终提交 `e2cbd7f`） | **134/135 文件、1359/1360 用例通过**；唯一失败是负载敏感的 `eventBufferOverflow.verify.test.ts`（并发时 48.9s 超时，**单独跑 4/4 通过、15.3s**）；独立验收 D2 在安静环境下两次跑出 **135 文件 / 1360 用例全绿** | 组件/状态 |
 | `npx vitest run d5`（独立用例） | D 的 12 条基线反例 + 主智能体修正后全部通过 | 状态/组件 |
-| `node scripts/interactive-verify/fe-scenarios.mjs --only=18,19,21,22` | **18:4/4、19:6/6、21:4/4、22:10/10 全部 PASS** | **真实浏览器 + 真实请求** |
+| `node scripts/interactive-verify/fe-scenarios.mjs --only=18,19,21,22,23` | **28/28 全部 PASS**（18 首次输入恢复 4、19 清除同步 6、21 提交失败原因 4、22 窄窗口切换条 10、23 长失败原文下输入区不被裁 4） | **真实浏览器 + 真实请求** |
 | `node scripts/interactive-verify/fe-scenarios.mjs --only=1..17` | 68/73 通过；5 项失败经单独复跑确认是**脚本状态依赖**（同一数据目录的历史卡片/提交），修正脚本后场景 6 为 7/7 | 真实浏览器 |
-| `cd backend; uv run --frozen pytest -q` | `PYTEST_EXIT=0` | 后端回归 |
+| `cd backend; uv run --frozen pytest -q` | `PYTEST_EXIT=0`（独立验收 D2 记录 2113 passed / 9 skipped） | 后端回归 |
 | `python scripts/check_docs.py` | 通过（**32** 个里程碑条目） | 文档一致性 |
 
 **CI**：本轮**没有查询也没有运行**仓库的远程 CI（本机没有可用的 CI 触发/查询权限），因此没有 CI 结论；
