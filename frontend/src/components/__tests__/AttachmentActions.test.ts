@@ -15,15 +15,36 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
+vi.mock("../../services/api", () => ({
+  api: {
+    sendTurn: vi.fn(async () => ({ ok: true, topic_id: null })),
+    getSessionContext: vi.fn(async () => ({
+      topic_id: "",
+      topic_name: null,
+      anchor_fragment: null,
+      messages: [],
+    })),
+    cancelTurn: vi.fn(async () => ({ ok: true, cancelled: true })),
+  },
+}));
+
 import AttachmentChip from "../AttachmentChip.vue";
+import Composer from "../Composer.vue";
 import MessageItem from "../MessageItem.vue";
 import type { AttachmentRef, AttachmentAction } from "../../services/attachments";
 import type { StreamMessage } from "../../stores/session";
 
-const { pickLocalPath, prepareAttachment, uploadAttachment, retryAttachment, relocateAttachment } =
-  vi.hoisted(() => ({
+const {
+  pickLocalPath,
+  waitUntilSettled,
+  prepareAttachment,
+  uploadAttachment,
+  retryAttachment,
+  relocateAttachment,
+} = vi.hoisted(() => ({
     pickLocalPath: vi.fn(async () => null as string | null),
-    prepareAttachment: vi.fn(async (path: string) => ({
+    waitUntilSettled: vi.fn(async (item: unknown) => item),
+    prepareAttachment: vi.fn(async (path: string): Promise<AttachmentRef> => ({
       id: "att_new",
       name: "report.pdf",
       sizeBytes: 2048,
@@ -33,7 +54,7 @@ const { pickLocalPath, prepareAttachment, uploadAttachment, retryAttachment, rel
       error: null,
       sourcePath: path,
     })),
-    uploadAttachment: vi.fn(async () => ({
+    uploadAttachment: vi.fn(async (): Promise<AttachmentRef> => ({
       id: "att_new",
       name: "report.pdf",
       sizeBytes: 2048,
@@ -42,7 +63,7 @@ const { pickLocalPath, prepareAttachment, uploadAttachment, retryAttachment, rel
       state: "ready" as const,
       error: null,
     })),
-    retryAttachment: vi.fn(async (id: string) => ({
+    retryAttachment: vi.fn(async (id: string): Promise<AttachmentRef> => ({
       id,
       name: "report.pdf",
       sizeBytes: 2048,
@@ -51,7 +72,7 @@ const { pickLocalPath, prepareAttachment, uploadAttachment, retryAttachment, rel
       state: "ready" as const,
       error: null,
     })),
-    relocateAttachment: vi.fn(async (id: string, path: string) => ({
+    relocateAttachment: vi.fn(async (id: string, path: string): Promise<AttachmentRef> => ({
       id,
       name: "report.pdf",
       sizeBytes: 2048,
@@ -68,6 +89,7 @@ vi.mock("../../services/attachments", async (importOriginal) => {
   return {
     ...actual,
     pickLocalPath,
+    waitUntilSettled,
     prepareAttachment,
     uploadAttachment,
     retryAttachment,
@@ -218,6 +240,78 @@ describe("历史消息里的附件行同样按 actions 渲染", () => {
     expect(notice.exists()).toBe(true);
     expect(notice.text()).toContain("已重新上传");
     expect(notice.text()).toContain("无法从原地址恢复");
+    w.unmount();
+  });
+});
+
+describe("输入区（Composer）的 chip 同样按 actions 渲染", () => {
+  async function mountComposer() {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mount(Composer, { global: { plugins: [pinia] } });
+    await flushPromises();
+    return w;
+  }
+
+  /** 浏览器回退路径：把文件塞进 input[type=file] 再触发 change。 */
+  async function chooseFiles(w: ReturnType<typeof mount>, ...names: string[]) {
+    const input = w.find("input.file-input");
+    Object.defineProperty(input.element, "files", {
+      value: names.map((name) => new File(["x"], name)),
+      configurable: true,
+    });
+    await input.trigger("change");
+    await flushPromises();
+  }
+
+  /** 真实路径入口：粘贴路径后回车。 */
+  async function pastePath(w: ReturnType<typeof mount>, path: string) {
+    await w.findAll(".attach-btn")[1].trigger("click");
+    await w.find(".path-input").setValue(path);
+    await w.find(".path-input").trigger("keydown.enter");
+    await flushPromises();
+  }
+
+  it("pending 的浏览器上传失败 chip：只有「重新上传」+ 说明，没有「重新定位」", async () => {
+    uploadAttachment.mockResolvedValueOnce(
+      ref({
+        id: "att_pending_browser",
+        state: "failed",
+        error: "目标位置不可用：Not a directory",
+        actions: ["reupload"],
+        sourcePath: null,
+      }),
+    );
+    const w = await mountComposer();
+    await chooseFiles(w, "报告.txt");
+
+    const row = w.find(".attach-row");
+    expect(row.exists()).toBe(true);
+    expect(row.text()).toContain("重新上传");
+    expect(row.text(), "浏览器上传没有原路径：不能给「重新定位」").not.toContain("重新定位");
+    expect(row.text()).toContain("QIO 无法从原地址恢复");
+    expect(row.text(), "失败原因要看得见").toContain("目标位置不可用");
+    w.unmount();
+  });
+
+  it("pending 的本地路径 chip：仍是重试 + 重新定位", async () => {
+    const failed = ref({
+      id: "att_pending_local",
+      state: "failed",
+      error: "保存失败：权限不足",
+      actions: ["retry", "relocate"],
+      sourcePath: "D:\\docs\\报告.pdf",
+    });
+    prepareAttachment.mockResolvedValueOnce(failed);
+    waitUntilSettled.mockResolvedValueOnce(failed);
+    const w = await mountComposer();
+    await pastePath(w, "D:\\docs\\报告.pdf");
+
+    const row = w.find(".attach-row");
+    expect(row.exists()).toBe(true);
+    expect(row.text()).toContain("重试");
+    expect(row.text()).toContain("重新定位");
+    expect(row.text()).not.toContain("重新上传");
     w.unmount();
   });
 });
