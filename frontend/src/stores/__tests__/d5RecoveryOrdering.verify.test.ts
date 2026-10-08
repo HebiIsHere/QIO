@@ -10,8 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
+import { useSessionStore } from "../session";
 import * as imApi from "../../services/interactive";
-import { cardLocalDraftKey, writeDraft } from "../../interactive/drafts";
+import { cardLocalDraftKey, cardLocalDraftStorageKey, writeDraft } from "../../interactive/drafts";
 import type { BoardState, BoardStateResponse } from "../../interactive/types";
 
 vi.mock("../../services/interactive", () => ({
@@ -124,7 +125,7 @@ describe("场景 9：在飞的旧保存请求晚到，不许重建已经清除�
 describe("场景 10：服务器慢返回不许覆盖恢复期间的新输入（§11.1）", () => {
   it("【状态】恢复还没回来时用户又打了字：新输入必须赢", async () => {
     fakeServer({}, null);
-    writeDraft(cardLocalDraftKey("c1"), "刷新前存下的本机草稿", 3);
+    writeDraft(cardLocalDraftStorageKey("c1"), "刷新前存下的本机草稿", 3);
     const store = useInteractiveStore();
 
     let release: (value: unknown) => void = () => {};
@@ -151,7 +152,7 @@ describe("场景 11：过期判断只按这张卡片自己的记录（§11.3）"
     // 服务器上只有 c2 的草稿，而且集合时间是「未来」（属于 c2）
     fakeServer({ "card:c2": "B 卡的服务器草稿" }, "2030-01-01T00:00:00.000Z");
     // c1 只有本机恢复副本（时间就是现在，比服务器集合时间早很多）
-    writeDraft(cardLocalDraftKey("c1"), "C1 只在本机的草稿", 5);
+    writeDraft(cardLocalDraftStorageKey("c1"), "C1 只在本机的草稿", 5);
 
     const store = useInteractiveStore();
     await store.load();
@@ -172,13 +173,19 @@ describe("场景 11：过期判断只按这张卡片自己的记录（§11.3）"
 
 describe("场景 12：恢复不是发送（§11.4）", () => {
   it("【状态】取回失败原文不触发任何发送", async () => {
+    /**
+     * 驱动修正（主智能体）：失败原文属于**会话层**（`stores/session.ts` 的 failedSend/retryFailedSend），
+     * 不是互动板 store。原来对 useInteractiveStore() 调用这些动作会拿到 undefined 而报
+     * "store.retryFailedSend is not a function"，测的不是产品行为。断言不变。
+     */
+    const session = useSessionStore();
     const store = useInteractiveStore();
-    store.failedSend = { topicId: null, text: "没发出去的原文", draftSeq: 1, at: Date.now() };
-    store.failedSendError = "网络中断";
+    session.failedSend = { topicId: null, text: "没发出去的原文", draftSeq: 1, at: Date.now() };
+    session.failedSendError = "网络中断";
     const before = vi.mocked(imApi.saveDrafts).mock.calls.length;
-    store.retryFailedSend();
+    session.retryFailedSend();
     await flushPromises();
-    expect(store.draft, "取回失败原文时没有把文字放回输入框").toBe("没发出去的原文");
+    expect(session.draft, "取回失败原文时没有把文字放回输入框").toBe("没发出去的原文");
     expect(
       vi.mocked(imApi.saveDrafts).mock.calls.length - before,
       "取回原文竟然发起了新的草稿写入（恢复了就不该再动服务器）",

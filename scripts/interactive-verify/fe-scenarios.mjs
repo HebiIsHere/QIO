@@ -1287,74 +1287,87 @@ async function scenario21() {
  * 断言全部落在**真实矩形与命中测试**上，不看布局函数的计划值。
  */
 async function scenario22() {
-  const openChatStep = () => [
-    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="chat-panel"]')){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'chat';})()` },
-    { op: "wait", ms: 500 },
-  ];
-  const openBatchStep = () => [
-    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="batch-list"]')){const b=document.querySelector('[data-im="batch-entry"]');if(b)b.click();}return 'batch';})()` },
-    { op: "wait", ms: 500 },
-  ];
-  const measure = (mark) => ({
-    op: "eval",
-    js: `JSON.stringify((function(){
-      const R=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};};
-      const bar=document.querySelector('[data-im="overlay-switch"]');
-      const btn=document.querySelector('[data-im="overlay-switch-chat"]');
-      const btn2=document.querySelector('[data-im="overlay-switch-batch"]');
-      const hit=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);const top=document.elementFromPoint(x,y);return {x,y,hit:!!top&&!!el.contains(top)};};
-      const chatInput=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"]');
-      const cs=bar?getComputedStyle(bar):null;
-      const bs=btn?getComputedStyle(btn):null;
-      return {mark:'${mark}', vw:window.innerWidth, vh:window.innerHeight,
-        hooks:{chatToggle:!!document.querySelector('[data-im="chat-toggle"]'), batchEntry:!!document.querySelector('[data-im="batch-entry"]'), demoEntry:!!document.querySelector('[data-im="demo-entry"]'), chatPanel:!!document.querySelector('[data-im="chat-panel"]'), batchList:!!document.querySelector('[data-im="batch-list"]')},
-        bar:R(bar), barPos: cs?{position:cs.position,display:cs.display,bottom:cs.bottom,height:cs.height,background:cs.backgroundColor,border:cs.borderStyle}:null,
-        btn:R(btn), btnSlice: bs?{cursor:bs.cursor,background:bs.backgroundColor,borderRadius:bs.borderRadius,fontSize:bs.fontSize}:null,
-        btn2:R(btn2), hitChatBtn:hit(btn), hitBatchBtn:hit(btn2),
-        chat:R(document.querySelector('[data-im="chat-panel"]')), batch:R(document.querySelector('[data-im="batch-list"]')),
-        toolbar:R(document.querySelector('[data-im="board-toolbar"]')),
-        chatInput:R(chatInput), hitChatInput: hit2(chatInput)};
-      function hit2(el){ if(!el) return null; const r=el.getBoundingClientRect(); const x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2); const top=document.elementFromPoint(x,y); return {x,y,hit:!!top&&!!el.contains(top)}; }
-    })())`,
-  });
-  // 批量入口需要「同一批 ≥4 项待处理意图」：先走应用自己的演示入口造出来（与场景 17 同一条路径）
+  /**
+   * 480px 窄窗口（浏览器边缘场景）下的面板切换条。
+   *
+   * 做法与手工探针完全一致：**同一个浏览器会话**里造批量 → 开面板 → 量真实矩形与命中 → 点切换条 → 再量。
+   * 断言全部落在真实 DOM 上（矩形、computed style、elementFromPoint），不看布局函数的计划值。
+   */
+  const M = (mark) => "JSON.stringify({mark:'" + mark + "',vw:window.innerWidth,vh:window.innerHeight," +
+    "chat:(function(){var e=document.querySelector('[data-im=\"chat-panel\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};})()," +
+    "batch:(function(){var e=document.querySelector('[data-im=\"batch-list\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};})()," +
+    "bar:(function(){var e=document.querySelector('[data-im=\"overlay-switch\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};})()," +
+    "barPos:(function(){var e=document.querySelector('[data-im=\"overlay-switch\"]');if(!e)return null;var c=getComputedStyle(e);return {position:c.position,display:c.display,background:c.backgroundColor,borderStyle:c.borderStyle};})()," +
+    "btnSlice:(function(){var e=document.querySelector('[data-im=\"overlay-switch-chat\"]');if(!e)return null;var c=getComputedStyle(e);return {cursor:c.cursor,borderRadius:c.borderRadius,fontSize:c.fontSize,background:c.backgroundColor};})()," +
+    "hitChatBtn:(function(){var e=document.querySelector('[data-im=\"overlay-switch-chat\"]');if(!e)return null;var r=e.getBoundingClientRect();var x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);var t=document.elementFromPoint(x,y);return {x:x,y:y,hit:!!t&&e.contains(t)};})()," +
+    "toolbar:(function(){var e=document.querySelector('[data-im=\"board-toolbar\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};})()," +
+    "hitChatToggle:(function(){var e=document.querySelector('[data-im=\"chat-toggle\"]');if(!e)return null;var r=e.getBoundingClientRect();var x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);var t=document.elementFromPoint(x,y);return {x:x,y:y,hit:!!t&&e.contains(t)};})()," +
+    "overlap:(function(){var a=document.querySelector('[data-im=\"chat-panel\"]'),b=document.querySelector('[data-im=\"batch-list\"]');if(!a||!b)return 0;var x=a.getBoundingClientRect(),y=b.getBoundingClientRect();var w=Math.min(x.right,y.right)-Math.max(x.left,y.left);var h=Math.min(x.bottom,y.bottom)-Math.max(x.top,y.top);return w>0&&h>0?Math.round(w*h):0;})()})";
+  const CHAT_JS = "(function(){if(!document.querySelector('[data-im=\"chat-panel\"]')){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();}return 'chat';})()";
+  const BATCH_JS = "(function(){if(!document.querySelector('[data-im=\"batch-list\"]')){var b=document.querySelector('[data-im=\"batch-entry\"]');if(b)b.click();}return 'batch';})()";
+  const SWITCH_JS = "(function(){var b=document.querySelector('[data-im=\"overlay-switch-chat\"]');if(!b)return 'missing';b.click();return 'clicked';})()";
+  const DEMO_JS = "(function(){var b=document.querySelector('[data-im=\"demo-entry\"]');if(b)b.click();return 'demo';})()";
+  const GEN_JS = "(function(){var b=[...document.querySelectorAll('button')].find(function(x){return /演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im=\"demo-popover\"], .demo-popover, .im-demo-pop');});if(!b)return 'no-button';b.click();return 'clicked';})()";
+
   await resetBoard();
   await clearPendingIntents();
-  const flow = sess([
-    clickHook("demo-entry"), { op: "wait", ms: 600 },
-    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
-    { op: "wait", ms: 2600 },
-    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="demo-entry"]');if(b)b.click();return 'close';})()` },
-    { op: "wait", ms: 400 },
-    { op: "viewport", width: 480, height: 800 },
-    { op: "wait", ms: 1200 },
-    openChatStep(),
+  // 第一段：480×600（竖着放不下两个）→ 必须二选一：只显示一个面板 + 切换条真实存在且能切换
+  const cramped = sess([
+    { op: "viewport", width: 480, height: 600 },
+    { op: "wait", ms: 1000 },
+    { op: "eval", js: DEMO_JS },
     { op: "wait", ms: 600 },
-    measure("afterChat"),
-    openBatchStep(),
-    { op: "wait", ms: 900 },
-    measure("both"),
-    clickHook("overlay-switch-chat"),
-    { op: "wait", ms: 900 },
-    measure("switched"),
-    { op: "screenshot", name: "fe-22-switch-bar-480" },
+    { op: "eval", js: GEN_JS },
+    { op: "wait", ms: 2800 },
+    { op: "eval", js: DEMO_JS },
+    { op: "wait", ms: 500 },
+    { op: "eval", js: CHAT_JS },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: BATCH_JS },
+    { op: "wait", ms: 1100 },
+    { op: "eval", js: M("crampedBoth") },
+    { op: "eval", js: SWITCH_JS },
+    { op: "wait", ms: 1300 },
+    { op: "eval", js: M("crampedSwitched") },
+    { op: "screenshot", name: "fe-22-switch-bar-480x600" },
   ]);
-  const afterChat = markedFrom(flow, "afterChat") || {};
-  const both = markedFrom(flow, "both") || {};
-  const switched = markedFrom(flow, "switched") || {};
-  console.log("诊断 afterChat=" + JSON.stringify(afterChat.hooks || {}) + " both=" + JSON.stringify(both.hooks || {}));
-
+  // 第二段：480×800（竖着放得下两个）→ 两块都显示且不相交，聊天入口仍可点
+  const tall = sess([
+    { op: "viewport", width: 480, height: 800 },
+    { op: "wait", ms: 1000 },
+    { op: "eval", js: DEMO_JS },
+    { op: "wait", ms: 600 },
+    { op: "eval", js: GEN_JS },
+    { op: "wait", ms: 2800 },
+    { op: "eval", js: DEMO_JS },
+    { op: "wait", ms: 500 },
+    { op: "eval", js: CHAT_JS },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: BATCH_JS },
+    { op: "wait", ms: 1200 },
+    { op: "eval", js: M("tall") },
+  ]);
+  const both = markedFrom(cramped, "crampedBoth") || {};
+  const switched = markedFrom(cramped, "crampedSwitched") || {};
+  const tallMark = markedFrom(tall, "tall") || {};
   const inside = (rect, vw, vh) => Boolean(rect) && rect.l >= 0 && rect.t >= 0 && rect.r <= vw && rect.b <= vh && rect.w > 0 && rect.h > 0;
-  const bar = both.bar || {};
-  check("22 两个面板请求同时展开时只显示一个", Boolean(both.chat) !== Boolean(both.batch), JSON.stringify({ chat: !!both.chat, batch: !!both.batch }));
-  check("22 切换条有真实矩形且在视口内", inside(bar, both.vw || 480, both.vh || 800) && bar.h >= 20, JSON.stringify(bar));
-  check("22 切换条的按钮有真实矩形且能命中", Boolean(both.hitChatBtn && both.hitChatBtn.hit), JSON.stringify({ btn: both.btn, hit: both.hitChatBtn }));
-  check("22 切换按钮用了令牌样式（不是浏览器默认按钮）", Boolean(both.btnSlice && both.btnSlice.borderRadius !== "0px" && both.btnSlice.cursor === "pointer"), JSON.stringify(both.btnSlice));
-  check("22 切换后面板真的换了", Boolean(switched.chat) !== Boolean(switched.batch), JSON.stringify({ chat: !!switched.chat, batch: !!switched.batch }));
-  check("22 切换后切换条仍在视口内", inside(switched.bar || {}, switched.vw || 480, switched.vh || 800), JSON.stringify(switched.bar || {}));
-  check("22 面板与工具栏都在视口内", inside(switched.toolbar || {}, switched.vw || 480, switched.vh || 800)
-    && [switched.chat, switched.batch].filter(Boolean).every((r) => inside(r, switched.vw || 480, switched.vh || 800)),
+
+  check("22 480×600 两个面板请求同时展开时只显示一个", Boolean(both.chat) !== Boolean(both.batch), JSON.stringify({ chat: !!both.chat, batch: !!both.batch }));
+  check("22 480×600 切换条有真实矩形且在视口内", inside(both.bar, 480, 600) && (both.bar || {}).h >= 20, JSON.stringify(both.bar || {}));
+  check("22 480×600 切换条已就位（不是 static）", Boolean(both.barPos && both.barPos.position !== "static"), JSON.stringify(both.barPos || {}));
+  check("22 480×600 切换按钮有真实矩形且能命中", Boolean(both.hitChatBtn && both.hitChatBtn.hit), JSON.stringify(both.hitChatBtn || {}));
+  check("22 480×600 切换按钮用了令牌样式（不是浏览器默认按钮）", Boolean(both.btnSlice && both.btnSlice.borderRadius !== "0px" && both.btnSlice.cursor === "pointer"), JSON.stringify(both.btnSlice || {}));
+  check("22 480×600 切换后面板真的换了", Boolean(switched.chat) !== Boolean(switched.batch), JSON.stringify({ chat: !!switched.chat, batch: !!switched.batch }));
+  check("22 480×600 切换后切换条仍在视口内", inside(switched.bar || {}, 480, 600), JSON.stringify(switched.bar || {}));
+  check("22 480×600 面板与工具栏都在视口内", inside(switched.toolbar || {}, 480, 600)
+    && [switched.chat, switched.batch].filter(Boolean).every((r) => inside(r, 480, 600)),
     JSON.stringify({ toolbar: switched.toolbar, chat: switched.chat, batch: switched.batch }));
+  if (tallMark.chat && tallMark.batch) {
+    check("22 480×800 两块面板都显示时互不相交", tallMark.overlap === 0, JSON.stringify({ overlap: tallMark.overlap }));
+    check("22 480×800 聊天入口按钮仍然可点（没被面板盖住）", Boolean(tallMark.hitChatToggle && tallMark.hitChatToggle.hit), JSON.stringify(tallMark.hitChatToggle || {}));
+  } else {
+    check("22 480×800 至少一个面板可见（不许两个都藏起来）", Boolean(tallMark.chat) || Boolean(tallMark.batch), JSON.stringify({ chat: !!tallMark.chat, batch: !!tallMark.batch }));
+  }
 }
 
 const main = async () => {

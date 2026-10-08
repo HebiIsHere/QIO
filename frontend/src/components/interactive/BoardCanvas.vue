@@ -16,6 +16,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
+import { cardDraftKey } from "../../interactive/drafts";
 import {
   addLink,
   bestMergeTarget,
@@ -799,10 +800,22 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
   commit(updateCard(current, cardId, { bookmarked: !card.bookmarked }), card.bookmarked ? "取消书签" : "加书签");
 }
 
+/**
+ * 删除卡片时，它上面的编辑草稿也要作为「待同步的清除」登记（契约 §11.2）。
+ *
+ * 只删内存里的草稿与本机记录**不会**让服务器删掉那份草稿：下次刷新又会把它恢复出来
+ * （用户看到的正是「清除过的草稿复活了」）。没有草稿的卡片不登记，免得留下无意义的删除依据。
+ */
+function forgetCardDraft(cardId: string): void {
+  if (!store.hasCardDraft(cardId)) return;
+  store.clearDraft(cardDraftKey(cardId));
+}
+
 function onCardRemove(cardId: string) {
   const current = boardState.value;
   if (!current) return;
   commit(removeCard(current, cardId), "删除卡片（撤回这条材料或注释）");
+  forgetCardDraft(cardId);
 }
 
 function onCardDuplicate(cardId: string) {
@@ -827,9 +840,12 @@ function onCardJoinGroup(cardId: string, groupId: string) {
 function deleteSelected() {
   const current = boardState.value;
   if (!current || !current.selection.length) return;
+  const removed = [...current.selection];
   let next = current;
-  for (const cardId of current.selection) next = removeCard(next, cardId);
+  for (const cardId of removed) next = removeCard(next, cardId);
   commit(next, "删除所选卡片（撤回材料或注释）");
+  // 被删卡片上的编辑草稿同样要同步清除（§11.2）
+  for (const cardId of removed) forgetCardDraft(cardId);
 }
 
 // --- 分组与顺序 -----------------------------------------------------------

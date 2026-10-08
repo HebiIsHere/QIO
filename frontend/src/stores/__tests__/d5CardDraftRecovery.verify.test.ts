@@ -12,7 +12,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
 import * as imApi from "../../services/interactive";
-import { cardLocalDraftKey, writeDraft } from "../../interactive/drafts";
+import { cardLocalDraftKey, cardLocalDraftStorageKey, writeDraft } from "../../interactive/drafts";
 import type { BoardState, BoardStateResponse } from "../../interactive/types";
 
 vi.mock("../../services/interactive", () => ({
@@ -118,7 +118,7 @@ describe("场景 1：首次编辑在防抖前刷新（§11.1）", () => {
     fakeServer({});
     // 先模拟「上一页输入时同步写下的本机恢复副本」：与 setDraft 走的是同一条写入路径，
     // 但没有留下上一页的防抖计时器（用户在计时器到点前就刷新了）。
-    writeDraft(cardLocalDraftKey("c1"), "只在本机的新草稿", 7);
+    writeDraft(cardLocalDraftStorageKey("c1"), "只在本机的新草稿", 7);
 
     setActivePinia(createPinia());
     const reloaded = useInteractiveStore();

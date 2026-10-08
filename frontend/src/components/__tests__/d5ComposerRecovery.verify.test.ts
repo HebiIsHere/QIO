@@ -46,8 +46,12 @@ function recoveryButtons(wrapper: ReturnType<typeof mount>) {
     const el = node.element as HTMLButtonElement;
     const name = ((node.text() || "") + " " + (el.getAttribute("aria-label") ?? "") + " " + (el.getAttribute("title") ?? "")).trim();
     if (!/(放回|找回|取回|恢复|互换)/.test(name)) return false;
-    const rect = el.getBoundingClientRect();
-    return !el.disabled && (rect.width > 0 || !el.ownerDocument.defaultView);
+    /**
+     * 驱动修正（主智能体）：jsdom 不做布局，getBoundingClientRect() 恒为全 0，
+     * 原来那句 `rect.width > 0` 会让这个辅助函数**永远找不到按钮**（不是产品缺入口）。
+     * 这里只排除禁用按钮；「按钮真的可见、能点」由真实浏览器验收（D 的探针与实机场景）覆盖。
+     */
+    return !el.disabled;
   });
 }
 

@@ -77,6 +77,14 @@ export const OVERLAY_GAP = 12;
  * 运行时可以按量到的入口按钮高度把多算的部分还回去（见 overlayLayout 的调用方）。
  */
 export const OVERLAY_CHAT_FOOTER = 78;
+
+/**
+ * 批量列表底边要预留的高度（工具栏顶边 → 批量列表底边）。
+ *
+ * 聊天入口按钮是**常驻**浮层（不随聊天面板开合），批量列表同样贴右边，
+ * 所以它也要让开这一行：实测按钮底边在工具栏顶边往上 58px、高 39px。
+ */
+export const OVERLAY_BATCH_FOOTER = 100;
 /** 聊天容器的底边：工具栏顶边往上 16px 边距 + 8px 余量（ChatDock 自己的口径） */
 export const OVERLAY_CHAT_DOCK_LIFT = 24;
 /**
@@ -166,7 +174,14 @@ function bandsOf(input: OverlayInput, reserveSwitchBar = false): Bands {
   const switchBottom = reserveSwitchBar ? Math.max(top, baseChatBottom - OVERLAY_GAP) : 0;
   const switchTop = reserveSwitchBar ? Math.max(top, switchBottom - OVERLAY_SWITCH_BAR_HEIGHT) : 0;
   const chatBottom = reserveSwitchBar ? Math.max(top, switchTop - OVERLAY_GAP) : baseChatBottom;
-  const batchBottom = Math.max(top, toolbarTop - OVERLAY_EDGE);
+  /**
+   * 批量列表的底边。
+   *
+   * 右下角**始终**浮着聊天入口按钮（实机实测：按钮底边在工具栏顶边往上 58px、高 39px），
+   * 批量列表也贴右边，所以它同样不能盖住那个按钮 —— 否则用户点不到聊天入口（契约 §11.7）。
+   * 预留值取 58 + 39 = 97，再留一点余量。
+   */
+  const batchBottom = Math.max(top, toolbarTop - OVERLAY_BATCH_FOOTER);
   return {
     viewportWidth,
     top,
@@ -272,7 +287,12 @@ export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
       chatMaxHeight: bands.chatBand,
       chatRight: OVERLAY_EDGE,
       batchMaxWidth: batchWidth,
-      batchMaxHeight: bands.chatBand,
+      /**
+       * 单开时两块面板贴同一列（right = 16），但底边各按**自己的**区间：
+       * 批量列表不是聊天容器的一部分，它必须让开整个入口按钮（含按钮自身高度），
+       * 否则按钮会被面板挡住、用户点不到「打开对话」（§11.7，实机 elementFromPoint 实测）。
+       */
+      batchMaxHeight: bands.batchBand,
       batchRight: OVERLAY_EDGE,
       gap,
       switchBar,
