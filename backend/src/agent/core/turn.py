@@ -40,6 +40,7 @@ TURN_END 除了终态与权威最终回答，还带**结束事实**（plan §1.2
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -72,6 +73,12 @@ TURN_END = "TURN_END"
 
 # 终态：进入其中之一后不再变化。
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
+
+logger = logging.getLogger(__name__)
+
+#: 预留顺序的**有界等待**上界（秒）：队首预留迟迟不放行（例如它的请求异常退出、
+#: 没来得及 abandon）时，后面已经就绪的预留不会被永远挡住 —— 到点按就绪顺序放行并记警告。
+ACTIVATION_ORDER_TIMEOUT = 60.0
 
 # 适配器（供应商）异常的类名：见 adapters/errors.py 的归一化分类。
 # 只按**类名**分类，不解析错误正文去猜厂商内容（与 services/verify.py 同一口径）。
@@ -180,6 +187,12 @@ class TurnManager:
         self._active: TurnContext | None = None
         self._pending: list[TurnContext] = []
         self._cancelled: list[dict] = []  # 最近被取消的 turn（有界）
+        # 预留（附件准备中）的轮次：**不入队**，等准备完成后按**预留顺序**放行（R6 §1.1）。
+        # 顺序即 FIFO：后预留的即使先就绪，也要等前面的先放行（有界兜底见 ACTIVATION_ORDER_TIMEOUT）。
+        self._reserved: list[TurnContext] = []
+        self._ready: set[str] = set()
+        self._ready_since: dict[str, float] = {}
+        self._order_timer: Any = None
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -277,6 +290,138 @@ class TurnManager:
             pass
 
     # -- submission -------------------------------------------------------
+
+    # -- 预留 → 准备 → 放行（R6 §1.1）--------------------------------------
+
+    def reserve(
+        self,
+        message: str,
+        topic_id: str | None = None,
+        *,
+        notify: bool = False,
+        intent_id: str | None = None,
+    ) -> TurnContext:
+        """预留一轮：分配 turn_id、落台账行 —— **不入队、不发 TURN_START**。
+
+        用在「附件还没准备好就不能开始执行」的路径上：路由先 reserve 拿到 turn_id，
+        用它去准备/克隆附件；成功才 activate（入队 + 发 TURN_START），失败就 abandon。
+        预留期间 worker 完全看不到这一轮，所以模型不可能被提前调用。
+        """
+        if self._closed:
+            raise RuntimeError("TurnManager is closed; it no longer accepts new turns")
+        ctx = TurnContext(
+            turn_id=f"turn_{uuid.uuid4().hex[:12]}",
+            message=message,
+            initial_topic=topic_id,
+            current_topic=topic_id,
+            notify=notify,
+            intent_id=intent_id,
+            # 内部状态：既不是 accepted（已入队）也不是 running（在跑）——
+            # 它不会出现在队列快照里，前端沿用请求进行中的「发送中」。
+            status="preparing",
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            self._futures[ctx.turn_id] = loop.create_future()
+        except RuntimeError:
+            pass  # no running loop: reserve without an awaitable result
+        self._reserved.append(ctx)
+        # 受理即落台账：准备期间进程退出也不会静默消失。
+        # 状态写 queued（台账没有 preparing 这一档），abandon 时会如实收尾。
+        self._journal_call(
+            "accepted",
+            turn_id=ctx.turn_id,
+            message=ctx.message,
+            topic_id=ctx.initial_topic,
+            notify=ctx.notify,
+            status="queued",
+        )
+        return ctx
+
+    def activate(self, ctx: TurnContext) -> None:
+        """附件就绪后放行：**按预留顺序**入队（此刻起 worker 才可能开始执行）。"""
+        if ctx not in self._reserved:
+            return  # 已经被取消 / 放弃 / 已经放行
+        self._ready.add(ctx.turn_id)
+        self._ready_since.setdefault(ctx.turn_id, self._monotonic())
+        self._flush_ready()
+        self._schedule_order_deadline()
+
+    def abandon(self, ctx: TurnContext, *, reason: str = "prepare_failed") -> None:
+        """准备失败 / 准备期间被取消：丢弃预留 —— 不入队、不留可执行队列项。
+
+        台账如实收尾成 cancelled + 具体 reason（**不是** shutdown 的 interrupted）：
+        这一轮从未开始执行，不能事后看起来像「被中断的一轮」。
+        """
+        if ctx in self._reserved:
+            self._reserved.remove(ctx)
+        self._ready.discard(ctx.turn_id)
+        self._ready_since.pop(ctx.turn_id, None)
+        self._futures.pop(ctx.turn_id, None)
+        if not _terminal(ctx):
+            ctx.status = "cancelled"
+        self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
+        self._resolve(ctx, {"ok": False, "reason": reason})
+        # FIFO 链不能断：前面放弃了，后面已经就绪的预留要立刻能走
+        self._flush_ready()
+
+    def _flush_ready(self) -> None:
+        """按预留顺序放行：队首没就绪就停下等它（有界兜底见 _force_expired_ready）。"""
+        while self._reserved:
+            head = self._reserved[0]
+            if head.turn_id not in self._ready:
+                break
+            self._reserved.pop(0)
+            self._ready.discard(head.turn_id)
+            self._ready_since.pop(head.turn_id, None)
+            self._enqueue_reserved(head)
+
+    def _enqueue_reserved(self, ctx: TurnContext) -> None:
+        """真正入队（原 submit 的尾段）：从这里开始 worker 才可能取到它并发 TURN_START。"""
+        ctx.status = "queued" if (self._active is not None or bool(self._pending)) else "accepted"
+        self._pending.append(ctx)
+        self._queue.put_nowait(ctx)
+        self._bump_revision()
+        self._ensure_worker()
+        self._schedule_emit()
+
+    @staticmethod
+    def _monotonic() -> float:
+        try:
+            return asyncio.get_running_loop().time()
+        except RuntimeError:
+            return time.monotonic()
+
+    def _schedule_order_deadline(self) -> None:
+        """有界等待：到点后把「等太久」的就绪预留放行（记警告），不无限期挡住后面的。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._order_timer is not None and not self._order_timer.cancelled():
+            return
+        self._order_timer = loop.call_later(ACTIVATION_ORDER_TIMEOUT, self._force_expired_ready)
+
+    def _force_expired_ready(self) -> None:
+        self._order_timer = None
+        now = self._monotonic()
+        for ctx in list(self._reserved):
+            if ctx.turn_id not in self._ready:
+                continue
+            since = self._ready_since.get(ctx.turn_id)
+            if since is None or now - since < ACTIVATION_ORDER_TIMEOUT:
+                continue
+            logger.warning(
+                "预留顺序等待超过 %.0fs，按就绪顺序放行（前面的预留没有按时放行）：%s",
+                ACTIVATION_ORDER_TIMEOUT,
+                ctx.turn_id,
+            )
+            self._reserved.remove(ctx)
+            self._ready.discard(ctx.turn_id)
+            self._ready_since.pop(ctx.turn_id, None)
+            self._enqueue_reserved(ctx)
+        if self._ready:
+            self._schedule_order_deadline()
 
     def submit(
         self,
@@ -638,6 +783,21 @@ class TurnManager:
         active = self._active
         if active is not None and active.turn_id == turn_id:
             return self.cancel_active()
+        for i, c in enumerate(self._reserved):
+            if c.turn_id == turn_id:
+                if _terminal(c):
+                    return False
+                # 准备中的预留：直接丢弃，绝不让它之后还被放行（客户端断开 / 用户取消）
+                self._reserved.pop(i)
+                self._ready.discard(c.turn_id)
+                self._ready_since.pop(c.turn_id, None)
+                c.cancelled = True
+                c.status = "cancelled"
+                self._journal_call("terminal", c.turn_id, "cancelled", reason="user")
+                self._record_cancelled(c)
+                self._resolve(c, {"ok": False, "reason": "cancelled"})
+                self._flush_ready()
+                return True
         for i, c in enumerate(self._pending):
             if c.turn_id == turn_id:
                 if _terminal(c):
@@ -668,6 +828,19 @@ class TurnManager:
         self._closed = True
         self._bump_revision()
 
+        # 准备中的预留：从未开始执行，也不该留成「可重发的被中断轮」——
+        # 如实记成 cancelled + reason=shutdown_during_prepare（不是 interrupted）。
+        reserved, self._reserved = list(self._reserved), []
+        self._ready.clear()
+        self._ready_since.clear()
+        for ctx in reserved:
+            ctx.cancelled = True
+            if not _terminal(ctx):
+                ctx.status = "cancelled"
+            self._journal_call(
+                "terminal", ctx.turn_id, "cancelled", reason="shutdown_during_prepare"
+            )
+            self._resolve(ctx, {"ok": False, "reason": "shutdown"})
         pending, self._pending = list(self._pending), []
         for ctx in pending:
             ctx.cancelled = True

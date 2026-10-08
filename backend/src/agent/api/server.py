@@ -1563,22 +1563,30 @@ def create_app(
         )
         if precheck:
             raise _attachment_failure(precheck)
-        turn = ctx.turns.submit(
+        # R6 §1.1：**先预留（不入队、不发 TURN_START）→ 准备附件 → 真的就绪才放行**。
+        # 以前先 submit 再 await bind_for_turn：等复制让出事件循环时，worker 已经可以把这一轮
+        # 跑起来 —— 模型会在附件还没就绪（甚至没有可读副本）时就被调用。
+        turn = ctx.turns.reserve(
             message, topic_id, intent_id=pending.intent_id if pending else None
         )
-        # bind_for_turn 现在是 async：校验/建行/定稿都在事件循环线程，
-        # 只有文件 I/O（硬链接失败后的复制退路）在 to_thread 里（R5 §1.3）。
-        outcome = await attachments.bind_for_turn(
-            turn_id=turn.turn_id,
-            message_id=None,
-            attachment_ids=explicit_ids,
-            topic_id=topic_id,
-            retry_of_turn_id=retry_of,
-        )
+        try:
+            outcome = await attachments.bind_for_turn(
+                turn_id=turn.turn_id,
+                message_id=None,
+                attachment_ids=explicit_ids,
+                topic_id=topic_id,
+                retry_of_turn_id=retry_of,
+            )
+        except BaseException:
+            # 准备期间出错 / 被取消（客户端断开、服务关闭）：丢弃预留，不留可执行队列项
+            ctx.turns.abandon(turn, reason="attachment_prepare_error")
+            raise
         if outcome.rejected:
-            # 预检之后的竞态（刚被删 / 被别的轮次抢走）：撤销刚提交的这一轮，不入队。
-            ctx.turns.cancel(turn.turn_id)
+            # 预检之后的竞态（刚被删 / 被别的轮次抢走）：丢弃预留 + 结构化拒绝，绝不入队
+            ctx.turns.abandon(turn, reason="attachment_not_ready")
             raise _attachment_failure(outcome.rejected)
+        # 附件真的就绪了才放行（按预留顺序入队；TURN_START 由 worker 真正开跑时发）
+        ctx.turns.activate(turn)
         return {
             "ok": True,
             "accepted": True,
@@ -1792,15 +1800,15 @@ def create_app(
         )
         if precheck:
             raise _attachment_failure(precheck)
-        if not ctx.turn_journal.claim(turn_id):
-            raise HTTPException(status_code=409, detail="这一条已经被处理过了")
         pending = ctx.bindings.peek_intent()
+        # R6 §1.1：先预留 + 准备，**claim 只在准备成功之后才消费** ——
+        # 准备失败（附件没就绪 / 客户端断开）不能把这条「未执行」记录永久消耗掉。
+        turn = ctx.turns.reserve(
+            record["message"],
+            record["topic_id"],
+            intent_id=pending.intent_id if pending else None,
+        )
         try:
-            turn = ctx.turns.submit(
-                record["message"],
-                record["topic_id"],
-                intent_id=pending.intent_id if pending else None,
-            )
             outcome = await attachments.bind_for_turn(
                 turn_id=turn.turn_id,
                 message_id=None,
@@ -1808,15 +1816,19 @@ def create_app(
                 topic_id=record["topic_id"],
                 retry_of_turn_id=turn_id,
             )
-        except Exception:
-            ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
+        except BaseException:
+            ctx.turns.abandon(turn, reason="attachment_prepare_error")
             raise
         if outcome.rejected:
-            # 预检之后的竞态：撤销刚提交的这一轮、退回 claim，结构化失败（不静默丢附件）。
-            ctx.turns.cancel(turn.turn_id)
-            ctx.turn_journal.release_claim(turn_id)
+            # 预检之后的竞态：丢弃预留（从未入队）+ 结构化失败 —— claim 没被消费，用户还能再试。
+            ctx.turns.abandon(turn, reason="attachment_not_ready")
             raise _attachment_failure(outcome.rejected)
+        if not ctx.turn_journal.claim(turn_id):
+            # 准备期间这条被别人抢走了：丢弃预留，如实 409（不入队、不消费）
+            ctx.turns.abandon(turn, reason="resend_claim_lost")
+            raise HTTPException(status_code=409, detail="这一条已经被处理过了")
         ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
+        ctx.turns.activate(turn)
         return {
             "ok": True,
             "recovered_turn_id": turn_id,

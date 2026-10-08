@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from agent.api.events import EventType, make_event
@@ -573,6 +574,9 @@ class TurnOrchestrator:
             narrative_settler=app._settle_narrative,
             # 工具归属只看 stage_id（plan §1.1）：没有阶段时如实为 None。
             stage_id_provider=lambda: app.current_stage_id(ctx.turn_id),
+            # 长正文暂存目录（R6 §1.3）：显式给 AppContext 的 data_dir 口径，
+            # 不让 AnswerBuffer 去惰性解析 Settings()（那条路在测试里会落到真实数据目录）。
+            spill_dir=Path(app.settings.data_dir) / "tmp",
         )
         ctx.loop = loop
         try:
