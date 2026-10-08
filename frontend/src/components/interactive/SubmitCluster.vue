@@ -20,7 +20,7 @@ import {
   draftHintText,
   localVisibleRange,
   saveStateText,
-  submitFailureText,
+  submitFailureBrief,
   submitStateLabel,
   submitStatusText,
   summarizeChanges,
@@ -85,11 +85,28 @@ const stateLabel = computed(() =>
     hasSubmission: Boolean(store.lastSubmission),
   }),
 );
+/**
+ * 失败说明（契约 §11.6）：原因、保留情况、下一步全部取**本次请求**的事实。
+ *
+ * 上一次提交结果只作为详情里的排查信息；它绝不能冒充本次失败原因 ——
+ * 那正是上一轮「默认失败区显示的是上一次结果」的缺陷。
+ */
+const failure = computed(() =>
+  submitFailureBrief({
+    status: store.submitStatus,
+    error: store.submitError,
+    saveStatus: store.saveStatus,
+    saveError: store.saveError,
+    dirty: store.dirty,
+    lastResult: store.lastSubmission,
+  }),
+);
 const statusText = computed(() =>
   submitStatusText(store.submitStatus, {
     result: store.lastSubmission,
     pendingCount: pendingExpressions.value.length,
-    error: store.submitError,
+    error: failure.value?.reason ?? store.submitError,
+    retention: failure.value?.retention,
   }),
 );
 const range = computed(() => localVisibleRange(store.board));
@@ -103,11 +120,11 @@ const rangeShort = computed(() => {
   if (!range.value) return "本次可见：还没有可提交的内容";
   return `本次可见：材料 ${counts.materials} 项 · 注释 ${counts.notes} 条`;
 });
-const isFailed = computed(
-  () => store.submitStatus === "failed" || store.lastSubmission?.status === "failed",
-);
-/** 失败时到底保留了什么（不要把失败说成「什么都没发生」） */
-const failureText = computed(() => submitFailureText(store.lastSubmission));
+/**
+ * 是不是**本次**失败：只看当前请求的状态。
+ * 不再看 lastSubmission —— 上一次的失败结果不该在成功之后继续显示成失败。
+ */
+const isFailed = computed(() => failure.value !== null);
 const draftText = draftHintText();
 /** 提交按钮文案：失败后明确写成「重新提交」，让重试一眼可见 */
 const submitLabel = computed(() => {
@@ -126,7 +143,7 @@ function onSubmit() {
     常态只有三样东西（契约 §10.8）：一行简短范围、一行简短提交状态、提交按钮（外加「详情」）。
     完整排除清单、改动列表、保存与提交的边界说明、草稿提示都收进按需打开的详情里。
   -->
-  <div class="submit-cluster" data-im="submit-cluster">
+  <div class="submit-cluster" data-im="submit-cluster" :data-im-failed="isFailed ? '1' : undefined">
     <p class="range" data-im="visible-range">{{ rangeShort }}</p>
 
     <p class="status" data-im="submit-status" role="status">
@@ -137,8 +154,14 @@ function onSubmit() {
       <span class="detail">{{ summary.hasContent ? summary.total + " 项改动" : "没有可提交的改动" }}</span>
     </p>
 
-    <!-- 失败必须立刻可见（真实错误不许藏进详情） -->
-    <p v-if="isFailed" class="failure" role="alert" data-im="submit-failure">{{ failureText }}</p>
+    <!--
+      失败必须立刻可见（真实错误不许藏进详情）：默认就说清「本次原因 → 保留情况 → 重试」。
+      顺序固定，详情只补充较长诊断（保存失败原因、上一次提交返回的说明），不是了解原因的必经入口。
+    -->
+    <p v-if="failure" class="failure" role="alert" data-im="submit-failure">
+      <span class="failure-reason" data-im="submit-failure-reason">失败原因：{{ failure.reason }}</span>
+      <span class="failure-retention" data-im="submit-failure-retention">{{ failure.retention }}</span>
+    </p>
 
     <div class="actions">
       <button
@@ -150,7 +173,14 @@ function onSubmit() {
       >
         {{ detailsOpen ? "收起详情" : "详情" }}
       </button>
-      <button class="submit" type="button" data-im="submit" :disabled="busy || !store.board" @click="onSubmit">
+      <button
+        class="submit"
+        type="button"
+        data-im="submit"
+        :title="failure?.nextStep"
+        :disabled="busy || !store.board"
+        @click="onSubmit"
+      >
         {{ submitLabel }}
       </button>
     </div>
@@ -159,6 +189,7 @@ function onSubmit() {
       <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
       <p class="line range" data-im="visible-range-full">{{ rangeText }}</p>
       <p class="line strong">{{ statusText }}</p>
+      <p v-if="failure" class="line err" data-im="submit-failure-detail">{{ failure.detail }}</p>
       <BoardChangeList
         :expressions="pendingExpressions"
         title="本次有效改动（尚未提交）"
@@ -177,6 +208,9 @@ function onSubmit() {
   position: relative;
   display: flex;
   align-items: center;
+  /* 允许换行：失败区可以换行、可以变高，但按钮行不会被挤坏（.actions 不参与收缩） */
+  flex-wrap: wrap;
+  row-gap: var(--sp-1);
   gap: var(--sp-3);
   min-width: 0;
   padding-left: var(--sp-4);
@@ -229,6 +263,31 @@ function onSubmit() {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/*
+  失败区（契约 §11.6 / §11.8）：默认就给出「本次原因 + 保留情况」，各占一行、顺序固定。
+  长原因允许换行（overflow-wrap），但整块有高度上限、超出时区内滚动，
+  所以既不会撑坏右边的提交按钮，也不会把板面盖住；颜色走令牌，明暗两主题都成立。
+*/
+.failure {
+  /* 基础尺寸给小值：长原因与按钮同排、由自己换行，而不是把整条操作行挤到下一行 */
+  flex: 1 1 12ch;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  max-height: calc(var(--fs-xs) * 1.45 * 4);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  border-left: 2px solid var(--danger);
+  border-radius: var(--r-xs);
+  background: var(--danger-soft);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.failure-reason { color: var(--danger); }
+.failure-retention { color: var(--text-secondary); }
 .line.retain { color: var(--warning); }
 .line.err { color: var(--danger); }
 .line.faint { color: var(--text-faint); }

@@ -7,6 +7,7 @@
  * 这里挂真实组件、喂进真实量到的矩形（jsdom 没有布局，所以 rect 由用例给出）：
  * - 位置与高度必须来自几何计划的矩形，且落在面板与工具栏之间；
  * - 关掉 / 切换面板之后预留**不变**（与"两面板都开"同一个状态算出来的数字相同）；
+ * - 切换显示时聊天面板还要真的抬到切换条上方（--im-geo-chat-lift）；
  * - 按钮有选中态、可点击、可用键盘聚焦，样式全部走令牌（扫源码文本）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,10 +19,13 @@ import IntentBatchTray from "../IntentBatchTray.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import { INTENT_BATCH_STORAGE_KEY } from "../../../interactive/approval";
 import {
+  CHAT_DOCK_TOGGLE_GAP,
+  OVERLAY_CHAT_DOCK_LIFT,
   OVERLAY_CHAT_FOOTER,
   OVERLAY_EDGE,
   OVERLAY_GAP,
   OVERLAY_SWITCH_BAR_HEIGHT,
+  chatSwitchLift,
 } from "../../../interactive/overlayLayout";
 import type { BoardCard, Intent } from "../../../interactive/types";
 
@@ -35,6 +39,23 @@ let toolbar: HTMLElement;
  */
 let stageHost: HTMLElement;
 let originalRect: typeof Element.prototype.getBoundingClientRect;
+
+interface View {
+  width: number;
+  height: number;
+  stageTop: number;
+  stageHeight: number;
+  toolbarTop: number;
+}
+
+/** 480×600：舞台 53 / 工具栏顶边 423（上一轮实测值），空间放不下两个面板 */
+const NARROW: View = { width: 480, height: 600, stageTop: 53, stageHeight: 547, toolbarTop: 423 };
+/** 1200×800：空间充足，并排 */
+const WIDE: View = { width: 1200, height: 800, stageTop: 52, stageHeight: 748, toolbarTop: 733 };
+/** 480×600 实机实测的聊天入口按钮高度（面板底边 = 工具栏顶边 - 24 - 8 - 39） */
+const TOGGLE_HEIGHT = 39;
+
+let view: View = { ...NARROW };
 
 function fakeRect(top: number, height: number, left = 0, width = 480): DOMRect {
   return {
@@ -103,26 +124,23 @@ async function flushMeasure(): Promise<void> {
   await new Promise((done) => setTimeout(done, 5));
 }
 
-/** 480×600：舞台 53 / 工具栏顶边 423（上一轮实测值），空间放不下两个面板 */
-const VIEW = { width: 480, height: 600, stageTop: 53, stageHeight: 547, toolbarTop: 423 };
-
 function setViewport(): void {
-  Object.defineProperty(window, "innerWidth", { value: VIEW.width, configurable: true, writable: true });
-  Object.defineProperty(window, "innerHeight", { value: VIEW.height, configurable: true, writable: true });
+  Object.defineProperty(window, "innerWidth", { value: view.width, configurable: true, writable: true });
+  Object.defineProperty(window, "innerHeight", { value: view.height, configurable: true, writable: true });
 }
 
 /**
- * jsdom 没有布局：所有矩形都由用例给出（数字来自上一轮 480×600 的实测值）。
+ * jsdom 没有布局：所有矩形都由用例给出（数字来自 480×600 / 1200×800 的实机实测值）。
  * 按 data-im 钩子分发，舞台宿主按 data-v-app / .im-stage 认。
  */
 function installRects(): void {
   originalRect = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
     const hook = this.getAttribute("data-im");
-    if (hook === "board-toolbar") return fakeRect(VIEW.toolbarTop, 96, 0, VIEW.width);
-    if (hook === "chat-toggle") return fakeRect(VIEW.toolbarTop - 58, 34, 0, 88);
+    if (hook === "board-toolbar") return fakeRect(view.toolbarTop, 96, 0, view.width);
+    if (hook === "chat-toggle") return fakeRect(view.toolbarTop - 58, TOGGLE_HEIGHT, 0, 88);
     if (this.hasAttribute("data-v-app") || this.classList.contains("im-stage")) {
-      return fakeRect(VIEW.stageTop, VIEW.stageHeight, 0, VIEW.width);
+      return fakeRect(view.stageTop, view.stageHeight, 0, view.width);
     }
     return fakeRect(0, 0);
   };
@@ -140,7 +158,18 @@ function stageMode(): string {
 
 function stageVar(name: string): number {
   const match = stageStyle().match(new RegExp(name + ":\\s*(-?[0-9.]+)px"));
-  return match ? Number(match[1]) : Number.NaN;
+  return match ? Number(match[1]) : NaN;
+}
+
+/**
+ * 默认不造聊天入口按钮：量不到它时几何层按最保守的方式处理
+ * （聊天高度一点都不放宽、切换显示抬到最大），这样预留数字可以用常量直接算出来。
+ */
+function installChatToggle(height = TOGGLE_HEIGHT): void {
+  const toggle = document.createElement("button");
+  toggle.setAttribute("data-im", "chat-toggle");
+  document.body.appendChild(toggle);
+  toggle.getBoundingClientRect = () => fakeRect(view.toolbarTop - 58, height, 0, 88);
 }
 
 async function mountTray(options: { chatOpen: boolean; batchOpen: boolean }): Promise<VueWrapper> {
@@ -155,10 +184,18 @@ async function mountTray(options: { chatOpen: boolean; batchOpen: boolean }): Pr
   return mounted;
 }
 
+/** 单开时竖直区间应该预留多少（常量直接算，不调用被测的几何函数） */
+function reservedChatBand(): number {
+  const top = view.stageTop + OVERLAY_EDGE;
+  const unreserved = view.toolbarTop - OVERLAY_CHAT_FOOTER - top;
+  return unreserved - OVERLAY_SWITCH_BAR_HEIGHT - 2 * OVERLAY_GAP;
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   document.body.innerHTML = "";
   localStorage.clear();
+  view = { ...NARROW };
   setViewport();
   installRects();
   stage = document.createElement("div");
@@ -167,8 +204,6 @@ beforeEach(() => {
   toolbar = document.createElement("div");
   toolbar.setAttribute("data-im", "board-toolbar");
   document.body.appendChild(toolbar);
-  // 刻意不造聊天入口按钮：量不到它时几何层一点都不放宽（宁少几像素），
-  // 这样「预留了多少」可以用常量算出来，不必依赖另一条测量链路。
 });
 
 afterEach(() => {
@@ -193,19 +228,19 @@ describe("切换条的真实定位与高度预留", () => {
     const maxWidth = Number(/max-width:\s*([0-9.]+)px/.exec(style)?.[1]);
     expect(height).toBe(OVERLAY_SWITCH_BAR_HEIGHT);
     expect(right).toBe(OVERLAY_EDGE);
-    expect(maxWidth).toBe(VIEW.width - 2 * OVERLAY_EDGE);
-    const barTop = VIEW.height - bottom - height;
+    expect(maxWidth).toBe(view.width - 2 * OVERLAY_EDGE);
+    const barTop = view.height - bottom - height;
     const barBottom = barTop + height;
-    expect(barTop).toBeGreaterThanOrEqual(VIEW.stageTop + OVERLAY_EDGE);
-    expect(barBottom).toBeLessThanOrEqual(VIEW.toolbarTop - OVERLAY_EDGE);
-    // 不压到聊天入口按钮（它在工具栏顶边往上 58px 起、高 34px 的那一行）
-    expect(barBottom).toBeLessThanOrEqual(VIEW.toolbarTop - 58);
+    expect(barTop).toBeGreaterThanOrEqual(view.stageTop + OVERLAY_EDGE);
+    expect(barBottom).toBeLessThanOrEqual(view.toolbarTop - OVERLAY_EDGE);
+    // 不压到聊天入口按钮（它在工具栏顶边往上 58px 起、高 39px 的那一行）
+    expect(barBottom).toBeLessThanOrEqual(view.toolbarTop - 58);
   });
 
   it("单开对话时切换条那一行是真实预留：比不预留时正好少掉切换条 + 两个间距", async () => {
     wrapper = await mountTray({ chatOpen: true, batchOpen: false });
-    const top = VIEW.stageTop + OVERLAY_EDGE;
-    const unreserved = VIEW.toolbarTop - OVERLAY_CHAT_FOOTER - top;
+    const top = view.stageTop + OVERLAY_EDGE;
+    const unreserved = view.toolbarTop - OVERLAY_CHAT_FOOTER - top;
     const reserved = unreserved - OVERLAY_SWITCH_BAR_HEIGHT - 2 * OVERLAY_GAP;
     expect(stageVar("--im-geo-chat-max-h")).toBe(reserved);
     expect(stageVar("--im-geo-chat-max-h")).toBeLessThan(unreserved);
@@ -235,6 +270,39 @@ describe("切换条的真实定位与高度预留", () => {
     await flushMeasure();
     expect(bar.attributes("style")).toBe(before);
     expect(stageStyle()).toBe(stageBefore);
+  });
+});
+
+describe("切换显示时聊天面板真的抬到切换条上方", () => {
+  it("量到入口按钮高度时按真实值抬升（480×600：104 - 39 = 65px）", async () => {
+    installChatToggle(TOGGLE_HEIGHT);
+    wrapper = await mountTray({ chatOpen: true, batchOpen: false });
+    expect(stageVar("--im-geo-chat-lift")).toBe(chatSwitchLift(TOGGLE_HEIGHT));
+    expect(stageVar("--im-geo-chat-lift")).toBe(65);
+  });
+
+  it("量不到入口按钮高度时抬到最大值（宁可多抬，也不许压住切换条）", async () => {
+    wrapper = await mountTray({ chatOpen: true, batchOpen: false });
+    expect(stageVar("--im-geo-chat-lift")).toBe(104);
+  });
+
+  it("宽窗口（并排）不抬升，聊天面板回到原来的位置", async () => {
+    view = { ...WIDE };
+    setViewport();
+    installChatToggle(TOGGLE_HEIGHT);
+    wrapper = await mountTray({ chatOpen: true, batchOpen: false });
+    expect(stageMode()).toBe("side-by-side");
+    expect(stageVar("--im-geo-chat-lift")).toBe(0);
+  });
+
+  it("抬升后聊天面板底边停在切换条上方一个间距（几何数字对得上）", async () => {
+    installChatToggle(TOGGLE_HEIGHT);
+    wrapper = await mountTray({ chatOpen: true, batchOpen: false });
+    const barTop = view.toolbarTop - OVERLAY_CHAT_FOOTER - OVERLAY_GAP - OVERLAY_SWITCH_BAR_HEIGHT;
+    const realPanelBottom = view.toolbarTop - OVERLAY_CHAT_DOCK_LIFT - CHAT_DOCK_TOGGLE_GAP - TOGGLE_HEIGHT;
+    const liftedBottom = realPanelBottom - stageVar("--im-geo-chat-lift");
+    expect(barTop - liftedBottom).toBe(OVERLAY_GAP);
+    expect(liftedBottom).toBe(reservedChatBand() + view.stageTop + OVERLAY_EDGE);
   });
 });
 

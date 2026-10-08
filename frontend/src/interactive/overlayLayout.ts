@@ -79,6 +79,13 @@ export const OVERLAY_GAP = 12;
 export const OVERLAY_CHAT_FOOTER = 78;
 /** 聊天容器的底边：工具栏顶边往上 16px 边距 + 8px 余量（ChatDock 自己的口径） */
 export const OVERLAY_CHAT_DOCK_LIFT = 24;
+/**
+ * 聊天容器里「面板 ↔ 入口按钮」的间距（ChatDock 自己的 --sp-2 = 8px）。
+ *
+ * 与 {@link OVERLAY_GAP}（两个浮层之间的最小间距 = 12px）**不是**同一个数：
+ * 混用会让抬升量差 4px，实机测量就会对不上（480×600：面板底边 413 = 工具栏顶边 484 - 24 - 8 - 39）。
+ */
+export const CHAT_DOCK_TOGGLE_GAP = 8;
 /** 面板标识：右侧聊天 / 右上批量列表 */
 export type OverlayPane = "chat" | "batch";
 /**
@@ -256,14 +263,16 @@ export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
   }
 
   if (!both) {
-    // 单开：不为未打开的面板预留任何空间
+    // 单开：不为未打开的面板预留任何空间（宽度上）；但两块面板贴的是**同一列**（right = 16），
+    // 而右下角始终有聊天入口按钮：批量列表如果按「可以更低」的区间长下去，会盖住「打开对话」
+    // 这个主要入口（实机 elementFromPoint 实测被面板里的按钮挡住）。所以单开时两块共用同一个竖直区间。
     return {
       mode: "side-by-side",
       chatMaxWidth: chatWidth,
       chatMaxHeight: bands.chatBand,
       chatRight: OVERLAY_EDGE,
       batchMaxWidth: batchWidth,
-      batchMaxHeight: bands.batchBand,
+      batchMaxHeight: bands.chatBand,
       batchRight: OVERLAY_EDGE,
       gap,
       switchBar,
@@ -362,6 +371,30 @@ export function chatHeightRelaxation(toggleHeight: number): number {
   if (!Number.isFinite(height) || height <= 0) return 0;
   const measured = OVERLAY_CHAT_DOCK_LIFT + OVERLAY_GAP + height;
   return Math.max(0, OVERLAY_CHAT_FOOTER - measured);
+}
+
+/**
+ * 切换显示时聊天面板要抬多高，才能真的停在切换条上方（契约 §11.7 的「真实高度」）。
+ *
+ * 为什么需要：聊天面板的底边不是几何计划说了算 —— ChatDock 把整个聊天容器贴在
+ * 「工具栏顶边往上 {@link OVERLAY_CHAT_DOCK_LIFT}」处，容器里「面板在上、入口按钮在下」，
+ * 所以面板真实底边 = 工具栏顶边 - {@link OVERLAY_CHAT_DOCK_LIFT} - {@link OVERLAY_GAP} - 入口按钮高度。
+ * 只限制 max-height 时面板仍从**自己的底边**向上长，依旧压在切换条上
+ * （独立实机复测：480×600 下相交 11934px²）。
+ *
+ * 抬升量 = 面板真实底边与预留底边之差。量不到入口按钮高度时取**最大**值：
+ * 宁可多抬几像素，也不许压住切换条（与「保守页脚」同一个取向）。
+ */
+export function chatSwitchLift(toggleHeight: number): number {
+  const full =
+    OVERLAY_CHAT_FOOTER +
+    OVERLAY_SWITCH_BAR_HEIGHT +
+    2 * OVERLAY_GAP -
+    OVERLAY_CHAT_DOCK_LIFT -
+    CHAT_DOCK_TOGGLE_GAP;
+  const height = px(num(toggleHeight, Number.NaN));
+  if (!Number.isFinite(height) || height <= 0) return full;
+  return Math.max(0, full - height);
 }
 
 /**

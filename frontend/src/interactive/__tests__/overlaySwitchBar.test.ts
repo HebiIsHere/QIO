@@ -11,9 +11,12 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_DOCK_TOGGLE_GAP,
+  OVERLAY_CHAT_DOCK_LIFT,
   OVERLAY_EDGE,
   OVERLAY_GAP,
   OVERLAY_SWITCH_BAR_HEIGHT,
+  chatSwitchLift,
   intersectionArea,
   overlaysAreCramped,
   overlayRects,
@@ -99,6 +102,30 @@ describe("切换显示状态：同一个布局状态算可用空间", () => {
   });
 });
 
+describe("聊天面板的抬升：底边由 ChatDock 自己锚定，必须真的抬到切换条上方", () => {
+  it("抬升量 = 预留底边与面板真实底边之差（按入口按钮高度算）", () => {
+    // 真实底边 = 工具栏顶边 - 24 - 8 - 入口按钮高度；预留底边 = 工具栏顶边 - 78 - 34 - 2*间距
+    expect(chatSwitchLift(34)).toBe(70);
+    expect(chatSwitchLift(39)).toBe(65); // 480×600 实机实测的入口按钮高度
+  });
+
+  it("量不到入口按钮高度时取最大值：宁可多抬几像素，也不许压住切换条", () => {
+    expect(chatSwitchLift(Number.NaN)).toBe(104);
+    expect(chatSwitchLift(0)).toBe(104);
+    expect(chatSwitchLift(200)).toBe(0); // 入口按钮比预留还高时不倒扣
+  });
+
+  it("抬升后的面板底边正好停在切换条上方一个间距，面板顶边仍在可用区内", () => {
+    const base = crampedBase({ chatOpen: true, batchOpen: false, switched: true });
+    const geometry = planOverlayGeometry(base);
+    const toggleHeight = 39;
+    const realBottom = base.toolbarTop - OVERLAY_CHAT_DOCK_LIFT - CHAT_DOCK_TOGGLE_GAP - toggleHeight;
+    const liftedBottom = realBottom - chatSwitchLift(toggleHeight);
+    expect(geometry.switchBar.y - liftedBottom).toBe(OVERLAY_GAP);
+    expect(liftedBottom - geometry.chatMaxHeight).toBeGreaterThanOrEqual(base.stage.top + OVERLAY_EDGE);
+  });
+});
+
 describe("切换条与面板、工具栏、视口的几何关系", () => {
   const cases: Array<[string, OverlayInput]> = [
     ["两个面板都开", crampedBase()],
@@ -127,6 +154,16 @@ describe("切换条与面板、工具栏、视口的几何关系", () => {
       expect(bar.y, name).toBeGreaterThanOrEqual(base.stage.top + OVERLAY_EDGE);
       expect(bar.y + bar.height, name).toBeLessThanOrEqual(base.toolbarTop - OVERLAY_EDGE);
     }
+  });
+
+  it("单开批量列表时不盖住右下角的聊天入口按钮（两块面板贴同一列）", () => {
+    const base = crampedBase({ viewport: { width: 800, height: 600 }, stage: { top: 53, height: 547 }, toolbarTop: 423, chatOpen: false, batchOpen: true });
+    const geometry = planOverlayGeometry(base);
+    expect(geometry.mode).toBe("side-by-side");
+    const { batch } = overlayRects(base, geometry);
+    // 聊天入口按钮在工具栏顶边往上 58px 起、高 39px（实机实测）：面板底边必须停在它上面
+    expect(batch.y + batch.height).toBeLessThanOrEqual(base.toolbarTop - 58 - 39);
+    expect(batch.x + batch.width).toBe(base.viewport.width - OVERLAY_EDGE);
   });
 
   it("宽窗口（并排）不需要切换条：矩形高度为 0，也不占竖直区间", () => {
