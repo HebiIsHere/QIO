@@ -13,13 +13,14 @@ import { computed, ref } from "vue";
 import * as api from "../services/interactive";
 import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../interactive/approval";
 import {
-  draftStorageKey,
-  hasDraftRecord,
+  cardDraftKey,
+  cardIdFromDraftKey,
   isStaleReceipt,
-  readDraft,
-  removeDraft,
-  writeDraft,
-  type DraftRecord,
+  listLocalCardDraftIds,
+  readCardLocalDraft,
+  removeCardLocalDraft,
+  writeCardLocalDraft,
+  writeCardLocalClear,
 } from "../interactive/drafts";
 import {
   cloneState,
@@ -51,15 +52,13 @@ const DRAFT_FLUSH_MAX_ROUNDS = 8;
  * 重新检查是有界的：失败会明确停在 error 等用户重试，不做无界自动重试。
  */
 const DRAFT_FLUSH_MAX_PASSES = 4;
-/** 卡片草稿在内存与服务端草稿接口里的键前缀（契约 §4：`card:<id>`） */
-const CARD_DRAFT_PREFIX = "card:";
-/** 本机恢复副本的 id 前缀：与服务端草稿键分开（§10.5） */
-const LOCAL_DRAFT_ID_PREFIX = "local-";
-/**
- * 恢复副本里的哨兵序号：表示「这个草稿已经被用户确认或删除」，不是一条草稿。
- * 服务端那次删除万一没成功，下次刷新靠它挡住旧记录复活、遮住新的正式内容（§10.4）。
+/*
+ * 卡片草稿的键一律走 `interactive/drafts.ts` 的构造函数（§11.1：两种记录身份都要能被识别与枚举）：
+ * - `cardDraftKey(cardId)`      与服务器同步的草稿（内存与服务端草稿接口里的键）
+ * - `cardLocalDraftKey(cardId)` 本机恢复副本的身份；实际存储键由 drafts.ts 内部统一拼
+ * 这里不再出现手写的字符串前缀，也不再需要「清除哨兵序号」——
+ * 「已被用户清除、还没同步」现在是一条真正的本机记录（kind: "cleared"，§11.2）。
  */
-const CLEARED_DRAFT_SEQ = -1;
 export type SubmitStatus = "idle" | "submitting" | "succeeded" | "failed" | "empty" | "duplicate";
 
 export const useInteractiveStore = defineStore("interactive", () => {
@@ -76,10 +75,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 最近编辑过的草稿键（提示组件没拿到 cardId 时的兜底） */
   const lastDraftKey = ref("");
   /**
-   * 本机草稿记录（存在记录 / 恢复副本）的写入结果（§10.5）。
+   * 本机草稿记录（存在记录 / 恢复副本）的写入结果（§10.5 / §11.3）。
    * 本机存储写不进去时必须能提示并重试，不能只在内存里假装存过了。
+   *
+   * 与 `draftStates`（**服务器**保存结果）分开：服务器已经成功时，
+   * 绝不能因为本机这一路失败就把它显示成服务器保存失败（§11.3）。
    */
   const draftLocalStates = ref<Record<string, { ok: boolean; error: string | null }>>({});
+  /**
+   * 每个草稿键上「待确认的清除」状态（§11.2）：
+   * 删除是一项待同步的真实变化，服务器确认前**不能**算已同步；失败要有准确状态与重试。
+   */
+  const draftRemovalStates = ref<Record<string, { status: "idle" | "pending" | "error"; error: string | null }>>({});
+  /**
+   * 按记录自己的版本无法判定新旧时留下的冲突（§11.3）：两份内容都保留，等用户明确选择。
+   * key 是草稿键，值是「本机那份」与「服务器那份」的正文。
+   */
+  const draftConflicts = ref<Record<string, { local: string; server: string }>>({});
 
   const saveStatus = ref<SaveStatus>("idle");
   const lastSavedAt = ref<string | null>(null);
@@ -166,10 +178,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 同一时刻只允许一个草稿保存请求在飞（并发 PUT 会让旧内容盖掉新内容） */
   let draftInFlight: Promise<void> | null = null;
   /**
-   * 已经在本机确认/删除、但服务端还没删掉的草稿键。
-   * 服务端草稿是整份替换保存的：下一次成功的草稿保存会把它们一并删掉（§10.4）。
+   * 用户已清除、但服务端还没确认的草稿键（§11.2）。
+   *
+   * 键是**草稿键**（`card:<id>`），值是这次清除针对的本机版本号：
+   * - 服务端草稿是整份替换保存的，所以「提交剩余集合」本身就完成了删除；
+   * - 只要这份依据还在，`flushDrafts` 就必须真的发一次请求（清空最后一份也要发）；
+   * - 版本号用来保证「旧版本的清除不许删掉后来新建的版本」。
    */
-  const draftRemovalKeys = new Set<string>();
+  const pendingRemovals = new Map<string, { cardId: string; version: number }>();
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -278,34 +294,101 @@ export const useInteractiveStore = defineStore("interactive", () => {
     scheduleSave();
   }
 
+  /** 这一版内存内容是不是比 `before` 时更新（含请求在飞期间的新输入，§11.1） */
+  function memoryIsNewer(key: string, before: Map<string, number>): boolean {
+    const seq = draftKeySeq.get(key) ?? 0;
+    const saved = draftSavedKeySeq.get(key) ?? 0;
+    return seq > (before.get(key) ?? 0) || seq > saved;
+  }
+
+  /** 这个板面上还有这张卡（已删除的对象不恢复草稿，§11.1） */
+  function boardHasCard(cardId: string): boolean {
+    return (board.value?.cards ?? []).some((card) => card.id === cardId && !card.deleted);
+  }
+
+  /**
+   * 恢复本机记录（§11.1）：**枚举本机记录**，不看服务器有没有这份草稿。
+   *
+   * 这是「第一次编辑、防抖还没到就刷新」能恢复的关键：那时服务器上没有这份草稿，
+   * 只按服务器/内存里已有的键去遍历永远发现不了它。
+   *
+   * 恢复的边界（逐条都按记录自己的信息判断，不用整个草稿集合的更新时间，§11.3）：
+   * - 记录属于别的板面 → 不恢复（也不删，那是别的板面的恢复数据）；
+   * - 记录属于已删除/不存在的卡片 → 不恢复；
+   * - 记录是「待确认的清除」→ 不是草稿：不许复活，登记一条待同步的清除；
+   * - 请求期间用户又输入了新文字 → 以新输入为准，绝不用服务器返回值覆盖；
+   * - 恢复结果只回到**编辑草稿**（内存里的 drafts），不写进正式卡片内容。
+   */
+  function restoreLocalCardDrafts(merged: Record<string, string>, before: Map<string, number>): void {
+    for (const cardId of listLocalCardDraftIds()) {
+      const key = cardDraftKey(cardId);
+      const local = readCardLocalDraft(cardId);
+      if (!local) continue;
+
+      if (local.kind === "cleared") {
+        /**
+         * 删除是一项**待确认的变化**（§11.2）：刷新后仍然知道这份旧草稿要清掉。
+         * 服务器上那份旧记录不许再出现在编辑器里（否则就是「清除后又复活」）。
+         */
+        pendingRemovals.set(key, { cardId, version: local.version ?? 0 });
+        setDraftRemovalState(key, "pending", null);
+        if (Object.prototype.hasOwnProperty.call(merged, key)) delete merged[key];
+        continue;
+      }
+
+      // 不给别的板面恢复内容：记录自己写了归属，和当前板面对不上就跳过
+      if (local.boardId && local.boardId !== boardId.value) continue;
+      // 已删除或不存在的对象不恢复草稿
+      if (!boardHasCard(cardId)) {
+        // 这份本机记录已经没有可归属的对象了；留着只会在别的对象上误恢复（§10.4）
+        removeCardLocalDraft(cardId);
+        continue;
+      }
+      // 恢复期间用户还在输入：内存里的新文字优先，绝不被服务器返回值覆盖
+      if (memoryIsNewer(key, before)) continue;
+
+      const serverText = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : null;
+      if (serverText !== null && serverText === local.text) {
+        // 服务器上已经有同样一份：这条本机记录已经被确认，按对象清理掉
+        removeCardLocalDraft(cardId);
+        continue;
+      }
+      if (serverText !== null && (local.version ?? 0) <= 0) {
+        /**
+         * 旧版本写的本机记录没有版本号，按这条记录**自己**的信息无法判定它和服务器那份谁新
+         * （§11.3：不许用整个草稿集合的更新时间或别张卡片的保存时间来判）。
+         * 两份都保留，交给用户明确选择，不静默丢弃也不静默覆盖。
+         */
+        merged[key] = local.text;
+        setDraftConflict(key, { local: local.text, server: serverText });
+        continue;
+      }
+
+      // 本机独有的记录：服务器没有这份草稿也要恢复（这正是「第一次输入」的形态）
+      merged[key] = local.text;
+      draftKeySeq.set(key, ++draftSeq);
+      setDraftLocalState(key, { ok: true, error: null });
+      setDraftState(key, "saving");
+      scheduleDraftSave();
+    }
+  }
+
   async function refreshBoardFromServer() {
+    // 请求发出前的内存版本：迟到返回时用它判断「用户是不是已经又输入了」（§11.1）
+    const before = new Map(draftKeySeq);
     const payload = await api.fetchBoardState(boardId.value);
     board.value = payload.state;
     boardId.value = payload.board.id;
     submissions.value = payload.submissions ?? [];
     // 服务端是已保存内容的事实来源，但**本地还没保存成功的编辑内容**优先：
-    // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」）。
+    // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」），
+    // 请求期间用户新输入的文字同样优先（§11.1）。
     const serverDrafts = payload.drafts?.drafts ?? {};
     const mergedDrafts: Record<string, string> = { ...serverDrafts };
-    for (const key of unsavedDraftKeys()) mergedDrafts[key] = drafts.value[key] ?? "";
-    /**
-     * 本机恢复副本（契约 §10.5）：`pagehide` 里发普通请求不保证到达，
-     * 所以输入时**同步**写一份本地副本；重新打开时只有它**比服务端更新**才用它，
-     * 绝不让旧副本覆盖更新的版本。用它恢复的内容会标成「未保存」并重新排一次保存。
-     */
-    const serverAt = payload.drafts?.updatedAt ? Date.parse(payload.drafts.updatedAt) : 0;
-    for (const key of Object.keys(mergedDrafts)) {
-      const cardId = key.startsWith("card:") ? key.slice("card:".length) : "";
-      if (!cardId) continue;
-      const local = readDraft(draftStorageKey("card", "local-" + cardId));
-      if (!local) continue;
-      const newer = local.updatedAt > (Number.isFinite(serverAt) ? serverAt : 0);
-      if (newer && local.text !== mergedDrafts[key]) {
-        mergedDrafts[key] = local.text;
-        draftKeySeq.set(key, ++draftSeq);
-        scheduleDraftSave();
-      }
+    for (const key of Object.keys(drafts.value)) {
+      if (memoryIsNewer(key, before)) mergedDrafts[key] = drafts.value[key] ?? "";
     }
+    restoreLocalCardDrafts(mergedDrafts, before);
     drafts.value = mergedDrafts;
     // 已经保存成功、且服务端也有的键：状态回到 idle；未保存/失败的键保留自己的状态
     const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
@@ -325,6 +408,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } else {
       saveStatus.value = "idle";
     }
+    // 刷新后发现的「待同步清除」要真的发出去：清空最后一份也要发（§11.2）
+    if (pendingRemovals.size > 0) scheduleDraftSave();
   }
 
   async function refreshVisibleRange() {
@@ -388,6 +473,67 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
+   * 本机恢复记录（不是服务器草稿）的写入结果。
+   * 默认 ok：没有要保护的内容时不算失败，界面不该平白冒出提示。
+   */
+  function draftLocalStateFor(key: string): { ok: boolean; error: string | null } {
+    return draftLocalStates.value[key] ?? { ok: true, error: null };
+  }
+
+  function setDraftLocalState(key: string, result: { ok: boolean; error?: string | null }): void {
+    draftLocalStates.value = { ...draftLocalStates.value, [key]: { ok: result.ok, error: result.error ?? null } };
+  }
+
+  /** 某个草稿键「待同步的清除」状态（§11.2）：没登记过就是 idle */
+  function draftRemovalStateFor(key: string): { status: "idle" | "pending" | "error"; error: string | null } {
+    return draftRemovalStates.value[key] ?? { status: "idle", error: null };
+  }
+
+  function setDraftRemovalState(key: string, status: "idle" | "pending" | "error", error: string | null = null): void {
+    draftRemovalStates.value = { ...draftRemovalStates.value, [key]: { status, error } };
+  }
+
+  function draftConflictFor(cardIdOrKey: string): { local: string; server: string } | null {
+    const key = cardIdFromDraftKey(cardIdOrKey) ? cardIdOrKey : cardDraftKey(cardIdOrKey);
+    return draftConflicts.value[key] ?? null;
+  }
+
+  function setDraftConflict(key: string, conflict: { local: string; server: string } | null): void {
+    const next = { ...draftConflicts.value };
+    if (conflict) next[key] = conflict;
+    else delete next[key];
+    draftConflicts.value = next;
+  }
+
+  /**
+   * 服务器草稿保存结果与本机恢复记录保存结果的**合并口径**（§11.3）。
+   *
+   * 一份提示只能有一个「主要原因」，但两个结果必须分别可见：
+   * - 服务器失败 → 原因是服务器的；
+   * - 服务器成功、本机失败 → 绝不显示成服务器保存失败（原因取本机那一路）；
+   * - 清除没同步 → 说清除，不说改写成功。
+   */
+  function draftProtectionStatus(cardId: string): {
+    local: "ok" | "failed";
+    server: DraftSaveState;
+    error: string | null;
+  } {
+    const key = cardDraftKey(cardId);
+    const local = draftLocalStateFor(key);
+    const server = draftStateFor(key);
+    const removal = draftRemovalStateFor(key);
+    const error =
+      removal.status === "error"
+        ? removal.error
+        : server.status === "error"
+          ? server.error
+          : !local.ok
+            ? local.error
+            : null;
+    return { local: local.ok ? "ok" : "failed", server: server.status, error };
+  }
+
+  /**
    * 有内容还没保存成功的草稿键。
    * 失败也算「没保存成功」：内容留在内存里，用户点重试时还要再存一次。
    */
@@ -417,22 +563,27 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /**
    * 空草稿也算「有草稿」：区分「没有草稿」与「存在但正文为空」（契约 §10.4）。
    *
-   * 两个来源都要看：
+   * 两个来源都要看，而且**都要按记录是否存在**判断（§11.1，不看字符串是否非空）：
    * - 内存里的 `drafts`（本次会话刚编辑过：哪怕正文是空串，它也是一条**存在**的草稿）；
-   * - 本机记录（刷新/重开之后的恢复来源）。
+   * - 本机记录（刷新/重开之后的恢复来源；「只存在于本机」的记录在这里被发现）。
    * 只看其中一个都会把「空草稿」判成「没有草稿」，于是旧正文又冒出来盖掉它。
+   *
+   * 待同步的清除依据（kind: "cleared"）**不是草稿**：用户已经清掉了它，
+   * 不能在编辑器里把它当草稿显示出来（§11.2）。
    */
   function hasCardDraft(cardId: string): boolean {
-    const key = "card:" + cardId;
+    const key = cardDraftKey(cardId);
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return true;
-    return hasDraftRecord(draftStorageKey("card", cardId));
+    const local = readCardLocalDraft(cardId);
+    return local !== null && local.kind !== "cleared";
   }
 
   /** 卡片草稿正文：存在则为草稿内容（可以是空串）；不存在时返回空串。 */
   function cardDraftText(cardId: string): string {
-    const key = "card:" + cardId;
+    const key = cardDraftKey(cardId);
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return drafts.value[key];
-    return readDraft(draftStorageKey("card", cardId))?.text ?? "";
+    const local = readCardLocalDraft(cardId);
+    return local && local.kind !== "cleared" ? local.text : "";
   }
 
   /**
@@ -440,8 +591,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
    *
    * **不能只是写一个空串**：那会留下一条「存在且正文为空」的草稿，
    * 下次打开编辑器会把用户刚确认的正式内容盖成空（契约 §10.4）。
-   * 这里把内存条目、本机记录一起删掉，并把版本往前推一格，
-   * 让还在飞的旧保存回执不再算数。
+   *
+   * 删除本身是一项**待确认的真实变化**（§11.2）：
+   * - 本机留下「待同步清除」的依据（kind: "cleared"），刷新后仍然知道这份旧草稿要清掉；
+   * - 登记待同步删除，`flushDrafts` 必须真的发一次请求（清空最后一份也要发）；
+   * - 服务器确认之前状态**不是**已同步：清除失败要能看到原因并重试；
+   * - 版本往前推，让还在飞的旧保存回执不再算数（不许把已清除的草稿复活）。
    */
   function clearDraft(key: string): void {
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) {
@@ -450,11 +605,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
       drafts.value = next;
     }
     draftKeySeq.set(key, ++draftSeq);
-    draftSavedKeySeq.set(key, draftKeySeq.get(key) ?? 0);
+    draftSavedKeySeq.delete(key);
     setDraftState(key, "idle");
-    const cardId = key.startsWith("card:") ? key.slice("card:".length) : key;
-    removeDraft(draftStorageKey("card", cardId));
-    removeDraft(draftStorageKey("card", "local-" + cardId));
+    setDraftConflict(key, null);
+    const cardId = cardIdFromDraftKey(key);
+    if (!cardId) return;
+    const cleared = writeCardLocalClear(cardId, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
+    setDraftLocalState(key, cleared);
+    pendingRemovals.set(key, { cardId, version: cleared.version });
+    setDraftRemovalState(
+      key,
+      cleared.ok ? "pending" : "error",
+      cleared.ok ? null : cleared.error ?? "本机没能记下这次清除，刷新后这份旧草稿可能重新出现",
+    );
+    scheduleDraftSave();
   }
 
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
@@ -463,16 +627,53 @@ export const useInteractiveStore = defineStore("interactive", () => {
     lastDraftKey.value = key;
     draftKeySeq.set(key, ++draftSeq);
     /**
+     * 这一版取代了这个键上任何还没确认的清除（§11.2）：
+     * 旧版本的清除不许删掉后来新建的版本，所以先撤掉待同步删除，再写下新版记录。
+     */
+    if (pendingRemovals.delete(key)) setDraftRemovalState(key, "idle");
+    setDraftConflict(key, null);
+    /**
      * 本机恢复副本：**同步**写（不等防抖、不等网络）。
      * 正常刷新/关闭时来不及等防抖也能把最后输入恢复出来（契约 §10.5）；
      * 只用于编辑恢复 —— 不提交、不发送、不扩大 QIO 可见范围。
+     * 写入结果**必须留下来**（§11.3）：本机写失败时不能只在内存里假装存过了。
      */
-    if (key.startsWith("card:")) {
-      writeDraft(draftStorageKey("card", "local-" + key.slice("card:".length)), text, draftKeySeq.get(key) ?? 0);
+    const cardId = cardIdFromDraftKey(key);
+    if (cardId) {
+      const written = writeCardLocalDraft(cardId, text, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
+      setDraftLocalState(key, written);
     }
     // 一有输入就进「保存中」：失败时才会被改成 error（绝不停在「已保存」）
     setDraftState(key, "saving");
     scheduleDraftSave();
+  }
+
+  /**
+   * 用户对「无法判定新旧」的冲突做出选择（§11.3）：两份都保留过，选了才继续。
+   * - 用本机的：这份内容继续作为草稿，重新排一次保存；
+   * - 用服务器上的：把它作为当前草稿内容，本机那份冲突记录清掉（服务器上已经有它）。
+   * 两种选择都不提交板面、不调用 QIO。
+   */
+  function resolveDraftConflict(cardIdOrKey: string, choice: "local" | "server"): void {
+    const cardId = cardIdFromDraftKey(cardIdOrKey) ?? cardIdOrKey;
+    const key = cardDraftKey(cardId);
+    const conflict = draftConflicts.value[key];
+    if (!conflict) return;
+    if (choice === "local") {
+      setDraftConflict(key, null);
+      draftKeySeq.set(key, ++draftSeq);
+      setDraftState(key, "saving");
+      scheduleDraftSave();
+      return;
+    }
+    setDraftConflict(key, null);
+    drafts.value = { ...drafts.value, [key]: conflict.server };
+    draftKeySeq.set(key, ++draftSeq);
+    draftSavedKeySeq.set(key, draftKeySeq.get(key) ?? 0);
+    setDraftState(key, "saved");
+    // 服务器上已经有这一份：本机那份冲突副本按对象清理掉
+    removeCardLocalDraft(cardId);
+    setDraftLocalState(key, { ok: true, error: null });
   }
 
   function draftFor(key: string): string {
@@ -487,12 +688,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }, DRAFT_SAVE_DEBOUNCE_MS);
   }
 
+  /** 还有「没做完的草稿工作」：未保存的内容，或还没被服务器确认的清除（§11.2） */
+  function hasDraftWork(): boolean {
+    return hasUnsavedDrafts() || pendingRemovals.size > 0;
+  }
+
   /**
    * 把未保存的草稿写回服务端（**只保存草稿**：不建卡、不提交板面、不调用 QIO）。
    *
    * 同一时刻只允许一个请求在飞：两个并发 PUT 会按返回顺序落库，先发出、后返回的
    * 旧内容会把新内容盖掉。一个请求结束后如果又有了新输入，就再存一轮（有上限）。
    * 失败**不自动重试**：内存内容与错误原因都留着，等用户点重试或下一次输入。
+   *
+   * 清除草稿同样是这里发出的（§11.2）：服务端草稿是**整份替换**保存的，
+   * 所以「提交剩余集合」本身就完成了删除 —— 清空最后一份也要发出请求（此时 payload 是 `{}`）。
+   * 服务器确认之前这份删除都留在 `pendingRemovals` 里，绝不算已同步。
    */
   async function flushDrafts(): Promise<void> {
     if (draftTimer) {
@@ -504,20 +714,25 @@ export const useInteractiveStore = defineStore("interactive", () => {
      *
      * 不能直接 return —— 那正是「第二版被遗忘、界面永远停在保存中」的根因：
      * 第二版的防抖到点时旧请求还在飞，等待后直接返回，旧请求失败就再也没人管它了。
+     * 这里等完后同样要重新检查「待确认的清除」：旧保存成功之后服务器上又有了那份草稿，
+     * 清除请求必须真的再发一次，否则刷新就复活（§11.2）。
      */
     while (draftInFlight) await draftInFlight;
-    if (!hasUnsavedDrafts()) return;
+    if (!hasDraftWork()) return;
     let lastError: string | null = null;
     draftInFlight = (async () => {
       try {
         for (let round = 0; round < DRAFT_FLUSH_MAX_ROUNDS; round += 1) {
-          if (!hasUnsavedDrafts()) return;
+          if (!hasDraftWork()) return;
           const payload = { ...drafts.value };
           const atSeq = draftSeq;
+          // 这次请求会一并清掉的删除依据（payload 就是剩余集合：不带某个键 = 删掉它）
+          const removalsAtRequest = new Map(pendingRemovals);
           const keys = Object.keys(payload);
           for (const key of keys) {
             if ((draftKeySeq.get(key) ?? 0) <= atSeq) setDraftState(key, "saving");
           }
+          for (const key of removalsAtRequest.keys()) setDraftRemovalState(key, "pending");
           try {
             await api.saveDrafts(boardId.value, payload);
             lastError = null;
@@ -528,6 +743,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
               // 期间又改了内容：它属于下一轮，不要标成这次的失败（状态留给下一轮）
               if (isStaleReceipt(atSeq, keySeq)) continue;
               setDraftState(key, "error", lastError);
+            }
+            for (const [key, entry] of removalsAtRequest) {
+              // 已经被新版本取代的清除不属于这次请求
+              if (pendingRemovals.get(key)?.version !== entry.version) continue;
+              setDraftRemovalState(key, "error", lastError);
             }
             /**
              * 只有「这次请求期间又改过」的更新版本才自动再试一次（有界）；
@@ -544,9 +764,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
             draftSavedKeySeq.set(key, keySeq);
             setDraftState(key, "saved");
             // 服务端已经拿到这一版：本机恢复副本按对象清理掉（契约 §10.5）
-            if (key.startsWith("card:")) {
-              removeDraft(draftStorageKey("card", "local-" + key.slice("card:".length)));
+            const cardId = cardIdFromDraftKey(key);
+            if (cardId) {
+              removeCardLocalDraft(cardId);
+              setDraftLocalState(key, { ok: true, error: null });
             }
+          }
+          /**
+           * 服务器确认了这次一并清掉的删除依据：
+           * 只有**同一版本**才算确认 —— 用户在清除之后又编辑的新版本不能被旧清除删掉（§11.2）。
+           */
+          for (const [key, entry] of removalsAtRequest) {
+            if (pendingRemovals.get(key)?.version !== entry.version) continue;
+            pendingRemovals.delete(key);
+            removeCardLocalDraft(entry.cardId, entry.version);
+            setDraftRemovalState(key, "idle");
+            setDraftState(key, "idle");
           }
         }
       } finally {
@@ -559,9 +792,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 要么继续安排下一次保存（真的会发出请求），要么明确显示未保存原因与重试入口。
      * 绝不留下「没有请求、没有计时、没有后续工作，却一直显示保存中」。
      */
-    if (hasUnsavedDrafts()) {
+    if (hasDraftWork()) {
       if (lastError) {
         for (const key of unsavedDraftKeys()) setDraftState(key, "error", lastError);
+        for (const [key] of pendingRemovals) {
+          if (draftRemovalStateFor(key).status === "pending") setDraftRemovalState(key, "error", lastError);
+        }
       } else {
         // 轮次上限用尽但内容还在更新：交给下一次防抖，不在这里空转
         scheduleDraftSave();
@@ -570,13 +806,35 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
-   * 用户点「重试保存」：只重写草稿，**不建卡、不提交板面、不调用 QIO**。
-   * 不传 key 就重试所有还没保存成功的草稿。
+   * 用户点「重试」：只重写草稿，**不建卡、不提交板面、不调用 QIO**。
+   * 不传 key 就重试所有还没保存成功的草稿与还没确认的清除。
+   *
+   * 重试要覆盖三件可能失败过的事（§11.2 / §11.3）：
+   * 1. 服务器草稿保存；
+   * 2. **本机恢复记录**的写入（之前只重发网络请求，本机那一路永远没被补上）；
+   * 3. 待确认的清除（包括「内容已经清空、只剩清除」的情况）。
    */
   async function retryDraftSave(key?: string): Promise<void> {
     const keys = key ? [key] : unsavedDraftKeys();
+    if (!key) {
+      for (const item of pendingRemovals.keys()) if (!keys.includes(item)) keys.push(item);
+    }
     for (const item of keys) {
       if (draftStateFor(item).status === "error") setDraftState(item, "saving");
+      const cardId = cardIdFromDraftKey(item);
+      if (!cardId) continue;
+      // 本机那一路之前失败过：这次连本机一起重写
+      if (!draftLocalStateFor(item).ok && Object.prototype.hasOwnProperty.call(drafts.value, item)) {
+        const written = writeCardLocalDraft(cardId, drafts.value[item] ?? "", {
+          boardId: boardId.value,
+          seq: draftKeySeq.get(item) ?? 0,
+        });
+        setDraftLocalState(item, written);
+      }
+      // 清除失败过：把清除重新标成待确认，由 flushDrafts 真的发出请求
+      if (pendingRemovals.has(item) && draftRemovalStateFor(item).status === "error") {
+        setDraftRemovalState(item, "pending");
+      }
     }
     await flushDrafts();
   }
@@ -795,10 +1053,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
     cardDraftText,
     clearDraft,
     draftStates,
+    draftLocalStates,
+    draftRemovalStates,
+    draftConflicts,
     lastDraftKey,
     draftSaveStatus,
     draftSaveError,
     draftStateFor,
+    draftLocalStateFor,
+    draftRemovalStateFor,
+    draftProtectionStatus,
+    draftConflictFor,
+    resolveDraftConflict,
     flushDrafts,
     retryDraftSave,
     submit,
