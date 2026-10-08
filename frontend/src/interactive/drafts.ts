@@ -40,11 +40,71 @@ export function draftStorageKey(scope: DraftScope, id: string): string {
   return STORAGE_PREFIX + scope + "." + (id || "default");
 }
 
-/** 本地存储后端的最小形状（只要这三个方法，方便测试注入替身） */
+/*
+ * 卡片草稿的两种记录身份（契约 §11.1）。
+ *
+ * - `card:<id>`        与服务器同步的草稿（保存成功后服务器也有）
+ * - `card-local:<id>`  **本机恢复副本**：输入时同步写的保护记录，可能还没上传
+ *
+ * 必须分成两种身份：恢复要能发现「只存在于本机」的记录，又不能在成功后误删服务器上还有的草稿。
+ * 读取路径与写入路径一律用这两个构造函数，不再手写字符串前缀。
+ */
+export const CARD_DRAFT_PREFIX = "card:";
+export const CARD_LOCAL_DRAFT_PREFIX = "card-local:";
+
+export function cardDraftKey(cardId: string): string {
+  return CARD_DRAFT_PREFIX + cardId;
+}
+
+export function cardLocalDraftKey(cardId: string): string {
+  return CARD_LOCAL_DRAFT_PREFIX + cardId;
+}
+
+/** 从任一卡片草稿键里取出卡片 id（两种键都认）；不是卡片草稿键时返回 null。 */
+export function cardIdFromDraftKey(key: string): string | null {
+  if (key.startsWith(CARD_LOCAL_DRAFT_PREFIX)) return key.slice(CARD_LOCAL_DRAFT_PREFIX.length) || null;
+  if (key.startsWith(CARD_DRAFT_PREFIX)) return key.slice(CARD_DRAFT_PREFIX.length) || null;
+  return null;
+}
+
+export function isCardDraftKey(key: string): boolean {
+  return cardIdFromDraftKey(key) !== null;
+}
+
+/**
+ * 本机存着恢复副本的卡片 id 列表（★恢复必须能发现「只存在于本机」的记录）。
+ *
+ * 只扫本机存储，不依赖服务器返回了什么，也不依赖内存里有没有对应的键。
+ */
+export function listLocalCardDraftIds(): string[] {
+  const { storage } = resolveStorage();
+  if (!storage) return [];
+  const prefix = draftStorageKey("card", "local-");
+  const ids: string[] = [];
+  try {
+    const count = typeof storage.length === "number" ? storage.length : 0;
+    const readKey = storage.key?.bind(storage);
+    if (!readKey) return [];
+    for (let index = 0; index < count; index += 1) {
+      const key = readKey(index);
+      if (!key || !key.startsWith(prefix)) continue;
+      const cardId = key.slice(prefix.length);
+      if (cardId) ids.push(cardId);
+    }
+  } catch {
+    // 存储不可用（隐私模式 / 被策略禁用）：当作没有本机记录，调用方按「恢复不了」如实说明
+    return [];
+  }
+  return ids;
+}
+
+/** 本地存储后端的最小形状（前三个方法必需；枚举键可选，用来发现「只存在于本机」的记录） */
 interface DraftStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+  readonly length?: number;
+  key?(index: number): string | null;
 }
 
 /**
