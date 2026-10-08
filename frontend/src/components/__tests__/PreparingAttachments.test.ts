@@ -26,6 +26,10 @@ const mocks = vi.hoisted(() => ({
   })),
   cancelTurn: vi.fn(async (id: string) => ({ ok: true, cancelled: true, turn_id: id })),
   cancelActiveTurn: vi.fn(async () => ({ ok: true, cancelled: true })),
+  /** 取消端点（契约 §1.1）：中止必须**以后端确认为准** */
+  cancelPreparing: vi.fn(
+    (_prepareId: string) => Promise.resolve({ ok: true, cancelled: true }) as Promise<unknown>,
+  ),
   prepareAttachment: vi.fn(),
   uploadAttachment: vi.fn(),
   removeAttachment: vi.fn(async () => undefined),
@@ -45,6 +49,7 @@ vi.mock("../../services/api", () => ({
     getSessionContext: mocks.getSessionContext,
     cancelTurn: mocks.cancelTurn,
     cancelActiveTurn: mocks.cancelActiveTurn,
+    cancelPreparing: mocks.cancelPreparing,
   },
 }));
 
@@ -108,8 +113,20 @@ async function mountDeferred(options: { abortFails?: boolean } = {}) {
   let settle: (value: unknown) => void = () => undefined;
   let fail: (err: unknown) => void = () => undefined;
   let signal: AbortSignal | undefined;
+  let prepareId: string | undefined;
+  let cancelSettle: (value: unknown) => void = () => undefined;
+  let cancelFail: (err: unknown) => void = () => undefined;
+  // 取消端点默认挂住：这样能断言「确认之前不得宣称已中止」
+  mocks.cancelPreparing.mockImplementation((...args: unknown[]) => {
+    void args;
+    return new Promise<unknown>((resolve, reject) => {
+      cancelSettle = resolve as (value: unknown) => void;
+      cancelFail = reject as (err: unknown) => void;
+    });
+  });
   mocks.sendTurn.mockImplementationOnce((...args: unknown[]) => {
     signal = args[4] as AbortSignal | undefined;
+    prepareId = args[5] as string | undefined;
     return new Promise((resolve, reject) => {
       settle = resolve as (value: unknown) => void;
       fail = reject;
@@ -127,6 +144,10 @@ async function mountDeferred(options: { abortFails?: boolean } = {}) {
     settle: (value: unknown = ACCEPTED) => settle(value),
     fail,
     signal: () => signal,
+    prepareId: () => prepareId,
+    confirmCancel: (value: unknown = { ok: true, cancelled: true, turn_id: "turn_1" }) =>
+      cancelSettle(value),
+    failCancel: (err: unknown) => cancelFail(err),
   };
 }
 /** 浏览器回退入口：真实地「选一个文件」，让 pending 里有一条已就绪的附件。 */
@@ -232,8 +253,8 @@ describe("带附件发送：「正在准备附件…」", () => {
     w.unmount();
   });
 
-  it("中止：请求被真的 abort，且不留「这一轮已发出」的执行迹象", async () => {
-    const { w, session, signal } = await mountDeferred();
+  it("中止：先调取消端点、**以后端确认为准**，并如实显示「这一轮没有发送」", async () => {
+    const { w, session, signal, prepareId, confirmCancel } = await mountDeferred();
     await attachFile(w);
     await typeAndSend(w, "要中止的消息");
     await new Promise((resolve) => setTimeout(resolve, 260));
@@ -244,14 +265,20 @@ describe("带附件发送：「正在准备附件…」", () => {
     await cancel.trigger("click");
     await flushPromises();
 
-    // 真正的 abort（后端据此 abandon 预留，见契约 §1.1）：
-    // api 层收到的 signal 被 abort，请求以 AbortError 收尾（mock 里就是这么接的）
-    expect(signal(), "必须把 AbortSignal 交给发送调用").toBeTruthy();
-    expect(signal()?.aborted, "点中止必须真的 abort 请求").toBe(true);
+    // 发送时带了准备标识：后端才能定位这次准备（abort 本身不是证据）
+    expect(prepareId(), "必须把准备标识交给发送调用").toBeTruthy();
+    expect(mocks.cancelPreparing).toHaveBeenCalledWith(prepareId());
 
+    // 后端还没确认：**不得**宣称已中止，界面处于「正在中止…」
+    expect(w.text(), "确认之前不得宣称已中止").not.toContain("已中止");
+    expect(w.find('[data-test="preparing-cancel"]').text()).toContain("正在中止");
+
+    confirmCancel({ ok: true, cancelled: true, turn_id: "turn_p" });
     await flushPromises();
     await nextTick();
 
+    // 确认之后：如实说「没有发送」，请求连接也放掉
+    expect(signal()?.aborted, "确认之后才放掉连接").toBe(true);
     expect(w.find(PREPARING).exists()).toBe(false);
     expect(w.find('[data-test="turn-process"]').exists()).toBe(false);
     expect(session.messages.some((m) => m.role === "user" && m.content === "要中止的消息")).toBe(false);
@@ -259,11 +286,33 @@ describe("带附件发送：「正在准备附件…」", () => {
     expect(w.text()).toContain("已中止");
     w.unmount();
   });
+
+  it("拿不到后端确认：保留原因与可用操作，**不宣称**已中止", async () => {
+    const { w, failCancel } = await mountDeferred();
+    await attachFile(w);
+    await typeAndSend(w, "确认失败的消息");
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await nextTick();
+
+    await w.find('[data-test="preparing-cancel"]').trigger("click");
+    await flushPromises();
+    failCancel(new Error("网络断了"));
+    await flushPromises();
+    await nextTick();
+
+    const notice = w.find('[data-test="preparing-notice"]');
+    expect(notice.exists(), "失败必须给出可理解的原因").toBe(true);
+    expect(notice.text()).toContain("中止失败");
+    expect(notice.text()).not.toContain("已中止");
+    // 还能再点一次（不是「已完成」的死状态）
+    expect(w.find('[data-test="preparing-cancel"]').attributes("disabled")).toBeUndefined();
+    w.unmount();
+  });
 });
 
-describe("abort 与「已受理」的竞态", () => {
-  it("用户已按中止但请求已经受理：不假装从未发送，如实按「已取消」收尾", async () => {
-    const { w, session, settle, signal } = await mountDeferred({ abortFails: false });
+describe("后端已经放行时的中止（already_started）", () => {
+  it("如实说「已受理，已按停止取消」，并走既有停止流程", async () => {
+    const { w, session, settle, confirmCancel } = await mountDeferred();
     await attachFile(w);
     await typeAndSend(w, "竞态的消息");
     await new Promise((resolve) => setTimeout(resolve, 260));
@@ -271,19 +320,27 @@ describe("abort 与「已受理」的竞态", () => {
 
     await w.find('[data-test="preparing-cancel"]').trigger("click");
     await flushPromises();
-    expect(signal()?.aborted).toBe(true);
 
-    // 请求已经在那一刻受理了：后端把它当成一轮真实的 turn
+    // 后端事实：这一轮已经放行/开始 —— 不得假装「没有发送」
+    confirmCancel({ ok: true, cancelled: false, already_started: true, turn_id: "turn_1" });
+    await flushPromises();
+    await nextTick();
+
+    // 已放行：POST 随后照常返回受理回执（准备状态随之收起）
     session.pushUser("竞态的消息");
-    session.turnRunning = true;
     settle(true);
     await flushPromises();
     await nextTick();
 
-    // 如实显示「已取消」，并且真的走了停止入口（不是假装没发过）
     const notice = w.find('[data-test="preparing-notice"]');
     expect(notice.exists()).toBe(true);
-    expect(notice.text()).toContain("已取消");
+    expect(notice.text()).toContain("已受理");
+    expect(notice.text()).toContain("停止");
+    // 走了既有停止入口（cancelTurn / cancelActiveTurn 之一）
+    expect(
+      mocks.cancelTurn.mock.calls.length + mocks.cancelActiveTurn.mock.calls.length,
+      "already_started 必须真的调用停止入口",
+    ).toBeGreaterThan(0);
     expect(w.find(PREPARING).exists()).toBe(false);
     expect(w.find('[data-test="turn-process"]').exists()).toBe(false);
     w.unmount();

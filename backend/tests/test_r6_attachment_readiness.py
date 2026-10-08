@@ -375,7 +375,9 @@ async def test_prepare_failure_is_rejected_before_anything_starts(async_app, tmp
 
     assert resp.status_code == 409, resp.text
     detail = resp.json()["detail"]
-    assert detail["code"] == "attachment_binding_failed", detail
+    # 顶层 code：B 交付具体拒绝 code（attachment_not_ready）之后要透传；
+    # 在他那份改动落到本 worktree 之前，保持既有的通用 code —— 两种都算「结构化拒绝」。
+    assert detail["code"] in ("attachment_binding_failed", "attachment_not_ready"), detail
     assert detail["rejected"], detail
     assert adapter.calls == 0, "准备失败时模型一次都不能被调用"
     assert not _turn_starts(ctx), "准备失败时不得发 TURN_START"

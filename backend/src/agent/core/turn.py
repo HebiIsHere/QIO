@@ -43,6 +43,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -79,6 +80,14 @@ logger = logging.getLogger(__name__)
 #: 预留顺序的**有界等待**上界（秒）：队首预留迟迟不放行（例如它的请求异常退出、
 #: 没来得及 abandon）时，后面已经就绪的预留不会被永远挡住 —— 到点按就绪顺序放行并记警告。
 ACTIVATION_ORDER_TIMEOUT = 60.0
+
+#: 准备标识历史（已取消 / 已开始）的容量：重复取消要幂等回「已取消」，
+#: 放行之后取消要如实回「已开始」，所以这两类事实都要在有界历史里留一段时间。
+PREPARE_HISTORY = 64
+
+#: 准备标识历史（已取消 / 已开始）的容量：重复取消要幂等回「已取消」，
+#: 放行之后取消要如实回「已开始」，所以这两类事实都要在有界历史里留一段时间。
+PREPARE_HISTORY = 64
 
 # 适配器（供应商）异常的类名：见 adapters/errors.py 的归一化分类。
 # 只按**类名**分类，不解析错误正文去猜厂商内容（与 services/verify.py 同一口径）。
@@ -193,6 +202,14 @@ class TurnManager:
         self._ready: set[str] = set()
         self._ready_since: dict[str, float] = {}
         self._order_timer: Any = None
+        # 准备标识（plan §1.1）：prepare_id → turn_id。预留期间有效；放行/放弃时按
+        # 「已开始」「已取消」两个**有界历史**记住它 —— 重复取消必须幂等回「已取消」，
+        # 放行之后取消必须如实回「已开始」（前端据此走既有停止流程）。
+        self._prepares: dict[str, str] = {}
+        self._prepare_of_turn: dict[str, str] = {}
+        self._prepare_signals: dict[str, asyncio.Future] = {}
+        self._cancelled_prepares: OrderedDict[str, str] = OrderedDict()
+        self._started_prepares: OrderedDict[str, str] = OrderedDict()
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -300,6 +317,7 @@ class TurnManager:
         *,
         notify: bool = False,
         intent_id: str | None = None,
+        prepare_id: str | None = None,
     ) -> TurnContext:
         """预留一轮：分配 turn_id、落台账行 —— **不入队、不发 TURN_START**。
 
@@ -336,7 +354,139 @@ class TurnManager:
             notify=ctx.notify,
             status="queued",
         )
+        if prepare_id:
+            self._register_prepare(prepare_id, ctx.turn_id)
         return ctx
+
+    # -- 准备标识与可确认取消（plan §1.1）----------------------------------
+
+    def _register_prepare(self, prepare_id: str, turn_id: str) -> None:
+        self._cancelled_prepares.pop(prepare_id, None)
+        self._started_prepares.pop(prepare_id, None)
+        self._prepares[prepare_id] = turn_id
+        self._prepare_of_turn[turn_id] = prepare_id
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if prepare_id not in self._prepare_signals:
+            self._prepare_signals[prepare_id] = loop.create_future()
+
+    def prepare_signal(self, prepare_id: str | None):
+        """本次准备的**取消信号**：显式取消端点与断连监测都会兑现它。
+
+        事件驱动（等待方 await 这个 future），不轮询、不靠固定延时判断。
+        """
+        if not prepare_id:
+            return None
+        fut = self._prepare_signals.get(prepare_id)
+        if fut is not None and not fut.done():
+            return fut
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        done = loop.create_future()
+        done.set_result("cancelled" if self.prepare_was_cancelled(prepare_id) else "finished")
+        return done
+
+    def prepare_was_cancelled(self, prepare_id: str | None) -> bool:
+        """这个准备标识是否已被取消 —— **activate 之前必须复核**（迟到复制成功不得重启本轮）。"""
+        return bool(prepare_id) and prepare_id in self._cancelled_prepares
+
+    def cancel_prepare(self, prepare_id: str) -> tuple[str, str | None]:
+        """按取消契约处理一个准备标识（幂等）。
+
+        返回 (state, turn_id)：
+
+        * `("cancelled", turn_id)`：这一轮已被放弃 —— 不入队、不调用模型、不执行工具；
+        * `("already_started", turn_id)`：已经放行/开始 —— 调用方必须走**既有停止流程**
+          （不得假装「没有发送」）；
+        * `("unknown", None)`：未知 / 已过期标识（幂等，不报错）。
+        """
+        if not prepare_id:
+            return "unknown", None
+        known = self._prepares.get(prepare_id)
+        if known is None:
+            if prepare_id in self._cancelled_prepares:
+                return "cancelled", self._cancelled_prepares[prepare_id]
+            if prepare_id in self._started_prepares:
+                return "already_started", self._started_prepares[prepare_id]
+            return "unknown", None
+        ctx = self._reserved_by_id(known)
+        if ctx is None or _terminal(ctx):
+            # 已经放行（或已经收尾）：如实回「已开始」，由前端走停止流程
+            self._mark_started_prepare(known)
+            return "already_started", known
+        self._cancel_reserved(ctx, reason="cancelled_during_prepare")
+        return "cancelled", known
+
+    def _reserved_by_id(self, turn_id: str) -> TurnContext | None:
+        for ctx in self._reserved:
+            if ctx.turn_id == turn_id:
+                return ctx
+        return None
+
+    def _wake_prepare(self, turn_id: str) -> None:
+        """兑现该轮准备标识的取消信号：正在等它的请求立刻走取消分支。"""
+        prepare_id = self._prepare_of_turn.get(turn_id)
+        if not prepare_id:
+            return
+        fut = self._prepare_signals.get(prepare_id)
+        if fut is not None and not fut.done():
+            fut.set_result("cancelled")
+
+    def _forget_prepare(self, turn_id: str) -> None:
+        """放弃/收尾：这个标识不再是「准备中」（历史里也不会变成「已开始」）。"""
+        prepare_id = self._prepare_of_turn.pop(turn_id, None)
+        if not prepare_id:
+            return
+        self._prepares.pop(prepare_id, None)
+        fut = self._prepare_signals.pop(prepare_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result("finished")
+
+    def _mark_started_prepare(self, turn_id: str) -> None:
+        """放行：标识从「准备中」转为「已开始」（之后取消要如实回 already_started）。"""
+        prepare_id = self._prepare_of_turn.pop(turn_id, None)
+        if not prepare_id:
+            return
+        self._prepares.pop(prepare_id, None)
+        fut = self._prepare_signals.pop(prepare_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result("finished")
+        self._started_prepares[prepare_id] = turn_id
+        while len(self._started_prepares) > PREPARE_HISTORY:
+            self._started_prepares.popitem(last=False)
+
+    def _remember_cancelled_prepare(self, prepare_id: str, turn_id: str) -> None:
+        self._cancelled_prepares[prepare_id] = turn_id
+        while len(self._cancelled_prepares) > PREPARE_HISTORY:
+            self._cancelled_prepares.popitem(last=False)
+
+    def _remember_cancelled(self, turn_id: str) -> None:
+        prepare_id = self._prepare_of_turn.get(turn_id)
+        if prepare_id:
+            self._remember_cancelled_prepare(prepare_id, turn_id)
+
+    def _cancel_reserved(self, ctx: TurnContext, *, reason: str) -> bool:
+        """取消一个**准备中**的预留（幂等）：丢弃 + 兑现等待者 + FIFO 链继续。"""
+        if ctx not in self._reserved:
+            return False
+        self._reserved.remove(ctx)
+        self._ready.discard(ctx.turn_id)
+        self._ready_since.pop(ctx.turn_id, None)
+        ctx.cancelled = True
+        if not _terminal(ctx):
+            ctx.status = "cancelled"
+            self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
+        self._record_cancelled(ctx)
+        self._remember_cancelled(ctx.turn_id)  # 必须早于 _forget_prepare
+        self._wake_prepare(ctx.turn_id)  # 等信号的请求立刻走取消分支（不靠轮询）
+        self._forget_prepare(ctx.turn_id)
+        self._resolve(ctx, {"ok": False, "reason": reason})
+        self._flush_ready()
+        return True
 
     def activate(self, ctx: TurnContext) -> None:
         """附件就绪后放行：**按预留顺序**入队（此刻起 worker 才可能开始执行）。"""
@@ -350,6 +500,10 @@ class TurnManager:
     def abandon(self, ctx: TurnContext, *, reason: str = "prepare_failed") -> None:
         """准备失败 / 准备期间被取消：丢弃预留 —— 不入队、不留可执行队列项。
 
+        **顺序是契约的一部分（plan §1.2）**：先兑现等待者，再清结果表。
+        反过来（先 pop _futures 再 _resolve，而 _resolve 内部也 pop）会让已经开始的
+        await wait(turn_id) **永远不返回** —— 等待者既拿不到结果，也等不到超时。
+
         台账如实收尾成 cancelled + 具体 reason（**不是** shutdown 的 interrupted）：
         这一轮从未开始执行，不能事后看起来像「被中断的一轮」。
         """
@@ -357,10 +511,12 @@ class TurnManager:
             self._reserved.remove(ctx)
         self._ready.discard(ctx.turn_id)
         self._ready_since.pop(ctx.turn_id, None)
-        self._futures.pop(ctx.turn_id, None)
+        self._forget_prepare(ctx.turn_id)  # 放弃之后它不再是「准备中」
+        # 已终态的轮次（刚跑完 / 已被取消）：迟到的 abandon 不改写它，也不重复落终态。
         if not _terminal(ctx):
             ctx.status = "cancelled"
-        self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
+            self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
+        # 兑现等待者：_resolve 自己负责清表，且幂等（重复调用不会重复设置）。
         self._resolve(ctx, {"ok": False, "reason": reason})
         # FIFO 链不能断：前面放弃了，后面已经就绪的预留要立刻能走
         self._flush_ready()
@@ -378,6 +534,12 @@ class TurnManager:
 
     def _enqueue_reserved(self, ctx: TurnContext) -> None:
         """真正入队（原 submit 的尾段）：从这里开始 worker 才可能取到它并发 TURN_START。"""
+        if ctx.cancelled or _terminal(ctx):
+            # 竞态兜底：放行之前这一刻已经被取消（例如取消正好落在准备完成边界）
+            self._forget_prepare(ctx.turn_id)
+            self._resolve(ctx, {"ok": False, "reason": "cancelled"})
+            return
+        self._mark_started_prepare(ctx.turn_id)  # 之后取消要如实回 already_started
         ctx.status = "queued" if (self._active is not None or bool(self._pending)) else "accepted"
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
@@ -783,21 +945,12 @@ class TurnManager:
         active = self._active
         if active is not None and active.turn_id == turn_id:
             return self.cancel_active()
-        for i, c in enumerate(self._reserved):
+        for c in list(self._reserved):
             if c.turn_id == turn_id:
                 if _terminal(c):
                     return False
                 # 准备中的预留：直接丢弃，绝不让它之后还被放行（客户端断开 / 用户取消）
-                self._reserved.pop(i)
-                self._ready.discard(c.turn_id)
-                self._ready_since.pop(c.turn_id, None)
-                c.cancelled = True
-                c.status = "cancelled"
-                self._journal_call("terminal", c.turn_id, "cancelled", reason="user")
-                self._record_cancelled(c)
-                self._resolve(c, {"ok": False, "reason": "cancelled"})
-                self._flush_ready()
-                return True
+                return self._cancel_reserved(c, reason="user")
         for i, c in enumerate(self._pending):
             if c.turn_id == turn_id:
                 if _terminal(c):
@@ -840,6 +993,9 @@ class TurnManager:
             self._journal_call(
                 "terminal", ctx.turn_id, "cancelled", reason="shutdown_during_prepare"
             )
+            self._remember_cancelled(ctx.turn_id)
+            self._wake_prepare(ctx.turn_id)
+            self._forget_prepare(ctx.turn_id)
             self._resolve(ctx, {"ok": False, "reason": "shutdown"})
         pending, self._pending = list(self._pending), []
         for ctx in pending:
