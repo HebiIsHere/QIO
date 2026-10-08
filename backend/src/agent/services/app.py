@@ -1474,6 +1474,8 @@ class AppContext:
                 # 系统驱动的轮没有叙事出口，阶段通常为空；这里仍然给出同一个
                 # 提供者，TOOL_START / TOOL_END 的 stage_id 才有统一口径（可为 null）。
                 stage_id_provider=lambda: self.current_stage_id(ctx.turn_id),
+                # 长正文暂存目录：显式用 AppContext 的 data_dir（不惰性解析 Settings()）
+                spill_dir=Path(self.settings.data_dir) / "tmp",
             )
             ctx.loop = loop
             try:

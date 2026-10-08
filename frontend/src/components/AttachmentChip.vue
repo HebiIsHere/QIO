@@ -3,12 +3,18 @@
  * 附件 chip：一个附件 = 一条事实。
  *
  * 显示什么由 state 决定（准备中 / 已保存副本 / 引用本地文件 / 失败 / 不在原位 / 内容有变化），
- * 失败与变化都保留「重试」，任何状态都能「移除」。
+ * **动作由服务端 payload.actions 决定**（契约 §1.4）：不许出现走不通的按钮 ——
+ *   * retry    → 「重试」（有真实原路径，重新读它做副本）
+ *   * relocate → 「重新定位」（引用型附件的唯一依据）
+ *   * reupload → 「重新上传」+ 明说「QIO 无法从原地址恢复」（浏览器字节上传）
+ *   * actions 为空 → 一个动作按钮都不出（「打开 / 移除」另算，见下）
+ * 缺字段（老后端）才退回既有状态逻辑（见 attachmentActions）。
  * 引用型（> 100MB）明确写「引用本地文件」，悬停给出「历史保留的是位置，不保证内容仍然存在」。
  */
 import { computed } from "vue";
 import {
   REFERENCE_CAVEAT,
+  attachmentActions,
   humanSize,
   stateText,
   type AttachmentRef,
@@ -20,15 +26,16 @@ const emit = defineEmits<{
   (e: "retry", id: string): void;
   (e: "open", id: string): void;
   (e: "relocate", id: string): void;
+  (e: "reupload", id: string): void;
 }>();
 
-const retryable = computed(() => props.attachment.state !== "ready" && props.attachment.state !== "prepared");
+/** 可用动作：服务端说了算（空数组 = 没有动作）；缺字段才按状态兜底。 */
+const actions = computed(() => attachmentActions(props.attachment));
+function has(action: "retry" | "relocate" | "reupload"): boolean {
+  return actions.value.includes(action);
+}
 /** 能打开：就绪或内容有变化（都读得到）。准备中/失败/丢失不给「打开」这个假入口。 */
 const openable = computed(() => props.attachment.state === "ready" || props.attachment.state === "changed");
-/** 需要重新指定位置：丢失 / 失败 / 内容变了（引用型被移动之后只有这条路）。 */
-const relocatable = computed(
-  () => props.attachment.state === "missing" || props.attachment.state === "failed" || props.attachment.state === "changed",
-);
 
 const title = computed(() => {
   const parts = [props.attachment.name, humanSize(props.attachment.sizeBytes)];
@@ -43,6 +50,15 @@ const title = computed(() => {
     <span class="name">{{ attachment.name }}</span>
     <span class="size mono">{{ humanSize(attachment.sizeBytes) }}</span>
     <span class="state">{{ stateText(attachment) }}</span>
+    <!-- 失败原因必须**用户可见**（契约 §1.4）：不能只留在服务端日志里 -->
+    <span
+      v-if="attachment.error"
+      class="err"
+      data-test="attach-error"
+      :title="attachment.error"
+    >
+      {{ attachment.error }}
+    </span>
     <button
       v-if="openable"
       class="act"
@@ -55,7 +71,7 @@ const title = computed(() => {
       打开
     </button>
     <button
-      v-if="relocatable"
+      v-if="has('relocate')"
       class="act locate"
       type="button"
       :disabled="busy"
@@ -66,7 +82,7 @@ const title = computed(() => {
       重新定位
     </button>
     <button
-      v-if="retryable"
+      v-if="has('retry')"
       class="act retry"
       type="button"
       :disabled="busy"
@@ -75,6 +91,25 @@ const title = computed(() => {
     >
       重试
     </button>
+    <!-- 浏览器字节上传：QIO 手里没有内容、也没有原地址 —— 只能用户重新给一次 -->
+    <button
+      v-if="has('reupload')"
+      class="act reupload"
+      type="button"
+      :disabled="busy"
+      :aria-label="'重新上传附件 ' + attachment.name + '（QIO 无法从原地址恢复）'"
+      title="QIO 无法从原地址恢复：请重新选择这个文件"
+      @click="emit('reupload', attachment.id)"
+    >
+      重新上传
+    </button>
+    <span
+      v-if="has('reupload')"
+      class="no-recovery"
+      data-test="attach-no-recovery-note"
+    >
+      QIO 无法从原地址恢复
+    </span>
     <button
       class="act remove"
       type="button"
@@ -161,6 +196,19 @@ const title = computed(() => {
 .act:disabled {
   color: var(--text-muted);
   cursor: default;
+}
+/* 失败/丢失原因：截断显示，完整原文在 title 里（用户可见，不只是日志） */
+.err {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+}
+/* 「QIO 无法从原地址恢复」：一句实话，别让用户以为点什么都能找回来 */
+.no-recovery {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 .act.remove {
   font-size: 13px;

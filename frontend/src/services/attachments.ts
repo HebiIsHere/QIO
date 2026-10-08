@@ -43,6 +43,17 @@ export class AttachmentTimeoutError extends Error {
 /** 十进制阈值：≤ 存副本 / > 记引用（与后端一致）。 */
 export const COPY_MAX_BYTES = 100_000_000;
 
+/**
+ * 服务端说「现在确实可用」的附件操作（契约 §1.4，**只有这三种取值**）。
+ *
+ * * retry    —— 有真实原路径：重新读它做副本（同一个附件行）；
+ * * relocate —— 重新指定位置（引用型附件的唯一依据）；
+ * * reupload —— 用户重新给一次文件（浏览器字节上传没有原路径，QIO 无法自行找回）。
+ */
+export type AttachmentAction = "retry" | "relocate" | "reupload";
+
+export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = ["retry", "relocate", "reupload"];
+
 export type AttachmentKind = "copy" | "reference";
 export type AttachmentState = "prepared" | "ready" | "failed" | "missing" | "changed";
 
@@ -64,6 +75,13 @@ export interface AttachmentRef {
   topicId?: string | null;
   turnId?: string | null;
   retryable?: boolean;
+  /**
+   * 服务端给的可用操作（§1.4）：**空数组 = 现在没有任何可用动作**（不显示按钮）；
+   * **缺字段 = 老后端**，界面按既有状态逻辑兜底（见 attachmentActions）。
+   */
+  actions?: AttachmentAction[];
+  /** QIO 能不能自己从已知位置把内容找回来（浏览器字节上传永远 false） */
+  recoverableFromSource?: boolean;
 }
 
 export const COPY_LABEL = "已保存副本";
@@ -108,7 +126,70 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
   if (typeof payload.topic_id === "string") ref.topicId = payload.topic_id;
   if (typeof payload.turn_id === "string") ref.turnId = payload.turn_id;
   if (typeof payload.retryable === "boolean") ref.retryable = payload.retryable;
+  // 可用操作：**列表（含空列表）就是权威**；只有「字段不是数组」才算老后端（不写这个键）
+  if (Array.isArray(payload.actions)) ref.actions = normalizeActions(payload.actions);
+  if (typeof payload.recoverable_from_source === "boolean") {
+    ref.recoverableFromSource = payload.recoverable_from_source;
+  }
   return ref;
+}
+
+/** 只接受冻结的三种取值：未知/重复/非字符串一律丢弃（宁可少一个按钮，也不给走不通的动作）。 */
+function normalizeActions(raw: unknown[]): AttachmentAction[] {
+  const out: AttachmentAction[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    if (!(ATTACHMENT_ACTIONS as readonly string[]).includes(item)) continue;
+    const action = item as AttachmentAction;
+    if (!out.includes(action)) out.push(action);
+  }
+  return out;
+}
+
+/**
+ * 界面该显示哪些动作：服务端给了 actions 就**完全按它**（空数组就是没有按钮）；
+ * 只有缺字段（老后端 / 老历史快照）才退回既有状态逻辑。
+ */
+export function attachmentActions(ref: AttachmentRef): AttachmentAction[] {
+  if (ref.actions) return ref.actions;
+  if (ref.state === "ready" || ref.state === "prepared") return [];
+  // 老后端没有 actions：保留既有行为（可重试；失败/变化/丢失可重新定位）
+  return ["retry", "relocate"];
+}
+
+/**
+ * 浏览器文件选择器（真实用户选择，不碰 fakepath）。
+ * 取消时 resolve(null)：调用方据此**不假装成功**。
+ */
+export function pickBrowserFile(): Promise<File | null> {
+  return new Promise((resolve) => {
+    if (typeof document === "undefined") {
+      resolve(null);
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.style.position = "fixed";
+    input.style.left = "-10000px";
+    let settled = false;
+    const finish = (file: File | null) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(file);
+    };
+    input.addEventListener("change", () => finish(input.files?.[0] ?? null), { once: true });
+    // 取消不会触发 change：窗口重新获得焦点后再等一拍，仍没有选择就当作取消
+    window.addEventListener(
+      "focus",
+      () => {
+        setTimeout(() => finish(input.files?.[0] ?? null), 300);
+      },
+      { once: true },
+    );
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 export function humanSize(bytes: number): string {
