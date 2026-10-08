@@ -185,6 +185,34 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachNote = ref("");
 /** 浏览器里没有原生选择器时，「粘贴路径 → 重新定位」的目标附件 id */
 const relocateTargetId = ref("");
+/** 「重新上传」的目标（§1.4）：QIO 没有内容也没有原地址，用户重新给一次后替换掉旧行 */
+const reuploadTarget = ref<{ id: string; name: string } | null>(null);
+
+/**
+ * 重新上传这一条：走**既有**的选择流程（桌面原生选择器 → 浏览器文件选择），
+ * 成功后由 finishReupload 替换掉旧的失败行。绝不假装 QIO 自己能找回内容。
+ */
+function reuploadOne(id: string) {
+  const item = pending.value.find((a) => a.id === id);
+  if (!item) return;
+  reuploadTarget.value = { id, name: item.name };
+  attachNote.value = `请重新选择「${item.name}」：QIO 无法从原地址恢复（选好后替换这一条）`;
+  void pickFile();
+}
+
+/** 重新上传成功之后：删掉旧的失败行并如实说明（删不掉就留着，不假装替换成功）。 */
+async function finishReupload() {
+  const target = reuploadTarget.value;
+  reuploadTarget.value = null;
+  if (!target) return;
+  try {
+    await removeAttachment(target.id);
+    pending.value = pending.value.filter((a) => a.id !== target.id);
+    attachNote.value = `已重新上传：原来那条「${target.name}」已替换（QIO 无法从原地址恢复）`;
+  } catch (err) {
+    attachNote.value = `新的附件已经登记，但旧的失败行没有删掉（${(err as Error).message}）：可以手动移除`;
+  }
+}
 let stopDropWatch: (() => void) | null = null;
 
 function upsert(item: AttachmentRef) {
@@ -222,6 +250,7 @@ async function addPaths(paths: string[]) {
   } finally {
     attaching.value = false;
   }
+  await finishReupload();
 }
 
 /** 浏览器回退：只有字节（没有真实路径）时走上传；绝不用 input[type=file] 的 fakepath。 */
@@ -241,6 +270,7 @@ async function addFiles(files: FileList | File[]) {
   } finally {
     attaching.value = false;
   }
+  await finishReupload();
 }
 
 /** 点击「附件」：桌面端用原生选择器拿真实路径；失败或不支持时退回文件选择/粘贴路径。 */
@@ -580,6 +610,7 @@ async function stopTurn() {
           @retry="retryOne"
           @open="openOne"
           @relocate="relocateOne"
+          @reupload="reuploadOne"
         />
         <span v-if="attaching" class="attach-hint mono">正在登记附件…</span>
       </div>

@@ -8,9 +8,12 @@ import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
 import type { MessageAttachment, StreamMessage } from "../stores/session";
 import {
+  pickBrowserFile,
   pickLocalPath,
+  prepareAttachment,
   relocateAttachment,
   retryAttachment,
+  uploadAttachment,
   type AttachmentRef,
 } from "../services/attachments";
 
@@ -280,6 +283,38 @@ async function relocateOne(id: string) {
   }
 }
 
+/**
+ * 「重新上传」（契约 §1.4，浏览器字节上传）：QIO 手里没有内容、也没有原地址，
+ * 只能由用户重新给一次文件；成功后是**新的**附件，旧行的失败原因原样保留（不抹掉事实）。
+ */
+async function reuploadOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const path = await pickLocalPath();
+    if (path) {
+      const created = await prepareAttachment(path, {
+        topicId: ref.topicId ?? null,
+        name: ref.name,
+      });
+      attachNotice.value =
+        `已重新登记为新的附件：${created.name}；「${ref.name}」QIO 无法从原地址恢复，失败原因仍保留在上面`;
+      return;
+    }
+    const file = await pickBrowserFile();
+    if (!file) return; // 用户取消：什么也没发生，不假装成功
+    const created = await uploadAttachment(file, { topicId: ref.topicId ?? null });
+    attachNotice.value =
+      `已重新上传为新的附件：${created.name}；「${ref.name}」QIO 无法从原地址恢复，失败原因仍保留在上面`;
+  } catch (e) {
+    attachNotice.value = `重新上传没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
 /** 失败 / 变化后重试同一行（不新建附件） */
 async function retryOne(id: string) {
   if (attachBusyId.value) return;
@@ -331,6 +366,7 @@ function removeOne(id: string) {
             @open="openOne"
             @relocate="relocateOne"
             @retry="retryOne"
+            @reupload="reuploadOne"
             @remove="removeOne"
           />
         </span>
