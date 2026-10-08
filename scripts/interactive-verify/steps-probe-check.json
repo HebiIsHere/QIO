@@ -1,0 +1,11 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5421/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "document.title"
+  }
+]

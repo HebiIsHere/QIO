@@ -32,10 +32,17 @@ mkdirSync(OUT_DIR, { recursive: true });
 const SIZES = [[1440, 900], [1024, 768], [800, 600]];
 const SCENES = ["toolbar", "chat-dense", "overlays", "save-failure"];
 
+/**
+ * 驱动：默认用仓库的 Chrome 探针（`scripts/visual_probe.mjs`），
+ * 需要时用 `QIO_PROBE=edge` 切到 Edge 探针（`visual_probe_d3.mjs`）。
+ * 同一批对照图必须用同一个驱动，否则几何口径不可比。
+ */
+const PROBE_SCRIPT = process.env.QIO_PROBE === "edge" ? "visual_probe_d3.mjs" : "visual_probe.mjs";
+
 function runSteps(steps, tag) {
   const file = join(process.env.TEMP || ".", "ui-races-" + LABEL + "-" + tag + ".json");
   writeFileSync(file, JSON.stringify(steps, null, 2), "utf8");
-  const probe = spawnSync(process.execPath, [join(root, "scripts", "visual_probe_d3.mjs"), "@" + file], {
+  const probe = spawnSync(process.execPath, [join(root, "scripts", PROBE_SCRIPT), "@" + file], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -112,11 +119,26 @@ const waitNoOverlap = {
     }
   })()`,
 };
-/** 在聊天里发一条真实消息（无凭据时这一轮会失败，但用户消息本身会进消息流） */
-const sendChatMessage = (text) => ({
+/**
+ * 在聊天里发一条真实消息。
+ *
+ * 必须**分两步**：同一个 tick 里设完 value 立刻点发送，按钮还是上一次渲染的禁用态（Vue 还没重绘），
+ * 点击会被丢掉 —— 实测那样截出来是「输入框里有字、消息流空着」，不能当作「有消息」的证据。
+ */
+const typeChatMessage = (text) => ({
   op: "eval",
-  js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'no-input';t.focus();t.value=${JSON.stringify(text)};t.dispatchEvent(new Event('input',{bubbles:true}));const b=document.querySelector('[data-im="chat-send"]');if(b)b.click();return 'sent';})()`,
+  js: `(function(){const t=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"], [data-im="chat-input"]');if(!t)return 'no-input';t.focus();t.value=${JSON.stringify(text)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()`,
 });
+const clickChatSend = {
+  op: "eval",
+  js: `(function(){const b=document.querySelector('[data-im="chat-send"]');if(!b)return 'no-send';if(b.disabled)return 'disabled';b.click();return 'sent';})()`,
+};
+const sendChatMessage = (text) => [typeChatMessage(text), { op: "wait", ms: 400 }, clickChatSend, { op: "wait", ms: 2400 }];
+/** 只拦「发送」这一条请求：失败是模拟的，但应用自己的失败处理是真的 */
+const breakSend = {
+  op: "eval",
+  js: `(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/api\\/turns$/.test(url)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed-send';})()`,
+};
 /** 制造保存失败（只拦板面状态写入），并触发一次真实改动，让失败与恢复入口显现 */
 const breakSave = {
   op: "eval",
@@ -133,13 +155,19 @@ async function captureScene(w, h, theme, scene) {
     { op: "wait", ms: 400 },
   ];
   if (scene === "chat-dense") {
-    steps.push(openChat, { op: "wait", ms: 700 }, sendChatMessage("这一条消息用来检验：聊天文字压在密集板面文字上还清楚吗？"), { op: "wait", ms: 2600 });
+    steps.push(openChat, { op: "wait", ms: 700 }, ...sendChatMessage("这一条消息用来检验：聊天文字压在密集板面文字上还清楚吗？"));
   }
   if (scene === "overlays") {
     steps.push(openChat, { op: "wait", ms: 700 }, openBatch, waitNoOverlap, { op: "wait", ms: 300 });
   }
   if (scene === "save-failure") {
-    steps.push(openChat, { op: "wait", ms: 600 }, sendChatMessage("发送失败之后，原文要能取回（恢复入口）"), { op: "wait", ms: 1200 }, breakSave, { op: "wait", ms: 300 }, sendChatMessage("这一条会失败：保存/发送失败后要有恢复入口"), { op: "wait", ms: 2600 });
+    steps.push(
+      openChat,
+      { op: "wait", ms: 600 },
+      breakSend,
+      { op: "wait", ms: 300 },
+      ...sendChatMessage("这一条会失败：失败之后原文要能取回（恢复入口）"),
+    );
   }
   steps.push(shot(tag));
   runSteps(steps, tag);
