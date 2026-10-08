@@ -1662,21 +1662,24 @@ async def test_spill_write_failure_is_reported_honestly(tmp_path, monkeypatch):
 
     assert len(adapter.requests) == 1, "暂存失败也不得再生成一次"
     text = result.final_content or ""
-    assert text.startswith("汉" * 87_381), "内存里的部分必须完整交付"
-    assert "没能完整保存" in text, "必须明确告诉用户回答未完整保存（契约 §1.4）"
-    assert "超过上限" not in text and "截断" not in text, (
-        "写入故障不得被描述成「正文超过上限/截断」",
-        text[-120:],
-    )
+    # 交付内容 = **已确认可交付的内存部分**，原样、不追加说明（字节数如实可核）
+    assert text == "汉" * 87_381, ("交付必须恰好是已确认的内存部分", len(text))
     assert _process_area(bus) == [], "过程区不得留副本"
+    # 不完整事实走两条通道：可见 WARNING + 轮次结果/警告（只写日志不算交付）
     warnings = _events(bus, "WARNING")
     assert [w["code"] for w in warnings] == ["answer_incomplete"], warnings
     assert warnings[0]["kind"] == "spill_write"
-    assert any("完整" in w for w in result.warnings)
+    message = str(warnings[0]["message"])
+    assert "写入" in message or "暂存" in message, message
+    assert "超过上限" not in message and "截断" not in message, (
+        "写入故障不得被描述成「正文超过上限/截断」",
+        message,
+    )
+    assert any("完整" in w for w in result.warnings), result.warnings
 
 
 async def test_spill_hard_limit_truncates_and_reports(tmp_path, monkeypatch):
-    """达到暂存硬上限：如实截断 + 可见 WARNING + 截断事实写进交付内容（绝不无界增长）。"""
+    """达到暂存硬上限：如实截断（交付内容原样、不追加说明）+ 可见 WARNING + 轮次警告。"""
     monkeypatch.setenv("APPDATA", str(tmp_path))
     from agent.core import answer_buffer as buffer_module
 
@@ -1690,12 +1693,16 @@ async def test_spill_hard_limit_truncates_and_reports(tmp_path, monkeypatch):
 
     assert len(adapter.requests) == 1
     text = result.final_content or ""
-    delivered = text.split("\n\n—— 系统事实")[0]
-    assert len(delivered.encode("utf-8")) <= 256 * 1024 + 1024 + 8, len(
-        delivered.encode("utf-8")
-    )
-    assert "截断" in text
-    assert [w["code"] for w in _events(bus, "WARNING")] == ["answer_truncated"]
+    # 交付内容 = 内存 + 暂存里已保存的部分（原样、连续前缀）；总量被硬上限约束住
+    assert len(text.encode("utf-8")) <= 256 * 1024 + 1024 + 8, len(text.encode("utf-8"))
+    assert text.startswith("汉" * 1000)
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀（不改写、不跳字）"
+    # 这是 limit（资源上限），不是存储故障：可见事件 code/kind 与措辞都要对得上
+    warnings = _events(bus, "WARNING")
+    assert [w["code"] for w in warnings] == ["answer_truncated"]
+    assert warnings[0]["kind"] == "limit"
+    assert "上限" in str(warnings[0]["message"])
+    assert any("截断" in w or "上限" in w for w in result.warnings), result.warnings
     assert _process_area(bus) == []
 
 
@@ -1788,7 +1795,7 @@ async def test_normal_over_threshold_paths_are_complete_without_warnings(
 
 
 async def test_spill_create_failure_is_reported_as_spill_create(tmp_path, monkeypatch):
-    """暂存文件创建失败：kind=spill_create，明确说「没能完整保存」，不说「超过上限」。"""
+    """暂存文件创建失败：kind=spill_create，交付内容原样，事实在可见事件 + 轮次警告里。"""
     monkeypatch.setenv("APPDATA", str(tmp_path))
     from agent.core import answer_buffer as buffer_module
 
@@ -1805,12 +1812,13 @@ async def test_spill_create_failure_is_reported_as_spill_create(tmp_path, monkey
 
     assert len(adapter.requests) == 1
     text = result.final_content or ""
-    assert text.startswith("汉" * 87_381), "内存里的部分必须完整交付"
-    assert "没能完整保存" in text
-    assert "超过上限" not in text and "截断" not in text, text[-120:]
+    assert text == "汉" * 87_381, ("交付必须恰好是已确认的内存部分", len(text))
     warnings = _events(bus, "WARNING")
     assert [w["code"] for w in warnings] == ["answer_incomplete"]
     assert warnings[0]["kind"] == "spill_create"
+    message = str(warnings[0]["message"])
+    assert "创建" in message or "暂存" in message, message
+    assert "超过上限" not in message and "截断" not in message, message
     assert any("完整" in w for w in result.warnings)
 
 
@@ -1885,9 +1893,15 @@ async def test_spill_read_failure_is_reported_and_not_hidden(tmp_path, monkeypat
     assert result.warnings, "轮次结果/警告里也要有这条事实"
 
     text = result.final_content or ""
+    # 交付内容 = **已确认可交付的内存部分**，原样（不追加说明、不改写模型的字）
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀"
     assert text.startswith("长" * 1000), "已确认可交付的内容必须保留"
-    assert "完整" in text, ("必须明确告诉用户回答未完整保存/读取", text[-200:])
-    assert len(text.encode("utf-8")) >= 262_144
+    # 内存部分「装得下多少就交付多少」：连续前缀、不切开多字节字符（所以可能差最后 1~2 字节）
+    delivered_bytes = len(text.encode("utf-8"))
+    assert 262_144 - 3 < delivered_bytes <= 262_144, (
+        "读取失败时交付的恰好是内存部分（≤256 KiB，且只差不到一个字符）",
+        delivered_bytes,
+    )
     assert _process_area(bus) == [], "过程区不得留副本"
     events = _events(bus, "ASSISTANT")
     assert len(events) == 1 and events[0]["interim"] is False
@@ -1924,8 +1938,10 @@ async def test_vanished_spill_file_is_reported_as_incomplete(tmp_path, monkeypat
     messages = " ".join(str(w.get("message") or "") for w in warnings)
     assert "超过上限" not in messages, warnings
     text = result.final_content or ""
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀（原样，不追加说明）"
     assert text.startswith("汉" * 1000)
-    assert "完整" in text, text[-200:]
+    assert _events(bus, "WARNING")[0]["kind"] == "spill_read"
+    assert any("完整" in w for w in result.warnings)
     assert len(adapter.requests) == 1
 
 
