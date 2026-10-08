@@ -35,7 +35,8 @@ const actionNotice = ref("");
 
 /** 只取当前话题的：失败原文始终属于原话题，切到别的话题不插入（§11.4） */
 const records = computed(() => session.failedSendsForTopic(session.currentTopicId));
-const prefix = computed(() => props.scope);
+/** 自动化钩子前缀：悬浮聊天沿用既有 chat-*，对话页用 composer-*（scope 仍用于样式分层） */
+const hook = computed(() => (props.scope === "chat" ? "chat" : "composer"));
 const inputBlank = computed(() => isBlankText(session.draft));
 
 function recordKey(record: FailedSend): string {
@@ -80,14 +81,14 @@ function discard(record: FailedSend): void {
   <section
     v-if="notice || records.length"
     class="failed-send"
-    :data-im="`${prefix}-recovery-wrap`"
+    :data-im="`${hook}-recovery-wrap`"
   >
     <!-- 本次尝试的真实原因：失败后第一时间要能读到（不是只有打开详情才看得到） -->
     <p
       v-if="notice"
       class="attempt"
       role="alert"
-      :data-im="prefix === 'chat' ? 'chat-failure' : 'composer-failure'"
+      :data-im="hook === 'chat' ? 'chat-failure' : 'composer-failure'"
     >
       {{ notice }}
     </p>
@@ -95,8 +96,8 @@ function discard(record: FailedSend): void {
     <div
       v-if="records.length"
       class="recovery"
-      :class="`scope-${prefix}`"
-      :data-im="`${prefix}-recovery`"
+      :class="`scope-${scope}`"
+      :data-im="`${hook}-recovery`"
       role="group"
       :aria-label="records.length > 1 ? `上一次没有发出去的文字（${records.length} 条）` : '上一次没有发出去的文字'"
     >
@@ -110,17 +111,17 @@ function discard(record: FailedSend): void {
           v-for="record in records"
           :key="recordKey(record)"
           class="recovery-item"
-          :data-im="`${prefix}-recovery-item`"
+          :data-im="`${hook}-recovery-item`"
         >
-          <p v-if="recordReason(record)" class="reason" :data-im="`${prefix}-recovery-reason`">
+          <p v-if="recordReason(record)" class="reason" :data-im="`${hook}-recovery-reason`">
             原因：{{ recordReason(record) }}
           </p>
           <!-- 原文原样显示（不截断）：限高滚动，长文不会把输入区挤走 -->
-          <p class="quote" :data-im="`${prefix}-recovery-quote`">{{ record.text }}</p>
+          <p class="quote" :data-im="`${hook}-recovery-quote`">{{ record.text }}</p>
           <p
             v-if="originalInInput(record)"
             class="quote-state"
-            :data-im="`${prefix}-recovery-in-input`"
+            :data-im="`${hook}-recovery-in-input`"
           >
             这段原文已经在输入框里，还没有发出去
           </p>
@@ -129,7 +130,7 @@ function discard(record: FailedSend): void {
               v-if="inputBlank"
               type="button"
               class="btn"
-              :data-im="`${prefix}-recovery-restore`"
+              :data-im="`${hook}-recovery-restore`"
               @click="restore(record)"
             >
               找回原文
@@ -138,7 +139,7 @@ function discard(record: FailedSend): void {
               v-else-if="!originalInInput(record)"
               type="button"
               class="btn"
-              :data-im="`${prefix}-recovery-swap`"
+              :data-im="`${hook}-recovery-swap`"
               @click="swap(record)"
             >
               与当前文字互换
@@ -146,7 +147,7 @@ function discard(record: FailedSend): void {
             <button
               type="button"
               class="btn ghost"
-              :data-im="`${prefix}-recovery-discard`"
+              :data-im="`${hook}-recovery-discard`"
               @click="discard(record)"
             >
               不再保留
@@ -159,7 +160,7 @@ function discard(record: FailedSend): void {
         v-if="actionNotice"
         class="action-notice"
         role="status"
-        :data-im="`${prefix}-recovery-status`"
+        :data-im="`${hook}-recovery-status`"
       >
         {{ actionNotice }}
       </p>
@@ -167,7 +168,7 @@ function discard(record: FailedSend): void {
         v-if="session.failedSendPersistError"
         class="persist-warning"
         role="status"
-        :data-im="`${prefix}-recovery-persist`"
+        :data-im="`${hook}-recovery-persist`"
       >
         这段原文没能保存在本机，刷新后可能取不回：{{ session.failedSendPersistError }}
       </p>
