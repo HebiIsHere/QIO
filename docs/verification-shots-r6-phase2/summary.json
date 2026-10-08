@@ -1,0 +1,252 @@
+{
+  "results": [
+    {
+      "name": "环境：首次引导已关闭",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "S1 带附件发送：秒级就绪**不闪现**「正在准备附件」提示（防抖生效）",
+      "ok": true,
+      "detail": {
+        "chipReady": true,
+        "preparingFrames": 0,
+        "samples": 18,
+        "shot": "D:\\qio-dev\\qio-r6-d\\docs\\verification-shots-r6-phase2\\r6-02-preparing-done.png"
+      }
+    },
+    {
+      "name": "S1 准备/受理期间界面**没有任何执行迹象**（不出现「正在思考/正在执行」）",
+      "ok": true,
+      "detail": {
+        "execSigns": 0
+      }
+    },
+    {
+      "name": "S1 这一轮最终正常完成（回答出现）",
+      "ok": true,
+      "detail": {
+        "tail": "默认话题\n\n（假模型默认回复）\n\n09:29:38\n复制\n默认话题\n\n我看到了这个附件。\n\n09:29:39\n复制"
+      }
+    },
+    {
+      "name": "S1 边界（未验证）：准备窗口在本机是亚秒级（os.link 成功），无法在实机复现「准备期点中止」",
+      "ok": true,
+      "detail": {
+        "note": "中止语义由后端验收件 test_r6_readiness_gate_verify.py 第 3 条（取消后模型调用=0）与前端单测 PreparingAttachments.test.ts 覆盖"
+      }
+    },
+    {
+      "name": "S2 装置说明：桌面端选文件入口在无头浏览器里无法驱动（Playwright 的 File 无真实路径），字节上传这条改走**同源真实 HTTP + payload.actions** 核验",
+      "ok": true,
+      "detail": {
+        "httpStatus": 500,
+        "rowState": "failed",
+        "actions": [
+          "reupload"
+        ],
+        "uiRenderingCoveredBy": "frontend/src/components/__tests__/AttachmentActions.test.ts"
+      }
+    },
+    {
+      "name": "S2 浏览器字节上传失败：原因**明确且是原始原因**（不是「副本已不在」通稿）",
+      "ok": true,
+      "detail": {
+        "reason": "目标位置不可用：当文件已存在时，无法创建该文件。"
+      }
+    },
+    {
+      "name": "S2 字节上传的 payload.actions 只有 reupload（没有 relocate/retry 这类走不通的死按钮）",
+      "ok": true,
+      "detail": {
+        "reuploadCount": 1,
+        "relocateCount": 0,
+        "noRecoveryNote": true
+      }
+    },
+    {
+      "name": "S2 本地路径登记失败：composer 的错误 chip 给出**原始原因**（不是通稿）且带可用操作",
+      "ok": true,
+      "detail": {
+        "pathReason": "默认话题 Enter 发送 · Shift+Enter 换行 r6-路径失败.txt 28 B 准备失败 目标位置不可用：当文件已存在时，无法创建该文件。 重新定位 重试 × 附件 路径 ↑",
+        "pathActions": [
+          {
+            "text": "重新定位",
+            "cls": "act locate"
+          },
+          {
+            "text": "重试",
+            "cls": "act retry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "S2 重新打开界面后：历史附件行**原因一致**（副本丢失 → 明确文案，不是空白/通稿混淆）",
+      "ok": true,
+      "detail": {
+        "rowText": "r6-历史原因.txt 22 B 文件不在原位 QIO 保存的副本文件已经不在了 重新定位 重试 ×",
+        "stored": "att_5cd75fc112f1",
+        "hadStoredPath": true,
+        "shot": "D:\\qio-dev\\qio-r6-d\\docs\\verification-shots-r6-phase2\\r6-04-history-missing-reason.png"
+      }
+    },
+    {
+      "name": "S3 正式回答在 provider 结束前已出现在回答容器（.message.assistant）",
+      "ok": true,
+      "detail": {
+        "observed": true,
+        "answerCallStillOpen": true,
+        "shot": "D:\\qio-dev\\qio-r6-d\\docs\\verification-shots-r6-phase2\\r6-05-answer-live-before-provider-end.png"
+      }
+    },
+    {
+      "name": "S3 命中时刻过程区不含这段正式回答",
+      "ok": true,
+      "detail": {
+        "process": "已完成\n耗时\n已完成\n耗时\n已完成\n耗时\n运行中"
+      }
+    },
+    {
+      "name": "S3 完成后：声明不泄漏、全局只 1 份、过程区无副本",
+      "ok": true,
+      "detail": {
+        "leaked": false,
+        "occurrences": 1,
+        "inProcess": false
+      }
+    },
+    {
+      "name": "S4 运行中默认折叠：默认可见区没有历史抽屉",
+      "ok": true,
+      "detail": {
+        "historyCount": 0
+      }
+    },
+    {
+      "name": "S4 结束原因与耗时可见",
+      "ok": true,
+      "detail": {
+        "tail": " 正式回答第一句。正式回答第二句。 09:29:45 复制 第 05 轮 09:29:48 回归取证（默认折叠） 09:29:48 复制 已完成 ▸ 耗时 624 毫秒 1 次调用 默认话题 回归取证：这一轮结束了。 09:29:49 复制"
+      }
+    },
+    {
+      "name": "S4 内联审批：描述/独立说明/真实命令三者都在卡里",
+      "ok": true,
+      "detail": {
+        "cardText": "! 电脑操作审批 想运行一条 shell 命令 会执行命令 ◈ QIO 的说明 模型说明：为了验证审批链路，我要在受限子进程里跑一条无害的回显命令。 会改变什么 会删除或覆盖已有数据 授权范围 仅这一次：只对本次操作有效，之后同类操作会再问你 它会访问什么 启动一个系统命令进程 命令内容见下方详情 "
+      }
+    },
+    {
+      "name": "S4 重试复用已保存副本（原文件已删除）且界面正常",
+      "ok": true,
+      "detail": {
+        "chipReady": true,
+        "retryAppeared": true,
+        "content": "R6 实机附件内容：只有这份副本里才有的标记 4d77\n",
+        "shot": "D:\\qio-dev\\qio-r6-d\\docs\\verification-shots-r6-phase2\\r6-10-failed-with-retry.png"
+      }
+    },
+    {
+      "name": "S4 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200",
+      "ok": true,
+      "detail": {
+        "contentStatus": 200
+      }
+    }
+  ],
+  "net": [
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_a34e6167447d"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_8ef29bee4865"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_8ef29bee4865"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_5cd75fc112f1"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_2ac6d5935c35"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_2ac6d5935c35/content"
+    }
+  ],
+  "provider": "http://127.0.0.1:8798",
+  "base": "http://127.0.0.1:5199"
+}
