@@ -1,18 +1,27 @@
 /**
- * 草稿持久化的纯逻辑（子智能体 C 负责实现，主智能体先给出契约骨架）。
+ * 草稿持久化的纯逻辑（子智能体 A 负责实现，主智能体先给出契约骨架）。
  *
- * 契约：docs/interactive-mode-contract.md §9.4 / §9.5。
+ * 契约：docs/interactive-mode-contract.md §9.4 / §9.5 / §10.4 / §10.5 / §11.1 / §11.2 / §11.3。
  *
  * 设计要点（为什么需要这一层）：
  * - 聊天草稿与卡片草稿要**分别持久保存**，并且都要能处理「保存回执迟到」：
  *   旧请求的返回值不许覆盖更新的内容，所以每次写入带一个单调递增的 seq。
  * - 存储不可用（隐私模式、配额满、被禁用、内容损坏）时必须**明确失败**，
  *   由调用方显示原因并允许重试 —— 不许静默吞掉。
+ * - 卡片草稿有**两种记录身份**（§11.1）：与服务器同步的 `card:<id>` 与本机恢复副本
+ *   `card-local:<id>`；恢复必须能发现「只存在于本机」的记录，所以本机记录要能被枚举。
+ * - 本机记录要能自己说明：**属于哪个板面**（不给别的板面恢复）、**自己是第几版**（旧版本作用不许
+ *   删掉后来新建的版本）、**是不是一份待同步的清除依据**（§11.2：清除在服务器确认前不算已同步）。
+ *   判断新旧只看这条记录自己的归属/版本/确认状态，绝不用「服务器整个草稿集合的更新时间」
+ *   或别张卡片的保存时间（§11.3）。
  * - 这里只做纯逻辑与存储读写，不碰网络、不碰 Vue、不发消息。
  */
 
 /** 草稿作用域：聊天按会话/话题，卡片按卡片 id */
 export type DraftScope = "chat" | "card";
+
+/** 本机记录的种类：编辑副本 / 待确认的清除依据（§11.2） */
+export type DraftRecordKind = "draft" | "cleared";
 
 export interface DraftRecord {
   /** 草稿正文（原样保存，包含换行） */
@@ -21,6 +30,17 @@ export interface DraftRecord {
   updatedAt: number;
   /** 单调递增的写入序号：迟到的回执用它判断自己是否已经过期 */
   seq: number;
+  /** 这条记录属于哪个板面（卡片草稿用；恢复时不给别的板面恢复内容，§11.1） */
+  boardId?: string;
+  /** 记录种类：编辑副本 / 待同步的清除依据（§11.2）。旧记录没有这个字段，按「编辑副本」认 */
+  kind?: DraftRecordKind;
+  /**
+   * 该对象上单调递增的本地版本号，**跨刷新、重开仍然递增**。
+   *
+   * 为什么不能用内存里的 seq：页面重开后 seq 从 0 重新开始，无法判断
+   * 「这次清除针对的是哪一版」；旧版本的清除回执晚到时就会删掉后来新建的版本（§11.2）。
+   */
+  version?: number;
 }
 
 /**
@@ -71,15 +91,30 @@ export function isCardDraftKey(key: string): boolean {
   return cardIdFromDraftKey(key) !== null;
 }
 
+/*
+ * 本机记录的实际存储键。
+ *
+ * 沿用上一版就写下的布局 `qio.draft.card.local-<id>`（历史记录仍能直接读到，不做迁移），
+ * 但字符串只在这里拼一次：其它地方一律走 cardLocalDraftStorageKey / readCardLocalDraft 等函数，
+ * 不再出现手写的 `"local-" + id`。
+ */
+const CARD_LOCAL_STORAGE_ID_PREFIX = "local-";
+
+export function cardLocalDraftStorageKey(cardId: string): string {
+  return draftStorageKey("card", CARD_LOCAL_STORAGE_ID_PREFIX + cardId);
+}
+
 /**
- * 本机存着恢复副本的卡片 id 列表（★恢复必须能发现「只存在于本机」的记录）。
+ * 本机存着记录的卡片 id 列表（★恢复必须能发现「只存在于本机」的记录）。
  *
  * 只扫本机存储，不依赖服务器返回了什么，也不依赖内存里有没有对应的键。
+ * 「存在」一律按**记录是否存在**判断：正文为空也算存在（§10.4 / §11.1），
+ * 待同步的清除依据也在列表里（调用方按 kind 区分，§11.2）。
  */
 export function listLocalCardDraftIds(): string[] {
   const { storage } = resolveStorage();
   if (!storage) return [];
-  const prefix = draftStorageKey("card", "local-");
+  const prefix = cardLocalDraftStorageKey("");
   const ids: string[] = [];
   try {
     const count = typeof storage.length === "number" ? storage.length : 0;
@@ -174,16 +209,53 @@ export function readDraft(key: string): DraftRecord | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const record = parsed as { text?: unknown; updatedAt?: unknown; seq?: unknown };
+    const record = parsed as {
+      text?: unknown;
+      updatedAt?: unknown;
+      seq?: unknown;
+      boardId?: unknown;
+      kind?: unknown;
+      version?: unknown;
+    };
     if (typeof record.text !== "string") return null;
-    return {
+    const result: DraftRecord = {
       text: record.text,
       updatedAt: typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : 0,
       seq: typeof record.seq === "number" && Number.isFinite(record.seq) ? record.seq : 0,
     };
+    if (typeof record.boardId === "string" && record.boardId) result.boardId = record.boardId;
+    if (record.kind === "draft" || record.kind === "cleared") result.kind = record.kind;
+    if (typeof record.version === "number" && Number.isFinite(record.version)) result.version = record.version;
+    return result;
   } catch {
     return null;
   }
+}
+
+/** 写入结果：真实结果 + 失败原因 + 这次写入得到的本机版本号（§11.3 要如实显示，不许静默） */
+export interface DraftWriteResult {
+  ok: boolean;
+  error?: string;
+  /** 这次写入针对的本机版本号（写失败时也返回，调用方仍可用它来说明「哪一版没保护上」） */
+  version: number;
+}
+
+/** 底层写入：只做序列化与存储，不解释语义 */
+function writeRecord(key: string, record: DraftRecord): DraftWriteResult {
+  const { storage, error } = resolveStorage();
+  if (!storage) return { ok: false, error: error ?? "本地存储不可用，草稿无法保存", version: record.version ?? 0 };
+  try {
+    storage.setItem(key, JSON.stringify(record));
+    return { ok: true, version: record.version ?? 0 };
+  } catch (err) {
+    return { ok: false, error: describeWriteError(err), version: record.version ?? 0 };
+  }
+}
+
+/** 读一条记录、算出它的下一个版本号（本机单调递增，跨刷新不重复） */
+function nextVersion(key: string): number {
+  const previous = readDraft(key);
+  return (typeof previous?.version === "number" ? previous.version : 0) + 1;
 }
 
 /**
@@ -193,22 +265,91 @@ export function readDraft(key: string): DraftRecord | null {
  * 这里只保证「写空串不会留下一条看着像有草稿的空记录」。
  */
 export function writeDraft(key: string, text: string, seq: number): { ok: boolean; error?: string } {
-  const { storage, error } = resolveStorage();
-  if (!storage) return { ok: false, error: error ?? "本地存储不可用，草稿无法保存" };
   const record: DraftRecord = {
     text: text ?? "",
     updatedAt: Date.now(),
     seq: Number.isFinite(seq) ? seq : 0,
   };
-  try {
-    storage.setItem(key, JSON.stringify(record));
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: describeWriteError(err) };
-  }
+  const result = writeRecord(key, record);
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
-/** 删除一条草稿（例如发送成功后）。删不掉时不能假装删掉了，但也没有更好的补救。 */
+/*
+ * ---------- 卡片的本机恢复记录（§11.1 / §11.2 / §11.3） ----------
+ */
+
+/** 读某一卡片的本机记录（编辑副本或待同步的清除依据都算记录） */
+export function readCardLocalDraft(cardId: string): DraftRecord | null {
+  return readDraft(cardLocalDraftStorageKey(cardId));
+}
+
+/** 这条记录是不是一份**编辑草稿**（待同步的清除依据不是草稿，不能恢复成文字） */
+export function isDraftRecord(record: DraftRecord | null): boolean {
+  return record !== null && record.kind !== "cleared";
+}
+
+/**
+ * 写下某一卡片的编辑副本（输入时同步调用，不等防抖、不等网络）。
+ *
+ * 归属（boardId）与版本号都写进记录自己：恢复时**只看这条记录**就能判断
+ * 「是不是这个板面的」「是不是比服务器那份新」（§11.3）。
+ */
+export function writeCardLocalDraft(
+  cardId: string,
+  text: string,
+  options: { boardId?: string; seq?: number } = {},
+): DraftWriteResult {
+  const key = cardLocalDraftStorageKey(cardId);
+  const version = nextVersion(key);
+  const record: DraftRecord = {
+    text: text ?? "",
+    updatedAt: Date.now(),
+    seq: Number.isFinite(options.seq) ? (options.seq as number) : 0,
+    kind: "draft",
+    version,
+  };
+  if (options.boardId) record.boardId = options.boardId;
+  return writeRecord(key, record);
+}
+
+/**
+ * 写下「这份草稿已被用户清除、等服务器确认」的依据（§11.2）。
+ *
+ * 删除是一项**待确认的变化**：请求失败或用户正常刷新后，靠这条记录仍然知道要清掉哪一份，
+ * 而不是把用户清掉的文字当没清过、刷新后复活。
+ */
+export function writeCardLocalClear(
+  cardId: string,
+  options: { boardId?: string; seq?: number } = {},
+): DraftWriteResult {
+  const key = cardLocalDraftStorageKey(cardId);
+  const version = nextVersion(key);
+  const record: DraftRecord = {
+    text: "",
+    updatedAt: Date.now(),
+    seq: Number.isFinite(options.seq) ? (options.seq as number) : 0,
+    kind: "cleared",
+    version,
+  };
+  if (options.boardId) record.boardId = options.boardId;
+  return writeRecord(key, record);
+}
+
+/**
+ * 删掉某一卡片的本机记录；给了 expectVersion 时**只删这一版**。
+ *
+ * 版本守卫解决的是 §11.2 的「旧版本的清除不许删掉后来新建的版本」：
+ * 用户在清除之后又编辑了新内容，记录已经是新版本，迟到的清除确认不能把它删掉。
+ * 记录不存在时返回 true（本来就没有，不需要删）。
+ */
+export function removeCardLocalDraft(cardId: string, expectVersion?: number): boolean {
+  const key = cardLocalDraftStorageKey(cardId);
+  const current = readDraft(key);
+  if (current && typeof expectVersion === "number" && current.version !== expectVersion) return false;
+  removeDraft(key);
+  return true;
+}
+
 /**
  * 记录是否存在（**正文为空也算存在**）。
  *
