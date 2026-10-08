@@ -571,14 +571,29 @@ async function scenario6() {
   const submitted = sess([clickHook("submit"), waitForHook("/已提交|提交失败|未重复/.test((document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||'')"), { op: "eval", js: "JSON.stringify({range: (document.querySelector('[data-im=\"visible-range\"]')||{}).textContent||'', status: (document.querySelector('[data-im=\"submit-status\"]')||{}).textContent||''})" }, { op: "screenshot", name: "fe-62-submitted" }]);
   const submitInfo = last(submitted, {});
   const submissions = await api("/api/interactive/boards/" + BOARD + "/submissions");
-  const payloadText = JSON.stringify(submissions);
-  check("6 提交内容里有已勾选的注释", payloadText.includes("甲己勾选的注释"), JSON.stringify({ range: (submitInfo.range || "").slice(0, 80) }));
-  check("6 未勾选的注释没有进入提交内容", !payloadText.includes("乙未勾选的注释"), "");
+  /**
+   * 只看**本次**这一次提交。
+   *
+   * 原来用整份历史（`JSON.stringify(submissions)`）：同一份数据目录里早先的运行可能合法地提交过
+   * 「乙未勾选的注释」（那时它是勾选的），于是这条检查会随历史数据偶发失败 —— 那不是产品缺陷。
+   */
+  const list = Array.isArray(submissions) ? submissions : submissions.submissions || [];
+  const latest = list.length ? list[list.length - 1] : {};
+  const payloadText = JSON.stringify(latest);
+  check("6 提交内容里有已勾选的注释", payloadText.includes("甲己勾选的注释"), JSON.stringify({ range: (submitInfo.range || "").slice(0, 80), 本次: payloadText.slice(0, 120) }));
+  check("6 未勾选的注释没有进入提交内容（只看本次提交）", !payloadText.includes("乙未勾选的注释"), payloadText.slice(0, 160));
   const afterSubmitState = await boardState();
+  /**
+   * 规则是「成功提交后取消本次勾选，**不是删除卡片**」。
+   *
+   * 这里按**本次写入的两张注释仍然存在**断言，而不是 `cards.length === 2`：
+   * 同一份数据目录里可能还留着别的卡片（脚本状态依赖），卡片总数不是这条规则的判据。
+   */
+  const stillThere = afterSubmitState.cards.filter((c) => String(c.content || "").includes(RUN_TAG));
   check(
     "6 提交后勾选被自动取消（不是删除）",
-    afterSubmitState.cards.filter((c) => c.checked).length === 0 && afterSubmitState.cards.length === 2,
-    JSON.stringify({ checked: afterSubmitState.cards.filter((c) => c.checked).length, cards: afterSubmitState.cards.length, status: (submitInfo.status || "").slice(0, 60) }),
+    afterSubmitState.cards.filter((c) => c.checked).length === 0 && stillThere.length === 2,
+    JSON.stringify({ checked: afterSubmitState.cards.filter((c) => c.checked).length, 本次两张还在: stillThere.length, cards: afterSubmitState.cards.length, status: (submitInfo.status || "").slice(0, 60) }),
   );
 }
 
