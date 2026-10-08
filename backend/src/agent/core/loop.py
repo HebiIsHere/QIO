@@ -1662,39 +1662,30 @@ class AgentLoop:
     def _incomplete_title(self, outcome: BufferOutcome) -> str:
         return self._INCOMPLETE_TITLES.get(outcome.kind, "这段回答没能完整保存")
 
-    def _incomplete_note(self, outcome: BufferOutcome) -> str:
-        """写进交付内容的**事实说明**（不是模型的说法；不覆盖已有正文）。"""
-        detail = f"（{outcome.reason}）" if outcome.reason else ""
-        if outcome.kind == "limit":
-            tail = "上面是已经保存的部分，后面的内容没有保存。"
-        elif outcome.kind == "spill_read":
-            tail = "上面是已经确认可交付的部分，后半部分（暂存内容）没有读取回来。"
-        else:
-            tail = "上面是已经确认可交付的部分，后半部分没有保存。"
-        return (
-            "—— 系统事实（后端记录，不是模型的说法）："
-            f"{self._incomplete_title(outcome)}{detail}；{tail}"
-        )
+    def _incomplete_detail(self, outcome: BufferOutcome) -> str:
+        """用户可见说明里的「拿到多少 / 一共多少」（字节数如实，不猜）。"""
+        if outcome.total_bytes:
+            got = len(outcome.text.encode("utf-8"))
+            return f"；已交付 {got} 字节，原生成内容共 {outcome.total_bytes} 字节"
+        return ""
 
     def _deliverable_answer_text(self) -> str:
-        """本次调用交付到正式回答区的正文。
+        """本次调用交付到正式回答区的正文 = **模型已生成、且已确认可交付**的那部分。
 
-        交付不完整时（硬上限截断 / 暂存故障），**事实写进交付内容**（契约 §1.4：
-        如实报告，绝不偷偷丢字、绝不把缺失正文当完整回答）；已经有正文时绝不覆盖它。
+        交付内容**原样**返回：不追加说明文字、不改写模型的字（交付字节数因此如实可核）。
+        交付不完整这个事实按契约 §1.4 的两条通道传递：①可见 WARNING 事件
+        ②轮次结果/警告（见 _note_incomplete_answer），**不靠改正文来表达**。
         """
-        text = self._call_answer_text or ""
-        outcome = self._call_buffer_outcome
-        if outcome is not None and not outcome.complete:
-            note = self._incomplete_note(outcome)
-            text = f"{text}\n\n{note}" if text else note
-        return text
+        return self._call_answer_text or ""
 
     async def _note_incomplete_answer(self, outcome: BufferOutcome) -> None:
         """交付不完整：发**可见** WARNING + 轮次警告（只写日志不算交付，契约 §1.4）。"""
         if self._truncation_warned:
             return
         self._truncation_warned = True
-        message = f"{self._incomplete_title(outcome)}：{outcome.reason}" if outcome.reason else self._incomplete_title(outcome)
+        title = self._incomplete_title(outcome)
+        message = f"{title}：{outcome.reason}" if outcome.reason else title
+        message = f"{message}{self._incomplete_detail(outcome)}。"
         self._warn(message)
         await self._emit(
             EventType.WARNING,
