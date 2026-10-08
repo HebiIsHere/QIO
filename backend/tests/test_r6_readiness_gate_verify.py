@@ -288,6 +288,14 @@ async def test_no_model_call_while_clone_is_gated(app, provider, tmp_path: Path)
             rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
             gate.set()
             response = await asyncio.wait_for(retry, timeout=60)
+        # 释放闸门之后的收尾断言也要在 client 关闭前做完
+        queue_json = queue.json()
+        new_ids = [x for x in _bound_ids(response) if x != att["id"]]
+        clone: dict = {}
+        content = None
+        if new_ids:
+            clone = await _wait_ready(client, new_ids[0])
+            content = await client.get("/api/attachments/%s/content" % clone["id"])
 
     assert still_closed, "断言时闸门已被打开 —— 证据不成立（必须在「磁盘闸门仍关闭」时判定）"
     assert queue.status_code == 200 and session.status_code == 200, (
@@ -297,17 +305,14 @@ async def test_no_model_call_while_clone_is_gated(app, provider, tmp_path: Path)
         "附件还没就绪（复制闸门仍关闭）时**模型已经被调用**了 —— 违反契约 §1.1「就绪后才放行」",
         {
             "calls_while_gated": calls_while_gated,
-            "running": (queue.json() or {}).get("running"),
-            "queued": (queue.json() or {}).get("queued"),
+            "running": (queue_json or {}).get("running"),
+            "queued": (queue_json or {}).get("queued"),
             "attachments": [(a.get("id"), a.get("state")) for a in rows],
         },
     )
     assert response.status_code == 200, (response.status_code, response.text[:300])
-    new_ids = [x for x in _bound_ids(response) if x != att["id"]]
     assert new_ids, ("新轮没有绑定克隆附件", response.text[:300])
-    clone = await _wait_ready(client, new_ids[0])
-    content = await client.get("/api/attachments/%s/content" % clone["id"])
-    assert content.status_code == 200 and MARKER in content.text, (
+    assert content is not None and content.status_code == 200 and MARKER in content.text, (
         "释放闸门后新轮的副本内容不正确", content.status_code, content.text[:80]
     )
     calls_after = (await _provider_calls(provider)) - calls_before
