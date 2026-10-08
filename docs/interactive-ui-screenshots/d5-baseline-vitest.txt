@@ -1,0 +1,248 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-recover-d/frontend
+
+ × src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 1：首次编辑在防抖前刷新（§11.1） > 【状态】防抖未到就刷新：本机记录必须被发现并恢复出来 23ms
+   → 刷新后没有发现只存在于本机的新草稿：输入框的文字恢复不出来: expected false to be true // Object.is equality
+ × src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 1：首次编辑在防抖前刷新（§11.1） > 【状态】恢复出来的本机草稿要重新排一次保存，不能只显示不保护 7ms
+   → 恢复后没有把这份草稿保存回服务器（saveDrafts 调用次数 0）: expected false to be true // Object.is equality
+ × src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 2：服务器已有旧草稿，用户清除后刷新不许复活（§11.2） > 【状态】清除最后一份草稿也必须发出同步请求 8ms
+   → 清除了草稿，服务器上却还留着它：这次清除没有同步（刷新后必然复活）: expected '服务器上的旧草稿' to be undefined
+ × src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 2：服务器已有旧草稿，用户清除后刷新不许复活（§11.2） > 【状态】清除后刷新，旧草稿不许复活 9ms
+   → 刷新之后旧草稿又回来了（用户已经清除过它）: expected '服务器上的旧草稿' not to be '服务器上的旧草稿' // Object.is equality
+ × src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts > 场景 7：提交失败时默认区域显示本次原因（§11.6） > 【组件/DOM】上一次提交成功、本次请求失败：默认区域必须含本次原因 60ms
+   → 默认失败区域看不到本次提交失败的真实原因: expected '本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动…' to contain '网络中断'
+ × src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts > 场景 7：提交失败时默认区域显示本次原因（§11.6） > 【组件/DOM】上一次提交也失败过：默认区域不许拿上一次的旧原因当本次原因 11ms
+   → 默认失败区域没有说本次提交失败的真实原因: expected '本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动…' to contain '本次提交的真实原因'
+ × src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts > 场景 8：480px 关闭一个面板后的切换条布局（§11.7） > 【组件/DOM】切换条要给剩下的面板预留真实高度 101ms
+   → 切换条压在剩下的面板上：面板底边 450px，切换条顶边 408px（没有为切换条预留高度）: expected 450 to be less than or equal to 408.5
+ × src/stores/__tests__/d5FailedSendRecovery.verify.test.ts > 场景 5：发送失败后刷新，失败原文与原因不许丢（§11.4） > 【会话层】刷新（新 store）后仍能知道这次失败并取回原文 26ms
+   → 刷新之后失败原文不见了（它只存在内存里）: expected undefined to be '服务器挂了的时候写下的原文' // Object.is equality
+ × src/stores/__tests__/d5FailedSendRecovery.verify.test.ts > 场景 6：未绑定话题发送成功后，已发送的文字不许回到输入框（§11.5） > 【会话层】currentTopicId=null 发送 → 绑定真实话题 → 受理成功：输入框与草稿都要干净 7ms
+   → 已经成功发送的文字又回到了输入框（清理找的是旧位置）: expected '未绑定话题时写的字' to be '' // Object.is equality
+ × src/components/__tests__/d5ComposerRecovery.verify.test.ts > 场景 4：普通对话页发送失败（§11.4） > 【组件/DOM】失败后页面上直接看得见本次真实原因 81ms
+   → 对话页没有显示这次发送失败的真实原因: expected '默认话题Enter 发送 · Shift+Enter 换行↑' to contain '网络中断'
+ × src/components/__tests__/d5ComposerRecovery.verify.test.ts > 场景 4：普通对话页发送失败（§11.4） > 【组件/DOM】输入框已有新文字时，仍要有取回失败原文的入口且两份都保留 24ms
+   → 对话页没有任何取回失败原文的入口（失败原因也不可见）: expected 0 to be greater than 0
+ × src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts > 场景 3：本机写入失败时界面必须说明（§11.3） > 【组件/DOM】本机存储写入失败：编辑处要如实说明，并保留输入内容 96ms
+   → 本机写入失败后，界面上一句解释都没有: expected '文字注释输入过程只保存草稿；点「完成编辑」才形成有效文字状态。草稿保存中……' to match /本机|本地|这台|关闭后|重开后|恢复副本/
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯ Failed Tests 12 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/__tests__/d5ComposerRecovery.verify.test.ts > 场景 4：普通对话页发送失败（§11.4） > 【组件/DOM】失败后页面上直接看得见本次真实原因
+AssertionError: 对话页没有显示这次发送失败的真实原因: expected '默认话题Enter 发送 · Shift+Enter 换行↑' to contain '网络中断'
+
+Expected: "网络中断"
+Received: "默认话题Enter 发送 · Shift+Enter 换行↑"
+
+ ❯ src/components/__tests__/d5ComposerRecovery.verify.test.ts:73:50
+     71|     await flushPromises();
+     72|
+     73|     expect(wrapper.text(), "对话页没有显示这次发送失败的真实原因").toContain("网络中断");
+       |                                                  ^
+     74|   });
+     75|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/12]⎯
+
+ FAIL  src/components/__tests__/d5ComposerRecovery.verify.test.ts > 场景 4：普通对话页发送失败（§11.4） > 【组件/DOM】输入框已有新文字时，仍要有取回失败原文
+的入口且两份都保留
+AssertionError: 对话页没有任何取回失败原文的入口（失败原因也不可见）: expected 0 to be greater than 0
+ ❯ src/components/__tests__/d5ComposerRecovery.verify.test.ts:93:7
+     91|       buttons.length,
+     92|       "对话页没有任何取回失败原文的入口（失败原因也不可见）",
+     93|     ).toBeGreaterThan(0);
+       |       ^
+     94|
+     95|     // 优先用「互换」入口（输入框已有新文字时的既有恢复方式），没有就点放回
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/12]⎯
+
+ FAIL  src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 1：首次编辑在防抖前刷新（§11.1） > 【状态】防抖未到就刷新：本机记录必须被发现并恢复出来
+AssertionError: 刷新后没有发现只存在于本机的新草稿：输入框的文字恢复不出来: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts:112:7
+    110|       reloaded.hasCardDraft("c1"),
+    111|       "刷新后没有发现只存在于本机的新草稿：输入框的文字恢复不出来",
+    112|     ).toBe(true);
+       |       ^
+    113|     expect(reloaded.cardDraftText("c1"), "恢复出来的正文不对").toBe("还没到 600ms …
+    114|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/12]⎯
+
+ FAIL  src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 1：首次编辑在防抖前刷新（§11.1） > 【状态】恢复出来的本机草稿要重新排一次保存，不能只显示不保
+护
+AssertionError: 恢复后没有把这份草稿保存回服务器（saveDrafts 调用次数 0）: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts:131:77
+    129|     const calls = vi.mocked(imApi.saveDrafts).mock.calls;
+    130|     const saved = calls.some(([, payload]) => (payload as Record<strin…
+    131|     expect(saved, "恢复后没有把这份草稿保存回服务器（saveDrafts 调用次数 " + calls.length +…
+       |                                                                             ^
+    132|   });
+    133| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/12]⎯
+
+ FAIL  src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 2：服务器已有旧草稿，用户清除后刷新不许复活（§11.2） > 【状态】清除最后一份草稿也必须发出同步
+请求
+AssertionError: 清除了草稿，服务器上却还留着它：这次清除没有同步（刷新后必然复活）: expected '服务器上的旧草稿' to be undefined
+
+- Expected:
+undefined
+
++ Received:
+"服务器上的旧草稿"
+
+ ❯ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts:149:7
+    147|       server.drafts["card:c1"],
+    148|       "清除了草稿，服务器上却还留着它：这次清除没有同步（刷新后必然复活）",
+    149|     ).toBeUndefined();
+       |       ^
+    150|   });
+    151|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/12]⎯
+
+ FAIL  src/stores/__tests__/d5CardDraftRecovery.verify.test.ts > 场景 2：服务器已有旧草稿，用户清除后刷新不许复活（§11.2） > 【状态】清除后刷新，旧草稿不许复活
+AssertionError: 刷新之后旧草稿又回来了（用户已经清除过它）: expected '服务器上的旧草稿' not to be '服务器上的旧草稿' // Object.is equality
+ ❯ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts:165:71
+    163|     await flushPromises();
+    164|
+    165|     expect(reloaded.cardDraftText("c1"), "刷新之后旧草稿又回来了（用户已经清除过它）").not.…
+       |                                                                       ^
+    166|     expect(reloaded.hasCardDraft("c1"), "刷新之后仍然认为这张卡片有草稿").toBe(false);
+    167|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/12]⎯
+
+ FAIL  src/stores/__tests__/d5FailedSendRecovery.verify.test.ts > 场景 5：发送失败后刷新，失败原文与原因不许丢（§11.4） > 【会话层】刷新（新 store）后仍能知
+道这次失败并取回原文
+AssertionError: 刷新之后失败原文不见了（它只存在内存里）: expected undefined to be '服务器挂了的时候写下的原文' // Object.is equality
+
+- Expected:
+"服务器挂了的时候写下的原文"
+
++ Received:
+undefined
+
+ ❯ src/stores/__tests__/d5FailedSendRecovery.verify.test.ts:97:7
+     95|       reloaded.failedSend?.text,
+     96|       "刷新之后失败原文不见了（它只存在内存里）",
+     97|     ).toBe("服务器挂了的时候写下的原文");
+       |       ^
+     98|     expect(
+     99|       reloaded.failedSendError ?? "",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/12]⎯
+
+ FAIL  src/stores/__tests__/d5FailedSendRecovery.verify.test.ts > 场景 6：未绑定话题发送成功后，已发送的文字不许回到输入框（§11.5） > 【会话层】currentTo
+picId=null 发送 → 绑定真实话题 → 受理成功：输入框与草稿都要干净
+AssertionError: 已经成功发送的文字又回到了输入框（清理找的是旧位置）: expected '未绑定话题时写的字' to be '' // Object.is equality
+
+- Expected
++ Received
+
++ 未绑定话题时写的字
+
+ ❯ src/stores/__tests__/d5FailedSendRecovery.verify.test.ts:128:57
+    126|     await flushPromises();
+    127|
+    128|     expect(session.draft, "已经成功发送的文字又回到了输入框（清理找的是旧位置）").toBe("");
+       |                                                         ^
+    129|     const kept = readDraft(chatKey("T1"))?.text ?? null;
+    130|     expect(kept, "已发送的文字被当成 T1 的新草稿留下来了").not.toBe("未绑定话题时写的字");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/12]⎯
+
+ FAIL  src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts > 场景 3：本机写入失败时界面必须说明（§11.3） > 【组件/DOM】本机
+存储写入失败：编辑处要如实说明，并保留输入内容
+AssertionError: 本机写入失败后，界面上一句解释都没有: expected '文字注释输入过程只保存草稿；点「完成编辑」才形成有效文字状态。草稿保存中……' to match /本机|本地|这台|关闭后|重开后|恢复副本/
+
+- Expected:
+/本机|本地|这台|关闭后|重开后|恢复副本/
+
++ Received:
+"文字注释输入过程只保存草稿；点「完成编辑」才形成有效文字状态。草稿保存中…完成编辑取消已勾选：本次允许 QIO 查看（仍需提交）10-08 08:00本次允许 QIO 查看编辑复制折叠隐藏书签 整理  删除"
+
+ ❯ src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts:107:40
+    105|
+    106|     const text = wrapper.text();
+
+ Test Files  6 failed (6)
+      Tests  12 failed (12)
+   Start at  15:24:58
+   Duration  4.93s (transform 2.59s, setup 255ms, import 5.38s, tests 471ms, environment 18.76s)
+
+    107|     expect(text, "本机写入失败后，界面上一句解释都没有").toMatch(/本机|本地|这台|关闭后|重开后|恢复副本/…
+       |                                        ^
+    108|     expect(text, "只说了一句套话，没有说明这份编辑保护不了").toMatch(
+    109|       /失败|没有保存|不可用|无法|存不下|不能恢复|会丢/,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/12]⎯
+
+ FAIL  src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts > 场景 7：提交失败时默认区域显示本次原因（§11.6） > 【组件/DOM】上一次提
+交成功、本次请求失败：默认区域必须含本次原因
+AssertionError: 默认失败区域看不到本次提交失败的真实原因: expected '本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动…' to contain '网络中断'
+
+Expected: "网络中断"
+Received: "本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动提交失败不会丢改动：已保存的板面、本次注释勾选都保留，上次成功提交的基准没有被更新详情重新提交"
+
+ ❯ src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts:61:52
+     59|     await flushPromises();
+     60|
+     61|     expect(wrapper.text(), "默认失败区域看不到本次提交失败的真实原因").toContain("网络中断");
+       |                                                    ^
+     62|     expect(wrapper.find('[data-im="submit-details-box"]').exists(), "默…
+     63|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/12]⎯
+
+ FAIL  src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts > 场景 7：提交失败时默认区域显示本次原因（§11.6） > 【组件/DOM】上一次提
+交也失败过：默认区域不许拿上一次的旧原因当本次原因
+AssertionError: 默认失败区域没有说本次提交失败的真实原因: expected '本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动…' to contain '本次提交的真实原因'
+
+Expected: "本次提交的真实原因"
+Received: "本次可见：材料 0 项 · 注释 0 条提交失败（未提交）没有可提交的改动提交失败不会丢改动：已保存的板面、本次注释勾选都保留，上次成功提交的基准没有被更新；失败原因：上一次提交的旧原因详情重新提交"
+
+ ❯ src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts:76:42
+     74|
+     75|     const text = wrapper.text();
+     76|     expect(text, "默认失败区域没有说本次提交失败的真实原因").toContain("本次提交的真实原因");
+       |                                          ^
+     77|     expect(
+     78|       text.includes("上一次提交的旧原因") && !text.includes("本次提交的真实原因"),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/12]⎯
+
+ FAIL  src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts > 场景 8：480px 关闭一个面板后的切换条布局（§11.7） > 【组件/
+DOM】切换条要给剩下的面板预留真实高度
+AssertionError: 切换条压在剩下的面板上：面板底边 450px，切换条顶边 408px（没有为切换条预留高度）: expected 450 to be less than or equal to 408.5
+ ❯ src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts:108:7
+    106|       chatBottom,
+    107|       "切换条压在剩下的面板上：面板底边 " + chatBottom + "px，切换条顶边 " + barTop + "px（没有…
+    108|     ).toBeLessThanOrEqual(barTop + 0.5);
+       |       ^
+    109|   });
+    110| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/12]⎯
+
