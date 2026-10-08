@@ -704,6 +704,14 @@ function onKeydown(event: KeyboardEvent) {
   line-height: 1.5;
   color: var(--text-faint);
 }
+/*
+  矮窗口（480×600 这类浏览器边缘档、以及 800×600 的桌面最小窗口）：
+  输入框不必保留整块最大高度 —— 面板里还要同时容下失败恢复块与发送按钮。
+  实机复现过：输入框按 132px 撑满时，恢复块被压到 6px（看不见）或输入行被顶出面板被裁掉。
+*/
+@media (max-height: 700px) {
+  .input { max-height: 84px; }
+}
 @media (max-width: 900px) {
   /* 窄窗口里工具栏会换行变高：默认避让值抬一档（量到真实高度时以量到的为准） */
   .chat-dock { bottom: calc(var(--sp-4) + var(--chat-dock-clearance, var(--im-toolbar-clearance, 112px))); }

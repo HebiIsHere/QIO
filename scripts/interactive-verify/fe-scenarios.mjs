@@ -1385,6 +1385,40 @@ async function scenario22() {
   }
 }
 
+async function scenario23() {
+  /**
+   * 480×600（浏览器边缘档）+ 长失败原文：聊天面板**自己裁掉输入区**的回归检查（独立验收 D2 发现）。
+   *
+   * 断言：输入框与发送按钮的矩形都在面板矩形之内，且 elementFromPoint 命中它们自己；
+   * 恢复块既不能被压没（至少能看见原因与一个按钮），也不能把输入行顶出面板。
+   */
+  const LONG = "失败之后原文要能找回（恢复入口）".repeat(6);
+  const M = (mark) => "JSON.stringify({mark:'" + mark + "',vw:window.innerWidth,vh:window.innerHeight," +
+    "panel:(function(){var e=document.querySelector('[data-im=\"chat-panel\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height)};})()," +
+    "recover:(function(){var e=document.querySelector('[data-im=\"chat-recovery-wrap\"]');if(!e)return null;var r=e.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height)};})()," +
+    "input:(function(){var e=document.querySelector('[data-im=\"chat-input\"]');if(!e)return null;var r=e.getBoundingClientRect();var x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);var t=document.elementFromPoint(x,y);return {t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),hitSelf:!!t&&e.contains(t),hit:t?(t.getAttribute&&t.getAttribute('data-im'))||t.tagName:null};})()," +
+    "send:(function(){var e=document.querySelector('[data-im=\"chat-send\"]');if(!e)return null;var r=e.getBoundingClientRect();var x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);var t=document.elementFromPoint(x,y);return {t:Math.round(r.top),b:Math.round(r.bottom),hitSelf:!!t&&e.contains(t),hit:t?(t.getAttribute&&t.getAttribute('data-im'))||t.tagName:null};})()})";
+  const flow = sess([
+    { op: "viewport", width: 480, height: 600 },
+    { op: "wait", ms: 1000 },
+    { op: "eval", js: "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();return 'chat';})()" },
+    { op: "wait", ms: 900 },
+    { op: "eval", js: "(function(){if(!window.__of){window.__of=window.fetch.bind(window);}window.fetch=function(i,init){var u=String((i&&i.url)||i);if(/\\/api\\/turns$/.test(u)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__of(i,init);};return 'stub';})()" },
+    { op: "eval", js: "(function(){var t=document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]');if(!t)return 'no-input';t.focus();t.value=" + JSON.stringify(LONG) + ";t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()" },
+    { op: "wait", ms: 500 },
+    { op: "eval", js: "(function(){var b=document.querySelector('[data-im=\"chat-send\"]');if(!b)return 'no-send';if(b.disabled)return 'disabled';b.click();return 'sent';})()" },
+    { op: "wait", ms: 2500 },
+    { op: "eval", js: M("chat480") },
+    { op: "screenshot", name: "fe-23-chat-480x600-long-failure" },
+  ]);
+  const m = markedFrom(flow, "chat480") || {};
+  const insidePanel = (rect, panel) => Boolean(rect && panel) && rect.t >= panel.t - 1 && rect.b <= panel.b + 1;
+  check("23 长失败原文下输入框仍在面板内且能命中", insidePanel(m.input, m.panel) && Boolean(m.input && m.input.hitSelf), JSON.stringify({ panel: m.panel, input: m.input }));
+  check("23 长失败原文下发送按钮仍在面板内且能命中", insidePanel(m.send, m.panel) && Boolean(m.send && m.send.hitSelf), JSON.stringify({ panel: m.panel, send: m.send }));
+  check("23 恢复块没被压没（还能看见原因与按钮）", Boolean(m.recover) && m.recover.h >= 40, JSON.stringify(m.recover || {}));
+  check("23 恢复块没有溢出面板", Boolean(m.recover && m.panel) && m.recover.b <= m.panel.b + 1, JSON.stringify({ panel: m.panel, recover: m.recover }));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -1409,6 +1443,7 @@ const main = async () => {
     [19, scenario19],
     [21, scenario21],
     [22, scenario22],
+    [23, scenario23],
     [99, scenario99],
   ];
   for (const entry of scenarios) {

@@ -183,6 +183,21 @@ function discard(record: FailedSend): void {
   flex-direction: column;
   gap: var(--sp-1);
   min-width: 0;
+  /**
+   * **必须可收缩**（契约 §11.7 / §11.8）。
+   *
+   * 面板是一个纵向 flex 容器、且 `overflow: hidden`；恢复块如果按内容高度长下去，
+   * 会把下面的输入行与发送按钮顶出面板、被直接裁掉 —— 480×600 实机复现：
+   * 面板底边 348，输入框 top 383、发送按钮 top 478，elementFromPoint 都命中不到自己。
+   * 所以这里显式允许收缩（flex: 0 1 auto + min-height: 0）并限高滚动：
+   * 内容再长，输入框与发送按钮也始终留在面板里。
+   */
+  flex: 0 1 auto;
+  /* 既不许把输入行顶出面板，也不许自己被压没：至少留出「原因 + 一个按钮」的高度 */
+  min-height: 56px;
+  max-height: min(34vh, 200px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .attempt {
   margin: 0;
