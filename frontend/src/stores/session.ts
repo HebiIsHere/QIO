@@ -2751,6 +2751,8 @@ export const useSessionStore = defineStore("session", {
       options: {
         /** 只在重试/重发某一轮时给：后端据此允许克隆复用那一轮的附件 */
         retryOfTurnId?: string | null;
+        /** 准备期间中止这次请求（输入区的「正在准备附件…」用它）：真 abort 才会让后端 abandon */
+        signal?: AbortSignal;
       } = {},
     ): Promise<boolean> {
       const message = text.trim();
@@ -2776,9 +2778,24 @@ export const useSessionStore = defineStore("session", {
          * 后端会走兜底把该话题下遗留的未绑定附件绑上（审计问题 3）。
          */
         // 非重试路径保持既有三参形状；只有重试/重发才带第四个参数（retry_of_turn_id）
-        const res = options.retryOfTurnId
-          ? await api.sendTurn(message, this.currentTopicId, ids, options.retryOfTurnId)
-          : await api.sendTurn(message, this.currentTopicId, ids);
+        // 调用形状按需最小化：没有 signal 时保持既有参数个数（3 参 / 重试 4 参），
+        // 免得把「准备期中止」的管道塞进所有调用点的既有契约里。
+        let res;
+        if (options.retryOfTurnId) {
+          res = options.signal
+            ? await api.sendTurn(
+                message,
+                this.currentTopicId,
+                ids,
+                options.retryOfTurnId,
+                options.signal,
+              )
+            : await api.sendTurn(message, this.currentTopicId, ids, options.retryOfTurnId);
+        } else {
+          res = options.signal
+            ? await api.sendTurn(message, this.currentTopicId, ids, undefined, options.signal)
+            : await api.sendTurn(message, this.currentTopicId, ids);
+        }
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。

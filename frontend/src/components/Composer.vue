@@ -147,11 +147,35 @@ async function submit() {
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
-  const ok = await sendWithAttachments(
-    value,
-    sentAttachments.map((item) => item.id),
-    sentAttachments,
-  );
+  const hasAttachments = sentAttachments.length > 0;
+  if (hasAttachments) {
+    // 只有「带了附件 + 后端还没受理」才需要这个状态；不带附件一律不显示。
+    // 防抖：秒级就绪的路径在阈值之前就受理了，界面不该闪一下。
+    sendWaiting.value = true;
+    preparingCancelled.value = false;
+    preparingNotice.value = "";
+    sendAbort = new AbortController();
+    preparingTimer = setTimeout(() => {
+      if (sendWaiting.value) preparingVisible.value = true;
+    }, PREPARING_VISIBLE_AFTER_MS);
+  }
+  let ok = false;
+  try {
+    ok = await sendWithAttachments(
+      value,
+      sentAttachments.map((item) => item.id),
+      sentAttachments,
+      sendAbort ? { signal: sendAbort.signal } : undefined,
+    );
+  } finally {
+    if (preparingTimer !== null) {
+      clearTimeout(preparingTimer);
+      preparingTimer = null;
+    }
+    sendWaiting.value = false;
+    preparingVisible.value = false;
+    sendAbort = null;
+  }
   if (!ok) {
     // 发送失败：草稿放回去（用户不必重写），附件也留着（失败不是附件的错）。
     // 若期间已输入新内容则不覆盖。
@@ -160,17 +184,47 @@ async function submit() {
       await nextTick();
       autosize();
     }
+    // 用户自己中止的：如实说「这一轮没有发送」，不要伪装成失败原因
+    if (preparingCancelled.value) {
+      preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
+    }
     return;
   }
   // 已被受理：后端在受理时就把这批附件绑到了这一轮，chip 可以清掉
   const sentIds = new Set(sentAttachments.map((item) => item.id));
   pending.value = pending.value.filter((item) => !sentIds.has(item.id));
   attachError.value = "";
+  if (preparingCancelled.value) {
+    /**
+     * 竞态：用户按了中止，但请求在那一刻**已经受理**（轮次已入队）。
+     * 这时不能假装「从未发送」—— 如实说「已取消」，并用既有停止入口真的取消它。
+     */
+    preparingNotice.value = "已取消：这一轮已经受理，已按「停止」取消";
+    void stopTurn();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 附件（选择 / 拖放 / 粘贴路径 → 登记 → 准备状态 → 发送前移除 / 失败重试）
 // ---------------------------------------------------------------------------
+
+/**
+ * 「正在准备附件…」：带附件发送后、后端**受理返回之前**的状态。
+ *
+ * 为什么需要：准备期间后端什么都没跑（不入队、不发 TURN_START、模型 0 次调用），
+ * 所以这里绝不能出现「正在思考 / 正在执行」或阶段历史 —— 只能说「在准备附件」。
+ * 中止 = 真的把这次请求 abort 掉（后端据此 abandon 预留，见契约 §1.1），
+ * 不是「前端不等了」（那样后端照常受理并执行，用户按了中止却看到它跑起来）。
+ */
+const PREPARING_VISIBLE_AFTER_MS = 200;
+/** 正在等后端受理（且这次带了附件） */
+const sendWaiting = ref(false);
+/** 真的显示出来的「正在准备附件…」（过了防抖阈值才置位，避免闪一下） */
+const preparingVisible = ref(false);
+const preparingCancelled = ref(false);
+const preparingNotice = ref("");
+let preparingTimer: ReturnType<typeof setTimeout> | null = null;
+let sendAbort: AbortController | null = null;
 
 /** 待发送附件（chip 列表）：发送成功后才清掉，发送失败连文本一起留着。 */
 const pending = ref<AttachmentRef[]>([]);
@@ -524,6 +578,7 @@ type SendWithAttachments = (
   text: string,
   attachmentIds?: string[],
   attachments?: AttachmentRef[],
+  options?: { signal?: AbortSignal },
 ) => Promise<boolean>;
 const sendWithAttachments = session.send as unknown as SendWithAttachments;
 
@@ -546,6 +601,16 @@ function autosize() {
   }
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_PX) + "px";
+}
+
+/**
+ * 中止「正在准备附件」的这一轮：**真的 abort 这次请求**。
+ * 后端契约 §1.1：客户端在准备期间断开 → abandon 预留 + 清理本次克隆，不入队、不执行。
+ */
+function cancelPreparing() {
+  if (!sendWaiting.value) return;
+  preparingCancelled.value = true;
+  sendAbort?.abort();
 }
 
 /** 停止当前 active turn：显示「正在停止」直到后端真正结束（TURN_END） */
@@ -597,7 +662,7 @@ async function stopTurn() {
     </div>
 
     <div
-      v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection"
+      v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"
       class="attach-area"
     >
       <div class="attach-row">
@@ -614,6 +679,28 @@ async function stopTurn() {
         />
         <span v-if="attaching" class="attach-hint mono">正在登记附件…</span>
       </div>
+      <!-- 正在准备附件（后端受理之前）：只说准备，绝不说「已经在跑」；可中止 -->
+      <p
+        v-if="preparingVisible"
+        class="preparing-status mono"
+        role="status"
+        data-test="preparing-attachments"
+      >
+        <span aria-hidden="true">◌</span>
+        正在准备附件…（这一轮还没有开始）
+        <button
+          class="act preparing-cancel"
+          type="button"
+          data-test="preparing-cancel"
+          aria-label="中止这次发送（附件还没有准备好）"
+          @click="cancelPreparing"
+        >
+          中止
+        </button>
+      </p>
+      <p v-if="preparingNotice" class="attach-note" role="status" data-test="preparing-notice">
+        {{ preparingNotice }}
+      </p>
       <div v-if="pathOpen" class="path-row">
         <input
           v-model="pathDraft"
@@ -922,6 +1009,26 @@ async function stopTurn() {
 }
 .attach-area {
   margin-bottom: 8px;
+}
+/* 「正在准备附件…」：统一的一行状态 + 中止入口（不是阶段历史，也不是执行迹象） */
+.preparing-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.preparing-status .act {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+}
+.preparing-status .act:hover {
+  text-decoration: underline;
 }
 .attach-row {
   display: flex;
