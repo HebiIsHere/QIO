@@ -128,12 +128,26 @@ def _turn_starts(ctx) -> list:
     return [e for e in ctx.bus._history if e.type.value == "TURN_START"]
 
 
+def _events_of(ctx, name: str, turn_id: str) -> list:
+    """事件历史里的**不可逆事实**（发出去就一直在），不随瞬时状态消失。"""
+    return [
+        e
+        for e in ctx.bus._history
+        if e.type.value == name and str(e.data.get("turn_id") or "") == turn_id
+    ]
+
+
 def _clones_of(ctx, source_id: str) -> list:
     return [
         row
         for row in ctx.attachments.list(limit=50, check=False)
         if getattr(row, "source_attachment_id", None) == source_id
     ]
+
+
+def _stored_files(ctx) -> list:
+    """附件目录里的实际文件（用于「克隆副本有没有被清掉」这类收敛判据）。"""
+    return [p for p in ctx.attachments.root.rglob("*") if p.is_file()]
 
 
 def _readable(att) -> bool:
@@ -397,15 +411,18 @@ async def test_resend_claim_survives_a_failed_prepare(async_app, tmp_path, monke
         ctx.turn_journal.interrupt_stale()
         assert ctx.turn_journal.recoverable(lost_turn) is not None
 
-        _break_copy(monkeypatch)
-        failed = await ac.post(f"/api/turns/{lost_turn}/resend")
-        assert failed.status_code == 409, failed.text
-        assert ctx.turn_journal.recoverable(lost_turn) is not None, (
-            "准备失败把 claim 永久消费掉了：用户再也没法重发这条消息"
-        )
-        assert adapter.calls == 0
+        # 注入只在这个上下文里生效（不用 monkeypatch.undo()：那会把同一 fixture 上
+        # 别的补丁——例如 autouse 的验证桩——一起撤掉，留下隐式耦合）
+        with pytest.MonkeyPatch.context() as failing:
+            _break_copy(failing)
+            failed = await ac.post(f"/api/turns/{lost_turn}/resend")
+            assert failed.status_code == 409, failed.text
+            assert ctx.turn_journal.recoverable(lost_turn) is not None, (
+                "准备失败把 claim 永久消费掉了：用户再也没法重发这条消息"
+            )
+            assert adapter.calls == 0
 
-        monkeypatch.undo()  # 修好复制（只撤销测试注入的 shim）
+        # 注入撤掉（复制恢复正常）之后：这条记录还能再试一次，并且真的跑起来
         retried = await ac.post(f"/api/turns/{lost_turn}/resend")
         assert retried.status_code == 200, retried.text
         assert retried.json()["recovered_turn_id"] == lost_turn
@@ -464,8 +481,14 @@ async def test_client_disconnect_during_prepare_never_starts(async_app, tmp_path
             timeout=SETUP_DEADLINE,
             what="断开后克隆行没有清掉",
         )
+        # 副本**文件**的清理是排程的（等复制线程收尾后再删）：等它收敛，而不是断言某一瞬间
+        await _wait_until(
+            lambda: len(_stored_files(ctx)) == 1,
+            timeout=SETUP_DEADLINE,
+            what="断开后克隆副本没有被清掉（目录里应该只剩原轮那一份）",
+        )
 
-    files = [p for p in ctx.attachments.root.rglob("*") if p.is_file()]
+    files = _stored_files(ctx)
     assert len(files) == 1, f"断开后只该剩下原轮那份副本：{files}"
 
 
@@ -513,29 +536,58 @@ async def test_deleting_the_clone_during_prepare_is_rejected(async_app, tmp_path
 
 
 async def test_activation_order_wait_is_bounded(async_app, monkeypatch):
-    """有界等待：前面的预留迟迟不放行时，后面已经就绪的不会被永远挡住（超时兜底放行）。"""
+    """有界等待：队首迟迟不放行时，后面已经就绪的不会被永远挡住（超时兜底放行）。
+
+    判据只用**不可逆事实**。快照里的 queued / running 是瞬态的：兜底放行的那一轮会在
+    同一个事件循环 tick 里被 worker 取走并跑完（实测：兜底触发后 runner 的 start/end
+    落在同一时间戳；250ms 采样必然错过、5ms 采样也只是碰运气）—— 拿「等到看见入队」
+    当判据会随机器调度随机变红（Linux CI 就是这样红的），而测不到「有没有兜底放行」。
+
+    所以这里等的是「worker 真的开跑过」这个留在事件历史里的 TURN_START，外加：
+    * 同步断言（没有 await，定时器不可能已触发）：那一刻还没入队、还没开跑；
+    * 下界：兜底真的等够了时间才放行（不是立刻放行）；
+    * 第一位始终没被执行 —— 兜底只放行到点的那一条，不改 FIFO 语义；
+    * 第二轮如实收尾（台账不留 unfinished）—— 不可逆的收尾事实。
+    """
     from agent.core import turn as turn_mod
 
-    monkeypatch.setattr(turn_mod, "ACTIVATION_ORDER_TIMEOUT", 0.2)
+    bound = 0.3
+    monkeypatch.setattr(turn_mod, "ACTIVATION_ORDER_TIMEOUT", bound)
     ctx = async_app.state.ctx
     first = ctx.turns.reserve("第一位（永远不放行）", None)
     second = ctx.turns.reserve("第二位（就绪但被顺序挡住）", None)
 
     ctx.turns.activate(second)
-    snapshot = ctx.turns.snapshot()
-    assert snapshot["running"] is None and not snapshot["queued"], (
-        "前面那一轮没放行时，后面的不该入队（FIFO）",
-        snapshot,
-    )
 
+    # ---- 同步断言：还没到兜底上界，队首没放行 → 后面的没入队、没开跑 ----
+    assert second.status == "preparing", ("还没放行就不该入队", second.status)
+    assert not _events_of(ctx, "TURN_START", second.turn_id), "FIFO：后预留的轮次先开跑了"
+
+    started = time.perf_counter()
     await _wait_until(
-        lambda: bool(ctx.turns.snapshot()["queued"]) or ctx.turns.snapshot()["running"] is not None,
+        lambda: _events_of(ctx, "TURN_START", second.turn_id),
         timeout=SETUP_DEADLINE,
         what="兜底等待没有把就绪的预留放行（会被永远挡住）",
     )
+    waited = time.perf_counter() - started
+    assert waited >= bound * 0.7, (
+        f"兜底等待没等够就放行了（{waited:.3f}s < {bound * 0.7:.3f}s）—— 那不是有界等待",
+    )
+    assert not _events_of(ctx, "TURN_START", first.turn_id), (
+        "第一位从未放行，却开跑了（兜底把不该放行的也放了）"
+    )
 
+    # ---- 不可逆事实二：兜底放行的那一轮如实收尾，台账不留 unfinished ----
+    await _wait_until(
+        lambda: _events_of(ctx, "TURN_END", second.turn_id),
+        timeout=SETUP_DEADLINE,
+        what="兜底放行的那一轮没有收尾",
+    )
+    assert ctx.turn_journal.unfinished() == [], (
+        "兜底放行的那一轮没有如实收尾",
+        ctx.turn_journal.unfinished(),
+    )
     ctx.turns.abandon(first, reason="test_cleanup")
-    ctx.turns.cancel(second.turn_id)
 
 
 async def test_retry_waits_for_the_copy_before_the_turn_starts(async_app, tmp_path, monkeypatch):
