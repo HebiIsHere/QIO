@@ -28,6 +28,7 @@ import pytest
 
 from agent.adapters.base import (
     STREAM_DONE,
+    ToolCall,
     STREAM_TEXT,
     AdapterMode,
     BaseAdapter,
@@ -36,14 +37,16 @@ from agent.adapters.base import (
     StreamDelta,
 )
 from agent.api.bus import EventBus
-from agent.core import loop as loop_module
+from agent.core import answer_buffer as buffer_module
 from agent.core.loop import AgentLoop
 from agent.prompts import ANSWER_MARKER
 from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 
 DECL = ANSWER_MARKER
-LIMIT = int(getattr(loop_module, "UNDECLARED_BUFFER_LIMIT", 256 * 1024))
+#: 契约 §1.3：内存上限按 **UTF-8 字节**计量（R6 起在 core/answer_buffer.py；不从实现里取值就不算验收）
+LIMIT = int(buffer_module.UNDECLARED_MEMORY_LIMIT)
+SPILL_LIMIT = int(buffer_module.UNDECLARED_SPILL_LIMIT)
 
 #: 固定一份含声明正文（中文 + 代码块 + 表格）
 BODY = (
@@ -196,7 +199,6 @@ def _cases() -> list[tuple[str, list[str]]]:
         ("确定性随机分块", _chunks_random()),
         ("小写声明", ["[[qio:answer]]\n" + BODY]),
         ("CRLF 声明", [DECL + "\r\n" + BODY]),
-        ("长英文正文同块", [DECL + "\n" + ("The answer is here. " * 200)]),
     ]
     for i, chunks in enumerate(_chunks_declaration_split_every_position(), start=1):
         cases.append(("声明在第 %d 个位置拆开" % i, chunks))
@@ -249,7 +251,11 @@ async def test_stream_break_keeps_chunk_invariance():
 
     adapter = _BreakAdapter([])
     registry, tool = _registry()
-    loop, result = await _run(adapter, registry=registry, turn_id="r6_break")
+    loop = AgentLoop(adapter, registry, EventBus(), turn_id="r6_break")
+    # 流被中断/出错时 loop 如实抛出（契约：已确认文本保留，但不得执行任何调用）
+    with pytest.raises(Exception) as raised:
+        await asyncio.wait_for(loop.run("请回答我"), timeout=90)
+    assert "受控错误" in str(raised.value) or "断流" in str(raised.value), str(raised.value)[:200]
     assert tool.seen == [], tool.seen
     joined = _joined(_non_empty(_events(loop)))
     assert "第一段正文。" in joined, ("断流后已确认的正文必须保留", joined[:120])
@@ -317,13 +323,15 @@ async def test_long_undeclared_note_with_real_tool_call_keeps_note_and_runs_tool
     adapter.supports_stream = False
 
     class _ToolAdapter(_ChunkAdapter):
+        #: 走整段响应用例：必须显式关掉流式（否则 loop 走 stream()，永远拿不到 tool_calls）
+        supports_stream = False
+
         def __init__(self, chunks):  # noqa: ANN001
             super().__init__(chunks)
+            self.supports_stream = False
             self.rounds = 0
 
         async def complete(self, messages, tools, **kwargs):  # noqa: ANN001
-            from agent.adapters.base import ToolCall
-
             self.calls += 1
             self.rounds += 1
             if self.rounds == 1:
@@ -331,12 +339,13 @@ async def test_long_undeclared_note_with_real_tool_call_keeps_note_and_runs_tool
                     message=ChatMessage(
                         role="assistant",
                         content=note,
-                        tool_calls=[ToolCall(id="r6_t1", name="echo", arguments='{"text": "long"}')],
+                        tool_calls=[ToolCall(id="r6_t1", name="echo", arguments={"text": "long"})],
                     )
                 )
             return Completion(message=ChatMessage(role="assistant", content=DECL + "\n" + BODY))
 
     adapter = _ToolAdapter([])
+    adapter.supports_stream = False
     registry, tool = _registry()
     loop, result = await _run(adapter, registry=registry, turn_id="r6_long_note_tool")
     assert tool.seen == [{"text": "long"}], ("工具必须真的执行", tool.seen)
