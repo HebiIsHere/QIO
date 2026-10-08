@@ -558,6 +558,31 @@ describe("CardDraftHint：本机保护失败与冲突选择", () => {
     wrapper.unmount();
   });
 
+  it("【组件】清除没同步成功：说清「还没同步」，不假装已清除，并可重试", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    vi.useFakeTimers();
+    const store = useInteractiveStore();
+    store.setDraft(cardDraftKey("c1"), "要清掉的字");
+    await store.flushDrafts();
+    vi.mocked(imApi.saveDrafts).mockRejectedValueOnce(new Error("清除没有同步上"));
+    store.clearDraft(cardDraftKey("c1"));
+    await vi.advanceTimersByTimeAsync(700);
+
+    const wrapper = mount(CardDraftHint, { props: { cardId: "c1" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    expect(wrapper.find('[data-im="card-draft-removal-error"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("清除没有同步上");
+    expect(wrapper.text(), "服务器还没确认，不许说已清除").not.toContain("已清除");
+    expect(wrapper.find('[data-im="card-draft-retry"]').exists()).toBe(true);
+
+    await wrapper.find('[data-im="card-draft-retry"]').trigger("click");
+    await flushPromises();
+    expect(store.draftRemovalStateFor(cardDraftKey("c1")).status).toBe("idle");
+    expect(readCardLocalDraft("c1")).toBeNull();
+    wrapper.unmount();
+  });
+
   it("【组件】冲突时两份都保留，选「用服务器上的」后界面按选择继续", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

@@ -15,6 +15,7 @@ import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../inte
 import {
   cardDraftKey,
   cardIdFromDraftKey,
+  isDraftRecord,
   isStaleReceipt,
   listLocalCardDraftIds,
   readCardLocalDraft,
@@ -578,9 +579,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   function localDraftFor(cardId: string): DraftRecord | null {
     const local = readCardLocalDraft(cardId);
-    if (!local) return null;
-    if (local.kind === "cleared") return null;
-    if (local.boardId && local.boardId !== boardId.value) return null;
+    // 待同步的清除依据不是草稿：它只说明「这份旧草稿要清掉」，不能恢复成文字（§11.2）
+    if (!isDraftRecord(local)) return null;
+    if (local && local.boardId && local.boardId !== boardId.value) return null;
     return local;
   }
 
