@@ -9,6 +9,11 @@
 达到时**如实报告**（可见 WARNING + 截断事实写进交付内容），绝不无界增长、
 偷偷丢字、擅自换角色或重写答案。
 
+交付结果是**结构化**的（第七轮契约 §1.4）：`collect()` 返回
+:class:`BufferOutcome`，区分「完整交付 / 硬上限截断 / 暂存创建·写入·读取故障」——
+**读取故障不得被描述成「正文超过上限」**。事实由 AgentLoop 写成可见事件 + 轮次警告
+（只写日志不算交付）。
+
 计量单位统一为 **UTF-8 字节**（旧注释里的「256 KB」按字符数算，中文下差 3 倍）。
 """
 
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -82,6 +88,24 @@ def _split_by_bytes(text: str, limit: int) -> tuple[str, str]:
     return text, ""
 
 
+@dataclass(frozen=True)
+class BufferOutcome:
+    """未声明正文的交付结果（第七轮契约 §1.4，冻结形状）。
+
+    ``kind`` 只有五种：
+    * `complete`：完整交付（内存 + 暂存按序拼回）；
+    * `limit`：达到暂存硬上限，如实截断（后面的内容没有保存）；
+    * `spill_create` / `spill_write` / `spill_read`：暂存创建 / 写入 / 读取故障。
+
+    ``reason`` 是人话原因（过 redact），**读取故障必须与「超过上限」区分开**。
+    """
+
+    text: str
+    complete: bool
+    kind: str
+    reason: str | None = None
+
+
 def _safe_name(delta_id: str) -> str:
     keep = [c if (c.isalnum() or c in "-_.") else "_" for c in delta_id]
     return ("".join(keep) or "delta")[:80]
@@ -109,9 +133,11 @@ class AnswerBuffer:
         self._spill_bytes = 0
         # 已生成内容的总字节数（内存 + 暂存）——「整轮有没有回答内容」看它。
         self.total_bytes = 0
-        # 如实记录截断（绝不偷偷丢字、绝不改角色）；截断事实由 AgentLoop 报给用户。
-        self.truncated = False
-        self.truncation_reason: str | None = None
+        # 如实记录「交付不完整」的**种类与原因**（绝不偷偷丢字、绝不改角色）：
+        # limit（硬上限截断）/ spill_create / spill_write / spill_read。
+        # 事实由 AgentLoop 写成可见事件 + 轮次警告（只写日志不算交付）。
+        self.failure_kind: str | None = None
+        self.failure_reason: str | None = None
 
     # -- 状态 -------------------------------------------------------------
 
@@ -153,19 +179,23 @@ class AnswerBuffer:
     async def _append_spill(self, text: str) -> None:
         room = self._spill_limit - self._spill_bytes
         if room <= 0:
-            self._truncate(f"达到暂存硬上限 {self._spill_limit} 字节")
+            self._fail("limit", f"达到暂存硬上限 {self._spill_limit} 字节")
             return
         keep, dropped = await asyncio.to_thread(_split_by_bytes, text, room)
         if dropped:
-            self._truncate(f"达到暂存硬上限 {self._spill_limit} 字节")
+            self._fail("limit", f"达到暂存硬上限 {self._spill_limit} 字节")
         if not keep:
             return
         data = keep.encode("utf-8")
         try:
             await self._ensure_spill_file()
+        except OSError as exc:  # 建不了暂存文件：如实报告（内存部分照常交付）
+            self._fail("spill_create", f"暂存文件创建失败（{type(exc).__name__}: {exc}）")
+            return
+        try:
             await asyncio.to_thread(self._write_sync, data)
-        except OSError as exc:  # 暂存不可用：如实截断并报告（内存部分照常交付）
-            self._truncate(f"暂存写入失败（{type(exc).__name__}: {exc}）")
+        except OSError as exc:  # 写不进暂存：如实报告（绝不无界增长、偷偷丢字）
+            self._fail("spill_write", f"暂存写入失败（{type(exc).__name__}: {exc}）")
             return
         self._spill_bytes += len(data)
         self.total_bytes += len(data)
@@ -190,16 +220,42 @@ class AnswerBuffer:
         handle.write(data)
         handle.flush()
 
-    def _truncate(self, reason: str) -> None:
-        if not self.truncated:
-            self.truncated = True
-            self.truncation_reason = reason
-            logger.warning("undeclared answer truncated: %s (delta=%s)", reason, self._delta_id)
+    @property
+    def truncated(self) -> bool:
+        """交付是否不完整（硬上限截断或暂存故障）。"""
+        return self.failure_kind is not None
+
+    # 交付不完整时的种类优先级：存储故障比资源上限更严重（读取故障绝不能被
+    # 「超过上限」这个说法盖住），所以保留**最严重**的那一条事实。
+    _FAILURE_RANK = {"limit": 0, "spill_create": 1, "spill_write": 2, "spill_read": 3}
+
+    def _fail(self, kind: str, reason: str) -> None:
+        """记下「交付不完整」的事实（同类只记第一次，更严重的覆盖较轻的）。"""
+        current = self.failure_kind
+        if current is not None and self._FAILURE_RANK.get(current, 0) >= self._FAILURE_RANK.get(
+            kind, 0
+        ):
+            return
+        # 原因会进可见事件 / 轮次警告：按项目约定过脱敏（异常文本可能带路径/密钥形态）。
+        from agent.trace.redact import redact_text
+
+        reason = redact_text(reason)
+        self.failure_kind = kind
+        self.failure_reason = reason
+        logger.warning(
+            "undeclared answer incomplete (%s): %s (delta=%s)", kind, reason, self._delta_id
+        )
 
     # -- 读取与清理 -------------------------------------------------------
 
-    async def collect(self) -> str:
-        """按序拼回全部正文（内存 + 暂存）；句柄关闭，文件留给 discard 清理。"""
+    async def collect(self) -> BufferOutcome:
+        """按序拼回全部正文（内存 + 暂存），返回**结构化**交付结果（契约 §1.4）。
+
+        * 记忆里的部分永远保留（已确认可交付）；
+        * 读不回来暂存文件时**不编造**，并把 **spill_read** 故障记进结果 ——
+          读取故障**不得**被描述成「正文超过上限」；
+        * 句柄关闭，文件留给 discard 清理（事实已经在结果里，不会被清理吞掉）。
+        """
         parts = list(self._memory)
         await self._close_spill()
         path = self._spill_path
@@ -208,8 +264,14 @@ class AnswerBuffer:
                 data = await asyncio.to_thread(path.read_bytes)
                 parts.append(data.decode("utf-8", "replace"))
             except OSError as exc:  # 读不回来就如实少这部分，不编造
-                logger.warning("spill read failed: %s", exc)
-        return "".join(parts)
+                self._fail("spill_read", f"暂存读取失败（{type(exc).__name__}: {exc}）")
+        text = "".join(parts)
+        return BufferOutcome(
+            text=text,
+            complete=self.failure_kind is None,
+            kind=self.failure_kind or "complete",
+            reason=self.failure_reason,
+        )
 
     async def discard(self) -> None:
         """删掉暂存文件（收尾 / 取消 / 断流后），不留待决任务。"""
