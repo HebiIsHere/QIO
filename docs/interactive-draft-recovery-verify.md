@@ -4,7 +4,16 @@
 > 基线：f436ad8。**本报告只写我自己的用例、探针、截图与结论；不改任何产品代码。**
 > 证据分级：【状态/单元】【组件/DOM】【真实浏览器】【真实请求】【视觉】【模拟】【没能验证】。
 
-## 0. 摘要（截至基线验收阶段）
+## 0. 摘要
+
+> **最终提交验收（独立复核子智能体 D2，2026-10-08）**：集成提交 `2e816f3` 上，我自己的 12 条独立用例
+> 与恢复顺序 4 条**全部通过**；主智能体对我用例做的三处改动经核对**都是驱动修正**（其中一处削弱了
+> 单测强度，已用真实浏览器证据补回，见 §9.3）；命令全绿（vue-tsc 0 / 前端全量 135 文件 1360 用例 /
+> 后端 2113 passed 9 skipped / check_docs 通过 / 实机 24 项全通过）；我另外写了 4 个文件 11 条反例，全部通过。
+> 仍然存在的产品缺陷见 §9.6：**480×600 边缘宽度下聊天面板的输入区被面板裁掉（长失败原文时更明显）**，
+> 800×600 桌面最小窗口正常。**结论与证据从 §9 开始；§0–§8 是基线阶段的原始记录。**
+
+### 0.1 基线阶段摘要（2026-10-08 早前，未改写）
 
 - 基线 f436ad8 上，我按**用户行为**写的 12 条独立用例全部失败（不是函数不存在、不是选择器改名）：
   卡片草稿防抖前刷新恢复不到、清除后复活、本机写入失败无说明、对话页无失败原因与找回入口、
@@ -202,4 +211,236 @@
 - 我没有修改任何产品代码；提交只包含我自己的用例、探针、报告与证据目录。
 - 没有合并 main、没有改数据库与迁移、没有接真实 QIO。
 - 失败注入（`/api/turns` 与 `/submissions` 的 500）都明确标注为探针拦截（【模拟】），但被验证的是**应用自己的处理流程**。
+
+---
+
+## 9. 最终提交上的独立复核（子智能体 D2 · 2026-10-08）
+
+> **验收对象**：`D:\qio-dev\qio-recover` 分支 `fix/interactive-draft-recovery-completion` 的提交
+> `2e816f3`（含前一位验收者 D 的用例与报告）。我的工作区 `D:\qio-dev\qio-recover-d`（分支
+> `wt/rec-d-verify`）已用 `git merge 2e816f3` **fast-forward** 到同一提交（没有产生合并提交，也没有改产品文件）。
+> 本节只写我自己的用例、探针、截图与结论。
+>
+> **证据层级**：【状态/单元】【组件/DOM】【纯几何】【真实浏览器】【真实请求】【视觉】；机制性的失败用
+> **【模拟】** 明确标注（请求拦截、本机存储注入、板面数据种子）。凡是只有单元/组件证据的条目，都会写明
+> 「真实浏览器未覆盖」。
+
+### 9.1 命令与输出（原样）
+
+| 命令 | 输出（原样） | 判定 |
+| --- | --- | --- |
+| `npx vue-tsc --noEmit` | 无输出，`TSC_EXIT=0` | 通过 |
+| `npx vitest run`（全量，第一遍 22:54） | `Test Files  135 passed (135)` / `Tests  1360 passed (1360)` / `Duration  85.00s` | 通过 |
+| `npx vitest run`（全量，最终复跑 23:21） | `Test Files  135 passed (135)` / `Tests  1360 passed (1360)` / `Duration  66.95s` | 通过 |
+| 全量中间一次（与探针/隔离用例并发、`environment 1465s`） | `Test Files  1 failed | 134 passed`：`eventBufferOverflow.verify.test.ts`「同步期间灌入 2 万条事件」（30s 上限）超时 | **负载敏感**，与本轮改动无关：该文件隔离重跑 `4 passed (4)`（10.9s） |
+| `cd backend; uv run --frozen pytest` | `2113 passed, 9 skipped, 1 warning in 371.49s (0:06:11)` | 通过 |
+| 同一命令复跑（与全量前端 + 真实浏览器并发时） | `FAILED tests/test_cmd_tools.py::test_proc_list_ok - TimeoutError`，`UV_EXIT=1` | **负载敏感**，非本轮改动：该用例在隔离重跑下通过（见下一行） |
+| `uv run --frozen pytest tests/test_cmd_tools.py::test_proc_list_ok -q` | `.` → `PYTEST_EXIT=0` | 通过 |
+| `python scripts/check_docs.py` | `文档一致性检查通过（31 个里程碑条目）`，`DOCS_EXIT=0` | 通过 |
+| `node scripts/interactive-verify/fe-scenarios.mjs --only=18,19,21,22` | `合计 24 项，通过 24 项，失败 0 项` | 通过 |
+| `node scripts/interactive-verify/d5-recovery-probe.mjs … --visual` | `步骤：17，失败：3`（三条都是同一件事：480px 聊天输入区，见 §9.6） | 有失败，见 §9.6 |
+
+实机场景的关键输出（原样，节选）：
+
+    --- 场景 18 ---
+    PASS  18 刷新后重新打开编辑器：未保存的文字能恢复  —— {"got":"首次编辑未保存610295","want":"首次编辑未保存610295"}
+    --- 场景 19 ---
+    PASS  19 确认（清除这条草稿）后服务端不再保留它  —— {"mark":"server-cleared","ok":true,"ms":4}
+    PASS  19 删除卡片后它的草稿也从服务端清掉  —— {"mark":"del-drafts","ok":true,"ms":5}
+    --- 场景 21 ---
+    PASS  21 默认区域说出本次请求的真实原因（网络层），不是通用保留说明  —— 失败原因：Failed to fetch…
+    PASS  21 提交按钮仍然可点、没有被失败文字挤坏  —— {"w":98,"h":41,"disabled":false}
+    --- 场景 22 ---
+    PASS  22 480×600 切换条有真实矩形且在视口内  —— {"t":360,"b":394,"l":81,"r":464,"w":383,"h":34}
+    PASS  22 480×600 切换条已就位（不是 static）  —— {"position":"fixed","display":"flex",…}
+
+### 9.2 我的 12 条独立用例：基线失败 → 最终提交通过（逐条对照）
+
+`cd frontend; npx vitest run d5` 在 `2e816f3` 上：`Test Files 9 passed (9)` / `Tests 48 passed (48)`。
+其中属于我的 12 条（基线记录见 §2、§4）逐条对照如下：
+
+| 用例 | 基线 `f436ad8` | 最终提交 `2e816f3` |
+| --- | --- | --- |
+| d5CardDraftRecovery.verify.test.ts · 场景 1「防抖未到就刷新：本机记录必须被发现并恢复出来」 | 失败：`expected false to be true`（本机记录没有被发现） | 通过（12ms）；同一个文件里的探针证据见 §9.4 场景 1 |
+| d5CardDraftRecovery.verify.test.ts · 场景 1「恢复出来的本机草稿要重新排一次保存」 | 失败：`saveDrafts 调用次数 0` | 通过（5ms） |
+| d5CardDraftRecovery.verify.test.ts · 场景 2「清除最后一份草稿也必须发出同步请求」 | 失败：`服务器上的旧草稿` 仍存在 | 通过（5ms） |
+| d5CardDraftRecovery.verify.test.ts · 场景 2「清除后刷新，旧草稿不许复活」 | 失败：旧草稿又回来了 | 通过（3ms） |
+| d5FailedSendRecovery.verify.test.ts · 场景 5「刷新（新 store）后仍能知道这次失败并取回原文」 | 失败：`expected undefined to be 服务器挂了的时候写下的原文` | 通过（20ms） |
+| d5FailedSendRecovery.verify.test.ts · 场景 6「currentTopicId=null 发送 → 绑定真实话题 → 受理成功：输入框与草稿都要干净」 | 失败：已发送的文字又回到输入框 | 通过（7ms） |
+| d5ComposerRecovery.verify.test.ts · 「失败后页面上直接看得见本次真实原因」 | 失败：看不到本次真实原因 | 通过（72ms） |
+| d5ComposerRecovery.verify.test.ts · 「输入框已有新文字时，仍要有取回失败原文的入口且两份都保留」 | 失败：`expected 0 to be greater than 0` | 通过（29ms） |
+| d5SubmitFailure.verify.test.ts · 「上一次提交成功、本次请求失败：默认区域必须含本次原因」 | 失败：看不到本次提交失败的真实原因 | 通过（47ms） |
+| d5SubmitFailure.verify.test.ts · 「上一次提交也失败过：默认区域不许拿上一次的旧原因当本次原因」 | 失败：读的是上一次结果 | 通过（8ms） |
+| d5LocalWriteFailure.verify.test.ts · 「本机存储写入失败：编辑处要如实说明，并保留输入内容」 | 失败：界面上一句解释都没有 | 通过（79ms） |
+| d5SwitchBarGeometry.verify.test.ts · 「切换条要给剩下的面板预留真实高度」 | 失败：面板底边 450px，切换条顶边 408px | 通过（66ms） |
+
+另外，主智能体代为提交的恢复顺序用例 `d5RecoveryOrdering.verify.test.ts`（4 条）在最终提交上也是 4/4 通过：
+旧保存迟到不许复活已清除的草稿、慢返回不许覆盖恢复期间的新输入、过期判断只按这张卡片自己的记录、
+取回失败原文不触发发送。这 4 条不在基线文档的 12 条清单里（编写时间晚于基线记录），**我没有单独在基线上复跑它们**。
+
+### 9.3 主智能体修的三处驱动缺陷：核对结论
+
+三处改动都只动驱动，**断言一字未改**（`git diff cde0d62^ cde0d62 -- <三个文件>` 逐行看过）。逐条：
+
+1. **`cardLocalDraftKey` → `cardLocalDraftStorageKey`（d5CardDraftRecovery / d5RecoveryOrdering）——只是驱动修正。**
+   基线 `git show f436ad8:frontend/src/interactive/drafts.ts` 里 `listLocalCardDraftIds()` 扫的前缀就是
+   `draftStorageKey("card", "local-")` = `qio.draft.card.local-`；真实浏览器探针在基线上写下的记录也是
+   `qio.draft.card.local-<id>`。我原来的写法把**逻辑键** `card-local:<id>` 当存储键传给 `writeDraft()`，
+   写到了产品永远不读的位置——那一条在基线上的失败结论因此**不能只靠单元用例**，只能靠真实浏览器证据；
+   §2.1 当时同时给了探针证据（`qio.draft.card.local-c_…` 存在但恢复不到），结论不变。
+   **顺带发现（次要）**：`cardLocalDraftKey()`（契约 §11.1 写的本机副本身份 `card-local:<id>`）在最终提交里
+   **没有任何产品代码使用**（只有定义与注释），本机记录实际用存储键 `qio.draft.card.local-<id>` 枚举、
+   用 `cardIdFromDraftKey()` 两种前缀都认。行为上不影响恢复，属于文档口径与实现姿势不一致 + 死代码。
+2. **失败原文从互动板 store 改到会话层 store（d5RecoveryOrdering 场景 12）——只是驱动修正。**
+   基线 `frontend/src/stores/session.ts` 就已经有 `failedSend / failedSendError / retryFailedSend /
+   swapFailedSendText`；`stores/interactive.ts` 从来没有这些成员（`git show f436ad8:…` 对照）。
+   契约 §11.4 要求两个入口共用**会话层**状态，所以原来对互动板 store 调这些动作只会拿到 `undefined`。
+   没有掩盖缺陷：互动板 store 里不存在第二套失败事实。
+3. **jsdom 里 `getBoundingClientRect().width > 0` 改成「只排除 disabled」（d5ComposerRecovery 的恢复入口查找）
+   ——是真实的 jsdom 限制，但它确实削弱了这条断言的强度。**
+   jsdom 不做布局，`getBoundingClientRect()` 恒为全 0，原写法让辅助函数**永远找不到恢复入口**（不是产品缺入口）。
+   改完后只要 DOM 里有一个不 disabled 的匹配按钮就算过，**「看不见 / 被盖住 / 在收起的详情里」这几种情况
+   jsdom 判不出来**。我用真实浏览器把强度补回来：探针场景 4 现在按 `visible + elementFromPoint 命中自己` 判定
+   入口，场景 5 真的点这个入口把原文取回来（§9.4）。所以这一处**不是掩盖产品缺陷**，但它把「可见可点」的举证
+   责任完全推给了真实浏览器证据——报告里必须这样标注。
+
+### 9.4 真实浏览器（我的探针，最终提交）
+
+`node scripts/interactive-verify/d5-recovery-probe.mjs --app http://127.0.0.1:5471 --backend http://127.0.0.1:8971
+--label after --port 9588 --profile %TEMP%\qio-chrome-d2 --visual`（Edge headless + 持久化 profile）。
+
+| 检查点 | 结果 | 证据（原样节选） |
+| --- | --- | --- |
+| 场景 1 防抖前刷新恢复 | OK | 本机记录 `qio.draft.card.local-…`、刷新后编辑器 =`刷新前刚写的新文字-D5-…` |
+| 场景 2 清除后不复活 | OK | 清除同步 `{"ok":true,"has":false,"ms":239}`；刷新后 `serverValueAfterReload=""`、`oldTextRevived=false`（键仍在，见 §9.6 次要 1） |
+| 场景 3 本机写入失败可见 | OK | `草稿还没保存成功；本机也没能留下恢复副本：本机存储已满…（现在关闭页面就恢复不到这次未完成的输入） 重试保护` |
+| 场景 4 对话页失败原因可见 | OK | 默认区显示本次请求的真实原因（见下） |
+| 场景 4 有可见可点的恢复入口 | OK | 入口按 `visible + hitSelf` 判定 |
+| 场景 5 刷新后仍能取回原文 | OK | `alreadyInInput=false`，点恢复入口后输入框 =`发送失败的原稿-D5-…` |
+| 场景 7 提交失败默认区显示本次原因 | OK | `失败原因：/api/interactive/boards/board_default/submissions -> 500: 模拟的提交失败原因-D5（探针拦截）…`，`detailsOpen=false` |
+| 场景 8 切换条有真实定位 | OK | `position: fixed`、`{"t":292,"b":326,"l":81,"r":464}` |
+| 场景 8 只开批量列表时切换条不压列表 | OK | `intersectionBatchSwitchBar=0`，列表 `{top:99,bottom:267}` |
+| 场景 8 切到聊天后不重叠 | OK | `intersectionChatSwitchBar=0`，`chatBottomVsBarTop=-12` |
+| 场景 8 关掉一个面板后有回去的路 | OK | 关闭最后一个面板后切换条隐藏（设计如此），两个面板入口可见可点 |
+| **场景 8/9 480px 聊天输入区可点** | **FAIL ×3** | 见 §9.6 重要 1 |
+| 场景 9 800×600 长失败原文下输入区可点 | OK | 面板 `h=335`，输入框 `hitSelf=true`、发送按钮 `hitSelf=true` |
+| 关闭重开（新浏览器进程、同一 profile） | OK | 应用重新起得来 |
+
+**这一次「注入的 500 详情」真的到了界面**：修掉探针自己的两个缺陷（应答没有 CORS 头、把 `OPTIONS` 预检也拦成
+500）之后，默认失败区显示的是
+`/api/turns -> 500: {"detail":"模拟的发送失败原因-D5（探针拦截）：请求没有到达服务端，诊断信息：连接被重置，这段文字还在这台机器上。"}（输入已保留，可以重试）`
+——【模拟】失败注入，但「取本次请求的原因并默认显示」是应用自己的行为。截图：
+`docs/interactive-ui-screenshots/r5-d-diag-09b-chat-composer-with-failure.png`。
+
+### 9.5 我新增的反例（4 个文件 11 条，全部通过）
+
+| 文件 | 条数 | 覆盖 | 结果 |
+| --- | --- | --- | --- |
+| `frontend/src/stores/__tests__/d5bCardsIsolation.verify.test.ts` | 2 | §11.1/§11.2：A 卡只有本机记录 + B 卡只有服务器草稿互不覆盖；清除 A 不影响 B（含刷新后） | 通过 |
+| `frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts` | 3 | §11.4/§11.5：刷新后失败原文与新草稿同时保留且取回不覆盖；未绑定→绑定→成功只清那一版；迁移时失败归到真实话题 | 通过 |
+| `frontend/src/components/interactive/__tests__/d5bSwitchBarGeometry.verify.test.ts` | 3 | §11.7：480×600 纯几何（切换条在视口内、两面板最坏矩形不压条、关掉面板不改变布局状态）；只开批量列表时 `--im-geo-batch-max-h` 也要让开切换条 | 通过 |
+| `frontend/src/components/interactive/__tests__/d5bSubmitReason.verify.test.ts` | 3 | §11.6：板面保存也失败时不许说「已保存的板面都保留」；长原因完整显示且无「接口」类实现用语；重试成功后旧原因不残留 | 通过 |
+
+**非空洞性说明（如实）**：这些反例是照着**最终实现**的接口面写的（`writeCardLocalDraft`、`readCardLocalDraft`、
+`failedSendsForTopic`、`--im-geo-batch-max-h`）。其中 `cardLocalDraftStorageKey`、`writeCardLocalDraft`、
+`readCardLocalDraft`、`failedSendsForTopic` 在基线 `f436ad8` 上**根本不存在**，把它们拿到基线上跑只会得到
+「函数不存在」型失败（基线文档明确说不算缺陷），所以**我没有在基线上复跑这批新用例**；它们的价值是在最终
+提交上补覆盖，并作为后续回归的护栏。另外我在 `d5bFailedSendPersist` 里补了
+`api.sendTurn` 调用次数断言（取回/互换不许再发一次请求）。
+
+### 9.6 缺陷清单（最终提交）
+
+#### 重要
+
+1. **480px 下聊天面板的输入区被面板自己裁掉（§11.7「输入区与主要操作可见可点」/ §11.8「原文较长时限高
+   滚动，不挤掉输入框与发送按钮」）**。
+   - 复现（真实浏览器，480×600）：打开互动板 → 打开聊天面板 → 量输入框。
+     * 干净状态下（本机失败事实与草稿都清掉）就已经复现：面板 `{top:65,bottom:280,h:215}`，
+       输入框 `{top:352,bottom:410}` —— **整条输入区落在面板盒子下方 72px**，被
+       `.panel{ overflow: hidden }` 裁掉；`elementFromPoint` 在输入框中心命中 `DIV`、在发送按钮中心命中
+       `chat-toggle`。`hitSelf=false`。
+     * 有长失败原文时同样（输入框 `{top:247,bottom:379}`，中心命中 `overlay-switch-notice`）。
+   - 机制证据（探针的祖先链诊断）：`SECTION.panel { height:215px, maxHeight:215px, overflow:hidden, display:flex }`；
+     输入框 `TEXTAREA.input { flex:1 1 0%, minHeight:40px, maxHeight:132px }`。失败通知（本轮新增组件）与
+     其它 flex 子项高度之和超过面板高度时，后面的 `input-row` 被排到面板盒子之外并被裁掉。
+   - 基线对照（同一 profile、同样 480×600、聊天面板展开）：基线探针
+     `d5-baseline-probe.json` 里 `chatInput.hitSelf=true`、`chatSend.hitSelf=true`（面板 `h=259`）。
+     最终提交把面板压到 215px（本轮新增的切换条预留/抬升），**这是本轮引入的回归**。
+   - 范围：**800×600（桌面最小窗口）正常**——同样有长失败原文时面板 `h=335`，输入框与发送按钮 `hitSelf=true`；
+     问题只出现在 480px 这条契约明确要求检查的边缘宽度上。所以判**重要**，不判阻断。
+   - 截图：`r5-d-diag-09b-chat-composer-with-failure.png`（480×600：面板里只有失败通知，**看不到输入框与发送按钮**）、
+     `r5-d-after-09a-chat-composer-clean.png`、`r5-d-after-09c-chat-composer-with-failure-800x600.png`（对照：正常）。
+   - 建议方向（仅供参考，未改产品代码）：面板高度不够时让失败恢复区参与收缩（`min-height:0` + 内部滚动），
+     或给 `input-row` 一个「不被挤出」的约束，或在切换显示状态下重新核算面板最小高度。
+
+#### 次要
+
+2. **用户确认编辑（清除草稿）并撤销之后，重新打开一次编辑器，会在服务端留下一条「正文为空」的草稿记录**
+   （`card:<id>: ""`，记录存在）。证据：探针场景 2 `draftKeyExistsAfterReload=true`、`serverValueAfterReload=""`、
+   `oldTextRevived=false` —— 旧文字**没有**复活（§11.2 的主诉已修好），但清除掉的记录在"存在性"意义上又出现了一条。
+   复现：新建空文字卡 → 编辑输入 → 完成编辑 → 撤销 → 刷新 → 打开编辑器（此时正式正文为空，应用按设计写下空草稿）。
+   影响：不丢字；但下一次打开这张卡片时会以「存在但为空」的草稿覆盖正文（正文非空时用户会看到空编辑框，
+   这正是 §10.4 想避免的一类状态）。建议产品明确「打开编辑器是否应该立刻写一份草稿」。
+3. **`cardLocalDraftKey()` 是死代码**，契约 §11.1 写的逻辑键 `card-local:<id>` 在实现里不存在（见 §9.3.1）。行为不受影响。
+
+（缺陷 1 的三条探针检查点是同一件事，不重复计数。）
+
+### 9.7 我自己的脚本缺陷（与产品缺陷分开写，全部已修并留下证据）
+
+1. 恢复入口只按 `<button>` 找、只认「找回/取回」文案 → 失败后原文已自动放回输入框时，「找回原文」按钮按设计不出现，
+   被误报成「没有恢复入口」。**已修**：收集全部交互元素（`button,a,[role=button],[tabindex]`）并记录
+   `visible`/`hitSelf`。
+2. 拦截应答没有 CORS 头，并且把 `OPTIONS` 预检也拦成 500 → 浏览器按 CORS 失败处理，应用只能看到
+   `Failed to fetch`，注入的 500 详情永远到不了界面，原因断言因此永远不可能通过。**已修**：应答带
+   `Access-Control-Allow-*`（回显页面 origin）并放行预检。
+3. 场景 3 的 `Page.addScriptToEvaluateOnNewDocument`（`qio.draft.*` 写入失败）**没有撤销** → 场景 4/5 是在
+   「本机草稿根本写不进去」的环境里跑的，「刷新后输入框为空」被误判成产品问题。**已修**：场景 3 结束时
+   `removeScriptToEvaluateOnNewDocument`，并写进 notes。
+4. 场景 2 用「最后一张卡片」定位、用**没有命中测试**的按文案鼠标点击、固定等 1.6 秒 → 清除请求可能压根没发出去
+   或被判早了。**已修**：按「编辑器所属卡片」定位、点它自己的「完成编辑」（先命中测试，点不到才退回 DOM 点击）、
+   轮询服务端最多 6 秒。修完后场景 2 通过，且 `clearedOnServer.ms=239` 证明清除请求确实发出并被服务器确认。
+5. 场景 2 只按「键还在不在」判断「旧草稿复活」→ 把「重新打开编辑器写下的空草稿」也算成复活。**已修**：按**值**判断。
+6. 场景 5 要求「刷新后输入框里必须就是原文」→ 草稿恢复成功时原文本来就在输入框里、恢复按钮按设计不出现。**已修**：
+   「已经在输入框里」与「点入口取回」两条路径都算通过，各自记录。
+7. 探针修好之前的**第一轮**原始输出留在 `docs/interactive-ui-screenshots/d5-after-probe-firstrun-superseded.json`
+   （6 条失败，其中场景 2/4/5/7 都是上面这几种驱动缺陷造成的假失败，场景 8 的两条是真实缺陷证据的一部分）。
+8. 视觉矩阵的板面数据种子（真实接口 PUT）会被并发写入盖掉（第一次跑到截图时板面只剩 3 张卡片）→ **已修**：
+   进矩阵前先数一次卡片，不足 6 张就用界面自己的「添加 → 文字」补卡片；最终一轮种子生效（9 张卡片 / 3 条关系线）。
+
+### 9.8 视觉矩阵（`docs/interactive-ui-screenshots/r5-d2-*`，14 张）
+
+| 文件 | 视口 | 主题 | 状态 |
+| --- | --- | --- | --- |
+| `r5-d2-visual-1440x900-{light,dark}-chat.png` | 1440×900 | 明/暗 | 互动板 + 聊天展开，背后 9 张卡片 / 3 条关系线 |
+| `r5-d2-visual-1024x768-{light,dark}-chat.png` | 1024×768 | 明/暗 | 同上 |
+| `r5-d2-visual-800x600-{light,dark}-chat.png` | 800×600 | 明/暗 | 桌面最小窗口（此处输入区正常，见 §9.4） |
+| `r5-d2-visual-1024x768-{light,dark}-batch-dense.png` | 1024×768 | 明/暗 | 批量列表 + 密集板面 |
+| `r5-d2-visual-480x600-{light,dark}-switch-bar.png` | 480×600 | 明/暗 | 切换条 + 批量列表 |
+| `r5-d2-visual-1024x768-{light,dark}-long-failure-text.png` | 1024×768 | 明/暗 | 对话页长失败原文（限高滚动，输入框与发送按钮都在） |
+| `r5-d2-visual-1440x900-{light,dark}-long-submit-reason.png` | 1440×900 | 明/暗 | 长提交原因完整换行、详情未展开 |
+
+【模拟】说明：明暗通过 `html[data-theme]` + `localStorage(qio-theme)` 切换；密集卡片与关系线用**真实接口
+PUT 板面状态**做数据种子；长失败原文与长提交原因用请求拦截制造。界面本身全部由应用自己渲染。
+功能证据截图另有 `r5-d-after-01…08`、`r5-d-after-09a/b/c`（探针运行时写入）。
+
+### 9.9 没能验证清单（本轮）
+
+1. **真实 QIO**：没有模型凭据，发送/提交的「失败」都是拦截制造的【模拟】；不伪造 QIO 回复。
+2. **服务器 500 详情在生产同源部署下的表现**：我验证的是 dev 跨源实例（5471 → 8971）。修掉预检拦截后应用能
+   显示注入的详情；生产同源部署下的同一路径没有单独验证。
+3. **缺陷 1 的修复后复验**：我没有改产品代码，所以这条缺陷只有失败证据，没有修复后的通过证据。
+4. **480px 之外的非整数/更窄宽度**（例如 360px）：没有覆盖。
+5. **关系线的交互**（建链、改含义、删除关系）：本轮只作为视觉背景（种子数据），没有驱动它的交互流程。
+6. **事件缓冲区负载敏感用例的稳定性统计**：全量只跑了一次（135 文件 / 1360 用例全绿）；后端
+   `test_proc_list_ok` 在并发负载下出现过一次 `TimeoutError`，隔离重跑通过，没有做重复次数统计。
+7. **强制结束 / 崩溃恢复**：不在本轮范围（与契约 §10.5 的边界一致）。
+
+### 9.10 边界（本轮补充）
+
+- 我没有修改任何产品代码；本节的所有变更只包含：我新增的 4 个测试文件、我的探针脚本
+  `scripts/interactive-verify/d5-recovery-probe.mjs`、我的报告与截图。
+- 没有合并 main、没有改数据库与迁移、没有接真实 QIO。
+- 探针的失败注入（`/api/turns`、`/submissions` 的 500）、本机存储注入、板面数据种子都明确标注为【模拟】，
+  被验证的是**应用自己的处理流程**。
+
 
