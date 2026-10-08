@@ -926,6 +926,42 @@
     怀疑与共享连接写事务有关；同期 API/SSE 仍能推进（已断言），**未定位根因**。
   - 原生桌面交互、安装包 E2E 与真实厂商端点未跑。
 
+### P21 — 取消确认 / 附件就绪 / 暂存故障交付 / 等待者收尾（2026-10-08）
+
+- **Status：** partial
+- **背景：** P20 之后仍有四条路径有洞：用户中止准备（客户端 abort）后端照样放行执行；首次登记的附件仍
+  `prepared`（首次复制没完成）就被当可就绪放行；暂存读取失败只写日志、回答尾部静默丢失；`abandon` 先删
+  结果 Future 再 resolve，等待者永不返回。
+- **Implementation（问题一 · 可确认取消）：** `X-QIO-Prepare-Id` 标识 + 幂等端点
+  `POST /api/turns/prepare/{prepare_id}/cancel`（`cancelled` / `already_started` / `unknown`）；
+  **服务端监测到准备期间请求断连也按同一契约 `abandon`**；`activate` 前复核取消标记，迟到的复制成功不得
+  重启本轮；前端「中止」以后端**确认**为准（确认前「正在中止…」；`already_started` 走既有停止流程并如实显示，
+  不得宣称「没有发送」）。实测：**真 uvicorn + 真 TCP 断连**后释放磁盘闸门，模型调用 0 次、台账 `cancelled`、
+  无孤儿克隆、取消端点 200。
+- **Implementation（问题二 · 唯一就绪条件）：** copy 必须 `ready` **且副本实际存在、可打开、大小与登记一致**；
+  `prepared` **一律不就绪** —— 要么**等待在飞首次准备**（`asyncio.Event` 唤醒，无轮询/固定延时/第二份复制，
+  有界 `PREPARE_WAIT_MS=60_000`，实例属性 `prepare_wait_seconds` 供测试收紧），要么**结构化拒绝**
+  `attachment_not_ready`（人话原因含重试指引）。覆盖首次登记 / 普通发送 / 旧客户端缺字段兜底 / 重试克隆 /
+  resend / 排队；**显式空列表仍表示不带附件**；任一被拒则整个绑定一个字节都不写（不留半绑状态）。
+- **Implementation（问题三 · 暂存故障准确交付）：** `AnswerBuffer.collect()` 返回结构化
+  `BufferOutcome(text, complete, kind, reason, total_bytes)`，`kind ∈ {complete, limit, spill_create, spill_write,
+  spill_read}` —— **读取故障绝不说成「超过上限」**；事实在 `collect()` 之后、清理之前进①**可见事件**
+  （`limit` → `answer_truncated`；`spill_*` → `answer_incomplete` + `kind`，写明「已交付 N / 原共 M 字节」）
+  ②**轮次警告**；**交付正文 = 已确认可交付的原样部分**（不把说明追加进正文）；`_maybe_fallback` 在结果
+  不完整时**不再调用模型**。
+- **Implementation（问题四 · 放弃预留先兑现等待者）：** `abandon` 先按既有约定兑现该轮所有等待者再清结果表；
+  重复 `abandon`/`cancel`/`shutdown` 幂等；单个等待者超时/取消不影响共享 Future 与其它等待者；终态不被
+  迟到 `abandon` 改写；放弃后后续就绪预留仍能推进。
+- **Tests：** 独立验证方按用户可见规则先建立反例（问题一 1 红：真 TCP 断连后仍执行；问题二 3 红：prepared
+  未就绪被调用；问题三 3 红：读取失败 0 警告 / 创建·写入被说成「超出上限」；问题四 5 红：等待者永不返回），
+  修复后**四文件全部转绿**。Lead 亲自复跑四文件（含真 TCP 断连用例）确认。前端「中止确认」由 DOM 用例 +
+  实机截图覆盖。
+- **Known limitations：**
+  - 60s 准备等待生产值未做真实等待验证（用例收紧到亚秒）；准备期**进程崩溃**（非优雅关闭）台账路径无用例。
+  - 真实磁盘故障（盘满/掉线）只做 OSError/FileNotFoundError 注入；多实例共用 `<data_dir>/tmp` 的暂存清理竞争未验证。
+  - 「重新打开对话后不完整警告是否仍可见」未验证（取决于轮次事实持久化）；警告事实按契约**不进正文**。
+  - 事件循环上 sqlite `synchronous=FULL` 的 fsync 停顿（推断，未改）；真实厂商/原生桌面/安装包未验。
+
 ---
 
 ## 尚未完成
