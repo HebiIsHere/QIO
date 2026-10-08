@@ -25,6 +25,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useInteractiveStore } from "../../stores/interactive";
 import { useSessionStore } from "../../stores/session";
 import MessageItem from "../MessageItem.vue";
+import FailedSendNotice from "./FailedSendNotice.vue";
 import {
   canSend,
   chatDraftHintText,
@@ -32,7 +33,6 @@ import {
   chatStatusText,
   normalizeSendText,
   olderMessagesText,
-  isBlankText,
   sendFailureText,
   shouldSendOnKeydown,
 } from "../../interactive/chat";
@@ -99,27 +99,6 @@ const sessionWarning = computed(() => session.warning ?? "");
 const failureVisible = computed(
   () => Boolean(failure.value) && failureTopic.value === session.currentTopicId,
 );
-const failedSendHere = computed(
-  () => (session.failedSend && session.failedSend.topicId === session.currentTopicId ? session.failedSend : null),
-);
-const failedSendPreview = computed(() => {
-  const text = failedSendHere.value?.text ?? "";
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 42 ? flat.slice(0, 42) + "…" : flat;
-});
-const canSwapFailed = computed(() => Boolean(failedSendHere.value) && !isBlankText(session.draft));
-
-/** 取回失败原文（只在原话题、只由用户点这个入口触发；不自动发送） */
-function restoreFailedSend(): void {
-  const result = session.retryFailedSend();
-  if (!result.ok) blankNotice.value = result.reason ?? "现在不能取回这段文字";
-  else blankNotice.value = "";
-}
-function swapFailedSend(): void {
-  const result = session.swapFailedSendText();
-  if (!result.ok) blankNotice.value = result.reason ?? "现在不能取回这段文字";
-  else blankNotice.value = "";
-}
 
 /**
  * 草稿保存状态（契约 §9.4）：失败必须显示真实原因并可重试，
@@ -312,7 +291,7 @@ async function submit() {
       // 失败事实由会话层统一记录：这里只显示原因。
       // 恢复交给会话层判断（只在原话题且输入框为空时放回），组件不自己写回任何输入框。
       failure.value = sendFailureText(session.lastError);
-      session.retryFailedSend();
+      session.retryFailedSend(attribution.draftId);
     }
   } catch (err) {
     failure.value = sendFailureText((err as Error).message);
@@ -351,14 +330,17 @@ function onKeydown(event: KeyboardEvent) {
         </button>
       </header>
 
-      <!-- 常驻只留一句；完整范围说明放进可打开的详情，不用裁切代替组织文字（契约 §10.8） -->
-      <p class="panel-scope" data-im="chat-scope">
-        文字发送不会提交板面
+      <!--
+        常驻只留一句；完整范围说明放进可打开的详情（契约 §10.8）。
+        这里必须是 div：details 是块级元素，放进 p 里是无效 HTML（契约 §11.8 要求修掉）。
+      -->
+      <div class="panel-scope" data-im="chat-scope">
+        <p class="scope-line">文字发送不会提交板面</p>
         <details class="scope-details">
           <summary data-im="chat-scope-details">说明</summary>
-          <span class="scope-full">{{ scopeText }}</span>
+          <p class="scope-full">{{ scopeText }}</p>
         </details>
-      </p>
+      </div>
 
       <div
         ref="streamRef"
@@ -382,19 +364,15 @@ function onKeydown(event: KeyboardEvent) {
 
       <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
       <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
-      <p v-if="failureVisible" class="notice err" role="alert" data-im="chat-failure">{{ failure }}</p>
-      <!-- 失败原文的取回入口：只在原话题出现，不自动写回、不自动重发（契约 §10.1） -->
-      <div v-if="failedSendHere" class="recovery" data-im="chat-recovery">
-        <p class="recovery-text">
-          上一次没有发出去：<span class="recovery-quote">{{ failedSendPreview }}</span>
-          <span v-if="session.failedSendError" class="recovery-reason">（{{ session.failedSendError }}）</span>
-        </p>
-        <div class="recovery-actions">
-          <button type="button" data-im="chat-recovery-restore" @click="restoreFailedSend">放回输入框</button>
-          <button v-if="canSwapFailed" type="button" data-im="chat-recovery-swap" @click="swapFailedSend">与当前文字互换</button>
-          <button type="button" data-im="chat-recovery-discard" @click="session.discardFailedSend()">不再保留</button>
-        </div>
-      </div>
+      <!--
+        失败原因 + 待恢复原文：与对话页共用同一个组件（契约 §11.4），
+        只在原话题出现，不自动写回、不自动重发。长文限高滚动，不挤掉下面的输入行。
+      -->
+      <FailedSendNotice
+        scope="chat"
+        :notice="failureVisible ? failure : ''"
+        :reason="failureVisible ? session.lastError : ''"
+      />
       <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
 
       <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">
@@ -537,18 +515,35 @@ function onKeydown(event: KeyboardEvent) {
 }
 .panel-close:hover { color: var(--accent-hover); }
 .panel-close:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-/* 能力边界：说清只发文字、不带板面、不调用提交接口，以及尚未接入的部分 */
+/*
+  能力边界：常驻一句「文字发送不会提交板面」，完整说明放在可打开的详情里。
+  这里不再用 line-clamp 裁切完整说明（契约 §10.8 / §11.8）：详情是用户自己要打开的，
+  打开后就要能读全。
+*/
 .panel-scope {
   flex: none;
   margin: 0;
   font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text-muted);
-  /* 全文留在 DOM 里（自动化与读屏都能拿到）；视觉上最多 3 行，避免窄窗口把消息区挤没 */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+}
+.scope-line {
+  margin: 0;
+}
+.scope-details {
+  margin-top: 2px;
+}
+.scope-details summary {
+  cursor: pointer;
+  color: var(--link);
+}
+.scope-details summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.scope-full {
+  margin: var(--sp-1) 0 0;
+  overflow-wrap: anywhere;
 }
 .stream {
   flex: 1;
@@ -615,11 +610,21 @@ function onKeydown(event: KeyboardEvent) {
   padding: 1px var(--sp-3);
   cursor: pointer;
 }
+/*
+  提示条也要有稳定的局部底色（契约 §11.8）：板面后方有密集文字或连线时，
+  直接铺在透明面板上的小字会与背景混在一起。这里不整块加不透明背景，
+  只给提示自己一层轻底色 + 边界。
+*/
 .notice {
   flex: none;
   margin: 0;
   font-size: var(--fs-xs);
   line-height: 1.5;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  overflow-wrap: anywhere;
 }
 .notice.err { color: var(--danger); }
 .notice.warn { color: var(--warning); }
@@ -666,8 +671,13 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-base);
   line-height: var(--lh-tight);
   color: var(--text-strong);
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border);
+  /*
+    输入框用**稳定的局部底色**（契约 §11.8）：面板本身仍是透明玻璃，
+    但正在写字的这一块不能和后方板面文字混在一起 —— 半透明渐变在密集
+    注释/连线上会把光标前后的字吃掉。
+  */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   padding: var(--sp-2) var(--sp-3);
 }
