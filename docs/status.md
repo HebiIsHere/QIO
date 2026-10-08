@@ -906,6 +906,17 @@
   原因被覆盖）；修复后逐项转绿（问题一 8/8 含多附件/排队失败/resend 恢复/准备期关闭；问题四 8/8 含
   5 种注入 × 首次/重复 GET/列表/重新打开一致、重试换新原因）。Lead 另用**仓外独立探针**复核分块无关性
   （7 种拆法）与 20 万字符未声明长正文：**37 项全过，每种拆法只有 1 次模型调用、过程区无副本、无声明泄漏**。
+- **验证（2026-10-08）：** 后端全量 **2403 tests / 0 failures / 0 errors / 10 skipped**；前端 **136 files / 1164 tests**
+  + `vue-tsc` exit 0；`check_docs` 通过（32 个里程碑）；R6 三个独立验收文件 **43 passed**；
+  **实机 18/18**（假 provider + uvicorn + vite + msedge/Playwright，12 张截图 + `summary.json`）；
+  CI 在最终 HEAD 上 **9/9 全绿（含 Linux py3.11 / py3.12）**。
+- **CI 暴露的两处「装置在 Linux 上不成立」已修（值得记住）：**
+  - 复制失败注入原先包 `builtins.open`/`io.open`，**Linux 的 `shutil.copyfile` 走 `_fastcopy_sendfile`**（`os.sendfile`
+    直接搬字节），不经过该层 → 注入不命中、克隆实际成功，于是「拒绝」与「模型未启动」两条断言在 Linux 上假红。
+    改为打在**真实调用点** `attachments.py:1390 os.link` / `:1393 shutil.copyfile`，跨平台确定。
+  - 有界等待用例原先断言 `queued`/`running` 这类**瞬态**快照；Linux 上被兜底放行的空转轮在同一 tick 内跑完，
+    采样必然错过（装置诊断实测：哨兵与 runner 起止同时间戳）。改为**不可逆事实**（TURN_START / TURN_END /
+    台账未完成集）+ 下界检查，并用**变异测试**证明判据未被放宽（把兜底函数摘成 `return` 后用例照样红）。
 - **Known limitations：**
   - 真实厂商模型是否按协议声明仍未验证（无外网/无 Key）；不遵守时走降级路径（一次性交付，不冒充流式）。
   - 有界等待的生产值（60s）未做真实等待验证（用例改为 0.2s 验证兜底逻辑）；进程**崩溃**在准备期的台账路径
