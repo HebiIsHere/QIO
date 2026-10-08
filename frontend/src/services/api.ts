@@ -441,6 +441,11 @@ export const api = {
     topicId?: string | null,
     attachmentIds?: string[],
     retryOfTurnId?: string | null,
+    /**
+     * 准备期间请求是**挂起**的：调用方（输入区）用它在「正在准备附件…」时中止这次请求。
+     * 真 abort 才有用 —— 后端据此判定客户端断开并 abandon 预留（契约 §1.1）。
+     */
+    signal?: AbortSignal,
   ) =>
     request<{
       ok: boolean;
@@ -457,6 +462,7 @@ export const api = {
       rejected?: { id: string; reason: string }[];
     }>("/api/turns", {
       method: "POST",
+      signal,
       body: JSON.stringify({
         message,
         topic_id: topicId ?? null,
