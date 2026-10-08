@@ -154,6 +154,8 @@ async function submit() {
     sendWaiting.value = true;
     preparingCancelled.value = false;
     preparingNotice.value = "";
+    preparingCancelBusy.value = false;
+    prepareId.value = newPrepareId();
     sendAbort = new AbortController();
     preparingTimer = setTimeout(() => {
       if (sendWaiting.value) preparingVisible.value = true;
@@ -165,7 +167,7 @@ async function submit() {
       value,
       sentAttachments.map((item) => item.id),
       sentAttachments,
-      sendAbort ? { signal: sendAbort.signal } : undefined,
+      sendAbort ? { signal: sendAbort.signal, prepareId: prepareId.value } : undefined,
     );
   } finally {
     if (preparingTimer !== null) {
@@ -174,6 +176,7 @@ async function submit() {
     }
     sendWaiting.value = false;
     preparingVisible.value = false;
+    preparingCancelBusy.value = false;
     sendAbort = null;
   }
   if (!ok) {
@@ -223,6 +226,17 @@ const sendWaiting = ref(false);
 const preparingVisible = ref(false);
 const preparingCancelled = ref(false);
 const preparingNotice = ref("");
+/** 这一次发送的准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
+const prepareId = ref("");
+/** 正在向后端确认中止（界面显示「正在中止…」；拿不到确认不宣称成功） */
+const preparingCancelBusy = ref(false);
+
+/** 准备标识：优先用平台 UUID，缺失时退化成随机串（两者都不含用户数据） */
+function newPrepareId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return `prep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
 let preparingTimer: ReturnType<typeof setTimeout> | null = null;
 let sendAbort: AbortController | null = null;
 
@@ -578,7 +592,8 @@ type SendWithAttachments = (
   text: string,
   attachmentIds?: string[],
   attachments?: AttachmentRef[],
-  options?: { signal?: AbortSignal },
+  /** prepareId：准备标识（契约 §1.1），中止时用它调取消端点，以后端确认为准 */
+  options?: { signal?: AbortSignal; prepareId?: string },
 ) => Promise<boolean>;
 const sendWithAttachments = session.send as unknown as SendWithAttachments;
 
@@ -604,13 +619,41 @@ function autosize() {
 }
 
 /**
- * 中止「正在准备附件」的这一轮：**真的 abort 这次请求**。
- * 后端契约 §1.1：客户端在准备期间断开 → abandon 预留 + 清理本次克隆，不入队、不执行。
+ * 中止「正在准备附件」的这一轮：**先调后端取消端点，以后端确认为准**（契约 §1.1）。
+ *
+ * 早先的实现只做 `AbortController.abort()`：abort 是客户端行为，不能当后端证据 ——
+ * 用户看到「已中止」，后端却照常受理并执行了这一轮。现在：
+ *
+ * * 后端确认 `cancelled` → 才算中止，并如实说「这一轮没有发送」；
+ * * 后端回 `already_started` → 走**既有停止流程**，如实说「已受理，已按停止取消」；
+ * * 拿不到确认（请求失败）→ 保留原因与可用操作，**不提前宣称成功**。
+ * * 确认之后才 abort 掉连接（它只是释放连接，不是取消证据）。
  */
-function cancelPreparing() {
-  if (!sendWaiting.value) return;
-  preparingCancelled.value = true;
-  sendAbort?.abort();
+async function cancelPreparing() {
+  if (!sendWaiting.value || preparingCancelBusy.value) return;
+  preparingCancelBusy.value = true;
+  preparingNotice.value = "正在中止…（等后端确认）";
+  try {
+    const confirmed = await session.cancelPreparing(prepareId.value);
+    if (!confirmed) {
+      // 拿不到确认：不宣称成功，用户还能再点一次
+      preparingNotice.value = session.lastError ?? "中止失败：没有拿到后端确认";
+      return;
+    }
+    if (confirmed.state === "cancelled") {
+      preparingCancelled.value = true;
+      preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
+      sendAbort?.abort();
+    } else if (confirmed.state === "already_started") {
+      preparingCancelled.value = false;
+      preparingNotice.value = "已受理，已按「停止」取消";
+      await stopTurn();
+    } else {
+      preparingNotice.value = "后端不认识这次发送（可能刚开始或已经结束）：请稍候再看结果";
+    }
+  } finally {
+    preparingCancelBusy.value = false;
+  }
 }
 
 /** 停止当前 active turn：显示「正在停止」直到后端真正结束（TURN_END） */
@@ -692,10 +735,16 @@ async function stopTurn() {
           class="act preparing-cancel"
           type="button"
           data-test="preparing-cancel"
-          aria-label="中止这次发送（附件还没有准备好）"
+          :disabled="preparingCancelBusy"
+          :aria-busy="preparingCancelBusy ? 'true' : 'false'"
+          :aria-label="
+            preparingCancelBusy
+              ? '正在中止：等后端确认'
+              : '中止这次发送（附件还没有准备好）'
+          "
           @click="cancelPreparing"
         >
-          中止
+          {{ preparingCancelBusy ? "正在中止…" : "中止" }}
         </button>
       </p>
       <p v-if="preparingNotice" class="attach-note" role="status" data-test="preparing-notice">

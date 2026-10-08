@@ -1472,6 +1472,30 @@ export const useSessionStore = defineStore("session", {
       return { ok: true, status: res.status, message: res.message };
     },
     /**
+     * 中止「正在准备附件」的那一次发送：**以服务端确认为准**（契约 §1.1）。
+     *
+     * 客户端 abort 不是证据 —— 只有后端的 cancelled / already_started 才算事实。
+     * 返回 null 表示**拿不到确认**（请求失败）：调用方要保留原因与可用操作，
+     * 不得提前宣称「已中止」。
+     */
+    async cancelPreparing(
+      prepareId: string,
+    ): Promise<{ state: "cancelled" | "already_started" | "unknown"; turnId: string | null } | null> {
+      try {
+        const res = await api.cancelPreparing(prepareId);
+        if (res?.already_started) {
+          return { state: "already_started", turnId: res.turn_id ?? null };
+        }
+        if (res?.cancelled) {
+          return { state: "cancelled", turnId: res.turn_id ?? null };
+        }
+        return { state: "unknown", turnId: null };
+      } catch (e) {
+        this.lastError = `中止失败：${(e as Error).message}`;
+        return null;
+      }
+    },
+    /**
      * 停止「真正在运行的主 turn」。
      *
      * 已知 active → 精确取消它；还不知道 turn_id → 让后端取消 active，
@@ -2753,6 +2777,8 @@ export const useSessionStore = defineStore("session", {
         retryOfTurnId?: string | null;
         /** 准备期间中止这次请求（输入区的「正在准备附件…」用它）：真 abort 才会让后端 abandon */
         signal?: AbortSignal;
+        /** 准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
+        prepareId?: string;
       } = {},
     ): Promise<boolean> {
       const message = text.trim();
@@ -2781,7 +2807,17 @@ export const useSessionStore = defineStore("session", {
         // 调用形状按需最小化：没有 signal 时保持既有参数个数（3 参 / 重试 4 参），
         // 免得把「准备期中止」的管道塞进所有调用点的既有契约里。
         let res;
-        if (options.retryOfTurnId) {
+        if (options.prepareId) {
+          // 带准备标识：多一个参数（契约 §1.1 的取消端点要靠它定位这次准备）
+          res = await api.sendTurn(
+            message,
+            this.currentTopicId,
+            ids,
+            options.retryOfTurnId,
+            options.signal,
+            options.prepareId,
+          );
+        } else if (options.retryOfTurnId) {
           res = options.signal
             ? await api.sendTurn(
                 message,
@@ -2795,6 +2831,16 @@ export const useSessionStore = defineStore("session", {
           res = options.signal
             ? await api.sendTurn(message, this.currentTopicId, ids, undefined, options.signal)
             : await api.sendTurn(message, this.currentTopicId, ids);
+        }
+        if (res && res.cancelled) {
+          /**
+           * 服务端确认：这一轮**没有被受理执行**（用户中止 / 连接断开，契约 §1.1）。
+           * 撤掉乐观消息、回到发送前的样子 —— 绝不能显示成「已发送」。
+           */
+          this.messages = this.messages.filter((m) => m.id !== optimistic.id);
+          this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== optimistic.id);
+          if (!queued) this.turnRunning = false;
+          return false;
         }
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成

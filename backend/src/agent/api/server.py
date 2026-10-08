@@ -1490,26 +1490,137 @@ def create_app(
 
     # -- 轮次绑定：B 的冻结回执 + 受理前预检（round4 §1.2） -------------------
 
+    def _rejection_code(outcome) -> str:
+        """透传 B 的**具体**拒绝 code（例如 attachment_not_ready）。
+
+        让「附件还没就绪（可重试）」与「绑定失败」在协议上可区分；B 的 outcome 还没有
+        这个能力时保持既有通用 code（跨 worktree 集成期不会互相卡住）。
+        """
+        getter = getattr(outcome, "rejection_code_for", None)
+        if callable(getter):
+            for item, _reason in outcome.rejected or []:
+                try:
+                    specific = getter(str(item))
+                except Exception:  # noqa: BLE001 - 取 code 失败不该改变拒绝语义
+                    specific = None
+                if specific:
+                    return str(specific)
+        return "attachment_binding_failed"
+
+    def _receipt_of(outcome) -> dict:
+        """B 的受理回执（rejected 行里带每个附件的具体 code）；拿不到就当没有。"""
+        getter = getattr(outcome, "as_receipt", None)
+        if not callable(getter):
+            return {}
+        try:
+            receipt = getter()
+        except Exception:  # noqa: BLE001 - 回执是旁路，取不到不影响拒绝本身
+            return {}
+        return receipt if isinstance(receipt, dict) else {}
+
     def _attachment_failure(
         rejected: list[tuple[str, str]],
         *,
         message: str | None = None,
+        code: str = "attachment_binding_failed",
+        receipt: dict | None = None,
     ) -> HTTPException:
         """结构化失败（409）：受理前拒绝、不入队、不消费 resend claim。
 
         detail 的形状是前端契约（stores/session.ts 读 detail.rejected；
         message 用 B 的 rejected_failure_message 生成一句话），不要改。
+        每个被拒附件带上**具体 code**（B 的回执里有就透传）：前端据此把
+        「还没就绪」与「绑定失败」区分开，可用操作仍是重试。
         """
         rows = [(str(item), str(reason)) for item, reason in (rejected or [])]
+        by_id: dict[str, str] = {}
+        for row in (receipt or {}).get("rejected") or []:
+            if isinstance(row, dict) and row.get("id") and row.get("code"):
+                by_id[str(row["id"])] = str(row["code"])
+        detail_rows = []
+        for item, reason in rows:
+            entry: dict[str, str] = {"id": item, "reason": reason}
+            if by_id.get(item):
+                entry["code"] = by_id[item]
+            detail_rows.append(entry)
         return HTTPException(
             status_code=409,
             detail={
-                "code": "attachment_binding_failed",
+                "code": code,
                 "message": message or rejected_failure_message(rows),
-                "rejected": [{"id": item, "reason": reason} for item, reason in rows],
+                "rejected": detail_rows,
                 "bound_attachment_ids": [],
             },
         )
+
+    # -- 准备阶段的取消证据（plan §1.1）------------------------------------
+
+    def _prepare_id(request: Request) -> str | None:
+        """准备标识（X-QIO-Prepare-Id）：旧客户端不带也能用（缺省 = 只靠断连取消）。"""
+        raw = str(request.headers.get("x-qio-prepare-id") or "").strip()
+        return raw[:128] or None
+
+    async def _wait_for_disconnect(request: Request) -> None:
+        """等这次请求**真实断开**（ASGI 的 http.disconnect）：事件驱动，不轮询、不猜。
+
+        客户端 abort / 断网 / 关页面都会走到这里；收到就按取消契约处理（plan §1.1）。
+        """
+        while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+                return
+
+    async def _prepare_with_cancel(bind_coro, *, turn, prepare_id, request):
+        """准备附件，同时把**显式取消**与**真实断连**都当成取消证据（plan §1.1）。
+
+        返回 (outcome, cancelled)：
+
+        * cancelled=True → 本轮已被取消（不入队、不调用模型），调用方返回「未发送」回执；
+        * 否则 outcome 是 bind_for_turn 的结果；bind 抛出的异常原样上抛（调用方 abandon + raise）。
+
+        线程纪律：取消 asyncio 等待**不等于**终止工作线程 —— 这里只取消等待，
+        克隆与临时文件的清理交给 attachments 自己的取消路径（行状态复核 + 迟到结果丢弃）。
+        """
+        bind_task = asyncio.ensure_future(bind_coro)
+        watchers = [asyncio.ensure_future(_wait_for_disconnect(request))]
+        signal = ctx.turns.prepare_signal(prepare_id)
+        if signal is not None:
+            watchers.append(asyncio.ensure_future(signal))
+        try:
+            await asyncio.wait({bind_task, *watchers}, return_when=asyncio.FIRST_COMPLETED)
+            if not bind_task.done() and any(w.done() for w in watchers):
+                bind_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await bind_task
+                return None, True
+            return bind_task.result(), False
+        finally:
+            # 收尾：把还在挂着的等待方（**包括 bind 自己**）取消掉。
+            # 外层被取消时（客户端断开 / 服务关闭 / 上层超时）这一步是必须的：
+            # attachments 的取消清理挂在它自己的 await 上，不取消就没人去丢弃
+            # 本次克隆行与临时文件（r6 的断连用例正是这样抓到漏掉的清理）。
+            for task in (bind_task, *watchers):
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+
+    def _cancelled_receipt(*, turn, message: str, topic_id, prepare_id) -> dict:
+        """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。"""
+        return {
+            "ok": True,
+            "accepted": False,
+            "cancelled": True,
+            "turn_id": turn.turn_id,
+            "prepare_id": prepare_id,
+            "status": turn.status,
+            "message": message,
+            "topic_id": topic_id,
+            "bound": [],
+            "bound_attachment_ids": [],
+            "rejected": [],
+            "attachments": [],
+        }
 
     # -- turns -------------------------------------------------------------
 
@@ -1528,7 +1639,7 @@ def create_app(
         return {"ok": True, "cancelled": True}
 
     @app.post("/api/turns")
-    async def start_turn(body: dict) -> dict:
+    async def start_turn(request: Request, body: dict) -> dict:
         message = str(body.get("message", "")).strip()
         if not message:
             raise HTTPException(status_code=400, detail="message required")
@@ -1566,25 +1677,45 @@ def create_app(
         # R6 §1.1：**先预留（不入队、不发 TURN_START）→ 准备附件 → 真的就绪才放行**。
         # 以前先 submit 再 await bind_for_turn：等复制让出事件循环时，worker 已经可以把这一轮
         # 跑起来 —— 模型会在附件还没就绪（甚至没有可读副本）时就被调用。
+        prepare_id = _prepare_id(request)
         turn = ctx.turns.reserve(
-            message, topic_id, intent_id=pending.intent_id if pending else None
+            message,
+            topic_id,
+            intent_id=pending.intent_id if pending else None,
+            prepare_id=prepare_id,
         )
         try:
-            outcome = await attachments.bind_for_turn(
-                turn_id=turn.turn_id,
-                message_id=None,
-                attachment_ids=explicit_ids,
-                topic_id=topic_id,
-                retry_of_turn_id=retry_of,
+            outcome, cancelled = await _prepare_with_cancel(
+                attachments.bind_for_turn(
+                    turn_id=turn.turn_id,
+                    message_id=None,
+                    attachment_ids=explicit_ids,
+                    topic_id=topic_id,
+                    retry_of_turn_id=retry_of,
+                ),
+                turn=turn,
+                prepare_id=prepare_id,
+                request=request,
             )
         except BaseException:
             # 准备期间出错 / 被取消（客户端断开、服务关闭）：丢弃预留，不留可执行队列项
             ctx.turns.abandon(turn, reason="attachment_prepare_error")
             raise
+        if cancelled or ctx.turns.prepare_was_cancelled(prepare_id):
+            # 取消证据成立（显式取消端点 / 真实断连 / 中止正好落在准备完成边界）：
+            # **绝不放行** —— 迟到的复制成功不得重启本轮。
+            ctx.turns.abandon(turn, reason="cancelled_during_prepare")
+            return _cancelled_receipt(
+                turn=turn, message=message, topic_id=topic_id, prepare_id=prepare_id
+            )
         if outcome.rejected:
             # 预检之后的竞态（刚被删 / 被别的轮次抢走）：丢弃预留 + 结构化拒绝，绝不入队
             ctx.turns.abandon(turn, reason="attachment_not_ready")
-            raise _attachment_failure(outcome.rejected)
+            raise _attachment_failure(
+                outcome.rejected,
+                code=_rejection_code(outcome),
+                receipt=_receipt_of(outcome),
+            )
         # 附件真的就绪了才放行（按预留顺序入队；TURN_START 由 worker 真正开跑时发）
         ctx.turns.activate(turn)
         return {
@@ -1767,6 +1898,24 @@ def create_app(
             "turn_facts": _turn_facts_for(_current_turn_ids()),
         }
 
+    @app.post("/api/turns/prepare/{prepare_id}/cancel")
+    async def cancel_preparing(prepare_id: str) -> dict:
+        """取消一个**准备中**的轮次（幂等；以服务端事实为准 —— plan §1.1）。
+
+        三种事实，前端据此**如实**显示，不得在拿不到确认时提前宣称「已中止」：
+
+        * `cancelled`：这一轮已被放弃 —— 不入队、不调用模型、不执行工具；
+        * `already_started`：已经放行/开始 —— 前端必须走**既有停止流程**；
+        * `unknown`：未知 / 已过期标识（幂等，不报错）。
+        """
+        # 返回形状是冻结契约（plan §1.1），只给这三种事实，不多塞字段
+        state, turn_id = ctx.turns.cancel_prepare(prepare_id)
+        if state == "cancelled":
+            return {"ok": True, "cancelled": True, "turn_id": turn_id}
+        if state == "already_started":
+            return {"ok": True, "cancelled": False, "already_started": True, "turn_id": turn_id}
+        return {"ok": True, "unknown": True}
+
     @app.post("/api/turns/{turn_id}/cancel")
     async def cancel_turn_by_id(turn_id: str) -> dict:
         """按 turn_id 取消 —— 运行中或仍在排队中的都可。"""
@@ -1778,7 +1927,7 @@ def create_app(
     # 前端不需要也不可能「猜」出这条消息到底执行过没有。
 
     @app.post("/api/turns/{turn_id}/resend")
-    async def resend_turn(turn_id: str) -> dict:
+    async def resend_turn(request: Request, turn_id: str) -> dict:
         """把一条「被接受但没有执行」的消息按原话题重新提交。
 
         一次性：先用带条件的 UPDATE 抢占（`claim`），抢不到就 409 ——
@@ -1803,26 +1952,53 @@ def create_app(
         pending = ctx.bindings.peek_intent()
         # R6 §1.1：先预留 + 准备，**claim 只在准备成功之后才消费** ——
         # 准备失败（附件没就绪 / 客户端断开）不能把这条「未执行」记录永久消耗掉。
+        prepare_id = _prepare_id(request)
         turn = ctx.turns.reserve(
             record["message"],
             record["topic_id"],
             intent_id=pending.intent_id if pending else None,
+            prepare_id=prepare_id,
         )
         try:
-            outcome = await attachments.bind_for_turn(
-                turn_id=turn.turn_id,
-                message_id=None,
-                attachment_ids=retry_ids,
-                topic_id=record["topic_id"],
-                retry_of_turn_id=turn_id,
+            outcome, cancelled = await _prepare_with_cancel(
+                attachments.bind_for_turn(
+                    turn_id=turn.turn_id,
+                    message_id=None,
+                    attachment_ids=retry_ids,
+                    topic_id=record["topic_id"],
+                    retry_of_turn_id=turn_id,
+                ),
+                turn=turn,
+                prepare_id=prepare_id,
+                request=request,
             )
         except BaseException:
             ctx.turns.abandon(turn, reason="attachment_prepare_error")
             raise
+        if cancelled or ctx.turns.prepare_was_cancelled(prepare_id):
+            # 用户取消了这次重发：丢弃预留、**不消费 claim**（这条记录仍然可以再试），
+            # 也绝不放行执行。
+            ctx.turns.abandon(turn, reason="cancelled_during_prepare")
+            return {
+                "ok": True,
+                "accepted": False,
+                "cancelled": True,
+                "turn_id": turn.turn_id,
+                "prepare_id": prepare_id,
+                "status": turn.status,
+                "bound": [],
+                "bound_attachment_ids": [],
+                "rejected": [],
+                "attachments": [],
+            }
         if outcome.rejected:
             # 预检之后的竞态：丢弃预留（从未入队）+ 结构化失败 —— claim 没被消费，用户还能再试。
             ctx.turns.abandon(turn, reason="attachment_not_ready")
-            raise _attachment_failure(outcome.rejected)
+            raise _attachment_failure(
+                outcome.rejected,
+                code=_rejection_code(outcome),
+                receipt=_receipt_of(outcome),
+            )
         if not ctx.turn_journal.claim(turn_id):
             # 准备期间这条被别人抢走了：丢弃预留，如实 409（不入队、不消费）
             ctx.turns.abandon(turn, reason="resend_claim_lost")

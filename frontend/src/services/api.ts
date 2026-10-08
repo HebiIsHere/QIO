@@ -430,6 +430,20 @@ export const api = {
       { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
   /**
+   * 取消一个**准备中**的轮次（幂等；契约 §1.1）。
+   *
+   * 返回的是**服务端事实**，前端据此如实显示：
+   * * cancelled=true → 这一轮已被放弃（不入队、不调用模型）；
+   * * already_started=true → 已经放行/开始，必须走既有停止流程（不得假装没发送）；
+   * * unknown=true → 未知/已过期标识（不报错）。
+   */
+  cancelPreparing: (prepareId: string) =>
+    request<{ ok: boolean; cancelled?: boolean; already_started?: boolean; unknown?: boolean; turn_id?: string }>(
+      `/api/turns/prepare/${encodeURIComponent(prepareId)}/cancel`,
+      { method: "POST" },
+    ),
+
+  /**
    * 提交一轮。
    *
    * `retryOfTurnId` 只在「重试/重发某一轮」时给：后端据此允许把**原来绑在那一轮**的
@@ -446,10 +460,18 @@ export const api = {
      * 真 abort 才有用 —— 后端据此判定客户端断开并 abandon 预留（契约 §1.1）。
      */
     signal?: AbortSignal,
+    /**
+     * 准备标识（契约 §1.1）：用户点「中止」时前端用它调取消端点，**以后端确认为准**。
+     * abort 只是客户端行为，不能当后端证据 —— 所以准备标识必须随请求发给后端。
+     */
+    prepareId?: string,
   ) =>
     request<{
       ok: boolean;
       accepted: boolean;
+      /** 服务端确认「这一轮没有被受理执行」（用户中止 / 断连）—— 界面不得显示成已发送 */
+      cancelled?: boolean;
+      prepare_id?: string | null;
       /** 受理时就有：乐观消息关联与「停止」都直接用它，不必等 TURN_START */
       turn_id: string;
       status: string;
@@ -463,6 +485,7 @@ export const api = {
     }>("/api/turns", {
       method: "POST",
       signal,
+      headers: prepareId ? { "X-QIO-Prepare-Id": prepareId } : undefined,
       body: JSON.stringify({
         message,
         topic_id: topicId ?? null,
