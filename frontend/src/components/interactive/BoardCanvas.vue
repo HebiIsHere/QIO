@@ -202,6 +202,22 @@ function displayY(card: BoardCardModel): number {
   return drag && drag.cardId === card.id ? drag.y : card.y;
 }
 
+/**
+ * **显示用**卡片列表：位置按拖动中的实时坐标替换。
+ *
+ * 为什么需要：板面状态在松手前不变（只预演），所以 store 里的坐标是静止的。
+ * 卡片自己用 displayX/displayY 拿到了实时坐标，但**关系线与组框**是另外的图层，
+ * 它们只拿到 store 的卡片 —— 于是拖动时线还挂在旧位置上，松手（提交）才跟着跳过去。
+ * 这两个图层是纯显示、不参与落点判定，所以给它们这一份实时坐标即可。
+ */
+const displayCards = computed<BoardCardModel[]>(() => {
+  const drag = dragging.value;
+  if (!drag || !drag.moved) return liveCards.value;
+  return liveCards.value.map((card) =>
+    card.id === drag.cardId ? { ...card, x: drag.x, y: drag.y } : card,
+  );
+});
+
 function commit(next: BoardState, label: string) {
   store.commit(next, label);
 }
@@ -1210,7 +1226,7 @@ onBeforeUnmount(() => {
             v-for="group in groups"
             :key="group.id"
             :group="group"
-            :cards="liveCards"
+            :cards="displayCards"
             :selected-ids="selection"
             :drop-target="dragging !== null && dragging.preview.groupId === group.id"
             :drop-merge="dragging !== null && dragging.preview.mergesWith === group.id"
@@ -1252,7 +1268,7 @@ onBeforeUnmount(() => {
 
           <BoardLinkLayer
             :links="links"
-            :cards="liveCards"
+            :cards="displayCards"
             :active-link-id="editingLinkId"
             :width="SURFACE_W"
             :height="SURFACE_H"

@@ -1419,6 +1419,56 @@ async function scenario23() {
   check("23 恢复块没有溢出面板", Boolean(m.recover && m.panel) && m.recover.b <= m.panel.b + 1, JSON.stringify({ panel: m.panel, recover: m.recover }));
 }
 
+async function scenario24() {
+  /**
+   * 拖动时关系线必须**实时跟随**（用户报告：拖动中不动，松手才动）。
+   *
+   * 造法：走真实接口写入两张卡片 + 一条关系线，然后在页面里按下指针、分多步移动，
+   * **在指针仍按下时**量线的端点与卡片矩形的中心，要求两者一致且相对拖动前发生了位移。
+   * 指针事件用页面内合成（标注【合成指针事件】）——它走的是同一套 pointerdown/pointermove 处理链。
+   */
+  const now = new Date().toISOString();
+  const mk = (id, x, y, content) => ({ id, kind: "text", content, meta: {}, x, y, w: 240, h: 120, checked: false, hidden: false, folded: false, bookmarked: false, deleted: false, createdAt: now, updatedAt: now });
+  const prev = await boardState();
+  const snap = {
+    boardId: BOARD,
+    seq: prev.seq || 0,
+    updatedAt: now,
+    cards: [mk("c_s24_a", 60, 40, "拖动起点卡片"), mk("c_s24_b", 480, 260, "关系另一端卡片")],
+    groups: [],
+    links: [{ id: "lnk_s24", src: "c_s24_a", dst: "c_s24_b", direction: true, meaning: "拖动跟随检查", deleted: false, createdAt: now, updatedAt: now }],
+    selection: [],
+  };
+  await api("/api/interactive/boards/" + BOARD + "/state", { method: "PUT", body: JSON.stringify({ state: snap, seq: prev.seq || 0, label: "验收：两张卡片 + 一条关系线" }) });
+
+  const M = (mark) => "JSON.stringify((function(){var card=document.querySelector('[data-im=\"card\"][data-card-id=\"c_s24_a\"]')||document.querySelector('[data-im=\"card\"]');var cr=card?card.getBoundingClientRect():null;var line=document.querySelector('svg line');return {mark:'" + mark + "',card:cr?{cx:Math.round(cr.left+cr.width/2),cy:Math.round(cr.top+cr.height/2)}:null,line:line?{x1:Number(line.getAttribute('x1')),y1:Number(line.getAttribute('y1')),x2:Number(line.getAttribute('x2')),y2:Number(line.getAttribute('y2'))}:null};})())";
+  const DRAG = "(function(){var card=document.querySelector('[data-im=\"card\"][data-card-id=\"c_s24_a\"]')||document.querySelector('[data-im=\"card\"]');if(!card)return 'no-card';var r=card.getBoundingClientRect();var cxp=Math.round(r.left+r.width*0.5),cyp=Math.round(r.top+8);var opts={bubbles:true,cancelable:true,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1,clientX:cxp,clientY:cyp};card.dispatchEvent(new PointerEvent('pointerdown',opts));var steps=[[60,20],[120,60],[180,100],[240,140]];for(var i=0;i<steps.length;i++){window.dispatchEvent(new PointerEvent('pointermove',Object.assign({},opts,{clientX:cxp+steps[i][0],clientY:cyp+steps[i][1]})));}return 'dragging';})()";
+
+  const flow = sess([
+    { op: "viewport", width: 1200, height: 800 },
+    { op: "wait", ms: 1200 },
+    { op: "eval", js: M("before") },
+    { op: "eval", js: DRAG },
+    { op: "wait", ms: 200 },
+    { op: "eval", js: M("during") },
+    { op: "screenshot", name: "fe-24-link-follows-drag" },
+  ]);
+  const before = markedFrom(flow, "before") || {};
+  const during = markedFrom(flow, "during") || {};
+  const moved = Boolean(before.line && during.line) && (during.line.x1 - before.line.x1) >= 200;
+  /**
+   * 线路由「卡片中心连线」推导：被拖动那张卡片的端点 x 应与卡片中心 x 一致
+   * （实测基线：卡片中心 180 → 线 x1 = 180；拖到 420 时旧实现仍是 180）。
+   * y 方向还要经过卡片顶边偏移，这里只要求它随拖动一起变（≥100），不写死公式。
+   */
+  const follows = Boolean(during.card && during.line)
+    && Math.abs(during.line.x1 - during.card.cx) <= 2
+    && Math.abs(during.line.y1 - before.line.y1) >= 100;
+  check("24 拖动前关系线挂在卡片上（前置）", Boolean(before.card && before.line) && Math.abs(before.line.x1 - before.card.cx) <= 2, JSON.stringify(before));
+  check("24 拖动**过程中**关系线跟着走（不是松手才动）", moved && Boolean(during.card) && during.card.cx - before.card.cx >= 200, JSON.stringify({ before: before.line, during: during.line, card: during.card }));
+  check("24 拖动中线的一端仍贴着被拖动的卡片", follows, JSON.stringify({ card: during.card, line: during.line }));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -1444,6 +1494,7 @@ const main = async () => {
     [21, scenario21],
     [22, scenario22],
     [23, scenario23],
+    [24, scenario24],
     [99, scenario99],
   ];
   for (const entry of scenarios) {
