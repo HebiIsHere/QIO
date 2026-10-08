@@ -1,7 +1,7 @@
 /**
- * 跨浮层的可用区域与并排策略（子智能体 D 负责实现，主智能体先给出契约骨架）。
+ * 跨浮层的可用区域与并排策略（子智能体 C 负责实现，主智能体先给出契约骨架）。
  *
- * 契约：docs/interactive-mode-contract.md §9.6。
+ * 契约：docs/interactive-mode-contract.md §11.7 / §11.8（覆盖 §9.6 与 §10.6 里的布局写法）。
  *
  * 为什么要有这一层：底部工具栏、右下聊天、右上批量列表、卡片局部工具栏与中央确认框
  * 过去各自用「窗口高度减一个固定值」算位置，窄窗口里必然互相遮挡（上一轮实测两面板相交约 45080px²）。
@@ -12,11 +12,13 @@
  * 空间不足（switched）时**保留哪一个面板**也在这里判（{@link resolveOverlayPanes}），
  * 组件只负责把结果写回 store 并渲染切换入口，不自己写一套「谁该被收起」的判断。
  *
- * 三条几何事实（本模块的全部假设，改版面时必须一起改）：
+ * 四条几何事实（本模块的全部假设，改版面时必须一起改）：
  * 1. 浮层挂在板面舞台上，舞台上沿 + {@link OVERLAY_EDGE} 是最高的可用行；
  * 2. 底部工具栏顶边以上才是可用列，聊天面板的底边还要再让开它自己的入口按钮
  *    （{@link OVERLAY_CHAT_FOOTER}：工具栏顶边 → 聊天面板底边）；
- * 3. 右侧是固定列：聊天永远贴右（right = {@link OVERLAY_EDGE}），批量列表在并排时被推到它的左边。
+ * 3. 右侧是固定列：聊天永远贴右（right = {@link OVERLAY_EDGE}），批量列表在并排时被推到它的左边；
+ * 4. 需要切换显示时，{@link OVERLAY_SWITCH_BAR_HEIGHT} 那一行由**同一个布局状态**决定
+ *    （{@link OverlayInput.switched}）：不管当前开着几个面板，竖直区间都按它预留，切换条自己也拿到一个矩形。
  */
 
 export interface OverlayInput {
@@ -31,6 +33,15 @@ export interface OverlayInput {
   /** 两个面板各自的最小可用尺寸（低于它就没法读） */
   chatMin: { width: number; height: number };
   batchMin: { width: number; height: number };
+  /**
+   * 本次布局是否处于「需要切换显示」的状态（由调用方按最新几何算一次后固定传入）。
+   *
+   * 为什么必须显式传：二选一时界面上还有一条**面板切换条**，它占真实高度。
+   * 只看 chatOpen / batchOpen 会得到「关掉一个面板就不必再留位置」的错误结论 ——
+   * 切换条此时仍然在，于是压在面板底边上（契约 §11.7 明确要求关掉一个面板后仍为它预留）。
+   * 为 true 时无论开着几个面板，竖直区间都按同一个状态算，模式也始终是 switched。
+   */
+  switched?: boolean;
 }
 
 export interface OverlayGeometry {
@@ -44,6 +55,13 @@ export interface OverlayGeometry {
   batchRight: number;
   /** 两个浮层之间的间距 */
   gap: number;
+  /**
+   * 切换条的**最坏情况**矩形（视口坐标）：不需要切换条时 height = 0。
+   *
+   * 真实元素比它小（宽度按内容收缩、右对齐），但一定落在它里面 ——
+   * 所以验收脚本用它算「切换条是否压到面板 / 工具栏 / 视口边缘」是保守而安全的。
+   */
+  switchBar: OverlayRect;
 }
 
 /** 面板与舞台边缘、视口边缘之间的最小间距 */
@@ -64,11 +82,13 @@ export const OVERLAY_CHAT_DOCK_LIFT = 24;
 /** 面板标识：右侧聊天 / 右上批量列表 */
 export type OverlayPane = "chat" | "batch";
 /**
- * 空间不足（switched）时「面板切换条」占用的高度（契约 §10.6）。
+ * 空间不足（switched）时「面板切换条」占用的高度（契约 §11.7）。
  *
  * 为什么要有它：二选一时必须**明确告诉用户还能切换**，这条提示不能压在面板或工具栏上。
  * 它占用聊天面板下方的一行（见 bandsOf 的 reserveSwitchBar）：位置在未预留的底边之上、
  * 聊天入口按钮之上，所以两个面板的实际高度都不会碰到它，也不需要观察它自己的尺寸。
+ * 高度是常量、由组件按同一个值写进行内样式（box-sizing: border-box），
+ * 所以「计划里预留的高度」与「界面上真实占的高度」是同一个数字，不会因为量自己而抖动。
  */
 export const OVERLAY_SWITCH_BAR_HEIGHT = 34;
 /** 低于这个视口宽度不与聊天并排：ChatDock 在 ≤560px 会变成左右各 12px 的整宽布局 */
@@ -106,20 +126,24 @@ function px(value: number): number {
 interface Bands {
   viewportWidth: number;
   top: number;
-  /** 聊天面板可以占的竖直区间 [top, chatBottom] */
+  /** 面板可以占的竖直区间 [top, chatBottom]（需要切换条时已经把它那一行让出来） */
   chatBottom: number;
   chatBand: number;
-  /** 批量列表可以占的竖直区间 [top, batchBottom]（它上面没有入口按钮，可以更低） */
+  /** 批量列表不预留切换条时可以更低（它上面没有入口按钮） */
   batchBottom: number;
   batchBand: number;
   availWidth: number;
+  /** 切换条占用的那一行 [switchTop, switchBottom]（不需要切换条时两者都是 0） */
+  switchTop: number;
+  switchBottom: number;
 }
 
 /**
  * 按实际可用区域算竖直区间与可用宽度（planOverlayGeometry 与 overlayRects 共用，避免两处算法漂移）。
  *
- * reserveSwitchBar = true 时把聊天区间再抬高一个「面板切换条」的高度：只有二选一模式才需要，
- * 而且**必然**是缩小可用高度（先判定够不够、再留位置），所以不会出现「留位置反而放得下」的循环依赖。
+ * reserveSwitchBar = true 时把面板区间抬高「面板切换条 + 上下各一个间距」：
+ * 先判定够不够、再留位置，而且**必然**是缩小可用高度，所以不会出现「留位置反而放得下」的循环依赖。
+ * 切换条自己占的那一行也在这里算出来（同一个函数），组件与验收脚本不必各自推一遍。
  */
 function bandsOf(input: OverlayInput, reserveSwitchBar = false): Bands {
   const viewportWidth = Math.max(0, px(num(input?.viewport?.width)));
@@ -130,8 +154,11 @@ function bandsOf(input: OverlayInput, reserveSwitchBar = false): Bands {
   // 工具栏量不到时按「舞台下沿」算：宁可把浮层排在舞台里，也不越过视口
   const toolbarTop = clamp(px(num(input?.toolbarTop, stageBottom)), stageTop, Math.max(stageTop, stageBottom));
   const top = stageTop + OVERLAY_EDGE;
-  const switchReserve = reserveSwitchBar ? OVERLAY_SWITCH_BAR_HEIGHT + OVERLAY_GAP : 0;
-  const chatBottom = Math.max(top, toolbarTop - OVERLAY_CHAT_FOOTER - switchReserve);
+  // 未预留时的面板底边：工具栏顶边往上让开聊天入口按钮那一行
+  const baseChatBottom = Math.max(top, toolbarTop - OVERLAY_CHAT_FOOTER);
+  const switchBottom = reserveSwitchBar ? Math.max(top, baseChatBottom - OVERLAY_GAP) : 0;
+  const switchTop = reserveSwitchBar ? Math.max(top, switchBottom - OVERLAY_SWITCH_BAR_HEIGHT) : 0;
+  const chatBottom = reserveSwitchBar ? Math.max(top, switchTop - OVERLAY_GAP) : baseChatBottom;
   const batchBottom = Math.max(top, toolbarTop - OVERLAY_EDGE);
   return {
     viewportWidth,
@@ -141,6 +168,19 @@ function bandsOf(input: OverlayInput, reserveSwitchBar = false): Bands {
     batchBottom,
     batchBand: batchBottom - top,
     availWidth: Math.max(0, viewportWidth - 2 * OVERLAY_EDGE),
+    switchTop,
+    switchBottom,
+  };
+}
+
+/** 切换条矩形：只有切换显示状态才有高度，且绝不越出舞台可用区 */
+function switchBarRectOf(bands: Bands, needed: boolean): OverlayRect {
+  const height = needed ? clamp(OVERLAY_SWITCH_BAR_HEIGHT, 0, Math.max(0, bands.switchBottom - bands.top)) : 0;
+  return {
+    x: OVERLAY_EDGE,
+    y: height > 0 ? bands.switchTop : 0,
+    width: bands.availWidth,
+    height,
   };
 }
 
@@ -160,47 +200,82 @@ function minsOf(input: OverlayInput): { chat: { width: number; height: number };
 /**
  * 算浮层几何。
  *
- * 决策顺序（先并排、再上下、最后二选一）：
+ * 决策顺序（先认显式状态，再并排、再上下、最后二选一）：
+ * 0. 调用方声明 {@link OverlayInput.switched}（需要切换显示）→ 直接按 switched 算：
+ *    无论当前开着几个面板，竖直区间都为切换条预留，模式也保持 switched
+ *    （契约 §11.7 的「同一个明确布局状态」；关掉一个面板不会把这一行还回去）；
  * 1. 只有一侧打开 → 没有冲突，各自拿满可用宽度（绝不为「另一个没开的面板」预留宽度）；
  * 2. 两者都开且宽度够 → **并排**：聊天贴右，批量列表整体推到聊天左边，各占满高度；
  * 3. 宽度不够、高度够 → **上下**：批量列表贴舞台上方（有顶无底），聊天贴工具栏上方（有底无顶），
  *    两者的高度上限之和加上间距不超过可用高度；
  * 4. 都不够 → **二选一**：同一时间只显示一个，由调用方保证（本函数只报模式与上限）。
+ *
+ * 空间判定只用「未预留切换条」的区间：判定必须只由空间决定，与当前是否已经在切换显示无关，
+ * 否则会自我实现（把 switched 传进来就永远放不下、退不回去）。
  */
 export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
   const gap = OVERLAY_GAP;
-  const bands = bandsOf(input);
   const mins = minsOf(input);
   const both = Boolean(input?.chatOpen) && Boolean(input?.batchOpen);
+  const plain = bandsOf(input, false);
+  const wantsSwitchBar = input?.switched === true;
 
-  const chatCap = Math.min(CHAT_PREFERRED_WIDTH, Math.floor(bands.viewportWidth * CHAT_WIDTH_RATIO));
-  const batchCap = Math.min(BATCH_PREFERRED_WIDTH, bands.availWidth);
+  const chatCap = Math.min(CHAT_PREFERRED_WIDTH, Math.floor(plain.viewportWidth * CHAT_WIDTH_RATIO));
+  const batchCap = Math.min(BATCH_PREFERRED_WIDTH, plain.availWidth);
+  const fitsSideBySide =
+    plain.viewportWidth >= OVERLAY_SIDE_BY_SIDE_MIN_WIDTH &&
+    plain.availWidth >= mins.chat.width + gap + mins.batch.width;
+  const fitsStacked = plain.chatBand >= mins.chat.height + gap + mins.batch.height;
+
+  let mode: OverlayGeometry["mode"];
+  if (wantsSwitchBar) mode = "switched";
+  else if (!both) mode = "side-by-side";
+  else if (fitsSideBySide) mode = "side-by-side";
+  else if (fitsStacked) mode = "stacked";
+  else mode = "switched";
+
+  // 预留只发生在真正要切换显示时；切换条矩形与面板上限出自同一次 bandsOf，两处不会漂移
+  const bands = bandsOf(input, mode === "switched");
+  const switchBar = switchBarRectOf(bands, mode === "switched");
+  const chatWidth = Math.max(mins.chat.width, Math.min(chatCap, bands.availWidth));
+  const batchWidth = Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth));
+
+  if (mode === "switched") {
+    // 二选一：两个面板共用切换条之上那一列（同一时间只显示一个由调用方保证），谁都不会压到切换条
+    return {
+      mode,
+      chatMaxWidth: chatWidth,
+      chatMaxHeight: bands.chatBand,
+      chatRight: OVERLAY_EDGE,
+      batchMaxWidth: batchWidth,
+      batchMaxHeight: bands.chatBand,
+      batchRight: OVERLAY_EDGE,
+      gap,
+      switchBar,
+    };
+  }
 
   if (!both) {
     // 单开：不为未打开的面板预留任何空间
     return {
       mode: "side-by-side",
-      chatMaxWidth: Math.max(mins.chat.width, Math.min(chatCap, bands.availWidth)),
+      chatMaxWidth: chatWidth,
       chatMaxHeight: bands.chatBand,
       chatRight: OVERLAY_EDGE,
-      batchMaxWidth: Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth)),
+      batchMaxWidth: batchWidth,
       batchMaxHeight: bands.batchBand,
       batchRight: OVERLAY_EDGE,
       gap,
+      switchBar,
     };
   }
 
-  const fitsSideBySide =
-    bands.viewportWidth >= OVERLAY_SIDE_BY_SIDE_MIN_WIDTH &&
-    bands.availWidth >= mins.chat.width + gap + mins.batch.width;
-  const fitsStacked = bands.chatBand >= mins.chat.height + gap + mins.batch.height;
-
-  if (fitsSideBySide) {
+  if (mode === "side-by-side") {
     // 并排：聊天先占右下，批量列表用剩下的宽度，右边贴在聊天左边
     const chatMaxWidth = clamp(chatCap, mins.chat.width, bands.availWidth - gap - mins.batch.width);
     const batchMaxWidth = clamp(batchCap, mins.batch.width, bands.availWidth - gap - chatMaxWidth);
     return {
-      mode: "side-by-side",
+      mode,
       chatMaxWidth,
       chatMaxHeight: bands.chatBand,
       chatRight: OVERLAY_EDGE,
@@ -208,41 +283,27 @@ export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
       batchMaxHeight: bands.batchBand,
       batchRight: OVERLAY_EDGE + chatMaxWidth + gap,
       gap,
+      switchBar,
     };
   }
 
-  if (fitsStacked) {
-    // 上下：批量列表贴顶、聊天贴底，两块上限之和 + 间距 = 可用高度（最坏情况刚好相切，绝不相交）
-    const batchMaxHeight = clamp(
-      BATCH_PREFERRED_HEIGHT,
-      mins.batch.height,
-      bands.chatBand - gap - mins.chat.height,
-    );
-    const chatMaxHeight = Math.max(mins.chat.height, bands.chatBand - gap - batchMaxHeight);
-    return {
-      mode: "stacked",
-      chatMaxWidth: Math.max(mins.chat.width, Math.min(chatCap, bands.availWidth)),
-      chatMaxHeight,
-      chatRight: OVERLAY_EDGE,
-      batchMaxWidth: Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth)),
-      batchMaxHeight,
-      batchRight: OVERLAY_EDGE,
-      gap,
-    };
-  }
-
-  // 二选一：两个都可以拿满各自的区间，但不允许同时出现
-  // 聊天区间要让出「面板切换条」那一行（上面已判定空间不够，让出后只会更不够，不会翻回 stacked）
-  const reserved = bandsOf(input, true);
+  // 上下：批量列表贴顶、聊天贴底，两块上限之和 + 间距 = 可用高度（最坏情况刚好相切，绝不相交）
+  const batchMaxHeight = clamp(
+    BATCH_PREFERRED_HEIGHT,
+    mins.batch.height,
+    bands.chatBand - gap - mins.chat.height,
+  );
+  const chatMaxHeight = Math.max(mins.chat.height, bands.chatBand - gap - batchMaxHeight);
   return {
-    mode: "switched",
-    chatMaxWidth: Math.max(mins.chat.width, Math.min(chatCap, bands.availWidth)),
-    chatMaxHeight: reserved.chatBand,
+    mode: "stacked",
+    chatMaxWidth: chatWidth,
+    chatMaxHeight,
     chatRight: OVERLAY_EDGE,
-    batchMaxWidth: Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth)),
-    batchMaxHeight: bands.batchBand,
+    batchMaxWidth: batchWidth,
+    batchMaxHeight,
     batchRight: OVERLAY_EDGE,
     gap,
+    switchBar,
   };
 }
 
@@ -310,7 +371,8 @@ export function chatHeightRelaxation(toggleHeight: number): number {
  * 不能等用户再点一次面板才发现空间不够。
  */
 export function overlaysAreCramped(input: OverlayInput): boolean {
-  return planOverlayGeometry({ ...input, chatOpen: true, batchOpen: true }).mode === "switched";
+  // switched 强制为 false：这条判据只回答「按空间够不够」，不能被调用方上一次的结论带偏
+  return planOverlayGeometry({ ...input, chatOpen: true, batchOpen: true, switched: false }).mode === "switched";
 }
 
 export interface PaneResolution {
