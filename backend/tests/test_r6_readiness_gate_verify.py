@@ -202,49 +202,34 @@ def _gated_clone(
 
 @contextlib.contextmanager
 def _failing_clone():
-    """复制**写入**直接失败（模块级 open seam，遮蔽内建）。"""
-    real_open = builtins.open
-    real_io_open = io.open
+    """让**克隆的复制退路必然失败**（跨平台确定，打在真实调用点）。
+
+    为什么必须打在 `shutil.copyfile` 上（而不是包 `builtins.open`/`io.open`）：
+    Linux 的 `shutil.copyfile` 走 `_fastcopy_sendfile`（`os.sendfile` 直接搬字节），
+    包 `builtins.open` 在 Linux 上**不会命中**真正的写路径 —— 会出现「注入自认为触发了、
+    但复制其实成功了」的假红（CI run 37727749922：py3.11/py3.12 三条用例 200 + 模型被调用）。
+    真实调用点见 services/attachments.py：os.link(...) 失败后 shutil.copyfile(...)。
+    """
+    import errno as _errno
+
     real_link = os.link
+    real_copyfile = attachments_mod.shutil.copyfile
     state = {"fired": False}
-
-    def _wrap(real):  # noqa: ANN001, ANN202
-        def _patched(file, mode="r", *args, **kwargs):  # noqa: ANN001
-            if "w" in str(mode):
-                state["fired"] = True
-                handle = real(file, mode, *args, **kwargs)
-
-                class _Boom:
-                    def write(self, data):  # noqa: ANN001
-                        raise OSError(28, "受控错误：写入失败（磁盘空间不足）")
-
-                    def __getattr__(self, name):  # noqa: ANN001
-                        return getattr(handle, name)
-
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *exc):  # noqa: ANN002
-                        return handle.__exit__(*exc)
-
-                return _Boom()
-            return real(file, mode, *args, **kwargs)
-
-        return _patched
 
     def _no_link(*args, **kwargs):  # noqa: ANN002
         raise OSError(1, "受控错误：强制走复制路径（验证装置）")
 
-    builtins.open, io.open = _wrap(real_open), _wrap(real_io_open)
-    attachments_mod.open = _wrap(real_open)
+    def _boom(src, dst, *args, **kwargs):  # noqa: ANN001
+        state["fired"] = True
+        raise OSError(_errno.ENOSPC, "No space left on device（受控错误：复制退路失败）")
+
     os.link = _no_link
+    attachments_mod.shutil.copyfile = _boom
     try:
         yield state
     finally:
-        builtins.open, io.open = real_open, real_io_open
-        with contextlib.suppress(AttributeError):
-            del attachments_mod.open
         os.link = real_link
+        attachments_mod.shutil.copyfile = real_copyfile
 
 
 async def _make_recoverable_turn(app, attachment_id: str, turn_id: str) -> str:
