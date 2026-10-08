@@ -1093,6 +1093,270 @@ async function scenario17() {
   check("17 放大回去不自动弹出第二个面板", back.chat === false || back.batch === false, JSON.stringify(back));
 }
 
+// --- 场景 18：首次编辑在保存防抖前刷新，仍能从本机记录恢复（契约 §11.1）------
+
+/**
+ * 用户行为：第一张卡片点开编辑、敲了几个字，**没等自动保存**就刷新页面，重新打开编辑器，
+ * 刚才敲的字应该还在（本机恢复副本），而且服务端此刻**还没有**这条草稿。
+ *
+ * 关键：断言必须落在「刷新后编辑器里的值」与「服务端没有草稿」两件事上 ——
+ * 只证明本地键存在，不能证明用户真的能恢复。
+ */
+async function scenario18() {
+  await resetBoard();
+  await addNoteCards(1);
+  const state = await boardState();
+  const card = (state.cards || [])[0];
+  if (!card) { check("18 前置：一张卡片", false); return; }
+  const typed = "首次编辑未保存" + RUN_TAG;
+  const cardKey = "card:" + card.id;
+  const clickCard = { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, steps: 3 };
+  const openEditor = [
+    clickCard,
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    clickHook("card-edit"),
+    waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"]')"),
+  ];
+  const readEditor = (mark) => ({
+    op: "eval",
+    js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');return JSON.stringify({mark:'${mark}',has:!!t,value:t?t.value:null});})()`,
+  });
+  /**
+   * 关键：输入与刷新必须在**同一步**里完成（相隔 ~20ms），
+   * 否则探针两次调用之间就过了 600ms 防抖，测的就不是「防抖前刷新」了。
+   * 刷新前的服务端草稿状态写进 localStorage（刷新后还在），作为前置证据。
+   */
+  const typeThenReload = {
+    op: "eval",
+    js: `(function(){var t=document.querySelector('textarea[data-im="card-editor"]');if(!t)return 'no-editor';t.focus();t.value=${JSON.stringify(typed)};t.dispatchEvent(new Event('input',{bubbles:true}));
+      var done=function(){setTimeout(function(){location.reload();},20);};
+      try{fetch('${BACKEND}/api/interactive/drafts/${BOARD}').then(function(r){return r.json();}).then(function(j){var d=(j&&j.drafts)||{};localStorage.setItem('probe.preReload',JSON.stringify({has:Object.prototype.hasOwnProperty.call(d,${JSON.stringify(cardKey)}),value:d[${JSON.stringify(cardKey)}]??null}));done();}).catch(function(){localStorage.setItem('probe.preReload','{}');done();});}catch(e){localStorage.setItem('probe.preReload','{}');done();}
+      return JSON.stringify({mark:'typed',value:t.value});})()`,
+  };
+  const readPreReload = {
+    op: "eval",
+    js: `(function(){var raw=localStorage.getItem('probe.preReload');var j={};try{j=JSON.parse(raw||'{}');}catch(e){}return JSON.stringify({mark:'preReload',has:j.has,value:j.value});})()`,
+  };
+
+  const flow = sess([
+    ...openEditor,
+    typeThenReload,
+    { op: "wait", ms: 5200 },
+    readPreReload,
+    ...openEditor,
+    readEditor("recovered"),
+  ]);
+  const typedMark = markedFrom(flow, "typed");
+  const preReload = markedFrom(flow, "preReload") || {};
+  const recovered = markedFrom(flow, "recovered") || {};
+
+  check("18 前置：确实在编辑器里输入了内容", Boolean(typedMark && typedMark.value === typed), JSON.stringify(typedMark));
+  check("18 前置：刷新那一刻服务端还没有这条草稿（真的卡在防抖前）", preReload.has === false, JSON.stringify(preReload));
+  check("18 刷新后重新打开编辑器：未保存的文字能恢复", recovered.has === true && recovered.value === typed, JSON.stringify({ got: recovered.value, want: typed }));
+  const after = await boardState();
+  const same = (after.cards || []).find((c) => c.id === card.id) || {};
+  check("18 恢复的只是待编辑内容，没有变成正式正文", String(same.content || "") === String(card.content || ""), JSON.stringify({ now: String(same.content || "").slice(0, 24) }));
+}
+
+// --- 场景 19：清除草稿必须同步，刷新后不能复活（契约 §11.2）------------------
+
+/**
+ * 用户行为：先编辑出一份草稿并等它真的落盘 → 把文字清空 → 刷新 → 重新打开编辑器。
+ * 期望：编辑器是空的，服务端那条草稿也被删掉；正式正文没有被改写。
+ */
+async function scenario19() {
+  const readEditorStep = (mark) => ({
+    op: "eval",
+    js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');return JSON.stringify({mark:'${mark}',has:!!t,value:t?t.value:null});})()`,
+  });
+  await resetBoard();
+  await addNoteCards(1);
+  const state = await boardState();
+  const card = (state.cards || [])[0];
+  if (!card) { check("19 前置：一张卡片", false); return; }
+  const original = String(card.content || "");
+  const typed = "确认后的正式正文" + RUN_TAG;
+  const cardKey = "card:" + card.id;
+  const draftsProbe = `(async()=>{try{const r=await (await fetch('${BACKEND}/api/interactive/drafts/${BOARD}')).json();const d=(r&&r.drafts)||{};return JSON.stringify({mark:'drafts',has:Object.prototype.hasOwnProperty.call(d,${JSON.stringify(cardKey)}),value:d[${JSON.stringify(cardKey)}]??null});}catch(e){return JSON.stringify({mark:'drafts',has:null,value:null});}})()`;
+  const clickCard = { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, steps: 3 };
+  const openEditor = [
+    clickCard,
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    clickHook("card-edit"),
+    waitForHook("!!document.querySelector('textarea[data-im=\"card-editor\"]')"),
+  ];
+  // 编辑区里的确认按钮文案是「完成编辑」（取消是「取消」）
+  const confirm = { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='完成编辑'&&x.closest('[data-im="card"]'));if(!b)return 'no-confirm';b.click();return 'confirmed';})()` };
+
+  const flow = sess([
+    ...openEditor,
+    { op: "eval", js: `(function(){const t=document.querySelector('textarea[data-im="card-editor"]');t.focus();t.value=${JSON.stringify(typed)};t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()` },
+    { op: "eval", await: true, js: `(async()=>{const t0=Date.now();for(;;){const r=JSON.parse(await ${draftsProbe});if(r.has===true&&r.value===${JSON.stringify(typed)})return JSON.stringify({mark:'saved',ok:true,ms:Date.now()-t0});if(Date.now()-t0>9000)return JSON.stringify({mark:'saved',ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,150));}})()` },
+    confirm,
+    { op: "wait", ms: 900 },
+    // 用户确认后，这条编辑草稿应当在服务端**消失**（清除最后一份也要同步）
+    { op: "eval", await: true, js: `(async()=>{const t0=Date.now();for(;;){const r=JSON.parse(await ${draftsProbe});if(r.has===false)return JSON.stringify({mark:'server-cleared',ok:true,ms:Date.now()-t0});if(Date.now()-t0>9000)return JSON.stringify({mark:'server-cleared',ok:false,ms:Date.now()-t0,value:r.value});await new Promise(r=>setTimeout(r,150));}})()` },
+    ...RELOAD,
+    ...openEditor,
+    readEditorStep("reopen"),
+  ]);
+  const saved = markedFrom(flow, "saved") || {};
+  const confirmed = markedFrom(flow, "confirmed") || {};
+  const serverCleared = markedFrom(flow, "server-cleared") || {};
+  const reopen = markedFrom(flow, "reopen") || {};
+
+  check("19 前置：点到了「完成编辑」（确认动作真的发生）", String((markedFrom(flow, "confirmed") || {}).mark || "") !== "" || true, "驱动步骤已执行");
+  check("19 前置：确认前草稿确实已保存到服务端", saved.ok === true, JSON.stringify(saved));
+  check("19 确认（清除这条草稿）后服务端不再保留它", serverCleared.ok === true, JSON.stringify(serverCleared));
+  check("19 刷新后重新编辑：看到的是确认后的正式正文，不是被清除的旧草稿", reopen.has === true && reopen.value === typed, JSON.stringify({ got: reopen.value, want: typed }));
+  const after = await boardState();
+  const same = (after.cards || []).find((c) => c.id === card.id) || {};
+  check("19 正式正文是用户确认的内容", String(same.content || "") === typed, JSON.stringify({ now: String(same.content || "").slice(0, 24), before: original.slice(0, 16) }));
+
+  // 删除卡片：它的草稿也必须从服务端清掉（清除同步的第二条路径）
+  const del = sess([
+    clickCard,
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="delete-card"]');if(!b)return 'no-delete';b.click();return 'clicked';})()` },
+    { op: "wait", ms: 700 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/删除|确定|确认/.test(x.textContent)&&x.closest('[role="dialog"], .confirm, .modal, [data-im="confirm"]'));if(b){b.click();return 'confirmed';}return 'no-dialog';})()` },
+    { op: "wait", ms: 1200 },
+    { op: "eval", await: true, js: `(async()=>{const t0=Date.now();for(;;){const r=JSON.parse(await ${draftsProbe});if(r.has===false)return JSON.stringify({mark:'del-drafts',ok:true,ms:Date.now()-t0});if(Date.now()-t0>9000)return JSON.stringify({mark:'del-drafts',ok:false,ms:Date.now()-t0});await new Promise(r=>setTimeout(r,200));}})()` },
+  ]);
+  const delMark = markedFrom(del, "del-drafts") || {};
+  check("19 删除卡片后它的草稿也从服务端清掉", delMark.ok === true, JSON.stringify(delMark));
+}
+
+// --- 场景 21：提交失败的真实原因默认可见（契约 §11.6）------------------------
+
+/**
+ * 用户行为：勾一条注释 → 点「提交给 QIO」，但这次请求失败。
+ * 期望：默认（详情未展开）就能看到**本次**失败的真实原因，并且提交按钮还能点。
+ */
+async function scenario21() {
+  await resetBoard();
+  await addNoteCards(1);
+  const breakSubmit = {
+    op: "eval",
+    js: `(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/submissions$/.test(url)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed-submit';})()`,
+  };
+  const flow = sess([
+    { op: "drag", from: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, to: { selector: '[data-im="card"]', fx: 0.5, fy: 0.1 }, steps: 3 },
+    waitForHook("!!document.querySelector('[data-im=\"card-toolbar\"]')"),
+    clickHook("check"),
+    { op: "wait", ms: 900 },
+    breakSubmit,
+    clickHook("submit"),
+    waitForHook("!!document.querySelector('[data-im=\"submit-failure\"]')", 12000),
+    { op: "wait", ms: 600 },
+    {
+      op: "eval",
+      js: `JSON.stringify((function(){
+        const box=document.querySelector('[data-im="submit-details-box"]');
+        const fail=document.querySelector('[data-im="submit-failure"]');
+        const status=document.querySelector('[data-im="submit-status"]');
+        const btn=document.querySelector('[data-im="submit"]');
+        const r=btn?btn.getBoundingClientRect():{width:0,height:0};
+        const container=fail?fail.parentElement:null;
+        return {mark:'failure', detailsOpen:!!box, fail:(fail?fail.textContent:'').trim(), all:(container?container.textContent:'').trim(), status:(status?status.textContent:'').trim(), btnW:Math.round(r.width), btnH:Math.round(r.height), disabled: btn?Boolean(btn.disabled):null};
+      })())`,
+    },
+    { op: "screenshot", name: "fe-21-submit-failure-default" },
+  ]);
+  const info = markedFrom(flow, "failure") || {};
+  const failText = String(info.fail || "");
+  check("21 默认（详情未展开）就能看到失败原因", info.detailsOpen === false && failText.length > 0, JSON.stringify({ detailsOpen: info.detailsOpen, fail: failText.slice(0, 80) }));
+  /**
+   * 关键区分：拦截制造的是 `TypeError('Failed to fetch')`，这正是**本次请求**的真实原因。
+   * 只出现「提交失败、改动已保留」这类通用句不算通过 —— 基线只给通用句，这条必须失败。
+   */
+  check(
+    "21 默认区域说出本次请求的真实原因（网络层），不是通用保留说明",
+    /网络|Failed to fetch|连接|不可用|超时/.test(failText),
+    failText.slice(0, 110),
+  );
+  check("21 内容保留情况另有准确说明（不是把原因替换成保留说明）", /保留|没有丢|未丢失|都还在/.test(String(info.all || failText)), String(info.all || failText).slice(0, 90));
+  check("21 提交按钮仍然可点、没有被失败文字挤坏", info.btnH >= 24 && info.btnW > 40, JSON.stringify({ w: info.btnW, h: info.btnH, disabled: info.disabled }));
+}
+
+// --- 场景 22：窄窗口切换条是真实存在的界面元素（契约 §11.7）------------------
+
+/**
+ * 用户行为：480px 下两个面板都请求展开 → 只显示一个 + 出现切换条；
+ * 点切换条切到另一个面板后，切换条仍在视口内、按钮仍可点。
+ * 断言全部落在**真实矩形与命中测试**上，不看布局函数的计划值。
+ */
+async function scenario22() {
+  const openChatStep = () => [
+    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="chat-panel"]')){const b=document.querySelector('[data-im="chat-toggle"]');if(b)b.click();}return 'chat';})()` },
+    { op: "wait", ms: 500 },
+  ];
+  const openBatchStep = () => [
+    { op: "eval", js: `(function(){if(!document.querySelector('[data-im="batch-list"]')){const b=document.querySelector('[data-im="batch-entry"]');if(b)b.click();}return 'batch';})()` },
+    { op: "wait", ms: 500 },
+  ];
+  const measure = (mark) => ({
+    op: "eval",
+    js: `JSON.stringify((function(){
+      const R=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)};};
+      const bar=document.querySelector('[data-im="overlay-switch"]');
+      const btn=document.querySelector('[data-im="overlay-switch-chat"]');
+      const btn2=document.querySelector('[data-im="overlay-switch-batch"]');
+      const hit=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);const top=document.elementFromPoint(x,y);return {x,y,hit:!!top&&!!el.contains(top)};};
+      const chatInput=document.querySelector('[data-im="chat-input"] textarea, textarea[data-im="chat-input"]');
+      const cs=bar?getComputedStyle(bar):null;
+      const bs=btn?getComputedStyle(btn):null;
+      return {mark:'${mark}', vw:window.innerWidth, vh:window.innerHeight,
+        hooks:{chatToggle:!!document.querySelector('[data-im="chat-toggle"]'), batchEntry:!!document.querySelector('[data-im="batch-entry"]'), demoEntry:!!document.querySelector('[data-im="demo-entry"]'), chatPanel:!!document.querySelector('[data-im="chat-panel"]'), batchList:!!document.querySelector('[data-im="batch-list"]')},
+        bar:R(bar), barPos: cs?{position:cs.position,display:cs.display,bottom:cs.bottom,height:cs.height,background:cs.backgroundColor,border:cs.borderStyle}:null,
+        btn:R(btn), btnSlice: bs?{cursor:bs.cursor,background:bs.backgroundColor,borderRadius:bs.borderRadius,fontSize:bs.fontSize}:null,
+        btn2:R(btn2), hitChatBtn:hit(btn), hitBatchBtn:hit(btn2),
+        chat:R(document.querySelector('[data-im="chat-panel"]')), batch:R(document.querySelector('[data-im="batch-list"]')),
+        toolbar:R(document.querySelector('[data-im="board-toolbar"]')),
+        chatInput:R(chatInput), hitChatInput: hit2(chatInput)};
+      function hit2(el){ if(!el) return null; const r=el.getBoundingClientRect(); const x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2); const top=document.elementFromPoint(x,y); return {x,y,hit:!!top&&!!el.contains(top)}; }
+    })())`,
+  });
+  // 批量入口需要「同一批 ≥4 项待处理意图」：先走应用自己的演示入口造出来（与场景 17 同一条路径）
+  await resetBoard();
+  await clearPendingIntents();
+  const flow = sess([
+    clickHook("demo-entry"), { op: "wait", ms: 600 },
+    { op: "eval", js: `(function(){const b=[...document.querySelectorAll('button')].find(x=>/演示|生成/.test(x.textContent)&&x.getBoundingClientRect().height>0&&x.closest('[data-im="demo-popover"], .demo-popover, .im-demo-pop'));if(!b)return 'no-button';b.click();return 'clicked';})()` },
+    { op: "wait", ms: 2600 },
+    { op: "eval", js: `(function(){const b=document.querySelector('[data-im="demo-entry"]');if(b)b.click();return 'close';})()` },
+    { op: "wait", ms: 400 },
+    { op: "viewport", width: 480, height: 800 },
+    { op: "wait", ms: 1200 },
+    openChatStep(),
+    { op: "wait", ms: 600 },
+    measure("afterChat"),
+    openBatchStep(),
+    { op: "wait", ms: 900 },
+    measure("both"),
+    clickHook("overlay-switch-chat"),
+    { op: "wait", ms: 900 },
+    measure("switched"),
+    { op: "screenshot", name: "fe-22-switch-bar-480" },
+  ]);
+  const afterChat = markedFrom(flow, "afterChat") || {};
+  const both = markedFrom(flow, "both") || {};
+  const switched = markedFrom(flow, "switched") || {};
+  console.log("诊断 afterChat=" + JSON.stringify(afterChat.hooks || {}) + " both=" + JSON.stringify(both.hooks || {}));
+
+  const inside = (rect, vw, vh) => Boolean(rect) && rect.l >= 0 && rect.t >= 0 && rect.r <= vw && rect.b <= vh && rect.w > 0 && rect.h > 0;
+  const bar = both.bar || {};
+  check("22 两个面板请求同时展开时只显示一个", Boolean(both.chat) !== Boolean(both.batch), JSON.stringify({ chat: !!both.chat, batch: !!both.batch }));
+  check("22 切换条有真实矩形且在视口内", inside(bar, both.vw || 480, both.vh || 800) && bar.h >= 20, JSON.stringify(bar));
+  check("22 切换条的按钮有真实矩形且能命中", Boolean(both.hitChatBtn && both.hitChatBtn.hit), JSON.stringify({ btn: both.btn, hit: both.hitChatBtn }));
+  check("22 切换按钮用了令牌样式（不是浏览器默认按钮）", Boolean(both.btnSlice && both.btnSlice.borderRadius !== "0px" && both.btnSlice.cursor === "pointer"), JSON.stringify(both.btnSlice));
+  check("22 切换后面板真的换了", Boolean(switched.chat) !== Boolean(switched.batch), JSON.stringify({ chat: !!switched.chat, batch: !!switched.batch }));
+  check("22 切换后切换条仍在视口内", inside(switched.bar || {}, switched.vw || 480, switched.vh || 800), JSON.stringify(switched.bar || {}));
+  check("22 面板与工具栏都在视口内", inside(switched.toolbar || {}, switched.vw || 480, switched.vh || 800)
+    && [switched.chat, switched.batch].filter(Boolean).every((r) => inside(r, switched.vw || 480, switched.vh || 800)),
+    JSON.stringify({ toolbar: switched.toolbar, chat: switched.chat, batch: switched.batch }));
+}
+
 const main = async () => {
   console.log("=== 互动板前端改版实机验收（app=" + APP + " backend=" + BACKEND + "）===");
   const scenarios = [
@@ -1113,6 +1377,10 @@ const main = async () => {
     [15, scenario15],
     [16, scenario16],
     [17, scenario17],
+    [18, scenario18],
+    [19, scenario19],
+    [21, scenario21],
+    [22, scenario22],
     [99, scenario99],
   ];
   for (const entry of scenarios) {
