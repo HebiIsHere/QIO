@@ -147,8 +147,32 @@ def _unbound_ready(app) -> list[tuple[str, str]]:
     ]
 
 
+class _Gate:
+    """磁盘闸门：只有显式 release() 才放行；wait() 不设超时（避免超时放行造成的假红）。
+
+    Lead 2026-10-08 裁决：带 timeout 的 wait 超时放行**不会**置位 is_set()，
+    会把「已被超时放行」误读成「仍关着」。这里用显式 released 标志区分两件事。
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.released = threading.Event()
+        self._open = threading.Event()
+
+    def hold(self) -> None:
+        self.entered.set()
+        self._open.wait()  # 不设超时：只有 release() 能放行
+
+    def release(self) -> None:
+        self.released.set()
+        self._open.set()
+
+    @property
+    def still_closed(self) -> bool:
+        return not self.released.is_set()
+
 @contextlib.contextmanager
-def _gated_clone(entered: threading.Event, gate: threading.Event):
+def _gated_clone(gate: _Gate):
     """复制卡在闸门内：打在**真实调用点** \`shutil.copyfile\` 上（跨平台确定）。"""
     real_link = attachments_mod.os.link
     real_copyfile = attachments_mod.shutil.copyfile
@@ -157,8 +181,7 @@ def _gated_clone(entered: threading.Event, gate: threading.Event):
         raise OSError(1, "受控错误：强制走复制路径（验证装置）")
 
     def _gated_copyfile(src, dst, *args, **kwargs):  # noqa: ANN001
-        entered.set()
-        gate.wait(timeout=60)  # 磁盘闸门：由测试释放
+        gate.hold()
         return real_copyfile(src, dst, *args, **kwargs)
 
     attachments_mod.os.link = _no_link
@@ -168,14 +191,14 @@ def _gated_clone(entered: threading.Event, gate: threading.Event):
     finally:
         attachments_mod.os.link = real_link
         attachments_mod.shutil.copyfile = real_copyfile
-        gate.set()
+        gate.release()
 
 
 async def test_disconnect_does_not_start_the_turn_after_gate_release(server, provider, tmp_path: Path):
     import httpx
 
     base, port, app = server
-    entered, gate = threading.Event(), threading.Event()
+    gate = _Gate()
     message = "断连那一轮（准备期间客户端关闭连接）"
 
     with httpx.Client(base_url=base, timeout=60) as client:
@@ -228,14 +251,20 @@ async def test_disconnect_does_not_start_the_turn_after_gate_release(server, pro
     ).encode("ascii") + body
 
     reader = writer = None
-    with _gated_clone(entered, gate):
+    with _gated_clone(gate):
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(request)
         await writer.drain()  # 请求**完整发完**
-        got = await asyncio.to_thread(entered.wait, 45)
+        got = await asyncio.to_thread(gate.entered.wait, 45)
         assert got, "复制没有进入闸门（装置失效：没走到克隆复制）"
         calls_while_gated = _calls(provider) - calls_before
-        still_closed = not gate.is_set()
+        # 无歧义事实：闸门关闭期间服务端**还没有回应**（真 TCP 上短探测一次）
+        responded_early = False
+        try:
+            responded_early = bool(await asyncio.wait_for(reader.read(1), timeout=0.3))
+        except asyncio.TimeoutError:
+            responded_early = False
+        still_closed = gate.still_closed
 
         # 真断连：关闭这条 TCP 连接（FIN），不取消任何测试端任务
         writer.close()
@@ -243,7 +272,7 @@ async def test_disconnect_does_not_start_the_turn_after_gate_release(server, pro
             await writer.wait_closed()
         writer = None
 
-        gate.set()  # 释放磁盘闸门
+        gate.release()  # 释放磁盘闸门
         # 给「迟到的复制成功 → 放行」一个有限的观察窗口
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
@@ -263,7 +292,10 @@ async def test_disconnect_does_not_start_the_turn_after_gate_release(server, pro
         % (calls_while_gated, calls_after, rows, orphan_clones, cancel_probe.status_code)
     )
 
-    assert still_closed, "断言时闸门已被打开 —— 证据不成立（必须在「复制仍在闸门内」时判定）"
+    assert not responded_early, (
+        "闸门关闭期间服务端已经回了响应 —— 说明没有真的等复制（请求不该提前返回）", responded_early
+    )
+    assert still_closed, "断言时闸门已被放行 —— 证据不成立（必须在「复制仍在闸门内」时判定）"
     assert calls_while_gated == 0, ("断连前（闸门仍关闭）不该有模型调用", calls_while_gated)
     assert calls_after == 0, (
         "客户端**真 TCP 断连** + 释放磁盘闸门之后，这一轮仍然开始执行了（模型被调用）—— "

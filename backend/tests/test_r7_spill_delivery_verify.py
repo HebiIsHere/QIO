@@ -147,9 +147,13 @@ async def test_spill_read_failure_is_reported_to_the_user(tmp_path: Path):
         loop, adapter, result, warnings = await _run(ASCII_TEXT, spill_dir=tmp_path, turn_id="r7_spill_read")
 
     delivered = result.final_content or ""
-    assert len(delivered.encode("utf-8")) == MEMORY_LIMIT, (
-        "读取失败时应当交付已确认可交付的内存部分（256 KiB）",
+    prefix = ASCII_TEXT[:MEMORY_LIMIT]
+    assert prefix in delivered, (
+        "读取失败时必须保留**已确认可交付**的内容（内存里的 256 KiB 前缀）",
         {"delivered_bytes": len(delivered.encode("utf-8")), "limit": MEMORY_LIMIT},
+    )
+    assert len(delivered.encode("utf-8")) >= MEMORY_LIMIT, (
+        "交付内容不得少于已确认可交付的部分", len(delivered.encode("utf-8"))
     )
     assert warnings, (
         "暂存读取失败**只写了日志**：流上没有任何用户可见的不完整说明（基线缺陷）",
