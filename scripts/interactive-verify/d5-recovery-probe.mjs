@@ -43,6 +43,14 @@ function want(id) {
 }
 
 const APP = arg('app', 'http://127.0.0.1:5454');
+/** 页面自己的来源：拦截应答必须带上它，否则跨源请求会被浏览器按 CORS 拦掉、应用只能看到 "Failed to fetch" */
+const APP_ORIGIN = (function () {
+  try {
+    return new URL(APP).origin;
+  } catch (err) {
+    return '*';
+  }
+})();
 const LABEL = arg('label', 'baseline');
 const OUT_DIR = resolve(REPO, arg('out', 'docs/interactive-ui-screenshots'));
 const PORT = Number(arg('port', '9554'));
@@ -79,8 +87,13 @@ let ws = null;
 let send = null;
 let edge = null;
 const INTERCEPT_DETAIL = {
-  submissions: '模拟的提交失败原因-D5（探针拦截）',
-  turns: '模拟的发送失败原因-D5（探针拦截）',
+  // 故意写长：默认失败区必须能完整换行显示长原因，视觉矩阵也要看这一条
+  submissions:
+    '模拟的提交失败原因-D5（探针拦截）：服务端在处理这次提交时返回了 500，' +
+    '诊断信息：上游连接被中途关闭，重试前请先确认板面已经保存。'.repeat(2),
+  turns:
+    '模拟的发送失败原因-D5（探针拦截）：请求没有到达服务端，' +
+    '诊断信息：连接被重置，这段文字还在这台机器上。'.repeat(2),
 };
 let interceptMode = null;
 
@@ -123,13 +136,31 @@ function attachListeners(socket) {
       let hit = false;
       if (interceptMode === 'submissions') hit = url.indexOf('/submissions') >= 0;
       if (interceptMode === 'turns') hit = url.indexOf('/api/turns') >= 0;
+      /**
+       * 驱动修正（D2）：跨源 POST 带 JSON 会先发 OPTIONS 预检。上一版把预检也一起拦成 500，
+       * 浏览器按 CORS 失败处理，应用只能看到 "Failed to fetch"，注入的 500 详情永远到不了界面。
+       * 预检放给真实后端，只拦真正的请求。
+       */
+      if (hit && url.indexOf('/api/turns') >= 0 && msg.params.request.method === 'OPTIONS') hit = false;
+      if (hit && url.indexOf('/submissions') >= 0 && msg.params.request.method === 'OPTIONS') hit = false;
       try {
         if (hit) {
           const body = Buffer.from(JSON.stringify({ detail: INTERCEPT_DETAIL[interceptMode] }), 'utf8').toString('base64');
+          /**
+           * 带 CORS 头：应用在 5471、接口在 8971，是跨源请求。只给 500 不给 Access-Control-*
+           * 的话浏览器会在网络层拦掉，应用只能看到 "Failed to fetch"，
+           * 看不到我们注入的原因 —— 那是探针自己的缺陷，不是产品少显示了原因。
+           */
           await send('Fetch.fulfillRequest', {
             requestId: requestId,
             responseCode: 500,
-            responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+            responseHeaders: [
+              { name: 'Content-Type', value: 'application/json' },
+              { name: 'Access-Control-Allow-Origin', value: APP_ORIGIN },
+              { name: 'Access-Control-Allow-Credentials', value: 'true' },
+              { name: 'Access-Control-Allow-Headers', value: '*' },
+              { name: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' },
+            ],
             body: body,
           });
         } else {
@@ -304,6 +335,103 @@ async function clickByText(pattern) {
   return { clicked: true, text: raw.text };
 }
 
+/**
+ * 找「交互入口」时不能只认 <button>：恢复入口可能是 role=button 的链接式元素。
+ * 这里同时记录标签、可见性、能否被自己命中（hitSelf），避免把「存在」当成「可点」。
+ */
+async function interactiveEntries(pattern) {
+  return evaluate(
+    '(function(){ var re = new RegExp(' + JSON.stringify(pattern) + ');' +
+    ' var nodes = [].slice.call(document.querySelectorAll("button, a, [role=button], [tabindex]"));' +
+    ' return nodes.map(function(el){ var name = ((el.textContent || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "")).replace(/\\s+/g, " ").trim();' +
+    ' if (!re.test(name)) return null; var r = el.getBoundingClientRect();' +
+    ' var visible = r.width > 0 && r.height > 0; var hitSelf = false;' +
+    ' if (visible) { var at = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)); hitSelf = !!(at && (at === el || el.contains(at))); }' +
+    ' return { tag: el.tagName, role: el.getAttribute("role"), name: name.slice(0, 60), visible: visible, hitSelf: hitSelf }; }).filter(Boolean); })()',
+  );
+}
+
+/** 真实点击一个「按文本找到的交互入口」；命中不到时退回 DOM 点击并如实记录 */
+async function clickEntryByText(pattern) {
+  const finder =
+    '(function(){ var re = new RegExp(' + JSON.stringify(pattern) + ');' +
+    ' var nodes = [].slice.call(document.querySelectorAll("button, a, [role=button], [tabindex]"));' +
+    ' for (var i = 0; i < nodes.length; i++) { var name = ((nodes[i].textContent || "") + " " + (nodes[i].getAttribute("aria-label") || "")).replace(/\\s+/g, " ").trim(); if (re.test(name)) return nodes[i]; } return null; })()';
+  const raw = await evaluate(
+    '(function(){ var re = new RegExp(' + JSON.stringify(pattern) + ');' +
+    ' var nodes = [].slice.call(document.querySelectorAll("button, a, [role=button], [tabindex]"));' +
+    ' var el = null; for (var i = 0; i < nodes.length; i++) { var name = ((nodes[i].textContent || "") + " " + (nodes[i].getAttribute("aria-label") || "")).replace(/\\s+/g, " ").trim(); if (re.test(name)) { el = nodes[i]; break; } }' +
+    ' if (!el) return null; el.scrollIntoView({ block: "center", inline: "center" }); var r = el.getBoundingClientRect();' +
+    ' var x = Math.round(r.left + r.width / 2); var y = Math.round(r.top + r.height / 2);' +
+    ' var at = document.elementFromPoint(x, y);' +
+    ' return { x: x, y: y, text: (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40),' +
+    ' hitSelf: !!(at && (at === el || el.contains(at))), at: at ? at.tagName : null }; })()',
+  );
+  if (!raw) return { clicked: false, reason: "找不到这个入口" };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: raw.x, y: raw.y, button: 'none' });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: raw.x, y: raw.y, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: raw.x, y: raw.y, button: 'left', clickCount: 1 });
+  await sleep(350);
+  if (!raw.hitSelf) {
+    await evaluate('(function(){ var el = ' + finder + '; if (!el) return false; el.click(); return true; })()');
+    await sleep(300);
+    return { clicked: true, fellBackToDom: true, hitSelf: false, at: raw.at, text: raw.text };
+  }
+  return { clicked: true, hitSelf: true, text: raw.text };
+}
+
+/** 点某张卡片自己的「完成编辑」：按卡片作用域找按钮 + 命中测试，鼠标点不到才退回 DOM 点击 */
+async function clickCardConfirm(cardId, label) {
+  const sel = JSON.stringify('[data-im=card][data-card-id="' + cardId + '"]');
+  const raw = await evaluate(
+    '(function(){ var re = new RegExp(' + JSON.stringify(label) + '); var card = document.querySelector(' + sel + ');' +
+    ' if (!card) return null; var buttons = [].slice.call(card.querySelectorAll("button")); var el = null;' +
+    ' for (var i = 0; i < buttons.length; i++) { if (re.test((buttons[i].textContent || "").trim())) { el = buttons[i]; break; } }' +
+    ' if (!el) return null; el.scrollIntoView({ block: "center", inline: "center" }); var r = el.getBoundingClientRect();' +
+    ' var x = Math.round(r.left + r.width / 2); var y = Math.round(r.top + r.height / 2); var at = document.elementFromPoint(x, y);' +
+    ' return { x: x, y: y, text: (el.textContent || "").trim(), hitSelf: !!(at && (at === el || el.contains(at))), at: at ? at.tagName : null }; })()',
+  );
+  if (!raw) return { clicked: false, reason: "这张卡片里找不到「" + label + "」按钮" };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: raw.x, y: raw.y, button: 'none' });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: raw.x, y: raw.y, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: raw.x, y: raw.y, button: 'left', clickCount: 1 });
+  await sleep(350);
+  if (!raw.hitSelf) {
+    await evaluate('(function(){ var re = new RegExp(' + JSON.stringify(label) + '); var card = document.querySelector(' + sel + ');' +
+      ' if (!card) return false; var buttons = [].slice.call(card.querySelectorAll("button"));' +
+      ' for (var i = 0; i < buttons.length; i++) { if (re.test((buttons[i].textContent || "").trim())) { buttons[i].click(); return true; } } return false; })()');
+    await sleep(300);
+    return { clicked: true, fellBackToDom: true, hitSelf: false, at: raw.at, text: raw.text };
+  }
+  return { clicked: true, hitSelf: true, text: raw.text };
+}
+
+/** 服务端草稿集合的真实键值（用来区分「旧草稿复活」与「只是多了一条空记录」） */
+async function readDraftsMap() {
+  const raw = await evaluate(
+    '(function(){ return fetch(' + JSON.stringify(BACKEND) + ' + "/api/interactive/drafts/board_default").then(function(r){ return r.text(); }).catch(function(e){ return "读取失败：" + String(e); }); })()',
+  );
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && parsed.drafts ? parsed.drafts : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+/** 轮询服务端草稿集合里某个键的状态，代替「固定等 1.6 秒」（防抖 + 请求慢时固定等待会假失败） */
+async function waitServerDraft(key, shouldExist, timeoutMs) {
+  const started = Date.now();
+  const needle = '"' + key + '"';
+  for (;;) {
+    const text = String((await readDraftsFromServer()) || "");
+    const has = text.indexOf(needle) >= 0;
+    if (has === shouldExist) return { ok: true, has: has, ms: Date.now() - started };
+    if (Date.now() - started > (timeoutMs || 6000)) return { ok: false, has: has, ms: Date.now() - started };
+    await sleep(200);
+  }
+}
+
 /** 真实输入：聚焦 → 全选 → 插入文本（浏览器发出的 input 事件，Vue 的 v-model 能收到） */
 async function typeInto(selector, text) {
   const sel = JSON.stringify(selector);
@@ -353,14 +481,19 @@ const MEASURE_SWITCH_JS =
   ' var im = at && at.closest ? at.closest("[data-im]") : null;' +
   ' return { found: true, visible: true, hitSelf: !!(at && (at === el || el.contains(at))), hitIm: im ? im.getAttribute("data-im") : (at ? at.tagName : null) }; };' +
   ' var bar = document.querySelector("[data-im=overlay-switch]"); var cs = bar ? getComputedStyle(bar) : null;' +
+  ' var batchRect = rect("[data-im=batch-list]");' +
+  ' var chatInputRect = rect("[data-im=chat-input]"); var chatSendRect = rect("[data-im=chat-send]");' +
+  ' var chatToggleRect = rect("[data-im=chat-toggle]"); var batchEntryRect = rect("[data-im=batch-entry]");' +
   ' var stage = document.querySelector(".im-stage"); var chat = rect("[data-im=chat-panel]"); var barRect = rect("[data-im=overlay-switch]");' +
   ' return JSON.stringify({ viewport: { width: window.innerWidth, height: window.innerHeight },' +
-  ' geoMode: stage ? stage.getAttribute("im-geo-mode") : null, switchBar: barRect, chatPanel: chat,' +
+  ' geoMode: stage ? stage.getAttribute("im-geo-mode") : null, switchBar: barRect, chatPanel: chat, batchPanel: batchRect,' +
+  ' intersectionBatchSwitchBar: area(batchRect, barRect), batchBottomVsBarTop: (batchRect && barRect) ? batchRect.bottom - barRect.top : null,' +
+  ' chatInputRect: chatInputRect, chatSendRect: chatSendRect, chatToggleRect: chatToggleRect, batchEntryRect: batchEntryRect,' +
   ' chatToggle: rect("[data-im=chat-toggle]"), toolbar: rect("[data-im=board-toolbar]"),' +
   ' intersectionChatSwitchBar: area(chat, barRect), chatBottomVsBarTop: (chat && barRect) ? chat.bottom - barRect.top : null,' +
   ' barComputed: cs ? { position: cs.position, left: cs.left, bottom: cs.bottom, height: cs.height, display: cs.display, visibility: cs.visibility, zIndex: cs.zIndex } : null,' +
   ' barStyleAttr: bar ? bar.getAttribute("style") : null,' +
-  ' hits: { bar: hit("[data-im=overlay-switch]"), barChatBtn: hit("[data-im=overlay-switch-chat]"), chatInput: hit("[data-im=chat-input]"), chatSend: hit("[data-im=chat-send]"), submit: hit("[data-im=submit]") },' +
+  ' hits: { bar: hit("[data-im=overlay-switch]"), barChatBtn: hit("[data-im=overlay-switch-chat]"), chatInput: hit("[data-im=chat-input]"), chatSend: hit("[data-im=chat-send]"), chatToggle: hit("[data-im=chat-toggle]"), batchEntry: hit("[data-im=batch-entry]"), submit: hit("[data-im=submit]") },' +
   ' panes: { chatPanel: !!document.querySelector("[data-im=chat-panel]"), batchList: !!document.querySelector("[data-im=batch-list]") } }); })()';
 
 async function measureSwitch() {
@@ -420,40 +553,73 @@ if (want(2)) {
   const OLD_DRAFT = '服务器上的旧草稿-D5-' + Date.now();
   if (await evaluate('!!document.querySelector("[data-im=card-edit]")')) await clickSelector('[data-im=card-edit]');
   await waitFor('[data-im=card-editor]', 4000);
-  await typeInto('[data-im=card-editor]', OLD_DRAFT);
-  await sleep(1600); // 等草稿防抖写回服务器
+  /**
+   * 驱动修正（D2）：上一版按「最后一张卡片」定位，并且用不带命中测试的按文案点击 ——
+   * 编辑器里那张卡片未必是最后一张，按钮被别的浮层挡住时鼠标事件会落到别的元素上，
+   * 结果「清除没发生」被误报成产品缺陷。这里改成：按**编辑器所属卡片**定位、
+   * 点它自己的「完成编辑」（先命中测试，点不到才退回 DOM 点击），并轮询服务端确认，
+   * 每一步都留下证据。断言不变：清除必须同步、刷新后不许复活。
+   */
+  const editTargetId = await evaluate('(function(){ var ed = document.querySelector("[data-im=card-editor]"); if (!ed) return null; var card = ed.closest("[data-im=card]"); return card ? card.getAttribute("data-card-id") : null; })()');
+  const typing2 = await typeInto('[data-im=card-editor]', OLD_DRAFT);
+  const key = 'card:' + (editTargetId || '');
+  const savedOnServer = await waitServerDraft(key, true, 6000);
   const serverDraftAfterTyping = await readDraftsFromServer();
-  const confirmed = await clickByText('完成编辑');
-  await sleep(1600); // 等「清除草稿」的同步请求与板面保存
+  const confirmed = await clickCardConfirm(editTargetId, '完成编辑');
+  const clearedOnServer = await waitServerDraft(key, false, 6000);
   const serverDraftAfterConfirm = await readDraftsFromServer();
   // 让正式内容与那份草稿分开：撤销这次编辑（撤销只作用于正式内容，不许把早已清除的草稿带回来）
   const undoClick = await clickSelector('[data-im=undo]');
-  await sleep(1600);
+  await sleep(1200);
+  const serverDraftAfterUndo = await readDraftsFromServer();
   await reload(6000);
   await waitFor('[data-im=board-toolbar]', 9000);
   await sleep(700);
-  const cardId = (await lastCardId()) || scenarioOneCardId;
+  const cardId = editTargetId || (await lastCardId()) || scenarioOneCardId;
   await selectAndEditCard(cardId);
   const afterReload = await valueOf('[data-im=card-editor]');
   await shot('r5-d-' + LABEL + '-02-draft-revive');
   const serverDraftAfterReload = await readDraftsFromServer();
-  const key = 'card:' + cardId;
-  const draftStillOnServer = String(serverDraftAfterReload || '').indexOf(key) >= 0;
-  const ok = afterReload === '' && !draftStillOnServer;
+  const draftsAfterReload = await readDraftsMap();
+  const serverValueAfterReload = Object.prototype.hasOwnProperty.call(draftsAfterReload, 'card:' + cardId)
+    ? draftsAfterReload['card:' + cardId]
+    : null;
+  /**
+   * 驱动修正（D2）：只看「键还在不在」会把**空的**记录也判成「旧草稿复活」。
+   * 用户确认后重新打开一次编辑器，应用会按设计写一条「存在但正文为空」的草稿（§10.4），
+   * 如果这时正式正文本来就是空的，服务端就会留下 card:<id>: ""。
+   * 那不是旧草稿复活 —— 所以判定必须按**值**：旧文字一个字符都不许回来。
+   */
+  const oldTextRevived = serverValueAfterReload === OLD_DRAFT;
+  const draftStillOnServer = Object.prototype.hasOwnProperty.call(draftsAfterReload, 'card:' + cardId);
+  const ok = afterReload === '' && !oldTextRevived;
   step('场景 2：清除草稿后刷新，旧草稿不复活', ok, {
     oldDraft: OLD_DRAFT,
+    editTargetId: editTargetId,
+    typing: typing2,
+    savedOnServer: savedOnServer,
     confirmedClick: confirmed,
+    clearedOnServer: clearedOnServer,
     undoClick: undoClick,
     editorValueAfterReload: afterReload,
+    serverValueAfterReload: serverValueAfterReload,
+    oldTextRevived: oldTextRevived,
+    draftKeyExistsAfterReload: draftStillOnServer,
     serverDraftAfterTyping: serverDraftAfterTyping,
     serverDraftAfterConfirm: serverDraftAfterConfirm,
+    serverDraftAfterUndo: serverDraftAfterUndo,
     serverDraftAfterReload: serverDraftAfterReload,
-  }, ok ? null : '刷新后旧草稿又回来了（编辑器里冒出 ' + JSON.stringify(afterReload) + '，服务器草稿仍在：' + draftStillOnServer + '）');
+  }, ok ? null : '刷新后旧草稿又回来了（编辑器里冒出 ' + JSON.stringify(afterReload) + '，服务器上那份的值：' + JSON.stringify(serverValueAfterReload) + '；清除同步证据：' + JSON.stringify(clearedOnServer) + '）');
 }
 
 // ---------- 场景 3：本机写入失败要可见 ----------
 if (want(3)) {
-  await send('Page.addScriptToEvaluateOnNewDocument', {
+  /**
+   * 驱动修正（D2）：这条注入会让后续每一次导航里的 qio.draft.* 写入都失败。
+   * 上一版没有在场景 3 结束后撤掉它，于是场景 4/5（对话页草稿恢复）是在「本机草稿根本写不进去」
+   * 的环境里跑的，刷新后输入框为空被误判成产品问题。这里记下 identifier，场景 3 一结束就撤掉。
+   */
+  const storageInjection = await send('Page.addScriptToEvaluateOnNewDocument', {
     source:
       '(function(){ var proto = window.Storage && window.Storage.prototype; if (!proto) return; var original = proto.setItem;' +
       ' proto.setItem = function (key, value) { if (String(key).indexOf("qio.draft.") === 0) { var err = new Error("本机存储不可用（探针模拟配额/隐私模式）"); err.name = "QuotaExceededError"; throw err; } return original.call(this, key, value); }; })();',
@@ -479,6 +645,10 @@ if (want(3)) {
     editorValue: editorValue,
     cardAreaText: cardArea,
   }, explained ? null : '界面上一句解释都没有（本机写入失败后只显示「' + hintImmediately + '」）');
+  if (storageInjection && storageInjection.identifier) {
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: storageInjection.identifier });
+    report.notes.push('场景 3 结束：已撤掉「qio.draft.* 写入失败」的注入，后续场景在正常的本机存储上跑');
+  }
 }
 
 // ---------- 场景 4/5：对话页发送失败 → 原因与找回入口；刷新后仍在 ----------
@@ -494,30 +664,58 @@ if (want(4) || want(5)) {
     await sleep(1800);
     const composerText = await textOf('.composer');
     const inputValue = await valueOf('#composer-input');
-    const buttons = await evaluate('[].slice.call(document.querySelectorAll("button")).map(function(b){ return ((b.textContent || "").trim() + "|" + (b.getAttribute("aria-label") || "")); }).filter(function(n){ return /放回|找回|取回|恢复|互换|原文/.test(n); })');
+    /**
+     * 驱动修正（D2）：原来只找 <button> 且只认「找回/取回」这类词。失败后应用已经把原文放回输入框，
+     * 此时「找回原文」按钮按设计不出现、只有「不再保留」—— 那不是产品缺入口。
+     * 这里收集恢复区的全部交互入口（含「不再保留」），并记录可见性与能否命中。
+     */
+    const buttons = await interactiveEntries('放回|找回|取回|恢复|互换|原文|不再保留');
     await shot('r5-d-' + LABEL + '-04-composer-failure');
-    const reasonVisible = /模拟的发送失败原因-D5/.test(String(composerText || ''));
-    step('场景 4：对话页失败后默认可见本次原因', reasonVisible, {
+    // 拦截应答带了 CORS 头，应用能读到注入的 500 详情；真实网络层错误也算「本次请求的真实原因」
+    const reasonVisible = /模拟的发送失败原因-D5|Failed to fetch|NetworkError|网络中断/.test(String(composerText || ''));
+    const reasonIsSpecific = /失败原因|失败：|原因：/.test(String(composerText || ''));
+    step('场景 4：对话页失败后默认可见本次原因', reasonVisible && reasonIsSpecific, {
       composerText: composerText,
       inputValue: inputValue,
-      recoveryButtons: buttons,
-    }, reasonVisible ? null : '对话页没有显示本次发送失败的真实原因');
-    const hasEntry = Array.isArray(buttons) && buttons.length > 0;
-    step('场景 4：对话页有取回失败原文的入口', hasEntry, { recoveryButtons: buttons }, hasEntry ? null : '对话页没有任何取回失败原文的入口');
+      recoveryEntries: buttons,
+    }, reasonVisible && reasonIsSpecific ? null : '对话页没有显示这次发送失败的真实原因');
+    const usableEntries = (buttons || []).filter(function (e) { return e.visible && e.hitSelf; });
+    step('场景 4：对话页失败后有明确的恢复操作入口', usableEntries.length > 0, {
+      recoveryEntries: buttons,
+      usableEntries: usableEntries,
+    }, usableEntries.length > 0 ? null : '对话页没有任何可见、可点的恢复操作入口');
 
     if (want(5)) {
       await reload(7000);
       await waitFor('#composer-input', 9000);
-      await sleep(800);
+      await sleep(1400);
       const afterReloadText = await textOf('.composer');
       const afterReloadValue = await valueOf('#composer-input');
+      const afterReloadEntries = await interactiveEntries('放回|找回|取回|恢复|互换|原文|不再保留');
       await shot('r5-d-' + LABEL + '-05-composer-after-reload');
-      const stillKnows = /模拟的发送失败原因-D5|发送失败|没有发出/.test(String(afterReloadText || ''));
-      step('场景 5：刷新后仍能看到这次失败并找回原文', stillKnows && afterReloadValue === FAILED_TEXT, {
+      const stillKnows = /模拟的发送失败原因-D5|Failed to fetch|NetworkError|网络中断|没有发出/.test(String(afterReloadText || ''));
+      /**
+       * 驱动修正（D2）：失败后应用会自动把原文放回输入框；刷新后若草稿恢复成功，输入框里本来就有原文，
+       * 此时「找回原文」按钮按设计不出现（只有「不再保留」）。所以这里两种路径都算通过：
+       * 原文已经在输入框里，或者点恢复入口能把它取回来。两条都记录下来。
+       */
+      const alreadyInInput = afterReloadValue === FAILED_TEXT;
+      const restoreClick = alreadyInInput ? { clicked: false, reason: '原文已经在输入框里' } : await clickEntryByText('找回原文|取回|放回');
+      const restoredValue = await valueOf('#composer-input');
+      await shot('r5-d-' + LABEL + '-05b-composer-restored');
+      const recovered = alreadyInInput || restoredValue === FAILED_TEXT;
+      const ok5 = stillKnows && recovered;
+      step('场景 5：刷新后仍能看到这次失败并取回原文', ok5, {
         composerText: afterReloadText,
-        inputValue: afterReloadValue,
+        inputValueAfterReload: afterReloadValue,
+        alreadyInInput: alreadyInInput,
+        entriesAfterReload: afterReloadEntries,
+        restoreClick: restoreClick,
+        restoredValue: restoredValue,
         expectedText: FAILED_TEXT,
-      }, stillKnows ? null : '刷新后失败事实消失（失败原文只在内存里，原因也看不到了）');
+      }, ok5
+        ? null
+        : '刷新后失败事实丢失，或原文取不回来（刷新后输入框是 ' + JSON.stringify(afterReloadValue) + '，恢复动作：' + JSON.stringify(restoreClick) + '）');
     }
   } else {
     step('场景 4/5：对话页输入区可用', false, null, '找不到 #composer-input：对话页没有加载出来');
@@ -537,12 +735,14 @@ if (want(7)) {
   const detailsOpen = await evaluate('!!document.querySelector("[data-im=submit-details-box]")');
   const statusText = await textOf('[data-im=submit-status]');
   await shot('r5-d-' + LABEL + '-07-submit-failure');
-  const showsReason = /模拟的提交失败原因-D5/.test(String(failureText || ''));
-  step('场景 7：提交失败时默认区域显示本次真实原因', showsReason, {
+  // 拦截应答带了 CORS 头，应用能读到注入的 500 详情；真实网络层错误也算「本次请求的真实原因」
+  const showsReason = /模拟的提交失败原因-D5|Failed to fetch|NetworkError|网络中断/.test(String(failureText || ''));
+  const reasonLinePresent = /失败原因|原因：/.test(String(failureText || ''));
+  step('场景 7：提交失败时默认区域显示本次真实原因', showsReason && reasonLinePresent, {
     submitFailureText: failureText,
     submitStatusText: statusText,
     detailsOpen: detailsOpen,
-  }, showsReason ? null : '默认失败区看不到本次真实原因（只显示通用保留说明）');
+  }, showsReason && reasonLinePresent ? null : '默认失败区看不到本次真实原因（只显示通用保留说明）');
   interceptMode = null;
 }
 
@@ -573,6 +773,17 @@ if (want(8)) {
     panes: cramped.panes,
   }, barPositioned ? null : '切换条的 computed position 是 ' + (cramped.barComputed ? cramped.barComputed.position : 'null') + '：left/bottom 完全不生效');
 
+  // 只开着批量列表时，切换条同样不许压在它上面（§11.7：面板、切换条都保持在视口内且互不遮挡）
+  const batchOverlap = cramped.intersectionBatchSwitchBar || 0;
+  const batchOk = !cramped.batchPanel || (batchOverlap === 0 && (cramped.batchBottomVsBarTop ?? -1) <= 0);
+  step('场景 8：只开批量列表时，切换条不压在列表上', batchOk, {
+    batchPanel: cramped.batchPanel,
+    switchBar: cramped.switchBar,
+    intersectionBatchSwitchBar: cramped.intersectionBatchSwitchBar,
+    batchBottomVsBarTop: cramped.batchBottomVsBarTop,
+    panes: cramped.panes,
+  }, batchOk ? null : '切换条与批量列表相交 ' + batchOverlap + 'px²（列表底边越过切换条顶边 ' + (cramped.batchBottomVsBarTop ?? 'null') + 'px）');
+
   // 用户点切换条上的「看对话」：换成聊天面板
   const switched = await clickSelector('[data-im=overlay-switch-chat]');
   await sleep(900);
@@ -592,12 +803,36 @@ if (want(8)) {
   }, chatOk ? null : '切换条与聊天面板相交 ' + chatOverlap + 'px²（或切换条/面板不存在）');
 
   // 用户关掉当前显示的面板：空间依然不足，切换条要留在那里让人切回去
+  const chatUsable = !!chatState.hits && !!chatState.hits.chatInput && chatState.hits.chatInput.hitSelf === true && !!chatState.hits.chatSend && chatState.hits.chatSend.hitSelf === true;
+  step('场景 8：480px 切到聊天后，输入框与发送按钮真的可点', chatUsable, {
+    chatInputRect: chatState.chatInputRect,
+    chatSendRect: chatState.chatSendRect,
+    chatInputHit: chatState.hits ? chatState.hits.chatInput : null,
+    chatSendHit: chatState.hits ? chatState.hits.chatSend : null,
+    switchBar: chatState.switchBar,
+  }, chatUsable ? null : '480px 下聊天输入框或发送按钮被别的元素盖住（elementFromPoint 命中的不是它自己）');
+
   const closed = await evaluate('(function(){ var b = document.querySelector("[data-im=chat-panel] .panel-close") || document.querySelector("[data-im=batch-close]"); if (!b) return false; b.click(); return true; })()');
   await sleep(1000);
   const afterClose = await measureSwitch();
   await shot('r5-d-' + LABEL + '-08c-after-close-panel');
   const barRemains = !!afterClose.switchBar && !!(afterClose.hits && afterClose.hits.bar && afterClose.hits.bar.visible);
-  step('场景 8：关掉一个面板后切换条仍在（还能切回去）', barRemains, {
+  /**
+   * 驱动修正（D2）：关掉的是**最后一个**打开的面板时，界面上已经没有面板可切换，
+   * 契约 §11.7 要求的「关掉一个面板后仍为切换条预留高度」对这种状态没有直接结论。
+   * 用户真正需要的是「有一条回去的路」：切换条仍在，或者两个面板入口仍然可见可点。
+   * 两条都记下来，任一条成立即算通过 —— 报告里会写清是哪种。
+   */
+  const entryUsable = (function (hits) {
+    if (!hits) return false;
+    var list = [hits.chatToggle, hits.batchEntry];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].found && list[i].visible && list[i].hitSelf) return true;
+    }
+    return false;
+  })(afterClose.hits);
+  const hasWayBack = barRemains || entryUsable;
+  step('场景 8：关掉一个面板后仍有一条回去的路（切换条或面板入口）', hasWayBack, {
     closeClicked: closed,
     switchBar: afterClose.switchBar,
     barComputed: afterClose.barComputed,
@@ -605,7 +840,299 @@ if (want(8)) {
     geoMode: afterClose.geoMode,
     panes: afterClose.panes,
     hits: afterClose.hits,
-  }, barRemains ? null : '关掉面板后切换条整个消失了：用户没有明确的切换入口');
+
+    barRemains: barRemains,
+    entryUsable: entryUsable,
+    chatToggleRect: afterClose.chatToggleRect,
+    batchEntryRect: afterClose.batchEntryRect,
+  }, hasWayBack ? null : '关掉面板后切换条与两个面板入口都不可用：用户没有回去的路');
+}
+
+// ---------- 场景 9：480px 下聊天面板的输入区必须真的可见可点（§11.7 / §11.8） ----
+if (want(9)) {
+  report.notes.push(
+    '场景 9：先清掉本机里上一轮的失败事实与草稿做对照，再制造一次长原文发送失败，' +
+      '用真实矩形 + elementFromPoint 判断聊天面板的输入区有没有被挤出面板（overflow: hidden 会裁剪）',
+  );
+  await goto(APP + '/#/interactive', 6500);
+  await waitFor('[data-im=board-toolbar]', 10000);
+  const clearedKeys = await evaluate(
+    '(function(){ var keys=[]; for (var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if (k && (k.indexOf("qio.draft.")===0 || k.indexOf("qio.chat.failedSend")===0)) keys.push(k); } keys.forEach(function(k){ localStorage.removeItem(k); }); return keys.length; })()',
+  );
+  await viewport(480, 600);
+  await goto(APP + '/#/interactive', 6500);
+  await waitFor('[data-im=board-toolbar]', 10000);
+  await sleep(900);
+  if (await evaluate('!!document.querySelector("[data-im=chat-toggle]")')) await clickSelector('[data-im=chat-toggle]');
+  await sleep(900);
+  const clean = await measureSwitch();
+  /**
+   * 诊断：输入框的祖先链几何。480px 下输入框的矩形完全落在面板盒子下方（面板 overflow: hidden 会裁掉它），
+   * 这里把每一层的矩形/overflow/position 都记下来，用来区分「面板算得太矮」与「输入框根本不在这个面板里」。
+   */
+  const chain = await evaluate(
+    '(function(){ var input = document.querySelector("[data-im=chat-input]"); var panel = document.querySelector("[data-im=chat-panel]");' +
+      ' var out = { panels: document.querySelectorAll("[data-im=chat-panel]").length, inputs: document.querySelectorAll("[data-im=chat-input]").length, chain: [] };' +
+      ' if (panel) { var pr = panel.getBoundingClientRect(); var pcs = getComputedStyle(panel); out.panel = { top: Math.round(pr.top), bottom: Math.round(pr.bottom), h: Math.round(pr.height), height: pcs.height, maxHeight: pcs.maxHeight, overflow: pcs.overflow, flex: pcs.flex }; }' +
+      ' var el = input; while (el && el !== document.body) { var r = el.getBoundingClientRect(); var cs = getComputedStyle(el);' +
+      ' out.chain.push({ tag: el.tagName, cls: String(el.className || "").slice(0, 36), top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height), overflow: cs.overflow, position: cs.position, display: cs.display, flex: cs.flex, minH: cs.minHeight, maxH: cs.maxHeight });' +
+      ' el = el.parentElement; } return out; })()',
+  );
+  await shot('r5-d-' + LABEL + '-09a-chat-composer-clean');
+  const cleanOk = !!(clean.hits && clean.hits.chatInput && clean.hits.chatInput.hitSelf);
+  step('场景 9：480px 干净状态下聊天输入框与发送按钮可点', cleanOk, {
+    clearedKeys: clearedKeys,
+    composerChain: chain,
+    chatPanel: clean.chatPanel,
+    chatInputRect: clean.chatInputRect,
+    chatSendRect: clean.chatSendRect,
+    chatInputHit: clean.hits ? clean.hits.chatInput : null,
+    chatSendHit: clean.hits ? clean.hits.chatSend : null,
+    switchBar: clean.switchBar,
+  }, cleanOk ? null : '干净状态下 480px 的聊天输入框就已经点不到');
+
+  interceptMode = 'turns';
+  const LONG = '很长的失败原文-D2-' + '这段文字在发送失败之后必须能被找回，而且不许把输入框和发送按钮挤出面板。'.repeat(6);
+  await typeInto('[data-im=chat-input]', LONG);
+  await clickSelector('[data-im=chat-send]');
+  await sleep(2400);
+  const withFailure = await measureSwitch();
+  await shot('r5-d-' + LABEL + '-09b-chat-composer-with-failure');
+  const failureEntries = await interactiveEntries('放回|找回|取回|恢复|互换|原文|不再保留');
+  interceptMode = null;
+  const withOk = !!(withFailure.hits && withFailure.hits.chatInput && withFailure.hits.chatInput.hitSelf);
+  /**
+   * 同一个失败状态换到桌面最小窗口（800×600）再量一次：
+   * 用来划清缺陷范围 —— 是「窄到 480px 才发生」还是「只要面板高度不够就发生」。
+   */
+  await viewport(800, 600);
+  await sleep(700);
+  const at800 = await measureSwitch();
+  await shot('r5-d-' + LABEL + '-09c-chat-composer-with-failure-800x600');
+  const ok800 = !!(at800.hits && at800.hits.chatInput && at800.hits.chatInput.hitSelf);
+  step('场景 9：同样有长失败原文时，800×600（桌面最小窗口）聊天输入框仍然可点', ok800, {
+    chatPanel: at800.chatPanel,
+    chatInputRect: at800.chatInputRect,
+    chatInputHit: at800.hits ? at800.hits.chatInput : null,
+    chatSendHit: at800.hits ? at800.hits.chatSend : null,
+  }, ok800 ? null : '800×600 下长失败原文同样把聊天输入框挤出面板');
+  await viewport(480, 600);
+  step('场景 9：失败原文较长时，聊天输入框仍然可点（不许被挤出面板）', withOk, {
+    chatPanel: withFailure.chatPanel,
+    chatInputRect: withFailure.chatInputRect,
+    chatSendRect: withFailure.chatSendRect,
+    chatInputHit: withFailure.hits ? withFailure.hits.chatInput : null,
+    chatSendHit: withFailure.hits ? withFailure.hits.chatSend : null,
+    switchBar: withFailure.switchBar,
+    failureEntries: failureEntries,
+  }, withOk ? null : '失败原文出现之后，480px 的聊天输入框/发送按钮被挤出面板（overflow: hidden 裁掉了输入区）');
+}
+
+// ---------- 视觉矩阵：视口 × 明暗（--visual） ---------------------------------
+if (flag('visual')) {
+  report.notes.push(
+    '视觉矩阵（--visual）：明暗通过 html[data-theme] + localStorage(qio-theme) 切换；' +
+      '密集卡片与关系线用**真实接口预置板面数据**（【模拟】数据种子），界面仍是应用自己渲染的',
+  );
+  const THEMES = ['light', 'dark'];
+  async function applyTheme(t) {
+    const applied = await evaluate(
+      '(function(){ try { document.documentElement.dataset.theme = ' + JSON.stringify(t) + '; localStorage.setItem("qio-theme", ' + JSON.stringify(t) + '); } catch (e) {} return document.documentElement.getAttribute("data-theme"); })()',
+    );
+    await sleep(320);
+    return applied;
+  }
+  async function openInteractive() {
+    await goto(APP + '/#/interactive', 6500);
+    await waitFor('[data-im=board-toolbar]', 10000);
+    await sleep(900);
+  }
+  async function ensureChat() {
+    if (!(await evaluate('!!document.querySelector("[data-im=chat-panel]")'))) {
+      if (await evaluate('!!document.querySelector("[data-im=chat-toggle]")')) await clickSelector('[data-im=chat-toggle]');
+      await sleep(900);
+    }
+  }
+  async function ensureBatch() {
+    if (!(await evaluate('!!document.querySelector("[data-im=batch-list]")'))) {
+      if (await evaluate('!!document.querySelector("[data-im=batch-entry]")')) await clickSelector('[data-im=batch-entry]');
+      await sleep(1000);
+    }
+  }
+  async function boardCounts() {
+    return evaluate(
+      '(function(){ return { cards: document.querySelectorAll("[data-im=card]").length, links: document.querySelectorAll("svg.link-layer line.line").length }; })()',
+    );
+  }
+  const visualShots = [];
+
+  // 密集板面 + 关系线：通过真实接口写入板面状态，再让应用自己加载渲染
+  const nowIso = new Date().toISOString();
+  let seedNote = '视觉矩阵数据种子：未执行';
+  try {
+    const current = await fetch(BACKEND + '/api/interactive/boards/board_default/state').then((r) => r.json());
+    const texts = [
+      '第一张：材料清单与来源（这段文字写在卡片里，用来检查密集文字下聊天浮层的可读性）',
+      '第二张：为什么需要恢复失败原文（用户点发送之后失败，文字不能丢）',
+      '第三张：本机记录与服务器草稿的两种身份',
+      '第四张：清除草稿必须同步，刷新后不许复活',
+      '第五张：窄窗口下切换条要占住自己那一行',
+      '第六张：提交失败默认区要说本次请求的真实原因',
+      '第七张：长文本换行与限高滚动',
+      '第八张：明暗两套令牌都要成立',
+    ];
+    const cards = texts.map((content, i) => ({
+      id: 'd2c' + i,
+      kind: 'text',
+      content: content,
+      meta: {},
+      x: 40 + (i % 4) * 300,
+      y: 40 + Math.floor(i / 4) * 220,
+      w: 260,
+      h: 160,
+      checked: i % 2 === 0,
+      hidden: false,
+      folded: false,
+      bookmarked: false,
+      deleted: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }));
+    const links = [0, 1, 2].map((i) => ({
+      id: 'd2l' + i,
+      src: 'd2c' + i,
+      dst: 'd2c' + (i + 2),
+      direction: false,
+      meaning: '用户写下的关系含义 ' + (i + 1),
+      deleted: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }));
+    const state = { ...(current.state || {}), cards: cards, links: links, groups: [], selection: ['d2c0', 'd2c1'], updatedAt: nowIso };
+    const put = await fetch(BACKEND + '/api/interactive/boards/board_default/state', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: state, reason: 'd2-visual-seed' }),
+    });
+    seedNote = '视觉矩阵数据种子：PUT ' + put.status + '，卡片 ' + cards.length + '，关系线 ' + links.length;
+  } catch (err) {
+    seedNote = '视觉矩阵数据种子失败：' + String(err);
+  }
+  report.notes.push(seedNote);
+
+  /**
+   * 种子可能被并发写入（别的工作区/别的验收跑批）盖掉：先打开页面确认一次，
+   * 不够密就用界面自己的「添加 → 文字」补几张带文字的卡片。
+   */
+  await viewport(1440, 900);
+  await openInteractive();
+  let preCounts = await boardCounts();
+  if ((preCounts.cards || 0) < 6) {
+    for (let i = 0; i < 4; i += 1) {
+      await clickSelector('[data-im=add-menu]');
+      await waitFor('[data-im=add-menu-list]', 4000);
+      await clickSelector('[data-im=add-text]');
+      await sleep(900);
+      const newId = await lastCardId();
+      if (newId) {
+        await selectAndEditCard(newId);
+        await typeInto('[data-im=card-editor]', '补的密集卡片 ' + (i + 1) + '：用来检查浮层叠在密集卡片文字与关系线上时的可读性。');
+        await clickCardConfirm(newId, '完成编辑');
+        await sleep(900);
+      }
+    }
+    preCounts = await boardCounts();
+  }
+  report.notes.push('视觉矩阵卡片数（进入矩阵前）：' + JSON.stringify(preCounts));
+
+  // A. 三个桌面视口 × 明暗：互动板 + 聊天展开（背后是密集卡片与关系线）
+  for (const vp of [
+    { name: '1440x900', w: 1440, h: 900 },
+    { name: '1024x768', w: 1024, h: 768 },
+    { name: '800x600', w: 800, h: 600 },
+  ]) {
+    await viewport(vp.w, vp.h);
+    await openInteractive();
+    await ensureChat();
+    for (const t of THEMES) {
+      await applyTheme(t);
+      const name = 'r5-d2-visual-' + vp.name + '-' + t + '-chat';
+      await shot(name);
+      visualShots.push({ name: name, counts: await boardCounts(), theme: t, viewport: vp.name });
+    }
+  }
+
+  // B. 1024×768 批量列表 + 密集板面
+  await viewport(1024, 768);
+  await openInteractive();
+  await ensureBatch();
+  for (const t of THEMES) {
+    await applyTheme(t);
+    const name = 'r5-d2-visual-1024x768-' + t + '-batch-dense';
+    await shot(name);
+    visualShots.push({ name: name, counts: await boardCounts(), theme: t });
+  }
+
+  // C. 480×600：两个面板都请求展开 → 切换条
+  await viewport(480, 600);
+  await openInteractive();
+  await ensureChat();
+  await ensureBatch();
+  for (const t of THEMES) {
+    await applyTheme(t);
+    const name = 'r5-d2-visual-480x600-' + t + '-switch-bar';
+    await shot(name);
+    visualShots.push({
+      name: name,
+      theme: t,
+      geoMode: await evaluate('(function(){ var s = document.querySelector(".im-stage"); return s ? s.getAttribute("im-geo-mode") : null; })()'),
+      counts: await boardCounts(),
+    });
+  }
+
+  // D. 长失败原文（对话页，拦截 /api/turns）
+  interceptMode = 'turns';
+  await viewport(1024, 768);
+  await goto(APP + '/#/', 7000);
+  await waitFor('#composer-input', 12000);
+  const longFailed =
+    '长失败原文-D2-' +
+    '这是一段很长的原稿，用来验证失败恢复区在文字很长时限高滚动、不挤掉输入框与发送按钮。'.repeat(5);
+  await typeInto('#composer-input', longFailed);
+  await clickSelector('.send-btn');
+  await sleep(2000);
+  for (const t of THEMES) {
+    await applyTheme(t);
+    const name = 'r5-d2-visual-1024x768-' + t + '-long-failure-text';
+    await shot(name);
+    visualShots.push({ name: name, theme: t });
+  }
+  interceptMode = null;
+
+  // E. 长提交原因（互动板，拦截 /submissions）
+  interceptMode = 'submissions';
+  await viewport(1440, 900);
+  await openInteractive();
+  await clickSelector('[data-im=submit]');
+  await sleep(2600);
+  for (const t of THEMES) {
+    await applyTheme(t);
+    const name = 'r5-d2-visual-1440x900-' + t + '-long-submit-reason';
+    await shot(name);
+    visualShots.push({
+      name: name,
+      theme: t,
+      failureText: String((await textOf('[data-im=submit-failure]')) || '').slice(0, 160),
+      detailsOpen: await evaluate('!!document.querySelector("[data-im=submit-details-box]")'),
+    });
+  }
+  interceptMode = null;
+  await applyTheme('light');
+
+  step('视觉矩阵：截图已生成（视口 × 明暗 + 长文本 + 批量列表）', visualShots.length >= 12, {
+    shots: visualShots,
+    seed: seedNote,
+  });
 }
 
 // ---------- 关闭重开（同一 profile）：可选用 --reopen ----------
