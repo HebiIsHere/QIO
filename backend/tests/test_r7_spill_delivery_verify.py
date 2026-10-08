@@ -147,13 +147,11 @@ async def test_spill_read_failure_is_reported_to_the_user(tmp_path: Path):
         loop, adapter, result, warnings = await _run(ASCII_TEXT, spill_dir=tmp_path, turn_id="r7_spill_read")
 
     delivered = result.final_content or ""
-    prefix = ASCII_TEXT[:MEMORY_LIMIT]
-    assert prefix in delivered, (
-        "读取失败时必须保留**已确认可交付**的内容（内存里的 256 KiB 前缀）",
+    # Lead 2026-10-08 裁决：不完整说明**不进正文**（走流上可见事件 + 轮次警告），
+    # 交付正文必须是已确认可交付的那部分**原样** → 这里仍然是精确判据。
+    assert len(delivered.encode("utf-8")) == MEMORY_LIMIT, (
+        "读取失败时必须原样交付已确认可交付的内存部分（256 KiB），说明不得塞回正文",
         {"delivered_bytes": len(delivered.encode("utf-8")), "limit": MEMORY_LIMIT},
-    )
-    assert len(delivered.encode("utf-8")) >= MEMORY_LIMIT, (
-        "交付内容不得少于已确认可交付的部分", len(delivered.encode("utf-8"))
     )
     assert warnings, (
         "暂存读取失败**只写了日志**：流上没有任何用户可见的不完整说明（基线缺陷）",
@@ -200,7 +198,7 @@ async def test_spill_write_failure_is_reported_and_distinct(tmp_path: Path):
 # ---- 3. 正常路径（超过内存上限但暂存正常）：完整交付、0 警告、只 1 次调用 -------------
 
 
-@pytest.mark.parametrize("label,text", [("ASCII", ASCII_TEXT), ("中文", CHINESE_TEXT)])
+@pytest.mark.parametrize("label,text", [("ASCII", ASCII_TEXT), ("中文", CHINESE_TEXT)], ids=["ascii", "cjk"])
 async def test_normal_over_threshold_delivers_complete_without_warnings(tmp_path: Path, label, text):
     loop, adapter, result, warnings = await _run(text, spill_dir=tmp_path, turn_id="r7_spill_ok")
     delivered = result.final_content or ""
