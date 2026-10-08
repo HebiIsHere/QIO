@@ -369,3 +369,121 @@ async def test_http_send_waits_for_first_preparation_instead_of_running(
             if ctx.turns.active is None:
                 break
             await asyncio.sleep(0.02)
+
+
+# -- 7. 真实 HTTP：旧客户端兜底 / 多附件最后一个未就绪（同样的闸门，**不设超时**）-------
+
+
+async def test_http_old_client_missing_field_waits_for_preparation(
+    async_app, tmp_path: Path, monkeypatch
+):
+    """缺 attachment_ids 字段的兜底路径：闸门关闭时不得开始执行，放行后必须真的绑上。"""
+    ctx = async_app.state.ctx
+    topic = ctx.topics.nodes.create_topic("兜底话题").id
+    adapter = _CountingAdapter()
+    ctx.build_adapter = AsyncMock(return_value=adapter)
+
+    source = tmp_path / "兜底大文件.bin"
+    source.write_bytes(bytes(5 * 1024 * 1024))
+    entered, release = _gate_first_copy(monkeypatch)
+
+    async with _live(async_app) as ac:
+        created = (
+            await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": topic})
+        ).json()["attachment"]
+        assert await asyncio.to_thread(entered.wait, GATE_DEADLINE)
+
+        send = asyncio.create_task(
+            ac.post("/api/turns", json={"message": "旧客户端发送（缺字段）", "topic_id": topic})
+        )
+        await asyncio.sleep(1.0)
+        assert adapter.calls == 0, "兜底路径也不得在附件就绪前开始执行"
+        assert _turn_starts(ctx) == []
+        assert not send.done(), "兜底路径同样要等首次准备"
+
+        release.set()
+        resp = await asyncio.wait_for(send, timeout=GATE_DEADLINE)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["bound_attachment_ids"] == [created["id"]], "放行后必须真的绑上"
+        assert ctx.attachments.get(created["id"], check=False).state == "ready"
+
+        for _ in range(400):
+            if adapter.calls:
+                break
+            await asyncio.sleep(0.02)
+        assert adapter.calls == 1
+        ctx.turns.cancel(body["turn_id"])
+        for _ in range(200):
+            if ctx.turns.active is None:
+                break
+            await asyncio.sleep(0.02)
+
+
+async def test_http_multi_attachment_last_preparing_blocks(
+    async_app, tmp_path: Path, monkeypatch
+):
+    """多附件里**最后一个**还没就绪：整轮不得开始执行，也不能半绑。"""
+    ctx = async_app.state.ctx
+    topic = ctx.topics.nodes.create_topic("多附件话题").id
+    adapter = _CountingAdapter()
+    ctx.build_adapter = AsyncMock(return_value=adapter)
+
+    small = tmp_path / "已就绪.txt"
+    small.write_text("早就准备好了", encoding="utf-8")
+    big = tmp_path / "还在准备.bin"
+    big.write_bytes(bytes(5 * 1024 * 1024))
+
+    entered, release = _gate_first_copy(monkeypatch)
+    async with _live(async_app) as ac:
+        # 第一条：正常准备到 ready
+        first = (
+            await ac.post("/api/attachments", json={"source_path": str(small), "topic_id": topic})
+        ).json()["attachment"]
+        for _ in range(400):
+            row = (await ac.get(f"/api/attachments/{first['id']}")).json()["attachment"]
+            if row["state"] == "ready":
+                break
+            await asyncio.sleep(0.02)
+        assert row["state"] == "ready"
+
+        # 第二条：闸门卡在首次复制里
+        second = (
+            await ac.post("/api/attachments", json={"source_path": str(big), "topic_id": topic})
+        ).json()["attachment"]
+        assert await asyncio.to_thread(entered.wait, GATE_DEADLINE)
+
+        send = asyncio.create_task(
+            ac.post(
+                "/api/turns",
+                json={
+                    "message": "多附件最后一个未就绪",
+                    "topic_id": topic,
+                    "attachment_ids": [first["id"], second["id"]],
+                },
+            )
+        )
+        await asyncio.sleep(1.0)
+        assert adapter.calls == 0, "最后一条没就绪时整轮不得开始执行"
+        assert _turn_starts(ctx) == []
+        assert not send.done()
+        assert ctx.attachments.get(first["id"], check=False).turn_id is None, "也不得先半绑第一条"
+
+        release.set()
+        resp = await asyncio.wait_for(send, timeout=GATE_DEADLINE)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["bound_attachment_ids"] == [first["id"], second["id"]]
+        for attachment_id in (first["id"], second["id"]):
+            assert ctx.attachments.get(attachment_id, check=False).turn_id == body["turn_id"]
+
+        for _ in range(400):
+            if adapter.calls:
+                break
+            await asyncio.sleep(0.02)
+        assert adapter.calls == 1
+        ctx.turns.cancel(body["turn_id"])
+        for _ in range(200):
+            if ctx.turns.active is None:
+                break
+            await asyncio.sleep(0.02)
