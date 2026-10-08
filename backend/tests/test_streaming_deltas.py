@@ -1460,6 +1460,7 @@ async def test_declaration_with_a_long_body_in_one_chunk_is_recognised():
     )
     assert all(e["interim"] is False for e in events)
     assert len(adapter.requests) == 1
+    assert _events(bus, "WARNING") == [], "合规声明路径不该有任何警告（仍真流式）"
 
 
 @pytest.mark.parametrize("split_at", list(range(0, len(ANSWER_MARKER) + 2)))
@@ -1640,7 +1641,11 @@ async def test_memory_threshold_boundaries_spill_only_beyond_the_byte_limit(
 
 
 async def test_spill_write_failure_is_reported_honestly(tmp_path, monkeypatch):
-    """暂存不可用：如实报告（可见 WARNING + 截断事实进交付内容），不改角色、不丢字不重发。"""
+    """暂存写入失败：如实报告（可见 WARNING + 事实进交付内容），不改角色、不丢字不重发。
+
+    契约 §1.4：这是 **spill_write** 故障 —— 事实说明里**不得**出现「超过上限/截断」
+    （那是 limit 的说法），必须明确说「没能完整保存」。
+    """
     monkeypatch.setenv("APPDATA", str(tmp_path))
     from agent.core import answer_buffer as buffer_module
 
@@ -1658,11 +1663,16 @@ async def test_spill_write_failure_is_reported_honestly(tmp_path, monkeypatch):
     assert len(adapter.requests) == 1, "暂存失败也不得再生成一次"
     text = result.final_content or ""
     assert text.startswith("汉" * 87_381), "内存里的部分必须完整交付"
-    assert "截断" in text, "截断事实必须写进交付内容"
+    assert "没能完整保存" in text, "必须明确告诉用户回答未完整保存（契约 §1.4）"
+    assert "超过上限" not in text and "截断" not in text, (
+        "写入故障不得被描述成「正文超过上限/截断」",
+        text[-120:],
+    )
     assert _process_area(bus) == [], "过程区不得留副本"
     warnings = _events(bus, "WARNING")
-    assert [w["code"] for w in warnings] == ["answer_truncated"], warnings
-    assert any("截断" in w for w in result.warnings)
+    assert [w["code"] for w in warnings] == ["answer_incomplete"], warnings
+    assert warnings[0]["kind"] == "spill_write"
+    assert any("完整" in w for w in result.warnings)
 
 
 async def test_spill_hard_limit_truncates_and_reports(tmp_path, monkeypatch):
@@ -1751,6 +1761,172 @@ async def test_non_streaming_long_undeclared_answer_is_delivered_once(tmp_path, 
     assert events[0]["interim"] is False and events[0]["streaming"] is False
     assert events[0]["role_evidence"] == "undeclared_answer"
     assert not list((tmp_path / "qio" / "tmp").glob("*.spill"))
+
+
+@pytest.mark.parametrize("unit", ["ascii", "cjk"])
+async def test_normal_over_threshold_paths_are_complete_without_warnings(
+    tmp_path, monkeypatch, unit
+):
+    """正常超过阈值的路径（ASCII / 中文）：完整交付、只 1 次调用、**不得有任何警告**。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    chunk = ("a" if unit == "ascii" else "汉") * 1000
+    answer = chunk * 300  # 300,000 / 900,000 UTF-8 字节，都超过 256 KiB
+    assert len(answer.encode("utf-8")) > 256 * 1024
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=[answer[:1], answer[1:]])])
+    bus = EventBus()
+    result = await AgentLoop(
+        adapter, _registry(), bus, turn_id=f"turn_normal_{unit}"
+    ).run("hi")
+
+    assert result.final_content == answer, "正常路径必须完整交付（一个字都不少）"
+    assert len(adapter.requests) == 1
+    assert _events(bus, "WARNING") == [], "正常路径不得产生任何警告"
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1 and events[0]["content"] == answer
+    assert events[0]["role_evidence"] == "undeclared_answer"
+    assert not list((tmp_path / "qio" / "tmp").glob("*.spill")), "收尾后临时文件必须收敛"
+
+
+async def test_spill_create_failure_is_reported_as_spill_create(tmp_path, monkeypatch):
+    """暂存文件创建失败：kind=spill_create，明确说「没能完整保存」，不说「超过上限」。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from agent.core import answer_buffer as buffer_module
+
+    async def _boom(self):  # noqa: ANN001 - 模拟建不了暂存文件
+        raise OSError("cannot create (test)")
+
+    monkeypatch.setattr(buffer_module.AnswerBuffer, "_ensure_spill_file", _boom)
+    answer = "汉" * 90_000  # 270,000 字节 > 256 KiB → 必须走暂存
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=[answer[:1], answer[1:]])])
+    bus = EventBus()
+    result = await AgentLoop(
+        adapter, _registry(), bus, turn_id="turn_spill_create"
+    ).run("hi")
+
+    assert len(adapter.requests) == 1
+    text = result.final_content or ""
+    assert text.startswith("汉" * 87_381), "内存里的部分必须完整交付"
+    assert "没能完整保存" in text
+    assert "超过上限" not in text and "截断" not in text, text[-120:]
+    warnings = _events(bus, "WARNING")
+    assert [w["code"] for w in warnings] == ["answer_incomplete"]
+    assert warnings[0]["kind"] == "spill_create"
+    assert any("完整" in w for w in result.warnings)
+
+
+async def test_cancel_with_spilled_text_keeps_text_and_converges_temp_files(
+    tmp_path, monkeypatch
+):
+    """取消：已收到的正文（内存 + 暂存）放行到过程区，临时文件收敛，不猜角色。"""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    answer = "汉" * 90_000
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "qio" / "tmp"
+    loop = AgentLoop(adapter, _registry(), bus, turn_id="turn_cancel_spill")
+    task = asyncio.create_task(loop.run("hi"))
+    for _ in range(150):
+        if spill_dir.is_dir() and list(spill_dir.glob("*.spill")):
+            break
+        await asyncio.sleep(0.02)
+    else:
+        hold.set()
+        raise AssertionError("暂存文件没有在取消前创建")
+
+    loop.cancel()
+    result = await asyncio.wait_for(task, 5)
+    hold.set()
+
+    assert result.cancelled is True
+    process = _process_area(bus)
+    assert "".join(str(e["content"] or "") for e in process) == answer, "取消不得丢字"
+    assert _answer_area(bus) == [], "取消不猜角色：不进正式回答区"
+    assert not list(spill_dir.glob("*.spill")), "取消后临时文件必须收敛"
+    assert _events(bus, "WARNING") == [], "取回成功就不该有「不完整」警告"
+
+
+async def test_spill_read_failure_is_reported_and_not_hidden(tmp_path, monkeypatch):
+    """反例（第七轮问题三，今天必红）：暂存读取故障**只写日志**。
+
+    未声明正文 UTF-8 总计 300,018 字节（> 256 KiB 内存阈值 → 触发暂存），在**真实暂存
+    读取**处注入 OSError：今天只交付 262,144 字节（内存前缀）、模型 1 次、
+    **WARNING 事件 0**、回答没有任何缺失说明。
+    契约 §1.4：读取故障必须进①可见事件②轮次结果，且**不得**被描述成「正文超过上限」。
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from pathlib import Path
+
+    original_read = Path.read_bytes
+
+    def _broken_read(self):  # noqa: ANN001 - 模拟暂存读取故障
+        if self.suffix == ".spill":
+            raise OSError("spill gone (test)")
+        return original_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _broken_read)
+
+    answer = "长" * 100_006  # 300,018 UTF-8 字节
+    assert len(answer.encode("utf-8")) == 300_018
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=[answer[:1], answer[1:]])])
+    bus = EventBus()
+    result = await AgentLoop(
+        adapter, _registry(), bus, turn_id="turn_spill_read"
+    ).run("hi")
+
+    assert len(adapter.requests) == 1, "不得重新调用模型伪造找回原文"
+    warnings = _events(bus, "WARNING")
+    assert warnings, "读取故障必须有可见 WARNING（只写日志不算交付）"
+    messages = " ".join(str(w.get("message") or "") for w in warnings)
+    assert "读取" in messages or "暂存" in messages, warnings
+    assert "超过上限" not in messages, ("读取故障不得被描述成超过上限", warnings)
+    assert result.warnings, "轮次结果/警告里也要有这条事实"
+
+    text = result.final_content or ""
+    assert text.startswith("长" * 1000), "已确认可交付的内容必须保留"
+    assert "完整" in text, ("必须明确告诉用户回答未完整保存/读取", text[-200:])
+    assert len(text.encode("utf-8")) >= 262_144
+    assert _process_area(bus) == [], "过程区不得留副本"
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1 and events[0]["interim"] is False
+    assert events[0]["role_evidence"] == "undeclared_answer"
+
+
+async def test_vanished_spill_file_is_reported_as_incomplete(tmp_path, monkeypatch):
+    """暂存文件消失（读取抛 FileNotFoundError，正是文件不见时的真实异常）：如实报告。
+
+    注：Windows 上暂存文件在流结束前保持打开（句柄在 collect 时才关闭），所以这里注入
+    read_bytes 的真实「文件不存在」异常，而不是在流中间 unlink 文件。
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from pathlib import Path
+
+    original_read = Path.read_bytes
+
+    def _gone(self):  # noqa: ANN001 - 模拟文件已消失
+        if self.suffix == ".spill":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return original_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _gone)
+
+    answer = "汉" * 100_006  # 300,018 UTF-8 字节
+    adapter = FakeStreamAdapter([StreamScript(text_chunks=[answer[:1], answer[1:]])])
+    bus = EventBus()
+    result = await AgentLoop(
+        adapter, _registry(), bus, turn_id="turn_spill_vanished"
+    ).run("hi")
+
+    warnings = _events(bus, "WARNING")
+    assert warnings, "暂存文件消失必须有可见 WARNING"
+    messages = " ".join(str(w.get("message") or "") for w in warnings)
+    assert "超过上限" not in messages, warnings
+    text = result.final_content or ""
+    assert text.startswith("汉" * 1000)
+    assert "完整" in text, text[-200:]
+    assert len(adapter.requests) == 1
 
 
 async def test_undeclared_answer_is_invisible_until_the_call_ends():

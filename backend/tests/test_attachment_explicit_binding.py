@@ -209,24 +209,42 @@ def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path
     _drain_turns(client)
 
 
-def test_explicit_ids_bind_ready_and_prepared_only(client: TestClient, tmp_path: Path):
-    """ready / prepared 是有效状态：显式给出时必须绑上。"""
+def test_explicit_ids_bind_ready_and_refuse_still_preparing(client: TestClient, tmp_path: Path):
+    """R7 §1.3：ready 必须绑上；**prepared 一律不就绪**。
+
+    旧断言（prepared 也算「有效状态」直接绑）编码的正是本轮修掉的缺陷：
+    「登记完立刻发送」时附件其实还没就绪，模型却已经开始执行。
+    这里造的是**没有在飞准备任务**的 prepared（后台复制早已结束、状态被改回去）：
+    「等不到」的那一类 → 结构化拒绝，且同一请求里真正 ready 的那条也不能被顺带绑上。
+    """
     ready = _create(client, tmp_path, "就绪.txt", topic_id="t_ok")
     prepared = _create(client, tmp_path, "准备中.txt", topic_id="t_ok")
     client.app.state.ctx.attachments._update(prepared["id"], state="prepared", error=None)
 
-    accepted = client.post(
+    refused = client.post(
         "/api/turns",
         json={
             "message": "带两个",
             "topic_id": "t_ok",
             "attachment_ids": [ready["id"], prepared["id"]],
         },
-    ).json()
+    )
 
-    assert [item["id"] for item in accepted["attachments"]] == [ready["id"], prepared["id"]]
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert [item["id"] for item in detail["rejected"]] == [prepared["id"]]
+    assert "准备" in detail["rejected"][0]["reason"]
+    assert _turn_row(client, prepared["id"]) is None
+    assert _turn_row(client, ready["id"]) is None, "被拒的整轮不得顺带绑上别的附件"
+    _drain_turns(client)
+
+    # 只带真正就绪的那条：必须正常受理并绑上
+    accepted = client.post(
+        "/api/turns",
+        json={"message": "只带就绪的", "topic_id": "t_ok", "attachment_ids": [ready["id"]]},
+    ).json()
+    assert [item["id"] for item in accepted["attachments"]] == [ready["id"]]
     assert _turn_row(client, ready["id"]) == accepted["turn_id"]
-    assert _turn_row(client, prepared["id"]) == accepted["turn_id"]
     _drain_turns(client)
 
 

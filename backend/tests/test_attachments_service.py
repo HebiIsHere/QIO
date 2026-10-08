@@ -446,9 +446,11 @@ async def test_bind_for_turn_explicit_and_fallback(svc: AttachmentService, tmp_p
     source_a = _write(tmp_path / "a.txt", b"a")
     source_b = _write(tmp_path / "b.txt", b"b")
     source_c = _write(tmp_path / "c.txt", b"c")
-    att_a = svc.prepare(str(source_a), topic_id="topic_a")
-    att_b = svc.prepare(str(source_b), topic_id="topic_b")
-    att_c = svc.prepare(str(source_c), topic_id="topic_a")
+    # R7 §1.3：prepared 一律不就绪（绑定前要等首次准备，等不到就结构化拒绝）。
+    # 这个用例测的是「显式绑定与兜底的语义」，所以把附件真的准备好（ready）。
+    att_a = svc.run_prepare(svc.prepare(str(source_a), topic_id="topic_a").id)
+    att_b = svc.run_prepare(svc.prepare(str(source_b), topic_id="topic_b").id)
+    att_c = svc.run_prepare(svc.prepare(str(source_c), topic_id="topic_a").id)
 
     # 兜底：只绑本话题里还没绑定轮次的附件
     bound = await svc.bind_for_turn("turn_1", None, topic_id="topic_a")
@@ -474,7 +476,7 @@ async def test_bind_for_turn_explicit_and_fallback(svc: AttachmentService, tmp_p
 
 async def test_message_id_is_resolved_from_turn_journal(svc: AttachmentService, tmp_path: Path, db_conn):
     source = _write(tmp_path / "m.txt", b"m")
-    att = svc.prepare(str(source), topic_id="t1")
+    att = svc.run_prepare(svc.prepare(str(source), topic_id="t1").id)  # §1.3：先就绪
     await svc.bind_for_turn("turn_9", [att.id], topic_id="t1")
     db_conn.execute(
         "INSERT INTO turn_journal (turn_id, message, topic_id, notify, status, created_at,"

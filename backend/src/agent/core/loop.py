@@ -201,8 +201,9 @@ class _AssistantStream:
         self._probe = ""
         # 未声明正文的缓冲（有界内存 + 溢出暂存；上限不改角色）
         self._undeclared: AnswerBuffer | None = None
-        # 缓冲被截断的原因（取走缓冲后仍要如实报告给用户）
-        self._truncation: str | None = None
+        # 取走缓冲时的结构化结果（含 limit / spill_* 故障事实）——**collect 之后、
+        # 清理之前**记在这里，之后由 AgentLoop 写成可见事件 + 轮次警告（契约 §1.4）。
+        self._buffer_outcome: BufferOutcome | None = None
         # 这条流交付到正式回答区的正文（声明本身已经去掉）；循环用它做 final_content
         self.answer_text = ""
         # 是否走了「未声明 → 一次性交付」的降级路径（如实记录，不冒充流式）
@@ -356,20 +357,20 @@ class _AssistantStream:
         buffer = self._undeclared
         if buffer is None:
             return ""
-        if buffer.truncated and self._truncation is None:
-            # 缓冲被取走后还要如实报告截断：原因留在流上（AgentLoop 读它）
-            self._truncation = buffer.truncation_reason
-        text = await buffer.collect()
+        # 事实传递（契约 §1.4）：**collect() 之后、discard()/清理之前**先把结果记在
+        # 流上 —— 之后由 AgentLoop 写成可见事件 + 轮次警告。只写日志不算交付，
+        # 所以这里绝不把故障事实丢掉。
+        outcome = await buffer.collect()
+        if not outcome.complete:
+            self._buffer_outcome = outcome
         await buffer.discard()
         self._undeclared = None
-        return text
+        return outcome.text
 
     @property
-    def truncation_reason(self) -> str | None:
-        """未声明正文被截断的原因（没有截断就是 None）——由 AgentLoop 如实报告。"""
-        if self._truncation is not None:
-            return self._truncation
-        return self._undeclared.truncation_reason if self._undeclared is not None else None
+    def buffer_outcome(self) -> BufferOutcome | None:
+        """这条流取缓冲的结构化结果（complete / limit / spill_*）；正常时为 None。"""
+        return self._buffer_outcome
 
     async def _absorb_whole_text(self, text: str) -> None:
         """整段正文（一个增量都没收到）也走同一套内容角色判定。"""
@@ -663,9 +664,9 @@ class AgentLoop:
         self._call_answer_text = ""
         # 这次调用是否走了「未声明 → 一次性交付」的降级路径（如实记录）。
         self._call_undeclared = False
-        # 这次调用的未声明正文被截断的原因（达到暂存硬上限 / 暂存不可用）；有值时
-        # 如实报告：可见 WARNING + 截断事实写进交付内容。
-        self._call_truncation: str | None = None
+        # 这次调用「交付不完整」的结构化事实（limit / spill_create / spill_write /
+        # spill_read）；有值时如实报告：可见 WARNING + 事实写进交付内容（契约 §1.4）。
+        self._call_buffer_outcome: BufferOutcome | None = None
         self._spill_dir = spill_dir
         self._undeclared_memory_limit = undeclared_memory_limit
         self._undeclared_spill_limit = undeclared_spill_limit
@@ -1342,9 +1343,10 @@ class AgentLoop:
                 # 协议未遵守（模型没有声明回答角色）：未声明的正文按一次性回答交付，
                 # 如实记录这条降级路径，不冒充流式（契约 §1.2/§1.3）。
                 self._note_undeclared_answer()
-            if self._call_truncation:
-                # 长正文达到保存上限：如实报告（可见 WARNING + 截断事实进交付内容）
-                await self._note_truncated_answer(self._call_truncation)
+            if self._call_buffer_outcome is not None:
+                # 交付不完整（硬上限截断 / 暂存创建·写入·读取故障）：如实报告 ——
+                # 可见 WARNING + 事实进交付内容（读取故障绝不说成「超过上限」）
+                await self._note_incomplete_answer(self._call_buffer_outcome)
 
             answer_text = self._deliverable_answer_text()
             if self._call_role == "answer":
@@ -1507,7 +1509,7 @@ class AgentLoop:
         self._call_role = stream.role
         self._call_answer_text = stream.answer_text
         self._call_undeclared = stream.undeclared_answer_used
-        self._call_truncation = stream.truncation_reason
+        self._call_buffer_outcome = stream.buffer_outcome
 
     def _call_hint(self) -> str | None:
         """每次调用附带的系统提示：内容角色协议（第五轮契约 §1.1）。
@@ -1601,6 +1603,10 @@ class AgentLoop:
         """
         if self._fallback_used or self.is_cancelled():
             return None
+        if self._call_buffer_outcome is not None and not self._call_buffer_outcome.complete:
+            # 已经生成过内容（只是没能完整保存/读取）：**不得**再让模型重写一遍
+            # 来「找回原文」（契约 §1.4：不重新调用模型伪造找回原文）。
+            return None
         self._fallback_used = True
         # 把模型已经说过的话交给它自己（空内容不追加空消息），否则兜底调用会
         # 看不到自己刚写过什么。
@@ -1645,34 +1651,61 @@ class AgentLoop:
             self.turn_id,
         )
 
+    # 交付不完整时给用户看的一句话（按 kind 区分：读取故障**绝不**说成「超过上限」）
+    _INCOMPLETE_TITLES = {
+        "limit": "这段正文太长，已按保存上限如实截断",
+        "spill_create": "暂存文件创建失败，这段回答没能完整保存",
+        "spill_write": "暂存写入失败，这段回答没能完整保存",
+        "spill_read": "暂存读取失败，这段回答没能完整读取",
+    }
+
+    def _incomplete_title(self, outcome: BufferOutcome) -> str:
+        return self._INCOMPLETE_TITLES.get(outcome.kind, "这段回答没能完整保存")
+
+    def _incomplete_note(self, outcome: BufferOutcome) -> str:
+        """写进交付内容的**事实说明**（不是模型的说法；不覆盖已有正文）。"""
+        detail = f"（{outcome.reason}）" if outcome.reason else ""
+        if outcome.kind == "limit":
+            tail = "上面是已经保存的部分，后面的内容没有保存。"
+        elif outcome.kind == "spill_read":
+            tail = "上面是已经确认可交付的部分，后半部分（暂存内容）没有读取回来。"
+        else:
+            tail = "上面是已经确认可交付的部分，后半部分没有保存。"
+        return (
+            "—— 系统事实（后端记录，不是模型的说法）："
+            f"{self._incomplete_title(outcome)}{detail}；{tail}"
+        )
+
     def _deliverable_answer_text(self) -> str:
         """本次调用交付到正式回答区的正文。
 
-        未声明长正文被截断时，**截断事实写进交付内容**（契约 §1.3：如实报告，
-        绝不偷偷丢字），用户看到的最后一段会说明后面还有没保存的内容。
+        交付不完整时（硬上限截断 / 暂存故障），**事实写进交付内容**（契约 §1.4：
+        如实报告，绝不偷偷丢字、绝不把缺失正文当完整回答）；已经有正文时绝不覆盖它。
         """
         text = self._call_answer_text or ""
-        if text and self._call_truncation:
-            text = f"{text}\n\n{self._truncation_note(self._call_truncation)}"
+        outcome = self._call_buffer_outcome
+        if outcome is not None and not outcome.complete:
+            note = self._incomplete_note(outcome)
+            text = f"{text}\n\n{note}" if text else note
         return text
 
-    @staticmethod
-    def _truncation_note(reason: str) -> str:
-        return (
-            "—— 系统事实（后端记录，不是模型的说法）：这段正文太长，已按上限截断"
-            f"（{reason}）；上面是完整的部分，后面的内容没有保存。"
-        )
-
-    async def _note_truncated_answer(self, reason: str) -> None:
-        """未声明正文被截断：发**可见** WARNING + 轮次警告（绝不无界增长、偷偷丢字）。"""
+    async def _note_incomplete_answer(self, outcome: BufferOutcome) -> None:
+        """交付不完整：发**可见** WARNING + 轮次警告（只写日志不算交付，契约 §1.4）。"""
         if self._truncation_warned:
             return
         self._truncation_warned = True
-        message = f"这段正文超出保存上限，已如实截断：{reason}"
+        message = f"{self._incomplete_title(outcome)}：{outcome.reason}" if outcome.reason else self._incomplete_title(outcome)
         self._warn(message)
         await self._emit(
             EventType.WARNING,
-            {"code": "answer_truncated", "message": message, "recoverable": False},
+            {
+                # limit（资源上限）与 spill_*（存储故障）用不同的 code：
+                # 读取故障不得被描述成「正文超过上限」。
+                "code": "answer_truncated" if outcome.kind == "limit" else "answer_incomplete",
+                "kind": outcome.kind,
+                "message": message,
+                "recoverable": False,
+            },
         )
 
     async def _fallback_answer_call(self, messages: list[ChatMessage]) -> str | None:
@@ -1693,8 +1726,8 @@ class AgentLoop:
             await self._emit_one_shot_assistant(completion)
         if self._call_undeclared:
             self._note_undeclared_answer()
-        if self._call_truncation:
-            await self._note_truncated_answer(self._call_truncation)
+        if self._call_buffer_outcome is not None:
+            await self._note_incomplete_answer(self._call_buffer_outcome)
         if completion.tool_calls:
             # 这次调用没有提供任何工具定义：即使模型仍返回工具调用也不执行
             # （它没有被授予这些工具），只把正文当正式回答，并如实记一条可见警告。
@@ -1721,7 +1754,7 @@ class AgentLoop:
         self._call_role = None
         self._call_answer_text = ""
         self._call_undeclared = False
-        self._call_truncation = None
+        self._call_buffer_outcome = None
         # 系统提示只发给这一次调用（不写回对话记录）：内容角色协议 / 兜底要求。
         request_messages = messages
         if hint:
