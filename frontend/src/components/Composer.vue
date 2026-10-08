@@ -2,6 +2,8 @@
 import { computed, nextTick, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
+import FailedSendNotice from "./interactive/FailedSendNotice.vue";
+import { sendFailureText } from "../interactive/chat";
 
 const session = useSessionStore();
 /**
@@ -67,6 +69,13 @@ const continuationText = computed(() => {
 });
 
 const cancelling = ref(false);
+/**
+ * 本次发送失败的真实原因（只显示这一次尝试，不读上一次的结果）。
+ * 没有它的话，对话页失败后用户只看得到「文字又回到了输入框」，不知道为什么。
+ */
+const failureNotice = ref("");
+/** 本组件这个实例刚发生的失败原因：用来避免与恢复入口里同一条原因重复显示 */
+const failureReason = computed(() => (failureNotice.value ? session.lastError ?? "" : ""));
 
 async function cancelContinuation() {
   if (cancelling.value) return;
@@ -89,20 +98,27 @@ async function submit() {
    * 归属在**点击这一刻**定下（契约 §10.1）：清空输入框、等待回执期间切换话题，
    * 都不许改变这条消息的去向，也不许把失败原文放进别的话题的输入框。
    */
-  session.sendAttribution();
+  const attribution = session.sendAttribution();
   // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
   text.value = "";
-  // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再测量，
+  // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再渲染，
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
   const ok = await session.send(value);
-  /**
-   * 失败原文的恢复由**会话层统一判断**（契约 §10.1）：`retryFailedSend()` 只在
-   * 「当前就在原话题」且「输入框是空的」时才把原文放回来；人已经切到别的话题、
-   * 或期间又写了新内容时，它什么都不做（只回报原因），因此不会污染别的话题的输入框。
-   */
-  if (!ok) session.retryFailedSend();
+  if (ok) {
+    failureNotice.value = "";
+  } else {
+    // 真实原因：本次请求的事实，不误读上一次结果（契约 §11.6 的同一条口径）
+    failureNotice.value = sendFailureText(session.lastError);
+    /**
+     * 失败原文的恢复由**会话层统一判断**（契约 §10.1）：只在「当前就在原话题」且
+     * 「输入框是空的」时才把原文放回来；人已经切到别的话题、或期间又写了新内容时，
+     * 它什么都不做（只回报原因），因此不会污染别的话题的输入框。
+     * 按这次发送的归属去找，不去动别的待恢复原文（§11.4）。
+     */
+    session.retryFailedSend(attribution.draftId);
+  }
   await nextTick();
   autosize();
 }
@@ -170,6 +186,13 @@ async function stopTurn() {
       <span class="spacer"></span>
       <span class="kbd-hint mono">Enter 发送 · Shift+Enter 换行</span>
     </div>
+
+    <!-- 失败原因 + 待恢复原文：辅助层，放在输入行上方，长文限高滚动，不挤走输入框 -->
+    <FailedSendNotice
+      scope="conversation"
+      :notice="failureNotice"
+      :reason="failureReason"
+    />
 
     <div class="input-row">
       <textarea
