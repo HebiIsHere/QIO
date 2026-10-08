@@ -12,8 +12,10 @@
   - 点击条目定位到板面上的虚线预览（window 事件 qio:interactive:locate-preview）。
 
   本组件同时是**跨浮层几何的运行时施加者**（几何计划见 interactive/overlayLayout.ts）：
-  - 契约 §10.6：几何一变（首次挂载 / 恢复开合 / 窗口缩放 / 工具栏变高）就按**最新几何**落实
+  - 契约 §11.7：几何一变（首次挂载 / 恢复开合 / 窗口缩放 / 工具栏变高）就按**最新几何**落实
     「空间不足只展开一个面板」，并给出明确的切换入口；从小窗口恢复大窗口**不会自动弹出**面板；
+    需要切换显示时**始终把同一个状态**（cramped）传给几何层，所以关掉一个面板后切换条那一行
+    仍然被真实预留；切换条的位置与高度直接取几何计划给的矩形，不在组件里另算一套；
   它挂在板面舞台上、又是聊天与批量面板共同祖先的直接子节点，所以把量到的数字算成
   --im-geo-chat-* / --im-geo-batch-* 写在舞台上，兄弟组件（ChatDock 的面板）通过
   styles/interactive-shell.css 读取这些变量，不需要改它的源码。
@@ -39,10 +41,8 @@ import {
   type IntentBatch,
 } from "../../interactive/approval";
 import {
-  OVERLAY_CHAT_FOOTER,
   OVERLAY_EDGE,
   OVERLAY_GAP,
-  OVERLAY_SWITCH_BAR_HEIGHT,
   chatHeightRelaxation,
   overlaysAreCramped,
   planOverlayGeometry,
@@ -102,8 +102,20 @@ const geometry = ref<OverlayGeometry | null>(null);
 const cramped = ref(false);
 /** 空间不够时保留哪一个面板展开：按用户最近打开的那个算（见下面的 watch） */
 const activePane = ref<OverlayPane>("chat");
-/** 切换条的视口坐标（position: fixed；高度用常量，避免观察自己造成重排） */
+/**
+ * 切换条的视口坐标（position: fixed；高度是常量，避免观察自己造成重排）。
+ *
+ * 数字全部来自几何计划给出的 {@link OverlayGeometry.switchBar} 矩形：
+ * 组件不自己推「切换条该在哪」，否则面板让出的位置与切换条实际画的位置会漂移。
+ */
 const switchBarStyle = ref<Record<string, string>>({});
+/**
+ * 切换条是否可见：几何说需要切换显示，而且确实还有一个面板开着（没有面板就没有可切换的对象）。
+ * 判据与预留用的是**同一个** geometry.mode，所以不会出现「留了位置却没有条」或反过来的情况。
+ */
+const switchBarVisible = computed(
+  () => geometry.value?.mode === "switched" && (store.chatOpen || store.batchOpen),
+);
 
 const trayStyle = ref<Record<string, string>>({});
 const panelStyle = ref<Record<string, string>>({});
@@ -175,19 +187,27 @@ function applyGeometry(): void {
   //   绝不能拿上一轮的 cramped 决定（那正是「480px 下两个面板都还开着」的原因）
   cramped.value = overlaysAreCramped(chatInput);
   const resolved = settlePanes(cramped.value);
+  // ★ switched 显式传给几何层：这是**同一个明确布局状态**，与当前开着几个面板无关，
+  //   所以用户关掉一个面板之后切换条那一行仍然被真实预留（契约 §11.7）
   const plan = planOverlayGeometry({
     ...chatInput,
     chatOpen: resolved.chatOpen,
     batchOpen: resolved.batchOpen,
+    switched: cramped.value,
   });
 
-  // 切换条固定占用「未预留时的聊天面板底边」那一行：面板底边已在几何里让开它
-  const barBottom = Math.max(stageRect.top, toolbarTop - OVERLAY_CHAT_FOOTER);
-  switchBarStyle.value = {
-    left: Math.round(stageRect.left + OVERLAY_EDGE) + "px",
-    bottom: Math.round(window.innerHeight - barBottom) + "px",
-    height: OVERLAY_SWITCH_BAR_HEIGHT + "px",
-  };
+  // 切换条的位置与高度直接取几何计划的矩形（视口坐标）：面板底边已在同一次计划里让开它
+  const bar = plan.switchBar;
+  const nextBarStyle: Record<string, string> =
+    bar.height > 0
+      ? {
+          right: OVERLAY_EDGE + "px",
+          bottom: Math.round(window.innerHeight - (bar.y + bar.height)) + "px",
+          height: bar.height + "px",
+          maxWidth: bar.width + "px",
+        }
+      : {};
+  if (!sameStyle(switchBarStyle.value, nextBarStyle)) switchBarStyle.value = nextBarStyle;
 
   const toggleHeight = measureToggleHeight();
   const chatMaxHeight = plan.chatMaxHeight + chatHeightRelaxation(toggleHeight);
@@ -230,6 +250,13 @@ function applyGeometry(): void {
 
   // 入口按钮可能在写入新宽度后换行：下一帧再量一次（第二次相同就不会再写）
   scheduleMeasure();
+}
+
+/** 写回前先比字符串：同一个几何不重复写，避免无意义的渲染（契约 §11.7 不许持续抖动） */
+function sameStyle(current: Record<string, string>, next: Record<string, string>): boolean {
+  const keys = Object.keys(current);
+  if (keys.length !== Object.keys(next).length) return false;
+  return keys.every((key) => current[key] === next[key]);
 }
 
 let measureTimer: number | null = null;
@@ -487,11 +514,11 @@ watch(
       位置由几何计划给出（面板底边已经让开这一行），内容与高度固定，所以不参与尺寸观察。
     -->
     <div
-      v-if="cramped && (store.chatOpen || store.batchOpen)"
+      v-if="switchBarVisible"
       class="overlay-switch"
       data-im="overlay-switch"
       role="group"
-      aria-label="浮层切换"
+      aria-label="面板切换"
       :style="switchBarStyle"
     >
       <span class="switch-hint" data-im="overlay-switch-notice">空间不足，只展开一个面板（内容都还在）</span>
@@ -500,7 +527,7 @@ watch(
         type="button"
         data-im="overlay-switch-chat"
         :aria-pressed="store.chatOpen"
-        title="消息与草稿都保留，切换不丢内容"
+        :title="store.chatOpen ? '当前显示的是对话（消息与草稿都保留）' : '切到对话，消息与草稿都保留'"
         @click="showPane('chat')"
       >
         看对话
@@ -511,7 +538,7 @@ watch(
         type="button"
         data-im="overlay-switch-batch"
         :aria-pressed="store.batchOpen"
-        title="勾选与阅读位置都保留，切换不丢内容"
+        :title="store.batchOpen ? '当前显示的是审批列表（勾选与阅读位置都保留）' : '切到审批列表，勾选与阅读位置都保留'"
         @click="showPane('batch')"
       >
         看审批列表
@@ -739,13 +766,68 @@ watch(
 .notice { color: var(--text-secondary); }
 .error { color: var(--danger); }
 .switch-notice { color: var(--warning); }
-.switch {
+
+/*
+  面板切换条（契约 §11.7 / §11.8）：定位与高度**全部**来自几何计划写进行内样式的矩形
+  （position: fixed + 视口坐标），这里只做外观：边框、底色、圆角、字号、选中态、hover、focus。
+  全部走既有令牌，明暗两主题自动成立；高度由行内样式定成常量、box-sizing: border-box，
+  内容只允许在一条线上收缩（提示文字省略），所以它不会把自己撑高、也不会参与尺寸观察。
+*/
+.overlay-switch {
+  position: fixed;
+  z-index: var(--im-z-batch, 40);
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex-wrap: wrap;
+  padding: 0 var(--sp-2);
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-1);
+  color: var(--text-primary);
+  font-family: var(--sans);
 }
-.switch-hint { font-size: var(--fs-xs); color: var(--text-secondary); }
+.switch-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.switch-btn {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  min-height: 26px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+}
+.switch-btn:hover {
+  color: var(--text-strong);
+  border-color: var(--accent);
+}
+/* 当前正在显示的那一个：用强调色说清「现在看的是它」，同时仍然可点（不会变成点不动的死按钮） */
+.switch-btn[aria-pressed="true"] {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.switch-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch-btn { transition: none; }
+}
 .batch-block {
   display: flex;
   flex-direction: column;
