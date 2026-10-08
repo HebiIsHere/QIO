@@ -104,6 +104,8 @@ class BufferOutcome:
     complete: bool
     kind: str
     reason: str | None = None
+    # 已生成内容的总字节数（内存 + 暂存）：用户可见说明里要告诉用户「拿到多少 / 一共多少」。
+    total_bytes: int | None = None
 
 
 def _safe_name(delta_id: str) -> str:
@@ -251,9 +253,11 @@ class AnswerBuffer:
     async def collect(self) -> BufferOutcome:
         """按序拼回全部正文（内存 + 暂存），返回**结构化**交付结果（契约 §1.4）。
 
-        * 记忆里的部分永远保留（已确认可交付）；
+        * 内存里的部分永远保留、**原样**返回（交付内容就是已确认可交付的正文本身，
+          字节数如实可核：不追加任何说明文字，也不改写模型的字）；
         * 读不回来暂存文件时**不编造**，并把 **spill_read** 故障记进结果 ——
-          读取故障**不得**被描述成「正文超过上限」；
+          读取故障**不得**被描述成「正文超过上限」；不完整事实由 AgentLoop 写成
+          可见事件 + 轮次警告（契约 §1.4 的两条传递通道），不靠改正文来表达；
         * 句柄关闭，文件留给 discard 清理（事实已经在结果里，不会被清理吞掉）。
         """
         parts = list(self._memory)
@@ -271,6 +275,7 @@ class AnswerBuffer:
             complete=self.failure_kind is None,
             kind=self.failure_kind or "complete",
             reason=self.failure_reason,
+            total_bytes=self.total_bytes,
         )
 
     async def discard(self) -> None:
