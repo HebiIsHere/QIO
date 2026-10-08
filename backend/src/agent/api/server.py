@@ -1595,15 +1595,27 @@ def create_app(
                 return None, True
             return bind_task.result(), False
         finally:
-            # 收尾：把还在挂着的等待方（**包括 bind 自己**）取消掉。
-            # 外层被取消时（客户端断开 / 服务关闭 / 上层超时）这一步是必须的：
-            # attachments 的取消清理挂在它自己的 await 上，不取消就没人去丢弃
-            # 本次克隆行与临时文件（r6 的断连用例正是这样抓到漏掉的清理）。
-            for task in (bind_task, *watchers):
+            # 收尾分两类（2026-10-09 修正，实测死锁后改）：
+            #
+            # * bind 自己：**必须等** —— attachments 的取消清理（丢弃本次克隆行与
+            #   临时文件）挂在它自己的 await 上，只取消不等就没人收尾
+            #   （r6 的断连用例正是这样抓到漏掉的清理）。
+            #
+            # * 断连/取消信号的监听任务：**只取消、不等待** —— 它们挂在 Starlette
+            #   BaseHTTPMiddleware 的 wrapped_receive 上，那个 receive 要等「本请求的
+            #   响应完成」才会返回 http.disconnect（testclient.py:299-305、
+            #   middleware/base.py:53-125），而响应完成要等本路由返回 → 在这里 await 它
+            #   就是自己等自己（实测：resend_turn 挂在下面的 await 上、监听器挂在
+            #   receive() 上、门户事件循环空转 —— test_turn_journal 的两条 resend 用例
+            #   因此永不返回）。取消本身就是终态：CancelledError 会在监听器的下一个
+            #   await 点送达，不需要（也不能）在这里等它结束。
+            if not bind_task.done():
+                bind_task.cancel()
+            with contextlib.suppress(BaseException):
+                await bind_task
+            for task in watchers:
                 if not task.done():
                     task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
 
     def _cancelled_receipt(*, turn, message: str, topic_id, prepare_id) -> dict:
         """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。"""
