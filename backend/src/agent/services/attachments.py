@@ -85,6 +85,14 @@ YIELD_SECONDS = 0.001
 #: 超过它不硬算 sha256：交给显式重试重新写一份副本（见 _copy_recovery_verified）。
 RECOVERY_VERIFY_MAX_BYTES = 8 * 1024 * 1024
 
+#: 「登记完立刻发送」时等首次准备的**单请求上限**（毫秒）。
+#: 与 core/turn.py 的 ACTIVATION_ORDER_TIMEOUT（60s）同量级：等待必须有界，
+#: 到点结构化拒绝（attachment_not_ready），不让 FIFO 被无限阻塞。
+PREPARE_WAIT_MS = 60_000
+
+#: 结构化拒绝的机器可读原因码（契约 §1.3）：可用操作=重试。
+REJECT_ATTACHMENT_NOT_READY = "attachment_not_ready"
+
 STATE_PREPARED = "prepared"
 STATE_READY = "ready"
 STATE_FAILED = "failed"
@@ -355,19 +363,35 @@ class BindOutcome(list):
         self.rejected: list[tuple[str, str]] = [
             (str(i), str(r)) for i, r in (rejected or [])
         ]
+        #: 逐条拒绝的机器可读原因码（契约 §1.3：attachment_not_ready 等）。
+        #: 人话原因仍在 rejected 里；这里只补充「调用方/界面可以据此选可用操作」。
+        self.rejected_codes: dict[str, str] = {}
 
     def accept(self, att) -> None:
         self.append(att)
         self.bound.append(str(att.id))
 
-    def reject(self, attachment_id: str, reason: str) -> None:
+    def reject(self, attachment_id: str, reason: str, *, code: str | None = None) -> None:
         self.rejected.append((str(attachment_id), str(reason)))
+        if code:
+            self.rejected_codes[str(attachment_id)] = str(code)
+
+    def rejection_code_for(self, attachment_id: str) -> str | None:
+        """这一条被拒的机器可读原因码（没有就是 None：调用方按旧行为处理）。"""
+        return self.rejected_codes.get(str(attachment_id))
 
     def as_receipt(self) -> dict:
         """受理回执（响应必须带它；前端以回执为准更新界面）。"""
         return {
             "bound_attachment_ids": list(self.bound),
-            "rejected": [{"id": item, "reason": reason} for item, reason in self.rejected],
+            "rejected": [
+                {
+                    "id": item,
+                    "reason": reason,
+                    **({"code": self.rejected_codes[item]} if item in self.rejected_codes else {}),
+                }
+                for item, reason in self.rejected
+            ],
         }
 
     def failure_message(self) -> str:
@@ -395,6 +419,15 @@ class AttachmentService:
         self._db_thread_warned = False
         # 取消后的收尾任务（等工作线程真正结束再清目标文件）：持有强引用，别被 GC 掉
         self._cleanup_tasks: set[asyncio.Task] = set()
+        #: 「登记完立刻发送」时等首次准备的上限（秒）；测试可以收紧
+        self.prepare_wait_seconds: float = PREPARE_WAIT_MS / 1000.0
+        # -- 首次准备的「在飞」登记（契约 §1.3：prepared 一律不就绪）----------------
+        # 只在**事件循环线程**读写：登记（prepare/begin_upload/plan_relocate，都是路由线程）
+        # → 结束（apply_outcome）/删除（delete）→ 唤醒等在 bind_for_turn 里的人。
+        # 值 = 登记时刻（monotonic）：太久没结束的登记视为过期，不再让请求干等。
+        self._pending_prepare: dict[str, float] = {}
+        # 等完成的人：id → 一组 asyncio.Event（事件驱动，不轮询、不睡固定时长）
+        self._prepare_waiters: dict[str, set[asyncio.Event]] = {}
 
     # -- 路径 --------------------------------------------------------------
 
@@ -595,7 +628,10 @@ class AttachmentService:
                     )
             except (TypeError, ValueError):
                 pass
-        return self._insert(att)
+        inserted = self._insert(att)
+        # 首次准备即将开始（由路由在后台调度）：登记「在飞」，绑定前据此等待（§1.3）
+        self._mark_preparing(inserted.id)
+        return inserted
 
     def register_upload(
         self,
@@ -663,7 +699,9 @@ class AttachmentService:
             created_at=now,
             updated_at=now,
         )
-        return self._insert(att)
+        inserted = self._insert(att)
+        self._mark_preparing(inserted.id)  # 字节由工作线程落盘：绑定前要等它（§1.3）
+        return inserted
 
     def write_upload_stream(
         self,
@@ -879,6 +917,7 @@ class AttachmentService:
             # 必须一并清掉，否则 attachments 目录里会留下无人认领的副本。
             if outcome.stored_path and self.is_managed_path(outcome.stored_path):
                 _unlink_quiet(Path(outcome.stored_path))
+            self._clear_preparing(attachment_id)  # 等在这条上的人必须被放醒（§1.3）
             return None
         if outcome.state in (STATE_READY, STATE_CHANGED) and self.is_cancel_requested(attachment_id):
             if outcome.stored_path and self.is_managed_path(outcome.stored_path):
@@ -890,6 +929,7 @@ class AttachmentService:
                 stored_path=None,
                 sha256=None,
             )
+            self._clear_preparing(attachment_id)  # 定稿：唤醒等待者（§1.3）
             return self.get(attachment_id, check=False)
         fields: dict[str, object] = {"state": outcome.state, "error": outcome.error}
         if outcome.stored_path is not None:
@@ -900,6 +940,8 @@ class AttachmentService:
         if outcome.mtime is not None:
             fields["mtime"] = float(outcome.mtime)
         self._update(attachment_id, **fields)
+        # 首次准备到此结束：注销在飞登记并**唤醒**等待者（先注销、再唤醒）
+        self._clear_preparing(attachment_id)
         return self.get(attachment_id, check=False)
 
     def _copy_once(
@@ -1047,6 +1089,7 @@ class AttachmentService:
             self.conn.execute("DELETE FROM attachments WHERE id = ?", (att.id,))
         with self._cancel_lock:
             self._cancel.pop(att.id, None)
+        self._clear_preparing(att.id)  # 等在这条上的人必须被放醒（§1.3）
         return {
             "removed": True,
             "deleted_copy": deleted_copy,
@@ -1090,6 +1133,7 @@ class AttachmentService:
             state=STATE_PREPARED,
             sha256=None,
         )
+        self._mark_preparing(att.id)  # 重新定位＝重新准备：绑定前同样要等（§1.3）
         return self.get(att.id, check=False)
 
     def relocate(self, attachment_id: str, source_path: str) -> Attachment:
@@ -1177,6 +1221,17 @@ class AttachmentService:
         outcome = BindOutcome()
 
         if attachment_ids is None:
+            # 旧客户端兜底：这些附件是「本话题下还没绑定轮次的」——其中可能有的首次准备
+            # 还在进行。先并行等它们（有界、事件驱动），再按**当下事实**决定绑不绑：
+            # 还没就绪的一律不绑（绝不出现「模型按缺附件的请求执行」）。
+            waiting = [a for a in self._unbound(topic_id) if a.state == STATE_PREPARED]
+            if waiting:
+                await asyncio.gather(
+                    *(
+                        self._await_ready(a, timeout=self.prepare_wait_seconds)
+                        for a in waiting
+                    )
+                )
             for att in (self._check(a) for a in self._unbound(topic_id)):
                 if not self._bindable(att, turn_id=turn, topic_id=topic_id):
                     continue
@@ -1188,6 +1243,10 @@ class AttachmentService:
 
         wanted = _dedup_ids(attachment_ids)
 
+        # **通过 1：只校验**（含「等首次准备」）—— 不写归属、不克隆。
+        # 这样「任一条不满足 → 整轮拒绝」不会留下半绑状态，也不会把别的附件污染成
+        # 「已经属于某个被放弃的轮次」（既有约定：混合请求整体被拒时，真附件也不得被绑上）。
+        planned: list[tuple[str, Attachment]] = []
         for attachment_id in wanted:
             # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
             att = self.get(attachment_id)
@@ -1197,12 +1256,36 @@ class AttachmentService:
             if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
                 outcome.reject(attachment_id, "这个附件属于另一个话题，不能带到这里")
                 continue
+            # 契约 §1.3：prepared 一律不就绪 —— 先**等**正在进行的首次准备（有界、
+            # 事件驱动、不重复复制），再按等待后的**当下事实**判定；等不到就结构化拒绝。
+            if att.state == STATE_PREPARED:
+                att = await self._await_ready(att, timeout=self.prepare_wait_seconds)
+                if att.state == STATE_PREPARED:
+                    outcome.reject(
+                        attachment_id,
+                        self._not_ready_reason(att),
+                        code=REJECT_ATTACHMENT_NOT_READY,
+                    )
+                    continue
             reason = self._reject_reason(
                 att, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
             )
             if reason:
-                outcome.reject(attachment_id, reason)
+                code = (
+                    REJECT_ATTACHMENT_NOT_READY
+                    if att.state == STATE_PREPARED
+                    else None
+                )
+                outcome.reject(attachment_id, reason, code=code)
                 continue
+            planned.append((attachment_id, att))
+
+        if outcome.rejected:
+            # 任何一条不满足 → 整轮拒绝，且**一个字节都不写**（半绑状态不许存在）
+            return outcome
+
+        # **通过 2：落库 / 克隆**（到这里为止没有写过任何东西）
+        for attachment_id, att in planned:
             owner = str(att.turn_id or "")
             if owner and owner != turn:
                 if att.kind == "copy":
@@ -1267,11 +1350,117 @@ class AttachmentService:
                 rejected.append((attachment_id, "没有这个附件（可能已经被删除）"))
                 continue
             reason = self._reject_reason(
-                att, turn_id="", topic_id=topic_id, retry_of_turn_id=retry_of
+                att,
+                turn_id="",
+                topic_id=topic_id,
+                retry_of_turn_id=retry_of,
+                # 预检是同步的、不能等：prepared 放行到这里，由 async 的 bind_for_turn 等/拒
+                allow_preparing=True,
             )
             if reason:
                 rejected.append((attachment_id, reason))
         return rejected
+
+    # -- 首次准备的「在飞」登记与有界等待（契约 §1.3）----------------------
+
+    def _mark_preparing(self, attachment_id: str) -> None:
+        """登记「这条附件的首次准备正在进行」（事件循环线程）。"""
+        self._pending_prepare[str(attachment_id)] = time.monotonic()
+
+    def _clear_preparing(self, attachment_id: str) -> None:
+        """准备结束（成功/失败/取消/删除）：注销登记并**唤醒**所有等待者。
+
+        顺序很重要：先注销、再唤醒 —— 被唤醒的人重新读行时会看到「已经没有在飞的
+        准备任务」，于是立刻按当下事实判定，而不是再等一轮。
+        """
+        key = str(attachment_id)
+        self._pending_prepare.pop(key, None)
+        for event in self._prepare_waiters.pop(key, set()):
+            event.set()
+
+    def is_preparing(self, attachment_id: str, *, max_age: float | None = None) -> bool:
+        """这条附件现在是否真的有一份准备在进行（太久没结束的登记视为过期）。"""
+        started = self._pending_prepare.get(str(attachment_id))
+        if started is None:
+            return False
+        age_limit = self.prepare_wait_seconds * 4 if max_age is None else float(max_age)
+        return (time.monotonic() - started) <= age_limit
+
+    def _not_ready_reason(self, att: Attachment) -> str:
+        """还没就绪的人话原因（契约 §1.3：可用操作 = 重试）。"""
+        waited = max(1, int(round(self.prepare_wait_seconds)))
+        return (
+            f"这个附件的准备还没有完成（已等 {waited} 秒）：{att.original_name}；"
+            "可以重试准备后重新发送"
+        )
+
+    def _copy_readiness_reason(self, att: Attachment) -> str | None:
+        """copy 的执行就绪判据（契约 §1.3，**唯一一份**）：
+
+        * 状态必须是 ready（prepared 由调用方先等；其它状态各有各的原因）；
+        * 副本必须在 QIO 管理目录里、存在、可打开；
+        * 大小必须与登记一致（文件被截断/替换过就不是同一份内容）。
+        """
+        if not att.stored_path or not self.is_managed_path(att.stored_path):
+            return "QIO 没有可用的副本文件；可以重试准备后再发送"
+        path = Path(att.stored_path)
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            return "读不到 QIO 保存的副本（" + redact_text(str(exc)) + "）；可以重试准备后再发送"
+        if not path.is_file():
+            return "QIO 保存的副本文件已经不在了；可以重试准备后再发送"
+        registered = int(att.size_bytes)
+        actual = int(stat.st_size)
+        if actual != registered:
+            return (
+                "QIO 保存的副本大小与登记不一致（现在 "
+                + human_size(actual)
+                + "，登记 "
+                + human_size(registered)
+                + "）：这份内容不能当成就绪；可以重试准备后再发送"
+            )
+        return None
+
+    async def _await_ready(self, att: Attachment, *, timeout: float) -> Attachment:
+        """等这条附件的首次准备结束（**事件驱动**，不轮询、不加固定延时、不重复复制）。
+
+        * 行已经不在 / 已经不是 prepared → 立刻返回（用当下的事实）；
+        * 没有在飞的准备任务（重启遗留、过期登记）→ 立刻返回，由调用方结构化拒绝；
+        * 有 → 挂一个 asyncio.Event 等完成（apply_outcome/delete 唤醒），**有界**超时。
+        返回**重新读出来的行**：调用方必须用返回值重新判定就绪。
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            current = self.get(att.id, check=False)  # 每次都用当下事实（等待期间会变）
+            if current is None or current.state != STATE_PREPARED:
+                return current or att
+            if not self.is_preparing(att.id):
+                return current  # 没有在飞的准备：不再干等
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return current
+            event = asyncio.Event()
+            self._prepare_waiters.setdefault(att.id, set()).add(event)
+            # 注册之后再复核一次：避免「恰好在我注册前完成」丢唤醒
+            fresh = self.get(att.id, check=False)
+            if fresh is None or fresh.state != STATE_PREPARED or not self.is_preparing(att.id):
+                waiters = self._prepare_waiters.get(att.id)
+                if waiters is not None:
+                    waiters.discard(event)
+                    if not waiters:
+                        self._prepare_waiters.pop(att.id, None)
+                return fresh or att
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return self.get(att.id, check=False) or att
+            finally:
+                waiters = self._prepare_waiters.get(att.id)
+                if waiters is not None:
+                    waiters.discard(event)
+                    if not waiters and att.id in self._prepare_waiters:
+                        self._prepare_waiters.pop(att.id, None)
 
     def _reject_reason(
         self,
@@ -1280,8 +1469,14 @@ class AttachmentService:
         turn_id: str,
         topic_id: str | None,
         retry_of_turn_id: str | None,
+        allow_preparing: bool = False,
     ) -> str | None:
-        """这条附件现在能不能绑到这一轮；不能就给人话原因（判据的唯一一份）。"""
+        """这条附件现在能不能绑到这一轮；不能就给人话原因（判据的唯一一份）。
+
+        `allow_preparing=True` 只给**同步的预检**（precheck_for_turn）用：预检不能 await，
+        它只挡话题/归属/终态；「还没就绪」的最终判定与等待在 async 的 bind_for_turn 里，
+        否则预检会把「登记完立刻发送」直接 409 掉，等待逻辑永远走不到。
+        """
         if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
             return "这个附件属于另一个话题，不能带到这里"
         owner = str(att.turn_id or "")
@@ -1290,8 +1485,15 @@ class AttachmentService:
                 return "这个附件已经属于别的一轮了；把它带到新一轮请用这一轮的重试入口"
             # 重试复用：还要能真的复用（副本在 / 引用位置可用）
             return self._clone_reason(att)
-        if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
+        if att.state == STATE_PREPARED:
+            # 契约 §1.3：prepared **一律不就绪** —— 调用方先等首次准备（bind_for_turn），
+            # 等不到就按这个原因结构化拒绝（可用操作=重试）。
+            return None if allow_preparing else self._not_ready_reason(att)
+        if att.state not in (STATE_READY, STATE_CHANGED):
             return self._state_reason(att)
+        # copy 的执行就绪还有第二个条件：副本真的在、大小与登记一致（契约 §1.3）
+        if att.kind == "copy":
+            return self._copy_readiness_reason(att)
         return None
 
     def _clone_reason(self, att: Attachment) -> str | None:
@@ -1301,7 +1503,14 @@ class AttachmentService:
                 return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
             if not Path(att.stored_path).is_file():
                 return "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送"
-            return None
+            # 复用的是**这份副本**：它必须与登记一致（截断/替换过就不能当原样复用）
+            return self._copy_readiness_reason(att)
+        if att.state == STATE_PREPARED:
+            # 源附件还在准备：克隆要复用的副本此刻还不存在 —— 由调用方（bind_for_turn）
+            # 先等它，等不到就是「还没就绪」而不是「没有副本」
+            return self._not_ready_reason(att)
+            
+        return None
         state, error = self._reference_state_now(att)
         if state == STATE_FAILED:
             return error or "这个位置现在不能当附件用"
@@ -1637,13 +1846,16 @@ class AttachmentService:
         return self.list(topic_id=str(topic_id), unbound=True, limit=50, check=False)
 
     def _bindable(self, att: Attachment, *, turn_id: str, topic_id: str | None) -> bool:
-        """这条附件现在能不能绑到这一轮（三条事实，缺一不可）：
+        """这条附件现在能不能绑到这一轮（兜底路径用；判据与 _reject_reason 同一份）：
 
-        1. 状态有效：prepared / ready / changed 可绑，failed / cancelled / missing 不绑；
+        1. 执行就绪（§1.3）：copy 要 ready + 副本可读且大小一致；reference 按既有规则；
+           **prepared 一律不就绪**（调用方已经等过一轮）；
         2. 话题对得上：属于当前话题，或还没有话题归属（无归属的会补上当前话题）；
         3. 没被别的轮次占着：att.turn_id 为空或就是这一轮（同一轮重复提交幂等）。
         """
-        if att.state not in (STATE_PREPARED, STATE_READY, STATE_CHANGED):
+        if att.state not in (STATE_READY, STATE_CHANGED):
+            return False
+        if att.kind == "copy" and self._copy_readiness_reason(att):
             return False
         if att.turn_id is not None and str(att.turn_id) != str(turn_id):
             return False
