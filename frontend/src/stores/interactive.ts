@@ -21,6 +21,7 @@ import {
   removeCardLocalDraft,
   writeCardLocalDraft,
   writeCardLocalClear,
+  type DraftRecord,
 } from "../interactive/drafts";
 import {
   cloneState,
@@ -571,19 +572,29 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 待同步的清除依据（kind: "cleared"）**不是草稿**：用户已经清掉了它，
    * 不能在编辑器里把它当草稿显示出来（§11.2）。
    */
+  /**
+   * 本机记录里属于**当前板面**的那份编辑草稿（没有/不是草稿/属于别的板面都返回 null）。
+   * 记录自己写了归属就按归属判断，绝不给别的板面恢复内容（§11.1）。
+   */
+  function localDraftFor(cardId: string): DraftRecord | null {
+    const local = readCardLocalDraft(cardId);
+    if (!local) return null;
+    if (local.kind === "cleared") return null;
+    if (local.boardId && local.boardId !== boardId.value) return null;
+    return local;
+  }
+
   function hasCardDraft(cardId: string): boolean {
     const key = cardDraftKey(cardId);
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return true;
-    const local = readCardLocalDraft(cardId);
-    return local !== null && local.kind !== "cleared";
+    return localDraftFor(cardId) !== null;
   }
 
   /** 卡片草稿正文：存在则为草稿内容（可以是空串）；不存在时返回空串。 */
   function cardDraftText(cardId: string): string {
     const key = cardDraftKey(cardId);
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return drafts.value[key];
-    const local = readCardLocalDraft(cardId);
-    return local && local.kind !== "cleared" ? local.text : "";
+    return localDraftFor(cardId)?.text ?? "";
   }
 
   /**
