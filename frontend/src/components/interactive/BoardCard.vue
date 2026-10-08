@@ -14,8 +14,9 @@
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
+import { cardDraftKey } from "../../interactive/drafts";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
@@ -171,12 +172,24 @@ function startEdit() {
   metaLanguage.value = language.value;
   metaHref.value = href.value;
   metaTitle.value = String(props.card.meta?.title ?? "");
-  store.setDraft("card:" + props.card.id, draft.value);
+  store.setDraft(cardDraftKey(props.card.id), draft.value);
 }
 
 function onDraftInput() {
-  store.setDraft("card:" + props.card.id, draft.value);
+  store.setDraft(cardDraftKey(props.card.id), draft.value);
 }
+
+/**
+ * 草稿内容也可能由**别处**改掉：恢复发现新旧冲突后用户选了「用服务器上的」，
+ * 或刷新恢复把本机记录读回来。编辑框要跟着走，不能停在旧文字上。
+ * 自己打字时 store 与输入框本来就一样，这里比较后不动，不会形成回写循环。
+ */
+watch(
+  () => store.cardDraftText(props.card.id),
+  (text) => {
+    if (editing.value && text !== draft.value) draft.value = text;
+  },
+);
 
 /** 确认编辑才形成有效文字状态；输入过程只存草稿，不调用 QIO。 */
 function confirmEdit() {
@@ -193,7 +206,7 @@ function confirmEdit() {
    * 确认之后草稿就该消失（契约 §10.4）：写一个空串会留下「存在但正文为空」的记录，
    * 下次打开编辑器会把刚确认的正式内容盖成空。这里把记录整个清掉。
    */
-  store.clearDraft("card:" + props.card.id);
+  store.clearDraft(cardDraftKey(props.card.id));
   editing.value = false;
 }
 
