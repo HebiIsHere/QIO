@@ -12,7 +12,15 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
 import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../interactive/approval";
-import { isStaleReceipt } from "../interactive/drafts";
+import {
+  draftStorageKey,
+  hasDraftRecord,
+  isStaleReceipt,
+  readDraft,
+  removeDraft,
+  writeDraft,
+  type DraftRecord,
+} from "../interactive/drafts";
 import {
   cloneState,
   emptyBoardState,
@@ -37,6 +45,21 @@ export type DraftSaveState = "idle" | "saving" | "saved" | "error";
 const DRAFT_SAVE_DEBOUNCE_MS = 600;
 /** 一次 flush 最多连存几轮（连续输入时避免把它变成停不下来的循环） */
 const DRAFT_FLUSH_MAX_ROUNDS = 8;
+/**
+ * 等旧请求结束之后最多重新检查几次（契约 §10.3）。
+ * 串行保存必须保留，但「等旧请求」不能拿到结果就返回、把后来的版本遗忘；
+ * 重新检查是有界的：失败会明确停在 error 等用户重试，不做无界自动重试。
+ */
+const DRAFT_FLUSH_MAX_PASSES = 4;
+/** 卡片草稿在内存与服务端草稿接口里的键前缀（契约 §4：`card:<id>`） */
+const CARD_DRAFT_PREFIX = "card:";
+/** 本机恢复副本的 id 前缀：与服务端草稿键分开（§10.5） */
+const LOCAL_DRAFT_ID_PREFIX = "local-";
+/**
+ * 恢复副本里的哨兵序号：表示「这个草稿已经被用户确认或删除」，不是一条草稿。
+ * 服务端那次删除万一没成功，下次刷新靠它挡住旧记录复活、遮住新的正式内容（§10.4）。
+ */
+const CLEARED_DRAFT_SEQ = -1;
 export type SubmitStatus = "idle" | "submitting" | "succeeded" | "failed" | "empty" | "duplicate";
 
 export const useInteractiveStore = defineStore("interactive", () => {
@@ -52,6 +75,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const draftStates = ref<Record<string, { status: DraftSaveState; error: string | null }>>({});
   /** 最近编辑过的草稿键（提示组件没拿到 cardId 时的兜底） */
   const lastDraftKey = ref("");
+  /**
+   * 本机草稿记录（存在记录 / 恢复副本）的写入结果（§10.5）。
+   * 本机存储写不进去时必须能提示并重试，不能只在内存里假装存过了。
+   */
+  const draftLocalStates = ref<Record<string, { ok: boolean; error: string | null }>>({});
 
   const saveStatus = ref<SaveStatus>("idle");
   const lastSavedAt = ref<string | null>(null);
@@ -137,6 +165,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const draftSavedKeySeq = new Map<string, number>();
   /** 同一时刻只允许一个草稿保存请求在飞（并发 PUT 会让旧内容盖掉新内容） */
   let draftInFlight: Promise<void> | null = null;
+  /**
+   * 已经在本机确认/删除、但服务端还没删掉的草稿键。
+   * 服务端草稿是整份替换保存的：下一次成功的草稿保存会把它们一并删掉（§10.4）。
+   */
+  const draftRemovalKeys = new Set<string>();
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -350,6 +383,62 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return unsavedDraftKeys().length > 0;
   }
 
+  /**
+   * 有没有「在 `atSeq` 之后又改过、且还没保存成功」的更新版本。
+   *
+   * 只给串行保存用：一次请求失败后，**只有更新版本**才值得自动再试一次（契约 §10.3）；
+   * 同一个版本失败就停下来，明确显示原因与重试入口 —— 不做无界的自动重试。
+   */
+  function hasNewerUnsaved(atSeq: number): boolean {
+    return Object.keys(drafts.value).some((key) => {
+      const seq = draftKeySeq.get(key) ?? 0;
+      return seq > atSeq && seq > (draftSavedKeySeq.get(key) ?? 0);
+    });
+  }
+
+  /**
+   * 空草稿也算「有草稿」：区分「没有草稿」与「存在但正文为空」（契约 §10.4）。
+   *
+   * 两个来源都要看：
+   * - 内存里的 `drafts`（本次会话刚编辑过：哪怕正文是空串，它也是一条**存在**的草稿）；
+   * - 本机记录（刷新/重开之后的恢复来源）。
+   * 只看其中一个都会把「空草稿」判成「没有草稿」，于是旧正文又冒出来盖掉它。
+   */
+  function hasCardDraft(cardId: string): boolean {
+    const key = "card:" + cardId;
+    if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return true;
+    return hasDraftRecord(draftStorageKey("card", cardId));
+  }
+
+  /** 卡片草稿正文：存在则为草稿内容（可以是空串）；不存在时返回空串。 */
+  function cardDraftText(cardId: string): string {
+    const key = "card:" + cardId;
+    if (Object.prototype.hasOwnProperty.call(drafts.value, key)) return drafts.value[key];
+    return readDraft(draftStorageKey("card", cardId))?.text ?? "";
+  }
+
+  /**
+   * 清掉一条草稿（用户确认编辑 / 删除卡片时用）。
+   *
+   * **不能只是写一个空串**：那会留下一条「存在且正文为空」的草稿，
+   * 下次打开编辑器会把用户刚确认的正式内容盖成空（契约 §10.4）。
+   * 这里把内存条目、本机记录一起删掉，并把版本往前推一格，
+   * 让还在飞的旧保存回执不再算数。
+   */
+  function clearDraft(key: string): void {
+    if (Object.prototype.hasOwnProperty.call(drafts.value, key)) {
+      const next = { ...drafts.value };
+      delete next[key];
+      drafts.value = next;
+    }
+    draftKeySeq.set(key, ++draftSeq);
+    draftSavedKeySeq.set(key, draftKeySeq.get(key) ?? 0);
+    setDraftState(key, "idle");
+    const cardId = key.startsWith("card:") ? key.slice("card:".length) : key;
+    removeDraft(draftStorageKey("card", cardId));
+    removeDraft(draftStorageKey("card", "local-" + cardId));
+  }
+
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
   function setDraft(key: string, text: string) {
     drafts.value = { ...drafts.value, [key]: text };
@@ -384,11 +473,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
       clearTimeout(draftTimer);
       draftTimer = null;
     }
-    if (draftInFlight) {
-      await draftInFlight;
-      return;
-    }
+    /**
+     * 已经有请求在飞：**等它结束后再检查一次**未保存的新版本（契约 §10.3）。
+     *
+     * 不能直接 return —— 那正是「第二版被遗忘、界面永远停在保存中」的根因：
+     * 第二版的防抖到点时旧请求还在飞，等待后直接返回，旧请求失败就再也没人管它了。
+     */
+    while (draftInFlight) await draftInFlight;
     if (!hasUnsavedDrafts()) return;
+    let lastError: string | null = null;
     draftInFlight = (async () => {
       try {
         for (let round = 0; round < DRAFT_FLUSH_MAX_ROUNDS; round += 1) {
@@ -401,15 +494,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           try {
             await api.saveDrafts(boardId.value, payload);
+            lastError = null;
           } catch (err) {
-            const reason = (err as Error).message || "原因未知";
+            lastError = (err as Error).message || "原因未知";
             for (const key of keys) {
               const keySeq = draftKeySeq.get(key) ?? 0;
-              // 期间又改了内容：它属于下一轮，状态保持「保存中」，不要标成这次的失败
+              // 期间又改了内容：它属于下一轮，不要标成这次的失败（状态留给下一轮）
               if (isStaleReceipt(atSeq, keySeq)) continue;
-              setDraftState(key, "error", reason);
+              setDraftState(key, "error", lastError);
             }
-            return;
+            /**
+             * 只有「这次请求期间又改过」的更新版本才自动再试一次（有界）；
+             * 同一个版本失败就**停下来**：明确显示原因与重试入口，等用户点重试或下一次输入。
+             * 这样既不会把新版本一起吞掉，也不会无界重试、更不会假装成功。
+             */
+            if (!hasNewerUnsaved(atSeq)) break;
+            continue;
           }
           for (const key of keys) {
             const keySeq = draftKeySeq.get(key) ?? 0;
@@ -422,10 +522,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
       } finally {
         draftInFlight = null;
       }
-      // 到轮次上限还有新内容：交给下一次防抖，别在这里空转
-      if (hasUnsavedDrafts()) scheduleDraftSave();
     })();
     await draftInFlight;
+    /**
+     * 请求结束后再看一眼：还有没保存的内容就必须**说清楚**（契约 §10.3）——
+     * 要么继续安排下一次保存（真的会发出请求），要么明确显示未保存原因与重试入口。
+     * 绝不留下「没有请求、没有计时、没有后续工作，却一直显示保存中」。
+     */
+    if (hasUnsavedDrafts()) {
+      if (lastError) {
+        for (const key of unsavedDraftKeys()) setDraftState(key, "error", lastError);
+      } else {
+        // 轮次上限用尽但内容还在更新：交给下一次防抖，不在这里空转
+        scheduleDraftSave();
+      }
+    }
   }
 
   /**
@@ -655,6 +766,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     refreshBoardFromServer,
     setDraft,
     draftFor,
+    hasCardDraft,
+    cardDraftText,
+    clearDraft,
     draftStates,
     lastDraftKey,
     draftSaveStatus,

@@ -17,7 +17,7 @@ import {
   UNBOUND_DRAFT_ID,
   writeDraft,
 } from "../interactive/drafts";
-import { isBlankText } from "../interactive/chat";
+import { isBlankText, normalizeSendText } from "../interactive/chat";
 
 export interface ToolPresentation {
   title?: string;
@@ -367,6 +367,43 @@ export interface StreamMessage {
   queued?: boolean;
 }
 
+/**
+ * 一次「没有发出去」的发送（契约 §10.1）。
+ *
+ * 原文只属于它当时的话题：切到别的话题时，这份记录不许改那边的输入、草稿或发送状态，
+ * 也不许把原话题的错误显示成那边的失败。
+ */
+export interface FailedSend {
+  /** 点击发送那一刻的话题（null = 话题还没确定，用的是占位草稿） */
+  topicId: string | null;
+  /** 原始文字（用户当时输入的内容，不自动拼接、不改写） */
+  text: string;
+  /** 点击发送那一刻的草稿版本：恢复与清理都按它判断，不靠「输入框是不是空的」 */
+  draftSeq: number;
+  /** 失败发生的时间（毫秒） */
+  at: number;
+}
+
+/**
+ * 点击「发送」那一刻定下的归属（契约 §10.1）。
+ *
+ * 请求本身必须用它：清空输入框、等待回执期间切换话题，都不许改变这条消息的去向。
+ */
+export interface SendAttribution {
+  /** 点击那一刻的话题 */
+  topicId: string | null;
+  /** 点击那一刻输入框里的原始文字 */
+  text: string;
+  /** 点击那一刻的草稿版本 */
+  draftSeq: number;
+  /** 点击那一刻的草稿存储键（清理旧草稿只按它 + 版本） */
+  key: string;
+  /** 记录时间（毫秒） */
+  at: number;
+  /** 是否确实在点击那一刻记录过（false = 兜底捕获，不做存档保护） */
+  recorded: boolean;
+}
+
 const sessionStoreDefinition = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
@@ -440,6 +477,16 @@ const sessionStoreDefinition = defineStore("session", {
     draftSaveStatus: "idle" as "idle" | "saving" | "saved" | "error",
     /** 最近一次草稿保存失败的真实原因（保存成功或没有草稿时为空） */
     draftSaveError: null as string | null,
+    /**
+     * 最近一次发送失败的原文（契约 §10.1）。
+     *
+     * 会话层统一持有这份事实：普通对话页的输入区与悬浮聊天都读它，
+     * 不各写一套「失败了要不要把字放回去」的判断。它**不自动写回输入框**，
+     * 只提供明确的取回入口；不属于当前话题时界面什么都不做。
+     */
+    failedSend: null as FailedSend | null,
+    /** 这次发送失败的真实原因（与 failedSend 同生共死，界面直接显示，不改写成别的意思） */
+    failedSendError: null as string | null,
     /**
      * 本机发起的发送序号。只有本机发送才允许把消息流强制拉回底部；
      * 后台/排队任务开始时用户可能正在往上读，不能被拽走。
@@ -626,6 +673,95 @@ const sessionStoreDefinition = defineStore("session", {
      */
     retryDraftSave() {
       chatDraftKeeperFor(this as object)?.retry();
+    },
+    /**
+     * 点击「发送」那一刻定下归属（契约 §10.1）：原话题、原始文字、当时的草稿版本。
+     *
+     * 组件必须在**清空输入框之前**调用它；send() 会用这次记录发起请求。
+     * 所以「等待回执期间切了话题」不会把消息发到别的话题上，
+     * 失败原文也不会被放进别的话题的输入框。
+     */
+    sendAttribution(): SendAttribution {
+      const keeper = chatDraftKeeperFor(this as object);
+      // 必须**记下来**（recordAttribution 会把归属存进 pendingAttribution），
+      // 只 capture 不记录的话 send() 取不到它，就会退化成「按当时的话题」发 —— 那正是要修的竞态。
+      if (keeper) return keeper.recordAttribution();
+      return {
+        topicId: this.currentTopicId,
+        text: this.draft,
+        draftSeq: 0,
+        key: "",
+        at: Date.now(),
+        recorded: true,
+      };
+    },
+    /**
+     * 取回上一次发送失败的原文（契约 §10.1）。**不自动发送**。
+     *
+     * 三条边界：
+     * - 只在原话题可用：当前在别的话题时一个字都不改，只回报原因；
+     * - 输入框为空就直接放回，放回后清掉失败记录（已经取回，不再重复提示）；
+     * - 输入框里已有更新文字时**不覆盖**：两份都保留，取回失败那份走 swapFailedSendText()。
+     */
+    retryFailedSend(): { ok: boolean; restored: boolean; reason?: string } {
+      const failed = this.failedSend;
+      if (!failed) return { ok: false, restored: false, reason: "没有需要取回的失败原文" };
+      if (failed.topicId !== this.currentTopicId) {
+        return { ok: false, restored: false, reason: "需要回到原话题才能取回这段文字" };
+      }
+      if (isBlankText(this.draft)) {
+        this.draft = failed.text;
+        this.failedSend = null;
+        this.failedSendError = null;
+        return { ok: true, restored: true };
+      }
+      if (normalizeSendText(this.draft) === normalizeSendText(failed.text)) {
+        // 原文已经在输入框里（例如回来时草稿被恢复）：不必再放一次，
+        // 失败事实仍保留 —— 它还没有成功发出去，不能假装已经解决。
+        return { ok: true, restored: false, reason: "原文已经在输入框里" };
+      }
+      return {
+        ok: false,
+        restored: false,
+        reason: "输入框里已有更新文字，没有覆盖（两份都保留，可以互换取回原文）",
+      };
+    },
+    /**
+     * 把失败原文与当前输入**互换**：两份文字都保留，谁都不被丢掉。
+     *
+     * 只在用户明确点「互换」时调用（不是失败后的自动行为），也不拼接、不改写、不发送。
+     * 互换之后这条记录里放的是刚才输入框里的那份文字。
+     */
+    swapFailedSendText(): { ok: boolean; swapped: boolean; reason?: string } {
+      const failed = this.failedSend;
+      if (!failed) return { ok: false, swapped: false, reason: "没有需要取回的失败原文" };
+      if (failed.topicId !== this.currentTopicId) {
+        return { ok: false, swapped: false, reason: "需要回到原话题才能取回这段文字" };
+      }
+      const current = this.draft;
+      if (isBlankText(current)) {
+        // 输入框本来就是空的：直接放回，不需要互换
+        this.draft = failed.text;
+        this.failedSend = null;
+        this.failedSendError = null;
+        return { ok: true, swapped: false };
+      }
+      const keeper = chatDraftKeeperFor(this as object);
+      this.failedSend = {
+        ...failed,
+        text: current,
+        draftSeq: keeper?.currentSeq ?? failed.draftSeq,
+      };
+      this.draft = failed.text;
+      return { ok: true, swapped: true };
+    },
+    /**
+     * 不再保留这次失败原文：只清掉失败事实与原因，
+     * **不删草稿、不清输入框、不发送、不碰板面**。
+     */
+    discardFailedSend() {
+      this.failedSend = null;
+      this.failedSendError = null;
     },
     /**
      * 设置锚点话题。name/fragment 可选：传入则刷新话题名与锚点片段，
@@ -1925,15 +2061,24 @@ const sessionStoreDefinition = defineStore("session", {
     async send(text: string): Promise<boolean> {
       const message = text.trim();
       if (!message) return false;
-      /**
-       * 这条消息属于哪个会话的草稿（契约 §9.4）：
-       * 只有**受理成功**才删这个键；发送期间用户切了话题、或又输入了新文字，
-       * 都不许被这次回执覆盖。
-       */
       const draftKeeper = chatDraftKeeperFor(this as object);
-      const draftKeyAtSend = draftKeeper?.currentKey ?? "";
-      // 清空输入框会引起一次「删草稿」的防抖写入：在拿到受理结果之前先按住它
-      draftKeeper?.holdForSend();
+      /**
+       * 归属在**点击那一刻**就已经定下（契约 §10.1）：这里只消费那次记录，
+       * 不再读「现在的话题」—— 清空输入框之后、等待回执期间切换话题，
+       * 都不许改变这条消息的去向。
+       */
+      const attribution = draftKeeper
+        ? draftKeeper.takeAttribution(message)
+        : {
+            topicId: this.currentTopicId,
+            text: message,
+            draftSeq: 0,
+            key: "",
+            at: Date.now(),
+            recorded: false,
+          };
+      // 原文先受保护：清空输入框引起的「删草稿」写入在拿到受理结果之前被按住
+      draftKeeper?.protectForSend(attribution);
       const queued = this.turnRunning;
       this.pushUser(message);
       const optimistic = this.messages[this.messages.length - 1];
@@ -1946,7 +2091,7 @@ const sessionStoreDefinition = defineStore("session", {
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
       try {
-        const res = await api.sendTurn(message, this.currentTopicId);
+        const res = await api.sendTurn(message, attribution.topicId);
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
@@ -1961,20 +2106,45 @@ const sessionStoreDefinition = defineStore("session", {
             this.turnPhase = "waiting";
           }
         }
-        // 受理成功：这条消息已经交给后端，对应的草稿可以删了
-        draftKeeper?.discardAfterSend(draftKeyAtSend);
+        // 受理成功：只清掉这一次发送对应的**旧版本**草稿（键 + 版本），
+        // 同话题后来写的新草稿、别的话题的草稿一律不动（契约 §10.2）
+        draftKeeper?.settleSend(attribution, true);
+        if (
+          this.failedSend &&
+          this.failedSend.topicId === attribution.topicId &&
+          normalizeSendText(this.failedSend.text) === message
+        ) {
+          // 这条失败原文已经成功发出去了：失败记录随之解除
+          this.failedSend = null;
+          this.failedSendError = null;
+        }
         return true;
       } catch (e) {
-        this.lastError = (e as Error).message;
+        const reason = (e as Error).message;
+        this.lastError = reason;
         // 通知消息流：这次发送没有被受理，界面要回到发送前的样子
         this.sendRejectedSeq += 1;
-        // 这条请求没有被后端接受：撤掉乐观消息，交给 Composer 恢复草稿，
+        // 这条请求没有被后端接受：撤掉乐观消息，
         // 避免「界面上有一条没发出去的消息」这种误导状态。
         this.messages = this.messages.filter((m) => m.id !== optimistic.id);
         this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== optimistic.id);
         // 只有「不是排队」的失败才说明当前 active turn 没起来。
         // 排队请求失败不能把仍在运行的其他任务一起标记成已结束。
         if (!queued) this.turnRunning = false;
+        draftKeeper?.settleSend(attribution, false);
+        /**
+         * 失败事实由会话层统一记录（契约 §10.1）：这里**不碰任何输入框**。
+         * 恢复只发生在原话题、且只由用户点恢复入口触发（不自动重发）。
+         */
+        if (!isBlankText(attribution.text)) {
+          this.failedSend = {
+            topicId: attribution.topicId,
+            text: attribution.text,
+            draftSeq: attribution.draftSeq,
+            at: attribution.at,
+          };
+          this.failedSendError = reason || "原因未知";
+        }
         return false;
       }
     },
@@ -2034,6 +2204,16 @@ function createChatDraftKeeper(host: SessionDraftHost) {
   let savedText: string | null = null;
   /** 正在把存储内容装回输入框：这次赋值不算用户输入，不该再写一次 */
   let loadingStored = false;
+  /**
+   * 已经发出、还在等受理结果的原文（契约 §10.1）。
+   *
+   * 每条记的是「点击那一刻的键 + 版本 + 原文」：在拿到回执之前，清空输入框
+   * （或切话题时的落盘）都不许把这条原文删掉。用列表而不是单个位置：
+   * 排队发送时确实可能有两条同时在飞。
+   */
+  const inFlightSends: SendAttribution[] = [];
+  /** 点击发送那一刻记下的归属；send() 消费它，消费后即失效 */
+  let pendingAttribution: SendAttribution | null = null;
 
   function setStatus(status: SessionDraftHost["draftSaveStatus"], error: string | null): void {
     host.draftSaveStatus = status;
@@ -2059,6 +2239,26 @@ function createChatDraftKeeper(host: SessionDraftHost) {
       // 但也不能把状态永远停在「保存中」——按当前键重新安排一次保存。
       armTimer();
       return;
+    }
+    /**
+     * 正在等受理结果的原文：清空输入框（或切话题落盘）不许把它删掉（契约 §10.1）。
+     * 用户在发送期间写下了更新的内容时，保护自动结束 —— 那条原文仍在失败记录里，
+     * 不会因为这里放手而丢。
+     */
+    const held = inFlightSends.find((item) => item.key === atKey);
+    if (held) {
+      if (isBlankText(text)) {
+        // 原文还压在存储里：这一小段没有待保存的内容，状态别停在「保存中」
+        if (isBlankText(host.draft)) setStatus("idle", null);
+        return;
+      }
+      if (atSeq > held.draftSeq) {
+        for (let i = inFlightSends.length - 1; i >= 0; i -= 1) {
+          if (inFlightSends[i].key === atKey && inFlightSends[i].draftSeq < atSeq) {
+            inFlightSends.splice(i, 1);
+          }
+        }
+      }
     }
     if (isBlankText(text)) {
       // 空草稿就是「没有草稿」：删掉记录，不留一条看着像有草稿的空记录
@@ -2165,36 +2365,116 @@ function createChatDraftKeeper(host: SessionDraftHost) {
     if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
   }
 
-  /**
-   * 发送请求在飞：先按住「清空输入框 → 删草稿」的防抖写入。
-   * 受理成功才删（discardAfterSend），失败时草稿必须原样还在。
-   */
-  function holdForSend(): void {
-    cancelTimer();
-    // 输入框已经清空（消息正在飞）：这一小段时间没有草稿在等保存，别把状态停在「保存中」。
-    // 存好的草稿先留着 —— 受理成功才删，失败还要原样恢复。
-    if (isBlankText(host.draft)) setStatus("idle", null);
+  /** 记下「点击发送」那一刻的归属（话题、原文、草稿版本、存储键） */
+  function captureAttribution(): SendAttribution {
+    return {
+      topicId: host.currentTopicId,
+      text: host.draft,
+      draftSeq: seq,
+      key,
+      at: Date.now(),
+      recorded: true,
+    };
   }
 
-  /** 受理成功：删掉这条消息对应的草稿；用户后来输入的新文字一个字都不动。 */
-  function discardAfterSend(sentKey: string): void {
-    if (!sentKey) return;
-    if (sentKey !== key) {
-      // 发送期间换了话题：只删属于那条消息的键，当前草稿不受影响
-      removeDraft(sentKey);
-      return;
-    }
-    if (!isBlankText(host.draft)) {
-      // 发送期间用户又打了字：那是更新的草稿，重新安排保存
-      armTimer();
-      return;
-    }
+  /** 点击发送时调用：把归属记住，等 send() 来取（请求必须用它） */
+  function recordAttribution(): SendAttribution {
+    const at = captureAttribution();
+    pendingAttribution = at;
+    return at;
+  }
+
+  /**
+   * send() 取用点击时记下的归属。
+   *
+   * 只有文字确实对得上才认这份记录（对不上说明它不是这次发送的）。
+   * 没有记录时用当前话题兜底捕获，**照样保护原文**（见下面的说明）。
+   */
+  function takeAttribution(message: string): SendAttribution {
+    const pending = pendingAttribution;
+    pendingAttribution = null;
+    if (pending && normalizeSendText(pending.text) === message) return pending;
+    /**
+     * 兜底归属：调用方没有在点击那一刻记录过（例如会话层被直接调用、或组件版本较旧）。
+     *
+     * 这时**仍然要保护原文**（契约 §10.1「发送前文字还没到自动保存时间也必须受保护」）：
+     * 用当前话题与当前草稿键建一份可用归属，protectForSend 会把原文落到**这个话题自己的键**上，
+     * 受理成功后再按版本清理。key 为空（存储不可用）时才退化成「只保住内存」。
+     */
+    return {
+      topicId: host.currentTopicId,
+      text: message,
+      draftSeq: seq,
+      key,
+      at: Date.now(),
+      recorded: Boolean(key),
+    };
+  }
+
+  /**
+   * 发送请求在飞：按住「清空输入框 → 删草稿」的防抖写入，并把原文先落盘。
+   *
+   * 受理成功才清理（settleSend），失败时原文必须原样还在 ——
+   * 而且它属于**点击那一刻**的话题，和之后用户切到哪儿无关（契约 §10.1）。
+   */
+  function protectForSend(at: SendAttribution): void {
     cancelTimer();
-    // 序号 +1：任何还在等防抖的旧写入都判定为过期，不许把草稿又写回去
-    seq += 1;
-    removeDraft(key);
+    pendingAttribution = null;
+    if (!at.recorded || !at.key) {
+      // 兜底归属（没有在点击那一刻记录过）：不动存储，只保住状态显示
+      if (at.key === key && isBlankText(host.draft)) setStatus("idle", null);
+      return;
+    }
+    // 输入框已经清空（消息正在飞）：先收起「保存中」，原文本身下面单独落盘
+    if (at.key === key && isBlankText(host.draft)) setStatus("idle", null);
+    if (isBlankText(at.text)) return;
+    const stored = readDraft(at.key);
+    if (!stored || stored.seq <= at.draftSeq) {
+      const result = writeDraft(at.key, at.text, at.draftSeq);
+      if (result.ok) {
+        if (at.key === key) savedText = at.text;
+      } else {
+        // 存不进本机也要如实说：内存里的原文不会丢，但刷新后可能取不回
+        setStatus("error", result.error ?? "草稿没有保存成功（原因未知）");
+      }
+    }
+    inFlightSends.push({ ...at });
+  }
+
+  /**
+   * 这次发送有了结果：受理成功 / 失败。
+   *
+   * 受理成功只清掉**这一次发送对应的旧版本**（键相同、且存储里的版本没有被更新的草稿取代）；
+   * 失败什么都不删 —— 原文留在它自己的键上，回到原话题就能取。
+   */
+  function settleSend(at: SendAttribution, accepted: boolean): void {
+    if (!at.key) return;
+    const index = inFlightSends.findIndex(
+      (item) => item.key === at.key && item.draftSeq === at.draftSeq && item.text === at.text,
+    );
+    if (index >= 0) inFlightSends.splice(index, 1);
+    if (!accepted) return;
+    const stored = readDraft(at.key);
+    if (!stored) return;
+    /**
+     * 存储里是后来写下的新草稿（版本更高）：一个字都不动（契约 §10.2）。
+     * 「输入框是不是空的」不能独立证明没有新草稿，所以只看版本，不看输入框。
+     */
+    if (stored.seq > at.draftSeq) return;
+    removeDraft(at.key);
+    if (at.key !== key) return; // 发送期间换了话题：当前话题的草稿与状态不受影响
+    // 序号往前推一格：还在等防抖、对应这次发送的旧写入不许把草稿又写回来
+    if (seq <= at.draftSeq) seq = at.draftSeq + 1;
     savedText = "";
-    setStatus("idle", null);
+    if (timer === null && host.draft === at.text) {
+      /**
+       * 用户切走又切回来时，输入框会被这条草稿填回来；这次发送已经受理，
+       * 原文再留在输入框会被当成「还没发出去」。只在**没有待保存写入**、
+       * 且输入框里就是这次发出去的原文时才清掉显示（不当成删除，也不重发）。
+       */
+      loadInto("");
+    }
+    if (isBlankText(host.draft)) setStatus("idle", null);
   }
 
   /** 保存失败后的重试：立刻重写一次，不等防抖 */
@@ -2209,12 +2489,18 @@ function createChatDraftKeeper(host: SessionDraftHost) {
     get currentKey(): string {
       return key;
     },
+    /** 当前键上的草稿版本（点击那一刻记归属、互换取回时都要用它） */
+    get currentSeq(): number {
+      return seq;
+    },
     bind,
     restore,
     onDraftChanged,
     flushNow,
-    holdForSend,
-    discardAfterSend,
+    recordAttribution,
+    takeAttribution,
+    protectForSend,
+    settleSend,
     retry,
   };
 }

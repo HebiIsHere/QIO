@@ -270,6 +270,18 @@ describe("悬浮聊天面板（组件级）", () => {
     const { wrapper, session } = open();
     vi.spyOn(session, "send").mockImplementation(async () => {
       session.lastError = "网络中断";
+      /**
+       * 真实的 `send()` 在失败时会把「失败原文 + 原话题」记进会话层（契约 §10.1），
+       * 界面据此显示原因并提供取回入口。这里 mock 掉 send 时要一并给出这份事实，
+       * 否则测的是「没有失败事实」的另一种情况，不是用户真实遇到的路径。
+       */
+      session.failedSend = {
+        topicId: session.currentTopicId,
+        text: session.draft || "这条发不出去的话",
+        draftSeq: 0,
+        at: Date.now(),
+      };
+      session.failedSendError = "网络中断";
       return false;
     });
     session.draft = "这条发不出去的话";

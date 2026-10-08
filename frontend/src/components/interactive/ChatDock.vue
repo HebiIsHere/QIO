@@ -32,6 +32,7 @@ import {
   chatStatusText,
   normalizeSendText,
   olderMessagesText,
+  isBlankText,
   sendFailureText,
   shouldSendOnKeydown,
 } from "../../interactive/chat";
@@ -54,6 +55,8 @@ const contentRef = ref<HTMLElement | null>(null);
 const sending = ref(false);
 /** 发送失败的真实原因（保留输入，不伪装成功） */
 const failure = ref("");
+/** 这条失败属于哪个话题：切到别的话题后不再把它显示成那边的失败（契约 §10.1） */
+const failureTopic = ref<string | null>(null);
 /** 对着空白按 Enter 时的提示：说清为什么不发，而不是静默 */
 const blankNotice = ref("");
 /** 是否跟随最新消息（用户上翻阅读后不再强行拉回） */
@@ -87,6 +90,36 @@ const turnError = computed(() => (failure.value ? "" : (session.lastError ?? "")
  * 这是「为什么没有回答」最直接的原因，必须显示，不能让用户对着一个空的等待框猜。
  */
 const sessionWarning = computed(() => session.warning ?? "");
+
+/**
+ * 失败事实只属于它自己的话题（契约 §10.1）：
+ * - 当前就在原话题：显示失败原因与**取回入口**（不自动写回、不自动重发）；
+ * - 当前在别的话题：一个字都不显示、不改输入框、不改草稿 —— 那边没有发生过失败。
+ */
+const failureVisible = computed(
+  () => Boolean(failure.value) && failureTopic.value === session.currentTopicId,
+);
+const failedSendHere = computed(
+  () => (session.failedSend && session.failedSend.topicId === session.currentTopicId ? session.failedSend : null),
+);
+const failedSendPreview = computed(() => {
+  const text = failedSendHere.value?.text ?? "";
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 42 ? flat.slice(0, 42) + "…" : flat;
+});
+const canSwapFailed = computed(() => Boolean(failedSendHere.value) && !isBlankText(session.draft));
+
+/** 取回失败原文（只在原话题、只由用户点这个入口触发；不自动发送） */
+function restoreFailedSend(): void {
+  const result = session.retryFailedSend();
+  if (!result.ok) blankNotice.value = result.reason ?? "现在不能取回这段文字";
+  else blankNotice.value = "";
+}
+function swapFailedSend(): void {
+  const result = session.swapFailedSendText();
+  if (!result.ok) blankNotice.value = result.reason ?? "现在不能取回这段文字";
+  else blankNotice.value = "";
+}
 
 /**
  * 草稿保存状态（契约 §9.4）：失败必须显示真实原因并可重试，
@@ -263,6 +296,12 @@ async function submit() {
   const payload = normalizeSendText(snapshot);
   blankNotice.value = "";
   failure.value = "";
+  /**
+   * 归属在**点击这一刻**定下（契约 §10.1）：清空输入框、等待回执期间切换话题，
+   * 都不许改变这条消息的去向，也不许把失败原文放进别的话题的输入框。
+   */
+  const attribution = session.sendAttribution();
+  failureTopic.value = attribution.topicId;
   sending.value = true;
   draft.value = "";
   await nextTick();
@@ -270,13 +309,13 @@ async function submit() {
   try {
     const ok = await session.send(payload);
     if (!ok) {
+      // 失败事实由会话层统一记录：这里只显示原因。
+      // 恢复交给会话层判断（只在原话题且输入框为空时放回），组件不自己写回任何输入框。
       failure.value = sendFailureText(session.lastError);
-      // 发送失败保留输入：期间没有输入新内容才放回去，避免覆盖用户刚打的字
-      if (!draft.value.trim()) draft.value = snapshot;
+      session.retryFailedSend();
     }
   } catch (err) {
     failure.value = sendFailureText((err as Error).message);
-    if (!draft.value.trim()) draft.value = snapshot;
   } finally {
     sending.value = false;
     await nextTick();
@@ -312,7 +351,14 @@ function onKeydown(event: KeyboardEvent) {
         </button>
       </header>
 
-      <p class="panel-scope" data-im="chat-scope" :title="scopeText">{{ scopeText }}</p>
+      <!-- 常驻只留一句；完整范围说明放进可打开的详情，不用裁切代替组织文字（契约 §10.8） -->
+      <p class="panel-scope" data-im="chat-scope">
+        文字发送不会提交板面
+        <details class="scope-details">
+          <summary data-im="chat-scope-details">说明</summary>
+          <span class="scope-full">{{ scopeText }}</span>
+        </details>
+      </p>
 
       <div
         ref="streamRef"
@@ -336,7 +382,19 @@ function onKeydown(event: KeyboardEvent) {
 
       <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
       <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
-      <p v-if="failure" class="notice err" role="alert" data-im="chat-failure">{{ failure }}</p>
+      <p v-if="failureVisible" class="notice err" role="alert" data-im="chat-failure">{{ failure }}</p>
+      <!-- 失败原文的取回入口：只在原话题出现，不自动写回、不自动重发（契约 §10.1） -->
+      <div v-if="failedSendHere" class="recovery" data-im="chat-recovery">
+        <p class="recovery-text">
+          上一次没有发出去：<span class="recovery-quote">{{ failedSendPreview }}</span>
+          <span v-if="session.failedSendError" class="recovery-reason">（{{ session.failedSendError }}）</span>
+        </p>
+        <div class="recovery-actions">
+          <button type="button" data-im="chat-recovery-restore" @click="restoreFailedSend">放回输入框</button>
+          <button v-if="canSwapFailed" type="button" data-im="chat-recovery-swap" @click="swapFailedSend">与当前文字互换</button>
+          <button type="button" data-im="chat-recovery-discard" @click="session.discardFailedSend()">不再保留</button>
+        </div>
+      </div>
       <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
 
       <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">

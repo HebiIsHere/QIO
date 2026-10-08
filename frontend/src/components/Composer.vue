@@ -85,7 +85,11 @@ async function cancelContinuation() {
 async function submit() {
   const value = text.value.trim();
   if (!value) return;
-  const draftSnapshot = text.value;
+  /**
+   * 归属在**点击这一刻**定下（契约 §10.1）：清空输入框、等待回执期间切换话题，
+   * 都不许改变这条消息的去向，也不许把失败原文放进别的话题的输入框。
+   */
+  session.sendAttribution();
   // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
   text.value = "";
   // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再测量，
@@ -93,12 +97,14 @@ async function submit() {
   await nextTick();
   autosize();
   const ok = await session.send(value);
-  // 失败恢复：把草稿放回去，用户不必重写（若期间已输入新内容则不覆盖）
-  if (!ok && !text.value.trim()) {
-    text.value = draftSnapshot;
-    await nextTick();
-    autosize();
-  }
+  /**
+   * 失败原文的恢复由**会话层统一判断**（契约 §10.1）：`retryFailedSend()` 只在
+   * 「当前就在原话题」且「输入框是空的」时才把原文放回来；人已经切到别的话题、
+   * 或期间又写了新内容时，它什么都不做（只回报原因），因此不会污染别的话题的输入框。
+   */
+  if (!ok) session.retryFailedSend();
+  await nextTick();
+  autosize();
 }
 
 function onKeydown(e: KeyboardEvent) {

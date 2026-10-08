@@ -159,7 +159,14 @@ function onConnectDown(event: PointerEvent) {
 
 function startEdit() {
   editing.value = true;
-  draft.value = store.draftFor("card:" + props.card.id) || props.card.content;
+  /**
+   * 空草稿是**有效编辑状态**（契约 §10.4）：
+   * 不能用 `draftFor(key) || card.content` —— 那会把「用户把正文删空后保存的草稿」
+   * 当成「没有草稿」，重开编辑器时旧正文又冒出来把空草稿盖掉。
+   * 这里按「记录是否存在」判断：存在就用草稿（哪怕是空串），不存在才回落到正式正文。
+   */
+  const cardId = props.card.id;
+  draft.value = store.hasCardDraft(cardId) ? store.cardDraftText(cardId) : props.card.content;
   metaName.value = name.value;
   metaLanguage.value = language.value;
   metaHref.value = href.value;
@@ -182,8 +189,11 @@ function confirmEdit() {
     patch.meta = { ...(props.card.meta ?? {}), href: metaHref.value, title: metaTitle.value };
   }
   emit("patch", props.card.id, patch, "编辑" + kindLabel.value);
-  store.setDraft("card:" + props.card.id, "");
-  store.flushDrafts();
+  /**
+   * 确认之后草稿就该消失（契约 §10.4）：写一个空串会留下「存在但正文为空」的记录，
+   * 下次打开编辑器会把刚确认的正式内容盖成空。这里把记录整个清掉。
+   */
+  store.clearDraft("card:" + props.card.id);
   editing.value = false;
 }
 
