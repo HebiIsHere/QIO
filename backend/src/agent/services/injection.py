@@ -251,6 +251,18 @@ class InjectionAssembler:
         self.retriever = retriever
         self.knowledge_source = knowledge_source
 
+    def _global_user_node_id(self) -> str | None:
+        """只读解析用户全局节点（M02 的「全局（你）」注入面）。
+
+        注入是读路径：不得顺手建节点；没有用户根节点就没有全局面。
+        """
+        conn = getattr(self.knowledge_source, "conn", None)
+        if conn is None:
+            return None
+        from agent.knowledge.scope import existing_user_global_node_id
+
+        return existing_user_global_node_id(conn)
+
     def build(
         self,
         query: str,
@@ -322,6 +334,11 @@ class InjectionAssembler:
                 )
 
         # entity / user knowledge surfaces
+        # 全局（你）范围 = node_ids 里挂用户根节点（M02）。调用方没传时自己解析，
+        # 避免「默认表单新建的全局知识」因为参数缺失而进不了注入面。
+        # 旧无归属条目（node_ids 为空、标 unresolved）不在这里 —— 它们不是全局。
+        if not user_node_id:
+            user_node_id = self._global_user_node_id()
         for surface, node_id in [
             *[("entity", eid) for eid in (entity_ids or [])],
             ("user", user_node_id),
