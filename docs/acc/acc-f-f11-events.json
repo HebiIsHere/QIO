@@ -1,0 +1,42 @@
+[
+ {
+  "type": "TURN_START",
+  "id": "evt_fixture_00",
+  "ts": "2026-10-09T00:00:00+00:00",
+  "data": {
+   "turn_id": "turn_accf11",
+   "message": "调用一个会失败的工具"
+  }
+ },
+ {
+  "type": "ASSISTANT",
+  "id": "evt_fixture_07",
+  "ts": "2026-10-09T00:00:00+00:00",
+  "data": {
+   "content": "====正文====\n这是这一轮唯一的正式回答。",
+   "interim": false,
+   "streaming": false,
+   "delta_id": "dl_accf11_3",
+   "seq": 1,
+   "stage_id": null,
+   "call_ids": [],
+   "role_evidence": "undeclared_answer",
+   "turn_id": "turn_accf11"
+  }
+ },
+ {
+  "type": "TURN_END",
+  "id": "evt_fixture_10",
+  "ts": "2026-10-09T00:00:00+00:00",
+  "data": {
+   "turn_id": "turn_accf11",
+   "status": "completed",
+   "final_content": "====正文====\n这是这一轮唯一的正式回答。\n\n—— 系统核对（后端事实，不是模型的说法）：\n· acc_f_failing_tool 执行失败：这一步失败了，但可以重试\n这几项没有通过验证，不能当作「已完成 / 可使用」。",
+   "error": null,
+   "reason_code": "none",
+   "reason": null,
+   "stopped_by": null,
+   "actions": []
+  }
+ }
+]
