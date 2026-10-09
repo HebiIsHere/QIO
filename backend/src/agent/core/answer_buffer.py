@@ -104,8 +104,18 @@ class BufferOutcome:
     complete: bool
     kind: str
     reason: str | None = None
-    # 已生成内容的总字节数（内存 + 暂存）：用户可见说明里要告诉用户「拿到多少 / 一共多少」。
-    total_bytes: int | None = None
+    # 三个数字分开（第八轮契约 §1.4，字段名冻结）：
+    #   generated_bytes = 模型总共生成、交给缓冲的字节数（含没能保存的部分）
+    #   saved_bytes     = 成功保存的字节数（内存 + 成功写入暂存的量；写失败/硬上限时 < generated）
+    #   delivered_bytes = 实际交付给用户的字节数（= len(text) 的 UTF-8 字节数；只含能确认的内容）
+    generated_bytes: int = 0
+    saved_bytes: int = 0
+    delivered_bytes: int = 0
+
+    @property
+    def total_bytes(self) -> int:
+        """旧名字（第七轮）：等价于 saved_bytes，仅为兼容保留。"""
+        return self.saved_bytes
 
 
 def _safe_name(delta_id: str) -> str:
@@ -133,8 +143,11 @@ class AnswerBuffer:
         self._spill_path: Path | None = None
         self._spill_handle = None
         self._spill_bytes = 0
-        # 已生成内容的总字节数（内存 + 暂存）——「整轮有没有回答内容」看它。
-        self.total_bytes = 0
+        # 三个字节事实（契约 §1.4）：
+        #   生成量：模型交给缓冲的全部字节（含后来没能保存的部分）
+        self.generated_bytes = 0
+        #   保存量：成功保存的字节（内存 + 成功写入暂存）——「整轮有没有回答内容」看它
+        self.saved_bytes = 0
         # 如实记录「交付不完整」的**种类与原因**（绝不偷偷丢字、绝不改角色）：
         # limit（硬上限截断）/ spill_create / spill_write / spill_read。
         # 事实由 AgentLoop 写成可见事件 + 轮次警告（只写日志不算交付）。
@@ -162,11 +175,13 @@ class AnswerBuffer:
         if not text:
             return
         size = len(text.encode("utf-8"))
+        # 生成量在**任何**取舍之前记账：硬上限截断 / 写失败时它仍然如实包含丢掉的字节。
+        self.generated_bytes += size
         room = self._memory_limit - self._memory_bytes
         if size <= room:
             self._memory.append(text)
             self._memory_bytes += size
-            self.total_bytes += size
+            self.saved_bytes += size
             return
         # 切分是 CPU 活：放到线程里，别堵事件循环（大分块时尤其明显）。
         head, tail = await asyncio.to_thread(_split_by_bytes, text, room)
@@ -174,7 +189,7 @@ class AnswerBuffer:
             used = len(head.encode("utf-8"))
             self._memory.append(head)
             self._memory_bytes += used
-            self.total_bytes += used
+            self.saved_bytes += used
         if tail:
             await self._append_spill(tail)
 
@@ -200,7 +215,7 @@ class AnswerBuffer:
             self._fail("spill_write", f"暂存写入失败（{type(exc).__name__}: {exc}）")
             return
         self._spill_bytes += len(data)
-        self.total_bytes += len(data)
+        self.saved_bytes += len(data)
 
     async def _ensure_spill_file(self) -> None:
         if self._spill_handle is not None:
@@ -253,11 +268,16 @@ class AnswerBuffer:
     async def collect(self) -> BufferOutcome:
         """按序拼回全部正文（内存 + 暂存），返回**结构化**交付结果（契约 §1.4）。
 
+        **按字节事实核对**：暂存里成功写入多少字节（self._spill_bytes）就有权期望
+        读回多少字节。缺失 / 截短 / 异常增长 / 不是合法 UTF-8（含中文末字被截断的
+        多字节边界）都**不算**完整交付：
+
+        * 只交付**能确认**的内容（内存部分 + 校验通过的那段暂存前缀），
+          **绝不用 replacement 字符掩盖损坏**，也不多交付异常增长出来的字节；
+        * 事实写进 kind/reason（**存储损坏不得被描述成「正文超过上限」**），
+          由 AgentLoop 写成可见事件 + 轮次警告；不完整事实不靠改正文来表达；
         * 内存里的部分永远保留、**原样**返回（交付内容就是已确认可交付的正文本身，
-          字节数如实可核：不追加任何说明文字，也不改写模型的字）；
-        * 读不回来暂存文件时**不编造**，并把 **spill_read** 故障记进结果 ——
-          读取故障**不得**被描述成「正文超过上限」；不完整事实由 AgentLoop 写成
-          可见事件 + 轮次警告（契约 §1.4 的两条传递通道），不靠改正文来表达；
+          字节数如实可核）；
         * 句柄关闭，文件留给 discard 清理（事实已经在结果里，不会被清理吞掉）。
         """
         parts = list(self._memory)
@@ -266,21 +286,66 @@ class AnswerBuffer:
         if path is not None:
             try:
                 data = await asyncio.to_thread(path.read_bytes)
-                parts.append(data.decode("utf-8", "replace"))
+                parts.append(self._confirm_spill_bytes(data))
             except OSError as exc:  # 读不回来就如实少这部分，不编造
                 self._fail("spill_read", f"暂存读取失败（{type(exc).__name__}: {exc}）")
         text = "".join(parts)
+        delivered = len(text.encode("utf-8"))
         return BufferOutcome(
             text=text,
             complete=self.failure_kind is None,
             kind=self.failure_kind or "complete",
             reason=self.failure_reason,
-            total_bytes=self.total_bytes,
+            generated_bytes=self.generated_bytes,
+            saved_bytes=self.saved_bytes,
+            delivered_bytes=delivered,
         )
 
+    def _confirm_spill_bytes(self, data: bytes) -> str:
+        """核对读回的暂存字节：只返回**能确认**的那部分（长度 + UTF-8 边界都核对）。
+
+        成功写入的字节数是 self._spill_bytes（工作线程里写成功后累加的**真实事实**）：
+        * 读回更少 → 截短 / 清空；
+        * 读回更多 → 异常增长（只认前 self._spill_bytes 字节）；
+        * 不是合法 UTF-8（含末尾多字节字符被截断）→ 截到合法边界，丢弃坏字节并如实说明。
+        """
+        expected = self._spill_bytes
+        actual = len(data)
+        if actual < expected:
+            self._fail(
+                "spill_read",
+                f"暂存文件被截短：成功写入暂存 {expected} 字节，实际只读回 {actual} 字节",
+            )
+        elif actual > expected:
+            self._fail(
+                "spill_read",
+                f"暂存文件异常增长：成功写入暂存 {expected} 字节，实际读到 {actual} 字节；"
+                "只交付已确认的前一段",
+            )
+            data = data[:expected]
+        if not data:
+            return ""
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # 不用 replacement 字符掩盖：截到最后一个合法边界（exc.start 之前的字节
+            # 一定是合法 UTF-8），丢弃其后的坏字节并如实报告数量。
+            valid = data[: exc.start].decode("utf-8")
+            self._fail(
+                "spill_read",
+                f"暂存内容不是合法 UTF-8（第 {exc.start} 字节起损坏，"
+                f"已丢弃其后 {len(data) - exc.start} 字节）",
+            )
+            return valid
+
     async def discard(self) -> None:
-        """删掉暂存文件（收尾 / 取消 / 断流后），不留待决任务。"""
-        await self._close_spill()
+        """删掉暂存文件（收尾 / 取消 / 断流后），不留待决任务。
+
+        句柄已经关过（collect() 读过）就**不再关一次**：关闭/破坏类的外部观测
+        （例如验证装置在 _close_spill 上挂的断言）只应该看到「这一次真正的收尾」。
+        """
+        if self._spill_handle is not None:
+            await self._close_spill()
         path, self._spill_path = self._spill_path, None
         if path is not None:
             await asyncio.to_thread(_unlink_quiet, path)
