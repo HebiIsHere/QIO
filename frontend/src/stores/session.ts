@@ -311,6 +311,131 @@ export function splitTurnItems(items: StreamMessage[]): TurnItemsView {
   return view;
 }
 
+/** 消息流里的一轮（契约 §1.5：一轮 = 一个过程区）。 */
+export interface StreamTurn {
+  id: string;
+  index: number;
+  startedAt: string;
+  items: StreamMessage[];
+  parts: TurnItemsView;
+  /** 这一轮的 turn_id（旧历史没有 turn_id 时为空串） */
+  turnId: string;
+  firstAssistantId: string | null;
+  running: boolean;
+  queued: boolean;
+  stages: TurnStage[];
+  facts: TurnFacts | null;
+  showProcess: boolean;
+}
+
+export interface GroupTurnsOptions {
+  turnRunning: boolean;
+  activeTurnId: string | null;
+  stagesFor: (turnId?: string | null) => TurnStage[];
+  factsFor: (turnId?: string | null) => TurnFacts | null;
+}
+
+/**
+ * 按 **turn 身份**组织消息流（F05 修复的核心规则）。
+ *
+ * 为什么不能用「遇 user 消息才开新一轮」的数组位置分组：排队消息会插进数组中间，
+ * 正在运行那一轮随后的说明 / 工具 / 回答就落在排队轮之后，被错误吸收到排队轮里，
+ * 同时「最后一轮才 running」会让正在运行的过程区误显示成已停止。
+ *
+ * 规则：
+ * 1. 有 turn_id 的消息按 turn_id 归属；属于同一 turn 的内容即使晚于排队消息到达，
+ *    也回到它自己的那一轮；
+ * 2. 用户消息**永远**开新一轮（保留用户消息顺序）；turn_id 已被别的轮占用时
+ *    （乐观发送到受理回执之间）先不登记，等回执纠正后再归位；
+ * 3. 无 turn_id 的旧历史整体按位置分组（user/system 开新轮，其余挂在当前轮）；
+ *    无 turn_id 的实时事件优先挂到 active turn，**绝不挂到数组最后一轮**
+ *    （最后一轮可能是排队轮）；
+ * 4. 只有 active turn（有 turn_id 时）或最后一轮（无 turn_id 的旧后端）可能是 running，
+ *    排队轮永远不是 running。
+ */
+export function groupTurns(messages: StreamMessage[], opts: GroupTurnsOptions): StreamTurn[] {
+  const out: StreamTurn[] = [];
+  const byTurnId = new Map<string, StreamTurn>();
+  let cur: StreamTurn | null = null;
+  let n = 0;
+
+  const startTurn = (startedAt: string): StreamTurn => {
+    n += 1;
+    const turn: StreamTurn = {
+      id: `turn_${n}`,
+      index: n,
+      startedAt,
+      items: [],
+      parts: { user: [], process: [], answers: [], other: [] },
+      turnId: "",
+      firstAssistantId: null,
+      running: false,
+      queued: false,
+      stages: [],
+      facts: null,
+      showProcess: false,
+    };
+    out.push(turn);
+    return turn;
+  };
+
+  for (const m of messages) {
+    const tid = String(m.turnId ?? "").trim();
+    let target: StreamTurn;
+    if (m.role === "user" || m.role === "system") {
+      target = startTurn(m.createdAt);
+      const owner = tid ? byTurnId.get(tid) : undefined;
+      if (tid && !owner) {
+        byTurnId.set(tid, target);
+        target.turnId = tid;
+      } else if (tid && owner === target) {
+        target.turnId = tid;
+      }
+      // owner 存在且不是自己 = 乐观消息的临时归属：不登记，回执纠正后自然归位
+      target.startedAt = m.createdAt;
+      cur = target;
+    } else if (tid && byTurnId.has(tid)) {
+      target = byTurnId.get(tid) as StreamTurn;
+    } else if (tid) {
+      // 没有对应 user 消息的 turn（历史 / 系统轮 / 起点丢失）：按 turn_id 自成一节
+      target = startTurn(m.createdAt);
+      target.turnId = tid;
+      byTurnId.set(tid, target);
+      cur = target;
+    } else if (opts.activeTurnId && byTurnId.has(opts.activeTurnId)) {
+      // 旧后端无 turn_id 的实时事件：优先回到 active turn，绝不挂到排队轮
+      target = byTurnId.get(opts.activeTurnId) as StreamTurn;
+    } else if (cur) {
+      target = cur;
+    } else {
+      target = startTurn(m.createdAt);
+      cur = target;
+    }
+    target.items.push(m);
+    if (target.firstAssistantId === null && m.role === "assistant" && !m.interim) {
+      target.firstAssistantId = m.id;
+    }
+  }
+
+  const last = out[out.length - 1];
+  for (const turn of out) {
+    turn.parts = splitTurnItems(turn.items);
+    turn.queued = turn.items.some((m) => m.role === "user" && m.queued === true);
+    turn.running =
+      opts.turnRunning &&
+      !turn.queued &&
+      (turn.turnId ? turn.turnId === opts.activeTurnId : turn === last);
+    turn.stages = opts.stagesFor(turn.turnId);
+    turn.facts = opts.factsFor(turn.turnId);
+    turn.showProcess =
+      turn.parts.process.length > 0 ||
+      turn.running ||
+      turn.queued ||
+      Boolean(turn.turnId && turn.facts);
+  }
+  return out;
+}
+
 function normalizeNarrativeKind(raw: unknown): NarrativeKind {
   return raw === "announce" || raw === "warning" || raw === "result" ? raw : "progress";
 }
