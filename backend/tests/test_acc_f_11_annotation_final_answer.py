@@ -4,17 +4,21 @@
 「TURN_END 可携带 final_content；前端 applyFinalAnswer 以 turn 身份 + 最终校准为准，
 禁止再用「全文是否相等」判断同一次回答」；§C3 注释也必须完整交付。
 
-场景：一轮里工具失败 → 后端事实台账在最终答复末尾追加系统注释（core/turn_facts.py 的
-ANNOTATION_HEADER）→ 流式正文 body 与 TURN_END.final_content = body + 注释。
-本文件在**后端出口**钉住事实，并把它**真实捕获**成前端可复放的夹具
-（docs/acc/acc-f-f11-events.json，已归一化 volatile 字段），供前端真实 store 用例消费。
+场景：一轮里工具失败 → 后端事实台账产生系统注释（core/turn_facts.py 的
+ANNOTATION_HEADER）。本文件在**后端出口**钉住事实，并把它**真实捕获**成前端可复放的
+夹具（docs/acc/acc-f-f11-events.json，已归一化 volatile 字段），供前端真实 store 用例消费。
+
+冻结契约裁定（Lead 2026-10-09，§C1/§C3 对齐）：系统核对注释由后端以**独立字段**
+annotation（兼容命名 final_annotation）随 TURN_END 交付；final_content 保持**纯正文**，
+前端在独立的「系统事实」区域渲染。禁止再把注释拼进 final_content（那会让同一段正式
+回答出现两个来源）。
 
 链路：假 provider（FakeStreamAdapter）→ adapter → AgentLoop → TurnManager → 事件总线。
 
-断言（后端出口）：
-1) TURN_END.status = completed，final_content = body + 完整系统注释；
-2) 注释只出现在最终校准里，ASSISTANT 流式正文里没有（否则就是重复来源）；
-3) 正式回答正文在 ASSISTANT 事件里恰好出现一次。
+断言（后端出口；「正文唯一」与「注释完整」两类断言都保留）：
+1) TURN_END.status = completed；final_content 是纯正文：以 body 开头、不含 ANNOTATION_HEADER；
+2) TURN_END 的 annotation 字段完整：含 ANNOTATION_HEADER 与结论句；
+3) 正式回答正文在 ASSISTANT 事件里恰好出现一次，且 ASSISTANT 里不出现 ANNOTATION_HEADER。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_acc_f_11_annotation_final_answer.py -q
 """
@@ -74,6 +78,19 @@ def _events(app, kind: str | None = None) -> list:
         if kind is None or event.type.value == kind:
             out.append(event)
     return out
+
+
+def annotation_of(end: dict) -> str:
+    """TURN_END 上的独立注释字段。
+
+    冻结契约定名为 annotation；为兼容并行实现允许 final_annotation 别名。
+    两者都必须是非空字符串才算交付（找不到就返回空串，由断言给出明确失败）。
+    """
+    for key in ("annotation", "final_annotation"):
+        value = end.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 async def _wait_turn_end(app, turn_id: str, timeout: float = 60.0) -> dict | None:
@@ -144,12 +161,31 @@ async def test_tool_failure_annotation_is_complete_and_body_is_unique(app):
 
     assert end is not None, "TURN_END 没有到达"
     assert end.get("status") == "completed", ("工具失败可恢复，整轮仍应完成", end.get("status"))
+
+    # ① 正文唯一：final_content 是纯正文，不掺杂注释（注释走独立字段）。
     final = str(end.get("final_content") or "")
     assert final.startswith(BODY), ("模型正文必须原样保留在 final_content 开头", final)
-    assert ANNOTATION_HEADER in final, ("系统注释必须完整出现在 final_content", final)
-    assert "不能当作「已完成 / 可使用」" in final, ("注释的结论句必须完整", final)
+    assert final.count(BODY) == 1, (
+        "正式回答正文在 final_content 里必须恰好出现一次",
+        {"count": final.count(BODY)},
+    )
+    assert ANNOTATION_HEADER not in final, (
+        "系统注释不得再拼进 final_content（冻结契约：注释走独立字段，正文保持纯净）",
+        {"final_content_tail": final[-160:]},
+    )
 
-    # 注释只来自最终校准；ASSISTANT 流式正文里不得出现（否则重复来源）
+    # ② 注释完整：独立字段必须带完整表头与结论句（不得截断、不得缺失）。
+    note = annotation_of(end)
+    assert ANNOTATION_HEADER in note, (
+        "TURN_END.annotation 必须完整交付（含系统核对表头）",
+        {"annotation_len": len(note), "keys": sorted(end.keys())},
+    )
+    assert "不能当作「已完成 / 可使用」" in note, (
+        "注释的结论句必须完整",
+        {"annotation_tail": note[-160:]},
+    )
+
+    # ③ 流式正文里不得出现注释，且正式回答正文恰好出现一次。
     assistant = _events(app, "ASSISTANT")
     assert assistant, "必须有 ASSISTANT 事件"
     contents = [str(e.data.get("content") or "") for e in assistant]
@@ -167,6 +203,6 @@ async def test_tool_failure_annotation_is_complete_and_body_is_unique(app):
     written = _write_fixture(app)
     assert FIXTURE_PATH.exists(), "前端复放夹具没有写出"
     print(
-        "[诊断] F11 后端出口：status=%s 注释完整=%s 正文出现次数=%d 夹具事件=%d"
-        % (end.get("status"), ANNOTATION_HEADER in final, occurrences, written)
+        "[诊断] F11 后端出口：status=%s 正文纯净=%s 注释长度=%d 正文出现次数=%d 夹具事件=%d"
+        % (end.get("status"), ANNOTATION_HEADER not in final, len(note), occurrences, written)
     )
