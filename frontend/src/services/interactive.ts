@@ -61,12 +61,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = "";
     let payload: InteractiveErrorPayload | undefined;
     try {
-      payload = (await resp.json()) as InteractiveErrorPayload;
-      detail = payload?.detail ?? payload?.reason ?? payload?.error ?? "";
+      const body = (await resp.json()) as { detail?: unknown } & InteractiveErrorPayload;
+      const rawDetail = body?.detail;
+      if (rawDetail && typeof rawDetail === "object") {
+        // FastAPI 的 HTTPException(detail=<dict>) 会长成 { detail: { error, reason, ... } }
+        payload = rawDetail as InteractiveErrorPayload;
+        detail = payload.detail ?? payload.reason ?? payload.error ?? "";
+      } else {
+        payload = body as InteractiveErrorPayload;
+        const text = typeof rawDetail === "string" ? rawDetail : "";
+        detail = text || payload.reason || payload.error || "";
+      }
     } catch {
       detail = await resp.text().catch(() => "");
     }
-    throw new InteractiveApiError(resp.status, path, detail.slice(0, 300), payload);
+    throw new InteractiveApiError(resp.status, path, String(detail).slice(0, 300), payload);
   }
   return (await resp.json()) as T;
 }
