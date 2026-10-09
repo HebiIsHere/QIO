@@ -1221,18 +1221,37 @@ class AttachmentService:
         outcome = BindOutcome()
 
         if attachment_ids is None:
-            # 旧客户端兜底：这些附件是「本话题下还没绑定轮次的」——其中可能有的首次准备
-            # 还在进行。先并行等它们（有界、事件驱动），再按**当下事实**决定绑不绑：
-            # 还没就绪的一律不绑（绝不出现「模型按缺附件的请求执行」）。
-            waiting = [a for a in self._unbound(topic_id) if a.state == STATE_PREPARED]
-            if waiting:
-                await asyncio.gather(
-                    *(
-                        self._await_ready(a, timeout=self.prepare_wait_seconds)
-                        for a in waiting
-                    )
+            # 兼容路径（旧客户端不带 attachment_ids）：**进入时枚举一次并固定**本次应携带的
+            # 集合 —— 等待期间**不重新枚举**：既不漏掉被删除的附件，也不把后来新登记的误绑。
+            # 快照只收「进入时就能带」的（见 _entry_carriable）：进入时就 failed / cancelled /
+            # missing / 不可读的是**历史记录**，不携带、也不阻断纯文字发送（契约 §1.3 集合政策）。
+            snapshot = [a.id for a in self._unbound(topic_id) if self._entry_carriable(a)]
+            if not snapshot:
+                # 空快照 = 这一轮不带附件（与显式空列表一致）
+                return outcome
+            planned = []
+            for attachment_id in snapshot:
+                att = await self._validate_for_turn(
+                    attachment_id,
+                    turn=turn,
+                    topic_id=topic_id,
+                    retry_of=retry_of,
+                    outcome=outcome,
+                    deleted_reason=
+                    "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）",
                 )
-            for att in (self._check(a) for a in self._unbound(topic_id)):
+                if att is None:
+                    continue
+                planned.append((attachment_id, att))
+            # 等待期间不重新枚举（快照固定），但落库前必须按**当下事实**复核一遍：
+            # 集合内任何一条变了（失败/取消/删除/超时/不可读/被别的轮次占用）→ 整轮拒绝。
+            self._recheck_planned(
+                planned, turn=turn, topic_id=topic_id, retry_of=retry_of, outcome=outcome
+            )
+            if outcome.rejected:
+                # 集合内任何一条不合格 → **整轮拒绝**：不调用模型、不半绑（契约 §1.3）
+                return outcome
+            for attachment_id, att in planned:
                 if not self._bindable(att, turn_id=turn, topic_id=topic_id):
                     continue
                 self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
@@ -1248,38 +1267,19 @@ class AttachmentService:
         # 「已经属于某个被放弃的轮次」（既有约定：混合请求整体被拒时，真附件也不得被绑上）。
         planned: list[tuple[str, Attachment]] = []
         for attachment_id in wanted:
-            # check=True：missing / changed 由**文件世界的事实**决定，不凭旧状态列
-            att = self.get(attachment_id)
-            if att is None:
-                outcome.reject(attachment_id, "没有这个附件（可能已经被删除）")
-                continue
-            if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
-                outcome.reject(attachment_id, "这个附件属于另一个话题，不能带到这里")
-                continue
-            # 契约 §1.3：prepared 一律不就绪 —— 先**等**正在进行的首次准备（有界、
-            # 事件驱动、不重复复制），再按等待后的**当下事实**判定；等不到就结构化拒绝。
-            if att.state == STATE_PREPARED:
-                att = await self._await_ready(att, timeout=self.prepare_wait_seconds)
-                if att.state == STATE_PREPARED:
-                    outcome.reject(
-                        attachment_id,
-                        self._not_ready_reason(att),
-                        code=REJECT_ATTACHMENT_NOT_READY,
-                    )
-                    continue
-            reason = self._reject_reason(
-                att, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+            att = await self._validate_for_turn(
+                attachment_id,
+                turn=turn,
+                topic_id=topic_id,
+                retry_of=retry_of,
+                outcome=outcome,
             )
-            if reason:
-                code = (
-                    REJECT_ATTACHMENT_NOT_READY
-                    if att.state == STATE_PREPARED
-                    else None
-                )
-                outcome.reject(attachment_id, reason, code=code)
+            if att is None:
                 continue
             planned.append((attachment_id, att))
 
+        # **通过 1.5：复核**（不写库、不 await）—— 等待期间事实可能又变了。
+        self._recheck_planned(planned, turn=turn, topic_id=topic_id, retry_of=retry_of, outcome=outcome)
         if outcome.rejected:
             # 任何一条不满足 → 整轮拒绝，且**一个字节都不写**（半绑状态不许存在）
             return outcome
@@ -1317,6 +1317,110 @@ class AttachmentService:
             if refreshed is not None:
                 outcome.accept(refreshed)
         return outcome
+
+    def _entry_carriable(self, att: Attachment) -> bool:
+        """进入兼容发送时，这条附件算不算「本次应携带的」（快照口径，契约 §1.3）。
+
+        只收**进入当下就能带**的：
+        * prepared —— 首次准备在飞，可以等（有界、事件驱动）；
+        * ready —— copy 要求副本可读且大小与登记一致；reference 天然可读；
+        * changed —— 只有引用型会变化，按既有规则允许；
+
+        进入时就 failed / cancelled / missing / 副本已经不可读的，是**历史记录**：
+        既不携带，也不拿它们阻断纯文字发送（历史失败不该让用户连字都发不出去）。
+        """
+        if att.state == STATE_PREPARED:
+            return True
+        if att.state == STATE_READY:
+            return att.kind != "copy" or self._copy_readiness_reason(att) is None
+        if att.state == STATE_CHANGED:
+            return att.kind != "copy"
+        return False
+
+    def _recheck_planned(
+        self,
+        planned: list[tuple[str, Attachment]],
+        *,
+        turn: str,
+        topic_id: str | None,
+        retry_of: str | None,
+        outcome: BindOutcome,
+    ) -> None:
+        """落库前把「准备带上的每一条」按当下事实复核；不合格写进 rejected（不写任何归属）。"""
+        for attachment_id, _att in planned:
+            reason = self._final_check(
+                attachment_id, turn=turn, topic_id=topic_id, retry_of=retry_of
+            )
+            if reason:
+                outcome.reject(attachment_id, reason)
+
+    def _final_check(
+        self,
+        attachment_id: str,
+        *,
+        turn: str,
+        topic_id: str | None,
+        retry_of: str | None,
+    ) -> str | None:
+        """落库前的**最后复核**（不写库、不 await）：等待期间事实又变了就得当场发现。
+
+        判据与 _validate_for_turn 完全同源（_reject_reason）；异步等待之后到真正落库之间
+        不允许再有任何 await —— 这样「复核全部 → 一次落库」对事件循环是原子的，
+        「等待期间不可读 / 被别的轮次占用」不会变成静默少带一个附件。
+        """
+        fresh = self.get(attachment_id)  # check=True：以文件世界的事实为准
+        if fresh is None:
+            return "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）"
+        return self._reject_reason(
+            fresh, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+        )
+
+    async def _validate_for_turn(
+        self,
+        attachment_id: str,
+        *,
+        turn: str,
+        topic_id: str | None,
+        retry_of: str | None,
+        outcome: BindOutcome,
+        deleted_reason: str | None = None,
+    ) -> Attachment | None:
+        """把一条附件校验成「可以落库的那一行」；不满足就写进 outcome.rejected 并返回 None。
+
+        **唯一一份**校验（显式路径与兼容路径共用）：存在 / 同话题 / 等首次准备 / 执行就绪
+        （copy 要 ready + 副本可读且大小一致；reference 按既有规则）/ 归属。
+        `deleted_reason` 让兼容路径把「准备期间被删除」说得更准（它拿的是进入时的快照 id）。
+        """
+        att = self.get(attachment_id)
+        if att is None:
+            # 显式路径与被删除的兼容路径：说清是哪一种
+            outcome.reject(
+                attachment_id,
+                deleted_reason or "没有这个附件（可能已经被删除）",
+            )
+            return None
+        if att.topic_id is not None and str(att.topic_id) != str(topic_id or ""):
+            outcome.reject(attachment_id, "这个附件属于另一个话题，不能带到这里")
+            return None
+        # 契约 §1.3：prepared 一律不就绪 —— 先**等**正在进行的首次准备（有界、
+        # 事件驱动、不复制第二份），再按等待后的**当下事实**判定；等不到就结构化拒绝。
+        if att.state == STATE_PREPARED:
+            att = await self._await_ready(att, timeout=self.prepare_wait_seconds)
+            if att.state == STATE_PREPARED:
+                outcome.reject(
+                    attachment_id,
+                    self._not_ready_reason(att),
+                    code=REJECT_ATTACHMENT_NOT_READY,
+                )
+                return None
+        reason = self._reject_reason(
+            att, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+        )
+        if reason:
+            code = REJECT_ATTACHMENT_NOT_READY if att.state == STATE_PREPARED else None
+            outcome.reject(attachment_id, reason, code=code)
+            return None
+        return att
 
     def retry_attachment_ids(self, turn_id: str) -> list[str]:
         """这一轮原来绑定的附件 id（重试 / 重发按同一清单重新归属，顺序稳定）。"""
