@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sqlite3
 import threading
 import time
 import uuid
@@ -35,6 +36,8 @@ from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
 MARKER = "R7 原轮副本内容：只有这份副本里才有的标记 7c31"
+#: 断连用例的消息（台账握手按它定位这一轮）
+MESSAGE_DISCONNECT = "重试（准备中断开）"
 #: 等待「缺陷出现 / 取消收尾」的上界（失败判定，不是等待手段）
 DEADLINE = 25.0
 #: 装置前置条件（服务起来、附件就绪、复制进闸门）的上界
@@ -186,6 +189,22 @@ def _starts(ctx) -> int:
     return sum(1 for e in list(ctx.bus._history) if e.type.value == "TURN_START")
 
 
+def _journal_row(ctx, message: str):
+    """按消息文本读台账行（只读 sqlite；并发写入的短暂锁只当「还没写」）。
+
+    用来做**显式握手**：abandon 会先写台账终态（cancelled + reason），
+    所以「台账里出现 cancelled 行」= 服务端确实把这次断连当成取消处理过了。
+    """
+    try:
+        return ctx.conn.execute(
+            "SELECT status, reason FROM turn_journal WHERE message = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (message,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
 def _attachments(client: httpx.Client) -> list[dict]:
     data = client.get("/api/attachments").json()
     rows = data.get("attachments") if isinstance(data, dict) else data
@@ -281,7 +300,7 @@ def test_disconnect_during_prepare_never_starts_the_turn(live, monkeypatch):
                 server,
                 "/api/turns",
                 {
-                    "message": "重试（准备中断开）",
+                    "message": MESSAGE_DISCONNECT,
                     "topic_id": topic,
                     "attachment_ids": [att],
                     "retry_of_turn_id": original,
@@ -291,8 +310,36 @@ def test_disconnect_during_prepare_never_starts_the_turn(live, monkeypatch):
             assert entered.wait(SETUP_DEADLINE), "复制没有进入服务内部的闸门"
             assert adapter.calls == calls_before, "前置：准备期间不该已经开始执行"
             assert _starts(ctx) == before, "前置：准备期间不该已经发过 TURN_START"
+            # 闸门还关着：先确认这一轮**确实已经登记为准备中**（reserve 就写了台账行）——
+            # 装置前置条件（不是就绪判据），保证下面的握手等的是本次那一轮。
+            prepared_row = _journal_row(ctx, MESSAGE_DISCONNECT)
+            assert prepared_row is not None and prepared_row["status"] == "queued", (
+                "这一刻台账里应当是准备中（queued）的预留行",
+                dict(prepared_row) if prepared_row is not None else None,
+            )
 
             sock.close()  # 真实 TCP 断连（等价于用户中止 / 网络断开）
+            # CI Linux 教训（2026-10-09）：**断连到达**与**复制完成**是两个独立的异步事实，
+            # 谁先到不该由机器调度决定 —— 先放行磁盘闸门时，Linux 上复制常常先完成，
+            # 于是这一轮被正常放行（模型 1 次调用），用例读成「断连没有成为取消证据」。
+            # 所以在放行之前，先等「服务端已经看见这次断连」这个**事实**：
+            # 观测点 = 本次克隆行被丢弃（取消清理在磁盘闸门仍关闭时就完成）。
+            # **显式握手**（CI Linux/py3.11 教训）：等「服务端确实把这次断连当成取消」这个
+            # **持久事实**再放行磁盘闸门 —— 观测点 = 台账里这一轮被 abandon 成 cancelled
+            # （reason=cancelled_during_prepare）。断连到达与复制完成是两个独立的异步事实，
+            # 先放行时慢一点的机器上复制会先完成 → 这一轮被正常放行（模型 1 次调用），
+            # 用例就被读成「断连没有成为取消证据」。这里等的是产品状态（轮询**事实**），
+            # 不是固定 sleep 去放大竞速窗口。
+            disconnect_seen = False
+            deadline = time.time() + DEADLINE
+            while time.time() < deadline:
+                row = _journal_row(ctx, MESSAGE_DISCONNECT)
+                if row is not None and row["status"] == "cancelled":
+                    disconnect_seen = True
+                    break
+                time.sleep(0.02)
+            # 看不到也不在这里判红：让后面的「模型 0 次」断言给结论（修复前就是它红）
+            print(f"disconnect_seen={disconnect_seen}", flush=True)
         finally:
             release.set()  # 无论断言怎么走，都要放行磁盘闸门（否则复制线程会挂住）
 
