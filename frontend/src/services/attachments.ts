@@ -82,6 +82,11 @@ export interface AttachmentRef {
   actions?: AttachmentAction[];
   /** QIO 能不能自己从已知位置把内容找回来（浏览器字节上传永远 false） */
   recoverableFromSource?: boolean;
+  /**
+   * F10：恢复时**暂时没能确认**（超时 / 5xx / 离线 / 鉴权失败）。
+   * 身份与原持久化数据保留，但状态未知 —— 不能当成就绪发送；界面显示「暂时无法确认」+ 重试。
+   */
+  unconfirmed?: boolean;
 }
 
 export const COPY_LABEL = "已保存副本";
@@ -101,6 +106,17 @@ function normalizeState(raw: unknown): AttachmentState {
     // 而不是发明一个新状态去污染冻结类型。
     case "cancelled":
       return "failed";
+    // F24：后端可能把「已受理、正在准备」表达成这些非最终态别名（E 的字段定稿前的兼容）。
+    // 一律归到 prepared（准备中），让等待逻辑继续跟进，而不是误判成最终失败。
+    case "preparing":
+    case "processing":
+    case "pending":
+    case "queued":
+    case "running":
+    case "accepted":
+    case "copying":
+    case "uploading":
+      return "prepared";
     default:
       return "failed";
   }
@@ -131,6 +147,8 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
   if (typeof payload.recoverable_from_source === "boolean") {
     ref.recoverableFromSource = payload.recoverable_from_source;
   }
+  // F10：这个标记是前端的「暂时无法确认」事实，持久化后刷新仍要如实显示。
+  if (payload.unconfirmed === true) ref.unconfirmed = true;
   return ref;
 }
 
@@ -151,6 +169,9 @@ function normalizeActions(raw: unknown[]): AttachmentAction[] {
  * 只有缺字段（老后端 / 老历史快照）才退回既有状态逻辑。
  */
 export function attachmentActions(ref: AttachmentRef): AttachmentAction[] {
+  // 暂时无法确认（F10）：给一个「重试」入口 —— 重试的是**重新向后端核对**（见 Composer.retryOne），
+  // 不是重新复制内容，所以不依赖后端的 retry 动作。
+  if (ref.unconfirmed) return ["retry"];
   if (ref.actions) return ref.actions;
   if (ref.state === "ready" || ref.state === "prepared") return [];
   // 老后端没有 actions：保留既有行为（可重试；失败/变化/丢失可重新定位）
@@ -207,11 +228,13 @@ export function humanSize(bytes: number): string {
 
 /** 附件能不能随消息发送：只有 ready 才算准备好。 */
 export function isSendable(ref: AttachmentRef): boolean {
-  return ref.state === "ready";
+  // 暂时无法确认的附件（F10）状态未知：不能当成就绪发送。
+  return ref.state === "ready" && !ref.unconfirmed;
 }
 
 /** 一句话状态（界面与错误提示共用，避免各处自己编词）。 */
 export function stateText(ref: AttachmentRef): string {
+  if (ref.unconfirmed) return "暂时无法确认";
   switch (ref.state) {
     case "prepared":
       return "准备中…";
@@ -370,7 +393,48 @@ export async function retryAttachment(id: string): Promise<AttachmentRef> {
   return toAttachmentRef(res.attachment);
 }
 
-/** 等待附件离开 prepared（准备中 → ready / failed / changed / missing）。 */
+/** 非最终状态（还在准备）：响应说这些 = 后端已受理、还在准备，前端必须继续等（F24）。 */
+const PREPARING_STATES = new Set([
+  "prepared",
+  "preparing",
+  "processing",
+  "pending",
+  "queued",
+  "running",
+  "accepted",
+  "copying",
+  "uploading",
+]);
+
+/** 后端响应给出的准备状态：final（可以收手）/ pending（继续等）/ unknown（没给出状态）。 */
+type AttachmentPayloadKind = "final" | "pending" | "unknown";
+
+function attachmentPayloadKind(payload: Record<string, unknown>): AttachmentPayloadKind {
+  // 显式最终标记最权威（E 定稿后可能用 final）。
+  if (payload.final === true) return "final";
+  if (payload.final === false) return "pending";
+  if (payload.preparing === true || payload.processing === true) return "pending";
+  const raw = payload.state ?? payload.status;
+  if (typeof raw !== "string" || !raw) return "unknown";
+  return PREPARING_STATES.has(raw.toLowerCase()) ? "pending" : "final";
+}
+
+/** 取原始 payload：判定「是否最终态」必须看后端原话，不能只看归一化后的 5 个状态。 */
+async function getAttachmentRaw(id: string): Promise<Record<string, unknown>> {
+  const res = await request<AttachmentPayload>("/api/attachments/" + encodeURIComponent(id));
+  return res.attachment ?? {};
+}
+
+/**
+ * 等待附件离开「准备中」（F24：只有最终态才收手）。
+ *
+ * 判据（契约 C4/C5）：响应含 preparing/processing 标识、state 是非最终态别名、或 final === false
+ * → **继续等待**；真正的最终态（ready/failed/missing/changed/cancelled）才返回。状态完全缺失时
+ * **有界等待**（不永久等待），超时后如实停在「准备中」，不谎报失败。
+ *
+ * 假设：E 的后端把「已受理且正在准备」与最终 missing/failed 区分开的字段尚未定稿，
+ * 这里对多种形态兼容；定稿后可收窄到确切字段。
+ */
 export async function waitUntilSettled(
   ref: AttachmentRef,
   options: { timeoutMs?: number; intervalMs?: number; onUpdate?: (next: AttachmentRef) => void } = {},
@@ -379,10 +443,22 @@ export async function waitUntilSettled(
   const intervalMs = options.intervalMs ?? 400;
   const deadline = Date.now() + timeoutMs;
   let current = ref;
-  while (current.state === "prepared" && Date.now() < deadline) {
+  // 输入已经是最终态（非 prepared）：直接返回，不额外请求。
+  if (current.state !== "prepared") return current;
+  while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    current = await getAttachment(ref.id);
-    options.onUpdate?.(current);
+    const payload = await getAttachmentRaw(ref.id);
+    const kind = attachmentPayloadKind(payload);
+    if (kind === "final") {
+      current = toAttachmentRef(payload);
+      options.onUpdate?.(current);
+      return current;
+    }
+    if (kind === "pending") {
+      current = toAttachmentRef(payload);
+      options.onUpdate?.(current);
+    }
+    // unknown：后端没给出状态 —— 不据此报失败、也不当成最终态；留在当前状态继续有界等待。
   }
   return current;
 }
@@ -586,23 +662,57 @@ export async function downloadAttachment(ref: AttachmentRef): Promise<Attachment
   return { action: "download", note: "已开始下载 QIO 保存的副本：" + ref.name };
 }
 
-function openBlobInNewTab(blob: Blob): boolean {
-  if (typeof window === "undefined") return false;
-  const url = blobUrlOf(blob);
-  if (!url) return false;
-  const opened = window.open(url, "_blank", "noopener,noreferrer");
-  if (!opened) {
-    URL.revokeObjectURL(url);
-    return false;
-  }
+/**
+ * blob URL 交给新窗口后的释放延迟。
+ *
+ * **不能立即 revoke**：新文档可能还在读这个 URL；而且 `noopener` 打开没有可依赖的完成信号，
+ * 立刻释放会把「已经打开」变成一次空白页。保留一段时间再释放，正确性与内存都有界。
+ */
+const BLOB_URL_TTL_MS = 60_000;
+
+/** 浏览器打开一个 Blob 的结果：可验证失败 / 已交出打开请求（无法同步确认新窗口是否真的出现）。 */
+export type BlobOpenOutcome =
+  | { status: "handed" }
+  | { status: "unavailable"; reason: string };
+
+/** 尽力释放一个 blob URL：不因重复释放失败而抛错，也不吞掉调用方的其它异常。 */
+function revokeBlobUrlSoon(url: string, delayMs: number): void {
   setTimeout(() => {
     try {
       URL.revokeObjectURL(url);
     } catch {
       /* 已经释放过就算了 */
     }
-  }, 60_000);
-  return true;
+  }, delayMs);
+}
+
+/**
+ * 在浏览器新标签页打开一个 Blob。
+ *
+ * 诚实规则（F03）：`window.open(url, "_blank", "noopener,noreferrer")` 在 noopener 下
+ * **成功打开也会返回 null**，所以这个返回值**不是**成败判据 —— 只要调用没有抛错，就当作
+ * 「打开请求已交给浏览器」（handed）；只有可验证的失败（没有 window / 不支持 Blob URL /
+ * window.open 抛错）才返回 unavailable，由调用方如实说明并回退下载。
+ * 安全参数一个都不去掉：不用拿到窗口句柄换取「能判成功」。
+ */
+export function openBlobInNewTab(blob: Blob): BlobOpenOutcome {
+  if (typeof window === "undefined") return { status: "unavailable", reason: "这个环境没有浏览器窗口" };
+  const url = blobUrlOf(blob);
+  if (!url) return { status: "unavailable", reason: "这个环境不支持 Blob 查看（可以下载副本）" };
+  const open = window.open;
+  if (typeof open !== "function") {
+    revokeBlobUrlSoon(url, 0);
+    return { status: "unavailable", reason: "这个环境不允许打开新窗口（可以下载副本）" };
+  }
+  try {
+    // 返回值丢弃：noopener 下 null 既可能是「被拦截」也可能是「已经打开」，无法同步区分。
+    open.call(window, url, "_blank", "noopener,noreferrer");
+  } catch (err) {
+    revokeBlobUrlSoon(url, 0);
+    return { status: "unavailable", reason: "浏览器拒绝了打开新窗口（" + (err as Error).message + "）" };
+  }
+  revokeBlobUrlSoon(url, BLOB_URL_TTL_MS);
+  return { status: "handed" };
 }
 
 async function invokeNativePath(command: string, path: string): Promise<void> {
@@ -631,8 +741,17 @@ export async function openAttachment(
     return { action: "open", note: "已交给系统默认程序打开：" + ref.name };
   }
   const blob = await fetchAttachmentContent(ref.id);
-  if (plan.action === "view" && openBlobInNewTab(blob)) {
-    return { action: "view", note: "" };
+  if (plan.action === "view") {
+    const outcome = openBlobInNewTab(blob);
+    if (outcome.status === "handed") {
+      return {
+        action: "view",
+        note: "已交给浏览器在新标签页打开；如果没有出现，可能是浏览器拦截了弹窗（允许弹窗后重试，或用「下载」保存副本）",
+      };
+    }
+    // 只有可验证的打开失败才回退下载：不把「已经打开但返回 null」误判成失败、更不自动再下载一次。
+    downloadBlob(blob, ref.name);
+    return { action: "download", note: outcome.reason + "：已改为下载副本" };
   }
   downloadBlob(blob, ref.name);
   return { action: "download", note: plan.reason || "已开始下载 QIO 保存的副本：" + ref.name };
@@ -680,39 +799,135 @@ export function loadPendingAttachments(topicId: string | null | undefined): Atta
   return readPendingBox()[pendingKey(topicId)] ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// 待发附件「收件箱」：跨组件把**已确认可用**的新附件送进发起话题的待发列表（F04）
+// ---------------------------------------------------------------------------
+
+export interface PendingAttachmentEvent {
+  /** 发起操作的话题（Composer 只在自己的当前话题匹配时更新 UI） */
+  topicId: string | null;
+  attachment: AttachmentRef;
+}
+
+const pendingListeners = new Set<(event: PendingAttachmentEvent) => void>();
+
+/**
+ * 订阅「有附件加入待发列表」事件。返回退订函数。
+ *
+ * 与 composerMetrics 的模块级订阅同一模式：Composer 与 MessageItem 都依赖本模块，
+ * 组件之间不需要互相挂事件，也不改其它人的 store。
+ */
+export function subscribePendingAttachment(
+  listener: (event: PendingAttachmentEvent) => void,
+): () => void {
+  pendingListeners.add(listener);
+  return () => {
+    pendingListeners.delete(listener);
+  };
+}
+
+/**
+ * 把一个**已确认可进入待发列表**的新附件加入某个话题并广播。
+ *
+ * 历史消息的「重新上传」用它：新附件进入**发起话题**的待发送列表，原历史记录保持不变。
+ * 同 id 重复加入按更新处理（不产生重复条目）。
+ */
+export function addPendingAttachment(
+  topicId: string | null | undefined,
+  attachment: AttachmentRef,
+): void {
+  const list = loadPendingAttachments(topicId);
+  const next = list.some((item) => item.id === attachment.id)
+    ? list.map((item) => (item.id === attachment.id ? attachment : item))
+    : [...list, attachment];
+  savePendingAttachments(topicId, next);
+  const event: PendingAttachmentEvent = { topicId: topicId ?? null, attachment };
+  for (const listener of pendingListeners) listener(event);
+}
+
 /** 能从待发列表发送的状态（与后端绑定校验一致：prepared / ready / changed）。 */
 export function isBindable(ref: AttachmentRef): boolean {
   return ref.state === "prepared" || ref.state === "ready" || ref.state === "changed";
 }
 
+export interface RestorePendingOutcome {
+  /** 已确认仍在待发列表、且核对期间没被别的轮绑走的附件（用后端新事实）。 */
+  items: AttachmentRef[];
+  /** **确认永久无效**（404/410 / 已绑定别的轮 / 不属于本话题）：已从持久化清理，报出名字。 */
+  dropped: string[];
+  /** 暂时没能确认（超时 / 5xx / 离线 / 鉴权失败）：身份与原数据保留，界面显示可重试。 */
+  unconfirmed: AttachmentRef[];
+}
+
+/** 404/410 = 后端明确说「这个附件不存在 / 已永久失效」；其余错误一律按**暂时失败**处理（F10）。 */
+function isPermanentlyGone(err: unknown): boolean {
+  return err instanceof AttachmentRequestError && (err.status === 404 || err.status === 410);
+}
+
 /**
  * 恢复待发附件：**用户看到的必须等于将发送的**，所以逐条向后端核对现在的事实：
  * 还在不在、属不属于本话题、有没有被别的轮次绑走（已被绑走的不能再发）。
- * 对不上的丢掉并报出名字（调用方显示原因），绝不「显示着但其实发不出去」。
+ *
+ * F10 区分两种「对不上」：
+ *   * **确认永久无效**（404/410、已绑走、不属于本话题）→ 清理持久化并报出名字；
+ *   * **暂时无法确认**（超时 / 5xx / 离线 / 鉴权失败）→ 保留身份与原持久化数据，
+ *     返回 unconfirmed，界面展示可重试状态，**绝不清空**。
+ * 落盘时合并「恢复期间新增」的条目，旧恢复不覆盖用户编辑（F08）。
  */
 export async function restorePendingAttachments(
   topicId: string | null | undefined,
-): Promise<{ items: AttachmentRef[]; dropped: string[] }> {
+): Promise<RestorePendingOutcome> {
   const stored = loadPendingAttachments(topicId);
   const items: AttachmentRef[] = [];
   const dropped: string[] = [];
+  const unconfirmed: AttachmentRef[] = [];
+  const droppedIds = new Set<string>();
   for (const item of stored) {
     try {
       const fresh = await getAttachment(item.id);
       if (fresh.turnId) {
         dropped.push(item.name);
+        droppedIds.add(item.id);
         continue;
       }
       if (topicId && fresh.topicId && fresh.topicId !== String(topicId)) {
         dropped.push(item.name);
+        droppedIds.add(item.id);
         continue;
       }
       items.push({ ...fresh, name: fresh.name || item.name, error: fresh.error ?? item.error ?? null });
-    } catch {
-      dropped.push(item.name);
+    } catch (err) {
+      if (isPermanentlyGone(err)) {
+        dropped.push(item.name);
+        droppedIds.add(item.id);
+        continue;
+      }
+      unconfirmed.push({ ...item, unconfirmed: true });
     }
   }
-  savePendingAttachments(topicId, items);
-  return { items, dropped };
+
+  // 落盘：确认可用的用新事实；确认无效的清理；暂时失败的保留；恢复期间新写入的不能被抹掉。
+  const storedIds = new Set(stored.map((i) => i.id));
+  const confirmedById = new Map(items.map((i) => [i.id, i]));
+  const unconfirmedById = new Map(unconfirmed.map((i) => [i.id, i]));
+  const merged: AttachmentRef[] = [];
+  for (const s of stored) {
+    if (droppedIds.has(s.id)) continue;
+    const confirmed = confirmedById.get(s.id);
+    if (confirmed) {
+      merged.push(confirmed);
+      continue;
+    }
+    const kept = unconfirmedById.get(s.id);
+    if (kept) merged.push(kept);
+  }
+  const current = readPendingBox()[pendingKey(topicId)] ?? [];
+  for (const c of current) {
+    if (storedIds.has(c.id) || droppedIds.has(c.id)) continue;
+    if (merged.some((m) => m.id === c.id)) continue;
+    merged.push(c);
+  }
+  savePendingAttachments(topicId, merged);
+  return { items, dropped, unconfirmed };
 }
 
