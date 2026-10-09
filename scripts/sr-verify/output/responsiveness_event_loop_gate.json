@@ -1,0 +1,45 @@
+{
+  "route_async_exists": false,
+  "main_thread_id": 62500,
+  "sync_route_blocks_loop": true,
+  "sync_route_beats_in_window": 0,
+  "sync_route_window_secs": 4.023,
+  "embed_off_main_thread": false,
+  "fs_find_blocks_loop": true,
+  "fs_find_beats_in_window": 0,
+  "fs_find_window_secs": 2.017,
+  "fs_find_thread_id": 62500,
+  "fs_find_off_main_thread": false,
+  "records": [
+    {
+      "op": "embed_texts",
+      "thread_id": 62500,
+      "t": 25891.2193
+    },
+    {
+      "op": "embed_texts_done",
+      "thread_id": 62500,
+      "t": 25893.2312
+    },
+    {
+      "op": "embed_texts",
+      "thread_id": 62500,
+      "t": 25893.2312
+    },
+    {
+      "op": "embed_texts_done",
+      "thread_id": 62500,
+      "t": 25895.242
+    },
+    {
+      "op": "_find_files",
+      "thread_id": 62500,
+      "t": 25895.3827
+    },
+    {
+      "op": "_find_files_done",
+      "thread_id": 62500,
+      "t": 25897.398
+    }
+  ]
+}

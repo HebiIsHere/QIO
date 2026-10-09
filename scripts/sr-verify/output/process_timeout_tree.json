@@ -1,0 +1,11 @@
+{
+  "tool_ok": false,
+  "tool_failed": true,
+  "tool_error": "程序执行超时",
+  "child_pid_started": true,
+  "child_alive_immediately": true,
+  "child_gone_within_1s": false,
+  "grandchild_gone": false,
+  "decoy_alive": true,
+  "probe_wait_seconds": 2.565
+}
