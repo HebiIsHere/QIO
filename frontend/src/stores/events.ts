@@ -186,6 +186,11 @@ export const useEventStore = defineStore("events", {
               void this.startResync();
             }
             if (tid) this.lastTurnId = tid;
+            // TURN_START 带 request_id 时精确关联到那次发送动作（契约 5）：
+            // 「这一轮已经开始」由事件认定；回执/查证就不得再改写该轮运行态，
+            // 查证 404（记录已丢）也不得把真实在跑的轮次误报成「未发送」。
+            const requestId = stringOrNull(d.request_id);
+            if (requestId) session.noteTurnStartedForRequest(requestId, tid || undefined);
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
           }

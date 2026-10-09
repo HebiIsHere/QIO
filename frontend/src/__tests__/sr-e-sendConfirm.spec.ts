@@ -300,3 +300,48 @@ describe("契约 5 · 幂等重试与串联恢复", () => {
     expect(cancelCalled).toContain("/api/turns/turn_x/cancel");
   });
 });
+
+describe("契约 5 · TURN_START 的 request_id 精确关联", () => {
+  it("TURN_START 认领发送动作：attempt 关联 turn_id；重启后 404 不误收敛已开始的轮次", async () => {
+    beforeEachImpl();
+    const { session, events } = setupSession();
+    vi.useFakeTimers();
+    gate.respond((url, init) => {
+      if (init.method === "POST" && url.endsWith("/api/turns")) return hang(init.signal);
+      if (init.method === "GET" && url.includes("/api/turns/by-request/")) {
+        // 后端重启：这次请求的记录已经丢了（404），但轮次当时真的开始过
+        return statusResponse(404, { ok: false, unknown: true });
+      }
+      return undefined;
+    });
+
+    const pending = session.send("被重启的消息");
+    await flushAsyncTimers(0);
+
+    // TURN_START 先到，并携带 request_id：事件层认领这次发送
+    const requestId = session.sendAttempts[0].clientRequestId;
+    events.route({
+      type: "TURN_START",
+      id: "s1",
+      ts: "",
+      data: { turn_id: "turn_x", revision: 1, request_id: requestId },
+    });
+    // ← 精确关联：不必等回执就知道「这次发送对应 turn_x，且已经开始」
+    expect(session.sendAttempts[0].turnId).toBe("turn_x");
+
+    await flushAsyncTimers(API_TIMEOUT_MS.write + 1000);
+    expect(await pending).toBe(false);
+    expect(session.sendAttempts[0].state).toBe("needs-confirm");
+    expect(session.turnRunning).toBe(true);
+    expect(session.activeTurnId).toBe("turn_x");
+
+    // 自动查证 → 404（记录因重启丢失）：呈现「发送未确认」，
+    // 但**不**收敛运行态 —— 轮次真实开始过，绝不能误报成「没有跑过」
+    await flushAsyncTimers(700);
+    expect(session.sendConfirm?.unknown).toBe(true);
+    expect(session.sendConfirm?.notice).toContain("发送未确认");
+    expect(session.turnRunning).toBe(true);
+    expect(session.activeTurnId).toBe("turn_x");
+    expect(session.messages.some((m) => m.content === "被重启的消息")).toBe(true);
+  });
+});
