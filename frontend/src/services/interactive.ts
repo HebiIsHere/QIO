@@ -93,15 +93,20 @@ export function fetchVisibleRange(boardId: string): Promise<{ visibleRange: Visi
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/visible-range`);
 }
 
-/** 提交：QIO 取得未提交表达的唯一入口。 */
+/** 提交：QIO 取得未提交表达的唯一入口。baseStateVersion = 本次候选所基于的服务器版本。 */
 export function submitBoard(
   boardId: string,
   requestedVisible?: string[],
   note = "",
+  baseStateVersion?: number,
 ): Promise<SubmissionResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`, {
     method: "POST",
-    body: JSON.stringify({ requestedVisible, note }),
+    body: JSON.stringify({
+      requestedVisible,
+      note,
+      ...(baseStateVersion !== undefined ? { baseStateVersion } : {}),
+    }),
   });
 }
 

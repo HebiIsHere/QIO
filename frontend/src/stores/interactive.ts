@@ -29,6 +29,7 @@ import {
   cloneState,
   emptyBoardState,
   type BoardState,
+  type BoardStateResponse,
   type DecideResult,
   type Intent,
   type IntentPreview,
@@ -148,6 +149,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 保存后服务端回报「因为这些改动被暂停的任务」 */
   const materialPaused = ref<Intent[]>([]);
   let impactConfirmed = false;
+  /**
+   * 影响预判失败的真实原因（08）：预判失败时保存暂停，候选保留，等用户重试。
+   * 这里不与 saveError 混用：一个是「保存」，一个是「保存前的预判」。
+   */
+  const impactCheckError = ref<string | null>(null);
+  /**
+   * 板面候选的版本记账（M1，收尾轮契约）：
+   * - `boardLocalRev`：每产生一个新候选（commit/undo/redo/load）就 +1；
+   * - `boardCleanRev`：当前板面与服务器一致的那一版的 localRev（刚读过 / 保存刚被确认）。
+   * `boardLocalRev > boardCleanRev` ⟺ 有未保存的本地候选（与 dirty 同步维护）。
+   * 任何旧回执、旧读取落地前都要用这对计数器判断「它读的版本是不是还是当前事实」。
+   */
+  let boardLocalRev = 0;
+  let boardCleanRev = 0;
 
   const undoStack = ref<string[]>([]);
   const redoStack = ref<string[]>([]);
@@ -211,6 +226,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (current) pushUndo(current);
     board.value = { ...next, boardId: boardId.value };
     lastOpLabel.value = label;
+    boardLocalRev += 1;
     dirty.value = true;
     saveStatus.value = "saving";
     scheduleSave();
@@ -234,6 +250,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveTimer = null;
     }
     const snapshot = cloneState(board.value);
+    // 本次 PUT 对应的候选版本与「上次与服务器一致」版本（M1）：回执落地时用来判断
+    // 「回执期间有没有出现更新的候选 / 更新的读取」。旧回执不许覆盖新候选（06 反例 A）。
+    const putRev = boardLocalRev;
+    const putCleanRev = boardCleanRev;
     // 保存前先问服务端一句：这次改动会不会碰到正在执行任务依赖的材料？
     // 会 → 不保存，把影响说明交给用户决定（继续=保存并暂停相关任务；取消=不改动，任务继续）。
     if (!impactConfirmed && activeIntents.value.length > 0) {
@@ -251,14 +271,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
           saveStatus.value = "idle";
           return;
         }
-      } catch {
-        // 预判失败不阻塞保存：它只是「多说一句话」，不是保存的前置条件
+      } catch (err) {
+        // 影响预判失败（08 路径1）：保存暂停、候选保留、真实原因可见，不阻塞在无解释的等待里。
+        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
+        saveStatus.value = "idle";
+        return;
       }
     }
+    impactCheckError.value = null;
     saveInFlight = (async () => {
       try {
         const result = await api.saveBoardState(boardId.value, snapshot, lastOpLabel.value || "op");
+        const newerCandidate = boardLocalRev !== putRev;
+        const boardReadAdvanced = boardCleanRev !== putCleanRev;
+        if (newerCandidate || boardReadAdvanced) {
+          // 回执在飞期间出现了更新的候选（用户继续编辑）/ 或一次更新的读取已经落地：
+          // 服务器已接受的是旧版本，板面（新候选）不被这次旧回执覆盖。
+          // 新候选保持未保存并安排下一轮保存；读取推进的情形下板面仍是本次读取的事实。
+          dirty.value = newerCandidate;
+          saveStatus.value = newerCandidate ? "saving" : "saved";
+          lastSavedAt.value = result.savedAt;
+          impactConfirmed = false;
+          if (newerCandidate) scheduleSave();
+          return;
+        }
         board.value = result.state;
+        boardCleanRev = putRev;
         lastSavedAt.value = result.savedAt;
         saveStatus.value = "saved";
         saveError.value = null;
@@ -288,6 +326,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const previous = undoStack.value.pop() as string;
     redoStack.value.push(JSON.stringify(board.value));
     board.value = JSON.parse(previous) as BoardState;
+    boardLocalRev += 1;
     dirty.value = true;
     lastOpLabel.value = "撤销";
     scheduleSave();
@@ -298,6 +337,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const next = redoStack.value.pop() as string;
     undoStack.value.push(JSON.stringify(board.value));
     board.value = JSON.parse(next) as BoardState;
+    boardLocalRev += 1;
     dirty.value = true;
     lastOpLabel.value = "重做";
     scheduleSave();
@@ -395,28 +435,31 @@ export const useInteractiveStore = defineStore("interactive", () => {
   async function refreshBoardFromServer() {
     // 请求发出前的内存版本：迟到返回时用它判断「用户是不是已经又输入了」（§11.1）
     const before = new Map(draftKeySeq);
+    // 各键「已保存版本」的读取基线（M1/01）：GET 在飞期间一次 PUT 先成功到达，
+    // saved 越过读取基线——这次 GET 返回的正文对那个已确认保存的新版本是迟到的，
+    // 不予应用（新输入由 memoryIsNewer 覆盖；两者合起来才完整）。
+    const readSaved = new Map(draftSavedKeySeq);
     const payload = await api.fetchBoardState(boardId.value);
-    board.value = payload.state;
     boardId.value = payload.board.id;
     submissions.value = payload.submissions ?? [];
-    // 服务端是已保存内容的事实来源，但**本地还没保存成功的编辑内容**优先：
-    // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」），
-    // 请求期间用户新输入的文字同样优先（§11.1）。
-    const serverDrafts = payload.drafts?.drafts ?? {};
-    const mergedDrafts: Record<string, string> = { ...serverDrafts };
-    for (const key of Object.keys(drafts.value)) {
-      if (memoryIsNewer(key, before)) mergedDrafts[key] = drafts.value[key] ?? "";
+    /*
+     * 板面候选的落地决定（M1/06）必须排在草稿合并**之前**：
+     * `restoreLocalCardDrafts` 要按「这个板面上还有没有这张卡」判断本机记录的归属，
+     * 所以它必须看到本次读取之后的板面；把整块落地放到合并后面会让首屏加载
+     * 把有效本机记录当成无主记录清掉（回归过）。
+     *
+     * - 没有未保存候选：服务器状态就是当前事实，整块落地（撤销栈、dirty、状态一起收敛）；
+     * - 有未保存候选（审批收尾保存失败后回读、旧回执在飞期间的新编辑）：
+     *   整块板面**不覆盖**候选，候选保持未保存，服务器新结果等下一次保存成功后再采纳。
+     */
+    if (boardLocalRev > boardCleanRev) {
+      // 草稿仍然要合并（按候选板面判断归属），只是板面本身不被这次读取覆盖
+      mergeDraftsFromPayload(payload, before, readSaved);
+      if (pendingRemovals.size > 0) scheduleDraftSave();
+      return;
     }
-    restoreLocalCardDrafts(mergedDrafts);
-    drafts.value = mergedDrafts;
-    // 已经保存成功、且服务端也有的键：状态回到 idle；未保存/失败的键保留自己的状态
-    const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
-    for (const key of Object.keys(mergedDrafts)) {
-      if ((draftKeySeq.get(key) ?? 0) > (draftSavedKeySeq.get(key) ?? 0)) {
-        keptStates[key] = draftStateFor(key);
-      }
-    }
-    draftStates.value = keptStates;
+    board.value = payload.state;
+    boardCleanRev = boardLocalRev;
     undoStack.value = [];
     redoStack.value = [];
     dirty.value = false;
@@ -427,8 +470,50 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } else {
       saveStatus.value = "idle";
     }
+    mergeDraftsFromPayload(payload, before, readSaved);
     // 刷新后发现的「待同步清除」要真的发出去：清空最后一份也要发（§11.2）
     if (pendingRemovals.size > 0) scheduleDraftSave();
+  }
+
+  /**
+   * 草稿合并（M1/01）：服务器正文、本机未保存的新输入、以及「GET 在飞期间保存成功的新版本」
+   * 三者按版本关系落地，任何一条都不被迟到的读取回退。
+   */
+  function mergeDraftsFromPayload(
+    payload: BoardStateResponse,
+    before: Map<string, number>,
+    readSaved: Map<string, number>,
+  ): void {
+    // 服务端是已保存内容的事实来源，但**本地还没保存成功的编辑内容**优先：
+    // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」），
+    // 请求期间用户新输入的文字同样优先（§11.1），
+    // GET 在飞期间已保存成功的新版本同样不被迟到的旧正文回退（M1/01）。
+    const serverDrafts = payload.drafts?.drafts ?? {};
+    const mergedDrafts: Record<string, string> = { ...serverDrafts };
+    for (const key of Object.keys(drafts.value)) {
+      const savedNow = draftSavedKeySeq.get(key) ?? 0;
+      const keepLocal =
+        memoryIsNewer(key, before) ||
+        savedNow > (readSaved.get(key) ?? 0) ||
+        !Object.prototype.hasOwnProperty.call(serverDrafts, key);
+      if (keepLocal) mergedDrafts[key] = drafts.value[key] ?? "";
+    }
+    restoreLocalCardDrafts(mergedDrafts);
+    drafts.value = mergedDrafts;
+    // 未保存/失败的键保留自己的状态；GET 在飞期间保存成功（越过读取基线）的键
+    // 仍然是「已保存」——迟到的读取不许把它说成没有状态（M1/01）。
+    const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
+    for (const key of Object.keys(mergedDrafts)) {
+      const keySeq = draftKeySeq.get(key) ?? 0;
+      const savedNow = draftSavedKeySeq.get(key) ?? 0;
+      const state = draftStateFor(key);
+      if (keySeq > savedNow || state.status === "error") {
+        keptStates[key] = state;
+      } else if (savedNow > (readSaved.get(key) ?? 0)) {
+        keptStates[key] = { status: "saved", error: null };
+      }
+    }
+    draftStates.value = keptStates;
   }
 
   async function refreshVisibleRange() {
@@ -957,15 +1042,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitError.value = null;
     submitStatus.value = "submitting";
     await saveNow();
-    if (saveStatus.value === "error") {
-      // 保存没成功就不提交：宁可让用户再点一次，也不能拿旧板面当「本次提交」。
+    const blocked =
+      pendingImpact.value
+        ? "这次板面还有待确认的影响说明，请先选择确认或取消，本次未提交"
+        : impactCheckError.value
+          ? `保存前的影响预判没有完成，本次未提交（${impactCheckError.value}）`
+          : saveStatus.value === "error" || dirty.value || !board.value
+            ? `板面没有保存成功，本次未提交（${saveError.value ?? "原因未知"}）`
+            : null;
+    if (blocked) {
+      // 08 路径3：等待影响确认、预判未完成或候选尚未保存成功时，不得发出板面提交；
+      // 也不能把 idle 当成「已经保存」拿服务器旧板面当本次提交。
       submitStatus.value = "failed";
-      submitError.value = `板面没有保存成功，本次未提交（${saveError.value ?? "原因未知"}）`;
+      submitError.value = blocked;
       return null;
     }
     const intentsBefore = intentIdSet();
     try {
-      const result = await api.submitBoard(boardId.value);
+      const result = await api.submitBoard(boardId.value, undefined, "", board.value.seq);
       lastSubmission.value = result;
       submitStatus.value = result.status;
       // 只有成功提交才会让服务端清掉勾选并推进基准，所以成功后重新拉一遍状态。
@@ -1046,14 +1140,29 @@ export const useInteractiveStore = defineStore("interactive", () => {
   async function confirmImpact(): Promise<void> {
     impactConfirmed = true;
     pendingImpact.value = null;
+    impactCheckError.value = null;
     await saveNow();
   }
 
-  /** 用户取消：不改动板面（也不保存），执行中的任务继续。 */
-  function cancelImpact(): void {
+  /** 用户取消：这次未确认的候选放弃（07），回到服务器已保存状态；执行中的任务继续。 */
+  async function cancelImpact(): Promise<void> {
     impactConfirmed = false;
     pendingImpact.value = null;
-    void refreshBoardFromServer();
+    impactCheckError.value = null;
+    /**
+     * 卡片编辑草稿与恢复来源**不在这里清理**：「正式变更与草稿清理」的最终确认关系
+     * 由 07 保证 —— 未确认、取消期间都保留候选，正式变更成功后才清对应版本。
+     * 明确取消是用户决定：候选丢弃，直接回读服务器状态；回读失败则候选恢复为未保存并显示原因。
+     */
+    dirty.value = false;
+    saveStatus.value = "idle";
+    try {
+      await refreshBoardFromServer();
+    } catch (err) {
+      saveStatus.value = "error";
+      saveError.value = (err as Error).message;
+      dirty.value = true;
+    }
   }
 
   function dismissMaterialPaused(): void {
@@ -1117,6 +1226,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     finishedIntents,
     taskCount,
     pendingImpact,
+    impactCheckError,
     materialPaused,
     undoStack,
     redoStack,

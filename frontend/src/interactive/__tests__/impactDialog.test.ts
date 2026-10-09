@@ -20,7 +20,7 @@ function mountDialog(): { store: ReturnType<typeof useInteractiveStore>; wrapper
   const store = useInteractiveStore();
   // 这两个动作会去访问服务端；组件测试只关心「接线是否正确」，所以在这里替换掉，
   // 避免测试环境因为连不上后端而出现未处理的网络错误。
-  vi.spyOn(store, "cancelImpact").mockImplementation(() => {
+  vi.spyOn(store, "cancelImpact").mockImplementation(async () => {
     store.pendingImpact = null;
   });
   vi.spyOn(store, "confirmImpact").mockResolvedValue(undefined);
