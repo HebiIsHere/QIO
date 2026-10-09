@@ -233,6 +233,11 @@ const STATUS_WORD: Record<string, string> = {
   cancelled: "已停止",
   stopped: "已停止",
   unavailable: "未完成",
+  /**
+   * 不完整结束（契约 §七 C2）：流在结束标记之前 EOF —— 已确认正文保留，
+   * 但这**不是完成**。界面必须说「未完成」，绝不能收成「已完成」的样子。
+   */
+  incomplete: "未完成",
 };
 
 const statusWord = computed(() => {
@@ -290,6 +295,8 @@ const dataState = computed(() => {
   if (props.queued) return "waiting";
   if (props.facts?.status === "failed") return "failed";
   if (props.facts?.status === "cancelled" || props.facts?.status === "stopped") return "stopped";
+  // 不完整结束：既不是成功（绿），也不是失败（红）—— 它是「未完成」这一档
+  if (props.facts?.status === "incomplete") return "incomplete";
   return "ready";
 });
 
@@ -739,6 +746,9 @@ onBeforeUnmount(() => {
 .turn-process[data-state="failed"] {
   border-left-color: var(--border-danger);
 }
+.turn-process[data-state="incomplete"] {
+  border-left-color: var(--warning);
+}
 .tp-status {
   display: flex;
   align-items: baseline;
@@ -783,6 +793,9 @@ onBeforeUnmount(() => {
 .turn-process[data-state="stopped"] .tp-dot {
   background: var(--text-faint);
 }
+.turn-process[data-state="incomplete"] .tp-dot {
+  background: var(--warning);
+}
 .turn-process[data-state="ready"] .tp-dot {
   background: var(--success);
 }
@@ -796,6 +809,9 @@ onBeforeUnmount(() => {
 }
 .turn-process[data-state="failed"] .tp-state {
   color: var(--danger);
+}
+.turn-process[data-state="incomplete"] .tp-state {
+  color: var(--warning);
 }
 .tp-detail {
   font-family: var(--sans);
@@ -826,6 +842,10 @@ onBeforeUnmount(() => {
 .turn-process[data-state="stopped"] .tp-outcome {
   border-left-color: var(--border-strong);
 }
+/* 未完成：不是失败也不是正常结束 —— 用警示色，原因文字保持可读 */
+.turn-process[data-state="incomplete"] .tp-outcome {
+  border-left-color: var(--warning);
+}
 .tp-reason {
   margin: 0;
   font-family: var(--sans);
@@ -834,6 +854,9 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 .turn-process[data-state="stopped"] .tp-reason {
+  color: var(--text-secondary);
+}
+.turn-process[data-state="incomplete"] .tp-reason {
   color: var(--text-secondary);
 }
 .tp-outcome-actions {

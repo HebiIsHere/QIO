@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
 import AttachmentChip from "./AttachmentChip.vue";
-import { useSessionStore } from "../stores/session";
+import { splitSystemAnnotation, useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
 import type { MessageAttachment, StreamMessage } from "../stores/session";
@@ -214,6 +214,15 @@ const verifiedText = computed(() => {
   if (!fact) return "";
   return fact.basis ? `后端已核对：${fact.basis}` : "后端已核对";
 });
+
+/**
+ * 系统核对注记（后端事实，不是模型的说法）：契约 §七 C1 要求它在**独立「系统事实」区域**
+ * 渲染 —— 所以这里把正文与注记切开：正文照常走 Markdown（打字机只作用于正文），
+ * 注记单独成块。同一段文字只出现一次（content 里本来就只存了一份）。
+ */
+const answerParts = computed(() => splitSystemAnnotation(props.message.content ?? ""));
+const answerBody = computed(() => answerParts.value.body);
+const systemNote = computed(() => answerParts.value.annotation);
 
 /**
  * 用户消息上的附件行。
@@ -531,12 +540,25 @@ function removeOne(id: string) {
           增量本身就是节奏，再叠一层逐字点亮就等于让用户看不到已经到达的回答。
         -->
         <MarkdownContent
-          :source="message.content"
+          :source="answerBody"
           :reveal="!!message.streaming && !message.assistantGrew"
           :cps="ui.typewriterCps"
           :pace-ms="message.paceMs ?? null"
         />
         <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
+      </div>
+      <!--
+        系统核对注记 = 后端事实，独立成块（不进正文 Markdown）：
+        正文与注记各出现一次，也不参与打字机动画（它是在回答落定之后才到的）。
+      -->
+      <div
+        v-if="systemNote"
+        class="system-fact"
+        data-test="answer-system-note"
+        role="note"
+      >
+        <span class="sf-kind mono">系统事实</span>
+        <p class="sf-body">{{ systemNote }}</p>
       </div>
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
@@ -575,6 +597,29 @@ function removeOne(id: string) {
 .message.assistant {
   margin-right: auto;
   align-items: flex-start;
+}
+/* 系统核对注记：独立「系统事实」区域（契约 §七 C1），与正文明确分开 */
+.system-fact {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  max-width: min(760px, 100%);
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-inset);
+  border-radius: var(--r-xs);
+}
+.sf-kind {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+.sf-body {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* 「后端已核对」：贴在回答内部的一行事实，克制、不抢正文 */
 .verified-note {

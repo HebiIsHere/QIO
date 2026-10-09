@@ -144,6 +144,11 @@ function normalizeTurnActions(raw: unknown): TurnAction[] {
  */
 export interface TurnFacts {
   turnId: string;
+  /**
+   * 后端给的终态词（契约 §七 C2）：completed / failed / cancelled / unavailable /
+   * **incomplete**（流在结束标记前 EOF —— 已经确认的正文保留，但**不是完成**）。
+   * 保持 string 是为了兼容旧记录里可能的未知词：界面不认识的词不当成完成。
+   */
   status: string;
   durationMs: number | null;
   queueMs: number | null;
@@ -543,8 +548,13 @@ function parseVerifiedRaw(raw?: string | null): VerifiedFact | null {
  */
 export const SYSTEM_ANNOTATION_HEADER = "—— 系统核对（后端事实，不是模型的说法）：";
 
-/** 把 final_content 切成「模型正文」与「系统核对注记」；没有注记时原样返回。 */
-function splitSystemAnnotation(text: string): { body: string; annotation: string | null } {
+/**
+ * 把 final_content 切成「模型正文」与「系统核对注记」；没有注记时原样返回。
+ *
+ * 渲染层（MessageItem）也用它：注记要在**独立「系统事实」区域**显示，
+ * 不能混进正文的 Markdown（契约 §七 C1：正文只出现一次、不重启打字动画）。
+ */
+export function splitSystemAnnotation(text: string): { body: string; annotation: string | null } {
   const raw = String(text ?? "");
   const idx = raw.indexOf(SYSTEM_ANNOTATION_HEADER);
   if (idx < 0) return { body: raw, annotation: null };
@@ -1268,6 +1278,18 @@ export const useSessionStore = defineStore("session", {
     },
     isQueuedTurn(turnId: string) {
       return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
+    },
+    /**
+     * 这一轮的用户消息是否还标着「等待中」（已受理、还没开始）。
+     *
+     * 与 isQueuedTurn 的区别：队列快照可能已经把它摘出 queued 列表，但消息上的
+     * 「等待中」标记（以及它「从未开始」这个事实）还在 —— 迟到 / 竞争到达的
+     * 结束事件要靠它判断「这确实是一个排队轮的结局」（§七 C1/C5）。
+     */
+    hasQueuedMessage(turnId: string): boolean {
+      const id = String(turnId ?? "");
+      if (!id) return false;
+      return this.messages.some((m) => m.role === "user" && m.turnId === id && m.queued === true);
     },
     /**
      * 排队中的 turn 已经有结局（取消 / 准备失败）。
@@ -2682,7 +2704,7 @@ export const useSessionStore = defineStore("session", {
          * 每轮结束事实（契约 §1.2）：历史分页同样要带回 reason / actions ——
          * 刷新后失败的那一轮仍然说得出为什么。旧记录没有这个字段 → 什么也不写。
          */
-        this.applyTurnFactsSnapshot((ctx as unknown as { turn_facts?: unknown }).turn_facts);
+        this.applyTurnFactsSnapshot(ctx.turn_facts);
         this.currentTopicId = ctx.topic_id;
         this.topicName = ctx.topic_name ?? null;
         this.anchorFragment = ctx.anchor_fragment ?? null;
@@ -2924,7 +2946,7 @@ export const useSessionStore = defineStore("session", {
         // （不串进新列表、不改新话题的游标与 has_more）
         if (!this._historyResultBelongs(seq, topicAtStart)) return false;
         // 更早的一页同样带回每轮结束事实（翻到的失败轮也要能「重试」）
-        this.applyTurnFactsSnapshot((page as unknown as { turn_facts?: unknown }).turn_facts);
+        this.applyTurnFactsSnapshot(page.turn_facts);
         const known = new Set(this.messages.map((m) => m.id));
         const knownRecords = new Set(
           this.messages.map((m) => m.toolRecordId).filter(Boolean) as string[],

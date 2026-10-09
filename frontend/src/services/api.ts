@@ -328,6 +328,47 @@ export interface EntityCard {
 }
 
 /**
+ * 一轮的**终态词**（契约 §七 C2）。
+ *
+ * incomplete 只用于「不完整 EOF」：流在结束标记（OpenAI 的 finish_reason /
+ * Anthropic 的 message_stop）之前就断了 —— 已确认正文保留，但**不是完成**。
+ * 厂商合法的 length_limit / content_filter 仍是 completed，只用 reason_code 区分。
+ */
+export type TurnEndStatus =
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "stopped"
+  | "unavailable"
+  | "incomplete";
+
+/**
+ * 一轮的结束事实（turn_facts，历史分页 / RESYNC 快照里的同一份形状）。
+ *
+ * 字段与后端台账一一对应，前端**只消费、不编造**：台账里没有事实的轮次不会出现在
+ * 这个数组里，界面因此不会显示一个假原因。incomplete 也在这里如实带回 ——
+ * 刷新 / 换设备之后仍然是「未完成 + 原因 + retry」。
+ */
+export interface TurnFactsRow {
+  turn_id: string;
+  /**
+   * 终态词：已知取值见 TurnEndStatus（含 incomplete）；未知词按原样收下，
+   * 由 store 归一化 —— 界面不认识的词绝不会被当成「已完成」。
+   */
+  status?: TurnEndStatus | (string & {}) | null;
+  duration_ms?: number | null;
+  queue_ms?: number | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  reason?: string | null;
+  reason_code?: string | null;
+  stopped_by?: string | null;
+  actions?: string[] | null;
+  error?: string | null;
+  message?: string | null;
+}
+
+/**
  * 一条「已经被后端接受、但没有执行完」的用户消息（后端 `turn_journal` 台账）。
  *
  * 语义（见 storage/turn_journal.py）：进程退出时还在 `queued` / `running` 的行
@@ -661,6 +702,11 @@ export const api = {
         }[];
         created_at?: string | null;
       }[];
+      /**
+       * 当前相关轮次的结束事实（运行中 / 排队中 / 刚取消 / 上次进程留下的未完成轮）。
+       * 与历史分页同一份形状：incomplete 在这里也必须原样带回来。
+       */
+      turn_facts?: TurnFactsRow[];
     }>("/api/runtime/state", { timeoutMs: API_TIMEOUT_MS.bulk }),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
@@ -748,6 +794,8 @@ export const api = {
         /** 叙事行的系统元数据（JSON 字符串）：kind 与系统生成的调用摘要 */
         raw?: string;
       }[];
+      /** 这一页涉及的每轮结束事实（台账里确实记过的才有；含 incomplete） */
+      turn_facts?: TurnFactsRow[];
       /** 这一页涉及的工具调用（预览；全文按 id 取） */
       tool_records?: ToolRecordPreview[];
       /** 还有更早的历史可以加载 */
@@ -773,6 +821,8 @@ export const api = {
         turn_id?: string | null;
         raw?: string;
       }[];
+      /** 更早的这一页同样带回每轮结束事实（含 incomplete；旧记录不出现） */
+      turn_facts?: TurnFactsRow[];
       tool_records?: ToolRecordPreview[];
       has_more: boolean;
       next_before: string | null;

@@ -38,6 +38,8 @@ const STATUS_WORD: Record<string, string> = {
   cancelled: "已停止",
   stopped: "已停止",
   unavailable: "未完成",
+  /** 不完整结束（契约 §七 C2）：与过程区同一口径，绝不显示成「已完成」。 */
+  incomplete: "未完成",
 };
 
 function num(value: unknown): number | null {

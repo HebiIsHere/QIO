@@ -8,7 +8,7 @@ import {
 } from "../services/events";
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
 import { useApprovalsStore } from "./approvals";
-import { api } from "../services/api";
+import { api, type TurnFactsRow } from "../services/api";
 import { resetBackend } from "../services/backend";
 
 /**
@@ -229,7 +229,32 @@ export const useEventStore = defineStore("events", {
             endRevision !== null &&
             endRevision < session.queueRevision &&
             tid !== session.activeTurnId;
-          if (staleEnd) break;
+          if (staleEnd) {
+            /**
+             * 陈旧 END 的**唯一例外：已经确定发生的结束事实**。
+             *
+             * 一条比权威队列快照更旧、但属于本会话**已知轮**的 END 不能整条丢掉：
+             * 否则「为什么停下 + 还能不能重试」会随着一次 revision 竞争（队列快照先
+             * 到、取消的 END 后到）一起消失（§七 C1/C5：重复 / 迟到 / 竞争取消必须
+             * 幂等，并且事实先落地、再清排队标记）。
+             *
+             * 例外范围严格限定：**只记事实**（外加清理「等待中」标记）——
+             * 绝不应用 final_content、绝不触碰 active / turnRunning / 全局结局。
+             */
+            const stillQueued =
+              session.isQueuedTurn(tid) || (Boolean(tid) && session.hasQueuedMessage(tid));
+            if (
+              tid &&
+              !this.endedTurns.includes(tid) &&
+              (stillQueued || Boolean(session.userMessageFor(tid)))
+            ) {
+              this.endedTurns.push(tid);
+              if (this.endedTurns.length > 200) this.endedTurns.shift();
+              session.recordTurnFacts(tid, d);
+              if (stillQueued) session.concludeQueuedTurn(tid);
+            }
+            break;
+          }
           // 结束也是一次状态变化：记下版本，避免更旧的快照事后把状态改回去
           session.noteQueueRevision(endRevision);
           const isActive = Boolean(tid) && tid === session.activeTurnId;
@@ -300,6 +325,14 @@ export const useEventStore = defineStore("events", {
           session.lastTurnOutcome = { turnId: tid, status };
           if (status === "failed") {
             session.lastError = String(d.error ?? d.message ?? "本轮执行失败");
+          } else if (status === "incomplete") {
+            /**
+             * 不完整结束（契约 §七 C2）：已确认正文照常校准（上面那条分支），
+             * 但这一轮**不是失败** —— lastError 绝不能写成「本轮执行失败」。
+             * 原因 / 原因码 / 原始错误都随 recordTurnFacts 落到了这一轮（过程区
+             * 默认显示一句话原因、详情折叠），顶部还有由 lastTurnOutcome 驱动的
+             * 安静提示说「未完成」—— 所以这个结局既不被说成失败，也不会被吞掉。
+             */
           } else if (status === "unavailable" && !session.warning) {
             // 后端通常已经先发了一条人话 WARNING；兜底也不直接把错误码丢给用户
             session.warning = "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key";
@@ -830,9 +863,10 @@ export const useEventStore = defineStore("events", {
       tools?: ToolExecutionSnapshot[];
       /**
        * 每轮结束事实（契约 §1.2）：重连恢复要把 reason / actions 一起带回来 ——
-       * 旧后端没有这个字段 → 什么也不写（不伪造原因）。
+       * 旧后端没有这个字段 → 什么也不写（不伪造原因）；
+       * incomplete 与其他终态一样原样带回（前端消费见 services/api.ts::TurnFactsRow）。
        */
-      turn_facts?: unknown;
+      turn_facts?: TurnFactsRow[];
       narratives?: {
         narrative_id?: string;
         turn_id?: string | null;
