@@ -873,14 +873,17 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
 }
 
 /**
- * 删除卡片时，它上面的编辑草稿也要作为「待同步的清除」登记（契约 §11.2）。
+ * 删除卡片时，它上面的编辑草稿的去向（收尾轮 07）。
  *
- * 只删内存里的草稿与本机记录**不会**让服务器删掉那份草稿：下次刷新又会把它恢复出来
- * （用户看到的正是「清除过的草稿复活了」）。没有草稿的卡片不登记，免得留下无意义的删除依据。
+ * 这里只**登记**「这次板面变更成功后清掉这张卡的草稿」，不做真正的清除：
+ * 删除还要经过影响确认与保存 —— 未确认、保存失败、用户取消的期间，
+ * 草稿候选与本机恢复来源都必须原样留着（否则取消后新输入就找不回来了）。
+ * 真正的清除由 store 在保存回执对应当前候选、且没有任何更新候选时按登记版本执行。
+ * 没有草稿的卡片不登记，免得留下无意义的删除依据。
  */
 function forgetCardDraft(cardId: string): void {
   if (!store.hasCardDraft(cardId)) return;
-  store.clearDraft(cardDraftKey(cardId));
+  store.requestDraftClear(cardDraftKey(cardId));
 }
 
 function onCardRemove(cardId: string) {

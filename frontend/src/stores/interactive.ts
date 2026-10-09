@@ -240,6 +240,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * version = 登记时 draftKeySeq 的那一版；登记后用户又输入更新版本 → 该次登记作废。
    */
   const pendingDraftClears = new Map<string, number>();
+  /**
+   * 登记表的**响应式镜像**（给界面/测试观察用）。
+   *
+   * 不能直接 computed 一个普通 Map：Map 的变化不会触发 computed 重算，
+   * 首次读到的数组会被永久缓存，于是「已经消化完的登记」看起来还在（假失败）。
+   * 每次改动登记表都调用 syncPendingDraftClearKeys() 同步这一份。
+   */
+  const pendingDraftClearKeys = ref<string[]>([]);
+  function syncPendingDraftClearKeys(): void {
+    pendingDraftClearKeys.value = [...pendingDraftClears.keys()];
+  }
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -419,6 +430,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           pendingDraftClears.delete(key);
           clearDraft(key);
         }
+        syncPendingDraftClearKeys();
         const impact = (result as { materialImpact?: { paused?: Intent[] } }).materialImpact;
         if (impact?.paused?.length) {
           materialPaused.value = impact.paused;
@@ -909,10 +921,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   function requestDraftClear(key: string): void {
     pendingDraftClears.set(key, draftKeySeq.get(key) ?? 0);
+    syncPendingDraftClearKeys();
   }
-
-  /** 登记了但还没落地的草稿清除（给界面/测试观察用，不改变语义）。 */
-  const pendingDraftClearKeys = computed(() => [...pendingDraftClears.keys()]);
 
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
   function setDraft(key: string, text: string) {
@@ -1440,6 +1450,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     impactCheckError.value = null;
     // 07：取消 = 这次板面变更不生效，那么它带来的草稿清除也不该落地
     pendingDraftClears.clear();
+    syncPendingDraftClearKeys();
     /**
      * 卡片编辑草稿与恢复来源**不在这里清理**：「正式变更与草稿清理」的最终确认关系
      * 由 07 保证 —— 未确认、取消期间都保留候选，正式变更成功后才清对应版本。
