@@ -267,11 +267,25 @@ def chain_of(conn: sqlite3.Connection, knowledge_id: str) -> list[KnowledgeItem]
     if start is None:
         return []
     if _has_chain_columns(conn) and start.chain_id:
-        rows = conn.execute(
-            "SELECT * FROM knowledge WHERE chain_id = ?", (start.chain_id,)
-        ).fetchall()
-        if rows:
-            return [svc._from_row(r) for r in rows]
+        ids: set[str] = set()
+        for row in conn.execute(
+            "SELECT id FROM knowledge WHERE chain_id = ?", (start.chain_id,)
+        ).fetchall():
+            ids.add(str(row["id"]))
+        # 迁移 26 只加列、不回填：历史行的 chain_id 仍可能是空的，旧写入路径也可能
+        # 留下 chain_id = NULL 的行。它们属于同一条链，绝不能被列查询漏掉——一旦漏掉，
+        # 同链的第二个 active 就看不见，R02「同一版本链不能有两个当前版本」会失效。
+        for row in conn.execute(
+            "SELECT id FROM knowledge WHERE chain_id IS NULL OR chain_id = ''"
+        ).fetchall():
+            orphan_id = str(row["id"])
+            if orphan_id in ids:
+                continue
+            if derive_chain(conn, orphan_id)[0] == start.chain_id:
+                ids.add(orphan_id)
+        if ids:
+            members = [svc.get(i) for i in ids]
+            return [m for m in members if m is not None]
     ids: set[str] = {knowledge_id}
     # 祖先：先找到链根
     root = knowledge_id

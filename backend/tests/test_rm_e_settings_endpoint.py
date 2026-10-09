@@ -1,16 +1,11 @@
-"""E 组 · M08 端点级验收（`api/server.py` 接线后自动由 xfail 变 xpass）。
+"""E 组 · M08 端点级验收（Lead 已接线，全部为正式用例）。
 
 契约要求设置写入是**整体**的：合法前字段 + 非法后字段 → HTTP 400 且数据库与
 运行时都不变。这条语义由 `agent/services/settings_service.py` 提供，
-但 `api/server.py` 本轮由 A 独占、端点接线由 Lead 完成。
+`api/server.py` 的 5 个设置端点 + computer 端点已改为「先全量校验 → 单事务提交
+→ 再应用运行时」（`_apply_settings_patch`）。
 
-所以这里放的是**接线后应当通过**的端点级验收：
-
-* 现在（路由仍各自「边校验边写」）这些用例是 `xfail`；
-* Lead 把端点改成调用 `SettingsService(ctx).apply({...})` 之后，它们会变成 XPASS
-  （非严格 xfail，不会把 pytest 变红），把标记去掉即可转为正式用例。
-
-整体生效与「不必失败」的用例（合法字段照旧生效）现在就是绿的。
+用例只依据可观察行为（HTTP 状态码 + 后续 GET 的生效值），不依赖接线细节。
 """
 
 from __future__ import annotations
@@ -18,7 +13,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from agent.api.server import create_app
@@ -52,10 +46,6 @@ def test_valid_pair_takes_effect_as_a_whole(client: TestClient) -> None:
     assert body["fragment_max_tokens"] == 6000
 
 
-@pytest.mark.xfail(
-    reason="等待 Lead 把 /api/settings/memory 接到 SettingsService（A 独占 api/server.py）",
-    strict=False,
-)
 def test_legal_memory_field_plus_illegal_later_field_changes_nothing(
     client: TestClient,
 ) -> None:
@@ -69,10 +59,6 @@ def test_legal_memory_field_plus_illegal_later_field_changes_nothing(
     assert _memory(client) == before
 
 
-@pytest.mark.xfail(
-    reason="等待 Lead 把 /api/settings/tools 接到 SettingsService（A 独占 api/server.py）",
-    strict=False,
-)
 def test_legal_tools_field_plus_illegal_later_field_changes_nothing(
     client: TestClient,
 ) -> None:

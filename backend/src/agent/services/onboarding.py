@@ -12,7 +12,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from agent.entities.cards import EntityAttribute, EntityCardCandidate, EntityCardService
+from agent.entities.cards import (
+    SOURCE_USER,
+    EntityAttribute,
+    EntityCardCandidate,
+    EntityCardService,
+)
 from agent.graph.nodes import NodeService
 from agent.knowledge.lifecycle import KnowledgeItem, KnowledgeService
 from agent.storage.settings import SettingsStore
@@ -269,7 +274,10 @@ class OnboardingService:
                 kind="person",
                 summary=intro,
                 attributes=attributes,
-            )
+            ),
+            # M04：引导表单是**用户自己填的**，标成 user 来源；否则后续普通提炼
+            # 会把它当成模型候选，按字段覆盖掉用户的自述。
+            source=SOURCE_USER,
         )
         return card.id if existing is None else existing.id
 
@@ -539,7 +547,10 @@ class OnboardingService:
             card = cards.find_by_name(name)
         if card is None:
             created = cards.upsert(
-                EntityCardCandidate(name=name, kind="person", summary=summary)
+                EntityCardCandidate(name=name, kind="person", summary=summary),
+                # 引导表单里用户自己填的称呼/背景：标成 user 来源，
+                # 免得后续普通提炼把它当成模型候选覆盖掉（M04）。
+                source=SOURCE_USER,
             )
             self.settings.set(SELF_CARD_KEY, created.id)
             return created.id

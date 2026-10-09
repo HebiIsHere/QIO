@@ -312,12 +312,17 @@ def test_verification_service_still_works_with_new_rule(db_conn):
     assert activated.state is KnowledgeState.ACTIVE
 
 
-# -- 迁移 24 落地后的「列优先」路径（列存在必须真的用列，不能两套语义）---------
+# -- 版本链列落地后的「列优先」路径（列存在必须真的用列，不能两套语义）---------
+# 注意：迁移 26（A 组）已经建好 chain_id / version，所以补列必须是**幂等**的，
+# 否则「迁移已落地」的真实库里这些用例会因 duplicate column name 而报错。
 
 
 def _add_chain_columns(conn: sqlite3.Connection) -> None:
-    conn.execute("ALTER TABLE knowledge ADD COLUMN chain_id TEXT")
-    conn.execute("ALTER TABLE knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(knowledge)")}
+    if "chain_id" not in existing:
+        conn.execute("ALTER TABLE knowledge ADD COLUMN chain_id TEXT")
+    if "version" not in existing:
+        conn.execute("ALTER TABLE knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
 
 
 def test_chain_columns_are_populated_and_used_when_present(db_conn):

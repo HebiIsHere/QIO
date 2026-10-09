@@ -305,7 +305,10 @@ async def test_cancelled_claim_is_released_with_generation_check(tmp_path: Path)
     task = dt.task_for(ctx.conn, dt.KIND_SUMMARY, sealed.id, version)
     assert task is not None
 
-    claimed = dt.claim_due(ctx.conn, instance_id="inst_close")
+    # Lead 集成后 AppContext 会 bind_instance(自己的 instance_id)：release() 走
+    # 「所有者 + 认领代次」双校验，所以认领与释放必须来自同一个实例身份。
+    # 这里用 app 自己的实例认领，保留本条用例真正要验的「代次校验」语义。
+    claimed = dt.claim_due(ctx.conn, instance_id=ctx.instance_id)
     assert claimed and claimed[0].claim_generation == 1
 
     assert dt.release(ctx.conn, task.id, expected_generation=0) is False

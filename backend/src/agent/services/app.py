@@ -105,6 +105,16 @@ class AppContext:
         self.instance_id = f"qio_{uuid.uuid4().hex[:16]}"
         self.instances = InstanceRegistry(conn, self.instance_id, pid=os.getpid())
         self.instances.start()
+        # R05：派生任务队列要认同一份实例身份与存活判据。不绑的话 owner 会写成
+        # NULL，恢复只能退化成「超时兜底」，「刚认领就重启」就恢复不了。
+        from agent.services.derived_tasks import bind_instance as _bind_derived_instance
+
+        _bind_derived_instance(self.instance_id, self.instances)
+        # M06：后台记忆任务的统一注册表。编排器调度（registry_for）与 aclose 收尾
+        # 必须拿到同一份，否则关闭时等不到正在跑的提炼任务。
+        from agent.services.background import BackgroundTasks as _BackgroundTasks
+
+        self.background = _BackgroundTasks()
         self.credentials = CredentialStore(conn)
         self.settings_store = SettingsStore(conn)
         from agent.trace.store import TraceStore
@@ -767,6 +777,7 @@ class AppContext:
 
         顺序（后者都依赖前者已经停下来）：
 
+        0. 停后台记忆任务（先拒绝新建派生工作 → 有界等待 → 取消 → 确认结束）；
         1. 停后台维护调度；
         2. 停 TurnManager（在跑的那一轮收尾、排队 turn 兑现终态、等待者全部结束）；
         3. 停 TaskManager（取消在跑的独立任务、兑现所有 waiter）；
@@ -775,6 +786,15 @@ class AppContext:
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
+        # M06：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
+        # 仍可能有提炼协程在写库；shutdown 会等/取消并让未完成任务回到队列（可恢复）。
+        registry = getattr(self, "background", None)
+        if registry is not None:
+            report = await registry.shutdown()
+            if not report.clean:
+                logger.warning(
+                    "background tasks did not finish before shutdown: %s", report.unfinished
+                )
         await self.maintenance.stop()
         await self.turns.shutdown()
         await self.task_manager.shutdown()
