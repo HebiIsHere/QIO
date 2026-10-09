@@ -51,18 +51,12 @@ const removal = computed(() => store.draftRemovalStateFor(key.value));
 const conflict = computed(() => store.draftConflictFor(cardId.value));
 
 /**
- * 本机副本「真的没删掉」的原因（条目 13）：由 store 提供 draftLocalRemovalErrorFor。
+ * 本机副本「真的没删掉」的原因（条目 13）：store 的 draftLocalRemovalErrorFor。
  *
- * 按可选能力读取：store 与组件由不同人接线、合并有先后，缺这个读取器时只是不显示这条提示，
- * 其余提示与重试照常 —— 不会因为版本不齐让整块提示失效。
- * （Lead 的 store 接线合并后可改成直接调用。）
+ * 只有 storage-failure（真的删失败）才非 null；版本守卫有意保留与「本来就没有记录」都是 null，
+ * 界面不许把它们显示成删除失败。
  */
-function readLocalRemovalError(): string | null {
-  const read = (store as { draftLocalRemovalErrorFor?: (id: string) => string | null }).draftLocalRemovalErrorFor;
-  if (typeof read !== "function") return null;
-  return read.call(store, cardId.value) || null;
-}
-const localRemovalError = computed(() => readLocalRemovalError());
+const localRemovalError = computed(() => store.draftLocalRemovalErrorFor(cardId.value) || null);
 /** 别的分支已经给了重试入口（同一次重试会一并补做本机删除），不重复放按钮 */
 const hasOtherRetry = computed(
   () =>
