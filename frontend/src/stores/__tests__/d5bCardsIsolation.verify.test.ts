@@ -129,8 +129,18 @@ describe("D2 反例：两张卡片的草稿记录互不干扰（§11.1 / §11.2�
     await flushPromises();
 
     expect(server.drafts["card:c1"], "清除了 A 卡的草稿，服务器上却还留着它").toBeUndefined();
-    expect(server.drafts["card:c2"], "清除 A 卡时把 B 卡的草稿也删掉了").toBe("B 卡本机的新文字");
-    expect(store.cardDraftText("c2"), "清除 A 卡影响了 B 卡正在编辑的内容").toBe("B 卡本机的新文字");
+    // §12.1 修订（2026-10-09：本节与前面冲突时以本节为准）：c1 的保存请求带上了 c2 的键
+    // —— c2 本机记录与服务器草稿不同、用户没有选择过，按「服务器事实」回写该键，
+    // 既不把本机候选写上去、也不许从整份替换的请求里把它删掉。两份内容都保留：
+    // 服务器的那份在服务器上、本机候选在本机记录与冲突登记里（见 store.draftConflictFor）。
+    // 旧断言「服务器落库成 B 卡本机的新文字」描述的是 §11 时代的自动覆盖行为，已被 §12.1 废止。
+    expect(server.drafts["card:c2"], "未决冲突键被整份替换保存删掉了").toBe("B 卡服务器上的旧草稿");
+    expect(
+      store.draftConflictFor("c2"),
+      "未选择的冲突不许被另一张卡片的保存绕过",
+    ).toEqual({ local: "B 卡本机的新文字", server: "B 卡服务器上的旧草稿" });
+    expect(readCardLocalDraft("c2")?.text, "B 卡的本机候选副本在保存请求后被删了").toBe("B 卡本机的新文字");
+    expect(store.cardDraftText("c2"), "编辑中的 B 卡内容不许被这次保存改变").toBe("B 卡本机的新文字");
     // B 卡的本机记录同步成功后按对象清掉是正确行为；这里要证明的是它没有被 A 卡的清除带坏：
     // 记录要么已经因为「服务器已确认同一份内容」被清掉，要么还是自己的那份文字。
     const c2LocalAfterSync = readCardLocalDraft("c2");

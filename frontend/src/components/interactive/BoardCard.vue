@@ -124,11 +124,14 @@ const isToolbarOwner = computed(() => {
 /** 工具栏在卡片上方时，整理菜单向上展开（朝卡片外侧），不盖标题与连接点 */
 const menuOpensUp = computed(() => props.toolbarTop < props.y);
 
+/** 冲突未决的关闭态卡片显示提示与选择按钮：高度放开为 auto，不被 overflow 裁掉（契约 §12.1 可见可点） */
+const conflictExpanded = computed(() => !props.card.folded && Boolean(store.draftConflictFor(props.card.id)));
+
 const style = computed(() => ({
   left: props.x + "px",
   top: props.y + "px",
   width: props.card.w + "px",
-  height: props.card.folded ? "auto" : props.card.h + "px",
+  height: props.card.folded || conflictExpanded.value ? "auto" : props.card.h + "px",
   zIndex: props.dragging ? 30 : props.selected ? 8 : 4,
 }));
 
@@ -160,13 +163,28 @@ function onConnectDown(event: PointerEvent) {
 
 function startEdit() {
   editing.value = true;
+  const cardId = props.card.id;
+  /**
+   * 冲突未决时（契约 §12.1）：「打开编辑器」**不等于**选择本机版本。
+   * 编辑框先显示本机候选，但**不写草稿、不排保存** —— 服务器那份不动，
+   * 冲突提示（CardDraftHint 里的「用本机的 / 用服务器上的」）保持可见，等用户明确选择。
+   * 用户选服务器后编辑框随 watch 跟随；真正输入新文字时才按正常编辑路径走。
+   */
+  const conflict = store.draftConflictFor(cardId);
+  if (conflict) {
+    draft.value = conflict.local;
+    metaName.value = name.value;
+    metaLanguage.value = language.value;
+    metaHref.value = href.value;
+    metaTitle.value = String(props.card.meta?.title ?? "");
+    return;
+  }
   /**
    * 空草稿是**有效编辑状态**（契约 §10.4）：
    * 不能用 `draftFor(key) || card.content` —— 那会把「用户把正文删空后保存的草稿」
    * 当成「没有草稿」，重开编辑器时旧正文又冒出来把空草稿盖掉。
    * 这里按「记录是否存在」判断：存在就用草稿（哪怕是空串），不存在才回落到正式正文。
    */
-  const cardId = props.card.id;
   draft.value = store.hasCardDraft(cardId) ? store.cardDraftText(cardId) : props.card.content;
   metaName.value = name.value;
   metaLanguage.value = language.value;
@@ -242,6 +260,11 @@ function cancelEdit() {
 
     <div v-if="!card.folded" class="card-body">
       <template v-if="editing">
+        <!--
+          未决冲突的选择入口放在编辑器**上方**（契约 §12.1：冲突入口在真实操作路径可见可点）：
+          卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
+          -->
+        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
         <textarea
           v-model="draft"
           class="editor"
@@ -265,22 +288,31 @@ function cancelEdit() {
         </template>
         <p class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
         <!-- 草稿保存失败不能静默：状态与重试入口就近显示（C 的组件，A 的卡片接线） -->
-        <CardDraftHint :card-id="card.id" />
+        <CardDraftHint v-if="!store.draftConflictFor(card.id)" :card-id="card.id" />
         <div class="row">
           <button class="btn primary" type="button" @click="confirmEdit">完成编辑</button>
           <button class="btn" type="button" @click="cancelEdit">取消</button>
         </div>
       </template>
       <template v-else>
-        <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
-        <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
-        <p v-else-if="card.kind === 'url'" class="content url">
-          <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
-        </p>
-        <p v-else class="content">
-          <span v-if="card.content" class="desc">{{ card.content }}</span>
-          <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
-        </p>
+        <!--
+          冲突未决时提示在**关闭态卡片**上也要可见可点（契约 §12.1）：
+          刷新恢复出冲突后，用户不必先点「编辑」也能直接做出选择。
+          卡片高度固定且 overflow 隐藏，提示不能追加在正文后面（会被裁掉）——
+          确有冲突时直接**替换**正文行：两份内容都保留着（打开编辑或任一选择都能回到），这里先让用户做选择。
+        -->
+        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
+        <template v-else>
+          <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
+          <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
+          <p v-else-if="card.kind === 'url'" class="content url">
+            <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
+          </p>
+          <p v-else class="content">
+            <span v-if="card.content" class="desc">{{ card.content }}</span>
+            <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
+          </p>
+        </template>
       </template>
     </div>
 

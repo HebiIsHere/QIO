@@ -17,6 +17,7 @@
   用法（BoardCard.vue 的编辑区里渲染任意一处即可）：
     <CardDraftHint :card-id="card.id" />        // 键按 cardDraftKey(card.id) 推导
     <CardDraftHint draft-key="card:xxx" />      // 已经有键时直接传
+    // 关闭态（编辑器没打开）也要渲染本组件：调用点用「确有未决冲突」守卫（§12.1）
 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";

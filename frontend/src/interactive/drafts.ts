@@ -351,6 +351,25 @@ export function removeCardLocalDraft(cardId: string, expectVersion?: number): bo
 }
 
 /**
+ * 按「记录仍是当时那一版」守卫的本机副本清理（§12.2：同浏览器多页面按记录版本校验）。
+ *
+ * 在飞的保存/清除回执处理本机副本之前，必须确认副本还是**请求发出时看到的那一版**：
+ * 同一浏览器的另一个页面可能在请求期间写入了更新的副本（版本号更大），直接删
+ * 会把别的页面还没同步的新输入一起删掉。所以：
+ * - expectVersion 是数字：只删版本号仍等于它的记录；
+ * - expectVersion 为 null（当时就没有记录）：只在现在仍然没有记录时才算无事可做。
+ * 版本对不上就**拒绝清理**并返回 false，让调用方保留这条（可能更新的）副本。
+ */
+export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: number | null): boolean {
+  const key = cardLocalDraftStorageKey(cardId);
+  const current = readDraft(key);
+  const currentVersion = current ? (typeof current.version === "number" ? current.version : 0) : null;
+  if (currentVersion !== expectVersion) return false;
+  removeDraft(key);
+  return true;
+}
+
+/**
  * 记录是否存在（**正文为空也算存在**）。
  *
  * 为什么需要：`readDraft(key)?.text || card.content` 这种写法会把「用户把正文删空后保存的草稿」

@@ -20,6 +20,7 @@ import {
   listLocalCardDraftIds,
   readCardLocalDraft,
   removeCardLocalDraft,
+  removeCardLocalDraftIfUnchanged,
   writeCardLocalDraft,
   writeCardLocalClear,
   type DraftRecord,
@@ -94,6 +95,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * key 是草稿键，值是「本机那份」与「服务器那份」的正文。
    */
   const draftConflicts = ref<Record<string, { local: string; server: string }>>({});
+  /**
+   * 每个未决冲突登记时的**本机记录版本**（不进 draftConflicts 的公开形状）。
+   * 「清理只作用于已经确认处理的对应版本」（§12.1/§12.4）：用户做出选择时，
+   * 只有仍是这一版的记录才允许被清掉；已被更晚写入替换的记录不动。
+   */
+  const conflictVersions = new Map<string, number>();
 
   const saveStatus = ref<SaveStatus>("idle");
   const lastSavedAt = ref<string | null>(null);
@@ -321,41 +328,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * - 请求期间用户又输入了新文字 → 以新输入为准，绝不用服务器返回值覆盖；
    * - 恢复结果只回到**编辑草稿**（内存里的 drafts），不写进正式卡片内容。
    */
-  function restoreLocalCardDrafts(merged: Record<string, string>, before: Map<string, number>): void {
+  function restoreLocalCardDrafts(merged: Record<string, string>): void {
     for (const cardId of listLocalCardDraftIds()) {
       const key = cardDraftKey(cardId);
       const local = readCardLocalDraft(cardId);
       if (!local) continue;
 
-    /**
-     * §12.2：旧清除记录**只作用于它自己那一版**。
-     *
-     * 顺序：在处理 cleared 之前，先看这一键上有没有比本地记录更新的内存事实 ——
-     * 反例：清除成功留下 cleared 依据 → 用户重新输入（这一次本地写失败，磁盘上
-     * 的唯一记录仍是那份旧的 cleared）→ 重新读取板面。若 cleared 先把内存里的
-     * 新输入删掉，用户刚打的字就丢了（独立验收反例 3：新输入变空）。
-     *
-     * 判据：内存里存在该键的非空草稿，且本地恢复记录这次写入失败 —— 磁盘上没有
-     * 新输入副本、唯一存档是旧 cleared —— 这时以内存为准：不登记待同步的清除
-     * （那份旧清除已被更新输入否定），也不动 merged[key]。
-     */
-    const inMemoryCardText = drafts.value[key];
-    const localWriteBroken = !draftLocalStateFor(key).ok;
-    if (local.kind === "cleared") {
-      if (inMemoryCardText !== undefined && inMemoryCardText !== "" && localWriteBroken) {
-        // 新输入掌握在内存里；旧 cleared 已经不是最新事实
-        pendingRemovals.delete(key);
-        continue;
-      }
-      // 删除是一项待确认的变化（§11.2）：刷新后仍然知道这份旧草稿要清掉；
-      // 服务器上那份旧记录不许再出现在编辑器里（否则清除后又复活）。
-      pendingRemovals.set(key, { cardId, version: local.version ?? 0 });
-      setDraftRemovalState(key, "pending", null);
-      if (Object.prototype.hasOwnProperty.call(merged, key)) delete merged[key];
-      continue;
-    }
-
-      // 不给别的板面恢复内容：记录自己写了归属，和当前板面对不上就跳过
+      // —— 恢复顺序（§12.2）第一步：先确认**归属** ——
+      // 记录自己写了归属、和当前板面对不上就跳过：别的板面的编辑副本**与清除依据**
+      // 都不许作用于本板（§12.2：别板面的 cleared 不作用于本板）。
       if (local.boardId && local.boardId !== boardId.value) continue;
       // 已删除或不存在的对象不恢复草稿
       if (!boardHasCard(cardId)) {
@@ -363,8 +344,25 @@ export const useInteractiveStore = defineStore("interactive", () => {
         removeCardLocalDraft(cardId);
         continue;
       }
-      // 恢复期间用户还在输入：内存里的新文字优先，绝不被服务器返回值覆盖
-      if (memoryIsNewer(key, before)) continue;
+
+      // —— 第二步：看它是否已被**更晚的编辑**取代 ——
+      // 内存里已经持有这个键（本次会话写下的内容，无论已同步还是未同步）时，内存内容更晚：
+      // 旧的 cleared 依据不许作用于它之后的新输入（本机那次写入失败时，磁盘上留下的
+      // 还是旧依据，内存里的新文字才是当前事实）；本机编辑副本也不许盖掉它。这一步
+      // 必须在「cleared 生效」**之前**（§12.2）。
+      if (Object.prototype.hasOwnProperty.call(drafts.value, key)) continue;
+
+      // —— 第三步：记录仍有效，才轮到 cleared / 恢复生效 ——
+      if (local.kind === "cleared") {
+        /**
+         * 删除是一项**待确认的变化**（§11.2）：刷新后仍然知道这份旧草稿要清掉。
+         * 服务器上那份旧记录不许再出现在编辑器里（否则就是「清除后又复活」）。
+         */
+        pendingRemovals.set(key, { cardId, version: local.version ?? 0 });
+        setDraftRemovalState(key, "pending", null);
+        if (Object.prototype.hasOwnProperty.call(merged, key)) delete merged[key];
+        continue;
+      }
 
       const serverText = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : null;
       if (serverText !== null && serverText === local.text) {
@@ -372,12 +370,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
         removeCardLocalDraft(cardId);
         continue;
       }
-      if (serverText !== null && (local.version ?? 0) <= 0) {
+      if (serverText !== null) {
         /**
-         * 旧版本写的本机记录没有版本号，按这条记录**自己**的信息无法判定它和服务器那份谁新
-         * （§11.3：不许用整个草稿集合的更新时间或别张卡片的保存时间来判）。
-         * 两份都保留，交给用户明确选择，不静默丢弃也不静默覆盖。
+         * 服务器上另有一份：只有一个本地版本号（正数也一样）不足以证明比服务器新 ——
+         * 服务器的草稿不带本机版本号，新旧**无法判定**（§12.1：旧格式与当前格式都按此检查）。
+         * 两份都保留：内存草稿先显示本机候选（编辑框是它），冲突记录里留服务器事实，
+         * flushDrafts 按服务器事实回写该键 —— 交给用户明确选择，不静默丢弃也不静默覆盖。
          */
+        conflictVersions.set(key, typeof local.version === "number" && local.version > 0 ? local.version : 0);
         merged[key] = local.text;
         setDraftConflict(key, { local: local.text, server: serverText });
         continue;
@@ -407,7 +407,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     for (const key of Object.keys(drafts.value)) {
       if (memoryIsNewer(key, before)) mergedDrafts[key] = drafts.value[key] ?? "";
     }
-    restoreLocalCardDrafts(mergedDrafts, before);
+    restoreLocalCardDrafts(mergedDrafts);
     drafts.value = mergedDrafts;
     // 已经保存成功、且服务端也有的键：状态回到 idle；未保存/失败的键保留自己的状态
     const keptStates: Record<string, { status: DraftSaveState; error: string | null }> = {};
@@ -520,7 +520,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function setDraftConflict(key: string, conflict: { local: string; server: string } | null): void {
     const next = { ...draftConflicts.value };
     if (conflict) next[key] = conflict;
-    else delete next[key];
+    else {
+      delete next[key];
+      conflictVersions.delete(key);
+    }
     draftConflicts.value = next;
   }
 
@@ -652,6 +655,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
   function setDraft(key: string, text: string) {
+    const conflict = draftConflicts.value[key];
+    if (conflict && text === conflict.local) {
+      // 打开编辑器/原样写入本机候选**不等于**做出选择（§12.1）：冲突保持可见，
+      // 不清冲突、不排保存 —— 否则用户还没选，本机候选就被写上服务器了。
+      lastDraftKey.value = key;
+      return;
+    }
     drafts.value = { ...drafts.value, [key]: text };
     lastDraftKey.value = key;
     draftKeySeq.set(key, ++draftSeq);
@@ -671,6 +681,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (cardId) {
       const written = writeCardLocalDraft(cardId, text, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
       setDraftLocalState(key, written);
+      if (conflict && written.ok) {
+        // 冲突里的「本机候选」已经换成这份新输入：清理守卫跟着记录的新版本走
+        conflictVersions.set(key, written.version);
+      }
     }
     // 一有输入就进「保存中」：失败时才会被改成 error（绝不停在「已保存」）
     setDraftState(key, "saving");
@@ -688,20 +702,30 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const key = cardDraftKey(cardId);
     const conflict = draftConflicts.value[key];
     if (!conflict) return;
+    // 冲突登记时记下的本机记录版本：清理只作用于「已确认的对应版本」（§12.1/§12.4）
+    const confirmedVersion = conflictVersions.get(key);
+    setDraftConflict(key, null);
     if (choice === "local") {
-      setDraftConflict(key, null);
+      // 明确选本机：本机候选就是当前草稿，按用户的选择重新排一次保存
+      drafts.value = { ...drafts.value, [key]: conflict.local };
       draftKeySeq.set(key, ++draftSeq);
+      draftSavedKeySeq.delete(key);
       setDraftState(key, "saving");
       scheduleDraftSave();
       return;
     }
-    setDraftConflict(key, null);
+    // 明确选服务器：编辑内容跟随服务器那份；本机那份候选按已确认的版本清理
     drafts.value = { ...drafts.value, [key]: conflict.server };
     draftKeySeq.set(key, ++draftSeq);
     draftSavedKeySeq.set(key, draftKeySeq.get(key) ?? 0);
     setDraftState(key, "saved");
-    // 服务器上已经有这一份：本机那份冲突副本按对象清理掉
-    removeCardLocalDraft(cardId);
+    if (typeof confirmedVersion === "number" && confirmedVersion > 0) {
+      // 版本守卫：记录已被更晚的写入替换（如同浏览器的另一个页面）时不能删
+      removeCardLocalDraft(cardId, confirmedVersion);
+    } else {
+      // 旧格式记录没有版本可校验：用户的明确选择就是确认，按对象清理
+      removeCardLocalDraft(cardId);
+    }
     setDraftLocalState(key, { ok: true, error: null });
   }
 
@@ -720,30 +744,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 还有「没做完的草稿工作」：未保存的内容，或还没被服务器确认的清除（§11.2） */
   function hasDraftWork(): boolean {
     return hasUnsavedDrafts() || pendingRemovals.size > 0;
-  }
-
-  /** 这个键上有没有**用户还没做出选择**的冲突（契约 §12.1：未决的内容不许被自动覆盖） */
-  function isConflictedKey(key: string): boolean {
-    return Object.prototype.hasOwnProperty.call(draftConflicts.value, key);
-  }
-
-  /**
-   * 组一次**尊重未决冲突**的保存 payload（契约 §12.1）。
-   *
-   * 服务端保存是整份替换：请求里没有的键会被删掉。所以对「用户还没选择」的冲突键：
-   * - **不能**把内存里的本机候选发上去（那会覆盖服务器上的另一份事实内容）；
-   * - **也不能**不发它（整份替换会把服务器上那份一起删掉）；
-   * 唯一正确做法是把**服务器当前事实**（冲突记录里存的服务器版本，即上次刷新读到的）
-   * 原样放回 payload —— 这次请求对冲突键是一场「无操作的回写」，本机候选等用户选择。
-   */
-  function draftsPayloadRespectingConflicts(): Record<string, string> {
-    const payload: Record<string, string> = { ...drafts.value };
-    for (const key of Object.keys(draftConflicts.value)) {
-      const conflict = draftConflicts.value[key];
-      if (!conflict) continue;
-      payload[key] = conflict.server;
-    }
-    return payload;
   }
 
   /**
@@ -777,22 +777,34 @@ export const useInteractiveStore = defineStore("interactive", () => {
       try {
         for (let round = 0; round < DRAFT_FLUSH_MAX_ROUNDS; round += 1) {
           if (!hasDraftWork()) return;
+          const payload = { ...drafts.value };
           /**
-           * 现有接口是**整份替换**保存：请求里不带某个键 = 删掉服务器上那份。
-           *
-           * 所以「冲突还没被用户选择」的键**绝不能**进 payload —— 把本机候选放进去会
-           * 覆盖服务器上的另一份；按旧逻辑「从 payload 删掉」则会让服务器把 A 键整个删掉，
-           * 两种方向都绕过了用户的选择（契约 §12.1 的两条复现）。
-           * 正确做法：保持 payload 里的**服务器事实**（上次刷新读到的），冲突的本机候选
-           * 独立放在本机记录里等用户选；这时这次请求只是「别的键的正常保存」。
+           * 未决冲突键（§12.1）：本机候选**不上去**，也**不许从请求里删掉** ——
+           * 服务端保存是整份替换，删键就是删掉服务器那份。未决时按**服务器事实**回写该键，
+           * 本机候选留在本机记录与冲突记录里等用户选择。
            */
-          const payload = draftsPayloadRespectingConflicts();
+          const conflictKeys = new Set<string>();
+          for (const [conflictKey, value] of Object.entries(draftConflicts.value)) {
+            if (!value) continue;
+            conflictKeys.add(conflictKey);
+            payload[conflictKey] = value.server;
+          }
           const atSeq = draftSeq;
           // 这次请求会一并清掉的删除依据（payload 就是剩余集合：不带某个键 = 删掉它）
           const removalsAtRequest = new Map(pendingRemovals);
-          const keys = Object.keys(payload);
+          // 未决冲突键不属于「这次要保存成功的工作」：它们等用户选择，不发状态、不做成功清理
+          const keys = Object.keys(payload).filter((key) => !conflictKeys.has(key));
+          // 各键此刻本机记录的版本：在飞回执清理本地副本必须按记录版本校验（§12.2）。
+          // 记账口径与 removeCardLocalDraftIfUnchanged 一致：有记录取 version（旧格式记 0），没有记录为 null。
+          const localVersionsAtRequest = new Map<string, number | null>();
           for (const key of keys) {
             if ((draftKeySeq.get(key) ?? 0) <= atSeq) setDraftState(key, "saving");
+            const cardId = cardIdFromDraftKey(key);
+            if (cardId) {
+              const record = readCardLocalDraft(cardId);
+              const version = record ? (typeof record.version === "number" ? record.version : 0) : null;
+              localVersionsAtRequest.set(key, version);
+            }
           }
           for (const key of removalsAtRequest.keys()) setDraftRemovalState(key, "pending");
           try {
@@ -825,12 +837,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
             if (isStaleReceipt(atSeq, keySeq)) continue;
             draftSavedKeySeq.set(key, keySeq);
             setDraftState(key, "saved");
-            // 服务端已经拿到这一版：本机恢复副本按对象清理掉（契约 §10.5）
+            // 服务端已经拿到这一版：本机恢复副本按「当时那一版」清理（契约 §10.5 / §12.2）。
+            // 版本校验（§12.2）：请求在飞期间被同一浏览器的**另一个页面**换成新版本的记录不许被这次回执删掉。
             const cardId = cardIdFromDraftKey(key);
             if (cardId) {
-              removeCardLocalDraft(cardId);
+              removeCardLocalDraftIfUnchanged(cardId, localVersionsAtRequest.get(key) ?? null);
               setDraftLocalState(key, { ok: true, error: null });
             }
+          }
+          /**
+           * 未决冲突键：服务器事实已成功回写。这里只把「保存工作」的记账清零
+           * （避免每 600ms 反复重发同一回写），**冲突本身不动**，仍等用户明确选择（§12.1）。
+           */
+          for (const key of conflictKeys) {
+            const keySeq = draftKeySeq.get(key) ?? 0;
+            // 请求在飞时用户又输入了新候选：属于下一轮回写，不算这次
+            if (isStaleReceipt(atSeq, keySeq)) continue;
+            draftSavedKeySeq.set(key, keySeq);
+            setDraftState(key, "idle");
           }
           /**
            * 服务器确认了这次一并清掉的删除依据：
