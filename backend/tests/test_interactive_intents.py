@@ -535,9 +535,8 @@ def test_paused_task_resumes_on_confirmation_with_fresh_material_baseline(db_con
         if card["id"] == seed["a"]["id"]:
             card["content"] = "材料（已替换）"
     board_store.save_board(db_conn, BOARD, state, reason="user-edit")
-    assert intents.on_board_saved(db_conn, board_id=BOARD, state=_state(db_conn))["affected"] == [
-        target["id"]
-    ]
+    affected = intents.on_board_saved(db_conn, board_id=BOARD, state=_state(db_conn))["affected"]
+    assert target["id"] in affected, "执行中任务的依据失效时必须被暂停并保留进度"
     assert _listed(db_conn)[target["id"]]["status"] == "paused"
 
     # 不确认：不能继续
@@ -799,7 +798,10 @@ def test_on_board_saved_pauses_running_intent_when_material_changes(db_conn):
     result = intents.on_board_saved(
         db_conn, board_id=BOARD, state=_state(db_conn), reason="user-edit-material"
     )
-    assert result["affected"] == [running["id"]]
+    # 收尾轮 16：affected 是「这次保存影响到、且依据已失效的任务」——所有引用该材料的
+    # 待审批预览都会被标记 needs_update（不能等到下一次提交才处理），
+    # 因此这里断言执行中的那一项在其中，而不是「只有它」。
+    assert running["id"] in result["affected"]
     assert [item["intentId"] for item in result["paused"]] == [running["id"]]
     assert "暂停" in result["paused"][0]["reason"]
     assert result["paused"][0]["progress"]["done"] == progress_before["done"]
@@ -808,8 +810,9 @@ def test_on_board_saved_pauses_running_intent_when_material_changes(db_conn):
     paused = _listed(db_conn)[running["id"]]
     assert paused["status"] == "paused"
     assert "不会自动重试" in paused["reason"]
-    # 等待审批的意图不受影响
-    assert _listed(db_conn)[waiting["id"]]["status"] == "pending"
+    # 收尾轮 16：等待审批的意图同样引用了这份材料 —— 它的预览依据也失效了，
+    # 必须一起被标记 needs_update（否则旧预览还能被批准），不再是「不受影响」。
+    assert _listed(db_conn)[waiting["id"]]["status"] == "needs_update"
 
     # 再保存一次不会重复暂停；但它的材料依据仍然不一致，所以继续报告受影响
     again = intents.on_board_saved(db_conn, board_id=BOARD, state=_state(db_conn), reason="op")

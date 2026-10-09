@@ -101,7 +101,37 @@ class Harness:
         return self.client.get(f"/api/interactive/boards/{board}/submissions").json()["submissions"]
 
     def put_state(self, state: dict, board: str = BOARD):
-        return self.client.put(f"/api/interactive/boards/{board}/state", json={"state": state})
+        """保存板面（M4 协议）：会影响执行中任务材料的改动必须**先预判、带确认**才落库。
+
+        收尾轮把「影响确认」变成服务端门：不带 confirm 的保存会得到 409
+        impact_confirmation_required，不落库。这里按契约走完整链路
+        （impact-check → confirm → PUT confirm），保持用例原本要验的场景语义：
+        用户确认之后，改动生效、相关任务暂停并保留进度。
+        """
+        response = self.client.put(f"/api/interactive/boards/{board}/state", json={"state": state})
+        body = None
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001 - 非 JSON 响应按原样返回
+            return response
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if response.status_code != 409 or not isinstance(detail, dict):
+            return response
+        if detail.get("error") != "impact_confirmation_required":
+            return response
+        meta = self.client.get(f"/api/interactive/boards/{board}/state").json()
+        check = self.client.post(
+            f"/api/interactive/boards/{board}/impact-check",
+            json={"stateVersion": meta["seq"], "changeSet": {"state": state}},
+        ).json()
+        assert check.get("checkId"), f"影响预判没有给出可确认的句柄：{check}"
+        return self.client.put(
+            f"/api/interactive/boards/{board}/state",
+            json={
+                "state": state,
+                "confirm": {"checkId": check["checkId"], "stateVersion": check.get("stateVersion")},
+            },
+        )
 
     def submit(self, board: str = BOARD, **payload):
         return self.client.post(f"/api/interactive/boards/{board}/submissions", json=payload)

@@ -47,6 +47,13 @@ def _link(lid: str, src: str, dst: str, *, direction: bool = False, meaning: str
 
 
 def save(client: TestClient, cards, groups=None, links=None, selection=None) -> dict:
+    """保存板面（M4 协议）：会影响执行中任务材料的改动必须先预判、带确认才落库。
+
+    收尾轮把影响确认变成服务端门：不带 confirm 的保存得到 409
+    impact_confirmation_required、不落库（前端据此先问用户）。这里按契约补完
+    「impact-check → confirm → PUT confirm」，用例原本要验的场景语义不变：
+    用户确认之后改动生效、相关任务暂停并保留进度。
+    """
     state = {
         "boardId": BOARD,
         "seq": 0,
@@ -57,6 +64,23 @@ def save(client: TestClient, cards, groups=None, links=None, selection=None) -> 
         "selection": list(selection or []),
     }
     resp = client.put(f"/api/interactive/boards/{BOARD}/state", json={"state": state, "reason": "test"})
+    if resp.status_code == 409:
+        detail = resp.json().get("detail")
+        if isinstance(detail, dict) and detail.get("error") == "impact_confirmation_required":
+            meta = client.get(f"/api/interactive/boards/{BOARD}/state").json()
+            check = client.post(
+                f"/api/interactive/boards/{BOARD}/impact-check",
+                json={"stateVersion": meta["seq"], "changeSet": {"state": state}},
+            ).json()
+            assert check.get("checkId"), f"影响预判没有给出可确认的句柄：{check}"
+            resp = client.put(
+                f"/api/interactive/boards/{BOARD}/state",
+                json={
+                    "state": state,
+                    "reason": "test",
+                    "confirm": {"checkId": check["checkId"], "stateVersion": check.get("stateVersion")},
+                },
+            )
     assert resp.status_code == 200, resp.text
     return resp.json()["state"]
 
@@ -287,8 +311,11 @@ def test_scenario6_preview_move_semantic_change_and_material_change(client: Test
     other = next(item for item in intents if item["id"] != target["id"] and not item["dependsOn"])
     assert _intents(client)[other["id"]]["status"] == "pending"
     save(client, [_card("m1", "file", "材料（已替换）", meta={"name": "a.txt"}), _card("n1", "text", "整理", checked=True)])
+    # 收尾轮 16：材料经真实保存接口变化时，服务端**保存那一刻**就把旧预览标记失效，
+    # 不再等下一次提交（旧断言只验提交后的 marking，是本轮要修掉的漏洞）。
+    assert _intents(client)[other["id"]]["status"] == "needs_update"
     result = submit(client)
-    assert other["id"] in result["delivery"]["marking"]["updated"]
+    assert result["status"] in ("succeeded", "empty", "duplicate")
     assert _intents(client)[other["id"]]["status"] == "needs_update"
     assert client.post(f"/api/interactive/intents/{other['id']}/approve", json={}).json()["ok"] is False
 

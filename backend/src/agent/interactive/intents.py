@@ -1771,6 +1771,21 @@ def impact_check(
     }
 
 
+def confirm_binding_version(check_id: str) -> int | None:
+    """这次影响确认绑定的板面版本（记录不存在时返回 None）。
+
+    保存接口用它核对 confirm.stateVersion：确认必须针对它当时预判的那一版，
+    版本对不上就按 stale_check 拒绝（不落库）。
+    """
+    entry = _CONFIRM_CHECKS.get(str(check_id))
+    if entry is None:
+        return None
+    try:
+        return int(entry.get("stateVersion"))
+    except (TypeError, ValueError):
+        return None
+
+
 def impact_gate(conn: sqlite3.Connection, *, board_id: str, state: dict) -> dict:
     """保存前的服务端门（常规校验入口：不只依赖前端禁用按钮）。"""
     affected = _affected_materials_for_state(conn, board_id=board_id, state=state)
