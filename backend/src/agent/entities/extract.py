@@ -107,10 +107,16 @@ async def extract_entity_cards_outcome(
         + "\n"
         + ENTITY_CARD_LIMITS_NOTE
     )
+    # 用量归因由 adapter 在每次实际请求上统一完成（含内部重试的每次响应）；
+    # 这里只把「用量上限已耗尽」如实转成简短原因，不重试、不换配置、不造数。
+    from agent.credentials.policy import BudgetExhausted
+
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content=prompt)], []
         )
+    except BudgetExhausted as exc:
+        return Outcome(None, str(exc))
     except Exception as exc:
         return Outcome(None, f"model call failed: {exc}")
     payload, error = parse_json_object(completion.message.content or "")

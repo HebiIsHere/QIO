@@ -52,6 +52,13 @@ def _terminal_tool_status(data: dict) -> str:
     return SUCCESS if data.get("ok") else FAILED
 
 
+def _usage_accounting():
+    """惰性取记账模块：core/ 不在导入期依赖凭据库（既有导入顺序约束）。"""
+    from agent.credentials import usage
+
+    return usage
+
+
 class LoopPhase(str, Enum):
     PLANNING = "planning"
     TOOL_EXEC = "tool_exec"
@@ -101,7 +108,7 @@ class AgentLoop:
         tool_state: ToolExecutionState | None = None,
         narrative_sink: Callable[..., Any] | None = None,
         narrative_settler: Callable[..., Any] | None = None,
-        usage_sink: Callable[[int, int], None] | None = None,
+        usage_sink: Callable[..., Any] | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -171,6 +178,13 @@ class AgentLoop:
         # 「停止」要能掐掉正在等待的模型请求，而不是等它自然返回（见 cancel/_await_completion）。
         self._cancel_event = asyncio.Event()
         self._request_aborted = False
+        # 在途的模型请求与它的竞速 waiter：取消（含外层 Task.cancel / 关闭）时必须把
+        # **两者**都取消并等它们真的结束，否则会留下悬挂的请求/等待者（见 _await_completion）。
+        self._in_flight_requests: set[asyncio.Future] = set()
+        self._in_flight_waiters: set[asyncio.Future] = set()
+        # 凭据累计用量耗尽（BudgetExhausted）：这是「停下来」而不是「这一轮坏了」，
+        # 收尾时要给一句简短真实原因（见 _plan / _run）。
+        self._budget_exhausted_reason: str | None = None
         self._disposers: list[Callable[[], None]] = []
         self._bind_pipeline()
 
@@ -707,8 +721,25 @@ class AgentLoop:
             # PLANNING
             completion = await self._plan(messages)
             if completion is None:
-                # 这一轮在等待模型时被用户停掉：请求已经中断，没有结果可用。
-                phase = LoopPhase.STOPPED
+                if self._budget_exhausted_reason:
+                    # 凭据累计用量上限耗尽：这是「按上限停下来」，不是「这一轮坏了」。
+                    # 给一句简短真实原因，绝不静默换配置或绕过用户上限。
+                    phase = LoopPhase.STOPPED
+                    self._stop_note = (
+                        f"本轮没有产生回答：{self._budget_exhausted_reason}，已停止。"
+                    )
+                    self._warn(f"用量上限耗尽：{self._budget_exhausted_reason}")
+                    await self._emit(
+                        EventType.WARNING,
+                        {
+                            "code": "usage_budget_exhausted",
+                            "message": self._budget_exhausted_reason,
+                            "recoverable": True,
+                        },
+                    )
+                else:
+                    # 这一轮在等待模型时被用户停掉：请求已经中断，没有结果可用。
+                    phase = LoopPhase.STOPPED
                 break
             self._account_usage(completion)
             self.budget.consume_iteration()
@@ -802,6 +833,10 @@ class AgentLoop:
             "output_tokens": self._usage_output,
             "total_tokens": self._usage_total,
         }
+        # 归因计数随 USAGE 一起给：展示统计「漏没漏记、重没重记」看得到。
+        accounting = self._accounting_snapshot()
+        if accounting is not None:
+            usage["accounting"] = accounting
         await self._emit(EventType.USAGE, usage)
         # 迟到的系统通知：这一轮已经不会再 planning 了，留在手上的必须交还给上层
         # （否则「子任务完成了」这句话会被静默丢掉，用户永远等不到结果）。
@@ -871,6 +906,21 @@ class AgentLoop:
                 )
             return completion
         except Exception as exc:  # adapter-level failure ends the turn
+            from agent.credentials.policy import BudgetExhausted
+
+            if isinstance(exc, BudgetExhausted):
+                # 累计用量上限已耗尽：不再发新请求，用一句简短真实原因收口
+                # （不重试、不换凭据、不绕过上限）。
+                self._budget_exhausted_reason = str(exc)
+                if self.trace is not None:
+                    self.trace.model_call(
+                        seq=self._model_seq,
+                        adapter_mode=str(getattr(self.adapter, "mode", "")),
+                        model=getattr(self.adapter, "model", None),
+                        latency_ms=int((_time.perf_counter() - _t0) * 1000),
+                        error=f"BudgetExhausted: {exc}"[:200],
+                    )
+                return None
             if self.trace is not None:
                 self.trace.model_call(
                     seq=self._model_seq,
@@ -889,34 +939,87 @@ class AgentLoop:
     async def _await_completion(
         self, messages: list[ChatMessage], tools: list[ToolSpec]
     ) -> Completion | None:
-        """跑一次模型调用；被用户取消时**中断这次请求**并返回 None。
+        """跑一次模型调用；被取消时**中断这次请求**并返回 None。
 
         以前取消只是一个检查点：请求已经发出去，就只能等它回来再把结果丢掉 ——
         provider 慢的时候要白白等几十秒，而 turn 队列是单飞的，排在后面的消息
         也跟着一起等。这里把请求放进自己的 task，与取消事件竞速；取消时立刻
         取消它，底层 HTTP 连接随之中断。
 
+        生命周期（M07）—— 三种出口都必须把 request 与 waiter 处理干净：
+
+        * 自然完成：请求先结束 → 取消并等 waiter 收尾 → 返回结果；
+        * 普通停止（用户按停止 / 上层 `cancel()`）：取消事件先到 → 取消并**等待**
+          请求清理 → 标记 `_request_aborted` → 返回 None（结果绝不进入已结束的 turn）；
+        * 外层 `Task.cancel`（关闭 / 上层任务被取消）：先把内层请求与 waiter 都取消
+          **并等它们真的结束**，再把 CancelledError 继续往上抛 —— 不吞取消、也不留
+          一个还在跑的请求。
+
         诚实边界：断开的是**客户端的等待**，服务端是否立刻停止生成由供应商决定；
         这条改动保证的是「不再占用等待时间、不再堵住下一条消息」。
         """
         if self._cancel_event.is_set():
+            self._request_aborted = True
             return None
         request = asyncio.ensure_future(self.adapter.complete(messages, tools))
         waiter = asyncio.ensure_future(self._cancel_event.wait())
+        self._in_flight_requests.add(request)
+        self._in_flight_waiters.add(waiter)
         try:
-            await asyncio.wait({request, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                await asyncio.wait({request, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                # 外层取消：先取消并等内层清理完，再把取消继续传播（不广泛吞取消）。
+                self._request_aborted = True
+                await self._cancel_and_drain(request, waiter)
+                raise
+            if request.done() and not request.cancelled():
+                # 正常返回（异常由 _plan 的 except 分支如实处理）
+                await self._drain_waiter(waiter)
+                return request.result()
+            # 取消事件先到（或请求在竞速窗口里已被取消）：中断请求并等它结束。
+            self._request_aborted = True
+            await self._cancel_and_drain(request, waiter)
+            return None
         finally:
+            self._in_flight_requests.discard(request)
+            self._in_flight_waiters.discard(waiter)
+
+    @staticmethod
+    async def _cancel_and_drain(*tasks: asyncio.Future) -> None:
+        """取消这些 task 并**等它们真的结束**（结果/异常都被丢弃）。
+
+        清理期间不再向等待者交付任何结果 —— 迟到的响应不许进入已经结束的任务。
+        """
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - 结果已被丢弃
+                pass
+
+    async def _drain_waiter(self, waiter: asyncio.Future) -> None:
+        """请求先结束时收掉竞速 waiter：不留悬挂的等待任务。"""
+        if not waiter.done():
             waiter.cancel()
-        if request.done() and not request.cancelled():
-            # 正常返回（异常由 _plan 的 except 分支如实处理）
-            return request.result()
-        request.cancel()
         try:
-            await request
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 结果已被取消，丢弃
+            await waiter
+        except asyncio.CancelledError:
             pass
-        self._request_aborted = True
-        return None
+        except Exception:  # noqa: BLE001 - 竞速任务的结果没有意义
+            pass
+
+    def in_flight_requests(self) -> list[asyncio.Future]:
+        """此刻还没结束的模型请求（测试/诊断用：取消后必须为空）。"""
+        return [t for t in self._in_flight_requests if not t.done()]
+
+    def in_flight_waiters(self) -> list[asyncio.Future]:
+        """此刻还没结束的竞速 waiter（测试/诊断用：取消后必须为空）。"""
+        return [t for t in self._in_flight_waiters if not t.done()]
 
     def _tokens_of(self, completion: Completion) -> int:
         """该次模型调用的**输出** token 数。
@@ -936,6 +1039,30 @@ class AgentLoop:
         usage = completion.usage
         return int(usage.output_tokens) if usage is not None else 0
 
+    def _sink_already_covers_requests(self) -> bool:
+        """这个 usage_sink 是否已经由**请求层**记账覆盖（再记一次就是双记）。
+
+        判定只看身份：sink 必须是为**这条 adapter** 建的、并且这条 adapter 确实
+        在每次实际请求上自己记账（真实 adapter 带 ``accounts_requests``）。
+        自定义 sink / 鸭子类型替身 adapter 永远照老路径被调用。
+        """
+        sink = self.usage_sink
+        if sink is None:
+            return False
+        if getattr(sink, "adapter", None) is not self.adapter:
+            return False
+        try:
+            return bool(getattr(sink, "covers_requests", False))
+        except Exception:  # noqa: BLE001 - 判定失败退回「上层记账」，不静默丢账
+            return False
+
+    def _accounting_snapshot(self) -> dict | None:
+        """这条 adapter 的记账计数（请求数 / 入账数 / 不完整数）；没有绑定就是 None。"""
+        try:
+            return _usage_accounting().accounting_snapshot(self.adapter)
+        except Exception:  # noqa: BLE001 - 诊断字段拿不到不影响收尾
+            return None
+
     def _account_usage(self, completion: Completion) -> None:
         """累计本轮用量：输出闸与 UI/Trace 统计共用同一份归一化数据。"""
         usage = completion.usage
@@ -944,8 +1071,10 @@ class AgentLoop:
             self._usage_output += int(usage.output_tokens)
             self._usage_total += int(usage.total_tokens)
         self.budget.consume_output_tokens(self._tokens_of(completion))
-        if self.usage_sink is not None:
+        if self.usage_sink is not None and not self._sink_already_covers_requests():
             # 归因给「这把钥匙」：进 / 出分开报，由调用方决定记到哪条凭据上。
+            # 生产接线（credential_usage_sink）下真实 adapter 已在请求层记过
+            # （含重试的每次响应），这里跳过正是「消除双记」。
             input_tokens = self._input_tokens_of(completion)
             output_tokens = self._output_tokens_of(completion)
             if input_tokens or output_tokens:
