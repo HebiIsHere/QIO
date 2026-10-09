@@ -141,3 +141,22 @@ $ npx vitest run src/stores/__tests__/d6FailedSendProtection.verify.test.ts src/
 - `vue-tsc` 已跑（通过）；全量 `vitest`（`npm test`）、后端 `pytest`、`scripts/check_docs.py`
   按任务书属第二步（等主智能体集成提交号后与分层证据、两个入口的真实关闭重开、三档尺寸 × 明暗
   480×600 前后截图一起补）。
+
+
+## 6. 第二步正式验收 · 关闭重开（主智能体补齐，2026-10-09）
+
+### 关闭重开（新浏览器进程、同一持久化 profile）
+
+- 实例：前端 `127.0.0.1:5475`、后端 `8975`（独立数据目录 `%TEMP%\qio-r6-closereopen`）；
+- 探针配置：同一 `QIO_PROBE_PROFILE=%TEMP%\qio-chrome-closereopen3`（第二次调用 = 新浏览器进程、同一目录）；
+- 第一次进程：互动聊天发送一条失败原文（`/api/turns` 拦截，模拟），恢复入口 1 条、原因真实；
+- **第二次进程**（关闭后重开同一 profile）：
+  - 互动聊天：恢复入口 `recoverCount=1`、原文 `关闭重开要找回的原话` —— 原文保留；
+  - 平移到对话页：`composer-reopen` `recoverCount=1`、原文一致 —— **同一失败原文在两个入口都找回**；
+- 证据截图：`docs/interactive-ui-screenshots/r6-lead-chat-reopen-recovery.png`、
+  `r6-lead-composer-reopen-recovery.png`。
+
+### 其余视觉与功能证据
+
+主题与三档尺寸（明暗 / 1440×900 / 1024×768 / 800×600 / 480×600）来自子智能体与主智能体的既有截图；
+反例覆盖失败原文无静默淘汰（查看其余 N 条）、无批次无切换条、标题与说明底色等。
