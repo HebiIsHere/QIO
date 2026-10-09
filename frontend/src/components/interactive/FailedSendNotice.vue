@@ -90,11 +90,33 @@ function discard(record: FailedSend): void {
   session.discardFailedSend(record.id);
   actionNotice.value = "已不再保留这段失败原文";
 }
+
+/**
+ * 「读取失败」与「写入失败」是两件事（收尾轮 15）：
+ *
+ * - 写入失败（failedSendPersistError）：这次原文没能写进本机存储，刷新后可能取不回；
+ * - 读取失败（failedSendReadError）：启动时读本机存储出错 —— 它**不代表**原文已经丢失，
+ *   只是这一次没读出来，修好存储后可以重新读取。
+ *
+ * 会话层还没提供读取失败字段时按「没有读取失败」处理：界面不会因此虚报任何状态，
+ * 也绝不会在零条记录时声称「已丢失」或「已恢复」。
+ */
+const readError = computed(
+  () => (session as unknown as { failedSendReadError?: string | null }).failedSendReadError ?? "",
+);
+const canRetryRead = computed(
+  () => typeof (session as unknown as { retryFailedSendRestore?: () => void }).retryFailedSendRestore === "function",
+);
+function retryRead(): void {
+  (session as unknown as { retryFailedSendRestore?: () => void }).retryFailedSendRestore?.();
+}
+/** 零条记录时，只要有一个真实错误，入口本身也要出现（错误提示不能依赖「已经恢复出内容」） */
+const hasStorageWarning = computed(() => Boolean(readError.value || session.failedSendPersistError));
 </script>
 
 <template>
   <section
-    v-if="notice || records.length"
+    v-if="notice || records.length || hasStorageWarning"
     class="failed-send"
     :data-im="`${hook}-recovery-wrap`"
   >
@@ -190,15 +212,37 @@ function discard(record: FailedSend): void {
       >
         {{ actionNotice }}
       </p>
-      <p
-        v-if="session.failedSendPersistError"
-        class="persist-warning"
-        role="status"
-        :data-im="`${hook}-recovery-persist`"
-      >
-        这段原文没能保存在本机，刷新后可能取不回：{{ session.failedSendPersistError }}
-      </p>
     </div>
+
+    <!--
+      存储相关的真实错误放在 records 块**外面**（收尾轮 15）：
+      零条记录也可能伴随「读取失败」或「写入失败」，错误提示不能依赖已经恢复出内容。
+    -->
+    <p
+      v-if="readError"
+      class="persist-warning"
+      role="alert"
+      :data-im="`${hook}-recovery-read-error`"
+    >
+      读取本机保存的失败原文时出错：{{ readError }}（这不代表原文已经丢失；恢复写入能力后可以重新读取）
+      <button
+        v-if="canRetryRead"
+        type="button"
+        class="btn ghost retry-read"
+        :data-im="`${hook}-recovery-read-retry`"
+        @click="retryRead()"
+      >
+        重新读取
+      </button>
+    </p>
+    <p
+      v-if="session.failedSendPersistError"
+      class="persist-warning"
+      role="status"
+      :data-im="`${hook}-recovery-persist`"
+    >
+      这段原文没能保存在本机，刷新后可能取不回：{{ session.failedSendPersistError }}
+    </p>
   </section>
 </template>
 

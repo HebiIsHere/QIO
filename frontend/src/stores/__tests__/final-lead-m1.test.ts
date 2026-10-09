@@ -189,6 +189,21 @@ describe("08/06 服务端门：409 的真实原因与不落库", () => {
     expect(store.saveStatus).not.toBe("saved");
   });
 
+  it("服务端 dict detail（FastAPI 形状 {detail:{...}}）也能读到真实原因并按 409 处理", async () => {
+    const store = useInteractiveStore();
+    await store.load();
+    const apiErr = Object.assign(new Error("409"), {
+      status: 409,
+      payload: { error: "impact_confirmation_required", reason: "会改动执行中任务依赖的材料", affectedTasks: [{ intentId: "t9", title: "任务九", materials: ["c1"], consequence: "暂停" }] },
+    });
+    vi.mocked(api.saveBoardState).mockRejectedValue(apiErr);
+    store.commit({ ...store.board!, seq: 99, cards: [card("c1", "改动")] } as BoardState, "改动");
+    await store.saveNow();
+    await flushPromises();
+    expect(store.pendingImpact?.affected.map((a) => a.intentId)).toEqual(["t9"]);
+    expect(store.dirty).toBe(true);
+  });
+
   it("提交返回 stale_state：给出可操作的真实原因，不推进提交状态、不清改动", async () => {
     const store = useInteractiveStore();
     await store.load();

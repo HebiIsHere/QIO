@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from typing import Any, Iterable
 
 from agent.interactive import models
@@ -163,6 +164,8 @@ def _insert_intent(
     )
     row = _get_row(conn, intent_id)
     assert row is not None
+    # 16：意图创建时记录审批依据（材料语义 + 检查时的板面版本），供审批时复核
+    _record_basis(conn, row)
     return _intent_payload(row)
 
 
@@ -213,7 +216,9 @@ def _progress_shape(progress: Any, preview: dict | None = None) -> dict:
 
 #: progress 里的私有键：材料指纹与执行者身份。它们不进接口负载（_progress_shape 会剥离），
 #: 但必须跨状态保留——恢复流程一旦重建 progress，材料保护就会失效。
-_PRIVATE_PROGRESS_KEYS = ("__materialWatch", "__ownerInstance")
+#: __basisWatch 是审批依据指纹（收尾轮 16）：意图创建时相关材料的语义指纹 + 检查时的板面
+#: 版本；审批与保存时服务端用它重新校验「材料还是预览所依据的那一份」。
+_PRIVATE_PROGRESS_KEYS = ("__materialWatch", "__ownerInstance", "__basisWatch")
 
 
 def _progress_private(row: sqlite3.Row) -> dict:
@@ -238,6 +243,7 @@ def _stored_progress(
     watch: dict | None = None,
     owner: str | None = None,
     drop_owner: bool = False,
+    basis: dict | None = None,
 ) -> dict:
     """构造写回数据库的 progress（保留私有键）；接口负载仍由 _progress_shape 剥离私有键。"""
     base = _progress_shape(models.loads(row["progress"], {}))
@@ -253,6 +259,8 @@ def _stored_progress(
         private["__ownerInstance"] = owner
     if drop_owner:
         private.pop("__ownerInstance", None)
+    if basis is not None:
+        private["__basisWatch"] = basis
     payload.update(private)
     return payload
 
@@ -633,6 +641,32 @@ def approve_intent(
             }
         return _resume_paused_intent(conn, row, instance_id=instance_id, rows_by_id=rows_by_id)
 
+    # 16：审批时服务端重新校验材料与预览依据；单项、批量、依赖等待后的确认共用这条路径。
+    if status in ("pending", "waiting_dependency", "waiting_confirm"):
+        stale = _stale_basis_materials(conn, row)
+        if stale:
+            state = _load_state(conn, row["board_id"])
+            labels = "、".join(_material_label(state, card_id) for card_id in stale[:3])
+            preview = _preview_shape(models.loads(row["preview"], {}))
+            text = (
+                f"相关材料在批准之前发生了变化（{labels}）：这份预览的依据已经过期，"
+                "需要提交并由 QIO 更新预览后才能批准。"
+            )
+            _update(
+                conn,
+                row["id"],
+                status="needs_update",
+                reason=text,
+                progress=_progress_shape({"done": 0, "text": "材料已变化：等待更新预览"}, preview),
+            )
+            fresh = _get_row(conn, intent_id)
+            assert fresh is not None
+            return {
+                **_fail("needs_update", text),
+                "intent": _intent_payload(fresh, rows_by_id),
+                "requiresUpdate": True,
+            }
+
     blockers = _conflict_blockers(conn, row)
     if blockers:
         names = "、".join(f"「{b['title']}」" for b in blockers[:3])
@@ -983,8 +1017,17 @@ def _save_state(conn: sqlite3.Connection, board_id: str, state: dict, reason: st
     _board_store().save_board(conn, board_id, state, reason=reason)
 
 
-def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    """把预览变成正式内容：只用用户同样具备的板面操作（新增结果卡片 / 组 / 链接）。"""
+def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict, str | None]:
+    """把预览变成正式内容：只用用户同样具备的板面操作（新增结果卡片 / 组 / 链接 / 成员调整）。
+
+    成组落地按「先做成员调整、再建立新组」实现（契约 M5 / 反例 18）：
+
+    - 预览组引用的既有成员若已在别的组里，先从原组移出（成员调整，是用户可以做的操作）；
+      一张卡仍然只属于一个组（G1），靠显式调整，而不是靠 normalize_state 静默裁剪；
+    - 落库前先在归一化结果上核对「每个批准成员、批准顺序、批准关系」都真实落地；
+      任何不一致都在**生效前**明确拒绝：返回失败原因、不写入任何改动；
+    - 拒绝时意图保持可处理状态（不会被悄悄标成完成）。
+    """
     board_id = row["board_id"]
     preview = _preview_shape(models.loads(row["preview"], {}))
     state = _load_state(conn, board_id)
@@ -1021,37 +1064,79 @@ def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         applied_cards.append(created["id"])
         live_ids.add(created["id"])
 
-    applied_groups: list[str] = []
+    # --- 预飞检查：预览组引用的成员必须都能落地（新生成的或仍在板面上的活卡） ---
+    planned_groups: list[tuple[str, list[str], bool]] = []  # (预览组 id, 落地成员顺序, 是否有序)
+    planned_group_ids: set[str] = set()
     for group in preview["groups"]:
         if group.get("deleted"):
             continue
-        members: list[str] = []
+        resolved: list[str] = []
+        missing: list[str] = []
         for member in group.get("members") or []:
             real = mapping.get(str(member), str(member))
-            if real in live_ids and real not in members:
-                members.append(real)
-        if not members:
+            if real in live_ids and real not in resolved:
+                resolved.append(real)
+            else:
+                missing.append(str(member))
+        if missing:
+            return (
+                {},
+                (
+                    "预览引用的成员（"
+                    + "、".join(missing[:3])
+                    + "）已经不在板面上，批准的内容无法按原样落地；"
+                    "没有写入任何改动。请重新提交，由 QIO 更新预览后再处理。"
+                ),
+            )
+        if not resolved:
             continue
-        name = str(group.get("name") or models.default_group_name(len(state["groups"]) + 1))
+        gid = str(group.get("id") or "")
+        planned_group_ids.add(gid)
+        planned_groups.append((gid, resolved, bool(group.get("ordered", False))))
+
+    # --- 成员调整：既有成员从原组移出（保留原组其余成员；空组随之消失） ----------
+    expected_members: set[str] = set()
+    for _gid, members, _ordered in planned_groups:
+        expected_members.update(members)
+    for group in state["groups"]:
+        if group.get("deleted") or str(group.get("id")) in planned_group_ids:
+            continue
+        members = [str(m) for m in group.get("members") or []]
+        remaining = [m for m in members if m not in expected_members]
+        if remaining != members:
+            group["members"] = remaining
+            group["updatedAt"] = _now()
+            # 成员全部移出的组消失：与用户手动移空一个组是同一种操作（G3）
+            group["deleted"] = not remaining
+
+    # --- 建立批准的组（成员 / 顺序 / 缺省名与预览一致） ---------------------------
+    applied_groups: list[str] = []
+    for gid, members, _ordered in planned_groups:
+        source = next(
+            (item for item in preview["groups"] if str(item.get("id") or "") == gid), {}
+        )
+        name = str(source.get("name") or models.default_group_name(len(state["groups"]) + 1))
         created_group = models.new_group(
             name,
-            ordered=bool(group.get("ordered", False)),
-            default_name=bool(group.get("defaultName", True)),
+            ordered=source.get("ordered") is True,
+            default_name=bool(source.get("defaultName", True)),
         )
         created_group.update(
             {
                 "members": members,
-                "x": _num(group.get("x"), created_group["x"]),
-                "y": _num(group.get("y"), created_group["y"]),
-                "w": _num(group.get("w"), created_group["w"]),
-                "h": _num(group.get("h"), created_group["h"]),
+                "x": _num(source.get("x"), created_group["x"]),
+                "y": _num(source.get("y"), created_group["y"]),
+                "w": _num(source.get("w"), created_group["w"]),
+                "h": _num(source.get("h"), created_group["h"]),
             }
         )
         state["groups"].append(created_group)
-        mapping[str(group.get("id"))] = created_group["id"]
+        if gid:
+            mapping[gid] = created_group["id"]
         applied_groups.append(created_group["id"])
 
     applied_links: list[str] = []
+    expected_links: list[tuple[str, str]] = []
     pairs = {
         (str(link.get("src")), str(link.get("dst")))
         for link in state["links"]
@@ -1060,8 +1145,25 @@ def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     for link in preview["links"]:
         if link.get("deleted"):
             continue
-        src = mapping.get(str(link.get("src")), str(link.get("src")))
-        dst = mapping.get(str(link.get("dst")), str(link.get("dst")))
+        src_ref, dst_ref = str(link.get("src") or ""), str(link.get("dst") or "")
+        src = mapping.get(src_ref, src_ref)
+        dst = mapping.get(dst_ref, dst_ref)
+        if src_ref and src_ref not in mapping and src_ref not in live_ids:
+            return (
+                {},
+                (
+                    f"预览引用的关系端点（{src_ref}）已经不在板面上，批准的内容无法按原样落地；"
+                    "没有写入任何改动。请重新提交，由 QIO 更新预览后再处理。"
+                ),
+            )
+        if dst_ref and dst_ref not in mapping and dst_ref not in live_ids:
+            return (
+                {},
+                (
+                    f"预览引用的关系端点（{dst_ref}）已经不在板面上，批准的内容无法按原样落地；"
+                    "没有写入任何改动。请重新提交，由 QIO 更新预览后再处理。"
+                ),
+            )
         if src == dst or src not in live_ids or dst not in live_ids or (src, dst) in pairs:
             continue
         created_link = models.new_link(
@@ -1073,7 +1175,63 @@ def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         state["links"].append(created_link)
         mapping[str(link.get("id"))] = created_link["id"]
         applied_links.append(created_link["id"])
+        expected_links.append((src, dst))
         pairs.add((src, dst))
+
+    # --- 落库前核对：归一化后的板面必须完整包含批准的成员 / 顺序 / 关系 -----------
+    from agent.interactive import board as board_module  # 延迟 import，避免任何 import 环
+
+    normalized = board_module.normalize_state({**state, "boardId": board_id})
+    normalized_groups = {str(g.get("id")): g for g in normalized.get("groups") or []}
+    member_groups: dict[str, str] = {}
+    for group in normalized.get("groups") or []:
+        for member in group.get("members") or []:
+            member_groups[str(member)] = str(group.get("id"))
+    for gid, members, _ordered in planned_groups:
+        landed = normalized_groups.get(str(mapping.get(gid) or ""))
+        if landed is None:
+            return (
+                {},
+                (
+                    "批准的组在落地核对时消失了（无法按批准内容完整落地）；"
+                    "生效前拒绝，没有写入任何改动。"
+                ),
+            )
+        actual = [str(m) for m in landed.get("members") or []]
+        if actual != members:
+            return (
+                {},
+                (
+                    "批准的组没有按确认的成员落地（期望 "
+                    + str(len(members))
+                    + " 项，实际 "
+                    + "、".join(actual[:3])
+                    + "）：生效前拒绝，没有写入任何改动。"
+                ),
+            )
+        for member in members:
+            if member_groups.get(member) != str(mapping.get(gid) or ""):
+                return (
+                    {},
+                    (
+                        "批准的成员没有都进入批准的组（一张卡只属于一个组，但没有全部用"
+                        "成员调整完成）：生效前拒绝，没有写入任何改动。"
+                    ),
+                )
+    existing_link_pairs = {
+        (str(link.get("src")), str(link.get("dst")))
+        for link in normalized.get("links") or []
+        if not link.get("deleted")
+    }
+    for src, dst in expected_links:
+        if (src, dst) not in existing_link_pairs:
+            return (
+                {},
+                (
+                    "批准的关系在落地核对时消失了（无法按批准内容完整落地）；"
+                    "生效前拒绝，没有写入任何改动。"
+                ),
+            )
 
     _save_state(conn, board_id, state, f"intent:{row['id']}:apply")
 
@@ -1091,14 +1249,17 @@ def _apply_preview(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     for link_id in applied_links:
         if link_id in links:
             signatures[link_id] = _link_signature(links[link_id])
-    return {
-        "cardIds": applied_cards,
-        "groupIds": applied_groups,
-        "linkIds": applied_links,
-        "signatures": signatures,
-        "previewIdMap": mapping,
-        "appliedAt": _now(),
-    }
+    return (
+        {
+            "cardIds": applied_cards,
+            "groupIds": applied_groups,
+            "linkIds": applied_links,
+            "signatures": signatures,
+            "previewIdMap": mapping,
+            "appliedAt": _now(),
+        },
+        None,
+    )
 
 
 def _other_work_refs(conn: sqlite3.Connection, row: sqlite3.Row) -> set[str]:
@@ -1376,7 +1537,14 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
         return {"ok": True, "intent": _intent_payload(fresh, rows_by_id), "demo": True}
 
     if outcome == "done":
-        applied = _apply_preview(conn, row)
+        applied, apply_failure = _apply_preview(conn, row)
+        if apply_failure is not None:
+            # 18：无法按批准内容落地 → 生效前明确拒绝；意图保持当前状态，板面没有写入
+            return {
+                **_fail("cannot_apply", apply_failure),
+                "intent": _intent_payload(row, rows_by_id),
+                "demo": bool(row["demo"]),
+            }
         _update(
             conn,
             row["id"],
@@ -1458,6 +1626,250 @@ def recover_running_intents(
     return {"paused": paused}
 
 
+# --- M4 影响确认协议（08）：checkId 绑定版本、范围与受影响任务 ---------------
+
+
+#: 进程内的影响确认记录：checkId → 绑定内容。服务重启后记录不存在，确认会被
+#: 如实拒绝并提示重新预判——这是有意的失败方式，不做无法证明的自动延续。
+_CONFIRM_CHECKS: dict[str, dict] = {}
+_CONFIRM_CHECK_LOCK = threading.Lock()
+_CONFIRM_CHECK_KEEP = 64
+
+
+def state_semantic_signature(state: dict) -> str:
+    """板面语义签名：内容与关系结构一致；位置 / 大小 / 折叠 / 书签都不算。
+
+    影响确认的 checkId 绑定到它：等待期间普通的位置调整不要求重新预判，
+    但任何内容 / 关系 / 组成员变化都会让确认失效（stale_check）——
+    确认不能顺带放行预判时没有说明的改动。
+    """
+    current = state if isinstance(state, dict) else {}
+    cards: dict[str, dict] = {}
+    for card in current.get("cards") or []:
+        if isinstance(card, dict) and card.get("id"):
+            cards[str(card["id"])] = _card_semantic(card)
+    groups: dict[str, dict] = {}
+    for group in current.get("groups") or []:
+        if isinstance(group, dict) and group.get("id"):
+            groups[str(group["id"])] = _group_semantic(group)
+    links: dict[str, dict] = {}
+    for link in current.get("links") or []:
+        if isinstance(link, dict) and link.get("id"):
+            links[str(link["id"])] = _link_semantic(link)
+    selection = sorted(str(cid) for cid in current.get("selection") or [])
+    return _signature({"cards": cards, "groups": groups, "links": links, "selection": selection})
+
+
+def _affected_materials_for_state(
+    conn: sqlite3.Connection, *, board_id: str, state: dict
+) -> list[dict]:
+    """对候选状态做影响判断：哪些任务依赖的材料被改变（running / paused 都报告）。"""
+    affected: list[dict] = []
+    for row in _board_rows(conn, board_id):
+        status = row["status"]
+        if status not in ("running", "paused") or not _material_watch(row):
+            continue
+        changed = _changed_materials(row, state)
+        if not changed:
+            continue
+        if status == "running":
+            consequence = (
+                "继续保存会让这项任务暂停并保留当前进度；取消则不改动板面，任务继续。"
+                "暂停后不会自动继续，需要你确认。"
+            )
+        else:
+            # 已经暂停的任务：不再重复暂停，但它的材料依据仍然和当前板面不一致，要如实说明
+            consequence = (
+                "这项任务已经因为材料变化暂停：继续保存不会自动继续它，需要你确认；"
+                "它的材料依据与当前板面仍然不一致。"
+            )
+        affected.append(
+            {
+                "intentId": row["id"],
+                "title": row["title"],
+                "status": status,
+                "materials": [_material_label(state, card_id) for card_id in changed],
+                "consequence": consequence,
+            }
+        )
+    return affected
+
+
+def _prune_confirm_checks() -> None:
+    """把影响确认记录的数量限制在有界范围（先进先出；进程内存，重启即清空）。"""
+    if len(_CONFIRM_CHECKS) <= _CONFIRM_CHECK_KEEP:
+        return
+    items = sorted(_CONFIRM_CHECKS.items(), key=lambda kv: str(kv[1].get("createdAt") or ""))
+    for key, _ in items[: len(items) - _CONFIRM_CHECK_KEEP]:
+        _CONFIRM_CHECKS.pop(key, None)
+
+
+def impact_check(
+    conn: sqlite3.Connection, *, board_id: str, state_version: Any, state: dict
+) -> dict:
+    """M4 预判入口：判断这次候选改动会不会影响执行中 / 已暂停的任务。
+
+    - checkId 绑定（板面版本、候选内容签名、受影响任务）；之后任何让版本变化的
+      保存、或与确认内容不一致的保存，确认时都会被拒绝（stale_check）；
+    - 预判失败返回 {"ok": False, "reason"}，并**不改动任何状态**；
+    - 预判本身只读：不落库、不暂停任何任务。
+    """
+    try:
+        requested = int(state_version)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "stateVersion 必须是板面版本号（整数）"}
+    try:
+        loaded = _board_store().load_board(conn, board_id)
+    except Exception as exc:  # noqa: BLE001 - 预判失败必须真实说明
+        return {"ok": False, "reason": f"读取板面失败：{exc}"}
+    if requested != loaded["seq"]:
+        return {
+            "ok": False,
+            "reason": (
+                f"板面已经更新到版本 {loaded['seq']}，这次预判基于的版本 {requested} 已过期；"
+                "请先重新读取板面，再对最新的内容做影响预判。"
+            ),
+            "currentSeq": loaded["seq"],
+        }
+    try:
+        affected = _affected_materials_for_state(conn, board_id=board_id, state=state)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"影响预判失败：{exc}"}
+
+    running = [item for item in affected if item["status"] == "running"]
+    if affected and running:
+        names = "、".join(item["title"] for item in running[:3])
+        summary = (
+            f"这次改动会修改执行中任务（{names}）依赖的材料：需要确认后才会保存生效；"
+            "取消则这次改动不生效、任务继续。"
+        )
+    elif affected:
+        summary = (
+            "这次改动涉及已暂停任务的依赖材料：不需要额外确认，"
+            "但那些任务的材料依据与当前板面仍不一致。"
+        )
+    else:
+        summary = "这次改动不影响任何执行中的任务，可以直接保存。"
+
+    check_id = models.new_id("chk")
+    with _CONFIRM_CHECK_LOCK:
+        _prune_confirm_checks()
+        _CONFIRM_CHECKS[check_id] = {
+            "boardId": board_id,
+            "stateVersion": int(loaded["seq"]),
+            "signature": state_semantic_signature(state),
+            "taskIds": [item["intentId"] for item in affected],
+            "createdAt": _now(),
+        }
+    return {
+        "ok": True,
+        "checkId": check_id,
+        "stateVersion": int(loaded["seq"]),
+        "affectedTasks": affected,
+        "summary": summary,
+        "impactConfirmationRequired": bool(running),
+    }
+
+
+def impact_gate(conn: sqlite3.Connection, *, board_id: str, state: dict) -> dict:
+    """保存前的服务端门（常规校验入口：不只依赖前端禁用按钮）。"""
+    affected = _affected_materials_for_state(conn, board_id=board_id, state=state)
+    running_ids = [item["intentId"] for item in affected if item["status"] == "running"]
+    return {"affectedTasks": affected, "runningIds": running_ids}
+
+
+def validate_save_confirmation(
+    conn: sqlite3.Connection, *, board_id: str, check_id: str, candidate_signature: str
+) -> str | None:
+    """确认校验（M4）：通过返回 None；否则返回失败原因（保存不得落库）。"""
+    entry = _CONFIRM_CHECKS.get(str(check_id))
+    if entry is None:
+        return "没有找到对应的影响确认记录（可能已过期，或服务重新启动过）：请重新预判并确认。"
+    if entry.get("boardId") != board_id:
+        return "这份影响确认记录属于另一个板面：请重新预判并确认。"
+    try:
+        current_seq = _board_store().load_board(conn, board_id)["seq"]
+    except Exception as exc:  # noqa: BLE001
+        return f"读取板面失败：{exc}"
+    if entry.get("stateVersion") != current_seq:
+        _CONFIRM_CHECKS.pop(str(check_id), None)
+        return (
+            f"确认之后板面又保存过（现在是版本 {current_seq}）：这份确认已经过期，"
+            "请重新预判并确认。"
+        )
+    if entry.get("signature") != candidate_signature:
+        return (
+            "待保存的内容已经不是预判时确认的范围（等待期间又改了别的内容）："
+            "请重新预判并确认，确认不会顺带放行没有说明的改动。"
+        )
+    return None
+
+
+def check_for_submission(
+    conn: sqlite3.Connection, *, board_id: str, check_id: str, state: dict
+) -> str | None:
+    """提交时校验当时确认过的影响范围与当前已保存板面一致（M4 第三条路径）。"""
+    entry = _CONFIRM_CHECKS.get(str(check_id))
+    if entry is None:
+        return "没有找到对应的影响确认记录（可能已过期，或服务重新启动过）：请重新预判并确认后再提交。"
+    if entry.get("boardId") != board_id:
+        return "这份影响确认记录属于另一个板面：请重新预判并确认后再提交。"
+    if entry.get("signature") != state_semantic_signature(state):
+        return (
+            "提交的板面与当时确认过的内容不一致（之后板面又发生了变化）："
+            "请重新预判并确认后再提交。"
+        )
+    return None
+
+
+# --- 审批依据指纹（16：材料变了，旧待审批预览不得批准） ---------------------
+
+
+def _basis_from_state(state: dict, refs: Iterable[str], preview: dict | None = None) -> dict:
+    """依据对象在当前板面上的语义指纹（+ 检查时的板面版本由调用方补充）。"""
+    live_cards = {str(c.get("id")) for c in state.get("cards") or [] if models.is_live(c)}
+    ids: list[str] = []
+    for ref in refs or []:
+        label = str(ref)
+        if label not in ids:
+            ids.append(label)
+    for card_id in _preview_ref_ids(_preview_shape(preview or {})):
+        if card_id in live_cards and card_id not in ids:
+            ids.append(card_id)
+    return {"signatures": _material_signatures(state, ids)}
+
+
+def _record_basis(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
+    """第一次见到一条待审批意图时记录它的审批依据。
+
+    旧格式数据缺 __basisWatch 也走这里：按「第一次观察记基线」如实处理——
+    无法证明更早的变化，之后的任何语义变化都会被抓到（M9 兼容规则）。
+    """
+    state = _load_state(conn, row["board_id"])
+    refs = [str(x) for x in models.loads(row["material_refs"], [])]
+    preview = _preview_shape(models.loads(row["preview"], {}))
+    basis = _basis_from_state(state, refs, preview)
+    basis["seq"] = int(_board_store().load_board(conn, row["board_id"])["seq"])
+    _update(conn, row["id"], progress=_stored_progress(row, basis=basis))
+
+
+def _stale_basis_materials(conn: sqlite3.Connection, row: sqlite3.Row) -> list[str]:
+    """已保存板面上已经与预览依据不一致的材料（只看语义，位置不算）。"""
+    refs = [str(x) for x in models.loads(row["material_refs"], [])]
+    if not refs:
+        return []
+    progress = models.loads(row["progress"], {})
+    basis = progress.get("__basisWatch") if isinstance(progress, dict) else None
+    state = _load_state(conn, row["board_id"])
+    current = _material_signatures(state, refs)
+    if not isinstance(basis, dict) or not isinstance(basis.get("signatures"), dict):
+        # 旧数据没有依据指纹：按第一次观察记基线，不做无法证明的判断
+        _update(conn, row["id"], progress=_stored_progress(row, basis=_basis_from_state(state, refs)))
+        return []
+    saved = {str(k): str(v) for k, v in basis["signatures"].items()}
+    return [card_id for card_id in refs if saved.get(card_id) != current.get(card_id)]
+
+
 # --- 保存后的材料保护（执行中任务） ---------------------------------------
 
 
@@ -1512,35 +1924,9 @@ def preview_material_impact(conn: sqlite3.Connection, *, board_id: str, state: d
     契约 §1.6：改动执行中任务依赖的材料前，先说明受影响的任务与后果，再让用户选择
     继续（改动生效、相关任务暂停并保留进度）或取消（不改动、任务继续）。
     这里**不改任何状态**；状态判定以 on_board_saved 为准。
+    每项含 status（running / paused），供 M4 的确认门区分哪些任务需要确认。
     """
-    affected: list[dict] = []
-    for row in _board_rows(conn, board_id):
-        status = row["status"]
-        if status not in ("running", "paused") or not _material_watch(row):
-            continue
-        changed = _changed_materials(row, state)
-        if not changed:
-            continue
-        if status == "running":
-            consequence = (
-                "继续保存会让这项任务暂停并保留当前进度；取消则不改动板面，任务继续。"
-                "暂停后不会自动继续，需要你确认。"
-            )
-        else:
-            # 已经暂停的任务：不再重复暂停，但它的材料依据仍然和当前板面不一致，要如实说明
-            consequence = (
-                "这项任务已经因为材料变化暂停：继续保存不会自动继续它，需要你确认；"
-                "它的材料依据与当前板面仍然不一致。"
-            )
-        affected.append(
-            {
-                "intentId": row["id"],
-                "title": row["title"],
-                "materials": [_material_label(state, card_id) for card_id in changed],
-                "consequence": consequence,
-            }
-        )
-    return {"affected": affected}
+    return {"affected": _affected_materials_for_state(conn, board_id=board_id, state=state)}
 
 
 def on_board_saved(
@@ -1559,6 +1945,40 @@ def on_board_saved(
     affected: list[str] = []
     for row in rows:
         status = row["status"]
+        if status in OPEN_STATUSES and status != "needs_update":
+            # 16 的补充标记：预览依据在保存后失效（旧格式缺依据指纹时按首次观察记基线）
+            refs = [str(x) for x in models.loads(row["material_refs"], [])]
+            if not refs:
+                continue
+            progress = models.loads(row["progress"], {})
+            basis = progress.get("__basisWatch") if isinstance(progress, dict) else None
+            if not isinstance(basis, dict) or not isinstance(basis.get("signatures"), dict):
+                _update(
+                    conn,
+                    row["id"],
+                    progress=_stored_progress(row, basis=_basis_from_state(state, refs)),
+                )
+                continue
+            saved_sigs = {str(k): str(v) for k, v in basis["signatures"].items()}
+            current = _material_signatures(state, refs)
+            changed = [cid for cid in refs if saved_sigs.get(cid) != current.get(cid)]
+            if not changed:
+                continue
+            preview = _preview_shape(models.loads(row["preview"], {}))
+            labels = "、".join(_material_label(state, card_id) for card_id in changed[:3])
+            text = (
+                f"相关材料在保存后发生了变化（{labels}）：这份预览的依据已经过期，"
+                "需要提交并由 QIO 更新预览后才能批准。"
+            )
+            _update(
+                conn,
+                row["id"],
+                status="needs_update",
+                reason=text,
+                progress=_progress_shape({"done": 0, "text": "材料已变化：等待更新预览"}, preview),
+            )
+            affected.append(row["id"])
+            continue
         if status not in ("running", "paused"):
             continue
         refs = [str(x) for x in models.loads(row["material_refs"], [])]
@@ -1822,6 +2242,11 @@ def create_demo_intents(conn: sqlite3.Connection, *, board_id: str) -> list[dict
 __all__ = [
     "ADVANCE_OUTCOMES",
     "BATCH_MIN",
+    "check_for_submission",
+    "impact_check",
+    "impact_gate",
+    "state_semantic_signature",
+    "validate_save_confirmation",
     "approve_intent",
     "batch_decide",
     "create_demo_intents",

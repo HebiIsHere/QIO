@@ -68,6 +68,18 @@ const continuationText = computed(() => {
     : "下一条消息将从所选历史继续";
 });
 
+/**
+ * 共享聊天草稿（store.draft）保存失败的真实原因与重试入口（收尾轮 15）。
+ *
+ * 只读会话层的状态：聊天草稿保存在本机，失败时文字仍在输入框里，
+ * 提示说的是「还没保存在本机」，不假装已保存，也不谎称发送失败。
+ */
+const chatDraftError = computed(() =>
+  session.draftSaveStatus === "error"
+    ? `这段文字还没保存在本机：${session.draftSaveError ?? "原因未知"}（文字还在输入框里，可以重试）`
+    : "",
+);
+
 const cancelling = ref(false);
 /**
  * 本次发送失败的真实原因（只显示这一次尝试，不读上一次的结果）。
@@ -193,6 +205,28 @@ async function stopTurn() {
       :notice="failureNotice"
       :reason="failureReason"
     />
+
+    <!--
+      共享聊天草稿的保存失败（收尾轮 15）：普通对话页也必须看得见、能重试。
+      与互动 ChatDock 读同一份会话状态（session.draftSaveStatus/draftSaveError），
+      不新建状态源、不重复发送；重试只重写本机草稿，不发送、不动板面。
+    -->
+    <p
+      v-if="chatDraftError"
+      class="draft-error"
+      role="alert"
+      data-im="composer-draft-status"
+    >
+      <span>{{ chatDraftError }}</span>
+      <button
+        class="draft-retry"
+        type="button"
+        data-im="composer-draft-retry"
+        @click="session.retryDraftSave()"
+      >
+        重试保存
+      </button>
+    </p>
 
     <div class="input-row">
       <textarea
@@ -376,6 +410,30 @@ async function stopTurn() {
   font-size: 12px;
   color: var(--danger);
 }
+/* 聊天草稿保存失败：辅助层里的一条，可读、可点，不抢输入行 */
+.draft-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.draft-retry {
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
+}
+.draft-retry:hover { border-color: var(--link); color: var(--link); }
+.draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .send-btn {
   width: 38px;
   height: 38px;
