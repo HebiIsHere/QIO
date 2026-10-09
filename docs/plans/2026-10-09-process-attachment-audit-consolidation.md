@@ -117,3 +117,27 @@
 3. 前端实际起应用视觉检查（执行与排队共存、失败与取消、附件恢复、Markdown 列表代码 / 表格、窄窗口）。
 4. 文档同步：docs/status.md、docs/architecture.md 相关契约小节，与本计划一致；check_docs 通过。
 5. 完成本地提交；未经授权不推送、不合 main。
+
+## 七、本轮追加裁定（Lead，2026-10-09 21:10；针对集成分支复跑发现的 3 项红灯）
+
+集成分支复跑独立验证者的阶段一反例后，F01—F05、F07—F10、F13—F24 转绿；仍红三项，裁定如下。
+
+### C2 追加：终止状态集合
+- `TURN_END.status` 取值集合扩为：`completed / failed / cancelled / unavailable / incomplete`（终态台账 `turn_journal` 同步接受 `incomplete`）。
+- `incomplete` **只**用于「不完整 EOF」：native 无 `finish_reason`、anthropic 无 `message_stop`、仅 usage/空分块、未结束的工具调用（即 `reason_code == "incomplete_stream"`）。
+- 厂商合法终止保持诚实区分而不升级为失败：`length_limit`、`content_filter` 的 status 仍是 `completed`，只用 `reason_code` 区分。
+- `incomplete` 时：已确认正文保留在 `final_content`，`reason_code=incomplete_stream`、`stopped_by=system`、带人话 reason、`actions` 含 `retry`；结束语义必须贯穿 adapter → loop → TURN_END → 前端 → **历史台账**（服务层 `turn_journal.record_facts` 落 reason_code/reason/stopped_by/actions），刷新后仍是「未完成 + 原因 + retry」。
+- 因此 F06 验收断言为：`status == "incomplete"`、`reason_code == "incomplete_stream"`、`actions` 含 retry、已确认正文保留、未确认后缀不得出现。
+
+### C1/C5 追加：排队轮的结束事实（F12）
+- 一个 accepted turn 恰好一次 TURN_END，**包括排队期（accepted 未开始）被取消的 turn**；该 END：`status=cancelled`、`reason_code=user_stopped`、`stopped_by=user`、`actions` 含 `retry`，并且立刻发出，不等 active turn 跑完。
+- 操作动词裁定：**排队取消路径 `actions=("retry",)`**；active 取消路径保持既有 `("resend",)`。理由：`/api/turns/{id}/resend` 只接受台账里 `interrupted` 的行（`recoverable`/`claim`），排队取消落台账是 `cancelled`，`resend` 必然 409 —— 列出它是死按钮；`retry` 走前端「重发该轮用户消息」，真实可用。验证者的 F12 反例相应从 `resend` 对齐为 `retry`（其余断言不放）。
+- 取消排队轮必须：先可靠落地结束事实（台账终态 + record_facts），再清理队列标记；重复/迟到/竞争取消幂等；**绝不**触碰 active turn 的归属、事件与状态。
+- 前端 `events.ts` 的 TURN_END「非 active 但已知 turn」分支按此消费：事实落到该 turn，A 不受影响。
+
+### C1 追加：系统核对注释的交付形态（F11）
+- 裁定：注释**不再拼进 `final_content`**。后端以独立字段 `annotation`（别名 `final_annotation`）随 TURN_END 交付，`final_content` 保持纯正文；前端在独立「系统事实」区域渲染该注释，正文只出现一次、不重启打字动画。
+- 因此验证者原反例中「注释必须出现在 final_content」的断言属于**基线行为**，改为契约对齐断言：`final_content` 以正文开头且不含注释头、`annotation` 字段完整（含头与结论句）、ASSISTANT 事件里正文恰好一次且不含注释头。正文唯一性与注释完整性两类断言都不许删除。
+
+### 未决到本轮结束的项
+- F11 后端已实现独立字段；F06/F12 由 acc-b2 修复、`incomplete` 的前端消费由 acc-c2 完成；阶段二复跑与实机取证由 acc-f2 完成；F01—F24 最终判定以 acc-f2 的 `docs/verification-acc-phase2.md` + Lead 复跑为准。
