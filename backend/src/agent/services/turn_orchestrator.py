@@ -570,19 +570,23 @@ class TurnOrchestrator:
             return await loop.run(plan.prompt)
         except Exception as exc:
             logging.getLogger(__name__).exception("turn failed")
+            # 契约 3：错误文本先打码再截断（str(exc)[:N] 的旧写法会把消息末尾的
+            # 注册密钥切成只剩前缀，打码器再也识别不到）。
+            from agent.trace.redact import sanitize_error_text as _sanitize_err
+            error_text = _sanitize_err(str(exc))
             await app.bus.publish(
                 make_error(
                     "turn_failed",
-                    f"本轮执行失败：{str(exc)[:180]}",
+                    f"本轮执行失败：{error_text[:160]}",
                     recoverable=True,
                     turn_id=ctx.turn_id,
                 )
             )
-            app.trace_store.finish(ctx.turn_id, "failed", error=str(exc)[:200])
+            app.trace_store.finish(ctx.turn_id, "failed", error=error_text[:200])
             ctx.result = {"ok": False, "reason": "turn_failed"}
             # 终态 + ERROR 事件：ERROR 只说明「出错了」，结束 turn 的只有 TURN_END
             ctx.status = "failed"
-            ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
+            ctx.error = f"{type(exc).__name__}: {error_text[:160]}"
             return None
         finally:
             ctx.loop = None

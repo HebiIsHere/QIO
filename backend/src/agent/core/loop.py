@@ -37,6 +37,7 @@ from agent.core import tool_feedback
 from agent.core.tool_state import CANCELLED, FAILED, SUCCESS, ToolExecutionState
 from agent.core.turn_facts import TurnFacts
 from agent.core.progress import ProgressTracker
+from agent.trace.redact import sanitize_error_text
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
@@ -881,12 +882,12 @@ class AgentLoop:
                     adapter_mode=str(getattr(self.adapter, "mode", "")),
                     model=getattr(self.adapter, "model", None),
                     latency_ms=int((_time.perf_counter() - _t0) * 1000),
-                    error=f"{type(exc).__name__}: {exc}"[:200],
+                    error=sanitize_error_text(f"{type(exc).__name__}: {exc}"),
                 )
-            self._warn(f"planning failed: {exc}")
+            self._warn("planning failed: " + sanitize_error_text(str(exc)))
             await self._emit(
                 EventType.ERROR,
-                {"code": "planning_failed", "message": str(exc)[:200], "recoverable": False},
+                {"code": "planning_failed", "message": sanitize_error_text(str(exc), limit=200), "recoverable": False},
             )
             raise
 
