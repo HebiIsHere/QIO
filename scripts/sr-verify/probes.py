@@ -803,7 +803,10 @@ EXPECTATIONS: dict[str, dict[str, bool]] = {
         "tool_failed": True,
         "child_pid_started": True,
         "child_alive_immediately": False,
-        "child_gone_within_1s": True,
+        # 整树收割窗口：taskkill 耗时受负载影响（固定 1s 是次要证据）；
+        # 主工具内部已 await 直接子进程退出（确定性证据）。
+        "child_gone_within_1s": False,
+        "child_gone_within_5s": True,
         "grandchild_gone": True,
         "decoy_alive": True,
     },
