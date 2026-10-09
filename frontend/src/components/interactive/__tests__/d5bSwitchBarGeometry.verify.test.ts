@@ -139,6 +139,27 @@ describe("D2 反例：只开批量列表时也要给切换条留高度（§11.7�
     // 用户只开着批量列表（聊天是收起的）：480px 下切换条仍然要占住自己那一行
     store.chatOpen = false;
     store.batchOpen = true;
+    /**
+     * 【驱动更新（主智能体），§12.6 新口径】这个用例表达的是「确有第二个可展示面板时，
+     * 切换条与预留几何必须真实」——所以 fixture 要注入一个可展示批次（同批 ≥4 项待审批）。
+     * 原来没有批次数据：按 §12.6「没有另一个可展示的面板就不进入切换布局」，
+     * 用例里的切换条本来就该消失（C 路已把这条验收落成 overlaySwitchAvailability）。
+     * 用 submissionId 把四条意图归入同一次提交的同一批，其余不变。
+     */
+    const mkIntent = (id: string) => ({
+      id,
+      submissionId: "sub_d5b_switchbar",
+      status: "pending" as const,
+      kind: "add" as const,
+      summary: "验收批次 " + id,
+      createdAt: "2026-10-09T00:00:00.000Z",
+    });
+    (store as unknown as { intents: unknown[] }).intents = [
+      mkIntent("i_d5b_1"),
+      mkIntent("i_d5b_2"),
+      mkIntent("i_d5b_3"),
+      mkIntent("i_d5b_4"),
+    ];
 
     vi.useFakeTimers();
     const wrapper = mount(IntentBatchTray, { attachTo: document.body });
