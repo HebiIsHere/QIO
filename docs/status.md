@@ -793,7 +793,7 @@
 
 ### P21 — 内容保护与界面精修（2026-10-09 第五轮）
 
-- **Status：** planned（等 A、C 完工并统一集成后转为 partial）
+- **Status：** partial（七项修复已全部落地并通过独立反例；真实关闭重开等收尾验收见下）
 - **起点与分支：** 起点提交 `403983f197b10392b3d8c96c56d62d18872d80b0`
   （远端 `fix/interactive-draft-recovery-completion` 顶端，无更新）。本轮分支 `fix/interactive-content-protection-polish`。
 - **范围：** 提示词给出的五项内容保护问题 + 两项界面问题（契约 §12）。

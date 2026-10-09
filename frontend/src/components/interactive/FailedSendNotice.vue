@@ -119,6 +119,17 @@ function discard(record: FailedSend): void {
       <p class="recovery-head">
         <span class="head-title">上一次没有发出去的文字</span>
         <span v-if="records.length > 1" class="head-count mono">{{ records.length }} 条待找回</span>
+        <!-- §12.5（B 转交的结构点）：按钮放在**滚动区之外的头部**，长列表也不会把它挤出可视区 -->
+        <button
+          v-if="hiddenCount > 0"
+          type="button"
+          class="expansion-toggle"
+          :data-im="`${hook}-recovery-more`"
+          :aria-expanded="expansionOpen"
+          @click="toggleExpansion()"
+        >
+          {{ expansionOpen ? "收起其余" : "查看其余 " + hiddenCount + " 条" }}
+        </button>
       </p>
 
       <ul class="recovery-list">
@@ -170,18 +181,6 @@ function discard(record: FailedSend): void {
           </div>
         </li>
       </ul>
-
-      <!-- §12.5：展示数量与保留数量分开 —— 隐藏的那几条只是收起，不是删除 -->
-      <button
-        v-if="hiddenCount > 0"
-        type="button"
-        class="expansion-toggle"
-        :data-im="`${hook}-recovery-more`"
-        :aria-expanded="expansionOpen"
-        @click="toggleExpansion()"
-      >
-        {{ expansionOpen ? "收起其余" : "查看其余 " + hiddenCount + " 条（全部可找回）" }}
-      </button>
 
       <p
         v-if="actionNotice"
