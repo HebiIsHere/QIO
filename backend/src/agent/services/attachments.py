@@ -1628,7 +1628,13 @@ class AttachmentService:
         return None
 
     def _clone_reason(self, att: Attachment) -> str | None:
-        """重试克隆的**只读**可行性检查（真正的落盘在 _plan_copy_clone + _run_clone_io）。"""
+        """重试克隆的**只读**可行性检查（真正的落盘在 _plan_copy_clone + _run_clone_io）。
+
+        F18（2026-10-09）：引用型必须按**当下的文件世界**重算事实（存在 / 状态 /
+        **可读性**）。以前这里在 copy 分支之后直接 return None，把引用型的检查写成了
+        **死代码**：目录型引用要等到落盘阶段才被拒（预检漏检），而拒读 ACL 下 stat
+        通过、open 失败，会被当成可用克隆。
+        """
         if att.kind == "copy":
             if not att.stored_path or not self.is_managed_path(att.stored_path):
                 return "QIO 没有可复用的副本（可能已被清理）；请重新附上这个文件后再发送"
@@ -1640,8 +1646,9 @@ class AttachmentService:
             # 源附件还在准备：克隆要复用的副本此刻还不存在 —— 由调用方（bind_for_turn）
             # 先等它，等不到就是「还没就绪」而不是「没有副本」
             return self._not_ready_reason(att)
-            
-        return None
+        # 引用型：重新验证现在的事实。missing / changed 允许建**如实**的新行（它不是可用
+        # 附件：状态照抄当下事实、turn_note 明说不可访问）；failed（目录 / 不可读）必须
+        # 在这里就拒绝，绝不让它变成一次「看起来受理了」的克隆。
         state, error = self._reference_state_now(att)
         if state == STATE_FAILED:
             return error or "这个位置现在不能当附件用"
@@ -1865,9 +1872,12 @@ class AttachmentService:
         )
         return self._insert(clone)
 
-    @staticmethod
-    def _reference_state_now(source: Attachment) -> tuple[str, str | None]:
-        """引用型附件的**当前**事实（状态/原因按现在的文件世界重算，不沿用旧状态）。"""
+    def _reference_state_now(self, source: Attachment) -> tuple[str, str | None]:
+        """引用型附件的**当前**事实（状态/原因按现在的文件世界重算，不沿用旧状态）。
+
+        F18（2026-10-09）：可读性也是当下事实的一部分 —— stat 能过但 open 会失败
+        （拒读 ACL / 被独占 / I/O 错误）的文件是 failed，不是 ready。
+        """
         raw = str(source.source_path or "")
         if not raw:
             return STATE_MISSING, "没有记录文件位置"
@@ -1878,6 +1888,9 @@ class AttachmentService:
             return STATE_MISSING, "本地文件不在原位了（可能被移动或删除）；可以重新指定位置"
         if path.is_dir():
             return STATE_FAILED, "这个位置现在是目录，不是文件"
+        probe = self._read_probe_reason(path)
+        if probe:
+            return STATE_FAILED, probe
         size = int(stat.st_size)
         mtime = float(stat.st_mtime)
         changed = size != int(source.size_bytes) or (
