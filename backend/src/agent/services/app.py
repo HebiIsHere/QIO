@@ -1503,6 +1503,7 @@ class AppContext:
             tracer.write("messages", notify_msg_id)
             ctx.final_content = result.final_content
             ctx.final_verification = getattr(result, "verification", None)
+            ctx.final_annotation = getattr(result, "final_annotation", None)
             ctx.result = {"ok": True, "turn": result.__dict__}
             ctx.usage = {
                 "iterations": result.iterations_used,

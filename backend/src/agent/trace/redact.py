@@ -164,6 +164,50 @@ def _replace_known_secrets(text: str) -> str:
     return text
 
 
+# 已登记敏感值的全部非空前缀（有界缓存）：流式出口用它判断「尾部是不是某个
+# 敏感值的开头」，从而扣留未定稿的尾部（冻结契约 C3）。登记表一变就失效。
+_prefix_lock = threading.Lock()
+_prefix_source: tuple[str, ...] | None = None
+_prefix_set: frozenset[str] = frozenset()
+_prefix_max: int = 0
+
+
+def _prefix_index() -> tuple[frozenset[str], int]:
+    global _prefix_source, _prefix_set, _prefix_max
+    ordered = _ordered_secrets()
+    with _prefix_lock:
+        if ordered is _prefix_source:
+            return _prefix_set, _prefix_max
+        prefixes: set[str] = set()
+        longest = 0
+        for secret in ordered:
+            longest = max(longest, len(secret))
+            for size in range(1, len(secret) + 1):
+                prefixes.add(secret[:size])
+        _prefix_source = ordered
+        _prefix_set = frozenset(prefixes)
+        _prefix_max = longest
+        return _prefix_set, _prefix_max
+
+
+def undecided_tail_length(text: str) -> int:
+    """已登记敏感值在 text 末尾「未定稿」的字符数（0 = 可以整段发布）。
+
+    返回 text 最长的、同时是某个已登记敏感值前缀的后缀长度（含整值）：这段尾部
+    还不能确定是不是敏感值的开头，必须在流式出口扣留；等后续分块把对齐打破
+    （或流结束）后再放行。没有登记表时恒为 0 —— 正常流式完全不受影响。
+    """
+    if not text:
+        return 0
+    prefixes, longest = _prefix_index()
+    if not prefixes or longest <= 0:
+        return 0
+    for size in range(min(longest, len(text)), 0, -1):
+        if text[-size:] in prefixes:
+            return size
+    return 0
+
+
 def redact_text(text: str | None, *, secret_fields: set[str] | None = None) -> str:
     return _redact_text(text, secret_fields=secret_fields, depth=0)
 
