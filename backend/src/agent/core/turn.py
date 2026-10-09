@@ -57,6 +57,25 @@ TURN_END = "TURN_END"
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
 
 
+class TurnAcceptError(RuntimeError):
+    """这一轮**没有被接受**。
+
+    受理 = 队列台账已经持久化成功。台账写不进去（`JournalWriteError`）时
+    不能返回一个「已接受」的内存 turn：那条消息在重启后没有任何痕迹，
+    用户却以为发出去了。调用方（HTTP 层）必须据此明确拒绝
+    （`POST /api/turns` → 503 + accepted=false）。
+    """
+
+
+def _journal_accept_failed(exc: BaseException) -> bool:
+    """这个异常是不是「台账写失败」（storage 抛的 JournalWriteError）。
+
+    用类名而不是 import：core/ 不认识 storage（见模块 docstring 的边界约定），
+    而 `JournalWriteError` 是 RuntimeError 的子类，按名字识别足够精确。
+    """
+    return type(exc).__name__ == "JournalWriteError"
+
+
 def _terminal(ctx: "TurnContext") -> bool:
     return ctx.status in TERMINAL_STATUSES
 
@@ -109,6 +128,7 @@ class TurnManager:
         runner: TurnRunner | None = None,
         publisher: Callable[[dict], Awaitable[None]] | None = None,
         emitter: EventEmitter | None = None,
+        journal: Any = None,
     ) -> None:
         self._runner = runner
         self._publisher = publisher
@@ -121,9 +141,12 @@ class TurnManager:
         self._worker: asyncio.Task | None = None
         self._closed = False
         # 可选的持久化台账（见 storage/turn_journal.py）：被 API 接受过的消息
-        # 从此有痕迹，进程退出后不会静默消失。core/ 不认识 storage，只按协议调用；
-        # 台账写入失败绝不影响 turn 本身。
-        self._journal: Any = None
+        # 从此有痕迹，进程退出后不会静默消失。core/ 不认识 storage，只按协议调用。
+        #
+        # 契约 C2：**受理必须先持久化成功**。所以 accepted 的失败不是「只记日志」，
+        # 它会变成 TurnAcceptError（见 submit）。其它台账写入（running / terminal /
+        # 用户消息 id）仍然是旁路：失败只记日志，不打断已经在跑的对话。
+        self._journal: Any = journal
         # 队列快照的版本号：每一次影响快照的状态变化都 +1。
         # 前端据此丢弃「比已知状态更旧」的快照 —— 快照是权威的，
         # 但**旧**的权威快照不能覆盖更新的事件（例如 TURN_START 之后晚到的 running=null）。
@@ -161,17 +184,24 @@ class TurnManager:
         """
         self._journal_call("note_user_message", turn_id, message_id)
 
-    def _journal_call(self, method: str, *args, **kwargs) -> None:
+    def _journal_call(self, method: str, *args, **kwargs) -> bool:
+        """旁路台账调用（running / terminal / note_user_message）：失败只记日志。
+
+        **受理那一次不走这里**：它必须让失败可见（`submit` 里直接调 `accepted`
+        并抛 `TurnAcceptError`）。其余写入发生在 turn 已经在跑之后，写不进去
+        也不该把对话打断 —— 但会返回 False，调用方需要时可以自己记一笔。
+        """
         journal = self._journal
         if journal is None:
-            return
+            return False
         fn = getattr(journal, method, None)
         if fn is None:
-            return
+            return False
         try:
             fn(*args, **kwargs)
         except Exception:  # noqa: BLE001 - 台账是旁路，不能挡住对话
-            pass
+            return False
+        return True
 
     # -- queue snapshot ---------------------------------------------------
 
@@ -222,7 +252,20 @@ class TurnManager:
         *,
         notify: bool = False,
         intent_id: str | None = None,
+        turn_id: str | None = None,
     ) -> TurnContext:
+        """受理一条 turn：**先持久化，成功之后才入队并返回**（契约 C2）。
+
+        顺序是固定的 persist → dispatch，不能反：
+
+        * 先入队再持久化：台账写失败时会留下一个「内存里有、库里没有」的 turn，
+          API 已经回 200，用户以为发出去了，重启后这条消息没有任何痕迹；
+        * 先持久化再入队：写失败就抛 `TurnAcceptError`，调用方明确拒绝这条消息
+          （HTTP 503 + accepted=false），内存与磁盘都不存在它。
+
+        提交之后、worker 真正派发之前进程退出的窗口，由台账里那条 `queued` 行
+        覆盖：重启后它是可见的「没有执行的消息」，但**不会**被自动执行。
+        """
         if self._closed:
             # worker 已经停了：再收下这个 turn，它只会躺在队列里永远不被执行
             # （调用方还会一直 await 一个永远不会兑现的 future）。
@@ -230,7 +273,7 @@ class TurnManager:
         # 提交成功 ≠ 开始执行：前面还有主 turn 或已经排着队时，它就是 queued。
         waits = self._active is not None or bool(self._pending)
         ctx = TurnContext(
-            turn_id=f"turn_{uuid.uuid4().hex[:12]}",
+            turn_id=turn_id or f"turn_{uuid.uuid4().hex[:12]}",
             message=message,
             initial_topic=topic_id,
             current_topic=topic_id,
@@ -238,6 +281,24 @@ class TurnManager:
             intent_id=intent_id,
             status="queued" if waits else "accepted",
         )
+        # 1) persist：台账写失败 → 这条消息没有被接受，绝不入队。
+        journal = self._journal
+        if journal is not None:
+            try:
+                journal.accepted(
+                    turn_id=ctx.turn_id,
+                    message=ctx.message,
+                    topic_id=ctx.initial_topic,
+                    notify=ctx.notify,
+                    status=ctx.status,
+                )
+            except Exception as exc:  # noqa: BLE001 - 任何台账失败都等于「没接受」
+                if _journal_accept_failed(exc):
+                    raise TurnAcceptError(f"turn not accepted: {exc}") from exc
+                # 台账本身不认识这个异常（例如测试注入的普通异常）：按同样的语义
+                # 拒绝，而不是返回一个库里可能没有的 turn。
+                raise TurnAcceptError(f"turn not accepted: {exc}") from exc
+        # 2) dispatch：到这里台账已经有了这一行，入队才是安全的。
         try:
             loop = asyncio.get_running_loop()
             self._futures[ctx.turn_id] = loop.create_future()
@@ -245,15 +306,6 @@ class TurnManager:
             pass  # no running loop: enqueue without an awaitable result
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
-        # 受理即落台账：排队中的消息从此不会因为进程退出而静默消失
-        self._journal_call(
-            "accepted",
-            turn_id=ctx.turn_id,
-            message=ctx.message,
-            topic_id=ctx.initial_topic,
-            notify=ctx.notify,
-            status=ctx.status,
-        )
         self._bump_revision()
         self._ensure_worker()
         self._schedule_emit()

@@ -58,6 +58,10 @@ from agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 MAIN_LOOP_TAG = "main-loop"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
 BUDGET_RATIO = 0.25
 
@@ -92,6 +96,15 @@ class AppContext:
         self.settings = settings
         self.conn = conn
         self.bus = bus
+        # 本进程实例身份 + 实例归属（契约 C1）。必须在任何「会写下带归属的记录」
+        # 的服务（审批、turn 台账）之前建立并 start()：先有身份，才有归属可写。
+        # 这里生成 instance_id（create_app 复用它），保证 HTTP 层、事件、台账
+        # 看到的是**同一个**实例身份。
+        from agent.storage.instance_registry import InstanceRegistry
+
+        self.instance_id = f"qio_{uuid.uuid4().hex[:16]}"
+        self.instances = InstanceRegistry(conn, self.instance_id, pid=os.getpid())
+        self.instances.start()
         self.credentials = CredentialStore(conn)
         self.settings_store = SettingsStore(conn)
         from agent.trace.store import TraceStore
@@ -175,7 +188,9 @@ class AppContext:
 
         # 带上数据库连接：等待中的审批要落库，重启后才能说清「那次操作没有执行」
         # （见迁移 23 与 tools/approval.py 的 interrupted）。
-        self.approvals = ApprovalService(bus, conn=conn)
+        # registry 让「上一次进程留下的 pending」按**实例归属**判定（契约 C1）：
+        # 归属者还活着的审批一行都不动。
+        self.approvals = ApprovalService(bus, conn=conn, registry=self.instances)
         from agent.tools.services import ServiceRegistry
 
         self.services = ServiceRegistry()
@@ -338,13 +353,17 @@ class AppContext:
         # TurnManager 是 turn 生命周期的唯一事实源：TURN_START / TURN_END 只由它发。
         self.turns.set_emitter(self._publish_turn_event)
         # turn 队列台账（迁移 25）：被 API 接受过的消息跨重启不丢。
-        # 重启时把上一个进程留下的 queued / running 标成 interrupted —— 只留痕、
-        # **不自动重放**（见 storage/turn_journal.py 的产品语义）。
+        # 台账带上本实例身份（契约 C1）+ 归属表；`submit()` 里「先持久化成功、
+        # 才入队返回」（契约 C2）就靠这个 journal。
         from agent.storage.turn_journal import TurnJournal
 
-        self.turn_journal = TurnJournal(conn)
+        self.turn_journal = TurnJournal(
+            conn, instance_id=self.instance_id, registry=self.instances
+        )
         self.turns.set_journal(self.turn_journal)
-        self.recovered_turns = self.turn_journal.interrupt_stale()
+        # 启动恢复：只处理**确认已退出实例**留下的 queued / running —— 别的实例
+        # 还在跑（或判不出来）时一行都不改，只留痕、**不自动重放**。
+        self.recovered_turns = self.turn_journal.interrupt_stale(self.instances)
         if self.recovered_turns:
             logger.warning(
                 "上一个进程留下了 %s 条没有执行的用户消息（不会自动重放，等用户决定）",
@@ -384,6 +403,119 @@ class AppContext:
         self.prune_tool_outputs()
         # 「整条记录保留天数」默认 0（永久保留，行为与以前一致）；设了天数才清理。
         self.prune_tool_records()
+        # 启动恢复（归属判定）最后做一次收口：只处理确认已退出实例留下的记录，
+        # unknown / 旧记录一律保留原状态。见下面方法的长注释。
+        try:
+            self.recover_instance_owned_records()
+        except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
+            logger.warning("instance owned recovery failed", exc_info=True)
+
+    # -- 实例归属的启动恢复（契约 C1）--------------------------------------
+
+    def _recover_owned_derived_tasks(self, instance_id: str, record_type: str) -> int:
+        """把「确认已退出实例」的派生任务重新交给后续 drain（**不在这里执行**）。
+
+        这里只改状态：把该实例名下仍卡在 running 的任务放回可重试，并把原因
+        写成一条可读的标记（不是错误、是「上次那个实例退出了」）。
+        `claim_due` 之后会照常取走它们 —— 恢复清单可见，但**不自动执行**任何副作用。
+        """
+        from agent.services.derived_tasks import STATE_PENDING
+        from agent.storage.instance_registry import RECORD_DERIVED_TASK
+
+        owner_column = self._derived_owner_column()
+        if owner_column is None:
+            # 列不存在（降级路径）：用归属表给出的 id 逐条更新。
+            ids = self.instances.owned_record_ids(RECORD_DERIVED_TASK, instance_id)
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            cur = self.conn.execute(
+                f"UPDATE derived_tasks SET state = ?, updated_at = ? "
+                f"WHERE id IN ({placeholders}) AND state = 'running'",
+                (STATE_PENDING, _now_iso(), *ids),
+            )
+            return int(cur.rowcount or 0)
+        cur = self.conn.execute(
+            "UPDATE derived_tasks SET state = ?, updated_at = ?, owner_instance_id = NULL, "
+            "last_error = COALESCE(last_error, '上次执行的实例已退出，这次改写没有完成') "
+            "WHERE owner_instance_id = ? AND state = 'running'",
+            (STATE_PENDING, _now_iso(), str(instance_id)),
+        )
+        return int(cur.rowcount or 0)
+
+    def _derived_owner_column(self) -> str | None:
+        """派生任务表有没有 owner_instance_id 列（没有就降级，绝不假设它存在）。"""
+        try:
+            cols = [
+                str(row[1])
+                for row in self.conn.execute("PRAGMA table_info(derived_tasks)").fetchall()
+            ]
+        except sqlite3.Error:
+            return None
+        return "owner_instance_id" if "owner_instance_id" in cols else None
+
+    def recover_instance_owned_records(self) -> dict:
+        """启动恢复的**归属判定**入口（契约 C1）。
+
+        队列台账与待确认事项在各自的构造阶段已经按归属判过（见
+        `turn_journal.interrupt_stale(registry)` 与 `ApprovalService._mark_interrupted`）；
+        这里补派生任务，并把「有多少条因为归属未知而没动」如实记进日志。
+
+        规则（三条，逐条对应契约）：
+        1. 归属者确认已退出 → 记录标成可恢复（起因为「那个实例退出了」）；
+        2. 归属者还活着 → 一行不动（别抢正在工作的实例的任务）；
+        3. 归属未知（unknown / 没有归属的旧记录）→ 保守保留原状态，只计数。
+        """
+        from agent.storage.instance_registry import RECORD_DERIVED_TASK
+
+        report = self.instances.recover_confirmed_dead(
+            types=(RECORD_DERIVED_TASK,),
+            handler=self._recover_owned_derived_tasks,
+        )
+        self.instance_recovery_report = report
+        legacy = self._legacy_unowned_counts()
+        report["legacy_unowned"] = legacy
+        if report["deferred"] or any(legacy.values()):
+            logger.info(
+                "实例归属未知，保守保留原状态：%s；无归属的旧记录：%s",
+                report["deferred"],
+                legacy,
+            )
+        return report
+
+    def _legacy_unowned_counts(self) -> dict[str, int]:
+        """没有归属的旧记录条数（保守保留、不自动中断的证据）。
+
+        这些行来自「还没有实例身份」的旧版本：无法判断它们的写入者还在不在，
+        所以只统计、不改状态 —— 界面上它们仍然按原状态呈现（interrupted 的
+        照旧可重发）。以后由维护重新判定。
+        """
+        counts: dict[str, int] = {}
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) c FROM turn_journal WHERE owner_instance_id IS NULL "
+                "AND status IN ('queued','running')"
+            ).fetchone()
+            counts["turn_journal"] = int(row["c"] if row is not None else 0)
+        except sqlite3.Error:  # pragma: no cover - 表不存在时降级
+            counts["turn_journal"] = 0
+        if self._derived_owner_column() is not None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) c FROM derived_tasks "
+                "WHERE owner_instance_id IS NULL AND state = 'running'"
+            ).fetchone()
+            counts["derived_tasks"] = int(row["c"] if row is not None else 0)
+        else:
+            counts["derived_tasks"] = 0
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) c FROM pending_approvals "
+                "WHERE owner_instance_id IS NULL AND status = 'pending'"
+            ).fetchone()
+            counts["pending_approvals"] = int(row["c"] if row is not None else 0)
+        except sqlite3.Error:  # pragma: no cover
+            counts["pending_approvals"] = 0
+        return counts
 
     # -- anchor 事件广播 --------------------------------------------------
 
@@ -648,6 +780,14 @@ class AppContext:
         await self.task_manager.shutdown()
         # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。
         await self.heavy.shutdown()
+
+        # 干净退出：显式写下退出时刻（契约 C1 的权威判据）。
+        # 顺序放在 turn / task 都停完之后：此刻确实不再有本实例的写入了。
+        # 失败也不能阻止关闭 —— 下次启动会用心跳 + pid 兜底判定。
+        try:
+            self.instances.mark_clean_exit()
+        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+            logger.warning("failed to mark clean exit", exc_info=True)
 
         adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
         self._anthropic_probe_at.clear()

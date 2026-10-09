@@ -31,6 +31,8 @@ from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
 from agent.api.events import AgentEvent, EventType, make_event
 from agent.config import Settings
+from agent.core.turn import TurnAcceptError
+from agent.storage.turn_journal import JournalWriteError
 from agent.credentials.providers import (
     CUSTOM_PRESET,
     MODEL_SUGGESTION_NOTE,
@@ -60,6 +62,10 @@ from agent.storage.db_identity import (
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+# 实例心跳间隔（契约 C1）：远小于 HEARTBEAT_TTL（90s），
+# 正常运行时始终「心跳新鲜」；崩溃时停止，靠 TTL + pid 兜底判死。
+HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 # 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
 _SENTENCE_END = "。！？!?\n"
@@ -206,9 +212,37 @@ def create_app(
                 logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
+        # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
+        # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
+        # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。
+        hb_log = logging.getLogger(__name__)
+        heartbeat_stop = asyncio.Event()
+
+        async def _instance_heartbeat() -> None:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(heartbeat_stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
+                if heartbeat_stop.is_set():
+                    return
+                try:
+                    ctx.instances.heartbeat()
+                except Exception:  # noqa: BLE001 - 心跳失败不能杀死后台任务
+                    hb_log.warning("instance heartbeat failed", exc_info=True)
+
+        heartbeat_task = asyncio.create_task(_instance_heartbeat())
         try:
             yield
         finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
                 await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
@@ -223,10 +257,10 @@ def create_app(
 
     app = FastAPI(title="QIO", version="0.1.14", lifespan=lifespan)
     auth = SessionAuth.from_settings(settings)
-    instance_id = f"qio_{uuid.uuid4().hex[:16]}"
+    # 实例身份由 AppContext 生成并登记（契约 C1：台账归属要用同一个 id）。
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，
     # 前端据此知道旧基准作废、要完整 resync（见 /api/runtime/state）。
-    ctx.instance_id = instance_id
+    instance_id = ctx.instance_id
     ctx.turns.instance_id = instance_id
     app.add_middleware(
         CORSMiddleware,
@@ -1064,9 +1098,22 @@ def create_app(
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
         # （排队中的这条消息不被追溯改向）。
         pending = ctx.bindings.peek_intent()
-        turn = ctx.turns.submit(
-            message, topic_id, intent_id=pending.intent_id if pending else None
-        )
+        try:
+            turn = ctx.turns.submit(
+                message, topic_id, intent_id=pending.intent_id if pending else None
+            )
+        except TurnAcceptError:
+            # 契约 C2：台账写不进去 = 这条消息**没有被接受**。绝不能返回 200：
+            # 那会留下一个「内存里有、库里没有」的 turn，重启后消息没有任何痕迹。
+            # 不入队、不发 TURN_START（TURN_START 只在 worker 真正开跑时发）。
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "accepted": False,
+                    "error": "消息未被接受：持久化失败",
+                },
+            )
         return {
             "ok": True,
             "accepted": True,
@@ -1230,6 +1277,10 @@ def create_app(
             "interrupted_approvals": ctx.approvals.interrupted(),
             # 上一次进程结束时没有被执行完的用户消息（见 storage/turn_journal.py）。
             "interrupted_turns": ctx.turn_journal.unfinished(),
+            # 孤儿重发：被抢占过、但没有写成任何后继的记录。它们不在
+            # interrupted_turns 里（已经算「处理过」），所以必须有这个出口 ——
+            # 否则那条消息就永久消失了（契约 C3：孤立即记录不得永久隐藏）。
+            "orphaned_turns": ctx.turn_journal.orphaned_claims(),
             "tasks": ctx.task_manager.snapshot(),
             # 工具执行的权威事实（活工具 + 最近结束的工具）：
             # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，
@@ -1255,8 +1306,13 @@ def create_app(
     async def resend_turn(turn_id: str) -> dict:
         """把一条「被接受但没有执行」的消息按原话题重新提交。
 
-        一次性：先用带条件的 UPDATE 抢占（`claim`），抢不到就 409 ——
-        所以同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
+        一次性 + **单事务**（契约 C3）：`claim_for_resend` 在同一个事务里完成
+        「老记录 recovered_by/recovered_at + 新记录 + 关联」；抢不到（已经被处理过、
+        或别的并发请求先抢到）就 409，任何一步失败整体回滚 —— 不会留下
+        「老记录已处理、新记录没写成」的孤儿。
+
+        新 turn_id 在事务之前就生成并传进去：关联（recovered_by）指向的必须是
+        真正提交的那个 turn，而不是事后补写。
         """
         record = ctx.turn_journal.recoverable(turn_id)
         if record is None:
@@ -1264,7 +1320,17 @@ def create_app(
                 status_code=409,
                 detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
             )
-        if not ctx.turn_journal.claim(turn_id):
+        new_turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        try:
+            linked = ctx.turn_journal.claim_for_resend(turn_id, new_turn_id, instance_id)
+        except JournalWriteError as exc:
+            # 事务整体回滚：老记录仍是可重发的，没有半截状态、没有孤儿。
+            # 但这次重发**没有做成**，必须如实说，不能返回假 200。
+            raise HTTPException(
+                status_code=503,
+                detail=f"重发未被执行：持久化失败（{exc}）",
+            ) from exc
+        if not linked:
             raise HTTPException(status_code=409, detail="这一条已经被处理过了")
         pending = ctx.bindings.peek_intent()
         try:
@@ -1272,11 +1338,16 @@ def create_app(
                 record["message"],
                 record["topic_id"],
                 intent_id=pending.intent_id if pending else None,
+                turn_id=new_turn_id,
             )
-        except Exception:
-            ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
-            raise
-        ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
+        except TurnAcceptError as exc:
+            # 关联已经写成、但新 turn 没被接受：这是真实的失败，必须让用户看见，
+            # 而不是返回一个假的 200。孤儿出口（orphaned_claims / repair_orphan）
+            # 保证这条记录不会因此永久消失。
+            raise HTTPException(
+                status_code=503,
+                detail=f"重发未被执行：{exc}",
+            ) from exc
         return {
             "ok": True,
             "recovered_turn_id": turn_id,
