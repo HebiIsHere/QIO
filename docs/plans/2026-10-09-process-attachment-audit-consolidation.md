@@ -140,7 +140,7 @@
 - 因此验证者原反例中「注释必须出现在 final_content」的断言属于**基线行为**，改为契约对齐断言：`final_content` 以正文开头且不含注释头、`annotation` 字段完整（含头与结论句）、ASSISTANT 事件里正文恰好一次且不含注释头。正文唯一性与注释完整性两类断言都不许删除。
 
 ### 未决到本轮结束的项
-- F11 后端已实现独立字段；F06/F12 由 acc-b2 修复、`incomplete` 的前端消费由 acc-c2 完成；阶段二复跑与实机取证由 acc-f2 完成；F01—F24 最终判定以 acc-f2 的 `docs/verification-acc-phase2.md` + Lead 复跑为准。
+- 本轮收口（2026-10-09 23:45）：F06/F12/F11 已由 acc-b2 + acc-c2 落地并入，F25（TOOL_END 出口未脱敏）与 r8 兼容路径负载回归由 Lead/acc-e2 修复并入，实机 11/11 通过（acc-vis 收口）。**F01—F25 的逐项最终判定与被裁定的未实测项以 `docs/verification-acc-phase2.md`（Lead 复跑）为准**，本节表格保留为初始判定。
 
 ## 八、集成期新增发现与裁定（Lead，2026-10-09 22:30）
 

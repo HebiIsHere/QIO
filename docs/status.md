@@ -1143,16 +1143,16 @@
     OpenAI / Anthropic 实网行为未验。
   - **Windows / Tauri 原生文件入口未实测**：原生选择器、拖放与原生打开只有编译级验证，没有在运行中的
     桌面进程里手工点过；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
-  - **真实浏览器实机取证待阶段二**：本轮结论来自后端跨层、前端组件/store 级与单测，不等于实机表现。
-  - **F06 / F12 / F11 前端消费的实机与跨层组合复跑**待阶段二；`incomplete`、排队取消结束事实与注释的
-    组合（排队 + 取消 + 不完整结束 + 注释）本轮未组合成一次确定性用例。
+  - **实机取证与跨层组合（阶段二）已完成**：10 张截图、11/11 通过（`docs/verification-shots-acc/summary.json`、
+    `docs/verification-shots-acc/visual-report.md`），跨层组合用例 `backend/tests/test_acc_f_20_cross_layer_combination.py`
+    覆盖「排队 + 取消 + 不完整结束 + 注释」的正常与异常两路。真实厂商端点、Windows/Tauri 原生入口仍未实测
+    （见 `docs/verification-acc-phase2.md` §六）。
   - **兼容路径（旧客户端不传 `attachment_ids`）下，话题里未绑定的陈旧失败草稿会阻断带附件发送**，
     直到用户删除它或重试成功；**显式 `attachment_ids=[]` 的纯文字发送不受影响**（新客户端一律走显式路径）。
   - **读取预算与分页的旧游标兼容**只覆盖实现声明的旧形态；真实海量超长行文件的端到端分页未做耗时取证。
-- **后续依赖：** 阶段二复跑与实机取证由独立验证者产出；阶段一的基线反例见 `docs/verification-acc-phase1.md`
-  （已并入，可校验）。阶段二的产物 —— 逐项 F01—F25 的最终判定报告 docs/verification-acc-phase2.md，
-  以及 F25 反例 backend/tests/test_acc_f_25_tool_end_redaction.py —— 由 acc-f2 在阶段二分支产出、
-  **尚未并入本分支**，因此按纯文本写；并入后应改为可被 `python scripts/check_docs.py` 校验的反引号路径。
+- **后续依赖：** 阶段一的基线反例见 `docs/verification-acc-phase1.md`；阶段二的逐项判定报告见
+  `docs/verification-acc-phase2.md`（含 F25 与 r8 兼容路径回归）；F25 的最小反例见
+  `backend/tests/test_acc_f_25_tool_end_redaction.py`。以上均已并入本分支，可被 `python scripts/check_docs.py` 校验。
 - 契约终稿见 `docs/architecture.md` §12.1.7，逐项状态表见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一。
 
 ---
