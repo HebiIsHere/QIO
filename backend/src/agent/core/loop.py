@@ -107,6 +107,29 @@ def _split_declared_answer(text: str) -> tuple[bool, str]:
     return True, rest
 
 
+def _redact_published(text: str, *, holdback: bool) -> str:
+    """对外发布的正文统一脱敏（冻结契约 C3）。
+
+    holdback=True（流式增量）时，先扣留「可能是某个已登记敏感值开头」的最长
+    尾部，再走 redact_text；等后续分块打破对齐（或收尾）再放行。没有登记敏感值
+    时扣留长度为 0 —— 正常流式完全不受影响，不退化为整段生成后显示。
+    """
+    if not text:
+        return text
+    from agent.trace.redact import redact_text, undecided_tail_length
+
+    if holdback:
+        tail = undecided_tail_length(text)
+        if tail:
+            text = text[: len(text) - tail]
+    return redact_text(text)
+
+
+# 结束语义（冻结契约 C2）里由模型调用本身产生的 reason_code：只有最后一次调用
+# 的结束事实才算数，一次后续的正常结束（例如兜底回答）会把它们清掉。
+_TERMINATION_CODES = frozenset({"incomplete_stream", "length_limit", "content_filter"})
+
+
 class _StreamEnd:
     """流结束哨兵（消费侧据此收口）。"""
 
@@ -258,8 +281,9 @@ class _AssistantStream:
             # 还没判定 ⟺ 这一块整体没超出控制前缀（判定所需长度是 PROBE_LIMIT，
             # 吃满就一定有结论）→ 没有正文被丢掉。
             if tail:  # pragma: no cover - 防御：真到了这里也绝不丢字、绝不提前展示
+                pending = self._probe
                 self._start_undeclared()
-                return self._probe + tail
+                return pending + tail
             return ""
         return feed + tail
 
@@ -327,6 +351,35 @@ class _AssistantStream:
         self.role_evidence = None
         self._probe = ""
 
+    def _probe_is_complete_declaration(self) -> bool:
+        """_probe 是否已经是一个完整合法声明（只是还没等到正文）。
+
+        只有两种「未判定」形态可能是完整声明：声明本身、或声明后跟一个孤立的
+        CR（LF / CRLF 在 _resolve_probe 里已经判成 answer）。完整声明必须被吃掉，
+        绝不能当正文发出去（审计 F19）。
+        """
+        marker = ANSWER_MARKER.lower()
+        lowered = self._probe.lower()
+        return lowered == marker or lowered == marker + "\r"
+
+    async def _flush_unresolved_probe(self) -> None:
+        """收尾时处理还没走完判定的控制前缀（审计 F19）。
+
+        完整声明 → 按回答调用收尾（正文为空）；否则 → 按「未声明」处理，并把
+        已收到的前缀字符原样喂进缓冲。旧实现先清空 _probe 再喂它，等于把这段
+        已收到的文字静默丢掉。
+        """
+        if self.role is not None:
+            return
+        if self._probe_is_complete_declaration():
+            self.role = "answer"
+            self.role_evidence = "declared_answer"
+            self._probe = ""
+            return
+        pending = self._probe
+        self._start_undeclared()
+        await self._feed(pending)
+
     async def _feed(self, text: str) -> None:
         """按已判定的角色分发正文：实时发布 / 有界缓冲（内存 + 暂存）。"""
         if not text:
@@ -379,9 +432,9 @@ class _AssistantStream:
             return
         feed = self._consume_prefix(text)
         if self.role is None:
-            # 整段就到这里：仍是声明的可能前缀（如「[[QIO」）→ 未声明
-            self._start_undeclared()
-            await self._feed(feed)
+            # 整段就到这里：仍是声明的可能前缀（如「[[QIO」）→ 未声明。
+            # 先取出 _probe 再清空，绝不吞掉已收到的字符（审计 F19）。
+            await self._flush_unresolved_probe()
             return
         await self._feed(feed)
 
@@ -459,17 +512,17 @@ class _AssistantStream:
                 await self._absorb_whole_text(text)
         tool_calls = bool(completion.tool_calls) if completion is not None else False
         if self.role is None:
-            # 判定没走完（缓冲仍是声明的可能前缀）→ 按「未声明」处理；
-            # 前缀里已经收到的字符也是正文（原文照实保留）。
-            self._start_undeclared()
-            await self._feed(self._probe)
+            # 判定没走完（缓冲仍是声明的可能前缀）：完整声明按回答收尾（正文为空），
+            # 否则按「未声明」处理；前缀字符原样保留（审计 F19）。
+            await self._flush_unresolved_probe()
         if self.role == "undeclared":
             await self._settle_undeclared(tool_calls=tool_calls, interrupted=completion is None)
             if self.role == "interim" and tool_calls:
                 return  # 工具轮：等 flush_interim 补阶段信息
             await self._settle()
             if self.role == "answer":
-                self.answer_text = self._confirmed
+                # 最终交付正文同样脱敏（契约 C3：最终校准 / 历史输出）
+                self.answer_text = _redact_published(self._confirmed, holdback=False)
             return
         if self.role == "interim" and tool_calls:
             return  # 工具轮：文字已经实时发过，等 flush_interim 补阶段信息
@@ -486,8 +539,8 @@ class _AssistantStream:
             await self._flush(force=True)
         await self._settle()
         if self.role == "answer":
-            # 这条流交付到正式回答区的正文（声明本身已经去掉）
-            self.answer_text = self._confirmed
+            # 这条流交付到正式回答区的正文（声明本身已经去掉），脱敏后交付
+            self.answer_text = _redact_published(self._confirmed, holdback=False)
 
     async def _settle(self) -> None:
         """一次性交出全部已确认文字（同一 delta_id 的累计快照，streaming=false）。"""
@@ -548,7 +601,9 @@ class _AssistantStream:
         """
         interim = self.role == "interim"
         return {
-            "content": self._confirmed,
+            # 先脱敏再发布：累计快照里的完整敏感值在这里被替换；流式增量额外扣留
+            # 可能是敏感值开头的尾部（契约 C3），收尾快照不再扣留（不会有后续分块）。
+            "content": _redact_published(self._confirmed, holdback=streaming),
             "interim": interim,
             "streaming": streaming,
             "delta_id": self.delta_id,
@@ -589,6 +644,9 @@ class TurnResult:
     stop_reason_code: str = "none"
     stop_reason: str | None = None
     stopped_by: str | None = None
+    # 系统核对注释（后端事实，见 core/turn_facts.py）：独立字段，绝不拼进
+    # final_content（审计 F11：正文与注释分层，前端不会因「全文不等」重复整段回答）。
+    final_annotation: str | None = None
 
 
 class AgentLoop:
@@ -718,6 +776,8 @@ class AgentLoop:
         self._stream_emitted = False
         # 「这条路径不支持实时生成」每轮只广播一次，避免降级后每次调用都刷屏。
         self._stream_degraded_warned = False
+        # 结束语义警告（incomplete_stream / length_limit / content_filter）每轮一次。
+        self._termination_warned = False
         # 当前这条流式响应的发布器：工具轮的文字要等阶段确定后再由它发出。
         self._active_stream: _AssistantStream | None = None
         # 用量归因：每次模型调用把 (进, 出) 报给调用方（由它记到对应凭据上）。
@@ -1146,6 +1206,10 @@ class AgentLoop:
         return phase(name, detail)
 
     def _warn(self, message: str) -> None:
+        from agent.trace.redact import redact_text
+
+        # 警告文本可能引用工具 / 厂商回显：新增可见输出路径必须过脱敏（契约 C3）。
+        message = redact_text(str(message))
         self._warnings.append(message)
         logger.warning(message)
         if self.trace is not None:
@@ -1171,6 +1235,7 @@ class AgentLoop:
         messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
         self._warnings = []
         self._stream_degraded_warned = False
+        self._termination_warned = False
         # 每轮一份新台账：上一轮的失败不能算到这一轮头上。
         self.turn_facts = TurnFacts()
         # 结束事实是**每轮**的量（同一个 loop 实例可以被复用）。
@@ -1429,13 +1494,16 @@ class AgentLoop:
         if not cancelled and not (final_content or "").strip():
             # 静默失败收口：护栏终止 / 预算停止 / 模型什么都没说，都必须留下人话。
             # 取消是用户自己的动作，界面已有「已停止」状态行，这里不补文本。
-            final_content = self._stop_note or "本轮没有产生回答，也没有给出原因。"
+            # 停止说明可能引用工具 / 厂商回显，过一遍脱敏（契约 C3：错误与最终输出）。
+            final_content = _redact_published(
+                self._stop_note, holdback=False
+            ) or "本轮没有产生回答，也没有给出原因。"
+        final_annotation: str | None = None
         if not cancelled:
-            # 后端事实校正：本轮存在没有通过验证的失败时，在答复末尾补一段事实说明。
-            # 它不改写、不删除模型写过的字；模型正文照原样留在前面。
-            note = self.turn_facts.annotation()
-            if note:
-                final_content = f"{final_content or ''}\n\n{note}"
+            # 后端事实校正（审计 F11）：系统核对注释走独立字段，绝不拼进 final_content。
+            # final_content 保持纯正文；前端按 annotation 渲染「系统核对」那一行，
+            # 不会因为「全文不等」再补一条包含完整正文的重复回答。
+            final_annotation = self.turn_facts.annotation()
         usage = {
             "iterations": self.budget.used_iterations,
             # 向后兼容字段：`tokens` 一直是「输出 token」（而不是总量）
@@ -1463,6 +1531,7 @@ class AgentLoop:
             stop_reason_code=stop_code,
             stop_reason=stop_reason,
             stopped_by=stop_by,
+            final_annotation=final_annotation,
         )
 
     # -- steps ------------------------------------------------------------
@@ -1511,6 +1580,44 @@ class AgentLoop:
         self._call_undeclared = stream.undeclared_answer_used
         self._call_buffer_outcome = stream.buffer_outcome
 
+    async def _note_model_termination(self, completion: Completion) -> None:
+        """把这次模型调用的结束事实记成本轮的停止原因（冻结契约 C2）。
+
+        * stream_incomplete（adapter 按协议判定：无 finish_reason / 无 message_stop）
+          → incomplete_stream；
+        * finish_reason = length / max_tokens → length_limit；
+        * content_filter / refusal → content_filter；
+        * 其余（stop / tool_calls / end_turn / tool_use / 旧路径的 None）不设停止原因；
+          一次后续的正常结束会把**先前**的临时结束码清掉（兜底回答成功 = 已恢复）。
+        """
+        reason = (completion.finish_reason or "").strip().lower()
+        if getattr(completion, "stream_incomplete", False):
+            code = "incomplete_stream"
+            text = "模型流在给出结束标记之前就结束了，回答可能不完整。"
+        elif reason in ("length", "max_tokens"):
+            code = "length_limit"
+            text = "模型因长度上限提前结束，回答可能被截断。"
+        elif reason in ("content_filter", "refusal"):
+            code = "content_filter"
+            text = "模型因内容策略中断了这次生成。"
+        else:
+            if self._stop_code in _TERMINATION_CODES:
+                self._stop_code = None
+                self._stop_reason = None
+                self._stop_by = None
+            return
+        self._stop_code = code
+        self._stop_reason = text
+        self._stop_by = "system"
+        if self._termination_warned:
+            return
+        self._termination_warned = True
+        self._warn(text)
+        await self._emit(
+            EventType.WARNING,
+            {"code": code, "message": text, "recoverable": True},
+        )
+
     def _call_hint(self) -> str | None:
         """每次调用附带的系统提示：内容角色协议（第五轮契约 §1.1）。
 
@@ -1539,6 +1646,8 @@ class AgentLoop:
         declared, body = _split_declared_answer(content)
         if declared:
             self._call_role = "answer"
+            # 对外发布与最终交付的正文统一脱敏（契约 C3）；整段已知，无需扣留尾部。
+            body = _redact_published(body, holdback=False)
             self._call_answer_text = body
             if not body.strip():
                 return
@@ -1556,17 +1665,24 @@ class AgentLoop:
             if batch_has_narrative:
                 return
             await self._emit_assistant(
-                self._one_shot_payload(content, interim=True, evidence=None, calls=calls)
+                self._one_shot_payload(
+                    _redact_published(content, holdback=False),
+                    interim=True,
+                    evidence=None,
+                    calls=calls,
+                )
             )
             return
         # 没有声明、也没有工具调用：未声明的正文就是正式回答（降级路径，一次性交付）
         self._call_role = "answer"
-        self._call_answer_text = content
+        self._call_answer_text = _redact_published(content, holdback=False)
         self._call_undeclared = bool(content.strip())
         if not content.strip():
             return
         await self._emit_assistant(
-            self._one_shot_payload(content, interim=False, evidence="undeclared_answer")
+            self._one_shot_payload(
+                self._call_answer_text, interim=False, evidence="undeclared_answer"
+            )
         )
 
     def _one_shot_payload(
@@ -1691,6 +1807,7 @@ class AgentLoop:
         title = self._incomplete_title(outcome)
         message = f"{title}：{outcome.reason}" if outcome.reason else title
         message = f"{message}{self._incomplete_detail(outcome)}。"
+        message = _redact_published(message, holdback=False)
         self._warn(message)
         await self._emit(
             EventType.WARNING,
@@ -1783,6 +1900,8 @@ class AgentLoop:
                     latency_ms=int((_time.perf_counter() - _t0) * 1000),
                     tool_calls=len(completion.tool_calls or []),
                 )
+            # 这次调用的结束事实（冻结契约 C2）：记成本轮停止原因，供 TURN_END 用。
+            await self._note_model_termination(completion)
             return completion
         except Exception as exc:  # adapter-level failure ends the turn
             if self.trace is not None:
@@ -1794,9 +1913,16 @@ class AgentLoop:
                     error=f"{type(exc).__name__}: {exc}"[:200],
                 )
             self._warn(f"planning failed: {exc}")
+            from agent.trace.redact import redact_text
+
             await self._emit(
                 EventType.ERROR,
-                {"code": "planning_failed", "message": str(exc)[:200], "recoverable": False},
+                {
+                    "code": "planning_failed",
+                    # 错误信息同样是对外可观输出：过脱敏（契约 C3）
+                    "message": redact_text(str(exc))[:200],
+                    "recoverable": False,
+                },
             )
             # **原样上抛**（Lead 裁决 2026-10-06）：适配器归一化过的异常自己带着
             # 「这是厂商/传输路径失败」的事实；没有归一化的异常就是 QIO 内部的意外

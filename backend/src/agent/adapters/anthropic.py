@@ -236,6 +236,8 @@ class AnthropicAdapter(BaseAdapter):
         input_tokens = 0
         output_tokens = 0
         stop_reason: str | None = None
+        # Anthropic 协议的结束标记是 message_stop（契约 C2）：没见过它 = 不完整结束。
+        saw_message_stop = False
         url = f"{self.endpoint}/messages"
         try:
             async with self._client.stream("POST", url, json=payload) as resp:
@@ -304,6 +306,9 @@ class AnthropicAdapter(BaseAdapter):
                         delta = event.get("delta") or {}
                         if delta.get("stop_reason"):
                             stop_reason = str(delta["stop_reason"])
+                    elif etype == "message_stop":
+                        # 协议结束标记：只有见过它，这条流才算正常完成。
+                        saw_message_stop = True
                     elif etype == "error":
                         detail = (event.get("error") or {}).get("message") or "anthropic stream error"
                         raise e.ProviderInternalError(str(detail)[:300])
@@ -315,12 +320,26 @@ class AnthropicAdapter(BaseAdapter):
         # 与 native 同一条兼容性口径：一个内容块都没解析出来、也没有 stop_reason、
         # 也没有任何 usage，说明这条服务很可能忽略了 stream=true（回了整段 JSON，
         # SSE 行里什么都没有）。如实声明用不了流式，让上层整段回退一次。
-        if not blocks and stop_reason is None and not input_tokens and not output_tokens:
+        if (
+            not blocks
+            and stop_reason is None
+            and not input_tokens
+            and not output_tokens
+            and not saw_message_stop
+        ):
             from agent.adapters import errors as e
 
             raise e.UnsupportedCapability(
                 "stream produced no content blocks (provider likely ignored stream=true)"
             )
+
+        # 结束语义（契约 C2）：没有 message_stop = 不完整结束；max_tokens / refusal
+        # 是协议合法的截断原因，但工具参数可能被切断 —— 两者都不执行工具调用。
+        incomplete = not saw_message_stop
+        truncated = isinstance(stop_reason, str) and stop_reason.lower() in (
+            "max_tokens",
+            "refusal",
+        )
 
         # 组装放在异常处理之外：ToolCallParseError 是解析错误，不该被归一化掉。
         text_parts = [
@@ -334,6 +353,9 @@ class AnthropicAdapter(BaseAdapter):
         for index in sorted(blocks):
             entry = blocks[index]
             if entry.get("type") != "tool_use":
+                continue
+            if incomplete or truncated:
+                # 未确认结束 / 被截断：绝不执行未完成的工具调用（正文照常保留）。
                 continue
             raw_json = entry.get("json") or "{}"
             try:
@@ -369,6 +391,7 @@ class AnthropicAdapter(BaseAdapter):
                 raw=None,
                 finish_reason=stop_reason,
                 usage=usage,
+                stream_incomplete=incomplete,
             ),
         )
 

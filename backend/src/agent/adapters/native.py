@@ -452,16 +452,27 @@ class NativeAdapter(BaseAdapter):
                 "stream produced no increments (provider likely ignored stream=true)"
             )
 
+        # 结束语义（冻结契约 C2）：OpenAI 兼容协议的结束标记就是 finish_reason。
+        # 到 EOF 都没有它 = 不完整结束（半截连接 / 缺结束包 / 只有 usage 的空流）。
+        incomplete = finish_reason is None
+        # 长度截断 / 内容策略：协议合法结束，但工具参数可能被切断 —— 同样不执行。
+        truncated = isinstance(finish_reason, str) and finish_reason.lower() in (
+            "length",
+            "content_filter",
+        )
         # 组装在 try 之外：ToolCallParseError 是解析错误，不能被归一化成 provider 错误。
+        # 不完整结束 / 截断时**绝不**组装可执行调用：没有合法结束标记就没有合法调用。
+        tool_calls = None if (incomplete or truncated) else accumulator.build()
         completion = Completion(
             message=ChatMessage(
                 role="assistant",
                 content="".join(content_parts) or None,
-                tool_calls=accumulator.build(),
+                tool_calls=tool_calls,
             ),
             raw=None,
             usage=usage,
             finish_reason=finish_reason,
+            stream_incomplete=incomplete,
         )
         yield StreamDelta(kind=STREAM_DONE, completion=completion)
 

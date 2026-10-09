@@ -106,6 +106,11 @@ class Completion:
     usage: "ModelUsage | None" = None
     # 归一化的结束原因（stop / tool_calls / length / content_filter / None）
     finish_reason: str | None = None
+    # 流式结束语义（冻结契约 C2）：True = 消费了一条流，但到 EOF 都没看到该协议
+    # 的结束标记（OpenAI 兼容看 finish_reason，Anthropic 看 message_stop）。
+    # 已确认文本保留，但**不得**当成正常完成，也**不得**执行未确认结束的工具调用。
+    # 非流式路径（整段 JSON）与脚本化假 adapter 默认 False。
+    stream_incomplete: bool = False
 
     def __post_init__(self) -> None:
         # 兼容：仍然允许直接传供应商形状的 dict，构造时归一化。

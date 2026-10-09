@@ -36,13 +36,22 @@ DEFAULT_BOUNDARY_MODE = "shadow"
 
 
 def verification_raw(result) -> dict | None:
-    """assistant 消息的 `raw`：把后端核对通过的结论一起存下来。
+    """assistant 消息的 `raw`：把后端核对结论与系统核对注释一起存下来。
 
-    前端在回答下方渲染「后端已核对」那一行就靠它（见 core/turn_facts.py）；
-    这一轮没有核对结论时返回 None，落库行为与以前完全一样（raw = 空对象）。
+    前端在回答下方渲染「后端已核对」那一行就靠 `verified`（见 core/turn_facts.py）；
+    `annotation` 是审计 F11 拆出来的**独立追加字段**（系统核对注释不再拼进正文），
+    刷新 / 历史分页后仍能恢复。两者都没有时返回 None，落库行为与以前完全一样。
     """
     verification = getattr(result, "verification", None)
-    return {"verified": verification} if verification else None
+    annotation = getattr(result, "final_annotation", None)
+    if not verification and not annotation:
+        return None
+    payload: dict = {}
+    if verification:
+        payload["verified"] = verification
+    if annotation:
+        payload["annotation"] = annotation
+    return payload
 
 
 @dataclass
@@ -134,6 +143,7 @@ class TurnOrchestrator:
         with tracer.phase("persistence"):
             final_topic = await self.persist(ctx, adapter, plan, result)
         ctx.final_content = result.final_content
+        ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.usage = {
             "iterations": result.iterations_used,
             "tokens": result.tokens_used,
@@ -871,6 +881,7 @@ class TurnOrchestrator:
             final_preview=result.final_content or "",
         )
         ctx.final_content = result.final_content
+        ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.result = {"ok": True, "turn": result.__dict__}
 
 

@@ -115,6 +115,11 @@ ACTIONS_BY_REASON: dict[str, tuple[str, ...]] = {
     "tool_failed": ("retry",),
     "user_stopped": ("resend",),
     "interrupted": ("resend",),
+    # 流式结束语义（冻结契约 C2）：不完整结束 / 长度截断 / 内容策略中断
+    # 都可以用「重发这条消息」恢复，所以给 retry。
+    "incomplete_stream": ("retry",),
+    "length_limit": ("retry",),
+    "content_filter": ("retry",),
     "budget": (),
     "no_progress": (),
     "guard_halt": (),
@@ -162,6 +167,9 @@ class TurnContext:
     notices: list[str] = field(default_factory=list)
     knowledge_snapshot: list[dict] = field(default_factory=list)
     final_content: str | None = None
+    # 系统核对注释（见 core/turn_facts.py）：**独立字段**，不拼进 final_content
+    # （审计 F11）。随 TURN_END 的 annotation 字段发出，前端单独渲染。
+    final_annotation: str | None = None
     # 本轮被后端核对通过的完成结论（见 core/turn_facts.py）：随 TURN_END 发出去，
     # 前端据此在回答下方显示「后端已核对」那一行。
     final_verification: dict | None = None
@@ -773,6 +781,14 @@ class TurnManager:
         payload.update(self._end_facts(ctx))
         if ctx.final_verification:
             payload["verification"] = ctx.final_verification
+        # 系统核对注释（审计 F11：只追加字段，不改 final_content 的旧语义）。
+        # ctx 上没显式给时，从服务层放进 result["turn"] 的 TurnResult 里取。
+        annotation = ctx.final_annotation
+        if annotation is None:
+            raw_annotation = self._turn_result(ctx).get("final_annotation")
+            annotation = raw_annotation if isinstance(raw_annotation, str) and raw_annotation else None
+        if annotation:
+            payload["annotation"] = annotation
         if ctx.usage:
             payload.update(ctx.usage)
         await self._emit_event(TURN_END, payload)
