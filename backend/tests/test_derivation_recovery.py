@@ -497,15 +497,19 @@ def test_over_long_title_no_longer_zeroes_the_derivation_chain(tmp_path: Path):
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    # 两条派生任务：摘要 + 链式登记的知识提炼
-    assert done == 2, "摘要与知识都应当完成，而不是失败重试"
+    # 三条派生任务：摘要 + 链式登记的知识提炼 + 独立登记的实体提炼（M05）
+    assert done == 3, "摘要、知识、实体都应当完成，而不是失败重试"
     assert _summary_row(ctx, sealed.id)["summary"] == "这是一段摘要"
     rows = _index_rows(ctx, sealed.id)
     assert len(rows) == 1, "索引要一起生成"
     assert len(rows[0]["title"]) == MAX_TITLE, "索引里的标题是截断后的"
     assert _count(ctx, "entity_cards") == 1, "实体卡要一起生成"
     assert _count(ctx, "knowledge") == 2, "知识条目要一起生成"
-    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
+    assert _task_states(ctx) == {
+        "summary": "completed",
+        "knowledge": "completed",
+        "entities": "completed",
+    }
 
 
 def test_over_long_summary_no_longer_zeroes_the_derivation_chain(tmp_path: Path):
@@ -524,12 +528,16 @@ def test_over_long_summary_no_longer_zeroes_the_derivation_chain(tmp_path: Path)
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 2
+    assert done == 3  # 摘要 + 知识 + 实体（实体这一环是独立任务行）
     assert len(_summary_row(ctx, sealed.id)["summary"]) == MAX_SUMMARY
     assert len(_index_rows(ctx, sealed.id)) == 1
     assert _count(ctx, "entity_cards") == 1
     assert _count(ctx, "knowledge") == 2
-    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
+    assert _task_states(ctx) == {
+        "summary": "completed",
+        "knowledge": "completed",
+        "entities": "completed",
+    }
 
 
 def test_fifty_candidates_still_produce_knowledge(tmp_path: Path):
@@ -540,9 +548,13 @@ def test_fifty_candidates_still_produce_knowledge(tmp_path: Path):
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5))
 
-    assert done == 2
+    assert done == 3
     assert _count(ctx, "knowledge") == MAX_CANDIDATES
-    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
+    assert _task_states(ctx) == {
+        "summary": "completed",
+        "knowledge": "completed",
+        "entities": "completed",
+    }
 
 
 def test_repairs_are_recorded_in_trace(tmp_path: Path):
@@ -582,7 +594,8 @@ def test_structurally_broken_summary_fails_visibly_and_isolates_entity_cards(
         ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
     )
 
-    assert done == 0, "结构错误不能被当成成功"
+    # 摘要本身失败不算成功；实体只依赖原文，作为独立任务照常完成（M05 失败隔离）
+    assert done == 1, "结构错误不能被当成成功，但实体任务独立于摘要完成"
     task = _task_row(ctx)
     assert task["state"] == "failed" and task["attempts"] == 1
     assert task["last_error"] and "JSON" in task["last_error"], task["last_error"]
@@ -611,7 +624,7 @@ def test_knowledge_schema_failure_is_recorded_and_keeps_summary(tmp_path: Path):
         ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
     )
 
-    assert done == 1, "知识抽取失败不应把已完成的摘要任务判失败"
+    assert done == 2, "知识抽取失败不应把已完成的摘要任务判失败；实体也是独立完成的一条"
     assert _summary_row(ctx, sealed.id)["summary"] == "这是一段摘要"
     assert len(_index_rows(ctx, sealed.id)) == 1
     assert _count(ctx, "knowledge") == 0
@@ -670,7 +683,12 @@ def test_broken_entity_card_output_does_not_break_the_chain(tmp_path: Path, bad_
     assert len(_index_rows(ctx, sealed.id)) == 1
     assert _count(ctx, "knowledge") == 2
     assert _count(ctx, "entity_cards") == 0
-    assert _task_states(ctx) == {"summary": "completed", "knowledge": "completed"}
+    # 实体提炼独立成任务行：坏了也只把这一条判失败（可重试），不带走摘要 / 知识
+    assert _task_states(ctx) == {
+        "summary": "completed",
+        "knowledge": "completed",
+        "entities": "failed",
+    }
 
 
 def test_missing_required_field_failure_is_traceable(tmp_path: Path):
@@ -687,7 +705,8 @@ def test_missing_required_field_failure_is_traceable(tmp_path: Path):
         ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
     )
 
-    assert done == 0
+    # 摘要这条失败；实体任务独立完成（`entities` 输出合法且为空 = 0 张卡）
+    assert done == 1
     task = _task_row(ctx)
     assert task["state"] == "failed" and task["attempts"] == 1
     assert "缺少必需字段 summary" in task["last_error"], task["last_error"]
@@ -724,7 +743,7 @@ def test_knowledge_runs_as_its_own_derived_task(tmp_path: Path):
         ctx.memory_lifecycle.drain_derived_tasks(_ScriptedAdapter(), limit=5)
     )
 
-    assert done == 2
+    assert done == 3, "摘要 + 知识 + 实体三条独立任务都完成"
     row = _task_row_for(ctx, "knowledge")
     assert row is not None, "知识提炼必须有自己的一条派生任务"
     assert row["state"] == "completed" and row["attempts"] == 0
@@ -738,7 +757,7 @@ def test_knowledge_task_failure_is_retryable_with_a_readable_reason(tmp_path: Pa
 
     done = asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(broken, limit=5))
 
-    assert done == 1, "摘要完成、知识失败"
+    assert done == 2, "摘要与实体完成、知识失败"
     row = _task_row_for(ctx, "knowledge")
     assert row is not None and row["state"] == "failed" and row["attempts"] == 1
     assert "无法安全恢复" in (row["last_error"] or ""), row
@@ -821,7 +840,7 @@ def test_entity_card_repairs_are_visible_in_trace(tmp_path: Path):
         ctx.memory_lifecycle.drain_derived_tasks(adapter, limit=5, tracer=tracer)
     )
 
-    assert done == 2
+    assert done == 3, "摘要 + 知识 + 实体（实体独立任务）"
     card = ctx.conn.execute("SELECT name, aliases FROM entity_cards").fetchone()
     assert card is not None and card["name"] == "我家的鹅"
     assert json.loads(card["aliases"]) == ["鹅", "大鹅"]
