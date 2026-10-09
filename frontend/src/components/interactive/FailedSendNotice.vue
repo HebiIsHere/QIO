@@ -35,6 +35,23 @@ const actionNotice = ref("");
 
 /** 只取当前话题的：失败原文始终属于原话题，切到别的话题不插入（§11.4） */
 const records = computed(() => session.failedSendsForTopic(session.currentTopicId));
+/**
+ * 展示数量与**保留数量**分开（契约 §12.5）：默认只展开最新几条，
+ * 其余以「查看其余」收起 —— 收起只影响显示，**隐藏不等于删除**，
+ * store 里未处理的失败原文一条都不会少。结构见下方模板改动点，
+ * 仅使用既有 class（btn ghost），未新增样式令牌。
+ */
+const FAILED_SEND_VISIBLE_DEFAULT = 3;
+const recoveryExpanded = ref(false);
+const visibleRecords = computed(() =>
+  recoveryExpanded.value ? records.value : records.value.slice(0, FAILED_SEND_VISIBLE_DEFAULT),
+);
+const hiddenCount = computed(() => Math.max(0, records.value.length - visibleRecords.value.length));
+
+function revealMore(): void {
+  recoveryExpanded.value = true;
+  actionNotice.value = "已展开其余的失败原文（都还保留着，隐藏不等于删除）";
+}
 /** 自动化钩子前缀：悬浮聊天沿用既有 chat-*，对话页用 composer-*（scope 仍用于样式分层） */
 const hook = computed(() => (props.scope === "chat" ? "chat" : "composer"));
 const inputBlank = computed(() => isBlankText(session.draft));
@@ -108,7 +125,7 @@ function discard(record: FailedSend): void {
 
       <ul class="recovery-list">
         <li
-          v-for="record in records"
+          v-for="record in visibleRecords"
           :key="recordKey(record)"
           class="recovery-item"
           :data-im="`${hook}-recovery-item`"
@@ -155,6 +172,20 @@ function discard(record: FailedSend): void {
           </div>
         </li>
       </ul>
+
+      <!--
+        「查看其余」（§12.5）：默认收起的其余失败原文的展开入口。
+        这些记录本就完整保留在 store / 本机存储里，展开按钮不影响任何清理。
+      -->
+      <button
+        v-if="hiddenCount > 0"
+        type="button"
+        class="btn ghost"
+        :data-im="`${hook}-recovery-more`"
+        @click="revealMore"
+      >
+        查看其余 {{ hiddenCount }} 条
+      </button>
 
       <p
         v-if="actionNotice"
