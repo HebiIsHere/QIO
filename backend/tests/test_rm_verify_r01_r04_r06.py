@@ -142,13 +142,18 @@ def test_r01_second_context_does_not_interrupt_a_live_instances_turn(tmp_path: P
 
 
 class _FlakyJournalConn(sqlite3.Connection):
-    """可注入一次真实 SQLite 写失败的连接（只在 turn_journal 的 INSERT 上触发）。"""
+    """可注入一次真实 SQLite 写失败的连接（只在 turn_journal 的受理写入上触发）。
+
+    匹配方式很关键：真实 SQL 是 `INSERT OR IGNORE INTO turn_journal …`，
+    所以用「以 insert 开头 + 语句里出现 turn_journal」；写成
+    `startswith("insert into turn_journal")` 会一次都匹配不到，注入形同虚设。
+    """
 
     inject_journal_failure = False
 
     def execute(self, sql, *args, **kwargs):  # type: ignore[override]
         text = " ".join(str(sql).split()).lower()
-        if self.inject_journal_failure and text.startswith("insert into turn_journal"):
+        if self.inject_journal_failure and text.startswith("insert") and "turn_journal" in text:
             self.inject_journal_failure = False  # 只注入一次
             raise sqlite3.OperationalError("disk I/O error (injected by rm-f)")
         return super().execute(sql, *args, **kwargs)
@@ -248,10 +253,11 @@ def test_r06_accepted_but_never_dispatched_record_is_recoverable(tmp_path: Path)
 def test_r06_claimed_but_undispatched_record_is_not_permanently_hidden(tmp_path: Path):
     """检查点二：抢占成功（recovered_at 已写）之后、mark_recovered 之前退出。
 
-    这条记录既不能再被 recoverable() 选中（recovered_at 非空），又没有被标成
+    这条记录既不能再被 `recoverable()` 选中（recovered_at 非空），又没有被标成
     「已处理」（recovered_by 为空）—— 基线把它永久隐藏：界面看不到、重发 409。
-    要求：它必须仍然是一条可操作的恢复记录（可重发，或至少出现在权威状态里），
-    重发成功时关联不悬空。
+    契约 C3 对它的要求是：**不得永久隐藏**（权威状态里看得到）+ 有正式出口
+    (`repair_orphan()`) 让它重新可重发 + 重发后关联不悬空 + 重发一次性。
+    本用例逐条核对这四件事。
     """
     conn = _freshen(tmp_path / "post.db")
     journal = TurnJournal(conn)
@@ -262,27 +268,32 @@ def test_r06_claimed_but_undispatched_record_is_not_permanently_hidden(tmp_path:
     try:
         app = create_app(Settings(data_dir=tmp_path / "data"), conn)
         with TestClient(app) as client:
+            ctx = client.app.state.ctx
             ran: list[str] = []
-            client.app.state.ctx.turns.set_runner(_counting_runner(ran))
+            ctx.turns.set_runner(_counting_runner(ran))
 
-            visible = [
-                t["turn_id"]
-                for t in client.get("/api/runtime/state").json()["interrupted_turns"]
-            ]
-            resp = client.post("/api/turns/turn_crash/resend")
-
-            assert resp.status_code == 200 or "turn_crash" in visible, (
-                "抢占后崩溃的遗留记录不得被永久隐藏：必须可重发，或至少出现在"
-                f"权威状态里（resend={resp.status_code}, interrupted_turns={visible}）"
+            state = client.get("/api/runtime/state").json()
+            interrupted = [t["turn_id"] for t in state["interrupted_turns"]]
+            orphaned = [t["turn_id"] for t in state.get("orphaned_turns", [])]
+            assert "turn_crash" in interrupted or "turn_crash" in orphaned, (
+                "抢占后崩溃的遗留记录不得被永久隐藏：必须能在权威状态里看到；"
+                f"interrupted_turns={interrupted}, orphaned_turns={orphaned}"
             )
 
-            if resp.status_code == 200:
-                row = _journal_row(conn, "turn_crash")
-                assert row is not None
-                assert row["recovered_at"], "重发后必须留下处理时间"
-                assert row["recovered_by"], "重发后不得悬空：旧记录必须指向新 turn"
-                again = client.post("/api/turns/turn_crash/resend")
-                assert again.status_code == 409, "重发是一次性的，第二次必须明确拒绝"
+            # 正式出口：repair_orphan() 让它重新回到「可重发」
+            assert ctx.turn_journal.repair_orphan("turn_crash") is True, (
+                f"孤儿记录必须能被修复为可重发；orphaned_turns={orphaned}"
+            )
+
+            resp = client.post("/api/turns/turn_crash/resend")
+            assert resp.status_code == 200, resp.text
+            row = _journal_row(conn, "turn_crash")
+            assert row is not None
+            assert row["recovered_at"], "重发后必须留下处理时间"
+            assert row["recovered_by"], "重发后不得悬空：旧记录必须指向新 turn"
+
+            again = client.post("/api/turns/turn_crash/resend")
+            assert again.status_code == 409, "重发是一次性的，第二次必须明确拒绝"
     finally:
         conn.close()
 
