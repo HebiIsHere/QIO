@@ -663,6 +663,12 @@ export const useSessionStore = defineStore("session", {
     sendConfirm: null as SendConfirmState | null,
     /** 各 attempt 的查证定时器（messageId → timer id；非业务状态） */
     _confirmTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
+    /**
+     * TURN_START 已关联的 request_id（有界）。
+     * 「这一轮已经开始」是事件带来的事实：受理回执/查证不得再改运行态，
+     * 「后端无记录」的收敛也不得误伤一条真实开始过的轮次。
+     */
+    startedRequestIds: [] as string[],
   }),
   getters: {
     /**
@@ -827,6 +833,26 @@ export const useSessionStore = defineStore("session", {
       if (this.turnPhase === "idle") this.turnPhase = "waiting";
       return true;
     },
+    /**
+     * TURN_START 携带 request_id 时的精确关联（契约 5）。
+     *
+     * 事件层在分发 TURN_START 时调用：把「这次发送对应的轮次已经开始」记下来。
+     * 之后发生的一切都据此判断：
+     * * 受理回执/查证命中不得改写该轮运行态（它们本来就只单向落定 attempt）；
+     * * 查证 404（后端重启 = 记录丢失）时**不**收敛运行态 —— 轮次可能真的在跑；
+     * * 该 attempt 的 turn_id 在这里就能关联上，不必等回执。
+     */
+    noteTurnStartedForRequest(requestId: string, turnId?: string) {
+      if (!requestId) return;
+      if (!this.startedRequestIds.includes(requestId)) {
+        this.startedRequestIds = [...this.startedRequestIds.slice(-199), requestId];
+      }
+      if (turnId) {
+        const attempt = this.sendAttempts.find((a) => a.clientRequestId === requestId);
+        if (attempt && !attempt.turnId) attempt.turnId = turnId;
+      }
+    },
+    
     /**
      * 后端实例变化（进程重启）→ revision 基准作废。
      *
@@ -2092,8 +2118,13 @@ export const useSessionStore = defineStore("session", {
       // 恢复草稿（输入框为空才放回，不覆盖正在输入的内容）
       if (!this.draft.trim()) this.draft = target.message;
       this.lastError = SEND_CONFIRM_UNKNOWN_NOTICE;
-      // 后端无这条记录、也没有 TURN_START 到过 → 乐观的「运行中」是站不住的
-      if (!target.queued && this.activeTurnId === null) {
+      // 后端无这条记录、这次发送也从未被 TURN_START 认领 →
+      // 乐观的「运行中」是站不住的（同 _runConfirmQuery 的收敛条件）
+      if (
+        !target.queued &&
+        this.activeTurnId === null &&
+        !this.startedRequestIds.includes(target.clientRequestId)
+      ) {
         this.turnRunning = false;
         this.turnPhase = "idle";
       }
@@ -2246,9 +2277,15 @@ export const useSessionStore = defineStore("session", {
             accepted: false,
             busy: false,
           };
-          // 后端明确没有这条记录、也没有任何 TURN_START 到过 →
+          // 后端明确没有这条记录、这次发送也从未被 TURN_START 认领 →
           // 乐观的「运行中」是站不住的：收敛，但不撤消息（用户还可以重试/放弃）。
-          if (!attempt.queued && this.activeTurnId === null) {
+          // 注意：后端重启会让记录丢失（404），但 TURN_START 可能已在重启前到过 ——
+          // 用「request_id 是否已关联」判断，绝不误伤真实开始过的轮次。
+          if (
+            !attempt.queued &&
+            this.activeTurnId === null &&
+            !this.startedRequestIds.includes(attempt.clientRequestId)
+          ) {
             this.turnRunning = false;
             this.turnPhase = "idle";
           }
