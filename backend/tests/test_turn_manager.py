@@ -194,12 +194,18 @@ async def test_waiting_turn_is_queued_not_accepted():
     await tm.shutdown()
 
 
-async def test_cancelled_queued_turn_never_emits_turn_lifecycle_events():
-    """取消的排队 turn 是 tombstone：不得再进入 running，也不得发 TURN_START/TURN_END。
+async def test_cancelled_queued_turn_never_starts_but_still_gets_one_turn_end():
+    """取消的排队 turn 是 tombstone：不得再进入 running，也不得发 TURN_START。
 
-    真实缺陷：cancel 只把它从 _pending 摘掉，对象仍留在底层 asyncio.Queue 里；
-    worker 后来取到它时会先设置 active 并发 TURN_START，前端因此会看到
-    「B 开始运行」，随后又收到 TURN_END —— 一个从未执行的 turn 污染了界面状态。
+    真实缺陷（本用例守住的那一半）：cancel 只把它从 _pending 摘掉，对象仍留在
+    底层 asyncio.Queue 里；worker 后来取到它时会先设置 active 并发 TURN_START，
+    前端因此会看到「B 开始运行」—— 一个从未执行的 turn 污染了界面状态。
+
+    另一半由冻结契约 C1/F12 更新（Lead 2026-10-09 裁定，基线行为已判为缺陷）：
+    被取消的排队轮**必须恰好留下一条 TURN_END**（status=cancelled /
+    reason_code=user_stopped / stopped_by=user / actions=["retry"]）—— 不发结束
+    事件的话前端拿不到结束事实，刷新后也恢复不了重发入口。旧断言「一条生命周期
+    事件都不发」编码的正是这个缺陷，故在此更新。
     """
     started = asyncio.Event()
     release = asyncio.Event()
@@ -222,8 +228,15 @@ async def test_cancelled_queued_turn_never_emits_turn_lifecycle_events():
     await tm.wait(a.turn_id)
     await asyncio.sleep(0.02)
 
-    assert [name for name, data in seen if data.get("turn_id") == b.turn_id] == []
+    events_b = [(name, data) for name, data in seen if data.get("turn_id") == b.turn_id]
+    # 不开始执行 → 没有 TURN_START；但必须恰好一条 TURN_END（冻结契约 C1/F12）。
+    assert [name for name, _ in events_b] == ["TURN_END"], events_b
+    assert events_b[0][1]["status"] == "cancelled", events_b[0][1]
+    assert events_b[0][1]["reason_code"] == "user_stopped", events_b[0][1]
+    assert events_b[0][1]["stopped_by"] == "user", events_b[0][1]
+    assert events_b[0][1]["actions"] == ["retry"], events_b[0][1]
     assert b.status == "cancelled"
+    assert b.turn_start_emitted is False
     assert a.status == "completed"
     await tm.shutdown()
 
@@ -253,7 +266,11 @@ async def test_terminal_turn_never_returns_to_running():
     assert ran == ["A"]
     assert b.status == "cancelled"
     assert b.turn_start_emitted is False
-    assert b.turn_end_emitted is False
+    # 冻结契约 C1/F12（Lead 2026-10-09 裁定，旧基线行为是缺陷）：
+    # 排队取消也必须留下结束事件，所以 turn_end_emitted 为 True ——
+    # 「恰好一条」由 test_cancelled_queued_turn_never_starts_but_still_gets_one_turn_end
+    # 与 tests/test_acc_b2_queued_cancel_end.py 守住。
+    assert b.turn_end_emitted is True
     await tm.shutdown()
 
 

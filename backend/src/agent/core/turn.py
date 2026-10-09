@@ -13,7 +13,8 @@ TurnManager is also the **single source of truth for the turn lifecycle**:
     accepted ──▶ queued ──▶ running ──┬──▶ completed
           └──────────────────────────▶├──▶ failed
                                       ├──▶ cancelled
-                                      └──▶ unavailable
+                                      ├──▶ unavailable
+                                      └──▶ incomplete
 
 契约（前端与后端共同遵守）：
 
@@ -25,7 +26,17 @@ TurnManager is also the **single source of truth for the turn lifecycle**:
 
 被取消的 queued turn 会变成 **tombstone**：它仍然躺在底层 `asyncio.Queue`
 里（`asyncio.Queue` 不支持安全删除），但 worker 取到它时会直接跳过 ——
-既不会被设成 `_active`，也不会发出任何 turn 生命周期事件。
+既不会被设成 `_active`，也不会发出 `TURN_START`。
+
+**但 tombstone 仍然欠用户一条 `TURN_END`**（冻结契约 C1：一个 accepted turn 恰好
+一次 TURN_END，含排队期被取消）。worker 既然跳过，这条结束事件就必须由 `cancel()`
+自己调度发出（见 `_schedule_turn_end`）—— 否则前端拿不到结束事实，刷新后也恢复不了。
+
+`incomplete` 是冻结契约（plan §C2）本轮扩进来的终态：**只在「不完整 EOF」时使用**
+（native 无 finish_reason、anthropic 无 message_stop、仅 usage / 空分块、未结束的工具
+调用，即 `reason_code == incomplete_stream`）。厂商合法终止 `length_limit` /
+`content_filter` 仍然落 `completed`，只用 reason_code 区分 —— 「被截断」不等于
+「协议没说结束」。
 
 Every accepted turn gets exactly one `TURN_START` and exactly one `TURN_END`
 (the latter in a `finally`), whatever happens inside the runner. Nested loops
@@ -73,7 +84,18 @@ TURN_START = "TURN_START"
 TURN_END = "TURN_END"
 
 # 终态：进入其中之一后不再变化。
-TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable")
+#
+# incomplete（冻结契约 C2，本轮扩入）：协议没有给出结束标记就 EOF —— 回答可能不完整，
+# 所以**不是** completed（前端不得显示「正常完成」），但它也不是 failed / cancelled。
+# 语义边界由 `_completion_status` 钉死：只有 reason_code == incomplete_stream 才用，
+# length_limit / content_filter 等厂商合法终止仍然是 completed。
+TERMINAL_STATUSES = ("completed", "failed", "cancelled", "unavailable", "incomplete")
+
+#: 不完整结束的状态码 / 人话原因（core/loop.py 按协议判定后随 TurnResult 传来；
+#: 这里是拿不到循环事实时的兜底，保证 TURN_END 绝不会退回「无原因的正常完成」）。
+INCOMPLETE_STATUS = "incomplete"
+INCOMPLETE_STREAM_CODE = "incomplete_stream"
+INCOMPLETE_REASON = "模型流在给出结束标记之前就结束了，回答可能不完整。"
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +201,12 @@ class TurnContext:
     notify: bool = False  # system-driven (e.g. subagent completion) turn
     turn_start_emitted: bool = False
     turn_end_emitted: bool = False
+    # 结束操作（actions）的**显式覆盖**，None = 按 reason_code 走 ACTIONS_BY_REASON。
+    # 为什么需要：排队轮被取消时 journal 是 cancelled（不是 interrupted），
+    # /api/turns/{id}/resend 必然拒绝，列 resend 就是一个点不通的死按钮；而
+    # 「重发这条用户消息」（retry）是真实可用的入口。这条路径单独给 ("retry",)，
+    # 不改 user_stopped 的全局映射（active 取消仍然是 resend，既有测试精确断言它）。
+    end_actions: tuple[str, ...] | None = None
     # 阶段 1：这一轮的归属在**提交时**就捕获接续意图，在**开始执行时**落实成绑定。
     # 提交之后用户再做的新选择只影响后续提交（排队消息不被追溯改向）。
     intent_id: str | None = None
@@ -220,6 +248,9 @@ class TurnManager:
         self._started_prepares: OrderedDict[str, str] = OrderedDict()
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
+        # 补发的 TURN_END 任务（排队轮被取消，不走 worker）：持句柄避免被 GC，
+        # shutdown 时会等它们跑完（见 _schedule_turn_end）。
+        self._emit_tasks: set[asyncio.Task] = set()
         self._closed = False
         # 可选的持久化台账（见 storage/turn_journal.py）：被 API 接受过的消息
         # 从此有痕迹，进程退出后不会静默消失。core/ 不认识 storage，只按协议调用；
@@ -698,7 +729,8 @@ class TurnManager:
                     if ctx.cancelled:
                         ctx.status = "cancelled"
                     elif ctx.status in ("running", "accepted"):
-                        ctx.status = "completed"
+                        # 权威终态：不完整 EOF 不是完成（冻结契约 C2）。
+                        ctx.status = self._completion_status(ctx)
             except asyncio.CancelledError:
                 ctx.status = "cancelled"
                 raise
@@ -724,6 +756,18 @@ class TurnManager:
                     ctx.result if ctx.result is not None else {"ok": False, "reason": ctx.status},
                 )
                 self._schedule_emit()
+
+    def _completion_status(self, ctx: TurnContext) -> str:
+        """runner 正常跑完后的权威终态：completed 或 incomplete。
+
+        唯一依据是循环给出的**协议事实**（core/loop.py::_note_model_termination）：
+        `reason_code == incomplete_stream` 表示流在给出结束标记之前就结束了 —— 已经
+        确认的正文保留，但整轮如实标成 incomplete，绝不显示成「正常完成」。
+
+        length_limit / content_filter 不在这里：它们是厂商合法终止，状态仍是 completed。
+        """
+        code = str(self._turn_result(ctx).get("stop_reason_code") or "")
+        return INCOMPLETE_STATUS if code == INCOMPLETE_STREAM_CODE else "completed"
 
     def _flush_trace_phases(self, ctx: TurnContext) -> None:
         """把这一轮的阶段时间落库（幂等）。
@@ -759,8 +803,28 @@ class TurnManager:
             },
         )
 
+    def _schedule_turn_end(self, ctx: TurnContext) -> None:
+        """为「不经过 worker 的终态」补发 TURN_END（当前用于排队轮被取消）。
+
+        worker 取到 tombstone 只会跳过，所以这一条结束事件必须在这里显式调度；
+        任务句柄被持有（`_emit_tasks`），shutdown 会等它跑完 —— 不留半截事实，
+        也不产生 asyncio 的「任务被 GC」警告。幂等由 `turn_end_emitted` 保证。
+        """
+        if ctx.turn_end_emitted:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # 没有事件循环就没法发异步事件；调用方在异步上下文之外
+        task = asyncio.create_task(self._emit_turn_end(ctx))
+        self._emit_tasks.add(task)
+        task.add_done_callback(self._emit_tasks.discard)
+
     async def _emit_turn_end(self, ctx: TurnContext) -> None:
-        """一个 accepted turn 必须且只能有一个 TURN_END（含异常路径）。"""
+        """一个 accepted turn 必须且只能有一个 TURN_END（含异常路径）。
+
+        `incomplete` 与其它四个终态一样只在这里定稿：不是终态才兜底成 completed。
+        """
         if ctx.status not in TERMINAL_STATUSES:
             ctx.status = "completed"
         if ctx.turn_end_emitted:
@@ -804,7 +868,11 @@ class TurnManager:
           （服务层把它放进 ctx.result["turn"]）；
         * 取消分两种：用户按的停止是 user_stopped，进程收尾掐断的是 interrupted；
         * 失败按**异常类名**分类：适配器错误 → provider_error，其余 → internal_error；
+        * 不完整结束（incomplete）→ incomplete_stream + system + 标准人话原因；
         * 没有事实 / 旧记录 → "none"，不编一个理由；旧记录也不会被补写。
+
+        actions 默认按 reason_code 走 ACTIONS_BY_REASON；ctx.end_actions 显式给了就
+        以它为准（当前只有「排队轮被取消」这一条路径给 ("retry",)，见 TurnContext）。
         """
         status = ctx.status
         turn = self._turn_result(ctx)
@@ -830,15 +898,26 @@ class TurnManager:
             )
         elif status == "failed":
             code, stopped_by, reason = self._failure_facts(ctx.error)
+        elif status == INCOMPLETE_STATUS:
+            # 不完整 EOF（冻结契约 C2）：正文保留，但整轮如实标「未完成 + 原因 + retry」。
+            # 循环正常会给全三个字段；拿不到时兜底，绝不退回「无原因的正常完成」。
+            code = code or INCOMPLETE_STREAM_CODE
+            stopped_by = stopped_by or "system"
+            reason = reason or INCOMPLETE_REASON
         elif status == "completed" and not code:
             code, stopped_by, reason = "none", None, None
         if not code:
             code = "none"
+        actions = (
+            list(ctx.end_actions)
+            if ctx.end_actions is not None
+            else list(ACTIONS_BY_REASON.get(code, ()))
+        )
         return {
             "reason_code": code,
             "reason": self._clean_reason(reason),
             "stopped_by": stopped_by,
-            "actions": list(ACTIONS_BY_REASON.get(code, ())),
+            "actions": actions,
         }
 
     @staticmethod
@@ -911,6 +990,11 @@ class TurnManager:
         if started_perf is not None:
             facts["duration_ms"] = max(0, int((time.perf_counter() - started_perf) * 1000))
             facts["queue_ms"] = max(0, int((started_perf - ctx.accepted_perf) * 1000))
+        else:
+            # 从未开始执行（排队中被取消）：执行时长是 0（不是「缺失」），排队时长照实给。
+            # 契约 C8 的总耗时 = 排队 + 执行，这里两个数字都必须存在且非负。
+            facts["duration_ms"] = 0
+            facts["queue_ms"] = max(0, int((time.perf_counter() - ctx.accepted_perf) * 1000))
         ledger = self._trace_ledger(ctx)
         if ledger.get("duration_ms") is not None:
             facts["duration_ms"] = max(0, int(ledger["duration_ms"]))
@@ -973,6 +1057,10 @@ class TurnManager:
                     return False
                 c.cancelled = True
                 c.status = "cancelled"
+                # 排队取消的可用操作是 retry（前端重发这条用户消息）。journal 记成
+                # cancelled（不是 interrupted），/api/turns/{id}/resend 必然拒绝 ——
+                # 列 resend 就是死按钮。active 取消路径不受影响，仍是 resend。
+                c.end_actions = ("retry",)
                 self._pending.pop(i)
                 self._journal_call("terminal", c.turn_id, "cancelled", reason="user")
                 self._record_cancelled(c)
@@ -981,6 +1069,10 @@ class TurnManager:
                 self._resolve(c, {"ok": False, "reason": "cancelled"})
                 self._bump_revision()
                 self._schedule_emit()
+                # worker 跳过 tombstone，所以这一条 TURN_END 必须由这里补发
+                # （冻结契约 C1：accepted turn 恰好一次 TURN_END，含排队期被取消）。
+                # 立刻发出，不等 active turn 结束；幂等由 turn_end_emitted 保证。
+                self._schedule_turn_end(c)
                 return True
         return False
 
@@ -1032,6 +1124,13 @@ class TurnManager:
             except asyncio.CancelledError:
                 pass
             except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+
+        # 补发的 TURN_END（排队轮取消）也要跑完：关停不得留下半截结束事实。
+        for task in list(self._emit_tasks):
+            try:
+                await task
+            except Exception:  # noqa: BLE001 - 关停不得抛
                 pass
 
         # 兜底：worker 已经不在，任何还挂着的等待者都必须以终态结束，而不是永远等待。

@@ -4,7 +4,8 @@
 
 * `queued`    —— API 已经明确接受，但还没开始执行；
 * `running`   —— 正在执行；
-* `completed` / `cancelled` / `failed` / `unavailable` —— 终态；
+* `completed` / `cancelled` / `failed` / `unavailable` / `incomplete` —— 终态
+  （`incomplete` = 流没有合法结束标记就 EOF，回答可能不完整；见 plan §C2）；
 * `interrupted` —— 进程结束（含崩溃）时还没走到终态的 turn。
 
 重启后的规则（明确、可测）：
@@ -47,9 +48,12 @@ COMPLETED = "completed"
 CANCELLED = "cancelled"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"
+# 冻结契约 C2：协议没有给出结束标记就 EOF = 不完整结束，不是完成。
+# 它必须进终态集合，否则 terminal() 会把它兜底成 failed —— 台账就会说谎。
+INCOMPLETE = "incomplete"
 INTERRUPTED = "interrupted"
 
-TERMINAL_STATUSES = (COMPLETED, CANCELLED, FAILED, UNAVAILABLE)
+TERMINAL_STATUSES = (COMPLETED, CANCELLED, FAILED, UNAVAILABLE, INCOMPLETE)
 # 进程结束时会「没走到终态」的状态：重启后一律变成 interrupted
 OPEN_STATUSES = (QUEUED, RUNNING)
 
@@ -161,6 +165,8 @@ class TurnJournal:
 
         `cancelled` + `reason='shutdown'` 记成 `interrupted`：那是进程把这一轮
         掐断的，不是用户取消的 —— 重启后应该给用户一个「重发」的机会。
+
+        `incomplete` 是正常终态之一（契约 C2）：它照原样落库，不折算成 failed / completed。
         """
         if status not in TERMINAL_STATUSES:
             status = FAILED
@@ -377,10 +383,13 @@ class TurnJournal:
         if retention <= 0:
             return 0
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention)).isoformat()
+        # 占位符按终态集合长度生成：以前写死 4 个，加入 incomplete 后会变成
+        # 「6 个绑定，5 个占位符」——清理静默失败（只记 warning），终态行永不清理。
+        placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
         try:
             cur = self.conn.execute(
-                "DELETE FROM turn_journal WHERE status IN (?, ?, ?, ?) AND ended_at IS NOT NULL "
-                "AND ended_at < ?",
+                f"DELETE FROM turn_journal WHERE status IN ({placeholders}) "
+                "AND ended_at IS NOT NULL AND ended_at < ?",
                 (*TERMINAL_STATUSES, cutoff),
             )
         except sqlite3.Error as exc:  # noqa: BLE001 - 清理是维护动作
