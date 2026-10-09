@@ -1,0 +1,51 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5441/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 480,
+    "height": 600,
+    "ms": 1600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b){b.click();return 'chat opened';}return 'no toggle';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1400
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var q=function(s){return document.querySelector(s);};var area=q('[data-im=\"batch-area\"]');var stage=area&&area.parentElement;var bar=q('[data-im=\"overlay-switch\"]');var panel=q('[data-im=\"chat-panel\"]');var cs=function(el){return el?getComputedStyle(el):null;};var rect=function(el){if(!el)return null;var r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),rt:Math.round(r.right),h:Math.round(r.height),w:Math.round(r.width)};};var s=stage?getComputedStyle(stage):null;var head=panel?panel.querySelector('.panel-head'):null;var scope=panel?panel.querySelector('.panel-scope'):null;var line=panel?panel.querySelector('.scope-line'):null;var under=null;if(head){var r=head.getBoundingClientRect();var els=document.elementsFromPoint(Math.min(r.left+r.width*0.7,window.innerWidth-2),r.top+r.height*0.5);under=els.slice(0,7).map(function(e){return String(e.className||e.tagName).slice(0,44);});}return JSON.stringify({switchBar:bar?{rect:rect(bar),text:bar.textContent.slice(0,80)}:null,vars:s?{lift:s.getPropertyValue('--im-geo-chat-lift'),mode:s.getPropertyValue('--im-geo-mode'),chatMaxH:s.getPropertyValue('--im-geo-chat-max-h'),batchMaxH:s.getPropertyValue('--im-geo-batch-max-h'),batchRight:s.getPropertyValue('--im-geo-batch-right')}:null,chatPanel:rect(panel),panelBg:cs(panel)?cs(panel).backgroundColor:null,panelOpacity:cs(panel)?cs(panel).opacity:null,headBg:cs(head)?cs(head).backgroundColor:null,scopeBg:cs(scope)?cs(scope).backgroundColor:null,scopeLineBg:cs(line)?cs(line).backgroundColor:null,headUnderneath:under,batchEntryCount:document.querySelectorAll('[data-im=\"batch-entry\"]').length,view:{w:window.innerWidth,h:window.innerHeight}});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d6-shot-480-chat-only"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600,
+    "ms": 1600
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var q=function(s){return document.querySelector(s);};var area=q('[data-im=\"batch-area\"]');var stage=area&&area.parentElement;var bar=q('[data-im=\"overlay-switch\"]');var panel=q('[data-im=\"chat-panel\"]');var cs=function(el){return el?getComputedStyle(el):null;};var rect=function(el){if(!el)return null;var r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),rt:Math.round(r.right),h:Math.round(r.height),w:Math.round(r.width)};};var s=stage?getComputedStyle(stage):null;var head=panel?panel.querySelector('.panel-head'):null;var scope=panel?panel.querySelector('.panel-scope'):null;var line=panel?panel.querySelector('.scope-line'):null;var under=null;if(head){var r=head.getBoundingClientRect();var els=document.elementsFromPoint(Math.min(r.left+r.width*0.7,window.innerWidth-2),r.top+r.height*0.5);under=els.slice(0,7).map(function(e){return String(e.className||e.tagName).slice(0,44);});}return JSON.stringify({switchBar:bar?{rect:rect(bar),text:bar.textContent.slice(0,80)}:null,vars:s?{lift:s.getPropertyValue('--im-geo-chat-lift'),mode:s.getPropertyValue('--im-geo-mode'),chatMaxH:s.getPropertyValue('--im-geo-chat-max-h'),batchMaxH:s.getPropertyValue('--im-geo-batch-max-h'),batchRight:s.getPropertyValue('--im-geo-batch-right')}:null,chatPanel:rect(panel),panelBg:cs(panel)?cs(panel).backgroundColor:null,panelOpacity:cs(panel)?cs(panel).opacity:null,headBg:cs(head)?cs(head).backgroundColor:null,scopeBg:cs(scope)?cs(scope).backgroundColor:null,scopeLineBg:cs(line)?cs(line).backgroundColor:null,headUnderneath:under,batchEntryCount:document.querySelectorAll('[data-im=\"batch-entry\"]').length,view:{w:window.innerWidth,h:window.innerHeight}});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d6-shot-800-chat-only"
+  },
+  {
+    "op": "console",
+    "tail": 15
+  }
+]
