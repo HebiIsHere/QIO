@@ -90,6 +90,9 @@ class TurnContext:
     usage: dict | None = None
     result: dict | None = None
     notify: bool = False  # system-driven (e.g. subagent completion) turn
+    # 发送请求身份（前端可传）：幂等受理与查证端点用它定位同一个「用户意图」。
+    # 一次发送动作只对应一个 request_id；重试必须复用同一个 id（契约 5）。
+    request_id: str | None = None
     turn_start_emitted: bool = False
     turn_end_emitted: bool = False
     # 阶段 1：这一轮的归属在**提交时**就捕获接续意图，在**开始执行时**落实成绑定。
@@ -117,6 +120,10 @@ class TurnManager:
         self._active: TurnContext | None = None
         self._pending: list[TurnContext] = []
         self._cancelled: list[dict] = []  # 最近被取消的 turn（有界）
+        # 发送请求身份索引（有界）：client_request_id → 最近一次绑定的 TurnContext。
+        # 幂等受理与查证端点只按它关联同一意图；进程重启后为空（查证返回 unknown）。
+        self._request_index: dict[str, TurnContext] = {}
+        self._REQUEST_INDEX_LIMIT = 300
         self._futures: dict[str, asyncio.Future] = {}
         self._worker: asyncio.Task | None = None
         self._closed = False
@@ -222,6 +229,7 @@ class TurnManager:
         *,
         notify: bool = False,
         intent_id: str | None = None,
+        request_id: str | None = None,
     ) -> TurnContext:
         if self._closed:
             # worker 已经停了：再收下这个 turn，它只会躺在队列里永远不被执行
@@ -243,6 +251,13 @@ class TurnManager:
             self._futures[ctx.turn_id] = loop.create_future()
         except RuntimeError:
             pass  # no running loop: enqueue without an awaitable result
+        if request_id:
+            ctx.request_id = request_id
+            self._request_index[request_id] = ctx
+            # 有界：超出上限丢弃最老的映射（查证对很早的请求返回 unknown 是诚实行为）
+            while len(self._request_index) > self._REQUEST_INDEX_LIMIT:
+                oldest = next(iter(self._request_index))
+                self._request_index.pop(oldest, None)
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
         # 受理即落台账：排队中的消息从此不会因为进程退出而静默消失
@@ -280,6 +295,14 @@ class TurnManager:
             return await asyncio.wait_for(asyncio.shield(fut), timeout)
         except asyncio.TimeoutError:
             return None
+
+    def lookup_request(self, request_id: str) -> TurnContext | None:
+        """按发送请求身份查证：这个意图在本进程里对应哪一轮（可能已结束）。返回 None
+        表示本进程没有该请求的记录（包括进程重启后），查证端点必须如实呈现 unknown。
+        """
+        if not request_id:
+            return None
+        return self._request_index.get(str(request_id).strip())
 
     def _resolve(self, ctx: TurnContext, payload: dict) -> None:
         """兑现某个 turn 的等待者（幂等：已经兑现过的不再重复设置）。"""
@@ -377,6 +400,8 @@ class TurnManager:
                 # 晚到的旧快照不得把这一轮清掉。
                 "revision": self._revision,
                 "message": ctx.message[:200],
+                # 发送请求身份：前端可用它把 TURN_START 关联回自己的发送动作。
+                "request_id": ctx.request_id,
             },
         )
 
