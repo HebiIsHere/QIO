@@ -497,7 +497,7 @@ def on_new_submission(
                 f"相关材料在提交 {submission_id} 后发生了变化：这份预览的依据已经过期，"
                 "需要提交并由 QIO 更新预览后才能批准。"
             ),
-            progress=_progress_shape({"done": 0, "text": "材料已变化：等待更新预览"}, preview),
+            progress=_stored_progress(row, text="材料已变化：等待更新预览"),
         )
         marked.append(row["id"])
     return marked
@@ -522,7 +522,7 @@ def _refresh_dependency_states(conn: sqlite3.Connection, board_id: str) -> None:
             row["id"],
             status="waiting_confirm",
             reason="前项已经成功完成：请先确认，任务不会自动开始。",
-            progress=_progress_shape({"done": 0, "text": "前项已完成：等待你的再次确认"}, preview),
+            progress=_stored_progress(row, text="前项已完成：等待你的再次确认"),
         )
 
 
@@ -657,7 +657,7 @@ def approve_intent(
                 row["id"],
                 status="needs_update",
                 reason=text,
-                progress=_progress_shape({"done": 0, "text": "材料已变化：等待更新预览"}, preview),
+                progress=_stored_progress(row, text="材料已变化：等待更新预览"),
             )
             fresh = _get_row(conn, intent_id)
             assert fresh is not None
@@ -686,7 +686,7 @@ def approve_intent(
                 row["id"],
                 status="waiting_dependency",
                 reason="前项还没有成功完成：会一直等待，不会自动开始。",
-                progress=_progress_shape({"done": 0, "text": "等待前项成功完成"}, preview),
+                progress=_stored_progress(row, text="等待前项成功完成"),
             )
             fresh = _get_row(conn, intent_id)
             return {
@@ -734,7 +734,7 @@ def approve_intent(
             row["id"],
             status="waiting_dependency",
             reason="已批准；但前项还没有成功完成：不会自动开始，前项完成并再次确认后才开始。",
-            progress=_progress_shape({"done": 0, "text": "等待前项成功完成"}, preview),
+            progress=_stored_progress(row, text="等待前项成功完成"),
         )
         fresh = _get_row(conn, intent_id)
         assert fresh is not None
@@ -816,7 +816,7 @@ def reject_intent(conn: sqlite3.Connection, intent_id: str) -> dict:
         status="rejected",
         preview={"cards": [], "groups": [], "links": [], "note": ""},
         reason="已拒绝：预览消失，板面原内容保持不变（没有对正式内容做任何改动）。",
-        progress=_progress_shape({"done": 0, "text": "已拒绝"}, {}),
+        progress=_stored_progress(row, text="已拒绝"),
     )
     fresh = _get_row(conn, intent_id)
     assert fresh is not None
@@ -879,7 +879,7 @@ def update_preview(conn: sqlite3.Connection, intent_id: str, preview: dict) -> d
         preview=next_preview,
         status="needs_update",
         reason=f"预览发生了变化（{detail}）：需要先提交，由 QIO 更新预览后才能批准。",
-        progress=_progress_shape({"done": 0, "text": "预览已变化：等待更新"}, next_preview),
+        progress=_stored_progress(row, text="预览已变化：等待更新"),
     )
     fresh = _get_row(conn, intent_id)
     assert fresh is not None
@@ -1975,7 +1975,7 @@ def on_board_saved(
                 row["id"],
                 status="needs_update",
                 reason=text,
-                progress=_progress_shape({"done": 0, "text": "材料已变化：等待更新预览"}, preview),
+                progress=_stored_progress(row, text="材料已变化：等待更新预览"),
             )
             affected.append(row["id"])
             continue

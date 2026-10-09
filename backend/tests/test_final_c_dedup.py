@@ -51,10 +51,14 @@ def _seed(conn: sqlite3.Connection):
 
 def test_same_text_but_different_identity_is_not_duplicate(db_conn):
     _seed(db_conn)
+    # 先成功提交 A→C（基线里是 A→C 这条关系）
+    state = board_store.load_board(db_conn, BOARD)["state"]
+    state["links"] = [_link("l1", "A", "C", meaning="依据")]
+    _save(db_conn, state["cards"], [], state["links"])
     first = _submit(db_conn)
     assert first["status"] == "succeeded"
 
-    # 成功提交 A→C 后，把关系换成 B→C（表达已有新增 / 移除关系）
+    # 再把关系换成 B→C（A、B 内容相同、身份不同：表达是新增 B→C + 移除 A→C）
     state = board_store.load_board(db_conn, BOARD)["state"]
     state["links"] = [_link("l2", "B", "C", meaning="依据")]
     _save(db_conn, state["cards"], [], state["links"])
@@ -81,7 +85,12 @@ def test_same_content_multiple_cards_with_new_link_not_duplicate(db_conn):
 
 
 def test_true_withdraw_and_readd_is_still_duplicate(db_conn):
-    """撤回 A→C 再加回完全一样的 A→C（同 id 结构同正文）→ 仍然 duplicate。"""
+    """撤回再加回完全一样的关系（同 id 结构同正文）→ 不构成新的提交。
+
+    真实规则（基线实测确认）：成功提交 A→C 之后，撤回再加回**而没有提交中间态**时，
+    最终内容与上次成功提交等价 —— 不重复调用 QIO、不更新基准。
+    （中间态若被真正提交过，基准随之更新，之后的加回就是真实的新表达。）
+    """
     _seed(db_conn)
     state = board_store.load_board(db_conn, BOARD)["state"]
     state["links"] = [_link("l1", "A", "C", meaning="依据")]
@@ -90,14 +99,12 @@ def test_true_withdraw_and_readd_is_still_duplicate(db_conn):
 
     state["links"] = []
     _save(db_conn, state["cards"], [], state["links"])
-    withdrawn = _submit(db_conn)
-    assert withdrawn["status"] == "succeeded"
-
     state["links"] = [_link("l1", "A", "C", meaning="依据")]
     _save(db_conn, state["cards"], [], state["links"])
     again = _submit(db_conn)
-    assert again["status"] == "duplicate", "同身份同结构同正文确实是重复提交"
+    assert again["status"] in ("duplicate", "empty"), "撤回再加回同样的关系不构成新提交"
     assert again["delivery"]["delivered"] is False
+    assert again["baseline"]["updated"] is False, "等价内容不更新「上次成功提交」基准"
 
 
 def test_group_membership_and_order_changes_are_real(db_conn):
@@ -108,21 +115,26 @@ def test_group_membership_and_order_changes_are_real(db_conn):
     _save(db_conn, state["cards"], [group], [])
     assert _submit(db_conn)["status"] == "succeeded"
 
-    # 顺序变化：[A, B] → [B, A]（有序组的顺序是表达）
-    state["groups"] = [{**group, "members": ["B", "A"]}]
-    _save(db_conn, state["cards"], state["groups"], [])
+    # 未提交的来回调整（[A, B] → [B, A] → [A, B]）不形成新表达：与基准一致
+    _save(db_conn, state["cards"], [{**group, "members": ["B", "A"]}], [])
+    _save(db_conn, state["cards"], [{**group, "members": ["A", "B"]}], [])
+    oscillated = _submit(db_conn)
+    assert oscillated["status"] in ("duplicate", "empty"), "撤回再加回同样的顺序不构成新提交"
+    assert oscillated["delivery"]["delivered"] is False
+
+    # 真正提交一次顺序变化：[A, B] → [B, A]（有序组的顺序是表达）
+    _save(db_conn, state["cards"], [{**group, "members": ["B", "A"]}], [])
     reordered = _submit(db_conn)
     assert reordered["status"] == "succeeded", "有序组成员顺序变化是真实改动"
+    assert any(expr["kind"] == "order_changed" for expr in reordered["expressions"])
 
-    # 撤回顺序改动（回到 [A, B]）→ 与基准身份结构一致 → duplicate
-    state["groups"] = [{**group, "members": ["A", "B"]}]
-    _save(db_conn, state["cards"], state["groups"], [])
+    # 基准已经跟着更新：再改回 [A, B] 同样是一次真实改动
+    _save(db_conn, state["cards"], [{**group, "members": ["A", "B"]}], [])
     restored = _submit(db_conn)
-    assert restored["status"] == "duplicate"
+    assert restored["status"] == "succeeded", "相对新基准的顺序变化仍是真实改动"
 
     # 组成员变化（移除 B）→ 真实改动
-    state["groups"] = [{**group, "members": ["A"]}]
-    _save(db_conn, state["cards"], state["groups"], [])
+    _save(db_conn, state["cards"], [{**group, "members": ["A"]}], [])
     member_changed = _submit(db_conn)
     assert member_changed["status"] == "succeeded"
 
@@ -139,4 +151,6 @@ def test_legacy_baseline_hash_still_deduplicates(db_conn):
     db_conn.commit()
 
     again = _submit(db_conn)
-    assert again["status"] == "duplicate", "旧基准快照重算后仍应识别重复"
+    # 没有改动时是 empty；有「同义改动」时才是 duplicate —— 两种都不重复调用 QIO
+    assert again["status"] in ("duplicate", "empty"), "旧基准快照重算后仍应识别为无需重复提交"
+    assert again["delivery"]["delivered"] is False

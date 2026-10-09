@@ -92,6 +92,23 @@ async def material_impact(request: Request, board_id: str, body: dict) -> dict:
     return intents.preview_material_impact(conn, board_id=board_id, state=state)
 
 
+@router.post("/api/interactive/boards/{board_id}/impact-check")
+async def board_impact_check(request: Request, board_id: str, body: dict) -> dict:
+    """M4 影响预判（收尾轮 Lead 补齐路由）：绑定当前已保存版本与候选内容，返回可确认的 checkId。
+
+    纯只读：不改任何状态、不落库、不暂停任何任务。预判失败返回 {"ok": false, "reason"}（HTTP 200），
+    前端据此显示真实原因并保留改动；确认与保存的校验分别在 PUT /state 与提交接口里做。
+    """
+    conn = _conn(request)
+    payload = _body_dict(body)
+    state_version = payload.get("stateVersion")
+    change_set = payload.get("changeSet")
+    state = change_set.get("state") if isinstance(change_set, dict) else None
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=400, detail="changeSet.state 必须是板面状态对象")
+    return intents.impact_check(conn, board_id=board_id, state_version=state_version, state=state)
+
+
 @router.post("/api/interactive/intents/{intent_id}/approve")
 async def approve(intent_id: str, request: Request, body: dict | None = None) -> dict:
     """批准。confirmDependency=true 表示「前项已完成，我确认开始」。

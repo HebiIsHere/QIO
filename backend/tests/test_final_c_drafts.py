@@ -142,6 +142,7 @@ def test_clear_response_is_real_stored_data(client: TestClient):
 
 def test_legacy_plain_dict_drafts_still_readable(client: TestClient, db_conn: sqlite3.Connection):
     """旧格式：drafts 列直接是 {key: text}（没有 rev 包装）。不得报错、不得清掉。"""
+    board_store.ensure_board(db_conn, board_id=BOARD)
     db_conn.execute(
         "INSERT INTO board_drafts (board_id, drafts, updated_at) VALUES (?, ?, ?)",
         (BOARD, json.dumps({"legacy_key": "旧格式草稿"}, ensure_ascii=False), models.now_iso()),
@@ -155,6 +156,7 @@ def test_legacy_plain_dict_drafts_still_readable(client: TestClient, db_conn: sq
 
 
 def test_write_upgrades_legacy_format(client: TestClient, db_conn: sqlite3.Connection):
+    board_store.ensure_board(db_conn, board_id=BOARD)
     db_conn.execute(
         "INSERT INTO board_drafts (board_id, drafts, updated_at) VALUES (?, ?, ?)",
         (BOARD, json.dumps({"k": "旧值"}, ensure_ascii=False), models.now_iso()),

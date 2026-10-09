@@ -497,10 +497,15 @@ def content_fingerprint(snapshot: dict) -> str:
         )
 
     def endpoint(cid: Any) -> str:
-        """链接端点 / 组成员的身份：卡片 id 优先；在快照里看不见时如实记录缺失。"""
-        label = str(cid)
-        card = cards.get(label)
-        return card_fp(card) if card is not None else f"unseen:{label}"
+        """链接端点 / 组成员的身份：**卡片 id（对象身份）**，不是正文。
+
+        修正（Lead 集成复核）：这里原来返回 card_fp(card)（kind + content + meta），
+        于是 A、B 两份**内容相同、身份不同**的材料被当成同一个端点 ——
+        A→C 换成 B→C 被判 duplicate（17 的核心反例）。身份必须按 id 记录；
+        正文不参与端点身份，卡片本身仍然按内容键参与（「撤回再加回同样内容」照旧去重）。
+        快照里看不见的 id 也按身份如实记录，不伪装成已消失。
+        """
+        return f"id:{str(cid)}"
 
     groups = sorted(
         json.dumps(

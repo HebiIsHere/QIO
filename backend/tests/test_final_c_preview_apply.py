@@ -88,11 +88,21 @@ def test_materials_move_from_old_group_into_new_group(db_conn):
 
 
 def test_old_group_keeps_its_other_members(db_conn):
-    _seed(db_conn, old_group_members=["A", "C_EXTRA"])
-    # 让 C_EXTRA 真存在
-    state = _state(db_conn)
-    state["cards"].append(_card("C_EXTRA", "file", "第三份材料", meta={"name": "c.pdf"}))
-    _save(db_conn, state)
+    # 修正（Lead）：C_EXTRA 必须**与组一起第一次保存**就存在 ——
+    # 先建组、再补卡片的话，normalize 会把当时不存在的成员从组里剔掉，
+    # 于是旧组只剩 A，用例测的就不是「保留其余成员」这件事了（夹具缺陷，不是产品缺陷）。
+    cards = [
+        _card("A", "file", "材料一", meta={"name": "a.pdf"}),
+        _card("B", "file", "材料二", meta={"name": "b.pdf"}),
+        _card("N", "text", "说明", checked=True),
+        _card("C_EXTRA", "file", "第三份材料", meta={"name": "c.pdf"}),
+    ]
+    old = models.new_group("旧组", default_name=False, members=["A", "C_EXTRA"])
+    old["id"] = "g_old"
+    _save(db_conn, {
+        "boardId": BOARD, "seq": 0, "updatedAt": models.now_iso(),
+        "cards": cards, "groups": [old], "links": [], "selection": [],
+    })
 
     done = _approve_and_done(db_conn, "［演示］把材料归为一组并给出对比摘要")
     state = _state(db_conn)
