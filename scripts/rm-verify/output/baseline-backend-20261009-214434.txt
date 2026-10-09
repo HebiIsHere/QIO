@@ -1,0 +1,531 @@
+﻿uv.exe : Uninstalled 1 package in 2ms
+At D:\qio-dev\qio-rm-f\scripts\rm-verify\run_all.ps1:40 char:25
++ ... $captured = & uv run --frozen pytest @files -q --no-header -p no:cach ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Uninstalled 1 package in 2ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Installed 1 package in 9ms
+FFFFFFFFFFF.FFFF                                                         [100%]
+================================== FAILURES ===================================
+_____ test_m04_extraction_keeps_attributes_the_candidate_did_not_mention ______
+
+db_conn = <sqlite3.Connection object at 0x000001FB786B34C0>
+
+    def test_m04_extraction_keeps_attributes_the_candidate_did_not_mention(db_conn):
+        svc = EntityCardService(db_conn)
+        card = svc.upsert(
+            _candidate(
+                name="我家的鹅",
+                attributes=[_attribute("状态", "生病"), _attribute("颜色", "白")],
+            )
+        )
+        # 新候选只提一个属性（真实提炼里很常见：这一轮只说了状态）
+        svc.upsert(_candidate(name="我家的鹅", attributes=[_attribute("状态", "康复")]))
+    
+        got = svc.get(card.id)
+        assert got is not None
+        attrs = _attrs(got)
+>       assert attrs.get("颜色") == "白", f"候选没提到的属性不得被删掉：{attrs}"
+E       AssertionError: 候选没提到的属性不得被删掉：{'状态': '康复'}
+E       assert None == '白'
+E        +  where None = <built-in method get of dict object at 0x000001FB78737EC0>('颜色')
+E        +    where <built-in method get of dict object at 0x000001FB78737EC0> = {'状态': '康复'}.get
+
+tests\test_rm_verify_m04_m05_memory.py:135: AssertionError
+____ test_m04_manual_edit_via_management_api_survives_released_extraction _____
+
+entity_client = <starlette.testclient.TestClient object at 0x000001FB18270AD0>
+db_conn = <sqlite3.Connection object at 0x000001FB78813100>
+
+    def test_m04_manual_edit_via_management_api_survives_released_extraction(
+        entity_client, db_conn
+    ):
+        """暂停提炼期间人工纠正 → 放行旧结果（提炼候选）后人工值仍保留（管理 API 入口）。"""
+        svc = EntityCardService(db_conn)
+        card = svc.upsert(_candidate(name="我家的鹅", attributes=[_attribute("状态", "生病")]))
+    
+        resp = entity_client.post(
+            f"/api/entities/{card.id}/revise",
+            json={"attributes": [{"key": "状态", "value": "已康复"}]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert _attrs(svc.get(card.id)).get("状态") == "已康复"
+    
+        # 放行旧提炼结果：仍然带着纠正之前的旧值
+        svc.upsert(_candidate(name="我家的鹅", attributes=[_attribute("状态", "生病")]))
+    
+        attrs = _attrs(svc.get(card.id))
+>       assert attrs.get("状态") == "已康复", (
+            f"人工纠正过的值不得被放行的旧提炼结果覆盖回来：{attrs}"
+        )
+E       AssertionError: 人工纠正过的值不得被放行的旧提炼结果覆盖回来：{'状态': '生病'}
+E       assert '生病' == '已康复'
+E         
+E         - 已康复
+E         + 生病
+
+tests\test_rm_verify_m04_m05_memory.py:157: AssertionError
+________ test_m04_user_deleted_attribute_is_not_revived_by_extraction _________
+
+entity_client = <starlette.testclient.TestClient object at 0x000001FB183B5350>
+db_conn = <sqlite3.Connection object at 0x000001FB181C14E0>
+
+    def test_m04_user_deleted_attribute_is_not_revived_by_extraction(entity_client, db_conn):
+        """用户删掉属性之后，普通提炼重放同一条候选不得把它加回来（纠正工具入口）。"""
+        svc = EntityCardService(db_conn)
+        card = svc.upsert(
+            _candidate(
+                name="我家的鹅",
+                attributes=[_attribute("状态", "生病"), _attribute("颜色", "白")],
+            )
+        )
+    
+        async def _delete() -> None:
+            from agent.tools.entity_tools import CorrectEntityTool
+    
+            result = await CorrectEntityTool(db_conn).run(
+                entity="我家的鹅", attribute_key="颜色", delete_attribute=True
+            )
+            assert result.ok, result
+    
+        asyncio.run(_delete())
+        assert "颜色" not in _attrs(svc.get(card.id))
+    
+        # 普通提炼重放旧候选（同一轮的结果迟到）
+        svc.upsert(
+            _candidate(
+                name="我家的鹅",
+                attributes=[_attribute("状态", "生病"), _attribute("颜色", "白")],
+            )
+        )
+    
+        attrs = _attrs(svc.get(card.id))
+>       assert "颜色" not in attrs, f"用户删除的属性和提炼不得被反转回来：{attrs}"
+E       AssertionError: 用户删除的属性和提炼不得被反转回来：{'状态': '生病', '颜色': '白'}
+E       assert '颜色' not in {'状态': '生病', '颜色': '白'}
+
+tests\test_rm_verify_m04_m05_memory.py:192: AssertionError
+_____ test_m05_entity_failure_leaves_a_retryable_task_and_only_it_retries _____
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_m05_entity_failure_leaves0')
+
+    def test_m05_entity_failure_leaves_a_retryable_task_and_only_it_retries(tmp_path: Path):
+        ctx = _app(tmp_path)
+        try:
+            sealed = _seal(ctx)
+            version = int(sealed.content_version or 0)
+    
+            # 第一次提炼：摘要与知识正常，实体卡输出结构错误（无法安全恢复）
+            bad = _FakeAdapter(entities={"entities": [{"name": 123}]})
+            asyncio.run(ctx.memory_lifecycle.drain_derived_tasks(bad, limit=5))
+    
+            summary_row = ctx.conn.execute(
+                "SELECT summary FROM fragments WHERE id = ?", (sealed.id,)
+            ).fetchone()
+            assert (summary_row["summary"] or "").strip(), "摘要这一轮应当已经成功"
+    
+            task = derived_tasks.task_for(
+                ctx.conn, derived_tasks.KIND_ENTITIES, sealed.id, version
+            )
+>           assert task is not None and task.state != derived_tasks.STATE_COMPLETED, (
+                "实体提炼失败必须留下一条可重试的实体任务，否则永远不会再试；"
+                f"task={task!r}"
+            )
+E           AssertionError: 实体提炼失败必须留下一条可重试的实体任务，否则永远不会再试；task=None
+E           assert (None is not None)
+
+tests\test_rm_verify_m04_m05_memory.py:218: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.memory_lifecycle:memory_lifecycle.py:447 entity_card_extraction_failed: 实体卡输出：字段 entities 无法安全恢复（1 项全部无效：entities[0].name 类型错误（期望字符串，拿到 int））
+____ test_m07_outer_cancel_cancels_the_inflight_request_and_leaves_nothing ____
+
+    async def test_m07_outer_cancel_cancels_the_inflight_request_and_leaves_nothing():
+        adapter = _GatedAdapter()
+        loop = AgentLoop(adapter, ToolRegistry(), EventBus())
+        task = asyncio.create_task(loop.run("你好"))
+        await asyncio.wait_for(adapter.entered.wait(), timeout=2)
+    
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    
+        leftovers = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+        for pending in leftovers:  # 清理，避免污染事件循环收尾
+            pending.cancel()
+    
+>       assert adapter.cancelled is True, "外层任务被取消时，内层模型请求也必须被取消（不是干等它返回）"
+E       AssertionError: 外层任务被取消时，内层模型请求也必须被取消（不是干等它返回）
+E       assert False is True
+E        +  where False = <test_rm_verify_m07_m09_m10_c01._GatedAdapter object at 0x000001FB184E0890>.cancelled
+
+tests\test_rm_verify_m07_m09_m10_c01.py:134: AssertionError
+_______ test_m09_exhausted_credential_budget_stops_the_next_model_call ________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_m09_exhausted_credential_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FB7876EC50>
+
+    def test_m09_exhausted_credential_budget_stops_the_next_model_call(tmp_path: Path, monkeypatch):
+        conn = connect(tmp_path / "budget.db")
+        apply_migrations(conn)
+        ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
+        ctx.credentials._kr = MemoryKeyring()
+        try:
+            # 余额恰好等于一次调用的用量（进 100 + 出 20）
+            ctx.credentials.create(
+                "k1",
+                "rmf-placeholder-secret",
+                tags=["main-loop"],
+                endpoint="https://api.example.com/v1",
+                default_model="m",
+                budget=120,
+                verify_state="verified",
+            )
+            ctx.credentials.set_default("k1")
+            adapter = _BudgetAdapter()
+    
+            async def _build_adapter():
+                return adapter
+    
+            monkeypatch.setattr(ctx, "build_adapter", _build_adapter)
+            topic = ctx.topics.nodes.create_topic("预算").id
+            asyncio.run(ctx.run_turn("你好", topic_id=topic))
+    
+>           assert adapter.calls == 1, (
+                "余额在第一次调用之后已经耗尽，不得再发起第二次模型调用；"
+                f"实际调用 {adapter.calls} 次"
+            )
+E           AssertionError: 余额在第一次调用之后已经耗尽，不得再发起第二次模型调用；实际调用 2 次
+E           assert 2 == 1
+E            +  where 2 = <test_rm_verify_m07_m09_m10_c01._BudgetAdapter object at 0x000001FB18437750>.calls
+
+tests\test_rm_verify_m07_m09_m10_c01.py:199: AssertionError
+______________ test_m10_parse_retry_responses_are_all_accounted _______________
+
+db_conn = <sqlite3.Connection object at 0x000001FB184DEE30>
+
+    def test_m10_parse_retry_responses_are_all_accounted(db_conn):
+        store = CredentialStore(db_conn, keyring_backend=MemoryKeyring())
+        store.create("k1", "rmf-placeholder-secret", tags=["main-loop"], verify_state="verified", budget=10**6)
+    
+        client = _ScriptedRawClient(
+            [
+                # 第一次响应：工具参数不是合法 JSON → 适配器内部重试
+                _raw_response(
+                    tool_calls=[_raw_tool_call("c1", "echo", "{不是合法 JSON")],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                ),
+                # 重试之后的最终响应
+                _raw_response(
+                    content="完成",
+                    usage={"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55},
+                ),
+            ]
+        )
+        adapter = NativeAdapter(client, "m")
+        adapter.key_id = "k1"
+        loop = AgentLoop(
+            adapter,
+            ToolRegistry(),
+            EventBus(),
+            usage_sink=credential_usage_sink(store, adapter),
+        )
+        result = asyncio.run(loop.run("hi"))
+    
+        assert result.final_content == "完成"
+        assert client.calls == 2, "这一轮必须真的发生了两次真实请求（解析重试）"
+        meta = store.get_metadata("k1")
+>       assert meta["budget_used"] == 165, (
+            "解析重试的每一次真实响应都必须记账（110 + 55 = 165），"
+            f"既不能漏记被重试丢弃的那次，也不能重复记：{meta}"
+        )
+E       AssertionError: 解析重试的每一次真实响应都必须记账（110 + 55 = 165），既不能漏记被重试丢弃的那次，也不能重复记：{'id': 'k1', 'version': 1, 'tags': ['main-loop'], 'endpoint': None, 'default_model': None, 'budget': 1000000.0, 'budget_used': 55.0, 'status': 'active', 'created_at': '2026-10-09T13:44:39.382913+00:00', 'updated_at': '2026-10-09T13:44:39.382913+00:00', 'last_used_at': '2026-10-09T13:44:39.388890+00:00', 'note': None, 'enabled': True, 'kind': None, 'verify_state': 'verified', 'verified_at': '2026-10-09T13:44:39.382913+00:00', 'verify_error': None, 'is_default': False, 'usage_input': 50.0, 'usage_output': 5.0}
+E       assert 55.0 == 165
+
+tests\test_rm_verify_m07_m09_m10_c01.py:245: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.adapters.native:native.py:138 tool-call parse retry 1/2
+__ test_c01_text_mode_second_request_has_no_tool_role_and_carries_the_result __
+
+    def test_c01_text_mode_second_request_has_no_tool_role_and_carries_the_result():
+        client = _TextRecordingClient(
+            [
+                json.dumps(
+                    {"tool_calls": [{"name": "rmf_echo", "arguments": {"text": "你好"}}]},
+                    ensure_ascii=False,
+                ),
+                "最终回答",
+            ]
+        )
+        adapter = TextAdapter(client, "fake-text")
+        loop = AgentLoop(adapter, _registry_with_case_tool(), EventBus())
+        result = asyncio.run(loop.run("请回显"))
+    
+        assert result.final_content == "最终回答"
+        assert client.calls == 2, "文本档必须先调用一次工具，再发第二次请求"
+    
+        second = client.seen[1]
+        roles = [str(m.get("role")) for m in second]
+>       assert "tool" not in roles, f"带 role=tool 但没有 tool_call_id 的消息不得下发：{second}"
+E       AssertionError: 带 role=tool 但没有 tool_call_id 的消息不得下发：[{'role': 'system', 'content': 'You are a tool-calling assistant in text mode, where tool calls are expressed as JSON. To call tools, respond with a single ```json block containing only this object:\n{"tool_calls": [{"name": "<tool_name>", "arguments": {}}]}\nCall independent tools together in one block. If no tool is needed, respond with plain text only; never mix prose and the JSON block. Optional: add "_qio" inside arguments to tell the user what this step is for; omit it to stay silent.\n\nAvailable tools (call by exact name only):\n- rmf_echo: 回显给定文本\n  arguments (JSON Schema): {"type": "object", "properties": {"text": {"type": "string"}, "_qio": {"type": "object", "description": "可选。用一句中文说明这次调用想让用户知道的意图：kind 取 announce（下一步准备做什么）/ progress（当前进展）/ warning（异常或限制）/ result（上一阶段结果）。不要复述工具名或参数；连续的低价值读取可以整批省略。不说明就省略整个字段（保持安静）。explanation 可选：若这次调用可能触发用户确认，说明为什么需要执行、准备做什么、可能影响什么。", "properties": {"kind": {"type": "string", "enum": ["announce", "progress", "warning", "result"]}, "text": {"type": "string", "description": "一句面向用户的意图说明"}, "explanation": {"type": "string", "description": "需要确认时说明原因与影响"}}, "additionalProperties": false}}, "required": ["text"]}'}, {'role': 'user', 'content': '请回显'}, {'role': 'assistant', 'content': '{"tool_calls": [{"name": "rmf_echo", "arguments": {"text": "你好"}}]}'}, {'role': 'tool', 'content': '回显结果:你好'}]
+E       assert 'tool' not in ['system', 'user', 'assistant', 'tool']
+
+tests\test_rm_verify_m07_m09_m10_c01.py:307: AssertionError
+_____ test_c01_text_mode_multi_tool_and_failed_result_keep_a_stable_order _____
+
+    def test_c01_text_mode_multi_tool_and_failed_result_keep_a_stable_order():
+        client = _TextRecordingClient(
+            [
+                json.dumps(
+                    {
+                        "tool_calls": [
+                            {"name": "rmf_echo", "arguments": {"text": "A"}},
+                            {"name": "rmf_ghost", "arguments": {}},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "收尾",
+            ]
+        )
+        adapter = TextAdapter(client, "fake-text")
+        loop = AgentLoop(adapter, _registry_with_case_tool(), EventBus())
+        result = asyncio.run(loop.run("一次调两个"))
+    
+        # 失败的工具会被后端事实核对补一句说明，模型正文仍在最前面
+        assert str(result.final_content).startswith("收尾")
+        second = client.seen[1]
+        roles = [str(m.get("role")) for m in second]
+>       assert "tool" not in roles, second
+E       AssertionError: [{'role': 'system', 'content': 'You are a tool-calling assistant in text mode, where tool calls are expressed as JSON....ost
+E         call_id: tc_12eb1be5
+E         状态: 失败（failed）
+E         错误类别: 代码异常（code_error）
+E         原因: 未注册的工具「rmf_ghost」（已注册：['rmf_echo']）
+E         是否可重试: 是"}]
+E       assert 'tool' not in ['system', 'user', 'assistant', 'tool', 'tool']
+
+tests\test_rm_verify_m07_m09_m10_c01.py:339: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.core.loop:loop.py:560 tool rmf_ghost failed: 未注册的工具「rmf_ghost」（已注册：['rmf_echo']）
+______ test_r01_second_context_does_not_interrupt_a_live_instances_turn _______
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r01_second_context_does_n0')
+
+    def test_r01_second_context_does_not_interrupt_a_live_instances_turn(tmp_path: Path):
+        """A 实例有一轮正在跑时启动 B（共享同一个库）：A 的记录必须保持 running，
+        并且 A 之后仍然能正常收口成 completed。"""
+        db_path = tmp_path / "shared.db"
+        conn_a = _freshen(db_path)
+        app_a = create_app(Settings(data_dir=tmp_path / "a"), conn_a)
+        conn_b: sqlite3.Connection | None = None
+        try:
+            with TestClient(app_a) as ca:
+                ctx_a = ca.app.state.ctx
+                held: list[asyncio.Event] = []
+    
+                async def arm() -> str:
+                    gate = asyncio.Event()
+                    held.append(gate)
+    
+                    async def blocked(ctx) -> None:  # noqa: ANN001 - 只做闸门
+                        await gate.wait()
+    
+                    ctx_a.turns.set_runner(blocked)
+                    return ctx_a.turns.submit("正在执行的消息").turn_id
+    
+                turn_id = ca.portal.call(arm)
+                started = ca.portal.call(_await_status, ctx_a.conn, turn_id, ("running",))
+                assert started == "running", f"这一轮应当已经在跑：{started}"
+    
+                # 第二个真实后端上下文（同一个临时库）
+                conn_b = connect(db_path)
+                ca.portal.call(create_app, Settings(data_dir=tmp_path / "b"), conn_b)
+    
+>               assert _journal_status(conn_a, turn_id) == "running", (
+                    "A 仍然是活跃实例，B 启动不得把 A 的运行中记录标成 interrupted；"
+                    f"实际 {_journal_status(conn_a, turn_id)!r}"
+                )
+E               AssertionError: A 仍然是活跃实例，B 启动不得把 A 的运行中记录标成 interrupted；实际 'interrupted'
+E               assert 'interrupted' == 'running'
+E                 
+E                 - running
+E                 + interrupted
+
+tests\test_rm_verify_r01_r04_r06.py:117: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.app:app.py:349 上一个进程留下了 1 条没有执行的用户消息（不会自动重放，等用户决定）
+_________ test_r04_journal_write_failure_is_not_reported_as_accepted __________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r04_journal_write_failure0')
+
+    def test_r04_journal_write_failure_is_not_reported_as_accepted(tmp_path: Path):
+        conn = _flaky_connect(tmp_path / "flaky.db")
+        apply_migrations(conn)
+        app = create_app(Settings(data_dir=tmp_path / "data"), conn)
+        ran: list[str] = []
+        try:
+            with TestClient(app) as client:
+                ctx = client.app.state.ctx
+    
+                async def counting(turn_ctx) -> None:  # noqa: ANN001 - 只计数
+                    ran.append(turn_ctx.turn_id)
+    
+                ctx.turns.set_runner(counting)
+    
+                first = client.post("/api/turns", json={"message": "第一条消息"})
+                assert first.status_code == 200, first.text
+                assert _wait_until(lambda: len(ran) == 1), "第一条消息应当被执行"
+    
+                conn.inject_journal_failure = True
+                second = client.post("/api/turns", json={"message": "第二条消息"})
+    
+>               assert second.status_code == 503, (
+                    "journal 写失败时不得装作已经受理：HTTP 必须是 503（非 200）；"
+                    f"实际 {second.status_code} / {second.text}"
+                )
+E               AssertionError: journal 写失败时不得装作已经受理：HTTP 必须是 503（非 200）；实际 200 / {"ok":true,"accepted":true,"turn_id":"turn_0d20feea2f15","status":"accepted","message":"第二条消息","topic_id":null}
+E               assert 200 == 503
+E                +  where 200 = <Response [200 OK]>.status_code
+
+tests\test_rm_verify_r01_r04_r06.py:189: AssertionError
+_____ test_r06_claimed_but_undispatched_record_is_not_permanently_hidden ______
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r06_claimed_but_undispatc0')
+
+    def test_r06_claimed_but_undispatched_record_is_not_permanently_hidden(tmp_path: Path):
+        """检查点二：抢占成功（recovered_at 已写）之后、mark_recovered 之前退出。
+    
+        这条记录既不能再被 recoverable() 选中（recovered_at 非空），又没有被标成
+        「已处理」（recovered_by 为空）—— 基线把它永久隐藏：界面看不到、重发 409。
+        要求：它必须仍然是一条可操作的恢复记录（可重发，或至少出现在权威状态里），
+        重发成功时关联不悬空。
+        """
+        conn = _freshen(tmp_path / "post.db")
+        journal = TurnJournal(conn)
+        journal.accepted(turn_id="turn_crash", message="抢占之后崩溃的消息")
+        journal.interrupt_stale()
+        assert journal.claim("turn_crash") is True
+        # 这里不调用 mark_recovered：模拟提交后、派发前进程退出
+        try:
+            app = create_app(Settings(data_dir=tmp_path / "data"), conn)
+            with TestClient(app) as client:
+                ran: list[str] = []
+                client.app.state.ctx.turns.set_runner(_counting_runner(ran))
+    
+                visible = [
+                    t["turn_id"]
+                    for t in client.get("/api/runtime/state").json()["interrupted_turns"]
+                ]
+                resp = client.post("/api/turns/turn_crash/resend")
+    
+>               assert resp.status_code == 200 or "turn_crash" in visible, (
+                    "抢占后崩溃的遗留记录不得被永久隐藏：必须可重发，或至少出现在"
+                    f"权威状态里（resend={resp.status_code}, interrupted_turns={visible}）"
+                )
+E               AssertionError: 抢占后崩溃的遗留记录不得被永久隐藏：必须可重发，或至少出现在权威状态里（resend=409, interrupted_turns=[]）
+E               assert (409 == 200 or 'turn_crash' in [])
+E                +  where 409 = <Response [409 Conflict]>.status_code
+
+tests\test_rm_verify_r01_r04_r06.py:274: AssertionError
+_ test_r02_second_correction_of_the_same_old_version_never_yields_two_actives _
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r02_second_correction_of_0')
+
+    def test_r02_second_correction_of_the_same_old_version_never_yields_two_actives(tmp_path: Path):
+        conn = connect(tmp_path / "kn.db")
+        apply_migrations(conn)
+        try:
+            old_id = _active_knowledge(conn, "用户喜欢咖啡")
+    
+            first = _correct(conn, old_id, "用户喜欢咖啡", "用户喜欢拿铁")
+            assert not isinstance(first, Exception) and first.ok, first
+    
+            # 第二次纠正的匹配来源仍是**旧快照**（模型看到的那条还没更新的版本）
+            second = _correct(conn, old_id, "用户喜欢咖啡", "用户喜欢美式")
+    
+            actives = _active_in_chain(conn, old_id)
+>           assert len(actives) == 1, (
+                "同一个版本链只能有一个 active：第二次纠正旧版本不得再产生一个 active；"
+                f"second={second!r}, actives={sorted(actives)}"
+            )
+E           AssertionError: 同一个版本链只能有一个 active：第二次纠正旧版本不得再产生一个 active；second=ToolResult(ok=True, content='已修正知识：「用户喜欢咖啡」→「用户喜欢美式」', error=None, category=None, recoverable=None, facts=None), actives=['kn_4e886af645b6', 'kn_b998ad2bc3fd']
+E           assert 2 == 1
+E            +  where 2 = len({'kn_4e886af645b6', 'kn_b998ad2bc3fd'})
+
+tests\test_rm_verify_r02_r03_knowledge.py:112: AssertionError
+____ test_r02_two_connections_correcting_the_same_version_keep_one_active _____
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r02_two_connections_corre0')
+
+    def test_r02_two_connections_correcting_the_same_version_keep_one_active(tmp_path: Path):
+        db_path = tmp_path / "kn2.db"
+        conn1 = connect(db_path)
+        apply_migrations(conn1)
+        conn2 = connect(db_path)
+        try:
+            old_id = _active_knowledge(conn1, "用户住在杭州")
+    
+            first = _correct(conn1, old_id, "用户住在杭州", "用户住在南京")
+            second = _correct(conn2, old_id, "用户住在杭州", "用户住在苏州")
+    
+            actives = _active_in_chain(conn1, old_id)
+>           assert len(actives) == 1, (
+                "两个连接并发纠正同一个版本时，只能有一个有效后继（另一个必须明确冲突）；"
+                f"first={first!r}, second={second!r}, actives={sorted(actives)}"
+            )
+E           AssertionError: 两个连接并发纠正同一个版本时，只能有一个有效后继（另一个必须明确冲突）；first=ToolResult(ok=True, content='已修正知识：「用户住在杭州」→「用户住在南京」', error=None, category=None, recoverable=None, facts=None), second=ToolResult(ok=True, content='已修正知识：「用户住在杭州」→「用户住在苏州」', error=None, category=None, recoverable=None, facts=None), actives=['kn_420c2d658235', 'kn_eb75e77d6563']
+E           assert 2 == 1
+E            +  where 2 = len({'kn_420c2d658235', 'kn_eb75e77d6563'})
+
+tests\test_rm_verify_r02_r03_knowledge.py:132: AssertionError
+___________ test_r03_failed_activation_keeps_the_old_version_active ___________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1662/test_r03_failed_activation_kee0')
+
+    def test_r03_failed_activation_keeps_the_old_version_active(tmp_path: Path):
+        conn = _flaky_connect(tmp_path / "kn3.db")
+        apply_migrations(conn)
+        try:
+            old_id = _active_knowledge(conn, "用户的猫叫做球球")
+    
+            conn.inject_activation_failure = True
+            failed = _correct(conn, old_id, "用户的猫叫做球球", "用户的猫叫做团团")
+    
+            actives = _active_in_chain(conn, old_id)
+>           assert actives == {old_id}, (
+                "新版本激活写失败时必须整体回滚：旧版本仍然是唯一的 active；"
+                f"failed={failed!r}, actives={sorted(actives)}"
+            )
+E           AssertionError: 新版本激活写失败时必须整体回滚：旧版本仍然是唯一的 active；failed=OperationalError('disk I/O error (injected by rm-f)'), actives=[]
+E           assert set() == {'kn_38ef9e16e6cf'}
+E             
+E             Extra items in the right set:
+E             'kn_38ef9e16e6cf'
+E             Use -v to get more diff
+
+tests\test_rm_verify_r02_r03_knowledge.py:189: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-rm-f\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_extraction_keeps_attributes_the_candidate_did_not_mention
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_manual_edit_via_management_api_survives_released_extraction
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_user_deleted_attribute_is_not_revived_by_extraction
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m05_entity_failure_leaves_a_retryable_task_and_only_it_retries
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m07_outer_cancel_cancels_the_inflight_request_and_leaves_nothing
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m09_exhausted_credential_budget_stops_the_next_model_call
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m10_parse_retry_responses_are_all_accounted
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_c01_text_mode_second_request_has_no_tool_role_and_carries_the_result
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_c01_text_mode_multi_tool_and_failed_result_keep_a_stable_order
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r01_second_context_does_not_interrupt_a_live_instances_turn
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r04_journal_write_failure_is_not_reported_as_accepted
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r06_claimed_but_undispatched_record_is_not_permanently_hidden
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r02_second_correction_of_the_same_old_version_never_yields_two_actives
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r02_two_connections_correcting_the_same_version_keep_one_active
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r03_failed_activation_keeps_the_old_version_active
+
+[rm-verify] pytest exit code = 1
