@@ -8,12 +8,14 @@ import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
 import type { MessageAttachment, StreamMessage } from "../stores/session";
 import {
+  addPendingAttachment,
   pickBrowserFile,
   pickLocalPath,
   prepareAttachment,
   relocateAttachment,
   retryAttachment,
   uploadAttachment,
+  waitUntilSettled,
   type AttachmentRef,
 } from "../services/attachments";
 
@@ -285,29 +287,41 @@ async function relocateOne(id: string) {
 
 /**
  * 「重新上传」（契约 §1.4，浏览器字节上传）：QIO 手里没有内容、也没有原地址，
- * 只能由用户重新给一次文件；成功后是**新的**附件，旧行的失败原因原样保留（不抹掉事实）。
+ * 只能由用户重新给一次文件。
+ *
+ * 结果归属（F04）：新附件进入**发起操作话题**的待发送附件列表（显示可使用入口并持久化），
+ * 原历史记录与旧 turn 的附件归属**保持不变** —— 不只是在后端建一条记录 + 弹一句成功。
  */
 async function reuploadOne(id: string) {
   const ref = attachmentChips.value.find((a) => a.id === id);
   if (!ref || attachBusyId.value) return;
   attachBusyId.value = id;
   attachNotice.value = "";
+  // 发起话题：优先当前话题，退化才用附件自身记录的话题事实
+  const topicId = session.currentTopicId ?? ref.topicId ?? null;
   try {
+    let created: AttachmentRef | null = null;
     const path = await pickLocalPath();
     if (path) {
-      const created = await prepareAttachment(path, {
-        topicId: ref.topicId ?? null,
-        name: ref.name,
-      });
-      attachNotice.value =
-        `已重新登记为新的附件：${created.name}；「${ref.name}」QIO 无法从原地址恢复，失败原因仍保留在上面`;
-      return;
+      created = await prepareAttachment(path, { topicId, name: ref.name });
+    } else {
+      const file = await pickBrowserFile();
+      if (!file) return; // 用户取消：什么也没发生，不假装成功
+      created = await uploadAttachment(file, { topicId });
     }
-    const file = await pickBrowserFile();
-    if (!file) return; // 用户取消：什么也没发生，不假装成功
-    const created = await uploadAttachment(file, { topicId: ref.topicId ?? null });
+    if (!created) return;
+    // 成功创建后立即进入发起话题的待发送列表（持久化 + 广播给 Composer）
+    addPendingAttachment(topicId, created);
     attachNotice.value =
-      `已重新上传为新的附件：${created.name}；「${ref.name}」QIO 无法从原地址恢复，失败原因仍保留在上面`;
+      `已重新上传并加入待发送附件：${created.name}；原来那条「${ref.name}」的历史记录保留（QIO 无法从原地址恢复）`;
+    // 还在后台准备的：继续跟进，就绪后更新待发送列表里的同一条
+    if (created.state === "prepared") {
+      void waitUntilSettled(created)
+        .then((settled) => addPendingAttachment(topicId, settled))
+        .catch(() => {
+          /* 状态没跟到：待发列表里的 chip 会显示准备中，不谎报成功 */
+        });
+    }
   } catch (e) {
     attachNotice.value = `重新上传没有成功：${(e as Error).message}（可以重试）`;
   } finally {
