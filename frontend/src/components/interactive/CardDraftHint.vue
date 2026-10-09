@@ -12,7 +12,9 @@
   - 服务器草稿保存结果（draftStates）；
   - **本机恢复记录**的写入结果（draftLocalStates）——服务器已经成功时，
     绝不把它显示成服务器保存失败；只有服务器还没保存成功时，它才真的影响恢复能力；
-  - 清除（§11.2）：服务器确认之前说「正在清除 / 清除没同步成功」，不说「已清除」。
+  - 清除（§11.2）：服务器确认之前说「正在清除 / 清除没同步成功」，不说「已清除」；
+  - **本机副本真的没删掉**（条目 13）：明确选择或清空草稿之后本机那份没删掉时，
+    如实说明「重开后可能又出现」并给重试；版本守卫有意保留（不算失败）与「本来就没有」都不显示。
 
   用法（BoardCard.vue 的编辑区里渲染任意一处即可）：
     <CardDraftHint :card-id="card.id" />        // 键按 cardDraftKey(card.id) 推导
@@ -49,6 +51,28 @@ const removal = computed(() => store.draftRemovalStateFor(key.value));
 const conflict = computed(() => store.draftConflictFor(cardId.value));
 
 /**
+ * 本机副本「真的没删掉」的原因（条目 13）：由 store 提供 draftLocalRemovalErrorFor。
+ *
+ * 按可选能力读取：store 与组件由不同人接线、合并有先后，缺这个读取器时只是不显示这条提示，
+ * 其余提示与重试照常 —— 不会因为版本不齐让整块提示失效。
+ * （Lead 的 store 接线合并后可改成直接调用。）
+ */
+function readLocalRemovalError(): string | null {
+  const read = (store as { draftLocalRemovalErrorFor?: (id: string) => string | null }).draftLocalRemovalErrorFor;
+  if (typeof read !== "function") return null;
+  return read.call(store, cardId.value) || null;
+}
+const localRemovalError = computed(() => readLocalRemovalError());
+/** 别的分支已经给了重试入口（同一次重试会一并补做本机删除），不重复放按钮 */
+const hasOtherRetry = computed(
+  () =>
+    removal.value.status === "error" ||
+    Boolean(conflict.value) ||
+    state.value.status === "error" ||
+    localAtRisk.value,
+);
+
+/**
  * 本机恢复副本失败**且服务器还没保存成功**时才提示：
  * 这时「关掉页面还能不能恢复」真的受影响，必须如实说明并提供重试（§11.3）。
  * 服务器已经保存成功时，恢复能力由服务器提供（重新打开会重新拉取草稿），
@@ -60,13 +84,18 @@ const localAtRisk = computed(() => !local.value.ok && state.value.status !== "sa
 const visible = computed(
   () =>
     Boolean(key.value) &&
-    (Boolean(conflict.value) || removal.value.status !== "idle" || state.value.status !== "idle" || localAtRisk.value),
+    (Boolean(conflict.value) ||
+      removal.value.status !== "idle" ||
+      state.value.status !== "idle" ||
+      localAtRisk.value ||
+      Boolean(localRemovalError.value)),
 );
 const isError = computed(
   () =>
     state.value.status === "error" ||
     removal.value.status === "error" ||
     localAtRisk.value ||
+    Boolean(localRemovalError.value) ||
     Boolean(conflict.value),
 );
 
@@ -157,6 +186,23 @@ function choose(choice: "local" | "server") {
     <span v-else-if="state.status === 'saving'" class="msg mono">草稿保存中…</span>
     <span v-else-if="state.status === 'saved'" class="msg mono">草稿已保存</span>
     <span v-else class="msg mono">草稿待保存</span>
+
+    <!-- 本机副本真的没删掉（条目 13）：说清后果并给重试；与「清除没同步」是两件事，各自说清 -->
+    <template v-if="localRemovalError">
+      <span class="msg" data-im="card-draft-local-removal-error">
+        这份本机副本没能删掉，重开后可能又出现：{{ localRemovalError }}
+      </span>
+      <button
+        v-if="!hasOtherRetry"
+        class="retry"
+        type="button"
+        data-im="card-draft-local-removal-retry"
+        :disabled="retrying"
+        @click="retry"
+      >
+        {{ retrying ? "重试中…" : "重试" }}
+      </button>
+    </template>
   </p>
 </template>
 
