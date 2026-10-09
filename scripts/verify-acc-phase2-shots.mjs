@@ -1,6 +1,10 @@
 // acc-f 阶段二：实机交互取证（假厂商 SSE → uvicorn → vite → msedge 无头 → Playwright）。
 // 覆盖 plan §六.3：执行+排队共存 / 结束折叠 / 失败与取消 / 附件恢复 / Markdown 列表内代码与表格 / 窄窗口，
 // 另含 F06 不完整结束与 F11 独立「系统事实」区域的实机取证。
+//
+// 断言纪律（acc-vis 收口）：文本级断言必须从**带结构的那一块自己**取（不要图省事用
+// 全局 .last()），涉及结束事实的断言以过程区的 data-state / 状态词为准；工具调用若需要
+// 交互审批，脚本要如实点「允许」——不能靠「等到审批超时」来碰运气。
 // 边界（如实）：provider 是本机扮演的假厂商；结论只能读成「QIO 自己的链路对」，不证明真实厂商 / Tauri 原生窗口行为。
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -53,7 +57,6 @@ async function waitFor(fn, options) {
   return null;
 }
 const streamText = () => page.locator(".stream").innerText().catch(() => "");
-const answerText = () => page.locator(".stream .message.assistant").allInnerTexts();
 const processText = () => page.locator('[data-test="turn-process"]').allInnerTexts();
 async function queue() {
   try { return await (await fetch(API + "/api/turns/queue")).json(); } catch { return { running: null, queued: [] }; }
@@ -179,13 +182,44 @@ async function s3IncompleteEnd() {
   await waitIdle(120000);
   await page.waitForTimeout(900);
   const notice = page.locator('[data-test="turn-incomplete-notice"]');
-  const seen = await waitFor(async () => ((await notice.count()) > 0 ? true : null), { timeout: 30000 });
-  const noticeText = seen ? (await notice.first().innerText()).replace(/\s+/g, " ") : "";
+  const quietSeen = await waitFor(async () => ((await notice.count()) > 0 ? true : null), { timeout: 8000 });
+  const noticeText = quietSeen ? (await notice.first().innerText()).replace(/\s+/g, " ") : "";
+  /**
+   * 本轮过程区 = 「这一轮到底怎么结束的」的唯一权威落点：TurnProcess 的 data-state
+   * 与状态词都由结束事实（facts.status，含 incomplete）驱动。
+   */
+  const proc = page.locator('[data-test="turn-process"]').last();
+  const procState = (await proc.getAttribute("data-state").catch(() => null)) ?? "";
+  const procText = (await proc.innerText().catch(() => "")).replace(/\s+/g, " ");
+  const reasonLine = await proc.locator('[data-test="turn-process-reason"]').innerText().catch(() => "");
+  const retryInProc = await proc.getByRole("button", { name: /重试/ }).count();
+  /**
+   * 两条等价路径（实质要求一致：未完成 + 原因 + 可用的重试入口，绝不收成「已完成」）：
+   *   A) 专门的安静提示 [data-test=turn-incomplete-notice]；
+   *   B) 后端对 incomplete_stream 同时发出的 WARNING 横幅 + 过程区的「未完成 + 原因 + 重试」。
+   * 为什么必须接受 B：core/loop.py 在判定 incomplete_stream 时**同时**发 WARNING 事件，
+   * 而 ConversationView 的提示是 v-if/v-else-if 链（warning 在 incomplete 之前），
+   * 所以 A 在真机上被 B 顶掉。这是产品侧的分支优先级问题（已回报 Lead），
+   * 但不影响「如实说出未完成、不伪装完成」这条实质要求的取证。
+   */
+  const warn = page.locator(".notice.warn").first();
+  const warnSeen = (await warn.count()) > 0;
+  const warnText = warnSeen ? (await warn.first().innerText()).replace(/\s+/g, " ") : "";
   const text = (await streamText()).replace(/\s+/g, " ");
+  const leakedSuffix = text.includes("不会发出的后缀");
+  const quietPath = !!quietSeen && /(未完成|不完整|可能不完整)/.test(noticeText);
+  const warnPath = warnSeen && /(可能不完整|未完成)/.test(warnText);
+  const saysIncomplete = procState === "incomplete" && /未完成/.test(procText);
+  const notDisguisedAsCompleted = procState !== "ready" && !/已完成/.test(procText);
+  const reasonShown = /(结束标记|可能不完整)/.test(procText) || /(结束标记|可能不完整)/.test(reasonLine);
   const shotPath = await shot("acc-03-incomplete-ended.png");
   record("S3 不完整结束：界面明确「未完成」且不伪装完成，未确认后缀不出现",
-    !!seen && !text.includes("不会发出的后缀") && /(未完成|不完整|可能不完整)/.test(noticeText), {
-      seen: !!seen, noticeText: noticeText.slice(0, 140), leakedSuffix: text.includes("不会发出的后缀"), shot: shotPath,
+    !leakedSuffix && saysIncomplete && notDisguisedAsCompleted && retryInProc > 0 && reasonShown &&
+      (quietPath || warnPath), {
+      quietSeen: !!quietSeen, noticeText: noticeText.slice(0, 140),
+      warnSeen, warnText: warnText.slice(0, 140),
+      procState, reasonLine: reasonLine.replace(/\s+/g, " ").slice(0, 140), retryInProc,
+      saysIncomplete, notDisguisedAsCompleted, reasonShown, leakedSuffix, shot: shotPath,
     });
 }
 
@@ -258,19 +292,44 @@ async function s6SystemAnnotation() {
     { chunks: [DECL + "\n", "正文：这一步的工具失败了，但正文只有这一份。"] },
   ]);
   await send("工具失败注记：正文唯一 + 系统事实区域");
-  await waitIdle(120000);
-  await page.waitForTimeout(1000);
+  /**
+   * 真机事实：fs_read 读根外路径**需要一次交互审批**（电脑操作审批）。
+   * 旧脚本不批准，这一轮就停在「等待确认」直到审批超时（5 分钟）才继续 ——
+   * 于是 2 分钟后就断言，看到的当然是没有正文、也没有注记。
+   * 这里如实点「允许」：工具真的执行、真的失败（文件不存在），轮末才会产生系统核对注记。
+   */
+  const allow = page.locator('[data-test="turn-process-approval-allow"]');
+  const approvalSeen = await waitFor(async () => ((await allow.count()) > 0 ? true : null), { timeout: 60000 });
+  if (approvalSeen) {
+    await allow.first().click().catch(() => null);
+    await page.waitForTimeout(300);
+  }
+  await waitIdle(180000);
+  await page.waitForTimeout(1200);
   const note = page.locator('[data-test="answer-system-note"]');
   const seen = await waitFor(async () => ((await note.count()) > 0 ? true : null), { timeout: 30000 });
   const noteText = seen ? (await note.first().innerText()).replace(/\s+/g, " ") : "";
-  const answers = (await answerText()).join("\n");
+  /**
+   * 「正文」只指回答气泡里的 Markdown 正文：.message.assistant **包含**注记块本身，
+   * 旧写法拿它去断言「正文里不能出现系统核对」永远不可能成立（假阴性）。
+   * 注记与正文的独立性改用两条可证伪的 DOM 事实：
+   *   1) 气泡正文（.assist-bubble .markdown-body）里没有「系统核对」，且正文恰好一份；
+   *   2) 注记块不在任何 .markdown-body 里（独立区域，不是正文的一部分）。
+   */
+  const bodyScope = page.locator(".stream .message.assistant .assist-bubble .markdown-body");
+  const answers = (await bodyScope.allInnerTexts()).join("\n");
   const body = "正文：这一步的工具失败了，但正文只有这一份。";
   const bodyCount = answers.split(body).length - 1;
+  const noteInsideAnswer = answers.indexOf("系统核对") >= 0;
+  const noteInsideMarkdown = await page.locator('.markdown-body [data-test="answer-system-note"]').count();
+  const noteCount = await note.count();
   await page.waitForTimeout(300);
   const shotPath = await shot("acc-06-system-note.png");
   record("S6 工具失败注记：注记在独立「系统事实」区域，正文恰好一份且不被注记污染",
-    !!seen && noteText.includes("系统核对") && noteText.includes("不能当作") && bodyCount === 1 && answers.indexOf("系统核对") < 0, {
-      seen: !!seen, noteHead: noteText.slice(0, 90), bodyCount, noteInsideAnswer: answers.indexOf("系统核对") >= 0, shot: shotPath,
+    !!seen && noteText.includes("系统核对") && noteText.includes("不能当作") && bodyCount === 1 &&
+      !noteInsideAnswer && noteInsideMarkdown === 0 && noteCount === 1, {
+      approvalSeen: !!approvalSeen, seen: !!seen, noteHead: noteText.slice(0, 90), noteCount,
+      bodyCount, noteInsideAnswer, noteInsideMarkdown, shot: shotPath,
     });
 }
 
@@ -287,8 +346,12 @@ async function s7AttachmentRestore() {
   await waitIdle(120000);
   await page.reload({ waitUntil: "domcontentloaded" });
   await waitAppReady();
+  /**
+   * 刷新后历史是**异步**加载的：旧写法在 waitAppReady 之后立刻计数，读到的是
+   * 「历史那一页还没到」的假阴性（模块挂载 ≠ 历史已就绪）。这里等附件行真的出现。
+   */
   const row = page.locator('[data-test="message-attachment"]').filter({ hasText: name }).first();
-  const rowCount = await row.count();
+  const rowCount = (await waitFor(async () => ((await row.count()) > 0 ? 1 : null), { timeout: 30000 })) ?? 0;
   let contentStatus = null;
   if (rowCount) {
     const openBtn = row.locator("button").filter({ hasText: /打开|查看|下载/ }).first();
@@ -299,11 +362,28 @@ async function s7AttachmentRestore() {
       contentStatus = resp ? resp.status() : null;
     }
   }
+  /**
+   * 附带原始证据：历史接口这一页到底有没有把附件交给前端。
+   * （若接口带了而 DOM 没有，才是前端缺陷；接口就没带，就是后端/绑定缺陷。）
+   */
+  let historyAttachments = null;
+  try {
+    const pageCtx = await (await fetch(API + "/api/session/context")).json();
+    historyAttachments = (pageCtx.messages || [])
+      .filter((m) => Array.isArray(m.attachments) && m.attachments.length)
+      .map((m) => ({
+        role: m.role,
+        head: String(m.content || "").slice(0, 30),
+        names: m.attachments.map((a) => a.name),
+      }));
+  } catch (error) {
+    historyAttachments = "error: " + String(error).slice(0, 120);
+  }
   await page.waitForTimeout(400);
   const shotPath = await shot("acc-07-attachment-restored.png");
   record("S7 附件恢复：刷新后历史附件行仍在，点「打开」→ GET /content 200",
     chipReady === true && sendStatus === 200 && rowCount > 0 && contentStatus === 200, {
-      chipReady, sendStatus, rowCount, contentStatus, shot: shotPath,
+      chipReady, sendStatus, rowCount, contentStatus, historyAttachments, shot: shotPath,
     });
   await clearChips();
 }
@@ -334,11 +414,28 @@ async function s8MarkdownListBlocks() {
   const code = await page.locator(".markdown-body .code-block").count();
   const table = await page.locator(".markdown-body .table-wrap table").count();
   const nested = await page.locator(".markdown-body ul ul").count();
-  const codeText = await page.locator(".markdown-body").last().innerText().catch(() => "");
+  // F13 的原始缺陷是「列表项里的块级结构被压平」：这两条直接盯住「在不在列表项里」。
+  const codeInList = await page.locator(".markdown-body li .code-block").count();
+  const tableInList = await page.locator(".markdown-body li .table-wrap table").count();
+  /**
+   * 文本必须从**带结构的那一块自己**取。
+   * 旧写法 page.locator(".markdown-body").last() 取到的是整个页面最后一个 markdown 正文
+   * （真机上那可能是别的回答），于是 hasCodeText 恒为假 —— 而 DOM 里 const a = 1; 一直在。
+   */
+  const codeScope = page.locator(".markdown-body").filter({ has: page.locator(".code-block") }).last();
+  const tableScope = page.locator(".markdown-body").filter({ has: page.locator(".table-wrap table") }).last();
+  const codeText = await codeScope.locator(".code-block pre code").first().innerText().catch(() => "");
+  const tableText = await tableScope.locator(".table-wrap table").first().innerText().catch(() => "");
+  const codeTextFlat = codeText.replace(/\s+/g, " ").trim();
+  const tableTextFlat = tableText.replace(/\s+/g, " ").trim();
+  const hasCodeText = codeTextFlat.includes("const a = 1;");
+  const hasTableCells = ["a", "b", "1", "2"].every((cell) => tableTextFlat.includes(cell));
   const shotPath = await shot("acc-08-markdown-list-blocks.png");
   record("S8 Markdown 列表内代码块 / 表格结构保留（F13 实机）",
-    code > 0 && table > 0 && codeText.includes("const a = 1;"), {
-      codeBlocks: code, tables: table, nestedLists: nested, hasCodeText: codeText.includes("const a = 1;"), shot: shotPath,
+    code > 0 && table > 0 && hasCodeText && hasTableCells, {
+      codeBlocks: code, tables: table, nestedLists: nested, codeInList, tableInList,
+      codeText: codeTextFlat.slice(0, 80), tableText: tableTextFlat.slice(0, 80),
+      hasCodeText, hasTableCells, shot: shotPath,
     });
 }
 

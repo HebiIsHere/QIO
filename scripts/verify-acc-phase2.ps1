@@ -72,10 +72,17 @@ try {
   $env:QIO_E2E_DATA = $DataDir
   $env:QIO_E2E_WORKSPACE = (Join-Path $DataDir "workspace")
   Push-Location $root
-  $shotOut = (& node (Join-Path $root "scripts\verify-acc-phase2-shots.mjs") 2>&1 | Out-String)
+  # 直接透传 node 的逐行输出（并留一份 console 日志）：脚本中途中断时也能看到卡在哪一层。
+  # 注意：Windows PowerShell 5.1 的 Tee-Object 没有 -Encoding，只能写 UTF-16 —— 日志进版本库后
+  # 会被当成二进制、无法直接读。所以这里改为逐行 Add-Content -Encoding UTF8：仍然流式，且是可读文本。
+  $shotLog = Join-Path $shots "shots-console.log"
+  Remove-Item -LiteralPath $shotLog -Force -ErrorAction SilentlyContinue
+  & node (Join-Path $root "scripts\verify-acc-phase2-shots.mjs") 2>&1 | ForEach-Object {
+    Write-Output $_
+    Add-Content -LiteralPath $shotLog -Value $_ -Encoding UTF8
+  }
   $shotExit = $LASTEXITCODE
   Pop-Location
-  Write-Output $shotOut
   if ($shotExit -ne 0) { $failures += "实机取证有失败项（见 " + (Join-Path $shots "summary.json") + "）" }
   Get-ChildItem $shots -Filter *.png | Sort-Object Name | ForEach-Object { Write-Output ("shot: " + $_.Name + " (" + $_.Length + " bytes)") }
 }
