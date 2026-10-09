@@ -369,9 +369,12 @@ export interface StreamMessage {
  * （工厂只提供 api 对象），import 具体类会让那些 mock 变成 undefined 而炸掉。
  */
 function isSendReceiptUnknown(e: unknown): boolean {
-  const name = (e as { name?: unknown } | null)?.name;
-  if (name === "ApiTimeoutError") return true;
-  return e instanceof TypeError;
+  // Lead 裁决（契约 5）：没有响应就没有结论 —— 判定口径是 sendErrorStatus，
+  // 而不是错误类型：ApiTimeoutError / TypeError / 任何没有 status 的失败
+  // 都属于「没拿到发送回执，受理情况未知」（契约：只有明确 4xx 才撤回为未
+  // 发送草稿）。带 status 的错误（ApiError）是后端明确给出的结论，不算。
+  const status = sendErrorStatus(e);
+  return !(status !== null && status >= 400 && status < 500);
 }
 
 /** 错误携带的 HTTP 状态码（ApiError）；不携带（普通 Error / TypeError）→ null。 */

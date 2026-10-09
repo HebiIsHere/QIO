@@ -1,9 +1,9 @@
 {
   "fs_read_denied": true,
   "fs_read_error": "拒绝访问该路径（敏感路径）",
-  "run_verdict": "auto",
-  "run_risk": "low",
-  "run_verdict_not_auto": false,
+  "run_verdict": "deny",
+  "run_risk": "high",
+  "run_verdict_not_auto": true,
   "run_executed": false,
   "run_marker_leaked": false,
   "cat_available": false,

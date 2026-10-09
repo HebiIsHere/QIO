@@ -1,7 +1,7 @@
 {
   "child_pid_started": true,
   "cancelled_error": true,
-  "child_gone_after_cancel": false,
-  "grandchild_gone_after_cancel": false,
+  "child_gone_after_cancel": true,
+  "grandchild_gone_after_cancel": true,
   "decoy_alive": true
 }

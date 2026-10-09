@@ -460,10 +460,12 @@ async def _run_sleeper_tree_probe(label: str, use_cancel: bool) -> dict:
             gc_pid = _read_pid(gc_pid_file)
             child_alive_immediately = pid_alive(child_pid)
             start = time.perf_counter()
-            gone_within = await _await_poll_gone(
-                lambda: pid_alive(child_pid) or pid_alive(gc_pid), 1.5
-            )
+            gone_poll = lambda: pid_alive(child_pid) or pid_alive(gc_pid)
+            gone_within = await _await_poll_gone(gone_poll, 1.5)
             elapsed = round(time.perf_counter() - start, 3)
+            # 整树宽窗口（5s）：taskkill 的实际耗时受并行负载影响。
+            started_wide = time.perf_counter()
+            gone_wide = await _await_poll_gone(gone_poll, 5.0 - elapsed)
             ev = {
                 "tool_ok": bool(result.ok),
                 "tool_failed": not result.ok,
@@ -471,6 +473,8 @@ async def _run_sleeper_tree_probe(label: str, use_cancel: bool) -> dict:
                 "child_pid_started": child_pid > 0,
                 "child_alive_immediately": child_alive_immediately,
                 "child_gone_within_1s": bool(gone_within and elapsed <= 1.0),
+                "child_gone_within_5s": bool(gone_wide),
+                "probe_wait_seconds_wide": 5.0,
                 "grandchild_gone": not pid_alive(gc_pid),
                 "decoy_alive": pid_alive(decoy_pid),
                 "probe_wait_seconds": elapsed,
@@ -712,6 +716,7 @@ async def _probe_responsiveness_gate(label: str = "responsiveness_event_loop_gat
     ev["sync_route_blocks_loop"] = len(beats_in_window0) == 0
     ev["sync_route_beats_in_window"] = len(beats_in_window0)
     ev["sync_route_window_secs"] = round(t1 - t0, 3)
+    n0 = len(records)  # 此后的记录才属于 route_async 段（同步基线在主线程产生过 embed 记录）
 
     # 期望主体：异步路由不得阻塞事件循环。
     if ev["route_async_exists"]:
@@ -721,8 +726,9 @@ async def _probe_responsiveness_gate(label: str = "responsiveness_event_loop_gat
         ev["route_async_blocks_loop"] = m["beats_in_window"] == 0
         ev["route_async_beats_in_window"] = m["beats_in_window"]
         ev["route_async_window_secs"] = m["window_secs"]
+        async_records = records[n0:]
         ev["embed_thread_id"] = next(
-            (r["thread_id"] for r in records if r["op"] == "embed_texts"), 0
+            (r["thread_id"] for r in async_records if r["op"] == "embed_texts"), 0
         )
     ev["embed_off_main_thread"] = bool(
         ev.get("embed_thread_id") and ev["embed_thread_id"] != main_tid

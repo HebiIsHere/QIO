@@ -246,7 +246,8 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
   });
 
   it("发送失败：草稿回到输入框，且不留下「已经发出去」的假消息", async () => {
-    mocks.sendTurn.mockRejectedValueOnce(new Error("network down"));
+    // 契约 5：明确拒绝 = 后端 4xx；无响应失败走「正在确认」（不撤草稿）。
+    mocks.sendTurn.mockRejectedValueOnce(Object.assign(new Error("network down"), { status: 400 }));
     const { w } = await mountComposer();
     await w.find("textarea").setValue("这条会失败");
     await w.find(".send-btn").trigger("click");
@@ -254,7 +255,7 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
     await nextTick();
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("这条会失败");
     const session = useSessionStore();
-    expect(session.lastError).toContain("network down");
+    expect(session.lastError).toContain("被拒绝");
     expect(session.messages.some((m) => m.content === "这条会失败")).toBe(false);
     w.unmount();
   });

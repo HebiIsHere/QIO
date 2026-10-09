@@ -41,11 +41,16 @@ async def test_sr_verify_timeout_kills_process_tree_and_spares_decoy():
     ev = await probes.probe_timeout_tree(label="process_timeout_tree")
     assert ev["tool_failed"], "超时的执行应当报失败：ok=" + str(ev["tool_ok"])
     assert ev["child_pid_started"], "受控子进程未启动（环境问题，不能作数）"
+    # 直接子进程在工具返回的瞬间就必须已退出：cmd_tools 在超时清理里 await 了
+    # proc.wait()（确定性证据，与机器负载无关）。
     assert not ev["child_alive_immediately"], (
         "反例：工具超时返回后本次启动的子进程仍存活（tasklist pid 取证）"
     )
-    assert ev["child_gone_within_1s"], (
-        "超时返回 %ss 后子/孙进程仍未全部退出" % ev["probe_wait_seconds"]
+    # 整树（孙进程经 taskkill /T 收割）用宽窗口断言：固定 1 秒墙钟是负载敏感
+    # 的次要证据（taskkill 自身在并行负载下可花 >1s）；核心事实是「反例基线上
+    # sleep 300 的树永远活着，修复后必定在宽窗口内收割」。
+    assert ev["child_gone_within_1s"] or ev["child_gone_within_5s"], (
+        "超时返回后 %ss 内子/孙进程仍未全部退出（tasklist 取证）" % ev.get("probe_wait_seconds_wide", 5.0)
     )
     assert ev["grandchild_gone"], "孙进程仍在（进程树未级联终止）"
     assert ev["decoy_alive"], "同名诱饵进程被误杀 —— 只允许清理本次启动的 pid"

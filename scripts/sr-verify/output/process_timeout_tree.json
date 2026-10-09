@@ -1,11 +1,13 @@
 {
   "tool_ok": false,
   "tool_failed": true,
-  "tool_error": "程序执行超时",
+  "tool_error": "程序执行超时（进程已终止）",
   "child_pid_started": true,
-  "child_alive_immediately": true,
+  "child_alive_immediately": false,
   "child_gone_within_1s": false,
-  "grandchild_gone": false,
+  "child_gone_within_5s": true,
+  "probe_wait_seconds_wide": 5.0,
+  "grandchild_gone": true,
   "decoy_alive": true,
-  "probe_wait_seconds": 2.565
+  "probe_wait_seconds": 1.21
 }

@@ -1,10 +1,10 @@
 {
   "registry_works": true,
-  "sse_raw_leaked": true,
-  "sse_has_marker": false,
-  "api_key_raw_leaked": true,
-  "replay_raw_leaked": true,
-  "replay_has_marker": false,
+  "sse_raw_leaked": false,
+  "sse_has_marker": true,
+  "api_key_raw_leaked": false,
+  "replay_raw_leaked": false,
+  "replay_has_marker": true,
   "event_ids_present": true,
   "caplog_raw_leaked": false
 }

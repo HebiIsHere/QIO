@@ -146,17 +146,36 @@ describe("本机发送被拒绝（P0：没发出去的消息不留后遗症）",
     const api = (await import("../../services/api")).api as unknown as {
       sendTurn: ReturnType<typeof vi.fn>;
     };
-    api.sendTurn.mockRejectedValueOnce(new Error("network down"));
+    // 契约 5（Lead 裁决）：明确拒绝 = 后端带 4xx 响应；无响应失败（network down）
+    // 已改为「正在确认」路径（见下方新用例），不再撤回消息。
+    api.sendTurn.mockRejectedValueOnce(Object.assign(new Error("network down"), { status: 400 }));
     expect(session.sendRejectedSeq).toBe(0);
 
     const ok = await session.send("这条会失败");
 
     expect(ok).toBe(false);
     expect(session.sendRejectedSeq).toBe(1);
-    expect(session.lastError).toContain("network down");
+    expect(session.lastError).toContain("被拒绝");
     expect(session.messages.some((m) => m.content === "这条会失败")).toBe(false);
   });
 
+  it("无响应失败（network down 无 status）走「正在确认」：不撤消息、不发已拒绝信号", async () => {
+    const { session } = setup();
+    const api2 = (await import("../../services/api")).api as unknown as {
+      sendTurn: ReturnType<typeof vi.fn>;
+    };
+    api2.sendTurn.mockRejectedValueOnce(new Error("network down"));
+    expect(session.sendRejectedSeq).toBe(0);
+
+    const ok = await session.send("网络中断的那条");
+
+    // 契约 5：HTTP 没等到回执 ≠ 后端未受理 —— 保留消息进入「正在确认」。
+    expect(ok).toBe(false);
+    expect(session.sendRejectedSeq).toBe(0);
+    expect(session.messages.some((m) => m.content === "网络中断的那条")).toBe(true);
+    // 待确认状态可被重试/放弃收尾（详见 sr-e-sendConfirm 套件）
+    expect(session.sendConfirm?.messageId ?? null).not.toBeNull();
+  });
   it("发送成功不发「已拒绝」信号", async () => {
     const { session } = setup();
     const ok = await session.send("正常发送");
