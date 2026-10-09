@@ -1015,6 +1015,111 @@
   多实例共写同一 tmp 目录未验证、100MB 兼容路径与引用型 changed 时序未单独造例、Windows 原生窗口
   与安装包 E2E 未跑、真实厂商未验。
 
+### P23 — 对话过程区/流式/附件审计集中修复（F01—F24，2026-10-09）
+
+- **Status：** partial
+- **背景：** 对 P16—P22 这条开发线做一次集中审计（F01—F24）：先在**基线**上跑反例（能失败），
+  再逐项修复并复跑；同时把 C1—C8 冻结成本轮契约（终稿见 `docs/architecture.md` §12.1.7）。
+  审计范围：附件读取与资源边界、流式结束语义、输出脱敏、未声明前缀中断、前端 turn 归属与回答校准、
+  Markdown 列表渲染、耗时口径、附件前后端一致性。逐项判定见文末「本轮判定」。
+- **Implementation（附件读取与资源边界 · F01/F02/F21/F22/F23）：** `backend/src/agent/tools/attachment_tools.py`
+  - **有界解压/解析**：zip 成员数与单成员字节、累计解压字节、共享字符串与整份解析总量都有预算；
+    超资源给**明确、可理解的限制原因**，不伪装成完整读取成功。
+  - **超长单行的有界分块与增量解码**：不再按整行分配、不再整文件解码；单行按片段分页。
+  - **可中止的读取调度**：解析/解压在「不让事件循环被同步解析阻塞」的前提下推进，取消能中断本轮读取。
+  - **编码嗅探的未完成尾字节处理**：被截断的 UTF-8 多字节序列不再被误判成另一种编码。
+  - **分页事实与实际交付一致**：截断时 `next_offset` 指向真实继续位置；超长行引入**行内片段游标**
+    （`next_fragment_offset` / `next_cursor`），旧游标兼容；元数据反映实际交付内容。
+  - **测试：** `backend/tests/test_acc_a_f01_parse_bounds.py`、`test_acc_a_f02_line_bounds.py`、
+    `test_acc_a_f21_scheduling.py`、`test_acc_a_f22_encoding.py`、`test_acc_a_f23_paging.py`。
+- **Implementation（流式结束语义 · F06）：** `backend/src/agent/adapters/native.py`、`anthropic.py`、
+  `core/loop.py`、`core/turn.py`、`storage/turn_journal.py`
+  - `TURN_END.status` 终态集合新增 `incomplete`，**只**用于不完整 EOF（`reason_code == "incomplete_stream"`）：
+    native 无 `finish_reason`、anthropic 无 `message_stop`、仅 usage/空分块、未结束的工具调用。
+  - 厂商合法终止保持诚实区分而不升级为失败：`length_limit`、`content_filter` 的 status 仍是 `completed`，
+    只用 `reason_code` 区分。
+  - `incomplete` 时：**已确认正文保留**在 `final_content`，**未确认后缀不得出现**，`stopped_by=system`，
+    带人话 reason，`actions` 含 `retry`；语义贯穿 adapter → loop → `TURN_END` → 前端 → **历史台账**
+    （`turn_journal.record_facts` 落 `reason_code/reason/stopped_by/actions`），刷新后仍是「未完成 + 原因 + retry」。
+  - **测试：** `backend/tests/test_acc_b_stream_end.py`、`test_acc_f_06_incomplete_stream.py`。
+- **Implementation（输出脱敏跨分块 · F07）：** `backend/src/agent/trace/redact.py`、`core/loop.py`
+  - 所有可观测输出（增量 / 累计快照 / 一次性正文 / 最终校准 / 注释 / 事件 / Trace / 历史 / 错误）
+    统一走 `redact_text`；**先脱敏再发布**。
+  - 跨分块敏感值用**有界未定稿尾部缓冲**（`undecided_tail_length`）：尾部不发布，直到确认没有完整对齐再放行；
+    缓冲有界、随流推进释放，**不退化为「整段生成后显示」**。
+  - **测试：** `backend/tests/test_acc_b_redact_stream.py`、`test_acc_f_07_stream_redaction.py`。
+- **Implementation（未声明前缀中断不丢字 · F19）：** `backend/src/agent/core/loop.py`
+  - 在短角色前缀阶段被中断时，保留可交付文本并**如实标记未完成**；**完整控制声明不泄漏为正文**。
+  - **测试：** `backend/tests/test_acc_b_prefix_interrupt.py`。
+- **Implementation（前端 turn 归属与回答校准 · F05/F11/F12）：** `frontend/src/stores/events.ts`、
+  `stores/session.ts`、`components/MessageStream.vue`
+  - 过程 / 工具 / 回答 / 结束事实按服务端 `turn_id` 归属；**排队 turn 不改变活动轮**。
+  - `applyFinalAnswer` 按 **turn 身份**校准（不再用「全文是否相等」判断同一次回答）；系统核对注释走
+    `TURN_END` 独立字段 `annotation`（兼容 `final_annotation`），在独立「系统事实」区域渲染；
+    `final_content` 保持**纯正文**、正文只出现一次、不重启打字动画。
+  - **排队轮取消**留下自己的结束事实：`cancelled` / `reason_code=user_stopped` / `stopped_by=user` /
+    `actions` 含 `retry`，立刻发出，不影响活动轮。
+  - **测试：** `frontend/src/stores/__tests__/acc_c_final_answer.test.ts`、`acc_c_queued_cancel.test.ts`、
+    `acc_f_05_active_turn_ownership.test.ts`、`acc_f_11_final_answer_annotation.test.ts`、
+    `frontend/src/components/__tests__/acc_c_turn_identity.test.ts`。
+- **Implementation（Markdown 列表内块语义 · F13）：** `frontend/src/components/MarkdownContent.vue`
+  - 按 AST **递归渲染列表项内的段落 / 代码块 / 子列表 / 引用 / 表格**，保留转义与链接安全策略。
+  - **测试：** `frontend/src/components/__tests__/acc_f_13_markdown_lists.test.ts`、`acc_c_markdown.test.ts`。
+- **Implementation（耗时口径 · F14）：** `frontend/src/components/TurnTimingPanel.vue`、`services/trace.ts`；
+  后端权威字段 `backend/src/agent/core/turn.py`
+  - 用户可见**总耗时 = 排队 + 执行**（可分列），**折叠态即可显示**；明细失败不覆盖已知总耗时、
+    不永久显示「读取中」；缺字段的旧记录只显示**可证明**的时间。
+  - **测试：** `frontend/src/components/__tests__/acc_c_timing.test.ts`。
+- **Implementation（附件前端 · F03/F04/F08/F09/F10/F24 前端）：** `frontend/src/services/attachments.ts`、
+  `components/Composer.vue`、`components/MessageItem.vue`、`utils/externalLink.ts`
+  - `noopener` 打开判定**不再用 `window.open` 返回值断言失败**（保留 opener 隔离、blob URL 生命周期与去重下载）。
+  - 历史重传结果**归属到发起话题的待发送列表**并可恢复；异步结果按 **topic / 操作版本**落地；
+    替换只在**指定的新附件 ready 且加入列表**后才提交；暂时恢复失败**不清持久化身份**。
+  - **测试：** `frontend/src/services/__tests__/acc_d_attachment_open.test.ts`、
+    `acc_d_restore_pending.test.ts`、`acc_d_wait_settled.test.ts`、`acc_f_03_external_open.test.ts`、
+    `frontend/src/components/__tests__/acc_d_composer_reupload_replace.test.ts`、
+    `acc_d_composer_topic_scope.test.ts`、`acc_d_reupload_result.test.ts`、
+    `frontend/src/utils/__tests__/acc_d_external_link.test.ts`。
+- **Implementation（附件后端一致性 · F15/F16/F17/F18/F20/F24 后端）：**
+  `backend/src/agent/services/attachments.py`、`api/server.py`
+  - 绑定跨 `await` 后按**记录身份 / 归属 / 可读性 / 操作版本**条件提交。
+  - 多附件重试的中间克隆在后续失败或取消时**完整补偿回滚**（删行 + 删本次副本 + 清 `preparing`，
+    原历史副本与归属不动）；取消后仍在执行的线程不得写回已撤销结果（落库前校验代际）。
+  - 副本就绪含**真实打开读取探针**（`stat` 正常但打不开的副本不再放行）。
+  - 引用消失的大文件重试按**当下事实**重校验；重定位用**代际版本**防止旧后台结果覆盖新结果。
+  - 缺失副本可恢复时返回「**已受理且正在准备**」，而不是立即 `missing`。
+  - **测试：** `backend/tests/test_acc_e_f15_binding_boundary.py`、`test_acc_e_f16_clone_rollback.py`、
+    `test_acc_e_f17_readability.py`、`test_acc_e_f18_reference_retry.py`、
+    `test_acc_e_f20_relocate_version.py`、`test_acc_e_f24_preparing_semantics.py`。
+- **本轮判定（逐项）：**
+  - **本轮修复：** F01—F04、F07—F10、F13—F24（集成分支复跑阶段一反例后转绿）。其中 F15—F24 是更早
+    审计登记的对照项，按「先核实是否已有修复 + 反例通过」的口径处理：需要修复的已在本轮落地，
+    能证明此前已有修复的只登记提交与验证，不重复实现。
+  - **已有修复且反例通过：** F05（基线即绿，修复位于基线的祖先提交 `2b204d7`，反例保留为回归守卫）。
+  - **集成期补齐中，最终判定待阶段二复跑：** **F06**（`TURN_END.status=incomplete` 的出口与历史台账接受、
+    以及前端消费）、**F12**（排队取消结束事实的 `retry` 对齐）、**F11 前端消费**（后端独立 `annotation`
+    字段已在本轮集成分支；前端按 turn 身份消费）。裁定与分工记录在集成分支的计划文档里。
+  - **未完成 / 未实测：** 见下「Known limitations」。
+- **Tests：** 上列每个实现分组都带对应的反例/回归文件；独立验证方另有按产品规则先建红、再逐项转绿的
+  基线反例（逐项登记处见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一）。
+- **验证（2026-10-09）：** 本轮文档侧验证 `python scripts/check_docs.py` 退出码 0；
+  后端全量与前端 `npx vue-tsc --noEmit` / `npm test`、以及实机取证由独立验证方在阶段二复跑产出
+  （具体数量随时会变，不写进本文件）。阶段一的基线反例与逐层证据见本轮验证报告。
+- **Known limitations：**
+  - **真实厂商端点未实测**：F06 的不完整结束语义只在假 provider 脚本与**真 HTTP + 真 SSE 的本地假厂商**上验证，
+    OpenAI / Anthropic 实网行为未验。
+  - **Windows / Tauri 原生文件入口未实测**：原生选择器、拖放与原生打开只有编译级验证，没有在运行中的
+    桌面进程里手工点过；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
+  - **真实浏览器实机取证待阶段二**：本轮结论来自后端跨层、前端组件/store 级与单测，不等于实机表现。
+  - **F06 / F11（前端消费）/ F12 的最终判定**待阶段二复跑；`incomplete` 与排队取消结束事实的跨层组合
+    （排队 + 取消 + 不完整结束 + 注释）本轮未组合成一次确定性用例。
+  - **读取预算与分页的旧游标兼容**只覆盖实现声明的旧形态；真实海量超长行文件的端到端分页未做耗时取证。
+- **后续依赖：** 阶段二复跑与实机取证由独立验证者产出；阶段一的基线反例见本轮验证报告
+  docs/verification-acc-phase1.md，逐项 F01—F24 的最终判定见 docs/verification-acc-phase2.md。
+  （两份报告由独立验证者 acc-f2 产出、尚未并入本分支，因此暂按纯文本写；并入后应改为可被
+  `python scripts/check_docs.py` 校验的反引号路径。）
+- 契约终稿见 `docs/architecture.md` §12.1.7，逐项状态表见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一。
+
 ---
 
 ## 尚未完成
