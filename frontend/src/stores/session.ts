@@ -7,6 +7,7 @@ import {
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
+import { newClientRequestId, setNextSendRequestId } from "../services/sendIdentity";
 
 export interface ToolPresentation {
   title?: string;
@@ -356,6 +357,93 @@ export interface StreamMessage {
   queued?: boolean;
 }
 
+/**
+ * 这个失败是否意味着「没有拿到发送回执」？
+ *
+ * * ApiTimeoutError（name === "ApiTimeoutError"）：等不到响应，结果未知；
+ * * TypeError：fetch 的网络层失败，结果未知；
+ * * 带 status 的错误（ApiError）是后端**明确**的拒绝（后端已给出结论），不算；
+ * * 其它错误按明确失败处理（保持既有行为）。
+ *
+ * 按名字/形状判断而不 import 具体错误类：api 模块在多处既有测试里被整体 mock
+ * （工厂只提供 api 对象），import 具体类会让那些 mock 变成 undefined 而炸掉。
+ */
+function isSendReceiptUnknown(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  if (name === "ApiTimeoutError") return true;
+  return e instanceof TypeError;
+}
+
+/** 错误携带的 HTTP 状态码（ApiError）；不携带（普通 Error / TypeError）→ null。 */
+function sendErrorStatus(e: unknown): number | null {
+  const status = (e as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : null;
+}
+
+/**
+ * 一次发送动作的生命周期状态（契约 5）。
+ *
+ * 四个尝试态：
+ * * `pending` —— 已发出、还没拿到任何回执；
+ * * `accepted` —— 后端明确受理（HTTP 200 回执或查证命中；幂等命中也算）；
+ * * `confirmed-rejected` —— 后端**明确**拒绝（有响应、无副作用）；
+ * * `needs-confirm` —— 没拿到回执（超时 / 网络失败）：结果未知，正在确认。
+ *
+ * 「accepted」是终点：成功回执只能 pending → accepted **单向前进**，
+ * 绝不因一张迟到的回执把已经推进的运行态拉回去。
+ */
+export type SendAttemptState = "pending" | "accepted" | "confirmed-rejected" | "needs-confirm";
+
+/** 一次发送动作（乐观消息 + 请求身份 + 状态）。重试复用同一个 clientRequestId。 */
+export interface SendAttempt {
+  /** 乐观消息 id：撤回与采纳都定位到它 */
+  messageId: string;
+  /** 请求身份（幂等键）：同一发送动作（含所有重试）永远复用同一个 */
+  clientRequestId: string;
+  state: SendAttemptState;
+  /** 受理回执 / 查证命中拿到的 turn_id */
+  turnId?: string;
+  /** 原文：重试按原样重发，不取当前草稿 */
+  message: string;
+  /** 发送时的话题：重试回到原话题，不跟当前选中走 */
+  topicId: string | null;
+  /** 发送时是否已在排队（turnRunning 已为 true） */
+  queued: boolean;
+  /** 确认查询进行中（防重入） */
+  confirmBusy?: boolean;
+  /** 重发进行中（防重入） */
+  retryBusy?: boolean;
+}
+
+/**
+ * 「正在确认」的界面状态。
+ *
+ * 文案必须区分两件事（契约 5 第 6 条）：
+ * * 正在确认是否已发送（本状态）；
+ * * 明确失败：被拒绝（进 lastError）。
+ */
+export interface SendConfirmState {
+  messageId: string;
+  clientRequestId: string;
+  /** 当前文案（界面原样显示，不自己推断） */
+  notice: string;
+  /** true = 查到 404：后端无记录 → 提供【重试 / 放弃】 */
+  unknown: boolean;
+  /** true = 查到命中：已受理 → 不提供放弃，只提供取消 */
+  accepted: boolean;
+  /** 查询进行中 */
+  busy: boolean;
+}
+
+export const SEND_CONFIRM_QUERYING_NOTICE = "正在确认这条消息是否已经发出…";
+export const SEND_CONFIRM_RETRY_NOTICE =
+  "正在确认这条消息是否已经发出…（刚才的确认查询没有成功，可以再查一次）";
+/** 404 的呈现：进程重启也会变成 404，所以是「未确认」，绝不是「未发送」。 */
+export const SEND_CONFIRM_UNKNOWN_NOTICE = "发送未确认：后端没有该请求记录（可能未送达）";
+export const SEND_REJECTED_NOTICE = "发送失败：被拒绝";
+/** 超时 / 网络失败后等多久才去查证（数百毫秒：给回执一点「在路上」的时间）。 */
+export const SEND_CONFIRM_QUERY_DELAY_MS = 600;
+
 export const useSessionStore = defineStore("session", {
   state: () => ({
     currentTopicId: null as string | null,
@@ -561,6 +649,20 @@ export const useSessionStore = defineStore("session", {
      * 直接改对象属性不会经过响应式代理，界面不会更新。
      */
     freshIds: [] as string[],
+    /**
+     * 本机发送动作的生命周期台账（契约 5）。
+     * 每一次 send 领一个请求身份；受理回执只能把条目 pending → accepted 单向推进，
+     * 回执丢失时条目停在 needs-confirm，由查证（by-request 端点）收尾。
+     * 有界：只保留最近 50 条。
+     */
+    sendAttempts: [] as SendAttempt[],
+    /**
+     * 当前「正在确认是否已发送」的界面状态（文案区分「正在确认」与
+     * 「发送未确认：后端没有该请求记录」；明确失败走 lastError）。
+     */
+    sendConfirm: null as SendConfirmState | null,
+    /** 各 attempt 的查证定时器（messageId → timer id；非业务状态） */
+    _confirmTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
   }),
   getters: {
     /**
@@ -580,6 +682,11 @@ export const useSessionStore = defineStore("session", {
      */
     unfinishedDevTasks: (state): DevTaskRow[] =>
       state.devTasks.filter((task) => !task.submitted && !task.abandoned),
+    /** 按乐观消息 id 找发送动作（界面把「重试/放弃/取消」挂回这条消息用）。 */
+    sendAttemptForMessage: (state) => (messageId: string): SendAttempt | undefined =>
+      state.sendAttempts.find((a) => a.messageId === messageId),
+    /** 当前是否处于「正在确认是否已发送」（界面据此区分两种失败文案）。 */
+    pendingSendConfirm: (state): SendConfirmState | null => state.sendConfirm,
   },
   actions: {
     _nextId() {
@@ -1875,6 +1982,14 @@ export const useSessionStore = defineStore("session", {
     /**
      * 发送一轮消息。turnRunning 时后端会排队（TURN_QUEUE 事件回执），
      * 因此仍然允许提交：本地先以「等待中」状态呈现，不阻塞用户写下一条。
+     *
+     * 生命周期（契约 5）：每次发送领一个请求身份 client_request_id（重试复用）。
+     * * 200 回执 → attempt 单向落定 accepted；**绝不**在这里写运行态 ——
+     *   回执可能比 SSE 晚到，这轮可能已经开始甚至结束（反例 A）。
+     * * 明确 4xx → confirmed-rejected：撤回乐观消息、恢复阅读位置，
+     *   文案是「发送失败：被拒绝」。
+     * * 超时 / 网络失败 → needs-confirm「正在确认」：不撤消息、不动运行态、
+     *   不自动重发；延迟数百毫秒后用同一个 id 查证（by-request 端点）。
      */
     async send(text: string): Promise<boolean> {
       const message = text.trim();
@@ -1890,34 +2005,291 @@ export const useSessionStore = defineStore("session", {
       }
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
+      // 登记发送动作：同一动作（含之后的所有重试）只用这一个请求身份
+      this.sendAttempts = [
+        ...this.sendAttempts.slice(-49),
+        {
+          messageId: optimistic.id,
+          clientRequestId: newClientRequestId(),
+          state: "pending",
+          message,
+          topicId: this.currentTopicId,
+          queued,
+        },
+      ];
+      const attempt = this._attemptOf(optimistic.id);
+      if (!attempt) return false;
+      // 一轮新的发送开始：上一条「正在确认」的提示让位（旧 attempt 状态保留，
+      // 它自己的查证定时器不受影响）
+      this.sendConfirm = null;
       try {
-        const res = await api.sendTurn(message, this.currentTopicId);
-        // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
-        // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
-        // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
-        if (res && res.turn_id) {
-          optimistic.turnId = res.turn_id;
-          if (queued) {
-            this.markTurnQueued(res.turn_id);
-          } else {
-            this.turnRunning = true;
-            this.turnPhase = "waiting";
-          }
-        }
+        setNextSendRequestId(attempt.clientRequestId);
+        const res = await api.sendTurn(message, attempt.topicId);
+        this._acceptSendReceipt(attempt.messageId, res);
         return true;
       } catch (e) {
-        this.lastError = (e as Error).message;
-        // 通知消息流：这次发送没有被受理，界面要回到发送前的样子
-        this.sendRejectedSeq += 1;
-        // 这条请求没有被后端接受：撤掉乐观消息，交给 Composer 恢复草稿，
-        // 避免「界面上有一条没发出去的消息」这种误导状态。
-        this.messages = this.messages.filter((m) => m.id !== optimistic.id);
-        this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== optimistic.id);
-        // 只有「不是排队」的失败才说明当前 active turn 没起来。
-        // 排队请求失败不能把仍在运行的其他任务一起标记成已结束。
-        if (!queued) this.turnRunning = false;
+        return this._onSendFailure(attempt.messageId, e);
+      }
+    },
+    /**
+     * 待确认下重试：复用**同一个** client_request_id 重新 POST（幂等）。
+     * 绝不换 id 重发 —— 换了 id，后端就无法识别这是同一次发送动作。
+     */
+    async retrySendAttempt(messageId: string): Promise<boolean> {
+      const attempt = this._attemptOf(messageId);
+      if (!attempt || attempt.state !== "needs-confirm" || attempt.retryBusy) return false;
+      attempt.retryBusy = true;
+      try {
+        setNextSendRequestId(attempt.clientRequestId);
+        const res = await api.sendTurn(attempt.message, attempt.topicId);
+        this._acceptSendReceipt(attempt.messageId, res);
+        return (attempt.state as SendAttemptState) === "accepted";
+      } catch (e) {
+        if (isSendReceiptUnknown(e)) {
+          // 还是没拿到回执：留在「正在确认」，稍后再查证一次
+          attempt.state = "needs-confirm";
+          this.sendConfirm = this._confirmingState(attempt.messageId);
+          this._scheduleConfirmQuery(attempt.messageId);
+          return false;
+        }
+        this._rejectAttempt(attempt.messageId, e);
+        return false;
+      } finally {
+        attempt.retryBusy = false;
+      }
+    },
+    /** 「正在确认」下再查一次（不重发；查询失败也可以反复查）。 */
+    async recheckSendAttempt(messageId?: string): Promise<void> {
+      const target = messageId
+        ? this._attemptOf(messageId)
+        : this.sendConfirm
+          ? this._attemptOf(this.sendConfirm.messageId)
+          : undefined;
+      if (!target || target.state !== "needs-confirm") return;
+      this._clearConfirmTimer(target.messageId);
+      await this._runConfirmQuery(target.messageId);
+    },
+    /**
+     * 「放弃」这条发送：只允许在后端确实没有它的记录时（sendConfirm.unknown）。
+     * 查证曾命中已受理的（accepted）拒绝放弃 —— 那条消息已受理，只有「取消」可用。
+     */
+    abandonSendAttempt(messageId?: string): boolean {
+      const target = messageId
+        ? this._attemptOf(messageId)
+        : this.sendConfirm
+          ? this._attemptOf(this.sendConfirm.messageId)
+          : undefined;
+      if (!target || target.state !== "needs-confirm") return false;
+      if (this.sendConfirm?.messageId === target.messageId && this.sendConfirm.accepted) {
         return false;
       }
+      this._settleConfirm(target.messageId);
+      target.state = "confirmed-rejected";
+      // 撤回乐观消息 + 阅读位置放回发送前（与被拒绝同一通道）
+      this.sendRejectedSeq += 1;
+      this.messages = this.messages.filter((m) => m.id !== target.messageId);
+      this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== target.messageId);
+      // 恢复草稿（输入框为空才放回，不覆盖正在输入的内容）
+      if (!this.draft.trim()) this.draft = target.message;
+      this.lastError = SEND_CONFIRM_UNKNOWN_NOTICE;
+      // 后端无这条记录、也没有 TURN_START 到过 → 乐观的「运行中」是站不住的
+      if (!target.queued && this.activeTurnId === null) {
+        this.turnRunning = false;
+        this.turnPhase = "idle";
+      }
+      return true;
+    },
+    /**
+     * 「取消」一条已受理的发送（查证命中后不再提供「放弃」）。
+     * 与停止按钮同一条通道：有 turn_id 精确取消，否则退化为取消后端 active。
+     */
+    async cancelConfirmedSend(messageId?: string): Promise<boolean> {
+      const target = messageId
+        ? this._attemptOf(messageId)
+        : this.sendConfirm
+          ? this._attemptOf(this.sendConfirm.messageId)
+          : undefined;
+      if (!target) return false;
+      const confirmed =
+        target.state === "accepted" ||
+        (target.state === "needs-confirm" && this.sendConfirm?.accepted === true);
+      if (!confirmed) return false;
+      try {
+        if (target.turnId) await api.cancelTurn(target.turnId);
+        else await api.cancelActiveTurn();
+        return true;
+      } catch (e) {
+        this.lastError = `取消失败：${(e as Error).message}`;
+        return false;
+      }
+    },
+    // -- 发送生命周期的内部收口 -----------------------------------------
+    _attemptOf(messageId: string): SendAttempt | undefined {
+      return this.sendAttempts.find((a) => a.messageId === messageId);
+    },
+    _confirmingState(messageId: string): SendConfirmState {
+      const attempt = this._attemptOf(messageId);
+      return {
+        messageId,
+        clientRequestId: attempt?.clientRequestId ?? "",
+        notice: SEND_CONFIRM_QUERYING_NOTICE,
+        unknown: false,
+        accepted: false,
+        busy: true,
+      };
+    },
+    /**
+     * 发送回执（HTTP 200，含幂等命中）：pending → accepted 的**单向**落定。
+     *
+     * 关键边界（反例 A）：受理 ≠ 开始执行 —— 这里**绝不**写 turnRunning /
+     * turnPhase / activeTurnId。「开始」只认 TURN_START，「结束」只认 TURN_END；
+     * 回执晚到时不得把已经结束的轮次拉回「运行中」，也不得把 generating
+     * 拉回 waiting。
+     */
+    _acceptSendReceipt(messageId: string, res: Record<string, unknown> | null | undefined) {
+      const attempt = this._attemptOf(messageId);
+      if (!attempt) return;
+      // 单向：accepted 是终点，confirmed-rejected 是另一个终点
+      if (attempt.state === "accepted" || attempt.state === "confirmed-rejected") return;
+      const turnId = res && typeof res.turn_id === "string" ? res.turn_id : "";
+      if (turnId) {
+        attempt.turnId = turnId;
+        const msg = this.messages.find((m) => m.id === attempt.messageId);
+        if (msg && !msg.turnId) msg.turnId = turnId;
+      }
+      attempt.state = "accepted";
+      // 排队登记保持原语义：SEND 只把 turn 记为「已受理排队」，不写 active
+      if (turnId && attempt.queued) this.markTurnQueued(turnId);
+      // 幂等命中（deduplicated）也一样：这只是同一次发送的回执，
+      // 不重复执行、不重复展示、不重复排队
+      this._settleConfirm(attempt.messageId);
+    },
+    /** 发送失败的分流：没拿到回执 → 「正在确认」；明确拒绝 → 撤回 + 明确失败。 */
+    _onSendFailure(messageId: string, e: unknown): boolean {
+      const attempt = this._attemptOf(messageId);
+      if (!attempt) return false;
+      if (isSendReceiptUnknown(e)) {
+        attempt.state = "needs-confirm";
+        this.sendConfirm = this._confirmingState(attempt.messageId);
+        this._scheduleConfirmQuery(attempt.messageId);
+        return false;
+      }
+      this._rejectAttempt(attempt.messageId, e);
+      return false;
+    },
+    /**
+     * 明确拒绝（后端给了响应：4xx/5xx；或其它明确失败）：撤回乐观消息、
+     * 恢复阅读位置。文案区分「明确失败：被拒绝」与「正在确认是否已发送」。
+     */
+    _rejectAttempt(messageId: string, e: unknown) {
+      const attempt = this._attemptOf(messageId);
+      this._settleConfirm(messageId);
+      const status = sendErrorStatus(e);
+      this.lastError =
+        status !== null && status >= 400 && status < 500
+          ? SEND_REJECTED_NOTICE
+          : (e as Error).message;
+      this.sendRejectedSeq += 1;
+      this.messages = this.messages.filter((m) => m.id !== messageId);
+      this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== messageId);
+      if (attempt) {
+        attempt.state = "confirmed-rejected";
+        // 这次发送没有被受理：只有「不是排队」的失败才说明当前 active turn 没起来。
+        // 排队请求失败不能把仍在运行的其他任务一起标记成已结束。
+        if (!attempt.queued) this.turnRunning = false;
+      }
+    },
+    _scheduleConfirmQuery(messageId: string) {
+      this._clearConfirmTimer(messageId);
+      // 裸 setTimeout（= window.setTimeout）：假定时器测试按 globalThis 补丁走
+      const timer = setTimeout(() => {
+        void this._runConfirmQuery(messageId);
+      }, SEND_CONFIRM_QUERY_DELAY_MS);
+      this._confirmTimers = { ...this._confirmTimers, [messageId]: timer };
+    },
+    _clearConfirmTimer(messageId: string) {
+      const timer = this._confirmTimers[messageId];
+      if (!timer) return;
+      clearTimeout(timer);
+      const next = { ...this._confirmTimers };
+      delete next[messageId];
+      this._confirmTimers = next;
+    },
+    _settleConfirm(messageId: string) {
+      this._clearConfirmTimer(messageId);
+      if (this.sendConfirm?.messageId === messageId) this.sendConfirm = null;
+    },
+    /**
+     * 查证一次发送动作（GET /api/turns/by-request/{id}）：
+     * 命中 → 采纳 turn 状态；404 → 「发送未确认」（绝不等于「未发送」）；
+     * 查询失败 → 保持「正在确认」，可以再查一次。
+     */
+    async _runConfirmQuery(messageId: string): Promise<void> {
+      const attempt = this._attemptOf(messageId);
+      if (!attempt || attempt.state !== "needs-confirm" || attempt.confirmBusy) return;
+      attempt.confirmBusy = true;
+      this.sendConfirm = this._confirmingState(attempt.messageId);
+      try {
+        const res = await api.lookupTurnByRequest(attempt.clientRequestId);
+        if (attempt.state !== "needs-confirm") return; // 期间已被回执/重试落定
+        this._adoptConfirmedTurn(attempt.messageId, res);
+      } catch (e) {
+        if (attempt.state !== "needs-confirm") return;
+        if (sendErrorStatus(e) === 404) {
+          // 本进程没有这次请求的记录：如实呈现「未确认」；
+          // 进程重启也会走到这里，所以它绝不等于「未发送」。
+          this.sendConfirm = {
+            messageId: attempt.messageId,
+            clientRequestId: attempt.clientRequestId,
+            notice: SEND_CONFIRM_UNKNOWN_NOTICE,
+            unknown: true,
+            accepted: false,
+            busy: false,
+          };
+          // 后端明确没有这条记录、也没有任何 TURN_START 到过 →
+          // 乐观的「运行中」是站不住的：收敛，但不撤消息（用户还可以重试/放弃）。
+          if (!attempt.queued && this.activeTurnId === null) {
+            this.turnRunning = false;
+            this.turnPhase = "idle";
+          }
+        } else {
+          // 查询失败：保持「正在确认」，可以再查一次（不自动重发）
+          this.sendConfirm = {
+            messageId: attempt.messageId,
+            clientRequestId: attempt.clientRequestId,
+            notice: SEND_CONFIRM_RETRY_NOTICE,
+            unknown: false,
+            accepted: false,
+            busy: false,
+          };
+        }
+      } finally {
+        attempt.confirmBusy = false;
+      }
+    },
+    /** 查证命中：采纳 turn 事实（幂等命中也一样），不重放执行、不写运行态。 */
+    _adoptConfirmedTurn(messageId: string, res: Record<string, unknown> | null | undefined) {
+      const attempt = this._attemptOf(messageId);
+      if (!attempt || attempt.state !== "needs-confirm") return;
+      const turnId = res && typeof res.turn_id === "string" ? res.turn_id : "";
+      if (!turnId) {
+        // 形状不对：当作这次查询失败处理，保持「正在确认」
+        this.sendConfirm = {
+          messageId: attempt.messageId,
+          clientRequestId: attempt.clientRequestId,
+          notice: SEND_CONFIRM_RETRY_NOTICE,
+          unknown: false,
+          accepted: false,
+          busy: false,
+        };
+        return;
+      }
+      attempt.turnId = turnId;
+      attempt.state = "accepted";
+      const msg = this.messages.find((m) => m.id === attempt.messageId);
+      if (msg && !msg.turnId) msg.turnId = turnId;
+      if (String(res?.status ?? "") === "queued") this.markTurnQueued(turnId);
+      this._settleConfirm(attempt.messageId);
     },
     /** 取消排队中的消息（只影响该条，不动 active turn） */
     dequeue(messageId: string) {
