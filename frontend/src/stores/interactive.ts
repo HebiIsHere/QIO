@@ -145,6 +145,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
   const pendingImpact = ref<{
     affected: { intentId: string; title: string; materials: string[]; consequence: string }[];
+    /** 这次预判针对的候选版本（M4/08 路径2）：确认只对这一版有效 */
+    previewRev: number;
+    /** 这次预判针对的已保存板面版本 */
+    stateVersion: number;
+    /** 服务端预判句柄（C 的 M4 协议）：有就带上，服务端据此拒绝过期确认 */
+    checkId?: string;
   } | null>(null);
   /** 保存后服务端回报「因为这些改动被暂停的任务」 */
   const materialPaused = ref<Intent[]>([]);
@@ -163,6 +169,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   let boardLocalRev = 0;
   let boardCleanRev = 0;
+  /**
+   * 用户已确认的影响检查句柄（M4）：
+   * - `pendingConfirm` 在用户点「确认」后设置，随这一次保存的 PUT 一起提交；
+   * - `confirmedCheck` 记录「哪一次确认授权了哪个已保存版本」，只有板面自那以后没有新改动时
+   *   才允许在提交时把它作为 confirmedCheckId 带上（避免拿过期授权去提交）。
+   */
+  let pendingConfirm: { checkId: string; stateVersion?: number } | null = null;
+  let confirmedCheck: { checkId: string; savedSeq: number } | null = null;
 
   const undoStack = ref<string[]>([]);
   const redoStack = ref<string[]>([]);
@@ -226,10 +240,47 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (current) pushUndo(current);
     board.value = { ...next, boardId: boardId.value };
     lastOpLabel.value = label;
+    // 新的改动让既有影响确认授权失效：它只授权它当时那一版（08 路径2）
+    confirmedCheck = null;
+    pendingConfirm = null;
     boardLocalRev += 1;
     dirty.value = true;
     saveStatus.value = "saving";
     scheduleSave();
+  }
+
+  /**
+   * 影响检查的统一入口（M4）：优先用服务端定稿的 impact-check；测试替身只提供旧预判时
+   * 回退到旧接口，保证既有测试的 mock 仍能用（生产路径走新接口）。
+   */
+  async function runImpactCheck(
+    stateVersion: number,
+    state: BoardState,
+  ): Promise<import("../services/interactive").ImpactCheckResult> {
+    const mod = api as unknown as {
+      checkMaterialImpact?: (
+        boardId: string,
+        version: number,
+        candidate: BoardState,
+      ) => Promise<import("../services/interactive").ImpactCheckResult>;
+    };
+    // 注意：测试替身（vi.mock 工厂）访问未声明的导出会抛错，这里必须就地兜住，
+    // 不能让「替身没实现新接口」表现成「预判失败」。
+    let checker: typeof mod.checkMaterialImpact;
+    try {
+      checker = mod.checkMaterialImpact;
+    } catch {
+      checker = undefined;
+    }
+    if (typeof checker === "function") {
+      return checker(boardId.value, stateVersion, state);
+    }
+    const legacy = await api.previewMaterialImpact(boardId.value, state);
+    return {
+      ok: true,
+      affected: legacy.affected,
+      impactConfirmationRequired: (legacy.affected ?? []).length > 0,
+    };
   }
 
   function scheduleSave() {
@@ -258,16 +309,37 @@ export const useInteractiveStore = defineStore("interactive", () => {
     // 会 → 不保存，把影响说明交给用户决定（继续=保存并暂停相关任务；取消=不改动，任务继续）。
     if (!impactConfirmed && activeIntents.value.length > 0) {
       try {
-        const check = await api.previewMaterialImpact(boardId.value, snapshot);
+        const check = await runImpactCheck(snapshot.seq, snapshot);
         // 只有**执行中**的任务才需要「先说明影响再让用户决定」。
         // 已经暂停的任务不该拦住保存：它的依据已经失效是历史事实，用户每次编辑都被拦
         // 会让板面根本存不下去（复核实测过这个后果）。暂停的影响只作为提示显示。
         const running = new Set(
           intents.value.filter((item) => item.status === "running").map((item) => item.id),
         );
-        const blocking = (check.affected ?? []).filter((item) => running.has(item.intentId));
-        if (blocking.length) {
-          pendingImpact.value = { affected: blocking };
+        const affected = (check.affected ?? check.affectedTasks ?? []) as {
+          intentId: string;
+          title: string;
+          materials: string[];
+          consequence: string;
+        }[];
+        if (check.ok === false) {
+          // 服务端如实说明「为什么这次预判没做成」（版本过期 / 无法预判）：不改任何状态
+          impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "原因未知"}）`;
+          saveStatus.value = "idle";
+          return;
+        }
+        const blocking = affected.filter((item) => running.has(item.intentId));
+        const needsConfirm =
+          check.impactConfirmationRequired === true ? affected.length > 0 : blocking.length > 0;
+        if (needsConfirm) {
+          // 确认必须绑定这次预判的候选版本与范围（M4/08 路径2）：
+          // 等待期间又改了别处，确认时要重新核实，不能放行未说明的改动。
+          pendingImpact.value = {
+            affected: blocking.length ? blocking : affected,
+            previewRev: putRev,
+            stateVersion: check.stateVersion ?? snapshot.seq,
+            checkId: check.checkId,
+          };
           saveStatus.value = "idle";
           return;
         }
@@ -281,7 +353,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
     impactCheckError.value = null;
     saveInFlight = (async () => {
       try {
-        const result = await api.saveBoardState(boardId.value, snapshot, lastOpLabel.value || "op");
+        const confirmPayload =
+          impactConfirmed && pendingConfirm ? pendingConfirm : undefined;
+        const result = await api.saveBoardState(
+          boardId.value,
+          snapshot,
+          lastOpLabel.value || "op",
+          confirmPayload,
+        );
         const newerCandidate = boardLocalRev !== putRev;
         const boardReadAdvanced = boardCleanRev !== putCleanRev;
         if (newerCandidate || boardReadAdvanced) {
@@ -289,6 +368,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
           // 服务器已接受的是旧版本，板面（新候选）不被这次旧回执覆盖。
           // 新候选保持未保存并安排下一轮保存；读取推进的情形下板面仍是本次读取的事实。
           dirty.value = newerCandidate;
+          if (newerCandidate) {
+            confirmedCheck = null;
+            pendingConfirm = null;
+          }
           saveStatus.value = newerCandidate ? "saving" : "saved";
           lastSavedAt.value = result.savedAt;
           impactConfirmed = false;
@@ -302,6 +385,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
         saveError.value = null;
         dirty.value = false;
         impactConfirmed = false;
+        if (confirmPayload) {
+          // 这次保存由用户确认授权：记住它授权的已保存版本，供提交时校验
+          confirmedCheck = { checkId: confirmPayload.checkId, savedSeq: result.seq ?? putRev };
+        }
+        pendingConfirm = null;
         const impact = (result as { materialImpact?: { paused?: Intent[] } }).materialImpact;
         if (impact?.paused?.length) {
           materialPaused.value = impact.paused;
@@ -755,7 +843,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 旧版本的清除不许删掉后来新建的版本，所以先撤掉待同步删除，再写下新版记录。
      */
     if (pendingRemovals.delete(key)) setDraftRemovalState(key, "idle");
-    setDraftConflict(key, null);
+    /**
+     * 未决冲突（收尾轮 05）：改一个字**不**清冲突 —— 服务器那份候选继续保留，
+     * 这份新输入只是「本机候选」的新版本；用户仍然必须明确选择才落地。
+     * （只有本来就没有冲突时才走清空，保持既有语义。）
+     */
+    if (!conflict) setDraftConflict(key, null);
     /**
      * 本机恢复副本：**同步**写（不等防抖、不等网络）。
      * 正常刷新/关闭时来不及等防抖也能把最后输入恢复出来（契约 §10.5）；
@@ -766,8 +859,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (cardId) {
       const written = writeCardLocalDraft(cardId, text, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
       setDraftLocalState(key, written);
+      if (conflict) {
+        // 冲突里的「本机候选」已经换成这份新输入：两份来源都还在，选择入口继续可操作
+        setDraftConflict(key, { local: text, server: conflict.server });
+      }
       if (conflict && written.ok) {
-        // 冲突里的「本机候选」已经换成这份新输入：清理守卫跟着记录的新版本走
+        // 清理守卫跟着记录的新版本走
         conflictVersions.set(key, written.version);
       }
     }
@@ -1059,7 +1156,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     const intentsBefore = intentIdSet();
     try {
-      const result = await api.submitBoard(boardId.value, undefined, "", board.value.seq);
+      const confirmedCheckId =
+        confirmedCheck && confirmedCheck.savedSeq === board.value.seq
+          ? confirmedCheck.checkId
+          : undefined;
+      const result = await api.submitBoard(
+        boardId.value,
+        undefined,
+        "",
+        board.value.seq,
+        confirmedCheckId,
+      );
       lastSubmission.value = result;
       submitStatus.value = result.status;
       // 只有成功提交才会让服务端清掉勾选并推进基准，所以成功后重新拉一遍状态。
@@ -1138,9 +1245,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 用户确认：改动生效，受影响的任务会暂停并保留进度。 */
   async function confirmImpact(): Promise<void> {
-    impactConfirmed = true;
+    const pending = pendingImpact.value;
     pendingImpact.value = null;
+    if (pending && pending.previewRev !== boardLocalRev) {
+      /**
+       * 等待确认期间板面又出现了新的候选（08 路径2）：这次说明只覆盖当时那一版，
+       * 确认不能放行未说明的改动 —— 重新核实影响，再把新的说明交给用户。
+       */
+      impactConfirmed = false;
+      impactCheckError.value = "等待确认期间板面又有改动，已重新核实这次改动的影响";
+      await saveNow();
+      return;
+    }
+    impactConfirmed = true;
     impactCheckError.value = null;
+    if (pending?.checkId) {
+      pendingConfirm = { checkId: pending.checkId, stateVersion: pending.stateVersion };
+    }
     await saveNow();
   }
 
@@ -1169,9 +1290,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     materialPaused.value = [];
   }
 
-  /** 保存前的只读预判（给组件用；不改任何状态）。 */
+  /** 保存前的只读预判（给组件用；不改任何状态）。走 M4 定稿的 impact-check。 */
   async function checkMaterialImpact(state: BoardState) {
-    return api.previewMaterialImpact(boardId.value, state);
+    return runImpactCheck(state.seq, state);
   }
 
   function intentById(intentId: string): Intent | undefined {

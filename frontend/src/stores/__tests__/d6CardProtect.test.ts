@@ -437,27 +437,36 @@ describe("§12.1 冲突入口在真实操作路径可见可点", () => {
     expect(draftSaveCalls(), "原样回写不许触发把候选写上服务器的保存").toBe(0);
   });
 
-  it("【状态】冲突未决时用户改写出不同文字：视为用户显式接管这份草稿（冲突随这次编辑结束，新文字可保存）", async () => {
+  it("【状态】冲突未决时用户改写：冲突保持，新文字只是本机候选的新版本（收尾轮 05）", async () => {
     vi.useFakeTimers();
     seedLocalRecord("A", { text: "本机候选 X", kind: "draft", version: 3, boardId: "board_default" });
     mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "服务器上的 Y" } }));
     const store = newStore();
     await store.load();
 
-    // 用户不理提示直接改写：这是对本卡内容的显式编辑（区别于「打开编辑器」「编辑别卡」）
+    /*
+     * 收尾轮 05：用户尚未点选择按钮，在冲突卡上改一个字**不**解除冲突 ——
+     * 服务器那份候选继续保留，这份新输入只是「本机候选」的新版本。
+     * 旧规则「输入就是接管」按 05 明确废止（见 docs/interactive-final-closure-contract.md）。
+     */
     store.setDraft(cardDraftKey("A"), "用户改写的新字");
-    expect(store.draftConflictFor("A"), "用户显式改写后冲突随这次编辑结束").toBeNull();
+    expect(store.draftConflictFor("A"), "改一个字不许解除未决冲突").toEqual({
+      local: "用户改写的新字",
+      server: "服务器上的 Y",
+    });
     expect(store.draftFor(cardDraftKey("A"))).toBe("用户改写的新字");
 
     vi.advanceTimersByTime(700);
     await flushPromises();
-    expect(lastDraftsPayload()[cardDraftKey("A")], "用户写下的新文字按草稿保存").toBe("用户改写的新字");
-    // 刷新后不再有冲突：服务器上已经是用户写下的这份（模拟服务器已受理这次保存）
-    mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "用户改写的新字" } }));
-    const reloaded = newStore();
-    await reloaded.load();
-    expect(reloaded.draftConflictFor("A")).toBeNull();
-    expect(reloaded.cardDraftText("A")).toBe("用户改写的新字");
+    expect(lastDraftsPayload()[cardDraftKey("A")], "未选择期间服务器那份不被本机候选覆盖").toBe("服务器上的 Y");
+    expect(store.draftConflictFor("A")).not.toBeNull();
+
+    // 用户明确选择「用本机的」：这时才按选择把这份新候选落地
+    store.resolveDraftConflict("A", "local");
+    expect(store.draftConflictFor("A")).toBeNull();
+    vi.advanceTimersByTime(700);
+    await flushPromises();
+    expect(lastDraftsPayload()[cardDraftKey("A")], "明确选择后按选择保存").toBe("用户改写的新字");
   });
 
   it("【状态】同一页面里清除草稿、防抖未到就重新读取板面：已清除的草稿不许复活", async () => {

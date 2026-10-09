@@ -69,15 +69,21 @@ export function fetchBoardState(boardId: string): Promise<BoardStateResponse> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`);
 }
 
-/** 保存：每完成一次操作就写一次。**这个调用不经过 QIO**。 */
+/**
+ * 保存：每完成一次操作就写一次。**这个调用不经过 QIO**。
+ *
+ * `confirm`（M4）：影响确认句柄。带它表示用户已经为这次改动做过影响确认；
+ * 服务端会校验 checkId 与当前已保存版本，过期就 409 stale_check（不落库）。
+ */
 export function saveBoardState(
   boardId: string,
   state: BoardState,
   reason = "op",
+  confirm?: { checkId: string; stateVersion?: number },
 ): Promise<{ ok: boolean; seq: number; savedAt: string; state: BoardState }> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`, {
     method: "PUT",
-    body: JSON.stringify({ state, reason }),
+    body: JSON.stringify({ state, reason, ...(confirm ? { confirm } : {}) }),
   });
 }
 
@@ -99,6 +105,7 @@ export function submitBoard(
   requestedVisible?: string[],
   note = "",
   baseStateVersion?: number,
+  confirmedCheckId?: string,
 ): Promise<SubmissionResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`, {
     method: "POST",
@@ -106,6 +113,7 @@ export function submitBoard(
       requestedVisible,
       note,
       ...(baseStateVersion !== undefined ? { baseStateVersion } : {}),
+      ...(confirmedCheckId ? { confirmedCheckId } : {}),
     }),
   });
 }
@@ -145,6 +153,35 @@ export function previewMaterialImpact(
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/material-impact`, {
     method: "POST",
     body: JSON.stringify({ state }),
+  });
+}
+
+/**
+ * 影响检查（M4，C 定稿）：保存前问服务端「这次候选会不会影响正在执行的任务」。
+ *
+ * 与旧的 material-impact 只读预判不同：命中影响时返回 `checkId`，
+ * 用户确认后必须带着它保存，服务端据此拒绝过期确认。
+ */
+export interface ImpactCheckResult {
+  ok: boolean;
+  checkId?: string;
+  stateVersion?: number;
+  affected?: { intentId: string; title: string; status?: string; materials: string[]; consequence: string }[];
+  affectedTasks?: { intentId: string; title: string; status?: string; materials: string[]; consequence: string }[];
+  summary?: string;
+  impactConfirmationRequired?: boolean;
+  reason?: string;
+  currentSeq?: number;
+}
+
+export function checkMaterialImpact(
+  boardId: string,
+  stateVersion: number,
+  state: BoardState,
+): Promise<ImpactCheckResult> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/impact-check`, {
+    method: "POST",
+    body: JSON.stringify({ stateVersion, changeSet: { state } }),
   });
 }
 

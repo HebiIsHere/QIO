@@ -25,6 +25,8 @@ function mountDialog(): { store: ReturnType<typeof useInteractiveStore>; wrapper
   });
   vi.spyOn(store, "confirmImpact").mockResolvedValue(undefined);
   store.pendingImpact = {
+    previewRev: 0,
+    stateVersion: 0,
     affected: [
       {
         intentId: "i1",

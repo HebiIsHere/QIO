@@ -17,6 +17,7 @@ import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
 import * as api from "../../services/interactive";
 import type { BoardState } from "../../interactive/types";
+import { writeCardLocalDraft } from "../../interactive/drafts";
 
 vi.mock("../../services/interactive", () => ({
   fetchBoardState: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../../services/interactive", () => ({
   saveDrafts: vi.fn(),
   fetchVisibleRange: vi.fn(),
   previewMaterialImpact: vi.fn(),
+  checkMaterialImpact: vi.fn(),
   submitBoard: vi.fn(),
   fetchIntents: vi.fn(),
 }));
@@ -48,14 +50,18 @@ function card(id: string, content: string): BoardState["cards"][number] {
   };
 }
 
-function boardPayload(seq = 3, drafts: Record<string, string> = {}): Awaited<ReturnType<typeof api.fetchBoardState>> {
+function boardPayload(
+  seq = 3,
+  drafts: Record<string, string> = {},
+  cards: BoardState["cards"] = [],
+): Awaited<ReturnType<typeof api.fetchBoardState>> {
   return {
     board: { id: "board_default", title: "默认板面" },
     state: {
       boardId: "board_default",
       seq,
       updatedAt: "2026-10-09T10:00:00Z",
-      cards: [],
+      cards,
       groups: [],
       links: [],
       selection: [],
@@ -68,12 +74,20 @@ function boardPayload(seq = 3, drafts: Record<string, string> = {}): Awaited<Ret
 }
 
 beforeEach(() => {
+  localStorage.clear();
   setActivePinia(createPinia());
   vi.mocked(api.fetchBoardState).mockResolvedValue(boardPayload(3));
   vi.mocked(api.saveBoardState).mockResolvedValue({ ok: true, seq: 4, savedAt: "t", state: boardPayload(4).state } as never);
   vi.mocked(api.saveDrafts).mockResolvedValue({ drafts: {}, updatedAt: "t" } as never);
   vi.mocked(api.fetchVisibleRange).mockResolvedValue({ visibleRange: { cards: [], groups: [], links: [], selection: [], empty: true, notVisibleCount: 0 } } as never);
   vi.mocked(api.previewMaterialImpact).mockResolvedValue({ affected: [] } as never);
+  vi.mocked(api.checkMaterialImpact).mockResolvedValue({
+    ok: true,
+    checkId: "chk_none",
+    stateVersion: 3,
+    affected: [],
+    impactConfirmationRequired: false,
+  } as never);
   vi.mocked(api.submitBoard).mockResolvedValue({
     status: "empty", submission: { id: "s1", seq: 4, status: "empty", createdAt: "" }, before: { cards: [], groups: [], links: [], selection: [], empty: true }, after: { cards: [], groups: [], links: [], selection: [], empty: true }, expressions: [], baseline: { updated: false }, delivery: { delivered: false, reason: "", detail: "" }, visibleRange: { cards: [], groups: [], links: [], selection: [], empty: true }, checkedCleared: [],
   } as never);
@@ -152,6 +166,33 @@ describe("06 正式板面的版本保护", () => {
   });
 });
 
+describe("05 未决冲突：改一个字不清冲突", () => {
+  it("改一个字：两份来源保留、服务器不被本机候选覆盖；明确选本机才落地", async () => {
+    const store = useInteractiveStore();
+    writeCardLocalDraft("c1", "本机候选", { boardId: "board_default", seq: 1 });
+    vi.mocked(api.fetchBoardState).mockResolvedValue(
+      boardPayload(3, { "card:c1": "服务器版本" }, [card("c1", "")]) as never,
+    );
+    await store.load();
+    expect(store.draftConflictFor("c1")).toEqual({ local: "本机候选", server: "服务器版本" });
+    // 用户在冲突 A 上「改一个字」
+    store.setDraft("card:c1", "本机候选改了");
+    expect(store.draftConflictFor("c1")?.local).toBe("本机候选改了");
+    expect(store.draftConflictFor("c1")?.server).toBe("服务器版本");
+    // 未选择期间发保存：冲突键按服务器事实回写，本机候选不上去、服务器那份也不被删
+    vi.mocked(api.saveDrafts).mockResolvedValue({ drafts: { "card:c1": "服务器版本" }, updatedAt: "t" } as never);
+    await store.flushDrafts();
+    const calls = vi.mocked(api.saveDrafts).mock.calls;
+    const sent = calls.length ? (calls[calls.length - 1][1] as Record<string, string>) : undefined;
+    if (sent && "card:c1" in sent) expect(sent["card:c1"]).toBe("服务器版本");
+    expect(store.draftConflictFor("c1")).not.toBeNull();
+    // 明确选择「用本机的」：按用户选择落地，冲突消失
+    store.resolveDraftConflict("c1", "local");
+    expect(store.draftConflictFor("c1")).toBeNull();
+    expect(store.drafts["card:c1"]).toBe("本机候选改了");
+  });
+});
+
 describe("08 影响确认约束保存与提交", () => {
   it("路径1：影响预判失败不落库，原因可见，候选保留", async () => {
     const store = useInteractiveStore();
@@ -163,13 +204,44 @@ describe("08 影响确认约束保存与提交", () => {
       recovery: { paused: [] },
     } as never);
     await store.loadIntents();
-    vi.mocked(api.previewMaterialImpact).mockRejectedValue(new Error("后端预判不可用"));
+    vi.mocked(api.checkMaterialImpact).mockRejectedValue(new Error("后端预判不可用"));
     store.commit({ ...store.board!, seq: 99, cards: [card("c1", "改动")] } as BoardState, "依赖材料的改动");
     await store.saveNow();
     await flushPromises();
     expect(api.saveBoardState).not.toHaveBeenCalled();
     expect(store.impactCheckError).toContain("影响预判");
     expect(store.dirty).toBe(true);
+  });
+
+  it("路径2：等待确认期间又改别处，确认时重新核实，不放行未说明的改动", async () => {
+    const store = useInteractiveStore();
+    await store.load();
+    vi.mocked(api.fetchIntents).mockResolvedValue({
+      intents: [{ id: "t1", title: "任务", status: "running" } as never],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    } as never);
+    await store.loadIntents();
+    vi.mocked(api.checkMaterialImpact).mockResolvedValue({
+      ok: true,
+      checkId: "chk_1",
+      stateVersion: 3,
+      affected: [{ intentId: "t1", title: "任务", materials: ["c1"], consequence: "暂停" }],
+      impactConfirmationRequired: true,
+    } as never);
+    store.commit({ ...store.board!, seq: 99, cards: [card("c1", "A")] } as BoardState, "改动A");
+    await store.saveNow();
+    await flushPromises();
+    expect(store.pendingImpact).not.toBeNull();
+    // 等待确认期间用户改了 B
+    store.commit({ ...store.board!, seq: 99, cards: [card("c1", "A"), card("c2", "B")] } as BoardState, "改动B");
+    await store.confirmImpact();
+    await flushPromises();
+    // 版本变了：这次确认不落地旧的授权，重新核实（预判仍然报影响 → 等待新的确认）
+    expect(api.saveBoardState).not.toHaveBeenCalled();
+    expect(store.pendingImpact).not.toBeNull();
+    expect(store.impactCheckError).toContain("重新核实");
   });
 
   it("路径3：等待影响确认时不发出提交；确认后提交携带本次候选版本", async () => {
@@ -182,8 +254,12 @@ describe("08 影响确认约束保存与提交", () => {
       recovery: { paused: [] },
     } as never);
     await store.loadIntents();
-    vi.mocked(api.previewMaterialImpact).mockResolvedValue({
+    vi.mocked(api.checkMaterialImpact).mockResolvedValue({
+      ok: true,
+      checkId: "chk_2",
+      stateVersion: 3,
       affected: [{ intentId: "t1", title: "任务", materials: ["c1"], consequence: "暂停" }],
+      impactConfirmationRequired: true,
     } as never);
     store.commit({ ...store.board!, seq: 99, cards: [card("c1", "改动")] } as BoardState, "改动");
     await store.saveNow();
@@ -192,11 +268,22 @@ describe("08 影响确认约束保存与提交", () => {
     const r = await store.submit();
     expect(r).toBeNull();
     expect(api.submitBoard).not.toHaveBeenCalled();
-    vi.mocked(api.previewMaterialImpact).mockResolvedValue({ affected: [] } as never);
+    vi.mocked(api.checkMaterialImpact).mockResolvedValue({
+      ok: true,
+      checkId: "chk_2",
+      stateVersion: 3,
+      affected: [],
+      impactConfirmationRequired: false,
+    } as never);
     await store.confirmImpact();
     await flushPromises();
+    // 确认句柄随这次保存一起提交（M4）
+    const saveCall = vi.mocked(api.saveBoardState).mock.calls[0];
+    expect((saveCall[3] as { checkId: string }).checkId).toBe("chk_2");
     await store.submit();
     expect(api.submitBoard).toHaveBeenCalledTimes(1);
-    expect((api.submitBoard as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBeTypeOf("number");
+    const submitCall = (api.submitBoard as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(submitCall[3]).toBeTypeOf("number");
+    expect(submitCall[4]).toBe("chk_2");
   });
 });
