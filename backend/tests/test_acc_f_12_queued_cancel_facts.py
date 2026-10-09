@@ -6,7 +6,13 @@ unavailable）」「结束事实（原因 / 动作 / 耗时）被记录持久化
 另一个正在运行的 turn」。
 
 场景：A 流式执行中提交 B（排队）→ 按 turn_id 取消 B → B 的结束事实必须：
-1) 以 TURN_END 事件发出（reason_code=user_stopped、stopped_by=user、actions 含 resend）；
+1) 以 TURN_END 事件发出（reason_code=user_stopped、stopped_by=user、actions 含 retry）；
+
+Lead 裁定（2026-10-09，列为冻结）：排队取消的可恢复动作是 **retry** 而不是 resend。
+理由：/api/turns/{id}/resend 只接受 journal 里记成 interrupted 的行（server.py 的
+recoverable/claim），排队取消后 journal 落的是 cancelled，resend 必然 409 —— 那是个死
+按钮；retry 走前端「重发该轮用户消息」（session.retryTurn → 普通发送接口），真实可用。
+active 取消路径保持既有 ("resend")，既有 test_turn_timing_facts.py 的精确相等断言不动。
 2) 持久化进 turn_journal（刷新 / 换设备后仍可恢复「重发」入口）；
 3) A 完全不受影响（继续完成、回答归 A、ASSISTANT 事件全部归 A）。
 
@@ -147,8 +153,8 @@ async def test_cancelled_queued_turn_has_persisted_end_facts_and_does_not_touch_
         end_b.get("reason_code"),
     )
     assert end_b["stopped_by"] == "user", end_b.get("stopped_by")
-    assert "resend" in [str(x) for x in end_b.get("actions") or []], (
-        "被取消的排队轮应当给「重发」入口",
+    assert "retry" in [str(x) for x in end_b.get("actions") or []], (
+        "被取消的排队轮应当给「重发/重试」入口（retry：resend 对该行必然 409，是死按钮）",
         end_b.get("actions"),
     )
     assert isinstance(end_b.get("duration_ms"), int) and end_b["duration_ms"] >= 0, (
@@ -161,7 +167,7 @@ async def test_cancelled_queued_turn_has_persisted_end_facts_and_does_not_touch_
     facts = app.state.ctx.turn_journal.facts([turn_b]).get(turn_b)
     assert facts is not None, "排队轮取消的结束事实没有落进 turn_journal"
     assert facts["reason_code"] == "user_stopped", facts
-    assert "resend" in facts["actions"], facts
+    assert "retry" in facts["actions"], facts
     assert facts["status"] == "cancelled", facts
 
     print(

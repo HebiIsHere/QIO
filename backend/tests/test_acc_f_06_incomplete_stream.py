@@ -11,10 +11,14 @@ TurnManager → TURN_END 事件。
 基线：软 EOF 后 adapter 给出 finish_reason=None 的 Completion，loop 按「没有工具调用 →
 正文即回答」收尾，TurnManager 落 status=completed、reason_code=none（正常完成）。
 
+冻结契约裁定（Lead 2026-10-09，§C2 对齐）：TURN_END 新增终态 incomplete，且只对
+reason_code=incomplete_stream 使用；不完整结束必须给出 retry 动作。
+
 断言：
 1) 已确认正文必须保留（不得丢字、不得补后缀）—— 契约既有要求；
-2) status 不得是 completed（不完整结束 ≠ 正常完成）；
-3) reason_code 不得是 none（必须给出「不完整」的结束原因）。
+2) status 不得是 completed（不完整结束 ≠ 正常完成），并必须恰好是 incomplete；
+3) reason_code 必须是 incomplete_stream（不得是正常停止 none）；
+4) actions 必须含 retry（可恢复操作）。
 
 运行：cd backend; uv run --frozen --extra dev pytest tests/test_acc_f_06_incomplete_stream.py -q
 """
@@ -130,6 +134,22 @@ async def test_sse_eof_without_finish_reason_is_not_a_normal_completion(app, pro
     assert end.get("reason_code") != "none", (
         "不完整结束必须给出明确结束原因，不得是正常停止 none",
         {"status": end.get("status"), "reason_code": end.get("reason_code"), "reason": end.get("reason")},
+    )
+    # 冻结契约裁定（Lead 2026-10-09）：不完整结束的终态与原因码是固定值，
+    # 且必须给「重试」入口。以下三条是在上面「不得是 completed / none」之上的加严，
+    # 不是放宽 —— 上面两条断言原样保留。
+    assert end.get("status") == "incomplete", (
+        "缺 finish_reason 的 EOF 必须以终态 incomplete 收口",
+        {"status": end.get("status"), "reason_code": end.get("reason_code")},
+    )
+    assert end.get("reason_code") == "incomplete_stream", (
+        "不完整结束的 reason_code 必须是 incomplete_stream",
+        {"status": end.get("status"), "reason_code": end.get("reason_code")},
+    )
+    actions = [str(x) for x in end.get("actions") or []]
+    assert "retry" in actions, (
+        "不完整结束必须给「重试」入口",
+        {"actions": end.get("actions"), "status": end.get("status")},
     )
     print(
         "[诊断] F06 不完整流：status=%s reason_code=%s 保留已确认正文=%s"
