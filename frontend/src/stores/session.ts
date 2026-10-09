@@ -812,6 +812,13 @@ const sessionStoreDefinition = defineStore("session", {
       }
       if (isBlankText(this.draft)) {
         this.draft = failed.text;
+        /**
+         * §12.4：**显式关联**被取回的失败记录。
+         * 用户把原文放回输入框、原样再发一次时，那次新发送的归属沿用**记录里已有的 draftId**
+         * （这正是「找回失败原文后主动重发」的语义关联）；受理成功只清这一条。
+         * 手动敲同样的一段字不会命中这条路径（没有显式关联）。
+         */
+        if (failed.draftId) chatDraftKeeperFor(this as object)?.armResendOf(failed.draftId, failed.text);
         const saved = this._flushDraftForRecovery();
         return saved.ok
           ? { ok: true, restored: true }
@@ -820,6 +827,7 @@ const sessionStoreDefinition = defineStore("session", {
       if (normalizeSendText(this.draft) === normalizeSendText(failed.text)) {
         // 原文已经在输入框里（例如失败后自动放回、或回来时草稿被恢复）：不必再放一次。
         // 失败事实仍保留 —— 它还没有成功发出去，不能假装已经解决。
+        if (failed.draftId) chatDraftKeeperFor(this as object)?.armResendOf(failed.draftId, failed.text);
         return { ok: true, restored: false, reason: "原文已经在输入框里" };
       }
       return {
@@ -920,11 +928,12 @@ const sessionStoreDefinition = defineStore("session", {
       this.failedSendError = newest?.id ? this.failedSendErrors[newest.id] ?? null : null;
     },
     /**
-     * 这次发送属于哪个话题（契约 §11.5）。
+     * 这次发送属于哪个话题（契约 §11.5 / §12.3）。
      *
-     * 点击时话题还没确定（null）但发送期间服务器把真实话题绑定了上来：
-     * 被发送的那份原文已经跟着迁移到新话题的位置，失败事实也应该算在新话题上，
-     * 否则回到这个话题时看不到恢复入口。
+     * 归属**只由发送自己携带**（attribution.topicId），在迁移（bind）那一刻就更新为真实话题：
+     * - 失败发生在用户切到别的话题、或页面状态是什么，都不能改变它；
+     * - **不许把「用户此刻正在看的话题」当兜底**（§12.3 反例：未绑定→A→切 B→失败，归属必须仍是 A）；
+     * - 之后才在 keeper 的存储位置上补一次确认（迁移后的键属于哪个话题）。
      */
     _failedSendTopicFor(attribution: SendAttribution): string | null {
       if (attribution.topicId !== null) return attribution.topicId;
@@ -932,9 +941,9 @@ const sessionStoreDefinition = defineStore("session", {
       const location = keeper?.locationOf(attribution.draftId);
       if (location) {
         const topic = keeper?.topicForKey(location.key);
-        if (topic !== undefined) return topic;
+        if (topic !== undefined && topic !== null) return topic;
       }
-      return this.currentTopicId;
+      return null;
     },
     /** 记下一次失败事实（原文 + 原因 + 归属身份），并立刻写进本机存储 */
     _recordFailedSend(attribution: SendAttribution, reason: string): FailedSend {
@@ -956,41 +965,40 @@ const sessionStoreDefinition = defineStore("session", {
       return record;
     },
     /**
-     * 受理成功：只清理**这一次发送对应的**失败原文（契约 §11.4 / §11.5）。
+     * 受理成功：只清理**实际被这次发送接受**的失败原文（契约 §11.4 / §12.4）。
      *
-     * 两种匹配：同一归属身份 + 同一版本（精确），或同一话题里文字相同。
-     * 后者覆盖用户把找回的原文原样再发一次、以及本机里旧记录没有身份的兼容情形；
-     * 文字不同的其他待恢复原文一律保留，晚到的旧回执不会清掉它们。
+     * **不做「文字相同」匹配**（§12.4 反例：同话题两次发送同一段话，
+     * 后一次先失败、前一次随后成功 —— 前一次的成功不能按文字把后一次的失败记录删掉）。
+     * 匹配只看身份：记录的 draftId 与这次发送一致（失败记录在 _recordFailedSend 里
+     * 已经带上同一次发送的 draftId）。旧格式没有身份的记录**保留**，不按文字猜测批量删。
+     *
+     * 找回失败原文后**主动重发**是一条新的发送（新归属）；它的成功处理只清它自己。
+     * 交互层通过「找回再发」的显式关联把旧记录的 draftId 指向重发的归属（不许按文字匹配）。
      */
     _clearFailedSendsAccepted(attribution: SendAttribution, message: string): void {
-      const normalized = normalizeSendText(message);
-      const kept: FailedSend[] = [];
+      void message;
       let dropped = 0;
+      const kept: FailedSend[] = [];
       for (const record of this.failedSends) {
+        /**
+         * §12.4：只有**身份**（draftId）被用于匹配 —— 版本号不参与：
+         * 同一身份出现新版本号，只可能来自「找回原文后原样重发」这条显式关联的路径，
+         * 它的成功同样代表这份失败事实已经处理完毕。
+         * 老格式没有 draftId 的记录一律**保留**（不按文字猜测批量删）。
+         */
         const sameAttempt = Boolean(
-          record.draftId &&
-            record.draftId === attribution.draftId &&
-            (record.draftSeq ?? attribution.draftSeq) === attribution.draftSeq,
+          record.draftId && attribution.draftId && record.draftId === attribution.draftId,
         );
-        const sameText =
-          record.topicId === attribution.topicId && normalizeSendText(record.text) === normalized;
-        if (sameAttempt || sameText) {
+        if (sameAttempt) {
           dropped += 1;
           continue;
         }
         kept.push(record);
       }
-      const legacy = this.failedSend;
-      const legacyCleared = Boolean(
-        legacy &&
-          !kept.includes(legacy) &&
-          !(legacy.id && kept.some((record) => record.id === legacy.id)) &&
-          legacy.topicId === attribution.topicId &&
-          normalizeSendText(legacy.text) === normalized,
-      );
-      if (!dropped && !legacyCleared) return;
+      if (!dropped) return;
       this.failedSends = kept;
-      if (legacyCleared) {
+      const first = this.failedSend;
+      if (first && this.failedSends.every((record) => record.id !== first?.id) && first.draftId === attribution.draftId) {
         this.failedSend = null;
         this.failedSendError = null;
       }
@@ -2371,12 +2379,18 @@ const sessionStoreDefinition = defineStore("session", {
         // 只有「不是排队」的失败才说明当前 active turn 没起来。
         // 排队请求失败不能把仍在运行的其他任务一起标记成已结束。
         if (!queued) this.turnRunning = false;
-        draftKeeper?.settleSend(attribution, false);
+        /**
+         * §12.3：拿归属的**迁移后版本**（settleSend(false) 之前在 inFlightSends 里登记的那份），
+         * 失败事实的话题从它身上拿 —— 不再看用户此刻在哪个话题、也不再用点击时刻的原始归属
+         * （未绑定发送在 bind 迁移时归属已被更新为真实话题，原始归属仍是 null）。
+         */
+        const failedAttribution = draftKeeper?.takeFailedAttributionFor(attribution) ?? attribution;
+        draftKeeper?.settleSend(failedAttribution, false);
         /**
          * 失败事实由会话层统一记录（契约 §10.1）：这里**不碰任何输入框**。
          * 恢复只发生在原话题、且只由用户点恢复入口触发（不自动重发）。
          */
-        if (!isBlankText(attribution.text)) {
+        if (!isBlankText(failedAttribution.text)) {
           /**
            * 失败事实进会话层、并立刻写进本机存储（契约 §11.4）：
            * 两个入口都只读这份事实，不各写一套「失败了要不要把字放回去」。
@@ -2384,7 +2398,7 @@ const sessionStoreDefinition = defineStore("session", {
            * 原文放回输入框由入口在拿到结果后调用 `retryFailedSend(本次归属)` 完成：
            * 只看这一条失败事实，不猜、不自动发送、不覆盖用户后来的输入。
            */
-          this._recordFailedSend(attribution, reason || "原因未知");
+          this._recordFailedSend(failedAttribution, reason || "原因未知");
         }
         return false;
       }
@@ -2440,22 +2454,30 @@ function mintFailedSendId(): string {
   return `fail_${Date.now().toString(36)}_${sendIdentitySeq.toString(36)}`;
 }
 
-/** 每个话题最多保留多少条待恢复原文（有界；只丢最旧的，不静默丢最新的） */
+/**
+ * §12.5：**废止静默裁剪**。
+ *
+ * 基线行为是「每话题最多 8 条、其余静默丢弃」——第九份失败原文会把第一份悄悄挤掉，
+ * 用户没有放弃任何一份、也没有成功发送，可第一份就找不回了（复现确认）。
+ *
+ * 现在的口径：**不自动淘汰用户尚未处理的失败原文**。
+ * 本函数保留名字（调用点不变）但实现改为「只去重、不裁剪」：
+ * - 展示数量与保留数量分开（展示层默认显示较少 + 「查看其余」，隐藏 ≠ 删除）；
+ * - 本机存储有配额限制时**如实告知**（写失败路径已处理），不用删除未处理内容来静默解决；
+ * - 记录只在对应发送成功（_clearFailedSendsAccepted）或用户明确放弃后清理。
+ */
 const FAILED_SEND_TOPIC_LIMIT = 8;
 
-/**
- * 按话题裁剪（新的在前）：每个话题只留最近 FAILED_SEND_TOPIC_LIMIT 条。
- * 上限是产品口径的一部分：本机存储有配额，恢复入口也不该无限堆积。
- */
 function trimFailedSendsPerTopic(records: FailedSend[]): FailedSend[] {
-  const seen = new Map<string, number>();
+  const seen = new Set<string>();
   const kept: FailedSend[] = [];
   for (const record of records) {
-    const key = record.topicId ?? UNBOUND_DRAFT_ID;
-    const count = (seen.get(key) ?? 0) + 1;
-    seen.set(key, count);
-    if (count <= FAILED_SEND_TOPIC_LIMIT) kept.push(record);
+    // 相同 id 只保留最新的（不该出现；防御性去重，不做每话题数量裁剪）
+    if (record.id && seen.has(record.id)) continue;
+    if (record.id) seen.add(record.id);
+    kept.push(record);
   }
+  void FAILED_SEND_TOPIC_LIMIT;
   return kept;
 }
 
@@ -2612,6 +2634,14 @@ function createChatDraftKeeper(host: SessionDraftHost) {
    * 话题迁移会改这里的 key（契约 §11.5），受理成功时按这里的**新位置**清理。
    */
   const inFlightSends: SendAttribution[] = [];
+
+/**
+ * §12.3：发送归属的话题信息，与「草稿保护是否仍有效」**分生命周期**。
+ *
+ * inFlightSends 登记的是保护本身：用户在发送期间写了新内容时保护解除（splice），那份登记会被清掉；
+ * 但「这次发送属于哪个话题」是一份独立事实，随迁移更新，失败时仍要用它。
+ */
+const sendTopicByDraftId = new Map<string, string | null>();
   /**
    * 存储键 → 话题（契约 §11.5）。
    *
@@ -2664,7 +2694,13 @@ function createChatDraftKeeper(host: SessionDraftHost) {
       if (atSeq > held.draftSeq) {
         for (let i = inFlightSends.length - 1; i >= 0; i -= 1) {
           if (inFlightSends[i].key === atKey && inFlightSends[i].draftSeq < atSeq) {
-            inFlightSends.splice(i, 1);
+            /**
+             * 保护解除（用户在发送期间写下了更新内容，契约 §10.1）。
+             * §12.3：这条发送的**归属话题**不随保护一起消失 —— 单独记在 sendTopicByDraftId 里，
+             * 失败的归属解析仍要用它。
+             */
+            const removed = inFlightSends.splice(i, 1)[0];
+            if (removed) sendTopicByDraftId.set(removed.draftId, removed.topicId);
           }
         }
       }
@@ -2780,6 +2816,17 @@ function createChatDraftKeeper(host: SessionDraftHost) {
     loadInto(text);
     // 从存储里读回来的草稿：它本来就是保存好的，状态如实说「已保存」
     if (stored && stored.text) setStatus("saved", null);
+    /**
+     * §12.3：归属话题在**迁移那一刻**就稳定为真实话题 —— 不依赖后续写入是否成功、
+     * 也不依赖「迁移的内容恰好和存储里已有的相同」这些巧合。
+     * 失败记录的话题从归属自己身上拿，不再看用户此刻在哪个话题。
+     */
+    if (previousUnbound && !isBlankText(carry)) {
+      for (const item of movedSends) {
+        item.key = nextKey;
+        if (item.topicId === null) item.topicId = topicId;
+      }
+    }
     if (!isBlankText(carry) && carry !== savedText) {
       if (movedSends.length > 0) {
         // 同一个版本换了话题位置：按原版本写入，并把在飞的归属指向新键
@@ -2801,10 +2848,29 @@ function createChatDraftKeeper(host: SessionDraftHost) {
     if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
   }
 
+  /**
+   * §12.4：「找回失败原文后主动重发」的显式关联。
+   * 置位时记录该失败记录的 draftId；下一次 captureAttribution() 时若输入框文字与
+   * 失败记录一致，就沿用同一个 draftId（那次发送 = 对该记录的重发）。用过后立即失效。
+   * 手动敲同样的一段字不会置位，因此不会命中。
+   */
+  let armedResendId: string | null = null;
+  let armedResendText: string | null = null;
+  function armResendOf(failedDraftId: string, text: string): void {
+    armedResendId = failedDraftId;
+    armedResendText = text;
+  }
+
   /** 记下「点击发送」那一刻的归属（身份、话题、原文、草稿版本、存储键） */
   function captureAttribution(): SendAttribution {
+    const reuseId =
+      armedResendId && armedResendText !== null && normalizeSendText(host.draft) === normalizeSendText(armedResendText)
+        ? armedResendId
+        : null;
+    armedResendId = null;
+    armedResendText = null;
     return {
-      draftId: mintSendIdentity(),
+      draftId: reuseId ?? mintSendIdentity(),
       topicId: host.currentTopicId,
       text: host.draft,
       draftSeq: seq,
@@ -2862,6 +2928,7 @@ function createChatDraftKeeper(host: SessionDraftHost) {
       // 兜底归属（没有在点击那一刻记录过）：不动存储，只保住状态显示。
       // 仍然登记这次发送：失败时要能说清它现在属于哪个话题（契约 §11.5）。
       inFlightSends.push({ ...at });
+      if (at.draftId) sendTopicByDraftId.set(at.draftId, at.topicId ?? null);
       if (at.key === key && isBlankText(host.draft)) setStatus("idle", null);
       return;
     }
@@ -2879,6 +2946,7 @@ function createChatDraftKeeper(host: SessionDraftHost) {
       }
     }
     inFlightSends.push({ ...at });
+    if (at.draftId) sendTopicByDraftId.set(at.draftId, at.topicId ?? null);
   }
 
   /**
@@ -2953,6 +3021,20 @@ function createChatDraftKeeper(host: SessionDraftHost) {
       const found = inFlightSends.find((item) => item.draftId === draftId);
       return found ? { key: found.key, seq: found.draftSeq, text: found.text } : null;
     },
+    /**
+     * §12.3：取这次发送的**迁移后归属**（含 bind 更新过的真实话题）。
+     * 找不到时返回原归属（调用方仍能拿点击时刻的版本）。
+     * 这一次读取**不会**从 inFlightSends 里摘除 —— 摘除交给 settleSend。
+     */
+    takeFailedAttributionFor(attribution: SendAttribution): SendAttribution {
+      const found = inFlightSends.find((item) => item.draftId === attribution.draftId);
+      // §12.3：迁移后确认（inFlightSends 上的登记拷贝）；保护解除则从独立映射取话题
+      if (found) return { ...found, text: attribution.text };
+      if (sendTopicByDraftId.has(attribution.draftId)) {
+        return { ...attribution, topicId: sendTopicByDraftId.get(attribution.draftId) ?? null };
+      }
+      return attribution;
+    },
     /** 某个存储键对应哪个话题（不认识这个键时返回 undefined，调用方自己兜底） */
     topicForKey(target: string): string | null | undefined {
       return keyTopics.get(target);
@@ -2963,6 +3045,7 @@ function createChatDraftKeeper(host: SessionDraftHost) {
     flushNow,
     recordAttribution,
     takeAttribution,
+    armResendOf,
     protectForSend,
     settleSend,
     retry,
