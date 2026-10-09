@@ -169,14 +169,32 @@ function describeError(err: unknown): string {
   return text || "原因未知";
 }
 
-/** 存储容量/配额类错误单独说清楚：用户能采取行动（清空间或改用其它浏览器） */
-function describeWriteError(err: unknown): string {
+/** 存储容量/配额类错误单独识别：用户能采取行动（清理空间或改用其它浏览器） */
+function isQuotaError(err: unknown): boolean {
   const name = (err as { name?: string } | null)?.name ?? "";
   const code = (err as { code?: number } | null)?.code ?? 0;
-  if (name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED" || code === 22 || code === 1014) {
-    return "本机存储已满，草稿没有保存成功（清理一些空间后可以重试）";
-  }
+  return name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED" || code === 22 || code === 1014;
+}
+
+/** 存储容量/配额类错误单独说清楚：用户能采取行动（清理一些空间或改用其它浏览器） */
+function describeWriteError(err: unknown): string {
+  if (isQuotaError(err)) return "本机存储已满，草稿没有保存成功（清理一些空间后可以重试）";
   return "草稿写入失败：" + describeError(err);
+}
+
+/*
+ * 删除失败的措辞与写入分开（契约 M2 / 条目 13）：
+ * 「没保存上」和「旧记录没删掉」对用户是两件事 —— 前者代表这次输入暂时没有保护，
+ * 后者代表下次打开可能又看到一份本该消失的内容。混成一句话会让用户判断错该做什么。
+ */
+function describeRemoveError(err: unknown): string {
+  if (isQuotaError(err)) return "本机存储已满，这条记录没有删掉（清理一些空间后可以重试）";
+  return "删除本机记录失败：" + describeError(err);
+}
+
+/** 删除本身没抛错、但结果无法核实（读记录就抛）时的说明：宁可说「没确认」，不报成功 */
+function describeRemoveUnverified(err: unknown): string {
+  return "没能确认本机记录是否已经删除：" + describeError(err);
 }
 
 /**
@@ -238,6 +256,37 @@ export interface DraftWriteResult {
   error?: string;
   /** 这次写入针对的本机版本号（写失败时也返回，调用方仍可用它来说明「哪一版没保护上」） */
   version: number;
+}
+
+/**
+ * 删除没达成期望时的原因分类（调用方据此决定界面说什么，契约 M2 / 条目 13）。
+ *
+ * - `missing-record`：本来就没有这条记录。**不是失败**（ok=true），调用方不做多余提示。
+ * - `version-guard`：记录已经是别的版本，按版本守卫**有意保留**（ok=false）。
+ *   这是 §11.2 的正常分支，不是故障 —— 界面不能显示成「删除失败」。
+ * - `storage-failure`：存储不可用或 removeItem 抛错，删除**真的失败了**（ok=false）。
+ *   调用方必须显示真实原因并提供重试，也不得把这次操作标成完成。
+ */
+export type DraftRemoveReason = "missing-record" | "version-guard" | "storage-failure";
+
+/**
+ * 底层删除的真实结果。
+ *
+ * 为什么专门要有这个返回值：删除是「让旧内容不再出现」的唯一手段，静默失败
+ * （返回 void，或把 false 混着用）会让界面显示成已完成，而用户重开后又看到那份
+ * 本该消失的稿子（条目 13 / 条目 12）。所以删除一律返回：**期望是否达成**（ok）、
+ * **是否真的删掉了一条**（removed）、**没达成时的原因分类**（reason）、
+ * 以及**可直接显示的真实原因**（error）。
+ */
+export interface DraftRemoveResult {
+  /** 期望是否达成：记录已经不在了就是 true（本来就没有也算） */
+  ok: boolean;
+  /** 这次是否真的从存储里删掉了一条记录 */
+  removed: boolean;
+  /** 没达成期望时的原因分类；成功时为 undefined */
+  reason?: DraftRemoveReason;
+  /** 失败时的真实原因（可直接显示给用户）；version-guard 是有意保留，不带错误 */
+  error?: string;
 }
 
 /** 底层写入：只做序列化与存储，不解释语义 */
@@ -340,14 +389,19 @@ export function writeCardLocalClear(
  *
  * 版本守卫解决的是 §11.2 的「旧版本的清除不许删掉后来新建的版本」：
  * 用户在清除之后又编辑了新内容，记录已经是新版本，迟到的清除确认不能把它删掉。
- * 记录不存在时返回 true（本来就没有，不需要删）。
+ * 记录不存在时 ok=true（本来就没有，不需要删）。
+ *
+ * 返回**真实结果**（条目 13）：版本守卫拒绝是 `version-guard`（有意保留，界面不说失败），
+ * 存储层删不掉是 `storage-failure`（界面必须说清原因并留重试入口）。
  */
-export function removeCardLocalDraft(cardId: string, expectVersion?: number): boolean {
+export function removeCardLocalDraft(cardId: string, expectVersion?: number): DraftRemoveResult {
   const key = cardLocalDraftStorageKey(cardId);
   const current = readDraft(key);
-  if (current && typeof expectVersion === "number" && current.version !== expectVersion) return false;
-  removeDraft(key);
-  return true;
+  if (!current) return { ok: true, removed: false, reason: "missing-record" };
+  if (typeof expectVersion === "number" && current.version !== expectVersion) {
+    return { ok: false, removed: false, reason: "version-guard" };
+  }
+  return removeDraft(key);
 }
 
 /**
@@ -358,15 +412,19 @@ export function removeCardLocalDraft(cardId: string, expectVersion?: number): bo
  * 会把别的页面还没同步的新输入一起删掉。所以：
  * - expectVersion 是数字：只删版本号仍等于它的记录；
  * - expectVersion 为 null（当时就没有记录）：只在现在仍然没有记录时才算无事可做。
- * 版本对不上就**拒绝清理**并返回 false，让调用方保留这条（可能更新的）副本。
+ *
+ * 版本对不上就**拒绝清理**（ok=false / reason="version-guard"），让调用方保留这条（可能更新的）副本；
+ * 版本对得上却删不掉（存储失败）是 **storage-failure**：调用方必须显示原因并可重试。
+ * 两者混在一个 false 里就无法区分「有意保留」与「真的删失败」（条目 13）。
  */
-export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: number | null): boolean {
+export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: number | null): DraftRemoveResult {
   const key = cardLocalDraftStorageKey(cardId);
   const current = readDraft(key);
   const currentVersion = current ? (typeof current.version === "number" ? current.version : 0) : null;
-  if (currentVersion !== expectVersion) return false;
-  removeDraft(key);
-  return true;
+  if (currentVersion !== expectVersion) return { ok: false, removed: false, reason: "version-guard" };
+  // 当时没有记录、现在仍然没有：本来就没有可删的东西（不是失败）
+  if (!current) return { ok: true, removed: false, reason: "missing-record" };
+  return removeDraft(key);
 }
 
 /**
@@ -380,14 +438,55 @@ export function hasDraftRecord(key: string): boolean {
   return readDraft(key) !== null;
 }
 
-export function removeDraft(key: string): void {
-  const { storage } = resolveStorage();
-  if (!storage) return;
+/**
+ * 删掉一条本机记录，返回**真实结果**（条目 13 / 契约 M2：失败不得静默报成功/完成）。
+ *
+ * 三种结局分得开：
+ * - 删成功 / 本来就没有 → ok=true；
+ * - 存储不可用、removeItem 抛错 → ok=false / storage-failure + 真实原因（删除失败时记录仍在，内容没丢）；
+ * - removeItem 不抛错却没删掉（只读环境、被别的实现吞掉、多页面竞争）→ 复核后判为 storage-failure，不报成功。
+ */
+export function removeDraft(key: string): DraftRemoveResult {
+  const { storage, error } = resolveStorage();
+  if (!storage) {
+    return {
+      ok: false,
+      removed: false,
+      reason: "storage-failure",
+      error: error ?? "本地存储不可用，这条本机记录没有删掉",
+    };
+  }
+  // 先看有没有：本来就没有不叫失败，调用方不必为它提示错误
+  let existed: boolean;
+  try {
+    existed = storage.getItem(key) !== null;
+  } catch (err) {
+    return { ok: false, removed: false, reason: "storage-failure", error: describeRemoveUnverified(err) };
+  }
+  if (!existed) return { ok: true, removed: false, reason: "missing-record" };
   try {
     storage.removeItem(key);
-  } catch {
-    /* 删不掉：下一次读取还会看到旧草稿，至少内容没有丢 */
+  } catch (err) {
+    return { ok: false, removed: false, reason: "storage-failure", error: describeRemoveError(err) };
   }
+  /*
+   * 删完必须复核：removeItem 不抛异常并不等于记录真的没了
+   * （只读环境、被别的实现吞掉、多页面竞争都可能留下旧记录）。
+   * 不复核就会把「没删掉」报成完成 —— 正是条目 13 要消掉的行为。
+   */
+  try {
+    if (storage.getItem(key) !== null) {
+      return {
+        ok: false,
+        removed: false,
+        reason: "storage-failure",
+        error: "本机存储没有真正删掉这条记录（可能被浏览器策略或其它页面阻止）",
+      };
+    }
+  } catch (err) {
+    return { ok: false, removed: false, reason: "storage-failure", error: describeRemoveUnverified(err) };
+  }
+  return { ok: true, removed: true };
 }
 
 /**
