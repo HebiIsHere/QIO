@@ -805,8 +805,8 @@
   - §12.3/§12.4/§12.5 发送记录保护（归属稳定、成功只清该次、失败原文不静默淘汰）
   - §12.6 切换条只在确有第二个面板
   - §12.7 透明区标题/说明局部底色
-- **门禁（集成总提交上实跑）：** `npx vue-tsc --noEmit` = 0；全量 `npx vitest run` = **144/145 文件、1416/1417 用例**
-  （唯一失败是负载敏感的 `eventBufferOverflow`，单独跑 4/4、17.9s）；后端 `pytest` **exit 0**；
+- **门禁（最终提交上实跑）：** `npx vue-tsc --noEmit` = 0；全量 `npx vitest run` = **145 文件 / 1417 用例全绿**
+  （最终提交上含负载敏感用例全绿；此前一轮并发时超时、单独跑 4/4 通过为已知现象）；后端 `pytest` **exit 0**；
   `python scripts/check_docs.py` 通过（33 个里程碑条目）；第六轮反例合集 **46 例通过**。
 - **关闭重开（已完成）：** 同一 profile 新浏览器进程验证两个入口都能找回同一失败原文
   （证据 `docs/interactive-ui-screenshots/r6-lead-{chat,composer}-reopen-recovery.png`）。
