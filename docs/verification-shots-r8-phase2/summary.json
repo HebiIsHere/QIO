@@ -1,0 +1,1728 @@
+{
+  "results": [
+    {
+      "name": "环境：首次引导已关闭",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "S1 跨来源带附件发送：POST **真的到达后端**（请求级观察到 /api/turns，且请求头带 x-qio-prepare-id）",
+      "ok": true,
+      "detail": {
+        "chipReady": true,
+        "sendStatus": 200,
+        "postCount": 1,
+        "prepareHeaderSeen": true,
+        "shot": "D:\\qio-dev\\qio-r8-d\\docs\\verification-shots-r8-phase2\\r8-01-cross-origin-attachment-send.png"
+      }
+    },
+    {
+      "name": "S1 CORS 放行：响应 200 且带 access-control-allow-origin（r7 的 no-request 定性为预检被拦）",
+      "ok": true,
+      "detail": {
+        "allowOrigin": "http://127.0.0.1:5199",
+        "corsErrorCount": 0,
+        "responseStatus": 200,
+        "note": "r7 报告里的「带附件发送 no-request」根因就是预检 400（后端预检用例已复现 400→200）"
+      }
+    },
+    {
+      "name": "S1 回执绑定正确 + read_attachment 读到内容 + 回答完成",
+      "ok": true,
+      "detail": {
+        "boundIds": [
+          "att_9dc4b55f226a"
+        ],
+        "contentHead": "R8 跨来源附件内容：只有这份副本里才有的标记 5e21\n",
+        "answerTail": ":27:39\n复制\n默认话题\n\n我读到了你带来的文件。\n\n15:27:41\n复制",
+        "modelCalls": 1
+      }
+    },
+    {
+      "name": "S2 带附件失败后重试：克隆新 id、原文件已删除仍读出内容（r7 欠账）",
+      "ok": true,
+      "detail": {
+        "chipReady": true,
+        "sendStatus": 200,
+        "retryAppeared": true,
+        "newIds": [
+          "att_6d5ddc7c8caf"
+        ],
+        "contentHead": "R8 重试附件内容：只有这份副本里才有的标记 7b33\n"
+      }
+    },
+    {
+      "name": "S3 回答在 provider 结束前流式可见、声明不泄漏、全局 1 份、过程区无副本",
+      "ok": true,
+      "detail": {
+        "live": true,
+        "stillOpen": true,
+        "leaked": false,
+        "occurrences": 1
+      }
+    },
+    {
+      "name": "S3 默认折叠（可见区没有历史抽屉）",
+      "ok": true,
+      "detail": {
+        "historyCount": 0
+      }
+    },
+    {
+      "name": "S3 结束原因与耗时可见",
+      "ok": true,
+      "detail": {
+        "tail": "秒 默认话题 我看过你带来的文件了。 15:27:45 复制 第 05 轮 15:27:47 流式取证 15:27:47 复制 已完成 耗时 2.5 秒 默认话题 正式回答第一句。正式回答第二句。 15:27:48 复制"
+      }
+    },
+    {
+      "name": "S3 内联审批：描述/独立说明/真实命令三者都在卡里",
+      "ok": true,
+      "detail": {
+        "cardText": "! 电脑操作审批 想运行一条 shell 命令 会执行命令 ◈ QIO 的说明 模型说明：为了验证审批链路，我要在受限子进程里跑一条无害的回显命令。 会改变什么 会删除或覆盖已有数据 授权范围 仅这一次：只对本次操作有效，之后同类操作会再问你 它会访问什么 启"
+      }
+    },
+    {
+      "name": "S3 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200",
+      "ok": true,
+      "detail": {
+        "contentStatus": 200
+      }
+    },
+    {
+      "name": "S4 宽窄窗口截图已产出，窄窗口无横向溢出",
+      "ok": true,
+      "detail": {
+        "wide": "D:\\qio-dev\\qio-r8-d\\docs\\verification-shots-r8-phase2\\r8-09-wide-1440.png",
+        "narrow": "D:\\qio-dev\\qio-r8-d\\docs\\verification-shots-r8-phase2\\r8-10-narrow-420.png",
+        "horizontalOverflowPx": 0
+      }
+    },
+    {
+      "name": "S4 边界（未验证）：Windows 原生窗口 / 安装包 E2E 本机不具备（不用浏览器证据冒充）",
+      "ok": true,
+      "detail": {
+        "note": "原生壳（Tauri）下的选文件、路径拖入、原生中止提示未验证"
+      }
+    }
+  ],
+  "apiRequests": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "accept": "text/event-stream",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/onboarding/seen",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "accept": "text/event-stream",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/attachments",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/attachments/att_9dc4b55f226a",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "x-qio-prepare-id": "8473d0fe-9a6e-44d0-8df2-3d03c7b6342b",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/attachments",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/attachments/att_9f004c2a92cb",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "x-qio-prepare-id": "ca86f746-7245-4d41-8274-8292e326852c",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/approvals/appr_88b9d6589b75/respond",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "accept": "text/event-stream",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "content-type": "application/json",
+        "sec-ch-ua-mobile": "?0"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8734/api/attachments/att_9f004c2a92cb/content",
+      "headers": {
+        "sec-ch-ua-platform": "\"Windows\"",
+        "referer": "http://127.0.0.1:5199/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+        "sec-ch-ua": "\"Chromium\";v=\"154\", \"Microsoft Edge\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0"
+      }
+    }
+  ],
+  "apiResponses": [
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "25",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "transfer-encoding": "chunked",
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "text/event-stream; charset=utf-8",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "179",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "277",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/onboarding/seen",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "185",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:32 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "168",
+        "date": "Fri, 09 Oct 2026 07:27:35 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "160",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "207",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "342",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "342",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "25",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "184",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "transfer-encoding": "chunked",
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "text/event-stream; charset=utf-8",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "277",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "168",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "160",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "207",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "342",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "342",
+        "date": "Fri, 09 Oct 2026 07:27:37 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "212",
+        "date": "Fri, 09 Oct 2026 07:27:38 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:39 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:39 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "880",
+        "date": "Fri, 09 Oct 2026 07:27:39 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_9dc4b55f226a",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "1064",
+        "date": "Fri, 09 Oct 2026 07:27:39 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "1293",
+        "date": "Fri, 09 Oct 2026 07:27:40 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:40 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:40 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "874",
+        "date": "Fri, 09 Oct 2026 07:27:43 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_9f004c2a92cb",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "1055",
+        "date": "Fri, 09 Oct 2026 07:27:43 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "1275",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "1276",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:44 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "191",
+        "date": "Fri, 09 Oct 2026 07:27:47 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:49 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:49 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "200",
+        "date": "Fri, 09 Oct 2026 07:27:50 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/approvals/appr_88b9d6589b75/respond",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "67",
+        "date": "Fri, 09 Oct 2026 07:27:50 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/health",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "25",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/settings/ui",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/onboarding/status",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "184",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/events",
+      "headers": {
+        "transfer-encoding": "chunked",
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "text/event-stream; charset=utf-8",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/runtime/state",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "532",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/tasks",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "12",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/dev/authorizations",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "21",
+        "date": "Fri, 09 Oct 2026 07:27:52 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "7544",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/graph/topics",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "160",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/overview",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "237",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "372",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/planet/browse",
+      "headers": {
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "372",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "application/json",
+        "vary": "Origin",
+        "server": "uvicorn"
+      }
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_9f004c2a92cb/content",
+      "headers": {
+        "cache-control": "no-store",
+        "etag": "\"152ce6265730824ce417cd69509e9f23\"",
+        "x-content-type-options": "nosniff",
+        "accept-ranges": "bytes",
+        "access-control-allow-origin": "http://127.0.0.1:5199",
+        "content-length": "66",
+        "date": "Fri, 09 Oct 2026 07:27:53 GMT",
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": "attachment; filename*=utf-8''r8-%E9%87%8D%E8%AF%95%E9%99%84%E4%BB%B6.txt",
+        "server": "uvicorn",
+        "last-modified": "Fri, 09 Oct 2026 07:27:43 GMT",
+        "vary": "Origin"
+      }
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+  ],
+  "provider": "http://127.0.0.1:8805",
+  "base": "http://127.0.0.1:5199"
+}
