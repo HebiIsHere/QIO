@@ -592,10 +592,16 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
     **缓冲上限只管理资源，不决定角色**（2026-10-08 废止「超限即判为工作调用」）：超过上限**不构成**
     「有工具调用」或「整轮没有回答内容」的证据。达到硬上限（`UNDECLARED_SPILL_LIMIT`，默认 64 MiB）
     或暂存 I/O 失败 → **如实报告**（2026-10-08 修正）：`AnswerBuffer.collect()` 返回结构化结果
-    `BufferOutcome(text, complete, kind, reason, total_bytes)`，`kind ∈ {complete, limit, spill_create, spill_write,
-    spill_read}` —— **三类必须区分**，暂存故障**不得**被描述成「正文超过上限」。事实传递通道是
+    `BufferOutcome(text, complete, kind, reason, generated_bytes, saved_bytes, delivered_bytes)`（2026-10-09 修正：
+    三个数字**分开**且必须真实 —— `generated_bytes` = 模型生成并交给缓冲的字节（含未能保存部分）、
+    `saved_bytes` = 内存 + **成功写入暂存**的字节、`delivered_bytes` = 实际交付字节；`total_bytes` 仅为
+    `saved_bytes` 的只读别名），`kind ∈ {complete, limit, spill_create, spill_write, spill_read}` ——
+    **三类必须区分**，暂存故障**不得**被描述成「正文超过上限」。事实传递通道是
     ①**可见事件**（`limit` → WARNING `answer_truncated`；`spill_*` → WARNING `answer_incomplete` + `kind`，
-    消息里写明「已交付 N 字节 / 原生成内容共 M 字节」）②**轮次警告**（随 `TURN_END` 事实下发）。
+    消息里的统计名称必须真实）②**轮次警告**（随 `TURN_END` 事实下发）。
+    `collect()` 必须**核对实际读回内容与成功写入的字节事实**（2026-10-09 新增）：暂存
+    **缺失 / 截短 / 异常增长 / 无效 UTF-8**（含**多字节边界被截断**）→ **不得**当正常完整交付、
+    **不得用 replacement 字符掩盖损坏**（截到合法边界并如实说明）。
     **交付正文 = 模型已生成且已确认可交付的那部分，原样** —— 不把说明追加进 `final_content`，
     不用校准事件覆盖不完整事实，**不重新调用模型**伪造找回原文。绝不无界增长、偷偷丢字、擅自换角色或重写答案。调用结束**有工具调用** → 缓冲文字作为过程说明
     **按序完整**放行（不丢字）；**无工具调用** → 一次性交付到正式回答区（`{interim:false, streaming:false}`、
@@ -674,13 +680,24 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
     要么**结构化拒绝**（`attachment_not_ready`，人话原因含重试指引）；等待**有界**（`PREPARE_WAIT_MS`）到点拒绝，
     覆盖首次登记 / 普通发送 / 旧客户端缺 `attachment_ids` 兜底 / 重试克隆 / resend / 排队；
     **显式空列表仍表示不带附件**；任一条被拒则整个绑定**一个字节都不写**（不留半绑状态）；
+    - **兼容路径的整体拒绝**（2026-10-09 修正）：旧客户端（缺 `attachment_ids`）进入时**枚举一次并固定**
+      本次应携带的集合快照（= 本话题未绑定附件），等待期间**不重新枚举**；快照内任一附件在等待期间
+      **失败 / 取消 / 删除 / 超时 / 不可读 / 被其他轮占用** → **结构化拒绝整轮**（复用显式路径同一份判据与 code，
+      两套规则不漂移）；等待之后落库之前**不再有 await**（按当下事实复核全部再一次落库，对事件循环原子）。
+      快照为空 → 正常执行；进入时已是 failed/cancelled/missing 的属于历史记录，不携带也不阻断纯文字发送。
   - 放行**按预留顺序**（FIFO，后预留先就绪也要等前面；队首长时间不放行按有界等待兜底并记警告）；
   - resend 的 claim **只在准备成功后消费** —— 准备失败不会永久吃掉原消息的恢复机会；
-  - **可确认的取消**（2026-10-08 新增）：`X-QIO-Prepare-Id` 标识 + 幂等端点
+  - **可确认的取消**（2026-10-08 新增；2026-10-09 修正）：`X-QIO-Prepare-Id` 标识 + 幂等端点
     `POST /api/turns/prepare/{prepare_id}/cancel`（`cancelled` / `already_started` / `unknown`），
     且**服务端监测到准备期间请求断连也按同一契约 `abandon`** —— 不依赖客户端再发任何字节；
     `activate` 前复核取消标记，迟到的复制成功**不得**重启本轮；只取消本请求，不影响其它轮次；
     已放行后走既有停止流程并**如实**显示（不得宣称「没有发送」）；前端「中止」以后端**确认**为准；
+    - **CORS**：`X-QIO-Prepare-Id` 必须列入 `allow_headers`（2026-10-09 修正：此前漏列导致带附件发送的
+      预检被 400 Disallowed CORS headers 拦截，带附件发送在浏览器侧根本到不了后端）；
+    - **精确取消目标**（2026-10-09 修正）：`already_started` 回执里的 `turn_id` 就是**要停止的目标** ——
+      前端 `stopTurnById(turnId)` 以它为准，覆盖准备中 / 已入队 / 运行中 / 已结束；**不得**静默退回
+      「停止当前 active 任务」（那是普通停止按钮的语义，另一轮在跑时会被误伤）；身份缺失时明确说明，
+      文案依事实（取消请求发出 ≠ 已停止；已执行轮次不得说「没有发送」）；
   - 准备期间客户端断开 / 取消 / 服务关闭 → `abandon` + 清理本次克隆，台账如实记 `cancelled`（**不是** interrupted）；
     释放磁盘闸门后**也不会**再开始执行；不遗留可执行队列项、永久准备态或无人认领副本；
   - **放弃预留先兑现等待者**（2026-10-08 修正）：`abandon` 先按既有约定**兑现该轮所有等待者**再清结果表；
