@@ -813,8 +813,9 @@
   两个关键缺陷、完成 19（定位换算二次减滚动量、任务定位真实通知）与 20（失焦/隐藏/Escape/卸载复位）、
   并接完 A2 的删除/清除底层到 store 的 6 处调用点。E 建立二十项正确行为验收矩阵并跑基线探针。
   交付按「部分并行 + 主智能体串行收尾」描述。
-- **门禁（最终提交实跑）：** `npx vue-tsc --noEmit` = 0；前端全量 `npx vitest run` 全绿；
-  后端 `pytest` exit 0；`python scripts/check_docs.py` 通过。
+- **门禁（最终提交实跑）：** `npx vue-tsc --noEmit` = 0；前端全量 `npx vitest run` = **579 文件 / 1549 用例全绿**
+  （与后端并发的一次运行中 `eventBufferOverflow` 负载敏感用例失败，单独复跑与无并发全量均全绿）；
+  后端 `pytest` exit 0；`python scripts/check_docs.py` 通过（34 个里程碑条目）。
 - **分层验收：** ①单元/状态与②组件/DOM 由各批 `final-*` 用例覆盖；③API/数据库：
   `scripts/final-lead-verify/final-lead-api-journey.py`（真实 HTTP + 临时库）**12/12 通过**
   （服务端门 409、带确认落库、过期提交 409 且无成功记录、`delivery.delivered` 未被伪造）；

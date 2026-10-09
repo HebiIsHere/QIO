@@ -69,11 +69,15 @@
 
 ## 6. 全量检查
 
+在候选 SHA（docs 提交 `e7f5802`）上实跑：
+
 - 前端 `npx vue-tsc --noEmit`：**exit 0**
-- 前端 `npx vitest run`：见下方「最终门禁」小节（在最终 SHA 上实跑）
-- 后端 `.venv/Scripts/python.exe -m pytest`：见下方「最终门禁」小节（在最终 SHA 上实跑）
+- 前端 `npx vitest run`：**579 文件 / 1549 用例全绿**（无并发负载时实跑；
+  与后端全量并发的一次运行里 `eventBufferOverflow` 的「2 万条事件有界」用例失败，
+  单独复跑 5/5 通过、无并发全量再次全绿 —— 与既往记录同类的负载敏感现象，不是本轮代码缺陷）
+- 后端 `.venv/Scripts/python.exe -m pytest -q`：**exit 0（全量通过）**
 - `python scripts/check_docs.py`：通过（34 个里程碑条目）
-- 视觉检查：真实应用 + CDP 探针（四尺寸两主题）
+- 视觉检查：真实应用 + CDP 探针（四尺寸两主题截图与几何测量）
 
 ## 7. CI
 

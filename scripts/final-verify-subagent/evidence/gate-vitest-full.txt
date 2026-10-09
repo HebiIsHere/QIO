@@ -1,0 +1,394 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-final/frontend
+
+node.exe : stderr | src/components/planet/__tests__/EntityPanel.test.ts > EntityPanel 空态与失败区分（任务05 E） > 加载失败：显示可读错误与重试入
+口，不显示「无实体卡」
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (stderr | src/co...与重试入口，不显示「无实体卡」:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[entity] load failed: Error: offline
+    at D:/qio-dev/qio-final/frontend/src/components/planet/__tests__/EntityPanel.test.ts:32:54
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20
+    at new Promise (<anonymous>)
+    at runWithCancel (file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:
+10)
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2272
+:10)
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2955:64
+
+ ✓ src/components/planet/__tests__/EntityPanel.test.ts (5 tests) 177ms
+stderr | src/components/planet/__tests__/KnowledgePanel.test.ts > KnowledgePanel 空态与失败区分（任务05 E：失败不能显示成无数据） > 加载失败：显示可读
+错误与重试入口，不显示「无知识条目」
+[knowledge] load failed: Error: offline
+    at D:/qio-dev/qio-final/frontend/src/components/planet/__tests__/KnowledgePanel.test.ts:155:55
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20
+    at new Promise (<anonymous>)
+    at runWithCancel (file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:
+10)
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2272
+:10)
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:2955:64
+
+ ✓ src/components/planet/__tests__/KnowledgePanel.test.ts (14 tests) 507ms
+ ✓ src/interactive/__tests__/batchTray.test.ts (16 tests) 393ms
+ ✓ src/components/__tests__/ApprovalModal.test.ts (19 tests) 958ms
+ ✓ src/components/interactive/__tests__/d5bSubmitReason.verify.test.ts (3 tests) 81ms
+ ✓ src/components/__tests__/Composer.test.ts (18 tests) 300ms
+ ✓ src/components/interactive/__tests__/BoardToolbar.test.ts (11 tests) 541ms
+ ✓ src/components/onboarding/__tests__/OnboardingWizard.test.ts (14 tests) 759ms
+ ✓ src/interactive/__tests__/boardCanvas.test.ts (24 tests) 923ms
+ ✓ src/components/__tests__/MarkdownStreaming.test.ts (7 tests) 867ms
+     ✓ 长文 / 多语言代码块 / 表格 / 嵌套列表 / GFM / directive 混排：落定后逐字一致  382ms
+     ✓ 解析次数由节拍决定，与文本长度无关（同样时长、8 倍文本，次数同量级）  313ms
+ ✓ src/views/__tests__/PlanetView.test.ts (67 tests) 2171ms
+stderr | src/views/__tests__/SettingsView.test.ts > 任务 04 PART B：保存模型与可用性说明 > 输出速度保存失败时会显示错误，而不是只写控制台
+[ui] save typewriter cps failed: Error: 网络不可用
+    at D:/qio-dev/qio-final/frontend/src/views/__tests__/SettingsView.test.ts:622:48
+    at file:///D:/qio-dev/qio-wt-fixes/frontend/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20
+
+ ✓ src/views/__tests__/SettingsView.test.ts (32 tests) 2028ms
+ ✓ src/components/credentials/__tests__/CredentialForm.test.ts (22 tests) 4071ms
+     ✓ 后台取模型列表不会顶掉正在进行的保存（按钮不会卡在「保存中…」）  651ms
+     ✓ Key 前缀只做本地提示：足够明确才预选厂商  595ms
+     ✓ 含糊前缀（sk-）只提示，不替用户改厂商  575ms
+     ✓ 编辑时改了地址：勾选确认之前，不拿已存的 Key 去问新地址要模型列表  672ms
+     ✓ 编辑时地址没变：仍然用已存的 Key 取模型列表  648ms
+ ✓ src/components/__tests__/MessageStream.test.ts (19 tests) 1214ms
+     ✓ 上翻阅读时新消息只计数，点击「回到最新消息」才滚动并恢复跟随  370ms
+     ✓ 回到最新：滚动过程中内容还在变高，也要落到真正的底部（不是开始时的估算底部）  335ms
+ ✓ src/composables/__tests__/useFloatingWindow.test.ts (32 tests) 821ms
+     ✓ 关闭 hideEnabled：立即解除隐藏态  422ms
+ ✓ src/stores/__tests__/eventOwnership.test.ts (8 tests) 133ms
+ ✓ src/components/__tests__/DevTaskEntry.test.ts (25 tests) 635ms
+ ✓ src/components/interactive/__tests__/IntentBatchTraySwitchBar.test.ts (11 tests) 840ms
+ ✓ src/interactive/__tests__/board.test.ts (66 tests) 42ms
+ ✓ src/components/__tests__/ApprovalDefer.test.ts (7 tests) 589ms
+ ✓ src/composables/__tests__/floatingState.test.ts (6 tests) 21ms
+ ✓ src/stores/__tests__/approvalInvalidation.test.ts (5 tests) 314ms
+ ✓ src/stores/__tests__/eventBufferOverflow.verify.test.ts (4 tests) 18146ms
+     ✓ 同步期间灌入 2 万条事件：缓存必须有界，不能无限增长  11997ms
+     ✓ 溢出时必须标记「需要重新同步」，不能静默丢事件  2985ms
+     ✓ 溢出之后不得宣称已同步（resyncState 不能停在 normal）  3160ms
+ ✓ src/interactive/__tests__/final-lead-m07-clear-binding.test.ts (3 tests) 74ms
+ ✓ src/components/__tests__/DevTaskEntryAbandon.verify.test.ts (16 tests) 218ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+stderr | src/views/__tests__/PlanetEndedGroup.test.ts > 星球的已结束分组 > 主视图只列进行中的话题，已结束的单独成组
+THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+stderr | src/views/__tests__/PlanetEndedGroup.test.ts > 星球的已结束分组 > 可以把进行中的话题标成结束
+THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+stderr | src/views/__tests__/PlanetEndedGroup.test.ts > 星球的已结束分组 > 可以恢复已结束的话题
+THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
+
+ ✓ src/views/__tests__/PlanetEndedGroup.test.ts (3 tests) 292ms
+ ✓ src/components/__tests__/MessageItem.test.ts (30 tests) 400ms
+ ✓ src/components/__tests__/MarkdownContent.test.ts (19 tests) 282ms
+ ✓ src/composables/__tests__/useLatestButtonAnchor.test.ts (6 tests) 484ms
+ ✓ src/components/interactive/__tests__/final-a3-05-conflict-paths.test.ts (4 tests) 147ms
+ ✓ src/stores/__tests__/d5FailedSendRecovery.verify.test.ts (2 tests) 54ms
+ ✓ src/composables/__tests__/useComposerClearance.test.ts (4 tests) 356ms
+ ✓ src/stores/__tests__/d6CardDraftConflict.verify.test.ts (6 tests) 86ms
+ ✓ src/views/settings/__tests__/CredentialCard.test.ts (13 tests) 156ms
+ ✓ src/components/interactive/__tests__/final-a3-07-draft-clear-binding.test.ts (5 tests) 191ms
+ ✓ src/components/__tests__/SettingsFloat.test.ts (4 tests) 216ms
+ ✓ src/stores/__tests__/final-b2-sendIdentity.test.ts (3 tests) 101ms
+ ✓ src/components/__tests__/PlanetDock.test.ts (4 tests) 312ms
+ ✓ src/stores/__tests__/d6CardConflictChoice.verify.test.ts (7 tests) 113ms
+ ✓ src/stores/__tests__/d4ChatDraftRace.verify.test.ts (18 tests) 462ms
+ ✓ src/interactive/__tests__/approval.test.ts (54 tests) 40ms
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 历史读取失败的状态表达 > 「还没设置完」横幅在时，把顶部提示条让到它下面（两者不重叠）
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+ ✓ src/components/__tests__/FailedSendNotice.test.ts (6 tests) 394ms
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 历史读取失败的状态表达 > 「还没设置完」横幅在时，把顶部提示条让到它下面（两者不重叠）
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 历史读取失败的状态表达 > 「还没设置完」横幅在时，把顶部提示条让到它下面（两者不重叠）
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 历史读取失败的状态表达 > 失败时显示「历史记录暂时无法读取」+ 重试，重试成功后消失
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 凭据状态提示 > 凭据被暂停 / 撤销时，对话页把话说出来并给出恢复入口
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 凭据状态提示 > 错误优先于凭据提示：同一时刻只显示最需要处理的那一条
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationViewNotices.test.ts > 取消的结局表达 > TURN_END(cancelled) 后显示安静的「已停止」，不是错误
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+ ✓ src/views/__tests__/ConversationViewNotices.test.ts (5 tests) 182ms
+stderr | src/views/__tests__/OnboardingGating.test.ts > 欢迎页 gating > 未完成且未关闭 → 对话页「继续设置」；点 × 记录关闭；点「继续设置」重新展开
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/OnboardingGating.test.ts > 欢迎页 gating > 未完成且未关闭 → 对话页「继续设置」；点 × 记录关闭；点「继续设置」重新展开
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/OnboardingGating.test.ts > 欢迎页 gating > 未完成且未关闭 → 对话页「继续设置」；点 × 记录关闭；点「继续设置」重新展开
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+ ✓ src/views/__tests__/OnboardingGating.test.ts (4 tests) 116ms
+ ✓ src/components/interactive/__tests__/d6SwitchBarOnlyWhenSecondPane.verify.test.ts (2 tests) 80ms
+ ✓ src/stores/__tests__/eventBufferOverflow.test.ts (5 tests) 328ms
+ ✓ src/components/__tests__/QueueChip.test.ts (3 tests) 172ms
+ ✓ src/utils/__tests__/externalLink.test.ts (7 tests) 9ms
+ ✓ src/components/interactive/__tests__/d5bSwitchBarGeometry.verify.test.ts (3 tests) 80ms
+ ✓ src/stores/__tests__/historyRace.test.ts (8 tests) 37ms
+ ✓ src/views/settings/__tests__/CredentialModal.test.ts (4 tests) 174ms
+ ✓ src/interactive/__tests__/final-d-canvas-locate.test.ts (6 tests) 132ms
+stdout | src/components/__tests__/TurnTimingPanel.test.ts > 长 trace 的渲染开销 > 500 个 span 仍然能快速渲染（给出真实数字 + 上限）
+[perf] 501-span trace 展开渲染 3.8ms
+
+ ✓ src/components/__tests__/TurnTimingPanel.test.ts (11 tests) 127ms
+ ✓ src/components/__tests__/final-lead-11a-displaced.test.ts (3 tests) 112ms
+ ✓ src/stores/__tests__/draftPersistence.test.ts (15 tests) 163ms
+ ✓ src/components/__tests__/MessageItemTiming.test.ts (3 tests) 70ms
+ ✓ src/stores/__tests__/d4CardDraftRace.verify.test.ts (10 tests) 137ms
+ ✓ src/stores/__tests__/d6SendProtection.test.ts (9 tests) 52ms
+ ✓ src/interactive/__tests__/chat.test.ts (24 tests) 193ms
+ ✓ src/stores/__tests__/d6FailedSendProtection.verify.test.ts (4 tests) 38ms
+ ✓ src/components/ui/__tests__/QSlider.test.ts (3 tests) 54ms
+ ✓ src/components/ui/__tests__/QNumber.integration.test.ts (4 tests) 85ms
+ ✓ src/components/__tests__/InterruptedTurnEntry.test.ts (13 tests) 158ms
+ ✓ src/components/interactive/__tests__/SubmitClusterFailure.test.ts (8 tests) 104ms
+ ✓ src/components/planet/__tests__/KnowledgePanel.visibility.test.ts (4 tests) 124ms
+ ✓ src/components/interactive/__tests__/final-a3-01-late-read-draft.test.ts (3 tests) 114ms
+ ✓ src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts (1 test) 87ms
+ ✓ src/interactive/__tests__/final-d-tasks-locate.test.ts (2 tests) 81ms
+ ✓ src/components/ui/__tests__/QConfirmEsc.test.ts (5 tests) 50ms
+ ✓ src/stores/__tests__/toolRecovery.test.ts (13 tests) 44ms
+ ✓ src/components/__tests__/ExecutionNarrativeDrawer.test.ts (6 tests) 103ms
+stderr | src/views/__tests__/ConversationView.test.ts > 待确认切换条（spec 第 29~30 条） > 没有建议时不出现
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > 待确认切换条（spec 第 29~30 条） > 有建议时出现在输入区附近，并显示目标话题名
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > 待确认切换条（spec 第 29~30 条） > 有建议时出现在输入区附近，并显示目标话题名
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面） > 关闭动画期间的旧 close 回调不会
+关掉后来重新打开的星球
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面） > 关闭动画期间的旧 close 回调不会
+关掉后来重新打开的星球
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面） > 关闭动画期间的旧 close 回调不会
+关掉后来重新打开的星球
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面） > 关闭动画期间的旧 close 回调不会
+关掉后来重新打开的星球
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 星球层开合（任务05 A：旧回调不得关闭新页面） > 关闭动画期间的旧 close 回调不会
+关掉后来重新打开的星球
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+stderr | src/views/__tests__/ConversationView.test.ts > ConversationView 键盘通道（任务 05 I：长消息流不该挡住输入框） > 第一个焦点位是「跳到输入框」，点击后
+焦点落到输入框
+[Vue warn]: Failed to resolve component: router-link
+If this is a native custom element, make sure to exclude it from component resolution via compilerOptions.isCustomEleme
+nt. 
+  at <ConversationView ref="VTU_COMPONENT" > 
+  at <VTUROOT>
+
+ ✓ src/views/__tests__/ConversationView.test.ts (4 tests) 148ms
+ ✓ src/components/ui/__tests__/QConfirm.test.ts (9 tests) 108ms
+ ✓ src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts (2 tests) 78ms
+ ✓ src/stores/__tests__/turnSequences.test.ts (20 tests) 64ms
+ ✓ src/__tests__/appBoot.test.ts (3 tests) 64ms
+ ✓ src/components/ui/__tests__/QSelect.test.ts (8 tests) 100ms
+ ✓ src/components/__tests__/final-b3-notice-visibility.test.ts (5 tests) 78ms
+ ✓ src/stores/__tests__/final-b2-reopenResend.test.ts (5 tests) 43ms
+ ✓ src/components/__tests__/d6FailedSendNoticeDisplay.test.ts (3 tests) 62ms
+ ✓ src/utils/__tests__/motion.test.ts (5 tests) 27ms
+ ✓ src/stores/__tests__/phase3Cards.test.ts (19 tests) 47ms
+ ✓ src/stores/__tests__/session.test.ts (13 tests) 45ms
+ ✓ src/interactive/__tests__/final-d-space-reset.test.ts (5 tests) 159ms
+ ✓ src/stores/__tests__/d6CardProtect.test.ts (14 tests) 135ms
+ ✓ src/stores/__tests__/final-lead-m1.test.ts (10 tests) 33ms
+ ✓ src/stores/__tests__/events.test.ts (20 tests) 66ms
+ ✓ src/components/__tests__/TopicSwitchPrompt.test.ts (5 tests) 69ms
+ ✓ src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts (1 test) 66ms
+ ✓ src/components/ui/__tests__/QNumber.test.ts (12 tests) 136ms
+ ✓ src/components/planet/__tests__/PlanetOrb.test.ts (6 tests) 72ms
+ ✓ src/components/__tests__/ContinueBar.test.ts (6 tests) 82ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.test.ts (19 tests) 110ms
+ ✓ src/components/__tests__/UpdateCard.test.ts (5 tests) 120ms
+ ✓ src/stores/__tests__/d5SendRecovery.test.ts (13 tests) 74ms
+ ✓ src/stores/__tests__/finalAnswer.test.ts (11 tests) 41ms
+ ✓ src/interactive/__tests__/impactDialog.test.ts (8 tests) 125ms
+ ✓ src/components/__tests__/d5ComposerRecovery.verify.test.ts (2 tests) 91ms
+ ✓ src/stores/__tests__/d5bFailedSendPersist.verify.test.ts (3 tests) 32ms
+ ✓ src/interactive/__tests__/final-a2-card-draft-hint.test.ts (8 tests) 418ms
+ ✓ src/stores/__tests__/historyPagination.test.ts (7 tests) 112ms
+ ✓ src/services/__tests__/boot.test.ts (4 tests) 147ms
+ ✓ src/stores/__tests__/d5RecoveryOrdering.verify.test.ts (4 tests) 29ms
+ ✓ src/composables/__tests__/composerMetrics.test.ts (4 tests) 129ms
+ ✓ src/stores/__tests__/resyncProtocol.test.ts (9 tests) 43ms
+ ✓ src/stores/__tests__/topicSwitch.test.ts (5 tests) 30ms
+ ✓ src/stores/__tests__/final-b2-chatTopicDrafts.test.ts (7 tests) 126ms
+ ✓ src/stores/__tests__/updaterTimers.test.ts (9 tests) 35ms
+ ✓ src/components/ui/__tests__/QInput.test.ts (6 tests) 69ms
+ ✓ src/components/__tests__/ComposerContinuationHint.test.ts (3 tests) 91ms
+ ✓ src/stores/__tests__/approvalInvalidation.verify.test.ts (5 tests) 32ms
+ ✓ src/services/__tests__/backendConnection.test.ts (8 tests) 50ms
+ ✓ src/services/__tests__/backendConnection.verify.test.ts (5 tests) 183ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts (4 tests) 38ms
+ ✓ src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts (1 test) 21ms
+ ✓ src/stores/__tests__/historyRace.verify.test.ts (7 tests) 30ms
+ ✓ src/stores/__tests__/d5bCardsIsolation.verify.test.ts (2 tests) 19ms
+ ✓ src/stores/__tests__/d6ClearRestoreOrdering.verify.test.ts (2 tests) 23ms
+ ✓ src/stores/__tests__/interruptedTurns.test.ts (10 tests) 32ms
+ ✓ src/interactive/__tests__/final-a2-reopen-cleared.test.ts (4 tests) 24ms
+ ✓ src/interactive/__tests__/submission.test.ts (16 tests) 33ms
+ ✓ src/stores/__tests__/final-b2-readError.test.ts (5 tests) 41ms
+ ✓ src/planet/__tests__/layoutSlots.test.ts (15 tests) 24ms
+ ✓ src/stores/__tests__/final-b2-removeDraftResult.test.ts (4 tests) 49ms
+ ✓ src/utils/__tests__/theme.test.ts (8 tests) 27ms
+ ✓ src/interactive/__tests__/overlayLayout.test.ts (14 tests) 28ms
+ ✓ src/services/__tests__/updaterFlow.test.ts (10 tests) 27ms
+ ✓ src/stores/__tests__/toolRecordHistory.test.ts (6 tests) 38ms
+ ✓ src/planet/__tests__/sdfRings.test.ts (4 tests) 4ms
+ ✓ src/interactive/__tests__/drafts.test.ts (8 tests) 15ms
+ ✓ src/stores/__tests__/approvalRouting.test.ts (3 tests) 21ms
+ ✓ src/stores/__tests__/sessionFastTurn.test.ts (2 tests) 24ms
+ ✓ src/stores/__tests__/executionNarrative.test.ts (6 tests) 22ms
+ ✓ src/composables/__tests__/planetContinuum.test.ts (2 tests) 11ms
+ ✓ src/interactive/__tests__/overlaySwitchBar.test.ts (13 tests) 16ms
+ ✓ src/services/__tests__/eventsCleanup.verify.test.ts (3 tests) 77ms
+ ✓ src/planet/__tests__/dotPool.test.ts (5 tests) 11ms
+ ✓ src/interactive/__tests__/final-d-overlay-geometry.test.ts (17 tests) 9ms
+ ✓ src/stores/__tests__/approvals.test.ts (9 tests) 20ms
+ ✓ src/interactive/__tests__/final-a2-drafts-removal-result.test.ts (12 tests) 14ms
+ ✓ src/interactive/__tests__/overlaySwitchAvailability.test.ts (9 tests) 7ms
+ ✓ src/planet/__tests__/browseSession.test.ts (16 tests) 12ms
+ ✓ src/stores/__tests__/updater.test.ts (11 tests) 19ms
+ ✓ src/stores/__tests__/devTasks.test.ts (4 tests) 23ms
+ ✓ src/stores/__tests__/onboarding.test.ts (5 tests) 14ms
+ ✓ src/stores/__tests__/final-lead-m13.test.ts (1 test) 12ms
+ ✓ src/utils/__tests__/easing.test.ts (6 tests) 11ms
+ ✓ src/stores/__tests__/turnEnd.test.ts (2 tests) 19ms
+ ✓ src/stores/__tests__/ui.test.ts (3 tests) 9ms
+ ✓ src/interactive/__tests__/viewport.test.ts (25 tests) 13ms
+ ✓ src/interactive/__tests__/final-a2-clear-protection.test.ts (9 tests) 10ms
+ ✓ src/services/__tests__/apiTimeouts.verify.test.ts (5 tests) 22ms
+ ✓ src/planet/__tests__/topicData.test.ts (5 tests) 7ms
+ ✓ src/interactive/__tests__/submitFailureBrief.test.ts (12 tests) 7ms
+stdout | src/services/__tests__/turnTiming.test.ts > 长 trace 的上限策略 > 5000 个 span 的归属计算仍在毫秒级（DOM 行数只与分类数有关）
+[perf] 5001-span 归属计算 2.0ms
+
+ ✓ src/services/__tests__/turnTiming.test.ts (15 tests) 18ms
+ ✓ src/styles/tokens.test.ts (11 tests) 8ms
+ ✓ src/planet/__tests__/browseFlow.test.ts (5 tests) 6ms
+ ✓ src/interactive/__tests__/final-a2-long-draft-local-copy.test.ts (8 tests) 10ms
+ ✓ src/planet/__tests__/entryLayout.test.ts (4 tests) 7ms
+ ✓ src/composables/__tests__/useActionFeedback.test.ts (4 tests) 9ms
+ ✓ src/styles/primitives.test.ts (9 tests) 13ms
+ ✓ src/utils/__tests__/latestButton.test.ts (11 tests) 8ms
+ ✓ src/planet/__tests__/ringField.test.ts (7 tests) 19ms
+ ✓ src/services/__tests__/final-lead-api-error.test.ts (3 tests) 14ms
+ ✓ src/design-guards.test.ts (8 tests) 10ms
+ ✓ src/smoke.test.ts (1 test) 2ms
+ ✓ src/utils/__tests__/turnLabel.test.ts (3 tests) 5ms
+ ✓ src/planet/__tests__/planetShader.test.ts (5 tests) 10ms
+
+ Test Files  168 passed (168)
+      Tests  1549 passed (1549)
+   Start at  21:45:17
+   Duration  183.08s (transform 51.07s, setup 4.23s, import 239.16s, tests 48.91s, environment 2204.47s)
+
+
