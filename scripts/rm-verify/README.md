@@ -93,7 +93,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\rm-verify\run_all.ps
 7. **不在 F 清单内的项**（M06 / M02 / M03 / M08 / M11 / L01 等）本组不建用例，
    按 Lead 的清单由对应组与集成阶段覆盖。
 
-## 5. 文件清单
+## 5. 集成后复跑：三个红的根因与用例修正（after 轮）
+
+在集成树（`fix/main-reliability-memory-20261009-r2`，HEAD `2e14cf4`）复跑后，
+后端 16 条中 13 绿、3 红（前端 2 条全绿）。三条红**全部是用例自身的问题、0 个修复缺口**，
+已用只读最小复现坐实，并按根因修正（只改注入/边界/观察通道，期望一条不降）：
+
+| 用例 | 红的原因（用例 bug） | 修正 | 复现脚本 |
+| --- | --- | --- | --- |
+| R04 | 注入谓词写的是 `startswith("insert into turn_journal")`，而真实 SQL 是 `INSERT OR IGNORE INTO turn_journal …` → **注入从未触发**，测不出东西 | 谓词改为 `startswith("insert") and "turn_journal" in text`，断言一字不动 | `output/repro/repro_r04_journal_failure.py` |
+| M09 | 用整层覆盖 `complete()` 的假 adapter，而预算闸门装在**真实 adapter 的每次实际请求之前** → 绕开了闸门；数的也是 adapter 调用而非真实 provider 请求 | 改用真实 `NativeAdapter` + 假 SDK 客户端 + 生产同款 `usage_sink=credential_usage_sink(store, adapter)`，断言 `client.calls == 1`、`budget_used == 120`，并要求给用户一句真实停止原因 | `output/repro/repro_m09_real_adapter.py` |
+| R06 | 观察通道写死成 `interrupted_turns`；契约 C3 的孤儿出口叫 `orphaned_turns`（正式修复出口是 `repair_orphan()`） | 可见性判定扩成 `interrupted_turns ∪ orphaned_turns`，修复后走 `repair_orphan()` → resend 200 → `recovered_by` 非空 → 再次 409 | `output/repro/repro_r06_orphan.py` |
+
+三个复现脚本**只读仓库源码**、只在临时目录建库、不写仓库文件；它们需要在**集成树**上运行
+（`orphaned_claims()` / 请求前预算核对都是本轮才有的行为），例如：
+
+```powershell
+cd D:\qio-dev\qio-rm-main\backend
+uv run --frozen python ..\scripts\rm-verify\output\repro\repro_r04_journal_failure.py
+uv run --frozen python ..\scripts\rm-verify\output\repro\repro_m09_real_adapter.py
+uv run --frozen python ..\scripts\rm-verify\output\repro\repro_r06_orphan.py
+```
+
+集成树上的观察结果（原始输出见集成树 `scripts/rm-verify/output/after-repro-*.txt`）：
+R04 → `503 {'ok': False, 'accepted': False, 'error': '消息未被接受：持久化失败'}`、运行器 1 次、journal 1 行；
+M09 → `真实 provider 请求次数: 1`、`budget_used: 120.0`、停止原因含「用量上限已耗尽（剩余 0）」；
+R06 → `orphaned_turns: [('turn_crash', …)]`、`repair_orphan: True` 后 `resend: 200`、`recovered_by` 非空、再次 `409`。
+
+## 6. 文件清单
 
 ```
 backend/tests/test_rm_verify_r01_r04_r06.py           R01 / R04 / R06（4 条）
@@ -104,4 +131,5 @@ frontend/src/stores/__tests__/rm-f-m12-restore.spec.ts M12（2 条）
 scripts/rm-verify/run_all.ps1                         一键运行（后端 + 前端）
 scripts/rm-verify/vitest.rmf.config.mjs               只收集 rm-f-*.spec.ts 的 vitest 配置
 scripts/rm-verify/output/                             基线原始输出（证据）
+scripts/rm-verify/output/repro/                       三个根因最小复现（只读、需在集成树运行）
 ```
