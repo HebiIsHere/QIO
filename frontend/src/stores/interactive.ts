@@ -224,6 +224,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * - 版本号用来保证「旧版本的清除不许删掉后来新建的版本」。
    */
   const pendingRemovals = new Map<string, { cardId: string; version: number }>();
+  /**
+   * 本机副本删除**真的失败**、还没处理完的键（13）：值是当时要删的记录版本（null = 按对象删）。
+   * 只有 storage-failure 才登记；version-guard 是「另一份更新的记录还在」的有意保留，不是失败。
+   * 重试入口（retryDraftSave）会连同它一起重试，界面不会停在「看起来删掉了、其实还在」。
+   */
+  const pendingLocalRemovals = new Map<string, number | null>();
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -490,7 +496,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 已删除或不存在的对象不恢复草稿
       if (!boardHasCard(cardId)) {
         // 这份本机记录已经没有可归属的对象了；留着只会在别的对象上误恢复（§10.4）
-        removeCardLocalDraft(cardId);
+        applyLocalRemovalResult(key, removeCardLocalDraft(cardId), null);
         continue;
       }
 
@@ -516,7 +522,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       const serverText = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : null;
       if (serverText !== null && serverText === local.text) {
         // 服务器上已经有同样一份：这条本机记录已经被确认，按对象清理掉
-        removeCardLocalDraft(cardId);
+        applyLocalRemovalResult(key, removeCardLocalDraft(cardId), null);
         continue;
       }
       if (serverText !== null) {
@@ -864,6 +870,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 旧版本的清除不许删掉后来新建的版本，所以先撤掉待同步删除，再写下新版记录。
      */
     if (pendingRemovals.delete(key)) setDraftRemovalState(key, "idle");
+    // 这一版取代了「还没删成功的本机副本」：目标变了，不再重试那次删除
+    pendingLocalRemovals.delete(key);
     /**
      * 未决冲突（收尾轮 05）：改一个字**不**清冲突 —— 服务器那份候选继续保留，
      * 这份新输入只是「本机候选」的新版本；用户仍然必须明确选择才落地。
@@ -924,12 +932,34 @@ export const useInteractiveStore = defineStore("interactive", () => {
     setDraftState(key, "saved");
     if (typeof confirmedVersion === "number" && confirmedVersion > 0) {
       // 版本守卫：记录已被更晚的写入替换（如同浏览器的另一个页面）时不能删
-      removeCardLocalDraft(cardId, confirmedVersion);
+      applyLocalRemovalResult(key, removeCardLocalDraft(cardId, confirmedVersion), confirmedVersion);
     } else {
       // 旧格式记录没有版本可校验：用户的明确选择就是确认，按对象清理
-      removeCardLocalDraft(cardId);
+      applyLocalRemovalResult(key, removeCardLocalDraft(cardId), null);
     }
-    setDraftLocalState(key, { ok: true, error: null });
+  }
+
+  /**
+   * 消费「本机副本删除」的真实结果（13）：
+   * - 删掉/本来就没有（ok）：清掉待处理决定；
+   * - version-guard（另一份更新的记录仍在）：有意的保留，静默、不报错、不重试；
+   * - storage-failure：真失败 —— 保留待处理决定 + 真实原因，等重试入口。
+   */
+  function applyLocalRemovalResult(
+    key: string,
+    result: ReturnType<typeof removeCardLocalDraft>,
+    expectVersion: number | null,
+  ): void {
+    if (result.ok || result.reason === "version-guard") {
+      pendingLocalRemovals.delete(key);
+      setDraftLocalState(key, { ok: true, error: null });
+      return;
+    }
+    pendingLocalRemovals.set(key, expectVersion);
+    setDraftLocalState(key, {
+      ok: false,
+      error: result.error ?? "这份本机副本没能删掉，暂时还留在本机",
+    });
   }
 
   function draftFor(key: string): string {
@@ -1044,8 +1074,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
             // 版本校验（§12.2）：请求在飞期间被同一浏览器的**另一个页面**换成新版本的记录不许被这次回执删掉。
             const cardId = cardIdFromDraftKey(key);
             if (cardId) {
-              removeCardLocalDraftIfUnchanged(cardId, localVersionsAtRequest.get(key) ?? null);
-              setDraftLocalState(key, { ok: true, error: null });
+              const expectVersion = localVersionsAtRequest.get(key) ?? null;
+              applyLocalRemovalResult(
+                key,
+                removeCardLocalDraftIfUnchanged(cardId, expectVersion),
+                expectVersion,
+              );
             }
           }
           /**
@@ -1066,7 +1100,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           for (const [key, entry] of removalsAtRequest) {
             if (pendingRemovals.get(key)?.version !== entry.version) continue;
             pendingRemovals.delete(key);
-            removeCardLocalDraft(entry.cardId, entry.version);
+            applyLocalRemovalResult(key, removeCardLocalDraft(entry.cardId, entry.version), entry.version);
             setDraftRemovalState(key, "idle");
             setDraftState(key, "idle");
           }
@@ -1108,12 +1142,35 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!key) {
       for (const item of pendingRemovals.keys()) if (!keys.includes(item)) keys.push(item);
     }
+    /**
+     * 本机副本删除失败过：这次先真的把它删掉（13）。
+     * 删成功的键在本轮**不再**被下面的「本机写入」补写回去 —— 用户已经明确放弃这份副本，
+     * 重建它等于把刚处理完的决定又撤销了。
+     */
+    const localRemovalRetries = key ? [key] : [...pendingLocalRemovals.keys()];
+    const removedLocalNow = new Set<string>();
+    for (const item of localRemovalRetries) {
+      if (!pendingLocalRemovals.has(item)) continue;
+      const retryCardId = cardIdFromDraftKey(item);
+      if (!retryCardId) continue;
+      const expectVersion = pendingLocalRemovals.get(item) ?? null;
+      const removal =
+        expectVersion === null
+          ? removeCardLocalDraft(retryCardId)
+          : removeCardLocalDraft(retryCardId, expectVersion);
+      applyLocalRemovalResult(item, removal, expectVersion);
+      if (removal.ok || removal.reason === "version-guard") removedLocalNow.add(item);
+    }
     for (const item of keys) {
       if (draftStateFor(item).status === "error") setDraftState(item, "saving");
       const cardId = cardIdFromDraftKey(item);
       if (!cardId) continue;
       // 本机那一路之前失败过：这次连本机一起重写
-      if (!draftLocalStateFor(item).ok && Object.prototype.hasOwnProperty.call(drafts.value, item)) {
+      if (
+        !removedLocalNow.has(item) &&
+        !draftLocalStateFor(item).ok &&
+        Object.prototype.hasOwnProperty.call(drafts.value, item)
+      ) {
         const written = writeCardLocalDraft(cardId, drafts.value[item] ?? "", {
           boardId: boardId.value,
           seq: draftKeySeq.get(item) ?? 0,

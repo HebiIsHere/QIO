@@ -50,9 +50,20 @@
   - 恢复/重开后关联持久化，输入框仍有原文时保持可用入口（找回/互换或等价操作），重发成功后清除对应记录。
 - 成功清理仅作用于：实际被接受的发送尝试、其 contentVersion、其话题、其失败记录。
 
-### M4 影响确认协议（C 定义后端，A/D 前端触发，Lead 接线）
+### M4 影响确认协议（C 定义后端，A/D 前端触发，Lead 接线）—— 2026-10-09 后端定稿
 
-- `POST /api/interactive/boards/{id}/impact-check` 请求 `{ stateVersion, changeSet }` → 响应 `{ checkId, stateVersion, affectedTasks[], summary, ok }`。
+- `POST /api/interactive/boards/{id}/impact-check` 请求 `{ stateVersion, changeSet: { state } }` → 响应
+  `{ ok, checkId, stateVersion, affected: [{intentId,title,status,materials[],consequence}], affectedTasks（同义别名）, summary, impactConfirmationRequired }`；
+  无法预判或版本过期 → HTTP 200 `{ ok: false, reason, currentSeq? }`（不改任何状态）。
+- 保存携带确认：`PUT /state` body 增加 `confirm: { checkId, stateVersion? }`；服务端校验 checkId 归属、绑定版本 == 当前已保存 seq、
+  候选语义签名 == check 绑定签名；不符 → HTTP 409 `{ error: "stale_check", reason }`，不落库。
+- 服务端门：`PUT /state` 不带 confirm 但这次保存会改变 running 任务依赖材料语义 → HTTP 409
+  `{ error: "impact_confirmation_required", affectedTasks: [...] }`，不落库。
+- 提交：`POST /submissions` 可选 body `baseStateVersion` 与 `confirmedCheckId`；不一致 → HTTP 409
+  `{ error: "stale_state", reason }`，不落库、不更新基准、不产生提交记录。
+- 前端已接线（Lead）：`services/interactive.checkMaterialImpact`、`saveBoardState(..., confirm)`、
+  `submitBoard(..., baseStateVersion, confirmedCheckId)`；store 对 409 分类显示真实原因并保留候选/勾选。
+- check 记录在服务端进程内存（重启后确认如实失效并要求重新预判），上限 64 条 FIFO。
   - 预判失败：返回真实错误（`{ok:false, reason}`），前端不得继续写入受影响材料，保留改动与重试入口。
   - `checkId` 绑定 (stateVersion, 变更范围, 受影响任务)。此后任何板面保存使 `seq` > stateVersion → `checkId` 失效，确认时服务端校验并拒绝（`stale`），前端重新预判。
 - `confirm` 时服务端再次校验：`当前已保存 seq == stateVersion` 且 `checkId` 有效。校验失败不落库（不"前端出错后服务端无条件生效"）。
