@@ -1675,6 +1675,13 @@ async def test_spill_write_failure_is_reported_honestly(tmp_path, monkeypatch):
         "写入故障不得被描述成「正文超过上限/截断」",
         message,
     )
+    # 三个字节事实必须分开且名称真实（不得把成功保存量说成完整生成量）
+    assert warnings[0]["generated_bytes"] == 270_000, warnings[0]  # 90,000 汉字 × 3
+    assert warnings[0]["saved_bytes"] == 262_143, warnings[0]
+    assert warnings[0]["delivered_bytes"] == 262_143, warnings[0]
+    assert "原生成 270000 字节" in message, message
+    assert "成功保存 262143 字节" in message, message
+    assert "实际交付 262143 字节" in message, message
     assert any("完整" in w for w in result.warnings), result.warnings
 
 
@@ -1819,6 +1826,11 @@ async def test_spill_create_failure_is_reported_as_spill_create(tmp_path, monkey
     message = str(warnings[0]["message"])
     assert "创建" in message or "暂存" in message, message
     assert "超过上限" not in message and "截断" not in message, message
+    # 创建失败时「成功保存量」只有内存部分：三个数字必须分开、名称真实
+    assert warnings[0]["generated_bytes"] == 270_000, warnings[0]
+    assert warnings[0]["saved_bytes"] == 262_143, warnings[0]
+    assert warnings[0]["delivered_bytes"] == 262_143, warnings[0]
+    assert "原生成 270000 字节" in message and "成功保存 262143 字节" in message, message
     assert any("完整" in w for w in result.warnings)
 
 
@@ -1854,6 +1866,223 @@ async def test_cancel_with_spilled_text_keeps_text_and_converges_temp_files(
     assert _answer_area(bus) == [], "取消不猜角色：不进正式回答区"
     assert not list(spill_dir.glob("*.spill")), "取消后临时文件必须收敛"
     assert _events(bus, "WARNING") == [], "取回成功就不该有「不完整」警告"
+
+
+async def _wait_for_spill_file(spill_dir, *, timeout: float = 10.0):
+    """等真实暂存文件出现且有内容（provider 卡在 hold 期间）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        files = [p for p in spill_dir.glob("*.spill") if p.stat().st_size > 0]
+        if files:
+            return files[0]
+        await asyncio.sleep(0.02)
+    raise AssertionError("暂存文件没有在预期时间内出现")
+
+
+def _truncate_spill(path, size: int) -> None:
+    """把真实暂存文件截短（另一个句柄写；Python 打开时允许共享写）。"""
+    with open(path, "r+b") as handle:
+        handle.truncate(size)
+
+
+async def test_truncated_spill_file_is_not_delivered_as_complete(tmp_path):
+    """反例（第八轮问题四，今天必红）：暂存文件在收尾前被**真实截短**。
+
+    ASCII 正文 300,018 字节 → 内存 262,144 + 暂存 37,874；把暂存截到 100 字节后，
+    今天 collect() 只交付 262,244 字节，却返回 complete=true / kind=complete /
+    reason=null（并把成功保存量说成「完整生成量」），WARNING 0 条。
+    契约 §1.4：按字节事实核对 —— 截短必须当故障，走可见事件 + 轮次警告。
+    """
+    answer = "A" * 300_018
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "tmp"
+    task = asyncio.create_task(
+        AgentLoop(
+            adapter, _registry(), bus, turn_id="turn_spill_short", spill_dir=spill_dir
+        ).run("hi")
+    )
+    try:
+        path = await _wait_for_spill_file(spill_dir)
+        assert path.stat().st_size == 37_874, path.stat().st_size
+        _truncate_spill(path, 100)
+        assert path.stat().st_size == 100
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 10)
+
+    assert len(adapter.requests) == 1, "不得为找回原文再调模型"
+    warnings = _events(bus, "WARNING")
+    assert warnings, "暂存被截短必须有可见 WARNING（今天 0 条：缺失被当完整交付）"
+    message = str(warnings[0].get("message") or "")
+    assert "截短" in message or "只读回" in message, message
+    assert "超过上限" not in message, ("存储损坏不得说成「正文超过上限」", message)
+
+    text = result.final_content or ""
+    # 只交付能确认的内容：内存部分 + 真实读回的 100 字节暂存前缀
+    assert len(text.encode("utf-8")) == 262_144 + 100, len(text.encode("utf-8"))
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀"
+    assert result.warnings, "轮次结果/警告里也要有这条事实"
+    events = _events(bus, "ASSISTANT")
+    assert len(events) == 1 and events[0]["interim"] is False
+
+
+async def test_emptied_spill_file_is_reported_as_incomplete(tmp_path):
+    """暂存被清空（真实文件 0 字节）：只交付内存部分，缺失如实报告。"""
+    answer = "A" * 300_018
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "tmp"
+    task = asyncio.create_task(
+        AgentLoop(
+            adapter, _registry(), bus, turn_id="turn_spill_empty", spill_dir=spill_dir
+        ).run("hi")
+    )
+    try:
+        path = await _wait_for_spill_file(spill_dir)
+        _truncate_spill(path, 0)
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 10)
+
+    assert len(adapter.requests) == 1
+    warnings = _events(bus, "WARNING")
+    assert warnings, "暂存被清空必须有可见 WARNING"
+    message = str(warnings[0].get("message") or "")
+    assert "超过上限" not in message, message
+    text = result.final_content or ""
+    assert len(text.encode("utf-8")) == 262_144, len(text.encode("utf-8"))
+    assert text == answer[: len(text)]
+    assert any("完整" in w or "暂存" in w for w in result.warnings), result.warnings
+
+
+async def test_utf8_boundary_truncated_spill_drops_the_partial_char(tmp_path):
+    """中文末字被截断（多字节边界）：**不得**用 replacement 字符掩盖，按字节事实截到合法边界。"""
+    answer = "甲" * 100_006  # 300,018 字节；内存 262,143 + 暂存 37,875
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "tmp"
+    task = asyncio.create_task(
+        AgentLoop(
+            adapter, _registry(), bus, turn_id="turn_spill_utf8", spill_dir=spill_dir
+        ).run("hi")
+    )
+    try:
+        path = await _wait_for_spill_file(spill_dir)
+        total = path.stat().st_size
+        # 少 1 字节：最后一个汉字的 UTF-8 序列被切断（3 字节只留 2 字节）
+        _truncate_spill(path, total - 1)
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 10)
+
+    warnings = _events(bus, "WARNING")
+    assert warnings, "多字节边界被截断必须有可见 WARNING"
+    message = str(warnings[0].get("message") or "")
+    assert "截短" in message or "只读回" in message, message
+    text = result.final_content or ""
+    assert "\ufffd" not in text, "不得用 replacement 字符掩盖损坏"
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀（不能拼接坏字节）"
+    # 事实：首个「甲」3 字节入内存、其余按字节上限切 → 内存 262,143 + 暂存 37,875；
+    # 截到 37,874 字节时最后一个汉字的 3 字节只剩 2 字节（非法）→ 丢弃这 2 字节。
+    memory_bytes = 262_143
+    spill_written = 37_875
+    assert len(text.encode("utf-8")) == memory_bytes + (spill_written - 1 - 2), len(
+        text.encode("utf-8")
+    )
+    # 三个数字必须分得开：生成 300,018 / 成功保存 300,018 / 实际交付 300,015
+    assert warnings[0]["generated_bytes"] == 300_018, warnings[0]
+    assert warnings[0]["saved_bytes"] == 300_018, warnings[0]
+    assert warnings[0]["delivered_bytes"] == 300_015, warnings[0]
+    assert any("完整" in w or "暂存" in w for w in result.warnings)
+
+
+async def test_invalid_utf8_spill_content_drops_the_bad_tail(tmp_path):
+    """暂存字节数对得上、但内容不是合法 UTF-8：**不得**用 replacement 字符掩盖。
+
+    构造：文件长度不变，把最后一个汉字的两个续字节改成非法字节 —— 长度核对能过，
+    只能靠 UTF-8 解码发现损坏；交付必须截到合法边界并如实说明。
+    """
+    answer = "甲" * 100_006  # 300,018 字节；内存 262,143 + 暂存 37,875
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "tmp"
+    task = asyncio.create_task(
+        AgentLoop(
+            adapter, _registry(), bus, turn_id="turn_spill_bad_utf8", spill_dir=spill_dir
+        ).run("hi")
+    )
+    try:
+        path = await _wait_for_spill_file(spill_dir)
+        size = path.stat().st_size
+        assert size == 37_875, size
+        data = path.read_bytes()
+        with open(path, "r+b") as handle:  # 长度不变：只把最后两个字节改坏
+            handle.seek(size - 2)
+            handle.write(b"\xff\xfe")
+        assert len(data) == size
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 10)
+
+    warnings = _events(bus, "WARNING")
+    assert warnings, "非法 UTF-8 必须有可见 WARNING"
+    message = str(warnings[0].get("message") or "")
+    assert "UTF-8" in message or "损坏" in message, message
+    assert "超过上限" not in message, message
+    text = result.final_content or ""
+    assert "\ufffd" not in text, "不得用 replacement 字符掩盖损坏"
+    assert text == answer[: len(text)], "交付必须是原文的连续前缀"
+    assert len(text.encode("utf-8")) == 262_143 + 37_872, len(text.encode("utf-8"))
+    assert warnings[0]["generated_bytes"] == 300_018
+    assert warnings[0]["saved_bytes"] == 300_018
+    assert warnings[0]["delivered_bytes"] == 300_015
+    assert len(adapter.requests) == 1
+
+
+async def test_grown_spill_file_delivers_only_the_confirmed_prefix(tmp_path):
+    """暂存异常增长：只交付已确认写入的部分，多出来的字节**不得**进回答。"""
+    answer = "A" * 300_018
+    hold = asyncio.Event()
+    adapter = FakeStreamAdapter(
+        [StreamScript(text_chunks=[answer[:1], answer[1:]], hold=hold, hold_after=2)]
+    )
+    bus = EventBus()
+    spill_dir = tmp_path / "tmp"
+    task = asyncio.create_task(
+        AgentLoop(
+            adapter, _registry(), bus, turn_id="turn_spill_grown", spill_dir=spill_dir
+        ).run("hi")
+    )
+    try:
+        path = await _wait_for_spill_file(spill_dir)
+        with open(path, "ab") as handle:
+            handle.write(b"Z" * 4096)
+    finally:
+        hold.set()
+    result = await asyncio.wait_for(task, 10)
+
+    warnings = _events(bus, "WARNING")
+    assert warnings, "暂存异常增长必须有可见 WARNING"
+    message = str(warnings[0].get("message") or "")
+    assert "超过上限" not in message, message
+    text = result.final_content or ""
+    assert "Z" not in text, "异常增长的字节不得进回答"
+    assert text == answer[: len(text)]
+    assert len(text.encode("utf-8")) == 262_144 + 37_874, len(text.encode("utf-8"))
 
 
 async def test_spill_read_failure_is_reported_and_not_hidden(tmp_path, monkeypatch):
