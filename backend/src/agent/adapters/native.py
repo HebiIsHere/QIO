@@ -29,6 +29,9 @@ MAX_PARSE_RETRIES = 2
 
 class NativeAdapter(BaseAdapter):
     mode = "native"
+    # 这条 adapter 在**每次实际请求**上自己记账（见 credentials/usage.py）：
+    # 主循环、子任务、后台维护、派生提炼共用同一个实例，所以记账只有一处。
+    accounts_requests = True
 
     def __init__(
         self,
@@ -99,16 +102,35 @@ class NativeAdapter(BaseAdapter):
             kwargs["max_tokens"] = max_tokens
 
         attempt = 0
+        # 函数内导入：adapter 层不在导入期依赖凭据库（既有导入顺序约束）。
+        from agent.credentials import usage as accounting
+
         while True:
+            # 每次实际请求（含内部解析重试的每一次）之前先核对累计用量：
+            # 已确认耗尽就不再发新请求（耗尽抛 BudgetExhausted，交给上层收口）。
+            accounting.ensure_adapter_request_allowed(self)
             try:
                 raw = await self._client.chat.completions.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - normalize provider errors
                 from agent.adapters.errors import normalize_error
 
+                # 失败且没有用量：明确标 incomplete，不造数（结果照旧抛出）。
+                accounting.account_adapter_failure(self, exc)
                 raise normalize_error(exc) from exc
+            usage = self._usage_of(raw)
             try:
-                return self._to_completion(raw)
+                completion = self._to_completion(raw)
             except ToolCallParseError as parse_error:
+                # 这次响应可能有真实用量：失败也要记下已知实际用量；
+                # 没有用量时标记这次请求的记账不完整。
+                accounting.account_adapter_request(
+                    self,
+                    usage,
+                    failed=True,
+                    reason=None
+                    if usage is not None
+                    else f"工具参数解析失败：{type(parse_error).__name__}",
+                )
                 attempt += 1
                 if attempt > self.parse_retries:
                     raise
@@ -136,6 +158,22 @@ class NativeAdapter(BaseAdapter):
                     ]
                 )
                 logger.warning("tool-call parse retry %d/%d", attempt, self.parse_retries)
+                continue
+            # 成功的一次响应：记一次真实用量（进 / 出分开）。
+            accounting.account_adapter_request(self, usage)
+            return completion
+
+    @staticmethod
+    def _usage_of(raw: Any) -> ModelUsage | None:
+        """把供应商形状的 usage 归一化；没有就返回 None（不猜）。"""
+        raw_usage = getattr(raw, "usage", None)
+        if raw_usage is None:
+            return None
+        if hasattr(raw_usage, "model_dump"):
+            return ModelUsage.from_provider(raw_usage.model_dump())
+        if isinstance(raw_usage, dict):
+            return ModelUsage.from_provider(raw_usage)
+        return None
 
     def _to_completion(self, raw: Any) -> Completion:
         message = raw.choices[0].message
@@ -164,10 +202,7 @@ class NativeAdapter(BaseAdapter):
                         narrative=narrative,
                     )
                 )
-        usage = None
-        if getattr(raw, "usage", None) is not None:
-            # 供应商字段在这里就归一化，上层只认 ModelUsage
-            usage = ModelUsage.from_provider(raw.usage.model_dump())
+        usage = self._usage_of(raw)
         return Completion(
             message=ChatMessage(
                 role="assistant",
