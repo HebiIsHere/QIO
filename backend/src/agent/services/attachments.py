@@ -1302,12 +1302,24 @@ class AttachmentService:
         if attachment_ids is None:
             # 兼容路径（旧客户端不带 attachment_ids）：**进入时枚举一次并固定**本次应携带的
             # 集合 —— 等待期间**不重新枚举**：既不漏掉被删除的附件，也不把后来新登记的误绑。
-            # 快照只收「进入时就能带」的（见 _entry_carriable）：进入时就 failed / cancelled /
-            # missing / 不可读的是**历史记录**，不携带、也不阻断纯文字发送（契约 §1.3 集合政策）。
-            snapshot = [a.id for a in self._unbound(topic_id) if self._entry_carriable(a)]
-            if not snapshot:
-                # 空快照 = 这一轮不带附件（与显式空列表一致）
+            #
+            # 集合政策（契约 §1.3）分两层 —— 2026-10-09 负载回归修复：失败事实不得在
+            # 重新枚举时消失（旧实现只把「进入时就能带」的放进快照，于是「进入前一刻刚
+            # 失败」的草稿被静默丢掉，本轮照发：200 + 部分绑定 + 模型被调用）。
+            #
+            # ① 进入时本话题至少有一条**能带**的草稿（prepared / ready / changed，见
+            #    _entry_carriable）→ 这一轮**确实要带附件**：集合 = 进入时本话题**全部
+            #    未绑定草稿**，包括进入时就已经 failed / cancelled / missing / 不可读的那些
+            #    —— 它们同样是用户此刻持有的草稿，宁可结构化拒绝也不许「少带一个照发」
+            #    （rejected 带准确 id + 人话原因，草稿可重试）。
+            # ② 一条能带的都没有（只剩历史失败 / 缺失记录）→ 这一轮就是纯文字发送：
+            #    历史失败不阻断用户连字都发不出去（与显式空列表语义一致）。
+            unbound = self._unbound(topic_id)
+            carriable = [a for a in unbound if self._entry_carriable(a)]
+            if not carriable:
+                # 没有任何可携带的草稿 = 这一轮不带附件（与显式空列表一致）
                 return outcome
+            snapshot = [a.id for a in unbound]
             planned = []
             for attachment_id in snapshot:
                 att = await self._validate_for_turn(
@@ -1378,15 +1390,18 @@ class AttachmentService:
         )
 
     def _entry_carriable(self, att: Attachment) -> bool:
-        """进入兼容发送时，这条附件算不算「本次应携带的」（快照口径，契约 §1.3）。
+        """进入兼容发送时，这条附件**现在就能带**吗（契约 §1.3 集合政策的第一层）。
 
         只收**进入当下就能带**的：
         * prepared —— 首次准备在飞，可以等（有界、事件驱动）；
         * ready —— copy 要求副本可读且大小与登记一致；reference 天然可读；
-        * changed —— 只有引用型会变化，按既有规则允许；
+        * changed —— 只有引用型会变化，按既有规则允许。
 
-        进入时就 failed / cancelled / missing / 副本已经不可读的，是**历史记录**：
-        既不携带，也不拿它们阻断纯文字发送（历史失败不该让用户连字都发不出去）。
+        它只回答「这一轮到底算不算带附件的发送」（bind_for_turn 的兼容分支据此
+        决定走哪一层），**不再**充当快照过滤器：一旦本轮确实要带附件，快照就取
+        进入时**全部未绑定草稿** —— 进入时就 failed / cancelled / missing / 不可读的
+        也要算进候选并整轮拒绝（否则「进入前一刻刚失败」的草稿会被静默丢掉）。
+        一条能带的都没有时才当作纯文字发送：历史失败不阻断用户连字都发不出去。
         """
         if att.state == STATE_PREPARED:
             return True

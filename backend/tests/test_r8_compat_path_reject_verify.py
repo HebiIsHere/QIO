@@ -10,6 +10,14 @@ _bindable 不满足就 continue —— 等待期间的失败/取消/删除/不�
 * 被拒后：模型/工具 **0 次**、**无 TURN_START**、**不留部分绑定**（附件不得被绑到这个被拒的轮次）；
 * 显式 attachment_ids: [] 仍表示不带附件；正常路径（首次准备成功后执行/显式列表/重试）照样通过。
 
+装置同步点（2026-10-09 acc-e2 补，**只补同步点，不放宽任何断言**）：
+用例 1/2 原来「登记 bad 附件后立刻发送」，与后台首次准备的完成是竞态 —— 注入的失败若在
+兼容路径枚举之前落库，这条附件进入时就已是 failed（契约 §1.3 的历史记录），测到的就不是
+「等待期间失败」语义（实测：负载下 200 / 只绑好附件 / rejected=[]）。现在用
+_gated_fail_prepare_copy 把提交（os.replace）卡到兼容路径**真的进入等待**之后再放行，
+语义被确定性地测到；用例 3 早已用 _gated_prepare_copy 做过同样的事（不可读必须发生在
+快照之后）。
+
 运行：cd backend; $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_r8_compat_path_reject_verify.py -q
 """
 
@@ -150,6 +158,32 @@ def _fail_prepare_copy(mode: str):
 
 
 @contextlib.contextmanager
+def _gated_fail_prepare_copy(gate_event):
+    """把**登记的提交步骤**（os.replace）挂起，直到测试 release；放行后以真实 ENOSPC 失败收尾。
+
+    2026-10-09 acc-e2 补的**同步点**（不改变任何断言）：只挂起不够 —— 要保证「失败发生在
+    兼容路径进入等待之后」。登记后立刻发送与后台准备完成之间存在竞态：失败若先落库，
+    这条附件进入时就已是 failed（契约 §1.3 的**历史记录**），测到的就不是本用例要测的
+    「等待期间失败」语义。用闸门把它钉死。
+    """
+    import errno
+
+    real_replace = attachments_mod.os.replace
+    state = {"fired": False}
+
+    def _boom(src, dst):  # noqa: ANN001
+        gate_event.wait()
+        state["fired"] = True
+        raise OSError(errno.ENOSPC, "No space left on device（受控错误：等待期间失败）")
+
+    attachments_mod.os.replace = _boom
+    try:
+        yield state
+    finally:
+        attachments_mod.os.replace = real_replace
+
+
+@contextlib.contextmanager
 def _gated_prepare_copy(gate_event):
     """把登记的提交步骤（os.replace）挂起，直到测试 release（用于构造「等待期间变化」）。"""
     real_replace = attachments_mod.os.replace
@@ -181,12 +215,20 @@ async def test_legacy_wait_failure_rejects_the_whole_turn(app, provider, tmp_pat
         calls_before = await _calls(provider)
         src = _write_source(tmp_path, "r8-legacy-fail.txt")
 
-        with _fail_prepare_copy("legacy-wait-failure") as injected:
+        gate = threading.Event()
+        # 2026-10-09 acc-e2：**只补同步点，不放宽任何断言**。原来「登记后立刻发送」与后台
+        # 准备的完成是竞态：注入的失败若在兼容路径枚举之前落库，这条附件进入时就已是
+        # failed（契约 §1.3 的历史记录）。见文件头部「装置同步点」与本轮 acc-e2 报告。
+        with _gated_fail_prepare_copy(gate) as injected:
             registered = await client.post("/api/attachments", json={"source_path": str(src)})
             assert registered.status_code == 200, registered.text[:200]
             attachment_id = str(registered.json()["attachment"]["id"])
             # 旧客户端：body 里**没有** attachment_ids 字段（走兼容兜底路径）
-            response = await client.post("/api/turns", json={"message": message})
+            send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
+            await asyncio.sleep(1.0)          # 让兼容路径真的进入「等待附件就绪」
+            assert not send.done(), "首次准备还没结束，兼容路径不得先受理"
+            gate.set()                        # 放行提交 → 以真实 ENOSPC 失败收尾
+            response = await asyncio.wait_for(send, timeout=120)
             await asyncio.sleep(1.0)
             calls_during = (await _calls(provider)) - calls_before
             row = (await client.get("/api/attachments/%s" % attachment_id)).json().get("attachment") or {}
@@ -226,10 +268,17 @@ async def test_legacy_multi_attachment_any_failure_rejects_all(app, provider, tm
         ok_row = await _wait_state(client, ok_id, ("ready",) + TERMINAL)
         assert str(ok_row.get("state")) == "ready", ok_row
 
-        with _fail_prepare_copy("multi-failure") as injected:
+        gate = threading.Event()
+        # 同步点（只补装置，不放宽断言）：把 bad 的提交卡住，等兼容路径进入等待后再以真实
+        # 失败放行 —— 这样「多附件里有一个在等待期间失败」不再取决于后台准备与枚举的先后。
+        with _gated_fail_prepare_copy(gate) as injected:
             bad_registered = await client.post("/api/attachments", json={"source_path": str(bad_src)})
             bad_id = str(bad_registered.json()["attachment"]["id"])
-            response = await client.post("/api/turns", json={"message": message})
+            send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
+            await asyncio.sleep(1.0)          # 兼容路径进入等待（bad 仍是 prepared）
+            assert not send.done(), "首次准备还没结束，兼容路径不得先受理"
+            gate.set()                        # 放行提交 → 以真实 ENOSPC 失败收尾
+            response = await asyncio.wait_for(send, timeout=120)
             await asyncio.sleep(1.0)
             calls_during = (await _calls(provider)) - calls_before
             turns = _turns_for(app, message)
