@@ -179,12 +179,21 @@ describe("§12.3 未绑定发送的失败归属在绑定时就稳定", () => {
     ]);
     expect(session.failedSendsForTopic("C")).toEqual([]);
 
-    // 切回 A:恢复入口在那里,可以取回
+    // 切回 A:恢复入口在那里;输入框被装回的是 A 里后来写的新文字
+    // (既有恢复规则:不覆盖,两份都保留,取回走互换)
     session.currentTopicId = "A";
     await flushPromises();
-    const restored = session.retryFailedSend(attribution.draftId);
-    expect(restored.ok, "失败原文归属对了才谈得上取回").toBe(true);
+    expect(session.draft).toBe("A 里后来写的新文字");
+    const blocked = session.retryFailedSend(attribution.draftId);
+    expect(blocked.ok, "失败原文归属对了才有取回机会(而非「没有需要取回的原文」)").toBe(false);
+    expect(blocked.reason).toContain("已有更新文字");
+    const swapped = session.swapFailedSendText(attribution.draftId);
+    expect(swapped.ok, "归属正确时互换可以取到失败原文(不覆盖两份都保留)").toBe(true);
     expect(session.draft).toBe("绑定时还在等回执的话");
+    // 记录仍在、归属仍是 A;互换后记录里是用户的草稿(Straw 既有的两份保留语义)
+    const records = session.failedSendsForTopic("A");
+    expect(records.length).toBe(1);
+    expect(records[0].text).toBe("A 里后来写的新文字");
     // C 里写的话没有丢
     expect(storedText(chatKey("C"))).toBe("C 里在写的话");
   });
