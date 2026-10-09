@@ -900,8 +900,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const committed = cleared.ok ? cleared.committedVersion ?? cleared.version : undefined;
     if (committed !== undefined) {
       pendingRemovals.set(key, { cardId, version: committed });
+      pendingLocalRemovals.delete(key);
     } else {
-      pendingRemovals.delete(key);
+      /**
+       * 本机那份 cleared 依据**没写成功**（12 的第二个反例）：
+       * 磁盘上留下的还是旧的 kind=draft 副本，它仍然有「恢复并重新上传」的权限。
+       * 两件事都要登记：
+       * - `pendingLocalRemovals`：本地清除保护待补写（重试时先补写，而不是只删记录）；
+       * - `pendingRemovals`：网络那一路的清除仍要真的发出去，版本取**磁盘上那份旧副本的真实版本**
+       *   （它才是要被清掉的对象；拿计划版本会与版本守卫对不上）。
+       */
+      const onDisk = readCardLocalDraft(cardId);
+      const onDiskVersion =
+        onDisk && typeof onDisk.version === "number" ? onDisk.version : (draftKeySeq.get(key) ?? 0);
+      pendingLocalRemovals.set(key, null);
+      pendingRemovals.set(key, { cardId, version: onDiskVersion });
     }
     setDraftRemovalState(
       key,
@@ -1169,9 +1182,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
            * 只有**同一版本**才算确认 —— 用户在清除之后又编辑的新版本不能被旧清除删掉（§11.2）。
            */
           for (const [key, entry] of removalsAtRequest) {
-            if (pendingRemovals.get(key)?.version !== entry.version) continue;
+            // 版本守卫：带计划版本时，服务器确认的版本可能与 pendingRemovals 里登记的不同，
+            // 这时按「这次请求实际要清的版本」核对，避免把后来重建的记录误删。
+            const registered = pendingRemovals.get(key);
+            if (registered && registered.version !== entry.version) continue;
             pendingRemovals.delete(key);
-            applyLocalRemovalResult(key, removeCardLocalDraft(entry.cardId, entry.version), entry.version);
+            if (pendingLocalRemovals.has(key)) {
+              /**
+               * 12：本机清除保护还没写成 —— 先把 cleared 依据补写成功（幂等），
+               * 而不是直接删记录：删除再失败一次，磁盘上仍是 kind=draft，重开就复活。
+               */
+              const protection = ensureCardLocalClear(entry.cardId, {
+                boardId: boardId.value,
+                seq: draftKeySeq.get(key) ?? 0,
+              });
+              if (protection.ok) {
+                pendingLocalRemovals.delete(key);
+                setDraftLocalState(key, { ok: true, error: null });
+              } else {
+                setDraftLocalState(key, {
+                  ok: false,
+                  error: protection.error ?? "本机没能记下这次清除，重开后这份旧稿可能重新出现",
+                });
+              }
+            } else {
+              applyLocalRemovalResult(key, removeCardLocalDraft(entry.cardId, entry.version), entry.version);
+            }
             setDraftRemovalState(key, "idle");
             setDraftState(key, "idle");
           }
@@ -1224,13 +1260,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (!pendingLocalRemovals.has(item)) continue;
       const retryCardId = cardIdFromDraftKey(item);
       if (!retryCardId) continue;
-      const expectVersion = pendingLocalRemovals.get(item) ?? null;
-      const removal =
-        expectVersion === null
-          ? removeCardLocalDraft(retryCardId)
-          : removeCardLocalDraft(retryCardId, expectVersion);
-      applyLocalRemovalResult(item, removal, expectVersion);
-      if (removal.ok || removal.reason === "version-guard") removedLocalNow.add(item);
+      /**
+       * 12（独立复核发现的反例）：本机清除保护写失败、而服务器清除已经确认时，
+       * 重试**必须先把本机那份 cleared 依据补写成功**（幂等），而不是只尝试删记录 ——
+       * 删除再失败一次，磁盘上留着的仍是 kind=draft 的旧稿，重开后它会重新取得
+       * 恢复与上传权限（旧稿复活）。补写成功后保留这份依据（它就是「已确认清除」的事实），
+       * 由后续正常的服务器清除流程按版本清理。
+       */
+      const protection = ensureCardLocalClear(retryCardId, {
+        boardId: boardId.value,
+        seq: draftKeySeq.get(item) ?? 0,
+      });
+      if (!protection.ok) {
+        setDraftLocalState(item, {
+          ok: false,
+          error: protection.error ?? "本机没能记下这次清除，重开后这份旧稿可能重新出现",
+        });
+        continue;
+      }
+      const committed = protection.committedVersion ?? protection.version;
+      pendingLocalRemovals.delete(item);
+      removedLocalNow.add(item);
+      setDraftLocalState(item, { ok: true, error: null });
+      if (pendingRemovals.has(item)) {
+        // 网络那一路还没确认：把待同步清除的版本对齐到真实落盘的这一版
+        pendingRemovals.set(item, { cardId: retryCardId, version: committed });
+      }
     }
     for (const item of keys) {
       if (draftStateFor(item).status === "error") setDraftState(item, "saving");
