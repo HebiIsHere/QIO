@@ -18,6 +18,8 @@ const stub = vi.hoisted(() => ({
   localState: { ok: true, error: null as string | null },
   removalState: { status: "idle", error: null as string | null },
   conflict: null as { local: string; server: string } | null,
+  /** 本机副本「真的没删掉」时的可显示原因（Lead 接线的 store 访问器；null 表示没有这种情况） */
+  localRemovalError: null as string | null,
   retryDraftSave: vi.fn(async () => undefined),
   resolveDraftConflict: vi.fn(),
 }));
@@ -29,6 +31,7 @@ vi.mock("../../stores/interactive", () => ({
     draftLocalStateFor: () => stub.localState,
     draftRemovalStateFor: () => stub.removalState,
     draftConflictFor: () => stub.conflict,
+    draftLocalRemovalErrorFor: () => stub.localRemovalError,
     retryDraftSave: stub.retryDraftSave,
     resolveDraftConflict: stub.resolveDraftConflict,
   }),
@@ -43,6 +46,7 @@ beforeEach(() => {
   stub.localState = { ok: true, error: null };
   stub.removalState = { status: "idle", error: null };
   stub.conflict = null;
+  stub.localRemovalError = null;
   stub.retryDraftSave.mockClear();
   stub.resolveDraftConflict.mockClear();
 });
@@ -95,6 +99,46 @@ describe("[13] 清除同步失败的说明", () => {
 
     await wrapper.find('[data-im="card-draft-retry"]').trigger("click");
     expect(stub.retryDraftSave).toHaveBeenCalled();
+  });
+});
+
+describe("[13] 本机副本真的没删掉时的说明", () => {
+  it("非 null：说清「本机副本没能删掉、重开后可能又出现」+ 真实原因 + 重试入口", async () => {
+    stub.localRemovalError = "本机存储已满，这条记录没有删掉（清理一些空间后可以重试）";
+
+    const wrapper = mountHint();
+    const text = wrapper.text();
+
+    expect(wrapper.find('[data-im="card-draft-local-removal-error"]').exists()).toBe(true);
+    expect(text).toMatch(/本机副本没能删掉/);
+    expect(text).toMatch(/重开后可能又出现/);
+    expect(text).toContain("本机存储已满");
+    // 清除同步失败说的是另一件事，不许互相冒充
+    expect(wrapper.find('[data-im="card-draft-removal-error"]').exists()).toBe(false);
+
+    const retry = wrapper.find('[data-im="card-draft-local-removal-retry"]');
+    expect(retry.exists()).toBe(true);
+    await retry.trigger("click");
+    expect(stub.retryDraftSave).toHaveBeenCalledWith("card:c1");
+  });
+
+  it("null：什么都不显示（版本守卫有意保留 / 本来就没有记录都不算失败）", () => {
+    const wrapper = mountHint();
+    expect(wrapper.find('[data-im="card-draft-hint"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-draft-local-removal-error"]').exists()).toBe(false);
+  });
+
+  it("与「清除还没同步成功」同时出现：两条事实都说清，但只留一个重试入口", () => {
+    stub.localRemovalError = "本机存储已满，这条记录没有删掉";
+    stub.removalState = { status: "error", error: "网络不可用" };
+
+    const wrapper = mountHint();
+
+    expect(wrapper.find('[data-im="card-draft-local-removal-error"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="card-draft-removal-error"]').exists()).toBe(true);
+    // 同一次重试会一并补做本机删除与网络清除：不重复放按钮
+    expect(wrapper.find('[data-im="card-draft-local-removal-retry"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-draft-retry"]').exists()).toBe(true);
   });
 });
 
