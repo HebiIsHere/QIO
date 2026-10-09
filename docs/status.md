@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-08（`main` 分支 + `fix/interactive-draft-races-ui-polish` 开发分支）。核对方法见文末。
+最后核对：2026-10-09（`main` 分支 + `fix/interactive-content-protection-polish` 开发分支）。核对方法见文末。
 
 ---
 
@@ -788,6 +788,24 @@
     本机 Chrome 在累计几十个 headless 实例后无法再承载（12 个进程 / CPU 91%，CDP 调用超时），
     Edge 与 Chrome 同为 Chromium、同一套 CDP，几何口径一致；主智能体本地的 Chrome 复验在最后阶段不可用。
 - **后续：** 真实 QIO 理解与执行接入提交投递点；把批次判定挪到服务端（需要新的迁移）。
+
+---
+
+### P21 — 内容保护与界面精修（2026-10-09 第五轮）
+
+- **Status：** planned（等 A、C 完工并统一集成后转为 partial）
+- **起点与分支：** 起点提交 `403983f197b10392b3d8c96c56d62d18872d80b0`
+  （远端 `fix/interactive-draft-recovery-completion` 顶端，无更新）。本轮分支 `fix/interactive-content-protection-polish`。
+- **范围：** 提示词给出的五项内容保护问题 + 两项界面问题（契约 §12）。
+- **并行方式（如实记录）：** 首轮四个子智能体都只读到文件就退出；重派 B2/C2/D2 并与 A 并行。
+  成果与分工明细见交付报告 `docs/interactive-content-protection-report.md` §2。
+- **完成项：**
+  - §12.1 冲突不被绕过（payload 按服务器事实回写 + 打开编辑器不选边 + 关闭态提示可见可点）
+  - §12.2 旧清除记录不删新输入（restoreLocalCardDrafts 归属→取代→cleared 顺序）
+  - §12.3/§12.4/§12.5 发送记录保护（归属稳定、成功只清该次、失败原文不静默淘汰）
+  - §12.6 切换条只在确有第二个面板
+  - §12.7 透明区标题/说明局部底色
+- **未验证项：** 真实关闭重开（两个入口）、真实鼠标旅程、三档尺寸 × 明暗 480×600 前后对照、后端 pytest、check_docs —— 等 D 第二步。
 
 ---
 
