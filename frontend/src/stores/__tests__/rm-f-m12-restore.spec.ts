@@ -135,7 +135,10 @@ describe("M12：新连接（无历史游标）的完整恢复", () => {
     // 工具执行记录：要么快照被交给工具核对入口，要么直接建出了对应的工具卡
     // （两种实现形状都算「覆盖了 tools」，但都不能像基线那样整份丢掉）
     const toolCard = session.messages.find((m) => m.role === "tool" && m.callId === "call_1");
-    const reconcileArgs = (reconcileTools.mock.calls.at(-1)?.[0] ?? []) as Array<{
+    // 用下标而不是 Array.prototype.at：本项目的 tsconfig lib 低于 es2022，
+    // `.at()` 会让 `vue-tsc --noEmit` 报 TS2550。
+    const reconcileCalls = reconcileTools.mock.calls;
+    const reconcileArgs = (reconcileCalls[reconcileCalls.length - 1]?.[0] ?? []) as Array<{
       tool_call_id?: string;
     }>;
     const toolsCovered =

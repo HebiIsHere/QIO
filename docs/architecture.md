@@ -645,3 +645,75 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 内部 reasoning、chain of thought、system prompt、model messages 一律不显示。
 任务完成后结果自然回到主 Agent：主 Agent 还在跑就继续回答，已经在等就从
 「进行中」变成「已完成」。
+
+## 13. 可靠性与一致性契约（2026-10-09 定稿）
+
+这一节固定本轮新增的**结构性边界**：它们不是实现细节，而是后续改动必须遵守的接口。
+
+### 13.1 实例归属与存活判据
+
+- 权威来源：`backend/src/agent/storage/instance_registry.py`（`InstanceRegistry`）。
+  实例身份在 `AppContext.__init__` 生成一次，HTTP 层、事件、台账共用同一个 id。
+- 归属写在 `instances` 与 `record_owners`（迁移 26）；台账、待确认事项、派生任务各自带
+  `owner_instance_id`。
+- 存活是**四态**：显式退出 = 死；心跳新鲜 = 活；心跳过期且 pid 不存在 = 死；其余 = 未知。
+  **未知不得被当成死**：恢复只能在确认已退出时动作，否则继续保留并在后续维护里重判。
+- 「只允许一个可写实例」不是本轮的假设——多实例共享数据目录是合法形态，
+  所以恢复必须按归属判断，而不是「启动时无条件中断所有在跑记录」。
+
+### 13.2 受理提交点：先持久化、再派发
+
+- `TurnManager.submit()` 的提交点顺序固定：**可靠持久化 → 进入可执行队列 → 返回受理成功**。
+  持久化失败必须抛 `TurnAcceptError`，受理接口返回 503，不产生内存里的假接受项。
+- 提交之后、派发之前退出的窗口由恢复清单覆盖：记录可见、可操作，但**不自动执行**用户消息。
+- 重发是一个事务：老记录的恢复状态、新任务行、后继关联一起提交；
+  只有已提交的新任务才能被派发。孤立抢占（recovered_at 有值、recovered_by 为空）
+  必须能被列出并修复，不能永久隐藏。
+
+### 13.3 知识版本链
+
+- 身份：`knowledge_id`（版本行）/ `chain_id`（链）/ `version`（链内序号）/ `supersedes_id`。
+  当前有效 = 该链内**唯一** `status='active'`。
+- 唯一写入入口：`backend/src/agent/knowledge/lifecycle.py` 的 `revise_atomic` /
+  `deactivate_atomic`；版本核对、撤销旧行、激活新行、写关联在同一事务里，
+  失败整体回滚；版本不符返回 409（`VersionConflict`），绝不悄悄新增第二个当前版本。
+- `chain_id` 为空的历史行按 supersedes 派生链纳入同一条链——迁移只加列不回填，
+  派生兜底是**必需**的，不是兼容装饰。
+- 范围归属由 `backend/src/agent/knowledge/scope.py` 判定：`node_ids` 为空 → 用户全局节点；
+  `topic_id` 只是兼容字段。无法可靠判定归属的旧条目保持 active 但标 `unresolved`。
+
+### 13.4 派生任务与后台生命周期
+
+- 派生任务（summary / knowledge / entities）各自独立登记、认领、完成、失败与重试，
+  带 `owner_instance_id` 与 `claim_generation`；完成 / 失败 / 释放都要带
+  `expected_generation`，不匹配即丢弃迟到结果。
+- `claim_due` 每次调用顺带核对一次超期 running 任务：恢复不是「只在启动跑一次」。
+- 后台记忆任务统一登记在 `backend/src/agent/services/background.py`，
+  `AppContext.aclose()` 先 `background.shutdown()`（拒绝新建 → 有界等待 → 取消 → 确认结束），
+  再停维护 / turn / 独立任务，最后关适配器；数据库由 lifespan 最后关。
+
+### 13.5 设置写入
+
+- 唯一入口：`backend/src/agent/services/settings_service.py`。
+  语义固定为「先全量校验 → 单事务提交 → 再应用运行时」；校验失败 400、写库失败 500，
+  两种情况数据库与运行时都保持整套旧值。会触发清理的设置（保留期限）只在提交成功后清理。
+- 端点只做「收 body → 交给服务 → 返回该 section 的权威现值」，不再各自边校验边写。
+
+### 13.6 前端运行状态恢复
+
+- 唯一入口：`frontend/src/stores/restore.ts::restoreRuntimeState(reason)`。
+  首次连接、页面刷新、普通重连、`RESYNC` 都走它；单飞 + 代次 + 同步期间缓冲事件 +
+  快照后按序补事件；旧代次与旧实例结果丢弃。
+- 同步期间的缓冲有明确上限，溢出时登记「需要重新同步」并补拉权威快照，
+  不允许「静默丢事件却宣称已同步」。
+
+### 13.7 模型调用与用量记账
+
+- 每次**实际请求**（含适配器内部重试的每一次响应）在发送前核对累计用量：
+  `backend/src/agent/credentials/policy.py` 的 `remaining_budget`（`None` = 无上限）与
+  `ensure_budget_available`（耗尽抛 `BudgetExhausted`）。耗尽后不再发新请求，
+  只给简短真实原因，不静默改配置。
+- 入账唯一入口：`backend/src/agent/credentials/usage.py::record_request_usage(...)`；
+  失败但有已知用量照记，没有用量就标 `incomplete`，不凭空造数。
+- 取消语义：外层取消必须取消**并等待**内层模型请求清理，再继续传播取消；
+  迟到结果不得进入已结束任务的历史。
