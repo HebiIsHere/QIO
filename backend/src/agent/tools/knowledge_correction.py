@@ -1,9 +1,14 @@
-﻿"""Knowledge correction: user feedback -> revoke or supersede.
+"""Knowledge correction: user feedback -> revoke or supersede.
 
 The tool locates the target entry without exposing internal ids: first
 within the current turn's injection snapshot (the knowledge the model
 just saw), then across the active library; ambiguous matches return a
 numbered candidate list and the model picks by index.
+
+R02/R03：纠正与删除都走 `knowledge/lifecycle` 的**同一套原子规则**——
+先在链上解析「当前版本」，再带 `expected_version` 做单事务替换；
+旧注入快照指向的版本被取代过时，反馈必须说清楚实际删/改的是哪一条，
+不能删了旧行却报「当前已删」。版本冲突（并发纠正）明确报冲突，不静默二次改写。
 """
 
 from __future__ import annotations
@@ -11,11 +16,23 @@ from __future__ import annotations
 import sqlite3
 from typing import Callable
 
-from agent.knowledge.lifecycle import KnowledgeService
+from agent.knowledge.lifecycle import (
+    KnowledgeItem,
+    KnowledgeNotFound,
+    KnowledgeService,
+    VersionConflict,
+)
 from agent.prompts import TOOL_CORRECT_KNOWLEDGE_DESC
 from agent.tools.base import Tool, ToolResult
 
 MAX_CANDIDATES = 8
+
+
+def _conflict_text(exc: VersionConflict) -> str:
+    return (
+        f"版本冲突：{exc.reason}；当前版本 {exc.current_id}（v{exc.current_version}），"
+        "未做修改，请重新确认后再纠正"
+    )
 
 
 class CorrectKnowledgeTool(Tool):
@@ -88,24 +105,74 @@ class CorrectKnowledgeTool(Tool):
         else:
             target = candidates[0]
         ks = KnowledgeService(self.conn)
-        item = ks.get(target["item_id"])
-        if item is None:
+        matched = ks.get(target["item_id"])
+        if matched is None:
             return ToolResult(ok=False, error="目标条目不存在")
+        # 快照可能指向已被取代的旧版本：按链解析真正的当前版本。
+        current = ks.resolve_current(matched.id) or matched
+        stale_snapshot = current.id != matched.id
         if delete:
-            ks.revoke(item.id)
-            return ToolResult(ok=True, content=f"已删除知识：「{item.content[:60]}」")
-        new_item = ks.create(
-            category=item.category,
-            content=new_content,
-            node_ids=list(item.node_ids),
-            supersedes_id=item.id,
-            provenance={"corrected_from": item.id},
-        )
-        # 用户纠错即确认：submit -> verify -> activate（激活时旧条目自动 revoked）
-        ks.submit(new_item.id)
-        ks.verify(new_item.id, verified_by="user")  # user correction is explicit confirmation
-        ks.activate(new_item.id)
-        return ToolResult(
-            ok=True,
-            content=f"已修正知识：「{item.content[:60]}」→「{new_content[:60]}」",
-        )
+            return self._delete(ks, matched, current, stale_snapshot=stale_snapshot)
+        return self._revise(ks, matched, current, new_content, stale_snapshot=stale_snapshot)
+
+    # -- actions ----------------------------------------------------------
+
+    def _delete(
+        self,
+        ks: KnowledgeService,
+        matched: KnowledgeItem,
+        current: KnowledgeItem,
+        *,
+        stale_snapshot: bool,
+    ) -> ToolResult:
+        try:
+            outcome = ks.deactivate_atomic(current.id, expected_version=current.version)
+        except VersionConflict as exc:
+            return ToolResult(ok=False, error=_conflict_text(exc))
+        except (KnowledgeNotFound, ValueError) as exc:
+            return ToolResult(ok=False, error=f"删除失败：{exc}")
+        if outcome.already_inactive:
+            return ToolResult(
+                ok=True,
+                content=f"该知识已不是有效条目，无需删除：「{current.content[:60]}」",
+            )
+        if stale_snapshot:
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"已删除当前有效版本：「{current.content[:60]}」"
+                    f"（你看到的旧快照 {matched.id} 已被它取代）"
+                ),
+            )
+        return ToolResult(ok=True, content=f"已删除知识：「{current.content[:60]}」")
+
+    def _revise(
+        self,
+        ks: KnowledgeService,
+        matched: KnowledgeItem,
+        current: KnowledgeItem,
+        new_content: str,
+        *,
+        stale_snapshot: bool,
+    ) -> ToolResult:
+        if new_content == current.content:
+            return ToolResult(
+                ok=True,
+                content=f"内容未变化，未新增版本：「{current.content[:60]}」",
+            )
+        try:
+            ks.revise_atomic(
+                current.id,
+                current.version,
+                {"content": new_content, "node_ids": list(current.node_ids)},
+                source="user_correction",
+                actor="user",
+            )
+        except VersionConflict as exc:
+            return ToolResult(ok=False, error=_conflict_text(exc))
+        except (KnowledgeNotFound, ValueError) as exc:
+            return ToolResult(ok=False, error=f"纠正失败：{exc}")
+        message = f"已修正知识：「{matched.content[:60]}」→「{new_content[:60]}」"
+        if stale_snapshot:
+            message += f"（你看到的旧快照 {matched.id} 已被取代，本次修正作用于当前版本）"
+        return ToolResult(ok=True, content=message)
