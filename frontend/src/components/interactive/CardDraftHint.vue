@@ -122,10 +122,17 @@ function choose(choice: "local" | "server") {
     <!-- 服务器保存失败（本机那一路若也失败，如实一起说明） -->
     <template v-else-if="state.status === 'error'">
       <span class="msg" data-im="card-draft-error">
-        草稿未保存：{{ state.error || "原因未知" }}（输入内容已保留）
+        草稿未保存：{{ state.error || "原因未知" }}
       </span>
+      <!--
+        本机副本写成功时才能说「关掉重开还在」（§11.3：不许把「内容还在当前页面」说成
+        「关闭后一定能恢复」）；写失败时只说明限制，不承诺。
+      -->
       <span v-if="localAtRisk" class="msg" data-im="card-draft-local-error">
         本机也没能留下恢复副本：{{ local.error || "原因未知" }}（现在关闭页面就恢复不到这次未完成的输入）
+      </span>
+      <span v-else class="msg" data-im="card-draft-error-local-kept">
+        完整内容已保留在本机，关闭后重开仍能继续编辑
       </span>
       <button class="retry" type="button" data-im="card-draft-retry" :disabled="retrying" @click="retry">
         {{ retrying ? "重试中…" : "重试保存" }}

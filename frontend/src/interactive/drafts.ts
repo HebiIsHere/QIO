@@ -250,12 +250,23 @@ export function readDraft(key: string): DraftRecord | null {
   }
 }
 
-/** 写入结果：真实结果 + 失败原因 + 这次写入得到的本机版本号（§11.3 要如实显示，不许静默） */
+/**
+ * 写入结果：真实结果 + 失败原因 + 本机版本号（§11.3 要如实显示，不许静默）。
+ *
+ * 版本号分两个口径，调用方**必须**分清（条目 12 / 契约 M2）：
+ * - `version`：这次写入**计划**写下的版本号。写入成功时它就是真实落盘的版本；
+ *   写入失败时它只是一次没有实现的计划 —— 调用方不得把它登记成「已确认版本」，
+ *   否则版本守卫会对不上，磁盘上的旧记录删不掉、重开后又复活。
+ * - `committedVersion`：这次**真的写进存储**的版本号（存储里现在的版本）。
+ *   写入失败时为 undefined：这次没有推进本机版本，磁盘上仍是旧记录。
+ */
 export interface DraftWriteResult {
   ok: boolean;
   error?: string;
-  /** 这次写入针对的本机版本号（写失败时也返回，调用方仍可用它来说明「哪一版没保护上」） */
+  /** 计划写入的本机版本号；写入成功时等于 committedVersion */
   version: number;
+  /** 真实落盘的版本号（存储里现在的版本）；写入失败时为 undefined */
+  committedVersion?: number;
 }
 
 /**
@@ -292,12 +303,14 @@ export interface DraftRemoveResult {
 /** 底层写入：只做序列化与存储，不解释语义 */
 function writeRecord(key: string, record: DraftRecord): DraftWriteResult {
   const { storage, error } = resolveStorage();
-  if (!storage) return { ok: false, error: error ?? "本地存储不可用，草稿无法保存", version: record.version ?? 0 };
+  const planned = typeof record.version === "number" && Number.isFinite(record.version) ? record.version : 0;
+  if (!storage) return { ok: false, error: error ?? "本地存储不可用，草稿无法保存", version: planned };
   try {
     storage.setItem(key, JSON.stringify(record));
-    return { ok: true, version: record.version ?? 0 };
+    // 只有真的落盘才给 committedVersion：失败时调用方不能把计划版本当成已确认版本（M2 / 条目 12）
+    return typeof record.version === "number" ? { ok: true, version: planned, committedVersion: planned } : { ok: true, version: planned };
   } catch (err) {
-    return { ok: false, error: describeWriteError(err), version: record.version ?? 0 };
+    return { ok: false, error: describeWriteError(err), version: planned };
   }
 }
 
@@ -382,6 +395,45 @@ export function writeCardLocalClear(
   };
   if (options.boardId) record.boardId = options.boardId;
   return writeRecord(key, record);
+}
+
+/** 重建本机清除保护的结果：真实写入结果 + 是否本来就已经有保护 */
+export interface DraftClearProtectionResult extends DraftWriteResult {
+  /**
+   * 磁盘上本来就已经是一份「待确认清除」记录：这次只确认，**没有新写**（版本不推进）。
+   * 幂等很重要：每重写一版都会让之前登记的确认版本失效，清理反而删不掉（M2 / 条目 12）。
+   */
+  alreadyProtected: boolean;
+}
+
+/**
+ * 确认/重建「这份草稿已被用户清除、等服务器确认」的本机依据（M2 / 条目 12）。
+ *
+ * 为什么要单独有这个入口：清除是两步事实 —— 先在本机留下依据（planCleared），再去和
+ * 服务器同步。本机那一步失败过（配额满、存储被禁用）时，重试**必须先补写本机依据**
+ * 再重发网络清除；只重发网络的话，网络在飞期间关闭重开，旧稿会因为本机依据不存在而复活。
+ * 已经写过（磁盘上就是一条 cleared 记录）时不重复写，避免把版本推掉。
+ */
+export function ensureCardLocalClear(
+  cardId: string,
+  options: { boardId?: string; seq?: number } = {},
+): DraftClearProtectionResult {
+  const current = readCardLocalDraft(cardId);
+  if (current && current.kind === "cleared") {
+    const version = typeof current.version === "number" ? current.version : 0;
+    return {
+      ok: true,
+      version,
+      ...(typeof current.version === "number" ? { committedVersion: current.version } : {}),
+      alreadyProtected: true,
+    };
+  }
+  return { ...writeCardLocalClear(cardId, options), alreadyProtected: false };
+}
+
+/** 本机此刻是否真的有一份待确认清除记录（以磁盘为准，不依赖内存里的状态） */
+export function hasCardLocalClear(cardId: string): boolean {
+  return readCardLocalDraft(cardId)?.kind === "cleared";
 }
 
 /**
