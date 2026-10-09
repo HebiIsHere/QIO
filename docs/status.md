@@ -808,7 +808,10 @@
 - **门禁（集成总提交上实跑）：** `npx vue-tsc --noEmit` = 0；全量 `npx vitest run` = **144/145 文件、1416/1417 用例**
   （唯一失败是负载敏感的 `eventBufferOverflow`，单独跑 4/4、17.9s）；后端 `pytest` **exit 0**；
   `python scripts/check_docs.py` 通过（33 个里程碑条目）；第六轮反例合集 **46 例通过**。
-- **未验证项：** 真实关闭重开（两个入口）、真实鼠标旅程 —— 等 D 第二步收尾。
+- **关闭重开（已完成）：** 同一 profile 新浏览器进程验证两个入口都能找回同一失败原文
+  （证据 `docs/interactive-ui-screenshots/r6-lead-{chat,composer}-reopen-recovery.png`）。
+- **未验证项：** 真实鼠标旅程（探针用合成指针事件与受控接口流程覆盖，功能经状态级与组件级用例钉死）；
+  360px 等比 480px 更窄的档位。
 
 ---
 
