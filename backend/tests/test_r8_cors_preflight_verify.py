@@ -14,7 +14,6 @@ r"""D 独立验证（R8 问题一）：带附件发送（X-QIO-Prepare-Id）的*
 
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 
@@ -40,13 +39,13 @@ UNTRUSTED_ORIGINS = ["http://evil.example", "https://tauri.localhost.evil.exampl
 
 
 def _build_app(tmp_path: Path, *, dev_insecure: bool):
-    if dev_insecure:
-        os.environ["QIO_DEV_INSECURE"] = "1"
-    else:
-        os.environ.pop("QIO_DEV_INSECURE", None)
+    # **不碰 os.environ**：conftest 用 os.environ.setdefault("QIO_DEV_INSECURE","1") 给整个测试会话兜底，
+    # 这里若 pop 掉它，同一进程里**之后**跑的用例（settings/runtime_state/turn/verify…）会因为
+    # Host: testserver 不是回环地址而全部 403 host_not_loopback（CI 实测事故）。
+    # Settings 的 dev_insecure 本来就是显式字段，直接传即可。
     conn = connect(tmp_path / ("r8_cors_%s.db" % ("dev" if dev_insecure else "prod")))
     apply_migrations(conn)
-    app = create_app(Settings(data_dir=tmp_path / "data"), conn)
+    app = create_app(Settings(data_dir=tmp_path / "data", dev_insecure=dev_insecure), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
     app.state.ctx.attachments.data_dir = tmp_path / "data"
     return app
