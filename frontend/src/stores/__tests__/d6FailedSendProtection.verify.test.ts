@@ -67,7 +67,10 @@ afterEach(() => {
 describe("§12.3 反例 4：未绑定 → A → B → 失败，恢复记录不许落在 B", () => {
   it("【状态】失败原文与归属身份要归属到原发送对应的话题 A", async () => {
     const session = useSessionStore();
-    // 1) 话题还没确定：用户点击发送（归属此刻定下）
+    session.draft = "没发出去的话";
+    // 1) 话题还没确定：用户输入后点击发送（归属此刻定下；正文取自输入框，
+    //    驱动修正：先打字再点发送才是真实路径 —— 空着输入框直接 sendAttribution 会生成
+    //    空文本归属，send() 的 takeAttribution 文字对不上会走兜底派发新身份，测的不是产品缺陷。）
     const at = session.sendAttribution();
     expect(at.topicId, "点击发送时话题还没绑定").toBeNull();
     let reject!: (err: unknown) => void;
