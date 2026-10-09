@@ -654,7 +654,7 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 
 - 权威来源：`backend/src/agent/storage/instance_registry.py`（`InstanceRegistry`）。
   实例身份在 `AppContext.__init__` 生成一次，HTTP 层、事件、台账共用同一个 id。
-- 归属写在 `instances` 与 `record_owners`（迁移 26）；台账、待确认事项、派生任务各自带
+- 归属写在 `instances` 与 `record_owners`（迁移 **29**，见下面 13.8 的号段说明）；台账、待确认事项、派生任务各自带
   `owner_instance_id`。
 - 存活是**四态**：显式退出 = 死；心跳新鲜 = 活；心跳过期且 pid 不存在 = 死；其余 = 未知。
   **未知不得被当成死**：恢复只能在确认已退出时动作，否则继续保留并在后续维护里重判。
@@ -717,3 +717,17 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   失败但有已知用量照记，没有用量就标 `incomplete`，不凭空造数。
 - 取消语义：外层取消必须取消**并等待**内层模型请求清理，再继续传播取消；
   迟到结果不得进入已结束任务的历史。
+
+### 13.8 迁移号段纪律（2026-10-09 实测定稿）
+
+- `agent/storage/migrate.py::apply_migrations` 的语义是「`target <= 已记录版本` 就**整条跳过**」。
+  因此迁移号不只代表顺序，还是**跨分支的命名空间**：同基线并行开发的多个修复分支
+  如果各自从「下一个空号」追加迁移，就会撞号，而撞号的后果不是冲突报错，而是
+  **后合入的那条被静默整段跳过** —— 表不存在、列不存在，直到运行期才以
+  `no such table` / `no such column` 的形式炸出来。
+- 本次实测到的形态：基线 `main`（`6e073e9`）停在 25，另外三个同基线修复分支已经用掉
+  26 / 27 / 28；本轮最初也用 26，结果被那些分支碰过的存量库把这条迁移整段跳过，
+  后端在 `AppContext.__init__` 抛 `sqlite3.OperationalError: no such table: instances`。
+- 规则：**新迁移取「所有并行分支已知最大号 + 1」**，不要取「当前 main 的下一个号」。
+  存量库上的半截迁移仍然由 `migrate.py` 的窄口径自愈（只认 duplicate column / already exists）
+  处理。回归见 `backend/tests/test_rm_lead_migration_discipline.py`。

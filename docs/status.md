@@ -2218,7 +2218,7 @@ GitHub 直链与 `gh` 上传本身是通的。
 
 ### 一、实例归属与可靠恢复（R01 / R04 / R05 / R06 / M06）
 
-- **实例归属（R01）**：新增 `backend/src/agent/storage/instance_registry.py` 与迁移 26
+- **实例归属（R01）**：新增 `backend/src/agent/storage/instance_registry.py` 与迁移 **29**
   （新增 `instances`、`record_owners`，并给 `turn_journal` / `derived_tasks` /
   `pending_approvals` 补归属列）。存活判据是**四态**而不是单一阈值：
   显式退出 → 死；心跳新鲜 → 活；心跳过期**且** pid 不存在 → 死；其余 → 未知。
@@ -2248,7 +2248,7 @@ GitHub 直链与 `gh` 上传本身是通的。
 - **版本链唯一当前版本（R02）**：`knowledge/lifecycle.py` 以 `chain_id` / `version` /
   `supersedes_id` 定义链身份；`revise_atomic` / `deactivate_atomic` 在单事务里
   「核对目标仍是当前版本 → 撤销旧行 → 插入并激活新行 → 写关联」，版本不符抛
-  `VersionConflict`（HTTP 409，带 current_id / current_version）。迁移 26 只加列**不回填**，
+  `VersionConflict`（HTTP 409，带 current_id / current_version）。迁移 29 只加列**不回填**，
   所以 `chain_of` 会把 `chain_id` 为空的历史行按 supersedes 派生链一并纳入——
   否则同链的第二个 active 会看不见，R02 形同虚设。
   已有同链多 active 的历史冲突用只读 `list_duplicate_active_chains()` 暴露（保留原文与历史）。
@@ -2330,7 +2330,16 @@ GitHub 直链与 `gh` 上传本身是通的。
 
 ### 八、数据迁移与历史状态处理
 
-- schema 只**追加**迁移（本轮为迁移 26），不改历史迁移；重复启动不会重复修复。
+- schema 只**追加**迁移（本轮为迁移 **29**），不改历史迁移；重复启动不会重复修复。
+  **号段为什么是 29 而不是 26**：`apply_migrations` 是「`target <=` 已记录版本就整条跳过」，
+  而基线 `main`（`6e073e9`）自己停在 25，同基线的其它修复分支（附件发送 / 进程审计 /
+  统一进程流）已经用掉了 26 / 27 / 28。最初写 26 时，任何被那些分支碰过的存量库
+  （例如长期数据目录）都已经记着 26，本轮迁移被整段跳过 → `instances` 表不存在
+  → 后端在 `AppContext.__init__` 抛 `no such table: instances` 起不来。
+  取 29（已知最大号 + 1）后，无论那些分支先合还是后合，这条迁移对任何存量库都必然生效；
+  受控回归见 `backend/tests/test_rm_lead_migration_discipline.py`（构造「版本已到 28、
+  缺本轮对象」的历史样例，迁移后对象齐全、存量数据不丢、重复跑幂等），
+  并用长期数据目录的副本实测后端从「起不来」变为 `backend_ready=True`、版本推进到 29。
 - 历史无归属的 turn / 审批 / 派生任务：保守保留原状态并计入待处理，不自动标中断。
 - 历史同链多个 active：只读列出、保留原文与历史，新写入由条件校验保证不再产生重复。
 - 历史无归属知识：保持 active 但标 `unresolved`，等用户在管理界面确认，不擅自改成全局。
