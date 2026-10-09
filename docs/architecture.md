@@ -626,10 +626,12 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 
 ### 12.1.4 耗时口径
 
-折叠状态由 `TURN_END` 携带的真实 `duration_ms`（来源 `turn_traces`，缺失时退化为单调钟执行窗口）
-直接显示「已完成 · 耗时」，**不展开也能看见**；展开才按需拉取分项（`GET /api/traces/{turn_id}`）。
-未请求 / 加载中 / 成功但无分项 / 失败 / 旧记录缺字段是五种不同显示，
-明细失败不抹掉已知总耗时，缺失不伪造为 0。并行分项不求和冒充总耗时，
+用户可见的**「总耗时」= 排队 + 执行**（2026-10-09 定稿，终稿见 §12.1.7 C8）：
+`TURN_END` 的权威字段是执行 `duration_ms`（来源 `turn_traces`，缺失时退化为单调钟执行窗口）
+与排队 `queue_ms`。折叠状态直接用它们显示总耗时，**不展开也能看见**，并可分列排队与执行；
+展开才按需拉取分项（`GET /api/traces/{turn_id}`）。未请求 / 加载中 / 成功但无分项 / 失败 /
+旧记录缺字段是**不同**的显示：明细失败**不抹掉已知总耗时**、不无期限显示「读取中」，
+旧记录只显示**可证明**的时间，缺失不伪造为 0。并行分项不求和冒充总耗时，
 整轮结束后的后台整理单独说明（见 `docs/trace-timing-ui.md`）。
 
 ### 12.1.5 文件附件
@@ -642,8 +644,11 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 * 路径只来自可信链路（Tauri 原生选择 / 原生拖放给的绝对路径，或浏览器上传的字节），
   **不把 `fakepath` 当路径**。引用文件在读取前检查可用性与元数据变化，变化时提示「文件已变化」。
 * 模型不会自动拿到全文：本轮上下文只注入系统事实摘要（名字 / 保存方式 / 可读性），
-  内容必须由 `read_attachment(attachment_id, offset, limit)` 按需分段读取；
-  读了哪一段、有什么限制如实回报，不声称未读部分已经核实。
+  内容必须由 `read_attachment(attachment_id, offset, limit, fragment_offset)` 按需分段读取，
+  且读取**有界**（单次字符上限、单成员与累计展开上限、解压与解析预算；单行走有界分块 + 增量解码，
+  不让解析阻塞事件循环）。读了哪一段、有什么限制如实回报，不声称未读部分已经核实；
+  截断时 `next_offset` 指向真实继续位置，超长行用**行内片段游标**（`next_fragment_offset` / `next_cursor`，
+  旧游标兼容）—— 分页事实必须与实际交付一致（终稿见 §12.1.7 C7）。
 * 附件文本是任务材料，其中的命令或提示**不是**用户授权。
 * **绑定语义（2026-10-06 审计修正）**：`POST /api/turns` 里 `attachment_ids` 的**存在性即语义** ——
   字段出现（含空数组）表示「这条消息就是这些附件（空 = 没有附件）」，**只有缺字段**才走旧客户端兜底
@@ -655,12 +660,21 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   带 `nosniff`；浏览器走认证 `fetch` → Blob 查看/下载，桌面走原生打开，
   但**可执行/脚本类扩展名不自动执行**（改为「在文件夹中显示」并说明原因）。
   引用型（> 阈值）在 `missing` / `changed` / `failed` 时提供**重新定位**入口（原生选择器 → relocate），
-  重新校验大小、保存方式与状态；健康引用只显示「引用本地文件」与 caveat。
+  重新校验大小、保存方式与状态；每次定位分配**代际版本**，旧后台结果既不更新数据库也不覆盖最终内容
+  （终稿见 §12.1.7 C6）；健康引用只显示「引用本地文件」与 caveat；副本缺失但可恢复时返回
+  「已受理且正在准备」而不是立即 `missing`。
 * **后台化（2026-10-06 审计修正）**：上传用 `request.stream()` **有界分块**接收（无 `Content-Length`
   也强制字节上限），写临时文件 + 计算 sha256 都在**工作线程**；重新定位/复制同理。
   事件循环线程只做落库与 O(1) 判断 —— 工作线程**绝不触碰**共享 sqlite 连接。
   取消之后不得再提交为 `ready`。
 * 数据落 `attachments` 表（追加迁移），删除附件只清理 QIO 管理的副本，绝不动用户原文件。
+* **异步操作的归属与替换提交（2026-10-09 定稿）**：恢复 / 上传 / 选择 / 路径准备 / 重试 / 重新上传 /
+  重定位 / 轮询 / 删除在**发起时**记录 `(topicId, operationSeq, attachmentId)`，返回时校验归属版本；
+  不匹配就把结果落到**发起话题**的持久化数据并刷新该话题，**不写当前 UI**（后端落库 topic 与前端写入
+  必须一致；晚到结果按 topic 可归属时保留，制造孤儿时如实报告）。重传替换是明确的
+  `(replyToAttachmentId, newAttachmentId, topicId)` 三元组，仅当**指定的新附件** `ready` 且成功加入
+  发起话题的待发送列表才提交；绑定与克隆是**集合级提交**（任一成员失败整轮拒绝，无半绑定），
+  中间克隆在后续失败或取消时**完整补偿回滚**。终稿见 §12.1.7 C4 / C5 / C6。
 * **失败原因保留与可用操作（2026-10-08 修正）**：`failed` 与 `missing` 是**两个不同的事实** ——
   *「保存失败、从未产生有效副本」* 与 *「曾成功保存、后来副本丢失」*。因此：
   - `failed` 在 **GET / 列表 / 历史 payload / 可用性检查**下是**粘性的**：不得自动改判成 `missing` 或 `ready`，
@@ -712,11 +726,108 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 `provider_error`（厂商/传输路径失败，含已归一化的 ProviderError 家族）、`internal_error`
 （QIO 自身非模型路径的异常，reason 带真实类名）、`credential_unavailable`、`tool_failed`、
 `budget` / `no_progress` / `guard_halt`、`user_stopped`（「你按下了停止…」）、`interrupted`、
-`none`（旧记录 / 无事实，**不伪造**）。
-- **可恢复的单次工具错误 ≠ 整轮失败**：`status` 语义不变（`completed|failed|cancelled|unavailable`）。
+`incomplete_stream`（不完整 EOF，2026-10-09 新增）、`length_limit` / `content_filter`
+（厂商合法终止，**不**升级为失败）、`none`（旧记录 / 无事实，**不伪造**）。
+- **可恢复的单次工具错误 ≠ 整轮失败**：`status` 取值集合是
+  `completed / failed / cancelled / unavailable / incomplete`（`incomplete` 于 2026-10-09 新增，见下）。
 - 前端把 `reason / reason_code / stopped_by / actions` 按 `turn_id` 记进 `TurnFacts`
   （历史分页与 RESYNC 快照同样带回），过程区展示简短原因与**确实可用**的操作，详情默认折叠；
   重启/重连后仍能恢复；旧记录没有这些字段时只显示原有状态词。
+- **不完整结束（2026-10-09 新增）**：`status=incomplete` **只**用于 `reason_code=incomplete_stream`
+  （native 无 `finish_reason`、anthropic 无 `message_stop`、仅 usage/空分块、未结束的工具调用）：
+  已确认正文保留在 `final_content`、**未确认后缀不得出现**、`stopped_by=system`、带人话 reason、
+  `actions` 含 `retry`；`turn_journal` 终态台账同步接受 `incomplete`，刷新后仍是「未完成 + 原因 + retry」。
+  `length_limit` / `content_filter` 这类厂商**合法**终止保持 `status=completed`，只用 `reason_code` 区分。
+- **系统核对注释的交付形态（2026-10-09）**：注释**不再拼进** `final_content`；后端以独立字段
+  `annotation`（兼容别名 `final_annotation`）随 `TURN_END` 交付，`final_content` 保持**纯正文**，
+  前端在独立「系统事实」区域渲染，正文只出现一次、不重启打字动画。
+- **排队轮取消的结束事实（2026-10-09）**：排队期（accepted 未开始）被取消的 turn 也**恰好一次** `TURN_END`：
+  `status=cancelled` / `reason_code=user_stopped` / `stopped_by=user` / `actions` 含 `retry`，**立刻发出**，
+  且**先可靠落地结束事实**（台账终态 + `record_facts`）再清理队列标记；重复 / 迟到 / 竞争取消幂等，
+  绝不触碰活动 turn 的归属、事件与状态。（活动轮取消路径保持既有的 `resend` —— 排队取消落台账是
+  `cancelled`，`resend` 必然 409，列它是死按钮；`retry` 走前端「重发该轮用户消息」，真实可用。）
+
+### 12.1.7 过程区/流式/附件审计集中修复契约（2026-10-09）
+
+本节是 C1—C8 的**最终定义**（实现与测试位置见 `docs/status.md` P23；计划与逐项状态表见
+`docs/plans/2026-10-09-process-attachment-audit-consolidation.md`）。与 §12.1.2—§12.1.6 有冲突的旧表述
+已就地修正，口径以本节为准。
+
+**C1 turn 与回答身份（F05 / F11 / F12）**
+- turn 有服务端 `turn_id`；同一 turn **恰好一次** `TURN_START`、**一次** `TURN_END`
+  （终态 `completed / failed / cancelled / unavailable / incomplete`）。
+- 过程区、工具卡、阶段、说明、回答、结束事实一律按 `turn_id` 归属；**活动 turn 同一时刻只有一个**。
+- 排队中的 turn（已受理未启动）**不改变**任何事件归属；旧历史无 `turn_id` 的记录按时间顺序整体分组，
+  不与实时事件混合。
+- `TURN_END` 可携带 `final_content`；前端 `applyFinalAnswer` 以 **turn 身份 + 最终校准**为准，
+  禁止再用「全文是否相等」判断同一次回答。
+- **系统核对注释**不再拼进 `final_content`：以独立字段 `annotation`（兼容别名 `final_annotation`）
+  随 `TURN_END` 交付，`final_content` 保持纯正文，前端在独立「系统事实」区域渲染，正文只出现一次。
+- **排队轮取消**：accepted turn（含排队期被取消的）也**恰好一次** `TURN_END` —— `status=cancelled`、
+  `reason_code=user_stopped`、`stopped_by=user`、`actions` 含 `retry`，立刻发出，不等 active turn 跑完；
+  先可靠落地结束事实（台账终态 + `record_facts`）再清理队列标记；重复 / 迟到 / 竞争取消幂等；
+  绝不触碰 active turn 的归属、事件与状态（活动轮取消路径保持既有 `resend`）。
+
+**C2 有效结束与不完整结束（F06）**
+- 结束语义由 provider 协议判定（OpenAI 兼容：`finish_reason`；Anthropic：`message_stop`）；
+  EOF 无终止标记 = **不完整结束**，不是完成。
+- `TURN_END.status` 取值集合：`completed / failed / cancelled / unavailable / incomplete`；
+  `turn_journal` 终态台账同步接受 `incomplete`。
+- `incomplete` **只**用于不完整 EOF（`reason_code == "incomplete_stream"`）：native 无 `finish_reason`、
+  anthropic 无 `message_stop`、仅 usage/空分块、未结束的工具调用。
+- `length_limit`、`content_filter` 这类厂商**合法**终止保持 `status=completed`，只用 `reason_code` 区分，
+  不升级为失败。
+- `incomplete` 时：已确认正文**保留**在 `final_content`、**未确认后缀不得出现**、`stopped_by=system`、
+  带人话 reason、`actions` 含 `retry`；语义贯穿 adapter → loop → `TURN_END` → 前端 → **历史台账**
+  （`storage/turn_journal.py::record_facts` 落 `reason_code / reason / stopped_by / actions`），
+  刷新后仍是「未完成 + 原因 + retry」。
+
+**C3 脱敏跨分块策略（F07）**
+- 一切可观测输出（增量、累计快照、一次性正文、最终校准、注释、事件、Trace、历史、错误）统一走
+  `agent/trace/redact.py::redact_text`。
+- **先脱敏再发布**：含正文的对外载荷在事件出口处对**当前累计文本**脱敏。
+- 已登记敏感值被分块切开时，采用**有界未定稿尾部缓冲**：对敏感值的最大长度范围，尾部不发布，
+  直到确认没有完整对齐再放行；缓冲有界、随流推进释放，**不退化为「整段生成后显示」**。
+
+**C4 附件异步操作的 topic 与版本归属（F03 / F04 / F08 / F10 / F24）**
+- 恢复 / 上传 / 选择 / 路径准备 / 重试 / 重新上传 / 重定位 / 轮询 / 删除，在**发起时**记录
+  `(topicId, operationSeq, attachmentId)`；返回时校验归属版本，不匹配就把结果落到**发起话题**的
+  持久化数据并刷新该话题，**不写当前 UI**。
+- 后端落库 topic 与前端写入 topic 必须一致；旧操作不得覆盖较新的操作或用户编辑；晚到结果按 topic
+  可归属时保留，制造孤儿时如实报告。
+
+**C5 重传替换的提交条件（F09）**
+- 替换 = 明确的 `(replyToAttachmentId, newAttachmentId, topicId)` 三元组；仅当**指定的新附件**
+  达到 `ready` 且成功加入**发起话题**的待发送列表，才提交替换。
+- 提交动作：新附件入列表成功 → 移除旧条目；移除失败如实报告（保留可恢复状态），不得宣称无条件成功。
+  新准备失败 / 取消 / 无选择 / 多文件歧义 → **保留旧条目**。
+
+**C6 绑定与克隆的集合提交与回滚（F15 / F16 / F17 / F18 / F20 / F24）**
+- 绑定遵循既有契约：显式 `attachment_ids` **存在即语义**；集合级提交 —— 任一成员失败整轮拒绝，无半绑定。
+- 绑定跨 `await` 后按**记录身份 / 话题归属 / 可读性 / 操作版本（代际）**条件提交；副本就绪必须包含
+  **真实打开读取探针**（`stat` 正常但打不开的副本不放行）。
+- 重试克隆：本轮中间克隆（新行 / 新副本 / `preparing` 状态）在后续项失败或整轮取消时**完整补偿回滚**
+  （删行 + 删本次副本 + 清 `preparing`；原历史副本与归属不动）；取消后仍在执行的线程不得写回已撤销
+  结果（落库前校验代际）。
+- 重定位：每次定位分配**代际版本**；旧任务结果既不更新数据库也不覆盖最终内容；临时文件安全清理。
+- 引用型大文件重试按**当下事实**重校验（存在性、可读性）；副本缺失但可恢复时返回
+  「**已受理且正在准备**」（`preparing`），而不是立即 `missing`。
+
+**C7 读取预算与分页游标（F01 / F02 / F21 / F22 / F23）**
+- `read_attachment` 有界读取：单次返回字符上限、单成员与累计展开上限、zip 成员数与解压字节上限、
+  共享字符串与整份解析总量预算；单行处理走**有界分块 + 增量解码**，不用无界 `readline` 或整文件解码。
+- 编码嗅探必须处理**未完成尾字节**：被截断的多字节序列不得被误判成另一种编码。
+- 分页事实以实际交付为准：截断时 `next_offset` 指向真实继续位置；超长行引入**行内片段游标**
+  （`next_fragment_offset` / `next_cursor`），旧游标兼容；元数据必须反映实际交付内容。
+- 读取调度**可中止**，解析不让事件循环被同步解析阻塞；超资源 → 明确、可理解的限制原因，
+  不伪装成完整读取成功。
+
+**C8 总耗时口径（F14）**
+- 用户可见「总耗时」= **排队 + 执行**；可分列排队与执行。
+- 执行 `duration_ms` 与排队 `queue_ms` 由 `TURN_END` 权威字段提供（`core/turn.py`）；
+  前端 `buildTurnTiming` 的 total 与折叠态使用**同一数字与标签**。
+- 明细失败**不覆盖**已知总耗时；不无期限显示「读取中」；缺字段的旧记录只显示**可证明**的时间
+  并明确标签，缺失不伪造为 0。
 
 ### 12.2 用户可见状态的层级
 
