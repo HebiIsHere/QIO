@@ -124,11 +124,14 @@ const isToolbarOwner = computed(() => {
 /** 工具栏在卡片上方时，整理菜单向上展开（朝卡片外侧），不盖标题与连接点 */
 const menuOpensUp = computed(() => props.toolbarTop < props.y);
 
+/** 冲突未决的关闭态卡片显示提示与选择按钮：高度放开为 auto，不被 overflow 裁掉（契约 §12.1 可见可点） */
+const conflictExpanded = computed(() => !props.card.folded && Boolean(store.draftConflictFor(props.card.id)));
+
 const style = computed(() => ({
   left: props.x + "px",
   top: props.y + "px",
   width: props.card.w + "px",
-  height: props.card.folded ? "auto" : props.card.h + "px",
+  height: props.card.folded || conflictExpanded.value ? "auto" : props.card.h + "px",
   zIndex: props.dragging ? 30 : props.selected ? 8 : 4,
 }));
 
@@ -292,21 +295,24 @@ function cancelEdit() {
         </div>
       </template>
       <template v-else>
-        <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
-        <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
-        <p v-else-if="card.kind === 'url'" class="content url">
-          <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
-        </p>
-        <p v-else class="content">
-          <span v-if="card.content" class="desc">{{ card.content }}</span>
-          <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
-        </p>
         <!--
           冲突未决时提示在**关闭态卡片**上也要可见可点（契约 §12.1）：
           刷新恢复出冲突后，用户不必先点「编辑」也能直接做出选择。
-          只在确有冲突时渲染，防止常态卡片冒出无关的保存状态文字。
+          卡片高度固定且 overflow 隐藏，提示不能追加在正文后面（会被裁掉）——
+          确有冲突时直接**替换**正文行：两份内容都保留着（打开编辑或任一选择都能回到），这里先让用户做选择。
         -->
         <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
+        <template v-else>
+          <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
+          <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
+          <p v-else-if="card.kind === 'url'" class="content url">
+            <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
+          </p>
+          <p v-else class="content">
+            <span v-if="card.content" class="desc">{{ card.content }}</span>
+            <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
+          </p>
+        </template>
       </template>
     </div>
 
