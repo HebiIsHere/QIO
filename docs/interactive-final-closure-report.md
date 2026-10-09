@@ -87,7 +87,14 @@
 
 ## 7. CI
 
-见下方「最终门禁」小节（推送后核对真实运行号与状态；未运行/查询失败/跳过分别如实标注）。
+- 代码 SHA：`0fa94a496b7be44d870df33e392f6ae68e77b735`，已推送 `origin/fix/interactive-final-closure`
+  （`git ls-remote` 与本地一致；未合并、未发布）。
+- 真实运行：**run 37940157474** —— https://github.com/HebiIsHere/QIO/actions/runs/37940157474
+  截至本报告成文时：`frontend` ✅、`docs consistency` ✅、`backend (py3.11)` ✅、`backend (py3.12)` ✅、
+  `backend (windows-latest)` ✅、`frozen worker (windows)` ✅、`rust (windows-latest)` ✅、`rust (ubuntu-24.04)` ✅、
+  `install e2e (windows-latest)` **仍在进行中**（无失败任务）。
+- 如实声明：**没有从本地全绿推断远程全绿**；上表是 `gh run view` 的真实结果，
+  尚在进行中的任务既不算通过也不算失败。本报告提交后产生的那次文档-only 运行号，见最终答复。
 
 ## 8. 新发现的缺陷与剩余限制
 

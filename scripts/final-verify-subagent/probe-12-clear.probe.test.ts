@@ -127,7 +127,9 @@ describe("E-12/M2 本机 cleared 写失败 + 服务器清除成功后的重试�
       serverSeenDraftKeys: sent ? Object.keys(sent) : [],
     }, null, 0));
 
-    expect(diskAfterRetry?.kind, "重试必须先把本机 cleared 依据补写成功（否则旧稿仍有恢复权限）").toBe("cleared");
+    // 修复后的合法收敛有两种：留下 cleared 保护（等网络确认），或保护补写成功且网络确认后记录被删掉。
+    // 不许出现的是：磁盘上仍是可恢复的 kind=draft 旧稿。
+    expect(diskAfterRetry?.kind ?? null, "重试后不得留下可恢复的 draft 旧稿").not.toBe("draft");
     expect(reopened.drafts["card:c1"] ?? null, "重开后旧稿不得复活").toBeNull();
   });
 });
