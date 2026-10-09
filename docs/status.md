@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-08（`main` 分支）。核对方法见文末。
+最后核对：2026-10-09（`main` 分支）。核对方法见文末。
 
 ---
 
@@ -956,6 +956,22 @@
   未就绪被调用；问题三 3 红：读取失败 0 警告 / 创建·写入被说成「超出上限」；问题四 5 红：等待者永不返回），
   修复后**四文件全部转绿**。Lead 亲自复跑四文件（含真 TCP 断连用例）确认。前端「中止确认」由 DOM 用例 +
   实机截图覆盖。
+- **验证（2026-10-09）：** 后端全量 **2445 tests / 0 failures / 0 errors / 10 skipped**；前端
+  **137 files / 1167 tests** + `vue-tsc` exit 0；`check_docs` 通过；`agent.eval.run` 与基线一致（verdict=skip）。
+- **两个集成期发现（都非本轮验收项的错误）：**
+  1. **准备期取消的监听任务死锁**（Lead 代修，`_prepare_with_cancel`）：断连监听挂在 Starlette
+     `BaseHTTPMiddleware` 的 `wrapped_receive` 上，那个 receive 要等**本请求的响应完成**才返回
+     `http.disconnect`，而响应要等路由返回 —— `finally` 里再 `await` 这个被取消的监听任务就是**自己等自己**
+     （`test_turn_journal` 两条 resend 用例实测永不返回，全量卡住）。修法：bind 任务**取消并等待**（克隆清理
+     挂在它身上）；监听任务**只取消不等待**（CancelledError 在其下一个 await 点送达）。
+  2. **就用未就绪附件点发送：前端本就有一道可见闸门**（`attachmentBlockReason`，自附件链路 `9b716ca` 起即有）：
+     prepared 附件按「发送」**不发请求**、屏幕显示「附件还在准备中…」。独立验证方的实机装置按
+     `data-test` 读原因元素而该元素当时没有 `data-test` → 读成「无任何拒绝提示」，被误列为
+     「待定性的观察」。补上 `data-test`（`attach-error`）+ 2 条 DOM 用例定性。
+- **Known limitations：**（见 `docs/verification-r7-phase2.md` §4）：60s 生产等待值未真实等待、准备期**进程崩溃**
+  台账路径无用例、真实磁盘故障仅 OSError 注入、多实例 tmp 清理竞争、重开对话后警告可见性未验证、
+  实机带附件发送的 3 条证据因前端就绪闸门不可达（后端门由 HTTP/ASGI 层覆盖）、HTTP/2 与反代下断连行为、
+  真实厂商/原生桌面/安装包未验。
 - **Known limitations：**
   - 60s 准备等待生产值未做真实等待验证（用例收紧到亚秒）；准备期**进程崩溃**（非优雅关闭）台账路径无用例。
   - 真实磁盘故障（盘满/掉线）只做 OSError/FileNotFoundError 注入；多实例共用 `<data_dir>/tmp` 的暂存清理竞争未验证。
