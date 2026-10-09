@@ -222,9 +222,15 @@ function confirmEdit() {
   emit("patch", props.card.id, patch, "编辑" + kindLabel.value);
   /**
    * 确认之后草稿就该消失（契约 §10.4）：写一个空串会留下「存在但正文为空」的记录，
-   * 下次打开编辑器会把刚确认的正式内容盖成空。这里把记录整个清掉。
+   * 下次打开编辑器会把刚确认的正式内容盖成空。这里登记一次清除。
+   *
+   * 但**不能点击时就清**（收尾轮 07）：这次板面变更可能只是进了影响确认（尚未保存），
+   * 用户还可能取消。点击时先清会把内存候选、本机恢复记录与服务器那份草稿一起处理掉，
+   * 取消后新输入连恢复来源都没有。清除登记给 store，等这次正式变更被服务器真实接受后，
+   * 由 store 按登记的那一版执行完整清除；等待确认 / 取消 / 保存失败期间候选都保留。
+   * 登记之后用户又输入了更新的草稿版本时，这次登记作废（不许清掉后来输入）。
    */
-  store.clearDraft(cardDraftKey(props.card.id));
+  store.requestDraftClear(cardDraftKey(props.card.id));
   editing.value = false;
 }
 
