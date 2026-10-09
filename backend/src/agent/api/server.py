@@ -312,7 +312,10 @@ def create_app(
         allow_origin_regex=DEV_ORIGIN_REGEX if settings.dev_insecure else None,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-QIO-Session"],
+        # X-QIO-Prepare-Id：准备标识（契约：附件发送的中止要靠它定位一次准备），
+        # 它出现在正式请求头里 → 浏览器会为该组合发预检，漏在 allow_headers 外
+        # 会被直接 400 Disallowed CORS headers（带附件发送在浏览器侧被拦）。
+        allow_headers=["Authorization", "Content-Type", "X-QIO-Session", "X-QIO-Prepare-Id"],
     )
     from agent.tools.approval import ApprovalService
 
