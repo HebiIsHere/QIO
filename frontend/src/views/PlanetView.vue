@@ -1461,6 +1461,25 @@ async function startHere() {
   anchorBusy.value = true;
   anchorError.value = "";
   try {
+    /**
+     * M01：这次动作把起点明确落到「某话题的最新位置」或「当前开放片段」——
+     * 旧的未落实接续选择必须先原子取消（复用既有 cancelContinuation 接口），
+     * 否则下一条消息仍会被旧登记的历史带偏（界面说切了、消息却去了别处）。
+     *
+     * 只浏览星球（选中话题 / 展开片段 / 关闭面板）**不经过这里**，
+     * 所以浏览不会取消用户已经做出的接续选择。
+     * 取消失败就不改起点：宁可不动，也不把消息送到错误的起点。
+     */
+    const opensCurrentPosition = !fragmentId || !selectedIsHistoric.value;
+    if (opensCurrentPosition && session.pendingContinuation) {
+      const cancelled = await session.cancelPendingContinuation();
+      if (!cancelled) {
+        anchorError.value = session.lastError ?? "旧的接续选择没能取消，未改变起点";
+        anchorBusy.value = false;
+        if (isClosing.value) session.lastError = anchorError.value;
+        return;
+      }
+    }
     // 只用后端返回的权威结果更新本地（标题 / 是否历史位置），
     // 避免与同一动作触发的 SSE ANCHOR 事件互相覆盖
     //

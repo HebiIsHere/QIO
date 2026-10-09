@@ -7,6 +7,7 @@ import {
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
+import { restoreRuntimeState } from "./restore";
 
 export interface ToolPresentation {
   title?: string;
@@ -354,6 +355,28 @@ export interface StreamMessage {
     fresh?: boolean;
   /** 主 turn 运行中提交、等待执行的消息（TURN_START 时按 FIFO 清除） */
   queued?: boolean;
+  /**
+   * 提交这条消息时**捕获下来的起点身份**（M01）。
+   *
+   * 起点身份必须在「受理那一刻」定死：之后用户再去星球里浏览、改选片段、
+   * 明确进入别的话题，都不能追溯改向这条已经提交（可能正在排队）的消息。
+   * 它同时是「受理结果与提交时是否一致」的核对依据。
+   */
+  startIdentity?: StartIdentity;
+}
+
+/** 一次发送在受理时捕获的起点身份（稳定身份，不随后续导航变化）。 */
+export interface StartIdentity {
+  /** 提交时的话题（后端 `/api/turns` 收到的 topic_id） */
+  topicId: string | null;
+  /** 提交时锚定的片段（null = 话题的最新位置） */
+  fragmentId: string | null;
+  /** 提交时待落实的接续选择（null = 没有登记「从某段历史继续」） */
+  intentId: string | null;
+  /** 提交时的话题名（只用于界面文案，不参与判定） */
+  topicName: string | null;
+  /** 捕获时刻（毫秒），用于诊断与「先后关系」判断 */
+  capturedAt: number;
 }
 
 export const useSessionStore = defineStore("session", {
@@ -468,8 +491,20 @@ export const useSessionStore = defineStore("session", {
     _devTasksSeq: 0,
     /** 执行授权列表的刷新代次（同上）。 */
     _devAuthSeq: 0,
-    /** 权威运行状态读取的代次（RESYNC 与失败恢复可能并发）。 */
-    _runtimeStateSeq: 0,
+    /**
+     * 「取消未落实的接续选择」是否正在提交（M01）。
+     *
+     * 明确改变起点时（进入某话题最新位置 / 选中的就是当前开放片段 / 确认话题切换）
+     * 必须先把这个选择取消掉，否则下一条消息会被旧登记接续带偏。单飞避免连点两次。
+     */
+    _cancelContinuationBusy: false,
+    /**
+     * 本地已经确认结束的「未执行消息」（M12）。
+     *
+     * 恢复快照可能是这些事项结束**之前**取的：稍旧的快照不能让它们复活成
+     * 一个点不动的假待办。这里记下确认结束的 turn_id（有界），应用快照时过滤。
+     */
+    _resolvedInterruptedTurnIds: [] as string[],
     /**
      * RESYNC 状态机：`normal` 正常实时；`resyncing` 正在拉权威快照
      * （期间实时事件先缓存，快照应用后再按顺序补放）；`failed` 同步失败，
@@ -643,12 +678,70 @@ export const useSessionStore = defineStore("session", {
     ) {
       this.pendingContinuation = payload;
     },
+
+    /**
+     * M01：取消「下一条消息从这段历史继续」的登记（复用既有 cancelContinuation 接口）。
+     *
+     * 用在**明确改变起点**的动作之前：进入某话题的最新位置、选中当前开放片段、
+     * 确认话题切换。语义：
+     * * 没有登记时是 no-op（不产生任何请求）；
+     * * 成功 → 本地立刻清掉 pendingContinuation，保证紧接着的发送不会带上旧意图
+     *   （后台也会广播新的 ANCHOR，两边最终一致）；
+     * * 失败 → **不改本地状态**（提示保留），返回 false 并给出可读原因，调用方
+     *   必须放弃这次起点改变 —— 宁可不动，也不把消息送到错误的起点；
+     * * 只是浏览星球 / 查看历史**不会**调到这里，所以浏览不取消选择。
+     */
+    async cancelPendingContinuation(): Promise<boolean> {
+      if (!this.pendingContinuation) return true;
+      if (this._cancelContinuationBusy) return false;
+      this._cancelContinuationBusy = true;
+      try {
+        const res = await api.cancelContinuation();
+        if (res && res.ok === false) {
+          this.lastError = "后端没有确认取消「从所选历史继续」，起点未改变（可以重试）";
+          return false;
+        }
+        // 服务端已确认取消 → 本地同步撤下提示，避免「本地还留着旧选择」。
+        // （服务端随后广播的 ANCHOR 也会是 pending=null，两边一致。）
+        this.pendingContinuation = null;
+        return true;
+      } catch (e) {
+        this.lastError = `没能取消「从所选历史继续」：${(e as Error).message}（起点未改变）`;
+        return false;
+      } finally {
+        this._cancelContinuationBusy = false;
+      }
+    },
+
+    /**
+     * M01：捕获「这一次发送的起点身份」。
+     *
+     * 三个字段都在提交那一刻从本地状态取值，之后不再重新计算 —— 已受理
+     * （可能还在排队）的消息因此不会被后续导航追溯改向。
+     */
+    captureStartIdentity(): StartIdentity {
+      return {
+        topicId: this.currentTopicId,
+        fragmentId: this.anchorFragmentId,
+        intentId: this.pendingContinuation?.intentId ?? null,
+        topicName: this.topicName,
+        capturedAt: Date.now(),
+      };
+    },
     /** 用户点「转到这里」：只有这一步会真的改变 Anchor。 */
     async confirmPendingSwitch() {
       const pending = this.pendingSwitch;
       if (!pending || this.pendingSwitchBusy) return;
       this.pendingSwitchBusy = true;
       try {
+        /**
+         * M01：确认「转到这里」= 明确改变起点 → 旧的未落实接续选择必须一起取消。
+         * 否则切换之后的第一条消息仍会被旧登记带偏（起点与界面显示不一致）。
+         * 取消失败就不切换：宁可不动，也不把消息送到错误的起点。
+         */
+        if (!(await this.cancelPendingContinuation())) {
+          return;
+        }
         const res = await api.confirmTopicSwitch();
         if (!res.ok || !res.topic_id) {
           this.lastError = "后端没有确认这次切换，未切换话题";
@@ -943,6 +1036,8 @@ export const useSessionStore = defineStore("session", {
       try {
         const res = await api.resendInterruptedTurn(turnId);
         this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+        // 本地确认它已经结束：稍旧的恢复快照不许把它复活
+        this.noteInterruptedTurnResolved(turnId);
         // 不把内部 turn_id 抛给用户：他要的是"这条重新发出去了"，不是一串标识
         void res;
         this.interruptedNotice = "已经按原话题重新排队，这一轮马上开始";
@@ -974,6 +1069,7 @@ export const useSessionStore = defineStore("session", {
       try {
         await api.dismissInterruptedTurn(turnId);
         this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+        this.noteInterruptedTurnResolved(turnId);
         this.interruptedNotice = "已忽略这一条（原文仍然保留在记录里）";
         return { ok: true, message: this.interruptedNotice };
       } catch (e) {
@@ -1006,6 +1102,7 @@ export const useSessionStore = defineStore("session", {
         try {
           await api.dismissInterruptedTurn(id);
           this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== id);
+          this.noteInterruptedTurnResolved(id);
         } catch (e) {
           if ((e as { status?: number }).status === 409) already += 1;
           else failed += 1;
@@ -1026,38 +1123,47 @@ export const useSessionStore = defineStore("session", {
       return { ok: true, message: this.interruptedNotice };
     },
     /**
-     * 事件流可能已经不完整（收到 RESYNC）：不再假装状态是最新的，
-     * 直接向服务器要一份**完整**权威状态并对齐（turn 队列 + 待审批 + 独立任务）。
+     * 事件流可能已经不完整（收到 RESYNC / 重连 / 实例变化）：
+     * 不再假装状态是最新的，交给**唯一恢复入口** `stores/restore.ts`。
+     *
+     * 保留这个方法名是因为它已经被既有调用点与用例使用；实现只有一份。
      */
-    async resyncTurnState(): Promise<{
-      turn_queue: TurnQueueSnapshot;
-      approvals: Awaited<ReturnType<typeof api.getRuntimeState>>["approvals"];
-      tasks: Awaited<ReturnType<typeof api.getRuntimeState>>["tasks"];
-    } | null> {
-      const seq = ++this._runtimeStateSeq;
-      try {
-        const state = await api.getRuntimeState();
-        // 归属校验：期间又发起了一次权威读取 → 这一份是旧的，整段丢弃
-        // （队列快照自身还有 revision / instance 校验，这里补的是请求代次）
-        if (seq !== this._runtimeStateSeq) return null;
-        this.adoptInstance(state.instance_id);
-        this.applyTurnQueue(state.turn_queue);
-        this.interruptedOperations = (state.interrupted_approvals ?? []).map((item) => ({
-          approval_id: item.approval_id,
-          kind: item.kind,
-          what: item.what,
-          createdAt: item.created_at,
-        }));
-        // 上一次退出时没执行完的用户消息：后端只给「还没被处理过」的那些，
-        // 这里照单收下 —— 前端不做第二套「算不算没做完」的判断。
-        this.interruptedTurns = state.interrupted_turns ?? [];
-        // 开发任务是另一份权威状态（独立的接口）：连上就一起拉，别等用户想起来刷新
-        await this.refreshDevTasks();
-        return { turn_queue: state.turn_queue, approvals: state.approvals, tasks: state.tasks };
-      } catch (e) {
-        this.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
-        return null;
-      }
+    async resyncTurnState(): Promise<void> {
+      await restoreRuntimeState("resync");
+    },
+    /**
+     * M12：把权威快照里的「未完成事项」一次性收下。
+     *
+     * * `interrupted_approvals`：上一次进程结束时没执行的工具操作（只说明事实）；
+     * * `interrupted_turns`：已经被接受、但没执行完的用户消息。
+     *
+     * 快照是权威，但它可能是在某个事项**刚刚结束之前**取的 —— 本地已经确认
+     * 结束（用户点了继续 / 忽略，或别处处理过）的那些不能被它复活成一个
+     * 点不动的假待办，所以这里按「本地已确认结束」的 id 过滤。
+     */
+    applyInterruptedState(
+      approvals: {
+        approval_id: string;
+        kind: string;
+        what: string;
+        created_at: string;
+      }[],
+      turns: InterruptedTurn[],
+    ) {
+      this.interruptedOperations = (approvals ?? []).map((item) => ({
+        approval_id: item.approval_id,
+        kind: item.kind,
+        what: item.what,
+        createdAt: item.created_at,
+      }));
+      const resolved = new Set(this._resolvedInterruptedTurnIds);
+      this.interruptedTurns = (turns ?? []).filter((t) => !resolved.has(t.turn_id));
+    },
+    /** 本地确认一条「未执行消息」已经结束（继续 / 忽略成功）：不允许快照把它复活。 */
+    noteInterruptedTurnResolved(turnId: string) {
+      if (!turnId || this._resolvedInterruptedTurnIds.includes(turnId)) return;
+      this._resolvedInterruptedTurnIds.push(turnId);
+      if (this._resolvedInterruptedTurnIds.length > 200) this._resolvedInterruptedTurnIds.shift();
     },
     /**
      * 拉一次开发任务列表（连接建立 / RESYNC / 一轮结束之后调用）。
@@ -1880,8 +1986,15 @@ export const useSessionStore = defineStore("session", {
       const message = text.trim();
       if (!message) return false;
       const queued = this.turnRunning;
+      /**
+       * M01：起点身份在**提交这一刻**定死，跟着这条消息走。
+       * 受理之后再发生的导航（浏览星球、改选片段、进入别的话题）都不会
+       * 重新计算它 —— 排队中的消息更不会被追溯改向。
+       */
+      const startIdentity = this.captureStartIdentity();
       this.pushUser(message);
       const optimistic = this.messages[this.messages.length - 1];
+      optimistic.startIdentity = startIdentity;
       if (queued) {
         optimistic.queued = true;
         this.queuedMessageIds.push(optimistic.id);
@@ -1891,7 +2004,7 @@ export const useSessionStore = defineStore("session", {
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
       try {
-        const res = await api.sendTurn(message, this.currentTopicId);
+        const res = await api.sendTurn(message, startIdentity.topicId);
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
@@ -1903,6 +2016,17 @@ export const useSessionStore = defineStore("session", {
             this.turnRunning = true;
             this.turnPhase = "waiting";
           }
+        }
+        /**
+         * 核对受理结果与提交时捕获的起点是否一致（M01）。
+         * 不一致时**不追改** captured 身份、也不重发：只如实提示 —— 起点错位
+         * 属于必须让用户看见的事实，不能被静默吞掉。后端没给 topic_id 时跳过核对。
+         */
+        const acceptedTopic = res?.topic_id ?? null;
+        if (acceptedTopic && startIdentity.topicId && acceptedTopic !== startIdentity.topicId) {
+          this.warning =
+            `这条消息提交时属于「${startIdentity.topicName || startIdentity.topicId}」，` +
+            "后端受理到的起点与提交时不一致；请确认当前起点后再发送下一条。";
         }
         return true;
       } catch (e) {

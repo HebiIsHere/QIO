@@ -8,8 +8,8 @@ import {
 } from "../services/events";
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
 import { useApprovalsStore } from "./approvals";
-import { api } from "../services/api";
 import { resetBackend } from "../services/backend";
+import { invalidateRestore, restoreRuntimeState } from "./restore";
 
 /**
  * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
@@ -119,14 +119,14 @@ export const useEventStore = defineStore("events", {
       source.onopen = () => {
         this.connected = true;
         /**
-         * 连接建立后主动拉一次权威状态。
+         * 连接建立后走**唯一恢复入口**拉一次权威状态。
          *
-         * 为什么必须这么做：后端不再把最近一批事件重放给新连接（那是新页面看到
-         * 上一次错误提示与排队条的原因）。事件流现在只负责「变化」，
-         * 「当前有没有在跑的任务 / 有没有待审批」要客户端自己问一次。
-         * 这与 resync 走同一条路径，不新增协议。
+         * 后端不再把最近一批事件重放给新连接（那是新页面看到上一次错误提示与
+         * 排队条的原因）。事件流只负责「变化」，「当前有没有在跑的任务 /
+         * 有没有待审批 / 有没有没执行完的消息」由这一次快照说清。
+         * 首次连接、页面刷新后重连、普通重连都是这一条路径。
          */
-        void useSessionStore().resyncTurnState();
+        void restoreRuntimeState("connect");
       };
       source.onerror = () => {
         this.connected = false;
@@ -138,6 +138,11 @@ export const useEventStore = defineStore("events", {
       this._source?.close();
       this._source = null;
       this.connected = false;
+      /**
+       * 连接断开 = 事件流不再连续：在飞的那次恢复可能带回旧连接上的旧状态，
+       * 必须作废（代次 +1）；重连时由唯一入口重新拉一份权威快照。
+       */
+      invalidateRestore();
     },
     route(event: AgentEvent) {
       /**
@@ -146,7 +151,7 @@ export const useEventStore = defineStore("events", {
        * 会先被应用，随后旧 snapshot 返回又把它覆盖掉。
        */
       if (event.type === "RESYNC") {
-        void this.startResync();
+        void restoreRuntimeState("resync");
         return;
       }
       if (this.resyncing) {
@@ -183,7 +188,7 @@ export const useEventStore = defineStore("events", {
             // 并补一次完整同步，别只依赖这一条事件
             if (tid && instanceChanged) {
               resetBackend();
-              void this.startResync();
+              void restoreRuntimeState("instance-change");
             }
             if (tid) this.lastTurnId = tid;
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
@@ -292,13 +297,13 @@ export const useEventStore = defineStore("events", {
           if (instanceChanged) {
             // 换了实例：旧的连接信息（端口 / 令牌）不再可信
             resetBackend();
-            void this.startResync();
+            void restoreRuntimeState("instance-change");
           }
           break;
         }
         case "RESYNC": {
           // RESYNC 在 `route()` 里就已经拦下并触发同步，这里只是兜底
-          void this.startResync();
+          void restoreRuntimeState("resync");
           break;
         }
         case "CAPABILITY": {
@@ -642,67 +647,16 @@ export const useEventStore = defineStore("events", {
     // -- RESYNC 恢复协议 --------------------------------------------------
 
     /**
-     * 进入同步：拉一次权威快照、完整应用、再把同步期间缓存的新事件按顺序补放。
+     * 兼容旧入口：RESYNC 恢复协议的**唯一实现**已经收敛到 `stores/restore.ts`
+     * 的 `restoreRuntimeState(reason)`（单飞 + generation + 同步期间缓冲事件 +
+     * 快照后按序补事件）。这里只做转发，避免再出现第二套恢复语义。
      *
-     * 关键点：
-     * * **单飞**：同一时间只允许一个同步在跑，重复 RESYNC 只做标记（不并发 snapshot）；
-     * * **顺序**：snapshot 先应用，之后才是同步期间到达的事件 —— 避免旧快照覆盖新事件；
-     * * **状态可见**：成功 → normal 并清掉提示；失败 → failed 且保留错误，不假装已同步。
+     * 旧行为（单飞、缓冲、快照应用顺序）由唯一入口保持：`resyncing` /
+     * `resyncBuffer` / `resyncDroppedEvents` / `flushResyncBuffer` 仍然由本 store
+     * 持有（事件路由发生在这一层），状态机与提示由唯一入口驱动。
      */
     async startResync(): Promise<void> {
-      const session = useSessionStore();
-      /**
-       * 单飞判断放在**建定时器之前**。
-       *
-       * 以前是先建 `graceTimer` 再判断 `this.resyncing` 直接 return —— 每一次
-       * 重复 RESYNC 都会留下一个没人清的提示定时器（稍后可能写出一条过期提示）。
-       */
-      if (this.resyncing) {
-        this._resyncAgain = true;
-        return;
-      }
-      session.resyncState = "resyncing";
-      /**
-       * 同步提示只在**真的卡住**时才出现。
-       *
-       * 之前的写法是立刻写一条「正在同步最新状态…」，但同步通常几十毫秒就完成、
-       * 随后又被清掉 —— 用户什么都看不到（实测：注入 RESYNC 后页面上没有任何提示）。
-       * 现在给它一个很短的宽限期：超过这个时间还没同步完，才把话说出来。
-       */
-      const notice = RESYNC_NOTICE;
-      const graceTimer = setTimeout(() => {
-        if (session.resyncState === "resyncing") session.warning = notice;
-      }, RESYNC_NOTICE_DELAY_MS);
-      this.resyncing = true;
-      try {
-        do {
-          this._resyncAgain = false;
-          // 本轮的溢出情况单独计：只要中间到过上限，本轮结束就要再来一轮
-          this.resyncDroppedEvents = 0;
-          const state = await api.getRuntimeState();
-          const instanceBefore = session.instanceId;
-          session.adoptInstance(state.instance_id);
-          // 后端重启（实例变化）→ 地址与令牌都可能变：下一次请求重新解析
-          if (instanceBefore && session.instanceId !== instanceBefore) resetBackend();
-          session.applyTurnQueue(state.turn_queue);
-          this.applyRuntimeState(state);
-          // 开发任务列表是另一份权威状态：重连/抖动之后要一起拉齐
-          await session.refreshDevTasks();
-          this.flushResyncBuffer();
-        } while (this._resyncAgain);
-        session.resyncState = "normal";
-        // 只撤下**这条同步提示**：同步期间新到的提醒不能被顺手抹掉
-        if (session.warning === notice) session.warning = null;
-      } catch (e) {
-        // 失败必须如实说：界面显示的状态可能已经不是最新的
-        session.resyncState = "failed";
-        if (session.warning === notice) session.warning = null;
-        session.lastError = `状态同步失败，界面显示的状态可能不是最新的：${(e as Error).message}`;
-      } finally {
-        clearTimeout(graceTimer);
-        this.resyncing = false;
-        this.flushResyncBuffer();
-      }
+      await restoreRuntimeState("resync");
     },
 
     /** 同步期间缓存的事件按到达顺序补放（嵌套的 RESYNC 只做标记）。 */
@@ -752,6 +706,18 @@ export const useEventStore = defineStore("events", {
     }) {
       const session = useSessionStore();
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
+      /**
+       * 「继续 / 停止」操作条也属于待办：快照里已经没有它（事务结束了 / 别处应答了）
+       * 就必须本地收口 —— 否则用户会看到一个点不动的假待办。
+       */
+      const continueIds = new Set(
+        state.approvals
+          .filter((a) => String(a.kind ?? "") === "continue")
+          .map((a) => a.approval_id),
+      );
+      if (session.pendingContinue && !continueIds.has(session.pendingContinue.id)) {
+        session.pendingContinue = null;
+      }
       for (const approval of state.approvals) {
         // 恢复出来的审批不抢焦点：保留待办 + 亮出入口
         this.handleApprovalRequired(approval as unknown as Record<string, unknown>, {

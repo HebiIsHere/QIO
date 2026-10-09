@@ -137,6 +137,39 @@ function errorText(error: unknown): string {
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 /**
+ * 一次更新操作里用到的 `Update`：它是 Tauri 的 `Resource`，**用到的每一次都要还**。
+ *
+ * `close()` 在 SDK 里是 `downloadedBytes?.close()` + `super.close()`（见
+ * `@tauri-apps/plugin-updater/dist-js/index.js`），所以：
+ * * 下载资源已经被 `install()` 成功消费时，SDK 会把它置空 —— 再调 close 不会二次关闭；
+ * * 反过来，重复调用本函数会对已经释放的 rid 再发一次 close，因此必须 only-once。
+ */
+type ReleasableUpdate = { close?: () => Promise<void> } | null | undefined;
+
+/**
+ * 生成「只释放一次」的释放函数。
+ *
+ * 释放本身永远不能改变这次操作的结果：
+ * * 安装成功时应用会在 Windows 上退出、Rust 侧可能已经消费了资源，
+ *   这时 close 报「resource not found」是**正常**的，不能因此让「安装成功」变成失败；
+ * * 失败路径上 close 异常也**不得掩盖原始失败原因** —— 原始错误才是用户需要看到的东西。
+ * 所以这里只记一条 warn，绝不向调用方抛。
+ */
+function createReleaseOnce(update: ReleasableUpdate): () => Promise<void> {
+  let released = false;
+  return async function release(): Promise<void> {
+    if (released) return;
+    released = true;
+    if (!update || typeof update.close !== "function") return;
+    try {
+      await update.close();
+    } catch (error) {
+      console.warn("[qio] 释放更新资源失败（不影响本次更新结果）：", error);
+    }
+  };
+}
+
+/**
  * 解析**本次更新操作**的代理配置（壳里按优先级 + 总预算探测，可超时）。
  *
  * 返回 null 表示壳明确判定「直连」；命令本身失败时退回系统默认行为并留痕 ——
@@ -264,11 +297,18 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       const proxy = await resolveOperationProxy(invokeCommand);
       const update = await check(proxy ? { proxy } : undefined);
       if (!update) return null;
-      return {
-        version: update.version,
-        notes: update.body ?? undefined,
-        date: update.date ?? undefined,
-      };
+      // 取完信息就释放：`check()` 只返回纯数据，Update 的 rid 不该留在进程里
+      // （autoCheck 每 24 小时一次、用户手动检查也可能多次，泄漏会一直累积）。
+      const release = createReleaseOnce(update);
+      try {
+        return {
+          version: update.version,
+          notes: update.body ?? undefined,
+          date: update.date ?? undefined,
+        };
+      } finally {
+        await release();
+      }
     },
     downloadAndInstall: async (onProgress, options) => {
       // 1) 本次操作的代理上下文：检查得到的 Update 会带着它进入下载/安装
@@ -277,30 +317,40 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       if (!update) {
         throw new Error("更新源上没有可用的新版本（版本可能已下线），请重新检查更新");
       }
-      const expected = options?.expectedVersion?.trim();
-      if (expected && compareVersions(update.version, expected) !== 0) {
-        throw new Error(
-          `更新源上的版本已变化（界面显示 ${expected}，实际 ${update.version}），已放弃安装；请重新检查更新`,
-        );
-      }
-
-      // 2) 下载 + 签名校验（校验在 download 内完成，失败即抛）
-      const state: { total: number | null; downloaded: number } = { total: null, downloaded: 0 };
-      await update.download(progressReporter(state, onProgress));
-      onProgress({ downloaded: state.downloaded, total: state.total, percent: 100 });
-
-      // 3) 校验通过、真要替换安装文件了，才结束后端进程树
+      // 从拿到 Update 起，所有出口（版本不匹配 / 下载失败 / 停止后端失败 / 安装失败 /
+      // 安装成功）都必须释放它；只释放一次，且释放异常不掩盖真正的失败原因。
+      const release = createReleaseOnce(update);
       try {
-        const prep = await prepareForUpdate(invokeCommand);
-        if (prep.alreadyStopped) {
-          console.info("[qio] 更新前没有本实例后端在跑，无需结束");
+        const expected = options?.expectedVersion?.trim();
+        if (expected && compareVersions(update.version, expected) !== 0) {
+          throw new Error(
+            `更新源上的版本已变化（界面显示 ${expected}，实际 ${update.version}），已放弃安装；请重新检查更新`,
+          );
         }
-        await update.install();
-      } catch (error) {
-        // 后端已经（或可能已经）被停掉：必须恢复，不能把聊天留在不可用状态。
-        // 恢复状态放在最前面：用户首先要知道「现在能不能继续用」，然后才是真因。
-        const recovery = await restoreBackend(invokeCommand);
-        throw new Error(`${recovery.suffix} 原因：${errorText(error)}`);
+
+        // 2) 下载 + 签名校验（校验在 download 内完成，失败即抛）
+        const state: { total: number | null; downloaded: number } = {
+          total: null,
+          downloaded: 0,
+        };
+        await update.download(progressReporter(state, onProgress));
+        onProgress({ downloaded: state.downloaded, total: state.total, percent: 100 });
+
+        // 3) 校验通过、真要替换安装文件了，才结束后端进程树
+        try {
+          const prep = await prepareForUpdate(invokeCommand);
+          if (prep.alreadyStopped) {
+            console.info("[qio] 更新前没有本实例后端在跑，无需结束");
+          }
+          await update.install();
+        } catch (error) {
+          // 后端已经（或可能已经）被停掉：必须恢复，不能把聊天留在不可用状态。
+          // 恢复状态放在最前面：用户首先要知道「现在能不能继续用」，然后才是真因。
+          const recovery = await restoreBackend(invokeCommand);
+          throw new Error(`${recovery.suffix} 原因：${errorText(error)}`);
+        }
+      } finally {
+        await release();
       }
     },
     relaunch: () => relaunch(),
