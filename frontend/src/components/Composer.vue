@@ -792,7 +792,16 @@ async function stopTurn() {
           移除这些附件后发送
         </button>
       </div>
-      <p v-if="attachError" class="attach-error" role="alert">{{ attachError }}</p>
+      <!-- data-test 是**诊断可见性**：装置（D 的实机脚本）按 [data-test="attach-error"]
+           读取「为什么没发出去」的原因；没有它就只能读成「什么都没发生」 -->
+      <p
+        v-if="attachError"
+        class="attach-error"
+        role="alert"
+        data-test="attach-error"
+      >
+        {{ attachError }}
+      </p>
       <p v-if="attachNote" class="attach-note" role="status">{{ attachNote }}</p>
     </div>
 
