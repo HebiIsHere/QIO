@@ -35,7 +35,7 @@ class _FakeSandbox:
         # run_shell 永远走审批：fake 只在显式 verdict="auto" 时模拟放行
         return self.command_verdict(cmd)
 
-    def command_verdict_for_program(self, program: str, args=None):
+    def command_verdict_for_program(self, program: str, args=None, **kwargs):
         return self._verdict, self.classify_argv(program, args)
 
     @property

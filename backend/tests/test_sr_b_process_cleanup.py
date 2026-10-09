@@ -38,7 +38,7 @@ class _AutoAccept:
     def shell_verdict(self, cmd: str):
         return "auto", CommandRisk.LOW
 
-    def command_verdict_for_program(self, program, args=None):
+    def command_verdict_for_program(self, program, args=None, **kwargs):
         return "auto", CommandRisk.LOW
 
 
@@ -51,7 +51,7 @@ class _ApproveAccept:
     def shell_verdict(self, cmd: str):
         return "approve", CommandRisk.HIGH
 
-    def command_verdict_for_program(self, program, args=None):
+    def command_verdict_for_program(self, program, args=None, **kwargs):
         return "approve", CommandRisk.HIGH
 
 

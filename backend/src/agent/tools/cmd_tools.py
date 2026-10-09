@@ -164,7 +164,11 @@ class RunProgramTool(_CmdTool):
         if not isinstance(raw_args, (list, tuple)):
             return ToolResult(ok=False, error="args 必须是字符串数组")
         args = [str(a) for a in raw_args]
-        verdict, risk = self.computer.command_verdict_for_program(program, args)
+        # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
+        # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
+        verdict, risk = self.computer.command_verdict_for_program(
+            program, args, cwd=str(kwargs.get("cwd") or "") or None
+        )
         if verdict == "deny":
             return ToolResult(ok=False, error=f"程序在当前模式下被拒绝（{risk.value}）")
         if verdict == "approve":
