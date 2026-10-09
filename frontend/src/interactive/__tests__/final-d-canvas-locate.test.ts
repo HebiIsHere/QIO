@@ -52,13 +52,21 @@ function screenOf(boardX: number, boardY: number, state: { scale: number; scroll
   return { x: VIEW_LEFT + boardX * state.scale - state.scrollLeft, y: VIEW_TOP + boardY * state.scale - state.scrollTop };
 }
 
-function wheelZoomTo(scaleTarget: number, wrapper: VueWrapper) {
+/**
+ * 滚到目标比例之上。
+ *
+ * 修正（Lead）：缩放后必须**等一次渲染**再读 DOM —— 缩放发生在同步事件处理里，
+ * 但 `.board-surface` 的 transform 要等 Vue 重渲染才更新；同步读完就断言会读到旧值
+ * （表现为「滚了轮子但 scale 还是 1」的假失败）。
+ */
+async function wheelZoomTo(scaleTarget: number, wrapper: VueWrapper) {
   const view = wrapper.get(".board-viewport").element;
   // 一次 wheel 的缩放系数固定：-462 ≈ ×2.1；重复滚到目标比例之上再取实际值
   for (let i = 0; i < 3; i += 1) {
     const state = viewState(wrapper);
     if (state.scale >= scaleTarget) break;
     view.dispatchEvent(wheel(VIEW_LEFT + 500, VIEW_TOP + 400, -462));
+    await wrapper.vm.$nextTick();
   }
 }
 
@@ -120,7 +128,7 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
     ["右下角离屏", { x: 2100, y: 1450, w: 200, h: 100 }],
   ])("预览%s → 定位后移进实际可用区域", async (_name, bounds) => {
     const wrapper = mountCanvas();
-    wheelZoomTo(1.5, wrapper);
+    await wheelZoomTo(1.5, wrapper);
     const state0 = viewState(wrapper);
     expect(state0.scale).toBeGreaterThanOrEqual(1.4);
     // 越出前确认它真的在右 / 下视口外（几何先有效，再断言边界）
@@ -136,7 +144,7 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
 
   it("极远坐标：数值有限、不抛错，滚动被夹在板面滚动范围内", async () => {
     const wrapper = mountCanvas();
-    wheelZoomTo(1.5, wrapper);
+    await wheelZoomTo(1.5, wrapper);
     const state0 = viewState(wrapper);
     locateBounds({ x: 1e6, y: 1e6, w: 200, h: 100 });
     await wrapper.vm.$nextTick();
@@ -156,7 +164,7 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
     );
     const cardId = store.board!.cards[0].id;
     const wrapper = mountCanvas();
-    wheelZoomTo(2.0, wrapper);
+    await wheelZoomTo(2.0, wrapper);
     const state0 = viewState(wrapper);
     expect(state0.scale).toBeGreaterThanOrEqual(1.9);
     // 以右下深处为缩放中心：缩放后 (100,100) 处的卡片落到视口左上外
@@ -178,10 +186,14 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
     document.body.appendChild(layer);
     locateBounds({ x: 200, y: 200, w: 200, h: 100 });
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(".preview-layer").exists()).toBe(false); // 画布内没有预览也不报错
+    /*
+     * 修正（Lead）：这条原来的断言写反了 —— 画布**自己**就渲染 .preview-layer，
+     * 所以「画布内没有预览层」永远为假，断言必然失败（假失败）。
+     * 这条用例要证明的是「只带 bounds、没有对应预览时定位不报错、画布仍然完好」。
+     */
+    expect(wrapper.find(".board-surface").exists()).toBe(true);
+    expect(wrapper.find(".preview-layer").exists()).toBe(true);
     layer.remove();
     wrapper.unmount();
   });
-
-});
 });

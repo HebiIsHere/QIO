@@ -22,6 +22,8 @@ import {
   removeCardLocalDraft,
   removeCardLocalDraftIfUnchanged,
   writeCardLocalDraft,
+  ensureCardLocalClear,
+  hasCardLocalClear,
   writeCardLocalClear,
   type DraftRecord,
 } from "../interactive/drafts";
@@ -230,6 +232,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 重试入口（retryDraftSave）会连同它一起重试，界面不会停在「看起来删掉了、其实还在」。
    */
   const pendingLocalRemovals = new Map<string, number | null>();
+  /**
+   * 07：组件登记「这次板面变更成功后要清哪个键的草稿」。
+   *
+   * 组件只**登记**，不在这里删候选、不写 cleared 依据、不排草稿请求 ——
+   * 正式变更（板面保存）真实成功之前，取消/失败/等待确认都必须保留候选与恢复来源。
+   * version = 登记时 draftKeySeq 的那一版；登记后用户又输入更新版本 → 该次登记作废。
+   */
+  const pendingDraftClears = new Map<string, number>();
 
   function pushUndo(previous: BoardState) {
     undoStack.value.push(JSON.stringify(previous));
@@ -396,6 +406,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
           confirmedCheck = { checkId: confirmPayload.checkId, savedSeq: result.seq ?? putRev };
         }
         pendingConfirm = null;
+        /*
+         * 07：正式变更真的落地了，才执行登记的草稿清除。
+         * 版本守卫：登记之后用户又输入了更新版本（draftKeySeq 前进）→ 该次登记作废，
+         * 绝不为了清旧稿误删后来的输入。
+         */
+        for (const [key, version] of pendingDraftClears) {
+          if (Object.prototype.hasOwnProperty.call(drafts.value, key) && (draftKeySeq.get(key) ?? 0) !== version) {
+            pendingDraftClears.delete(key);
+            continue;
+          }
+          pendingDraftClears.delete(key);
+          clearDraft(key);
+        }
         const impact = (result as { materialImpact?: { paused?: Intent[] } }).materialImpact;
         if (impact?.paused?.length) {
           materialPaused.value = impact.paused;
@@ -756,6 +779,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
+   * 本机副本「真的没删掉」（storage-failure）时的真实原因；没有待处理失败时 null（13）。
+   *
+   * version-guard（另一份更新的记录仍在，有意的保留）与 missing-record（本来就没有）
+   * 都不算失败，返回 null —— 界面不许把它们显示成删除失败。
+   */
+  function draftLocalRemovalErrorFor(cardIdOrKey: string): string | null {
+    const key = cardIdFromDraftKey(cardIdOrKey) ? cardIdOrKey : cardDraftKey(cardIdOrKey);
+    if (!pendingLocalRemovals.has(key)) return null;
+    const state = draftLocalStateFor(key);
+    return state.ok ? null : (state.error ?? "这份本机副本没能删掉，重开后可能又出现");
+  }
+
+  /**
    * 有内容还没保存成功的草稿键。
    * 失败也算「没保存成功」：内容留在内存里，用户点重试时还要再存一次。
    */
@@ -844,14 +880,39 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!cardId) return;
     const cleared = writeCardLocalClear(cardId, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
     setDraftLocalState(key, cleared);
-    pendingRemovals.set(key, { cardId, version: cleared.version });
+    /**
+     * 12：只登记**真实写进存储**的版本（committedVersion）。
+     * 写失败时磁盘上仍是旧记录，拿「计划版本」去登记会让后面的清理版本守卫对不上：
+     * 服务器清除成功了，却删不掉磁盘上那份旧稿，重开就复活。
+     */
+    const committed = cleared.ok ? cleared.committedVersion ?? cleared.version : undefined;
+    if (committed !== undefined) {
+      pendingRemovals.set(key, { cardId, version: committed });
+    } else {
+      pendingRemovals.delete(key);
+    }
     setDraftRemovalState(
       key,
       cleared.ok ? "pending" : "error",
       cleared.ok ? null : cleared.error ?? "本机没能记下这次清除，刷新后这份旧草稿可能重新出现",
     );
-    scheduleDraftSave();
+    if (cleared.ok) scheduleDraftSave();
   }
+
+  /**
+   * 07：登记「这次板面变更成功后要清这个键的草稿」。
+   *
+   * 触发方（完成编辑 / 删除卡片 / 删除所选）在这里只登记：
+   * 不删内存候选、不写 cleared 依据、不排草稿请求 —— 板面变更还在影响确认里、
+   * 保存还没成功的时候，草稿候选与恢复来源必须原样留着。
+   * 真正的清除由 `saveNow` 在「回执对应当前候选且没有任何更新候选」时按登记版本执行。
+   */
+  function requestDraftClear(key: string): void {
+    pendingDraftClears.set(key, draftKeySeq.get(key) ?? 0);
+  }
+
+  /** 登记了但还没落地的草稿清除（给界面/测试观察用，不改变语义）。 */
+  const pendingDraftClearKeys = computed(() => [...pendingDraftClears.keys()]);
 
   /** 文字草稿：输入过程中保存，**不调用 QIO**，也不等于提交内容。 */
   function setDraft(key: string, text: string) {
@@ -1177,9 +1238,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
         });
         setDraftLocalState(item, written);
       }
-      // 清除失败过：把清除重新标成待确认，由 flushDrafts 真的发出请求
+      /**
+       * 清除失败过（12）：重试必须**先重建本机清除保护**，再发网络清除。
+       * 只重发网络的话，本机那条 cleared 依据始终没写进去 —— 网络请求在飞期间重开，
+       * 磁盘上的旧稿会再次取得恢复与上传权限。
+       * ensureCardLocalClear 幂等：磁盘上已经是 cleared 时不新写、不推进版本
+       * （否则登记的确认版本会被换掉，清理反而删不掉）。
+       */
       if (pendingRemovals.has(item) && draftRemovalStateFor(item).status === "error") {
-        setDraftRemovalState(item, "pending");
+        const retryCardId = cardIdFromDraftKey(item);
+        if (retryCardId && !hasCardLocalClear(retryCardId)) {
+          const protection = ensureCardLocalClear(retryCardId, {
+            boardId: boardId.value,
+            seq: draftKeySeq.get(item) ?? 0,
+          });
+          if (protection.ok) {
+            const committed = protection.committedVersion ?? protection.version;
+            pendingRemovals.set(item, { cardId: retryCardId, version: committed });
+            setDraftLocalState(item, { ok: true, error: null });
+            setDraftRemovalState(item, "pending");
+          } else {
+            setDraftLocalState(item, { ok: false, error: protection.error ?? "本机没能记下这次清除" });
+            setDraftRemovalState(item, "error", protection.error ?? "本机没能记下这次清除，刷新后这份旧草稿可能重新出现");
+          }
+        } else if (retryCardId) {
+          setDraftRemovalState(item, "pending");
+        }
       }
     }
     await flushDrafts();
@@ -1354,6 +1438,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     impactConfirmed = false;
     pendingImpact.value = null;
     impactCheckError.value = null;
+    // 07：取消 = 这次板面变更不生效，那么它带来的草稿清除也不该落地
+    pendingDraftClears.clear();
     /**
      * 卡片编辑草稿与恢复来源**不在这里清理**：「正式变更与草稿清理」的最终确认关系
      * 由 07 保证 —— 未确认、取消期间都保留候选，正式变更成功后才清对应版本。
@@ -1464,6 +1550,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     draftLocalStateFor,
     draftRemovalStateFor,
     draftProtectionStatus,
+    draftLocalRemovalErrorFor,
+    requestDraftClear,
+    pendingDraftClearKeys,
     draftConflictFor,
     resolveDraftConflict,
     flushDrafts,

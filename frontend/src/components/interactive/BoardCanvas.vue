@@ -256,6 +256,29 @@ function liveScroll(): { x: number; y: number } {
   return { x, y };
 }
 
+/**
+ * 板面坐标 → 屏幕坐标，**与真实渲染一致**：
+ *   屏幕 = 容器左上 + 板面坐标 × 缩放 − 容器滚动量。
+ *
+ * 19 复核修正：原来定位用 `toScreenPoint(view, point, surfaceRect())`，而 surfaceRect() 是
+ * 「内容原点」位置（已经把滚动量减掉了），view.x 又是 −滚动量 —— 滚动量被减了两次。
+ * 滚动为 0 时碰巧正确，一旦平移过（滚动 ≠ 0）定位就会往错误方向/错误幅度移动，
+ * 右侧与下侧离屏的预览因此永远进不了可用区。
+ */
+function screenPointOfBoard(boardX: number, boardY: number, viewRect: DOMRectLike): { x: number; y: number } {
+  const live = liveScroll();
+  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
+  return {
+    x: finiteNumber(viewRect.left) + finiteNumber(boardX) * scale - live.x,
+    y: finiteNumber(viewRect.top) + finiteNumber(boardY) * scale - live.y,
+  };
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const result = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(result) ? result : fallback;
+}
+
 function surfaceRect(): DOMRectLike {
   const element = viewportEl.value;
   if (!element) return { left: 0, top: 0 };
@@ -284,7 +307,20 @@ function applyScroll(next: { x: number; y: number }) {
   // 浏览器不接受负滚动量：以 DOM 为准回写，保证坐标换算与真实显示一致
   element.scrollLeft = scroll.value.x;
   element.scrollTop = scroll.value.y;
-  scroll.value = { x: element.scrollLeft, y: element.scrollTop };
+  /**
+   * 只有容器**真的能滚动**时才以 DOM 为准回写（与 onViewportScroll 同一条口径）。
+   * jsdom 没有真实布局：scrollWidth/scrollHeight 恒为 0，setter 会把滚动量钳到 0，
+   * 无条件回写会让定位、平移、框选在测试环境里全部「算了却没动」，
+   * 从而把真实缺陷掩盖成假通过、或把真实修复显示成失败。
+   */
+  const canScrollX = element.scrollWidth > element.clientWidth + 1;
+  const canScrollY = element.scrollHeight > element.clientHeight + 1;
+  if (canScrollX || canScrollY) {
+    scroll.value = {
+      x: canScrollX ? element.scrollLeft : scroll.value.x,
+      y: canScrollY ? element.scrollTop : scroll.value.y,
+    };
+  }
   scrollSyncLock = true;
   void nextTick(() => {
     scrollSyncLock = false;
@@ -620,6 +656,26 @@ const mergeHintStyle = computed(() => {
     top: Math.max(minTop, Math.min(maxTop, above < minTop ? below : above)) + "px",
   };
 });
+
+/**
+ * 临时按键与进行中的手势复位（20）：失焦、页面隐藏、取消手势、卸载时都必须复位。
+ *
+ * 反例：按住空格切窗口，在别的窗口松开 —— 本窗口收不到 keyup，spaceDown 残留成 true，
+ * 回来后普通拖动被当成框选。这里在 blur / visibilitychange(hidden) / Escape / 卸载
+ * 四个出口统一复位，而不是各写一份。
+ */
+function resetTransientGesture() {
+  spaceDown.value = false;
+  if (dragging.value || rectSelect.value || panning.value) onDragCancel();
+}
+
+function onWindowBlur() {
+  resetTransientGesture();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") resetTransientGesture();
+}
 
 function attachPointerListeners() {
   window.addEventListener("pointermove", onPointerMove);
@@ -1070,7 +1126,7 @@ function locate(cardId: string) {
   const element = viewportEl.value;
   if (element) {
     const viewRect = element.getBoundingClientRect();
-    const screen = toScreenPoint(view.value, { x: card.x, y: card.y }, surfaceRect());
+    const screen = screenPointOfBoard(card.x, card.y, viewRect);
     const margin = 80;
     let dx = 0;
     let dy = 0;
@@ -1119,10 +1175,31 @@ function onLocatePreview(event: Event) {
   const bounds = detail.bounds;
   const element = viewportEl.value;
   if (!bounds || !element) return;
+  /**
+   * 19：预览的四个方向都要处理。原来只把「左/上离屏」拉回来，
+   * 右侧/下侧离屏时不做任何事 —— 用户点了定位却仍看不到预览。
+   *
+   * 这里用一个统一的矩形约束：先算预览在屏幕上的框（含缩放后的宽高），
+   * 再分别对左/右/上/下越界求位移；完全离屏的极远坐标也被拉回可用区域。
+   * 数值一律先做有限性检查：NaN / 非有限值不参与计算，避免把滚动位置写坏。
+   */
   const viewRect = element.getBoundingClientRect();
-  const screen = toScreenPoint(view.value, { x: bounds.x, y: bounds.y }, surfaceRect());
-  const dx = screen.x < viewRect.left + 60 ? viewRect.left + 60 - screen.x : 0;
-  const dy = screen.y < viewRect.top + 60 ? viewRect.top + 60 - screen.y : 0;
+  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
+  const screen = screenPointOfBoard(bounds.x, bounds.y, viewRect);
+  if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return;
+  const width = (Number.isFinite(bounds.w) ? bounds.w : 0) * scale;
+  const height = (Number.isFinite(bounds.h) ? bounds.h : 0) * scale;
+  const margin = 60;
+  const left = screen.x;
+  const top = screen.y;
+  const right = screen.x + width;
+  const bottom = screen.y + height;
+  let dx = 0;
+  let dy = 0;
+  if (left < viewRect.left + margin) dx = viewRect.left + margin - left;
+  else if (right > viewRect.right - margin) dx = viewRect.right - margin - right;
+  if (top < viewRect.top + margin) dy = viewRect.top + margin - top;
+  else if (bottom > viewRect.bottom - margin) dy = viewRect.bottom - margin - bottom;
   if (dx || dy) {
     applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
     view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
@@ -1135,9 +1212,11 @@ function onKeyDown(event: KeyboardEvent) {
   const typing = isTypingTarget(event.target);
   if (event.key === "Escape") {
     if (dragging.value || rectSelect.value || panning.value) {
-      onDragCancel();
+      resetTransientGesture();
       return;
     }
+    // Escape 也复位临时按键：取消手势之后不该继续停在框选模式（20）
+    spaceDown.value = false;
     if (linkDraft.value) {
       linkDraft.value = null;
       notice.value = "已退出建立关系。";
@@ -1148,6 +1227,8 @@ function onKeyDown(event: KeyboardEvent) {
   }
   // 空格 + 拖动空白处 = 框选卡片；输入框 / 可编辑内容 / 聊天 / 菜单 / 确认框里空格正常输入
   if (event.code === "Space" || event.key === " ") {
+    // 中文输入法选字确认（isComposing）里的空格不是板面手势，绝不劫持（20）
+    if (event.isComposing) return;
     if (typing) return;
     const target = event.target as HTMLElement | null;
     if (target && typeof target.closest === "function" && target.closest("button, a, [role='button'], [role='menuitem']")) {
@@ -1186,6 +1267,9 @@ onMounted(() => {
   viewportEl.value?.addEventListener("scroll", onViewportScroll, { passive: true });
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
+  // 20：失焦与页面隐藏时复位临时按键与进行中的手势
+  window.addEventListener("blur", onWindowBlur);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
   refreshOverlay();
@@ -1196,9 +1280,13 @@ onBeforeUnmount(() => {
   viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
+  window.removeEventListener("blur", onWindowBlur);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.removeEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
   detachPointerListeners();
+  // 卸载时同样复位：组件已经不在了，临时按键状态不许残留（20）
+  resetTransientGesture();
   if (highlightTimer) clearTimeout(highlightTimer);
   if (locatedTimer) clearTimeout(locatedTimer);
 });

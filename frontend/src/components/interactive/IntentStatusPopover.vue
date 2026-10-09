@@ -13,7 +13,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { previewBounds, statusText } from "../../interactive/approval";
+import { locatePreview, previewBounds, statusText } from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
 import IntentPreviewCard from "./IntentPreviewCard.vue";
 
@@ -286,9 +286,20 @@ function toggleDetail(intentId: string): void {
   expanded.value = { ...expanded.value, [intentId]: !expanded.value[intentId] };
 }
 
-/** 定位：记下聚焦项，并等板面滚动过去之后量一次预览位置 */
+/**
+ * 定位（19b）：**真实通知板面**把预览带进视口，而不是只改局部聚焦项。
+ *
+ * 反例：原来只设 focusedId + 重新测量浮条，板面纹丝不动，
+ * 用户点「在板面上定位」之后仍然看不到预览在哪里。
+ * 这里与单项审批浮条共用同一条通道（approval.locatePreview → window 事件），
+ * 由 BoardCanvas 真实平移板面；没有可展示位置的按预览如实不派发，不伪造 bounds。
+ */
 function locate(intentId: string): void {
   focusedId.value = intentId;
+  const intent = store.intentById(intentId);
+  const bounds = intent ? previewBounds(intent.preview) : null;
+  if (bounds) locatePreview(intentId, bounds);
+  // 板面滚动过去之后再量一次浮条位置，避免浮条停在旧坐标
   window.setTimeout(measure, 320);
 }
 
