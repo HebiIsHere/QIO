@@ -64,13 +64,13 @@ async def test_extraction_chain_low_impact_auto_activates(ctx: AppContext, topic
     adapter = FakeSequenceAdapter([
         # fragment summary
         '{"title": "饮食", "summary": "用户偏好清淡饮食", "entities": ["牛奶"], "keywords": ["清淡"]}',
-        # entity extraction (?????)
-        '{"entities": []}',
-        # knowledge extraction
+        # 知识提炼（知识依赖摘要，摘要落库后链式登记 → 先被认领）
         '{"candidates": ['
         '{"content": "用户偏好清淡饮食", "category": "user_profile", "attach": "user", "entity": null},'
         '{"content": "该话题讨论了清淡饮食", "category": "general_fact", "attach": "topic", "entity": null}'
         "]}",
+        # 实体提炼（M05：独立成派生任务，只依赖原文，后于知识被认领）
+        '{"entities": []}',
     ])
     closed = await ctx._close_fragment(topic, adapter)
     assert closed is not None and closed.closed_at is not None
