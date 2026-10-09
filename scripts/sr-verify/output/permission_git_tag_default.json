@@ -1,0 +1,11 @@
+{
+  "git_available": true,
+  "mode": "default",
+  "verdict_not_auto": false,
+  "verdict": "auto",
+  "risk": "low",
+  "tool_ok": true,
+  "tool_error": "",
+  "tag_created": true,
+  "approval_requests": 0
+}
