@@ -1021,7 +1021,8 @@
 - **背景：** 对 P16—P22 这条开发线做一次集中审计（F01—F24）：先在**基线**上跑反例（能失败），
   再逐项修复并复跑；同时把 C1—C8 冻结成本轮契约（终稿见 `docs/architecture.md` §12.1.7）。
   审计范围：附件读取与资源边界、流式结束语义、输出脱敏、未声明前缀中断、前端 turn 归属与回答校准、
-  Markdown 列表渲染、耗时口径、附件前后端一致性。逐项判定见文末「本轮判定」。
+  Markdown 列表渲染、耗时口径、附件前后端一致性。集成期另发现相邻路径 F25（TOOL_END 出口未脱敏），
+  一并登记；逐项判定见文末「本轮判定」。
 - **Implementation（附件读取与资源边界 · F01/F02/F21/F22/F23）：** `backend/src/agent/tools/attachment_tools.py`
   - **有界解压/解析**：zip 成员数与单成员字节、累计解压字节、共享字符串与整份解析总量都有预算；
     超资源给**明确、可理解的限制原因**，不伪装成完整读取成功。
@@ -1041,27 +1042,44 @@
   - `incomplete` 时：**已确认正文保留**在 `final_content`，**未确认后缀不得出现**，`stopped_by=system`，
     带人话 reason，`actions` 含 `retry`；语义贯穿 adapter → loop → `TURN_END` → 前端 → **历史台账**
     （`turn_journal.record_facts` 落 `reason_code/reason/stopped_by/actions`），刷新后仍是「未完成 + 原因 + retry」。
-  - **测试：** `backend/tests/test_acc_b_stream_end.py`、`test_acc_f_06_incomplete_stream.py`。
+    终态表现由 `core/turn.py` 的 `TERMINAL_STATUSES` 与 `_completion_status` 定稿；`turn_journal` 的终态
+    集合同步接受 `incomplete`（**不折算成 `failed` / `completed`**），刷新 / 重连 / 分页都如实带回。
+  - **测试：** `backend/tests/test_acc_b_stream_end.py`、`test_acc_f_06_incomplete_stream.py`、
+    `backend/tests/test_acc_b2_incomplete_status.py`。
 - **Implementation（输出脱敏跨分块 · F07）：** `backend/src/agent/trace/redact.py`、`core/loop.py`
   - 所有可观测输出（增量 / 累计快照 / 一次性正文 / 最终校准 / 注释 / 事件 / Trace / 历史 / 错误）
     统一走 `redact_text`；**先脱敏再发布**。
   - 跨分块敏感值用**有界未定稿尾部缓冲**（`undecided_tail_length`）：尾部不发布，直到确认没有完整对齐再放行；
     缓冲有界、随流推进释放，**不退化为「整段生成后显示」**。
   - **测试：** `backend/tests/test_acc_b_redact_stream.py`、`test_acc_f_07_stream_redaction.py`。
+- **Implementation（F25（相邻路径新发现）· TOOL_END 出口未脱敏）：** `backend/src/agent/core/loop.py`
+  - 相邻路径同范围：`TOOL_END` 的 `error` 与 `content_preview` 在**发布之前**过 `redact_text`，并与
+    **同源落库**（`tool_state.finish`、工具事实、工具历史 `_record_tool_call`）同口径 —— 工具失败信息里的
+    登记敏感值不得从事件出口或历史漏出（Lead 接手，提交 `59c3766`）。
+  - 发现方式：独立验证者（acc-f2）在集成分支上用最小反例复现（合成敏感值经必失败工具的 `ToolResult.error`
+    进入 `TOOL_END`，SSE 出口原样发布；对照路径均已脱敏）。
+  - **测试（反例）：** backend/tests/test_acc_f_25_tool_end_redaction.py（独立验证者产出、尚未并入本分支，
+    见「后续依赖」）。
 - **Implementation（未声明前缀中断不丢字 · F19）：** `backend/src/agent/core/loop.py`
   - 在短角色前缀阶段被中断时，保留可交付文本并**如实标记未完成**；**完整控制声明不泄漏为正文**。
   - **测试：** `backend/tests/test_acc_b_prefix_interrupt.py`。
 - **Implementation（前端 turn 归属与回答校准 · F05/F11/F12）：** `frontend/src/stores/events.ts`、
-  `stores/session.ts`、`components/MessageStream.vue`
+  `stores/session.ts`、`components/TurnProcess.vue`、`components/MessageStream.vue`、`services/api.ts`；
+  后端 `backend/src/agent/core/turn.py`
   - 过程 / 工具 / 回答 / 结束事实按服务端 `turn_id` 归属；**排队 turn 不改变活动轮**。
   - `applyFinalAnswer` 按 **turn 身份**校准（不再用「全文是否相等」判断同一次回答）；系统核对注释走
     `TURN_END` 独立字段 `annotation`（兼容 `final_annotation`），在独立「系统事实」区域渲染；
     `final_content` 保持**纯正文**、正文只出现一次、不重启打字动画。
   - **排队轮取消**留下自己的结束事实：`cancelled` / `reason_code=user_stopped` / `stopped_by=user` /
-    `actions` 含 `retry`，立刻发出，不影响活动轮。
+    `actions` 含 `retry`，立刻发出，不影响活动轮；后端在 `core/turn.py` 里**补发恰好一条 `TURN_END`**
+    （`end_actions=("retry",)`，先落台账与 `record_facts` 再清理队列标记），前端 `events.ts` 对「非 active
+    但已知 turn」的 END 按该轮归属消费，`TurnProcess.vue` 如实显示「未完成 / 已取消 + 原因 + retry」。
   - **测试：** `frontend/src/stores/__tests__/acc_c_final_answer.test.ts`、`acc_c_queued_cancel.test.ts`、
     `acc_f_05_active_turn_ownership.test.ts`、`acc_f_11_final_answer_annotation.test.ts`、
     `frontend/src/components/__tests__/acc_c_turn_identity.test.ts`。
+  - **测试（集成期补齐）：** `backend/tests/test_acc_b2_queued_cancel_end.py`、
+    `frontend/src/stores/__tests__/acc_c2_incomplete_turn.test.ts`、
+    `frontend/src/components/__tests__/acc_c2_incomplete_ui.test.ts`。
 - **Implementation（Markdown 列表内块语义 · F13）：** `frontend/src/components/MarkdownContent.vue`
   - 按 AST **递归渲染列表项内的段落 / 代码块 / 子列表 / 引用 / 表格**，保留转义与链接安全策略。
   - **测试：** `frontend/src/components/__tests__/acc_f_13_markdown_lists.test.ts`、`acc_c_markdown.test.ts`。
@@ -1091,14 +1109,29 @@
   - **测试：** `backend/tests/test_acc_e_f15_binding_boundary.py`、`test_acc_e_f16_clone_rollback.py`、
     `test_acc_e_f17_readability.py`、`test_acc_e_f18_reference_retry.py`、
     `test_acc_e_f20_relocate_version.py`、`test_acc_e_f24_preparing_semantics.py`。
+- **【回归修复】r8「兼容路径多附件任一失败整轮拒绝」在组合/负载下变红（2026-10-09）：**
+  `backend/src/agent/services/attachments.py`（acc-e2）
+  - **现象：** `backend/tests/test_r8_compat_path_reject_verify.py` 的多附件用例在组合/负载运行下返回
+    200 accepted、`rejected=[]`；单文件运行通过（时序依赖）。
+  - **根因：** 兼容兜底把「进入时就能带」（`_entry_carriable`）当成**快照过滤器** —— bad 附件的失败若在
+    兼容路径枚举之前落库，它就被过滤掉，于是只剩 ok 附件被绑定并照常执行。
+  - **修复：** 集合口径分两层 —— 进入时本话题**至少有一条能带的草稿** → 集合 = 进入时**全部未绑定草稿**
+    （含进入即 failed / cancelled / missing / 不可读者）→ 任一条不合格**整轮拒绝**；**一条能带的都没有**
+    → 纯文字发送（保住既有集合政策）。
+  - **装置同步点：** 冻结用例只补**确定性同步点**（闸门把登记提交卡到兼容路径真正进入等待之后再放行），
+    **未改任何断言**；修复实现与用例由 acc-e2 产出（集成分支并入状态以提交记录为准）。
+  - **测试：** `backend/tests/test_r8_compat_path_reject_verify.py`（同一份断言，只加同步点）。
 - **本轮判定（逐项）：**
   - **本轮修复：** F01—F04、F07—F10、F13—F24（集成分支复跑阶段一反例后转绿）。其中 F15—F24 是更早
     审计登记的对照项，按「先核实是否已有修复 + 反例通过」的口径处理：需要修复的已在本轮落地，
     能证明此前已有修复的只登记提交与验证，不重复实现。
   - **已有修复且反例通过：** F05（基线即绿，修复位于基线的祖先提交 `2b204d7`，反例保留为回归守卫）。
-  - **集成期补齐中，最终判定待阶段二复跑：** **F06**（`TURN_END.status=incomplete` 的出口与历史台账接受、
-    以及前端消费）、**F12**（排队取消结束事实的 `retry` 对齐）、**F11 前端消费**（后端独立 `annotation`
-    字段已在本轮集成分支；前端按 turn 身份消费）。裁定与分工记录在集成分支的计划文档里。
+  - **本轮修复（集成期补齐后已落地）：** **F06**（`core/turn.py` 的 `incomplete` 终态出口、历史台账接受
+    与前端如实消费）、**F12**（排队轮取消补发恰好一条 `TURN_END`，`end_actions=("retry",)`）、
+    **F11 前端消费**（后端独立 `annotation` 字段 + 前端按 turn 身份在独立「系统事实」区域渲染）。
+  - **本轮修复（相邻路径新发现）：** **F25**（`TOOL_END` 出口与同源落库脱敏，Lead 接手 `59c3766`；
+    反例由独立验证者随阶段二并入）。
+  - **本轮修复（回归）：** r8「兼容路径多附件任一失败整轮拒绝」的负载回归（acc-e2，见上）。
   - **未完成 / 未实测：** 见下「Known limitations」。
 - **Tests：** 上列每个实现分组都带对应的反例/回归文件；独立验证方另有按产品规则先建红、再逐项转绿的
   基线反例（逐项登记处见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一）。
@@ -1111,13 +1144,15 @@
   - **Windows / Tauri 原生文件入口未实测**：原生选择器、拖放与原生打开只有编译级验证，没有在运行中的
     桌面进程里手工点过；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
   - **真实浏览器实机取证待阶段二**：本轮结论来自后端跨层、前端组件/store 级与单测，不等于实机表现。
-  - **F06 / F11（前端消费）/ F12 的最终判定**待阶段二复跑；`incomplete` 与排队取消结束事实的跨层组合
-    （排队 + 取消 + 不完整结束 + 注释）本轮未组合成一次确定性用例。
+  - **F06 / F12 / F11 前端消费的实机与跨层组合复跑**待阶段二；`incomplete`、排队取消结束事实与注释的
+    组合（排队 + 取消 + 不完整结束 + 注释）本轮未组合成一次确定性用例。
+  - **兼容路径（旧客户端不传 `attachment_ids`）下，话题里未绑定的陈旧失败草稿会阻断带附件发送**，
+    直到用户删除它或重试成功；**显式 `attachment_ids=[]` 的纯文字发送不受影响**（新客户端一律走显式路径）。
   - **读取预算与分页的旧游标兼容**只覆盖实现声明的旧形态；真实海量超长行文件的端到端分页未做耗时取证。
-- **后续依赖：** 阶段二复跑与实机取证由独立验证者产出；阶段一的基线反例见本轮验证报告
-  docs/verification-acc-phase1.md，逐项 F01—F24 的最终判定见 docs/verification-acc-phase2.md。
-  （两份报告由独立验证者 acc-f2 产出、尚未并入本分支，因此暂按纯文本写；并入后应改为可被
-  `python scripts/check_docs.py` 校验的反引号路径。）
+- **后续依赖：** 阶段二复跑与实机取证由独立验证者产出；阶段一的基线反例见 `docs/verification-acc-phase1.md`
+  （已并入，可校验）。阶段二的产物 —— 逐项 F01—F25 的最终判定报告 docs/verification-acc-phase2.md，
+  以及 F25 反例 backend/tests/test_acc_f_25_tool_end_redaction.py —— 由 acc-f2 在阶段二分支产出、
+  **尚未并入本分支**，因此按纯文本写；并入后应改为可被 `python scripts/check_docs.py` 校验的反引号路径。
 - 契约终稿见 `docs/architecture.md` §12.1.7，逐项状态表见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一。
 
 ---
