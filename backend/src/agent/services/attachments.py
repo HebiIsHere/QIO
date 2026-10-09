@@ -345,6 +345,22 @@ class CloneResult:
     attachment: object | None = None
 
 
+@dataclass
+class _CommitRecord:
+    """本轮**已经写下**的一次提交（整轮失败/取消时用于完整补偿，F16）。
+
+    * kind="bind"：普通绑定 —— 回滚时恢复它原来的归属（turn / topic / message）；
+    * kind="clone"：重试克隆的新行 —— 回滚时删行 + 删副本 + 清 preparing（原历史副本不动）。
+    """
+
+    kind: str
+    attachment_id: str
+    prev_turn_id: str | None = None
+    prev_topic_id: str | None = None
+    prev_message_id: str | None = None
+    stored_path: str | None = None
+
+
 class BindOutcome(list):
     """一次「把附件绑到这一轮」的结果（契约 §1.2 冻结接口）。
 
@@ -428,6 +444,13 @@ class AttachmentService:
         self._pending_prepare: dict[str, float] = {}
         # 等完成的人：id → 一组 asyncio.Event（事件驱动，不轮询、不睡固定时长）
         self._prepare_waiters: dict[str, set[asyncio.Event]] = {}
+        # F20（2026-10-09）：准备/重定位的**代际版本**。同一个附件可能先后收到两次定位
+        # （或定位与重试交错），旧的复制线程可能晚于新的完成 —— 若按完成顺序落库，
+        # 较旧的来源会覆盖较新的元数据、并把同名目标文件写回旧内容。
+        # 每次「开始一次准备」递增；复制线程与落库线程都按自己的代际校验，
+        # 过期代际既不落库、也不清在飞登记（不误唤醒等新代际的等待者）。
+        self._prepare_gen: dict[str, int] = {}
+        self._prepare_gen_lock = threading.Lock()
 
     # -- 路径 --------------------------------------------------------------
 
@@ -852,8 +875,12 @@ class AttachmentService:
         if att is None:
             raise AttachmentError(f"没有这个附件：{attachment_id}")
         self._clear_cancel(att.id)
-        outcome = self.copy_to_disk(att, chunk_size=chunk_size, on_chunk=on_chunk)
-        applied = self.apply_outcome(att.id, outcome)
+        # F20：同步编排也要绑定代际，否则一次慢的同步准备可能覆盖其后的一次定位。
+        generation = self.prepare_generation(att.id)
+        outcome = self.copy_to_disk(
+            att, chunk_size=chunk_size, on_chunk=on_chunk, generation=generation
+        )
+        applied = self.apply_outcome(att.id, outcome, generation=generation)
         if applied is None:
             raise AttachmentError(f"没有这个附件：{attachment_id}")
         return applied
@@ -864,6 +891,7 @@ class AttachmentService:
         *,
         chunk_size: int = CHUNK_BYTES,
         on_chunk: Callable[[int], None] | None = None,
+        generation: int | None = None,
     ) -> DiskOutcome:
         """**纯文件 I/O**：可以在工作线程里调用，绝不碰数据库。
 
@@ -883,7 +911,9 @@ class AttachmentService:
         """
         if att.kind == "reference":
             return self._reference_outcome(att)
-        return self._copy_once(att, chunk_size=chunk_size, on_chunk=on_chunk)
+        return self._copy_once(
+            att, chunk_size=chunk_size, on_chunk=on_chunk, generation=generation
+        )
 
     def _reference_outcome(self, att: Attachment) -> DiskOutcome:
         """大于阈值：只 stat 位置 + 元数据（不复制内容，也不碰数据库）。"""
@@ -904,20 +934,35 @@ class AttachmentService:
             mtime=float(stat.st_mtime),
         )
 
-    def apply_outcome(self, attachment_id: str, outcome: DiskOutcome) -> Attachment | None:
+    def apply_outcome(
+        self,
+        attachment_id: str,
+        outcome: DiskOutcome,
+        *,
+        generation: int | None = None,
+    ) -> Attachment | None:
         """把磁盘事实落库（**只允许在事件循环线程调用**）；行已不存在时返回 None。
+
+        F20（2026-10-09）：带 generation 调用时，只有仍属于**当前代际**的结果才允许落库。
+        旧代际（同一条附件更早的一次准备/定位）即使晚到也一律丢弃：不更新元数据、
+        不覆盖更新的结果、也不清当前代际的在飞登记。
 
         取消纪律（审计问题 6）：**取消之后不得提交为 ready**。复制线程与落库线程是两段，
         「复制刚好成功、取消在其后到达」是真实存在的时序 —— 所以落库前再看一次取消标志：
         已取消就丢掉这次结果（连刚提交的那份副本一起清掉），把行留在 cancelled（可重试）。
         """
+        if not self._generation_current(attachment_id, generation):
+            # 旧代际的迟到结果：整个丢弃。注意**不动磁盘**：同名目标文件现在归新代际所有，
+            # 删它会把新代际刚提交的副本一起删掉。
+            logger.info("附件准备结果已过期，丢弃（%s）", redact_text(str(attachment_id)))
+            return self.get(attachment_id, check=False)
         if self.get(attachment_id, check=False) is None:
             # 复制期间附件被删掉了：行已经不在，磁盘结果无处可落。
             # 但这次复制可能刚好在 delete 之前提交了正式副本 —— 那是 QIO 自己的文件，
             # 必须一并清掉，否则 attachments 目录里会留下无人认领的副本。
             if outcome.stored_path and self.is_managed_path(outcome.stored_path):
                 _unlink_quiet(Path(outcome.stored_path))
-            self._clear_preparing(attachment_id)  # 等在这条上的人必须被放醒（§1.3）
+            self._clear_preparing(attachment_id, generation=generation)  # 等在这条上的人必须被放醒（§1.3）
             return None
         if outcome.state in (STATE_READY, STATE_CHANGED) and self.is_cancel_requested(attachment_id):
             if outcome.stored_path and self.is_managed_path(outcome.stored_path):
@@ -929,8 +974,34 @@ class AttachmentService:
                 stored_path=None,
                 sha256=None,
             )
-            self._clear_preparing(attachment_id)  # 定稿：唤醒等待者（§1.3）
+            self._clear_preparing(attachment_id, generation=generation)  # 定稿：唤醒等待者（§1.3）
             return self.get(attachment_id, check=False)
+        if (
+            outcome.state == STATE_READY
+            and outcome.stored_path
+            and outcome.size_bytes is not None
+            and self.is_managed_path(outcome.stored_path)
+        ):
+            # F20 收口：落库那一刻再核对一次磁盘事实（O(1) 的 stat，不读全文件 ——
+            # 事件循环线程上不允许做与文件大小成正比的 I/O）。旧代际在极小竞态窗口里
+            # 覆盖了同名目标文件时，大小对不上就会被抓出来，不会留下
+            # 「元数据是新的定位、文件内容是旧的来源」这种自相矛盾的状态。
+            try:
+                actual_size = int(Path(outcome.stored_path).stat().st_size)
+            except OSError:
+                actual_size = None
+            if actual_size is not None and actual_size != int(outcome.size_bytes):
+                outcome = DiskOutcome(
+                    state=STATE_CHANGED,
+                    error=(
+                        "副本文件的内容与本次准备的记录不一致（已被另一次准备覆盖）；"
+                        "可以重试准备"
+                    ),
+                    stored_path=outcome.stored_path,
+                    sha256=outcome.sha256,
+                    size_bytes=outcome.size_bytes,
+                    mtime=outcome.mtime,
+                )
         fields: dict[str, object] = {"state": outcome.state, "error": outcome.error}
         if outcome.stored_path is not None:
             fields["stored_path"] = outcome.stored_path
@@ -941,7 +1012,7 @@ class AttachmentService:
             fields["mtime"] = float(outcome.mtime)
         self._update(attachment_id, **fields)
         # 首次准备到此结束：注销在飞登记并**唤醒**等待者（先注销、再唤醒）
-        self._clear_preparing(attachment_id)
+        self._clear_preparing(attachment_id, generation=generation)
         return self.get(attachment_id, check=False)
 
     def _copy_once(
@@ -950,6 +1021,7 @@ class AttachmentService:
         *,
         chunk_size: int,
         on_chunk: Callable[[int], None] | None,
+        generation: int | None = None,
     ) -> DiskOutcome:
         source = Path(att.source_path or "")
         target = self.copy_path(att)
@@ -980,6 +1052,9 @@ class AttachmentService:
             with open(source, "rb") as src, open(tmp, "wb") as dst:
                 while remaining > 0:
                     if event.is_set():
+                        raise _Cancelled()
+                    if not self._generation_current(att.id, generation):
+                        # F20：这次准备已经被更新的定位/重试取代 —— 停下，别写旧来源的字节
                         raise _Cancelled()
                     chunk = src.read(min(max(1, int(chunk_size)), remaining))
                     if not chunk:
@@ -1016,6 +1091,10 @@ class AttachmentService:
             or abs(float(after.st_mtime) - float(before.st_mtime)) > 1e-6
             or copied != target_size
         )
+        if not self._generation_current(att.id, generation):
+            # F20：提交前才发现已被取代 —— 不覆盖目标文件，清掉临时文件并如实作废
+            _unlink_quiet(tmp)
+            return DiskOutcome(state=STATE_CANCELLED, error="这次准备已被更新的定位取代（可以重试）")
         try:
             os.replace(tmp, target)
         except OSError as exc:
@@ -1251,14 +1330,15 @@ class AttachmentService:
             if outcome.rejected:
                 # 集合内任何一条不合格 → **整轮拒绝**：不调用模型、不半绑（契约 §1.3）
                 return outcome
-            for attachment_id, att in planned:
-                if not self._bindable(att, turn_id=turn, topic_id=topic_id):
-                    continue
-                self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
-                refreshed = self.get(att.id, check=False)
-                if refreshed is not None:
-                    outcome.accept(refreshed)
-            return outcome
+            # 落库：逐条在**提交前一刻**按当下事实复核 + 条件写入（F15/F16 见 _commit_planned）
+            return await self._commit_planned(
+                planned,
+                turn=turn,
+                topic_id=topic_id,
+                message_id=message_id,
+                retry_of=retry_of,
+                outcome=outcome,
+            )
 
         wanted = _dedup_ids(attachment_ids)
 
@@ -1284,39 +1364,18 @@ class AttachmentService:
             # 任何一条不满足 → 整轮拒绝，且**一个字节都不写**（半绑状态不许存在）
             return outcome
 
-        # **通过 2：落库 / 克隆**（到这里为止没有写过任何东西）
-        for attachment_id, att in planned:
-            owner = str(att.turn_id or "")
-            if owner and owner != turn:
-                if att.kind == "copy":
-                    # 三段式：① 计划（事件循环）→ ② 文件 I/O（工作线程）→ ③ 定稿（事件循环）
-                    plan = self._plan_copy_clone(
-                        att, turn_id=turn, topic_id=topic_id, message_id=message_id
-                    )
-                    if isinstance(plan, str):
-                        outcome.reject(attachment_id, plan)
-                        continue
-                    result = await self._finish_copy_clone(plan)
-                else:
-                    # 引用型没有文件 I/O：重新检查当前可用性后就地登记新行
-                    cloned = self._clone_reference_for_retry(
-                        att, turn_id=turn, topic_id=topic_id, message_id=message_id
-                    )
-                    result = (
-                        CloneResult(True, attachment=cloned)
-                        if not isinstance(cloned, str)
-                        else CloneResult(False, cloned)
-                    )
-                if not result.ok:
-                    outcome.reject(attachment_id, result.reason or "复用已保存的副本失败")
-                else:
-                    outcome.accept(result.attachment)
-                continue
-            self._bind_row(att, turn_id=turn, topic_id=topic_id, message_id=message_id)
-            refreshed = self.get(att.id, check=False)
-            if refreshed is not None:
-                outcome.accept(refreshed)
-        return outcome
+        # **通过 2：落库 / 克隆**（到这里为止没有写过任何东西）。
+        # 每一条在**自己提交前一刻**重新读行复核（F15）：前面的重试克隆会 await，等待期间
+        # 事实可能又变了；任一条不合格 → 整轮拒绝，并把本轮已经写下的绑定/克隆**完整回滚**
+        # （F16：删行、删副本、清 preparing；原历史副本不动）。
+        return await self._commit_planned(
+            planned,
+            turn=turn,
+            topic_id=topic_id,
+            message_id=message_id,
+            retry_of=retry_of,
+            outcome=outcome,
+        )
 
     def _entry_carriable(self, att: Attachment) -> bool:
         """进入兼容发送时，这条附件算不算「本次应携带的」（快照口径，契约 §1.3）。
@@ -1374,6 +1433,150 @@ class AttachmentService:
         return self._reject_reason(
             fresh, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
         )
+
+    async def _commit_planned(
+        self,
+        planned: list[tuple[str, Attachment]],
+        *,
+        turn: str,
+        topic_id: str | None,
+        message_id: str | None,
+        retry_of: str | None,
+        outcome: BindOutcome,
+    ) -> BindOutcome:
+        """集合级提交边界（F15/F16）：逐条「复核当下事实 → 条件写入 / 克隆」，任一条失败整轮回滚。
+
+        * 每一条在**自己提交前一刻**重新读行（绝不能拿 await 之前的旧对象落库）：
+          记录身份、话题、归属、就绪（含副本可读性）全部按当下事实重算；
+        * 普通绑定走**条件 UPDATE**（该行仍未绑定、或已经属于本轮）：抢不到就拒绝 ——
+          不偷取别的轮的附件，也不复活已删记录；
+        * 重试克隆成功的新行记入本轮账本：后续任一条失败或整轮取消 → 删行、删副本、
+          清 preparing（完整补偿；原行的历史副本与归属不动）；
+        * 取消（CancelledError）与任何异常都走同一条回滚路径后原样上抛，绝不留半绑。
+        """
+        commits: list[_CommitRecord] = []
+        #: 逐条成功的结果先攒着：**整轮全部成功**才写进 outcome（失败/取消时不留半截回执）
+        accepted: list[Attachment] = []
+        try:
+            for attachment_id, _stale in planned:
+                fresh = self.get(attachment_id)  # check=True：以文件世界的事实为准
+                if fresh is None:
+                    outcome.reject(
+                        attachment_id,
+                        "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）",
+                    )
+                    break
+                reason = self._reject_reason(
+                    fresh, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
+                )
+                if reason:
+                    outcome.reject(attachment_id, reason)
+                    break
+                owner = str(fresh.turn_id or "")
+                if owner and owner != turn:
+                    # 重试复用：把源行克隆到本轮（源行的归属与历史都不动）
+                    if fresh.kind == "copy":
+                        # 三段式：① 计划（事件循环）→ ② 文件 I/O（工作线程）→ ③ 定稿（事件循环）
+                        plan = self._plan_copy_clone(
+                            fresh, turn_id=turn, topic_id=topic_id, message_id=message_id
+                        )
+                        if isinstance(plan, str):
+                            outcome.reject(attachment_id, plan)
+                            break
+                        result = await self._finish_copy_clone(plan)
+                    else:
+                        # 引用型没有文件 I/O：重新检查当前可用性后就地登记新行
+                        cloned = self._clone_reference_for_retry(
+                            fresh, turn_id=turn, topic_id=topic_id, message_id=message_id
+                        )
+                        result = (
+                            CloneResult(True, attachment=cloned)
+                            if not isinstance(cloned, str)
+                            else CloneResult(False, cloned)
+                        )
+                    if not result.ok:
+                        outcome.reject(attachment_id, result.reason or "复用已保存的副本失败")
+                        break
+                    clone = result.attachment
+                    if clone is None:  # 理论不可达：ok=True 必带 attachment
+                        outcome.reject(attachment_id, "复用已保存的副本失败")
+                        break
+                    commits.append(
+                        _CommitRecord(
+                            kind="clone",
+                            attachment_id=str(clone.id),
+                            stored_path=clone.stored_path,
+                        )
+                    )
+                    accepted.append(clone)
+                    continue
+                # 普通绑定：先记账（失败回滚要恢复原归属），再条件写入
+                commits.append(
+                    _CommitRecord(
+                        kind="bind",
+                        attachment_id=fresh.id,
+                        prev_turn_id=fresh.turn_id,
+                        prev_topic_id=fresh.topic_id,
+                        prev_message_id=fresh.message_id,
+                    )
+                )
+                if not self._bind_row(
+                    fresh, turn_id=turn, topic_id=topic_id, message_id=message_id
+                ):
+                    commits.pop()
+                    outcome.reject(
+                        attachment_id,
+                        "这个附件在准备期间被别的轮次取走了；整轮没有发送（可以重试）",
+                    )
+                    break
+                refreshed = self.get(attachment_id, check=False)
+                if refreshed is None:
+                    outcome.reject(
+                        attachment_id,
+                        "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）",
+                    )
+                    break
+                accepted.append(refreshed)
+        except BaseException:
+            # 取消 / 异常 / 服务关闭：先把本轮已经写下的东西完整补偿，再原样上抛
+            self._rollback_commits(commits, turn=turn)
+            raise
+        if outcome.rejected:
+            # 集合级提交：任一条失败，本轮已写下的绑定/克隆**全部补偿**，回执里不留 bound
+            self._rollback_commits(commits, turn=turn)
+        else:
+            for att in accepted:
+                outcome.accept(att)
+        return outcome
+
+    def _rollback_commits(self, commits: list[_CommitRecord], *, turn: str) -> None:
+        """整轮失败/取消时的完整补偿（F16）。逐个尽力而为，补偿本身绝不再抛。
+
+        * 克隆：删行 + 删本次副本 + 清 preparing（`delete` 会一并做）；
+        * 绑定：恢复原来的 turn / topic / message；只在该行**仍然属于本轮**时恢复 ——
+          行已删除就不复活，已被别人重新绑定就不抢；
+        * 原行的历史副本与归属**从不**被这里触碰。
+        """
+        for record in reversed(commits):
+            try:
+                if record.kind == "clone":
+                    self.delete(record.attachment_id, purge_copy=True)
+                    continue
+                current = self.get(record.attachment_id, check=False)
+                if current is None:
+                    continue  # 已删记录不复活
+                if str(current.turn_id or "") != str(turn):
+                    continue  # 已被别人重新绑定：不抢
+                self._update(
+                    record.attachment_id,
+                    turn_id=record.prev_turn_id,
+                    topic_id=record.prev_topic_id,
+                    message_id=record.prev_message_id,
+                )
+            except Exception:  # noqa: BLE001 - 补偿失败不能掩盖真正的原因，逐个继续
+                logger.warning(
+                    "整轮回滚未完成（%s %s）", record.kind, record.attachment_id, exc_info=True
+                )
 
     async def _validate_for_turn(
         self,
@@ -1467,17 +1670,48 @@ class AttachmentService:
 
     # -- 首次准备的「在飞」登记与有界等待（契约 §1.3）----------------------
 
-    def _mark_preparing(self, attachment_id: str) -> None:
-        """登记「这条附件的首次准备正在进行」（事件循环线程）。"""
-        self._pending_prepare[str(attachment_id)] = time.monotonic()
+    def mark_preparing_for_retry(self, attachment_id: str) -> None:
+        """F24：重试被受理时就登记在飞准备（公开入口，供 API 层在调度前调用）。
 
-    def _clear_preparing(self, attachment_id: str) -> None:
+        语义与首次准备一致：登记 → 后台完成/失败 → apply_outcome 注销并唤醒。
+        行里的 state 保持不变（missing/failed 是历史事实），由 payload 的
+        preparing 字段表达「这次重试正在跑」。
+        """
+        self._mark_preparing(str(attachment_id))
+
+    def _mark_preparing(self, attachment_id: str) -> None:
+        """登记「这条附件的首次准备正在进行」（事件循环线程），并递增代际（F20）。
+
+        递增是**开始新一次准备**的标记：之后完成的旧代际结果一律作废。
+        """
+        key = str(attachment_id)
+        with self._prepare_gen_lock:
+            self._prepare_gen[key] = self._prepare_gen.get(key, 0) + 1
+        self._pending_prepare[key] = time.monotonic()
+
+    def prepare_generation(self, attachment_id: str) -> int:
+        """当前准备代际（0 = 还没有过准备登记）。调用方在调度前后各取一次以绑定归属。"""
+        with self._prepare_gen_lock:
+            return int(self._prepare_gen.get(str(attachment_id), 0))
+
+    def _generation_current(self, attachment_id: str, generation: int | None) -> bool:
+        """这次结果是否仍属于**当前**代际（generation=None 表示不校验，兼容旧调用）。"""
+        if generation is None:
+            return True
+        return self.prepare_generation(attachment_id) == int(generation)
+
+    def _clear_preparing(self, attachment_id: str, *, generation: int | None = None) -> None:
         """准备结束（成功/失败/取消/删除）：注销登记并**唤醒**所有等待者。
 
         顺序很重要：先注销、再唤醒 —— 被唤醒的人重新读行时会看到「已经没有在飞的
         准备任务」，于是立刻按当下事实判定，而不是再等一轮。
+
+        F20：带 generation 调用时只清**自己那一代**；旧代际结束不得清掉新代际的在飞登记
+        （否则等新代际的人会被一个过期的旧结果提前放醒）。
         """
         key = str(attachment_id)
+        if not self._generation_current(key, generation):
+            return
         self._pending_prepare.pop(key, None)
         for event in self._prepare_waiters.pop(key, set()):
             event.set()
@@ -1661,13 +1895,29 @@ class AttachmentService:
         turn_id: str,
         topic_id: str | None,
         message_id: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """条件绑定（F15 提交边界）：只在「仍未绑定」或「已经属于本轮」时才写入。
+
+        返回是否真的写入了这一行（rowcount > 0）。调用方在写入前已按当下事实复核过；
+        这里的 WHERE 是提交边界的第二道闸 —— 并发或复算差错时**宁可拒绝**，
+        绝不偷取别的轮已经绑定的附件，也绝不复活已经被删除的记录。
+        """
         fields: dict[str, object] = {"turn_id": str(turn_id)}
         if topic_id is not None and not att.topic_id:
             fields["topic_id"] = str(topic_id)
         if message_id:
             fields["message_id"] = str(message_id)
-        self._update(att.id, **fields)
+        fields["updated_at"] = self._clock()
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        values = list(fields.values()) + [str(att.id), str(turn_id)]
+        self._note_db_thread()
+        with self._db_lock, transaction(self.conn):
+            cursor = self.conn.execute(
+                f"UPDATE attachments SET {columns}"
+                " WHERE id = ? AND (turn_id IS NULL OR turn_id = ?)",
+                tuple(values),
+            )
+            return cursor.rowcount > 0
 
     @staticmethod
     def _state_reason(att: Attachment) -> str:
@@ -2227,6 +2477,12 @@ class AttachmentService:
             "display": COPY_LABEL if att.kind == "copy" else REFERENCE_LABEL,
             "state": att.state,
             "error": att.error,
+            # F24（2026-10-09）：**「已受理且正在准备」不是最终态**。重试/定位刚被受理时，
+            # 行里仍是上一次的 missing/failed（那是真实历史），但此刻已经有一份准备在飞 ——
+            # 只报 state 会让界面把「正在恢复」误读成「永久失败」并停止等待。
+            # 这里把在飞事实单独说清楚：preparing=true 时前端继续等，state 只作历史/终态判断。
+            "preparing": self.is_preparing(att.id),
+            "phase": "preparing" if self.is_preparing(att.id) else "settled",
             "readability": mode,
             "readability_label": label,
             "readability_note": note,

@@ -1119,7 +1119,7 @@ def create_app(
 
     # -- attachments -------------------------------------------------------
 
-    async def _prepare_attachment_in_background(attachment_id: str) -> None:
+    async def _prepare_attachment_in_background(attachment_id: str, generation: int) -> None:
         """后台准备：**工作线程只做文件 I/O**，数据库动作全部回到事件循环线程。
 
         为什么必须这么绕（2026-10-06 CI py3.12/windows 真事故）：AttachmentService 与
@@ -1132,8 +1132,12 @@ def create_app(
         att = attachments.get(attachment_id, check=False)
         if att is None:
             return
-        outcome = await asyncio.to_thread(attachments.copy_to_disk, att)
-        attachments.apply_outcome(attachment_id, outcome)
+        # F20：把调度那一刻的代际带下去；这次准备被更新的定位/重试取代时，
+        # 复制在分块之间就会停、落库也会因代际过期被丢弃，不会覆盖更新的结果。
+        outcome = await asyncio.to_thread(
+            attachments.copy_to_disk, att, generation=generation
+        )
+        attachments.apply_outcome(attachment_id, outcome, generation=generation)
 
     def _note_background_failure(task: asyncio.Task) -> None:
         """后台任务的异常必须被取走：否则日志里只剩 'Task exception was never retrieved'。"""
@@ -1146,7 +1150,12 @@ def create_app(
             )
 
     def _schedule_prepare(attachment_id: str) -> None:
-        task = asyncio.create_task(_prepare_attachment_in_background(attachment_id))
+        # F20：调度时取当前代际（prepare/plan_relocate 刚通过 _mark_preparing 递增过），
+        # 后台任务与落库都以此为准。
+        generation = attachments.prepare_generation(attachment_id)
+        task = asyncio.create_task(
+            _prepare_attachment_in_background(attachment_id, generation)
+        )
         task.add_done_callback(_note_background_failure)
 
     @app.post("/api/attachments")
@@ -1471,6 +1480,9 @@ def create_app(
         att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
+        # F24：先登记「已受理且正在准备」，再调度 —— 否则响应里只有上次的 missing/failed，
+        # 界面会把它当最终失败而停止等待（副本其实正在重新复制）。
+        attachments.mark_preparing_for_retry(att.id)
         _schedule_prepare(att.id)
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
