@@ -257,6 +257,11 @@ function cancelEdit() {
 
     <div v-if="!card.folded" class="card-body">
       <template v-if="editing">
+        <!--
+          未决冲突的选择入口放在编辑器**上方**（契约 §12.1：冲突入口在真实操作路径可见可点）：
+          卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
+          -->
+        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
         <textarea
           v-model="draft"
           class="editor"
@@ -280,7 +285,7 @@ function cancelEdit() {
         </template>
         <p class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
         <!-- 草稿保存失败不能静默：状态与重试入口就近显示（C 的组件，A 的卡片接线） -->
-        <CardDraftHint :card-id="card.id" />
+        <CardDraftHint v-if="!store.draftConflictFor(card.id)" :card-id="card.id" />
         <div class="row">
           <button class="btn primary" type="button" @click="confirmEdit">完成编辑</button>
           <button class="btn" type="button" @click="cancelEdit">取消</button>
