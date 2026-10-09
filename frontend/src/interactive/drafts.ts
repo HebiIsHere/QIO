@@ -404,6 +404,11 @@ export interface DraftClearProtectionResult extends DraftWriteResult {
    * 幂等很重要：每重写一版都会让之前登记的确认版本失效，清理反而删不掉（M2 / 条目 12）。
    */
   alreadyProtected: boolean;
+  /**
+   * 补写被**版本守卫**拒绝时给出 `"version-guard"`（有意保留更新的一版，不是故障）。
+   * 与 `removeCardLocalDraft` 的 reason 同口径，调用方据此决定「静默保留」还是「显示失败」。
+   */
+  reason?: "version-guard" | "storage-failure" | "missing-record";
 }
 
 /**
@@ -416,7 +421,7 @@ export interface DraftClearProtectionResult extends DraftWriteResult {
  */
 export function ensureCardLocalClear(
   cardId: string,
-  options: { boardId?: string; seq?: number } = {},
+  options: { boardId?: string; seq?: number; expectVersion?: number | null } = {},
 ): DraftClearProtectionResult {
   const current = readCardLocalDraft(cardId);
   if (current && current.kind === "cleared") {
@@ -428,6 +433,25 @@ export function ensureCardLocalClear(
       alreadyProtected: true,
     };
   }
+  /**
+   * 版本守卫（独立复核 12b）：另一页面在本页面清除写失败期间写入了**更新的一版**编辑草稿时，
+   * 补写 cleared 会把那份新输入覆盖掉 —— 随后网络确认流程还会把它删掉，用户的新输入就没了。
+   * 契约 M2 明文禁止「为清除旧稿误删后来输入的更新版本」，所以这里也要按记录版本校验，
+   * 与 removeCardLocalDraft 的守卫同口径：记录版本与预期不符 → 有意保留，不写、不删。
+   */
+  if (current && typeof options.expectVersion !== "undefined" && options.expectVersion !== null) {
+    if (typeof current.version === "number" && current.version !== options.expectVersion) {
+      return {
+        ok: false,
+        version: current.version,
+        committedVersion: current.version,
+        alreadyProtected: false,
+        error: "这份本机草稿已经被更晚的输入更新过：保留更新的那一版，不执行这次清除",
+        reason: "version-guard",
+      };
+    }
+  }
+  // 没给预期版本时不做无法证明的判断：按现有口径写入（调用方负责给出版本）
   return { ...writeCardLocalClear(cardId, options), alreadyProtected: false };
 }
 

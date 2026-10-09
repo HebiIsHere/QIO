@@ -913,7 +913,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       const onDisk = readCardLocalDraft(cardId);
       const onDiskVersion =
         onDisk && typeof onDisk.version === "number" ? onDisk.version : (draftKeySeq.get(key) ?? 0);
-      pendingLocalRemovals.set(key, null);
+      /**
+       * 预期版本 = 磁盘上那份要被清除的旧副本的版本（版本守卫的依据）：
+       * 补写 cleared 时若磁盘上已经是**更晚**的一版（同一浏览器另一个页面写的），
+       * 必须保留它、不许覆盖，也不许随后把它删掉。
+       */
+      pendingLocalRemovals.set(key, onDiskVersion);
       pendingRemovals.set(key, { cardId, version: onDiskVersion });
     }
     setDraftRemovalState(
@@ -1195,8 +1200,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
               const protection = ensureCardLocalClear(entry.cardId, {
                 boardId: boardId.value,
                 seq: draftKeySeq.get(key) ?? 0,
+                expectVersion: pendingLocalRemovals.get(key) ?? null,
               });
-              if (protection.ok) {
+              if (protection.reason === "version-guard") {
+                // 12b：更晚的一版草稿（别的页面写的）优先，这次清除不再作用于它
+                pendingLocalRemovals.delete(key);
+                setDraftLocalState(key, { ok: true, error: null });
+              } else if (protection.ok) {
                 pendingLocalRemovals.delete(key);
                 setDraftLocalState(key, { ok: true, error: null });
               } else {
@@ -1267,10 +1277,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 恢复与上传权限（旧稿复活）。补写成功后保留这份依据（它就是「已确认清除」的事实），
        * 由后续正常的服务器清除流程按版本清理。
        */
+      const expectVersion = pendingLocalRemovals.get(item) ?? null;
       const protection = ensureCardLocalClear(retryCardId, {
         boardId: boardId.value,
         seq: draftKeySeq.get(item) ?? 0,
+        expectVersion,
       });
+      if (protection.reason === "version-guard") {
+        /**
+         * 12b（独立复核）：磁盘上已经是另一个页面写下的**更新**一版草稿 ——
+         * 这次清除的目的（清掉自己那一版旧稿）已经不存在，也不该动更新的那一份。
+         * 静默解除登记，不写、不删，界面不报失败。
+         */
+        pendingLocalRemovals.delete(item);
+        pendingRemovals.delete(item);
+        setDraftLocalState(item, { ok: true, error: null });
+        setDraftRemovalState(item, "idle");
+        continue;
+      }
       if (!protection.ok) {
         setDraftLocalState(item, {
           ok: false,
