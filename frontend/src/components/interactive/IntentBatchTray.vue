@@ -189,12 +189,17 @@ function applyGeometry(): void {
   cramped.value = overlaysAreCramped(chatInput);
   const resolved = settlePanes(cramped.value);
   // ★ switched 显式传给几何层：这是**同一个明确布局状态**，与当前开着几个面板无关，
-  //   所以用户关掉一个面板之后切换条那一行仍然被真实预留（契约 §11.7）
+  //   所以用户关掉一个面板之后切换条那一行仍然被真实预留（契约 §11.7）。
+  // ★ batchAvailable 与 settlePanes 用**同一个**判据（确实存在一个可展示的批次）：
+  //   没有审批列表时就没有「另一个可去的面板」，几何层会退出切换布局 ——
+  //   不预留、不出虚假切换提示，聊天自己用满可用高度（契约 §12.6）。
+  const batchAvailable = batches.value.length > 0;
   const plan = planOverlayGeometry({
     ...chatInput,
     chatOpen: resolved.chatOpen,
     batchOpen: resolved.batchOpen,
     switched: cramped.value,
+    batchAvailable,
   });
 
   // 切换条的位置与高度直接取几何计划的矩形（视口坐标）：面板底边已在同一次计划里让开它
