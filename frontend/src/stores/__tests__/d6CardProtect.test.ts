@@ -225,7 +225,8 @@ async function mountBoardCard(cardId: string) {
   const { card, props } = boardCardProps(cardId);
   const store = useInteractiveStore();
   const payload = boardPayload({ cards: [card] });
-  store.board = payload.state;
+  // 卡片局部工具栏只在「选中且是最后点中的那张」时渲染：这里让这张卡成为工具栏持有者
+  store.board = { ...payload.state, selection: [cardId] };
   const wrapper = mount(BoardCard, { props, attachTo: document.body });
   await flushPromises();
   return { wrapper, store, card };
@@ -417,23 +418,69 @@ describe("§12.1 冲突入口在真实操作路径可见可点", () => {
     wrapper.unmount();
   });
 
-  it("【状态】冲突未决时输入新文字：冲突不许自动消失，本机候选更新为最新输入，服务器那份不被覆盖", async () => {
+  it("【状态】冲突未决时原样写入本机候选（打开编辑器的回写）：冲突不许消失、不许排保存", async () => {
     vi.useFakeTimers();
     seedLocalRecord("A", { text: "本机候选 X", kind: "draft", version: 3, boardId: "board_default" });
     mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "服务器上的 Y" } }));
     const store = newStore();
     await store.load();
 
-    // 用户不理提示，直接改写编辑框：这是用户显式改掉本机候选，但冲突仍要他明确选一次
+    // 「打开编辑器」会按当前草稿原样回写一次（BoardCard.startEdit 的真实调用）：
+    // 这不等于选择本机版本 —— 冲突保持，也不许排一次把候选写上服务器的保存
+    store.setDraft(cardDraftKey("A"), "本机候选 X");
+    expect(store.draftConflictFor("A"), "原样回写本机候选不许把冲突清掉").toEqual({
+      local: "本机候选 X",
+      server: "服务器上的 Y",
+    });
+    vi.advanceTimersByTime(2000);
+    await flushPromises();
+    expect(draftSaveCalls(), "原样回写不许触发把候选写上服务器的保存").toBe(0);
+  });
+
+  it("【状态】冲突未决时用户改写出不同文字：视为用户显式接管这份草稿（冲突随这次编辑结束，新文字可保存）", async () => {
+    vi.useFakeTimers();
+    seedLocalRecord("A", { text: "本机候选 X", kind: "draft", version: 3, boardId: "board_default" });
+    mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "服务器上的 Y" } }));
+    const store = newStore();
+    await store.load();
+
+    // 用户不理提示直接改写：这是对本卡内容的显式编辑（区别于「打开编辑器」「编辑别卡」）
     store.setDraft(cardDraftKey("A"), "用户改写的新字");
-    expect(store.draftConflictFor("A"), "输入不许自动解决冲突").not.toBeNull();
-    expect(store.draftConflictFor("A")?.local).toBe("用户改写的新字");
+    expect(store.draftConflictFor("A"), "用户显式改写后冲突随这次编辑结束").toBeNull();
+    expect(store.draftFor(cardDraftKey("A"))).toBe("用户改写的新字");
 
     vi.advanceTimersByTime(700);
     await flushPromises();
-    expect(lastDraftsPayload()[cardDraftKey("A")], "未决时服务器那份不许被覆盖也不许被删").toBe("服务器上的 Y");
-    // 用户的新输入仍留在本机记录里（这是他后来选「用本机的」时会保存的那份）
-    expect(readCardLocalDraft("A")?.text).toBe("用户改写的新字");
+    expect(lastDraftsPayload()[cardDraftKey("A")], "用户写下的新文字按草稿保存").toBe("用户改写的新字");
+    // 刷新后不再有冲突：服务器上已经是用户写下的这份（模拟服务器已受理这次保存）
+    mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "用户改写的新字" } }));
+    const reloaded = newStore();
+    await reloaded.load();
+    expect(reloaded.draftConflictFor("A")).toBeNull();
+    expect(reloaded.cardDraftText("A")).toBe("用户改写的新字");
+  });
+
+  it("【状态】同一页面里清除草稿、防抖未到就重新读取板面：已清除的草稿不许复活", async () => {
+    vi.useFakeTimers();
+    const store = useInteractiveStore();
+    store.setDraft(cardKey("A"), "要被清掉的字");
+    await store.flushDrafts();
+    expect(draftSaveCalls()).toBe(1);
+
+    // 用户清除：本机留下待同步的清除依据（还没发出去）
+    store.clearDraft(cardKey("A"));
+    expect(readCardLocalDraft("A")?.kind).toBe("cleared");
+
+    // 重新读取板面（真实路径：提交/审批后的重读都走这里，不关页面）
+    mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "要被清掉的字" } }));
+    await store.refreshBoardFromServer();
+
+    expect(
+      store.hasCardDraft("A"),
+      "已清除的草稿在同一页面的重读后复活了（恢复顺序里 cleared 的排除被内存新旧判定跳过）",
+    ).toBe(false);
+    expect(store.draftFor(cardKey("A"))).toBe("");
+    expect(store.draftRemovalStateFor(cardKey("A")).status, "清除依据仍要等同步").toBe("pending");
   });
 });
 
@@ -486,6 +533,7 @@ describe("§12.2 旧清除记录不许删除后来的新输入", () => {
   });
 
   it("【状态】别板面的清除依据不作用于本板面", async () => {
+    vi.useFakeTimers();
     seedLocalRecord("A", { text: "", kind: "cleared", version: 2, boardId: "board_other" });
     mockBoard(boardPayload({ cards: ["A"], drafts: { [cardDraftKey("A")]: "本板服务器草稿" } }));
     const store = newStore();
