@@ -858,6 +858,15 @@ class AgentLoop:
         duration_ms = None
         tool_name = str(data.get("tool") or "")
         status = _terminal_tool_status(data)
+        # 事件出口脱敏（契约 C3 / 审计 F25）：工具错误与输出预览同样是可观测输出，
+        # 必须在**发布之前**过 redact_text；同源落库（tool_state / 工具事实 / 工具历史）
+        # 用同一份已脱敏值，避免出现「事件干净、台账带原文」的两套事实。
+        from agent.trace.redact import redact_text
+
+        raw_error = data.get("error")
+        safe_error = None if raw_error is None else redact_text(str(raw_error))
+        raw_preview = data.get("content_preview")
+        safe_preview = redact_text(str(raw_preview)) if raw_preview else ""
         if call_id:
             import time as _time
 
@@ -869,21 +878,27 @@ class AgentLoop:
             str(call_id or ""),
             status,
             tool_name=tool_name,
-            error=data.get("error"),
+            error=safe_error,
         )
         pending = self._pending_tool_io.pop(str(call_id or ""), None)
         # 结果事实（类别 / 可重试）随 TOOL_END 一起给：界面不必从 ok 反推失败类型。
         result_facts = (
             tool_feedback.facts(pending["result"]) if pending and pending.get("result") else {}
         )
-        record_id = self._record_tool_call(tool_name, data, status, duration_ms, pending)
+        record_id = self._record_tool_call(
+            tool_name,
+            {**data, "error": safe_error, "content_preview": safe_preview},
+            status,
+            duration_ms,
+            pending,
+        )
         if call_id:
             # 合并写入：`record_id` 由上面刚写下的历史记录给出，整条覆盖会把它丢掉
             self._tool_facts[str(call_id)] = {
                 **(self._tool_facts.get(str(call_id)) or {}),
                 "status": status,
                 "duration_ms": duration_ms,
-                "error": data.get("error"),
+                "error": safe_error,
                 "record_id": record_id,
             }
         await self._emit(
@@ -895,11 +910,11 @@ class AgentLoop:
                 # 结局的语义（success / failed / cancelled）随事件一起给，
                 # 前端不必从 ok 反推「取消」还是「失败」。
                 "status": status,
-                "error": data.get("error"),
+                "error": safe_error,
                 "category": result_facts.get("category"),
                 "category_label": result_facts.get("category_label"),
                 "recoverable": result_facts.get("recoverable"),
-                "content_preview": data.get("content_preview", ""),
+                "content_preview": safe_preview,
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
                 # 工具调用历史的记录 id：实时卡片靠它取全文（与历史卡片同一条路径）
