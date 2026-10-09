@@ -41,35 +41,71 @@
 
 ## 4. 前端审美收尾（第六章）
 
-待填：实际改动、四尺寸×两主题对照截图路径。
+本轮审美部分以**核验既有设计**为主（前几轮已按 token 体系落地），实际改动限定在互动版内，
+没有动设置页、星球与全站导航：
+
+- 底部工具栏：实测高度 1440×900 = 51px、1024×768 = 80px、800×600 = 80px、480×600 = 108px
+  （总高含底部留白 67 / 92 / 88 / 116px）；800×600 满足「≤96px、最多两行」，480×600 为两行重排、
+  无元素溢出（`scrollWidth > clientWidth` 命中 0 个）、无裁切、无逐字竖排。
+- 亮色主题辅助文字：实测 `--text-muted` #75736c 对净白 **4.75:1**、`--text-faint` #8f8e89 **3.28:1**
+  （后者是纯装饰级、按 3:1 下限管理）；状态行字号 12.5–14.5px，未出现难辨认的小字。
+- 聊天外层保持透明（面板背景 rgba(0,0,0,0)、`backdrop-filter: none`），
+  标题条/范围条用 `--bg-panel` 局部实色、消息与输入各自带局部底色 —— 满足「外层透明 + 局部阅读背景」，
+  且无重度模糊与发光。
+- 截图：`%TEMP%\qio-visual\shots\final-{1440x900,1024x768,800x600,480x600}-{dark,light}.png`（8 张，
+  由 CDP 探针在真实前后端进程上生成）。验收环境的依赖目录是 worktree 外的 junction，
+  Vite 对 webfont 返回 403 → 截图使用系统回落字体，几何与布局不受影响。
 
 ## 5. 证据分层
 
-1. 单元/状态：待填
-2. 真实组件/DOM：待填
-3. API/数据库：待填
-4. 真浏览器（visual_probe + e2e_up + fake provider）：待填
-5. 关闭重开：待填
+1. **单元/状态**：各批 `final-*` 用例（stores/services 层）。
+2. **真实组件/DOM**：`final-a3-*`（BoardCard/真实 textarea、冲突四路径）、`final-b3-*`（Composer/FailedSendNotice）、
+   `final-lead-11a`（Composer/ChatDock 被让位草稿）、`final-lead-m07`（BoardCanvas 删除登记）、`final-d-*`（BoardCanvas/浮层几何）。
+3. **API/数据库**：`scripts/final-lead-verify/final-lead-api-journey.py` 真实 HTTP + 临时库 **12/12**；
+   后端 `test_final_c_*.py` 与既有互动用例（真实临时库 + 实际路由）。
+4. **真浏览器**：CDP 探针（`scripts/visual_probe.mjs`）在真实前后端进程上做四尺寸×两主题几何测量与截图。
+5. **关闭重开**：同一 Chrome 用户目录、结束进程后**新进程**打开，恢复出同一份共享聊天草稿文字
+   （探针记录：`qio.draft.chat.topic_6b6fed07377b` 与输入框文字 `关闭重开探针文字-CLOSURE-0910`）。
 
 ## 6. 全量检查
 
-- 前端 `npx vue-tsc --noEmit`：待填
-- 前端 `npx vitest run`：待填
-- 后端 `uv run --frozen pytest`：待填
-- `python scripts/check_docs.py`：待填
-- 视觉检查（实际起应用）：待填
+- 前端 `npx vue-tsc --noEmit`：**exit 0**
+- 前端 `npx vitest run`：见下方「最终门禁」小节（在最终 SHA 上实跑）
+- 后端 `.venv/Scripts/python.exe -m pytest`：见下方「最终门禁」小节（在最终 SHA 上实跑）
+- `python scripts/check_docs.py`：通过（34 个里程碑条目）
+- 视觉检查：真实应用 + CDP 探针（四尺寸两主题）
 
 ## 7. CI
 
-待填：最终 SHA 对应运行号与状态（未运行 / 查询失败 / 跳过 / 通过分别如实写）。
+见下方「最终门禁」小节（推送后核对真实运行号与状态；未运行/查询失败/跳过分别如实标注）。
 
 ## 8. 新发现的缺陷与剩余限制
 
-待填：本轮流程中新发现的相关缺陷与处理；必要剩余限制与未验证项。
+本轮集成过程中新发现并修复的相关缺陷（都由主智能体在候选 SHA 前修掉）：
+
+1. `impact-check` 路由从未注册（C 的交付缺件）→ 补齐路由，12 条 API 用例转绿；
+2. `intents.confirm_binding_version` 缺失 → 补齐（保存接口的确认版本核对依赖它）；
+3. 16 的依据指纹在状态流转时被 `_progress_shape` 整体替换而丢掉（`__basisWatch`）→ 统一改为 `_stored_progress` 保留私有键；
+4. 17 的端点身份实现写成「卡片正文指纹」，A、B 同内容时被当成同一身份 → 改为按卡片 id 记录身份；
+5. 19 的定位换算把滚动量减了两次（`surfaceRect` + `view.x`），滚动不为 0 时方向/幅度错误 → 改为与真实渲染一致的换算；
+6. 分块响应错误体：FastAPI 的 `detail` 为 dict 时前端原实现会把它当字符串切 → 统一解析并保留结构（affectedTasks/currentSeq 等）；
+7. 07 的登记表用 `computed` 包非响应式 Map，首读后永久缓存 → 改为显式同步的响应式镜像。
+
+必要剩余限制与未验证项：
+
+- **E 的独立复核未完成**：其会话在阶段 1 之后多次被中断，阶段 3 分层验收没有交付独立结论；
+  本报告的③④⑤层证据由主智能体实跑（脚本与截图可复现），独立性弱于计划中的验收智能体。
+- 真实鼠标/触摸旅程、比 480px 更窄的档位未验证。
+- 验收环境 webfont 403（依赖 junction）导致截图使用回落字体。
+- 第一阶段未接入的能力（真实 QIO 理解/执行）继续如实标注；`delivery.delivered` 依然为 false。
 
 ## 9. 边界声明
 
-- 未合并 main，未合并 fix/unified-process-audit、feat/unified-process-attachments-streaming。
-- 未开发附件系统、记忆系统、真实模型板面理解或新的任务执行能力；`delivery.delivered` 未被伪造为 true。
+- 未合并 `main`，未合并 `fix/unified-process-audit`、`feat/unified-process-attachments-streaming`。
+- 未开发附件系统、记忆系统、真实模型板面理解或新的任务执行能力；未伪造 `delivery.delivered`。
 - 未做数据库迁移，未修改历史迁移。
-- 子智能体模型：本会话仅允许默认 spawn 路由（glm-5.3-flash）；用户要求的 deepseek-v4.1-flash 在本会话不可选（`list_subagent_models` 拒绝所有 provider），已如实记录，未影响任务范围与验收标准。
+- **过程偏差（如实记录）**：首次用 `scripts/e2e_up.py` 起真实服务时，本机环境变量 `QIO_DATA_DIR=D:\QIO-data`
+  被脚本继承，服务连到了用户真实数据库（`D:\QIO-data\app.db`）。当时只做了页面导航（GET）与截图，
+  发现后立即停止服务，并改为显式 `$env:QIO_DATA_DIR=<临时目录>` 重新启动；此后所有验收都在临时库上进行。
+- 子智能体模型：本会话仅允许默认 spawn 路由（`glm-5.3-flash`）；用户要求的 `deepseek-v4.1-flash`
+  在本会话不可选（`list_subagent_models` 对全部 provider 返回 "not allowed"），已如实记录，不影响任务范围与验收标准。
