@@ -65,6 +65,14 @@
    与 `probe17_dedup.py`（**14/14 通过**：同内容不同身份不是重复、撤回再加回不构成新提交且不投递、有序组顺序变化是真实改动）；
    它独立跑出的前端全量证据 `evidence/gate-vitest-full.txt` = 168 文件 / 1549 用例全绿。
    **它发现了一处真实缺口**（见 §8 第 8 条），修复后 3 个组件探针全绿。
+   第二批（`scripts/final-verify-subagent/batch2/`，含 `REPORT.md` 与 `run-all.ps1`）覆盖 **06 / 07 / 08 / 02 / 03 / 04**：
+   未突变 8 用例 + 后端 21/21 全绿，且每个都有**定向突变**证明用例承重（06 关掉候选版本判断→旧回执把板面换回第一版；
+   07 禁用登记消费→两条正向清理失败；08 分别拆掉服务端门/ stale_check / stale_state → 10 / 4 / 5 条红；
+   02 去掉内容版本条件→失败记录被旧回执删除）。08 探针**不用开发者夹具**：自己 `mkdtemp → apply_migrations` 建真实 sqlite 文件库、
+   挂完整 ASGI 路由，并**直接 SELECT seq / 材料正文 / 快照数 / 成功提交数**核对「不落库」。
+   两处如实标注：03 的现实流程反例由 `bind() 切话题即 disarm` + `captureAttribution 要求同话题` **两层**共同挡住
+   （只拆一层仍绿，两层同拆才红；成功清理里的同话题条件是有意的纵深防御，另加隔离例让它单独承重）；
+   02 的镜像兜底会让「只看列表」的断言假通过，探针改为断言状态列表后才稳定变红。
 2. **真实组件/DOM**：`final-a3-*`（BoardCard/真实 textarea、冲突四路径）、`final-b3-*`（Composer/FailedSendNotice）、
    `final-lead-11a`（Composer/ChatDock 被让位草稿）、`final-lead-m07`（BoardCanvas 删除登记）、`final-d-*`（BoardCanvas/浮层几何）。
 3. **API/数据库**：`scripts/final-lead-verify/final-lead-api-journey.py` 真实 HTTP + 临时库 **12/12**；
