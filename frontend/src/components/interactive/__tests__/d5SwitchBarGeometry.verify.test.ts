@@ -78,6 +78,25 @@ describe("场景 8：480px 关闭一个面板后的切换条布局（§11.7）",
     // 用户先开过两个面板，然后关掉了批量列表：480px 下空间依然不足（切换条必须常驻）
     store.chatOpen = true;
     store.batchOpen = false;
+    /**
+     * 【驱动更新（主智能体），§12.6 新口径】只有「确实有另一个可展示面板」时才进入切换布局 ——
+     * 本用例关注的是「确有第二个面板时的切换条预留几何」，因此注入同批四条待审批意图
+     * （与 d5bSwitchBarGeometry 的做法一致），保证切换布局成立。
+     */
+    const mkIntent = (id: string) => ({
+      id,
+      submissionId: "sub_d5_switchbar",
+      status: "pending" as const,
+      kind: "add" as const,
+      summary: "验收批次 " + id,
+      createdAt: "2026-10-09T00:00:00.000Z",
+    });
+    (store as unknown as { intents: unknown[] }).intents = [
+      mkIntent("i_d5_1"),
+      mkIntent("i_d5_2"),
+      mkIntent("i_d5_3"),
+      mkIntent("i_d5_4"),
+    ];
 
     vi.useFakeTimers();
     const wrapper = mount(IntentBatchTray, { attachTo: document.body });
