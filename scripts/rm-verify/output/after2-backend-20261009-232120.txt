@@ -1,0 +1,17 @@
+﻿uv.exe : Uninstalled 1 package in 2ms
+At D:\qio-dev\qio-rm-main\scripts\rm-verify\run_all.ps1:40 char:25
++ ... $captured = & uv run --frozen pytest @files -q --no-header -p no:cach ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Uninstalled 1 package in 2ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Installed 1 package in 10ms
+................                                                         [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-rm-main\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+[rm-verify] pytest exit code = 0
