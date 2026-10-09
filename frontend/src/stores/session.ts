@@ -536,6 +536,61 @@ function parseVerifiedRaw(raw?: string | null): VerifiedFact | null {
 }
 
 /**
+ * 后端「系统核对」事实注记的起始标记（backend core/turn_facts.py::ANNOTATION_HEADER）。
+ *
+ * 旧形态里这段注记被拼进 `TURN_END.final_content` 的末尾；新形态会走独立字段。
+ * 两种形态前端都认：独立字段优先，内嵌的按这个标记切出来，**只保留一份**。
+ */
+export const SYSTEM_ANNOTATION_HEADER = "—— 系统核对（后端事实，不是模型的说法）：";
+
+/** 把 final_content 切成「模型正文」与「系统核对注记」；没有注记时原样返回。 */
+function splitSystemAnnotation(text: string): { body: string; annotation: string | null } {
+  const raw = String(text ?? "");
+  const idx = raw.indexOf(SYSTEM_ANNOTATION_HEADER);
+  if (idx < 0) return { body: raw, annotation: null };
+  const body = raw.slice(0, idx).replace(/\s+$/, "");
+  const annotation = raw.slice(idx).trim();
+  return { body, annotation: annotation || null };
+}
+
+/** 注记统一带上标记（独立字段没带时补上），保证它在界面上明确是「系统事实」。 */
+function labelSystemAnnotation(note: string): string {
+  const trimmed = String(note ?? "").trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith(SYSTEM_ANNOTATION_HEADER)
+    ? trimmed
+    : `${SYSTEM_ANNOTATION_HEADER}\n${trimmed}`;
+}
+
+/** 把注记并入已有回答（同一条消息，正文不复制）；已经包含同一段注记时不重复追加。 */
+function appendSystemAnnotation(content: string, note: string): string {
+  const labeled = labelSystemAnnotation(note);
+  if (!labeled) return content;
+  const current = String(content ?? "");
+  if (current.includes(labeled)) return current;
+  const base = current.replace(/\s+$/, "");
+  return base ? `${base}\n\n${labeled}` : labeled;
+}
+
+/**
+ * 用 TURN_END 的最终正文校准已发布回答。
+ *
+ * 只在「同一次回答」上就地合并 / 延长；返回 null 表示两段正文真不一样，
+ * 交给调用方决定（真正不同的多条回答要保留）。
+ */
+function mergeFinalBody(existing: string, body: string): string | null {
+  const prev = String(existing ?? "");
+  const next = String(body ?? "");
+  const p = prev.trim();
+  const b = next.trim();
+  if (p === b) return prev;
+  if (!b) return prev;
+  if (b.startsWith(p)) return next;
+  if (p.startsWith(b)) return prev;
+  return null;
+}
+
+/**
  * 一份工具执行事实（`/api/runtime/state.tools`：活工具 + 最近结束的工具）。
  *
  * 身份是 `tool_call_id`（同一个工具名可能在一轮里被调用多次），
@@ -1213,6 +1268,35 @@ export const useSessionStore = defineStore("session", {
     },
     isQueuedTurn(turnId: string) {
       return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
+    },
+    /**
+     * 排队中的 turn 已经有结局（取消 / 准备失败）。
+     *
+     * 结束事实由 recordTurnFacts **先**落地，这里只负责清理排队标记：
+     * * 清掉这条用户消息的「等待中」；
+     * * 把它登记为「已取消」（QueueChip 可查看）；
+     * * 绝不触碰 active / turnRunning —— 正在跑的可能是另一轮。
+     */
+    concludeQueuedTurn(turnId: string) {
+      const id = String(turnId ?? "");
+      if (!id) return;
+      const message = this.messages.find((m) => m.role === "user" && m.turnId === id);
+      for (const m of this.messages) {
+        if (m.role === "user" && m.turnId === id && m.queued) m.queued = false;
+      }
+      if (message) {
+        this.queuedMessageIds = this.queuedMessageIds.filter((mid) => mid !== message.id);
+      }
+      if (!this.turnQueue.cancelled.some((c) => c.turn_id === id)) {
+        this.turnQueue = {
+          ...this.turnQueue,
+          cancelled: [
+            ...this.turnQueue.cancelled,
+            { turn_id: id, message: message?.content ?? "" },
+          ],
+        };
+      }
+      this.forgetQueuedTurn(id);
     },
     /**
      * 应用一份**权威队列快照**（TURN_QUEUE 事件，或 RESYNC 后重新拉取的快照）。
@@ -1936,24 +2020,65 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
-     * TURN_END.final_content 是最终回答的唯一权威来源。
-     * 只有当最后一条助手消息**内容就是它**时才复用，否则单独追加一条 —— 
-     * 绝不能因为「最后一条已经是 assistant」就把最终回答丢掉，
-     * 也不能把工具前的中间话当成最终答案。
+     * 找到某一轮里代表「回答」的那条助手消息。
+     *
+     * 优先最后一条**正式回答**（interim !== true）；只有整轮都没有正式回答时，
+     * 才退回最后一条中间话（interim → 正式回答的提升路径）。
+     * turnId 为空（旧后端）时沿用「最近一条助手消息」的兼容行为。
      */
-    applyFinalAnswer(text: string, verification?: unknown) {
-      const last = this.messages[this.messages.length - 1];
-      if (
-        last &&
-        last.role === "assistant" &&
-        !last.streaming &&
-        last.content.trim() === text.trim()
-      ) {
-        last.interim = false;
-        this._attachVerification(last, verification);
-        return;
+    _turnAnswerMessage(turnId: string): StreamMessage | null {
+      let interimFallback: StreamMessage | null = null;
+      for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+        const m = this.messages[i];
+        if (!m || m.role !== "assistant") continue;
+        if (turnId && m.turnId !== turnId) continue;
+        if (m.interim !== true) return m;
+        if (!interimFallback) interimFallback = m;
       }
-      this.pushAssistant(text);
+      return interimFallback;
+    },
+    /**
+     * TURN_END.final_content 是最终回答的唯一权威来源。
+     *
+     * 契约 §1.5 / C8：校准必须按 **turn 身份** 做，不能用「全文是否相等」判断同一次回答。
+     * 真实缺陷（F11）：后端在正文后追加系统核对注记（或走独立字段）后 full text 不再相等，
+     * 旧实现就另起一条包含完整正文的回答 —— 正文在页面上出现两次。
+     *
+     * 现在的规则：
+     * * 同一条回答（正文是已有文本的延长 / 已有文本是它的前缀 / 完全一致）→ 就地合并，
+     *   注记并入同一条消息（正文只出现一次），不重启动画；
+     * * 真正不同的两段正文 → 追加一条新的回答（保留多条不同回答）；
+     * * 排队 / 旧历史里没有可复用回答 → 正常新建。
+     */
+    applyFinalAnswer(
+      text: string,
+      verification?: unknown,
+      opts: { turnId?: string | null; annotation?: string | null } = {},
+    ) {
+      const raw = String(text ?? "");
+      const turnId = String(opts.turnId ?? this.activeTurnId ?? "");
+      const split = splitSystemAnnotation(raw);
+      const separateNote = typeof opts.annotation === "string" ? opts.annotation.trim() : "";
+      const note = separateNote || split.annotation;
+      const body = split.annotation ? split.body : raw;
+
+      const target = this._turnAnswerMessage(turnId);
+      if (target) {
+        const merged = mergeFinalBody(target.content, body);
+        if (merged !== null) {
+          target.content = merged;
+          target.interim = false;
+          this._attachVerification(target, verification);
+          if (note) target.content = appendSystemAnnotation(target.content, note);
+          return;
+        }
+      }
+
+      // 没有可复用的同一次回答：新建一条（注记跟在这一条上，正文不重复）
+      const nextContent = note
+        ? appendSystemAnnotation(body.replace(/\s+$/, ""), note)
+        : body;
+      this.pushAssistant(nextContent);
       const added = this.messages[this.messages.length - 1];
       if (added) this._attachVerification(added, verification);
     },
