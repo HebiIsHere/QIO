@@ -256,6 +256,10 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
     const session = useSessionStore();
     expect(session.lastError).toContain("network down");
     expect(session.messages.some((m) => m.content === "这条会失败")).toBe(false);
+    // 不留永久「发送中 / 正在准备附件…」：失败之后入口回到可用状态
+    expect(w.find('[data-test="preparing-attachments"]').exists()).toBe(false);
+    expect(w.find('[data-test="preparing-notice"]').exists()).toBe(false);
+    expect(w.find(".send-btn").attributes("disabled")).toBeUndefined();
     w.unmount();
   });
 

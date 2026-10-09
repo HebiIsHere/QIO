@@ -1496,6 +1496,23 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
+     * 按**取消确认返回的 turn_id** 停止（契约 §1.2）。
+     *
+     * 与 stopActiveTurn 的区别：目标来自后端确认，而不是「当前 active 轮」——
+     * 另一轮在跑时用 activeTurnId 会**停错对象**。
+     * 返回后端事实：cancelled=false 表示这一轮已经没有可取消的目标（例如已经结束）。
+     * 返回 null 表示请求失败（拿不到事实）。
+     */
+    async stopTurnById(turnId: string): Promise<{ ok: boolean; cancelled: boolean } | null> {
+      try {
+        const res = await api.cancelTurn(turnId);
+        return { ok: !!res?.ok, cancelled: !!res?.cancelled };
+      } catch (e) {
+        this.lastError = `停止失败：${(e as Error).message}`;
+        return null;
+      }
+    },
+    /**
      * 停止「真正在运行的主 turn」。
      *
      * 已知 active → 精确取消它；还不知道 turn_id → 让后端取消 active，

@@ -62,3 +62,35 @@ describe("sendTurn 的 attachment_ids（存在性即语义）", () => {
     expect(Object.prototype.hasOwnProperty.call(lastBody(), "attachment_ids")).toBe(false);
   });
 });
+
+describe("sendTurn 的准备标识（契约 §1.1：CORS 允许的那个头必须真的发出去）", () => {
+  it("给了 prepareId → 请求头带 X-QIO-Prepare-Id", async () => {
+    await api.sendTurn("带附件", "t1", ["att_1"], undefined, undefined, "prep_abc");
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(headers["X-QIO-Prepare-Id"]).toBe("prep_abc");
+  });
+
+  it("没给 prepareId → 不发这个头（旧调用形状不变）", async () => {
+    await api.sendTurn("纯文字", "t1", []);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(headers["X-QIO-Prepare-Id"]).toBeUndefined();
+  });
+
+  it("取消端点：POST /api/turns/prepare/{id}/cancel，返回服务端事实", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({ ok: true, cancelled: false, already_started: true, turn_id: "turn_9" }),
+    );
+
+    const res = await api.cancelPreparing("prep_abc");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/turns/prepare/prep_abc/cancel");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(res.already_started).toBe(true);
+    expect(res.turn_id).toBe("turn_9");
+  });
+});
