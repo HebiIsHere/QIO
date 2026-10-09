@@ -80,6 +80,35 @@ const chatDraftError = computed(() =>
     : "",
 );
 
+/**
+ * 被让位的旧草稿（11a）：第一次把未绑定输入迁移到某个话题时，话题原本已有一份草稿，
+ * 两份都保留 —— 当前编辑的是新输入，旧那份在这里可查、可取回（互换）、可放弃。
+ */
+const displacedDraft = computed(() => session.displacedDraftsForTopic(session.currentTopicId)[0] ?? null);
+const displacedCount = computed(() => session.displacedDraftsForTopic(session.currentTopicId).length);
+const displacedSnippet = computed(() => {
+  const text = displacedDraft.value?.text ?? "";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 40 ? oneLine.slice(0, 40) + "…" : oneLine || "（空草稿）";
+});
+const displacedNotice = ref("");
+
+function restoreDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  const result = session.restoreDisplacedDraft(target.id);
+  displacedNotice.value = result.ok
+    ? "已取回那份草稿：输入框是它，刚才的文字留在入口里（两份都还在）"
+    : result.reason ?? "现在不能取回这份草稿";
+}
+
+function discardDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  session.discardDisplacedDraft(target.id);
+  displacedNotice.value = "已放弃这份被让位的草稿（当前输入不受影响）";
+}
+
 const cancelling = ref(false);
 /**
  * 本次发送失败的真实原因（只显示这一次尝试，不读上一次的结果）。
@@ -205,6 +234,41 @@ async function stopTurn() {
       :notice="failureNotice"
       :reason="failureReason"
     />
+
+    <!--
+      第一次话题迁移时被让位的旧草稿（收尾轮 11a）：两份都保留，这里给出明确入口。
+      取回是「与当前文字互换」——两份都还在，不拼接、不覆盖、不自动发送。
+    -->
+    <p
+      v-if="displacedDraft"
+      class="displaced-draft"
+      role="status"
+      data-im="composer-displaced-draft"
+    >
+      <span>
+        这个话题原来还有一份草稿：{{ displacedSnippet }}
+        <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
+      </span>
+      <button
+        class="draft-retry"
+        type="button"
+        data-im="composer-displaced-restore"
+        @click="restoreDisplaced"
+      >
+        取回（与当前文字互换）
+      </button>
+      <button
+        class="draft-retry ghost"
+        type="button"
+        data-im="composer-displaced-discard"
+        @click="discardDisplaced"
+      >
+        放弃这份
+      </button>
+    </p>
+    <p v-if="displacedNotice" class="displaced-notice" role="status" data-im="composer-displaced-status">
+      {{ displacedNotice }}
+    </p>
 
     <!--
       共享聊天草稿的保存失败（收尾轮 15）：普通对话页也必须看得见、能重试。
@@ -433,6 +497,21 @@ async function stopTurn() {
   transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
 }
 .draft-retry:hover { border-color: var(--link); color: var(--link); }
+.draft-retry.ghost { border-color: var(--border-subtle); color: var(--text-muted); }
+.displaced-draft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.displaced-notice {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .send-btn {
   width: 38px;

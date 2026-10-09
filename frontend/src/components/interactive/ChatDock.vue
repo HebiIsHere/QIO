@@ -115,6 +115,35 @@ const draftSaveError = computed(() =>
     : "",
 );
 
+/**
+ * 被让位的旧草稿（11a）：第一次迁移到某个话题时，话题原有草稿被让位但**不删**，
+ * 两份都保留。这里给出「取回（互换）/ 放弃」入口，与对话页同一份会话状态。
+ */
+const displacedDraft = computed(() => session.displacedDraftsForTopic(session.currentTopicId)[0] ?? null);
+const displacedCount = computed(() => session.displacedDraftsForTopic(session.currentTopicId).length);
+const displacedSnippet = computed(() => {
+  const text = displacedDraft.value?.text ?? "";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 32 ? oneLine.slice(0, 32) + "…" : oneLine || "（空草稿）";
+});
+const displacedNotice = ref("");
+
+function restoreDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  const result = session.restoreDisplacedDraft(target.id);
+  displacedNotice.value = result.ok
+    ? "已取回那份草稿：输入框是它，刚才的文字留在入口里（两份都还在）"
+    : result.reason ?? "现在不能取回这份草稿";
+}
+
+function discardDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  session.discardDisplacedDraft(target.id);
+  displacedNotice.value = "已放弃这份被让位的草稿（当前输入不受影响）";
+}
+
 /** 收起面板时把还没到防抖时间的内容落盘（草稿不清、也不丢） */
 watch(
   () => store.chatOpen,
@@ -383,6 +412,23 @@ function onKeydown(event: KeyboardEvent) {
       </p>
       <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status">
         {{ draftStatusText }}
+      </p>
+
+      <!-- 11a：被让位的旧草稿（两份都保留，取回 = 与当前文字互换） -->
+      <p v-if="displacedDraft" class="notice displaced" role="status" data-im="chat-displaced-draft">
+        <span>
+          这个话题原来还有一份草稿：{{ displacedSnippet }}
+          <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
+        </span>
+        <button class="draft-retry" type="button" data-im="chat-displaced-restore" @click="restoreDisplaced">
+          取回（互换）
+        </button>
+        <button class="draft-retry" type="button" data-im="chat-displaced-discard" @click="discardDisplaced">
+          放弃这份
+        </button>
+      </p>
+      <p v-if="displacedNotice" class="draft-status mono" role="status" data-im="chat-displaced-status">
+        {{ displacedNotice }}
       </p>
 
       <div class="input-row">
