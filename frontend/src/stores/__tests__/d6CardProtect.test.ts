@@ -497,7 +497,8 @@ describe("§12.2 旧清除记录不许删除后来的新输入", () => {
     store.setDraft(cardKey("A"), "要清掉的旧内容");
     vi.advanceTimersByTime(700);
     await flushPromises();
-    expect(vi.mocked(imApi.saveDrafts).mock.calls.at(-1)?.[1]?.[cardDraftKey("A")]).toBe("要清掉的旧内容");
+    const callsAt = vi.mocked(imApi.saveDrafts).mock.calls;
+    expect(callsAt[callsAt.length - 1]?.[1]?.[cardDraftKey("A")]).toBe("要清掉的旧内容");
 
     // 用户清除：本机留下待同步的清除依据（写入成功）
     store.clearDraft(cardDraftKey("A"));
