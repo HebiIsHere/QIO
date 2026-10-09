@@ -978,6 +978,43 @@
   - 「重新打开对话后不完整警告是否仍可见」未验证（取决于轮次事实持久化）；警告事实按契约**不进正文**。
   - 事件循环上 sqlite `synchronous=FULL` 的 fsync 停顿（推断，未改）；真实厂商/原生桌面/安装包未验。
 
+### P22 — 带附件发送 CORS / 精确取消目标 / 兼容路径整体拒绝 / 暂存完整性（2026-10-09）
+
+- **Status：** partial
+- **背景：** P21 之后仍有四条：新取消头 `X-QIO-Prepare-Id` 没进 CORS 允许列表，带附件发送在**浏览器侧的预检
+  被直接 400 Disallowed CORS headers** 拦截（r7 报告里「带附件发送 no-request」的真根因）；取消确认返回
+  `already_started` 后前端停的是 `stopActiveTurn()`（**另一轮在跑时会被误伤**）；旧客户端兼容路径在等待期间
+  **重新枚举**未绑定附件，`_bindable` 不满足即 `continue` —— 复制真实 failed 的附件被静默丢掉、该轮照常执行；
+  `AnswerBuffer.collect()` 只把读取 OSError 当故障，暂存被**截短/清空/异常增长**或**多字节边界损坏**时
+  仍标 `complete=true`（把成功保存量说成完整生成量）。
+- **Implementation（问题一 · CORS）：** `X-QIO-Prepare-Id` 纳入 `allow_headers`（Lead 实施，`725fc75`）；
+  保留既有认证、可信来源与 Host 检查；预检过后正式请求仍走认证。前端发送失败给可理解原因、保留草稿与附件。
+- **Implementation（问题二 · 精确取消目标）：** `already_started` 回执里的 `turn_id` = 唯一取消目标 ——
+  新增 `session.stopTurnById(turnId)`，`Composer` 用 `stopConfirmedTurn` 以它为准；身份缺失明确说明、
+  **不静默退回** `stopActiveTurn()`（普通停止按钮语义不变，有用例钉住）；文案依事实（发出停止请求 ≠ 已停止、
+  已执行不得称「没有发送」）；`preparingHandled` 让重复点击只问一次。
+- **Implementation（问题三 · 兼容路径整体拒绝）：** 进入兼容发送**枚举一次并固定**集合快照，等待期间
+  **不重新枚举**；快照内任一附件失败/取消/删除/超时/不可读/被占用 → **结构化拒绝整轮**（复用显式路径同一份
+  判据与 code）；等待之后到落库之间**不再有 await**（`_recheck_planned` 按当下事实复核全部再一次落库）；
+  快照为空 → 正常执行；历史失败记录不阻断纯文字发送。
+- **Implementation（问题四 · 暂存字节事实核对）：** `collect()` 核对实际读回与成功写入的字节事实 ——
+  截短/清空/异常增长/非法 UTF-8（含中文末字截断的多字节边界）**不再被当完整交付**、不用 replacement 字符
+  掩盖；三个数字分开记（`generated_bytes / saved_bytes / delivered_bytes`，`total_bytes` 降为只读别名），
+  警告统计名称真实；事实走可见事件 + 轮次警告，不重调模型。
+- **Tests：** 独立验证方先在基线跑出四项红（预检 4 红 / 取消目标 5 红 / 兼容路径 8 红 / 暂存完整性 4 红，
+  另有绿守卫确认边界），修复后**同一套断言**在集成分支四文件全绿；实机**跨来源真浏览器 12/12**（请求级观察：
+  预检 200、POST 真到达 + prepare 头、回执绑定、`read_attachment`、回答完成；10 张截图 + summary.json）。
+- **验证（2026-10-09）：** 后端全量 **2460 tests / 0 failures / 0 errors / 10 skipped**；前端
+  **138 files / 1178 tests** + `vue-tsc` exit 0；`check_docs` 通过（34 里程碑）；`agent.eval.run` 与基线一致
+  （verdict=skip）。`test_turn_journal.py` 在 Lead 集成树上单独复跑 EXIT=0（独立验证方本机曾停住，判定为其
+  环境残留进程所致，非产品问题）。
+- **过程记录：** 本轮发生一次 **git stash 跨 worktree 撞车**（`git stash` 是仓库级共享栈）—— A/B 工作区曾
+  交叉污染，按共享 FS 复制 + 哈希核对恢复，**多 worktree 禁用 git stash** 已写入契约
+  （`docs/plans/2026-10-09-send-cancel-integrity.md`）。
+- **Known limitations：**（见 `docs/verification-r8-phase2.md`）真实硬件级损坏未验证（用真实文件操作模拟）、
+  多实例共写同一 tmp 目录未验证、100MB 兼容路径与引用型 changed 时序未单独造例、Windows 原生窗口
+  与安装包 E2E 未跑、真实厂商未验。
+
 ---
 
 ## 尚未完成
