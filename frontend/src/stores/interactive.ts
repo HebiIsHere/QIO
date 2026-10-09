@@ -399,6 +399,27 @@ export const useInteractiveStore = defineStore("interactive", () => {
         // 这一步同样不调用 QIO。
         void refreshVisibleRange();
       } catch (err) {
+        const status = (err as { status?: number }).status;
+        const failure = (err as { payload?: { error?: string; reason?: string; affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[] } }).payload;
+        if (status === 409 && failure?.error === "impact_confirmation_required") {
+          // 服务端门（M4）：这次保存会改动运行任务依赖的材料，必须先做影响确认。
+          // 候选与勾选保留，不落库；把服务端列出的真实受影响任务交给用户决定。
+          pendingImpact.value = {
+            affected: failure.affectedTasks ?? [],
+            previewRev: putRev,
+            stateVersion: snapshot.seq,
+          };
+          saveStatus.value = "idle";
+          saveError.value = null;
+          return;
+        }
+        if (status === 409 && failure?.error === "stale_check") {
+          // 确认句柄过期：重新核实，不落库
+          impactCheckError.value = `这次改动的影响确认已经过期，请重新确认（${failure.reason ?? "板面版本已变化"}）`;
+          saveStatus.value = "idle";
+          saveError.value = null;
+          return;
+        }
         saveStatus.value = "error";
         saveError.value = (err as Error).message;
         dirty.value = true;
@@ -1177,8 +1198,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
       recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
       return result;
     } catch (err) {
+      const status = (err as { status?: number }).status;
+      const failure = (err as { payload?: { error?: string; reason?: string } }).payload;
       submitStatus.value = "failed";
-      submitError.value = (err as Error).message;
+      submitError.value =
+        status === 409 && failure?.error === "stale_state"
+          ? `板面版本已经变化，本次未提交（${failure.reason ?? "服务端已有更新的已保存版本"}）。请确认当前板面后再提交`
+          : (err as Error).message;
+      // 提交失败保留改动与本次注释选择：这里不刷新、不清勾选、不动基准
       return null;
     }
   }

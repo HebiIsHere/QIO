@@ -17,11 +17,23 @@ import type {
   VisibleRange,
 } from "../interactive/types";
 
+/** 服务端错误体（M4 定稿）：error/reason 是给用户看的真实原因，其余是可核对的结构。 */
+export interface InteractiveErrorPayload {
+  error?: string;
+  reason?: string;
+  detail?: string;
+  affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[];
+  currentSeq?: number;
+  limit?: number;
+  keys?: string[];
+}
+
 export class InteractiveApiError extends Error {
   constructor(
     readonly status: number,
     readonly path: string,
     detail: string,
+    readonly payload?: InteractiveErrorPayload,
   ) {
     super(
       status === 401 || status === 403
@@ -43,14 +55,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!resp.ok) {
+    // 服务端会给出「为什么这次没成功」的真实原因（stale_state / stale_check /
+    // impact_confirmation_required / draft_too_long …）：它必须原样到得了界面，
+    // 不能被压成一句笼统的失败。payload 保留结构（例如 affectedTasks / limit）。
     let detail = "";
+    let payload: InteractiveErrorPayload | undefined;
     try {
-      const payload = (await resp.json()) as { detail?: string };
-      detail = payload?.detail ?? "";
+      payload = (await resp.json()) as InteractiveErrorPayload;
+      detail = payload?.detail ?? payload?.reason ?? payload?.error ?? "";
     } catch {
       detail = await resp.text().catch(() => "");
     }
-    throw new InteractiveApiError(resp.status, path, detail.slice(0, 300));
+    throw new InteractiveApiError(resp.status, path, detail.slice(0, 300), payload);
   }
   return (await resp.json()) as T;
 }

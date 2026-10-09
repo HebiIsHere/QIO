@@ -166,6 +166,57 @@ describe("06 正式板面的版本保护", () => {
   });
 });
 
+describe("08/06 服务端门：409 的真实原因与不落库", () => {
+  it("PUT 返回 impact_confirmation_required：不落库、候选保留、按服务端列出的任务等待确认", async () => {
+    const store = useInteractiveStore();
+    await store.load();
+    // 没有运行中意图 → 前端不发影响检查，由服务端门兜住
+    const gate = Object.assign(new Error("409"), {
+      status: 409,
+      payload: {
+        error: "impact_confirmation_required",
+        reason: "这次保存会改动正在执行任务依赖的材料",
+        affectedTasks: [{ intentId: "t1", title: "任务一", materials: ["c1"], consequence: "暂停并保留进度" }],
+      },
+    });
+    vi.mocked(api.saveBoardState).mockRejectedValue(gate);
+    store.commit({ ...store.board!, seq: 99, cards: [card("c1", "改动")] } as BoardState, "改动");
+    await store.saveNow();
+    await flushPromises();
+    expect(store.pendingImpact).not.toBeNull();
+    expect(store.pendingImpact?.affected.map((a) => a.intentId)).toEqual(["t1"]);
+    expect(store.dirty).toBe(true);
+    expect(store.saveStatus).not.toBe("saved");
+  });
+
+  it("提交返回 stale_state：给出可操作的真实原因，不推进提交状态、不清改动", async () => {
+    const store = useInteractiveStore();
+    await store.load();
+    vi.mocked(api.saveBoardState).mockImplementation((async (_boardId: string, state: BoardState) => ({
+      ok: true,
+      seq: 4,
+      savedAt: "t",
+      state,
+    })) as never);
+    store.commit({ ...store.board!, seq: 4, cards: [card("c1", "改动")] } as BoardState, "改动");
+    await store.saveNow();
+    await flushPromises();
+    vi.mocked(api.submitBoard).mockRejectedValue(
+      Object.assign(new Error("409"), {
+        status: 409,
+        payload: { error: "stale_state", reason: "服务端已有更新的已保存版本（seq=9）" },
+      }),
+    );
+    const r = await store.submit();
+    expect(r).toBeNull();
+    expect(store.submitStatus).toBe("failed");
+    expect(store.submitError).toContain("板面版本已经变化");
+    expect(store.submitError).toContain("seq=9");
+    // 提交失败保留改动与勾选
+    expect(store.board?.cards.map((c) => c.id)).toEqual(["c1"]);
+  });
+});
+
 describe("05 未决冲突：改一个字不清冲突", () => {
   it("改一个字：两份来源保留、服务器不被本机候选覆盖；明确选本机才落地", async () => {
     const store = useInteractiveStore();
