@@ -659,6 +659,11 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text-faint);
+  /* 草稿状态行同样贴着透明区铺字：给它与 notice 一致的稳定局部底色（§12.7） */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
 }
 .draft-status.err { color: var(--danger); }
 .draft-retry {
@@ -720,9 +725,19 @@ function onKeydown(event: KeyboardEvent) {
 .panel-hint {
   flex: none;
   margin: 0;
+  align-self: flex-start;
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--text-faint);
+  /*
+    快捷键说明是最长的一行小字，直接铺在透明面板上时与后方板面文字相叠
+    （800×600 暗色实机复测发现，同批 §12.7 口径）：给它一个紧凑的局部底色，
+    明暗两主题都稳定；窄窗口下该行隐藏（既有规则不变）。
+  */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
 }
 /*
   矮窗口（480×600 这类浏览器边缘档、以及 800×600 的桌面最小窗口）：
