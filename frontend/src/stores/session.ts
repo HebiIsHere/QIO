@@ -311,6 +311,131 @@ export function splitTurnItems(items: StreamMessage[]): TurnItemsView {
   return view;
 }
 
+/** 消息流里的一轮（契约 §1.5：一轮 = 一个过程区）。 */
+export interface StreamTurn {
+  id: string;
+  index: number;
+  startedAt: string;
+  items: StreamMessage[];
+  parts: TurnItemsView;
+  /** 这一轮的 turn_id（旧历史没有 turn_id 时为空串） */
+  turnId: string;
+  firstAssistantId: string | null;
+  running: boolean;
+  queued: boolean;
+  stages: TurnStage[];
+  facts: TurnFacts | null;
+  showProcess: boolean;
+}
+
+export interface GroupTurnsOptions {
+  turnRunning: boolean;
+  activeTurnId: string | null;
+  stagesFor: (turnId?: string | null) => TurnStage[];
+  factsFor: (turnId?: string | null) => TurnFacts | null;
+}
+
+/**
+ * 按 **turn 身份**组织消息流（F05 修复的核心规则）。
+ *
+ * 为什么不能用「遇 user 消息才开新一轮」的数组位置分组：排队消息会插进数组中间，
+ * 正在运行那一轮随后的说明 / 工具 / 回答就落在排队轮之后，被错误吸收到排队轮里，
+ * 同时「最后一轮才 running」会让正在运行的过程区误显示成已停止。
+ *
+ * 规则：
+ * 1. 有 turn_id 的消息按 turn_id 归属；属于同一 turn 的内容即使晚于排队消息到达，
+ *    也回到它自己的那一轮；
+ * 2. 用户消息**永远**开新一轮（保留用户消息顺序）；turn_id 已被别的轮占用时
+ *    （乐观发送到受理回执之间）先不登记，等回执纠正后再归位；
+ * 3. 无 turn_id 的旧历史整体按位置分组（user/system 开新轮，其余挂在当前轮）；
+ *    无 turn_id 的实时事件优先挂到 active turn，**绝不挂到数组最后一轮**
+ *    （最后一轮可能是排队轮）；
+ * 4. 只有 active turn（有 turn_id 时）或最后一轮（无 turn_id 的旧后端）可能是 running，
+ *    排队轮永远不是 running。
+ */
+export function groupTurns(messages: StreamMessage[], opts: GroupTurnsOptions): StreamTurn[] {
+  const out: StreamTurn[] = [];
+  const byTurnId = new Map<string, StreamTurn>();
+  let cur: StreamTurn | null = null;
+  let n = 0;
+
+  const startTurn = (startedAt: string): StreamTurn => {
+    n += 1;
+    const turn: StreamTurn = {
+      id: `turn_${n}`,
+      index: n,
+      startedAt,
+      items: [],
+      parts: { user: [], process: [], answers: [], other: [] },
+      turnId: "",
+      firstAssistantId: null,
+      running: false,
+      queued: false,
+      stages: [],
+      facts: null,
+      showProcess: false,
+    };
+    out.push(turn);
+    return turn;
+  };
+
+  for (const m of messages) {
+    const tid = String(m.turnId ?? "").trim();
+    let target: StreamTurn;
+    if (m.role === "user" || m.role === "system") {
+      target = startTurn(m.createdAt);
+      const owner = tid ? byTurnId.get(tid) : undefined;
+      if (tid && !owner) {
+        byTurnId.set(tid, target);
+        target.turnId = tid;
+      } else if (tid && owner === target) {
+        target.turnId = tid;
+      }
+      // owner 存在且不是自己 = 乐观消息的临时归属：不登记，回执纠正后自然归位
+      target.startedAt = m.createdAt;
+      cur = target;
+    } else if (tid && byTurnId.has(tid)) {
+      target = byTurnId.get(tid) as StreamTurn;
+    } else if (tid) {
+      // 没有对应 user 消息的 turn（历史 / 系统轮 / 起点丢失）：按 turn_id 自成一节
+      target = startTurn(m.createdAt);
+      target.turnId = tid;
+      byTurnId.set(tid, target);
+      cur = target;
+    } else if (opts.activeTurnId && byTurnId.has(opts.activeTurnId)) {
+      // 旧后端无 turn_id 的实时事件：优先回到 active turn，绝不挂到排队轮
+      target = byTurnId.get(opts.activeTurnId) as StreamTurn;
+    } else if (cur) {
+      target = cur;
+    } else {
+      target = startTurn(m.createdAt);
+      cur = target;
+    }
+    target.items.push(m);
+    if (target.firstAssistantId === null && m.role === "assistant" && !m.interim) {
+      target.firstAssistantId = m.id;
+    }
+  }
+
+  const last = out[out.length - 1];
+  for (const turn of out) {
+    turn.parts = splitTurnItems(turn.items);
+    turn.queued = turn.items.some((m) => m.role === "user" && m.queued === true);
+    turn.running =
+      opts.turnRunning &&
+      !turn.queued &&
+      (turn.turnId ? turn.turnId === opts.activeTurnId : turn === last);
+    turn.stages = opts.stagesFor(turn.turnId);
+    turn.facts = opts.factsFor(turn.turnId);
+    turn.showProcess =
+      turn.parts.process.length > 0 ||
+      turn.running ||
+      turn.queued ||
+      Boolean(turn.turnId && turn.facts);
+  }
+  return out;
+}
+
 function normalizeNarrativeKind(raw: unknown): NarrativeKind {
   return raw === "announce" || raw === "warning" || raw === "result" ? raw : "progress";
 }
@@ -408,6 +533,61 @@ function parseVerifiedRaw(raw?: string | null): VerifiedFact | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 后端「系统核对」事实注记的起始标记（backend core/turn_facts.py::ANNOTATION_HEADER）。
+ *
+ * 旧形态里这段注记被拼进 `TURN_END.final_content` 的末尾；新形态会走独立字段。
+ * 两种形态前端都认：独立字段优先，内嵌的按这个标记切出来，**只保留一份**。
+ */
+export const SYSTEM_ANNOTATION_HEADER = "—— 系统核对（后端事实，不是模型的说法）：";
+
+/** 把 final_content 切成「模型正文」与「系统核对注记」；没有注记时原样返回。 */
+function splitSystemAnnotation(text: string): { body: string; annotation: string | null } {
+  const raw = String(text ?? "");
+  const idx = raw.indexOf(SYSTEM_ANNOTATION_HEADER);
+  if (idx < 0) return { body: raw, annotation: null };
+  const body = raw.slice(0, idx).replace(/\s+$/, "");
+  const annotation = raw.slice(idx).trim();
+  return { body, annotation: annotation || null };
+}
+
+/** 注记统一带上标记（独立字段没带时补上），保证它在界面上明确是「系统事实」。 */
+function labelSystemAnnotation(note: string): string {
+  const trimmed = String(note ?? "").trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith(SYSTEM_ANNOTATION_HEADER)
+    ? trimmed
+    : `${SYSTEM_ANNOTATION_HEADER}\n${trimmed}`;
+}
+
+/** 把注记并入已有回答（同一条消息，正文不复制）；已经包含同一段注记时不重复追加。 */
+function appendSystemAnnotation(content: string, note: string): string {
+  const labeled = labelSystemAnnotation(note);
+  if (!labeled) return content;
+  const current = String(content ?? "");
+  if (current.includes(labeled)) return current;
+  const base = current.replace(/\s+$/, "");
+  return base ? `${base}\n\n${labeled}` : labeled;
+}
+
+/**
+ * 用 TURN_END 的最终正文校准已发布回答。
+ *
+ * 只在「同一次回答」上就地合并 / 延长；返回 null 表示两段正文真不一样，
+ * 交给调用方决定（真正不同的多条回答要保留）。
+ */
+function mergeFinalBody(existing: string, body: string): string | null {
+  const prev = String(existing ?? "");
+  const next = String(body ?? "");
+  const p = prev.trim();
+  const b = next.trim();
+  if (p === b) return prev;
+  if (!b) return prev;
+  if (b.startsWith(p)) return next;
+  if (p.startsWith(b)) return prev;
+  return null;
 }
 
 /**
@@ -1088,6 +1268,35 @@ export const useSessionStore = defineStore("session", {
     },
     isQueuedTurn(turnId: string) {
       return Boolean(turnId) && this.queuedTurnIds.includes(turnId);
+    },
+    /**
+     * 排队中的 turn 已经有结局（取消 / 准备失败）。
+     *
+     * 结束事实由 recordTurnFacts **先**落地，这里只负责清理排队标记：
+     * * 清掉这条用户消息的「等待中」；
+     * * 把它登记为「已取消」（QueueChip 可查看）；
+     * * 绝不触碰 active / turnRunning —— 正在跑的可能是另一轮。
+     */
+    concludeQueuedTurn(turnId: string) {
+      const id = String(turnId ?? "");
+      if (!id) return;
+      const message = this.messages.find((m) => m.role === "user" && m.turnId === id);
+      for (const m of this.messages) {
+        if (m.role === "user" && m.turnId === id && m.queued) m.queued = false;
+      }
+      if (message) {
+        this.queuedMessageIds = this.queuedMessageIds.filter((mid) => mid !== message.id);
+      }
+      if (!this.turnQueue.cancelled.some((c) => c.turn_id === id)) {
+        this.turnQueue = {
+          ...this.turnQueue,
+          cancelled: [
+            ...this.turnQueue.cancelled,
+            { turn_id: id, message: message?.content ?? "" },
+          ],
+        };
+      }
+      this.forgetQueuedTurn(id);
     },
     /**
      * 应用一份**权威队列快照**（TURN_QUEUE 事件，或 RESYNC 后重新拉取的快照）。
@@ -1811,24 +2020,65 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
-     * TURN_END.final_content 是最终回答的唯一权威来源。
-     * 只有当最后一条助手消息**内容就是它**时才复用，否则单独追加一条 —— 
-     * 绝不能因为「最后一条已经是 assistant」就把最终回答丢掉，
-     * 也不能把工具前的中间话当成最终答案。
+     * 找到某一轮里代表「回答」的那条助手消息。
+     *
+     * 优先最后一条**正式回答**（interim !== true）；只有整轮都没有正式回答时，
+     * 才退回最后一条中间话（interim → 正式回答的提升路径）。
+     * turnId 为空（旧后端）时沿用「最近一条助手消息」的兼容行为。
      */
-    applyFinalAnswer(text: string, verification?: unknown) {
-      const last = this.messages[this.messages.length - 1];
-      if (
-        last &&
-        last.role === "assistant" &&
-        !last.streaming &&
-        last.content.trim() === text.trim()
-      ) {
-        last.interim = false;
-        this._attachVerification(last, verification);
-        return;
+    _turnAnswerMessage(turnId: string): StreamMessage | null {
+      let interimFallback: StreamMessage | null = null;
+      for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+        const m = this.messages[i];
+        if (!m || m.role !== "assistant") continue;
+        if (turnId && m.turnId !== turnId) continue;
+        if (m.interim !== true) return m;
+        if (!interimFallback) interimFallback = m;
       }
-      this.pushAssistant(text);
+      return interimFallback;
+    },
+    /**
+     * TURN_END.final_content 是最终回答的唯一权威来源。
+     *
+     * 契约 §1.5 / C8：校准必须按 **turn 身份** 做，不能用「全文是否相等」判断同一次回答。
+     * 真实缺陷（F11）：后端在正文后追加系统核对注记（或走独立字段）后 full text 不再相等，
+     * 旧实现就另起一条包含完整正文的回答 —— 正文在页面上出现两次。
+     *
+     * 现在的规则：
+     * * 同一条回答（正文是已有文本的延长 / 已有文本是它的前缀 / 完全一致）→ 就地合并，
+     *   注记并入同一条消息（正文只出现一次），不重启动画；
+     * * 真正不同的两段正文 → 追加一条新的回答（保留多条不同回答）；
+     * * 排队 / 旧历史里没有可复用回答 → 正常新建。
+     */
+    applyFinalAnswer(
+      text: string,
+      verification?: unknown,
+      opts: { turnId?: string | null; annotation?: string | null } = {},
+    ) {
+      const raw = String(text ?? "");
+      const turnId = String(opts.turnId ?? this.activeTurnId ?? "");
+      const split = splitSystemAnnotation(raw);
+      const separateNote = typeof opts.annotation === "string" ? opts.annotation.trim() : "";
+      const note = separateNote || split.annotation;
+      const body = split.annotation ? split.body : raw;
+
+      const target = this._turnAnswerMessage(turnId);
+      if (target) {
+        const merged = mergeFinalBody(target.content, body);
+        if (merged !== null) {
+          target.content = merged;
+          target.interim = false;
+          this._attachVerification(target, verification);
+          if (note) target.content = appendSystemAnnotation(target.content, note);
+          return;
+        }
+      }
+
+      // 没有可复用的同一次回答：新建一条（注记跟在这一条上，正文不重复）
+      const nextContent = note
+        ? appendSystemAnnotation(body.replace(/\s+$/, ""), note)
+        : body;
+      this.pushAssistant(nextContent);
       const added = this.messages[this.messages.length - 1];
       if (added) this._attachVerification(added, verification);
     },

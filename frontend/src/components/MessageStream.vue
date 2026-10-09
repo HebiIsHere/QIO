@@ -14,39 +14,12 @@ import ContinueBar from "./ContinueBar.vue";
 import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
-import {
-  splitTurnItems,
-  type StreamMessage,
-  type TurnFacts,
-  type TurnItemsView,
-  type TurnStage,
-} from "../stores/session";
+import { groupTurns, type StreamTurn } from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 
 /** 对话内容列宽：用户消息与回答共用一个居中列，不分别贴窗口两端 */
 const CONTENT_MAX_PX = 860;
-
-interface Turn {
-  id: string;
-  index: number;
-  startedAt: string;
-  items: StreamMessage[];
-  /** 一轮的消息分到哪一块：过程区 / 正文区 / 其余卡片（见 splitTurnItems） */
-  parts: TurnItemsView;
-  /** 这一轮的 turn_id（旧历史记录可能没有） */
-  turnId: string;
-  /** 本轮第一条正式回答（用于显示话题名） */
-  firstAssistantId: string | null;
-  /** 这一轮正在运行（只有最后一轮 + turnRunning 同时成立） */
-  running: boolean;
-  /** 已受理、还没开始执行 */
-  queued: boolean;
-  stages: TurnStage[];
-  facts: TurnFacts | null;
-  /** 是否渲染过程区：有过程内容 / 在跑 / 有权威事实 */
-  showProcess: boolean;
-}
 
 const session = useSessionStore();
 const approvals = useApprovalsStore();
@@ -102,52 +75,20 @@ watch(
   },
 );
 
-const turns = computed<Turn[]>(() => {
-  const out: Turn[] = [];
-  let cur: Turn | null = null;
-  let n = 0;
-  for (const m of messages.value) {
-    if (!cur || m.role === "user" || m.role === "system") {
-      n += 1;
-      cur = {
-        id: `turn_${n}`,
-        index: n,
-        startedAt: m.createdAt,
-        items: [],
-        parts: { user: [], process: [], answers: [], other: [] },
-        turnId: "",
-        firstAssistantId: null,
-        running: false,
-        queued: false,
-        stages: [],
-        facts: null,
-        showProcess: false,
-      };
-      out.push(cur);
-    }
-    cur.items.push(m);
-    // 话题名挂在第一条**正式回答**上（中间话不再单独成气泡，也不该抢这一行）
-    if (cur.firstAssistantId === null && m.role === "assistant" && !m.interim) {
-      cur.firstAssistantId = m.id;
-    }
-    if (!cur.turnId && m.turnId) cur.turnId = m.turnId;
-  }
-  const lastIndex = out.length;
-  for (const turn of out) {
-    turn.parts = splitTurnItems(turn.items);
-    turn.queued = turn.items.some((m) => m.role === "user" && m.queued === true);
-    // 主对话同一时刻只有一轮在跑：只有最后一轮可能是「正在运行」
-    turn.running = session.turnRunning && turn.index === lastIndex && !turn.queued;
-    turn.stages = session.stagesFor(turn.turnId);
-    turn.facts = session.factsFor(turn.turnId);
-    turn.showProcess =
-      turn.parts.process.length > 0 ||
-      turn.running ||
-      turn.queued ||
-      Boolean(turn.turnId && turn.facts);
-  }
-  return out;
-});
+/**
+ * 按 turn 身份分组（见 stores/session.ts 的 groupTurns）。
+ *
+ * 排队消息插进数组中间不会改变任何一轮的归属：正在跑的那一轮仍然是 running，
+ * 它随后的说明 / 工具 / 回答也仍然回到它自己那一轮。
+ */
+const turns = computed<StreamTurn[]>(() =>
+  groupTurns(messages.value, {
+    turnRunning: session.turnRunning,
+    activeTurnId: session.activeTurnId,
+    stagesFor: (turnId) => session.stagesFor(turnId),
+    factsFor: (turnId) => session.factsFor(turnId),
+  }),
+);
 
 // options 整体作为 computed：count 依赖轮次数变化时自动 setOptions
 const virtualizer = useVirtualizer(
@@ -512,8 +453,8 @@ watch(
   },
 );
 
-function labelOf(t: Turn): string {
-  return turnLabel(t.index, session.turnRunning && t.index === turns.value.length);
+function labelOf(t: StreamTurn): string {
+  return turnLabel(t.index, t.running);
 }
 
 function formatTime(iso?: string): string {
@@ -537,10 +478,9 @@ function formatTime(iso?: string): string {
  * 契约 §1.5 的归并要求：有过程区时，全局状态条不再显示同一条状态 ——
  * 否则「已受理」与「正在处理」会同时出现在页面上。
  */
-const processRegionSpeaks = computed(() => {
-  const last = turns.value[turns.value.length - 1];
-  return Boolean(last?.showProcess && last.running);
-});
+const processRegionSpeaks = computed(() =>
+  turns.value.some((turn) => turn.showProcess && turn.running),
+);
 
 const showGlobalStatus = computed(() => {
   // 「正在使用工具」「正在生成」本来就不显示（过程由过程区 / 工具卡表达）

@@ -33,6 +33,26 @@ function stringOrNull(value: unknown): string | null {
 }
 
 /**
+ * TURN_END 的**独立系统核对注记**字段（B 的出口字段名待定）。
+ *
+ * 后端当前把注记拼进 final_content（旧形态）；B 会把它拆成独立字段。
+ * 这里同时兼容几个常见命名：独立字段优先，final_content 里的内嵌形态由 store 兜底识别。
+ */
+function systemAnnotationOf(d: Record<string, unknown>): string | null {
+  for (const key of [
+    "final_annotation",
+    "annotation",
+    "system_note",
+    "system_annotation",
+    "fact_note",
+  ]) {
+    const value = d[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/**
  * 事件的 turn_id 是否属于**主对话**。
  *
  * 主对话只认「当前正在跑的那一轮」：
@@ -169,6 +189,11 @@ export const useEventStore = defineStore("events", {
           {
             const d = event.data as Record<string, unknown>;
             const tid = String(d.turn_id ?? "");
+            /**
+             * 已经结束过的 turn 不可能再开始（事件倒序 / 重连重放）：
+             * 不能把已取消的排队轮重新点亮成 active，否则界面会永远停在「运行中」。
+             */
+            if (tid && this.endedTurns.includes(tid)) break;
             // 只有真实的 TURN_START 能把 turn 设为 active。
             // 带上 revision：晚到的旧队列快照不能把这一轮清掉。
             // 陈旧事件整条不生效：连 turnRunning / turnPhase 都不许动。
@@ -207,23 +232,41 @@ export const useEventStore = defineStore("events", {
           if (staleEnd) break;
           // 结束也是一次状态变化：记下版本，避免更旧的快照事后把状态改回去
           session.noteQueueRevision(endRevision);
+          const isActive = Boolean(tid) && tid === session.activeTurnId;
           /**
            * 归属规则（active/queued 模型下重新审查）：
            *
-           * 1. 属于当前 active turn 的 END **必须生效** —— 它是唯一能结束界面运行
+           * 1. 属于「已受理但从未开始」的排队 turn：它也有自己的结局（取消 / 准备失败）。
+           *    **先**把结束事实（原因 / 动作 / 耗时）可靠落地，**再**清理排队标记；
+           *    绝不触碰 active —— 正在跑的 A 与它无关。
+           * 2. 属于当前 active turn 的 END **必须生效** —— 它是唯一能结束界面运行
            *    状态的事件，绝不能因为「本地记错了 active」而被丢掉；
-           * 2. 属于「已受理但从未开始」的 turn：只把它从排队列表里摘掉，不触碰 active；
            * 3. active 未知（重连后首帧就是 END）：按 lastTurnId / 去重表收敛；
-           * 4. 其余（更早的 turn 迟到的收尾）：忽略，不能让旧事件把新任务标记成已结束。
+           * 4. 其余（更早的 turn 迟到的收尾）：不能让旧事件把新任务标记成已结束。
            */
-          if (tid) {
-            const isActive = tid === session.activeTurnId;
-            if (!isActive && session.isQueuedTurn(tid)) {
-              // 一个从未开始执行的 turn 结束（或被取消）：只清理排队登记
-              session.forgetQueuedTurn(tid);
-              break;
+          if (!isActive && tid && session.isQueuedTurn(tid)) {
+            if (this.endedTurns.includes(tid)) break;
+            this.endedTurns.push(tid);
+            if (this.endedTurns.length > 200) this.endedTurns.shift();
+            session.recordTurnFacts(tid, d);
+            session.concludeQueuedTurn(tid);
+            break;
+          }
+          if (tid && !isActive && session.activeTurnId) {
+            /**
+             * 另一轮正在跑，而这条 END 属于本会话**已知**的某一轮（有它的用户消息）：
+             * 典型是「排队项先被 TURN_QUEUE 摘出队列，END 随后才到」。
+             * 事实必须留下，但绝不能触碰 active 那一轮。
+             * 完全未知的旧轮（本地没有它的用户消息）才忽略 —— 旧事件不能把新任务标记成已结束。
+             */
+            if (session.userMessageFor(tid)) {
+              if (this.endedTurns.includes(tid)) break;
+              this.endedTurns.push(tid);
+              if (this.endedTurns.length > 200) this.endedTurns.shift();
+              session.recordTurnFacts(tid, d);
+              session.concludeQueuedTurn(tid);
             }
-            if (!isActive && session.activeTurnId) break;
+            break;
           }
           // 重连重放：同一个 turn 的 TURN_END 只能生效一次
           if (tid && this.endedTurns.includes(tid)) break;
@@ -236,10 +279,11 @@ export const useEventStore = defineStore("events", {
           if (tid) session.recordTurnFacts(tid, d);
           const status = String(d.status ?? "completed");
           const final = typeof d.final_content === "string" ? d.final_content : "";
+          const annotation = systemAnnotationOf(d);
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
           session.finalizeAssistant();
-          if (final.trim()) {
-            session.applyFinalAnswer(final, d.verification);
+          if (final.trim() || annotation) {
+            session.applyFinalAnswer(final, d.verification, { turnId: tid, annotation });
           } else if (status === "completed") {
             // 正常的空回答：不动内容
           } else {
