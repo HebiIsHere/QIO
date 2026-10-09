@@ -155,6 +155,7 @@ async function submit() {
     preparingCancelled.value = false;
     preparingNotice.value = "";
     preparingCancelBusy.value = false;
+    preparingHandled.value = false;
     prepareId.value = newPrepareId();
     sendAbort = new AbortController();
     preparingTimer = setTimeout(() => {
@@ -230,6 +231,12 @@ const preparingNotice = ref("");
 const prepareId = ref("");
 /** 正在向后端确认中止（界面显示「正在中止…」；拿不到确认不宣称成功） */
 const preparingCancelBusy = ref(false);
+/**
+ * 这次中止已经**有了后端确认的结论**（已中止 / 已放行 / 不认识）。
+ * 结论定了就不再重复问后端：重复点击不该重复询问、更不该重复取消别的轮次。
+ * 拿不到确认（请求失败）时保持 false —— 用户还能再点一次。
+ */
+const preparingHandled = ref(false);
 
 /** 准备标识：优先用平台 UUID，缺失时退化成随机串（两者都不含用户数据） */
 function newPrepareId(): string {
@@ -630,29 +637,70 @@ function autosize() {
  * * 确认之后才 abort 掉连接（它只是释放连接，不是取消证据）。
  */
 async function cancelPreparing() {
-  if (!sendWaiting.value || preparingCancelBusy.value) return;
+  if (!sendWaiting.value || preparingCancelBusy.value || preparingHandled.value) return;
   preparingCancelBusy.value = true;
   preparingNotice.value = "正在中止…（等后端确认）";
   try {
     const confirmed = await session.cancelPreparing(prepareId.value);
     if (!confirmed) {
-      // 拿不到确认：不宣称成功，用户还能再点一次
+      // 拿不到确认：不宣称成功，用户还能再点一次（preparingHandled 保持 false）
       preparingNotice.value = session.lastError ?? "中止失败：没有拿到后端确认";
       return;
     }
+    preparingHandled.value = true;
     if (confirmed.state === "cancelled") {
       preparingCancelled.value = true;
       preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
       sendAbort?.abort();
     } else if (confirmed.state === "already_started") {
       preparingCancelled.value = false;
-      preparingNotice.value = "已受理，已按「停止」取消";
-      await stopTurn();
+      // 后端说它已经放行：这一轮不再处于「准备中」，准备状态该收起来（如实）
+      preparingVisible.value = false;
+      if (!confirmed.turnId) {
+        /**
+         * 身份缺失：**不得**静默退回 stopActiveTurn()（那会停到别的任务上，契约 §1.2）。
+         * 如实说明，并给出可用出口。
+         */
+        preparingNotice.value =
+          "后端已放行这一轮，但没有给出可确认的轮次标识：请用「停止」按钮停止当前任务，或刷新后确认这一轮的状态";
+        return;
+      }
+      await stopConfirmedTurn(confirmed.turnId);
     } else {
-      preparingNotice.value = "后端不认识这次发送（可能刚开始或已经结束）：请稍候再看结果";
+      preparingNotice.value =
+        "后端不认识这次发送（可能已经开始或已经结束）：请看会话里的实际状态，这里不宣称「没有发送」";
     }
   } finally {
     preparingCancelBusy.value = false;
+  }
+}
+
+/**
+ * 停止**取消确认返回的那一轮**（契约 §1.2）。
+ *
+ * 绝不拿 session.activeTurnId 顶替：另一轮在跑时那会停错对象。
+ * 文案依事实：**发出停止请求 ≠ 已经停止**；失败不宣称成功；
+ * 已经结束的轮次如实说明（不说「没有发送」）。
+ */
+async function stopConfirmedTurn(turnId: string) {
+  if (stopping.value) return;
+  stopping.value = true;
+  cancelError.value = "";
+  session.cancelling = turnId;
+  try {
+    const result = await session.stopTurnById(turnId);
+    if (!result) {
+      cancelError.value = session.lastError ?? "停止失败";
+      session.cancelling = null;
+      preparingNotice.value = `已受理，但停止请求失败：${cancelError.value}（这一轮可能仍在运行，可再试）`;
+    } else if (!result.cancelled) {
+      session.cancelling = null;
+      preparingNotice.value = "这一轮已经结束（停止请求没有可取消的目标）——请看会话里的实际结果";
+    } else {
+      preparingNotice.value = "已受理：已发出停止请求（等这一轮真正结束）";
+    }
+  } finally {
+    stopping.value = false;
   }
 }
 
