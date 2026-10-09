@@ -160,13 +160,28 @@ function onConnectDown(event: PointerEvent) {
 
 function startEdit() {
   editing.value = true;
+  const cardId = props.card.id;
+  /**
+   * 冲突未决时（契约 §12.1）：「打开编辑器」**不等于**选择本机版本。
+   * 编辑框先显示本机候选，但**不写草稿、不排保存** —— 服务器那份不动，
+   * 冲突提示（CardDraftHint 里的「用本机的 / 用服务器上的」）保持可见，等用户明确选择。
+   * 用户选服务器后编辑框随 watch 跟随；真正输入新文字时才按正常编辑路径走。
+   */
+  const conflict = store.draftConflictFor(cardId);
+  if (conflict) {
+    draft.value = conflict.local;
+    metaName.value = name.value;
+    metaLanguage.value = language.value;
+    metaHref.value = href.value;
+    metaTitle.value = String(props.card.meta?.title ?? "");
+    return;
+  }
   /**
    * 空草稿是**有效编辑状态**（契约 §10.4）：
    * 不能用 `draftFor(key) || card.content` —— 那会把「用户把正文删空后保存的草稿」
    * 当成「没有草稿」，重开编辑器时旧正文又冒出来把空草稿盖掉。
    * 这里按「记录是否存在」判断：存在就用草稿（哪怕是空串），不存在才回落到正式正文。
    */
-  const cardId = props.card.id;
   draft.value = store.hasCardDraft(cardId) ? store.cardDraftText(cardId) : props.card.content;
   metaName.value = name.value;
   metaLanguage.value = language.value;
@@ -281,6 +296,12 @@ function cancelEdit() {
           <span v-if="card.content" class="desc">{{ card.content }}</span>
           <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
         </p>
+        <!--
+          冲突未决时提示在**关闭态卡片**上也要可见可点（契约 §12.1）：
+          刷新恢复出冲突后，用户不必先点「编辑」也能直接做出选择。
+          只在确有冲突时渲染，防止常态卡片冒出无关的保存状态文字。
+        -->
+        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
       </template>
     </div>
 
