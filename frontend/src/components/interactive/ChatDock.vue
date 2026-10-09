@@ -488,6 +488,12 @@ function onKeydown(event: KeyboardEvent) {
   gap: var(--sp-2);
   min-width: 0;
   flex: none;
+  /* 标题条局部稳定底色（§12.7）：既有半实色令牌，明暗两主题自动成立 */
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-2) var(--sp-3);
 }
 .panel-title {
   font-size: var(--fs-md);
@@ -526,6 +532,12 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text-muted);
+  /* 说明条用与标题条一致的稳定底色，长说明展开后也不与板面文字相叠 */
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-2) var(--sp-3);
 }
 .scope-line {
   margin: 0;
@@ -596,6 +608,14 @@ function onKeydown(event: KeyboardEvent) {
   margin: var(--sp-2) 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+.stream-empty {
+  /* 空闲说明也铺在透明区上：给它与 notice 一致的稳定底色，不与板面长文字相叠 */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  overflow-wrap: anywhere;
 }
 .stream-older { color: var(--text-faint); }
 .to-latest {
