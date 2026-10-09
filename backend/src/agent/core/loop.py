@@ -20,6 +20,7 @@ TurnManager 单独负责（子 agent、维护任务也复用本循环，它们�
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -821,7 +822,7 @@ class AgentLoop:
 
     # -- steps ------------------------------------------------------------
 
-    def _routed_tools(self, messages: list[ChatMessage]) -> list[ToolSpec]:
+    async def _routed_tools(self, messages: list[ChatMessage]) -> list[ToolSpec]:
         """按当前查询上下文路由工具集（原 _plan 的前半段，行为不变）。"""
         tools = self.registry.specs()
         if self.tool_selector is None:
@@ -838,7 +839,10 @@ class AgentLoop:
                 break
         query = "\n".join(reversed(query_parts))[:500]
         try:
-            return self.tool_selector(query)
+            picked = self.tool_selector(query)
+            if inspect.isawaitable(picked):
+                picked = await picked
+            return picked
         except Exception:  # noqa: BLE001 - routing must never break planning
             logger.warning("tool routing failed; falling back to full set", exc_info=True)
             return tools
@@ -847,7 +851,7 @@ class AgentLoop:
         # 工具路由（含 query 嵌入）以前在模型计时**之前**发生：它既不算模型耗时，
         # 也没有任何分区 —— 慢的路由曾经是完全不可见的等待。
         with self._phase("tool_routing"):
-            tools = self._routed_tools(messages)
+            tools = await self._routed_tools(messages)
         import time as _time
 
         self._model_seq += 1

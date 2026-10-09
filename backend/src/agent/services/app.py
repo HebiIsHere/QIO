@@ -648,6 +648,10 @@ class AppContext:
         await self.task_manager.shutdown()
         # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。
         await self.heavy.shutdown()
+        # 契约 4：共享有界执行器（工具路由/文件 I/O）随应用关闭收口。
+        from agent.tools.blocking import shutdown_blocking_executor
+
+        shutdown_blocking_executor(wait=True)
 
         adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
         self._anthropic_probe_at.clear()
@@ -1131,8 +1135,12 @@ class AppContext:
             logger.info("pruned %s tool records older than %s days", pruned, days)
         return pruned
 
-    def _route_tools(self, query: str):
-        """Route the tool set for one PLANNING step (core + ranked subset)."""
+    async def _route_tools(self, query: str):
+        """Route the tool set for one PLANNING step（契约 4：纯计算经有界执行器）.
+
+        结构判断留在事件循环；embed/余弦等耗时部分走 ToolRouter.route_async
+        的有界线程池，事件循环不再被嵌入阻塞（审批撤回、取消、健康检查可推进）。
+        """
         specs = self.registry.specs()
         # 工具定义变化 → 失效 embedding 缓存
         sig = tuple((s.name, s.description) for s in specs)
@@ -1144,7 +1152,7 @@ class AppContext:
             pending = any(not r.done for r in self.task_manager._records.values())
         except Exception:  # noqa: BLE001 - routing must never break planning
             pending = False
-        return self.tool_router.route(
+        return await self.tool_router.route_async(
             query, specs, pending_tasks=pending, web_allowed=True
         )
 
