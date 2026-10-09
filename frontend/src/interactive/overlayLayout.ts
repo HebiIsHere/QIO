@@ -18,7 +18,9 @@
  *    （{@link OVERLAY_CHAT_FOOTER}：工具栏顶边 → 聊天面板底边）；
  * 3. 右侧是固定列：聊天永远贴右（right = {@link OVERLAY_EDGE}），批量列表在并排时被推到它的左边；
  * 4. 需要切换显示时，{@link OVERLAY_SWITCH_BAR_HEIGHT} 那一行由**同一个布局状态**决定
- *    （{@link OverlayInput.switched}）：不管当前开着几个面板，竖直区间都按它预留，切换条自己也拿到一个矩形。
+ *    （{@link OverlayInput.switched}）：不管当前开着几个面板，竖直区间都按它预留，切换条自己也拿到一个矩形；
+ *    但「切换显示」以**确有第二个可展示面板**为前提（{@link OverlayInput.batchAvailable}，
+ *    契约 §12.6）—— 没有审批批次时没有可去的面板，就不进切换布局、不预留、不出提示条。
  */
 
 export interface OverlayInput {
@@ -40,8 +42,20 @@ export interface OverlayInput {
    * 只看 chatOpen / batchOpen 会得到「关掉一个面板就不必再留位置」的错误结论 ——
    * 切换条此时仍然在，于是压在面板底边上（契约 §11.7 明确要求关掉一个面板后仍为它预留）。
    * 为 true 时无论开着几个面板，竖直区间都按同一个状态算，模式也始终是 switched。
+   *
+   * 前提（契约 §12.6）：切换显示的意义是「还有另一个可展示的面板可去」——
+   * {@link batchAvailable} 为 false（这一轮没有任何可展示的审批批次）时，
+   * 就算空间不足也不进入切换布局：不预留、不出虚假提示条，聊天自己用满可用高度。
    */
   switched?: boolean;
+  /**
+   * 审批列表这一轮是否真的可展示（存在有可展示价值的批次列表）。
+   *
+   * 缺省视为 true：旧调用方不传时行为与之前完全一致；IntentBatchTray 按
+   * 「确实存在一个可以展示的批次」传值。为 false 时即使 {@link switched} 为 true
+   * 也不算切换显示（§12.6：没有第二个面板，切换条就是虚假提示）。
+   */
+  batchAvailable?: boolean;
 }
 
 export interface OverlayGeometry {
@@ -240,7 +254,15 @@ export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
   const mins = minsOf(input);
   const both = Boolean(input?.chatOpen) && Boolean(input?.batchOpen);
   const plain = bandsOf(input, false);
-  const wantsSwitchBar = input?.switched === true;
+  /**
+   * 切换显示只在自己「真的有第二个面板可去」时成立（契约 §12.6）。
+   *
+   * cramped 只说明「两个面板同时打开放不下」；当审批列表这一轮根本没有可展示的批次时，
+   * 就算调用方声明 switched（可能还是上一轮的切换状态），也不能再预留一行虚假的切换条、
+   * 更不能显示切换提示 —— 那样聊天会被白抬一两行、还看到点不动的按钮。
+   * 这里的批次列表消失直接让模式退回单开布局，组件侧下一次测量就会把预留还回去。
+   */
+  const wantsSwitchBar = input?.switched === true && input?.batchAvailable !== false;
 
   const chatCap = Math.min(CHAT_PREFERRED_WIDTH, Math.floor(plain.viewportWidth * CHAT_WIDTH_RATIO));
   const batchCap = Math.min(BATCH_PREFERRED_WIDTH, plain.availWidth);

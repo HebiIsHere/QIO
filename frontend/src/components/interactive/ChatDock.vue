@@ -488,6 +488,12 @@ function onKeydown(event: KeyboardEvent) {
   gap: var(--sp-2);
   min-width: 0;
   flex: none;
+  /* 标题条局部稳定底色（§12.7）：既有半实色令牌，明暗两主题自动成立 */
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-2) var(--sp-3);
 }
 .panel-title {
   font-size: var(--fs-md);
@@ -526,6 +532,12 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text-muted);
+  /* 说明条用与标题条一致的稳定底色，长说明展开后也不与板面文字相叠 */
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-2) var(--sp-3);
 }
 .scope-line {
   margin: 0;
@@ -597,6 +609,14 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+.stream-empty {
+  /* 空闲说明也铺在透明区上：给它与 notice 一致的稳定底色，不与板面长文字相叠 */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  overflow-wrap: anywhere;
+}
 .stream-older { color: var(--text-faint); }
 .to-latest {
   align-self: center;
@@ -639,6 +659,11 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text-faint);
+  /* 草稿状态行同样贴着透明区铺字：给它与 notice 一致的稳定局部底色（§12.7） */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
 }
 .draft-status.err { color: var(--danger); }
 .draft-retry {
@@ -700,9 +725,19 @@ function onKeydown(event: KeyboardEvent) {
 .panel-hint {
   flex: none;
   margin: 0;
+  align-self: flex-start;
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--text-faint);
+  /*
+    快捷键说明是最长的一行小字，直接铺在透明面板上时与后方板面文字相叠
+    （800×600 暗色实机复测发现，同批 §12.7 口径）：给它一个紧凑的局部底色，
+    明暗两主题都稳定；窄窗口下该行隐藏（既有规则不变）。
+  */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
 }
 /*
   矮窗口（480×600 这类浏览器边缘档、以及 800×600 的桌面最小窗口）：
