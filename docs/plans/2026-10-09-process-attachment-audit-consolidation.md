@@ -141,3 +141,17 @@
 
 ### 未决到本轮结束的项
 - F11 后端已实现独立字段；F06/F12 由 acc-b2 修复、`incomplete` 的前端消费由 acc-c2 完成；阶段二复跑与实机取证由 acc-f2 完成；F01—F24 最终判定以 acc-f2 的 `docs/verification-acc-phase2.md` + Lead 复跑为准。
+
+## 八、集成期新增发现与裁定（Lead，2026-10-09 22:30）
+
+### 新增 F25 —— TOOL_END 事件出口未脱敏（相邻路径同范围）
+- 发现者：acc-f2（独立验证者），集成分支 1d1a7b6 上的最小反例：合成敏感值经必失败工具的 ToolResult.error 进入 TOOL_END，SSE 出口原样发布；对照：进程日志、TURN_END.annotation、final_content、ASSISTANT 流式正文均已脱敏。
+- 契约依据：§二 C3「所有可观测输出（含事件、Trace、历史与错误）统一脱敏，先脱敏再发布」。
+- 维护者：acc-b2；范围：core/loop.py 的 TOOL_END error/content_preview 出口与同源落库路径（tool_state.finish、_tool_facts、_record_tool_call）。
+- 验证：acc-f2 复跑其反例（改名 test_acc_f_25_tool_end_redaction.py）+ 跨层组合 + 全量。
+
+### 回归修复 —— 上一轮 r8「兼容路径多附件任一失败整轮拒绝」在负载下变红
+- 现象：test_r8_compat_path_reject_verify.py::test_legacy_multi_attachment_any_failure_rejects_all 在组合/负载运行下返回 200 accepted、rejected=[]；单文件运行通过（时序依赖）。
+- 根因（acc-e2 探针钉死）：兼容兜底把「进入时就能带」当成快照过滤器；bad 附件的失败若在兼容路径枚举前落库，就被过滤掉，于是只剩 ok 附件被绑定。
+- 修复：只要进入时本话题有至少一条**能带**的草稿，集合即「进入时本话题全部未绑定草稿」（含进入即 failed/missing/不可读）→ 任一条不合格整轮拒绝；一条能带的都没有才按纯文字发送（保住产品规则 7 与既有 test_compat_ignores_historical_terminal_failures 的集合政策）。
+- 装置同步点：单附件冻结用例补确定性闸门（复用同文件 _gated_prepare_copy 模式），**只补同步点、不改断言**。
