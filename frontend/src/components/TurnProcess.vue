@@ -552,7 +552,11 @@ onBeforeUnmount(() => {
         （注释里不写状态词本身：DOM 文本计数断言不该被注释污染。）
       -->
       <span v-if="turnId && !running" class="tp-duration" data-test="turn-process-duration">
-        <TurnTimingPanel :turn-id="turnId" :duration-ms="facts?.durationMs ?? null" />
+        <TurnTimingPanel
+          :turn-id="turnId"
+          :duration-ms="facts?.durationMs ?? null"
+          :queue-ms="facts?.queueMs ?? null"
+        />
       </span>
       <span v-if="hasDrawer && drawerSummary" class="tp-count mono">{{ drawerSummary }}</span>
     </div>

@@ -14,13 +14,15 @@
 import { computed } from "vue";
 import { useUiStore } from "../stores/ui";
 import { useTurnTiming } from "../composables/useTurnTiming";
-import { buildTimingSentence, formatMs } from "../services/trace";
+import { formatMs, type TimingRow } from "../services/trace";
 
 const props = defineProps<{
   turnId?: string | null;
   dev?: boolean;
-  /** TURN_END 的权威总耗时（毫秒）：折叠态直接显示它，不依赖明细是否加载 */
+  /** TURN_END 的权威**执行**时长（毫秒，不含排队） */
   durationMs?: number | null;
+  /** TURN_END 的权威**排队**时长（毫秒，受理之后、真正开始之前） */
+  queueMs?: number | null;
   /** 这一轮的系统状态（completed / failed / cancelled / unavailable…） */
   status?: string | null;
 }>();
@@ -38,17 +40,48 @@ const STATUS_WORD: Record<string, string> = {
   unavailable: "未完成",
 };
 
-/** 已知总耗时：TURN_END 的权威值优先，没有才退回明细里的（排队 + 执行） */
-const knownTotal = computed(() => {
-  const authoritative = props.durationMs;
-  if (typeof authoritative === "number" && Number.isFinite(authoritative) && authoritative >= 0) {
-    return authoritative;
-  }
-  const fromTrace = timing.value?.totalMs;
-  return typeof fromTrace === "number" && Number.isFinite(fromTrace) ? fromTrace : null;
-});
+function num(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
 
+/** TURN_END 的两个权威分量：执行（duration_ms）与排队（queue_ms）。 */
+const execMs = computed(() => num(props.durationMs));
+const queueMs = computed(() => num(props.queueMs));
+/**
+ * 用户可见「总耗时」= 排队 + 执行（契约 C8）。
+ *
+ * 只有两个分量都拿到才是**完整**总耗时；缺一个就只能显示可证明的那部分，
+ * 并且用明确标签说清（不猜测未知时间、不把执行冒充总耗时）。
+ */
+const authoritativeTotal = computed(() =>
+  execMs.value !== null && queueMs.value !== null ? execMs.value + queueMs.value : null,
+);
+const traceTotal = computed(() => {
+  const value = timing.value?.totalMs;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+});
+const knownTotal = computed(() => {
+  if (authoritativeTotal.value !== null) return authoritativeTotal.value;
+  if (traceTotal.value !== null) return traceTotal.value;
+  if (execMs.value !== null) return execMs.value;
+  if (queueMs.value !== null) return queueMs.value;
+  return null;
+});
+/** 完整总耗时（排队 + 执行都已知）才敢称「总耗时」。 */
+const totalComplete = computed(() => authoritativeTotal.value !== null || traceTotal.value !== null);
+const queueOnly = computed(() => execMs.value === null && queueMs.value !== null);
 const totalText = computed(() => (knownTotal.value === null ? "" : formatMs(knownTotal.value)));
+
+/**
+ * 分项占比：分母始终用界面上显示的那个总耗时 ——
+ * 明细加载**不能**把已知总耗时改小/改没，也不能让占比与显示的总数对不上。
+ */
+const rows = computed<TimingRow[]>(() => {
+  const list = timing.value?.rows ?? [];
+  const base = knownTotal.value;
+  if (base === null || base <= 0) return list;
+  return list.map((row) => ({ ...row, percent: Math.round((row.ms / base) * 1000) / 10 }));
+});
 
 /**
  * 折叠态文案。只有**真的在请求明细**时才说「读取中」；
@@ -56,7 +89,14 @@ const totalText = computed(() => (knownTotal.value === null ? "" : formatMs(know
  */
 const summaryText = computed(() => {
   const word = props.status ? (STATUS_WORD[props.status] ?? "已结束") : "";
-  if (totalText.value) return word ? `${word} · 耗时 ${totalText.value}` : `耗时 ${totalText.value}`;
+  if (totalText.value) {
+    const body = totalComplete.value
+      ? `总耗时 ${totalText.value}`
+      : queueOnly.value
+        ? `排队 ${totalText.value}`
+        : `执行耗时 ${totalText.value}（排队时间未知）`;
+    return word ? `${word} · ${body}` : body;
+  }
   if (state.value === "loading") return "读取中";
   if (state.value === "error") return "耗时（明细没读到）";
   if (state.value === "missing") return "没有耗时记录";
@@ -64,12 +104,23 @@ const summaryText = computed(() => {
   return "耗时";
 });
 
-/** 读屏句子：优先用明细；明细还没有但已知总耗时时，也要念得出总耗时 */
+/**
+ * 读屏句子：总耗时 + 占比最大的几项。
+ * 明细和 TURN_END 不一致时以界面显示的总耗时为准（口径唯一）。
+ */
 const sentence = computed(() => {
-  const base = buildTimingSentence(timing.value);
-  if (timing.value?.totalMs !== null && timing.value?.totalMs !== undefined) return base;
-  if (totalText.value) return `总耗时 ${totalText.value}`;
-  return base;
+  if (knownTotal.value === null) return "这次没有耗时记录";
+  if (!totalComplete.value) {
+    return queueOnly.value
+      ? `排队 ${formatMs(knownTotal.value)}`
+      : `执行耗时 ${formatMs(knownTotal.value)}，排队时间未知`;
+  }
+  const head = `总耗时 ${formatMs(knownTotal.value)}`;
+  const top = [...rows.value]
+    .sort((a, b) => b.ms - a.ms)
+    .slice(0, 3)
+    .map((row) => `${row.label} ${formatMs(row.ms)}`);
+  return top.length ? `${head}，其中${top.join("、")}` : head;
 });
 
 function onToggle(event: Event) {
@@ -107,9 +158,9 @@ const queueNote = computed(() => {
 
     <div class="tt-body">
       <!-- 成功且有分项 -->
-      <template v-if="timing && timing.rows.length">
+      <template v-if="timing && rows.length">
         <ul class="tt-rows">
-          <li v-for="row in timing.rows" :key="row.key" class="tt-row">
+          <li v-for="row in rows" :key="row.key" class="tt-row">
             <span class="tt-label">{{ row.label }}</span>
             <span class="tt-track" aria-hidden="true">
               <span class="tt-fill" :style="{ width: Math.max(row.percent, 1.5) + '%' }" />
