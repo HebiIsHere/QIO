@@ -33,8 +33,23 @@ const session = useSessionStore();
 /** 最近一次恢复操作的结果（成功或失败都说清楚，不静默） */
 const actionNotice = ref("");
 
+/**
+ * §12.5：展示数量与**保留**数量分开。
+ * 默认只直视较新的三条；其余收起但**一条都不删**（数据始终在会话层，可随时展开找回）。
+ */
+const DEFAULT_SHOWN = 3;
+const expansionOpen = ref(false);
+
 /** 只取当前话题的：失败原文始终属于原话题，切到别的话题不插入（§11.4） */
 const records = computed(() => session.failedSendsForTopic(session.currentTopicId));
+/** 当前渲染的子集：未展开时显示**最新的** DEFAULT_SHOWN 条（其余仍有数据，不淘汰） */
+const shownRecords = computed(() =>
+  expansionOpen.value ? records.value : records.value.slice(0, DEFAULT_SHOWN),
+);
+const hiddenCount = computed(() => Math.max(0, records.value.length - DEFAULT_SHOWN));
+function toggleExpansion(): void {
+  expansionOpen.value = !expansionOpen.value;
+}
 /** 自动化钩子前缀：悬浮聊天沿用既有 chat-*，对话页用 composer-*（scope 仍用于样式分层） */
 const hook = computed(() => (props.scope === "chat" ? "chat" : "composer"));
 const inputBlank = computed(() => isBlankText(session.draft));
@@ -108,7 +123,7 @@ function discard(record: FailedSend): void {
 
       <ul class="recovery-list">
         <li
-          v-for="record in records"
+          v-for="record in shownRecords"
           :key="recordKey(record)"
           class="recovery-item"
           :data-im="`${hook}-recovery-item`"
@@ -155,6 +170,18 @@ function discard(record: FailedSend): void {
           </div>
         </li>
       </ul>
+
+      <!-- §12.5：展示数量与保留数量分开 —— 隐藏的那几条只是收起，不是删除 -->
+      <button
+        v-if="hiddenCount > 0"
+        type="button"
+        class="expansion-toggle"
+        :data-im="`${hook}-recovery-more`"
+        :aria-expanded="expansionOpen"
+        @click="toggleExpansion()"
+      >
+        {{ expansionOpen ? "收起其余" : "查看其余 " + hiddenCount + " 条（全部可找回）" }}
+      </button>
 
       <p
         v-if="actionNotice"
@@ -225,6 +252,24 @@ function discard(record: FailedSend): void {
 }
 .scope-chat { max-height: min(26vh, 200px); }
 .scope-conversation { max-height: min(30vh, 240px); }
+/*
+ * §12.5：展开/收起按钮 —— 次级小按钮，不抢主输入的重量；
+ * 底色/边框/圆角全走令牌（不硬编码颜色）。
+ */
+.expansion-toggle {
+  align-self: flex-start;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.expansion-toggle:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.expansion-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
 .recovery-head {
   display: flex;
   align-items: baseline;
