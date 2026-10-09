@@ -148,6 +148,51 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
     reason = payload.get("reason") or "op"
     if not isinstance(reason, str):
         raise HTTPException(status_code=400, detail="reason 必须是字符串")
+    # --- M4 确认门（08）：确认协议与真实落库对象一致，不只依赖前端禁用按钮 ---
+    confirm = payload.get("confirm")
+    check_id = ""
+    if confirm is not None:
+        if not isinstance(confirm, dict):
+            raise HTTPException(status_code=400, detail="confirm 必须是对象 {checkId}")
+        check_id = str(confirm.get("checkId") or "")
+        claimed_version = confirm.get("stateVersion")
+        if claimed_version is not None and not isinstance(claimed_version, (int, float)):
+            raise HTTPException(status_code=400, detail="confirm.stateVersion 必须是版本号")
+
+    from agent.interactive import intents as intents_module  # 延迟 import
+
+    candidate_signature = intents_module.state_semantic_signature(state)
+    gate = intents_module.impact_gate(conn, board_id=bid, state=state)
+
+    if check_id:
+        failure = intents_module.validate_save_confirmation(
+            conn, board_id=bid, check_id=check_id, candidate_signature=candidate_signature
+        )
+        claimed = confirm.get("stateVersion")
+        if failure is None and claimed is not None:
+            # 确认协议里的 stateVersion（如前端提供）必须与影响预判绑定的版本一致
+            entry_version = intents_module.confirm_binding_version(check_id)
+            if entry_version is not None and int(claimed) != int(entry_version):
+                failure = "确认时给出的版本与当时影响预判绑定的版本不一致：请重新预判并确认。"
+        if failure is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "stale_check", "reason": failure, "affectedTasks": gate["affectedTasks"]},
+            )
+    elif gate["runningIds"]:
+        # 服务端门：这次保存会改变执行中任务依赖的材料，但没有对应的影响确认记录
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "impact_confirmation_required",
+                "reason": (
+                    "这次保存会修改执行中任务依赖的材料：需要先做影响预判并确认后才会生效；"
+                    "取消则这次改动不生效、任务继续。"
+                ),
+                "affectedTasks": gate["affectedTasks"],
+            },
+        )
+
     try:
         result = board_store.save_board(conn, bid, state, reason=reason)
     except ValueError as exc:
@@ -174,6 +219,7 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
         "state": result["state"],
         "pending": result.get("pending") or {"baselineSeq": None, "expressions": []},
         "materialImpact": material_impact,
+        "confirmedCheckId": check_id or None,
     }
 
 
@@ -246,13 +292,23 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
         raise HTTPException(status_code=400, detail="note 必须是字符串")
     if len(note) > _MAX_NOTE:
         raise HTTPException(status_code=400, detail=f"note 过长（最多 {_MAX_NOTE} 字）")
+    base_version = payload.get("baseStateVersion")
+    if base_version is not None and not isinstance(base_version, (int, float, str)):
+        raise HTTPException(status_code=400, detail="baseStateVersion 必须是板面版本号")
     try:
         return await submission.submit_board(
             conn,
             bid,
             requested_visible=[str(item) for item in requested] if requested else None,
             note=note,
+            base_state_version=base_version,
+            confirmed_check_id=payload.get("confirmedCheckId"),
         )
+    except submission.StaleState as exc:
+        # M4 路径 3：候选版本 / 确认范围与服务端不一致 → 不落库
+        raise HTTPException(
+            status_code=409, detail={"error": "stale_state", "reason": str(exc)}
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -272,5 +328,11 @@ async def put_drafts(request: Request, board_id: str, body: dict) -> dict:
         raise HTTPException(status_code=400, detail="drafts 必须是 JSON 对象")
     try:
         return board_store.save_draft(_conn(request), bid, drafts)
+    except board_store.DraftTooLong as exc:
+        # 09：超限明确拒绝（不截短、不返回成功），错误形状按契约定稿
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "draft_too_long", "limit": exc.limit, "keys": exc.keys},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

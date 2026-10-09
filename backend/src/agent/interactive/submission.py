@@ -28,6 +28,13 @@ from typing import Any
 
 from agent.interactive import board_store, models
 
+class StaleState(Exception):
+    """提交被拒（M4 路径 3）：候选版本 / 确认范围与当前服务端不一致。
+
+    触发它的提交**不落库**：不产生提交记录、不更新基准、不调用 QIO。
+    """
+
+
 #: 只影响显示、不构成提交内容的表达式：普通移动 / 缩放。
 #: 注意它与 models.NON_INTENT_EXPRESSIONS 不是一回事：材料增删、注释撤回、关系移除
 #: 虽然 intentBearing=false（不代表用户提出的工作），但它们仍然是**板面内容变化**，
@@ -466,10 +473,14 @@ def diff_states(before: dict, after: dict) -> list[dict]:
 
 
 def content_fingerprint(snapshot: dict) -> str:
-    """内容指纹：忽略 id、位置与时间，只保留「QIO 能看到的意思」。
+    """去重指纹：以**身份结构**为准（契约 M5 / 反例 17）。
 
-    用于 duplicate 判定（与上次成功提交内容一致）：例如撤回后又加回同样的材料，
-    内容没变，就不该重复调用 QIO。
+    - 卡片沿用内容键（kind + content + meta）：「撤回后重新加回同样内容」的现状
+      重复规则得以维持——同内容即重复，不因重新建了一张卡就再调用 QIO；
+    - 链接端点、组成员（含顺序）与 selection 按**卡片 id** 的对象身份记录：
+      正文不再替换端点身份。A、B 内容相同但身份不同时，A→C 换成 B→C
+      是真实的新关系（新增 + 移除），不是重复提交；
+    - 同身份同结构同正文 = duplicate；同正文不同身份 ≠ duplicate。
     """
     cards = {c["id"]: c for c in snapshot.get("cards", []) if c.get("id")}
 
@@ -485,14 +496,18 @@ def content_fingerprint(snapshot: dict) -> str:
             separators=(",", ":"),
         )
 
+    def endpoint(cid: Any) -> str:
+        """链接端点 / 组成员的身份：卡片 id 优先；在快照里看不见时如实记录缺失。"""
+        label = str(cid)
+        card = cards.get(label)
+        return card_fp(card) if card is not None else f"unseen:{label}"
+
     groups = sorted(
         json.dumps(
             {
                 "name": str(group.get("name") or ""),
                 "ordered": bool(group.get("ordered")),
-                "members": [
-                    card_fp(cards[m]) for m in group.get("members", []) if m in cards
-                ],
+                "members": [endpoint(m) for m in group.get("members", [])],
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -503,8 +518,8 @@ def content_fingerprint(snapshot: dict) -> str:
     links = sorted(
         json.dumps(
             {
-                "src": card_fp(cards[str(link.get("src"))]),
-                "dst": card_fp(cards[str(link.get("dst"))]),
+                "src": endpoint(link.get("src")),
+                "dst": endpoint(link.get("dst")),
                 "direction": bool(link.get("direction")),
                 "meaning": str(link.get("meaning") or ""),
             },
@@ -513,11 +528,8 @@ def content_fingerprint(snapshot: dict) -> str:
             separators=(",", ":"),
         )
         for link in snapshot.get("links", [])
-        if str(link.get("src")) in cards and str(link.get("dst")) in cards
     )
-    selection = sorted(
-        card_fp(cards[cid]) for cid in snapshot.get("selection", []) if cid in cards
-    )
+    selection = sorted(endpoint(cid) for cid in snapshot.get("selection", []))
     payload = json.dumps(
         {
             "cards": sorted(card_fp(card) for card in cards.values()),
@@ -598,7 +610,12 @@ def _decide_status(baseline: dict | None, expressions: list[dict], after: dict) 
             "empty",
             "没有可提交内容：本次没有允许查看的内容，或只有普通移动 / 缩放这类不构成表达的变化",
         )
-    if baseline and baseline.get("contentHash") and baseline["contentHash"] == content_fingerprint(after):
+    if baseline and isinstance(baseline.get("snapshot"), dict) and baseline.get("snapshot"):
+        # 与「上次成功提交内容」比较时对两边都重算身份指纹：
+        # 基准行里的 content_hash 可能是旧方案（内容指纹），旧基准无缝兼容
+        if content_fingerprint(after) == content_fingerprint(baseline["snapshot"]):
+            return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
+    elif baseline and baseline.get("contentHash") and baseline["contentHash"] == content_fingerprint(after):
         return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
     return "succeeded", None
 
@@ -666,6 +683,8 @@ async def submit_board(
     *,
     requested_visible: list[str] | None = None,
     note: str = "",
+    base_state_version: Any = None,
+    confirmed_check_id: str | None = None,
 ) -> dict:
     """提交：QIO 取得表达的唯一入口。
 
@@ -674,11 +693,33 @@ async def submit_board(
     - 成功才更新基准，并自动取消勾选（不是删除或撤回）；
     - 失败保留改动与本次注释选择，不更新基准、不调用 QIO；
     - empty / duplicate 不更新基准、不调用 QIO；
+    - M4 路径 3：请求可携带 baseStateVersion（本次候选所基于的服务器 seq）与
+      confirmedCheckId（影响确认记录）；与服务端不一致 → StaleState，
+      **不落库**（不产生提交记录、不更新基准、不调用 QIO）；
     - 第一阶段没有接入模型调用：delivery.delivered 恒为 false。
     """
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
     state = loaded["state"]
+
+    if base_state_version is not None:
+        try:
+            requested_version = int(base_state_version)
+        except (TypeError, ValueError) as exc:
+            raise StaleState("baseStateVersion 必须是板面版本号（整数）。") from exc
+        if requested_version != loaded["seq"]:
+            raise StaleState(
+                f"板面已经在服务端更新到版本 {loaded['seq']}，这次提交基于的版本 "
+                f"{requested_version} 已过期：请重新读取板面后再提交；本次没有记录任何提交。"
+            )
+    if confirmed_check_id:
+        from agent.interactive import intents as intents_module  # 延迟 import
+
+        reason = intents_module.check_for_submission(
+            conn, board_id=bid, check_id=str(confirmed_check_id), state=loaded["state"]
+        )
+        if reason:
+            raise StaleState(reason)
     baseline = last_success_baseline(conn, bid)
     first_submission = baseline is None
     submission_seq = _next_submission_seq(conn, bid)

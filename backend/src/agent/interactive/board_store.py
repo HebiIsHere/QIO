@@ -30,6 +30,19 @@ DRAFT_MAX_KEYS = 200
 DRAFT_MAX_CHARS = 20000
 
 
+class DraftTooLong(ValueError):
+    """草稿正文超过上限：必须明确拒绝，**不允许截短后返回成功**（契约 M6）。
+
+    attributes：keys（超限的键）、limit（上限字符数）。
+    """
+
+    def __init__(self, keys: list[str], limit: int) -> None:
+        self.keys = keys
+        self.limit = limit
+        shown = "、".join(keys[:3]) + ("等" if len(keys) > 3 else "")
+        super().__init__(f"草稿过长（最多 {limit} 字）：{shown}。已拒绝保存，未截短、未写入。")
+
+
 def _now() -> str:
     return models.now_iso()
 
@@ -185,23 +198,47 @@ def load_pending(conn: sqlite3.Connection, board_id: str) -> dict:
     }
 
 
+def _read_stored_drafts(conn: sqlite3.Connection, board_id: str) -> tuple[dict[str, str], int]:
+    """读取真实存储的草稿与其版本号。
+
+    新格式是 {"rev": int, "drafts": {key: text}}；旧格式是直接的 {key: text}。
+    旧格式没有版本信息：rev 如实返回 0，不编造「已保存过一次」的版本。
+    """
+    row = conn.execute(
+        "SELECT drafts FROM board_drafts WHERE board_id = ?", (board_id,)
+    ).fetchone()
+    stored = models.loads(row["drafts"] if row else None, None)
+    if not isinstance(stored, dict):
+        return {}, 0
+    inner = stored.get("drafts")
+    if isinstance(inner, dict) and "rev" in stored:
+        return {str(k): str(v) for k, v in inner.items()}, max(0, int(stored.get("rev") or 0))
+    # 旧格式（plain dict）：按原样兼容，绝不自动覆盖或删除
+    return {str(k): str(v) for k, v in stored.items()}, 0
+
+
 def get_draft(conn: sqlite3.Connection, board_id: str) -> dict:
-    """读取草稿。草稿不是提交内容，也不会交给 QIO。"""
+    """读取草稿。草稿不是提交内容，也不会交给 QIO。
+
+    除草稿本体与更新时间外，返回单调存簿版本号 rev：区分「客户端计划清除的版本」
+    与「服务端里真正存下的版本」就靠它（契约 M1 草稿 draftRev 的服务端事实源）。
+    """
     info = ensure_board(conn, board_id=board_id)
     row = conn.execute(
-        "SELECT drafts, updated_at FROM board_drafts WHERE board_id = ?", (info["id"],)
+        "SELECT updated_at FROM board_drafts WHERE board_id = ?", (info["id"],)
     ).fetchone()
-    drafts = models.loads(row["drafts"] if row else None, {})
-    if not isinstance(drafts, dict):
-        drafts = {}
-    return {
-        "drafts": {str(key): str(value) for key, value in drafts.items()},
-        "updatedAt": row["updated_at"] if row else None,
-    }
+    drafts, rev = _read_stored_drafts(conn, info["id"])
+    return {"drafts": drafts, "updatedAt": row["updated_at"] if row else None, "rev": rev}
 
 
 def save_draft(conn: sqlite3.Connection, board_id: str, drafts: dict) -> dict:
-    """保存草稿（未提交的文字输入）。**不调用 QIO**，也不写入板面状态。"""
+    """保存草稿（未提交的文字输入）。**不调用 QIO**，也不写入板面状态。
+
+    - 超过 DRAFT_MAX_CHARS 的正文：整体拒绝（DraftTooLong，附带键名与上限），
+      不截短、不部分写入；上限内的正文**完整**落库。
+    - 响应 cleared 列出这次保存**真实清掉**的键，rev 单调递增：清除结果的
+      真实性由调用方逐一核对，而不是靠「请求发出去了」推断。
+    """
     if drafts is None:
         drafts = {}
     if not isinstance(drafts, dict):
@@ -210,15 +247,23 @@ def save_draft(conn: sqlite3.Connection, board_id: str, drafts: dict) -> dict:
         raise ValueError(f"草稿条目过多（最多 {DRAFT_MAX_KEYS} 条）")
     clean: dict[str, str] = {}
     for key, value in drafts.items():
-        clean[_clip(key, limit=120)] = (
-            "" if value is None else _clip(value, limit=DRAFT_MAX_CHARS)
-        )
+        label = str(key)
+        if len(label) > 120:
+            # 键名静默截短会让两个话题共用一个键：宁可明确拒绝
+            raise ValueError(f"草稿键名过长（最多 120 字符）：{label[:24]}…")
+        text = "" if value is None else str(value)
+        if len(text) > DRAFT_MAX_CHARS:
+            raise DraftTooLong([label], DRAFT_MAX_CHARS)
+        clean[label] = text
     info = ensure_board(conn, board_id=board_id)
+    prev_drafts, prev_rev = _read_stored_drafts(conn, info["id"])
+    cleared = sorted(set(prev_drafts) - set(clean))
+    new_rev = prev_rev + 1
     stamp = _now()
     conn.execute(
         "INSERT INTO board_drafts (board_id, drafts, updated_at) VALUES (?, ?, ?)"
         " ON CONFLICT(board_id) DO UPDATE SET drafts = excluded.drafts,"
         " updated_at = excluded.updated_at",
-        (info["id"], models.dumps(clean), stamp),
+        (info["id"], models.dumps({"rev": new_rev, "drafts": clean}), stamp),
     )
-    return {"drafts": clean, "updatedAt": stamp}
+    return {"drafts": clean, "updatedAt": stamp, "rev": new_rev, "cleared": cleared}
