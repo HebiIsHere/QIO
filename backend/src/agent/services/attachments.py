@@ -1502,8 +1502,16 @@ class AttachmentService:
         """copy 的执行就绪判据（契约 §1.3，**唯一一份**）：
 
         * 状态必须是 ready（prepared 由调用方先等；其它状态各有各的原因）；
-        * 副本必须在 QIO 管理目录里、存在、可打开；
+        * 副本必须在 QIO 管理目录里、存在、**实际可打开可读**；
         * 大小必须与登记一致（文件被截断/替换过就不是同一份内容）。
+
+        F17（2026-10-09）：stat 正常、大小一致**不等于**可读 —— 拒读 ACL / 被独占 /
+        I/O 错误都能让 stat 通过而 open 失败。以前这里只看 stat，导致「界面上是 ready、
+        绑进本轮、模型拿到一个打不开的附件」。现在做一次**真实的读取探针**（打开并读 1 字节）。
+
+        诚实边界：这是**时点检查**，只证明「检查这一刻读得到」。检查之后到真正读取之间
+        仍可能变化（文件被换/被删/被锁）—— 那一段由 read_attachment / content_target
+        在打开时如实报错，本方法不宣称消除了那个竞态。
         """
         if not att.stored_path or not self.is_managed_path(att.stored_path):
             return "QIO 没有可用的副本文件；可以重试准备后再发送"
@@ -1523,6 +1531,25 @@ class AttachmentService:
                 + "，登记 "
                 + human_size(registered)
                 + "）：这份内容不能当成就绪；可以重试准备后再发送"
+            )
+        unreadable = self._read_probe_reason(path)
+        if unreadable:
+            return unreadable
+        return None
+
+    @staticmethod
+    def _read_probe_reason(path: Path) -> str | None:
+        """真实读取探针（F17/F18 共用）：打开并读 1 字节；读不到就给人话原因。
+
+        只做一次最小读，不整文件读取 —— 它跑在事件循环线程上（GET / precheck / bind 都会走）。
+        """
+        try:
+            with open(path, "rb") as handle:
+                handle.read(1)
+        except OSError as exc:
+            return (
+                "读不到这个文件（" + redact_text(str(exc)) + "）：现在不能当成就绪；"
+                "可以重试准备（或重新定位）后再发送"
             )
         return None
 
