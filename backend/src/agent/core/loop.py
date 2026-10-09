@@ -1663,11 +1663,16 @@ class AgentLoop:
         return self._INCOMPLETE_TITLES.get(outcome.kind, "这段回答没能完整保存")
 
     def _incomplete_detail(self, outcome: BufferOutcome) -> str:
-        """用户可见说明里的「拿到多少 / 一共多少」（字节数如实，不猜）。"""
-        if outcome.total_bytes:
-            got = len(outcome.text.encode("utf-8"))
-            return f"；已交付 {got} 字节，原生成内容共 {outcome.total_bytes} 字节"
-        return ""
+        """用户可见说明里的**三个字节事实**（名称必须真实，不得混用）。
+
+        契约 §1.4：原生成字节数 / 成功保存字节数 / 实际交付字节数分开报 ——
+        绝不把「成功保存量」说成「完整生成量」（硬上限 / 写失败时两者本来就不同）。
+        """
+        return (
+            f"；原生成 {outcome.generated_bytes} 字节，"
+            f"成功保存 {outcome.saved_bytes} 字节，"
+            f"实际交付 {outcome.delivered_bytes} 字节"
+        )
 
     def _deliverable_answer_text(self) -> str:
         """本次调用交付到正式回答区的正文 = **模型已生成、且已确认可交付**的那部分。
@@ -1696,6 +1701,10 @@ class AgentLoop:
                 "kind": outcome.kind,
                 "message": message,
                 "recoverable": False,
+                # 三个字节事实可机读（与 message 里报的数一致，名称不混用）
+                "generated_bytes": outcome.generated_bytes,
+                "saved_bytes": outcome.saved_bytes,
+                "delivered_bytes": outcome.delivered_bytes,
             },
         )
 
