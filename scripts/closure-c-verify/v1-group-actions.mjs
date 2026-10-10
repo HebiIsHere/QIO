@@ -45,6 +45,21 @@ async function api(path, init) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 固定反例数据：两组，卡片故意压在组头部上（组框顶边由成员最小 y 决定，这是真实会发生的位置）。 */
+/**
+ * 写入前先 GET 当前已保存的 seq（B 的服务端版本保护）：
+ * PUT 的 state.seq 与已保存 seq 不一致会 409 stale_state（不落库）。
+ * 固定写 0/1 的脚本在非空板面上会失败，所以这里每一步都用「刚读到的真实版本」。
+ */
+async function currentSeq() {
+  try {
+    const data = await api("/api/interactive/boards/" + BOARD + "/state");
+    const state = data.state || data;
+    return Number.isFinite(Number(state.seq)) ? Number(state.seq) : 0;
+  } catch (error) {
+    return 0;
+  }
+}
+
 async function seed() {
   const now = new Date().toISOString();
   const card = (id, x, y, content) => ({
@@ -62,15 +77,23 @@ async function seed() {
     id, name: "默认组名", defaultName: true, ordered, deleted: false, members, x: 0, y: 0, w: 1, h: 1, createdAt: now, updatedAt: now,
   });
   const groups = [group("g_left", true, ["cA", "cB"]), group("g_right", false, ["cC", "cD"])];
-  await api("/api/interactive/boards/" + BOARD + "/state", {
+  const clearedSeq = await currentSeq();
+  const cleared = await api("/api/interactive/boards/" + BOARD + "/state", {
     method: "PUT",
-    body: JSON.stringify({ state: { boardId: BOARD, seq: 0, updatedAt: now, cards: [], groups: [], links: [], selection: [] }, reason: "v1-reset" }),
+    body: JSON.stringify({ state: { boardId: BOARD, seq: clearedSeq, updatedAt: now, cards: [], groups: [], links: [], selection: [] }, reason: "v1-reset" }),
   });
-  await api("/api/interactive/boards/" + BOARD + "/state", {
+  const seededSeq = await currentSeq();
+  const seeded = await api("/api/interactive/boards/" + BOARD + "/state", {
     method: "PUT",
-    body: JSON.stringify({ state: { boardId: BOARD, seq: 1, updatedAt: now, cards, groups, links: [], selection: [] }, reason: "v1-seed" }),
+    body: JSON.stringify({ state: { boardId: BOARD, seq: seededSeq, updatedAt: now, cards, groups, links: [], selection: [] }, reason: "v1-seed" }),
   });
-  return { cards: cards.length, groups: groups.length };
+  return {
+    cards: cards.length,
+    groups: groups.length,
+    clearedSeq: clearedSeq,
+    seededSeq: seededSeq,
+    errors: [cleared?.detail?.error, seeded?.detail?.error].filter(Boolean),
+  };
 }
 
 async function serverBoard() {

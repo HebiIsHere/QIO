@@ -4,9 +4,12 @@
   "backend": "http://127.0.0.1:8943",
   "seeded": {
     "cards": 5,
-    "groups": 2
+    "groups": 2,
+    "clearedSeq": 25,
+    "seededSeq": 26,
+    "errors": []
   },
-  "createdAt": "2026-10-10T07:47:30.278Z",
+  "createdAt": "2026-10-10T08:25:23.119Z",
   "summary": {
     "total": 98,
     "reachable": 78,
@@ -4230,8 +4233,9 @@
       ]
     }
   ],
-  "httpFails": [
-    "FAILED net::ERR_ABORTED 60144.4857"
-  ],
-  "consoleErrors": []
+  "httpFails": [],
+  "consoleErrors": [
+    "Uncaught (in promise)",
+    "Uncaught (in promise)"
+  ]
 }
