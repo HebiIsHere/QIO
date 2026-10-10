@@ -132,50 +132,67 @@ await runGroup(async () => {
   // 打开星球（.dock 的 aria-label 是「打开话题星球」）；星球是懒加载 + WebGL，给它时间
   const dock = s.page.locator(".dock").first();
   await dock.click({ timeout: 8000 }).catch(() => {});
-  // 页签的类是 .tab-entity（比按名字找稳：页面上还有叫「实体」的话题标签）。
-  // 面板可能处于收起状态 → Playwright 的可见性检查会挡下点击，所以用 DOM 派发点击，
-  // 走的仍然是组件真实的 @click 处理器。
-  const entityTab = s.page.locator(".tab-entity").first();
-  await entityTab.waitFor({ state: "attached", timeout: 15000 }).catch(() => {});
-  await entityTab.evaluate((el) => el.click()).catch(() => {});
   await sleep(1200);
-  // 等候选区出现（列表页那一块是跨卡清单）
-  await s.page
-    .getByText(/待处理候选/)
-    .first()
-    .waitFor({ state: "visible", timeout: 10000 })
-    .catch(() => {});
-  await sleep(600);
-  await s.shot("candidates-entity-tab", "星球的「实体」页签");
+  // 面板默认可能是**收起**的（aside.panel 没有 open 类）→ 先把面板真正展开，
+  // 否则后面点到的都是隐藏元素：处理器会跑到，但界面上什么都没发生，
+  // 截出来的图也看不见候选区（那就不算「界面实际运行」的证据）。
+  const panel = s.page.locator("aside.panel").first();
+  await panel.waitFor({ state: "attached", timeout: 15000 }).catch(() => {});
+  const panelOpenBefore = await panel.evaluate((el) => el.classList.contains("open")).catch(() => false);
+  if (!panelOpenBefore) {
+    await s.page.locator(".panel-toggle").first().click({ timeout: 8000 }).catch(() => {});
+    await sleep(900);
+  }
+  const panelOpenAfter = await panel.evaluate((el) => el.classList.contains("open")).catch(() => false);
+  record(
+    "星球面板已展开",
+    panelOpenAfter,
+    panelOpenBefore ? "本来就展开" : "初始收起 → 已展开",
+  );
 
-  // 「待处理候选（n）」默认收起 → 点开（用 DOM 派发点击，走组件真实的 @click）
+  // 页签用真实点击（此时它必须是可见可点的，否则这条本身就说明界面没到可操作状态）
+  const entityTab = s.page.locator(".tab-entity").first();
+  await entityTab.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+  const tabVisible = await entityTab.isVisible().catch(() => false);
+  record("「实体」页签可见可点", tabVisible, tabVisible ? "" : "仍然不可见");
+  if (tabVisible) await entityTab.click({ timeout: 8000 }).catch(() => {});
+  await sleep(1200);
+
+  const block = s.page.locator(".ec-block").first();
+  await block.waitFor({ state: "visible", timeout: 12000 }).catch(() => {});
+  const blockVisible = await block.isVisible().catch(() => false);
+  record("候选区在界面上真实可见", blockVisible, blockVisible ? "" : "不可见（说明面板没打开）");
+
+  // 「待处理候选（n）」默认收起 → 真实点击展开
   const headerButton = s.page.locator(".ec-head").first();
-  const headerVisible = (await headerButton.count()) > 0;
-  const collapsedText = headerVisible ? await s.page.locator("body").innerText() : "";
+  const headerVisible = (await headerButton.count()) > 0 && (await headerButton.isVisible().catch(() => false));
+  const collapsedText = await block.innerText().catch(() => "");
   record("候选区标题可见", headerVisible, collapsedText.match(/待处理候选[^\n]{0,20}/)?.[0] ?? "");
   const collapsedHasButtons = /采纳/.test(collapsedText);
   record("默认收起（收起时不显示采纳按钮）", !collapsedHasButtons, collapsedHasButtons ? "收起时已出现采纳" : "");
 
   if (headerVisible) {
-    await headerButton.evaluate((el) => el.click()).catch(() => {});
+    await headerButton.click({ timeout: 8000 }).catch(() => {});
     await sleep(1200);
   }
-  const expanded = await s.page.locator("body").innerText();
+  await block.scrollIntoViewIfNeeded().catch(() => {});
+  await sleep(400);
+  const expanded = await block.innerText().catch(() => "");
   record(
     "展开后显示当前值 / 候选值 / 原因 / 两个动作",
     expanded.includes(MANUAL_SUMMARY) &&
       expanded.includes(CANDIDATE_SUMMARY) &&
       /采纳/.test(expanded) &&
       /丢弃/.test(expanded),
-    expanded.replace(/\s+/g, " ").match(/待处理候选.{0,160}/s)?.[0] ?? expanded.slice(0, 160),
+    expanded.replace(/\s+/g, " ").slice(0, 220),
   );
-  await s.shot("candidates-expanded", "待处理候选展开");
+  await s.shot("candidates-expanded", "待处理候选展开（可见区）");
 
-  // 点「采纳」→ 真实落库（.ec-adopt 是行内采纳按钮；同样用 DOM 派发点击）
+  // 点「采纳」→ 真实落库
   const before = summaryOf(dataDir);
   const adopt = s.page.locator("button.ec-adopt").first();
   if ((await adopt.count()) > 0) {
-    await adopt.evaluate((el) => el.click()).catch(() => {});
+    await adopt.click({ timeout: 8000 }).catch(() => {});
     await sleep(2200);
   }
   const after = summaryOf(dataDir);
@@ -184,9 +201,15 @@ await runGroup(async () => {
     before === MANUAL_SUMMARY && after === CANDIDATE_SUMMARY,
     `before=${before} after=${after}`,
   );
-  const afterText = await s.page.locator("body").innerText();
-  record("采纳后界面显示采纳结果", /已采纳|此前已经处理过/.test(afterText), afterText.replace(/\s+/g, " ").slice(0, 140));
-  await s.shot("candidates-after-adopt", "采纳之后");
+  const afterText = await block.innerText().catch(() => "");
+  record(
+    "采纳后界面显示采纳结果 / 计数归零",
+    /已采纳|此前已经处理过|待处理候选（0）/.test(afterText),
+    afterText.replace(/\s+/g, " ").slice(0, 160),
+  );
+  await block.scrollIntoViewIfNeeded().catch(() => {});
+  await sleep(400);
+  await s.shot("candidates-after-adopt", "采纳之后（可见区）");
 
   // 窄窗口
   await s.page.setViewportSize({ width: 420, height: 720 });
