@@ -1,0 +1,18 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-src-d2/frontend
+
+ ✓ src/acceptance-state-recovery/n1-superseded-check.test.ts (1 test) 18ms
+ ✓ src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts (1 test) 21ms
+ ✓ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests) 45ms
+ ✓ src/acceptance-state-recovery/n3-pending-revert-decision.test.ts (3 tests) 151ms
+ ✓ src/acceptance-state-recovery/n5-submit-move-checked.test.ts (1 test) 22ms
+ ✓ src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts (1 test) 23ms
+ ✓ src/acceptance-state-recovery/n2-reconfirm-result.test.ts (1 test) 233ms
+ ✓ src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts (4 tests) 698ms
+     ✓ 网址（地址 + 标题）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动  454ms
+
+ Test Files  8 passed (8)
+      Tests  14 passed (14)
+   Start at  17:20:25
+   Duration  5.24s (transform 2.47s, setup 215ms, import 5.98s, tests 1.21s, environment 22.95s)
+

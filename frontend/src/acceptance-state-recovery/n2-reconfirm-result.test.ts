@@ -88,6 +88,11 @@ describe("N2 重新确认仍待确认时，不许显示成功事实", () => {
     wrapper = mount(ImpactConfirmDialog, { attachTo: document.body });
     await wrapper.vm.$nextTick();
     await wrapper.find('[data-im="impact-continue"]').trigger("click");
+    // 确认链路要经过 PUT → 409 → 补取预判 → 重开确认框：轮询到状态稳定再断言（避免时序抖动）
+    for (let wait = 0; wait < 30 && store.pendingImpact === null; wait += 1) {
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     await flushPromises();
     await wrapper.vm.$nextTick();
 

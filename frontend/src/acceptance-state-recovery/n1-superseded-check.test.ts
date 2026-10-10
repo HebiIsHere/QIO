@@ -85,7 +85,7 @@ describe("N1 保存前检查乱序", () => {
       stateVersion: 3,
       affected: [],
       impactConfirmationRequired: false,
-    });
+    } as never);
     await flushPromises();
     expect(puts.map((p) => p.cards[0].content)).toEqual(["第二版"]);
 
@@ -96,7 +96,7 @@ describe("N1 保存前检查乱序", () => {
       stateVersion: 3,
       affected: [],
       impactConfirmationRequired: false,
-    });
+    } as never);
     await Promise.all([saving, savingSecond]);
     await flushPromises();
 
