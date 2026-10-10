@@ -647,6 +647,10 @@ class TurnResult:
     # 系统核对注释（后端事实，见 core/turn_facts.py）：独立字段，绝不拼进
     # final_content（审计 F11：正文与注释分层，前端不会因「全文不等」重复整段回答）。
     final_annotation: str | None = None
+    # 回答身份（冻结契约 K2）：本次最终内容所校准的那条**正式回答**的 delta_id。
+    # 没有正式回答段（例如整轮空输出、只留下停止说明）时为 None —— 前端据此区分
+    # 「校准哪一条」与「没有可校准回答」，不再靠全文相等/前缀相似度猜。
+    final_answer_id: str | None = None
 
 
 class AgentLoop:
@@ -773,6 +777,9 @@ class AgentLoop:
         # 真流式已发，或工具轮的正文正在等阶段就位（延后发）都算 —— 两种情况都
         # 不能再走一次性的整段补发，否则同一段文字会出现两次（见 _run）。
         self._call_delta_id: str | None = None
+        # 最近一条**正式回答**（interim=false）的 delta_id：TURN_END 的 answer_id 取它。
+        # 只记录真正发布过的正式回答身份 —— 过程区说明（interim=true）绝不进这里。
+        self._last_answer_delta_id: str | None = None
         self._stream_emitted = False
         # 「这条路径不支持实时生成」每轮只广播一次，避免降级后每次调用都刷屏。
         self._stream_degraded_warned = False
@@ -1547,6 +1554,7 @@ class AgentLoop:
             stop_reason=stop_reason,
             stopped_by=stop_by,
             final_annotation=final_annotation,
+            final_answer_id=self._last_answer_delta_id,
         )
 
     # -- steps ------------------------------------------------------------
@@ -1586,6 +1594,11 @@ class AgentLoop:
             return None
 
     async def _emit_assistant(self, payload: dict) -> None:
+        # 回答身份（契约 K2）：只有「非 interim 且确实有正文」的发布才算正式回答段。
+        if payload.get("interim") is False and str(payload.get("content") or "").strip():
+            delta_id = payload.get("delta_id")
+            if isinstance(delta_id, str) and delta_id:
+                self._last_answer_delta_id = delta_id
         await self._emit(EventType.ASSISTANT, payload)
 
     def _absorb_stream_role(self, stream: _AssistantStream) -> None:

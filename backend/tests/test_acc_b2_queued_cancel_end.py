@@ -233,8 +233,10 @@ async def test_cancel_of_already_started_turn_uses_stop_flow(db_conn):
     assert len(ends) == 1, ends
     assert ends[0]["status"] == "cancelled", ends[0]
     assert ends[0]["reason_code"] == "user_stopped", ends[0]
-    # active 取消保持既有行为：actions 仍是 resend（Lead 裁定不变）
-    assert ends[0]["actions"] == ["resend"], ends[0]
+    # 冻结契约 K3（2026-10-10 R7）：活动取消落台账是 cancelled（不是 interrupted），
+    # resend 只认 interrupted → 给 resend 是必然 409 的死按钮；真正可用的恢复是 retry。
+    # （上一轮「active 取消仍给 resend」的裁定已被本轮 K3 取代，理由见计划文档 §二 K3。）
+    assert ends[0]["actions"] == ["retry"], ends[0]
     assert len(_of(events, "TURN_END", a.turn_id)) == 1
 
 

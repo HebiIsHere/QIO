@@ -135,7 +135,10 @@ ACTIONS_BY_REASON: dict[str, tuple[str, ...]] = {
     "provider_error": ("retry",),
     "internal_error": ("retry",),
     "tool_failed": ("retry",),
-    "user_stopped": ("resend",),
+    # 冻结契约 K3：user_stopped 的 journal 是 cancelled（不是 interrupted），
+    # /api/turns/{id}/resend 只认 interrupted → 给 resend 等于给一个必然 409 的死按钮。
+    # 用户停止后真正可用的恢复是 retry（前端用既有发送接口创建新 turn）。
+    "user_stopped": ("retry",),
     "interrupted": ("resend",),
     # 流式结束语义（冻结契约 C2）：不完整结束 / 长度截断 / 内容策略中断
     # 都可以用「重发这条消息」恢复，所以给 retry。
@@ -853,6 +856,10 @@ class TurnManager:
             annotation = raw_annotation if isinstance(raw_annotation, str) and raw_annotation else None
         if annotation:
             payload["annotation"] = annotation
+        # 回答身份（冻结契约 K2）：本次最终内容所校准的正式回答的 delta_id；
+        # 没有可校准回答时为 null —— 前端据此定位目标回答，不再靠文字相似度猜。
+        answer_id = self._turn_result(ctx).get("final_answer_id")
+        payload["answer_id"] = answer_id if isinstance(answer_id, str) and answer_id else None
         if ctx.usage:
             payload.update(ctx.usage)
         await self._emit_event(TURN_END, payload)

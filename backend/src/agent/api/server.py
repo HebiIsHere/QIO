@@ -2149,6 +2149,15 @@ def create_app(
             if not row:
                 continue
             actions = [str(a) for a in (row.get("actions") or [])]
+            # 冻结契约 K3（读路径归一）：cancelled 轮不得显示点不通的 resend —— 旧记录
+            # 里存过 resend 的，读出来归一到真正可用的 retry；journal 行本身不改写，
+            # interrupted 仍保留 resend。
+            if str(row.get("status") or "") == "cancelled" and "resend" in actions:
+                actions = ["retry" if a == "resend" else a for a in actions]
+            # interrupted 轮真正可恢复（resend 一次性领取），读路径补上它的可用动作：
+            # 否则刷新后「继续发送」入口会因为没有动作而消失（K3.2）。journal 不动。
+            if str(row.get("status") or "") == "interrupted" and not actions:
+                actions = ["resend"]
             if not any(
                 (row.get("reason_code"), row.get("reason"), row.get("stopped_by"), actions)
             ):
