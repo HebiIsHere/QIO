@@ -1194,9 +1194,8 @@
   - R2 被拒回执里的 id 是本轮克隆行 id（克隆失败时回落到用户请求的源行 id）；前端按「实际请求的那条」理解。
   - `copy_to_disk` 的 `on_commit` 是**测试用**确定性缝（默认 None）。
   - 兼容路径下话题里未绑定的陈旧失败草稿仍会阻断旧客户端带附件发送（P23 既有已知限制）。
-- **后续依赖：** 逐项判定与实机取证见 docs/verification-final-boundaries-phase2.md，基线反例见
-  docs/verification-final-boundaries-phase1.md（两份报告在独立验证者分支产出，**并入后**改为可被
-  `python scripts/check_docs.py` 校验的反引号路径）；契约见 `docs/architecture.md` §12.1.8。
+- **后续依赖：** 逐项判定与实机取证见 `docs/verification-final-boundaries-phase2.md`；
+  基线反例见 `docs/verification-final-boundaries-phase1.md`；契约见 `docs/architecture.md` §12.1.8。
 
 ---
 
