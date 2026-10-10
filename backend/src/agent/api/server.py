@@ -268,6 +268,7 @@ def create_app(
                     hb_log.warning("instance heartbeat failed", exc_info=True)
 
         heartbeat_task = asyncio.create_task(_instance_heartbeat())
+        report = None
         try:
             yield
         finally:
@@ -280,16 +281,41 @@ def create_app(
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
-                await ctx.aclose()
+                report = await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
                 logging.getLogger(__name__).warning("app context close failed", exc_info=True)
-            if close_db_on_shutdown:
+            from agent.services.lifecycle import (
+                PHASE_DB_CLOSED,
+                PHASE_DB_KEPT,
+                close_decision,
+                log_close_report,
+            )
+
+            _log = logging.getLogger(__name__)
+            if report is None:
+                # 关闭本身失败了：无法确认后台是否已结束 → 不关数据库（宁可留连接，
+                # 也不要在残留协程还在写的时候把连接关掉）。
+                _log.error(
+                    "关闭过程未确认后台是否已结束：不关数据库（SQLite WAL 崩溃安全；"
+                    "下次启动按归属恢复）"
+                )
+            elif close_db_on_shutdown and close_decision(report).close_database:
                 try:
                     from agent.storage.db import close as close_conn
 
                     close_conn(conn)
+                    report = report.with_phase(PHASE_DB_CLOSED)
                 except Exception:  # noqa: BLE001
-                    logging.getLogger(__name__).warning("closing db failed", exc_info=True)
+                    _log.warning("closing db failed", exc_info=True)
+            else:
+                report = report.with_phase(PHASE_DB_KEPT)
+                if close_db_on_shutdown:
+                    _log.error(
+                        "关闭未确认完成：不关数据库（SQLite WAL 崩溃安全；下次启动按归属恢复）：%s",
+                        list(report.unfinished),
+                    )
+            if report is not None:
+                log_close_report(report)
 
     app = FastAPI(title="QIO", version="0.1.14", lifespan=lifespan)
     from agent.knowledge.lifecycle import VersionConflict
@@ -2053,4 +2079,9 @@ def create_app(
     app.state.instance_id = instance_id
     app.state.approvals = approvals
     app.state.ctx = ctx
+    # A01/A03：可恢复记录收件箱（历史无归属消息 / 孤立重发 / 归属判不出来的记录）
+    # 与它们的处理动作。路由工厂在本文件之外，避免把恢复规则塞进这个长文件。
+    from agent.api.recovery_routes import build_router as build_recovery_router
+
+    app.include_router(build_recovery_router(ctx))
     return app
