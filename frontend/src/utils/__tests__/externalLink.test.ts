@@ -49,8 +49,21 @@ describe("外链 scheme 白名单", () => {
     vi.unstubAllGlobals();
   });
 
-  it("打开被拦截时如实返回失败", async () => {
-    vi.stubGlobal("open", vi.fn(() => null));
+  it("noopener 下返回 null 不等于失败：仍视为发起成功（F03）", async () => {
+    const open = vi.fn(() => null);
+    vi.stubGlobal("open", open);
+    expect(await openExternal("https://example.com")).toBe(true);
+    expect(open).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+    vi.unstubAllGlobals();
+  });
+
+  it("可验证的打开失败：window.open 抛错 → false", async () => {
+    vi.stubGlobal(
+      "open",
+      vi.fn(() => {
+        throw new Error("blocked");
+      }),
+    );
     expect(await openExternal("https://example.com")).toBe(false);
     vi.unstubAllGlobals();
   });

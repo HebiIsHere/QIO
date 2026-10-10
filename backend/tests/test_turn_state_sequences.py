@@ -103,7 +103,12 @@ async def test_sequence_stop_targets_running_turn_not_queued_one():
 
 
 async def test_sequence_cancel_queued_turn_never_starts_and_next_one_runs():
-    """A START → B QUEUED → C QUEUED → cancel B → A END：C 正常开始，B 永不开始。"""
+    """A START → B QUEUED → C QUEUED → cancel B → A END：C 正常开始，B 永不开始。
+
+    冻结契约 C1/F12（Lead 2026-10-09 裁定）：B 永不开始执行（没有 TURN_START），
+    但必须**恰好一条 TURN_END** —— 旧断言的「[]（什么事件都不发）」编码的是
+    「排队取消没有结束事实」这个缺陷（见 plan §C2 与 F12 反例）。
+    """
     started = asyncio.Event()
     release = asyncio.Event()
     recorder = _Recorder()
@@ -129,7 +134,8 @@ async def test_sequence_cancel_queued_turn_never_starts_and_next_one_runs():
     await tm.wait(c.turn_id)
 
     assert ran == ["A", "C"]
-    assert recorder.names_for(b.turn_id) == []
+    # 只发 TURN_END，绝不发 TURN_START（不开始执行，但结束事实必须落地）。
+    assert recorder.names_for(b.turn_id) == ["TURN_END"], recorder.names_for(b.turn_id)
     assert b.status == "cancelled"
     assert recorder.names_for(c.turn_id) == ["TURN_START", "TURN_END"]
     await tm.shutdown()

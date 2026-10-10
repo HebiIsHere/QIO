@@ -902,10 +902,237 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE entity_cards ADD COLUMN field_meta TEXT NOT NULL DEFAULT '{}'",
         ],
     ),
+    (
+        31,
+        [
+            # 附件（见 services/attachments.py）：≤100_000_000 字节存独立副本，> 只记引用。
+            # 以前完全没有附件能力：用户给了路径，模型只能靠文件名猜内容。
+            # 本表只记**事实**：保存方式（copy/reference）、位置、大小、摘要、
+            # 以及它到底处于什么状态（prepared/ready/failed/cancelled/missing/changed）。
+            # 副本落在 <QIO_DATA_DIR>/attachments/<yyyy>/<mm>/，用户原文件永不被移动或删除。
+            """
+            CREATE TABLE IF NOT EXISTS attachments (
+                id            TEXT PRIMARY KEY,
+                message_id    TEXT,
+                turn_id       TEXT,
+                topic_id      TEXT,
+                kind          TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                stored_path   TEXT,
+                source_path   TEXT,
+                size_bytes    INTEGER NOT NULL DEFAULT 0,
+                mtime         REAL,
+                sha256        TEXT,
+                state         TEXT NOT NULL,
+                error         TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_attachments_turn ON attachments(turn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_topic ON attachments(topic_id, state)",
+        ],
+    ),
+    (        # 来源线原编号 27（attachments.source_attachment_id）。集成时改号为 32，理由同上：
+        # 必须排在 main 已知最大号 30 之后，否则高版本存量库会整段跳过这一列。
+
+        32,
+        [
+            # R4 问题二：重试复用原轮附件时，新记录要指回源行（新 id + 复用已保存副本，
+            # 原行归属与历史不变）。只追加一列，不改历史迁移；老库既有行的值为 NULL。
+            "ALTER TABLE attachments ADD COLUMN source_attachment_id TEXT",
+        ],
+    ),
+    (        # 来源线原编号 28（turn_journal 结束事实三列）。集成时改号为 33，理由同上。
+
+        33,
+        [
+            # R4 S6：TURN_END 的结束事实（reason_code / stopped_by / actions）以前没有落库，
+            # 刷新或换设备后失败轮的「重试」入口就没了（前端只能靠本机留痕兜底）。
+            # 只追加三列，不改历史迁移；旧行的三列为 NULL（= 没有事实，界面按旧行为）。
+            "ALTER TABLE turn_journal ADD COLUMN reason_code TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN stopped_by TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN actions TEXT",
+        ],
+    ),
+    (
+        # 集成补偿迁移（编号 34 = 当前最大号 33 + 1）：把两条线各自的对象**一起**补齐。
+        #
+        # 为什么需要：main 的补偿迁移 30 只覆盖实例归属那一批对象；本次集成新引入的
+        # 附件与轮次结束事实（迁移 31/32/33）同样处在「版本号可能已推进、对象却缺失」的
+        # 风险面上（高版本存量库被半截迁移碰过，或对象被手改弄丢）。这里把两批对象的幂等
+        # 语句合并重放一次：只建对象，不 DROP / DELETE / UPDATE 任何用户数据。
+        #
+        # 顺序要求同迁移 30：每条 ALTER 之前先 CREATE 出完整现代形状（表整个缺失时列才在；
+        # 表已存在时 CREATE 是空操作，后面的 ADD COLUMN 由「列已存在就跳过」的幂等规则接住）。
+        # `storage/migrate.py` 的 verify_required_objects() 在迁移序列跑完后按对象复核，
+        # 缺了就重放这一条，仍缺就抛 SchemaIncompleteError（不静默放过）。
+        34,
+        [
+            # --- 实例归属（迁移 29 的核心对象）-----------------------------
+            """
+            CREATE TABLE IF NOT EXISTS instances (
+                instance_id    TEXT PRIMARY KEY,
+                pid            INTEGER,
+                host           TEXT,
+                started_at     TEXT NOT NULL,
+                last_heartbeat TEXT NOT NULL,
+                exited_at      TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_instances_heartbeat ON instances(last_heartbeat)",
+            """
+            CREATE TABLE IF NOT EXISTS record_owners (
+                record_type TEXT NOT NULL,
+                record_id   TEXT NOT NULL,
+                instance_id TEXT NOT NULL,
+                PRIMARY KEY (record_type, record_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_record_owners_instance ON record_owners(instance_id)",
+            # --- turn_journal：队列台账 + 归属列 ---------------------------
+            """
+            CREATE TABLE IF NOT EXISTS turn_journal (
+                turn_id         TEXT PRIMARY KEY,
+                message         TEXT NOT NULL DEFAULT '',
+                topic_id        TEXT,
+                notify          INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'queued',
+                created_at      TEXT NOT NULL,
+                started_at      TEXT,
+                ended_at        TEXT,
+                updated_at      TEXT NOT NULL,
+                reason          TEXT,
+                user_message_id TEXT,
+                recovered_at    TEXT,
+                recovered_by    TEXT,
+                owner_instance_id TEXT
+            )
+            """,
+            "ALTER TABLE turn_journal ADD COLUMN owner_instance_id TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_turn_journal_owner ON turn_journal(owner_instance_id)",
+            # --- derived_tasks：归属 + 认领代次（迟到结果靠它被丢弃）--------
+            """
+            CREATE TABLE IF NOT EXISTS derived_tasks (
+                id              TEXT PRIMARY KEY,
+                kind            TEXT NOT NULL,
+                fragment_id     TEXT NOT NULL,
+                content_version INTEGER NOT NULL,
+                state           TEXT NOT NULL DEFAULT 'pending',
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                last_error      TEXT,
+                run_after       TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                owner_instance_id TEXT,
+                claim_generation INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (kind, fragment_id, content_version)
+            )
+            """,
+            "ALTER TABLE derived_tasks ADD COLUMN owner_instance_id TEXT",
+            "ALTER TABLE derived_tasks ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0",
+            # --- pending_approvals：审批归属 -------------------------------
+            """
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                approval_id TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                payload     TEXT NOT NULL DEFAULT '{}',
+                turn_id     TEXT,
+                session_id  TEXT,
+                created_at  TEXT NOT NULL,
+                expires_at  TEXT,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                resolved_at TEXT,
+                owner_instance_id TEXT
+            )
+            """,
+            "ALTER TABLE pending_approvals ADD COLUMN owner_instance_id TEXT",
+            # --- knowledge：版本链身份列 -----------------------------------
+            # 这里只建列，**不回填**（回填由读写侧的适配层负责）：历史库可能有同链
+            # 重复 active，在本迁移里回填或建唯一索引会让迁移直接失败，与「保守保留
+            # 原文与历史」冲突。
+            """
+            CREATE TABLE IF NOT EXISTS knowledge (
+                id            TEXT PRIMARY KEY,
+                category      TEXT NOT NULL CHECK (category IN
+                              ('user_profile','agent_self','goal','general_fact','tool_experience')),
+                state         TEXT NOT NULL CHECK (state IN
+                              ('draft','pending_review','verified','active','expired','revoked')),
+                content       TEXT NOT NULL,
+                supersedes_id TEXT REFERENCES knowledge(id),
+                topic_id      TEXT REFERENCES nodes(id),
+                entity_ids    TEXT NOT NULL DEFAULT '[]',
+                provenance    TEXT NOT NULL DEFAULT '{}',
+                confidence    REAL,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                activated_at  TEXT,
+                expired_at    TEXT,
+                export        INTEGER NOT NULL DEFAULT 0,
+                node_ids      TEXT NOT NULL DEFAULT '[]',
+                chain_id      TEXT,
+                version       INTEGER NOT NULL DEFAULT 1
+            )
+            """,
+            "ALTER TABLE knowledge ADD COLUMN chain_id TEXT",
+            "ALTER TABLE knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_chain ON knowledge(chain_id, version)",
+            # --- entity_cards：人工纠正保护（revision / field_meta）---------
+            """
+            CREATE TABLE IF NOT EXISTS entity_cards (
+                id         TEXT PRIMARY KEY,
+                node_id    TEXT REFERENCES nodes(id),
+                name       TEXT NOT NULL,
+                aliases    TEXT NOT NULL DEFAULT '[]',
+                kind       TEXT,
+                summary    TEXT,
+                attributes TEXT NOT NULL DEFAULT '[]',
+                state      TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revision   INTEGER NOT NULL DEFAULT 0,
+                field_meta TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "ALTER TABLE entity_cards ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE entity_cards ADD COLUMN field_meta TEXT NOT NULL DEFAULT '{}'",
+
+            # --- 集成新增对象：附件与轮次结束事实（迁移 31/32/33）--------------
+            """
+            CREATE TABLE IF NOT EXISTS attachments (
+                id            TEXT PRIMARY KEY,
+                message_id    TEXT,
+                turn_id       TEXT,
+                topic_id      TEXT,
+                kind          TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                stored_path   TEXT,
+                source_path   TEXT,
+                size_bytes    INTEGER NOT NULL DEFAULT 0,
+                mtime         REAL,
+                sha256        TEXT,
+                state         TEXT NOT NULL,
+                error         TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                source_attachment_id TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_attachments_turn ON attachments(turn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_topic ON attachments(topic_id, state)",
+            "ALTER TABLE attachments ADD COLUMN source_attachment_id TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN reason_code TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN stopped_by TEXT",
+            "ALTER TABLE turn_journal ADD COLUMN actions TEXT",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 
 # `storage/migrate.py` 的补偿入口：`REQUIRED_OBJECTS` 缺失时**重放这一条**。
 # 用编号固定引用（不是「最后一条」）：以后追加迁移不会把它挤掉。
-COMPENSATION_VERSION = 30
+# 集成后编号为 34：= 迁移 30 的全部语句 + 本次集成新增的附件与轮次结束事实对象（31–33）。
+COMPENSATION_VERSION = 34

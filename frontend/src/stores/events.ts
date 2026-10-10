@@ -8,6 +8,7 @@ import {
 } from "../services/events";
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
 import { useApprovalsStore } from "./approvals";
+import { api, type TurnFactsRow } from "../services/api";
 import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
 
@@ -30,6 +31,26 @@ function numberOrNull(value: unknown): number | null {
 /** 事件里的可选字符串字段（缺失 / 非字符串 → null）。 */
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
+}
+
+/**
+ * TURN_END 的**独立系统核对注记**字段（B 的出口字段名待定）。
+ *
+ * 后端当前把注记拼进 final_content（旧形态）；B 会把它拆成独立字段。
+ * 这里同时兼容几个常见命名：独立字段优先，final_content 里的内嵌形态由 store 兜底识别。
+ */
+function systemAnnotationOf(d: Record<string, unknown>): string | null {
+  for (const key of [
+    "final_annotation",
+    "annotation",
+    "system_note",
+    "system_annotation",
+    "fact_note",
+  ]) {
+    const value = d[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 /**
@@ -174,6 +195,11 @@ export const useEventStore = defineStore("events", {
           {
             const d = event.data as Record<string, unknown>;
             const tid = String(d.turn_id ?? "");
+            /**
+             * 已经结束过的 turn 不可能再开始（事件倒序 / 重连重放）：
+             * 不能把已取消的排队轮重新点亮成 active，否则界面会永远停在「运行中」。
+             */
+            if (tid && this.endedTurns.includes(tid)) break;
             // 只有真实的 TURN_START 能把 turn 设为 active。
             // 带上 revision：晚到的旧队列快照不能把这一轮清掉。
             // 陈旧事件整条不生效：连 turnRunning / turnPhase 都不许动。
@@ -214,26 +240,69 @@ export const useEventStore = defineStore("events", {
             endRevision !== null &&
             endRevision < session.queueRevision &&
             tid !== session.activeTurnId;
-          if (staleEnd) break;
+          if (staleEnd) {
+            /**
+             * 陈旧 END 的**唯一例外：已经确定发生的结束事实**。
+             *
+             * 一条比权威队列快照更旧、但属于本会话**已知轮**的 END 不能整条丢掉：
+             * 否则「为什么停下 + 还能不能重试」会随着一次 revision 竞争（队列快照先
+             * 到、取消的 END 后到）一起消失（§七 C1/C5：重复 / 迟到 / 竞争取消必须
+             * 幂等，并且事实先落地、再清排队标记）。
+             *
+             * 例外范围严格限定：**只记事实**（外加清理「等待中」标记）——
+             * 绝不应用 final_content、绝不触碰 active / turnRunning / 全局结局。
+             */
+            const stillQueued =
+              session.isQueuedTurn(tid) || (Boolean(tid) && session.hasQueuedMessage(tid));
+            if (
+              tid &&
+              !this.endedTurns.includes(tid) &&
+              (stillQueued || Boolean(session.userMessageFor(tid)))
+            ) {
+              this.endedTurns.push(tid);
+              if (this.endedTurns.length > 200) this.endedTurns.shift();
+              session.recordTurnFacts(tid, d);
+              if (stillQueued) session.concludeQueuedTurn(tid);
+            }
+            break;
+          }
           // 结束也是一次状态变化：记下版本，避免更旧的快照事后把状态改回去
           session.noteQueueRevision(endRevision);
+          const isActive = Boolean(tid) && tid === session.activeTurnId;
           /**
            * 归属规则（active/queued 模型下重新审查）：
            *
-           * 1. 属于当前 active turn 的 END **必须生效** —— 它是唯一能结束界面运行
+           * 1. 属于「已受理但从未开始」的排队 turn：它也有自己的结局（取消 / 准备失败）。
+           *    **先**把结束事实（原因 / 动作 / 耗时）可靠落地，**再**清理排队标记；
+           *    绝不触碰 active —— 正在跑的 A 与它无关。
+           * 2. 属于当前 active turn 的 END **必须生效** —— 它是唯一能结束界面运行
            *    状态的事件，绝不能因为「本地记错了 active」而被丢掉；
-           * 2. 属于「已受理但从未开始」的 turn：只把它从排队列表里摘掉，不触碰 active；
            * 3. active 未知（重连后首帧就是 END）：按 lastTurnId / 去重表收敛；
-           * 4. 其余（更早的 turn 迟到的收尾）：忽略，不能让旧事件把新任务标记成已结束。
+           * 4. 其余（更早的 turn 迟到的收尾）：不能让旧事件把新任务标记成已结束。
            */
-          if (tid) {
-            const isActive = tid === session.activeTurnId;
-            if (!isActive && session.isQueuedTurn(tid)) {
-              // 一个从未开始执行的 turn 结束（或被取消）：只清理排队登记
-              session.forgetQueuedTurn(tid);
-              break;
+          if (!isActive && tid && session.isQueuedTurn(tid)) {
+            if (this.endedTurns.includes(tid)) break;
+            this.endedTurns.push(tid);
+            if (this.endedTurns.length > 200) this.endedTurns.shift();
+            session.recordTurnFacts(tid, d);
+            session.concludeQueuedTurn(tid);
+            break;
+          }
+          if (tid && !isActive && session.activeTurnId) {
+            /**
+             * 另一轮正在跑，而这条 END 属于本会话**已知**的某一轮（有它的用户消息）：
+             * 典型是「排队项先被 TURN_QUEUE 摘出队列，END 随后才到」。
+             * 事实必须留下，但绝不能触碰 active 那一轮。
+             * 完全未知的旧轮（本地没有它的用户消息）才忽略 —— 旧事件不能把新任务标记成已结束。
+             */
+            if (session.userMessageFor(tid)) {
+              if (this.endedTurns.includes(tid)) break;
+              this.endedTurns.push(tid);
+              if (this.endedTurns.length > 200) this.endedTurns.shift();
+              session.recordTurnFacts(tid, d);
+              session.concludeQueuedTurn(tid);
             }
-            if (!isActive && session.activeTurnId) break;
+            break;
           }
           // 重连重放：同一个 turn 的 TURN_END 只能生效一次
           if (tid && this.endedTurns.includes(tid)) break;
@@ -242,12 +311,24 @@ export const useEventStore = defineStore("events", {
             if (this.endedTurns.length > 200) this.endedTurns.shift();
           }
           this.recordUsage(tid, d);
+          // 权威耗时事实（契约 §3）：折叠态不展开也要显示总耗时
+          if (tid) session.recordTurnFacts(tid, d);
           const status = String(d.status ?? "completed");
-          const final = typeof d.final_content === "string" ? d.final_content : "";
+          /**
+           * 经 Lead 授权（fb-c R6，仅此处 TURN_END 分流）：
+           * * final_content 的**存在性**必须保留 —— 缺省（undefined/null）= 不校准正文，
+           *   显式空串 = 清空目标正文（契约 K2.2）。旧写法把 null 归一成 ""，两者再也分不开。
+           * * answer_id（目标回答的 delta_id，fb-d 生产）必须传给校准：有身份只改那一条，
+           *   没有身份才按「该轮最后一条正式回答」校准。
+           */
+          const hasFinal = d.final_content !== undefined && d.final_content !== null;
+          const final = hasFinal ? String(d.final_content) : null;
+          const annotation = systemAnnotationOf(d);
+          const answerId = stringOrNull(d.answer_id);
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
           session.finalizeAssistant();
-          if (final.trim()) {
-            session.applyFinalAnswer(final, d.verification);
+          if (hasFinal || annotation) {
+            session.applyFinalAnswer(final, d.verification, { turnId: tid, annotation, answerId });
           } else if (status === "completed") {
             // 正常的空回答：不动内容
           } else {
@@ -264,6 +345,14 @@ export const useEventStore = defineStore("events", {
           session.lastTurnOutcome = { turnId: tid, status };
           if (status === "failed") {
             session.lastError = String(d.error ?? d.message ?? "本轮执行失败");
+          } else if (status === "incomplete") {
+            /**
+             * 不完整结束（契约 §七 C2）：已确认正文照常校准（上面那条分支），
+             * 但这一轮**不是失败** —— lastError 绝不能写成「本轮执行失败」。
+             * 原因 / 原因码 / 原始错误都随 recordTurnFacts 落到了这一轮（过程区
+             * 默认显示一句话原因、详情折叠），顶部还有由 lastTurnOutcome 驱动的
+             * 安静提示说「未完成」—— 所以这个结局既不被说成失败，也不会被吞掉。
+             */
           } else if (status === "unavailable" && !session.warning) {
             // 后端通常已经先发了一条人话 WARNING；兜底也不直接把错误码丢给用户
             session.warning = "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key";
@@ -373,7 +462,29 @@ export const useEventStore = defineStore("events", {
             // 已经有真实内容到达：阶段从「等待响应」转为「正在生成」
             session.turnPhase = "generating";
             if (session.activity !== "approval") session.activity = "generating";
-            session.pushAssistant(content, true, true);
+            /**
+             * 契约 §2.1：interim 由**事件字段**决定 —— 旧代码把它写死成 true，
+             * 结果正式回答也被标成「过程」。streaming 缺省 true 保持旧后端
+             * 「整段推送 + 打字机」的行为；显式 false（text 兼容档）时不假装实时生成。
+             * delta_id / seq：同轮多段正文各自保真，重复 / 迟到事件按 seq 丢弃。
+             */
+            session.pushAssistant(content, d.interim === true, d.streaming !== false, {
+              deltaId: stringOrNull(d.delta_id),
+              seq: numberOrNull(d.seq),
+              // 契约最终版：interim 时后端给同批 STAGE 的 stage_id 与这一批的 call_ids
+              // （正式回答 stage_id=null、call_ids=[]）。
+              //
+              // 显式 null 与「事件里没有这个键」语义不同（Lead 追加契约 task-6）：
+              // 显式 null = 这段文字**未归属**（等同一 delta_id 的累计快照就地归位）；
+              // 缺字段才是旧后端，才允许回落到「到达时的当前阶段」。
+              stageId:
+                d.stage_id === null
+                  ? null
+                  : typeof d.stage_id === "string" && d.stage_id.trim()
+                    ? d.stage_id
+                    : undefined,
+              callIds: Array.isArray(d.call_ids) ? (d.call_ids as string[]).map(String) : [],
+            });
           }
           break;
         }
@@ -389,6 +500,8 @@ export const useEventStore = defineStore("events", {
             (d.presentation as ToolPresentation | null) ?? null,
             (d.turn_id as string | null) ?? null,
             (d.arguments as Record<string, unknown> | undefined) ?? null,
+            // 契约 §1.3：可选 stage_id（缺省 null = 归入「整轮」）
+            (d.stage_id as string | null) ?? null,
           );
           if (session.turnRunning) session.activity = "tool";
           break;
@@ -408,6 +521,8 @@ export const useEventStore = defineStore("events", {
             (d.status as ToolStatus | undefined) ?? null,
             // 工具调用历史的记录 id：卡片展开时按它取全文（实时与历史同一条路径）
             (d.record_id as string | null) ?? null,
+            // 契约 §1.3：可选 stage_id（缺省 null = 归入「整轮」）
+            (d.stage_id as string | null) ?? null,
           );
           if (session.turnRunning) {
             session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
@@ -428,6 +543,28 @@ export const useEventStore = defineStore("events", {
             turn_id: (d.turn_id as string | null) ?? null,
             kind: String(d.kind ?? "progress"),
             text: String(d.text ?? ""),
+            call_ids: Array.isArray(d.call_ids) ? (d.call_ids as string[]) : [],
+            created_at: (d.created_at as string | null) ?? null,
+          });
+          break;
+        }
+        case "STAGE": {
+          /**
+           * 过程阶段（契约 §1.3）：系统生成，前端只消费 —— 阶段集合、顺序、说明、状态。
+           * 归属规则同其它主轮事件：子任务内部的阶段不进主对话。
+           */
+          const d = event.data as Record<string, unknown>;
+          if (!belongsToMainTurn(session, String(d.turn_id ?? ""))) break;
+          session.upsertStage({
+            stage_id: String(d.stage_id ?? ""),
+            turn_id: (d.turn_id as string | null) ?? null,
+            index: numberOrNull(d.index),
+            status: String(d.status ?? ""),
+            name: String(d.name ?? ""),
+            text: String(d.text ?? ""),
+            kind: String(d.kind ?? ""),
+            op: String(d.op ?? ""),
+            narrative_id: (d.narrative_id as string | null) ?? null,
             call_ids: Array.isArray(d.call_ids) ? (d.call_ids as string[]) : [],
             created_at: (d.created_at as string | null) ?? null,
           });
@@ -693,6 +830,12 @@ export const useEventStore = defineStore("events", {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
+      /**
+       * 每轮结束事实（契约 §1.2）：重连恢复要把 reason / actions 一起带回来 ——
+       * 旧后端没有这个字段 → 什么也不写（不伪造原因）；
+       * incomplete 与其他终态一样原样带回（前端消费见 services/api.ts::TurnFactsRow）。
+       */
+      turn_facts?: TurnFactsRow[];
       narratives?: {
         narrative_id?: string;
         turn_id?: string | null;
@@ -710,6 +853,8 @@ export const useEventStore = defineStore("events", {
       }[];
     }) {
       const session = useSessionStore();
+      // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
+      session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
       /**
        * 「继续 / 停止」操作条也属于待办：快照里已经没有它（事务结束了 / 别处应答了）

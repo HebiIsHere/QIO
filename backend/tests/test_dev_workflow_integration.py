@@ -1,4 +1,4 @@
-﻿"""Dev workflow integration: main loop drives create -> write -> test -> submit -> register."""
+"""Dev workflow integration: main loop drives create -> write -> test -> submit -> register."""
 
 from __future__ import annotations
 
@@ -33,8 +33,11 @@ class DevScriptAdapter:
         self.seen: list[str] = []
 
     async def complete(self, messages, tools, **kwargs):
-        self.seen.append(messages[-1].content or "")
-        step = self.script.pop(0)
+        # 契约 §1.1 起每次调用末尾会多一条阶段 system 提示：记录整份输入才是
+        # 「模型看到了什么」的如实捕获。
+        self.seen.append("\n".join(m.content or "" for m in messages))
+        # 脚本用尽时重复「工具已开发完成」这一档：一轮有工作调用 + 回答调用两次调用。
+        step = self.script.pop(0) if self.script else None
         if step is None:
             return Completion(message=ChatMessage(role="assistant", content="工具已开发完成"))
         name, args = step

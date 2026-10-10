@@ -8,6 +8,12 @@ export class ApiError extends Error {
     readonly status: number,
     readonly path: string,
     detail: string,
+    /**
+     * 响应体解析出来的结构（能解析成 JSON 才有）。
+     * 结构化失败（例如附件没附上）靠它拿到逐条原因 —— 光有一句话的 detail
+     * 让调用方只能把 JSON 当字符串显示。
+     */
+    readonly body?: unknown,
   ) {
     super(
       status === 401 || status === 403
@@ -93,7 +99,13 @@ async function requestOnce<T>(
       const text = await resp.text();
       // 认证明确失效：令牌可能已经轮换、或后端换了实例 → 下一次请求重新解析地址与令牌
       if (resp.status === 401 || resp.status === 403) resetBackend();
-      throw new ApiError(resp.status, path, text.slice(0, 200));
+      let body: unknown;
+      try {
+        body = JSON.parse(text) as unknown;
+      } catch {
+        body = undefined; // 不是 JSON（代理页 / 纯文本错误）：保持 undefined，不伪造结构
+      }
+      throw new ApiError(resp.status, path, text.slice(0, 200), body);
     }
     return (await resp.json()) as T;
   } catch (err) {
@@ -317,6 +329,47 @@ export interface EntityCard {
 }
 
 /**
+ * 一轮的**终态词**（契约 §七 C2）。
+ *
+ * incomplete 只用于「不完整 EOF」：流在结束标记（OpenAI 的 finish_reason /
+ * Anthropic 的 message_stop）之前就断了 —— 已确认正文保留，但**不是完成**。
+ * 厂商合法的 length_limit / content_filter 仍是 completed，只用 reason_code 区分。
+ */
+export type TurnEndStatus =
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "stopped"
+  | "unavailable"
+  | "incomplete";
+
+/**
+ * 一轮的结束事实（turn_facts，历史分页 / RESYNC 快照里的同一份形状）。
+ *
+ * 字段与后端台账一一对应，前端**只消费、不编造**：台账里没有事实的轮次不会出现在
+ * 这个数组里，界面因此不会显示一个假原因。incomplete 也在这里如实带回 ——
+ * 刷新 / 换设备之后仍然是「未完成 + 原因 + retry」。
+ */
+export interface TurnFactsRow {
+  turn_id: string;
+  /**
+   * 终态词：已知取值见 TurnEndStatus（含 incomplete）；未知词按原样收下，
+   * 由 store 归一化 —— 界面不认识的词绝不会被当成「已完成」。
+   */
+  status?: TurnEndStatus | (string & {}) | null;
+  duration_ms?: number | null;
+  queue_ms?: number | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  reason?: string | null;
+  reason_code?: string | null;
+  stopped_by?: string | null;
+  actions?: string[] | null;
+  error?: string | null;
+  message?: string | null;
+}
+
+/**
  * 一条「已经被后端接受、但没有执行完」的用户消息（后端 `turn_journal` 台账）。
  *
  * 语义（见 storage/turn_journal.py）：进程退出时还在 `queued` / `running` 的行
@@ -418,26 +471,81 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
       { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
-  sendTurn: (message: string, topicId?: string | null) => {
-    // 请求身份（幂等键）：发送方在调用前用 setNextSendRequestId 挂上，这里取走。
-    // 同一次发送动作（含重试）永远复用同一个 id —— 后端据此保证幂等命中也回 200、
-    // 绝不产生第二次执行；不挂 id 的调用保持旧行为（body 里没有这个字段）。
-    const requestId = takeNextSendRequestId();
-    return request<{
+  /**
+   * 取消一个**准备中**的轮次（幂等；契约 §1.1）。
+   *
+   * 返回的是**服务端事实**，前端据此如实显示：
+   * * cancelled=true → 这一轮已被放弃（不入队、不调用模型）；
+   * * already_started=true → 已经放行/开始，必须走既有停止流程（不得假装没发送）；
+   * * unknown=true → 未知/已过期标识（不报错）。
+   */
+  cancelPreparing: (prepareId: string) =>
+    request<{ ok: boolean; cancelled?: boolean; already_started?: boolean; unknown?: boolean; turn_id?: string }>(
+      `/api/turns/prepare/${encodeURIComponent(prepareId)}/cancel`,
+      { method: "POST" },
+    ),
+
+  /**
+   * 提交一轮。
+   *
+   * `retryOfTurnId` 只在「重试/重发某一轮」时给：后端据此允许把**原来绑在那一轮**的
+   * 附件克隆到新一轮（新 id + 复用已保存副本）。不给的话，原轮的附件已经属于别的一轮，
+   * 后端只能拒绝 —— 旧实现正是这里漏了参数，导致「界面有附件、模型实际没有」。
+   */
+  sendTurn: (
+    message: string,
+    topicId?: string | null,
+    attachmentIds?: string[],
+    retryOfTurnId?: string | null,
+    /**
+     * 准备期间请求是**挂起**的：调用方（输入区）用它在「正在准备附件…」时中止这次请求。
+     * 真 abort 才有用 —— 后端据此判定客户端断开并 abandon 预留（契约 §1.1）。
+     */
+    signal?: AbortSignal,
+    /**
+     * 准备标识（契约 §1.1）：用户点「中止」时前端用它调取消端点，**以后端确认为准**。
+     * abort 只是客户端行为，不能当后端证据 —— 所以准备标识必须随请求发给后端。
+     */
+    prepareId?: string,
+  ) => {
+      // 请求身份（幂等键）：发送方在调用前用 setNextSendRequestId 挂上，这里取走。
+      // 同一次发送动作（含重试）永远复用同一个 id —— 后端据此保证幂等命中也回 200、
+      // 绝不产生第二次执行；不挂 id 的调用保持旧行为（body 里没有这个字段）。
+      const requestId = takeNextSendRequestId();
+      return request<{
       ok: boolean;
       accepted: boolean;
+      /** 服务端确认「这一轮没有被受理执行」（用户中止 / 断连）—— 界面不得显示成已发送 */
+      cancelled?: boolean;
+      prepare_id?: string | null;
       /** 受理时就有：乐观消息关联与「停止」都直接用它，不必等 TURN_START */
       turn_id: string;
       status: string;
       topic_id: string | null;
       /** true = 这个 client_request_id 之前已受理过：这是同一次发送的回执，不是新一轮 */
       deduplicated?: boolean;
+      /** 本轮真实绑定到的附件（受理回执；前端以它为准） */
+      bound_attachment_ids?: string[];
+      /** 旧形状的回执：真实绑定到的附件 payload（id 就是事实） */
+      attachments?: { id?: string }[];
+      /** 没绑上的附件与原因（严格语义下非空即整轮被拒） */
+      rejected?: { id: string; reason: string }[];
     }>("/api/turns", {
       method: "POST",
+      signal,
+      headers: prepareId ? { "X-QIO-Prepare-Id": prepareId } : undefined,
       body: JSON.stringify({
         message,
         topic_id: topicId ?? null,
         ...(requestId ? { client_request_id: requestId } : {}),
+        // 重试/重发：告诉后端这些附件原来属于哪一轮（克隆复用的唯一凭据）
+        ...(retryOfTurnId ? { retry_of_turn_id: retryOfTurnId } : {}),
+        // 附件随这一轮绑定（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
+        // 只要调用方给了这个参数就一律带上，**包括空数组**（= 这一轮没有附件）。
+        // 以前写成 attachmentIds?.length ? {...} : {}：空数组被省略成「缺字段」，
+        // 后端于是走旧客户端兜底，把话题下的遗留附件绑到这条纯文字消息上（审计问题 3）。
+        // 只有完全没传这个参数（undefined）才省略字段：那是真正的旧客户端路径。
+        ...(attachmentIds === undefined ? {} : { attachment_ids: attachmentIds }),
       }),
     });
   },
@@ -627,6 +735,11 @@ export const api = {
         }[];
         created_at?: string | null;
       }[];
+      /**
+       * 当前相关轮次的结束事实（运行中 / 排队中 / 刚取消 / 上次进程留下的未完成轮）。
+       * 与历史分页同一份形状：incomplete 在这里也必须原样带回来。
+       */
+      turn_facts?: TurnFactsRow[];
     }>("/api/runtime/state", { timeoutMs: API_TIMEOUT_MS.bulk }),
   /**
    * 可恢复记录收件箱（A01 + A03 的后端出口，见 `api/recovery_routes.py`）。
@@ -800,6 +913,8 @@ export const api = {
         /** 叙事行的系统元数据（JSON 字符串）：kind 与系统生成的调用摘要 */
         raw?: string;
       }[];
+      /** 这一页涉及的每轮结束事实（台账里确实记过的才有；含 incomplete） */
+      turn_facts?: TurnFactsRow[];
       /** 这一页涉及的工具调用（预览；全文按 id 取） */
       tool_records?: ToolRecordPreview[];
       /** 还有更早的历史可以加载 */
@@ -825,6 +940,8 @@ export const api = {
         turn_id?: string | null;
         raw?: string;
       }[];
+      /** 更早的这一页同样带回每轮结束事实（含 incomplete；旧记录不出现） */
+      turn_facts?: TurnFactsRow[];
       tool_records?: ToolRecordPreview[];
       has_more: boolean;
       next_before: string | null;

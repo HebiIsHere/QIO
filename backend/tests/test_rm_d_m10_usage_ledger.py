@@ -170,6 +170,9 @@ def _store(db_conn: sqlite3.Connection, budget: int | None, key_id: str = "k1") 
 def _bound_adapter(client: Any, store: CredentialStore, key_id: str = "k1") -> NativeAdapter:
     adapter = NativeAdapter(client=client, model="fake-model")
     adapter.key_id = key_id
+    # fake client 不返回异步流：如实声明不支持流式，本用例只关心总账口径
+    # （流式记账由 tests/test_streaming_usage_accounting.py 覆盖）。
+    adapter.supports_stream = False
     bind_request_accounting(adapter, store, key_id)
     return adapter
 

@@ -19,13 +19,18 @@ import secrets
 import sqlite3
 import uuid
 from collections import Counter, deque
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncIterator
 
+# anyio 是 starlette（fastapi 的依赖）自带的取消原语：收尾等待要屏蔽外层取消时用它，
+# 见 _settle_upload_worker。它必然随 fastapi 一起安装，不是新增依赖。
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
@@ -51,7 +56,31 @@ from agent.memory.fragment import (
     resolve_max_turns,
 )
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
+# 附件路由的错误类型与可绑状态：模块级导入（无循环依赖）
+from agent.services.attachments import (
+    TEMP_SUFFIX,
+    STATE_CANCELLED as DISK_CANCELLED,
+    STATE_FAILED as DISK_FAILED,
+    AttachmentContentError,
+    AttachmentError,
+    DiskOutcome,
+    UploadAborted,
+    UploadTooLarge,
+    rejected_failure_message,
+)
+# 上传作业：接收端 / 工作线程 / 收尾共享同一份终态（round 4 问题三）
+from agent.services.attachment_upload import (
+    SETTLE_SECONDS as UPLOAD_SETTLE_SECONDS,
+    # 桥接队列深度搬进了作业模块；名字继续在这里可用（容量口径的唯一来源，验收用例读它）
+    UPLOAD_QUEUE_DEPTH,
+    UploadJob,
+    UploadJobEnded,
+    abort_jobs_for,
+    active_jobs as upload_active_jobs,
+    run_upload_worker,
+)
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
+from agent.trace.redact import redact_text
 from agent.storage.db_identity import (
     accept_current,
     check_enabled,
@@ -59,6 +88,8 @@ from agent.storage.db_identity import (
     connection_db_path,
     disabled_report,
 )
+# 终态动作表的读时投影只有一份实现（冻结契约 K3 / R6）：这里与 TurnJournal.facts 共用它
+from agent.storage.turn_journal import project_terminal_actions
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
@@ -66,6 +97,31 @@ DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 # 实例心跳间隔（契约 C1）：远小于 HEARTBEAT_TTL（90s），
 # 正常运行时始终「心跳新鲜」；崩溃时停止，靠 TTL + pid 兜底判死。
 HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+#: GET /content 只把「确定安全、可内联查看」的类型如实告诉浏览器（并始终带 nosniff）。
+#: HTML / SVG / XML 这类会执行脚本或带外链的类型**不内联**：一律 application/octet-stream。
+INLINE_SAFE_SUFFIXES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".log": "text/plain; charset=utf-8",
+    ".csv": "text/plain; charset=utf-8",
+    ".json": "application/json",
+    ".pdf": "application/pdf",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".ogg": "audio/ogg; codecs=opus",
+}
+
+
 
 # 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
 _SENTENCE_END = "。！？!?\n"
@@ -238,6 +294,14 @@ def create_app(
         → （真实入口才）关 DB。DB 放在最后，避免后台任务还在写时连接先断了。
         """
         ctx.maintenance.start()
+        # 附件：重启收敛 —— 上次没完成准备的标成 failed（可重试）、副本丢了标 missing、
+        # 清掉自己留下的 .part 临时文件。不猜状态，只写文件世界的事实。
+        try:
+            recovered = ctx.attachments.reconcile()
+            if recovered.get("recovered_prepared") or recovered.get("temp_files_removed"):
+                logging.getLogger(__name__).info("attachments reconciled: %s", recovered)
+        except Exception:  # noqa: BLE001 - 收敛失败不该让应用起不来
+            logging.getLogger(__name__).warning("attachment reconcile failed", exc_info=True)
         # 阶段 2：进程重启后把「卡在 running」的派生任务放回可重试状态，
         # 并把上次没做完的补齐（幂等，不重放任何外部副作用）。
         try:
@@ -342,6 +406,24 @@ def create_app(
     # 前端据此知道旧基准作废、要完整 resync（见 /api/runtime/state）。
     instance_id = ctx.instance_id
     ctx.turns.instance_id = instance_id
+    # 附件服务：登记 / 副本 / 引用 / 可用性检查的唯一入口（见 services/attachments.py）。
+    # 注册放在 create_app（而不是 AppContext.__init__）：附件相关的文件都归本模块所有，
+    # 不改 A 名下的 services/app.py。
+    from agent.trace.redact import redact_text
+    from agent.services.attachments import AttachmentService
+
+    attachments = AttachmentService(conn, settings.data_dir)
+    ctx.attachments = attachments
+    ctx.services.register("attachments", attachments)
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    ctx.registry.register(
+        ReadAttachmentTool(
+            attachments,
+            # 工具执行时处于 single-flight 的 active turn：这就是本轮的真实 turn_id
+            active_turn_id=lambda: (ctx.turns.active.turn_id if ctx.turns.active else None),
+        )
+    )
     app.add_middleware(
         CORSMiddleware,
         # 只信任 QIO 自己的 WebView origin；开发模式额外允许本机 dev server。
@@ -349,7 +431,10 @@ def create_app(
         allow_origin_regex=DEV_ORIGIN_REGEX if settings.dev_insecure else None,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-QIO-Session"],
+        # X-QIO-Prepare-Id：准备标识（契约：附件发送的中止要靠它定位一次准备），
+        # 它出现在正式请求头里 → 浏览器会为该组合发预检，漏在 allow_headers 外
+        # 会被直接 400 Disallowed CORS headers（带附件发送在浏览器侧被拦）。
+        allow_headers=["Authorization", "Content-Type", "X-QIO-Session", "X-QIO-Prepare-Id"],
     )
     from agent.tools.approval import ApprovalService
 
@@ -1053,6 +1138,610 @@ def create_app(
             "source_fragment_id": result.source_fragment_id,
         }
 
+    # -- attachments -------------------------------------------------------
+
+    async def _prepare_attachment_in_background(attachment_id: str, generation: int) -> None:
+        """后台准备：**工作线程只做文件 I/O**，数据库动作全部回到事件循环线程。
+
+        为什么必须这么绕（2026-10-06 CI py3.12/windows 真事故）：AttachmentService 与
+        整个应用共用同一个 sqlite 连接（storage/db.py 用 check_same_thread=False）。
+        以前这里把整个 run_prepare 丢进 asyncio.to_thread，工作线程于是既读又写那个
+        共享连接，与事件循环线程并发使用同一个连接对象 —— 结果是
+        sqlite3.InterfaceError，以及「刚 POST 成功、紧接着 GET 404」的幻影状态。
+        本机（Windows + py3.11）反复全绿只是时序运气。
+        """
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            return
+        # F20：把调度那一刻的代际带下去；这次准备被更新的定位/重试取代时，
+        # 复制在分块之间就会停、落库也会因代际过期被丢弃，不会覆盖更新的结果。
+        outcome = await asyncio.to_thread(
+            attachments.copy_to_disk, att, generation=generation
+        )
+        attachments.apply_outcome(attachment_id, outcome, generation=generation)
+
+    def _note_background_failure(task: asyncio.Task) -> None:
+        """后台任务的异常必须被取走：否则日志里只剩 'Task exception was never retrieved'。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logging.getLogger(__name__).warning(
+                "附件后台准备失败：%s", redact_text(str(exc)), exc_info=exc
+            )
+
+    def _schedule_prepare(attachment_id: str) -> None:
+        # F20：调度时取当前代际（prepare/plan_relocate 刚通过 _mark_preparing 递增过），
+        # 后台任务与落库都以此为准。
+        generation = attachments.prepare_generation(attachment_id)
+        task = asyncio.create_task(
+            _prepare_attachment_in_background(attachment_id, generation)
+        )
+        task.add_done_callback(_note_background_failure)
+
+    @app.post("/api/attachments")
+    async def create_attachment(body: dict) -> dict:
+        """登记一个本地文件：**按服务端 stat 出来的真实大小**决定存副本还是记引用。
+
+        ≤ 100_000_000 字节 → 存独立副本（后台复制，先写 .part 再改名提交）；
+        >  100_000_000 字节 → 只记路径 + 元数据（历史保留的是位置，不保证内容仍在）。
+        复制在后台线程里做，这里立刻返回登记事实（state=prepared），
+        前端按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        """
+        source_path = str(body.get("source_path") or "")
+        raw_name = body.get("name")
+        topic_id = body.get("topic_id")
+        try:
+            att = attachments.prepare(
+                source_path,
+                name=str(raw_name) if raw_name else None,
+                size=body.get("size"),
+                topic_id=str(topic_id) if topic_id else None,
+            )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _schedule_prepare(att.id)
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    def _upload_limit_detail() -> str:
+        from agent.services.attachments import human_size
+
+        limit = attachments.max_upload_bytes
+        return (
+            f"浏览器上传只用于 <= {human_size(limit)} 的文件；这个文件更大，"
+            "请用桌面端拖入或选择本地路径"
+            f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
+        )
+
+    def _converge_upload(
+        attachment_id: str,
+        reason: str,
+        *,
+        state: str = DISK_FAILED,
+        generation: int | None = None,
+    ) -> None:
+        """失败/取消的收尾（**事件循环线程**）：行还在就如实转 failed/cancelled，绝不提交 ready。
+
+        工作线程只做文件 I/O、不再落库，所以这里是上传状态的唯一出口。行已经被用户删掉时
+        什么都不做（apply_outcome 会自己处理「行不在」的情况并清掉可能已提交的副本）。
+
+        generation：上传开始时记下的**本操作自己的代际**。上传路径没有 R1 票号在调用方手里
+        （票号在 write_upload_stream 内部领），所以用它作准入：期间已经有更新的准备
+        （重新定位 / 重试）完成时，这次收尾是过期的 —— apply_outcome 会整份丢弃，绝不把
+        更新的 ready 行改写成 failed/cancelled。**没有更新的准备时仍然照写**（当前的
+        失败/取消照旧如实收敛），所以它不是「一律不写」。
+        """
+        attachments.apply_outcome(
+            attachment_id, DiskOutcome(state=state, error=reason), generation=generation
+        )
+
+    def _file_identity(path: Path) -> tuple[int, int] | None:
+        """(st_dev, st_ino)：证明「这个目录项还是本操作提交的那一份」。"""
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (int(stat.st_dev), int(stat.st_ino))
+
+    def _purge_uncommitted_copy(att, *, generation: int | None = None) -> None:
+        """取消竞态清理：工作线程可能已经把正式副本提交到位（os.replace 之后才被丢弃），
+
+        而它的结果已经落不到库里 —— 按**可预测的副本路径**（QIO 自己的管理目录）清掉它，
+        避免留下无人认领的副本。用户原文件永远不在此列。
+
+        generation：本操作自己的代际。目标已经被更新的准备（重新定位 / 重试）接管时
+        （当前代际已经不是它），磁盘上那份是**更新的成果**，绝不删（R1 的纪律）。
+        临时文件 <目标>.<token>.part 由工作线程自己清（每个操作一个 token，谁也删不到别人的）；
+        这里绝不按通配符清理，免得误删另一个在飞操作正在写的临时文件。
+        """
+        with contextlib.suppress(Exception):
+            if generation is not None and attachments.prepare_generation(att.id) != generation:
+                logger.debug(
+                    "取消收尾跳过：附件 %s 已经被更新的准备接管（不删更新的成果）",
+                    redact_text(str(att.id)),
+                )
+                return
+            path = attachments.copy_path(att)
+            if attachments.is_managed_path(path):
+                Path(path).unlink(missing_ok=True)
+                Path(str(path) + TEMP_SUFFIX).unlink(missing_ok=True)
+
+    async def _settle_upload_worker(
+        worker: asyncio.Task, job: UploadJob, *, attachment_id: str
+    ) -> DiskOutcome | None:
+        """请求被取消（服务关闭 / 客户端离开）：解除工作线程阻塞读、有界等它收尾，返回磁盘结果。
+
+        收尾纪律：**不留临时文件、不留孤儿副本**。
+        * 先置服务侧取消标志（工作线程提交前的最后一道闸会看到它，不再 os.replace）；
+        * 再置作业终态（解除它在 queue.get 上的阻塞）；
+        * 工作线程如果已经提交了正式副本（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
+        """
+        attachments.cancel(attachment_id)
+        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何副本")
+        outcome: DiskOutcome | None = None
+        # 收尾等待必须在**屏蔽外层取消**的作用域里跑（anyio 是流式中间件的取消原语）：
+        # 请求被取消后，BaseHTTPMiddleware 的取消作用域会在每个 await 点重复投递
+        # CancelledError。实测：不屏蔽时这个等待 0.02s 就被打断，工作线程被丢在后台继续跑，
+        # 它刚建的 <目标>.<token>.part 就留在磁盘上（_purge_uncommitted_copy 只认旧的
+        # <目标>.part，删不到）。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
+        with anyio.CancelScope(shield=True):
+            with contextlib.suppress(BaseException):
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+                )
+        if outcome is not None and outcome.stored_path:
+            stored = Path(str(outcome.stored_path))
+            # R1：只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
+            # 目标已经被更新的操作换掉时，那是别人的成果，绝不删。
+            if attachments.is_managed_path(stored) and (
+                outcome.identity is None or _file_identity(stored) == outcome.identity
+            ):
+                try:
+                    stored.unlink(missing_ok=True)
+                except OSError as exc:  # noqa: BLE001 - 清理失败不能掩盖取消
+                    logging.getLogger(__name__).warning(
+                        "清理被取消上传的副本失败：%s", redact_text(str(exc))
+                    )
+        return outcome
+
+    @app.post("/api/attachments/upload")
+    async def upload_attachment(request: Request) -> dict:
+        """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
+
+        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）。
+        没有真实路径：只存副本；超过阈值的字节明确拒绝，不偷偷存一个大副本。
+
+        有界接收（审计问题 6）：**不把整包读进内存**，没有 Content-Length 时照样强制上限
+        （每收一块累加校验，超限立刻中止并清理）。写临时文件 + 算 sha256 在工作线程
+        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰，
+        见 services/attachments.py 顶部的线程纪律。
+        """
+        limit = attachments.max_upload_bytes
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise HTTPException(status_code=413, detail=_upload_limit_detail())
+        raw_name = request.headers.get("x-qio-name") or "attachment"
+        try:
+            from urllib.parse import unquote
+
+            name = unquote(raw_name)
+        except Exception:  # noqa: BLE001 - 头里的名字解不出来就退回原名
+            name = raw_name
+        topic_id = request.headers.get("x-qio-topic-id") or None
+        # 先登记一行（prepared）：字节由工作线程落盘，状态由事件循环线程落库
+        att = attachments.begin_upload(
+            name=name, topic_id=str(topic_id) if topic_id else None
+        )
+        # 本操作自己的代际（begin_upload 已经登记过一次准备）：之后任何更新的准备
+        # （重新定位 / 重试）都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
+        upload_generation = attachments.prepare_generation(att.id)
+        # 一次上传 = 一个作业：队列 + 终态 + 工作线程句柄，接收端/工作线程/取消清理共享它。
+        # 这样「工作线程死了」不再表现为「队列永远等不到空位」，取消也能解除工作线程的阻塞读。
+        job = UploadJob(
+            label=att.id,
+            loop=asyncio.get_running_loop(),
+            depth=UPLOAD_QUEUE_DEPTH,
+            cancel_requested=lambda: attachments.is_cancel_requested(att.id),
+            # N5：把**登记时**的代际带进工作线程 —— 提交边界与下面所有 apply_outcome
+            # 必须用同一个代际，否则 worker 启动晚一步就会以新代际身份覆盖新结果。
+            generation=upload_generation,
+        )
+        worker = asyncio.create_task(
+            asyncio.to_thread(run_upload_worker, attachments, att, job, max_bytes=limit)
+        )
+        received = 0
+        too_large = False
+        read_error: BaseException | None = None
+        ended: UploadJobEnded | None = None
+        stream = request.stream()
+        # 终态等待任务：**等下一块网络数据时也必须观察它**（契约 §1.2）——
+        # 否则工作线程一死、客户端一暂停，接收端就永远挂在这里（附件停在 prepared、
+        # 活动作业不注销，客户端恢复发送才 500）。
+        end_wait = asyncio.ensure_future(job.wait_end())
+        read_task: asyncio.Task | None = None
+        try:
+            while not job.terminal:
+                read_task = asyncio.ensure_future(stream.__anext__())
+                try:
+                    await asyncio.wait(
+                        {read_task, end_wait}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    if not read_task.done():
+                        read_task.cancel()  # 终态先到：待决读取立刻取消，不泄漏
+                chunk_ready = read_task.done() and not read_task.cancelled()
+                if not chunk_ready:
+                    read_task = None
+                    if end_wait.done():
+                        break  # 作业已终态：**不需要客户端再发任何字节**
+                    continue  # 竞态：下一轮重新竞争
+                try:
+                    chunk = read_task.result()
+                except StopAsyncIteration:
+                    read_task = None
+                    break
+                finally:
+                    read_task = None
+                if job.terminal:
+                    break  # 终态优先：这一块不再入队（原因归属由作业终态说了算）
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > limit:
+                    too_large = True
+                    break
+                # 每次排队前先看终态；队列满时同时等空位与终态（谁先到谁解除等待）
+                await job.put(chunk)
+        except UploadJobEnded as exc:
+            # 工作线程已经结束（写盘失败 / 被取消）：立即停止接收，按它的结果准确反馈
+            ended = exc
+        except asyncio.CancelledError:
+            # 服务关闭 / 请求被取消：先让工作线程看到终态（解除阻塞读），再等它收尾
+            await _settle_upload_worker(worker, job, attachment_id=att.id)
+            _converge_upload(
+                att.id,
+                "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                generation=upload_generation,
+            )
+            _purge_uncommitted_copy(att, generation=upload_generation)
+            job.close()
+            raise
+        except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
+            read_error = exc
+        finally:
+            # 收尾（§1.2）：取消并回收读取 / 等待任务，关闭请求体生成器 —— 一个都不留
+            for pending in (read_task, end_wait):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            for pending in (read_task, end_wait):
+                if pending is not None:
+                    with contextlib.suppress(BaseException):
+                        await pending
+            with contextlib.suppress(BaseException):
+                await stream.aclose()
+            if read_error is not None:
+                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何副本")
+            with contextlib.suppress(UploadJobEnded):
+                await job.close_input(abort=bool(too_large or read_error))
+        try:
+            try:
+                # 有界等工作线程收尾：它可能卡在**不可中断的磁盘调用**里（契约 §1.2）。
+                # 卡住时不谎报「已退出」，保留真实状态（worker_done 不会被置位），
+                # 如实收尾、清掉可能已落盘的副本，并让迟到的结果无法提交 ready。
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+                )
+            except asyncio.TimeoutError:
+                attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
+                _converge_upload(
+                    att.id,
+                    "上传收尾超时（磁盘调用没有返回）；没有提交副本",
+                    generation=upload_generation,
+                )
+                _purge_uncommitted_copy(att, generation=upload_generation)
+                # 安排可靠清理：工作线程真正退出时再清一次 —— 它可能刚好在 os.replace
+                # 里（提交发生在我们的清理之后），那一份副本同样不能留成孤儿。
+                worker.add_done_callback(
+                    lambda _task: _purge_uncommitted_copy(
+                        att, generation=upload_generation
+                    )
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存副本",
+                ) from None
+            except (UploadTooLarge, UploadAborted) as exc:
+                # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
+                if too_large or isinstance(exc, UploadTooLarge):
+                    attachments.delete(att.id)
+                    raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
+                if read_error is not None:
+                    attachments.delete(att.id)
+                    raise HTTPException(
+                        status_code=400, detail=f"上传被中断：{redact_text(str(read_error))}"
+                    ) from exc
+                # 取消（用户 DELETE / 服务关闭）：行若还在，如实转 cancelled；不提交 ready
+                _converge_upload(
+                    att.id, str(exc), state=DISK_CANCELLED, generation=upload_generation
+                )
+                if attachments.get(att.id, check=False) is None or ended is not None:
+                    raise HTTPException(status_code=404, detail="上传期间附件已被移除") from exc
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except AttachmentError as exc:
+                attachments.delete(att.id)
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except asyncio.CancelledError:
+                # 等结果时被取消（服务关闭 / 客户端离开）：工作线程可能刚好把副本提交到位，
+                # 而它的结果已经无法落库 —— 先解除阻塞、再把这份无人认领的副本清掉。
+                await _settle_upload_worker(worker, job, attachment_id=att.id)
+                _converge_upload(
+                    att.id,
+                    "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                    generation=upload_generation,
+                )
+                _purge_uncommitted_copy(att, generation=upload_generation)
+                raise
+            # 原因归属互不覆盖（契约 §1.2）：写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭。
+            # 作业终态是「第一个到达的原因」（UploadJob._mark 幂等），这里按同一优先级映射 HTTP。
+            if outcome.state == DISK_FAILED:
+                # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
+                # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
+                applied = attachments.apply_outcome(
+                    att.id, outcome, generation=upload_generation
+                )
+                if applied is None:
+                    raise HTTPException(status_code=404, detail="上传期间附件已被移除")
+                raise HTTPException(
+                    status_code=500,
+                    detail=outcome.error or "上传失败：没有保存副本",
+                )
+            if too_large:
+                attachments.delete(att.id)
+                raise HTTPException(status_code=413, detail=_upload_limit_detail())
+            applied = attachments.apply_outcome(
+                att.id, outcome, generation=upload_generation
+            )
+            if applied is None:
+                raise HTTPException(status_code=404, detail="上传期间附件已被移除")
+            if outcome.state == DISK_CANCELLED:
+                raise HTTPException(status_code=409, detail=outcome.error or "上传已取消")
+            return {"ok": True, "attachment": attachments.payload(applied, check=False)}
+        finally:
+            job.close()
+
+    @app.get("/api/attachments")
+    async def list_attachments(
+        topic_id: str | None = None,
+        turn_id: str | None = None,
+        unbound: bool = False,
+    ) -> dict:
+        items = attachments.list(
+            topic_id=topic_id, turn_id=turn_id, unbound=bool(unbound), limit=100
+        )
+        return {"ok": True, "attachments": [attachments.payload(a) for a in items]}
+
+    @app.get("/api/attachments/{attachment_id}")
+    async def get_attachment(attachment_id: str) -> dict:
+        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。"""
+        att = attachments.get(attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        return {"ok": True, "attachment": attachments.payload(att)}
+
+    @app.get("/api/attachments/{attachment_id}/content")
+    async def attachment_content(attachment_id: str) -> FileResponse:
+        """打开/下载一个附件：**只读 QIO 自己管理的副本**。
+
+        * 只认 kind=copy 且 state=ready 的副本，路径由 id 从数据库取，
+          **绝不接受调用方给的任意路径** —— 这是「打开历史附件」与「任意文件读取」的分界线；
+        * 沿用 /api/* 的会话令牌认证（session_guard 中间件），没有裸链接；
+        * 文件名只用 QIO 清洗过的 original_name（safe_name 落盘名，不含路径），
+          并带 X-Content-Type-Options: nosniff；HTML/SVG 这类会执行脚本的类型不内联。
+        """
+        try:
+            path, name = attachments.content_target(attachment_id)
+        except AttachmentContentError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        media_type = INLINE_SAFE_SUFFIXES.get(Path(name).suffix.lower(), "application/octet-stream")
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=name,
+            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/attachments/{attachment_id}/relocate")
+    async def relocate_attachment(attachment_id: str, body: dict) -> dict:
+        """文件被移动/改名之后重新指定位置；副本按新来源重做。
+
+        重新校验（真实大小 → copy / reference、状态、位置）后把准备交给后台：
+        工作线程只做文件 I/O，状态回事件循环线程落库（审计问题 6）。
+        响应是**受理事实**（prepared / missing / failed）：不要当成功，
+        按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        """
+        try:
+            att = attachments.plan_relocate(attachment_id, str(body.get("source_path") or ""))
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if att.state == "prepared":
+            _schedule_prepare(att.id)
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.post("/api/attachments/{attachment_id}/retry")
+    async def retry_attachment(attachment_id: str) -> dict:
+        """失败/取消/变化之后重试：同一行重做副本，不新建附件。"""
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        # F24：先登记「已受理且正在准备」，再调度 —— 否则响应里只有上次的 missing/failed，
+        # 界面会把它当最终失败而停止等待（副本其实正在重新复制）。
+        attachments.mark_preparing_for_retry(att.id)
+        _schedule_prepare(att.id)
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.delete("/api/attachments/{attachment_id}")
+    async def delete_attachment(attachment_id: str) -> dict:
+        """移除附件：**只删 QIO 自己管理的副本，绝不动用户原文件**。
+
+        正在复制时调用它 = 取消：复制线程在分块之间看到标志就停下并清掉临时文件。
+        """
+        # 先中止正在进行的上传作业：删除附件 = 取消这次上传。
+        # 不能只靠服务侧的取消事件 —— services/attachments.py 的 delete() 置位后会把事件从
+        # _cancel 里清掉，事后轮询的取块循环就看不到取消了（CI py3.12 的取消用例红在这里）。
+        abort_jobs_for(
+            attachment_id, "附件已被移除，上传取消；没有保存任何副本"
+        )
+        result = attachments.delete(attachment_id)
+        if not result["removed"]:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        return {"ok": True, **result}
+
+    # -- 轮次绑定：B 的冻结回执 + 受理前预检（round4 §1.2） -------------------
+
+    def _rejection_code(outcome) -> str:
+        """透传 B 的**具体**拒绝 code（例如 attachment_not_ready）。
+
+        让「附件还没就绪（可重试）」与「绑定失败」在协议上可区分；B 的 outcome 还没有
+        这个能力时保持既有通用 code（跨 worktree 集成期不会互相卡住）。
+        """
+        getter = getattr(outcome, "rejection_code_for", None)
+        if callable(getter):
+            for item, _reason in outcome.rejected or []:
+                try:
+                    specific = getter(str(item))
+                except Exception:  # noqa: BLE001 - 取 code 失败不该改变拒绝语义
+                    specific = None
+                if specific:
+                    return str(specific)
+        return "attachment_binding_failed"
+
+    def _receipt_of(outcome) -> dict:
+        """B 的受理回执（rejected 行里带每个附件的具体 code）；拿不到就当没有。"""
+        getter = getattr(outcome, "as_receipt", None)
+        if not callable(getter):
+            return {}
+        try:
+            receipt = getter()
+        except Exception:  # noqa: BLE001 - 回执是旁路，取不到不影响拒绝本身
+            return {}
+        return receipt if isinstance(receipt, dict) else {}
+
+    def _attachment_failure(
+        rejected: list[tuple[str, str]],
+        *,
+        message: str | None = None,
+        code: str = "attachment_binding_failed",
+        receipt: dict | None = None,
+    ) -> HTTPException:
+        """结构化失败（409）：受理前拒绝、不入队、不消费 resend claim。
+
+        detail 的形状是前端契约（stores/session.ts 读 detail.rejected；
+        message 用 B 的 rejected_failure_message 生成一句话），不要改。
+        每个被拒附件带上**具体 code**（B 的回执里有就透传）：前端据此把
+        「还没就绪」与「绑定失败」区分开，可用操作仍是重试。
+        """
+        rows = [(str(item), str(reason)) for item, reason in (rejected or [])]
+        by_id: dict[str, str] = {}
+        for row in (receipt or {}).get("rejected") or []:
+            if isinstance(row, dict) and row.get("id") and row.get("code"):
+                by_id[str(row["id"])] = str(row["code"])
+        detail_rows = []
+        for item, reason in rows:
+            entry: dict[str, str] = {"id": item, "reason": reason}
+            if by_id.get(item):
+                entry["code"] = by_id[item]
+            detail_rows.append(entry)
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": code,
+                "message": message or rejected_failure_message(rows),
+                "rejected": detail_rows,
+                "bound_attachment_ids": [],
+            },
+        )
+
+    # -- 准备阶段的取消证据（plan §1.1）------------------------------------
+
+    def _prepare_id(request: Request) -> str | None:
+        """准备标识（X-QIO-Prepare-Id）：旧客户端不带也能用（缺省 = 只靠断连取消）。"""
+        raw = str(request.headers.get("x-qio-prepare-id") or "").strip()
+        return raw[:128] or None
+
+    async def _wait_for_disconnect(request: Request) -> None:
+        """等这次请求**真实断开**（ASGI 的 http.disconnect）：事件驱动，不轮询、不猜。
+
+        客户端 abort / 断网 / 关页面都会走到这里；收到就按取消契约处理（plan §1.1）。
+        """
+        while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+                return
+
+    async def _prepare_with_cancel(bind_coro, *, turn, prepare_id, request):
+        """准备附件，同时把**显式取消**与**真实断连**都当成取消证据（plan §1.1）。
+
+        返回 (outcome, cancelled)：
+
+        * cancelled=True → 本轮已被取消（不入队、不调用模型），调用方返回「未发送」回执；
+        * 否则 outcome 是 bind_for_turn 的结果；bind 抛出的异常原样上抛（调用方 abandon + raise）。
+
+        线程纪律：取消 asyncio 等待**不等于**终止工作线程 —— 这里只取消等待，
+        克隆与临时文件的清理交给 attachments 自己的取消路径（行状态复核 + 迟到结果丢弃）。
+        """
+        bind_task = asyncio.ensure_future(bind_coro)
+        watchers = [asyncio.ensure_future(_wait_for_disconnect(request))]
+        signal = ctx.turns.prepare_signal(prepare_id)
+        if signal is not None:
+            watchers.append(asyncio.ensure_future(signal))
+        try:
+            await asyncio.wait({bind_task, *watchers}, return_when=asyncio.FIRST_COMPLETED)
+            if not bind_task.done() and any(w.done() for w in watchers):
+                bind_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await bind_task
+                return None, True
+            return bind_task.result(), False
+        finally:
+            # 收尾分两类（2026-10-09 修正，实测死锁后改）：
+            #
+            # * bind 自己：**必须等** —— attachments 的取消清理（丢弃本次克隆行与
+            #   临时文件）挂在它自己的 await 上，只取消不等就没人收尾
+            #   （r6 的断连用例正是这样抓到漏掉的清理）。
+            #
+            # * 断连/取消信号的监听任务：**只取消、不等待** —— 它们挂在 Starlette
+            #   BaseHTTPMiddleware 的 wrapped_receive 上，那个 receive 要等「本请求的
+            #   响应完成」才会返回 http.disconnect（testclient.py:299-305、
+            #   middleware/base.py:53-125），而响应完成要等本路由返回 → 在这里 await 它
+            #   就是自己等自己（实测：resend_turn 挂在下面的 await 上、监听器挂在
+            #   receive() 上、门户事件循环空转 —— test_turn_journal 的两条 resend 用例
+            #   因此永不返回）。取消本身就是终态：CancelledError 会在监听器的下一个
+            #   await 点送达，不需要（也不能）在这里等它结束。
+            if not bind_task.done():
+                bind_task.cancel()
+            with contextlib.suppress(BaseException):
+                await bind_task
+            for task in watchers:
+                if not task.done():
+                    task.cancel()
+
+    def _cancelled_receipt(*, turn, message: str, topic_id, prepare_id) -> dict:
+        """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。"""
+        return {
+            "ok": True,
+            "accepted": False,
+            "cancelled": True,
+            "turn_id": turn.turn_id,
+            "prepare_id": prepare_id,
+            "status": turn.status,
+            "message": message,
+            "topic_id": topic_id,
+            "bound": [],
+            "bound_attachment_ids": [],
+            "rejected": [],
+            "attachments": [],
+        }
+
     # -- turns -------------------------------------------------------------
 
     @app.post("/api/anchor/continue/cancel")
@@ -1070,7 +1759,7 @@ def create_app(
         return {"ok": True, "cancelled": True}
 
     @app.post("/api/turns")
-    async def start_turn(body: dict) -> dict:
+    async def start_turn(request: Request, body: dict) -> dict:
         message = str(body.get("message", "")).strip()
         if not message:
             raise HTTPException(status_code=400, detail="message required")
@@ -1095,15 +1784,50 @@ def create_app(
                     "topic_id": topic_id,
                 }
         pending = ctx.bindings.peek_intent()
+        # 附件（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
+        # 字段出现（含空列表）= 显式，只绑列出的这些，[] 表示这一轮没有附件；
+        # 字段缺失才走旧客户端兜底（把本话题下还没绑定任何轮次的附件绑上来）。
+        # 以前写成 body.get("attachment_ids") or []：显式空列表被压成 falsy 落进兜底分支，
+        # 用户清空附件后发纯文字，遗留附件仍被绑进这一轮（审计问题 3）。
+        explicit_ids: list[str] | None = None
+        if "attachment_ids" in body:
+            raw_ids = body.get("attachment_ids")
+            if not isinstance(raw_ids, list):
+                raise HTTPException(status_code=400, detail="attachment_ids must be a list")
+            explicit_ids = [str(item) for item in raw_ids]
+        # 重试复用（round4 §1.2）：重试时必须带上原轮 turn_id，B 据此克隆可复用的附件；
+        # 严格语义「rejected 非空 → 不入队」：**submit 之前**用 B 的只读预检挡一次
+        # （判据与 bind_for_turn 共用同一份 _reject_reason，两处规则不会漂移）。
+        retry_raw = body.get("retry_of_turn_id")
+        retry_of = (
+            str(retry_raw).strip()
+            if isinstance(retry_raw, str) and retry_raw.strip()
+            else None
+        )
+        precheck = attachments.precheck_for_turn(
+            attachment_ids=explicit_ids, topic_id=topic_id, retry_of_turn_id=retry_of
+        )
+        if precheck:
+            raise _attachment_failure(precheck)
+        # R6 §1.1：**先预留（不入队、不发 TURN_START）→ 准备附件 → 真的就绪才放行**。
+        # 以前先 submit 再 await bind_for_turn：等复制让出事件循环时，worker 已经可以把这一轮
+        # 跑起来 —— 模型会在附件还没就绪（甚至没有可读副本）时就被调用。
+        prepare_id = _prepare_id(request)
         try:
-            turn = ctx.turns.submit(
-                message, topic_id, intent_id=pending.intent_id if pending else None,
+            turn = ctx.turns.reserve(
+                message,
+                topic_id,
+                intent_id=pending.intent_id if pending else None,
+                prepare_id=prepare_id,
+                # 契约 5：预留也要绑定请求身份 —— 同一个 client_request_id 重试
+                # 必须命中同一轮（幂等受理），绝不产生第二条 turn。
                 request_id=request_id,
             )
         except TurnAcceptError:
             # 契约 C2：台账写不进去 = 这条消息**没有被接受**。绝不能返回 200：
             # 那会留下一个「内存里有、库里没有」的 turn，重启后消息没有任何痕迹。
-            # 不入队、不发 TURN_START（TURN_START 只在 worker 真正开跑时发）。
+            # 不入队、不发 TURN_START（TURN_START 只在 worker 真正开跑时发），
+            # 也不消费任何附件预留。
             return JSONResponse(
                 status_code=503,
                 content={
@@ -1112,6 +1836,40 @@ def create_app(
                     "error": "消息未被接受：持久化失败",
                 },
             )
+        try:
+            outcome, cancelled = await _prepare_with_cancel(
+                attachments.bind_for_turn(
+                    turn_id=turn.turn_id,
+                    message_id=None,
+                    attachment_ids=explicit_ids,
+                    topic_id=topic_id,
+                    retry_of_turn_id=retry_of,
+                ),
+                turn=turn,
+                prepare_id=prepare_id,
+                request=request,
+            )
+        except BaseException:
+            # 准备期间出错 / 被取消（客户端断开、服务关闭）：丢弃预留，不留可执行队列项
+            ctx.turns.abandon(turn, reason="attachment_prepare_error")
+            raise
+        if cancelled or ctx.turns.prepare_was_cancelled(prepare_id):
+            # 取消证据成立（显式取消端点 / 真实断连 / 中止正好落在准备完成边界）：
+            # **绝不放行** —— 迟到的复制成功不得重启本轮。
+            ctx.turns.abandon(turn, reason="cancelled_during_prepare")
+            return _cancelled_receipt(
+                turn=turn, message=message, topic_id=topic_id, prepare_id=prepare_id
+            )
+        if outcome.rejected:
+            # 预检之后的竞态（刚被删 / 被别的轮次抢走）：丢弃预留 + 结构化拒绝，绝不入队
+            ctx.turns.abandon(turn, reason="attachment_not_ready")
+            raise _attachment_failure(
+                outcome.rejected,
+                code=_rejection_code(outcome),
+                receipt=_receipt_of(outcome),
+            )
+        # 附件真的就绪了才放行（按预留顺序入队；TURN_START 由 worker 真正开跑时发）
+        ctx.turns.activate(turn)
         return {
             "ok": True,
             "accepted": True,
@@ -1119,6 +1877,9 @@ def create_app(
             "status": turn.status,
             "message": message,
             "topic_id": topic_id,
+            # 实际绑定回执（§1.2）：前端以它为准更新界面，未绑定不得显示为「已带上」
+            **outcome.as_receipt(),
+            "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
 
     @app.get("/api/turns/by-request/{client_request_id}")
@@ -1306,7 +2067,28 @@ def create_app(
             # 本轮已输出的执行叙事（模型文案 + 系统生成的调用摘要）：
             # 断线期间丢失的叙事在这里补齐，客户端按 narrative_id 去重。
             "narratives": ctx.active_turn_narratives(),
+            # 结束事实（R4 S6）：RESYNC 时把「当前相关轮次」（运行 / 排队 / 刚取消 /
+            # 上一个进程留下的未完成轮）的事实一并给前端，按 turn_id 合并。
+            "turn_facts": _turn_facts_for(_current_turn_ids()),
         }
+
+    @app.post("/api/turns/prepare/{prepare_id}/cancel")
+    async def cancel_preparing(prepare_id: str) -> dict:
+        """取消一个**准备中**的轮次（幂等；以服务端事实为准 —— plan §1.1）。
+
+        三种事实，前端据此**如实**显示，不得在拿不到确认时提前宣称「已中止」：
+
+        * `cancelled`：这一轮已被放弃 —— 不入队、不调用模型、不执行工具；
+        * `already_started`：已经放行/开始 —— 前端必须走**既有停止流程**；
+        * `unknown`：未知 / 已过期标识（幂等，不报错）。
+        """
+        # 返回形状是冻结契约（plan §1.1），只给这三种事实，不多塞字段
+        state, turn_id = ctx.turns.cancel_prepare(prepare_id)
+        if state == "cancelled":
+            return {"ok": True, "cancelled": True, "turn_id": turn_id}
+        if state == "already_started":
+            return {"ok": True, "cancelled": False, "already_started": True, "turn_id": turn_id}
+        return {"ok": True, "unknown": True}
 
     @app.post("/api/turns/{turn_id}/cancel")
     async def cancel_turn_by_id(turn_id: str) -> dict:
@@ -1319,7 +2101,7 @@ def create_app(
     # 前端不需要也不可能「猜」出这条消息到底执行过没有。
 
     @app.post("/api/turns/{turn_id}/resend")
-    async def resend_turn(turn_id: str) -> dict:
+    async def resend_turn(request: Request, turn_id: str) -> dict:
         """把一条「被接受但没有执行」的消息按原话题重新提交。
 
         一次性 + **单事务**（契约 C3）：`claim_for_resend` 在同一个事务里完成
@@ -1336,39 +2118,92 @@ def create_app(
                 status_code=409,
                 detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
             )
-        new_turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        # 附件（§1.2）：重发按**原来那一轮**的清单重新归属（retry_of_turn_id=原轮），
+        # 所以原轮附件可以克隆复用。预检必须在 claim **之前**：被拒绝的重发不消费 claim。
+        retry_ids = attachments.retry_attachment_ids(turn_id)
+        precheck = attachments.precheck_for_turn(
+            attachment_ids=retry_ids,
+            topic_id=record["topic_id"],
+            retry_of_turn_id=turn_id,
+        )
+        if precheck:
+            raise _attachment_failure(precheck)
+        pending = ctx.bindings.peek_intent()
+        # R6 §1.1：先预留 + 准备，**claim 只在准备成功之后才消费** ——
+        # 准备失败（附件没就绪 / 客户端断开）不能把这条「未执行」记录永久消耗掉。
+        prepare_id = _prepare_id(request)
+        turn = ctx.turns.reserve(
+            record["message"],
+            record["topic_id"],
+            intent_id=pending.intent_id if pending else None,
+            prepare_id=prepare_id,
+        )
         try:
-            linked = ctx.turn_journal.claim_for_resend(turn_id, new_turn_id, instance_id)
+            outcome, cancelled = await _prepare_with_cancel(
+                attachments.bind_for_turn(
+                    turn_id=turn.turn_id,
+                    message_id=None,
+                    attachment_ids=retry_ids,
+                    topic_id=record["topic_id"],
+                    retry_of_turn_id=turn_id,
+                ),
+                turn=turn,
+                prepare_id=prepare_id,
+                request=request,
+            )
+        except BaseException:
+            ctx.turns.abandon(turn, reason="attachment_prepare_error")
+            raise
+        if cancelled or ctx.turns.prepare_was_cancelled(prepare_id):
+            # 用户取消了这次重发：丢弃预留、**不消费 claim**（这条记录仍然可以再试），
+            # 也绝不放行执行。
+            ctx.turns.abandon(turn, reason="cancelled_during_prepare")
+            return {
+                "ok": True,
+                "accepted": False,
+                "cancelled": True,
+                "turn_id": turn.turn_id,
+                "prepare_id": prepare_id,
+                "status": turn.status,
+                "bound": [],
+                "bound_attachment_ids": [],
+                "rejected": [],
+                "attachments": [],
+            }
+        if outcome.rejected:
+            # 预检之后的竞态：丢弃预留（从未入队）+ 结构化失败 —— claim 没被消费，用户还能再试。
+            ctx.turns.abandon(turn, reason="attachment_not_ready")
+            raise _attachment_failure(
+                outcome.rejected,
+                code=_rejection_code(outcome),
+                receipt=_receipt_of(outcome),
+            )
+        # 主线的原子重发（契约 C3）：一个事务里完成「老记录 recovered_at + 后继行 +
+        # recovered_by」。顺序与来源线一致：claim 只在准备成功之后才消费 —— 准备失败 /
+        # 取消 / 被拒都不消费，这条「未执行」记录仍然可以再试。
+        try:
+            linked = ctx.turn_journal.claim_for_resend(turn_id, turn.turn_id, instance_id)
         except JournalWriteError as exc:
             # 事务整体回滚：老记录仍是可重发的，没有半截状态、没有孤儿。
             # 但这次重发**没有做成**，必须如实说，不能返回假 200。
+            ctx.turns.abandon(turn, reason="resend_claim_failed")
             raise HTTPException(
                 status_code=503,
                 detail=f"重发未被执行：持久化失败（{exc}）",
             ) from exc
         if not linked:
+            # 准备期间这条被别人抢走了：丢弃预留，如实 409（不入队、不消费）
+            ctx.turns.abandon(turn, reason="resend_claim_lost")
             raise HTTPException(status_code=409, detail="这一条已经被处理过了")
-        pending = ctx.bindings.peek_intent()
         try:
-            turn = ctx.turns.submit(
-                record["message"],
-                record["topic_id"],
-                intent_id=pending.intent_id if pending else None,
-                turn_id=new_turn_id,
-            )
-        except TurnAcceptError as exc:
-            # 关联已经写成、但新 turn 没被接受：这是真实的失败，必须让用户看见，
-            # 而不是返回一个假的 200。孤儿出口（orphaned_claims / repair_orphan）
-            # 保证这条记录不会因此永久消失。
-            #
-            # F03（相邻入口）：后继已经落库（queued + 本实例归属），但它没有进内存
-            # 队列 —— 不改状态的话，它既不会被派发、又因为归属者活着不进恢复清单，
-            # 用户在**当前运行**里永远重试不了。所以把它标成显式的 dispatch_failed：
-            # 恢复清单里能看到「重新执行」，重试复用同一个 turn_id。
+            ctx.turns.activate(turn)
+        except BaseException as exc:
+            # F03：后继已经落库、但派发没有做成 —— 标成显式的可恢复失败（同一个
+            # turn_id），恢复清单里能看到「重新执行」，绝不返回一个假的 200。
             from agent.trace.redact import redact_text
 
             reason = redact_text(f"重发未被执行：{exc}")[:500]
-            ctx.turn_journal.mark_dispatch_failed(new_turn_id, reason)
+            ctx.turn_journal.mark_dispatch_failed(turn.turn_id, reason)
             raise HTTPException(
                 status_code=503,
                 detail=reason,
@@ -1378,6 +2213,9 @@ def create_app(
             "recovered_turn_id": turn_id,
             "turn_id": turn.turn_id,
             "status": turn.status,
+            # 重发同样要带回执：重试复用的克隆是**新 id**，前端以回执为准
+            **outcome.as_receipt(),
+            "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
 
     @app.post("/api/turns/{turn_id}/dismiss")
@@ -1444,17 +2282,123 @@ def create_app(
 
     # -- graph -------------------------------------------------------------
 
+    def _current_turn_ids() -> list[str]:
+        """「当前相关轮次」：运行中 + 排队中 + 刚取消 + 上个进程留下的未完成轮。
+
+        只按权威来源取 id（queue 快照 / 台账），不扫全表。
+        """
+        snapshot = ctx.turns.snapshot()
+        ids: list[str] = []
+        running = snapshot.get("running") or {}
+        if running.get("turn_id"):
+            ids.append(str(running["turn_id"]))
+        ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("queued") or [])
+        ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("cancelled") or [])
+        ids.extend(str(row.get("turn_id") or "") for row in ctx.turn_journal.unfinished())
+        return ids
+
+    def _turn_facts_for(turn_ids) -> list[dict]:
+        """这一页 / 当前相关轮次的结束事实（R4 S6）：**一次批量查询**，绝不 N+1。
+
+        * 只给台账里**确实有事实**的轮次：旧记录（迁移前三列全 NULL）不出现 ——
+          不伪造成 none / 假原因；没有任何事实时就是空数组。
+        * 顺序 = 调用方给的顺序（前端按 turn_id 合并，顺序只影响可读性）。
+        * 台账读不出来只记日志：历史接口照常返回（不能因为旁路台账挂掉）。
+        """
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for item in turn_ids:
+            value = str(item or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                wanted.append(value)
+        if not wanted:
+            return []
+        try:
+            rows = ctx.turn_journal.facts(wanted)
+        except Exception as exc:  # noqa: BLE001 - 台账读不出来不能影响历史接口
+            logger.warning("结束事实读台账失败（历史照常返回）：%s", redact_text(str(exc)))
+            return []
+        out: list[dict] = []
+        for turn_id in wanted:
+            row = (rows or {}).get(turn_id)
+            if not row:
+                continue
+            # 冻结契约 K3 / R6（读路径归一）：与 TurnJournal.facts 调**同一份**投影，
+            # 不再在这里另写一套 —— 两份口径分叉正是「重发成功后刷新仍透出 resend」
+            # 的根因（这份镜像以前无条件给 interrupted 补 resend，连已领取 / 通知轮也补）。
+            # 幂等：facts() 已经投影过一次，这里再投影一次结果不变；journal 行不改写。
+            actions = project_terminal_actions(
+                str(row.get("status") or ""),
+                [str(a) for a in (row.get("actions") or [])],
+                notify=bool(row.get("notify")),
+                recovered_at=row.get("recovered_at"),
+            )
+            if not any(
+                (row.get("reason_code"), row.get("reason"), row.get("stopped_by"), actions)
+            ):
+                continue  # 旧记录：没有事实就不带这一条（不给假原因）
+            out.append(
+                {
+                    "turn_id": str(row.get("turn_id") or turn_id),
+                    "status": row.get("status"),
+                    "reason_code": row.get("reason_code"),
+                    "reason": row.get("reason"),
+                    "stopped_by": row.get("stopped_by"),
+                    "actions": actions,
+                }
+            )
+        return out
+
+    def _history_page_with_attachments(page: dict) -> dict:
+        """给一页历史消息补上附件（问题 5：刷新 / 重进历史后附件行必须还在）。
+
+        * 形状与实时发送路径**完全一致**：就是 attachments.payload()，前端 session.ts
+          用同一个 toAttachmentRef 收敛，不需要第二套解析；
+        * 整页一次批量查询（services/attachments.payloads_for_messages），不做 N+1；
+        * 状态是**现在的事实**（payload(check=True)）：missing / changed / failed 在重新
+          打开历史时如实呈现，而不是发送时写死的旧状态（契约 §1.6）；
+        * 没有附件的消息不带这个字段（与实时路径 ...(refs.length ? {attachments} : {}) 一致），
+          分页字段与 before 游标原样不动。
+        """
+        messages = page.get("messages") or []
+        enriched = messages
+        by_message = attachments.payloads_for_messages(messages)
+        if by_message:
+            enriched = []
+            for message in messages:
+                items = by_message.get(str(message.get("id") or ""))
+                if items:
+                    updated = dict(message)
+                    updated["attachments"] = items
+                    enriched.append(updated)
+                else:
+                    enriched.append(message)
+        # 结束事实（R4 S6）：刷新 / 换设备后失败轮仍要说得出为什么、还有哪些操作。
+        # 只查这一页涉及的轮次（一次批量），旧记录没有事实就不出现。
+        return {
+            **page,
+            "messages": enriched,
+            "turn_facts": _turn_facts_for(
+                str(message.get("turn_id") or "") for message in messages
+            ),
+        }
+
     @app.get("/api/session/context")
     async def session_context(limit: int | None = None) -> dict:
         topic_id = ctx.current_topic()
         node = ctx.topics.nodes.get_topic(topic_id)
         # 首次只给最近一页（默认 200 条）：不再随历史长度线性增长
-        page = ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+        page = _history_page_with_attachments(
+            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+        )
         return {
             "topic_id": topic_id,
             "topic_name": node.name if node else topic_id,
             "anchor_fragment": ctx.anchor_fragment_info(),
             "messages": page["messages"],
+            # 这一页涉及的轮次结束事实（R4 S6：失败轮的原因 / 可用操作，刷新后仍在）
+            "turn_facts": page["turn_facts"],
             # 这一页涉及的工具调用（预览；全文走 /api/tool-records/{id}）
             "tool_records": page["tool_records"],
             "has_more": page["has_more"],
@@ -1465,10 +2409,15 @@ def create_app(
     async def session_messages_before(
         topic_id: str | None = None, before: str | None = None, limit: int | None = None
     ) -> dict:
-        """更早的一页历史（用户向上读时按需加载）。"""
+        """更早的一页历史（用户向上读时按需加载）。
+
+        每条消息同样带上 attachments（问题 5）：翻页翻到的历史附件也要能打开 / 重新定位。
+        """
         target = topic_id or ctx.current_topic()
-        page = ctx.session_messages_page(
-            target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
+        page = _history_page_with_attachments(
+            ctx.session_messages_page(
+                target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
+            )
         )
         return {"topic_id": target, **page}
 

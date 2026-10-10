@@ -1,0 +1,277 @@
+{
+  "results": [
+    {
+      "name": "环境：首次引导已关闭",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "S1 附件登记/准备期间：界面显示准备状态、没有任何执行迹象、模型调用保持 0",
+      "ok": true,
+      "detail": {
+        "preparingText": "默认话题 Enter 发送 · Shift+Enter 换行 r7-大附件.bin 94.4 MB 准备中… × 附件 路径 ↑",
+        "execSigns": false,
+        "callsBefore": 0,
+        "callsDuringPreparing": 0,
+        "shot": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-01-preparing-no-execution.png"
+      }
+    },
+    {
+      "name": "S1 边界（未验证）：本机无法稳定复现「发送时后端仍在准备」的窗口 → 真浏览器点「中止」按边界处理",
+      "ok": true,
+      "detail": {
+        "note": "本机复制是硬链接/亚秒级、界面会挡住未就绪发送；取消语义由后端 test_r7_disconnect_cancel_verify.py + A 的 test_preparation_cancel_http.py 与前端单测覆盖",
+        "preparingBannerSelectorPresent": false,
+        "preparingCancelSelectorPresent": false
+      }
+    },
+    {
+      "name": "S2 真浏览器「中止」装置取证：准备期发送入口状态与 Enter 是否发出请求（现状记录）",
+      "ok": true,
+      "detail": {
+        "disabledDuringPreparing": false,
+        "enterProducedRequest": false,
+        "callsBefore": 0,
+        "callsAfter": 0,
+        "shot": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-02-cancel-window-evidence.png"
+      }
+    },
+    {
+      "name": "S2 实机不可驱动「准备期点中止」的判定 + 替代证据（不静默跳过）",
+      "ok": true,
+      "detail": {
+        "verdict": "准备期仍可发送：需要继续定位（本次 Enter 结果=false）",
+        "substituteBackend": "test_r7_disconnect_cancel_verify.py（真 uvicorn + 真 TCP 断连 → 释放闸门后 0 调用 / 台账 cancelled / 无孤儿克隆 / 取消端点 200）+ A 的 test_preparation_cancel_http.py",
+        "substituteFrontend": "A 的组件级用例（PreparingAttachments 等 7 条：提示文案、中止按钮、already_started 分支）",
+        "preparingCancelSelectorPresent": false
+      }
+    },
+    {
+      "name": "S2 附件就绪之后才开始执行（就绪不晚于第一次模型调用，且就绪时副本可读）",
+      "ok": false,
+      "detail": {
+        "chipReady": true,
+        "sendStatus": "no-request",
+        "readyAt": 1791519444621,
+        "firstCallAt": null,
+        "sendDiagnostics": [
+          {
+            "attempt": 0,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          },
+          {
+            "attempt": 4,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          },
+          {
+            "attempt": 14,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          }
+        ],
+        "deltaMs": null,
+        "states": [
+          "ready"
+        ]
+      }
+    },
+    {
+      "name": "S2 这一轮最终正常完成（回答出现）",
+      "ok": false,
+      "detail": {
+        "tail": "默认话题\n\n（假模型默认回复）\n\n12:17:17\n复制",
+        "shot": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-03-first-time-ready.png"
+      }
+    },
+    {
+      "name": "S3 超过 256 KiB 的正文正常路径：完整交付（无截断、无「不完整」说明）",
+      "ok": true,
+      "detail": {
+        "delivered": 300006,
+        "expected": 300006,
+        "incompleteNoticeInUi": false,
+        "shot": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-04-long-answer.png"
+      }
+    },
+    {
+      "name": "S3 边界（未验证）：暂存读取故障在实机无法注入（需要进程内打桩）",
+      "ok": true,
+      "detail": {
+        "note": "该故障由后端验收件 test_r7_spill_delivery_verify.py（真实 AgentLoop + 注入 OSError）覆盖；实机只验正常长正文路径"
+      }
+    },
+    {
+      "name": "S4 回答在 provider 结束前流式可见、声明不泄漏、全局 1 份、过程区无副本",
+      "ok": true,
+      "detail": {
+        "live": true,
+        "stillOpen": true,
+        "leaked": false,
+        "occurrences": 1
+      }
+    },
+    {
+      "name": "S4 默认折叠（可见区没有历史抽屉）",
+      "ok": true,
+      "detail": {
+        "historyCount": 0
+      }
+    },
+    {
+      "name": "S4 结束原因与耗时可见",
+      "ok": true,
+      "detail": {
+        "tail": "AAAAAAAAAAAAAAAAAAAAAAAAA\n\n12:22:16\n复制\n第 03 轮\n12:22:18\n流式取证\n12:22:18\n复制\n已完成\n耗时 2.5 秒\n默认话题\n\n正式回答第一句。正式回答第二句。\n\n12:22:19\n复制"
+      }
+    },
+    {
+      "name": "S4 重试复用已保存副本（原文件已删除）且界面正常",
+      "ok": false,
+      "detail": {
+        "chipReady": true,
+        "retrySendStatus": "no-request",
+        "retryAppeared": null,
+        "content": "",
+        "sendDiagnostics": [
+          {
+            "attempt": 0,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          },
+          {
+            "attempt": 4,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          },
+          {
+            "attempt": 14,
+            "valueBefore": 9,
+            "valueAfter": 9,
+            "sendButtonEnabled": true,
+            "composer": "默认话题 Enter 发送 · Shift+Enter 换行 r7-就绪附件.bin 62.9 MB 已保存副本 打开 × 附件 路径 ↑",
+            "notices": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "S4 内联审批：描述/独立说明/真实命令三者都在卡里",
+      "ok": false,
+      "detail": {
+        "cardText": ""
+      }
+    },
+    {
+      "name": "S4 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200",
+      "ok": false,
+      "detail": {
+        "contentStatus": null
+      }
+    },
+    {
+      "name": "S5 宽窄窗口截图已产出，窄窗口无横向溢出",
+      "ok": true,
+      "detail": {
+        "wide": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-12-wide-1440.png",
+        "narrow": "D:\\qio-dev\\qio-r7-d\\docs\\verification-shots-r7-phase2\\r7-13-narrow-420.png",
+        "horizontalOverflowPx": 0
+      }
+    }
+  ],
+  "net": [
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_431ceeede353"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_431ceeede353"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_1104b3df752f"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_1104b3df752f"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_7a3f2693589d"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_7a3f2693589d"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_0dd88435a798"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_0dd88435a798"
+    }
+  ],
+  "provider": "http://127.0.0.1:8798",
+  "base": "http://127.0.0.1:5199"
+}

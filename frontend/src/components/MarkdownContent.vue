@@ -110,8 +110,27 @@ function renderBlock(node: any): string {
     case "list":
       const tag = node.ordered ? "ol" : "ul";
       return `<${tag}>${(node.children ?? []).map((item: any) => renderBlock(item)).join("")}</${tag}>`;
-    case "listItem":
-      return `<li>${renderInline(node.children ?? [])}</li>`;
+    case "listItem": {
+      /**
+       * 列表项是**块容器**，不是行内片段：段落、代码块、子列表、引用、表格
+       * 都要按块语义递归渲染。旧实现用 renderInline 处理 listItem.children，
+       * 于是 fenced code 整个消失、嵌套列表被拼成文本、表格只剩文字没有结构。
+       *
+       * 紧凑列表（无空行）的单项段落不包 <p>，保持与标准 Markdown 一致的观感；
+       * 松散列表/多项内容走 renderBlock，段落与其它块各自成结构。
+       */
+      const children = node.children ?? [];
+      const unwrapParagraph =
+        node.spread !== true && children.length === 1 && children[0]?.type === "paragraph";
+      const inner = children
+        .map((child: any) =>
+          unwrapParagraph && child.type === "paragraph"
+            ? renderInline(child.children)
+            : renderBlock(child),
+        )
+        .join("\n");
+      return `<li>${inner}</li>`;
+    }
     case "code": {
       const lang = node.lang || "";
       const html = highlightCode(lang, node.value ?? "");

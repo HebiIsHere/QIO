@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+mod attachment_picker;
 mod backend_lifecycle;
 mod updater_net;
 
@@ -1683,7 +1684,13 @@ fn main() {
             qio_backend_info,
             qio_prepare_for_update,
             qio_restore_backend,
-            qio_refresh_updater_proxy
+            qio_refresh_updater_proxy,
+            // 附件：点击「附件」时的原生文件选择（Win32 对话框给真实路径；不新增 crate）
+            attachment_picker::pick_attachment_file,
+            attachment_picker::pick_attachment_file_available,
+            // 附件：打开 / 在文件夹中显示（可执行 / 脚本类只给后者 —— 不自动执行）
+            attachment_picker::open_attachment_path,
+            attachment_picker::reveal_attachment_path
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

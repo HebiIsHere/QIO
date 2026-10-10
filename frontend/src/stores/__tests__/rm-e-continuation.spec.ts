@@ -76,7 +76,8 @@ describe("历史 A → 明确进入 B 最新位置", () => {
 
     await session.send("这条属于 B");
     // 提交时已经没有任何接续选择 → 后端只会按 topic_id=B 处理
-    expect(sendTurn).toHaveBeenCalledWith("这条属于 B", "B");
+    // 第三参 = 附件显式绑定数组（契约 §1.4：空数组也是显式语义，字段不能省）
+    expect(sendTurn).toHaveBeenCalledWith("这条属于 B", "B", []);
   });
 
   it("取消失败：本地选择保留、起点不动（不把消息送到错误的起点）", async () => {
@@ -150,7 +151,7 @@ describe("已提交（排队中）消息不被后续导航追溯改向", () => {
     const captured = queuedMessage.startIdentity;
     expect(captured).toMatchObject({ topicId: "B", fragmentId: "fB", intentId: null });
     expect(queuedMessage.queued).toBe(true);
-    expect(sendTurn).toHaveBeenLastCalledWith("排队的第一条", "B");
+    expect(sendTurn).toHaveBeenLastCalledWith("排队的第一条", "B", []);
 
     // 之后用户去星球改选到话题 C（明确改变起点）
     session.setAnchor("C", null, "话题 C", null, false);

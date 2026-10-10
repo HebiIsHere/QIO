@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-10（`main` 分支）。核对方法见文末。
+最后核对：2026-10-11（`main` 分支）。核对方法见文末。
 
 ---
 
@@ -662,6 +662,540 @@
 - **后续依赖：** 发布 v0.1.3 时补齐端到端验证。
   设计与实现计划见 `docs/superpowers/specs/2026-09-22-updater-design.md`、
   `docs/superpowers/plans/2026-09-22-updater.md`。
+
+### P16 — 统一执行过程 / 真实流式回答 / 文件附件 / 耗时口径（2026-10-06）
+
+- **Status：** partial
+- **Implementation（统一过程区域）：** 一轮 = 一个过程区域（`frontend/src/components/TurnProcess.vue`），
+  把过去彼此独立的入口（阶段行、工具卡、`◈ 过程` 中间话气泡、全局运行中提示、耗时面板）收拢成一处；
+  状态行只由系统事实（TURN_*/TOOL_*/APPROVAL_*）驱动，完成/失败/停止自动收起，用户阅读历史时不抢滚动位置。
+- **Implementation（阶段协议）：** 新增 `STAGE` 事件与 `stage_id`（`st_<turn8>_<n>`）。模型可在工具参数的
+  `_qio` 信封里附 `stage:{op,name}`（start / next / update，白名单解析）；缺失或非法一律安全降级
+  （没有阶段操作只更新当前说明，当前无阶段才开隐式阶段）——不因每次工具调用或新文本自动开阶段。
+  阶段与说明随叙事行落库（`messages.raw.stage`）后再广播，工具按 `stage_id` 归属而非相邻位置；
+  旧数据没有 `raw.stage` 时按旧版平铺渲染，不伪造阶段历史。
+- **Implementation（真实流式）：** adapter 层新增 `supports_stream` / `stream()`（OpenAI 兼容与 Anthropic 走真 SSE，
+  文本兼容档明确降级为一次性输出并提示「不支持实时生成」）；正文增量**一到达就以 `interim=true` 实时发布**
+  （进过程区，边生成边显示），**唯一可靠的正式回答判据 = 该次调用结束且没有任何工具调用** → 同一 `delta_id`
+  原样提升为正式回答（`streaming=false` 收尾快照），调用结束有工具调用则该段留在过程区；
+  **没有时间守卫，也没有「正式回答→过程区」的移动**（旧的 300ms 守卫与移动例外已于 2026-10-06 审计废止）。
+  按字符/时间合并发布累计快照，`(delta_id, seq)` 单调去重，`TURN_END.final_content` 只做校准；
+  工具参数碎片只在 adapter 内组装，未完成的参数绝不执行。
+  `TURN_END` 另带轮次结束事实 `reason_code / reason / stopped_by / actions`（系统事实、过 redact、
+  只列确实可用的操作；旧记录为 `none` 不伪造）。
+- **Implementation（耗时）：** `TURN_END` 增补 `duration_ms / queue_ms / started_at / ended_at`（来源 turn_traces 台账，
+  缺失时退化为单调钟执行窗口）；折叠态直接显示「已完成 · 耗时」，不再无期限显示「读取中」；
+  仅真正请求明细时才加载，未请求 / 加载中 / 成功无分项 / 失败 / 旧记录五种显示互不混淆，明细失败不抹掉已知总耗时。
+- **Implementation（附件）：** 新增 `attachments` 表（追加迁移）与附件服务/接口/工具。不大于 100,000,000 字节
+  （十进制 MB，取等号算副本）存独立副本并标注「已保存副本」，大于阈值只记录真实路径并标注「引用本地文件」
+  （写明历史保留的是位置）；路径只来自 Tauri 原生选择/拖放的绝对路径或浏览器上传字节，不把 fakepath 当路径；
+  内容不进上下文，由 `read_attachment` 按需分段读取；删除附件只清理 QIO 副本，绝不动用户原文件。
+- **Tests：** `backend/tests/test_stage_protocol.py`、`test_streaming_deltas.py`、`test_turn_timing_facts.py`、
+  `test_attachment_context.py`、`test_attachments_service.py` / `_tools` / `_api`、
+  `frontend/src/components/__tests__/TurnProcess.test.ts`、`stores/__tests__/stageStreaming.test.ts` 等；
+  独立验证方另有一组 `*_verify` 用例（`backend/tests/test_*_verify.py`、`frontend/src/**/*.verify.test.ts`）。
+  附件边界的真机取证另有一个手工脚本 `scripts/verify_attachment_boundaries.py`（含**真实 100MB 复制**的精确等号边界，
+  不进 CI，避免每次全量都写 100MB）。
+- **Implementation（远端 CI 抓到的两个真缺陷，2026-10-06 已修）：**
+  1) **后台复制不再在工作线程碰共享 sqlite 连接**：原先整个 `run_prepare` 被丢进 `asyncio.to_thread`，
+     工作线程既读又写与全应用共享的连接（`check_same_thread=False`），在 CI 的 py3.12 / windows 上
+     稳定复现 `sqlite3.InterfaceError` 与「刚 POST 成功、马上 GET 404」的幻影状态（本机 py3.11 全绿只是时序运气）。
+     现在工作线程只跑纯文件 I/O（`copy_to_disk`），落库回到事件循环线程（`apply_outcome`），
+     并有确定性并发用例（闸门卡住复制 + 复制期间高频 GET）守住「同一个连接只有一个线程碰」这条不变量。
+  2) **兼容忽略 `stream: true` 的 OpenAI 兼容服务**：这类服务回整段 `application/json`，
+     SDK 会给出 0 个 chunk 且不报错 —— 整轮会「没有工具调用」。现在先看响应 `Content-Type`：
+     不是 `text/event-stream` 就直接用整段结果（零额外请求），并对裸客户端保留「零增量则只回退一次」的兜底；
+     两种路径都如实告知「这条模型路径不支持实时生成」。
+- **Known limitations：**
+  - **真实厂商端点的 SSE 未验证**（规则禁止真实 Key / 联网）：只验证了协议形状与假厂商分片；
+    「不支持流式」的 provider 路径明确降级，不宣称实时生成。
+  - **工具轮的过程旁白在该次模型调用结束、阶段就位后才显示**（保证「同一阶段、不并列两个过程气泡」的取舍）；
+    正式回答的实时性不受影响。
+  - **原生文件选择与 Tauri 拖放只有编译级验证**（`cargo check --offline` 通过），没有在运行中的桌面进程里
+    手工点开对话框/拖入文件；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
+  - **真实大于阈值的超大文件未做端到端复制耗时取证**（阈值分类与引用路径已由测试覆盖）。
+  - 阶段与说明历史复用 `messages` 的叙事行，没有独立阶段表；阶段在当前实现里不跨 turn 延续。
+- **后续依赖：** 真机桌面端手工验证原生选择/拖放与视觉检查（窄窗口、长回答、代码块、附件准备中）。
+  设计与分工见 `docs/plans/2026-10-06-unified-process-attachments-streaming.md`，
+  结构契约见 `docs/architecture.md` §12.1.2 ~ §12.1.5；
+  独立验证方的取证记录见 `docs/verification-d-phase2.md`（含七组验收结论与截图 `docs/verification-shots/`）。
+
+### P17 — 审计七项修复（统一过程区 / 流式输出 / 附件，2026-10-06）
+
+- **Status：** partial
+- **背景：** 对 P16 交付做独立审计，确认七项与产品规则冲突的问题并逐项修复；本轮**废止**了 P16 引入的两处错误规则：
+  300ms 输出角色守卫，以及「正式回答→过程区」的文字移动例外。
+- **Implementation（问题 2 · 输出角色）：** 删除 `GUARD_MS` 守卫与 answer→interim 移动。正文增量**一到达就以
+  `interim=true` 实时发布**（过程区「生成中」说明，边生成边显示）；**唯一可靠判据 = 该次模型调用结束且没有
+  任何工具调用** → 同一 `delta_id` 发 `{interim:false, streaming:false, content=累计全文}` 收尾快照，
+  文字**原样提升**为正式回答；有工具调用则留在过程区，阶段就位后同 `delta_id` 补 `stage_id`/`call_ids`。
+  工具阶段收尾零正文时补**一次** `tools=[]` 的调用专门产出正式回答（每轮最多一次，成本计入迭代/用量）。
+  **已进入正式回答区的文字永不移动**；判据不含时间、文案猜测或 `kind` 变化。
+- **Implementation（问题 1 · 内联审批）：** 抽出共用 `ApprovalFacts.vue` + `approvalFacts()`，弹窗与内联卡同一份事实；
+  内联展示模型 explanation 与系统 description（分别保留）、真实操作事实（命令/路径/工具参数/授权对象/范围/风险）、
+  验证与预算入口，长技术明细可折叠；「查看完整信息」打开原弹窗；内联接管期间**抑制自动弹窗**，
+  **同一 `approval_id` 任一时刻只有一套有效按钮**；非当前轮/恢复路径仍走全局入口。
+- **Implementation（问题 3 · 附件绑定）：** `attachment_ids` 的**存在性即语义**（出现，含 `[]`，表示这条消息就是这些附件；
+  只有**缺字段**才走旧客户端兜底）。前端发送路径一律带该字段；待发附件与话题/草稿绑定并在重建/刷新后可见恢复；
+  绑定前校验存在、话题归属与状态，已被别的轮绑定的不再重复绑定。
+- **Implementation（问题 4 · 默认折叠）：** 运行中**不自动展开**；默认可见区 = 状态行 + 当前阶段名 + 最新一条说明 +
+  **一行**工具摘要；旧阶段/旧说明/逐项工具记录默认收起；整轮历史抽屉与本阶段明细**两个独立**展开状态；
+  完成/失败/停止自动收起，手动开合或正在阅读时不被抢占。
+- **Implementation（问题 5 · 历史附件）：** 新增 `GET /api/attachments/{id}/content`（只读 QIO 管理的副本、需认证、
+  路径由 id 反查、不接受任意路径、`nosniff`）；浏览器认证 `fetch` → Blob 查看/下载；桌面原生打开，
+  **可执行/脚本类不自动执行**（改「在文件夹中显示」）；引用型在 missing/changed/failed 时提供**重新定位**入口。
+- **Implementation（问题 6 · 后台化）：** 上传改 `request.stream()` **有界分块**（无 `Content-Length` 也强制上限），
+  写临时文件 + sha256 在**工作线程**；重新定位/复制同理；事件循环只做落库与 O(1) 判断，
+  工作线程**不触碰**共享 sqlite 连接；取消后不得提交为 ready。
+- **Implementation（问题 7 · 结束事实）：** `TURN_END` 增补 `reason_code / reason / stopped_by / actions`
+  （系统事实、过 redact、≤200 字、只列确实可用的操作）；`reason_code` 含 `provider_error`（仅厂商/传输路径失败）/
+  `internal_error`（QIO 自身异常，reason 带真实类名）/ `credential_unavailable` / `tool_failed` /
+  `budget|no_progress|guard_halt` / `user_stopped` / `interrupted` / `none`（旧记录不伪造）；
+  可恢复的单次工具错误**不等于**整轮失败。前端按 `turn_id` 记进 `TurnFacts` 并展示原因与可用操作。
+- **Tests：** 独立验证方（D）先建立 **44 条红 / 24 条绿守卫**的基线（按产品规则而非实现文档），修复后逐项转绿；
+  实现方补充 `test_streaming_deltas.py` / `test_turn_timing_facts.py` / `test_attachment_explicit_binding.py` /
+  `test_attachment_content_and_background.py` 与前端 `TurnProcessCollapse` / `ApprovalFacts` /
+  `assistantPromotion` / `turnFactsReason` / `MessageItemAttachments` 等用例。
+- **Known limitations：**
+  - 实机交互（默认折叠 / 正式回答稳定性 / 内联审批点击 / 历史附件打开与重定位 / 失败入口）的浏览器级证据见阶段二报告；
+    原生选择器、拖放与原生打开仍需在运行中的桌面端手工验证（`cargo check` 不能替代）。
+  - 工作线程与事件循环共享 GIL 会带来 10–30ms 抖动（最大单次停顿实测 14–21ms，**不随文件大小增长**；
+    累计值随负载波动）。已用对照实验归因，未做「每 N 块主动让出 GIL」的优化（吞吐代价不划算）。
+  - 真实厂商端点的流式与兼容行为仍未验证（规则禁止真实 Key / 联网）。
+  - 与实机取证同批满载跑时，附件后台化的「最大单次停顿」断言出现过一次越线（单独复跑 13–14ms 通过）；
+    断言语义与阈值未改，建议该文件单独跑。
+  - 历史分页的附件元数据只加在 `/api/session/context` 与 `/api/session/messages` 两条路由；
+    `GET /api/fragments/{fragment_id}/messages` 未改动（前端无调用点）。
+- **验证（2026-10-07）：** 独立验证方按产品规则先建立 **44 条红 / 24 条绿守卫**基线，修复后逐项转绿；
+  Lead 亲自复跑冻结验收套件（后端 26 + 前端 26 全绿）与两条闸门（后端全量 0 失败、前端 1120 用例 + `vue-tsc` 全绿）。
+  **实机交互 37/37 通过**：默认折叠（运行中旧说明与逐项工具卡不可见、展开可回看）、正式回答稳定性
+  （provider 结束前已可见；1.2s 迟到工具增量不移字）、内联审批真机点击（允许 → `respond` 200 且本轮继续；
+  拒绝 → 命令不执行）、失败原因 + 重试真的再跑一轮、历史附件刷新后仍可打开（`GET /content` 200）
+  与引用失效后 `missing` + 重新定位。
+  取证见 `docs/verification-audit-phase2.md` 与 `docs/verification-shots-phase2/`（含原始 FAIL 对照）。
+- **后续依赖：** 真实厂商端点、桌面壳原生交互（当前用最小 Tauri 桩驱动同一段前端代码）、
+  大于阈值的超大文件上传与窄窗口视觉检查仍需在对应环境补齐。
+
+### P18 — 三项剩余问题修复（正式回答真流式 / 附件重试复用 / 上传失败收敛，2026-10-07）
+
+- **Status：** partial
+- **背景：** 独立复现三项遗留问题：正式回答仍要等调用结束才出现、带附件任务重试静默丢附件、
+  分块上传写盘失败后接收端持续等待。本轮同时**取代** P17 的回答角色方案。
+- **Implementation（问题一 · 正式回答真流式）：** 角色判据改为「这次调用带不带工具」：
+  `tools=[...]` 是**工作调用**（正文进过程区，可多轮/并行调工具）；`tools=[]` 是**回答调用**，
+  其正文**从第一个可发布增量起**以 `{interim:false, streaming:true}` **直接进入正式回答区**并持续显示。
+  工作调用不再请求工具时进入回答阶段并发起一次回答调用（工作阶段无正文时亦然）；收尾再发同一
+  `delta_id` 的累计快照做**校准**（收尾前若有未发布正文先发流式增量，**校准永不成为首次展示来源**）。
+  已进正式回答区的文字**永不移动**。成本：每轮固定多一次纯回答调用（最简问答 1→2 次），如实记录。
+  前端同步修两处：累计快照被打字机节流导致「文字到了 DOM 不亮」、断流/失败把已发布回答标回过程区。
+  另修一处诚实性问题：厂商错误曾被 `openai` SDK 默认 `max_retries=2` 静默重试成「成功」，现按 0 重试并如实失败。
+- **Implementation（问题二 · 附件重试复用）：** 新增 `retry_of_turn_id` 显式来源；`bind_for_turn`
+  返回 `BindOutcome(bound, rejected)`。**受理前**校验每个 id（存在 / 同话题 / 状态允许 / 未绑定或绑定在
+  来源轮），不满足即**结构化 409 且不入队**；`kind=copy` 为新一轮**新建记录并复用已保存副本**
+  （`os.link` 硬链接优先、失败退化复制，**绝不重读用户原文件**），新增 `source_attachment_id`（追加迁移）；
+  `kind=reference` 克隆**重查**当前可用性与变化；原轮归属与历史不变。响应带**实际绑定回执**，
+  前端以回执为准；中断恢复重发同样按此处理。
+- **Implementation（问题三 · 上传失败收敛）：** 一次上传 = 一个作业（有界队列 + 终态
+  `running|done|failed|cancelled` + 原因 + 工作线程句柄）。接收端排队前看终态，等待空位时**同时**观察终态；
+  **结束/中止哨兵不再依赖已无消费者的满队列**；取消能解除工作线程的阻塞读，工作线程失败能解除接收端等待。
+  失败/取消后清理临时文件、`prepared` 转 `failed`（带人话原因），**绝不提交 ready**；覆盖建目录/打开/
+  写入途中失败、权限、超限、客户端断开、用户取消、服务关闭。仍保持有界内存与字节上限、临时文件 +
+  `os.replace` 提交、后台文件 I/O、数据库只在事件循环线程访问。
+- **Tests：** 独立验证方按用户可见规则先建立 **26 红 / 12 绿守卫**基线（含三类受控写盘失败、
+  分块数超过队列容量、真实重试入口、受控假 provider 暂停在首段正文后），修复后逐项转绿；
+  实现方补充流式协议、克隆复用、回执准确性、上传收敛等用例；前端新增正式回答容器/过程容器 DOM 断言。
+- **Known limitations：**
+  - 真实厂商端点仍未验证（无外网、无真实 Key；全部假 provider / 真 SDK + 假端点）。
+  - 原生桌面交互（原生选择器、拖放、原生打开）需在运行中的桌面端手工验证，`cargo check` 不能替代。
+  - 工作线程与事件循环共享 GIL 的抖动、以及 `Settings` 的 `QIO_DATA_DIR` 覆盖显式 `data_dir`
+    这一测试陷阱，均记录在案（后者本轮未改）。
+  - 事件循环线程上的 `_check()/availability()` 会对引用型附件 `stat`，网络盘掉线时可能阻塞（既有风险，未在本轮处理）。
+- **阶段二发现并修复的缺陷（实机复现）：** 失败/中断的一轮在**刷新（历史恢复）之后丢失过程区与「重试」入口**
+  （实机证据 `processRegionsAfterRefresh:1 / retryAfterRefresh:false`）。两层修复：
+  ① 前端把**后端真实给过**的结束事实按 `turn_id` 留一份**有界本机留痕**（后端一旦下发同一条 `turn_facts` 即以它为准）；
+  ② **后端权威路径**：`TURN_END` 的 `reason_code/reason/stopped_by/actions` 落进 `turn_journal`
+  （**追加迁移 28**，落库前过 redact），并随 `/api/session/context`、`/api/session/messages`（分页）与
+  `/api/runtime/state`（RESYNC，只覆盖当前相关轮次）以 `turn_facts` 下发；旧记录无事实**不伪造**。
+  实机复验：**20/20**，其中「清掉 localStorage + sessionStorage 再刷新」后过程区与重试入口仍在
+  （证明来自后端权威路径而非仅前端留痕）。
+- **阶段二修正的验收口径（不是放宽）：** 附件后台化的停顿断言改为**按环境地板标定**
+  （同一次运行先测 1 KB 对照地板，硬指标 = `max_stall ≤ max(120ms, 3 × floor_ms)` + 探针推进），
+  并带**鉴别力自证**用例：在事件循环上放 400 ms 同步阻塞时实测 402 ms 仍判越线。
+  起因：CI run 37542503098 两个 job 各自越线（我们 407 ms / 既有无关测试 103 ms vs 100 ms）→ 2 vCPU runner 被抢占。
+- **验证（2026-10-07）：** 独立验证方按用户可见规则先建立 **26 红 / 12 绿守卫**基线，修复后逐项转绿；
+  Lead 亲自复跑：后端全量 **EXIT=0**、前端 **134 files / 1148 tests** + `vue-tsc` exit 0、`check_docs` 通过、
+  独立验证方 7 个 R4/审计文件全绿；**实机 20/20**（截图与网络台账见阶段二报告）。
+  Lead 另有**仓外独立探针**三条：正式回答在 provider 结束前已流式显示（3 条 150 ms 间隔增量、首条早于
+  `stream_end`）、原文件删除后重试新轮**读出同一份内容**、写盘失败上传在有限时间内返回且无残留记录。
+- **已知风险（记录不修）：** `AttachmentService.delete()` 置位取消后会把取消事件从 `_cancel` 中移除，
+  任何**事后**用 `is_cancel_requested()` 轮询的消费者看不到「已取消」（当前由上传作业终态兜住）。
+- **后续依赖：** 真实厂商端点与原生桌面交互仍需在对应环境验证；阶段二报告见独立验证方产出。
+
+### P19 — 收尾三项：上传终态 / 回答重复 / 附件复制阻塞（2026-10-07）
+
+- **Status：** partial
+- **背景：** 上一轮交付后仍有三条遗漏路径：上传工作线程失败后接收端还在等下一块网络数据；
+  工作阶段直接写出的完整答案会被再生成一次（过程区与回答区各一份）；重试克隆在硬链接失败后
+  用 `shutil.copyfile` **在事件循环线程**同步复制。本轮逐条闭合，并**废止** P18 的「每轮固定多一次回答调用」。
+- **Implementation（问题一 · 上传接收端与工作线程共同收敛）：** 接收循环把 `request.stream().__anext__()`
+  包成任务，与**作业终态**做 `asyncio.wait(FIRST_COMPLETED)` 竞争 —— 等待网络时同样观察终态，
+  **工作线程失败后不需要客户端再发送任何字节**即可进入失败收尾；每轮回收待决读取任务。
+  原因归属互不覆盖（写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭）；只有**实际退出**的工作线程
+  才被报告为已退出，卡在不可中断磁盘调用时保留真实状态、阻止迟到结果提交 `ready`、并在真正退出后补清理；
+  失败/取消不留 `prepared`、不留临时文件、不留无人认领副本。
+- **Implementation（问题二 · 内容角色协议）：** 角色由模型在正文开头的 `[[QIO:ANSWER]]` **显式声明**
+  （声明不展示）；流式按最长可能前缀缓冲判定，匹配即为回答调用、其后正文**从第一个可发布增量起**
+  实时进正式回答区；**未声明**正文先不展示（有界缓冲 256 KB），出现工具调用或超限才放行到过程区，
+  调用结束无工具调用则**一次性**交付回答区（`role_evidence="undeclared_answer"`，**不重新生成、不搬动、
+  过程区不留副本**）；声明后的迟到工具调用**不执行**并给可见警告；非法/冲突声明按未声明处理；
+  整轮完全没有回答内容时才补**一次** `tools=[]` 兜底。协议由 `prompts.CONTENT_ROLE_PROTOCOL` 单常量注入三档。
+  **成本：合规直接问答 1 次调用、工具轮 + 回答 2 次**（旧方案固定 2 / 3 次）。
+- **Implementation（问题三 · 重试克隆文件 I/O 异步化）：** `AttachmentService.bind_for_turn` 改为 **async**
+  三段式：① 事件循环线程校验 + 建 `prepared` 行 + 算目标路径；② `asyncio.to_thread` 只做文件 I/O
+  （`os.link` 优先、失败退化为复制，含 stat/大小校验）；③ 回到事件循环线程定稿 `ready`/`failed` 并绑定。
+  **不把含数据库操作的整个方法塞进线程**；取消/失败不留 `prepared`、不留半截文件、不留无人认领副本，
+  迟到结果按「行是否仍在 `prepared`」校验，绝不提交 `ready`。turns/resend 两处路由由 Lead 接线。
+- **Tests：** 独立验证方按用户可见规则先建立反例（问题一 4 红走**真实 ASGI 上传路由**、问题二 6 红、
+  问题三 1 红含**线程身份**证据），修复后逐项转绿；问题三另有**100,000,000 字节等号边界**的真实文件验证
+  （kind=copy、sha 一致、原轮与新轮都能读出、删除原文件后仍可读、无 `.part` 残留）。
+- **验证（2026-10-07）：** 独立验证方按用户可见规则先建立反例（问题一 4 红走**真实 ASGI 上传路由**、
+  问题二 6 红、问题三 1 红含线程身份），修复后 **36 条验收全绿**；**实机 15/15**（假 provider + uvicorn + vite +
+  msedge/Playwright，10 张截图与网络台账见阶段二报告）；Lead 亲自用**仓外独立探针**复核三条关键：
+  客户端暂停时上传请求自己返回且无残留、未声明完整答案进回答区且只 **1 次调用**、硬链接失败后复制线程
+  为 `asyncio_1`（非事件循环线程）且闸门关闭期间循环仍在推进。闸门：后端全量 **EXIT=0**、
+  前端 **134 files / 1148 tests** + `vue-tsc` 0、`check_docs` 通过。
+- **CI 已知 flake（非本轮引入）：** `backend (windows-latest)` 上既有测试
+  `test_interactive_during_heavy_work::test_health_probe_stays_responsive_while_slow_prediction_runs`
+  （阈值 100ms）在共享 runner 上越线（观测到 1191ms / 121ms），而本轮**未改动**该文件、本机带 6 个抢核进程
+  连跑 5 次全绿、上一轮 CI 亦曾通过 —— 判为负载敏感的既有 flake；**未改阈值、未 skip**。
+  其余 8 个 job（py3.11 / py3.12 / frontend / install e2e / rust×2 / frozen worker / docs）全绿。
+- **Known limitations：**
+  - 真实厂商模型是否按协议发出 `[[QIO:ANSWER]]` 未验证（无外网/无真实 Key）；不遵守时走**降级路径**
+    （一次性交付、不重复生成），但该次回答**不是流式**。
+  - 真实 uvicorn 下**客户端半开连接**（TCP 不 FIN、只是不发数据）的收尾未覆盖（用的是 ASGI 层暂停）；
+    「失败与最后一块/成功提交同时到达」的确定性竞态亦未构造。
+  - 原生桌面交互与真实厂商端点仍未验证。
+  - 事件循环线程上的 sqlite 为 autocommit + 默认 `synchronous=FULL`，每次写都 fsync；CI 上观测到过
+    数百毫秒的单次停顿（**推断**归因），本轮未改（可考虑 `synchronous=NORMAL` 或独立写线程）。
+
+### P20 — 四项剩余问题：附件就绪放行 / 声明解析 / 长正文退路 / 失败原因保留（2026-10-08）
+
+- **Status：** partial
+- **背景：** P19 之后仍有四条路径有洞：附件还在复制时模型已启动；合法声明与大正文落在同一分块时识别失败
+  （声明泄漏进正文）；未声明长正文超过缓冲上限后被改判过程区、并在结束时**再生成一次**；查询失败附件状态时
+  真实失败原因被通用 `missing` 文案覆盖。
+- **Implementation（问题一 · 附件就绪后才放行执行）：** `TurnManager.reserve / activate / abandon` 三段式 ——
+  预留分配 turn_id 并落台账但**不入队、不发 TURN_START**；turns 与 resend 两处路由改为
+  `precheck → reserve → await 准备 →（失败 abandon + 结构化拒绝）/（成功 activate）`；放行**按预留顺序**（FIFO，
+  有界等待兜底）；resend 的 claim **只在准备成功后消费**；准备期断开/取消/关闭 → `abandon` + 清理克隆，
+  台账记 `cancelled`（不是 interrupted）。**准备期间模型 0 次调用、工具 0 次执行。**
+- **Implementation（问题二 · 增量前缀解析）：** 删除「探测累计超过 32 字符即判未声明」的判据，
+  探测缓冲**只保存控制前缀**（`len(声明)+2`），**超出部分一律是正文**；匹配成功后同一分块剩余正文立即进回答流。
+  **分块边界无关**：同一字节序列任意拆分/合并，角色、最终正文、声明隐藏、控制流语义完全一致。
+- **Implementation（问题三 · 未声明长正文的角色待定退路）：** 新增 `core/answer_buffer.py` ——
+  有界内存（`UNDECLARED_MEMORY_LIMIT`，**UTF-8 字节**计量）+ 超出后工作线程追加写暂存文件；
+  **缓冲上限只管理资源、不决定角色**（废止「超限即判为工作调用」）；硬上限/暂存失败**如实报告**
+  （可见 WARNING `answer_truncated` + 截断事实），绝不无界增长、偷偷丢字或换角色；无工具调用 → 一次性交付
+  回答区、**不重新生成**；有工具调用 → 按序完整放行过程区；取消/断流/关闭/重启清理暂存。
+- **Implementation（问题四 · 失败原因保留）：** `failed` 与 `missing` 严格区分并**粘性**（GET/列表/历史/payload
+  不得覆盖原始原因）；只有显式重试成功或 **sha256 可验证恢复**才转 `ready`；payload 新增 `actions` 与
+  `recoverable_from_source`，前端按钮由其驱动 —— 浏览器字节上传给 **`reupload`**（并明说无法从原地址恢复），
+  不再给必然失败的 `retry` 或不适用的 `relocate`。
+- **Tests：** 独立验证方按用户可见规则先建立反例：问题二/三 **22 红**（声明泄漏 + 角色判错 + 重复生成）、
+  问题一 **2 红**（闸门关闭时模型调用=1、准备期取消后仍执行）、问题四 **6 红**（failed 被改判 missing、
+  原因被覆盖）；修复后逐项转绿（问题一 8/8 含多附件/排队失败/resend 恢复/准备期关闭；问题四 8/8 含
+  5 种注入 × 首次/重复 GET/列表/重新打开一致、重试换新原因）。Lead 另用**仓外独立探针**复核分块无关性
+  （7 种拆法）与 20 万字符未声明长正文：**37 项全过，每种拆法只有 1 次模型调用、过程区无副本、无声明泄漏**。
+- **验证（2026-10-08）：** 后端全量 **2403 tests / 0 failures / 0 errors / 10 skipped**；前端 **136 files / 1164 tests**
+  + `vue-tsc` exit 0；`check_docs` 通过（32 个里程碑）；R6 三个独立验收文件 **43 passed**；
+  **实机 18/18**（假 provider + uvicorn + vite + msedge/Playwright，12 张截图 + `summary.json`）；
+  CI 在最终 HEAD 上 **9/9 全绿（含 Linux py3.11 / py3.12）**。
+- **CI 暴露的两处「装置在 Linux 上不成立」已修（值得记住）：**
+  - 复制失败注入原先包 `builtins.open`/`io.open`，**Linux 的 `shutil.copyfile` 走 `_fastcopy_sendfile`**（`os.sendfile`
+    直接搬字节），不经过该层 → 注入不命中、克隆实际成功，于是「拒绝」与「模型未启动」两条断言在 Linux 上假红。
+    改为打在**真实调用点** `attachments.py:1390 os.link` / `:1393 shutil.copyfile`，跨平台确定。
+  - 有界等待用例原先断言 `queued`/`running` 这类**瞬态**快照；Linux 上被兜底放行的空转轮在同一 tick 内跑完，
+    采样必然错过（装置诊断实测：哨兵与 runner 起止同时间戳）。改为**不可逆事实**（TURN_START / TURN_END /
+    台账未完成集）+ 下界检查，并用**变异测试**证明判据未被放宽（把兜底函数摘成 `return` 后用例照样红）。
+- **Known limitations：**
+  - 真实厂商模型是否按协议声明仍未验证（无外网/无 Key）；不遵守时走降级路径（一次性交付，不冒充流式）。
+  - 有界等待的生产值（60s）未做真实等待验证（用例改为 0.2s 验证兜底逻辑）；进程**崩溃**在准备期的台账路径
+    （`queued` → 重启后 `interrupt_stale`）无用例。
+  - 暂存盘真实故障（盘满/权限）只做了 OSError 注入模拟；未做真实进程 RSS 采样（只验证有界性与清理）。
+  - 有一条未定位观察：复制工作线程被闸门卡住时重活池线程长时间停在 `inject.py list_active_for_node`（SQLite 读），
+    怀疑与共享连接写事务有关；同期 API/SSE 仍能推进（已断言），**未定位根因**。
+  - 原生桌面交互、安装包 E2E 与真实厂商端点未跑。
+
+### P21 — 取消确认 / 附件就绪 / 暂存故障交付 / 等待者收尾（2026-10-08）
+
+- **Status：** partial
+- **背景：** P20 之后仍有四条路径有洞：用户中止准备（客户端 abort）后端照样放行执行；首次登记的附件仍
+  `prepared`（首次复制没完成）就被当可就绪放行；暂存读取失败只写日志、回答尾部静默丢失；`abandon` 先删
+  结果 Future 再 resolve，等待者永不返回。
+- **Implementation（问题一 · 可确认取消）：** `X-QIO-Prepare-Id` 标识 + 幂等端点
+  `POST /api/turns/prepare/{prepare_id}/cancel`（`cancelled` / `already_started` / `unknown`）；
+  **服务端监测到准备期间请求断连也按同一契约 `abandon`**；`activate` 前复核取消标记，迟到的复制成功不得
+  重启本轮；前端「中止」以后端**确认**为准（确认前「正在中止…」；`already_started` 走既有停止流程并如实显示，
+  不得宣称「没有发送」）。实测：**真 uvicorn + 真 TCP 断连**后释放磁盘闸门，模型调用 0 次、台账 `cancelled`、
+  无孤儿克隆、取消端点 200。
+- **Implementation（问题二 · 唯一就绪条件）：** copy 必须 `ready` **且副本实际存在、可打开、大小与登记一致**；
+  `prepared` **一律不就绪** —— 要么**等待在飞首次准备**（`asyncio.Event` 唤醒，无轮询/固定延时/第二份复制，
+  有界 `PREPARE_WAIT_MS=60_000`，实例属性 `prepare_wait_seconds` 供测试收紧），要么**结构化拒绝**
+  `attachment_not_ready`（人话原因含重试指引）。覆盖首次登记 / 普通发送 / 旧客户端缺字段兜底 / 重试克隆 /
+  resend / 排队；**显式空列表仍表示不带附件**；任一被拒则整个绑定一个字节都不写（不留半绑状态）。
+- **Implementation（问题三 · 暂存故障准确交付）：** `AnswerBuffer.collect()` 返回结构化
+  `BufferOutcome(text, complete, kind, reason, total_bytes)`，`kind ∈ {complete, limit, spill_create, spill_write,
+  spill_read}` —— **读取故障绝不说成「超过上限」**；事实在 `collect()` 之后、清理之前进①**可见事件**
+  （`limit` → `answer_truncated`；`spill_*` → `answer_incomplete` + `kind`，写明「已交付 N / 原共 M 字节」）
+  ②**轮次警告**；**交付正文 = 已确认可交付的原样部分**（不把说明追加进正文）；`_maybe_fallback` 在结果
+  不完整时**不再调用模型**。
+- **Implementation（问题四 · 放弃预留先兑现等待者）：** `abandon` 先按既有约定兑现该轮所有等待者再清结果表；
+  重复 `abandon`/`cancel`/`shutdown` 幂等；单个等待者超时/取消不影响共享 Future 与其它等待者；终态不被
+  迟到 `abandon` 改写；放弃后后续就绪预留仍能推进。
+- **Tests：** 独立验证方按用户可见规则先建立反例（问题一 1 红：真 TCP 断连后仍执行；问题二 3 红：prepared
+  未就绪被调用；问题三 3 红：读取失败 0 警告 / 创建·写入被说成「超出上限」；问题四 5 红：等待者永不返回），
+  修复后**四文件全部转绿**。Lead 亲自复跑四文件（含真 TCP 断连用例）确认。前端「中止确认」由 DOM 用例 +
+  实机截图覆盖。
+- **验证（2026-10-09）：** 后端全量 **2445 tests / 0 failures / 0 errors / 10 skipped**；前端
+  **137 files / 1167 tests** + `vue-tsc` exit 0；`check_docs` 通过；`agent.eval.run` 与基线一致（verdict=skip）。
+- **两个集成期发现（都非本轮验收项的错误）：**
+  1. **准备期取消的监听任务死锁**（Lead 代修，`_prepare_with_cancel`）：断连监听挂在 Starlette
+     `BaseHTTPMiddleware` 的 `wrapped_receive` 上，那个 receive 要等**本请求的响应完成**才返回
+     `http.disconnect`，而响应要等路由返回 —— `finally` 里再 `await` 这个被取消的监听任务就是**自己等自己**
+     （`test_turn_journal` 两条 resend 用例实测永不返回，全量卡住）。修法：bind 任务**取消并等待**（克隆清理
+     挂在它身上）；监听任务**只取消不等待**（CancelledError 在其下一个 await 点送达）。
+  2. **就用未就绪附件点发送：前端本就有一道可见闸门**（`attachmentBlockReason`，自附件链路 `9b716ca` 起即有）：
+     prepared 附件按「发送」**不发请求**、屏幕显示「附件还在准备中…」。独立验证方的实机装置按
+     `data-test` 读原因元素而该元素当时没有 `data-test` → 读成「无任何拒绝提示」，被误列为
+     「待定性的观察」。补上 `data-test`（`attach-error`）+ 2 条 DOM 用例定性。
+- **Known limitations：**（见 `docs/verification-r7-phase2.md` §4）：60s 生产等待值未真实等待、准备期**进程崩溃**
+  台账路径无用例、真实磁盘故障仅 OSError 注入、多实例 tmp 清理竞争、重开对话后警告可见性未验证、
+  实机带附件发送的 3 条证据因前端就绪闸门不可达（后端门由 HTTP/ASGI 层覆盖）、HTTP/2 与反代下断连行为、
+  真实厂商/原生桌面/安装包未验。
+- **Known limitations：**
+  - 60s 准备等待生产值未做真实等待验证（用例收紧到亚秒）；准备期**进程崩溃**（非优雅关闭）台账路径无用例。
+  - 真实磁盘故障（盘满/掉线）只做 OSError/FileNotFoundError 注入；多实例共用 `<data_dir>/tmp` 的暂存清理竞争未验证。
+  - 「重新打开对话后不完整警告是否仍可见」未验证（取决于轮次事实持久化）；警告事实按契约**不进正文**。
+  - 事件循环上 sqlite `synchronous=FULL` 的 fsync 停顿（推断，未改）；真实厂商/原生桌面/安装包未验。
+
+### P22 — 带附件发送 CORS / 精确取消目标 / 兼容路径整体拒绝 / 暂存完整性（2026-10-09）
+
+- **Status：** partial
+- **背景：** P21 之后仍有四条：新取消头 `X-QIO-Prepare-Id` 没进 CORS 允许列表，带附件发送在**浏览器侧的预检
+  被直接 400 Disallowed CORS headers** 拦截（r7 报告里「带附件发送 no-request」的真根因）；取消确认返回
+  `already_started` 后前端停的是 `stopActiveTurn()`（**另一轮在跑时会被误伤**）；旧客户端兼容路径在等待期间
+  **重新枚举**未绑定附件，`_bindable` 不满足即 `continue` —— 复制真实 failed 的附件被静默丢掉、该轮照常执行；
+  `AnswerBuffer.collect()` 只把读取 OSError 当故障，暂存被**截短/清空/异常增长**或**多字节边界损坏**时
+  仍标 `complete=true`（把成功保存量说成完整生成量）。
+- **Implementation（问题一 · CORS）：** `X-QIO-Prepare-Id` 纳入 `allow_headers`（Lead 实施，`725fc75`）；
+  保留既有认证、可信来源与 Host 检查；预检过后正式请求仍走认证。前端发送失败给可理解原因、保留草稿与附件。
+- **Implementation（问题二 · 精确取消目标）：** `already_started` 回执里的 `turn_id` = 唯一取消目标 ——
+  新增 `session.stopTurnById(turnId)`，`Composer` 用 `stopConfirmedTurn` 以它为准；身份缺失明确说明、
+  **不静默退回** `stopActiveTurn()`（普通停止按钮语义不变，有用例钉住）；文案依事实（发出停止请求 ≠ 已停止、
+  已执行不得称「没有发送」）；`preparingHandled` 让重复点击只问一次。
+- **Implementation（问题三 · 兼容路径整体拒绝）：** 进入兼容发送**枚举一次并固定**集合快照，等待期间
+  **不重新枚举**；快照内任一附件失败/取消/删除/超时/不可读/被占用 → **结构化拒绝整轮**（复用显式路径同一份
+  判据与 code）；等待之后到落库之间**不再有 await**（`_recheck_planned` 按当下事实复核全部再一次落库）；
+  快照为空 → 正常执行；历史失败记录不阻断纯文字发送。
+- **Implementation（问题四 · 暂存字节事实核对）：** `collect()` 核对实际读回与成功写入的字节事实 ——
+  截短/清空/异常增长/非法 UTF-8（含中文末字截断的多字节边界）**不再被当完整交付**、不用 replacement 字符
+  掩盖；三个数字分开记（`generated_bytes / saved_bytes / delivered_bytes`，`total_bytes` 降为只读别名），
+  警告统计名称真实；事实走可见事件 + 轮次警告，不重调模型。
+- **Tests：** 独立验证方先在基线跑出四项红（预检 4 红 / 取消目标 5 红 / 兼容路径 8 红 / 暂存完整性 4 红，
+  另有绿守卫确认边界），修复后**同一套断言**在集成分支四文件全绿；实机**跨来源真浏览器 12/12**（请求级观察：
+  预检 200、POST 真到达 + prepare 头、回执绑定、`read_attachment`、回答完成；10 张截图 + summary.json）。
+- **验证（2026-10-09）：** 后端全量 **2460 tests / 0 failures / 0 errors / 10 skipped**；前端
+  **138 files / 1178 tests** + `vue-tsc` exit 0；`check_docs` 通过（34 里程碑）；`agent.eval.run` 与基线一致
+  （verdict=skip）。`test_turn_journal.py` 在 Lead 集成树上单独复跑 EXIT=0（独立验证方本机曾停住，判定为其
+  环境残留进程所致，非产品问题）。
+- **过程记录：** 本轮发生一次 **git stash 跨 worktree 撞车**（`git stash` 是仓库级共享栈）—— A/B 工作区曾
+  交叉污染，按共享 FS 复制 + 哈希核对恢复，**多 worktree 禁用 git stash** 已写入契约
+  （`docs/plans/2026-10-09-send-cancel-integrity.md`）。
+- **Known limitations：**（见 `docs/verification-r8-phase2.md`）真实硬件级损坏未验证（用真实文件操作模拟）、
+  多实例共写同一 tmp 目录未验证、100MB 兼容路径与引用型 changed 时序未单独造例、Windows 原生窗口
+  与安装包 E2E 未跑、真实厂商未验。
+
+### P23 — 对话过程区/流式/附件审计集中修复（F01—F24，2026-10-09）
+
+- **Status：** partial
+- **背景：** 对 P16—P22 这条开发线做一次集中审计（F01—F24）：先在**基线**上跑反例（能失败），
+  再逐项修复并复跑；同时把 C1—C8 冻结成本轮契约（终稿见 `docs/architecture.md` §12.1.7）。
+  审计范围：附件读取与资源边界、流式结束语义、输出脱敏、未声明前缀中断、前端 turn 归属与回答校准、
+  Markdown 列表渲染、耗时口径、附件前后端一致性。集成期另发现相邻路径 F25（TOOL_END 出口未脱敏），
+  一并登记；逐项判定见文末「本轮判定」。
+- **Implementation（附件读取与资源边界 · F01/F02/F21/F22/F23）：** `backend/src/agent/tools/attachment_tools.py`
+  - **有界解压/解析**：zip 成员数与单成员字节、累计解压字节、共享字符串与整份解析总量都有预算；
+    超资源给**明确、可理解的限制原因**，不伪装成完整读取成功。
+  - **超长单行的有界分块与增量解码**：不再按整行分配、不再整文件解码；单行按片段分页。
+  - **可中止的读取调度**：解析/解压在「不让事件循环被同步解析阻塞」的前提下推进，取消能中断本轮读取。
+  - **编码嗅探的未完成尾字节处理**：被截断的 UTF-8 多字节序列不再被误判成另一种编码。
+  - **分页事实与实际交付一致**：截断时 `next_offset` 指向真实继续位置；超长行引入**行内片段游标**
+    （`next_fragment_offset` / `next_cursor`），旧游标兼容；元数据反映实际交付内容。
+  - **测试：** `backend/tests/test_acc_a_f01_parse_bounds.py`、`test_acc_a_f02_line_bounds.py`、
+    `test_acc_a_f21_scheduling.py`、`test_acc_a_f22_encoding.py`、`test_acc_a_f23_paging.py`。
+- **Implementation（流式结束语义 · F06）：** `backend/src/agent/adapters/native.py`、`anthropic.py`、
+  `core/loop.py`、`core/turn.py`、`storage/turn_journal.py`
+  - `TURN_END.status` 终态集合新增 `incomplete`，**只**用于不完整 EOF（`reason_code == "incomplete_stream"`）：
+    native 无 `finish_reason`、anthropic 无 `message_stop`、仅 usage/空分块、未结束的工具调用。
+  - 厂商合法终止保持诚实区分而不升级为失败：`length_limit`、`content_filter` 的 status 仍是 `completed`，
+    只用 `reason_code` 区分。
+  - `incomplete` 时：**已确认正文保留**在 `final_content`，**未确认后缀不得出现**，`stopped_by=system`，
+    带人话 reason，`actions` 含 `retry`；语义贯穿 adapter → loop → `TURN_END` → 前端 → **历史台账**
+    （`turn_journal.record_facts` 落 `reason_code/reason/stopped_by/actions`），刷新后仍是「未完成 + 原因 + retry」。
+    终态表现由 `core/turn.py` 的 `TERMINAL_STATUSES` 与 `_completion_status` 定稿；`turn_journal` 的终态
+    集合同步接受 `incomplete`（**不折算成 `failed` / `completed`**），刷新 / 重连 / 分页都如实带回。
+  - **测试：** `backend/tests/test_acc_b_stream_end.py`、`test_acc_f_06_incomplete_stream.py`、
+    `backend/tests/test_acc_b2_incomplete_status.py`。
+- **Implementation（输出脱敏跨分块 · F07）：** `backend/src/agent/trace/redact.py`、`core/loop.py`
+  - 所有可观测输出（增量 / 累计快照 / 一次性正文 / 最终校准 / 注释 / 事件 / Trace / 历史 / 错误）
+    统一走 `redact_text`；**先脱敏再发布**。
+  - 跨分块敏感值用**有界未定稿尾部缓冲**（`undecided_tail_length`）：尾部不发布，直到确认没有完整对齐再放行；
+    缓冲有界、随流推进释放，**不退化为「整段生成后显示」**。
+  - **测试：** `backend/tests/test_acc_b_redact_stream.py`、`test_acc_f_07_stream_redaction.py`。
+- **Implementation（F25（相邻路径新发现）· TOOL_END 出口未脱敏）：** `backend/src/agent/core/loop.py`
+  - 相邻路径同范围：`TOOL_END` 的 `error` 与 `content_preview` 在**发布之前**过 `redact_text`，并与
+    **同源落库**（`tool_state.finish`、工具事实、工具历史 `_record_tool_call`）同口径 —— 工具失败信息里的
+    登记敏感值不得从事件出口或历史漏出（Lead 接手，提交 `59c3766`）。
+  - 发现方式：独立验证者（acc-f2）在集成分支上用最小反例复现（合成敏感值经必失败工具的 `ToolResult.error`
+    进入 `TOOL_END`，SSE 出口原样发布；对照路径均已脱敏）。
+  - **测试（反例）：** backend/tests/test_acc_f_25_tool_end_redaction.py（独立验证者产出、尚未并入本分支，
+    见「后续依赖」）。
+- **Implementation（未声明前缀中断不丢字 · F19）：** `backend/src/agent/core/loop.py`
+  - 在短角色前缀阶段被中断时，保留可交付文本并**如实标记未完成**；**完整控制声明不泄漏为正文**。
+  - **测试：** `backend/tests/test_acc_b_prefix_interrupt.py`。
+- **Implementation（前端 turn 归属与回答校准 · F05/F11/F12）：** `frontend/src/stores/events.ts`、
+  `stores/session.ts`、`components/TurnProcess.vue`、`components/MessageStream.vue`、`services/api.ts`；
+  后端 `backend/src/agent/core/turn.py`
+  - 过程 / 工具 / 回答 / 结束事实按服务端 `turn_id` 归属；**排队 turn 不改变活动轮**。
+  - `applyFinalAnswer` 按 **turn 身份**校准（不再用「全文是否相等」判断同一次回答）；系统核对注释走
+    `TURN_END` 独立字段 `annotation`（兼容 `final_annotation`），在独立「系统事实」区域渲染；
+    `final_content` 保持**纯正文**、正文只出现一次、不重启打字动画。
+  - **排队轮取消**留下自己的结束事实：`cancelled` / `reason_code=user_stopped` / `stopped_by=user` /
+    `actions` 含 `retry`，立刻发出，不影响活动轮；后端在 `core/turn.py` 里**补发恰好一条 `TURN_END`**
+    （`end_actions=("retry",)`，先落台账与 `record_facts` 再清理队列标记），前端 `events.ts` 对「非 active
+    但已知 turn」的 END 按该轮归属消费，`TurnProcess.vue` 如实显示「未完成 / 已取消 + 原因 + retry」。
+  - **测试：** `frontend/src/stores/__tests__/acc_c_final_answer.test.ts`、`acc_c_queued_cancel.test.ts`、
+    `acc_f_05_active_turn_ownership.test.ts`、`acc_f_11_final_answer_annotation.test.ts`、
+    `frontend/src/components/__tests__/acc_c_turn_identity.test.ts`。
+  - **测试（集成期补齐）：** `backend/tests/test_acc_b2_queued_cancel_end.py`、
+    `frontend/src/stores/__tests__/acc_c2_incomplete_turn.test.ts`、
+    `frontend/src/components/__tests__/acc_c2_incomplete_ui.test.ts`。
+- **Implementation（Markdown 列表内块语义 · F13）：** `frontend/src/components/MarkdownContent.vue`
+  - 按 AST **递归渲染列表项内的段落 / 代码块 / 子列表 / 引用 / 表格**，保留转义与链接安全策略。
+  - **测试：** `frontend/src/components/__tests__/acc_f_13_markdown_lists.test.ts`、`acc_c_markdown.test.ts`。
+- **Implementation（耗时口径 · F14）：** `frontend/src/components/TurnTimingPanel.vue`、`services/trace.ts`；
+  后端权威字段 `backend/src/agent/core/turn.py`
+  - 用户可见**总耗时 = 排队 + 执行**（可分列），**折叠态即可显示**；明细失败不覆盖已知总耗时、
+    不永久显示「读取中」；缺字段的旧记录只显示**可证明**的时间。
+  - **测试：** `frontend/src/components/__tests__/acc_c_timing.test.ts`。
+- **Implementation（附件前端 · F03/F04/F08/F09/F10/F24 前端）：** `frontend/src/services/attachments.ts`、
+  `components/Composer.vue`、`components/MessageItem.vue`、`utils/externalLink.ts`
+  - `noopener` 打开判定**不再用 `window.open` 返回值断言失败**（保留 opener 隔离、blob URL 生命周期与去重下载）。
+  - 历史重传结果**归属到发起话题的待发送列表**并可恢复；异步结果按 **topic / 操作版本**落地；
+    替换只在**指定的新附件 ready 且加入列表**后才提交；暂时恢复失败**不清持久化身份**。
+  - **测试：** `frontend/src/services/__tests__/acc_d_attachment_open.test.ts`、
+    `acc_d_restore_pending.test.ts`、`acc_d_wait_settled.test.ts`、`acc_f_03_external_open.test.ts`、
+    `frontend/src/components/__tests__/acc_d_composer_reupload_replace.test.ts`、
+    `acc_d_composer_topic_scope.test.ts`、`acc_d_reupload_result.test.ts`、
+    `frontend/src/utils/__tests__/acc_d_external_link.test.ts`。
+- **Implementation（附件后端一致性 · F15/F16/F17/F18/F20/F24 后端）：**
+  `backend/src/agent/services/attachments.py`、`api/server.py`
+  - 绑定跨 `await` 后按**记录身份 / 归属 / 可读性 / 操作版本**条件提交。
+  - 多附件重试的中间克隆在后续失败或取消时**完整补偿回滚**（删行 + 删本次副本 + 清 `preparing`，
+    原历史副本与归属不动）；取消后仍在执行的线程不得写回已撤销结果（落库前校验代际）。
+  - 副本就绪含**真实打开读取探针**（`stat` 正常但打不开的副本不再放行）。
+  - 引用消失的大文件重试按**当下事实**重校验；重定位用**代际版本**防止旧后台结果覆盖新结果。
+  - 缺失副本可恢复时返回「**已受理且正在准备**」，而不是立即 `missing`。
+  - **测试：** `backend/tests/test_acc_e_f15_binding_boundary.py`、`test_acc_e_f16_clone_rollback.py`、
+    `test_acc_e_f17_readability.py`、`test_acc_e_f18_reference_retry.py`、
+    `test_acc_e_f20_relocate_version.py`、`test_acc_e_f24_preparing_semantics.py`。
+- **【回归修复】r8「兼容路径多附件任一失败整轮拒绝」在组合/负载下变红（2026-10-09）：**
+  `backend/src/agent/services/attachments.py`（acc-e2）
+  - **现象：** `backend/tests/test_r8_compat_path_reject_verify.py` 的多附件用例在组合/负载运行下返回
+    200 accepted、`rejected=[]`；单文件运行通过（时序依赖）。
+  - **根因：** 兼容兜底把「进入时就能带」（`_entry_carriable`）当成**快照过滤器** —— bad 附件的失败若在
+    兼容路径枚举之前落库，它就被过滤掉，于是只剩 ok 附件被绑定并照常执行。
+  - **修复：** 集合口径分两层 —— 进入时本话题**至少有一条能带的草稿** → 集合 = 进入时**全部未绑定草稿**
+    （含进入即 failed / cancelled / missing / 不可读者）→ 任一条不合格**整轮拒绝**；**一条能带的都没有**
+    → 纯文字发送（保住既有集合政策）。
+  - **装置同步点：** 冻结用例只补**确定性同步点**（闸门把登记提交卡到兼容路径真正进入等待之后再放行），
+    **未改任何断言**；修复实现与用例由 acc-e2 产出（集成分支并入状态以提交记录为准）。
+  - **测试：** `backend/tests/test_r8_compat_path_reject_verify.py`（同一份断言，只加同步点）。
+- **本轮判定（逐项）：**
+  - **本轮修复：** F01—F04、F07—F10、F13—F24（集成分支复跑阶段一反例后转绿）。其中 F15—F24 是更早
+    审计登记的对照项，按「先核实是否已有修复 + 反例通过」的口径处理：需要修复的已在本轮落地，
+    能证明此前已有修复的只登记提交与验证，不重复实现。
+  - **已有修复且反例通过：** F05（基线即绿，修复位于基线的祖先提交 `2b204d7`，反例保留为回归守卫）。
+  - **本轮修复（集成期补齐后已落地）：** **F06**（`core/turn.py` 的 `incomplete` 终态出口、历史台账接受
+    与前端如实消费）、**F12**（排队轮取消补发恰好一条 `TURN_END`，`end_actions=("retry",)`）、
+    **F11 前端消费**（后端独立 `annotation` 字段 + 前端按 turn 身份在独立「系统事实」区域渲染）。
+  - **本轮修复（相邻路径新发现）：** **F25**（`TOOL_END` 出口与同源落库脱敏，Lead 接手 `59c3766`；
+    反例由独立验证者随阶段二并入）。
+  - **本轮修复（回归）：** r8「兼容路径多附件任一失败整轮拒绝」的负载回归（acc-e2，见上）。
+  - **未完成 / 未实测：** 见下「Known limitations」。
+- **Tests：** 上列每个实现分组都带对应的反例/回归文件；独立验证方另有按产品规则先建红、再逐项转绿的
+  基线反例（逐项登记处见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一）。
+- **验证（2026-10-09）：** 本轮文档侧验证 `python scripts/check_docs.py` 退出码 0；
+  后端全量与前端 `npx vue-tsc --noEmit` / `npm test`、以及实机取证由独立验证方在阶段二复跑产出
+  （具体数量随时会变，不写进本文件）。阶段一的基线反例与逐层证据见本轮验证报告。
+- **Known limitations：**
+  - **真实厂商端点未实测**：F06 的不完整结束语义只在假 provider 脚本与**真 HTTP + 真 SSE 的本地假厂商**上验证，
+    OpenAI / Anthropic 实网行为未验。
+  - **Windows / Tauri 原生文件入口未实测**：原生选择器、拖放与原生打开只有编译级验证，没有在运行中的
+    桌面进程里手工点过；浏览器环境拿不到真实路径，只能上传字节（能力限制如实提示）。
+  - **实机取证与跨层组合（阶段二）已完成**：10 张截图、11/11 通过（`docs/verification-shots-acc/summary.json`、
+    `docs/verification-shots-acc/visual-report.md`），跨层组合用例 `backend/tests/test_acc_f_20_cross_layer_combination.py`
+    覆盖「排队 + 取消 + 不完整结束 + 注释」的正常与异常两路。真实厂商端点、Windows/Tauri 原生入口仍未实测
+    （见 `docs/verification-acc-phase2.md` §六）。
+  - **兼容路径（旧客户端不传 `attachment_ids`）下，话题里未绑定的陈旧失败草稿会阻断带附件发送**，
+    直到用户删除它或重试成功；**显式 `attachment_ids=[]` 的纯文字发送不受影响**（新客户端一律走显式路径）。
+  - **读取预算与分页的旧游标兼容**只覆盖实现声明的旧形态；真实海量超长行文件的端到端分页未做耗时取证。
+- **后续依赖：** 阶段一的基线反例见 `docs/verification-acc-phase1.md`；阶段二的逐项判定报告见
+  `docs/verification-acc-phase2.md`（含 F25 与 r8 兼容路径回归）；F25 的最小反例见
+  `backend/tests/test_acc_f_25_tool_end_redaction.py`。以上均已并入本分支，可被 `python scripts/check_docs.py` 校验。
+- 契约终稿见 `docs/architecture.md` §12.1.7，逐项状态表见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一。
+
+### P24 — 七项残留边界问题收尾（R1—R7，2026-10-10）
+
+- **Status：** partial
+- **Implementation（本轮修复）：**
+  - **R1 定位/复制的代际提交边界**：`backend/src/agent/services/attachments.py` —— 每个复制操作/代际使用
+    **独有临时文件**（`temp_path_for`，后缀仍是 `.part` 以便重启清理认领），提交只在覆盖
+    「再校验代际 + 核对本操作写出的文件身份（st_dev/st_ino）+ `os.replace`」的**短锁**内完成（锁不覆盖复制）；
+    已提交但落库失败时按身份回滚**本操作**的副本（不误删新代际文件）；克隆与上传同纪律。
+  - **R2 集合放行的整组复核**：同文件 `_reverify_committed`（不写库、不 `await`）在所有等待结束后按
+    **当下事实**复核每条的存在/身份/归属（turn/topic/message）与副本可用性；任一条失效 → 整轮拒绝 +
+    完整补偿（`bound` 清空，放行集合 == 实际绑定集合），新克隆不留半成功。
+  - **R3 异步附件操作的归属与恢复写回**：`frontend/src/composables/attachmentOps.ts`（新增共享守卫）、
+    `components/Composer.vue`、`services/attachments.ts` —— 每个操作在发起时捕获 (topic, 附件, opToken)；
+    移除/发送确认使在飞操作失效；removed tombstone 随待发送持久化、跨卸载重挂载仍有效；
+    `restorePendingAttachments` 改为**返回补丁**、由 Composer 在修订号一致时合并（只新增，绝不整表回写旧快照）。
+  - **R4 选择期话题归属**：同批文件 —— `pickFile`/`addPaths`/`relocate` 在**点击入口**捕获发起 topic 与操作身份，
+    返回后不再读 `currentTopicId`；取消只清理自己的选择意图。
+  - **R5 系统注记的历史恢复**：`frontend/src/stores/session.ts` 的历史转换读 `raw.annotation`
+    （字段优先；仅字段缺失才从正文拆旧内联；并存只渲染一份；异常 raw 不制造虚假提醒），渲染层独立
+    「系统事实」区域、正文与注记各一次。后端形状 `{verified, annotation}`（`services/turn_orchestrator.py` 既有）。
+  - **R6 回答身份校准**：`TURN_END.answer_id`（= 最终校准目标回答的 `delta_id`；`core/loop.py` 记录最近一条
+    非 interim 正式回答、`core/turn.py` 透传，无回答段为 null）；前端 `applyFinalAnswer` 按身份**覆盖式**校准
+    （缺省 = 不校准、显式空串 = 清空目标正文、无身份 = 校准该 turn 最后一条正式回答），删除文字相似度/前缀判定
+    （`mergeFinalBody`）。
+  - **R7 终态动作一致**：`core/turn.py` `user_stopped → ("retry",)`（`interrupted` 保留 `resend`）；
+    `storage/turn_journal.py` 与 `api/server.py` 做**读时投影**：cancelled 轮的旧 `resend` 归一成 `retry`、
+    真正可恢复（用户消息、未被 claim）的 interrupted 行补 `resend`（已领取/系统通知轮不补），**journal 行不改写**；
+    前端 `components/TurnProcess.vue` 与 `stores/session.ts` 同规则归一；`retry` 用既有发送接口创建**新 turn**
+    （同话题 + `retry_of_turn_id` + 附件按既有克隆规则），只有点击才执行、重复点击只产生一轮。
+- **Tests：** `backend/tests/test_fb_a_r1_stale_relocate_overwrite.py`、`test_fb_a_r2_group_recheck.py`、
+  `test_fb_d_r6_answer_id.py`、`test_fb_d_r7_actions_retry_resend.py`、`test_fb_d_r5_history_annotation.py`；
+  前端 `fb_b_attachment_ops` / `fb_b_restore_patch` / `fb_b_attachment_ownership` /
+  `fb_c_r5_annotation_history` / `fb_c_r5_annotation_dom` / `fb_c_r6_answer_identity` / `fb_c_r7_turn_actions`；
+  以及 F01—F25 与 r8 兼容路径等既有回归。
+- **Known limitations：**
+  - 放行之后、模型真正读取之前，用户仍可能删除文件；R1/R2 不宣称消除这一段，读取侧按当下事实报错。
+  - R2 被拒回执里的 id 是本轮克隆行 id（克隆失败时回落到用户请求的源行 id）；前端按「实际请求的那条」理解。
+  - `copy_to_disk` 的 `on_commit` 是**测试用**确定性缝（默认 None）。
+  - 兼容路径下话题里未绑定的陈旧失败草稿仍会阻断旧客户端带附件发送（P23 既有已知限制）。
+- **后续依赖：** 逐项判定与实机取证见 `docs/verification-final-boundaries-phase2.md`；
+  基线反例见 `docs/verification-final-boundaries-phase1.md`；契约见 `docs/architecture.md` §12.1.8。
 
 ---
 
@@ -2503,6 +3037,101 @@ GitHub 直链与 `gh` 上传本身是通的。
   （既有行为，本轮未改）。
 - B01 的 26–28 分支组合未集成、未验证（见上）。
 - 候选「保存失败」在后端没有独立契约面，前端用注入 500 覆盖。
+---
+
+## 本轮变更：附件与发送边界收口（2026-10-10）
+
+在 `fix/process-attachment-audit-final-boundaries` 之上做的一轮边界收口。中心纪律只有一条：
+**所有「异步结果回来后要改文件或改状态」的地方，都要在同一个有效串行边界内再核对一次当下事实，
+过期操作一律不得覆盖更新的结果。**
+
+### 一、后端附件的提交边界
+
+- 旧问题：提交前的代次/身份检查与最终 `os.replace` 不在同一有效串行边界内；目标在操作开始时不存在时
+  身份核对整段被跳过；浏览器上传路径没有代次。旧任务因此可能覆盖更新的重新定位结果并回写旧元数据。
+- 现在：提交边界在同一临界区里核对 **代次仍当前 + 提交票号仍最新 + 目标身份未变**，三者同时成立才提交；
+  票号随结果回到落库路径，过期结果连行状态都不写（既有孤儿副本补偿契约不变）。上传路径与
+  `copy_to_disk(generation=None)` 的旧调用方同样被这条边界保护。
+
+### 二、引用型附件的最终接受边界
+
+- 旧问题：引用附件通过初步复核后，克隆或等待期间源文件消失、变得不可读、或被同名文件顶替，
+  最终绑定仍报成功。
+- 现在：在**最终接受边界**按当下事实复核引用事实（存在、可读、未变差），只允许不变或变好；
+  变差即结构化拒绝且不留下克隆行。进入时就缺失的引用仍如实登记为非可用行（既有语义不变）。
+
+### 三、前端恢复补丁与轮询结果的归属
+
+- 迟到的恢复补丁：应用前比较「当前本地修订号」与「请求发起时捕获的修订号」，期间有新写入就不应用
+  旧的缺失剔除，保留当前记录。
+- 旧轮询结果：条目级操作发起时记操作声明序号；不再是最新声明的结果既不写界面也不落盘。
+  仍然有效但属于别的话题的结果，只按它自己的原话题落盘。
+
+### 四、重新定位与重叠发送（界面）
+
+- 重新定位：原生选择器失败回退到「粘贴路径」时，发起时刻冻结的话题与附件身份一路带到提交，
+  不再用提交时刻的当前话题重新冻结；取消路径行、移除附件、切话题与组件卸载都会清掉这份捕获。
+- 重叠发送：每次发送持有**自己的**准备状态与取消目标（准备标识、连接控制器、防抖定时器、中止状态），
+  某次发送的收尾只清自己那一份；中止入口始终绑定它自己的请求标识。两次带附件的发送会同时停在
+  「后端尚未受理」时，第二次在派发前被拒绝并保留草稿与附件。组件卸载只清定时器、**不**中止在途请求
+  （中止只由用户显式动作触发，离开页面不得丢掉已经发送的消息）。
+
+### 五、中断轮次成功重发后的终态动作
+
+- 旧问题：`interrupted` 行如果持久化的动作表里本来就写着 `resend`，在已经被领取（已成功重发过）
+  或系统通知轮上仍会原样透出，用户再点必然得到 409。
+- 现在：终态动作表只有**一份**读时投影，可恢复判据是「`interrupted` 且非系统通知且尚未被领取」；
+  非可恢复的 `resend` 一律去掉（`cancelled` 仍归一到真正可用的 `retry`）。台账行里的执行事实不改写，
+  接口与历史读路径共用这一份投影。
+
+### 六、Windows 后端 CI 的测试装置
+
+- 探针子进程明确 UTF-8（`PYTHONIOENCODING` 加标准流 reconfigure），父进程按 UTF-8 解码：
+  不再依赖 runner 默认编码（英文 Windows 的 cp1252 会让打印中文的探针直接崩）。
+- 拒读/恢复装置：`icacls` 不动继承，只拒读写数据权限；恢复只做一次移除并**复核可读**；
+  所有 `icacls` 调用的返回码和主体标识都会被检查，恢复不了就大声失败（带命令、退出码与输出）。
+  装置故障不再被当成产品缺陷，也不再被静默当成通过。
+
+### 七、本轮实测
+
+- 新增受控回归（受控闸门/承诺对象构造时序，无随机等待）见
+  `backend/tests/test_r2_w1_r1_commit_boundary.py`、`backend/tests/test_r2_w1_r2_reference_final_acceptance.py`、
+  `backend/tests/test_r2_w4_terminal_facts_projection.py`、`backend/tests/test_r2_w5_windows_ci_harness.py`、
+  `frontend/src/components/__tests__/r2-w3-r5-relocate-topic.test.ts`、
+  `frontend/src/components/__tests__/r2-w3-r7-overlap-send.test.ts`。
+  每一项都先在本轮基线上复现为红，再修到绿。
+- `cd frontend; npx vue-tsc --noEmit` 通过；`npx vitest run` 全绿。
+- `python scripts/check_docs.py` 通过。
+
+### 八、仍然存在的限制
+
+- 本轮的 Windows 侧验证以本机受控条件等价复现 CI 的失败机制；拒读装置的权限口径需要在 GitHub Actions 的
+  windows-latest 上实跑复核（本机与 runner 的权限环境不同）。
+- 引用型附件的「与登记时同源」只能按登记事实（大小加修改时间）与当前状态秩判断：登记里没有 inode 或
+  内容摘要，「同名、同大小、同修改时间」的重建文件在登记事实层面不可区分；要更强需要登记文件身份。
+- POSIX 分支的拒读装置（`chmod`）在本机（Windows）无法执行，未实测。
+- 本机全量后端套件存在与会话环境相关的既有失败与顺序抖动（部分用例单独跑即通过），因此本机全量结果
+  只作对照，不作为合并依据；合并依据是 GitHub Actions。
+
+### 九、继续审计发现并已修的问题
+
+本轮在集成之后又做了一轮独立验证与继续审计，发现并修掉了下面几条「同一族根因的残留」：
+
+- **提交票号跨代际误伤（N1）**：票号原先在**工作线程**里领取，所以票号的先后不一定等于代际的先后；
+  顺序反转时两个操作会互相作废，附件永远停在「准备中」，绑定要等满等待上限才被拒绝。
+  现在代际是硬闸、票号只**在同一代际内**比较（按附件与代际分桶）——过期代际的操作不可能再作废当前代际的操作。
+- **兼容调用形状仍带旧缺陷（N3）**：`restorePendingAttachments` 不带选项的那条兼容路径也会按
+  「当前本地修订号」判断，期间被更新过的记录不再被旧事实删除。
+- **旁路落盘入口（N4）**：`register_upload` 不再自己提交文件，改走与上传同一条提交边界；
+  绕过边界的私有落盘入口已删除。
+- **上传 worker 的代际错配（N5）**：工作线程原先绑定的是「它自己启动那一刻」的代际，而落库用的是
+  「登记时」的代际 —— 登记在前的上传能覆盖后发起的重定位成果，行与磁盘还会不一致。
+  现在上传作业携带登记时的代际，提交边界与落库用**同一个**代际。
+
+这四条都有确定性回归：`backend/tests/test_r2_v_n4_n5_upload_boundary.py`（含把
+`run_upload_worker` 的代际透传钉死的接线守卫）以及 `backend/tests/test_r2_w1_*.py` 里的 N1 时序用例。
+
+
 
 
 ---
@@ -2645,3 +3274,48 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 - 本轮改动影响工具策略相关评测：uv run --frozen python -m agent.eval.run 输出与修复前基线一致（topic/retrieval/anchor 全指标无回归）。
 - 未验证：Windows 安装包 E2E、真机浏览器截图走查（本轮以组件级 + store 级测试替代）。
 
+---
+
+## 集成：流式回复修复线并入 main（2026-10-11，评审中）
+
+把 `fix/process-attachment-audit-round2`（`cc19b68`，含统一过程区、真实增量、附件生命周期
+与 8 轮审计的全部修复）集成到 `origin/main`（`84eb4b4`）。集成分支
+`integrate/streaming-main-20261011`，**未合并 main、未发布**。
+
+### 一、数据库
+
+- 来源线三条迁移改号 **26/27/28 → 31/32/33**（SQL 与语义逐字保留）：main 的迁移已到 30，
+  `apply_migrations` 只按版本号前进，沿用旧号会被最新 main 的存量库整段跳过，attachments 永不建出。
+- 新增**补偿迁移 34**（`COMPENSATION_VERSION` 随之改为 34）：main 的实例归属对象 + 本次新增的
+  attachments / 结束事实对象合并为一份幂等语句；`verify_required_objects()` 按对象复核、缺则重放、
+  仍缺抛 `SchemaIncompleteError`。只有 CREATE / ADD COLUMN，没有 DROP / DELETE / UPDATE。
+
+### 二、运行与事件
+
+- `TurnManager.reserve()` 支持 `request_id`（预留同样算已受理，幂等索引同一份）。
+- `/api/turns` 与 `/api/turns/{id}/resend` 统一为「预留 → 准备 → 放行」，同时保留契约 C2
+  （持久化失败 → 503 `accepted=false`）与契约 C3（`claim_for_resend` 单事务消费 claim + F03 派发失败标记）。
+- 持久接受收口为唯一入口 `_persist_accept()`：`submit()` 与 `reserve()` 对同一故障给出同一结果
+  （以前附件预留路径会静默吞掉台账写失败）。
+- `claim_for_resend` 的新行插入改为幂等 upsert（兼容 `reserve()` 已经落下的预留行）。
+
+### 三、流式用量记账（集成补丁）
+
+`native.stream()` / `anthropic.stream()` 原先不记账：main 的 `accounts_requests=True` 会让 loop
+跳过上层补记，于是回答阶段的主路径既不进凭据账本也不受预算上限约束。补丁在两条 `stream()` 的
+外层补 `ensure_adapter_request_allowed()`（请求前核对预算）与 `account_adapter_request()` /
+`account_adapter_failure()`，并新增 `backend/tests/test_streaming_usage_accounting.py`。
+
+### 四、前端
+
+- 发送一律 `api.sendTurn(message, startIdentity.topicId, ids, …)`：起点身份用提交时快照（M01），
+  第三参是显式附件绑定数组（契约 §1.4：空数组也成字段）。
+- 失败分流统一：只有带 status 的 4xx 算明确拒绝；5xx / 无 status 算「没拿到回执，结果未知」；
+  没有结构化 detail 时不伪造附件原因。
+- 用户中止带附件的发送（准备期 abort）按「明确未发送」收口，不滑进「正在确认」。
+- main 的回执台账与来源线的准备态/过程区/终态动作都保留。
+
+### 五、验证
+
+后端全量、前端类型检查与全量、`check_docs.py`、评测基线对比全部通过；逐条证据与未验证项见
+`docs/integration/2026-10-11-streaming-into-main.md`。

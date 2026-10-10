@@ -212,7 +212,11 @@ async def test_multi_round_tools_accumulate_in_the_request():
     joined = "\n".join(m["content"] for m in third)
     assert joined.count("工具 echo 的结果") == 2
     assert joined.index("第一轮") < joined.index("第二轮")
-    assert "最终回答" not in joined
+    # 集成后 text 档的 system prompt 里带着内容角色协议，其中**原样**包含「最终回答」
+    # 这几个字（[[QIO:ANSWER]] 的说明文字）。这条用例要钉的是「上一轮的回答正文不会被
+    # 回灌进请求」，所以排除 system 消息后再断言。
+    non_system = "\n".join(m["content"] for m in third if m.get("role") != "system")
+    assert "最终回答" not in non_system
 
 
 async def test_failed_tool_result_is_kept_as_plain_text_not_dropped():

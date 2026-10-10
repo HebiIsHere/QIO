@@ -2,11 +2,22 @@
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
-import TurnTimingPanel from "./TurnTimingPanel.vue";
-import { useSessionStore } from "../stores/session";
+import AttachmentChip from "./AttachmentChip.vue";
+import { splitSystemAnnotation, useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
-import type { StreamMessage } from "../stores/session";
+import type { MessageAttachment, StreamMessage } from "../stores/session";
+import {
+  addPendingAttachment,
+  pickBrowserFile,
+  pickLocalPath,
+  prepareAttachment,
+  relocateAttachment,
+  retryAttachment,
+  uploadAttachment,
+  waitUntilSettled,
+  type AttachmentRef,
+} from "../services/attachments";
 
 const props = defineProps<{ message: StreamMessage; showTopic?: boolean }>();
 const session = useSessionStore();
@@ -203,6 +214,153 @@ const verifiedText = computed(() => {
   if (!fact) return "";
   return fact.basis ? `后端已核对：${fact.basis}` : "后端已核对";
 });
+
+/**
+ * 系统核对注记（后端事实，不是模型的说法）：契约 §七 C1 要求它在**独立「系统事实」区域**
+ * 渲染 —— 所以这里把正文与注记切开：正文照常走 Markdown（打字机只作用于正文），
+ * 注记单独成块。同一段文字只出现一次（content 里本来就只存了一份）。
+ */
+const answerParts = computed(() => splitSystemAnnotation(props.message.content ?? ""));
+const answerBody = computed(() => answerParts.value.body);
+const systemNote = computed(() => answerParts.value.annotation);
+
+/**
+ * 用户消息上的附件行。
+ *
+ * 只展示**真实拿到的元数据**（名称 / 大小 / 保存方式 / 可用性 / 失败原因）；
+ * 只有 id 没有元数据时如实说「元数据未加载」，绝不编造文件名或状态。
+ */
+const attachmentChips = computed(() => props.message.attachments ?? []);
+
+// -- 附件行（契约 §1.6）：显示交给 AttachmentChip，动作接在这里 ----------
+
+/** 正在处理的附件 id（打开 / 重新定位 / 重试共用）：防重复点击 */
+const attachBusyId = ref<string | null>(null);
+/** 附件操作的结果：失败必须留在这一行上，不能只写控制台 */
+const attachNotice = ref("");
+
+/** 就地更新一条附件（重新定位 / 重试会返回后端确认过的新状态） */
+function applyAttachment(next: AttachmentRef) {
+  const list = props.message.attachments;
+  if (!list) return;
+  const index = list.findIndex((a) => a.id === next.id);
+  if (index >= 0) list[index] = next;
+}
+
+/**
+ * 打开附件副本（契约 §1.6）：走附件服务（浏览器 fetch 副本 / 桌面原生打开），
+ * **绝不接受任意路径**。服务还没提供这个入口时如实说明，不给一个假动作。
+ */
+async function openOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const mod = (await import("../services/attachments")) as unknown as {
+      openAttachment?: (attachment: AttachmentRef) => Promise<void> | void;
+    };
+    if (typeof mod.openAttachment !== "function") {
+      attachNotice.value = "这个版本还没有提供「打开副本」的入口（缺少附件内容接口）";
+      return;
+    }
+    await mod.openAttachment(ref);
+  } catch (e) {
+    attachNotice.value = `打开没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/**
+ * 重新定位引用型附件（契约 §1.6）：原生选择器给新路径 → 后端重新校验
+ * 大小 / 保存方式 / 状态；失败如实显示，仍可再试。
+ */
+async function relocateOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const path = await pickLocalPath();
+    if (!path) return; // 用户取消：什么也没发生，不能假装成功
+    const updated = await relocateAttachment(id, path);
+    applyAttachment(updated);
+    attachNotice.value = `已重新定位：${updated.name}`;
+  } catch (e) {
+    attachNotice.value = `重新定位没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/**
+ * 「重新上传」（契约 §1.4，浏览器字节上传）：QIO 手里没有内容、也没有原地址，
+ * 只能由用户重新给一次文件。
+ *
+ * 结果归属（F04）：新附件进入**发起操作话题**的待发送附件列表（显示可使用入口并持久化），
+ * 原历史记录与旧 turn 的附件归属**保持不变** —— 不只是在后端建一条记录 + 弹一句成功。
+ */
+async function reuploadOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  if (!ref || attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  // 发起话题：优先当前话题，退化才用附件自身记录的话题事实
+  const topicId = session.currentTopicId ?? ref.topicId ?? null;
+  try {
+    let created: AttachmentRef | null = null;
+    const path = await pickLocalPath();
+    if (path) {
+      created = await prepareAttachment(path, { topicId, name: ref.name });
+    } else {
+      const file = await pickBrowserFile();
+      if (!file) return; // 用户取消：什么也没发生，不假装成功
+      created = await uploadAttachment(file, { topicId });
+    }
+    if (!created) return;
+    // 成功创建后立即进入发起话题的待发送列表（持久化 + 广播给 Composer）
+    addPendingAttachment(topicId, created);
+    attachNotice.value =
+      `已重新上传并加入待发送附件：${created.name}；原来那条「${ref.name}」的历史记录保留（QIO 无法从原地址恢复）`;
+    // 还在后台准备的：继续跟进，就绪后更新待发送列表里的同一条
+    if (created.state === "prepared") {
+      void waitUntilSettled(created)
+        .then((settled) => addPendingAttachment(topicId, settled))
+        .catch(() => {
+          /* 状态没跟到：待发列表里的 chip 会显示准备中，不谎报成功 */
+        });
+    }
+  } catch (e) {
+    attachNotice.value = `重新上传没有成功：${(e as Error).message}（可以重试）`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/** 失败 / 变化后重试同一行（不新建附件） */
+async function retryOne(id: string) {
+  if (attachBusyId.value) return;
+  attachBusyId.value = id;
+  attachNotice.value = "";
+  try {
+    const updated = await retryAttachment(id);
+    applyAttachment(updated);
+  } catch (e) {
+    attachNotice.value = `重试没有成功：${(e as Error).message}`;
+  } finally {
+    attachBusyId.value = null;
+  }
+}
+
+/**
+ * 已发出消息上的「移除」：附件是这条消息的一部分，不能在这里抹掉。
+ * 说清楚而不是让按钮看起来能点却没反应。
+ */
+function removeOne(id: string) {
+  const ref = attachmentChips.value.find((a) => a.id === id);
+  attachNotice.value = `这条消息已经发出：${ref?.name ?? "附件"} 是消息的一部分，不能在这里移除`;
+}
 </script>
 
 <template>
@@ -211,6 +369,46 @@ const verifiedText = computed(() => {
       <div class="bubble user-bubble">
         <div class="plain">{{ message.content }}</div>
       </div>
+      <!--
+        附件行（契约 §1.6）：显示与「打开 / 重新定位 / 重试 / ×」入口由 C 的
+        AttachmentChip 负责，这里把事件接到真实动作，并把结果就地反馈。
+      -->
+      <div v-if="attachmentChips.length" class="attach-row" data-test="message-attachments">
+        <span
+          v-for="a in attachmentChips"
+          :key="a.id"
+          class="attach-item"
+          data-test="message-attachment"
+          :data-id="a.id"
+          :data-kind="a.kind"
+          :data-state="a.state"
+        >
+          <AttachmentChip
+            :attachment="a"
+            :busy="attachBusyId === a.id"
+            @open="openOne"
+            @relocate="relocateOne"
+            @retry="retryOne"
+            @reupload="reuploadOne"
+            @remove="removeOne"
+          />
+        </span>
+      </div>
+      <!-- 受理回执与界面不一致：这条消息实际没带上附件（绝不假装带上了） -->
+      <p
+        v-if="message.attachmentNotice"
+        class="attach-notice"
+        role="status"
+        data-test="attachment-receipt-notice"
+      >
+        {{ message.attachmentNotice }}
+      </p>
+      <p v-if="attachNotice" class="attach-notice" role="status" data-test="attachment-notice">
+        {{ attachNotice }}
+      </p>
+      <p v-else-if="!attachmentChips.length && message.attachmentIds?.length" class="attach-note mono">
+        带了 {{ message.attachmentIds.length }} 个附件（元数据未加载）
+      </p>
       <div class="meta mono">
         <span v-if="message.queued" class="queued-tag">等待中</span>
         <span class="ts">{{ formatTime(message.createdAt) }}</span>
@@ -319,28 +517,49 @@ const verifiedText = computed(() => {
       <ToolCreationCard :message="message" />
     </template>
 
+    <!--
+      中间话（interim）**不是气泡**：它是过程说明，统一由过程区（TurnProcess）渲染。
+      这里保留同一条渲染路径，所以整段文字在 DOM 里只出现一次。
+    -->
+    <template v-else-if="message.role === 'assistant' && message.interim">
+      <p class="process-line" data-test="process-line">{{ message.content }}</p>
+    </template>
+
     <template v-else>
       <!-- 流式生成中的正文不逐字播报给辅助阅读工具（aria-busy + 不设 live 区域），
            落定后由正常文档流阅读即可。 -->
       <div
         class="bubble assist-bubble"
-        :class="{ interim: message.interim }"
         :aria-busy="message.streaming ? 'true' : undefined"
         :aria-live="message.streaming ? 'off' : undefined"
       >
-        <div v-if="message.interim" class="interim-tag mono">◈ 过程</div>
         <div v-if="showTopic" class="tname serif">{{ topicLine }}</div>
+        <!--
+          打字机只用于「一次整段到达」的文本（旧后端整段推送）。
+          已经被增量更新过的消息（assistantGrew）必须立刻显示收到的全文：
+          增量本身就是节奏，再叠一层逐字点亮就等于让用户看不到已经到达的回答。
+        -->
         <MarkdownContent
-          :source="message.content"
-          :reveal="!!message.streaming"
+          :source="answerBody"
+          :reveal="!!message.streaming && !message.assistantGrew"
           :cps="ui.typewriterCps"
           :pace-ms="message.paceMs ?? null"
         />
         <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
       </div>
-      <!-- 「这次为什么等这么久」：只在轮次结束、且这一轮有自己的 turn_id 时出现；
-           没有 phases 的旧轮次由面板自己降级说明，不占对话正文的注意力 -->
-      <TurnTimingPanel v-if="message.turnId && !message.streaming" :turn-id="message.turnId" />
+      <!--
+        系统核对注记 = 后端事实，独立成块（不进正文 Markdown）：
+        正文与注记各出现一次，也不参与打字机动画（它是在回答落定之后才到的）。
+      -->
+      <div
+        v-if="systemNote"
+        class="system-fact"
+        data-test="answer-system-note"
+        role="note"
+      >
+        <span class="sf-kind mono">系统事实</span>
+        <p class="sf-body">{{ systemNote }}</p>
+      </div>
       <div class="meta mono">
         <span class="ts">{{ metaText }}</span>
         <button class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
@@ -379,6 +598,29 @@ const verifiedText = computed(() => {
   margin-right: auto;
   align-items: flex-start;
 }
+/* 系统核对注记：独立「系统事实」区域（契约 §七 C1），与正文明确分开 */
+.system-fact {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  max-width: min(760px, 100%);
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-inset);
+  border-radius: var(--r-xs);
+}
+.sf-kind {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+.sf-body {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 /* 「后端已核对」：贴在回答内部的一行事实，克制、不抢正文 */
 .verified-note {
   margin: 8px 0 0;
@@ -414,17 +656,46 @@ const verifiedText = computed(() => {
   color: var(--text-strong);
   margin-bottom: 6px;
 }
-.assist-bubble.interim {
-  background: transparent;
-  border-style: dashed;
+/* 过程说明行：安静的一行文字，不是气泡（interim 不再单独成气泡） */
+.process-line {
+  margin: 1px 0 1px 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-subtle);
+  max-width: min(760px, 100%);
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  line-height: 1.75;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
 }
-.interim-tag {
+/* 附件行：用户消息下方的一排小签，数据用等宽字体 */
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  max-width: min(620px, 100%);
+}
+.attach-item {
   display: inline-flex;
   align-items: center;
-  margin-bottom: 6px;
+  max-width: 100%;
+}
+/* 附件操作的结果（打开 / 重新定位 / 重试）：留住，不静默 */
+.attach-notice {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  text-align: right;
+  max-width: min(620px, 100%);
+  overflow-wrap: anywhere;
+}
+.attach-note {
+  margin: 4px 0 0;
   font-size: 10.5px;
   color: var(--text-muted);
-  letter-spacing: 0.05em;
+  text-align: right;
 }
 /* 元数据：低调存在，hover / focus 时才完全显形（第一眼只看内容） */
 .meta {

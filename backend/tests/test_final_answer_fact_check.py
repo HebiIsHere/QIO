@@ -114,11 +114,13 @@ async def test_success_claim_after_failed_tool_is_corrected():
     adapter = _ScriptAdapter([("dev_run_tests", {})], "测试全部通过，工具已就绪。")
     result = await _loop(registry, adapter).run("做一个工具")
 
-    content = result.final_content or ""
-    assert "测试全部通过，工具已就绪。" in content      # 模型的话原样保留
-    assert "系统核对" in content                       # 末尾补了后端事实
-    assert "dev_run_tests" in content
-    assert "ws_ab12cd34ef56" in content
+    # 审计 F11：final_content 是**纯正文**，系统核对注释走独立字段 final_annotation
+    # （旧实现把注释拼进 final_content，前端因「全文不等」会再补一条重复回答）。
+    assert result.final_content == "测试全部通过，工具已就绪。"
+    annotation = result.final_annotation or ""
+    assert "系统核对" in annotation                     # 后端事实说明仍在，只是不再拼进正文
+    assert "dev_run_tests" in annotation
+    assert "ws_ab12cd34ef56" in annotation
 
 
 async def test_retry_success_keeps_the_answer_untouched():

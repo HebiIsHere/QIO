@@ -92,7 +92,9 @@ async def test_abc_fifo_single_planner_and_message_order(ctx: AppContext):
     await asyncio.wait_for(asyncio.gather(t_a, t_b, t_c), timeout=20)
     mp.undo()
 
-    assert adapter.order == ["A", "B", "C"]  # FIFO
+    # 契约 §1.1 变更：回答由 [[QIO:ANSWER]] 声明，未声明走降级交付 ——
+    # 合规的一轮只有 1 次调用 → 每个 tag 各出现一次；顺序仍然等于提交顺序（FIFO）。
+    assert adapter.order == ["A", "B", "C"]
     assert adapter.peak == 1
     assert ctx.turns.active is None
 

@@ -255,15 +255,38 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     w.unmount();
   });
 
-  it("整体状态只说一句话：等待响应时是「正在处理」，开始生成后不再重复", async () => {
+  /**
+   * 契约变更（2026-10-06 §1.5 归并，Lead 裁决「状态重复必须收口」）：
+   *
+   * 这一轮的运行状态由**过程区状态行**表达；当前轮已经有过程区时，
+   * 全局状态条不再显示同一条状态（旧断言期望这里仍出现「正在处理」）。
+   * 全局条只保留过程区覆盖不到的情况：排队等待 / 独立任务 / 系统通知 / 没有过程区的旧记录。
+   */
+  it("当前轮已有过程区：全局状态条不再重复「正在处理」；覆盖不到的状态仍然显示", async () => {
     const { w, session } = await mountStream();
     session.pushUser("问题");
     session.turnStarted();
     session.turnPhase = "waiting";
     await settle();
-    expect(w.find(".typing").exists()).toBe(true);
+    // 过程区（TurnProcess 的状态行）在说「正在处理」：全局条让位
+    expect(w.find(".typing").exists()).toBe(false);
+
+    // 过程区覆盖不到：独立任务 / 系统通知
+    session.activity = "subagent";
+    await settle();
+    expect(w.find(".typing").text()).toContain("正在处理独立任务");
+    session.activity = "notify";
+    await settle();
+    expect(w.find(".typing").text()).toContain("正在整理独立任务的结果");
+
+    // 没有在跑的轮 = 没有过程区：等待 / 排队仍由全局条表达
+    session.turnRunning = false;
+    session.activity = "waiting";
+    await settle();
     expect(w.find(".typing").text()).toContain("正在处理");
 
+    // 生成中本来就不重复
+    session.turnRunning = true;
     session.turnPhase = "generating";
     session.activity = "generating";
     session.pushAssistant("开始回答", true, true);

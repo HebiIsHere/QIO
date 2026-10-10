@@ -1,0 +1,207 @@
+{
+  "results": [
+    {
+      "name": "环境：首次引导已关闭",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "S1 上传写盘失败：界面在有限时间内给出明确失败与原因（不是无限转圈）",
+      "ok": true,
+      "detail": {
+        "composerText": "默认话题 Enter 发送 · Shift+Enter 换行 r5-上传失败.txt 28 B 文件不在原位 重新定位 重试 × 附件 路径 ↑",
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-01-upload-failed.png"
+      }
+    },
+    {
+      "name": "S1 失败上传没有停在「准备中」的残留记录",
+      "ok": true,
+      "detail": {
+        "rows": [
+          [
+            "r5-上传失败.txt",
+            "missing"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "S2 回答在 provider 结束前已出现在正式回答容器（.message.assistant）",
+      "ok": true,
+      "detail": {
+        "observed": true,
+        "answerCallStillOpen": true,
+        "streamEndsBeforeSend": 0,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-02-answer-live-before-provider-end.png"
+      }
+    },
+    {
+      "name": "S2 命中时刻过程区不含这段正式回答",
+      "ok": true,
+      "detail": {
+        "process": "已完成\n耗时 154 毫秒\n运行中"
+      }
+    },
+    {
+      "name": "S2 完成后：同一答案全局只出现一次（回答区一份、过程区没有副本）",
+      "ok": true,
+      "detail": {
+        "occurrences": 1,
+        "inProcess": false,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-03-answer-after-complete.png"
+      }
+    },
+    {
+      "name": "S2 未发生「为同一答案再生成一次」的额外调用（调用台账 ≤ 脚本步数 2）",
+      "ok": true,
+      "detail": {
+        "requests": 2,
+        "kinds": [
+          "text",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "S2 未声明降级路径：正文一次性出现在回答容器、过程区不含它、全局一份",
+      "ok": true,
+      "detail": {
+        "inAnswer": true,
+        "inProcess": false,
+        "occurrences": 1,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-04-undeclared-fallback.png"
+      }
+    },
+    {
+      "name": "S3 第一轮失败后出现真实「重试」入口",
+      "ok": true,
+      "detail": {
+        "chipReady": true,
+        "retryAppeared": true,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-05-failed-with-retry.png"
+      }
+    },
+    {
+      "name": "S3 重试真的开了新轮，新轮附件是克隆（新 id、原文件已删除）且内容读得回来",
+      "ok": true,
+      "detail": {
+        "originalId": "att_00171b33e373",
+        "newIds": [
+          "att_4600e4e621de"
+        ],
+        "state": "ready",
+        "content": "R5 实机附件内容：只有这份副本里才有的标记 5b21\n",
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-06-after-retry.png"
+      }
+    },
+    {
+      "name": "S3 重试后这一轮界面正常（正式回答出现 + 最新一轮已完成、无失败提示）",
+      "ok": true,
+      "detail": {
+        "answerTail": "\n未声明的完整答案：一次性出现。\n\n18:46:54\n复制\n默认话题\n\n我看过你带来的文件了。\n\n18:46:56\n复制",
+        "lastRegion": "已完成 耗时 101 毫秒"
+      }
+    },
+    {
+      "name": "S4 运行中默认折叠：默认可见区没有历史抽屉",
+      "ok": true,
+      "detail": {
+        "historyCount": 0,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-07-running-default-collapsed.png"
+      }
+    },
+    {
+      "name": "S4 结束原因与耗时可见（已完成 + 耗时）",
+      "ok": true,
+      "detail": {
+        "tail": "败） 有 1 个附件没有附上 18:46:56 复制 已完成 耗时 101 毫秒 默认话题 我看过你带来的文件了。 18:46:56 复制 第 06 轮 18:46:58 回归取证（默认折叠） 18:46:58 复制 已完成 ▸ 耗时 481 毫秒 1 次调用 默认话题 回归取证：这一轮结束了。 18:46:58 复制"
+      }
+    },
+    {
+      "name": "S4 内联审批：描述/独立说明/真实命令三者都在卡里",
+      "ok": true,
+      "detail": {
+        "cardText": "! 电脑操作审批 想运行一条 shell 命令 会执行命令 ◈ QIO 的说明 模型说明：为了验证审批链路，我要在受限子进程里跑一条无害的回显命令。 会改变什么 会删除或覆盖已有数据 授权范围 仅这一次：只对本次操作有效，之后同类操作会再问你 它会访问什么 启动一个系统命令进程 命令内容见下方详情 这次会实际执行什么 命令 echo r5-phase2-ap",
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-08-inline-approval.png"
+      }
+    },
+    {
+      "name": "S4 回归：刷新后历史附件行仍在，点「打开」→ GET /content 200",
+      "ok": true,
+      "detail": {
+        "rowCount": 1,
+        "contentStatus": 200,
+        "shot": "D:\\qio-dev\\qio-r5-d\\docs\\verification-shots-r5-phase2\\r5-10-history-attachment-open.png"
+      }
+    }
+  ],
+  "net": [
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_9b0701a27da3"
+    },
+    {
+      "method": "DELETE",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_9b0701a27da3"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_00171b33e373"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/turns"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://127.0.0.1:8734/api/attachments/att_00171b33e373/content"
+    }
+  ],
+  "provider": "http://127.0.0.1:8798",
+  "base": "http://127.0.0.1:5199"
+}

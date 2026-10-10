@@ -1,0 +1,123 @@
+{
+  "base": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8798",
+  "turn_id": "turn_a68b0e2c203b",
+  "message": "请分多次回答，讲清楚每一步。",
+  "sse_event_types": [
+    "TURN_START",
+    "TURN_QUEUE",
+    "TURN_QUEUE",
+    "CAPABILITY",
+    "ANCHOR",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "ASSISTANT",
+    "USAGE",
+    "ANCHOR",
+    "TURN_END",
+    "TURN_QUEUE"
+  ],
+  "trace_adapter_modes": [
+    "native"
+  ],
+  "trace_warnings": [],
+  "provider_requests": 2,
+  "stream_requests": 1,
+  "plain_requests": 1,
+  "provider_chunks": 20,
+  "sse_events": 23,
+  "sse_error": null,
+  "turn_end_status": "completed",
+  "checks": [
+    {
+      "name": "QIO 向 provider 请求了流式（stream=true）",
+      "ok": true,
+      "detail": {
+        "requests": 2,
+        "stream": 1,
+        "plain": 1
+      }
+    },
+    {
+      "name": "provider 真的分片发送",
+      "ok": true,
+      "detail": {
+        "chunks": 20,
+        "stream_end": true
+      }
+    },
+    {
+      "name": "SSE 收到非空正式回答增量",
+      "ok": true,
+      "detail": {
+        "assistant_events": 14,
+        "answer_events": 14
+      }
+    },
+    {
+      "name": "回答在 provider 结束之前就到了",
+      "ok": true,
+      "detail": {
+        "first_answer_lead_ms": 599,
+        "first_answer_latency_ms": 414,
+        "provider_stream_end_lag_ms": 1013
+      }
+    },
+    {
+      "name": "增量是累计快照（单调不回退）",
+      "ok": true,
+      "detail": [
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。第17段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。第17段。第18段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。第17段。第18段。第19段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。第17段。第18段。第19段。第20段。",
+        "第01段。第02段。第03段。第04段。第05段。第06段。第07段。第08段。第09段。第10段。第11段。第12段。第13段。第14段。第15段。第16段。第17段。第18段。第19段。第20段。"
+      ]
+    },
+    {
+      "name": "TURN_END 的最终全文与 provider 发出的完全一致",
+      "ok": true,
+      "detail": {
+        "final_len": 100,
+        "provider_len": 100
+      }
+    },
+    {
+      "name": "完整回答只交付一次（收尾快照不算重复）",
+      "ok": true,
+      "detail": {
+        "deliveries": 1,
+        "settle": 1
+      }
+    },
+    {
+      "name": "收尾快照是最后一条且交付全文",
+      "ok": true,
+      "detail": {
+        "settle_count": 1,
+        "is_last": true
+      }
+    }
+  ],
+  "failed": []
+}
