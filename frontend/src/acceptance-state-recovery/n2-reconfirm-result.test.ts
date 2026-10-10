@@ -88,11 +88,22 @@ describe("N2 重新确认仍待确认时，不许显示成功事实", () => {
     wrapper = mount(ImpactConfirmDialog, { attachTo: document.body });
     await wrapper.vm.$nextTick();
     await wrapper.find('[data-im="impact-continue"]').trigger("click");
+    // 确认链路要经过 PUT → 409 → 补取预判 → 重开确认框：轮询到状态稳定再断言（避免时序抖动）
+    for (let wait = 0; wait < 30 && store.pendingImpact === null; wait += 1) {
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     await flushPromises();
     await wrapper.vm.$nextTick();
 
     // 真实结果：仍然有待确认的影响说明（并没有生效）
-    expect(store.pendingImpact, "服务端仍要求再次确认").not.toBeNull();
+    const stateText = JSON.stringify({
+      impactCheckError: store.impactCheckError,
+      saveError: store.saveError,
+      saveStatus: store.saveStatus,
+      dirty: store.dirty,
+    });
+    expect(store.pendingImpact, "服务端仍要求再次确认；实际状态=" + stateText).not.toBeNull();
     const text = wrapper.text();
     expect(text, "界面必须继续显示待确认的新范围").toContain("任务-B");
     expect(

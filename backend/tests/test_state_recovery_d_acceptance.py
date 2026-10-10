@@ -132,7 +132,12 @@ def _seed_pending_revert(client: TestClient, *, link_both: bool = False) -> dict
     report = failed.json()["revert"]
     pending = [str(item["id"]) for item in report["pendingDecision"]]
     assert pending, report
-    return {"intent_id": target["id"], "applied_ids": applied, "pending_ids": pending}
+    return {
+        "intent_id": target["id"],
+        "applied_ids": applied,
+        "pending_ids": pending,
+        "note_id": seed["note_id"],
+    }
 
 
 def test_sr_n1_stale_whole_board_write_is_rejected(client: TestClient):
@@ -208,9 +213,8 @@ def test_sr_n4_revert_rest_rechecks_content_before_executing(client: TestClient)
             if card["id"] == target:
                 card["content"] = "用户后来补写的新内容"
         state["links"].append(
-            models.new_link(
-                target, seeded["applied_ids"][1], direction=False, meaning="后来建立的关系"
-            )
+            # 连到仍然存在、且与既有关系不同端点的对象上（同一对端点的关系会被规范化去重）
+            models.new_link(target, "m2", direction=False, meaning="后来建立的关系")
         )
 
     _put_current(client, mutate)
@@ -230,4 +234,7 @@ def test_sr_n4_revert_rest_rechecks_content_before_executing(client: TestClient)
         for link in _state(client)["state"]["links"]
         if link.get("meaning") == "后来建立的关系" and not link.get("deleted")
     ]
-    assert links, "等待期间新建的关系被旧决定顺带删掉了（N4）"
+    assert links, (
+        "等待期间新建的关系被旧决定顺带删掉了（N4）："
+        + repr([(l.get("id"), l.get("meaning"), l.get("deleted")) for l in _state(client)["state"]["links"]])
+    )
