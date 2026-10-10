@@ -119,6 +119,48 @@ def _parse_actions(raw: Any) -> list[str]:
     return [str(item) for item in parsed if str(item).strip()]
 
 
+def project_terminal_actions(
+    status: str,
+    actions: list[str],
+    *,
+    notify: bool = False,
+    recovered_at: Any = None,
+) -> list[str]:
+    """终态动作表的**唯一**读时投影（冻结契约 K3 / R6）。
+
+    动作表是给用户点的按钮：列出来的动作必须真的可用，否则就是一个点了必然 409
+    的死按钮。resend 的准入谓词就是 recoverable() / claim() 用的那一个：
+
+        recoverable_now = (status == interrupted and notify == 0 and recovered_at IS NULL)
+
+    * actions 含 resend 且**不是** recoverable_now：
+      - status == cancelled → 归一到真正可用的 retry（旧记录里存过 resend）；
+      - 其它终态（已经领取过的 interrupted / 系统通知轮）→ **去掉 resend**。
+    * status == interrupted 且动作被清空、且 recoverable_now → 补 ["resend"]
+      （旧行没写动作时的既有行为，刷新后「继续发送」入口不消失）。
+
+    投影只发生在「有终态动作表」的状态上：TERMINAL_STATUSES
+    （completed / cancelled / failed / unavailable / incomplete）与 interrupted。
+    还没到终态的 queued / running 行事实原样读回，本函数不介入（事实尚未定稿）。
+
+    纯函数，**不改写** journal 行里的执行事实；api/server.py 的镜像也调它，
+    避免两份口径再次分叉。
+    """
+    if status != INTERRUPTED and status not in TERMINAL_STATUSES:
+        return actions
+    recoverable_now = status == INTERRUPTED and not notify and recovered_at is None
+    if "resend" in actions and not recoverable_now:
+        if status == CANCELLED:
+            actions = ["retry" if item == "resend" else item for item in actions]
+        else:
+            actions = [item for item in actions if item != "resend"]
+    if status == INTERRUPTED and not actions and recoverable_now:
+        # 只有**真正可恢复**（用户消息、尚未被 claim）的 interrupted 行才补 resend，
+        # 与 /api/turns/{id}/resend 的准入谓词一致；已领取 / 系统通知轮不补。
+        actions = ["resend"]
+    return actions
+
+
 class TurnJournal:
     """`turn_journal` 表的读写。所有写入失败都只记日志 —— 台账不能挡住对话。"""
 
@@ -222,6 +264,9 @@ class TurnJournal:
 
         返回 ``{turn_id: {turn_id, status, reason_code, reason, stopped_by, actions}}``：
 
+        `actions` 是**读时投影**后的动作表（见 project_terminal_actions）；`notify` /
+        `recovered_at` 只为 api/server.py 的镜像复用同一套准入谓词，界面不要用。
+
         * 没有这一行 → 不出现（调用方按旧行为显示状态词，绝不伪造原因）；
         * 旧行（迁移前写入、三列为 NULL）→ 状态与既有 reason 照给，actions 为 []；
         * reason 是历史遗留码时翻成人话，内部码不上界面；
@@ -250,22 +295,17 @@ class TurnJournal:
             for row in rows:
                 turn_id = str(row["turn_id"])
                 status = str(row["status"] or "")
-                actions = _parse_actions(row["actions"])
-                # 冻结契约 K3（**读时投影**，不改写执行事实）：
-                # * cancelled（≠ interrupted）不得给出必然 409 的 resend —— 旧记录里存过
-                #   resend 的，读出来归一到真正可用的 retry；
-                # * interrupted 是真正可恢复的（resend 一次性领取），旧行没写动作时补上。
-                if status == "cancelled" and "resend" in actions:
-                    actions = ["retry" if a == "resend" else a for a in actions]
-                if (
-                    status == "interrupted"
-                    and not actions
-                    and not int(row["notify"] or 0)
-                    and row["recovered_at"] is None
-                ):
-                    # 只有**真正可恢复**（用户消息、尚未被 claim）的 interrupted 行才补
-                    # resend，与 /api/turns/{id}/resend 的准入谓词一致；已领取/系统通知轮不补。
-                    actions = ["resend"]
+                notice = bool(int(row["notify"] or 0))
+                recovered_at = row["recovered_at"]
+                # 冻结契约 K3 / R6（**读时投影**，不改写执行事实）：归一只有这一份实现
+                # （project_terminal_actions）；api/server.py 的镜像也调它 —— 两份口径
+                # 分叉正是「重发成功后仍透出 resend」的根因。
+                actions = project_terminal_actions(
+                    status,
+                    _parse_actions(row["actions"]),
+                    notify=notice,
+                    recovered_at=recovered_at,
+                )
                 out[turn_id] = {
                     "turn_id": turn_id,
                     "status": status,
@@ -273,6 +313,10 @@ class TurnJournal:
                     "reason": _human_reason(row["reason"]),
                     "stopped_by": str(row["stopped_by"]) if row["stopped_by"] else None,
                     "actions": actions,
+                    # 下面两个字段只为 api/server.py 的镜像用同一套谓词再投影一次（幂等），
+                    # 界面不用它们；_turn_facts_for 只挑它自己要的键。
+                    "notify": 1 if notice else 0,
+                    "recovered_at": recovered_at,
                 }
         return out
 
