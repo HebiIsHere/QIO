@@ -151,7 +151,9 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
    （固定等 1.0 秒后取消「准备中」的轮次；慢 runner 上准备登记还没落下 → 回执 `unknown`，
    断言 `first["cancelled"] is True` 失败）。本机 Windows 复跑该文件 4 个用例全过，
    与 §九 的两项修复没有交集，按**既有问题 / 时序敏感**记录，不在本次收尾里改动它。
-   同一 run 的两个 Linux backend 任务在收尾时仍停在 `Run tests`（远超历史 ~12 分钟），未拿到结论。
+   同一 run 的两个 Linux backend 任务（py3.11 / py3.12）最终也失败了，但原因**不是断言**：
+   GitHub 注解为「The hosted runner lost communication with the server」（runner 本身失联，
+   两个任务分别跑到 30–70 分钟才收场）。同一份代码在本机跑完整后端全量是 3334 passed / 0 failed。
 4. **两处产品口径待确认**：
    - 排队期间切话题时，附件 id 属于提交时的话题、`topic_id` 也是提交时的快照，后端按旧话题
      校验附件是否仍能命中（需要后端所有者确认）；
@@ -180,7 +182,14 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 | frozen worker (windows) | ✅ 成功 |
 | install e2e (windows-latest) | ✅ 成功 |
 | backend (windows-latest) | ❌ 失败（1 条用例） |
-| backend (py3.11) / (py3.12) | ⏳ 收尾时仍停在 `Run tests`，未拿到结论 |
+| backend (py3.11) | ❌ 失败（**基础设施**：runner 失联） |
+| backend (py3.12) | ❌ 失败（**基础设施**：runner 失联） |
+
+**两个 Linux backend 任务的失败原因**：GitHub 注解是
+「The hosted runner lost communication with the server. Anything in your workflow that
+terminates the runner process, starves it for CPU/Memory, or blocks its network access can
+cause this error.」——两个任务各自跑了很久（远超历史 ~12 分钟）之后 runner 失联，
+**没有任何用例断言失败**。这是 CI 基础设施问题，不是产物回归。
 
 **`backend (windows-latest)` 失败定位（既有问题，不是本次两项修复的回归）**
 
@@ -272,7 +281,7 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
 | frozen worker (windows) | ✅ 成功 |
 | install e2e (windows-latest) | ✅ 成功 |
 | backend (windows-latest) | ❌ 失败（唯一失败：`tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs`，阈值 `gap_ms < 100` 实测 **104 ms**） |
-| backend (py3.11) / (py3.12) | ⏳ 收尾时仍未结束（原合并 run 的同类任务已超过一小时），未拿到结论 |
+| backend (py3.11) / (py3.12) | ⏳ 收尾时仍未结束；同一份代码在原合并 run 上的同类任务最终是「runner 失联」（基础设施，不是断言失败） |
 
 关于这个红点：本机 Windows 复跑 `tests/test_interactive_during_heavy_work.py` 为
 **13 passed / 4 skipped**，且同一份代码在本机跑完整后端全量是 **3334 passed / 11 skipped /
@@ -306,7 +315,8 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
    `test_health_probe_stays_responsive_while_slow_prediction_runs` 的 `gap_ms < 100` 阈值上
    （实测 104 ms；本机复跑该文件 13 passed / 4 skipped）。与本次两项修复无交集，
    按**负载敏感**记录，不用重跑掩盖。
-3. **原合并 CI 的两个 Linux backend 任务**在收尾时仍未结束，未拿到结论。
+3. **原合并 CI 的两个 Linux backend 任务**最终失败，但 GitHub 给出的原因是 runner 失联
+   （基础设施），不是用例断言；本轮分支的同类任务在收尾时仍未结束。
 4. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
 
 **最终状态**

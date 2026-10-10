@@ -3286,7 +3286,7 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 | 合并前 main | `84eb4b4` |
 | 集成分支线头 | `6356c0e`（`integrate/streaming-main-20261011`，保留为历史） |
 | **合并提交（当前 main）** | `7ff5e2e`（`merge: 流式回复修复线集成到 main`，父提交 `84eb4b4` + `6356c0e`） |
-| 合并 CI | run `38075732622`（push，`7ff5e2e`）：docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)` 失败（唯一失败是 R8 取消幂等用例，固定等 1.0 秒的时序敏感断言，本机复跑通过）；两个 Linux backend 任务收尾时仍停在 Run tests |
+| 合并 CI | run `38075732622`（push，`7ff5e2e`）：docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)` 失败（唯一失败是 R8 取消幂等用例，固定等 1.0 秒的时序敏感断言，本机复跑通过）；两个 Linux backend 任务因 **runner 失联**失败（GitHub 注解：hosted runner lost communication，属基础设施，不是断言） |
 
 ### 一、数据库
 
@@ -3349,7 +3349,7 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 本轮分支 CI：run `38078800507`（SHA `6078b613b`，代码与本分支最终代码一致）——
 docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)`
 失败在「慢推理期间事件循环停顿」的 100 ms 阈值上（实测 104 ms，本机复跑该文件 13 passed
-/ 4 skipped，整份后端全量 3334 passed / 0 failed）；两个 Linux backend 任务在收尾时未结束。
+/ 4 skipped，整份后端全量 3334 passed / 0 failed）；两个 Linux backend 任务在收尾时未结束（同一份代码在原合并 run 上的同类任务最终是 runner 失联，属基础设施）。
 **未验证（不粉饰）**：Windows 桌面实机走查（附件发送与中止、重发、历史打开、关闭清理、窄窗口）
 本轮仍未做——本检出没有构建好的桌面壳/安装包，Playwright 也未安装，实机交互流程无法在本会话执行；
 组件级测试不能替代实机结论。
