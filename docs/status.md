@@ -1155,6 +1155,48 @@
   `backend/tests/test_acc_f_25_tool_end_redaction.py`。以上均已并入本分支，可被 `python scripts/check_docs.py` 校验。
 - 契约终稿见 `docs/architecture.md` §12.1.7，逐项状态表见 `docs/plans/2026-10-09-process-attachment-audit-consolidation.md` §一。
 
+### P24 — 七项残留边界问题收尾（R1—R7，2026-10-10）
+
+- **Status：** partial
+- **Implementation（本轮修复）：**
+  - **R1 定位/复制的代际提交边界**：`backend/src/agent/services/attachments.py` —— 每个复制操作/代际使用
+    **独有临时文件**（`temp_path_for`，后缀仍是 `.part` 以便重启清理认领），提交只在覆盖
+    「再校验代际 + 核对本操作写出的文件身份（st_dev/st_ino）+ `os.replace`」的**短锁**内完成（锁不覆盖复制）；
+    已提交但落库失败时按身份回滚**本操作**的副本（不误删新代际文件）；克隆与上传同纪律。
+  - **R2 集合放行的整组复核**：同文件 `_reverify_committed`（不写库、不 `await`）在所有等待结束后按
+    **当下事实**复核每条的存在/身份/归属（turn/topic/message）与副本可用性；任一条失效 → 整轮拒绝 +
+    完整补偿（`bound` 清空，放行集合 == 实际绑定集合），新克隆不留半成功。
+  - **R3 异步附件操作的归属与恢复写回**：`frontend/src/composables/attachmentOps.ts`（新增共享守卫）、
+    `components/Composer.vue`、`services/attachments.ts` —— 每个操作在发起时捕获 (topic, 附件, opToken)；
+    移除/发送确认使在飞操作失效；removed tombstone 随待发送持久化、跨卸载重挂载仍有效；
+    `restorePendingAttachments` 改为**返回补丁**、由 Composer 在修订号一致时合并（只新增，绝不整表回写旧快照）。
+  - **R4 选择期话题归属**：同批文件 —— `pickFile`/`addPaths`/`relocate` 在**点击入口**捕获发起 topic 与操作身份，
+    返回后不再读 `currentTopicId`；取消只清理自己的选择意图。
+  - **R5 系统注记的历史恢复**：`frontend/src/stores/session.ts` 的历史转换读 `raw.annotation`
+    （字段优先；仅字段缺失才从正文拆旧内联；并存只渲染一份；异常 raw 不制造虚假提醒），渲染层独立
+    「系统事实」区域、正文与注记各一次。后端形状 `{verified, annotation}`（`services/turn_orchestrator.py` 既有）。
+  - **R6 回答身份校准**：`TURN_END.answer_id`（= 最终校准目标回答的 `delta_id`；`core/loop.py` 记录最近一条
+    非 interim 正式回答、`core/turn.py` 透传，无回答段为 null）；前端 `applyFinalAnswer` 按身份**覆盖式**校准
+    （缺省 = 不校准、显式空串 = 清空目标正文、无身份 = 校准该 turn 最后一条正式回答），删除文字相似度/前缀判定
+    （`mergeFinalBody`）。
+  - **R7 终态动作一致**：`core/turn.py` `user_stopped → ("retry",)`（`interrupted` 保留 `resend`）；
+    `storage/turn_journal.py` 与 `api/server.py` 做**读时投影**：cancelled 轮的旧 `resend` 归一成 `retry`、
+    真正可恢复（用户消息、未被 claim）的 interrupted 行补 `resend`（已领取/系统通知轮不补），**journal 行不改写**；
+    前端 `components/TurnProcess.vue` 与 `stores/session.ts` 同规则归一；`retry` 用既有发送接口创建**新 turn**
+    （同话题 + `retry_of_turn_id` + 附件按既有克隆规则），只有点击才执行、重复点击只产生一轮。
+- **Tests：** `backend/tests/test_fb_a_r1_stale_relocate_overwrite.py`、`test_fb_a_r2_group_recheck.py`、
+  `test_fb_d_r6_answer_id.py`、`test_fb_d_r7_actions_retry_resend.py`、`test_fb_d_r5_history_annotation.py`；
+  前端 `fb_b_attachment_ops` / `fb_b_restore_patch` / `fb_b_attachment_ownership` /
+  `fb_c_r5_annotation_history` / `fb_c_r5_annotation_dom` / `fb_c_r6_answer_identity` / `fb_c_r7_turn_actions`；
+  以及 F01—F25 与 r8 兼容路径等既有回归。
+- **Known limitations：**
+  - 放行之后、模型真正读取之前，用户仍可能删除文件；R1/R2 不宣称消除这一段，读取侧按当下事实报错。
+  - R2 被拒回执里的 id 是本轮克隆行 id（克隆失败时回落到用户请求的源行 id）；前端按「实际请求的那条」理解。
+  - `copy_to_disk` 的 `on_commit` 是**测试用**确定性缝（默认 None）。
+  - 兼容路径下话题里未绑定的陈旧失败草稿仍会阻断旧客户端带附件发送（P23 既有已知限制）。
+- **后续依赖：** 逐项判定与实机取证见 `docs/verification-final-boundaries-phase2.md`；
+  基线反例见 `docs/verification-final-boundaries-phase1.md`；契约见 `docs/architecture.md` §12.1.8。
+
 ---
 
 ## 尚未完成

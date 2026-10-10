@@ -843,6 +843,39 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 明细失败**不覆盖**已知总耗时；不无期限显示「读取中」；缺字段的旧记录只显示**可证明**的时间
   并明确标签，缺失不伪造为 0。
 
+### 12.1.8 残留边界收尾契约（R1—R7，2026-10-10）
+
+**K1 附件操作：发起 topic、操作版本、失效与恢复写回**
+- 每个异步附件操作（上传/路径准备/轮询/校验/重新定位/历史重传/恢复）在**发起时刻**捕获
+  `{topicId, attachmentId(s), opToken, kind}`；后续辅助函数**不得**再读 `currentTopicId` 决定归属。
+- 附件级 `opToken` + 话题级 `topicEpoch`：移除、发送被接受、话题清空都会使旧操作失效；
+  `removed` tombstone 随待发送持久化保存，跨组件卸载/重挂载仍有效。
+- 写 UI/持久化前校验 token/epoch/removed/sent：不属于当前话题的结果落到**原话题**的持久化（不制造服务器孤儿），
+  已被移除/已随发送确认失效的静默丢弃（绝不 upsert 回来）。
+- `restorePendingAttachments` **不自行写持久化**：按 topic 返回补丁（`candidateIds + revision → restored/missing/revision`），
+  由 Composer 在修订号一致时合并；只新增不在 removed/sent/当前列表的 id，绝不复活 removed、绝不整表回写旧快照。
+- 删除失败只把**属于该失败操作**的条目放回；暂时失败保留附件身份。
+
+**K2 回答身份与系统注记**
+- 回答身份 = 流式 `delta_id`；`TURN_END.answer_id` 指向本次最终校准的目标回答（无回答段为 `null`）。
+- 消费端只用身份定位：有 `answer_id` → **覆盖**该 deltaId 的正文，不新建第二条；无 `answer_id`（旧事件）→
+  校准该 turn **最后一条**正式回答（`interim=false`），该 turn 无正式回答且 `final_content` 非空才新建；
+  **禁止**全文相等/前缀/相似度判定。
+- `final_content` 缺省（null/undefined）= 不校准；**显式空串** = 清空目标回答正文（保留消息与注记）。
+- 同 turn 多个不同回答身份各自保留；重复 delta / 重复 TURN_END 幂等；旧 turn 或错误身份晚到不污染当前回答；
+  正常校准不重启动画、不把正式回答移进过程区。
+- annotation：实时走 `TURN_END.annotation`（兼容 `final_annotation`）；历史走 `raw.annotation`（明确字段）；
+  legacy 旧记录可能内联在正文末尾。去重规则：字段优先；仅字段缺失才按固定表头拆内联；等价只渲染一次；
+  raw 异常/缺失正常恢复且保留 `verified`，不制造虚假失败提醒。系统事实区域独立，正文与注记各出现一次。
+
+**K3 终态动作：可用动作、API 与新旧历史一致**
+- 动作表：`user_stopped`（活动取消、排队取消）→ `("retry",)`；`interrupted` → `("resend",)`；其余不变。
+- `retry` = 前端用既有发送接口创建**新 turn**（同话题、`retry_of_turn_id`=原轮、附件按既有克隆规则复用历史副本），
+  只有用户点击才执行，重复点击只产生一轮；`resend` 仍只认 `interrupted` 且一次性 claim。
+- **读时投影**（不改写 journal）：`cancelled` 且 actions 含 `resend` 的旧记录归一到 `retry`；
+  真正可恢复（用户消息、未被 claim）的 `interrupted` 行补 `resend`；已领取/系统通知轮不补。
+- 旧 cancelled 保持 cancelled 事实、不伪装 interrupted；真正 interrupted 的恢复、一次性领取、queued cancelled 不退化。
+
 ### 12.2 用户可见状态的层级
 
 反馈层级从局部到全局，**能局部解决就局部解决**：
