@@ -20,6 +20,14 @@
    失败、取消、变化都保留重试能力（run_prepare 可以再跑）。
 4. 重启后不猜状态：reconcile() 把「重启前没完成准备」的行标成 failed（可重试），
    把副本丢失标成 missing，并清掉自己留下的 .part 临时文件。
+5. 提交边界（R1，2026-10-10）：同一条附件上的准备操作按**提交票号**构成全序 ——
+   票号在**开始复制那一刻**领取（单调递增），提交前在同一把 _commit_lock 里核对
+   「代际仍当前 + 票号仍最新 + 目标目录项与开始时同一份（开始时不存在就必须仍然
+   不存在）」，然后才 os.replace。旧操作既不覆盖新结果，也不抢在更新操作之前落地；
+   上传路径（没有代际）与 generation=None 的旧调用方同样受这条边界保护。
+6. 引用型的最终接受边界（R2，2026-10-10）：初步复核时还在的引用源，在克隆/等待期间
+   消失 / 读不了 / 被同名文件顶替时**结构化拒绝**，绝不产出看起来可用的克隆行；
+   初步复核时就已经缺失/变化的（F18 历史降级）按既有语义如实登记，不擅自升级。
 
 线程纪律（2026-10-06 CI 真事故后写死在这里）:
 
@@ -151,6 +159,16 @@ STATES = (
     STATE_CHANGED,
 )
 
+#: R2：引用型「当前事实」的可用程度。最终接受边界只允许事实**不变或变好** ——
+#: 初步复核时还在的文件在克隆/等待期间变差（消失 / 读不了 / 被同名文件顶替），
+#: 必须结构化拒绝，绝不产出看起来可用的克隆行。
+_REFERENCE_STATE_RANK = {
+    STATE_READY: 3,
+    STATE_CHANGED: 2,
+    STATE_MISSING: 1,
+    STATE_FAILED: 0,
+}
+
 _INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEFAULT_NAME = "attachment"
 _MAX_NAME_CHARS = 96
@@ -223,6 +241,9 @@ class DiskOutcome:
     #: R1：本操作**提交那一刻**写出的文件身份（st_dev, st_ino）。收尾/回滚时按它核对，
     #: 只在路径仍然是这一份文件时才删 —— 新代际已经替换过就不能动（那是别人的成果）。
     identity: tuple[int, int] | None = None
+    #: R1：本操作在**开始复制那一刻**领到的提交票号（同一条附件上单调递增）。它随结果
+    #: 回到 apply_outcome：过期操作的结果连行状态都不许写。
+    commit_ticket: int | None = None
 
 
 def _now() -> str:
@@ -501,6 +522,11 @@ class AttachmentService:
         # 绝不覆盖整段复制（复制可以在锁外跑几分钟，也不允许一个全局锁把并发复制串起来）。
         # 它同时是「检查→提交」之间的一致性边界：锁内再核对一次代际与文件身份。
         self._commit_lock = threading.Lock()
+        # R1：同一条附件上的准备操作**提交票号**（每个操作在开始复制时领一张，单调递增）。
+        # 代际会被共享（调用方在调度时快照；浏览器上传路径干脆没有代际），票号不会 ——
+        # 提交边界据此得到"后开始的准备永远赢"的全序，旧操作永不覆盖新结果。
+        self._commit_seq: dict[str, int] = {}
+        self._commit_seq_lock = threading.Lock()
 
     # -- 路径 --------------------------------------------------------------
 
@@ -783,6 +809,26 @@ class AttachmentService:
         *,
         max_bytes: int | None = None,
     ) -> DiskOutcome:
+        """浏览器上传的落盘入口（完整的线程/提交纪律见 _upload_stream_impl）。
+
+        R1：上传路径**没有代际**，所以在开始接收字节时领一张提交票号 —— 提交边界与
+        apply_outcome 都按它作废过期操作；上传期间用户重新定位时，过期上传绝不覆盖
+        新定位刚提交的副本，也不许把行状态写成上传的结果。
+        """
+        ticket = self._begin_commit_scope(att.id)
+        outcome = self._upload_stream_impl(att, chunks, max_bytes=max_bytes, ticket=ticket)
+        # 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        outcome.commit_ticket = ticket
+        return outcome
+
+    def _upload_stream_impl(
+        self,
+        att: Attachment,
+        chunks: Iterable[bytes],
+        *,
+        max_bytes: int | None,
+        ticket: int,
+    ) -> DiskOutcome:
         """**纯文件 I/O**（工作线程）：有界接收字节 → 临时文件 → sha256 → 改名提交。
 
         * 没有 Content-Length 也强制上限：每收一块都累加校验，超限立刻停（UploadTooLarge），
@@ -863,8 +909,17 @@ class AttachmentService:
             if event.is_set():
                 _unlink_quiet(tmp)
                 return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
+            if not self._commit_scope_current(att.id, ticket):
+                # R1：同一条附件上已经开始了更新的准备 —— 上传路径没有代际，票号是
+                # 唯一能证明"我不是最新那一次"的东西。
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED, error="这次上传已被更新的准备取代（可以重试）"
+                )
             current_identity = _identity_of(target)
-            if target_identity is not None and current_identity != target_identity:
+            if current_identity != target_identity:
+                # 开始接收字节时目标不存在（None），现在却有了 / 被换了一份 —— 那是
+                # 更新的准备提交出来的，过期上传绝不覆盖它。
                 _unlink_quiet(tmp)
                 return DiskOutcome(
                     state=STATE_CANCELLED, error="这份副本已经被更新的准备替换过（可以重试）"
@@ -977,13 +1032,19 @@ class AttachmentService:
         """
         if att.kind == "reference":
             return self._reference_outcome(att)
-        return self._copy_once(
+        # R1：本操作在**开始复制**时领一张提交票号（同一条附件上的准备据此全序）。
+        ticket = self._begin_commit_scope(att.id)
+        outcome = self._copy_once(
             att,
             chunk_size=chunk_size,
             on_chunk=on_chunk,
             generation=generation,
             on_commit=on_commit,
+            ticket=ticket,
         )
+        # 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        outcome.commit_ticket = ticket
+        return outcome
 
     def _reference_outcome(self, att: Attachment) -> DiskOutcome:
         """大于阈值：只 stat 位置 + 元数据（不复制内容，也不碰数据库）。"""
@@ -1034,6 +1095,16 @@ class AttachmentService:
             self._purge_committed(outcome)
             self._clear_preparing(attachment_id, generation=generation)  # 等在这条上的人必须被放醒（§1.3）
             return None
+        if not self._commit_scope_current(attachment_id, outcome.commit_ticket):
+            # R1：同一条附件上已经有更新的准备开始了（票号比我新）—— 这份结果连行状态
+            # 都不许写（否则旧操作会把新定位的结果覆盖成自己的）。**不动磁盘**：
+            # 目标副本归更新的操作所有。
+            # 放在"行已不在"之后：删行之后的迟到结果仍要走孤儿副本补偿（_purge_committed
+            # 按文件身份核对，绝不会删掉更新操作刚提交的那一份）。
+            logger.info(
+                "附件准备结果已被更新的准备取代，丢弃（%s）", redact_text(str(attachment_id))
+            )
+            return self.get(attachment_id, check=False)
         if outcome.state in (STATE_READY, STATE_CHANGED) and self.is_cancel_requested(attachment_id):
             self._purge_committed(outcome)
             self._update(
@@ -1114,6 +1185,29 @@ class AttachmentService:
             return
         _unlink_if_same_file(Path(outcome.stored_path), outcome.identity)
 
+    # -- 提交票号（R1：提交边界必须是一个真串行边界） -----------------------
+
+    def _begin_commit_scope(self, attachment_id: str) -> int:
+        """给一次准备操作发一张**单调递增**的提交票号（在开始复制那一刻领取）。
+
+        代际（_prepare_gen）由"开始一次准备"的登记递增，但调用方可以在调度时快照它
+        （api/server.py 的 _schedule_prepare、run_prepare 的入口），浏览器上传路径更是
+        完全没有代际 —— 两个操作因此可能共享同一个（或没有）代际。票号在开始复制时
+        领取，同一条附件上的准备操作据此构成一个全序：后开始的准备永远赢。
+        """
+        key = str(attachment_id)
+        with self._commit_seq_lock:
+            value = self._commit_seq.get(key, 0) + 1
+            self._commit_seq[key] = value
+            return value
+
+    def _commit_scope_current(self, attachment_id: str, ticket: int | None) -> bool:
+        """这次准备的票号是不是**最新**的一张（ticket=None 表示不做票号校验）。"""
+        if ticket is None:
+            return True
+        with self._commit_seq_lock:
+            return int(self._commit_seq.get(str(attachment_id), 0)) == int(ticket)
+
     def _copy_once(
         self,
         att: Attachment,
@@ -1122,6 +1216,7 @@ class AttachmentService:
         on_chunk: Callable[[int], None] | None,
         generation: int | None = None,
         on_commit: Callable[[], None] | None = None,
+        ticket: int | None = None,
     ) -> DiskOutcome:
         """一次复制操作（**纯文件 I/O**，可以在工作线程里跑）。
 
@@ -1223,11 +1318,19 @@ class AttachmentService:
                 return DiskOutcome(
                     state=STATE_CANCELLED, error="这次准备已被更新的定位取代（可以重试）"
                 )
+            if not self._commit_scope_current(att.id, ticket):
+                # R1：同一条附件上已经开始了更新的准备 —— 代际可能相同（调用方快照的
+                # 代际，或根本没有代际的上传路径），只有票号能证明"我不是最新那一次"。
+                # 旧操作绝不抢在更新操作之前落地。
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED, error="这次准备已被更新的准备取代（可以重试）"
+                )
             current_identity = _identity_of(target)
-            if target_identity is not None and current_identity != target_identity:
-                # 本操作开始这一刻目标不存在、或不是现在这一份 —— 说明已有一个**更新的**
-                # 提交把目标换掉了。旧任务绝不替换最新成果（字节、大小都可能对得上，
-                # 只有身份能证明「这不是我该写的那一份」）。
+            if current_identity != target_identity:
+                # 本操作开始时目标**不存在**（target_identity is None）或不是现在这一份 ——
+                # 说明已有一个更新的提交把目标写出来了 / 换掉了。旧任务绝不替换最新成果
+                # （字节、大小都可能对得上，只有身份能证明「这不是我该写的那一份」）。
                 _unlink_quiet(tmp)
                 return DiskOutcome(
                     state=STATE_CANCELLED,
@@ -1311,6 +1414,9 @@ class AttachmentService:
             self.conn.execute("DELETE FROM attachments WHERE id = ?", (att.id,))
         with self._cancel_lock:
             self._cancel.pop(att.id, None)
+        # 提交票号**不在这里清**：删行之后复制线程的迟到结果仍要走到「行已不在 →
+        # 清掉它自己刚提交的副本」那条补偿路径（_commit_seq 与 _prepare_gen 一样，
+        # 按附件 id 单调累积，不回收）。
         self._clear_preparing(att.id)  # 等在这条上的人必须被放醒（§1.3）
         return {
             "removed": True,
@@ -1493,6 +1599,9 @@ class AttachmentService:
                 message_id=message_id,
                 retry_of=retry_of,
                 outcome=outcome,
+                entry_reference_facts=self._entry_reference_facts(
+                    planned, retry_of=retry_of
+                ),
             )
 
         wanted = _dedup_ids(attachment_ids)
@@ -1518,6 +1627,9 @@ class AttachmentService:
         if outcome.rejected:
             # 任何一条不满足 → 整轮拒绝，且**一个字节都不写**（半绑状态不许存在）
             return outcome
+        # R2：把"初步复核这一刻"的引用事实记下来（落盘克隆可能还要等前面某一条的
+        # 文件 I/O）；最终接受边界必须证明这段等待里源文件没有消失/被顶替。
+        entry_reference_facts = self._entry_reference_facts(planned, retry_of=retry_of)
 
         # **通过 2：落库 / 克隆**（到这里为止没有写过任何东西）。
         # 每一条在**自己提交前一刻**重新读行复核（F15）：前面的重试克隆会 await，等待期间
@@ -1530,6 +1642,7 @@ class AttachmentService:
             message_id=message_id,
             retry_of=retry_of,
             outcome=outcome,
+            entry_reference_facts=entry_reference_facts,
         )
 
     def _entry_carriable(self, att: Attachment) -> bool:
@@ -1646,7 +1759,11 @@ class AttachmentService:
             return "这个附件的消息归属在提交期间变了；整轮没有发送（可以重试）"
         if fresh.kind == "copy":
             return self._copy_readiness_reason(fresh)
-        return None
+        # R2：引用型的"当前事实"同样是文件世界的事实 —— 初步复核/克隆那一刻确认的
+        # 事实，在等待期间不得变差（消失 / 读不了 / 被同名文件顶替）。
+        return self._reference_degraded_reason(
+            current.state, self._reference_state_now(fresh)[0]
+        )
 
     async def _commit_planned(
         self,
@@ -1657,6 +1774,7 @@ class AttachmentService:
         message_id: str | None,
         retry_of: str | None,
         outcome: BindOutcome,
+        entry_reference_facts: dict[str, str] | None = None,
     ) -> BindOutcome:
         """集合级提交边界（F15/F16 + R2）：逐条「复核当下事实 → 条件写入 / 克隆」，
         全部等待结束、放行之前再**整组**复核一次，任一条失效整轮回滚。
@@ -1671,6 +1789,9 @@ class AttachmentService:
           用户可能把第 1 条删掉/移走/改归属。所以放行前按当下事实对**整组已写下的行**
           再复核一次（_reverify_committed，无 await）；任一条失效 → 整轮拒绝 + 补偿，
           回执里 bound 为空、rejected 有准确 id，新克隆不得半成功；
+        * R2（引用型）：落盘克隆可能排在某一条的 await 之后；与**初步复核那一刻**
+          记下的引用事实（entry_reference_facts）比对，消失 / 读不了 / 被同名文件顶替
+          → 结构化拒绝，绝不建出一行"看起来可用"的新附件；
         * 取消（CancelledError）与任何异常都走同一条回滚路径后原样上抛，绝不留半绑。
         """
         commits: list[_CommitRecord] = []
@@ -1706,6 +1827,17 @@ class AttachmentService:
                             break
                         result = await self._finish_copy_clone(plan)
                     else:
+                        # R2：引用型的"最终接受边界"就在这里 —— 克隆可能排在前面某一条的
+                        # 文件 I/O 之后，这段时间里源文件完全可能消失/被顶替。与初步复核
+                        # 时记下的事实比对：变差了就结构化拒绝，绝不建出"看起来可用"的新行。
+                        recorded = (entry_reference_facts or {}).get(attachment_id)
+                        if recorded is not None:
+                            degraded = self._reference_degraded_reason(
+                                recorded, self._reference_state_now(fresh)[0]
+                            )
+                            if degraded:
+                                outcome.reject(attachment_id, degraded)
+                                break
                         # 引用型没有文件 I/O：重新检查当前可用性后就地登记新行
                         cloned = self._clone_reference_for_retry(
                             fresh, turn_id=turn, topic_id=topic_id, message_id=message_id
@@ -2409,6 +2541,51 @@ class AttachmentService:
                 f"本地文件内容看起来变了（现在 {human_size(size)}，登记时 {human_size(int(source.size_bytes))}）；克隆记录的是重新检查后的事实",
             )
         return STATE_READY, None
+
+    def _reference_degraded_reason(self, recorded: str, now_state: str) -> str | None:
+        """最终接受边界对**引用型**的复核算据（R2）：事实只允许不变或变好。
+
+        * 初步复核（或克隆那一刻）时源文件在、可读、与登记一致（ready）——
+          最终边界必须仍然是 ready；消失 / 读不了 / 被同名文件顶替都结构化拒绝；
+        * 初步复核时就已经缺失/变化的（F18 的历史降级）—— 事实没有变得更差就按既有
+          语义如实登记（missing / changed 行），既不擅自升级成"可用"，也不把历史降级
+          当成新的失败（frozen 契约 §5 R2 与 F18 两条同时成立）。
+        """
+        if _REFERENCE_STATE_RANK.get(now_state, -1) >= _REFERENCE_STATE_RANK.get(
+            recorded, -1
+        ):
+            return None
+        if now_state == STATE_MISSING:
+            return (
+                "这个引用附件的源文件在本轮准备期间已经不在了（可能被移动或删除）；"
+                "整轮没有发送（可以重新定位后再试）"
+            )
+        if now_state == STATE_FAILED:
+            return (
+                "这个引用附件的源文件在本轮准备期间变得读不了（或已经不是文件）；"
+                "整轮没有发送（可以重新定位后再试）"
+            )
+        return (
+            "这个引用附件的源文件在本轮准备期间被换成了另一份（与初步复核时不是同一份）；"
+            "整轮没有发送（请确认后重试）"
+        )
+
+    def _entry_reference_facts(
+        self, planned: list[tuple[str, Attachment]], *, retry_of: str | None
+    ) -> dict[str, str]:
+        """初步复核那一刻，每个**将要被重试克隆**的引用附件在文件世界里的当前事实。
+
+        克隆可能排在前面某一条的文件 I/O 之后；落盘前的复核就靠这份快照判断
+        "等待期间源文件有没有变差"（R2）。
+        """
+        facts: dict[str, str] = {}
+        if not retry_of:
+            return facts
+        for attachment_id, att in planned:
+            if att.kind != "reference" or str(att.turn_id or "") != str(retry_of):
+                continue
+            facts[str(attachment_id)] = self._reference_state_now(att)[0]
+        return facts
 
     def payloads_for_messages(self, messages: Iterable[dict]) -> dict[str, list[dict]]:
         """一页历史消息的附件（问题 5：刷新 / 重进历史后附件行必须还在）。
