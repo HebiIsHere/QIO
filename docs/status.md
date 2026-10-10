@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-10（`main` 分支）。核对方法见文末。
+最后核对：2026-10-11（`main` 分支）。核对方法见文末。
 
 ---
 
@@ -3274,3 +3274,48 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 - 本轮改动影响工具策略相关评测：uv run --frozen python -m agent.eval.run 输出与修复前基线一致（topic/retrieval/anchor 全指标无回归）。
 - 未验证：Windows 安装包 E2E、真机浏览器截图走查（本轮以组件级 + store 级测试替代）。
 
+---
+
+## 集成：流式回复修复线并入 main（2026-10-11，评审中）
+
+把 `fix/process-attachment-audit-round2`（`cc19b68`，含统一过程区、真实增量、附件生命周期
+与 8 轮审计的全部修复）集成到 `origin/main`（`84eb4b4`）。集成分支
+`integrate/streaming-main-20261011`，**未合并 main、未发布**。
+
+### 一、数据库
+
+- 来源线三条迁移改号 **26/27/28 → 31/32/33**（SQL 与语义逐字保留）：main 的迁移已到 30，
+  `apply_migrations` 只按版本号前进，沿用旧号会被最新 main 的存量库整段跳过，attachments 永不建出。
+- 新增**补偿迁移 34**（`COMPENSATION_VERSION` 随之改为 34）：main 的实例归属对象 + 本次新增的
+  attachments / 结束事实对象合并为一份幂等语句；`verify_required_objects()` 按对象复核、缺则重放、
+  仍缺抛 `SchemaIncompleteError`。只有 CREATE / ADD COLUMN，没有 DROP / DELETE / UPDATE。
+
+### 二、运行与事件
+
+- `TurnManager.reserve()` 支持 `request_id`（预留同样算已受理，幂等索引同一份）。
+- `/api/turns` 与 `/api/turns/{id}/resend` 统一为「预留 → 准备 → 放行」，同时保留契约 C2
+  （持久化失败 → 503 `accepted=false`）与契约 C3（`claim_for_resend` 单事务消费 claim + F03 派发失败标记）。
+- 持久接受收口为唯一入口 `_persist_accept()`：`submit()` 与 `reserve()` 对同一故障给出同一结果
+  （以前附件预留路径会静默吞掉台账写失败）。
+- `claim_for_resend` 的新行插入改为幂等 upsert（兼容 `reserve()` 已经落下的预留行）。
+
+### 三、流式用量记账（集成补丁）
+
+`native.stream()` / `anthropic.stream()` 原先不记账：main 的 `accounts_requests=True` 会让 loop
+跳过上层补记，于是回答阶段的主路径既不进凭据账本也不受预算上限约束。补丁在两条 `stream()` 的
+外层补 `ensure_adapter_request_allowed()`（请求前核对预算）与 `account_adapter_request()` /
+`account_adapter_failure()`，并新增 `backend/tests/test_streaming_usage_accounting.py`。
+
+### 四、前端
+
+- 发送一律 `api.sendTurn(message, startIdentity.topicId, ids, …)`：起点身份用提交时快照（M01），
+  第三参是显式附件绑定数组（契约 §1.4：空数组也成字段）。
+- 失败分流统一：只有带 status 的 4xx 算明确拒绝；5xx / 无 status 算「没拿到回执，结果未知」；
+  没有结构化 detail 时不伪造附件原因。
+- 用户中止带附件的发送（准备期 abort）按「明确未发送」收口，不滑进「正在确认」。
+- main 的回执台账与来源线的准备态/过程区/终态动作都保留。
+
+### 五、验证
+
+后端全量、前端类型检查与全量、`check_docs.py`、评测基线对比全部通过；逐条证据与未验证项见
+`docs/integration/2026-10-11-streaming-into-main.md`。
