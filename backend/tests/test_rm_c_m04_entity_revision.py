@@ -260,7 +260,12 @@ def test_user_deleted_card_is_not_resurrected(db_conn, settings):
 
 
 def test_legacy_card_without_meta_keeps_its_content(db_conn):
-    """历史行（没有来源元数据）也要保守保留已有内容。"""
+    """历史行（没有来源元数据）也要保守保留已有内容。
+
+    A02 补充：旧行「有非空值、但 field_meta 里没有它的来源记录」= 来源未知，
+    按**用户值**保护 —— 自动候选不得覆盖，冲突进 pending 候选；未提及项照旧保留。
+    （旧断言曾认为该属性可以被自动值更新，与保护规则不一致，故按新规则更新。）
+    """
     card = _seed(db_conn)
     db_conn.execute(
         "UPDATE entity_cards SET revision = 0, field_meta = '{}' WHERE id = ?", (card.id,)
@@ -273,8 +278,16 @@ def test_legacy_card_without_meta_keeps_its_content(db_conn):
     )
 
     values = _attrs(updated)
-    assert values["健康状况"] == "已康复"
+    assert values["健康状况"] == "红肿", "来源未知的旧值按用户值保护：自动候选不得覆盖"
     assert values["年龄"] == "2 岁", "旧行内容不能被整卡替换掉"
+    pending = svc.pending_candidates(card.id)
+    assert any(p["field"] == "attributes.健康状况" for p in pending), pending
+
+    payload = svc.to_dict(updated)
+    assert payload["attribute_sources"].get("健康状况") is None, (
+        "旧值不得被伪造成 source=user（也不该被改写成别的来源）"
+    )
+    assert "attributes.健康状况" in payload["unknown_source_fields"]
 
 
 def test_user_upsert_still_replaces_whole_card(db_conn):
