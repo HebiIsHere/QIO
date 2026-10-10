@@ -529,6 +529,24 @@ describe("N5 提交清理与勾选版本", () => {
     expect(puts[puts.length - 1].cards[0].x).toBe(500);
   });
 
+  it("【状态/单元】取消勾选后又撤销回勾选：迟到的服务器清理不许把这一版取消掉", async () => {
+    const store = useInteractiveStore();
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(3, [card({ checked: true })])));
+    await store.refreshBoardFromServer();
+    store.intents = [];
+
+    // 用户取消勾选 → 随即撤销（撤销也是一次板面变化，勾选记账必须跟着走）
+    store.commit(state(3, [card({ checked: false })]), "取消勾选");
+    store.undo();
+    expect(store.board?.cards[0].checked, "撤销没有把勾选退回").toBe(true);
+
+    // 迟到的服务器事实说这一条被清掉了（例如提交清理）：用户刚刚撤销回勾选的这一版不许被它取消
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(4, [card({ checked: false, x: 50 })])));
+    await store.refreshBoardFromServer();
+    expect(store.board?.cards[0].checked, "撤销回来的勾选被迟到的服务器事实取消了").toBe(true);
+    expect(store.board?.cards[0].x).toBe(50);
+  });
+
   it("【状态/单元】用户在提交等待期间重新勾选同一条：旧回执不许取消他/她的新选择", async () => {
     const store = useInteractiveStore();
     vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(3, [card({ checked: true })])));

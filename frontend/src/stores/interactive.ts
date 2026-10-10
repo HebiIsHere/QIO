@@ -410,6 +410,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
   }
 
+  /**
+   * 丢弃「与这份事实不一致」的本地勾选选择记录：
+   * 候选已经被整体撤回/被服务器整块替换时，那些选择不再是当前板面的一部分，
+   * 留着只会在下一次合并时把早已作废的勾选又「强制」回来。
+   */
+  function dropCheckedChoicesNotIn(state: BoardState): void {
+    for (const [cardId, choice] of [...localCheckedChoices]) {
+      const card = (state.cards ?? []).find((item) => item.id === cardId);
+      if (!card || card.checked !== choice) localCheckedChoices.delete(cardId);
+    }
+  }
+
   /** 用户重新编辑了正文：这张卡片的内容冲突由这次编辑解决（不再拦住保存）。 */
   function settleContentConflicts(previous: BoardState | null, next: BoardState): void {
     if (!previous || !Object.keys(boardContentConflicts.value).length) return;
@@ -916,7 +928,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!canUndo.value || !board.value) return;
     const previous = undoStack.value.pop() as string;
     redoStack.value.push(JSON.stringify(board.value));
-    board.value = JSON.parse(previous) as BoardState;
+    const reverted = JSON.parse(previous) as BoardState;
+    // 撤销也是一次板面变化：勾选/正文冲突的记账要跟着走（N5 保护不能拿旧值覆盖）
+    trackCheckedChanges(board.value, reverted);
+    settleContentConflicts(board.value, reverted);
+    board.value = reverted;
     boardLocalRev += 1;
     dirty.value = true;
     lastOpLabel.value = "撤销";
@@ -927,7 +943,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!canRedo.value || !board.value) return;
     const next = redoStack.value.pop() as string;
     undoStack.value.push(JSON.stringify(board.value));
-    board.value = JSON.parse(next) as BoardState;
+    const reapplied = JSON.parse(next) as BoardState;
+    trackCheckedChanges(board.value, reapplied);
+    settleContentConflicts(board.value, reapplied);
+    board.value = reapplied;
     boardLocalRev += 1;
     dirty.value = true;
     lastOpLabel.value = "重做";
@@ -1178,6 +1197,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     board.value = payload.state;
     cleanState = cloneState(payload.state);
     reconcileCheckedChoices(payload.state);
+    // 整块采用服务器事实：与它不一致的本地勾选选择记录一并作废（不能留到下次合并又冒出来）
+    dropCheckedChoicesNotIn(payload.state);
     boardCleanRev = boardLocalRev;
     boardReadAppliedSeq = Math.max(boardReadAppliedSeq, readSeq);
     undoStack.value = [];
@@ -2531,6 +2552,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * - 卡片编辑草稿与恢复来源仍不在这里清理（07：正式变更成功后才清对应版本）。
      */
     if (cleanState) board.value = cloneState(cleanState);
+    // 取消丢弃的是整个候选：这期间用户做的勾选选择也一并作废（以撤回后的板面为准）
+    if (board.value) dropCheckedChoicesNotIn(board.value);
     boardLocalRev = boardCleanRev;
     dirty.value = false;
     saveStatus.value = "idle";
