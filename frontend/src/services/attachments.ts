@@ -1159,13 +1159,24 @@ export async function restorePendingAttachments(
      * 补丁模式（K1.6）：**不写任何持久化**。
      * 合并权在发起方（Composer）—— 只有它同时掌握当前列表、tombstone 与 sent 失效集；
      * 服务按旧快照整表回写正是「已移除附件被恢复结果重新加入」的入口。
+     *
+     * R3：回显值不是判据，**当前本地修订号**才是。
+     * `options.revision` 是发起核对时捕获的修订号；核对在途期间本地可能又写过
+     * （用户改了同一条 / 重新添加）。这时 `missingIds` 是核对那一刻的旧事实，
+     * 应用它会删掉用户刚更新的记录 —— 当前修订号更大（期间有新写入）时**不应用**这次剔除，
+     * 保留当前记录，交给下一次恢复清理。`revision` 仍按发起时捕获的值原样回显（调用方据此判断）。
+     *
+     * 用「当前 > 捕获」而不是「不相等」：修订号按话题单调递增，所以更大 = 期间确实有人写过；
+     * 当前为 0（本地没有这个话题的记录）只说明没有可比的记录，不能据此声称有人写过。
      */
+    const requestedRevision = typeof options.revision === "number" ? options.revision : null;
+    const revisionMoved = requestedRevision !== null && pendingRevision(topicId) > requestedRevision;
     return {
       topicId: topicId ?? null,
-      revision: typeof options.revision === "number" ? options.revision : pendingRevision(topicId),
+      revision: requestedRevision ?? pendingRevision(topicId),
       restored: [...items, ...unconfirmed],
-      missing: dropped,
-      missingIds: [...droppedIds],
+      missing: revisionMoved ? [] : dropped,
+      missingIds: revisionMoved ? [] : [...droppedIds],
     } satisfies RestorePendingPatch;
   }
 

@@ -31,6 +31,7 @@ import {
   forgetSentAttachments,
   isAttachmentRemoved,
   isAttachmentSent,
+  pendingRevision,
   type AttachmentRef,
 } from "../services/attachments";
 
@@ -64,6 +65,14 @@ export interface AttachmentOpCapture {
   /** 逐附件捕获的 token（多附件操作各自判定） */
   readonly opTokens: Readonly<Record<string, number>>;
   readonly topicEpoch: number;
+  /**
+   * 逐附件的**操作声明序号**（R4）：条目级操作（poll / verify / relocate …）每次发起都声明一次。
+   *
+   * 与 opToken 的区别：token 表达「这条身份还在不在」，声明序号表达「这条上**最新**的操作是哪一次」。
+   * 同一个附件上后发起的操作会拿走最新的声明，先发起、后返回的旧结果据此判为过期
+   * —— 过期结果既不写界面也不落盘（`decideAttachmentWrite` → drop）。
+   */
+  readonly claims: Readonly<Record<string, number>>;
 }
 
 export type AttachmentWriteTarget = "ui" | "persistence" | "drop";
@@ -78,7 +87,9 @@ export interface AttachmentWriteVerdict {
     | "token-stale"
     | "epoch-passed"
     | "not-in-list"
-    | "topic-gone";
+    | "topic-gone"
+    /** R4：这条上已经有**更晚发起**的操作（它的结果才是当前事实） */
+    | "superseded";
 }
 
 export interface PendingRestorePatch {
@@ -106,6 +117,9 @@ const tokens = new Map<string, number>();
 const entryEpochs = new Map<string, number>();
 /** topic 级世代 */
 const topicEpochs = new Map<string, number>();
+/** 条目级操作的声明序号：这条上最新发起的那次操作才是当前事实（R4） */
+const claims = new Map<string, number>();
+let claimSeq = 0;
 
 function topicKey(topicId: string | null | undefined): string {
   return String(topicId ?? "");
@@ -117,6 +131,8 @@ export function resetAttachmentOpState(): void {
   tokens.clear();
   entryEpochs.clear();
   topicEpochs.clear();
+  claims.clear();
+  claimSeq = 0;
   forgetSentAttachments(undefined);
   // 注意：tombstone 的**持久化**内容不清（重挂载语义）；只清存储不可用时的内存镜像。
   clearRemovedAttachmentMemory();
@@ -164,6 +180,11 @@ export function attachmentEntryEpoch(id: string): number {
   return entryEpochs.get(id) ?? 0;
 }
 
+/** 这条附件当前的操作声明序号（0 = 还没有条目级操作声明过它）。 */
+export function attachmentOpClaim(id: string): number {
+  return claims.get(id) ?? 0;
+}
+
 /** 移除 / 替换一个附件：使它的当前 token 失效（旧操作晚到不得再写）。 */
 export function invalidateAttachmentIdentity(id: string): number {
   const next = opSeq + 1;
@@ -190,7 +211,17 @@ export function beginAttachmentOp(input: {
   const opToken = creating ? opSeq + 1 : attachmentIds.length ? attachmentOpToken(attachmentIds[0]) : 0;
   if (creating) opSeq = opToken;
   const opTokens: Record<string, number> = {};
-  for (const id of attachmentIds) opTokens[id] = attachmentOpToken(id);
+  const opClaims: Record<string, number> = {};
+  for (const id of attachmentIds) {
+    opTokens[id] = attachmentOpToken(id);
+    // 条目级操作：发起即声明「这一条上最新的操作是我」——之前发起、之后返回的旧结果一律过期（R4）。
+    // 新建类操作不声明：它还没有 id（身份由结果登记），别人的在飞结果不受影响。
+    if (!creating) {
+      claimSeq += 1;
+      claims.set(id, claimSeq);
+      opClaims[id] = claimSeq;
+    }
+  }
   return Object.freeze({
     kind: input.kind,
     topicId,
@@ -198,6 +229,7 @@ export function beginAttachmentOp(input: {
     opToken,
     opTokens: Object.freeze(opTokens),
     topicEpoch: topicEpochOf(topicId),
+    claims: Object.freeze(opClaims),
   });
 }
 
@@ -226,6 +258,14 @@ export function decideAttachmentWrite(
   if (id) {
     if (isAttachmentRemoved(capture.topicId, id)) return { target: "drop", reason: "removed" };
     if (isAttachmentSent(capture.topicId, id)) return { target: "drop", reason: "sent" };
+    /**
+     * R4：这条上已经有**更晚发起**的操作 → 本次结果是过期事实。
+     * 既不写界面也不落盘（写进持久化同样是拿旧事实覆盖新结果），静默丢弃。
+     */
+    const claimed = capture.claims[id];
+    if (claimed !== undefined && attachmentOpClaim(id) !== claimed) {
+      return { target: "drop", reason: "superseded" };
+    }
     const expected = capture.opTokens[id] ?? capture.opToken;
     if (expected !== attachmentOpToken(id)) return { target: "persistence", reason: "token-stale" };
   }
@@ -253,6 +293,14 @@ export function decideAttachmentWrite(
  * 补丁里出现某个候选，说明服务核对该候选时它还没有 tombstone；只有水位**之后**才被移除的
  * 候选才在这里被挡（这正是「恢复在途时移除」的窗口）。水位之前就存在的 tombstone 不可能
  * 出现在真实补丁里 —— 服务在核对阶段就会直接跳过它；不传水位 = 一律按 tombstone 挡。
+ *
+ * R3（应用边界）：补丁的 `revision` 是**发起核对时捕获**的修订号。合并这一刻再比一次
+ * 「当前本地修订号」—— 更大了说明期间有人写过，这份补丁的 `missingIds` 已经是旧事实，
+ * 一律不应用剔除（保留当前记录，交给下一次恢复）。补丁生成与合并之间还有窗口，
+ * 所以这一层判定不能只放在生成侧。
+ *
+ * 比较用「当前 > 补丁」：修订号按话题单调递增（更大 = 期间有人写过）；
+ * 当前为 0 只表示本地没有这个话题的修订记录，不能据此声称有人写过。
  */
 export function mergeRestorePatch(
   patch: PendingRestorePatch,
@@ -260,7 +308,8 @@ export function mergeRestorePatch(
   options: { dropMissing?: boolean; removedBarrier?: number } = {},
 ): MergeRestoreResult {
   const topicId = patch.topicId ?? null;
-  const dropMissing = options.dropMissing !== false;
+  const revisionMoved = pendingRevision(topicId) > patch.revision;
+  const dropMissing = options.dropMissing !== false && !revisionMoved;
   const missingIds = new Set(dropMissing ? patch.missingIds : []);
   const restoredById = new Map(patch.restored.map((item) => [item.id, item]));
   const list: AttachmentRef[] = [];

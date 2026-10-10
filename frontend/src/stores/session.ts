@@ -1528,7 +1528,8 @@ export const useSessionStore = defineStore("session", {
       this.interruptedNotice = "";
       try {
         const res = await api.resendInterruptedTurn(turnId);
-        this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+        // R6：成功重发之后这一轮的本机留痕与「未完成」入口都不再给死按钮
+        this.markTurnResendConsumed(turnId);
         // 不把内部 turn_id 抛给用户：他要的是"这条重新发出去了"，不是一串标识
         void res;
         this.interruptedNotice = "已经按原话题重新排队，这一轮马上开始";
@@ -3164,6 +3165,26 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
+     * R6：这一轮已经**成功重发** → 本机留痕不得再暴露 `resend`，并把它从「未完成」入口清掉。
+     *
+     * 为什么必须做：成功后后端台账已经把这一轮领走（再点 /resend 必然 409），
+     * 但过程区渲染读的是**本机留痕**（qio.turnFacts）—— 不清就会留下一个点不通的死按钮。
+     * 后端读时投影由 W4 修；这里只收口本机这一份（刷新后一律以后端事实为准）。
+     * 只有真正成功才收口：失败（409 / 网络）保留留痕与入口，可重试。
+     */
+    markTurnResendConsumed(turnId: string): void {
+      if (!turnId) return;
+      const facts = this.turnFacts[turnId];
+      if (facts && facts.actions.includes("resend")) {
+        this.turnFacts = {
+          ...this.turnFacts,
+          [turnId]: { ...facts, actions: facts.actions.filter((action) => action !== "resend") },
+        };
+        persistTurnFactsCache(this.turnFacts);
+      }
+      this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
+    },
+    /**
      * 问题 7 的「重新发送」：走既有的 `POST /api/turns/{id}/resend`（后端一次性 claim）。
      *
      * 409（已经有结局 / 已被抢占）如实说明；失败保留可重试，绝不静默。
@@ -3174,6 +3195,8 @@ export const useSessionStore = defineStore("session", {
       this.clearTurnActionFeedback(turnId);
       try {
         await api.resendInterruptedTurn(turnId);
+        // R6：成功才收口本机留痕与「未完成」入口（失败路径不动，保留可重试）
+        this.markTurnResendConsumed(turnId);
         return true;
       } catch (e) {
         this.setTurnActionFeedback(turnId, `重新发送没有成功：${(e as Error).message}（可以重试）`);
