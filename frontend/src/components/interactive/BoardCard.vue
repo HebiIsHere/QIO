@@ -86,6 +86,28 @@ const titleText = computed(() => {
   return props.card.folded ? firstLine.value : "";
 });
 
+/**
+  关闭态也需要用户处理的本机 / 草稿状态（本轮修复）。
+  
+  触发：A 的组件级探针发现，用户在**关闭态**点「用服务器上的」而本机副本删除失败时，
+  失败原因与重试入口只在编辑态可见 —— 必须先进「编辑」才看得到，等于不可达。
+  这里把「本机副本没删掉 / 清除未同步 / 服务器草稿保存失败 / 本机恢复副本没写成功」
+  提到关闭态：提示就地渲染在正文之上（正文区 .card-body 自带滚动，不会被裁掉，
+  也不撑开卡片工具栏、不挡连接点）。未决冲突仍沿用既有行为（替换正文，见模板注释）。
+*/
+const cardDraftNeedsAttention = computed(() => {
+  const key = cardDraftKey(props.card.id);
+  const state = store.draftStateFor(key);
+  const local = store.draftLocalStateFor(key);
+  const removal = store.draftRemovalStateFor(key);
+  return (
+    Boolean(store.draftLocalRemovalErrorFor(props.card.id)) ||
+    removal.status === "error" ||
+    state.status === "error" ||
+    (!local.ok && state.status !== "saved")
+  );
+});
+
 /** 元信息层：状态必须能读出来，不能只靠颜色。 */
 const statusText = computed(() => {
   const parts: string[] = [];
@@ -309,6 +331,8 @@ function cancelEdit() {
         -->
         <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
         <template v-else>
+          <!-- 关闭态也能看到、能处理的状态（本机副本没删掉 / 清除未同步 / 草稿保存失败）：就地提示 + 重试 -->
+          <CardDraftHint v-if="cardDraftNeedsAttention" :card-id="card.id" />
           <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
           <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
           <p v-else-if="card.kind === 'url'" class="content url">

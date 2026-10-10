@@ -28,6 +28,7 @@ import {
   visibleRangeText,
 } from "../../interactive/submission";
 import BoardChangeList from "./BoardChangeList.vue";
+import { humanizeFailure, scrubInternalTerms } from "./displayText";
 
 const store = useInteractiveStore();
 const detailsOpen = ref(false);
@@ -125,6 +126,39 @@ const rangeShort = computed(() => {
  * 不再看 lastSubmission —— 上一次的失败结果不该在成功之后继续显示成失败。
  */
 const isFailed = computed(() => failure.value !== null);
+/**
+ * 失败原因的展示分层（本轮验收点 4）：
+ * - 默认区只放**一句**短原因（primary），完整原文与保存失败诊断进详情；
+ * - 底层字符串里的传输外壳（`/api/… -> 500: `）与内部代码（stale_check / checkId 之流）
+ *   在展示层剥掉，避免开发术语直接铺在界面上。
+ */
+/**
+ * 默认区的原因：**不截断**（上一轮验收已明确「很长的失败原因在默认区完整显示」），
+ * 但必须先剥掉传输外壳（/api/… -> 500:）与内部代码（stale_check 之流）——
+ * 「完整」指的是真实原因完整，不是把实现用语一起铺出来。
+ */
+const failureShort = computed(() => humanizeFailure(failure.value?.reason).short);
+const failureDetailText = computed(() => scrubInternalTerms(failure.value?.detail ?? ""));
+
+/**
+ * 保存前的影响预判失败 / 确认过期：它**阻塞提交**，所以必须有一个清楚、可达的重试入口。
+ * 只调 store.saveNow()（重新预判并保存，不自动提交，也不会循环自动重试）。
+ */
+const impactCheckErrorText = computed(() => {
+  const raw = store.impactCheckError;
+  // 只有真的有错才占位：humanizeFailure(null) 会返回「没有拿到失败原因」，直接用会凭空多出一行
+  return raw ? humanizeFailure(raw, { maxShort: 60 }).short : "";
+});
+const rechecking = ref(false);
+async function recheckImpact(): Promise<void> {
+  if (rechecking.value) return;
+  rechecking.value = true;
+  try {
+    await store.saveNow();
+  } finally {
+    rechecking.value = false;
+  }
+}
 const draftText = draftHintText();
 /** 提交按钮文案：失败后明确写成「重新提交」，让重试一眼可见 */
 const submitLabel = computed(() => {
@@ -159,8 +193,25 @@ function onSubmit() {
       顺序固定，详情只补充较长诊断（保存失败原因、上一次提交返回的说明），不是了解原因的必经入口。
     -->
     <p v-if="failure" class="failure" role="alert" data-im="submit-failure">
-      <span class="failure-reason" data-im="submit-failure-reason">失败原因：{{ failure.reason }}</span>
+      <span class="failure-reason" data-im="submit-failure-reason"><span class="failure-label">失败原因：</span>{{ failureShort }}</span>
       <span class="failure-retention" data-im="submit-failure-retention">{{ failure.retention }}</span>
+    </p>
+
+    <!--
+      提交被「影响预判没完成 / 确认过期」挡住：这不是提交失败，而是保存前的检查没做完。
+      所以单独一条、层级低于失败区，并给**一次**可达的重试（重新预判并保存，不自动提交）。
+    -->
+    <p v-else-if="impactCheckErrorText" class="blocked" role="status" data-im="submit-blocked">
+      <span class="blocked-text" data-im="submit-blocked-reason">{{ impactCheckErrorText }}</span>
+      <button
+        class="details"
+        type="button"
+        data-im="submit-recheck"
+        :disabled="rechecking"
+        @click="recheckImpact"
+      >
+        {{ rechecking ? "重新预判中…" : "重新预判并保存" }}
+      </button>
     </p>
 
     <div class="actions">
@@ -189,7 +240,7 @@ function onSubmit() {
       <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
       <p class="line range" data-im="visible-range-full">{{ rangeText }}</p>
       <p class="line strong">{{ statusText }}</p>
-      <p v-if="failure" class="line err" data-im="submit-failure-detail">{{ failure.detail }}</p>
+      <p v-if="failure" class="line err" data-im="submit-failure-detail">{{ failureDetailText }}</p>
       <BoardChangeList
         :expressions="pendingExpressions"
         title="本次有效改动（尚未提交）"
@@ -277,6 +328,7 @@ function onSubmit() {
   gap: 2px;
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
+  /* 高度上限保持基线（4 行）：上一轮验收要求长原因在默认区完整显示，本轮不动这条 */
   max-height: calc(var(--fs-xs) * 1.45 * 4);
   overflow-y: auto;
   overflow-wrap: anywhere;
@@ -286,11 +338,32 @@ function onSubmit() {
   font-size: var(--fs-xs);
   line-height: 1.45;
 }
-.failure-reason { color: var(--danger); }
+/* 被挡住的那一条（影响预判未完成）：与失败区同宽、层级低一档，文字用正文色、按钮可点 */
+.blocked {
+  flex: 1 1 16ch;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--warning);
+  border-radius: var(--r-xs);
+  background: var(--warning-soft);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.blocked-text { color: var(--text-secondary); overflow-wrap: anywhere; }
+/* 失败原因这一行是**要读的内容**：颜色用正文色保证对比度（实测 --danger 铺在 --danger-soft 上
+   只有 4.07:1，小字不达标），错误信号由左侧红边与「失败原因：」这个标签承担 */
+.failure-reason { color: var(--text-primary); }
+.failure-label { color: var(--danger); }
 .failure-retention { color: var(--text-secondary); }
 .line.retain { color: var(--warning); }
 .line.err { color: var(--danger); }
-.line.faint { color: var(--text-faint); }
+/* 详情里的草稿提示是「输入什么时候会被保存」的操作说明：用可读色，不做装饰 */
+.line.faint { color: var(--text-muted); }
 .actions {
   flex: none;
   display: flex;
@@ -357,5 +430,24 @@ function onSubmit() {
   .texts { max-width: none; }
   .actions { justify-content: flex-end; }
   .details-box { width: min(420px, 92vw); }
+
+}
+
+/*
+  更窄（480×600 这类边缘档）：工具栏实测 108px，超出 96px 的常态目标，原因是
+  「范围 + 状态」在同一行里各自换行、再加上按钮行，提交区内部占了 3 行。
+  这里只做三件不减少信息的事：范围单行省略（全文仍在详情里）、状态与按钮同排、
+  按钮内边距收一档。错误区与「等待重新预判」区改为整行，长文才读得清。
+*/
+@media (max-width: 620px) {
+  /* 列间距收一档、行距保持原值（不要用 gap 一次改两个方向：会把行距从 4px 撑到 8px） */
+  .submit-cluster { column-gap: var(--sp-2); row-gap: var(--sp-1); }
+  /* 范围单行省略（全文仍在详情里），不再和状态争两行 */
+  .range { -webkit-line-clamp: 1; }
+  .actions { gap: var(--sp-1); }
+  .submit { font-size: var(--fs-sm); padding: 1px var(--sp-2); }
+  .details { padding: 1px var(--sp-2); }
+  .label { padding: 0 3px; }
+
 }
 </style>

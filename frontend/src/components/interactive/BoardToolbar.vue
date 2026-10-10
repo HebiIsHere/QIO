@@ -302,4 +302,16 @@ function toggleSearch(): void {
   }
   .tb-sep { display: none; }
 }
+
+/*
+  480×600 这类边缘档：按钮本身不缩字号（主要操作不缩成元信息字号），只压行高与内边距。
+  实测 480 宽下常态工具栏 108px，超过 800×600 那条 96px 口径的常态目标，这里把它压回 96px 以内。
+*/
+@media (max-width: 620px) {
+  .board-toolbar { padding: 3px var(--sp-2); }
+  .tb-btn { line-height: 1.45; padding: 0 var(--sp-2); }
+  .tb-main { gap: 2px var(--sp-1); }
+  .tb-edit { gap: 2px; }
+  .tb-submit { padding-top: 2px; }
+}
 </style>

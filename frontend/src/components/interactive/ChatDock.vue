@@ -663,7 +663,13 @@ function onKeydown(event: KeyboardEvent) {
   padding: var(--sp-1) var(--sp-2);
   overflow-wrap: anywhere;
 }
-.stream-older { color: var(--text-faint); }
+/*
+  更早消息说明（「还有更早的 N 条没有显示」）不是装饰：它告诉用户内容还在、只是没渲染。
+  实测亮色主题下 --text-faint 只有 3.27:1（真实像素采样，见 closure-c-verify 报告），
+  小字读不清就等于这条信息不存在；改成 --text-muted（亮色实测 4.7:1 以上），
+  只动这一处有操作意义的小字，不全局加深装饰元素。
+*/
+.stream-older { color: var(--text-muted); }
 .to-latest {
   align-self: center;
   flex: none;
@@ -704,7 +710,9 @@ function onKeydown(event: KeyboardEvent) {
   gap: var(--sp-2);
   font-size: var(--fs-xs);
   line-height: 1.5;
-  color: var(--text-faint);
+  /* 草稿状态是有操作意义的（它决定用户敢不敢关页面）：必须过小字可读线，不能当装饰色。
+     亮色 --text-faint 实测 3.27:1 → 改为 --text-muted（迁移后实测 ≥4.7:1）。 */
+  color: var(--text-muted);
   /* 草稿状态行同样贴着透明区铺字：给它与 notice 一致的稳定局部底色（§12.7） */
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
@@ -752,7 +760,8 @@ function onKeydown(event: KeyboardEvent) {
   border-radius: var(--r-md);
   padding: var(--sp-2) var(--sp-3);
 }
-.input::placeholder { color: var(--text-faint); }
+/* 占位说明是「这里可以输入什么」的唯一提示：同样提到可读色，不做装饰处理 */
+.input::placeholder { color: var(--text-muted); }
 .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .send {
   flex: none;
@@ -772,9 +781,14 @@ function onKeydown(event: KeyboardEvent) {
   flex: none;
   margin: 0;
   align-self: flex-start;
-  font-size: 10.5px;
+  /* 快捷键说明（Enter 发送 / Shift+Enter 换行 / 中文选字不发送）是操作说明：
+     字号提到统一的 --fs-xs（11px，与其它小字同级），颜色从装饰色 --text-faint
+     改为可读色 --text-muted —— 迁移前亮色实测 3.28:1、暗色 2.86:1（真实像素采样），
+     都低于小字 4.5:1 的门槛。 */
+  font-size: var(--fs-xs);
   line-height: 1.5;
-  color: var(--text-faint);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
   /*
     快捷键说明是最长的一行小字，直接铺在透明面板上时与后方板面文字相叠
     （800×600 暗色实机复测发现，同批 §12.7 口径）：给它一个紧凑的局部底色，
@@ -801,6 +815,10 @@ function onKeydown(event: KeyboardEvent) {
   .chat-dock { right: var(--sp-3); left: var(--sp-3); align-items: stretch; }
   .toggle { align-self: flex-end; }
   .panel { width: auto; height: min(58vh, 440px, var(--chat-panel-max-h, 440px)); }
-  .panel-hint { display: none; }
+  /*
+    480px 这类窄窗口原先把快捷键说明整行藏掉 —— 那是「信息不可达」，不是重排。
+    实测这一行在 456px 面板宽度下仍能排成 1–2 行（字号 11px、可换行），所以保留它，
+    只在空间真不够时由它自己换行。
+  */
 }
 </style>

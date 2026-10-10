@@ -20,6 +20,7 @@ import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
 import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
 import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
 import DemoIntentEntry from "../components/interactive/DemoIntentEntry.vue";
+import { humanizeFailure } from "../components/interactive/displayText";
 
 const store = useInteractiveStore();
 const demoOpen = ref(false);
@@ -34,12 +35,19 @@ onMounted(() => {
  */
 const saveText = computed(() => {
   if (store.saveStatus === "saving") return "正在保存…";
-  if (store.saveStatus === "error") return `保存失败：${store.saveError ?? "原因未知"}`;
+  // 顶部是唯一的保存状态：失败原因在这里说**一句**（底层原文外壳含 /api/… 与状态码，属开发术语，
+  // 完整原文放到 title 里供排查），完整诊断仍在提交区详情中
+  if (store.saveStatus === "error") return `保存失败：${humanizeFailure(store.saveError, { maxShort: 48 }).short}`;
   if (store.dirty) return "有改动尚未保存";
   // 顶部只说「保存」这一件事；「提交」由工具栏右端的提交区单独表达（§9.6：各自只设一处主状态）
   if (store.saveStatus === "saved") return "已保存";
   return "尚未保存过";
 });
+
+/** 悬停能看到完整原文（已剥掉接口路径与内部代码）：主状态保持一句话，辅助信息不挤占版面 */
+const saveDetail = computed(() =>
+  store.saveStatus === "error" ? humanizeFailure(store.saveError).detail : "",
+);
 
 const saveTone = computed(() => {
   if (store.saveStatus === "error") return "err";
@@ -72,7 +80,13 @@ const boardSize = computed(() => {
 
       <div class="im-top-right">
         <!-- 唯一的保存状态（顶部） -->
-        <p class="im-save" :class="saveTone" data-im="save-status" role="status">
+        <p
+          class="im-save"
+          :class="saveTone"
+          data-im="save-status"
+          role="status"
+          :title="saveDetail"
+        >
           <span class="im-dot" aria-hidden="true"></span>{{ saveText }}
         </p>
         <!-- 未接入状态如实可见，且不用开发用语 -->
