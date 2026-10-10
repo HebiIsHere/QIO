@@ -155,7 +155,8 @@ describe("R5（DOM）服务端兜底确认：点「继续」必须用有效 chec
     expect(wrapper.find('[data-im="impact-dialog"]').exists()).toBe(false);
     expect(store.pendingImpact).toBeNull();
     expect(store.saveStatus).toBe("saved");
-    const lastConfirm = vi.mocked(api.saveBoardState).mock.calls.at(-1)?.[3] as { checkId?: string } | undefined;
+    const calls = vi.mocked(api.saveBoardState).mock.calls;
+    const lastConfirm = calls[calls.length - 1]?.[3] as { checkId?: string } | undefined;
     expect(lastConfirm?.checkId).toBe("chk_fresh");
   });
 });

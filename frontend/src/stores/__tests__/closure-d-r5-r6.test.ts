@@ -111,7 +111,8 @@ describe("R5 服务端兜底的影响确认必须拿到 checkId，确认后不�
     await flushPromises();
 
     // 正确行为 A：确认时必须把重新预判拿到的 checkId 交给服务端（用户确认才有真实依据）
-    const lastConfirm = vi.mocked(api.saveBoardState).mock.calls.at(-1)?.[3] as { checkId?: string } | undefined;
+    const calls = vi.mocked(api.saveBoardState).mock.calls;
+    const lastConfirm = calls[calls.length - 1]?.[3] as { checkId?: string } | undefined;
     expect(lastConfirm?.checkId).toBe("chk_fresh");
     // 正确行为 B：确认后这次保存真的成功，说明不再出现
     expect(store.pendingImpact).toBeNull();
