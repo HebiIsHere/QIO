@@ -79,6 +79,14 @@
 | E（独立验证） | fb-e（成员 acc-f2） | `wt/fb-e` @ `qio-acc-f` |
 | Lead | lead | `fix/process-attachment-audit-final-boundaries` @ `qio-acc` |
 
+
+## 五、执行记录（Lead，2026-10-10）
+
+- 集成分支 `fix/process-attachment-audit-final-boundaries` 起点 `9e53736`（= 复核提交 43a9fcb + 本计划）。
+- 分支与提交：fb-d（R7 后端 + R6 answer_id 生产端）：`57c458a` + `25a8ba6`（Lead 接手完成并修其测试装置）；fb-c（R5/R6/R7 前端）：`a983f30`（成员 acc-c2）；fb-b（R3/R4）：`c030c8b`（fb-b 产出，Lead 验证后代为提交）；fb-a（R1/R2）：`1171920`（fb-a）；fb-e（独立验证）：`0471d87`（阶段一）、阶段二待并。
+- Lead 在集成树上亲自复跑（全部退出码 0）：后端全量 `uv run --frozen pytest`（无 FAILED）、前端 `npx vue-tsc --noEmit` + `npx vitest run`（163 文件 / 1360 用例）、`python scripts/check_docs.py`（36 个里程碑条目）。
+- 契约对齐：被测方与验证者共同确认的旧断言更新（`test_turn_timing_facts`、`test_acc_b2_queued_cancel_end`、`test_audit_turn_end_facts_verify`、`test_turn_journal_facts`、前端 `acc_c_final_answer` / `TurnEndFacts.audit.verify` / `answerStreaming` / `AnswerContainerStreaming` / `AnswerContainer.r4.verify` / `acc_c2_incomplete_turn`）均在提交信息与报告里注明了依据（K2/K3），不是为绿灯放宽。
+
 ## 四、验收（每项：旧基线先红 → 修复后绿 + 回归）
 
 - R1/R2：真实文件、真实附件服务、确定性闸门（只控制 I/O 时序，不 sleep 碰运气）；断言最终字节、身份、集合回执、数据库绑定、临时文件与句柄清理；/api/turns 入口级证据（模型调用数 0）。
