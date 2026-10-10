@@ -97,18 +97,20 @@ def test_v_r1a_old_op_parked_before_commit_loses_to_new_relocate(svc, tmp_path):
 def test_v_r1b_identity_guard_alone_blocks_overwrite(svc, tmp_path):
     """契约时序 2：目标在旧任务开始时**不存在**（target_identity is None）→ 身份检查必须自己挡住。
 
-    隔离手法：让票号校验与代际校验**都通过**（代际传 None；闸门里把票号写回旧操作那张），
+    隔离手法：让代际闸与票号闸**都通过**（调用方不给代际 → 现场代际即为当前；
+    闸门里把该代际桶里的最新票号写回本操作那张），
     于是唯一还能挡住旧操作的就是「目标目录项与开始时不是同一份」这条身份检查。
     """
     src_a = _src(tmp_path, "a.bin", b"A" * 2048)
     att = svc.prepare(str(src_a))
     assert svc.copy_path(att).exists() is False  # 开始时目标确实不存在
 
+    gen0 = svc.prepare_generation(att.id)
     tickets: list[int] = []
     begin = svc._begin_commit_scope
 
-    def spy(attachment_id: str) -> int:
-        value = begin(attachment_id)
+    def spy(attachment_id: str, generation: int) -> int:
+        value = begin(attachment_id, generation)
         tickets.append(value)
         return value
 
@@ -122,8 +124,9 @@ def test_v_r1b_identity_guard_alone_blocks_overwrite(svc, tmp_path):
         target = svc.copy_path(att)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(newer)  # 模拟「更新的提交」把目标写出来了
+        # 故意让代际闸与票号闸都通过（票号按 (附件, 代际) 分桶）
         with svc._commit_seq_lock:
-            svc._commit_seq[att.id] = tickets[0]  # 故意让票号校验仍然通过
+            svc._commit_bucket[(att.id, gen0)] = tickets[0]
         entered.set()
         assert release.wait(10)
 
@@ -191,17 +194,15 @@ def test_v_r1c_two_ops_never_share_a_temp_file(svc, tmp_path):
 
 
 def test_v_r1d_audit_stale_generation_op_started_later_deadlocks_both(svc, tmp_path):
-    """【审计 N1】票号顺序与代际顺序可以相反：后开始的**过期代际**操作会作废当前代际的操作。
+    """【N1 闭合】过期代际的操作**后启动、领到更大票号**，也不得作废当前代际的操作。
 
     构造（完全确定，不 sleep）：
-      1. 旧代际操作（gen=1）在闸门里停住，**已经领到票号 2**；
-      2. 新重定位把代际推到 2，新操作（gen=2）也被闸门停住；
-      3. 让一个**过期代际**（gen=1）的复制在此时开始复制 —— 它领到**更新的票号 3**；
-      4. 它到提交边界：代际校验失败 → 作废（正确）；
-      5. 放行 gen=2 那个操作：票号校验失败 → 也作废。
+      1. 当前代际操作（gen=2）先启动并停在提交边界之前；
+      2. 一个**过期代际**（gen=1）的复制在此时才开始 —— 它会领到更大的票号；
+      3. 过期操作到提交边界：代际闸挡住它（正确）；
+      4. 放行当前代际操作：它必须**照常提交**（目标文件存在、行不再停在 prepared）。
 
-    结果：**没有任何操作提交**，附件永远停在 prepared（本轮绑定会等到超时才结构化拒绝）。
-    契约要求「旧操作永不覆盖新结果」是满足的，但功能上附件再也到不了 ready。
+    修复前这里两个操作会互相作废：都 cancelled、目标不存在、行停在 prepared。
     """
     src_a = _src(tmp_path, "a.bin", b"A" * 4096)
     src_b = _src(tmp_path, "b.bin", b"B" * 8192)
@@ -222,6 +223,15 @@ def test_v_r1d_audit_stale_generation_op_started_later_deadlocks_both(svc, tmp_p
     att_new = svc.get(att.id, check=False)
 
     box: dict[str, object] = {}
+    tickets: list[tuple[str, int, int]] = []
+    begin = svc._begin_commit_scope
+
+    def spy(attachment_id: str, generation: int) -> int:
+        value = begin(attachment_id, generation)
+        tickets.append((attachment_id, generation, value))
+        return value
+
+    svc._begin_commit_scope = spy  # type: ignore[method-assign]
 
     def op_new() -> None:
         box["new"] = svc.copy_to_disk(att_new, generation=gen_stale + 1, on_commit=gate_new)
@@ -243,14 +253,24 @@ def test_v_r1d_audit_stale_generation_op_started_later_deadlocks_both(svc, tmp_p
     tn.join(10)
     out_new = box["new"]
 
-    # 审计结论：当前代际的操作也被票号校验作废了
-    print("N1 op_new:", out_new.state, out_new.error)
-    print("N1 target exists:", svc.copy_path(att).exists())
-    row = svc.get(att.id, check=False)
-    print("N1 row state:", row.state, "is_preparing:", svc.is_preparing(att.id))
-    assert out_new.state == STATE_CANCELLED
-    assert not svc.copy_path(att).exists()
-    assert row.state == "prepared"
+    # 证明时序确实是 N1 那种反转：过期代际的操作领到了更大的票号
+    stale_tickets = [t for (_aid, gen, t) in tickets if gen == gen_stale]
+    new_tickets = [t for (_aid, gen, t) in tickets if gen == gen_stale + 1]
+    assert stale_tickets and new_tickets
+    assert max(stale_tickets) > max(new_tickets), tickets
+
+    print("N1-closed op_new:", out_new.state, out_new.error)
+    print("N1-closed target exists:", svc.copy_path(att).exists())
+    assert out_new.state == STATE_READY, "当前代际的操作必须照常提交"
+    assert svc.copy_path(att).read_bytes() == b"B" * 8192
+
+    svc.apply_outcome(att.id, out_new, generation=gen_stale + 1)
+    svc.apply_outcome(att.id, box["stale"], generation=gen_stale)  # 迟到结果不得写行
+    row = svc.get(att.id, check=True)
+    print("N1-closed row:", row.state, row.size_bytes, "is_preparing:", svc.is_preparing(att.id))
+    assert row.state == STATE_READY and row.size_bytes == 8192
+    assert not svc.is_preparing(att.id)
+    assert _part_files(svc, att.id) == []
 
 
 def test_v_r1e_two_ops_adversarial_release_order_never_overwrites_newer(svc, tmp_path):
@@ -320,8 +340,8 @@ def test_v_r1e_two_ops_adversarial_release_order_never_overwrites_newer(svc, tmp
     assert Path(row.stored_path).read_bytes() == b"B" * 8192
 
 
-def test_v_r1f_audit_n1_impact_bind_rejects_not_ready(svc, tmp_path):
-    """【审计 N1 的影响面】两个操作互相作废之后，这一轮的附件绑定会等到超时才结构化拒绝。"""
+def test_v_r1f_n1_closed_bind_succeeds_after_stale_generation_op(svc, tmp_path):
+    """N1 闭合（端到端）：过期代际操作后启动之后，这一轮的附件绑定仍然成功（不再卡在 prepared）。"""
     src_a = _src(tmp_path, "a.bin", b"A" * 4096)
     src_b = _src(tmp_path, "b.bin", b"B" * 8192)
     att = svc.prepare(str(src_a))
@@ -358,14 +378,59 @@ def test_v_r1f_audit_n1_impact_bind_rejects_not_ready(svc, tmp_path):
     t_new.join(10)
 
     assert box["stale"].state == STATE_CANCELLED
-    assert box["new"].state == STATE_CANCELLED
+    assert box["new"].state == STATE_READY, "当前代际的操作必须提交成功"
+
+    svc.apply_outcome(att.id, box["new"], generation=gen_stale + 1)
+    svc.apply_outcome(att.id, box["stale"], generation=gen_stale)  # 迟到结果不得写行
 
     outcome = asyncio.run(
         svc.bind_for_turn(turn_id="turn_new", attachment_ids=[att.id], topic_id=None)
     )
-    print("N1 bind bound:", outcome.bound)
-    print("N1 bind rejected:", outcome.rejected)
-    print("N1 rejection code:", outcome.rejection_code_for(att.id))
-    assert outcome.bound == []
-    assert outcome.rejection_code_for(att.id) == "attachment_not_ready"
-    assert not svc.copy_path(att).exists()
+    print("N1-closed bind bound:", outcome.bound)
+    print("N1-closed bind rejected:", outcome.rejected)
+    print("N1-closed bind is_preparing:", svc.is_preparing(att.id))
+    assert outcome.rejected == [], "修复前这里会是 attachment_not_ready"
+    assert outcome.bound == [att.id]
+    assert svc.copy_path(att).read_bytes() == b"B" * 8192
+
+
+def test_v_r1g_no_generation_caller_is_now_generation_gated(svc, tmp_path):
+    """N1 修复带来的新不变量：**没有代际信息**的旧调用方（上传 / 老调用路径）在开始那一刻
+    绑定当下代际 —— 之后任何更新的准备都会让它过期，它不再"跳过代际校验"。"""
+    src_a = _src(tmp_path, "a.bin", b"A" * 4096)
+    src_b = _src(tmp_path, "b.bin", b"B" * 8192)
+    att = svc.prepare(str(src_a))
+    att_old = svc.get(att.id, check=False)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def gate() -> None:
+        entered.set()
+        assert release.wait(10)
+
+    box: dict[str, object] = {}
+
+    def op_old() -> None:
+        box["old"] = svc.copy_to_disk(att_old, generation=None, on_commit=gate)
+
+    thread = threading.Thread(target=op_old, name="v-r1g")
+    thread.start()
+    assert entered.wait(10)
+
+    # 新重定位完整跑完并提交
+    svc.relocate(att.id, str(src_b))
+    release.set()
+    thread.join(10)
+
+    out = box["old"]
+    print("r1g out:", out.state, out.error, "commit_generation:", out.commit_generation)
+    assert out.commit_generation is not None, "不给代际的调用方也必须在开始时绑定当下代际"
+    assert out.state == STATE_CANCELLED, "旧调用方不得覆盖更新的重定位结果"
+
+    # 不带 generation 落库：apply_outcome 用结果自带的代际作废它
+    svc.apply_outcome(att.id, out)
+    row = svc.get(att.id, check=True)
+    assert row.state == STATE_READY and row.size_bytes == 8192
+    assert Path(row.stored_path).read_bytes() == b"B" * 8192
+    assert _part_files(svc, att.id) == []

@@ -145,3 +145,40 @@ describe("R3 迟到的恢复补丁（应用边界按当前本地修订号判定�
     expect(merged.list[0]?.name).toBe("更新的名字.bin");
   });
 });
+
+describe("R3 / N3 兼容调用形状（不带 options）", () => {
+  it("请求期间同一 ID 被更新过 → 保留当前记录，且不再报成永久无效（N3 闭合）", async () => {
+    savePendingAttachments(TOPIC, [ref()]);
+    const gate = deferred<Response>();
+    let sent = false;
+    fetchMock.mockImplementation(() => {
+      sent = true;
+      return gate.promise;
+    });
+
+    const inflight = restorePendingAttachments(TOPIC); // 不带 options（旧调用形状）
+    for (let i = 0; i < 50 && !sent; i += 1) await Promise.resolve();
+    expect(sent).toBe(true);
+
+    // 期间本地把同 ID 记录更新了（修订号前进）
+    savePendingAttachments(TOPIC, [
+      ref({ name: "期间更新过.bin", state: "changed", error: "内容有变化" }),
+    ]);
+
+    gate.resolve(response(404, { detail: "没有这个附件" }));
+    const outcome = await inflight;
+
+    expect(outcome.dropped, "没有按旧事实删，就不能同时说它永久无效").toEqual([]);
+    const list = loadPendingAttachments(TOPIC);
+    expect(list.map((item) => item.id)).toEqual([ref().id]);
+    expect(list[0]?.name).toBe("期间更新过.bin");
+  });
+
+  it("对照：期间无人写过 → 照旧清理并报出名字", async () => {
+    savePendingAttachments(TOPIC, [ref()]);
+    fetchMock.mockResolvedValue(response(404, { detail: "没有这个附件" }));
+    const outcome = await restorePendingAttachments(TOPIC);
+    expect(outcome.dropped).toEqual([ref().name]);
+    expect(loadPendingAttachments(TOPIC)).toEqual([]);
+  });
+});
