@@ -10,8 +10,11 @@
 
 1. 用户原文件**永不被移动、改名或删除**。DELETE 只清理 QIO 自己管理的副本
    （<data_dir>/attachments/ 之下，且经过 resolve 校验）。
-2. 副本先写临时文件（<目标名>.part），复制成功后才 os.replace 提交；
-   失败/取消/进程中断留下的是临时文件，可重试，不会出现「半个正式副本」。
+2. 副本先写**本操作自己的**临时文件（<目标名>.<操作 token>.part），复制成功后才
+   os.replace 提交；失败/取消/进程中断留下的是临时文件，可重试，不会出现「半个正式副本」。
+   R1（2026-10-10）：临时文件绝不共用同名 —— 同一条附件先后两次准备（重定位/重试）会
+   并发跑两个复制线程，共用 <目标名>.part 时旧操作会覆盖新操作正在写的字节，还会把新
+   操作的临时文件当成自己的删掉。每个操作持有唯一 token，只清理自己的资产。
 3. 状态是**事实**：prepared（已登记、还没准备）/ ready / failed / cancelled /
    missing（文件不在原位）/ changed（内容与登记时不一致，或复制期间源文件变了）。
    失败、取消、变化都保留重试能力（run_prepare 可以再跑）。
@@ -61,6 +64,43 @@ REFERENCE_CAVEAT = "历史保留的是位置，不保证内容仍然存在"
 CHUNK_BYTES = 1024 * 1024
 #: 临时文件后缀：重启清理只认自己写的这个后缀
 TEMP_SUFFIX = ".part"
+
+
+def temp_path_for(target: Path) -> Path:
+    """本操作**独有**的临时文件路径：<目标名>.<操作 token><TEMP_SUFFIX>。
+
+    R1：同一目标名可能有多个操作（代际）在并发复制 —— 临时文件必须身份独立，
+    否则 A 的字节会覆盖 B 刚写的、A 收尾时也会删掉 B 正在写的文件。
+    仍以 TEMP_SUFFIX 结尾，所以 reconcile() 的重启清理规则照旧认得出来；
+    仍以目标名开头，所以「临时文件在目标旁边」这条不变量的形状不变。
+    """
+    return target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}{TEMP_SUFFIX}")
+
+
+def _identity_of(path: Path) -> tuple[int, int] | None:
+    """文件身份（st_dev, st_ino）：用来证明「这个目录项现在还是我看的那一份」。
+
+    Windows 上 st_ino 是文件索引（NTFS 提供），换一个 inode 就是换了一份文件 ——
+    正是「旧任务不得替换新代际刚提交的副本」需要的判据。
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_dev), int(stat.st_ino))
+
+
+def _unlink_if_same_file(path: Path, identity: tuple[int, int] | None) -> bool:
+    """只在路径**仍然是** identity 指的那一份文件时删除它（尽力而为，不抛）。
+
+    旧操作收尾时目标文件可能已经被新代际替换：按身份核对，绝不删别人的成果。
+    identity 为 None（老调用方）时按旧行为直接删。
+    """
+    if identity is not None and _identity_of(path) != identity:
+        return False
+    _unlink_quiet(path)
+    return True
+
 
 #: 上传写入的单块上限：ASGI 服务端/测试客户端可能一次送来一整包（几十 MB），
 #: 所以工作线程里再切一次 —— 让「让出 GIL」的粒度只与字节数有关，与调用方分块无关。
@@ -180,6 +220,9 @@ class DiskOutcome:
     sha256: str | None = None
     size_bytes: int | None = None
     mtime: float | None = None
+    #: R1：本操作**提交那一刻**写出的文件身份（st_dev, st_ino）。收尾/回滚时按它核对，
+    #: 只在路径仍然是这一份文件时才删 —— 新代际已经替换过就不能动（那是别人的成果）。
+    identity: tuple[int, int] | None = None
 
 
 def _now() -> str:
@@ -329,6 +372,9 @@ class ClonePlan:
     source_copy: Path
     target: Path
     expect_size: int
+    #: R1：本操作**独有**的临时文件（<目标名>.<token>.part）。工作线程先写它、再 os.replace
+    #: 提交；取消/失败只清自己这一份，绝不动别处（默认值让旧构造点仍然可用）。
+    temp: Path | None = None
     #: 取消标记：调用方置位后，工作线程写完也会自己清掉目标文件（迟到结果不得提交 ready）
     cancelled: threading.Event = field(default_factory=threading.Event)
     #: 工作线程真正结束（成功/失败/取消都置位）：取消后的收尾据此再清一次
@@ -451,6 +497,10 @@ class AttachmentService:
         # 过期代际既不落库、也不清在飞登记（不误唤醒等新代际的等待者）。
         self._prepare_gen: dict[str, int] = {}
         self._prepare_gen_lock = threading.Lock()
+        # R1：**提交边界的短锁**。只护住「再校验一次代际 + os.replace」这一瞬间 ——
+        # 绝不覆盖整段复制（复制可以在锁外跑几分钟，也不允许一个全局锁把并发复制串起来）。
+        # 它同时是「检查→提交」之间的一致性边界：锁内再核对一次代际与文件身份。
+        self._commit_lock = threading.Lock()
 
     # -- 路径 --------------------------------------------------------------
 
@@ -752,7 +802,9 @@ class AttachmentService:
         """
         limit = int(self.max_upload_bytes if max_bytes is None else max_bytes)
         target = self.copy_path(att)
-        tmp = target.with_name(target.name + TEMP_SUFFIX)
+        # R1：上传也用自己的临时文件（同一条附件的多次上传/重试不得互相覆盖字节）
+        tmp = temp_path_for(target)
+        target_identity = _identity_of(target)
         event = self._cancel_event(att.id)
         digest = hashlib.sha256()
         written = 0
@@ -806,14 +858,26 @@ class AttachmentService:
             # 最后一道闸：取消/删除已经发生，绝不把这份字节提交成 ready
             _unlink_quiet(tmp)
             return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
-        try:
-            os.replace(tmp, target)
-        except OSError as exc:
-            _unlink_quiet(tmp)
-            return DiskOutcome(
-                state=STATE_FAILED,
-                error=self._describe_oserror(exc, target=target),
-            )
+        # 与 _copy_once 同一条提交边界：短锁里再核一次取消、代际与文件身份。
+        with self._commit_lock:
+            if event.is_set():
+                _unlink_quiet(tmp)
+                return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
+            current_identity = _identity_of(target)
+            if target_identity is not None and current_identity != target_identity:
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED, error="这份副本已经被更新的准备替换过（可以重试）"
+                )
+            try:
+                os.replace(tmp, target)
+            except OSError as exc:
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_FAILED,
+                    error=self._describe_oserror(exc, target=target),
+                )
+        committed_identity = _identity_of(target)
         try:
             mtime = float(target.stat().st_mtime)
         except OSError:
@@ -825,11 +889,12 @@ class AttachmentService:
             sha256=digest.hexdigest(),
             size_bytes=written,
             mtime=mtime,
+            identity=committed_identity,
         )
 
     def _write_upload(self, att: Attachment, payload: bytes) -> Attachment:
         target = self.copy_path(att)
-        tmp = target.with_name(target.name + TEMP_SUFFIX)
+        tmp = temp_path_for(target)  # R1：写入也用自己的临时文件
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "wb") as handle:
@@ -892,6 +957,7 @@ class AttachmentService:
         chunk_size: int = CHUNK_BYTES,
         on_chunk: Callable[[int], None] | None = None,
         generation: int | None = None,
+        on_commit: Callable[[], None] | None = None,
     ) -> DiskOutcome:
         """**纯文件 I/O**：可以在工作线程里调用，绝不碰数据库。
 
@@ -912,7 +978,11 @@ class AttachmentService:
         if att.kind == "reference":
             return self._reference_outcome(att)
         return self._copy_once(
-            att, chunk_size=chunk_size, on_chunk=on_chunk, generation=generation
+            att,
+            chunk_size=chunk_size,
+            on_chunk=on_chunk,
+            generation=generation,
+            on_commit=on_commit,
         )
 
     def _reference_outcome(self, att: Attachment) -> DiskOutcome:
@@ -960,13 +1030,12 @@ class AttachmentService:
             # 复制期间附件被删掉了：行已经不在，磁盘结果无处可落。
             # 但这次复制可能刚好在 delete 之前提交了正式副本 —— 那是 QIO 自己的文件，
             # 必须一并清掉，否则 attachments 目录里会留下无人认领的副本。
-            if outcome.stored_path and self.is_managed_path(outcome.stored_path):
-                _unlink_quiet(Path(outcome.stored_path))
+            # R1：按**文件身份**核对后再删 —— 目标可能已经被新代际换成它的副本了。
+            self._purge_committed(outcome)
             self._clear_preparing(attachment_id, generation=generation)  # 等在这条上的人必须被放醒（§1.3）
             return None
         if outcome.state in (STATE_READY, STATE_CHANGED) and self.is_cancel_requested(attachment_id):
-            if outcome.stored_path and self.is_managed_path(outcome.stored_path):
-                _unlink_quiet(Path(outcome.stored_path))
+            self._purge_committed(outcome)
             self._update(
                 attachment_id,
                 state=STATE_CANCELLED,
@@ -1001,6 +1070,7 @@ class AttachmentService:
                     sha256=outcome.sha256,
                     size_bytes=outcome.size_bytes,
                     mtime=outcome.mtime,
+                    identity=outcome.identity,
                 )
         fields: dict[str, object] = {"state": outcome.state, "error": outcome.error}
         if outcome.stored_path is not None:
@@ -1010,10 +1080,39 @@ class AttachmentService:
             fields["size_bytes"] = int(outcome.size_bytes)
         if outcome.mtime is not None:
             fields["mtime"] = float(outcome.mtime)
-        self._update(attachment_id, **fields)
+        try:
+            self._update(attachment_id, **fields)
+        except Exception:
+            # R1 补偿：**文件已经提交、落库失败** —— 这次操作自己的副本必须回滚
+            # （按身份核对，绝不误删新代际的文件），并如实把行留成 failed（可重试），
+            # 绝不留下「行里什么都没有、磁盘上多一份无人认领副本」的状态。
+            self._purge_committed(outcome)
+            try:
+                self._update(
+                    attachment_id,
+                    state=STATE_FAILED,
+                    error="副本已经写出但状态落库失败；请重试准备",
+                    stored_path=None,
+                    sha256=None,
+                )
+            except Exception:  # noqa: BLE001 - 补偿本身不得掩盖真正的原因
+                logger.warning("附件落库失败后的状态补偿也没成功（%s）", redact_text(str(attachment_id)))
+            self._clear_preparing(attachment_id, generation=generation)
+            raise
         # 首次准备到此结束：注销在飞登记并**唤醒**等待者（先注销、再唤醒）
         self._clear_preparing(attachment_id, generation=generation)
         return self.get(attachment_id, check=False)
+
+    def _purge_committed(self, outcome: DiskOutcome) -> None:
+        """清掉**本操作**刚提交的那份副本（R1 补偿路径的唯一入口）。
+
+        只在两个条件下删：路径在 QIO 管理目录里，且磁盘上这一份**仍然是** outcome
+        记录的身份。新代际已经把目标换成自己的副本时什么都不做 —— 那是别人的成果，
+        旧操作没有资格删（这正是 R1 要挡住的「旧任务覆盖/删除新内容」）。
+        """
+        if not outcome.stored_path or not self.is_managed_path(outcome.stored_path):
+            return
+        _unlink_if_same_file(Path(outcome.stored_path), outcome.identity)
 
     def _copy_once(
         self,
@@ -1022,10 +1121,25 @@ class AttachmentService:
         chunk_size: int,
         on_chunk: Callable[[int], None] | None,
         generation: int | None = None,
+        on_commit: Callable[[], None] | None = None,
     ) -> DiskOutcome:
+        """一次复制操作（**纯文件 I/O**，可以在工作线程里跑）。
+
+        提交边界（R1）：复制循环结束后句柄已关闭，再在 self._commit_lock 这段**短锁**里
+        重算代际、核对目标目录项还是不是本操作开始时看到的那一份，最后才 os.replace。
+        锁不覆盖复制本身。
+
+        on_commit：测试缝 —— 在下一次运行**在复制之后、提交边界之前**（句柄已关闭、
+        字节已落盘）。用来确定性地构造「旧任务复制完、提交前新代际已提交」的时序；
+        生产路径不传（默认 None）。
+        """
         source = Path(att.source_path or "")
         target = self.copy_path(att)
-        tmp = target.with_name(target.name + TEMP_SUFFIX)
+        # R1：临时文件身份独立（每次操作一个新 token），绝不共用 <目标名>.part ——
+        # 两个代际并发复制时互不覆盖，收尾时也只会清掉自己的那一份。
+        tmp = temp_path_for(target)
+        #: 提交时核对：开始这次操作时目标目录项的身份（None = 当时还不存在）。
+        target_identity = _identity_of(target)
         event = self._cancel_event(att.id)
         digest = hashlib.sha256()
         copied = 0
@@ -1091,18 +1205,43 @@ class AttachmentService:
             or abs(float(after.st_mtime) - float(before.st_mtime)) > 1e-6
             or copied != target_size
         )
-        if not self._generation_current(att.id, generation):
-            # F20：提交前才发现已被取代 —— 不覆盖目标文件，清掉临时文件并如实作废
-            _unlink_quiet(tmp)
-            return DiskOutcome(state=STATE_CANCELLED, error="这次准备已被更新的定位取代（可以重试）")
-        try:
-            os.replace(tmp, target)
-        except OSError as exc:
-            _unlink_quiet(tmp)
-            return DiskOutcome(
-                state=STATE_FAILED,
-                error=self._describe_oserror(exc, target=target),
-            )
+        # 测试缝（生产路径不传）：此刻本操作的句柄都已关闭、字节已落盘，正好是
+        # 「已经过了循环里的代际检查、提交边界还没跑」的那一刻。
+        if on_commit is not None:
+            try:
+                on_commit()
+            except BaseException:
+                _unlink_quiet(tmp)  # 缝里抛了（测试失败/超时）：不留无人认领的临时文件
+                raise
+        # 提交边界：短锁里完成「再校验一次代际 + 核对文件身份 + os.replace」。
+        # 三件事必须在同一个临界区里，否则「检查通过」与「真的提交」之间还有一个窗口，
+        # 旧任务可以在这个窗口里把新代际刚提交的副本替换成旧字节（R1 的根因）。
+        with self._commit_lock:
+            if not self._generation_current(att.id, generation):
+                # F20：提交前才发现已被取代 —— 不覆盖目标文件，清掉临时文件并如实作废
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED, error="这次准备已被更新的定位取代（可以重试）"
+                )
+            current_identity = _identity_of(target)
+            if target_identity is not None and current_identity != target_identity:
+                # 本操作开始这一刻目标不存在、或不是现在这一份 —— 说明已有一个**更新的**
+                # 提交把目标换掉了。旧任务绝不替换最新成果（字节、大小都可能对得上，
+                # 只有身份能证明「这不是我该写的那一份」）。
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED,
+                    error="这次准备已被更新的准备取代（目标副本已经换过一份；可以重试）",
+                )
+            try:
+                os.replace(tmp, target)
+            except OSError as exc:
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_FAILED,
+                    error=self._describe_oserror(exc, target=target),
+                )
+        committed_identity = _identity_of(target)
         if moved_during:
             state, error = (
                 STATE_CHANGED,
@@ -1124,6 +1263,7 @@ class AttachmentService:
             sha256=digest.hexdigest(),
             size_bytes=copied,
             mtime=float(after.st_mtime),
+            identity=committed_identity,
         )
 
     # -- 取消 / 删除 --------------------------------------------------------
@@ -1163,7 +1303,10 @@ class AttachmentService:
                 deleted_copy = str(path)
             except OSError as exc:
                 logger.warning("删除附件副本失败: %s", redact_text(str(exc)))
-            _unlink_quiet(Path(str(path) + TEMP_SUFFIX))
+            # R1：临时文件已经改成每个操作一个唯一名字（<目标名>.<token>.part），
+            # 这里**不能**再按固定名字猜 —— 猜错就是删掉别人正在写的那一份。
+            # 本操作自己的临时文件由它自己收尾（失败/取消路径都会清），
+            # 进程中断留下的由 reconcile() 的重启清理统一扫掉。
         with self._db_lock, transaction(self.conn):
             self.conn.execute("DELETE FROM attachments WHERE id = ?", (att.id,))
         with self._cancel_lock:
@@ -1428,6 +1571,36 @@ class AttachmentService:
             if reason:
                 outcome.reject(attachment_id, reason)
 
+    def _reverify_committed(
+        self,
+        committed: list[tuple[Attachment, Attachment]],
+        *,
+        outcome: BindOutcome,
+    ) -> None:
+        """整组**放行前**的最终复核（R2）：按当下事实确认本轮写下的每一条仍然成立。
+
+        为什么必须有它：_commit_planned 是逐条「复核 → 写入」，第 1 条绑完之后，
+        第 2 条可能还要 await（重试克隆的文件 I/O，可能几百毫秒）—— 这段时间里
+        用户完全可能把第 1 条删掉、移走、改归属。只在各自写入前复核，会留下
+        「回执里有第 1 条、rejected 为空、模型真带上了它」这种已经失效的集合。
+
+        复核 + 放行在同一个**无 await 的提交段**里：本方法不写库、不 await，返回后
+        调用方立刻决定 accept 或整轮回滚（_rollback_commits），事件循环不会在这中间
+        插进别的写操作。诚实边界：放行之后用户仍可能删掉文件 —— 那一段由读取侧
+        （read_attachment / content_target）按当下事实如实报错，本方法不宣称消除它。
+        """
+        for current, _fresh in committed:
+            reason = self._attachment_failure_reason(
+                current, self.get(current.id, check=False)
+            )
+            if reason:
+                # current.id 对重试克隆是**本轮的克隆 id**（不是源行 id）：回执与补偿
+                # 都按实际绑定集合说话（Lead 冻结：放行集合 == 实际绑定集合）。
+                outcome.reject(
+                    current.id,
+                    "这个附件在本轮准备期间已经失效（" + reason + "）",
+                )
+
     def _final_check(
         self,
         attachment_id: str,
@@ -1449,6 +1622,32 @@ class AttachmentService:
             fresh, turn_id=turn, topic_id=topic_id, retry_of_turn_id=retry_of
         )
 
+    def _attachment_failure_reason(self, current: Attachment, fresh: Attachment | None) -> str | None:
+        """**已经写下绑定之后**的复核判据（R2）：这一条现在还成立吗。
+
+        与 _reject_reason 的区别只有一条、但很关键：绑定是**刚刚由本轮写下的**，
+        所以「已属于本轮」不再是一种失败 —— 复核的是它有没有被改掉 / 被拿走：
+
+        * 行被删了（fresh is None）→ 不复活，整轮拒绝；
+        * 归属被改走（turn 不再是本轮、或 topic 变了）→ 整轮拒绝；
+        * 消息归属被改掉、副本变得不可读 → 整轮拒绝。
+
+        「用户与 topic / turn 归属」按**当前事实**核对，不拿 await 之前的旧对象。
+        """
+        if fresh is None:
+            return "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）"
+        if str(fresh.turn_id or "") != str(current.turn_id or ""):
+            return "这个附件的归属在提交期间变了；整轮没有发送（可以重试）"
+        if str(fresh.topic_id or "") != str(current.topic_id or ""):
+            return "这个附件的话题归属在提交期间变了；整轮没有发送（可以重试）"
+        expected_message = str(current.message_id or "")
+        actual_message = str(fresh.message_id or "")
+        if expected_message and actual_message != expected_message:
+            return "这个附件的消息归属在提交期间变了；整轮没有发送（可以重试）"
+        if fresh.kind == "copy":
+            return self._copy_readiness_reason(fresh)
+        return None
+
     async def _commit_planned(
         self,
         planned: list[tuple[str, Attachment]],
@@ -1459,7 +1658,8 @@ class AttachmentService:
         retry_of: str | None,
         outcome: BindOutcome,
     ) -> BindOutcome:
-        """集合级提交边界（F15/F16）：逐条「复核当下事实 → 条件写入 / 克隆」，任一条失败整轮回滚。
+        """集合级提交边界（F15/F16 + R2）：逐条「复核当下事实 → 条件写入 / 克隆」，
+        全部等待结束、放行之前再**整组**复核一次，任一条失效整轮回滚。
 
         * 每一条在**自己提交前一刻**重新读行（绝不能拿 await 之前的旧对象落库）：
           记录身份、话题、归属、就绪（含副本可读性）全部按当下事实重算；
@@ -1467,11 +1667,17 @@ class AttachmentService:
           不偷取别的轮的附件，也不复活已删记录；
         * 重试克隆成功的新行记入本轮账本：后续任一条失败或整轮取消 → 删行、删副本、
           清 preparing（完整补偿；原行的历史副本与归属不动）；
+        * R2：**第 1 条绑完之后**，第 2 条的克隆还要 await 文件 I/O —— 这段时间里
+          用户可能把第 1 条删掉/移走/改归属。所以放行前按当下事实对**整组已写下的行**
+          再复核一次（_reverify_committed，无 await）；任一条失效 → 整轮拒绝 + 补偿，
+          回执里 bound 为空、rejected 有准确 id，新克隆不得半成功；
         * 取消（CancelledError）与任何异常都走同一条回滚路径后原样上抛，绝不留半绑。
         """
         commits: list[_CommitRecord] = []
-        #: 逐条成功的结果先攒着：**整轮全部成功**才写进 outcome（失败/取消时不留半截回执）
+        #: 逐条成功的结果先攒着：**整轮全部成功 + 放行前整组复核通过**才写进 outcome
         accepted: list[Attachment] = []
+        #: R2：已写下的每一条（提交后的当下行, 写入时的行）。放行前按**当下事实**整组复核。
+        committed: list[tuple[Attachment, Attachment]] = []
         try:
             for attachment_id, _stale in planned:
                 fresh = self.get(attachment_id)  # check=True：以文件世界的事实为准
@@ -1523,6 +1729,7 @@ class AttachmentService:
                             stored_path=clone.stored_path,
                         )
                     )
+                    committed.append((clone, clone))
                     accepted.append(clone)
                     continue
                 # 普通绑定：先记账（失败回滚要恢复原归属），再条件写入
@@ -1551,14 +1758,22 @@ class AttachmentService:
                         "这个附件在准备期间被删除了；整轮没有发送（可以重新附上再发）",
                     )
                     break
+                committed.append((refreshed, fresh))
                 accepted.append(refreshed)
         except BaseException:
             # 取消 / 异常 / 服务关闭：先把本轮已经写下的东西完整补偿，再原样上抛
             self._rollback_commits(commits, turn=turn)
             raise
+        if not outcome.rejected:
+            # R2：所有等待都结束了 —— 放行前按**当下事实**整组复核。
+            # 复核 + 放行之间没有任何 await（上面最后一次 await 是克隆的 to_thread）。
+            self._reverify_committed(committed, outcome=outcome)
         if outcome.rejected:
             # 集合级提交：任一条失败，本轮已写下的绑定/克隆**全部补偿**，回执里不留 bound
+            # （放行集合 == 实际绑定集合：被拒的那一轮在回执里一个 id 都不留）
             self._rollback_commits(commits, turn=turn)
+            outcome.bound.clear()
+            outcome.clear()
         else:
             for att in accepted:
                 outcome.accept(att)
@@ -1978,12 +2193,14 @@ class AttachmentService:
             mtime=source.mtime,
         )
         self._insert(clone)
+        target = self.copy_path(clone)
         return ClonePlan(
             source_id=source.id,
             clone_id=clone.id,
             source_copy=source_copy,
-            target=self.copy_path(clone),
+            target=target,
             expect_size=int(source.size_bytes),
+            temp=temp_path_for(target),  # R1：克隆也有自己的临时文件
         )
 
     def _run_clone_io(self, plan: ClonePlan) -> CloneResult:
@@ -1992,6 +2209,10 @@ class AttachmentService:
         成功条件：目标文件写出且大小与登记一致；失败一律清掉半截文件再返回原因。
         取消（调用方置位 plan.cancelled）：写完了也要自己清掉，迟到结果不得提交 ready。
         """
+        # R1：先写**本操作自己的**临时文件，成功后才提交到目标名（与 _copy_once 同一条纪律）。
+        # 目标名已经是 clones 专用的新 id，但临时文件仍必须身份独立：同一计划被别人复用、
+        # 或取消后收尾线程再清一次时，绝不能碰到别人正在写的字节。
+        tmp = plan.temp or temp_path_for(plan.target)
         try:
             if plan.cancelled.is_set():
                 return CloneResult(False, "这一轮在复制开始前已经结束", cancelled=True)
@@ -1999,17 +2220,17 @@ class AttachmentService:
                 return CloneResult(False, "QIO 保存的副本文件已经不在了；请重新附上这个文件后再发送")
             plan.target.parent.mkdir(parents=True, exist_ok=True)
             try:
-                os.link(plan.source_copy, plan.target)
+                os.link(plan.source_copy, tmp)
             except OSError:
                 # 硬链接不可用（跨卷 / 权限 / 文件系统不支持）→ 复制同一份已保存副本
-                shutil.copyfile(plan.source_copy, plan.target)
+                shutil.copyfile(plan.source_copy, tmp)
             try:
-                written = plan.target.stat().st_size
+                written = tmp.stat().st_size
             except OSError as exc:
-                _unlink_quiet(plan.target)
-                return CloneResult(False, "复用已保存的副本失败：" + self._describe_oserror(exc, target=plan.target))
+                _unlink_quiet(tmp)
+                return CloneResult(False, "复用已保存的副本失败：" + self._describe_oserror(exc, target=tmp))
             if written != int(plan.expect_size):
-                _unlink_quiet(plan.target)
+                _unlink_quiet(tmp)
                 return CloneResult(
                     False,
                     "复用已保存的副本失败：写出的副本大小不对（"
@@ -2020,11 +2241,13 @@ class AttachmentService:
                 )
             if plan.cancelled.is_set():
                 # 取消发生在写完之后：自己清掉刚写出的文件
-                _unlink_quiet(plan.target)
+                _unlink_quiet(tmp)
                 return CloneResult(False, "这一轮在复制期间被取消", cancelled=True)
+            with self._commit_lock:  # 提交边界：短锁里做改名（不覆盖复制本身）
+                os.replace(tmp, plan.target)
             return CloneResult(True)
         except OSError as exc:
-            _unlink_quiet(plan.target)
+            _unlink_quiet(tmp)
             return CloneResult(False, "复用已保存的副本失败：" + self._describe_oserror(exc, target=plan.target))
         finally:
             plan.finished.set()
@@ -2043,36 +2266,55 @@ class AttachmentService:
             self._discard_clone(plan)
             self._schedule_orphan_cleanup(plan)
             raise
+        tmp = plan.temp or temp_path_for(plan.target)
         current = self.get(plan.clone_id, check=False)
         if current is None or current.state != STATE_PREPARED:
             # 代次/取消校验：这一行已经不是「正在准备的这一条」了 —— 迟到结果不得提交 ready
             _unlink_quiet(plan.target)
+            _unlink_quiet(tmp)
             return CloneResult(False, "这一轮在复制期间已经结束（附件记录已不在），没有留下副本")
         if not result.ok:
-            _unlink_quiet(plan.target)
+            self._purge_clone_target(plan)
             self.delete(plan.clone_id, purge_copy=True)
             return CloneResult(False, result.reason or "复用已保存的副本失败")
-        self._update(plan.clone_id, stored_path=str(plan.target), state=STATE_READY, error=None)
+        try:
+            self._update(plan.clone_id, stored_path=str(plan.target), state=STATE_READY, error=None)
+        except Exception:
+            # R1 补偿：文件已提交、落库失败 —— 清掉本操作的副本（按身份核对）
+            self._purge_clone_target(plan)
+            raise
         refreshed = self.get(plan.clone_id, check=False)
         if refreshed is None:
             _unlink_quiet(plan.target)
+            _unlink_quiet(tmp)
             return CloneResult(False, "这一轮在复制期间已经结束（附件记录已不在），没有留下副本")
         return CloneResult(True, attachment=refreshed)
+
+    def _purge_clone_target(self, plan: ClonePlan) -> None:
+        """清掉本次克隆的资产：目标副本 + 本操作自己的临时文件。
+
+        克隆的目标是**新 id 的专属路径**（别人不会写它），所以这里可以直接删；
+        真正需要按身份核对的是「同一条附件的历次定位/上传」那条路（见 _purge_committed）。
+        """
+        _unlink_quiet(plan.target)
+        _unlink_quiet(plan.temp or temp_path_for(plan.target))
 
     def _discard_clone(self, plan: ClonePlan) -> None:
         """取消/失败时立刻收尾：删行 + 尽力删目标文件（不留 prepared、不留无人认领副本）。"""
         _unlink_quiet(plan.target)
+        _unlink_quiet(plan.temp or temp_path_for(plan.target))
         try:
             self.delete(plan.clone_id, purge_copy=True)
         except Exception:  # noqa: BLE001 - 收尾本身不得再抛
             logger.warning("clone discard failed", exc_info=True)
 
     def _schedule_orphan_cleanup(self, plan: ClonePlan) -> None:
-        """取消之后工作线程可能还在写：等它真正结束，再清一次目标文件。"""
+        """取消之后工作线程可能还在写：等它真正结束，再清一次目标文件与本操作的临时文件。"""
 
         async def cleanup() -> None:
             await asyncio.to_thread(plan.finished.wait, 10)
             _unlink_quiet(plan.target)
+            _unlink_quiet(plan.temp or temp_path_for(plan.target))
 
         try:
             task = asyncio.get_running_loop().create_task(cleanup())
