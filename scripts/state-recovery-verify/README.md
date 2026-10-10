@@ -72,7 +72,15 @@
 
 ## 在集成分支上复核
 
-E2/E1 的脚本按自身位置解析工作树（config.mjs 的 ROOT），因此要复核集成分支时，
-把本目录与 frontend/src/acceptance-state-recovery、backend/tests/test_state_recovery_d_acceptance.py
-一并放到该分支的工作树里再跑；跑完在报告里注明**核对时的确切 SHA**。
-本次第一步的基线红证据来自 b3245e5。
+E2/E1 的脚本默认按自身位置解析工作树；复核集成分支时**不需要**把脚本复制过去，
+用 QIO_SR_ROOT 指向那个工作树即可（不会写对方的工作树）：
+
+    $env:QIO_SR_ROOT='D:\qio-dev\qio-src-lead'
+    $env:QIO_SR_DATA_DIR=(Join-Path $env:TEMP 'qio-sr-data-after')
+    node scripts/state-recovery-verify/run-with-env.mjs -- capture.mjs --label=after --scenes=coexist,savefail,submitfail --themes=light,dark
+    node scripts/state-recovery-verify/run-with-env.mjs -- journey.mjs --label=after
+
+前端/后端的**反例测试**仍然要在被验收的工作树里跑（它们 import 那一份源码）：
+把 frontend/src/acceptance-state-recovery 与 backend/tests/test_state_recovery_d_acceptance.py
+一并带过去（或先合并本分支）。跑完在报告里注明**核对时的确切 SHA**。
+本次第一步的基线红证据来自 b3245e5；E1/E2 的 before 证据来自同一 SHA。

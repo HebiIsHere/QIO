@@ -3,7 +3,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const ROOT = resolve(here, "..", "..");
+/**
+ * 被验收的工作树根：默认是脚本所在的仓库根。
+ * 复核集成分支时可用 QIO_SR_ROOT 指向那个工作树（脚本不必复制过去，也不会写对方的工作树）。
+ */
+export const ROOT = process.env.QIO_SR_ROOT ? resolve(process.env.QIO_SR_ROOT) : resolve(here, "..", "..");
 export const BACKEND_PORT = Number(process.env.QIO_SR_BACKEND_PORT || 8933);
 export const APP_PORT = Number(process.env.QIO_SR_APP_PORT || 5433);
 export const BACKEND = "http://127.0.0.1:" + BACKEND_PORT;
