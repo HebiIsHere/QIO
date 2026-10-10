@@ -2389,11 +2389,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
       /**
        * 等待确认期间板面又出现了新的候选（08 路径2）：这次说明只覆盖当时那一版，
        * 确认不能放行未说明的改动 —— 重新核实影响，再把新的说明交给用户。
+       *
+       * N2：这条「已重新核实」的事实写在**新的确认说明**里（note），不再挂在
+       * impactCheckError 上 —— 否则界面会一边说「未保存未暂停」、一边还留着上一次的预判失败。
        */
       impactConfirmed = false;
-      impactCheckError.value = "等待确认期间板面又有改动，已重新核实这次改动的影响";
       await saveNow();
-      return summarizeImpactConfirm();
+      const recheckNote = "等待确认期间板面又有改动，已按最新版重新核实这次改动的影响，请重新确认";
+      if (pendingImpact.value && !pendingImpact.value.note) {
+        pendingImpact.value = { ...pendingImpact.value, note: recheckNote };
+      }
+      return summarizeImpactConfirm(recheckNote);
     }
     impactConfirmed = true;
     impactCheckError.value = null;

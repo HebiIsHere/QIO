@@ -307,7 +307,10 @@ describe("08 影响确认约束保存与提交", () => {
     // 版本变了：这次确认不落地旧的授权，重新核实（预判仍然报影响 → 等待新的确认）
     expect(api.saveBoardState).not.toHaveBeenCalled();
     expect(store.pendingImpact).not.toBeNull();
-    expect(store.impactCheckError).toContain("重新核实");
+    // 重新核实的事实写在**新的确认说明**里（N2：不能再把上一次的预判失败留在 impactCheckError，
+    // 否则界面会同时宣称「未保存未暂停」与「已保存已暂停」）
+    expect(store.pendingImpact?.note ?? "").toContain("重新核实");
+    expect(store.impactCheckError, "新的说明已经给出，还留着旧的预判失败").toBeNull();
   });
 
   it("路径3：等待影响确认时不发出提交；确认后提交携带本次候选版本", async () => {
