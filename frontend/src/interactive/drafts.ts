@@ -480,26 +480,122 @@ export function removeCardLocalDraft(cardId: string, expectVersion?: number): Dr
   return removeDraft(key);
 }
 
+/*
+ * ---------- 旧格式本机记录的内容身份依据（F2） ----------
+ *
+ * 无 version（旧版本写下的记录）或 version === 0 的记录**没有版本号可校验**：
+ * 「这次要删的是当时那条记录」这句话无法用版本证明。只按对象 id 删就会误删
+ * 后来新建的那条（反例 F2：删除失败期间另一页面为同一张卡片写下新稿，重试把它删掉了）。
+ *
+ * 所以旧格式记录在登记决定时必须留下一份**可验证的原始身份依据**：由记录自己的内容算出的指纹。
+ * 重试前用同一依据复核，证明不了「当前仍是原记录」就保留新稿。
+ * 指纹必须确定性、可复跑、不含随机数（同一记录多次调用、以及重新读盘后调用都必须一致），
+ * 否则重试会永远证明不了自己，旧副本反而清不掉。
+ */
+const LOCAL_RECORD_FINGERPRINT_VERSION = "fp1";
+
+/** 32 位 FNV-1a（用 Math.imul 保证 32 位溢出行为确定，不依赖平台数学实现） */
+function fnv1a32Hex(input: string, seed: number): string {
+  let hash = seed >>> 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
 /**
- * 按「记录仍是当时那一版」守卫的本机副本清理（§12.2：同浏览器多页面按记录版本校验）。
+ * 记录时戳在历史格式里可能叫 updatedAt / ts / createdAt：逐个归一（不是有限数字的记 null），
+ * **全部**进身份依据 —— 少算任何一个都会把两条不同的旧记录认成同一条。
+ */
+function normalizeStamps(...values: unknown[]): (number | null)[] {
+  return values.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
+}
+
+/**
+ * 一条本机记录的内容身份依据（F2：无版本 / version 0 记录的替换保护）。
  *
- * 在飞的保存/清除回执处理本机副本之前，必须确认副本还是**请求发出时看到的那一版**：
- * 同一浏览器的另一个页面可能在请求期间写入了更新的副本（版本号更大），直接删
- * 会把别的页面还没同步的新输入一起删掉。所以：
- * - expectVersion 是数字：只删版本号仍等于它的记录；
- * - expectVersion 为 null（当时就没有记录）：只在现在仍然没有记录时才算无事可做。
+ * - 记录不存在（null）时返回 null：调用方据此表达「当时就没有记录」，
+ *   之后冒出来的记录不许被这次决定删掉；
+ * - 有记录时返回稳定字符串，覆盖 text、记录种类（draft/cleared/legacy）、
+ *   记录时戳（updatedAt / ts / createdAt）、seq、version、boardId —— 任一字段变了，
+ *   身份依据就变，调用方据此判定「当前已经不是当时那条记录」。
  *
- * 版本对不上就**拒绝清理**（ok=false / reason="version-guard"），让调用方保留这条（可能更新的）副本；
- * 版本对得上却删不掉（存储失败）是 **storage-failure**：调用方必须显示原因并可重试。
+ * 正版本号的记录同样能算出依据（多一道独立校验不削弱既有版本守卫），
+ * 但旧格式记录是**唯一**能证明身份的来源。
+ */
+export function localRecordFingerprint(record: DraftRecord | null): string | null {
+  if (!record) return null;
+  const kind = record.kind === "draft" || record.kind === "cleared" ? record.kind : "legacy";
+  const raw = record as DraftRecord & { ts?: unknown; createdAt?: unknown };
+  const stamps = normalizeStamps(record.updatedAt, raw.ts, raw.createdAt);
+  const seq = typeof record.seq === "number" && Number.isFinite(record.seq) ? record.seq : 0;
+  const version = typeof record.version === "number" && Number.isFinite(record.version) ? record.version : null;
+  const boardId = typeof record.boardId === "string" && record.boardId ? record.boardId : null;
+  const payload = JSON.stringify([LOCAL_RECORD_FINGERPRINT_VERSION, record.text ?? "", kind, ...stamps, seq, version, boardId]);
+  return LOCAL_RECORD_FINGERPRINT_VERSION + ":" + fnv1a32Hex(payload, 0x811c9dc5) + fnv1a32Hex(payload, 0x9e3779b1);
+}
+
+/** 读某一卡片当前的本机记录并算身份依据（登记删除决定时用） */
+export function cardLocalDraftFingerprint(cardId: string): string | null {
+  return localRecordFingerprint(readCardLocalDraft(cardId));
+}
+
+/**
+ * 按「记录仍是当时那一版／那一条」守卫的本机副本清理（§12.2：同浏览器多页面按记录身份校验）。
+ *
+ * 在飞的保存/清除回执处理本机副本之前，必须确认副本还是**请求发出时看到的那一条**：
+ * 同一浏览器的另一个页面可能在请求期间写入了更新的副本，直接删会把别的页面还没同步的
+ * 新输入一起删掉。所以：
+ * - expectVersion 是正数：只删版本号仍等于它的记录（若另外给了指纹，指纹也须一致）；
+ * - expectVersion 为 0 / null（旧格式记录：没有版本可校验，或登记时本来就没有记录）：
+ *   **必须**提供 expectFingerprint，且与当前记录的指纹一致才删。没有这份可验证依据
+ *   就一律保留（version-guard）—— 绝不允许退化成「按对象 id 删」；
+ * - expectFingerprint === null：表达「当时就没有记录」，只有现在仍然没有记录才算无事可做，
+ *   之后冒出来的记录一律保留；
+ * - 不传 expectFingerprint（第三参缺省）：**完全保持既有两参行为**（向后兼容）。
+ *
+ * 版本/身份对不上就**拒绝清理**（ok=false / reason="version-guard"），让调用方保留这条（可能更新的）副本；
+ * 身份对得上却删不掉（存储失败）是 **storage-failure**：调用方必须显示原因并可重试。
  * 两者混在一个 false 里就无法区分「有意保留」与「真的删失败」（条目 13）。
  */
-export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: number | null): DraftRemoveResult {
+export function removeCardLocalDraftIfUnchanged(
+  cardId: string,
+  expectVersion: number | null,
+  expectFingerprint?: string | null,
+): DraftRemoveResult {
   const key = cardLocalDraftStorageKey(cardId);
   const current = readDraft(key);
   const currentVersion = current ? (typeof current.version === "number" ? current.version : 0) : null;
-  if (currentVersion !== expectVersion) return { ok: false, removed: false, reason: "version-guard" };
-  // 当时没有记录、现在仍然没有：本来就没有可删的东西（不是失败）
+
+  // 第三参缺省：既有两参语义一字不变（旧调用仍然可用）
+  if (expectFingerprint === undefined) {
+    if (currentVersion !== expectVersion) return { ok: false, removed: false, reason: "version-guard" };
+    // 当时没有记录、现在仍然没有：本来就没有可删的东西（不是失败）
+    if (!current) return { ok: true, removed: false, reason: "missing-record" };
+    return removeDraft(key);
+  }
+
+  // 正版本号：版本相等（且给了指纹时指纹一致）才删
+  if (typeof expectVersion === "number" && expectVersion > 0) {
+    if (currentVersion !== expectVersion) return { ok: false, removed: false, reason: "version-guard" };
+    if (expectFingerprint && localRecordFingerprint(current) !== expectFingerprint) {
+      return { ok: false, removed: false, reason: "version-guard" };
+    }
+    return removeDraft(key);
+  }
+
+  // 无版本 / version 0：记录已经不在了就是「本来就没有」
   if (!current) return { ok: true, removed: false, reason: "missing-record" };
+  /**
+   * 没有可验证依据（expectFingerprint 为 null：登记时本来就没有记录）时，
+   * 现在却冒出一条记录 —— 那一定是后来新建的稿，不许按对象 id 删。
+   */
+  if (typeof expectFingerprint !== "string") return { ok: false, removed: false, reason: "version-guard" };
+  // 身份对不上：当前已经不是当时那条记录（另一页面重写、种类变化、内容变化）→ 保留新稿
+  if (localRecordFingerprint(current) !== expectFingerprint) {
+    return { ok: false, removed: false, reason: "version-guard" };
+  }
   return removeDraft(key);
 }
 
@@ -520,12 +616,15 @@ export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: n
 export type LocalRemovalPurpose = "remove-local-copy" | "clear-draft";
 
 /**
- * 本机记录删除/清理的守卫方式（三种语义必须分开，混成一种就会削弱版本守卫）：
+ * 本机记录删除/清理的守卫方式（四种语义必须分开，混成一种就会削弱版本守卫）：
  * - `version`：只删版本号仍等于 expectVersion 的那条（跨页面更新的记录不许被删，§12.2）；
  * - `absent`：登记时本来就没有记录，只在**现在仍然没有**记录时才算无事可做（flushDrafts 回执口径）；
- * - `object`：按对象删（用户已明确选择、或记录已无归属对象时使用；没有版本可比时唯一可用的口径）。
+ * - `fingerprint`（F2）：旧格式记录（无 version / version 0）用**内容身份依据**复核，
+ *   证明不了「当前仍是原记录」就保留 —— 旧格式记录不许退化成按对象 id 删；
+ * - `object`：按对象删（只用于**确实没有**任何版本或身份依据可比的历史调用；显式给了
+ *   expectFingerprint 时自动升级为指纹守卫，不会退化成裸删）。
  */
-export type LocalRemovalGuard = "version" | "absent" | "object";
+export type LocalRemovalGuard = "version" | "absent" | "fingerprint" | "object";
 
 /**
  * store 的 pendingLocalRemovals 应当存的形状（替换现在的 `number | null`）。
@@ -540,8 +639,14 @@ export interface LocalRemovalIntent {
   purpose: LocalRemovalPurpose;
   /** 登记时那条记录的本机版本；null = 登记时没有可比的版本 */
   expectVersion: number | null;
-  /** 缺省 `object`：按对象删（有数字版本时同样按版本校验） */
+  /** 缺省 `object`：按对象删；显式给了 expectFingerprint 时自动按指纹守卫 */
   guard?: LocalRemovalGuard;
+  /**
+   * 登记时那条记录的**内容身份依据**（F2）：无 version / version 0 的记录只有它能证明
+   * 「当前仍是原记录」。字符串 = 当时那条记录的指纹；null = 登记时本来就没有记录
+   * （之后冒出来的记录一律不许删）；缺省（字段不存在）= 没有依据，按旧口径处理。
+   */
+  expectFingerprint?: string | null;
 }
 
 /** 兼容旧登记形状：旧版本存的是裸版本号（或 null），目的不明确 */
@@ -608,17 +713,33 @@ export interface NormalizedLocalRemovalIntent {
   purpose: LocalRemovalPurpose | "unknown";
   expectVersion: number | null;
   guard: LocalRemovalGuard;
+  /** 登记时的内容身份依据：字符串 = 指纹；null = 当时没有记录；undefined = 没有这份依据 */
+  expectFingerprint?: string | null;
   advice?: string;
 }
 
 /** 把登记意图归一化（含旧形状）：不认识的一律标注目的不明，不猜 */
 export function normalizeLocalRemovalIntent(raw: LocalRemovalIntentInput): NormalizedLocalRemovalIntent {
   if (raw && typeof raw === "object") {
+    /**
+     * 指纹字段只在**登记时确实带了**的时候保留（undefined 与 null 语义不同：
+     * undefined = 没有依据、按旧口径；null = 当时没有记录，后来冒出来的不许删）。
+     */
+    const hasFingerprint = Object.prototype.hasOwnProperty.call(raw, "expectFingerprint");
+    const expectFingerprint = typeof raw.expectFingerprint === "string" ? raw.expectFingerprint : null;
+    const explicitGuard =
+      raw.guard === "version" || raw.guard === "absent" || raw.guard === "fingerprint" || raw.guard === "object"
+        ? raw.guard
+        : null;
     return {
       purpose: raw.purpose === "clear-draft" ? "clear-draft" : "remove-local-copy",
       expectVersion: typeof raw.expectVersion === "number" && Number.isFinite(raw.expectVersion) ? raw.expectVersion : null,
-      // 缺省 object：与既有 removeCardLocalDraft(cardId, expectVersion) 口径一致，不改变已落地的接线行为
-      guard: raw.guard === "version" || raw.guard === "absent" || raw.guard === "object" ? raw.guard : "object",
+      /**
+       * 缺省 object：与既有 removeCardLocalDraft(cardId, expectVersion) 口径一致，不改变已落地的接线行为；
+       * 但**显式带了身份依据**时默认按指纹守卫 —— 有依据就不许退化成按对象 id 裸删（F2）。
+       */
+      guard: explicitGuard ?? (hasFingerprint ? "fingerprint" : "object"),
+      ...(hasFingerprint ? { expectFingerprint } : {}),
     };
   }
   // 旧形状（裸版本号 / null）：只知道版本，不知道用户当时要做什么 —— 不许猜成整份清除
@@ -656,7 +777,8 @@ export interface LocalRemovalRetryOutcome {
 /**
  * 按**登记时的目的**重试本机记录处理（反例 R4 的修复入口）。
  *
- * - `remove-local-copy`：只删本机副本（按登记的守卫口径），**绝不写 cleared 依据**；
+ * - `remove-local-copy`：只删本机副本（按登记的守卫口径；旧格式记录按登记的内容身份依据
+ *   复核，F2：证明不了「当前仍是原记录」就保留新稿），**绝不写 cleared 依据**；
  * - `clear-draft`：调用 ensureCardLocalClear 补写/确认 cleared 依据（幂等，保留版本守卫）；
  * - 目的不明（旧登记形状）：两件破坏性动作都不做，保留两份候选 + 可操作说明。
  *
@@ -727,10 +849,29 @@ export function retryLocalRemovalByPurpose(
 
   // remove-local-copy：只删本机冗余副本，绝不写 cleared 依据
   const expectVersion = normalized.expectVersion;
-  const result =
-    normalized.guard === "object"
-      ? removeCardLocalDraft(cardId, typeof expectVersion === "number" ? expectVersion : undefined)
-      : removeCardLocalDraftIfUnchanged(cardId, normalized.guard === "absent" ? null : expectVersion);
+  const expectFingerprint = normalized.expectFingerprint;
+  const hasFingerprint = expectFingerprint !== undefined;
+  /**
+   * 守卫选择（F2 后）：
+   * - fingerprint：旧格式记录按内容身份依据复核，没有依据就不许按对象 id 删；
+   * - object 且带了（哪怕为 null 的）身份依据：同样走指纹守卫，不裸删；
+   * - absent：只在现在仍然没有记录时无事可做（version 参为 null）；
+   * - version：只删那一个版本（若同时带指纹，一并复核）。
+   */
+  let result: DraftRemoveResult;
+  if (normalized.guard === "fingerprint") {
+    result = removeCardLocalDraftIfUnchanged(cardId, expectVersion, expectFingerprint ?? null);
+  } else if (normalized.guard === "object") {
+    result = hasFingerprint
+      ? removeCardLocalDraftIfUnchanged(cardId, expectVersion, expectFingerprint ?? null)
+      : removeCardLocalDraft(cardId, typeof expectVersion === "number" ? expectVersion : undefined);
+  } else {
+    result = removeCardLocalDraftIfUnchanged(
+      cardId,
+      normalized.guard === "absent" ? null : expectVersion,
+      hasFingerprint ? (expectFingerprint ?? null) : undefined,
+    );
+  }
   if (result.ok) {
     return {
       ok: true,
