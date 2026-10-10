@@ -242,7 +242,8 @@ class TurnJournal:
             chunk = wanted[start : start + 400]
             placeholders = ",".join("?" for _ in chunk)
             rows = self._query(
-                "SELECT turn_id, status, reason, reason_code, stopped_by, actions"
+                "SELECT turn_id, status, reason, reason_code, stopped_by, actions,"
+                " notify, recovered_at"
                 f" FROM turn_journal WHERE turn_id IN ({placeholders})",
                 tuple(chunk),
             )
@@ -256,7 +257,14 @@ class TurnJournal:
                 # * interrupted 是真正可恢复的（resend 一次性领取），旧行没写动作时补上。
                 if status == "cancelled" and "resend" in actions:
                     actions = ["retry" if a == "resend" else a for a in actions]
-                if status == "interrupted" and not actions:
+                if (
+                    status == "interrupted"
+                    and not actions
+                    and not int(row["notify"] or 0)
+                    and row["recovered_at"] is None
+                ):
+                    # 只有**真正可恢复**（用户消息、尚未被 claim）的 interrupted 行才补
+                    # resend，与 /api/turns/{id}/resend 的准入谓词一致；已领取/系统通知轮不补。
                     actions = ["resend"]
                 out[turn_id] = {
                     "turn_id": turn_id,

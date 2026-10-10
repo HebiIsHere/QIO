@@ -180,6 +180,11 @@ async def test_interrupted_still_resends_once(app):
     ctx.turn_journal.running("turn_fb_d_lost")
     ctx.turn_journal.interrupt_stale()
 
+    # claim 之前：真正可恢复 → 读时投影给出可用的 resend（与准入一致）
+    before = ctx.turn_journal.facts(["turn_fb_d_lost"])["turn_fb_d_lost"]
+    assert before["status"] == "interrupted", before
+    assert before["actions"] == ["resend"], before
+
     adapter = FakeStreamAdapter([StreamScript(text_chunks=[DECL + "\n", "重发成功。"])])
     ctx.build_adapter = AsyncMock(return_value=adapter)
 
@@ -194,7 +199,9 @@ async def test_interrupted_still_resends_once(app):
 
     facts = ctx.turn_journal.facts(["turn_fb_d_lost"]).get("turn_fb_d_lost")
     assert facts is not None and facts["status"] == "interrupted", facts
-    assert facts["actions"] == ["resend"], ("interrupted 保留 resend", facts)
+    # 已经被一次性 claim 过：不再可恢复，读时投影不再给 resend（否则又是一个 409 死按钮）。
+    assert ctx.turn_journal.recoverable("turn_fb_d_lost") is None
+    assert facts["actions"] == [], ("已领取的 interrupted 不得再给 resend", facts)
     print("[诊断] R7 interrupted：首=200；再=%d；facts.actions=%s" % (again.status_code, facts["actions"]))
 
 
