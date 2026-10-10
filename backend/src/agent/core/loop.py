@@ -686,7 +686,7 @@ class AgentLoop:
         narrative_sink: Callable[..., Any] | None = None,
         narrative_settler: Callable[..., Any] | None = None,
         stage_id_provider: Callable[[], str | None] | None = None,
-        usage_sink: Callable[[int, int], None] | None = None,
+        usage_sink: Callable[..., Any] | None = None,
         # 未声明长正文的退路（第六轮契约 §1.3）：暂存目录缺省 = <data_dir>/tmp
         # （惰性解析，正常轮次不碰磁盘）；两个上限只管理资源，不决定角色。
         spill_dir: Path | str | None = None,

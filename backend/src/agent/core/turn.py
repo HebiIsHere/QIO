@@ -345,6 +345,29 @@ class TurnManager:
             return False
         return True
 
+    def _persist_accept(self, ctx: "TurnContext", *, status: str) -> None:
+        """受理的**唯一**持久化入口（契约 C2）：写不进去 = 这条消息没有被接受。
+
+        为什么单独抽出来：`submit()` 与 `reserve()`（附件准备路径）都是「已经受理」
+        的入口，必须对同一个故障给出同一个结果 —— 否则附件路径会出现「API 回了
+        accepted、库里却一行都没有」的消息，重启后静默消失（正是 C2 要根除的缺陷）。
+        旁路写入（running / terminal / note_user_message）仍走 `_journal_call`：
+        那些发生在 turn 已经跑起来之后，写不进去不该把对话打断。
+        """
+        journal = self._journal
+        if journal is None:
+            return
+        try:
+            journal.accepted(
+                turn_id=ctx.turn_id,
+                message=ctx.message,
+                topic_id=ctx.initial_topic,
+                notify=ctx.notify,
+                status=status,
+            )
+        except Exception as exc:  # noqa: BLE001 - 任何台账失败都等于「没接受」
+            raise TurnAcceptError(f"turn not accepted: {exc}") from exc
+
     # -- queue snapshot ---------------------------------------------------
 
     def snapshot(self) -> dict:
@@ -418,22 +441,18 @@ class TurnManager:
             # 它不会出现在队列快照里，前端沿用请求进行中的「发送中」。
             status="preparing",
         )
+        # 1) persist：受理的唯一持久化入口（契约 C2）—— 写不进去 = 没有被接受，
+        # 绝不留下「API 回了 accepted、库里没有痕迹」的预留。
+        # 预留同样算已经受理：准备期间进程退出不能让这条消息静默消失。
+        # 状态写 queued（台账没有 preparing 这一档），abandon 时会如实收尾。
+        self._persist_accept(ctx, status="queued")
+        # 2) 记住这一轮（不入队、不发 TURN_START）
         try:
             loop = asyncio.get_running_loop()
             self._futures[ctx.turn_id] = loop.create_future()
         except RuntimeError:
             pass  # no running loop: reserve without an awaitable result
         self._reserved.append(ctx)
-        # 受理即落台账：准备期间进程退出也不会静默消失。
-        # 状态写 queued（台账没有 preparing 这一档），abandon 时会如实收尾。
-        self._journal_call(
-            "accepted",
-            turn_id=ctx.turn_id,
-            message=ctx.message,
-            topic_id=ctx.initial_topic,
-            notify=ctx.notify,
-            status="queued",
-        )
         if prepare_id:
             self._register_prepare(prepare_id, ctx.turn_id)
         if request_id:
@@ -711,23 +730,8 @@ class TurnManager:
             intent_id=intent_id,
             status="queued" if waits else "accepted",
         )
-        # 1) persist：台账写失败 → 这条消息没有被接受，绝不入队。
-        journal = self._journal
-        if journal is not None:
-            try:
-                journal.accepted(
-                    turn_id=ctx.turn_id,
-                    message=ctx.message,
-                    topic_id=ctx.initial_topic,
-                    notify=ctx.notify,
-                    status=ctx.status,
-                )
-            except Exception as exc:  # noqa: BLE001 - 任何台账失败都等于「没接受」
-                if _journal_accept_failed(exc):
-                    raise TurnAcceptError(f"turn not accepted: {exc}") from exc
-                # 台账本身不认识这个异常（例如测试注入的普通异常）：按同样的语义
-                # 拒绝，而不是返回一个库里可能没有的 turn。
-                raise TurnAcceptError(f"turn not accepted: {exc}") from exc
+        # 1) persist：台账写失败 → 这条消息没有被接受，绝不入队（契约 C2）。
+        self._persist_accept(ctx, status=ctx.status)
         # 2) dispatch：到这里台账已经有了这一行，入队才是安全的。
         try:
             loop = asyncio.get_running_loop()

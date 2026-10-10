@@ -373,6 +373,20 @@ class NativeAdapter(BaseAdapter):
             if delta.kind == STREAM_DONE and delta.completion is not None:
                 accounting.account_adapter_request(self, delta.completion.usage)
 
+        def _account_failure(exc: Exception) -> None:
+            """失败记账（只有真的发过请求才记）。
+
+            `UnsupportedCapability` / `NotImplementedError` 表示「这条路径用不了流式」——
+            客户端根本没返回异步流、或 adapter 没实现 stream，**没有任何请求发出去**；
+            上层随后会整段降级再发一次真实请求，那一次会自己记账。把它记成 incomplete
+            会凭空多出一次「失败的请求」，污染账本与展示统计。
+            """
+            from agent.adapters.errors import UnsupportedCapability
+
+            if isinstance(exc, (NotImplementedError, UnsupportedCapability)):
+                return
+            accounting.account_adapter_failure(self, exc)
+
         yielded = False
         try:
             async for delta in self._stream_once(kwargs):
@@ -381,7 +395,7 @@ class NativeAdapter(BaseAdapter):
                 yield delta
             return
         except Exception as exc:  # noqa: BLE001 - 两条窄降级路径
-            accounting.account_adapter_failure(self, exc)
+            _account_failure(exc)
             if yielded:
                 raise  # 已经透出正文就不能重来（会重复展示）
             if _rejects_stream_options(exc):
@@ -396,7 +410,7 @@ class NativeAdapter(BaseAdapter):
                 _account_done(delta)
                 yield delta
         except Exception as exc:  # noqa: BLE001 - 同上；此时仍然什么都没发出去
-            accounting.account_adapter_failure(self, exc)
+            _account_failure(exc)
             if _stream_rejected(exc):
                 raise _unsupported_stream(exc) from exc
             raise

@@ -227,6 +227,17 @@ def project_terminal_actions(
     """
     if status != INTERRUPTED and status not in TERMINAL_STATUSES:
         return actions
+    recoverable_now = status == INTERRUPTED and not notify and recovered_at is None
+    if "resend" in actions and not recoverable_now:
+        if status == CANCELLED:
+            actions = ["retry" if item == "resend" else item for item in actions]
+        else:
+            actions = [item for item in actions if item != "resend"]
+    if status == INTERRUPTED and not actions and recoverable_now:
+        # 只有**真正可恢复**（用户消息、尚未被 claim）的 interrupted 行才补 resend，
+        # 与 /api/turns/{id}/resend 的准入谓词一致；已领取 / 系统通知轮不补。
+        actions = ["resend"]
+    return actions
 
 
 class TurnJournal:
