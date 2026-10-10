@@ -284,6 +284,22 @@ def preview(value: Any, limit: int = 400, *, secret_fields: set[str] | None = No
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def sanitize_error_text(text: str | None, *, limit: int = 200) -> str:
+    """错误出口统一语义：先打码、再截断（契约 3）。
+
+    以前散落的「str(exc)[:N]」是先截断后落事件/落库：一个排在消息末尾的注册
+    密钥会在截断后只剩前缀（打码函数再也识别不到它）。错误文本的出口语义
+    只有一条 —— 先全量替换已知密钥与敏感字段值，再截断；截断后的文本仍
+    再过一次 redact_text（防御：截断点切进 key=value 模式时 INLINE 模式照样拦）。
+    """
+    if not text:
+        return ""
+    cleaned = redact_text(str(text))
+    if limit and len(cleaned) > limit:
+        cleaned = cleaned[:limit]
+        cleaned = redact_text(cleaned)
+    return cleaned
+
 def assert_clean(payload: Any, secrets: list[str]) -> None:
     """Test/guard helper: raise if any raw secret leaks into the payload."""
     blob = payload if isinstance(payload, str) else str(payload)

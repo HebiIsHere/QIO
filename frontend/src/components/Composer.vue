@@ -68,6 +68,57 @@ const continuationText = computed(() => {
 
 const cancelling = ref(false);
 
+/**
+ * 发送回执丢失后的「正在确认」状态（契约 5）。
+ *
+ * 文案按后端已知程度区分两态，原样显示 store 里的文案：
+ * * 正在确认是否已发送（查询中 / 查询失败可再查）；
+ * * 发送未确认：后端没有该请求记录（可能未送达）→ 提供【重试 / 放弃】。
+ * 查证曾命中已受理时只提供【取消】（放弃被 store 拒绝）。
+ */
+const confirmState = computed(() => session.pendingSendConfirm);
+const interacting = ref(false);
+
+async function retryConfirmedSend() {
+  const c = confirmState.value;
+  if (!c || c.busy || interacting.value) return;
+  interacting.value = true;
+  try {
+    await session.retrySendAttempt(c.messageId);
+  } finally {
+    interacting.value = false;
+  }
+}
+
+async function recheckConfirmedSend() {
+  const c = confirmState.value;
+  if (!c || c.busy || interacting.value) return;
+  interacting.value = true;
+  try {
+    await session.recheckSendAttempt(c.messageId);
+  } finally {
+    interacting.value = false;
+  }
+}
+
+function abandonConfirmedSend() {
+  const c = confirmState.value;
+  if (!c || interacting.value) return;
+  // 放弃：后端没有该请求的记录 → 撤回消息并把原话放回草稿（store 负责）
+  session.abandonSendAttempt(c.messageId);
+}
+
+async function cancelConfirmedSend() {
+  const c = confirmState.value;
+  if (!c || interacting.value) return;
+  interacting.value = true;
+  try {
+    await session.cancelConfirmedSend(c.messageId);
+  } finally {
+    interacting.value = false;
+  }
+}
+
 async function cancelContinuation() {
   if (cancelling.value) return;
   cancelling.value = true;
@@ -93,8 +144,11 @@ async function submit() {
   await nextTick();
   autosize();
   const ok = await session.send(value);
-  // 失败恢复：把草稿放回去，用户不必重写（若期间已输入新内容则不覆盖）
-  if (!ok && !text.value.trim()) {
+  // 失败恢复：把草稿放回去，用户不必重写（若期间已输入新内容则不覆盖）。
+  // 例外（契约 5）：发送停在「正在确认」时**不**恢复草稿 —— 那条消息还留在
+  // 对话流里，确认条的【重试 / 放弃】才是接管入口；这时把原文放回输入框，
+  // 用户再按 Enter 就会以另一个请求身份再发一次，恰好绕开幂等保护。
+  if (!ok && !session.pendingSendConfirm && !text.value.trim()) {
     text.value = draftSnapshot;
     await nextTick();
     autosize();
@@ -200,6 +254,51 @@ async function stopTurn() {
       </button>
     </div>
     <p v-if="cancelError" class="cancel-error" role="alert">{{ cancelError }}</p>
+    <!-- 发送回执丢失后的确认条（契约 5）：文案区分「正在确认」与「发送未确认」，
+         操作按已知程度给：未知 → 重试/放弃；查询中 → 只识字；已受理 → 只有取消 -->
+    <div v-if="confirmState" class="send-confirm" role="status">
+      <span class="confirm-notice mono" :class="{ unknown: confirmState.unknown }">
+        {{ confirmState.unknown ? "⚠️ " : "" }}{{ confirmState.notice }}
+      </span>
+      <span class="confirm-actions">
+        <button
+          v-if="!confirmState.busy && !confirmState.unknown && !confirmState.accepted"
+          type="button"
+          class="confirm-btn"
+          :disabled="interacting"
+          @click="recheckConfirmedSend"
+        >
+          再查一次
+        </button>
+        <button
+          v-if="!confirmState.busy && !confirmState.accepted"
+          type="button"
+          class="confirm-btn"
+          :disabled="interacting"
+          @click="retryConfirmedSend"
+        >
+          重试
+        </button>
+        <button
+          v-if="confirmState.unknown"
+          type="button"
+          class="confirm-btn abandon"
+          :disabled="interacting"
+          @click="abandonConfirmedSend"
+        >
+          放弃
+        </button>
+        <button
+          v-if="confirmState.accepted"
+          type="button"
+          class="confirm-btn"
+          :disabled="interacting"
+          @click="cancelConfirmedSend"
+        >
+          取消
+        </button>
+      </span>
+    </div>
   </div>
 </template>
 
@@ -345,6 +444,54 @@ async function stopTurn() {
 .cancel-error {
   margin-top: 8px;
   font-size: 12px;
+  color: var(--danger);
+}
+.send-confirm {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.confirm-notice {
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「发送未确认」是比「正在确认」更重的一态：用强调色把话说重一点 */
+.confirm-notice.unknown {
+  color: var(--warning, var(--accent));
+  font-weight: 600;
+}
+.confirm-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 6px;
+}
+.confirm-btn {
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
+}
+.confirm-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.confirm-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.confirm-btn.abandon:hover:not(:disabled) {
+  border-color: var(--danger);
   color: var(--danger);
 }
 .send-btn {

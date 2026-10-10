@@ -7,6 +7,17 @@
 * `run_shell`：交给系统 shell 的自由命令，**永远**需要高等级审批
   （`plan` 模式直接拒绝）。以前只有一个 `run_cmd`：用字符串前缀判断它「安全」，
   却把原始字符串交给 shell 执行 —— `ls && evil` 会被判低危并自动跑掉。
+
+结果与进程生命周期（契约 2 的三条铁律）：
+
+* **退出码是事实**：0 → ok=True（stderr 非空只是输出，不是失败）；
+  非 0 → ok=False +「退出码 N」，content 保留合并输出，模型要能看到原因。
+  旧反例：git show 不存在的引用报 ok=True —— 已消除。
+* **超时/取消收尾自己启动的进程树**：Windows 用 taskkill /T /F /PID
+  （只按本次启动拿到的 pid，绝不按程序名），POSIX 用 start_new_session +
+  killpg；终止后 await 真正退出；确认不了就如实说「清理未确认」。
+* **取消不吞异常**：执行协程被 cancel 时先收尾进程树，再把原始
+  CancelledError 重新抛出（loop 靠它判定取消终态）。
 """
 
 from __future__ import annotations
@@ -14,8 +25,9 @@ from __future__ import annotations
 import asyncio
 import platform
 import sys
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from agent.tools import proc_cleanup
 from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
 from agent.tools.base import Tool, ToolResult
 
@@ -25,11 +37,91 @@ MAX_OUTPUT_CHARS = 20_000
 # 用户还没点确认，工具就已经报「超时（45000 毫秒）」结束了。
 APPROVAL_SLACK_MS = int(DEFAULT_TIMEOUT_SECONDS * 1000)
 
+# 终止动作之后等待子进程真正退出的宽限；taskkill /F 下通常 <1s。
+_TERM_VERIFY_SECONDS = 10.0
+
+# 合并输出里 stderr 的分隔标记（不写反斜杠转义，保持与旧格式一致）。
+_STDERR_DELIM = chr(10) + "[stderr]" + chr(10)
+
 
 def _clip(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    return text[:MAX_OUTPUT_CHARS] + f"\n…（输出已截断，共 {len(text)} 字符）"
+    return text[:MAX_OUTPUT_CHARS] + f"{chr(10)}…（输出已截断，共 {len(text)} 字符）"
+
+
+def _merged_content(out: bytes | None, err: bytes | None) -> str:
+    """stdout 为主体，stderr 以 [stderr] 段落合并保留（模型需要看到原因）。"""
+    content = (out or b"").decode(errors="replace").strip()
+    if err:
+        err_text = err.decode(errors="replace").strip()
+        if err_text:
+            content += _STDERR_DELIM + err_text
+    return content
+
+
+async def _run_child(
+    create_subprocess: Callable[[], Awaitable[Any]],
+    *,
+    timeout: float,
+    label: str,
+    missing_error: str | None = None,
+) -> ToolResult:
+    """启动 → 等待 → 按真实退出码裁决；超时/取消都要收尾自己启动的进程树。
+
+    * 退出码 0 → ok=True（stderr 非空不算失败）；
+    * 退出码非 0 → ok=False +「退出码 N」，content 保留合并输出；
+    * 超时：终止本次启动的进程树并 await 退出验证，确认不了就如实说
+      「清理未确认」，不得伪装已停止；
+    * 取消：收尾进程树后把原始 CancelledError 重新抛出，不吞异常；
+    * 启动失败：如实报错；proc 没建立就绝不进入清理流程。
+    """
+    proc = None
+    try:
+        proc = await create_subprocess()
+    except asyncio.CancelledError:
+        raise
+    except FileNotFoundError:
+        return ToolResult(
+            ok=False, error=missing_error or f"{label}启动失败：未找到可执行文件"
+        )
+    except Exception as exc:  # noqa: BLE001 - 系统边界
+        return ToolResult(ok=False, error=f"{label}启动失败：{exc}")
+    if proc is None:
+        return ToolResult(ok=False, error=f"{label}启动失败：未取回子进程对象")
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        confirmed = await proc_cleanup.terminate_process_tree(
+            proc, wait_exit_seconds=_TERM_VERIFY_SECONDS
+        )
+        if confirmed:
+            return ToolResult(ok=False, error=f"{label}执行超时（进程已终止）")
+        return ToolResult(
+            ok=False, error=f"{label}执行超时（清理未确认，进程可能仍在运行）"
+        )
+    except asyncio.CancelledError:
+        # 用户取消 / 外层工具超时 / 任务取消：先收尾自己启动的进程树并 await
+        # 退出验证，再把取消原样抛回 —— 不吞异常（loop 靠它判定取消终态）。
+        cleanup = asyncio.ensure_future(
+            proc_cleanup.terminate_process_tree(
+                proc, wait_exit_seconds=_TERM_VERIFY_SECONDS
+            )
+        )
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            # 二次取消也不能跳过收尾：等清理真正完成再 propagate。
+            await cleanup
+            raise
+        raise
+    content = _merged_content(out, err)
+    returncode = proc.returncode
+    if returncode != 0:
+        return ToolResult(
+            ok=False, error=f"{label}退出码 {returncode}", content=_clip(content)
+        )
+    return ToolResult(ok=True, content=_clip(content) or "(无输出)")
 
 
 class _CmdTool(Tool):
@@ -41,7 +133,7 @@ class _CmdTool(Tool):
 
 
 class RunProgramTool(_CmdTool):
-    """安全路径：argv 白名单，`shell=False`。"""
+    """安全路径：argv 白名单，不经 shell。"""
 
     name = "run_program"
     description = (
@@ -72,7 +164,11 @@ class RunProgramTool(_CmdTool):
         if not isinstance(raw_args, (list, tuple)):
             return ToolResult(ok=False, error="args 必须是字符串数组")
         args = [str(a) for a in raw_args]
-        verdict, risk = self.computer.command_verdict_for_program(program, args)
+        # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
+        # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
+        verdict, risk = self.computer.command_verdict_for_program(
+            program, args, cwd=str(kwargs.get("cwd") or "") or None
+        )
         if verdict == "deny":
             return ToolResult(ok=False, error=f"程序在当前模式下被拒绝（{risk.value}）")
         if verdict == "approve":
@@ -92,26 +188,24 @@ class RunProgramTool(_CmdTool):
 
     async def _exec(self, program: str, args: list[str], cwd: Any, timeout: Any) -> ToolResult:
         cwd_str = str(cwd or "") or None
-        try:
-            proc = await asyncio.create_subprocess_exec(
+
+        def _create():
+            return asyncio.create_subprocess_exec(
                 program,
                 *args,
                 cwd=cwd_str,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 shell=False,
+                **proc_cleanup.new_session_kwargs(),
             )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=float(timeout or 30))
-        except asyncio.TimeoutError:
-            return ToolResult(ok=False, error="程序执行超时")
-        except FileNotFoundError:
-            return ToolResult(ok=False, error=f"找不到程序：{program}")
-        except Exception as exc:  # noqa: BLE001 - boundary
-            return ToolResult(ok=False, error=f"程序执行失败：{exc}")
-        content = out.decode(errors="replace").strip()
-        if err:
-            content += "\n[stderr]\n" + err.decode(errors="replace").strip()
-        return ToolResult(ok=True, content=_clip(content) or "(无输出)")
+
+        return await _run_child(
+            _create,
+            timeout=float(timeout or 30),
+            label="程序",
+            missing_error=f"找不到程序：{program}",
+        )
 
 
 class RunCmdTool(_CmdTool):
@@ -154,22 +248,17 @@ class RunCmdTool(_CmdTool):
             if r.decision != "approved":
                 return ToolResult(ok=False, error=f"命令执行未获批准：{refusal_reason(r.decision)}")
         timeout = float(kwargs.get("timeout", 30))
-        try:
-            proc = await asyncio.create_subprocess_shell(
+
+        def _create():
+            return asyncio.create_subprocess_shell(
                 cmd,
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **proc_cleanup.new_session_kwargs(),
             )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return ToolResult(ok=False, error="命令执行超时")
-        except Exception as exc:  # noqa: BLE001 - boundary
-            return ToolResult(ok=False, error=f"命令执行失败：{exc}")
-        content = out.decode(errors="replace").strip()
-        if err:
-            content += ("\n[stderr]\n" + err.decode(errors="replace").strip())
-        return ToolResult(ok=True, content=_clip(content) or "(无输出)")
+
+        return await _run_child(_create, timeout=timeout, label="命令")
 
 
 class SysInfoTool(_CmdTool):
@@ -185,7 +274,7 @@ class SysInfoTool(_CmdTool):
             "machine": platform.machine(),
             "python_executable": sys.executable,
         }
-        return ToolResult(ok=True, content="\n".join(f"{k}: {v}" for k, v in info.items()))
+        return ToolResult(ok=True, content=f"{chr(10)}".join(f"{k}: {v}" for k, v in info.items()))
 
 
 class ProcListTool(_CmdTool):
@@ -196,25 +285,29 @@ class ProcListTool(_CmdTool):
 
     async def run(self, **kwargs: Any) -> ToolResult:
         if platform.system().lower() == "windows":
-            proc = await asyncio.create_subprocess_exec(
-                "tasklist",
-                "/fo",
-                "table",
-                "/nh",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=20)
-            return ToolResult(ok=True, content=_clip(out.decode(errors="replace").strip()))
-        proc = await asyncio.create_subprocess_exec(
-            "ps",
-            "-eo",
-            "pid,comm",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=20)
-        return ToolResult(ok=True, content=_clip(out.decode(errors="replace").strip()))
+
+            def _create():
+                return asyncio.create_subprocess_exec(
+                    "tasklist",
+                    "/fo",
+                    "table",
+                    "/nh",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+        else:
+
+            def _create():
+                return asyncio.create_subprocess_exec(
+                    "ps",
+                    "-eo",
+                    "pid,comm",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+        return await _run_child(_create, timeout=20, label="进程列表")
 
 
 class ProcKillTool(_CmdTool):

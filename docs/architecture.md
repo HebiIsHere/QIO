@@ -302,6 +302,22 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 | Sandbox | `agent/tools/sandbox.py` |
 | ExecutionPolicy | `agent/tools/policy.py` |
 
+### 4.5.1 本轮结构契约补充（2026-10-09）
+
+* **事件打码总闸**：`EventBus.publish` 在事件进入重放缓冲与扇出**之前**对 `data` 做一次 `redact_any`。
+  `ERROR` / `WARNING` / `TOOL_END` 里的报错文本、`TOOL_START arguments` 里的敏感值在实时与重连重放
+  两条路径都不外泄；事件 `id` / `turn_id` / 计量字段原样保留。错误文本出口统一 `sanitize_error_text`
+  （先打码、再截断），禁止再看「str(exc)[:N]」式构造。
+* **命令自动放行**：`services/computer.py` 的判定是「可信可执行文件 × 明确只读语法 × 实际只读访问目标 ×
+  cwd/workspace 内替身拒绝」。git 的 tag/branch/remote 按参数形态区分查询与写；`--git-dir=` 等号形式与
+  `-C` 外部路径按写/逃逸处理；`cat/ls/find` 的文件操作数与 fs 工具同一套红线/根内/根外规则。
+* **命令结果语义**：退出码非 0 即 `ok=False`；超时/取消按本次启动 pid 收割进程树并 `await` 退出验证，
+  清理未确认时必须如实说明。
+* **发送请求身份**：`POST /api/turns` 接受可选 `client_request_id`（幂等受理，重复提交返回同一 turn），
+  `GET /api/turns/by-request/{client_request_id}` 提供受理查证（进程重启后如实报告 404 unknown）。
+* **异步路由**：AgentLoop 的工具路由走 `ToolRouter.route_async`（结构判断在事件循环，embed/余弦经
+  `agent/tools/blocking.py` 的有界执行器；缓存只在事件循环侧提交）。fs 工具的真实 I/O 同进执行器。
+
 ### 4.6 Local Store
 
 | 用途 | 位置 |

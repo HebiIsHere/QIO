@@ -2618,3 +2618,30 @@ GitHub 直链与 `gh` 上传本身是通的。
 - F06–F09 只跑了单元 / 组件测试与类型检查，没有新增真实浏览器截图复核。
 - 迁移边界与上一轮一致：其他分支的 26–28 号迁移未集成，该组合**未验证**，
   本轮也没有新增迁移。
+
+---
+
+## 本轮变更：权限与真实行为一致、报错不泄漏、失败如实收尾、发送状态不被迟到消息改错（2026-10-09）
+
+入口：2026-10-09 独立审查的五组反例（分支 fix/main-safety-state-responsiveness-20261009）。全部反例以「未修复基线红 / 集成后绿」的对照测试钉住。
+
+| 问题 | 修法 | Implementation | Tests |
+| --- | --- | --- | --- |
+`git tag/branch/remote` 只看名字被判只读：git tag v1、git tag -d、--git-dir= 等号形式、-C 指外仓库都能零审批写出 | 自动放行改为结构化判定：可执行文件真实身份（cwd/根内替身不放行）× git 子命令查询/写形态分级 × 等号赋值形式 token × 文件操作数与 fs 工具同规则（红线 deny、根内 auto、根外 approve） | services/computer.py（resolve_program 等） | test_sr_a_computer.py、test_sr_verify_permissions.py（临时真实 git 仓库验证拒绝后零变化） |
+
+命令失败被报成功（带 stderr fatal 仍 ok=True），超时后进程不受控残留 | 成功/失败按真实退出码判定；超时/取消用共享清理函数按 pid 收割进程树并 await 退出验证；清不干净就如实说 | tools/cmd_tools.py、tools/proc_cleanup.py（新） | test_sr_b_exit_code.py、test_sr_b_process_cleanup.py、test_sr_verify_process.py（受控子进程 + 同名诱饵存活） |
+
+日志打码了，但 ERROR 事件 / 重放缓冲 / 恢复快照仍带原文 | bus.publish 建立打码总闸：事件进入重放缓冲与扇出之前打码；错误出口统一 sanitize_error_text（先打码再截断） | api/bus.py、trace/redact.py、services/turn_orchestrator.py、core/loop.py | test_sr_c_redact.py、test_sr_verify_redaction.py（真实 SSE 字节 + 重放 + api_key 结构化字段四路径） |
+
+HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 | 发送带 client_request_id（幂等受理、重试复用）；前端四态 sendAttempt：回执只单向前进；无响应失败（非 4xx）一律「正在确认」，按请求身份查证 | core/turn.py、api/server.py（by-request 查证端点）、前端 session.ts、services/sendIdentity.ts（新）、Composer.vue | test_sr_lead_send_identity.py、前端 sr-e-*.spec.ts、sr-f-turn-lifecycle.test.ts、sr-e-composerConfirm.spec.ts |
+
+工具路由（嵌入）与文件 I/O 跑在事件循环线程 | 结构判断留循环、embed/余弦经有界线程执行器、缓存只在循环侧提交；六个 fs 工具的真实 I/O 全部进执行器；fs 写取消用 shield 等待/如实描述「可能已在后台完成」 | services/tool_router.py（route_async）、tools/blocking.py（新）、tools/fs_tools.py、core/loop.py、services/app.py | test_sr_d_*.py（线程身份 + 事件闸门内健康请求/取消推进）、test_sr_verify_responsiveness.py |
+
+**已知限制（不粉饰）**
+
+- 修复前的历史事件/记录没有补打码：总闸只对发布时刻起的事件生效；历史读取路径的出口打码已覆盖（redact 总闸 + sanitize 语义检验）。
+- 工具级回执语义变化：shell 命令退出码非 0 现在明确 ok=False（以前被当成成功）。
+- POST /api/turns 的 client_request_id 是运行期身份：进程重启后查证返回「本进程没有记录（可能未送达）」，不做跨重启重复执行判断。
+- 本轮改动影响工具策略相关评测：uv run --frozen python -m agent.eval.run 输出与修复前基线一致（topic/retrieval/anchor 全指标无回归）。
+- 未验证：Windows 安装包 E2E、真机浏览器截图走查（本轮以组件级 + store 级测试替代）。
+

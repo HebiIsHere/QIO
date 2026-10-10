@@ -1,4 +1,4 @@
-"""SSE event bus: fan-out with bounded replay.
+﻿"""SSE event bus: fan-out with bounded replay.
 
 重连不能重新消费历史事件：每个事件都有实例内唯一的 `event_id`，
 `stream(last_event_id)` 只补发该 id 之后的事件（标准 `Last-Event-ID`）。
@@ -29,6 +29,21 @@ from collections import deque
 from typing import AsyncIterator
 
 from agent.api.events import AgentEvent, EventType, make_event, sse_format
+
+
+
+def _sanitized(event: AgentEvent) -> AgentEvent:
+    """返回 data 已打码的同一事件（id/ts/type 原样保留）；打码器异常不能吞掉真实状态。"""
+    try:
+        from agent.trace.redact import redact_any
+ 
+        cleaned = redact_any(event.data)
+    except Exception:
+        return event
+    if cleaned is event.data:
+        return event
+    return AgentEvent(type=event.type, id=event.id, ts=event.ts, data=cleaned)
+
 
 DEFAULT_QUEUE_LIMIT = 256
 
@@ -162,6 +177,11 @@ class EventBus:
         self._queue_limit = max(1, queue_limit)
 
     async def publish(self, event: AgentEvent) -> None:
+        # 契约 3（打码总闸）：事件进入重放缓冲 / 扇出给订阅者之前先打码。
+        # redact_any 只替换注册过的密钥值与敏感字段名的值；事件 id、turn_id、
+        # 用量计量、业务 ID 原样保留。于是 ERROR / WARNING / TOOL_END 的报错
+        # 文本、TOOL_START arguments 里的敏感值在实时与重连重放两条路径都不外泄。
+        event = _sanitized(event)
         self._history.append(event)
         for subscriber in list(self._subscribers):
             subscriber.offer(event)

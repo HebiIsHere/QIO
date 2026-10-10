@@ -2,23 +2,66 @@
 
 统一路径收口：`resolve → normalize → containment → 权限判定 → 执行`。
 
-* 相对路径（含省略 `dir`）一律以 `ComputerSandbox.root()` 为基准，
-  **不用** `process.cwd()`；
-* containment 用 resolve 之后的真实路径判断，所以 `..`、绝对路径、
+* 相对路径（含省略 dir）一律以 ComputerSandbox.root() 为基准，
+  **不用** process.cwd()；
+* containment 用 resolve 之后的真实路径判断，所以 ..、绝对路径、
   指向根外的 symlink（含嵌套 symlink）都逃不出去；
 * 所有权限判定都委派给注入的 ComputerSandbox；工具只执行判定结果
   （'auto' 直接执行、'approve' 走 ApprovalService、'deny' 直接拒绝）。
+
+契约 4（响应性）：实际文件 I/O（open/read/write/replace/stat/iterdir/
+scandir/_find_files）经 run_in_executor 移出事件循环（共享有界执行器，
+见 agent/tools/blocking.py）；resolve → 权限判定 → 审批的顺序与语义
+留在事件循环上，不变 —— 审批（人机交互）绝不进线程。
+
+取消语义（fs_write / fs_patch）：用 asyncio.shield 等价机制等待/检查底层
+future —— **不得宣布「没有执行」**。底层写入不可中断时返回 ok=False 且
+描述准确（「已取消，但写入可能已在后台完成（状态未确认）」）；确认完成
+时如实说明写入实际已完成；不误报成功、不漏报。只读工具（read/list/
+find/info）取消时 CancelledError 照常传播（幂等、可安全重试）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
 
 from agent.tools.base import Tool, ToolResult
+from agent.tools.blocking import get_blocking_executor
 
 FIND_LIMIT = 50
+
+# 取消但写入状态未确认时的准确文案（契约 4 规定不得漏报/误报）
+CANCELLED_WRITE_UNCONFIRMED = "已取消，但写入可能已在后台完成（状态未确认）"
+
+
+# -- 同步 I/O helper（在线程里执行；模块级以便测试替换/记录线程） ------------
+
+
+def _read_file_text(path: Path) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _write_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _write_file_text(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _list_dir(path: Path) -> list[str]:
+    return [p.name for p in path.iterdir()]
+
+
+def _stat_info(path: Path) -> os.stat_result:
+    return path.stat()
 
 
 class _FsTool(Tool):
@@ -54,6 +97,40 @@ class _FsTool(Tool):
                 )
         return None
 
+    @staticmethod
+    async def _run_blocking(fn, *args: Any, **kwargs: Any) -> Any:
+        """把一次纯 I/O 调用交给共享有界执行器（线程身份由调用方断言）。"""
+        loop = asyncio.get_running_loop()
+        if kwargs:
+            import functools
+
+            fn = functools.partial(fn, **kwargs)
+        return await loop.run_in_executor(get_blocking_executor(), fn, *args)
+
+    @staticmethod
+    async def _await_write_settled(fut: Any, target: Path, ok_message: str) -> ToolResult:
+        """等待写入落定，并给出准确的结局（含取消语义）。
+
+        正常完成 → ok=True；取消 → 等待/检查底层 future：
+        - 写入实际完成 → ok=False 且说明「写入实际已完成」；
+        - 等待也被二次取消 → ok=False +「已取消，但写入可能已在后台完成（状态未确认）」；
+        - 底层写入失败 → ok=False + 失败原因。
+        """
+        try:
+            await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            # 取消：底层写入不可中断。shield 防止二次取消跳过状态检查。
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                return ToolResult(ok=False, error=CANCELLED_WRITE_UNCONFIRMED)
+            except OSError as exc:
+                return ToolResult(ok=False, error=f"本轮已取消，且底层写入失败：{exc}")
+            return ToolResult(ok=False, error=f"本轮已取消，且写入实际已完成：{target}")
+        except OSError as exc:
+            return ToolResult(ok=False, error=f"写入失败：{exc}")
+        return ToolResult(ok=True, content=ok_message)
+
 
 class FsReadTool(_FsTool):
     name = "fs_read"
@@ -74,8 +151,7 @@ class FsReadTool(_FsTool):
         if blocked is not None:
             return blocked
         try:
-            with open(target, "r", encoding="utf-8") as f:
-                text = f.read()
+            text = await self._run_blocking(_read_file_text, target)
         except OSError as exc:
             return ToolResult(ok=False, error=f"读取失败：{exc}")
         return ToolResult(ok=True, content=text)
@@ -103,13 +179,9 @@ class FsWriteTool(_FsTool):
         )
         if blocked is not None:
             return blocked
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(content)
-        except OSError as exc:
-            return ToolResult(ok=False, error=f"写入失败：{exc}")
-        return ToolResult(ok=True, content=f"已写入 {target}")
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(get_blocking_executor(), _write_file, target, content)
+        return await self._await_write_settled(fut, target, f"已写入 {target}")
 
 
 class FsPatchTool(_FsTool):
@@ -140,17 +212,15 @@ class FsPatchTool(_FsTool):
         if blocked is not None:
             return blocked
         try:
-            text = target.read_text(encoding="utf-8")
+            text = await self._run_blocking(_read_file_text, target)
         except OSError as exc:
             return ToolResult(ok=False, error=f"读取失败：{exc}")
         if old not in text:
             return ToolResult(ok=False, error="未找到待替换的内容 old")
         text = text.replace(old, new, 1)
-        try:
-            target.write_text(text, encoding="utf-8")
-        except OSError as exc:
-            return ToolResult(ok=False, error=f"写入失败：{exc}")
-        return ToolResult(ok=True, content=f"已编辑 {target}")
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(get_blocking_executor(), _write_file_text, target, text)
+        return await self._await_write_settled(fut, target, f"已编辑 {target}")
 
 
 class FsListTool(_FsTool):
@@ -172,7 +242,7 @@ class FsListTool(_FsTool):
         if blocked is not None:
             return blocked
         try:
-            entries = sorted(p.name for p in target.iterdir())
+            entries = sorted(await self._run_blocking(_list_dir, target))
         except OSError as exc:
             return ToolResult(ok=False, error=f"列目录失败：{exc}")
         return ToolResult(ok=True, content="\n".join(entries) or "(空目录)")
@@ -205,7 +275,7 @@ class FsFindTool(_FsTool):
         if not root.exists():
             return ToolResult(ok=False, error=f"目录不存在：{root}")
         try:
-            matches = _find_files(root, query, limit=FIND_LIMIT)
+            matches = await self._run_blocking(_find_files, root, query, limit=FIND_LIMIT)
         except OSError as exc:
             return ToolResult(ok=False, error=f"查找失败：{exc}")
         return ToolResult(ok=True, content="\n".join(matches) or "(无匹配)")
@@ -230,24 +300,23 @@ class FsInfoTool(_FsTool):
         if blocked is not None:
             return blocked
         try:
-            p = target
-            st = p.stat()
+            st = await self._run_blocking(_stat_info, target)
         except OSError as exc:
             return ToolResult(ok=False, error=f"读取信息失败：{exc}")
         lines = [
-            f"name: {p.name}",
+            f"name: {target.name}",
             f"size: {st.st_size}",
             f"mtime: {int(st.st_mtime)}",
-            f"path: {p}",
+            f"path: {target}",
         ]
         return ToolResult(ok=True, content="\n".join(lines))
 
 
-def _find_files(root: Path, query: str, *, limit: int) -> list[str]:
+def _find_files(root: Path, query: str, limit: int = FIND_LIMIT) -> list[str]:
     """不跟随符号链接的广度优先查找，且只返回仍在 root 内的真实文件。
 
-    `Path.rglob` 在 Windows 上会沿着 symlink 目录走到根外（实测），所以这里
-    用 `os.scandir` + `follow_symlinks=False` 自己走，并逐个结果做 containment。
+    Path.rglob 在 Windows 上会沿着 symlink 目录走到根外（实测），所以这里
+    用 os.scandir + follow_symlinks=False 自己走，并逐个结果做 containment。
     """
     base = Path(root).resolve()
     found: list[str] = []

@@ -1,0 +1,11 @@
+{
+  "git_available": true,
+  "mode": "plan",
+  "verdict_not_auto": true,
+  "verdict": "deny",
+  "risk": "high",
+  "tool_ok": false,
+  "tool_error": "程序在当前模式下被拒绝（high）",
+  "tag_created": false,
+  "approval_requests": 0
+}

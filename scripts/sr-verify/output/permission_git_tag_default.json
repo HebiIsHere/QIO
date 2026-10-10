@@ -1,0 +1,11 @@
+{
+  "git_available": true,
+  "mode": "default",
+  "verdict_not_auto": true,
+  "verdict": "approve",
+  "risk": "high",
+  "tool_ok": false,
+  "tool_error": "程序执行未获批准：你点了拒绝",
+  "tag_created": false,
+  "approval_requests": 1
+}

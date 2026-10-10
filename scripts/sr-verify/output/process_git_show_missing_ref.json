@@ -1,0 +1,7 @@
+{
+  "git_available": true,
+  "ok": false,
+  "error": "程序退出码 128",
+  "error_mentions_exit_code": true,
+  "content_has_stderr_hint": true
+}

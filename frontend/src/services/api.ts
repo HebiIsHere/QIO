@@ -1,5 +1,6 @@
 /** 后端 API 客户端（本机 HTTP + 会话令牌）。 */
 import { authHeaders, resetBackend, resolveBackend } from "./backend";
+import { takeNextSendRequestId } from "./sendIdentity";
 
 /** API 错误：带上状态码，调用方才能区分「没权限」和「真的坏了」。 */
 export class ApiError extends Error {
@@ -417,17 +418,42 @@ export const api = {
       `/api/credentials/${encodeURIComponent(keyId)}/test`,
       { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
     ),
-  sendTurn: (message: string, topicId?: string | null) =>
-    request<{
+  sendTurn: (message: string, topicId?: string | null) => {
+    // 请求身份（幂等键）：发送方在调用前用 setNextSendRequestId 挂上，这里取走。
+    // 同一次发送动作（含重试）永远复用同一个 id —— 后端据此保证幂等命中也回 200、
+    // 绝不产生第二次执行；不挂 id 的调用保持旧行为（body 里没有这个字段）。
+    const requestId = takeNextSendRequestId();
+    return request<{
       ok: boolean;
       accepted: boolean;
       /** 受理时就有：乐观消息关联与「停止」都直接用它，不必等 TURN_START */
       turn_id: string;
       status: string;
       topic_id: string | null;
+      /** true = 这个 client_request_id 之前已受理过：这是同一次发送的回执，不是新一轮 */
+      deduplicated?: boolean;
     }>("/api/turns", {
       method: "POST",
-      body: JSON.stringify({ message, topic_id: topicId ?? null }),
+      body: JSON.stringify({
+        message,
+        topic_id: topicId ?? null,
+        ...(requestId ? { client_request_id: requestId } : {}),
+      }),
+    });
+  },
+  /**
+   * 查证一次「发送动作」在后端有没有记录 —— 发送回执丢失（超时 / 断网）后的
+   * 唯一恢复通道，请求身份就是发送时的 client_request_id。
+   *
+   * 200 { turn_id, status } = 已受理（幂等命中也算）；
+   * 404 { ok:false, unknown:true } = 本进程没有这次请求的记录。
+   * 进程重启 = 记录丢失 = 404：它只代表「未确认」，**不等于**「未发送」。
+   */
+  lookupTurnByRequest: (clientRequestId: string) =>
+    request<
+      { turn_id: string; status: string; deduplicated?: boolean } | { ok: false; unknown: true }
+    >(`/api/turns/by-request/${encodeURIComponent(clientRequestId)}`, {
+      timeoutMs: API_TIMEOUT_MS.read,
     }),
   getInstance: () =>
     request<{ instance_id: string; pid: number; auth_required: boolean; version: string }>(

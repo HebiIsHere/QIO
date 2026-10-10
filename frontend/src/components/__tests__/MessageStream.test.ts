@@ -323,7 +323,8 @@ describe("本机发送被拒绝后不留后遗症（P0：没发出去的消息�
   }
 
   it("上翻阅读时发送失败：位置放回发送前，且不进入跟随", async () => {
-    vi.mocked(api.sendTurn).mockRejectedValueOnce(new Error("network down"));
+    // 契约 5：明确拒绝 = 后端 4xx（无响应失败现在是「正在确认」，不撤消息）。
+    vi.mocked(api.sendTurn).mockRejectedValueOnce(Object.assign(new Error("network down"), { status: 400 }));
     const { w, session, stream } = await mountStream();
     stream.scrollTop = 120;
     stream.dispatchEvent(new Event("scroll"));

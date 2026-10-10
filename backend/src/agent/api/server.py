@@ -1079,10 +1079,26 @@ def create_app(
         # 不必等 SSE 的 TURN_START（SSE 是异步状态通道，不承担请求身份）。
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
         # （排队中的这条消息不被追溯改向）。
+        # 发送请求身份（契约 5）：前端为每次发送生成一个 client_request_id，
+        # 重试必须复用同一个 id —— 幂等受理命中时绝不提交第二条 turn。
+        request_id = str(body.get("client_request_id") or "").strip() or None
+        if request_id:
+            existing = ctx.turns.lookup_request(request_id)
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "accepted": True,
+                    "turn_id": existing.turn_id,
+                    "status": existing.status,
+                    "deduplicated": True,
+                    "message": message,
+                    "topic_id": topic_id,
+                }
         pending = ctx.bindings.peek_intent()
         try:
             turn = ctx.turns.submit(
-                message, topic_id, intent_id=pending.intent_id if pending else None
+                message, topic_id, intent_id=pending.intent_id if pending else None,
+                request_id=request_id,
             )
         except TurnAcceptError:
             # 契约 C2：台账写不进去 = 这条消息**没有被接受**。绝不能返回 200：
@@ -1103,6 +1119,24 @@ def create_app(
             "status": turn.status,
             "message": message,
             "topic_id": topic_id,
+        }
+
+    @app.get("/api/turns/by-request/{client_request_id}")
+    async def turn_by_request(client_request_id: str) -> dict:
+        """按发送请求身份查证（契约 5）。
+
+        200：该请求在本进程中绑定过一轮（含终态 —— 这正是「回执丢了」之后
+        查权威记录的入口）；404：本进程没有该请求的记录（包括进程重启），
+        客户端必须呈现「无法确认」，而不是当成「未发送」。
+        """
+        ctx_found = ctx.turns.lookup_request(client_request_id)
+        if ctx_found is None:
+            return JSONResponse(status_code=404, content={"ok": False, "unknown": True})
+        return {
+            "ok": True,
+            "turn_id": ctx_found.turn_id,
+            "status": ctx_found.status,
+            "request_id": ctx_found.request_id,
         }
 
     @app.post("/api/turns/cancel")
