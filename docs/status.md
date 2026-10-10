@@ -3276,11 +3276,17 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 
 ---
 
-## 集成：流式回复修复线并入 main（2026-10-11，评审中）
+## 集成：流式回复修复线并入 main（2026-10-11）
 
 把 `fix/process-attachment-audit-round2`（`cc19b68`，含统一过程区、真实增量、附件生命周期
-与 8 轮审计的全部修复）集成到 `origin/main`（`84eb4b4`）。集成分支
-`integrate/streaming-main-20261011`，**未合并 main、未发布**。
+与 8 轮审计的全部修复）集成到当时的 `origin/main`（`84eb4b4`），并以 **PR #2 合并进 main**：
+
+| 项 | 值 |
+| --- | --- |
+| 合并前 main | `84eb4b4` |
+| 集成分支线头 | `6356c0e`（`integrate/streaming-main-20261011`，保留为历史） |
+| **合并提交（当前 main）** | `7ff5e2e`（`merge: 流式回复修复线集成到 main`，父提交 `84eb4b4` + `6356c0e`） |
+| 合并 CI | run `38075732622`（push，`7ff5e2e`）：docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)` 失败（唯一失败是 R8 取消幂等用例，固定等 1.0 秒的时序敏感断言，本机复跑通过）；两个 Linux backend 任务收尾时仍停在 Run tests |
 
 ### 一、数据库
 
@@ -3315,7 +3321,30 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 - 用户中止带附件的发送（准备期 abort）按「明确未发送」收口，不滑进「正在确认」。
 - main 的回执台账与来源线的准备态/过程区/终态动作都保留。
 
-### 五、验证
+### 五、合并收尾补缺（2026-10-11，分支 `fix/streaming-main-closeout-20261011`，从 `7ff5e2e` 起）
 
-后端全量、前端类型检查与全量、`check_docs.py`、评测基线对比全部通过；逐条证据与未验证项见
+合并后在 main `7ff5e2e` 上复核出两处缺口，已在独立分支修掉（未并入互动模式线、无无关重构）：
+
+**缺口一：结构完整性检查漏掉了本线新增的半个 schema。** `REQUIRED_OBJECTS` 只覆盖实例归属
+那批对象，于是「版本号已到 34、但 `attachments` 被整张删掉」的库照样被判结构完整、也不补建。
+修法：清单补上 `attachments` 表、`attachments.source_attachment_id`、三个附件索引与
+`turn_journal` 的 `reason_code / stopped_by / actions`（每项都与补偿迁移 34 的语句一一对应），
+缺了就重放 34，仍缺抛 `SchemaIncompleteError`；只追加清单、不改历史迁移。
+对照装置：`backend/tests/test_main_closeout_migration_objects.py`（四种升级起点 + 补偿幂等 +
+真实业务行的数据保护 + 补不齐时明确失败）。
+
+**缺口二：流式降级时漏记已经真实发出的请求。** `native.stream()` 按异常类别判断要不要记账，
+把 `UnsupportedCapability` 一律当成「没有请求发出」；但 `_stream_once()` 可能在已经调用客户端、
+读到响应之后才抛它（空异步流 / 非异步响应 / 零增量且看不到 Content-Type）。修法：改成按
+**请求事实**判断（`_StreamAttempt`），已请求但无可靠用量记「不完整用量」（不估算 token），
+未请求就发现能力不支持则零记账；`stream_options` 被拒后的重试在发出前重新核对预算。
+对照装置：`backend/tests/test_main_closeout_streaming_accounting.py`。
+
+### 六、验证与未验证项
+
+定向（两处缺口的反例、受影响面）与交付前的一次全量后端、前端类型检查与全量、`check_docs.py`、
+评测基线对比：结果与本轮分支 CI 的 run ID 逐条记在
 `docs/integration/2026-10-11-streaming-into-main.md`。
+
+**未验证（不粉饰）**：Windows 桌面实机走查（附件发送与中止、重发、历史打开、关闭清理、窄窗口）
+本轮仍未做，组件级测试不能替代实机结论；原合并 CI 的两个 Linux backend 任务在收尾时未结束。
