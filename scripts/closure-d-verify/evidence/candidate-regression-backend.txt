@@ -1,0 +1,4 @@
+# 候选 fd3649d：上一轮 20 项核心回归抽检（后端 5 个文件）
+# 命令：pytest -q tests/test_final_c_impact.py tests/test_final_c_drafts.py tests/test_final_c_dedup.py tests/test_final_c_preview_apply.py tests/test_final_c_approval.py
+# 结果：36 个用例全部通过（进度行 36 个点），exit=0。
+....................................                                     [100%]

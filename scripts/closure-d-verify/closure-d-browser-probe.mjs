@@ -260,6 +260,56 @@ async function main() {
     check("B1.5 取消后界面不再显示被取消掉的正文（板面回到服务器已保存内容）",
       !stillEdited, "server=" + JSON.stringify(serverContents) + " screen=" + JSON.stringify(String(onScreen).slice(0, 160)));
     check("B1.6 取消不产生服务端改动", serverContents.join("|").includes("材料一"), "server=" + JSON.stringify(serverContents));
+
+    // ---- B1c：取消之后**继续编辑**（真实点选 → 编辑 → 完成编辑 → 点「继续」确认） ----
+    await sleep(800);
+    const center2 = await browser.evaluate(
+      "(function(){var c=document.querySelector('[data-card-id=\\\"m2\\\"]'); if(!c) return null; var r=c.getBoundingClientRect();" +
+      "return JSON.stringify({x:Math.round(r.left+r.width/2), y:Math.round(r.top+20)});})()"
+    );
+    if (center2) {
+      const pt2 = JSON.parse(center2);
+      await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pt2.x, y: pt2.y, button: "none", buttons: 0 });
+      await sleep(120);
+      await browser.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt2.x, y: pt2.y, button: "left", clickCount: 1, buttons: 1 });
+      await sleep(120);
+      await browser.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt2.x, y: pt2.y, button: "left", clickCount: 1, buttons: 0 });
+    }
+    await sleep(700);
+    const edit2 = await browser.evaluate(
+      "(function(){var b=document.querySelector('[data-im=\\\"card-edit\\\"]'); if(!b) return false; b.click(); return true;})()"
+    );
+    await sleep(500);
+    const typed2 = await browser.evaluate(
+      "(function(){var t=document.querySelector('[data-im=\\\"card-editor\\\"]'); if(!t) return null;" +
+      "t.focus(); t.value='取消之后继续编辑的正文-R1c'; t.dispatchEvent(new Event('input',{bubbles:true})); return t.value;})()"
+    );
+    await sleep(300);
+    const done2 = await browser.evaluate(
+      "(function(){var bs=Array.from(document.querySelectorAll('button')); var b=bs.find(function(x){return (x.innerText||'').indexOf('完成编辑')>=0;}); if(!b) return false; b.click(); return true;})()"
+    );
+    await sleep(3000);
+    const dialog2 = await browser.evaluate("Boolean(document.querySelector('[data-im=\\\"impact-dialog\\\"]'))");
+    check("B1c.1 取消之后能继续编辑并再次进入影响确认（真实操作链）",
+      Boolean(center2) && edit2 === true && typed2 === "取消之后继续编辑的正文-R1c" && done2 === true && dialog2 === true,
+      "select=" + Boolean(center2) + " edit=" + edit2 + " typed=" + JSON.stringify(typed2) + " done=" + done2 + " dialog=" + dialog2);
+
+    if (dialog2) {
+      await browser.evaluate("(function(){var b=document.querySelector('[data-im=\\\"impact-continue\\\"]'); if(b) b.click(); return Boolean(b);})()");
+      await sleep(3000);
+      const dialogAfter2 = await browser.evaluate("Boolean(document.querySelector('[data-im=\\\"impact-dialog\\\"]'))");
+      const screen2 = await browser.evaluate(
+        "(function(){return Array.from(document.querySelectorAll('[data-im=\\\"card\\\"]')).map(function(e){return (e.innerText||'').trim();}).join(' | ');})()"
+      );
+      const live2 = await api("GET", prefix + "/state");
+      const server2 = (live2.json?.state?.cards || []).map((c) => c.content);
+      const intents2 = await api("GET", prefix + "/intents");
+      const pausedNow = (intents2.json?.intents || []).filter((i) => i.status === "paused").map((i) => i.title);
+      check("B1c.2 确认（继续）后：确认框关闭、界面显示新正文", dialogAfter2 === false && String(screen2).includes("取消之后继续编辑的正文-R1c"),
+        "dialog=" + dialogAfter2 + " screen=" + JSON.stringify(String(screen2).slice(0, 160)));
+      check("B1c.3 确认后服务端真的落库新正文", server2.includes("取消之后继续编辑的正文-R1c"), "server=" + JSON.stringify(server2));
+      check("B1c.4 确认后受影响任务真的被暂停", pausedNow.length >= 1, "paused=" + JSON.stringify(pausedNow));
+    }
   }
   check("B1.7 真实浏览器无控制台异常", browser.consoleErrors.length === 0, JSON.stringify(browser.consoleErrors.slice(0, 3)));
   check("B1.8 真实浏览器无 4xx/5xx 请求（webfont 回落已按已知现象排除）", browser.httpFails.length === 0,

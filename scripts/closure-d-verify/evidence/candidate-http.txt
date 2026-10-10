@@ -1,0 +1,21 @@
+﻿PASS 0 数据库路径存在（验收在临时数据目录上） :: D:\qio-dev\qio-cl-d-verify-tmp\scripts\closure-d-verify\tmp\cand-http\app.db
+PASS 1 取到板面 id :: {"boards": [{"id": "board_default", "title": "互动板面"}]}
+PASS 2 材料种子保存成功 :: status=200
+PASS R3.1 第一版保存成功 :: status=200
+PASS R3.2 保存回执给出前进后的 seq :: 1 -> 2
+PASS R3.3 第二版用新 seq 继续保存成功 :: status=200
+PASS R3.4 第二版让 seq 继续前进 :: 2 -> 3
+PASS R3.5 库里落地的是第二版 :: seq=3 contents=['第二版']
+PASS R6.1 演示任务已创建 :: created=4
+PASS R6.2 任务批准后进入执行中 :: status=200 body={"ok": true, "intent": {"id": "i_1b5b64a7dc6e", "boardId": "board_default", "submissionId": null, "title": "［演示］把材料归为一组并给出对比摘要", "summary": 
+PASS R5.1 不带确认改材料被服务端门拒绝 :: status=409 detail={"error": "impact_confirmation_required", "reason": "这次保存会修改执行中任务依赖的材料：需要先做影响预判并确认后才会生效；取消则这次改动不生效、任务继续。", "affectedTasks": [{"intentId": "i_1b5b64a7dc6e", "tit
+PASS R5.2 门里如实列出受影响任务（R6 的完整列表来源） :: ['i_1b5b64a7dc6e']
+PASS R5.3 被拒绝的保存没有落库 :: 3 -> 3
+PASS R5.4 影响预判给出 checkId 与完整受影响列表 :: {"ok": true, "checkId": "chk_8aa3eef3c21b", "stateVersion": 3, "impactConfirmationRequired": true}
+PASS R5.5 位置微调保存成功（seq 前进） :: 3 -> 4
+PASS R5.6 过期 checkId 确认被拒 stale_check :: status=409 detail={"error": "stale_check", "reason": "确认之后板面又保存过（现在是版本 4）：这份确认已经过期，请重新预判并确认。", "scopeChanged": false, "affectedTasks": [{"intentId": "i_1b5b64a7dc6e", "title": "［
+PASS R5.7 过期确认没有落库 :: 4 -> 4
+PASS R5.8 用新 checkId 确认后保存成功 :: status=200
+PASS R6.3 保存响应如实报告被暂停的任务 :: ['i_1b5b64a7dc6e']
+PASS R6.4 库里该任务真的是 paused 且保留进度 :: status=paused progress={"done":0,"total":1,"text":"你修改了这项任务依赖的材料（文件「材料一（替换版）」）：保存已经生效，任务因此暂停并保留进度。需要你确认
+---- 汇总：20/20 通过 ----

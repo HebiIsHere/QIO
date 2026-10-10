@@ -1,0 +1,68 @@
+﻿F                                                                        [100%]
+================================== FAILURES ===================================
+________ test_health_probe_stays_responsive_while_slow_prediction_runs ________
+
+ctx = <agent.services.app.AppContext object at 0x00000249D62D66D0>
+topic = 'topic_09850e34d327'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000249D62C6E50>
+
+    async def test_health_probe_stays_responsive_while_slow_prediction_runs(
+        ctx: AppContext, topic: str, monkeypatch
+    ):
+        """慢话题预判（ONNX 推理）期间，健康探测类的轻请求不能被占住。
+    
+        修复前：预判直接跑在事件循环上（还带一次冷启动向量补算）→ 停顿 = 整个推理
+        时长；修复后：推理进有上限的工作线程 → 停顿只剩心跳本身。
+        """
+        slow = _SlowEmbedding(delay=0.2)
+        monkeypatch.setattr(ctx.predictor, "embedding", slow)
+    
+        result, gap_ms = await _measure_loop_lag(
+            lambda: _start_turn(ctx, monkeypatch, "帮我看看这段代码", topic)
+        )
+    
+        assert result["ok"] is True
+        assert slow.calls >= 1, "这一轮应该真的走到了嵌入（否则测的不是慢推理）"
+>       assert gap_ms < 100, f"慢推理期间事件循环被占住 {gap_ms:.0f} ms（健康探测要等这么久）"
+E       AssertionError: 慢推理期间事件循环被占住 124 ms（健康探测要等这么久）
+E       assert 123.90930000401568 < 100
+
+tests\test_interactive_during_heavy_work.py:234: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs
+---- run1 exit=1 用时=12s ----
+.                                                                        [100%]
+---- run2 exit=0 用时=8s ----
+F                                                                        [100%]
+================================== FAILURES ===================================
+________ test_health_probe_stays_responsive_while_slow_prediction_runs ________
+
+ctx = <agent.services.app.AppContext object at 0x000001ABA99F1490>
+topic = 'topic_91b15a146386'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001ABA9A08050>
+
+    async def test_health_probe_stays_responsive_while_slow_prediction_runs(
+        ctx: AppContext, topic: str, monkeypatch
+    ):
+        """慢话题预判（ONNX 推理）期间，健康探测类的轻请求不能被占住。
+    
+        修复前：预判直接跑在事件循环上（还带一次冷启动向量补算）→ 停顿 = 整个推理
+        时长；修复后：推理进有上限的工作线程 → 停顿只剩心跳本身。
+        """
+        slow = _SlowEmbedding(delay=0.2)
+        monkeypatch.setattr(ctx.predictor, "embedding", slow)
+    
+        result, gap_ms = await _measure_loop_lag(
+            lambda: _start_turn(ctx, monkeypatch, "帮我看看这段代码", topic)
+        )
+    
+        assert result["ok"] is True
+        assert slow.calls >= 1, "这一轮应该真的走到了嵌入（否则测的不是慢推理）"
+>       assert gap_ms < 100, f"慢推理期间事件循环被占住 {gap_ms:.0f} ms（健康探测要等这么久）"
+E       AssertionError: 慢推理期间事件循环被占住 124 ms（健康探测要等这么久）
+E       assert 123.68360000255052 < 100
+
+tests\test_interactive_during_heavy_work.py:234: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs
+---- run3 exit=1 用时=12s ----
