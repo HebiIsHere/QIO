@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
+# anyio 是 starlette（fastapi 的依赖）自带的取消原语：收尾等待要屏蔽外层取消时用它，
+# 见 _settle_upload_worker。它必然随 fastapi 一起安装，不是新增依赖。
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -1194,21 +1197,54 @@ def create_app(
             f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
         )
 
-    def _converge_upload(attachment_id: str, reason: str, *, state: str = DISK_FAILED) -> None:
+    def _converge_upload(
+        attachment_id: str,
+        reason: str,
+        *,
+        state: str = DISK_FAILED,
+        generation: int | None = None,
+    ) -> None:
         """失败/取消的收尾（**事件循环线程**）：行还在就如实转 failed/cancelled，绝不提交 ready。
 
         工作线程只做文件 I/O、不再落库，所以这里是上传状态的唯一出口。行已经被用户删掉时
         什么都不做（apply_outcome 会自己处理「行不在」的情况并清掉可能已提交的副本）。
-        """
-        attachments.apply_outcome(attachment_id, DiskOutcome(state=state, error=reason))
 
-    def _purge_uncommitted_copy(att) -> None:
+        generation：上传开始时记下的**本操作自己的代际**。上传路径没有 R1 票号在调用方手里
+        （票号在 write_upload_stream 内部领），所以用它作准入：期间已经有更新的准备
+        （重新定位 / 重试）完成时，这次收尾是过期的 —— apply_outcome 会整份丢弃，绝不把
+        更新的 ready 行改写成 failed/cancelled。**没有更新的准备时仍然照写**（当前的
+        失败/取消照旧如实收敛），所以它不是「一律不写」。
+        """
+        attachments.apply_outcome(
+            attachment_id, DiskOutcome(state=state, error=reason), generation=generation
+        )
+
+    def _file_identity(path: Path) -> tuple[int, int] | None:
+        """(st_dev, st_ino)：证明「这个目录项还是本操作提交的那一份」。"""
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (int(stat.st_dev), int(stat.st_ino))
+
+    def _purge_uncommitted_copy(att, *, generation: int | None = None) -> None:
         """取消竞态清理：工作线程可能已经把正式副本提交到位（os.replace 之后才被丢弃），
 
         而它的结果已经落不到库里 —— 按**可预测的副本路径**（QIO 自己的管理目录）清掉它，
         避免留下无人认领的副本。用户原文件永远不在此列。
+
+        generation：本操作自己的代际。目标已经被更新的准备（重新定位 / 重试）接管时
+        （当前代际已经不是它），磁盘上那份是**更新的成果**，绝不删（R1 的纪律）。
+        临时文件 <目标>.<token>.part 由工作线程自己清（每个操作一个 token，谁也删不到别人的）；
+        这里绝不按通配符清理，免得误删另一个在飞操作正在写的临时文件。
         """
         with contextlib.suppress(Exception):
+            if generation is not None and attachments.prepare_generation(att.id) != generation:
+                logger.debug(
+                    "取消收尾跳过：附件 %s 已经被更新的准备接管（不删更新的成果）",
+                    redact_text(str(att.id)),
+                )
+                return
             path = attachments.copy_path(att)
             if attachments.is_managed_path(path):
                 Path(path).unlink(missing_ok=True)
@@ -1227,14 +1263,25 @@ def create_app(
         attachments.cancel(attachment_id)
         job.abort("上传被取消（服务关闭或请求中断）；没有保存任何副本")
         outcome: DiskOutcome | None = None
-        with contextlib.suppress(BaseException):
-            outcome = await asyncio.wait_for(
-                asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
-            )
+        # 收尾等待必须在**屏蔽外层取消**的作用域里跑（anyio 是流式中间件的取消原语）：
+        # 请求被取消后，BaseHTTPMiddleware 的取消作用域会在每个 await 点重复投递
+        # CancelledError。实测：不屏蔽时这个等待 0.02s 就被打断，工作线程被丢在后台继续跑，
+        # 它刚建的 <目标>.<token>.part 就留在磁盘上（_purge_uncommitted_copy 只认旧的
+        # <目标>.part，删不到）。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
+        with anyio.CancelScope(shield=True):
+            with contextlib.suppress(BaseException):
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+                )
         if outcome is not None and outcome.stored_path:
-            if attachments.is_managed_path(outcome.stored_path):
+            stored = Path(str(outcome.stored_path))
+            # R1：只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
+            # 目标已经被更新的操作换掉时，那是别人的成果，绝不删。
+            if attachments.is_managed_path(stored) and (
+                outcome.identity is None or _file_identity(stored) == outcome.identity
+            ):
                 try:
-                    Path(outcome.stored_path).unlink(missing_ok=True)
+                    stored.unlink(missing_ok=True)
                 except OSError as exc:  # noqa: BLE001 - 清理失败不能掩盖取消
                     logging.getLogger(__name__).warning(
                         "清理被取消上传的副本失败：%s", redact_text(str(exc))
@@ -1269,6 +1316,9 @@ def create_app(
         att = attachments.begin_upload(
             name=name, topic_id=str(topic_id) if topic_id else None
         )
+        # 本操作自己的代际（begin_upload 已经登记过一次准备）：之后任何更新的准备
+        # （重新定位 / 重试）都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
+        upload_generation = attachments.prepare_generation(att.id)
         # 一次上传 = 一个作业：队列 + 终态 + 工作线程句柄，接收端/工作线程/取消清理共享它。
         # 这样「工作线程死了」不再表现为「队列永远等不到空位」，取消也能解除工作线程的阻塞读。
         job = UploadJob(
@@ -1329,8 +1379,12 @@ def create_app(
         except asyncio.CancelledError:
             # 服务关闭 / 请求被取消：先让工作线程看到终态（解除阻塞读），再等它收尾
             await _settle_upload_worker(worker, job, attachment_id=att.id)
-            _converge_upload(att.id, "上传被取消（服务关闭或请求中断）；没有保存任何副本")
-            _purge_uncommitted_copy(att)
+            _converge_upload(
+                att.id,
+                "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                generation=upload_generation,
+            )
+            _purge_uncommitted_copy(att, generation=upload_generation)
             job.close()
             raise
         except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
@@ -1360,11 +1414,19 @@ def create_app(
                 )
             except asyncio.TimeoutError:
                 attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
-                _converge_upload(att.id, "上传收尾超时（磁盘调用没有返回）；没有提交副本")
-                _purge_uncommitted_copy(att)
+                _converge_upload(
+                    att.id,
+                    "上传收尾超时（磁盘调用没有返回）；没有提交副本",
+                    generation=upload_generation,
+                )
+                _purge_uncommitted_copy(att, generation=upload_generation)
                 # 安排可靠清理：工作线程真正退出时再清一次 —— 它可能刚好在 os.replace
                 # 里（提交发生在我们的清理之后），那一份副本同样不能留成孤儿。
-                worker.add_done_callback(lambda _task: _purge_uncommitted_copy(att))
+                worker.add_done_callback(
+                    lambda _task: _purge_uncommitted_copy(
+                        att, generation=upload_generation
+                    )
+                )
                 raise HTTPException(
                     status_code=500,
                     detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存副本",
@@ -1380,7 +1442,9 @@ def create_app(
                         status_code=400, detail=f"上传被中断：{redact_text(str(read_error))}"
                     ) from exc
                 # 取消（用户 DELETE / 服务关闭）：行若还在，如实转 cancelled；不提交 ready
-                _converge_upload(att.id, str(exc), state=DISK_CANCELLED)
+                _converge_upload(
+                    att.id, str(exc), state=DISK_CANCELLED, generation=upload_generation
+                )
                 if attachments.get(att.id, check=False) is None or ended is not None:
                     raise HTTPException(status_code=404, detail="上传期间附件已被移除") from exc
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1391,15 +1455,21 @@ def create_app(
                 # 等结果时被取消（服务关闭 / 客户端离开）：工作线程可能刚好把副本提交到位，
                 # 而它的结果已经无法落库 —— 先解除阻塞、再把这份无人认领的副本清掉。
                 await _settle_upload_worker(worker, job, attachment_id=att.id)
-                _converge_upload(att.id, "上传被取消（服务关闭或请求中断）；没有保存任何副本")
-                _purge_uncommitted_copy(att)
+                _converge_upload(
+                    att.id,
+                    "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                    generation=upload_generation,
+                )
+                _purge_uncommitted_copy(att, generation=upload_generation)
                 raise
             # 原因归属互不覆盖（契约 §1.2）：写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭。
             # 作业终态是「第一个到达的原因」（UploadJob._mark 幂等），这里按同一优先级映射 HTTP。
             if outcome.state == DISK_FAILED:
                 # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
                 # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
-                applied = attachments.apply_outcome(att.id, outcome)
+                applied = attachments.apply_outcome(
+                    att.id, outcome, generation=upload_generation
+                )
                 if applied is None:
                     raise HTTPException(status_code=404, detail="上传期间附件已被移除")
                 raise HTTPException(
@@ -1409,7 +1479,9 @@ def create_app(
             if too_large:
                 attachments.delete(att.id)
                 raise HTTPException(status_code=413, detail=_upload_limit_detail())
-            applied = attachments.apply_outcome(att.id, outcome)
+            applied = attachments.apply_outcome(
+                att.id, outcome, generation=upload_generation
+            )
             if applied is None:
                 raise HTTPException(status_code=404, detail="上传期间附件已被移除")
             if outcome.state == DISK_CANCELLED:
