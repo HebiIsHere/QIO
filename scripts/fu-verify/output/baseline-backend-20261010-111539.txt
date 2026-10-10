@@ -1,0 +1,1367 @@
+﻿uv : Uninstalled 1 package in 2ms
+At D:\qio-dev\qio-fu-v\scripts\fu-verify\run_all.ps1:74 char:13
++             uv run --frozen pytest @files -q --no-header -p no:cachep ...
++             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Uninstalled 1 package in 2ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Installed 1 package in 13ms
+FFFFFFFFFFFFFFFFFFF.F...FFFFFFFFFFFFFF.F.FFFF.FFFF....FF...FFF.......FFF [ 98%]
+F                                                                        [100%]
+================================== FAILURES ===================================
+_________________ test_a01_legacy_unowned_rows_become_visible _________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275418637D0>
+
+    def test_a01_legacy_unowned_rows_become_visible(harness: Harness):
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        seed_turn(harness.conn, LEGACY_RUNNING, MSG_RUNNING, status="running")
+        client = harness.start()
+    
+        # 基线的旧入口确实看不见它们（这就是缺陷的现场）
+        state = client.get("/api/runtime/state").json()
+        assert state["interrupted_turns"] == [], "旧入口（interrupted_turns）看不见历史无归属行"
+    
+>       body = recovery_listing(client)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a01_a03_recovery.py:243: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027561241390>
+params = {}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+_________ test_a01_legacy_row_survives_restart_and_is_still_operable __________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x000002755FA236D0>
+
+    def test_a01_legacy_row_survives_restart_and_is_still_operable(harness: Harness):
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        seed_turn(harness.conn, LEGACY_RUNNING, MSG_RUNNING, status="running")
+        first = harness.start()
+>       assert {i["record_id"] for i in recovery_listing(first)["records"]} >= {
+                                        ^^^^^^^^^^^^^^^^^^^^^^^
+            LEGACY_QUEUED,
+            LEGACY_RUNNING,
+        }
+
+tests\test_fu_verify_a01_a03_recovery.py:272: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027561468E50>
+params = {}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+__________ test_a01_continue_yields_exactly_one_effective_execution ___________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561243C50>
+
+    def test_a01_continue_yields_exactly_one_effective_execution(harness: Harness):
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+    
+        before = journal_row(harness.conn, LEGACY_QUEUED)
+        assert before["owner_instance_id"] is None
+    
+        resp = client.post(
+            f"/api/recovery/records/{LEGACY_QUEUED}/continue",
+            json={"expected_class": "legacy_unowned", "expected_status": "queued"},
+        )
+>       assert resp.status_code == 200, f"继续必须成功：{resp.status_code} {resp.text[:200]}"
+E       AssertionError: 继续必须成功：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:299: AssertionError
+_________ test_a01_continue_gives_new_turn_an_owner_that_is_traceable _________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275615B5A50>
+
+    def test_a01_continue_gives_new_turn_an_owner_that_is_traceable(harness: Harness):
+        """继续之后归属必须可追踪（否则下次重启又会退化成 owner_unknown）。"""
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+        instance_id = client.app.state.instance_id
+    
+        resp = client.post(
+            f"/api/recovery/records/{LEGACY_QUEUED}/continue",
+            json={"expected_class": "legacy_unowned", "expected_status": "queued"},
+        )
+>       assert resp.status_code == 200
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:334: AssertionError
+_____________ test_a01_concurrent_continue_produces_one_successor _____________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275615A2A90>
+
+    def test_a01_concurrent_continue_produces_one_successor(harness: Harness):
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+        url = f"/api/recovery/records/{LEGACY_QUEUED}/continue"
+        payload = {"expected_class": "legacy_unowned", "expected_status": "queued"}
+    
+        def _post():  # noqa: ANN202
+            return client.post(url, json=payload).status_code
+    
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            codes = sorted(pool.map(lambda _i: _post(), range(2)))
+    
+>       assert codes.count(200) == 1, f"并发只允许一个成功：{codes}"
+E       AssertionError: 并发只允许一个成功：[404, 404]
+E       assert 0 == 1
+E        +  where 0 = <built-in method count of list object at 0x0000027560A362C0>(200)
+E        +    where <built-in method count of list object at 0x0000027560A362C0> = [404, 404].count
+
+tests\test_fu_verify_a01_a03_recovery.py:361: AssertionError
+__________________ test_a01_second_continue_click_conflicts ___________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561496710>
+
+    def test_a01_second_continue_click_conflicts(harness: Harness):
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+        url = f"/api/recovery/records/{LEGACY_QUEUED}/continue"
+        payload = {"expected_class": "legacy_unowned", "expected_status": "queued"}
+    
+>       assert client.post(url, json=payload).status_code == 200
+E       AssertionError: assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+E        +    where <Response [404 Not Found]> = post('/api/recovery/records/turn_legacy_queued/continue', json={'expected_class': 'legacy_unowned', 'expected_status': 'queued'})
+E        +      where post = <starlette.testclient.TestClient object at 0x00000275618BB550>.post
+
+tests\test_fu_verify_a01_a03_recovery.py:373: AssertionError
+_________________ test_a01_notify_rows_never_enter_the_inbox __________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275618106D0>
+
+    def test_a01_notify_rows_never_enter_the_inbox(harness: Harness):
+        """系统通知轮永不进清单、永不可操作（它不是用户的消息）。"""
+        seed_turn(harness.conn, NOTIFY_ROW, "系统通知：某某结束了", status="interrupted", notify=1)
+        client = harness.start()
+    
+>       body = recovery_listing(client)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a01_a03_recovery.py:386: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x00000275619B6C90>
+params = {}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+_______ test_a01_legacy_running_derived_task_is_listed_and_requeueable ________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275619F0350>
+
+    def test_a01_legacy_running_derived_task_is_listed_and_requeueable(harness: Harness):
+        """历史无归属的 running 派生任务：既不可见也不能放回队列（基线：没有入口）。"""
+        seed_derived_running(harness.conn, DERIVED)
+        client = harness.start()
+    
+>       body = recovery_listing(client, kinds="derived_task")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a01_a03_recovery.py:407: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027561BDEC10>
+params = {'kinds': 'derived_task'}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+____________ test_a01_derived_requeue_conflicts_after_state_change ____________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561BECD50>
+
+    def test_a01_derived_requeue_conflicts_after_state_change(harness: Harness):
+        seed_derived_running(harness.conn, DERIVED)
+        client = harness.start()
+>       assert client.post(
+            f"/api/recovery/records/{DERIVED}/requeue",
+            json={"expected_state": "running", "expected_generation": 1},
+        ).status_code == 200
+E       AssertionError: assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+E        +    where <Response [404 Not Found]> = post('/api/recovery/records/task_derived_running/requeue', json={'expected_state': 'running', 'expected_generation': 1})
+E        +      where post = <starlette.testclient.TestClient object at 0x0000027561AEEFD0>.post
+
+tests\test_fu_verify_a01_a03_recovery.py:437: AssertionError
+__________________ test_a03_orphan_claim_gets_a_repair_entry __________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561A148D0>
+
+    def test_a03_orphan_claim_gets_a_repair_entry(harness: Harness):
+        seed_turn(harness.conn, ORPHAN, MSG_ORPHAN, status="interrupted", recovered_at=NOW)
+        client = harness.start()
+    
+        # 基线唯一的出口只是只读的 orphaned_turns（这条在基线就成立）
+        state = client.get("/api/runtime/state").json()
+        assert ORPHAN in {str(i["turn_id"]) for i in state["orphaned_turns"]}
+        assert state["interrupted_turns"] == [], "孤儿已经不在 unfinished 入口里了"
+    
+>       record = find_record(client, ORPHAN)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a01_a03_recovery.py:463: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_fu_verify_a01_a03_recovery.py:219: in find_record
+    for item in recovery_listing(client)["records"]:
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027561D05350>
+params = {}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+_____________ test_a03_repair_then_continue_restores_the_message ______________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275619398D0>
+
+    def test_a03_repair_then_continue_restores_the_message(harness: Harness):
+        seed_turn(harness.conn, ORPHAN, MSG_ORPHAN, status="interrupted", recovered_at=NOW)
+        client = harness.start()
+    
+        repaired = client.post(
+            f"/api/recovery/records/{ORPHAN}/repair", json={"expected_class": "orphaned_claim"}
+        )
+>       assert repaired.status_code == 200, f"修复必须成功：{repaired.status_code} {repaired.text[:200]}"
+E       AssertionError: 修复必须成功：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:481: AssertionError
+________________ test_a03_repair_refuses_already_resent_record ________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x00000275618E0E50>
+
+    def test_a03_repair_refuses_already_resent_record(harness: Harness):
+        """已经真正重发过的记录不能被 repair 重置（否则一条消息会被重发两次）。"""
+        seed_turn(
+            harness.conn,
+            RESENT,
+            MSG_RESENT,
+            status="interrupted",
+            recovered_at=NOW,
+            recovered_by=RESENT_SUCCESSOR,
+        )
+        seed_turn(harness.conn, RESENT_SUCCESSOR, MSG_RESENT, status="queued")
+        client = harness.start()
+    
+        resp = client.post(
+            f"/api/recovery/records/{RESENT}/repair", json={"expected_class": "orphaned_claim"}
+        )
+        assert resp.status_code != 500
+        if resp.status_code == 200:
+            assert resp.json().get("repaired") is False, (
+                f"已重发的记录不得被修复成功：{resp.json()}"
+            )
+            assert resp.json().get("ok") is False
+        else:
+>           assert resp.status_code == 409
+E           assert 404 == 409
+E            +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:535: AssertionError
+_________ test_a03_concurrent_continue_after_repair_has_one_successor _________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561EF9690>
+
+    def test_a03_concurrent_continue_after_repair_has_one_successor(harness: Harness):
+        seed_turn(harness.conn, ORPHAN, MSG_ORPHAN, status="interrupted", recovered_at=NOW)
+        client = harness.start()
+>       assert client.post(
+            f"/api/recovery/records/{ORPHAN}/repair", json={"expected_class": "orphaned_claim"}
+        ).status_code == 200
+E       AssertionError: assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+E        +    where <Response [404 Not Found]> = post('/api/recovery/records/turn_orphan_claim/repair', json={'expected_class': 'orphaned_claim'})
+E        +      where post = <starlette.testclient.TestClient object at 0x0000027561FE7F50>.post
+
+tests\test_fu_verify_a01_a03_recovery.py:549: AssertionError
+_________ test_a03_ignore_keeps_the_message_and_creates_no_successor __________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561C16C90>
+
+    def test_a03_ignore_keeps_the_message_and_creates_no_successor(harness: Harness):
+        """忽略：不删原消息、不产生后继。"""
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+    
+        resp = client.post(
+            f"/api/recovery/records/{LEGACY_QUEUED}/ignore", json={"expected_class": "legacy_unowned"}
+        )
+>       assert resp.status_code == 200, f"忽略必须成功：{resp.status_code} {resp.text[:200]}"
+E       AssertionError: 忽略必须成功：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:576: AssertionError
+____________ test_a03_continue_with_wrong_expected_class_conflicts ____________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x0000027561FE2C10>
+
+    def test_a03_continue_with_wrong_expected_class_conflicts(harness: Harness):
+        """期望状态不符 → 409，且一行都不改。"""
+        seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
+        client = harness.start()
+    
+        resp = client.post(
+            f"/api/recovery/records/{LEGACY_QUEUED}/continue",
+            json={"expected_class": "ready", "expected_status": "interrupted"},
+        )
+    
+>       assert resp.status_code == 409, f"类别不符必须 409：{resp.status_code}"
+E       AssertionError: 类别不符必须 409：404
+E       assert 404 == 409
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:597: AssertionError
+____________________ test_a01_listing_truncation_is_honest ____________________
+
+harness = <test_fu_verify_a01_a03_recovery.Harness object at 0x000002756121A650>
+
+    def test_a01_listing_truncation_is_honest(harness: Harness):
+        """limit 生效时 total 仍如实；未显示的记录不会永久消失。"""
+        for index in range(5):
+            seed_turn(harness.conn, f"turn_bulk_{index}", f"批量消息 {index}", status="queued")
+        client = harness.start()
+    
+>       page = recovery_listing(client, limit=2)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a01_a03_recovery.py:611: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562307450>
+params = {'limit': 2}
+
+    def recovery_listing(client: TestClient, **params) -> dict:
+        resp = client.get("/api/recovery/records", params=params)
+>       assert resp.status_code == 200, (
+            f"恢复收件箱接口必须可用（基线 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 恢复收件箱接口必须可用（基线 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a01_a03_recovery.py:209: AssertionError
+______________ test_a02_legacy_manual_values_are_not_overwritten ______________
+
+legacy_card = (<sqlite3.Connection object at 0x00000275615AEF20>, WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a02_legacy_manual_values_0'))
+
+    def test_a02_legacy_manual_values_are_not_overwritten(legacy_card):
+        """旧 schema 的人工值必须原样保留（基线：全部被自动候选覆盖）。"""
+        conn, tmp_path = legacy_card
+        service = EntityCardService(conn)
+    
+        updated = service.apply_auto_candidate(_auto_candidate())
+    
+        assert updated is not None
+>       assert updated.summary == LEGACY_SUMMARY, "历史人工摘要不得被自动候选覆盖"
+E       AssertionError: 历史人工摘要不得被自动候选覆盖
+E       assert '自动摘要：鹅会看门' == '人工写的摘要：这只鹅会咬人'
+E         
+E         - 人工写的摘要：这只鹅会咬人
+E         + 自动摘要：鹅会看门
+
+tests\test_fu_verify_a02_provenance.py:162: AssertionError
+_______________ test_a02_conflicts_are_registered_as_candidates _______________
+
+legacy_card = (<sqlite3.Connection object at 0x000002753C6EDF30>, WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a02_conflicts_are_registe0'))
+
+    def test_a02_conflicts_are_registered_as_candidates(legacy_card):
+        """被保护而没落地的候选必须登记成用户可管理的候选（基线：一个都没有）。"""
+        conn, tmp_path = legacy_card
+        service = EntityCardService(conn)
+    
+        service.apply_auto_candidate(_auto_candidate())
+    
+        candidates = _registered_candidates(conn, tmp_path, CARD_ID)
+>       assert candidates, "冲突必须进候选，不能静默丢弃"
+E       AssertionError: 冲突必须进候选，不能静默丢弃
+E       assert []
+
+tests\test_fu_verify_a02_provenance.py:177: AssertionError
+_______________________ test_a02_gaps_still_get_filled ________________________
+
+legacy_card = (<sqlite3.Connection object at 0x00000275615AEF20>, WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a02_gaps_still_get_filled0'))
+
+    def test_a02_gaps_still_get_filled(legacy_card):
+        """空缺（当前缺失）仍可合理补充：未提及的旧值保留，新属性正常补上。"""
+        conn, tmp_path = legacy_card
+        service = EntityCardService(conn)
+    
+        updated = service.apply_auto_candidate(_auto_candidate())
+    
+        attrs = _attrs(updated)
+        assert attrs.get(AUTO_NEW_ATTR_KEY) == AUTO_NEW_ATTR_VALUE, "空缺属性应当被补上"
+>       assert attrs.get("年龄") == LEGACY_AGE, "已有属性必须保留（未提及≠删除）"
+E       AssertionError: 已有属性必须保留（未提及≠删除）
+E       assert '3 岁' == '2 岁'
+E         
+E         - 2 岁
+E         + 3 岁
+
+tests\test_fu_verify_a02_provenance.py:201: AssertionError
+______________ test_a02_real_upgrade_path_protects_manual_values ______________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a02_real_upgrade_path_pro0')
+
+    def test_a02_real_upgrade_path_protects_manual_values(tmp_path):
+        """真实升级路径：先在建到 7 的旧库里写人工值，再跑迁移，然后提交自动候选。"""
+        from agent.storage.db import connect
+    
+        conn = connect(tmp_path / "upgrade.db")
+        try:
+            _build_through(conn, 7)
+            columns = {str(r["name"]) for r in conn.execute("PRAGMA table_info(entity_cards)")}
+            assert "field_meta" not in columns, "场景构造：升级前不该有 field_meta 列"
+            assert "revision" not in columns, "场景构造：升级前不该有 revision 列"
+    
+            conn.execute(
+                "INSERT INTO entity_cards (id, node_id, name, aliases, kind, summary, attributes, "
+                "state, created_at, updated_at) "
+                "VALUES (?, NULL, '我家的鹅', ?, ?, ?, ?, 'active', ?, ?)",
+                (
+                    CARD_ID,
+                    json.dumps([LEGACY_ALIAS], ensure_ascii=False),
+                    LEGACY_KIND,
+                    LEGACY_SUMMARY,
+                    json.dumps(
+                        [{"key": "年龄", "value": LEGACY_AGE, "confidence": 0.9}],
+                        ensure_ascii=False,
+                    ),
+                    NOW,
+                    NOW,
+                ),
+            )
+    
+            apply_migrations(conn)
+            columns = {str(r["name"]) for r in conn.execute("PRAGMA table_info(entity_cards)")}
+            assert {"revision", "field_meta"} <= columns, "场景构造：迁移必须补上这两列"
+    
+            service = EntityCardService(conn)
+            before = service.get(CARD_ID)
+            assert before is not None
+            assert before.summary == LEGACY_SUMMARY
+            assert before.field_meta.get("fields", {}).get("summary") is None, (
+                "场景构造：升级上来的行没有来源记录"
+            )
+    
+            service.apply_auto_candidate(_auto_candidate())
+            after = service.get(CARD_ID)
+            assert after is not None
+    
+>           assert after.summary == LEGACY_SUMMARY, "真实升级路径上的人工摘要必须被保护"
+E           AssertionError: 真实升级路径上的人工摘要必须被保护
+E           assert '自动摘要：鹅会看门' == '人工写的摘要：这只鹅会咬人'
+E             
+E             - 人工写的摘要：这只鹅会咬人
+E             + 自动摘要：鹅会看门
+
+tests\test_fu_verify_a02_provenance.py:268: AssertionError
+________________ test_a04_cross_card_listing_lists_candidates _________________
+
+client = <starlette.testclient.TestClient object at 0x0000027562425710>
+db_conn = <sqlite3.Connection object at 0x00000275617A9D50>
+
+    def test_a04_cross_card_listing_lists_candidates(client: TestClient, db_conn):
+        _seed_card(db_conn)
+    
+        resp = client.get("/api/entities/candidates?include_archived=true")
+    
+>       assert resp.status_code == 200, f"跨卡片候选清单必须可用：{resp.status_code}"
+E       AssertionError: 跨卡片候选清单必须可用：404
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:116: AssertionError
+______________ test_a04_listing_exposes_the_fields_the_ui_needs _______________
+
+client = <starlette.testclient.TestClient object at 0x0000027562826A50>
+db_conn = <sqlite3.Connection object at 0x0000027561BFDA80>
+
+    def test_a04_listing_exposes_the_fields_the_ui_needs(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+    
+>       body = _listing(client, card_id)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:127: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562826A50>
+entity_id = 'ec_c9c89278ff42'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+______________ test_a04_adopt_writes_value_and_marks_user_source ______________
+
+client = <starlette.testclient.TestClient object at 0x000002756293A9D0>
+db_conn = <sqlite3.Connection object at 0x000002756272D210>
+
+    def test_a04_adopt_writes_value_and_marks_user_source(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+        revision = service.get(card_id).revision
+>       entry = _by_field(_listing(client, card_id), "summary")
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x000002756293A9D0>
+entity_id = 'ec_d9d042422d8a'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+______ test_a04_adopt_with_stale_revision_conflicts_and_changes_nothing _______
+
+client = <starlette.testclient.TestClient object at 0x0000027562A52990>
+db_conn = <sqlite3.Connection object at 0x000002756272D7B0>
+
+    def test_a04_adopt_with_stale_revision_conflicts_and_changes_nothing(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+>       entry = _by_field(_listing(client, card_id), "summary")
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:175: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562A52990>
+entity_id = 'ec_6fb192820828'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+___________________ test_a04_duplicate_adopt_is_idempotent ____________________
+
+client = <starlette.testclient.TestClient object at 0x0000027562B63F50>
+db_conn = <sqlite3.Connection object at 0x000002756272E890>
+
+    def test_a04_duplicate_adopt_is_idempotent(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+>       entry = _by_field(_listing(client, card_id), "summary")
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:200: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562B63F50>
+entity_id = 'ec_15216f58bdc9'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+___________________ test_a04_archived_card_is_not_adoptable ___________________
+
+client = <starlette.testclient.TestClient object at 0x00000275623A7B90>
+db_conn = <sqlite3.Connection object at 0x000002756272FD30>
+
+    def test_a04_archived_card_is_not_adoptable(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+        assert service.revoke(card_id) is True
+        archived = service.get(card_id)
+        assert archived.state == "archived"
+    
+>       body = _listing(client, card_id)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:224: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x00000275623A7B90>
+entity_id = 'ec_88911d372d0f'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+________________ test_a04_dismiss_resolves_only_that_candidate ________________
+
+client = <starlette.testclient.TestClient object at 0x0000027562D4D710>
+db_conn = <sqlite3.Connection object at 0x000002756272DF30>
+
+    def test_a04_dismiss_resolves_only_that_candidate(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+>       body = _listing(client, card_id)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:250: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562D4D710>
+entity_id = 'ec_324ba74fdc3f'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+__________________ test_a04_duplicate_dismiss_is_idempotent ___________________
+
+client = <starlette.testclient.TestClient object at 0x0000027562E49C10>
+db_conn = <sqlite3.Connection object at 0x00000275616C3790>
+
+    def test_a04_duplicate_dismiss_is_idempotent(client: TestClient, db_conn):
+        card_id = _seed_card(db_conn)
+        service = EntityCardService(db_conn)
+>       entry = _by_field(_listing(client, card_id), "summary")
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:275: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562E49C10>
+entity_id = 'ec_c418dcad5230'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+________________ test_a04_listing_json_has_no_secret_material _________________
+
+client = <starlette.testclient.TestClient object at 0x0000027562F41450>
+db_conn = <sqlite3.Connection object at 0x0000027561BFF6A0>
+
+    def test_a04_listing_json_has_no_secret_material(client: TestClient, db_conn):
+        """候选清单属于用户可见输出：不得带出密钥原文（AGENTS.md 硬约束）。"""
+        card_id = _seed_card(db_conn)
+>       raw = json.dumps(_listing(client, card_id), ensure_ascii=False)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a04_candidates.py:298: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+client = <starlette.testclient.TestClient object at 0x0000027562F41450>
+entity_id = 'ec_aa8bdef25c46'
+
+    def _listing(client: TestClient, entity_id: str) -> dict:
+        resp = client.get(f"/api/entities/{entity_id}/candidates")
+>       assert resp.status_code == 200, (
+            f"候选读接口必须可用（基线是 404）：{resp.status_code} {resp.text[:200]}"
+        )
+E       AssertionError: 候选读接口必须可用（基线是 404）：404 {"detail":"Not Found"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_fu_verify_a04_candidates.py:91: AssertionError
+_________ test_a05_state_normal_reports_clean_and_persists_clean_exit _________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_state_normal_reports_0')
+
+    async def test_a05_state_normal_reports_clean_and_persists_clean_exit(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "normal")
+        order: list[str] = []
+        _shorten_shutdown(ctx)
+        _tap(ctx, order)
+        ctx.background.register("normal", _normal())
+    
+        report = await ctx.aclose()
+>       data = _report_dict(report)
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:191: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+______________ test_a05_state_normal_writes_nothing_after_close _______________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_state_normal_writes_n0')
+
+    async def test_a05_state_normal_writes_nothing_after_close(tmp_path):
+        """无关闭后写库：所有执行单元确认结束后，台账/库不再被触碰。"""
+        ctx, conn = _make_ctx(tmp_path, "normal-nw")
+        _shorten_shutdown(ctx)
+        ctx.background.register("normal", _normal())
+    
+        writes: list[str] = []
+        original_execute = conn.execute
+    
+        def _observe(sql, *args, **kwargs):  # noqa: ANN001, ANN202
+            head = str(sql).strip().split(" ", 1)[0].upper()
+            if head in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+                writes.append(str(sql))
+            return original_execute(sql, *args, **kwargs)
+    
+>       conn.execute = _observe  # type: ignore[method-assign]
+        ^^^^^^^^^^^^
+E       AttributeError: 'sqlite3.Connection' object attribute 'execute' is read-only
+
+tests\test_fu_verify_a05_close.py:218: AttributeError
+_________________ test_a05_state_cooperative_cancel_is_clean __________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_state_cooperative_can0')
+
+    async def test_a05_state_cooperative_cancel_is_clean(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "coop")
+        order: list[str] = []
+        _shorten_shutdown(ctx)
+        _tap(ctx, order)
+        ctx.background.register("coop", _cooperative())
+    
+        report = await ctx.aclose()
+>       data = _report_dict(report)
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:243: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+___________________ test_a05_state_delayed_cancel_is_clean ____________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_state_delayed_cancel_0')
+
+    async def test_a05_state_delayed_cancel_is_clean(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "delayed")
+        order: list[str] = []
+        _shorten_shutdown(ctx)
+        _tap(ctx, order)
+        ctx.background.register("delayed", _delayed())
+    
+        report = await ctx.aclose()
+>       data = _report_dict(report)
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:265: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.background:background.py:220 background: 关闭后仍有 1 个后台任务未确认结束：delayed
+WARNING  agent.services.app:app.py:795 background tasks did not finish before shutdown: ['delayed']
+___________ test_a05_state_stuck_after_cancel_is_not_reported_clean ___________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_state_stuck_after_can0')
+
+    async def test_a05_state_stuck_after_cancel_is_not_reported_clean(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "stuck")
+        order: list[str] = []
+        _shorten_shutdown(ctx)
+        _tap(ctx, order)
+        release = asyncio.Event()
+        handle = ctx.background.register("stuck", _stuck(release))
+    
+        report = await ctx.aclose()
+>       data = _report_dict(report)
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:288: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.background:background.py:220 background: 关闭后仍有 1 个后台任务未确认结束：stuck
+WARNING  agent.services.app:app.py:795 background tasks did not finish before shutdown: ['stuck']
+_____________ test_a05_delayed_cancel_gets_a_bounded_final_grace ______________
+
+    async def test_a05_delayed_cancel_gets_a_bounded_final_grace():
+        """两阶段有界：取消之后再给一个 `final_timeout` grace，仍不结束才如实报未完成。"""
+        registry = BackgroundTasks()
+        handle = registry.register("delayed", _delayed())
+    
+>       report = await registry.shutdown(0.01, cancel_timeout=0.01, final_timeout=0.8)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: BackgroundTasks.shutdown() got an unexpected keyword argument 'final_timeout'
+
+tests\test_fu_verify_a05_close.py:335: TypeError
+_______________________ test_a05_shutdown_is_idempotent _______________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_shutdown_is_idempoten0')
+
+    async def test_a05_shutdown_is_idempotent(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "idem")
+        _shorten_shutdown(ctx)
+        ctx.background.register("normal", _normal())
+    
+        first = await ctx.aclose()
+        second = await ctx.aclose()
+    
+>       assert _report_dict(first)["clean"] is True
+               ^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:358: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+_________ test_a05_clean_close_lets_next_instance_recover_queued_rows _________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_clean_close_lets_next0')
+
+    async def test_a05_clean_close_lets_next_instance_recover_queued_rows(tmp_path):
+        ctx, conn = _make_ctx(tmp_path, "recover")
+        _shorten_shutdown(ctx)
+        ctx.turn_journal.accepted(turn_id="turn_left", message="上次没跑完的消息")
+    
+        report = await ctx.aclose()
+>       assert _report_dict(report)["clean"] is True
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:374: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+_______ test_a05_unclean_close_leaves_rows_for_ownership_based_recovery _______
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_unclean_close_leaves_0')
+
+    async def test_a05_unclean_close_leaves_rows_for_ownership_based_recovery(tmp_path):
+        """不 clean 时不写干净退出标记；记录仍然靠「心跳 + pid」判据恢复，不会丢。"""
+        ctx, conn = _make_ctx(tmp_path, "unclean-recover")
+        _shorten_shutdown(ctx)
+        release = asyncio.Event()
+        handle = ctx.background.register("stuck", _stuck(release))
+        ctx.turn_journal.accepted(turn_id="turn_stuck", message="被卡住的那条消息")
+    
+        report = await ctx.aclose()
+>       assert _report_dict(report)["clean"] is False
+               ^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a05_close.py:397: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+report = None
+
+    def _report_dict(report) -> dict:  # noqa: ANN001
+>       assert report is not None, "aclose() 必须返回关闭报告（基线返回 None）"
+E       AssertionError: aclose() 必须返回关闭报告（基线返回 None）
+E       assert None is not None
+
+tests\test_fu_verify_a05_close.py:168: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.background:background.py:220 background: 关闭后仍有 1 个后台任务未确认结束：stuck
+WARNING  agent.services.app:app.py:795 background tasks did not finish before shutdown: ['stuck']
+____________ test_a05_lifespan_keeps_db_open_when_close_is_unclean ____________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a05_lifespan_keeps_db_ope0')
+
+    def test_a05_lifespan_keeps_db_open_when_close_is_unclean(tmp_path):
+        conn = connect(tmp_path / "unclean.db")
+        apply_migrations(conn)
+        app = create_app(Settings(data_dir=tmp_path), conn, close_db_on_shutdown=True)
+    
+        with TestClient(app) as client:
+            release = _register_stuck_via_portal(client)
+    
+        release.set()
+    
+        try:
+            conn.execute("SELECT 1").fetchone()
+            still_open = True
+        except sqlite3.ProgrammingError:
+            still_open = False
+>       assert still_open, (
+            "不 clean 的关闭不得关数据库：残留后台协程会打到已关的连接上"
+            "（进程随退出走，下次启动按归属恢复）"
+        )
+E       AssertionError: 不 clean 的关闭不得关数据库：残留后台协程会打到已关的连接上（进程随退出走，下次启动按归属恢复）
+E       assert False
+
+tests\test_fu_verify_a05_close.py:455: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  agent.services.background:background.py:220 background: 关闭后仍有 1 个后台任务未确认结束：stuck
+WARNING  agent.services.app:app.py:795 background tasks did not finish before shutdown: ['stuck']
+____________ test_a06_owning_ledger_wins_over_later_global_default ____________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a06_owning_ledger_wins_ov0')
+
+    async def test_a06_owning_ledger_wins_over_later_global_default(tmp_path):
+        """先建 A（额度 0）再建 B（额度 100）：A 的适配器必须绑到 A。"""
+        ctx_a, conn_a = _make_ctx(tmp_path, "a", 0.0)
+        ctx_b, conn_b = _make_ctx(tmp_path, "b", 100.0)
+        try:
+            from agent.credentials.usage import default_accounting_store, request_accounting
+    
+            # 场景前提：全局默认**已经**被后建的 B 覆盖（这正是缺陷的触发条件）
+            assert default_accounting_store() is ctx_b.credentials
+    
+            adapter = await _adapter_of(ctx_a)
+            binding = request_accounting(adapter)
+    
+            assert binding is not None, "真实 adapter 必须能归因到某个账本"
+>           assert binding.store is ctx_a.credentials, (
+                "A 的适配器必须显式绑定 A 自己的账本，不能被后建的全局默认库接管"
+            )
+E           AssertionError: A 的适配器必须显式绑定 A 自己的账本，不能被后建的全局默认库接管
+E           assert <agent.credentials.store.CredentialStore object at 0x00000275641A6590> is <agent.credentials.store.CredentialStore object at 0x0000027562F54690>
+E            +  where <agent.credentials.store.CredentialStore object at 0x00000275641A6590> = RequestAccounting(store=<agent.credentials.store.CredentialStore object at 0x00000275641A6590>, key_id='key-shared', enforce_budget=True, requests=0, recorded=0, incomplete=0, _notes=[]).store
+E            +  and   <agent.credentials.store.CredentialStore object at 0x0000027562F54690> = <agent.services.app.AppContext object at 0x0000027562457D90>.credentials
+
+tests\test_fu_verify_a06_accounting.py:116: AssertionError
+_____________ test_a06_first_direct_call_is_blocked_by_own_budget _____________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a06_first_direct_call_is_0')
+
+    async def test_a06_first_direct_call_is_blocked_by_own_budget(tmp_path):
+        """A=0 / B=100：A 的适配器首次直接调用必须被**自己的**预算挡下。"""
+        ctx_a, conn_a = _make_ctx(tmp_path, "a", 0.0)
+        ctx_b, conn_b = _make_ctx(tmp_path, "b", 100.0)
+        try:
+            from agent.credentials.usage import ensure_adapter_request_allowed
+    
+            adapter = await _adapter_of(ctx_a)
+    
+>           with pytest.raises(BudgetExhausted):
+E           Failed: DID NOT RAISE BudgetExhausted
+
+tests\test_fu_verify_a06_accounting.py:137: Failed
+_______________ test_a06_swapped_budgets_do_not_block_own_call ________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a06_swapped_budgets_do_no0')
+
+    async def test_a06_swapped_budgets_do_not_block_own_call(tmp_path):
+        """额度对调（A=100 / B=0）：归属正确时 A 的调用**不得**被 B 的 0 余额挡住。"""
+        ctx_a, conn_a = _make_ctx(tmp_path, "a", 100.0)
+        ctx_b, conn_b = _make_ctx(tmp_path, "b", 0.0)
+        try:
+            from agent.credentials.usage import ensure_adapter_request_allowed
+    
+            adapter = await _adapter_of(ctx_a)
+    
+            # 归属正确 → 核对的是 A 的 100（够用）；归属错到 B → 会被 B 的 0 挡住
+>           remaining = ensure_adapter_request_allowed(adapter)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_fu_verify_a06_accounting.py:157: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\agent\credentials\usage.py:255: in ensure_adapter_request_allowed
+    return ensure_budget_available(binding.store, binding.key_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <agent.credentials.store.CredentialStore object at 0x00000275642FC710>
+key_id = 'key-shared'
+
+    def ensure_budget_available(store: Any, key_id: str) -> float | None:
+        """实际请求前核对累计用量；已耗尽抛 :class:`BudgetExhausted`。
+    
+        返回剩余额度（``None`` 表示没有上限）。主循环、子任务、维护、后台提炼与
+        内部重试共用这一处判断，不各自实现一套。
+        """
+        left = remaining_budget(store, key_id)
+        if left is not None and left <= 0:
+>           raise BudgetExhausted(key_id, left)
+E           agent.credentials.policy.BudgetExhausted: 凭据 key-shared 的用量上限已耗尽（剩余 0）
+
+src\agent\credentials\policy.py:85: BudgetExhausted
+___________ test_a06_usage_is_written_to_owning_ledger_exactly_once ___________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-1866/test_a06_usage_is_written_to_o0')
+
+    async def test_a06_usage_is_written_to_owning_ledger_exactly_once(tmp_path):
+        """用量核对与写入必须用**同一个账本**：只进 A，且只进一次。"""
+        ctx_a, conn_a = _make_ctx(tmp_path, "a", 1000.0)
+        ctx_b, conn_b = _make_ctx(tmp_path, "b", 1000.0)
+        try:
+            from agent.credentials.usage import account_adapter_request
+    
+            adapter = await _adapter_of(ctx_a)
+            usage = SimpleNamespace(input_tokens=7, output_tokens=3)
+    
+            receipt = account_adapter_request(adapter, usage)
+            assert receipt is not None and receipt.recorded is True
+    
+>           assert _budget_used(conn_a) == 10.0, "实际调用必须记在它自己的账本上"
+E           AssertionError: 实际调用必须记在它自己的账本上
+E           assert 0.0 == 10.0
+E            +  where 0.0 = _budget_used(<sqlite3.Connection object at 0x00000275643356C0>)
+
+tests\test_fu_verify_a06_accounting.py:180: AssertionError
+_____________ test_state03_version_29_without_objects_is_repaired _____________
+
+fresh_db = <sqlite3.Connection object at 0x00000275642BB010>
+
+    def test_state03_version_29_without_objects_is_repaired(fresh_db):
+        """这是本轮要修的主场景：基线在这里静默放过，后端起不来。"""
+        conn = fresh_db
+        _build_through(conn, 25)
+        _simulate_sibling_branches(conn, through=28)
+        _seed_user_data(conn)
+        # 关键一步：版本号被推到 29，但 29 的对象一个都没有（兄弟分支占用 29 号段的形状）
+        _record_version(conn, HIGHEST_BASELINE_VERSION)
+    
+        assert current_version(conn) == HIGHEST_BASELINE_VERSION
+        before = _missing_objects(conn)
+        assert "table:instances" in before, "场景构造：instances 必须确实缺失"
+    
+        apply_migrations(conn)
+    
+>       assert _missing_objects(conn) == [], f"版本已到 29 但对象缺失的库必须被补偿：缺 {before}"
+E       AssertionError: 版本已到 29 但对象缺失的库必须被补偿：缺 ['table:instances', 'table:record_owners', 'column:turn_journal.owner_instance_id', 'column:derived_tasks.owner_instance_id', 'column:derived_tasks.claim_generation', 'column:pending_approvals.owner_instance_id', 'column:entity_cards.revision', 'column:entity_cards.field_meta', 'column:knowledge.chain_id', 'column:knowledge.version', 'index:idx_instances_heartbeat', 'index:idx_record_owners_instance', 'index:idx_turn_journal_owner', 'index:idx_knowledge_chain']
+E       assert ['table:insta...ance_id', ...] == []
+E         
+E         Left contains 14 more items, first extra item: 'table:instances'
+E         Use -v to get more diff
+
+tests\test_fu_verify_b01_migration.py:299: AssertionError
+___________ test_state03_compensation_is_repeatable_and_idempotent ____________
+
+fresh_db = <sqlite3.Connection object at 0x00000275642BA2F0>
+
+    def test_state03_compensation_is_repeatable_and_idempotent(fresh_db):
+        """补偿迁移必须可重复执行：第二次调用不再改结构、不再动数据。"""
+        conn = fresh_db
+        _build_through(conn, 25)
+        _simulate_sibling_branches(conn, through=28)
+        _seed_user_data(conn)
+        _record_version(conn, HIGHEST_BASELINE_VERSION)
+    
+        apply_migrations(conn)
+        version_after_first = current_version(conn)
+        schema_after_first = sorted(_tables(conn))
+    
+        apply_migrations(conn)
+        apply_migrations(conn)
+    
+        assert current_version(conn) == version_after_first, "重复执行不得反复推进版本"
+        assert sorted(_tables(conn)) == schema_after_first, "重复执行不得反复改结构"
+>       assert _missing_objects(conn) == []
+E       AssertionError: assert ['table:insta...ance_id', ...] == []
+E         
+E         Left contains 14 more items, first extra item: 'table:instances'
+E         Use -v to get more diff
+
+tests\test_fu_verify_b01_migration.py:321: AssertionError
+_____________ test_posix_low_pids_are_probed_not_short_circuited ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000027564333950>
+
+    def test_posix_low_pids_are_probed_not_short_circuited(monkeypatch):
+        """POSIX 上 1/2/3/4 必须真的去探测（基线一行不探就返回 None）。"""
+        seen: list[tuple[int, int]] = []
+    
+        def kill(pid: int, sig: int):  # noqa: ANN202
+            seen.append((pid, sig))
+            raise ProcessLookupError(3, "No such process")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+        for pid in (1, 2, 3, 4):
+>           assert _default_pid_alive(pid) is False, f"POSIX PID {pid} 不存在时必须返回 False"
+E           AssertionError: POSIX PID 1 不存在时必须返回 False
+E           assert None is False
+E            +  where None = _default_pid_alive(1)
+
+tests\test_fu_verify_b02_pid.py:74: AssertionError
+___________________ test_posix_low_pid_exists_returns_true ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000275641A5650>
+
+    def test_posix_low_pid_exists_returns_true(monkeypatch):
+        """信号 0 正常返回 = 进程存在（PID 1 也一样）。"""
+    
+        def kill(pid: int, sig: int):  # noqa: ANN202
+            return None
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+        for pid in (1, 2, 3, 4):
+>           assert _default_pid_alive(pid) is True, f"POSIX PID {pid} 存在时必须返回 True"
+E           AssertionError: POSIX PID 1 存在时必须返回 True
+E           assert None is True
+E            +  where None = _default_pid_alive(1)
+
+tests\test_fu_verify_b02_pid.py:89: AssertionError
+_______________ test_posix_low_pid_permission_error_means_alive _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000275643450D0>
+
+    def test_posix_low_pid_permission_error_means_alive(monkeypatch):
+        """权限不足说明进程存在（别人家的 init / 系统进程）→ True，不是 unknown。"""
+    
+        def kill(pid: int, sig: int):  # noqa: ANN202
+            raise PermissionError(1, "Operation not permitted")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+>       assert _default_pid_alive(1) is True, "PID 1 权限不足 → 进程在"
+E       AssertionError: PID 1 权限不足 → 进程在
+E       assert None is True
+E        +  where None = _default_pid_alive(1)
+
+tests\test_fu_verify_b02_pid.py:100: AssertionError
+__________________ test_posix_low_pid_matrix_is_explicit[1] ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000275642FCD10>
+pid = 1
+
+    @pytest.mark.parametrize("pid", [1, 2, 3, 4])
+    def test_posix_low_pid_matrix_is_explicit(monkeypatch, pid):
+        """把 1/2/3/4 逐个参数化，失败时能直接看出是哪一个 PID 没被探测。"""
+        seen: list[int] = []
+    
+        def kill(value: int, sig: int):  # noqa: ANN202
+            seen.append(value)
+            raise ProcessLookupError(3, "No such process")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+>       assert _default_pid_alive(pid) is False
+E       assert None is False
+E        +  where None = _default_pid_alive(1)
+
+tests\test_fu_verify_b02_pid.py:214: AssertionError
+__________________ test_posix_low_pid_matrix_is_explicit[2] ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000027564331ED0>
+pid = 2
+
+    @pytest.mark.parametrize("pid", [1, 2, 3, 4])
+    def test_posix_low_pid_matrix_is_explicit(monkeypatch, pid):
+        """把 1/2/3/4 逐个参数化，失败时能直接看出是哪一个 PID 没被探测。"""
+        seen: list[int] = []
+    
+        def kill(value: int, sig: int):  # noqa: ANN202
+            seen.append(value)
+            raise ProcessLookupError(3, "No such process")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+>       assert _default_pid_alive(pid) is False
+E       assert None is False
+E        +  where None = _default_pid_alive(2)
+
+tests\test_fu_verify_b02_pid.py:214: AssertionError
+__________________ test_posix_low_pid_matrix_is_explicit[3] ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000027564720710>
+pid = 3
+
+    @pytest.mark.parametrize("pid", [1, 2, 3, 4])
+    def test_posix_low_pid_matrix_is_explicit(monkeypatch, pid):
+        """把 1/2/3/4 逐个参数化，失败时能直接看出是哪一个 PID 没被探测。"""
+        seen: list[int] = []
+    
+        def kill(value: int, sig: int):  # noqa: ANN202
+            seen.append(value)
+            raise ProcessLookupError(3, "No such process")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+>       assert _default_pid_alive(pid) is False
+E       assert None is False
+E        +  where None = _default_pid_alive(3)
+
+tests\test_fu_verify_b02_pid.py:214: AssertionError
+__________________ test_posix_low_pid_matrix_is_explicit[4] ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000275641BAA50>
+pid = 4
+
+    @pytest.mark.parametrize("pid", [1, 2, 3, 4])
+    def test_posix_low_pid_matrix_is_explicit(monkeypatch, pid):
+        """把 1/2/3/4 逐个参数化，失败时能直接看出是哪一个 PID 没被探测。"""
+        seen: list[int] = []
+    
+        def kill(value: int, sig: int):  # noqa: ANN202
+            seen.append(value)
+            raise ProcessLookupError(3, "No such process")
+    
+        monkeypatch.setattr(ir, "os", _posix(kill))
+    
+>       assert _default_pid_alive(pid) is False
+E       assert None is False
+E        +  where None = _default_pid_alive(4)
+
+tests\test_fu_verify_b02_pid.py:214: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-fu-v\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_legacy_unowned_rows_become_visible
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_legacy_row_survives_restart_and_is_still_operable
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_continue_yields_exactly_one_effective_execution
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_continue_gives_new_turn_an_owner_that_is_traceable
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_concurrent_continue_produces_one_successor
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_second_continue_click_conflicts
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_notify_rows_never_enter_the_inbox
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_legacy_running_derived_task_is_listed_and_requeueable
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_derived_requeue_conflicts_after_state_change
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_orphan_claim_gets_a_repair_entry
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_repair_then_continue_restores_the_message
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_repair_refuses_already_resent_record
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_concurrent_continue_after_repair_has_one_successor
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_ignore_keeps_the_message_and_creates_no_successor
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a03_continue_with_wrong_expected_class_conflicts
+FAILED tests/test_fu_verify_a01_a03_recovery.py::test_a01_listing_truncation_is_honest
+FAILED tests/test_fu_verify_a02_provenance.py::test_a02_legacy_manual_values_are_not_overwritten
+FAILED tests/test_fu_verify_a02_provenance.py::test_a02_conflicts_are_registered_as_candidates
+FAILED tests/test_fu_verify_a02_provenance.py::test_a02_gaps_still_get_filled
+FAILED tests/test_fu_verify_a02_provenance.py::test_a02_real_upgrade_path_protects_manual_values
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_cross_card_listing_lists_candidates
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_listing_exposes_the_fields_the_ui_needs
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_adopt_writes_value_and_marks_user_source
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_adopt_with_stale_revision_conflicts_and_changes_nothing
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_duplicate_adopt_is_idempotent
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_archived_card_is_not_adoptable
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_dismiss_resolves_only_that_candidate
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_duplicate_dismiss_is_idempotent
+FAILED tests/test_fu_verify_a04_candidates.py::test_a04_listing_json_has_no_secret_material
+FAILED tests/test_fu_verify_a05_close.py::test_a05_state_normal_reports_clean_and_persists_clean_exit
+FAILED tests/test_fu_verify_a05_close.py::test_a05_state_normal_writes_nothing_after_close
+FAILED tests/test_fu_verify_a05_close.py::test_a05_state_cooperative_cancel_is_clean
+FAILED tests/test_fu_verify_a05_close.py::test_a05_state_delayed_cancel_is_clean
+FAILED tests/test_fu_verify_a05_close.py::test_a05_state_stuck_after_cancel_is_not_reported_clean
+FAILED tests/test_fu_verify_a05_close.py::test_a05_delayed_cancel_gets_a_bounded_final_grace
+FAILED tests/test_fu_verify_a05_close.py::test_a05_shutdown_is_idempotent - A...
+FAILED tests/test_fu_verify_a05_close.py::test_a05_clean_close_lets_next_instance_recover_queued_rows
+FAILED tests/test_fu_verify_a05_close.py::test_a05_unclean_close_leaves_rows_for_ownership_based_recovery
+FAILED tests/test_fu_verify_a05_close.py::test_a05_lifespan_keeps_db_open_when_close_is_unclean
+FAILED tests/test_fu_verify_a06_accounting.py::test_a06_owning_ledger_wins_over_later_global_default
+FAILED tests/test_fu_verify_a06_accounting.py::test_a06_first_direct_call_is_blocked_by_own_budget
+FAILED tests/test_fu_verify_a06_accounting.py::test_a06_swapped_budgets_do_not_block_own_call
+FAILED tests/test_fu_verify_a06_accounting.py::test_a06_usage_is_written_to_owning_ledger_exactly_once
+FAILED tests/test_fu_verify_b01_migration.py::test_state03_version_29_without_objects_is_repaired
+FAILED tests/test_fu_verify_b01_migration.py::test_state03_compensation_is_repeatable_and_idempotent
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pids_are_probed_not_short_circuited
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_exists_returns_true
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_permission_error_means_alive
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_matrix_is_explicit[1]
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_matrix_is_explicit[2]
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_matrix_is_explicit[3]
+FAILED tests/test_fu_verify_b02_pid.py::test_posix_low_pid_matrix_is_explicit[4]
+
+[fu-verify] exit code = 1

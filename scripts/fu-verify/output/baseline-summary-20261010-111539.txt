@@ -1,0 +1,9 @@
+﻿label      = baseline
+stamp      = 20261010-111539
+worktree   = D:\qio-dev\qio-fu-v
+
+backend    exit=1  D:\qio-dev\qio-fu-v\scripts\fu-verify\output\baseline-backend-20261010-111539.txt
+repro      exit=0  D:\qio-dev\qio-fu-v\scripts\fu-verify\output\baseline-repro-20261010-111539.txt
+frontend   exit=1  D:\qio-dev\qio-fu-v\scripts\fu-verify\output\baseline-frontend-20261010-111539.txt
+
+（baseline 预期为红：那就是「原缺陷仍在」的原始证据）

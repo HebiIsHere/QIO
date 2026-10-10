@@ -1,0 +1,306 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-fu-v/frontend
+
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts (8 tests | 8 failed) 18ms
+     × store 暴露收件箱状态与加载动作，并从 /api/recovery/records 拉取 9ms
+     × 专用请求失败时如实报错，不静默吞、也不假装清空 1ms
+     × continueRecovery 成功后**就地**更新本地状态（不靠刷新） 1ms
+     × continueRecovery 收到 409 时给出可读原因，并保留这条记录 1ms
+     × 修复 / 忽略 / 放回队列各自打到冻结的端点 1ms
+     × 唯一恢复入口把 /api/runtime/state 的 orphaned_turns 并入同一清单（专用请求失败也看得见） 3ms
+     × 旧快照不得复活已经处理过的记录 1ms
+     × 交付物存在性：services/recoveryApi.ts 与 components/RecoveryInbox.vue 1ms
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts (6 tests | 6 failed) 80ms
+     × 候选存在时渲染「待处理候选（n）」区块，且候选值默认收起 34ms
+     × 展开后能看到当前值 / 候选值 / 一句话原因，并有「采纳」「丢弃」按钮 22ms
+     × 采纳遇到 409 时就地提示「已被改动」，且候选仍在列表里（不假装成功） 7ms
+     × 采纳保存失败（500）不假装成功：候选还在，且给出失败原因 7ms
+     × 归档卡上的候选不可采纳，并说明「该实体已归档」 6ms
+     × 交付物存在性：services/entityCandidatesApi.ts 2ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯ Failed Tests 14 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 候选存在时渲染「待处理候选（n）」区块，且候选值默认收起
+AssertionError: expected '<div data-v-2939c0a7="" class="epanel…' to contain '待处理候选'
+
+- Expected
++ Received
+
+- 待处理候选
++ <div data-v-2939c0a7="" class="epanel">
++   <div data-v-2939c0a7="" class="e-detail qio-card">
++     <div data-v-2939c0a7="" class="e-detail-head"><button data-v-2939c0a7="" class="qio-btn mini quiet" type="button"
+>← 返回</button><span data-v-2939c0a7="" class="e-title serif">我家的鹅</span><span data-v-2939c0a7="" class="qio-state ok">生
+效中</span><span data-v-2939c0a7="" class="spacer"></span><!-- 阅读态只在明处放一个动作；修正与归档是次要的，点开才进入 --><button data-v-2939c0a7=""
+ class="qio-btn mini e-edit-open" type="button">修正</button><button data-v-2939c0a7="" class="qio-btn mini quiet e-revok
+e" type="button">归档</button></div><!-- 阅读态：摘要与字段组是主体，没有输入框 -->
++     <p data-v-2939c0a7="" class="e-read-summary">用户写下的摘要</p>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">别名</span>
++       <div data-v-2939c0a7="" class="chips"><span data-v-2939c0a7="" class="qio-tag">大白</span>
++         <!--v-if-->
++       </div>
++     </div>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">属性</span>
++       <div data-v-2939c0a7="" class="attr-table">
++         <div data-v-2939c0a7="" class="attr-row"><span data-v-2939c0a7="" class="grow">年龄 = 2 岁</span><span data-v-29
+39c0a7="" class="mono conf">0.90</span></div>
++         <!--v-if-->
++       </div>
++     </div>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">关系</span>
++       <div data-v-2939c0a7="" class="rel-list">
++         <p data-v-2939c0a7="" class="hint">暂无关系。</p>
++       </div>
++     </div><!-- 归档：就地确认，说明影响（实体卡归档后不再参与回答） -->
++     <!--v-if-->
++     <!--v-if-->
++     <!--v-if-->
++   </div>
++ </div>
+
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:153:28
+    151|     await flushPromises();
+    152|
+    153|     expect(wrapper.html()).toContain("待处理候选");
+       |                            ^
+    154|     expect(wrapper.html()).toMatch(/待处理候选\s*[（(]\s*1\s*[）)]/);
+    155|     expect(wrapper.html()).not.toContain("自动提炼的摘要");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/14]⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 展开后能看到当前值 / 候选值 / 一句话原因，并有「采纳
+」「丢弃」按钮
+AssertionError: expected '<div data-v-2939c0a7="" class="epanel…' to contain '自动提炼的摘要'
+
+- Expected
++ Received
+
+- 自动提炼的摘要
++ <div data-v-2939c0a7="" class="epanel">
++   <div data-v-2939c0a7="" class="e-detail qio-card">
++     <div data-v-2939c0a7="" class="e-detail-head"><button data-v-2939c0a7="" class="qio-btn mini quiet" type="button"
+>← 返回</button><span data-v-2939c0a7="" class="e-title serif">我家的鹅</span><span data-v-2939c0a7="" class="qio-state ok">生
+效中</span><span data-v-2939c0a7="" class="spacer"></span><!-- 阅读态只在明处放一个动作；修正与归档是次要的，点开才进入 --><button data-v-2939c0a7=""
+ class="qio-btn mini e-edit-open" type="button">修正</button><button data-v-2939c0a7="" class="qio-btn mini quiet e-revok
+e" type="button">归档</button></div><!-- 阅读态：摘要与字段组是主体，没有输入框 -->
++     <p data-v-2939c0a7="" class="e-read-summary">用户写下的摘要</p>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">别名</span>
++       <div data-v-2939c0a7="" class="chips"><span data-v-2939c0a7="" class="qio-tag">大白</span>
++         <!--v-if-->
++       </div>
++     </div>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">属性</span>
++       <div data-v-2939c0a7="" class="attr-table">
++         <div data-v-2939c0a7="" class="attr-row"><span data-v-2939c0a7="" class="grow">年龄 = 2 岁</span><span data-v-29
+39c0a7="" class="mono conf">0.90</span></div>
++         <!--v-if-->
++       </div>
++     </div>
++     <div data-v-2939c0a7="" class="field"><span data-v-2939c0a7="" class="label">关系</span>
++       <div data-v-2939c0a7="" class="rel-list">
++         <p data-v-2939c0a7="" class="hint">暂无关系。</p>
++       </div>
++     </div><!-- 归档：就地确认，说明影响（实体卡归档后不再参与回答） -->
++     <!--v-if-->
++     <!--v-if-->
++     <!--v-if-->
++   </div>
++ </div>
+
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:170:18
+    168|
+    169|     const html = wrapper.html();
+    170|     expect(html).toContain("自动提炼的摘要");
+       |                  ^
+    171|     expect(html).toContain("用户写下的摘要");
+    172|     expect(html).not.toContain("user_value");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/14]⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 采纳遇到 409 时就地提示「已被改动」，且候选仍在列表里
+（不假装成功）
+AssertionError: 必须有「采纳」按钮: expected 0 to be greater than 0
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:194:39
+    192|
+    193|     const adopt = buttonsWithText(wrapper, "采纳");
+    194|     expect(adopt.length, "必须有「采纳」按钮").toBeGreaterThan(0);
+       |                                       ^
+    195|     await adopt[0].trigger("click");
+    196|     await flushPromises();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/14]⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 采纳保存失败（500）不假装成功：候选还在，且给出失败原因
+AssertionError: expected 0 to be greater than 0
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:219:26
+    217|
+    218|     const adopt = buttonsWithText(wrapper, "采纳");
+    219|     expect(adopt.length).toBeGreaterThan(0);
+       |                          ^
+    220|     await adopt[0].trigger("click");
+    221|     await flushPromises();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/14]⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 归档卡上的候选不可采纳，并说明「该实体已归档」
+AssertionError: 归档卡上仍应显示采纳按钮（但不可用）: expected 0 to be greater than 0
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:250:48
+    248|
+    249|     const adopt = buttonsWithText(wrapper, "采纳");
+    250|     expect(adopt.length, "归档卡上仍应显示采纳按钮（但不可用）").toBeGreaterThan(0);
+       |                                                ^
+    251|     for (const node of adopt) {
+    252|       const disabled =
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/14]⎯
+
+ FAIL  src/components/planet/__tests__/fu-v-a04-candidates.spec.ts > A04 前端：实体候选的用户管理入口 > 交付物存在性：services/entityCandida
+tesApi.ts
+AssertionError: services/entityCandidatesApi.ts 必须存在（D:\qio-dev\qio-fu-v\frontend\src\services\entityCandidatesApi.ts）:
+ expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/components/planet/__tests__/fu-v-a04-candidates.spec.ts:260:85
+    258|   it("交付物存在性：services/entityCandidatesApi.ts", () => {
+    259|     const apiPath = resolve(process.cwd(), "src/services/entityCandida…
+    260|     expect(existsSync(apiPath), `services/entityCandidatesApi.ts 必须存在（…
+       |                                                                                     ^
+    261|       true,
+    262|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > store 暴露收件箱状态与加载动作，并从 /api/recovery/re
+cords 拉取
+AssertionError: store 必须暴露 recoveryRecords: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:201:80
+    199|     installFetch(defaultHandler());
+    200|
+    201|     expect(Array.isArray(store.recoveryRecords), "store 必须暴露 recoveryR…
+       |                                                                                ^
+    202|     expect(typeof store.recoveryLoading, "store 必须暴露 recoveryLoading")…
+    203|     expect(typeof store.loadRecoveryInbox, "store 必须暴露 loadRecoveryInb…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > 专用请求失败时如实报错，不静默吞、也不假装清空
+TypeError: store.loadRecoveryInbox is not a function
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:218:17
+    216|     installFetch(defaultHandler({ recoveryStatus: 500 }));
+    217|
+    218|     await store.loadRecoveryInbox().catch(() => undefined);
+       |                 ^
+    219|     await flushPromises();
+    220|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > continueRecovery 成功后**就地**更新本地状态（不靠刷新）
+TypeError: store.loadRecoveryInbox is not a function
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:233:17
+    231|     });
+    232|
+    233|     await store.loadRecoveryInbox();
+       |                 ^
+    234|     await flushPromises();
+    235|     expect(store.recoveryRecords.length).toBe(1);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > continueRecovery 收到 409 时给出可读原因，并保留这条记
+录
+TypeError: store.loadRecoveryInbox is not a function
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:255:17
+    253|     });
+    254|
+    255|     await store.loadRecoveryInbox();
+       |                 ^
+    256|     await flushPromises();
+    257|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > 修复 / 忽略 / 放回队列各自打到冻结的端点
+TypeError: store.loadRecoveryInbox is not a function
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:291:17
+    289|     });
+    290|
+    291|     await store.loadRecoveryInbox();
+       |                 ^
+    292|     await flushPromises();
+    293|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > 唯一恢复入口把 /api/runtime/state 的 orphaned_
+turns 并入同一清单（专用请求失败也看得见）
+TypeError: Cannot read properties of undefined (reading 'map')
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:327:29
+    325|
+    326|     expect(
+    327|       store.recoveryRecords.map((r) => r.record_id),
+       |                             ^
+    328|       "专用请求失败时也必须能看见 orphaned_turns",
+    329|     ).toContain("turn_orphan_9");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > 旧快照不得复活已经处理过的记录
+TypeError: Cannot read properties of undefined (reading 'map')
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:350:34
+    348|     await restoreRuntimeState("resync");
+    349|     await flushPromises();
+    350|     expect(store.recoveryRecords.map((r) => r.record_id)).toContain("t…
+       |                                  ^
+    351|
+    352|     installFetch((url) => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/14]⎯
+
+ FAIL  src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts > A01/A03 前端：恢复收件箱 > 交付物存在性：services/recoveryApi.ts 与 compo
+nents/RecoveryInbox.vue
+AssertionError: services/recoveryApi.ts 必须存在（D:\qio-dev\qio-fu-v\frontend\src\services\recoveryApi.ts）: expected false 
+to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/stores/__tests__/fu-v-a01-recovery-inbox.spec.ts:386:77
+    384|     // 的证据（只剩收集错误）。
+    385|     const apiPath = resolve(process.cwd(), "src/services/recoveryApi.t…
+    386|     expect(existsSync(apiPath), `services/recoveryApi.ts 必须存在（${apiPat…
+       |                                                                             ^
+    387|
+    388|     const source = readFileSync(apiPath, "utf8");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/14]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  14 failed (14)
+   Start at  11:16:30
+   Duration  2.57s (transform 442ms, setup 29ms, import 789ms, tests 98ms, environment 3.68s)
+
+
+[fu-verify] exit code = 1
