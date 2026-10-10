@@ -400,6 +400,13 @@ describe("[R4 对照] 另外三条路径各自的断言", () => {
     expect(store.draftConflictFor(CARD_ID), "旧记录与服务器稿两份都要保留，等用户选择").not.toBeNull();
     expect(store.draftRemovalStateFor(CARD_KEY).status, "不许为旧记录登记整份清除").toBe("idle");
 
+    // 可操作的说明与两个选择入口必须在真实卡片上可见可点（两份候选都保留）
+    const wrapper = mountCard();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-im="card-draft-conflict"]').exists(), "必须给出可操作说明").toBe(true);
+    expect(wrapper.find('[data-im="card-draft-keep-local"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="card-draft-keep-server"]').exists()).toBe(true);
+
     await store.flushDrafts();
     await flushPromises();
     expect(server.drafts[CARD_KEY], "未决冲突期间按服务器事实回写，服务器稿不许被删").toBe(SERVER);
