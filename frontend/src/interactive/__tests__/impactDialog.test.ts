@@ -23,7 +23,7 @@ function mountDialog(): { store: ReturnType<typeof useInteractiveStore>; wrapper
   vi.spyOn(store, "cancelImpact").mockImplementation(async () => {
     store.pendingImpact = null;
   });
-  vi.spyOn(store, "confirmImpact").mockResolvedValue(undefined);
+  vi.spyOn(store, "confirmImpact").mockResolvedValue({ outcome: "saved", paused: [] });
   store.pendingImpact = {
     previewRev: 0,
     stateVersion: 0,
@@ -36,7 +36,7 @@ function mountDialog(): { store: ReturnType<typeof useInteractiveStore>; wrapper
       },
     ],
   };
-  wrapper = mount(ImpactConfirmDialog, { attachTo: document.body });
+  wrapper = mount(ImpactConfirmDialog, { attachTo: document.body, global: { stubs: { Teleport: true } } });
   return { store, wrapper };
 }
 
@@ -111,10 +111,22 @@ describe("影响确认框", () => {
   it("继续按钮 = 改动生效并暂停相关任务（走 store.confirmImpact）", async () => {
     const { store, wrapper: w } = mountDialog();
     const spy = vi.mocked(store.confirmImpact);
+    /**
+     * 本轮（N2）后 store.confirmImpact 返回**真实结果** ImpactConfirmResult（不再是 void），
+     * 且真实 store 在确认时会清掉 pendingImpact（改动已进入保存）。
+     * 界面只在返回 saved 时才说「已保存生效」，真实结果放在结果面板里（Teleport）。
+     */
+    spy.mockImplementation(async () => {
+      store.pendingImpact = null;
+      return { outcome: "saved", paused: [] };
+    });
     await w.find('[data-im="impact-continue"]').trigger("click");
     expect(spy).toHaveBeenCalledTimes(1);
     await w.vm.$nextTick();
-    expect(w.text()).toContain("已确认");
+    const panel = w.find('[data-im="impact-outcome"]');
+    expect(panel.exists()).toBe(true);
+    expect(panel.attributes("data-outcome")).toBe("saved");
+    expect(panel.text()).toContain("改动已保存生效");
   });
 
   it("关闭后焦点回到触发点", async () => {
