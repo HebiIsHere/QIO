@@ -1737,6 +1737,8 @@ def impact_check(
         return {"ok": False, "reason": f"影响预判失败：{exc}"}
 
     running = [item for item in affected if item["status"] == "running"]
+    running_ids = [item["intentId"] for item in running]
+    paused_ids = [item["intentId"] for item in affected if item["status"] == "paused"]
     if affected and running:
         names = "、".join(item["title"] for item in running[:3])
         summary = (
@@ -1759,6 +1761,11 @@ def impact_check(
             "stateVersion": int(loaded["seq"]),
             "signature": state_semantic_signature(state),
             "taskIds": [item["intentId"] for item in affected],
+            # R6：把「需要用户确认的运行中任务」与「只报告、不重复暂停的已暂停任务」
+            # 分开记录。保存前按**真实影响**重核这一份范围，而不是比整个任务列表或总数：
+            # 已暂停任务再怎么变也不会被当成新的运行任务反复阻断保存。
+            "runningTaskIds": running_ids,
+            "pausedTaskIds": paused_ids,
             "createdAt": _now(),
         }
     return {
@@ -1793,10 +1800,100 @@ def impact_gate(conn: sqlite3.Connection, *, board_id: str, state: dict) -> dict
     return {"affectedTasks": affected, "runningIds": running_ids}
 
 
+def _newly_running_ids(entry: dict, affected: list[dict]) -> list[str]:
+    """这次保存真正会**新暂停**、但预判时没有说明过的运行中任务（R6）。
+
+    - 只比「运行中被影响的任务集合」：既不比整个任务列表，也不比总数量——
+      无关任务的新增 / 结束、已暂停任务的增减都不该造成无意义的重复确认；
+    - 已暂停任务不在这个集合里：它只会被报告、不会被重复暂停，
+      所以不该被当成新的运行任务反复阻断保存。
+    """
+    recorded = {str(x) for x in entry.get("runningTaskIds") or []}
+    current = [item for item in affected if item.get("status") == "running"]
+    return [str(item["intentId"]) for item in current if str(item["intentId"]) not in recorded]
+
+
+def confirmation_scope_error(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    check_id: str,
+    candidate_signature: str,
+    state: dict,
+) -> dict | None:
+    """确认校验（M4 + R6）：通过返回 None；否则返回失败详情（保存不得落库）。
+
+    返回 dict 的形状（保存接口原样放进 409 的 detail，前端据此展示「为什么要重新说明」）：
+
+    - reason：人能读懂的原因；
+    - scopeChanged：这次是不是因为**真实受影响范围变了**才拒绝；
+    - affectedTasks：当前的**全量**受影响任务（含 status，供前端重新说明）。
+
+    判定依据是真实影响：在保存前用**待保存的候选状态**重算一次受影响任务，
+    再与预判时记录的「需要用户确认的运行中任务」比对；已经暂停的任务与无关任务
+    的变化都不会被当成新增的运行任务。
+    """
+    entry = _CONFIRM_CHECKS.get(str(check_id))
+    if entry is None:
+        return {
+            "reason": "没有找到对应的影响确认记录（可能已过期，或服务重新启动过）：请重新预判并确认。",
+            "scopeChanged": False,
+        }
+    if entry.get("boardId") != board_id:
+        return {"reason": "这份影响确认记录属于另一个板面：请重新预判并确认。", "scopeChanged": False}
+    try:
+        current_seq = _board_store().load_board(conn, board_id)["seq"]
+    except Exception as exc:  # noqa: BLE001
+        return {"reason": f"读取板面失败：{exc}", "scopeChanged": False}
+    if entry.get("stateVersion") != current_seq:
+        _CONFIRM_CHECKS.pop(str(check_id), None)
+        return {
+            "reason": (
+                f"确认之后板面又保存过（现在是版本 {current_seq}）：这份确认已经过期，"
+                "请重新预判并确认。"
+            ),
+            "scopeChanged": False,
+        }
+    if entry.get("signature") != candidate_signature:
+        return {
+            "reason": (
+                "待保存的内容已经不是预判时确认的范围（等待期间又改了别的内容）："
+                "请重新预判并确认，确认不会顺带放行没有说明的改动。"
+            ),
+            "scopeChanged": False,
+        }
+
+    # --- R6：保存前按真实影响重核当前受影响任务及其运行 / 暂停状态 ---------
+    try:
+        affected = _affected_materials_for_state(conn, board_id=board_id, state=state)
+    except Exception as exc:  # noqa: BLE001 - 判不出来就不能放行
+        return {"reason": f"保存前重新核对受影响任务失败：{exc}", "scopeChanged": False}
+    fresh = _newly_running_ids(entry, affected)
+    if not fresh:
+        return None
+    titles = {str(item["intentId"]): str(item.get("title") or "") for item in affected}
+    names = "、".join(f"「{titles.get(item) or item}」" for item in fresh[:3])
+    more = f"等 {len(fresh)} 项" if len(fresh) > 3 else ""
+    return {
+        "reason": (
+            f"这次预判当时没有列出 {names}{more}：等待期间它们已经变成执行中的任务，"
+            "并且依赖这次要改动的材料，保存会让它们也暂停——这属于预判时没有说明的新影响。"
+            "这次改动还没有保存，任务也都没有被暂停。请重新做一次影响预判，"
+            "看清楚完整范围后再确认。"
+        ),
+        "scopeChanged": True,
+        "affectedTasks": affected,
+    }
+
+
 def validate_save_confirmation(
     conn: sqlite3.Connection, *, board_id: str, check_id: str, candidate_signature: str
 ) -> str | None:
-    """确认校验（M4）：通过返回 None；否则返回失败原因（保存不得落库）。"""
+    """确认校验（M4）：通过返回 None；否则返回失败原因（保存不得落库）。
+
+    只做「记录是否存在 + 板面版本 + 候选签名」这三项；需要按真实影响重核范围、
+    并拿到 scopeChanged / affectedTasks 的调用方（保存接口）用 confirmation_scope_error。
+    """
     entry = _CONFIRM_CHECKS.get(str(check_id))
     if entry is None:
         return "没有找到对应的影响确认记录（可能已过期，或服务重新启动过）：请重新预判并确认。"
@@ -2258,6 +2355,7 @@ __all__ = [
     "ADVANCE_OUTCOMES",
     "BATCH_MIN",
     "check_for_submission",
+    "confirmation_scope_error",
     "impact_check",
     "impact_gate",
     "state_semantic_signature",

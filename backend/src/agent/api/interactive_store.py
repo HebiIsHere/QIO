@@ -162,24 +162,49 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
     from agent.interactive import intents as intents_module  # 延迟 import
 
     candidate_signature = intents_module.state_semantic_signature(state)
-    gate = intents_module.impact_gate(conn, board_id=bid, state=state)
+    # 服务端自己按**真实影响**算一次当前受影响任务：既用于无确认时的门，
+    # 也用于带确认时重新核对范围（R6）。
+    affected_now = intents_module.preview_material_impact(
+        conn, board_id=bid, state=state
+    )["affected"]
+    running_ids = [
+        item["intentId"] for item in affected_now if item.get("status") == "running"
+    ]
 
     if check_id:
-        failure = intents_module.validate_save_confirmation(
-            conn, board_id=bid, check_id=check_id, candidate_signature=candidate_signature
+        # R6/R5：除了「记录存在 + 板面版本 + 候选签名」，保存前还要按真实影响重核范围——
+        # 等待期间新出现的运行中受影响任务，旧 checkId 不得放行（不落库、不暂停、不推进快照）。
+        failure = intents_module.confirmation_scope_error(
+            conn,
+            board_id=bid,
+            check_id=check_id,
+            candidate_signature=candidate_signature,
+            state=state,
         )
-        claimed = confirm.get("stateVersion")
-        if failure is None and claimed is not None:
-            # 确认协议里的 stateVersion（如前端提供）必须与影响预判绑定的版本一致
-            entry_version = intents_module.confirm_binding_version(check_id)
-            if entry_version is not None and int(claimed) != int(entry_version):
-                failure = "确认时给出的版本与当时影响预判绑定的版本不一致：请重新预判并确认。"
+        if failure is None:
+            claimed = confirm.get("stateVersion")
+            if claimed is not None:
+                # 确认协议里的 stateVersion（如前端提供）必须与影响预判绑定的版本一致
+                entry_version = intents_module.confirm_binding_version(check_id)
+                if entry_version is not None and int(claimed) != int(entry_version):
+                    failure = {
+                        "reason": "确认时给出的版本与当时影响预判绑定的版本不一致：请重新预判并确认。",
+                        "scopeChanged": False,
+                    }
         if failure is not None:
+            scope_changed = bool(failure.get("scopeChanged"))
             raise HTTPException(
                 status_code=409,
-                detail={"error": "stale_check", "reason": failure, "affectedTasks": gate["affectedTasks"]},
+                detail={
+                    # 保留既有形状：error 仍是 stale_check；范围变化时 scopeChanged=true，
+                    # affectedTasks 始终是**当前的**全量受影响任务，前端据此重新说明。
+                    "error": "stale_check",
+                    "reason": failure["reason"],
+                    "scopeChanged": scope_changed,
+                    "affectedTasks": failure.get("affectedTasks") or affected_now,
+                },
             )
-    elif gate["runningIds"]:
+    elif running_ids:
         # 服务端门：这次保存会改变执行中任务依赖的材料，但没有对应的影响确认记录
         raise HTTPException(
             status_code=409,
@@ -189,7 +214,7 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
                     "这次保存会修改执行中任务依赖的材料：需要先做影响预判并确认后才会生效；"
                     "取消则这次改动不生效、任务继续。"
                 ),
-                "affectedTasks": gate["affectedTasks"],
+                "affectedTasks": affected_now,
             },
         )
 
