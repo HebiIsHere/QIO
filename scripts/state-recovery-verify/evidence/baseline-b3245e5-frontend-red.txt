@@ -1,28 +1,28 @@
 ﻿
  RUN  v4.1.10 D:/qio-dev/qio-src-d/frontend
 
- ❯ src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts (1 test | 1 failed) 20ms
-     × 重试不许把另一页面后来写下的新稿当成「那份旧记录」删掉 18ms
- ❯ src/acceptance-state-recovery/n2-reconfirm-result.test.ts (1 test | 1 failed) 108ms
-     × 补取新说明后仍是「等待确认」，界面不得出现「已确认 / 已保存 / 已暂停」 104ms
- ❯ src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts (1 test | 1 failed) 33ms
-     × 被拒后必须读取最新事实、按最新版本重新确认并保存，且不覆盖另一页面的独立改动 31ms
- ❯ src/acceptance-state-recovery/n1-superseded-check.test.ts (1 test | 1 failed) 32ms
-     × 被第二版取代的第一版检查迟到后，不得再发出第一版候选 30ms
- ❯ src/acceptance-state-recovery/n5-submit-move-checked.test.ts (1 test | 1 failed) 28ms
-     × 服务端清掉的勾选要生效、本地移动要保留，且不许把旧勾选写回或自动再提交 26ms
- ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests | 1 failed) 34ms
-     × 取消的正文不许留下、不许被写回；等待期间的独立移动必须保留 28ms
-     ✓ 恢复回读失败：如实显示真实原因、保留可处理状态，不宣称撤回成功 4ms
- ❯ src/acceptance-state-recovery/n3-pending-revert-decision.test.ts (3 tests | 3 failed) 86ms
-     × 「继续」必须真的发出带 decisionIds 的撤回执行请求 64ms
-     × 「取消」只结束提示：不执行撤回，并且真的能关掉提示 13ms
-     × Escape 与「取消」同义：关掉提示、不执行撤回 8ms
- ❯ src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts (4 tests | 3 failed) 184ms
-     × 网址（地址 + 标题）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 121ms
-     × 代码（语言）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 24ms
-     × 文件（名称）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 26ms
-     ✓ 兼容旧的「仅正文」记录：正文恢复，附加字段沿用卡片原值 11ms
+ ❯ src/acceptance-state-recovery/n5-submit-move-checked.test.ts (1 test | 1 failed) 14ms
+     × 服务端清掉的勾选要生效、本地移动要保留，且不许把旧勾选写回或自动再提交 13ms
+ ❯ src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts (1 test | 1 failed) 15ms
+     × 被拒后必须读取最新事实、按最新版本重新确认并保存，且不覆盖另一页面的独立改动 13ms
+ ❯ src/acceptance-state-recovery/n3-pending-revert-decision.test.ts (3 tests | 3 failed) 96ms
+     × 「继续」必须真的发出带 decisionIds 的撤回执行请求 53ms
+     × 「取消」只结束提示：不执行撤回，并且真的能关掉提示 15ms
+     × Escape 与「取消」同义：关掉提示、不执行撤回 26ms
+ ❯ src/acceptance-state-recovery/n2-reconfirm-result.test.ts (1 test | 1 failed) 77ms
+     × 补取新说明后仍是「等待确认」，界面不得出现「已确认 / 已保存 / 已暂停」 75ms
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests | 2 failed) 29ms
+     × 取消的正文不许留下、不许被写回；等待期间的独立移动必须保留 17ms
+     × 回读失败：本地撤回仍生效、如实说明撤回未被服务器确认、可重试（新口径） 11ms
+ ❯ src/acceptance-state-recovery/n1-superseded-check.test.ts (1 test | 1 failed) 24ms
+     × 被第二版取代的第一版检查迟到后，不得再发出第一版候选 21ms
+ ❯ src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts (1 test | 1 failed) 26ms
+     × 重试不许把另一页面后来写下的新稿当成「那份旧记录」删掉 25ms
+ ❯ src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts (4 tests | 3 failed) 204ms
+     × 网址（地址 + 标题）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 108ms
+     × 代码（语言）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 55ms
+     × 文件（名称）：未完成输入在关闭重开后完整恢复，且不自动形成正式改动 30ms
+     ✓ 兼容旧的「仅正文」记录：正文恢复，附加字段沿用卡片原值 10ms
 node.exe : 
 At line:1 char:1
 + & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
@@ -30,7 +30,7 @@ At line:1 char:1
     + CategoryInfo          : NotSpecified: (:String) [], RemoteException
     + FullyQualifiedErrorId : NativeCommandError
  
-⎯⎯⎯⎯⎯⎯ Failed Tests 12 ⎯⎯⎯⎯⎯⎯⎯
+⎯⎯⎯⎯⎯⎯ Failed Tests 13 ⎯⎯⎯⎯⎯⎯⎯
 
  FAIL  src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts > F1 取消恢复等待期间的独立操作 > 取消的正文不许留下、不许被写
 回；等待期间的独立移动必须保留
@@ -47,7 +47,24 @@ Received: "被取消掉的新正文"
     114|     // 正确行为 B：等待期间的独立移动保留
     115|     expect(store.board!.cards.find((c) => c.id === "c2")!.x, "等待期间的独立移…
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/13]⎯
+
+ FAIL  src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts > F1 取消恢复等待期间的独立操作 > 回读失败：本地撤回仍生效、如
+实说明撤回未被服务器确认、可重试（新口径）
+AssertionError: 回读失败又把被取消的正文放回了板面（F1 根因）: expected '被取消掉的新正文' to be '服务器原文' // Object.is equality
+
+Expected: "服务器原文"
+Received: "被取消掉的新正文"
+
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts:165:7
+    163|       store.board!.cards.find((c) => c.id === "c1")!.content,
+    164|       "回读失败又把被取消的正文放回了板面（F1 根因）",
+    165|     ).toBe(SERVER_TEXT);
+       |       ^
+    166|     // 正确行为 B：不假装撤回成功 —— 如实说明「还没被服务器确认」，并给出重试入口
+    167|     expect(store.pendingImpact).toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/13]⎯
 
  FAIL  src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts > F2 旧格式本机记录的删除重试 > 重试不许把另一页面后来写下的新稿当成「那份旧
 记录」删掉
@@ -68,7 +85,7 @@ undefined
     125|     expect(after?.kind).not.toBe("cleared");
     126|     // 服务器那份用户选择保留的稿子不许被动
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/13]⎯
 
  FAIL  src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts > F3 跨页面保存使确认过期 > 被拒后必须读取最新事实、按最新版本重新确认并保存，且
 不覆盖另一页面的独立改动
@@ -88,7 +105,7 @@ AssertionError: 重新确认仍然用旧 seq 预判（不能只把 seq 改大，
     130|     expect(
     131|       finalPut.cards.find((c) => c.id === "c1")!.content,
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/13]⎯
 
  FAIL  src/acceptance-state-recovery/n1-superseded-check.test.ts > N1 保存前检查乱序 > 被第二版取代的第一版检查迟到后，不得再发出第一版候选
 AssertionError: 被第二版取代的第一版检查迟到后仍然发出了旧候选（N1）: expected [ '第二版', '第一版' ] to deeply equal [ '第二版' ]
@@ -109,7 +126,7 @@ AssertionError: 被第二版取代的第一版检查迟到后仍然发出了旧�
     107|   });
     108| });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/13]⎯
 
  FAIL  src/acceptance-state-recovery/n2-reconfirm-result.test.ts > N2 重新确认仍待确认时，不许显示成功事实 > 补取新说明后仍是「等待确认」，界面不得出现「已确认 / 
 已保存 / 已暂停」
@@ -129,7 +146,7 @@ AssertionError: 确认返回后界面宣称「已确认 / 已保存 / 已暂停�
     102|     expect(wrapper.find('[data-im="impact-dialog"]').exists()).toBe(tr…
     103|   });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/13]⎯
 
  FAIL  src/acceptance-state-recovery/n3-pending-revert-decision.test.ts > N3 剩余撤回弹窗 > 「继续」必须真的发出带 decisionIds 的撤回执行请求
 AssertionError: 「继续」没有发出任何撤回执行请求（N3）: expected 0 to be greater than 0
@@ -141,7 +158,7 @@ AssertionError: 「继续」没有发出任何撤回执行请求（N3）: expect
     103|     const call = calls.find((c) => c.url.includes("/intents/i9/"))!;
     104|     expect(call, "撤回执行请求没有指向这条任务").toBeTruthy();
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/13]⎯
 
  FAIL  src/acceptance-state-recovery/n3-pending-revert-decision.test.ts > N3 剩余撤回弹窗 > 「取消」只结束提示：不执行撤回，并且真的能关掉提示
 AssertionError: 「取消」关不掉提示（N3）: expected true to be false // Object.is equality
@@ -160,7 +177,7 @@ AssertionError: 「取消」关不掉提示（N3）: expected true to be false /
     124|   });
     125|
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/13]⎯
 
  FAIL  src/acceptance-state-recovery/n3-pending-revert-decision.test.ts > N3 剩余撤回弹窗 > Escape 与「取消」同义：关掉提示、不执行撤回
 AssertionError: Escape 关不掉提示（N3）: expected true to be false // Object.is equality
@@ -179,11 +196,12 @@ AssertionError: Escape 关不掉提示（N3）: expected true to be false // Obj
     137|   });
     138| });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/13]⎯
 
  FAIL  src/acceptance-state-recovery/n5-submit-move-checked.test.ts > N5 提交成功时的独立移动与勾选清理 > 服务端清掉的勾选要生效、本地移动要保留，且不许把旧勾选写
 回或自动再提交
 AssertionError: 提交真实清掉的勾选没有生效：本页仍带着旧勾选（N5）: expected true to be false // Object.is equality
+
 
 - Expected
 + Received
@@ -192,6 +210,11 @@ AssertionError: 提交真实清掉的勾选没有生效：本页仍带着旧勾�
 + true
 
  ❯ src/acceptance-state-recovery/n5-submit-move-checked.test.ts:111:54
+ Test Files  8 failed (8)
+      Tests  13 failed | 1 passed (14)
+   Start at  15:50:30
+   Duration  5.92s (transform 2.15s, setup 143ms, import 4.09s, tests 485ms, environment 34.75s)
+
     109|     const c2 = store.board!.cards.find((c) => c.id === "c2")!;
     110|     // 正确行为 A：这次提交真实清掉的勾选要生效（不能因为本地有未保存移动就整块拒绝服务器事实）
     111|     expect(c1.checked, "提交真实清掉的勾选没有生效：本页仍带着旧勾选（N5）").toBe(false);
@@ -199,7 +222,7 @@ AssertionError: 提交真实清掉的勾选没有生效：本页仍带着旧勾�
     112|     // 正确行为 B：等待期间的独立移动必须保留
     113|     expect(c1.x, "提交期间的独立移动被丢弃").toBe(MOVED_X);
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/13]⎯
 
  FAIL  src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 网址（地址 + 标题）：未完成输入在关闭重开后完整恢复，且不自
 动形成正式改动
@@ -217,7 +240,7 @@ Received: "https://旧.example"
     173|       }
     174|     });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/13]⎯
 
  FAIL  src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 代码（语言）：未完成输入在关闭重开后完整恢复，且不自动形成正式
 改动
@@ -234,7 +257,7 @@ Received: "typescript"
     173|       }
     174|     });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/12]⎯
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/13]⎯
 
  FAIL  src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 文件（名称）：未完成输入在关闭重开后完整恢复，且不自动形成正式
 改动
@@ -251,11 +274,5 @@ Received: "旧文件名.pdf"
     173|       }
     174|     });
 
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/12]⎯
-
-
- Test Files  8 failed (8)
-      Tests  12 failed | 2 passed (14)
-   Start at  15:41:36
-   Duration  4.84s (transform 1.90s, setup 287ms, import 4.88s, tests 525ms, environment 28.07s)
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/13]⎯
 

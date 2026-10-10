@@ -133,11 +133,22 @@ describe("F1 取消恢复等待期间的独立操作", () => {
     expect(store.dirty).toBe(false);
   });
 
-  it("恢复回读失败：如实显示真实原因、保留可处理状态，不宣称撤回成功", async () => {
+  /**
+   * F1 口径更新（本轮第八轮，Lead 在集成分支明确变更，理由随实现落盘）：
+   * 取消**先同步**把板面退回「上一次与服务器一致」的事实，回读只负责把撤回落到服务器事实上确认。
+   * 因此回读失败**不再**把被取消的正文恢复成 dirty 候选（那正是 F1 的根因：后续独立操作会从
+   * 尚未恢复的板面复制），改为：本地撤回仍然生效 + cancelRecovery 说明「撤回还没被服务器确认」
+   * + retryCancelRecovery() 重试入口。R1 的本质要求（不假装撤回成功、原因可见、可处理）仍然满足。
+   *
+   * 基线（旧口径）在这里失败，属于本轮**有意变更的既有口径**：基线把回读失败说成 saveStatus=error
+   * 并把被取消的正文放回板面。
+   */
+  it("回读失败：本地撤回仍生效、如实说明撤回未被服务器确认、可重试（新口径）", async () => {
     const store = useInteractiveStore();
     await store.load();
 
     store.commit(state(3, [card("c1", CANCELLED_TEXT), card("c2", "第二张")]), "改正文");
+    store.setDraft("card:c1", "取消前的编辑候选");
     await store.saveNow();
     expect(store.pendingImpact).not.toBeNull();
 
@@ -147,9 +158,24 @@ describe("F1 取消恢复等待期间的独立操作", () => {
     await store.cancelImpact();
     await flushPromises();
 
-    // 正确行为：不假装撤回成功 —— 状态是失败、原因可见、候选仍按「未保存」保留可重试
-    expect(store.saveStatus).toBe("error");
-    expect(String(store.saveError ?? "")).toContain("503");
-    expect(store.dirty).toBe(true);
+    // 正确行为 A：本地撤回立刻生效 —— 被取消的正文不许回到板面上
+    expect(
+      store.board!.cards.find((c) => c.id === "c1")!.content,
+      "回读失败又把被取消的正文放回了板面（F1 根因）",
+    ).toBe(SERVER_TEXT);
+    // 正确行为 B：不假装撤回成功 —— 如实说明「还没被服务器确认」，并给出重试入口
+    expect(store.pendingImpact).toBeNull();
+    const recovery = store.cancelRecovery;
+    expect(recovery?.active, "回读失败却宣称撤回已确认").toBe(true);
+    expect(String(recovery?.reason ?? ""), "回读失败没有留下真实原因").toContain("503");
+    // 正确行为 C：编辑草稿与恢复来源不因取消而丢
+    expect(store.drafts["card:c1"]).toBe("取消前的编辑候选");
+
+    // 正确行为 D：重试入口能取到最新事实、把撤回确认下来（不永久卡住）
+    expect(typeof store.retryCancelRecovery, "缺少「撤回未被确认」的重试入口（本轮新口径要求）").toBe("function");
+    vi.mocked(api.fetchBoardState).mockResolvedValue(serverBoard());
+    const retried = await store.retryCancelRecovery();
+    expect(retried.ok, "重试入口没有取到最新事实").toBe(true);
+    expect(store.cancelRecovery?.active).toBe(false);
   });
 });
