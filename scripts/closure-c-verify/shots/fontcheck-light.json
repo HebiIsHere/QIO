@@ -1,0 +1,107 @@
+{
+  "app": "http://127.0.0.1:5421",
+  "theme": "light",
+  "faceCount": 202,
+  "faceSummary": {
+    "Noto Serif SC/400/unloaded": 93,
+    "Noto Serif SC/400/loaded": 8,
+    "Noto Serif SC/600/unloaded": 96,
+    "Noto Serif SC/600/loaded": 5
+  },
+  "checks": {
+    "serif": true,
+    "sans": true,
+    "mono": true,
+    "titleFamily": "\"Noto Serif SC\", \"Source Han Serif SC\", \"Noto Serif CJK SC\", \"Songti SC\", STSong, Georgia, \"Times New Roman\", serif",
+    "titleText": "互动板面"
+  },
+  "fontResponseSummary": {
+    "200 noto-serif-sc-116-600-normal": 1,
+    "200 noto-serif-sc-118-600-normal": 1,
+    "200 noto-serif-sc-115-600-normal": 1,
+    "200 noto-serif-sc-114-400-normal": 1,
+    "200 noto-serif-sc-latin-400-norm": 1,
+    "200 noto-serif-sc-117-400-normal": 1,
+    "200 noto-serif-sc-118-400-normal": 1,
+    "200 noto-serif-sc-116-400-normal": 1,
+    "200 noto-serif-sc-112-400-normal": 1,
+    "200 noto-serif-sc-115-400-normal": 1,
+    "200 noto-serif-sc-111-400-normal": 1,
+    "200 noto-serif-sc-119-600-normal": 1,
+    "200 noto-serif-sc-latin-600-norm": 1
+  },
+  "platformFonts": {
+    "title": [
+      {
+        "familyName": "Noto Serif SC ExtraLight SemiBold",
+        "postScriptName": "NotoSerifSCExtraLight-SemiBold",
+        "isCustomFont": true,
+        "glyphCount": 4
+      }
+    ],
+    "scopeLine": [
+      {
+        "familyName": "Microsoft YaHei UI",
+        "postScriptName": "MicrosoftYaHeiUI",
+        "isCustomFont": false,
+        "glyphCount": 10
+      }
+    ]
+  },
+  "fontResponses": [
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-116-600-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-118-600-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-115-600-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-114-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-latin-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-117-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-118-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-116-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-112-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-115-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-111-400-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-119-600-normal.woff2"
+    },
+    {
+      "status": 200,
+      "url": "http://127.0.0.1:5421/@fs/D:/qio-dev/qio-wt-fixes/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-latin-600-normal.woff2"
+    }
+  ],
+  "httpFails": [],
+  "consoleErrors": []
+}

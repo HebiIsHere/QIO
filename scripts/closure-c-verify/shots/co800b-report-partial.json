@@ -1,0 +1,423 @@
+{
+  "label": "co800b",
+  "app": "http://127.0.0.1:5421",
+  "seeded": {
+    "cards": 6,
+    "groups": 2,
+    "links": 6
+  },
+  "createdAt": "2026-10-10T03:52:48.196Z",
+  "runs": [
+    {
+      "tag": "co800b-800x600-light-coexist",
+      "scene": "coexist",
+      "size": "800x600",
+      "theme": "light",
+      "shot": "D:\\qio-dev\\qio-cl-c\\scripts\\closure-c-verify\\shots\\co800b\\co800b-800x600-light-coexist.png",
+      "metrics": {
+        "viewport": [
+          800,
+          600
+        ],
+        "theme": "light",
+        "toolbar": {
+          "box": {
+            "x": 16,
+            "y": 513,
+            "w": 680,
+            "h": 80,
+            "right": 696,
+            "bottom": 592
+          },
+          "height": 80,
+          "rows": 2,
+          "rowTops": [
+            522,
+            549
+          ]
+        },
+        "submitLines": [
+          {
+            "sel": "actions",
+            "top": 554,
+            "bottom": 583
+          },
+          {
+            "sel": "visible-range",
+            "top": 556,
+            "bottom": 581
+          },
+          {
+            "sel": "submit-status",
+            "top": 556,
+            "bottom": 581
+          }
+        ],
+        "toolbarText": "＋添加 搜索 撤销 重做 操作说明 本次可见：材料 3 项 · 注释 2 条 未提交11 项改动 详情 提交给 QIO",
+        "toolbarSubmitBox": {
+          "x": 411,
+          "y": 554,
+          "w": 97,
+          "h": 29,
+          "right": 508,
+          "bottom": 583
+        },
+        "toolbarFailureBox": null,
+        "rects": {
+          "chat": {
+            "x": 364,
+            "y": 71,
+            "w": 420,
+            "h": 370,
+            "right": 784,
+            "bottom": 441
+          },
+          "batch": {
+            "x": 16,
+            "y": 99,
+            "w": 336,
+            "h": 301,
+            "right": 352,
+            "bottom": 400
+          },
+          "batchEntry": {
+            "x": 70,
+            "y": 60,
+            "w": 282,
+            "h": 32,
+            "right": 352,
+            "bottom": 91
+          },
+          "chatToggle": {
+            "x": 680,
+            "y": 449,
+            "w": 104,
+            "h": 39,
+            "right": 784,
+            "bottom": 488
+          },
+          "toolbar": {
+            "x": 16,
+            "y": 513,
+            "w": 680,
+            "h": 80,
+            "right": 696,
+            "bottom": 592
+          }
+        },
+        "overlap": {
+          "chatBatch": 0,
+          "chatToolbar": 0,
+          "chatToggleToolbar": 0,
+          "batchEntryToolbar": 0,
+          "chatBatchEntry": 0
+        },
+        "switchBar": null,
+        "clipped": [],
+        "deadButtons": [
+          {
+            "why": "covered",
+            "im": "toggle-ordered",
+            "text": "设为有序",
+            "by": "span.entry-count.mono",
+            "byParent": "button[batch-entry].entry.qio-glass"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "解除组",
+            "by": "span.entry-count.mono",
+            "byParent": "button[batch-entry].entry.qio-glass"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "把这一季度的材料按「…",
+            "by": "p.hint",
+            "byParent": "section[batch-list].panel"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "移出",
+            "by": "p.hint",
+            "byParent": "section[batch-list].panel"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "def summar…",
+            "by": "p.hint",
+            "byParent": "section[batch-list].panel"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "移出",
+            "by": "p.hint",
+            "byParent": "section[batch-list].panel"
+          },
+          {
+            "why": "offscreen",
+            "im": "toggle-ordered",
+            "text": "设为有序"
+          },
+          {
+            "why": "offscreen",
+            "im": null,
+            "text": "解除组"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "https://ex…",
+            "by": "p.scope-line",
+            "byParent": "div[chat-scope].panel-scope"
+          },
+          {
+            "why": "covered",
+            "im": null,
+            "text": "移出",
+            "by": "p.scope-line",
+            "byParent": "div[chat-scope].panel-scope"
+          },
+          {
+            "why": "offscreen",
+            "im": null,
+            "text": "移出"
+          },
+          {
+            "why": "covered",
+            "im": "batch-approve",
+            "text": "批量批准（0）",
+            "by": "p.content.code",
+            "byParent": "div.card-body"
+          },
+          {
+            "why": "covered",
+            "im": "batch-reject",
+            "text": "批量拒绝（0）",
+            "by": "p.content.code",
+            "byParent": "div.card-body"
+          },
+          {
+            "why": "covered",
+            "im": "batch-all",
+            "text": "全选",
+            "by": "p.content.code",
+            "byParent": "div.card-body"
+          },
+          {
+            "why": "covered",
+            "im": "batch-clear",
+            "text": "清空选择",
+            "by": "div.card-body",
+            "byParent": "article[card].card"
+          }
+        ],
+        "leafTextNodes": 115,
+        "verticalText": [],
+        "texts": {
+          "panelHint": {
+            "text": "Enter 发送 · Shift+Enter 换行 · 中文选字时不发送",
+            "box": {
+              "x": 377,
+              "y": 401,
+              "w": 305,
+              "h": 27,
+              "right": 682,
+              "bottom": 428
+            },
+            "color": "rgb(117, 115, 108)",
+            "fontSize": "11px",
+            "background": "rgb(255, 255, 255)",
+            "fontFamily": "\"Cascadia Mono\", Consolas, SFMono-Regular, ui-monospace, monospace"
+          },
+          "draftStatus": null,
+          "older": null,
+          "empty": {
+            "text": "还没有消息。这里发送的文字会进入当前 QIO 会话（与对话页是同一个会话）。",
+            "box": {
+              "x": 377,
+              "y": 206,
+              "w": 390,
+              "h": 47,
+              "right": 767,
+              "bottom": 253
+            },
+            "color": "rgb(117, 115, 108)",
+            "fontSize": "11px",
+            "background": "rgb(255, 255, 255)",
+            "fontFamily": "system-ui, -apple-system, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+          },
+          "scopeLine": {
+            "text": "文字发送不会提交板面",
+            "box": {
+              "x": 390,
+              "y": 146,
+              "w": 368,
+              "h": 17,
+              "right": 758,
+              "bottom": 162
+            },
+            "color": "rgb(117, 115, 108)",
+            "fontSize": "11px",
+            "background": "rgba(0, 0, 0, 0)",
+            "fontFamily": "system-ui, -apple-system, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+          },
+          "submitStatus": {
+            "text": "未提交11 项改动",
+            "box": {
+              "x": 243,
+              "y": 556,
+              "w": 108,
+              "h": 25,
+              "right": 351,
+              "bottom": 581
+            },
+            "color": "rgb(48, 48, 45)",
+            "fontSize": "14.5px",
+            "background": "rgba(0, 0, 0, 0)",
+            "fontFamily": "system-ui, -apple-system, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+          },
+          "submitRange": {
+            "text": "本次可见：材料 3 项 · 注释 2 条",
+            "box": {
+              "x": 25,
+              "y": 556,
+              "w": 206,
+              "h": 25,
+              "right": 231,
+              "bottom": 581
+            },
+            "color": "rgb(48, 48, 45)",
+            "fontSize": "14.5px",
+            "background": "rgba(0, 0, 0, 0)",
+            "fontFamily": "system-ui, -apple-system, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+          },
+          "submitFailureReason": null,
+          "submitFailureRetention": null,
+          "saveStatus": {
+            "text": "已保存",
+            "box": {
+              "x": 535,
+              "y": 18,
+              "w": 52,
+              "h": 21,
+              "right": 586,
+              "bottom": 40
+            },
+            "color": "rgb(95, 94, 89)",
+            "fontSize": "12.5px",
+            "background": "rgba(0, 0, 0, 0)",
+            "fontFamily": "system-ui, -apple-system, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+          },
+          "impactError": null,
+          "loadError": null
+        },
+        "placeholder": {
+          "text": "和 QIO 说点什么…",
+          "box": {
+            "x": 377,
+            "y": 336,
+            "w": 329,
+            "h": 57,
+            "right": 706,
+            "bottom": 393
+          },
+          "color": "rgb(117, 115, 108)",
+          "fontSize": "14.5px"
+        },
+        "fonts": {
+          "serif": true,
+          "sans": true,
+          "mono": true
+        },
+        "contrast": {
+          "panelHint": {
+            "background": [
+              255,
+              255,
+              255
+            ],
+            "foregroundSample": [
+              117,
+              115,
+              108
+            ],
+            "ratio": 4.75,
+            "nominalFromComputed": null,
+            "css": {
+              "color": "rgb(117, 115, 108)",
+              "fontSize": "11px",
+              "background": "rgb(255, 255, 255)"
+            }
+          },
+          "empty": {
+            "background": [
+              255,
+              255,
+              255
+            ],
+            "foregroundSample": [
+              117,
+              115,
+              108
+            ],
+            "ratio": 4.75,
+            "nominalFromComputed": null,
+            "css": {
+              "color": "rgb(117, 115, 108)",
+              "fontSize": "11px",
+              "background": "rgb(255, 255, 255)"
+            }
+          },
+          "scopeLine": {
+            "background": [
+              255,
+              255,
+              255
+            ],
+            "foregroundSample": [
+              117,
+              115,
+              108
+            ],
+            "ratio": 4.75,
+            "nominalFromComputed": null,
+            "css": {
+              "color": "rgb(117, 115, 108)",
+              "fontSize": "11px",
+              "background": "rgba(0, 0, 0, 0)"
+            }
+          },
+          "saveStatus": {
+            "background": [
+              255,
+              255,
+              255
+            ],
+            "foregroundSample": [
+              95,
+              94,
+              89
+            ],
+            "ratio": 6.5,
+            "nominalFromComputed": null,
+            "css": {
+              "color": "rgb(95, 94, 89)",
+              "fontSize": "12.5px",
+              "background": "rgba(0, 0, 0, 0)"
+            }
+          }
+        },
+        "devTermsInVisibleText": []
+      }
+    }
+  ],
+  "httpFails": [],
+  "consoleErrors": [
+    "Uncaught (in promise)",
+    "Uncaught (in promise)"
+  ]
+}
