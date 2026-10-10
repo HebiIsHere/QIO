@@ -119,15 +119,24 @@ def _default_pid_alive(pid: int) -> bool | None:
 
     pid 不存在 → False；没有权限说明进程存在 → True；意外错误 → None。
     **判不出来就承认判不出来**：unknown 不改任何状态。
+
+    B02：**先分平台，再判特殊 PID**。以前是无条件 `pid <= 4 → None`，于是
+    POSIX 上 1 / 2 / 3 / 4（init、kthreadd、ksoftirqd、kworker —— 都是合法 PID）
+    永远判不出来：一个归属者在容器里恰好是 1 号进程时，「心跳过期 + pid 不存在」
+    这条判据永远退化成 unknown，它的记录也就永远无法被恢复。
+    只有 Windows 上 0/4 才是内核伪 pid，那条 `<= 4 → None` 只属于 Windows。
     """
     try:
         ivalue = int(pid)
     except (TypeError, ValueError):
         return None
-    if ivalue <= 4:
-        # 0/负数没有意义；Windows 上 0/4 是内核伪 pid，查询行为不可靠。
+    if ivalue <= 0:
+        # 0 / 负数在任何平台上都没有意义。
         return None
     if os.name == "nt":
+        if ivalue <= 4:
+            # Windows：0/4 是内核伪 pid，查询行为不可靠（且绝不能用 os.kill）。
+            return None
         try:
             return _windows_pid_alive(ivalue)
         except Exception:  # noqa: BLE001 - 探测失败一律 unknown

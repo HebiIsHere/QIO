@@ -585,6 +585,77 @@ def release(
     return applied
 
 
+def requeue_running(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_state: str,
+    expected_generation: int,
+    instance_id: str | None = None,
+) -> bool:
+    """A01：用户明确要求重排一条卡住的 running 派生任务（条件更新 + 代次递增）。
+
+    为什么需要用户入口：历史行可能是「升级前没有任何归属」，也可能是「归属者
+    已经确认退出但恢复循环还没轮到它」。两种情况都不会自己动（unknown 一律不改
+    状态），所以必须给用户一个明确的动作。
+
+    为什么安全：
+
+    * 与 `claim_due()` 同一把锁（`BEGIN IMMEDIATE`）+ 条件 UPDATE，两个并发请求
+      只有一个能改到行；
+    * `claim_generation + 1`：如果原来那个执行者其实还在跑，它回来写
+      complete/fail 时代次已经变了，迟到结果被丢弃（不会覆盖这次重排）；
+    * `attempts` / `last_error` **原样保留**（不重置失败历史，退避口径不变）；
+    * `owner_instance_id` 指向发起重排的实例（可追踪），`record_owners` 里的旧归属
+      清掉：这条任务回到 pending，不再「在谁手上」。
+
+    命中 0 行（状态 / 代次已经变化，或这条其实是完成态）→ 返回 False，一行不改。
+    """
+    state = str(expected_state or "")
+    if state in (STATE_COMPLETED, STATE_PENDING):
+        # 完成态不该被重排；pending 已经是目标状态（重复点击不做第二次变更）。
+        return False
+    owns = _has_ownership(conn)
+    owner = instance_id if instance_id is not None else _INSTANCE_ID
+    stamp = _iso(_now())
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if owns:
+            cursor = conn.execute(
+                "UPDATE derived_tasks SET state = ?, run_after = NULL, "
+                "claim_generation = claim_generation + 1, owner_instance_id = ?, updated_at = ? "
+                "WHERE id = ? AND state = ? AND claim_generation = ?",
+                (
+                    STATE_PENDING,
+                    owner,
+                    stamp,
+                    str(task_id),
+                    state,
+                    int(expected_generation),
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE derived_tasks SET state = ?, run_after = NULL, updated_at = ? "
+                "WHERE id = ? AND state = ?",
+                (STATE_PENDING, stamp, str(task_id), state),
+            )
+        changed = int(cursor.rowcount or 0) == 1
+        if changed:
+            _clear_ownership(conn, task_id)
+        conn.execute("COMMIT" if changed else "ROLLBACK")
+    except sqlite3.Error as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:  # pragma: no cover
+            pass
+        logger.warning("派生任务重排失败：%s", exc)
+        return False
+    if changed:
+        logger.info("派生任务由用户重排回队列：task=%s", task_id)
+    return changed
+
+
 def release_running(
     conn: sqlite3.Connection, *, instance_id: str | None = None, reason: str | None = None
 ) -> int:

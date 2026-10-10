@@ -33,6 +33,15 @@
 * **重发关联**：`claim_for_resend()` 单事务；`orphaned_claims()` / `repair_orphan()`
   处理「抢占了但后继没写成」的遗留，孤立即记录不得永久隐藏。
 
+补充修复轮（A01 / A03；收件箱实现见 `services/recovery.py`）：
+
+* **接管**：`take_over()` 用条件 UPDATE 把一条**无归属**（或归属者已确认退出）的
+  `queued` / `running` 历史行精确接管成 `interrupted`，命中 0 行（状态已变 /
+  有归属且不是确认退出）时一行都不改 —— 这是「升级前的历史消息」唯一的可操作入口；
+* **忽略是终态**：`dismiss()` 现在写成 `status = 'dismissed'`，与「抢占过但没有后继」
+  的孤儿从库里就分得开，既不会被收件箱当成孤儿重列，也不能被 `repair_orphan()`
+  复活成可重发。
+
 为什么队列里的消息会消失（缺陷）：排队中的 turn 只活在进程内存的
 `asyncio.Queue` 里，用户消息甚至还没写进 `messages` 表 —— 进程一退，
 它就没有任何痕迹。台账是这条消息唯一的落点。
@@ -61,6 +70,12 @@ CANCELLED = "cancelled"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"
 INTERRUPTED = "interrupted"
+# 用户明确「知道了」（忽略）之后的终态：原文保留、不再提示、不可重发、不可修复。
+# 为什么需要它是独立状态（A01/A03）：以前 dismiss 只写 recovered_at，于是
+# 「用户已忽略」和「抢占成功但没收尾的孤儿」在库里长得**一模一样**
+# （recovered_at 非空 + recovered_by 空），收件箱会把用户刚忽略的记录当成孤儿
+# 再列出来，repair_orphan 甚至能把它复活成可重发。
+DISMISSED = "dismissed"
 
 TERMINAL_STATUSES = (COMPLETED, CANCELLED, FAILED, UNAVAILABLE)
 # 进程结束时会「没走到终态」的状态：重启后一律变成 interrupted
@@ -93,7 +108,11 @@ REASON_TEXT = {
     "queued_at_restart": "这条消息当时还在排队，进程退出后没有开始执行",
     "running_at_restart": "这条消息执行到一半，进程退出后没有完成",
     "shutdown": "应用关闭时这条消息还没有执行",
+    "user_confirmed_takeover": "你确认接管了这条当时没有归属的消息",
 }
+
+# 用户明确接管一条历史记录时写进 reason 的标记（契约 §2.1 冻结字面量）。
+TAKEOVER_REASON = "user_confirmed_takeover"
 
 
 def _now() -> str:
@@ -460,7 +479,12 @@ class TurnJournal:
 
         只作用于「孤儿」这一种精确状态：`interrupted` + 用户行 + `recovered_at`
         非空 + `recovered_by` 空。已经真正重发过的行（`recovered_by` 非空）不动 ——
-        否则就会出现「一条消息被重发两次」。修复本身记下归属，便于后续审计。
+        否则就会出现「一条消息被重发两次」。
+
+        修复后的记录**不归任何实例**：归属表里那一行会被清掉（修复前的归属是
+        「抢占的人」，它已经失败了）。这一点很关键：如果修复后把归属记到当前实例
+        名下，这条记录就会因为「主人还活着」而重新从恢复入口消失 —— 刚修好的东西
+        又看不见了。`instance_id` 只用于日志审计（保留参数以兼容既有调用方）。
         """
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -471,8 +495,8 @@ class TurnJournal:
                 (_now(), str(record_id), *_USER_INTERRUPTED_PARAMS),
             )
             changed = int(cur.rowcount or 0) == 1
-            if changed and instance_id and self.registry is not None:
-                self.registry.claim(RECORD_TURN, str(record_id), instance_id)
+            if changed:
+                self._release_owner(str(record_id))
             self.conn.execute("COMMIT" if changed else "ROLLBACK")
         except sqlite3.Error as exc:
             try:
@@ -481,7 +505,104 @@ class TurnJournal:
                 pass
             logger.warning("turn journal repair_orphan failed: %s", exc)
             return False
+        if changed:
+            logger.info(
+                "turn journal orphan repaired: record=%s by=%s", record_id, instance_id
+            )
         return changed
+
+    def _release_owner(self, record_id: str) -> None:
+        """清掉一条记录在归属表里的登记（它不再属于任何实例）。"""
+        if self.registry is not None:
+            try:
+                self.registry.release(RECORD_TURN, record_id)
+                return
+            except Exception:  # noqa: BLE001 - 归属清理失败不撤销已经落库的修复
+                logger.warning("turn journal owner release failed", exc_info=True)
+        try:
+            self.conn.execute(
+                "DELETE FROM record_owners WHERE record_type = ? AND record_id = ?",
+                (RECORD_TURN, record_id),
+            )
+        except sqlite3.Error:
+            logger.warning("turn journal owner release mirror failed", exc_info=True)
+
+    def take_over(self, record_id: str, *, expected_status: str, instance_id: str | None = None,
+                  dead_owner: str | None = None) -> bool:
+        """把一条**开放状态**（queued / running）的历史记录接管成本实例的 interrupted。
+
+        A01 的关键动作：升级前的历史行没有任何归属，`interrupt_stale()` 对它们
+        一律「保守保留」（`_interrupt_owned` 里 owner 为空的行走 unknown 分支），
+        于是它们既不在 `unfinished()` 里（那要求 `interrupted`），也无法重发 ——
+        消息在库里有原文，但用户在界面上永远点不到。用户明确点「继续」时，
+        才由这里把这一条精确地接管过来。
+
+        条件（契约 §2.1 冻结）：
+
+        1. `status = expected_status`：客户端看到的状态必须还是当前状态
+           （并发 / 状态已变化 → 命中 0 行，返回 False，**一行都不改**）；
+        2. `recovered_at IS NULL`：已经进入过重发流程的行不走这条路；
+        3. 归属条件：`owner_instance_id IS NULL`（无归属）**或**
+           `owner_instance_id = dead_owner`（有归属、但归属者已确认退出）。
+           有归属且不是「已完成退出」的一律拒绝 —— 活实例 / 判不出来的记录
+           绝不能被抢（unknown 不改状态）。
+
+        `dead_owner` 只由调用方在 `registry.owner_alive(owner) is False` 时传入：
+        归属者已经确认退出时，它留下的 running/queued 行才是可安全接管的。
+        """
+        owner = instance_id if instance_id is not None else self._owner_id()
+        moment = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
+                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
+                "AND owner_instance_id IS NULL",
+                (INTERRUPTED, TAKEOVER_REASON, owner, moment, str(record_id),
+                 str(expected_status)),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            if not changed and dead_owner:
+                cur = self.conn.execute(
+                    "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
+                    "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
+                    "AND owner_instance_id = ?",
+                    (INTERRUPTED, TAKEOVER_REASON, owner, moment, str(record_id),
+                     str(expected_status), str(dead_owner)),
+                )
+                changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover - 回滚本身失败时保留原异常
+                pass
+            logger.warning("turn journal take_over failed: %s", exc)
+            return False
+        if changed and owner:
+            self._claim_owner(str(record_id), str(owner))
+        return changed
+
+    def _claim_owner(self, record_id: str, instance_id: str) -> None:
+        """把归属写进 `record_owners`（契约 §2.1：接管后归属必须可追踪）。
+
+        有 registry 走它（生产路径）；没有时直接写同一张表、同一个主键 ——
+        归属登记失败不撤销已经落库的接管，只记一条 warning。
+        """
+        if self.registry is not None:
+            try:
+                self.registry.claim(RECORD_TURN, record_id, instance_id)
+                return
+            except Exception:  # noqa: BLE001 - 归属登记失败不撤销已经落库的接管
+                logger.warning("turn journal ownership claim failed", exc_info=True)
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO record_owners "
+                "(record_type, record_id, instance_id) VALUES (?, ?, ?)",
+                (RECORD_TURN, record_id, instance_id),
+            )
+        except sqlite3.Error:
+            logger.warning("turn journal ownership mirror failed", exc_info=True)
 
     def release_claim(self, turn_id: str) -> None:
         """提交失败时把抢占退回去（否则用户就再也重发不了这条消息了）。
@@ -513,14 +634,27 @@ class TurnJournal:
         return int(cur.rowcount or 0) == 1
 
     def dismiss(self, turn_id: str) -> bool:
-        """用户选择「知道了」：不再提示，但仍然保留记录（不删用户消息）。"""
-        if self.recoverable(turn_id) is None:
+        """用户选择「知道了」：不再提示，但仍然保留记录（不删用户消息）。
+
+        一次带条件的 UPDATE（与 `recoverable()` 同一个权威谓词），写成
+        `status = 'dismissed'` 的终态：
+
+        * 它不再是 `interrupted`，所以既不会被 `orphaned_claims()` 当成孤儿，
+          也不能被 `repair_orphan()` 复活成「可重发」（否则用户说过的
+          「知道了」会被一个修复动作推翻，那条消息会被再执行一次）；
+        * 原文、topic、recovered_at 全部保留（不删用户数据）；
+        * 重复点击返回 False（第二次不再是可恢复状态）→ HTTP 409。
+        """
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, recovered_at = ?, updated_at = ? "
+                f"WHERE turn_id = ? AND {_RECOVERABLE_CLAUSE}",
+                (DISMISSED, _now(), _now(), str(turn_id), *_RECOVERABLE_PARAMS),
+            )
+        except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不得影响接口可用性
+            logger.warning("turn journal dismiss failed: %s", exc)
             return False
-        self._execute(
-            "UPDATE turn_journal SET recovered_at = ?, updated_at = ? WHERE turn_id = ?",
-            (_now(), _now(), str(turn_id)),
-        )
-        return True
+        return int(cur.rowcount or 0) == 1
 
     # -- 清理 -------------------------------------------------------------
 
