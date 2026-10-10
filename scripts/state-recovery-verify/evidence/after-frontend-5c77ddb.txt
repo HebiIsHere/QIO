@@ -1,0 +1,55 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-src-lead/frontend
+
+ ✓ src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts (1 test) 9ms
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests | 1 failed) 22ms
+     × 取消的正文不许留下、不许被写回；等待期间的独立移动必须保留 17ms
+     ✓ 回读失败：本地撤回仍生效、如实说明撤回未被服务器确认、可重试（新口径） 3ms
+ ✓ src/acceptance-state-recovery/n5-submit-move-checked.test.ts (1 test) 9ms
+ ✓ src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts (1 test) 12ms
+ ✓ src/acceptance-state-recovery/n1-superseded-check.test.ts (1 test) 8ms
+ ❯ src/acceptance-state-recovery/n2-reconfirm-result.test.ts (1 test | 1 failed) 45ms
+     × 补取新说明后仍是「等待确认」，界面不得出现「已确认 / 已保存 / 已暂停」 44ms
+ ✓ src/acceptance-state-recovery/n3-pending-revert-decision.test.ts (3 tests) 69ms
+ ✓ src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts (4 tests) 96ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts > F1 取消恢复等待期间的独立操作 > 取消的正文不许留下、不许被写
+回；等待期间的独立移动必须保留
+AssertionError: 这次保存没有真的发出: expected null not to be null
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts:127:37
+    125|     await store.saveNow();
+    126|     await flushPromises();
+    127|     expect(saved, "这次保存没有真的发出").not.toBeNull();
+       |                                     ^
+    128|     expect(
+    129|       saved!.cards.find((c) => c.id === "c1")!.content,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/acceptance-state-recovery/n2-reconfirm-result.test.ts > N2 重新确认仍待确认时，不许显示成功事实 > 补取新说明后仍是「等待确认」，界面不得出现「已确认 / 
+已保存 / 已暂停」
+AssertionError: 服务端仍要求再次确认: expected null not to be null
+ ❯ src/acceptance-state-recovery/n2-reconfirm-result.test.ts:95:51
+     93|
+     94|     // 真实结果：仍然有待确认的影响说明（并没有生效）
+     95|     expect(store.pendingImpact, "服务端仍要求再次确认").not.toBeNull();
+       |                                                   ^
+     96|     const text = wrapper.text();
+     97|     expect(text, "界面必须继续显示待确认的新范围").toContain("任务-B");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed | 6 passed (8)
+      Tests  2 failed | 12 passed (14)
+   Start at  17:17:38
+   Duration  3.30s (transform 1.90s, setup 596ms, import 3.44s, tests 269ms, environment 18.00s)
+

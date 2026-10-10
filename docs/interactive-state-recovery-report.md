@@ -26,9 +26,9 @@
 | 真实基线 SHA | `b3245e5`（`git fetch` 后核对远端 `fix/interactive-closure-followup` 与之完全一致、未推进） |
 | 集成分支 | `fix/interactive-state-recovery-completion` |
 | 工作分支 | A `wt/src-a-drafts`+`wt/src-a-integration`；B `wt/src-b-backend`；C `wt/src-c-ui`；D `wt/src-d-verify`+`wt/src-d-verify-after`（各独立 worktree，全部从 `b3245e5` 建立） |
-| 最终交付 SHA | 【FINAL-SHA】 |
-| 推送状态 | 【FINAL-PUSH】 |
-| 工作树状态 | 【FINAL-WT】 |
+| 交付 tip | 【TIP】—— 本报告所在提交；**代码/测试冻结候选 = `ccc651a`**（其后 `390e0b1` 只增加 D 的 after2 证据与截图，本提交只增加文档） |
+| 推送状态 | 已推送 `origin/fix/interactive-state-recovery-completion`（见 §5.4 的 CI run） |
+| 工作树状态 | 干净（`git status --porcelain` 为空；门禁运行产物 `scripts/recovery-lead-verify/out/` 已 gitignore、不入库） |
 | 是否合主线 / 发布 | **否**。不合 `main`，不合并 `fix/unified-process-audit` 与 `feat/unified-process-attachments-streaming`，不发布；无数据库迁移、未改历史迁移 |
 
 ---
@@ -156,11 +156,18 @@
   工具栏实测 1440=51px、1024/800=80px、480=104px（提交失败态 114/172px）。
   `480×600` 的 coexist 按产品的「切换条（只展开一个面板）」形态断言。保存/提交失败用页面内 `fetch` 桩制造（证据里标注为模拟），
   其余为真实后端。证据：`scripts/state-recovery-verify/evidence/`、`shots/baseline/`。
-- **修后矩阵**：【FINAL-E1-AFTER】
+- **修后矩阵（D 在 `c8bde01` 上跑，改动不进入这四类场景路径）**：受影响场景 **24 格全绿**
+  （4 尺寸 × 亮暗 × 双面板共存/保存失败/提交失败）；`base` 场景 after 侧**未重跑**，如实标注。
+  证据：`scripts/state-recovery-verify/shots/after/`+`after-report-partial.json`+`evidence/e1-after-run.log`。
 
 ### E2 — 真实关闭重开与关键浏览器旅程缺失
 - **结果（基线）**：J1 通过、J2 通过、J3/J4/J5 按预期红（正是 N6/N3/F1 的缺陷）。
-- **修后**：【FINAL-E2-AFTER】
+- **修后（`390e0b1`，被验收 SHA `ccc651a`）**：**J1–J5 五条全绿**（基线是 2 绿 3 红）。
+  J3（N6）实测：关闭前附加字段已输入（`https://new.example/path` / `新标题`）、未完成正文已真实落到服务器草稿；
+  关闭浏览器进程 → 同一 profile 重开 → 正文恢复最后版本、**网址与标题一并恢复**、正式内容仍是原值（不自动形成正式改动）。
+  J4 真实发出 `POST /demo/advance`，body `{"outcome":"revert_rest","decisionIds":[两个真实待决定项]}`；
+  J5 取消后被取消的正文不再留在板面；J1 关闭前后本机记录均为 null、编辑入口恢复服务器稿且服务器稿未误删。
+  证据：`scripts/state-recovery-verify/shots/after2-journey-report.json`、`evidence/e2-after2-run.log`、`shots/after2/*.png`。
 
 ---
 
@@ -206,20 +213,51 @@
   `vue-tsc --noEmit` exit 0；前端全量 **186 文件 / 1707 用例全绿**；
   后端受影响模块（14 个引用 `interactive`/`board_store` 的测试文件）**222 用例 / 0 失败 / 0 错误 / 0 跳过**；
   `scripts/check_docs.py` 通过。
-- **最终冻结候选门禁**：【FINAL-GATE】
+- **门禁（`scripts/recovery-lead-verify/final-gate.ps1`，在代码/测试冻结候选 `ccc651a` 上实跑）**：
+  `vue-tsc --noEmit` exit 0；前端全量 **194 文件 / 1723 用例全绿**；
+  后端受影响模块（15 个引用 `interactive`/`board_store` 的测试文件）**226 用例 / 0 失败 / 0 错误 / 0 跳过**；
+  `scripts/check_docs.py` 通过。其后只追加证据与文档（`390e0b1` 仅为证据/截图），文档提交上复跑 `check_docs.py` 通过。
 
 ### 5.3 未运行 / 说明
 - **未跑后端全仓全量**：本轮只改互动板相关的 4 个后端模块（版本门与撤回重核）与前端互动板模块；
   按用户要求做针对性验证，不机械重跑全量。合入 `main` / 发布时再对最终候选做一次全量。
 - **未跑 `agent.eval.run`**：本轮未改 runtime / 预算 / 工具策略。
 - **未跑安装/升级/恢复等发布检查**：本轮不发版。
-- **CI**：【FINAL-CI】
+- **CI**：见 §5.4。
 
 ---
 
 ## 6. 截图、组操作与关闭重开旅程
 
-【FINAL-SECTION6】
+### 6.1 E1：有效截图与测量（D 的独立装置）
+- **基线 b3245e5：32/32 格采集断言通过**（4 尺寸 × 亮暗 × 正常/双面板共存/保存失败/提交失败）。
+  每格截图前实测：`data-theme` + 真实背景亮度（亮 0.9728 / 暗 0.0061）+ 主题持久化（重新加载后再断言）、6 卡/6 关系/2 组、
+  预定面板状态、目标失败的原因与重试入口；条件不满足即失败。
+- **修后：受影响场景 24 格全绿**（同上；`base` 未重跑，如实标注）。
+- 工具栏实测：1440=51px、1024/800=80px、480=104px（提交失败态 114/172px），before/after 一致。
+- `480×600` 的共存按产品「切换条（只展开一个面板）」形态断言，**不是缺陷**。
+- 保存/提交失败用页面内 `fetch` 桩制造（证据里标注为模拟），其余为真实后端。
+
+### 6.2 V1：组操作实际点击/键盘结果（C 的独立装置）
+- `summary={"total":98,"reachable":78,"covered":3,"panel":5,"offscreen":12}`；真实点击（1024×768，CDP 真实鼠标）：
+  设为有序 `false→true` ✅、移出成员 `[cA,cB]→[cB]` ✅、解除组后组消失 ✅。
+- 剩余 `covered 3` 全部在 480×600：组头部落在**主动打开的**底部固定工具栏下方（面板遮挡），已在证据里区分，不是新缺陷；
+  独立 480×600 反例（两组分别在视口上/下部）实测上部组可达、下部组被工具栏遮挡。
+
+### 6.3 E2：真实关闭重开与关键旅程（分层如实标注）
+| 场景 | 层 | 基线 | 修后 |
+| --- | --- | --- | --- |
+| J1 草稿冲突→选服务器稿→本机删除失败→重试→正常关闭重开→编辑入口恢复 | ④真实 HTTP + ⑤真浏览器 + ⑥实际进程关闭（正常关闭） | 通过 | 通过 |
+| J2 删除失败未重试→**强制结束**进程→重开处理入口仍可达 | ⑤ + ⑥（强制结束） | 通过 | 通过 |
+| J3 R3 连续编辑 + N6 完整附加字段→关闭重开恢复 | ④ + ⑤ + ⑥（正常关闭） | **红**（N6：网址/标题回退） | **通过** |
+| J4 N3 待决定撤回：界面「继续」真实执行并带 `decisionIds` | ④ + ⑤ | **红**（不发请求） | 通过 |
+| J5 F1 取消影响确认（受控延迟 1800ms）后被取消正文不留在板面 | ④ + ⑤（CDP 传输层延迟=模拟） | **红** | 通过 |
+- 模拟部分如实标注：J1/J2 的 `localStorage.removeItem` 抛错（存储故障）、J5 的 CDP 传输层延迟；其余为真实后端与真浏览器，
+  正常关闭用 CDP `Browser.close`、强制结束用真实进程终止，均验证了「调试端口/进程真的消失」。
+- **未验证**：J5 的「等待期间独立移动保留」子断言（真实指针拖动在本装置没有让卡片移动，已标未验证）；
+  R2/R5 与 N1/N4/N5 的浏览器级证据（已有 store/ASGI 层反例）；N6 的 file/code 字段在真浏览器（组件级已覆盖）。
+- 跨进程证据：J1 关闭前后本机记录均为 `null`（重试只删本机冗余副本、没有写成 cleared 依据），服务器稿未被误删；
+  J3 关闭前本机记录里的附加字段快照在重开后仍被读到（这正是 N6 修复的落点）。
 
 ---
 
