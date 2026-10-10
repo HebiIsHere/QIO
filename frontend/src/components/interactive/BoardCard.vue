@@ -16,7 +16,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { cardDraftKey } from "../../interactive/drafts";
+import {
+  cardDraftKey,
+  cardDraftMetaFieldsForKind,
+  readCardDraftInputForBoard,
+  restoreCardDraftInput,
+} from "../../interactive/drafts";
+import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
@@ -65,6 +71,63 @@ const metaLanguage = ref("");
 const metaHref = ref("");
 const metaTitle = ref("");
 
+/**
+ * store 与本组件在两个工作树里分别实现（约定接口见本轮契约 §3/§4）：
+ * - `setCardDraftInput(cardId, { text, meta })`：把**正文与适用附加字段**作为同一份
+ *   未完成输入写进同一条本机记录（唯一写者仍是 store 的草稿通道）；
+ * - `boardContentConflictFor / resolveBoardContentConflict`：F3 的正文冲突选择入口。
+ *
+ * 两个入口合并前用可选调用：缺接口时退化为既有行为（只保存正文 / 不渲染该冲突块），
+ * 不会静默使用第二套逻辑，也不会阻塞编译；合并后自动走完整路径。
+ */
+type CardDraftInputStoreApi = {
+  setCardDraftInput?: (cardId: string, input: CardDraftInput) => void;
+  boardContentConflictFor?: (cardId: string) => { local: string; server: string } | null;
+};
+const draftInputApi = store as unknown as CardDraftInputStoreApi;
+
+/** 本卡片种类适用的附加字段（文字注释 / reply 没有附加字段） */
+function applicableMetaFields(): (keyof CardDraftMetaInput)[] {
+  return cardDraftMetaFieldsForKind(props.card.kind) as (keyof CardDraftMetaInput)[];
+}
+
+/** 当前编辑态里适用的附加字段（只收适用字段，含空串：空串是「用户明确清空」） */
+function currentMetaInput(): CardDraftMetaInput {
+  const meta: CardDraftMetaInput = {};
+  for (const field of applicableMetaFields()) {
+    if (field === "name") meta.name = metaName.value;
+    else if (field === "language") meta.language = metaLanguage.value;
+    else if (field === "href") meta.href = metaHref.value;
+    else if (field === "title") meta.title = metaTitle.value;
+  }
+  return meta;
+}
+
+/** 当前这一版的完整未完成输入：正文 + 适用附加字段（N6：两者一起保存、一起恢复） */
+function currentDraftInput(): CardDraftInput {
+  return { text: draft.value, meta: currentMetaInput() };
+}
+
+/**
+ * 保存当前这一版未完成输入：正文与附加字段**一次**写进同一条本机记录。
+ * 不直接写存储、不另建写者：走 store 的草稿通道（版本、冲突、清除登记规则全部复用）。
+ */
+function saveDraftInput() {
+  const cardId = props.card.id;
+  if (typeof draftInputApi.setCardDraftInput === "function") {
+    draftInputApi.setCardDraftInput(cardId, currentDraftInput());
+    return;
+  }
+  // 过渡期（store 尚未提供合并后的入口）：只保存正文，保持既有行为不变
+  store.setDraft(cardDraftKey(cardId), draft.value);
+}
+
+/** F3 的正文冲突（本页候选与服务器同一张卡片正文都有改动）：没有接口或没有冲突时为 null */
+function boardContentConflict(cardId: string): { local: string; server: string } | null {
+  if (typeof draftInputApi.boardContentConflictFor !== "function") return null;
+  return draftInputApi.boardContentConflictFor(cardId);
+}
+
 const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
 const kindLabel = computed(() => CARD_KIND_LABELS[props.card.kind]);
 const name = computed(() => String(props.card.meta?.name ?? ""));
@@ -104,7 +167,9 @@ const cardDraftNeedsAttention = computed(() => {
     Boolean(store.draftLocalRemovalErrorFor(props.card.id)) ||
     removal.status === "error" ||
     state.status === "error" ||
-    (!local.ok && state.status !== "saved")
+    (!local.ok && state.status !== "saved") ||
+    // F3 的正文冲突是**必须由用户决定**的：关闭态也要能看到入口（否则入口只在编辑态可达）
+    Boolean(boardContentConflict(props.card.id))
   );
 });
 
@@ -147,7 +212,9 @@ const isToolbarOwner = computed(() => {
 const menuOpensUp = computed(() => props.toolbarTop < props.y);
 
 /** 冲突未决的关闭态卡片显示提示与选择按钮：高度放开为 auto，不被 overflow 裁掉（契约 §12.1 可见可点） */
-const conflictExpanded = computed(() => !props.card.folded && Boolean(store.draftConflictFor(props.card.id)));
+const conflictExpanded = computed(
+  () => !props.card.folded && Boolean(store.draftConflictFor(props.card.id) || boardContentConflict(props.card.id)),
+);
 
 const style = computed(() => ({
   left: props.x + "px",
@@ -193,30 +260,40 @@ function startEdit() {
    * 用户选服务器后编辑框随 watch 跟随；真正输入新文字时才按正常编辑路径走。
    */
   const conflict = store.draftConflictFor(cardId);
-  if (conflict) {
-    draft.value = conflict.local;
-    metaName.value = name.value;
-    metaLanguage.value = language.value;
-    metaHref.value = href.value;
-    metaTitle.value = String(props.card.meta?.title ?? "");
-    return;
-  }
   /**
-   * 空草稿是**有效编辑状态**（契约 §10.4）：
-   * 不能用 `draftFor(key) || card.content` —— 那会把「用户把正文删空后保存的草稿」
-   * 当成「没有草稿」，重开编辑器时旧正文又冒出来把空草稿盖掉。
-   * 这里按「记录是否存在」判断：存在就用草稿（哪怕是空串），不存在才回落到正式正文。
+   * 恢复来源（N6）：正文与附加字段是**同一份未完成输入**，一次重建。
+   * - 正文：按「记录是否存在」判断（空草稿是有效编辑状态，§10.4），存在就用草稿
+   *   （哪怕是空串），不存在才回落到正式正文；
+   * - 附加字段：取自**同一板面**的本机记录（旧记录没有附加快照时回退正式值）。
    */
-  draft.value = store.hasCardDraft(cardId) ? store.cardDraftText(cardId) : props.card.content;
-  metaName.value = name.value;
-  metaLanguage.value = language.value;
-  metaHref.value = href.value;
-  metaTitle.value = String(props.card.meta?.title ?? "");
-  store.setDraft(cardDraftKey(props.card.id), draft.value);
+  const localInput = readCardDraftInputForBoard(cardId, store.boardId);
+  const restored = restoreCardDraftInput({
+    kind: props.card.kind,
+    content: props.card.content,
+    meta: (props.card.meta ?? {}) as Record<string, unknown>,
+    hasUnfinishedInput: store.hasCardDraft(cardId),
+    draftText: store.cardDraftText(cardId),
+    draftMeta: localInput?.meta ?? null,
+  });
+  draft.value = conflict ? conflict.local : restored.text;
+  metaName.value = restored.meta.name ?? "";
+  metaLanguage.value = restored.meta.language ?? "";
+  metaHref.value = restored.meta.href ?? "";
+  metaTitle.value = restored.meta.title ?? "";
+  /**
+   * 冲突未决时不写草稿、不排保存（§12.1），等用户明确选择；
+   * 其余情况把这一版完整输入登记进草稿通道（正文 + 适用附加字段一起）。
+   */
+  if (conflict) return;
+  saveDraftInput();
 }
 
+/**
+ * 正文或任一附加字段变了都走同一个入口：这一版完整未完成输入（正文 + 适用附加字段）
+ * 一起进本机记录。分别保存会让两者不同步（刷新后正文恢复了、网址还是旧的）。
+ */
 function onDraftInput() {
-  store.setDraft(cardDraftKey(props.card.id), draft.value);
+  saveDraftInput();
 }
 
 /**
@@ -292,7 +369,7 @@ function cancelEdit() {
           未决冲突的选择入口放在编辑器**上方**（契约 §12.1：冲突入口在真实操作路径可见可点）：
           卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
           -->
-        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
+        <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
         <textarea
           v-model="draft"
           class="editor"
@@ -304,19 +381,25 @@ function cancelEdit() {
         ></textarea>
         <label v-if="card.kind === 'file' || card.kind === 'image'" class="field">
           <span>名称</span>
-          <input v-model="metaName" type="text" />
+          <input v-model="metaName" type="text" data-im="card-meta-name" :data-card-id="card.id" @input="onDraftInput" />
         </label>
         <label v-if="card.kind === 'code'" class="field">
           <span>语言</span>
-          <input v-model="metaLanguage" type="text" />
+          <input v-model="metaLanguage" type="text" data-im="card-meta-language" :data-card-id="card.id" @input="onDraftInput" />
         </label>
         <template v-if="card.kind === 'url'">
-          <label class="field"><span>网址</span><input v-model="metaHref" type="text" /></label>
-          <label class="field"><span>标题</span><input v-model="metaTitle" type="text" /></label>
+          <label class="field">
+            <span>网址</span>
+            <input v-model="metaHref" type="text" data-im="card-meta-href" :data-card-id="card.id" @input="onDraftInput" />
+          </label>
+          <label class="field">
+            <span>标题</span>
+            <input v-model="metaTitle" type="text" data-im="card-meta-title" :data-card-id="card.id" @input="onDraftInput" />
+          </label>
         </template>
         <p class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
         <!-- 草稿保存失败不能静默：状态与重试入口就近显示（C 的组件，A 的卡片接线） -->
-        <CardDraftHint v-if="!store.draftConflictFor(card.id)" :card-id="card.id" />
+        <CardDraftHint v-if="!store.draftConflictFor(card.id) && !boardContentConflict(card.id)" :card-id="card.id" />
         <div class="row">
           <button class="btn primary" type="button" @click="confirmEdit">完成编辑</button>
           <button class="btn" type="button" @click="cancelEdit">取消</button>
@@ -329,7 +412,7 @@ function cancelEdit() {
           卡片高度固定且 overflow 隐藏，提示不能追加在正文后面（会被裁掉）——
           确有冲突时直接**替换**正文行：两份内容都保留着（打开编辑或任一选择都能回到），这里先让用户做选择。
         -->
-        <CardDraftHint v-if="store.draftConflictFor(card.id)" :card-id="card.id" />
+        <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
         <template v-else>
           <!-- 关闭态也能看到、能处理的状态（本机副本没删掉 / 清除未同步 / 草稿保存失败）：就地提示 + 重试 -->
           <CardDraftHint v-if="cardDraftNeedsAttention" :card-id="card.id" />

@@ -23,6 +23,35 @@ export type DraftScope = "chat" | "card";
 /** 本机记录的种类：编辑副本 / 待确认的清除依据（§11.2） */
 export type DraftRecordKind = "draft" | "cleared";
 
+/**
+ * 一张卡片**未完成输入**里的附加字段（N6）。
+ *
+ * 为什么必须跟正文一起存：用户编辑的是「这一张卡片这次要怎么改」，正文与网址/标题/文件名/
+ * 图片名/代码语言是**同一份未完成输入**。只存正文的话，刷新或正常关闭重开之后，
+ * 网址、标题、名称、语言会悄悄回退成正式卡片上的旧值 —— 用户以为自己改过的都还在。
+ *
+ * 取值必须原样保留**空串**：空串代表「用户明确清空了这个字段」，恢复时绝不能用正式值回填
+ * （那等于把用户删掉的旧值又塞回来）。
+ */
+export interface CardDraftMetaInput {
+  /** file / image 的名称 */
+  name?: string;
+  /** code 的语言 */
+  language?: string;
+  /** url 的网址 */
+  href?: string;
+  /** url 的标题 */
+  title?: string;
+}
+
+/** 一张卡片的完整未完成输入：正文 + 适用附加字段（可缺省 = 这条记录只改了正文） */
+export interface CardDraftInput {
+  /** 正文（可以为空串：空草稿是有效编辑状态，§10.4） */
+  text: string;
+  /** 附加字段；缺省表示这条记录没有附加快照（旧记录或只改了正文） */
+  meta?: CardDraftMetaInput;
+}
+
 export interface DraftRecord {
   /** 草稿正文（原样保存，包含换行） */
   text: string;
@@ -41,6 +70,11 @@ export interface DraftRecord {
    * 「这次清除针对的是哪一版」；旧版本的清除回执晚到时就会删掉后来新建的版本（§11.2）。
    */
   version?: number;
+  /**
+   * 未完成输入的附加字段（N6）。旧记录没有这个字段：读取时按「没有附加快照」处理，
+   * 恢复时回退到正式卡片上的值（兼容行为，不是把空值当成清空）。
+   */
+  meta?: CardDraftMetaInput;
 }
 
 /**
@@ -214,6 +248,32 @@ export function draftStorageAvailable(): { ok: boolean; error?: string } {
  * 损坏（不是本模块写的 JSON、字段类型不对）也按「没有草稿」处理：
  * 与其把一段乱码塞进输入框，不如当作没有，用户重打一遍即可。
  */
+/** 附加字段的固定顺序：写入、读取与展示都按这个顺序，保证同一份输入可复跑 */
+export const CARD_DRAFT_META_FIELDS = ["name", "language", "href", "title"] as const;
+
+/** 附加字段名 */
+export type CardDraftMetaField = (typeof CARD_DRAFT_META_FIELDS)[number];
+
+/**
+ * 归一化未完成输入的附加字段（N6）。
+ *
+ * - 只认四个已知字段，且必须是字符串：**空串保留**（明确清空），未知字段与非法类型一律丢掉；
+ * - 一个可用字段都没有时返回 null（不制造空的 meta 对象：旧调用写出的记录必须保持原样）。
+ */
+export function normalizeCardDraftMeta(meta: CardDraftMetaInput | null | undefined): CardDraftMetaInput | null {
+  if (!meta || typeof meta !== "object") return null;
+  const result: CardDraftMetaInput = {};
+  let any = false;
+  for (const field of CARD_DRAFT_META_FIELDS) {
+    const value = meta[field];
+    if (typeof value === "string") {
+      result[field] = value;
+      any = true;
+    }
+  }
+  return any ? result : null;
+}
+
 export function readDraft(key: string): DraftRecord | null {
   const { storage } = resolveStorage();
   if (!storage) return null;
@@ -234,6 +294,7 @@ export function readDraft(key: string): DraftRecord | null {
       boardId?: unknown;
       kind?: unknown;
       version?: unknown;
+      meta?: unknown;
     };
     if (typeof record.text !== "string") return null;
     const result: DraftRecord = {
@@ -244,6 +305,8 @@ export function readDraft(key: string): DraftRecord | null {
     if (typeof record.boardId === "string" && record.boardId) result.boardId = record.boardId;
     if (record.kind === "draft" || record.kind === "cleared") result.kind = record.kind;
     if (typeof record.version === "number" && Number.isFinite(record.version)) result.version = record.version;
+    const meta = normalizeCardDraftMeta(record.meta as CardDraftMetaInput | null | undefined);
+    if (meta) result.meta = meta;
     return result;
   } catch {
     return null;
@@ -340,9 +403,44 @@ export function writeDraft(key: string, text: string, seq: number): { ok: boolea
  * ---------- 卡片的本机恢复记录（§11.1 / §11.2 / §11.3） ----------
  */
 
-/** 读某一卡片的本机记录（编辑副本或待同步的清除依据都算记录） */
+/**
+ * 读某一卡片的本机记录（编辑副本或待同步的清除依据都算记录）。
+ *
+ * 兼容**最早期**写下的「纯文本」值（当时这个键直接存正文，没有 JSON 外壳）：
+ * 只在值根本不是合法 JSON 时按正文认。JSON 解析成功但形状不对（损坏、字段类型错）
+ * 仍然按「没有记录」处理 —— 不把损坏内容或 JSON 字面量塞进输入框。
+ */
 export function readCardLocalDraft(cardId: string): DraftRecord | null {
-  return readDraft(cardLocalDraftStorageKey(cardId));
+  const key = cardLocalDraftStorageKey(cardId);
+  const record = readDraft(key);
+  if (record) return record;
+  return readLegacyPlainTextCardLocalRecord(key);
+}
+
+/** 旧版纯文本本机记录的回退读取（只在值不是合法 JSON、且不像 JSON 结构时生效） */
+function readLegacyPlainTextCardLocalRecord(key: string): DraftRecord | null {
+  const { storage } = resolveStorage();
+  if (!storage) return null;
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(key);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "string" || raw === "") return null;
+  const trimmed = raw.trim();
+  // 以对象/数组开头的一律当成「损坏的 JSON」，不当作正文（避免把乱码恢复进编辑器）
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return null;
+  let parsed = true;
+  try {
+    JSON.parse(raw);
+  } catch {
+    parsed = false;
+  }
+  if (parsed) return null;
+  // 旧纯文本记录没有 kind、没有版本、没有时戳：如实按「未知来源的编辑候选」返回，
+  // 由调用方按 legacy 规则要求用户选择（不猜成清除依据）。
+  return { text: raw, updatedAt: 0, seq: 0 };
 }
 
 /** 这条记录是不是一份**编辑草稿**（待同步的清除依据不是草稿，不能恢复成文字） */
@@ -351,27 +449,137 @@ export function isDraftRecord(record: DraftRecord | null): boolean {
 }
 
 /**
- * 写下某一卡片的编辑副本（输入时同步调用，不等防抖、不等网络）。
+ * 写下某一卡片的**完整未完成输入**（正文 + 适用附加字段，N6）。
  *
+ * 一次写入同一条记录（不是正文一条、附加字段另一条）：这是「同一份未完成输入」的
+ * 唯一落点，不新增第二个写者，也就不会出现「正文恢复了、网址还是旧的」这种半份恢复。
  * 归属（boardId）与版本号都写进记录自己：恢复时**只看这条记录**就能判断
  * 「是不是这个板面的」「是不是比服务器那份新」（§11.3）。
+ * 附加字段为空/没有 → 不写 meta 字段，与旧格式逐字节兼容。
  */
-export function writeCardLocalDraft(
+export function writeCardDraftInput(
   cardId: string,
-  text: string,
+  input: CardDraftInput,
   options: { boardId?: string; seq?: number } = {},
 ): DraftWriteResult {
   const key = cardLocalDraftStorageKey(cardId);
   const version = nextVersion(key);
   const record: DraftRecord = {
-    text: text ?? "",
+    text: input?.text ?? "",
     updatedAt: Date.now(),
     seq: Number.isFinite(options.seq) ? (options.seq as number) : 0,
     kind: "draft",
     version,
   };
   if (options.boardId) record.boardId = options.boardId;
+  const meta = normalizeCardDraftMeta(input?.meta);
+  if (meta) record.meta = meta;
   return writeRecord(key, record);
+}
+
+/**
+ * 写下某一卡片的编辑副本正文（输入时同步调用，不等防抖、不等网络）。
+ *
+ * 保持既有签名与行为不变：它就是 writeCardDraftInput 的薄包装（只带正文、不带附加字段），
+ * 老调用写出的记录格式与原实现逐字节一致。
+ */
+export function writeCardLocalDraft(
+  cardId: string,
+  text: string,
+  options: { boardId?: string; seq?: number } = {},
+): DraftWriteResult {
+  return writeCardDraftInput(cardId, { text }, options);
+}
+
+/** 读某一卡片的完整未完成输入（正文 + 附加字段）；没有记录时返回 null（旧记录没有 meta） */
+export function readCardDraftInput(cardId: string): CardDraftInput | null {
+  const record = readCardLocalDraft(cardId);
+  if (!record) return null;
+  const input: CardDraftInput = { text: record.text };
+  if (record.meta) input.meta = record.meta;
+  return input;
+}
+
+/**
+ * 这条记录是不是**当前板面**的（记录自己写了归属才判断；没写归属的旧记录不拦，§11.1）。
+ */
+export function cardDraftInputBelongsToBoard(
+  record: DraftRecord | null,
+  boardId: string | null | undefined,
+): boolean {
+  if (!record) return false;
+  if (!record.boardId) return true;
+  return Boolean(boardId) && record.boardId === boardId;
+}
+
+/**
+ * 读某一卡片属于**指定板面**的未完成输入：待同步的清除依据不是草稿（不恢复成文字），
+ * 别板面的记录也不给恢复（§11.1）。恢复来源只允许从这里取。
+ */
+export function readCardDraftInputForBoard(
+  cardId: string,
+  boardId: string | null | undefined,
+): CardDraftInput | null {
+  const record = readCardLocalDraft(cardId);
+  if (!record || !isDraftRecord(record)) return null;
+  if (!cardDraftInputBelongsToBoard(record, boardId)) return null;
+  const input: CardDraftInput = { text: record.text };
+  if (record.meta) input.meta = record.meta;
+  return input;
+}
+
+/** 某一卡片种类适用的附加字段（文字注释/reply 没有附加字段） */
+export function cardDraftMetaFieldsForKind(kind: string): CardDraftMetaField[] {
+  if (kind === "file" || kind === "image") return ["name"];
+  if (kind === "code") return ["language"];
+  if (kind === "url") return ["href", "title"];
+  return [];
+}
+
+/** 重建恢复来源的输入：正式内容 + 本机未完成输入（两者分开给，避免「谁覆盖谁」靠猜） */
+export interface CardDraftRestoreSources {
+  /** 卡片种类（决定哪些附加字段适用） */
+  kind: string;
+  /** 正式卡片正文 */
+  content: string;
+  /** 正式卡片的附加字段（原始 meta） */
+  meta?: Record<string, unknown> | null;
+  /** 是否存在未完成输入（由 store 判定：内存候选或属于本板面的本机记录） */
+  hasUnfinishedInput: boolean;
+  /** 未完成输入的正文；空串是有效值（空草稿是有效编辑状态） */
+  draftText?: string;
+  /** 本机记录里的附加字段；null / 缺省 = 这条记录没有附加快照（旧记录，回退正式值） */
+  draftMeta?: CardDraftMetaInput | null;
+}
+
+/** 重建后的编辑态内容：正文 + 适用附加字段（附加字段一定给出，缺省为空串） */
+export interface RestoredCardDraftInput {
+  hasUnfinishedInput: boolean;
+  text: string;
+  meta: CardDraftMetaInput;
+}
+
+/**
+ * 重建「打开编辑器时该显示什么」（N6 的恢复来源）。
+ *
+ * 规则（与既有草稿/正式内容口径一致，不新增第二套判断）：
+ * - 正文：有未完成输入就用它（**空串也算**，§10.4），否则用正式正文；
+ * - 附加字段：先取正式卡片的适用字段，本机记录里**写了**的字段（含空串）覆盖它；
+ *   旧记录没有附加快照 → 全部用正式值（兼容行为，不是把空值当成清空）。
+ */
+export function restoreCardDraftInput(sources: CardDraftRestoreSources): RestoredCardDraftInput {
+  const meta: CardDraftMetaInput = {};
+  for (const field of cardDraftMetaFieldsForKind(sources.kind)) {
+    const formal = sources.meta?.[field];
+    const drafted = sources.draftMeta?.[field];
+    // 未完成输入里写了这个字段（包括空串）就以它为准；否则回退正式值
+    meta[field] = typeof drafted === "string" ? drafted : typeof formal === "string" ? formal : "";
+  }
+  return {
+    hasUnfinishedInput: sources.hasUnfinishedInput,
+    text: sources.hasUnfinishedInput ? sources.draftText ?? "" : sources.content,
+    meta,
+  };
 }
 
 /**
