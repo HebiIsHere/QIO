@@ -9,10 +9,10 @@
   `fix/interactive-final-closure` 与之**完全一致、未推进**，因此本轮从该提交开始（不从 `main` 建立）。
 - **修复分支**：`fix/interactive-closure-followup`（从互动开发线 `1da2172` 新建；分支名未被占用，未使用日期后缀）。
 - **代码冻结 SHA**：`fd3649d4376458127dd10028ad840fb7207937f5`（Lead + A + B + C 的产品代码全部并入后的提交）。
-- **交付提交**：本文档所在提交（其父提交为代码+测试验收的集成提交；推送后 `git ls-remote` 与本地一致，见 §7）。
-  代码冻结后只追加了**测试与验收文件**（`git diff --name-status fd3649d..HEAD` 显示 `backend/tests/**`、
+- **交付提交**：`fc7184f5075d98ba51058a8e6a958eff2f94f59c`（代码 + 测试验收 + 本报告），
+  推送后远端 `fix/interactive-closure-followup` 与本地一致；其后只追加 `docs/**` 的文档提交（差异核对方式见 §7）。
+  代码冻结后只追加了**测试与验收文件**（`git diff --name-status fd3649d..fc7184f` 显示 `backend/tests/**`、
   `frontend/src/**/__tests__/**`、`scripts/closure-*-verify/**`，无 `backend/src/**` 或非测试前端产品代码）。
-  工作区在交付提交后干净（远端一致性、最终 SHA 与 CI 记录见 §7）。
 - **并行方式（如实记录）**：主智能体 + 四个子智能体，各自独立 worktree（`qio-cl-lead/a/b/c/d`，均从 `1da2172` 建立）。
   A/B/C 的成果由主智能体合并进集成分支；D 全程只写独立命名的验收文件、**不改产品代码**。
   **过程中断（如实记录）**：C 与 D 的会话在收尾阶段先后异常中断（无收尾消息）。
@@ -163,15 +163,20 @@
 | ⑤真浏览器（D/C） | `scripts/closure-d-verify/closure-d-browser-probe.mjs`、`scripts/closure-c-verify/capture.mjs` | D：基线 15/16（唯一红=R1）；集成分支 16/16；C：38 场景几何与对比度测量 |
 | ⑥真实进程关闭重开（D） | 同一 Chrome 用户目录结束进程后新进程打开 | 本机数据仍在（`evidence/closure-d-b2-reopened.png`） |
 
-## 7. CI
+## 7. CI 与远端一致性
 
-本轮改动推送后在**最终提交**上触发 `.github/workflows/ci.yml`（`push: branches: ["**"]`），任务包括：
-`docs consistency`（含 `check_docs.py --selftest` 与 `release_gate.py --selftest`）、`backend (py3.11)`、`backend (py3.12)`、
-`backend (windows-latest)`、`frontend`、`frozen worker (windows)`、`rust (windows-latest)`、`rust (ubuntu-24.04)`、`install e2e (windows-latest)`。
-
-- 代码冻结 SHA：`fd3649d4376458127dd10028ad840fb7207937f5`
-- 交付 SHA、远端一致性与 CI 运行号/逐任务状态：**记录在本报告所在分支的收尾文档提交里**（见该提交的说明与 `docs/status.md` P23）。
-  在此之前不声称「CI 全绿」。
+- **交付 SHA（代码+测试+本报告）**：`fc7184f5075d98ba51058a8e6a958eff2f94f59c`。
+  推送后 `git ls-remote --heads origin fix/interactive-closure-followup` 返回同一 SHA（远端一致）。
+- **远端/工作区**：推送前后工作区干净；门禁实跑时 `scripts/closure-lead-verify/out/gate-sha.txt` 记录 `dirty=` 为空。
+- **真实 CI 运行**：**run 38026730414** —— https://github.com/HebiIsHere/QIO/actions/runs/38026730414
+  截至成文：**9/9 任务全部 success** ——
+  `docs consistency` ✅、`backend (py3.11)` ✅、`backend (py3.12)` ✅、`backend (windows-latest)` ✅、
+  `frontend` ✅、`frozen worker (windows)` ✅、`rust (windows-latest)` ✅、`rust (ubuntu-24.04)` ✅、`install e2e (windows-latest)` ✅。
+- **同一 SHA 上的本地最终门禁**（`scripts/closure-lead-verify/final-gate.ps1`）：`vue-tsc` exit 0；
+  前端全量 **178 文件 / 1618 用例全绿**；后端全量 **2167 用例 / 0 失败 / 0 错误 / 9 跳过**；
+  `check_docs.py` 通过（35 个里程碑条目）。本地门禁与远程 CI 是两次独立运行，数字各自来自真实输出。
+- **交付之后只追加文档提交**：其差异用 `git diff --name-status fc7184f..<最终HEAD>` 核对，只应有 `docs/**`；
+  这类提交的 CI 运行号在最终答复中给出（不在本报告里引用自身提交的 CI）。
 
 ## 8. 真实浏览器与独立验收（D 的阶段 3 正式结论）
 
@@ -232,4 +237,8 @@
 - 未合并 `main`、未合并 `fix/unified-process-audit`、未合并 `feat/unified-process-attachments-streaming`；未发布、未强制覆盖他人提交。
 - 未开发附件、记忆、真实模型板面理解或新的任务执行能力；`delivery.delivered` 继续如实反映未接入状态。
 - 未做数据库迁移、未修改历史迁移。
-- 上一轮报告里「168 文件 / 579 文件」的口径问题：本轮以**实跑输出**为准，不再沿用旧数字。
+- **上一轮报告的文件数口径问题（本节更正）**：上一轮报告在同一主题下先后出现过「168 文件 / 1549 用例」与「579 文件 / 1549 用例」
+  两种文件数口径（前者是当时全量实跑的「Test Files」计数，后者是同一段里写错的数字），两者互相矛盾。
+  本轮一律以**实跑输出**为准，不再沿用旧数字：交付 SHA 上前端全量 = **178 文件 / 1618 用例**（`npx vitest run`，
+  见 `scripts/closure-lead-verify/out/vitest-full.txt`），后端全量 = **2167 用例 / 0 失败 / 0 错误 / 9 跳过**
+  （`pytest -q` + JUnit XML，见 `out/pytest-junit.xml`）；CI 的 `frontend` 任务只报通过/失败，不产生文件数。

@@ -810,8 +810,11 @@
   **C 与 D 的会话在收尾阶段先后异常中断**：C 的产品代码与全部证据在中断前已提交并并入（其工作区中断后的中间态未被并入；
   其中一个已通过但未提交的用例由主智能体代为提交并注明来源）；D 的阶段 1（基线红）与集成分支分层自测证据已并入，
   阶段 3 的正式结论按报告如实标注。
-- **门禁（代码冻结 SHA 与最终提交上实跑）：** 见 `docs/interactive-closure-followup-report.md` §6；
+- **门禁（交付 SHA `fc7184f5075d98ba51058a8e6a958eff2f94f59c` 上实跑）：** `npx vue-tsc --noEmit` exit 0；
+  前端全量 **178 文件 / 1618 用例全绿**；后端全量 **2167 用例 / 0 失败 / 0 错误 / 9 跳过**；`scripts/check_docs.py` 通过（35 个里程碑条目）。
+  远端 CI **run 38026730414**（https://github.com/HebiIsHere/QIO/actions/runs/38026730414）**9/9 任务全部 success**。
   可复跑入口 `scripts/closure-lead-verify/final-gate.ps1`（vue-tsc / 前端全量 / 后端全量 / 文档一致性一次跑完并落真实输出）。
+  详见 `docs/interactive-closure-followup-report.md` §6 与 §7。
 - **已知限制（详见报告 §9）：** 真浏览器深链路本轮只覆盖 R1 与「真实进程关闭重开」，R2/R3/R4/R6 由状态/组件/真实 HTTP 层覆盖；
   `test_interactive_during_heavy_work` 的健康探针计时用例在并发负载下偶发超时（单独复跑通过，无并发全量通过）；
   480×600 常态工具栏 104px（96px 口径只对 800×600 要求）。
