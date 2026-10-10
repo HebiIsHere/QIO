@@ -151,7 +151,7 @@ describe("F11：附注释不复制正文", () => {
     expect(after[0]!.streaming, "落定为静态").toBeUndefined();
   });
 
-  it("同一 turn 内真正不同的多条回答仍然保留", () => {
+  it("旧协议（没有 answer_id）：正文不同也不再补第二条 —— 校准该 turn 最后一条正式回答", () => {
     const { events, session } = setup();
     events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "turn_e" } });
     events.route({
@@ -166,8 +166,44 @@ describe("F11：附注释不复制正文", () => {
       ts: "",
       data: { turn_id: "turn_e", status: "completed", final_content: "这是完全不同的一段回答。" },
     });
+    /**
+     * 契约 K2.2：禁止用「全文是否相等 / 前缀」判断同一次回答 —— 无 answer_id 的旧事件
+     * 一律校准该 turn 最后一条正式回答（interim === false）。
+     */
     const list = assistantMessages(session);
-    expect(list.map((m) => m.content)).toEqual(["第一段回答。", "这是完全不同的一段回答。"]);
+    expect(list, "不得因为正文不同再补一条").toHaveLength(1);
+    expect(list.map((m) => m.content)).toEqual(["这是完全不同的一段回答。"]);
+  });
+
+  it("新协议（answer_id）：同 turn 的多个回答身份各自保留，只改目标那一条", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "1", ts: "", data: { turn_id: "turn_g" } });
+    events.route({
+      type: "ASSISTANT",
+      id: "2",
+      ts: "",
+      data: { turn_id: "turn_g", content: "第一段回答。", interim: false, streaming: true, delta_id: "dl_g1", seq: 1 },
+    });
+    events.route({
+      type: "ASSISTANT",
+      id: "3",
+      ts: "",
+      data: { turn_id: "turn_g", content: "第二段回答。", interim: false, streaming: true, delta_id: "dl_g2", seq: 1 },
+    });
+    events.route({
+      type: "TURN_END",
+      id: "4",
+      ts: "",
+      data: {
+        turn_id: "turn_g",
+        status: "completed",
+        final_content: "修订后的第一段回答。",
+        answer_id: "dl_g1",
+      },
+    });
+    const list = assistantMessages(session);
+    expect(list, "两条不同身份都要保留").toHaveLength(2);
+    expect(list.map((m) => m.content)).toEqual(["修订后的第一段回答。", "第二段回答。"]);
   });
 
   it("过程说明（interim）不会被注释复制成正式回答", () => {

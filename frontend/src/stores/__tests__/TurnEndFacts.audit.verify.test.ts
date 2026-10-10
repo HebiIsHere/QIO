@@ -111,7 +111,7 @@ describe("契约 §1.2：结束事实必须落到这一轮", () => {
     expect(pick(a, "reasonCode", "reason_code")).toBe("provider_error");
   });
 
-  it("用户停止：说成用户停止，不是厂商故障，并给出重发入口", () => {
+  it("用户停止：说成用户停止，不是厂商故障；旧动作 resend 归一到 retry", () => {
     const { events, session } = setup();
     events.route({ type: "TURN_START", id: "s1", ts: "", data: { turn_id: "turn_stop" } });
     end(events, "turn_stop", {
@@ -125,8 +125,32 @@ describe("契约 §1.2：结束事实必须落到这一轮", () => {
     const facts = factsOf(session, "turn_stop");
     expect(pick(facts, "reasonCode", "reason_code")).toBe("user_stopped");
     expect(pick(facts, "stoppedBy", "stopped_by")).toBe("user");
-    const actions = pick(facts, "actions");
-    expect(Array.isArray(actions) ? actions : []).toContain("resend");
+    /**
+     * 契约 K3.1 / K3.4（Lead 裁定，2026-10-10）：user_stopped 的可用动作是 retry；
+     * cancelled + resend 是点不通的死按钮（/api/turns/{id}/resend 只接受 interrupted 的行），
+     * 实时与读路径都要归一。
+     */
+    const actions = (pick(facts, "actions") as string[]) ?? [];
+    expect(actions).toContain("retry");
+    expect(actions).not.toContain("resend");
+  });
+
+  it("真正的中断（interrupted）：保留 resend 入口，不被归一成 retry", () => {
+    const { events, session } = setup();
+    events.route({ type: "TURN_START", id: "s2", ts: "", data: { turn_id: "turn_int" } });
+    end(events, "turn_int", {
+      status: "cancelled",
+      reason_code: "interrupted",
+      reason: "程序在这次回答结束前中断了。",
+      stopped_by: "system",
+      actions: ["resend"],
+    });
+
+    const facts = factsOf(session, "turn_int");
+    expect(pick(facts, "reasonCode", "reason_code")).toBe("interrupted");
+    const actions = (pick(facts, "actions") as string[]) ?? [];
+    expect(actions).toContain("resend");
+    expect(actions, "interrupted 不走 retry 归一").not.toContain("retry");
   });
 
   it("可恢复的工具错误不是整轮失败：completed + reason_code=none 不得显示失败原因", () => {

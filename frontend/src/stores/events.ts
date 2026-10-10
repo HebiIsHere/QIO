@@ -303,12 +303,21 @@ export const useEventStore = defineStore("events", {
           // 权威耗时事实（契约 §3）：折叠态不展开也要显示总耗时
           if (tid) session.recordTurnFacts(tid, d);
           const status = String(d.status ?? "completed");
-          const final = typeof d.final_content === "string" ? d.final_content : "";
+          /**
+           * 经 Lead 授权（fb-c R6，仅此处 TURN_END 分流）：
+           * * final_content 的**存在性**必须保留 —— 缺省（undefined/null）= 不校准正文，
+           *   显式空串 = 清空目标正文（契约 K2.2）。旧写法把 null 归一成 ""，两者再也分不开。
+           * * answer_id（目标回答的 delta_id，fb-d 生产）必须传给校准：有身份只改那一条，
+           *   没有身份才按「该轮最后一条正式回答」校准。
+           */
+          const hasFinal = d.final_content !== undefined && d.final_content !== null;
+          const final = hasFinal ? String(d.final_content) : null;
           const annotation = systemAnnotationOf(d);
+          const answerId = stringOrNull(d.answer_id);
           // 落定正在流式输出的助手消息（打字机结束，变为静态；interim 标记保留）
           session.finalizeAssistant();
-          if (final.trim() || annotation) {
-            session.applyFinalAnswer(final, d.verification, { turnId: tid, annotation });
+          if (hasFinal || annotation) {
+            session.applyFinalAnswer(final, d.verification, { turnId: tid, annotation, answerId });
           } else if (status === "completed") {
             // 正常的空回答：不动内容
           } else {
