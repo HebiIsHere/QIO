@@ -163,7 +163,11 @@ async function main() {
 
   // 种子：一张材料卡 + 一个执行中任务（走真实 API，不伪造）
   const seed = await api("PUT", prefix + "/state", {
-    state: { boardId, seq: 0, updatedAt: STAMP, cards: [CARD("m1", "材料一", true), CARD("m2", "材料二", true)], groups: [], links: [], selection: [] },
+    state: {
+      boardId, seq: 0, updatedAt: STAMP,
+      cards: [CARD("m1", "材料一", true), CARD("m2", "材料二", true, 220)],
+      groups: [], links: [], selection: [],
+    },
     reason: "seed",
   });
   check("B0.2 种子板面保存成功", seed.status === 200, "status=" + seed.status);

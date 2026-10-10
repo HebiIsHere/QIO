@@ -51,7 +51,7 @@ cd frontend && npx vitest run src/stores/__tests__/closure-d-r1-r4.test.ts
 ```
 # 修正后 · 基线 1da2172（反例必须红）
 npx vitest run closure-d-r1-r4 + closure-d-r5-r6 + closure-d-impact-dialog
-#   total=11  passed=1  failed=10
+#   total=12  passed=1  failed=11
 #   R4 真路径两条（red）：
 #     AssertionError: expected false to be true            （本机记录变成了 kind=cleared）
 #     AssertionError: expected undefined to be '服务器那份草稿（用户选择保留）'（服务器稿被删空）
@@ -61,9 +61,30 @@ npx vitest run closure-d-r1-r4 + closure-d-r5-r6 + closure-d-impact-dialog
 ```
 # 修正后 · 集成分支 f24331d（本地自测；正式结论等冻结 SHA）
 npx vitest run closure-d-r1-r4 + closure-d-r5-r6 + closure-d-impact-dialog
-#   total=11  passed=11  failed=0
+#   total=12  passed=12  failed=0
 #   证据：evidence/integration-store.json（从集成 worktree 复制的机器可读结果）
 ```
+
+> 计数从 11 变 12 的原因：按 lead 要求把 R2「迟到 GET + 续存基准」补进了第②层 DOM 文件
+> （`closure-d-impact-dialog.test.ts` 末尾新增 1 条，覆盖 R2 与 R3 的联合契约）。
+> 基线 DOM 层：4 条 → 3 failed / 1 passed（R1/R5/R6 + 新增 R2 全红）；
+> 集成分支 DOM 层：4 条 → 4 passed。证据 `evidence/phase1-dom-v2.json` / `integration-dom.json`。
+
+## 4b. 集成分支第③④⑤⑥层复跑（本地自测）
+
+| 层 | 命令 | 集成 f24331d 结果 | 基线 1da2172 结果 |
+| --- | --- | --- | --- |
+| ③ API/DB | `pytest -q tests/test_closure_d_acceptance.py` | 通过（集成 worktree 自建 .venv） | 3 passed |
+| ④ 真实 HTTP | `closure-d-api-journey.py --data-dir <临时>` | **20/20 通过** | 20/20 通过 |
+| ⑤⑥ 真浏览器 | `closure-d-browser-probe.mjs`（集成分支源码 + 真实前后端 + 真实 Chrome） | **16/16 通过**（含 R1 的 B1.5：取消后界面不再显示被取消掉的正文） | 15/16（B1.5 红 = R1 缺陷） |
+
+- 第④层集成复跑用的是**集成分支自己的后端**（`backend/.venv` 在集成 worktree 内新建）。
+- 第⑤层集成复跑：前端 dev server 用**集成分支源码**（node_modules 为 junction），后端用集成分支后端。
+- 真浏览器目前覆盖 R1 端到端与「真实进程关闭重开」；R2/R3/R4/R6 的真浏览器深链路
+  （乱序 GET 注入、冲突+删除失败+重开点击流、真实 approve 扩大范围）本轮尝试后**未采用**：
+  这些用例依赖较长的真实点击/注入序列，实测出现偶发不稳定（同一探针重跑时卡片渲染计数会 0），
+  为不让不稳定证据进入交付物，已回退到稳定形态，并把 R2/R3 的确定性验证放到第②层 DOM（真实组件）。
+  这是本轮**未覆盖项**，如实记录。
 
 ## 4. 其他五条在集成分支上的自测结论（本地，非正式）
 
