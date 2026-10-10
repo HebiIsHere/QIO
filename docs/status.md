@@ -816,6 +816,8 @@
 - **两处有意变更的旧口径（旧断言随行为更新，不是回归）：** R1/F1「取消+回读失败」改为「本地撤回立即生效 + 撤回未被服务器确认 + 重试入口」；
   08 路径2「等待期间又改别处」的重新核实信息挂到新的确认说明 `note` 并清掉 `impactCheckError`（避免界面同时宣称两种状态）。
   理由与受影响文件见 `docs/interactive-state-recovery-contract.md` §8.5。
+- **CI（推送后实跑）：** run **38043038509**（https://github.com/HebiIsHere/QIO/actions/runs/38043038509）**9/9 任务 success**，
+  对应提交 `ab1b6ca`（`git ls-remote --heads origin fix/interactive-state-recovery-completion` 已核对一致）。
 - **已知限制（详见报告 §7）：** 服务端版本门是「读 `seq` + 比较」，没有数据库级串行化（并发同 `seq` 的两个请求仍可能都通过）；
   `scripts/closure-c-verify`、`scripts/interactive-verify`、`scripts/closure-d-verify` 里仍有把固定 `seq` 写进 PUT 的旧脚本（在非空板面上会 409，建议后续统一按「先读当前版本」改造）；
   真浏览器层的覆盖范围如实标注（R2/R5 与 N1/N4/N5 的浏览器级证据未做，已有 store/ASGI 层反例；N6 的 file/code 字段真机未验证）；

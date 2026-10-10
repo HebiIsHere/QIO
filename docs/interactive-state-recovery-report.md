@@ -26,7 +26,7 @@
 | 真实基线 SHA | `b3245e5`（`git fetch` 后核对远端 `fix/interactive-closure-followup` 与之完全一致、未推进） |
 | 集成分支 | `fix/interactive-state-recovery-completion` |
 | 工作分支 | A `wt/src-a-drafts`+`wt/src-a-integration`；B `wt/src-b-backend`；C `wt/src-c-ui`；D `wt/src-d-verify`+`wt/src-d-verify-after`（各独立 worktree，全部从 `b3245e5` 建立） |
-| 交付 tip | `fix/interactive-state-recovery-completion` 分支 HEAD（本报告主体提交 `72c6d8e`；其后至多追加一次「仅回填 CI run」的文档提交，tip 的完整 SHA 与 CI run 见交付说明）—— 本报告所在提交；**代码/测试冻结候选 = `ccc651a`**（其后 `390e0b1` 只增加 D 的 after2 证据与截图，本提交只增加文档） |
+| 交付 tip | `origin/fix/interactive-state-recovery-completion` 的 HEAD（本报告主体提交 `72c6d8e`，其后一次提交只回填本节的 CI run）；**代码/测试冻结候选 = `ccc651a`**（其后 `390e0b1` 只增加 D 的 after2 证据与截图） |
 | 推送状态 | 已推送 `origin/fix/interactive-state-recovery-completion`（见 §5.4 的 CI run） |
 | 工作树状态 | 干净（`git status --porcelain` 为空；门禁运行产物 `scripts/recovery-lead-verify/out/` 已 gitignore、不入库） |
 | 是否合主线 / 发布 | **否**。不合 `main`，不合并 `fix/unified-process-audit` 与 `feat/unified-process-attachments-streaming`，不发布；无数据库迁移、未改历史迁移 |
@@ -223,7 +223,16 @@
   按用户要求做针对性验证，不机械重跑全量。合入 `main` / 发布时再对最终候选做一次全量。
 - **未跑 `agent.eval.run`**：本轮未改 runtime / 预算 / 工具策略。
 - **未跑安装/升级/恢复等发布检查**：本轮不发版。
-- **CI**：见 §5.4。
+- **CI（推送后的真实运行，SHA `ab1b6caab2d85b6f41f67a5405d0ec71c72bbb6c`）**：
+  run **38043038509**（https://github.com/HebiIsHere/QIO/actions/runs/38043038509）**9/9 任务全部 success**
+  （rust windows / docs consistency / backend windows / backend py3.12 / frozen worker / install e2e / rust ubuntu / frontend / backend py3.11）。
+  该 SHA 与本节其余内容只差「这一行 CI 结果的回填」，代码与测试完全一致。
+
+### 5.4 CI 与推送
+- 远端分支：`origin/fix/interactive-state-recovery-completion`（新建，未合并 `main`、未发布）。
+- 推送后的 CI：run **38043038509** = **9/9 success**（对应提交 `ab1b6ca`）。
+- 两个数字口径不同但都存在：CI 跑的是**后端与前端全量**（含 Linux/Windows 两个平台与安装 e2e），
+  本地门禁跑的是**受影响模块**（按用户要求不做无收益的重复全量，见 §5.3）。
 
 ---
 
