@@ -360,16 +360,25 @@ def test_http_resend_marks_the_successor_as_dispatch_failed(client, monkeypatch)
     conn = ctx.conn
     _seed_interrupted(ctx.turn_journal, "turn_lost", "重发时派发失败的消息", "topic_1")
 
-    calls = {"n": 0}
-    original = ctx.turns.submit
+    # 集成后「重发」不再经过 submit：它先 reserve（落行）、准备附件、再在收尾处
+    # activate 入队。所以 F03 的「后继已落库但没有派发成功」发生在 activate 上；
+    # 这里把故障注入点跟着挪到 activate，后续重试走的仍是既有 submit 入口。
+    calls = {"activate": 0, "submit": 0}
+    original_activate = ctx.turns.activate
+    original_submit = ctx.turns.submit
 
-    def _flaky(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise TurnAcceptError("injected: queue unavailable")
-        return original(*args, **kwargs)
+    def _flaky_activate(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls["activate"] += 1
+        if calls["activate"] == 1:
+            raise RuntimeError("injected: queue unavailable")
+        return original_activate(*args, **kwargs)
 
-    monkeypatch.setattr(ctx.turns, "submit", _flaky)
+    def _counting_submit(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls["submit"] += 1
+        return original_submit(*args, **kwargs)
+
+    monkeypatch.setattr(ctx.turns, "activate", _flaky_activate)
+    monkeypatch.setattr(ctx.turns, "submit", _counting_submit)
 
     resp = client.post("/api/turns/turn_lost/resend")
     assert resp.status_code == 503, resp.text
@@ -396,7 +405,8 @@ def test_http_resend_marks_the_successor_as_dispatch_failed(client, monkeypatch)
     )
     assert retry.status_code == 200, retry.text
     assert retry.json()["turn_id"] == successor_id, "重试复用同一个后继"
-    assert calls["n"] == 2
+    assert calls["activate"] == 1, "重发路径的派发失败只注入一次"
+    assert calls["submit"] == 1, "重试复用既有派发入口（同一个后继）"
     assert (
         len(list(conn.execute("SELECT * FROM turn_journal WHERE turn_id != 'turn_lost'"))) == 1
     ), "重试不得产生第二个后继"

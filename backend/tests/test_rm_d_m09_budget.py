@@ -144,6 +144,9 @@ def _adapter(client: ScriptedClient, store: CredentialStore) -> NativeAdapter:
     """按生产接线建 adapter：key_id 由构造它的地方填（services/app.py 同一规则）。"""
     adapter = NativeAdapter(client=client, model="fake-model")
     adapter.key_id = "k1"
+    # 这个 fake client 不会返回异步流：如实声明「不支持流式」，本用例只关注预算闸门。
+    # 流式探测与降级路径由 tests/test_streaming_deltas.py 覆盖。
+    adapter.supports_stream = False
     bind_request_accounting(adapter, store)
     return adapter
 

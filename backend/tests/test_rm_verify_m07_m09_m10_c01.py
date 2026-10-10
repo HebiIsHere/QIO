@@ -201,6 +201,8 @@ def test_m09_exhausted_credential_budget_stops_the_next_model_call(db_conn):
 
     client = _BudgetSdkClient()
     adapter = NativeAdapter(client, "fake-budget")
+    # fake client 不返回异步流：如实声明不支持流式（本用例只验预算闸门）。
+    adapter.supports_stream = False
     adapter.key_id = "k1"
     loop = AgentLoop(
         adapter,
@@ -246,6 +248,8 @@ def test_m10_parse_retry_responses_are_all_accounted(db_conn):
         ]
     )
     adapter = NativeAdapter(client, "m")
+    # fake client 不返回异步流：如实声明不支持流式（本用例只验记账次数）。
+    adapter.supports_stream = False
     adapter.key_id = "k1"
     loop = AgentLoop(
         adapter,

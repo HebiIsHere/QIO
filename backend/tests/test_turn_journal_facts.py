@@ -74,20 +74,29 @@ def test_migration_adds_fact_columns_and_keeps_legacy_rows_readable(db_conn, jou
 
 
 def test_upgrade_path_from_pre_fact_schema_keeps_existing_rows(db_conn, journal):
-    """存量库升级：把库退回到迁移 28 之前，再跑一次迁移 —— 旧行必须原样可读。"""
+    """存量库升级：把库退回到「结束事实列还没有」的状态，再跑一次迁移 —— 旧行必须原样可读。"""
+    from agent.storage.migrate import apply_migrations, current_version
+    from agent.storage.schema import MIGRATIONS, SCHEMA_VERSION
+
+    # 结束事实三列现在由哪一条迁移负责，由迁移定义自己决定（集成后编号不再是 28）——
+    # 用例按「哪条迁移 ADD COLUMN reason_code」自适应，避免把号段写死在测试里。
+    facts_version = max(
+        target
+        for target, statements in MIGRATIONS
+        if any("ADD COLUMN reason_code" in str(statement) for statement in statements)
+    )
+
     _legacy_row(db_conn, "turn_before_upgrade", status="completed", reason=None, message="升级前的消息")
     for column in ("reason_code", "stopped_by", "actions"):
         db_conn.execute(f"ALTER TABLE turn_journal DROP COLUMN {column}")
-    db_conn.execute("DELETE FROM schema_version WHERE version = 28")
+    db_conn.execute("DELETE FROM schema_version WHERE version >= ?", (facts_version,))
     db_conn.commit()
     assert "actions" not in {
         row["name"] for row in db_conn.execute("PRAGMA table_info(turn_journal)").fetchall()
     }
 
-    from agent.storage.migrate import apply_migrations, current_version
-
-    assert current_version(db_conn) == 27
-    assert apply_migrations(db_conn) == 28
+    assert current_version(db_conn) == facts_version - 1
+    assert apply_migrations(db_conn) == SCHEMA_VERSION
 
     row = db_conn.execute(
         "SELECT * FROM turn_journal WHERE turn_id = 'turn_before_upgrade'"

@@ -81,8 +81,12 @@ def _apply_sibling_shape(conn: sqlite3.Connection) -> None:
     这里只造「它们各自新增了对象」这一件事，用来验证「版本号高 + 缺本轮对象」
     时本轮迁移仍会跑到。**不是它们的真实形状**，也不能据此宣称兼容。
     """
+    # 注意：**不要**用 `attachments` 这个名字。集成后 `attachments` 已经是本线自己的表
+    # （来源线原迁移 26，集成时改号为 31），存量库里带着一张**形状不同**的 `attachments`
+    # 不是任何真实分支会产生的情形，也不是本轮要兼容的对象；而这里要模拟的只是
+    # 「版本号已经很高、但本轮必需对象缺失」这一件事。
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS attachments ("
+        "CREATE TABLE IF NOT EXISTS sibling_documents ("
         " id TEXT PRIMARY KEY, message_id TEXT, created_at TEXT NOT NULL)"
     )
     conn.execute("ALTER TABLE messages ADD COLUMN attachment_ids TEXT NOT NULL DEFAULT '[]'")
