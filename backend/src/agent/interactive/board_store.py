@@ -105,6 +105,74 @@ def load_board(conn: sqlite3.Connection, board_id: str) -> dict:
     }
 
 
+def saved_seq(conn: sqlite3.Connection, board_id: str) -> int | None:
+    """当前**已保存**的板面版本（契约 §1.4 的唯一版本事实）。
+
+    板面还不存在时返回 None：读版本**不建行、不改任何内容**——被拒绝的写入
+    不应该因为一次版本检查就在数据库里留下痕迹。
+    """
+    row = conn.execute("SELECT seq FROM board_states WHERE board_id = ?", (board_id,)).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["seq"])
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_state_seq(state: Any) -> int | None:
+    """从候选板面里取出「这次写入所依据的已保存版本」。
+
+    能证明是版本的只有整数（含整数值的浮点与数字字符串）；缺失 / 非数字 / 布尔
+    一律按**未知版本**返回 None，不猜成某个已保存版本。
+    """
+    data = state if isinstance(state, dict) else {}
+    raw = data.get("seq")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() else None
+    if isinstance(raw, str):
+        try:
+            return int(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def state_version_error(*, claimed: int | None, current: int) -> str | None:
+    """普通整板写入的版本门（契约 §1.4）：通过返回 None，否则返回可读中文原因。
+
+    - 声明版本与当前已保存版本一致 → 放行；
+    - 新板（还没有任何已保存版本，current == 0）：缺失版本也放行——没有旧版本可被覆盖，
+      这是「新板第一次保存必须允许」的兼容口径；
+    - 一旦有已保存版本：旧版 / 未知版本（缺失、非数字、比服务端更新）都必须被拒绝——
+      错误前端或跨页面旧请求不得静默回退新版。
+    """
+    if claimed == current:
+        return None
+    if claimed is None and current <= 0:
+        return None
+    if claimed is None:
+        return (
+            f"这次保存没有带上它所依据的板面版本（seq）：服务器已有已保存版本 {current}，"
+            "无法证明这次写入基于它，已拒绝（没有写入任何内容）。"
+            "请先读取最新板面，再用最新版本重新保存。"
+        )
+    if claimed > current:
+        return (
+            f"这次保存声明的板面版本 {claimed} 比服务器已保存版本 {current} 更新（未知版本）："
+            "已拒绝（没有写入任何内容）。请先读取最新板面，再用最新版本重新保存。"
+        )
+    return (
+        f"这次保存基于旧版本 {claimed}，服务器已经保存到版本 {current}："
+        "为避免这次写入覆盖更新的内容，已拒绝（没有写入任何内容）。"
+        "请先读取最新板面，再用最新版本重新保存。"
+    )
+
+
 def _refresh_pending(conn: sqlite3.Connection, board_id: str) -> dict:
     """重算「未提交的有效改动」（纯本地求差，不调用 QIO）。
 

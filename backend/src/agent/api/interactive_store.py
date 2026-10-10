@@ -148,6 +148,24 @@ async def put_board_state(request: Request, board_id: str, body: dict) -> dict:
     reason = payload.get("reason") or "op"
     if not isinstance(reason, str):
         raise HTTPException(status_code=400, detail="reason 必须是字符串")
+    # --- N1 版本门（契约 §1.4）：普通整板写入必须先证明它基于当前已保存版本 ---
+    # 按真实版本事实保护：旧版 / 未知版本的整板状态一律不落库（也不推进快照、不暂停任务），
+    # 错误前端或跨页面旧请求不能静默把新版盖回旧版。
+    # 这道门在 M4 确认门之前：带 confirm 的兼容路径同样先校验版本，不得成为绕过版本保护的入口。
+    claimed_seq = board_store.parse_state_seq(state)
+    current_seq = board_store.saved_seq(conn, bid)
+    version_error = board_store.state_version_error(
+        claimed=claimed_seq, current=current_seq or 0
+    )
+    if version_error is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "stale_state",
+                "reason": version_error,
+                "currentSeq": current_seq or 0,
+            },
+        )
     # --- M4 确认门（08）：确认协议与真实落库对象一致，不只依赖前端禁用按钮 ---
     confirm = payload.get("confirm")
     check_id = ""
