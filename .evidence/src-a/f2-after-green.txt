@@ -1,0 +1,10 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ✓ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (13 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+   Start at  15:31:19
+   Duration  1.65s (transform 57ms, setup 18ms, import 57ms, tests 6ms, environment 1.38s)
+

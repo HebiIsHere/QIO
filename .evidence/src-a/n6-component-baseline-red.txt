@@ -1,0 +1,209 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts (14 tests | 14 failed) 61ms
+     × url 卡片：正文、网址、标题一起恢复 6ms
+     × file 卡片：名称恢复（不是正式卡片上的旧名） 1ms
+     × image 卡片：图片名恢复 1ms
+     × code 卡片：语言恢复 5ms
+     × 文字注释：只有正文，没有附加字段输入（旧「仅正文」记录也能恢复） 1ms
+     × 用户清空的字段必须保持为空，不许用正式值回填 1ms
+     × 仅改附加字段：正文仍是正式内容，附加字段用未完成输入 0ms
+     × 重新读取存储重建恢复来源（刷新/重开的记录层替身）：输入 → 落盘 → 新实例读到完整输入 31ms
+     × 多卡片：各卡片的未完成输入互不串 1ms
+     × 改网址 / 标题 / 正文都调用同一次完整输入写入（含空串） 7ms
+     × 本机存储写失败：如实提示恢复能力受限，输入内容仍留在编辑器里 8ms
+     × 完成编辑：正式变更带上正文与附加字段，并登记草稿清除；编辑器关闭 0ms
+     × 冲突未决：编辑器显示本机候选 + 本机记录里的附加字段，且不写草稿（打开≠选择） 0ms
+     × 另一页面写下的新稿（本机记录被替换）优先于正式内容恢复 0ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯ Failed Tests 14 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > url 卡片：正文、网
+址、标题一起恢复
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:81:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > file 卡片：名称恢
+复（不是正式卡片上的旧名）
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:91:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > image 卡片：图片
+名恢复
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:100:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > code 卡片：语言恢
+复
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:109:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > 文字注释：只有正文，没
+有附加字段输入（旧「仅正文」记录也能恢复）
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:118:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > 用户清空的字段必须保持
+为空，不许用正式值回填
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:129:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > 仅改附加字段：正文仍是
+正式内容，附加字段用未完成输入
+TypeError: writeCardDraftInput is not a function
+ ❯ seedInput src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:58:3
+     56|
+     57| function seedInput(cardId: string, text: string, meta?: Record<string,…
+     58|   writeCardDraftInput(cardId, meta ? { text, meta } : { text }, { boar…
+       |   ^
+     59| }
+     60|
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:137:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > 重新读取存储重建恢复来
+源（刷新/重开的记录层替身）：输入 → 落盘 → 新实例读到完整输入
+Error: Cannot call setValue on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:159:50
+    157|     await openEditor(first);
+    158|     await first.find('[data-im="card-editor"]').setValue("刷新前的未完成正文");
+    159|     await first.find('[data-im="card-meta-href"]').setValue("https://d…
+       |                                                  ^
+    160|     await first.find('[data-im="card-meta-title"]').setValue("刷新前的标题");
+    161|     expect(readCardLocalDraft("c1")?.meta?.title).toBe("刷新前的标题");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 打开编辑器时恢复完整未完成输入 > 多卡片：各卡片的未完成
+输入互不串
+TypeError: writeCardDraftInput is not a function
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:177:5
+    175|
+    176|   it("多卡片：各卡片的未完成输入互不串", async () => {
+    177|     writeCardDraftInput("c1", { text: "卡 1 正文", meta: { title: "卡 1 标题…
+       |     ^
+    178|     writeCardDraftInput("c2", { text: "卡 2 正文", meta: { title: "卡 2 标题…
+    179|     const w = mount(BoardCard, { props: props({ kind: "url" }) });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 输入过程把正文与附加字段作为同一份未完成输入保存 > 改网
+址 / 标题 / 正文都调用同一次完整输入写入（含空串）
+AssertionError: expected "vi.fn()" to be called 1 times, but got 0 times
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:194:20
+    192|     const w = mount(BoardCard, { props: props({ kind: "url" }) });
+    193|     await openEditor(w);
+    194|     expect(writer).toHaveBeenCalledTimes(1);
+       |                    ^
+    195|
+    196|     await w.find('[data-im="card-meta-href"]').setValue("https://typed…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/14]⎯
+
+ Test Files  1 failed (1)
+      Tests  14 failed (14)
+   Start at  15:41:26
+   Duration  2.27s (transform 425ms, setup 20ms, import 537ms, tests 61ms, environment 1.41s)
+
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 输入过程把正文与附加字段作为同一份未完成输入保存 > 本机
+存储写失败：如实提示恢复能力受限，输入内容仍留在编辑器里
+AssertionError: [data-im="card-meta-href"] 应该存在: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ value src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:63:46
+     61| function value(wrapper: ReturnType<typeof mount>, selector: string): s…
+     62|   const found = wrapper.find(selector);
+     63|   expect(found.exists(), selector + " 应该存在").toBe(true);
+       |                                              ^
+     64|   return (found.element as HTMLInputElement | HTMLTextAreaElement).val…
+     65| }
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:245:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/14]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 完成编辑后的清理与冲突未决 > 完成编辑：正式变更带上正文
+与附加字段，并登记草稿清除；编辑器关闭
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 完成编辑后的清理与冲突未决 > 冲突未决：编辑器显示本机候
+选 + 本机记录里的附加字段，且不写草稿（打开≠选择）
+ FAIL  src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts > N6 完成编辑后的清理与冲突未决 > 另一页面写下的新稿（本机记
+录被替换）优先于正式内容恢复
+TypeError: localStorage.clear is not a function
+ ❯ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts:72:16
+     70|
+     71| beforeEach(() => {
+     72|   localStorage.clear();
+       |                ^
+     73|   setActivePinia(createPinia());
+     74|   const store = useInteractiveStore();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/14]⎯
+

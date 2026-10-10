@@ -197,7 +197,12 @@ describe("R1 取消影响确认后正式板面必须撤回", () => {
     expect(JSON.stringify(lastPut.cards), "被取消的改动被后续保存重新带上了").not.toContain("被取消的新正文");
   });
 
-  it("取消时回读失败：如实提示原因、候选恢复为未保存，不假装撤回成功", async () => {
+  /**
+   * 本轮口径更新（F1）：取消**先同步**把板面退回已保存事实，回读只负责「把撤回落到服务器事实上确认」。
+   * 因此回读失败不再把被取消的正文恢复成 dirty 候选（那正是 F1 的根因：后续独立操作会从
+   * 尚未恢复的板面复制），而是保留本地撤回 + 如实说明「撤回还没被服务器确认」+ 给出重试入口。
+   */
+  it("取消时回读失败：本地撤回仍然生效，但如实说明撤回未被服务器确认并可重试", async () => {
     vi.mocked(api.fetchIntents).mockResolvedValue(runningIntents());
     const store = useInteractiveStore();
     await store.load();
@@ -210,9 +215,16 @@ describe("R1 取消影响确认后正式板面必须撤回", () => {
     await store.cancelImpact();
 
     expect(store.pendingImpact, "取消后仍停在影响确认里").toBeNull();
-    expect(store.dirty, "回读失败却把候选说成已保存").toBe(true);
-    expect(store.saveStatus, "回读失败没有如实标成失败").toBe("error");
-    expect(store.saveError ?? "").toContain("连接中断");
+    expect(store.board?.cards[0].content, "被取消的正文还留在板面上（回读失败时尤其不许回来）").toBe("已保存的第一版");
+    expect(store.dirty, "本地撤回已经把候选收回一致，不该说成有未保存候选").toBe(false);
+    expect(store.cancelRecovery?.active, "回读失败却宣称撤回已确认").toBe(true);
+    expect(store.cancelRecovery?.reason ?? "", "回读失败没有留下真实原因").toContain("连接中断");
+
+    // 重试入口：服务器恢复后事实落地，撤回被确认（不假装、也不永久卡住）
+    vi.mocked(api.fetchBoardState).mockResolvedValue(boardPayload(3, {}, [card("c1", "已保存的第一版")]));
+    const retried = await store.retryCancelRecovery();
+    expect(retried.ok, "重试入口没有取到最新事实").toBe(true);
+    expect(store.cancelRecovery?.active, "重试成功后仍在说撤回未被确认").toBe(false);
   });
 });
 

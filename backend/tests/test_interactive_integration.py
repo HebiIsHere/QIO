@@ -63,11 +63,16 @@ def save(client: TestClient, cards, groups=None, links=None, selection=None) -> 
         "links": list(links or []),
         "selection": list(selection or []),
     }
+    # N1（契约 §1.4）：候选必须基于当前已保存版本；真实客户端读取板面后就是这么写的。
+    # 固定 seq=0 的旧写法会在第二次保存时被服务端按旧版本拒绝（这不是要验的业务语义）。
+    state["seq"] = int(state_meta(client)["seq"])
     resp = client.put(f"/api/interactive/boards/{BOARD}/state", json={"state": state, "reason": "test"})
     if resp.status_code == 409:
         detail = resp.json().get("detail")
         if isinstance(detail, dict) and detail.get("error") == "impact_confirmation_required":
             meta = client.get(f"/api/interactive/boards/{BOARD}/state").json()
+            # 影响确认与待保存候选绑定同一个已保存版本（契约 §1.4 / M4）
+            state["seq"] = int(meta["seq"])
             check = client.post(
                 f"/api/interactive/boards/{BOARD}/impact-check",
                 json={"stateVersion": meta["seq"], "changeSet": {"state": state}},

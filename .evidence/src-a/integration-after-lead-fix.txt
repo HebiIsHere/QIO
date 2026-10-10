@@ -1,0 +1,11 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+ ✓ src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts (6 tests) 44ms
+ ✓ src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts (6 tests) 199ms
+
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+   Start at  16:08:27
+   Duration  5.58s (transform 1.33s, setup 68ms, import 2.19s, tests 243ms, environment 6.81s)
+

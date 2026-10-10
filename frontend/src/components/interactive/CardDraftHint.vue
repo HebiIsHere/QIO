@@ -51,6 +51,22 @@ const removal = computed(() => store.draftRemovalStateFor(key.value));
 const conflict = computed(() => store.draftConflictFor(cardId.value));
 
 /**
+ * F3 的正文冲突（本页候选正文与服务器上**同一张卡片**正文都有改动）：必须由用户决定，
+ * 不许静默覆盖。store 接口已约定（boardContentConflictFor / resolveBoardContentConflict）；
+ * 两个工作树合并前用可选调用 —— 缺接口时这一块不渲染，不影响其它提示。
+ */
+type BoardContentConflictApi = {
+  boardContentConflictFor?: (cardId: string) => { local: string; server: string } | null;
+  resolveBoardContentConflict?: (cardId: string, choice: "local" | "server") => void;
+};
+const contentConflictApi = store as unknown as BoardContentConflictApi;
+const contentConflict = computed(() =>
+  typeof contentConflictApi.boardContentConflictFor === "function"
+    ? contentConflictApi.boardContentConflictFor(cardId.value)
+    : null,
+);
+
+/**
  * 本机副本「真的没删掉」的原因（条目 13）：store 的 draftLocalRemovalErrorFor。
  *
  * 只有 storage-failure（真的删失败）才非 null；版本守卫有意保留与「本来就没有记录」都是 null，
@@ -62,6 +78,7 @@ const hasOtherRetry = computed(
   () =>
     removal.value.status === "error" ||
     Boolean(conflict.value) ||
+    Boolean(contentConflict.value) ||
     state.value.status === "error" ||
     localAtRisk.value,
 );
@@ -79,6 +96,7 @@ const visible = computed(
   () =>
     Boolean(key.value) &&
     (Boolean(conflict.value) ||
+      Boolean(contentConflict.value) ||
       removal.value.status !== "idle" ||
       state.value.status !== "idle" ||
       localAtRisk.value ||
@@ -90,7 +108,8 @@ const isError = computed(
     removal.value.status === "error" ||
     localAtRisk.value ||
     Boolean(localRemovalError.value) ||
-    Boolean(conflict.value),
+    Boolean(conflict.value) ||
+    Boolean(contentConflict.value),
 );
 
 async function retry() {
@@ -107,6 +126,11 @@ async function retry() {
 function choose(choice: "local" | "server") {
   store.resolveDraftConflict(cardId.value, choice);
 }
+
+/** F3 正文冲突的选择：交给 store 按真实决定落地（本组件只上报用户选择） */
+function chooseContent(choice: "local" | "server") {
+  contentConflictApi.resolveBoardContentConflict?.(cardId.value, choice);
+}
 </script>
 
 <template>
@@ -119,6 +143,22 @@ function choose(choice: "local" | "server") {
     :title="state.error ?? removal.error ?? local.error ?? ''"
     data-im="card-draft-hint"
   >
+    <!--
+      F3：本页改过的正文与服务器上同一张卡片的正文都有改动 → 必须由用户决定保留哪一份，
+      不静默覆盖。沿用现有冲突块的样式与文案层级，不新造一套视觉。
+    -->
+    <template v-if="contentConflict">
+      <span class="msg" data-im="card-content-conflict">
+        本页改过的正文与服务器上同一张卡片的正文都有改动，两份都留着，先选一份继续
+      </span>
+      <button class="retry" type="button" data-im="card-content-keep-local" @click="chooseContent('local')">
+        用本页的
+      </button>
+      <button class="retry" type="button" data-im="card-content-keep-server" @click="chooseContent('server')">
+        用服务器上的
+      </button>
+    </template>
+
     <!-- 清除还没同步成功：说清「哪件事没成」，不说「已清除」 -->
     <template v-if="removal.status === 'error'">
       <span class="msg" data-im="card-draft-removal-error">

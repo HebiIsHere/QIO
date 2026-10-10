@@ -1,0 +1,77 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ❯ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts (4 tests | 3 failed) 32ms
+     × 冲突存在时渲染：说清两份都保留、必须由用户选择 18ms
+     × 两个按钮分别调用 store.resolveBoardContentConflict(cardId, 选择) 2ms
+     × 与既有草稿冲突块并存：两块各自可操作，互不冒充 10ms
+     ✓ 没有冲突时不渲染这一块（也保留一切正常时不渲染的既有行为） 2ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts > F3 正文冲突入口 > 冲突存在时渲染：说清两份都保留、必
+须由用户选择
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts:64:72
+     62|     const text = wrapper.text();
+     63|
+     64|     expect(wrapper.find('[data-im="card-content-conflict"]').exists())…
+       |                                                                        ^
+     65|     expect(text).toMatch(/都有改动/);
+     66|     expect(text).toMatch(/两份都留着/);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts > F3 正文冲突入口 > 两个按钮分别调用 store.re
+solveBoardContentConflict(cardId, 选择)
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts:76:61
+     74|     const wrapper = mountHint();
+     75|
+     76|     await wrapper.find('[data-im="card-content-keep-local"]').trigger(…
+       |                                                             ^
+     77|     expect(stub.resolveBoardContentConflict).toHaveBeenLastCalledWith(…
+     78|     // 这是**另一类**冲突：不许走草稿冲突的选择入口
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts > F3 正文冲突入口 > 与既有草稿冲突块并存：两块各自可操
+作，互不冒充
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts:91:72
+     89|
+     90|     expect(wrapper.find('[data-im="card-draft-conflict"]').exists()).t…
+     91|     expect(wrapper.find('[data-im="card-content-conflict"]').exists())…
+       |                                                                        ^
+     92|
+     93|     await wrapper.find('[data-im="card-content-keep-server"]').trigger…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 1 passed (4)
+   Start at  15:42:23
+   Duration  2.41s (transform 254ms, setup 21ms, import 344ms, tests 32ms, environment 1.76s)
+

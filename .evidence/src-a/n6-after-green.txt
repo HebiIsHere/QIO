@@ -1,0 +1,10 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ✓ src/interactive/__tests__/recovery-a-n6-draft-input.test.ts (18 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  15:36:10
+   Duration  1.61s (transform 58ms, setup 19ms, import 59ms, tests 6ms, environment 1.34s)
+

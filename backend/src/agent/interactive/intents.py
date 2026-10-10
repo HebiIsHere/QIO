@@ -1333,8 +1333,13 @@ def _revert_applied(conn: sqlite3.Connection, row: sqlite3.Row, outcome: str) ->
             pending.append(
                 {
                     "id": card_id,
+                    "kind": "card",
                     "reason": f"撤回卡片 {card_id}（{_card_label(card)}）会影响你已经做过的其他工作",
                     "impact": "；".join(impacts),
+                    # N4（本轮 §5）：记下「说明时」的对象内容指纹与影响清单。执行用户的决定前必须重核，
+                    # 否则说明之后新增的编辑 / 关系 / 组成员 / 工作依赖会被旧决定顺带删除。
+                    "signature": _card_signature(card),
+                    "impacts": impacts,
                 }
             )
             pending_cards.add(card_id)
@@ -1354,8 +1359,12 @@ def _revert_applied(conn: sqlite3.Connection, row: sqlite3.Row, outcome: str) ->
             pending.append(
                 {
                     "id": link_id,
+                    "kind": "link",
                     "reason": f"关系 {link_id} 的一端要等你决定是否撤回",
                     "impact": "撤回卡片会让这条关系失去一端，因此需要一起决定",
+                    # N4：关系按内容指纹复核（它一端要撤回的卡片由那张卡片自己的重核负责）
+                    "signature": _link_signature(link),
+                    "impacts": [],
                 }
             )
             continue
@@ -1416,55 +1425,262 @@ def _revert_applied(conn: sqlite3.Connection, row: sqlite3.Row, outcome: str) ->
     }
 
 
-def _revert_pending_rest(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    """用户决定撤回「等待决定」的其余部分（决策路径：演示推进 outcome=revert_rest）。"""
+def _pending_label(kind: str, item_id: str, state: dict) -> str:
+    """给人看的待决定对象名称（按板面事实判断，不按旧记录里的字段）。"""
+    if kind == "card":
+        for card in state.get("cards") or []:
+            if str(card.get("id")) == item_id:
+                return f"卡片 {item_id}（{_card_label(card)}）"
+    if kind == "link":
+        return f"关系 {item_id}"
+    if kind == "group":
+        return f"组 {item_id}"
+    return f"对象 {item_id}"
+
+
+def _recheck_pending_item(
+    item: dict,
+    *,
+    item_id: str,
+    state: dict,
+    cards: dict,
+    links: dict,
+    groups: dict,
+    task_groups: set[str],
+    task_links: set[str],
+    other_refs: set[str],
+) -> dict:
+    """执行旧决定前，重核待撤回对象的**当前**身份、内容与影响（N4）。
+
+    返回 {"kind", "signature", "impacts", "recorded_signature", "recorded_impacts"}；
+    kind 为 None 表示对象已经不在板面上（不得按 id 去删一个不存在的东西）。
+    对象当前是什么以**板面事实**为准：旧记录里的 kind 只作为说明，不作为删除依据。
+    """
+    recorded_signature = item.get("signature")
+    recorded_impacts = [str(x) for x in (item.get("impacts") or [])]
+    if item_id in cards and not cards[item_id].get("deleted"):
+        return {
+            "kind": "card",
+            "signature": _card_signature(cards[item_id]),
+            "impacts": _card_impacts(
+                item_id,
+                state,
+                task_groups=task_groups,
+                task_links=task_links,
+                other_refs=other_refs,
+            ),
+            "recorded_signature": recorded_signature,
+            "recorded_impacts": recorded_impacts,
+        }
+    if item_id in links and not links[item_id].get("deleted"):
+        # 关系只比内容指纹：它一端要撤回的那张卡片由那张卡片自己的重核负责
+        return {
+            "kind": "link",
+            "signature": _link_signature(links[item_id]),
+            "impacts": [],
+            "recorded_signature": recorded_signature,
+            "recorded_impacts": [],
+        }
+    if item_id in groups and not groups[item_id].get("deleted"):
+        return {
+            "kind": "group",
+            "signature": _group_signature(groups[item_id]),
+            "impacts": [],
+            "recorded_signature": recorded_signature,
+            "recorded_impacts": [],
+        }
+    return {
+        "kind": None,
+        "signature": "",
+        "impacts": [],
+        "recorded_signature": recorded_signature,
+        "recorded_impacts": recorded_impacts,
+    }
+
+
+def _pending_refresh_reason(now: dict, *, label: str) -> str:
+    """为什么需要你重新决定：按**具体变化**说清（旧记录没有依据 / 内容被改过 / 出现新影响）。"""
+    recorded_signature = now.get("recorded_signature")
+    if recorded_signature is None:
+        return (
+            "这条待决定项是旧格式记录（没有记录当时的内容依据）：不能按对象 id 直接撤回。"
+            f"这次没有撤回 {label}，请按现在的内容重新确认。"
+        )
+    if now["signature"] != str(recorded_signature):
+        return (
+            f"{label} 在你说要撤回之后又被改过：这次没有撤回它，你的改动被保留。"
+            "请按现在的内容重新确认是否撤回。"
+        )
+    detail = "；".join(str(x) for x in now["impacts"][:3]) or "出现了原来说明里没有的新影响"
+    return (
+        f"{label} 出现了原来说明里没有的新影响（{detail}）：这次没有撤回它，"
+        "你之后新做的工作被保留。请按新的影响重新确认。"
+    )
+
+
+def _revert_pending_rest(
+    conn: sqlite3.Connection, row: sqlite3.Row, *, decision_ids: list[str] | None = None
+) -> dict:
+    """用户决定撤回「等待决定」的其余部分（决策路径：演示推进 outcome=revert_rest）。
+
+    N4（本轮契约 §5）：**执行前重核**每个待撤回对象的当前内容与影响。
+
+    - 只处理属于 pendingDecision 且被明确指定的项（decisionIds）；未指定 / 未展示的项原样保留，
+      不会被顺带处理；不传 decisionIds 时保持既有语义（处理全部待决定项），但同样重核；
+    - 对象已经不在板面上：只保留说明，不做删除；
+    - 对象在「说明」之后被改过内容、或出现了说明里没有的新影响（新关系 / 新组成员 / 其他工作依赖）：
+      这次**不撤回**，保留用户的后续内容，并把刷新后的说明放回 pendingDecision，
+      等用户按新说明重新决定；旧记录没有内容依据时同样先重新说明；
+    - 只有与说明时**完全一致**的对象，才按旧决定撤回。
+    """
     applied = models.loads(row["applied"], {})
     report = models.loads(row["revert"], {})
     pending = [p for p in report.get("pendingDecision") or [] if isinstance(p, dict)]
     if not pending:
-        return _fail("nothing_pending", "没有等待决定的撤回项。")
+        return {
+            **_fail("nothing_pending", "没有等待决定的撤回项。"),
+            "intent": _intent_payload(row, {}),
+            "revert": report,
+            "demo": bool(row["demo"]),
+        }
+
+    requested = None if decision_ids is None else [str(x) for x in decision_ids]
+    pending_ids = [str(p.get("id") or "") for p in pending]
+    selected_ids = set(pending_ids) if requested is None else {x for x in requested if x in pending_ids}
+    decision_summary = {
+        "requested": list(pending_ids) if requested is None else list(requested),
+        "processed": [],
+        "reconfirmed": [],
+        "skipped": [x for x in (requested or []) if x not in pending_ids],
+        "remaining": list(pending_ids),
+        "gone": [],
+    }
+    if requested is not None and not selected_ids:
+        return {
+            **_fail(
+                "nothing_selected",
+                "你指定的项都不在这项任务的待决定清单里：这次没有撤回任何内容。",
+            ),
+            "intent": _intent_payload(row, {}),
+            "revert": report,
+            "demo": bool(row["demo"]),
+            "decision": decision_summary,
+        }
+
     state = _load_state(conn, row["board_id"])
     cards = {str(c.get("id")): c for c in state.get("cards") or []}
     groups = {str(g.get("id")): g for g in state.get("groups") or []}
     links = {str(l.get("id")): l for l in state.get("links") or []}
-    applied_groups = {str(x) for x in applied.get("groupIds", [])}
+    applied_groups = {str(x) for x in applied.get("groupIds") or []}
+    task_links = {str(x) for x in applied.get("linkIds") or []}
+    other_refs = _other_work_refs(conn, row)
     reverted = list(report.get("reverted") or [])
     kept = list(report.get("kept") or [])
+    kept_before = len(kept)
     changed = False
+    new_pending: list[dict] = []
+
     for item in pending:
         item_id = str(item.get("id") or "")
-        if item_id in cards and not cards[item_id].get("deleted"):
+        if item_id not in selected_ids:
+            # 未展示 / 未指定：原样保留，绝不被这次决定顺带处理
+            new_pending.append(item)
+            continue
+        now = _recheck_pending_item(
+            item,
+            item_id=item_id,
+            state=state,
+            cards=cards,
+            links=links,
+            groups=groups,
+            task_groups=applied_groups,
+            task_links=task_links,
+            other_refs=other_refs,
+        )
+        if now["kind"] is None:
+            kept.append(f"{item_id}：已经不在板面上，无需撤回")
+            decision_summary["gone"].append(item_id)
+            continue
+        recorded_signature = now["recorded_signature"]
+        content_changed = (
+            recorded_signature is not None and now["signature"] != str(recorded_signature)
+        )
+        impacts_changed = (
+            now["kind"] == "card"
+            and recorded_signature is not None
+            and set(now["impacts"]) != set(now["recorded_impacts"])
+        )
+        if recorded_signature is None or content_changed or impacts_changed:
+            label = _pending_label(now["kind"], item_id, state)
+            why = _pending_refresh_reason(now, label=label)
+            kept.append(why)
+            new_pending.append(
+                {
+                    "id": item_id,
+                    "kind": now["kind"],
+                    "reason": why,
+                    "impact": "；".join(str(x) for x in now["impacts"])
+                    or str(item.get("impact") or ""),
+                    "impacts": now["impacts"],
+                    "signature": now["signature"],
+                }
+            )
+            decision_summary["reconfirmed"].append(item_id)
+            continue
+
+        # 与说明时完全一致：按旧决定撤回（真正落库）
+        if now["kind"] == "card":
             cards[item_id]["deleted"] = True
             cards[item_id]["updatedAt"] = _now()
             reverted.append(f"卡片 {item_id}（{_card_label(cards[item_id])}）：按你的决定，已撤回")
-            changed = True
             group = models.group_of(state, item_id)
             if group is not None:
                 group["members"] = [m for m in group.get("members") or [] if str(m) != item_id]
                 if not group["members"] and str(group.get("id")) in applied_groups:
                     groups[str(group["id"])]["deleted"] = True
-                changed = True
-        elif item_id in links and not links[item_id].get("deleted"):
+        elif now["kind"] == "link":
             links[item_id]["deleted"] = True
             links[item_id]["updatedAt"] = _now()
             reverted.append(f"关系 {item_id}：按你的决定，已撤回")
-            changed = True
-        elif item_id in groups and not groups[item_id].get("deleted"):
+        else:
             groups[item_id]["deleted"] = True
             groups[item_id]["updatedAt"] = _now()
             reverted.append(f"组 {item_id}：按你的决定，已撤回")
-            changed = True
-        else:
-            kept.append(f"{item_id}：已经不在板面上，无需撤回")
+        changed = True
+        decision_summary["processed"].append(item_id)
+
     if changed:
         _save_state(conn, row["board_id"], state, f"intent:{row['id']}:revert-rest")
+    decision_summary["remaining"] = [str(p.get("id") or "") for p in new_pending]
+    parts = [f"已按你的决定撤回 {len(decision_summary['processed'])} 项"]
+    if decision_summary["gone"]:
+        parts.append(f"{len(decision_summary['gone'])} 项已经不在板面上")
+    if decision_summary["reconfirmed"]:
+        parts.append(
+            f"{len(decision_summary['reconfirmed'])} 项因为之后又有变化，"
+            "需要你按最新说明重新决定"
+        )
+    if len(kept) > kept_before and not decision_summary["reconfirmed"]:
+        parts.append(f"保留 {len(kept) - kept_before} 项")
     new_report = {
         "reverted": reverted,
         "kept": kept,
-        "pendingDecision": [],
-        "reasonText": "已按你的决定撤回其余部分；保留的部分不再变动。",
+        "pendingDecision": new_pending,
+        "reasonText": "；".join(parts) + "；已经撤回的内容不再变动。",
     }
-    _update(conn, row["id"], revert=new_report, reason=f"{row['reason']}（其余部分已按你的决定撤回）")
+    _update(
+        conn,
+        row["id"],
+        revert=new_report,
+        reason=(
+            f"{row['reason']}（其余部分：{new_report['reasonText']}）"
+            if changed
+            else (
+                f"{row['reason']}（这次没有撤回任何内容：待决定项与说明时相比有变化，"
+                "需要你按最新说明重新决定）"
+            )
+        ),
+    )
     fresh = _get_row(conn, row["id"])
     assert fresh is not None
     return {
@@ -1472,10 +1688,18 @@ def _revert_pending_rest(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "intent": _intent_payload(fresh, {}),
         "revert": new_report,
         "demo": bool(row["demo"]),
+        "detail": new_report["reasonText"],
+        "decision": decision_summary,
     }
 
 
-def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) -> dict:
+def advance_intent(
+    conn: sqlite3.Connection,
+    intent_id: str,
+    *,
+    outcome: str,
+    decision_ids: list[str] | None = None,
+) -> dict:
     """演示执行推进（明确标注为演示）。
 
     第一阶段没有真实的模型执行：这里用可控结果走通状态机与撤回保护。
@@ -1488,7 +1712,8 @@ def advance_intent(conn: sqlite3.Connection, intent_id: str, *, outcome: str) ->
     if outcome == "revert_rest":
         if row["status"] not in ("failed", "cancelled"):
             return _fail("not_applicable", "只有失败或取消、且还有待决定项的任务才需要这个决定。")
-        return _revert_pending_rest(conn, row)
+        # N4：decisionIds 只指定「这次明确展示给用户」的项；不传则保持既有语义（全部待决定项）
+        return _revert_pending_rest(conn, row, decision_ids=decision_ids)
     if outcome not in ADVANCE_OUTCOMES:
         return _fail("bad_outcome", f"不认识的结果：{outcome}。")
 

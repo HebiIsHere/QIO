@@ -258,10 +258,15 @@ export function updateIntentPreview(
 export function advanceIntent(
   intentId: string,
   outcome: "done" | "failed" | "paused" | "cancelled" | "revert_rest",
-): Promise<{ ok: boolean; intent?: Intent; revert?: unknown; detail?: string }> {
+  /**
+   * N3/N4（契约 §2）：只处理这次**明确展示给用户**的待决定项。
+   * 不传 = 保持既有语义（由服务端决定），但服务端同样要按当前内容重核（N4）。
+   */
+  decisionIds?: string[],
+): Promise<{ ok: boolean; intent?: Intent; revert?: unknown; detail?: string; reason?: string }> {
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/demo/advance`, {
     method: "POST",
-    body: JSON.stringify({ outcome }),
+    body: JSON.stringify({ outcome, ...(decisionIds ? { decisionIds } : {}) }),
   });
 }
 

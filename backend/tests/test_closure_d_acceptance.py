@@ -144,7 +144,14 @@ def test_closure_d_r5_server_gate_requires_fresh_check_id(client: TestClient):
     assert bumped_resp.status_code == 200, bumped_resp.text
     seq_bumped = _state(client)["seq"]
 
-    stale = _save(client, candidate, confirm={"checkId": check["checkId"], "stateVersion": check["stateVersion"]})
+    # N1（契约 §1.4）：候选必须带上它所依据的已保存版本，否则会更早被版本门按 stale_state 拒绝。
+    # 这里重新基于最新版本、仍然带旧 checkId：验的是确认门自己拒绝过期确认（不落库）。
+    current_candidate = {**candidate, "seq": seq_bumped}
+    stale = _save(
+        client,
+        current_candidate,
+        confirm={"checkId": check["checkId"], "stateVersion": check["stateVersion"]},
+    )
     assert stale.status_code == 409, stale.text
     stale_detail = stale.json().get("detail")
     assert isinstance(stale_detail, dict) and stale_detail.get("error") == "stale_check", stale_detail
@@ -153,10 +160,14 @@ def test_closure_d_r5_server_gate_requires_fresh_check_id(client: TestClient):
     # (c) 重新预判拿新 checkId → 保存成功
     fresh = client.post(
         f"/api/interactive/boards/{BOARD}/impact-check",
-        json={"stateVersion": seq_bumped, "changeSet": {"state": candidate}},
+        json={"stateVersion": seq_bumped, "changeSet": {"state": current_candidate}},
     ).json()
     assert fresh["ok"] is True and fresh["checkId"], fresh
-    ok = _save(client, candidate, confirm={"checkId": fresh["checkId"], "stateVersion": fresh["stateVersion"]})
+    ok = _save(
+        client,
+        current_candidate,
+        confirm={"checkId": fresh["checkId"], "stateVersion": fresh["stateVersion"]},
+    )
     assert ok.status_code == 200, ok.text
     assert ok.json()["seq"] > seq_bumped
 

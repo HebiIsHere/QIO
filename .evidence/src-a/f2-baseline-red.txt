@@ -1,0 +1,174 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (12 tests | 11 failed) 7ms
+     × 没有记录返回 null；有记录返回稳定、可复跑的身份依据 3ms
+     × 内容、记录种类、记录时戳、版本任一不同 → 依据不同（不会把新记录认成旧记录） 0ms
+     × 无 version 记录：删除失败 → 另一页面写新稿 → 重试按指纹复核并保留新稿 0ms
+     × version 0 记录：同样必须按指纹复核（0 不许当成「按对象删」） 0ms
+     × 另一页面写入的新记录同样是旧格式（无版本）也不能被删 0ms
+     × 记录种类变了（旧副本被新的待确认清除依据替换）也不能被删 0ms
+     × 没有被替换的旧副本仍可清理（无版本与 version 0 都覆盖） 0ms
+     × 记录已经不在了：按指纹清理算「本来就没有」，不报失败 0ms
+     × 当时没有记录时给 null 指纹：现在冒出的记录不许被删 0ms
+     × 版本相等且指纹一致才删；版本被推进或指纹不符都保留 1ms
+     ✓ 不传指纹的两参调用保持既有语义（无版本按版本守卫保留，version 0 按对象删的旧口径不变） 0ms
+     × remove-local-copy + fingerprint：被替换则 kept-newer，未被替换则真的删掉 0ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 内容指纹：无版本旧格式记录的身份依据 > 没有记录返回 null；有记录返回稳定
+、可复跑的身份依据
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:97:12
+     95| describe("F2 内容指纹：无版本旧格式记录的身份依据", () => {
+     96|   it("没有记录返回 null；有记录返回稳定、可复跑的身份依据", () => {
+     97|     expect(localRecordFingerprint(null)).toBeNull();
+       |            ^
+     98|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+     99|     const record = readCardLocalDraft("c1");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 内容指纹：无版本旧格式记录的身份依据 > 内容、记录种类、记录时戳、版本任一不同
+ → 依据不同（不会把新记录认成旧记录）
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:110:18
+    108|   it("内容、记录种类、记录时戳、版本任一不同 → 依据不同（不会把新记录认成旧记录）", () => {
+    109|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    110|     const base = localRecordFingerprint(readCardLocalDraft("c1"));
+       |                  ^
+    111|     seedLegacyRecord("c1", { text: "旧副本改", kind: "draft", updatedAt: 1…
+    112|     expect(localRecordFingerprint(readCardLocalDraft("c1"))).not.toBe(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 无 versio
+n 记录：删除失败 → 另一页面写新稿 → 重试按指纹复核并保留新稿
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:130:25
+    128|   it("无 version 记录：删除失败 → 另一页面写新稿 → 重试按指纹复核并保留新稿", () => {
+    129|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    130|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+    131|     expect(fingerprint).toBeTruthy();
+    132|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > version 
+0 记录：同样必须按指纹复核（0 不许当成「按对象删」）
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:161:25
+    159|   it("version 0 记录：同样必须按指纹复核（0 不许当成「按对象删」）", () => {
+    160|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", version: 0, u…
+    161|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+    162|
+    163|     storage.failRemove(() => new Error("readonly"));
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 另一页面写入的新
+记录同样是旧格式（无版本）也不能被删
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:176:25
+    174|   it("另一页面写入的新记录同样是旧格式（无版本）也不能被删", () => {
+    175|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    176|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+    177|     // 另一个仍是旧版本实现的页面直接写下一条无版本记录
+    178|     seedLegacyRecord("c1", { text: "旧页面写的新稿", kind: "draft", updatedAt…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 记录种类变了（旧
+副本被新的待确认清除依据替换）也不能被删
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:186:25
+    184|   it("记录种类变了（旧副本被新的待确认清除依据替换）也不能被删", () => {
+    185|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    186|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+    187|     writeCardLocalClear("c1", { boardId: "b1", seq: 9 });
+    188|     expect(removeCardLocalDraftIfUnchanged("c1", null, fingerprint).re…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 没有被替换的旧副
+本仍可清理（无版本与 version 0 都覆盖）
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:194:17
+    192|   it("没有被替换的旧副本仍可清理（无版本与 version 0 都覆盖）", () => {
+    193|     seedLegacyRecord("c1", { text: "无版本旧副本", kind: "draft", updatedAt:…
+    194|     const fp1 = localRecordFingerprint(readCardLocalDraft("c1"));
+       |                 ^
+    195|     const removed1 = removeCardLocalDraftIfUnchanged("c1", null, fp1);
+    196|     expect(removed1.ok).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 记录已经不在了：
+按指纹清理算「本来就没有」，不报失败
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:210:25
+    208|   it("记录已经不在了：按指纹清理算「本来就没有」，不报失败", () => {
+    209|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    210|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+    211|     localStorage.removeItem(cardLocalDraftStorageKey("c1"));
+    212|     const result = removeCardLocalDraftIfUnchanged("c1", null, fingerp…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 无版本旧格式记录：删除失败后另一页面重写，重试必须保留新稿 > 当时没有记录时给
+ null 指纹：现在冒出的记录不许被删
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:219:31
+    217|
+    218|   it("当时没有记录时给 null 指纹：现在冒出的记录不许被删", () => {
+    219|     const absentFingerprint = localRecordFingerprint(readCardLocalDraf…
+       |                               ^
+    220|     expect(absentFingerprint).toBeNull();
+    221|     seedLegacyRecord("c1", { text: "后来新建的稿", kind: "draft", updatedAt:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 当前格式（正版本号）行为不变 > 版本相等且指纹一致才删；版本被推进或指纹不符都
+保留
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:234:16
+    232|     const third = readCardLocalDraft("c1");
+    233|     expect(third?.version).toBe(2);
+    234|     const fp = localRecordFingerprint(third);
+       |                ^
+    235|
+    236|     // 要不要先删一次？不删：直接模拟另一页面推到下一版
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/11]⎯
+
+ FAIL  src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts > F2 生产重试形状：retryLocalRemovalByPurpose 的指纹守卫 
+> remove-local-copy + fingerprint：被替换则 kept-newer，未被替换则真的删掉
+TypeError: localRecordFingerprint is not a function
+ ❯ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts:269:25
+    267|   it("remove-local-copy + fingerprint：被替换则 kept-newer，未被替换则真的删掉", () =…
+    268|     seedLegacyRecord("c1", { text: "旧副本", kind: "draft", updatedAt: 10…
+    269|     const fingerprint = localRecordFingerprint(readCardLocalDraft("c1"…
+       |                         ^
+
+ Test Files  1 failed (1)
+      Tests  11 failed | 1 passed (12)
+   Start at  15:29:29
+   Duration  1.64s (transform 60ms, setup 18ms, import 60ms, tests 7ms, environment 1.33s)
+
+    270|     writeCardLocalDraft("c1", "新稿", { boardId: "b1", seq: 2 });
+    271|     const kept = retryLocalRemovalByPurpose("c1", {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/11]⎯
+

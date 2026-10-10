@@ -1,0 +1,49 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+ ❯ src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts (6 tests | 3 failed) 14ms
+     × 删除失败 → 另一页面写新稿 → 重试：文字、本机记录、请求集合与重开恢复都保留新稿 8ms
+     ✓ 没有被替换的旧副本：重试后真的被清理（不能因为保护而清不掉） 1ms
+     × 删除失败 → 另一页面写新稿 → 重试：文字、本机记录、请求集合与重开恢复都保留新稿 1ms
+     ✓ 没有被替换的旧副本：重试后真的被清理（不能因为保护而清不掉） 1ms
+     × 删除失败 → 另一页面写新稿 → 重试：文字、本机记录、请求集合与重开恢复都保留新稿 1ms
+     ✓ 没有被替换的旧副本：重试后真的被清理（不能因为保护而清不掉） 1ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts > F2 生产重试入口（no-version 记录） > 删除失败 → 另一页面写新稿 →
+ 重试：文字、本机记录、请求集合与重开恢复都保留新稿
+ FAIL  src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts > F2 生产重试入口（version-0 记录） > 删除失败 → 另一页面写新稿 → 
+重试：文字、本机记录、请求集合与重开恢复都保留新稿
+ FAIL  src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts > F2 生产重试入口（current 记录） > 删除失败 → 另一页面写新稿 → 重试
+：文字、本机记录、请求集合与重开恢复都保留新稿
+AssertionError: expected undefined to be '另一页面的新稿' // Object.is equality
+
+- Expected:
+"另一页面的新稿"
+
++ Received:
+undefined
+
+ ❯ src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts:173:46
+    171|
+    172|       // 1) 新稿的文字与本机记录都还在
+    173|       expect(readCardLocalDraft("c1")?.text).toBe("另一页面的新稿");
+       |                                              ^
+    174|       // 2) version-guard 是有意保留：不显示成删除失败、不重试
+    175|       expect(store.draftLocalRemovalErrorFor("c1")).toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 3 passed (6)
+   Start at  16:01:55
+   Duration  1.75s (transform 126ms, setup 18ms, import 198ms, tests 14ms, environment 1.32s)
+

@@ -1,0 +1,13 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+ ✓ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (13 tests) 6ms
+ ✓ src/interactive/__tests__/recovery-a-n6-draft-input.test.ts (18 tests) 7ms
+ ✓ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts (4 tests) 25ms
+ ✓ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts (16 tests) 142ms
+
+ Test Files  4 passed (4)
+      Tests  51 passed (51)
+   Start at  15:51:46
+   Duration  2.84s (transform 859ms, setup 56ms, import 1.16s, tests 180ms, environment 7.34s)
+

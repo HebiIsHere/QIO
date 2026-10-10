@@ -213,7 +213,13 @@ def test_confirm_rejected_when_version_advanced(client: TestClient):
     later_save = _save(client, later_state)
     assert later_save.status_code == 200, later_save.text
 
-    stale = _save(client, candidate, confirm={"checkId": check["checkId"]})
+    # N1（契约 §1.4）：候选必须带上它所依据的已保存版本，否则会更早被版本门按 stale_state 拒绝。
+    # 这里重新基于最新版本、仍然带旧 checkId：验的是确认门自己拒绝过期确认（不落库）。
+    stale = _save(
+        client,
+        {**candidate, "seq": _state(client)["seq"]},
+        confirm={"checkId": check["checkId"]},
+    )
     assert stale.status_code in (400, 409)
     assert stale.json()["detail"]["error"] == "stale_check"
     seq_after = _state(client)["seq"]
