@@ -101,8 +101,14 @@ defineExpose({ focusName });
     :style="style"
     data-im="group"
     :data-group-id="group.id"
+    :data-ordered="group.ordered ? 'true' : 'false'"
   >
-    <div class="group-head">
+    <div class="group-head" data-im="group-head">
+      <!-- 组语义说明单独一行：它跟操作按钮挤同一行时会把整行挤到三行（实测），
+           头部高度被吃光后序号 / 成员那一行就被裁掉、组内操作在视口里消失 -->
+      <span class="mode" :title="group.ordered ? '有序组：序号 1..n 表示顺序' : '普通组：自由摆放不表示先后'">
+        {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
+      </span>
       <div class="head-row">
         <input
           ref="nameInput"
@@ -125,10 +131,15 @@ defineExpose({ focusName });
         >
           {{ group.ordered ? "取消有序" : "设为有序" }}
         </button>
-        <button class="btn" type="button" @click="emit('dissolve', group.id)">解除组</button>
-        <span class="mode" :title="group.ordered ? '有序组：序号 1..n 表示顺序' : '普通组：自由摆放不表示先后'">
-          {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
-        </span>
+        <button
+          class="btn"
+          type="button"
+          data-im="dissolve-group"
+          :data-group-id="group.id"
+          @click="emit('dissolve', group.id)"
+        >
+          解除组
+        </button>
         <span class="count mono">成员 {{ group.members.length }}</span>
         <span v-if="group.defaultName" class="badge default-name">系统默认名，可改</span>
         <span v-if="dropMerge" class="badge merge">拖动中：这一组将被并入落点所在的组</span>
@@ -148,18 +159,38 @@ defineExpose({ focusName });
             <span class="index mono">{{ index + 1 }}</span>
             <span class="chip-text">{{ titleOf(card) }}</span>
           </button>
-          <button class="btn tiny" type="button" :disabled="index === 0" @click="emit('move-member', group.id, card.id, index - 1)">
+          <button
+            class="btn tiny"
+            type="button"
+            data-im="move-member-up"
+            :data-group-id="group.id"
+            :data-card-id="card.id"
+            :disabled="index === 0"
+            @click="emit('move-member', group.id, card.id, index - 1)"
+          >
             上移
           </button>
           <button
             class="btn tiny"
             type="button"
+            data-im="move-member-down"
+            :data-group-id="group.id"
+            :data-card-id="card.id"
             :disabled="index === displayCards.length - 1"
             @click="emit('move-member', group.id, card.id, index + 1)"
           >
             下移
           </button>
-          <button class="btn tiny" type="button" @click="emit('leave', group.id, card.id)">移出</button>
+          <button
+            class="btn tiny"
+            type="button"
+            data-im="leave-member"
+            :data-group-id="group.id"
+            :data-card-id="card.id"
+            @click="emit('leave', group.id, card.id)"
+          >
+            移出
+          </button>
         </li>
         <li v-if="dropTarget && dropCardId" class="chip insert">
           <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
@@ -175,7 +206,16 @@ defineExpose({ focusName });
           <button class="chip-title" type="button" @click="emit('select-member', card.id)">
             <span class="chip-text">{{ titleOf(card) }}</span>
           </button>
-          <button class="btn tiny" type="button" @click="emit('leave', group.id, card.id)">移出</button>
+          <button
+            class="btn tiny"
+            type="button"
+            data-im="leave-member"
+            :data-group-id="group.id"
+            :data-card-id="card.id"
+            @click="emit('leave', group.id, card.id)"
+          >
+            移出
+          </button>
         </li>
         <li v-if="dropTarget && dropCardId" class="chip insert">
           <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
@@ -214,18 +254,44 @@ defineExpose({ focusName });
 .group-head {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   max-height: 56px; /* 与 board.ts 的 GROUP_PAD_TOP 对齐，不压住成员卡片 */
   overflow: hidden;
   padding: 2px var(--sp-2);
-  pointer-events: auto;
-  /* 头部不再压一块实心背景：组框整体比卡片轻，分隔只靠一条细线 */
-  background: transparent;
+  /**
+   * 组操作的层级（V1）：组框本身必须比卡片轻（z-index: 2，卡片 4），
+   * 否则会反过来盖住卡片标题与拖动区；但**头部**是用户要点的操作，
+   * 必须画在卡片与关系线（3）之上，否则卡片贴到组框顶边时操作就被压住、点不到。
+   *
+   * z-index 只加在头部、不改 .group：整组抬高会遮挡卡片，头部抬高只影响这条 58px 预留带
+   * （board.ts 的 GROUP_PAD_TOP：卡片的最小 y 就在这条带下面）。
+   *
+   * 头部本身 pointer-events: none：**头部空白处不接管指针**，卡片压上来时仍可点卡片、可拖动；
+   * 只有按钮 / 输入框 / 序号 chip 这些子元素接管（它们是用户明确要用的操作）。
+   */
+  position: relative;
+  z-index: 8;
+  pointer-events: none;
+  /**
+   * 头部带一层很淡的底：卡片万一压到同一条带上也不会两层文字叠着读不请。
+   * 只到组框自己的底色一档，不加边界、不加阴影，保持「组框比卡片轻」。
+   */
+  background: var(--bg-inset);
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   font-size: var(--fs-xs);
 }
-.head-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+/*
+ * 单行不折行：成员数 / 系统默认名 / 拖动提示再多也不能把这一行挤成三行
+ * （头部高度是固定的 56px，被挤满就没有成员那一行了）。宽度不够时先压缩说明文字。
+ */
+.head-row { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+/* 头部里所有可操作子元素重新接管指针（父级是 none，保证空白处不挡卡片） */
+.group-head > *,
+.group-head button,
+.group-head input,
+.group-head .chip,
+.group-head .btn { pointer-events: auto; }
 .group-name {
   flex: none;
   font: inherit;
@@ -236,12 +302,15 @@ defineExpose({ focusName });
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
-  min-width: 80px;
-  max-width: 160px;
+  min-width: 72px;
+  max-width: 140px;
+  min-height: 22px;
+  box-sizing: border-box;
 }
 .group-name:hover { border-color: var(--border-strong); }
 .group-name:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.mode { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+/* 说明行自己一行：可压缩、可省略，不跟按钮抢同一行的宽度 */
+.mode { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 /* 成员数量是次级信息：小、灰，但不至于看不清 */
 .count { flex: none; color: var(--text-muted); }
 .sequence {
@@ -283,6 +352,7 @@ defineExpose({ focusName });
 .index { color: var(--accent); }
 .chip-text { max-width: 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn {
+  flex: none;
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
@@ -290,6 +360,8 @@ defineExpose({ focusName });
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
+  /* 操作按钮要能稳定点中：给足高度，不被同行的说明文字挤扁 */
+  min-height: 22px;
   cursor: pointer;
 }
 .btn:hover { color: var(--text-strong); border-color: var(--border-strong); }

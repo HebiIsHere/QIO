@@ -1,0 +1,1312 @@
+{
+  "label": "before",
+  "app": "http://127.0.0.1:5443",
+  "backend": "http://127.0.0.1:8943",
+  "seeded": {
+    "cards": 5,
+    "groups": 2
+  },
+  "createdAt": "2026-10-10T07:50:45.115Z",
+  "summary": {
+    "total": 28,
+    "reachable": 12,
+    "covered": 12,
+    "panel": 0,
+    "offscreen": 4,
+    "notShown": 0
+  },
+  "results": [
+    {
+      "scenario": "1440x900-base",
+      "size": "1440x900",
+      "metrics": {
+        "viewport": [
+          1440,
+          900
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\1440x900-base.png",
+      "actions": []
+    },
+    {
+      "scenario": "1440x900-pan-zoom",
+      "size": "1440x900",
+      "metrics": {
+        "viewport": [
+          1440,
+          900
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": -44,
+              "y": -94,
+              "w": 65,
+              "h": 25,
+              "right": 20,
+              "bottom": -69
+            },
+            "why": "offscreen"
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": -227,
+              "y": -96,
+              "w": 174,
+              "h": 28,
+              "right": -54,
+              "bottom": -68
+            },
+            "why": "offscreen"
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": -44,
+              "y": 361,
+              "w": 65,
+              "h": 25,
+              "right": 20,
+              "bottom": 386
+            },
+            "why": "offscreen"
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": -227,
+              "y": 359,
+              "w": 174,
+              "h": 28,
+              "right": -54,
+              "bottom": 387
+            },
+            "why": "offscreen"
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\1440x900-pan-zoom.png",
+      "actions": []
+    },
+    {
+      "scenario": "1440x900-chat-batch",
+      "size": "1440x900",
+      "metrics": {
+        "viewport": [
+          1440,
+          900
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\1440x900-chat-batch.png",
+      "actions": []
+    },
+    {
+      "scenario": "1024x768-base",
+      "size": "1024x768",
+      "metrics": {
+        "viewport": [
+          1024,
+          768
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\1024x768-base.png",
+      "actions": []
+    },
+    {
+      "scenario": "800x600-base",
+      "size": "800x600",
+      "metrics": {
+        "viewport": [
+          800,
+          600
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\800x600-base.png",
+      "actions": []
+    },
+    {
+      "scenario": "800x600-chat",
+      "size": "800x600",
+      "metrics": {
+        "viewport": [
+          800,
+          600
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\800x600-chat.png",
+      "actions": []
+    },
+    {
+      "scenario": "480x600-base",
+      "size": "480x600",
+      "metrics": {
+        "viewport": [
+          480,
+          600
+        ],
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 84,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 105
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 83,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 106
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 464,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 485
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 463,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 486
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\480x600-base.png",
+      "actions": []
+    },
+    {
+      "scenario": "1024x768-actions",
+      "size": "1024x768",
+      "metrics": null,
+      "shot": null,
+      "actions": [
+        {
+          "action": "设为有序(g_right)",
+          "click": {
+            "ok": true,
+            "at": {
+              "x": 213,
+              "y": 456
+            }
+          },
+          "before": false,
+          "ok": true,
+          "after": true
+        },
+        {
+          "action": "移出成员(g_left/cA)",
+          "click": {
+            "ok": false,
+            "why": "not-found",
+            "selector": "[data-im=\"group\"][data-group-id=\"g_left\"] [data-im=\"leave-member\"]"
+          },
+          "ok": false,
+          "after": [
+            "cA",
+            "cB"
+          ]
+        },
+        {
+          "action": "解除组(g_left)",
+          "click": {
+            "ok": false,
+            "why": "not-found",
+            "selector": "[data-im=\"group\"][data-group-id=\"g_left\"] [data-im=\"dissolve-group\"]"
+          },
+          "ok": false,
+          "afterGroups": [
+            "g_left",
+            "g_right"
+          ]
+        }
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "scenario": "1440x900-base",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-base",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-base",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-base",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-pan-zoom",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": -44,
+        "y": -94,
+        "w": 65,
+        "h": 25,
+        "right": 20,
+        "bottom": -69
+      },
+      "why": "offscreen"
+    },
+    {
+      "scenario": "1440x900-pan-zoom",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": -227,
+        "y": -96,
+        "w": 174,
+        "h": 28,
+        "right": -54,
+        "bottom": -68
+      },
+      "why": "offscreen"
+    },
+    {
+      "scenario": "1440x900-pan-zoom",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": -44,
+        "y": 361,
+        "w": 65,
+        "h": 25,
+        "right": 20,
+        "bottom": 386
+      },
+      "why": "offscreen"
+    },
+    {
+      "scenario": "1440x900-pan-zoom",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": -227,
+        "y": 359,
+        "w": 174,
+        "h": 28,
+        "right": -54,
+        "bottom": 387
+      },
+      "why": "offscreen"
+    },
+    {
+      "scenario": "1440x900-chat-batch",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-chat-batch",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-chat-batch",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1440x900-chat-batch",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1024x768-base",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1024x768-base",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1024x768-base",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "1024x768-base",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-base",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-base",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 84,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 105
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 83,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 106
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 464,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 485
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 463,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 486
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    }
+  ],
+  "httpFails": [
+    "FAILED net::ERR_ABORTED 36756.3758",
+    "FAILED net::ERR_ABORTED 36756.3759"
+  ],
+  "consoleErrors": []
+}

@@ -1,0 +1,217 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-c/frontend
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts (14 tests | 13 failed) 66ms
+     ✓ 保存被拒后重新说明：说明里不许再同时出现「已保存 / 已暂停」 21ms
+     × 确认时板面又变了（结果 superseded）：不宣称成功，并等新的说明 5ms
+     × 检查失败：显示真实原因，并给可达的重试入口（重新核实并保存） 3ms
+     × 保存失败：真实原因不截断，重试可用 2ms
+     × 真正保存成功：只有在返回 saved 时才说生效，并列出真正被暂停的任务 2ms
+     × 仍待确认：如实说还没有保存，不许把「还需要确认」说成成功 2ms
+     × 继续：真的执行这次明确展示的剩余处理，并且只带这次展示的 decisionIds 7ms
+     × 取消：只结束本次提示，不执行撤回（不再调用只清 materialPaused 的旧动作） 4ms
+     × Escape：与取消同一条路径（结束提示、保留板面、不执行撤回） 3ms
+     × 关闭后不再自动打断；可以按任务身份主动再次查看 3ms
+     × 失败：显示服务端真实原因，并提供可用的重试入口 4ms
+     × 多任务按身份处理：只对用户这次要处理的那个 intentId 生效 3ms
+     × 请求进行中：按钮显示进行态并禁用，避免重复执行 2ms
+     × 回读没落地就不许说「已撤回」，要显示真实原因与重试 3ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 13 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：状态与文案只依据真实操作结果 > 确认时板面又变了（结果 superseded）：不宣称成功，并等新的说明
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:107:47
+    105|       return { outcome: "superseded", reason: "等待确认期间板面又有改动，已重新核实这次改动的…
+    106|     });
+    107|     await w.find('[data-im="impact-continue"]').trigger("click");
+       |                                               ^
+    108|     await w.vm.$nextTick();
+    109|     const text = panelText(w) + w.text();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：状态与文案只依据真实操作结果 > 检查失败：显示真实原因，并给可达的重试入口（重新核实并保存）
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:128:47
+    126|       return { outcome: "check_failed", reason: "这次保存前的影响预判没有完成，保存已暂停（…
+    127|     });
+    128|     await w.find('[data-im="impact-continue"]').trigger("click");
+       |                                               ^
+    129|     await w.vm.$nextTick();
+    130|     const text = panelText(w);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：状态与文案只依据真实操作结果 > 保存失败：真实原因不截断，重试可用
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:154:47
+    152|       return { outcome: "save_failed", reason: longReason } as ImpactC…
+    153|     });
+    154|     await w.find('[data-im="impact-continue"]').trigger("click");
+       |                                               ^
+    155|     await w.vm.$nextTick();
+    156|     const panel = w.find('[data-im="impact-outcome"]');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：状态与文案只依据真实操作结果 > 真正保存成功：只有在返回 saved 时才说生效，并列出真正被暂停的任务
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:179:47
+    177|       } as ImpactConfirmResult;
+    178|     });
+    179|     await w.find('[data-im="impact-continue"]').trigger("click");
+       |                                               ^
+    180|     await w.vm.$nextTick();
+    181|     const panel = w.find('[data-im="impact-outcome"]');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：状态与文案只依据真实操作结果 > 仍待确认：如实说还没有保存，不许把「还需要确认」说成成功
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:197:47
+    195|     };
+    196|     store.confirmImpact = vi.fn(async () => ({ outcome: "needs_confirm…
+    197|     await w.find('[data-im="impact-continue"]').trigger("click");
+       |                                               ^
+    198|     await w.vm.$nextTick();
+    199|     const text = panelText(w);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 继续：真的执行这次明确展示的剩余处理，并且只带这次展示的 decisionIds
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:236:26
+    234|     await w.find('[data-im="impact-continue"]').trigger("click");
+    235|     await w.vm.$nextTick();
+    236|     expect(calls.length).toBe(1);
+       |                          ^
+    237|     expect(calls[0].id).toBe("i9");
+    238|     expect(calls[0].ids).toEqual(["c2", "c3"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 取消：只结束本次提示，不执行撤回（不再调用只清 materialPaused 的旧动作）
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'i9' ]
+
+Number of calls: 0
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:252:21
+    250|     await w.vm.$nextTick();
+    251|     await w.find('[data-im="impact-cancel"]').trigger("click");
+    252|     expect(dismiss).toHaveBeenCalledWith("i9");
+       |                     ^
+    253|     expect(cont).not.toHaveBeenCalled();
+    254|     expect(dismissMaterial).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > Escape：与取消同一条路径（结束提示、保留板面、不执行撤回）
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'i9' ]
+
+Number of calls: 0
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:266:21
+    264|     await w.vm.$nextTick();
+    265|     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape",…
+    266|     expect(dismiss).toHaveBeenCalledWith("i9");
+       |                     ^
+    267|     expect(cont).not.toHaveBeenCalled();
+    268|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 关闭后不再自动打断；可以按任务身份主动再次查看
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:277:58
+    275|     store.revertDecisionDismissed = { i9: true };
+    276|     await w.vm.$nextTick();
+    277|     expect(w.find('[data-im="impact-dialog"]').exists()).toBe(false);
+       |                                                          ^
+    278|     // 「任务列表更新」不是重新打断的理由：只有用户主动再次查看才放出来
+    279|     store.intents = [...store.intents];
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 失败：显示服务端真实原因，并提供可用的重试入口
+AssertionError: expected '还有改动没有撤回：需要你决定剩下的部分 这些任务失败或取消后，已经撤回了不…' to contain '撤回前重新核对发现这些内容已经被改动'
+
+Expected: "撤回前重新核对发现这些内容已经被改动"
+Received: "还有改动没有撤回：需要你决定剩下的部分 这些任务失败或取消后，已经撤回了不受影响的部分；下面这些改动会影响其他工作，所以停在这里等你决定。 选择「继续」会按上面的说明继续处理；选择「取消」保持现状，不做任何改动。任务：会失败的任务原因：任务失败，已撤回 1 项撤回会影响别的工作 影响：它是某条关系的一端也被引用 影响：组内还有成员已结束这条提示：板面没有任何自动改动，你后来的修改都保留。取消：保持现状，不做改动继续：按上面的说明处理剩余的改动"
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:309:18
+    307|     await w.vm.$nextTick();
+    308|     const text = w.text();
+    309|     expect(text).toContain("撤回前重新核对发现这些内容已经被改动");
+       |                  ^
+    310|     const retry = w.find('[data-im="impact-continue"]');
+    311|     expect(retry.exists()).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 多任务按身份处理：只对用户这次要处理的那个 intentId 生效
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio-wt-fixes/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:339:57
+    337|     expect(blocks.length).toBe(2);
+    338|     const second = blocks[1];
+    339|     await second.find('[data-im="impact-item-continue"]').trigger("cli…
+       |                                                         ^
+    340|     expect(calls).toEqual([{ id: "i10", ids: ["d10"] }]);
+    341|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N3：待决定撤回项的继续 / 取消 > 请求进行中：按钮显示进行态并禁用，避免重复执行
+AssertionError: expected undefined to be defined
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:350:43
+    348|     await w.vm.$nextTick();
+    349|     const button = w.find('[data-im="impact-continue"]');
+    350|     expect(button.attributes("disabled")).toBeDefined();
+       |                                           ^
+    351|     await button.trigger("click");
+    352|     expect(store.continueRevertDecision).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/13]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts > N2：取消后回读失败时如实说明 > 回读没落地就不许说「已撤回」，要显示真实原因与重试
+AssertionError: expected '这次改动还没有生效：它会影响正在执行的任务 下面这些任务正在执行，而这次改…' to contain '读回服务器板面失败：网络不可用'
+
+Expected: "读回服务器板面失败：网络不可用"
+Received: "这次改动还没有生效：它会影响正在执行的任务 下面这些任务正在执行，而这次改动动了它们依赖的材料。改动还没有生效。 选择「继续」才会保存并让它们暂停（进度保留）；选择「取消」则这次改动不生效，任务继续。 其他独立任务不受影响；这不是对任务的重新审批。 任务：任务 A后果：会暂停已取消：这次改动没有生效，任务继续；其他独立任务不受影响。取消：改动不生效，任务继续继续：改动生效，相关任务暂停并保留进度"
+
+ ❯ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts:372:18
+    370|     await w.vm.$nextTick();
+    371|     const text = w.text() + panelText(w);
+    372|     expect(text).toContain("读回服务器板面失败：网络不可用");
+       |                  ^
+    373|     expect(text).not.toContain("改动没有生效");
+    374|     const retry = w.find('[data-im="impact-cancel-retry"]');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/13]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  13 failed | 1 passed (14)
+   Start at  15:56:42
+   Duration  2.00s (transform 208ms, setup 18ms, import 311ms, tests 66ms, environment 1.38s)
+
