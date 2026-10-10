@@ -248,6 +248,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * （保存成功、或提交回执与读取都能证明服务器已经这么记）时才清掉这条记录。
    */
   const localCheckedChoices = new Map<string, boolean>();
+  /**
+   * 本页**自己**最后成功写下的本机记录版本（每个草稿键）。
+   * 用于在重试补写本机副本时判断「磁盘上的是不是另一个页面写下的更新记录」——
+   * 能证明是别人的更新版本就保留它，绝不覆盖（F2 的同类保护，针对写入而不是删除）。
+   */
+  const draftLocalWrittenVersion = new Map<string, number>();
 
   /**
    * 正式的**内容冲突**（F3）：本页候选与服务器上同一张卡片的正文都被改过。
@@ -1544,6 +1550,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (cardId) {
       const written = writeCardLocalDraft(cardId, text, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
       setDraftLocalState(key, written);
+      if (written.ok && typeof written.version === "number") draftLocalWrittenVersion.set(key, written.version);
       if (conflict) {
         // 冲突里的「本机候选」已经换成这份新输入：两份来源都还在，选择入口继续可操作
         setDraftConflict(key, { local: text, server: conflict.server });
@@ -1585,6 +1592,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       seq: draftKeySeq.get(key) ?? 0,
     });
     setDraftLocalState(key, written);
+    if (written.ok && typeof written.version === "number") draftLocalWrittenVersion.set(key, written.version);
     if (conflict) {
       setDraftConflict(key, { local: text, server: conflict.server });
       if (written.ok) {
@@ -2079,11 +2087,26 @@ export const useInteractiveStore = defineStore("interactive", () => {
         !draftLocalStateFor(item).ok &&
         Object.prototype.hasOwnProperty.call(drafts.value, item)
       ) {
+        /**
+         * F2 同类保护（写入方向）：磁盘上已经是**另一个页面写下的更新记录**时，
+         * 这次补写会把它覆盖掉 —— 只在我们能证明「它比本页最后写下的版本更新」时保留它。
+         */
+        const currentRecord = readCardLocalDraft(cardId);
+        const currentVersion =
+          currentRecord && typeof currentRecord.version === "number" ? currentRecord.version : null;
+        const ourVersion = draftLocalWrittenVersion.get(item);
+        const foreignNewer =
+          currentVersion !== null && ourVersion !== undefined && currentVersion > ourVersion;
+        if (foreignNewer) {
+          setDraftLocalState(item, { ok: true, error: null });
+          continue;
+        }
         const written = writeCardLocalDraft(cardId, drafts.value[item] ?? "", {
           boardId: boardId.value,
           seq: draftKeySeq.get(item) ?? 0,
         });
         setDraftLocalState(item, written);
+        if (written.ok && typeof written.version === "number") draftLocalWrittenVersion.set(item, written.version);
       }
       /**
        * 清除失败过（12）：重试必须**先重建本机清除保护**，再发网络清除。
