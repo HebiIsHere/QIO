@@ -6,13 +6,13 @@
     "cards": 5,
     "groups": 2
   },
-  "createdAt": "2026-10-10T07:35:06.062Z",
+  "createdAt": "2026-10-10T07:50:45.115Z",
   "summary": {
-    "total": 70,
-    "reachable": 30,
-    "covered": 28,
+    "total": 28,
+    "reachable": 12,
+    "covered": 12,
     "panel": 0,
-    "offscreen": 12,
+    "offscreen": 4,
     "notShown": 0
   },
   "results": [
@@ -43,159 +43,6 @@
               "p",
               "section[data-im=board]",
               "main",
-              "div"
-            ]
-          },
-          {
-            "role": "dissolve-group",
-            "groupId": "g_left",
-            "box": {
-              "x": 248,
-              "y": 66,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 86
-            },
-            "why": "covered",
-            "hit": "p",
-            "hitParent": "section[data-im=board]",
-            "stack": [
-              "p",
-              "section[data-im=board]",
-              "main",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 208,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 241,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 426,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 459,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 138,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 171,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 173,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 206,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 356,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 389,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 391,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 424,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
               "div"
             ]
           },
@@ -236,71 +83,6 @@
             "hitParent": "div",
             "stack": [
               "button[data-im=toggle-ordered][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "dissolve-group",
-            "groupId": "g_right",
-            "box": {
-              "x": 248,
-              "y": 446,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 466
-            },
-            "why": "reachable",
-            "hit": "button[data-im=dissolve-group][g=g_right]",
-            "hitParent": "div",
-            "stack": [
-              "button[data-im=dissolve-group][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cC",
-            "box": {
-              "x": 128,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 161,
-              "bottom": 511
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cD",
-            "box": {
-              "x": 265,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 298,
-              "bottom": 511
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
               "div",
               "div",
               "div"
@@ -355,103 +137,6 @@
             "why": "offscreen"
           },
           {
-            "role": "dissolve-group",
-            "groupId": "g_left",
-            "box": {
-              "x": 30,
-              "y": -94,
-              "w": 51,
-              "h": 25,
-              "right": 81,
-              "bottom": -69
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": -17,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": 22,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 243,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": 282,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": -101,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": -62,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": -59,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": -20,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 159,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": 199,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 201,
-              "y": -42,
-              "w": 40,
-              "h": 26,
-              "right": 241,
-              "bottom": -16
-            },
-            "why": "offscreen"
-          },
-          {
             "role": "group-name",
             "groupId": "g_left",
             "box": {
@@ -476,63 +161,6 @@
               "bottom": 386
             },
             "why": "offscreen"
-          },
-          {
-            "role": "dissolve-group",
-            "groupId": "g_right",
-            "box": {
-              "x": 30,
-              "y": 361,
-              "w": 51,
-              "h": 25,
-              "right": 81,
-              "bottom": 386
-            },
-            "why": "reachable",
-            "hit": "button[data-im=dissolve-group][g=g_right]",
-            "hitParent": "div",
-            "stack": [
-              "button[data-im=dissolve-group][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cC",
-            "box": {
-              "x": -114,
-              "y": 413,
-              "w": 40,
-              "h": 26,
-              "right": -74,
-              "bottom": 439
-            },
-            "why": "offscreen"
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cD",
-            "box": {
-              "x": 50,
-              "y": 413,
-              "w": 40,
-              "h": 26,
-              "right": 90,
-              "bottom": 439
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
           },
           {
             "role": "group-name",
@@ -583,159 +211,6 @@
             ]
           },
           {
-            "role": "dissolve-group",
-            "groupId": "g_left",
-            "box": {
-              "x": 248,
-              "y": 66,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 86
-            },
-            "why": "covered",
-            "hit": "p",
-            "hitParent": "section[data-im=board]",
-            "stack": [
-              "p",
-              "section[data-im=board]",
-              "main",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 208,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 241,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 426,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 459,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 138,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 171,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 173,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 206,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 356,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 389,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 391,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 424,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
             "role": "group-name",
             "groupId": "g_left",
             "box": {
@@ -772,71 +247,6 @@
             "hitParent": "div",
             "stack": [
               "button[data-im=toggle-ordered][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "dissolve-group",
-            "groupId": "g_right",
-            "box": {
-              "x": 248,
-              "y": 446,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 466
-            },
-            "why": "reachable",
-            "hit": "button[data-im=dissolve-group][g=g_right]",
-            "hitParent": "div",
-            "stack": [
-              "button[data-im=dissolve-group][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cC",
-            "box": {
-              "x": 128,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 161,
-              "bottom": 511
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cD",
-            "box": {
-              "x": 265,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 298,
-              "bottom": 511
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
               "div",
               "div",
               "div"
@@ -899,159 +309,6 @@
             ]
           },
           {
-            "role": "dissolve-group",
-            "groupId": "g_left",
-            "box": {
-              "x": 248,
-              "y": 66,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 86
-            },
-            "why": "covered",
-            "hit": "p",
-            "hitParent": "section[data-im=board]",
-            "stack": [
-              "p",
-              "section[data-im=board]",
-              "main",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 208,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 241,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 426,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 459,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 138,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 171,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 173,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 206,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 356,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 389,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 391,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 424,
-              "bottom": 131
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
             "role": "group-name",
             "groupId": "g_left",
             "box": {
@@ -1088,71 +345,6 @@
             "hitParent": "div",
             "stack": [
               "button[data-im=toggle-ordered][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "dissolve-group",
-            "groupId": "g_right",
-            "box": {
-              "x": 248,
-              "y": 446,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 466
-            },
-            "why": "reachable",
-            "hit": "button[data-im=dissolve-group][g=g_right]",
-            "hitParent": "div",
-            "stack": [
-              "button[data-im=dissolve-group][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cC",
-            "box": {
-              "x": 128,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 161,
-              "bottom": 511
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cD",
-            "box": {
-              "x": 265,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 298,
-              "bottom": 511
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
               "div",
               "div",
               "div"
@@ -1215,15 +407,15 @@
             ]
           },
           {
-            "role": "dissolve-group",
+            "role": "group-name",
             "groupId": "g_left",
             "box": {
-              "x": 248,
-              "y": 66,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 86
+              "x": 33,
+              "y": 64,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 88
             },
             "why": "covered",
             "hit": "p",
@@ -1236,134 +428,79 @@
             ]
           },
           {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cA",
+            "role": "toggle-ordered",
+            "groupId": "g_right",
             "box": {
-              "x": 208,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 241,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 426,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 459,
-              "bottom": 131
+              "x": 186,
+              "y": 446,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 466
             },
             "why": "reachable",
-            "hit": "div",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
             "hitParent": "div",
             "stack": [
-              "div",
+              "button[data-im=toggle-ordered][g=g_right]",
               "div",
               "div",
               "div"
             ]
           },
           {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cA",
+            "role": "group-name",
+            "groupId": "g_right",
             "box": {
-              "x": 138,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 171,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-down",
-            "groupId": "g_left",
-            "cardId": "cA",
-            "box": {
-              "x": 173,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 206,
-              "bottom": 131
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "move-member-up",
-            "groupId": "g_left",
-            "cardId": "cB",
-            "box": {
-              "x": 356,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 389,
-              "bottom": 131
+              "x": 33,
+              "y": 444,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 468
             },
             "why": "reachable",
-            "hit": "div",
+            "hit": "input[data-im=group-name][g=g_right]",
             "hitParent": "div",
             "stack": [
-              "div",
+              "input[data-im=group-name][g=g_right]",
               "div",
               "div",
               "div"
             ]
-          },
+          }
+        ]
+      },
+      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\800x600-base.png",
+      "actions": []
+    },
+    {
+      "scenario": "800x600-chat",
+      "size": "800x600",
+      "metrics": {
+        "viewport": [
+          800,
+          600
+        ],
+        "rows": [
           {
-            "role": "move-member-down",
+            "role": "toggle-ordered",
             "groupId": "g_left",
-            "cardId": "cB",
             "box": {
-              "x": 391,
-              "y": 109,
-              "w": 33,
-              "h": 22,
-              "right": 424,
-              "bottom": 131
+              "x": 186,
+              "y": 66,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 86
             },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
             "stack": [
-              "div",
-              "div",
-              "div",
+              "p",
+              "section[data-im=board]",
+              "main",
               "div"
             ]
           },
@@ -1410,71 +547,6 @@
             ]
           },
           {
-            "role": "dissolve-group",
-            "groupId": "g_right",
-            "box": {
-              "x": 248,
-              "y": 446,
-              "w": 43,
-              "h": 21,
-              "right": 291,
-              "bottom": 466
-            },
-            "why": "reachable",
-            "hit": "button[data-im=dissolve-group][g=g_right]",
-            "hitParent": "div",
-            "stack": [
-              "button[data-im=dissolve-group][g=g_right]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cC",
-            "box": {
-              "x": 128,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 161,
-              "bottom": 511
-            },
-            "why": "covered",
-            "hit": "article[data-im=card]",
-            "hitParent": "div",
-            "stack": [
-              "article[data-im=card]",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
-            "role": "leave-member",
-            "groupId": "g_right",
-            "cardId": "cD",
-            "box": {
-              "x": 265,
-              "y": 489,
-              "w": 33,
-              "h": 22,
-              "right": 298,
-              "bottom": 511
-            },
-            "why": "reachable",
-            "hit": "div",
-            "hitParent": "div",
-            "stack": [
-              "div",
-              "div",
-              "div",
-              "div"
-            ]
-          },
-          {
             "role": "group-name",
             "groupId": "g_right",
             "box": {
@@ -1497,19 +569,6 @@
           }
         ]
       },
-      "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\800x600-base.png",
-      "actions": []
-    },
-    {
-      "scenario": "800x600-chat",
-      "size": "800x600",
-      "metrics": {
-        "viewport": [
-          800,
-          600
-        ],
-        "rows": []
-      },
       "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\800x600-chat.png",
       "actions": []
     },
@@ -1521,7 +580,92 @@
           480,
           600
         ],
-        "rows": []
+        "rows": [
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_left",
+            "box": {
+              "x": 186,
+              "y": 84,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 105
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_left",
+            "box": {
+              "x": 33,
+              "y": 83,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 106
+            },
+            "why": "covered",
+            "hit": "p",
+            "hitParent": "section[data-im=board]",
+            "stack": [
+              "p",
+              "section[data-im=board]",
+              "main",
+              "div"
+            ]
+          },
+          {
+            "role": "toggle-ordered",
+            "groupId": "g_right",
+            "box": {
+              "x": 186,
+              "y": 464,
+              "w": 54,
+              "h": 21,
+              "right": 240,
+              "bottom": 485
+            },
+            "why": "reachable",
+            "hit": "button[data-im=toggle-ordered][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "button[data-im=toggle-ordered][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          },
+          {
+            "role": "group-name",
+            "groupId": "g_right",
+            "box": {
+              "x": 33,
+              "y": 463,
+              "w": 145,
+              "h": 23,
+              "right": 178,
+              "bottom": 486
+            },
+            "why": "reachable",
+            "hit": "input[data-im=group-name][g=g_right]",
+            "hitParent": "div",
+            "stack": [
+              "input[data-im=group-name][g=g_right]",
+              "div",
+              "div",
+              "div"
+            ]
+          }
+        ]
       },
       "shot": "D:\\qio-dev\\qio-src-c\\scripts\\closure-c-verify\\shots\\before-v1\\480x600-base.png",
       "actions": []
@@ -1548,11 +692,9 @@
         {
           "action": "移出成员(g_left/cA)",
           "click": {
-            "ok": true,
-            "at": {
-              "x": 225,
-              "y": 120
-            }
+            "ok": false,
+            "why": "not-found",
+            "selector": "[data-im=\"group\"][data-group-id=\"g_left\"] [data-im=\"leave-member\"]"
           },
           "ok": false,
           "after": [
@@ -1563,11 +705,9 @@
         {
           "action": "解除组(g_left)",
           "click": {
-            "ok": true,
-            "at": {
-              "x": 270,
-              "y": 76
-            }
+            "ok": false,
+            "why": "not-found",
+            "selector": "[data-im=\"group\"][data-group-id=\"g_left\"] [data-im=\"dissolve-group\"]"
           },
           "ok": false,
           "afterGroups": [
@@ -1598,166 +738,6 @@
         "p",
         "section[data-im=board]",
         "main",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "dissolve-group",
-      "groupId": "g_left",
-      "box": {
-        "x": 248,
-        "y": 66,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 86
-      },
-      "why": "covered",
-      "hit": "p",
-      "hitParent": "section[data-im=board]",
-      "stack": [
-        "p",
-        "section[data-im=board]",
-        "main",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 208,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 241,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 426,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 459,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 138,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 171,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 173,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 206,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 356,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 389,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 391,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 424,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
         "div"
       ]
     },
@@ -1807,74 +787,6 @@
     },
     {
       "scenario": "1440x900-base",
-      "role": "dissolve-group",
-      "groupId": "g_right",
-      "box": {
-        "x": 248,
-        "y": 446,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 466
-      },
-      "why": "reachable",
-      "hit": "button[data-im=dissolve-group][g=g_right]",
-      "hitParent": "div",
-      "stack": [
-        "button[data-im=dissolve-group][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cC",
-      "box": {
-        "x": 128,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 161,
-        "bottom": 511
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cD",
-      "box": {
-        "x": 265,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 298,
-        "bottom": 511
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-base",
       "role": "group-name",
       "groupId": "g_right",
       "box": {
@@ -1911,110 +823,6 @@
     },
     {
       "scenario": "1440x900-pan-zoom",
-      "role": "dissolve-group",
-      "groupId": "g_left",
-      "box": {
-        "x": 30,
-        "y": -94,
-        "w": 51,
-        "h": 25,
-        "right": 81,
-        "bottom": -69
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": -17,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": 22,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 243,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": 282,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": -101,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": -62,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": -59,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": -20,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 159,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": 199,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 201,
-        "y": -42,
-        "w": 40,
-        "h": 26,
-        "right": 241,
-        "bottom": -16
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
       "role": "group-name",
       "groupId": "g_left",
       "box": {
@@ -2040,66 +848,6 @@
         "bottom": 386
       },
       "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "dissolve-group",
-      "groupId": "g_right",
-      "box": {
-        "x": 30,
-        "y": 361,
-        "w": 51,
-        "h": 25,
-        "right": 81,
-        "bottom": 386
-      },
-      "why": "reachable",
-      "hit": "button[data-im=dissolve-group][g=g_right]",
-      "hitParent": "div",
-      "stack": [
-        "button[data-im=dissolve-group][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cC",
-      "box": {
-        "x": -114,
-        "y": 413,
-        "w": 40,
-        "h": 26,
-        "right": -74,
-        "bottom": 439
-      },
-      "why": "offscreen"
-    },
-    {
-      "scenario": "1440x900-pan-zoom",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cD",
-      "box": {
-        "x": 50,
-        "y": 413,
-        "w": 40,
-        "h": 26,
-        "right": 90,
-        "bottom": 439
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
     },
     {
       "scenario": "1440x900-pan-zoom",
@@ -2139,166 +887,6 @@
     },
     {
       "scenario": "1440x900-chat-batch",
-      "role": "dissolve-group",
-      "groupId": "g_left",
-      "box": {
-        "x": 248,
-        "y": 66,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 86
-      },
-      "why": "covered",
-      "hit": "p",
-      "hitParent": "section[data-im=board]",
-      "stack": [
-        "p",
-        "section[data-im=board]",
-        "main",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 208,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 241,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 426,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 459,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 138,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 171,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 173,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 206,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 356,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 389,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 391,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 424,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
       "role": "group-name",
       "groupId": "g_left",
       "box": {
@@ -2336,74 +924,6 @@
       "hitParent": "div",
       "stack": [
         "button[data-im=toggle-ordered][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "dissolve-group",
-      "groupId": "g_right",
-      "box": {
-        "x": 248,
-        "y": 446,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 466
-      },
-      "why": "reachable",
-      "hit": "button[data-im=dissolve-group][g=g_right]",
-      "hitParent": "div",
-      "stack": [
-        "button[data-im=dissolve-group][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cC",
-      "box": {
-        "x": 128,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 161,
-        "bottom": 511
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1440x900-chat-batch",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cD",
-      "box": {
-        "x": 265,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 298,
-        "bottom": 511
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
         "div",
         "div",
         "div"
@@ -2455,166 +975,6 @@
     },
     {
       "scenario": "1024x768-base",
-      "role": "dissolve-group",
-      "groupId": "g_left",
-      "box": {
-        "x": 248,
-        "y": 66,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 86
-      },
-      "why": "covered",
-      "hit": "p",
-      "hitParent": "section[data-im=board]",
-      "stack": [
-        "p",
-        "section[data-im=board]",
-        "main",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 208,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 241,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 426,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 459,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 138,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 171,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 173,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 206,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 356,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 389,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 391,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 424,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
       "role": "group-name",
       "groupId": "g_left",
       "box": {
@@ -2652,74 +1012,6 @@
       "hitParent": "div",
       "stack": [
         "button[data-im=toggle-ordered][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "dissolve-group",
-      "groupId": "g_right",
-      "box": {
-        "x": 248,
-        "y": 446,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 466
-      },
-      "why": "reachable",
-      "hit": "button[data-im=dissolve-group][g=g_right]",
-      "hitParent": "div",
-      "stack": [
-        "button[data-im=dissolve-group][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cC",
-      "box": {
-        "x": 128,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 161,
-        "bottom": 511
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "1024x768-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cD",
-      "box": {
-        "x": 265,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 298,
-        "bottom": 511
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
         "div",
         "div",
         "div"
@@ -2771,166 +1063,6 @@
     },
     {
       "scenario": "800x600-base",
-      "role": "dissolve-group",
-      "groupId": "g_left",
-      "box": {
-        "x": 248,
-        "y": 66,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 86
-      },
-      "why": "covered",
-      "hit": "p",
-      "hitParent": "section[data-im=board]",
-      "stack": [
-        "p",
-        "section[data-im=board]",
-        "main",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 208,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 241,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "leave-member",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 426,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 459,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 138,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 171,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cA",
-      "box": {
-        "x": 173,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 206,
-        "bottom": 131
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "move-member-up",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 356,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 389,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "move-member-down",
-      "groupId": "g_left",
-      "cardId": "cB",
-      "box": {
-        "x": 391,
-        "y": 109,
-        "w": 33,
-        "h": 22,
-        "right": 424,
-        "bottom": 131
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
       "role": "group-name",
       "groupId": "g_left",
       "box": {
@@ -2975,74 +1107,6 @@
     },
     {
       "scenario": "800x600-base",
-      "role": "dissolve-group",
-      "groupId": "g_right",
-      "box": {
-        "x": 248,
-        "y": 446,
-        "w": 43,
-        "h": 21,
-        "right": 291,
-        "bottom": 466
-      },
-      "why": "reachable",
-      "hit": "button[data-im=dissolve-group][g=g_right]",
-      "hitParent": "div",
-      "stack": [
-        "button[data-im=dissolve-group][g=g_right]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cC",
-      "box": {
-        "x": 128,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 161,
-        "bottom": 511
-      },
-      "why": "covered",
-      "hit": "article[data-im=card]",
-      "hitParent": "div",
-      "stack": [
-        "article[data-im=card]",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
-      "role": "leave-member",
-      "groupId": "g_right",
-      "cardId": "cD",
-      "box": {
-        "x": 265,
-        "y": 489,
-        "w": 33,
-        "h": 22,
-        "right": 298,
-        "bottom": 511
-      },
-      "why": "reachable",
-      "hit": "div",
-      "hitParent": "div",
-      "stack": [
-        "div",
-        "div",
-        "div",
-        "div"
-      ]
-    },
-    {
-      "scenario": "800x600-base",
       "role": "group-name",
       "groupId": "g_right",
       "box": {
@@ -3052,6 +1116,182 @@
         "h": 23,
         "right": 178,
         "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 66,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 86
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 64,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 88
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 446,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 466
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "800x600-chat",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 444,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 468
+      },
+      "why": "reachable",
+      "hit": "input[data-im=group-name][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "input[data-im=group-name][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_left",
+      "box": {
+        "x": 186,
+        "y": 84,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 105
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "group-name",
+      "groupId": "g_left",
+      "box": {
+        "x": 33,
+        "y": 83,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 106
+      },
+      "why": "covered",
+      "hit": "p",
+      "hitParent": "section[data-im=board]",
+      "stack": [
+        "p",
+        "section[data-im=board]",
+        "main",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "toggle-ordered",
+      "groupId": "g_right",
+      "box": {
+        "x": 186,
+        "y": 464,
+        "w": 54,
+        "h": 21,
+        "right": 240,
+        "bottom": 485
+      },
+      "why": "reachable",
+      "hit": "button[data-im=toggle-ordered][g=g_right]",
+      "hitParent": "div",
+      "stack": [
+        "button[data-im=toggle-ordered][g=g_right]",
+        "div",
+        "div",
+        "div"
+      ]
+    },
+    {
+      "scenario": "480x600-base",
+      "role": "group-name",
+      "groupId": "g_right",
+      "box": {
+        "x": 33,
+        "y": 463,
+        "w": 145,
+        "h": 23,
+        "right": 178,
+        "bottom": 486
       },
       "why": "reachable",
       "hit": "input[data-im=group-name][g=g_right]",
@@ -3065,11 +1305,8 @@
     }
   ],
   "httpFails": [
-    "FAILED net::ERR_ABORTED 42824.3896",
-    "FAILED net::ERR_ABORTED 42824.4378",
-    "FAILED net::ERR_ABORTED 42824.4379",
-    "FAILED net::ERR_ABORTED 42824.4380",
-    "FAILED net::ERR_ABORTED 42824.4381"
+    "FAILED net::ERR_ABORTED 36756.3758",
+    "FAILED net::ERR_ABORTED 36756.3759"
   ],
   "consoleErrors": []
 }
