@@ -160,4 +160,65 @@ describe("R3 迟到的恢复补丁 vs 期间的新写入", () => {
     expect(merged.list).toEqual([]);
     expect(merged.skipped).toEqual([{ id: "att_1", reason: "missing" }]);
   });
+
+  it("兼容调用形状（不带 options）：期间更新过的同 ID 记录也不得被旧 droppedIds 删掉", async () => {
+    savePendingAttachments("A", [
+      ref({ id: "att_1", name: "一号.txt", state: "ready" }),
+      ref({ id: "att_2", name: "二号.txt", state: "ready" }),
+    ]);
+
+    const hung = gate<Response>();
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes("att_1")) return hung.promise;
+      return Promise.resolve(
+        jsonResponse({
+          attachment: { id: "att_2", name: "二号.txt", size_bytes: 10, kind: "copy", state: "ready", topic_id: "A" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 旧调用形状：不带 options —— 服务**自己**合并并落盘（N3 的兼容边界）
+    const inflight = restorePendingAttachments("A");
+
+    // 核对在途：本地更新了同一条（修订号前进）
+    savePendingAttachments("A", [
+      ref({ id: "att_1", name: "一号.txt", state: "prepared" }),
+      ref({ id: "att_2", name: "二号.txt", state: "ready" }),
+    ]);
+
+    // 后端按它发起核对时的旧事实说 att_1 永久无效（404）
+    hung.release(jsonResponse({ detail: "没有这个附件" }, 404));
+    const out = await inflight;
+
+    expect(out.dropped, "兼容路径仍把期间更新过的条目报成「永久无效」").not.toContain("一号.txt");
+    expect(loadPendingAttachments("A").map((i) => i.id), "兼容路径按进入时的旧快照删掉了更新的记录").toEqual([
+      "att_1",
+      "att_2",
+    ]);
+    expect(loadPendingAttachments("A").find((i) => i.id === "att_1")?.state).toBe("prepared");
+  });
+
+  it("对照：兼容调用形状在没人写过（修订号一致）时照旧剔除确认永久无效的条目", async () => {
+    savePendingAttachments("A", [
+      ref({ id: "att_1", name: "一号.txt" }),
+      ref({ id: "att_2", name: "二号.txt" }),
+    ]);
+    const fetchMock = vi.fn((url: string) =>
+      String(url).includes("att_1")
+        ? Promise.resolve(jsonResponse({ detail: "没有这个附件" }, 404))
+        : Promise.resolve(
+            jsonResponse({
+              attachment: { id: "att_2", name: "二号.txt", size_bytes: 10, kind: "copy", state: "ready", topic_id: "A" },
+            }),
+          ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await restorePendingAttachments("A");
+
+    expect(out.dropped).toEqual(["一号.txt"]);
+    expect(out.items.map((i) => i.id)).toEqual(["att_2"]);
+    expect(loadPendingAttachments("A").map((i) => i.id)).toEqual(["att_2"]);
+  });
 });
