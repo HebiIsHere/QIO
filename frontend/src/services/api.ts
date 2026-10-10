@@ -112,7 +112,7 @@ async function requestOnce<T>(
  * 操作可能已经生效，自动重发会变成重复提交；调用方要么查询原操作状态，要么用既有的
  * 幂等标识（例如 turn 的一次性 claim）。
  */
-async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const isRead = method === "GET";
   const timeoutMs = init.timeoutMs ?? (isRead ? API_TIMEOUT_MS.read : API_TIMEOUT_MS.write);
@@ -540,6 +540,16 @@ export const api = {
        * 前端照单渲染，不自己推断「这条算不算没做完」。
        */
       interrupted_turns?: InterruptedTurn[];
+      /**
+       * 孤儿重发：被抢占过（`recovered_at` 有值）、但**没有写成任何后继**
+       * （`recovered_by` 为空）的记录。
+       *
+       * 它们不在 `interrupted_turns` 里（后端已经算它们「被处理过」），所以如果
+       * 没有这个出口，那条消息就永久消失、用户点都点不到。前端把这份清单与
+       * `/api/recovery/records` **并入同一个收件箱**（见 stores/restore.ts）：
+       * 即使专用接口失败了，这些记录也必须在界面上看得见。
+       */
+      orphaned_turns?: InterruptedTurn[];
       approvals: {
         approval_id: string;
         kind: string;
@@ -592,6 +602,72 @@ export const api = {
         created_at?: string | null;
       }[];
     }>("/api/runtime/state", { timeoutMs: API_TIMEOUT_MS.bulk }),
+  /**
+   * 可恢复记录收件箱（A01 + A03 的后端出口，见 `api/recovery_routes.py`）。
+   *
+   * `suffix` 由 `services/recoveryApi.ts` 拼好（limit / kinds / classes）：
+   * 这里不做参数推断，避免两个地方各猜一次。返回值形状由调用方做形状校验。
+   */
+  getRecoveryRecords: (suffix = "") =>
+    request<{
+      records: unknown[];
+      total: number;
+      shown: number;
+      truncated: boolean;
+    }>(`/api/recovery/records${suffix}`, { timeoutMs: API_TIMEOUT_MS.bulk }),
+  /**
+   * 「继续这一条」：后端在单事务里接管 + 沿用既有可靠重发规则。
+   * 抢不到（已经被处理过 / 并发）→ 409，调用方必须如实反馈，不能静默。
+   */
+  continueRecovery: (
+    recordId: string,
+    expected: { expected_class: string; expected_status?: string },
+    timeoutMs: number = API_TIMEOUT_MS.write,
+  ) =>
+    request<{ ok: boolean; record_id: string; turn_id: string; status: string }>(
+      `/api/recovery/records/${encodeURIComponent(recordId)}/continue`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_class: expected.expected_class,
+          ...(expected.expected_status ? { expected_status: expected.expected_status } : {}),
+        }),
+        timeoutMs,
+      },
+    ),
+  /**
+   * 修复孤儿重发：只作用于「interrupted + 用户行 + recovered_at 非空 +
+   * recovered_by 空」这一精确状态。修复本身不改消息原文、不新建 turn。
+   */
+  repairOrphanRecord: (recordId: string, expected: { expected_class: string }) =>
+    request<{ ok: boolean; repaired: boolean; record_id: string; reason?: string }>(
+      `/api/recovery/records/${encodeURIComponent(recordId)}/repair`,
+      { method: "POST", body: JSON.stringify({ expected_class: expected.expected_class }) },
+    ),
+  /** 「忽略这一条」：标记用户已知晓，不删除原文、不产生后继。 */
+  ignoreRecoveryRecord: (recordId: string, expected: { expected_class: string }) =>
+    request<{ ok: boolean; ignored: boolean; record_id?: string }>(
+      `/api/recovery/records/${encodeURIComponent(recordId)}/ignore`,
+      { method: "POST", body: JSON.stringify({ expected_class: expected.expected_class }) },
+    ),
+  /**
+   * 把归属已死的派生任务放回待执行。
+   * `attempts` / `last_error` 由后端原样保留，迟到写由 claim_generation 挡住。
+   */
+  requeueDerivedRecord: (
+    recordId: string,
+    expected: { expected_state: string; expected_generation: number | null },
+  ) =>
+    request<{ ok: boolean; record_id?: string; state: string }>(
+      `/api/recovery/records/${encodeURIComponent(recordId)}/requeue`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_state: expected.expected_state,
+          expected_generation: expected.expected_generation,
+        }),
+      },
+    ),
   listTraces: (limit = 50, offset = 0) =>
     request<{ traces: TraceSummary[]; total: number; limit: number; offset: number }>(
       `/api/traces?limit=${limit}&offset=${offset}`,

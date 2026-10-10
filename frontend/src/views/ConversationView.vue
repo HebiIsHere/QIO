@@ -12,6 +12,7 @@ import PlanetBoot from "../components/PlanetBoot.vue";
 import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
 import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
 import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
+import RecoveryInbox from "../components/RecoveryInbox.vue";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -89,7 +90,14 @@ function syncTopNotesOffset() {
 }
 
 watch(
-  [() => onboarding.hintVisible, () => session.interruptedTurns.length],
+  [
+    () => onboarding.hintVisible,
+    () => session.interruptedTurns.length,
+    // 收件箱（未完成事项）与它同处一个槽：条数或详情展开都会改高度，
+    // 所以按实测高度重新让位，而不是写死一个常数。
+    () => session.recoveryRecords.length,
+    () => session.recoveryLoading,
+  ],
   () => void nextTick(syncTopNotesOffset),
   { immediate: true },
 );
@@ -163,6 +171,12 @@ onMounted(() => {
     -->
     <div ref="interruptedRef" class="interrupted-slot">
       <InterruptedTurnEntry />
+      <!--
+        「未完成事项」收件箱（A01 / A03）：与上面同一个槽、同一处入口，不另起页面。
+        它覆盖上面那个入口管不到的部分 —— 孤儿重发、升级前无归属的历史行、
+        归属判不出来 / 已死的派生任务。列表安静常驻，详情默认收起。
+      -->
+      <RecoveryInbox />
     </div>
     <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
     <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->
