@@ -146,11 +146,23 @@ def record_request_usage(
 
 # 进程内默认凭据库（弱引用）：主循环 / 子任务 / 维护以外的直接 adapter 调用
 # （例如 onboarding 追问）也要能归因。弱引用保证应用关掉后不会留着一个死账本。
+#
+# A06（适配器必须显式绑定所属账本）：这个全局默认库**只是兼容兜底**，不是归属
+# 依据。同一进程里每建一个 ``CredentialPolicy``（= 每建一个 AppContext）都会把它
+# 指向自己那份账本，**后建覆盖先建**；所以「谁登记得晚」绝不能改变一条已经显式
+# 绑定过的 adapter 的归属。真实归属由**建 adapter 的上下文**用
+# ``bind_request_accounting(adapter, self.credentials)`` 一次性钉死
+# （接线点：``services/app.py::_create_adapter`` 里 ``adapter.key_id = key_id``
+# 之后的一行，Lead 负责挂上）。
 _DEFAULT_STORE: "weakref.ReferenceType[Any] | None" = None
 
 
 def set_default_accounting_store(store: Any) -> None:
-    """登记进程内默认凭据库（由 ``CredentialPolicy`` 构造时调用）。"""
+    """登记进程内默认凭据库（由 ``CredentialPolicy`` 构造时调用）。
+
+    A06：这是**后建覆盖先建**的全局登记，只服务「完全没有显式绑定」的 adapter。
+    显式绑定过的 adapter 不受它影响（见 :func:`request_accounting`）。
+    """
     global _DEFAULT_STORE
     try:
         _DEFAULT_STORE = weakref.ref(store) if store is not None else None
@@ -164,9 +176,36 @@ def default_accounting_store() -> Any | None:
     return _DEFAULT_STORE()
 
 
+def clear_default_accounting_store(store: Any = None) -> bool:
+    """撤销进程内默认凭据库登记；只撤销「当前登记的正是它」的那一个。
+
+    A06：多上下文同进程时，某个上下文关闭**不能**把别的上下文刚登记的默认库
+    抹掉。``store`` 与当前登记不是同一个对象时什么都不做并返回 ``False``；
+    ``store=None`` 表示无条件清空（测试收尾用）。返回是否真的清了。
+
+    诚实边界：清掉兜底登记只影响「没有任何显式绑定」的 adapter —— 它会从此
+    不再记到别人的账本上（宁少记，不记错），显式绑定的归属完全不受影响。
+    """
+    global _DEFAULT_STORE
+    if _DEFAULT_STORE is None:
+        return False
+    if store is not None and _DEFAULT_STORE() is not store:
+        return False
+    _DEFAULT_STORE = None
+    return True
+
+
 @dataclass
 class RequestAccounting:
-    """一条 adapter ↔ 凭据的记账绑定（含可观察计数）。"""
+    """一条 adapter ↔ 凭据的记账绑定（含可观察计数）。
+
+    ``explicit`` 区分归属的来源：
+
+    * ``True``  = 显式绑定（``bind_request_accounting``）—— 归属的权威，任何
+      别的上下文后来登记默认库都不能改写它；
+    * ``False`` = 全局默认库兜底 —— 临时归属，只用于从来没有显式绑定过的
+      adapter；一旦显式绑定出现就升级成显式（计数延续，不抹掉已发生的调用）。
+    """
 
     store: Any
     key_id: str
@@ -174,15 +213,31 @@ class RequestAccounting:
     requests: int = 0
     recorded: int = 0
     incomplete: int = 0
+    explicit: bool = True
     _notes: list[str] = field(default_factory=list)
 
+    @property
+    def is_explicit(self) -> bool:
+        """这条归属是不是显式绑定来的（False = 全局默认库兜底）。"""
+        return bool(self.explicit)
+
     def snapshot(self) -> dict[str, Any]:
+        # 展示口径保持稳定（不加字段）：归属来源另用 is_explicit 表达。
         return {
             "key_id": self.key_id,
             "requests": self.requests,
             "recorded": self.recorded,
             "incomplete": self.incomplete,
         }
+
+
+def _pin_binding(adapter: Any, binding: RequestAccounting) -> bool:
+    """把绑定钉在 adapter 实例上；钉不上就返回 False（绝不打断请求）。"""
+    try:
+        adapter._request_accounting = binding
+    except Exception:  # noqa: BLE001 - 绑定不了就不记账，绝不打断请求
+        return False
+    return True
 
 
 def bind_request_accounting(
@@ -192,28 +247,49 @@ def bind_request_accounting(
     *,
     enforce_budget: bool = True,
 ) -> RequestAccounting | None:
-    """把「这条 adapter 的每次实际请求都算在 key_id 上」绑定到 adapter 实例。
+    """把「这条 adapter 的每次实际请求都算在 key_id 上」**显式**绑定到 adapter。
 
-    归因不了（没有 key_id 或没有凭据库）时返回 None —— 宁少记，不记错。
+    A06：显式绑定是归属的唯一权威，所以：
+
+    * 已经有**显式**绑定的 adapter 一律保持原绑定 —— 缓存复用的 adapter 不会
+      被后来创建的上下文改写归属（``key_id`` 缺省取 ``adapter.key_id``）；
+    * 只有「原来只是全局默认库兜底」（``explicit=False``）的 adapter 才会被
+      升级成显式绑定，升级时**保留**已累计的请求 / 入账 / 不完整计数；
+    * 归因不了（没有 key_id 或没有凭据库）时返回 None —— 宁少记，不记错。
     """
     key = key_id or getattr(adapter, "key_id", None)
     if not key or store is None:
         return None
+    existing = getattr(adapter, "_request_accounting", None)
+    if existing is not None and getattr(existing, "explicit", True):
+        # 显式归属已经钉死：后来者不得改写（同一账户对象直接复用也很自然）。
+        return existing
     binding = RequestAccounting(
-        store=store, key_id=str(key), enforce_budget=bool(enforce_budget)
+        store=store, key_id=str(key), enforce_budget=bool(enforce_budget), explicit=True
     )
-    try:
-        adapter._request_accounting = binding
-    except Exception:  # noqa: BLE001 - 绑定不了就不记账，绝不打断请求
+    if existing is not None:
+        binding.requests = int(getattr(existing, "requests", 0) or 0)
+        binding.recorded = int(getattr(existing, "recorded", 0) or 0)
+        binding.incomplete = int(getattr(existing, "incomplete", 0) or 0)
+    if not _pin_binding(adapter, binding):
         return None
     return binding
 
 
 def request_accounting(adapter: Any, *, allow_default: bool = True) -> RequestAccounting | None:
-    """取这条 adapter 的记账绑定；显式绑定优先，其次进程默认凭据库。
+    """取这条 adapter 的记账绑定；**显式绑定优先**，其次进程默认凭据库。
 
-    默认库只用于**明确声明 ``accounts_requests`` 的真实 adapter**：测试里的
-    鸭子类型替身永远走调用方给的 ``usage_sink``，不会被隐式接管。
+    A06：判定顺序就是归属规则本身：
+
+    1. adapter 一旦有（显式或已钉住的兜底）绑定就返回它 —— 别的上下文后来登记
+       默认库**不能**改变已有归属；
+    2. ``allow_default=False`` 时到此为止（调用方明确表示不接受兜底）；
+    3. 默认库只用于**明确声明 ``accounts_requests`` 且完全没有显式绑定**的真实
+       adapter：测试里的鸭子类型替身永远走调用方给的 ``usage_sink``，不会被隐式接管；
+    4. 兜底结果会**钉在 adapter 上**（``explicit=False``）：同一次请求的「预算核对」
+       与「用量写入」因此必然落在同一个账本上，即使全局默认库随后被别的上下文覆盖；
+       钉不住（例如 ``__slots__`` 替身）就**不兜底**：宁可这次不记，也不能让一次
+       请求的核对与写入落到两份不同账本上（宁少记，不记错）。
     """
     binding = getattr(adapter, "_request_accounting", None)
     if binding is not None:
@@ -224,7 +300,10 @@ def request_accounting(adapter: Any, *, allow_default: bool = True) -> RequestAc
     store = default_accounting_store()
     if not key or store is None:
         return None
-    return bind_request_accounting(adapter, store, key)
+    fallback = RequestAccounting(store=store, key_id=str(key), explicit=False)
+    if not _pin_binding(adapter, fallback):
+        return None
+    return fallback
 
 
 def adapter_self_accounts(adapter: Any) -> bool:
