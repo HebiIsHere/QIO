@@ -1326,6 +1326,9 @@ def create_app(
             loop=asyncio.get_running_loop(),
             depth=UPLOAD_QUEUE_DEPTH,
             cancel_requested=lambda: attachments.is_cancel_requested(att.id),
+            # N5：把**登记时**的代际带进工作线程 —— 提交边界与下面所有 apply_outcome
+            # 必须用同一个代际，否则 worker 启动晚一步就会以新代际身份覆盖新结果。
+            generation=upload_generation,
         )
         worker = asyncio.create_task(
             asyncio.to_thread(run_upload_worker, attachments, att, job, max_bytes=limit)

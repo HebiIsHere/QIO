@@ -99,8 +99,13 @@ class UploadJob:
         depth: int = UPLOAD_QUEUE_DEPTH,
         poll_seconds: float = POLL_SECONDS,
         cancel_requested: Callable[[], bool] | None = None,
+        generation: int | None = None,
     ) -> None:
         self.label = label
+        #: N5：本作业**登记时**的代际。提交边界与落库必须用同一个代际 ——
+        #: 否则「登记在前、worker 启动在后」的上传会以「启动那一刻」的代际通过提交
+        #: 边界（覆盖后发起的重定位成果），而落库按登记代际丢弃，行与磁盘就此不一致。
+        self.generation = generation
         self.id = label
         self.loop = loop
         self.depth = max(1, int(depth))
@@ -312,7 +317,11 @@ def run_upload_worker(service, att, job: UploadJob, *, max_bytes: int) -> DiskOu
     """工作线程入口：**只做文件 I/O**（+ 作业终态），绝不碰数据库。"""
     job.worker_started.set()
     try:
-        outcome = service.write_upload_stream(att, job.consume(), max_bytes=max_bytes)
+        # N5：把**登记时**的代际交给提交边界（与 api/server.py 的 apply_outcome 同一个），
+        # 工作线程启动得再晚也不会以新代际的身份覆盖更新的准备结果。
+        outcome = service.write_upload_stream(
+            att, job.consume(), max_bytes=max_bytes, generation=job.generation
+        )
     except BaseException as exc:  # noqa: BLE001 - 任何退出路径都要先给接收端一个准确终态
         job.worker_failed(exc)
         raise

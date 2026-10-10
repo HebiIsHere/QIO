@@ -1,11 +1,11 @@
-"""V 组独立验证：N4（register_upload 不得绕过 R1 提交边界）与 N5（审计新发现）。
+"""V 组独立验证：N4（register_upload 不得绕过 R1 提交边界）与 N5（上传 worker 的代际接线）。
 
 N4 闭合断言：不存在绕过提交边界的落盘入口；浏览器回退上传与路径准备受同一套
 （代际 + 票号 + 目标身份）边界保护。
 
-N5 是**本轮新发现**：上传 worker 绑定的是「它自己启动时」的代际，而落库用的是
+N5（本轮审计发现、现已闭合）：上传 worker 原先绑定的是「它自己启动时」的代际，而落库用的是
 「登记时」的代际 —— 登记在前的上传可以覆盖后发起的重定位结果，并把行与磁盘搞成不一致。
-本文件把 N5 的当前行为钉成可复现证据。
+本文件现在钉住**修复后**的契约：提交边界与落库必须用同一个（登记时）代际。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from agent.services.attachments import (
     STATE_CHANGED,
     STATE_READY,
     AttachmentService,
+    DiskOutcome,
 )
 
 
@@ -95,18 +96,13 @@ def test_v_n4_no_bypass_entry_and_upload_obeys_boundary(svc, tmp_path):
     assert _part_files(svc, att.id) == []
 
 
-def test_v_n5_audit_upload_worker_binds_worker_start_generation(svc, tmp_path):
-    """【审计 N5】上传 worker 绑定「自己启动时」的代际，而不是「登记时」的代际。
+def test_v_n5_stale_upload_binds_registration_generation(svc, tmp_path):
+    """N5 闭合：登记在前的上传必须以**登记时**的代际提交，不得覆盖后发起的重定位。
 
-    生产形状：server.py 在登记时算好 `upload_generation`，
-    attachment_upload.run_upload_worker 调 write_upload_stream **不传** generation
-    （见 attachment_upload.py 的 run_upload_worker）。
-
-    于是「登记在前、worker 启动在后」的上传会以**重定位那一代**的身份提交：
-    提交边界放行、把后发起的重定位结果覆盖掉；而落库仍按登记时代际 → 结果被丢弃，
-    磁盘与行记录就此不一致（读时表现为 `changed`）。
-
-    本用例断言**当前行为**，把这条残留边界固定成可复现证据。
+    生产形状：api/server.py 在登记时算好 upload_generation 并交给 UploadJob；
+    attachment_upload.run_upload_worker 用同一个代际调 write_upload_stream。
+    于是「登记在前、worker 启动在后」的上传在提交边界就被判为过期：
+    既不能覆盖重定位写下的副本，也不会让行与磁盘不一致。
     """
     src_b = _src(tmp_path, "b.bin", b"B" * 8192)
 
@@ -119,34 +115,66 @@ def test_v_n5_audit_upload_worker_binds_worker_start_generation(svc, tmp_path):
     assert relocated.state == STATE_READY
     assert svc.copy_path(att).read_bytes() == b"B" * 8192
 
-    # 3) 上传 worker 现在才启动（生产不传 generation）→ 它绑定当下的代际（= 2）
-    out = svc.write_upload_stream(att, [b"U" * 64])
-    print("N5 upload outcome:", out.state, out.error, "bound gen:", out.commit_generation)
-    print("N5 registration gen:", gen_at_registration)
-    print("N5 target bytes after upload:", svc.copy_path(att).read_bytes()[:16])
+    # 3) worker 现在才启动，但用的是**登记时**的代际（N5 的修法）
+    out = svc.write_upload_stream(att, [b"U" * 64], generation=gen_at_registration)
+    print("N5-closed upload outcome:", out.state, out.error, "bound gen:", out.commit_generation)
+    assert out.state == STATE_CANCELLED, "过期上传必须在提交边界被作废（不得覆盖更新的准备）"
+    assert svc.copy_path(att).read_bytes() == b"B" * 8192, "重定位写下的副本被过期上传覆盖了"
 
-    # 4) 落库仍按登记时代际（路由的 apply_outcome 用 upload_generation）
+    # 4) 落库同样按登记代际丢弃；行与磁盘保持一致（不再是「行列 ready/8192、磁盘 64 字节」）
     svc.apply_outcome(att.id, out, generation=gen_at_registration)
     raw = svc.get(att.id, check=False)
-    checked = svc.get(att.id, check=True)
-    print("N5 row(check=False):", raw.state, raw.size_bytes)
-    print("N5 row(check=True):", checked.state)
-    print("N5 actual file size:", svc.copy_path(att).stat().st_size)
-
-    # 当前行为：上传被当作「重定位那一代的操作」放行并覆盖了它
-    assert out.commit_generation == gen_at_registration + 1
-    assert out.state == STATE_READY, "上传在提交边界没有被作废"
-    assert svc.copy_path(att).read_bytes() == b"U" * 64, "重定位写下的副本被覆盖了"
-    # 而落库按登记代际丢弃 → 行仍是重定位的事实（ready + 8192），磁盘却是上传的 64 字节。
-    # get(check=True) 只验副本存在、不比对内容 → **界面照样显示 ready**。
     assert raw.state == STATE_READY and raw.size_bytes == 8192
-    assert checked.state == STATE_READY, "行没有察觉磁盘已被换掉（_check 只验存在）"
+    assert svc.copy_path(att).stat().st_size == 8192
+    assert _part_files(svc, att.id) == []
 
-    # 影响面：下一次绑定才在就绪判据上炸掉（大小与登记不一致）→ 这一条用不了了
+    # 5) 后续绑定仍能正常使用这一条（不再出现「大小与登记不一致」）
     bind = asyncio.run(
         svc.bind_for_turn(turn_id="turn_v_n5", attachment_ids=[att.id], topic_id=None)
     )
-    print("N5 bind rejected:", bind.rejected)
-    assert bind.bound == []
-    assert "大小与登记不一致" in bind.rejected[0][1]
-    assert _part_files(svc, att.id) == []
+    assert bind.rejected == [], bind.rejected
+    assert bind.bound == [att.id]
+
+
+def test_v_n5_worker_passes_registration_generation(svc, tmp_path):
+    """N5 的接线守卫：run_upload_worker 必须把 UploadJob 上的代际交给落盘入口。
+
+    只让服务层「调用方自觉传 generation」是不够的：真正的生产调用点是
+    attachment_upload.run_upload_worker —— 它必须把 job.generation 透传下去，
+    否则本文件上面那条服务层用例照样绿、线上却仍会以新代际覆盖新结果。
+    """
+    from agent.services.attachment_upload import (
+        SENTINEL_END,
+        UploadJob,
+        run_upload_worker,
+    )
+
+    att = svc.begin_upload(name="worker.bin")
+    captured: dict[str, object] = {}
+
+    def fake_write(a, chunks, *, max_bytes=None, generation=None):
+        captured["generation"] = generation
+        captured["bytes"] = b"".join(chunks)
+        return DiskOutcome(state=STATE_CANCELLED, error="测试替身：不落盘")
+
+    svc.write_upload_stream = fake_write  # type: ignore[method-assign]
+    loop = asyncio.new_event_loop()
+    try:
+        job = UploadJob(label="v-n5", loop=loop, poll_seconds=0.01)
+        # 用属性赋值而不是构造参数：接线缺失的旧实现也能跑到这里，于是红的是**行为**
+        # （没有把代际交给落盘入口），而不是一个「构造参数不认识」的 TypeError。
+        job.generation = 7
+        try:
+            job.box.put_nowait(b"abc")
+            job.box.put_nowait(SENTINEL_END)
+            out = run_upload_worker(svc, att, job, max_bytes=1000)
+        finally:
+            job.close()
+    finally:
+        loop.close()
+    assert out.state == STATE_CANCELLED
+    assert captured["generation"] == 7, (
+        "run_upload_worker 没有把登记时的代际交给落盘入口（N5 回归）",
+        captured,
+    )
+    assert captured["bytes"] == b"abc"
