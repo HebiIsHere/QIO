@@ -7,6 +7,16 @@ import {
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
+import {
+  continueRecovery as continueRecoveryCall,
+  fetchRecoveryRecords,
+  ignoreRecovery as ignoreRecoveryCall,
+  isRecoveryConflict,
+  repairOrphan as repairOrphanCall,
+  requeueDerived as requeueDerivedCall,
+  type RecoveryActionView,
+  type RecoveryRecordView,
+} from "../services/recoveryApi";
 import { restoreRuntimeState } from "./restore";
 
 export interface ToolPresentation {
@@ -274,6 +284,161 @@ export interface HistoryState {
  */
 export const HISTORY_PAGE_SIZE = 200;
 
+// -- 可恢复记录收件箱（A01 + A03）-----------------------------------------
+
+/** 一次收件箱动作的结果：界面据此就地说明「成功了」还是「为什么没成功」。 */
+export interface RecoveryOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/** 后端 `RecoveryRecord.status` 的中文说法；认不出的照原样显示，不编。 */
+const STATUS_LABELS: Record<string, string> = {
+  queued: "排队中",
+  running: "执行中",
+  interrupted: "上次没有执行完",
+  pending: "等待执行",
+  claimed: "已被接手",
+  done: "已完成",
+  failed: "已失败",
+  cancelled: "已取消",
+};
+
+/**
+ * 服务端没给 `actions` 时的兜底（例如接的是旧后端）。
+ *
+ * 兜底**只允许**对唯一一种精确状态生成可点动作：`ready`（已确认可恢复）。
+ * 其余状态一律给出禁用按钮 + 一句「为什么现在动不了」—— 界面上绝不能出现
+ * 一个点了没效果的按钮，也不能凭 `owner_state === 'unknown'` 就当成「已死」。
+ */
+function fallbackActions(stateClass: string): RecoveryActionView[] {
+  if (stateClass === "ready") {
+    return [
+      { id: "continue", label: "继续发送这条", enabled: true, reason: "" },
+      { id: "ignore", label: "忽略", enabled: true, reason: "" },
+    ];
+  }
+  const reason = stateClass === "orphaned_claim"
+    ? "这条记录的重发关系没有写成，先要修好才能继续"
+    : stateClass === "derived_stale" || stateClass === "derived_legacy"
+      ? "后台任务的归属已经不可用，需要重新排队"
+      : stateClass === "legacy_unowned"
+        ? "这是升级前留下的记录，没有任何归属信息"
+        : "无法确认上次的写入者是否已停止，暂时不能直接动它";
+  return [{ id: "continue", label: "暂时不能继续", enabled: false, reason }];
+}
+
+/** 记录自己带来的原因原文；为空时不编造，只说状态本身。 */
+function statusLabelOf(record: RecoveryRecordView): string {
+  const status = (record.status || "").trim();
+  if (!status) return "状态未知";
+  return STATUS_LABELS[status] ?? status;
+}
+
+/**
+ * 「为什么现在动不了」的一句话。
+ *
+ * 优先用服务端给的 `owner_note`（它知道真实归属），其次用记录里的 reason 原文，
+ * 再退回状态本身 —— 三层都不含猜测：`unknown` 永远不说成「已停止」。
+ */
+export function recoveryReasonOf(record: RecoveryRecordView): string {
+  const note = (record.owner_note || "").trim();
+  if (note) return note;
+  const reason = (record.reason || "").trim();
+  if (reason) return reason;
+  return `这条记录停留在「${statusLabelOf(record)}」`;
+}
+
+/** 服务端给的动作按钮文案；缺 label 时用一句能看懂的中文兜底。 */
+export function recoveryActionLabel(actionId: string, label?: string): string {
+  const text = (label || "").trim();
+  if (text) return text;
+  if (actionId === "continue") return "继续发送这条";
+  if (actionId === "repair") return "修好这条记录";
+  if (actionId === "ignore") return "忽略";
+  if (actionId === "requeue") return "重新排队";
+  return "处理";
+}
+
+/**
+ * 「修好」之后本地就地得到的形状（不靠刷新）。
+ *
+ * 修复的语义是「回到可继续 / 可忽略」：状态原文回到 `interrupted`，
+ * 归属变成「本实例」，动作换成继续 / 忽略。它仍然需要用户明确点一下 ——
+ * 修复本身绝不自动重发。
+ */
+function repairedRecord(record: RecoveryRecordView): RecoveryRecordView {
+  return {
+    ...record,
+    kind: record.kind === "derived_task" ? "derived_task" : "user_turn",
+    state_class: "ready",
+    status: record.kind === "derived_task" ? "pending" : "interrupted",
+    owner_state: "alive",
+    owner_note: "",
+    actions: [
+      { id: "continue", label: "继续发送这条", enabled: true, reason: "" },
+      { id: "ignore", label: "忽略", enabled: true, reason: "" },
+    ],
+  };
+}
+
+/**
+ * 首屏那行汇总：只说数量，**不替用户点**任何东西。
+ *
+ * 「继续」是用户明确决定的动作（进程退出可能正是他的意思），所以这里
+ * 只报告「有几条需要你决定」，绝不自动重发。
+ */
+function recoveryInboxSummary(records: RecoveryRecordView[]): string {
+  if (!records.length) return "";
+  return records.length === 1
+    ? "上次有一条记录需要你决定：继续还是忽略"
+    : `上次有 ${records.length} 条记录需要你决定：继续还是忽略`;
+}
+
+/**
+ * `/api/runtime/state` 里的 `orphaned_turns`（与 `interrupted_turns` 同形状）
+ * → 收件箱里的一条记录。
+ *
+ * 这类记录的精确状态是「抢占过、但没有写成任何后继」：唯一有意义的动作是
+ * **修好它**（修好之后才谈得上继续 / 忽略）。这里不生成可点的「继续」，
+ * 否则用户会点到一个注定 409 的按钮。
+ */
+function orphanedTurnToRecord(turn: InterruptedTurn): RecoveryRecordView {
+  const updatedAt = String(turn.ended_at || turn.updated_at || "");
+  return {
+    record_id: String(turn.turn_id ?? ""),
+    kind: "user_turn",
+    state_class: "orphaned_claim",
+    status: String(turn.status ?? "interrupted"),
+    message: turn.message ?? null,
+    topic_id: turn.topic_id ?? null,
+    reason: turn.reason ?? null,
+    created_at: String(turn.created_at ?? ""),
+    updated_at: updatedAt || null,
+    owner_instance_id: null,
+    owner_state: "unknown",
+    owner_note: (turn.reason_text || "").trim() || "这条记录的重发关系没有写成，需要先修好",
+    claim_generation: null,
+    attempts: null,
+    last_error: null,
+    actions: [
+      {
+        id: "repair",
+        label: "修好这条记录",
+        enabled: true,
+        reason: "",
+      },
+      {
+        id: "continue",
+        label: "继续发送这条",
+        enabled: false,
+        reason: "需要先修好这条记录的重发关系",
+      },
+    ],
+  };
+}
+
+
 export interface StreamMessage {
   id: string;
   /**
@@ -505,6 +670,41 @@ export const useSessionStore = defineStore("session", {
      * 一个点不动的假待办。这里记下确认结束的 turn_id（有界），应用快照时过滤。
      */
     _resolvedInterruptedTurnIds: [] as string[],
+    /**
+     * 可恢复记录收件箱（A01 + A03）。
+     *
+     * 一台规则同时覆盖：确认中断的用户消息、孤立重发、升级前无归属的历史行、
+     * 归属判不出来的行、以及归属已死的派生任务。界面**只**在这里呈现它们 ——
+     * 「有的记录永远看不见」正是这两个缺陷的共同根因。
+     */
+    recoveryRecords: [] as RecoveryRecordView[],
+    /**
+     * 服务端说的匹配总数（不受 limit 影响）。
+     * 它比已显示的条数多时，界面必须说出「还有 N 条未显示」——
+     * 剩下的记录不能因为没被返回就看起来不存在。
+     */
+    recoveryTotal: 0,
+    /** 正在拉收件箱（单飞；同一时间只有一个请求） */
+    recoveryLoading: false,
+    /**
+     * 收件箱的最近一次结果说明。
+     *
+     * 失败时**保留清单**（可重试），成功时也写一句 —— 「点了没反应」和
+     * 「悄悄成功」都是任务书禁止的静默状态。
+     */
+    recoveryError: "",
+    /** 正在提交的那条（record_id）：同一条只能有一个请求在飞，重复点击不重发 */
+    recoveryBusyId: "" as string,
+    /**
+     * 已经处理掉的记录 id（有界）。
+     *
+     * `/api/runtime/state` 的快照可能是处理**之前**取的，而它是另一个请求
+     * （专用接口失败时也照样要显示）。没有这份集合，旧快照就会把用户刚处理完的
+     * 记录复活成一个点不动的假待办。
+     */
+    _recoveredResolvedIds: [] as string[],
+    /** 最近一次 `/api/runtime/state` 里的孤儿记录：并入同一份清单用 */
+    _pendingOrphanedTurns: [] as InterruptedTurn[],
     /**
      * RESYNC 状态机：`normal` 正常实时；`resyncing` 正在拉权威快照
      * （期间实时事件先缓存，快照应用后再按顺序补放）；`failed` 同步失败，
@@ -1131,6 +1331,239 @@ export const useSessionStore = defineStore("session", {
     async resyncTurnState(): Promise<void> {
       await restoreRuntimeState("resync");
     },
+
+    // -- 可恢复记录收件箱（A01 + A03）------------------------------------
+
+    /**
+     * 收下 `/api/runtime/state` 里的孤儿记录（快照里的那一份）。
+     *
+     * 为什么必须单独收：`orphaned_turns` 与 `interrupted_turns` 是两个出口，
+     * 专用收件箱接口失败时前者仍然看得到 —— 孤儿记录一旦不可见，那条消息就
+     * 永久消失（点都点不到）。它们先与**本次快照时刻**的已处理集合过滤一次，
+     * 再与收件箱合并；下一次快照到达时会重新合并，所以旧快照不会复活已处理的记录。
+     */
+    adoptOrphanedTurns(turns: InterruptedTurn[] | undefined) {
+      this._pendingOrphanedTurns = (turns ?? []).map((t) => ({ ...t }));
+      this.mergeRecoveryInbox();
+    },
+    /**
+     * 把「运行时快照里的孤儿」与「收件箱接口的记录」并成同一份清单。
+     *
+     * 去重规则：同一条 id 只出现一次；两边都有时**以收件箱记录为准**（它带
+     * `actions` 与归属说明，能真的操作）。
+     */
+    mergeRecoveryInbox() {
+      const resolved = new Set(this._recoveredResolvedIds);
+      const merged: RecoveryRecordView[] = [];
+      const seen = new Set<string>();
+      for (const record of this.recoveryRecords) {
+        if (!record?.record_id || resolved.has(record.record_id) || seen.has(record.record_id)) {
+          continue;
+        }
+        seen.add(record.record_id);
+        merged.push(record);
+      }
+      for (const turn of this._pendingOrphanedTurns) {
+        const id = String((turn as { turn_id?: string }).turn_id ?? "");
+        if (!id || resolved.has(id) || seen.has(id)) continue;
+        seen.add(id);
+        merged.push(orphanedTurnToRecord(turn));
+      }
+      // 服务端说「还有没返回的」时，总数不能被本地合并改小 —— 截断提示必须真实
+      this.recoveryTotal = Math.max(this.recoveryTotal, merged.length);
+      this.recoveryRecords = merged;
+    },
+    /** 本地确认一条可恢复记录已经处理掉：旧快照不许把它复活。 */
+    noteRecoveryResolved(recordId: string) {
+      if (!recordId || this._recoveredResolvedIds.includes(recordId)) return;
+      this._recoveredResolvedIds.push(recordId);
+      if (this._recoveredResolvedIds.length > 200) this._recoveredResolvedIds.shift();
+    },
+    /**
+     * 拉一次收件箱（**单飞**）。
+     *
+     * 单飞的理由与发布闸门一样：恢复入口（连接建立 / 重连 / RESYNC / 实例变化）
+     * 可能几乎同时触发好几次，没必要发同样四五个请求。失败时**保留上一次的清单**
+     * 并写下可重试说明 —— 绝不把「拉不到」擦成「没有未完成的事」。
+     */
+    async loadRecoveryInbox(): Promise<void> {
+      if (this.recoveryLoading) return;
+      this.recoveryLoading = true;
+      this.recoveryError = "";
+      try {
+        const listing = await fetchRecoveryRecords();
+        this.recoveryRecords = listing.records ?? [];
+        this.recoveryTotal =
+          typeof listing.total === "number" && Number.isFinite(listing.total)
+            ? listing.total
+            : this.recoveryRecords.length;
+      } catch (e) {
+        // 拉不到 ≠ 没有：保留既有清单（含快照里的孤儿），说明这一份可能不完整
+        this.recoveryError =
+          `没能读取「未完成事项」清单：${(e as Error).message}` +
+          "（已显示的记录仍然可以处理，可以重试）";
+      } finally {
+        // 合并放在 finally：无论成功失败，快照里的孤儿都必须在这一份清单里看得见
+        this.mergeRecoveryInbox();
+        this.recoveryLoading = false;
+      }
+    },
+    /** 找到一条记录；找不到时给出可读原因（不抛半截状态）。 */
+    _recoveryRecord(recordId: string): RecoveryRecordView | null {
+      return this.recoveryRecords.find((r) => r.record_id === recordId) ?? null;
+    },
+    /** 单飞闸门：同一条记录只允许一个请求在飞。 */
+    _beginRecoveryAction(recordId: string): RecoveryOutcome | null {
+      if (this.recoveryBusyId) {
+        return { ok: false, message: "上一次操作还在提交中，请稍候" };
+      }
+      if (!recordId) {
+        return { ok: false, message: "这条记录没有标识，无法处理（请重试）" };
+      }
+      this.recoveryBusyId = recordId;
+      this.recoveryError = "";
+      return null;
+    },
+    /** 失败：保留这条记录（可重试），把可读原因就地写出来。 */
+    _failRecovery(recordId: string, prefix: string, e: unknown): RecoveryOutcome {
+      const conflict = isRecoveryConflict(e);
+      const message = conflict
+        ? `${prefix}没有完成：这条记录已经被处理过（可能在别处继续或忽略了），清单正在按后端最新状态刷新`
+        : `${prefix}没有成功：${(e as Error).message}（可以重试）`;
+      this.recoveryError = message;
+      if (conflict) {
+        // 409：不猜本地状态，重新要一份真相（失败也只是提示，不清空清单）
+        this.noteRecoveryResolved(recordId);
+        void this.loadRecoveryInbox();
+      }
+      return { ok: false, message };
+    },
+    /**
+     * 「继续这一条」。
+     *
+     * 只有后端确认成功才从入口移除（**不做乐观移除**）；失败就地保留 + 原因 + 重试。
+     * 不在这里自动重发：进程退出可能正是用户的意思。
+     */
+    async continueRecovery(recordId: string): Promise<RecoveryOutcome> {
+      const gate = this._beginRecoveryAction(recordId);
+      if (gate) return gate;
+      const record = this._recoveryRecord(recordId);
+      try {
+        const res = await continueRecoveryCall(recordId, {
+          expected_class: String(record?.state_class ?? ""),
+          expected_status: String(record?.status ?? ""),
+        });
+        if (!res?.ok) {
+          throw new Error("后端没有确认这条记录可以继续");
+        }
+        this.recoveryRecords = this.recoveryRecords.filter((r) => r.record_id !== recordId);
+        this.noteRecoveryResolved(recordId);
+        this.recoveryError = "已经按原话题重新排队，这一轮马上开始";
+        return { ok: true, message: this.recoveryError };
+      } catch (e) {
+        return this._failRecovery(recordId, "继续这条记录", e);
+      } finally {
+        this.recoveryBusyId = "";
+      }
+    },
+    /**
+     * 「修好这一条」（孤立重发）。
+     *
+     * 修复本身不改消息原文、不新建 turn：成功之后这条回到「可继续 / 可忽略」，
+     * 仍然要用户明确点一下才会重发。
+     */
+    async repairOrphan(recordId: string): Promise<RecoveryOutcome> {
+      const gate = this._beginRecoveryAction(recordId);
+      if (gate) return gate;
+      const record = this._recoveryRecord(recordId);
+      try {
+        const res = await repairOrphanCall(recordId, String(record?.state_class ?? "orphaned_claim"));
+        if (res && res.ok === false && res.repaired !== true) {
+          // 后端明确说「这条不在孤儿状态 / 已经真正重发过」：不假装修好了
+          const why = (res.reason || "").trim();
+          this.recoveryError = why
+            ? `这条记录没有需要修复的地方：${why}`
+            : "这条记录已经不在可修复状态（可能已经真正重发过）";
+          return { ok: false, message: this.recoveryError };
+        }
+        if (record) {
+          const fixed = repairedRecord(record);
+          this.recoveryRecords = this.recoveryRecords.map((r) =>
+            r.record_id === recordId ? fixed : r,
+          );
+          // 让快照里的孤儿也被替换成修好后的形状
+          this._pendingOrphanedTurns = this._pendingOrphanedTurns.filter(
+            (t) => String((t as { turn_id?: string }).turn_id ?? "") !== recordId,
+          );
+        }
+        this.recoveryError = "已经修好这条记录：现在可以继续发送，或忽略它";
+        return { ok: true, message: this.recoveryError };
+      } catch (e) {
+        return this._failRecovery(recordId, "修复这条记录", e);
+      } finally {
+        this.recoveryBusyId = "";
+      }
+    },
+    /**
+     * 「忽略这一条」：不再提示，但原文与记录都由后端保留（前端不删数据）。
+     * 只有真正成功才从入口移除；409 时向后端要真相。
+     */
+    async ignoreRecovery(recordId: string): Promise<RecoveryOutcome> {
+      const gate = this._beginRecoveryAction(recordId);
+      if (gate) return gate;
+      const record = this._recoveryRecord(recordId);
+      try {
+        await ignoreRecoveryCall(recordId, String(record?.state_class ?? ""));
+        this.recoveryRecords = this.recoveryRecords.filter((r) => r.record_id !== recordId);
+        this.noteRecoveryResolved(recordId);
+        this.recoveryError = "已忽略这一条（原文仍然保留在记录里）";
+        return { ok: true, message: this.recoveryError };
+      } catch (e) {
+        return this._failRecovery(recordId, "忽略这条记录", e);
+      } finally {
+        this.recoveryBusyId = "";
+      }
+    },
+    /**
+     * 「重新排队」（归属已死的派生任务）。
+     *
+     * `attempts` / `last_error` 由后端原样保留；这里只就地把它标成等待执行，
+     * 不重置任何计数（重置会让用户以为失败从没发生过）。
+     */
+    async requeueDerived(recordId: string): Promise<RecoveryOutcome> {
+      const gate = this._beginRecoveryAction(recordId);
+      if (gate) return gate;
+      const record = this._recoveryRecord(recordId);
+      try {
+        const res = await requeueDerivedCall(recordId, {
+          expected_state: String(record?.status ?? ""),
+          expected_generation: record?.claim_generation ?? null,
+        });
+        if (res && res.ok === false) {
+          throw new Error("后端没有确认这条任务可以重新排队");
+        }
+        this.recoveryRecords = this.recoveryRecords.map((r) =>
+          r.record_id === recordId
+            ? {
+                ...r,
+                status: String(res?.state ?? "pending"),
+                state_class: "ready",
+                owner_note: "",
+              }
+            : r,
+        );
+        this.recoveryError = "已经重新排队，这一项马上会被再次执行";
+        return { ok: true, message: this.recoveryError };
+      } catch (e) {
+        return this._failRecovery(recordId, "重新排队", e);
+      } finally {
+        this.recoveryBusyId = "";
+      }
+    },
+    /** 首屏那一行汇总（不入全局提示、不自动重发）。 */
+    recoveryInboxSummary(): string {
+      return recoveryInboxSummary(this.recoveryRecords);
+    },
     /**
      * M12：把权威快照里的「未完成事项」一次性收下。
      *
@@ -1149,6 +1582,7 @@ export const useSessionStore = defineStore("session", {
         created_at: string;
       }[],
       turns: InterruptedTurn[],
+      orphanedTurns?: InterruptedTurn[],
     ) {
       this.interruptedOperations = (approvals ?? []).map((item) => ({
         approval_id: item.approval_id,
@@ -1158,6 +1592,12 @@ export const useSessionStore = defineStore("session", {
       }));
       const resolved = new Set(this._resolvedInterruptedTurnIds);
       this.interruptedTurns = (turns ?? []).filter((t) => !resolved.has(t.turn_id));
+      /**
+       * 孤儿记录（抢占过、没有后继）走**同一份收件箱**：它们不在
+       * `interrupted_turns` 里，所以必须有这个出口，否则那条消息永久消失。
+       * 收进来时按「本地已处理 id」过滤 —— 旧快照不许复活已处理记录。
+       */
+      this.adoptOrphanedTurns(orphanedTurns);
     },
     /** 本地确认一条「未执行消息」已经结束（继续 / 忽略成功）：不允许快照把它复活。 */
     noteInterruptedTurnResolved(turnId: string) {
