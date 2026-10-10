@@ -26,7 +26,7 @@
 | 真实基线 SHA | `b3245e5`（`git fetch` 后核对远端 `fix/interactive-closure-followup` 与之完全一致、未推进） |
 | 集成分支 | `fix/interactive-state-recovery-completion` |
 | 工作分支 | A `wt/src-a-drafts`+`wt/src-a-integration`；B `wt/src-b-backend`；C `wt/src-c-ui`；D `wt/src-d-verify`+`wt/src-d-verify-after`（各独立 worktree，全部从 `b3245e5` 建立） |
-| 交付 tip | 【TIP】—— 本报告所在提交；**代码/测试冻结候选 = `ccc651a`**（其后 `390e0b1` 只增加 D 的 after2 证据与截图，本提交只增加文档） |
+| 交付 tip | `fix/interactive-state-recovery-completion` 分支 HEAD（本报告主体提交 `72c6d8e`；其后至多追加一次「仅回填 CI run」的文档提交，tip 的完整 SHA 与 CI run 见交付说明）—— 本报告所在提交；**代码/测试冻结候选 = `ccc651a`**（其后 `390e0b1` 只增加 D 的 after2 证据与截图，本提交只增加文档） |
 | 推送状态 | 已推送 `origin/fix/interactive-state-recovery-completion`（见 §5.4 的 CI run） |
 | 工作树状态 | 干净（`git status --porcelain` 为空；门禁运行产物 `scripts/recovery-lead-verify/out/` 已 gitignore、不入库） |
 | 是否合主线 / 发布 | **否**。不合 `main`，不合并 `fix/unified-process-audit` 与 `feat/unified-process-attachments-streaming`，不发布；无数据库迁移、未改历史迁移 |
