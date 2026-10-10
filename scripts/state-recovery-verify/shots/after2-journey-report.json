@@ -1,0 +1,227 @@
+{
+  "label": "after2",
+  "app": "http://127.0.0.1:5433",
+  "board": "board_default",
+  "createdAt": "2026-10-10T09:49:05.249Z",
+  "results": [
+    {
+      "id": "J1",
+      "title": "草稿冲突→选服务器稿→本机删除失败→重试→关闭重开→编辑入口恢复",
+      "layer": "④真实 HTTP + ⑤真浏览器 + ⑥实际进程关闭（正常关闭）",
+      "simulated": "localStorage.removeItem 抛错（模拟存储故障）",
+      "assertions": [
+        {
+          "ok": true,
+          "name": "重开后出现「两份稿冲突」入口",
+          "detail": "true"
+        },
+        {
+          "ok": true,
+          "name": "本机副本删除失败就地可见（含原因）"
+        },
+        {
+          "ok": true,
+          "name": "删除失败给出真实重试入口"
+        },
+        {
+          "ok": true,
+          "name": "删除真失败时本机记录仍在且不是 cleared 依据",
+          "detail": "{\"text\":\"本机旧稿（旧格式、没有版本）\",\"updatedAt\":1791625478818,\"seq\":1}"
+        },
+        {
+          "ok": true,
+          "name": "重试只删本机冗余副本（不许写成 cleared 依据）",
+          "detail": "null"
+        },
+        {
+          "ok": true,
+          "name": "取证：关闭前最后的本机记录（用于解释重开后的状态）",
+          "detail": "null"
+        },
+        {
+          "ok": true,
+          "name": "服务器上用户选择保留的草稿仍在",
+          "detail": "{\"card:c1\":\"服务器稿（用户明确选择保留的那一份）\"}"
+        },
+        {
+          "ok": true,
+          "name": "这次重试若发出草稿保存请求，仍带着服务器那份正文",
+          "detail": "[]"
+        },
+        {
+          "ok": true,
+          "name": "取证：重开后的本机记录",
+          "detail": "{\"text\":\"服务器稿（用户明确选择保留的那一份）\",\"updatedAt\":1791625522173,\"seq\":1,\"kind\":\"draft\",\"version\":1,\"boardId\":\"board_default\"}"
+        },
+        {
+          "ok": true,
+          "name": "关闭时浏览器调试端口真的消失（实际进程关闭）"
+        },
+        {
+          "ok": true,
+          "name": "重开后实际编辑入口恢复的是用户选择保留的服务器稿",
+          "detail": "{\"content\":\"文字注释\\n\\n输入过程只保存草稿；点「完成编辑」才形成有效文字状态。\\n\\n草稿保存中…\\n\\n完成编辑\\n取消\\n未勾选：QIO 看不到它的文字\\n10-10 17:43\",\"left\":60,\"top\":147,\"editor\":\"服务器稿（用户明确选择保留的那一份）\"}"
+        },
+        {
+          "ok": true,
+          "name": "重开后服务器草稿没有被误删",
+          "detail": "{\"card:c1\":\"服务器稿（用户明确选择保留的那一份）\"}"
+        }
+      ],
+      "failures": [],
+      "extra": null
+    },
+    {
+      "id": "J2",
+      "title": "本机删除失败未重试→强制结束进程→重开后处理入口仍在",
+      "layer": "⑤真浏览器 + ⑥实际进程关闭（强制结束）",
+      "simulated": "localStorage.removeItem 抛错（模拟存储故障）",
+      "assertions": [
+        {
+          "ok": true,
+          "name": "删除失败时就地给出原因与重试入口"
+        },
+        {
+          "ok": true,
+          "name": "强制结束后重开：本机记录的处理入口仍然可达（删除失败入口或「两份稿冲突」入口），不是只写 marker 就算验证",
+          "detail": "{\"resolvable\":\"conflict\",\"error\":false,\"retry\":false,\"conflict\":true}"
+        },
+        {
+          "ok": true,
+          "name": "强制结束后本机记录仍在（没有被悄悄删掉/改写）",
+          "detail": "{\"text\":\"本机旧稿（旧格式、没有版本）\",\"updatedAt\":1791625552846,\"seq\":1}"
+        }
+      ],
+      "failures": [],
+      "extra": null
+    },
+    {
+      "id": "J3",
+      "title": "R3 连续编辑 + N6 完整附加字段 → 关闭重开恢复",
+      "layer": "④真实 HTTP + ⑤真浏览器 + ⑥实际进程关闭（正常关闭）",
+      "simulated": null,
+      "assertions": [
+        {
+          "ok": true,
+          "name": "关闭前的前置条件：未完成的附加字段确实已经输入进界面",
+          "detail": "[\"https://new.example/path\",\"新标题\"]"
+        },
+        {
+          "ok": true,
+          "name": "未完成输入已经真实保存到服务器草稿（真实 HTTP）",
+          "detail": "{\"card:c_url\":\"第二版草稿（连续编辑）\"}"
+        },
+        {
+          "ok": true,
+          "name": "重开后编辑入口恢复最后完成的正文（连续编辑以最后版本为准）",
+          "detail": "{\"content\":\"网址\\n旧标题\\n\\n本机与服务器上各有一份不同的草稿，两份都留着，先选一份继续编辑\\n用本机的\\n用服务器上的\\n\\n网址\\n标题\\n\\n输入过程只保存草稿；点「完成编辑」才形成有效文字状态。\\n\\n完成编辑\\n取消\\n材料：默认在本次允许查看范围内（不需要勾选）\\n10-10 17:46\",\"left\":60,\"top\":147,\"editor\":\"第二版草稿（连续编辑）\"}"
+        },
+        {
+          "ok": true,
+          "name": "恢复不自动形成正式改动（正式内容仍是原值）",
+          "detail": "网址卡的正文"
+        },
+        {
+          "ok": true,
+          "name": "N6：网址随未完成输入恢复",
+          "detail": "[\"https://new.example/path\",\"新标题\"]"
+        },
+        {
+          "ok": true,
+          "name": "N6：标题随未完成输入恢复",
+          "detail": "[\"https://new.example/path\",\"新标题\"]"
+        }
+      ],
+      "failures": [],
+      "extra": null
+    },
+    {
+      "id": "J4",
+      "title": "N3 待决定撤回项：界面「继续」真的执行并带 decisionIds",
+      "layer": "④真实 HTTP + ⑤真浏览器",
+      "simulated": null,
+      "assertions": [
+        {
+          "ok": true,
+          "name": "本次新建了可用的演示任务（前置条件）",
+          "detail": "\"pending\""
+        },
+        {
+          "ok": true,
+          "name": "演示任务批准成功（前置条件）",
+          "detail": "\"approved\""
+        },
+        {
+          "ok": true,
+          "name": "演示任务执行完成并产生结果内容（前置条件）"
+        },
+        {
+          "ok": true,
+          "name": "真实后端已进入「等待你决定」（前置条件）",
+          "detail": "[\"c_e0aa200b5cc0\",\"c_49260409d82e\"]"
+        },
+        {
+          "ok": true,
+          "name": "界面用同一个框说明剩余改动与影响",
+          "detail": "revert"
+        },
+        {
+          "ok": true,
+          "name": "框里说明了需要用户决定的原因"
+        },
+        {
+          "ok": true,
+          "name": "「继续」真的发出撤回执行请求（N3）",
+          "detail": "[\"{\\\"outcome\\\":\\\"revert_rest\\\",\\\"decisionIds\\\":[\\\"c_e0aa200b5cc0\\\",\\\"c_49260409d82e\\\"]}\"]"
+        },
+        {
+          "ok": true,
+          "name": "撤回执行请求带上了这次明确展示的决定项（decisionIds）",
+          "detail": "[\"{\\\"outcome\\\":\\\"revert_rest\\\",\\\"decisionIds\\\":[\\\"c_e0aa200b5cc0\\\",\\\"c_49260409d82e\\\"]}\"]"
+        }
+      ],
+      "failures": [],
+      "extra": null
+    },
+    {
+      "id": "J5",
+      "title": "F1 取消影响确认 + 受控延迟下移动卡片",
+      "layer": "④真实 HTTP + ⑤真浏览器",
+      "simulated": "CDP 传输层延迟 1800ms（受控延迟）",
+      "assertions": [
+        {
+          "ok": true,
+          "name": "本次新建了可用的演示任务（前置条件）",
+          "detail": "\"pending\""
+        },
+        {
+          "ok": true,
+          "name": "演示任务批准成功（前置条件）",
+          "detail": "\"approved\""
+        },
+        {
+          "ok": true,
+          "name": "改动运行任务依赖的材料 → 出现影响确认",
+          "detail": "impact"
+        },
+        {
+          "ok": true,
+          "name": "取消恢复期间尝试用真实指针拖动另一张卡片",
+          "detail": "true"
+        },
+        {
+          "ok": true,
+          "name": "F1：被取消的正文不许留在板面上",
+          "detail": "文件\na.pdf\n\n材料一（运行任务的依据）\n\n材料：默认在本次允许查看范围内（不需要勾选） · 在组「默认组名」\n10-10 17:49"
+        },
+        {
+          "ok": true,
+          "name": "【未验证】F1 的「等待期间独立移动保留」：本次真实指针拖动没有让卡片移动",
+          "detail": "[420,{\"content\":\"文件\\nb.pdf\\n\\n材料二\\n\\n材料：默认在本次允许查看范围内（不需要勾选） · 在组「默认组名」\\n10-10 17:48\",\"left\":420,\"top\":147,\"editor\":null}]"
+        }
+      ],
+      "failures": [],
+      "extra": null
+    }
+  ]
+}
