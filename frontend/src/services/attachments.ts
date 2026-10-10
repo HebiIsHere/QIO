@@ -1121,6 +1121,8 @@ export async function restorePendingAttachments(
 ): Promise<RestorePendingOutcome | RestorePendingPatch> {
   const stored = loadPendingAttachments(topicId);
   const storedById = new Map(stored.map((item) => [item.id, item]));
+  // R3：**发起这次核对时**的本地修订号（两条路径共用这一份捕获）
+  const entryRevision = pendingRevision(topicId);
   const candidates: AttachmentRef[] = options?.candidateIds
     ? options.candidateIds.map((id) => storedById.get(id) ?? unverifiedRef(id))
     : stored;
@@ -1128,6 +1130,8 @@ export async function restorePendingAttachments(
   const dropped: string[] = [];
   const unconfirmed: AttachmentRef[] = [];
   const droppedIds = new Set<string>();
+  /** 确认永久无效的「id + 名字」行（R3 里要按 id 决定还报不报，且名字可能重复，不能只用名字判） */
+  const droppedRows: { id: string; name: string }[] = [];
   for (const item of candidates) {
     // K1.4：已移除（tombstone）的候选绝不复活 —— 连核对请求都不发
     if (isAttachmentRemoved(topicId, item.id)) continue;
@@ -1136,11 +1140,13 @@ export async function restorePendingAttachments(
       if (fresh.turnId) {
         dropped.push(item.name);
         droppedIds.add(item.id);
+        droppedRows.push({ id: item.id, name: item.name });
         continue;
       }
       if (topicId && fresh.topicId && fresh.topicId !== String(topicId)) {
         dropped.push(item.name);
         droppedIds.add(item.id);
+        droppedRows.push({ id: item.id, name: item.name });
         continue;
       }
       items.push({ ...fresh, name: fresh.name || item.name, error: fresh.error ?? item.error ?? null });
@@ -1148,6 +1154,7 @@ export async function restorePendingAttachments(
       if (isPermanentlyGone(err)) {
         dropped.push(item.name);
         droppedIds.add(item.id);
+        droppedRows.push({ id: item.id, name: item.name });
         continue;
       }
       unconfirmed.push({ ...item, unconfirmed: true });
@@ -1183,12 +1190,31 @@ export async function restorePendingAttachments(
   // 旧调用形状（不带 options）的兼容路径：沿用既有「自行合并落盘」语义（F08/F10 用例仍走这里）。
   // 生产调用方（Composer）一律走上面的补丁模式，不再由服务整表回写旧快照。
   // 落盘：确认可用的用新事实；确认无效的清理；暂时失败的保留；恢复期间新写入的不能被抹掉。
+  const current = readPendingBox()[pendingKey(topicId)] ?? [];
+  /**
+   * R3（兼容路径同一条判据）：`droppedIds` 是**进入时**核对出来的旧事实。
+   * 核对在途期间本地又写过（当前修订号 > 进入时捕获的修订号）时，不应用这次剔除：
+   *   * 这条记录此时仍在持久化里（用户刚更新过 `current` 就是它）→ 按**当前**（更晚）的事实保留；
+   *   * 它已经不在持久化里（用户真的移除了）→ 照旧不回填；
+   *   * 也不再把它报成「永久无效」（既然没有按旧事实删，就不能同时说它没了）。
+   * 判据与上面的补丁模式逐字一致：修订号单调递增，更大 = 期间确实有人写过。
+   */
+  const revisionMoved = pendingRevision(topicId) > entryRevision;
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  const keptBackIds = new Set<string>();
+  if (revisionMoved) {
+    for (const id of droppedIds) if (currentById.has(id)) keptBackIds.add(id);
+  }
   const storedIds = new Set(stored.map((i) => i.id));
   const confirmedById = new Map(items.map((i) => [i.id, i]));
   const unconfirmedById = new Map(unconfirmed.map((i) => [i.id, i]));
   const merged: AttachmentRef[] = [];
   for (const s of stored) {
-    if (droppedIds.has(s.id)) continue;
+    if (droppedIds.has(s.id)) {
+      const latest = keptBackIds.has(s.id) ? currentById.get(s.id) : undefined;
+      if (latest) merged.push(latest);
+      continue;
+    }
     const confirmed = confirmedById.get(s.id);
     if (confirmed) {
       merged.push(confirmed);
@@ -1197,13 +1223,16 @@ export async function restorePendingAttachments(
     const kept = unconfirmedById.get(s.id);
     if (kept) merged.push(kept);
   }
-  const current = readPendingBox()[pendingKey(topicId)] ?? [];
   for (const c of current) {
     if (storedIds.has(c.id) || droppedIds.has(c.id)) continue;
     if (merged.some((m) => m.id === c.id)) continue;
     merged.push(c);
   }
   savePendingAttachments(topicId, merged);
-  return { items, dropped, unconfirmed };
+  return {
+    items,
+    dropped: droppedRows.filter((row) => !keptBackIds.has(row.id)).map((row) => row.name),
+    unconfirmed,
+  };
 }
 

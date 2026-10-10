@@ -20,11 +20,13 @@
    失败、取消、变化都保留重试能力（run_prepare 可以再跑）。
 4. 重启后不猜状态：reconcile() 把「重启前没完成准备」的行标成 failed（可重试），
    把副本丢失标成 missing，并清掉自己留下的 .part 临时文件。
-5. 提交边界（R1，2026-10-10）：同一条附件上的准备操作按**提交票号**构成全序 ——
-   票号在**开始复制那一刻**领取（单调递增），提交前在同一把 _commit_lock 里核对
-   「代际仍当前 + 票号仍最新 + 目标目录项与开始时同一份（开始时不存在就必须仍然
-   不存在）」，然后才 os.replace。旧操作既不覆盖新结果，也不抢在更新操作之前落地；
-   上传路径（没有代际）与 generation=None 的旧调用方同样受这条边界保护。
+5. 提交边界（R1，2026-10-10）：每个准备操作在**开始复制那一刻**绑定自己的代际
+   （调用方没给就用当下的代际）并领一张**提交票号**；提交前在同一把 _commit_lock 里
+   核对「代际仍当前 + 票号在**本代际内**仍最新 + 目标目录项与开始时同一份（开始时
+   不存在就必须仍然不存在）」，然后才 os.replace。跨代际的顺序由代际说了算，票号只做
+   同代际内的并列裁决 —— 票号是在工作线程里领的，顺序可能反转（审计 N1），绝不能让它
+   把当前代际的操作作废。旧操作既不覆盖新结果，也不抢在更新操作之前落地；上传路径与
+   generation=None 的旧调用方同样受这条边界保护（register_upload 也走这条边界，N4）。
 6. 引用型的最终接受边界（R2，2026-10-10）：初步复核时还在的引用源，在克隆/等待期间
    消失 / 读不了 / 被同名文件顶替时**结构化拒绝**，绝不产出看起来可用的克隆行；
    初步复核时就已经缺失/变化的（F18 历史降级）按既有语义如实登记，不擅自升级。
@@ -241,8 +243,11 @@ class DiskOutcome:
     #: R1：本操作**提交那一刻**写出的文件身份（st_dev, st_ino）。收尾/回滚时按它核对，
     #: 只在路径仍然是这一份文件时才删 —— 新代际已经替换过就不能动（那是别人的成果）。
     identity: tuple[int, int] | None = None
-    #: R1：本操作在**开始复制那一刻**领到的提交票号（同一条附件上单调递增）。它随结果
-    #: 回到 apply_outcome：过期操作的结果连行状态都不许写。
+    #: R1：本操作在**开始复制那一刻**绑定到自己的代际（没有传代际的旧调用方/上传路径
+    #: 就绑定当下的代际）。它随结果回到 apply_outcome：代际已经过期就整份丢弃。
+    commit_generation: int | None = None
+    #: R1：本操作在**开始复制那一刻**领到的提交票号。它只在**同一个代际内**比较
+    #: （见 _commit_scope_current）：过期代际的迟到操作绝不作废当前代际的操作（N1）。
     commit_ticket: int | None = None
 
 
@@ -523,9 +528,11 @@ class AttachmentService:
         # 它同时是「检查→提交」之间的一致性边界：锁内再核对一次代际与文件身份。
         self._commit_lock = threading.Lock()
         # R1：同一条附件上的准备操作**提交票号**（每个操作在开始复制时领一张，单调递增）。
-        # 代际会被共享（调用方在调度时快照；浏览器上传路径干脆没有代际），票号不会 ——
-        # 提交边界据此得到"后开始的准备永远赢"的全序，旧操作永不覆盖新结果。
+        # 票号在**工作线程**里领取，线程启动顺序可以反转 —— 所以它只在**同一个代际**内
+        # 比较（_commit_bucket）；跨代际的顺序由代际本身说了算，否则一个过期代际的迟到
+        # 操作会把当前代际的操作一起作废（审计 N1，2026-10-10）。
         self._commit_seq: dict[str, int] = {}
+        self._commit_bucket: dict[tuple[str, int], int] = {}
         self._commit_seq_lock = threading.Lock()
 
     # -- 路径 --------------------------------------------------------------
@@ -752,27 +759,15 @@ class AttachmentService:
                 f"这个文件 {human_size(len(payload))}，请用桌面端拖入或选择本地路径"
                 f"（大于 {human_size(COPY_MAX_BYTES)} 的文件只记位置，不复制内容）"
             )
-        now = self._clock()
-        att = Attachment(
-            id=f"att_{uuid.uuid4().hex[:12]}",
-            message_id=None,
-            turn_id=None,
-            topic_id=topic_id,
-            kind="copy",
-            original_name=safe_name(name or "attachment"),
-            stored_path=None,
-            source_path=None,
-            size_bytes=len(payload),
-            mtime=None,
-            sha256=None,
-            state=STATE_PREPARED,
-            error=None,
-            created_at=now,
-            updated_at=now,
-        )
-        self._insert(att)
-        self._write_upload(att, payload)
-        return self.get(att.id, check=False)
+        # N4（2026-10-10）：这里不再自己 os.replace（旧的 _write_upload 完全绕过 R1 提交
+        # 边界：不绑代际、不领票号、不查目标身份）。现在与浏览器上传走**同一条**三段式：
+        # 登记（prepared + 在飞）→ 落盘（提交边界：代际 + 票号 + 目标身份）→ 落库
+        # （apply_outcome 按代际/票号丢弃过期结果）。
+        att = self.begin_upload(name=name, topic_id=topic_id)
+        outcome = self.write_upload_stream(att, [payload])
+        self.apply_outcome(att.id, outcome)
+        current = self.get(att.id, check=False)
+        return current if current is not None else att
 
     def begin_upload(self, *, name: str | None = None, topic_id: str | None = None) -> Attachment:
         """上传第一步（**事件循环线程**）：先登记一行 prepared。
@@ -808,16 +803,27 @@ class AttachmentService:
         chunks: Iterable[bytes],
         *,
         max_bytes: int | None = None,
+        generation: int | None = None,
     ) -> DiskOutcome:
         """浏览器上传的落盘入口（完整的线程/提交纪律见 _upload_stream_impl）。
 
-        R1：上传路径**没有代际**，所以在开始接收字节时领一张提交票号 —— 提交边界与
-        apply_outcome 都按它作废过期操作；上传期间用户重新定位时，过期上传绝不覆盖
-        新定位刚提交的副本，也不许把行状态写成上传的结果。
+        R1：开始接收字节时**绑定自己的代际**（调用方没给就用当下的）并领一张提交票号 ——
+        提交边界与 apply_outcome 都按它们作废过期操作；上传期间用户重新定位时，过期上传
+        绝不覆盖新定位刚提交的副本，也不许把行状态写成上传的结果。
         """
-        ticket = self._begin_commit_scope(att.id)
-        outcome = self._upload_stream_impl(att, chunks, max_bytes=max_bytes, ticket=ticket)
-        # 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        bound_generation = (
+            self.prepare_generation(att.id) if generation is None else int(generation)
+        )
+        ticket = self._begin_commit_scope(att.id, bound_generation)
+        outcome = self._upload_stream_impl(
+            att,
+            chunks,
+            max_bytes=max_bytes,
+            ticket=ticket,
+            generation=bound_generation,
+        )
+        # 代际 + 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        outcome.commit_generation = bound_generation
         outcome.commit_ticket = ticket
         return outcome
 
@@ -828,6 +834,7 @@ class AttachmentService:
         *,
         max_bytes: int | None,
         ticket: int,
+        generation: int,
     ) -> DiskOutcome:
         """**纯文件 I/O**（工作线程）：有界接收字节 → 临时文件 → sha256 → 改名提交。
 
@@ -909,9 +916,15 @@ class AttachmentService:
             if event.is_set():
                 _unlink_quiet(tmp)
                 return DiskOutcome(state=STATE_CANCELLED, error="已取消（可以重试）")
-            if not self._commit_scope_current(att.id, ticket):
-                # R1：同一条附件上已经开始了更新的准备 —— 上传路径没有代际，票号是
-                # 唯一能证明"我不是最新那一次"的东西。
+            if not self._generation_current(att.id, generation):
+                # R1/N1：本操作绑定的代际已经不是当前代际 —— 期间已经有更新的准备
+                # （重新定位 / 重试）登记过了，过期上传绝不覆盖它的成果。
+                _unlink_quiet(tmp)
+                return DiskOutcome(
+                    state=STATE_CANCELLED, error="这次上传已被更新的准备取代（可以重试）"
+                )
+            if not self._commit_scope_current(att.id, ticket, generation):
+                # 同一个代际里还有更新的上传/准备：只有票号能证明"我不是最新那一次"。
                 _unlink_quiet(tmp)
                 return DiskOutcome(
                     state=STATE_CANCELLED, error="这次上传已被更新的准备取代（可以重试）"
@@ -946,32 +959,6 @@ class AttachmentService:
             mtime=mtime,
             identity=committed_identity,
         )
-
-    def _write_upload(self, att: Attachment, payload: bytes) -> Attachment:
-        target = self.copy_path(att)
-        tmp = temp_path_for(target)  # R1：写入也用自己的临时文件
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp, "wb") as handle:
-                handle.write(payload)
-            os.replace(tmp, target)
-        except OSError as exc:
-            _unlink_quiet(tmp)
-            self._update(
-                att.id,
-                state=STATE_FAILED,
-                error=self._describe_oserror(exc, target=target),
-            )
-            return self.get(att.id, check=False)
-        digest = hashlib.sha256(payload).hexdigest()
-        self._update(
-            att.id,
-            stored_path=str(target),
-            sha256=digest,
-            state=STATE_READY,
-            error=None,
-        )
-        return self.get(att.id, check=False)
 
     # -- 准备（复制 / 引用登记） -------------------------------------------
 
@@ -1032,17 +1019,24 @@ class AttachmentService:
         """
         if att.kind == "reference":
             return self._reference_outcome(att)
-        # R1：本操作在**开始复制**时领一张提交票号（同一条附件上的准备据此全序）。
-        ticket = self._begin_commit_scope(att.id)
+        # R1：本操作在**开始复制那一刻**绑定自己的代际并领一张提交票号。
+        # 调用方没给代际（旧调用方 / 上传路径）时绑定**当下**的代际：代际是"开始一次
+        # 准备"的登记顺序（事件循环线程里分配），据此旧操作永远排在更新操作前面；
+        # 票号只用于**同一个代际内**的并列裁决（N1）。
+        bound_generation = (
+            self.prepare_generation(att.id) if generation is None else int(generation)
+        )
+        ticket = self._begin_commit_scope(att.id, bound_generation)
         outcome = self._copy_once(
             att,
             chunk_size=chunk_size,
             on_chunk=on_chunk,
-            generation=generation,
+            generation=bound_generation,
             on_commit=on_commit,
             ticket=ticket,
         )
-        # 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        # 代际 + 票号随结果回到 apply_outcome：过期操作的结果不得写行状态（R1）。
+        outcome.commit_generation = bound_generation
         outcome.commit_ticket = ticket
         return outcome
 
@@ -1082,7 +1076,13 @@ class AttachmentService:
         「复制刚好成功、取消在其后到达」是真实存在的时序 —— 所以落库前再看一次取消标志：
         已取消就丢掉这次结果（连刚提交的那份副本一起清掉），把行留在 cancelled（可重试）。
         """
-        if not self._generation_current(attachment_id, generation):
+        # R1：结果的代际 —— 调用方没给 generation 时用**结果自己携带**的那一份。
+        # 未绑定代际的旧调用方不再"不校验"：它在开始时绑定了当下代际，所以任何更新的
+        # 准备（重新定位 / 重试）都会让它过期，这正是「旧操作永不覆盖新结果」。
+        effective_generation = (
+            generation if generation is not None else outcome.commit_generation
+        )
+        if not self._generation_current(attachment_id, effective_generation):
             # 旧代际的迟到结果：整个丢弃。注意**不动磁盘**：同名目标文件现在归新代际所有，
             # 删它会把新代际刚提交的副本一起删掉。
             logger.info("附件准备结果已过期，丢弃（%s）", redact_text(str(attachment_id)))
@@ -1095,12 +1095,15 @@ class AttachmentService:
             self._purge_committed(outcome)
             self._clear_preparing(attachment_id, generation=generation)  # 等在这条上的人必须被放醒（§1.3）
             return None
-        if not self._commit_scope_current(attachment_id, outcome.commit_ticket):
-            # R1：同一条附件上已经有更新的准备开始了（票号比我新）—— 这份结果连行状态
-            # 都不许写（否则旧操作会把新定位的结果覆盖成自己的）。**不动磁盘**：
+        if not self._commit_scope_current(
+            attachment_id, outcome.commit_ticket, effective_generation
+        ):
+            # R1/N1：**同一个代际里**已经有更新的准备开始了（票号比我新）—— 这份结果连
+            # 行状态都不许写（否则旧操作会把新定位的结果覆盖成自己的）。**不动磁盘**：
             # 目标副本归更新的操作所有。
             # 放在"行已不在"之后：删行之后的迟到结果仍要走孤儿副本补偿（_purge_committed
-            # 按文件身份核对，绝不会删掉更新操作刚提交的那一份）。
+            # 按文件身份核对，绝不会删掉更新操作刚提交的那一份）。放在代际闸之后、
+            # 只按票号比：过期代际的结果已经被上面那道闸丢掉，不会走到这里。
             logger.info(
                 "附件准备结果已被更新的准备取代，丢弃（%s）", redact_text(str(attachment_id))
             )
@@ -1187,26 +1190,42 @@ class AttachmentService:
 
     # -- 提交票号（R1：提交边界必须是一个真串行边界） -----------------------
 
-    def _begin_commit_scope(self, attachment_id: str) -> int:
-        """给一次准备操作发一张**单调递增**的提交票号（在开始复制那一刻领取）。
+    def _begin_commit_scope(self, attachment_id: str, generation: int) -> int:
+        """给一次准备操作发一张**单调递增**的提交票号（在开始复制那一刻领取），
+        并按 (附件, 代际) 记进桶里。
 
-        代际（_prepare_gen）由"开始一次准备"的登记递增，但调用方可以在调度时快照它
-        （api/server.py 的 _schedule_prepare、run_prepare 的入口），浏览器上传路径更是
-        完全没有代际 —— 两个操作因此可能共享同一个（或没有）代际。票号在开始复制时
-        领取，同一条附件上的准备操作据此构成一个全序：后开始的准备永远赢。
+        票号只在**同一个代际内**比较（见 _commit_scope_current）。代际是"开始一次准备"
+        的登记顺序（事件循环线程里分配）—— 它才是跨操作的权威顺序；票号只是并列裁决者。
+
+        为什么必须分代际桶（审计 N1，2026-10-10）：票号在**工作线程**里领取
+        （生产路径 asyncio.to_thread → copy_to_disk），线程实际启动顺序可以反转 ——
+        一个**过期代际**的迟到操作可能领到**更大的**票号。若拿它做附件级比较，它会把
+        **当前代际**的操作一起作废：两个操作都不提交、目标副本不存在、行停在 prepared，
+        绑定要等满 prepare_wait_seconds 才拒绝（用户必须手动重试）。
         """
         key = str(attachment_id)
         with self._commit_seq_lock:
             value = self._commit_seq.get(key, 0) + 1
             self._commit_seq[key] = value
+            self._commit_bucket[(key, int(generation))] = value
             return value
 
-    def _commit_scope_current(self, attachment_id: str, ticket: int | None) -> bool:
-        """这次准备的票号是不是**最新**的一张（ticket=None 表示不做票号校验）。"""
+    def _commit_scope_current(
+        self, attachment_id: str, ticket: int | None, generation: int | None
+    ) -> bool:
+        """这次准备是不是**自己那个代际里**最新的一张票（ticket=None = 不做票号校验）。
+
+        绑定了代际 → 只在该代际的桶内比较：过期代际的操作不可能作废当前代际的操作（N1）。
+        generation 为 None 只可能来自没有代际信息的老调用路径：退回附件级比较
+        （保守：只认最新的一张票）。跨代际的顺序由代际闸（_generation_current）负责。
+        """
         if ticket is None:
             return True
+        key = str(attachment_id)
         with self._commit_seq_lock:
-            return int(self._commit_seq.get(str(attachment_id), 0)) == int(ticket)
+            if generation is None:
+                return int(self._commit_seq.get(key, 0)) == int(ticket)
+            return int(self._commit_bucket.get((key, int(generation)), 0)) == int(ticket)
 
     def _copy_once(
         self,
@@ -1318,10 +1337,10 @@ class AttachmentService:
                 return DiskOutcome(
                     state=STATE_CANCELLED, error="这次准备已被更新的定位取代（可以重试）"
                 )
-            if not self._commit_scope_current(att.id, ticket):
-                # R1：同一条附件上已经开始了更新的准备 —— 代际可能相同（调用方快照的
-                # 代际，或根本没有代际的上传路径），只有票号能证明"我不是最新那一次"。
-                # 旧操作绝不抢在更新操作之前落地。
+            if not self._commit_scope_current(att.id, ticket, generation):
+                # R1/N1：**同一个代际里**已经开始了更新的准备（票号比我新）—— 旧操作
+                # 绝不抢在更新操作之前落地。过期代际由上面那道代际闸负责；它的票号
+                # 哪怕更大也不作数（票号在 worker 线程里领，顺序可能反转）。
                 _unlink_quiet(tmp)
                 return DiskOutcome(
                     state=STATE_CANCELLED, error="这次准备已被更新的准备取代（可以重试）"
