@@ -39,7 +39,8 @@
 - `phase1-all.json`（基线 ①② 11 条）/ `candidate-all.json`（候选 12 条）
 - `phase1-dom-v2.json` / `phase1-store*.json`（基线分层）、`candidate-backend.txt`、`candidate-http.txt`、`candidate-browser.txt`
 - `phase1-browser.txt`（基线 19/20）、`phase1-http.txt`（基线 20/20）
-- `closure-d-b0-app.png` / `closure-d-b1-impact-dialog.png` / `closure-d-b2-reopened.png`（候选真浏览器截图）
+- 候选真浏览器截图：`candidate-b0-app.png`（板面渲染）、`candidate-b1-impact-dialog.png`（影响确认框）、`candidate-b2-reopened.png`（关闭重开后）
+- 基线真浏览器截图（对照，基线那次 B1.5 为红）：`baseline-b0-app.png` / `baseline-b1-impact-dialog.png` / `baseline-b2-reopened.png`
 
 ## 3. 上一轮 20 项核心回归抽检结果（候选 SHA）
 
