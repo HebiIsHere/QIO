@@ -84,3 +84,48 @@ A/C/B 需要 store 或共享类型调整时，先在本文件/消息里约定接
 
 ①状态/单元 ②真实组件 DOM ③ASGI/API + 真实临时数据库 ④真实前后端 HTTP ⑤真浏览器 ⑥实际进程关闭重开。
 mock 故障/延迟/存储故障必须标注为模拟；所有服务与脚本必须使用独立临时 `QIO_DATA_DIR`。
+
+## 8. 最终接口清单（实施后回填，2026-10-10）
+
+### 8.1 前端 store（Lead：`frontend/src/stores/interactive.ts`）
+- `adoptServerFacts(server)`：唯一合并入口；纯函数在 `frontend/src/interactive/serverFacts.ts` 的
+  `mergeServerInto(local, server, base)`：吸收版本事实、协调服务器独立变化、保留本页候选与用户勾选选择，
+  同一张卡片正文两边都改时登记 `BoardContentConflict` 交用户决定。
+- `cancelRecovery: Ref<{ boardId; active; reason } | null>` + `retryCancelRecovery(): Promise<{ok; error?}>`（F1）。
+- `boardContentConflictFor(cardId)` / `resolveBoardContentConflict(cardId, "local" | "server")`（F3）。
+- `confirmImpact(): Promise<ImpactConfirmResult>`（N2）；`cancelImpact(): Promise<void>`。
+- `continueRevertDecision(intentId, decisionIds?)` / `dismissRevertDecision(intentId)` /
+  `reopenRevertDecision(intentId)` / `revertDecisionDismissed` / `revertDecisionStateFor(intentId)`（N3）。
+- `setCardDraftInput(cardId, input)`（N6：A 的 `writeCardDraftInput` 的 store 入口，沿用同一套草稿规则）。
+- `lastSavePaused: Ref<Intent[]>`（N2 的 `saved.paused` 事实来源）。
+
+### 8.2 前端服务（Lead：`frontend/src/services/interactive.ts`）
+- `advanceIntent(intentId, outcome, decisionIds?: string[])`（N3/N4；body 仅在有值时带 `decisionIds`）。
+
+### 8.3 草稿底层（A：`frontend/src/interactive/drafts.ts`）
+- `localRecordFingerprint(record)` / `cardLocalDraftFingerprint(cardId)`
+- `removeCardLocalDraftIfUnchanged(cardId, expectVersion, expectFingerprint?)`（第三参缺省保持旧语义）
+- `LocalRemovalGuard` 增加 `"fingerprint"`
+- `CardDraftInput` / `CardDraftMetaInput` / `writeCardDraftInput` / `readCardDraftInput(ForBoard)` / `restoreCardDraftInput`
+
+### 8.4 后端（B）
+- `PUT /api/interactive/boards/{id}/state`：`state.seq` 与当前已保存 `seq` 不一致 → 409
+  `{"detail": {"error": "stale_state", "reason": ..., "currentSeq": ...}}`，不落库、不推进快照、不暂停任务；
+  已保存 seq=0 的新板允许第一次保存；带 confirm 也必须先过版本门。
+- `POST /api/interactive/intents/{id}/demo/advance`：可选 `decisionIds`；执行前重核当前内容与影响（N4）；
+  额外返回 decision 摘要 `{requested, processed, reconfirmed, skipped, remaining}`。
+
+### 8.5 两处**有意的口径变更**（旧断言随行为更新，不得当作回归）
+1. **R1/F1「取消 + 回读失败」**：旧口径 = 恢复被取消的候选并标 `dirty=true / saveStatus="error"`；
+   新口径 = 取消**先同步**退回 `cleanState`（被取消的正文/删除立刻消失，后续独立操作不再从被取消板面复制），
+   回读失败只说明「撤回还没被服务器确认」（`cancelRecovery.active=true` + 真实 `reason` + `retryCancelRecovery`），
+   不恢复被取消的候选、不假装撤回成功。理由：旧口径正是 F1 的根因。
+   受影响文件：`frontend/src/stores/__tests__/closure-lead-r1r2r3r5.test.ts`（用例按新口径改名并改写）。
+2. **08 路径2「等待确认期间又改别处」**：旧口径把「已重新核实」写在 `impactCheckError`；
+   新口径写在**新的确认说明** `pendingImpact.note`，并在给出有效说明时清掉 `impactCheckError`（N2：状态不冲突）。
+   受影响文件：`frontend/src/stores/__tests__/final-lead-m1.test.ts`。
+
+### 8.6 采集脚本注意（B 的跨范围发现）
+任何「把固定 seq（0/1）写进 PUT」的脚本在非空板面上会 409 `stale_state`（本轮有意的服务端保护）。
+已确认位置：`scripts/closure-c-verify/capture.mjs`、`scripts/interactive-verify/*.mjs`、
+`scripts/closure-d-verify/closure-d-browser-probe.mjs`。请改为「先读取当前 seq 再 PUT」，或用全新临时 `QIO_DATA_DIR`。
