@@ -793,10 +793,207 @@ export function savePendingAttachments(topicId: string | null | undefined, items
   } catch {
     /* 存储不可用时静默降级：列表仍在内存里，发送路径不受影响 */
   }
+  bumpPendingRevision(topicId);
 }
 
 export function loadPendingAttachments(topicId: string | null | undefined): AttachmentRef[] {
   return readPendingBox()[pendingKey(topicId)] ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// 待发列表的修订号 / 移除 tombstone / 已发送失效集（契约 K1.4—K1.6）
+// ---------------------------------------------------------------------------
+
+/**
+ * 修订号：每次待发列表落盘 +1。恢复（restorePendingAttachments）带上它，
+ * Composer 才知道「恢复在途期间有没有人写过这个话题」，从而决定补丁的生效范围。
+ */
+const REVISION_KEY = "qio.pending-attachments.revision.v1";
+
+/**
+ * 已移除附件的 tombstone：键含 topicId + id，值 = **单调移除序号**。
+ *
+ * 为什么必须持久化：组件卸载/重挂载、切话题、刷新之后，晚到的轮询或恢复结果不能把
+ * 用户已经移除的附件 upsert 回来 —— 只靠组件内存里的 Set 挡不住重挂载。
+ * 序号的作用：恢复补丁里出现某个候选，说明服务核对该候选时它还没有 tombstone；
+ * 只有「移除水位之后」才被移除的候选才需要在合并时挡住（见 attachmentOps.mergeRestorePatch）。
+ * 清理时机：发送被受理、用户显式重新选择同一个文件、或话题被清空。
+ */
+const REMOVED_KEY = "qio.pending-attachments.removed.v1";
+
+/** 移除序号：进程内单调；跨会话用时间戳起算（旧会话的序号不会比新会话大）。 */
+let removedSeq = Date.now();
+function nextRemovedSeq(): number {
+  removedSeq = Math.max(Date.now(), removedSeq + 1);
+  return removedSeq;
+}
+
+/**
+ * 存储不可用时的内存镜像：tombstone 语义仍然成立（不因存储故障而复活已移除项）。
+ * 只在存储读写失败（degraded）时参与判定，避免镜像与磁盘各说各话。
+ */
+const removedFallback = new Map<string, Map<string, number>>();
+let removedStorageDegraded = false;
+
+function readJsonObject<T>(key: string): Record<string, T> | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const box: Record<string, T> = {};
+    for (const [entryKey, value] of Object.entries(parsed)) {
+      if (value !== undefined) box[entryKey] = value as T;
+    }
+    return box;
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonObject(key: string, box: Record<string, unknown>): boolean {
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify(box));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removedRecord(topicId: string | null | undefined): Record<string, number> {
+  const key = pendingKey(topicId);
+  const box = readJsonObject<Record<string, number>>(REMOVED_KEY);
+  if (box === null) removedStorageDegraded = true;
+  const stored = box?.[key] ?? {};
+  if (!removedStorageDegraded) return { ...stored };
+  const memory = removedFallback.get(key);
+  return memory ? { ...stored, ...Object.fromEntries(memory) } : { ...stored };
+}
+
+/** 该话题当前已移除（tombstone）的附件 id。 */
+export function loadRemovedAttachmentIds(topicId: string | null | undefined): string[] {
+  return Object.keys(removedRecord(topicId));
+}
+
+export function isAttachmentRemoved(topicId: string | null | undefined, id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(removedRecord(topicId), id);
+}
+
+/** 这条 tombstone 的移除序号（0 = 没有 tombstone）。 */
+export function attachmentRemovedSeq(topicId: string | null | undefined, id: string): number {
+  return removedRecord(topicId)[id] ?? 0;
+}
+
+/** 移除水位：发起异步核对前捕获，用来判断「之后有没有这条被移除」。 */
+export function attachmentRemovalBarrier(): number {
+  return removedSeq;
+}
+
+/** 记录一条移除 tombstone（K1.4：随持久化一起存，跨卸载重挂载有效）。 */
+export function markAttachmentRemoved(topicId: string | null | undefined, id: string): number {
+  const key = pendingKey(topicId);
+  const seq = nextRemovedSeq();
+  const box = readJsonObject<Record<string, number>>(REMOVED_KEY);
+  const stored = box?.[key] ?? {};
+  const written = box !== null && writeJsonObject(REMOVED_KEY, { ...box, [key]: { ...stored, [id]: seq } });
+  if (!written) {
+    removedStorageDegraded = true;
+    const memory = removedFallback.get(key) ?? new Map<string, number>();
+    memory.set(id, seq);
+    removedFallback.set(key, memory);
+  }
+  return seq;
+}
+
+/** 撤销一条 tombstone：删除失败（这一条其实还在）、或用户显式重新添加同一个 id。 */
+export function forgetAttachmentRemoved(topicId: string | null | undefined, id: string): void {
+  const key = pendingKey(topicId);
+  const memory = removedFallback.get(key);
+  if (memory) {
+    memory.delete(id);
+    if (!memory.size) removedFallback.delete(key);
+  }
+  const box = readJsonObject<Record<string, number>>(REMOVED_KEY);
+  if (box === null || !box[key] || !(id in box[key])) return;
+  const next = { ...box[key] };
+  delete next[id];
+  if (Object.keys(next).length) box[key] = next;
+  else delete box[key];
+  writeJsonObject(REMOVED_KEY, box);
+}
+
+/** 清理 tombstones：发送被受理（这批已经进轮次）、或话题被清空。 */
+export function clearAttachmentTombstones(
+  topicId: string | null | undefined,
+  ids?: readonly string[],
+): void {
+  const key = pendingKey(topicId);
+  if (!ids) {
+    removedFallback.delete(key);
+    const box = readJsonObject<Record<string, number>>(REMOVED_KEY);
+    if (box && box[key]) {
+      delete box[key];
+      writeJsonObject(REMOVED_KEY, box);
+    }
+    return;
+  }
+  for (const id of ids) forgetAttachmentRemoved(topicId, id);
+}
+
+/** 仅供测试：清掉 tombstone 的内存镜像（磁盘内容与真实存储路径无关）。 */
+export function clearRemovedAttachmentMemory(): void {
+  removedFallback.clear();
+  removedStorageDegraded = false;
+}
+
+/** 该话题待发列表的修订号（0 = 从未写过）。 */
+export function pendingRevision(topicId: string | null | undefined): number {
+  const value = readJsonObject<number>(REVISION_KEY)?.[pendingKey(topicId)];
+  return typeof value === "number" ? value : 0;
+}
+
+function bumpPendingRevision(topicId: string | null | undefined): number {
+  const key = pendingKey(topicId);
+  const box = readJsonObject<number>(REVISION_KEY) ?? {};
+  const next = (typeof box[key] === "number" ? box[key] : 0) + 1;
+  box[key] = next;
+  writeJsonObject(REVISION_KEY, box);
+  return next;
+}
+
+// --- 已发送失效集（K1.5）：随发送受理生效；会话级（刷新后由服务端绑定事实兜底） --------
+
+const sentAttachments = new Set<string>();
+
+function sentKey(topicId: string | null | undefined, id: string): string {
+  return pendingKey(topicId) + "\u0000" + id;
+}
+
+/** 这批附件已随发送受理绑到轮次：晚到的结果必须静默丢弃。 */
+export function markAttachmentsSent(topicId: string | null | undefined, ids: readonly string[]): void {
+  for (const id of ids) sentAttachments.add(sentKey(topicId, id));
+}
+
+export function isAttachmentSent(topicId: string | null | undefined, id: string): boolean {
+  return sentAttachments.has(sentKey(topicId, id));
+}
+
+export function forgetSentAttachments(
+  topicId: string | null | undefined,
+  ids?: readonly string[],
+): void {
+  if (ids) {
+    for (const id of ids) sentAttachments.delete(sentKey(topicId, id));
+    return;
+  }
+  const prefix = pendingKey(topicId) + "\u0000";
+  for (const key of [...sentAttachments]) {
+    if (key.startsWith(prefix)) sentAttachments.delete(key);
+  }
+}
+
+/** 已移除或已发送：晚到的结果一律不得复活它。 */
+export function isAttachmentDead(topicId: string | null | undefined, id: string): boolean {
+  return isAttachmentRemoved(topicId, id) || isAttachmentSent(topicId, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -835,7 +1032,10 @@ export function subscribePendingAttachment(
 export function addPendingAttachment(
   topicId: string | null | undefined,
   attachment: AttachmentRef,
-): void {
+): boolean {
+  // K1.3：已移除（tombstone）或已随发送受理（sent）的 id 绝不复活 —— 迟到的广播也不许。
+  // 显式重新添加同一个文件走 registerAttachmentIdentity（它会清理这两处痕迹）。
+  if (isAttachmentDead(topicId, attachment.id)) return false;
   const list = loadPendingAttachments(topicId);
   const next = list.some((item) => item.id === attachment.id)
     ? list.map((item) => (item.id === attachment.id ? attachment : item))
@@ -843,6 +1043,7 @@ export function addPendingAttachment(
   savePendingAttachments(topicId, next);
   const event: PendingAttachmentEvent = { topicId: topicId ?? null, attachment };
   for (const listener of pendingListeners) listener(event);
+  return true;
 }
 
 /** 能从待发列表发送的状态（与后端绑定校验一致：prepared / ready / changed）。 */
@@ -874,15 +1075,62 @@ function isPermanentlyGone(err: unknown): boolean {
  *     返回 unconfirmed，界面展示可重试状态，**绝不清空**。
  * 落盘时合并「恢复期间新增」的条目，旧恢复不覆盖用户编辑（F08）。
  */
+/** 恢复补丁请求（K1.6）：候选与发起时的修订号；服务**不再自行写持久化**。 */
+export interface RestorePatchOptions {
+  /** 要核对的候选 id（缺省 = 该话题持久化里的条目） */
+  candidateIds?: readonly string[];
+  /** 发起恢复时的列表修订号（原样回显，发起方据此判断恢复期间有没有人写过） */
+  revision?: number;
+}
+
+/** 恢复补丁结果（K1.6）：由 Composer 合并；只新增、绝不复活 removed/sent。 */
+export interface RestorePendingPatch {
+  topicId: string | null;
+  revision: number;
+  /** 确认可用（含暂时无法确认、带 unconfirmed 标记）的条目 */
+  restored: AttachmentRef[];
+  /** 确认永久无效的名字（给人看） */
+  missing: string[];
+  /** 确认永久无效的 id（用来从当前列表剔除） */
+  missingIds: string[];
+}
+
+/** 候选还不够了解时的最小引用：核对成功后由后端事实替换，失败则如实显示「暂时无法确认」。 */
+function unverifiedRef(id: string): AttachmentRef {
+  return {
+    id,
+    name: id,
+    sizeBytes: 0,
+    kind: "copy",
+    display: COPY_LABEL,
+    state: "prepared",
+    error: null,
+  };
+}
+
+export function restorePendingAttachments(
+  topicId: string | null | undefined,
+): Promise<RestorePendingOutcome>;
+export function restorePendingAttachments(
+  topicId: string | null | undefined,
+  options: RestorePatchOptions,
+): Promise<RestorePendingPatch>;
 export async function restorePendingAttachments(
   topicId: string | null | undefined,
-): Promise<RestorePendingOutcome> {
+  options?: RestorePatchOptions,
+): Promise<RestorePendingOutcome | RestorePendingPatch> {
   const stored = loadPendingAttachments(topicId);
+  const storedById = new Map(stored.map((item) => [item.id, item]));
+  const candidates: AttachmentRef[] = options?.candidateIds
+    ? options.candidateIds.map((id) => storedById.get(id) ?? unverifiedRef(id))
+    : stored;
   const items: AttachmentRef[] = [];
   const dropped: string[] = [];
   const unconfirmed: AttachmentRef[] = [];
   const droppedIds = new Set<string>();
-  for (const item of stored) {
+  for (const item of candidates) {
+    // K1.4：已移除（tombstone）的候选绝不复活 —— 连核对请求都不发
+    if (isAttachmentRemoved(topicId, item.id)) continue;
     try {
       const fresh = await getAttachment(item.id);
       if (fresh.turnId) {
@@ -906,6 +1154,23 @@ export async function restorePendingAttachments(
     }
   }
 
+  if (options) {
+    /**
+     * 补丁模式（K1.6）：**不写任何持久化**。
+     * 合并权在发起方（Composer）—— 只有它同时掌握当前列表、tombstone 与 sent 失效集；
+     * 服务按旧快照整表回写正是「已移除附件被恢复结果重新加入」的入口。
+     */
+    return {
+      topicId: topicId ?? null,
+      revision: typeof options.revision === "number" ? options.revision : pendingRevision(topicId),
+      restored: [...items, ...unconfirmed],
+      missing: dropped,
+      missingIds: [...droppedIds],
+    } satisfies RestorePendingPatch;
+  }
+
+  // 旧调用形状（不带 options）的兼容路径：沿用既有「自行合并落盘」语义（F08/F10 用例仍走这里）。
+  // 生产调用方（Composer）一律走上面的补丁模式，不再由服务整表回写旧快照。
   // 落盘：确认可用的用新事实；确认无效的清理；暂时失败的保留；恢复期间新写入的不能被抹掉。
   const storedIds = new Set(stored.map((i) => i.id));
   const confirmedById = new Map(items.map((i) => [i.id, i]));
