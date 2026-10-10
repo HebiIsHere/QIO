@@ -204,7 +204,8 @@ describe("R4 问题一：正式回答容器 vs 过程容器", () => {
         reason: "连接中断",
         stopped_by: null,
         actions: ["retry"],
-        final_content: "",
+        // K2.2：缺省 = 不校准（断流时后端没有最终正文，不是「清空已显示的回答」）
+        final_content: null,
       }),
     );
     await settle();

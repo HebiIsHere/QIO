@@ -80,7 +80,7 @@ describe("回答调用的流式增量（契约 §1.1）", () => {
     const { events, session } = setup();
     events.route(ev("TURN_START", { turn_id: "t4", revision: 1 }));
     events.route(ev("ASSISTANT", { turn_id: "t4", content: "已经流出来的正式回答。", interim: false, streaming: true, delta_id: "dl_d", seq: 1 }));
-    events.route(ev("TURN_END", { turn_id: "t4", status: "failed", reason_code: "provider_error", reason: "连接中断", final_content: "" }));
+    events.route(ev("TURN_END", { turn_id: "t4", status: "failed", reason_code: "provider_error", reason: "连接中断", final_content: null })); // K2.2：缺省 = 不校准（本用例意图是「没有最终正文」）
 
     const list = assistants(session);
     expect(list).toHaveLength(1);
