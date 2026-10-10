@@ -145,6 +145,10 @@ async def advance(intent_id: str, request: Request, body: dict | None = None) ->
     """演示执行推进（明确标注为演示）：成功 / 失败 / 暂停 / 取消。
 
     第一阶段没有真实的模型执行；这里用可控的演示结果走通状态机与撤回保护。
+
+    N4（本轮契约 §2）：可选字段 decisionIds: string[] —— 只处理这次**明确展示给用户**、
+    且属于该意图 pendingDecision 的项。未展示项不会被顺带处理；不传时保持既有语义，
+    但执行前同样重核每个待撤回对象的当前内容与影响。
     """
     conn = _conn(request)
     payload = _body_dict(body)
@@ -154,7 +158,15 @@ async def advance(intent_id: str, request: Request, body: dict | None = None) ->
             status_code=400,
             detail=f"不认识的结果：{outcome}（可选：{'、'.join(ADVANCE_OUTCOMES)}）",
         )
-    return intents.advance_intent(conn, intent_id, outcome=outcome)
+    decision_ids = payload.get("decisionIds")
+    if decision_ids is not None and not isinstance(decision_ids, list):
+        raise HTTPException(status_code=400, detail="decisionIds 必须是意图项 id 的字符串数组")
+    return intents.advance_intent(
+        conn,
+        intent_id,
+        outcome=outcome,
+        decision_ids=(None if decision_ids is None else [str(x) for x in decision_ids]),
+    )
 
 
 @router.post("/api/interactive/intents/batch")

@@ -507,7 +507,14 @@ def test_scope_change_after_confirmation_is_rejected_without_writing(
     assert _save(client, BOARD_A, later).status_code == 200
 
     fingerprint_before = _db_fingerprint(db_conn, BOARD_A)
-    rejected = _save(client, BOARD_A, candidate, confirm={"checkId": check["checkId"]})
+    # N1（契约 §1.4）：候选必须带上它所依据的已保存版本，否则会更早被版本门按 stale_state 拒绝。
+    # 这里故意**重新基于最新版本**再带旧 checkId：要验的是确认门本身仍然拒绝过期确认。
+    rejected = _save(
+        client,
+        BOARD_A,
+        {**candidate, "seq": _state(client, BOARD_A)["seq"]},
+        confirm={"checkId": check["checkId"]},
+    )
     assert rejected.status_code == 409, rejected.text
     detail = rejected.json()["detail"]
     assert detail["error"] == "stale_check"

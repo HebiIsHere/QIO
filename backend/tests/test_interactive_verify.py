@@ -108,6 +108,9 @@ class Harness:
         （impact-check → confirm → PUT confirm），保持用例原本要验的场景语义：
         用户确认之后，改动生效、相关任务暂停并保留进度。
         """
+        # N1（契约 §1.4）：普通整板写入必须带上「这次候选所依据的已保存版本（seq）」。
+        # 真实客户端读取板面后就是这样写的；不补的话第二次保存会被服务端按旧版本拒绝。
+        state = {**state, "seq": self.state(board)["seq"]}
         response = self.client.put(f"/api/interactive/boards/{board}/state", json={"state": state})
         body = None
         try:
@@ -120,6 +123,8 @@ class Harness:
         if detail.get("error") != "impact_confirmation_required":
             return response
         meta = self.client.get(f"/api/interactive/boards/{board}/state").json()
+        # 影响确认与待保存候选必须绑定同一个已保存版本（契约 §1.4 / M4）
+        state = {**state, "seq": meta["seq"]}
         check = self.client.post(
             f"/api/interactive/boards/{board}/impact-check",
             json={"stateVersion": meta["seq"], "changeSet": {"state": state}},
