@@ -213,12 +213,21 @@ def test_sr_n4_revert_rest_rechecks_content_before_executing(client: TestClient)
             if card["id"] == target:
                 card["content"] = "用户后来补写的新内容"
         state["links"].append(
-            # 连到仍然存在、且与既有关系不同端点的对象上（同一对端点的关系会被规范化去重）
+            # 连到仍然存在、且与既有关系不同的对象上（同一对端点的关系会被规范化去重）
             models.new_link(target, "m2", direction=False, meaning="后来建立的关系")
         )
 
     _put_current(client, mutate)
     assert _cards(client)[target]["content"] == "用户后来补写的新内容"
+    links_before = [
+        str(l.get("id"))
+        for l in _state(client)["state"]["links"]
+        if l.get("meaning") == "后来建立的关系" and not l.get("deleted")
+    ]
+    assert links_before, (
+        "前置条件：等待期间新建的关系没有落库，链接="
+        + repr([(l.get("id"), l.get("meaning"), l.get("deleted")) for l in _state(client)["state"]["links"]])
+    )
 
     resp = client.post(
         f"/api/interactive/intents/{seeded['intent_id']}/demo/advance",

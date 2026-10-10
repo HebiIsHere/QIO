@@ -117,7 +117,7 @@ describe("F1 取消恢复等待期间的独立操作", () => {
     expect(store.dirty).toBe(true);
 
     // 正确行为 D：随后真的保存一次，取消掉的正文不得重新落库
-    // 这次不再有影响需要确认（前面的门已经取消过），否则保存会再次被影响门拦下
+    // 这次不再有影响需要确认（前面的门已经取消过），否则保存会再次被影响门拦下（那是契约要求的先前路径）
     vi.mocked(api.checkMaterialImpact).mockResolvedValue({
       ok: true,
       checkId: "chk_f1_after_cancel",
