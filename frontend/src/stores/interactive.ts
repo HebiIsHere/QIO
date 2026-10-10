@@ -230,6 +230,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
   let knownServerSeq = 0;
 
   /**
+   * N1/F3：同一次候选的「旧版本写入被拒 → 读最新事实 → 重试」次数上限。
+   * 服务端版本一直在被别人推进时，绝不做无界重试：停在明确失败上，让用户看见原因。
+   */
+  let saveRecoveryRev = -1;
+  let saveRecoveryAttempts = 0;
+
+  /**
    * 「勾选」是按对象记录的修改代次（N5）：提交成功回报 checkedCleared 时，
    * 只有**用户没有在等待期间自己重新勾选**的那一条才能被这次清理取消。
    */
@@ -694,8 +701,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
         );
         const newerCandidate = boardLocalRev !== putRev;
         const boardReadAdvanced = boardCleanRev !== putCleanRev;
-        // 服务器接受了这次写入：这是**已保存事实**（F1 的撤回也由它确认）
-        settleCancelRecovery(true, null);
         if (!newerCandidate && Number.isFinite(Number(result.seq))) {
           knownServerSeq = Math.max(knownServerSeq, Number(result.seq));
         }
@@ -735,6 +740,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
           if (newerCandidate) scheduleSave();
           return;
         }
+        // 服务器接受了这次写入：这是**已保存事实**（F1 的撤回也由它确认）
+        settleCancelRecovery(true, null);
+        saveRecoveryRev = putRev;
+        saveRecoveryAttempts = 0;
         board.value = result.state;
         cleanState = cloneState(result.state);
         reconcileCheckedChoices(result.state);
@@ -789,6 +798,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
           pendingConfirm = null;
           saveStatus.value = "idle";
           saveError.value = null;
+          // 有界重试：同一次候选最多重来 3 次，之后如实停在失败上（不做无界自动重试）
+          if (saveRecoveryRev !== putRev) {
+            saveRecoveryRev = putRev;
+            saveRecoveryAttempts = 0;
+          }
+          saveRecoveryAttempts += 1;
+          if (saveRecoveryAttempts > 3) {
+            saveStatus.value = "error";
+            saveError.value =
+              "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。" +
+              "请确认是否有其他窗口或页面正在同时编辑，然后点重试";
+            dirty.value = true;
+            return;
+          }
           const readError = await recoverCandidateFromServer(
             "服务端已有更新的已保存版本（" + (failure.reason ?? "板面版本已经变化") + "）",
           );
@@ -2354,6 +2377,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return result;
   }
 
+/**
+   * 读取当前的影响确认。
+   *
+   * 放进函数里是必要的：`confirmImpact` 里先执行了 `pendingImpact.value = null`，
+   * 直接再读会命中 TypeScript 的控制流收窄（判成 null/never），
+   * 而这里要的正是「await 之后真实的最新值」。
+   */
+  function peekPendingImpact() {
+    return pendingImpact.value;
+  }
+
   /**
    * N2：把这次影响确认的**真实结果**如实说出来（成功 / 仍待确认 / 检查失败 / 保存失败 / 未落库）。
    * 绝不因为 Promise 正常返回就宣称「已保存、任务已暂停」。
@@ -2396,8 +2430,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
       impactConfirmed = false;
       await saveNow();
       const recheckNote = "等待确认期间板面又有改动，已按最新版重新核实这次改动的影响，请重新确认";
-      if (pendingImpact.value && !pendingImpact.value.note) {
-        pendingImpact.value = { ...pendingImpact.value, note: recheckNote };
+      const rechecked = peekPendingImpact();
+      if (rechecked && !rechecked.note) {
+        pendingImpact.value = { ...rechecked, note: recheckNote };
       }
       return summarizeImpactConfirm(recheckNote);
     }
