@@ -226,8 +226,10 @@ def test_user_stop_is_not_reported_as_provider_error(app_client):
         end["reason_code"],
     )
     assert end["stopped_by"] == "user", end["stopped_by"]
-    assert "resend" in [str(a) for a in end["actions"]], (
-        "被用户停掉的一轮应当能「重发」",
+    # 冻结契约 K3（2026-10-10 R7）：用户停止落台账是 cancelled，resend 只认 interrupted
+    # （会 409）—— 真正可用的恢复动作是 retry（用既有发送接口创建新 turn）。
+    assert end["actions"] == ["retry"], (
+        "被用户停掉的一轮应当给出真正可用的恢复动作（retry）",
         end["actions"],
     )
 

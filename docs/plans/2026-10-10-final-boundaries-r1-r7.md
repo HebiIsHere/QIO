@@ -68,6 +68,17 @@
 
 跨范围需求：C 需要 B 的守卫 → B 提供 `attachmentOps.ts` 并由 Lead 冻结接口；D 需要 C 的前端动作 → 以 K3 为准；任何一方需要改对方文件时先报 Lead。
 
+实际成员分配（会话的团队名额上限 8 已被上一轮成员占满，本轮**复用**上一轮成员承担五个工作流，均使用各自独立分支/worktree；并发能力未受限，五条流同时运行）：
+
+| 本轮角色 | 成员 | 分支 / worktree |
+| --- | --- | --- |
+| A（R1/R2） | fb-a | `wt/fb-a` @ `qio-acc-a` |
+| B（R3/R4） | fb-b | `wt/fb-b` @ `qio-acc-d` |
+| C（R5/R6/R7 前端） | fb-c（成员 acc-c2） | `wt/fb-c` @ `qio-acc-c` |
+| D（R7 后端 + R6 生产端） | fb-d（成员 acc-b2） | `wt/fb-d` @ `qio-acc-b` |
+| E（独立验证） | fb-e（成员 acc-f2） | `wt/fb-e` @ `qio-acc-f` |
+| Lead | lead | `fix/process-attachment-audit-final-boundaries` @ `qio-acc` |
+
 ## 四、验收（每项：旧基线先红 → 修复后绿 + 回归）
 
 - R1/R2：真实文件、真实附件服务、确定性闸门（只控制 I/O 时序，不 sleep 碰运气）；断言最终字节、身份、集合回执、数据库绑定、临时文件与句柄清理；/api/turns 入口级证据（模型调用数 0）。

@@ -4,12 +4,19 @@ import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
 import AttachmentChip from "./AttachmentChip.vue";
 import {
+  attachmentRemovalBarrier,
+  clearAttachmentTombstones,
+  forgetAttachmentRemoved,
   getAttachment,
+  isAttachmentDead,
   isDesktopShell,
   isSendable,
   loadPendingAttachments,
+  markAttachmentRemoved,
+  markAttachmentsSent,
   onPathDrop,
   openAttachment,
+  pendingRevision,
   pickLocalPath,
   prepareAttachment,
   relocateAttachment,
@@ -22,7 +29,20 @@ import {
   uploadAttachment,
   waitUntilSettled,
   type AttachmentRef,
+  type RestorePendingOutcome,
 } from "../services/attachments";
+import {
+  attachmentOpToken,
+  beginAttachmentOp,
+  bumpTopicEpoch,
+  decideAttachmentWrite,
+  invalidateAttachmentIdentity,
+  mergeRestorePatch,
+  registerAttachmentIdentity,
+  restoreAttachmentIdentity,
+  type AttachmentOpCapture,
+  type PendingRestorePatch,
+} from "../composables/attachmentOps";
 
 const session = useSessionStore();
 /**
@@ -127,9 +147,13 @@ function nameOfAttachment(id: string): string {
 async function removeRejectedAndSend() {
   const rejected = sendRejection.value?.rejected ?? [];
   const ids = new Set(rejected.map((row) => row.id));
-  for (const id of ids) removedIds.add(id);
-  editSeq += 1;
-  commitToTopic(currentTopicId(), (list) => list.filter((item) => !ids.has(item.id)));
+  const topicId = currentTopicId();
+  // 用户显式「移除这些附件后发送」：同样写 tombstone，晚到的恢复不得把它们放回来
+  for (const id of ids) {
+    invalidateAttachmentIdentity(id);
+    markAttachmentRemoved(topicId, id);
+  }
+  commitToTopic(topicId, (list) => list.filter((item) => !ids.has(item.id)));
   session.lastSendRejection = null;
   attachError.value = "";
   await submit();
@@ -201,10 +225,13 @@ async function submit() {
     }
     return;
   }
-  // 已被受理：后端在受理时就把这批附件绑到了这一轮，chip 可以清掉（只删自己那一份）
+  // 已被受理：后端在受理时就把这批附件绑到了这一轮，chip 可以清掉（只删自己那一份）。
+  // K1.5：这批 id 进入 sent 失效集、话题世代前进、tombstone 清理 —— 晚到的旧结果不得再入待发列表。
   const sentIds = new Set(sentAttachments.map((item) => item.id));
-  for (const id of sentIds) removedIds.add(id);
-  editSeq += 1;
+  for (const id of sentIds) invalidateAttachmentIdentity(id);
+  markAttachmentsSent(sendTopicId, [...sentIds]);
+  clearAttachmentTombstones(sendTopicId, [...sentIds]);
+  bumpTopicEpoch(sendTopicId);
   commitToTopic(sendTopicId, (list) => list.filter((item) => !sentIds.has(item.id)));
   attachError.value = "";
   if (preparingCancelled.value) {
@@ -296,14 +323,14 @@ function isCurrentTopic(topicId: string | null): boolean {
 
 /** 组件是否还活着（卸载后异步结果只落持久化，不写 UI）。 */
 let alive = true;
-/** 用户对当前待发列表的编辑计数：用于判断「恢复在途期间用户改过」 */
-let editSeq = 0;
-/** 操作序号：每次附件操作 +1（归属版本标识，防止旧结果覆盖新结果） */
-let attachOpSeq = 0;
-/** 用户在本次会话里明确移除过的附件 id：慢恢复不能把它们再放回来 */
-const removedIds = new Set<string>();
 /** 在途「登记/上传」操作计数：不用共享 loading 布尔值（旧操作结束不会清掉新操作的 loading） */
 let attachOpCount = 0;
+/**
+ * 浏览器文件对话框：**点击那一刻**捕获的发起身份（R4）。
+ * 对话框返回后不得再读 currentTopicId —— 用户可能已经切到别的话题，
+ * 结果必须落到发起话题 A，而不是污染当前话题 B。
+ */
+let pickCapture: AttachmentOpCapture | null = null;
 
 function beginAttach(): void {
   attachOpCount += 1;
@@ -314,15 +341,37 @@ function endAttach(): void {
   attaching.value = attachOpCount > 0;
 }
 
-/** 更新一个话题的待发列表：当前话题（且组件存活）才更新 UI；任何情况都持久化。 */
-function commitToTopic(topicId: string | null, mutate: (list: AttachmentRef[]) => AttachmentRef[]): void {
-  if (alive && isCurrentTopic(topicId)) {
-    const next = mutate(pending.value);
-    pending.value = next;
-    savePendingAttachments(topicId, next);
-    return;
-  }
-  savePendingAttachments(topicId, mutate(loadPendingAttachments(topicId)));
+/**
+ * 更新一个话题的待发列表：只有「组件存活 + 发起话题仍是当前话题 + 调用方允许写 UI」才更新 UI；
+ * 任何情况都持久化到**发起话题**（结果不属于当前话题时也不丢 —— 落到它自己的话题，不制造孤儿）。
+ * 已移除（tombstone）/已发送（sent）的条目一律不写回去（K1.3）。
+ */
+function commitToTopic(
+  topicId: string | null,
+  mutate: (list: AttachmentRef[]) => AttachmentRef[],
+  allowUi = true,
+): void {
+  const ui = allowUi && alive && isCurrentTopic(topicId);
+  const next = mutate(ui ? pending.value : loadPendingAttachments(topicId)).filter(
+    (item) => !isAttachmentDead(topicId, item.id),
+  );
+  if (ui) pending.value = next;
+  savePendingAttachments(topicId, next);
+}
+
+/**
+ * 把一个附件结果写到它该去的地方（K1.3）：
+ *   * ui          → 当前 UI + 持久化；
+ *   * persistence → 只落**发起话题**的持久化（不写当前 UI，也不丢弃）；
+ *   * drop        → 已移除 / 已发送：静默丢弃，绝不 upsert 回来。
+ */
+function commitAttachment(capture: AttachmentOpCapture, item: AttachmentRef): void {
+  const verdict = decideAttachmentWrite(capture, {
+    id: item.id,
+    isCurrentTopic: alive && isCurrentTopic(capture.topicId),
+  });
+  if (verdict.target === "drop") return;
+  commitToTopic(capture.topicId, (list) => upsertIn(list, item), verdict.target === "ui");
 }
 
 /** 按 id 就地更新/追加一条（返回新数组，避免共享引用被误改）。 */
@@ -339,19 +388,17 @@ function upsertIn(list: AttachmentRef[], item: AttachmentRef): AttachmentRef[] {
  * F24：由 waitUntilSettled 保证「已受理、正在准备」会继续等待；这里不自行判断最终态。
  * 返回最终引用（状态没跟到时返回 null，旧条目保留）。
  */
-async function track(item: AttachmentRef, topicId: string | null, seq: number): Promise<AttachmentRef | null> {
-  void seq; // 归属版本：调用方用它识别陈旧结果；当前以话题归属为准
-  removedIds.delete(item.id);
-  commitToTopic(topicId, (list) => upsertIn(list, item));
+async function track(item: AttachmentRef, capture: AttachmentOpCapture): Promise<AttachmentRef | null> {
+  commitAttachment(capture, item);
   try {
     const settled = await waitUntilSettled(item, {
-      onUpdate: (next) => commitToTopic(topicId, (list) => upsertIn(list, next)),
+      onUpdate: (next) => commitAttachment(capture, next),
     });
-    commitToTopic(topicId, (list) => upsertIn(list, settled));
+    commitAttachment(capture, settled);
     return settled;
   } catch (err) {
     // 跟进失败 ≠ 附件失败：只在它所属话题仍是当前话题时提示，不干扰别的话题
-    if (alive && isCurrentTopic(topicId)) {
+    if (alive && isCurrentTopic(capture.topicId)) {
       attachError.value = `附件「${item.name}」的准备状态没有跟到：${(err as Error).message}`;
     }
     return null;
@@ -361,12 +408,12 @@ async function track(item: AttachmentRef, topicId: string | null, seq: number): 
 let stopDropWatch: (() => void) | null = null;
 
 /** 真实路径（拖放 / 原生选择器 / 粘贴）：登记后由后台复制或记引用。 */
-async function addPaths(paths: string[]) {
+async function addPaths(paths: string[], entryCapture?: AttachmentOpCapture) {
   if (!paths.length) return;
-  const topicId = currentTopicId();
-  const seq = ++attachOpSeq;
+  // 归属：发起时刻冻结（调用方在点击/拖放入口捕获；缺省才用当前话题兜底）
+  const capture = entryCapture ?? beginAttachmentOp({ kind: "prepare", topicId: currentTopicId() });
+  const topicId = capture.topicId;
   const target = reuploadTargetFor(topicId);
-  editSeq += 1;
   attachError.value = "";
   beginAttach();
   try {
@@ -375,8 +422,10 @@ async function addPaths(paths: string[]) {
       const replace = target && i === 0 ? target : null;
       try {
         const created = await prepareAttachment(path, { topicId });
-        if (replace) await trackAndReplace(created, replace, topicId, seq);
-        else void track(created, topicId, seq);
+        // 新附件的身份 = 本次操作（显式重新添加：同时清理移除痕迹与 sent 标记）
+        registerAttachmentIdentity(topicId, created.id, capture.opToken);
+        if (replace) await trackAndReplace(created, replace, capture);
+        else void track(created, capture);
       } catch (err) {
         if (alive && isCurrentTopic(topicId)) {
           attachError.value = `「${path}」没有登记成功：${(err as Error).message}`;
@@ -392,13 +441,13 @@ async function addPaths(paths: string[]) {
 }
 
 /** 浏览器回退：只有字节（没有真实路径）时走上传；绝不用 input[type=file] 的 fakepath。 */
-async function addFiles(files: FileList | File[]) {
+async function addFiles(files: FileList | File[], entryCapture?: AttachmentOpCapture) {
   const list = Array.from(files);
   if (!list.length) return;
-  const topicId = currentTopicId();
-  const seq = ++attachOpSeq;
+  // 归属：优先用「打开文件对话框那一刻」捕获的发起身份（R4），否则用当前话题兜底
+  const capture = entryCapture ?? beginAttachmentOp({ kind: "upload", topicId: currentTopicId() });
+  const topicId = capture.topicId;
   const target = reuploadTargetFor(topicId);
-  editSeq += 1;
   attachError.value = "";
   beginAttach();
   try {
@@ -407,8 +456,9 @@ async function addFiles(files: FileList | File[]) {
       const replace = target && i === 0 ? target : null;
       try {
         const created = await uploadAttachment(file, { topicId });
-        if (replace) await trackAndReplace(created, replace, topicId, seq);
-        else void track(created, topicId, seq);
+        registerAttachmentIdentity(topicId, created.id, capture.opToken);
+        if (replace) await trackAndReplace(created, replace, capture);
+        else void track(created, capture);
       } catch (err) {
         if (alive && isCurrentTopic(topicId)) {
           attachError.value = `「${file.name}」没有上传成功：${(err as Error).message}`;
@@ -438,10 +488,10 @@ function reuploadTargetFor(topicId: string | null): { id: string; name: string; 
 async function trackAndReplace(
   created: AttachmentRef,
   target: { id: string; name: string; topicId: string | null },
-  topicId: string | null,
-  seq: number,
+  capture: AttachmentOpCapture,
 ): Promise<void> {
-  const settled = await track(created, topicId, seq);
+  const topicId = capture.topicId;
+  const settled = await track(created, capture);
   if (!settled) return; // 状态没跟到：旧附件保留
   if (settled.state !== "ready") {
     if (alive && isCurrentTopic(topicId)) {
@@ -458,15 +508,16 @@ async function trackAndReplace(
     }
     return;
   }
-  await commitReplacement(target, settled, topicId);
+  await commitReplacement(target, settled, capture);
 }
 
 /** 提交替换：删除**指定旧 ID**；删除失败不报告无条件成功，保留旧条目可恢复。 */
 async function commitReplacement(
   target: { id: string; name: string; topicId: string | null },
   replacement: AttachmentRef,
-  topicId: string | null,
+  capture: AttachmentOpCapture,
 ): Promise<void> {
+  const topicId = capture.topicId;
   // 双次重传竞态：旧条目已经被上一轮替换动作删掉时，不重复 DELETE。
   const stillThere =
     loadPendingAttachments(topicId).some((a) => a.id === target.id) ||
@@ -480,7 +531,8 @@ async function commitReplacement(
     }
     return;
   }
-  removedIds.add(target.id);
+  invalidateAttachmentIdentity(target.id);
+  markAttachmentRemoved(topicId, target.id);
   commitToTopic(topicId, (list) => list.filter((a) => a.id !== target.id));
   if (reuploadTarget.value && reuploadTarget.value.id === target.id) reuploadTarget.value = null;
   if (alive && isCurrentTopic(topicId)) {
@@ -489,23 +541,39 @@ async function commitReplacement(
   }
 }
 
-/** 点击「附件」：桌面端用原生选择器拿真实路径；失败或不支持时退回文件选择/粘贴路径。 */
+/**
+ * 点击「附件」：**在点击入口**捕获发起身份（R4）。
+ * 桌面端用原生选择器拿真实路径、浏览器/失败时退回文件选择 —— 两条路共用同一个捕获，
+ * 所以对话框返回后即使用户已经切了话题，结果仍落到发起话题（不读 currentTopicId）。
+ */
 async function pickFile() {
   attachError.value = "";
+  pickCapture = null;
+  const capture = beginAttachmentOp({ kind: "prepare", topicId: currentTopicId() });
   if (isDesktopShell()) {
     try {
       const path = await pickLocalPath();
       if (path) {
-        await addPaths([path]);
+        await addPaths([path], capture);
         return;
       }
-      // 用户取消：什么都不做（不算失败）
-      if (await desktopPickerAvailable()) return;
+      // 用户取消：只清理自己的选择意图（不留重传/替换目标），不算失败
+      if (await desktopPickerAvailable()) {
+        cancelPickIntent();
+        return;
+      }
     } catch (err) {
       attachError.value = `原生文件选择器不可用（${(err as Error).message}）：已退回文件选择`;
     }
   }
+  pickCapture = capture;
   fileInputRef.value?.click();
+}
+
+/** 取消选择：只清掉本次选择意图本身（含重传/替换目标），不假装发生过什么。 */
+function cancelPickIntent() {
+  pickCapture = null;
+  reuploadTarget.value = null;
 }
 
 /** 桌面壳是否真的有原生选择命令（没有就退回字节上传，不假装能拿路径）。 */
@@ -525,8 +593,16 @@ async function desktopPickerAvailable(): Promise<boolean> {
 
 function onFileInput(e: Event) {
   const input = e.target as HTMLInputElement;
-  if (input.files?.length) void addFiles(input.files);
+  // R4：用「打开对话框那一刻」捕获的身份，而不是这里重新读 currentTopicId
+  const capture = pickCapture;
+  pickCapture = null;
+  if (input.files?.length) void addFiles(input.files, capture ?? undefined);
   input.value = ""; // 同一个文件可以再次选择
+}
+
+/** 原生文件对话框被取消（现代浏览器发 cancel 事件）：清掉这次的选择意图。 */
+function onFileInputCancel() {
+  cancelPickIntent();
 }
 
 async function submitPath() {
@@ -541,26 +617,34 @@ async function submitPath() {
     await applyRelocate(target, value);
     return;
   }
-  await addPaths([value]);
+  // 入口捕获：路径提交这一刻的话题就是发起话题
+  await addPaths([value], beginAttachmentOp({ kind: "prepare", topicId: currentTopicId() }));
 }
 
 async function removeOne(id: string) {
   const topicId = currentTopicId();
-  const item = pending.value.find((a) => a.id === id);
+  const item =
+    pending.value.find((a) => a.id === id) ??
+    loadPendingAttachments(topicId).find((a) => a.id === id) ??
+    null;
   if (relocateTargetId.value === id) {
     relocateTargetId.value = "";
     pathOpen.value = false;
   }
-  editSeq += 1;
-  removedIds.add(id);
+  if (reuploadTarget.value?.id === id) reuploadTarget.value = null;
+  // K1.4：移除 = 使旧操作失效（token 前进）+ 写 tombstone（持久化，跨重挂载有效）
+  const previousToken = attachmentOpToken(id);
+  invalidateAttachmentIdentity(id);
+  markAttachmentRemoved(topicId, id);
   commitToTopic(topicId, (list) => list.filter((a) => a.id !== id));
   // 用户自己把这个附件移掉了：拒绝信息里对应的那条也一起收掉（不留一条点不动的待办）
   dropFromRejection(id);
   try {
     await removeAttachment(id);
   } catch (err) {
-    // 没删掉就还在：不制造「已经移除」的假象
-    removedIds.delete(id);
+    // K1.7：删除失败只恢复**这一条**，并保留它的操作身份（暂时失败不改身份）
+    forgetAttachmentRemoved(topicId, id);
+    restoreAttachmentIdentity(id, previousToken);
     if (item) commitToTopic(topicId, (list) => upsertIn(list, item));
     if (alive && isCurrentTopic(topicId)) attachError.value = `移除附件失败：${(err as Error).message}`;
   }
@@ -568,25 +652,26 @@ async function removeOne(id: string) {
 
 async function retryOne(id: string) {
   const item = pending.value.find((a) => a.id === id);
-  const topicId = currentTopicId();
+  const capture = beginAttachmentOp({ kind: "poll", topicId: currentTopicId(), attachmentIds: [id] });
   attachError.value = "";
   attachNote.value = "";
   if (!item) return;
   if (item.unconfirmed) {
     // 暂时无法确认（F10）的重试 = 重新向后端核对事实，不是重新复制内容。
-    await verifyOne(item, topicId);
+    await verifyOne(item, capture);
     return;
   }
   try {
     const accepted = await retryAttachment(id);
-    void track(accepted, topicId, ++attachOpSeq);
+    void track(accepted, capture);
   } catch (err) {
-    if (alive && isCurrentTopic(topicId)) attachError.value = `重试失败：${(err as Error).message}`;
+    if (alive && isCurrentTopic(capture.topicId)) attachError.value = `重试失败：${(err as Error).message}`;
   }
 }
 
 /** 重新向后端核对一条「暂时无法确认」的附件：确认后清掉标记，仍失败就继续保留。 */
-async function verifyOne(item: AttachmentRef, topicId: string | null): Promise<void> {
+async function verifyOne(item: AttachmentRef, capture: AttachmentOpCapture): Promise<void> {
+  const topicId = capture.topicId;
   try {
     const fresh = await getAttachment(item.id);
     const next: AttachmentRef = {
@@ -595,9 +680,9 @@ async function verifyOne(item: AttachmentRef, topicId: string | null): Promise<v
       error: fresh.error ?? item.error ?? null,
     };
     delete next.unconfirmed;
-    removedIds.delete(item.id);
-    commitToTopic(topicId, (list) => upsertIn(list, next));
-    if (alive && isCurrentTopic(topicId)) {
+    // 核对结果同样受身份约束：已经移除/已发送/换了话题都不得写当前 UI
+    commitAttachment(capture, next);
+    if (alive && isCurrentTopic(topicId) && !isAttachmentDead(topicId, item.id)) {
       attachError.value = "";
       attachNote.value = `已重新核对「${next.name}」：${stateText(next)}`;
     }
@@ -626,15 +711,18 @@ async function openOne(id: string) {
   }
 }
 
-async function applyRelocate(id: string, path: string) {
-  const topicId = currentTopicId();
+async function applyRelocate(id: string, path: string, entryCapture?: AttachmentOpCapture) {
+  // 归属：重新定位的结果属于**发起话题**（入口捕获；没有就现在冻结）
+  const capture =
+    entryCapture ?? beginAttachmentOp({ kind: "relocate", topicId: currentTopicId(), attachmentIds: [id] });
+  const topicId = capture.topicId;
   try {
     const accepted = await relocateAttachment(id, path);
     if (alive && isCurrentTopic(topicId)) {
       attachError.value = "";
       attachNote.value = "已受理重新定位：状态跟到 ready 才算成功（准备中不是成功）";
     }
-    void track(accepted, topicId, ++attachOpSeq);
+    void track(accepted, capture);
   } catch (err) {
     if (alive && isCurrentTopic(topicId)) attachError.value = `重新定位失败：${(err as Error).message}`;
   }
@@ -647,14 +735,16 @@ async function applyRelocate(id: string, path: string) {
 async function relocateOne(id: string) {
   const item = pending.value.find((a) => a.id === id);
   if (!item) return;
-  const topicId = currentTopicId();
+  // 入口捕获：原生选择器返回后不得再读 currentTopicId（R4）
+  const capture = beginAttachmentOp({ kind: "relocate", topicId: currentTopicId(), attachmentIds: [id] });
+  const topicId = capture.topicId;
   attachError.value = "";
   attachNote.value = "";
   if (isDesktopShell()) {
     try {
       const path = await pickLocalPath();
-      if (!path) return; // 用户取消：什么都不做（不算失败）
-      await applyRelocate(id, path);
+      if (!path) return; // 用户取消：什么都不做（不算失败），也不留任何替换/重定位目标
+      await applyRelocate(id, path, capture);
       return;
     } catch (err) {
       if (alive && isCurrentTopic(topicId)) {
@@ -679,44 +769,92 @@ function pendingTopicKey(): string | null {
 /** 恢复序号：只有最新一次恢复能写当前 UI（F08）。 */
 let restoreToken = 0;
 
+/** 把持久化基线先摆到界面上：恢复在途时用户就能看到（也才能移除）它。 */
+function seedFromPersistence(topicId: string | null): void {
+  if (!alive || !isCurrentTopic(topicId)) return;
+  pending.value = loadPendingAttachments(topicId).filter((item) => !isAttachmentDead(topicId, item.id));
+}
+
+/** 恢复候选 = 持久化里的 + 当前界面上已有的（去重，顺序稳定）。 */
+function restoreCandidates(topicId: string | null): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const collect = (items: readonly AttachmentRef[]) => {
+    for (const item of items) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      ids.push(item.id);
+    }
+  };
+  collect(loadPendingAttachments(topicId));
+  if (alive && isCurrentTopic(topicId)) collect(pending.value);
+  return ids;
+}
+
+/** 把恢复返回值（真实补丁 / 旧三态）归一成补丁，便于统一合并。 */
+function toRestorePatch(
+  outcome: Awaited<ReturnType<typeof restorePendingAttachments>>,
+  topicId: string | null,
+  revision: number,
+): PendingRestorePatch {
+  const value = outcome as Partial<PendingRestorePatch> & Partial<RestorePendingOutcome>;
+  const byId = new Map<string, AttachmentRef>();
+  for (const item of value.restored ?? value.items ?? []) byId.set(item.id, item);
+  for (const item of value.unconfirmed ?? []) byId.set(item.id, { ...item, unconfirmed: true });
+  return {
+    topicId: value.topicId ?? topicId,
+    revision: typeof value.revision === "number" ? value.revision : revision,
+    restored: [...byId.values()],
+    missing: value.missing ?? value.dropped ?? [],
+    missingIds: value.missingIds ?? [],
+  };
+}
+
 /**
- * 恢复待发列表：逐条向后端核对现在的事实（还在不在 / 属不属于本话题 / 有没有被别的轮次绑走）。
+ * 恢复待发列表（K1.6）：服务**按话题返回补丁**（不自行写持久化），由这里在修订号一致时合并。
  *
  * F08/F10 归属与版本：
- *   * 捕获**发起话题**与恢复序号；被更新的恢复取代、或已切走/卸载后，只保留持久化，不写当前 UI；
- *   * 恢复期间用户新增的附件要保留，不能被旧快照覆盖；
- *   * 暂时无法确认的附件由 service 保留并返回 unconfirmed（界面显示可重试状态）。
+ *   * 捕获**发起话题**、候选、修订号与恢复序号；被更新的恢复取代、或已切走/卸载后，
+ *     只按补丁合并到原话题持久化，绝不写当前 UI；
+ *   * 合并一律**只新增**：绝不复活 removed/sent，绝不覆盖更晚的列表状态；
+ *   * 恢复在途期间有人写过（修订号变了）时，连「确认永久无效」的剔除都先不做 —— 交给下一次恢复；
+ *   * 暂时无法确认的附件保留身份并带 unconfirmed（界面显示可重试状态）。
  */
 async function restorePending(): Promise<void> {
   const topicId = currentTopicId();
   const token = ++restoreToken;
-  const startIds = new Set(pending.value.map((a) => a.id));
-  const editAtStart = editSeq;
+  const revision = pendingRevision(topicId);
+  // 移除水位：这次核对开始之后才被移除的条目，一律不许被补丁复活
+  const removedBarrier = attachmentRemovalBarrier();
   let outcome: Awaited<ReturnType<typeof restorePendingAttachments>>;
   try {
-    outcome = await restorePendingAttachments(topicId);
+    outcome = await restorePendingAttachments(topicId, {
+      candidateIds: restoreCandidates(topicId),
+      revision,
+    });
   } catch (err) {
     if (alive && isCurrentTopic(topicId) && token === restoreToken) {
       attachError.value = `待发附件恢复失败：${(err as Error).message}（没有清理任何记录，可以刷新重试）`;
     }
     return;
   }
-  if (token !== restoreToken) return; // 被更新的恢复取代
-  if (!alive || !isCurrentTopic(topicId)) return; // 已切走 / 卸载：持久化已由 service 写好，不碰 UI
+  if (token !== restoreToken) return; // 被更新的恢复取代：旧快照一个字节都不写
 
-  const unconfirmed = outcome.unconfirmed ?? [];
-  const restored = [...outcome.items, ...unconfirmed].filter((a) => !removedIds.has(a.id));
-  if (editSeq === editAtStart) {
-    pending.value = restored;
-  } else {
-    // 恢复期间用户改过：并集 —— 恢复结果 + 期间新增（不是删除）的条目
-    const resultIds = new Set(restored.map((a) => a.id));
-    const additions = pending.value.filter((a) => !startIds.has(a.id) && !resultIds.has(a.id));
-    pending.value = [...restored, ...additions];
+  const patch = toRestorePatch(outcome, topicId, revision);
+  const editing = alive && isCurrentTopic(topicId);
+  const merged = mergeRestorePatch(patch, editing ? pending.value : loadPendingAttachments(topicId), {
+    // 修订号变了 = 恢复在途期间有别的写入：只允许新增，不剔除任何条目
+    dropMissing: patch.revision === revision,
+    removedBarrier,
+  });
+  if (editing) pending.value = merged.list;
+  savePendingAttachments(topicId, merged.list);
+  if (!editing) return; // 已切走 / 卸载：只落原话题持久化
+
+  if (patch.missing.length) {
+    attachError.value = `这些附件已经不在待发列表里（已删除、已随别的消息发出，或不属于本话题）：${patch.missing.join("、")}`;
   }
-  if (outcome.dropped.length) {
-    attachError.value = `这些附件已经不在待发列表里（已删除、已随别的消息发出，或不属于本话题）：${outcome.dropped.join("、")}`;
-  }
+  const unconfirmed = merged.list.filter((item) => item.unconfirmed);
   if (unconfirmed.length) {
     attachNote.value = `这些附件暂时无法确认（服务没有响应）：${unconfirmed
       .map((a) => a.name)
@@ -731,13 +869,14 @@ watch(
   async (_next, prev) => {
     savePendingAttachments(prev ?? null, pending.value);
     restoreToken += 1; // 立刻让在途旧恢复失效
-    editSeq += 1;
     pending.value = [];
     attachNote.value = "";
     attachError.value = "";
     relocateTargetId.value = "";
     pathOpen.value = false;
     reuploadTarget.value = null;
+    // 注意：**不清** pickCapture —— 文件对话框可能还开着，切换话题后返回的结果仍属发起话题（R4）
+    seedFromPersistence(currentTopicId());
     await restorePending();
   },
 );
@@ -762,14 +901,17 @@ function onDrop(e: DragEvent) {
 }
 
 onMounted(async () => {
-  // 恢复本话题的待发附件（组件重建 / 刷新后「看到的 == 将发送的」）
+  // 组件（重）挂载 = 话题世代前进（K1.2），并把持久化基线先摆到界面上；
+  // 然后逐条向后端核对（看到的 == 将发送的）。
+  bumpTopicEpoch(currentTopicId());
+  seedFromPersistence(currentTopicId());
   void restorePending();
   // 历史消息里的「重新上传」成功后，把新附件送进**发起话题**的待发列表（F04）。
   // 不属于当前话题时已经持久化，这里不碰 UI（切过去自然会恢复出来）。
   stopPendingInbox = subscribePendingAttachment(({ topicId, attachment }) => {
     if (!alive || !isCurrentTopic(topicId)) return;
-    removedIds.delete(attachment.id);
-    editSeq += 1;
+    // K1.3：已移除 / 已发送的 id 绝不复活 —— 迟到的历史重传结果也一视同仁
+    if (isAttachmentDead(topicId, attachment.id)) return;
     commitToTopic(topicId, (list) => upsertIn(list, attachment));
     attachNote.value = `已把「${attachment.name}」加入待发送附件（来自历史消息的重新上传）`;
   });
@@ -1149,6 +1291,7 @@ async function stopTurn() {
       aria-hidden="true"
       tabindex="-1"
       @change="onFileInput"
+      @cancel="onFileInputCancel"
     />
     <div v-if="dragging" class="drop-hint">松开即可添加为附件</div>
   </div>

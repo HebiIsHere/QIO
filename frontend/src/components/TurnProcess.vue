@@ -28,8 +28,10 @@ import {
 import {
   currentStageOf,
   groupTurnItems,
+  normalizeTurnActionsForStatus,
   useSessionStore,
   type StreamMessage,
+  type TurnAction,
   type TurnFacts,
   type TurnStage,
 } from "../stores/session";
@@ -304,12 +306,24 @@ const dataState = computed(() => {
 
 /** 后端给的一句话人话原因；没有就是空串（旧记录不伪造原因） */
 const reasonLine = computed(() => props.facts?.reason ?? "");
+/**
+ * 渲染用的可用动作（K3.4 防御性归一）：
+ * 历史或旧留痕里的 cancelled + resend 是一个点不通的死按钮（resend 只对 interrupted
+ * 生效），渲染时同样归一成 retry —— 不依赖上游一定已经归一过。
+ */
+const displayActions = computed<TurnAction[]>(() =>
+  normalizeTurnActionsForStatus(
+    props.facts?.status,
+    props.facts?.reasonCode,
+    props.facts?.actions ?? [],
+  ),
+);
 /** 重试要重发的就是这一轮的用户消息：找不到它，按钮就不该出现 */
 const retrySource = computed(() => (props.turnId ? session.userMessageFor(props.turnId) : null));
 const canRetry = computed(
-  () => (props.facts?.actions ?? []).includes("retry") && !!retrySource.value?.content.trim(),
+  () => displayActions.value.includes("retry") && !!retrySource.value?.content.trim(),
 );
-const canResend = computed(() => (props.facts?.actions ?? []).includes("resend"));
+const canResend = computed(() => displayActions.value.includes("resend"));
 const actionButtons = computed<{ key: "retry" | "resend"; label: string }[]>(() => {
   const out: { key: "retry" | "resend"; label: string }[] = [];
   if (canRetry.value) out.push({ key: "retry", label: "重试" });
@@ -318,7 +332,7 @@ const actionButtons = computed<{ key: "retry" | "resend"; label: string }[]>(() 
 });
 /** 后端列了 retry、但本地找不到这一轮的用户消息：说清为什么没有这个入口 */
 const actionNote = computed(() =>
-  (props.facts?.actions ?? []).includes("retry") && !canRetry.value
+  displayActions.value.includes("retry") && !canRetry.value
     ? "找不到这一轮的用户消息，无法重试"
     : "",
 );
@@ -330,7 +344,7 @@ const actionFeedback = computed(() =>
 );
 /** continue 由既有的「继续 / 停止」操作条承担：过程区只提示入口位置，绝不重复出按钮 */
 const continueHint = computed(() =>
-  (props.facts?.actions ?? []).includes("continue") && session.pendingContinue
+  displayActions.value.includes("continue") && session.pendingContinue
     ? "继续或停止请用下方的操作条"
     : "",
 );

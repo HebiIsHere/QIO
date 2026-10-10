@@ -170,7 +170,8 @@ describe("R4 问题一：流式正式回答的 DOM", () => {
         reason: "连接中断",
         stopped_by: null,
         actions: ["retry"],
-        final_content: "",
+        // K2.2：缺省 = 不校准（本用例的意图是「没有 final_content」，不是清空已显示回答）
+        final_content: null,
       }),
     );
     await settle();

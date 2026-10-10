@@ -242,19 +242,37 @@ class TurnJournal:
             chunk = wanted[start : start + 400]
             placeholders = ",".join("?" for _ in chunk)
             rows = self._query(
-                "SELECT turn_id, status, reason, reason_code, stopped_by, actions"
+                "SELECT turn_id, status, reason, reason_code, stopped_by, actions,"
+                " notify, recovered_at"
                 f" FROM turn_journal WHERE turn_id IN ({placeholders})",
                 tuple(chunk),
             )
             for row in rows:
                 turn_id = str(row["turn_id"])
+                status = str(row["status"] or "")
+                actions = _parse_actions(row["actions"])
+                # 冻结契约 K3（**读时投影**，不改写执行事实）：
+                # * cancelled（≠ interrupted）不得给出必然 409 的 resend —— 旧记录里存过
+                #   resend 的，读出来归一到真正可用的 retry；
+                # * interrupted 是真正可恢复的（resend 一次性领取），旧行没写动作时补上。
+                if status == "cancelled" and "resend" in actions:
+                    actions = ["retry" if a == "resend" else a for a in actions]
+                if (
+                    status == "interrupted"
+                    and not actions
+                    and not int(row["notify"] or 0)
+                    and row["recovered_at"] is None
+                ):
+                    # 只有**真正可恢复**（用户消息、尚未被 claim）的 interrupted 行才补
+                    # resend，与 /api/turns/{id}/resend 的准入谓词一致；已领取/系统通知轮不补。
+                    actions = ["resend"]
                 out[turn_id] = {
                     "turn_id": turn_id,
-                    "status": str(row["status"] or ""),
+                    "status": status,
                     "reason_code": str(row["reason_code"]) if row["reason_code"] else None,
                     "reason": _human_reason(row["reason"]),
                     "stopped_by": str(row["stopped_by"]) if row["stopped_by"] else None,
-                    "actions": _parse_actions(row["actions"]),
+                    "actions": actions,
                 }
         return out
 

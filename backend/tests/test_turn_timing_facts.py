@@ -250,7 +250,9 @@ async def test_user_stop_is_reported_as_user_stopped():
     assert isinstance(end["reason"], str) and end["reason"].strip()
     assert "停止" in end["reason"]
     assert len(end["reason"]) <= 200
-    assert end["actions"] == ["resend"]
+    # 冻结契约 K3：用户停止落台账是 cancelled，resend 只认 interrupted（会 409）；
+    # 真正可用的恢复动作是 retry（前端用既有发送接口创建新 turn）。
+    assert end["actions"] == ["retry"]
 
 
 async def test_shutdown_interruption_is_not_a_user_stop():

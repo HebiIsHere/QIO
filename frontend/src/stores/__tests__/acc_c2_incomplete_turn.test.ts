@@ -158,15 +158,16 @@ describe("F06 前端：incomplete 是「未完成」，不是完成", () => {
     expect(list[0]!.streaming, "落定为静态").toBeUndefined();
   });
 
-  it("final_content 与已到达正文等长前缀不一致时不复制：正文仍然只有一条", () => {
+  it("final_content 比已到达正文短（未确认后缀）：以后端确认的正文为准，仍然只有一条", () => {
     const { events, session } = setup();
     streamAnswers(events, "turn_i", BODY);
-    // 后端确认的那部分比前端已经显示的短（未确认后缀不补发）
-    events.route(ev("TURN_END", incompleteEnd({ final_content: BODY.slice(0, 8) })));
+    // 后端确认的那部分比前端已经显示的短：未确认的后缀不得继续显示（F06 验收）
+    const confirmed = BODY.slice(0, 8);
+    events.route(ev("TURN_END", incompleteEnd({ final_content: confirmed })));
 
     const list = assistants(session);
     expect(list, "不得因为「全文不等」再补一条回答").toHaveLength(1);
-    expect(countOf(list[0]!.content, BODY)).toBe(1);
+    expect(list[0]!.content, "正文以确认过的那部分为准（K2.2 覆盖，不比较相似度）").toBe(confirmed);
   });
 
   it("重连重放（同一 turn 的 TURN_END 再来一次）不得追加第二条正文", () => {

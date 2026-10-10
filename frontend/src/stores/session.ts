@@ -135,6 +135,30 @@ function normalizeTurnActions(raw: unknown): TurnAction[] {
 }
 
 /**
+ * 终态动作归一（契约 K3.1 / K3.4）：`cancelled` / `stopped` 且**不是真正的中断**时，
+ * `resend` 是一个点不通的死按钮 —— 后端 `/api/turns/{id}/resend` 只接受台账里
+ * `interrupted` 的行，对已取消的轮必然 409。于是把它归一成 `retry`
+ * （前端用既有发送接口新建一轮）；真正 interrupted（reasonCode === "interrupted"）
+ * 保留 resend。实时事件、历史 turn_facts、本机留痕与渲染层共用这一条规则。
+ */
+export function normalizeTurnActionsForStatus(
+  status: unknown,
+  reasonCode: unknown,
+  actions: TurnAction[],
+): TurnAction[] {
+  const st = String(status ?? "");
+  const code = String(reasonCode ?? "");
+  if ((st !== "cancelled" && st !== "stopped") || code === "interrupted") return actions;
+  if (!actions.includes("resend")) return actions;
+  const out: TurnAction[] = [];
+  for (const action of actions) {
+    const next: TurnAction = action === "resend" ? "retry" : action;
+    if (!out.includes(next)) out.push(next);
+  }
+  return out;
+}
+
+/**
  * TURN_END 的权威事实（契约 §3 / §1.2）：总耗时与结束原因都只在轮次结束后才存在。
  *
  * 结束原因/可用操作全部来自后端（已脱敏）：
@@ -199,7 +223,18 @@ function loadTurnFactsCache(): Record<string, TurnFacts> {
     const out: Record<string, TurnFacts> = {};
     for (const [key, value] of Object.entries(parsed)) {
       const row = value as TurnFacts | null;
-      if (row && typeof row === "object" && typeof row.turnId === "string") out[key] = row;
+      if (!row || typeof row !== "object" || typeof row.turnId !== "string") continue;
+      // 读取路径归一（K3.4）：旧留痕里的 cancelled + resend 也不能变成死按钮
+      out[key] = Array.isArray(row.actions)
+        ? {
+            ...row,
+            actions: normalizeTurnActionsForStatus(
+              row.status,
+              row.reasonCode,
+              normalizeTurnActions(row.actions),
+            ),
+          }
+        : row;
     }
     return out;
   } catch {
@@ -529,14 +564,26 @@ function normalizeVerification(value: unknown): VerifiedFact | null {
   return { basis, claims };
 }
 
-/** 历史行的 `raw`（JSON 字符串）→ 核对结论；解析失败一律当作「没有」。 */
-function parseVerifiedRaw(raw?: string | null): VerifiedFact | null {
-  if (!raw) return null;
+/**
+ * 历史 assistant 行的 `raw`（JSON 字符串）→ 核对结论 + 系统核对注记。
+ *
+ * 契约 K2.3：raw.annotation 是注记的**权威字段**（后端 turn_orchestrator.verification_raw
+ * 与 verified 一起落库）；legacy 旧记录可能把注记内联在正文末尾。解析失败 / 字段缺失
+ * 一律当作「没有」—— 正常恢复正文，绝不制造失败或「未验证」提醒。
+ */
+function parseAssistantRaw(raw?: string | null): {
+  annotation: string | null;
+  verified: VerifiedFact | null;
+} {
+  if (!raw) return { annotation: null, verified: null };
   try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return normalizeVerification(parsed?.verified);
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== "object") return { annotation: null, verified: null };
+    const note = parsed.annotation;
+    const annotation = typeof note === "string" && note.trim() ? note.trim() : null;
+    return { annotation, verified: normalizeVerification(parsed.verified) };
   } catch {
-    return null;
+    return { annotation: null, verified: null };
   }
 }
 
@@ -582,23 +629,6 @@ function appendSystemAnnotation(content: string, note: string): string {
   return base ? `${base}\n\n${labeled}` : labeled;
 }
 
-/**
- * 用 TURN_END 的最终正文校准已发布回答。
- *
- * 只在「同一次回答」上就地合并 / 延长；返回 null 表示两段正文真不一样，
- * 交给调用方决定（真正不同的多条回答要保留）。
- */
-function mergeFinalBody(existing: string, body: string): string | null {
-  const prev = String(existing ?? "");
-  const next = String(body ?? "");
-  const p = prev.trim();
-  const b = next.trim();
-  if (p === b) return prev;
-  if (!b) return prev;
-  if (b.startsWith(p)) return next;
-  if (p.startsWith(b)) return prev;
-  return null;
-}
 
 /**
  * 一份工具执行事实（`/api/runtime/state.tools`：活工具 + 最近结束的工具）。
@@ -2042,67 +2072,145 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
-     * 找到某一轮里代表「回答」的那条助手消息。
+     * 按**回答身份**取校准目标（契约 K2.2）：身份就是流式 delta_id。
      *
-     * 优先最后一条**正式回答**（interim !== true）；只有整轮都没有正式回答时，
-     * 才退回最后一条中间话（interim → 正式回答的提升路径）。
-     * turnId 为空（旧后端）时沿用「最近一条助手消息」的兼容行为。
+     * 有 answer_id 时只认这一条；找不到就是「缺失」——调用方据此什么都不做
+     * （不猜、不新建）。turnId 为空（旧后端）时不按轮过滤。
      */
-    _turnAnswerMessage(turnId: string): StreamMessage | null {
-      let interimFallback: StreamMessage | null = null;
+    _answerByDeltaId(turnId: string, deltaId: string): StreamMessage | null {
+      const id = String(deltaId ?? "").trim();
+      if (!id) return null;
+      for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+        const m = this.messages[i];
+        if (!m || m.role !== "assistant") continue;
+        if (m.assistantDeltaId !== id) continue;
+        if (turnId && m.turnId !== turnId) continue;
+        return m;
+      }
+      return null;
+    },
+    /**
+     * 该轮**最后一条「已作为正式回答发布」**的消息（interim === false）。
+     *
+     * 这是旧事件（没有 answer_id）的校准目标；**不再无条件回落到中间话** ——
+     * 中间话不是回答（旧实现把最后一条中间话提升成正式回答，等于把过程说明当结论）。
+     * 唯一例外：旧协议（没有 delta_id）里本轮只有一条助手消息时可就地提升，
+     * 见 _legacySoleAssistant。
+     */
+    _lastFormalAnswer(turnId: string): StreamMessage | null {
       for (let i = this.messages.length - 1; i >= 0; i -= 1) {
         const m = this.messages[i];
         if (!m || m.role !== "assistant") continue;
         if (turnId && m.turnId !== turnId) continue;
         if (m.interim !== true) return m;
-        if (!interimFallback) interimFallback = m;
       }
-      return interimFallback;
+      return null;
     },
     /**
-     * TURN_END.final_content 是最终回答的唯一权威来源。
+     * 旧协议（没有 delta_id）里「这一轮只有一条助手消息」的那一条：
+     * 它是这次回答的唯一候选，TURN_END 可就地把它提升为正式回答（§2.1 的既有语义）。
+     * 有任何 delta_id / 有多条助手消息时返回 null —— 不在无法确定身份时猜。
+     */
+    _legacySoleAssistant(turnId: string): StreamMessage | null {
+      let found: StreamMessage | null = null;
+      let count = 0;
+      for (const m of this.messages) {
+        if (!m || m.role !== "assistant") continue;
+        if (turnId && m.turnId !== turnId) continue;
+        count += 1;
+        if (count > 1) return null;
+        found = m;
+      }
+      if (!found || found.assistantDeltaId) return null;
+      return found.interim === true ? found : null;
+    },
+    /** 就地校准一条回答：正文（null = 不动）、注记、核对结论；绝不重启动画 / 改身份 */
+    _applyAnswerCalibration(
+      message: StreamMessage,
+      body: string | null,
+      note: string,
+      verification: unknown,
+    ) {
+      if (body !== null) message.content = body;
+      message.interim = false;
+      this._attachVerification(message, verification);
+      if (note) message.content = appendSystemAnnotation(message.content, note);
+    },
+    /**
+     * TURN_END 的最终正文校准（契约 K2.2，**禁止文字相似度 / 前缀判定**）。
      *
-     * 契约 §1.5 / C8：校准必须按 **turn 身份** 做，不能用「全文是否相等」判断同一次回答。
-     * 真实缺陷（F11）：后端在正文后追加系统核对注记（或走独立字段）后 full text 不再相等，
-     * 旧实现就另起一条包含完整正文的回答 —— 正文在页面上出现两次。
+     * 目标身份：
+     * * 有 `answer_id`（= 目标回答的 delta_id）→ 只更新该 turn 内这一条；
+     *   找不到该身份 = 按缺失处理（不猜、不新建、不动任何正文）；
+     * * 没有 `answer_id`（旧事件）→ 该 turn 内**最后一条**正式回答（interim === false）；
+     *   该 turn 没有正式回答时：旧协议单条消息就地提升（_legacySoleAssistant），
+     *   否则在 final_content 非空时新建一条。
      *
-     * 现在的规则：
-     * * 同一条回答（正文是已有文本的延长 / 已有文本是它的前缀 / 完全一致）→ 就地合并，
-     *   注记并入同一条消息（正文只出现一次），不重启动画；
-     * * 真正不同的两段正文 → 追加一条新的回答（保留多条不同回答）；
-     * * 排队 / 旧历史里没有可复用回答 → 正常新建。
+     * 正文语义：
+     * * `undefined` / `null`（字段缺省）= **不校准**正文（注记 / 核对结论仍可挂到目标上）；
+     * * 显式空串 = 清空目标正文（消息与注记保留）；
+     * * 其它一律**覆盖**为目标正文（长 -> 短不再被忽略，「12 -> 13」不会多出一条）。
+     *
+     * 校准只改目标那一条：不新建第二条正式回答、不重启动画、不改变身份、
+     * 不把正式回答移进过程区；重复 TURN_END / 重复 delta 幂等。
      */
     applyFinalAnswer(
-      text: string,
+      text?: string | null,
       verification?: unknown,
-      opts: { turnId?: string | null; annotation?: string | null } = {},
+      opts: {
+        turnId?: string | null;
+        annotation?: string | null;
+        /** 目标回答的 delta_id（TURN_END.answer_id；旧生产端没有这个字段） */
+        answerId?: string | null;
+      } = {},
     ) {
-      const raw = String(text ?? "");
       const turnId = String(opts.turnId ?? this.activeTurnId ?? "");
+      const hasFinal = text !== undefined && text !== null;
+      const raw = hasFinal ? String(text) : "";
       const split = splitSystemAnnotation(raw);
       const separateNote = typeof opts.annotation === "string" ? opts.annotation.trim() : "";
-      const note = separateNote || split.annotation;
+      const note = separateNote || split.annotation || "";
       const body = split.annotation ? split.body : raw;
+      const wantedId = String(opts.answerId ?? "").trim();
 
-      const target = this._turnAnswerMessage(turnId);
-      if (target) {
-        const merged = mergeFinalBody(target.content, body);
-        if (merged !== null) {
-          target.content = merged;
-          target.interim = false;
-          this._attachVerification(target, verification);
-          if (note) target.content = appendSystemAnnotation(target.content, note);
-          return;
-        }
+      // 1) 有身份：只认这一条；缺失 = 什么都不做（不猜）
+      if (wantedId) {
+        const target = this._answerByDeltaId(turnId, wantedId);
+        if (!target) return;
+        this._applyAnswerCalibration(target, hasFinal ? body : null, note, verification);
+        return;
       }
 
-      // 没有可复用的同一次回答：新建一条（注记跟在这一条上，正文不重复）
-      const nextContent = note
-        ? appendSystemAnnotation(body.replace(/\s+$/, ""), note)
-        : body;
-      this.pushAssistant(nextContent);
+      // 2) 旧事件：该 turn 最后一条正式回答
+      const lastFormal = this._lastFormalAnswer(turnId);
+      if (lastFormal) {
+        this._applyAnswerCalibration(lastFormal, hasFinal ? body : null, note, verification);
+        return;
+      }
+
+      /**
+       * 3) 该 turn 没有正式回答。
+       *
+       * 旧协议（没有 delta_id 的整段推送）里「这一轮的整个回答只有一条助手消息」时，
+       * TURN_END 的最终正文**就地更新那一条**（interim -> 正式回答的提升，
+       * 契约 §2.1）；否则按 K2 新建 —— 多条 / 有身份时无法确定身份，绝不猜。
+       */
+      const legacySole = hasFinal ? this._legacySoleAssistant(turnId) : null;
+      if (legacySole) {
+        this._applyAnswerCalibration(legacySole, body, note, verification);
+        return;
+      }
+      // 4) 新建：只有确实给了非空 final_content 才新建（显式空串没有可清空的目标）
+      if (!hasFinal || !body.trim()) return;
+      this.pushMessage({
+        role: "assistant",
+        content: body,
+        contentType: "text",
+        interim: false,
+        ...(turnId ? { turnId } : {}),
+      });
       const added = this.messages[this.messages.length - 1];
-      if (added) this._attachVerification(added, verification);
+      if (added) this._applyAnswerCalibration(added, null, note, verification);
     },
     /** 把后端核对结论挂到这一条回答上（形状不对就当没有，不留半截状态） */
     _attachVerification(message: StreamMessage, verification: unknown) {
@@ -2315,19 +2423,26 @@ export const useSessionStore = defineStore("session", {
         const s = typeof value === "string" ? value.trim() : "";
         return s ? s : null;
       };
+      const factsStatus = String(d.status ?? "completed");
+      const factsReasonCode = text(d.reason_code);
       const nextFacts: TurnFacts = {
           turnId,
-          status: String(d.status ?? "completed"),
+          status: factsStatus,
           durationMs: num(d.duration_ms),
           queueMs: num(d.queue_ms),
           startedAt: typeof d.started_at === "string" ? d.started_at : null,
           endedAt: typeof d.ended_at === "string" ? d.ended_at : null,
           // 结束原因：只写后端真实给过的字段；旧记录没有 → null，界面不编造
           reason: text(d.reason),
-          reasonCode: text(d.reason_code),
+          reasonCode: factsReasonCode,
           stoppedBy: d.stopped_by === "user" || d.stopped_by === "system" ? d.stopped_by : null,
-        // 只列后端说「当前确实可用」的操作（未知 / 重复 / 非字符串丢弃）
-        actions: normalizeTurnActions(d.actions),
+          // 只列后端说「当前确实可用」的操作（未知 / 重复 / 非字符串丢弃），
+          // 再按终态做防御性归一（K3.4：cancelled + resend -> retry）
+          actions: normalizeTurnActionsForStatus(
+            factsStatus,
+            factsReasonCode,
+            normalizeTurnActions(d.actions),
+          ),
         errorText: text(d.error ?? d.message),
       };
       this.turnFacts = trimTurnMap({ ...this.turnFacts, [turnId]: nextFacts });
@@ -2904,10 +3019,26 @@ export const useSessionStore = defineStore("session", {
           ...(m.turn_id ? { turnId: String(m.turn_id) } : {}),
         };
       }
+      /**
+       * 系统核对注记（R5 / K2.3）：**服务端字段优先** ——
+       * raw.annotation 存在时用它；只有字段缺失才回落到正文里的旧内联表头。
+       * 两者并存时不再渲染第二份（字段优先，正文侧的内联表头按表头切掉）。
+       * 统一成与实时一致的内部表示：content = 正文 + 带表头的注记，渲染层再拆成
+       * 独立的「系统事实」区域（正文 DOM 一次、注记 DOM 一次）。
+       */
+      const parsedRaw = m.role === "assistant" ? parseAssistantRaw(m.raw) : null;
+      let content = m.content;
+      if (parsedRaw?.annotation) {
+        const inline = splitSystemAnnotation(m.content);
+        content = appendSystemAnnotation(
+          inline.annotation ? inline.body : m.content,
+          parsedRaw.annotation,
+        );
+      }
       return {
         id: m.id,
         role: m.role as StreamMessage["role"],
-        content: m.content,
+        content,
         contentType: m.content_type,
         createdAt: m.created_at,
         topicName: this.topicName,
@@ -2916,9 +3047,7 @@ export const useSessionStore = defineStore("session", {
         ...(m.role === "tool"
           ? { toolName: "tool", toolOk: true, toolStatus: "success" as const, toolError: null }
           : {}),
-        ...(m.role === "assistant" && parseVerifiedRaw(m.raw)
-          ? { verified: parseVerifiedRaw(m.raw) as VerifiedFact }
-          : {}),
+        ...(parsedRaw?.verified ? { verified: parsedRaw.verified } : {}),
         // 附件行：名称/大小/保存方式/可用性（打开与重新定位入口在 MessageItem）
         ...(attachments.length ? { attachments } : {}),
       };

@@ -62,13 +62,15 @@ def test_migration_adds_fact_columns_and_keeps_legacy_rows_readable(db_conn, jou
     assert row["stopped_by"] is None
     assert row["actions"] is None
 
-    # 旧行没有「结束事实」：状态词 + 既有的人话原因照给，actions 不伪造
+    # 旧行没有「结束事实」：状态词 + 既有的人话原因照给，不伪造原因；但这一行确实
+    # **可恢复**（interrupted、notify=0、未被 claim），按 K3 读时投影给出真正可用的
+    # resend（与 /api/turns/{id}/resend 准入一致），journal 行本身不变。
     facts = journal.facts(["turn_legacy"])["turn_legacy"]
     assert facts["status"] == "interrupted"
     assert facts["reason"] == REASON_TEXT["running_at_restart"]
     assert facts["reason_code"] is None
     assert facts["stopped_by"] is None
-    assert facts["actions"] == []
+    assert facts["actions"] == ["resend"]
 
 
 def test_upgrade_path_from_pre_fact_schema_keeps_existing_rows(db_conn, journal):
