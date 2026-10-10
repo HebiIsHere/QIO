@@ -257,8 +257,28 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 | 发布闸门自检 | `python scripts/release_gate.py --selftest` | PASS |
 | 评测基线 | `uv run --frozen python -m agent.eval.run` | 与基线 `7ff5e2e` **逐项相等**：在 `7ff5e2e` 的独立 worktree 里跑同一条命令并深度比较，**0 差异** |
 
-**本轮分支 CI**：分支推送后由 Actions 在**该分支 SHA** 上跑完整 CI；实际 run ID 与逐任务
-结论在拿到结果后回填本节（**不预先写成全绿**）。
+**本轮分支 CI**（绑定实际 SHA 与 run ID，**不是全绿**）
+
+run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
+被测代码与本分支最终代码**逐字相同**（其后只有本文档的补充提交，不改任何代码；PR 上的
+再次运行因此是同代码的另一次 run）。
+
+| 任务 | 结果 |
+| --- | --- |
+| docs consistency | ✅ 成功 |
+| frontend | ✅ 成功 |
+| rust (ubuntu-24.04) | ✅ 成功 |
+| rust (windows-latest) | ✅ 成功 |
+| frozen worker (windows) | ✅ 成功 |
+| install e2e (windows-latest) | ✅ 成功 |
+| backend (windows-latest) | ❌ 失败（唯一失败：`tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs`，阈值 `gap_ms < 100` 实测 **104 ms**） |
+| backend (py3.11) / (py3.12) | ⏳ 收尾时仍未结束（原合并 run 的同类任务已超过一小时），未拿到结论 |
+
+关于这个红点：本机 Windows 复跑 `tests/test_interactive_during_heavy_work.py` 为
+**13 passed / 4 skipped**，且同一份代码在本机跑完整后端全量是 **3334 passed / 11 skipped /
+0 failed**；该用例量的是「慢嵌入期间事件循环的最大停顿」，阈值 100 ms 在负载高的共享 runner
+上会被压线越过。它与本次两项修复没有交集（那条路径用 `AsyncMock` 的 adapter，不经过任何
+记账入口）。**不通过反复重跑直到变绿**：按负载敏感的既有问题如实记录。
 
 ## 十一、回退说明（代码回退 ≠ 数据库回退）
 
@@ -282,7 +302,10 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 1. **Windows 桌面实机走查**（起应用、附件发送与中止、重发、历史打开、关闭清理、窄窗口视觉检查）
    本轮**仍未做**：本机可以跑组件级/后端用例，但没有完成桌面端（Tauri 壳）实机走查，
    组件测试**不能**替代实机结论。
-2. **本轮分支 CI 结论**：以 Actions 上该分支 SHA 的 run 为准（见 §十）。
+2. **本轮分支 CI 未全绿**：run `38078800507` 的 `backend (windows-latest)` 失败在
+   `test_health_probe_stays_responsive_while_slow_prediction_runs` 的 `gap_ms < 100` 阈值上
+   （实测 104 ms；本机复跑该文件 13 passed / 4 skipped）。与本次两项修复无交集，
+   按**负载敏感**记录，不用重跑掩盖。
 3. **原合并 CI 的两个 Linux backend 任务**在收尾时仍未结束，未拿到结论。
 4. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
 

@@ -3346,5 +3346,10 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 评测基线对比：结果与本轮分支 CI 的 run ID 逐条记在
 `docs/integration/2026-10-11-streaming-into-main.md`。
 
+本轮分支 CI：run `38078800507`（SHA `6078b613b`，代码与本分支最终代码一致）——
+docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)`
+失败在「慢推理期间事件循环停顿」的 100 ms 阈值上（实测 104 ms，本机复跑该文件 13 passed
+/ 4 skipped，整份后端全量 3334 passed / 0 failed）；两个 Linux backend 任务在收尾时未结束。
 **未验证（不粉饰）**：Windows 桌面实机走查（附件发送与中止、重发、历史打开、关闭清理、窄窗口）
-本轮仍未做，组件级测试不能替代实机结论；原合并 CI 的两个 Linux backend 任务在收尾时未结束。
+本轮仍未做——本检出没有构建好的桌面壳/安装包，Playwright 也未安装，实机交互流程无法在本会话执行；
+组件级测试不能替代实机结论。
