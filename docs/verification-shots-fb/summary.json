@@ -1,0 +1,86 @@
+{
+  "results": [
+    {
+      "name": "环境：首次引导已关闭",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "S1 活动取消后给「重试」而不是死按钮「重新发送」；点重试真的跑出新的一轮",
+      "ok": true,
+      "detail": {
+        "sendStatus": 200,
+        "live": true,
+        "stopVisible": 1,
+        "retryButtons": 1,
+        "resendButtons": 0,
+        "retried": true,
+        "apiTurnsWithRetry": 1,
+        "apiTurnsWithResend": 0,
+        "shots": [
+          "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-01-cancelled-retry-action.png",
+          "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-02-after-retry-click.png"
+        ]
+      }
+    },
+    {
+      "name": "S2 附件移除后（刷新/重挂载）不得复活，持久化不再包含它",
+      "ok": true,
+      "detail": {
+        "ready": true,
+        "before": [
+          "fb-移除后不复活-368269.txt"
+        ],
+        "removed": true,
+        "afterRemove": [],
+        "afterReload": [],
+        "shot": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-03-attachment-removed-persisted.png"
+      }
+    },
+    {
+      "name": "S3 系统核对注记刷新后仍在（历史恢复读 raw.annotation），正文恰好一次",
+      "ok": true,
+      "detail": {
+        "sendStatus": 200,
+        "beforeReload": 1,
+        "sawAfter": true,
+        "noteHead": "系统事实 —— 系统核对（后端事实，不是模型的说法）： · read_attachment 执行失败：没有这个附件 id：att_fb_missing_3682",
+        "bodyCount": 1,
+        "shot": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-04-annotation-after-reload.png"
+      }
+    },
+    {
+      "name": "S4 一轮结束后正式回答正文在页面上恰好一份（校准不复制）",
+      "ok": true,
+      "detail": {
+        "occurrences": 1,
+        "tail": "4:23:06 复制 第 05 轮 14:23:11 S4 校准后唯一正文 14:23:11 复制 已完成 总耗时 1.4 秒 默认话题 FB 唯一正文标记 368269：第一句。第二句（不含标记）。 14:23:11 复制 1 已取消 ▸",
+        "shot": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-05-single-answer.png"
+      }
+    },
+    {
+      "name": "S5 窄窗口无横向溢出；代码块内部自行滚动（不撑破页面）",
+      "ok": true,
+      "detail": {
+        "overflowPx": 0,
+        "codeScrollable": {
+          "scrollWidth": 558,
+          "clientWidth": 558
+        },
+        "wide": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-06-wide-1440.png",
+        "narrow": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb\\fb-07-narrow-420.png"
+      }
+    },
+    {
+      "name": "S5 边界（未验证）：Windows/Tauri 原生窗口、真实厂商端点、真实浏览器矩阵本机不具备",
+      "ok": true,
+      "detail": {
+        "note": "只测了 msedge 无头单机；原生壳选文件/拖入/真实厂商行为未验证"
+      }
+    }
+  ],
+  "consoleErrors": [],
+  "provider": "http://127.0.0.1:8809",
+  "base": "http://127.0.0.1:5199",
+  "shots": "D:\\qio-dev\\qio-acc-f\\docs\\verification-shots-fb"
+}
