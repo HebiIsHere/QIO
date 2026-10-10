@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { api } from "../services/api";
 import AttachmentChip from "./AttachmentChip.vue";
@@ -170,6 +170,17 @@ async function submit() {
   }
   const draftSnapshot = text.value;
   const sentAttachments = pending.value.slice();
+  const hasAttachments = sentAttachments.length > 0;
+  /**
+   * R7 / I4：上一次带附件发送**还没被后端受理**时，第二次带附件发送在派发前拒绝。
+   * 草稿与附件都留在输入区、给出可见原因，第一次的界面与状态一动不动；
+   * 第一次受理（准备状态收尾）之后这里不再拦截，既有排队发送语义不变。
+   */
+  if (hasAttachments && prepareInFlight()) {
+    attachError.value =
+      "上一次带附件的发送还没有被后端受理：等它受理，或先按它的「中止」结束它，再发送这一条（这条消息的文字与附件都留在输入区）";
+    return;
+  }
   // 归属：这次发送携带的附件属于**发起时刻**的话题（之后切话题也不改这一事实）
   const sendTopicId = currentTopicId();
   // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
@@ -178,38 +189,19 @@ async function submit() {
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
-  const hasAttachments = sentAttachments.length > 0;
-  if (hasAttachments) {
-    // 只有「带了附件 + 后端还没受理」才需要这个状态；不带附件一律不显示。
-    // 防抖：秒级就绪的路径在阈值之前就受理了，界面不该闪一下。
-    sendWaiting.value = true;
-    preparingCancelled.value = false;
-    preparingNotice.value = "";
-    preparingCancelBusy.value = false;
-    preparingHandled.value = false;
-    prepareId.value = newPrepareId();
-    sendAbort = new AbortController();
-    preparingTimer = setTimeout(() => {
-      if (sendWaiting.value) preparingVisible.value = true;
-    }, PREPARING_VISIBLE_AFTER_MS);
-  }
+  // 只有「带了附件 + 后端还没受理」才需要准备状态；不带附件一律没有。
+  // 这一次发送拿到的 prep 就是**它自己那一份**（I1）：收尾只清这一份（I2）。
+  const prep = hasAttachments ? beginPrepare() : null;
   let ok = false;
   try {
     ok = await sendWithAttachments(
       value,
       sentAttachments.map((item) => item.id),
       sentAttachments,
-      sendAbort ? { signal: sendAbort.signal, prepareId: prepareId.value } : undefined,
+      prep ? { signal: prep.abort.signal, prepareId: prep.id } : undefined,
     );
   } finally {
-    if (preparingTimer !== null) {
-      clearTimeout(preparingTimer);
-      preparingTimer = null;
-    }
-    sendWaiting.value = false;
-    preparingVisible.value = false;
-    preparingCancelBusy.value = false;
-    sendAbort = null;
+    endPrepare(prep);
   }
   if (!ok) {
     // 发送失败：草稿放回去（用户不必重写），附件也留着（失败不是附件的错）。
@@ -220,7 +212,7 @@ async function submit() {
       autosize();
     }
     // 用户自己中止的：如实说「这一轮没有发送」，不要伪装成失败原因
-    if (preparingCancelled.value) {
+    if (prep?.cancelled) {
       preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
     }
     return;
@@ -234,7 +226,7 @@ async function submit() {
   bumpTopicEpoch(sendTopicId);
   commitToTopic(sendTopicId, (list) => list.filter((item) => !sentIds.has(item.id)));
   attachError.value = "";
-  if (preparingCancelled.value) {
+  if (prep?.cancelled) {
     /**
      * 竞态：用户按了中止，但请求在那一刻**已经受理**（轮次已入队）。
      * 这时不能假装「从未发送」—— 如实说「已取消」，并用既有停止入口真的取消它。
@@ -257,22 +249,51 @@ async function submit() {
  * 不是「前端不等了」（那样后端照常受理并执行，用户按了中止却看到它跑起来）。
  */
 const PREPARING_VISIBLE_AFTER_MS = 200;
-/** 正在等后端受理（且这次带了附件） */
-const sendWaiting = ref(false);
-/** 真的显示出来的「正在准备附件…」（过了防抖阈值才置位，避免闪一下） */
-const preparingVisible = ref(false);
-const preparingCancelled = ref(false);
-const preparingNotice = ref("");
-/** 这一次发送的准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
-const prepareId = ref("");
-/** 正在向后端确认中止（界面显示「正在中止…」；拿不到确认不宣称成功） */
-const preparingCancelBusy = ref(false);
+
 /**
- * 这次中止已经**有了后端确认的结论**（已中止 / 已放行 / 不认识）。
- * 结论定了就不再重复问后端：重复点击不该重复询问、更不该重复取消别的轮次。
- * 拿不到确认（请求失败）时保持 false —— 用户还能再点一次。
+ * 一次「带附件发送、后端尚未受理」的准备状态（R7 / I1）。
+ *
+ * **每次发送各持一份**：准备标识、取消目标（AbortController）、防抖定时器、
+ * 中止状态都属于产生它的那次发送 —— 没有跨发送共享的可变标量；
+ * 某次发送的收尾只清掉自己那一份（I2），别的发送的状态一律不动。
  */
-const preparingHandled = ref(false);
+interface PrepareState {
+  /** 准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
+  readonly id: string;
+  /** 这次发送自己的取消目标：abort 只作用于这一次请求 */
+  readonly abort: AbortController;
+  /** 用户已经中止（后端确认 cancelled） */
+  cancelled: boolean;
+  /**
+   * 这次中止已经**有了后端确认的结论**（已中止 / 已放行 / 不认识）。
+   * 结论定了就不再重复问后端：重复点击不该重复询问、更不该重复取消别的轮次。
+   * 拿不到确认（请求失败）时保持 false —— 用户还能再点一次。
+   */
+  handled: boolean;
+  /** 正在向后端确认中止（界面显示「正在中止…」；拿不到确认不宣称成功） */
+  cancelBusy: boolean;
+  /** 真的显示出来了（过了防抖阈值才置位，避免闪一下） */
+  visible: boolean;
+}
+
+/** 在途的准备状态：每次发送一份；这次发送收尾时移除**自己那一份**。 */
+const prepares = ref<PrepareState[]>([]);
+/** 准备定时器：按 prepareId 存放（定时器句柄不进响应式对象） */
+const prepareTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** 最近一次准备写下的用户可见结论/提示（由产生它的那次发送写） */
+const preparingNotice = ref("");
+
+/** 界面上的「正在准备附件…」：有任一份准备已过防抖阈值就显示。 */
+const preparingVisible = computed(() => prepares.value.some((p) => p.visible));
+/**
+ * 「中止」入口绑定的那一份（I3）：永远取**最新仍未受理**的那一份。
+ * 它不会被别的发送的收尾清掉 —— 所以始终可达，且永远绑定自己的 prepareId。
+ */
+const preparingActive = computed<PrepareState | null>(
+  () => prepares.value[prepares.value.length - 1] ?? null,
+);
+/** 正在向后端确认中止（界面显示「正在中止…」） */
+const preparingCancelBusy = computed(() => preparingActive.value?.cancelBusy ?? false);
 
 /** 准备标识：优先用平台 UUID，缺失时退化成随机串（两者都不含用户数据） */
 function newPrepareId(): string {
@@ -280,8 +301,45 @@ function newPrepareId(): string {
   if (c && typeof c.randomUUID === "function") return c.randomUUID();
   return `prep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
-let preparingTimer: ReturnType<typeof setTimeout> | null = null;
-let sendAbort: AbortController | null = null;
+/** 开始一次准备：新的一份状态 + 它自己的定时器（绝不复用别人的）。 */
+function beginPrepare(): PrepareState {
+  const prep = reactive<PrepareState>({
+    id: newPrepareId(),
+    abort: new AbortController(),
+    cancelled: false,
+    handled: false,
+    cancelBusy: false,
+    visible: false,
+  });
+  preparingNotice.value = "";
+  prepares.value = [...prepares.value, prep];
+  prepareTimers.set(
+    prep.id,
+    setTimeout(() => {
+      // 只在自己那一份仍在途时置位：迟到的回调不会点亮别的发送的准备状态
+      if (prepares.value.some((p) => p.id === prep.id)) prep.visible = true;
+    }, PREPARING_VISIBLE_AFTER_MS),
+  );
+  return prep;
+}
+
+/** 收尾一次准备：只清**自己那一份**的定时器与状态（I2）。 */
+function endPrepare(prep: PrepareState | null): void {
+  if (!prep) return;
+  const timer = prepareTimers.get(prep.id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    prepareTimers.delete(prep.id);
+  }
+  prep.visible = false;
+  prep.cancelBusy = false;
+  prepares.value = prepares.value.filter((p) => p.id !== prep.id);
+}
+
+/** 是否还有带附件的发送停在「后端尚未受理」（I4 的闸门）。 */
+function prepareInFlight(): boolean {
+  return prepares.value.length > 0;
+}
 
 /** 待发送附件（chip 列表）：发送成功后才清掉，发送失败连文本一起留着。 */
 const pending = ref<AttachmentRef[]>([]);
@@ -296,6 +354,12 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachNote = ref("");
 /** 浏览器里没有原生选择器时，「粘贴路径 → 重新定位」的目标附件 id */
 const relocateTargetId = ref("");
+/**
+ * 「粘贴路径 → 重新定位」的**发起身份**（R5）：在入口（点「重新定位」）冻结，
+ * 原生选择器失败回退到粘贴路径时一起带上，直到提交那一刻 ——
+ * 这样即使选择器挂住期间用户切了话题，重新定位的结果也只属于发起话题。
+ */
+let relocateCapture: AttachmentOpCapture | null = null;
 /** 「重新上传」的目标（§1.4）：绑定**具体旧 ID + 发起话题**，只有新附件 ready 且入列才替换。 */
 const reuploadTarget = ref<{ id: string; name: string; topicId: string | null } | null>(null);
 
@@ -613,12 +677,24 @@ async function submitPath() {
   // 「重新定位」模式：这条路径是某个待发附件的新位置，不是新附件
   if (relocateTargetId.value) {
     const target = relocateTargetId.value;
+    // R5：身份用**发起时冻结**的那一份（选择器失败 → 粘贴路径这条回退路径），
+    // 绝不用提交时刻的 currentTopicId 重新冻结 —— 否则切话题后结果会写进新话题。
+    const capture = relocateCapture;
     relocateTargetId.value = "";
-    await applyRelocate(target, value);
+    relocateCapture = null;
+    await applyRelocate(target, value, capture ?? undefined);
     return;
   }
   // 入口捕获：路径提交这一刻的话题就是发起话题
   await addPaths([value], beginAttachmentOp({ kind: "prepare", topicId: currentTopicId() }));
+}
+
+/** 收起路径行：这次粘贴路径的意图（含重新定位的发起身份）一并清掉，不留悬挂捕获。 */
+function cancelPathRow() {
+  pathOpen.value = false;
+  pathDraft.value = "";
+  relocateTargetId.value = "";
+  relocateCapture = null;
 }
 
 async function removeOne(id: string) {
@@ -629,6 +705,7 @@ async function removeOne(id: string) {
     null;
   if (relocateTargetId.value === id) {
     relocateTargetId.value = "";
+    relocateCapture = null;
     pathOpen.value = false;
   }
   if (reuploadTarget.value?.id === id) reuploadTarget.value = null;
@@ -753,6 +830,9 @@ async function relocateOne(id: string) {
     }
   }
   relocateTargetId.value = id;
+  // R5：回退到「粘贴路径」时把**发起身份**一起带上（原生选择器可能挂住很久，
+  // 期间用户可能已经切走；这条粘贴路径的归属仍只由发起时刻决定）
+  relocateCapture = capture;
   pathOpen.value = true;
   if (alive && isCurrentTopic(topicId)) {
     attachNote.value = `把「${item.name}」的新位置粘到下面，回车即可重新定位`;
@@ -873,6 +953,7 @@ watch(
     attachNote.value = "";
     attachError.value = "";
     relocateTargetId.value = "";
+    relocateCapture = null;
     pathOpen.value = false;
     reuploadTarget.value = null;
     // 注意：**不清** pickCapture —— 文件对话框可能还开着，切换话题后返回的结果仍属发起话题（R4）
@@ -934,6 +1015,23 @@ let stopPendingInbox: (() => void) | null = null;
 onBeforeUnmount(() => {
   // F08：卸载后晚到的异步结果只落持久化，不再写 UI。
   alive = false;
+  /**
+   * R7 / I5：卸载只清掉**所有**准备定时器与本地准备状态登记，一个悬挂定时器都不留。
+   *
+   * 这里**不 abort** 在途请求：abort 是用户的显式动作（「中止」/「停止」），
+   * 不该由「离开对话页」这种导航副作用触发 —— 用户已经点过发送的消息必须继续跑完，
+   * 「离开页面不得丢失已发送的消息」比「卸载时放掉引用」重要得多。
+   * 卸载后的异步结果照既有 alive 语义只落持久化、不写 UI。
+   */
+  for (const timer of prepareTimers.values()) clearTimeout(timer);
+  prepareTimers.clear();
+  for (const prep of prepares.value) {
+    prep.visible = false;
+    prep.cancelBusy = false;
+  }
+  prepares.value = [];
+  // R5：卸载不留悬挂的重新定位发起身份
+  relocateCapture = null;
   stopPendingInbox?.();
   stopPendingInbox = null;
   stopDropWatch?.();
@@ -1012,25 +1110,27 @@ function autosize() {
  * * 确认之后才 abort 掉连接（它只是释放连接，不是取消证据）。
  */
 async function cancelPreparing() {
-  if (!sendWaiting.value || preparingCancelBusy.value || preparingHandled.value) return;
-  preparingCancelBusy.value = true;
+  // 中止永远只作用于**那一份准备状态自己**（I3）：它绑定自己的 prepareId 与取消目标
+  const prep = preparingActive.value;
+  if (!prep || prep.cancelBusy || prep.handled) return;
+  prep.cancelBusy = true;
   preparingNotice.value = "正在中止…（等后端确认）";
   try {
-    const confirmed = await session.cancelPreparing(prepareId.value);
+    const confirmed = await session.cancelPreparing(prep.id);
     if (!confirmed) {
-      // 拿不到确认：不宣称成功，用户还能再点一次（preparingHandled 保持 false）
+      // 拿不到确认：不宣称成功，用户还能再点一次（prep.handled 保持 false）
       preparingNotice.value = session.lastError ?? "中止失败：没有拿到后端确认";
       return;
     }
-    preparingHandled.value = true;
+    prep.handled = true;
     if (confirmed.state === "cancelled") {
-      preparingCancelled.value = true;
+      prep.cancelled = true;
       preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
-      sendAbort?.abort();
+      prep.abort.abort();
     } else if (confirmed.state === "already_started") {
-      preparingCancelled.value = false;
+      prep.cancelled = false;
       // 后端说它已经放行：这一轮不再处于「准备中」，准备状态该收起来（如实）
-      preparingVisible.value = false;
+      prep.visible = false;
       if (!confirmed.turnId) {
         /**
          * 身份缺失：**不得**静默退回 stopActiveTurn()（那会停到别的任务上，契约 §1.2）。
@@ -1046,7 +1146,7 @@ async function cancelPreparing() {
         "后端不认识这次发送（可能已经开始或已经结束）：请看会话里的实际状态，这里不宣称「没有发送」";
     }
   } finally {
-    preparingCancelBusy.value = false;
+    prep.cancelBusy = false;
   }
 }
 
@@ -1192,7 +1292,7 @@ async function stopTurn() {
         <button
           class="path-btn"
           type="button"
-          @click="pathOpen = false; pathDraft = ''; relocateTargetId = ''"
+          @click="cancelPathRow"
         >
           取消
         </button>
