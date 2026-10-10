@@ -9,6 +9,12 @@ import { createPinia, setActivePinia } from "pinia";
 import { useInteractiveStore } from "../interactive";
 import * as imApi from "../../services/interactive";
 import { emptyBoardState, type BoardCard, type BoardState, type BoardStateResponse } from "../../interactive/types";
+import {
+  cardDraftKey,
+  cardLocalDraftStorageKey,
+  readCardLocalDraft,
+  writeCardLocalDraft,
+} from "../../interactive/drafts";
 
 vi.mock("../../services/interactive", () => ({
   fetchBoardState: vi.fn(),
@@ -289,6 +295,58 @@ describe("F3 跨页面保存后的重新确认", () => {
     expect(store.board?.seq, "兜底分支没有接收最新版本事实").toBe(4);
     expect(store.board?.cards[0].content, "本页候选被覆盖").toBe("本页新正文");
     expect(store.board?.cards[0].x, "另一页面的独立移动被丢掉").toBe(999);
+  });
+});
+
+describe("F2 本机记录与服务器草稿", () => {
+  function responseWithDrafts(st: BoardState, drafts: Record<string, string>): BoardStateResponse {
+    return { ...response(st), drafts: { drafts, updatedAt: "2026-10-10T00:00:00.000Z" } } as unknown as BoardStateResponse;
+  }
+
+  it("【状态/单元】本页保存的成功回执不许删掉另一页面写下的新稿（正版本记录）", async () => {
+    const store = useInteractiveStore();
+    writeCardLocalDraft("c1", "本机旧稿", { boardId: "board_default", seq: 1 });
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(
+      responseWithDrafts(state(3, [card()]), { [cardDraftKey("c1")]: "服务器正文" }),
+    );
+    await store.load();
+    expect(store.draftConflictFor("c1"), "没有识别出「本机 / 服务器」两份候选").not.toBeNull();
+
+    // 用户明确选择服务器那一份：本机旧副本被清理
+    store.resolveDraftConflict("c1", "server");
+    expect(readCardLocalDraft("c1"), "选服务器本该清掉那条旧副本").toBeNull();
+
+    // 同一浏览器另一个页面为同一张卡片写下了新稿（本页并不知道）
+    writeCardLocalDraft("c1", "另一页面的新稿", { boardId: "board_default", seq: 2 });
+    // 本页另一张卡片有未保存输入 → 触发一次草稿保存（成功回执不得删 c1 的新稿）
+    store.setDraft(cardDraftKey("c2"), "另一张卡的新输入");
+    vi.mocked(imApi.saveDrafts).mockResolvedValue({ drafts: {}, updatedAt: null } as never);
+    await store.flushDrafts();
+
+    expect(readCardLocalDraft("c1")?.text, "另一页面写下的新稿被本页的成功回执删掉了").toBe("另一页面的新稿");
+  });
+
+  it("【状态/单元】旧格式（没有 version）记录同样不许被误删", async () => {
+    const store = useInteractiveStore();
+    // 旧格式记录：没有 version 字段
+    localStorage.setItem(
+      cardLocalDraftStorageKey("c1"),
+      JSON.stringify({ text: "更早的旧稿", updatedAt: 1, seq: 1, kind: "draft", boardId: "board_default" }),
+    );
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(
+      responseWithDrafts(state(3, [card()]), { [cardDraftKey("c1")]: "服务器正文" }),
+    );
+    await store.load();
+    store.draftConflictFor("c1");
+    // 另一页面把它换成了新稿（仍然没有 version：跨页面写入的旧格式兼容形态）
+    localStorage.setItem(
+      cardLocalDraftStorageKey("c1"),
+      JSON.stringify({ text: "另一页面的新稿", updatedAt: 2, seq: 2, kind: "draft", boardId: "board_default" }),
+    );
+    store.setDraft(cardDraftKey("c2"), "另一张卡的新输入");
+    vi.mocked(imApi.saveDrafts).mockResolvedValue({ drafts: {}, updatedAt: null } as never);
+    await store.flushDrafts();
+    expect(readCardLocalDraft("c1")?.text, "旧格式新稿被误删").toBe("另一页面的新稿");
   });
 });
 

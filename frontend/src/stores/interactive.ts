@@ -1806,6 +1806,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
           // 各键此刻本机记录的版本：在飞回执清理本地副本必须按记录版本校验（§12.2）。
           // 记账口径与 removeCardLocalDraftIfUnchanged 一致：有记录取 version（旧格式记 0），没有记录为 null。
           const localVersionsAtRequest = new Map<string, number | null>();
+          /**
+           * 请求发出时本机记录的**完整快照**（版本 + 内容身份指纹 + 正文）。
+           *
+           * F2（独立复核发现的真实缺口）：只记版本不够 —— 如果本机记录里的内容
+           * **不是**这次上传给服务器的内容（冲突里选了服务器版、或记录已被同一浏览器
+           * 另一个页面换成新稿），服务器并没有收到这条记录，按「服务器已经有这一版」删它
+           * 就会把另一页面还没上传的新稿删掉。正文 + 指纹一起才是「这条记录真的上去了」的证明。
+           */
+          const localSnapshotsAtRequest = new Map<
+            string,
+            { version: number | null; fingerprint: string | null; text: string } | null
+          >();
           for (const key of keys) {
             if ((draftKeySeq.get(key) ?? 0) <= atSeq) setDraftState(key, "saving");
             const cardId = cardIdFromDraftKey(key);
@@ -1813,6 +1825,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
               const record = readCardLocalDraft(cardId);
               const version = record ? (typeof record.version === "number" ? record.version : 0) : null;
               localVersionsAtRequest.set(key, version);
+              localSnapshotsAtRequest.set(
+                key,
+                record ? { version, fingerprint: localRecordFingerprint(record), text: record.text ?? "" } : null,
+              );
             }
           }
           for (const key of removalsAtRequest.keys()) setDraftRemovalState(key, "pending");
@@ -1851,14 +1867,29 @@ export const useInteractiveStore = defineStore("interactive", () => {
             const cardId = cardIdFromDraftKey(key);
             if (cardId) {
               const expectVersion = localVersionsAtRequest.get(key) ?? null;
-              applyLocalRemovalResult(
-                key,
-                removeCardLocalDraftIfUnchanged(cardId, expectVersion),
-                expectVersion,
-                "remove-local-copy",
-                // 登记时本来就没有本机记录：重试时仍然没有才算无事可做（绝不误删别的页面新建的记录）
-                "absent",
-              );
+              const snapshot = localSnapshotsAtRequest.get(key) ?? null;
+              const uploaded = payload[key] ?? "";
+              if (!snapshot || snapshot.text !== uploaded) {
+                /**
+                 * F2：本机记录的内容**不是**这次上传的内容 —— 服务器并没有收到这条记录，
+                 * 绝不能按「服务器已经有这一版」把它删掉（那会删掉另一页面刚写下的新稿）。
+                 * 之前登记的删除决定也已经不作用于当前这条记录：保留记录、静默解除登记。
+                 */
+                if (pendingLocalRemovals.has(key)) {
+                  pendingLocalRemovals.delete(key);
+                  setDraftLocalState(key, { ok: true, error: null });
+                }
+              } else {
+                applyLocalRemovalResult(
+                  key,
+                  removeCardLocalDraftIfUnchanged(cardId, snapshot.version, snapshot.fingerprint),
+                  snapshot.version,
+                  "remove-local-copy",
+                  // 有正版本号按版本守卫；旧格式（0/null）只认内容指纹；都不可能退化成按对象裸删
+                  snapshot.version !== null && snapshot.version > 0 ? "version" : "fingerprint",
+                  snapshot.fingerprint,
+                );
+              }
             }
           }
           /**
