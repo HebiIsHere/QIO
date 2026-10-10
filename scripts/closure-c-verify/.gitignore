@@ -1,0 +1,3 @@
+# 运行期产物：pid 文件只在本机有意义
+.pids.json
+node_modules/

@@ -127,15 +127,12 @@ const rangeShort = computed(() => {
  */
 const isFailed = computed(() => failure.value !== null);
 /**
- * 失败原因的展示分层（本轮验收点 4）：
- * - 默认区只放**一句**短原因（primary），完整原文与保存失败诊断进详情；
- * - 底层字符串里的传输外壳（`/api/… -> 500: `）与内部代码（stale_check / checkId 之流）
- *   在展示层剥掉，避免开发术语直接铺在界面上。
- */
-/**
- * 默认区的原因：**不截断**（上一轮验收已明确「很长的失败原因在默认区完整显示」），
- * 但必须先剥掉传输外壳（/api/… -> 500:）与内部代码（stale_check 之流）——
- * 「完整」指的是真实原因完整，不是把实现用语一起铺出来。
+ * 失败原因的展示（本轮验收点 4：文案准确简短、层级清楚、不泄露开发术语）。
+ *
+ * 默认区的原因**不截断**（上一轮验收已明确「很长的失败原因在默认区完整显示」），
+ * 但必须先剥掉传输外壳（/api/… -> 500:）与内部代码（stale_check 之流），并解开底层的
+ * 重复包裹 ——「完整」指的是真实原因完整，不是把实现用语与重复句子一起铺出来。
+ * 辅助诊断（保存失败原因、上一次提交的说明）仍在展开的详情里。
  */
 const failureShort = computed(() => humanizeFailure(failure.value?.reason).short);
 const failureDetailText = computed(() => scrubInternalTerms(failure.value?.detail ?? ""));
