@@ -326,6 +326,25 @@ describe("F2 本机记录与服务器草稿", () => {
     expect(readCardLocalDraft("c1")?.text, "另一页面写下的新稿被本页的成功回执删掉了").toBe("另一页面的新稿");
   });
 
+  it("【状态/单元】N6：带附加字段的本机记录在服务器确认正文后仍然保留（真实关闭重开的唯一来源）", async () => {
+    const store = useInteractiveStore();
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(3, [card({ kind: "url", content: "网址卡的正文" })])));
+    await store.load();
+    store.intents = [];
+
+    // 用户编辑正文 + 网址 + 标题（网址/标题只进本机记录）
+    store.setCardDraftInput("c1", { text: "第二版草稿", meta: { href: "https://new.example/path", title: "新标题" } });
+    expect(readCardLocalDraft("c1")?.meta?.href, "附加字段没有写进本机记录").toBe("https://new.example/path");
+
+    // 服务器草稿保存成功（载荷里只有正文）：本机记录**不是**冗余副本，不许被清理
+    vi.mocked(imApi.saveDrafts).mockResolvedValue({ drafts: {}, updatedAt: null } as never);
+    await store.flushDrafts();
+    const afterSave = readCardLocalDraft("c1");
+    expect(afterSave?.text, "服务器确认正文后本机记录被删掉了（重开后附加字段就没有来源）").toBe("第二版草稿");
+    expect(afterSave?.meta?.href, "附加字段快照被服务器确认正文的回执清掉了").toBe("https://new.example/path");
+    expect(afterSave?.meta?.title).toBe("新标题");
+  });
+
   it("【状态/单元】旧格式（没有 version）记录同样不许被误删", async () => {
     const store = useInteractiveStore();
     // 旧格式记录：没有 version 字段
