@@ -1,5 +1,6 @@
 <!--
-  页面中央的影响确认框（子智能体 D）。
+  页面中央的影响确认框（结构由 D 建立；本轮「显示与入口」由 C 调整：文案层级、辅助说明、
+  不出现开发术语；不改任何 store 行为）。
 
   契约 §1.6 / §8.1：
   - 用户要改**执行中任务**依赖的材料时，在**改动生效前**先用页面中央的确认框说明
@@ -28,6 +29,13 @@ const error = ref<string | null>(null);
 let lastFocused: HTMLElement | null = null;
 
 const affected = computed(() => store.pendingImpact?.affected ?? []);
+
+/**
+ * 服务端/主流程补充的说明（可选字段 note，可能为 undefined）。
+ * 它是对「为什么又让你确认一次」的**辅助说明**，层级低于主决定：
+ * 主决定永远是「确认 / 取消」两个按钮，note 只解释情况，不改变按钮含义。
+ */
+const impactNote = computed(() => String((store.pendingImpact as unknown as { note?: string } | null)?.note ?? "").trim());
 
 /**
  * 撤回留下的「等待你决定」：同一批（正在执行 / 已暂停）任务失败或取消后，
@@ -163,11 +171,15 @@ function dismiss(): void {
 
       <div id="im-impact-body" class="body">
         <template v-if="mode === 'impact'">
+          <!-- 主句说「发生了什么」，下一行说「两个选择各自意味着什么」：标题不再重复 -->
           <p class="lead">
             下面这些任务正在执行，而这次改动动了它们依赖的材料。<strong>改动还没有生效。</strong>
-            选择「继续」才会保存并让它们暂停（进度保留）；选择「取消」则这次改动不生效，任务继续。
-            其他独立任务不受影响；这不是对任务的重新审批，已经批准过的任务不会被重新批准。
           </p>
+          <p class="lead-sub">
+            选择「继续」才会保存并让它们暂停（进度保留）；选择「取消」则这次改动不生效，任务继续。
+            其他独立任务不受影响；这不是对任务的重新审批。
+          </p>
+          <p v-if="impactNote" class="note-aux" data-im="impact-note">{{ impactNote }}</p>
           <ul class="list">
             <li v-for="item in affected" :key="item.intentId" class="item" data-im="impact-item">
               <p class="task">任务：{{ item.title }}</p>
@@ -181,16 +193,17 @@ function dismiss(): void {
 
         <template v-else>
           <p class="lead">
-            这些任务失败或取消后，已经撤回了不受影响的部分；下面这些改动会影响其他工作，
-            所以停在这里等你决定。选择「继续」会按上面的说明继续处理，选择「取消」则保持现状（不做任何改动）。
+            这些任务失败或取消后，已经撤回了不受影响的部分；下面这些改动会影响其他工作，所以停在这里等你决定。
           </p>
+          <p class="lead-sub">选择「继续」会按上面的说明继续处理；选择「取消」保持现状，不做任何改动。</p>
           <ul class="list">
             <li v-for="intent in pendingReverts" :key="intent.id" class="item" data-im="impact-item">
               <p class="task">任务：{{ intent.title }}</p>
               <p class="consequence">原因：{{ intent.revert?.reasonText || "未说明" }}</p>
               <ul class="pending">
+                <!-- 不再显示内部决定项 id：它是开发标识，对用户没有意义（本轮验收点 4） -->
                 <li v-for="item in intent.revert?.pendingDecision ?? []" :key="item.id">
-                  <span class="mono">{{ item.id }}</span>：{{ item.reason }}
+                  {{ item.reason }}
                   <span class="impact">影响：{{ item.impact }}</span>
                 </li>
               </ul>
@@ -261,6 +274,22 @@ function dismiss(): void {
 .lead {
   margin: 0;
   font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  color: var(--text-secondary);
+}
+/* 辅助说明层：比主句低一档（字号小一档、颜色更安静），用户可以先读主句做决定 */
+.lead-sub {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-muted);
+}
+/* 需要重新核对时的补充说明：同一层级里的「注意」，用左边线而不是整块变色，避免抢走主决定 */
+.note-aux {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-3);
+  border-left: 2px solid var(--warning);
+  font-size: var(--fs-sm);
   line-height: var(--lh-base);
   color: var(--text-secondary);
 }
