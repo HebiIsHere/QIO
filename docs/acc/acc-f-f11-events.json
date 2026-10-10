@@ -37,7 +37,8 @@
    "reason": null,
    "stopped_by": null,
    "actions": [],
-   "annotation": "—— 系统核对（后端事实，不是模型的说法）：\n· acc_f_failing_tool 执行失败：这一步失败了，但可以重试\n这几项没有通过验证，不能当作「已完成 / 可使用」。"
+   "annotation": "—— 系统核对（后端事实，不是模型的说法）：\n· acc_f_failing_tool 执行失败：这一步失败了，但可以重试\n这几项没有通过验证，不能当作「已完成 / 可使用」。",
+   "answer_id": "dl_accf11_3"
   }
  }
 ]

@@ -120,6 +120,11 @@ def _norm_data(data: dict) -> dict:
     delta = out.get("delta_id")
     if isinstance(delta, str) and "_" in delta:
         out["delta_id"] = "dl_accf11_" + delta.rsplit("_", 1)[-1]
+    # R6/K2 新增的回答身份字段：turn_id 里的短标识同样是易变的，必须一起归一，
+    # 否则夹具每次运行都变（前端复放也就无法稳定对齐）。
+    answer = out.get("answer_id")
+    if isinstance(answer, str) and "_" in answer:
+        out["answer_id"] = "dl_accf11_" + answer.rsplit("_", 1)[-1]
     return out
 
 
