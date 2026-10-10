@@ -1,12 +1,11 @@
 /**
- * fb-E / R3（入口一）反例：附件准备中（poll 在途）被移除，旧 poll 结果把它 upsert 回来。
+ * fb-E / 阶段二 · 跨模块组合（前端）：R3×R4（切话题 + 移除 + 晚到结果）。
  *
- * 用户可见规则（K1.4）：removeOne 必须让该附件进入 removed/tombstone；
- * 之后任何在途的轮询结果都**不得**把它重新加回待发列表或持久化。
+ * 场景：在 A 触发路径选择（R4：选择器在途）→ 切到 B → 在 B 新增并移除一个附件（R3 tombstone）
+ * → 放行 A 的选择器结果（必须只落 A，不进 B 的 UI）→ 再放行 B 那次恢复的补丁（仍带着被移除的 id，
+ * 必须被移除水位拦下，不得复活）。
  *
- * 确定性时序：waitUntilSettled 返回受控 deferred；先移除 chip，再放行 poll 的最终结果。
- *
- * 运行：cd frontend; npx vitest run src/components/__tests__/fb_e_r3_poll_removed.test.ts
+ * 运行：cd frontend; npx vitest run src/components/__tests__/fb_e_combo_topic_ops.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
@@ -57,11 +56,7 @@ vi.mock("../../services/attachments", async (importOriginal) => {
 
 import Composer from "../Composer.vue";
 import { useSessionStore } from "../../stores/session";
-import {
-  loadPendingAttachments,
-  savePendingAttachments,
-  type AttachmentRef,
-} from "../../services/attachments";
+import { loadPendingAttachments, type AttachmentRef } from "../../services/attachments";
 
 function ref(over: Partial<AttachmentRef> = {}): AttachmentRef {
   return {
@@ -111,7 +106,6 @@ async function clickRemove(w: VueWrapper, name: string) {
   const chip = w.findAll(".composer .chip").find((c) => c.text().includes(name));
   expect(chip, "找不到要移除的 chip：" + name).toBeTruthy();
   const btn = chip!.findAll("button").find((b) => (b.text() || "").trim() === "×");
-  expect(btn, "chip 上没有移除按钮").toBeTruthy();
   await btn!.trigger("click");
   await flushPromises();
 }
@@ -124,7 +118,7 @@ beforeEach(() => {
       (value as { mockReset: () => void }).mockReset();
     }
   }
-  mocks.desktopShell.value = false;
+  mocks.desktopShell.value = true;
   mocks.restorePendingAttachments.mockResolvedValue({ items: [], dropped: [], unconfirmed: [] } as never);
   mocks.pickLocalPath.mockResolvedValue(null as never);
   mocks.pickBrowserFile.mockResolvedValue(null as never);
@@ -138,60 +132,55 @@ beforeEach(() => {
   mocks.getSessionContext.mockResolvedValue({ topic_id: "", topic_name: null, anchor_fragment: null, messages: [] } as never);
 });
 
-describe("R3① 准备中移除后，旧 poll 不得把它加回来", () => {
-  it("poll 在途移除 → 放行 poll 后仍不得复活", async () => {
-    const settle = deferred<AttachmentRef>();
-    mocks.waitUntilSettled.mockReturnValue(settle.promise as never);
+describe("R3×R4 组合：切话题 + 移除 + 晚到结果", () => {
+  it("A 的选择器在切到 B 后返回只落 A；B 在途移除的附件不被晚到补丁复活", async () => {
+    const picked = deferred<string | null>();
+    mocks.pickLocalPath.mockReturnValue(picked.promise as never);
+    mocks.prepareAttachment.mockImplementation(async () =>
+      ref({ id: "att_来自A", name: "来自A.txt", state: "prepared" }),
+    );
 
-    const { w } = await mountComposer("A");
-    await chooseFiles(w, "准备中.txt");
-    expect(chipNames(w)).toContain("准备中.txt");
-
-    await clickRemove(w, "准备中.txt");
-    expect(chipNames(w)).not.toContain("准备中.txt");
-
-    // 放行在途轮询的最终结果（服务说它已经 ready）
-    settle.resolve(ref({ id: "att_准备中.txt", name: "准备中.txt", state: "ready" }));
+    const { w, session } = await mountComposer("A");
+    await w.find(".composer .attach-btn").trigger("click");
     await flushPromises();
 
-    expect(chipNames(w), "已移除的附件被旧 poll 结果重新加回列表").not.toContain("准备中.txt");
-    expect(loadPendingAttachments("A").map((i) => i.id)).not.toContain("att_准备中.txt");
-    w.unmount();
-  });
-});
-
-describe("R3② 恢复在途时移除：晚到的补丁不得复活已移除的 chip（合并权在 Composer）", () => {
-  it("挂载时先摆出持久化基线，恢复在途中用户移除；再放行含它的补丁 → 必须被 tombstone 拦下", async () => {
-    // 真实窗口（K1.6）：restorePending 先把持久化基线摆到界面（所以用户能移除），
-    // 核对期间被移除的条目，其补丁晚到时必须被「移除水位」拦下。
-    savePendingAttachments("A", [ref({ id: "att_种子", name: "种子.txt" })]);
-
+    // 切到 B：B 的恢复在途（受控 deferred），记录它回显的修订号
     let seenRevision = -1;
     const inflight = deferred<unknown>();
     mocks.restorePendingAttachments.mockImplementation((_topicId: string | null, options?: { revision?: number }) => {
       seenRevision = typeof options?.revision === "number" ? options.revision : 0;
       return inflight.promise as never;
     });
+    session.currentTopicId = "B";
+    await flushPromises();
 
-    const { w } = await mountComposer("A");
-    expect(chipNames(w), "挂载时应先显示持久化基线").toContain("种子.txt");
+    // 在 B 新增一个附件并移除它（tombstone 发生在 B 的恢复在途之后）
+    await chooseFiles(w, "B被移除.txt");
+    expect(chipNames(w)).toContain("B被移除.txt");
+    await clickRemove(w, "B被移除.txt");
+    expect(chipNames(w)).not.toContain("B被移除.txt");
 
-    await clickRemove(w, "种子.txt"); // 恢复在途中移除（移除序号 > 水位）
-    expect(chipNames(w)).not.toContain("种子.txt");
+    // A 的选择器返回：必须归发起话题 A，且不得写当前话题 B 的 UI
+    picked.resolve("C:/tmp/来自A.txt");
+    await flushPromises();
+    await flushPromises();
+    const calls = mocks.prepareAttachment.mock.calls as unknown as [string, { topicId?: string | null }][];
+    expect(calls[0]?.[1]?.topicId, "A 的选择结果必须归发起话题 A").toBe("A");
+    expect(loadPendingAttachments("A").map((i) => i.id)).toContain("att_来自A");
+    expect(chipNames(w), "A 的结果不得写进当前话题 B 的 UI").not.toContain("来自A.txt");
 
+    // B 的恢复补丁晚到，且仍带着被移除的 id → 必须被移除水位拦下
     inflight.resolve({
-      topicId: "A",
-      revision: seenRevision, // 服务原样回显修订号 → 合并分支会认为修订号一致
-      restored: [ref({ id: "att_种子", name: "种子.txt", state: "ready" })],
+      topicId: "B",
+      revision: seenRevision,
+      restored: [ref({ id: "att_B被移除.txt", name: "B被移除.txt", state: "ready" })],
       missing: [],
       missingIds: [],
     });
     await flushPromises();
     await flushPromises();
-
-    expect(chipNames(w), "晚到的恢复补丁把恢复期间被移除的附件复活了").not.toContain("种子.txt");
-    expect(loadPendingAttachments("A").map((i) => i.id)).not.toContain("att_种子");
+    expect(chipNames(w), "晚到的恢复补丁复活了 B 里已移除的附件").not.toContain("B被移除.txt");
+    expect(loadPendingAttachments("B").map((i) => i.id)).not.toContain("att_B被移除.txt");
     w.unmount();
   });
 });
-
