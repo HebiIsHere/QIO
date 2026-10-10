@@ -23,7 +23,8 @@ function mountDialog(): { store: ReturnType<typeof useInteractiveStore>; wrapper
   vi.spyOn(store, "cancelImpact").mockImplementation(async () => {
     store.pendingImpact = null;
   });
-  vi.spyOn(store, "confirmImpact").mockResolvedValue(undefined);
+  // confirmImpact 现在返回**真实结果**（N2）：组件测试只关心接线，给一个成功形状
+  vi.spyOn(store, "confirmImpact").mockResolvedValue({ outcome: "saved", paused: [] });
   store.pendingImpact = {
     previewRev: 0,
     stateVersion: 0,

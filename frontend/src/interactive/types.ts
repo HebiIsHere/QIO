@@ -163,6 +163,32 @@ export interface BoardStateResponse {
   visibleRange?: VisibleRange;
 }
 
+/**
+ * 一次影响确认/取消的**真实结果**（N2）：界面只依据它声明「已保存 / 任务已暂停」。
+ *
+ * - `saved`：PUT 真的落到这一次候选（seq 前进），这才是成功；
+ * - `needs_confirm`：候选保留、没落库，正在等用户再次确认；
+ * - `cancelled`：用户取消，改动不生效、任务继续；
+ * - `check_failed`：保存前的影响预判没完成（原因见 reason），没落库；
+ * - `save_failed`：写入失败（原因见 reason），没落库；
+ * - `superseded`：确认对应的候选已被更新的改动取代，已重新核实，本次没落库。
+ */
+export type ImpactConfirmOutcome =
+  | "saved"
+  | "needs_confirm"
+  | "cancelled"
+  | "check_failed"
+  | "save_failed"
+  | "superseded";
+
+export interface ImpactConfirmResult {
+  outcome: ImpactConfirmOutcome;
+  /** 只在未成功时给可读的真实原因（不截断） */
+  reason?: string;
+  /** 仅 `saved`：这一次真实被暂停的意图（来自服务端 materialImpact.paused，不是客户端猜的） */
+  paused?: Intent[];
+}
+
 export interface IntentPreview {
   cards: BoardCard[];
   groups: BoardGroup[];
