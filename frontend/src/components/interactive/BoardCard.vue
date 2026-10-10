@@ -260,12 +260,27 @@ function startEdit() {
    * 用户选服务器后编辑框随 watch 跟随；真正输入新文字时才按正常编辑路径走。
    */
   const conflict = store.draftConflictFor(cardId);
+  applyRestore();
   /**
-   * 恢复来源（N6）：正文与附加字段是**同一份未完成输入**，一次重建。
-   * - 正文：按「记录是否存在」判断（空草稿是有效编辑状态，§10.4），存在就用草稿
-   *   （哪怕是空串），不存在才回落到正式正文；
-   * - 附加字段：取自**同一板面**的本机记录（旧记录没有附加快照时回退正式值）。
+   * 冲突未决时不写草稿、不排保存（§12.1），等用户明确选择；
+   * 其余情况把这一版完整输入登记进草稿通道（正文 + 适用附加字段一起）。
    */
+  if (conflict) return;
+  saveDraftInput();
+}
+
+/**
+ * 从当前恢复来源重建编辑态内容（N6）：正文与附加字段是**同一份未完成输入**，一次重建。
+ * - 正文：按「记录是否存在」判断（空草稿是有效编辑状态，§10.4），存在就用草稿（哪怕是空串），
+ *   不存在才回落到正式正文；冲突未决时显示本机候选（§12.1：打开编辑器 ≠ 做出选择）；
+ * - 附加字段：取自**同一板面**的本机记录（旧记录没有附加快照时回退正式值）。
+ *
+ * 「选择服务器上的」会清掉本机那份候选副本，于是这里重建时附加字段自然回到正式值；
+ * 「选择本机的」保留本机记录，附加字段继续是本机未完成输入 —— 两种选择共用这一条规则。
+ */
+function applyRestore() {
+  const cardId = props.card.id;
+  const conflict = store.draftConflictFor(cardId);
   const localInput = readCardDraftInputForBoard(cardId, store.boardId);
   const restored = restoreCardDraftInput({
     kind: props.card.kind,
@@ -280,12 +295,6 @@ function startEdit() {
   metaLanguage.value = restored.meta.language ?? "";
   metaHref.value = restored.meta.href ?? "";
   metaTitle.value = restored.meta.title ?? "";
-  /**
-   * 冲突未决时不写草稿、不排保存（§12.1），等用户明确选择；
-   * 其余情况把这一版完整输入登记进草稿通道（正文 + 适用附加字段一起）。
-   */
-  if (conflict) return;
-  saveDraftInput();
 }
 
 /**
@@ -305,6 +314,20 @@ watch(
   () => store.cardDraftText(props.card.id),
   (text) => {
     if (editing.value && text !== draft.value) draft.value = text;
+  },
+);
+
+/**
+ * 冲突刚刚被解决（从「有冲突」变成「没有冲突」）时，按同一条规则重建编辑态：
+ * 选「服务器上的」→ 本机候选副本已被清掉，附加字段回到正式值；
+ * 选「本机的」→ 本机记录还在，附加字段继续是本机未完成输入。
+ * 两种选择共用 applyRestore，不各写一套判断。
+ */
+watch(
+  () => store.draftConflictFor(props.card.id),
+  (conflict, previous) => {
+    if (!editing.value || conflict || !previous) return;
+    applyRestore();
   },
 );
 

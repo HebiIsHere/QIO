@@ -11,12 +11,18 @@
  * 标注：【真实组件 DOM + 真实 localStorage】；存储写失败为模拟（配额异常）。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import BoardCard from "../BoardCard.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import * as board from "../../../interactive/board";
-import { cardLocalDraftStorageKey, readCardLocalDraft, writeCardDraftInput } from "../../../interactive/drafts";
+import {
+  cardLocalDraftStorageKey,
+  readCardLocalDraft,
+  removeCardLocalDraft,
+  writeCardDraftInput,
+} from "../../../interactive/drafts";
 import type { BoardCard as BoardCardType } from "../../../interactive/types";
 
 const CARD = {
@@ -283,6 +289,45 @@ describe("N6 完成编辑后的清理与冲突未决", () => {
     expect(value(w, '[data-im="card-meta-href"]')).toBe("https://local.example");
     expect(writer).not.toHaveBeenCalled();
     expect(w.text()).toMatch(/先选一份继续/);
+  });
+
+  it("冲突选中「服务器上的」：正文跟随服务器，附加字段回到正式值（本机那份候选已作废）", async () => {
+    seedInput("c1", "本机候选正文", { href: "https://local.example", title: "本机标题" });
+    const store = useInteractiveStore();
+    store.draftConflicts = { "card:c1": { local: "本机候选正文", server: "服务器正文" } } as never;
+
+    const w = mount(BoardCard, { props: props({ kind: "url" }) });
+    await openEditor(w);
+    expect(value(w, '[data-im="card-editor"]')).toBe("本机候选正文");
+    expect(value(w, '[data-im="card-meta-href"]')).toBe("https://local.example");
+
+    // 模拟 store.resolveDraftConflict(c1, "server")：清冲突、候选换成服务器正文、按版本清理本机副本
+    removeCardLocalDraft("c1");
+    store.drafts = { "card:c1": "服务器正文" } as never;
+    store.draftConflicts = {} as never;
+    await nextTick();
+
+    expect(value(w, '[data-im="card-editor"]')).toBe("服务器正文");
+    expect(value(w, '[data-im="card-meta-href"]')).toBe("https://old.example");
+    expect(value(w, '[data-im="card-meta-title"]')).toBe("旧标题");
+  });
+
+  it("冲突选中「本机的」：正文与本机记录里的附加字段都保留", async () => {
+    seedInput("c1", "本机候选正文", { href: "https://local.example", title: "本机标题" });
+    const store = useInteractiveStore();
+    store.draftConflicts = { "card:c1": { local: "本机候选正文", server: "服务器正文" } } as never;
+
+    const w = mount(BoardCard, { props: props({ kind: "url" }) });
+    await openEditor(w);
+
+    // 模拟 store.resolveDraftConflict(c1, "local")：清冲突、候选仍是本机那份，本机记录保留
+    store.drafts = { "card:c1": "本机候选正文" } as never;
+    store.draftConflicts = {} as never;
+    await nextTick();
+
+    expect(value(w, '[data-im="card-editor"]')).toBe("本机候选正文");
+    expect(value(w, '[data-im="card-meta-href"]')).toBe("https://local.example");
+    expect(value(w, '[data-im="card-meta-title"]')).toBe("本机标题");
   });
 
   it("另一页面写下的新稿（本机记录被替换）优先于正式内容恢复", async () => {
