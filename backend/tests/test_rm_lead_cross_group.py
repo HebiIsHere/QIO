@@ -223,6 +223,21 @@ def test_lv3_orphan_is_visible_repairable_and_resend_is_one_shot(tmp_path):
             (_now().isoformat(), "turn_crash"),
         )
 
+        # F04：孤儿出口与专用清单用同一套 owner 判定 ——「抢占后崩溃」的那次归属
+        # 是一个**已经退出**的实例（显式 mark_clean_exit，不探测真实进程）。
+        from agent.storage.instance_registry import InstanceRegistry
+
+        crashed = InstanceRegistry(conn, "crashed_owner", pid=GHOST_PID)
+        crashed.start()
+        crashed.mark_clean_exit()
+        conn.execute(
+            "UPDATE turn_journal SET owner_instance_id = 'crashed_owner' WHERE turn_id = 'turn_crash'"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO record_owners (record_type, record_id, instance_id) "
+            "VALUES ('turn', 'turn_crash', 'crashed_owner')"
+        )
+
         state = client.get("/api/runtime/state").json()
         visible = {r["turn_id"] for r in state.get("orphaned_turns", [])} | {
             r["turn_id"] for r in state.get("interrupted_turns", [])

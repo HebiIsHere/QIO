@@ -42,6 +42,16 @@ from agent.memory.index import IndexBuilder
 from agent.memory.ingest import MemoryWriter
 from agent.selector.selector import Selector
 from agent.services.heavy import HeavyWork
+from agent.services.lifecycle import (
+    PHASE_ADAPTERS_KEPT,
+    PHASE_ADAPTERS_RELEASED,
+    PHASE_CLEAN_EXIT_RECORDED,
+    PHASE_CLEAN_EXIT_SKIPPED,
+    CloseReport,
+    close_background,
+    close_decision,
+    log_close_report,
+)
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
     NOTIFY_SUBTASK_DONE,
@@ -741,6 +751,12 @@ class AppContext:
         # 用量归因：这条 adapter 发出的每次调用都算在这把凭据上。
         # 主循环、子 agent、后台维护共用这里建出来的 adapter，所以只在这一处打标。
         adapter.key_id = key_id
+        # A06：显式绑定**本上下文**的账本。这里是新建 adapter 的唯一路径（缓存复用走不到
+        # 这里），所以缓存复用的 adapter 天然保持原绑定；绑定函数本身也拒绝改写已有的显式
+        # 归属，于是「哪个上下文最后登记了进程级默认库」不再影响记账与预算归属。
+        from agent.credentials.usage import bind_request_accounting
+
+        bind_request_accounting(adapter, self.credentials)
         return adapter
 
     async def _ensure_anthropic_capability(
@@ -760,7 +776,9 @@ class AppContext:
         probed_at = self._anthropic_probe_at.get(key)
         if probed_at is not None and (time.time() - probed_at) < ANTHROPIC_PROBE_TTL_SECONDS:
             return
-        result = await probe_anthropic(secret, model, base_url)
+        result = await probe_anthropic(
+            secret, model, base_url, key_id=key_id, accounting_store=self.credentials
+        )
         self._anthropic_probe_at[key] = time.time()
         return result
 
@@ -772,7 +790,7 @@ class AppContext:
             _close_adapter_soon(stale)
         self._adapter_cache[cache_key] = adapter
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> "CloseReport":
         """应用关闭：按依赖顺序收尾，不留悬挂的任务与等待。
 
         顺序（后者都依赖前者已经停下来）：
@@ -783,36 +801,52 @@ class AppContext:
         3. 停 TaskManager（取消在跑的独立任务、兑现所有 waiter）；
         4. 释放 adapter / HTTP client。
 
+        返回 `CloseReport`：调用方（API lifespan / 更新前停后端）**必须**按它决定
+        是否写干净退出、是否释放依赖、是否关数据库。不干净时三项全否——见
+        `services/lifecycle.py::close_decision`。
+
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
-        # M06：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
-        # 仍可能有提炼协程在写库；shutdown 会等/取消并让未完成任务回到队列（可恢复）。
-        registry = getattr(self, "background", None)
-        if registry is not None:
-            report = await registry.shutdown()
-            if not report.clean:
-                logger.warning(
-                    "background tasks did not finish before shutdown: %s", report.unfinished
-                )
+        # A05：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
+        # 仍可能有提炼协程在写库。`close_background` 会等/取消并如实回报
+        # 「句柄取消了」与「底层执行单元确认结束」的区别。
+        report = await close_background(getattr(self, "background", None))
         await self.maintenance.stop()
         await self.turns.shutdown()
         await self.task_manager.shutdown()
         # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。
         await self.heavy.shutdown()
 
-        # 干净退出：显式写下退出时刻（契约 C1 的权威判据）。
-        # 顺序放在 turn / task 都停完之后：此刻确实不再有本实例的写入了。
-        # 失败也不能阻止关闭 —— 下次启动会用心跳 + pid 兜底判定。
-        try:
-            self.instances.mark_clean_exit()
-        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
-            logger.warning("failed to mark clean exit", exc_info=True)
+        decision = close_decision(report)
+        if decision.record_clean_exit:
+            # 干净退出：显式写下退出时刻（契约 C1 的权威判据）。
+            # 顺序放在 turn / task 都停完之后：此刻确实不再有本实例的写入了。
+            # 失败也不能阻止关闭 —— 下次启动会用心跳 + pid 兜底判定。
+            try:
+                self.instances.mark_clean_exit()
+            except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+                logger.warning("failed to mark clean exit", exc_info=True)
+            report = report.with_phase(PHASE_CLEAN_EXIT_RECORDED)
+        else:
+            # 还有后台执行单元没确认结束：**不写干净退出**，下次启动按归属恢复。
+            report = report.with_phase(PHASE_CLEAN_EXIT_SKIPPED)
+            logger.error(
+                "后台执行单元未确认结束：不写干净退出（下次启动按归属恢复）：%s",
+                list(report.unfinished),
+            )
 
-        adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
-        self._anthropic_probe_at.clear()
-        for adapter in adapters:
-            await _close_adapter(adapter)
+        if decision.release_adapters:
+            adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
+            self._anthropic_probe_at.clear()
+            for adapter in adapters:
+                await _close_adapter(adapter)
+            report = report.with_phase(PHASE_ADAPTERS_RELEASED)
+        else:
+            # 残留协程还会用到 adapter：先不释放，也不清缓存（否则它们会打到已关的 client）。
+            report = report.with_phase(PHASE_ADAPTERS_KEPT)
+        log_close_report(report)
+        return report
 
     async def build_adapter(self) -> BaseAdapter | None:
         ref = self.resolve_main_ref()

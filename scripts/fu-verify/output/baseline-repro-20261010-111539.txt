@@ -1,0 +1,93 @@
+﻿
+Uninstalled 1 package in 2ms
+Installed 1 package in 9ms
+[基线观察] /api/runtime/state.interrupted_turns = []
+[基线观察] /api/runtime/state.orphaned_turns   = []
+[基线观察] POST /api/turns/{legacy}/resend  -> 409 {"detail":"这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发"}
+[基线观察] GET  /api/recovery/records      -> 404 {"detail":"Not Found"}
+[台账真值]  [{'turn_id': 'turn_legacy_queued', 'status': 'queued', 'owner_instance_id': None, 'recovered_at': None, 'recovered_by': None}, {'turn_id': 'turn_legacy_running', 'status': 'running', 'owner_instance_id': None, 'recovered_at': None, 'recovered_by': None}]
+[结论] 两条历史行状态未变、不在任何用户可见入口里、也不能继续操作。
+[fu-verify] repro_a01_legacy_invisible.py exit code = 0
+
+Uninstalled 1 package in 2ms
+Installed 1 package in 11ms
+[升级后] field_meta      = {'fields': {}, 'attributes': {}, 'tombstones': {}, 'pending': [], 'card': {}}
+[升级后] summary         = 人工写的摘要：这只鹅会咬人
+[升级后] kind            = 动物
+[升级后] attributes      = {'年龄': '2 岁'}
+[升级后] aliases         = ['大白']
+--- 提交自动候选之后 ---
+[结果] summary           = 自动摘要：鹅会看门
+[结果] kind              = 家禽
+[结果] attributes        = {'年龄': '3 岁', '健康状况': '良好'}
+[结果] aliases           = ['大白', '新别名']
+[结果] pending 候选条数  = 0 []
+[结论] 三个字段的人工值被自动候选覆盖；冲突一条候选都没登记。
+[fu-verify] repro_a02_legacy_overwritten.py exit code = 0
+
+Uninstalled 1 package in 9ms
+Installed 1 package in 25ms
+[基线观察] interrupted_turns = [] （孤儿不在其中）
+[基线观察] orphaned_turns    = ['turn_orphan_claim'] （只有只读出口）
+[基线观察] GET  /api/recovery/records                 -> 404
+[基线观察] POST /api/recovery/records/{id}/repair      -> 404
+[基线观察] POST /api/recovery/records/{id}/continue    -> 404
+[台账真值] {'status': 'interrupted', 'recovered_at': '2026-10-10T00:00:00+00:00', 'recovered_by': None}
+[结论] 这条消息在界面上彻底消失，也没有任何 HTTP 入口能修复它。
+[fu-verify] repro_a03_orphan_no_entry.py exit code = 0
+
+Uninstalled 1 package in 2ms
+Installed 1 package in 12ms
+[基线观察] 后端已登记的候选条数 = 4
+           - aliases -> 新别名 ( user_value )
+           - summary -> 自动提炼的摘要 ( user_value )
+           - kind -> 家禽 ( user_value )
+           - attributes.年龄 -> 3 岁 ( user_value )
+[基线观察] GET  /api/entities/candidates                     -> 404
+[基线观察] GET  /api/entities/{id}/candidates                -> 404
+[基线观察] POST /api/entities/{id}/candidates/{cid}/adopt   -> 404
+[基线观察] POST /api/entities/{id}/candidates/{cid}/dismiss -> 404
+[结论] 候选在后端登记着，但用户没有任何可观察的入口去采纳或丢弃。
+[fu-verify] repro_a04_candidate_endpoints.py exit code = 0
+
+Uninstalled 1 package in 2ms
+Installed 1 package in 12ms
+background: 关闭后仍有 1 个后台任务未确认结束：stuck
+background tasks did not finish before shutdown: ['stuck']
+[基线观察] aclose() 返回 = None None
+[基线观察] instances.exited_at = {'exited_at': '2026-10-10T03:16:23.657756+00:00'}
+[基线观察] adapter 是否被释放   = True
+[基线观察] 关闭后数据库仍可用   = False（ Cannot operate on a closed database. ）
+[结论] 后台协程没结束，却写了干净退出标记、释放了 adapter、关了数据库。
+[fu-verify] repro_a05_aclose_report.py exit code = 0
+
+Uninstalled 1 package in 2ms
+Installed 1 package in 10ms
+[构造] A 账本 key 额度 = 0.0  B 账本同名 key 额度 = 100.0
+[构造] 全局默认库是 B 吗 = True
+[构造] A 造出的 adapter.key_id = key-shared
+[基线观察] 这条 adapter 实际归属的账本是 = B
+[基线观察] A=0 的首次直接调用核对结果 = 放行，剩余额度 100.0
+[基线观察] 记完一次用量之后：A.budget_used = 0.0  B.budget_used = 10.0
+[结论] A 的预算 0 拦不住 A 的调用，用量记进了 B 的账本。
+[fu-verify] repro_a06_ledger_misattribution.py exit code = 0
+
+Uninstalled 1 package in 3ms
+Installed 1 package in 16ms
+[构造] 版本记录 = 29 （29 已记录）
+[基线观察] 迁移前缺失对象 = ['table:instances', 'table:record_owners', 'column:turn_journal.owner_instance_id', 'column:derived_tasks.owner_instance_id', 'column:derived_tasks.claim_generation', 'column:pending_approvals.owner_instance_id', 'column:knowledge.chain_id', 'column:knowledge.version', 'column:entity_cards.revision', 'column:entity_cards.field_meta', 'index:idx_instances_heartbeat', 'index:idx_record_owners_instance', 'index:idx_turn_journal_owner', 'index:idx_knowledge_chain']
+[基线观察] apply_migrations 返回 = 29
+[基线观察] 迁移后缺失对象 = ['table:instances', 'table:record_owners', 'column:turn_journal.owner_instance_id', 'column:derived_tasks.owner_instance_id', 'column:derived_tasks.claim_generation', 'column:pending_approvals.owner_instance_id', 'column:knowledge.chain_id', 'column:knowledge.version', 'column:entity_cards.revision', 'column:entity_cards.field_meta', 'index:idx_instances_heartbeat', 'index:idx_record_owners_instance', 'index:idx_turn_journal_owner', 'index:idx_knowledge_chain']
+[基线观察] InstanceRegistry.start() 抛 = OperationalError no such table: instances
+[基线观察] 用户数据仍在 = 1 条 messages
+[结论] 版本号说「已经到 29」，对象却一个都不在，后端起不来。
+[fu-verify] repro_b01_version29_missing_objects.py exit code = 0
+
+Uninstalled 1 package in 2ms
+Installed 1 package in 9ms
+[基线观察] 平台=posix，os.kill 替身记录 = []
+[基线观察] _default_pid_alive(1/2/3/4) = {1: None, 2: None, 3: None, 4: None}
+[基线观察] 真实平台 os.name = nt  测试进程 pid = 47752
+[结论] POSIX 上 1/2/3/4 是合法 PID，却全部被判成「判不出来」（None）；探测函数一次都没被调用。
+[对照] 平台=nt，_default_pid_alive(0..4) = {0: None, 1: None, 2: None, 3: None, 4: None}
+[fu-verify] repro_b02_posix_low_pid.py exit code = 0

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api, type EntityAttribute, type EntityCard } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 import QConfirm from "../ui/QConfirm.vue";
+import EntityCandidates from "./EntityCandidates.vue";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 
 const props = defineProps<{ openCardId?: string; openByNodeId?: string }>();
@@ -183,6 +184,18 @@ async function revokeCard() {
   );
 }
 
+/**
+ * 候选被采纳 / 丢弃之后：卡片上的值在服务端已经变了。
+ * 这里重新取一次权威数据（不靠本地猜测），让详情与列表都显示真实持久状态。
+ */
+async function onCandidatesChanged(entityId: string) {
+  const keepId = opened.value?.id ?? entityId;
+  await load();
+  if (!opened.value || editing.value) return;
+  const fresh = cards.value.find((c) => c.id === keepId);
+  if (fresh) openCard(fresh);
+}
+
 watch(
   () => props.openCardId,
   (id) => {
@@ -249,6 +262,14 @@ onMounted(async () => {
           <button v-if="cards.length" class="link e-clear-search" type="button" @click="q = ''">清除搜索</button>
         </li>
       </ul>
+      <!--
+        待处理候选（A04）：跨卡片的清单，默认收起。
+        放在列表这一层，是为了让「有东西等我决定」在打开某张卡之前就看得见；
+        刻意与上面的「加载中 / 加载失败 / 列表」三态分开 —— 它是另一份数据，
+        既不该让实体列表的加载把它重新挂载一次（状态会丢、请求会重发），
+        也不该在实体读取失败时跟着一起消失。
+      -->
+      <EntityCandidates @changed="onCandidatesChanged" />
     </template>
 
     <template v-else>
@@ -380,6 +401,16 @@ onMounted(async () => {
             </button>
           </div>
         </template>
+
+        <!--
+          待处理候选（A04）：只在这一张卡的阅读态出现，默认收起。
+          编辑态不显示：编辑中的草稿与「采纳候选」是两套写入，混在一起会互相盖掉。
+        -->
+        <EntityCandidates
+          v-if="!editing && opened.id"
+          :entity-id="opened.id"
+          @changed="onCandidatesChanged"
+        />
 
         <!-- 归档：就地确认，说明影响（实体卡归档后不再参与回答） -->
         <QConfirm

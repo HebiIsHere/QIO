@@ -29,7 +29,23 @@ M04：区分「用户明确整张修订」与「模型部分候选」
 * `fields.<字段>`：`{"source": "user"|"auto"|"system", "revision": n}`；
 * `attributes.<键>`：同上（**不塞进 attributes 值里**，否则结构化输出会多出字段）；
 * `tombstones.<键>`：用户删除过的属性键 —— 自动提炼不得复活；
-* `pending`：被保护而没落的自动候选（可管理：用户可见、可接受、可丢弃）。
+* `pending`：被保护而没落的自动候选（可管理：用户可见、可接受、可丢弃）；
+* `resolved`：已处理的候选 id（采纳/丢弃/被明确的字段修订取代）——**重复点击幂等**的依据。
+
+历史来源未知（A02）
+-------------------
+
+迁移 29 只给 `entity_cards` 加 `revision` / `field_meta` 两列，**不回填**。所以旧库升级上来
+（或 meta 被清掉）时，卡上明明有值、`field_meta` 里却没有来源记录。这种值**不得**被
+
+* 当成「没有来源所以是模型的」，交给下一次自动提炼覆盖；也**不得**
+* 伪造成 `source: "user"`（那是编造历史）。
+
+判定规则（冻结）：**卡上已有非空值 + `field_meta` 里没有它的来源记录 ⇒ 来源视为
+`unknown`，按「用户值」保护**。自动候选不得覆盖，冲突进 `pending` 候选；
+`aliases` / `summary` / `kind` / 每个 `attributes.<键>` 一致适用。
+空缺（当前为空 / 缺失）仍然可以补 —— 但要过用户删除墓碑（`user_deleted`）与归档卡两道闸。
+读时判定、写时只在确有必要时写 `source: "unknown"`，不改迁移 29 的含义。
 
 迟到结果的核对在**提交时**做（不只是发起请求前）：调用方把发起时的 `revision`
 作为 `expected_revision` 传进来，提交时若卡已经变了，自动候选只能**补空**，
@@ -55,18 +71,25 @@ logger = logging.getLogger(__name__)
 SOURCE_USER = "user"
 SOURCE_AUTO = "auto"
 SOURCE_SYSTEM = "system"
+# A02：卡上有非空值、但 field_meta 里没有来源记录（旧 schema 升级上来 / meta 被清）。
+# 它既不是 user（不得伪造历史）也不是 auto（不得被下一次自动提炼覆盖），而是「来源未知」。
+SOURCE_UNKNOWN = "unknown"
 
 # 降级告警只打一次（每次装配上下文都会新建 Service，不能刷屏）。
 _LEGACY_SCHEMA_WARNED = False
 
 # 可管理候选的上限：只留最近这么多条待处理候选，避免 field_meta 无限膨胀。
 PENDING_LIMIT = 20
+# 已解决候选（幂等依据）的保留条数：只为了「重复点击返回 already_resolved」，同样有界。
+RESOLVED_LIMIT = 50
 
 # 待处理候选的原因码（可读、可被管理界面直接展示）。
 PENDING_USER_VALUE = "user_value"  # 与用户明确设定的值冲突
 PENDING_USER_DELETED = "user_deleted"  # 用户删除过，自动提炼不得复活
 PENDING_STALE = "stale_revision"  # 迟到结果：卡在请求期间已被改动
 PENDING_CARD_ARCHIVED = "card_archived"  # 用户删了整张卡，自动提炼不复活
+# A02：有非空值但没有任何来源记录（旧数据）→ 按用户值保护。
+PENDING_UNKNOWN_SOURCE = "source_unknown"
 
 
 def _now() -> str:
@@ -83,6 +106,7 @@ def _empty_meta() -> dict:
         "attributes": {},
         "tombstones": {},
         "pending": [],
+        "resolved": [],
         "card": {},
     }
 
@@ -99,13 +123,55 @@ def _normalize_meta(raw: object) -> dict:
                 str(k): dict(v) if isinstance(v, dict) else {"source": str(v)}
                 for k, v in section.items()
             }
-    pending = raw.get("pending")
-    if isinstance(pending, list):
-        meta["pending"] = [dict(item) for item in pending if isinstance(item, dict)]
+    for key in ("pending", "resolved"):
+        section = raw.get(key)
+        if isinstance(section, list):
+            meta[key] = [dict(item) for item in section if isinstance(item, dict)]
     card = raw.get("card")
     if isinstance(card, dict):
         meta["card"] = dict(card)
     return meta
+
+
+def normalize_meta(raw: object) -> dict:
+    """公开入口：A04 的候选管理读同一份规范化结果（单一事实来源，避免两份形状漂移）。"""
+    return _normalize_meta(raw)
+
+
+def _nonempty(value: object) -> bool:
+    """「卡上已有非空值」的判定：字符串去空白、列表看有没有非空项。"""
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(str(item or "").strip() for item in value)
+    return bool(str(value).strip())
+
+
+def pending_field_kind(field_name: object) -> str:
+    """候选字段的类型：summary / kind / aliases / attribute / unknown（未知=不支持采纳）。"""
+    field = str(field_name or "")
+    if field in ("summary", "kind", "aliases"):
+        return field
+    if field.startswith("attributes.") and field.split(".", 1)[1]:
+        return "attribute"
+    return "unknown"
+
+
+def field_label(field_name: object) -> str:
+    """中文短标签（界面直接显示，不暴露内部字段名）。"""
+    field = str(field_name or "")
+    if field == "summary":
+        return "摘要"
+    if field == "kind":
+        return "类型"
+    if field == "aliases":
+        return "别名"
+    if field.startswith("attributes."):
+        key = field.split(".", 1)[1]
+        return f"属性「{key}」" if key else "属性"
+    if field == "card":
+        return "整张卡片"
+    return "未识别的字段"
 
 
 def _pending_id(field_name: str, value: object) -> str:
@@ -195,6 +261,10 @@ class EntityCardService:
             "SELECT * FROM entity_cards WHERE id = ?", (card_id,)
         ).fetchone()
         return self._row_to_card(row) if row else None
+
+    def row_to_card(self, row: sqlite3.Row) -> EntityCard:
+        """已取到的行 → EntityCard（A04 的清单一次查询多卡，不为了读一行再查一次）。"""
+        return self._row_to_card(row)
 
     def find_by_name(self, name: str) -> EntityCard | None:
         name = (name or "").strip()
@@ -315,41 +385,114 @@ class EntityCardService:
         pending = [
             item
             for item in meta.get("pending", [])
-            if not (item.get("field") == field_name and item.get("value") == value)
+            if str(item.get("id") or "") != candidate["id"]
         ]
         pending.append(candidate)
         meta["pending"] = pending[-PENDING_LIMIT:]
-
-    def _clear_pending(self, meta: dict, field_name: str) -> None:
-        """用户在某个字段上做了明确决定：该字段的待处理候选视为已解决。"""
-        meta["pending"] = [
-            item
-            for item in meta.get("pending", [])
-            if not _pending_matches_field(item.get("field"), field_name)
+        # 不变式：一条候选要么在 pending、要么在 resolved，不会同时在两边。
+        meta["resolved"] = [
+            row
+            for row in meta.get("resolved", [])
+            if str(row.get("id") or "") != candidate["id"]
         ]
+
+    def _clear_pending(self, meta: dict, field_name: str, *, action: str = "field_decided") -> None:
+        """用户在某个字段上做了明确决定：该字段的待处理候选视为已解决。
+
+        被清掉的候选记进 `resolved`（A04）：界面上还留着一份旧清单时再点一次，
+        要得到「已经处理过」，而不是 404 / 500。
+        """
+        kept: list[dict] = []
+        for item in meta.get("pending", []):
+            if _pending_matches_field(item.get("field"), field_name):
+                self._mark_resolved(meta, item, action=action)
+            else:
+                kept.append(item)
+        meta["pending"] = kept
+
+    @staticmethod
+    def _mark_resolved(meta: dict, item: dict, *, action: str) -> None:
+        """记录「这条候选已被处理」（幂等依据，条数有界）。"""
+        candidate_id = str(item.get("id") or "")
+        if not candidate_id:
+            return
+        entry = {
+            "id": candidate_id,
+            "field": str(item.get("field") or ""),
+            "action": str(action),
+            "at": _now(),
+        }
+        resolved = [
+            row
+            for row in meta.get("resolved", [])
+            if str(row.get("id") or "") != candidate_id
+        ]
+        resolved.append(entry)
+        meta["resolved"] = resolved[-RESOLVED_LIMIT:]
+
+    @staticmethod
+    def _conflict_reason(source: str | None, *, has_value: bool, stale: bool) -> str | None:
+        """自动候选能不能改动这个字段？返回 None 表示可以，否则返回挡下的原因码。
+
+        保护顺序（A02 冻结规则）：
+        1. `source == user`：用户明确设定过 → 保护（即使值为空，删除意图也有效）；
+        2. `source == unknown`，或**有非空值却没有来源记录** → 按用户值保护（旧数据）；
+        3. 迟到结果（提交时 `revision` 不符）→ 保护，只能补空；
+        4. 其余（来源是 auto/system、或无来源且当前为空缺）→ 允许按自动值更新 / 补空。
+        """
+        if source == SOURCE_USER:
+            return PENDING_USER_VALUE
+        if source == SOURCE_UNKNOWN or (source is None and has_value):
+            return PENDING_UNKNOWN_SOURCE
+        if stale:
+            return PENDING_STALE
+        return None
 
     def pending_candidates(self, card_id: str) -> list[dict]:
         """可管理的自动候选（被用户明确值/用户删除/迟到结果挡下来的那些）。"""
         card = self.get(card_id)
         return list(card.field_meta.get("pending", [])) if card else []
 
-    def resolve_pending(self, card_id: str, candidate_id: str, *, accept: bool) -> EntityCard | None:
-        """处理一条待处理候选：accept=True 采纳（按用户决定写入并标 user）。"""
+    def resolve_pending(
+        self,
+        card_id: str,
+        candidate_id: str,
+        *,
+        accept: bool,
+        expected_revision: int | None = None,
+        actor: str = SOURCE_USER,
+    ) -> EntityCard | None:
+        """处理一条待处理候选：accept=True 采纳（按用户决定写入并标 user）。
+
+        采纳**是本次用户的明确决定**，所以写 `source="user"` 与新的 `revision` 是记录
+        真实决定，不是伪造历史（旧数据的来源未知由 A02 的读时判定负责）。
+
+        `expected_revision` 不符（CAS 失败）→ 返回 None 且**不改任何东西**，调用方给 409。
+        不支持的候选类型（例如归档卡上的 `card`）不会被吞掉：候选留在 pending 里。
+        """
         card = self.get(card_id)
         if card is None:
             return None
         meta = _normalize_meta(card.field_meta)
         target = next(
-            (item for item in meta.get("pending", []) if item.get("id") == candidate_id), None
+            (item for item in meta.get("pending", []) if str(item.get("id") or "") == candidate_id),
+            None,
         )
         if target is None:
             return card
         field_name = str(target.get("field") or "")
-        meta["pending"] = [item for item in meta.get("pending", []) if item.get("id") != candidate_id]
         if not accept:
-            return self._commit_card(card, meta=meta, values=None)
+            self._drop_pending(meta, candidate_id)
+            self._mark_resolved(meta, target, action="dismiss")
+            return self._commit_card(
+                card, meta=meta, values=None, expected_revision=expected_revision
+            )
+        if pending_field_kind(field_name) == "unknown":
+            # 界面上不该出现「点了没效果」的按钮：采纳不了的类型原样留在 pending。
+            return card
 
         revision = card.revision
+        self._drop_pending(meta, candidate_id)
         if field_name.startswith("attributes."):
             key = field_name.split(".", 1)[1]
             attrs = [dict(a) for a in card.attributes]
@@ -362,10 +505,10 @@ class EntityCardService:
                 hit["value"] = str(target.get("value") or "")
             values = {"attributes": json.dumps(attrs, ensure_ascii=False)}
             meta.setdefault("tombstones", {}).pop(key, None)
-            self._mark_attribute(meta, key, SOURCE_USER, revision + 1)
+            self._mark_attribute(meta, key, actor, revision + 1)
         elif field_name in ("summary", "kind"):
             values = {field_name: str(target.get("value") or "")}
-            self._mark_field(meta, field_name, SOURCE_USER, revision + 1)
+            self._mark_field(meta, field_name, actor, revision + 1)
         elif field_name == "aliases":
             aliases = list(card.aliases)
             value = target.get("value")
@@ -373,10 +516,26 @@ class EntityCardService:
                 if item and str(item) not in aliases:
                     aliases.append(str(item))
             values = {"aliases": json.dumps(aliases, ensure_ascii=False)}
-            self._mark_field(meta, "aliases", SOURCE_USER, revision + 1)
+            self._mark_field(meta, "aliases", actor, revision + 1)
         else:
-            return self._commit_card(card, meta=meta, values=None)
-        return self._commit_card(card, meta=meta, values=values, mark_user=True)
+            return card
+        self._mark_resolved(meta, target, action="adopt")
+        return self._commit_card(
+            card,
+            meta=meta,
+            values=values,
+            mark_user=True,
+            expected_revision=expected_revision,
+        )
+
+    @staticmethod
+    def _drop_pending(meta: dict, candidate_id: str) -> None:
+        """摘掉一条待处理候选（不记 resolved：调用方决定记成采纳还是丢弃）。"""
+        meta["pending"] = [
+            item
+            for item in meta.get("pending", [])
+            if str(item.get("id") or "") != str(candidate_id)
+        ]
 
     # -- 写入原语 ---------------------------------------------------------
 
@@ -528,8 +687,9 @@ class EntityCardService:
         * 卡不存在 → 新建（来源 auto）；
         * 卡已被用户归档 → **不复活**，候选记进那张卡的 pending；
         * 存在 → 按字段合并：属性按 key 合并、别名取并集、摘要/类型只填空；
-          用户明确设定过的字段、用户删除过的属性键、以及「请求期间卡已被改动」
-          （`expected_revision` 不匹配 = 迟到结果）都只记 pending 候选，不覆盖。
+          用户明确设定过的字段、**有非空值却没有来源记录的旧字段（来源未知，按用户值保护）**、
+          用户删除过的属性键、以及「请求期间卡已被改动」（`expected_revision` 不匹配 =
+          迟到结果）都只记 pending 候选，不覆盖。
         """
         for _attempt in range(3):
             existing = self._find_any_by_name(cand.name)
@@ -564,7 +724,12 @@ class EntityCardService:
             if cand.name and cand.name != existing.name:
                 aliases.append(cand.name)
             aliases_field_source = self._field_source(meta, "aliases")
-            alias_locked = aliases_field_source == SOURCE_USER or stale
+            alias_reason = self._conflict_reason(
+                aliases_field_source,
+                has_value=_nonempty(aliases),
+                stale=stale,
+            )
+            alias_locked = alias_reason is not None
             incoming_aliases = [a for a in aliases if a]
             for alias in cand.aliases:
                 text = str(alias or "").strip()
@@ -578,7 +743,7 @@ class EntityCardService:
                             meta,
                             "aliases",
                             alias,
-                            reason=PENDING_USER_VALUE if aliases_field_source == SOURCE_USER else PENDING_STALE,
+                            reason=alias_reason or PENDING_STALE,
                             base_revision=base,
                         )
                 else:
@@ -587,20 +752,37 @@ class EntityCardService:
                     changed = True
                     self._mark_field(meta, "aliases", SOURCE_AUTO, revision + 1)
 
-            # 摘要：只在原值为空时填；用户设定过 / 迟到结果 → pending。
+            # 摘要：空值也要按**来源**判定 —— 用户明确清空过（source=user）的字段不得
+            # 被自动候选复填（F02）；从未填写过的空字段仍然可以补全。
             if cand.summary:
                 summary_source = self._field_source(meta, "summary")
                 if not (existing.summary or "").strip():
-                    values["summary"] = cand.summary
-                    changed = True
-                    self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
-                elif str(existing.summary) != cand.summary:
-                    if summary_source == SOURCE_USER or stale:
+                    empty_reason = self._conflict_reason(
+                        summary_source, has_value=False, stale=stale
+                    )
+                    if empty_reason is not None:
+                        # 用户清空 / 迟到结果：保留为空，候选进待处理列表由用户决定。
                         self._add_pending(
                             meta,
                             "summary",
                             cand.summary,
-                            reason=PENDING_USER_VALUE if summary_source == SOURCE_USER else PENDING_STALE,
+                            reason=empty_reason,
+                            base_revision=base,
+                        )
+                    else:
+                        values["summary"] = cand.summary
+                        changed = True
+                        self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
+                elif str(existing.summary) != cand.summary:
+                    summary_reason = self._conflict_reason(
+                        summary_source, has_value=True, stale=stale
+                    )
+                    if summary_reason is not None:
+                        self._add_pending(
+                            meta,
+                            "summary",
+                            cand.summary,
+                            reason=summary_reason,
                             base_revision=base,
                         )
                     else:
@@ -608,20 +790,33 @@ class EntityCardService:
                         changed = True
                         self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
 
-            # 类型：同上（只填空 / 非用户来源才更新）。
+            # 类型：与摘要同一套规则（F02：用户清空过的类型也不得被复填）。
             if cand.kind:
                 kind_source = self._field_source(meta, "kind")
                 if not (existing.kind or "").strip():
-                    values["kind"] = cand.kind
-                    changed = True
-                    self._mark_field(meta, "kind", SOURCE_AUTO, revision + 1)
-                elif str(existing.kind) != str(cand.kind):
-                    if kind_source == SOURCE_USER or stale:
+                    empty_reason = self._conflict_reason(
+                        kind_source, has_value=False, stale=stale
+                    )
+                    if empty_reason is not None:
                         self._add_pending(
                             meta,
                             "kind",
                             cand.kind,
-                            reason=PENDING_USER_VALUE if kind_source == SOURCE_USER else PENDING_STALE,
+                            reason=empty_reason,
+                            base_revision=base,
+                        )
+                    else:
+                        values["kind"] = cand.kind
+                        changed = True
+                        self._mark_field(meta, "kind", SOURCE_AUTO, revision + 1)
+                elif str(existing.kind) != str(cand.kind):
+                    kind_reason = self._conflict_reason(kind_source, has_value=True, stale=stale)
+                    if kind_reason is not None:
+                        self._add_pending(
+                            meta,
+                            "kind",
+                            cand.kind,
+                            reason=kind_reason,
                             base_revision=base,
                         )
                     else:
@@ -658,12 +853,17 @@ class EntityCardService:
                 if str(hit.get("value")) == str(item.value):
                     continue
                 attr_source = self._attribute_source(meta, key)
-                if attr_source == SOURCE_USER or stale:
+                attr_reason = self._conflict_reason(
+                    attr_source,
+                    has_value=_nonempty(hit.get("value")),
+                    stale=stale,
+                )
+                if attr_reason is not None:
                     self._add_pending(
                         meta,
                         f"attributes.{key}",
                         item.value,
-                        reason=PENDING_USER_VALUE if attr_source == SOURCE_USER else PENDING_STALE,
+                        reason=attr_reason,
                         base_revision=base,
                     )
                     continue
@@ -925,6 +1125,7 @@ class EntityCardService:
     def to_dict(self, card: EntityCard) -> dict:
         """结构化输出：管理页/API 用（含属性、关系、node_id）。"""
         relations = [{"type": r["type"], "target": r["name"]} for r in self._relation_rows(card)]
+        raw_meta = card.field_meta if isinstance(card.field_meta, dict) else {}
         return {
             "id": card.id,
             "node_id": card.node_id,
@@ -939,11 +1140,35 @@ class EntityCardService:
             "updated_at": card.updated_at,
             # M04：修订版本与「可管理候选」（管理界面据此展示/采纳/丢弃）。
             "revision": card.revision,
-            "field_sources": dict(card.field_meta.get("fields", {})),
-            "attribute_sources": dict(card.field_meta.get("attributes", {})),
-            "tombstones": dict(card.field_meta.get("tombstones", {})),
-            "pending_candidates": list(card.field_meta.get("pending", [])),
+            "field_sources": dict(raw_meta.get("fields", {})),
+            "attribute_sources": dict(raw_meta.get("attributes", {})),
+            "tombstones": dict(raw_meta.get("tombstones", {})),
+            "pending_candidates": list(raw_meta.get("pending", [])),
+            # A02：读时把「有非空值但没有来源记录」判成 unknown（旧数据）——
+            # 管理侧能一眼看出哪些内容是按用户值保护的，而不是等着被自动提炼覆盖。
+            "unknown_source_fields": self._unknown_source_fields(card),
         }
+
+    def _unknown_source_fields(self, card: EntityCard) -> list[str]:
+        """来源未知（受保护）的字段清单：`summary` / `kind` / `aliases` / `attributes.<键>`。"""
+        meta = card.field_meta if isinstance(card.field_meta, dict) else {}
+        unknown: list[str] = []
+        for field_name, value in (
+            ("summary", card.summary),
+            ("kind", card.kind),
+            ("aliases", card.aliases),
+        ):
+            source = self._field_source(meta, field_name)
+            if _nonempty(value) and source in (None, SOURCE_UNKNOWN):
+                unknown.append(field_name)
+        for attr in card.attributes:
+            key = str(attr.get("key") or "")
+            if not key or not _nonempty(attr.get("value")):
+                continue
+            source = self._attribute_source(meta, key)
+            if source in (None, SOURCE_UNKNOWN):
+                unknown.append(f"attributes.{key}")
+        return unknown
 
 
 def _pending_matches_field(pending_field: object, field_name: str) -> bool:

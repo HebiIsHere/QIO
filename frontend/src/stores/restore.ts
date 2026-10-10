@@ -19,7 +19,10 @@
  *    （`events.resyncBuffer`，有明确上限），快照应用完再按到达顺序补放 ——
  *    所以「同步期间结束的事项」不会被随后返回的旧快照复活；
  * 5. **覆盖全部权威状态**：turn 队列、待审批、独立任务、工具执行事实、叙事、
- *    上次没执行完的用户消息与「那次操作没执行」的审批，一次拉齐。
+ *    上次没执行完的用户消息与「那次操作没执行」的审批，一次拉齐；
+ * 6. **可恢复记录收件箱**：快照里的 `orphaned_turns` 与专用接口
+ *    `/api/recovery/records` 并成**同一份**清单，并按「已解决 id 集合」过滤 ——
+ *    旧快照不得复活已处理记录；专用接口失败时快照里的孤儿仍可见。
  *
  * 首次连接、页面刷新、普通重连、RESYNC、实例变化全部走 `restoreRuntimeState(reason)`。
  */
@@ -161,8 +164,21 @@ async function runRestore(reason: RestoreReason, notice: string): Promise<Restor
       // ---- 快照是权威：整份应用（队列先于其它状态，保证「在跑」的归属正确） ----
       session.applyTurnQueue(state.turn_queue);
       events.applyRuntimeState(state);
-      // 上次没执行完的用户消息与「那次操作没执行」的审批（与队列同一份快照）
-      session.applyInterruptedState(state.interrupted_approvals ?? [], state.interrupted_turns ?? []);
+      // 上次没执行完的用户消息与「那次操作没执行」的审批（与队列同一份快照）。
+      // 第三个参数是孤儿记录：它与 interrupted_turns 是两个出口，合并进同一份收件箱 ——
+      // 专用接口失败时它们也必须在界面上看得见。
+      session.applyInterruptedState(
+        state.interrupted_approvals ?? [],
+        state.interrupted_turns ?? [],
+        state.orphaned_turns ?? [],
+      );
+      /**
+       * 收件箱（A01 / A03 的专用接口）。它是**同一批事项的权威清单**，
+       * 所以在这里一并拉齐；失败时 `loadRecoveryInbox` 内部已经把原因写在
+       * `session.recoveryError` 上并保留快照里的孤儿 —— 不会把「拉不到」
+       * 擦成「没有未完成的事」，也不会因为一个补充请求打断整个恢复。
+       */
+      await session.loadRecoveryInbox();
       // 开发任务是另一份权威状态（独立接口）：连上/抖动之后一起拉齐
       await session.refreshDevTasks();
 

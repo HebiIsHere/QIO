@@ -268,6 +268,7 @@ def create_app(
                     hb_log.warning("instance heartbeat failed", exc_info=True)
 
         heartbeat_task = asyncio.create_task(_instance_heartbeat())
+        report = None
         try:
             yield
         finally:
@@ -280,16 +281,41 @@ def create_app(
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
-                await ctx.aclose()
+                report = await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
                 logging.getLogger(__name__).warning("app context close failed", exc_info=True)
-            if close_db_on_shutdown:
+            from agent.services.lifecycle import (
+                PHASE_DB_CLOSED,
+                PHASE_DB_KEPT,
+                close_decision,
+                log_close_report,
+            )
+
+            _log = logging.getLogger(__name__)
+            if report is None:
+                # 关闭本身失败了：无法确认后台是否已结束 → 不关数据库（宁可留连接，
+                # 也不要在残留协程还在写的时候把连接关掉）。
+                _log.error(
+                    "关闭过程未确认后台是否已结束：不关数据库（SQLite WAL 崩溃安全；"
+                    "下次启动按归属恢复）"
+                )
+            elif close_db_on_shutdown and close_decision(report).close_database:
                 try:
                     from agent.storage.db import close as close_conn
 
                     close_conn(conn)
+                    report = report.with_phase(PHASE_DB_CLOSED)
                 except Exception:  # noqa: BLE001
-                    logging.getLogger(__name__).warning("closing db failed", exc_info=True)
+                    _log.warning("closing db failed", exc_info=True)
+            else:
+                report = report.with_phase(PHASE_DB_KEPT)
+                if close_db_on_shutdown:
+                    _log.error(
+                        "关闭未确认完成：不关数据库（SQLite WAL 崩溃安全；下次启动按归属恢复）：%s",
+                        list(report.unfinished),
+                    )
+            if report is not None:
+                log_close_report(report)
 
     app = FastAPI(title="QIO", version="0.1.14", lifespan=lifespan)
     from agent.knowledge.lifecycle import VersionConflict
@@ -302,6 +328,13 @@ def create_app(
         调用方拿去核对「当前版本到底是谁」。
         """
         return JSONResponse(status_code=409, content=exc.to_dict())
+
+    # A02/A04：实体冲突候选的查看 / 采纳 / 丢弃。
+    # **必须在 `GET /api/entities/{entity_id}` 之前注册**：starlette 取第一个匹配，
+    # 否则 `/api/entities/candidates` 会被当成 `entity_id="candidates"` 吃掉。
+    from agent.api.entity_pending_routes import build_router as build_entity_pending_router
+
+    app.include_router(build_entity_pending_router(ctx))
 
     auth = SessionAuth.from_settings(settings)
     # 实例身份由 AppContext 生成并登记（契约 C1：台账归属要用同一个 id）。
@@ -1293,9 +1326,18 @@ def create_app(
             # 关联已经写成、但新 turn 没被接受：这是真实的失败，必须让用户看见，
             # 而不是返回一个假的 200。孤儿出口（orphaned_claims / repair_orphan）
             # 保证这条记录不会因此永久消失。
+            #
+            # F03（相邻入口）：后继已经落库（queued + 本实例归属），但它没有进内存
+            # 队列 —— 不改状态的话，它既不会被派发、又因为归属者活着不进恢复清单，
+            # 用户在**当前运行**里永远重试不了。所以把它标成显式的 dispatch_failed：
+            # 恢复清单里能看到「重新执行」，重试复用同一个 turn_id。
+            from agent.trace.redact import redact_text
+
+            reason = redact_text(f"重发未被执行：{exc}")[:500]
+            ctx.turn_journal.mark_dispatch_failed(new_turn_id, reason)
             raise HTTPException(
                 status_code=503,
-                detail=f"重发未被执行：{exc}",
+                detail=reason,
             ) from exc
         return {
             "ok": True,
@@ -2053,4 +2095,9 @@ def create_app(
     app.state.instance_id = instance_id
     app.state.approvals = approvals
     app.state.ctx = ctx
+    # A01/A03：可恢复记录收件箱（历史无归属消息 / 孤立重发 / 归属判不出来的记录）
+    # 与它们的处理动作。路由工厂在本文件之外，避免把恢复规则塞进这个长文件。
+    from agent.api.recovery_routes import build_router as build_recovery_router
+
+    app.include_router(build_recovery_router(ctx))
     return app

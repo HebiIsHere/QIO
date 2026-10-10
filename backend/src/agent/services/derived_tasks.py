@@ -312,7 +312,11 @@ def _should_reclaim(
       True 不动（另一活实例的任务不被抢），None（unknown）保留原状态。
     """
     if not owner:
-        return bool(stale_by_time)
+        # F01：无归属 = 旧版本写的行，**库内没有任何证据**说明那个执行者已经停止。
+        # 超时只是时间猜测；旧 runner 可能正卡在一个长动作上，靠超时接管会让同一件
+        # 事做两遍。这类行只进恢复清单（derived_legacy），要用户确认旧执行者已停止
+        # 之后才能重排。归属者存在的那两条路径不受影响。
+        return False
     if my_instance and owner == my_instance:
         return bool(stale_by_time)
     alive = _owner_alive(registry, owner)
@@ -583,6 +587,95 @@ def release(
         if reason:
             logger.info("派生任务释放回队列：task=%s 原因=%s", task_id, reason)
     return applied
+
+
+def requeue_running(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_state: str,
+    expected_generation: int,
+    instance_id: str | None = None,
+    owner_key: str | None = None,
+) -> bool:
+    """A01：用户明确要求重排一条卡住的 running 派生任务（条件更新 + 代次递增）。
+
+    为什么需要用户入口：历史行可能是「升级前没有任何归属」，也可能是「归属者
+    已经确认退出但恢复循环还没轮到它」。两种情况都不会自己动（unknown 一律不改
+    状态），所以必须给用户一个明确的动作。
+
+    为什么安全：
+
+    * 与 `claim_due()` 同一把锁（`BEGIN IMMEDIATE`）+ 条件 UPDATE，两个并发请求
+      只有一个能改到行；
+    * `claim_generation + 1`：如果原来那个执行者其实还在跑，它回来写
+      complete/fail 时代次已经变了，迟到结果被丢弃（不会覆盖这次重排）；
+    * `attempts` / `last_error` **原样保留**（不重置失败历史，退避口径不变）；
+    * `owner_instance_id` 指向发起重排的实例（可追踪），`record_owners` 里的旧归属
+      清掉：这条任务回到 pending，不再「在谁手上」。
+
+    命中 0 行（状态 / 代次已经变化，或这条其实是完成态）→ 返回 False，一行不改。
+    """
+    state = str(expected_state or "")
+    if state in (STATE_COMPLETED, STATE_PENDING):
+        # 完成态不该被重排；pending 已经是目标状态（重复点击不做第二次变更）。
+        return False
+    owns = _has_ownership(conn)
+    owner = instance_id if instance_id is not None else _INSTANCE_ID
+    stamp = _iso(_now())
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # F01/F04：归属条件与 RecoveryInbox 的判定一致 —— 只有库里的归属列和调用方
+        # 算出来的归属一致时才命中（无归属传空串、确认已退出的归属者传它的实例 id）。
+        owner_clause = ""
+        owner_params: list[object] = []
+        if owner_key is not None:
+            key = str(owner_key or "")
+            if key:
+                # 与 turn_journal._owner_guard 同一口径：归属表是权威、列只是镜像，
+                # 列是 NULL 或等于权威归属者都算一致；列上是别的实例则保守拒绝。
+                owner_clause = (
+                    " AND (IFNULL(owner_instance_id, '') = ''"
+                    " OR IFNULL(owner_instance_id, '') = ?)"
+                )
+                owner_params.append(key)
+            else:
+                owner_clause = " AND IFNULL(owner_instance_id, '') = ''"
+        if owns:
+            cursor = conn.execute(
+                "UPDATE derived_tasks SET state = ?, run_after = NULL, "
+                "claim_generation = claim_generation + 1, owner_instance_id = ?, updated_at = ? "
+                "WHERE id = ? AND state = ? AND claim_generation = ?" + owner_clause,
+                (
+                    STATE_PENDING,
+                    owner,
+                    stamp,
+                    str(task_id),
+                    state,
+                    int(expected_generation),
+                    *owner_params,
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE derived_tasks SET state = ?, run_after = NULL, updated_at = ? "
+                "WHERE id = ? AND state = ?",
+                (STATE_PENDING, stamp, str(task_id), state),
+            )
+        changed = int(cursor.rowcount or 0) == 1
+        if changed:
+            _clear_ownership(conn, task_id)
+        conn.execute("COMMIT" if changed else "ROLLBACK")
+    except sqlite3.Error as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:  # pragma: no cover
+            pass
+        logger.warning("派生任务重排失败：%s", exc)
+        return False
+    if changed:
+        logger.info("派生任务由用户重排回队列：task=%s", task_id)
+    return changed
 
 
 def release_running(

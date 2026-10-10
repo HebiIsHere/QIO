@@ -23,9 +23,12 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.credentials.store import USABLE_VERIFY_STATES, CredentialStore
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环）
+    from agent.credentials.usage import RequestAccounting
 
 PRESET_TAGS = [
     "main-loop",
@@ -124,13 +127,39 @@ class Snapshot:
 
 
 class CredentialPolicy:
-    def __init__(self, store: CredentialStore) -> None:
+    def __init__(
+        self, store: CredentialStore, *, register_default_accounting: bool = True
+    ) -> None:
         self.store = store
         # 进程内默认凭据库：真实 adapter 在**每次实际请求**上自动归因（见
         # credentials/usage.py）。弱引用，不会把应用/测试的临时库钉住不放。
-        from agent.credentials.usage import set_default_accounting_store
+        #
+        # A06（适配器必须显式绑定所属账本）：这里登记的只是**兼容兜底**，不是
+        # 归属依据 —— 同一进程里每建一个 AppContext 都会把全局默认库指向自己
+        # 那份账本（后建覆盖先建）。真实归属由**建 adapter 的上下文**用
+        # ``bind_request_accounting(adapter, self.credentials)`` 显式钉死
+        # （接线点：services/app.py::_create_adapter），显式绑定永远优先，所以
+        # 「别的上下文后来登记默认库」不会改变已有归属，也不会让别的上下文替你
+        # 花额度。``register_default_accounting=False`` 供「同进程里的次要上下文」
+        # 使用：它照样按自己的账本做预算与归属，只是不去抢占进程级兜底登记。
+        if register_default_accounting:
+            from agent.credentials.usage import set_default_accounting_store
 
-        set_default_accounting_store(store)
+            set_default_accounting_store(store)
+
+    def bind_accounting(
+        self, adapter: Any, key_id: str | None = None
+    ) -> "RequestAccounting | None":
+        """把这条 adapter 的每次实际请求显式绑到**本策略的**账本上（A06）。
+
+        这是给「建 adapter 的地方」用的一行接线：绑定后
+        ``request_accounting(adapter)`` 必定返回本上下文的账本，不受全局默认库
+        被别的上下文覆盖影响；已经显式绑定过的 adapter 保持原归属（不会被改写）。
+        归因不了时返回 None。
+        """
+        from agent.credentials.usage import bind_request_accounting
+
+        return bind_request_accounting(adapter, self.store, key_id)
 
     def resolve(
         self, requestor: str, required_tags: list[str], limit: int | None = None

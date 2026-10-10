@@ -731,3 +731,163 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 - 规则：**新迁移取「所有并行分支已知最大号 + 1」**，不要取「当前 main 的下一个号」。
   存量库上的半截迁移仍然由 `migrate.py` 的窄口径自愈（只认 duplicate column / already exists）
   处理。回归见 `backend/tests/test_rm_lead_migration_discipline.py`。
+
+## 14. 历史数据、来源与关闭真实性契约（2026-10-10 定稿）
+
+这一节固定本轮新增 / 收紧的结构性边界。共同前提：**「升级前留下的数据」不能因为
+「不知道它当初是谁写的」就变成不可操作或被自动改写。**
+
+### 14.1 可恢复记录的唯一规则（A01 / A03）
+
+- 唯一入口：`backend/src/agent/services/recovery.py`（`RecoveryInbox`）。
+  HTTP 端口在 `backend/src/agent/api/recovery_routes.py`（`build_router(ctx)`），
+  由 `api/server.py` 在 `create_app()` 末尾挂一次。
+- **六种状态分开表达**，不允许合并成一个「有问题」的桶：
+
+  | state_class | 含义 | 可做动作 |
+  | --- | --- | --- |
+  | `ready` | 确认中断、还没被处理 | continue / ignore |
+  | `orphaned_claim` | 抢占过但没有后继 | repair（修复后变 ready）/ ignore；归属者 alive 或 unknown 时**两个都不给** |
+  | `legacy_unowned` | 升级前的开放行，**没有任何归属** | 只列出 + `confirm_stopped`（确认后才 continue / ignore） |
+  | `owner_unknown` | 有归属但存活判不出来 | 只列出（不提供动作） |
+  | `derived_stale` | running 派生任务，归属者确认已退出 | requeue |
+  | `derived_legacy` | running 派生任务，无归属 | 只列出 + `confirm_stopped`（确认后才 requeue） |
+  | `dispatch_failed` | 后继已落库、派发没做成（F03） | continue（原地重试**同一个 turn_id**）/ ignore |
+
+- **unknown 绝不批量改成死或中断**：判不出来就只列出、并写清「无法确认上次的写入者是否已停止」。
+- **没有归属 ≠ 已经证明执行者停止**（本轮收紧，见 §14.8）：升级前的旧版本不写任何实例 /
+  心跳 / 归属记录，所以「旧执行者还在跑」与「旧执行者已经退出」在库里留下的形状**一模一样**。
+  无归属的开放行因此只列出、默认不给任何会改变运行状态的动作；唯一的解锁入口是用户显式确认
+  「旧执行者已停止」（`confirm_stopped`，持久化在 `settings` 表里）。
+- **一致的所有权判定 + 条件写入**：repair / continue / ignore / requeue 共用同一套 owner 规则
+  （`alive` / `unknown` 一律拒绝），写入本身带 `IFNULL(owner_instance_id,'')` 条件 ——
+  归属列与权威归属不一致时命中 0 行，宁可不做也不抢一条可能正在被执行的记录。
+- **读失败不是空清单**：任一来源读不动就抛 `RecoveryReadError`（HTTP 503 + 写清哪个来源），
+  绝不返回「200 + total=0」。
+- **接管是条件更新 + 写锁**：`BEGIN IMMEDIATE` + `UPDATE ... WHERE owner_instance_id IS NULL`
+  （或归属者已确认退出），命中 0 行 → 409 且一行不改。接管之后沿用既有
+  `claim_for_resend`（老记录 + 新记录 + 关联同一事务），**不新写第二条派发路径**。
+  这样「旧、新写入者同时执行」被两件事挡住：写锁 + 精确状态条件；
+  并且新 turn 一落库就带本实例归属，重启后仍可追踪。
+- **忽略不等于删除**：`status='dismissed'` 终态；原文与历史保留。
+  这样「用户已忽略」与「孤儿抢占」不再同形（否则刚忽略的记录会被当成孤儿重列，还能被 repair 复活）。
+- **派生任务**：重排用条件更新 + `claim_generation + 1`，`attempts` / `last_error` 保留；
+  归属者 alive 或 unknown 一律拒绝（重排会让同一件事做两遍，代次只挡迟到写回）。
+  已超期的无归属任务由启动恢复自动放回 `pending` —— 那不是「卡住」，不需要用户操作。
+- **截断要如实**：`total` / `shown` / `truncated` 三个字段都在，界面显示「还有 N 条未显示」，
+  未显示的记录不能永久消失（可以继续取）。
+
+### 14.2 实体来源未知 = 受保护（A02）
+
+- 判定：某个字段 / 属性**已有非空值**、而 `entity_cards.field_meta` 里没有它的来源记录
+  → 来源 = `unknown`，**按用户值保护**：自动候选不得覆盖，冲突登记成候选（`user_value` /
+  `source_unknown`），由用户在界面上决定。
+- **不伪造来源**：历史值不会被写成 `source="user"`；需要标记时写 `source="unknown"`。
+  读取侧通过 `to_dict()['unknown_source_fields']` 如实暴露「这些字段的来源未知」。
+- 一致适用于 `aliases` / `summary` / `kind` / `attributes.<key>`；未提及的字段与属性一律保留；
+  空缺仍可补充；`user_deleted` 墓碑与已归档卡片不被自动流程绕过；
+  自动提交仍按 `expected_revision` 做 CAS。
+- 这是**读写兼容**方案（读时判定），不需要为它追加迁移或回填历史行。
+
+### 14.3 候选的用户管理（A04）
+
+- 唯一入口：`backend/src/agent/entities/pending.py`；
+  HTTP 在 `backend/src/agent/api/entity_pending_routes.py`，
+  **必须在 `GET /api/entities/{entity_id}` 之前注册**（starlette 取第一个匹配，
+  否则 `/api/entities/candidates` 会被当成 `entity_id="candidates"`）。
+- 采纳 = 用户的明确决定：写值 + `source="user"` + 新 `revision` + 移除该候选；
+  `expected_revision` 不符 → 409 且零改动；归档卡不可采纳（`blocked_reason="card_archived"`，
+  恢复实体是另一个动作）；不支持的候选类型不给可点击的按钮；重复点击幂等。
+- 丢弃 = 只解决这一个候选：不改实体内容值、不影响其他候选，幂等。
+- **`revision` 是卡级 CAS 令牌**（不是纯内容版本）：任何 `field_meta` 写入（含丢弃）
+  都会递增它，于是并发的「丢弃 / 采纳 / 自动提交」会以 409 暴露而不是静默覆盖。
+  回归断言按这个语义写：内容值一字不变 + 其它候选仍在 + 用丢弃前的 revision 采纳必须 409 且零改动。
+
+### 14.4 关闭结果与依赖释放（A05）
+
+- `BackgroundTasks.shutdown`：**两阶段有界**（等待 → 取消 → 取消确认窗口 → final grace），
+  `ShutdownReport` 带 `still_running` / `phases` / `detail`；
+  `register(..., unit_finished=...)` 用于声明**底层执行单元**探针 ——
+  「asyncio 句柄取消了」不等于「线程 / 子进程 / 执行器里的那件事结束了」。
+- `AppContext.aclose()` 返回 `CloseReport`；`services/lifecycle.py::close_decision` 是唯一口径：
+  不干净 → **不写干净退出、不释放适配器、不关数据库**（三者同时否）。
+- `api/server.py` 的 lifespan 只在报告干净（且 `close_db_on_shutdown`）时才 `close_conn`。
+  **不关库的依据**：不关库 = 让进程自然退出，SQLite WAL 崩溃安全，而「谁还没结束」
+  已经写在本实例的归属里，下次启动按归属恢复；反过来，在残留执行单元还可能写库时先关库，
+  才会真的丢 / 炸。
+- 「更新前停止后端」必须用真实结果：前端 / Tauri 侧看 `StopReport.verified`；
+  `scripts/e2e_down.py` 改为对本进程负责的端口做**有界轮询真实确认**，确认不了就说「未确认停止」。
+
+### 14.5 适配器与账本的归属（A06）
+
+- `AppContext._create_adapter`（新建 adapter 的**唯一**路径）在 `adapter.key_id` 之后调用
+  `bind_request_accounting(adapter, self.credentials)`。缓存复用的 adapter 因此天然保持原绑定。
+- `request_accounting()` 的优先级：**显式绑定 → 已钉住的兜底绑定 → 全局默认库（兼容兜底）**；
+  兜底结果钉在 adapter 上，保证「预算核对」与「用量写入」用同一个账本；
+  钉不住（例如 `__slots__` 替身）就不兜底 —— 宁少记，不记错。
+- 进程级默认账本只是**兼容**手段：`CredentialPolicy(store, register_default_accounting=False)`
+  可以不登记；`clear_default_accounting_store(store)` 只撤销「当前登记的正是它」那条。
+- 限定范围：这是**同一进程多个 `AppContext`** 的问题；独立进程之间不共享该变量。
+
+### 14.6 迁移的对象级校验（B01）
+
+- `storage/migrate.py` 除了版本号，还要**按对象**校验（表 / 列 / 索引）：
+  `REQUIRED_OBJECTS`、`missing_objects(conn)`、`verify_required_objects(conn)`；
+  `apply_migrations()` 结束前必须跑一次，缺失就补偿、仍缺就抛可读 `SchemaIncompleteError`。
+- 补偿迁移用**更高编号**（本轮是 30，> 当时的 29），纯幂等写法，**不改历史迁移的含义**。
+- 与 13.8 合起来读：**并行分支的迁移号必须取「已知最大 + 1」**，
+  否则要么被整段跳过（先合的对后合的）、要么撞号。未集成的分支，其对象本轮无法补偿，
+  该组合必须如实标为「未验证」。
+
+### 14.7 PID 存活探测的平台差异（B02）
+
+- 先分平台，再判特殊 PID：
+  - 通用：`pid <= 0` → unknown（无意义）。
+  - Windows：`pid <= 4` → unknown（0 / 4 是内核伪 pid，查询不可靠），其余走只读 `OpenProcess`；
+    权限不足 → 存在，参数错误 → 不存在，其它 → unknown。
+  - POSIX：**1 / 2 / 3 / 4 都是合法 PID，必须正常探测**；
+    `ProcessLookupError` → 不存在，`PermissionError` → 存在，其它 `OSError` → unknown。
+- 注意 Python 的 `OSError(errno, msg)` 会按 errno 映射出子类
+  （`OSError(13, …)` 就是 `PermissionError`），写测试时不要把它当成「其它 OSError」。
+
+### 14.8 恢复入口的收口（F01–F10，2026-10-10）
+
+这一节只写**本轮改动**的边界；14.1–14.7 的其余规则不变。
+
+- **F01 版本并存的执行互斥**：旧版本（升级前）**不写任何**进程 / 实例 / 心跳 / 归属记录，
+  因此新版本没有库内证据能证明「写下这条开放行的旧进程已经停了」。规则：
+  1. 无归属的 `queued` / `running`（turn）与 `running`（派生任务）**仍然可见**，
+     但 continue / ignore / repair / requeue 默认全部禁用，并给出原因；
+  2. 唯一解锁入口是用户显式确认「旧执行者已停止」
+     （`POST /api/recovery/records/{id}/confirm-stopped`），确认写在 `settings` 表
+     （`recovery.legacy_stop.<kind>.<id>`）里、跨重启有效 ——
+     **不新增表、不占迁移号**（迁移号是并行分支的命名空间，见 §13.8）；
+  3. `derived_tasks.recover_stale()` **不再**按超时自动回收无归属的 running 任务
+     （超时是时间猜测，不是「执行者已停止」的证据）；归属者存在的那条路径不变；
+  4. 用户确认之前不得为了「让按钮可点」而冒重复执行风险。
+- **F03 派发失败的可见性与可恢复性**：`claim_for_resend()` 成功、`submit()` 失败时，
+  后继被改写成 `dispatch_failed`（同一个 turn_id），在**当前运行**里就能看见并重试；
+  重试复用同一个 turn_id，不产生第二个后继。两个入口都覆盖：
+  `RecoveryInbox.take_over_and_continue` 与 `POST /api/turns/{id}/resend`。
+  提交之前失败（事务回滚）时，已经落库的那次**接管会被退回原状**
+  （`TurnJournal.release_takeover`），否则记录会带着「本实例归属」从清单里消失。
+- **F04 回退清单与专用清单同一口径**：`TurnJournal.orphaned_claims()` 过滤掉
+  「归属者确认活着」的记录（`/api/runtime/state.orphaned_turns` 因此不再复活专用清单
+  已经排除的项）；`repair_orphan` 与 continue / ignore 共用 owner 判定，并且条件写入带
+  `owner_key`（调用方按权威归属算出的实例 id，或空串表示无归属）。
+- **F05 读取失败必须可见**：`RecoveryInbox.list_records` 在任一来源读不动时抛
+  `RecoveryReadError` → `GET /api/recovery/records` 回 503；前端保留上一次可见的内容、
+  显示可重试原因，不把「拉不到」说成「没有未完成的事」。
+- **F02 用户清空的字段不得被复填**：`entities/cards.py` 的摘要 / 类型分支在**现值为空**时
+  也要先过 `_conflict_reason`：`source=user`（用户设定过 / 明确清空）与迟到结果只登记
+  待处理候选；**从未填写过**的空字段仍可补全；旧记录里已有非空值但来源缺失仍按用户值保护。
+  这条规则与 aliases / attributes 共用同一实现，不是给两个字段打的临时特判。
+- **F06–F09 前端一致性**：候选面板的每次读取用「请求代次 + 当前 entityId」校验写回；
+  收件箱读取用「请求代次 + 当前实例」校验，实例切换后旧响应整段丢弃；
+  `interruptedTurns` 从权威快照派生（收件箱已覆盖 / 已处理的 id 不再由旧入口重复提供），
+  忽略 / 继续成功后列表与 `total` 一起有依据地收敛；跨实体候选的渲染 key、逐行提示与
+  忙碌状态用 `(entity_id, candidate_id)` 复合身份（**不改**持久化里的历史候选 id）。
+- **F10 去掉环境假设**：`test_fu_verify_b02_pid.py` 不再断言「测试进程 PID > 4」——
+  POSIX 上 1/2/3/4 都是合法 PID，那条断言只是环境假设（核查环境 PID=2 时会失败）。
+  平台分支仍用受控替身覆盖，不探测真实进程。
+

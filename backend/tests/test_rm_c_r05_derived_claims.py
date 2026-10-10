@@ -205,14 +205,28 @@ def test_backoff_is_preserved_with_generations(conn, clock):
     assert again[0].claim_generation == 2
 
 
-def test_legacy_running_row_without_owner_falls_back_to_timeout(conn, clock):
-    """旧记录没有归属（未接线实例）：明确超期后按时限兜底放回，保留原行为。"""
-    dt.enqueue(conn, dt.KIND_SUMMARY, "frag_x", 1)
+def test_legacy_running_row_without_owner_is_not_reclaimed_by_timeout(conn, clock):
+    """F01：无归属 = 没有证据证明执行者已停止 —— 超时不再自动放回。
+
+    旧行为（超期按时限兜底自动放回）会让一个还在跑的旧 runner 和恢复后的执行
+    **同时**做同一件事。现在这类行只进恢复清单；只有用户显式确认旧执行者已停止后，
+    重排（`requeue_running(..., owner_key="")`，也就是收件箱走的同一条路）才允许。
+    """
+    task_id, _ = dt.enqueue(conn, dt.KIND_SUMMARY, "frag_x", 1)
     dt.claim_due(conn)  # 不传 instance_id：owner 为 NULL
     assert _task(conn).owner_instance_id is None
 
     clock.advance(dt._STALE_RUNNING_SECONDS + 1)
-    assert dt.recover_stale(conn) == 1
+    assert dt.recover_stale(conn) == 0, "无归属的 running 任务不再被时限兜底接管"
+    assert _task(conn).state == dt.STATE_RUNNING
+
+    assert dt.requeue_running(
+        conn,
+        task_id,
+        expected_state=dt.STATE_RUNNING,
+        expected_generation=1,
+        owner_key="",
+    ) is True
     assert _task(conn).state == dt.STATE_PENDING
 
 

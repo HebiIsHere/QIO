@@ -33,6 +33,15 @@
 * **重发关联**：`claim_for_resend()` 单事务；`orphaned_claims()` / `repair_orphan()`
   处理「抢占了但后继没写成」的遗留，孤立即记录不得永久隐藏。
 
+补充修复轮（A01 / A03；收件箱实现见 `services/recovery.py`）：
+
+* **接管**：`take_over()` 用条件 UPDATE 把一条**无归属**（或归属者已确认退出）的
+  `queued` / `running` 历史行精确接管成 `interrupted`，命中 0 行（状态已变 /
+  有归属且不是确认退出）时一行都不改 —— 这是「升级前的历史消息」唯一的可操作入口；
+* **忽略是终态**：`dismiss()` 现在写成 `status = 'dismissed'`，与「抢占过但没有后继」
+  的孤儿从库里就分得开，既不会被收件箱当成孤儿重列，也不能被 `repair_orphan()`
+  复活成可重发。
+
 为什么队列里的消息会消失（缺陷）：排队中的 turn 只活在进程内存的
 `asyncio.Queue` 里，用户消息甚至还没写进 `messages` 表 —— 进程一退，
 它就没有任何痕迹。台账是这条消息唯一的落点。
@@ -61,6 +70,12 @@ CANCELLED = "cancelled"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"
 INTERRUPTED = "interrupted"
+# 用户明确「知道了」（忽略）之后的终态：原文保留、不再提示、不可重发、不可修复。
+# 为什么需要它是独立状态（A01/A03）：以前 dismiss 只写 recovered_at，于是
+# 「用户已忽略」和「抢占成功但没收尾的孤儿」在库里长得**一模一样**
+# （recovered_at 非空 + recovered_by 空），收件箱会把用户刚忽略的记录当成孤儿
+# 再列出来，repair_orphan 甚至能把它复活成可重发。
+DISMISSED = "dismissed"
 
 TERMINAL_STATUSES = (COMPLETED, CANCELLED, FAILED, UNAVAILABLE)
 # 进程结束时会「没走到终态」的状态：重启后一律变成 interrupted
@@ -93,11 +108,44 @@ REASON_TEXT = {
     "queued_at_restart": "这条消息当时还在排队，进程退出后没有开始执行",
     "running_at_restart": "这条消息执行到一半，进程退出后没有完成",
     "shutdown": "应用关闭时这条消息还没有执行",
+    "user_confirmed_takeover": "你确认接管了这条当时没有归属的消息",
 }
+
+# 用户明确接管一条历史记录时写进 reason 的标记（契约 §2.1 冻结字面量）。
+TAKEOVER_REASON = "user_confirmed_takeover"
+
+# F03：后继已经落库、但派发没有做成时写进 reason 的前缀。
+# 带这个前缀的 `interrupted` 行是「明确、可原地重试」的状态：
+# 它没有在跑（submit 失败 = 没有进内存队列），所以重试的是**同一个 turn_id**，
+# 不会产生第二个后继，也不会静默宣称已执行。
+DISPATCH_FAILED_REASON_PREFIX = "dispatch_failed"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _owner_guard(owner_key: str | None) -> tuple[str, list[object]]:
+    """归属条件子句（F01/F04）：库里的归属列必须与**权威归属判定**一致。
+
+    权威判定（`record_owners` 优先，退回行上的列）与行上的列可能不一致：
+
+    * 权威归属者已确认退出（X）、列是 NULL —— 归属表是权威、列只是镜像，接管安全；
+    * 列上有**别的**实例 id —— 形状不一致，保守拒绝（命中 0 行），绝不抢走一条
+      可能正在被别的实例执行的记录；
+    * 无归属（旧记录 / 用户已确认旧执行者停止）—— 只接受列为 NULL 的行。
+
+    `owner_key=None` 表示调用方不做归属判定（旧路径 / 无归属表），保持原行为。
+    """
+    if owner_key is None:
+        return "", []
+    key = str(owner_key or "")
+    if not key:
+        return " AND IFNULL(owner_instance_id, '') = ''", []
+    return (
+        " AND (IFNULL(owner_instance_id, '') = '' OR IFNULL(owner_instance_id, '') = ?)",
+        [key],
+    )
 
 
 class JournalWriteError(RuntimeError):
@@ -439,6 +487,56 @@ class TurnJournal:
                 logger.warning("turn journal owner claim for resend failed", exc_info=True)
         return True
 
+    # -- F03：派发失败的明确状态（同一个后继原地重试） ----------------------
+
+    def mark_dispatch_failed(self, turn_id: str, reason: str) -> bool:
+        """把一条**刚落库、还没派发成功**的后继标成显式的可重试失败状态。
+
+        条件 UPDATE：只动 `queued` 行（已经跑起来的行不能被这次失败标记覆盖）。
+        原文、`recovered_by` 父子关联全部保留 —— 它仍然只有一个后继。
+        """
+        marker = f"{DISPATCH_FAILED_REASON_PREFIX}: {reason}".strip()
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, updated_at = ? "
+                "WHERE turn_id = ? AND status = ?",
+                (INTERRUPTED, marker[:500], _now(), str(turn_id), QUEUED),
+            )
+        except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不撤销已经落库的后继
+            logger.warning("turn journal mark_dispatch_failed failed: %s", exc)
+            return False
+        return int(cur.rowcount or 0) == 1
+
+    def requeue_dispatch_failed(self, turn_id: str) -> bool:
+        """把派发失败的后继原地放回 `queued`（同一个 turn_id，不新建行）。
+
+        只认「`interrupted` + reason 带派发失败前缀」这一精确状态：命中 0 行
+        （已经被重试过 / 状态已变）就返回 False，一行不改。
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = NULL, updated_at = ? "
+                "WHERE turn_id = ? AND status = ? AND reason LIKE ?",
+                (
+                    QUEUED,
+                    _now(),
+                    str(turn_id),
+                    INTERRUPTED,
+                    f"{DISPATCH_FAILED_REASON_PREFIX}:%",
+                ),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover
+                pass
+            logger.warning("turn journal requeue_dispatch_failed failed: %s", exc)
+            return False
+        return changed
+
     def orphaned_claims(self, limit: int = 50) -> list[dict[str, Any]]:
         """孤儿重发：`recovered_at` 非空、但 `recovered_by` 为空的遗留记录。
 
@@ -453,26 +551,60 @@ class TurnJournal:
             "ORDER BY recovered_at ASC LIMIT ?",
             (*_USER_INTERRUPTED_PARAMS, max(1, int(limit))),
         )
-        return [self._view(dict(r)) for r in rows]
+        views = [self._view(dict(r)) for r in rows]
+        # F04：这个出口是**回退**清单（前端在没有专用清单时会合并它）。专用清单
+        # （RecoveryInbox.list_records）不列出「归属者还活着」的记录；这里必须用
+        # 同一套 owner 判定过滤，否则被排除的项会从回退数据里重新冒出来。
+        # 判不出来（unknown）仍保留：它不是「活」，专用清单会照样给出原因与禁用动作。
+        return [row for row in views if not self._owner_is_alive(row)]
 
-    def repair_orphan(self, record_id: str, instance_id: str | None = None) -> bool:
+    def _owner_is_alive(self, row: dict[str, Any]) -> bool:
+        """这条记录的归属者是不是**确认活着**（只在有归属表时判定）。"""
+        if self.registry is None:
+            return False
+        owner = self._row_owner(row, self.registry)
+        if not owner:
+            return False
+        try:
+            return self.registry.owner_alive(owner) is True
+        except Exception:  # noqa: BLE001 - 判不出来就不从回退清单里排除
+            return False
+
+    def repair_orphan(
+        self,
+        record_id: str,
+        instance_id: str | None = None,
+        *,
+        owner_key: str | None = None,
+    ) -> bool:
         """让一条孤儿记录**重新可重发**（清掉那次失败的抢占），返回是否改到了行。
 
         只作用于「孤儿」这一种精确状态：`interrupted` + 用户行 + `recovered_at`
         非空 + `recovered_by` 空。已经真正重发过的行（`recovered_by` 非空）不动 ——
-        否则就会出现「一条消息被重发两次」。修复本身记下归属，便于后续审计。
+        否则就会出现「一条消息被重发两次」。
+
+        修复后的记录**不归任何实例**：归属表里那一行会被清掉（修复前的归属是
+        「抢占的人」，它已经失败了）。这一点很关键：如果修复后把归属记到当前实例
+        名下，这条记录就会因为「主人还活着」而重新从恢复入口消失 —— 刚修好的东西
+        又看不见了。`instance_id` 只用于日志审计（保留参数以兼容既有调用方）。
         """
+        # F04：修复也必须是条件写入。`owner_key` 是调用方按权威归属判定算出来的：
+        # 无归属时是空串，归属者已确认退出时是它的实例 id。库里的归属列与它不一致
+        # （例如记录在归属表里但列是 NULL）时命中 0 行 —— 宁可不修，也不清掉一个
+        # 可能还在跑的写入者的抢占记录。
+        owner_clause, owner_params = _owner_guard(owner_key)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             cur = self.conn.execute(
                 "UPDATE turn_journal SET recovered_at = NULL, updated_at = ? "
                 f"WHERE turn_id = ? AND {_USER_INTERRUPTED_CLAUSE} "
-                "AND recovered_at IS NOT NULL AND (recovered_by IS NULL OR recovered_by = '')",
-                (_now(), str(record_id), *_USER_INTERRUPTED_PARAMS),
+                "AND recovered_at IS NOT NULL AND (recovered_by IS NULL OR recovered_by = '')"
+                + owner_clause,
+                (_now(), str(record_id), *_USER_INTERRUPTED_PARAMS, *owner_params),
             )
             changed = int(cur.rowcount or 0) == 1
-            if changed and instance_id and self.registry is not None:
-                self.registry.claim(RECORD_TURN, str(record_id), instance_id)
+            if changed:
+                self._release_owner(str(record_id))
             self.conn.execute("COMMIT" if changed else "ROLLBACK")
         except sqlite3.Error as exc:
             try:
@@ -481,7 +613,157 @@ class TurnJournal:
                 pass
             logger.warning("turn journal repair_orphan failed: %s", exc)
             return False
+        if changed:
+            logger.info(
+                "turn journal orphan repaired: record=%s by=%s", record_id, instance_id
+            )
         return changed
+
+    def _release_owner(self, record_id: str) -> None:
+        """清掉一条记录在归属表里的登记（它不再属于任何实例）。"""
+        if self.registry is not None:
+            try:
+                self.registry.release(RECORD_TURN, record_id)
+                return
+            except Exception:  # noqa: BLE001 - 归属清理失败不撤销已经落库的修复
+                logger.warning("turn journal owner release failed", exc_info=True)
+        try:
+            self.conn.execute(
+                "DELETE FROM record_owners WHERE record_type = ? AND record_id = ?",
+                (RECORD_TURN, record_id),
+            )
+        except sqlite3.Error:
+            logger.warning("turn journal owner release mirror failed", exc_info=True)
+
+    def take_over(self, record_id: str, *, expected_status: str, instance_id: str | None = None,
+                  dead_owner: str | None = None) -> bool:
+        """把一条**开放状态**（queued / running）的历史记录接管成本实例的 interrupted。
+
+        A01 的关键动作：升级前的历史行没有任何归属，`interrupt_stale()` 对它们
+        一律「保守保留」（`_interrupt_owned` 里 owner 为空的行走 unknown 分支），
+        于是它们既不在 `unfinished()` 里（那要求 `interrupted`），也无法重发 ——
+        消息在库里有原文，但用户在界面上永远点不到。用户明确点「继续」时，
+        才由这里把这一条精确地接管过来。
+
+        条件（契约 §2.1 冻结）：
+
+        1. `status = expected_status`：客户端看到的状态必须还是当前状态
+           （并发 / 状态已变化 → 命中 0 行，返回 False，**一行都不改**）；
+        2. `recovered_at IS NULL`：已经进入过重发流程的行不走这条路；
+        3. 归属条件：`owner_instance_id IS NULL`（无归属）**或**
+           `owner_instance_id = dead_owner`（有归属、但归属者已确认退出）。
+           有归属且不是「已完成退出」的一律拒绝 —— 活实例 / 判不出来的记录
+           绝不能被抢（unknown 不改状态）。
+
+        `dead_owner` 只由调用方在 `registry.owner_alive(owner) is False` 时传入：
+        归属者已经确认退出时，它留下的 running/queued 行才是可安全接管的。
+        """
+        owner = instance_id if instance_id is not None else self._owner_id()
+        moment = _now()
+        # F01/F04：归属条件写成**一个精确比较**（`IFNULL(owner_instance_id,'') = ?`）：
+        #   * 无归属（旧记录、或用户已确认旧执行者停止）→ 传入空串；
+        #   * 归属者已确认退出 → 传入它的实例 id。
+        # 只有当库里的归属列与调用方按权威判定算出来的归属**一致**时才命中 ——
+        # 归属表里有主人、列却是 NULL 这种不一致的形状会被保守拒绝（命中 0 行），
+        # 绝不会把一条可能正在被执行的记录抢走。
+        # 注意这里传的是 `dead_owner or ""`：`dead_owner=None` 的含义是
+        # 「只接受无归属的行」，不是「不做归属判定」。
+        owner_clause, owner_params = _owner_guard(dead_owner or "")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
+                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL"
+                + owner_clause,
+                (INTERRUPTED, TAKEOVER_REASON, owner, moment, str(record_id),
+                 str(expected_status), *owner_params),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover - 回滚本身失败时保留原异常
+                pass
+            logger.warning("turn journal take_over failed: %s", exc)
+            return False
+        if changed and owner:
+            self._claim_owner(str(record_id), str(owner))
+        return changed
+
+    def release_takeover(
+        self,
+        record_id: str,
+        *,
+        status: str,
+        reason: str | None,
+        owner_instance_id: str | None,
+        instance_id: str | None = None,
+    ) -> bool:
+        """接管成功、但后续步骤整体失败时，把这次接管**退回原状**（F03）。
+
+        错误可能发生在提交之前（重发事务整体回滚）：那时老记录已经被本实例接管成
+        `interrupted` 并带上了本实例归属 —— 如果不退回去，这条记录既不在恢复清单里
+        （归属者还活着），又会被「上次的写入者还在运行」挡住，用户在**当前运行**里
+        再也重试不了（只能等进程退出）。
+
+        只回退**本实例刚刚接管的那一条**：条件里带 `status = interrupted`、
+        `recovered_at IS NULL`、`owner_instance_id = 本实例` —— 任何并发的其它写入
+        都不会被这次回退覆盖。归属表也恢复成接管之前的样子。
+        """
+        me = instance_id if instance_id is not None else self._owner_id()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
+                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
+                "AND IFNULL(owner_instance_id, '') = ?",
+                (
+                    str(status),
+                    reason,
+                    owner_instance_id,
+                    _now(),
+                    str(record_id),
+                    INTERRUPTED,
+                    str(me or ""),
+                ),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover
+                pass
+            logger.warning("turn journal release_takeover failed: %s", exc)
+            return False
+        if changed:
+            if owner_instance_id:
+                self._claim_owner(str(record_id), str(owner_instance_id))
+            else:
+                self._release_owner(str(record_id))
+        return changed
+
+    def _claim_owner(self, record_id: str, instance_id: str) -> None:
+        """把归属写进 `record_owners`（契约 §2.1：接管后归属必须可追踪）。
+
+        有 registry 走它（生产路径）；没有时直接写同一张表、同一个主键 ——
+        归属登记失败不撤销已经落库的接管，只记一条 warning。
+        """
+        if self.registry is not None:
+            try:
+                self.registry.claim(RECORD_TURN, record_id, instance_id)
+                return
+            except Exception:  # noqa: BLE001 - 归属登记失败不撤销已经落库的接管
+                logger.warning("turn journal ownership claim failed", exc_info=True)
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO record_owners "
+                "(record_type, record_id, instance_id) VALUES (?, ?, ?)",
+                (RECORD_TURN, record_id, instance_id),
+            )
+        except sqlite3.Error:
+            logger.warning("turn journal ownership mirror failed", exc_info=True)
 
     def release_claim(self, turn_id: str) -> None:
         """提交失败时把抢占退回去（否则用户就再也重发不了这条消息了）。
@@ -513,14 +795,27 @@ class TurnJournal:
         return int(cur.rowcount or 0) == 1
 
     def dismiss(self, turn_id: str) -> bool:
-        """用户选择「知道了」：不再提示，但仍然保留记录（不删用户消息）。"""
-        if self.recoverable(turn_id) is None:
+        """用户选择「知道了」：不再提示，但仍然保留记录（不删用户消息）。
+
+        一次带条件的 UPDATE（与 `recoverable()` 同一个权威谓词），写成
+        `status = 'dismissed'` 的终态：
+
+        * 它不再是 `interrupted`，所以既不会被 `orphaned_claims()` 当成孤儿，
+          也不能被 `repair_orphan()` 复活成「可重发」（否则用户说过的
+          「知道了」会被一个修复动作推翻，那条消息会被再执行一次）；
+        * 原文、topic、recovered_at 全部保留（不删用户数据）；
+        * 重复点击返回 False（第二次不再是可恢复状态）→ HTTP 409。
+        """
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, recovered_at = ?, updated_at = ? "
+                f"WHERE turn_id = ? AND {_RECOVERABLE_CLAUSE}",
+                (DISMISSED, _now(), _now(), str(turn_id), *_RECOVERABLE_PARAMS),
+            )
+        except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不得影响接口可用性
+            logger.warning("turn journal dismiss failed: %s", exc)
             return False
-        self._execute(
-            "UPDATE turn_journal SET recovered_at = ?, updated_at = ? WHERE turn_id = ?",
-            (_now(), _now(), str(turn_id)),
-        )
-        return True
+        return int(cur.rowcount or 0) == 1
 
     # -- 清理 -------------------------------------------------------------
 
