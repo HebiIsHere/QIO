@@ -156,6 +156,21 @@ def add_derived(
     return task_id
 
 
+def confirm_legacy_stopped(
+    conn: sqlite3.Connection, kind: str, record_id: str, instance_id: str = "me"
+) -> str:
+    """F01：受控用例里显式记下「旧执行者已停止」的确认（等价于用户点那一次确认）。
+
+    无归属记录的 continue / ignore / repair / requeue 都要求先有这个确认 ——
+    旧版本不写任何生命周期记录，库里没有证据说明它的执行者停了。
+    """
+    from agent.services.recovery import LegacyStopConfirmations
+
+    return LegacyStopConfirmations(conn).confirm(
+        kind, record_id, instance_id=instance_id, note="受控用例"
+    )
+
+
 def register_self(conn: sqlite3.Connection, instance_id: str = "me") -> InstanceRegistry:
     """把「本实例」登记成活着（生产路径里 AppContext 会 start() 它）。"""
     registry = InstanceRegistry(conn, instance_id, pid=4242, host=HOST)

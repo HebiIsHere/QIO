@@ -8,6 +8,7 @@ import {
   type ToolRecordPreview,
 } from "../services/api";
 import {
+  confirmStopped as confirmStoppedCall,
   continueRecovery as continueRecoveryCall,
   fetchRecoveryRecords,
   ignoreRecovery as ignoreRecoveryCall,
@@ -357,6 +358,7 @@ export function recoveryActionLabel(actionId: string, label?: string): string {
   if (actionId === "repair") return "修好这条记录";
   if (actionId === "ignore") return "忽略";
   if (actionId === "requeue") return "重新排队";
+  if (actionId === "confirm_stopped") return "确认旧执行者已停止";
   return "处理";
 }
 
@@ -568,6 +570,14 @@ export const useSessionStore = defineStore("session", {
      */
     interruptedTurns: [] as InterruptedTurn[],
     /**
+     * 权威快照给的那份「未执行消息」**原始集合**（未过滤）。
+     *
+     * `interruptedTurns` 现在是从它派生出来的：收件箱（recoveryRecords）已经覆盖的记录
+     * 不再由旧入口重复提供操作；本地已确认处理的、以及被收件箱覆盖的都在派生时过滤掉。
+     * 快照失败时保留旧值 —— 「拉不到」不能说成「没有」。
+     */
+    _rawInterruptedTurns: [] as InterruptedTurn[],
+    /**
      * 正在提交中的那条（turn_id）；「全部忽略」用 `ALL`。
      *
      * 放在 store 而不是组件里：同一条记录的「继续」只能有一个请求在飞，
@@ -684,8 +694,18 @@ export const useSessionStore = defineStore("session", {
      * 剩下的记录不能因为没被返回就看起来不存在。
      */
     recoveryTotal: 0,
-    /** 正在拉收件箱（单飞；同一时间只有一个请求） */
+    /** 正在拉收件箱（单飞；**同一实例**同一时间只有一个请求） */
     recoveryLoading: false,
+    /**
+     * 收件箱读取的请求代次 + 这次在飞请求所属的后端实例。
+     *
+     * 复用 `_devTasksSeq` 的既有模式：提交结果前同时校验「仍是最新一次请求」与
+     * 「发起时的实例没被换掉」。后端换实例时旧实例的响应必须整段丢弃 ——
+     * 它会把旧实例的记录写进新实例的清单；而新实例的读取也不能被旧请求的单飞锁
+     * 挡住、更不能被旧请求的 finally 提前解锁。
+     */
+    _recoverySeq: 0,
+    _recoveryLoadingInstance: null as string | null,
     /**
      * 收件箱的最近一次结果说明。
      *
@@ -1024,6 +1044,11 @@ export const useSessionStore = defineStore("session", {
       if (this.instanceId === instanceId) return false;
       this.instanceId = instanceId;
       this.queueRevision = 0;
+      // 实例切换：在飞的收件箱请求属于旧实例，整个作废（代次 +1）。
+      // 旧请求的 finally 因此不会再解锁 loading；新实例的读取可以立刻发起。
+      this._recoverySeq += 1;
+      this._recoveryLoadingInstance = null;
+      this.recoveryLoading = false;
       return true;
     },
     /**
@@ -1235,9 +1260,8 @@ export const useSessionStore = defineStore("session", {
       this.interruptedNotice = "";
       try {
         const res = await api.resendInterruptedTurn(turnId);
-        this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
-        // 本地确认它已经结束：稍旧的恢复快照不许把它复活
-        this.noteInterruptedTurnResolved(turnId);
+        // 两个入口共用同一份「已处理」真相：收件箱里同一条也不再残留/复活
+        this._syncRecoveryHandled(turnId);
         // 不把内部 turn_id 抛给用户：他要的是"这条重新发出去了"，不是一串标识
         void res;
         this.interruptedNotice = "已经按原话题重新排队，这一轮马上开始";
@@ -1268,8 +1292,8 @@ export const useSessionStore = defineStore("session", {
       this.interruptedNotice = "";
       try {
         await api.dismissInterruptedTurn(turnId);
-        this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== turnId);
-        this.noteInterruptedTurnResolved(turnId);
+        // 两个入口共用同一份「已处理」真相：收件箱里同一条也不再残留/复活
+        this._syncRecoveryHandled(turnId);
         this.interruptedNotice = "已忽略这一条（原文仍然保留在记录里）";
         return { ok: true, message: this.interruptedNotice };
       } catch (e) {
@@ -1301,8 +1325,7 @@ export const useSessionStore = defineStore("session", {
       for (const id of ids) {
         try {
           await api.dismissInterruptedTurn(id);
-          this.interruptedTurns = this.interruptedTurns.filter((t) => t.turn_id !== id);
-          this.noteInterruptedTurnResolved(id);
+          this._syncRecoveryHandled(id);
         } catch (e) {
           if ((e as { status?: number }).status === 409) already += 1;
           else failed += 1;
@@ -1372,6 +1395,43 @@ export const useSessionStore = defineStore("session", {
       // 服务端说「还有没返回的」时，总数不能被本地合并改小 —— 截断提示必须真实
       this.recoveryTotal = Math.max(this.recoveryTotal, merged.length);
       this.recoveryRecords = merged;
+      // 收件箱清单变了：旧入口（InterruptedTurnEntry）渲染的那份派生清单也要跟着收敛
+      this._syncInterruptedTurns();
+    },
+    /**
+     * 从 `_rawInterruptedTurns` 派生出旧入口渲染的 `interruptedTurns`。
+     *
+     * 两个入口（旧的 InterruptedTurnEntry 与新的 RecoveryInbox）覆盖的是**同一批**事项，
+     * 同一条记录绝不能同时出现在两边（那会让用户对同一条重复操作，且状态各说各话）。
+     * 收件箱已经覆盖的 id 由新入口独家提供操作；收件箱拉不到时旧入口仍然兜底显示
+     * （覆盖不会因此丢失）。已确认处理的 id 两边都过滤：稍旧的快照不许复活它们。
+     */
+    _syncInterruptedTurns() {
+      const resolved = new Set(this._resolvedInterruptedTurnIds);
+      const covered = new Set(this.recoveryRecords.map((r) => r.record_id));
+      this.interruptedTurns = this._rawInterruptedTurns.filter(
+        (t) => !resolved.has(t.turn_id) && !covered.has(t.turn_id),
+      );
+    },
+    /**
+     * 一条记录已经被处理掉（继续 / 忽略）：两个入口共用这一份「已处理」真相。
+     *
+     * * 从收件箱清单移除，并记入两个「已处理」集合（新旧快照都不许复活）；
+     * * 总数**有依据地**减一：这条本来就属于服务端匹配集合（列表里拿到的，或
+     *   合并进总数的那份孤儿）—— 不重读清单（既有契约要求就地更新），
+     *   也不把未知数量猜成 0；
+     * * 重新派生旧入口的清单，让另一处入口不再残留。
+     */
+    _syncRecoveryHandled(recordId: string) {
+      if (!recordId) return;
+      const had = this.recoveryRecords.some((r) => r.record_id === recordId);
+      this.recoveryRecords = this.recoveryRecords.filter((r) => r.record_id !== recordId);
+      this.noteRecoveryResolved(recordId);
+      this.noteInterruptedTurnResolved(recordId);
+      if (had) {
+        this.recoveryTotal = Math.max(this.recoveryRecords.length, this.recoveryTotal - 1);
+      }
+      this._syncInterruptedTurns();
     },
     /** 本地确认一条可恢复记录已经处理掉：旧快照不许把它复活。 */
     noteRecoveryResolved(recordId: string) {
@@ -1387,26 +1447,44 @@ export const useSessionStore = defineStore("session", {
      * 并写下可重试说明 —— 绝不把「拉不到」擦成「没有未完成的事」。
      */
     async loadRecoveryInbox(): Promise<void> {
-      if (this.recoveryLoading) return;
+      const instanceAtStart = this.instanceId;
+      // 单飞只约束**同一实例**：已经在飞的请求若是旧实例的，新实例必须能继续读，
+      // 不能被旧请求的锁挡在门外。
+      if (this.recoveryLoading && this._recoveryLoadingInstance === instanceAtStart) return;
+      const seq = ++this._recoverySeq;
+      this._recoveryLoadingInstance = instanceAtStart;
       this.recoveryLoading = true;
       this.recoveryError = "";
       try {
         const listing = await fetchRecoveryRecords();
+        // 迟到响应（实例已切换 / 已有更新的请求）：整段丢弃，一个字段都不许写
+        if (!this._recoveryResultBelongs(seq, instanceAtStart)) return;
         this.recoveryRecords = listing.records ?? [];
         this.recoveryTotal =
           typeof listing.total === "number" && Number.isFinite(listing.total)
             ? listing.total
             : this.recoveryRecords.length;
       } catch (e) {
+        // 失败也必须属于当前实例：旧实例的错误不能写到新实例的清单上
+        if (!this._recoveryResultBelongs(seq, instanceAtStart)) return;
         // 拉不到 ≠ 没有：保留既有清单（含快照里的孤儿），说明这一份可能不完整
         this.recoveryError =
           `没能读取「未完成事项」清单：${(e as Error).message}` +
           "（已显示的记录仍然可以处理，可以重试）";
       } finally {
-        // 合并放在 finally：无论成功失败，快照里的孤儿都必须在这一份清单里看得见
-        this.mergeRecoveryInbox();
-        this.recoveryLoading = false;
+        // 只有仍属于当前实例、且自己还是最新一次请求的那次加载才允许合并与解锁 ——
+        // 旧请求不得把新请求的 loading 提前关掉。
+        if (this._recoveryResultBelongs(seq, instanceAtStart)) {
+          // 合并放在 finally：无论成功失败，快照里的孤儿都必须在这一份清单里看得见
+          this.mergeRecoveryInbox();
+          this._recoveryLoadingInstance = null;
+          this.recoveryLoading = false;
+        }
       }
+    },
+    /** 这次收件箱读取是否仍属于「当前实例 + 最新一次请求」。 */
+    _recoveryResultBelongs(seq: number, instanceAtStart: string | null): boolean {
+      return seq === this._recoverySeq && this.instanceId === instanceAtStart;
     },
     /** 找到一条记录；找不到时给出可读原因（不抛半截状态）。 */
     _recoveryRecord(recordId: string): RecoveryRecordView | null {
@@ -1464,8 +1542,8 @@ export const useSessionStore = defineStore("session", {
         if (!res?.ok) {
           throw new Error("后端没有确认这条记录可以继续");
         }
-        this.recoveryRecords = this.recoveryRecords.filter((r) => r.record_id !== recordId);
-        this.noteRecoveryResolved(recordId);
+        // 两个入口共用同一份「已处理」真相（列表 / total / 旧入口一起收敛）
+        this._syncRecoveryHandled(recordId);
         this.recoveryError = "已经按原话题重新排队，这一轮马上开始";
         return { ok: true, message: this.recoveryError };
       } catch (e) {
@@ -1513,6 +1591,38 @@ export const useSessionStore = defineStore("session", {
       }
     },
     /**
+     * F01：「确认写下这条无归属记录的旧执行者已经停止」。
+     *
+     * 旧版本不写实例 / 心跳 / 归属 —— 库里没有证据说明它停了，所以 continue /
+     * ignore / repair / requeue 默认全被挡住。这是**唯一**的解锁入口：由用户显式
+     * 承担「旧进程已经退出」这个判断，服务端把它持久化下来。
+     *
+     * 确认本身不执行任何东西，也不改消息原文；确认之后重读清单，让按钮的真实可用性
+     * 仍由服务端判定（前端不自己猜哪一条变成可点了）。
+     */
+    async confirmStopped(recordId: string): Promise<RecoveryOutcome> {
+      const gate = this._beginRecoveryAction(recordId);
+      if (gate) return gate;
+      const record = this._recoveryRecord(recordId);
+      try {
+        const res = await confirmStoppedCall(recordId, String(record?.state_class ?? ""));
+        if (!res || res.ok !== true || res.confirmed !== true) {
+          throw new Error("后端没有确认这条记录");
+        }
+        this.recoveryRecords = this.recoveryRecords.map((r) =>
+          r.record_id === recordId ? { ...r, confirmed_stopped: true } : r,
+        );
+        // 真实可用性由服务端重新判定（动作列表是服务端给的，前端不重算）
+        await this.loadRecoveryInbox();
+        this.recoveryError = "已确认旧执行者已停止：现在可以继续或忽略了";
+        return { ok: true, message: this.recoveryError };
+      } catch (e) {
+        return this._failRecovery(recordId, "确认旧执行者已停止", e);
+      } finally {
+        this.recoveryBusyId = "";
+      }
+    },
+    /**
      * 「忽略这一条」：不再提示，但原文与记录都由后端保留（前端不删数据）。
      * 只有真正成功才从入口移除；409 时向后端要真相。
      */
@@ -1522,8 +1632,8 @@ export const useSessionStore = defineStore("session", {
       const record = this._recoveryRecord(recordId);
       try {
         await ignoreRecoveryCall(recordId, String(record?.state_class ?? ""));
-        this.recoveryRecords = this.recoveryRecords.filter((r) => r.record_id !== recordId);
-        this.noteRecoveryResolved(recordId);
+        // 两个入口共用同一份「已处理」真相（列表 / total / 旧入口一起收敛）
+        this._syncRecoveryHandled(recordId);
         this.recoveryError = "已忽略这一条（原文仍然保留在记录里）";
         return { ok: true, message: this.recoveryError };
       } catch (e) {
@@ -1598,14 +1708,15 @@ export const useSessionStore = defineStore("session", {
         what: item.what,
         createdAt: item.created_at,
       }));
-      const resolved = new Set(this._resolvedInterruptedTurnIds);
-      this.interruptedTurns = (turns ?? []).filter((t) => !resolved.has(t.turn_id));
+      this._rawInterruptedTurns = (turns ?? []).map((t) => ({ ...t }));
       /**
        * 孤儿记录（抢占过、没有后继）走**同一份收件箱**：它们不在
        * `interrupted_turns` 里，所以必须有这个出口，否则那条消息永久消失。
        * 收进来时按「本地已处理 id」过滤 —— 旧快照不许复活已处理记录。
+       * 这一步会顺带把旧入口的派生清单收敛（收件箱覆盖的记录不重复出现在两边）。
        */
       this.adoptOrphanedTurns(orphanedTurns);
+      this._syncInterruptedTurns();
     },
     /** 本地确认一条「未执行消息」已经结束（继续 / 忽略成功）：不允许快照把它复活。 */
     noteInterruptedTurnResolved(turnId: string) {

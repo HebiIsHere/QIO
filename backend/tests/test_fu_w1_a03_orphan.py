@@ -36,6 +36,7 @@ from test_fu_w1_support import (
     FakeTurns,
     add_instance,
     add_turn,
+    confirm_legacy_stopped,
     migrated_conn,
     register_self,
     table_snapshot,
@@ -104,6 +105,8 @@ def test_orphan_repair_then_continue(tmp_path):
     journal = TurnJournal(conn, instance_id="me", registry=registry)
     inbox = RecoveryInbox(conn, registry, turns=turns, instance_id="me", journal=journal)
 
+    # F01：无归属的孤儿同样要用户先确认「旧执行者已停止」（修复会把它变回可继续）。
+    confirm_legacy_stopped(conn, "user_turn", "turn_orphan")
     repaired = inbox.repair_orphan("turn_orphan", expected_class=STATE_ORPHAN)
     assert repaired == {"ok": True, "repaired": True, "record_id": "turn_orphan"}
     row = _row(conn, "turn_orphan")
@@ -183,6 +186,7 @@ def test_ignore_orphan_is_terminal_and_no_longer_an_orphan(tmp_path):
     journal = TurnJournal(conn, instance_id="me", registry=registry)
     inbox = RecoveryInbox(conn, registry, turns=FakeTurns(), instance_id="me", journal=journal)
 
+    confirm_legacy_stopped(conn, "user_turn", "turn_orphan")
     result = inbox.ignore("turn_orphan", expected_class=STATE_ORPHAN)
     assert result == {"ok": True, "ignored": True, "record_id": "turn_orphan"}
 
@@ -230,6 +234,7 @@ def test_ignore_legacy_unowned_takes_over_first_without_successor(tmp_path):
     journal = TurnJournal(conn, instance_id="me", registry=registry)
     inbox = RecoveryInbox(conn, registry, turns=FakeTurns(), instance_id="me", journal=journal)
 
+    confirm_legacy_stopped(conn, "user_turn", "turn_legacy")
     result = inbox.ignore("turn_legacy", expected_class="legacy_unowned")
     assert result["ok"] is True
     row = _row(conn, "turn_legacy")

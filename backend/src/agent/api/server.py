@@ -1326,9 +1326,18 @@ def create_app(
             # 关联已经写成、但新 turn 没被接受：这是真实的失败，必须让用户看见，
             # 而不是返回一个假的 200。孤儿出口（orphaned_claims / repair_orphan）
             # 保证这条记录不会因此永久消失。
+            #
+            # F03（相邻入口）：后继已经落库（queued + 本实例归属），但它没有进内存
+            # 队列 —— 不改状态的话，它既不会被派发、又因为归属者活着不进恢复清单，
+            # 用户在**当前运行**里永远重试不了。所以把它标成显式的 dispatch_failed：
+            # 恢复清单里能看到「重新执行」，重试复用同一个 turn_id。
+            from agent.trace.redact import redact_text
+
+            reason = redact_text(f"重发未被执行：{exc}")[:500]
+            ctx.turn_journal.mark_dispatch_failed(new_turn_id, reason)
             raise HTTPException(
                 status_code=503,
-                detail=f"重发未被执行：{exc}",
+                detail=reason,
             ) from exc
         return {
             "ok": True,

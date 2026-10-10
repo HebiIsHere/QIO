@@ -752,13 +752,27 @@ class EntityCardService:
                     changed = True
                     self._mark_field(meta, "aliases", SOURCE_AUTO, revision + 1)
 
-            # 摘要：只在原值为空时填；用户设定过 / 旧数据来源未知 / 迟到结果 → pending。
+            # 摘要：空值也要按**来源**判定 —— 用户明确清空过（source=user）的字段不得
+            # 被自动候选复填（F02）；从未填写过的空字段仍然可以补全。
             if cand.summary:
                 summary_source = self._field_source(meta, "summary")
                 if not (existing.summary or "").strip():
-                    values["summary"] = cand.summary
-                    changed = True
-                    self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
+                    empty_reason = self._conflict_reason(
+                        summary_source, has_value=False, stale=stale
+                    )
+                    if empty_reason is not None:
+                        # 用户清空 / 迟到结果：保留为空，候选进待处理列表由用户决定。
+                        self._add_pending(
+                            meta,
+                            "summary",
+                            cand.summary,
+                            reason=empty_reason,
+                            base_revision=base,
+                        )
+                    else:
+                        values["summary"] = cand.summary
+                        changed = True
+                        self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
                 elif str(existing.summary) != cand.summary:
                     summary_reason = self._conflict_reason(
                         summary_source, has_value=True, stale=stale
@@ -776,13 +790,25 @@ class EntityCardService:
                         changed = True
                         self._mark_field(meta, "summary", SOURCE_AUTO, revision + 1)
 
-            # 类型：同上（只填空 / 非保护来源才更新）。
+            # 类型：与摘要同一套规则（F02：用户清空过的类型也不得被复填）。
             if cand.kind:
                 kind_source = self._field_source(meta, "kind")
                 if not (existing.kind or "").strip():
-                    values["kind"] = cand.kind
-                    changed = True
-                    self._mark_field(meta, "kind", SOURCE_AUTO, revision + 1)
+                    empty_reason = self._conflict_reason(
+                        kind_source, has_value=False, stale=stale
+                    )
+                    if empty_reason is not None:
+                        self._add_pending(
+                            meta,
+                            "kind",
+                            cand.kind,
+                            reason=empty_reason,
+                            base_revision=base,
+                        )
+                    else:
+                        values["kind"] = cand.kind
+                        changed = True
+                        self._mark_field(meta, "kind", SOURCE_AUTO, revision + 1)
                 elif str(existing.kind) != str(cand.kind):
                     kind_reason = self._conflict_reason(kind_source, has_value=True, stale=stale)
                     if kind_reason is not None:

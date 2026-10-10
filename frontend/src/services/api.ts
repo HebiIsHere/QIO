@@ -644,6 +644,26 @@ export const api = {
       `/api/recovery/records/${encodeURIComponent(recordId)}/repair`,
       { method: "POST", body: JSON.stringify({ expected_class: expected.expected_class }) },
     ),
+  /**
+   * F01：「确认写下这条无归属记录的旧执行者已经停止」。
+   *
+   * 旧版本（升级前）不写实例 / 心跳 / 归属，所以库里**没有证据**说明它停了；
+   * 这是唯一能把这条记录从「只可见」变成「可操作」的入口（用户显式承担判断）。
+   */
+  confirmStoppedRecord: (recordId: string, expected: { expected_class?: string }) =>
+    request<{
+      ok: boolean;
+      confirmed: boolean;
+      already_confirmed: boolean;
+      confirmed_at: string;
+      record_id: string;
+      kind: string;
+    }>(`/api/recovery/records/${encodeURIComponent(recordId)}/confirm-stopped`, {
+      method: "POST",
+      body: JSON.stringify(
+        expected.expected_class ? { expected_class: expected.expected_class } : {},
+      ),
+    }),
   /** 「忽略这一条」：标记用户已知晓，不删除原文、不产生后继。 */
   ignoreRecoveryRecord: (recordId: string, expected: { expected_class: string }) =>
     request<{ ok: boolean; ignored: boolean; record_id?: string }>(

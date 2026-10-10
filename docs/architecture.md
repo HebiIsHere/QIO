@@ -747,13 +747,23 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   | state_class | 含义 | 可做动作 |
   | --- | --- | --- |
   | `ready` | 确认中断、还没被处理 | continue / ignore |
-  | `orphaned_claim` | 抢占过但没有后继 | repair（修复后变 ready）/ ignore |
-  | `legacy_unowned` | 升级前的开放行，没有任何归属 | continue / ignore |
+  | `orphaned_claim` | 抢占过但没有后继 | repair（修复后变 ready）/ ignore；归属者 alive 或 unknown 时**两个都不给** |
+  | `legacy_unowned` | 升级前的开放行，**没有任何归属** | 只列出 + `confirm_stopped`（确认后才 continue / ignore） |
   | `owner_unknown` | 有归属但存活判不出来 | 只列出（不提供动作） |
   | `derived_stale` | running 派生任务，归属者确认已退出 | requeue |
-  | `derived_legacy` | running 派生任务，无归属 | requeue |
+  | `derived_legacy` | running 派生任务，无归属 | 只列出 + `confirm_stopped`（确认后才 requeue） |
+  | `dispatch_failed` | 后继已落库、派发没做成（F03） | continue（原地重试**同一个 turn_id**）/ ignore |
 
 - **unknown 绝不批量改成死或中断**：判不出来就只列出、并写清「无法确认上次的写入者是否已停止」。
+- **没有归属 ≠ 已经证明执行者停止**（本轮收紧，见 §14.8）：升级前的旧版本不写任何实例 /
+  心跳 / 归属记录，所以「旧执行者还在跑」与「旧执行者已经退出」在库里留下的形状**一模一样**。
+  无归属的开放行因此只列出、默认不给任何会改变运行状态的动作；唯一的解锁入口是用户显式确认
+  「旧执行者已停止」（`confirm_stopped`，持久化在 `settings` 表里）。
+- **一致的所有权判定 + 条件写入**：repair / continue / ignore / requeue 共用同一套 owner 规则
+  （`alive` / `unknown` 一律拒绝），写入本身带 `IFNULL(owner_instance_id,'')` 条件 ——
+  归属列与权威归属不一致时命中 0 行，宁可不做也不抢一条可能正在被执行的记录。
+- **读失败不是空清单**：任一来源读不动就抛 `RecoveryReadError`（HTTP 503 + 写清哪个来源），
+  绝不返回「200 + total=0」。
 - **接管是条件更新 + 写锁**：`BEGIN IMMEDIATE` + `UPDATE ... WHERE owner_instance_id IS NULL`
   （或归属者已确认退出），命中 0 行 → 409 且一行不改。接管之后沿用既有
   `claim_for_resend`（老记录 + 新记录 + 关联同一事务），**不新写第二条派发路径**。
@@ -839,3 +849,45 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
     `ProcessLookupError` → 不存在，`PermissionError` → 存在，其它 `OSError` → unknown。
 - 注意 Python 的 `OSError(errno, msg)` 会按 errno 映射出子类
   （`OSError(13, …)` 就是 `PermissionError`），写测试时不要把它当成「其它 OSError」。
+
+### 14.8 恢复入口的收口（F01–F10，2026-10-10）
+
+这一节只写**本轮改动**的边界；14.1–14.7 的其余规则不变。
+
+- **F01 版本并存的执行互斥**：旧版本（升级前）**不写任何**进程 / 实例 / 心跳 / 归属记录，
+  因此新版本没有库内证据能证明「写下这条开放行的旧进程已经停了」。规则：
+  1. 无归属的 `queued` / `running`（turn）与 `running`（派生任务）**仍然可见**，
+     但 continue / ignore / repair / requeue 默认全部禁用，并给出原因；
+  2. 唯一解锁入口是用户显式确认「旧执行者已停止」
+     （`POST /api/recovery/records/{id}/confirm-stopped`），确认写在 `settings` 表
+     （`recovery.legacy_stop.<kind>.<id>`）里、跨重启有效 ——
+     **不新增表、不占迁移号**（迁移号是并行分支的命名空间，见 §13.8）；
+  3. `derived_tasks.recover_stale()` **不再**按超时自动回收无归属的 running 任务
+     （超时是时间猜测，不是「执行者已停止」的证据）；归属者存在的那条路径不变；
+  4. 用户确认之前不得为了「让按钮可点」而冒重复执行风险。
+- **F03 派发失败的可见性与可恢复性**：`claim_for_resend()` 成功、`submit()` 失败时，
+  后继被改写成 `dispatch_failed`（同一个 turn_id），在**当前运行**里就能看见并重试；
+  重试复用同一个 turn_id，不产生第二个后继。两个入口都覆盖：
+  `RecoveryInbox.take_over_and_continue` 与 `POST /api/turns/{id}/resend`。
+  提交之前失败（事务回滚）时，已经落库的那次**接管会被退回原状**
+  （`TurnJournal.release_takeover`），否则记录会带着「本实例归属」从清单里消失。
+- **F04 回退清单与专用清单同一口径**：`TurnJournal.orphaned_claims()` 过滤掉
+  「归属者确认活着」的记录（`/api/runtime/state.orphaned_turns` 因此不再复活专用清单
+  已经排除的项）；`repair_orphan` 与 continue / ignore 共用 owner 判定，并且条件写入带
+  `owner_key`（调用方按权威归属算出的实例 id，或空串表示无归属）。
+- **F05 读取失败必须可见**：`RecoveryInbox.list_records` 在任一来源读不动时抛
+  `RecoveryReadError` → `GET /api/recovery/records` 回 503；前端保留上一次可见的内容、
+  显示可重试原因，不把「拉不到」说成「没有未完成的事」。
+- **F02 用户清空的字段不得被复填**：`entities/cards.py` 的摘要 / 类型分支在**现值为空**时
+  也要先过 `_conflict_reason`：`source=user`（用户设定过 / 明确清空）与迟到结果只登记
+  待处理候选；**从未填写过**的空字段仍可补全；旧记录里已有非空值但来源缺失仍按用户值保护。
+  这条规则与 aliases / attributes 共用同一实现，不是给两个字段打的临时特判。
+- **F06–F09 前端一致性**：候选面板的每次读取用「请求代次 + 当前 entityId」校验写回；
+  收件箱读取用「请求代次 + 当前实例」校验，实例切换后旧响应整段丢弃；
+  `interruptedTurns` 从权威快照派生（收件箱已覆盖 / 已处理的 id 不再由旧入口重复提供），
+  忽略 / 继续成功后列表与 `total` 一起有依据地收敛；跨实体候选的渲染 key、逐行提示与
+  忙碌状态用 `(entity_id, candidate_id)` 复合身份（**不改**持久化里的历史候选 id）。
+- **F10 去掉环境假设**：`test_fu_verify_b02_pid.py` 不再断言「测试进程 PID > 4」——
+  POSIX 上 1/2/3/4 都是合法 PID，那条断言只是环境假设（核查环境 PID=2 时会失败）。
+  平台分支仍用受控替身覆盖，不探测真实进程。
+

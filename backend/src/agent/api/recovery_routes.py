@@ -38,6 +38,7 @@ from agent.services.recovery import (
     RecoveryConflict,
     RecoveryDispatchError,
     RecoveryInbox,
+    RecoveryReadError,
 )
 
 __all__ = ["build_router"]
@@ -57,6 +58,15 @@ class _ExpectedClassBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     expected_class: str | None = None
+
+
+class _ConfirmStoppedBody(BaseModel):
+    """F01：用户显式确认「写下这条无归属记录的旧执行者已经停止」。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    expected_class: str | None = None
+    note: str | None = None
 
 
 class _RequeueBody(BaseModel):
@@ -116,13 +126,48 @@ def build_router(ctx: Any) -> APIRouter:
         limit: int = 200,
         kinds: str | None = None,
         classes: str | None = None,
-    ) -> dict:
-        """只读清单：四类历史状态分开表达，unknown 绝不被当成「死」。"""
-        return _inbox().list_records(
-            limit=limit,
-            kinds=_split(kinds),
-            classes=_split(classes),
-        ).to_dict()
+    ) -> Any:
+        """只读清单：六类历史状态分开表达，unknown 绝不被当成「死」。
+
+        F05：**读失败绝不伪装成空清单**。`list_records` 在任一来源读不动时抛
+        `RecoveryReadError` → 这里回 503 + 可读原因；前端保留上一次可见的内容、
+        显示可重试原因，而不是把「读失败」显示成「没有记录」。
+        """
+        try:
+            listing = _inbox().list_records(
+                limit=limit,
+                kinds=_split(kinds),
+                classes=_split(classes),
+            )
+        except RecoveryReadError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "incomplete": True,
+                    "reason": str(exc),
+                    "records": [],
+                    "total": None,
+                    "shown": 0,
+                    "truncated": False,
+                },
+            )
+        return listing.to_dict()
+
+    @router.post("/records/{record_id}/confirm-stopped")
+    async def confirm_stopped(
+        record_id: str, body: _ConfirmStoppedBody | None = Body(default=None)
+    ) -> Any:
+        """确认「旧执行者已停止」——无归属记录唯一的解锁入口（F01）。"""
+        payload = body or _ConfirmStoppedBody()
+        result = _inbox().confirm_stopped(
+            record_id,
+            note=payload.note or "",
+            expected_class=payload.expected_class,
+        )
+        if not result.get("ok"):
+            return JSONResponse(status_code=409, content=result)
+        return result
 
     @router.post("/records/{record_id}/continue")
     async def continue_record(record_id: str, body: _ContinueBody | None = Body(default=None)) -> Any:

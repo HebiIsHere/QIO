@@ -15,7 +15,7 @@
  * 3. **归档卡片不给点不动的按钮**：`card_archived` 的候选采纳按钮禁用并说明
  *    「该实体已归档；恢复实体是另一个动作」；丢弃仍然可用（它不改实体值）。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   adoptCandidate,
   dismissCandidate,
@@ -39,12 +39,63 @@ const loadError = ref("");
 const candidates = ref<EntityCandidateView[]>([]);
 const total = ref(0);
 const truncated = ref(false);
-/** 正在处理的那一条：在飞时不再发第二次请求（重复点击幂等） */
-const busyId = ref<string | null>(null);
+/**
+ * 正在处理的那几条（复合身份）。
+ *
+ * 用**集合**而不是单个 id：全局清单里不同实体可能撞同一个 `candidate_id`，
+ * 一条在飞不该把别的实体那一行也变成「处理中…」/不可点。同一条（同一复合身份）
+ * 仍然只允许一个请求在飞 —— 重复点击幂等。
+ */
+const busyIds = ref<string[]>([]);
 /** 每条自己的就地结果（失败 / 冲突），成功不在这里占位 */
 const rowNotice = ref<Record<string, { tone: "err" | "conflict"; text: string }>>({});
 /** 区块级结果（成功）：放在列表外，列表被清空后它仍然在 */
 const blockNotice = ref("");
+
+/**
+ * 请求代次：每一次 `load()` 领一个新号。
+ *
+ * 提交结果前必须同时校验「仍是最新一次请求」与「发起时的实体没被换掉」——
+ * 旧实体 A 的响应（成功、失败、finally 三处）都要整段丢弃，否则 A 的候选会显示在
+ * B 的面板上，而操作又会按响应里的 entity_id 发出去。组件卸载后同样作废。
+ */
+let loadSeq = 0;
+/** 组件是否已卸载：卸载后任何迟到响应都不许再碰状态。 */
+let disposed = false;
+
+/** 这次请求发起时的实体（null = 全局跨卡片清单）。 */
+function currentEntityId(): string | null {
+  return props.entityId ?? null;
+}
+
+/** 这份结果是否仍属于「当前实体 + 最新一次请求」。 */
+function belongs(seq: number, entityId: string | null): boolean {
+  return !disposed && seq === loadSeq && currentEntityId() === entityId;
+}
+
+/**
+ * 一条候选的**界面身份**。
+ *
+ * 后端 `_pending_id(field, value)` 只在单实体内唯一：不同实体相同字段+值会撞同一个
+ * `candidate_id`（例如两个实体的「生日」都给 `pc_5531…`）。所以渲染 key、逐行提示与
+ * 忙碌状态都必须用 `(entity_id, candidate_id)` 复合键；单实体视图里 candidate_id 虽然
+ * 唯一，用复合键同样成立（不另造分支）。
+ * 这里只改**界面身份**，**不动**持久化里的历史 candidate_id。
+ */
+function identityOf(c: EntityCandidateView): string {
+  return `${c.entity_id}\u0000${c.candidate_id}`;
+}
+
+/** 这一条（复合身份）是否正在处理。 */
+function isBusy(c: EntityCandidateView): boolean {
+  return busyIds.value.includes(identityOf(c));
+}
+function markBusy(token: string) {
+  if (!busyIds.value.includes(token)) busyIds.value = [...busyIds.value, token];
+}
+function clearBusy(token: string) {
+  busyIds.value = busyIds.value.filter((t) => t !== token);
+}
 
 const count = computed(() => total.value);
 const hiddenCount = computed(() => Math.max(0, total.value - candidates.value.length));
@@ -118,20 +169,25 @@ function formatValue(v: unknown): string {
 
 /** 某一条的就地结果（模板里少写一层索引与断言）。 */
 function noticeOf(c: EntityCandidateView): { tone: "err" | "conflict"; text: string } | null {
-  return rowNotice.value[c.candidate_id] ?? null;
+  return rowNotice.value[identityOf(c)] ?? null;
 }
 
 async function load() {
+  const seq = ++loadSeq;
+  const entityId = currentEntityId();
   loading.value = true;
   loadError.value = "";
   try {
-    if (props.entityId) {
-      const r = await listEntityCandidates(props.entityId);
+    if (entityId) {
+      const r = await listEntityCandidates(entityId);
+      // 迟到响应（实体已切换 / 已有更新的请求 / 已卸载）：数据一律不写回
+      if (!belongs(seq, entityId)) return;
       candidates.value = r.candidates;
       total.value = r.total;
       truncated.value = r.truncated;
     } else {
       const r = await listAllCandidates(true);
+      if (!belongs(seq, entityId)) return;
       candidates.value = r.candidates;
       total.value = r.total;
       truncated.value = r.truncated;
@@ -139,9 +195,13 @@ async function load() {
     // 刷新之后展示的是真实持久状态：上一次的就地提示不再代表现状
     rowNotice.value = {};
   } catch (e) {
+    // 失败也必须属于当前实体：旧实体的错误不能写到新面板上
+    if (!belongs(seq, entityId)) return;
     loadError.value = `加载待处理候选失败：${(e as Error).message}`;
   } finally {
-    loading.value = false;
+    // 只有仍属于当前实体、且自己还是最新一次请求的那次加载才允许解锁 ——
+    // 旧请求的 finally 不得把新请求（切换实体后重新发起）的 loading 关掉
+    if (belongs(seq, entityId)) loading.value = false;
   }
 }
 
@@ -152,22 +212,29 @@ function toggle() {
 }
 
 function setRow(c: EntityCandidateView, tone: "err" | "conflict", text: string) {
-  rowNotice.value = { ...rowNotice.value, [c.candidate_id]: { tone, text } };
+  rowNotice.value = { ...rowNotice.value, [identityOf(c)]: { tone, text } };
 }
 
 async function decide(c: EntityCandidateView, action: "adopt" | "dismiss") {
-  if (busyId.value) return; // 重复点击幂等：一次只发一个决定
-  busyId.value = c.candidate_id;
+  const token = identityOf(c);
+  // 同一条幂等：同一条（复合身份）只发一个决定；别的实体那一行不受影响
+  if (busyIds.value.includes(token)) return;
+  // 操作也绑在「发起时的实体」上：实体切换后，这次决定的结果不再属于当前面板
+  const entityId = currentEntityId();
+  markBusy(token);
   blockNotice.value = "";
   const next = { ...rowNotice.value };
-  delete next[c.candidate_id];
+  delete next[token];
   rowNotice.value = next;
   const what = action === "adopt" ? "采纳" : "丢弃";
   try {
+    // URL / body 仍用这条候选自己所属实体的 entity_id（复合身份只用于界面区分）
     const result =
       action === "adopt"
         ? await adoptCandidate(c.entity_id, c.candidate_id, c.card_revision)
         : await dismissCandidate(c.entity_id, c.candidate_id, c.card_revision);
+    // 实体已切换 / 已卸载：这次结果整段丢弃，也不去刷新新面板的清单
+    if (disposed || currentEntityId() !== entityId) return;
     if (result && result.ok === false) {
       // 后端明确说没有写进去：如实说明，不刷新成「成功」
       const blocked = result.blocked_reason ?? "";
@@ -186,16 +253,19 @@ async function decide(c: EntityCandidateView, action: "adopt" | "dismiss") {
         ? `「${fieldText(c)}」这条候选此前已经处理过了`
         : `已丢弃「${fieldText(c)}」的候选值（实体当前值未改变）`;
     }
-    await load(); // 展示真实持久状态，不靠本地猜
+    await load(); // 展示真实持久状态，不靠本地猜（load 自带代次守卫）
+    if (disposed || currentEntityId() !== entityId) return;
     emit("changed", c.entity_id);
   } catch (e) {
+    if (disposed || currentEntityId() !== entityId) return;
     if (isCandidateConflict(e)) {
       setRow(c, "conflict", "这条实体已被改动，请刷新后重试");
     } else {
       setRow(c, "err", `${what}没有成功：${(e as Error).message}`);
     }
   } finally {
-    busyId.value = null;
+    // 只清自己那一条忙碌标记：切换实体后可能已经在处理别的候选，别替它解锁
+    if (!disposed) clearBusy(token);
   }
 }
 
@@ -208,17 +278,27 @@ async function refresh() {
 watch(
   () => props.entityId,
   () => {
+    // 切换实体：旧实体的数据、提示、错误与忙碌标记都必须先清掉 ——
+    // 在飞的旧请求由下面的 load() 领新代次作废，绝不允许它的迟到响应写回来。
     candidates.value = [];
     total.value = 0;
     truncated.value = false;
     rowNotice.value = {};
     blockNotice.value = "";
+    loadError.value = "";
+    busyIds.value = [];
     void load();
   },
 );
 
 onMounted(() => {
   void load();
+});
+
+onUnmounted(() => {
+  // 卸载后到达的响应一律丢弃（先作废代次，再标记 disposed）
+  disposed = true;
+  loadSeq += 1;
 });
 </script>
 
@@ -254,7 +334,7 @@ onMounted(() => {
 
       <template v-else>
         <ul class="ec-list">
-          <li v-for="c in candidates" :key="c.candidate_id" class="ec-row qio-card qio-card--quiet">
+          <li v-for="c in candidates" :key="identityOf(c)" class="ec-row qio-card qio-card--quiet">
             <div class="ec-row-head">
               <span class="ec-field">{{ fieldText(c) }}</span>
               <span v-if="!entityId" class="ec-entity">{{ c.entity_name }}</span>
@@ -278,16 +358,16 @@ onMounted(() => {
               <button
                 class="qio-btn mini primary ec-adopt"
                 type="button"
-                :disabled="adoptDisabled(c) || busyId !== null"
+                :disabled="adoptDisabled(c) || isBusy(c)"
                 :aria-label="`采纳这条候选：${fieldText(c)}`"
                 @click="decide(c, 'adopt')"
               >
-                {{ busyId === c.candidate_id ? "处理中…" : "采纳" }}
+                {{ isBusy(c) ? "处理中…" : "采纳" }}
               </button>
               <button
                 class="qio-btn mini quiet ec-dismiss"
                 type="button"
-                :disabled="busyId !== null"
+                :disabled="isBusy(c)"
                 :aria-label="`丢弃这条候选：${fieldText(c)}`"
                 @click="decide(c, 'dismiss')"
               >

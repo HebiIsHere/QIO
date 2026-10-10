@@ -312,7 +312,11 @@ def _should_reclaim(
       True 不动（另一活实例的任务不被抢），None（unknown）保留原状态。
     """
     if not owner:
-        return bool(stale_by_time)
+        # F01：无归属 = 旧版本写的行，**库内没有任何证据**说明那个执行者已经停止。
+        # 超时只是时间猜测；旧 runner 可能正卡在一个长动作上，靠超时接管会让同一件
+        # 事做两遍。这类行只进恢复清单（derived_legacy），要用户确认旧执行者已停止
+        # 之后才能重排。归属者存在的那两条路径不受影响。
+        return False
     if my_instance and owner == my_instance:
         return bool(stale_by_time)
     alive = _owner_alive(registry, owner)
@@ -592,6 +596,7 @@ def requeue_running(
     expected_state: str,
     expected_generation: int,
     instance_id: str | None = None,
+    owner_key: str | None = None,
 ) -> bool:
     """A01：用户明确要求重排一条卡住的 running 派生任务（条件更新 + 代次递增）。
 
@@ -620,11 +625,27 @@ def requeue_running(
     stamp = _iso(_now())
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # F01/F04：归属条件与 RecoveryInbox 的判定一致 —— 只有库里的归属列和调用方
+        # 算出来的归属一致时才命中（无归属传空串、确认已退出的归属者传它的实例 id）。
+        owner_clause = ""
+        owner_params: list[object] = []
+        if owner_key is not None:
+            key = str(owner_key or "")
+            if key:
+                # 与 turn_journal._owner_guard 同一口径：归属表是权威、列只是镜像，
+                # 列是 NULL 或等于权威归属者都算一致；列上是别的实例则保守拒绝。
+                owner_clause = (
+                    " AND (IFNULL(owner_instance_id, '') = ''"
+                    " OR IFNULL(owner_instance_id, '') = ?)"
+                )
+                owner_params.append(key)
+            else:
+                owner_clause = " AND IFNULL(owner_instance_id, '') = ''"
         if owns:
             cursor = conn.execute(
                 "UPDATE derived_tasks SET state = ?, run_after = NULL, "
                 "claim_generation = claim_generation + 1, owner_instance_id = ?, updated_at = ? "
-                "WHERE id = ? AND state = ? AND claim_generation = ?",
+                "WHERE id = ? AND state = ? AND claim_generation = ?" + owner_clause,
                 (
                     STATE_PENDING,
                     owner,
@@ -632,6 +653,7 @@ def requeue_running(
                     str(task_id),
                     state,
                     int(expected_generation),
+                    *owner_params,
                 ),
             )
         else:

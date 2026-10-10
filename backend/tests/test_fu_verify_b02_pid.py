@@ -35,7 +35,6 @@
 from __future__ import annotations
 
 import errno
-import os
 
 import pytest
 
@@ -206,15 +205,39 @@ def test_windows_probe_failure_is_unknown(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_no_test_in_this_module_touches_a_real_process():
-    """自证：本模块只通过替身探测；真实平台分支只在显式 shim 下被调用。
+def test_no_test_in_this_module_touches_a_real_process(monkeypatch):
+    """自证：本模块的探测**全部**在受控替身下完成，且平台分支只用信号 0。
 
-    这里断言的是「本文件里的替身路径不依赖 os.kill 的真实副作用」——
-    真实 `_default_pid_alive(os.getpid())` 在 Windows 上走 OpenProcess（只读），
-    在 POSIX 上走信号 0（也是只读存在性检查，不投递信号）。
+    原来的 `assert os.getpid() > 4` 是一条**环境假设**：核查环境里 pytest 进程
+    PID = 2，这条断言因此失败（187 passed / 1 failed），而它断言的并不是产品行为
+    —— POSIX 上 1/2/3/4 都是合法 PID，低 PID 必须被正常探测（B02 的冻结契约）。
+
+    改成两条与 PID 大小无关的自证：
+
+    1. POSIX 分支：低 PID 逐个探测，且**只**用 `kill(pid, 0)`（纯存在性检查，
+       不投递任何会结束进程的信号）；
+    2. Windows 分支：绝不落到 `os.kill`，只走只读 `OpenProcess` 替身。
     """
-    assert os.getpid() > 4, "本机测试进程 PID 必须大于 4，避免撞上特殊 PID 分支"
-    # 明确不调用真实探测：本模块所有断言都在 monkeypatch 的替身下完成。
+    seen: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int):  # noqa: ANN202
+        seen.append((pid, sig))
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(ir, "os", _posix(kill))
+    for pid in (1, 2, 3, 4):
+        _default_pid_alive(pid)
+    assert seen == [(1, 0), (2, 0), (3, 0), (4, 0)], (
+        "POSIX 低 PID 必须逐个用信号 0 探测（不假设测试进程 PID 的大小）"
+    )
+
+    def kill_win(pid: int, sig: int):  # noqa: ANN202
+        raise AssertionError("Windows 分支绝不能走 os.kill")
+
+    monkeypatch.setattr(ir, "os", _windows(kill_win))
+    monkeypatch.setattr(ir, "_windows_pid_alive", lambda pid: None)
+    for pid in (1, 2, 3, 4, 5):
+        _default_pid_alive(pid)
     assert callable(_default_pid_alive)
 
 

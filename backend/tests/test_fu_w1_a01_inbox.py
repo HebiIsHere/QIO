@@ -43,6 +43,7 @@ from test_fu_w1_support import (
     add_derived,
     add_instance,
     add_turn,
+    confirm_legacy_stopped,
     migrated_conn,
     register_self,
     shadow_conn,
@@ -237,6 +238,8 @@ async def test_continue_legacy_unowned_executes_exactly_once(tmp_path):
 
     turns.set_runner(runner)
     inbox = RecoveryInbox(conn, registry, turns=turns, instance_id="me")
+    # F01：无归属 = 库里没有证据说明旧执行者停了 —— 用户确认之后才允许继续。
+    confirm_legacy_stopped(conn, KIND_USER_TURN, "turn_legacy")
 
     result = inbox.take_over_and_continue(
         "turn_legacy", expected_class=STATE_LEGACY_UNOWNED, expected_status="queued"
@@ -338,6 +341,7 @@ def test_two_inboxes_on_the_same_record_create_one_successor(tmp_path):
         turns_a, turns_b = FakeTurns(), FakeTurns()
         inbox_a = RecoveryInbox(conn, registry, turns=turns_a, instance_id="me")
         inbox_b = RecoveryInbox(other, registry, turns=turns_b, instance_id="me")
+        confirm_legacy_stopped(conn, KIND_USER_TURN, "turn_once")
 
         first = inbox_a.take_over_and_continue(
             "turn_once", expected_class=STATE_LEGACY_UNOWNED, expected_status="queued"
@@ -359,7 +363,7 @@ def test_two_inboxes_on_the_same_record_create_one_successor(tmp_path):
 
 
 def test_restart_keeps_the_legacy_record_operable(tmp_path):
-    """重启（新实例 + 新台账）之后，历史无归属的记录仍然可见、可继续。"""
+    """重启（新实例 + 新台账）之后，历史无归属的记录仍然可见；确认旧执行者已停止后可继续。"""
     conn = migrated_conn(tmp_path)
     add_turn(conn, "turn_legacy", message="重启前就存在的消息", status="queued", owner=None)
 
@@ -383,6 +387,8 @@ def test_restart_keeps_the_legacy_record_operable(tmp_path):
     )
 
     assert _classes(inbox) == {"turn_legacy": STATE_LEGACY_UNOWNED}
+    # 重启不会让「无归属」变成「已证明停止」：确认是持久化的（F01）。
+    confirm_legacy_stopped(conn, KIND_USER_TURN, "turn_legacy", instance_id="second")
     result = inbox.take_over_and_continue(
         "turn_legacy", expected_class=STATE_LEGACY_UNOWNED, expected_status="queued"
     )
@@ -415,6 +421,7 @@ def test_continue_without_a_dispatch_channel_changes_nothing(tmp_path):
     add_turn(conn, "turn_legacy", message="没有通道就别动我", status="queued", owner=None)
     before = table_snapshot(conn, "turn_journal")
     inbox = RecoveryInbox(conn, registry, instance_id="me")  # 没有 turns / submitter
+    confirm_legacy_stopped(conn, KIND_USER_TURN, "turn_legacy")
 
     with pytest.raises(RecoveryDispatchError):
         inbox.take_over_and_continue(

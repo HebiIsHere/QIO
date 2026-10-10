@@ -15,7 +15,13 @@
 import { ApiError, api, type InterruptedTurn } from "./api";
 
 /** 与后端 `RecoveryRecord.actions[].id` 一一对应。 */
-export type RecoveryActionId = "continue" | "repair" | "ignore" | "requeue";
+export type RecoveryActionId =
+  | "continue"
+  | "repair"
+  | "ignore"
+  | "requeue"
+  /** F01：确认「无归属记录的旧执行者已停止」——唯一的解锁入口。 */
+  | "confirm_stopped";
 
 /** 后端 `RecoveryRecord.kind`。 */
 export type RecoveryKind = "user_turn" | "derived_task";
@@ -33,6 +39,8 @@ export type RecoveryStateClass =
   | "owner_unknown"
   | "derived_stale"
   | "derived_legacy"
+  /** F03：后继已落库、派发没做成 —— 可原地重试的明确状态。 */
+  | "dispatch_failed"
   | (string & {});
 
 /** 后台执行单元的归属状态。`unknown` **不是**死（不许当死处理）。 */
@@ -65,6 +73,8 @@ export interface RecoveryRecordView {
   claim_generation: number | null;
   attempts: number | null;
   last_error: string | null;
+  /** F01：这条记录的「旧执行者已停止」是否已被用户显式确认过（旧后端没有这个字段）。 */
+  confirmed_stopped?: boolean;
   actions: RecoveryActionView[];
 }
 
@@ -160,6 +170,8 @@ function normalizeRecord(raw: unknown): RecoveryRecordView {
     attempts: typeof row.attempts === "number" ? row.attempts : null,
     last_error:
       row.last_error === undefined || row.last_error === null ? null : String(row.last_error),
+    // 旧后端没有这个字段时按「未确认」处理：拿不到证据就不放行。
+    confirmed_stopped: row.confirmed_stopped === true,
     actions: actions.map((item) => {
       const a = (item ?? {}) as Record<string, unknown>;
       return {
@@ -214,6 +226,30 @@ export function continueRecovery(
 /** `POST /api/recovery/records/{id}/repair`：把孤立抢占修回「可继续」。 */
 export function repairOrphan(recordId: string, expectedClass = "orphaned_claim"): Promise<RepairRecoveryResult> {
   return api.repairOrphanRecord(requireRecordId(recordId), { expected_class: expectedClass });
+}
+
+export interface ConfirmStoppedResult {
+  ok: boolean;
+  confirmed: boolean;
+  already_confirmed: boolean;
+  confirmed_at: string;
+  record_id: string;
+  kind: string;
+}
+
+/**
+ * F01：`POST /api/recovery/records/{id}/confirm-stopped`。
+ *
+ * 只对**当前确实无归属**的记录生效（有归属的由服务端拒绝）——前端不自己判断。
+ */
+export function confirmStopped(
+  recordId: string,
+  expectedClass = "",
+): Promise<ConfirmStoppedResult> {
+  return api.confirmStoppedRecord(
+    requireRecordId(recordId),
+    expectedClass ? { expected_class: expectedClass } : {},
+  );
 }
 
 /** `POST /api/recovery/records/{id}/ignore`：用户已知晓，原文与记录都保留。 */

@@ -18,6 +18,7 @@
  * 5. **截断要可见**：服务端说还有没显示完的，就明说「还有 N 条未显示」。
  */
 import { computed, ref } from "vue";
+import QConfirm from "./ui/QConfirm.vue";
 import { useSessionStore } from "../stores/session";
 import {
   recoveryActionLabel,
@@ -33,6 +34,14 @@ const openIds = ref<string[]>([]);
 const localErrors = ref<Record<string, string>>({});
 /** 每条自己最近一次的成功说明（列表消失前也能看到结果） */
 const localNotices = ref<Record<string, string>>({});
+/**
+ * 正在等用户确认「旧执行者已停止」的那一条（F01）。
+ *
+ * 为什么单独一步确认：无归属 = 库里没有证据说明旧执行者停了。点「继续 / 知道了」
+ * 之前必须先由用户**显式**承担「旧进程已经退出」这个判断，否则同一条消息可能被
+ * 执行两次。这一步不执行任何东西，只把用户的判断交给服务端持久化。
+ */
+const confirmingId = ref("");
 
 const items = computed<RecoveryRecordView[]>(() => session.recoveryRecords);
 const count = computed(() => items.value.length);
@@ -99,6 +108,11 @@ function actionLabel(action: RecoveryActionView): string {
 async function run(record: RecoveryRecordView, action: RecoveryActionView) {
   if (!action.enabled || busyId.value) return;
   const id = record.record_id;
+  if (action.id === "confirm_stopped") {
+    // 先弹一次就地确认（这一步不执行任何东西），确认后才真的提交
+    confirmingId.value = id;
+    return;
+  }
   localErrors.value = { ...localErrors.value, [id]: "" };
   localNotices.value = { ...localNotices.value, [id]: "" };
   let outcome: RecoveryOutcome;
@@ -123,6 +137,24 @@ async function run(record: RecoveryRecordView, action: RecoveryActionView) {
 
 function retry(record: RecoveryRecordView, action: RecoveryActionView) {
   void run(record, action);
+}
+
+/** 用户在确认框里点了「确认已停止」：提交给服务端，结果就地说明。 */
+async function confirmStopped(record: RecoveryRecordView) {
+  const id = record.record_id;
+  confirmingId.value = "";
+  localErrors.value = { ...localErrors.value, [id]: "" };
+  localNotices.value = { ...localNotices.value, [id]: "" };
+  const outcome = await session.confirmStopped(id);
+  if (outcome.ok) {
+    localNotices.value = { ...localNotices.value, [id]: outcome.message };
+    return;
+  }
+  localErrors.value = { ...localErrors.value, [id]: outcome.message };
+}
+
+function cancelConfirm() {
+  confirmingId.value = "";
 }
 
 /** 时间：台账里是 UTC ISO，用户判断要不要处理靠本地时间。 */
@@ -222,6 +254,20 @@ function formatWhen(record: RecoveryRecordView): string {
             <dd>{{ record.last_error }}</dd>
           </div>
         </dl>
+
+        <!-- F01：确认「旧执行者已停止」——唯一能把这条从「只可见」变成「可操作」的一步 -->
+        <QConfirm
+          v-if="confirmingId === record.record_id"
+          :open="true"
+          variant="inline"
+          tone="danger"
+          title="确认旧执行者已经停止？"
+          detail="这条记录来自没有实例归属的旧版本。只有在确定那个旧进程已经退出时才确认；否则「继续」会让同一条消息被执行两次。"
+          confirm-text="确认已停止"
+          cancel-text="先不确认"
+          @confirm="confirmStopped(record)"
+          @cancel="cancelConfirm"
+        />
 
         <!-- 失败就地说话 + 可重试（重试就是同一个动作再点一次） -->
         <p v-if="localErrors[record.record_id]" class="inline-error" role="status">

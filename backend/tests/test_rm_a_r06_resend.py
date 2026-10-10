@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
+from agent.core.turn import TurnAcceptError
 from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
@@ -351,6 +352,56 @@ def test_http_resend_reports_503_and_leaves_a_visible_orphan(client, monkeypatch
     assert ctx.turn_journal.orphaned_claims() == []
 
 
+def test_http_resend_marks_the_successor_as_dispatch_failed(client, monkeypatch):
+    """F03（相邻入口）：`/api/turns/{id}/resend` 派发失败后，后继必须在**当前运行**里
+    可见、可原地重试 —— 否则它既没进队列、又因为归属者活着不进清单，只能等重启。
+    """
+    ctx = client.app.state.ctx
+    conn = ctx.conn
+    _seed_interrupted(ctx.turn_journal, "turn_lost", "重发时派发失败的消息", "topic_1")
+
+    calls = {"n": 0}
+    original = ctx.turns.submit
+
+    def _flaky(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TurnAcceptError("injected: queue unavailable")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ctx.turns, "submit", _flaky)
+
+    resp = client.post("/api/turns/turn_lost/resend")
+    assert resp.status_code == 503, resp.text
+    assert "重发未被执行" in resp.json()["detail"]
+
+    successors = list(
+        conn.execute("SELECT * FROM turn_journal WHERE turn_id != 'turn_lost' ORDER BY created_at")
+    )
+    assert len(successors) == 1, "只允许一个持久后继"
+    successor_id = str(successors[0]["turn_id"])
+    assert str(successors[0]["reason"]).startswith("dispatch_failed")
+
+    listing = client.get("/api/recovery/records").json()
+    listed = {r["record_id"]: r for r in listing["records"]}
+    assert successor_id in listed, "派发失败的后继必须在当前运行里看得见"
+    assert listed[successor_id]["state_class"] == "dispatch_failed"
+    assert any(
+        a["id"] == "continue" and a["enabled"] for a in listed[successor_id]["actions"]
+    ), "必须给出可点的「重新执行」"
+
+    retry = client.post(
+        f"/api/recovery/records/{successor_id}/continue",
+        json={"expected_class": "dispatch_failed"},
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["turn_id"] == successor_id, "重试复用同一个后继"
+    assert calls["n"] == 2
+    assert (
+        len(list(conn.execute("SELECT * FROM turn_journal WHERE turn_id != 'turn_lost'"))) == 1
+    ), "重试不得产生第二个后继"
+
+
 def test_runtime_state_exposes_orphaned_turns(client):
     ctx = client.app.state.ctx
     topic = ctx.topics.nodes.create_topic("孤儿话题").id
@@ -359,10 +410,39 @@ def test_runtime_state_exposes_orphaned_turns(client):
         "UPDATE turn_journal SET recovered_at = '2026-01-01T00:00:00+00:00' "
         "WHERE turn_id = 'turn_orphan'"
     )
+    # F04：这个回退出口必须与专用清单用**同一套 owner 判定**。真实场景里
+    # 「抢占后崩溃」的那次归属来自一个已经退出的实例，所以这里把它指到一个
+    # 确认已退出的实例上（不探测任何真实进程：mark_clean_exit 是显式退出）。
+    from agent.storage.instance_registry import InstanceRegistry
+
+    crashed = InstanceRegistry(ctx.conn, "crashed_owner", pid=999_999_999)
+    crashed.start()
+    crashed.mark_clean_exit()
+    ctx.conn.execute(
+        "UPDATE turn_journal SET owner_instance_id = 'crashed_owner' WHERE turn_id = 'turn_orphan'"
+    )
+    ctx.conn.execute(
+        "INSERT OR REPLACE INTO record_owners (record_type, record_id, instance_id) "
+        "VALUES ('turn', 'turn_orphan', 'crashed_owner')"
+    )
+
     state = client.get("/api/runtime/state").json()
     orphans = {row["turn_id"]: row for row in state["orphaned_turns"]}
     assert "turn_orphan" in orphans
     assert orphans["turn_orphan"]["message"] == "孤儿消息"
+
+    # 反向：归属者还活着时，回退清单不得把专用清单已经排除的记录重新引进来。
+    live = InstanceRegistry(ctx.conn, "live_owner", pid=999_999_998)
+    live.start()
+    ctx.conn.execute(
+        "UPDATE turn_journal SET owner_instance_id = 'live_owner' WHERE turn_id = 'turn_orphan'"
+    )
+    ctx.conn.execute(
+        "UPDATE record_owners SET instance_id = 'live_owner' "
+        "WHERE record_type = 'turn' AND record_id = 'turn_orphan'"
+    )
+    again = client.get("/api/runtime/state").json()
+    assert "turn_orphan" not in {row["turn_id"] for row in again["orphaned_turns"]}
 
 
 # -- helpers ------------------------------------------------------------------

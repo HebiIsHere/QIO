@@ -103,6 +103,7 @@ def test_get_records_returns_classified_listing(tmp_path):
             "claim_generation",
             "attempts",
             "last_error",
+            "confirmed_stopped",
             "actions",
         }
         orphan = next(r for r in body["records"] if r["record_id"] == "turn_orphan")
@@ -144,6 +145,17 @@ def test_post_continue_dispatches_exactly_one_turn(tmp_path):
     turns.set_runner(runner)
 
     with TestClient(_app(_ctx(conn, registry, turns))) as client:
+        # F01：无归属记录先要一次显式确认（端点级）。
+        blocked = client.post(
+            "/api/recovery/records/turn_legacy/continue",
+            json={"expected_class": "legacy_unowned", "expected_status": "queued"},
+        )
+        assert blocked.status_code == 409, blocked.text
+        assert "旧版本" in blocked.json()["reason"]
+        confirmed = client.post("/api/recovery/records/turn_legacy/confirm-stopped", json={})
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["confirmed"] is True
+
         resp = client.post(
             "/api/recovery/records/turn_legacy/continue",
             json={"expected_class": "legacy_unowned", "expected_status": "queued"},
@@ -224,6 +236,20 @@ def test_post_repair_then_conflict_for_resent_record(tmp_path):
              recovered_at=SEED_TIME, recovered_by="turn_successor")
 
     with TestClient(_app(_ctx(conn, registry, FakeTurns()))) as client:
+        # F01：无归属的孤儿要先确认旧执行者已停止（修复会把它变回可继续）。
+        assert (
+            client.post(
+                "/api/recovery/records/turn_orphan/repair",
+                json={"expected_class": "orphaned_claim"},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/api/recovery/records/turn_orphan/confirm-stopped", json={}
+            ).status_code
+            == 200
+        )
         ok = client.post(
             "/api/recovery/records/turn_orphan/repair",
             json={"expected_class": "orphaned_claim"},
@@ -254,6 +280,19 @@ def test_post_ignore_is_one_shot_and_keeps_the_message(tmp_path):
     add_turn(conn, "turn_legacy", message="用户不想继续", status="queued", owner=None)
 
     with TestClient(_app(_ctx(conn, registry, FakeTurns()))) as client:
+        assert (
+            client.post(
+                "/api/recovery/records/turn_legacy/ignore",
+                json={"expected_class": "legacy_unowned"},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/api/recovery/records/turn_legacy/confirm-stopped", json={}
+            ).status_code
+            == 200
+        )
         ok = client.post(
             "/api/recovery/records/turn_legacy/ignore",
             json={"expected_class": "legacy_unowned"},
@@ -310,6 +349,20 @@ def test_router_works_with_the_real_app_context(tmp_path):
         classes = {record["record_id"]: record["state_class"] for record in listing["records"]}
         assert classes.get("turn_legacy") == "legacy_unowned", listing
 
+        # F01：真实上下文里也要先确认「旧执行者已停止」（无归属 = 没有证据）。
+        assert (
+            client.post(
+                "/api/recovery/records/turn_legacy/continue",
+                json={"expected_class": "legacy_unowned", "expected_status": "queued"},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/api/recovery/records/turn_legacy/confirm-stopped", json={}
+            ).status_code
+            == 200
+        )
         resp = client.post(
             "/api/recovery/records/turn_legacy/continue",
             json={"expected_class": "legacy_unowned", "expected_status": "queued"},

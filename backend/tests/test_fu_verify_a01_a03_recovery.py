@@ -284,6 +284,22 @@ def action_ids(record: dict) -> set[str]:
     return {str(a.get("id")) for a in record.get("actions", [])}
 
 
+def confirm_stopped(
+    client: TestClient, record_id: str, *, expected_class: str | None = None
+) -> dict:
+    """F01：显式确认「写下这条无归属记录的旧执行者已经停止」。
+
+    旧版本（`6e073e9`）不写实例 / 心跳 / 归属，任何库内证据都证明不了它停了 ——
+    所以无归属记录默认只可见；确认是它变成可操作的唯一入口。
+    """
+    payload = {"expected_class": expected_class} if expected_class else {}
+    resp = client.post(f"/api/recovery/records/{record_id}/confirm-stopped", json=payload)
+    assert resp.status_code == 200, f"确认必须成功：{resp.status_code} {resp.text[:200]}"
+    body = resp.json()
+    assert body.get("confirmed") is True
+    return body
+
+
 # --------------------------------------------------------------------------
 # A01 · 历史无归属 queued/running 用户行
 # --------------------------------------------------------------------------
@@ -331,16 +347,29 @@ def test_a01_legacy_row_survives_restart_and_is_still_operable(harness: Harness)
         LEGACY_QUEUED,
         LEGACY_RUNNING,
     }
+    # F01：重启**不会**把「没有归属」变成「已证明执行者停止」——默认只可见、不可操作。
+    blocked = first.post(
+        f"/api/recovery/records/{LEGACY_QUEUED}/continue",
+        json={"expected_class": "legacy_unowned", "expected_status": "queued"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "旧版本" in blocked.json()["reason"]
+    # 用户显式确认旧执行者已停止：这份确认必须跨重启仍然有效。
+    confirm_stopped(first, LEGACY_QUEUED, expected_class="legacy_unowned")
     harness.stop(first)
 
     second = harness.start()
     body = recovery_listing(second)
     ids = {str(item["record_id"]) for item in body["records"]}
     assert {LEGACY_QUEUED, LEGACY_RUNNING} <= ids, "重启后记录不得消失"
-    for record_id in (LEGACY_QUEUED, LEGACY_RUNNING):
-        record = next(i for i in body["records"] if i["record_id"] == record_id)
-        assert "continue" in action_ids(record), "重启后仍然可继续"
-        assert all(a["enabled"] for a in record["actions"] if a["id"] == "continue")
+    queued = next(i for i in body["records"] if i["record_id"] == LEGACY_QUEUED)
+    assert any(a["enabled"] for a in queued["actions"] if a["id"] == "continue"), (
+        "确认过的记录重启后仍然可继续"
+    )
+    running = next(i for i in body["records"] if i["record_id"] == LEGACY_RUNNING)
+    assert all(
+        not a["enabled"] for a in running["actions"] if a["id"] in ("continue", "ignore")
+    ), "没有确认过的无归属记录重启后仍然不可操作"
 
 
 def test_a01_continue_yields_exactly_one_effective_execution(harness: Harness):
@@ -349,6 +378,7 @@ def test_a01_continue_yields_exactly_one_effective_execution(harness: Harness):
 
     before = journal_row(harness.conn, LEGACY_QUEUED)
     assert before["owner_instance_id"] is None
+    confirm_stopped(client, LEGACY_QUEUED, expected_class="legacy_unowned")
 
     resp = client.post(
         f"/api/recovery/records/{LEGACY_QUEUED}/continue",
@@ -384,6 +414,7 @@ def test_a01_continue_gives_new_turn_an_owner_that_is_traceable(harness: Harness
     seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
     client = harness.start()
     instance_id = client.app.state.instance_id
+    confirm_stopped(client, LEGACY_QUEUED, expected_class="legacy_unowned")
 
     resp = client.post(
         f"/api/recovery/records/{LEGACY_QUEUED}/continue",
@@ -407,6 +438,7 @@ def test_a01_continue_gives_new_turn_an_owner_that_is_traceable(harness: Harness
 def test_a01_concurrent_continue_produces_one_successor(harness: Harness):
     seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
     client = harness.start()
+    confirm_stopped(client, LEGACY_QUEUED, expected_class="legacy_unowned")
     url = f"/api/recovery/records/{LEGACY_QUEUED}/continue"
     payload = {"expected_class": "legacy_unowned", "expected_status": "queued"}
 
@@ -425,6 +457,7 @@ def test_a01_concurrent_continue_produces_one_successor(harness: Harness):
 def test_a01_second_continue_click_conflicts(harness: Harness):
     seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
     client = harness.start()
+    confirm_stopped(client, LEGACY_QUEUED, expected_class="legacy_unowned")
     url = f"/api/recovery/records/{LEGACY_QUEUED}/continue"
     payload = {"expected_class": "legacy_unowned", "expected_status": "queued"}
 
@@ -458,34 +491,34 @@ def test_a01_notify_rows_never_enter_the_inbox(harness: Harness):
 
 
 def test_a01_legacy_running_derived_task_is_listed_and_requeueable(harness: Harness):
-    """历史无归属的 running 派生任务：既不可见也不能放回队列（基线：没有入口）。
+    """历史无归属的 running 派生任务：可见；确认旧执行者已停止后才能放回队列。
 
-    同时钉住时限兜底的真实行为：**已超期**的无归属 running 任务会被启动恢复
-    `recover_stale()` 自动放回 `pending`（不需要用户做任何操作）—— 所以它不该
-    留在恢复清单里，也谈不上「永久卡住」。需要用户处理的只有「新鲜但卡住」那种。
+    F01 收紧后的口径（与 turn 一致）：旧版本不写归属，**没有任何库内证据**说明那个
+    执行者已经停止 —— 所以「超时」不再是充分的接管理由，`recover_stale()` 不再
+    自动放回无归属任务（旧 runner 可能正卡在一个长动作上，靠超时接管会让同一件事
+    做两遍）。这类任务只进恢复清单；用户显式确认之后才允许重排。
     """
     stale_at = (datetime.now(timezone.utc) - timedelta(seconds=3600)).isoformat()
     seed_derived_running(harness.conn, DERIVED)  # 新鲜：真正的「卡住的 running」
     seed_derived_running(harness.conn, DERIVED_STALE, updated_at=stale_at, content_version=2)
     client = harness.start()
 
-    # 已超期的那条：启动恢复自动放回 pending —— 不是永久卡住，不需要用户点按钮
+    # 已超期但无归属：不再被启动恢复自动放回 —— 状态原样保留（保守）
     stale_row = harness.conn.execute(
         "SELECT * FROM derived_tasks WHERE id = ?", (DERIVED_STALE,)
     ).fetchone()
-    assert stale_row["state"] == "pending", (
-        f"无归属 + 已超期的 running 任务必须被启动恢复放回 pending（不是永久卡住）：{dict(stale_row)}"
+    assert stale_row["state"] == "running", (
+        "无归属 = 没有证据证明执行者已停止，超时不足以接管"
+        f"（必须原样保留）：{dict(stale_row)}"
     )
-    assert stale_row["run_after"] is None, "放回队列必须清掉 run_after（可立即重跑）"
 
     body = recovery_listing(client, kinds="derived_task")
     listed = {str(i["record_id"]) for i in body["records"]}
-    assert DERIVED_STALE not in listed, (
-        "已经自动放回队列的任务不需要用户操作，不该留在恢复清单里"
+    assert {DERIVED, DERIVED_STALE} <= listed, (
+        f"无归属的 running 派生任务必须进清单：{[i['record_id'] for i in body['records']]}"
     )
 
     records = [i for i in body["records"] if str(i["record_id"]) == DERIVED]
-    assert records, f"无归属的 running 派生任务必须进清单：{[i['record_id'] for i in body['records']]}"
     record = records[0]
     assert record["kind"] == "derived_task"
     assert record["state_class"] == "derived_legacy"
@@ -494,7 +527,24 @@ def test_a01_legacy_running_derived_task_is_listed_and_requeueable(harness: Harn
     assert record["attempts"] == 2, "attempts 必须如实展示"
     assert record["last_error"] == "boom"
     assert "requeue" in action_ids(record), f"必须给出放回队列的动作：{record['actions']}"
+    assert not any(
+        a["enabled"] for a in record["actions"] if a["id"] == "requeue"
+    ), "没有确认旧执行者停止之前，重排必须被挡住"
+    assert any(a["id"] == "confirm_stopped" for a in record["actions"]), (
+        "必须给出唯一的解锁入口（确认旧执行者已停止）"
+    )
 
+    # 未确认 → 明确 409，一行不改
+    blocked = client.post(
+        f"/api/recovery/records/{DERIVED}/requeue",
+        json={"expected_state": "running", "expected_generation": 1},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert harness.conn.execute(
+        "SELECT state FROM derived_tasks WHERE id = ?", (DERIVED,)
+    ).fetchone()["state"] == "running"
+
+    confirm_stopped(client, DERIVED, expected_class="derived_legacy")
     resp = client.post(
         f"/api/recovery/records/{DERIVED}/requeue",
         json={"expected_state": "running", "expected_generation": 1},
@@ -513,6 +563,7 @@ def test_a01_legacy_running_derived_task_is_listed_and_requeueable(harness: Harn
 def test_a01_derived_requeue_conflicts_after_state_change(harness: Harness):
     seed_derived_running(harness.conn, DERIVED)
     client = harness.start()
+    confirm_stopped(client, DERIVED, expected_class="derived_legacy")
     assert client.post(
         f"/api/recovery/records/{DERIVED}/requeue",
         json={"expected_state": "running", "expected_generation": 1},
@@ -553,6 +604,7 @@ def test_a03_orphan_claim_gets_a_repair_entry(harness: Harness):
 def test_a03_repair_then_continue_restores_the_message(harness: Harness):
     seed_turn(harness.conn, ORPHAN, MSG_ORPHAN, status="interrupted", recovered_at=NOW)
     client = harness.start()
+    confirm_stopped(client, ORPHAN, expected_class="orphaned_claim")
 
     repaired = client.post(
         f"/api/recovery/records/{ORPHAN}/repair", json={"expected_class": "orphaned_claim"}
@@ -625,6 +677,7 @@ def test_a03_repair_refuses_already_resent_record(harness: Harness):
 def test_a03_concurrent_continue_after_repair_has_one_successor(harness: Harness):
     seed_turn(harness.conn, ORPHAN, MSG_ORPHAN, status="interrupted", recovered_at=NOW)
     client = harness.start()
+    confirm_stopped(client, ORPHAN, expected_class="orphaned_claim")
     assert client.post(
         f"/api/recovery/records/{ORPHAN}/repair", json={"expected_class": "orphaned_claim"}
     ).status_code == 200
@@ -648,6 +701,7 @@ def test_a03_ignore_keeps_the_message_and_creates_no_successor(harness: Harness)
     """忽略：不删原消息、不产生后继。"""
     seed_turn(harness.conn, LEGACY_QUEUED, MSG_QUEUED, status="queued")
     client = harness.start()
+    confirm_stopped(client, LEGACY_QUEUED, expected_class="legacy_unowned")
 
     resp = client.post(
         f"/api/recovery/records/{LEGACY_QUEUED}/ignore", json={"expected_class": "legacy_unowned"}

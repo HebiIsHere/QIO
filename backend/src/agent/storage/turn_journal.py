@@ -114,9 +114,38 @@ REASON_TEXT = {
 # 用户明确接管一条历史记录时写进 reason 的标记（契约 §2.1 冻结字面量）。
 TAKEOVER_REASON = "user_confirmed_takeover"
 
+# F03：后继已经落库、但派发没有做成时写进 reason 的前缀。
+# 带这个前缀的 `interrupted` 行是「明确、可原地重试」的状态：
+# 它没有在跑（submit 失败 = 没有进内存队列），所以重试的是**同一个 turn_id**，
+# 不会产生第二个后继，也不会静默宣称已执行。
+DISPATCH_FAILED_REASON_PREFIX = "dispatch_failed"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _owner_guard(owner_key: str | None) -> tuple[str, list[object]]:
+    """归属条件子句（F01/F04）：库里的归属列必须与**权威归属判定**一致。
+
+    权威判定（`record_owners` 优先，退回行上的列）与行上的列可能不一致：
+
+    * 权威归属者已确认退出（X）、列是 NULL —— 归属表是权威、列只是镜像，接管安全；
+    * 列上有**别的**实例 id —— 形状不一致，保守拒绝（命中 0 行），绝不抢走一条
+      可能正在被别的实例执行的记录；
+    * 无归属（旧记录 / 用户已确认旧执行者停止）—— 只接受列为 NULL 的行。
+
+    `owner_key=None` 表示调用方不做归属判定（旧路径 / 无归属表），保持原行为。
+    """
+    if owner_key is None:
+        return "", []
+    key = str(owner_key or "")
+    if not key:
+        return " AND IFNULL(owner_instance_id, '') = ''", []
+    return (
+        " AND (IFNULL(owner_instance_id, '') = '' OR IFNULL(owner_instance_id, '') = ?)",
+        [key],
+    )
 
 
 class JournalWriteError(RuntimeError):
@@ -458,6 +487,56 @@ class TurnJournal:
                 logger.warning("turn journal owner claim for resend failed", exc_info=True)
         return True
 
+    # -- F03：派发失败的明确状态（同一个后继原地重试） ----------------------
+
+    def mark_dispatch_failed(self, turn_id: str, reason: str) -> bool:
+        """把一条**刚落库、还没派发成功**的后继标成显式的可重试失败状态。
+
+        条件 UPDATE：只动 `queued` 行（已经跑起来的行不能被这次失败标记覆盖）。
+        原文、`recovered_by` 父子关联全部保留 —— 它仍然只有一个后继。
+        """
+        marker = f"{DISPATCH_FAILED_REASON_PREFIX}: {reason}".strip()
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, updated_at = ? "
+                "WHERE turn_id = ? AND status = ?",
+                (INTERRUPTED, marker[:500], _now(), str(turn_id), QUEUED),
+            )
+        except sqlite3.Error as exc:  # noqa: BLE001 - 台账失败不撤销已经落库的后继
+            logger.warning("turn journal mark_dispatch_failed failed: %s", exc)
+            return False
+        return int(cur.rowcount or 0) == 1
+
+    def requeue_dispatch_failed(self, turn_id: str) -> bool:
+        """把派发失败的后继原地放回 `queued`（同一个 turn_id，不新建行）。
+
+        只认「`interrupted` + reason 带派发失败前缀」这一精确状态：命中 0 行
+        （已经被重试过 / 状态已变）就返回 False，一行不改。
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = NULL, updated_at = ? "
+                "WHERE turn_id = ? AND status = ? AND reason LIKE ?",
+                (
+                    QUEUED,
+                    _now(),
+                    str(turn_id),
+                    INTERRUPTED,
+                    f"{DISPATCH_FAILED_REASON_PREFIX}:%",
+                ),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover
+                pass
+            logger.warning("turn journal requeue_dispatch_failed failed: %s", exc)
+            return False
+        return changed
+
     def orphaned_claims(self, limit: int = 50) -> list[dict[str, Any]]:
         """孤儿重发：`recovered_at` 非空、但 `recovered_by` 为空的遗留记录。
 
@@ -472,9 +551,32 @@ class TurnJournal:
             "ORDER BY recovered_at ASC LIMIT ?",
             (*_USER_INTERRUPTED_PARAMS, max(1, int(limit))),
         )
-        return [self._view(dict(r)) for r in rows]
+        views = [self._view(dict(r)) for r in rows]
+        # F04：这个出口是**回退**清单（前端在没有专用清单时会合并它）。专用清单
+        # （RecoveryInbox.list_records）不列出「归属者还活着」的记录；这里必须用
+        # 同一套 owner 判定过滤，否则被排除的项会从回退数据里重新冒出来。
+        # 判不出来（unknown）仍保留：它不是「活」，专用清单会照样给出原因与禁用动作。
+        return [row for row in views if not self._owner_is_alive(row)]
 
-    def repair_orphan(self, record_id: str, instance_id: str | None = None) -> bool:
+    def _owner_is_alive(self, row: dict[str, Any]) -> bool:
+        """这条记录的归属者是不是**确认活着**（只在有归属表时判定）。"""
+        if self.registry is None:
+            return False
+        owner = self._row_owner(row, self.registry)
+        if not owner:
+            return False
+        try:
+            return self.registry.owner_alive(owner) is True
+        except Exception:  # noqa: BLE001 - 判不出来就不从回退清单里排除
+            return False
+
+    def repair_orphan(
+        self,
+        record_id: str,
+        instance_id: str | None = None,
+        *,
+        owner_key: str | None = None,
+    ) -> bool:
         """让一条孤儿记录**重新可重发**（清掉那次失败的抢占），返回是否改到了行。
 
         只作用于「孤儿」这一种精确状态：`interrupted` + 用户行 + `recovered_at`
@@ -486,13 +588,19 @@ class TurnJournal:
         名下，这条记录就会因为「主人还活着」而重新从恢复入口消失 —— 刚修好的东西
         又看不见了。`instance_id` 只用于日志审计（保留参数以兼容既有调用方）。
         """
+        # F04：修复也必须是条件写入。`owner_key` 是调用方按权威归属判定算出来的：
+        # 无归属时是空串，归属者已确认退出时是它的实例 id。库里的归属列与它不一致
+        # （例如记录在归属表里但列是 NULL）时命中 0 行 —— 宁可不修，也不清掉一个
+        # 可能还在跑的写入者的抢占记录。
+        owner_clause, owner_params = _owner_guard(owner_key)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             cur = self.conn.execute(
                 "UPDATE turn_journal SET recovered_at = NULL, updated_at = ? "
                 f"WHERE turn_id = ? AND {_USER_INTERRUPTED_CLAUSE} "
-                "AND recovered_at IS NOT NULL AND (recovered_by IS NULL OR recovered_by = '')",
-                (_now(), str(record_id), *_USER_INTERRUPTED_PARAMS),
+                "AND recovered_at IS NOT NULL AND (recovered_by IS NULL OR recovered_by = '')"
+                + owner_clause,
+                (_now(), str(record_id), *_USER_INTERRUPTED_PARAMS, *owner_params),
             )
             changed = int(cur.rowcount or 0) == 1
             if changed:
@@ -552,25 +660,25 @@ class TurnJournal:
         """
         owner = instance_id if instance_id is not None else self._owner_id()
         moment = _now()
+        # F01/F04：归属条件写成**一个精确比较**（`IFNULL(owner_instance_id,'') = ?`）：
+        #   * 无归属（旧记录、或用户已确认旧执行者停止）→ 传入空串；
+        #   * 归属者已确认退出 → 传入它的实例 id。
+        # 只有当库里的归属列与调用方按权威判定算出来的归属**一致**时才命中 ——
+        # 归属表里有主人、列却是 NULL 这种不一致的形状会被保守拒绝（命中 0 行），
+        # 绝不会把一条可能正在被执行的记录抢走。
+        # 注意这里传的是 `dead_owner or ""`：`dead_owner=None` 的含义是
+        # 「只接受无归属的行」，不是「不做归属判定」。
+        owner_clause, owner_params = _owner_guard(dead_owner or "")
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             cur = self.conn.execute(
                 "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
-                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
-                "AND owner_instance_id IS NULL",
+                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL"
+                + owner_clause,
                 (INTERRUPTED, TAKEOVER_REASON, owner, moment, str(record_id),
-                 str(expected_status)),
+                 str(expected_status), *owner_params),
             )
             changed = int(cur.rowcount or 0) == 1
-            if not changed and dead_owner:
-                cur = self.conn.execute(
-                    "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
-                    "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
-                    "AND owner_instance_id = ?",
-                    (INTERRUPTED, TAKEOVER_REASON, owner, moment, str(record_id),
-                     str(expected_status), str(dead_owner)),
-                )
-                changed = int(cur.rowcount or 0) == 1
             self.conn.execute("COMMIT" if changed else "ROLLBACK")
         except sqlite3.Error as exc:
             try:
@@ -581,6 +689,59 @@ class TurnJournal:
             return False
         if changed and owner:
             self._claim_owner(str(record_id), str(owner))
+        return changed
+
+    def release_takeover(
+        self,
+        record_id: str,
+        *,
+        status: str,
+        reason: str | None,
+        owner_instance_id: str | None,
+        instance_id: str | None = None,
+    ) -> bool:
+        """接管成功、但后续步骤整体失败时，把这次接管**退回原状**（F03）。
+
+        错误可能发生在提交之前（重发事务整体回滚）：那时老记录已经被本实例接管成
+        `interrupted` 并带上了本实例归属 —— 如果不退回去，这条记录既不在恢复清单里
+        （归属者还活着），又会被「上次的写入者还在运行」挡住，用户在**当前运行**里
+        再也重试不了（只能等进程退出）。
+
+        只回退**本实例刚刚接管的那一条**：条件里带 `status = interrupted`、
+        `recovered_at IS NULL`、`owner_instance_id = 本实例` —— 任何并发的其它写入
+        都不会被这次回退覆盖。归属表也恢复成接管之前的样子。
+        """
+        me = instance_id if instance_id is not None else self._owner_id()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute(
+                "UPDATE turn_journal SET status = ?, reason = ?, owner_instance_id = ?, "
+                "updated_at = ? WHERE turn_id = ? AND status = ? AND recovered_at IS NULL "
+                "AND IFNULL(owner_instance_id, '') = ?",
+                (
+                    str(status),
+                    reason,
+                    owner_instance_id,
+                    _now(),
+                    str(record_id),
+                    INTERRUPTED,
+                    str(me or ""),
+                ),
+            )
+            changed = int(cur.rowcount or 0) == 1
+            self.conn.execute("COMMIT" if changed else "ROLLBACK")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:  # pragma: no cover
+                pass
+            logger.warning("turn journal release_takeover failed: %s", exc)
+            return False
+        if changed:
+            if owner_instance_id:
+                self._claim_owner(str(record_id), str(owner_instance_id))
+            else:
+                self._release_owner(str(record_id))
         return changed
 
     def _claim_owner(self, record_id: str, instance_id: str) -> None:
