@@ -44,7 +44,13 @@ if (-not (Test-Path $python)) {
   Write-Output ("缺少后端解释器：" + $python + " —— 先跑 uv sync --frozen --extra dev")
   $exits.backend = 127
 } else {
-  $exits.backend = Section '后端全量（pytest -q）' 'pytest-full.txt' { Set-Location $backend; & $python -m pytest -q; }
+  # 落一份 JUnit XML：pytest -q 的汇总行在重定向时可能被吃掉，计数以 XML 为准
+  # PowerShell 会在参数模式里拆开 "--junit-xml=(...)"，所以先把整段拼成一个变量再传
+  $junitArg = '--junit-xml=' + (Join-Path $OutDir 'pytest-junit.xml')
+  $exits.backend = Section '后端全量（pytest -q）' 'pytest-full.txt' {
+    Set-Location $backend
+    & $python -m pytest -q $junitArg
+  }
   $exits.docs = Section '文档一致性（check_docs.py）' 'check-docs.txt' { Set-Location $repo; & $python (Join-Path $repo 'scripts\check_docs.py'); }
 }
 Set-Location $repo

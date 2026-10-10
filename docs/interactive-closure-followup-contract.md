@@ -1,6 +1,6 @@
 # 互动板收尾后续轮：共同规则契约（fix/interactive-closure-followup，2026-10-10）
 
-本文件是**本轮（第八轮）**的唯一新约定来源，补充并**更新**以下历史文件里被本轮反例推翻的部分：
+本文件是**本轮（第七轮）**的唯一新约定来源，补充并**更新**以下历史文件里被本轮反例推翻的部分：
 
 - `docs/interactive-final-closure-contract.md`（第七轮 M1–M9）：其 M1「只在 dirty=true 时保护板面」的写法被本轮 R2/R3 推翻；其余 M2–M9 仍然有效。
 - `docs/interactive-final-closure-report.md`（第七轮报告）：其结论只适用于提交 `1da2172c6876c98f9b1076b4477dc75e7fe37638` 及其之前，不作为本轮验收结果。

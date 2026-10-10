@@ -494,7 +494,7 @@ export function sendFailureText(message: string | null): string;
 
 ### 11.10 拖动中的实时显示（2026-10-08 补充，见交付报告 §3.8）
 
-## 13. 收尾后续轮约定（2026-10-10 第八轮，**更新此前被本轮六条反例推翻的条文**）
+## 13. 收尾后续轮约定（2026-10-10 第七轮，**更新此前被本轮六条反例推翻的条文**）
 
 本轮针对六条新反例（R1–R6）统一修共同根因，不为单条反例加特例；完整矩阵、分工与证据见
 `docs/interactive-closure-followup-contract.md`。
