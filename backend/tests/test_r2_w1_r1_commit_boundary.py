@@ -32,8 +32,9 @@ from pathlib import Path
 
 import pytest
 
-from agent.services.attachments import STATE_READY, AttachmentService
+from agent.services.attachments import STATE_CANCELLED, STATE_READY, AttachmentService
 
+A_BYTES = b"A" * 4096
 B_BYTES = b"B" * 4096
 C_BYTES = b"C" * 4096
 UP_BYTES = b"U" * 4096
@@ -305,6 +306,43 @@ def test_normal_relocate_sequence_still_converges(svc, tmp_path):
 # -- 5. 绿守卫：删行之后的迟到结果仍走孤儿副本补偿（提交票号不得挡住它） ---------
 
 
+def test_same_generation_newer_attempt_supersedes_the_older_one(svc, tmp_path):
+    """同代际内：后开始的准备（哪怕它自己失败）作废更早的那一次 —— 旧结果绝不落地。
+
+    这是提交票号**唯一**的职责（跨代际由代际闸负责，见 N1 用例）。目标在这一整段里
+    都没有被谁提交过，所以身份核对是通的：只有票号能挡住旧操作。
+    """
+    a = _write(tmp_path / "same-gen-a.bin", A_BYTES)
+    att = svc.prepare(str(a), name="same-gen.bin", topic_id="t1")
+    generation = svc.prepare_generation(att.id)
+    old_att = svc.get(att.id, check=False)
+
+    worker, copied, proceed, sink, errors = _gated_copy(
+        svc, old_att, generation=generation
+    )
+    assert copied.wait(30), "旧操作没有走到提交边界"
+
+    # 更新的一次准备（**同代际**）：新位置不存在 → 立刻失败，什么都不提交
+    svc.plan_relocate(att.id, str(tmp_path / "gone.bin"))
+    assert svc.prepare_generation(att.id) == generation, "装置：这次重定位没有递增代际"
+    failed = svc.copy_to_disk(svc.get(att.id, check=False), generation=generation)
+    assert failed.state != STATE_READY, failed
+    assert not _target(svc, att.id).exists()
+
+    # 放行旧操作：更新的一次失败不等于旧结果可以补上
+    proceed.set()
+    worker.join(timeout=60)
+    assert not worker.is_alive() and errors == [], errors
+    stale = sink[0]
+    assert stale.state != STATE_READY, (
+        "更新的一次准备已经开始（哪怕它失败了），旧结果不得落地",
+        {"state": stale.state, "error": stale.error},
+    )
+    svc.apply_outcome(att.id, stale)
+    assert not _target(svc, att.id).exists(), "旧结果不得落到磁盘上"
+    assert _parts(svc.root) == []
+
+
 def test_late_stale_outcome_after_delete_still_cleans_its_own_orphan(svc, tmp_path):
     """旧操作已经提交出副本、更新的一次准备随后开始；用户把这一行移除之后，
     迟到的旧结果仍必须清掉**它自己那一份**无人认领的副本。"""
@@ -324,6 +362,92 @@ def test_late_stale_outcome_after_delete_still_cleans_its_own_orphan(svc, tmp_pa
     assert svc.apply_outcome(att.id, first) is None  # 迟到的旧结果（票号已过期）
     assert not committed.exists(), "迟到结果必须清掉它自己那份无人认领的副本"
     assert b.is_file(), "用户原文件永远不动"
+
+
+# -- 6. 红（审计 N1）：票号在 worker 线程里领 → 顺序反转时两个操作互相作废 ------
+
+
+def _n1_order_reversal_race(svc: AttachmentService, tmp_path: Path):
+    """审计 N1 的确定性时序（受控闸门，无 sleep）：
+
+    ① **当前代际**（gen=2）的操作先启动并停在提交边界（它领到票号 A）；
+    ② 一个**过期代际**（gen=1）的操作在它之后才在 worker 线程里启动（领到更大的票号 B）；
+    ③ 过期操作到边界：代际校验失败 → 作废（正确）；
+    ④ 放行当前代际的操作 —— 它绝不能被过期操作的更大票号作废。
+
+    返回 (att_id, current_gen, out_current, stale_outcome)。
+    """
+    a = _write(tmp_path / "n1-a.bin", A_BYTES)
+    b = _write(tmp_path / "n1-b.bin", B_BYTES)
+    att = svc.prepare(str(a), name="n1.bin", topic_id="t1")
+    stale_gen = svc.prepare_generation(att.id)
+    stale_att = svc.get(att.id, check=False)  # 快照：source = A（过期代际那一份）
+
+    svc.plan_relocate(att.id, str(b))  # 代际 → stale_gen + 1
+    current_gen = svc.prepare_generation(att.id)
+    assert current_gen == stale_gen + 1, (stale_gen, current_gen)
+    current_att = svc.get(att.id, check=False)  # 快照：source = B
+
+    # ① 当前代际的操作先启动：领票号、复制完、停在提交边界之前
+    worker, copied, proceed, sink, errors = _gated_copy(
+        svc, current_att, generation=current_gen
+    )
+    assert copied.wait(30), "当前代际的操作没有走到提交边界（装置失效）"
+
+    # ② 过期代际的操作在此时此刻才启动 —— 它会领到**更大的票号**
+    stale_outcome = svc.copy_to_disk(stale_att, generation=stale_gen)
+    assert stale_outcome.state == STATE_CANCELLED, (
+        "过期代际的操作必须在提交边界被作废（代际是硬闸）",
+        {"state": stale_outcome.state, "error": stale_outcome.error},
+    )
+
+    # ④ 放行当前代际的操作
+    proceed.set()
+    worker.join(timeout=60)
+    assert not worker.is_alive(), "当前代际的操作没有结束"
+    assert errors == [], errors
+    return att.id, current_gen, sink[0], stale_outcome
+
+
+def test_stale_generation_worker_starting_later_never_invalidates_current_generation(
+    svc, tmp_path
+):
+    """N1 反例：过期代际（后启动）的更大票号不得作废当前代际的操作。
+
+    基线上两个操作会互相作废：目标副本不存在、行停在 prepared、is_preparing 仍为 True。
+    """
+    att_id, current_gen, out_current, _stale = _n1_order_reversal_race(svc, tmp_path)
+
+    assert out_current.state == STATE_READY, (
+        "当前代际的操作被过期代际操作的更大票号作废了（N1：两个操作互相作废）",
+        {"state": out_current.state, "error": out_current.error},
+    )
+    applied = svc.apply_outcome(att_id, out_current, generation=current_gen)
+    assert applied is not None and applied.state == STATE_READY, applied
+    assert _served(svc, att_id) == B_BYTES, "最终落地的必须是当前代际（B）的内容"
+    row = svc.get(att_id, check=False)
+    assert row.state == STATE_READY, (row.state, row.error)
+    assert not svc.is_preparing(att_id), "落定之后不得还挂着在飞准备"
+    assert _parts(svc.root) == []
+
+
+async def test_after_the_order_reversal_race_the_binding_does_not_wait_for_timeout(
+    svc, tmp_path
+):
+    """N1 的影响面：时序反转之后，这一轮的绑定必须直接成功，不得等满超时才拒绝。"""
+    att_id, current_gen, out_current, _stale = _n1_order_reversal_race(svc, tmp_path)
+    svc.apply_outcome(att_id, out_current, generation=current_gen)
+
+    # 收紧等待上限：基线形状下这里会等到超时并给出 attachment_not_ready
+    svc.prepare_wait_seconds = 0.05
+    outcome = await svc.bind_for_turn(
+        turn_id="turn_n1", attachment_ids=[att_id], topic_id="t1"
+    )
+    assert outcome.rejected == [], (
+        "时序反转后附件仍不可绑定（附件永远停在 prepared）",
+        outcome.as_receipt(),
+    )
+    assert outcome.bound == [att_id], outcome.as_receipt()
 
 
 def test_late_stale_outcome_never_deletes_the_newer_copy(svc, tmp_path):
