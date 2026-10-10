@@ -858,16 +858,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
           // F3：先接收最新服务器事实（保留本页候选），再用**最新版本**重新预判 ——
           // 只有这样才能拿到有效的 checkId，而不是拿旧 seq 反复被拒（基线的真实缺陷）。
           const readError = await recoverCandidateFromServer("这次保存需要先做影响确认，但板面版本已经变化");
-          if (readError) {
-            impactCheckError.value = readError;
-            saveStatus.value = "idle";
-            saveError.value = null;
+          // 读取失败**不能**让用户连确认说明都看不到：仍然按当前候选重新预判，
+          // 把「最新事实没取到」如实写在说明里；万一版本真的变了，保存时会被服务端再拦一次。
+          const outcome = await recheckImpactForCurrentCandidate(
+            gatedTasks,
+            readError ? "板面最新事实没有取到：" + readError + "。下面是按当前候选重新预判的范围；若版本已经变化，保存时会再要求你确认。" : undefined,
+          );
+          if (outcome === "blocked") {
+            if (readError && impactCheckError.value) {
+              impactCheckError.value = readError + "；重新预判也没有完成（" + impactCheckError.value + "）";
+            }
             return;
           }
-          const outcome = await recheckImpactForCurrentCandidate(gatedTasks);
           if (outcome === "ok") resumeSave = true;
-          // 内容冲突等「必须由用户决定」的阻断原因不能被这里清掉
-          if (outcome === "blocked") return;
           saveStatus.value = "idle";
           saveError.value = null;
           return;
@@ -895,16 +898,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
           const readError = await recoverCandidateFromServer(
             "这次改动的影响确认已经过期（" + (failure.reason ?? "板面版本已变化") + "）",
           );
-          if (readError) {
-            impactCheckError.value = readError;
-            saveStatus.value = "idle";
-            saveError.value = null;
+          // 读取失败同样不能把用户堵在「无解释」上：仍按当前候选重新预判并重新展示范围
+          const outcome = await recheckImpactForCurrentCandidate(
+            gatedTasks,
+            readError
+              ? "板面最新事实没有取到：" + readError + "。下面是按当前候选重新预判的范围；若版本已经变化，保存时会再要求你确认。"
+              : scopeNote,
+          );
+          if (outcome === "blocked") {
+            if (readError && impactCheckError.value) {
+              impactCheckError.value = readError + "；重新预判也没有完成（" + impactCheckError.value + "）";
+            }
             return;
           }
-          const outcome = await recheckImpactForCurrentCandidate(gatedTasks, scopeNote);
           if (outcome === "ok") resumeSave = true;
-          // 内容冲突等「必须由用户决定」的阻断原因不能被这里清掉
-          if (outcome === "blocked") return;
           saveStatus.value = "idle";
           saveError.value = null;
           return;
