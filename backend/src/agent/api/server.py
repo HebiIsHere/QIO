@@ -83,6 +83,8 @@ from agent.storage.db_identity import (
     connection_db_path,
     disabled_report,
 )
+# 终态动作表的读时投影只有一份实现（冻结契约 K3 / R6）：这里与 TurnJournal.facts 共用它
+from agent.storage.turn_journal import project_terminal_actions
 
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
@@ -2148,16 +2150,16 @@ def create_app(
             row = (rows or {}).get(turn_id)
             if not row:
                 continue
-            actions = [str(a) for a in (row.get("actions") or [])]
-            # 冻结契约 K3（读路径归一）：cancelled 轮不得显示点不通的 resend —— 旧记录
-            # 里存过 resend 的，读出来归一到真正可用的 retry；journal 行本身不改写，
-            # interrupted 仍保留 resend。
-            if str(row.get("status") or "") == "cancelled" and "resend" in actions:
-                actions = ["retry" if a == "resend" else a for a in actions]
-            # interrupted 轮真正可恢复（resend 一次性领取），读路径补上它的可用动作：
-            # 否则刷新后「继续发送」入口会因为没有动作而消失（K3.2）。journal 不动。
-            if str(row.get("status") or "") == "interrupted" and not actions:
-                actions = ["resend"]
+            # 冻结契约 K3 / R6（读路径归一）：与 TurnJournal.facts 调**同一份**投影，
+            # 不再在这里另写一套 —— 两份口径分叉正是「重发成功后刷新仍透出 resend」
+            # 的根因（这份镜像以前无条件给 interrupted 补 resend，连已领取 / 通知轮也补）。
+            # 幂等：facts() 已经投影过一次，这里再投影一次结果不变；journal 行不改写。
+            actions = project_terminal_actions(
+                str(row.get("status") or ""),
+                [str(a) for a in (row.get("actions") or [])],
+                notify=bool(row.get("notify")),
+                recovered_at=row.get("recovered_at"),
+            )
             if not any(
                 (row.get("reason_code"), row.get("reason"), row.get("stopped_by"), actions)
             ):
