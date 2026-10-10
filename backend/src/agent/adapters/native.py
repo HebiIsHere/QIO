@@ -153,6 +153,26 @@ def _error_from_status(status: int, body: str) -> Any:
     return e.ProviderInternalError(f"provider {status}: {body}")
 
 
+class _StreamAttempt:
+    """一次流式尝试的**请求事实**：记账看它，不看异常类别。
+
+    * `requested`：真的把请求交给客户端之后才为真（能力检查阶段为假）；
+    * `settled`：这次尝试已经登过账（成功用量 / 不完整失败），不再重复登记。
+
+    为什么必须按事实判断：`UnsupportedCapability` 有两个来源 ——
+    「还没发请求就发现这条路径用不了流式」（能力检查，零记账）与
+    「请求已经发出去、响应回来之后才发现增量不可用」（客户端不返回异步流 /
+    零增量且看不到 Content-Type，必须登记一次）。只看异常类别的旧写法把
+    后者的真实请求抹掉了：账本少一次、界面统计也少一次。
+    """
+
+    __slots__ = ("requested", "settled")
+
+    def __init__(self) -> None:
+        self.requested = False
+        self.settled = False
+
+
 class NativeAdapter(BaseAdapter):
     mode = "native"
     # 这条 adapter 在**每次实际请求**上自己记账（见 credentials/usage.py）：
@@ -345,7 +365,9 @@ class NativeAdapter(BaseAdapter):
           才出现在 kind="done" 的 completion 里 —— 没有 done 就没有可执行的调用；
         * usage 只在流结束时由供应商给出，所以显式要求 stream_options.include_usage；
           供应商不认这个参数时（窄判定）去掉它重试一次，此时用量如实为 None，
-          而不是伪造一个 0。
+          而不是伪造一个 0；
+        * 记账看的是**请求事实**（_StreamAttempt.requested），不是异常类别：每次真的
+          发出去的请求恰好登一次账，详见下面的记账段落。
         """
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -362,40 +384,60 @@ class NativeAdapter(BaseAdapter):
             kwargs["max_tokens"] = max_tokens
 
         # 记账（契约 5 / 预算）：真流式同样是**一次实际请求**，与 complete() 同口径 ——
-        # 进入前核对累计用量（耗尽抛 BudgetExhausted），流结束后按真实用量入账，
-        # 没有任何用量的失败标 incomplete。记账点在**外层** stream()：内层 _stream_once
-        # 可能因 stream_options 被拒而重放一次，记在内层会把同一次调用记两遍。
+        # 每次发出请求之前核对累计用量（耗尽抛 BudgetExhausted），每次真的发出去的
+        # 请求恰好登一次账。
+        #
+        # 判据是**请求事实**（_StreamAttempt.requested），不是异常类别：_stream_once
+        # 可能在已经调用客户端、读到响应**之后**才抛 UnsupportedCapability
+        # （客户端不返回异步流 / 零增量且看不到 Content-Type）。那次请求确实发生了 ——
+        # 没有可靠用量就记一次「不完整用量」（不估算 token）；按异常类别跳过会让这次
+        # 真实请求凭空消失，账本与展示统计都少一次。
+        # 反过来，「还没发出请求就发现这条路径用不了流式」时 requested 为假，一次也不记：
+        # 上层随后整段降级会再发一次真实请求，由那一次自己记账。
         from agent.credentials import usage as accounting
+
+        def _account_done(attempt: _StreamAttempt, delta: StreamDelta) -> None:
+            if delta.kind == STREAM_DONE and delta.completion is not None:
+                accounting.account_adapter_request(self, delta.completion.usage)
+                attempt.settled = True
+
+        def _account_failure(attempt: _StreamAttempt, exc: Exception | None) -> None:
+            """这次尝试失败时的记账：只看请求事实，最多记一次。
+
+            已经登记过（拿到了 done 的真实用量）就不再记；`requested` 为假表示还没
+            发出请求（能力检查阶段）—— 零记账，交给上层整段降级的那次请求自己记。
+            """
+            if attempt.settled or not attempt.requested:
+                return
+            attempt.settled = True
+            if exc is None:
+                accounting.account_adapter_failure(
+                    self, reason="stream ended without a completion"
+                )
+            else:
+                accounting.account_adapter_failure(self, exc)
+
+        async def _pump(
+            kwargs: dict[str, Any], attempt: _StreamAttempt
+        ) -> AsyncIterator[StreamDelta]:
+            async for delta in self._stream_once(kwargs, attempt):
+                _account_done(attempt, delta)
+                yield delta
+            # 干净结束却没有 done（拿到了流、连一条结束包都没有）：请求已经发生，
+            # 如实记「不完整」，而不是当它没发生过。
+            _account_failure(attempt, None)
 
         accounting.ensure_adapter_request_allowed(self)
 
-        def _account_done(delta: StreamDelta) -> None:
-            if delta.kind == STREAM_DONE and delta.completion is not None:
-                accounting.account_adapter_request(self, delta.completion.usage)
-
-        def _account_failure(exc: Exception) -> None:
-            """失败记账（只有真的发过请求才记）。
-
-            `UnsupportedCapability` / `NotImplementedError` 表示「这条路径用不了流式」——
-            客户端根本没返回异步流、或 adapter 没实现 stream，**没有任何请求发出去**；
-            上层随后会整段降级再发一次真实请求，那一次会自己记账。把它记成 incomplete
-            会凭空多出一次「失败的请求」，污染账本与展示统计。
-            """
-            from agent.adapters.errors import UnsupportedCapability
-
-            if isinstance(exc, (NotImplementedError, UnsupportedCapability)):
-                return
-            accounting.account_adapter_failure(self, exc)
-
         yielded = False
+        attempt = _StreamAttempt()
         try:
-            async for delta in self._stream_once(kwargs):
+            async for delta in _pump(kwargs, attempt):
                 yielded = True
-                _account_done(delta)
                 yield delta
             return
         except Exception as exc:  # noqa: BLE001 - 两条窄降级路径
-            _account_failure(exc)
+            _account_failure(attempt, exc)
             if yielded:
                 raise  # 已经透出正文就不能重来（会重复展示）
             if _rejects_stream_options(exc):
@@ -405,17 +447,22 @@ class NativeAdapter(BaseAdapter):
             else:
                 raise
         kwargs.pop("stream_options", None)
+        # 去掉 stream_options 重发是**第二次实际请求**：发出之前重新核对预算，
+        # 不复用第一次的核对结论（第一次可能已经把额度用掉或用尽）。
+        accounting.ensure_adapter_request_allowed(self)
+        attempt = _StreamAttempt()
         try:
-            async for delta in self._stream_once(kwargs):
-                _account_done(delta)
+            async for delta in _pump(kwargs, attempt):
                 yield delta
         except Exception as exc:  # noqa: BLE001 - 同上；此时仍然什么都没发出去
-            _account_failure(exc)
+            _account_failure(attempt, exc)
             if _stream_rejected(exc):
                 raise _unsupported_stream(exc) from exc
             raise
 
-    async def _stream_once(self, kwargs: dict[str, Any]) -> AsyncIterator[StreamDelta]:
+    async def _stream_once(
+        self, kwargs: dict[str, Any], attempt: _StreamAttempt
+    ) -> AsyncIterator[StreamDelta]:
         from agent.adapters.errors import UnsupportedCapability, normalize_error
 
         # 有 with_raw_response 时用它：**只有这条路能先看到 Content-Type**。
@@ -432,6 +479,8 @@ class NativeAdapter(BaseAdapter):
         try:
             if raw_sender is not None:
                 saw_content_type = True
+                # 从这里开始就是**一次实际请求**：记账只看这个事实（见 _StreamAttempt）。
+                attempt.requested = True
                 response = await raw_sender(**kwargs)
                 status = int(getattr(response.http_response, "status_code", 200) or 200)
                 if status >= 400:
@@ -447,6 +496,7 @@ class NativeAdapter(BaseAdapter):
                     return
                 raw = response.parse()
             else:
+                attempt.requested = True
                 raw = await client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             raise normalize_error(exc) from exc
