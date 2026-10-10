@@ -23,6 +23,7 @@ from agent.adapters.base import (
     ToolSpec,
 )
 from agent.prompts import (
+    CONTENT_ROLE_PROTOCOL,
     SYSTEM_PROMPT_TEXT_MODE,
     SYSTEM_PROMPT_TOOLS_HEADER,
     TEXT_TOOL_ENTRY,
@@ -49,6 +50,10 @@ class TextAdapter(BaseAdapter):
     tools_in_prompt = True
     # 每次实际请求自己记账 —— 与 native / anthropic 同一处（credentials/usage.py）。
     accounts_requests = True
+    # 明确降级（plan §2.1 第 8 条）：这条路径**不支持**实时生成，
+    # AgentLoop 会一次性给出 {streaming: false}，前端如实提示
+    # 「该模型路径不支持实时生成」，而不是假装一片一片地出字。
+    supports_stream = False
 
     def __init__(
         self,
@@ -89,6 +94,10 @@ class TextAdapter(BaseAdapter):
             )
         return "\n".join(lines)
 
+    # text 档自己把内容角色协议拼进 system prompt（见 build_system_prompt）：
+    # core/loop.py 据此不再重复注入（同一份措辞只出现一次）。
+    protocol_in_prompt = True
+
     def build_system_prompt(self, tools: list[ToolSpec]) -> str:
         tools_block = self.build_text_tools(tools)
         if tools_block:
@@ -99,7 +108,8 @@ class TextAdapter(BaseAdapter):
             '"工具 <name> 的结果（call_id=<id>）：<result>"; '
             'your tool calls are echoed as "调用工具 <name>（call_id=<id>）：参数 <json>".'
         )
-        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{observation_note}\n\n{tools_block}"
+        # 内容角色协议（第五轮契约 §1.1）：三档都要能看到，text 档拼在这里。
+        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{CONTENT_ROLE_PROTOCOL}\n\n{observation_note}\n\n{tools_block}"
 
     def system_prompt_text(self, tools: list[ToolSpec]) -> str:
         """text 档真正会发出去的 system prompt（含全部工具 schema）。"""
@@ -110,6 +120,21 @@ class TextAdapter(BaseAdapter):
         return super().protocol_overhead_tokens(tools) + 32
 
     # -- completion -------------------------------------------------------
+
+    def _request_client(self) -> Any:
+        """发起请求用的客户端：**关掉 SDK 自己的自动重试**（与 native 档同一口径）。
+
+        openai SDK 默认 max_retries=2：明确的厂商/传输错误会被静默重试，我们看到
+        的是重试后那一次的结果 —— 一次 5xx 可能因此变成一个「正常回答」。QIO 的
+        语义是原样上抛 → 整轮如实失败（provider_error）。
+        """
+        with_options = getattr(self._client, "with_options", None)
+        if with_options is None:
+            return self._client
+        try:
+            return with_options(max_retries=0)
+        except Exception:  # noqa: BLE001 - 兼容客户端不认识这个参数时原样用
+            return self._client
 
     async def complete(
         self,
@@ -133,7 +158,7 @@ class TextAdapter(BaseAdapter):
 
         accounting.ensure_adapter_request_allowed(self)
         try:
-            raw = await self._client.chat.completions.create(**kwargs)
+            raw = await self._request_client().chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             from agent.adapters.errors import normalize_error
 

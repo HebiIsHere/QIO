@@ -702,10 +702,18 @@ async def test_loop_skips_interim_when_batch_has_narrative():
     loop = AgentLoop(_EchoAdapter(), registry, bus, turn_id="turn_1", narrative_sink=sink)
     await loop.run("hi")
 
-    published = [e.type for e in bus._history]
-    # 有叙事 → 没有 interim 的 ASSISTANT；叙事本身照常
-    assert EventType.ASSISTANT not in published
+    published = [e for e in bus._history if e.type == EventType.ASSISTANT]
+    # 有叙事 → 这一批工具的正文不再单独推 interim（同一阶段只保留一种过程表达）。
+    assert not any(
+        e.data.get("content") == "我先看几个文件再说。" for e in published
+    )
     assert events == [{"narrative": "我先确认审批链路。"}]
+    # 契约 §1.1 变更：角色由正文声明决定 —— 第二次调用的正文没有声明 → 一次性交付
+    # 到正式回答区（降级路径，interim=false、streaming=false），不再是过程区说明。
+    assert [e.data.get("content") for e in published] == ["完成"]
+    answer = published[-1].data
+    assert answer["interim"] is False and answer["streaming"] is False
+    assert answer["role_evidence"] == "undeclared_answer"
 
 
 async def test_loop_keeps_interim_when_batch_has_no_narrative():
@@ -743,8 +751,17 @@ async def test_loop_keeps_interim_when_batch_has_no_narrative():
     interim = [
         e for e in loop.bus._history if e.type == EventType.ASSISTANT and e.data.get("interim")
     ]
+    # 工具轮的正文（没有叙事时）是过程说明；契约 §1.1 变更：正式回答由正文声明决定，
+    # 未声明的第二次调用按一次性交付到回答区（interim=false，降级路径）。
     assert len(interim) == 1
     assert interim[0].data["content"] == "我先看几个文件再说。"
+    answer = [
+        e
+        for e in loop.bus._history
+        if e.type == EventType.ASSISTANT and not e.data.get("interim")
+    ]
+    assert [e.data["content"] for e in answer] == ["完成"]
+    assert answer[0].data["role_evidence"] == "undeclared_answer"
 
 
 # ---- AppContext：先落库、再广播；批次结束补写系统调用摘要 ------------------------
@@ -793,11 +810,23 @@ async def test_narrative_is_persisted_then_broadcast(tmp_path):
     assert raw["narrative"]["kind"] == "announce"
     assert raw["narrative"]["tool"] == "echo"
     assert raw["calls"] == []
+    # 阶段事实与说明在同一条消息里（plan §1.4）：没有合法 stage 操作时，
+    # 系统兜底建立一个隐式阶段（name 取首条说明）。
+    # turn_1 → shortest 形式 st_1_1（真实 turn 是 turn_<12hex> → st_<8hex>_<n>）
+    assert raw["stage"]["stage_id"] == "st_1_1"
+    assert raw["stage"]["index"] == 1
+    assert raw["stage"]["name"] == "我先确认审批链路。"
+    assert raw["stage"]["op"] == "start"
+    assert raw["stage"]["status"] == "running"
 
-    events = [e for e in ctx.bus._history if e.type.value == "NARRATIVE"]
+    # 主轮广播的是 STAGE（NARRATIVE 保留为兼容事件，主轮不再发）。
+    assert [e for e in ctx.bus._history if e.type.value == "NARRATIVE"] == []
+    events = [e for e in ctx.bus._history if e.type.value == "STAGE"]
     assert len(events) == 1
     assert events[0].data["narrative_id"] == message_id
     assert events[0].data["call_ids"] == ["c1"]
+    assert events[0].data["stage_id"] == raw["stage"]["stage_id"]
+    assert events[0].data["text"] == "我先确认审批链路。"
 
 
 async def test_narrative_without_binding_only_broadcasts(tmp_path):

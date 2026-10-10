@@ -33,6 +33,8 @@ export const EVENT_TYPES = [
   "TOOL_END",
   // 模型自主决定的过程说明（announce / progress / warning / result）
   "NARRATIVE",
+  // 系统生成的过程阶段（顺序 / 阶段内说明 / 状态；契约 §1.3）
+  "STAGE",
   "ASSISTANT",
   "ANCHOR",
   "TOPIC_SWITCH_SUGGESTED",

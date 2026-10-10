@@ -63,6 +63,9 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         # 过程说明：丢了就少一句模型文案，但客户端会因此无法与服务器对齐，
         # 所以按关键事件处理（走既有 RESYNC 恢复路径）。
         EventType.NARRATIVE,
+        # 阶段（plan §1.3）：阶段边界丢了，过程区就会停在错误的名字/序号上，
+        # 与整轮状态不再对应 —— 按关键事件处理。
+        EventType.STAGE,
         EventType.TOOL_CREATE_STATUS,
         EventType.APPROVAL_REQUIRED,
         EventType.APPROVAL_RESULT,
@@ -153,11 +156,19 @@ class _Subscriber:
         self._wake.set()
 
     def _merge_target(self, event: AgentEvent) -> int | None:
-        """同一 (类型, turn) 已有条目 → 合并到最新（保留到达顺序，旧条目移除）。"""
+        """同一 (类型, turn_id, delta_id) 已有条目 → 合并到最新。
+
+        合并键在 plan §2.1 第 5 条里被细化为三元组：一次模型调用 = 一个 delta_id，
+        同一 turn 里不同 delta（例如工具轮的 interim 与之后那一轮）的累计快照
+        互不覆盖。没有 delta_id 的累计事件（例如 USAGE）键里的 delta_id 为 None，
+        行为与以前完全一致。
+        """
         for index in range(len(self._items) - 1, -1, -1):
             other = self._items[index]
-            if other.type == event.type and other.data.get("turn_id") == event.data.get(
-                "turn_id"
+            if (
+                other.type == event.type
+                and other.data.get("turn_id") == event.data.get("turn_id")
+                and other.data.get("delta_id") == event.data.get("delta_id")
             ):
                 return index
         return None

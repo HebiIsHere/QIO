@@ -92,6 +92,8 @@ async def test_marker_once_on_normal_turn(ctx: AppContext):
     finally:
         mp.undo()
 
+    # 契约 §1.1 变更：回答由 [[QIO:ANSWER]] 声明，未声明走降级交付 ——
+    # 合规直接问答只有 1 次调用；每次调用里标记都只出现一次
     assert adapter.marker_count_per_call(MARKER) == [1], adapter.calls
     assert "历史消息 0" in adapter.joined  # history not silently dropped
 
@@ -110,8 +112,8 @@ async def test_marker_once_when_model_switches_topic(ctx: AppContext):
     finally:
         mp.undo()
 
-    # one request before the tool call, one after: the marker must appear
-    # exactly once in each
+    # 工具调用前、工具执行后的每次调用里标记都只出现一次
+    # （契约 §1.1 变更：角色由 [[QIO:ANSWER]] 声明，未声明走降级交付 → 2 次调用）
     assert adapter.marker_count_per_call(MARKER) == [1, 1], adapter.calls
     # 本轮是**模型自己**切的话题：整轮跟着走（阶段 1 的受控例外）。
     # 来源话题只留切话题之前的历史，当前消息落在目标话题。
@@ -146,6 +148,7 @@ async def test_marker_once_when_model_creates_topic(ctx: AppContext):
     finally:
         mp.undo()
 
+    # 同上：契约 §1.1 变更后是 2 次调用（工具轮 + 未声明的降级交付）
     assert adapter.marker_count_per_call(MARKER) == [1, 1], adapter.calls
     node = ctx.conn.execute(
         "SELECT id FROM nodes WHERE type = 'topic' AND name = '全新话题XYZ'"

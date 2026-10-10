@@ -1,0 +1,57 @@
+{
+  "base": "http://127.0.0.1:5199",
+  "provider": "http://127.0.0.1:8798",
+  "out": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots",
+  "results": [
+    {
+      "name": "统一过程区：运行中截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\01-process-running.png"
+    },
+    {
+      "name": "完成自动收起截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\03-process-collapsed-complete.png"
+    },
+    {
+      "name": "长回答与代码块截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\04-long-answer-codeblock.png"
+    },
+    {
+      "name": "阶段历史展开截图",
+      "ok": true,
+      "detail": {
+        "shot": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\02-stage-history.png",
+        "region": "已完成\n核对实现 · 2 项失败\n▾\n耗时 294 毫秒\n2 个阶段 · 2 次调用\n1\n读取仓库结构\n已完成\n\n正在读取仓库结构\n\n✕\n读取文件\n18:30:41\n▸\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-183023\\\\workspace…（展开可看完整原因）\n\n输出\n\n读取失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\zxy\\\\AppData\\\\Local\\\\Temp\\\\qio-verify-d-20261006-183023\\\\workspace\\\\README.md'\n\n2\n核对实现\n已完成\n\n正在核对实现\n\n✕\n读取文件\n18:30:41\n▸\n\n读取失败"
+      }
+    },
+    {
+      "name": "窄窗口截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\05-narrow.png"
+    },
+    {
+      "name": "审批内联截图",
+      "ok": false,
+      "detail": {
+        "shot": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\06-approval-inline.png",
+        "inline": false,
+        "modal": false
+      }
+    },
+    {
+      "name": "附件准备中截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\07-attachment-preparing.png"
+    },
+    {
+      "name": "附件登记完成截图",
+      "ok": true,
+      "detail": "D:\\qio-dev\\qio-up-v\\docs\\verification-shots\\08-attachment-ready.png"
+    }
+  ],
+  "failed": [
+    "审批内联截图"
+  ]
+}

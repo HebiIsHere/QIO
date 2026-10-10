@@ -1,0 +1,348 @@
+/**
+ * 一轮 = 一个过程区域（契约 §1.5）：
+ *
+ * * 状态行是系统事实（受理中 / 运行中 / 等待确认 / 已停止 / 已完成 · 耗时）；
+ * * 当前阶段突出显示，历史可展开（阶段顺序 + 历次说明 + 关联工具）；
+ * * 完成 / 失败 / 停止自动收起，但**用户手动展开过、或正在上翻阅读时不动**；
+ * * legacy 记录平铺，不伪造阶段；同一段过程文字只出现一次；
+ * * 内联审批复用既有 approvals store（同一时刻只允许一套按钮）。
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
+import TurnProcess from "../TurnProcess.vue";
+import { useApprovalsStore } from "../../stores/approvals";
+import {
+  useSessionStore,
+  type StreamMessage,
+  type TurnFacts,
+  type TurnStage,
+} from "../../stores/session";
+import { resetProcessState } from "../../stores/turnProcess";
+
+const { respondApproval, getTrace } = vi.hoisted(() => ({
+  respondApproval: vi.fn((..._args: unknown[]) => Promise.resolve({ ok: true })),
+  getTrace: vi.fn((..._args: unknown[]) =>
+    Promise.resolve({ turn_id: "turn_1", duration_ms: 0, phases: {} }),
+  ),
+}));
+
+vi.mock("../../services/api", () => ({
+  api: { respondApproval, getTrace, getUISettings: vi.fn() },
+  ApiError: class ApiError extends Error {},
+}));
+
+function msg(partial: Partial<StreamMessage> & { id: string; role: StreamMessage["role"] }): StreamMessage {
+  return {
+    content: "",
+    contentType: "text",
+    createdAt: "2026-10-06T08:00:00+00:00",
+    ...partial,
+  } as StreamMessage;
+}
+
+function stage(partial: Partial<TurnStage> & { stageId: string }): TurnStage {
+  return {
+    index: 1,
+    name: "",
+    status: "running",
+    notes: [],
+    callIds: [],
+    ...partial,
+  };
+}
+
+function facts(partial: Partial<TurnFacts> = {}): TurnFacts {
+  const base: TurnFacts = {
+    turnId: "turn_1",
+    status: "completed",
+    durationMs: null,
+    queueMs: null,
+    startedAt: null,
+    endedAt: null,
+    reason: null,
+    reasonCode: null,
+    stoppedBy: null,
+    actions: [],
+    errorText: null,
+  };
+  return { ...base, ...partial };
+}
+
+function mountProcess(props: Record<string, unknown> = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  const session = useSessionStore();
+  const w = mount(TurnProcess, {
+    props: {
+      turnId: "turn_1",
+      items: [],
+      stages: [],
+      facts: null,
+      running: false,
+      ...props,
+    },
+    global: { plugins: [pinia], stubs: { MarkdownContent: true } },
+  });
+  return { w, session, pinia };
+}
+
+const RUNNING_STAGE = stage({
+  stageId: "st_ab12_1",
+  index: 1,
+  name: "读取仓库结构",
+  status: "running",
+  notes: [
+    { narrativeId: "msg_1", text: "正在读取仓库结构", kind: "progress", at: "2026-10-06T08:00:00+00:00" },
+  ],
+  callIds: ["c1"],
+});
+
+const RUNNING_TOOL = msg({
+  id: "t1",
+  role: "tool",
+  callId: "c1",
+  toolName: "read_file",
+  toolStatus: "running",
+  stageId: "st_ab12_1",
+  presentation: { title: "读取文件" },
+});
+
+beforeEach(() => {
+  resetProcessState();
+  respondApproval.mockClear();
+  getTrace.mockClear();
+});
+
+describe("过程区：状态行与当前阶段", () => {
+  it("运行中：状态行给一行工具摘要、当前阶段名与最新说明可见；逐项工具卡默认收起", async () => {
+    const { w, session } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
+    session.turnPhase = "generating";
+    await nextTick();
+
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("运行中");
+    expect(status).toContain("读取文件 · 1 项工具运行中");
+    expect(w.find(".tp-current").text()).toContain("读取仓库结构");
+    // 契约 §1.5：运行中不再自动展开历史，逐项工具卡不进默认可见区
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
+    expect(w.findAll(".tool-card")).toHaveLength(0);
+    // 需要时用**独立**的当前阶段明细开关展开
+    await w.find("[data-test='turn-process-stage-toggle']").trigger("click");
+    expect(w.findAll(".tool-card")).toHaveLength(1);
+    w.unmount();
+  });
+
+  it("完成：自动收起历史，状态行与总耗时仍然在（总耗时来自 TURN_END）", async () => {
+    const done = stage({ ...RUNNING_STAGE, status: "done" });
+    const { w } = mountProcess({
+      items: [RUNNING_TOOL],
+      stages: [done],
+      running: false,
+      facts: facts({ status: "completed", durationMs: 12345 }),
+    });
+    await nextTick();
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
+    expect(w.find("[data-test='turn-process-status']").text()).toContain("已完成");
+    expect(w.find("[data-test='turn-process-duration']").text()).toContain("12 秒");
+    /**
+     * 折叠态**只出现一次状态词**（2026-10-06 D 的真机截图实测缺陷：
+     * 过程区状态行说「已完成」，内嵌耗时面板又拼了一次 → 「已完成 · 已完成 · 耗时 2.6 秒」）。
+     * 状态词由过程区状态行唯一负责，耗时面板只输出「耗时 X」。
+     */
+    const region = w.find("[data-test='turn-process']");
+    // 用可见文本计数（html() 会带上模板注释，注释不该参与断言）
+    expect(region.text().split("已完成").length - 1).toBe(1);
+    // 总耗时仍然可见（在同一个折叠态里）
+    expect(region.text()).toContain("12 秒");
+    w.unmount();
+  });
+
+  it("失败：状态说失败，历史收起（失败事实留在状态行）", async () => {
+    const failedTool = msg({ ...RUNNING_TOOL, id: "t2", callId: "c2", toolStatus: "failed", toolError: "boom" });
+    const { w } = mountProcess({
+      items: [failedTool],
+      stages: [stage({ ...RUNNING_STAGE, status: "done" })],
+      running: false,
+      facts: facts({ status: "failed", durationMs: 500 }),
+    });
+    await nextTick();
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("已失败");
+    expect(status).toContain("1 项失败");
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
+    // 失败态同样只有一个状态词（耗时面板不再拼状态词）
+    expect(w.find("[data-test='turn-process']").text().split("已失败").length - 1).toBe(1);
+    w.unmount();
+  });
+});
+
+describe("展开状态：自动收起 vs 用户的选择", () => {
+  it("用户手动展开后，轮次结束不强制收起", async () => {
+    const { w } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
+    await nextTick();
+    const toggle = w.find("[data-test='turn-process-toggle']");
+    expect(toggle.attributes("aria-expanded"), "运行中不再自动展开历史").toBe("false");
+    await toggle.trigger("click"); // 用户手动展开（正在阅读历史）
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
+
+    await w.setProps({ running: false, facts: facts({ status: "completed", durationMs: 1000 }) });
+    await nextTick();
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("用户正在上翻阅读（没在跟随底部）时，普通状态更新不强制收起", async () => {
+    const { w, session } = mountProcess({ items: [RUNNING_TOOL], stages: [RUNNING_STAGE], running: true });
+    await nextTick();
+    await w.find("[data-test='turn-process-toggle']").trigger("click"); // 用户手动展开
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
+    session.streamFollowing = false;
+    await w.setProps({ running: false, facts: facts({ status: "completed", durationMs: 1000 }) });
+    await nextTick();
+    expect(w.find("[data-test='turn-process-history']").exists()).toBe(true);
+    w.unmount();
+  });
+});
+
+describe("同一内容只出现一次 / legacy 平铺", () => {
+  /**
+   * A 最终契约：interim 的 stage_id 让中间话成为**该阶段的历次说明之一**，
+   * 不再单独渲染成一个并列的过程气泡（它的文字由阶段 notes 渲染）。
+   */
+  it("带 stage_id 的中间话不单独渲染（文字作为阶段说明只出现一次）", async () => {
+    const text = "正在读取仓库结构";
+    const interim = msg({
+      id: "a1",
+      role: "assistant",
+      content: text,
+      interim: true,
+      streaming: true,
+      stageId: "st_ab12_1",
+    });
+    const { w } = mountProcess({ items: [interim], stages: [RUNNING_STAGE], running: true });
+    await nextTick();
+    // 没有并列的过程气泡
+    expect(w.find(".process-line").exists()).toBe(false);
+    const html = w.html();
+    expect(html.split(text).length - 1).toBe(1);
+    w.unmount();
+  });
+
+  it("没有阶段归属的中间话（旧后端 / 旧记录）仍然渲染成过程说明，且最后一句不重复", async () => {
+    const first = msg({
+      id: "a2",
+      role: "assistant",
+      content: "我先说一句",
+      interim: true,
+      streaming: true,
+    });
+    const second = msg({
+      id: "a3",
+      role: "assistant",
+      content: "再说一句",
+      interim: true,
+      streaming: true,
+    });
+    const { w } = mountProcess({ items: [first, second], stages: [], running: true });
+    await nextTick();
+    // 最后一句是「当前说明」；更早的在可展开历史里（默认收起）
+    expect(w.find(".tp-cur-text").text()).toContain("再说一句");
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
+    const lines = w.findAll(".process-line");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.text()).toContain("我先说一句");
+    expect(w.html().split("再说一句").length - 1).toBe(1);
+    w.unmount();
+  });
+
+  it("当前阶段的历次说明：最新一条突出显示，更早的进可展开历史（每句只出现一次）", async () => {
+    const multi = stage({
+      ...RUNNING_STAGE,
+      notes: [
+        { narrativeId: "m1", text: "先看目录", kind: "progress", at: "" },
+        { narrativeId: "m2", text: "再读入口文件", kind: "progress", at: "" },
+        { narrativeId: "m3", text: "正在读取仓库结构", kind: "progress", at: "" },
+      ],
+    });
+    const { w } = mountProcess({ items: [], stages: [multi], running: true });
+    await nextTick();
+    expect(w.find(".tp-cur-text").text()).toBe("正在读取仓库结构");
+    expect(w.find("[data-test='turn-process-current-notes']").exists(), "默认收起").toBe(false);
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
+    const earlier = w.find("[data-test='turn-process-current-notes']");
+    expect(earlier.exists()).toBe(true);
+    expect(earlier.text()).toContain("先看目录");
+    expect(earlier.text()).toContain("再读入口文件");
+    const html = w.html();
+    for (const text of ["先看目录", "再读入口文件", "正在读取仓库结构"]) {
+      expect(html.split(text).length - 1).toBe(1);
+    }
+    w.unmount();
+  });
+
+  it("legacy（没有阶段）：平铺渲染旧叙事行，不伪造阶段", async () => {
+    const narrative = msg({
+      id: "n1",
+      role: "narrative",
+      content: "旧版过程说明",
+      narrativeKind: "progress",
+      narrativeCallIds: ["c1"],
+    });
+    const tool = msg({ id: "t1", role: "tool", callId: "c1", toolName: "read_file", toolStatus: "success" });
+    const { w } = mountProcess({ items: [narrative, tool], stages: [], running: true });
+    await nextTick();
+    expect(w.find(".tp-stage").exists()).toBe(false);
+    await w.find("[data-test='turn-process-toggle']").trigger("click");
+    expect(w.find("[data-test='turn-process-history']").text()).toContain("旧版过程说明");
+    expect(w.findAll(".tool-card")).toHaveLength(1);
+    w.unmount();
+  });
+});
+
+describe("内联审批：复用既有 approvals store，同一时刻只允许一套按钮", () => {
+  function withPendingTurn() {
+    const mounted = mountProcess({ items: [], stages: [], running: true });
+    mounted.session.activeTurnId = "turn_1";
+    mounted.session.turnRunning = true;
+    return mounted;
+  }
+
+  it("属于当前轮的审批在过程区内联显示，按钮走 respondById（不是自己发请求）", async () => {
+    const { w } = withPendingTurn();
+    const approvals = useApprovalsStore();
+    approvals.enqueue(
+      "ap_1",
+      "tool_execution",
+      { description: "删除临时目录", capabilities: ["副作用：destructive"] },
+      { turnId: "turn_1", autoOpen: false },
+    );
+    await nextTick();
+
+    const card = w.find("[data-test='turn-process-approval']");
+    expect(card.exists()).toBe(true);
+    expect(card.text()).toContain("删除临时目录");
+    expect(card.text()).toContain("副作用：destructive");
+    // 内联声明生效：全局入口 / 弹窗不得再对同一条显示按钮
+    expect(approvals.inlineClaimed).toBe(true);
+
+    await card.find("[data-test='turn-process-approval-allow']").trigger("click");
+    expect(respondApproval).toHaveBeenCalledWith(
+      "ap_1",
+      "approved",
+      undefined,
+      expect.objectContaining({ turnId: "turn_1" }),
+    );
+    w.unmount();
+  });
+
+  it("不属于当前轮的审批不进过程区（仍走全局入口）", async () => {
+    const { w } = withPendingTurn();
+    useApprovalsStore().enqueue("ap_2", "tool_execution", { description: "别的轮" }, { turnId: "turn_other", autoOpen: false });
+    await nextTick();
+    expect(w.find("[data-test='turn-process-approval']").exists()).toBe(false);
+    expect(useApprovalsStore().inlineClaimed).toBe(false);
+    w.unmount();
+  });
+});

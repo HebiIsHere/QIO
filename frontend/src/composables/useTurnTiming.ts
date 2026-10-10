@@ -5,6 +5,14 @@
  * - 一页历史可能有几十条助手消息，每条都自动拉 trace 就是几十个请求；
  * - 同一轮展开/收起多次不该反复请求；
  * - 失败**不重试成灾**：把 null 也缓存住，用户想重来可以再展开一次（force）。
+ *
+ * 五种状态（契约 §3），互不混淆：
+ * * `idle`    未请求（折叠态显示已知总耗时，不显示「读取中」）；
+ * * `loading` 正在请求明细（只有这时才显示「读取中」）；
+ * * `ready`   成功：可能有分项（rows），也可能是「成功但无分项」/「旧记录」——
+ *             由 `timing.legacy` 与 `timing.rows` 区分；
+ * * `missing` 后端没有这条记录（缺失 ≠ 0，也不永久转圈）；
+ * * `error`   请求失败（**不抹掉**已知总耗时，也不清掉已经加载过的明细）。
  */
 
 import { ref, type Ref } from "vue";
@@ -58,9 +66,9 @@ export function useTurnTiming(turnId: () => string | null | undefined): {
       timing.value = result;
       state.value = result ? "ready" : "missing";
     } catch {
-      // 拿不到耗时明细不影响对话：界面说清「这次没读到」，不弹错
+      // 拿不到耗时明细不影响对话，也**不影响已知总耗时**：
+      // 只标记失败，绝不把已经加载出来的明细清空（旧实现会把它抹成 null）。
       if (turnId() !== id) return;
-      timing.value = null;
       state.value = "error";
     }
   }

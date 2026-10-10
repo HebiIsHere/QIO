@@ -10,20 +10,26 @@ Key conversion differences vs OpenAI:
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
 from agent.adapters.base import (
+    STREAM_DONE,
+    STREAM_TEXT,
+    STREAM_TOOL_CALL,
     AdapterMode,
     BaseAdapter,
     ChatMessage,
     Completion,
     ModelUsage,
+    StreamDelta,
     ToolCall,
     ToolSpec,
     ToolCallParseError,
+    parse_arguments,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,8 @@ class AnthropicAdapter(BaseAdapter):
     mode = "native"  # tool calling is native to the Anthropic protocol
     # 每次实际请求自己记账（含内部解析重试的每次响应）—— 只记一处，见 credentials/usage.py。
     accounts_requests = True
+    # Anthropic 的 SSE：content_block_delta / input_json_delta（见 stream()）。
+    supports_stream = True
 
     def __init__(
         self,
@@ -151,18 +159,7 @@ class AnthropicAdapter(BaseAdapter):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> Completion:
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens or self.max_tokens,
-            "messages": self.to_anthropic_messages(messages),
-        }
-        system = self._extract_system(messages)
-        if system:
-            payload["system"] = system
-        if tools:
-            payload["tools"] = self.to_anthropic_tools(tools)
-        if temperature is not None:
-            payload["temperature"] = temperature
+        payload = self._payload(messages, tools, temperature, max_tokens)
 
         attempt = 0
         # 函数内导入：adapter 层不在导入期依赖凭据库（既有导入顺序约束）。
@@ -219,6 +216,237 @@ class AnthropicAdapter(BaseAdapter):
             return None
         return ModelUsage.from_provider(raw.get("usage"))
 
+    def _payload(
+        self,
+        messages: list[ChatMessage],
+        tools: list[ToolSpec],
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        """一次请求的完整载荷（整段与流式共用，避免两条路径漂移）。"""
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "messages": self.to_anthropic_messages(messages),
+        }
+        system = self._extract_system(messages)
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = self.to_anthropic_tools(tools)
+        if temperature is not None:
+            payload["temperature"] = temperature
+        return payload
+
+    # -- real streaming (plan §2.1) ----------------------------------------
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[ToolSpec],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """真 SSE 增量（/v1/messages stream=true）。
+
+        Anthropic 的事件形状与 OpenAI 不同，但契约一致：
+
+        * text_delta → 正文增量；
+        * tool_use 的 input 以 input_json_delta 分片到达，**只在这里**拼接，
+          攒成合法 JSON 才进入 kind="done" 的 completion；
+        * usage 在 message_start（输入）与 message_delta（输出）分别给出，
+          两者都没有时如实为 None，不伪造 0。
+        """
+        from agent.adapters import errors as e
+
+        payload = self._payload(messages, tools, temperature, max_tokens)
+        payload["stream"] = True
+
+        # index → 内容块。文本块累积成 text，工具块累积 input 的 JSON 碎片。
+        blocks: dict[int, dict[str, Any]] = {}
+        input_tokens = 0
+        output_tokens = 0
+        stop_reason: str | None = None
+        # Anthropic 协议的结束标记是 message_stop（契约 C2）：没见过它 = 不完整结束。
+        saw_message_stop = False
+        url = f"{self.endpoint}/messages"
+        # 记账（契约 5 / 预算）：流式与整段同口径（与 native.stream 的说明一致）。
+        from agent.credentials import usage as accounting
+
+        accounting.ensure_adapter_request_allowed(self)
+        try:
+            async with self._client.stream("POST", url, json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", "replace")[:500]
+                    raise self._http_error(resp.status_code, body)
+                async for line in resp.aiter_lines():
+                    raw = line.strip()
+                    if not raw.startswith("data:"):
+                        continue  # event: / 心跳 / 空行都不携带内容
+                    body_text = raw[5:].strip()
+                    if not body_text or body_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(body_text)
+                    except json.JSONDecodeError:
+                        continue  # 半行：忽略，绝不猜
+                    etype = event.get("type")
+                    if etype == "message_start":
+                        message = event.get("message") or {}
+                        usage = message.get("usage") or {}
+                        input_tokens = int(usage.get("input_tokens") or 0)
+                        stop_reason = message.get("stop_reason") or stop_reason
+                    elif etype == "content_block_start":
+                        index = int(event.get("index") or 0)
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            blocks[index] = {
+                                "type": "tool_use",
+                                "id": str(block.get("id") or ""),
+                                "name": str(block.get("name") or ""),
+                                "json": "",
+                            }
+                            yield StreamDelta(
+                                kind=STREAM_TOOL_CALL,
+                                index=index,
+                                call_id=str(block.get("id") or "") or None,
+                                name=str(block.get("name") or "") or None,
+                            )
+                        elif block.get("type") == "text":
+                            blocks[index] = {"type": "text", "text": ""}
+                            initial = block.get("text") or ""
+                            if initial:
+                                blocks[index]["text"] += initial
+                                yield StreamDelta(kind=STREAM_TEXT, text=initial)
+                    elif etype == "content_block_delta":
+                        index = int(event.get("index") or 0)
+                        delta = event.get("delta") or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            text = delta.get("text") or ""
+                            if text:
+                                entry = blocks.setdefault(index, {"type": "text", "text": ""})
+                                entry["text"] += text
+                                yield StreamDelta(kind=STREAM_TEXT, text=text)
+                        elif dtype == "input_json_delta":
+                            entry = blocks.setdefault(
+                                index,
+                                {"type": "tool_use", "id": "", "name": "", "json": ""},
+                            )
+                            entry["json"] += delta.get("partial_json") or ""
+                    elif etype == "message_delta":
+                        usage = event.get("usage") or {}
+                        if usage.get("output_tokens") is not None:
+                            output_tokens = int(usage.get("output_tokens") or 0)
+                        delta = event.get("delta") or {}
+                        if delta.get("stop_reason"):
+                            stop_reason = str(delta["stop_reason"])
+                    elif etype == "message_stop":
+                        # 协议结束标记：只有见过它，这条流才算正常完成。
+                        saw_message_stop = True
+                    elif etype == "error":
+                        detail = (event.get("error") or {}).get("message") or "anthropic stream error"
+                        raise e.ProviderInternalError(str(detail)[:300])
+        except e.ProviderError as exc:
+            accounting.account_adapter_failure(self, exc)
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalize transport errors
+            accounting.account_adapter_failure(self, exc)
+            raise e.normalize_error(exc) from exc
+
+        # 与 native 同一条兼容性口径：一个内容块都没解析出来、也没有 stop_reason、
+        # 也没有任何 usage，说明这条服务很可能忽略了 stream=true（回了整段 JSON，
+        # SSE 行里什么都没有）。如实声明用不了流式，让上层整段回退一次。
+        if (
+            not blocks
+            and stop_reason is None
+            and not input_tokens
+            and not output_tokens
+            and not saw_message_stop
+        ):
+            from agent.adapters import errors as e
+
+            reason = "stream produced no content blocks (provider likely ignored stream=true)"
+            accounting.account_adapter_failure(self, reason=reason)
+            raise e.UnsupportedCapability(reason)
+
+        # 结束语义（契约 C2）：没有 message_stop = 不完整结束；max_tokens / refusal
+        # 是协议合法的截断原因，但工具参数可能被切断 —— 两者都不执行工具调用。
+        incomplete = not saw_message_stop
+        truncated = isinstance(stop_reason, str) and stop_reason.lower() in (
+            "max_tokens",
+            "refusal",
+        )
+
+        # 组装放在异常处理之外：ToolCallParseError 是解析错误，不该被归一化掉。
+        text_parts = [
+            blocks[i]["text"]
+            for i in sorted(blocks)
+            if blocks[i].get("type") == "text" and blocks[i].get("text")
+        ]
+        tool_calls: list[ToolCall] | None = None
+        from agent.core.narrative import split_narrative_arguments
+
+        for index in sorted(blocks):
+            entry = blocks[index]
+            if entry.get("type") != "tool_use":
+                continue
+            if incomplete or truncated:
+                # 未确认结束 / 被截断：绝不执行未完成的工具调用（正文照常保留）。
+                continue
+            raw_json = entry.get("json") or "{}"
+            try:
+                arguments = parse_arguments(raw_json)
+            except Exception:
+                raise ToolCallParseError(
+                    tool_call_id=str(entry.get("id") or ""),
+                    name=str(entry.get("name") or ""),
+                    raw_arguments=raw_json,
+                ) from None
+            arguments, narrative = split_narrative_arguments(arguments)
+            if tool_calls is None:
+                tool_calls = []
+            tool_calls.append(
+                ToolCall(
+                    id=str(entry.get("id") or ""),
+                    name=str(entry.get("name") or ""),
+                    arguments=arguments,
+                    narrative=narrative,
+                )
+            )
+        usage = None
+        if input_tokens or output_tokens:
+            usage = ModelUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+        # 记账：这条流已经拿到真实用量（message_start / message_delta）—— 与整段同口径。
+        accounting.account_adapter_request(self, usage)
+        yield StreamDelta(
+            kind=STREAM_DONE,
+            completion=Completion(
+                message=ChatMessage(
+                    role="assistant",
+                    content="\n".join(text_parts) if text_parts else None,
+                    tool_calls=tool_calls,
+                ),
+                raw=None,
+                finish_reason=stop_reason,
+                usage=usage,
+                stream_incomplete=incomplete,
+            ),
+        )
+
+    def _http_error(self, status: int, body: str) -> Exception:
+        """HTTP 状态 → 内部错误分类（整段与流式共用同一套口径）。"""
+        from agent.adapters import errors as e
+
+        if status in (401, 403):
+            return e.AuthenticationError(f"anthropic {status}: {body}")
+        if status == 429:
+            return e.RateLimitError(f"anthropic 429: {body}")
+        if 400 <= status < 500:
+            return e.InvalidToolCall(f"anthropic {status}: {body}")
+        return e.ProviderInternalError(f"anthropic {status}: {body}")
+
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         from agent.adapters import errors as e
 
@@ -227,14 +455,7 @@ class AnthropicAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001 - normalize transport errors
             raise e.NetworkError(str(exc)[:300]) from exc
         if resp.status_code >= 400:
-            body = resp.text[:500]
-            if resp.status_code in (401, 403):
-                raise e.AuthenticationError(f"anthropic {resp.status_code}: {body}")
-            if resp.status_code == 429:
-                raise e.RateLimitError(f"anthropic 429: {body}")
-            if 400 <= resp.status_code < 500:
-                raise e.InvalidToolCall(f"anthropic {resp.status_code}: {body}")
-            raise e.ProviderInternalError(f"anthropic {resp.status_code}: {body}")
+            raise self._http_error(resp.status_code, resp.text[:500])
         return resp.json()
 
     def _to_completion(self, raw: dict[str, Any]) -> Completion:

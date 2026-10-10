@@ -214,6 +214,20 @@ onMounted(() => {
         <span class="kind mono qio-state quiet">已停止</span>
         <span class="text">这一轮已按你的要求停止，可以继续输入</span>
       </div>
+      <!--
+        不完整结束（契约 §七 C2：流在结束标记之前 EOF）：已确认正文保留，但这**不是完成**。
+        安静地说清「未完成」并指出重试入口 —— 既不能收成「已完成」的样子，
+        也不能悄悄吞掉（它不是错误，所以不进错误横幅；具体原因在过程区里）。
+      -->
+      <div
+        v-else-if="session.lastTurnOutcome?.status === 'incomplete'"
+        class="notice quiet"
+        role="status"
+        data-test="turn-incomplete-notice"
+      >
+        <span class="kind mono qio-state quiet">未完成</span>
+        <span class="text">这一轮没有正常结束：回答可能不完整，可以在过程区里「重试」</span>
+      </div>
     </Transition>
     <MessageStream />
     <!-- 底部三块（候选卡 / 兼容模式 / 话题切换）：用同一个「输入区让位」的量测

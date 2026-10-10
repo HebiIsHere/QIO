@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useEventStore } from "./stores/events";
 import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
+import { useApprovalsStore } from "./stores/approvals";
 import ApprovalModal from "./components/ApprovalModal.vue";
 import ApprovalEntry from "./components/ApprovalEntry.vue";
 import DevTaskEntry from "./components/DevTaskEntry.vue";
@@ -12,6 +13,7 @@ import { waitForBackend } from "./services/boot";
 const events = useEventStore();
 const ui = useUiStore();
 const onboarding = useOnboardingStore();
+const approvals = useApprovalsStore();
 
 /**
  * 启动状态：后端没应答之前不渲染主界面。
@@ -90,7 +92,8 @@ onUnmounted(stopTicker);
         <ApprovalEntry />
         <DevTaskEntry />
       </div>
-      <ApprovalModal />
+      <!-- 同一时刻只允许一套按钮：过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
+      <ApprovalModal v-if="!approvals.inlineClaimed" />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>

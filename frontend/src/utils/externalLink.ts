@@ -31,8 +31,13 @@ function tauriInternals(): Record<string, unknown> | undefined {
 }
 
 /**
- * 打开一个外部链接。返回是否成功发起。
- * 失败时调用方要给出可见反馈，不能假装打开过。
+ * 打开一个外部链接。返回是否**成功发起打开尝试**（不是「新窗口一定出现了」）。
+ *
+ * 诚实规则（F03）：`window.open(..., "noopener,noreferrer")` 在 noopener 下
+ * **成功打开也会返回 null**，因此不能用返回值判断成败 —— 用 null 当失败会把成功打开
+ * 报成「打开失败」，并在界面上给出错误提示。保留 opener 隔离，不为了拿句柄去掉安全参数。
+ * 只有可验证的失败（环境没有 window.open / 调用抛错 / 危险 scheme）才返回 false，
+ * 调用方据此给出可见反馈。
  */
 export async function openExternal(url: string): Promise<boolean> {
   if (!isSafeExternalUrl(url)) return false;
@@ -46,9 +51,12 @@ export async function openExternal(url: string): Promise<boolean> {
       return false;
     }
   }
+  const open = globalThis.open;
+  if (typeof open !== "function") return false;
   try {
-    const opened = globalThis.open?.(target, "_blank", "noopener,noreferrer");
-    return opened !== null && opened !== undefined;
+    // 返回值丢弃：noopener 下 null 无法同步区分「被拦截」与「已打开」。
+    open.call(globalThis, target, "_blank", "noopener,noreferrer");
+    return true;
   } catch {
     return false;
   }

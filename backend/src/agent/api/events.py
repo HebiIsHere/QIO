@@ -1,4 +1,4 @@
-﻿"""SSE event protocol (agreed event set).
+"""SSE event protocol (agreed event set).
 
 Envelope: { "type": str, "id": str, "ts": str, "data": object }
 Wire format: "event: <TYPE>\\ndata: <json>\\n\\n"
@@ -33,7 +33,19 @@ class EventType(str, Enum):
     TOOL_END = "TOOL_END"
     # 模型自主决定的过程说明（announce / progress / warning / result）。
     # 它只承载"模型怎么表达"，工具事实仍走 TOOL_START / TOOL_END。
+    #
+    # 兼容事件（plan §1.3）：协议保留，**主轮不再发**（主轮改发 STAGE）；
+    # 前端遇到旧数据 / 旧客户端时仍按「旧版平铺记录」渲染，不伪造阶段。
     NARRATIVE = "NARRATIVE"
+    # 阶段（plan §1.1~§1.4）：标识与顺序由系统生成，模型只能给 op / name。
+    # 载荷：{turn_id, stage_id, index, status, name, text, kind, op,
+    #        narrative_id, call_id, call_ids, created_at}
+    # 关键事件：丢了客户端就会与服务器对不上阶段，走既有 RESYNC 恢复路径。
+    STAGE = "STAGE"
+    # 流式正文（plan §2.1）：content 是**该 delta_id 的累计快照**，
+    # 载荷 {content, interim, streaming, delta_id, seq}；
+    # 顺序与去重按 (delta_id, seq) 单调，bus 的合并键是
+    # (type, turn_id, delta_id) —— 不同 delta 不会互相覆盖。
     ASSISTANT = "ASSISTANT"
     ANCHOR = "ANCHOR"
     # 推测切换：只表示「可能属于另一个话题，等你确认」，Anchor 没变（见 spec 第 29~30 条）

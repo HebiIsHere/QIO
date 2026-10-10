@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from agent.api.events import EventType, make_event
@@ -35,13 +36,22 @@ DEFAULT_BOUNDARY_MODE = "shadow"
 
 
 def verification_raw(result) -> dict | None:
-    """assistant 消息的 `raw`：把后端核对通过的结论一起存下来。
+    """assistant 消息的 `raw`：把后端核对结论与系统核对注释一起存下来。
 
-    前端在回答下方渲染「后端已核对」那一行就靠它（见 core/turn_facts.py）；
-    这一轮没有核对结论时返回 None，落库行为与以前完全一样（raw = 空对象）。
+    前端在回答下方渲染「后端已核对」那一行就靠 `verified`（见 core/turn_facts.py）；
+    `annotation` 是审计 F11 拆出来的**独立追加字段**（系统核对注释不再拼进正文），
+    刷新 / 历史分页后仍能恢复。两者都没有时返回 None，落库行为与以前完全一样。
     """
     verification = getattr(result, "verification", None)
-    return {"verified": verification} if verification else None
+    annotation = getattr(result, "final_annotation", None)
+    if not verification and not annotation:
+        return None
+    payload: dict = {}
+    if verification:
+        payload["verified"] = verification
+    if annotation:
+        payload["annotation"] = annotation
+    return payload
 
 
 @dataclass
@@ -133,6 +143,7 @@ class TurnOrchestrator:
         with tracer.phase("persistence"):
             final_topic = await self.persist(ctx, adapter, plan, result)
         ctx.final_content = result.final_content
+        ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.usage = {
             "iterations": result.iterations_used,
             "tokens": result.tokens_used,
@@ -488,9 +499,15 @@ class TurnOrchestrator:
             },
             dropped=[],
         )
+        # 附件事实（C 的 AttachmentService）：只说明「本轮附加了哪些文件对象」，
+        # 内容不进上下文（模型必须按需 read_attachment），也不影响审批权限与工具参数。
+        # 走既有的「系统通知」措辞路径；没有附件/没有服务时什么都不加。
+        attachment_note = app.attachment_turn_note(ctx.turn_id)
         prompt = message
         if payload.text:
             prompt = f"{payload.text}\n\n【用户消息】\n{message}"
+        if attachment_note:
+            prompt = f"{prompt}\n\n【系统通知】\n{attachment_note}"
         return _Plan(
             topic=topic,
             prediction=prediction,
@@ -561,9 +578,15 @@ class TurnOrchestrator:
             tool_state=app.tool_state,
             # 取消检查点：本 turn 被取消后循环不再发起新的模型/工具调用
             is_cancelled=lambda: ctx.cancelled,
-            # 执行叙事：模型决定说不说，AppContext 负责落库 + 广播 + 批次结束补写系统摘要
+            # 执行叙事与阶段：模型决定说不说，AppContext 负责落库 + 广播 + 批次结束
+            # 补写系统摘要；阶段标识由服务层的状态机给出（plan §1.2）。
             narrative_sink=app._on_narrative,
             narrative_settler=app._settle_narrative,
+            # 工具归属只看 stage_id（plan §1.1）：没有阶段时如实为 None。
+            stage_id_provider=lambda: app.current_stage_id(ctx.turn_id),
+            # 长正文暂存目录（R6 §1.3）：显式给 AppContext 的 data_dir 口径，
+            # 不让 AnswerBuffer 去惰性解析 Settings()（那条路在测试里会落到真实数据目录）。
+            spill_dir=Path(app.settings.data_dir) / "tmp",
         )
         ctx.loop = loop
         try:
@@ -883,6 +906,7 @@ class TurnOrchestrator:
             final_preview=result.final_content or "",
         )
         ctx.final_content = result.final_content
+        ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.result = {"ok": True, "turn": result.__dict__}
 
 

@@ -1,4 +1,4 @@
-﻿"""Subagent integration: main loop async call, await_task, notify injection/turn, overrides."""
+"""Subagent integration: main loop async call, await_task, notify injection/turn, overrides."""
 
 from __future__ import annotations
 
@@ -38,8 +38,11 @@ class FakeMainAdapter:
         self.seen_messages: list[str] = []
 
     async def complete(self, messages, tools, **kwargs):
-        self.seen_messages.append(messages[-1].content or "")
-        step = self.script.pop(0)
+        # 契约 §1.1 起每次调用末尾会多一条阶段 system 提示：这里记录**整份输入**
+        # （而不是只看最后一条），才是「模型看到了什么」的如实捕获。
+        self.seen_messages.append("\n".join(m.content or "" for m in messages))
+        # 脚本用尽时重复「最终回复」这一档：一轮有工作调用 + 回答调用两次调用。
+        step = self.script.pop(0) if self.script else None
         if step is None:
             return Completion(message=ChatMessage(role="assistant", content="最终回复"))
         name, args = step

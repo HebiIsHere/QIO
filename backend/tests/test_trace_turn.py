@@ -71,6 +71,10 @@ async def test_turn_records_trace_without_secret(ctx: AppContext):
     assert len(traces) == 1
     trace = ctx.trace_store.get(traces[0]["turn_id"])
     assert trace["status"] == "done"
+    # 契约 §1.1 变更：回答由一次**不带工具**的专用调用产出 ——
+    # 1 次工作调用（带工具）+ 1 次工作调用收尾（不再请求工具）+ 1 次回答调用
+    # 契约 §1.1 变更：回答由 [[QIO:ANSWER]] 声明，未声明走降级交付 ——
+    # 这一轮是「工具轮 + 未声明的降级交付」= 2 次模型调用（不再固定 +1）
     assert len(trace["model_calls"]) == 2
     assert trace["model_calls"][0]["output_tokens"] == 5
     assert len(trace["tool_runs"]) == 1

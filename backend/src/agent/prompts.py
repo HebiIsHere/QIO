@@ -364,6 +364,36 @@ SYSTEM_PROMPT_TEXT_MODE = (
     'Optional: add "_qio" inside arguments to tell the user what this step is for; omit it to stay silent.'
 )
 
+# ---- 内容角色协议（第五轮契约 §1.1：消除完整答案重复生成）--------------------
+#
+# 模型用**正文开头的声明**告诉系统「这段文字是最终回答」；声明本身不展示给用户。
+# 这是**唯一**允许的角色判据（禁止用延迟、字数、是否含代码块等启发式猜角色）。
+#
+# 注入点（同一份措辞，只有下面这一个常量；三档都要能看到）：
+#   * text 兼容档：adapters/text.py::build_system_prompt 把它拼进自己的 system prompt；
+#   * native / anthropic：core/loop.py 每次调用把它作为**最后一条 system 消息**发出
+#     （这两档本来就不自己拼 system prompt，见 BaseAdapter.protocol_in_prompt）。
+# 解析方：core/loop.py::_AssistantStream（流式）与 _split_declared_answer（整段）。
+ANSWER_MARKER = "[[QIO:ANSWER]]"
+
+# 内容角色协议说明（给模型看）。语义三件事：工作阶段文字=进度说明（进过程区）；
+# 最终回答必须以上面的声明开头；声明之后不要再请求工具（否则本轮按已声明回答收尾 + 可见警告）。
+CONTENT_ROLE_PROTOCOL = (
+    "【回答协议】工作阶段的文字是**进度说明**，会显示在过程区；需要工具就直接调用工具。"
+    f"给出最终回答时，正文**必须以 {ANSWER_MARKER} 开头**"
+    "（这个声明本身不会展示给用户）。"
+    "声明之后不要再请求工具：若仍然请求，本轮会按已声明的回答收尾并给出可见警告。"
+)
+
+# 兜底调用（core/loop.py::_fallback_answer_call）的 system 提示。
+# 触发条件（唯一允许的额外回答调用，每轮最多一次）：整轮结束时**完全没有回答内容**
+# —— 既没有声明过的回答、也没有可交付的正文（模型只调用过工具、或一个字都没说）。
+# 合规模型下直接问答只需 1 次调用；只有这里会补一次「请给出最终回答」。
+ANSWER_FALLBACK_HINT = (
+    "【最终回答】本轮还没有产生正式回答。请直接给出面向用户的最终回答，"
+    f"正文以 {ANSWER_MARKER} 开头；本次调用不提供任何工具。"
+)
+
 # text 模式工具列表标题。定义于 agent/adapters/text.py build_system_prompt；
 # 作用：在 system prompt 中分隔「可用工具」区，标题后追加每个工具的名称/描述/参数 schema。
 SYSTEM_PROMPT_TOOLS_HEADER = "Available tools (call by exact name only):"
