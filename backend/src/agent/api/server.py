@@ -329,6 +329,13 @@ def create_app(
         """
         return JSONResponse(status_code=409, content=exc.to_dict())
 
+    # A02/A04：实体冲突候选的查看 / 采纳 / 丢弃。
+    # **必须在 `GET /api/entities/{entity_id}` 之前注册**：starlette 取第一个匹配，
+    # 否则 `/api/entities/candidates` 会被当成 `entity_id="candidates"` 吃掉。
+    from agent.api.entity_pending_routes import build_router as build_entity_pending_router
+
+    app.include_router(build_entity_pending_router(ctx))
+
     auth = SessionAuth.from_settings(settings)
     # 实例身份由 AppContext 生成并登记（契约 C1：台账归属要用同一个 id）。
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，

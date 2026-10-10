@@ -98,8 +98,46 @@ class _FakeAdapter:
         self.closed = True
 
 
-def _make_ctx(tmp_path: Path, name: str = "ctx") -> tuple[AppContext, sqlite3.Connection]:
-    conn = connect(tmp_path / f"{name}.db")
+class _CountingConnection(sqlite3.Connection):
+    """记账连接：把写语句记在实例的 `writes` 上。
+
+    为什么要子类：`sqlite3.Connection` 是 C 类型，**实例属性不可赋值**
+    （`conn.execute = f` → `AttributeError: ... attribute 'execute' is read-only`），
+    所以只能在**子类**上覆写 `execute`，再用 `sqlite3.connect(..., factory=...)`
+    把子类实例交给 `AppContext`。参数与 `agent.storage.db.connect()` 保持一致
+    （见 `_connect_counting`），这样观察到的写与真实运行路径同源。
+    """
+
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self.writes: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN201
+        head = str(sql).strip().split(" ", 1)[0].upper()
+        if head in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+            self.writes.append(str(sql))
+        return super().execute(sql, *args, **kwargs)
+
+
+def _connect_counting(db_path: Path) -> _CountingConnection:
+    """`agent.storage.db.connect()` 的同参版本，只换成记账子类。"""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, factory=_CountingConnection)
+    conn.isolation_level = None
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn  # type: ignore[return-value]
+
+
+def _make_ctx(
+    tmp_path: Path,
+    name: str = "ctx",
+    *,
+    conn_factory=connect,  # noqa: ANN001
+) -> tuple[AppContext, sqlite3.Connection]:
+    conn = conn_factory(tmp_path / f"{name}.db")
     apply_migrations(conn)
     ctx = AppContext(Settings(data_dir=tmp_path / name), conn, EventBus())
     ctx.credentials._kr = MemoryKeyring()
@@ -116,8 +154,14 @@ def _shorten_shutdown(ctx: AppContext) -> None:
     ctx.background.shutdown = _fast  # type: ignore[method-assign]
 
 
-def _tap(ctx: AppContext, order: list[str]) -> None:
-    """记录收尾阶段的真实调用顺序（受控替身，不改实现）。"""
+def _tap(ctx: AppContext, order: list[str]) -> _FakeAdapter:
+    """记录收尾阶段的真实调用顺序（受控替身，不改实现），并返回播种的 adapter。
+
+    返回引用是必须的：`aclose()` 在「干净释放」时执行
+    `adapters, self._adapter_cache = list(...), {}`（释放过的不许再被发出去 ——
+    这是正确行为），所以**关闭之后**再去读 `_adapter_cache` 只会读到空字典。
+    断言必须落在「关闭前播种的那个对象」上。
+    """
 
     def _wrap_async(name: str, target: object, attr: str) -> None:
         original = getattr(target, attr)
@@ -149,11 +193,9 @@ def _tap(ctx: AppContext, order: list[str]) -> None:
 
     ctx.instances.mark_clean_exit = _mark  # type: ignore[method-assign]
 
-    ctx._adapter_cache[("key_verify", 1, "https://api.example.com/v1", "gpt-x")] = _FakeAdapter()
-
-
-def _adapter_of(ctx: AppContext) -> _FakeAdapter:
-    return next(iter(ctx._adapter_cache.values()))
+    adapter = _FakeAdapter()
+    ctx._adapter_cache[("key_verify", 1, "https://api.example.com/v1", "gpt-x")] = adapter
+    return adapter
 
 
 def _exited_at(conn: sqlite3.Connection, instance_id: str) -> str | None:
@@ -184,7 +226,7 @@ async def test_a05_state_normal_reports_clean_and_persists_clean_exit(tmp_path):
     ctx, conn = _make_ctx(tmp_path, "normal")
     order: list[str] = []
     _shorten_shutdown(ctx)
-    _tap(ctx, order)
+    adapter = _tap(ctx, order)
     ctx.background.register("normal", _normal())
 
     report = await ctx.aclose()
@@ -196,35 +238,30 @@ async def test_a05_state_normal_reports_clean_and_persists_clean_exit(tmp_path):
     assert str(data["detail"])
     assert _exited_at(conn, ctx.instance_id), "clean=True 必须写干净退出标记"
     assert order[0] == "background.shutdown", f"后台必须先停：{order}"
-    assert _adapter_of(ctx).closed is True, "clean=True 必须释放 adapter"
+    assert adapter.closed is True, "clean=True 必须释放关闭前播种的那个 adapter"
     conn.close()
 
 
 async def test_a05_state_normal_writes_nothing_after_close(tmp_path):
-    """无关闭后写库：所有执行单元确认结束后，台账/库不再被触碰。"""
-    ctx, conn = _make_ctx(tmp_path, "normal-nw")
+    """无关闭后写库：所有执行单元确认结束后，台账/库不再被触碰。
+
+    观察点是**记账连接**（`sqlite3.Connection` 子类，覆写 `execute` 记账）：
+    C 类型不允许给实例赋 `execute`（原探针在本 Python 上从未可能通过），
+    子类化是同一观察点的可行写法，断言强度不变（关闭后写语句条数不再增长），
+    并且额外要求「关闭前确实观察到过写」—— 否则探针是空跑。
+    """
+    ctx, conn = _make_ctx(tmp_path, "normal-nw", conn_factory=_connect_counting)
     _shorten_shutdown(ctx)
     ctx.background.register("normal", _normal())
 
-    writes: list[str] = []
-    original_execute = conn.execute
-
-    def _observe(sql, *args, **kwargs):  # noqa: ANN001, ANN202
-        head = str(sql).strip().split(" ", 1)[0].upper()
-        if head in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
-            writes.append(str(sql))
-        return original_execute(sql, *args, **kwargs)
-
-    conn.execute = _observe  # type: ignore[method-assign]
-    try:
-        report = await ctx.aclose()
-        assert _report_dict(report)["clean"] is True
-        baseline = len(writes)
-        await asyncio.sleep(0.05)
-        assert len(writes) == baseline, f"关闭完成后不得再写库：{writes[baseline:]}"
-    finally:
-        conn.execute = original_execute  # type: ignore[method-assign]
-        conn.close()
+    writes = conn.writes  # type: ignore[attr-defined]
+    report = await ctx.aclose()
+    assert _report_dict(report)["clean"] is True
+    baseline = len(writes)
+    assert baseline > 0, "记账连接必须真的观察到关闭前的写（否则这条探针是空跑）"
+    await asyncio.sleep(0.05)
+    assert len(writes) == baseline, f"关闭完成后不得再写库：{writes[baseline:]}"
+    conn.close()
 
 
 # --------------------------------------------------------------------------
@@ -236,7 +273,7 @@ async def test_a05_state_cooperative_cancel_is_clean(tmp_path):
     ctx, conn = _make_ctx(tmp_path, "coop")
     order: list[str] = []
     _shorten_shutdown(ctx)
-    _tap(ctx, order)
+    adapter = _tap(ctx, order)
     ctx.background.register("coop", _cooperative())
 
     report = await ctx.aclose()
@@ -245,7 +282,7 @@ async def test_a05_state_cooperative_cancel_is_clean(tmp_path):
     assert data["clean"] is True, f"配合取消必须收干净：{data}"
     assert data["unfinished"] == []
     assert _exited_at(conn, ctx.instance_id)
-    assert _adapter_of(ctx).closed is True
+    assert adapter.closed is True
     conn.close()
 
 
@@ -258,7 +295,7 @@ async def test_a05_state_delayed_cancel_is_clean(tmp_path):
     ctx, conn = _make_ctx(tmp_path, "delayed")
     order: list[str] = []
     _shorten_shutdown(ctx)
-    _tap(ctx, order)
+    adapter = _tap(ctx, order)
     ctx.background.register("delayed", _delayed())
 
     report = await ctx.aclose()
@@ -267,7 +304,7 @@ async def test_a05_state_delayed_cancel_is_clean(tmp_path):
     assert data["clean"] is True, f"延迟取消在 grace 内结束也必须算干净：{data}"
     assert data["unfinished"] == []
     assert _exited_at(conn, ctx.instance_id), "确实收干净了就该写干净退出"
-    assert _adapter_of(ctx).closed is True
+    assert adapter.closed is True
     conn.close()
 
 
@@ -280,7 +317,7 @@ async def test_a05_state_stuck_after_cancel_is_not_reported_clean(tmp_path):
     ctx, conn = _make_ctx(tmp_path, "stuck")
     order: list[str] = []
     _shorten_shutdown(ctx)
-    _tap(ctx, order)
+    adapter = _tap(ctx, order)
     release = asyncio.Event()
     handle = ctx.background.register("stuck", _stuck(release))
 
@@ -293,7 +330,7 @@ async def test_a05_state_stuck_after_cancel_is_not_reported_clean(tmp_path):
     assert _exited_at(conn, ctx.instance_id) is None, (
         "有后台协程没结束就不得写干净退出标记（那会让下次启动误判）"
     )
-    assert _adapter_of(ctx).closed is False, "不 clean 时不得释放 adapter（残留协程会打到已关的 client）"
+    assert adapter.closed is False, "不 clean 时不得释放 adapter（残留协程会打到已关的 client）"
     assert "mark_clean_exit" not in order, f"不 clean 时不得走干净退出的动作：{order}"
     # 收尾顺序：后台仍然排在最前，其余依赖照旧被停掉
     assert order[0] == "background.shutdown", f"{order}"

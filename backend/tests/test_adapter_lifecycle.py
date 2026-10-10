@@ -61,8 +61,10 @@ def probe_counter(monkeypatch):
 def anthropic_probe_counter(monkeypatch):
     calls: list[tuple] = []
 
-    async def fake_probe(secret, model, endpoint):
-        calls.append((model, endpoint))
+    async def fake_probe(secret, model, endpoint, *, key_id=None, accounting_store=None):
+        # A06：Anthropic 能力探测本身是一次真实请求，所以要带上「算在哪把凭据上」的身份
+        # （第三个元素就是 key_id；缺了它这次调用既不受该凭据预算约束、也不进账本）。
+        calls.append((model, endpoint, key_id))
         return "native"
 
     monkeypatch.setattr("agent.services.app.probe_anthropic", fake_probe)
@@ -97,6 +99,10 @@ async def test_anthropic_probe_is_cached_per_credential(ctx, anthropic_probe_cou
     assert first is not None and second is not None
     assert first is second
     assert len(anthropic_probe_counter) == 1, "Anthropic 能力探测必须缓存，不能每轮实打"
+    assert anthropic_probe_counter[0][2] == "k1", (
+        "A06：能力探测也是一次真实请求，必须带上凭据身份 —— "
+        "否则这次调用不受该凭据的预算约束，也不会记进它的账本"
+    )
     await ctx.aclose()
 
 

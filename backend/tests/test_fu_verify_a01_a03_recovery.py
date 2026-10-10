@@ -32,6 +32,16 @@
     * 重启：退出第一个 app（同一条 sqlite），再起一个 app，断言记录仍然可见可操作。
 
     断言只看 HTTP 状态、台账行、清单字段与派生任务行；基线全红（404），修复后仍绿。
+
+判据说明（补充修复轮修正，详见 `scripts/fu-verify/README.md`）
+
+    * **后继关联的方向**：`claim_for_resend()` 按 R06 契约 C3 把关联写在**老记录**上
+      （`老记录.recovered_by = 新 turn_id`）。所以 `successors_of()` 必须顺着老记录的
+      `recovered_by` 去找那一行 —— 不是反过来查「`recovered_by` 等于老 id 的行」
+      （那个方向永远查不到东西，是用例自身写反了，不是实现缺陷）。
+    * **「卡住」的时间戳必须新鲜**：无归属的 running 派生任务若已超期，启动恢复
+      `recover_stale()` 会把它放回 `pending` —— 这是正确的时限兜底，不是「卡住」。
+      保持「卡住」语义的用例必须用当前时间播种；已超期的场景另有专门的用例钉住。
 """
 
 from __future__ import annotations
@@ -39,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,6 +68,7 @@ ORPHAN = "turn_orphan_claim"
 RESENT = "turn_already_resent"
 RESENT_SUCCESSOR = "turn_real_successor"
 DERIVED = "task_derived_running"
+DERIVED_STALE = "task_derived_running_expired"
 
 MSG_QUEUED = "这条消息当时还在排队，进程退出后没有开始执行"
 MSG_RUNNING = "这条消息执行到一半，进程退出后没有完成"
@@ -100,12 +112,38 @@ def seed_turn(
     )
 
 
-def seed_derived_running(conn: sqlite3.Connection, task_id: str) -> None:
+def _utc_now_iso() -> str:
+    """真实当前时间（UTC）。
+
+    「卡住」语义必须用**新鲜**时间戳：无归属的 running 任务只要超期
+    （`derived_tasks._STALE_RUNNING_SECONDS`，默认 300 秒），启动恢复
+    `recover_stale()` 就会把它放回 `pending` —— 那是**正常**兜底，它不该再被
+    当成「卡住的 running」。所以这里不能用固定字面量（会随时间变旧）。
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def seed_derived_running(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    updated_at: str | None = None,
+    content_version: int = 1,
+) -> None:
+    """无归属的 running 派生任务。
+
+    `updated_at` 默认取**此刻**：这才是「刚刚还在跑、但归属为空」的卡住现场。
+    需要构造「已超期」的场景时显式传一个旧时间戳。
+
+    `(kind, fragment_id, content_version)` 上有唯一约束，所以同一场景里播种多条时
+    必须给出不同的 `content_version`。
+    """
+    moment = updated_at or _utc_now_iso()
     conn.execute(
         "INSERT INTO derived_tasks (id, kind, fragment_id, content_version, state, attempts, "
         " last_error, run_after, created_at, updated_at, owner_instance_id, claim_generation) "
-        "VALUES (?, 'summary', 'frag_legacy', 1, 'running', 2, 'boom', NULL, ?, ?, NULL, 1)",
-        (task_id, NOW, NOW),
+        "VALUES (?, 'summary', 'frag_legacy', ?, 'running', 2, 'boom', NULL, ?, ?, NULL, 1)",
+        (task_id, int(content_version), moment, moment),
     )
 
 
@@ -116,9 +154,29 @@ def journal_row(conn: sqlite3.Connection, turn_id: str) -> sqlite3.Row:
 
 
 def successors_of(conn: sqlite3.Connection, record_id: str) -> list[sqlite3.Row]:
+    """一条记录的「后继」——按既有 R06 契约 C3，关联方向是**老记录指向新记录**。
+
+    `TurnJournal.claim_for_resend()` 一个事务里做三件事：带条件 UPDATE 老记录写
+    `recovered_at`、INSERT 新记录、再在老记录上写 `recovered_by = 新 turn_id`。
+    所以关联落在**老记录**这一行上：
+
+        老记录.recovered_by ──▶ 新记录的 turn_id
+
+    「后继」因此是「老记录 `recovered_by` 指向的那一行」，而不是「`recovered_by`
+    等于老 id 的行」（后者永远为空，除非有人把方向弄反）。老记录没有 `recovered_by`
+    （未重发 / 孤立抢占 / 已被忽略）→ 没有后继。
+    """
+    row = conn.execute(
+        "SELECT recovered_by FROM turn_journal WHERE turn_id = ?", (record_id,)
+    ).fetchone()
+    if row is None:
+        return []
+    successor_id = str(row["recovered_by"] or "")
+    if not successor_id:
+        return []
     return list(
         conn.execute(
-            "SELECT * FROM turn_journal WHERE recovered_by = ? ORDER BY created_at", (record_id,)
+            "SELECT * FROM turn_journal WHERE turn_id = ? ORDER BY created_at", (successor_id,)
         ).fetchall()
     )
 
@@ -400,11 +458,32 @@ def test_a01_notify_rows_never_enter_the_inbox(harness: Harness):
 
 
 def test_a01_legacy_running_derived_task_is_listed_and_requeueable(harness: Harness):
-    """历史无归属的 running 派生任务：既不可见也不能放回队列（基线：没有入口）。"""
-    seed_derived_running(harness.conn, DERIVED)
+    """历史无归属的 running 派生任务：既不可见也不能放回队列（基线：没有入口）。
+
+    同时钉住时限兜底的真实行为：**已超期**的无归属 running 任务会被启动恢复
+    `recover_stale()` 自动放回 `pending`（不需要用户做任何操作）—— 所以它不该
+    留在恢复清单里，也谈不上「永久卡住」。需要用户处理的只有「新鲜但卡住」那种。
+    """
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=3600)).isoformat()
+    seed_derived_running(harness.conn, DERIVED)  # 新鲜：真正的「卡住的 running」
+    seed_derived_running(harness.conn, DERIVED_STALE, updated_at=stale_at, content_version=2)
     client = harness.start()
 
+    # 已超期的那条：启动恢复自动放回 pending —— 不是永久卡住，不需要用户点按钮
+    stale_row = harness.conn.execute(
+        "SELECT * FROM derived_tasks WHERE id = ?", (DERIVED_STALE,)
+    ).fetchone()
+    assert stale_row["state"] == "pending", (
+        f"无归属 + 已超期的 running 任务必须被启动恢复放回 pending（不是永久卡住）：{dict(stale_row)}"
+    )
+    assert stale_row["run_after"] is None, "放回队列必须清掉 run_after（可立即重跑）"
+
     body = recovery_listing(client, kinds="derived_task")
+    listed = {str(i["record_id"]) for i in body["records"]}
+    assert DERIVED_STALE not in listed, (
+        "已经自动放回队列的任务不需要用户操作，不该留在恢复清单里"
+    )
+
     records = [i for i in body["records"] if str(i["record_id"]) == DERIVED]
     assert records, f"无归属的 running 派生任务必须进清单：{[i['record_id'] for i in body['records']]}"
     record = records[0]

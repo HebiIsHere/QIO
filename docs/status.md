@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-09（`main` 分支）。核对方法见文末。
+最后核对：2026-10-10（`main` 分支）。核对方法见文末。
 
 ---
 
@@ -2357,6 +2357,152 @@ GitHub 直链与 `gh` 上传本身是通的。
   所以只保证「已确认耗尽后不再发新请求」，不声称零误差账单预测。
 - 前端界面只跑了单元 / 组件测试与类型检查；真实浏览器的窄窗口、滚动、代码块溢出
   仍未在本轮逐项截图复核。
+
+---
+
+## 本轮变更：历史数据可恢复、来源保护与关闭真实性（2026-10-10）
+
+本轮在**已合入可靠性修复的 main**（`da0436b`）上修 A01–A06、B01–B02 共 8 项。
+主题是「升级前留下的历史数据」与「关闭 / 记账的真实性」。只做功能正确性、历史数据、恢复、
+长期信息的用户控制、生命周期、资源释放、预算与记账归属、界面接线；**不涉及网络安全，
+不改认证 / 授权 / 隔离 / 安全策略**。
+
+### 一、历史无归属的消息终于可操作（A01）
+
+- **缺陷**：升级前的用户消息没有实例归属、状态停在 `queued`。启动恢复按契约保守保留
+  （unknown 不改状态），但收件箱只认 `interrupted`、`resend` 只认可重发状态 ——
+  这条消息**既不可见也不能继续**，永久卡死。
+- **修法**：新增 `backend/src/agent/services/recovery.py`（`RecoveryInbox`）与
+  `backend/src/agent/api/recovery_routes.py`，把「可恢复记录」做成**一套规则**，
+  同时覆盖确认中断、孤立抢占、历史无归属、归属判不出来、以及卡住的派生任务；
+  六种状态分开表达（`ready` / `orphaned_claim` / `legacy_unowned` / `owner_unknown` /
+  `derived_stale` / `derived_legacy`），**unknown 绝不批量改成死或中断**。
+- **继续的语义**：`queued` / `running` 的开放行先做**接管**——`BEGIN IMMEDIATE` +
+  条件 `UPDATE ... WHERE owner_instance_id IS NULL`（只为「无归属」这一精确状态），
+  命中 0 行就 409 且**一行不改**；接管之后**沿用既有可靠重发事务**
+  （`TurnJournal.claim_for_resend`：老记录 + 新记录 + 关联同一事务），不另写一套派发。
+  任何写入之前先检查派发通道，没有通道就 503 且一行不改（绝不假 200）。
+- **忽略**：先接管再标记用户已知晓（`status='dismissed'` 终态），**不删除原文**；
+  系统通知轮（`notify = 1`）永不进清单、永不可操作。
+- **历史派生任务**：无归属的 `running` 派生任务进清单（`derived_legacy`）并可「重新排队」——
+  条件更新 + `claim_generation + 1`，`attempts` / `last_error` 原样保留；
+  归属者还活着或判不出来时拒绝（重排会让同一件事做两遍，代次只挡迟到写回）。
+  已超期的无归属任务由启动恢复自动放回 `pending`（此时不需要用户操作），
+  这条行为也被用例钉住，不会被误当成「永久卡住」。
+- **界面**（`frontend/src/components/RecoveryInbox.vue`）：并入既有的「未完成事项」槽位
+  （不另起页面），显示消息原文、原状态、**一句「为什么现在动不了」**与可用动作；
+  详情默认收起；失败就地显示原因并可重试；被截断时如实显示「还有 N 条未显示」。
+
+### 二、历史来源未知的实体值会被保护（A02）
+
+- **缺陷**：迁移 29 只加列不回填。升级前用户明确改过的摘要 / 类型 / 属性，
+  `field_meta` 是空的、`revision = 0`；自动候选把「来源为空」当成可以覆盖，
+  于是**人工值被模型值改掉，而且没有登记任何候选**。
+- **修法**：新增 `SOURCE_UNKNOWN`；判定规则是「卡上**已有非空值** + `field_meta` 没有它的来源记录」→
+  来源未知，**按用户值保护**：自动候选不得覆盖，冲突进 `user_value` / `source_unknown` 候选。
+  **不伪造** `source="user"`（来源就是未知，如实标记）；`aliases` / `summary` / `kind` /
+  `attributes.<key>` 共用同一套规则；未提及的字段与属性一律保留；空缺仍可合理补充；
+  `user_deleted` 墓碑与已归档卡片不被绕过；提交时仍按 `expected_revision` 做 CAS。
+  这是**读写兼容**方案（读时判定），没有为它追加迁移、也没有写回历史标记。
+
+### 三、冲突候选由用户真正管理（A04）
+
+- **缺陷**：底层已经保存候选、序列化也返回，但**产品界面没有任何入口**，
+  用户看不到、也采纳 / 丢弃不了。
+- **修法**：新增 `backend/src/agent/entities/pending.py` 与
+  `backend/src/agent/api/entity_pending_routes.py`（列表 / 采纳 / 丢弃），
+  前端 `frontend/src/components/planet/EntityCandidates.vue` 并入 `EntityPanel`：
+  当前值 / 候选值 / 一句话原因 / 「采纳」「丢弃」，默认收起，不新增弹窗与反复提示。
+  - **采纳** = 本次用户的明确决定：写值 + `source="user"` + 新 revision + 移除该候选；
+    `expected_revision` 不符 → 409 且零改动；归档卡 `adoptable=false` 并说明
+    「该实体已归档；恢复实体是另一个动作」；不支持的候选类型不给「点了没效果」的按钮；
+    重复点击幂等。
+  - **丢弃** = 只解决这一个候选：不改实体内容值、不影响其他候选，幂等。
+    注意：丢弃会**递增卡级 `revision`**——它是卡级 CAS 令牌（丢弃要落
+    `field_meta.pending/resolved`），递增之后并发的「丢弃 / 采纳 / 自动提交」
+    会以 409 暴露而不是静默覆盖。这条是本轮的**明确定稿**，回归用例按它断言
+    （内容值一字不变 + 其它候选仍在 + 用丢弃前的 revision 采纳必须 409 且零改动）。
+
+### 四、关闭结果必须反映真实后台状态（A05）
+
+- **缺陷**：后台任务延迟响应取消时，`shutdown` 如实报了 `unfinished`，但 `aclose` 只打一条
+  告警就继续 `mark_clean_exit()`、释放适配器；lifespan 随后无条件关数据库 ——
+  结果既写了「干净退出」，又出现「关闭后写库」。
+- **修法**：`BackgroundTasks.shutdown` 改为**两阶段有界**（等待 → 取消 → 取消确认窗口 →
+  final grace → 如实回报），`ShutdownReport` 增加 `still_running` / `phases` / `detail`，
+  并通过 `register(..., unit_finished=...)` 声明**底层执行单元**探针 ——
+  「asyncio 句柄取消了」不再等于「执行单元结束了」。新增
+  `backend/src/agent/services/lifecycle.py`（`CloseReport` / `close_decision` /
+  `log_close_report` / `backend_stop_verdict`）。
+- **接线**（`AppContext.aclose` + lifespan）：`aclose()` 返回 `CloseReport`；
+  `close_decision` 是唯一口径 —— 不干净时**不写干净退出**、**不释放适配器**
+  （残留协程还会用它们）、**不关数据库**。lifespan 只在报告干净时才关 DB。
+  这样做的数据安全依据：**不关库等于让进程自然退出**，SQLite WAL 崩溃安全，
+  而「谁还没结束」已经写在本实例的归属里 —— 下次启动按归属恢复；反过来，
+  在残留执行单元还可能写库时先关库，才是真正会丢 / 会炸的路径。
+- 「更新前停止后端」：前端 / Tauri 侧本来就要求真实 `verified`（不 verified 就放弃安装），
+  无需改动；缺的是 `scripts/e2e_down.py` —— 它以前用「任一端口关闭就报 ok」且**早于真实确认**，
+  现改为对该进程负责的端口做**有界轮询真实确认**，确认不了就如实说「未确认停止」。
+
+### 五、适配器显式绑定所属账本（A06）
+
+- **缺陷**（限定场景：**同一进程多个 `AppContext`**）：`CredentialPolicy.__init__` 会把
+  自己的 store 登记成**进程级默认账本**，后创建的上下文覆盖前一个；适配器若没有显式绑定，
+  首次**直接调用**（后台提炼、引导追问、内部重试）就会用最后登记的那个账本 ——
+  A 的 0 预算没挡住，用量却记到 B 头上。
+- **修法**：`bind_request_accounting(adapter, store, key_id=None)` 成为显式归属权威
+  （已有显式绑定不得被后来上下文改写，缓存复用的 adapter 保持原绑定）；
+  兜底结果**钉在 adapter 上**，保证「预算核对」与「用量写入」必然是同一个账本；
+  新增 `clear_default_accounting_store`（只撤销「当前登记的正是它」那条）。
+  Lead 在 `AppContext._create_adapter`（新建 adapter 的唯一路径）里加一行显式绑定。
+- **边界**：独立进程之间不共享该全局变量，所以这不是「所有多开都失效」。
+
+### 六、高版本存量库不会漏掉后补对象（B01）
+
+- **缺陷**：迁移器按「`target <= 已记录版本` 就跳过」。用户先跑到 29，之后集成其它分支的
+  新 26–28 迁移时，低编号条目**永远不会执行** —— 只看版本号看不出这件事。
+- **修法**：`storage/schema.py` 追加**补偿迁移 30**（编号 > 29，纯幂等写法，不改 1–29 的含义）；
+  `storage/migrate.py` 增加 `REQUIRED_OBJECTS`、`missing_objects()`（**按对象校验**：
+  表 / 列 / 索引，不只看数字）与 `verify_required_objects()`（缺失就补偿，仍缺抛可读
+  `SchemaIncompleteError`），并在 `apply_migrations()` 结束前调用。
+  四种库状态各有断言：只到 25、25 + 其它分支形状的 26–28、**版本已到 29 但本轮对象缺失**、
+  全新库；都要求对象齐全、版本推进、存量数据不丢、重复执行幂等。
+- **诚实边界**：那三个 26–28 分支**没有**集成到本分支，它们自己的对象本轮无法补偿，
+  该组合**未验证**；它们合并前必须把各自的迁移号抬到 **30 以上**，
+  否则会被本轮的 30 整段跳过（与 B01 是同一个根因的不同方向）。
+  `missing_objects` 是**按名字**校验，同名异形的对象判不出来。
+
+### 七、POSIX 低 PID 不再套用 Windows 特殊 PID 规则（B02）
+
+- **缺陷**：`_default_pid_alive` 在**平台判断之前**就 `pid <= 4 → None`，
+  于是 POSIX 上合法的 PID 1/2/3/4 一律「判不出来」。
+- **修法**：先分平台 —— 通用只拒 `pid <= 0`；Windows 保持 `<= 4 → None`（0/4 是内核伪 pid，
+  查询不可靠）与只读 `OpenProcess` 探测；POSIX 的 1/2/3/4 **正常探测**
+  （`ProcessLookupError → False`、`PermissionError → True`、其它 `OSError → None`）。
+  用替身探测覆盖，**不结束任何真实进程**。
+
+### 八、本轮实测（命令与结果）
+
+- 后端：`cd backend; uv run --frozen pytest` 全绿（exit 0）。
+- 前端：`cd frontend; npm test` 全绿；`npx vue-tsc --noEmit` 通过。
+- 运行时 / 预算：`uv run --frozen python -m agent.eval.run` 与同环境基线对比。
+- 界面：真实起后端 + Vite，截图核验恢复收件箱（首次连接 / 刷新 / 失败反馈 / 窄窗口）
+  与候选管理区。
+- `python scripts/check_docs.py` 通过。
+- 独立验证：`scripts/fu-verify/run_all.ps1`（`-Label baseline|after`）给出前后对照，
+  原始输出在 `scripts/fu-verify/output/`；其中四处「判据修正 / 设计裁定」在
+  `scripts/fu-verify/README.md` 里逐条写明依据（不是放宽期望）。
+
+### 九、仍然存在的限制（诚实边界）
+
+- A01「继续」之后的真实模型执行：受控验收用记录型 runner 只断言「恰好一次有效执行」，
+  真实链路一律 fake provider。
+- A05 用同进程受控实例替代「真被 kill 的进程」；pid 复用与跨机 host 判定未覆盖；
+  关闭的有界性前提是事件循环没有被**同步阻塞**（协程里的同步阻塞调用无法被 timeout 打断）。
+- A06 的 Anthropic 能力探测会临时建一个没有 `key_id` 的 adapter，那次探测请求不入账
+  （既有行为，本轮未改）。
+- B01 的 26–28 分支组合未集成、未验证（见上）。
+- 候选「保存失败」在后端没有独立契约面，前端用注入 500 覆盖。
 
 
 

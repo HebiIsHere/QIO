@@ -24,10 +24,17 @@
       * 各分支返回值符合冻结契约。
 
 断言只看返回值与替身记录，不看实现细节；原缺陷在时红、修复后仍绿。
+
+判据说明（补充修复轮修正，详见 `scripts/fu-verify/README.md`）
+
+    「其它 OSError」不能用 `OSError(13, ...)` 构造：EACCES 在 Python 3.3+ 会按
+    errno 映射成 `PermissionError`，那正是「进程在、只是没权限 → True」的既有
+    分支。表达基础 `OSError` 要用不会被映射的 errno（本文件用 `errno.EIO`）。
 """
 
 from __future__ import annotations
 
+import errno
 import os
 
 import pytest
@@ -102,10 +109,21 @@ def test_posix_low_pid_permission_error_means_alive(monkeypatch):
 
 
 def test_posix_low_pid_other_oserror_is_unknown(monkeypatch):
-    """其它 OSError 判不出来 → None（绝不当作死）。对照：基线也返回 None。"""
+    """其它 OSError 判不出来 → None（绝不当作死）。
+
+    注意构造方式：Python 3.3+ 的 `OSError(errno, ...)` 会按 errno **映射出子类**
+    —— `OSError(13, ...)` 就是 `PermissionError`（EACCES），那属于「进程在、只是
+    没权限」的既有分支（→ True），表达不了「其它 OSError」。所以这里用不会被映射
+    成已知子类的 `errno.EIO`（EIO → 基础 `OSError`）。
+    """
+
+    other_oserror = OSError(errno.EIO, "I/O error")
+    assert not isinstance(other_oserror, (PermissionError, ProcessLookupError)), (
+        "本用例必须构造一个**没有**被映射成已知子类的 OSError"
+    )
 
     def kill(pid: int, sig: int):  # noqa: ANN202
-        raise OSError(13, "unexpected probe failure")
+        raise other_oserror
 
     monkeypatch.setattr(ir, "os", _posix(kill))
 

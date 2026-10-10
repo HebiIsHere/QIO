@@ -22,6 +22,16 @@
     * 重复点击：幂等、不 500、不重复改值（revision 不再涨）。
 
     基线在这些断言上全红（404），修复后仍绿。
+
+判据说明（补充修复轮修正，详见 `scripts/fu-verify/README.md`）
+
+    **丢弃会推进卡级 `revision`（设计裁定，保留实现）**：`revision` 是**卡级 CAS
+    令牌**，不是纯内容版本。丢弃要落 `field_meta.pending/resolved`，递增它才能让
+    并发的「丢弃 / 采纳 / 自动提交」互相以 409 暴露，而不是静默覆盖较新的决定
+    （提示词明确要求「不能静默覆盖较新的决定；提供刷新与冲突反馈」）。因此原
+    「丢弃后 `revision` 相等」的断言写错了判据，被**更强**的行为断言取代：
+    内容值一字不变 + 其它候选原样留在 pending + 用丢弃前的旧令牌采纳另一条候选
+    必须 409 且一行不改。丢弃**不改内容值**这一条没有放宽。
 """
 
 from __future__ import annotations
@@ -101,6 +111,29 @@ def _by_field(body: dict, field: str) -> dict:
         if str(item.get("field")) == field:
             return item
     pytest.fail(f"没有 field={field!r} 的候选：{[i.get('field') for i in body['candidates']]}")
+
+
+def _content_snapshot(service: EntityCardService, card_id: str) -> dict:
+    """实体**内容值**快照：只取用户看得见的内容，不含 `revision` / `field_meta`。
+
+    丢弃（以及被 409 挡下的动作）必须做到「内容一字不改」—— 这里就是那个
+    「一字」的判据面：summary / kind / aliases / attributes 四项全等。
+    """
+    payload = service.to_dict(service.get(card_id))
+    return {key: payload[key] for key in ("summary", "kind", "aliases", "attributes")}
+
+
+def _other_pending_snapshot(body: dict, *, drop: str) -> list:
+    """除 `drop` 之外的 pending 候选（顺序无关，逐条比较字段/值/原因）。"""
+    return sorted(
+        (
+            str(item.get("field")),
+            json.dumps(item.get("candidate_value"), ensure_ascii=False, sort_keys=True),
+            str(item.get("reason") or ""),
+        )
+        for item in body["candidates"]
+        if str(item.get("candidate_id")) != str(drop)
+    )
 
 
 # --------------------------------------------------------------------------
@@ -245,28 +278,67 @@ def test_a04_archived_card_is_not_adoptable(client: TestClient, db_conn):
 
 
 def test_a04_dismiss_resolves_only_that_candidate(client: TestClient, db_conn):
+    """丢弃一条候选：内容一字不改、其它候选不受影响，并且**推进卡级 revision**。
+
+    `revision` 是**卡级 CAS 令牌**，不是纯内容版本。丢弃要落
+    `field_meta.pending/resolved`（一次真实的用户决定），递增它才能让并发的
+    「丢弃 / 采纳 / 自动提交」互相以 409 暴露，而不是静默覆盖较新的决定。
+    所以这里断言的是「内容值不变 + 令牌推进 + 旧令牌被拒」（判据比原来的
+    「revision 相等」更强），而不是删掉版本断言。
+    """
     card_id = _seed_card(db_conn)
     service = EntityCardService(db_conn)
     body = _listing(client, card_id)
     summary_entry = _by_field(body, "summary")
-    _by_field(body, "kind")  # 场景前提：还存在别的候选
-    revision = service.get(card_id).revision
+    kind_entry = _by_field(body, "kind")  # 场景前提：还存在别的候选
+    revision_before = service.get(card_id).revision
+    content_before = _content_snapshot(service, card_id)
+    others_before = _other_pending_snapshot(body, drop=summary_entry["candidate_id"])
 
     resp = client.post(
         f"/api/entities/{card_id}/candidates/{summary_entry['candidate_id']}/dismiss",
-        json={"expected_revision": revision},
+        json={"expected_revision": revision_before},
     )
 
     assert resp.status_code == 200, f"丢弃必须成功：{resp.status_code} {resp.text[:200]}"
     assert resp.json().get("dismissed") is True or resp.json().get("ok") is True
 
-    card = service.get(card_id)
-    assert card.summary == USER_SUMMARY, "丢弃不得改当前实体值"
-    assert card.revision == revision, "丢弃只解决候选，不该改卡的内容版本"
+    # 1) 内容值一字不变：丢弃不是一次内容修改
+    assert _content_snapshot(service, card_id) == content_before, (
+        f"丢弃不得改任何内容值：{content_before} → {_content_snapshot(service, card_id)}"
+    )
 
-    remaining = {str(item.get("field")) for item in _listing(client, card_id)["candidates"]}
+    # 2) 卡级 CAS 令牌推进 —— 这正是并发保护：别的页面手里的旧令牌立刻失效
+    revision_after = service.get(card_id).revision
+    assert revision_after > revision_before, (
+        "丢弃要落 field_meta.pending/resolved，必须推进卡级 revision（CAS 令牌）"
+    )
+
+    # 3) 其它候选仍在 pending：数量与内容都不变
+    after_body = _listing(client, card_id)
+    remaining = {str(item.get("field")) for item in after_body["candidates"]}
     assert "summary" not in remaining, "被丢弃的候选必须消失"
     assert "kind" in remaining, "其它候选不得被连带解决"
+    after_others = _other_pending_snapshot(after_body, drop=summary_entry["candidate_id"])
+    assert after_others == others_before, "其它候选必须原样留在 pending（数量与内容都不变）"
+
+    # 4) 用**丢弃之前**的令牌采纳另一条候选 → 409，且一行不改、不改值
+    stale = client.post(
+        f"/api/entities/{card_id}/candidates/{kind_entry['candidate_id']}/adopt",
+        json={"expected_revision": revision_before},
+    )
+    assert stale.status_code == 409, (
+        "旧卡级令牌必须被拒绝（否则就是静默覆盖较新的决定）："
+        f"{stale.status_code} {stale.text[:200]}"
+    )
+    assert stale.json().get("conflict") is True
+    assert int(stale.json()["current_revision"]) == revision_after
+
+    assert _content_snapshot(service, card_id) == content_before, "409 不得改任何值"
+    assert service.get(card_id).revision == revision_after, "409 不得推进版本"
+    assert _other_pending_snapshot(
+        _listing(client, card_id), drop=summary_entry["candidate_id"]
+    ) == others_before, "409 不得动其它候选"
 
 
 def test_a04_duplicate_dismiss_is_idempotent(client: TestClient, db_conn):
@@ -277,11 +349,16 @@ def test_a04_duplicate_dismiss_is_idempotent(client: TestClient, db_conn):
     revision = service.get(card_id).revision
 
     assert client.post(url, json={"expected_revision": revision}).status_code == 200
+    revision_after_first = service.get(card_id).revision
+    assert revision_after_first > revision, "第一次丢弃要推进卡级 revision（CAS 令牌）"
+    content_after_first = _content_snapshot(service, card_id)
+
     second = client.post(url, json={"expected_revision": revision})
 
     assert second.status_code != 500
     assert second.status_code in (200, 409)
-    assert service.get(card_id).revision == revision
+    assert service.get(card_id).revision == revision_after_first, "重复丢弃不得再推进版本"
+    assert _content_snapshot(service, card_id) == content_after_first, "重复丢弃不得改值"
 
 
 def _by_field_candidates(client: TestClient, entity_id: str, field: str) -> list[dict]:

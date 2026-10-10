@@ -731,3 +731,111 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 - 规则：**新迁移取「所有并行分支已知最大号 + 1」**，不要取「当前 main 的下一个号」。
   存量库上的半截迁移仍然由 `migrate.py` 的窄口径自愈（只认 duplicate column / already exists）
   处理。回归见 `backend/tests/test_rm_lead_migration_discipline.py`。
+
+## 14. 历史数据、来源与关闭真实性契约（2026-10-10 定稿）
+
+这一节固定本轮新增 / 收紧的结构性边界。共同前提：**「升级前留下的数据」不能因为
+「不知道它当初是谁写的」就变成不可操作或被自动改写。**
+
+### 14.1 可恢复记录的唯一规则（A01 / A03）
+
+- 唯一入口：`backend/src/agent/services/recovery.py`（`RecoveryInbox`）。
+  HTTP 端口在 `backend/src/agent/api/recovery_routes.py`（`build_router(ctx)`），
+  由 `api/server.py` 在 `create_app()` 末尾挂一次。
+- **六种状态分开表达**，不允许合并成一个「有问题」的桶：
+
+  | state_class | 含义 | 可做动作 |
+  | --- | --- | --- |
+  | `ready` | 确认中断、还没被处理 | continue / ignore |
+  | `orphaned_claim` | 抢占过但没有后继 | repair（修复后变 ready）/ ignore |
+  | `legacy_unowned` | 升级前的开放行，没有任何归属 | continue / ignore |
+  | `owner_unknown` | 有归属但存活判不出来 | 只列出（不提供动作） |
+  | `derived_stale` | running 派生任务，归属者确认已退出 | requeue |
+  | `derived_legacy` | running 派生任务，无归属 | requeue |
+
+- **unknown 绝不批量改成死或中断**：判不出来就只列出、并写清「无法确认上次的写入者是否已停止」。
+- **接管是条件更新 + 写锁**：`BEGIN IMMEDIATE` + `UPDATE ... WHERE owner_instance_id IS NULL`
+  （或归属者已确认退出），命中 0 行 → 409 且一行不改。接管之后沿用既有
+  `claim_for_resend`（老记录 + 新记录 + 关联同一事务），**不新写第二条派发路径**。
+  这样「旧、新写入者同时执行」被两件事挡住：写锁 + 精确状态条件；
+  并且新 turn 一落库就带本实例归属，重启后仍可追踪。
+- **忽略不等于删除**：`status='dismissed'` 终态；原文与历史保留。
+  这样「用户已忽略」与「孤儿抢占」不再同形（否则刚忽略的记录会被当成孤儿重列，还能被 repair 复活）。
+- **派生任务**：重排用条件更新 + `claim_generation + 1`，`attempts` / `last_error` 保留；
+  归属者 alive 或 unknown 一律拒绝（重排会让同一件事做两遍，代次只挡迟到写回）。
+  已超期的无归属任务由启动恢复自动放回 `pending` —— 那不是「卡住」，不需要用户操作。
+- **截断要如实**：`total` / `shown` / `truncated` 三个字段都在，界面显示「还有 N 条未显示」，
+  未显示的记录不能永久消失（可以继续取）。
+
+### 14.2 实体来源未知 = 受保护（A02）
+
+- 判定：某个字段 / 属性**已有非空值**、而 `entity_cards.field_meta` 里没有它的来源记录
+  → 来源 = `unknown`，**按用户值保护**：自动候选不得覆盖，冲突登记成候选（`user_value` /
+  `source_unknown`），由用户在界面上决定。
+- **不伪造来源**：历史值不会被写成 `source="user"`；需要标记时写 `source="unknown"`。
+  读取侧通过 `to_dict()['unknown_source_fields']` 如实暴露「这些字段的来源未知」。
+- 一致适用于 `aliases` / `summary` / `kind` / `attributes.<key>`；未提及的字段与属性一律保留；
+  空缺仍可补充；`user_deleted` 墓碑与已归档卡片不被自动流程绕过；
+  自动提交仍按 `expected_revision` 做 CAS。
+- 这是**读写兼容**方案（读时判定），不需要为它追加迁移或回填历史行。
+
+### 14.3 候选的用户管理（A04）
+
+- 唯一入口：`backend/src/agent/entities/pending.py`；
+  HTTP 在 `backend/src/agent/api/entity_pending_routes.py`，
+  **必须在 `GET /api/entities/{entity_id}` 之前注册**（starlette 取第一个匹配，
+  否则 `/api/entities/candidates` 会被当成 `entity_id="candidates"`）。
+- 采纳 = 用户的明确决定：写值 + `source="user"` + 新 `revision` + 移除该候选；
+  `expected_revision` 不符 → 409 且零改动；归档卡不可采纳（`blocked_reason="card_archived"`，
+  恢复实体是另一个动作）；不支持的候选类型不给可点击的按钮；重复点击幂等。
+- 丢弃 = 只解决这一个候选：不改实体内容值、不影响其他候选，幂等。
+- **`revision` 是卡级 CAS 令牌**（不是纯内容版本）：任何 `field_meta` 写入（含丢弃）
+  都会递增它，于是并发的「丢弃 / 采纳 / 自动提交」会以 409 暴露而不是静默覆盖。
+  回归断言按这个语义写：内容值一字不变 + 其它候选仍在 + 用丢弃前的 revision 采纳必须 409 且零改动。
+
+### 14.4 关闭结果与依赖释放（A05）
+
+- `BackgroundTasks.shutdown`：**两阶段有界**（等待 → 取消 → 取消确认窗口 → final grace），
+  `ShutdownReport` 带 `still_running` / `phases` / `detail`；
+  `register(..., unit_finished=...)` 用于声明**底层执行单元**探针 ——
+  「asyncio 句柄取消了」不等于「线程 / 子进程 / 执行器里的那件事结束了」。
+- `AppContext.aclose()` 返回 `CloseReport`；`services/lifecycle.py::close_decision` 是唯一口径：
+  不干净 → **不写干净退出、不释放适配器、不关数据库**（三者同时否）。
+- `api/server.py` 的 lifespan 只在报告干净（且 `close_db_on_shutdown`）时才 `close_conn`。
+  **不关库的依据**：不关库 = 让进程自然退出，SQLite WAL 崩溃安全，而「谁还没结束」
+  已经写在本实例的归属里，下次启动按归属恢复；反过来，在残留执行单元还可能写库时先关库，
+  才会真的丢 / 炸。
+- 「更新前停止后端」必须用真实结果：前端 / Tauri 侧看 `StopReport.verified`；
+  `scripts/e2e_down.py` 改为对本进程负责的端口做**有界轮询真实确认**，确认不了就说「未确认停止」。
+
+### 14.5 适配器与账本的归属（A06）
+
+- `AppContext._create_adapter`（新建 adapter 的**唯一**路径）在 `adapter.key_id` 之后调用
+  `bind_request_accounting(adapter, self.credentials)`。缓存复用的 adapter 因此天然保持原绑定。
+- `request_accounting()` 的优先级：**显式绑定 → 已钉住的兜底绑定 → 全局默认库（兼容兜底）**；
+  兜底结果钉在 adapter 上，保证「预算核对」与「用量写入」用同一个账本；
+  钉不住（例如 `__slots__` 替身）就不兜底 —— 宁少记，不记错。
+- 进程级默认账本只是**兼容**手段：`CredentialPolicy(store, register_default_accounting=False)`
+  可以不登记；`clear_default_accounting_store(store)` 只撤销「当前登记的正是它」那条。
+- 限定范围：这是**同一进程多个 `AppContext`** 的问题；独立进程之间不共享该变量。
+
+### 14.6 迁移的对象级校验（B01）
+
+- `storage/migrate.py` 除了版本号，还要**按对象**校验（表 / 列 / 索引）：
+  `REQUIRED_OBJECTS`、`missing_objects(conn)`、`verify_required_objects(conn)`；
+  `apply_migrations()` 结束前必须跑一次，缺失就补偿、仍缺就抛可读 `SchemaIncompleteError`。
+- 补偿迁移用**更高编号**（本轮是 30，> 当时的 29），纯幂等写法，**不改历史迁移的含义**。
+- 与 13.8 合起来读：**并行分支的迁移号必须取「已知最大 + 1」**，
+  否则要么被整段跳过（先合的对后合的）、要么撞号。未集成的分支，其对象本轮无法补偿，
+  该组合必须如实标为「未验证」。
+
+### 14.7 PID 存活探测的平台差异（B02）
+
+- 先分平台，再判特殊 PID：
+  - 通用：`pid <= 0` → unknown（无意义）。
+  - Windows：`pid <= 4` → unknown（0 / 4 是内核伪 pid，查询不可靠），其余走只读 `OpenProcess`；
+    权限不足 → 存在，参数错误 → 不存在，其它 → unknown。
+  - POSIX：**1 / 2 / 3 / 4 都是合法 PID，必须正常探测**；
+    `ProcessLookupError` → 不存在，`PermissionError` → 存在，其它 `OSError` → unknown。
+- 注意 Python 的 `OSError(errno, msg)` 会按 errno 映射出子类
+  （`OSError(13, …)` 就是 `PermissionError`），写测试时不要把它当成「其它 OSError」。

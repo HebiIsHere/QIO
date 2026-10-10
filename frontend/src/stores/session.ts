@@ -1424,16 +1424,24 @@ export const useSessionStore = defineStore("session", {
       this.recoveryError = "";
       return null;
     },
-    /** 失败：保留这条记录（可重试），把可读原因就地写出来。 */
-    _failRecovery(recordId: string, prefix: string, e: unknown): RecoveryOutcome {
+    /**
+     * 失败：保留这条记录（可重试），把可读原因就地写出来。
+     *
+     * **409 不等于「已经被处理过」**：后端在好几种情况下都回 409 —— 记录状态已经变化、
+     * 原写入者还在运行不能接管、孤立记录要先修复再继续。这些情况下这条记录**仍然在
+     * 权威清单里**，所以绝不能凭本地猜测把它标成「已解决」再遮掉（那正是「以不确定为
+     * 由永久隐藏记录」）。只做一件事：重新拉一次权威清单，由后端决定它还在不在；
+     * 原因用后端给的那句话，不自己编。
+     */
+    _failRecovery(_recordId: string, prefix: string, e: unknown): RecoveryOutcome {
       const conflict = isRecoveryConflict(e);
+      const serverReason = String((e as Error)?.message ?? "").trim();
       const message = conflict
-        ? `${prefix}没有完成：这条记录已经被处理过（可能在别处继续或忽略了），清单正在按后端最新状态刷新`
-        : `${prefix}没有成功：${(e as Error).message}（可以重试）`;
+        ? `${prefix}没有完成：${serverReason || "这条记录的状态已经变化"}（清单已按后端最新状态刷新，可重试）`
+        : `${prefix}没有成功：${serverReason || "未知原因"}（可以重试）`;
       this.recoveryError = message;
       if (conflict) {
-        // 409：不猜本地状态，重新要一份真相（失败也只是提示，不清空清单）
-        this.noteRecoveryResolved(recordId);
+        // 不猜本地状态：只重新要一份真相（不再本地标记 resolved，避免遮掉仍然可操作的记录）
         void this.loadRecoveryInbox();
       }
       return { ok: false, message };

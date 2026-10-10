@@ -283,21 +283,27 @@ describe("继续 / 修复 / 忽略 / 重新排队：真的落到接口并就地�
     expect(session.recoveryError).toContain("可以重试");
   });
 
-  it("409（已经被处理过）→ 如实说明并重新对齐，不假装成功", async () => {
+  it("409 → 如实转述服务端原因、重新对齐，不假装成功也不本地遮掉记录", async () => {
     fetchRecoveryRecords.mockResolvedValue({
       records: [readyRecord()],
       total: 1,
       shown: 1,
       truncated: false,
     });
-    continueRecovery.mockRejectedValue(Object.assign(new Error("409"), { status: 409 }));
+    // 后端的 409 原因可能不是「已经被处理过」（也可能是状态已变化 / 原写入者还在运行 /
+    // 需要先修复）。界面必须**原样转述**，不能自己编一个理由。
+    continueRecovery.mockRejectedValue(
+      Object.assign(new Error("上次的写入者现在还在运行，不能接管"), { status: 409 }),
+    );
     const session = setup();
     await session.loadRecoveryInbox();
 
     const res = await session.continueRecovery("turn_a");
 
     expect(res.ok).toBe(false);
-    expect(res.message).toContain("已经被处理过");
+    expect(res.message).toContain("上次的写入者现在还在运行");
+    // 409 不等于「已经处理过」：这条记录仍然可操作，不得被本地遮掉
+    expect(session.recoveryRecords.map((r) => r.record_id)).toContain("turn_a");
     // 409 之后重新问服务端要真相
     await vi.waitFor(() => expect(fetchRecoveryRecords).toHaveBeenCalledTimes(2));
   });

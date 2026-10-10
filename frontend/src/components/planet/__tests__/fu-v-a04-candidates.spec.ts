@@ -220,9 +220,13 @@ describe("A04 前端：实体候选的用户管理入口", () => {
     await adopt[0].trigger("click");
     await flushPromises();
 
-    const html = wrapper.html();
-    expect(html).toContain("自动提炼的摘要");
-    expect(html).not.toMatch(/已采纳|采纳成功/);
+    // 只看**可见文本**：`wrapper.html()` 里带着 Vue 模板注释
+    // （`<!-- …也不翻成「已采纳」 -->`，注释会留在 outerHTML），对原始 html 串做
+    // 「已采纳」正则会命中注释而不是渲染结果。组件实际渲染的是「采纳没有成功：…」。
+    const visible = wrapper.text();
+    expect(visible, "失败不得把候选从界面里抹掉").toContain("自动提炼的摘要");
+    expect(visible, "必须就地给出失败原因").toContain("采纳没有成功");
+    expect(visible, "500 不许假装成功").not.toMatch(/已采纳|采纳成功/);
   });
 
   it("归档卡上的候选不可采纳，并说明「该实体已归档」", async () => {

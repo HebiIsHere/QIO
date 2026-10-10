@@ -776,7 +776,9 @@ class AppContext:
         probed_at = self._anthropic_probe_at.get(key)
         if probed_at is not None and (time.time() - probed_at) < ANTHROPIC_PROBE_TTL_SECONDS:
             return
-        result = await probe_anthropic(secret, model, base_url)
+        result = await probe_anthropic(
+            secret, model, base_url, key_id=key_id, accounting_store=self.credentials
+        )
         self._anthropic_probe_at[key] = time.time()
         return result
 

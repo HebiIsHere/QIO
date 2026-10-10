@@ -287,12 +287,25 @@ async def probe_anthropic(
     api_key: str,
     model: str,
     endpoint: str = "https://api.anthropic.com/v1",
+    *,
+    key_id: str | None = None,
+    accounting_store: Any = None,
 ) -> str:
     """Probe an Anthropic endpoint with a minimal tool-calling request.
 
     Returns "native" on success; raises on auth/network errors.
+
+    A06：这次探测**本身就是一次真实请求**，所以它要和其它直接调用路径一样归因到
+    建它的那把凭据 —— 传了 `key_id` + `accounting_store` 就显式绑定（受同一份预算与
+    账本约束）；缺任一参数时保持旧行为（不假装绑定，也不把账记到别的上下文头上）。
     """
     adapter = AnthropicAdapter(api_key=api_key, model=model, endpoint=endpoint, max_tokens=8)
+    if key_id:
+        adapter.key_id = str(key_id)
+    if key_id and accounting_store is not None:
+        from agent.credentials.usage import bind_request_accounting
+
+        bind_request_accounting(adapter, accounting_store)
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content="ping")],

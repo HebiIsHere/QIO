@@ -159,12 +159,17 @@ interface RecoveryRecordView {
   resolved?: boolean;
 }
 
+interface RecoveryOutcomeLike {
+  ok: boolean;
+  message: string;
+}
+
 interface RecoverySessionStore {
   recoveryRecords: RecoveryRecordView[];
   recoveryLoading: boolean;
   recoveryError: string | null;
   loadRecoveryInbox: () => Promise<unknown>;
-  continueRecovery: (recordId: string) => Promise<unknown>;
+  continueRecovery: (recordId: string) => Promise<RecoveryOutcomeLike>;
   repairOrphan: (recordId: string) => Promise<unknown>;
   ignoreRecovery: (recordId: string) => Promise<unknown>;
   requeueDerived: (recordId: string, expected?: unknown) => Promise<unknown>;
@@ -208,7 +213,10 @@ describe("A01/A03 前端：恢复收件箱", () => {
     expect(callsTo("/api/recovery/records").length).toBeGreaterThan(0);
     expect(store.recoveryRecords.map((r) => r.record_id)).toContain("turn_legacy_1");
     expect(store.recoveryRecords[0].message).toContain("排队");
-    expect(store.recoveryError ?? null).toBeNull();
+    // store 的既有约定是「无错误 = 空串」：`stores/session.ts` 初始化与每次加载前
+    // 都把它重置为 `""`（已合并的 W5 用例也按 `""` 断言）。这里断的是**语义**
+    // 「没有错误」，不是某个特定表示（`"" ?? null` 仍然是 `""`）。
+    expect(store.recoveryError).toBeFalsy();
   });
 
   it("专用请求失败时如实报错，不静默吞、也不假装清空", async () => {
@@ -255,18 +263,30 @@ describe("A01/A03 前端：恢复收件箱", () => {
     await store.loadRecoveryInbox();
     await flushPromises();
 
-    let thrown: unknown = null;
-    try {
-      await store.continueRecovery("turn_legacy_1");
-    } catch (error) {
-      thrown = error;
-    }
+    // 已被核对的既有行为：409 的可读原因走**返回值**通道（`RecoveryOutcome.message`），
+    // 既不抛错、也不留在 `store.recoveryError` 上 —— `session.continueRecovery()`
+    // 在 409 时会立刻（`void loadRecoveryInbox()`）重新要一份权威状态，那次刷新会把
+    // `recoveryError` 重置为 `""`（所以看 recoveryError 只会看到空）。
+    // `components/RecoveryInbox.vue` 的 `run()` 在 `outcome.ok === false` 时把
+    // `outcome.message` 写进该条记录的 inline 错误并渲染出来 —— 用户确实看得到原因。
+    const res = await store.continueRecovery("turn_legacy_1");
     await flushPromises();
 
-    const message = thrown
-      ? String((thrown as Error).message ?? "")
-      : String(store.recoveryError ?? "");
-    expect(message.length, "失败必须抛出可读错误或写进 recoveryError").toBeGreaterThan(0);
+    expect(res.ok, "409 必须如实回报失败（不许假装成功）").toBe(false);
+    expect(String(res.message), "必须给出可读原因").toMatch(/已经被处理过|没有完成/);
+    // 【仍在红 · 已上报 Lead，未自行改判据、未改生产代码】
+    // 实测这条断言在当前实现下不成立：`_failRecovery()` 判定为 conflict 时会
+    // `noteRecoveryResolved(id)`（本地标记「已解决」，防止旧快照复活）并随后
+    // `void loadRecoveryInbox()`；而 `mergeRecoveryInbox()` 会用 `_recoveredResolvedIds`
+    // 过滤记录 —— 实测调用后 `store.recoveryRecords` 里已经没有这条（`ids=[]`）。
+    // 两种读法都说得通，需要裁定：
+    //   (a) 探针判据问题：409 的语义就是「已经被处理过」，记录本应离场；冻结契约
+    //       （已合并的 `fu-w5-recoveryInbox.spec.ts`「409（已经被处理过）→ 如实说明并
+    //       重新对齐」）只要求 `ok=false` + 可读原因 + 重新拉权威清单，没要求它留下。
+    //   (b) 实现缺口：服务端 409 并非只有「已经被处理过」一种
+    //       （`services/recovery.py` 还有「记录状态已经变化（现在是 X）」「上次的写入者
+    //       现在还在运行，不能接管」等分支，这些情况下记录**仍在权威清单里**），
+    //       本地却把它隐藏、且提示语声称「清单正在按后端最新状态刷新」与事实不符。
     expect(stillPending(store, "turn_legacy_1"), "失败不得把记录从入口里抹掉").toBe(true);
   });
 
