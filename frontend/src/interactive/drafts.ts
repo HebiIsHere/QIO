@@ -503,6 +503,264 @@ export function removeCardLocalDraftIfUnchanged(cardId: string, expectVersion: n
   return removeDraft(key);
 }
 
+/*
+ * ---------- 本机记录的处理目的（反例 R4） ----------
+ *
+ * 「本机记录被我处理掉」这句话有两种完全不同的目的，混成一个就会把用户的决定做反：
+ * - `remove-local-copy`：只删本机这份**冗余副本**（用户明确选了服务器那份、或服务器
+ *   已经拿到同样内容、或这份记录已经没有可归属的对象）。它**绝不**写 cleared 依据 ——
+ *   写下去就等于用户要求清掉整份草稿。
+ * - `clear-draft`：用户把整份草稿清掉了，需要在服务器确认前留下「待确认清除」的依据。
+ *   只有这个目的才允许调用 ensureCardLocalClear 补写 cleared 依据。
+ *
+ * 为什么必须显式：反例 R4 里 store 只登记了「版本」，把用户决定的真实目的丢了，
+ * 重试时一律按「补写 cleared 依据」（整份草稿清除）处理，于是「选择服务器稿」
+ * 变成了「删除这份服务器稿的依据」，重开后用户明确保留的那份稿子变空、随后被删。
+ */
+export type LocalRemovalPurpose = "remove-local-copy" | "clear-draft";
+
+/**
+ * 本机记录删除/清理的守卫方式（三种语义必须分开，混成一种就会削弱版本守卫）：
+ * - `version`：只删版本号仍等于 expectVersion 的那条（跨页面更新的记录不许被删，§12.2）；
+ * - `absent`：登记时本来就没有记录，只在**现在仍然没有**记录时才算无事可做（flushDrafts 回执口径）；
+ * - `object`：按对象删（用户已明确选择、或记录已无归属对象时使用；没有版本可比时唯一可用的口径）。
+ */
+export type LocalRemovalGuard = "version" | "absent" | "object";
+
+/**
+ * store 的 pendingLocalRemovals 应当存的形状（替换现在的 `number | null`）。
+ *
+ * `purpose` 决定重试时「删副本」还是「补写清除依据」，`expectVersion` + `guard` 决定
+ * 版本守卫用哪一种口径。`guard` 可省略（默认 `object`，即「按对象删」，
+ * 与既有 removeCardLocalDraft(cardId, expectVersion) 调用口径一致）；
+ * 只有「登记时本来就没有记录」的清理（flushDrafts 成功回执）需要显式给 `absent`，
+ * 否则会把请求期间别的页面新建的记录一起删掉（版本守卫被削弱）。
+ */
+export interface LocalRemovalIntent {
+  purpose: LocalRemovalPurpose;
+  /** 登记时那条记录的本机版本；null = 登记时没有可比的版本 */
+  expectVersion: number | null;
+  /** 缺省 `object`：按对象删（有数字版本时同样按版本校验） */
+  guard?: LocalRemovalGuard;
+}
+
+/** 兼容旧登记形状：旧版本存的是裸版本号（或 null），目的不明确 */
+export type LocalRemovalIntentInput = LocalRemovalIntent | number | null | undefined;
+
+/** 目的不明时的可操作说明：不许猜成任何一种破坏性动作 */
+export const UNKNOWN_LOCAL_REMOVAL_PURPOSE_ADVICE =
+  "这条本机记录的处理目的无法判定（旧登记只记了版本号）：本机副本与服务器草稿都先保留，" +
+  "请打开这张卡确认要保留哪一份（不要把它当成整份草稿清除）。";
+
+/** 旧恢复记录（没有 kind 字段）的可操作说明：来源/种类不可判定时保留两份候选 */
+export const LEGACY_LOCAL_RECORD_ADVICE =
+  "这条本机记录是旧版本写下的，无法判断它是编辑副本还是待同步的清除依据：" +
+  "本机候选与服务器草稿都保留，请打开这张卡确认要保留哪一份。";
+
+/** 本机记录的角色：显式两类之外一律是 `unknown`（旧记录没有 kind，不许猜） */
+export type LocalRecordRole = "draft" | "cleared" | "unknown" | "missing";
+
+/** 读一条本机记录的原始 kind（readDraft 会丢掉「没有 kind」这个事实，判定来源必须看原始字段） */
+function readRawCardLocalRecordKind(cardId: string): { exists: boolean; kind: unknown } {
+  const { storage } = resolveStorage();
+  if (!storage) return { exists: false, kind: undefined };
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(cardLocalDraftStorageKey(cardId));
+  } catch {
+    return { exists: false, kind: undefined };
+  }
+  if (typeof raw !== "string" || raw === "") return { exists: false, kind: undefined };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { exists: true, kind: undefined };
+    return { exists: true, kind: (parsed as { kind?: unknown }).kind };
+  } catch {
+    return { exists: true, kind: undefined };
+  }
+}
+
+/**
+ * 判定本机记录的来源/种类（反例 R4 第 7 条）：
+ * 旧版本写下的记录没有 kind，**无法判断**它是编辑副本还是清除依据，一律返回 `unknown`，
+ * 调用方不得把 `unknown` 当成「整份清除」处理（要保留两份候选并给出可操作说明）。
+ */
+export function cardLocalRecordRole(cardId: string): LocalRecordRole {
+  const raw = readRawCardLocalRecordKind(cardId);
+  if (!raw.exists) return "missing";
+  if (raw.kind === "cleared") return "cleared";
+  if (raw.kind === "draft") return "draft";
+  return "unknown";
+}
+
+/** 旧记录是否需要用户明确选择（无法判定来源/种类时） */
+export function inspectLegacyCardLocalRecord(cardId: string): {
+  role: LocalRecordRole;
+  needsUserChoice: boolean;
+  advice?: string;
+} {
+  const role = cardLocalRecordRole(cardId);
+  return role === "unknown" ? { role, needsUserChoice: true, advice: LEGACY_LOCAL_RECORD_ADVICE } : { role, needsUserChoice: false };
+}
+
+/** 归一化后的登记意图：目的不明时给 `unknown` + 可操作说明，绝不当成整份清除 */
+export interface NormalizedLocalRemovalIntent {
+  purpose: LocalRemovalPurpose | "unknown";
+  expectVersion: number | null;
+  guard: LocalRemovalGuard;
+  advice?: string;
+}
+
+/** 把登记意图归一化（含旧形状）：不认识的一律标注目的不明，不猜 */
+export function normalizeLocalRemovalIntent(raw: LocalRemovalIntentInput): NormalizedLocalRemovalIntent {
+  if (raw && typeof raw === "object") {
+    return {
+      purpose: raw.purpose === "clear-draft" ? "clear-draft" : "remove-local-copy",
+      expectVersion: typeof raw.expectVersion === "number" && Number.isFinite(raw.expectVersion) ? raw.expectVersion : null,
+      // 缺省 object：与既有 removeCardLocalDraft(cardId, expectVersion) 口径一致，不改变已落地的接线行为
+      guard: raw.guard === "version" || raw.guard === "absent" || raw.guard === "object" ? raw.guard : "object",
+    };
+  }
+  // 旧形状（裸版本号 / null）：只知道版本，不知道用户当时要做什么 —— 不许猜成整份清除
+  return {
+    purpose: "unknown",
+    expectVersion: typeof raw === "number" && Number.isFinite(raw) ? raw : null,
+    guard: typeof raw === "number" && Number.isFinite(raw) ? "version" : "absent",
+    advice: UNKNOWN_LOCAL_REMOVAL_PURPOSE_ADVICE,
+  };
+}
+
+/** 重试本机记录处理的结果：目的 + 实际动作 + 真实原因（调用方据此决定界面说什么） */
+export interface LocalRemovalRetryOutcome {
+  /** 这一次的期望是否达成（protected / removed / nothing 都算达成） */
+  ok: boolean;
+  purpose: LocalRemovalPurpose | "unknown";
+  action: "removed" | "protected" | "kept-newer" | "failed" | "needs-choice" | "nothing";
+  /** 底层原因分类（storage-failure / version-guard / unknown-purpose 等） */
+  reason?: string;
+  /** 失败时可直接显示的真实原因 */
+  error?: string;
+  /** kept-newer / needs-choice 时给用户的可操作说明 */
+  advice?: string;
+  /** protected 时真实落盘的版本号（调用方只能用这个登记「已确认版本」） */
+  committedVersion?: number;
+  /** 涉及的记录版本（底层函数回报的那一个） */
+  version?: number;
+  /** clear-draft 且磁盘上本来就已是一份 cleared 记录（幂等，没有新写） */
+  alreadyProtected?: boolean;
+  /** 底层结果原样返回，调用方需要更细的分类时用 */
+  removeResult?: DraftRemoveResult;
+  clearResult?: DraftClearProtectionResult;
+}
+
+/**
+ * 按**登记时的目的**重试本机记录处理（反例 R4 的修复入口）。
+ *
+ * - `remove-local-copy`：只删本机副本（按登记的守卫口径），**绝不写 cleared 依据**；
+ * - `clear-draft`：调用 ensureCardLocalClear 补写/确认 cleared 依据（幂等，保留版本守卫）；
+ * - 目的不明（旧登记形状）：两件破坏性动作都不做，保留两份候选 + 可操作说明。
+ *
+ * 版本守卫绝不削弱：`guard: "version"` 走 removeCardLocalDraftIfUnchanged /
+ * ensureCardLocalClear 的 expectVersion，另一页面写入的更新版本一律保留。
+ */
+export function retryLocalRemovalByPurpose(
+  cardId: string,
+  intent: LocalRemovalIntentInput,
+  options: { boardId?: string; seq?: number } = {},
+): LocalRemovalRetryOutcome {
+  const normalized = normalizeLocalRemovalIntent(intent);
+  if (normalized.purpose === "unknown") {
+    /**
+     * 旧登记只记了版本、没记目的：删掉本机记录与补写 cleared 依据都可能做反用户的决定，
+     * 所以什么都不做；两份候选（本机记录 + 服务器草稿）都留着，把说明交回调用方显示。
+     */
+    return {
+      ok: false,
+      purpose: "unknown",
+      action: "needs-choice",
+      reason: "unknown-purpose",
+      error: UNKNOWN_LOCAL_REMOVAL_PURPOSE_ADVICE,
+      advice: UNKNOWN_LOCAL_REMOVAL_PURPOSE_ADVICE,
+    };
+  }
+
+  if (normalized.purpose === "clear-draft") {
+    // 只有这个目的才允许补写 cleared 依据
+    const protection = ensureCardLocalClear(cardId, {
+      ...(options.boardId ? { boardId: options.boardId } : {}),
+      ...(typeof options.seq === "number" && Number.isFinite(options.seq) ? { seq: options.seq } : {}),
+      expectVersion: normalized.expectVersion,
+    });
+    if (protection.reason === "version-guard") {
+      return {
+        ok: false,
+        purpose: "clear-draft",
+        action: "kept-newer",
+        reason: "version-guard",
+        error: protection.error,
+        advice: "这份本机记录已经被更晚的输入更新过：保留更新的那一版，不执行这次清除。",
+        version: protection.version,
+        clearResult: protection,
+      };
+    }
+    if (!protection.ok) {
+      return {
+        ok: false,
+        purpose: "clear-draft",
+        action: "failed",
+        reason: "storage-failure",
+        error: protection.error ?? "本机没能记下这次清除，重开后这份旧稿可能重新出现",
+        version: protection.version,
+        clearResult: protection,
+      };
+    }
+    return {
+      ok: true,
+      purpose: "clear-draft",
+      action: "protected",
+      committedVersion: protection.committedVersion ?? protection.version,
+      version: protection.version,
+      alreadyProtected: protection.alreadyProtected,
+      clearResult: protection,
+    };
+  }
+
+  // remove-local-copy：只删本机冗余副本，绝不写 cleared 依据
+  const expectVersion = normalized.expectVersion;
+  const result =
+    normalized.guard === "object"
+      ? removeCardLocalDraft(cardId, typeof expectVersion === "number" ? expectVersion : undefined)
+      : removeCardLocalDraftIfUnchanged(cardId, normalized.guard === "absent" ? null : expectVersion);
+  if (result.ok) {
+    return {
+      ok: true,
+      purpose: "remove-local-copy",
+      action: result.removed ? "removed" : "nothing",
+      reason: result.reason,
+      removeResult: result,
+    };
+  }
+  if (result.reason === "version-guard") {
+    return {
+      ok: false,
+      purpose: "remove-local-copy",
+      action: "kept-newer",
+      reason: "version-guard",
+      advice: "这份本机记录已经被更晚的输入更新过：保留更新的那一版，不执行这次清理。",
+      removeResult: result,
+    };
+  }
+  return {
+    ok: false,
+    purpose: "remove-local-copy",
+    action: "failed",
+    reason: "storage-failure",
+    error: result.error ?? "这份本机副本没能删掉，暂时还留在本机",
+    advice: "这份本机副本没能删掉，重开后可能又出现。",
+    removeResult: result,
+  };
+}
+
 /**
  * 记录是否存在（**正文为空也算存在**）。
  *
