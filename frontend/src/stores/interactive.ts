@@ -153,6 +153,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     stateVersion: number;
     /** 服务端预判句柄（C 的 M4 协议）：有就带上，服务端据此拒绝过期确认 */
     checkId?: string;
+    /**
+     * R5：兜底/重新说明时给用户看的一句补充（例如「重新核对后范围与刚才不同」）。
+     * 正常的保存前预判不带它，界面按原样展示受影响任务。
+     */
+    note?: string;
   } | null>(null);
   /** 保存后服务端回报「因为这些改动被暂停的任务」 */
   const materialPaused = ref<Intent[]>([]);
@@ -171,6 +176,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   let boardLocalRev = 0;
   let boardCleanRev = 0;
+  /**
+   * R2：正式板面读取的代次记账。
+   * - `boardReadSeq`：每发起一次 GET 就 +1（请求发出时刻的读取代次）；
+   * - `boardReadAppliedSeq`：已经真正落地过的最大读取代次。
+   * 两次 GET 乱序返回时，只有代次更新（且期间板面没有被推进）的那次算数。
+   */
+  let boardReadSeq = 0;
+  let boardReadAppliedSeq = 0;
   /**
    * 用户已确认的影响检查句柄（M4）：
    * - `pendingConfirm` 在用户点「确认」后设置，随这一次保存的 PUT 一起提交；
@@ -231,7 +244,28 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 只有 storage-failure 才登记；version-guard 是「另一份更新的记录还在」的有意保留，不是失败。
    * 重试入口（retryDraftSave）会连同它一起重试，界面不会停在「看起来删掉了、其实还在」。
    */
-  const pendingLocalRemovals = new Map<string, number | null>();
+  /**
+   * R4（本轮修复）：待处理的本机记录操作必须保留**用户决定的真实目的**，不能只留版本。
+   * - `remove-local-copy`：本机冗余副本删除（用户选了「用服务器上的」，或服务器已保存成功后的本机清理）；
+   *   重试只删这份记录，**绝不写 cleared 依据**；
+   * - `clear-draft`：整份草稿清除（用户要清掉这份草稿）；重试先幂等补写 cleared 依据（12 的既有保护）。
+   *
+   * 基线把两者混为一谈：选「用服务器上的」删除失败后重试写下 cleared，重开后用户选择保留的
+   * 服务器稿被当成本次要清除的旧稿删掉 —— 这正是 R4。
+   */
+  type LocalRemovalPurpose = "remove-local-copy" | "clear-draft";
+  /**
+   * 重试时的版本守卫口径（A 的 drafts.ts 同口径）：
+   * - `version`：只删那个确切版本；
+   * - `absent`：登记时本来就没有记录 → 现在仍然没有才算无事可做（flushDrafts 成功清理那一条）；
+   * - `object`：旧格式记录没有版本可校验，按对象删。
+   * 没有它，null 期望版本会被当成「按对象删」，可能误删请求期间别的页面新建的记录。
+   */
+  type LocalRemovalGuard = "version" | "absent" | "object";
+  const pendingLocalRemovals = new Map<
+    string,
+    { purpose: LocalRemovalPurpose; expectVersion: number | null; guard: LocalRemovalGuard }
+  >();
   /**
    * 07：组件登记「这次板面变更成功后要清哪个键的草稿」。
    *
@@ -308,6 +342,64 @@ export const useInteractiveStore = defineStore("interactive", () => {
       affected: legacy.affected,
       impactConfirmationRequired: (legacy.affected ?? []).length > 0,
     };
+  }
+
+  /** 受影响任务集合的身份（R5/R6）：用来判断「补取预判后的范围与刚才的说明是否不同」。 */
+  function affectedSignature(
+    items: { intentId?: string }[] | undefined,
+  ): string {
+    return (items ?? [])
+      .map((item) => String(item?.intentId ?? ""))
+      .filter((id) => id.length > 0)
+      .sort()
+      .join("|");
+  }
+
+  /**
+   * 把一次影响预判落到「等用户决定」的候选说明上（R5 兜底分支与确认过期后的重新说明共用）。
+   *
+   * 只有拿到服务端 checkId 才算一次**有效**的说明：没有 checkId 的说明，用户确认后必然
+   * 被服务端再拒一次（基线的真实缺陷：兜底分支拿不到 checkId，确认后重复弹同一说明）。
+   * 返回 false 表示这次没拿到有效说明，调用方要如实说明原因并保留候选。
+   *
+   * 传了 previousAffected 时，如果新范围与刚才展示的不同，必须**先展示变化**、
+   * 由用户按新范围重新确认，不能在用户只确认旧说明时就自动批准新增后果（R5/R6）。
+   */
+  function openImpactConfirm(
+    check: import("../services/interactive").ImpactCheckResult,
+    putRev: number,
+    fallbackStateVersion: number,
+    previousAffected?: { intentId: string; title: string; materials: string[]; consequence: string }[],
+  ): boolean {
+    if (check.ok === false || !check.checkId) return false;
+    const affected = (check.affected ?? check.affectedTasks ?? []).map((item) => ({
+      intentId: String(item.intentId),
+      title: String(item.title ?? ""),
+      materials: (item.materials ?? []).map((name) => String(name)),
+      consequence: String(item.consequence ?? ""),
+    }));
+    /**
+     * 服务端门与补取的影响预判都是服务端自己算出来的；两者若不一致，
+     * 显示它们的并集（至少有一份服务端判断说有影响，就不能少报给用户看）。
+     */
+    for (const item of previousAffected ?? []) {
+      if (!affected.some((entry) => entry.intentId === item.intentId)) affected.push(item);
+    }
+    const scopeChanged = previousAffected
+      ? affectedSignature(previousAffected) !== affectedSignature(affected)
+      : false;
+    pendingImpact.value = {
+      affected,
+      previewRev: putRev,
+      stateVersion: check.stateVersion ?? fallbackStateVersion,
+      checkId: check.checkId,
+      note: previousAffected
+        ? scopeChanged
+          ? "重新核对后发现受影响的任务与刚才的说明不同：下面是当前候选的真实影响范围，请按它重新确认。"
+          : "影响范围已经重新核对：下面是当前候选的真实影响，确认后才会保存生效。"
+        : undefined,
+    };
+    return true;
   }
 
   function scheduleSave() {
@@ -393,7 +485,26 @@ export const useInteractiveStore = defineStore("interactive", () => {
         if (newerCandidate || boardReadAdvanced) {
           // 回执在飞期间出现了更新的候选（用户继续编辑）/ 或一次更新的读取已经落地：
           // 服务器已接受的是旧版本，板面（新候选）不被这次旧回执覆盖。
-          // 新候选保持未保存并安排下一轮保存；读取推进的情形下板面仍是本次读取的事实。
+          /**
+           * R3（本轮修复）：必须把两件事**分开接收** ——
+           * 「服务器已经接受了这一版」是一个已经发生的版本事实；「用户正在编辑的是更新的候选」
+           * 是另一件事。基线把两者绑在一起：既不把服务器接受的新 seq 记到候选上，也不推进
+           * 「与服务器一致」的版本，于是候选仍带旧 seq，下一轮保存被服务端预判判为过期版本、
+           * 一般回读又被候选保护阻断 —— 第二版再也存不下去。
+           * 这里只吸收版本事实（seq / updatedAt），绝不整块替换用户正在写的候选正文。
+           */
+          const cleanUnchanged = boardCleanRev === putCleanRev;
+          if (newerCandidate && cleanUnchanged && board.value) {
+            boardCleanRev = putRev;
+            const acceptedSeq = Number(result.seq);
+            if (Number.isFinite(acceptedSeq)) {
+              board.value = {
+                ...board.value,
+                seq: acceptedSeq,
+                updatedAt: result.savedAt ?? board.value.updatedAt,
+              };
+            }
+          }
           dirty.value = newerCandidate;
           if (newerCandidate) {
             confirmedCheck = null;
@@ -443,20 +554,59 @@ export const useInteractiveStore = defineStore("interactive", () => {
         const status = (err as { status?: number }).status;
         const failure = (err as { payload?: { error?: string; reason?: string; affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[] } }).payload;
         if (status === 409 && failure?.error === "impact_confirmation_required") {
-          // 服务端门（M4）：这次保存会改动运行任务依赖的材料，必须先做影响确认。
-          // 候选与勾选保留，不落库；把服务端列出的真实受影响任务交给用户决定。
-          pendingImpact.value = {
-            affected: failure.affectedTasks ?? [],
-            previewRev: putRev,
-            stateVersion: snapshot.seq,
-          };
+          /**
+           * 服务端门（M4）：这次保存会改动运行任务依赖的材料，必须先做影响确认。
+           * 候选与勾选保留，不落库。
+           *
+           * R5（本轮修复）：兜底分支**必须补取**与当前候选、服务器版本一致的影响预判（含 checkId）。
+           * 基线在这里只把服务端列的 affectedTasks 放进对话框、没有 checkId，
+           * 用户点确认后仍发不带确认句柄的 PUT，被服务端再拒一次 —— 反复弹同一说明、存不进去。
+           * 补取后如果范围与刚才的服务端说明不同，先展示变化、由用户按新范围确认（绝不自动放行）。
+           */
+          impactConfirmed = false;
+          pendingConfirm = null;
+          try {
+            const check = await runImpactCheck(snapshot.seq, snapshot);
+            const gatedTasks = failure.affectedTasks?.length ? failure.affectedTasks : undefined;
+            if (openImpactConfirm(check, putRev, snapshot.seq, gatedTasks)) {
+              impactCheckError.value = null;
+              saveStatus.value = "idle";
+              saveError.value = null;
+              return;
+            }
+            impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
+          } catch (err) {
+            impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
+          }
           saveStatus.value = "idle";
           saveError.value = null;
           return;
         }
         if (status === 409 && failure?.error === "stale_check") {
-          // 确认句柄过期：重新核实，不落库
-          impactCheckError.value = `这次改动的影响确认已经过期，请重新确认（${failure.reason ?? "板面版本已变化"}）`;
+          /**
+           * 确认句柄过期（板面版本变了，或服务端重新核对后发现范围变了）：重新核实，不落库。
+           * R5/R6：保留候选，把**重新预判后的完整范围**交回用户重新确认；
+           * 不自动批准、不无条件重发、不绕过服务端校验。
+           */
+          impactConfirmed = false;
+          pendingConfirm = null;
+          try {
+            const check = await runImpactCheck(snapshot.seq, snapshot);
+            const gatedTasks = failure.affectedTasks?.length ? failure.affectedTasks : undefined;
+            if (openImpactConfirm(check, putRev, snapshot.seq, gatedTasks)) {
+              impactCheckError.value = null;
+              saveStatus.value = "idle";
+              saveError.value = null;
+              return;
+            }
+            impactCheckError.value =
+              `这次改动的影响确认已经过期，需要重新确认（${failure.reason ?? "板面版本已变化"}）；` +
+              `重新预判也没有完成（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
+          } catch (err) {
+            impactCheckError.value =
+              `这次改动的影响确认已经过期，需要重新确认（${failure.reason ?? "板面版本已变化"}）；` +
+              `重新预判失败（${(err as Error).message || "原因未知"}）`;
+          }
           saveStatus.value = "idle";
           saveError.value = null;
           return;
@@ -589,7 +739,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
     // saved 越过读取基线——这次 GET 返回的正文对那个已确认保存的新版本是迟到的，
     // 不予应用（新输入由 memoryIsNewer 覆盖；两者合起来才完整）。
     const readSaved = new Map(draftSavedKeySeq);
-    const payload = await api.fetchBoardState(boardId.value);
+    /**
+     * R2（本轮修复）：正式板面的读取同样要按**请求发出时刻的基线**落地，不能只看 dirty。
+     * - `requestedBoardId`：这次读取属于哪个板面（迟到的别板面回执不许落到当前板面）；
+     * - `readLocalRev` / `readCleanRev`：读取开始时「本地候选版本」与「与服务器一致的版本」。
+     *   期间任何一次保存被确认（boardCleanRev 前进）都说明这次 GET 读到的正文已经迟到 ——
+     *   用户刚保存成功的新版本不许被旧读取回退；
+     * - `readSeq`：读取代次，两次 GET 乱序时只有更新的那次算数。
+     */
+    const requestedBoardId = boardId.value;
+    const readLocalRev = boardLocalRev;
+    const readCleanRev = boardCleanRev;
+    const readSeq = ++boardReadSeq;
+    const payload = await api.fetchBoardState(requestedBoardId);
+    // 板面已经切走：这次回执不属于当前板面，按板面身份保护丢弃（不能串用别板面的版本）
+    if (boardId.value !== requestedBoardId) return;
     boardId.value = payload.board.id;
     submissions.value = payload.submissions ?? [];
     /*
@@ -608,8 +772,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (pendingRemovals.size > 0) scheduleDraftSave();
       return;
     }
+    /**
+     * R2：读取期间板面被推进过（用户完成了一次保存、或又出现了新候选）——
+     * 这次 GET 读到的正文对当前事实已经迟到，不整块覆盖；只合并草稿。
+     * 「已经保存成功的新版本」与「dirty 的新输入」受同样保护：保护条件不是 dirty，而是版本基线。
+     * 判断用的是**每次请求自己的基线**，所以之后正常的读取仍然可用（不是永久拒绝刷新）。
+     */
+    const boardMovedDuringRead =
+      boardLocalRev !== readLocalRev || boardCleanRev !== readCleanRev;
+    if (boardMovedDuringRead || readSeq < boardReadAppliedSeq) {
+      mergeDraftsFromPayload(payload, before, readSaved);
+      if (pendingRemovals.size > 0) scheduleDraftSave();
+      return;
+    }
     board.value = payload.state;
     boardCleanRev = boardLocalRev;
+    boardReadAppliedSeq = Math.max(boardReadAppliedSeq, readSeq);
     undoStack.value = [];
     redoStack.value = [];
     dirty.value = false;
@@ -918,7 +1096,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 补写 cleared 时若磁盘上已经是**更晚**的一版（同一浏览器另一个页面写的），
        * 必须保留它、不许覆盖，也不许随后把它删掉。
        */
-      pendingLocalRemovals.set(key, onDiskVersion);
+      pendingLocalRemovals.set(key, { purpose: "clear-draft", expectVersion: onDiskVersion, guard: "version" });
       pendingRemovals.set(key, { cardId, version: onDiskVersion });
     }
     setDraftRemovalState(
@@ -1038,17 +1216,38 @@ export const useInteractiveStore = defineStore("interactive", () => {
     key: string,
     result: ReturnType<typeof removeCardLocalDraft>,
     expectVersion: number | null,
+    purpose: LocalRemovalPurpose = "remove-local-copy",
+    guard: LocalRemovalGuard = typeof expectVersion === "number" ? "version" : "object",
   ): void {
     if (result.ok || result.reason === "version-guard") {
       pendingLocalRemovals.delete(key);
       setDraftLocalState(key, { ok: true, error: null });
       return;
     }
-    pendingLocalRemovals.set(key, expectVersion);
+    pendingLocalRemovals.set(key, { purpose, expectVersion, guard });
     setDraftLocalState(key, {
       ok: false,
       error: result.error ?? "这份本机副本没能删掉，暂时还留在本机",
     });
+  }
+
+  /**
+   * 按登记的真实目的与守卫口径重试一次本机记录处理（R4）：
+   * - remove-local-copy + absent：登记时本来就没有记录 → 现在仍然没有才算无事可做
+   *   （与 removeCardLocalDraftIfUnchanged 同口径，绝不误删请求期间别的页面新建的记录）；
+   * - remove-local-copy + version：只删那个确切版本；
+   * - remove-local-copy + object：按对象删（旧格式记录没有版本可校验）；
+   * - clear-draft 不走这里：整份草稿清除必须先幂等补写 cleared 依据（12 的既有保护）。
+   */
+  function retryLocalRemoval(
+    cardId: string,
+    entry: { expectVersion: number | null; guard: LocalRemovalGuard },
+  ): ReturnType<typeof removeCardLocalDraft> {
+    if (entry.guard === "absent") return removeCardLocalDraftIfUnchanged(cardId, entry.expectVersion);
+    if (entry.guard === "version" && entry.expectVersion !== null) {
+      return removeCardLocalDraft(cardId, entry.expectVersion);
+    }
+    return removeCardLocalDraft(cardId);
   }
 
   function draftFor(key: string): string {
@@ -1168,6 +1367,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
                 key,
                 removeCardLocalDraftIfUnchanged(cardId, expectVersion),
                 expectVersion,
+                "remove-local-copy",
+                // 登记时本来就没有本机记录：重试时仍然没有才算无事可做（绝不误删别的页面新建的记录）
+                "absent",
               );
             }
           }
@@ -1192,7 +1394,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
             const registered = pendingRemovals.get(key);
             if (registered && registered.version !== entry.version) continue;
             pendingRemovals.delete(key);
-            if (pendingLocalRemovals.has(key)) {
+            const pendingLocal = pendingLocalRemovals.get(key);
+            if (pendingLocal && pendingLocal.purpose === "remove-local-copy") {
+              /**
+               * R4：这条待处理决定的目的是**删本机冗余副本**，不是整份草稿清除 ——
+               * 绝不能在这里补写 cleared 依据，否则就等于替用户决定清掉整份草稿。
+               * 只按版本删这份记录；version-guard（更新的那一版仍在）照样是「有意保留」。
+               */
+              applyLocalRemovalResult(
+                key,
+                removeCardLocalDraft(entry.cardId, pendingLocal.expectVersion ?? undefined),
+                pendingLocal.expectVersion,
+                "remove-local-copy",
+              );
+            } else if (pendingLocal) {
               /**
                * 12：本机清除保护还没写成 —— 先把 cleared 依据补写成功（幂等），
                * 而不是直接删记录：删除再失败一次，磁盘上仍是 kind=draft，重开就复活。
@@ -1200,7 +1415,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
               const protection = ensureCardLocalClear(entry.cardId, {
                 boardId: boardId.value,
                 seq: draftKeySeq.get(key) ?? 0,
-                expectVersion: pendingLocalRemovals.get(key) ?? null,
+                expectVersion: pendingLocal.expectVersion,
               });
               if (protection.reason === "version-guard") {
                 // 12b：更晚的一版草稿（别的页面写的）优先，这次清除不再作用于它
@@ -1267,9 +1482,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const localRemovalRetries = key ? [key] : [...pendingLocalRemovals.keys()];
     const removedLocalNow = new Set<string>();
     for (const item of localRemovalRetries) {
-      if (!pendingLocalRemovals.has(item)) continue;
+      const pendingLocal = pendingLocalRemovals.get(item);
+      if (!pendingLocal) continue;
       const retryCardId = cardIdFromDraftKey(item);
       if (!retryCardId) continue;
+      /**
+       * R4：按**用户决定的真实目的**分派重试，绝不把「删本机冗余副本」做成「整份草稿清除」。
+       * - remove-local-copy：只按版本删掉这份本机记录（成功或 version-guard 都算处理完），
+       *   不写 cleared 依据 —— 写下去就等于替用户决定清掉整份草稿，重开后服务器稿会被删掉；
+       * - clear-draft：整份草稿清除，重试必须先幂等补写 cleared 依据（12 的既有保护）。
+       */
+      if (pendingLocal.purpose === "remove-local-copy") {
+        const removal = removeCardLocalDraft(retryCardId, pendingLocal.expectVersion ?? undefined);
+        applyLocalRemovalResult(item, removal, pendingLocal.expectVersion, "remove-local-copy");
+        // 删成功、或被版本守卫有意保留：本轮都不再把本机副本写回去
+        if (removal.ok || removal.reason === "version-guard") removedLocalNow.add(item);
+        continue;
+      }
       /**
        * 12（独立复核发现的反例）：本机清除保护写失败、而服务器清除已经确认时，
        * 重试**必须先把本机那份 cleared 依据补写成功**（幂等），而不是只尝试删记录 ——
@@ -1277,7 +1506,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 恢复与上传权限（旧稿复活）。补写成功后保留这份依据（它就是「已确认清除」的事实），
        * 由后续正常的服务器清除流程按版本清理。
        */
-      const expectVersion = pendingLocalRemovals.get(item) ?? null;
+      const expectVersion = pendingLocal.expectVersion;
       const protection = ensureCardLocalClear(retryCardId, {
         boardId: boardId.value,
         seq: draftKeySeq.get(item) ?? 0,
@@ -1534,12 +1763,29 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 卡片编辑草稿与恢复来源**不在这里清理**：「正式变更与草稿清理」的最终确认关系
      * 由 07 保证 —— 未确认、取消期间都保留候选，正式变更成功后才清对应版本。
      * 明确取消是用户决定：候选丢弃，直接回读服务器状态；回读失败则候选恢复为未保存并显示原因。
+     *
+     * R1（本轮修复）：**丢弃候选必须同时把版本记账收回**。
+     * 基线只把 dirty 置 false、状态置 idle，却没有让「本地候选版本」回到「与服务器一致」的版本，
+     * 于是 refreshBoardFromServer 仍以为存在未保存候选而拒绝采用服务器状态 ——
+     * 结果是「取消成功」的样子（dirty=false / idle）配上「没有撤回」的板面（仍显示被取消的新正文）。
+     * 这里先把记账收到一致，再回读；回读失败就把候选如实恢复为未保存并给出原因，不假装撤回成功。
      */
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    confirmedCheck = null;
+    pendingConfirm = null;
+    const discardedRev = boardLocalRev;
+    boardLocalRev = boardCleanRev;
     dirty.value = false;
     saveStatus.value = "idle";
+    saveError.value = null;
     try {
       await refreshBoardFromServer();
     } catch (err) {
+      // 回读失败：候选回到「未保存」这一真实状态，原因可见，可重试（不假装已经撤回）
+      boardLocalRev = discardedRev;
       saveStatus.value = "error";
       saveError.value = (err as Error).message;
       dirty.value = true;
