@@ -35,6 +35,8 @@ MAX_PARSE_RETRIES = 2
 
 class AnthropicAdapter(BaseAdapter):
     mode = "native"  # tool calling is native to the Anthropic protocol
+    # 每次实际请求自己记账（含内部解析重试的每次响应）—— 只记一处，见 credentials/usage.py。
+    accounts_requests = True
 
     def __init__(
         self,
@@ -163,11 +165,30 @@ class AnthropicAdapter(BaseAdapter):
             payload["temperature"] = temperature
 
         attempt = 0
+        # 函数内导入：adapter 层不在导入期依赖凭据库（既有导入顺序约束）。
+        from agent.credentials import usage as accounting
+
         while True:
-            raw = await self._post(payload)
+            # 每次实际请求（含重试）之前核对累计用量；耗尽抛 BudgetExhausted，不再发新请求。
+            accounting.ensure_adapter_request_allowed(self)
             try:
-                return self._to_completion(raw)
+                raw = await self._post(payload)
+            except Exception as exc:  # noqa: BLE001 - 失败且没有用量：标 incomplete，不造数
+                accounting.account_adapter_failure(self, exc)
+                raise
+            usage = self._usage_of(raw)
+            try:
+                completion = self._to_completion(raw)
             except ToolCallParseError as parse_error:
+                # 这次响应带用量就如实记下（失败也记已知用量）；没有用量才标 incomplete。
+                accounting.account_adapter_request(
+                    self,
+                    usage,
+                    failed=True,
+                    reason=None
+                    if usage is not None
+                    else f"工具输入解析失败：{type(parse_error).__name__}",
+                )
                 attempt += 1
                 if attempt > self.parse_retries:
                     raise
@@ -186,6 +207,17 @@ class AnthropicAdapter(BaseAdapter):
                     ]
                 )
                 logger.warning("anthropic tool parse retry %d/%d", attempt, self.parse_retries)
+                continue
+            # 成功的一次响应：记一次真实用量（进 / 出分开）。
+            accounting.account_adapter_request(self, usage)
+            return completion
+
+    @staticmethod
+    def _usage_of(raw: Any) -> ModelUsage | None:
+        """Anthropic 的 usage 在响应体里；没有就不猜（不造数）。"""
+        if not isinstance(raw, dict):
+            return None
+        return ModelUsage.from_provider(raw.get("usage"))
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         from agent.adapters import errors as e

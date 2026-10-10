@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from agent.api.events import EventType, make_event
+from agent.storage.db import transaction
+from agent.storage.instance_registry import RECORD_APPROVAL
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 logger = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ class ApprovalService:
         bus,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         conn=None,
+        registry=None,
     ) -> None:
         self.bus = bus
         self.timeout_seconds = timeout_seconds
@@ -105,6 +108,11 @@ class ApprovalService:
         # 可选的持久化连接（见迁移 23）：有它才记录「等待中的审批」，
         # 这样重启后能说清「那次操作没有执行」；没它就与旧行为完全一致。
         self.conn = conn
+        # 可选的实例归属表（见 storage/instance_registry.py，契约 C1）：有它才按
+        # 「归属者是否确认已退出」决定要不要把 pending 标成 interrupted。
+        # 没有它时保持旧行为（库只有一个写入者的路径不变）。
+        self.registry = registry
+        self._instance_id = getattr(registry, "instance_id", None)
         self._mark_interrupted()
         # 由本方法排进事件循环的发布任务：持有引用，避免被 GC 提前回收。
         self._pending_publishes: set[asyncio.Task] = set()
@@ -197,20 +205,84 @@ class ApprovalService:
     # -- 跨重启的等待记录 --------------------------------------------------
 
     def _mark_interrupted(self) -> None:
-        """启动时把上一个进程留下的 pending 一律标成 interrupted。
+        """启动时处理上一个进程留下的 pending —— **按实例归属判定**（契约 C1）。
 
-        判定放在构造时：新进程刚开始不可能有自己的等待项 —— 此刻还写着 pending
-        的，全是上一个进程没来得及回答的（不恢复等待，只留一条明确记录）。
+        没有归属表时的旧行为：库里还写着 pending 的，全是上一个进程没来得及
+        回答的（新进程刚开始不可能有自己的等待项）→ 一律标 interrupted。
+
+        有归属表后不能这么粗糙：第二个实例启动时，第一个实例可能**正在**
+        等用户点「允许」。所以逐条按归属判定：
+
+        * 归属者确认已退出 → 标 interrupted（理由仍是「那次操作没有执行」）；
+        * 归属者还活着 → 一行都不动（那是别人正在等的审批）；
+        * 归属判不出来（unknown，或旧记录没有归属）→ 保守保留 pending + 计数，
+          等后续维护重判。绝不因为「判不出来」就把它标成中断。
         """
         if self.conn is None:
             return
+        if self.registry is None:
+            self._set_interrupted_unowned()
+            return
         try:
-            self.conn.execute(
-                "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
-                "WHERE status = 'pending'",
-                (_now().isoformat(),),
+            rows = self.conn.execute(
+                "SELECT approval_id, owner_instance_id FROM pending_approvals "
+                "WHERE status = 'pending'"
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
+            logger.warning("failed to read pending approvals", exc_info=True)
+            return
+        victims: list[str] = []
+        deferred = 0
+        for row in rows:
+            owner = self._owner_of(row)
+            state = self.registry.owner_alive(owner) if owner else None
+            if state is True:
+                continue
+            if state is None:
+                # 归属未知（含旧记录）：保守保留原状态。
+                deferred += 1
+                continue
+            victims.append(str(row["approval_id"]))
+        try:
+            with transaction(self.conn):
+                for approval_id in victims:
+                    self.conn.execute(
+                        "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
+                        "WHERE approval_id = ? AND status = 'pending'",
+                        (_now().isoformat(), approval_id),
+                    )
+        except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
+            logger.warning("failed to mark interrupted approvals", exc_info=True)
+            return
+        if deferred:
+            logger.info(
+                "pending approvals: %s 条因归属未知而保留 pending（不改状态）", deferred
             )
-            self.conn.commit()
+
+    def _owner_of(self, row) -> str | None:
+        """这条审批的归属者：优先归属表，退回行上的归属列（老行没有 → None）。"""
+        owner = None
+        try:
+            owner = self.registry.owner_instance_id(RECORD_APPROVAL, str(row["approval_id"]))
+        except Exception:  # noqa: BLE001 - 读不到归属表就退回列值
+            owner = None
+        if owner:
+            return str(owner)
+        try:
+            column = row["owner_instance_id"]
+        except (IndexError, KeyError):
+            return None
+        return str(column) if column else None
+
+    def _set_interrupted_unowned(self) -> None:
+        """旧路径（没有实例归属表）：上一个进程留下的 pending 一律标 interrupted。"""
+        try:
+            with transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
+                    "WHERE status = 'pending'",
+                    (_now().isoformat(),),
+                )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
             logger.warning("failed to mark interrupted approvals", exc_info=True)
 
@@ -218,21 +290,25 @@ class ApprovalService:
         if self.conn is None:
             return
         try:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO pending_approvals "
-                "(approval_id, kind, payload, turn_id, session_id, created_at, expires_at, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
-                (
-                    request.approval_id,
-                    request.kind,
-                    json.dumps(request.payload or {}, ensure_ascii=False),
-                    request.turn_id,
-                    request.session_id,
-                    request.created_at,
-                    request.expires_at,
-                ),
-            )
-            self.conn.commit()
+            with transaction(self.conn):
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO pending_approvals "
+                    "(approval_id, kind, payload, turn_id, session_id, created_at, expires_at, "
+                    " status, owner_instance_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                    (
+                        request.approval_id,
+                        request.kind,
+                        json.dumps(request.payload or {}, ensure_ascii=False),
+                        request.turn_id,
+                        request.session_id,
+                        request.created_at,
+                        request.expires_at,
+                        self._instance_id,
+                    ),
+                )
+            if self.registry is not None and self._instance_id:
+                self.registry.claim(RECORD_APPROVAL, request.approval_id, self._instance_id)
         except Exception:  # noqa: BLE001 - 落库失败不能挡住审批本身
             logger.warning("failed to persist pending approval", exc_info=True)
 
@@ -241,12 +317,12 @@ class ApprovalService:
         if self.conn is None:
             return
         try:
-            self.conn.execute(
-                "UPDATE pending_approvals SET status = ?, resolved_at = ? "
-                "WHERE approval_id = ? AND status = 'pending'",
-                (status, _now().isoformat(), approval_id),
-            )
-            self.conn.commit()
+            with transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE pending_approvals SET status = ?, resolved_at = ? "
+                    "WHERE approval_id = ? AND status = 'pending'",
+                    (status, _now().isoformat(), approval_id),
+                )
         except Exception:  # noqa: BLE001 - 同上
             logger.warning("failed to settle pending approval", exc_info=True)
 

@@ -115,8 +115,8 @@ async def test_index_failure_does_not_undo_the_seal_and_is_retryable(ctx, monkey
         "UPDATE derived_tasks SET run_after = NULL WHERE id = ?", (task.id,)
     )
     done = await ctx.memory_lifecycle.drain_derived_tasks(_SummaryAdapter(), limit=5)
-    # 摘要补齐后链式登记的知识任务也在同一轮里做完
-    assert done == 2
+    # 摘要补齐后链式登记的知识任务、以及独立登记的实体任务也在同一轮里做完
+    assert done == 3
     assert ctx.conn.execute("SELECT COUNT(*) c FROM memory_index").fetchone()["c"] == 1
     assert derived_tasks.task_for(
         ctx.conn, derived_tasks.KIND_SUMMARY, closed.id, int(row["content_version"])

@@ -8,6 +8,7 @@ pipeline instead of a pile of domain details.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -127,15 +128,21 @@ class MemoryLifecycle:
         return self.fragments.get(fragment.id)
 
     async def run_summary_task(self, task, adapter: BaseAdapter, *, tracer=None) -> bool:
-        """执行一条摘要派生任务。返回是否完成（失败会进可重试状态）。"""
+        """执行一条摘要派生任务。返回是否完成（失败会进可重试状态）。
+
+        M05：摘要与实体提炼是**两条独立任务**（各自的内容版本、尝试次数、可读原因）。
+        摘要失败不让实体那条跟着归零 —— 实体只依赖原文，原文本就在，所以摘要这条
+        不可恢复时，实体任务照样登记并独立推进。
+        """
         from agent.memory.model_output import NOTE_TRUNCATED_TEXT
         from agent.memory.summary import summarize_fragment_outcome
         from agent.services import derived_tasks
 
+        generation = task.claim_generation
         fragment = self.fragments.get(task.fragment_id)
         if fragment is None:
             # 片段已经不存在（被清理）：任务没有意义了，判为完成，避免无限重试
-            derived_tasks.complete(self.conn, task.id)
+            derived_tasks.complete(self.conn, task.id, expected_generation=generation)
             return True
 
         messages = self.fragments.messages(fragment.id)
@@ -145,21 +152,22 @@ class MemoryLifecycle:
                 self.conn,
                 task.id,
                 f"内容已变化（任务记录 {task.content_version} 条，实际 {len(messages)} 条）",
+                expected_generation=generation,
             )
             return False
 
         outcome = await summarize_fragment_outcome(adapter, [dict(m) for m in messages])
         self._record_repairs(tracer, "摘要", outcome.notes)
         if outcome.value is None:
-            # 摘要失败不使对话或导航失败：片段保持「已封存、无摘要」，
-            # 原文仍可读（上下文里有预算受控的原文回退）。
-            # 失败隔离：实体卡只依赖对话原文、不依赖摘要，摘要这条不可恢复时
-            # 仍然把它做掉，避免「一个字段的结构错误」把整条派生链一起归零。
-            await self._extract_entity_cards(adapter, messages, tracer)
-            self._record_failure(
-                tracer, "summary_derivation_failed", outcome.error or "摘要模型不可用"
-            )
-            derived_tasks.fail(self.conn, task.id, outcome.error or "摘要模型不可用")
+            # 摘要失败不使对话或导航失败：片段保持「已封存、无摘要」，原文仍可读。
+            #
+            # 失败隔离（M05）：实体提炼只依赖对话原文、不依赖摘要，所以这里把它作为
+            # **独立任务**登记，由实体任务自己认领/重试/留痕 —— 摘要这条失败不再
+            # 顺带决定实体的成败。
+            reason = outcome.error or "摘要模型不可用"
+            self._enqueue_entities_task(fragment.id, task.content_version)
+            self._record_failure(tracer, "summary_derivation_failed", reason)
+            derived_tasks.fail(self.conn, task.id, reason, expected_generation=generation)
             return False
         summary = outcome.value
 
@@ -168,7 +176,12 @@ class MemoryLifecycle:
             "SELECT content_version FROM fragments WHERE id = ?", (fragment.id,)
         ).fetchone()
         if row is None or int(row["content_version"]) != task.content_version:
-            derived_tasks.fail(self.conn, task.id, "片段内容版本已经推进，结果作废")
+            derived_tasks.fail(
+                self.conn,
+                task.id,
+                "片段内容版本已经推进，结果作废",
+                expected_generation=generation,
+            )
             return False
 
         entity_ids: list[str] = []
@@ -221,81 +234,171 @@ class MemoryLifecycle:
             derived_tasks.enqueue(
                 self.conn, derived_tasks.KIND_KNOWLEDGE, fragment.id, task.content_version
             )
+            # 实体提炼只依赖原文，登记在同一个事务里只是为了「摘要成功 ⇒ 实体任务一定
+            # 在队列里」；它的成功/失败与这条摘要任务完全独立（M05）。
+            derived_tasks.enqueue(
+                self.conn, derived_tasks.KIND_ENTITIES, fragment.id, task.content_version
+            )
         self._index_changed(entry)
         if tracer is not None:
             tracer.write("summaries", f"{fragment.id}:{summary.title or ''}")
 
-        # 实体卡提炼：只依赖原文 + 幂等 upsert，失败只记录（摘要任务已算完成）
-        try:
-            await self._extract_entity_cards(adapter, messages, tracer)
-        except Exception as exc:  # noqa: BLE001 - 派生数据失败不影响对话
-            logger.warning("derived extraction failed: %s", self._safe_exc(exc))
-
-        derived_tasks.complete(self.conn, task.id)
+        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
         return True
 
-    async def _extract_entity_cards(self, adapter, messages, tracer=None) -> None:
-        """实体卡提炼：**只依赖对话原文**，不依赖摘要。
+    # -- 实体提炼（独立派生任务）------------------------------------------
 
-        单独成一步是为了失败隔离：摘要那条派生失败时，实体卡仍然能产出，
-        而不是整条链一起归零。提炼输出走统一可修正层，修正与失败都要留痕。
+    def _enqueue_entities_task(self, fragment_id: str, content_version: int) -> str:
+        """幂等登记实体提炼任务（摘要失败路径 / 首次派发用）。"""
+        from agent.services import derived_tasks
+
+        task_id, _created = derived_tasks.enqueue(
+            self.conn, derived_tasks.KIND_ENTITIES, fragment_id, content_version
+        )
+        return task_id
+
+    def _mark_entities_extracted(self, fragment_id: str, content_version: int) -> None:
+        """把「这一版原文已经提炼过实体」写进片段数据（幂等身份的一部分）。
+
+        写卡片与写这个标记分两步：崩溃在两者之间时，重试会因为标记缺失而重跑一次
+        提取，但卡片按字段合并（幂等），不会重复制造卡片。
+        """
+        row = self.conn.execute(
+            "SELECT meta FROM fragments WHERE id = ?", (fragment_id,)
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["entities_extracted_version"] = int(content_version)
+        self.conn.execute(
+            "UPDATE fragments SET meta = ? WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), fragment_id),
+        )
+
+    def _save_card_vector(self, card) -> None:
+        """实体卡向量（best effort）：失败不影响卡片本身已经写好。"""
+        if self.embedding is None or not hasattr(self.embedding, "save_entity_card_vector"):
+            return
+        try:
+            self.embedding.save_entity_card_vector(
+                card.id, f"{card.name}：{card.summary or ''}"
+            )
+        except Exception:  # noqa: BLE001 - 向量是加速手段，不是数据本体
+            pass
+
+    async def run_entities_task(self, task, adapter: BaseAdapter, *, tracer=None) -> bool:
+        """执行一条实体提炼派生任务：**只依赖对话原文**，不依赖摘要（M05）。
+
+        * 独立的状态行：state / attempts / last_error / 认领代次都在这条任务上，
+          「摘要完成」不再等于「实体完成」；
+        * 幂等：内容版本 + fragments.meta 的 entities_extracted_version 双重身份，
+          重复 drain 不会重复调用模型；卡片写入走字段合并（同名卡不会重复创建）；
+        * 迟到结果：发起模型调用前取一次卡修订版本快照，提交时按 `expected_revision`
+          再次核对（不只是发起前核对），被用户改过的值一律保留。
         """
         from agent.entities.cards import EntityCardService
-        from agent.entities.extract import extract_entity_cards_outcome
+        from agent.entities.extract import (
+            extract_entity_cards_outcome,
+            prepare_candidates_for_commit,
+        )
+        from agent.services import derived_tasks
 
-        try:
-            outcome = await extract_entity_cards_outcome(
-                adapter, [dict(m) for m in messages]
+        generation = task.claim_generation
+        fragment = self.fragments.get(task.fragment_id)
+        if fragment is None:
+            derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+            return True
+        meta = dict(fragment.meta or {})
+        if int(meta.get("entities_extracted_version") or 0) == int(task.content_version):
+            # 这一版原文已经提炼过：任务被判完成（不重复调用模型、不重复写卡片）
+            derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+            return True
+
+        messages = self.fragments.messages(fragment.id)
+        if len(messages) != task.content_version:
+            derived_tasks.fail(
+                self.conn,
+                task.id,
+                f"内容已变化（任务记录 {task.content_version} 条，实际 {len(messages)} 条）",
+                expected_generation=generation,
             )
-            self._record_repairs(tracer, "实体卡", outcome.notes)
-            if outcome.value is None:
-                self._record_failure(
-                    tracer,
-                    "entity_card_extraction_failed",
-                    outcome.error or "实体卡提炼不可用",
-                )
-                return
-            candidates = outcome.value
-            card_svc = EntityCardService(self.conn)
-            for cand in candidates:
-                card = card_svc.upsert(cand)
-                try:
-                    if self.embedding is not None and hasattr(
-                        self.embedding, "save_entity_card_vector"
-                    ):
-                        self.embedding.save_entity_card_vector(
-                            card.id, f"{card.name}：{card.summary or ''}"
-                        )
-                except Exception:
-                    pass
-        except Exception as exc:  # noqa: BLE001 - 派生数据失败不影响对话
-            logger.warning("entity card extraction failed: %s", self._safe_exc(exc))
-            self._record_failure(
-                tracer, "entity_card_extraction_failed", f"{type(exc).__name__}: {exc}"
+            return False
+
+        card_svc = EntityCardService(self.conn)
+        # 提交时核对修订版本：快照取自**模型调用之前**。
+        snapshot = card_svc.revision_snapshot()
+        outcome = await extract_entity_cards_outcome(adapter, [dict(m) for m in messages])
+        self._record_repairs(tracer, "实体卡", outcome.notes)
+        if outcome.value is None:
+            reason = outcome.error or "实体卡提炼不可用"
+            self._record_failure(tracer, "entity_card_extraction_failed", reason)
+            derived_tasks.fail(self.conn, task.id, reason, expected_generation=generation)
+            return False
+
+        candidates, notes = prepare_candidates_for_commit(outcome.value)
+        if notes:
+            self._record_repairs(tracer, "实体卡", notes)
+        for cand in candidates:
+            card = card_svc.upsert(
+                cand, source="auto", expected_revision=snapshot.get(cand.name)
             )
+            if card is None:
+                continue
+            self._save_card_vector(card)
+            if tracer is not None:
+                tracer.write("entity_cards", f"{card.id}:{card.name}")
+        self._mark_entities_extracted(fragment.id, int(task.content_version))
+        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        return True
 
-    async def drain_derived_tasks(
-        self, adapter: BaseAdapter, *, limit: int = 3, tracer=None
-    ) -> int:
-        """把到期的派生任务做一轮，返回完成条数（摘要与知识各自计一条）。
+    def backfill_entity_tasks(self, *, limit: int = 2) -> int:
+        """有边界补派（M05）：摘要已完成的**历史片段**如果缺实体任务，补登记。
 
-        知识提炼依赖摘要，所以知识任务由摘要任务在落库的同一个事务里链式登记：
-        第一轮跑完后再补认领一次知识任务，「封块后摘要与知识都就绪」的既有语义
-        不变；同时知识失败有自己的任务行（状态 / attempts / 可读 last_error）。
+        新代码在摘要落库时就会登记实体任务，所以这里命中的是升级前完成的片段。
+        有边界 = 每次最多补 `limit` 条；幂等 = enqueue 按 (kind, 片段, 内容版本) 去重，
+        补过一次就不会再补。补派走同一套自动合并规则：不覆盖人工修订、不制造重复卡片。
         """
         from agent.services import derived_tasks
 
-        done = await self._drain_batch(
-            adapter,
-            limit=limit,
-            tracer=tracer,
-            kinds=(derived_tasks.KIND_SUMMARY, derived_tasks.KIND_KNOWLEDGE),
+        created = 0
+        for fragment_id, version in derived_tasks.fragments_missing_entity_tasks(
+            self.conn, limit=max(0, int(limit))
+        ):
+            _, is_new = derived_tasks.enqueue(
+                self.conn, derived_tasks.KIND_ENTITIES, fragment_id, version
+            )
+            created += int(is_new)
+        return created
+
+    async def drain_derived_tasks(
+        self, adapter: BaseAdapter, *, limit: int = 3, tracer=None, backfill_limit: int = 2
+    ) -> int:
+        """把到期的派生任务做一轮，返回完成条数（摘要 / 知识 / 实体各自计一条）。
+
+        知识提炼依赖摘要，所以知识任务由摘要任务在落库的同一个事务里链式登记；
+        实体任务同理（但**不依赖**摘要的成功）。第一轮跑完后再补认领一次，
+        「封块后摘要/知识/实体都就绪」的既有语义不变；三种派生各有自己的任务行
+        （状态 / attempts / 可读 last_error / 认领代次）。
+        """
+        from agent.services import derived_tasks
+
+        self.backfill_entity_tasks(limit=backfill_limit)
+        kinds = (
+            derived_tasks.KIND_SUMMARY,
+            derived_tasks.KIND_KNOWLEDGE,
+            derived_tasks.KIND_ENTITIES,
         )
+        done = await self._drain_batch(adapter, limit=limit, tracer=tracer, kinds=kinds)
         done += await self._drain_batch(
             adapter,
             limit=limit,
             tracer=tracer,
-            kinds=(derived_tasks.KIND_KNOWLEDGE,),
+            kinds=(derived_tasks.KIND_KNOWLEDGE, derived_tasks.KIND_ENTITIES),
         )
         return done
 
@@ -307,41 +410,59 @@ class MemoryLifecycle:
         done = 0
         for task in derived_tasks.claim_due(self.conn, limit=limit, kinds=kinds):
             try:
-                runner = (
-                    self.run_knowledge_task
-                    if task.kind == derived_tasks.KIND_KNOWLEDGE
-                    else self.run_summary_task
-                )
+                runner = {
+                    derived_tasks.KIND_KNOWLEDGE: self.run_knowledge_task,
+                    derived_tasks.KIND_ENTITIES: self.run_entities_task,
+                }.get(task.kind, self.run_summary_task)
                 if await runner(task, adapter, tracer=tracer):
                     done += 1
+            except asyncio.CancelledError:
+                # 关闭 / 取消（M06）：不是失败 —— 过代次校验后放回队列，
+                # 不留永久 running；被杀掉的这条任务的迟到结果会因代次不匹配被丢弃。
+                derived_tasks.release(
+                    self.conn,
+                    task.id,
+                    expected_generation=task.claim_generation,
+                    reason="取消/关闭",
+                )
+                raise
             except Exception as exc:  # noqa: BLE001 - 单条任务失败不能中断整批
                 logger.warning("derived task failed: %s", self._safe_exc(exc))
-                derived_tasks.fail(self.conn, task.id, f"{type(exc).__name__}: {exc}")
+                derived_tasks.fail(
+                    self.conn,
+                    task.id,
+                    f"{type(exc).__name__}: {exc}",
+                    expected_generation=task.claim_generation,
+                )
         return done
 
     async def run_knowledge_task(self, task, adapter: BaseAdapter, *, tracer=None) -> bool:
         """执行一条知识派生任务。返回是否完成（失败会进可重试状态）。"""
         from agent.services import derived_tasks
 
+        generation = task.claim_generation
         fragment = self.fragments.get(task.fragment_id)
         if fragment is None:
             # 片段已经不存在（被清理）：任务没有意义了，判为完成，避免无限重试
-            derived_tasks.complete(self.conn, task.id)
+            derived_tasks.complete(self.conn, task.id, expected_generation=generation)
             return True
         summary = self._summary_for_fragment(fragment)
         if summary is None:
             # 摘要还没落库：不是结构错误，等摘要任务完成后重试
             derived_tasks.fail(
-                self.conn, task.id, "摘要尚未生成（知识提炼依赖摘要），稍后重试"
+                self.conn,
+                task.id,
+                "摘要尚未生成（知识提炼依赖摘要），稍后重试",
+                expected_generation=generation,
             )
             return False
         error = await self.extract_knowledge(
             adapter, summary, fragment.topic_id, [], fragment.id, tracer=tracer
         )
         if error:
-            derived_tasks.fail(self.conn, task.id, error)
+            derived_tasks.fail(self.conn, task.id, error, expected_generation=generation)
             return False
-        derived_tasks.complete(self.conn, task.id)
+        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
         return True
 
     def _summary_for_fragment(self, fragment) -> Any | None:

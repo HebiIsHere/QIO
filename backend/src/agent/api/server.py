@@ -31,6 +31,8 @@ from agent.api.auth import TICKET_SCOPE_EVENTS, SessionAuth
 from agent.api.bus import EventBus
 from agent.api.events import AgentEvent, EventType, make_event
 from agent.config import Settings
+from agent.core.turn import TurnAcceptError
+from agent.storage.turn_journal import JournalWriteError
 from agent.credentials.providers import (
     CUSTOM_PRESET,
     MODEL_SUGGESTION_NOTE,
@@ -61,6 +63,10 @@ from agent.storage.db_identity import (
 # 开发模式的 CORS 兜底：本机 dev server 任意端口。
 DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
+# 实例心跳间隔（契约 C1）：远小于 HEARTBEAT_TTL（90s），
+# 正常运行时始终「心跳新鲜」；崩溃时停止，靠 TTL + pid 兜底判死。
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
 # 摘要只给「一句」：详情层要的是看得懂，不是把整段摘要摊开
 _SENTENCE_END = "。！？!?\n"
 
@@ -87,6 +93,32 @@ def _first_sentence(text: str | None) -> str | None:
     return cleaned
 
 
+def _apply_settings_patch(ctx, section: str, body: dict) -> dict:
+    """设置写入的统一入口：先全量校验 → 单事务提交 → 再应用运行时。
+
+    M08：一个设置请求是**整体**。校验失败返回 400、写库失败返回 500，两种情况
+    下数据库与运行时都保持整套旧值（`SettingsService` 负责事务与回滚语义）。
+    """
+    from agent.services.settings_service import (
+        SettingsService,
+        SettingsValidationError,
+        SettingsWriteError,
+    )
+
+    try:
+        result = SettingsService(ctx).apply({section: body})
+    except SettingsValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from None
+    except SettingsWriteError as exc:
+        raise HTTPException(status_code=500, detail=exc.detail) from None
+    payload = dict(result.sections.get(section) or {})
+    # 只有工具历史设置会在提交成功后真的清理，把清理条数一并回给界面
+    for key in ("purged", "records_purged"):
+        if key in result.applied:
+            payload[key] = result.applied[key]
+    return payload
+
+
 def _knowledge_payload(ctx, item) -> dict:
     """知识条目的结构化载荷（列表与新建共用）。"""
     topic_name = None
@@ -94,6 +126,7 @@ def _knowledge_payload(ctx, item) -> dict:
         node = ctx.topics.nodes.get_topic(item.topic_id)
         topic_name = node.name if node is not None else None
     provenance = dict(item.provenance or {})
+    node_ids = list(item.node_ids or [])
     return {
         "id": item.id,
         "category": item.category,
@@ -105,6 +138,15 @@ def _knowledge_payload(ctx, item) -> dict:
         # 「看得懂」三件套：从哪来、管多大范围、什么时候结束的
         "source": _knowledge_source_label(provenance),
         "scope": _knowledge_scope(ctx, item),
+        # M02：范围以**真实节点归属**为准，`topic_id` 只是兼容字段。
+        # 界面据此显示「全局（你）/ 某个话题 / 未指定归属（需确认）」。
+        "scope_nodes": node_ids,
+        "scope_global": bool(getattr(item, "scope_global", False)),
+        "scope_unresolved": bool(getattr(item, "scope_unresolved", False)),
+        # R02：版本链身份，管理界面据此判断「这条还是不是当前版本」
+        "chain_id": getattr(item, "chain_id", "") or "",
+        "version": getattr(item, "version", 1),
+        "supersedes_id": getattr(item, "supersedes_id", None),
         "ended": bool(provenance.get("ended_at")),
         "ended_at": provenance.get("ended_at"),
         "created_at": item.created_at,
@@ -206,9 +248,37 @@ def create_app(
                 logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
+        # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
+        # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
+        # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。
+        hb_log = logging.getLogger(__name__)
+        heartbeat_stop = asyncio.Event()
+
+        async def _instance_heartbeat() -> None:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(heartbeat_stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
+                if heartbeat_stop.is_set():
+                    return
+                try:
+                    ctx.instances.heartbeat()
+                except Exception:  # noqa: BLE001 - 心跳失败不能杀死后台任务
+                    hb_log.warning("instance heartbeat failed", exc_info=True)
+
+        heartbeat_task = asyncio.create_task(_instance_heartbeat())
         try:
             yield
         finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
                 await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
@@ -222,11 +292,22 @@ def create_app(
                     logging.getLogger(__name__).warning("closing db failed", exc_info=True)
 
     app = FastAPI(title="QIO", version="0.1.14", lifespan=lifespan)
+    from agent.knowledge.lifecycle import VersionConflict
+
+    @app.exception_handler(VersionConflict)
+    async def _knowledge_version_conflict(request: Request, exc: VersionConflict):  # noqa: ANN202
+        """R02/R03：版本链冲突是 409，不是 400，更不是「悄悄再建一个当前版本」。
+
+        `exc.to_dict()` 已经是约定的响应体形状（带 current_id / current_version），
+        调用方拿去核对「当前版本到底是谁」。
+        """
+        return JSONResponse(status_code=409, content=exc.to_dict())
+
     auth = SessionAuth.from_settings(settings)
-    instance_id = f"qio_{uuid.uuid4().hex[:16]}"
+    # 实例身份由 AppContext 生成并登记（契约 C1：台账归属要用同一个 id）。
     # 事件要能自证「来自哪个后端实例」：进程重启后 revision 从 0 重新计数，
     # 前端据此知道旧基准作废、要完整 resync（见 /api/runtime/state）。
-    ctx.instance_id = instance_id
+    instance_id = ctx.instance_id
     ctx.turns.instance_id = instance_id
     app.add_middleware(
         CORSMiddleware,
@@ -729,44 +810,7 @@ def create_app(
 
     @app.put("/api/settings/memory")
     async def update_memory_settings(body: dict) -> dict:
-        from agent.memory.fragment import FRAGMENT_TOKENS_KEY, resolve_max_tokens
-
-        if "fragment_max_tokens" in body:
-            try:
-                tokens = int(body["fragment_max_tokens"])
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=400, detail="fragment_max_tokens must be an integer"
-                ) from None
-            if not (2_000 <= tokens <= 200_000):
-                raise HTTPException(
-                    status_code=400,
-                    detail="fragment_max_tokens must be in [2000, 200000]",
-                )
-            ctx.settings_store.set(FRAGMENT_TOKENS_KEY, str(tokens))
-            # 只改长度时不强制要求同时给轮数
-            if "fragment_max_turns" not in body:
-                return {
-                    "ok": True,
-                    "fragment_max_tokens": resolve_max_tokens(ctx.settings_store),
-                    "fragment_max_turns": resolve_max_turns(ctx.settings_store),
-                }
-        raw = body.get("fragment_max_turns")
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="fragment_max_turns must be an integer")
-        if not (FRAGMENT_MIN_TURNS <= value <= FRAGMENT_MAX_TURNS):
-            raise HTTPException(
-                status_code=400,
-                detail=f"fragment_max_turns must be in [{FRAGMENT_MIN_TURNS}, {FRAGMENT_MAX_TURNS}]",
-            )
-        ctx.settings_store.set(FRAGMENT_TURNS_KEY, str(value))
-        return {
-            "ok": True,
-            "fragment_max_turns": value,
-            "fragment_max_tokens": resolve_max_tokens(ctx.settings_store),
-        }
+        return _apply_settings_patch(ctx, "memory", body)
 
     # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
 
@@ -814,31 +858,7 @@ def create_app(
 
     @app.put("/api/settings/loop")
     async def update_loop_settings(body: dict) -> dict:
-        store = ctx.settings_store
-        if "max_iterations" in body:
-            try:
-                v = int(body["max_iterations"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="max_iterations must be an integer")
-            if not (1 <= v <= LOOP_MAX_ITERATIONS_LIMIT):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"max_iterations must be in [1, {LOOP_MAX_ITERATIONS_LIMIT}]",
-                )
-            store.set("loop.max_iterations", str(v))
-        if "output_token_budget" in body:
-            try:
-                v = int(body["output_token_budget"])
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=400, detail="output_token_budget must be an integer"
-                )
-            if v < 0:
-                raise HTTPException(
-                    status_code=400, detail="output_token_budget must be >= 0"
-                )
-            store.set("loop.output_token_budget", str(v))
-        return await get_loop_settings()
+        return _apply_settings_patch(ctx, "loop", body)
 
     @app.get("/api/settings/search")
     async def get_search_settings() -> dict:
@@ -855,34 +875,8 @@ def create_app(
 
     @app.put("/api/settings/search")
     async def update_search_settings(body: dict) -> dict:
-        store = ctx.settings_store
-        if "searxng_url" in body:
-            store.set("search.searxng_url", str(body.get("searxng_url") or ""))
-        if "bocha_api_key" in body:
-            store.set("search.bocha_api_key", str(body.get("bocha_api_key") or ""))
-        if "keyless_fallback" in body:
-            store.set("search.keyless_fallback", "1" if body.get("keyless_fallback") else "0")
-        if "top_k_default" in body:
-            try:
-                v = int(body["top_k_default"])
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=400, detail="top_k_default must be an integer"
-                )
-            store.set("search.top_k_default", str(max(1, min(v, 20))))
-        if "max_fetch_chars" in body:
-            try:
-                v = int(body["max_fetch_chars"])
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=400,
-                    detail="max_fetch_chars must be an integer",
-                )
-            store.set("search.max_fetch_chars", str(max(1000, min(v, 40000))))
-        # 保存即生效：把设置套用到运行中的 SearchService（改 SearXNG/博查/免密钥开关
-        # 不需要重启后端）
-        ctx.apply_search_settings()
-        return await get_search_settings()
+        # 保存即生效由 SettingsService 在**提交成功之后**套用到运行中的 SearchService
+        return _apply_settings_patch(ctx, "search", body)
 
     # -- computer control settings -----------------------------------------
 
@@ -899,17 +893,33 @@ def create_app(
 
     @app.put("/api/settings/computer")
     async def update_computer_settings(body: dict) -> dict:
+        from agent.storage.db import transaction
+
         store = ctx.settings_store
+        # M08：同根因。先全量校验、再单事务提交——后面的字段非法时前面的字段
+        # 不能已经落库（旧实现先写 root_dir 再校验 permission_mode）。
+        writes: list[tuple[str, str]] = []
         if "root_dir" in body:
-            store.set("computer.root_dir", str(body.get("root_dir") or ""))
-            # 新根目录同样要就位：否则用户填了一个还不存在的目录，之后每个相对
-            # 路径的文件调用都会以「系统找不到指定的路径」结束。
-            ctx.computer.ensure_root()
+            writes.append(("computer.root_dir", str(body.get("root_dir") or "")))
         if "permission_mode" in body:
             mode = str(body["permission_mode"])
             if mode not in PERMISSION_MODES:
                 raise HTTPException(status_code=400, detail="invalid permission_mode")
-            store.set("computer.permission_mode", mode)
+            writes.append(("computer.permission_mode", mode))
+        if writes:
+            try:
+                with transaction(ctx.conn):
+                    for key, value in writes:
+                        store.set(key, value)
+            except Exception as exc:  # noqa: BLE001 - 统一转成「整套回滚」的可读错误
+                raise HTTPException(
+                    status_code=500,
+                    detail="设置写入失败，本次改动已整体回滚（设置保持原值）",
+                ) from exc
+        if "root_dir" in body:
+            # 提交成功之后才让新根目录就位：否则用户填了一个还不存在的目录，
+            # 之后每个相对路径的文件调用都会以「系统找不到指定的路径」结束。
+            ctx.computer.ensure_root()
         return await get_computer_settings()
 
     @app.get("/api/settings/tools")
@@ -940,35 +950,8 @@ def create_app(
 
     @app.put("/api/settings/tools")
     async def update_tool_history_settings(body: dict) -> dict:
-        from agent.storage.tool_records import MAX_RETENTION_DAYS
-
-        store = ctx.settings_store
-        if "record_outputs" in body:
-            store.set("tools.record_outputs", "1" if body.get("record_outputs") else "0")
-        if "output_retention_days" in body:
-            try:
-                days = int(body["output_retention_days"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="invalid output_retention_days")
-            # 超出范围按边界收敛（与搜索设置的既有做法一致）
-            store.set(
-                "tools.output_retention_days", str(max(0, min(days, MAX_RETENTION_DAYS)))
-            )
-        if "record_retention_days" in body:
-            try:
-                record_days = int(body["record_retention_days"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="invalid record_retention_days")
-            # 0 = 永久保留（默认，与既有行为一致）
-            store.set(
-                "tools.record_retention_days",
-                str(max(0, min(record_days, MAX_RETENTION_DAYS))),
-            )
-        payload = await get_tool_history_settings()
-        # 保存即生效：把天数调小要马上清掉过期内容；purged 是这次清掉的条数
-        payload["purged"] = ctx.prune_tool_outputs()
-        payload["records_purged"] = ctx.prune_tool_records()
-        return payload
+        # 保存即生效：把天数调小要马上清掉过期内容；清理只在整套校验/提交成功后执行
+        return _apply_settings_patch(ctx, "tools", body)
 
     # -- anchor -------------------------------------------------------------
 
@@ -1064,9 +1047,22 @@ def create_app(
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
         # （排队中的这条消息不被追溯改向）。
         pending = ctx.bindings.peek_intent()
-        turn = ctx.turns.submit(
-            message, topic_id, intent_id=pending.intent_id if pending else None
-        )
+        try:
+            turn = ctx.turns.submit(
+                message, topic_id, intent_id=pending.intent_id if pending else None
+            )
+        except TurnAcceptError:
+            # 契约 C2：台账写不进去 = 这条消息**没有被接受**。绝不能返回 200：
+            # 那会留下一个「内存里有、库里没有」的 turn，重启后消息没有任何痕迹。
+            # 不入队、不发 TURN_START（TURN_START 只在 worker 真正开跑时发）。
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "accepted": False,
+                    "error": "消息未被接受：持久化失败",
+                },
+            )
         return {
             "ok": True,
             "accepted": True,
@@ -1230,6 +1226,10 @@ def create_app(
             "interrupted_approvals": ctx.approvals.interrupted(),
             # 上一次进程结束时没有被执行完的用户消息（见 storage/turn_journal.py）。
             "interrupted_turns": ctx.turn_journal.unfinished(),
+            # 孤儿重发：被抢占过、但没有写成任何后继的记录。它们不在
+            # interrupted_turns 里（已经算「处理过」），所以必须有这个出口 ——
+            # 否则那条消息就永久消失了（契约 C3：孤立即记录不得永久隐藏）。
+            "orphaned_turns": ctx.turn_journal.orphaned_claims(),
             "tasks": ctx.task_manager.snapshot(),
             # 工具执行的权威事实（活工具 + 最近结束的工具）：
             # TOOL_END 可能丢在失真区间里，但终态本身是服务器已经知道的事实，
@@ -1255,8 +1255,13 @@ def create_app(
     async def resend_turn(turn_id: str) -> dict:
         """把一条「被接受但没有执行」的消息按原话题重新提交。
 
-        一次性：先用带条件的 UPDATE 抢占（`claim`），抢不到就 409 ——
-        所以同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
+        一次性 + **单事务**（契约 C3）：`claim_for_resend` 在同一个事务里完成
+        「老记录 recovered_by/recovered_at + 新记录 + 关联」；抢不到（已经被处理过、
+        或别的并发请求先抢到）就 409，任何一步失败整体回滚 —— 不会留下
+        「老记录已处理、新记录没写成」的孤儿。
+
+        新 turn_id 在事务之前就生成并传进去：关联（recovered_by）指向的必须是
+        真正提交的那个 turn，而不是事后补写。
         """
         record = ctx.turn_journal.recoverable(turn_id)
         if record is None:
@@ -1264,7 +1269,17 @@ def create_app(
                 status_code=409,
                 detail="这一条不在「未执行」状态（可能已经执行完成或已经被处理过），不能重发",
             )
-        if not ctx.turn_journal.claim(turn_id):
+        new_turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        try:
+            linked = ctx.turn_journal.claim_for_resend(turn_id, new_turn_id, instance_id)
+        except JournalWriteError as exc:
+            # 事务整体回滚：老记录仍是可重发的，没有半截状态、没有孤儿。
+            # 但这次重发**没有做成**，必须如实说，不能返回假 200。
+            raise HTTPException(
+                status_code=503,
+                detail=f"重发未被执行：持久化失败（{exc}）",
+            ) from exc
+        if not linked:
             raise HTTPException(status_code=409, detail="这一条已经被处理过了")
         pending = ctx.bindings.peek_intent()
         try:
@@ -1272,11 +1287,16 @@ def create_app(
                 record["message"],
                 record["topic_id"],
                 intent_id=pending.intent_id if pending else None,
+                turn_id=new_turn_id,
             )
-        except Exception:
-            ctx.turn_journal.release_claim(turn_id)  # 提交失败 → 退回去，用户还能再试
-            raise
-        ctx.turn_journal.mark_recovered(turn_id, new_turn_id=turn.turn_id)
+        except TurnAcceptError as exc:
+            # 关联已经写成、但新 turn 没被接受：这是真实的失败，必须让用户看见，
+            # 而不是返回一个假的 200。孤儿出口（orphaned_claims / repair_orphan）
+            # 保证这条记录不会因此永久消失。
+            raise HTTPException(
+                status_code=503,
+                detail=f"重发未被执行：{exc}",
+            ) from exc
         return {
             "ok": True,
             "recovered_turn_id": turn_id,
@@ -1685,6 +1705,7 @@ def create_app(
         category: str | None = None,
         state: str | None = None,
         q: str | None = None,
+        unresolved: bool | None = None,
     ) -> dict:
         from agent.knowledge.lifecycle import KnowledgeService
 
@@ -1692,7 +1713,11 @@ def create_app(
         items = ks.list_items(category=category, state=state, q=q)
         out = []
         for it in items:
-            out.append(_knowledge_payload(ctx, it))
+            payload = _knowledge_payload(ctx, it)
+            # M02：旧的无归属条目要保持 active 但「待处理」，管理界面要能单独筛出来
+            if unresolved is not None and payload["scope_unresolved"] is not unresolved:
+                continue
+            out.append(payload)
         return {"knowledge": out}
 
     @app.post("/api/knowledge")
@@ -1833,26 +1858,42 @@ def create_app(
 
     @app.post("/api/knowledge/{knowledge_id}/revise")
     async def revise_knowledge(knowledge_id: str, body: dict) -> dict:
-        from agent.knowledge.lifecycle import KnowledgeService
+        """纠正知识：**原子替换**当前版本（R02/R03）。
+
+        版本不符（目标已不是当前版本）返回 409 并带上「当前版本是谁」，
+        绝不悄悄再建一个 current；任何一步写入失败都整体回滚。
+        """
+        from agent.knowledge.lifecycle import KnowledgeNotFound, revise_atomic
 
         content = str(body.get("content") or "").strip()
         if not content:
             raise HTTPException(status_code=400, detail="content required")
-        ks = KnowledgeService(ctx.conn)
-        item = ks.get(knowledge_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="knowledge not found")
-        new_item = ks.create(
-            category=item.category,
-            content=content,
-            node_ids=list(item.node_ids),
-            supersedes_id=item.id,
-            provenance={"corrected_from": item.id},
-        )
-        ks.submit(new_item.id)
-        ks.verify(new_item.id, verified_by="user")
-        ks.activate(new_item.id)
-        return {"ok": True, "knowledge_id": new_item.id, "supersedes": item.id}
+        expected = body.get("expected_version")
+        if expected is not None:
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="expected_version must be an integer"
+                ) from None
+        try:
+            new_item = revise_atomic(
+                ctx.conn,
+                knowledge_id,
+                expected,
+                {"content": content},
+                source="user_correction",
+                actor="user",
+            )
+        except KnowledgeNotFound as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {
+            "ok": True,
+            "knowledge_id": new_item.id,
+            "supersedes": new_item.supersedes_id or knowledge_id,
+            "chain_id": new_item.chain_id,
+            "version": new_item.version,
+        }
 
     # -- entity cards ---------------------------------------------------------
 
@@ -1935,14 +1976,21 @@ def create_app(
 
     @app.post("/api/knowledge/{knowledge_id}/revoke")
     async def revoke_knowledge(knowledge_id: str) -> dict:
-        from agent.knowledge.lifecycle import KnowledgeService
+        """删除/停用：核对当前版本后再撤销，并如实反馈「到底删了什么」（R02）。"""
+        from agent.knowledge.lifecycle import KnowledgeNotFound, deactivate_atomic
 
-        ks = KnowledgeService(ctx.conn)
-        item = ks.get(knowledge_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="knowledge not found")
-        ks.revoke(item.id)
-        return {"ok": True, "knowledge_id": item.id}
+        try:
+            outcome = deactivate_atomic(ctx.conn, knowledge_id)
+        except KnowledgeNotFound as exc:
+            raise HTTPException(status_code=404, detail="knowledge not found") from exc
+        return {
+            "ok": True,
+            "knowledge_id": knowledge_id,
+            "deleted": outcome.deleted,
+            "already_inactive": outcome.already_inactive,
+            "current_id": outcome.current_id,
+            "current_version": outcome.current_version,
+        }
 
     # -- maintenance -------------------------------------------------------
 
@@ -1960,18 +2008,7 @@ def create_app(
 
     @app.put("/api/settings/maintenance")
     async def update_maintenance_settings(body: dict) -> dict:
-        if "enabled" in body:
-            ctx.settings_store.set("maintenance.enabled", "true" if body["enabled"] else "false")
-        if "interval_hours" in body:
-            raw = body["interval_hours"]
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="interval_hours must be an integer")
-            if not (1 <= value <= 24 * 30):
-                raise HTTPException(status_code=400, detail="interval_hours must be in [1, 720]")
-            ctx.settings_store.set("maintenance.interval_hours", str(value))
-        return await get_maintenance_settings()
+        return _apply_settings_patch(ctx, "maintenance", body)
 
     # -- approvals ---------------------------------------------------------
 

@@ -686,25 +686,38 @@ class TurnOrchestrator:
                 await self._refresh_topic_vector(ctx, final_topic)
                 # 派生工作（摘要 / 知识抽取）是后台任务：把 tracer 交下去，
                 # 失败与本地修正才会落进这一轮的 trace，而不是只留在日志里。
-                self._schedule_derived_work(adapter, getattr(ctx, "trace", None))
+                self._schedule_derived_work(
+                    adapter, getattr(ctx, "trace", None), fragment_id=sealed.id
+                )
         if plan.payload.plan.needs_consolidation:
             # 收尾的压缩整理会发起**额外**的模型调用（不进 model_calls）：
             # 它同样要能在阶段账本里被看见，否则又是一段无法解释的等待。
             with tracer.phase("model_wait", "consolidate"):
                 await app.consolidate(final_topic, adapter)
 
-    def _schedule_derived_work(self, adapter, tracer=None) -> None:
+    def _schedule_derived_work(
+        self, adapter, tracer=None, *, fragment_id: str | None = None
+    ) -> None:
         """后台把派生任务做掉。失败只记录：派生数据不影响对话与导航。
 
         但「只记录在日志里」是不够的（可观测性缺口）：派生任务的结构性失败与
         本地修正必须落进这一轮的 trace（tracer 走 drain_derived_tasks 既有的
         tracer 通道），耗时则作为 **turn 结束之后** 的工作单独记账 ——
         它不阻塞这一轮的终态，因此不能算进 duration_ms（见 phases.after_turn）。
+
+        M06：这条后台协程**统一登记**在 `app.background`（services/background.py）
+        里，由 `app.aclose` 关闭：先拒绝新建 → 有界等待 → 取消 → 确认结束。
+        以前是裸 `loop.create_task()`，没有任何人持有句柄 —— 关闭后它可能还在写库，
+        进程退出时认领状态也只能等时限兜底。
         """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+
+        from agent.services.background import BackgroundClosed, registry_for
+
+        registry = registry_for(self.app, loop=loop)
 
         async def _run() -> None:
             import time as _time
@@ -729,12 +742,20 @@ class TurnOrchestrator:
                         record(
                             "derived_work",
                             int((_time.perf_counter() - _t0) * 1000),
-                            detail="summary/knowledge derivation",
+                            detail="summary/knowledge/entities derivation",
                         )
                     except Exception:  # noqa: BLE001 - 记账不得影响后台任务
                         pass
 
-        loop.create_task(_run())
+        # 名字带片段：同一个片段的派生工作不会重复调度；不同片段各自持有句柄，
+        # 关闭时全部能被等/被取消。
+        name = f"derived_work:{fragment_id}" if fragment_id else "derived_work"
+        try:
+            registry.register(name, _run)
+        except BackgroundClosed:
+            # 关闭流程已经开始：不再新建派生工作。这一份工作没有丢 ——
+            # 派生任务仍在持久队列里，下一次启动由恢复路径接手。
+            logging.getLogger(__name__).info("应用关闭中：跳过派生工作调度 %s", name)
 
     def _apply_boundary_policy(self, ctx, topic: str, fragment_id: str | None) -> None:
         """轮前边界判断（阶段 4）：只使用当前输入与此前已完成的上下文。

@@ -674,6 +674,83 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_turn_journal_created ON turn_journal(created_at)",
         ],
     ),
+    (
+        # 号段选择：26 / 27 / 28 已被同基线的其它修复分支占用（附件发送、进程审计、
+        # 统一进程流等分支各自用到了 28），基线 main（6e073e9）自己停在 25。
+        # `apply_migrations` 是「target <= 已记录版本就跳过」，所以如果这里也用 26，
+        # 任何被那些分支碰过的**存量库**都会把这条迁移整段跳过去 —— 结果是
+        # `instances` 表不存在、`AppContext.__init__` 直接抛
+        # `sqlite3.OperationalError: no such table: instances`，后端起不来。
+        # 取 29（= 已知最大号 28 + 1）保证：无论那些分支先合还是后合，
+        # 这条迁移对任何存量库都**必然**会被应用一次。
+        29,
+        [
+            # 实例归属（契约 C1）：一个进程实例在库里有身份，其它实例才能判断
+            # 「它写下的记录现在还算不算活着」。
+            #
+            # 为什么需要：以前启动恢复只有一句「把 leave 的 pending/queued/running
+            # 全标成 interrupted」—— 隐含假设「数据库只有我一个写入者」。第二个后端
+            # 实例（多开、重启期间旧的还没退）一启动，就会把**还在跑**的实例的任务和
+            # 待确认事项全部标成中断，并在它的恢复里重复认领同一批派生任务。
+            #
+            # 判据不许只看 pid 或只看时间阈值（两者都会误判）：
+            #   exited_at 非空            → 死（显式退出）
+            #   心跳新鲜（<= HEARTBEAT_TTL）→ 活
+            #   心跳过期 **且** pid 不存在  → 死
+            #   其余                      → 未知（unknown）—— 未知一律不改状态。
+            """
+            CREATE TABLE IF NOT EXISTS instances (
+                instance_id    TEXT PRIMARY KEY,
+                pid            INTEGER,
+                host           TEXT,
+                started_at     TEXT NOT NULL,
+                last_heartbeat TEXT NOT NULL,
+                exited_at      TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_instances_heartbeat ON instances(last_heartbeat)",
+            # 记录 → 实例的归属。**一张表覆盖所有记录类型**（turn / approval / 派生任务），
+            # 避免每种记录各自长一列 owner 而彼此口径不一。
+            # 主键 (record_type, record_id) 让归属唯一：同一条记录不可能同时属于两个实例。
+            """
+            CREATE TABLE IF NOT EXISTS record_owners (
+                record_type TEXT NOT NULL,
+                record_id   TEXT NOT NULL,
+                instance_id TEXT NOT NULL,
+                PRIMARY KEY (record_type, record_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_record_owners_instance ON record_owners(instance_id)",
+            # turn_journal 自己的归属列：队列台账是恢复的第一入口，读它时
+            # 不必再 join 一次归属表（老行为：所属者未知）。
+            "ALTER TABLE turn_journal ADD COLUMN owner_instance_id TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_turn_journal_owner ON turn_journal(owner_instance_id)",
+            # 派生任务的归属（契约 C7 需要 kind/owner_instance_id/claim_generation/
+            # attempts/last_error）。kind / attempts / last_error 在迁移 15 已有，
+            # 这里只补缺的两列：owner_instance_id 与 claim_generation。
+            # claim_generation 由认领方递增：迟到结果带着旧 generation 回来时被丢弃。
+            "ALTER TABLE derived_tasks ADD COLUMN owner_instance_id TEXT",
+            "ALTER TABLE derived_tasks ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0",
+            # 待确认事项（审批）的归属列：与 record_owners 双写，
+            # 让「启动时该不该把它标成 interrupted」能按实例判定，而不是一律标。
+            "ALTER TABLE pending_approvals ADD COLUMN owner_instance_id TEXT",
+            # 知识版本链（契约 C4，B 组用）：只加身份列，**不在这里回填**。
+            # 回填（chain_id=链根 id、version=1+祖先数）由 B 在读写侧用
+            # 「列存在则用、不存在则降级」的适配层处理：历史库可能有同链重复
+            # active，在本迁移里回填或建唯一索引会让迁移直接失败，与「保守保留
+            # 原文与历史」冲突。每链唯一 active 由 B 在写入侧（BEGIN IMMEDIATE +
+            # 条件校验）保证。
+            "ALTER TABLE knowledge ADD COLUMN chain_id TEXT",
+            "ALTER TABLE knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_chain ON knowledge(chain_id, version)",
+            # 实体卡片人工纠正保护（M04，C 组用）：
+            # revision 用来判断「这条卡片被人工改过几次」；
+            # field_meta 承载各字段 source(user/auto)+revision、用户删除属性的墓碑、
+            # 以及冲突时保留的可管理候选。旧行默认 0 / '{}'（没有人工修订记录）。
+            "ALTER TABLE entity_cards ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE entity_cards ADD COLUMN field_meta TEXT NOT NULL DEFAULT '{}'",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0

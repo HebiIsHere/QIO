@@ -1,0 +1,35 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-rm-f/frontend
+
+ ❯ src/stores/__tests__/rm-f-m12-restore.spec.ts (2 tests | 1 failed) 15ms
+     × 后端已有的待确认事项 / 独立任务 / 工具记录 / 叙事必须被恢复 11ms
+     ✓ 空快照的下限行为：不报错、不伪造内容（对照） 3ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/rm-f-m12-restore.spec.ts > M12：新连接（无历史游标）的完整恢复 > 后端已有的待确认事项 / 独立任务 / 工具记录 / 叙事必须被恢复
+AssertionError: expected [] to include 'appr_1'
+ ❯ src/stores/__tests__/rm-f-m12-restore.spec.ts:126:55
+    124|
+    125|     // 待确认事项：必须出现在审批队列里（否则界面永远不会让用户点允许/拒绝）
+    126|     expect(approvals.queue.map((a) => a.approval_id)).toContain("appr_…
+       |                                                       ^
+    127|
+    128|     // 独立任务：必须有卡片，并且状态就是服务器说的 running
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  21:44:44
+   Duration  3.37s (transform 221ms, setup 55ms, import 378ms, tests 15ms, environment 2.60s)
+
+
+[rm-verify] vitest exit code = 1

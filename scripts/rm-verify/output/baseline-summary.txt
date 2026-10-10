@@ -1,0 +1,31 @@
+﻿uv.exe : Uninstalled 1 package in 3ms
+At line:1 char:520
++ ...  $_.Name }; & uv run --frozen pytest @files -q --tb=no --no-header -p ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Uninstalled 1 package in 3ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Installed 1 package in 15ms
+FFFFFFFFFFF.FFFF                                                         [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-rm-f\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_extraction_keeps_attributes_the_candidate_did_not_mention
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_manual_edit_via_management_api_survives_released_extraction
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m04_user_deleted_attribute_is_not_revived_by_extraction
+FAILED tests/test_rm_verify_m04_m05_memory.py::test_m05_entity_failure_leaves_a_retryable_task_and_only_it_retries
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m07_outer_cancel_cancels_the_inflight_request_and_leaves_nothing
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m09_exhausted_credential_budget_stops_the_next_model_call
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_m10_parse_retry_responses_are_all_accounted
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_c01_text_mode_second_request_has_no_tool_role_and_carries_the_result
+FAILED tests/test_rm_verify_m07_m09_m10_c01.py::test_c01_text_mode_multi_tool_and_failed_result_keep_a_stable_order
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r01_second_context_does_not_interrupt_a_live_instances_turn
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r04_journal_write_failure_is_not_reported_as_accepted
+FAILED tests/test_rm_verify_r01_r04_r06.py::test_r06_claimed_but_undispatched_record_is_not_permanently_hidden
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r02_second_correction_of_the_same_old_version_never_yields_two_actives
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r02_two_connections_correcting_the_same_version_keep_one_active
+FAILED tests/test_rm_verify_r02_r03_knowledge.py::test_r03_failed_activation_keeps_the_old_version_active

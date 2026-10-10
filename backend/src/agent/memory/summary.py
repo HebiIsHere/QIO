@@ -137,12 +137,19 @@ async def summarize_fragment_outcome(
         + "\n\nTranscript:\n"
         + transcript
     )
+    # 用量归因不在这里做：adapter 在**每次实际请求**上统一入账（含内部重试）。
+    # 这里只负责把「用量上限已耗尽」如实转成简短原因，不重试、不换配置。
+    from agent.credentials.policy import BudgetExhausted
+
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content=prompt)],
             tools=[],
             temperature=temperature,
         )
+    except BudgetExhausted as exc:
+        logger.warning("summarize skipped: %s", _safe_exc(exc))
+        return Outcome(None, str(exc))
     except Exception as exc:
         logger.warning("summarize call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")
@@ -275,12 +282,18 @@ async def extract_knowledge_candidates_outcome(
         + "\n\nFragment summary:\n"
         + summary.model_dump_json(ensure_ascii=False)
     )
+    # 记账在 adapter 的请求层统一完成；这里只把预算耗尽转成简短真实原因。
+    from agent.credentials.policy import BudgetExhausted
+
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content=prompt)],
             tools=[],
             temperature=temperature,
         )
+    except BudgetExhausted as exc:
+        logger.warning("knowledge extraction skipped: %s", _safe_exc(exc))
+        return Outcome(None, str(exc))
     except Exception as exc:
         logger.warning("knowledge extraction call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")
@@ -333,12 +346,18 @@ async def summarize_rolling_outcome(
         + "\n\nNew messages:\n"
         + transcript
     )
+    # 记账在 adapter 的请求层统一完成；这里只把预算耗尽转成简短真实原因。
+    from agent.credentials.policy import BudgetExhausted
+
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content=prompt)],
             tools=[],
             temperature=temperature,
         )
+    except BudgetExhausted as exc:
+        logger.warning("rolling summary skipped: %s", _safe_exc(exc))
+        return Outcome(None, str(exc))
     except Exception as exc:
         logger.warning("rolling summary call failed: %s", _safe_exc(exc))
         return Outcome(None, f"model call failed: {exc}")

@@ -7,13 +7,19 @@ spec: docs/superpowers/specs/2026-08-18-onboarding-design.md
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from agent.entities.cards import EntityAttribute, EntityCardCandidate, EntityCardService
+from agent.entities.cards import (
+    SOURCE_USER,
+    EntityAttribute,
+    EntityCardCandidate,
+    EntityCardService,
+)
 from agent.graph.nodes import NodeService
-from agent.knowledge.lifecycle import KnowledgeService
+from agent.knowledge.lifecycle import KnowledgeItem, KnowledgeService
 from agent.storage.settings import SettingsStore
 
 DONE_KEY = "onboarding.done"
@@ -55,6 +61,42 @@ PREFERENCE_LABELS = {
     "explanation": "解释方式",
     "collaboration": "协作方式",
 }
+
+
+def goal_field_key(goal: str) -> str:
+    """目标（多值字段）的稳定身份：同内容 = 同一条，不同目标互不覆盖。"""
+    digest = hashlib.sha1(goal.strip().encode("utf-8")).hexdigest()
+    return f"goal:{digest}"
+
+
+def _same_field(item: KnowledgeItem, prefix: str, identity: str) -> bool:
+    """这一行是不是「同一项」：优先按稳定身份，旧行退回前缀匹配（兼容已有数据）。"""
+    key = (item.provenance or {}).get("field_key")
+    if key:
+        return str(key) == identity
+    return item.content.startswith(prefix)
+
+
+def _backfill_field_key(conn: sqlite3.Connection, knowledge_id: str, identity: str) -> None:
+    """给旧行补上稳定身份，之后的重复提交/纠正都按身份走。"""
+    import json
+
+    row = conn.execute(
+        "SELECT provenance FROM knowledge WHERE id = ?", (knowledge_id,)
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        prov = json.loads(row["provenance"] or "{}")
+    except (TypeError, ValueError):
+        prov = {}
+    if not isinstance(prov, dict) or prov.get("field_key") == identity:
+        return
+    prov["field_key"] = identity
+    conn.execute(
+        "UPDATE knowledge SET provenance = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(prov, ensure_ascii=False), _now(), knowledge_id),
+    )
 
 
 def _now() -> str:
@@ -232,7 +274,10 @@ class OnboardingService:
                 kind="person",
                 summary=intro,
                 attributes=attributes,
-            )
+            ),
+            # M04：引导表单是**用户自己填的**，标成 user 来源；否则后续普通提炼
+            # 会把它当成模型候选，按字段覆盖掉用户的自述。
+            source=SOURCE_USER,
         )
         return card.id if existing is None else existing.id
 
@@ -256,7 +301,13 @@ class OnboardingService:
         规则：
         - 用户自己填的 → 直接生效（verified_by="user"）；
         - 模型推测的（`inferred`）→ 停在待确认，不参与回答；
-        - 每个字段一条知识、挂在「你」或指定话题上，重复提交只会取代同前缀的旧条目。
+        - 每个字段一条知识、挂在「你」或指定话题上；
+        - **单值字段**（称呼/背景/最近在做/长期关注/熟悉程度/不要做/表达方式/单值偏好）
+          按前缀身份替换旧版本；
+        - **多值字段 goals**（M03）按 `goal:<sha1(内容)>` 稳定身份 upsert：
+          新目标不撤销其他目标、重复提交不增项、旧目标留在历史链里；
+        - `written` 清单按**实际生效结果**生成（`created/reused/superseded/state`），
+          不把被本次提交取代的旧条目报成成功。
         """
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -355,8 +406,17 @@ class OnboardingService:
 
         topics: list[str] = []
         for goal in goals:
+            # M03：目标是多值字段，每条一个稳定身份（goal:<sha1(内容)>），
+            # upsert 语义 —— 新目标不会撤销其他目标，重复提交也不增项。
             written.append(
-                self._put_field("goal", GOAL_PREFIX, f"{GOAL_PREFIX}{goal}", [user_node_id])
+                self._put_field(
+                    "goal",
+                    GOAL_PREFIX,
+                    f"{GOAL_PREFIX}{goal}",
+                    [user_node_id],
+                    field_key=goal_field_key(goal),
+                    multi_value=True,
+                )
             )
             topics.append(self._topic_id(goal))
 
@@ -399,38 +459,59 @@ class OnboardingService:
         node_ids: list[str],
         *,
         ended: bool = False,
+        field_key: str | None = None,
+        multi_value: bool = False,
     ) -> dict:
-        """写一条字段知识：同前缀的旧条目被取代（内容一样就复用）。
+        """写一条字段知识：同一「身份」的旧条目被取代（内容一样就复用）。
 
-        前缀是"这一项"的身份（例如「偏好（详略）」「偏好（解释方式·仅开发 QIO）」），
-        所以不同维度、不同适用范围的偏好互不覆盖。
+        - `field_key` 是这一项的身份（例如「偏好（详略）」「目标：<sha1>」），
+          所以不同维度、不同适用范围、**不同目标**互不覆盖；
+        - `multi_value=True`（目标）只做 upsert：不撤销其他目标，
+          旧目标仍留在版本链/历史里，可查可管理；
+        - `multi_value=False`（称呼/背景/单值偏好）保持替换语义：新版本取代
+          同身份的旧版本，旧行保留在链上（不删除、可追历史）；
+        - 旧行没有 `field_key` 时退回前缀匹配，并顺手补上身份（兼容已有数据）；
+        - 「已结束」标记只在本次显式要求时添加，**不会**被重复提交清掉。
         """
+        identity = field_key or prefix
         knowledge = KnowledgeService(self.conn)
-        same_field = [
+        active = [
             item
             for item in knowledge.list_items(category=category)
-            if item.state.value == "active" and item.content.startswith(prefix)
+            if item.state.value == "active"
         ]
-        target = next((item for item in same_field if item.content == content), None)
+        same = [item for item in active if _same_field(item, prefix, identity)]
+        target = next((item for item in same if item.content == content), None)
+        created = False
+        superseded: str | None = None
         if target is None:
-            supersedes = same_field[0].id if same_field else None
-            created = knowledge.create(
+            # 多值字段：绝不取代别的目标；单值字段：取代同身份旧条目
+            supersedes = None if multi_value else (same[0].id if same else None)
+            superseded = supersedes
+            new_item = knowledge.create(
                 category=category,
                 content=content,
                 node_ids=node_ids,
-                provenance={"source": "onboarding"},
+                provenance={"source": "onboarding", "field_key": identity},
                 supersedes_id=supersedes,
             )
-            knowledge.submit(created.id)
-            knowledge.verify(created.id, verified_by="user")
-            knowledge.activate(created.id)
-            target = knowledge.get(created.id)
+            knowledge.submit(new_item.id)
+            knowledge.verify(new_item.id, verified_by="user")
+            target = knowledge.activate(new_item.id)
+            created = True
+        elif (target.provenance or {}).get("field_key") != identity:
+            _backfill_field_key(self.conn, target.id, identity)
         if ended and target is not None and not (target.provenance or {}).get("ended_at"):
             target = knowledge.mark_ended(target.id, reason="onboarding")
         return {
             "id": target.id if target else None,
             "content": content,
-            "node_ids": node_ids,
+            "node_ids": list(node_ids),
+            "field": identity,
+            "state": target.state.value if target else None,
+            "created": created,
+            "reused": not created,
+            "superseded": superseded,
         }
 
     def _put_pending(
@@ -466,7 +547,10 @@ class OnboardingService:
             card = cards.find_by_name(name)
         if card is None:
             created = cards.upsert(
-                EntityCardCandidate(name=name, kind="person", summary=summary)
+                EntityCardCandidate(name=name, kind="person", summary=summary),
+                # 引导表单里用户自己填的称呼/背景：标成 user 来源，
+                # 免得后续普通提炼把它当成模型候选覆盖掉（M04）。
+                source=SOURCE_USER,
             )
             self.settings.set(SELF_CARD_KEY, created.id)
             return created.id

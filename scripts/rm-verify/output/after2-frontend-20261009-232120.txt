@@ -1,0 +1,12 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-rm-main/frontend
+
+ ✓ src/stores/__tests__/rm-f-m12-restore.spec.ts (2 tests) 8ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  23:21:28
+   Duration  2.11s (transform 140ms, setup 81ms, import 245ms, tests 8ms, environment 1.56s)
+
+
+[rm-verify] vitest exit code = 0

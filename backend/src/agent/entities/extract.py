@@ -107,10 +107,16 @@ async def extract_entity_cards_outcome(
         + "\n"
         + ENTITY_CARD_LIMITS_NOTE
     )
+    # 用量归因由 adapter 在每次实际请求上统一完成（含内部重试的每次响应）；
+    # 这里只把「用量上限已耗尽」如实转成简短原因，不重试、不换配置、不造数。
+    from agent.credentials.policy import BudgetExhausted
+
     try:
         completion = await adapter.complete(
             [ChatMessage(role="user", content=prompt)], []
         )
+    except BudgetExhausted as exc:
+        return Outcome(None, str(exc))
     except Exception as exc:
         return Outcome(None, f"model call failed: {exc}")
     payload, error = parse_json_object(completion.message.content or "")
@@ -154,3 +160,68 @@ async def extract_entity_cards(
         adapter, messages, temperature=temperature
     )
     return outcome.value or []
+
+
+def prepare_candidates_for_commit(
+    candidates: list[EntityCardCandidate],
+) -> tuple[list[EntityCardCandidate], tuple[RepairNote, ...]]:
+    """**提交前**的候选校验（M04/M05）：收敛到「可以安全写库」的一批候选。
+
+    解析层已经处理了「无法解析 / 类型完全错误 / 必需结构缺失」这一类不可恢复的
+    输出；这里只做提交前必须保证的两件事：
+
+    * 丢掉空名候选 —— 否则会写出一张空名卡（并给图里建一个空名节点）；
+    * 同名候选合并成一条 —— 否则同一张卡在一次提交里被写多遍，别名/属性互相覆盖。
+
+    合并规则与自动提炼一致：别名取并集、属性按 key（首个非空值胜）、摘要/类型取首个
+    非空、关系按 (target, type) 去重。留痕走统一的 RepairNote（进 trace）。
+    """
+    cleaned: list[EntityCardCandidate] = []
+    by_name: dict[str, EntityCardCandidate] = {}
+    merged = 0
+    dropped = 0
+    for cand in candidates:
+        name = str(cand.name or "").strip()
+        if not name:
+            dropped += 1
+            continue
+        if name not in by_name:
+            card = EntityCardCandidate(
+                name=name,
+                aliases=[str(a).strip() for a in cand.aliases if str(a).strip()],
+                kind=(str(cand.kind).strip() or None) if cand.kind else None,
+                summary=str(cand.summary or ""),
+                attributes=list(cand.attributes),
+                relations=list(cand.relations),
+            )
+            by_name[name] = card
+            cleaned.append(card)
+            continue
+
+        merged += 1
+        card = by_name[name]
+        aliases = list(dict.fromkeys([*card.aliases, *(str(a).strip() for a in cand.aliases if str(a).strip())]))
+        attrs = {a.key: a for a in card.attributes}
+        for attr in cand.attributes:
+            attrs.setdefault(attr.key, attr)
+        relations = {(r.target, r.type): r for r in card.relations}
+        for rel in cand.relations:
+            relations.setdefault((rel.target, rel.type), rel)
+        by_name[name] = EntityCardCandidate(
+            name=name,
+            aliases=aliases,
+            kind=card.kind or ((str(cand.kind).strip() or None) if cand.kind else None),
+            summary=card.summary or str(cand.summary or ""),
+            attributes=list(attrs.values()),
+            relations=list(relations.values()),
+        )
+        cleaned = [by_name.get(str(c.name or "").strip(), c) for c in cleaned]
+
+    notes: list[RepairNote] = []
+    if dropped:
+        notes.append(
+            RepairNote("entities", NOTE_DROPPED_INVALID_ITEM, f"丢掉 {dropped} 条空名候选")
+        )
+    if merged:
+        notes.append(RepairNote("entities", NOTE_DROPPED_INVALID_ITEM, f"合并 {merged} 条同名候选"))
+    return cleaned, tuple(notes)

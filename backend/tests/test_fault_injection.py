@@ -166,15 +166,20 @@ def test_restart_before_summary_resumes_the_task_once(tmp_path: Path):
     rows = restarted.conn.execute(
         "SELECT COUNT(*) c FROM memory_index WHERE fragment_id = ?", (sealed.id,)
     ).fetchone()["c"]
-    # 现在有两条派生任务：摘要 + 链式登记的知识提炼（各自一条状态行）
+    # 现在有三条派生任务：摘要 + 链式登记的知识提炼 + 独立登记的实体提炼
+    # （各自一条状态行；M05 要求实体提炼独立登记/认领/完成）
     states = {
         row["kind"]: row["state"]
         for row in restarted.conn.execute(
             "SELECT kind, state FROM derived_tasks"
         ).fetchall()
     }
-    assert done == 2 and rows == 1, f"done={done} index_rows={rows} states={states}"
-    assert states == {"summary": "completed", "knowledge": "completed"}, states
+    assert done == 3 and rows == 1, f"done={done} index_rows={rows} states={states}"
+    assert states == {
+        "summary": "completed",
+        "knowledge": "completed",
+        "entities": "completed",
+    }, states
     assert restarted.fragments.messages(sealed.id), "原文仍然可读"
 
 
