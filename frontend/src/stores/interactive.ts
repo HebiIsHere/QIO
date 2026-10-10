@@ -411,6 +411,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
+   * N6：这条本机记录里是否带着**只在本机存在的**附加字段快照。
+   *
+   * 附加字段（网址/标题/文件名/图片名/代码语言）不进服务器草稿通道（那份只放正文），
+   * 所以「服务器已经有这份正文」**不能**证明这条记录是冗余副本 ——
+   * 删掉它，刷新/关闭重开后这些字段就没有任何来源，只能悄悄回退成正式卡片的旧值。
+   * 带附加字段的记录一律保留，等用户「完成编辑」（清除登记）或明确选「用服务器上的」时再清理。
+   */
+  function recordCarriesLocalMeta(record: DraftRecord | null): boolean {
+    return Boolean(record && record.meta && Object.keys(record.meta).length > 0);
+  }
+
+  /**
    * 丢弃「与这份事实不一致」的本地勾选选择记录：
    * 候选已经被整体撤回/被服务器整块替换时，那些选择不再是当前板面的一部分，
    * 留着只会在下一次合并时把早已作废的勾选又「强制」回来。
@@ -1023,8 +1035,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       }
 
       const serverText = Object.prototype.hasOwnProperty.call(merged, key) ? merged[key] : null;
-      if (serverText !== null && serverText === local.text) {
-        // 服务器上已经有同样一份：这条本机记录已经被确认，按它的身份清理掉
+      if (serverText !== null && serverText === local.text && !recordCarriesLocalMeta(local)) {
+        // 服务器上已经有同样一份（且这条记录不带只在本机存在的附加字段）：按它的身份清理掉
         applyIdentityRemoval(key, cardId, local);
         continue;
       }
@@ -1852,7 +1864,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
            */
           const localSnapshotsAtRequest = new Map<
             string,
-            { version: number | null; fingerprint: string | null; text: string } | null
+            { version: number | null; fingerprint: string | null; text: string; hasMeta: boolean } | null
           >();
           for (const key of keys) {
             if ((draftKeySeq.get(key) ?? 0) <= atSeq) setDraftState(key, "saving");
@@ -1863,7 +1875,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
               localVersionsAtRequest.set(key, version);
               localSnapshotsAtRequest.set(
                 key,
-                record ? { version, fingerprint: localRecordFingerprint(record), text: record.text ?? "" } : null,
+                record
+                  ? {
+                      version,
+                      fingerprint: localRecordFingerprint(record),
+                      text: record.text ?? "",
+                      // N6：带附加字段快照的记录不是冗余副本，成功回执不许删它（见 recordCarriesLocalMeta）
+                      hasMeta: recordCarriesLocalMeta(record),
+                    }
+                  : null,
               );
             }
           }
@@ -1905,7 +1925,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
               const expectVersion = localVersionsAtRequest.get(key) ?? null;
               const snapshot = localSnapshotsAtRequest.get(key) ?? null;
               const uploaded = payload[key] ?? "";
-              if (!snapshot || snapshot.text !== uploaded) {
+              if (!snapshot || snapshot.hasMeta || snapshot.text !== uploaded) {
                 /**
                  * F2：本机记录的内容**不是**这次上传的内容 —— 服务器并没有收到这条记录，
                  * 绝不能按「服务器已经有这一版」把它删掉（那会删掉另一页面刚写下的新稿）。
