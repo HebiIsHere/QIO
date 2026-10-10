@@ -1,0 +1,26 @@
+# closure-C 本轮验证汇总（合并集成分支 8748907 / ef6a235 之后复跑）
+
+## 1) 合并后组件与共用测试（vitest）
+ Test Files  4 passed (4)
+      Tests  37 passed (37)
+
+## 2) interactive 测试目录全量（src/components/interactive/__tests__ + src/interactive/__tests__）
+ Test Files  48 passed (48)
+      Tests  541 passed (541)
+
+## 3) 前端全量测试
+ Test Files  186 passed (186)
+      Tests  1707 passed (1707)
+
+## 4) 类型检查（npx vue-tsc --noEmit）
+exit=0，无输出
+
+## 5) V1 组操作可达性（合并后，1440/1024/800/480、平移缩放、聊天、批量面板）
+summary={"total":98,"reachable":78,"covered":3,"panel":5,"offscreen":12}
+真实点击（1024x768，CDP Input.dispatchMouseEvent）：
+- 设为有序(g_right)：false → true ✅
+- 移出成员(g_left/cA)：members [cA,cB] → [cB] ✅
+- 解除组(g_left)：g_left 消失（只剩 g_right）✅
+剩余 covered 3 项全部在 480×600：组头部正好落在底部固定工具栏下方（面板遮挡，不是新缺陷）。
+独立 480×600 反例（两组分别位于视口上部/下部）实测：上部组的「设为有序」中心点命中自己（可达）；
+下部组被底部工具栏遮挡（命中 board-toolbar），属主动打开的面板覆盖。
