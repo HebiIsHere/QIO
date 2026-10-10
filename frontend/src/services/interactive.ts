@@ -23,6 +23,11 @@ export interface InteractiveErrorPayload {
   reason?: string;
   detail?: string;
   affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[];
+  /**
+   * R6（后端 B 定稿）：409 stale_check 时额外说明「这次拒绝是因为真实受影响范围变了」。
+   * 缺失/忽略都安全（前端仍会重新预判并重新展示范围）。
+   */
+  scopeChanged?: boolean;
   currentSeq?: number;
   limit?: number;
   keys?: string[];

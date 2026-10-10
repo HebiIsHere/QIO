@@ -1,5 +1,11 @@
 # 互动模式收尾轮验证报告（fix/interactive-final-closure）
 
+> **历史报告（结论只适用于提交 `1da2172c6876c98f9b1076b4477dc75e7fe37638` 及其之前）。**
+> 本文的「全部通过」结论**不作为**第八轮（`fix/interactive-closure-followup`）的验收结果：
+> 第八轮独立核查在同一条提交上复现出六条新反例（R1–R6，见
+> `docs/interactive-closure-followup-contract.md` §1），并据此修复。第八轮的结论、证据与
+> 未验证项见 `docs/interactive-closure-followup-report.md`。本文保留历史数字与当时的真实运行结果，不予改写。
+
 > 结构先落位，事实在集成与独立验收完成后填写；未完成项会明确标注，不写成通过。
 
 ## 1. 基线与产物

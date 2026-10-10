@@ -453,8 +453,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
         if (needsConfirm) {
           // 确认必须绑定这次预判的候选版本与范围（M4/08 路径2）：
           // 等待期间又改了别处，确认时要重新核实，不能放行未说明的改动。
+          //
+          // R6：确认框展示的是**服务端给出的完整受影响范围**，而不是「客户端自己知道在运行的那几个」。
+          // 客户端的任务清单可能滞后（刚被批准并运行的任务它还看不到），按交集展示会让用户在
+          // 不知情的情况下确认一份更小的范围。是否需要确认仍以服务端 impactConfirmationRequired 为准
+          // （已暂停任务只作为说明展示，不额外拦住保存）。
           pendingImpact.value = {
-            affected: blocking.length ? blocking : affected,
+            affected: affected.length ? affected : blocking,
             previewRev: putRev,
             stateVersion: check.stateVersion ?? snapshot.seq,
             checkId: check.checkId,
@@ -552,7 +557,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         void refreshVisibleRange();
       } catch (err) {
         const status = (err as { status?: number }).status;
-        const failure = (err as { payload?: { error?: string; reason?: string; affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[] } }).payload;
+        const failure = (err as { payload?: { error?: string; reason?: string; scopeChanged?: boolean; affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[] } }).payload;
         if (status === 409 && failure?.error === "impact_confirmation_required") {
           /**
            * 服务端门（M4）：这次保存会改动运行任务依赖的材料，必须先做影响确认。
@@ -594,6 +599,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
             const check = await runImpactCheck(snapshot.seq, snapshot);
             const gatedTasks = failure.affectedTasks?.length ? failure.affectedTasks : undefined;
             if (openImpactConfirm(check, putRev, snapshot.seq, gatedTasks)) {
+              if (failure.scopeChanged === true && pendingImpact.value) {
+                // R6：服务端明确说「拒绝是因为真实受影响范围变了」——先把变化讲清楚，再让用户确认
+                pendingImpact.value = {
+                  ...pendingImpact.value,
+                  note:
+                    "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
+                    "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。",
+                };
+              }
               impactCheckError.value = null;
               saveStatus.value = "idle";
               saveError.value = null;

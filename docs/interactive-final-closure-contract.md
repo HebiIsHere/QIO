@@ -1,5 +1,12 @@
 # 互动模式收尾轮：统一机制契约（fix/interactive-final-closure）
 
+> **历史文件（只适用于提交 `1da2172c6876c98f9b1076b4477dc75e7fe37638` 及其之前）。**
+> 第八轮（`fix/interactive-closure-followup`，2026-10-10）的六条反例推翻并更新了本文的以下条文：
+> M1「只在 `dirty=true` 时保护板面」→ 见 `docs/interactive-closure-followup-contract.md` §0 第 1 条与
+> `docs/interactive-mode-contract.md` §13.1（已保存成功的新版本与未保存的新输入受同样保护；
+> 旧回执成功时必须吸收版本事实而不替换候选）；取消影响确认的撤回语义见 §13.2；
+> 影响确认的范围复核见 §13.4。**M2–M9 仍然有效**。
+
 本轮把上一轮遗留五项（01–05）与本轮十五类（06–20）问题一次修复收尾。
 本文件由主智能体维护；与 `docs/interactive-mode-contract.md` 冲突时，以互动契约为准，本文件只补充**可靠性机制**。
 
