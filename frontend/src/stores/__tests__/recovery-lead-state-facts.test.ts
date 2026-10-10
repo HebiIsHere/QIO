@@ -292,6 +292,68 @@ describe("F3 跨页面保存后的重新确认", () => {
   });
 });
 
+describe("F3 正文内容冲突", () => {
+  it("【状态/单元】两边都改了同一张卡片的正文：记成内容冲突、阻断保存，用户选择服务器版后才继续", async () => {
+    const store = useInteractiveStore();
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(3, [card()])));
+    await store.refreshBoardFromServer();
+    store.intents = [];
+
+    store.commit(state(3, [card({ content: "本页正文" })]), "编辑正文");
+    vi.mocked(imApi.saveBoardState).mockRejectedValue(
+      apiError(409, { error: "stale_check", reason: "板面版本已变化" }),
+    );
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(4, [card({ content: "另一页正文" })])));
+    vi.mocked(imApi.checkMaterialImpact).mockResolvedValue({
+      ok: true,
+      affected: [],
+      impactConfirmationRequired: false,
+    } as never);
+
+    await store.saveNow();
+    expect(store.boardContentConflictFor("c1"), "正文两边都改了却没有登记内容冲突").not.toBeNull();
+    expect(store.board?.cards[0].content, "本页正文被静默覆盖").toBe("本页正文");
+    expect(store.saveStatus, "有未决定的内容冲突却像正常一样").toBe("error");
+    expect(store.saveError ?? "", "没有说明为什么不能保存").toContain("正文");
+
+    // 用户明确选择「用服务器上的」：那时才允许继续保存，且保存的就是服务器那一版
+    const puts: BoardState[] = [];
+    vi.mocked(imApi.saveBoardState).mockImplementation(async (_boardId: string, st: BoardState) => {
+      puts.push(st);
+      return { ok: true, seq: 5, savedAt: "2026-10-10T00:00:09.000Z", state: st } as never;
+    });
+    store.resolveBoardContentConflict("c1", "server");
+    expect(store.boardContentConflictFor("c1")).toBeNull();
+    expect(store.board?.cards[0].content).toBe("另一页正文");
+    await store.saveNow();
+    expect(puts.length).toBeGreaterThan(0);
+    expect(puts[puts.length - 1].cards[0].content).toBe("另一页正文");
+  });
+
+  it("【状态/单元】用户选择「用本页」：本页正文被保存，冲突清除", async () => {
+    const store = useInteractiveStore();
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(3, [card()])));
+    await store.refreshBoardFromServer();
+    store.intents = [];
+    store.commit(state(3, [card({ content: "本页正文" })]), "编辑正文");
+    vi.mocked(imApi.saveBoardState).mockRejectedValue(
+      apiError(409, { error: "stale_state", reason: "旧版本" }),
+    );
+    vi.mocked(imApi.fetchBoardState).mockResolvedValue(response(state(4, [card({ content: "另一页正文" })])));
+    await store.saveNow();
+    expect(store.boardContentConflictFor("c1")).not.toBeNull();
+
+    const puts: BoardState[] = [];
+    vi.mocked(imApi.saveBoardState).mockImplementation(async (_boardId: string, st: BoardState) => {
+      puts.push(st);
+      return { ok: true, seq: 5, savedAt: "2026-10-10T00:00:10.000Z", state: st } as never;
+    });
+    store.resolveBoardContentConflict("c1", "local");
+    await store.saveNow();
+    expect(puts[puts.length - 1].cards[0].content).toBe("本页正文");
+  });
+});
+
 describe("N1 保存生命周期", () => {
   it("【状态/单元】被替代的影响检查不再发出旧候选（旧写入不许覆盖已保存的新版）", async () => {
     const store = useInteractiveStore();

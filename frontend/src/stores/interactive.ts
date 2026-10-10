@@ -848,6 +848,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           const outcome = await recheckImpactForCurrentCandidate(gatedTasks);
           if (outcome === "ok") resumeSave = true;
+          // 内容冲突等「必须由用户决定」的阻断原因不能被这里清掉
+          if (outcome === "blocked") return;
           saveStatus.value = "idle";
           saveError.value = null;
           return;
@@ -883,6 +885,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           const outcome = await recheckImpactForCurrentCandidate(gatedTasks, scopeNote);
           if (outcome === "ok") resumeSave = true;
+          // 内容冲突等「必须由用户决定」的阻断原因不能被这里清掉
+          if (outcome === "blocked") return;
           saveStatus.value = "idle";
           saveError.value = null;
           return;
