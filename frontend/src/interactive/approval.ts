@@ -17,11 +17,19 @@ import type {
   BoardCard,
   BoardGroup,
   BoardLink,
+  Execution,
+  ExecutionStatus,
   Intent,
   IntentImpact,
+  IntentOperationKind,
   IntentPreview,
   IntentStatus,
+  MaterialSource,
   RevertReport,
+  Understanding,
+  UnderstandingMaterial,
+  UnderstandingStatus,
+  UnderstandingStep,
 } from "./types";
 
 /** 同一批达到这个数量时，界面提供简洁列表（与服务端 intents.BATCH_MIN 一致） */
@@ -330,7 +338,7 @@ export function statusText(intent: Intent): StatusText {
     case "running":
       return {
         label,
-        detail: "任务正在执行；第一阶段没有真实执行，推进来自演示入口。",
+        detail: "任务已进入执行：排队、执行、暂停与结束都以服务端执行记录为准，不会一直显示成运行中。",
         tone: "active",
       };
     case "paused":
@@ -354,6 +362,554 @@ export function statusText(intent: Intent): StatusText {
     default:
       return { label, detail: reason, tone: "settled" };
   }
+}
+
+// --- 真实理解与真实执行的过程显示（契约 §14.1 / §14.6）---------------------
+//
+// 这一层只做**显示**：受理、理解、执行三件事的事实都由服务端给出。
+// 前端不许为了「看起来在动」编造阶段、进度或结果：没有说明时先显示统一状态，
+// 说明到了再补上；同阶段更新当前说明，阶段切换后把上一阶段收进历史。
+
+const UNDERSTANDING_STATUS_LABELS: Record<UnderstandingStatus, string> = {
+  accepted: "已受理",
+  understanding: "正在理解",
+  understood: "理解完成",
+  needs_clarification: "需要补充",
+  no_action: "本次无需开展任务",
+  failed: "理解失败",
+};
+
+/** 受理与理解分开：这里说的只是「理解过程」这一个阶段的状态。 */
+export function understandingStatusLabel(status: UnderstandingStatus | null | undefined): string {
+  if (!status) return "还没有提交给 QIO";
+  return UNDERSTANDING_STATUS_LABELS[status] ?? String(status);
+}
+
+/** 理解过程是否已经结束（结束就不该再有读条，也不该再自动查询）。 */
+export function understandingSettled(status: UnderstandingStatus | null | undefined): boolean {
+  return (
+    status === "understood" ||
+    status === "needs_clarification" ||
+    status === "no_action" ||
+    status === "failed"
+  );
+}
+
+/** 理解结果只有三种（外加失败）：有意图 / 需要补充 / 无需行动。 */
+export type UnderstandingOutcome = "intent" | "clarification" | "no_action" | "failed" | "pending";
+
+export function understandingOutcome(
+  status: UnderstandingStatus | null | undefined,
+): UnderstandingOutcome {
+  switch (status) {
+    case "understood":
+      return "intent";
+    case "needs_clarification":
+      return "clarification";
+    case "no_action":
+      return "no_action";
+    case "failed":
+      return "failed";
+    default:
+      return "pending";
+  }
+}
+
+export interface UnderstandingText {
+  /** 统一状态（一句话，先出现） */
+  label: string;
+  /** 说明（可以后补；同阶段只更新它） */
+  detail: string;
+  tone: StatusTone;
+  /** 是否已经结束 */
+  settled: boolean;
+  /** 是否还需要用户做事（补充说明 / 审批 / 重试） */
+  needsUser: boolean;
+  /** 服务端是否已经给出这份理解记录（false = 只有受理回执） */
+  known: boolean;
+}
+
+/**
+ * 一句统一状态 + 说明。传 status 是为了在**只有受理回执**时也能立即说「已受理，正在理解」，
+ * 不必等第一次查询回来才有话说。
+ */
+export function understandingText(
+  understanding: Understanding | null | undefined,
+  status?: UnderstandingStatus | null,
+): UnderstandingText {
+  const state = status ?? understanding?.status ?? null;
+  const label = understandingStatusLabel(state);
+  const settled = understandingSettled(state);
+  if (!state) {
+    return {
+      label,
+      detail: "提交后才会建立理解请求；保存本身不调用模型，也不产生任务。",
+      tone: "settled",
+      settled: false,
+      needsUser: false,
+      known: false,
+    };
+  }
+  const stage = String(understanding?.stage ?? "").trim();
+  switch (state) {
+    case "accepted":
+      return {
+        label,
+        detail: "QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。",
+        tone: "waiting",
+        settled: false,
+        needsUser: false,
+        known: Boolean(understanding),
+      };
+    case "understanding":
+      return {
+        label,
+        detail: stage || "正在读取这次提交的材料并理解你的要求。",
+        tone: "active",
+        settled: false,
+        needsUser: false,
+        known: true,
+      };
+    case "understood": {
+      const summary = String(understanding?.summary ?? "").trim();
+      return {
+        label,
+        detail: summary || "已经产出可以审批的意图；批准之前板面上不会有任何改动。",
+        tone: "open",
+        settled: true,
+        needsUser: true,
+        known: true,
+      };
+    }
+    case "needs_clarification": {
+      const question = String(understanding?.clarification?.question ?? "").trim();
+      const missing = understanding?.clarification?.missing ?? [];
+      const missingText = missing.length ? "（缺少：" + missing.join("、") + "）" : "";
+      return {
+        label,
+        detail: (question || "这次提交的材料还不足以形成可执行的任务。") + missingText + " 没有生成任何任务；补充后再提交。",
+        tone: "waiting",
+        settled: true,
+        needsUser: true,
+        known: true,
+      };
+    }
+    case "no_action": {
+      const summary = String(understanding?.summary ?? "").trim();
+      return {
+        label,
+        detail: summary || "这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。",
+        tone: "settled",
+        settled: true,
+        needsUser: false,
+        known: true,
+      };
+    }
+    case "failed": {
+      const error = String(understanding?.error ?? "").trim();
+      return {
+        label,
+        detail:
+          error ||
+          "这次理解没有完成。重试只会从这次提交保存的快照恢复：不重读当前板面，也不会重建同一批任务。",
+        tone: "problem",
+        settled: true,
+        needsUser: true,
+        known: true,
+      };
+    }
+    default:
+      return {
+        label,
+        detail: stage,
+        tone: "settled",
+        settled: true,
+        needsUser: false,
+        known: Boolean(understanding),
+      };
+  }
+}
+
+export const MATERIAL_SOURCE_LABELS: Record<MaterialSource, string> = {
+  inline: "板面内容",
+  attachment_text: "附件正文",
+  url_fetched: "已读取的网页",
+  url_address_only: "只拿到地址（没有正文）",
+  image_unsupported: "图片（当前不支持读图）",
+  unreadable: "读不到内容",
+  unsupported: "不支持的材料",
+};
+
+export interface MaterialReadSummary {
+  total: number;
+  read: number;
+  unread: { cardId: string; label: string; source: MaterialSource; reason: string }[];
+  truncated: { label: string }[];
+}
+
+/** 材料诚实口径：拿到文件名 / 地址不等于读到正文。 */
+export function materialReadSummary(materials: UnderstandingMaterial[] | undefined): MaterialReadSummary {
+  const list = materials ?? [];
+  const unread: MaterialReadSummary["unread"] = [];
+  const truncated: MaterialReadSummary["truncated"] = [];
+  let read = 0;
+  for (const item of list) {
+    const label = String(item?.label ?? item?.cardId ?? "材料");
+    if (item?.read) {
+      read += 1;
+      if (item.truncated) truncated.push({ label });
+    } else {
+      unread.push({
+        cardId: String(item?.cardId ?? ""),
+        label,
+        source: (item?.source ?? "unreadable") as MaterialSource,
+        reason: String(item?.reason ?? "").trim() || MATERIAL_SOURCE_LABELS[item?.source ?? "unreadable"],
+      });
+    }
+  }
+  return { total: list.length, read, unread, truncated };
+}
+
+/** 材料这条的一句话（默认一行；细节仍在展开里）。 */
+export function materialReadText(materials: UnderstandingMaterial[] | undefined): string {
+  const summary = materialReadSummary(materials);
+  if (!summary.total) return "这次提交没有材料。";
+  const parts = ["材料 " + summary.total + " 项：读到正文 " + summary.read + " 项"];
+  if (summary.unread.length) {
+    const first = summary.unread[0];
+    parts.push(
+      "未读 " +
+        summary.unread.length +
+        " 项（" +
+        MATERIAL_SOURCE_LABELS[first.source] +
+        "：" +
+        first.label +
+        (first.reason ? "，" + first.reason : "") +
+        "）",
+    );
+  }
+  if (summary.truncated.length) parts.push("被截断 " + summary.truncated.length + " 项");
+  parts.push("拿到文件名或地址不等于读到正文。");
+  return parts.join("；");
+}
+
+/** 当前阶段：正在跑的那一步；没有正在跑的，就是最近完成 / 失败的那一步。 */
+export function currentUnderstandingStep(
+  understanding: Understanding | null | undefined,
+): UnderstandingStep | null {
+  const steps = understanding?.steps ?? [];
+  const running = steps.find((step) => step?.status === "running");
+  if (running) return running;
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const status = steps[index]?.status;
+    if (status === "done" || status === "failed") return steps[index];
+  }
+  return steps.find((step) => step?.status === "pending") ?? null;
+}
+
+/** 已经过去的阶段：阶段切换后收进历史，同阶段只更新当前说明（可展开查看）。 */
+export function understandingHistory(
+  understanding: Understanding | null | undefined,
+): UnderstandingStep[] {
+  const steps = understanding?.steps ?? [];
+  const current = currentUnderstandingStep(understanding);
+  if (!current) return [...steps];
+  const index = steps.indexOf(current);
+  return index <= 0 ? [] : steps.slice(0, index);
+}
+
+export function understandingStepText(step: UnderstandingStep | null | undefined): string {
+  if (!step) return "";
+  const label = String(step.label ?? step.key ?? "").trim();
+  const detail = String(step.detail ?? "").trim();
+  return detail ? label + "：" + detail : label;
+}
+
+// --- 执行状态（一次执行尝试） ---------------------------------------------
+
+export const EXECUTION_STATUS_LABELS: Record<ExecutionStatus, string> = {
+  queued: "排队中",
+  running: "正在执行",
+  paused: "已暂停",
+  done: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+export const INTENT_OPERATION_LABELS: Record<IntentOperationKind | string, string> = {
+  add_reply_card: "添加结果卡片",
+  add_text_card: "添加文字卡片",
+  move_card: "移动卡片",
+  group_cards: "组合卡片",
+  order_group: "调整组内顺序",
+  add_link: "添加关系",
+};
+
+export function operationLabel(operation: string | undefined): string {
+  const key = String(operation ?? "");
+  return INTENT_OPERATION_LABELS[key] ?? key ?? "板面操作";
+}
+
+export interface ExecutionProgress {
+  done: number;
+  total: number;
+  text: string;
+}
+
+/** 读条只由服务端步骤驱动：没有步骤记录就不画进度。 */
+export function executionProgress(execution: Execution | null | undefined): ExecutionProgress {
+  const steps = execution?.steps ?? [];
+  const total = steps.length;
+  const done = steps.filter((step) => step?.status === "done" || step?.status === "skipped").length;
+  if (!total) return { done: 0, total: 0, text: "还没有步骤记录。" };
+  const running = steps.find((step) => step?.status === "running");
+  if (running) {
+    const index = steps.indexOf(running);
+    return {
+      done,
+      total,
+      text: "正在执行第 " + (index + 1) + "/" + total + " 步：" + operationLabel(String(running.op ?? "")),
+    };
+  }
+  const failed = steps.find((step) => step?.status === "failed");
+  if (failed) {
+    const index = steps.indexOf(failed);
+    return {
+      done,
+      total,
+      text: "第 " + (index + 1) + "/" + total + " 步没有成功：" + operationLabel(String(failed.op ?? "")),
+    };
+  }
+  return { done, total, text: "已完成 " + done + "/" + total + " 步。" };
+}
+
+export interface ExecutionText {
+  label: string;
+  detail: string;
+  tone: StatusTone;
+  /** 真的在执行（排队或运行）：只有这个值为 true 才允许出现读条。 */
+  running: boolean;
+  /** 已经结束：成功 / 失败 / 取消都算结束，读条必须停下。 */
+  settled: boolean;
+}
+
+/**
+ * 执行状态显示。**不允许「已批准就一直运行中」**：
+ * 意图状态说 running、却还没有真实执行记录时，如实说「已批准，等待执行记录」，不画读条。
+ */
+export function executionText(
+  execution: Execution | null | undefined,
+  intent?: Intent | null,
+): ExecutionText {
+  if (execution) {
+    const label = EXECUTION_STATUS_LABELS[execution.status] ?? String(execution.status);
+    const progress = executionProgress(execution);
+    switch (execution.status) {
+      case "queued":
+        return {
+          label,
+          detail: "已经进入执行队列，还没有开始：" + progress.text,
+          tone: "waiting",
+          running: true,
+          settled: false,
+        };
+      case "running":
+        return { label, detail: progress.text, tone: "active", running: true, settled: false };
+      case "paused":
+        return {
+          label,
+          detail:
+            "已暂停，不会自动继续：" +
+            progress.text +
+            " 继续时会校验材料与已完成步骤，不重复已经完成的操作。",
+          tone: "waiting",
+          running: false,
+          settled: false,
+        };
+      case "done":
+        return {
+          label,
+          detail: "结果已经成为板面正式内容：" + progress.text,
+          tone: "settled",
+          running: false,
+          settled: true,
+        };
+      case "failed":
+        return {
+          label,
+          detail: String(execution.error ?? "").trim() || "这次执行没有完成：" + progress.text,
+          tone: "problem",
+          running: false,
+          settled: true,
+        };
+      case "cancelled":
+        return {
+          label,
+          detail: "这次执行已经取消；仍然可以安全撤回的改动已按服务端结果撤回。",
+          tone: "problem",
+          running: false,
+          settled: true,
+        };
+      default:
+        return { label, detail: progress.text, tone: "settled", running: false, settled: true };
+    }
+  }
+
+  if (!intent) {
+    return {
+      label: "还没有执行记录",
+      detail: "批准之后才会建立执行记录。",
+      tone: "settled",
+      running: false,
+      settled: true,
+    };
+  }
+  const intentLabel = INTENT_STATUS_LABELS[intent.status] ?? String(intent.status ?? "");
+  const reason = String(intent.reason ?? "").trim();
+  switch (intent.status) {
+    case "pending":
+    case "waiting_confirm":
+      return {
+        label: intentLabel,
+        detail: "还没有批准：提交与理解都不构成执行批准，批准之后才会有执行记录。",
+        tone: "open",
+        running: false,
+        settled: false,
+      };
+    case "needs_update":
+      return {
+        label: intentLabel,
+        detail: reason || "相关材料变了：不能批准，需要先提交并由 QIO 更新。",
+        tone: "problem",
+        running: false,
+        settled: false,
+      };
+    case "waiting_dependency": {
+      const waiting = (intent.waitingFor ?? intent.dependsOn ?? []).join("、");
+      return {
+        label: intentLabel,
+        detail: waiting ? "已批准，等待前项：" + waiting + "；不会自动开始。" : "已批准，等待前项；不会自动开始。",
+        tone: "waiting",
+        running: false,
+        settled: false,
+      };
+    }
+    case "running":
+      return {
+        label: "已批准，等待执行记录",
+        detail: "还没有拿到这次任务的真实执行记录：界面不会把它显示成正在执行。可以重新查询执行记录。",
+        tone: "waiting",
+        running: false,
+        settled: false,
+      };
+    case "paused":
+      return {
+        label: intentLabel,
+        detail: reason || "已暂停；继续时会校验材料与已完成步骤，不重复已经完成的操作。",
+        tone: "waiting",
+        running: false,
+        settled: false,
+      };
+    case "done":
+      return {
+        label: intentLabel,
+        detail: "结果已经成为板面正式内容。",
+        tone: "settled",
+        running: false,
+        settled: true,
+      };
+    case "failed":
+      return {
+        label: intentLabel,
+        detail: reason || "这次执行没有完成；你后来的修改保留，不会自动重试。",
+        tone: "problem",
+        running: false,
+        settled: true,
+      };
+    case "cancelled":
+      return {
+        label: intentLabel,
+        detail: reason || "任务已取消。",
+        tone: "problem",
+        running: false,
+        settled: true,
+      };
+    case "rejected":
+      return {
+        label: intentLabel,
+        detail: reason || "已拒绝，没有开始执行。",
+        tone: "settled",
+        running: false,
+        settled: true,
+      };
+    default:
+      return { label: intentLabel, detail: reason, tone: "settled", running: false, settled: true };
+  }
+}
+
+export interface ExecutionActions {
+  canPause: boolean;
+  canResume: boolean;
+  canCancel: boolean;
+  /** 为什么这些操作现在不能做（有人可用的操作时也为空则说明可以不显示） */
+  reason: string;
+}
+
+/** 暂停 / 继续 / 取消各自的可用性：只依据服务端的执行与意图状态。 */
+export function executionActions(
+  execution: Execution | null | undefined,
+  intent?: Intent | null,
+): ExecutionActions {
+  const none = { canPause: false, canResume: false, canCancel: false, reason: "" };
+  if (execution) {
+    switch (execution.status) {
+      case "queued":
+      case "running":
+        return { canPause: true, canResume: false, canCancel: true, reason: "正在执行：可以暂停或取消。" };
+      case "paused":
+        return { canPause: false, canResume: true, canCancel: true, reason: "已暂停：可以按当前材料继续，也可以取消。" };
+      case "done":
+      case "failed":
+      case "cancelled":
+        return { ...none, reason: "这次执行已经结束。" };
+      default:
+        return none;
+    }
+  }
+  switch (intent?.status) {
+    case "running":
+      return {
+        canPause: false,
+        canResume: false,
+        canCancel: true,
+        reason: "还没有执行记录：不会显示成正在运行；可以先取消，或重新查询执行记录。",
+      };
+    case "paused":
+      return { canPause: false, canResume: true, canCancel: true, reason: "已暂停：可以继续，也可以取消。" };
+    case "waiting_dependency":
+      return { canPause: false, canResume: false, canCancel: true, reason: "已批准，正在等待前项：可以取消。" };
+    case "pending":
+    case "waiting_confirm":
+      return { ...none, reason: "还没有批准，没有可以控制的任务。" };
+    default:
+      return { ...none, reason: "这项任务已经没有可以控制的操作。" };
+  }
+}
+
+/** 这一项的执行是否还在推进（决定要不要继续查询执行记录）。 */
+export function executionIsLive(execution: Execution | null | undefined): boolean {
+  return execution?.status === "queued" || execution?.status === "running";
+}
+
+/** 预览与正式内容必须分开：模型建议的操作不能直接改正式板面。 */
+export function operationsText(intent: Intent): string[] {
+  return (intent?.operations ?? []).map((operation) => {
+    const label = operationLabel(String(operation?.op ?? ""));
+    const target = operation?.title || operation?.content || operation?.cardId || operation?.groupId || "";
+    const short = String(target).replace(/\s+/g, " ").trim();
+    const cut = short.length > 24 ? short.slice(0, 24) + "…" : short;
+    return cut ? label + "：" + cut : label;
+  });
 }
 
 export interface ApproveAvailability {

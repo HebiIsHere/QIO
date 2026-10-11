@@ -36,6 +36,17 @@ import {
   sendFailureText,
   shouldSendOnKeydown,
 } from "../../interactive/chat";
+import {
+  approveAvailability,
+  currentUnderstandingStep,
+  rejectAvailability,
+  understandingHistory,
+  understandingOutcome,
+  understandingSettled,
+  understandingStepText,
+  understandingText,
+} from "../../interactive/approval";
+import type { Intent } from "../../interactive/types";
 
 /**
  * 面板里最多渲染多少条消息。
@@ -142,6 +153,101 @@ function discardDisplaced(): void {
   if (!target) return;
   session.discardDisplacedDraft(target.id);
   displacedNotice.value = "已放弃这份被让位的草稿（当前输入不受影响）";
+}
+
+/* ------------------------------------------------------------------------
+ * 统一过程规则（契约 §14.6）：受理 / 理解 / 理解完成三态 / 失败
+ *
+ * - 没有说明时先出现统一状态，说明随查询结果补上；
+ * - 阶段切换后上一阶段收进可展开的历史，同阶段只更新当前说明；
+ * - 默认只占一行；理解完成后的审批入口自动展开，不必再找一次。
+ * 这一块只读 store 里服务端给出的事实，不伪造进度。
+ * ---------------------------------------------------------------------- */
+const uStatus = computed(() => store.understandingStatus);
+const submitting = computed(() => store.submitStatus === "submitting");
+const uText = computed(() => {
+  // 正在提交时先显示这一次的事实，不让上一次的理解结果冒充这一次
+  if (submitting.value) {
+    return {
+      label: "正在提交",
+      detail: "正在保存板面并把这次表达交给 QIO；受理成功后会立刻显示「已受理」。",
+      tone: "waiting" as const,
+      settled: false,
+      needsUser: false,
+      known: false,
+    };
+  }
+  return understandingText(store.understanding, store.understandingStatus);
+});
+const uOutcome = computed(() => understandingOutcome(uStatus.value));
+const uLive = computed(() => Boolean(uStatus.value) && !understandingSettled(uStatus.value));
+const uCurrent = computed(() => currentUnderstandingStep(store.understanding));
+const uHistory = computed(() => understandingHistory(store.understanding));
+const processVisible = computed(
+  () =>
+    uStatus.value !== null ||
+    Boolean(store.submitNote) ||
+    store.submitStatus === "submitting" ||
+    Boolean(store.understandingNote),
+);
+const missingText = computed(() => {
+  const missing = store.understanding?.clarification?.missing ?? [];
+  return missing.length ? missing.join("、") : "请补充这次要做什么";
+});
+/** 这次理解产出的、还在等待审批的条目（审批入口自动展开） */
+const pendingApprovals = computed(() =>
+  store.understandingIntents.filter((item) =>
+    ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+  ),
+);
+const processOpen = ref(false);
+const processBusy = ref<string | null>(null);
+const processNote = ref<string | null>(null);
+const processRefreshing = ref(false);
+
+async function retryUnderstanding(): Promise<void> {
+  if (processRefreshing.value) return;
+  processRefreshing.value = true;
+  processNote.value = null;
+  try {
+    const result = await store.retryUnderstanding();
+    if (!result.ok) processNote.value = result.reason ?? "没有开始重试";
+  } finally {
+    processRefreshing.value = false;
+  }
+}
+
+async function refreshUnderstanding(): Promise<void> {
+  if (processRefreshing.value) return;
+  processRefreshing.value = true;
+  processNote.value = null;
+  try {
+    await store.refreshUnderstanding();
+  } finally {
+    processRefreshing.value = false;
+  }
+}
+
+/** 批准 / 拒绝：重复点击不会重复提交（store 里同一意图只允许一次） */
+async function decideIntent(intent: Intent, decision: "approve" | "reject"): Promise<void> {
+  if (processBusy.value) return;
+  processBusy.value = intent.id;
+  processNote.value = null;
+  try {
+    if (decision === "approve") {
+      const result = await store.approve(intent.id, approveAvailability(intent).needsConfirm);
+      processNote.value = result.ok
+        ? result.detail ?? "已批准：任务已交给真实执行，进度以执行记录为准。"
+        : "没有批准：" + (result.detail ?? result.reason ?? "服务端未说明原因");
+    } else {
+      const result = await store.reject(intent.id);
+      processNote.value = result.ok
+        ? "已拒绝：预览消失，板面原内容保留。"
+        : "没有拒绝：" + (result.detail ?? result.reason ?? "服务端未说明原因");
+    }
+  } finally {
+    processBusy.value = null;
+  }
 }
 
 /** 收起面板时把还没到防抖时间的内容落盘（草稿不清、也不丢） */
@@ -390,6 +496,112 @@ function onKeydown(event: KeyboardEvent) {
       <button v-if="!following" class="to-latest" type="button" @click="scrollToBottom(true)">
         回到最新
       </button>
+
+      <!--
+        统一过程（契约 §14.6）：受理成功就先出现统一状态「已受理」，说明随查询补上；
+        阶段切换后上一阶段收进可展开的历史；理解完成产出的待审批条目在这里直接展开。
+      -->
+      <div
+        v-if="processVisible"
+        class="process"
+        data-im="chat-process"
+        :data-process-status="uStatus ?? 'none'"
+        :data-process-outcome="uOutcome"
+      >
+        <p class="process-line" role="status">
+          <strong class="process-label" :class="'tone-' + uText.tone" data-im="chat-process-status">
+            {{ uText.label }}
+          </strong>
+          <span class="process-detail" data-im="chat-process-detail" :title="uText.detail">{{ uText.detail }}</span>
+        </p>
+        <!-- 工具 / 阶段记录默认只占一行，历史按需展开 -->
+        <p v-if="uCurrent" class="process-step" data-im="chat-process-step">{{ understandingStepText(uCurrent) }}</p>
+        <p v-if="uOutcome === 'clarification'" class="process-note" data-im="chat-process-missing">
+          需要你补充：{{ missingText }}；这次没有生成任何任务。
+        </p>
+        <p v-else-if="uOutcome === 'no_action'" class="process-note" data-im="chat-process-no-action">
+          这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
+        </p>
+        <p v-if="store.understandingNote" class="process-note" data-im="chat-process-note">
+          {{ store.understandingNote }}
+        </p>
+        <p v-if="store.submitNote" class="process-note" data-im="chat-acceptance-note">{{ store.submitNote }}</p>
+        <div class="process-actions">
+          <button
+            v-if="!submitting && uStatus === 'failed'"
+            class="process-btn"
+            type="button"
+            data-im="chat-process-retry"
+            :disabled="processRefreshing"
+            @click="retryUnderstanding"
+          >
+            {{ processRefreshing ? "重试中…" : "重试理解（从快照恢复）" }}
+          </button>
+          <button
+            v-else-if="!submitting && uLive"
+            class="process-btn"
+            type="button"
+            data-im="chat-process-refresh"
+            :disabled="processRefreshing"
+            @click="refreshUnderstanding"
+          >
+            {{ processRefreshing ? "查询中…" : "刷新理解状态" }}
+          </button>
+          <button
+            v-if="uHistory.length"
+            class="process-btn"
+            type="button"
+            data-im="chat-process-history-toggle"
+            :aria-expanded="processOpen"
+            @click="processOpen = !processOpen"
+          >
+            {{ processOpen ? "收起过程" : "查看过程" }}
+          </button>
+        </div>
+        <ol v-if="processOpen" class="process-history" data-im="chat-process-history">
+          <li v-for="step in uHistory" :key="step.key + '-' + step.label" class="process-history-item">
+            {{ understandingStepText(step) }}
+          </li>
+        </ol>
+        <!-- 审批入口自动展开：批准前不会改动板面 -->
+        <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
+          <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
+          <div
+            v-for="intent in pendingApprovals"
+            :key="intent.id"
+            class="approval-row"
+            data-im="chat-approval-item"
+            :data-intent-id="intent.id"
+          >
+            <span class="approval-name">
+              <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
+            </span>
+            <button
+              class="process-btn"
+              type="button"
+              data-im="chat-approve"
+              :data-intent-id="intent.id"
+              :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
+              :title="approveAvailability(intent).text"
+              @click="decideIntent(intent, 'approve')"
+            >
+              {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
+            </button>
+            <button
+              class="process-btn ghost"
+              type="button"
+              data-im="chat-reject"
+              :data-intent-id="intent.id"
+              :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
+              :title="rejectAvailability(intent).text"
+              @click="decideIntent(intent, 'reject')"
+            >
+              拒绝
+            </button>
+          </div>
+        </div>
+        <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
+      </div>
 
       <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
       <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
@@ -700,6 +912,97 @@ function onKeydown(event: KeyboardEvent) {
 }
 .notice.err { color: var(--danger); }
 .notice.warn { color: var(--warning); }
+/*
+  统一过程（契约 §14.6 / §12.7）：状态与说明要有稳定的局部底色，
+  后方板面的长文字不许透上来叠在头上；默认一行，历史与审批列表按需展开。
+*/
+.process {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+.process-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.process-label {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
+.process-label.tone-open { color: var(--link); border-color: var(--link); }
+.process-label.tone-waiting { color: var(--warning); border-color: var(--warning); }
+.process-label.tone-active { color: var(--accent); border-color: var(--accent); }
+.process-label.tone-settled { color: var(--text-secondary); }
+.process-label.tone-problem { color: var(--danger); border-color: var(--danger); }
+.process-detail { min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.process-step,
+.process-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.process-note { color: var(--text-secondary); }
+.process-actions { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.process-btn {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-2);
+  cursor: pointer;
+}
+.process-btn.ghost { background: none; color: var(--link); }
+.process-btn:disabled { opacity: 0.55; cursor: default; }
+.process-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.process-history { margin: 0; padding-left: var(--sp-4); display: flex; flex-direction: column; gap: 2px; }
+.process-history-item { font-size: var(--fs-xs); color: var(--text-faint); line-height: 1.5; overflow-wrap: anywhere; }
+/* 审批入口自动展开（批准前不改动板面），窄窗口里每行可换行 */
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--sp-1);
+}
+.approval-title { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); }
+.approval-row { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.approval-name {
+  flex: 1 1 12ch;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.approval-demo {
+  margin-right: var(--sp-1);
+  font-size: var(--fs-xs);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--warning);
+  color: var(--warning);
+  background: var(--warning-soft);
+}
 /* 草稿状态：贴着输入区的一行小字，不抢消息区的空间 */
 .draft-status {
   flex: none;
