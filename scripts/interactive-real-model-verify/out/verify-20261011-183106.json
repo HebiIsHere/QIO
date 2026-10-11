@@ -1,0 +1,457 @@
+{
+  "results": [
+    {
+      "id": "B1",
+      "group": "visibility",
+      "title": "未勾选注释不进 before/after（含注释链接）",
+      "status": "PASS",
+      "detail": "状态=succeeded after=['c_mat']，注释与其链接均未进入载荷",
+      "seconds": 0.135
+    },
+    {
+      "id": "B2",
+      "group": "visibility",
+      "title": "hidden 卡片退出讨论范围",
+      "status": "PASS",
+      "detail": "hidden 卡片既不在 after，正文也未在提交结果中泄露",
+      "seconds": 0.138
+    },
+    {
+      "id": "B3",
+      "group": "visibility",
+      "title": "仅一端可见的链接不进载荷",
+      "status": "PASS",
+      "detail": "仅一端可见的链接未进入载荷",
+      "seconds": 0.121
+    },
+    {
+      "id": "B4",
+      "group": "visibility",
+      "title": "无可见成员的组整体不出现（组名不泄露）",
+      "status": "PASS",
+      "detail": "无可见成员的组未出现，组名未泄露",
+      "seconds": 0.101
+    },
+    {
+      "id": "B5",
+      "group": "visibility",
+      "title": "客户端伪造 requestedVisible 不会突破服务端可见范围",
+      "status": "PASS",
+      "detail": "服务端忽略伪造项并如实报告",
+      "seconds": 0.095
+    },
+    {
+      "id": "B6",
+      "group": "visibility",
+      "title": "提交成功清勾选；失败保留勾选与改动",
+      "status": "PASS",
+      "detail": "提交成功后勾选已清（不是删除，卡片仍在）",
+      "seconds": 0.129
+    },
+    {
+      "id": "C1",
+      "group": "no-model",
+      "title": "空提交：empty，不建理解请求",
+      "status": "PASS",
+      "detail": "empty；本板面理解记录 0 条（空提交未新建）",
+      "seconds": 0.067
+    },
+    {
+      "id": "C2",
+      "group": "no-model",
+      "title": "重复提交：duplicate，不重复建理解请求",
+      "status": "FAIL",
+      "detail": "同一内容重复提交被判为 empty 而不是 duplicate（契约 §1.5：duplicate 用同一 fingerprint 判定，不更新基准、不调用模型）",
+      "seconds": 0.181
+    },
+    {
+      "id": "C3",
+      "group": "no-model",
+      "title": "纯位置/缩放变化不产生模型调用",
+      "status": "PASS",
+      "detail": "状态=empty，理解记录保持 0 条",
+      "seconds": 0.242
+    },
+    {
+      "id": "C4",
+      "group": "no-model",
+      "title": "保存 PUT /state 只落库，不建立理解请求",
+      "status": "PASS",
+      "detail": "保存未建立理解请求",
+      "seconds": 0.08
+    },
+    {
+      "id": "C5",
+      "group": "no-model",
+      "title": "聊天发送不调用板面提交接口",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端 / SSE 会话证据：本脚本只有后端 HTTP。待补证据：用前端定向用例或抓包证明文字发送未请求 submissions 接口。",
+      "seconds": 0.0
+    },
+    {
+      "id": "D1",
+      "group": "intent",
+      "title": "要求不明确 → needs_clarification，不产出可执行意图",
+      "status": "NOT_VERIFIABLE",
+      "detail": "understanding 模块不存在：候选版本还没有真实理解链路",
+      "seconds": 0.001
+    },
+    {
+      "id": "D2",
+      "group": "intent",
+      "title": "无工作需求 → no_action，不强制产生任务",
+      "status": "NOT_VERIFIABLE",
+      "detail": "understanding 模块不存在",
+      "seconds": 0.0
+    },
+    {
+      "id": "D3",
+      "group": "intent",
+      "title": "拒绝后无正式修改、预览消失、原内容保留",
+      "status": "PASS",
+      "detail": "状态=rejected，板面卡片数不变（0），记录保留；记录里仍留预览内容=False（契约 §1.6「预览消失、原内容保留」，前端据此不展示）",
+      "seconds": 0.22
+    },
+    {
+      "id": "D4",
+      "group": "intent",
+      "title": "批准前材料变化 → needs_update 且禁止批准",
+      "status": "NOT_VERIFIABLE",
+      "detail": "understanding 模块不存在：候选版本还没有真实意图链路，无法构造「批准前材料变化」",
+      "seconds": 0.001
+    },
+    {
+      "id": "D5",
+      "group": "intent",
+      "title": "重复批准幂等：不新建第二条执行",
+      "status": "PASS",
+      "detail": "首次=running，二次=running，执行记录 0 → 0",
+      "seconds": 0.125
+    },
+    {
+      "id": "D6",
+      "group": "intent",
+      "title": "依赖未完成不自动开始；前项 done + 再次确认才 running",
+      "status": "PASS",
+      "detail": "状态=waiting_dependency，重复批准后仍为 waiting_dependency",
+      "seconds": 0.171
+    },
+    {
+      "id": "D7",
+      "group": "intent",
+      "title": "互不相容的意图不能同时批准（服务端判定）",
+      "status": "PASS",
+      "detail": "两项都未批准：approved=[] statuses=['pending', 'pending']",
+      "seconds": 0.141
+    },
+    {
+      "id": "E1",
+      "group": "recovery",
+      "title": "request_id 唯一：重复受理不新建第二条",
+      "status": "PASS",
+      "detail": "board_understanding.request_id 有 UNIQUE 索引（结构层证据）",
+      "seconds": 0.0
+    },
+    {
+      "id": "E2",
+      "group": "recovery",
+      "title": "刷新页面不重复创建意图 / 不重复执行",
+      "status": "PASS",
+      "detail": "连续刷新并重开入口后意图数量保持 4",
+      "seconds": 0.282
+    },
+    {
+      "id": "E3",
+      "group": "recovery",
+      "title": "理解失败重试只从保存的快照恢复",
+      "status": "NOT_VERIFIABLE",
+      "detail": "understanding 模块不存在：候选版本还没有真实理解链路",
+      "seconds": 0.0
+    },
+    {
+      "id": "E4",
+      "group": "recovery",
+      "title": "取消撤回可安全撤回的改动，保留用户后续修改",
+      "status": "PASS",
+      "detail": "撤回报告：{\"reverted\": [], \"kept\": [], \"pendingDecision\": [], \"reasonText\": \"任务取消，已撤回本任务造成的改动 0 项。\"}",
+      "seconds": 0.178
+    },
+    {
+      "id": "E5",
+      "group": "recovery",
+      "title": "重启后迟到结果不写回",
+      "status": "PASS",
+      "detail": "board_executions 具备 owner_instance_id + attempt + checkpoints（结构层证据；行为证据待真实执行链路）",
+      "seconds": 0.0
+    },
+    {
+      "id": "E6",
+      "group": "recovery",
+      "title": "恢复后保留内容与进度，running 降级为 paused",
+      "status": "PASS",
+      "detail": "批准后=running，模拟换实例后=paused，recovery={\"paused\": [\"i_91ce91f13083\"]}",
+      "seconds": 0.149
+    },
+    {
+      "id": "E7",
+      "group": "recovery",
+      "title": "恢复后继续不重复已完成步骤",
+      "status": "NOT_VERIFIABLE",
+      "detail": "execution 模块不存在：候选版本还没有真实执行链路",
+      "seconds": 0.001
+    },
+    {
+      "id": "E8",
+      "group": "recovery",
+      "title": "状态显示真实：不允许「已批准就一直运行中」",
+      "status": "PASS",
+      "detail": "存在 board_executions 且带状态与起止时间（执行状态与意图状态分离的落点）",
+      "seconds": 0.0
+    },
+    {
+      "id": "X1",
+      "group": "contract",
+      "title": "提交返回 delivery.delivered / understandingId / status=accepted",
+      "status": "FAIL",
+      "detail": "delivery 缺少冻结字段 ['understandingId', 'status']：{\"delivered\": false, \"reason\": \"第一阶段没有接入 QIO 模型调用：本次表达已记录在本地数据库并标记受影响意图，但 QIO 尚未真正读取或理解这些内容\", \"detail\": \"本次交给 QIO 的范围：卡片 1 项、组 0 项、关系 0 项；有效改动 1 项\", \"marking\": {\"updated\": []}}",
+      "seconds": 0.11
+    },
+    {
+      "id": "X2",
+      "group": "contract",
+      "title": "理解过程列表接口 GET /boards/{id}/understanding",
+      "status": "NOT_VERIFIABLE",
+      "detail": "接口不存在（HTTP 404）",
+      "seconds": 0.048
+    },
+    {
+      "id": "X3",
+      "group": "contract",
+      "title": "理解取消接口 POST /boards/{id}/understanding/{uid}/cancel",
+      "status": "NOT_VERIFIABLE",
+      "detail": "接口不存在（HTTP 404）",
+      "seconds": 0.055
+    },
+    {
+      "id": "X4",
+      "group": "contract",
+      "title": "执行记录接口 GET /boards/{id}/executions",
+      "status": "NOT_VERIFIABLE",
+      "detail": "接口不存在（HTTP 404）",
+      "seconds": 0.063
+    },
+    {
+      "id": "X5",
+      "group": "contract",
+      "title": "执行控制接口 pause / resume / cancel 存在",
+      "status": "NOT_VERIFIABLE",
+      "detail": "三者都无法区分「路由不存在」与「意图不存在」：{'pause': 404, 'resume': 404, 'cancel': 404}",
+      "seconds": 0.092
+    },
+    {
+      "id": "X6",
+      "group": "contract",
+      "title": "意图创建真实入口接受 submissionId",
+      "status": "NOT_VERIFIABLE",
+      "detail": "该路径仍只接受 demo=true（候选版本未实现真实入口）",
+      "seconds": 0.178
+    },
+    {
+      "id": "X7",
+      "group": "contract",
+      "title": "允许操作集合与冻结清单一致（ALLOWED_INTENT_OPS）",
+      "status": "PASS",
+      "detail": "agent.interactive.models.ALLOWED_INTENT_OPS = ['add_link', 'add_reply_card', 'add_text_card', 'group_cards', 'move_card', 'order_group']",
+      "seconds": 0.0
+    },
+    {
+      "id": "X8",
+      "group": "contract",
+      "title": "迁移 37/38 与 REQUIRED_OBJECTS 覆盖本轮新对象",
+      "status": "PASS",
+      "detail": "迁移 37/38、COMPENSATION_VERSION=38、REQUIRED_OBJECTS 与 board_intents 新列齐备",
+      "seconds": 0.0
+    },
+    {
+      "id": "F1",
+      "group": "materials",
+      "title": "文本附件真读到正文（attachment_text）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在：候选版本还没有材料解析",
+      "seconds": 0.002
+    },
+    {
+      "id": "F2",
+      "group": "materials",
+      "title": "图片如实标 image_unsupported，不得假装看懂",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在：候选版本还没有材料解析",
+      "seconds": 0.0
+    },
+    {
+      "id": "F3",
+      "group": "materials",
+      "title": "不可抓取的网址只给地址（url_address_only）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在",
+      "seconds": 0.0
+    },
+    {
+      "id": "F4",
+      "group": "materials",
+      "title": "可抓取网址标 url_fetched（fake FETCH）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在",
+      "seconds": 0.0
+    },
+    {
+      "id": "F5",
+      "group": "materials",
+      "title": "读不到/被截断如实标注（unreadable/截断）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在",
+      "seconds": 0.001
+    },
+    {
+      "id": "F6",
+      "group": "materials",
+      "title": "不支持的来源标 unsupported 且有可理解原因",
+      "status": "NOT_VERIFIABLE",
+      "detail": "materials 模块不存在",
+      "seconds": 0.0
+    },
+    {
+      "id": "F7",
+      "group": "materials",
+      "title": "界面准确显示材料来源与未读取情况",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图证据（窄窗口/主题见 V 组）",
+      "seconds": 0.0
+    },
+    {
+      "id": "R1",
+      "group": "regression",
+      "title": "原对话发送未被破坏",
+      "status": "NOT_VERIFIABLE",
+      "detail": "未找到既有对话列表路由（路径随版本变化），本条留到集成分支后用前端/SSE 证据核对",
+      "seconds": 0.055
+    },
+    {
+      "id": "R2",
+      "group": "regression",
+      "title": "流式回答未被破坏",
+      "status": "NOT_VERIFIABLE",
+      "detail": "未找到既有对话列表路由（路径随版本变化），本条留到集成分支后用前端/SSE 证据核对",
+      "seconds": 0.057
+    },
+    {
+      "id": "R3",
+      "group": "regression",
+      "title": "附件能力未被破坏",
+      "status": "PASS",
+      "detail": "/api/attachments 可用：{\"ok\": true, \"attachments\": []}",
+      "seconds": 0.044
+    },
+    {
+      "id": "R4",
+      "group": "regression",
+      "title": "话题归属正确，不串话题",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端/会话归属证据（本脚本只有互动板面 HTTP）",
+      "seconds": 0.022
+    },
+    {
+      "id": "R5",
+      "group": "regression",
+      "title": "草稿保存/恢复可用；失败保留输入",
+      "status": "PASS",
+      "detail": "互动板面草稿保存/恢复可用：{\"drafts\": {\"chat\": \"草稿内容E\"}, \"updatedAt\": \"2026-10-11T10:31:05.724193+00:00\", \"rev\": 1}",
+      "seconds": 0.092
+    },
+    {
+      "id": "R6",
+      "group": "regression",
+      "title": "受理待确认入口（impact-check）可用",
+      "status": "PASS",
+      "detail": "impact-check 返回 ok=True",
+      "seconds": 0.034
+    },
+    {
+      "id": "R7",
+      "group": "regression",
+      "title": "提交成功后草稿清理不误删未提交内容",
+      "status": "PASS",
+      "detail": "提交未清掉无关草稿",
+      "seconds": 0.2
+    },
+    {
+      "id": "R8",
+      "group": "regression",
+      "title": "话题归属相邻路径（新建/切换/恢复）不回归",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端证据（本脚本只有后端 HTTP）",
+      "seconds": 0.0
+    },
+    {
+      "id": "R9",
+      "group": "regression",
+      "title": "演示入口不驱动真实任务；正式路径不显示演示内容",
+      "status": "PASS",
+      "detail": "演示入口带 demo 标注，演示推进未产生 board_executions 记录",
+      "seconds": 0.12
+    },
+    {
+      "id": "V1",
+      "group": "visual",
+      "title": "800x600 关键状态可读（截图）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图：脚本不产出截图，集成分支后用 Playwright/浏览器抓图",
+      "seconds": 0.0
+    },
+    {
+      "id": "V2",
+      "group": "visual",
+      "title": "480x600 关键状态可读（截图）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图",
+      "seconds": 0.0
+    },
+    {
+      "id": "V3",
+      "group": "visual",
+      "title": "窄窗口审批可操作",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图 + 点击验证",
+      "seconds": 0.0
+    },
+    {
+      "id": "V4",
+      "group": "visual",
+      "title": "结果与来源引用可读",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图",
+      "seconds": 0.0
+    },
+    {
+      "id": "V5",
+      "group": "visual",
+      "title": "恢复入口可操作",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图 + 点击验证",
+      "seconds": 0.0
+    },
+    {
+      "id": "V6",
+      "group": "visual",
+      "title": "亮/暗主题关键状态对比度足够",
+      "status": "NOT_VERIFIABLE",
+      "detail": "需要前端截图（亮/暗各一组）",
+      "seconds": 0.0
+    }
+  ],
+  "counts": {
+    "PASS": 26,
+    "FAIL": 2,
+    "NOT_VERIFIABLE": 28
+  }
+}

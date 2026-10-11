@@ -1,0 +1,153 @@
+{
+  "results": [
+    {
+      "id": "B1",
+      "group": "visibility",
+      "title": "未勾选注释不进 before/after（含注释链接）",
+      "status": "PASS",
+      "detail": "状态=succeeded after=['c_mat']，注释与其链接均未进入载荷",
+      "seconds": 0.133
+    },
+    {
+      "id": "B6",
+      "group": "visibility",
+      "title": "提交成功清勾选；失败保留勾选与改动",
+      "status": "PASS",
+      "detail": "提交成功后勾选已清（不是删除，卡片仍在）",
+      "seconds": 0.136
+    },
+    {
+      "id": "C1",
+      "group": "no-model",
+      "title": "空提交：empty，不建理解请求",
+      "status": "PASS",
+      "detail": "empty；本板面理解记录 0 条（空提交未新建）",
+      "seconds": 0.043
+    },
+    {
+      "id": "C3",
+      "group": "no-model",
+      "title": "纯位置/缩放变化不产生模型调用",
+      "status": "PASS",
+      "detail": "状态=empty，理解记录保持 0 条",
+      "seconds": 0.167
+    },
+    {
+      "id": "D3",
+      "group": "intent",
+      "title": "拒绝后无正式修改、预览消失、原内容保留",
+      "status": "PASS",
+      "detail": "状态=rejected，板面卡片数不变（0），记录保留；记录里仍留预览内容=False（契约 §1.6「预览消失、原内容保留」，前端据此不展示）",
+      "seconds": 0.175
+    },
+    {
+      "id": "D5",
+      "group": "intent",
+      "title": "重复批准幂等：不新建第二条执行",
+      "status": "PASS",
+      "detail": "首次=running，二次=running，执行记录 0 → 0",
+      "seconds": 0.165
+    },
+    {
+      "id": "D6",
+      "group": "intent",
+      "title": "依赖未完成不自动开始；前项 done + 再次确认才 running",
+      "status": "PASS",
+      "detail": "状态=waiting_dependency，重复批准后仍为 waiting_dependency",
+      "seconds": 0.185
+    },
+    {
+      "id": "D7",
+      "group": "intent",
+      "title": "互不相容的意图不能同时批准（服务端判定）",
+      "status": "PASS",
+      "detail": "两项都未批准：approved=[] statuses=['pending', 'pending']",
+      "seconds": 0.214
+    },
+    {
+      "id": "E1",
+      "group": "recovery",
+      "title": "request_id 唯一：重复受理不新建第二条",
+      "status": "PASS",
+      "detail": "board_understanding.request_id 有 UNIQUE 索引（结构层证据）",
+      "seconds": 0.0
+    },
+    {
+      "id": "E2",
+      "group": "recovery",
+      "title": "刷新页面不重复创建意图 / 不重复执行",
+      "status": "PASS",
+      "detail": "连续刷新并重开入口后意图数量保持 4",
+      "seconds": 0.245
+    },
+    {
+      "id": "E6",
+      "group": "recovery",
+      "title": "恢复后保留内容与进度，running 降级为 paused",
+      "status": "PASS",
+      "detail": "批准后=running，模拟换实例后=paused，recovery={\"paused\": [\"i_2e6d4fe7ac8c\"]}",
+      "seconds": 0.162
+    },
+    {
+      "id": "X7",
+      "group": "contract",
+      "title": "允许操作集合与冻结清单一致（ALLOWED_INTENT_OPS）",
+      "status": "PASS",
+      "detail": "agent.interactive.models.ALLOWED_INTENT_OPS = ['add_link', 'add_reply_card', 'add_text_card', 'group_cards', 'move_card', 'order_group']",
+      "seconds": 0.0
+    },
+    {
+      "id": "X8",
+      "group": "contract",
+      "title": "迁移 37/38 与 REQUIRED_OBJECTS 覆盖本轮新对象",
+      "status": "PASS",
+      "detail": "迁移 37/38、COMPENSATION_VERSION=38、REQUIRED_OBJECTS 与 board_intents 新列齐备",
+      "seconds": 0.0
+    },
+    {
+      "id": "R3",
+      "group": "regression",
+      "title": "附件能力未被破坏",
+      "status": "PASS",
+      "detail": "/api/attachments 可用：{\"ok\": true, \"attachments\": []}",
+      "seconds": 0.023
+    },
+    {
+      "id": "R5",
+      "group": "regression",
+      "title": "草稿保存/恢复可用；失败保留输入",
+      "status": "PASS",
+      "detail": "互动板面草稿保存/恢复可用：{\"drafts\": {\"chat\": \"草稿内容E\"}, \"updatedAt\": \"2026-10-11T10:33:09.969733+00:00\", \"rev\": 1}",
+      "seconds": 0.088
+    },
+    {
+      "id": "R6",
+      "group": "regression",
+      "title": "受理待确认入口（impact-check）可用",
+      "status": "PASS",
+      "detail": "impact-check 返回 ok=True",
+      "seconds": 0.031
+    },
+    {
+      "id": "R7",
+      "group": "regression",
+      "title": "提交成功后草稿清理不误删未提交内容",
+      "status": "PASS",
+      "detail": "提交未清掉无关草稿",
+      "seconds": 0.217
+    },
+    {
+      "id": "R9",
+      "group": "regression",
+      "title": "演示入口不驱动真实任务；正式路径不显示演示内容",
+      "status": "PASS",
+      "detail": "演示入口带 demo 标注，演示推进未产生 board_executions 记录",
+      "seconds": 0.118
+    }
+  ],
+  "counts": {
+    "PASS": 18,
+    "FAIL": 0,
+    "NOT_VERIFIABLE": 0
+  }
+}
