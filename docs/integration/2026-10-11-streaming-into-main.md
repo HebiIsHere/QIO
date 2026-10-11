@@ -170,6 +170,7 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
   （集成分支线头）。当前 `origin/main` = `7ff5e2e`（此处数字与 SHA 都在 2026-10-11 实查，
   `git fetch` 之后 `git ls-remote origin main` 与之逐字一致）。
 - 集成分支 `integrate/streaming-main-20261011` 保留为历史，未删除。
+- 合并后的收尾轮见 §九–§十二：分支 `fix/streaming-main-closeout-20261011`，经 **PR #3** 合并进 main。
 
 **合并 CI run `38075732622`（push，`7ff5e2e`）逐任务结果**
 
@@ -391,4 +392,5 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）
 
 - 两处缺口已修并各有「修复前红 / 修复后绿」的对照装置；数据库升级路径（全新 / 旧 main 25 /
   main 30 / 来源流式线 28）与补偿幂等、数据保护都有真实业务行的断言。
-- 未合并 main、未发布、未并入互动模式线；独立分支与 PR 以评审为准。
+- 本轮成果经 **PR #3** 合并进 main（合并提交 SHA 见 PR #3 或 `git log --oneline main`）；
+  未发布、未并入互动模式线。
