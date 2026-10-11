@@ -1,0 +1,648 @@
+"""互动理解（契约 §14.1 / §14.3 / §14.5）的真实模型路径测试。
+
+一律使用 fake / mock provider（不联网、不读任何密钥）；材料解析用按冻结签名构造的
+假模块替换（A 的 materials.py 与 B 并行开发，签名已冻结）。
+
+覆盖：
+1) 真实理解：两条材料 + 一条获准要求 → intent → 校验通过 → 调用 create_intents_from_understanding；
+2) 换材料 / 换要求 → 上下文与产出相应变化（证明不是固定模板）；
+3) 未勾选注释、hidden 对象、间接链接不进上下文；
+4) clarification / no_action 都不创建意图；
+5) 无效输出（越权操作 / 范围外对象 / 不存在的材料 id / 结构损坏）不落成任务 + 可读原因；
+   自动修复**只调用一次**；
+6) 受理幂等；重试只从冻结快照恢复（不读当前板面）；
+7) 材料口径诚实：未读取 / 截断都如实记录，禁止声称已完整阅读。
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import types
+
+import pytest
+
+from agent.adapters.fake import FakeStreamAdapter, StreamScript
+from agent.interactive import board_store, models, submission as submission_module
+from agent.interactive import understanding as u
+
+BOARD = models.DEFAULT_BOARD_ID
+NOWHERE = "这段文字不应该出现在上下文里"
+
+
+# --- 工具 -----------------------------------------------------------------
+
+
+def _card(cid: str, kind: str, content: str = "", **fields) -> dict:
+    card = models.new_card(kind, content, **fields)
+    card["id"] = cid
+    return card
+
+
+def _group(gid: str, name: str, members: list[str], *, ordered: bool = False) -> dict:
+    group = models.new_group(name, ordered=ordered, default_name=False, members=list(members))
+    group["id"] = gid
+    return group
+
+
+def _link(lid: str, src: str, dst: str, *, meaning: str = "") -> dict:
+    link = models.new_link(src, dst, meaning=meaning)
+    link["id"] = lid
+    return link
+
+
+async def _save_and_submit(
+    conn: sqlite3.Connection,
+    cards: list[dict],
+    *,
+    groups: list[dict] | None = None,
+    links: list[dict] | None = None,
+    selection: list[str] | None = None,
+) -> dict:
+    board_store.ensure_board(conn, board_id=BOARD)
+    state = {
+        "boardId": BOARD,
+        "seq": 0,
+        "updatedAt": models.now_iso(),
+        "cards": list(cards),
+        "groups": list(groups or []),
+        "links": list(links or []),
+        "selection": list(selection or []),
+    }
+    board_store.save_board(conn, BOARD, state, reason="test")
+    return await submission_module.submit_board(conn, BOARD)
+
+
+def _provider(adapter):
+    async def _get():
+        return adapter
+
+    return _get
+
+
+def _request_context(request: dict) -> dict:
+    for message in request["messages"]:
+        content = message.content or ""
+        if "=== 上下文开始 ===" in content:
+            payload = content.split("=== 上下文开始 ===", 1)[1]
+            payload = payload.split("=== 上下文结束 ===", 1)[0].strip()
+            return json.loads(payload)
+    raise AssertionError("请求里没有结构化上下文")
+
+
+def _adapter(*payloads: dict | str) -> FakeStreamAdapter:
+    scripts = []
+    for payload in payloads:
+        text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        scripts.append(StreamScript(text=text))
+    return FakeStreamAdapter(scripts)
+
+
+# --- 假材料解析模块（A 的 materials.resolve_materials 冻结签名） ------------
+
+
+def _material_kinds() -> tuple:
+    return models.MATERIAL_KINDS
+
+
+@pytest.fixture()
+def fake_materials(monkeypatch):
+    """按冻结签名实现的假材料解析：只读传进来的 state，不碰当前板面。"""
+    seen: list[dict] = []
+    module = types.ModuleType("agent.interactive.materials")
+
+    def resolve_materials(conn, *, state, cards=None, max_chars=40000):
+        seen.append(state)
+        items = []
+        for card in state.get("cards", []):
+            kind = card.get("kind")
+            if kind not in _material_kinds():
+                continue
+            meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+            name = meta.get("name") or meta.get("title") or card.get("content") or card.get("id")
+            if kind == "url":
+                items.append({
+                    "id": card["id"],
+                    "cardId": card["id"],
+                    "kind": kind,
+                    "name": name,
+                    "source": "url_address_only",
+                    "text": "",
+                    "chars": 0,
+                })
+                continue
+            if kind == "image":
+                items.append({
+                    "id": card["id"],
+                    "cardId": card["id"],
+                    "kind": kind,
+                    "name": name,
+                    "source": "image_unsupported",
+                    "text": "",
+                    "chars": 0,
+                })
+                continue
+            text = str(card.get("content") or "")
+            items.append({
+                "id": card["id"],
+                "cardId": card["id"],
+                "kind": kind,
+                "name": name,
+                "source": "inline",
+                "text": text,
+                "chars": len(text),
+            })
+        return items
+
+    module.resolve_materials = resolve_materials
+    monkeypatch.setitem(sys.modules, "agent.interactive.materials", module)
+    return {"module": module, "seen": seen}
+
+
+@pytest.fixture()
+def intents_stub(monkeypatch):
+    """记录 create_intents_from_understanding 的调用（C 的实现与 B 并行）。"""
+    from agent.interactive import intents as intents_module
+
+    calls: list[dict] = []
+
+    def fake_create(conn, *, board_id, understanding_id, payloads):
+        calls.append({
+            "board_id": board_id,
+            "understanding_id": understanding_id,
+            "payloads": payloads,
+        })
+        return [{"id": "i_fake_" + str(len(calls))}]
+
+    monkeypatch.setattr(
+        intents_module, "create_intents_from_understanding", fake_create, raising=False
+    )
+    return calls
+
+
+def _accept(conn, result) -> dict:
+    return u.request_understanding(
+        conn,
+        board_id=BOARD,
+        submission_id=result["submission"]["id"],
+        snapshot=result["after"],
+    )
+
+
+def _intent_payload(operations, *, ref: str = "c_file", **overrides) -> dict:
+    intent = {
+        "intentKey": "compare-materials",
+        "title": "整理两份材料的差异",
+        "goal": "让用户看到两份材料的关键差异",
+        "summary": "对比两份材料的正文并给出差异",
+        "basis": [{"cardId": ref, "role": "material", "version": "v1"}],
+        "expected": "一张列出差异的结果卡片",
+        "operations": operations,
+        "impact": {"cardIds": [ref], "scope": "只新增 QIO 结果卡片"},
+        "dependsOn": [],
+        "conflictsWith": [],
+        "conflictKey": "",
+    }
+    intent.update(overrides)
+    return {"kind": "intent", "summary": "用户要求比较两份材料", "intents": [intent]}
+
+
+# --- 1) 真实理解路径 -------------------------------------------------------
+
+
+async def test_intent_understanding_creates_intents(db_conn, fake_materials, intents_stub):
+    cards = [
+        _card("c_file", "file", "甲材料正文：方案 A 的成本更高", meta={"name": "甲.txt"}),
+        _card("c_code", "code", "print(1)", meta={"language": "python"}),
+        _card("c_note", "text", "请比较这两份材料并给出差异", checked=True),
+        _card("c_unchecked", "text", NOWHERE, checked=False),
+        _card("c_hidden", "file", NOWHERE, hidden=True, meta={"name": "隐藏.txt"}),
+    ]
+    groups = [_group("g1", "两份材料", ["c_file", "c_code"])]
+    links = [_link("l1", "c_file", "c_unchecked", meaning="越界关系")]
+    result = await _save_and_submit(
+        db_conn, cards, groups=groups, links=links, selection=["c_file", "c_code"]
+    )
+    accepted = _accept(db_conn, result)
+    assert accepted["status"] == "accepted"
+    assert accepted["reused"] is False
+
+    payload = _intent_payload([
+        {"op": "add_reply_card", "content": "两份材料的差异如下……", "title": "差异"},
+        {"op": "group_cards", "cardIds": ["c_file", "c_code"], "ordered": True},
+    ])
+    adapter = _adapter(payload)
+    done = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(adapter)
+    )
+
+    assert done["status"] == "understood"
+    assert done["validation"]["ok"] is True
+    assert done["stage"] == "persist"
+    assert done["output"]["kind"] == "intent"
+    assert len(intents_stub) == 1
+    assert intents_stub[0]["understanding_id"] == accepted["id"]
+    assert [i["intentKey"] for i in intents_stub[0]["payloads"]] == ["compare-materials"]
+    ops = intents_stub[0]["payloads"][0]["operations"]
+    assert [op["op"] for op in ops] == ["add_reply_card", "group_cards"]
+
+    ctx = _request_context(adapter.requests[0])
+    assert len(adapter.requests) == 1
+    assert "请比较这两份材料并给出差异" in ctx["requirement"]["text"]
+    assert set(ctx["visibleCardIds"]) == {"c_file", "c_code", "c_note"}
+    assert {m["cardId"] for m in ctx["materials"]} == {"c_file", "c_code"}
+    assert any("甲材料正文" in str(m.get("text")) for m in ctx["materials"])
+
+
+# --- 2) 不是固定模板：换材料 / 换要求 → 上下文与产出都变 --------------------
+
+
+async def test_context_and_output_change_with_submission(db_conn, fake_materials, intents_stub):
+    first = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_a1", "file", "第一版材料：预算 10 万", meta={"name": "预算.txt"}),
+            _card("c_a2", "file", "第一版材料：工期 3 个月", meta={"name": "工期.txt"}),
+            _card("c_a3", "text", "请比较这两份材料的风险", checked=True),
+        ],
+    )
+    first_accepted = _accept(db_conn, first)
+    first_adapter = _adapter(
+        _intent_payload(
+            [{"op": "add_reply_card", "content": "风险对比", "title": "风险"}],
+            ref="c_a1",
+        )
+    )
+    first_done = await u.run_understanding(
+        db_conn, first_accepted["id"], adapter_provider=_provider(first_adapter)
+    )
+    assert first_done["status"] == "understood"
+
+    second = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_b1", "code", "def check(): return True"),
+            _card("c_b2", "url", "https://example.invalid/spec", meta={"title": "规格说明"}),
+            _card("c_b3", "text", "这两份内容不需要现在处理，先放着", checked=True),
+        ],
+    )
+    second_accepted = _accept(db_conn, second)
+    second_adapter = _adapter({"kind": "no_action", "summary": "用户明确说先放着，不需要开展任务"})
+    second_done = await u.run_understanding(
+        db_conn, second_accepted["id"], adapter_provider=_provider(second_adapter)
+    )
+
+    assert second_done["status"] == "no_action"
+    assert not intents_stub or len(intents_stub) == 1  # 只有第一次落了意图
+    first_ctx = _request_context(first_adapter.requests[0])
+    second_ctx = _request_context(second_adapter.requests[0])
+    assert set(first_ctx["visibleCardIds"]) == {"c_a1", "c_a2", "c_a3"}
+    assert set(second_ctx["visibleCardIds"]) == {"c_b1", "c_b2", "c_b3"}
+    assert "请比较这两份材料的风险" in first_ctx["requirement"]["text"]
+    assert "先放着" in second_ctx["requirement"]["text"]
+    assert {m["cardId"] for m in first_ctx["materials"]} == {"c_a1", "c_a2"}
+    assert {m["cardId"] for m in second_ctx["materials"]} == {"c_b1", "c_b2"}
+    assert first_ctx["materials"] != second_ctx["materials"]
+    assert second_ctx["materials"][1]["source"] == "url_address_only"
+    # 上下文不同，产出也必须不同：不是套模板
+    assert first_done["output"]["kind"] == "intent"
+    assert second_done["output"]["kind"] == "no_action"
+
+
+# --- 3) 未勾选注释 / hidden 对象 / 间接链接不进上下文 -----------------------
+
+
+async def test_invisible_objects_never_reach_context(db_conn, fake_materials, intents_stub):
+    cards = [
+        _card("c_ok", "file", "可见材料正文", meta={"name": "可见.txt"}),
+        _card("c_note", "text", "已勾选的要求：整理可见材料", checked=True),
+        _card("c_off", "text", NOWHERE, checked=False),
+        _card("c_hide", "file", NOWHERE + "隐藏", hidden=True, meta={"name": "隐藏.txt"}),
+        _card("c_gone", "file", NOWHERE + "删除", deleted=True, meta={"name": "删除.txt"}),
+    ]
+    groups = [
+        _group("g_ok", "可见组", ["c_ok", "c_off"]),
+        _group("g_off", "只有未勾选的组", ["c_off"]),
+    ]
+    links = [
+        _link("l_indirect", "c_ok", "c_off", meaning=NOWHERE),
+        _link("l_hidden", "c_ok", "c_hide", meaning=NOWHERE),
+    ]
+    result = await _save_and_submit(
+        db_conn, cards, groups=groups, links=links, selection=["c_ok", "c_off"]
+    )
+    accepted = _accept(db_conn, result)
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=accepted["id"])
+    rendered = json.dumps(context, ensure_ascii=False)
+
+    assert context["visibleCardIds"] == ["c_ok", "c_note"]
+    for hidden_id in ("c_off", "c_hide", "c_gone"):
+        assert hidden_id not in rendered
+    assert NOWHERE not in rendered
+    assert "隐藏" not in rendered
+    assert [g["id"] for g in context["groups"]] == ["g_ok"]
+    assert context["groups"][0]["members"] == ["c_ok"]
+    assert context["relationships"] == []
+    assert context["focus"]["cardIds"] == ["c_ok"]
+
+
+# --- 4) clarification / no_action 都不创建意图 -----------------------------
+
+
+async def test_clarification_and_no_action_create_no_intents(
+    db_conn, fake_materials, intents_stub
+):
+    result = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_file", "file", "只有一份材料", meta={"name": "材料.txt"}),
+            _card("c_note", "text", "看一下这个", checked=True),
+        ],
+    )
+    accepted = _accept(db_conn, result)
+
+    clarify_adapter = _adapter({
+        "kind": "clarification",
+        "summary": "不知道要对这份材料做什么",
+        "clarification": {
+            "question": "你想让我对这份材料做什么？",
+            "missing": ["具体动作", "期望结果"],
+        },
+    })
+    clarify_done = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(clarify_adapter)
+    )
+    assert clarify_done["status"] == "needs_clarification"
+    assert clarify_done["output"]["clarification"]["question"].startswith("你想让我")
+    assert clarify_done["output"]["intentCreation"]["skipped"] is True
+    assert intents_stub == []
+
+    again = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(_adapter({"kind": "no_action", "summary": "x"}))
+    )
+    assert again["status"] == "needs_clarification"
+    assert again.get("skipped") is True
+
+    second = await _save_and_submit(
+        db_conn, [_card("c_only", "file", "仅添加材料", meta={"name": "another.txt"})]
+    )
+    second_accepted = _accept(db_conn, second)
+    no_action_adapter = _adapter({
+        "kind": "no_action",
+        "summary": "只是添加材料，当前无需开展任务",
+    })
+    no_action_done = await u.run_understanding(
+        db_conn, second_accepted["id"], adapter_provider=_provider(no_action_adapter)
+    )
+    assert no_action_done["status"] == "no_action"
+    assert no_action_done["output"]["intentCreation"]["skipped"] is True
+    assert intents_stub == []
+
+# --- 5) 无效输出不落成任务；自动修复只调用一次 -----------------------------
+
+
+async def _board_with_scope(conn) -> dict:
+    cards = [
+        _card("c_file", "file", "甲材料正文", meta={"name": "甲.txt"}),
+        _card("c_code", "code", "print(1)"),
+        _card("c_note", "text", "请处理这两份材料", checked=True),
+        _card("c_hidden", "file", NOWHERE, hidden=True, meta={"name": "隐藏.txt"}),
+    ]
+    return await _save_and_submit(conn, cards)
+
+
+INVALID_CASES = [
+    (
+        "越权操作",
+        _intent_payload([{"op": "delete_card", "cardId": "c_file"}]),
+        "不允许的操作",
+    ),
+    (
+        "引用范围外对象",
+        _intent_payload([{"op": "group_cards", "cardIds": ["c_file", "c_hidden"]}]),
+        "不在本次可见范围",
+    ),
+    (
+        "材料 id 不在解析结果里",
+        _intent_payload(
+            [{"op": "add_reply_card", "content": "结论"}],
+            basis=[{"cardId": "c_note", "role": "material", "version": "v1"}],
+        ),
+        "不在本次解析出的材料里",
+    ),
+    (
+        "结构损坏",
+        "这是一段普通话，不是 JSON 对象。",
+        "没有 JSON 对象",
+    ),
+]
+
+
+@pytest.mark.parametrize("name,payload,fragment", INVALID_CASES)
+async def test_invalid_output_never_becomes_tasks(
+    db_conn, fake_materials, intents_stub, name, payload, fragment
+):
+    result = await _board_with_scope(db_conn)
+    accepted = _accept(db_conn, result)
+    adapter = _adapter(payload, payload)  # 修复调用同样给无效输出
+    done = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(adapter)
+    )
+
+    assert done["status"] == "failed", name
+    assert done["validation"]["ok"] is False
+    assert done["validation"]["reasons"], name
+    assert fragment in "；".join(done["validation"]["reasons"]), name
+    assert done["error"] and len(done["error"]) > 0, name
+    assert intents_stub == [], name
+    # 自动修复**只调用一次**：一共两次模型调用，不会无限重试
+    assert len(adapter.requests) == 2, name
+    assert done["finishedAt"] is not None
+
+
+async def test_repair_runs_at_most_once_and_can_succeed(
+    db_conn, fake_materials, intents_stub
+):
+    result = await _board_with_scope(db_conn)
+    accepted = _accept(db_conn, result)
+    invalid = _intent_payload([{"op": "move_card", "cardId": "c_file", "x": "左边", "y": 10}])
+    valid = _intent_payload([{"op": "add_reply_card", "content": "结论", "title": "结论"}])
+    adapter = _adapter(invalid, valid)
+    done = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(adapter)
+    )
+
+    assert done["status"] == "understood"
+    assert done["validation"]["attempts"] == 2
+    assert len(adapter.requests) == 2
+    assert len(intents_stub) == 1
+    repair_messages = adapter.requests[1]["messages"]
+    assert any("没有通过程序校验" in (m.content or "") for m in repair_messages)
+
+
+async def test_missing_adapter_settles_failed_without_raising(db_conn, fake_materials, intents_stub):
+    result = await _board_with_scope(db_conn)
+    accepted = _accept(db_conn, result)
+
+    async def _none():
+        return None
+
+    done = await u.run_understanding(db_conn, accepted["id"], adapter_provider=_none)
+    assert done["status"] == "failed"
+    assert "没有可用的模型适配器" in done["error"]
+    assert done["validation"]["reasons"]
+
+    async def _boom():
+        raise RuntimeError("凭据读取失败：key=sk-should-be-redacted-1234567890")
+
+    failed = await u.run_understanding(db_conn, accepted["id"], adapter_provider=_boom)
+    assert failed["status"] == "failed"
+    assert failed["validation"]["reasons"]
+    assert "sk-should-be-redacted-1234567890" not in json.dumps(failed, ensure_ascii=False)
+    assert intents_stub == []
+
+
+# --- 6) 受理幂等；重试只从冻结快照恢复 -------------------------------------
+
+
+async def test_request_idempotent_and_retry_uses_frozen_snapshot(
+    db_conn, fake_materials, intents_stub
+):
+    result = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_old", "file", "第一版材料：预算 10 万", meta={"name": "旧.txt"}),
+            _card("c_note", "text", "请总结第一版材料", checked=True),
+        ],
+    )
+    submission_id = result["submission"]["id"]
+    first = u.request_understanding(
+        db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
+    )
+    second = u.request_understanding(
+        db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
+    )
+    assert second["reused"] is True
+    assert second["id"] == first["id"]
+    rows = db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()
+    assert int(rows["n"]) == 1
+
+    # 第一次理解失败（模型报错）→ 只从保存的快照重试
+    broken = FakeStreamAdapter([StreamScript(error=RuntimeError("provider down"))])
+    failed = await u.run_understanding(
+        db_conn, first["id"], adapter_provider=_provider(broken)
+    )
+    assert failed["status"] == "failed"
+    assert "provider down" in failed["error"]
+
+    # 把**当前板面**改掉：重试必须仍然用旧快照，读不到新内容
+    board_store.save_board(
+        db_conn,
+        BOARD,
+        {
+            "boardId": BOARD,
+            "cards": [
+                _card("c_new", "file", "第二版材料：预算 99 万", meta={"name": "新.txt"}),
+                _card("c_new_note", "text", "看第二版", checked=True),
+            ],
+            "groups": [],
+            "links": [],
+            "selection": [],
+        },
+        reason="board changed after submit",
+    )
+
+    payload = _intent_payload(
+        [{"op": "add_reply_card", "content": "第一版材料的总结", "title": "总结"}],
+        ref="c_old",
+    )
+    adapter = _adapter(payload)
+    done = await u.run_understanding(
+        db_conn, first["id"], adapter_provider=_provider(adapter)
+    )
+
+    assert done["status"] == "understood"
+    assert done["attempt"] == 2
+    ctx = _request_context(adapter.requests[0])
+    rendered = json.dumps(ctx, ensure_ascii=False)
+    assert "第一版材料" in rendered
+    assert "第二版材料" not in rendered
+    assert "c_new" not in rendered
+    assert set(ctx["visibleCardIds"]) == {"c_old", "c_note"}
+
+    rebuilt = u.build_context(db_conn, board_id=BOARD, understanding_id=first["id"])
+    assert set(rebuilt["visibleCardIds"]) == {"c_old", "c_note"}
+    assert "第二版材料" not in json.dumps(rebuilt, ensure_ascii=False)
+
+
+# --- 7) 材料口径诚实：未读取 / 截断必须如实记录 -----------------------------
+
+
+async def test_material_honesty_records_truncation_and_unread(db_conn, fake_materials):
+    long_text = "正文段落。" * 2000
+    result = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_long", "code", long_text, meta={"language": "text"}),
+            _card("c_url", "url", "https://example.invalid/page", meta={"title": "网页地址"}),
+            _card("c_note", "text", "请整理这些材料", checked=True),
+        ],
+    )
+    accepted = _accept(db_conn, result)
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=accepted["id"])
+
+    assert context["limits"]["truncated"] is True
+    assert context["limits"]["unreadRanges"]
+    truncated = [m for m in context["materials"] if m["cardId"] == "c_long"][0]
+    assert truncated["truncated"] is True
+    assert len(truncated["text"]) <= u.MAX_MATERIAL_CHARS
+    assert context["honesty"]["complete"] is False
+    assert context["honesty"]["unreadSources"]["url_address_only"] == 1
+    assert "未" in context["honesty"]["claim"]
+    notes = "；".join(context["honesty"]["notes"])
+    assert "只拿到地址" in notes
+    assert "其余未读取" in notes
+    assert context["limits"]["usedChars"] <= u.MAX_CONTEXT_CHARS
+
+    done = await u.run_understanding(
+        db_conn,
+        accepted["id"],
+        adapter_provider=_provider(_adapter({"kind": "no_action", "summary": "先不动"})),
+    )
+    assert done["status"] == "no_action"
+    # 诚实口径也随上下文一起进模型：模型不能假装读过没读到的东西
+    assert done["hasContext"] is True
+
+
+async def test_memory_only_records_cooperation_relevant_entries(db_conn, fake_materials, intents_stub):
+    result = await _save_and_submit(
+        db_conn,
+        [
+            _card("c_m", "file", "材料甲", meta={"name": "甲.txt"}),
+            _card("c_note", "text", "请比较材料并给出结论", checked=True),
+        ],
+    )
+    accepted = _accept(db_conn, result)
+    payload = _intent_payload(
+        [{"op": "add_reply_card", "content": "结论", "title": "结论"}], ref="c_m"
+    )
+    payload["memory"] = [
+        {"text": "用户倾向用对比得出结论", "kind": "conclusion"},
+        {"text": json.dumps({"cards": [{"id": "c_m"}]}, ensure_ascii=False), "kind": "basis"},
+    ]
+    done = await u.run_understanding(
+        db_conn, accepted["id"], adapter_provider=_provider(_adapter(payload))
+    )
+    assert done["status"] == "understood"
+    memory = done["memory"]
+    kinds = {record.get("provenance") for record in memory}
+    assert "user_statement" in kinds
+    assert "pending_suggestion" in kinds
+    dumped = "；".join(str(record.get("reason") or "") for record in memory)
+    assert "整块板面" in dumped
+    for record in memory:
+        if record.get("stored"):
+            assert record["state"] in ("pending_review", "active")
+    # 未获准的内容不会被自动激活
+    assert all(record.get("state") != "active" for record in memory if record.get("stored"))
