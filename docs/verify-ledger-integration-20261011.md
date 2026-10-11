@@ -200,7 +200,7 @@ gh workflow run targeted-verify.yml -f ref=<ref> -f sha=<sha> -f targets=docs
 | --- | --- |
 | 分支 | `wt/irm-int-d-ci`（起点 `c6a03b1`） |
 | 首个提交 SHA | `750be8105996eb1111a7494c43fc9d444a99a32b` |
-| 最终 SHA | 见 §7.1（本台账回填 SHA 后的提交；以那条为准） |
+| 台账记录时的分支末端 SHA | `6629e39aa43d3570a2f2b2a83e77880b4c9a3b89`（本台账这次回填自身再产生一个提交，见 §7.1） |
 | 改动文件 | `.github/workflows/ci.yml`、`.github/workflows/targeted-verify.yml`、`.github/actions/verify-checkout/action.yml`、`scripts/targeted-verify/verify_sha.py`、`scripts/targeted-verify/test_verify_sha.py`、`scripts/targeted-verify/verify_workflow_contract.py`、`docs/verify-ledger-integration-20261011.md` |
 
 ### 7.1 提交记录
@@ -208,7 +208,8 @@ gh workflow run targeted-verify.yml -f ref=<ref> -f sha=<sha> -f targets=docs
 | 提交 | 说明 |
 | --- | --- |
 | `750be81` | ci 触发去重 + 定向验证入口 + 证据脚本 + 本台账 |
-| 待填 | 台账回填与后续修正（以分支末端 SHA 为准） |
+| `f583497` | 定向入口改用长参数筛选用例名；台账回填；`--actual-from` 语义收紧 |
+| `6629e39` | 修正断言通过时仍打印「缺少…」的误导性 detail |
 
 > 本分支**不推送**：推送与全量 CI 由 Lead 执行。台账记录 SHA 时用分支内实际提交。
 
