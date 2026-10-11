@@ -182,14 +182,23 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 | frozen worker (windows) | ✅ 成功 |
 | install e2e (windows-latest) | ✅ 成功 |
 | backend (windows-latest) | ❌ 失败（1 条用例） |
-| backend (py3.11) | ❌ 失败（**基础设施**：runner 失联） |
-| backend (py3.12) | ❌ 失败（**基础设施**：runner 失联） |
+| backend (py3.11) | ❌ 失败（真因见下：**仓库内的探针把 runner 一起杀了**，不是基建抖动） |
+| backend (py3.12) | ❌ 失败（同上） |
 
-**两个 Linux backend 任务的失败原因**：GitHub 注解是
-「The hosted runner lost communication with the server. Anything in your workflow that
-terminates the runner process, starves it for CPU/Memory, or blocks its network access can
-cause this error.」——两个任务各自跑了很久（远超历史 ~12 分钟）之后 runner 失联，
-**没有任何用例断言失败**。这是 CI 基础设施问题，不是产物回归。
+**两个 Linux backend 任务的失败原因（已定位）**：GitHub 注解是
+「The hosted runner lost communication with the server. ...」。起初只能按基础设施问题记录，
+随后用一个**临时诊断工作流**（把整套用例**按文件**跑、每个文件放进自己的会话并加 180s 上限，
+这样即使某个文件自杀也不会带走 runner）拿到证据，真因是仓库内的缺陷：
+
+- `scripts/sr-verify/probes.py` 的 `kill_tree()` 在 POSIX 上无条件
+  `os.killpg(os.getpgid(pid), SIGKILL)`；
+- 诱饵进程由 `subprocess.Popen` 启动、与调用方**同组**，`os.getpgid()` 于是返回
+  **调用方自己的组 id** —— 整组（pytest + runner 的 agent）被 SIGKILL；
+- 逐文件诊断里 `tests/test_sr_verify_process.py` 正是 **EXIT=137、3 秒即死**；单进程整跑
+  则表现为「跑到 ~47 分钟后失联、日志一条都不上传」。Windows 走 `taskkill /T` 按 pid 遍历，
+  所以只有 Linux 中招。
+
+修法与反例见下一节的**缺口三**。
 
 **`backend (windows-latest)` 失败定位（既有问题，不是本次两项修复的回归）**
 
@@ -241,6 +250,26 @@ cause this error.」——两个任务各自跑了很久（远超历史 ~12 分�
 
 - 反例（修复后）：同一装置下这次请求登记为 `requests=1 / incomplete=1`，且不写任何 token 数。
 
+**缺口三（CI 层面，独立于上面两处）：探针收尾在 Linux 上把 runner 一起 SIGKILL**
+
+- 反例（修复前）：`tests/test_sr_verify_process.py` 单独在 Linux 上跑 → **EXIT=137、3 秒即死**；
+  单进程整跑表现为 `backend (py3.11)/(py3.12)` 跑到 ~47 分钟后
+  `The hosted runner lost communication`、**任务日志一条都不上传**（Windows 一直绿）。
+- 根因：`scripts/sr-verify/probes.py::kill_tree()` 的 POSIX 分支无条件
+  `os.killpg(os.getpgid(pid), SIGKILL)`；诱饵进程与调用方同组 → `os.getpgid()` 返回调用方
+  自己的组 → 整组被端掉。
+- 修法：① `kill_tree()` 只在目标**自己就是组长**（`pgid == pid` 且不是我们的组）时才
+  `killpg`，否则只 `os.kill` 那一个 pid；② 诱饵改为自立进程组（POSIX `start_new_session`），
+  按组收割因此只可能命中它自己。
+- 顺带修掉两处「考平台而不是考契约」的 Linux-only 用例（不修的话探针修好后 Linux 照样红）：
+  `test_sr_b_exit_code.py` 的 shell 非零退出码用例写死了 Windows 的 `exit /b 7`（Linux 的 sh
+  报 `Illegal number: /b`，退出码成了 2）；`test_sr_a_computer.py` 的假 git 只造 `git.bat`
+  （Linux 的 `shutil.which` 直接跳到真实 `/usr/bin/git`，判定自然是 auto）。两处都改成按平台
+  造装置，**断言一字未放松**。
+- 反例（修复后）：Linux CI 全绿（run `38117123246`，backend (py3.11) 8 分钟 /
+  (py3.12) 9 分钟）；同一纪律的 `sandbox.py` 加固由
+  `backend/tests/test_main_closeout_process_group_scope.py` 钉住（含探针 `kill_tree` 的两条判定）。
+
 ## 十、本轮验证结果
 
 > 定向与全量都在本机（Windows）跑；命令与 AGENTS.md 一致。数值见下表。
@@ -251,6 +280,8 @@ cause this error.」——两个任务各自跑了很久（远超历史 ~12 分�
 | --- | --- | --- |
 | 缺口一反例（本轮新增） | `pytest tests/test_main_closeout_migration_objects.py` | 13 passed |
 | 缺口二反例（本轮新增） | `pytest tests/test_main_closeout_streaming_accounting.py` | 12 passed |
+| 缺口三反例（本轮新增） | `pytest tests/test_main_closeout_process_group_scope.py` | 11 collected（Windows 本机 5 skipped，POSIX 分支由 Linux CI 真跑） |
+| 缺口三顺带修正的两个用例 | `pytest tests/test_sr_a_computer.py tests/test_sr_b_exit_code.py tests/test_sr_verify_process.py` | 108 + 6 + 3 passed（本机 Windows） |
 | 既有 B01 清单 / 独立验证 | `pytest tests/test_fu_w3_b01_schema.py tests/test_fu_verify_b01_migration.py` | 8 + 7 passed |
 | 流式契约 / 记账 / 预算 / 迁移纪律 | `pytest tests/test_streaming_deltas.py tests/test_streaming_usage_accounting.py tests/test_migrations_append_only_verify.py tests/test_rm_d_m10_usage_ledger.py tests/test_rm_d_m09_budget.py tests/test_rm_verify_m07_m09_m10_c01.py` | 96 / 3 / 2 / 12 / 8 / 5 passed |
 | R8 取消用例（合并 CI 的红点）本机复跑 | `pytest tests/test_r8_cancel_target_verify.py` | 4 passed |
@@ -259,18 +290,17 @@ cause this error.」——两个任务各自跑了很久（远超历史 ~12 分�
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 后端全量 | `uv run --frozen pytest`（本机用仓库自带 venv 的同一套 pytest） | 3334 passed / 11 skipped / 0 failed（746 秒） |
+| 后端全量 | `uv run --frozen pytest`（本机用仓库自带 venv 的同一套 pytest） | 收集 **3345** 项，**exit 0（全绿）**，约 15 分钟；交付前在修复后的代码上干净重跑（无并发编辑） |
 | 前端类型检查 | `npx vue-tsc --noEmit` | exit 0 |
 | 前端全量 | `npm test` | 205 files / 1592 tests passed |
 | 文档一致性 | `python scripts/check_docs.py`（含 `--selftest`） | exit 0（36 个里程碑条目；自检 6 个场景全绿） |
 | 发布闸门自检 | `python scripts/release_gate.py --selftest` | PASS |
 | 评测基线 | `uv run --frozen python -m agent.eval.run` | 与基线 `7ff5e2e` **逐项相等**：在 `7ff5e2e` 的独立 worktree 里跑同一条命令并深度比较，**0 差异** |
 
-**本轮分支 CI**（绑定实际 SHA 与 run ID，**不是全绿**）
+**本轮分支 CI（修复前的那次）**
 
-run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
-被测代码与本分支最终代码**逐字相同**（其后只有本文档的补充提交，不改任何代码；PR 上的
-再次运行因此是同代码的另一次 run）。
+run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）
+——记录当时的状态，便于对照；它跑的是**修复前**的代码。
 
 | 任务 | 结果 |
 | --- | --- |
@@ -284,10 +314,30 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
 | backend (py3.11) / (py3.12) | ⏳ 收尾时仍未结束；同一份代码在原合并 run 上的同类任务最终是「runner 失联」（基础设施，不是断言失败） |
 
 关于这个红点：本机 Windows 复跑 `tests/test_interactive_during_heavy_work.py` 为
-**13 passed / 4 skipped**，且同一份代码在本机跑完整后端全量是 **3334 passed / 11 skipped /
+**13 passed / 4 skipped**，且当时那棵树上本机跑完整后端全量是 **3334 passed / 11 skipped /
 0 failed**；该用例量的是「慢嵌入期间事件循环的最大停顿」，阈值 100 ms 在负载高的共享 runner
 上会被压线越过。它与本次两项修复没有交集（那条路径用 `AsyncMock` 的 adapter，不经过任何
 记账入口）。**不通过反复重跑直到变绿**：按负载敏感的既有问题如实记录。
+
+**本轮分支 CI（最终，全绿）**
+
+run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)（push，SHA
+`451414aca4018070e198e1fdcd1e314f269ecff1`，即本分支修复后的代码）：
+
+| 任务 | 结果 |
+| --- | --- |
+| docs consistency | ✅ 成功 |
+| frontend | ✅ 成功 |
+| rust (ubuntu-24.04) | ✅ 成功 |
+| rust (windows-latest) | ✅ 成功 |
+| frozen worker (windows) | ✅ 成功 |
+| install e2e (windows-latest) | ✅ 成功（12 分钟） |
+| backend (windows-latest) | ✅ 成功（17 分钟） |
+| backend (py3.11) | ✅ 成功（8 分钟） |
+| backend (py3.12) | ✅ 成功（9 分钟） |
+
+同一 SHA 的 pull_request run（`38117125754`）同样跑完整 CI。Linux backend 用时从
+「47–52 分钟后失联」回到 8–9 分钟，正是缺口三被修掉的直接证据。
 
 ## 十一、回退说明（代码回退 ≠ 数据库回退）
 
@@ -315,9 +365,14 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）。
    `test_health_probe_stays_responsive_while_slow_prediction_runs` 的 `gap_ms < 100` 阈值上
    （实测 104 ms；本机复跑该文件 13 passed / 4 skipped）。与本次两项修复无交集，
    按**负载敏感**记录，不用重跑掩盖。
-3. **原合并 CI 的两个 Linux backend 任务**最终失败，但 GitHub 给出的原因是 runner 失联
-   （基础设施），不是用例断言；本轮分支的同类任务在收尾时仍未结束。
-4. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
+3. **原合并 CI 的两个 Linux backend 任务**最终失败；真因已定位并修掉（缺口三：探针收尾误杀
+   runner agent，不是基础设施抖动）。修复后本轮分支的 Linux backend 任务是绿的
+   （run `38117123246`）。
+4. **负载敏感的既有用例**：本机一次（与编辑并发、机器同时在跑别的负载）观察到
+   `tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`
+   偶发红（诊断显示闸门释放后累计调用=1，预期 0）；同一代码在干净重跑与 CI 上都是绿的。
+   与本次三处修复无交集，按**负载敏感**记录，未做与收尾无关的改动。
+5. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
 
 **最终状态**
 

@@ -3340,16 +3340,26 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 未请求就发现能力不支持则零记账；`stream_options` 被拒后的重试在发出前重新核对预算。
 对照装置：`backend/tests/test_main_closeout_streaming_accounting.py`。
 
+**缺口三（CI 层面）：Linux 上探针收尾把 runner 一起 SIGKILL。** `scripts/sr-verify/probes.py`
+的 `kill_tree()` 在 POSIX 上无条件 `os.killpg(os.getpgid(pid), SIGKILL)`；诱饵进程与调用方
+**同组**，`os.getpgid()` 返回的正是调用方自己的组 → `tests/test_sr_verify_process.py` 跑到收尾时
+把 pytest 连同 **runner 的 agent** 一起杀掉（Linux 任务表现为「跑到 ~47 分钟后失联、日志一条都
+不上传」，Windows 走 taskkill /T 所以一直绿；定位手段是把整套用例按文件跑、每文件独立会话）。
+修法：只在目标**自己就是组长**时才按组收割，否则只杀那一个 pid；诱饵改为自立进程组。顺带修掉
+两处「考平台而不是考契约」的 Linux-only 用例（写死 `exit /b 7`、只造 `git.bat`），断言未放松。
+对照装置：`backend/tests/test_main_closeout_process_group_scope.py` + Linux CI 实跑。
+
 ### 六、验证与未验证项
 
 定向（两处缺口的反例、受影响面）与交付前的一次全量后端、前端类型检查与全量、`check_docs.py`、
 评测基线对比：结果与本轮分支 CI 的 run ID 逐条记在
 `docs/integration/2026-10-11-streaming-into-main.md`。
 
-本轮分支 CI：run `38078800507`（SHA `6078b613b`，代码与本分支最终代码一致）——
-docs / frontend / rust（两个平台）/ frozen worker / install e2e 成功；`backend (windows-latest)`
-失败在「慢推理期间事件循环停顿」的 100 ms 阈值上（实测 104 ms，本机复跑该文件 13 passed
-/ 4 skipped，整份后端全量 3334 passed / 0 failed）；两个 Linux backend 任务在收尾时未结束（同一份代码在原合并 run 上的同类任务最终是 runner 失联，属基础设施）。
+本轮分支 CI：**run `38117123246`（SHA `451414a`）9/9 全绿** —— backend (py3.11) 8 分钟 /
+(py3.12) 9 分钟 / (windows-latest) 17 分钟，外加 docs consistency / frontend / rust（两个平台）/
+frozen worker / install e2e（12 分钟）。修复前的 run `38078800507` 曾红在「慢推理期间事件循环
+停顿」的 100 ms 阈值上（实测 104 ms，本机复跑该文件 13 passed / 4 skipped），那是负载敏感的
+既有问题；Linux backend 当时的「runner 失联」真因是上面的缺口三。
 **未验证（不粉饰）**：Windows 桌面实机走查（附件发送与中止、重发、历史打开、关闭清理、窄窗口）
 本轮仍未做——本检出没有构建好的桌面壳/安装包，Playwright 也未安装，实机交互流程无法在本会话执行；
 组件级测试不能替代实机结论。
