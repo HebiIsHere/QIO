@@ -170,10 +170,12 @@ async def test_list_returns_rows_with_real_shape_and_filters_by_submission(
 
 
 async def test_list_without_understanding_module_is_a_clear_503(client, monkeypatch):
-    import agent.interactive as interactive_pkg
-
-    monkeypatch.delitem(sys.modules, "agent.interactive.understanding", raising=False)
-    monkeypatch.delattr(interactive_pkg, "understanding", raising=False)
+    # 替换加载点（不是删 sys.modules）：B 的模块真的在磁盘上时，删 sys.modules 已拦不住 import
+    monkeypatch.setattr(
+        interactive_store,
+        "_load_understanding_module",
+        lambda: (None, "理解模块尚未接入（测试模拟）"),
+    )
 
     response = await client.get(f"/api/interactive/boards/{BOARD}/understanding")
     assert response.status_code == 503
@@ -326,11 +328,12 @@ async def test_cancel_stops_a_running_background_understanding(client, db_conn, 
 
 
 async def test_cancel_without_understanding_module_is_a_clear_503(client, db_conn, monkeypatch):
-    import agent.interactive as interactive_pkg
-
     _insert(db_conn, "u_alone", status="accepted")
-    monkeypatch.delitem(sys.modules, "agent.interactive.understanding", raising=False)
-    monkeypatch.delattr(interactive_pkg, "understanding", raising=False)
+    monkeypatch.setattr(
+        interactive_store,
+        "_load_understanding_module",
+        lambda: (None, "理解模块尚未接入（测试模拟）"),
+    )
 
     response = await client.post(f"/api/interactive/boards/{BOARD}/understanding/u_alone/cancel")
     assert response.status_code == 503

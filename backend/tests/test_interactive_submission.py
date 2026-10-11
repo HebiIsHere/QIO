@@ -744,11 +744,14 @@ def test_acceptance_failure_keeps_changes_checks_and_baseline(db_conn, understan
 
 
 def test_missing_understanding_module_fails_acceptance_without_crashing(db_conn, monkeypatch):
-    """B 还没合并：受理不可用 → 按受理失败处理（不抛异常、保留勾选、不更新基准）。"""
-    import agent.interactive as interactive_pkg
+    """理解模块不可用 → 受理不可用：按受理失败处理（不抛异常、保留勾选、不更新基准）。
 
-    monkeypatch.delitem(sys.modules, "agent.interactive.understanding", raising=False)
-    monkeypatch.delattr(interactive_pkg, "understanding", raising=False)
+    模拟方式：直接替换**加载点**，而不是删 sys.modules —— B 的 understanding.py
+    真的在磁盘上之后，删 sys.modules 拦不住 import，那种模拟会失效。
+    """
+    monkeypatch.setattr(
+        submission, "_load_understanding", lambda: (None, "理解模块不可用（测试模拟）")
+    )
     note = _note("理解模块缺失", checked=True)
     _save(db_conn, _state([note]))
 
