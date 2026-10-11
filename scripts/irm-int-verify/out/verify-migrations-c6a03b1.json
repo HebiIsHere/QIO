@@ -1,0 +1,231 @@
+{
+ "script": "scripts/irm-int-verify/verify_migrations.py",
+ "generated_at": "2026-10-11T13:33:39.078354+00:00",
+ "worktree": "D:\\qio-dev\\qio-irm-int-e",
+ "branch": "wt/irm-int-e-verify",
+ "head": "11af69fb2a7970af63d370c06979b2b19f63d16e",
+ "schema_version": 38,
+ "compensation_version": 38,
+ "migrations": 35,
+ "real_db": "C:\\Users\\zxy\\AppData\\Roaming\\qio\\app.db",
+ "checks_total": 43,
+ "checks_failed": 0,
+ "passed": true,
+ "checks": [
+  {
+   "check": "A1 版本到顶",
+   "ok": true,
+   "detail": "version=38 SCHEMA_VERSION=38"
+  },
+  {
+   "check": "A2 必需对象齐全",
+   "ok": true,
+   "detail": "（无）"
+  },
+  {
+   "check": "A3 schema_objects_report.complete",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A4 真实模型对象存在（board_understanding）",
+   "ok": true,
+   "detail": "board_understanding"
+  },
+  {
+   "check": "A4 真实模型对象存在（board_executions）",
+   "ok": true,
+   "detail": "board_executions"
+  },
+  {
+   "check": "A4 真实模型对象存在（idx_board_understanding_request）",
+   "ok": true,
+   "detail": "idx_board_understanding_request"
+  },
+  {
+   "check": "A4 真实模型对象存在（idx_board_executions_board）",
+   "ok": true,
+   "detail": "idx_board_executions_board"
+  },
+  {
+   "check": "A5 board_intents.goal 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A5 board_intents.expected 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A5 board_intents.operations 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A5 board_intents.basis 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A5 board_intents.intent_key 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A5 board_intents.understanding_id 存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "A6 版本行数 == 迁移条数且无重复",
+   "ok": true,
+   "detail": "rows=35 migrations=35"
+  },
+  {
+   "check": "B1 升级到最新版本",
+   "ok": true,
+   "detail": "22 -> 38 (SCHEMA_VERSION=38)"
+  },
+  {
+   "check": "B2 升级后对象齐全",
+   "ok": true,
+   "detail": "（无）"
+  },
+  {
+   "check": "B3 既有表行数不变（升级不改用户数据）",
+   "ok": true,
+   "detail": "{}"
+  },
+  {
+   "check": "B4 新增表都来自未应用的迁移语句",
+   "ok": true,
+   "detail": "new=['attachments', 'board_drafts', 'board_executions', 'board_intents', 'board_pending', 'board_state_snapshots', 'board_states', 'board_submissions', 'board_understanding', 'boards', 'instances', 'pending_approvals', 'record_owners', 'turn_journal'] 不在迁移里的=[]"
+  },
+  {
+   "check": "B5 升级后真实模型两张表存在",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "C1 缺口被按对象检出",
+   "ok": true,
+   "detail": "表 board_understanding；列 board_intents.goal；索引 idx_board_understanding_board, idx_board_understanding_request, idx_board_understanding_submission, idx_board_executions_board"
+  },
+  {
+   "check": "C2 版本不变（补偿不是新迁移）",
+   "ok": true,
+   "detail": "version=38"
+  },
+  {
+   "check": "C3 补偿后对象齐全",
+   "ok": true,
+   "detail": "（无）"
+  },
+  {
+   "check": "C4 被删的表已补回",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "C5 被删的索引已补回",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "C6 被删的列已补回",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "C7 补回的表可用",
+   "ok": true,
+   "detail": "rows=0"
+  },
+  {
+   "check": "C8 补偿可重复触发",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "D1 三次启动版本稳定",
+   "ok": true,
+   "detail": "[38, 38, 38]"
+  },
+  {
+   "check": "D2 版本行不重复、条数稳定",
+   "ok": true,
+   "detail": "rows=35"
+  },
+  {
+   "check": "D3 重复启动无缺对象",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "E1 存量库停在 36",
+   "ok": true,
+   "detail": "36"
+  },
+  {
+   "check": "E2 升级到最新版本",
+   "ok": true,
+   "detail": "36 -> 38"
+  },
+  {
+   "check": "E3 草稿正文不变",
+   "ok": true,
+   "detail": "{\"c1\":\"旧草稿\"}"
+  },
+  {
+   "check": "E4 板面版本与正文不变",
+   "ok": true,
+   "detail": "seq=7"
+  },
+  {
+   "check": "E5 旧意图行保留且新列为默认值",
+   "ok": true,
+   "detail": "('旧任务', 'pending', '', '', '[]', '[]', '', '')"
+  },
+  {
+   "check": "E6 提交记录保留",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "E7 升级后对象齐全",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "I1 SCHEMA_VERSION == 最大迁移编号",
+   "ok": true,
+   "detail": "38 vs 38"
+  },
+  {
+   "check": "I2 补偿编号在 MIGRATIONS 里",
+   "ok": true,
+   "detail": "COMPENSATION_VERSION=38"
+  },
+  {
+   "check": "I3 补偿 == c-2 全部语句 + c-1 新增语句",
+   "ok": true,
+   "detail": "c=38"
+  },
+  {
+   "check": "I4 真实模型对象首次出现在迁移 37（37/38 为已交付历史）",
+   "ok": true,
+   "detail": "first_real=37"
+  },
+  {
+   "check": "I5 历史迁移（<37）不含真实模型对象",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "I6 REQUIRED_OBJECTS 每项都有补偿语句",
+   "ok": true,
+   "detail": ""
+  }
+ ]
+}

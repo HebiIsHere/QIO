@@ -1,0 +1,16 @@
+﻿
+> qio-frontend@0.1.14 test
+> vitest run src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts src/acceptance-state-recovery/f10-submit-refresh.test.ts
+
+
+ RUN  v4.1.10 D:/qio-dev/qio-irm-int-e/frontend
+
+ ✓ src/acceptance-state-recovery/f10-submit-refresh.test.ts (3 tests) 12ms
+ ✓ src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts (2 tests) 14ms
+
+ Test Files  2 passed (2)
+      Tests  5 passed (5)
+   Start at  22:03:56
+   Duration  2.21s (transform 369ms, setup 40ms, import 661ms, tests 26ms, environment 3.23s)
+
+

@@ -1,0 +1,20 @@
+﻿
+> qio-frontend@0.1.14 test
+> vitest run src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+
+
+ RUN  v4.1.10 D:/qio-dev/qio-irm-int-e/frontend
+
+stdout | src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+[e-wire] mode=live  base=http://127.0.0.1:8848
+
+ ✓ src/__irm_int_e_probe__/e-wire-identity.probe.test.ts (3 tests) 724ms
+     ✓ 活体：真实 services + 真后端（提交 → 查证 → 换身份 404 → 同身份不同内容 409）  340ms
+     ✓ 活体：store 级查证 —— 命中恢复受理事实，换身份保持 unknown  381ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  22:09:44
+   Duration  2.90s (transform 182ms, setup 19ms, import 265ms, tests 724ms, environment 1.56s)
+
+
