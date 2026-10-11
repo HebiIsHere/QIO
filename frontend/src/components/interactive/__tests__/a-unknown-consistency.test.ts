@@ -5,10 +5,15 @@
  *    **合成状态**（store.submissionStage）、**按钮**（主提交按钮文案）、**文案**（未知区块）。
  *    四处说的是同一件事：结果未知、不会自动重复提交、重试沿用同一个请求身份。
  *
- * ⑤ 材料 / 附件入口：互动模式的材料入口是 AddMenu（五类：文字 / 文件 / 图片 / 代码 / 网址），
- *    由 BoardToolbar 常驻渲染 —— 这里挂真实组件断言入口在、文件与图片仍关联附件。
- *    悬浮聊天（ChatDock）**只发文字**（契约 §8.3），未决发送的原文不写回输入框这一条
- *    由 components/__tests__/b-chatDockPendingSend.test.ts 用真实 ChatDock DOM 证明。
+ * ⑤ 材料 / 附件入口（**口径以 Lead 2026-10-11 裁决为准，勿误读**）：
+ *    任务书那句「材料/附件入口 + 未决发送处理都在」的验收口径是**两者都不能丢**，
+ *    不是「ChatDock 必须有附件按钮」：
+ *    - 材料 / 附件入口在 **BoardToolbar → AddMenu**（五类：文字 / 文件 / 图片 / 代码 / 网址），
+ *      由本文件挂真实组件断言入口在、文件与图片仍关联真实附件；
+ *    - 未决发送处理在 **ChatDock**：它按冻结契约 §8.3 **只发文字**，
+ *      「受理未知时不把原文放回输入框」由 components/__tests__/b-chatDockPendingSend.test.ts
+ *      用真实 ChatDock DOM 证明。
+ *    Lead 裁决：**不要给 ChatDock 增加附件入口**（那会改变它只发文字的契约与样式边界）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
