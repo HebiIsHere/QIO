@@ -101,7 +101,8 @@ concurrency:
 | workflow | `.github/workflows/ci.yml`（全量矩阵） |
 | 对象 SHA | `28e5752507c934fdabade754ffe2f3cb97547af3` |
 | CI run ID / attempt | **38149965943 / attempt 1**（push 触发，run 内 `ci dedup preflight` 确认去重键 `ci-CI-28e5752…`，同一提交只有这一个 run） |
-| 各 job 结论 | `ci dedup preflight` ✅ / `frontend` ✅ / `rust (ubuntu-24.04)` ✅ / `rust (windows-latest)` ✅ / `frozen worker (windows)` ✅ / **`docs consistency` ❌** / `backend (py3.11)`、`backend (py3.12)`、`backend (windows-latest)`、`install e2e` 在该 run 内**未跑完**（本次任务的时间窗口内没有等到结束） |
+| 各 job 结论 | `ci dedup preflight` ✅ / `frontend` ✅（2m42s）/ `rust (ubuntu-24.04)` ✅ / `rust (windows-latest)` ✅ / `frozen worker (windows)` ✅ / `backend (py3.11)` ✅（13m19s）/ `backend (py3.12)` ✅（13m40s）/ `install e2e (windows-latest)` ✅（12m47s）/ **`docs consistency` ❌**（8s）/ `backend (windows-latest)` 交付时仍在运行（本 run 未出结论） |
+| 该 run 实测含义 | 除 docs 任务外，**全部已完成的 job 都通过**，其中包括只有 runner 上才成立的那几项：`install e2e`（NSIS 安装包）、`frozen worker`（真 sidecar 冻结冒烟）、`rust (windows)`（含 Windows 专属启动加固用例）。docs 任务失败的原因见下，与产品代码无关 |
 | 额度 | 用掉 1/1 |
 
 **docs consistency 唯一失败原因（已修，见 `28e5752` 之后的提交）**：docs 任务里新增的
@@ -112,9 +113,21 @@ concurrency:
 `60 assertions passed`、`selftest: 7 checks, 0 failed`、`check_docs.py` 通过、`release_gate.py --selftest` 通过。
 
 **额度约束下的后续处理**：按本轮硬性约束，全量 CI 只有一次，失败后**不得**再触发第二次全量。
-因此修复后的 sha 走 §5 的定向入口（`workflow_dispatch`，显式 checkout 并核验 SHA）只跑
-**失败的那一项**（docs）；原 CI 里未跑完的 `install e2e`（NSIS 安装包，目录内没有定向入口，
-见 §8.3）在本轮**没有执行证据**，按「未验证」记录，不当作通过。
+修复后的 sha 走 §5 的定向入口（`workflow_dispatch`，显式 checkout 并核验 SHA）只跑**失败的那一项**（docs）。
+
+**定向入口在未合并前的结构性阻断（本轮实测，已定性）**：2026-10-11 派出 run
+`38150350556`（`targeted-verify.yml` `targets=docs`，sha `a3c18b5…`，ref 为整合分支）——
+`resolve + assert SHA` 通过，但 `docs / workflow contract` 在第一步就失败：
+`Can't find 'action.yml' … under '/home/runner/work/QIO/QIO/.github/actions/verify-checkout'`。
+
+根因不在代码，而在 GitHub 的 `workflow_dispatch` 语义：**手动派发只能用默认分支上的 workflow 文件**，
+本地 `uses: ./.github/actions/verify-checkout` 这类动作要等仓库里对应文件就位才能解析。
+整合分支尚未合入 main（本轮不自行合并），所以 `targeted-verify.yml` 与那个复合 action
+都还不存在于 main 上，job 在解析阶段即失败。
+
+结论与后续：这不是本轮能靠改 YAML 在未合并状态下修掉的东西（把复合 action 改成内联步骤也只是
+回避同一类前提）。正确做法是**合并进 main 之后**再派发定向入口（届时 workflow 与 action 都在默认分支上）。
+在此之前，§5 的三条硬约束在 GitHub 端仍属**未实跑**；本轮的 CI 失败项修复证据是本地复跑（§4）。
 
 ## 4. 定向验证记录
 
