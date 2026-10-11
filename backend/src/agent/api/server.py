@@ -554,6 +554,11 @@ def create_app(
         - 明确被拒（Key 无效 / 没有该模型权限 / 额度不足）→ verify_state=failed；
         - 只是网络/超时/限流这类临时故障 → **保持原状态**（不能因为一次断网
           就把一把本来可用的钥匙判死），但如实把这次失败告诉用户。
+
+        F09：验证是带 await 的真实调用，期间用户可能已经改了密钥 / 地址 / 模型 /
+        协议。所以开始前先冻结输入指纹（密钥版本 + endpoint + default_model + kind），
+        落库时交给 store 做**条件写入**；指纹对不上就只记「历史结果」，不改动当前
+        可用性、默认项或自动候选。响应与事件都要说清这次结论属于哪一份配置。
         """
         from agent.services.verify import TRANSIENT_REASONS, verify_model
 
@@ -568,8 +573,11 @@ def create_app(
                 "detail": "",
                 "mode": None,
                 "state_kept": False,
+                "result_state": "current",
+                "applies_to_current_config": False,
             }
-        previous = str(meta.get("verify_state") or "unverified")
+        # 冻结这次验证覆盖的输入事实（旧配置的迟到结果靠它被挡下）
+        snapshot = ctx.credentials.verification_snapshot(key_id)
         result = await verify_model(
             secret=secret,
             endpoint=meta.get("endpoint"),
@@ -577,23 +585,42 @@ def create_app(
             kind=meta.get("kind"),
         )
         payload = result.to_dict()
-        if result.ok:
-            ctx.credentials.set_verified(key_id, True)
-            ctx.credentials.promote_default()
-            payload["state_kept"] = False
-        elif result.reason_code in TRANSIENT_REASONS and previous in ("verified", "legacy"):
-            payload.update(state=previous, state_kept=True)
+        recorded = ctx.credentials.set_verified(
+            key_id,
+            result.ok,
+            result.reason_code,
+            input_fingerprint=snapshot["input_fingerprint"],
+            transient=result.reason_code in TRANSIENT_REASONS,
+        )
+        outcome = recorded.get("verify_result") or {}
+        applied = bool(outcome.get("applied"))
+        payload["result_state"] = str(outcome.get("result_state") or "current")
+        payload["applies_to_current_config"] = applied
+        payload["state_kept"] = bool(outcome.get("state_kept"))
+        payload["state"] = str(outcome.get("state") or payload.get("state"))
+        if outcome.get("state_kept"):
             payload["message"] = f"{_verify_failure_message(result)}（这条凭据的状态保持不变）"
-        else:
-            ctx.credentials.set_verified(key_id, False, result.reason_code)
-            payload["state_kept"] = False
+        elif not applied:
+            # 这次结论属于改动前的配置：说成历史结果，状态用当前事实。
+            payload["ok"] = False
+            payload["message"] = (
+                f"{result.message}（这是改动前配置的历史结果，当前配置的状态没有改变）"
+            )
+        if result.ok and applied:
+            ctx.credentials.promote_default()
         updated = ctx.credentials.get_metadata(key_id)
         if updated is not None:
             payload["credential"] = _credential_payload(updated)
         await bus.publish(
             make_event(
                 EventType.CREDENTIAL_STATUS,
-                {"key_id": key_id, "status": payload["state"], "verified": result.ok},
+                {
+                    "key_id": key_id,
+                    "status": payload["state"],
+                    "verified": result.ok and applied,
+                    "result_state": payload["result_state"],
+                    "applies_to_current_config": applied,
+                },
             )
         )
         return payload
