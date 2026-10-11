@@ -1,0 +1,785 @@
+﻿
+
+ RUN  v4.1.10 D:/qio-dev/qa-e
+
+ ❯ frontend/src/stores/__tests__/d5FailedSendRecovery.verify.test.ts (2 tests | 1 failed) 18ms
+     × 【会话层】刷新（新 store）后仍能知道这次失败并取回原文 13ms
+     ✓ 【会话层】currentTopicId=null 发送 → 绑定真实话题 → 受理成功：输入框与草稿都要干净 4ms
+ ❯ frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts (4 tests | 4 failed) 25ms
+     × 【状态】失败原文与归属身份要归属到原发送对应的话题 A 13ms
+     × 【状态】前一次成功的回执不许按「文字相同」把后一次失败原文一并清掉 4ms
+     × 【状态】九次发送九次失败：每一条失败原文都仍可处理 4ms
+     × 【状态】写本机存储时同样不许把最早的一份悄悄裁掉（磁盘已有记录不许在写入时丢失） 3ms
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts (5 tests | 5 failed) 34ms
+     × 【状态】重开后原文已在输入框，用户直接发送成功 → 记录清空 22ms
+     × 【状态】重开后编辑原文再发送：仍算这条记录的重发（M3 编辑后发送），记录清掉 3ms
+     × 【状态】重开后清空输入、再手打相同文字发送成功：记录必须保留（区分手打） 2ms
+     × 【状态】重开后切到别的话题：在别处手打相同文字发送成功不清原话题的记录 2ms
+     × 【状态】再次重开：记录与输入都在，之后发送仍能清掉这条记录 3ms
+ ❯ frontend/src/stores/__tests__/d4ChatDraftRace.verify.test.ts (0 test)
+ ❯ frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts (3 tests | 2 failed) 57ms
+     × 【会话层】刷新后：输入框里是新草稿，失败原文与原因仍能找回，取回时不覆盖新草稿 45ms
+     ✓ 【会话层】未绑定→绑定→发送成功：只清被发送的那一版，迁移后写下的新文字不被误删 7ms
+     × 【会话层】未绑定→绑定→发送失败：原文归到真实话题，用户新输入不被覆盖，刷新后两份都在 4ms
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts (13 tests | 10 failed) 70ms
+     × 【会话层】【模拟刷新】发送中继续输入→失败：输入框是新文字，恢复入口里是失败原文，两份都还在 26ms
+     × 【会话层】连续两次失败：前一份原文不被顶掉，两份都能分别找回 4ms
+     × 【会话层】找回原文不是发送：点恢复只改输入框，绝不自动重试 4ms
+     × 【会话层】「不再保留」只清这一条失败事实：不删草稿、不清输入框、不发送 3ms
+     × 【会话层】A 的失败不插入 B：B 的输入、草稿与恢复入口都不受影响 4ms
+     ✓ 【会话层】未绑定→绑定→成功：已发出的旧文字不再回到输入框，旧键也被清掉 4ms
+     ✓ 【会话层】未绑定→绑定→用户已输入新文字：受理成功不误删新草稿 3ms
+     × 【会话层】迁移时失败：失败原文归到真实话题，入口在 T 里看得到、原文不丢 4ms
+     × 【会话层】迁移后未绑定位置残留的记录会跟着进入真实话题（不丢在占位话题里） 4ms
+     × 【会话层】后一条失败、前一条迟到成功：成功不许删掉新草稿与失败原文 3ms
+     × 【会话层】同一条失败原文被原样重新发出并成功：只清这一条，输入框随之清空 4ms
+     ✓ 【会话层】A→B→A→B：A 的成功回执不许删 B 的草稿，也不许清 B 的失败原文 3ms
+     × 【会话层】本机存储写不进时：内存里保留原文，并给出真实原因（不显示成已保存） 2ms
+ ❯ frontend/src/stores/__tests__/final-b2-chatTopicDrafts.test.ts (7 tests | 2 failed) 122ms
+     ✓ 【状态】A 的新稿写本机失败：切 B 再回 A 仍在，且失败状态可见；重试只保存不发送 11ms
+     ✓ 【状态】当前编辑的是新输入，既有那份进「被让位草稿」；不拼接、不自动发送、不静默覆盖 13ms
+     ✓ 【状态】被让位的那份可以取回/放弃：取回时与当前输入互换，两份仍都保留 9ms
+     ✓ 【状态】关闭重开后两份都还在 12ms
+     ✓ 【状态】写 A 失败时未绑定副本不删；恢复后重试保存才写目标并清理源（不发送） 41ms
+     × 【状态】本机恢复出来的历史未绑定失败：绑定 A 时不搬进 A 30ms
+     × 【状态】本次未绑定失败（有本机发送身份）仍然跟着绑定进入真实话题 4ms
+ ❯ frontend/src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts (1 test | 1 failed) 17ms
+     × 同话题连续九次不同原文全部失败：九份都可找回 16ms
+ ❯ frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts (3 tests | 3 failed) 25ms
+     × 【会话层】互换后记录正文已更新，旧重发成功不许按身份把它删掉 16ms
+     × 【会话层】A 找回原文后切 B，B 手动输入相同文字发送成功，A 的记录必须还在 3ms
+     × 【会话层】未绑定发送→用户输入新稿→绑定 A→切 B→失败：记录必须在 A 找得到 5ms
+ ❯ frontend/src/stores/__tests__/final-b2-readError.test.ts (5 tests | 2 failed) 29ms
+     ✓ 【状态】零条 + 读取失败：failedSendReadError 给出真实原因，不许当成没有记录 10ms
+     ✓ 【状态】零条 + 读取成功：这是「从来没有记录」，不许报读取失败 3ms
+     ✓ 【状态】读不出来时不许虚报「已恢复」：failedSends 保持为空 2ms
+     × 【状态】补进磁盘里存在、内存里还没有的记录；不发送 9ms
+     × 【状态】同 id 的记录以内存为准：磁盘上的旧版本不许覆盖内存里更新的正文 3ms
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts (9 tests | 8 failed) 40ms
+     × 【会话层】未绑定发送→绑定 A→切 B→原请求失败:失败原文归 A,B 一无变化 16ms
+     × 【会话层】绑定 A 后写新文字解除旧草稿保护、再切 C:归属还是 A,切回 A 能取回 3ms
+     × 【会话层】同话题手打相同文字发送成功:先前那条失败记录不许被按文字清掉 3ms
+     × 【会话层】找回原文后原样重发成功:显式关联到这条被重发的记录,只清这一份 2ms
+     × 【会话层】互换过的记录(正文已变):发送成功后不许凭旧关联被删 2ms
+     ✓ 【会话层】老格式(缺身份)的失败记录:同文字发送成功后也必须保留 2ms
+     × 【会话层】同话题九次不同原文全部失败且未放弃:九条全部保留(不许限制在 8 条) 4ms
+     × 【会话层】刷新之后九条失败原文全都在:不许再裁剪一次丢掉磁盘已有记录 4ms
+     × 【会话层】记录只在对应发送成功或用户明确放弃后清理:找回与互换都不算清理 2ms
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d4ChatDraftRace.verify.test.ts [ frontend/src/stores/__tests__/d4ChatDraftRace.ver
+ify.test.ts ]
+Error: Failed to parse source for import analysis because the content contains invalid JS syntax. Install @vitejs/plugi
+n-vue to handle .vue files.
+  Plugin: vite:import-analysis
+  File: D:/qio-dev/qa-e/frontend/src/components/interactive/ChatDock.vue:356:35
+  354|        <header class="panel-head">
+  355|          <span class="panel-title serif">对话</span>
+  356|          <span class="panel-status mono" data-im="chat-status">{{ statusText }}</span>
+     |                                    ^
+  357|          <button class="panel-close" type="button" aria-label="收起对话" @click="store.chatOpen = false">
+  358|            收起
+ ❯ TransformPluginContext._formatLog ../qio/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:42658:41
+ ❯ TransformPluginContext.error ../qio/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:42655:16
+ ❯ TransformPluginContext.transform ../qio/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:40585:14
+ ❯ EnvironmentPluginContainer.transform ../qio/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:42453:18
+ ❯ loadAndTransform ../qio/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:35845:27
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/39]⎯
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯ Failed Tests 38 ⎯⎯⎯⎯⎯⎯⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts > D2 反例：失败原文与新草稿在刷新后同时保留（§11.4） > 【会话层】刷新后：输入框
+里是新草稿，失败原文与原因仍能找回，取回时不覆盖新草稿
+AssertionError: 失败原文没有记进会话层: expected undefined to be '没发出去的原文' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected:
+"没发出去的原文"
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts:95:53
+     93|     vi.mocked(api.sendTurn).mockRejectedValueOnce(new Error("网络中断：请求没有…
+     94|     expect(await session.send("没发出去的原文"), "受控失败居然被当成发送成功").toBe(false);
+     95|     expect(session.failedSend?.text, "失败原文没有记进会话层").toBe("没发出去的原文");
+       |                                                     ^
+     96|
+     97|     // 失败之后用户又写下一条新草稿（还没发送）
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts > D2 反例：未绑定话题迁移后的清理（§11.5） > 【会话层】未绑定→绑定→发送失败：
+原文归到真实话题，用户新输入不被覆盖，刷新后两份都在
+AssertionError: 失败原文没有跟着迁移到真实话题（回到这个话题就找不回了）: expected [] to include '迁移时失败的原文'
+ ❯ frontend/src/stores/__tests__/d5bFailedSendPersist.verify.test.ts:192:7
+    190|       session.failedSendsForTopic("T1").map((r) => r.text),
+    191|       "失败原文没有跟着迁移到真实话题（回到这个话题就找不回了）",
+    192|     ).toContain("迁移时失败的原文");
+       |       ^
+    193|     expect(session.failedSendsForTopic(null).map((r) => r.text), "失败原文…
+    194|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5FailedSendRecovery.verify.test.ts > 场景 5：发送失败后刷新，失败原文与原因不许丢（§11.4） > 【会话层】刷新（新 s
+tore）后仍能知道这次失败并取回原文
+AssertionError: expected undefined to be '服务器挂了的时候写下的原文' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected:
+"服务器挂了的时候写下的原文"
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5FailedSendRecovery.verify.test.ts:87:38
+     85|     const ok = await session.send("服务器挂了的时候写下的原文");
+     86|     expect(ok).toBe(false);
+     87|     expect(session.failedSend?.text).toBe("服务器挂了的时候写下的原文");
+       |                                      ^
+     88|
+     89|     // 用户刷新页面：新的 pinia / 新的 store，内存状态全部重建
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 失败原文是可持久的事实（不是内存槽） > 【会话层】【模拟刷新】发送中继续输入→失败：输入框是新文字，
+恢复入口里是失败原文，两份都还在
+AssertionError: expected [] to deeply equal [ '第一条：会失败的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "第一条：会失败的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:150:76
+    148|     // 输入框里是用户后来写的新文字；失败原文在恢复入口里，两份都还在
+    149|     expect(reloaded.draft).toBe("第二条：后来写的新内容");
+    150|     expect(reloaded.failedSendsForTopic("A").map((record) => record.te…
+       |                                                                            ^
+    151|       "第一条：会失败的话",
+    152|     ]);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 失败原文是可持久的事实（不是内存槽） > 【会话层】连续两次失败：前一份原文不被顶掉，两份都能分别找回
+AssertionError: expected '' to be '第一次失败的话' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 第一次失败的话
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:171:27
+    169|     await session.send("第一次失败的话");
+    170|     session.retryFailedSend(firstAttribution.draftId);
+    171|     expect(session.draft).toBe("第一次失败的话");
+       |                           ^
+    172|
+    173|     // 用户改写后再发一次，同样失败
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 失败原文是可持久的事实（不是内存槽） > 【会话层】找回原文不是发送：点恢复只改输入框，绝不自动重试
+AssertionError: expected '没有需要取回的失败原文' to contain '已有更新文字'
+System.Management.Automation.RemoteException
+Expected: "已有更新文字"
+Received: "没有需要取回的失败原文"
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:224:28
+    222|     const blocked = session.retryFailedSend(attribution.draftId);
+    223|     expect(blocked.ok).toBe(false);
+    224|     expect(blocked.reason).toContain("已有更新文字");
+       |                            ^
+    225|     expect(session.draft).toBe("我先写点别的");
+    226|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 失败原文是可持久的事实（不是内存槽） > 【会话层】「不再保留」只清这一条失败事实：不删草稿、不清输入
+框、不发送
+AssertionError: expected undefined to be truthy
+System.Management.Automation.RemoteException
+- Expected:
+true
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:245:20
+    243|     await session.send("失败原文");
+    244|     const record = session.failedSendsForTopic("A")[0];
+    245|     expect(record).toBeTruthy();
+       |                    ^
+    246|
+    247|     session.draft = "正在写的新内容";
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 A→B 失败隔离与回到原话题取回 > 【会话层】A 的失败不插入 B：B 的输入、草稿与恢复入口都不受
+影响
+AssertionError: expected [] to deeply equal [ 'A 的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "A 的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:292:75
+    290|
+    291|     // 回到 A：失败原文在那里等着，可以取回
+    292|     expect(session.failedSendsForTopic("A").map((record) => record.tex…
+       |                                                                           ^
+    293|     session.currentTopicId = "A";
+    294|     await flushPromises();
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.5 未绑定话题迁移 > 【会话层】迁移时失败：失败原文归到真实话题，入口在 T 里看得到、原文不丢
+AssertionError: expected [] to deeply equal [ '迁移过程中失败的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "迁移过程中失败的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:382:75
+    380|
+    381|     // 失败事实属于真实话题 T（不是 null 的占位位置）
+    382|     expect(session.failedSendsForTopic("T").map((record) => record.tex…
+       |                                                                           ^
+    383|       "迁移过程中失败的话",
+    384|     ]);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.5 未绑定话题迁移 > 【会话层】迁移后未绑定位置残留的记录会跟着进入真实话题（不丢在占位话题里）
+AssertionError: expected [] to deeply equal [ '占位话题里的失败原文' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "占位话题里的失败原文",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:407:76
+    405|     session.draft = "";
+    406|     await session.send("占位话题里的失败原文");
+    407|     expect(session.failedSendsForTopic(null).map((record) => record.te…
+       |                                                                            ^
+    408|       "占位话题里的失败原文",
+    409|     ]);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 多个回执先后到达不互相清错 > 【会话层】后一条失败、前一条迟到成功：成功不许删掉新草稿与失败原文
+AssertionError: expected '' to be '第二条：新的话' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 第二条：新的话
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:450:27
+    448|     session.retryFailedSend(secondAttribution.draftId);
+    449|     await vi.advanceTimersByTimeAsync(400);
+    450|     expect(session.draft).toBe("第二条：新的话");
+       |                           ^
+    451|
+    452|     // 第一条的成功回执此刻才到
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.4 多个回执先后到达不互相清错 > 【会话层】同一条失败原文被原样重新发出并成功：只清这一条，输入框随之清
+空
+AssertionError: expected +0 to be 1 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 1
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:476:53
+    474|     await session.send("重发成功的话");
+    475|     session.retryFailedSend(firstAttribution.draftId);
+    476|     expect(session.failedSendsForTopic("A").length).toBe(1);
+       |                                                     ^
+    477|
+    478|     // 用户原样再发一次：这次受理成功
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d5SendRecovery.test.ts > §11.8 失败原文的持久化失败要如实说 > 【会话层】本机存储写不进时：内存里保留原文，并给出真实原因（不显示成
+已保存）
+AssertionError: expected [] to deeply equal [ '写不进本机的失败原文' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "写不进本机的失败原文",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d5SendRecovery.test.ts:555:77
+    553|       session.retryFailedSend(attribution.draftId);
+    554|
+    555|       expect(session.failedSendsForTopic("A").map((record) => record.t…
+       |                                                                             ^
+    556|         "写不进本机的失败原文",
+    557|       ]);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts > §12.3 反例 4：未绑定 → A → B → 失败，恢复记录不许落在 B > 【
+状态】失败原文与归属身份要归属到原发送对应的话题 A
+AssertionError: 恢复记录落在了 B（当前话题），而未绑定发送的归属已稳定为 A（§12.3）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts:102:7
+    100|       inA.some((record) => record.text === "没发出去的话"),
+    101|       "恢复记录落在了 B（当前话题），而未绑定发送的归属已稳定为 A（§12.3）",
+    102|     ).toBe(true);
+       |       ^
+    103|     expect(
+    104|       inB.some((record) => record.text === "没发出去的话"),
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts > §12.4 反例 5：相同文字两次发送，后失败、前成功 —— 后一次原文不许消失 >
+ 【状态】前一次成功的回执不许按「文字相同」把后一次失败原文一并清掉
+AssertionError: 第二次发送失败后，后那一次的失败原文应该已经被记录: expected +0 to be 1 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 1
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts:136:7
+    134|       session.failedSendsForTopic("topic_t").length,
+    135|       "第二次发送失败后，后那一次的失败原文应该已经被记录",
+    136|     ).toBe(1);
+       |       ^
+    137|
+    138|     // 前一次（更早发出的）此刻才受理成功：只许清理这次发送自己的记录
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts > §12.5 反例 6：九份失败原文，第一份不许被静默淘汰 > 【状态】九次发送九次失
+败：每一条失败原文都仍可处理
+AssertionError: 「第1份失败原文」被静默淘汰了（§12.5：不许自动淘汰用户尚未处理的失败原文）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts:170:9
+    168|         kept.some((record) => record.text === text),
+    169|         "「" + text + "」被静默淘汰了（§12.5：不许自动淘汰用户尚未处理的失败原文）",
+    170|       ).toBe(true);
+       |         ^
+    171|     }
+    172|     expect(
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts > §12.5 反例 6：九份失败原文，第一份不许被静默淘汰 > 【状态】写本机存储时同
+样不许把最早的一份悄悄裁掉（磁盘已有记录不许在写入时丢失）
+AssertionError: 失败原文必须先写进本机存储: expected null to be truthy
+System.Management.Automation.RemoteException
+- Expected:
+true
+System.Management.Automation.RemoteException
+null
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6FailedSendProtection.verify.test.ts:188:40
+    186|     }
+    187|     const persisted = localStorage.getItem("qio.chat.failedSend.v1");
+    188|     expect(persisted, "失败原文必须先写进本机存储").toBeTruthy();
+       |                                        ^
+    189|     const parsed = JSON.parse(persisted as string) as {
+    190|       topics: Record<string, unknown[]>;
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts > §12.5 主智能体反例：失败原文不做静默淘汰 > 同话题连续九次不同原文全部失败：九份都可
+找回
+AssertionError: 九份未处理的失败原文必须全部保留: expected +0 to be 9 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 9
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts:35:73
+     33|       await flushPromises();
+     34|     }
+     35|     expect(session.failedSendsForTopic("T").length, "九份未处理的失败原文必须全部保留"…
+       |                                                                         ^
+     36|     const texts = session.failedSendsForTopic("T").map((r) => r.text);
+     37|     expect(texts).toContain("失败原文 1");
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.3 未绑定发送的失败归属在绑定时就稳定 > 【会话层】未绑定发送→绑定 A→切 B→原请求失败:失败原
+文归 A,B 一无变化
+AssertionError: 失败发生时用户在看的话题(B)不能变成归属: expected [] to deeply equal [ '未绑定就要发出去的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "未绑定就要发出去的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:145:7
+    143|       session.failedSendsForTopic("A").map((record) => record.text),
+    144|       "失败发生时用户在看的话题(B)不能变成归属",
+    145|     ).toEqual(["未绑定就要发出去的话"]);
+       |       ^
+    146|     expect(session.failedSendsForTopic("B"), "切到 B 不许把这次失败记录搬到 B").toE…
+    147|     expect(session.failedSendsForTopic(null), "绑定之后不许再留下占位记录").toEqual…
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.3 未绑定发送的失败归属在绑定时就稳定 > 【会话层】绑定 A 后写新文字解除旧草稿保护、再切 C:归
+属还是 A,切回 A 能取回
+AssertionError: expected [] to deeply equal [ '绑定时还在等回执的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "绑定时还在等回执的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:177:75
+    175|     await sendPromise;
+    176|
+    177|     expect(session.failedSendsForTopic("A").map((record) => record.tex…
+       |                                                                           ^
+    178|       "绑定时还在等回执的话",
+    179|     ]);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.4 成功只处理被这个发送接受的记录 > 【会话层】同话题手打相同文字发送成功:先前那条失败记录不许被按
+文字清掉
+AssertionError: expected +0 to be 1 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 1
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:214:53
+    212|     session.draft = "";
+    213|     await session.send("同一句话");
+    214|     expect(session.failedSendsForTopic("A").length).toBe(1);
+       |                                                     ^
+    215|
+    216|     // 用户**手打**同样的文字再发一次(没有经历「找回」动作),这次成功
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.4 成功只处理被这个发送接受的记录 > 【会话层】找回原文后原样重发成功:显式关联到这条被重发的记录,
+只清这一份
+AssertionError: expected '' to be '找回后要重发的话' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 找回后要重发的话
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:244:27
+    242|     // 用户点「找回」:原文回到输入框(记录保留)
+    243|     session.retryFailedSend(first.draftId);
+    244|     expect(session.draft).toBe("找回后要重发的话");
+       |                           ^
+    245|
+    246|     // 原样再发一次,这次成功
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.4 成功只处理被这个发送接受的记录 > 【会话层】互换过的记录(正文已变):发送成功后不许凭旧关联被删
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:273:39
+    271|     session.draft = "用户自己的草稿";
+    272|     vi.advanceTimersByTime(500);
+    273|     session.swapFailedSendText(record.id);
+       |                                       ^
+    274|     expect(session.draft).toBe("失败的那段原文");
+    275|     // swap 会用新对象替换列表里的条目:改从 store 列表取改正后的记录
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.5 失败原文不做静默淘汰 > 【会话层】同话题九次不同原文全部失败且未放弃:九条全部保留(不许限制在 
+8 条)
+AssertionError: 「每话题保留 8 条」的静默裁剪被废止:第九份不许把第一份挤掉: expected +0 to be 9 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 9
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:327:7
+    325|       kept.length,
+    326|       "「每话题保留 8 条」的静默裁剪被废止:第九份不许把第一份挤掉",
+    327|     ).toBe(9);
+       |       ^
+    328|     expect(kept).toContain("失败原文 1");
+    329|     expect(kept).toContain("失败原文 9");
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.5 失败原文不做静默淘汰 > 【会话层】刷新之后九条失败原文全都在:不许再裁剪一次丢掉磁盘已有记录
+AssertionError: 刷新时重新裁剪会把磁盘已保存的第 9 条直接丢掉: expected +0 to be 9 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 9
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:349:7
+    347|       reloaded.failedSendsForTopic("A").length,
+    348|       "刷新时重新裁剪会把磁盘已保存的第 9 条直接丢掉",
+    349|     ).toBe(9);
+       |       ^
+    350|   });
+    351|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/d6SendProtection.test.ts > §12.5 失败原文不做静默淘汰 > 【会话层】记录只在对应发送成功或用户明确放弃后清理:找回与互换都不算清理
+AssertionError: expected +0 to be 1 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 1
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/d6SendProtection.test.ts:366:53
+    364|     // 找回(放回输入框):记录保留
+    365|     session.retryFailedSend(attribution.draftId);
+    366|     expect(session.failedSendsForTopic("A").length).toBe(1);
+       |                                                     ^
+    367|     // 用户明确放弃:这时候才清理
+    368|     session.discardFailedSend(record.id);
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-chatTopicDrafts.test.ts > 11(c) 与本次发送无关的未绑定失败记录不许被吸收 > 【状态】本机恢复出来的历史未绑定失败
+：绑定 A 时不搬进 A
+AssertionError: expected [] to deeply equal [ '上次会话没发出去的话' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "上次会话没发出去的话",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/final-b2-chatTopicDrafts.test.ts:239:64
+    237|     first.draft = "";
+    238|     await first.send("上次会话没发出去的话");
+    239|     expect(first.failedSendsForTopic(null).map((r) => r.text)).toEqual…
+       |                                                                ^
+    240|
+    241|     // 关闭重开：这份记录只来自本机，与本次会话的发送无关
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-chatTopicDrafts.test.ts > 11(c) 与本次发送无关的未绑定失败记录不许被吸收 > 【状态】本次未绑定失败（有本机发送身
+份）仍然跟着绑定进入真实话题
+AssertionError: expected +0 to be 1 // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- 1
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/final-b2-chatTopicDrafts.test.ts:266:54
+    264|     session.draft = "";
+    265|     await session.send("本次没发出去的话");
+    266|     expect(session.failedSendsForTopic(null).length).toBe(1);
+       |                                                      ^
+    267|
+    268|     session.currentTopicId = "A";
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[29/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-readError.test.ts > retryFailedSendRestore：只重读本机，按 id 合并不覆盖内存 > 【状态】补进磁盘里
+存在、内存里还没有的记录；不发送
+TypeError: Cannot read properties of null (reading 'topics')
+ ❯ frontend/src/stores/__tests__/final-b2-readError.test.ts:132:9
+    130|       topics: Record<string, unknown[]>;
+    131|     };
+    132|     raw.topics["A"] = [
+       |         ^
+    133|       ...(raw.topics["A"] ?? []),
+    134|       {
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[30/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-readError.test.ts > retryFailedSendRestore：只重读本机，按 id 合并不覆盖内存 > 【状态】同 id 
+的记录以内存为准：磁盘上的旧版本不许覆盖内存里更新的正文
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ frontend/src/stores/__tests__/final-b2-readError.test.ts:179:39
+    177|     session.draft = "用户后来写的正文";
+    178|     await vi.advanceTimersByTimeAsync(500);
+    179|     session.swapFailedSendText(record.id);
+       |                                       ^
+    180|     const swapped = session.failedSendsForTopic("A")[0];
+    181|     expect(swapped.text).toBe("用户后来写的正文");
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[31/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-reopenResend.test.ts > 14 重开后直接重发成功：失败记录必须被清掉 > 【状态】重开后原文已在输入框，用户直接发送成功 →
+ 记录清空
+AssertionError: 回到原话题应当能取回失败原文（这是本反例的前提）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ failAndRestoreInA frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:62:51
+     60|   await session.send(text);
+     61|   const restored = session.retryFailedSend(attribution.draftId);
+     62|   expect(restored.ok, "回到原话题应当能取回失败原文（这是本反例的前提）").toBe(true);
+       |                                                   ^
+
+ Test Files  11 failed (11)
+      Tests  38 failed | 14 passed (52)
+   Start at  19:08:08
+   Duration  3.85s (transform 2.44s, setup 0ms, import 4.93s, tests 437ms, environment 30.28s)
+
+     63|   void chatKey;
+     64| }
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:87:5
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[32/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-reopenResend.test.ts > 14 重开后直接重发成功：失败记录必须被清掉 > 【状态】重开后编辑原文再发送：仍算这条记录的重发（
+M3 编辑后发送），记录清掉
+AssertionError: 回到原话题应当能取回失败原文（这是本反例的前提）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ failAndRestoreInA frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:62:51
+     60|   await session.send(text);
+     61|   const restored = session.retryFailedSend(attribution.draftId);
+     62|   expect(restored.ok, "回到原话题应当能取回失败原文（这是本反例的前提）").toBe(true);
+       |                                                   ^
+     63|   void chatKey;
+     64| }
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:110:5
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[33/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-reopenResend.test.ts > 14 重开后直接重发成功：失败记录必须被清掉 > 【状态】重开后清空输入、再手打相同文字发送成功：记
+录必须保留（区分手打）
+AssertionError: 回到原话题应当能取回失败原文（这是本反例的前提）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ failAndRestoreInA frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:62:51
+     60|   await session.send(text);
+     61|   const restored = session.retryFailedSend(attribution.draftId);
+     62|   expect(restored.ok, "回到原话题应当能取回失败原文（这是本反例的前提）").toBe(true);
+       |                                                   ^
+     63|   void chatKey;
+     64| }
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:133:5
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[34/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-reopenResend.test.ts > 14 重开后直接重发成功：失败记录必须被清掉 > 【状态】重开后切到别的话题：在别处手打相同文字发送
+成功不清原话题的记录
+AssertionError: 回到原话题应当能取回失败原文（这是本反例的前提）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ failAndRestoreInA frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:62:51
+     60|   await session.send(text);
+     61|   const restored = session.retryFailedSend(attribution.draftId);
+     62|   expect(restored.ok, "回到原话题应当能取回失败原文（这是本反例的前提）").toBe(true);
+       |                                                   ^
+     63|   void chatKey;
+     64| }
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:159:5
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[35/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-reopenResend.test.ts > 14 重开后直接重发成功：失败记录必须被清掉 > 【状态】再次重开：记录与输入都在，之后发送仍能清掉
+这条记录
+AssertionError: 回到原话题应当能取回失败原文（这是本反例的前提）: expected false to be true // Object.is equality
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- true
+System.Management.Automation.RemoteException
+ ❯ failAndRestoreInA frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:62:51
+     60|   await session.send(text);
+     61|   const restored = session.retryFailedSend(attribution.draftId);
+     62|   expect(restored.ok, "回到原话题应当能取回失败原文（这是本反例的前提）").toBe(true);
+       |                                                   ^
+     63|   void chatKey;
+     64| }
+ ❯ frontend/src/stores/__tests__/final-b2-reopenResend.test.ts:184:5
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[36/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts > 02 重发期间互换：旧成功只处理它实际接受的版本 > 【会话层】互换后记录正文已更新，旧重发成功不许
+按身份把它删掉
+AssertionError: 失败原文没有记录下来: expected undefined to be '没发出去的原文' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected:
+"没发出去的原文"
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts:97:40
+     95|     await session.send("没发出去的原文");
+     96|     const record = session.failedSendsForTopic("A")[0];
+     97|     expect(record?.text, "失败原文没有记录下来").toBe("没发出去的原文");
+       |                                        ^
+     98|
+     99|     // 用户点「找回原文」：建立显式重发关联
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[37/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts > 03 重发关联跨话题：成功不许清别的话题的失败记录 > 【会话层】A 找回原文后切 B，B 手动输入
+相同文字发送成功，A 的记录必须还在
+AssertionError: A 话题的失败原文没有记录: expected undefined to be '两个话题里一样的文字' // Object.is equality
+System.Management.Automation.RemoteException
+- Expected:
+"两个话题里一样的文字"
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts:147:43
+    145|     await session.send("两个话题里一样的文字");
+    146|     const record = session.failedSendsForTopic("A")[0];
+    147|     expect(record?.text, "A 话题的失败原文没有记录").toBe("两个话题里一样的文字");
+       |                                           ^
+    148|
+    149|     // A 里找回原文：建立显式重发关联
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[38/39]⎯
+System.Management.Automation.RemoteException
+ FAIL  frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts > 04 绑定话题前输入新稿：原发送稳定归属绑定的真实话题 > 【会话层】未绑定发送→用户输入新稿→绑定
+ A→切 B→失败：记录必须在 A 找得到
+AssertionError: 原发送的失败原文留在了未绑定位置：绑定后它稳定归 A，回到 A 必须找得到: expected [] to deeply equal [ '未绑定话题时发出的原文' ]
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- [
+-   "未绑定话题时发出的原文",
+- ]
+System.Management.Automation.RemoteException
+ ❯ frontend/src/stores/__tests__/final-b2-sendIdentity.test.ts:213:7
+    211|       session.failedSendsForTopic("A").map((r) => r.text),
+    212|       "原发送的失败原文留在了未绑定位置：绑定后它稳定归 A，回到 A 必须找得到",
+    213|     ).toEqual(["未绑定话题时发出的原文"]);
+       |       ^
+    214|     expect(session.failedSendsForTopic(null), "绑定之后不许再留下占位话题下的失败记录").t…
+    215|     expect(session.failedSendsForTopic("B"), "与 B 无关的失败原文不许落在 B").toEq…
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[39/39]⎯
+System.Management.Automation.RemoteException
+
+
