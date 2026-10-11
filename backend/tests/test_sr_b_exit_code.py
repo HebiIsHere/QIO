@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 import sys
@@ -119,7 +120,12 @@ async def test_shell_nonzero_exit_is_failure():
     tool = RunCmdTool()
     tool.computer = _AutoAccept()
     tool.approvals = object()
-    res = await tool.run(cmd="exit /b 7")
+    # 这条命令交给**当前平台真正的 shell**：Windows 是 cmd 的 `exit /b 7`，
+    # POSIX 是 sh 的 `exit 7`。原来写死 `exit /b 7`，在 Linux CI 上 sh 只报
+    # "Illegal number: /b"（退出码 2）—— 考的是平台，不是「非零退出码必须算失败」
+    # 这条契约（2026-10-11 修正）。
+    cmd = "exit /b 7" if os.name == "nt" else "exit 7"
+    res = await tool.run(cmd=cmd)
     assert res.ok is False
     assert "退出码 7" in (res.error or "")
 

@@ -1,4 +1,4 @@
-# 流式回复修复线并入 main —— 集成记录（2026-10-11）
+# 流式回复修复线并入 main —— 集成记录与合并后收尾（2026-10-11）
 
 ## 一、先用非技术的话说结论
 
@@ -19,18 +19,24 @@
 另外在集成过程中发现一个**真实的功能空洞**：流式调用不记用量、也不受预算上限约束
 （界面上数字照常显示，所以光看界面发现不了）。已经补上并加了测试。
 
-**这条集成分支是给评审用的，没有动 main、没有合并、没有发布。**
+**PR #2 已把这条集成分支合并进 main**（合并提交 `7ff5e2e`）。本文分两部分：
+
+- §一–§七 是**合并前的原始集成报告**（写于评审阶段，原文保留以便对照）；
+- §八 起是**合并后的核对与收尾**：原合并 CI 的真实结果、两处缺口的复现与修复、
+  独立分支的补充验证，以及修正后的回退说明。
 
 ## 二、实际分支与基线（全部为真实 SHA）
 
 | 项 | 值 |
 | --- | --- |
-| 基线（最新 main） | `84eb4b4`（含可靠性跟进线与安全/响应性线两次合并） |
+| 合并前 main（集成基线） | `84eb4b4`（含可靠性跟进线与安全/响应性线两次合并） |
 | 来源（流式回复修复线线头） | `cc19b68`（`fix/process-attachment-audit-round2`） |
 | 共同祖先 | `6e073e9` |
-| 集成分支 | `integrate/streaming-main-20261011` |
-| 集成提交 | ``0e00dbe`（合并提交；随后为集成期修复与文档提交）`（合并提交，含冲突解决与集成补丁） |
-| 相对 main | 引入 324 个来源提交；main 侧 61 个提交全部保留 |
+| 集成分支 | `integrate/streaming-main-20261011`（线头 `6356c0e`） |
+| 集成提交 | `0e00dbe`（合并提交，含冲突解决与集成补丁；其后 `f516589` / `c270605` / `6356c0e` 为集成期修复与文档） |
+| 相对 main | `git rev-list --count 7ff5e2e^2 ^7ff5e2e^1` = 328 个来源提交；main 侧 61 个提交全部保留 |
+| **合并（PR #2）** | **`7ff5e2e`**（`merge: 流式回复修复线集成到 main`；父提交 `84eb4b4` + `6356c0e`） |
+| 合并 CI | run `38075732622`（push，`7ff5e2e`）—— 逐任务结果见 §八 |
 
 来源线的祖先关系已核对：`feat/unified-process-attachments-streaming` →
 `fix/unified-process-audit` → … → `fix/process-attachment-audit-consolidation` →
@@ -113,9 +119,10 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 **数据保护**：34 与 31/32/33 里没有 DROP / DELETE / UPDATE，只建对象；
 没有修改任何历史迁移（迁移只追加的纪律用例仍绿）；没有靠改版本号掩盖结构差异。
 
-## 六、测试证据
+## 六、测试证据（原始集成轮，写于合并前评审）
 
-> 未通过 / 未执行的项目在第七节逐条列出。
+> 本节是**分支 `integrate/streaming-main-20261011` 上的原始记录**，不是合并后的复核。
+> 合并后的核对、两处缺口的修复与再验证见 §八–§十一；未通过 / 未执行的项目在第七节逐条列出。
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
@@ -137,8 +144,16 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
 
 1. **未在真实 Windows 桌面上做端到端走查**（起应用、附件全流程、关闭清理、窄窗口视觉检查）。
    本轮以组件级 + store 级 + 后端全量测试替代，**不等于**桌面端已验证。
-2. **Rust 侧未跑**：`cargo check` / `cargo test` 与安装包 E2E 属 CI 范围，本次未在本地执行。
-3. **CI 未跑**：分支推送后由 GitHub Actions 运行；本地无法替代。
+2. **Rust 侧未在本地跑**：`cargo check` / `cargo test` 与安装包 E2E 由 CI 覆盖。合并 CI
+   run `38075732622` 里 rust（两个平台）与 install e2e（windows-latest）**都是成功的**。
+3. **合并 CI 没有全绿**：run `38075732622` 的 `backend (windows-latest)` 失败，唯一失败用例是
+   `backend/tests/test_r8_cancel_target_verify.py::test_repeated_cancel_and_unknown_id_are_idempotent`
+   （固定等 1.0 秒后取消「准备中」的轮次；慢 runner 上准备登记还没落下 → 回执 `unknown`，
+   断言 `first["cancelled"] is True` 失败）。本机 Windows 复跑该文件 4 个用例全过，
+   与 §九 的两项修复没有交集，按**既有问题 / 时序敏感**记录，不在本次收尾里改动它。
+   同一 run 的两个 Linux backend 任务（py3.11 / py3.12）最终也失败了，但原因**不是断言**：
+   GitHub 注解为「The hosted runner lost communication with the server」（runner 本身失联，
+   两个任务分别跑到 30–70 分钟才收场）。同一份代码在本机跑完整后端全量是 3334 passed / 0 failed。
 4. **两处产品口径待确认**：
    - 排队期间切话题时，附件 id 属于提交时的话题、`topic_id` 也是提交时的快照，后端按旧话题
      校验附件是否仍能命中（需要后端所有者确认）；
@@ -147,25 +162,235 @@ knowledge 链列 / entity_cards 修订列）与本次集成新引入的 attachme
    建议后续单独清理，不混进本次集成。
 6. **来源线遗留**：`PREPARE_HISTORY` 注释在来源线里重复一次（同值，无害）。
 
-## 八、风险与回退
+## 八、合并与 CI（合并后复核）
 
-**代码回退**：本次成果全部在一个分支上，`origin/main` 未动。
+**合并事实**
 
-```
-git switch main                     # 回到未集成的 main（84eb4b4）
-git push origin --delete integrate/streaming-main-20261011   # 需要撤销远端分支时
-```
+- PR #2 已合并：合并提交 `7ff5e2e`，父提交 `84eb4b4`（合并前的 main）+ `6356c0e`
+  （集成分支线头）。当前 `origin/main` = `7ff5e2e`（此处数字与 SHA 都在 2026-10-11 实查，
+  `git fetch` 之后 `git ls-remote origin main` 与之逐字一致）。
+- 集成分支 `integrate/streaming-main-20261011` 保留为历史，未删除。
+- 合并后的收尾轮见 §九–§十二：分支 `fix/streaming-main-closeout-20261011`，经 **PR #3** 合并进 main。
 
-**数据库回退**：本次新增的迁移只建对象（31–34），**没有删改任何用户数据**，因此回退代码即可；
-但如果旧版本代码运行在已经升到 34 的库上，会看到多出来的 `attachments` 表与 `turn_journal`
-的三个新列 —— 旧代码不认识它们、不影响读写（列可空、表无人读）。
-**升级前建议先复制一份数据目录做验证**（`QIO_DATA_DIR`），确认后再在真实数据上启动。
+**合并 CI run `38075732622`（push，`7ff5e2e`）逐任务结果**
 
-## 九、最终建议
+| 任务 | 结果 |
+| --- | --- |
+| docs consistency | ✅ 成功 |
+| frontend | ✅ 成功 |
+| rust (ubuntu-24.04) | ✅ 成功 |
+| rust (windows-latest) | ✅ 成功 |
+| frozen worker (windows) | ✅ 成功 |
+| install e2e (windows-latest) | ✅ 成功 |
+| backend (windows-latest) | ❌ 失败（1 条用例） |
+| backend (py3.11) | ❌ 失败（真因见下：**仓库内的探针把 runner 一起杀了**，不是基建抖动） |
+| backend (py3.12) | ❌ 失败（同上） |
 
-- **是否达到合并 main 的标准**：代码与已完成的验证层面达到了（无遗留冲突、无残留标记、
-  方向性回归已修、数据库升级路径四态齐备且幂等、后端/前端/文档本地全绿）。
-- **是否存在阻塞项**：本项目前**没有 P0 阻塞**；但有三项属于"合并前应当补上"的证据缺口：
-  ① Windows 桌面端实机走查；② 远端 CI 结果；③ 上面第 4 条的两处产品口径确认。
-- **是否可以等待用户批准后正式合并**：可以。集成分支已经推送、PR 已创建，
-  **未经批准不会合并、不会修改 main、不会发布**。
+**两个 Linux backend 任务的失败原因（已定位）**：GitHub 注解是
+「The hosted runner lost communication with the server. ...」。起初只能按基础设施问题记录，
+随后用一个**临时诊断工作流**（把整套用例**按文件**跑、每个文件放进自己的会话并加 180s 上限，
+这样即使某个文件自杀也不会带走 runner）拿到证据，真因是仓库内的缺陷：
+
+- `scripts/sr-verify/probes.py` 的 `kill_tree()` 在 POSIX 上无条件
+  `os.killpg(os.getpgid(pid), SIGKILL)`；
+- 诱饵进程由 `subprocess.Popen` 启动、与调用方**同组**，`os.getpgid()` 于是返回
+  **调用方自己的组 id** —— 整组（pytest + runner 的 agent）被 SIGKILL；
+- 逐文件诊断里 `tests/test_sr_verify_process.py` 正是 **EXIT=137、3 秒即死**；单进程整跑
+  则表现为「跑到 ~47 分钟后失联、日志一条都不上传」。Windows 走 `taskkill /T` 按 pid 遍历，
+  所以只有 Linux 中招。
+
+修法与反例见下一节的**缺口三**。
+
+**`backend (windows-latest)` 失败定位（既有问题，不是本次两项修复的回归）**
+
+- 唯一失败用例：`backend/tests/test_r8_cancel_target_verify.py::test_repeated_cancel_and_unknown_id_are_idempotent`；
+  断言 `first["cancelled"] is True`，实际回执 `{'ok': True, 'unknown': True}`。
+- 原因：该用例登记「准备中」的轮次后**固定等 1.0 秒**就发第一次取消；负载高的 Windows runner 上
+  准备登记尚未落下，服务如实回 `unknown`（这就是「未知标识」语义），于是断言失败。
+- 与本轮两处修复的关系：无交集（一处是迁移清单，一处是流式记账）。本机 Windows 复跑
+  `backend/tests/test_r8_cancel_target_verify.py` 4 个用例全过（见 §十）。
+- 处理：按**时序敏感的既有问题**记录；本次收尾不扩大范围去改这条独立验证用例。
+
+## 九、合并后核对出的两处缺口（本轮修复）
+
+分支 `fix/streaming-main-closeout-20261011`（从 `7ff5e2e` 起，未并入互动模式线、无无关重构）。
+
+**缺口一：结构完整性检查漏掉了本线新增的半个 schema**
+
+- 反例（修复前）：库已升到 34 → `DROP TABLE attachments` → 再跑迁移：
+  `missing_objects()` 报空、`apply_migrations()` 报「结构完整」、表也不补建。
+- 根因：`backend/src/agent/storage/migrate.py` 的 `REQUIRED_OBJECTS` 只覆盖实例归属那批对象，
+  补偿迁移 34 里已有的 attachments / 结束事实对象没进清单。
+- 修法：清单补上 `attachments` 表、`attachments.source_attachment_id`、三个附件索引、
+  `turn_journal` 的 `reason_code / stopped_by / actions` —— 每一项都与迁移 34 的补偿语句一一对应
+  （用例逐项核对，不接受「只能发现、补不了」的项）。缺了就重放 34；仍缺抛
+  `SchemaIncompleteError`，绝不返回「完整」。只追加清单，不动任何历史迁移，不 DROP/DELETE/UPDATE 用户数据。
+- 反例（修复后）：同上步骤 → 表、索引、列都被补建；补偿补不齐时（表在但形状不对）
+  抛出可读错误并如实列出仍缺的对象。
+
+**缺口二：流式降级时漏记已经真实发出的请求**
+
+- 反例（修复前）：假客户端记录一次 `create()`、返回空异步流 → 真实 `NativeAdapter` 抛
+  `UnsupportedCapability`，却**没有调用任何记账入口**（`requests` 停在 0）。
+- 根因：`stream()` 的失败记账按**异常类别**判断 —— `UnsupportedCapability` / `NotImplementedError`
+  一律当成「没有请求发出」。但 `_stream_once()` 可能在已经调用客户端、读到响应**之后**才抛它
+  （客户端不返回异步流 / 零增量且看不到 Content-Type）。
+- 修法（`backend/src/agent/adapters/native.py`）：
+
+  1. 引入按请求事实记账的 `_StreamAttempt`（`requested` = 真的把请求交给了客户端；
+     `settled` = 这次尝试已登记），记账只看事实，不看异常类别；
+  2. 「还没发请求就发现能力不支持」→ `requested` 为假 → 零请求、零记账
+     （上层整段降级的那次请求自己记）；
+  3. 「请求已发出、响应后才发现不能流式」→ 记一次**不完整用量**（`incomplete`，不估算 token）；
+  4. 整段降级是**另一实际请求**，由 `complete()` 自己登记 —— 请求数 = 登记数；
+  5. 正文已透出后不得重新生成的规则保持不变（`yielded` 守卫未动）；
+  6. `stream_options` 被拒后的重试是第二次实际请求：**发出之前**重新核对预算
+     （原来只在第一次之前核对，存在绕过）；
+  7. 记账只有一个负责入口：Native / Anthropic 声明 `accounts_requests`，上层的
+     `credential_usage_sink` 据此 `covers_requests=True` 而跳过补记（流式路径也有用例钉住不双记）。
+
+- 反例（修复后）：同一装置下这次请求登记为 `requests=1 / incomplete=1`，且不写任何 token 数。
+
+**缺口三（CI 层面，独立于上面两处）：探针收尾在 Linux 上把 runner 一起 SIGKILL**
+
+- 反例（修复前）：`tests/test_sr_verify_process.py` 单独在 Linux 上跑 → **EXIT=137、3 秒即死**；
+  单进程整跑表现为 `backend (py3.11)/(py3.12)` 跑到 ~47 分钟后
+  `The hosted runner lost communication`、**任务日志一条都不上传**（Windows 一直绿）。
+- 根因：`scripts/sr-verify/probes.py::kill_tree()` 的 POSIX 分支无条件
+  `os.killpg(os.getpgid(pid), SIGKILL)`；诱饵进程与调用方同组 → `os.getpgid()` 返回调用方
+  自己的组 → 整组被端掉。
+- 修法：① `kill_tree()` 只在目标**自己就是组长**（`pgid == pid` 且不是我们的组）时才
+  `killpg`，否则只 `os.kill` 那一个 pid；② 诱饵改为自立进程组（POSIX `start_new_session`），
+  按组收割因此只可能命中它自己。
+- 顺带修掉两处「考平台而不是考契约」的 Linux-only 用例（不修的话探针修好后 Linux 照样红）：
+  `test_sr_b_exit_code.py` 的 shell 非零退出码用例写死了 Windows 的 `exit /b 7`（Linux 的 sh
+  报 `Illegal number: /b`，退出码成了 2）；`test_sr_a_computer.py` 的假 git 只造 `git.bat`
+  （Linux 的 `shutil.which` 直接跳到真实 `/usr/bin/git`，判定自然是 auto）。两处都改成按平台
+  造装置，**断言一字未放松**。
+- 反例（修复后）：Linux CI 全绿（run `38117123246`，backend (py3.11) 8 分钟 /
+  (py3.12) 9 分钟）；同一纪律的 `sandbox.py` 加固由
+  `backend/tests/test_main_closeout_process_group_scope.py` 钉住（含探针 `kill_tree` 的两条判定）。
+
+## 十、本轮验证结果
+
+> 定向与全量都在本机（Windows）跑；命令与 AGENTS.md 一致。数值见下表。
+
+**定向（本轮缺陷 + 受影响面）**
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 缺口一反例（本轮新增） | `pytest tests/test_main_closeout_migration_objects.py` | 13 passed |
+| 缺口二反例（本轮新增） | `pytest tests/test_main_closeout_streaming_accounting.py` | 12 passed |
+| 缺口三反例（本轮新增） | `pytest tests/test_main_closeout_process_group_scope.py` | 11 collected（Windows 本机 5 skipped，POSIX 分支由 Linux CI 真跑） |
+| 缺口三顺带修正的两个用例 | `pytest tests/test_sr_a_computer.py tests/test_sr_b_exit_code.py tests/test_sr_verify_process.py` | 108 + 6 + 3 passed（本机 Windows） |
+| 既有 B01 清单 / 独立验证 | `pytest tests/test_fu_w3_b01_schema.py tests/test_fu_verify_b01_migration.py` | 8 + 7 passed |
+| 流式契约 / 记账 / 预算 / 迁移纪律 | `pytest tests/test_streaming_deltas.py tests/test_streaming_usage_accounting.py tests/test_migrations_append_only_verify.py tests/test_rm_d_m10_usage_ledger.py tests/test_rm_d_m09_budget.py tests/test_rm_verify_m07_m09_m10_c01.py` | 96 / 3 / 2 / 12 / 8 / 5 passed |
+| R8 取消用例（合并 CI 的红点）本机复跑 | `pytest tests/test_r8_cancel_target_verify.py` | 4 passed |
+
+**全量（交付前集中一次）**
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端全量 | `uv run --frozen pytest`（本机用仓库自带 venv 的同一套 pytest） | 收集 **3345** 项，**exit 0（全绿）**，约 15 分钟；交付前在修复后的代码上干净重跑（无并发编辑） |
+| 前端类型检查 | `npx vue-tsc --noEmit` | exit 0 |
+| 前端全量 | `npm test` | 205 files / 1592 tests passed |
+| 文档一致性 | `python scripts/check_docs.py`（含 `--selftest`） | exit 0（36 个里程碑条目；自检 6 个场景全绿） |
+| 发布闸门自检 | `python scripts/release_gate.py --selftest` | PASS |
+| 评测基线 | `uv run --frozen python -m agent.eval.run` | 与基线 `7ff5e2e` **逐项相等**：在 `7ff5e2e` 的独立 worktree 里跑同一条命令并深度比较，**0 差异** |
+
+**本轮分支 CI（修复前的那次）**
+
+run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）
+——记录当时的状态，便于对照；它跑的是**修复前**的代码。
+
+| 任务 | 结果 |
+| --- | --- |
+| docs consistency | ✅ 成功 |
+| frontend | ✅ 成功 |
+| rust (ubuntu-24.04) | ✅ 成功 |
+| rust (windows-latest) | ✅ 成功 |
+| frozen worker (windows) | ✅ 成功 |
+| install e2e (windows-latest) | ✅ 成功 |
+| backend (windows-latest) | ❌ 失败（唯一失败：`tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs`，阈值 `gap_ms < 100` 实测 **104 ms**） |
+| backend (py3.11) / (py3.12) | ⏳ 收尾时仍未结束；同一份代码在原合并 run 上的同类任务最终是「runner 失联」（基础设施，不是断言失败） |
+
+关于这个红点：本机 Windows 复跑 `tests/test_interactive_during_heavy_work.py` 为
+**13 passed / 4 skipped**，且当时那棵树上本机跑完整后端全量是 **3334 passed / 11 skipped /
+0 failed**；该用例量的是「慢嵌入期间事件循环的最大停顿」，阈值 100 ms 在负载高的共享 runner
+上会被压线越过。它与本次两项修复没有交集（那条路径用 `AsyncMock` 的 adapter，不经过任何
+记账入口）。**不通过反复重跑直到变绿**：按负载敏感的既有问题如实记录。
+
+**本轮分支 CI（最终，全绿）**
+
+分支最终 SHA `2a27e481443e6c4c7d934a4f5d3a96de11dc9d4b`：
+
+| run | SHA | 结论 |
+| --- | --- | --- |
+| [`38121670380`](https://github.com/HebiIsHere/QIO/actions/runs/38121670380)（push） | `2a27e481443e` | **success，9/9 任务全绿** |
+| [`38121674258`](https://github.com/HebiIsHere/QIO/actions/runs/38121674258)（pull_request） | `2a27e481443e` | **success，9/9 任务全绿** |
+
+前一个可验证点 run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)（push，SHA
+`451414aca4018070e198e1fdcd1e314f269ecff1`）也是 9/9 全绿；从它到最终 SHA 多的是三处取证用例的
+确定性修正（探针响应性、附件 I/O 鉴别力）与文档改动，没有产物行为变化。逐任务（按最终 SHA）：
+
+| 任务 | 结果 |
+| --- | --- |
+| docs consistency | ✅ 成功 |
+| frontend | ✅ 成功 |
+| rust (ubuntu-24.04) | ✅ 成功 |
+| rust (windows-latest) | ✅ 成功 |
+| frozen worker (windows) | ✅ 成功 |
+| install e2e (windows-latest) | ✅ 成功（12 分钟） |
+| backend (windows-latest) | ✅ 成功（17 分钟） |
+| backend (py3.11) | ✅ 成功（8 分钟） |
+| backend (py3.12) | ✅ 成功（9 分钟） |
+
+同一 SHA 的 pull_request run（`38117125754`）同样跑完整 CI。Linux backend 用时从
+「47–52 分钟后失联」回到 8–9 分钟，正是缺口三被修掉的直接证据。
+
+## 十一、回退说明（代码回退 ≠ 数据库回退）
+
+- **代码回退**：本次成果已经进了 main（`7ff5e2e`）。要撤销集成，只能对合并提交做
+  `git revert -m 1 7ff5e2e`（或在合并前准备一个回退分支），**不是**「切回未集成的 main」——
+  那个用作基线的 `84eb4b4` 已经不再是 main 的顶端。回退代码**不会**把库降回旧结构。
+- **数据库回退**：迁移 31–34 与本次的补偿只建对象，没有 DROP / DELETE / UPDATE 任何用户数据，
+  但**版本号与服务端结构不会自动降级**：
+  - 回退后的旧代码运行在已升到 34 的库上时，会看到多出来的 `attachments` 表、
+    `turn_journal` 的三个事实列与附件索引；旧代码不认识它们，列可空、表无人读，
+    **不影响旧代码读写**（这正是「只追加、不回填」的代价与边界）。
+  - 若必须回到真正的旧结构，那是一次**人工数据迁移**（先把 34 之后写入的数据导出/备份，
+    再重建旧结构库），不是 `git revert` 能做到的事；操作前先复制一份数据目录
+    （`QIO_DATA_DIR`）验证。
+- **升级建议**：先在数据目录副本上启动一次确认，再在真实数据上启动。
+
+## 十二、未验证项与最终状态
+
+**未验证（不粉饰）**
+
+1. **Windows 桌面实机走查**（起应用、附件发送与中止、重发、历史打开、关闭清理、窄窗口视觉检查）
+   本轮**仍未做**：本机可以跑组件级/后端用例，但没有完成桌面端（Tauri 壳）实机走查，
+   组件测试**不能**替代实机结论。
+2. **本轮分支 CI 未全绿**：run `38078800507` 的 `backend (windows-latest)` 失败在
+   `test_health_probe_stays_responsive_while_slow_prediction_runs` 的 `gap_ms < 100` 阈值上
+   （实测 104 ms；本机复跑该文件 13 passed / 4 skipped）。与本次两项修复无交集，
+   按**负载敏感**记录，不用重跑掩盖。
+3. **原合并 CI 的两个 Linux backend 任务**最终失败；真因已定位并修掉（缺口三：探针收尾误杀
+   runner agent，不是基础设施抖动）。修复后本轮分支的 Linux backend 任务是绿的
+   （run `38117123246`）。
+4. **负载敏感的既有用例（两处，均已处理或记录）**：
+   - `tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`
+     本机一次（与编辑并发、机器同时在跑别的负载）偶发红（诊断显示闸门释放后累计调用=1，
+     预期 0）；同一代码干净重跑与 CI 均绿。与本次三处修复无交集，按**负载敏感**记录。
+   - `tests/test_sr_verify_responsiveness.py::test_sr_verify_baseline_route_blocks_loop_documented`
+     曾在同一个 SHA 的 PR run 上假红一次（push run 绿）：证据装置用 `round(ts, 4)` 的时间戳
+     窗格判「同步 route 期间零心跳」，紧挨窗格起点之前的那一拍会被舍入进窗格。
+     已改为用**心跳计数的精确增量**判定（纯同步调用期间事件循环不可能推进计数，增量必然为 0），
+     时间戳窗格降为附加证据 —— 这是把装置做成确定性，**没有放宽带断言**。
+5. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
+
+**最终状态**
+
+- 两处缺口已修并各有「修复前红 / 修复后绿」的对照装置；数据库升级路径（全新 / 旧 main 25 /
+  main 30 / 来源流式线 28）与补偿幂等、数据保护都有真实业务行的断言。
+- 本轮成果经 **PR #3** 合并进 main（合并提交 SHA 见 PR #3 或 `git log --oneline main`）；
+  未发布、未并入互动模式线。

@@ -353,12 +353,70 @@ def _spawn_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def _own_process_group(pid: int) -> int | None:
+    """这个 pid 真是**它自己进程组的组长**时返回它的组 id；否则 None。
+
+    为什么必须判：`os.getpgid(pid)` 对一个与调用方**同组**的子进程返回的正是
+    **调用方自己的组 id** —— 对它 killpg 等于把整组（调用方自己、同一个 shell 里的
+    兄弟进程、CI runner 的 agent）一起 SIGKILL。
+
+    2026-10-11 的实测事故正是如此：docker 客户端进程没有 `start_new_session`
+    （见 `_execute_docker`），容器超时/取消清理时 killpg 打到 runner agent 上，
+    Linux backend 任务连续整份失联（`The hosted runner lost communication`），
+    而 Windows 走 taskkill /T 按 pid 遍历，所以只有 Linux 中招。
+
+    判据只有一条：`pgid == pid`（自己就是组长）且它不是我们自己的组。
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+    if pgid != pid:
+        return None
+    try:
+        if pgid == os.getpgrp():
+            return None
+    except OSError:  # pragma: no cover - 拿不到自己的组就不冒险
+        return None
+    return pgid
+
+
+def _is_our_child(pid: int) -> bool:
+    """这个 pid 是不是**本进程的直接子进程**（「只清自己的」这条原则的兜底）。
+
+    Linux 上读 `/proc/<pid>/stat` 的 ppid 字段核对；没有 /proc（其它平台）或
+    读不到证据时返回 True —— 那就是改动前的行为，不新增不确定性。
+
+    为什么需要它：清理动作拿到的 pid 未必来自真实子进程（测试桩会用一个固定的
+    假 pid，例如 4321）。在 Linux 上对一个**恰好存在**的陌生 pid 执行
+    `os.kill(pid, SIGKILL)` 会误伤别人的进程；配上 `_own_process_group` 之后
+    这已不会波及整个进程组，但「只动自己的」才是这条纪律的完整表述。
+    """
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    close = text.rfind(")")
+    if close < 0:
+        return True
+    fields = text[close + 2 :].split()
+    if len(fields) < 2:
+        return True
+    try:
+        ppid = int(fields[1])
+    except ValueError:
+        return True
+    return ppid == os.getpid()
+
+
 async def _kill_process_tree(process) -> None:
     """只结束这一次工具调用对应的进程树。
 
     明确不做的事：按可执行文件名称批量结束进程 —— 那会误伤同一台机器上名字相同的
     其它进程（包括用户自己的）。Windows 用 `taskkill /PID <pid> /T /F`，它从这个
-    PID 往下遍历子进程；POSIX 用进程组。清理失败只记日志，不盖过真正的错误。
+    PID 往下遍历子进程；POSIX **只在子进程自己就是组长**（`start_new_session`，
+    见 `_spawn_kwargs()`）时才按组收割，否则退回只杀那一个 pid —— 绝不以
+    调用方自己的进程组为目标。清理失败只记日志，不盖过真正的错误。
     """
     pid = getattr(process, "pid", None)
     try:
@@ -371,8 +429,14 @@ async def _kill_process_tree(process) -> None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(killer.wait(), timeout=10)
         elif pid:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            pgid = _own_process_group(pid)
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGKILL)
+                elif _is_our_child(pid):
+                    # 不是组长：只杀这一个进程，绝不碰它的组；而且必须确认
+                    # 它是我们自己的孩子（假 pid 在 Linux 上可能命中别人的进程）。
+                    os.kill(pid, signal.SIGKILL)
     except Exception:  # noqa: BLE001 - 清理是尽力而为
         logger.warning("failed to terminate tool process tree (pid=%s)", pid, exc_info=True)
     with contextlib.suppress(Exception):
@@ -794,6 +858,10 @@ class SandboxExecutor:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # 与受限子进程路径同一条纪律：这个进程之后由 _kill_process_tree 清理，
+                # POSIX 上必须先让它自立进程组 —— 否则「按组收割」打到的会是调用方
+                # 自己的组（CI 上就是 runner agent 的组）。2026-10-11 实测事故。
+                **_spawn_kwargs(),
             )
         except OSError as exc:
             # 探测之后 docker 命令行起不来了（被卸载、路径变了）：容器没起来，

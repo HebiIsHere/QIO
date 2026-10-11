@@ -25,6 +25,11 @@ exists）才当作「这条已经应用过」，其它任何错误照旧抛 —�
 * `missing_objects(conn)`：**按对象校验**（不只看版本号），返回缺什么；
 * `apply_migrations()` 结束前调用 `verify_required_objects()`：缺了就重放补偿迁移，
   仍缺就抛可读的 `SchemaIncompleteError` —— **不再静默放过**。
+
+集成后的同一条缺口（2026-10-11 收尾复核）：补偿迁移 34 已经会建 `attachments`
+与轮次结束事实对象，但 `REQUIRED_OBJECTS` 没列它们 —— 版本号已到 34 的库把
+`attachments` 整张删掉，迁移照样报「结构完整」、也不补建。清单现在覆盖两批对象
+（实例归属 + 附件/结束事实），并与迁移 34 的补偿语句逐项对应。
 """
 
 from __future__ import annotations
@@ -56,13 +61,24 @@ _ADD_COLUMN_RE = re.compile(
 # 合法标识符（对象名只会来自本仓库的常量清单；仍然校验一次，杜绝拼接注入）。
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# 本轮（A05/B01 补充修复轮）**必需**的 schema 对象。校验按对象做，不看版本号：
-# 版本号到 29 但对象缺失正是本轮要修的主场景。
+# **必需**的 schema 对象。校验按对象做，不看版本号：版本号到 34 但对象缺失
+# 正是这条检查要治的场景。清单覆盖两批对象：
 #
-# 诚实边界：这是**按名字**的校验 —— 同名的对象存在但形状不同（例如某个兄弟分支
-# 用同一个列名存了别的东西）它判不出来。清单本身要与补偿迁移 30 一一对应。
+# * A05/B01 补充修复轮（实例归属 / 知识版本链 / 人工纠正保护）；
+# * 流式回复线并入 main 时新增的附件对象与轮次结束事实（来源线迁移 31/32/33）。
+#
+# 诚实边界（两条）：
+#
+# * 这是**按名字**的校验 —— 同名的对象存在但形状不同（例如某个兄弟分支用同一个
+#   列名存了别的东西）它判不出来；
+# * 清单里的每一项都必须在补偿迁移 `COMPENSATION_VERSION`（34）里有一条对应的
+#   建对象语句（`test_fu_w3_b01_schema.py::test_compensation_migration_is_additive_and_ordered`
+#   逐项核对）。所以这里**不列** `attachments` 的建表基础列：它们只出现在
+#   `CREATE TABLE IF NOT EXISTS` 里，表整体缺失时建表语句会把整张现代形状（含那些列）
+#   建出来；而「表在、某根基础列丢了」补偿语句补不了它，列进来只会得到一份
+#   永远补不齐的清单（真正的形状损坏该靠人判断，不该伪装成可补偿项）。
 REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
-    "tables": ("instances", "record_owners"),
+    "tables": ("instances", "record_owners", "attachments"),
     "columns": (
         "turn_journal.owner_instance_id",
         "derived_tasks.owner_instance_id",
@@ -72,12 +88,21 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "knowledge.version",
         "entity_cards.revision",
         "entity_cards.field_meta",
+        # 附件复用来源（迁移 31/32）：重试复用原轮附件时新记录指回源行。
+        "attachments.source_attachment_id",
+        # 轮次结束事实（迁移 33）：漏了它，刷新 / 换设备后失败轮的重试入口就没了。
+        "turn_journal.reason_code",
+        "turn_journal.stopped_by",
+        "turn_journal.actions",
     ),
     "indexes": (
         "idx_instances_heartbeat",
         "idx_record_owners_instance",
         "idx_turn_journal_owner",
         "idx_knowledge_chain",
+        "idx_attachments_turn",
+        "idx_attachments_message",
+        "idx_attachments_topic",
     ),
 }
 

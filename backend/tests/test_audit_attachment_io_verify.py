@@ -601,9 +601,14 @@ async def test_criterion_still_catches_synchronous_blocking(async_app):
     """
     floor_ms = await _control_floor_ms(async_app)
     limit = _stall_limit(floor_ms)
+    # 阻塞时长必须**明显高于本次环境的上限**（上限 = max(120ms, 3 × 地板)）。
+    # 地板高的机器上（共享 runner 实测 176ms → 上限 528ms），固定的 400ms 阻塞本来
+    # 就不该判越线 —— 那是机器噪声地板变宽，不是「口径被放宽过头」
+    # （2026-10-11 Windows CI 因此假红一次）。这里让刺激随上限走，鉴别力的性质不变。
+    block_seconds = max(0.4, (limit + 300.0) / 1000.0)
 
     async def _work():
-        time.sleep(0.4)  # 事件循环上的同步阻塞（修复前就是这么被占住的）
+        time.sleep(block_seconds)  # 事件循环上的同步阻塞（修复前就是这么被占住的）
         return "blocked"
 
     _, max_gap_ms, blocked_ms, stats = await _measure_loop_lag(

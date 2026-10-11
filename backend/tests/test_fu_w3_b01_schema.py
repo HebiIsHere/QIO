@@ -10,6 +10,10 @@
 
 四种都要断言：迁移后对象齐全、版本推进、数据完好、重复跑幂等。
 
+2026-10-11 合并收尾：`REQUIRED_OBJECTS` 补进了集成引入的 attachments 表 / 附件
+来源列 / 三个附件索引 / 结束事实三列，本文件里那几处「缺什么」的断言随之更新
+（只加强，不放松）；对应的新反例在 `test_main_closeout_migration_objects.py`。
+
 **诚实边界**：那三个 26–28 分支**没有集成到本分支**，它们的真实迁移定义不在
 这里；状态 2 只能造出「版本号已到 28 + 它们各自新增的对象」这种形状，
 它们自己的对象本轮无法补偿。该组合**未验证真实分支的实际形状**；
@@ -192,8 +196,11 @@ def test_state_baseline_25_gets_this_rounds_objects(tmp_path: Path):
     _apply_prefix(conn, BASELINE_VERSION)
     assert current_version(conn) == BASELINE_VERSION
     missing = missing_objects(conn)
-    assert missing["tables"] == ["instances", "record_owners"], missing
+    assert missing["tables"] == ["instances", "record_owners", "attachments"], missing
     assert "turn_journal.owner_instance_id" in missing["columns"], missing
+    # 集成收尾新增的那批（附件 / 结束事实）同样必须在清单里，且此刻确实缺失
+    assert "attachments.source_attachment_id" in missing["columns"], missing
+    assert "turn_journal.reason_code" in missing["columns"], missing
     # 纯检查不许改库（compensate=False 只读）
     assert verify_required_objects(conn, compensate=False) == missing
     assert current_version(conn) == BASELINE_VERSION
@@ -259,7 +266,7 @@ def test_state_version_29_without_objects_is_repaired_by_compensation(tmp_path: 
     assert current_version(conn) == 29
     assert "instances" not in _tables(conn)
     missing = missing_objects(conn)
-    assert missing["tables"] == ["instances", "record_owners"], missing
+    assert missing["tables"] == ["instances", "record_owners", "attachments"], missing
     assert set(missing["columns"]) == {
         "turn_journal.owner_instance_id",
         "derived_tasks.owner_instance_id",
@@ -269,6 +276,19 @@ def test_state_version_29_without_objects_is_repaired_by_compensation(tmp_path: 
         "knowledge.version",
         "entity_cards.revision",
         "entity_cards.field_meta",
+        "attachments.source_attachment_id",
+        "turn_journal.reason_code",
+        "turn_journal.stopped_by",
+        "turn_journal.actions",
+    }, missing
+    assert set(missing["indexes"]) == {
+        "idx_instances_heartbeat",
+        "idx_record_owners_instance",
+        "idx_turn_journal_owner",
+        "idx_knowledge_chain",
+        "idx_attachments_turn",
+        "idx_attachments_message",
+        "idx_attachments_topic",
     }, missing
 
     assert apply_migrations(conn) == SCHEMA_VERSION
@@ -290,7 +310,7 @@ def test_version_30_recorded_but_objects_lost_is_compensated(tmp_path: Path):
     _mark_versions(conn, *range(SIBLING_MIN, COMPENSATION_VERSION + 1))
     _seed_history(conn)
     assert current_version(conn) == COMPENSATION_VERSION
-    assert missing_objects(conn)["tables"] == ["instances", "record_owners"]
+    assert missing_objects(conn)["tables"] == ["instances", "record_owners", "attachments"]
 
     rows = _version_rows(conn)
     assert apply_migrations(conn) == COMPENSATION_VERSION
