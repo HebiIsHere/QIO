@@ -43,6 +43,20 @@ class StaleState(Exception):
     触发它的提交**不落库**：不产生提交记录、不更新基准、不调用 QIO。
     """
 
+class RequestIdentityConflict(Exception):
+    """提交被拒（契约 §1.1 第 3 条）：同一个提交请求身份，内容却不一致。
+
+    一次提交请求有稳定身份（client_request_id）。同身份同内容 = 重试（返回原事实）；
+    同身份**不同内容**（base_state_version 或 note 不一致）= 冲突 —— 不得把另一个窗口 /
+    另一次内容当成同一次提交的受理结果。
+
+    触发它的提交**不落库**：不产生提交记录、不新建理解请求、不改基准、不调用模型。
+    """
+
+
+#: 提交请求身份的上限（与 understanding.request_id_for 拼接后仍在合理长度内）。
+MAX_CLIENT_REQUEST_ID = 200
+
 
 #: 只影响显示、不构成提交内容的表达式：普通移动 / 缩放。
 #: 注意它与 models.NON_INTENT_EXPRESSIONS 不是一回事：材料增删、注释撤回、关系移除
@@ -644,6 +658,337 @@ def _decide_status(baseline: dict | None, expressions: list[dict], after: dict) 
     return "succeeded", None
 
 
+# --- 提交请求身份（契约 §1.1 / §1.2） ------------------------------------
+
+
+def normalize_client_request_id(value: Any) -> str:
+    """把客户端传来的提交请求身份规范成可落库的字符串；非法直接拒绝。
+
+    - None / 缺失 / 空白 → ""（旧客户端：不参与幂等，行为与今天一致）；
+    - 必须是字符串（数字 / 布尔一律 400 级错误，不悄悄转成字符串）；
+    - 去掉首尾空白，长度 1..MAX_CLIENT_REQUEST_ID。
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("clientRequestId 必须是字符串")
+    if not value.strip():
+        # 空 / 全空白 = 旧客户端：不参与幂等（也不落身份）
+        return ""
+    if len(value) > MAX_CLIENT_REQUEST_ID:
+        # 只拒绝，不截断：身份必须**原样**保存与回显（前端逐字比较）
+        raise ValueError(f"clientRequestId 过长（最多 {MAX_CLIENT_REQUEST_ID} 字符）")
+    return value
+
+
+def _raw_note(note: Any) -> str:
+    """提交请求里的 note，**原样**（不改写、不截断、不规范化）。"""
+    return note if isinstance(note, str) else ""
+
+
+def _display_note(note: Any) -> str:
+    """给用户看的备注摘要（只进 delivery.detail 的展示文本，不作为身份依据）。"""
+    return " ".join(str(note or "").split())[:200]
+
+
+def _note_from_delivery(delivery: Any) -> str:
+    """从提交记录的 delivery 里取回本次提交的备注（**原样**）。
+
+    新记录显式带 delivery["note"]（提交时原样落库）：直接原样返回 —— 前端逐字比较，
+    不许规范化 / 截断 / 改写。旧记录没有它时才从 detail 的「用户备注：」段取回，
+    取不到返回 ""（不猜、不编）。
+    """
+    data = delivery if isinstance(delivery, dict) else {}
+    note = data.get("note")
+    if isinstance(note, str):
+        return note
+    detail = data.get("detail")
+    if isinstance(detail, str) and "用户备注：" in detail:
+        tail = detail.rsplit("用户备注：", 1)[1]
+        return tail.split("；", 1)[0].strip()[:200]
+    return ""
+
+
+def _delivery_facts(delivery: Any, status: str) -> dict:
+    """把记录里的 delivery 规范成契约 §1.2 的冻结形状（缺的字段如实补 None，不编造）。
+
+    既有的 delivered / status / understandingId / reason / detail 原样透出；背景调度
+    这类额外事实（background / marking）也一并保留（前端按需读取，只增不改）。
+    duplicate / empty 这类没有投递状态的历史记录如实表成 not_sent，不伪装成 accepted。
+    """
+    data = dict(delivery) if isinstance(delivery, dict) else {}
+    fallback_status = "accepted" if status == "succeeded" else "not_sent"
+    normalized = {
+        "delivered": bool(data.get("delivered", status == "succeeded")),
+        "status": str(data.get("status") or fallback_status),
+        "understandingId": data.get("understandingId"),
+        "reason": data.get("reason"),
+        "detail": data.get("detail"),
+    }
+    for key, value in data.items():
+        normalized.setdefault(key, value)
+    return normalized
+
+
+def _understanding_facts(
+    conn: sqlite3.Connection, *, submission_id: str
+) -> tuple[str | None, str | None]:
+    """这次提交的理解请求事实 (understandingId, understandingStatus)。
+
+    身份口径与 understanding.request_id_for 一致（"sub:<boardId>:<submissionId>" 的
+    submission_id 部分）：按 submission_id 取一条，读不到就如实返回 (None, None) ——
+    不推断、不拿「最近一条理解记录」冒充受理证据（契约 §1.1 第 4 条）。
+    """
+    try:
+        row = conn.execute(
+            "SELECT id, status FROM board_understanding WHERE submission_id = ?"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (str(submission_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if row is None:
+        return None, None
+    return str(row["id"]), str(row["status"])
+
+
+def _base_state_version(row) -> int | None:
+    """这条提交记录**基于的板面版本**（契约 §1.2 acceptance.baseStateVersion）。
+
+    真相在提交记录里，不需要新列：
+
+    - `baseline.seq` 是这次提交写下的板面版本（成功提交 = 本次基于的版本；
+      empty / duplicate / failed 也带上它，便于事后查证）；
+    - 缺它时（本列之前写下的旧记录）退回读 after_state 里的 seq；再没有就如实 None ——
+      不拿「最近一次成功提交的版本」冒充（那会把另一次提交的版本安到这一条上）。
+    """
+    baseline = models.loads(row["baseline"], {})
+    if isinstance(baseline, dict):
+        raw = baseline.get("baseStateVersion")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+        # 旧记录：只有成功提交的 baseline.seq 与「本次基于的版本」同义
+        if str(row["status"]) == "succeeded":
+            legacy = baseline.get("seq")
+            if isinstance(legacy, int) and not isinstance(legacy, bool):
+                return legacy
+    return board_store.parse_state_seq(models.loads(row["after_state"], {}))
+
+
+def _client_request_id_row(conn: sqlite3.Connection, board_id: str, client_request_id: str):
+    """按**精确身份**取原始提交记录；查不到返回 None。
+
+    只按 (board_id, client_request_id) 精确匹配：时间接近、最近一条、板面出现新任务
+    一律不作为证据。空身份直接 None（旧客户端不参与幂等）。
+    """
+    if not client_request_id:
+        return None
+    try:
+        return conn.execute(
+            "SELECT * FROM board_submissions WHERE board_id = ? AND client_request_id = ?"
+            " ORDER BY seq LIMIT 1",
+            (board_id, client_request_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+def acceptance_lookup(
+    conn: sqlite3.Connection, board_id: str, client_request_id: str
+) -> dict | None:
+    """按**精确身份**查这次提交请求的事实（契约 §1.2）；查不到返回 None。
+
+    冻结形状（D/A 都按它写断言）：
+
+        {clientRequestId, submissionId, status, delivery{delivered, status,
+         understandingId, reason, detail}, understandingId, understandingStatus,
+         baseStateVersion, note, createdAt, replayed}
+
+    **只认精确匹配**：时间接近、最近一条理解记录、板面出现新任务都不能单独作为受理
+    证据；查不到就返回 None，由调用方如实回「结果未知」，绝不推导成功。
+    本函数只读：不写库、不落新行、不调用模型。
+    """
+    try:
+        bid = board_store.ensure_board(conn, board_id=board_id)["id"]
+    except Exception:  # noqa: BLE001 - 板面 id 非法 / 库不可用都按「查不到」处理
+        return None
+    wanted = normalize_client_request_id(client_request_id)
+    if not wanted:
+        return None
+    row = _client_request_id_row(conn, bid, wanted)
+    if row is None:
+        return None
+    delivery = _delivery_facts(models.loads(row["delivery"], {}), str(row["status"]))
+    understanding_id, understanding_status = _understanding_facts(conn, submission_id=row["id"])
+    return {
+        # 原样回显落库的身份（提交时就是原样保存的；前端逐字比较，绝不规范化 / 截断）
+        "clientRequestId": str(row["client_request_id"]),
+        "submissionId": row["id"],
+        "status": str(row["status"]),
+        "delivery": delivery,
+        "understandingId": understanding_id,
+        "understandingStatus": understanding_status,
+        "baseStateVersion": _base_state_version(row),
+        "note": _note_from_delivery(delivery),
+        "createdAt": row["created_at"],
+        # 查证动作本身不重放提交：这里永远是 False（重放事实由提交响应里的 replayed 表达）
+        "replayed": False,
+    }
+
+
+def _submission_facts(conn: sqlite3.Connection, row) -> dict:
+    """把一条提交记录转成「原记录事实」（重放响应的唯一读侧实现）。"""
+
+    def _json(value: Any, fallback: Any) -> Any:
+        loaded = models.loads(value, fallback)
+        return loaded if loaded is not None else fallback
+
+    status = str(row["status"])
+    delivery = _json(row["delivery"], {})
+    understanding_id, understanding_status = _understanding_facts(conn, submission_id=row["id"])
+    return {
+        "submissionId": row["id"],
+        "seq": int(row["seq"]),
+        "status": status,
+        "before": _json(row["before_state"], {}),
+        "after": _json(row["after_state"], {}),
+        "visible": _json(row["visible"], {}),
+        "expressions": _json(row["expressions"], []),
+        "baseline": _json(row["baseline"], {}),
+        "delivery": _delivery_facts(delivery, status),
+        "error": row["error"],
+        "createdAt": row["created_at"],
+        "baseStateVersion": _base_state_version(row),
+        "note": _note_from_delivery(delivery),
+        "understandingId": understanding_id,
+        "understandingStatus": understanding_status,
+    }
+
+
+def _checked_cleared_at(conn: sqlite3.Connection, board_id: str, seq: int) -> list[str]:
+    """提交那一刻被自动取消勾选的卡片（从当时的板面快照读，不重算、不猜）。"""
+    try:
+        row = conn.execute(
+            "SELECT state FROM board_state_snapshots WHERE board_id = ? AND seq = ? LIMIT 1",
+            (board_id, int(seq)),
+        ).fetchone()
+    except sqlite3.Error:
+        return []
+    if row is None:
+        return []
+    state = models.loads(row["state"], {})
+    if not isinstance(state, dict):
+        return []
+    visible_ids = {card["id"] for card in project_snapshot(state)["cards"] if card.get("id")}
+    return [
+        str(card["id"])
+        for card in state.get("cards", [])
+        if card.get("id") in visible_ids and card.get("checked")
+    ]
+
+
+def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
+    """同身份重试的响应：只返回**原记录事实**，不落新行、不新建理解请求、不调模型。
+
+    与原提交响应同形状（status / submission / before / after / expressions / baseline /
+    delivery / visibleRange / checkedCleared），但 status、delivery、submission 全部来自
+    落库的原记录，并带 `replayed: true` 让调用方（与前端）区分「重放」与「新受理」。
+    重放**不重放副作用**：勾选当时已取消，这里如实回报当时被清理的勾选，不再清一次。
+    """
+    facts = _submission_facts(conn, row)
+    status = str(facts["status"])
+    submission_seq = int(facts["seq"])
+    baseline_info = facts["baseline"] if isinstance(facts["baseline"], dict) else {}
+    previous_seq = baseline_info.get("previousSeq")
+    if previous_seq is None:
+        prior = conn.execute(
+            "SELECT seq FROM board_submissions WHERE board_id = ? AND status = 'succeeded'"
+            " AND seq < ? ORDER BY seq DESC LIMIT 1",
+            (board_id, submission_seq),
+        ).fetchone()
+        previous_seq = int(prior["seq"]) if prior is not None else None
+    before = facts["before"]
+    if status == "succeeded":
+        baseline_info = {
+            "updated": True,
+            "firstSubmission": previous_seq is None,
+            "previousSeq": previous_seq,
+            "seq": submission_seq,
+        }
+        # 前后状态复用同一份求差实现（与 understanding 侧「按 submission_id 补读」同口径）：
+        # 重放时板面可能已经前进，所以 before 按**当时那次提交**的基准还原。
+        try:
+            snapshot = conn.execute(
+                "SELECT state FROM board_state_snapshots WHERE board_id = ? AND seq = ? LIMIT 1",
+                (board_id, submission_seq - 1),
+            ).fetchone()
+            if snapshot is not None:
+                state = models.loads(snapshot["state"], {})
+                if isinstance(state, dict):
+                    before = project_baseline(last_success_baseline(conn, board_id), state)
+        except Exception:  # noqa: BLE001 - 还原不出来时仍旧返回原记录里的 before
+            before = facts["before"]
+    baseline_seq = facts["baseStateVersion"]
+    return {
+        "status": status,
+        "submission": {
+            "id": str(facts["submissionId"]),
+            "seq": submission_seq,
+            "status": status,
+            "visible": facts["visible"],
+            "expressions": facts["expressions"],
+            "delivery": facts["delivery"],
+            "error": facts["error"],
+            "createdAt": facts["createdAt"],
+            "clientRequestId": str(row["client_request_id"]),
+        },
+        "before": before,
+        "after": facts["after"],
+        "expressions": facts["expressions"],
+        "baseline": baseline_info,
+        "delivery": facts["delivery"],
+        "visibleRange": facts["visible"],
+        # 提交那一刻被自动取消的勾选：按记录里的板面版本还原当时的快照（快照已被轮转清理
+        # 时如实返回空列表，不拿当前板面重算）
+        "checkedCleared": (
+            _checked_cleared_at(conn, board_id, baseline_seq)
+            if isinstance(baseline_seq, int)
+            else []
+        ),
+        "replayed": True,
+    }
+
+
+def _conflict_reason(conn: sqlite3.Connection, row, *, note: str, base_state_version: Any) -> str | None:
+    """同身份但内容不一致的可读原因；一致返回 None（= 重试，可以重放原事实）。
+
+    只比契约写明的两件事：base_state_version 与 note。身份内出现这两种偏差都**不能**
+    当成同一次提交的受理结果（不得把另一个窗口的内容混进来）。
+    """
+    stored_base = _base_state_version(row)
+    wanted_base = None
+    if base_state_version is not None:
+        try:
+            wanted_base = int(base_state_version)
+        except (TypeError, ValueError):
+            wanted_base = None
+    stored_note = _note_from_delivery(models.loads(row["delivery"], {}))
+    identity = str(row["client_request_id"])
+    if wanted_base != stored_base:
+        return (
+            f"这个提交请求身份（{identity}）已经对应一次基于板面版本 {stored_base} 的提交，"
+            f"这次却声明基于版本 {wanted_base}：内容不一致，已拒绝"
+            "（没有落新提交、没有改基准、没有调用模型）。"
+        )
+    if _note_from_delivery({"note": note}) != stored_note:
+        return (
+            f"这个提交请求身份（{identity}）已经对应一次备注为「{stored_note}」的提交，"
+            f"这次却是「{note}」：内容不一致，已拒绝"
+            "（没有落新提交、没有改基准、没有调用模型）。"
+        )
+    return None
+
+
 def _next_submission_seq(conn: sqlite3.Connection, board_id: str) -> int:
     row = conn.execute(
         "SELECT COALESCE(MAX(seq), 0) AS top FROM board_submissions WHERE board_id = ?",
@@ -667,12 +1012,14 @@ def _record_submission(
     delivery: dict,
     content_hash: str,
     error: str | None,
+    client_request_id: str = "",
 ) -> dict:
     stamp = models.now_iso()
     conn.execute(
         "INSERT INTO board_submissions (id, board_id, seq, status, before_state, after_state,"
-        " visible, expressions, baseline, delivery, content_hash, error, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " visible, expressions, baseline, delivery, content_hash, error, created_at,"
+        " client_request_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             submission_id,
             board_id,
@@ -687,6 +1034,7 @@ def _record_submission(
             content_hash,
             error,
             stamp,
+            client_request_id,
         ),
     )
     return {
@@ -1109,6 +1457,7 @@ async def submit_board(
     base_state_version: Any = None,
     confirmed_check_id: str | None = None,
     adapter_provider: Any = None,
+    client_request_id: str = "",
 ) -> dict:
     """提交：QIO 取得表达的唯一入口。
 
@@ -1124,11 +1473,33 @@ async def submit_board(
       （adapter_provider 透传给 B 的 run_understanding；没有可用凭据 / adapter 时后台
       如实降级为可读失败，不阻塞本请求）；
     - 受理失败（理解模块不可用 / 建立请求抛错）：按 failed 处理 —— 不更新基准、
-      不清勾选、如实返回原因；受理成功之后的模型失败不回改提交状态。
+      不清勾选、如实返回原因；受理成功之后的模型失败不回改提交状态；
+    - **稳定提交请求身份**（契约 §1.1）：client_request_id 非空时按
+      (board_id, client_request_id) 精确认这一次提交请求 ——
+      同身份同内容 = 重试，直接返回原记录事实（replayed=True，不落新行、不新建理解请求、
+      不启动后台理解、不调用模型）；同身份但 base_state_version 或 note 不一致 →
+      RequestIdentityConflict（HTTP 409，不落新提交、不改基准、不调模型）；
+      空串 = 旧客户端，行为与今天完全一致（不参与幂等）。
     """
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
     state = loaded["state"]
+    requested_note = _raw_note(note)
+    display_note = _display_note(note)
+
+    # --- 稳定提交请求身份（契约 §1.1 / §1.2）：先按精确身份认领，再做任何写入与模型调用 ---
+    identity = normalize_client_request_id(client_request_id)
+    if identity:
+        existing = _client_request_id_row(conn, bid, identity)
+        if existing is not None:
+            conflict = _conflict_reason(
+                conn, existing, note=requested_note, base_state_version=base_state_version
+            )
+            if conflict is not None:
+                # 同身份不同内容：绝不落新提交、不改基准、不调模型（契约 §1.1 第 3 条）
+                raise RequestIdentityConflict(conflict)
+            # 同身份同内容：返回**原记录事实**，不重复落行、不新建理解请求、不启动后台理解
+            return replay_response(conn, existing, board_id=bid)
 
     if base_state_version is not None:
         try:
@@ -1152,7 +1523,7 @@ async def submit_board(
     first_submission = baseline is None
     submission_seq = _next_submission_seq(conn, bid)
     submission_id = models.new_id("sub")
-    note_text = " ".join(str(note or "").split())[:200]
+    note_text = display_note
 
     # 任何一步出问题都走 failed：不更新基准、不清勾选，但要如实返回一份可读的载荷。
     visible = _empty_projection()
@@ -1264,6 +1635,9 @@ async def submit_board(
             "detail": "未更新基准；已保存的板面与勾选保持不变",
             "marking": {"updated": []},
         }
+    # 备注**原样**落进 delivery：查证（acceptance.note）与身份冲突比对都按它逐字比较，
+    # 前端提交时恒为空串，这里就回显空串（绝不把别的说明塞进这个字段）。
+    delivery["note"] = requested_note
     if ignored_requested:
         delivery["detail"] = (
             f"{delivery.get('detail', '')}；客户端请求的 {len(ignored_requested)} 项不在本次允许查看范围内，"
@@ -1273,10 +1647,14 @@ async def submit_board(
         delivery["detail"] = f"{delivery.get('detail', '')}；用户备注：{note_text}".strip("；")
 
     baseline_info = {
+        # baseline.seq 保持既有语义（成功 = 提交后新的基准版本；其余 = 当前成功基准的版本）。
         "updated": status == "succeeded",
         "firstSubmission": first_submission,
         "previousSeq": int(baseline["seq"]) if baseline else None,
         "seq": submission_seq if status == "succeeded" else (int(baseline["seq"]) if baseline else None),
+        # 新增（只增字段）：这次提交**基于**的板面版本 = 请求里的 baseStateVersion。
+        # 契约 §1.2 的 acceptance.baseStateVersion 就取它（四种状态都写上，便于事后查证）。
+        "baseStateVersion": loaded["seq"],
     }
     record = _record_submission(
         conn,
@@ -1292,6 +1670,7 @@ async def submit_board(
         delivery=delivery,
         content_hash=content_hash if status == "succeeded" else "",
         error=error,
+        client_request_id=identity,
     )
 
     # 提交成功后自动取消勾选：不是删除或撤回，用户仍可再次勾选提交。
@@ -1318,6 +1697,7 @@ async def submit_board(
                 )
                 record["delivery"] = delivery
 
+    record["clientRequestId"] = identity
     return {
         "status": status,
         "submission": record,

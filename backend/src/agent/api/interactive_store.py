@@ -326,6 +326,10 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
 
     只传 requestedVisible 表示「用户这一批想给 QIO 看的卡片」；
     服务端仍以**已保存状态推导出的可见范围**为准，绝不接受未勾选卡片进入载荷。
+
+    clientRequestId（可选，契约 §1.2）是前端在发出提交**之前**生成的稳定提交请求身份：
+    同身份重试返回原记录事实（replayed=true，不重复落行 / 不重复调用模型）；
+    同身份但内容不同 → 409 request_identity_conflict；缺省 / 空串 = 旧客户端行为。
     """
     conn = _conn(request)
     bid = _board_id(board_id)
@@ -342,6 +346,12 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
     if base_version is not None and not isinstance(base_version, (int, float, str)):
         raise HTTPException(status_code=400, detail="baseStateVersion 必须是板面版本号")
     try:
+        client_request_id = submission.normalize_client_request_id(
+            payload.get("clientRequestId")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
         return await submission.submit_board(
             conn,
             bid,
@@ -351,14 +361,64 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
             confirmed_check_id=payload.get("confirmedCheckId"),
             # 与理解路由共用同一个 adapter 注入点：提交 → 受理 → 后台理解也走同一条链路
             adapter_provider=_adapter_provider(request),
+            # 稳定提交请求身份：同身份重试不重复落行、不重复调用模型
+            client_request_id=client_request_id,
         )
     except submission.StaleState as exc:
         # M4 路径 3：候选版本 / 确认范围与服务端不一致 → 不落库
         raise HTTPException(
             status_code=409, detail={"error": "stale_state", "reason": str(exc)}
         ) from exc
+    except submission.RequestIdentityConflict as exc:
+        # 契约 §1.1 第 3 条：同身份不同内容 → 拒绝（不落新提交、不改基准、不调模型）
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "request_identity_conflict", "reason": str(exc)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/interactive/boards/{board_id}/submissions/acceptance")
+async def submission_acceptance(
+    request: Request, board_id: str, clientRequestId: str | None = None
+):
+    """按**精确身份**查这次提交请求的受理事实（契约 §1.2）。
+
+    200 {"acceptance": {...}}（形状见 submission.acceptance_lookup）
+    404 {"acceptance": null, "reason": "..."} —— 查不到就是查不到，
+    绝不用「时间接近 / 最近一条理解记录 / 板面出现新任务」推导成受理成功。
+    路由本身只读：不写库、不落新提交、不调用模型。
+    """
+    from fastapi.responses import JSONResponse
+
+    conn = _conn(request)
+    bid = _board_id(board_id)
+    try:
+        wanted = submission.normalize_client_request_id(clientRequestId)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not wanted:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "acceptance": None,
+                "reason": "没有带 clientRequestId：无法按精确身份查证受理事实。",
+            },
+        )
+    found = submission.acceptance_lookup(conn, bid, wanted)
+    if found is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "acceptance": None,
+                "reason": (
+                    f"没有这个提交请求身份的受理记录（{wanted}）：结果未知，不推断成功；"
+                    "请保留原内容与勾选，不要盲目重发。"
+                ),
+            },
+        )
+    return {"acceptance": found}
 
 
 @router.get("/api/interactive/drafts/{board_id}")
