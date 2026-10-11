@@ -151,13 +151,26 @@
 - 交付分支推送**一次**：`feat/interactive-real-model`。
 - **不创建 PR**：`ci.yml` 同时监听 `push` 与 `pull_request`；创建 PR 会用 `pull_request` 事件再触发一遍全量 CI，
   等于第二次全量，因此本轮不建 PR（与「不自行合并 main」也一致）。
-- CI 记录在推送完成后补写进本表；**补写用带 `[skip ci]` 的提交**，避免再触发一次全量 CI。
+- **推送与 CI 记录**
 
 | 项 | 值 |
 | --- | --- |
 | workflow | CI（`ci.yml`） |
-| run ID / attempt | 推送后补充 |
-| 触发 SHA | 推送后补充 |
-| jobs / matrix | docs consistency；backend (py3.11)、(py3.12)；backend (windows-latest)；以及仓库既有前端任务 |
-| 结果 | 推送后补充 |
-| 失败项与定向重跑 | 推送后补充 |
+| run ID / attempt | `38139115168` / attempt 1 |
+| 触发事件与 SHA | `push`，`d5b7bb1ab54d7460731288cfc3d4fb8f6fe19dd7` |
+| 触发次数 | 1 次（本轮只推送一次，且**不创建 PR**：`ci.yml` 同时监听 `push` 与 `pull_request`，建 PR 会用 `pull_request` 再触发一遍全量） |
+| jobs | docs consistency ✓、frontend ✗、rust (ubuntu-24.04) ✓、rust (windows-latest) ✓、backend (py3.11) ✓、backend (py3.12) ✓、backend (windows-latest) ✓、frozen worker (windows) ✓、install e2e (windows-latest) ✓ |
+| 结果 | 9 个 job 中 8 个通过；唯一失败是 `frontend` 的 **Tests** 步骤（Typecheck 通过、Build 因 Tests 失败被跳过） |
+
+**frontend 失败的定性（定向分析，不是猜测）：**
+
+- CI 上失败的 40 项用例，与本机把 12 个失败文件在**基线 `8fa8452`** 上定向重跑得到的 40 项**是同一组用例**（失败用例名逐条一一对应）。
+- 根因是这批旧验收用例仍然断言「网络失败后必须有可恢复的失败原文」，而该代码路径早已按契约 §11.4 改成
+  「受理情况未确认时不登记可恢复原文（避免用新请求身份绕过幂等），只走待确认通道」。这批用例没有随语义更新。
+- 本轮唯一引入的回归用例 `src/stores/__tests__/final-lead-m1.test.ts` 在 CI 上**通过**（10/10，日志里是 ✓），
+  说明 9.2 的修复在 Linux 上同样有效。
+- 补充事实：`main` 分支最近的 CI（run `38124767508`，SHA `7d20b24`）frontend 是成功的，但该 SHA **早于**互动线并入 main；
+  并入 main 的那个合并提交带 `[skip ci]`，因此这批失败从未在 CI 上跑过 —— 本轮这次推送是该代码第一次跑完整 CI。
+
+**没有做（按规则）：** 没有使用 Re-run all jobs，没有再次触发完整 workflow，没有推送第二次全量。
+失败项已定位为**基线既有问题**、本轮没有针对它们的代码修复需要验证，因此没有进行二次 CI。
