@@ -155,10 +155,17 @@
   接口接通与 mock 验证**不等于**真实模型验收。
 * 图片视觉理解未接入（当前模型链路没有视觉能力），界面与上下文如实标注 `image_unsupported`。
 * 引用型附件（无副本、直接引用原文件）的读取路径没有专门用例覆盖。
-* 跨进程迟到写回窗口：`board_understanding` 没有 `owner_instance_id` 列，靠 attempt 护栏与
-  「同一次理解的意图幂等」收敛；两个进程共享同一数据库且都没有推进 attempt 的情形无法区分（见 E 的报告）。
+* 跨进程迟到写回窗口：`board_understanding` 没有 `owner_instance_id` 列（本轮**未加**，见 B 报告 §6），
+  实际收敛靠两层既有机制：① `run_understanding` 的 attempt 护栏（被接手即丢弃迟到结果）；
+  ② `create_intents_from_understanding` 按 understanding_id 幂等（旧实例迟到**不会重复生成意图**）。
+  仍无法区分的情形是「两个进程共享同一数据库且都没有推进 attempt」。彻底闭合需要
+  「迁移增列 + `request_understanding` 写当前实例 id + `run_understanding` 丢弃判定」三处一起改，本轮不做。
 * 硬杀（未走关闭流程）留下的 `accepted`/`understanding` 记录在重启时**不自动清扫**，
   由用户重试或下一次关闭收敛。
+* B 的并发反例是**顺序化的两窗口**（同进程同一连接），不是真实线程/进程竞争；并发安全网是
+  `(board_id, client_request_id)` 的部分唯一索引（并发插入第二个会命中唯一约束并被拒绝）。
+* 迁移 39 之前的老提交记录没有 `client_request_id`：不参与幂等，`acceptance.baseStateVersion`
+  可能为 null（前端只用于身份比对，对老记录按查不到处理）。
 * 前端实机视觉核对的范围与结论见 `docs/integration-review-20261011.md`。
 * 其余见 `docs/verify-ledger-integration-20261011.md` §8 与 E 的审查报告。
 
