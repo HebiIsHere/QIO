@@ -293,3 +293,42 @@ describe("同身份但内容不同：服务端冲突（契约 §1.1.3）", () =>
     expect(ids[1]).not.toBe(ids[0]);
   });
 });
+
+describe("查证命中的记录本身说没有被可靠受理", () => {
+  it("查证命中的记录说 delivered=false：按服务端明确结论算失败，不冒充已受理", async () => {
+    const store = useInteractiveStore();
+    await store.load();
+    vi.mocked(api.submitBoard).mockRejectedValue(new Error("网络中断，没有收到回执"));
+    // 服务端有这条身份的记录，但明确说没有被可靠受理
+    vi.mocked(api.fetchAcceptance).mockImplementation(async (_boardId, clientRequestId) => ({
+      acceptance: {
+        clientRequestId,
+        submissionId: "s9",
+        status: "failed",
+        delivery: {
+          delivered: false,
+          reason: "投递通道拒绝了这次受理",
+          detail: "投递通道拒绝了这次受理（detail）",
+          understandingId: null,
+          status: null,
+        },
+        understandingId: null,
+        understandingStatus: null,
+        baseStateVersion: 4,
+        note: "",
+        createdAt: "t",
+        replayed: false,
+      },
+    } as never));
+
+    await store.submit();
+
+    expect(store.submitStatus, "服务端明说没受理就不能算成功（与回执路径同一口径）").toBe("failed");
+    expect(store.submitResultUnknown).toBe(false);
+    expect(store.submitError ?? "", "把服务端的真实原因带到界面").toContain("投递通道拒绝了这次受理");
+    expect(store.submitAcceptedByLookup, "这不是「查证确认受理」").toBe(false);
+    expect(store.submitNote, "不许出现「已被可靠受理」的说明").toBeNull();
+    expect(store.pendingSubmission, "身份已经有明确结论：收掉台账").toBeNull();
+  });
+});
+
