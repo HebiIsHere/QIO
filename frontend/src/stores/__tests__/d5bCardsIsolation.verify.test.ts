@@ -61,7 +61,7 @@ function boardState(): BoardState {
   } as unknown as BoardState;
 }
 
-/** 受控的「服务端」：草稿整份替换保存，和真实接口的语义一致（未列出的键会被删掉）。 */
+/** 受控的「服务端」：契约 C1 的**逐键**保存语义（只更新请求里出现的键，只有 removed 才删除）。 */
 function fakeServer(initial: Record<string, string> = {}) {
   const drafts: Record<string, string> = { ...initial };
   let updatedAt = "2026-10-08T00:00:00.000Z";
@@ -74,12 +74,16 @@ function fakeServer(initial: Record<string, string> = {}) {
     submissions: [],
     drafts: { drafts: { ...drafts }, updatedAt },
   }));
-  vi.mocked(imApi.saveDrafts).mockImplementation(async (_boardId: string, next: Record<string, string>) => {
-    for (const key of Object.keys(drafts)) delete drafts[key];
-    Object.assign(drafts, next);
-    updatedAt = new Date().toISOString();
-    return { drafts: { ...drafts }, updatedAt };
-  });
+  vi.mocked(imApi.saveDrafts).mockImplementation(
+    async (_boardId: string, next: Record<string, string>, patch?: { removed?: string[] }) => {
+      // C1：逐键更新 + 明确删除；未出现的键是「未修改」，保持原样
+      Object.assign(drafts, next);
+      const cleared = [...(patch?.removed ?? [])];
+      for (const key of cleared) delete drafts[key];
+      updatedAt = new Date().toISOString();
+      return { drafts: { ...drafts }, updatedAt, cleared, rev: cleared.length + 1 };
+    },
+  );
   vi.mocked(imApi.fetchVisibleRange).mockResolvedValue({ visibleRange: null } as never);
   vi.mocked(imApi.fetchIntents).mockResolvedValue({ intents: [], conflicts: [], batchAvailable: false } as never);
   return state;

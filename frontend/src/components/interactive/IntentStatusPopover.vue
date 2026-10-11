@@ -22,6 +22,17 @@ const store = useInteractiveStore();
 const busy = ref(false);
 const notice = ref<string | null>(null);
 const error = ref<string | null>(null);
+/** 只重试读取任务清单（F11）：不提交、不审批、不改任何板面事实 */
+const refreshing = ref(false);
+async function retryIntents(): Promise<void> {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await store.loadIntents();
+  } finally {
+    refreshing.value = false;
+  }
+}
 /** 当前聚焦查看的任务（点「在板面上定位」时设置；用来在预览附近放审批浮条） */
 const focusedId = ref<string | null>(null);
 /** 每行任务默认只显示「状态 + 操作」，点「详情」才展开进度与预览位置（浮层保持小巧，少挡板面） */
@@ -355,7 +366,25 @@ function boundsText(intent: Intent): string {
     <p v-if="notice" class="notice" role="status" data-im="tasks-notice">{{ notice }}</p>
     <p v-if="error" class="error" role="alert">操作失败：{{ error }}</p>
 
-    <p v-if="!tasks.length" class="hint">现在没有执行中或已暂停的任务。</p>
+    <!--
+      F11：读取失败**不是**「任务消失」。下面列出的仍然是最后一次成功读到的任务
+      （不是当前权威事实），并给一个只触发读取的重试入口。
+    -->
+    <p v-if="store.intentsLoadState === 'error'" class="notice warn" role="status" data-im="tasks-refresh-failed">
+      任务清单刷新失败：{{ store.intentsLoadError || "原因未知" }}。下面是最后一次成功读到的任务，
+      不代表当前状态；依赖最新事实的审批会先重新核验，核验不成会暂停。
+      <button
+        class="btn ghost"
+        type="button"
+        data-im="tasks-refresh-retry"
+        :disabled="refreshing"
+        @click="retryIntents"
+      >
+        {{ refreshing ? "重新读取中…" : "重试刷新" }}
+      </button>
+    </p>
+
+    <p v-if="!tasks.length" class="hint">{{ store.intentsLoadState === "error" ? "清单读取失败：这里的空白不是「没有任务」，请先重试刷新。" : "现在没有执行中或已暂停的任务。" }}</p>
     <ul class="rows">
       <li
         v-for="intent in tasks"
@@ -478,6 +507,18 @@ function boundsText(intent: Intent): string {
 }
 .hint { color: var(--text-faint); }
 .notice { color: var(--text-secondary); }
+/* F11：读取失败是「事实可能过期」的提示 —— 用警告色令牌，并让重试按钮在同一行可达 */
+.notice.warn {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  color: var(--text-primary);
+  border-left: 2px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: var(--r-xs);
+  padding: var(--sp-1) var(--sp-2);
+}
 .error { color: var(--danger); }
 .rows {
   list-style: none;
