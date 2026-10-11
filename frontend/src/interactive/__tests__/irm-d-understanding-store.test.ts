@@ -24,6 +24,7 @@ vi.mock("../../services/interactive", () => ({
   checkMaterialImpact: vi.fn(),
   fetchIntents: vi.fn(),
   submitBoard: vi.fn(),
+  fetchAcceptance: vi.fn(),
   fetchUnderstanding: vi.fn(),
   retryUnderstanding: vi.fn(),
   fetchExecutions: vi.fn(),
@@ -292,36 +293,63 @@ describe("受理与理解分开（契约 §14.1）", () => {
   });
 });
 
-describe("受理情况不明时先查询确认（契约 §14.1 / §14.4）", () => {
-  it("回执丢失但服务端已有这次提交的理解请求：算已受理，且不重复提交", async () => {
+/**
+ * 契约 §1.3 改写了这一段的口径：受理证据**只有**一条路径 ——
+ * 同一个 clientRequestId 在服务端的精确记录（fetchAcceptance）。
+ * 旧口径（按 createdAt 接近 + 排除上一次 submissionId 去「认领」一条理解记录）
+ * 已经删除；查不到 / 查询失败一律继续「结果未知」，不许改判失败，也不许拿
+ * 上一次提交留下的理解记录冒充本次（§1.1.3 / §1.1.4 / §1.1.5）。
+ */
+describe("受理情况不明时按请求身份精确查证（契约 §1.3）", () => {
+  it("服务端按同一个请求身份确认受理：恢复受理与理解身份，且不重复提交", async () => {
     const store = useInteractiveStore();
     await seed(store);
     vi.mocked(api.submitBoard).mockRejectedValue(new Error("网络中断，没有收到回执"));
-    const fresh = understandingFixture({ status: "accepted", createdAt: new Date(Date.now() - 1000).toISOString() });
-    vi.mocked(api.fetchUnderstanding).mockResolvedValue({
-      understanding: fresh,
-      understandings: [fresh],
-    } as never);
+    // 服务端按**客户端发出的**身份与内容依据返回事实：身份与基准版本都对得上才算命中
+    vi.mocked(api.fetchAcceptance).mockImplementation(async (_boardId, clientRequestId) => ({
+      acceptance: {
+        clientRequestId,
+        submissionId: "s9",
+        status: "succeeded",
+        delivery: { delivered: true, reason: "", detail: "", understandingId: "u9", status: "accepted" },
+        understandingId: "u9",
+        understandingStatus: "accepted",
+        baseStateVersion: vi.mocked(api.submitBoard).mock.calls[0][3],
+        note: "",
+        createdAt: new Date(Date.now() - 1000).toISOString(),
+        replayed: false,
+      },
+    } as never));
 
     const result = await store.submit();
     expect(result).toBeNull();
     expect(api.submitBoard).toHaveBeenCalledTimes(1); // 绝不自动重发
     expect(store.submitStatus).toBe("succeeded");
-    expect(store.submitNote ?? "").toContain("回执");
+    expect(store.submitNote ?? "").toContain("同一个请求身份");
     expect(store.understandingStatus).toBe("accepted");
     expect(store.submissionStage).toBe("accepted");
+    expect(store.acceptedUnderstandingId, "恢复受理回执给出的理解请求身份").toBe("u9");
+    expect(store.lastAcceptance?.submissionId).toBe("s9");
+    // 查证用的必须是这次提交发出的那个身份
+    expect(vi.mocked(api.fetchAcceptance).mock.calls[0][1]).toBe(
+      vi.mocked(api.submitBoard).mock.calls[0][5],
+    );
   });
 
-  it("不会把上一次提交留下的理解记录当成这次已受理", async () => {
+  it("只有上一次提交留下的理解记录（这次身份查不到）：继续「结果未知」，不认领、不改判失败", async () => {
     const store = useInteractiveStore();
     await seed(store);
-    // 先有一次成功提交，留下 lastSubmission(s1)
+    // 先有一次成功提交，留下 lastSubmission(s1) 与它的理解记录
     vi.mocked(api.submitBoard).mockResolvedValue(submitResult() as never);
     await store.submit();
     expect(store.submitStatus).toBe("succeeded");
 
-    // 第二次请求失败，而服务端只有上一次 s1 的理解记录：这不算这次已受理
+    // 第二次请求失败；这次身份在服务端**没有**记录，只有上一次 s1 的理解记录
     vi.mocked(api.submitBoard).mockRejectedValue(new Error("网络中断，没有收到回执"));
+    vi.mocked(api.fetchAcceptance).mockResolvedValue({
+      acceptance: null,
+      reason: "没有这条请求身份的记录",
+    } as never);
     const old = understandingFixture({
       id: "u_old",
       submissionId: "s1",
@@ -333,26 +361,39 @@ describe("受理情况不明时先查询确认（契约 §14.1 / §14.4）", () 
       understanding: old,
       understandings: [old],
     } as never);
+
     await store.submit();
-    expect(store.submitStatus).toBe("failed");
+    expect(store.submitStatus, "查不到不是失败结论").toBe("unknown");
     expect(store.submitError ?? "").toContain("网络中断");
+    expect(store.understandingStatus, "上一次的 understood 不许冒充本次理解").not.toBe("understood");
+    expect(store.submissionStage).toBe("unknown");
+    expect(store.acceptanceLookupNote ?? "").toContain("结果仍然未知");
   });
 
-  it("查询也查不到这次提交：如实算失败，保留改动", async () => {
+  it("查证也没有记录 / 查询失败：继续「结果未知」，保留改动，不盲目重发", async () => {
     const store = useInteractiveStore();
     await seed(store);
     vi.mocked(api.submitBoard).mockRejectedValue(new Error("网络中断，没有收到回执"));
-    vi.mocked(api.fetchUnderstanding).mockResolvedValue({
-      understanding: null,
-      understandings: [],
+    vi.mocked(api.fetchAcceptance).mockResolvedValue({
+      acceptance: null,
+      reason: "没有这条请求身份的记录",
     } as never);
 
     const result = await store.submit();
     expect(result).toBeNull();
     expect(api.submitBoard).toHaveBeenCalledTimes(1);
-    expect(store.submitStatus).toBe("failed");
+    expect(store.submitStatus, "没有精确证据就只能说「未知」").toBe("unknown");
+    expect(store.submitResultUnknown).toBe(true);
     expect(store.submitError ?? "").toContain("网络中断");
-    expect(store.submitNote).toBeNull();
+    expect(store.submitNote, "没命中不许出现「已受理」的说明").toBeNull();
+
+    // 查证本身失败（断网）：同样只说明「还没确认」
+    const second = useInteractiveStore();
+    await seed(second);
+    vi.mocked(api.fetchAcceptance).mockRejectedValue(new Error("查证也断网了"));
+    await second.submit();
+    expect(second.submitStatus).toBe("unknown");
+    expect(second.acceptanceLookupNote ?? "").toContain("查证没有完成");
   });
 });
 

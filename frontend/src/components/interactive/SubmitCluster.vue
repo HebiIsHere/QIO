@@ -192,6 +192,14 @@ const failure = computed(() =>
 const statusText = computed(() => {
   // 受理与理解分开：成功只说「这次提交记录下来了」，理解到了哪一步由理解状态单独说
   if (store.submitStatus === "succeeded") {
+    if (store.submitAcceptedByLookup) {
+      // 这次「已受理」是按请求身份精确查证确认的：本机没有完整回执，
+      // 所以绝不借用上一次提交的改动条数（那正是「上一次冒充本次」的错误）。
+      return [
+        "已提交：服务端确认这次请求已被可靠受理（按本次请求身份精确查证；本机没有拿到完整回执，改动条数以服务端记录为准）",
+        "受理只表示 QIO 可靠收下了这次提交；理解结果与任务执行状态分别由理解状态与任务列表表达，提交不构成执行批准。",
+      ].join("；");
+    }
     const count = store.lastSubmission?.expressions?.length ?? 0;
     const cleared = store.lastSubmission?.checkedCleared?.length ?? 0;
     return [
@@ -266,6 +274,22 @@ const refreshErrorText = computed(() =>
   store.submitRefreshError ? humanizeFailure(store.submitRefreshError).short : "原因未知",
 );
 const refreshRetrying = ref(false);
+/**
+ * F10 + 契约 §1.3：受理情况未知时的**精确查证**入口。
+ *
+ * 只按这次提交的请求身份向服务端核对（`fetchAcceptance`）：命中才认受理，
+ * 查不到 / 查询失败就说清「结果仍然未知」—— 不推断、不重复提交、不改判失败。
+ */
+const verifyingAcceptance = ref(false);
+async function verifyAcceptance(): Promise<void> {
+  if (verifyingAcceptance.value) return;
+  verifyingAcceptance.value = true;
+  try {
+    await store.confirmAcceptanceAfterUnclear();
+  } finally {
+    verifyingAcceptance.value = false;
+  }
+}
 async function retryRefresh(): Promise<void> {
   if (refreshRetrying.value) return;
   refreshRetrying.value = true;
@@ -291,6 +315,12 @@ const draftText = draftHintText();
 const submitLabel = computed(() => {
   if (busy.value) return "正在提交…";
   if (isFailed.value) return "重新提交";
+  /**
+   * F10 + 契约 §1.3：结果未知时按钮必须和「不会重复提交」这句文案一致 ——
+   * 重试会**沿用同一个请求身份**，服务端据此返回原事实（不重复创建提交与理解请求），
+   * 所以这里明写「同一身份」，而不是含混的「提交给 QIO」。
+   */
+  if (store.submitStatus === "unknown") return "用同一身份重试";
   return "提交给 QIO";
 });
 
@@ -395,12 +425,22 @@ function onSubmit() {
     -->
     <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
       <span class="blocked-text" data-im="submit-unknown-reason">
-        提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留，请先确认结果，不要直接重复提交。
+        提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留；请先查证结果，不要直接重复提交
+        （查证只按这次请求身份向服务端精确核对，不会自动重复提交）。
       </span>
       <!--
-        F10：未知时给的是**只触发读取**的查证入口（板面 / 可见范围 / 任务清单），
+        F10 + 契约 §1.3：未知时给的是**只读查证**入口（按请求身份精确匹配 + 重新读取），
         不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
       -->
+      <button
+        class="details"
+        type="button"
+        data-im="submit-unknown-verify"
+        :disabled="verifyingAcceptance"
+        @click="verifyAcceptance"
+      >
+        {{ verifyingAcceptance ? "查证中…" : "查证受理结果（按请求身份）" }}
+      </button>
       <button
         class="details"
         type="button"
@@ -408,8 +448,11 @@ function onSubmit() {
         :disabled="refreshRetrying"
         @click="retryRefresh"
       >
-        {{ refreshRetrying ? "重新读取中…" : "查证（只重新读取）" }}
+        {{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}
       </button>
+      <span v-if="store.acceptanceLookupNote" class="blocked-text" data-im="submit-unknown-lookup-note">
+        {{ store.acceptanceLookupNote }}
+      </span>
     </p>
 
     <!--
