@@ -29,12 +29,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import sys
 import types
 
 import pytest
 
+from agent.adapters.fake import FakeStreamAdapter, StreamScript
 from agent.api.bus import EventBus
 from agent.credentials.store import MemoryKeyring
 from agent.interactive import board_store, execution, models, submission
@@ -541,4 +543,138 @@ async def test_submit_board_rejects_background_dispatch_after_close(tmp_path, mo
     assert calls == [], "关闭期间不得同步跑模型"
     # 记录停在未终结状态（可从原快照重试），不假装已经理解过
     assert _row(ctx.conn, ui)["status"] == "accepted"
+    ctx.conn.close()
+
+
+# --- 7. 迟到写回护栏（understanding.run_understanding 内） -------------------
+#
+# 契约 §2 最后一条：旧实例 / 旧 attempt 的迟到结果不得写入当前记录、不得重复生成
+# 意图。这里用**真实** run_understanding（不替换模块）+ 受控的假 adapter 把模型调用
+# 钉在半路，模拟「旧进程的模型还在跑，新的一次尝试已经接手」。
+
+
+def _intent_payload(*, refs: list[str], content: str) -> dict:
+    return {
+        "kind": "intent",
+        "summary": "比较两份材料",
+        "intents": [
+            {
+                "intentKey": "compare-materials",
+                "title": "整理材料的差异",
+                "goal": "让用户看到两份材料的关键差异",
+                "summary": "对比两份材料的正文并给出差异",
+                "basis": [
+                    {"cardId": cid, "role": "material", "version": "v1"} for cid in refs
+                ],
+                "expected": "一张列出差异的结果卡片",
+                "operations": [
+                    {"op": "add_reply_card", "content": content, "title": "差异"},
+                    {"op": "group_cards", "cardIds": list(refs), "ordered": True},
+                ],
+                "impact": {"cardIds": list(refs), "scope": "只新增 QIO 结果卡片并成组"},
+                "dependsOn": [],
+                "conflictsWith": [],
+                "conflictKey": "",
+            }
+        ],
+    }
+
+
+def _real_model_snapshot() -> dict:
+    """受理时冻结的那份快照：两条材料 + 一条勾选的文字要求。
+
+    理解上下文按契约从**冻结快照**构建（不读当前板面），所以这里直接给快照。
+    """
+    cards = [
+        models.new_card("file", "甲材料：单价 100 元", id="m_a", meta={"name": "甲.txt"}),
+        models.new_card("code", "乙材料：交付 3 天", id="m_b", meta={"language": "text"}),
+        models.new_card("text", "请比较这两份材料的成本与交付", id="req", checked=True),
+    ]
+    return {"cards": cards, "groups": [], "links": [], "selection": [], "note": ""}
+
+
+def _gated_adapter(payload: dict, entered: asyncio.Event, release: asyncio.Event):
+    """把模型调用钉住：entered 置位后一直等 release —— 用来制造「迟到的结果」。"""
+    adapter = FakeStreamAdapter([StreamScript(text=json.dumps(payload, ensure_ascii=False))])
+    original = adapter.complete
+
+    async def gated(messages, tools, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        entered.set()
+        await release.wait()
+        return await original(messages, tools, **kwargs)
+
+    adapter.complete = gated  # type: ignore[method-assign]
+    return adapter
+
+
+def _intent_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) AS n FROM board_intents").fetchone()["n"])
+
+
+async def test_superseded_attempt_late_result_is_discarded(tmp_path):
+    """旧 attempt 迟到返回 → 当前记录不变、不建意图（真实 run_understanding）。"""
+    ctx = _app(tmp_path, "late-real")
+    uid = "und-late-real"
+    _insert_understanding(ctx.conn, uid, snapshot=_real_model_snapshot())
+    entered, release = asyncio.Event(), asyncio.Event()
+    adapter = _gated_adapter(
+        _intent_payload(refs=["m_a", "m_b"], content="成本差异：甲低于乙"), entered, release
+    )
+
+    async def provider():
+        return adapter
+
+    assert submission.schedule_understanding(
+        ctx.conn, understanding_id=uid, adapter_provider=provider
+    )["started"] is True
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    # 新的一次尝试接手（等同关停后重启 / 重试）：attempt+1，并且已经落成终结状态。
+    # 这里落成 failed + 可读原因（就是关停中断的那一条），旧实例返回后**不得**把它
+    # 翻回 understood，也不得建意图。
+    superseded_error = "理解被执行环境的关闭 / 重启中断：新的一次尝试已经接手。"
+    ctx.conn.execute(
+        "UPDATE board_understanding SET attempt = attempt + 1, status = 'failed',"
+        " error = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+        (superseded_error, models.now_iso(), models.now_iso(), uid),
+    )
+    release.set()
+    handle = ctx.background.handle(_named(ctx, uid))
+    assert handle is not None
+    await asyncio.wait_for(handle.task, timeout=5)
+
+    row = _row(ctx.conn, uid)
+    assert row["status"] == "failed", "迟到的结果不得改写当前记录（含不得把中断翻成成功）"
+    assert int(row["attempt"]) == 2
+    assert row["error"] == superseded_error, "迟到路径不得改写当前记录的原因"
+    assert _intent_count(ctx.conn) == 0, "迟到的结果不得创建意图"
+    ctx.conn.close()
+
+
+async def test_normal_run_still_writes_terminal_state_and_intents(tmp_path):
+    """attempt 未被接手时照常写终结状态与意图：护栏不影响正常路径。"""
+    ctx = _app(tmp_path, "normal-real")
+    uid = "und-normal-real"
+    _insert_understanding(ctx.conn, uid, snapshot=_real_model_snapshot())
+    entered, release = asyncio.Event(), asyncio.Event()
+    release.set()  # 不设闸：直接放行
+    adapter = _gated_adapter(
+        _intent_payload(refs=["m_a", "m_b"], content="成本差异：甲低于乙"), entered, release
+    )
+
+    async def provider():
+        return adapter
+
+    assert submission.schedule_understanding(
+        ctx.conn, understanding_id=uid, adapter_provider=provider
+    )["started"] is True
+    handle = ctx.background.handle(_named(ctx, uid))
+    assert handle is not None
+    await asyncio.wait_for(handle.task, timeout=10)
+
+    row = _row(ctx.conn, uid)
+    assert row["status"] == "understood", row
+    assert int(row["attempt"]) == 1
+    assert not (row["error"] or ""), row["error"]
+    assert _intent_count(ctx.conn) == 1, "正常路径必须照常创建意图"
     ctx.conn.close()

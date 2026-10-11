@@ -1457,6 +1457,36 @@ async def run_understanding(
         validation={},
         memory=[],
     )
+    # 整合轮契约 §2：这一次尝试的身份 = (记录 id, attempt)。写终结状态与创建意图之前
+    # 必须核对它没有被新的一次尝试 / 新实例取代（关停中断后重试会 attempt+1）——
+    # 旧实例的迟到结果不得写回当前记录，也不得建意图。
+    run_attempt = attempt
+
+    def _discard_if_superseded() -> dict | None:
+        """已被新的一次尝试取代时返回「丢弃」结果（调用方直接 return），否则 None。
+
+        读不到记录按「已取代」处理：宁可什么都不写，也不能把迟到的结果写进一条
+        来路不明的记录。丢弃时如实写日志，不改记录、不建意图。
+        """
+        fresh = _load_row(conn, understanding_id)
+        if fresh is not None and int(fresh["attempt"] or 1) == run_attempt:
+            return None
+        logger.warning(
+            "互动理解已被新的一次尝试取代：这一次的迟到结果不再写回（%s）", understanding_id
+        )
+        if fresh is None:
+            return {
+                "id": understanding_id,
+                "status": None,
+                "boardId": board_id,
+                "discarded": True,
+                "reason": "这条理解记录已经不存在：这一次的结果不再写回。",
+            }
+        record_now = _row_dict(fresh)
+        record_now["discarded"] = True
+        record_now["reason"] = "这次理解已经被更新的一次尝试取代：迟到的结果不再写回。"
+        return record_now
+
     try:
         current_stage = "materials"
         _set_stage(conn, understanding_id, "materials", "正在读取本次允许查看的材料")
@@ -1478,6 +1508,9 @@ async def run_understanding(
             if provider_error:
                 reason += "（" + provider_error + "）"
             reason += "：受理记录已保留，补充凭据后可以重试。"
+            discarded = _discard_if_superseded()
+            if discarded is not None:
+                return discarded
             return _fail(
                 conn, understanding_id, stage="model", error=reason, reasons=[reason]
             )
@@ -1515,6 +1548,9 @@ async def run_understanding(
                 "模型输出未通过程序校验（已自动修复 1 次，仍然无效），没有落成任何任务："
                 + ("；".join(reasons) if reasons else "原因未知")
             )
+            discarded = _discard_if_superseded()
+            if discarded is not None:
+                return discarded
             _update(
                 conn,
                 understanding_id,
@@ -1543,6 +1579,9 @@ async def run_understanding(
             "memory": normalized["memory"],
             "raw": _clip(_redact_text(raw), MAX_RAW_CHARS),
         }
+        discarded = _discard_if_superseded()
+        if discarded is not None:
+            return discarded
         if kind == "intent":
             intent_creation = _create_intents(
                 conn,
@@ -1605,6 +1644,9 @@ async def run_understanding(
         assert fresh is not None
         return _row_dict(fresh)
     except Exception as exc:  # noqa: BLE001 - 任何异常都收敛为失败，绝不向外抛
+        discarded = _discard_if_superseded()
+        if discarded is not None:
+            return discarded
         message = "理解过程出现异常（已收敛为失败，可从快照重试）：" + _safe_error(exc)
         return _fail(
             conn,
