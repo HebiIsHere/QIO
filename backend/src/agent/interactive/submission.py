@@ -4,8 +4,13 @@
 
 硬约束（不许绕过）：
 
-1. 保存不调用 QIO；**只有 submit_board 会让 QIO 拿到表达**，而第一阶段没有接入模型调用，
-   所以 delivery.delivered 恒为 false，reason 必须说清「没有接入」，不能假装 QIO 懂了。
+1. 保存不调用 QIO；**只有 submit_board 会让 QIO 拿到表达**。提交成功（succeeded）时
+   **受理与理解分开**（契约 §14.1）：本函数只负责建立一条 accepted 的理解请求并把它交给
+   后台真实理解（understanding.py，延迟 import）。受理成功 → delivery.delivered=true、
+   delivery.understandingId、delivery.status='accepted'；受理**失败**（理解模块不可用 /
+   建立请求抛错）→ 这次提交按 failed 处理：不更新基准、不清勾选、如实返回原因，绝不假装
+   QIO 受理了。受理成功之后的模型失败**不得**回头改提交状态（那是理解记录自己的 failed，
+   可从保存的快照重试）。
 2. 未勾选的注释、明确隐藏的卡片：文字与链接都不得进入 before / after；
    链接必须两端都在范围内才出现；一名可见成员都没有的组整体不出现。
 3. 提交成功才更新「上次成功提交」基准；失败保留改动与本次注释选择。
@@ -21,12 +26,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import sqlite3
 from typing import Any
 
 from agent.interactive import board_store, models
+
+logger = logging.getLogger(__name__)
 
 class StaleState(Exception):
     """提交被拒（M4 路径 3）：候选版本 / 确认范围与当前服务端不一致。
@@ -608,20 +617,30 @@ def refresh_pending(conn: sqlite3.Connection, board_id: str) -> dict:
 
 
 def _decide_status(baseline: dict | None, expressions: list[dict], after: dict) -> tuple[str, str | None]:
-    """empty / duplicate / succeeded 的一致判定（前两种都不更新基准、不调用 QIO）。"""
+    """empty / duplicate / succeeded 的一致判定（前两种都不更新基准、不调用 QIO）。
+
+    判定顺序按契约 §1.5：**先看内容是否与上次成功提交一致（duplicate），再看有没有
+    可提交内容（empty）**。纯位置变化（layout_only）后内容与上次成功提交一致，必须
+    判 duplicate 而不是 empty —— 两种状态的安全语义相同（不更新基准、不调用模型），
+    但前端文案与状态机含义必须准确。
+    """
+    fingerprint = content_fingerprint(after)
+    if baseline:
+        # 与「上次成功提交内容」比较时对两边都重算身份指纹：
+        # 基准行里的 content_hash 可能是旧方案（内容指纹），旧基准无缝兼容
+        snapshot = baseline.get("snapshot")
+        if isinstance(snapshot, dict) and snapshot:
+            if fingerprint == content_fingerprint(snapshot):
+                return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
+        elif baseline.get("contentHash") and baseline["contentHash"] == fingerprint:
+            return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
+    # 首次提交（baseline=None）不得判成 duplicate；没有内容变化才是 empty
     content = [e for e in expressions if e.get("kind") not in DISPLAY_ONLY_EXPRESSIONS]
     if not content:
         return (
             "empty",
             "没有可提交内容：本次没有允许查看的内容，或只有普通移动 / 缩放这类不构成表达的变化",
         )
-    if baseline and isinstance(baseline.get("snapshot"), dict) and baseline.get("snapshot"):
-        # 与「上次成功提交内容」比较时对两边都重算身份指纹：
-        # 基准行里的 content_hash 可能是旧方案（内容指纹），旧基准无缝兼容
-        if content_fingerprint(after) == content_fingerprint(baseline["snapshot"]):
-            return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
-    elif baseline and baseline.get("contentHash") and baseline["contentHash"] == content_fingerprint(after):
-        return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
     return "succeeded", None
 
 
@@ -682,6 +701,185 @@ def _record_submission(
     }
 
 
+# --- 受理与后台理解（契约 §14.1 / §14.3 / §14.4） -------------------------
+
+
+#: 后台理解任务的强引用：任务在跑的时候必须有人持有它（否则可能被 GC 吞掉）。
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+async def _no_adapter():
+    """没有传入 adapter_provider 时的兜底：如实返回「当前没有可用模型」。
+
+    understanding.run_understanding 拿到 None 必须给出可读失败原因（不抛异常）；
+    这里只保证形状正确 —— A 侧绝不自己拿凭据、绝不绕过 QIO 既有的用量 / 预算链路。
+    """
+    return None
+
+
+def _load_understanding():
+    """延迟 import B 的理解模块：不存在时返回 (None, 可读原因)，绝不抛给调用方。
+
+    只管「模块在不在」；具体有没有 request_understanding / run_understanding 由各自的
+    调用点判定（受理与后台执行是两条不同的路径）。
+    """
+    try:
+        from agent.interactive import understanding  # 延迟 import：B 的模块
+    except Exception as exc:  # noqa: BLE001 - 模块缺失 / 加载失败都是「受理不可用」
+        return None, f"理解模块不可用（agent.interactive.understanding）：{type(exc).__name__}: {exc}"
+    return understanding, None
+
+
+def _understanding_id_of(conn: sqlite3.Connection, record: Any, submission_id: str) -> str:
+    """从受理返回值里取理解请求 id；取不到就按 submission_id 回查（只取一条）。"""
+    if isinstance(record, dict):
+        for key in ("id", "understandingId"):
+            value = record.get(key)
+            if value:
+                return str(value)
+        nested = record.get("understanding")
+        if isinstance(nested, dict) and nested.get("id"):
+            return str(nested["id"])
+    try:
+        row = conn.execute(
+            "SELECT id FROM board_understanding WHERE submission_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (submission_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    return str(row["id"]) if row is not None else ""
+
+
+def _accept_submission(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    snapshot: dict,
+) -> dict:
+    """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
+
+    snapshot 就是这次提交结果里的 **after 投影**（内存里那份，不重新读板面）：
+    提交成功后紧接着会「自动取消勾选」并保存板面，重读会把刚提交的注释从可见范围里
+    过滤掉。B 需要 before / expressions 时自己按 submission_id 从 board_submissions 读。
+
+    返回 {"ok": bool, "understandingId": str | None, "reason": str | None}。
+    任何失败都如实返回原因，**不抛异常**（调用方据此把这次提交按 failed 处理）。
+    """
+    understanding, reason = _load_understanding()
+    if understanding is None:
+        return {"ok": False, "understandingId": None, "reason": reason}
+    requester = getattr(understanding, "request_understanding", None)
+    if not callable(requester):
+        return {
+            "ok": False,
+            "understandingId": None,
+            "reason": "理解模块没有 request_understanding：无法建立理解请求",
+        }
+    # 深拷贝一份冻结快照：内容就是内存里那份 after，之后谁也改不到它
+    frozen = models.loads(models.dumps(snapshot), {})
+    try:
+        record = requester(
+            conn, board_id=board_id, submission_id=submission_id, snapshot=frozen
+        )
+    except Exception as exc:  # noqa: BLE001 - 受理失败必须如实返回，不能抛给路由
+        logger.warning("互动提交受理失败（不更新基准、不清勾选）", exc_info=True)
+        return {
+            "ok": False,
+            "understandingId": None,
+            "reason": f"建立理解请求失败：{type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": True,
+        "understandingId": _understanding_id_of(conn, record, submission_id) or None,
+        "reason": None,
+    }
+
+
+def _schedule_understanding(
+    conn: sqlite3.Connection, *, understanding_id: str, adapter_provider: Any
+) -> dict:
+    """把真实理解放到后台跑：**不阻塞请求**，也不持有任何事务（模型调用在任务里）。
+
+    返回 {"started": bool, "reason": str | None}。没有事件循环（同步调用）时如实说明；
+    绝不在这里同步跑模型。受理之后的失败只记在理解记录上，不回改提交状态。
+    """
+    understanding, reason = _load_understanding()
+    if understanding is None:
+        return {"started": False, "reason": reason}
+    runner = getattr(understanding, "run_understanding", None)
+    if runner is None:
+        return {"started": False, "reason": "理解模块没有 run_understanding：无法启动真实理解"}
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return {
+            "started": False,
+            "reason": "当前没有运行中的事件循环：本次没有启动后台理解（可以从保存的快照重试）",
+        }
+    provider = adapter_provider if callable(adapter_provider) else _no_adapter
+
+    async def _run() -> None:
+        try:
+            await runner(conn, understanding_id, adapter_provider=provider)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 提交已受理：后台失败绝不改提交状态
+            logger.warning("互动理解后台任务失败（提交已受理，状态不改）", exc_info=True)
+            _mark_understanding_failed(conn, understanding_id, exc)
+
+    task = loop.create_task(_run(), name=f"interactive-understanding:{understanding_id}")
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return {"started": True, "reason": None}
+
+
+def schedule_understanding(
+    conn: sqlite3.Connection, *, understanding_id: str, adapter_provider: Any = None
+) -> dict:
+    """把一条已受理 / 待重试的理解放到后台跑（提交路径与重试路由共用同一条路径）。"""
+    return _schedule_understanding(
+        conn, understanding_id=understanding_id, adapter_provider=adapter_provider
+    )
+
+
+def cancel_background_understanding(understanding_id: str) -> bool:
+    """取消正在跑的后台理解任务（已读的材料不再产出；记录状态由调用方如实落库）。"""
+    target = f"interactive-understanding:{understanding_id}"
+    stopped = False
+    for task in list(_BACKGROUND_TASKS):
+        if task.done() or task.get_name() != target:
+            continue
+        task.cancel()
+        stopped = True
+    return stopped
+
+
+def _mark_understanding_failed(
+    conn: sqlite3.Connection, understanding_id: str, exc: BaseException
+) -> bool:
+    """兜底：理解模块抛异常时，把仍在 accepted / understanding 的理解记录标成 failed。
+
+    只写理解记录自己的状态（失败可从保存的快照重试），**绝不回改提交记录**；
+    理解模块自己已经落了终结状态时这里什么都不做（不抢 B 的写入）。
+    """
+    reason = (f"理解失败（可重试，从保存的快照恢复）：{type(exc).__name__}: {exc}")[:500]
+    try:
+        cursor = conn.execute(
+            "UPDATE board_understanding SET status = 'failed', error = ?, updated_at = ?"
+            " WHERE id = ? AND status IN ('accepted', 'understanding')",
+            (reason, models.now_iso(), understanding_id),
+        )
+    except sqlite3.Error:
+        logger.warning("标记理解失败时写库失败（理解记录不可用）", exc_info=True)
+        return False
+    if cursor.rowcount:
+        logger.warning("互动理解已标记为 failed（%s）：%s", understanding_id, reason)
+        return True
+    return False
+
+
 async def submit_board(
     conn: sqlite3.Connection,
     board_id: str,
@@ -690,6 +888,7 @@ async def submit_board(
     note: str = "",
     base_state_version: Any = None,
     confirmed_check_id: str | None = None,
+    adapter_provider: Any = None,
 ) -> dict:
     """提交：QIO 取得表达的唯一入口。
 
@@ -701,7 +900,11 @@ async def submit_board(
     - M4 路径 3：请求可携带 baseStateVersion（本次候选所基于的服务器 seq）与
       confirmedCheckId（影响确认记录）；与服务端不一致 → StaleState，
       **不落库**（不产生提交记录、不更新基准、不调用 QIO）；
-    - 第一阶段没有接入模型调用：delivery.delivered 恒为 false。
+    - **受理与理解分开**（§14.1）：成功时建立理解请求，并把真实理解交给后台
+      （adapter_provider 透传给 B 的 run_understanding；没有可用凭据 / adapter 时后台
+      如实降级为可读失败，不阻塞本请求）；
+    - 受理失败（理解模块不可用 / 建立请求抛错）：按 failed 处理 —— 不更新基准、
+      不清勾选、如实返回原因；受理成功之后的模型失败不回改提交状态。
     """
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
@@ -754,19 +957,53 @@ async def submit_board(
     requested = {str(cid) for cid in (requested_visible or [])}
     ignored_requested = sorted(requested - {card["id"] for card in visible["cards"]})
 
-    # QIO 投递位置：第一阶段没有接入模型调用，delivered 必须是 false 且说清原因。
+    # 受理与理解分开（§14.1）：只有 succeeded 才建立理解请求；建立不起来按受理失败处理。
+    acceptance: dict[str, Any] = {"ok": False, "understandingId": None, "reason": ""}
+    if status == "succeeded":
+        acceptance = _accept_submission(
+            conn,
+            board_id=bid,
+            submission_id=submission_id,
+            # 只传内存里这份 after 投影（不重读板面：随后就会清勾选并保存）
+            snapshot=after,
+        )
+        if not acceptance["ok"]:
+            # 受理失败：没有可靠受理 → 不更新基准、不清勾选，改动与本次注释选择保留
+            status = "failed"
+            error = f"受理失败：没有建立理解请求。原因：{acceptance['reason']}"
+
+    # QIO 投递位置：受理成功才 delivered；受理成功之后的模型失败不回改这次提交。
     if status == "succeeded":
         delivery: dict[str, Any] = {
-            "delivered": False,
+            "delivered": True,
+            "status": "accepted",
+            "understandingId": acceptance.get("understandingId"),
             "reason": (
-                "第一阶段没有接入 QIO 模型调用：本次表达已记录在本地数据库并标记受影响意图，"
-                "但 QIO 尚未真正读取或理解这些内容"
+                "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；"
+                "模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交"
             ),
             "detail": (
                 f"本次交给 QIO 的范围：卡片 {len(after['cards'])} 项、组 {len(after['groups'])} 项、"
                 f"关系 {len(after['links'])} 项；有效改动 {len(expressions)} 项"
             ),
         }
+        if acceptance.get("understandingId"):
+            dispatch = _schedule_understanding(
+                conn,
+                understanding_id=str(acceptance["understandingId"]),
+                adapter_provider=adapter_provider,
+            )
+        else:
+            dispatch = {
+                "started": False,
+                "reason": (
+                    "理解请求已建立但没有拿到理解 id：本次没有启动后台理解"
+                    "（可以从保存的快照重试）"
+                ),
+            }
+        delivery["background"] = dispatch
+        if not dispatch.get("started") and dispatch.get("reason"):
+            delivery["detail"] = f"{delivery['detail']}；{dispatch['reason']}"
         marking_updated: list[str] = []
         try:
             from agent.interactive import intents  # 延迟 import：避免与 C 的模块互相牵制
@@ -787,9 +1024,16 @@ async def submit_board(
                 "error": f"受影响意图标记失败（提交本身已成功）：{exc}",
             }
     elif status == "failed":
+        acceptance_failed = bool(acceptance["reason"] and not acceptance["ok"])
         delivery = {
             "delivered": False,
-            "reason": "提交未成功：没有调用 QIO，基准未更新，改动与本次注释选择已保留，可以再试一次",
+            "status": "failed",
+            "reason": (
+                f"受理失败：{acceptance['reason']}。本次没有更新基准、没有清除勾选，"
+                "改动与本次注释选择已保留，可以再试一次"
+                if acceptance_failed
+                else "提交未成功：没有调用 QIO，基准未更新，改动与本次注释选择已保留，可以再试一次"
+            ),
             "detail": error or "",
             "marking": {"updated": [], "error": "提交未成功，未标记任何意图"},
         }
