@@ -1,0 +1,11 @@
+[
+  {
+    "op": "navigate",
+    "url": "about:blank",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "1+1"
+  }
+]

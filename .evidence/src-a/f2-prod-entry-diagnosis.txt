@@ -1,0 +1,19 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+stdout | src/stores/__tests__/zz-scratch-diagnose.test.ts > 诊断 > 不触发任何草稿请求时：记录是否保留
+NO-REQUEST-PATH {"record":{"text":"另一页面的新稿","updatedAt":1791619393260,"seq":9,"boardId":"board_default","kind":"draft","version":1},"saveCalls":0}
+
+stdout | src/stores/__tests__/zz-scratch-diagnose.test.ts > 诊断 > 有另一张卡片的未保存草稿触发请求时：记录是否保留 + 请求内容
+BEFORE-REQUEST record= {"text":"另一页面的新稿","updatedAt":1791619393262,"seq":9,"boardId":"board_default","kind":"draft","version":1} drafts= {"card:c1":"服务器正文"}
+
+stdout | src/stores/__tests__/zz-scratch-diagnose.test.ts > 诊断 > 有另一张卡片的未保存草稿触发请求时：记录是否保留 + 请求内容
+AFTER-REQUEST record= null calls= [["board_default",{"card:c1":"服务器正文","card:c2":"另一张卡的新输入"}]]
+
+ ✓ src/stores/__tests__/zz-scratch-diagnose.test.ts (2 tests) 11ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  16:03:11
+   Duration  2.00s (transform 140ms, setup 24ms, import 238ms, tests 11ms, environment 1.51s)
+

@@ -1,0 +1,24 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-cl-a/frontend
+
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] remove-local-copy：只删本机冗余副本，绝不写 cleared 依据 > 删除失败 → 重试成功：记录真的被删掉，且全程没有 cleared 依据（选服务器稿不许变清除） 2ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] remove-local-copy：只删本机冗余副本，绝不写 cleared 依据 > 版本守卫不削弱：另一页面写入更新版本时，重试保留它、不删也不写 cleared 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] remove-local-copy：只删本机冗余副本，绝不写 cleared 依据 > guard=object：旧记录没有版本可比时按对象删除（不写 cleared） 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] remove-local-copy：只删本机冗余副本，绝不写 cleared 依据 > guard=absent：登记时本来就没有记录、现在仍然没有 → 无事可做（不是失败） 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] remove-local-copy：只删本机冗余副本，绝不写 cleared 依据 > guard=absent：登记后另一页面又写了记录 → 拒绝清理，保留新记录 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] clear-draft：只有这个目的才允许补写 cleared 依据 > 补写保护成功：磁盘上出现 cleared 依据，并给出可登记的落盘版本（旧稿不再复活） 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] clear-draft：只有这个目的才允许补写 cleared 依据 > 幂等：磁盘上已经是 cleared 时不新写、不推进版本 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] clear-draft：只有这个目的才允许补写 cleared 依据 > 版本守卫不削弱：清除之后又输入的新版本不许被这次清除覆盖 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] clear-draft：只有这个目的才允许补写 cleared 依据 > 本机写失败：如实失败 + 真实原因，磁盘上仍是旧副本（不当成完成） 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4] clear-draft：只有这个目的才允许补写 cleared 依据 > 既有保护不被撤掉：清除依据写好后，重开读取仍能区分「清除」与「草稿」 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4·第 7 条] 旧登记/旧记录：无法判断来源或目的时不许当成整份清除 > 旧登记只记了版本 → 目的不明：不删、不写，保留两份候选并给可操作说明 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4·第 7 条] 旧登记/旧记录：无法判断来源或目的时不许当成整份清除 > 旧登记 null 形状同样目的不明：不删、不写 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4·第 7 条] 旧登记/旧记录：无法判断来源或目的时不许当成整份清除 > 旧记录判定：没有 kind 的记录是 unknown（不许猜成 cleared），显式两类各自可判 0ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts > [R4·第 7 条] 旧登记/旧记录：无法判断来源或目的时不许当成整份清除 > 归一化：认识的新形状原样保留，旧形状一律 unknown 且带可操作说明 0ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  10:50:34
+   Duration  2.30s (transform 67ms, setup 26ms, import 67ms, tests 6ms, environment 1.96s)
+
+

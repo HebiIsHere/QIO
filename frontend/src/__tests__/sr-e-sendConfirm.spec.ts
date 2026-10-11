@@ -117,6 +117,9 @@ describe("契约 5 · 查证（GET /api/turns/by-request/{id}）", () => {
 
   it("查证 404：呈现「发送未确认」（不等于「未发送」），提供重试 / 放弃", async () => {
     beforeEachImpl();
+    // 互动线的草稿 keeper 会把本机草稿装回输入框：这条用例要考「放弃后恢复原文」，
+    // 先把本机残留清掉，避免上一条用例的草稿（消息B）串进来。
+    localStorage.clear();
     const { session } = setupSession();
     vi.useFakeTimers();
     gate.respond((url, init) => {

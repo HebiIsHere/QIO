@@ -1,0 +1,4 @@
+# 候选 fd3649d：第③层（真实临时 sqlite + 完整 ASGI 路由）
+# 命令：cd backend && .venv/Scripts/python.exe -m pytest -q tests/test_closure_d_acceptance.py
+# 结果：3 个用例全部通过（进度行 3 个点），exit=0；本次 pytest 未打印 "N passed" 汇总行，故用进度点数与退出码作为证据。
+...                                                                      [100%]

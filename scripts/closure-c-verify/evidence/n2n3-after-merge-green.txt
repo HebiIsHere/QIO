@@ -1,0 +1,13 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-c/frontend
+
+ ✓ src/components/interactive/__tests__/closure-c-visual-guards.test.ts (11 tests) 30ms
+ ✓ src/components/interactive/__tests__/closure-d-impact-dialog.test.ts (4 tests) 79ms
+ ✓ src/interactive/__tests__/impactDialog.test.ts (8 tests) 110ms
+ ✓ src/components/interactive/__tests__/closure-c-n2n3-recovery.test.ts (14 tests) 261ms
+
+ Test Files  4 passed (4)
+      Tests  37 passed (37)
+   Start at  16:26:18
+   Duration  18.97s (transform 3.94s, setup 180ms, import 6.48s, tests 480ms, environment 60.55s)
+

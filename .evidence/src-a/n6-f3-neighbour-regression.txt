@@ -1,0 +1,33 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a/frontend
+
+ ✓ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts (4 tests) 70ms
+ ✓ src/interactive/__tests__/recovery-a-n6-draft-input.test.ts (18 tests) 18ms
+ ✓ src/components/interactive/__tests__/closure-c-closed-card-hint.test.ts (2 tests) 92ms
+ ✓ src/stores/__tests__/d6CardDraftConflict.verify.test.ts (6 tests) 164ms
+ ✓ src/components/interactive/__tests__/final-a3-01-late-read-draft.test.ts (3 tests) 259ms
+ ✓ src/components/interactive/__tests__/final-a3-05-conflict-paths.test.ts (4 tests) 207ms
+ ✓ src/stores/__tests__/d6CardProtect.test.ts (14 tests) 216ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts (7 tests) 372ms
+ ✓ src/interactive/__tests__/final-a2-card-draft-hint.test.ts (8 tests) 78ms
+ ✓ src/interactive/__tests__/final-lead-m07-clear-binding.test.ts (3 tests) 86ms
+ ✓ src/stores/__tests__/d6CardConflictChoice.verify.test.ts (7 tests) 145ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.test.ts (19 tests) 339ms
+ ✓ src/components/interactive/__tests__/final-a3-07-draft-clear-binding.test.ts (5 tests) 285ms
+ ✓ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts (14 tests) 352ms
+ ✓ src/stores/__tests__/draftPersistence.test.ts (15 tests) 186ms
+ ✓ src/stores/__tests__/closure-d-r1-r4.test.ts (6 tests) 40ms
+ ✓ src/interactive/__tests__/final-a2-drafts-removal-result.test.ts (12 tests) 11ms
+ ✓ src/stores/__tests__/final-b2-removeDraftResult.test.ts (4 tests) 27ms
+ ✓ src/interactive/__tests__/final-a2-long-draft-local-copy.test.ts (8 tests) 8ms
+ ✓ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (13 tests) 18ms
+ ✓ src/interactive/__tests__/final-a2-reopen-cleared.test.ts (4 tests) 23ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts (14 tests) 11ms
+ ✓ src/interactive/__tests__/final-a2-clear-protection.test.ts (9 tests) 9ms
+ ✓ src/interactive/__tests__/drafts.test.ts (8 tests) 12ms
+
+ Test Files  24 passed (24)
+      Tests  207 passed (207)
+   Start at  15:42:44
+   Duration  12.28s (transform 8.20s, setup 526ms, import 19.84s, tests 3.03s, environment 122.19s)
+

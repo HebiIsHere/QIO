@@ -1,0 +1,24 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();const all=[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id]')];const ids=[...new Set(all.map(e=>e.getAttribute('data-intent-id')))];return JSON.stringify({api:j.intents.map(i=>({id:i.id,s:i.status})),domIds:ids,domCount:all.length,pending:j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm','running'].includes(i.status)).map(i=>i.id)})})()"
+  }
+]

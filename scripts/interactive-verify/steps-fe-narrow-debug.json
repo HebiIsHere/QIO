@@ -1,0 +1,61 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){const root=document.querySelector('[data-im=\"board-toolbar\"]');if(!root)return {missing:true};const r=root.getBoundingClientRect();return {root:{t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),w:Math.round(r.width)}, children:[...root.children].map(c=>{const x=c.getBoundingClientRect();const cs=getComputedStyle(c);return {cls:String(c.className).slice(0,28),t:Math.round(x.top),h:Math.round(x.height),w:Math.round(x.width),display:cs.display,minH:cs.minHeight,maxH:cs.maxHeight,flex:cs.flex};})};})())"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){const root=document.querySelector('.tb-submit');if(!root)return {missing:true};const r=root.getBoundingClientRect();return {root:{t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),w:Math.round(r.width)}, children:[...root.children].map(c=>{const x=c.getBoundingClientRect();const cs=getComputedStyle(c);return {cls:String(c.className).slice(0,28),t:Math.round(x.top),h:Math.round(x.height),w:Math.round(x.width),display:cs.display,minH:cs.minHeight,maxH:cs.maxHeight,flex:cs.flex};})};})())"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){const root=document.querySelector('.submit-cluster');if(!root)return {missing:true};const r=root.getBoundingClientRect();return {root:{t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),w:Math.round(r.width)}, children:[...root.children].map(c=>{const x=c.getBoundingClientRect();const cs=getComputedStyle(c);return {cls:String(c.className).slice(0,28),t:Math.round(x.top),h:Math.round(x.height),w:Math.round(x.width),display:cs.display,minH:cs.minHeight,maxH:cs.maxHeight,flex:cs.flex};})};})())"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-debug-toolbar-1024"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();return 'open';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){const root=document.querySelector('.chat-dock');if(!root)return {missing:true};const r=root.getBoundingClientRect();return {root:{t:Math.round(r.top),b:Math.round(r.bottom),h:Math.round(r.height),w:Math.round(r.width)}, children:[...root.children].map(c=>{const x=c.getBoundingClientRect();const cs=getComputedStyle(c);return {cls:String(c.className).slice(0,28),t:Math.round(x.top),h:Math.round(x.height),w:Math.round(x.width),display:cs.display,minH:cs.minHeight,maxH:cs.maxHeight,flex:cs.flex};})};})())"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({clearance:(document.querySelector('.chat-dock')||{style:{}}).style.getPropertyValue('--chat-dock-clearance'), panelMax:(document.querySelector('.chat-dock')||{style:{}}).style.getPropertyValue('--chat-panel-max-h')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-debug-chat-800"
+  }
+]

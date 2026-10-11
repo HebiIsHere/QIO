@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');return JSON.stringify(live.map(c=>({id:c.id,kind:c.kind,x:c.x,y:c.y})))})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const id=live[0].id;const el=document.querySelector('[data-card-id=\"'+id+'\"]');const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+12;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:11,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:11}));await new Promise(r=>setTimeout(r,500));return JSON.stringify({selectedId:id})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-card-id]');const id=document.querySelector('[data-im=\"card-toolbar\"]')?document.querySelector('[data-im=\"card-toolbar\"]').getAttribute('data-card-id'):null;const pts=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")];const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {cls:e.className,top:Math.round(r.top),bottom:Math.round(r.bottom),left:Math.round(r.left),right:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height)}};const cardEl=id?document.querySelector('[data-card-id=\"'+id+'\"]'):null;const cr=cardEl?cardEl.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;const prs=pts.map(p=>p.getBoundingClientRect());const overlap=(a,b)=>!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom);const covered=br?prs.filter(p=>overlap(p,br)).length:null;return JSON.stringify({toolbarCardId:id,card:cr?{top:Math.round(cr.top),bottom:Math.round(cr.bottom),left:Math.round(cr.left),right:Math.round(cr.right)}:null,toolbar:g(bar),points:pts.map(p=>g(p)),pointsCount:pts.length,pointsCoveredByToolbar:covered,pointsInsideCard:cr?prs.map(p=>p.left>=cr.left-1&&p.right<=cr.right+1&&p.top>=cr.top-1&&p.bottom<=cr.bottom+1):null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-56-connect-points"
+  }
+]

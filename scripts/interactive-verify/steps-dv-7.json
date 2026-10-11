@@ -1,0 +1,60 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const c=(await r.json()).created;return JSON.stringify({created:c.length,ids:c.map(i=>i.id)})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({fourEntry:!!document.querySelector('[data-im=\"batch-entry\"]'),text:(document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent})"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();const ids=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(ids.length<4)return 'not-enough:'+ids.length;try{localStorage.setItem('qio.interactive.intentBatches',JSON.stringify({version:1,records:[{id:ids[0],key:'session:a'},{id:ids[1],key:'session:a'},{id:ids[2],key:'session:a'},{id:ids[3],key:'session:b'}]}))}catch(e){return 'ls-fail'}return JSON.stringify({pending:ids.length,seeded:'3+1'})})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({entry:!!document.querySelector('[data-im=\"batch-entry\"]'),list:!!document.querySelector('[data-im=\"batch-list\"]')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-9-3plus1-no-entry"
+  }
+]

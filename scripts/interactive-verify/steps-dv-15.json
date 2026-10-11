@@ -1,0 +1,62 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(!e)return 'no-entry';e.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const pr=panel?panel.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom)}:null,toolbar:br?{top:Math.round(br.top)}:null,overlap:pr&&br?Math.max(0,Math.round(pr.bottom-br.top)):null,trayInline:(document.querySelector(\"[data-im=\\\"batch-area\\\"]\")||{getAttribute:()=>null}).getAttribute('style')})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-20-integrated-overlap-800"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const pr=panel?panel.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom)}:null,toolbar:br?{top:Math.round(br.top)}:null,overlap:pr&&br?Math.max(0,Math.round(pr.bottom-br.top)):null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-21-integrated-overlap-1024"
+  }
+]

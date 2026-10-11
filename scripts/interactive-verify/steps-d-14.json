@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();const run=j.intents.filter(i=>i.status==='running');const rid=run.length?run[0].id:null;const nodes=rid?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+rid+'\"]')].map(e=>{const r=e.getBoundingClientRect();return {cls:e.className,w:Math.round(r.width),h:Math.round(r.height)}}):[];return JSON.stringify({running:rid,nodes})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();await new Promise(r=>setTimeout(r,800));window.dispatchEvent(new Event('resize'));await new Promise(r=>setTimeout(r,400));const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');const id=card?card.getAttribute('data-intent-id'):null;const nodes=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>{const r=e.getBoundingClientRect();return {cls:e.className,w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)}}):[];const vis=nodes.filter(n=>n.w>0&&n.h>0);const strip=card?card.getBoundingClientRect():null;return JSON.stringify({id,vis,strip:strip?{x:Math.round(strip.x),y:Math.round(strip.y),w:Math.round(strip.width),h:Math.round(strip.height)}:null,within:strip?strip.x>=0&&strip.y>=0&&strip.right<=window.innerWidth&&strip.bottom<=window.innerHeight:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-47-docked-anchored"
+  }
+]

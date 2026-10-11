@@ -1,0 +1,52 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');return JSON.stringify(live.map(c=>({id:c.id,kind:c.kind,x:c.x,y:c.y,w:c.w,h:c.h})))})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const src=live[0],dst=live[1];const el=document.querySelector('[data-card-id=\"'+src.id+'\"]');const r=el.getBoundingClientRect();const sx=r.x+20,sy=r.y+20;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:sx,clientY:sy,pointerId:3,buttons:1}));const target=document.querySelector('[data-card-id=\"'+dst.id+'\"]').getBoundingClientRect();const tx=target.x+target.width/2,ty=target.y+target.height/2;for(let i=1;i<=8;i++){window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:sx+(tx-sx)*i/8,clientY:sy+(ty-sy)*i/8,pointerId:3,buttons:1}))}await new Promise(r=>setTimeout(r,400));return JSON.stringify({hint:(document.body.innerText.match(/松开后合并成组/)||['（没有提示）'])[0],src:dst.id})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-23-merge-hint"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify({groupsBefore:st.state.groups.map(g=>({id:g.id,name:g.name,members:g.members.length}))})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:0,clientY:0,pointerId:3}));return 'released'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify({groups:st.state.groups.map(g=>({name:g.name,defaultName:g.defaultName,members:g.members.length,ordered:g.ordered}))})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-24-merged"
+  }
+]

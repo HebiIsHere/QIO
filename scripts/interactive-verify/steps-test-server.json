@@ -1,0 +1,24 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({title: document.title, toolbar: document.querySelectorAll('[data-im=\"board-toolbar\"]').length, chat: !!document.querySelector('[data-im=\"chat-toggle\"]'), submit: !!document.querySelector('[data-im=\"submit\"]'), addMenu: !!document.querySelector('[data-im=\"add-menu\"]'), demo: !!document.querySelector('[data-im=\"demo-entry\"]'), save: (document.querySelector('[data-im=\"save-status\"]')||{}).textContent||'', cards: document.querySelectorAll('[data-im=\"card\"]').length, wizard: !!document.querySelector('.onboarding, [data-im=\"onboarding\"]')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "test-server-ready"
+  }
+]

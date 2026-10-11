@@ -1,0 +1,71 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(function(){if(!document.querySelector('[data-im=\"chat-panel\"]')){const b=document.querySelector('[data-im=\"chat-toggle\"]');if(b)b.click();}return 'ensure-open';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(function(){if(!window.__origFetch){window.__origFetch=window.fetch.bind(window);}window.fetch=function(input,init){const url=String((input&&input.url)||input);if(/\\/api\\/turns$/.test(url)){return Promise.reject(new TypeError('Failed to fetch'));}return window.__origFetch(input,init);};return 'stubbed';})()"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const t=document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]');if(!t)return 'no-input';t.focus();t.value='发送会失败的一条文字';t.dispatchEvent(new Event('input',{bubbles:true}));return 'typed';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 300
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyDown",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13,
+      "text": "\r"
+    }
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchKeyEvent",
+    "params": {
+      "type": "keyUp",
+      "key": "Enter",
+      "code": "Enter",
+      "windowsVirtualKeyCode": 13,
+      "nativeVirtualKeyCode": 13
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const t=document.querySelector('[data-im=\"chat-input\"] textarea, textarea[data-im=\"chat-input\"], [data-im=\"chat-input\"]');const p=document.querySelector('[data-im=\"chat-panel\"]');const w=document.querySelector('[data-im=\"chat-warning\"], [data-im=\"chat-status\"]');return JSON.stringify({draft:t?t.value:null, warning:w?w.textContent:'', panel:(p?p.textContent:'').replace(/\\s+/g,' ').slice(0,320)});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-81-chat-send-failed"
+  }
+]

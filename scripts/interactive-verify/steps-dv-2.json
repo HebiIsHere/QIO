@@ -1,0 +1,52 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({entry:!!document.querySelector('[data-im=\"batch-entry\"]'),list:!!document.querySelector('[data-im=\"batch-list\"]'),entryText:(document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent})"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-1-four-collapsed"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"batch-entry\"]').click();await new Promise(r=>setTimeout(r,400));return JSON.stringify({list:!!document.querySelector('[data-im=\"batch-list\"]'),items:document.querySelectorAll('[data-im=\"batch-item\"]').length,approve:document.querySelector('[data-im=\"batch-approve\"]').textContent.trim(),reject:document.querySelector('[data-im=\"batch-reject\"]').textContent.trim()})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-2-four-expanded"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const boxes=[...document.querySelectorAll('[data-im=\"batch-item\"] input[type=checkbox]')];const fire=(el)=>{el.checked=true;el.dispatchEvent(new Event('change',{bubbles:true}))};fire(boxes[0]);await new Promise(r=>setTimeout(r,150));fire(boxes[2]);await new Promise(r=>setTimeout(r,250));return JSON.stringify({checked:boxes.map(b=>b.checked),approve:document.querySelector('[data-im=\"batch-approve\"]').textContent.trim(),reject:document.querySelector('[data-im=\"batch-reject\"]').textContent.trim(),summary:(document.querySelector('.summary')||{}).textContent})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-3-partial-selection"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"batch-approve\"]').click();await new Promise(r=>setTimeout(r,2200));const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();const last=j.intents.slice(-4);return JSON.stringify({notice:(document.querySelector('[data-im=\"batch-notice\"]')||{}).textContent,entry:!!document.querySelector('[data-im=\"batch-entry\"]'),statuses:last.map(i=>i.status)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-4-after-partial-approve"
+  }
+]

@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const m=document.querySelector('[data-im=\"add-menu\"]');m.click();await new Promise(r=>setTimeout(r,250));document.querySelector('[data-im=\"add-text\"]').click();await new Promise(r=>setTimeout(r,400));const m2=document.querySelector('[data-im=\"add-menu\"]');m2.click();await new Promise(r=>setTimeout(r,250));document.querySelector('[data-im=\"add-text\"]').click();await new Promise(r=>setTimeout(r,1500));const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify(st.state.cards.filter(c=>c.kind==='text').map(c=>({id:c.id,checked:c.checked,content:c.content})))})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const t=st.state.cards.filter(c=>c.kind==='text');const card=document.querySelector('[data-card-id=\"'+t[0].id+'\"]');card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await new Promise(r=>setTimeout(r,300));const bar=document.querySelector('[data-im=\"card-toolbar\"]');const btn=bar?[...bar.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑'):null;if(!btn)return 'no-edit:'+JSON.stringify(bar?[...bar.querySelectorAll('button')].map(b=>b.textContent.trim()):null);btn.click();await new Promise(r=>setTimeout(r,300));const ta=document.querySelector('[data-im=\"card-editor\"]');const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(ta,'（D 独立验收）未勾选的注释文字');ta.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,200));const card2=document.querySelector('[data-card-id=\"'+t[0].id+'\"]');[...card2.querySelectorAll('button')].find(b=>b.textContent.trim()==='完成编辑').click();await new Promise(r=>setTimeout(r,1500));return JSON.stringify({textId:t[0].id})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/visible-range')).json();return JSON.stringify({cards:j.visibleRange.cards.map(c=>({kind:c.kind,content:(c.content||'').slice(0,20)})),notVisibleCount:j.visibleRange.notVisibleCount,empty:j.visibleRange.empty})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-10-unchecked-comment"
+  }
+]

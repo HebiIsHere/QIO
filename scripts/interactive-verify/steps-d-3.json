@@ -1,0 +1,56 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{try{localStorage.removeItem('qio.interactive.intentBatches');}catch(e){};return 'cleared'})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{document.querySelector('[data-im=\"add-file\"]').click();document.querySelector('[data-im=\"add-code\"]').click();return 'materials'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const r=await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/state');const j=await r.json();return JSON.stringify(j.state.cards.map(c=>({id:c.id,kind:c.kind})));})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const r=await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents');const before=await r.json();const r2=await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const j=await r2.json();return JSON.stringify({before:before.intents.length,ids:j.created.map(i=>i.id),refs:j.created.map(i=>i.materialRefs),statuses:j.created.map(i=>i.status)});})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({batchEntry:!!document.querySelector('[data-im=\"batch-entry\"]'),batchList:!!document.querySelector('[data-im=\"batch-list\"]'),entryText:(document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent,previews:document.querySelectorAll('[data-im=\"preview\"]').length})"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-11-four-intents-collapsed"
+  }
+]

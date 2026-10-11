@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(t)t.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const toggle=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {w:Math.round(r.width),h:Math.round(r.height),top:Math.round(r.top),bottom:Math.round(r.bottom),left:Math.round(r.left),height:cs.height,minH:cs.minHeight,maxH:cs.maxHeight,flex:cs.flex,pos:cs.position,bottomCss:cs.bottom}};return JSON.stringify({dock:g(dock),toggle:g(toggle),panel:g(panel),varMaxH:dock?getComputedStyle(dock).getPropertyValue('--chat-panel-max-h'):null,varClearance:dock?getComputedStyle(dock).getPropertyValue('--chat-dock-clearance'):null,innerH:window.innerHeight})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-48-chat-dock-measure"
+  }
+]

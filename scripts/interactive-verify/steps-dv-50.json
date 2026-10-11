@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const src=live[3],dst=live[0];const el=document.querySelector('[data-card-id=\"'+src.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:101,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:101}));await new Promise(r=>setTimeout(r,600));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');const tb=top.getBoundingClientRect();const px=tb.left+tb.width/2,py=tb.top+tb.height/2;const before=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state.links.length;const hit=document.elementFromPoint(px,py);top.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:px,clientY:py,pointerId:102,buttons:1}));const target=document.querySelector('[data-card-id=\"'+dst.id+'\"]').getBoundingClientRect();const tx=target.x+target.width/2,ty=target.y+target.height/2;for(let i=1;i<=8;i++){window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:px+(tx-px)*i/8,clientY:py+(ty-py)*i/8,pointerId:102,buttons:1}))}await new Promise(r=>setTimeout(r,400));const draft=!!document.querySelector(\"[data-im=\\\"link-draft\\\"]\");window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:tx,clientY:ty,pointerId:102}));await new Promise(r=>setTimeout(r,1800));const after=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state;return JSON.stringify({src:src.id,hitIm:hit?hit.getAttribute('data-im'):null,linksBefore:before,linksAfter:after.links.length,draftVisible:draft,newLink:after.links[after.links.length-1]||null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-74-top-drag-link"
+  }
+]

@@ -483,7 +483,9 @@ def test_version_34_with_attachment_source_column_missing_is_repaired(conn):
     _build_through(conn, 31)
     _mark_versions(conn, 32, 33, 34)
     _seed_history(conn, with_facts=False)
-    assert current_version(conn) == COMPENSATION_VERSION
+    # 记到 34 就停了（补偿入口在互动线并入后改成 36）——本条考的是「版本号停在半截、对象缺失」，
+    # 所以断言记录到 34，而不是当前的补偿号。
+    assert current_version(conn) == 34
     assert "attachments" in _tables(conn)
     assert "source_attachment_id" not in _columns(conn, "attachments")
 

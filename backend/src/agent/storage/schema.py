@@ -1130,9 +1130,131 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     ),
 ]
 
+
+# ── 互动模式（来源线原编号 26；集成时改号 35，2026-10-11）──────────────────
+# 为什么改号：main 的历史迁移已到 34，而 apply_migrations **只按版本号前进**
+# （target <= 已记录版本 就整段跳过）。沿用 26 会被任何 main 存量库整段跳过，
+# 结果是互动接口缺表。互动对象的 SQL 与语义**逐字保留**来源线，只改编号。
+# 表语义见 docs/interactive-mode-contract.md。
+_INTERACTIVE_DDL: list[str] = [
+            # 互动模式第一阶段：板面、材料 / 注释卡片、组、关系链接、状态快照、
+            # 提交记录、QIO 意图与草稿。
+            #
+            # 语义见 docs/interactive-mode-contract.md：板面状态是一份 JSON 文档，
+            # 这里只保存必须落库的事实（最新状态 / 快照 / 提交 / 意图 / 草稿）；
+            # 组顺序、可见范围这类判定放在应用层，不用 SQL 表达。
+            """
+            CREATE TABLE IF NOT EXISTS boards (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL DEFAULT '互动板面',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                meta       TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            # 最新板面状态：每完成一次操作就自动写一次（保存不调用 QIO）
+            """
+            CREATE TABLE IF NOT EXISTS board_states (
+                board_id   TEXT PRIMARY KEY REFERENCES boards(id),
+                seq        INTEGER NOT NULL DEFAULT 0,
+                state      TEXT NOT NULL DEFAULT '{}',
+                reason     TEXT NOT NULL DEFAULT 'op',
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # 状态快照：撤销 / 重做与「撤回任务改动」的依据
+            """
+            CREATE TABLE IF NOT EXISTS board_state_snapshots (
+                id         TEXT PRIMARY KEY,
+                board_id   TEXT NOT NULL REFERENCES boards(id),
+                seq        INTEGER NOT NULL,
+                state      TEXT NOT NULL,
+                reason     TEXT NOT NULL DEFAULT 'op',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_snapshots_board"
+            " ON board_state_snapshots(board_id, seq)",
+            # 文字草稿：输入过程中保存的未提交文字（草稿不是提交内容）
+            """
+            CREATE TABLE IF NOT EXISTS board_drafts (
+                board_id   TEXT PRIMARY KEY REFERENCES boards(id),
+                drafts     TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # 提交：before / after 均限于**本次允许查看的范围**
+            """
+            CREATE TABLE IF NOT EXISTS board_submissions (
+                id           TEXT PRIMARY KEY,
+                board_id     TEXT NOT NULL REFERENCES boards(id),
+                seq          INTEGER NOT NULL,
+                status       TEXT NOT NULL,
+                before_state TEXT NOT NULL DEFAULT '{}',
+                after_state  TEXT NOT NULL DEFAULT '{}',
+                visible      TEXT NOT NULL DEFAULT '{}',
+                expressions  TEXT NOT NULL DEFAULT '[]',
+                baseline     TEXT NOT NULL DEFAULT '{}',
+                delivery     TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT NOT NULL DEFAULT '',
+                error        TEXT,
+                created_at   TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_submissions_board"
+            " ON board_submissions(board_id, seq)",
+            # 未提交的有效改动（每次保存后重算，供界面显示；它不进 QIO）
+            """
+            CREATE TABLE IF NOT EXISTS board_pending (
+                board_id     TEXT PRIMARY KEY REFERENCES boards(id),
+                baseline_seq INTEGER,
+                expressions  TEXT NOT NULL DEFAULT '[]',
+                updated_at   TEXT NOT NULL
+            )
+            """,
+            # QIO 意图 / 任务：预览、影响说明、依赖、进度、已应用与撤回记录
+            """
+            CREATE TABLE IF NOT EXISTS board_intents (
+                id             TEXT PRIMARY KEY,
+                board_id       TEXT NOT NULL REFERENCES boards(id),
+                submission_id  TEXT,
+                title          TEXT NOT NULL,
+                summary        TEXT NOT NULL DEFAULT '',
+                status         TEXT NOT NULL,
+                preview        TEXT NOT NULL DEFAULT '{}',
+                impact         TEXT NOT NULL DEFAULT '{}',
+                depends_on     TEXT NOT NULL DEFAULT '[]',
+                conflicts_with TEXT NOT NULL DEFAULT '[]',
+                conflict_key   TEXT NOT NULL DEFAULT '',
+                material_refs  TEXT NOT NULL DEFAULT '[]',
+                progress       TEXT NOT NULL DEFAULT '{}',
+                applied        TEXT NOT NULL DEFAULT '{}',
+                revert         TEXT NOT NULL DEFAULT '{}',
+                reason         TEXT NOT NULL DEFAULT '',
+                demo           INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_board_intents_board"
+            " ON board_intents(board_id, created_at)",
+]
+
+MIGRATIONS.append((35, list(_INTERACTIVE_DDL)))
+
+# 补偿入口（新，36）：迁移 34 的全部语句 + 互动对象。34 已发布到 main、原样保留；
+# 这里只把「缺对象时重放哪一条」指向一条覆盖更全的新迁移，避免手抄 34 的语句。
+MIGRATIONS.append(
+    (
+        36,
+        [stmt for target, stmts in MIGRATIONS if target == 34 for stmt in stmts]
+        + list(_INTERACTIVE_DDL),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 
 # `storage/migrate.py` 的补偿入口：`REQUIRED_OBJECTS` 缺失时**重放这一条**。
 # 用编号固定引用（不是「最后一条」）：以后追加迁移不会把它挤掉。
-# 集成后编号为 34：= 迁移 30 的全部语句 + 本次集成新增的附件与轮次结束事实对象（31–33）。
-COMPENSATION_VERSION = 34
+# 集成后编号为 36：= 迁移 34 的全部语句 + 本次集成的互动对象（35）。
+COMPENSATION_VERSION = 36

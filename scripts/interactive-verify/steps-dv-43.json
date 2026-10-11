@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const st=await (await fetch(base+'/boards/board_default/state')).json();const groups=st.state.groups.filter(g=>!g.deleted);if(!groups.length)return 'no-groups';return JSON.stringify({groups:groups.map(g=>({id:g.id,name:g.name,members:g.members.length}))})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const src=live[0],dst=live[1];const el=document.querySelector('[data-card-id=\"'+src.id+'\"]');const r=el.getBoundingClientRect();const sx=r.x+20,sy=r.y+20;el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:sx,clientY:sy,pointerId:31,buttons:1}));const tb=document.querySelector('[data-card-id=\"'+dst.id+'\"]').getBoundingClientRect();const tx=tb.x+tb.width/2,ty=tb.y+tb.height/2;for(let i=1;i<=8;i++){window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:sx+(tx-sx)*i/8,clientY:sy+(ty-sy)*i/8,pointerId:31,buttons:1}))}await new Promise(r=>setTimeout(r,400));const hint=(document.body.innerText.match(/松开后合并成组/)||['（没有提示）'])[0];const before=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state.groups.length;window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:tx,clientY:ty,pointerId:31}));await new Promise(r=>setTimeout(r,2000));const after=(await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json()).state;return JSON.stringify({hint,groupsBefore:before,groupsAfter:after.groups.length,group:after.groups[after.groups.length-1]?{name:after.groups[after.groups.length-1].name,defaultName:after.groups[after.groups.length-1].defaultName,members:after.groups[after.groups.length-1].members.length}:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-61-merged"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const input=document.querySelector('input.group-name');if(!input)return 'no-input';input.focus();input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));input.blur();await new Promise(r=>setTimeout(r,2000));const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const g=st.state.groups[st.state.groups.length-1];return JSON.stringify({name:g.name,defaultName:g.defaultName,members:g.members.length})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-62-group-default-name"
+  }
+]

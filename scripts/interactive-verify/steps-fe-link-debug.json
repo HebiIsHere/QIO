@@ -1,0 +1,153 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify([...document.querySelectorAll('[data-im=\"card\"]')].map(c=>{const r=c.getBoundingClientRect();return {id:c.getAttribute('data-card-id'),x:Math.round(r.left),y:Math.round(r.top),cx:Math.round(r.left+r.width/2),cy:Math.round(r.top+r.height/2)};}))"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 222,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 190,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({points:[...document.querySelectorAll('[data-im=\"connect-point\"]')].map(p=>{const r=p.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};}), zz:(document.querySelector('[data-im=\"zz-state\"]')||{}).textContent})"
+  },
+  {
+    "op": "eval",
+    "js": "(function(){window.__log=[];document.addEventListener('pointerdown',e=>{window.__log.push('down:'+(e.target.getAttribute&&e.target.getAttribute('data-im')||e.target.className))},true);document.addEventListener('pointermove',e=>{if(window.__log.length<12)window.__log.push('move:'+e.clientX+','+e.clientY)},true);document.addEventListener('pointerup',e=>{window.__log.push('up:'+(e.target.getAttribute&&e.target.getAttribute('data-im')||e.target.className))},true);return 'instrumented';})()"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 166,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 120
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 300,
+      "y": 190,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 100
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 420,
+      "y": 210,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 100
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 474,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 160
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({draft: !!document.querySelector('[data-im=\"link-draft\"]'), log:(window.__log||[]).slice(0,12)})"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 474,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 1600
+  },
+  {
+    "op": "eval",
+    "await": true,
+    "js": "(async()=>{const raw=await (await fetch('http://127.0.0.1:8791/api/interactive/boards/board_default/state')).json();const j=raw.state||raw;const n=document.querySelector('.notice, [data-im=\"notice\"], .board-notice');return JSON.stringify({links:(j.links||[]).length, notice:n?n.textContent:''});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-debug-link2"
+  }
+]

@@ -1,0 +1,60 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const c=(await r.json()).created;return JSON.stringify({created:c.length,ids:c.map(i=>i.id)})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const e=document.querySelector('[data-im=\"batch-entry\"]');if(!e)return 'no-entry';e.click();await new Promise(r=>setTimeout(r,400));const boxes=[...document.querySelectorAll('[data-im=\"batch-item\"] input[type=checkbox]')];boxes[3].checked=true;boxes[3].dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,250));document.querySelector('[data-im=\"batch-reject\"]').click();await new Promise(r=>setTimeout(r,1800));return JSON.stringify({entry:!!document.querySelector('[data-im=\"batch-entry\"]'),list:!!document.querySelector('[data-im=\"batch-list\"]'),notice:(document.querySelector('[data-im=\"batch-notice\"]')||{}).textContent})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-8-three-no-entry"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status));const ids=open.map(i=>i.id);if(ids.length<4)return 'not-enough:'+ids.length;const records=[{id:ids[0],key:'session:a'},{id:ids[1],key:'session:a'},{id:ids[2],key:'session:a'},{id:ids[3],key:'session:b'}];try{localStorage.setItem('qio.interactive.intentBatches',JSON.stringify({version:1,records}))}catch(e){return 'ls-fail'}location.reload();return 'seeded-3+1'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({entry:!!document.querySelector('[data-im=\"batch-entry\"]'),list:!!document.querySelector('[data-im=\"batch-list\"]')})"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-9-3plus1-no-entry"
+  }
+]

@@ -1,0 +1,52 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});return JSON.stringify({created:(await r.json()).created.length})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1800
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(e)e.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const main=bar?bar.querySelector('.tb-main'):null;const texts=bar?bar.querySelector('.texts'):null;const cluster=bar?bar.querySelector(\"[data-im=\\\"submit-cluster\\\"]\"):null;const sub=bar?bar.querySelector(\"[data-im=\\\"submit\\\"]\"):null;const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {w:Math.round(r.width),h:Math.round(r.height),top:Math.round(r.top),bottom:Math.round(r.bottom)}};const panel=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const pr=panel?panel.getBoundingClientRect():null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:'1024x768',bar:g(bar),main:g(main),texts:g(texts),cluster:g(cluster),submitBtn:g(sub),panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom),h:Math.round(pr.height)}:null,panelInline:panel?panel.getAttribute('style'):null,panelOverBar:pr&&bar?Math.max(0,Math.round(pr.bottom-bar.getBoundingClientRect().top)):null,entryVisible:vis(document.querySelector(\"[data-im=\\\"batch-entry\\\"]\")),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-43-1024-after-fix"
+  }
+]

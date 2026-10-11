@@ -1,0 +1,68 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();return 'intents='+j.intents.length})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{localStorage.removeItem('qio.interactive.intentBatches');return 'ls-cleared'})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const created=(await r.json()).created;return JSON.stringify({created:created.length,refs:created[0].materialRefs})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector('[data-im=\"batch-entry\"]');if(!e)return 'no-entry';e.click();return 'expanded'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const boxes=[...document.querySelectorAll('[data-im=\"batch-item\"] input[type=checkbox]')];const fire=el=>{el.checked=!el.checked;el.dispatchEvent(new Event('change',{bubbles:true}))};fire(boxes[0]);await new Promise(r=>setTimeout(r,120));fire(boxes[2]);await new Promise(r=>setTimeout(r,200));return JSON.stringify({checked:boxes.map(b=>b.checked),approve:document.querySelector('[data-im=\"batch-approve\"]').textContent.trim(),reject:document.querySelector('[data-im=\"batch-reject\"]').textContent.trim(),summary:(document.querySelector('.summary')||{}).textContent})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-20-partial-selection"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"batch-approve\"]').click();await new Promise(r=>setTimeout(r,1800));return JSON.stringify({notice:(document.querySelector('[data-im=\"batch-notice\"]')||{}).textContent,batchList:!!document.querySelector('[data-im=\"batch-list\"]'),batchEntry:!!document.querySelector('[data-im=\"batch-entry\"]'),entryText:(document.querySelector('[data-im=\"batch-entry\"]')||{}).textContent})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();return JSON.stringify(j.intents.map(i=>({t:i.title.slice(0,16),s:i.status})))})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-21-after-partial-approve"
+  }
+]
