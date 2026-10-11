@@ -58,6 +58,13 @@ PHASE_BACKGROUND_UNFINISHED = "background_unfinished"
 # F06：维护（周期巡检 + 手动触发的那一轮 + 维护发起的审批等待）是否确认结束。
 PHASE_MAINTENANCE_STOPPED = "maintenance_stopped"
 PHASE_MAINTENANCE_UNFINISHED = "maintenance_unfinished"
+# 整合轮 §2：互动理解的后台任务是否确认结束（与 maintenance_* 同构）。
+# 理解登记在 AppContext.background 里，阶段名在 aclose 接线处按 report.unfinished
+# 里有没有 interactive-understanding: 前缀的真实判定来记（不是按「有没有调度过」猜）。
+PHASE_UNDERSTANDING_STOPPED = "understanding_stopped"
+PHASE_UNDERSTANDING_UNFINISHED = "understanding_unfinished"
+#: 理解后台任务的名字前缀（submission.UNDERSTANDING_TASK_PREFIX 的唯一口径来源）。
+UNDERSTANDING_TASK_PREFIX = "interactive-understanding:"
 PHASE_CLEAN_EXIT_RECORDED = "clean_exit_recorded"
 PHASE_CLEAN_EXIT_SKIPPED = "clean_exit_skipped"
 PHASE_ADAPTERS_RELEASED = "adapters_released"
