@@ -3502,11 +3502,26 @@ export const useInteractiveStore = defineStore("interactive", () => {
       });
       return null;
     }
+    lastAcceptance.value = acceptance;
+    /**
+     * 记录确实存在，但服务端明确说这次**没有被可靠受理**（`delivered: false`）：
+     * 与回执路径同一口径 —— 如实算失败、不冒充成功、不推进基准；身份已经有结论，
+     * 收掉本机台账（下一次提交是一次新提交）。理由原样带到界面。
+     */
+    if (acceptance.delivery?.delivered === false) {
+      writePendingIdentity(null);
+      submitStatus.value = "failed";
+      submitResultUnknown.value = false;
+      submitError.value =
+        acceptance.delivery.detail ||
+        acceptance.delivery.reason ||
+        "服务端按这次请求身份给出的结论是：没有被可靠受理；改动与勾选都保留，可以重试。";
+      return null;
+    }
     /**
      * 精确命中：恢复这次提交的事实（submissionId / delivery / understandingId），
      * 并把理解状态绑定到**这一次**提交，然后按它开始查询。
      */
-    lastAcceptance.value = acceptance;
     submitAcceptedByLookup.value = true;
     submitStatus.value = "succeeded";
     submitResultUnknown.value = false;
