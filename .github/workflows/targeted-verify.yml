@@ -1,0 +1,87 @@
+name: Targeted verify (interactive into main)
+
+# 本次整合的**唯一**验证入口（workflow_dispatch）：只跑与本次改动直接相关的检查，
+# 不跑全量。为什么单独一个工作流而不是改 ci.yml：ci.yml 是其它分支的正常门禁，
+# 保持原样；本文件只按需手动触发（推送/PR 事件都不会启动它）。
+#
+# 覆盖面（与本地跑过的完全一致）：
+#   * 文档一致性；
+#   * 迁移：必需对象/补偿（含互动对象）+ 互动库/main 库/空库三种起点与幂等；
+#   * 互动 store/API 的后端用例；
+#   * 前端类型检查 + 受影响 store/组件用例（会话发送、失败恢复、草稿、附件准备）。
+
+on:
+  workflow_dispatch:
+
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  docs:
+    name: docs consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: |
+          python scripts/check_docs.py
+
+  backend-targeted:
+    name: backend (targeted)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen --extra dev
+      - name: Targeted tests
+        run: |
+          uv run --frozen pytest -q \
+            tests/test_interactive_migration_integration.py \
+            tests/test_fu_w3_b01_schema.py \
+            tests/test_main_closeout_migration_objects.py \
+            tests/test_interactive_board.py \
+            tests/test_interactive_submission.py \
+            tests/test_interactive_intents.py \
+            tests/test_interactive_integration.py \
+            tests/test_interactive_verify.py \
+            tests/test_interactive_during_heavy_work.py
+
+  frontend-targeted:
+    name: frontend (targeted)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Type check
+        run: npx vue-tsc --noEmit
+      - name: Targeted specs
+        run: |
+          npx vitest run \
+            src/__tests__/sr-e-sendConfirm.spec.ts \
+            src/__tests__/sr-e-sendReceiptOrdering.spec.ts \
+            src/__tests__/sr-f-turn-lifecycle.test.ts \
+            src/components/__tests__/sr-e-composerConfirm.spec.ts \
+            src/components/__tests__/PreparingAttachments.test.ts \
+            src/components/__tests__/SendWhileAttachmentPreparing.test.ts \
+            src/components/__tests__/ComposerAttachmentRejection.test.ts \
+            src/components/__tests__/d5ComposerRecovery.verify.test.ts \
+            src/components/__tests__/d6FailedSendNoticeDisplay.test.ts \
+            src/components/__tests__/FailedSendNotice.test.ts \
+            src/components/__tests__/final-lead-11a-displaced.test.ts \
+            src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts \
+            src/interactive/__tests__/chat.test.ts
