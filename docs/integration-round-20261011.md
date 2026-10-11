@@ -137,17 +137,38 @@
 | 开发期定向（Lead） | `npm run build` | `bd9d2ee` | 通过 |
 | 开发期定向（Lead） | A 的两套前端套件在整合树上复跑 | `5e4b186` | 46 文件 / 493 用例 |
 | 开发期定向（Lead） | B+C 后端定向（身份/接口/迁移/生命周期/真实模型/schema） | `1105c3f` | 72 passed |
-| **唯一一轮本地全量** | §6.1 | 候选 SHA | 见 §6.1 |
-| **唯一一次全量 CI** | `ci.yml` | 候选 SHA | 见 §6.2 |
+| **唯一一轮本地全量** | §6.1 | `a42bafd`（产品代码与最终提交相同） | 见 §6.1 |
+| **唯一一次全量 CI** | `ci.yml` | 最终提交 | 见 §6.2 |
 
-### 6.1 唯一一轮本地全量（待测）
+### 6.1 唯一一轮本地全量（已执行，对象 `a42bafd`）
 
-（冻结候选 SHA 后填写：后端全量、前端类型/测试/构建、文档一致性、Rust 检查与测试、
-按 AGENTS.md 必须执行的评测集合、发布闸门自检。）
+`a42bafd` 与最终提交之间**没有产品代码差异**：`git diff a42bafd HEAD -- backend frontend` 为空，
+差异只在 `docs/` 与 `scripts/irm-int-verify/`。
 
-### 6.2 唯一一次全量 CI（待触发）
+| 项 | 结果 |
+| --- | --- |
+| 后端全量 py3.12（Windows） | **3691 passed / 2 failed** |
+| 后端全量 py3.11 | **3692 passed / 1 failed**（同一 R7 用例） |
+| 前端 `vue-tsc --noEmit` / `npm test` / `npm run build` | 通过 / **315 文件 2482 用例全过** / 通过 |
+| 文档 `check_docs.py` | 通过（47 个里程碑条目） |
+| 发布闸门 `release_gate.py --selftest` | 通过 |
+| 评测 `test_topic_decision_eval` + `test_boundary_semantic_eval` | 13 passed |
+| Rust `cargo check` | 通过 |
+| Rust `cargo test` | 首次 2 项失败（`taskkill` 超时，三作业并发）→ 空载重跑**全绿** |
 
-（填写 run id / attempt / 各 job 结论。）
+**失败项与定向重跑**（细节见 `docs/verify-ledger-integration-20261011.md` §4.1）：
+
+1. `test_maintenance_does_not_block_the_loop`：断言的 `gap_ms < 100` 实测 101.6 ms（贴线）；
+   空载重跑通过；仓库既有记录已把这类计时断言记为「并发负载下偶发、单独复跑通过」。
+2. `test_disconnect_does_not_start_the_turn_after_gate_release`：空载重跑**仍然失败**，
+   在**基线 `8fa8452`** 的独立 worktree 上重跑**同样失败** → 基线既有的 Windows 断连/取消时序问题，
+   与本轮改动无关；上一轮真实模型分支台账也记录过同一现象。
+3. Rust 两项 `ownership::tests::close_installation_*`：并发负载下 `taskkill` 超时；
+   空载重跑整个壳套件 **31/27/2/5 全过、0 failed**。本轮**没有改动任何 Rust 文件**。
+
+### 6.2 唯一一次全量 CI（已触发，对象为最终提交）
+
+（run id / attempt / 各 job 结论见 `docs/verify-ledger-integration-20261011.md` §3.2。）
 
 ## 7. 未验证项与限制
 
