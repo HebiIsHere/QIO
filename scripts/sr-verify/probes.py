@@ -153,7 +153,15 @@ def pid_alive(pid: int) -> bool:
 
 
 def kill_tree(pid: int) -> None:
-    """收尾清理：只杀探针自己记录到的 pid（Windows 用 taskkill /T /F）。"""
+    """收尾清理：只杀探针自己记录到的 pid（Windows 用 taskkill /T /F）。
+
+    POSIX 上**只在目标自己就是进程组组长**时才按组收割，否则只杀那一个 pid：
+    `os.getpgid(pid)` 对与调用方同组的进程返回的正是**调用方自己的组 id**，
+    对它 killpg 会把整组（pytest 自己、同一个 shell，CI 上还有 runner 的 agent）
+    一起 SIGKILL。2026-10-11 实测事故：`test_sr_verify_process.py` 因此在 Linux CI
+    上把 runner 打死（`The hosted runner lost communication`，日志一条都没有），
+    而 Windows 走 taskkill /T 按 pid 遍历，所以只有 Linux 中招。
+    """
     if not pid or pid <= 0:
         return
     try:
@@ -167,7 +175,16 @@ def kill_tree(pid: int) -> None:
             import os
             import signal
 
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            try:
+                pgid = os.getpgid(pid)
+            except OSError:
+                return
+            if pgid == pid and pgid != os.getpgrp():
+                # 自己就是组长：按组收割（只可能是这次探针自己起的树）。
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                # 与调用方同组 / 不是组长：绝不 killpg，只杀这一个 pid。
+                os.kill(pid, signal.SIGKILL)
     except Exception:  # noqa: BLE001 - 清理失败不影响证据
         pass
 
@@ -416,6 +433,9 @@ async def _run_sleeper_tree_probe(label: str, use_cancel: bool) -> dict:
             cwd=str(base),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # 诱饵自立进程组（POSIX）：这样探针收尾的按组收割只可能命中它自己，
+            # 而不是把调用方（CI 上还有 runner agent）的组一起端掉。
+            **({} if IS_WINDOWS else {"start_new_session": True}),
         )
         _wait_for_file(decoy_pid_file)
         decoy_pid = _read_pid(decoy_pid_file)

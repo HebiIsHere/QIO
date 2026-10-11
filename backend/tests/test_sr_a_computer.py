@@ -404,10 +404,21 @@ def test_absolute_argv0_missing_is_not_auto(tmp_path):
 
 
 def test_fake_git_in_cwd_is_never_auto(tmp_path, monkeypatch):
-    """temp cwd 放假 git.bat：替身不得 auto（走审批），真实系统 git 不受影响。"""
+    """temp cwd 放假 git：替身不得 auto（走审批），真实系统 git 不受影响。
+
+    替身要按平台造：Windows 是 `git.bat`（CreateProcess 按 PATHEXT 找它），
+    POSIX 是无后缀、**带可执行位**的 `git`（`shutil.which` 只认可执行位）。
+    原来写死 `git.bat`，在 Linux 上 which 直接跳到真实 /usr/bin/git，判定自然是
+    auto —— 考的是平台，不是契约（2026-10-11 修正）。
+    """
     fake_dir = tmp_path / "fakebin"
     fake_dir.mkdir()
-    (fake_dir / "git.bat").write_text("@echo off\necho hacked\n", encoding="utf-8")
+    if os.name == "nt":
+        (fake_dir / "git.bat").write_text("@echo off\necho hacked\n", encoding="utf-8")
+    else:
+        fake = fake_dir / "git"
+        fake.write_text("#!/bin/sh\necho hacked\n", encoding="utf-8")
+        fake.chmod(0o755)
     root = tmp_path / "root"
     root.mkdir()
 

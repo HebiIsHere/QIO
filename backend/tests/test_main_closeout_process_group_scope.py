@@ -65,6 +65,63 @@ def test_group_target_is_none_when_the_process_is_gone(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 1b. 同一纪律：scripts/sr-verify/probes.py 的探针收尾（CI 上真正打死 runner 的那处）
+# ---------------------------------------------------------------------------
+
+
+def _load_sr_probes():
+    """加载 scripts/sr-verify/probes.py（它不是包，测试里按路径导入）。"""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "sr-verify" / "probes.py"
+    assert path.exists(), f"验证资产缺失：{path}"
+    spec = importlib.util.spec_from_file_location("sr_verify_probes_closeout", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _record_kills(monkeypatch) -> list[tuple]:
+    """把 os.killpg / os.kill 换成记录器（绝不真的发信号）。"""
+    recorded: list[tuple] = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: recorded.append(("killpg", pgid)), raising=False)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: recorded.append(("kill", pid)), raising=False)
+    return recorded
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 走 taskkill /T 按 pid 遍历")
+def test_probe_kill_tree_never_targets_the_callers_own_group(monkeypatch):
+    """探针收尾只杀自己的 pid：目标与调用方同组时绝不允许 killpg。
+
+    这就是 2026-10-11 Linux CI 整份失联的直接原因 —— `probes.kill_tree(decoy_pid)`
+    对同组的诱饵执行 `killpg(os.getpgid(pid))`，把 pytest 和 runner agent 一起杀掉。
+    """
+    probes = _load_sr_probes()
+    recorded = _record_kills(monkeypatch)
+    monkeypatch.setattr(os, "getpgrp", lambda: 777, raising=False)
+    monkeypatch.setattr(os, "getpgid", lambda pid: 777, raising=False)  # 与调用方同组
+
+    probes.kill_tree(4321)
+
+    assert recorded == [("kill", 4321)], ("对同组 pid 用了 killpg（会打死调用方自己）", recorded)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 走 taskkill /T 按 pid 遍历")
+def test_probe_kill_tree_still_uses_group_kill_for_a_group_leader(monkeypatch):
+    """正对照：目标自己就是组长时照样按组收割（清理语义没有被削弱）。"""
+    probes = _load_sr_probes()
+    recorded = _record_kills(monkeypatch)
+    monkeypatch.setattr(os, "getpgrp", lambda: 777, raising=False)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)  # 自己是组长
+
+    probes.kill_tree(4321)
+
+    assert recorded == [("killpg", 4321)], recorded
+
+
+# ---------------------------------------------------------------------------
 # 2. docker 客户端必须自立进程组（重演事故的装置：抓启动参数）
 # ---------------------------------------------------------------------------
 
