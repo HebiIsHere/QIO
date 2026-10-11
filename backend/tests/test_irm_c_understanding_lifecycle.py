@@ -678,3 +678,64 @@ async def test_normal_run_still_writes_terminal_state_and_intents(tmp_path):
     assert not (row["error"] or ""), row["error"]
     assert _intent_count(ctx.conn) == 1, "正常路径必须照常创建意图"
     ctx.conn.close()
+
+
+async def test_execution_lands_on_same_app_registry_and_close_ledger(tmp_path, monkeypatch):
+    """真实执行的调度与理解使用**同一份**应用归属：关闭账上能看到它的名字。
+
+    反例（整合基线）：路由层传 owner=request.app（FastAPI 对象），注册表另外挂一份、
+    没有任何人 shutdown —— 关闭账上看不到 interactive-execution:<id>，
+    未确认结束也不会让 CloseReport.clean=False。
+    """
+    from types import SimpleNamespace
+
+    ctx = _app(tmp_path, "exec-owner")
+    exec_id = "exec-close-ledger"
+    entered, release = asyncio.Event(), asyncio.Event()
+    execution._insert_execution(
+        ctx.conn,
+        execution_id=exec_id,
+        intent_id="int-1",
+        board_id=BOARD,
+        attempt=1,
+        status="queued",
+        plan={"ops": []},
+        steps=[],
+        owner_instance_id=None,
+    )
+
+    async def stuck_run(conn, execution_id, *, adapter_provider=None, instance_id=None):  # noqa: ANN001
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass  # 吞掉取消：底层执行单元未确认结束
+        await release.wait()
+
+    monkeypatch.setattr(execution, "run_execution", stuck_run)
+
+    app = SimpleNamespace(state=SimpleNamespace(ctx=ctx))
+    started = await execution.start_execution(
+        ctx.conn,
+        exec_id,
+        owner=execution.app_owner_for(app),  # 路由层现在就是这么解析的
+    )
+    assert started["scheduled"] is True, started
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    name = "interactive-execution:" + exec_id
+    assert name in ctx.background.registered(), ctx.background.registered()
+
+    # 未确认结束时：关闭报告不干净，且名字在 unfinished 里（有界三档等待不无限等）
+    _fast_shutdown(ctx)
+    report = await ctx.aclose()
+    assert report.clean is False, report.to_dict()
+    assert name in report.unfinished, report.unfinished
+
+    release.set()
+    handle = ctx.background.handle(name)
+    for _ in range(100):
+        if handle is None or handle.task.done():
+            break
+        await asyncio.sleep(0.01)
+    ctx.conn.close()
