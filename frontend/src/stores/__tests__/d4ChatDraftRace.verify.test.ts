@@ -510,7 +510,21 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
  * 交叉时序 1'：普通对话页（Composer）也要覆盖发送恢复，不只是纯函数。
  * ======================================================================== */
 describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
-  it("【组件】Composer：A 发送失败后原文回到 A 的输入框", async () => {
+  /**
+   * 断言改写说明（子 agent B，2026-10-11；契约确实变化，不是放宽断言）。
+   *
+   * 原断言是「原文回到输入框」。它写于互动线把**所有**发送失败都登记为可恢复原文的时期；
+   * 并入 main 后契约 5（Lead 裁决）明确规定：needs-confirm（受理情况未知）时 Composer
+   * **不**自动恢复草稿，由确认条【重试 / 放弃】接管 —— 理由正是本用例要防的「重复执行」：
+   * 原文一回到输入框，用户顺手按 Enter 就会用**新的请求身份**再发一次，绕开幂等保护。
+   * 两份契约同时成立时二者互斥（此前本条「看似通过」只是因为当时根本没有失败记录可恢复）。
+   *
+   * 按 F03「网络超时或断开不得一律当明确未受理，不得自动生成新身份重发」+ 契约 5，
+   * 这里改成断言**新契约下更强的结果**：
+   * 原文完整保存在会话层的未决台账里、界面给出查看原文 / 同身份重试 / 明确放弃三个入口、
+   * 且没有发生任何自动重发。原文没有丢，用户仍能拿到它 —— 只是不再被诱导换身份重发。
+   */
+  it("【组件】Composer：A 发送未决时原文不自动放回输入框，完整留在原话题的未决入口里", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
@@ -526,7 +540,33 @@ describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
     await flushPromises();
     await vi.advanceTimersByTimeAsync(800);
     await flushPromises();
-    expect((textarea.element as HTMLTextAreaElement).value).toBe("对话页要发的话");
+
+    // 未决：不自动放回输入框（否则按 Enter 就是新身份重发）
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+    // 输入框里没有被当成「已保留的新草稿」：会话层草稿仍是空的
+    expect(session.draft, "未决时把原文当成了输入框里的新草稿").toBe("");
+    // 原文一个字都没丢：完整保存在原话题的未决台账里
+    expect(
+      session.unresolvedSendsForTopic("A").map((record) => record.snapshot.text),
+      "未决发送的原文没有留在会话层（这条断言是「原文不许丢」的落点）",
+    ).toEqual(["对话页要发的话"]);
+    // 没有自动重发：发送请求只发过一次
+    expect(vi.mocked(api.sendTurn).mock.calls.length).toBe(1);
+
+    // 界面必须给出三个明确入口，且「查看原文」真的能看到原文
+    const view = wrapper.find('[data-im="composer-pending-view"]');
+    expect(view.exists(), "对话页没有「查看原文」入口").toBe(true);
+    await view.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-im="composer-pending-quote"]').text()).toBe("对话页要发的话");
+    expect(
+      wrapper.find('[data-im="composer-pending-retry"]').exists(),
+      "对话页没有「同身份重试」入口",
+    ).toBe(true);
+    expect(
+      wrapper.find('[data-im="composer-pending-abandon"]').exists(),
+      "对话页没有「明确放弃」入口",
+    ).toBe(true);
     wrapper.unmount();
   });
 

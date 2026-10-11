@@ -14,7 +14,12 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useSessionStore, type FailedSend } from "../../stores/session";
+import {
+  pendingSendView,
+  useSessionStore,
+  type FailedSend,
+  type PendingSendView,
+} from "../../stores/session";
 import { isBlankText, normalizeSendText } from "../../interactive/chat";
 
 const props = withDefaults(
@@ -40,8 +45,43 @@ const actionNotice = ref("");
 const DEFAULT_SHOWN = 3;
 const expansionOpen = ref(false);
 
+/**
+ * 未决发送（F03 / F12）：还没拿到**可靠受理结论**的发送，连同完整提交快照与请求身份。
+ *
+ * 与「可恢复的失败原文」分开呈现：前者要**先查证再决定**，后者是已经确定没发出去的原文。
+ * 只按提交快照里的话题取 —— 切到别的话题不串入这边的内容与错误。
+ */
+const pendingRecords = computed(() => session.unresolvedSendsForTopic(session.currentTopicId));
+const pendingViews = computed<PendingSendView[]>(() =>
+  pendingRecords.value.map((record) => pendingSendView(record, session.pendingSendConfirm)),
+);
+/** 未决列表的分页展示（数据一条不删，只是翻页看） */
+const PENDING_PAGE_SIZE = 5;
+const pendingPage = ref(0);
+const pendingPageCount = computed(() =>
+  Math.max(1, Math.ceil(pendingViews.value.length / PENDING_PAGE_SIZE)),
+);
+const shownPending = computed(() => {
+  const page = Math.min(pendingPage.value, pendingPageCount.value - 1);
+  return pendingViews.value.slice(page * PENDING_PAGE_SIZE, (page + 1) * PENDING_PAGE_SIZE);
+});
+function nextPendingPage(): void {
+  pendingPage.value = (Math.min(pendingPage.value, pendingPageCount.value - 1) + 1) % pendingPageCount.value;
+}
+
+/**
+ * 已经被未决台账覆盖的那条，不再在失败原文列表里重复出现 ——
+ * 同一个发送动作只在一个地方呈现，动作也只给一处（否则用户要在两处之间猜该点哪个）。
+ */
+const pendingRequestIds = computed(
+  () => new Set(pendingRecords.value.map((record) => record.clientRequestId)),
+);
 /** 只取当前话题的：失败原文始终属于原话题，切到别的话题不插入（§11.4） */
-const records = computed(() => session.failedSendsForTopic(session.currentTopicId));
+const records = computed(() =>
+  session.failedSendsForTopic(session.currentTopicId).filter(
+    (record) => !record.clientRequestId || !pendingRequestIds.value.has(record.clientRequestId),
+  ),
+);
 /** 当前渲染的子集：未展开时显示**最新的** DEFAULT_SHOWN 条（其余仍有数据，不淘汰） */
 const shownRecords = computed(() =>
   expansionOpen.value ? records.value : records.value.slice(0, DEFAULT_SHOWN),
@@ -91,6 +131,71 @@ function discard(record: FailedSend): void {
   actionNotice.value = "已不再保留这段失败原文";
 }
 
+/* ---- 未决发送的恢复动作（F03）：查证 / 同身份重试 / 查看原文 / 明确放弃 ---- */
+
+/** 正在查看原文的那一条（只读：不改输入框、不发送、不删记录） */
+const viewingPending = ref<string | null>(null);
+
+function attachmentNote(record: PendingSendView): string {
+  const count = record.attachmentIds.length;
+  if (count === 0) {
+    // 显式空列表也必须说清楚：重试不会顺带绑上别处的附件
+    return "这次提交没有附件（提交快照里是显式空列表，重试不会绑定其他附件）";
+  }
+  return `这次提交带了 ${count} 个附件；重试沿用提交那一刻的同一份附件列表`;
+}
+
+function recordKeyOfPending(record: PendingSendView): string {
+  return record.id;
+}
+
+async function recheck(record: PendingSendView): Promise<void> {
+  actionNotice.value = "正在查证这次发送在后端有没有记录…";
+  await session.recheckPendingSend(record.id);
+  actionNotice.value = "查证完成：结果见上面的状态说明（没有结论时仍然是「未知」，没有被当成未发送）";
+}
+
+async function retryPending(record: PendingSendView): Promise<void> {
+  const ok = await session.retrySendAttempt(record.id);
+  actionNotice.value = ok
+    ? "已用同一个请求身份重新提交：后端认得出这是同一次发送，不会重复执行"
+    : "重试没有拿到受理回执：仍然是「未知」，原文与请求身份都保留着，可以再查证或明确放弃";
+}
+
+function viewPending(record: PendingSendView): void {
+  viewingPending.value = viewingPending.value === record.id ? null : record.id;
+  actionNotice.value = "查看原文只读：不改输入框、不写草稿、不发送";
+}
+
+function abandonPending(record: PendingSendView): void {
+  const ok = session.abandonSendAttempt(record.id);
+  actionNotice.value = ok
+    ? "已明确放弃这次发送：消息撤回，原文放回输入框（还没有发送）"
+    : "当前状态不允许放弃：查证已经命中受理的那条请用「取消」";
+}
+
+/**
+ * F12：输入框为空时**不能**再提示「输入已保留，可以重试」。
+ *
+ * 原文确实还在（在独立的恢复入口里），所以要把话说准：说清它存放在哪里、入口在哪。
+ * 输入框里根本没有文字、也没有任何记录时也不许虚报「已保留」。
+ */
+const INPUT_KEPT_NOTE = "（输入已保留，可以重试）";
+const hasRecovery = computed(() => records.value.length + pendingViews.value.length > 0);
+const displayNotice = computed(() => {
+  const raw = props.notice;
+  if (!raw) return "";
+  if (!inputBlank.value) return raw;
+  if (!raw.includes(INPUT_KEPT_NOTE)) return raw;
+  return raw
+    .split(INPUT_KEPT_NOTE)
+    .join(
+      hasRecovery.value
+        ? "（输入框是空的：原文保存在下面的恢复入口里，不会自动重发）"
+        : "（输入框是空的：这段文字没有留在输入框里）",
+    );
+});
+
 /**
  * 「读取失败」与「写入失败」是两件事（收尾轮 15）：
  *
@@ -110,25 +215,131 @@ const canRetryRead = computed(
 function retryRead(): void {
   (session as unknown as { retryFailedSendRestore?: () => void }).retryFailedSendRestore?.();
 }
+/** 未决发送的读取失败也要能重试（F03：本机读写失败必须保留事实 + 提示 + 重试入口） */
+function retryPendingRead(): void {
+  const result = session.retryPendingSendRestore();
+  actionNotice.value = result.ok
+    ? `已重新读取本机保存的未决发送（补进 ${result.restored} 条）`
+    : `重新读取仍然失败：${result.error ?? "原因未知"}`;
+}
+/**
+ * 未决发送的本机存储错误（F03）：读不出来 / 写不进去都必须如实说，
+ * 并且**不能**说成「没有未决发送」或「已经保存好了」。
+ */
+const pendingStorageError = computed(
+  () => session.pendingSendReadError || session.pendingSendPersistError || "",
+);
 /** 零条记录时，只要有一个真实错误，入口本身也要出现（错误提示不能依赖「已经恢复出内容」） */
-const hasStorageWarning = computed(() => Boolean(readError.value || session.failedSendPersistError));
+const hasStorageWarning = computed(() =>
+  Boolean(readError.value || session.failedSendPersistError || pendingStorageError.value),
+);
 </script>
 
 <template>
   <section
-    v-if="notice || records.length || hasStorageWarning"
+    v-if="displayNotice || records.length || pendingViews.length || hasStorageWarning"
     class="failed-send"
     :data-im="`${hook}-recovery-wrap`"
   >
     <!-- 本次尝试的真实原因：失败后第一时间要能读到（不是只有打开详情才看得到） -->
     <p
-      v-if="notice"
+      v-if="displayNotice"
       class="attempt"
       role="alert"
       :data-im="hook === 'chat' ? 'chat-failure' : 'composer-failure'"
     >
-      {{ notice }}
+      {{ displayNotice }}
     </p>
+
+    <!--
+      未决发送（F03 / F12）：与「可恢复的失败原文」分开的一块。
+      共同规则由会话层统一给出（pendingSendView），普通对话页与悬浮聊天读同一份 ——
+      所以四个动作（查证 / 同身份重试 / 查看原文 / 明确放弃）在两个入口完全一致。
+      切到别的话题时这一块整个不出现：原文、错误都不串门。
+    -->
+    <div
+      v-if="pendingViews.length"
+      class="pending"
+      :data-im="`${hook}-pending`"
+      role="group"
+      :aria-label="`还没有确认是否发出的文字（${pendingViews.length} 条）`"
+    >
+      <p class="recovery-head">
+        <span class="head-title">还没有确认是否发出的文字</span>
+        <span class="head-count mono">{{ pendingViews.length }} 条待确认</span>
+        <button
+          v-if="pendingPageCount > 1"
+          type="button"
+          class="expansion-toggle"
+          :data-im="`${hook}-pending-more`"
+          @click="nextPendingPage()"
+        >
+          第 {{ pendingPage + 1 }} / {{ pendingPageCount }} 页 · 下一页
+        </button>
+      </p>
+      <ul class="recovery-list">
+        <li
+          v-for="record in shownPending"
+          :key="recordKeyOfPending(record)"
+          class="recovery-item"
+          :data-im="`${hook}-pending-item`"
+        >
+          <p
+            class="pending-state"
+            :class="{ unknown: record.state === 'unknown' }"
+            :data-im="`${hook}-pending-state`"
+          >
+            {{ record.state === "unknown" ? "⚠️ " : "" }}{{ record.notice }}
+          </p>
+          <p v-if="record.reason" class="reason" :data-im="`${hook}-pending-reason`">
+            原因：{{ record.reason }}
+          </p>
+          <p class="quote-state" :data-im="`${hook}-pending-attachments`">
+            {{ attachmentNote(record) }}
+          </p>
+          <!-- 「查看原文」之前不直接铺开正文：未决发送的重点是「还没定论」，不是重发 -->
+          <p v-if="viewingPending === record.id" class="quote" :data-im="`${hook}-pending-quote`">
+            {{ record.text }}
+          </p>
+          <div class="actions">
+            <button
+              type="button"
+              class="btn"
+              :disabled="record.busy"
+              :data-im="`${hook}-pending-recheck`"
+              @click="recheck(record)"
+            >
+              查证
+            </button>
+            <button
+              type="button"
+              class="btn"
+              :disabled="record.busy"
+              :data-im="`${hook}-pending-retry`"
+              @click="retryPending(record)"
+            >
+              同身份重试
+            </button>
+            <button
+              type="button"
+              class="btn ghost"
+              :data-im="`${hook}-pending-view`"
+              @click="viewPending(record)"
+            >
+              {{ viewingPending === record.id ? "收起原文" : "查看原文" }}
+            </button>
+            <button
+              type="button"
+              class="btn ghost"
+              :data-im="`${hook}-pending-abandon`"
+              @click="abandonPending(record)"
+            >
+              明确放弃
+            </button>
+          </div>
+        </li>
+      </ul>
+    </div>
 
     <div
       v-if="records.length"
@@ -203,16 +414,20 @@ const hasStorageWarning = computed(() => Boolean(readError.value || session.fail
           </div>
         </li>
       </ul>
-
-      <p
-        v-if="actionNotice"
-        class="action-notice"
-        role="status"
-        :data-im="`${hook}-recovery-status`"
-      >
-        {{ actionNotice }}
-      </p>
     </div>
+
+    <!--
+      恢复动作的结果（找回 / 互换 / 放弃 / 查证 / 同身份重试）统一显示一次：
+      两个块共用一句话，避免同一件事在界面上说两遍。
+    -->
+    <p
+      v-if="actionNotice"
+      class="action-notice"
+      role="status"
+      :data-im="`${hook}-recovery-status`"
+    >
+      {{ actionNotice }}
+    </p>
 
     <!--
       存储相关的真实错误放在 records 块**外面**（收尾轮 15）：
@@ -242,6 +457,31 @@ const hasStorageWarning = computed(() => Boolean(readError.value || session.fail
       :data-im="`${hook}-recovery-persist`"
     >
       这段原文没能保存在本机，刷新后可能取不回：{{ session.failedSendPersistError }}
+    </p>
+    <!-- 未决发送的本机读写错误（F03）：读不出来 ≠ 没有未决发送；写不进去 ≠ 已经保存好 -->
+    <p
+      v-if="session.pendingSendReadError"
+      class="persist-warning"
+      role="alert"
+      :data-im="`${hook}-pending-read-error`"
+    >
+      读取本机保存的未决发送时出错：{{ session.pendingSendReadError }}（这不代表这些发送不存在；恢复写入能力后可以重新读取）
+      <button
+        type="button"
+        class="btn ghost retry-read"
+        :data-im="`${hook}-pending-read-retry`"
+        @click="retryPendingRead()"
+      >
+        重新读取
+      </button>
+    </p>
+    <p
+      v-if="session.pendingSendPersistError"
+      class="persist-warning"
+      role="status"
+      :data-im="`${hook}-pending-persist`"
+    >
+      这次未决发送没能保存在本机，刷新后可能找不到它：{{ session.pendingSendPersistError }}
     </p>
   </section>
 </template>
@@ -295,6 +535,31 @@ const hasStorageWarning = computed(() => Boolean(readError.value || session.fail
 }
 .scope-chat { max-height: min(26vh, 200px); }
 .scope-conversation { max-height: min(30vh, 240px); }
+/*
+ * 未决发送块（F03/F12）：与失败原文同一套辅助层级，但状态行用警示色 ——
+ * 「受理未知」不是「明确失败」，颜色也要能区分，同时不抢输入行的重量。
+ */
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: min(30vh, 240px);
+}
+.pending-state {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--warning);
+  overflow-wrap: anywhere;
+}
+.pending-state.unknown { color: var(--danger); }
 /*
  * §12.5：展开/收起按钮 —— 次级小按钮，不抢主输入的重量；
  * 底色/边框/圆角全走令牌（不硬编码颜色）。

@@ -44,7 +44,7 @@ import {
   type PendingRestorePatch,
 } from "../composables/attachmentOps";
 import FailedSendNotice from "./interactive/FailedSendNotice.vue";
-import { sendFailureText } from "../interactive/chat";
+import { pendingSendText, sendFailureText } from "../interactive/chat";
 
 const session = useSessionStore();
 /**
@@ -322,8 +322,23 @@ async function submit() {
     }
     // 互动线：显示**本次请求**的真实原因，并按点击那一刻的归属找回失败原文。
     // 会话层只在「还在原话题 + 输入框为空」时才动手 —— 不覆盖新草稿、不污染别的话题。
-    failureNotice.value = sendFailureText(session.lastError);
-    session.retryFailedSend(attribution.draftId);
+    /**
+     * 未决发送（受理情况未知）**不自动把原文放回输入框**（契约 5 + F03）：
+     * 放回去以后用户顺手按 Enter 就会用**新的请求身份**再发一次，恰好绕开幂等保护 ——
+     * 那正是「同一件事被后端执行两次」的来源。原文保存在独立的未决记录里，
+     * 由「查看原文 / 同身份重试 / 明确放弃」提供明确入口；用户真要取回，点「找回原文」即可。
+     *
+     * 文案也随之分开：未决时说「发送未确认 + 原文保存在哪里」（输入框为空时
+     * 绝不声称「输入已保留」）；明确失败时才说「输入已保留，可以重试」。
+     */
+    if (session.pendingSendConfirm) {
+      failureNotice.value = pendingSendText(
+        session.unresolvedSendReason(session.pendingSendConfirm.messageId) ?? session.lastError,
+      );
+    } else {
+      failureNotice.value = sendFailureText(session.lastError);
+      session.retryFailedSend(attribution.draftId);
+    }
     // 用户自己中止的：如实说「这一轮没有发送」，不要伪装成失败原因
     if (prep?.cancelled) {
       preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";

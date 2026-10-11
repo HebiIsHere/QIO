@@ -33,6 +33,7 @@ import {
   chatStatusText,
   normalizeSendText,
   olderMessagesText,
+  pendingSendText,
   sendFailureText,
   shouldSendOnKeydown,
 } from "../../interactive/chat";
@@ -317,10 +318,20 @@ async function submit() {
   try {
     const ok = await session.send(payload);
     if (!ok) {
-      // 失败事实由会话层统一记录：这里只显示原因。
-      // 恢复交给会话层判断（只在原话题且输入框为空时放回），组件不自己写回任何输入框。
-      failure.value = sendFailureText(session.lastError);
-      session.retryFailedSend(attribution.draftId);
+      /**
+       * 与 Composer 同一套规则（F12）：未决发送（受理情况未知）时**不**自动把原文
+       * 放回输入框 —— 那会让用户顺手按 Enter 就用新身份再发一次，绕开幂等保护。
+       * 状态与入口都交给「还没有确认是否发出的文字」那一块（查证 / 同身份重试 /
+       * 查看原文 / 明确放弃），两个入口读的是会话层的同一份事实。
+       */
+      if (session.pendingSendConfirm) {
+        failure.value = pendingSendText(
+          session.unresolvedSendReason(session.pendingSendConfirm.messageId) ?? session.lastError,
+        );
+      } else {
+        failure.value = sendFailureText(session.lastError);
+        session.retryFailedSend(attribution.draftId);
+      }
     }
   } catch (err) {
     failure.value = sendFailureText((err as Error).message);
