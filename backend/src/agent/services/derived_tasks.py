@@ -30,9 +30,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from agent.storage.db import transaction
 
@@ -249,6 +250,92 @@ def _due(run_after: Any, now: datetime) -> bool:
     if moment is None:
         return True  # 时间坏掉的行不该永远卡在队列外
     return moment <= now
+
+
+class TaskSuperseded(RuntimeError):
+    """这条派生任务在**执行期间**丢掉了所有权（被恢复重排 / 用户重排 / 被取消）。
+
+    F05：这不是任务失败，而是「这次执行的结果已经作废」—— 调用方必须把它当成
+    「不做任何领域写入、不登记下游、不报正常完成」。它由 hold() 在事务内抛出：
+
+    领域写入（摘要 / 索引 / 实体关系 / 知识）与「任务完成」现在在**同一个事务边界**
+    里执行，事务开头先核验 id + state=running + claim_generation + owner；任何一项
+    不匹配就整体回滚 —— 不会出现「数据先写了、最后 complete 才发现代次过期」这种
+    半截状态。
+
+    捕获它**不等于**任务完成：被取消/被接替的任务由取消方（release / requeue）负责
+    放回队列或递增代次；执行方只需如实返回「没做完」。
+    """
+
+    def __init__(self, task_id: str, reason: str = "任务所有权已变化") -> None:
+        self.task_id = str(task_id)
+        self.reason = reason
+        super().__init__(f"{reason}：task={self.task_id}")
+
+
+@contextmanager
+def hold(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_generation: int | None,
+    owner_key: str | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """**领域写入前**的所有权核验（F05）：返回一个事务上下文管理器。
+
+    用法（写入 + 完成必须在同一个 with 里）::
+
+        try:
+            with derived_tasks.hold(conn, task.id, expected_generation=task.claim_generation):
+                ...写摘要 / 索引 / 实体关系 / 知识 / 登记下游...
+                derived_tasks.complete(conn, task.id, expected_generation=task.claim_generation)
+        except derived_tasks.TaskSuperseded:
+            return False   # 什么都不写，也不报正常完成
+
+    语义：
+
+    * 核验发生在事务开头，且是**带条件的原子读**：state='running'、
+      claim_generation 等于本次认领的代次、并且（绑定了实例身份时）
+      owner_instance_id 指向本实例或为空 —— 任一不匹配即视为「丢了所有权」；
+    * 核验与写入在同一个 SQLite 事务里（BEGIN 立即取写锁），所以核验通过之后
+      不会有别的写入者在本事务提交前改掉这条任务；
+    * 不跨模型 await：调用方必须把模型调用放在 with 之外（本函数只提供事务边界，
+      「不跨 await 持写事务」由调用点保证）；
+    * 抛 TaskSuperseded 时事务整体回滚（transaction() 的 ROLLBACK），调用方据此
+      返回「没做完」。取消路径抛的是 asyncio.CancelledError，同样回滚。
+    """
+    with transaction(conn) as guarded:
+        row = None
+        cols: set[str] = set()
+        try:
+            row = guarded.execute(
+                "SELECT * FROM derived_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            if row is not None:
+                cols = set(row.keys())
+        except sqlite3.Error:
+            row = None
+        if row is None:
+            raise TaskSuperseded(str(task_id), "任务行已经不存在")
+        if str(row["state"]) != STATE_RUNNING:
+            raise TaskSuperseded(
+                str(task_id), f"任务状态已不是 running（当前 {row['state']}）"
+            )
+        if (
+            expected_generation is not None
+            and "claim_generation" in cols
+            and int(row["claim_generation"]) != int(expected_generation)
+        ):
+            raise TaskSuperseded(
+                str(task_id),
+                f"认领代次已变化（期望 {expected_generation}，当前 {row['claim_generation']}）",
+            )
+        owner = owner_key if owner_key is not None else _INSTANCE_ID
+        if owner and "owner_instance_id" in cols:
+            current = row["owner_instance_id"]
+            if current and str(current) != str(owner):
+                raise TaskSuperseded(str(task_id), "任务归属已转给别的实例")
+        yield guarded
 
 
 def _owner_clause(
