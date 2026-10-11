@@ -219,9 +219,18 @@ export function submitStatusText(
     case "succeeded": {
       const count = context.result?.expressions?.length ?? 0;
       const cleared = context.result?.checkedCleared?.length ?? 0;
+      const delivery = context.result?.delivery;
+      // 受理与理解分开（契约 §14.1）：delivered=true 只表示「已可靠受理」，
+      // 不等于模型已经理解完成；这里必须如实说明下一步，不能假装已经懂。
+      const understanding =
+        delivery?.delivered === true
+          ? `已受理（${delivery.status ?? "accepted"}）：QIO 正在读取本次材料并真实理解；` +
+            "模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交"
+          : delivery?.reason ||
+            "本次表达已记录，但没有可靠受理：改动与勾选已保留，可以直接再试一次";
       return [
         `已提交：本次 ${count} 项改动已记录`,
-        "第一阶段没有接入 QIO 模型调用，QIO 还没有真正读取或理解这些内容",
+        understanding,
         cleared > 0 ? `提交成功后已自动取消 ${cleared} 条注释的勾选（不是删除或撤回）` : "",
       ]
         .filter(Boolean)

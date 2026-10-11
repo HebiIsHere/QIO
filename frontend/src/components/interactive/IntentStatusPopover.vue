@@ -8,7 +8,8 @@
   - 单项批准 / 拒绝入口靠近对应预览：板面本身由 BoardPreviewLayer 画虚线预览，
     这里在预览附近放一条审批浮条（IntentPreviewCard docked），同样要避开聊天与批量面板；
   - 键盘与指针边界：浮层内空格不触发板面框选、滚轮优先滚自己、Escape 先收浮层；
-  - 不把演示状态说成真实执行成功：第一阶段没有接入真实执行。
+  - 不把演示状态说成真实执行成功：正式路径的批准会真实启动执行（契约 §14.4），
+    演示推进（/demo/advance）只走可控状态机、不得驱动真实任务，两类状态在界面上必须分清。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
