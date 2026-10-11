@@ -24,7 +24,9 @@ export type SubmitStatusLike =
   | "succeeded"
   | "failed"
   | "empty"
-  | "duplicate";
+  | "duplicate"
+  /** F10：没有拿到提交回执 —— 提交结果**未知**，不能假定成功或失败 */
+  | "unknown";
 
 export type SaveStatusLike = "idle" | "saving" | "saved" | "error";
 
@@ -188,6 +190,7 @@ export function submitStateLabel(
   const pending = options.pendingCount ?? 0;
   const hasSubmission = Boolean(options.hasSubmission);
   if (status === "submitting") return "正在提交";
+  if (status === "unknown") return "提交结果未知";
   if (status === "failed") return "提交失败（未提交）";
   if (status === "empty") return "无内容可提交";
   if (status === "duplicate") return "未重复提交";
@@ -231,6 +234,11 @@ export function submitStatusText(
       return `提交失败：${context.error || "原因未知"}；${
         context.retention || "本次改动与注释勾选已保留，基准没有更新，可以直接再试一次。"
       }`;
+    case "unknown":
+      /**
+       * F10：没有回执 ≠ 失败。服务端可能已经受理，所以既不宣称成功、也不诱导重复提交。
+       */
+      return `提交结果未知：${context.error || "没有拿到服务端回执"}；这次提交可能已经受理，改动与勾选都保留，请先确认结果再决定是否重试。`;
     case "empty":
       return "没有可提交内容：只有普通移动 / 缩放，或本次没有允许查看的内容；未更新基准、未调用 QIO。";
     case "duplicate":

@@ -310,6 +310,17 @@ class EntityCardService:
         ).fetchall()
         return [self._row_to_card(r) for r in rows]
 
+    def current_revisions(self) -> dict[str, int]:
+        """name / alias → 当前 revision（**提交时**快照，F05）。
+
+        派生任务在拿到任务所有权、准备写卡之前取一次；本次提交的每个候选用它做
+        `expected_revision`。在**发起模型调用之前**取值也可以（`revision_snapshot`），
+        但那样得到的是「请求开始时的版本」—— 若同一次 drain 里先有别的写入者改了卡，
+        那份快照会过旧，导致本来该正常合并的候选被误判成迟到。提交时快照把判定口径
+        钉在「写卡那一刻」。
+        """
+        return self.revision_snapshot()
+
     def revision_snapshot(self) -> dict[str, int]:
         """name / alias → 当前 revision。
 

@@ -1,0 +1,247 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qa-e
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删除
+[F07-a] 合并后 links = [{"id":"link:1","src":"card:a","dst":"card:b","direction":true,"meaning":"关联","deleted":false,"createdAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"}] conflicts = []
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散
+[F07-b] 合并后 groups = [{"id":"group:1","name":"g-group:1","defaultName":false,"ordered":false,"x":0,"y":0,"w":1,"h":1,"members":["card:a"],"deleted":false,"createdAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"}]
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-c 服务器新增的对象必须保留（不能为了修删除而把新增也吞掉）
+[F07-c] 合并后 cards = ["card:local","card:server"]
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-d 删除与服务器对同对象的修改相撞：不能静默复活却什么都不说
+[F07-d] 合并后 link:1 = {"id":"link:1","src":"card:a","dst":"card:b","direction":true,"meaning":"服务器改过的含义","deleted":false,"createdAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"} conflicts = []
+
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts (4 tests | 2 failed) 8ms
+     × F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删除 5ms
+     × F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散 1ms
+     ✓ F07-c 服务器新增的对象必须保留（不能为了修删除而把新增也吞掉） 1ms
+     ✓ F07-d 删除与服务器对同对象的修改相撞：不能静默复活却什么都不说 0ms
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F08 已确认的保存版本不能被旧读取回退 > F08-a 保存确认 seq=4 后，迟到的 GET seq=3 不得回退板面/清洁基线，也不得制造假冲突
+[F08-a] 保存确认后 board.seq = 4 cleanSeq = undefined
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F08 已确认的保存版本不能被旧读取回退 > F08-a 保存确认 seq=4 后，迟到的 GET seq=3 不得回退板面/清洁基线，也不得制造假冲突
+[F08-a] 旧 GET 之后 board.seq = 3 card.a = 第三版 conflicts = []
+
+stdout | scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-a POST 明确成功 + 随后所有读取失败 → 提交成功事实必须保留，刷新失败必须独立可见
+[F10-min-a] 提交前 saveStatus = saved dirty = false boardSeq = 3
+
+stdout | scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-a POST 明确成功 + 随后所有读取失败 → 提交成功事实必须保留，刷新失败必须独立可见
+[F10-min-a] saveNow 之后 saveStatus = saved dirty = false saveError = Failed to fetch
+
+stdout | scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-a POST 明确成功 + 随后所有读取失败 → 提交成功事实必须保留，刷新失败必须独立可见
+[F10-min-a] result = null submitStatus = failed submitError = Failed to fetch submitRefreshError = undefined submitRefreshState = undefined submitBoard 调用 = [["board_default",null,"",3,null]]
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F10 回归保护 > F10-b 提交被真正拒绝：不得显示成成功
+[F10-b] 拒绝时 result = null
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F11 任务清单读取失败不能被显示成任务消失 > F11-a 已加载到 running 任务后读取失败：必须保留最后一次已知任务并标明刷新失败
+[F11-a] 首次加载 intents = 1
+
+stdout | scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-b POST 被明确拒绝 → 必须 failed，且不得显示成提交成功
+[F10-min-b] result = null submitStatus = failed submitError = 409 拒绝
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F11 任务清单读取失败不能被显示成任务消失 > F11-a 已加载到 running 任务后读取失败：必须保留最后一次已知任务并标明刷新失败
+[F11-a] 读取失败后 intents = 0 intentsLoadState = undefined intentsLoadError = undefined recoverNotice = Failed to fetch
+
+stdout | scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-c POST 没有拿到回执（无 status）→ 结果未知，不得假定成功也不得假定失败
+[F10-min-c] result = null submitStatus = failed submitResultUnknown = undefined submitError = Failed to fetch
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F11 任务清单读取失败不能被显示成任务消失 > F11-b 成功返回空集合必须与请求失败区分开
+[F11-b] 成功空清单 intents = 0  intentsLoadError = undefined
+
+stdout | scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F11 任务清单读取失败不能被显示成任务消失 > F11-b 成功返回空集合必须与请求失败区分开
+[F11-b] 失败后 intentsLoadError = Failed to fetch
+
+ ❯ scripts/audit-verify-8fa8452/f10-min.probe.ts (3 tests | 1 failed) 15ms
+     × F10-min-a POST 明确成功 + 随后所有读取失败 → 提交成功事实必须保留，刷新失败必须独立可见 11ms
+     ✓ F10-min-b POST 被明确拒绝 → 必须 failed，且不得显示成提交成功 2ms
+     ✓ F10-min-c POST 没有拿到回执（无 status）→ 结果未知，不得假定成功也不得假定失败 1ms
+ ❯ scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts (4 tests | 2 failed) 15ms
+     × F08-a 保存确认 seq=4 后，迟到的 GET seq=3 不得回退板面/清洁基线，也不得制造假冲突 10ms
+     ✓ F10-b 提交被真正拒绝：不得显示成成功 1ms
+     × F11-a 已加载到 running 任务后读取失败：必须保留最后一次已知任务并标明刷新失败 1ms
+     ✓ F11-b 成功返回空集合必须与请求失败区分开 1ms
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-a 带附件的未决发送，重试必须带原来的附件（不读当前输入框/当前话题）
+[F02-a] sendTurn 调用 = [["原始文字","A",["att_1","att_2"]],["原始文字","A"]]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-b 显式无附件的未决发送，重试必须仍是显式空数组（不得变成字段缺失）
+[F02-b] 重试调用 = ["纯文字","A"]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-c 首次发送：显式无附件必须传空数组而不是缺字段（回归保护）
+[F02-c] 首次调用 = ["纯文字","A",[]]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-d 未决重试必须复用同一 clientRequestId（不得换身份重发）
+[F02-d] clientRequestId 前/后 = 472ab092-3272-47d2-b208-760628066178 / 472ab092-3272-47d2-b208-760628066178
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F03 未确认发送的保留 > F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静默淘汰
+[F03-a] 未决记录数 = 50 被淘汰 = ["local_1791718086832_1"]
+
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts (5 tests | 3 failed) 31ms
+     × F02-a 带附件的未决发送，重试必须带原来的附件（不读当前输入框/当前话题） 12ms
+     × F02-b 显式无附件的未决发送，重试必须仍是显式空数组（不得变成字段缺失） 2ms
+     ✓ F02-c 首次发送：显式无附件必须传空数组而不是缺字段（回归保护） 2ms
+     ✓ F02-d 未决重试必须复用同一 clientRequestId（不得换身份重发） 1ms
+     × F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静默淘汰 11ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-a 带附件的未决发送，重试必须带原来的附件（不读当前
+输入框/当前话题）
+AssertionError: F02 缺陷复现：重试没有携带快照里的 attachmentIds（基线 retrySendAttempt 只传 message+topicId），原请求的附件选择在重试时丢失。实际第三参=undefine
+d: expected undefined to deeply equal [ 'att_1', 'att_2' ]
+
+- Expected:
+[
+  "att_1",
+  "att_2",
+]
+
++ Received:
+undefined
+
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:127:7
+    125|       "F02 缺陷复现：重试没有携带快照里的 attachmentIds（基线 retrySendAttempt 只传 messag…
+    126|         "原请求的附件选择在重试时丢失。实际第三参=" + JSON.stringify(retryCall[2]),
+    127|     ).toEqual(["att_1", "att_2"]);
+       |       ^
+    128|   });
+    129|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-b 显式无附件的未决发送，重试必须仍是显式空数组（不
+得变成字段缺失）
+AssertionError: F02 缺陷复现：显式无附件的发送在重试时把 attachment_ids 丢了（undefined = 字段缺失），后端会走遗留兜底把话题下未绑定附件绑到这条纯文字消息上。实际第三参=undefined:
+ expected undefined to deeply equal []
+
+- Expected:
+[]
+
++ Received:
+undefined
+
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:155:7
+    153|         "后端会走遗留兜底把话题下未绑定附件绑到这条纯文字消息上。实际第三参=" +
+    154|         JSON.stringify(retryCall[2]),
+    155|     ).toEqual([]);
+       |       ^
+    156|   });
+    157|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F03 未确认发送的保留 > F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静默淘
+汰
+AssertionError: F03 缺陷复现：第 1 条未决发送被 sendAttempts.slice(-49) 静默淘汰（数据悄悄消失）。lost=["local_1791718086832_1"]: expected [ 'lo
+cal_1791718086832_1' ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "local_1791718086832_1",
++ ]
+
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:209:7
+    207|         " 条未决发送被 sendAttempts.slice(-49) 静默淘汰（数据悄悄消失）。lost=" +
+    208|         JSON.stringify(lost),
+    209|     ).toEqual([]);
+       |       ^
+    210|   });
+    211| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删除
+AssertionError: F07 缺陷复现：本地删除的关联被服务器事实复活了（mergeLink 只看到 server 有、local 没有，无条件返回 server，没有用 base 区分『本地删除』与『服务器新增』）。 实际 l
+inks=["link:1"]: expected [ 'link:1' ] to not include 'link:1'
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts:98:11
+     96|         "无条件返回 server，没有用 base 区分『本地删除』与『服务器新增』）。" +
+     97|         " 实际 links=" + JSON.stringify(ids),
+     98|     ).not.toContain("link:1");
+       |           ^
+     99|   });
+    100|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散
+AssertionError: F07 缺陷复现：本地解散的组被服务器事实复活了。实际 groups=["group:1"]: expected [ 'group:1' ] to not include 'group:1'
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts:113:11
+    111|       ids,
+    112|       "F07 缺陷复现：本地解散的组被服务器事实复活了。实际 groups=" + JSON.stringify(ids),
+    113|     ).not.toContain("group:1");
+       |           ^
+    114|   });
+    115|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F08 已确认的保存版本不能被旧读取回退 > F08-a 保存确认 seq=4 后，迟到的 GE
+T seq=3 不得回退板面/清洁基线，也不得制造假冲突
+AssertionError: F08 缺陷复现：旧 GET（seq=3）把已确认的 seq=4 回退了: expected 3 to be 4 // Object.is equality
+
+- Expected
++ Received
+
+- 4
++ 3
+
+ ❯ scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts:160:57
+    158|     );
+    159|
+    160|     expect(seq, "F08 缺陷复现：旧 GET（seq=3）把已确认的 seq=4 回退了").toBe(4);
+       |                                                         ^
+    161|     expect(content, "F08：更晚的本地候选正文不得被旧读取覆盖").toBe("用户本地第 2 版");
+    162|     expect(conflicts, "F08：不得针对旧正文制造假冲突").toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts > F11 任务清单读取失败不能被显示成任务消失 > F11-a 已加载到 running 任务后读
+取失败：必须保留最后一次已知任务并标明刷新失败
+AssertionError: F11 缺陷复现：读取失败把已知任务清空/显示成任务消失: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ scripts/audit-verify-8fa8452/f08-f10-f11-interactive.probe.ts:210:51
+    208|       "recoverNotice =", (store.recoverNotice ?? []).join(" | "),
+    209|     );
+    210|     expect(after, "F11 缺陷复现：读取失败把已知任务清空/显示成任务消失").toBe(1);
+       |                                                   ^
+    211|     expect(String(err).length, "F11：必须标明刷新失败（要有可读错误）").toBeGreaterThan…
+    212|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  scripts/audit-verify-8fa8452/f10-min.probe.ts > F10 最小隔离反例 > F10-min-a POST 明确成功 + 随后所有读取失败 → 提交成功事实必须保留，刷新失败必须独
+立可见
+AssertionError: F10 缺陷复现：POST 已明确成功，提交状态却被后续读取失败改成 failed: expected 'failed' not to be 'failed' // Object.is equality
+ ❯ scripts/audit-verify-8fa8452/f10-min.probe.ts:107:81
+
+ Test Files  4 failed (4)
+      Tests  8 failed | 8 passed (16)
+   Start at  19:28:04
+   Duration  2.58s (transform 633ms, setup 0ms, import 1.08s, tests 68ms, environment 7.57s)
+
+    105|
+    106|     expect(vi.mocked(interactiveApi.submitBoard).mock.calls.length, "前…
+    107|     expect(store.submitStatus, "F10 缺陷复现：POST 已明确成功，提交状态却被后续读取失败改成 fai…
+       |                                                                                 ^
+    108|     if (refreshErr !== undefined) {
+    109|       expect(String(refreshErr ?? "").length, "F10 缺陷复现：提交成功但刷新失败没有任何独…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+

@@ -171,34 +171,6 @@ class MemoryLifecycle:
             return False
         summary = outcome.value
 
-        # 再确认一次内容版本，然后在一个事务里写摘要 + 索引
-        row = self.conn.execute(
-            "SELECT content_version FROM fragments WHERE id = ?", (fragment.id,)
-        ).fetchone()
-        if row is None or int(row["content_version"]) != task.content_version:
-            derived_tasks.fail(
-                self.conn,
-                task.id,
-                "片段内容版本已经推进，结果作废",
-                expected_generation=generation,
-            )
-            return False
-
-        entity_ids: list[str] = []
-        from agent.graph.edges import EdgeService
-        from agent.graph.nodes import NodeService
-
-        nodes = NodeService(self.conn)
-        edges = EdgeService(self.conn)
-        for name in summary.entities:
-            entity, _created = nodes.mention(name, fragment.topic_id, force=False)
-            if entity is not None:
-                entity_ids.append(entity.id)
-                edges.add(fragment.topic_id, entity.id, "mention")
-        from agent.services.affinity import relate_shared_entities
-
-        relate_shared_entities(self.conn, fragment.topic_id, entity_ids)
-
         # 降级标记写进片段数据本身（不只是 trace）：这段摘要是被本地修正过的，
         # 上层读数据时就能看见，而不必去翻 trace。
         meta = dict(fragment.meta or {})
@@ -208,42 +180,79 @@ class MemoryLifecycle:
         )
         meta["summary_repairs"] = [note.render() for note in outcome.notes]
 
-        with transaction(self.conn):
-            self.conn.execute(
-                "UPDATE fragments SET summary = ?, summary_model = ?, summary_version = 1, "
-                "meta = ? WHERE id = ? AND content_version = ?",
-                (
-                    summary.summary,
-                    adapter.model,
-                    json.dumps(meta, ensure_ascii=False),
-                    fragment.id,
-                    task.content_version,
-                ),
-            )
-            entry = self.index_builder.build(
-                fragment_id=fragment.id,
-                topic_id=fragment.topic_id,
-                title=summary.title,
-                summary_text=summary.summary,
-                entities=summary.entities,
-                keywords=summary.keywords,
-                message_texts=[m["content"] for m in messages],
-            )
-            # 知识提炼依赖摘要，所以摘要落库的同一个事务里登记它：
-            # 不会出现「摘要写好了但知识任务没登记」的半截状态。
-            derived_tasks.enqueue(
-                self.conn, derived_tasks.KIND_KNOWLEDGE, fragment.id, task.content_version
-            )
-            # 实体提炼只依赖原文，登记在同一个事务里只是为了「摘要成功 ⇒ 实体任务一定
-            # 在队列里」；它的成功/失败与这条摘要任务完全独立（M05）。
-            derived_tasks.enqueue(
-                self.conn, derived_tasks.KIND_ENTITIES, fragment.id, task.content_version
-            )
+        from agent.graph.edges import EdgeService
+        from agent.graph.nodes import NodeService
+        from agent.services.affinity import relate_shared_entities
+
+        nodes = NodeService(self.conn)
+        edges = EdgeService(self.conn)
+
+        # F05：领域写入（摘要 / 索引 / 实体关系 / 下游登记）与「任务完成」必须在
+        # **同一个事务边界**内，事务开头用 derived_tasks.hold 核验
+        # owner + claim_generation + state=running，并再次核对片段内容版本。
+        # 丢了所有权的旧代任务在这里整体回滚：不覆盖摘要、不写索引、不加关联、
+        # 不登记下游，也绝不会被误报为「正常完成」。
+        # 模型调用已经在 with 之外完成 —— 不跨 await 持有写事务。
+        try:
+            with derived_tasks.hold(
+                self.conn, task.id, expected_generation=generation
+            ):
+                row = self.conn.execute(
+                    "SELECT content_version FROM fragments WHERE id = ?", (fragment.id,)
+                ).fetchone()
+                if row is None or int(row["content_version"]) != task.content_version:
+                    raise derived_tasks.TaskSuperseded(
+                        task.id, "片段内容版本已经推进，结果作废"
+                    )
+
+                entity_ids: list[str] = []
+                for name in summary.entities:
+                    entity, _created = nodes.mention(name, fragment.topic_id, force=False)
+                    if entity is not None:
+                        entity_ids.append(entity.id)
+                        edges.add(fragment.topic_id, entity.id, "mention")
+                relate_shared_entities(self.conn, fragment.topic_id, entity_ids)
+
+                self.conn.execute(
+                    "UPDATE fragments SET summary = ?, summary_model = ?, summary_version = 1, "
+                    "meta = ? WHERE id = ? AND content_version = ?",
+                    (
+                        summary.summary,
+                        adapter.model,
+                        json.dumps(meta, ensure_ascii=False),
+                        fragment.id,
+                        task.content_version,
+                    ),
+                )
+                entry = self.index_builder.build(
+                    fragment_id=fragment.id,
+                    topic_id=fragment.topic_id,
+                    title=summary.title,
+                    summary_text=summary.summary,
+                    entities=summary.entities,
+                    keywords=summary.keywords,
+                    message_texts=[m["content"] for m in messages],
+                )
+                # 知识提炼依赖摘要，所以摘要落库的同一个事务里登记它：
+                # 不会出现「摘要写好了但知识任务没登记」的半截状态。
+                derived_tasks.enqueue(
+                    self.conn, derived_tasks.KIND_KNOWLEDGE, fragment.id, task.content_version
+                )
+                # 实体提炼只依赖原文，登记在同一个事务里只是为了「摘要成功 ⇒ 实体任务一定
+                # 在队列里」；它的成功/失败与这条摘要任务完全独立（M05）。
+                derived_tasks.enqueue(
+                    self.conn, derived_tasks.KIND_ENTITIES, fragment.id, task.content_version
+                )
+                derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        except derived_tasks.TaskSuperseded as exc:
+            # 结果作废：一行都不写，也不报告完成。任务本身由「重排 / 取消」那一方
+            # 负责（它已经把状态或代次改掉了），这里绝不回头改它的状态。
+            logger.info("摘要派生结果作废：%s", self._safe_exc(exc))
+            return False
+
         self._index_changed(entry)
         if tracer is not None:
             tracer.write("summaries", f"{fragment.id}:{summary.title or ''}")
-
-        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
         return True
 
     # -- 实体提炼（独立派生任务）------------------------------------------
@@ -343,17 +352,45 @@ class MemoryLifecycle:
         candidates, notes = prepare_candidates_for_commit(outcome.value)
         if notes:
             self._record_repairs(tracer, "实体卡", notes)
-        for cand in candidates:
-            card = card_svc.upsert(
-                cand, source="auto", expected_revision=snapshot.get(cand.name)
-            )
-            if card is None:
-                continue
+
+        # F05：卡片写入、关系边、meta 标记与「任务完成」在同一个事务边界内，
+        # 事务开头先核验 owner + claim_generation + state=running。
+        # 丢了所有权的旧代任务整体回滚：不写卡、不加关系边、不写幂等标记，
+        # 也不报告正常完成。模型调用已经在 with 之外（不跨 await 持写事务）。
+        written: list = []
+        conflicted = False
+        try:
+            with derived_tasks.hold(
+                self.conn, task.id, expected_generation=generation
+            ):
+                # 归属核验通过之后、第一笔写入之前取「提交时快照」：
+                # expected_revision 相对这个快照判定，模型调用期间发生的改动一律算迟到。
+                commit_revisions = card_svc.current_revisions()
+                for cand in candidates:
+                    card = card_svc.upsert(
+                        cand,
+                        source="auto",
+                        expected_revision=commit_revisions.get(cand.name),
+                    )
+                    if card is None:
+                        # CAS 连续失败 / 卡不可用：这次提交被放弃了，不能谎报完成
+                        conflicted = True
+                        continue
+                    written.append(card)
+                self._mark_entities_extracted(fragment.id, int(task.content_version))
+                derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        except derived_tasks.TaskSuperseded as exc:
+            logger.info("实体提炼结果作废：%s", self._safe_exc(exc))
+            return False
+
+        for card in written:
+            # 向量是加速手段：放在事务提交之后，best effort，失败不影响卡片本身。
             self._save_card_vector(card)
             if tracer is not None:
                 tracer.write("entity_cards", f"{card.id}:{card.name}")
-        self._mark_entities_extracted(fragment.id, int(task.content_version))
-        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        if conflicted:
+            # 已有的提交被放弃语义：卡片保持原样，任务不带「这一版提炼过」的标记。
+            return False
         return True
 
     def backfill_entity_tasks(self, *, limit: int = 2) -> int:
@@ -456,13 +493,34 @@ class MemoryLifecycle:
                 expected_generation=generation,
             )
             return False
-        error = await self.extract_knowledge(
-            adapter, summary, fragment.topic_id, [], fragment.id, tracer=tracer
+        # 模型抽取放在任何写事务之外；落库与「任务完成」再进同一个事务边界。
+        extraction, error = await self.extract_knowledge_candidates(
+            adapter, summary, tracer=tracer
         )
         if error:
             derived_tasks.fail(self.conn, task.id, error, expected_generation=generation)
             return False
-        derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        try:
+            # F05：知识条目（含 submit / verify / activate 与相关节点）与「任务完成」
+            # 在同一个事务边界内；事务开头先核验 owner + claim_generation + state=running。
+            # 丢了所有权的旧代任务整体回滚：不写知识、不建关联节点，也不报告正常完成。
+            with derived_tasks.hold(
+                self.conn, task.id, expected_generation=generation
+            ):
+                high_impact = self.commit_knowledge(
+                    extraction,
+                    topic_id=fragment.topic_id,
+                    entity_ids=[],
+                    fragment_id=fragment.id,
+                    tracer=tracer,
+                )
+                derived_tasks.complete(self.conn, task.id, expected_generation=generation)
+        except derived_tasks.TaskSuperseded as exc:
+            logger.info("知识提炼结果作废：%s", self._safe_exc(exc))
+            return False
+        # 事务已提交，才把这些高影响候选登记到「回答后自然确认」队列：
+        # 回滚时它们不能留在内存队列里指向不存在的知识条目。
+        self._pending_candidates.extend(high_impact)
         return True
 
     def _summary_for_fragment(self, fragment) -> Any | None:
@@ -580,14 +638,41 @@ class MemoryLifecycle:
         fragment_id: str,
         tracer=None,
     ) -> str | None:
-        """抽取并落库知识候选。
+        """抽取并落库知识候选（兼容入口：抽取 + 立即落库）。
 
         返回 None 表示成功；返回非空字符串是**可读失败原因**（同时已进 trace/日志），
         由调用方决定是重试（知识派生任务）还是只记录（摘要任务内联调用）。
         幂等：同一个片段已经写过的同内容候选会被跳过，任务重试不会重复制造知识。
+
+        需要「域写入与任务完成同一事务」的调用方（`run_knowledge_task`）请用
+        :meth:`extract_knowledge_candidates` + :meth:`commit_knowledge`：本入口的
+        落库**不在**任何所有权核验之内，只适合「已经在事务里、或没有任何任务所有权」
+        的调用点。
         """
-        from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
-        from agent.knowledge.verify import VerificationService
+        extraction, error = await self.extract_knowledge_candidates(
+            adapter, summary, tracer=tracer
+        )
+        if error:
+            return error
+        high_impact = self.commit_knowledge(
+            extraction,
+            topic_id=topic_id,
+            entity_ids=entity_ids,
+            fragment_id=fragment_id,
+            tracer=tracer,
+        )
+        self._pending_candidates.extend(high_impact)
+        return None
+
+    async def extract_knowledge_candidates(
+        self, adapter: BaseAdapter, summary: Any, *, tracer=None
+    ):
+        """**只调用模型**：抽取知识候选，不碰数据库。
+
+        返回 `(提取结果 | None, 可读失败原因 | None)`。任何领域写入由
+        :meth:`commit_knowledge` 在调用方指定的事务边界内完成 —— 这样
+        「模型调用不跨写事务」与「写入前后核验所有权」可以同时成立（F05）。
+        """
         from agent.memory.summary import extract_knowledge_candidates_outcome
 
         outcome = await extract_knowledge_candidates_outcome(adapter, summary)
@@ -597,11 +682,33 @@ class MemoryLifecycle:
             # 失败原因要能在 trace 与日志里读出来，而不是悄悄没有知识条目。
             reason = outcome.error or "知识抽取不可用"
             self._record_failure(tracer, "knowledge_extraction_failed", reason)
-            return reason
+            return None, reason
+        return outcome.value, None
+
+    def commit_knowledge(
+        self,
+        extraction: Any,
+        *,
+        topic_id: str,
+        entity_ids: list[str],
+        fragment_id: str,
+        tracer=None,
+    ) -> list[dict]:
+        """把抽取结果落库。**调用方负责事务边界与所有权核验**（F05）。
+
+        返回本轮新建的高影响候选（由调用方在事务提交后再登记到待确认队列 ——
+        事务回滚时它们不能留在内存队列里指向不存在的知识条目）。
+        """
+        from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
+        from agent.knowledge.verify import VerificationService
+
+        if extraction is None:
+            return []
         ks = KnowledgeService(self.conn)
         vs = VerificationService(self.conn, ks)
         existing = self._knowledge_contents_for_fragment(fragment_id)
-        for cand in outcome.value.candidates:
+        high_impact: list[dict] = []
+        for cand in extraction.candidates:
             if cand.content in existing:
                 # 幂等：重试时不重复写同一条知识
                 continue
@@ -626,8 +733,8 @@ class MemoryLifecycle:
                     tracer.write("knowledge", item.id)
                 ks.submit(item.id)
                 if cand.category in HIGH_IMPACT_CATEGORIES:
-                    # 留在待确认状态，并登记到「回答后在对话里自然确认」的队列
-                    self._pending_candidates.append(
+                    # 留在待确认状态，由调用方在事务提交后登记到「回答后自然确认」队列
+                    high_impact.append(
                         {
                             "knowledge_id": item.id,
                             "category": cand.category,
@@ -644,7 +751,7 @@ class MemoryLifecycle:
                     ks.activate(item.id)
             except Exception as exc:  # extraction must not break the fragment close
                 logger.warning("knowledge candidate failed: %s", self._safe_exc(exc))
-        return None
+        return high_impact
 
     def _knowledge_contents_for_fragment(self, fragment_id: str) -> set[str]:
         """这个片段已经写过的知识内容（供任务重试时幂等跳过）。"""

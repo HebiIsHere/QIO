@@ -156,7 +156,14 @@ export interface BoardStateResponse {
   seq: number;
   baseline: { seq: number; submittedAt: string } | null;
   submissions: SubmissionRecord[];
-  drafts: { drafts: Record<string, string>; updatedAt: string | null };
+  drafts: {
+    drafts: Record<string, string>;
+    updatedAt: string | null;
+    /** 服务端存簿版本（契约 C1）：证明「这次更新 / 删除基于哪一版」 */
+    rev?: number;
+    /** 逐键版本（契约 C1） */
+    keyVersions?: Record<string, number>;
+  };
   /** 未提交的有效改动（服务端每次保存后重算；它不进 QIO） */
   pending?: Expression[];
   /** 本次允许查看的范围（服务端以已保存状态推导） */

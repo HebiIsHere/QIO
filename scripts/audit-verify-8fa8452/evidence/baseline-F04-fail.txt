@@ -1,0 +1,132 @@
+﻿
+F
+[F04-b] by-request = 200 {'ok': True, 'turn_id': 'turn_8cabe02ad51b', 'status': 'cancelled', 'request_id': 'e-f04-never
+-2'}
+FF
+[F04-d] 仍在准备的同身份重试 = {'ok': True, 'accepted': True, 'turn_id': 'turn_b0a111414244', 'status': 'preparing', 'deduplicate
+d': True, 'message': '还在准备', 'topic_id': None}
+F
+[F04-e] 正常重复提交 = {'ok': True, 'accepted': True, 'turn_id': 'turn_b8eb42cea487', 'status': 'unavailable', 'deduplicated'
+: True, 'message': '正常受理', 'topic_id': None}
+.
+================================== FAILURES ===================================
+_________ test_f04_a_never_activated_cancel_then_same_identity_retry __________
+
+app = <fastapi.applications.FastAPI object at 0x000001EBB876F310>
+
+    async def test_f04_a_never_activated_cancel_then_same_identity_retry(app) -> None:
+        rid, prep = "e-f04-never-1", "e-prep-1"
+        turn = _reserve(app, rid, prep)
+        state, tid = app.state.ctx.turns.cancel_prepare(prep)
+        print("\n[F04-a] cancel_prepare ->", state, tid, " turn.status =", turn.status,
+>             " activated =", turn.activated)
+                              ^^^^^^^^^^^^^^
+E       AttributeError: 'TurnContext' object has no attribute 'activated'
+
+..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py:116: AttributeError
+----------------------------- Captured log setup ------------------------------
+__________________ test_f04_b_by_request_reports_same_facts ___________________
+
+app = <fastapi.applications.FastAPI object at 0x000001EBB8B2F990>
+
+    async def test_f04_b_by_request_reports_same_facts(app) -> None:
+        rid, prep = "e-f04-never-2", "e-prep-2"
+        app.state.ctx.turns.reserve("查证用", None, prepare_id=prep, request_id=rid)
+        app.state.ctx.turns.cancel_prepare(prep)
+    
+        async with _client(app) as client:
+            resp = await client.get("/api/turns/by-request/" + rid)
+            body = resp.json()
+        print("\n[F04-b] by-request =", resp.status_code, body)
+        facts = _facts(body)
+>       assert body.get("accepted") is False, (
+            "F04 缺陷复现：by-request 没有如实表达「从未受理」。body=" + str(body)
+        )
+E       AssertionError: F04 缺陷复现：by-request 没有如实表达「从未受理」。body={'ok': True, 'turn_id': 'turn_8cabe02ad51b', 'status': 'c
+ancelled', 'request_id': 'e-f04-never-2'}
+E       assert None is False
+E        +  where None = <built-in method get of dict object at 0x000001EBB8D8AF00>('accepted')
+E        +    where <built-in method get of dict object at 0x000001EBB8D8AF00> = {'ok': True, 'turn_id': 'turn_8cabe02a
+d51b', 'status': 'cancelled', 'request_id': 'e-f04-never-2'}.get
+
+..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py:150: AssertionError
+----------------------------- Captured log setup ------------------------------
+____________ test_f04_c_cancelled_after_accept_is_distinguishable _____________
+
+app = <fastapi.applications.FastAPI object at 0x000001EBB8DFB910>
+
+    async def test_f04_c_cancelled_after_accept_is_distinguishable(app) -> None:
+        """已经放行（activate）之后被用户停止 → cancelled_after_accept，绝不能与「从未受理」混为一谈。
+    
+        走**真实路径**：假 adapter 把流钉在第二段，POST 之后轮次真的在跑；用
+        POST /api/turns/{turn_id}/cancel 停止它（= 用户按停止）；然后再用同一身份重试。
+        """
+        import asyncio
+    
+        from agent.adapters.fake import FakeStreamAdapter, StreamScript
+    
+        rid = "e-f04-after-3"
+        hold = asyncio.Event()
+        adapter = FakeStreamAdapter(
+            [
+                StreamScript(
+                    text_chunks=["[[QIO:ANSWER]]\n", "第一段。", "第二段。"],
+                    hold_after=2,
+                    hold=hold,
+                    gap_ms=40,
+                )
+            ]
+        )
+        app.state.ctx.build_adapter = _fake_adapter_builder(adapter)
+    
+        async with _client(app) as client:
+            first = await client.post(
+                "/api/turns", json={"message": "已受理后取消", "attachment_ids": [], "client_request_id": rid}
+            )
+            assert first.status_code == 200, first.json()
+            turn_id = first.json()["turn_id"]
+            ctx = await _wait_for(lambda: app.state.ctx.turns.lookup_request(rid), timeout=20.0)
+            assert ctx is not None, "前置条件：必须能按请求身份查到这一轮"
+            started = await _wait_for(lambda: bool(getattr(ctx, "activated", False)), timeout=20.0)
+>           assert started, "前置条件：这一轮必须已经被放行执行（activated）"
+E           AssertionError: 前置条件：这一轮必须已经被放行执行（activated）
+E           assert False
+
+..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py:192: AssertionError
+----------------------------- Captured log setup ------------------------------
+______________ test_f04_d_still_preparing_is_pending_not_failure ______________
+
+app = <fastapi.applications.FastAPI object at 0x000001EBB9074810>
+
+    async def test_f04_d_still_preparing_is_pending_not_failure(app) -> None:
+        """预留未放行、也未取消 → preparing/pending，既不能说成功也不能说失败。"""
+        rid, prep = "e-f04-prep-4", "e-prep-4"
+        app.state.ctx.turns.reserve("还在准备", None, prepare_id=prep, request_id=rid)
+        async with _client(app) as client:
+            resp = await client.post(
+                "/api/turns", json={"message": "还在准备", "attachment_ids": [], "client_request_id": rid}
+            )
+            body = resp.json()
+        facts = _facts(body)
+        print("\n[F04-d] 仍在准备的同身份重试 =", body)
+>       assert facts.get("state") == "preparing", (
+            "F04：仍在准备的轮次必须报 preparing，不能提前说成功或失败。facts=" + str(facts)
+        )
+E       AssertionError: F04：仍在准备的轮次必须报 preparing，不能提前说成功或失败。facts={'state': None, 'accepted': True, 'cancelled': None, 
+'pending': None, 'reason': None, 'deduped': None}
+E       assert None == 'preparing'
+E        +  where None = <built-in method get of dict object at 0x000001EBB91C06C0>('state')
+E        +    where <built-in method get of dict object at 0x000001EBB91C06C0> = {'state': None, 'accepted': True, 'can
+celled': None, 'pending': None, ...}.get
+
+..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py:224: AssertionError
+----------------------------- Captured log setup ------------------------------
+=========================== short test summary info ===========================
+FAILED ..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py::test_f04_a_never_activated_cancel_then_same_identity
+_retry
+FAILED ..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py::test_f04_b_by_request_reports_same_facts
+FAILED ..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py::test_f04_c_cancelled_after_accept_is_distinguishable
+FAILED ..\scripts\audit-verify-8fa8452\test_f04_accept_receipt.py::test_f04_d_still_preparing_is_pending_not_failure
+4 failed, 1 passed in 23.53s
+
+

@@ -213,7 +213,13 @@ describe("时序 7：多卡片与连续输入的版本归属（§10.3）", () =>
     expect(store.draftStateFor("card:b").status).toBe("saved");
     const lastPayload = vi.mocked(imApi.saveDrafts).mock.calls[vi.mocked(imApi.saveDrafts).mock.calls.length - 1]?.[1] as Record<string, string>;
     expect(lastPayload["card:a"]).toBe("A 的第二版");
-    expect(lastPayload["card:b"]).toBe("B 的第一版");
+    /*
+     * 契约 C1 变更（F01）：草稿保存从「整份替换」改成**逐键更新** ——
+     * card:b 这一版在第一轮已经保存成功、之后没有改动，所以本次请求里**不应出现**它。
+     * 旧断言要求把 b 一起带上（整份集合语义）；现在「未出现在请求里」= 未修改，
+     * 服务端绝不因此删除它，这正是「另一窗口保存不会删掉已保存的草稿」的实现口径。
+     */
+    expect(lastPayload["card:b"], "已保存且未再改动的键不该被重发").toBeUndefined();
   });
 
   it("【状态】旧请求失败不许把「期间又改过」的新版本标成已保存或这次的失败", async () => {

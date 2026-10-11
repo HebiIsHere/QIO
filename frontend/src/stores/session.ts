@@ -1099,6 +1099,65 @@ function sendErrorStatus(e: unknown): number | null {
 }
 
 /**
+ * 后端受理事实（契约 C3）的**统一读法**。
+ *
+ * 为什么不能只看 turn_id：去重命中的回执以前无条件回 200，于是一条「准备期就被放弃、
+ * 从未放行执行」的轮次会被前端当成「已受理」—— 用户看到「已发送」，实际什么都没跑。
+ * 现在后端在回执里给出 accepted / cancelled / receipt.state，前端按它判定，
+ * 并且**区分**两件事：
+ * * `not_accepted`      —— 从未放行执行（准备期 abandon / 附件准备失败）：确定没受理；
+ * * `cancelled_after_accept` —— 曾经放行执行、随后被取消：这次发送**确实被受理过**。
+ */
+export interface SendReceiptVerdict {
+  /** 显式受理事实；null = 这份回执没说（旧后端）→ 退化为「有 turn_id 即受理」 */
+  accepted: boolean | null;
+  cancelled: boolean;
+  /** receipt.state（accepted / not_accepted / cancelled_after_accept / preparing / null） */
+  state: string | null;
+  /** 仍处于准备期（预留未放行）：既不算受理，也不算未受理 */
+  preparing: boolean;
+  /** 后端给的原因（preparation_abandoned / cancelled_during_prepare / ...） */
+  reason: string | null;
+  /** 去重命中：这是同一个请求身份的回执，不是新的一轮 */
+  deduped: boolean;
+  /** 后端实际绑定到的附件（以它为准，绝不用界面上的选择去猜） */
+  attachmentIds: string[] | null;
+}
+
+/** 从回执里读出受理事实（兼容旧形状：没有 receipt 时按顶层字段与 turn_id 判断）。 */
+export function readSendReceiptVerdict(
+  res: Record<string, unknown> | null | undefined,
+): SendReceiptVerdict {
+  const source = res ?? {};
+  const receipt =
+    source.receipt && typeof source.receipt === "object" && !Array.isArray(source.receipt)
+      ? (source.receipt as Record<string, unknown>)
+      : null;
+  const pickBoolean = (key: string): boolean | null => {
+    const top = source[key];
+    if (typeof top === "boolean") return top;
+    const nested = receipt ? receipt[key] : undefined;
+    return typeof nested === "boolean" ? nested : null;
+  };
+  const state = typeof receipt?.state === "string" ? receipt.state : null;
+  const accepted = pickBoolean("accepted");
+  const cancelled = pickBoolean("cancelled") ?? false;
+  const pending = pickBoolean("pending") ?? false;
+  const reason =
+    typeof receipt?.reason === "string"
+      ? receipt.reason
+      : typeof source.reason === "string"
+        ? source.reason
+        : null;
+  const deduped = pickBoolean("deduplicated") ?? false;
+  const attachmentIds = readExplicitAttachmentIds(
+    receipt?.attachment_ids ?? source.bound_attachment_ids,
+  );
+  const preparing = state === "preparing" || (pending && accepted === false && !cancelled);
+  return { accepted, cancelled, state, preparing, reason, deduped, attachmentIds };
+}
+
+/**
  * 一次发送动作的生命周期状态（契约 5）。
  *
  * 四个尝试态：
@@ -1111,6 +1170,54 @@ function sendErrorStatus(e: unknown): number | null {
  * 绝不因一张迟到的回执把已经推进的运行态拉回去。
  */
 export type SendAttemptState = "pending" | "accepted" | "confirmed-rejected" | "needs-confirm";
+
+/**
+ * 一次发送动作的**不可变提交快照**（契约 C2 / F02）。
+ *
+ * 为什么必须整份存下来：重试是一次「原请求语义」的幂等重放，不是一次新的发送。
+ * 只要有任何一项在重试时**重新计算**（读当前输入框、当前话题、后来加入的附件），
+ * 同一次发送就会在后端变成两个不同的请求 —— 幂等保护失效、附件被错绑或漏绑。
+ * 所以这里在提交那一刻整体冻结，重试只消费它，一个字都不重算。
+ */
+export interface SendSnapshot {
+  /** 提交那一刻的原文（不 trim 之外不改写、不拼接） */
+  text: string;
+  /** 提交那一刻的话题（null = 尚未绑定，重试仍按 null 发，不看当前话题） */
+  topicId: string | null;
+  /**
+   * 提交那一刻的**显式**附件列表。
+   *
+   * 空数组是「这条消息没有附件」的显式语义，必须原样发出去；
+   * 序列化成字段缺失会让后端走旧客户端兜底，把该话题下遗留的未绑定附件绑上来。
+   */
+  attachmentIds: string[];
+  /** 永远为 true：字段存在且是数组（断言「显式」这件事本身，不靠字段名猜） */
+  attachmentsExplicit: true;
+  /** 请求身份（幂等键）：同一次发送的所有重试复用同一个 */
+  clientRequestId: string;
+  /** 重试来源：后端据此允许克隆复用原来那一轮的附件 */
+  retryOfTurnId: string | null;
+  /**
+   * 这次发送的归属身份（attribution.draftId）。
+   *
+   * 只用于判断「这条未决记录是不是本次会话这台机器发出来的」：话题首次绑定时
+   * 由它决定要不要跟着迁移到真实话题（与失败原文同一套规则）。
+   * 它**不参与请求语义** —— 重试仍然只用上面的 topicId/text/attachmentIds。
+   */
+  draftId?: string;
+  /** 需要延续的起点信息（提交时捕获，跟着这次发送走） */
+  continuation: {
+    topicId: string | null;
+    fragmentId: string | null;
+    intentId: string | null;
+    topicName: string | null;
+    capturedAt: number;
+  } | null;
+  /** 提交时是否已在排队 */
+  queued: boolean;
+  /** 快照冻结时刻（毫秒） */
+  capturedAt: number;
+}
 
 /** 一次发送动作（乐观消息 + 请求身份 + 状态）。重试复用同一个 clientRequestId。 */
 export interface SendAttempt {
@@ -1131,6 +1238,57 @@ export interface SendAttempt {
   confirmBusy?: boolean;
   /** 重发进行中（防重入） */
   retryBusy?: boolean;
+  /**
+   * 提交那一刻的完整不可变快照（F02）。
+   *
+   * 可选只为了兼容从本机旧格式装回来的记录（那时没有快照，按 message/topicId 退化）；
+   * 本机新写入的每条 attempt 一律带它。
+   */
+  snapshot?: SendSnapshot;
+}
+
+/**
+ * 未决发送的会话层记录（F03）：完整提交快照 + 请求身份 + 当前已知程度。
+ *
+ * 只在「没拿到可靠受理结论」时存在（pending / needs-confirm）；一旦有了明确结论
+ * （受理成功或明确拒绝），这条记录从 pendingSends 移除并写进本机 —— 受理成功
+ * 对应的可恢复原文由 `_clearFailedSendsAccepted` 精确解除，明确拒绝留下的原文
+ * 归 failedSends（可恢复原文）而不是这里。
+ */
+export interface PendingSendRecord {
+  /** 本机记录 id：就是原来那条乐观消息 id（同一个发送动作只有一条） */
+  id: string;
+  /** 请求身份（幂等键）：重试与查证都复用它 */
+  clientRequestId: string;
+  /**
+   * **归属话题**：界面按它把这条未决发送归到哪个话题（与 FailedSend.topicId 同义）。
+   *
+   * 与 `snapshot.topicId` 是两件事：后者是**请求语义**（原请求发的 topic_id，重试必须
+   * 原样复用，绝不因为后来绑定了话题就改），前者只是「回哪个话题能找到它」。
+   */
+  topicId: string | null;
+  /** 提交那一刻的完整不可变快照 */
+  snapshot: SendSnapshot;
+  /** 当前已知程度：pending（刚发出）/ needs-confirm（没有回执，结果未知） */
+  state: "pending" | "needs-confirm";
+  /** 最近一次失败的真实原因（null = 只是还没回执，谈不上失败） */
+  lastError: string | null;
+  /** 最近一次查证的结果说明（null = 还没查过） */
+  lastCheck: string | null;
+  /** 第一次登记时刻（毫秒） */
+  createdAt: number;
+  /** 最近更新时刻（毫秒） */
+  updatedAt: number;
+}
+
+/** 未决发送列表的一页（F03：展示可翻页，数据不淘汰） */
+export interface PendingSendPage {
+  items: PendingSendRecord[];
+  /** 总条数（保留数量，不是展示数量） */
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
 }
 
 /**
@@ -1161,6 +1319,65 @@ export const SEND_CONFIRM_UNKNOWN_NOTICE = "发送未确认：后端没有该请
 export const SEND_REJECTED_NOTICE = "发送失败：被拒绝";
 /** 超时 / 网络失败后等多久才去查证（数百毫秒：给回执一点「在路上」的时间）。 */
 export const SEND_CONFIRM_QUERY_DELAY_MS = 600;
+
+/**
+ * 已经落定的发送动作（受理 / 明确拒绝）在本机台账里保留多少条。
+ *
+ * 只裁剪**已落定**的：它们不承载用户数据（原文与未决事实另有独立、不裁剪的存储）。
+ * **未决**（pending / needs-confirm）一条都不裁 —— 用户还没处理过的事实不许被静默淘汰。
+ */
+export const MAX_SETTLED_SEND_ATTEMPTS = 50;
+
+/**
+ * 未决发送在界面上的**统一视图**（F12）。
+ *
+ * 普通对话页与悬浮聊天读同一份规则：不各写一套「什么算正在确认、什么算受理未知、
+ * 什么时候能重试」，也就不会出现两个入口对同一条发送说法不一致。
+ *
+ * 四个状态里这里只表达两个 —— 「正在确认」与「受理未知」；明确未受理（`rejected`）
+ * 与已受理分别由 failedSends 与 attempt.state 表达：
+ * * `confirming`：还没拿到回执 / 查证还没结论；
+ * * `unknown`：查证过、后端确实没有这条请求记录（进程重启也会 404，所以它绝不等于「未发送」）。
+ */
+export interface PendingSendView {
+  id: string;
+  clientRequestId: string;
+  text: string;
+  topicId: string | null;
+  state: "confirming" | "unknown";
+  /** 查证 / 重试进行中 */
+  busy: boolean;
+  /** 原样显示的状态文案（界面不自己推断） */
+  notice: string;
+  /** 这次失败/未知的真实原因（可能为空） */
+  reason: string;
+  /** 提交快照里的**显式**附件列表（空数组 = 这次确实没有附件） */
+  attachmentIds: string[];
+  createdAt: number;
+}
+
+export function pendingSendView(
+  record: PendingSendRecord,
+  confirm: SendConfirmState | null,
+): PendingSendView {
+  const isCurrent = confirm?.messageId === record.id;
+  const unknown = Boolean(isCurrent && confirm?.unknown);
+  const notice = isCurrent
+    ? (confirm?.notice ?? SEND_CONFIRM_QUERYING_NOTICE)
+    : (record.lastCheck ?? SEND_CONFIRM_QUERYING_NOTICE);
+  return {
+    id: record.id,
+    clientRequestId: record.clientRequestId,
+    text: record.snapshot.text,
+    topicId: record.topicId,
+    state: unknown ? "unknown" : "confirming",
+    busy: Boolean(isCurrent && confirm?.busy),
+    notice,
+    reason: record.lastError ?? "",
+    attachmentIds: [...record.snapshot.attachmentIds],
+    createdAt: record.createdAt,
+  };
+}
 
 
 /**
@@ -1199,6 +1416,25 @@ export interface FailedSend {
    * 缺省（旧格式/旧本机记录）按 1 处理。
    */
   contentVersion?: number;
+  /**
+   * 这次发送的**请求身份**（client_request_id）。
+   *
+   * 同一次发送动作（含所有重试）只有一个身份：受理成功/查证命中时按它精确解除
+   * 这条失败记录 —— 既不看当前话题、也不按「文字相同」猜。
+   */
+  clientRequestId?: string;
+  /**
+   * 这次失败是哪一类（F03：两类必须分开）。
+   *
+   * * `rejected` —— 后端给了明确结论（结构化 4xx/5xx / accepted=false）：确定没受理；
+   * * `unknown`  —— 超时 / 断线 / 没有任何回执：受理情况**未知**，
+   *   不能当成「明确未受理」，更不许自动换新身份重发。
+   *
+   * 旧格式（没有这个字段）按 `rejected` 对待：界面只说「失败」，不替它宣称未知。
+   */
+  failure?: "rejected" | "unknown";
+  /** 提交那一刻的**显式**附件列表（空数组也是显式：绝不能退化成「缺字段」） */
+  attachmentIds?: string[];
   /** 失败发生的时间（毫秒） */
   at: number;
 }
@@ -1604,6 +1840,23 @@ const sessionStoreDefinition = defineStore("session", {
      */
     sendAttempts: [] as SendAttempt[],
     /**
+     * 未决发送（契约 C2/C3、F03）：还没拿到**可靠**受理结论的发送动作，
+     * 连同完整提交快照与请求身份一起独立保存。
+     *
+     * 为什么与 failedSends 分开：failedSends 是「可恢复的失败原文」（要重发或放弃），
+     * 未决发送是「这次请求到底有没有被受理还不知道」（要先查证再决定）—— 两者语义不同。
+     * 混在一起最危险的后果就是：网络超时被当成「明确未受理」，用户按提示换一个新身份
+     * 重发，后端于是真的执行了两次。
+     *
+     * 这份列表**不做数量裁剪**：用户还没处理过的事实不许因为「超过 50 条」被静默淘汰；
+     * 展示按页取（pendingSendsPage），数据一条都不删。
+     */
+    pendingSends: [] as PendingSendRecord[],
+    /** 未决发送写本机存储的结果（null = 最近一次写入成功） */
+    pendingSendPersistError: null as string | null,
+    /** 读本机未决发送的结果（null = 最近一次读取成功） */
+    pendingSendReadError: null as string | null,
+    /**
      * 当前「正在确认是否已发送」的界面状态（文案区分「正在确认」与
      * 「发送未确认：后端没有该请求记录」；明确失败走 lastError）。
      */
@@ -1651,6 +1904,48 @@ const sessionStoreDefinition = defineStore("session", {
       state.sendAttempts.find((a) => a.messageId === messageId),
     /** 当前是否处于「正在确认是否已发送」（界面据此区分两种失败文案）。 */
     pendingSendConfirm: (state): SendConfirmState | null => state.sendConfirm,
+    /**
+     * 未决发送自己的真实原因（F03/F12）：界面直接显示，不自己推断。
+     * 不传 id 时取最新的一条；没有未决记录时返回 null。
+     */
+    unresolvedSendReason:
+      (state) =>
+      (messageId?: string | null): string | null => {
+        const target = messageId
+          ? state.pendingSends.find((record) => record.id === messageId)
+          : state.pendingSends[state.pendingSends.length - 1];
+        return target?.lastError ?? null;
+      },
+    /**
+     * 原话题下还没定论的发送（F03/F12）。
+     *
+     * 只按**提交快照里的话题**取：切到别的话题不插入、不显示，回到原话题还能看到
+     * 并处理（查证 / 同身份重试 / 查看原文 / 明确放弃）。话题为 null 的记录只在
+     * 未绑定位置显示 —— 与 failedSendsForTopic 同一套隔离规则。
+     */
+    unresolvedSendsForTopic:
+      (state) =>
+      (topicId: string | null): PendingSendRecord[] =>
+        state.pendingSends.filter((record) => record.topicId === topicId),
+    /**
+     * 未决发送的分页视图（F03）：`page` 从 0 开始。
+     * 列表本身不做数量裁剪，翻页只改变**展示**哪一段，没有任何一条被删掉。
+     */
+    pendingSendsPage:
+      (state) =>
+      (page = 0, pageSize = 20): PendingSendPage => {
+        const size = Math.max(1, Math.floor(pageSize));
+        const total = state.pendingSends.length;
+        const pageCount = Math.max(1, Math.ceil(total / size));
+        const safePage = Math.min(Math.max(0, Math.floor(page)), pageCount - 1);
+        return {
+          items: state.pendingSends.slice(safePage * size, safePage * size + size),
+          total,
+          page: safePage,
+          pageSize: size,
+          pageCount,
+        };
+      },
     /** 某一轮的阶段（按 index 顺序；没有就是空数组 = legacy 平铺） */
     stagesFor: (state) => (turnId?: string | null): TurnStage[] =>
       turnId ? (state.stagesByTurn[turnId] ?? []) : [],
@@ -2089,8 +2384,43 @@ const sessionStoreDefinition = defineStore("session", {
       }
       return null;
     },
-    /** 记下一次失败事实（原文 + 原因 + 归属身份），并立刻写进本机存储 */
-    _recordFailedSend(attribution: SendAttribution, reason: string): FailedSend {
+    /**
+     * 记下一次失败事实（原文 + 原因 + 归属身份 + 请求身份），并立刻写进本机存储。
+     *
+     * 同一次发送动作（同一个 clientRequestId）只留**一条**记录：原请求失败、随后用
+     * 同一个身份重试又失败时，更新这一条而不是再堆一条 —— 否则「一份原文」会在恢复
+     * 入口里出现两次，用户还得在两条里挑。
+     */
+    _recordFailedSend(
+      attribution: SendAttribution,
+      reason: string,
+      options: { attempt?: SendAttempt; failure?: "rejected" | "unknown" } = {},
+    ): FailedSend {
+      const clientRequestId = options.attempt?.clientRequestId;
+      const existing = clientRequestId
+        ? this.failedSends.find((item) => item.clientRequestId === clientRequestId)
+        : undefined;
+      if (existing) {
+        const next: FailedSend = {
+          ...existing,
+          // 原文与归属都用这次（重试）实际提交的那一份：它们是同一次发送的事实
+          topicId: this._failedSendTopicFor(attribution),
+          text: attribution.text,
+          draftSeq: attribution.draftSeq,
+          contentVersion: attribution.contentVersion ?? existing.contentVersion ?? 1,
+          failure: options.failure ?? existing.failure ?? "rejected",
+          attachmentIds: options.attempt?.snapshot?.attachmentIds ?? existing.attachmentIds,
+          at: existing.at,
+        };
+        this.failedSends = this.failedSends.map((item) =>
+          item.id === existing.id ? next : item,
+        );
+        if (next.id) this.failedSendErrors = { ...this.failedSendErrors, [next.id]: reason };
+        this.failedSend = next;
+        this.failedSendError = reason;
+        this._persistFailedSends();
+        return next;
+      }
       const record: FailedSend = {
         id: mintFailedSendId(),
         draftId: attribution.draftId,
@@ -2099,6 +2429,9 @@ const sessionStoreDefinition = defineStore("session", {
         draftSeq: attribution.draftSeq,
         /** M3：失败记录也带内容版本，成功清理时按 (身份|记录, 版本, 话题) 精确匹配 */
         contentVersion: attribution.contentVersion ?? 1,
+        clientRequestId,
+        failure: options.failure ?? "rejected",
+        attachmentIds: options.attempt?.snapshot?.attachmentIds,
         at: Date.now(),
       };
       this.failedSends = trimFailedSendsPerTopic([record, ...this.failedSends]);
@@ -2175,8 +2508,26 @@ const sessionStoreDefinition = defineStore("session", {
      */
     adoptUnboundFailedSends(topicId: string) {
       if (!topicId) return;
-      if (!this.failedSends.some((record) => record.topicId === null)) return;
       const keeper = chatDraftKeeperFor(this as object);
+      /**
+       * 未决发送与失败原文同一套迁移规则（F03）：只有**本次会话确实由本机这次未绑定
+       * 发送产生**的记录才跟着进真实话题。从本机恢复出来、与本次发送无关的历史记录
+       * 留在未绑定位置，等用户自己处理 —— 不许被无条件吸收进任意新话题。
+       *
+       * 注意只改**归属话题**（界面回哪个话题能找到它），不动提交快照里的请求话题：
+       * 重试必须原样复用原请求语义（topic_id=null），不能因为绑定就改向。
+       */
+      if (this.pendingSends.some((record) => record.topicId === null)) {
+        let moved = false;
+        this.pendingSends = this.pendingSends.map((record) => {
+          if (record.topicId !== null) return record;
+          if (!keeper?.knowsSendIdentity(record.snapshot.draftId)) return record;
+          moved = true;
+          return { ...record, topicId, updatedAt: Date.now() };
+        });
+        if (moved) this._flushPendingSends();
+      }
+      if (!this.failedSends.some((record) => record.topicId === null)) return;
       /**
        * 反例 11(c)：**不把所有历史未绑定失败无条件搬到任意新话题**。
        * 只搬「本次会话确实由本机这次未绑定发送产生」的记录（有本机发送身份映射）；
@@ -2398,7 +2749,7 @@ const sessionStoreDefinition = defineStore("session", {
         this.startedRequestIds = [...this.startedRequestIds.slice(-199), requestId];
       }
       if (turnId) {
-        const attempt = this.sendAttempts.find((a) => a.clientRequestId === requestId);
+        const attempt = this._attemptByRequestId(requestId);
         if (attempt && !attempt.turnId) attempt.turnId = turnId;
       }
     },
@@ -4768,20 +5119,56 @@ const sessionStoreDefinition = defineStore("session", {
       }
       // 本机发送：允许把消息流拉回底部跟随（用户刚写完，想看结果）
       this.localSendSeq += 1;
-      // 登记发送动作：同一动作（含之后的所有重试）只用这一个请求身份
-      this.sendAttempts = [
-        ...this.sendAttempts.slice(-49),
-        {
-          messageId: optimistic.id,
-          clientRequestId: newClientRequestId(),
-          state: "pending",
-          message,
-          topicId: this.currentTopicId,
-          queued,
+      /**
+       * 本次请求的话题在**提交这一刻**定死（归属优先：未绑定话题迁移后的真实话题）。
+       * 快照与请求体用同一个值 —— 之后切换话题、甚至已经清空输入框，都不再重算。
+       */
+      const requestTopicId = attribution.topicId ?? startIdentity.topicId;
+      /**
+       * F02：提交那一刻冻结**完整不可变快照**。
+       *
+       * 重试只消费它：原文、话题、请求身份、**显式**附件列表（空数组也必须原样带着 ——
+       * 变成字段缺失会让后端走旧客户端兜底，把话题下遗留的未绑定附件绑上来）、
+       * 重试来源与需要延续的起点。任何一项在重试时重算，都会让「同一次发送」变成
+       * 后端眼里的两个不同请求。
+       */
+      const snapshot: SendSnapshot = {
+        text: message,
+        topicId: requestTopicId,
+        attachmentIds: [...ids],
+        attachmentsExplicit: true,
+        clientRequestId: newClientRequestId(),
+        retryOfTurnId: options.retryOfTurnId ?? null,
+        draftId: attribution.draftId,
+        continuation: {
+          topicId: startIdentity.topicId,
+          fragmentId: startIdentity.fragmentId,
+          intentId: startIdentity.intentId,
+          topicName: startIdentity.topicName,
+          capturedAt: startIdentity.capturedAt,
         },
-      ];
-      const attempt = this._attemptOf(optimistic.id);
-      if (!attempt) return false;
+        queued,
+        capturedAt: Date.now(),
+      };
+      const attempt: SendAttempt = {
+        messageId: optimistic.id,
+        clientRequestId: snapshot.clientRequestId,
+        state: "pending",
+        message: snapshot.text,
+        topicId: snapshot.topicId,
+        queued,
+        snapshot,
+      };
+      /**
+       * 登记发送动作：同一动作（含之后的所有重试）只用这一个请求身份。
+       * 未决的记录**不做数量裁剪**（F03）—— 只有已经有结论的本地台账条目才保留最近若干条。
+       */
+      this._indexAttempt(attempt);
+      // 刚发出、还没有任何结论：进独立的未决台账并立刻落本机（F03）
+      this._trackPendingSend(attempt, {
+        state: "pending",
+        topicId: this._failedSendTopicFor(attribution),
+      });
       // 一轮新的发送开始：上一条「正在确认」的提示让位（旧 attempt 状态保留，
       // 它自己的查证定时器不受影响）
       this.sendConfirm = null;
@@ -4792,9 +5179,7 @@ const sessionStoreDefinition = defineStore("session", {
          * 「这条消息没有附件」的显式语义。不传参数 = 缺字段 = 旧客户端，
          * 后端会走兜底把该话题下遗留的未绑定附件绑上（审计问题 3）。
          */
-        // 起点身份（M01）在提交那一刻定死；互动线（契约 §10.1）另外要求在**点击那一刻**
-        // 记下归属：两者正常路径一致，归属存在时以它为准（未绑定话题迁移后的真实话题）。
-        const requestTopicId = attribution.topicId ?? startIdentity.topicId;
+        // 话题取自提交快照（上面已定死），这里不再看当前话题（F02）
         // 非重试路径保持既有三参形状；只有重试/重发才带第四个参数（retry_of_turn_id）
         // 调用形状按需最小化：没有 signal 时保持既有参数个数，免得把「准备期中止」
         // 的管道塞进所有调用点的既有契约里。
@@ -4818,6 +5203,28 @@ const sessionStoreDefinition = defineStore("session", {
             ? await api.sendTurn(message, requestTopicId, ids, undefined, options.signal)
             : await api.sendTurn(message, requestTopicId, ids);
         }
+        /**
+         * 受理事实（契约 C3）：**绝不能只看 turn_id**。
+         *
+         * 去重命中以前无条件回 200，于是一条「准备期就被放弃、从未放行执行」的轮次
+         * 会被显示成「已发送」——用户以为发出去了，实际什么都没跑。现在按后端给的
+         * accepted / cancelled / receipt.state 判定，并把两件事分开：
+         * * not_accepted（从未放行执行）→ 撤掉乐观消息、结束错误的运行/等待态、保留原文；
+         * * cancelled_after_accept（曾受理后被取消）→ 受理事实成立，绝不显示成「没发出去」。
+         */
+        const verdict = readSendReceiptVerdict(res as Record<string, unknown> | null | undefined);
+        if (verdict.preparing) {
+          // 仍在准备期（已预留、尚未放行）：既不算受理，也不算未受理 —— 保持未决
+          this._trackPendingSend(attempt, { state: "pending" });
+          return false;
+        }
+        if (verdict.accepted === false || (verdict.cancelled && verdict.accepted !== true)) {
+          // 归属取**迁移后版本**：未绑定发送在飞期间话题被绑定时才能归到真实话题
+          const notAccepted = draftKeeper?.takeFailedAttributionFor(attribution) ?? attribution;
+          draftKeeper?.settleSend(notAccepted, false);
+          this._concludeSendNotAccepted(attempt.messageId, verdict, notAccepted);
+          return false;
+        }
         // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 绝不能在这里写 activeTurnId —— 排队中的 turn 被当成 active 会同时造成
         // 两个后果：Stop 打到错的目标，以及真正在跑那一轮的 TURN_END 被丢弃。
@@ -4832,25 +5239,15 @@ const sessionStoreDefinition = defineStore("session", {
             this.turnPhase = "waiting";
           }
         }
-        if (res && res.cancelled) {
-          /**
-           * 服务端确认：这一轮**没有被受理执行**（用户中止 / 连接断开，契约 §1.1）。
-           * 撤掉乐观消息、回到发送前的样子 —— 绝不能显示成「已发送」。
-           */
-          this.messages = this.messages.filter((m) => m.id !== optimistic.id);
-          this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== optimistic.id);
-          if (!queued) this.turnRunning = false;
-          // 互动线：明确未受理 —— 按归属登记可恢复原文（不自动放回输入框）
-          const cancelled = draftKeeper?.takeFailedAttributionFor(attribution) ?? attribution;
-          draftKeeper?.settleSend(cancelled, false);
-          if (!isBlankText(cancelled.text)) this._recordFailedSend(cancelled, "服务端确认这一轮没有被受理执行");
-          return false;
-        }
-        // 受理 ≠ 开始执行：SEND 只告诉我们「后端收下了这条消息」。
         // 回执只把发送动作单向推进到 accepted（_acceptSendReceipt），
         // 绝不在这里写 turnRunning / turnPhase / activeTurnId —— 那会把已经结束的轮次
         // 拉回「运行中」，也会把真正在跑那一轮的 TURN_END 丢掉。
         this._acceptSendReceipt(attempt.messageId, res);
+        if (verdict.cancelled) {
+          // 曾经受理、随后被取消：受理事实成立，但必须如实说清它已被取消
+          // （与「从未放行执行」是两件事，不能混成一句话）
+          this.warning = "这一轮已经受理，随后被取消；原话仍保留在对话流里。";
+        }
         /**
          * 核对受理结果与提交时捕获的起点是否一致（M01）。
          * 不一致时**不追改** captured 身份、也不重发：只如实提示 —— 起点错位
@@ -4884,27 +5281,29 @@ const sessionStoreDefinition = defineStore("session", {
           const aborted = draftKeeper?.takeFailedAttributionFor(attribution) ?? attribution;
           draftKeeper?.settleSend(aborted, false);
           if (!isBlankText(aborted.text)) {
-            this._recordFailedSend(aborted, (e as Error).message || "发送已中止");
+            this._recordFailedSend(aborted, (e as Error).message || "发送已中止", {
+              attempt,
+              failure: "rejected",
+            });
           }
+          this._forgetPendingSend(attempt.messageId);
           return false;
         }
         /**
-         * 「受理情况未确认」与「明确未受理」必须分开（契约 5 + 互动线 §11.4）：
-         * 前者（超时 / 网络失败，没有任何回执）**不登记**可恢复原文 —— 原文一旦回到
-         * 输入框，用户就会用一个新请求身份重发，绕过幂等保护；它只走 main 的
-         * 「正在确认」通道（重试复用同一个 clientRequestId）。
+         * 「受理情况未确认」与「明确未受理」必须分开（契约 5 + F03）：
+         *
+         * 前者（超时 / 网络失败，没有任何回执）**不能当成「明确未受理」** ——
+         * 它要么先查证、要么用**同一个请求身份**重试；换一个新身份重发会让后端
+         * 真的执行两次。但它同样是用户的一段原文，必须能找回：所以原文照记，
+         * 只是额外落一份**独立的未决台账**（完整快照 + 请求身份），并在记录上标成
+         * `unknown`，界面据此先说「受理未知」。
+         *
+         * §12.3：失败事实的话题取归属的**迁移后版本**（settleSend(false) 之前在
+         * inFlightSends 里登记的那份），不看用户此刻在哪个话题。
          */
         const receiptUnknown = isSendReceiptUnknown(e);
         this._onSendFailure(attempt.messageId, e);
-        if (receiptUnknown) {
-          draftKeeper?.settleSend(attribution, false);
-          return false;
-        }
         const reason = (e as Error).message;
-        /**
-         * §12.3：拿归属的**迁移后版本**（settleSend(false) 之前在 inFlightSends 里登记的那份），
-         * 失败事实的话题从它身上拿 —— 不再看用户此刻在哪个话题。
-         */
         const failedAttribution = draftKeeper?.takeFailedAttributionFor(attribution) ?? attribution;
         draftKeeper?.settleSend(failedAttribution, false);
         /**
@@ -4912,9 +5311,23 @@ const sessionStoreDefinition = defineStore("session", {
          * 恢复只发生在原话题、且只由用户点恢复入口触发（不自动重发）。
          */
         if (!isBlankText(failedAttribution.text)) {
-          this._recordFailedSend(failedAttribution, reason || "原因未知");
+          this._recordFailedSend(failedAttribution, reason || "原因未知", {
+            attempt,
+            failure: receiptUnknown ? "unknown" : "rejected",
+          });
         }
-        return false;
+        if (receiptUnknown) {
+          // 独立未决台账：完整快照 + 请求身份，关闭重开后仍可先查证再重试（F03）
+          // 归属取**迁移后**的话题：未绑定发送在飞期间话题被绑定时也能在原话题找到它
+          this._trackPendingSend(attempt, {
+            state: "needs-confirm",
+            lastError: reason || null,
+            topicId: this._failedSendTopicFor(failedAttribution),
+          });
+        } else {
+          // 明确拒绝：后端已经给了结论，不属于未决
+          this._forgetPendingSend(attempt.messageId);
+        }
         return false;
       }
     },
@@ -4928,18 +5341,52 @@ const sessionStoreDefinition = defineStore("session", {
       attempt.retryBusy = true;
       try {
         setNextSendRequestId(attempt.clientRequestId);
-        const res = await api.sendTurn(attempt.message, attempt.topicId);
-        this._acceptSendReceipt(attempt.messageId, res);
-        return (attempt.state as SendAttemptState) === "accepted";
-      } catch (e) {
-        if (isSendReceiptUnknown(e)) {
-          // 还是没拿到回执：留在「正在确认」，稍后再查证一次
+        /**
+         * F02：重试**只消费提交快照**。
+         *
+         * 原文、话题、附件列表、重试来源全部来自快照 —— 绝不读当前输入框、当前话题，
+         * 也不把「后来加入待发列表的附件」顺带绑上去。附件列表哪怕是空数组也必须
+         * **显式**传出去：少传这个参数，后端会走旧客户端兜底，把该话题下遗留的
+         * 未绑定附件绑到这条纯文字消息上。
+         */
+        const snapshot = attempt.snapshot;
+        const res = snapshot
+          ? await api.sendTurn(
+              snapshot.text,
+              snapshot.topicId,
+              snapshot.attachmentIds,
+              snapshot.retryOfTurnId ?? undefined,
+            )
+          : await api.sendTurn(attempt.message, attempt.topicId);
+        const verdict = readSendReceiptVerdict(res);
+        if (verdict.preparing) {
+          // 仍在准备期：留着未决，稍后再查证（不自动换身份重发）
           attempt.state = "needs-confirm";
+          this._trackPendingSend(attempt, { state: "needs-confirm", lastCheck: "仍在准备中" });
           this.sendConfirm = this._confirmingState(attempt.messageId);
           this._scheduleConfirmQuery(attempt.messageId);
           return false;
         }
+        if (verdict.accepted === false || (verdict.cancelled && verdict.accepted !== true)) {
+          this._concludeSendNotAccepted(attempt.messageId, verdict);
+          return false;
+        }
+        this._acceptSendReceipt(attempt.messageId, res);
+        return (attempt.state as SendAttemptState) === "accepted";
+      } catch (e) {
+        if (isSendReceiptUnknown(e)) {
+          // 还是没拿到回执：留在「正在确认」，稍后再查证一次（绝不换新身份重发）
+          attempt.state = "needs-confirm";
+          this.sendConfirm = this._confirmingState(attempt.messageId);
+          this._trackPendingSend(attempt, {
+            state: "needs-confirm",
+            lastError: (e as Error).message || null,
+          });
+          this._scheduleConfirmQuery(attempt.messageId);
+          return false;
+        }
         this._rejectAttempt(attempt.messageId, e);
+        this._forgetPendingSend(attempt.messageId);
         return false;
       } finally {
         attempt.retryBusy = false;
@@ -4972,6 +5419,8 @@ const sessionStoreDefinition = defineStore("session", {
       }
       this._settleConfirm(target.messageId);
       target.state = "confirmed-rejected";
+      // 用户明确放弃：这条发送有结论了，从独立未决台账移除（原文由放弃动作放回输入框）
+      this._forgetPendingSend(target.messageId);
       // 撤回乐观消息 + 阅读位置放回发送前（与被拒绝同一通道）
       this.sendRejectedSeq += 1;
       this.messages = this.messages.filter((m) => m.id !== target.messageId);
@@ -5016,8 +5465,223 @@ const sessionStoreDefinition = defineStore("session", {
       }
     },
     // -- 发送生命周期的内部收口 -----------------------------------------
+    /**
+     * 把一次发送动作放进本地台账。
+     *
+     * **未决的记录一律保留**（F03：不许因为「超过 50 条」被静默淘汰）；只有已经落定的
+     * （accepted / confirmed-rejected）才作为本机生命周期台账保留最近若干条 ——
+     * 那部分不承载用户数据，裁剪不会让任何原文消失。
+     */
+    _indexAttempt(attempt: SendAttempt): void {
+      const settled = (item: SendAttempt) =>
+        item.state === "accepted" || item.state === "confirmed-rejected";
+      const keptResolved = this.sendAttempts.filter(settled).slice(-MAX_SETTLED_SEND_ATTEMPTS);
+      const keptUnresolved = this.sendAttempts.filter(
+        (item) => !settled(item) && item.messageId !== attempt.messageId,
+      );
+      this.sendAttempts = [...keptResolved, ...keptUnresolved, attempt];
+    },
+    /**
+     * 登记/更新一条**未决**发送并立刻落本机（F03）。
+     *
+     * 完整快照 + 请求身份一起存：关闭重开之后先查证，再提供同身份重试 / 查看原文 /
+     * 明确放弃。写失败时保留内存事实并把真实原因记在 pendingSendPersistError，
+     * 绝不假装已经保存好。
+     */
+    _trackPendingSend(
+      attempt: SendAttempt,
+      options: {
+        state: "pending" | "needs-confirm";
+        lastError?: string | null;
+        lastCheck?: string | null;
+        /** 归属话题（迁移后由调用方给真实话题）；缺省沿用已有记录或提交快照里的话题 */
+        topicId?: string | null;
+      },
+    ): void {
+      const now = Date.now();
+      const existing = this.pendingSends.find((record) => record.id === attempt.messageId);
+      const snapshot: SendSnapshot = attempt.snapshot ?? {
+        text: attempt.message,
+        topicId: attempt.topicId,
+        attachmentIds: [],
+        attachmentsExplicit: true,
+        clientRequestId: attempt.clientRequestId,
+        retryOfTurnId: null,
+        continuation: null,
+        queued: attempt.queued,
+        capturedAt: now,
+      };
+      const next: PendingSendRecord = {
+        id: attempt.messageId,
+        clientRequestId: attempt.clientRequestId,
+        topicId:
+          options.topicId !== undefined
+            ? options.topicId
+            : (existing?.topicId ?? snapshot.topicId),
+        snapshot,
+        state: options.state,
+        lastError: options.lastError ?? existing?.lastError ?? null,
+        lastCheck: options.lastCheck ?? existing?.lastCheck ?? null,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      this.pendingSends = existing
+        ? this.pendingSends.map((record) => (record.id === attempt.messageId ? next : record))
+        : [...this.pendingSends, next];
+      this._flushPendingSends();
+    },
+    /** 这条发送已经有结论了（受理 / 明确拒绝 / 放弃）：从独立未决台账移除并落本机 */
+    _forgetPendingSend(messageId: string): void {
+      if (!this.pendingSends.some((record) => record.id === messageId)) return;
+      this.pendingSends = this.pendingSends.filter((record) => record.id !== messageId);
+      this._flushPendingSends();
+    },
+    _flushPendingSends(): void {
+      const result = writePendingSendStateToStorage(this.pendingSends);
+      this.pendingSendPersistError = result.error;
+    },
+    /**
+     * 重读本机保存的未决发送（F03）：**只读** —— 不发送、不查证、不提交、不动板面。
+     *
+     * 与内存里的记录按 id 合并：内存里更新的（更多、更新的）不被磁盘旧版本覆盖，
+     * 只补进内存里没有的那些。读失败时 pendingSendReadError 给出真实原因，
+     * 零条 + 读取失败绝不能被说成「没有未决发送」。
+     */
+    retryPendingSendRestore(): { ok: boolean; restored: number; error: string | null } {
+      const persisted = readPendingSendStateFromStorage();
+      this.pendingSendReadError = persisted.error;
+      if (persisted.error) return { ok: false, restored: 0, error: persisted.error };
+      const known = new Set(this.pendingSends.map((record) => record.id));
+      const added = persisted.records.filter((record) => !known.has(record.id));
+      if (added.length) {
+        // 先补历史记录，再让内存里的记录留在后面：同 id 不会被补进来，内存事实优先
+        this.pendingSends = [...added, ...this.pendingSends].sort(
+          (a, b) => a.createdAt - b.createdAt,
+        );
+        // 不给 sendAttempts 预先塞入历史记录：定位由 _attemptOf 按需装载（见那里的说明）
+      }
+      return { ok: true, restored: added.length, error: null };
+    },
+    /**
+     * 查证一条**未决**发送（F03：重开后先查证再决定）。
+     * 只是 recheckSendAttempt 的显式入口：查证本身不发送、不重放、不改原文。
+     */
+    async recheckPendingSend(id?: string): Promise<void> {
+      const target = id
+        ? this.pendingSends.find((record) => record.id === id)
+        : this.pendingSends[this.pendingSends.length - 1];
+      if (!target) return;
+      await this.recheckSendAttempt(target.id);
+      const attempt = this._attemptOf(target.id);
+      if (attempt && attempt.state === "needs-confirm") {
+        this._trackPendingSend(attempt, {
+          state: "needs-confirm",
+          lastCheck: this.sendConfirm?.notice ?? "查证没有结论：受理情况仍然未知",
+        });
+      }
+    },
+    /**
+     * 查看未决发送的原文（F03 的「查看原文」）：**只读** ——
+     * 不改输入框、不写草稿、不发送、不查证、不删记录。
+     */
+    viewPendingSendText(id: string): string | null {
+      const record = this.pendingSends.find((item) => item.id === id);
+      return record ? record.snapshot.text : null;
+    },
+    /**
+     * 服务端确认「这一轮**没有被受理执行**」（契约 C3 / F04）。
+     *
+     * 与「明确 4xx 拒绝」同一条收口：撤掉乐观消息、结束错误的运行/等待状态、
+     * 留下可恢复原文；但文案**必须能区分**两件事：
+     * * 从未放行执行（准备期 abandon / 取消）→ 「未被放行执行」；
+     * * 曾经受理、随后被取消 → 走 `cancelled_after_accept`，这里不会进来（受理事实成立）。
+     */
+    _concludeSendNotAccepted(
+      messageId: string,
+      verdict: SendReceiptVerdict,
+      failedAttribution?: SendAttribution | null,
+    ): void {
+      const attempt = this._attemptOf(messageId);
+      const reasonText =
+        verdict.reason === "preparation_abandoned"
+          ? "未被放行执行：准备阶段就被放弃（原文已保留）"
+          : verdict.reason === "cancelled_during_prepare" ||
+              verdict.reason === "preparation_cancelled"
+            ? "未被放行执行：准备期间被取消（原文已保留）"
+            : verdict.reason
+              ? `未被放行执行：${verdict.reason}（原文已保留）`
+              : "服务端确认这一轮没有被受理执行（原文已保留）";
+      this._settleConfirm(messageId);
+      // 没有被受理：撤回乐观消息 + 阅读位置放回发送前（与「被拒绝」同一通道）
+      this.messages = this.messages.filter((m) => m.id !== messageId);
+      this.queuedMessageIds = this.queuedMessageIds.filter((id) => id !== messageId);
+      this.sendRejectedSeq += 1;
+      this.lastError = reasonText;
+      if (attempt) {
+        attempt.state = "confirmed-rejected";
+        // 这次发送没有被受理：只有「不是排队」的失败才说明当前 active turn 没起来
+        if (!attempt.queued) this.turnRunning = false;
+        /**
+         * 结束**错误的等待状态**：后端明确说没放行、也没有 TURN_START 认领过这次请求，
+         * 就不能把界面留在「运行中 / 等待执行」。
+         */
+        if (this.activeTurnId === null && !this.startedRequestIds.includes(attempt.clientRequestId)) {
+          this.turnPhase = "idle";
+        }
+        this._forgetPendingSend(messageId);
+      }
+      const topicId = failedAttribution
+        ? this._failedSendTopicFor(failedAttribution)
+        : attempt?.snapshot?.topicId ?? attempt?.topicId ?? null;
+      const text = failedAttribution?.text ?? attempt?.message ?? "";
+      if (!isBlankText(text)) {
+        const attribution: SendAttribution =
+          failedAttribution ?? {
+            draftId: attempt?.snapshot?.clientRequestId ?? `not-accepted-${messageId}`,
+            topicId,
+            text,
+            draftSeq: 0,
+            key: "",
+            at: Date.now(),
+            recorded: false,
+          };
+        this._recordFailedSend(attribution, reasonText, { attempt, failure: "rejected" });
+      }
+    },
+    /**
+     * 关闭重开之后，未决发送只在本机台账（pendingSends）里。这里按需把它装成一条
+     * attempt —— 查证 / 同身份重试 / 明确放弃都必须能定位到它。
+     *
+     * 为什么**不**在启动时就把历史记录塞进 sendAttempts：那会让「刚发出的那条」
+     * 不在列表首位，界面与既有断言都会指到一条旧的发送上。按需装载既保住定位能力，
+     * 也不改变「刚发出的在最新位置」这个既有语义。
+     */
+    _materializePendingAttempt(messageId: string): SendAttempt | undefined {
+      const existing = this.sendAttempts.find((a) => a.messageId === messageId);
+      if (existing) return existing;
+      const record = this.pendingSends.find((item) => item.id === messageId);
+      if (!record) return undefined;
+      const attempt: SendAttempt = {
+        messageId: record.id,
+        clientRequestId: record.clientRequestId,
+        state: "needs-confirm",
+        message: record.snapshot.text,
+        topicId: record.snapshot.topicId,
+        queued: record.snapshot.queued,
+        snapshot: record.snapshot,
+      };
+      this.sendAttempts = [...this.sendAttempts, attempt];
+      return attempt;
+    },
     _attemptOf(messageId: string): SendAttempt | undefined {
-      return this.sendAttempts.find((a) => a.messageId === messageId);
+      return this._materializePendingAttempt(messageId);
+    },
+    /** 按请求身份找发送动作（TURN_START 精确关联用）：同样覆盖重开后的未决记录 */
+    _attemptByRequestId(requestId: string): SendAttempt | undefined {
+      const existing = this.sendAttempts.find((a) => a.clientRequestId === requestId);
+      if (existing) return existing;
+      const record = this.pendingSends.find((item) => item.clientRequestId === requestId);
+      return record ? this._materializePendingAttempt(record.id) : undefined;
     },
     _confirmingState(messageId: string): SendConfirmState {
       const attempt = this._attemptOf(messageId);
@@ -5043,6 +5707,18 @@ const sessionStoreDefinition = defineStore("session", {
       if (!attempt) return;
       // 单向：accepted 是终点，confirmed-rejected 是另一个终点
       if (attempt.state === "accepted" || attempt.state === "confirmed-rejected") return;
+      const verdict = readSendReceiptVerdict(res);
+      /**
+       * 契约 C3：**不能只看 turn_id**。
+       *
+       * 回执明确说这次没有被受理时，绝不许把发送动作推进到 accepted —— 那是把
+       * 「什么都没有跑」显示成「已发送」。去重命中同样如此：它必须返回**原请求**的
+       * 真实受理事实，而不是无条件成功。
+       */
+      if (verdict.accepted === false || (verdict.cancelled && verdict.accepted !== true)) {
+        this._concludeSendNotAccepted(messageId, verdict);
+        return;
+      }
       const turnId = res && typeof res.turn_id === "string" ? res.turn_id : "";
       if (turnId) {
         attempt.turnId = turnId;
@@ -5052,9 +5728,46 @@ const sessionStoreDefinition = defineStore("session", {
       attempt.state = "accepted";
       // 排队登记保持原语义：SEND 只把 turn 记为「已受理排队」，不写 active
       if (turnId && attempt.queued) this.markTurnQueued(turnId);
-      // 幂等命中（deduplicated）也一样：这只是同一次发送的回执，
-      // 不重复执行、不重复展示、不重复排队
+      /**
+       * 受理成功：这条发送不再是未决；先前因为「没有回执」留下的可恢复原文按
+       * **请求身份**精确解除 —— 不看文字，也不碰别的发送动作留下的记录。
+       * 幂等命中（deduplicated）也一样：这只是同一次发送的回执，
+       * 不重复执行、不重复展示、不重复排队。
+       */
+      this._forgetPendingSend(attempt.messageId);
+      this._clearFailedSendForRequest(attempt.clientRequestId);
       this._settleConfirm(attempt.messageId);
+    },
+    /**
+     * 按**请求身份**解除一条失败原文（契约 C2/C3）。
+     *
+     * 为什么用请求身份：同一次发送动作（含所有重试）只有一个 client_request_id，
+     * 它就是「这条失败到底属于哪一次发送」的机器可读事实。按文字匹配会误删别的话题、
+     * 别的发送留下的记录；按 draftId 匹配在「找回后互换」之后也已经不够（内容版本变了）。
+     */
+    _clearFailedSendForRequest(clientRequestId: string | null | undefined): void {
+      if (!clientRequestId) return;
+      const matched = this.failedSends.filter(
+        (record) => record.clientRequestId === clientRequestId,
+      );
+      if (!matched.length) return;
+      const ids = new Set(matched.map((record) => record.id).filter(Boolean) as string[]);
+      this.failedSends = this.failedSends.filter(
+        (record) => record.clientRequestId !== clientRequestId,
+      );
+      const errors: Record<string, string> = {};
+      for (const [key, value] of Object.entries(this.failedSendErrors)) {
+        if (!ids.has(key)) errors[key] = value;
+      }
+      this.failedSendErrors = errors;
+      const keeper = chatDraftKeeperFor(this as object);
+      if (keeper) for (const id of ids) keeper.disarmResend(id);
+      if (this.failedSend && matched.includes(this.failedSend)) {
+        const newest = this.failedSends[0] ?? null;
+        this.failedSend = newest;
+        this.failedSendError = newest?.id ? errors[newest.id] ?? null : null;
+      }
+      this._persistFailedSends();
     },
     /** 发送失败的分流：没拿到回执 → 「正在确认」；明确拒绝 → 撤回 + 明确失败。 */
     _onSendFailure(messageId: string, e: unknown): boolean {
@@ -5169,6 +5882,28 @@ const sessionStoreDefinition = defineStore("session", {
     _adoptConfirmedTurn(messageId: string, res: Record<string, unknown> | null | undefined) {
       const attempt = this._attemptOf(messageId);
       if (!attempt || attempt.state !== "needs-confirm") return;
+      /**
+       * 查证回执也带受理事实（契约 C3）：命中不等于受理。
+       * 准备期 abandon 的请求即使被查到记录，也可能从未放行执行 —— 那时
+       * accepted=false，必须按「未被放行执行」收口，绝不能显示成已发送。
+       */
+      const verdict = readSendReceiptVerdict(res);
+      if (verdict.preparing) {
+        this.sendConfirm = {
+          messageId: attempt.messageId,
+          clientRequestId: attempt.clientRequestId,
+          notice: SEND_CONFIRM_RETRY_NOTICE,
+          unknown: false,
+          accepted: false,
+          busy: false,
+        };
+        this._trackPendingSend(attempt, { state: "needs-confirm", lastCheck: "后端仍在准备这一轮" });
+        return;
+      }
+      if (verdict.accepted === false || (verdict.cancelled && verdict.accepted !== true)) {
+        this._concludeSendNotAccepted(messageId, verdict);
+        return;
+      }
       const turnId = res && typeof res.turn_id === "string" ? res.turn_id : "";
       if (!turnId) {
         // 形状不对：当作这次查询失败处理，保持「正在确认」
@@ -5187,6 +5922,12 @@ const sessionStoreDefinition = defineStore("session", {
       const msg = this.messages.find((m) => m.id === attempt.messageId);
       if (msg && !msg.turnId) msg.turnId = turnId;
       if (String(res?.status ?? "") === "queued") this.markTurnQueued(turnId);
+      /**
+       * 查证命中已受理 = 这次发送**确实被后端收下了**：它不再未决，先前因「没有回执」
+       * 留下的可恢复原文也按请求身份精确解除（F03/F04：前后端受理事实必须一致）。
+       */
+      this._forgetPendingSend(attempt.messageId);
+      this._clearFailedSendForRequest(attempt.clientRequestId);
       this._settleConfirm(attempt.messageId);
     },
     /**
@@ -5202,6 +5943,8 @@ const sessionStoreDefinition = defineStore("session", {
       res:
         | {
             bound_attachment_ids?: string[];
+            /** 契约 C3 的统一受理事实（去重命中时是**原请求**的真实绑定） */
+            receipt?: { attachment_ids?: string[] };
             /** 旧形状的回执：这一轮真实绑定的附件 payload（id 就是事实） */
             attachments?: { id?: string }[];
             rejected?: { id: string; reason: string }[];
@@ -5210,13 +5953,27 @@ const sessionStoreDefinition = defineStore("session", {
         | undefined,
     ) {
       if (!message) return;
-      // 回执优先用 bound_attachment_ids；只有旧形状（attachments 列表）时用它的 id ——
-      // 两者都缺才是「拿不到回执」，那时保持原样（不凭空判定）。
+      /**
+       * 回执优先用 bound_attachment_ids；契约 C3 的 `receipt.attachment_ids` 是同一事实的
+       * 统一位置（去重命中时它返回**原请求**真实绑定的附件，不是重新绑定）；
+       * 只有旧形状（attachments 列表）时才退回从 payload 取 id。
+       * 三者都缺 = 拿不到回执 → 保持原样，不凭空判定。
+       */
+      const receiptAttachmentIds = Array.isArray(
+        (res as { receipt?: { attachment_ids?: unknown } } | null | undefined)?.receipt
+          ?.attachment_ids,
+      )
+        ? (res as { receipt: { attachment_ids: unknown[] } }).receipt.attachment_ids.map((x) =>
+            String(x),
+          )
+        : null;
       const boundRaw = Array.isArray(res?.bound_attachment_ids)
         ? res?.bound_attachment_ids
-        : Array.isArray(res?.attachments)
-          ? res.attachments.map((row) => String(row?.id ?? "")).filter(Boolean)
-          : null;
+        : receiptAttachmentIds
+          ? receiptAttachmentIds
+          : Array.isArray(res?.attachments)
+            ? res.attachments.map((row) => String(row?.id ?? "")).filter(Boolean)
+            : null;
       if (!boundRaw) return;
       const bound = new Set(boundRaw.map((x) => String(x)));
       const dropped = requestedIds.filter((id) => !bound.has(id));
@@ -5370,6 +6127,17 @@ function normalizePersistedFailedSend(raw: unknown): PersistedFailedSend | null 
         ? record.contentVersion
         : 1,
     at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0,
+    /** 请求身份要一起过夜：重开之后受理成功/查证命中仍要按它精确解除这条记录 */
+    clientRequestId:
+      typeof record.clientRequestId === "string" && record.clientRequestId
+        ? record.clientRequestId
+        : undefined,
+    /**
+     * 旧记录没有分类字段：按 `rejected` 对待 —— 界面只说「失败」，
+     * 绝不替旧数据宣称「受理未知」（那会让用户接到一个不存在的查证入口）。
+     */
+    failure: record.failure === "unknown" ? "unknown" : "rejected",
+    attachmentIds: readExplicitAttachmentIds(record.attachmentIds) ?? undefined,
     error: typeof record.error === "string" && record.error ? record.error : null,
   };
 }
@@ -5441,6 +6209,171 @@ function writeFailedSendStateToStorage(
     return { error: null };
   } catch (err) {
     return { error: "失败原文没有保存在本机：" + describeLocalError(err) };
+  }
+}
+
+/**
+ * 未决发送的本机存储（契约 C2 / F03）。
+ *
+ * 单独一个键：它存的是「这次请求到底有没有被受理还不知道」的**完整提交快照 +
+ * 请求身份**，与「可恢复的失败原文」（qio.chat.failedSend.v1）语义不同，混存会让
+ * 「未知受理」被当成「明确未受理」。关闭重开之后，用户仍然可以先查证、再用**同一个
+ * 请求身份**重试，或明确放弃 —— 而不是被诱导换一个新身份重发。
+ *
+ * 这里**不做任何数量裁剪**：超过 50 条也全部保留（展示层分页）。本机配额不足时
+ * 如实回报错误（writePendingSendStateToStorage 的 error），绝不靠丢用户数据解决。
+ */
+const PENDING_SEND_STORAGE_KEY = "qio.chat.pendingSend.v1";
+
+interface PendingSendStorageState {
+  version: 1;
+  records: PendingSendRecord[];
+}
+
+/** 从任意形状里读出显式附件列表：缺字段 = 旧格式（用 null 表示「不知道」） */
+function readExplicitAttachmentIds(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.map((id) => String(id)).filter(Boolean);
+}
+
+/**
+ * 归一化一条从本机读回来的未决发送。
+ *
+ * 必须容得下旧格式：字段缺失时尽最大努力还原（原文 + 请求身份 + 话题），
+ * 不能因为格式旧就把用户还没处理的未决事实丢掉。
+ */
+function normalizePendingSend(raw: unknown): PendingSendRecord | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const snapshotRaw =
+    record.snapshot && typeof record.snapshot === "object" && !Array.isArray(record.snapshot)
+      ? (record.snapshot as Record<string, unknown>)
+      : record;
+  const text =
+    typeof snapshotRaw.text === "string"
+      ? snapshotRaw.text
+      : typeof record.message === "string"
+        ? record.message
+        : "";
+  if (!text) return null;
+  const clientRequestId =
+    typeof snapshotRaw.clientRequestId === "string" && snapshotRaw.clientRequestId
+      ? snapshotRaw.clientRequestId
+      : typeof record.clientRequestId === "string"
+        ? record.clientRequestId
+        : "";
+  if (!clientRequestId) return null;
+  /** 请求语义里的话题：`null` 是合法值（未绑定发送），必须与「字段缺失」区分开 */
+  const requestTopicId =
+    snapshotRaw.topicId === null
+      ? null
+      : typeof snapshotRaw.topicId === "string"
+        ? snapshotRaw.topicId
+        : null;
+  /** 归属话题（界面按它归到哪个话题）；旧格式没有这个字段时退化为请求话题 */
+  const placementTopicId =
+    record.topicId === null
+      ? null
+      : typeof record.topicId === "string"
+        ? record.topicId
+        : requestTopicId;
+  const explicit = readExplicitAttachmentIds(snapshotRaw.attachmentIds ?? record.attachmentIds);
+  const capturedAt =
+    typeof snapshotRaw.capturedAt === "number" && Number.isFinite(snapshotRaw.capturedAt)
+      ? snapshotRaw.capturedAt
+      : typeof record.createdAt === "number" && Number.isFinite(record.createdAt)
+        ? record.createdAt
+        : Date.now();
+  const state = record.state === "pending" ? "pending" : "needs-confirm";
+  const createdAt =
+    typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : capturedAt;
+  const updatedAt =
+    typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : createdAt;
+  const continuationRaw =
+    snapshotRaw.continuation && typeof snapshotRaw.continuation === "object"
+      ? (snapshotRaw.continuation as Record<string, unknown>)
+      : null;
+  return {
+    id: typeof record.id === "string" && record.id ? record.id : clientRequestId,
+    clientRequestId,
+    topicId: placementTopicId,
+    snapshot: {
+      text,
+      topicId: requestTopicId,
+      attachmentIds: explicit ?? [],
+      attachmentsExplicit: true,
+      clientRequestId,
+      retryOfTurnId:
+        typeof snapshotRaw.retryOfTurnId === "string" ? snapshotRaw.retryOfTurnId : null,
+      continuation: continuationRaw
+        ? {
+            topicId:
+              typeof continuationRaw.topicId === "string"
+                ? continuationRaw.topicId
+                : requestTopicId,
+            fragmentId:
+              typeof continuationRaw.fragmentId === "string" ? continuationRaw.fragmentId : null,
+            intentId: typeof continuationRaw.intentId === "string" ? continuationRaw.intentId : null,
+            topicName:
+              typeof continuationRaw.topicName === "string" ? continuationRaw.topicName : null,
+            capturedAt:
+              typeof continuationRaw.capturedAt === "number" &&
+              Number.isFinite(continuationRaw.capturedAt)
+                ? continuationRaw.capturedAt
+                : capturedAt,
+          }
+        : null,
+      queued: record.queued === true,
+      capturedAt,
+    },
+    state,
+    lastError: typeof record.lastError === "string" && record.lastError ? record.lastError : null,
+    lastCheck: typeof record.lastCheck === "string" && record.lastCheck ? record.lastCheck : null,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function readPendingSendStateFromStorage(): { records: PendingSendRecord[]; error: string | null } {
+  const { storage, error } = resolveLocalStorage();
+  if (!storage) return { records: [], error: error ?? null };
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(PENDING_SEND_STORAGE_KEY);
+  } catch (err) {
+    return { records: [], error: "读不出本机保存的未决发送：" + describeLocalError(err) };
+  }
+  if (!raw) return { records: [], error: null };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("不是对象");
+    const listed = (parsed as { records?: unknown }).records;
+    if (!Array.isArray(listed)) throw new Error("没有 records");
+    const records: PendingSendRecord[] = [];
+    for (const item of listed) {
+      const record = normalizePendingSend(item);
+      if (record) records.push(record);
+    }
+    records.sort((a, b) => a.createdAt - b.createdAt);
+    return { records, error: null };
+  } catch (err) {
+    return {
+      records: [],
+      error: "本机保存的未决发送读不出来，已按没有处理：" + describeLocalError(err),
+    };
+  }
+}
+
+/** 把未决发送写进本机；失败返回真实原因（调用方必须如实显示，不许静默） */
+function writePendingSendStateToStorage(records: PendingSendRecord[]): { error: string | null } {
+  const { storage, error } = resolveLocalStorage();
+  if (!storage) return { error: error ?? "本地存储不可用，未决发送无法保存在本机" };
+  const payload: PendingSendStorageState = { version: 1, records };
+  try {
+    storage.setItem(PENDING_SEND_STORAGE_KEY, JSON.stringify(payload));
+    return { error: null };
+  } catch (err) {
+    return { error: "未决发送没有保存在本机：" + describeLocalError(err) };
   }
 }
 
@@ -6300,6 +7233,19 @@ export function useSessionStore(pinia?: Pinia): ReturnType<typeof sessionStoreDe
      * 与「从来没有记录」区分开）；failedSendPersistError 只表示**这一次写入**没成功。
      */
     store.failedSendReadError = persistedFails.error;
+    /**
+     * 关闭重开：把本机保存的**未决发送**（完整提交快照 + 请求身份）装回会话状态（F03）。
+     *
+     * 只恢复事实：**不自动查证、不自动重试、不自动发送** —— 网络动作一律由用户
+     * 明确触发。这里保证「重开之后仍然知道有一次发送还没有结论」，并让
+     * 查证 / 同身份重试 / 查看原文 / 明确放弃四个入口都能用。
+     * 读失败时如实记在 pendingSendReadError：零条 ≠ 没有未决发送。
+     */
+    const persistedPending = readPendingSendStateFromStorage();
+    store.pendingSendReadError = persistedPending.error;
+    if (persistedPending.records.length) {
+      store.pendingSends = persistedPending.records;
+    }
     /**
      * 关闭重开：把「被让位的既有草稿」也装回来（反例 11a）——
      * 两份都还在，用户仍能取回或放弃。读不出来时不假装没有：如实记在失败原文读取错误上，
