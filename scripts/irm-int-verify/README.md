@@ -35,6 +35,22 @@
 **边界（诚实声明）**：这是名字级核对，只证明「这条线引入的符号没有整条消失」，
 不证明语义没有变化；语义结论必须另有阅读或实测证据（见 docs/integration-review-20261011.md）。
 
+## run_stage2.py —— 第二段验收编排（集成候选 SHA 上一条命令跑完定向项）
+
+    backend/.venv/Scripts/python.exe scripts/irm-int-verify/run_stage2.py --sha <候选SHA>
+
+顺序（全部定向，不跑全量）：
+
+1. SHA 核验：`--sha` 必须等于工作区 HEAD（复用 D 的 `scripts/targeted-verify/verify_sha.py`，不在则内置比对）；
+2. `verify_migrations.py`（空库 / 真实库 / 补偿 / 重启 / 存量带数据 / 静态不变式）；
+3. `verify_submission_identity.py`（契约 §1 稳定提交身份链路）；
+4. 后端定向 pytest：互动闭环 `test_interactive_real_model.py`、执行 / 理解 / 材料 / 提交 / 迁移 / 发送身份；
+5. 前端定向 vitest：F10 提交刷新、F11 清单读取失败、理解归属，以及我自己的「只读一次」探针（跑完删除探针目录）。
+
+汇总写成 `out/stage2-<sha8>.json`（每步的命令、退出码、输出尾部、耗时都在里面）。
+
+退出码 0 = 全部通过；2 = 请求的 SHA 与工作区不一致（先 checkout）。
+
 ## probes/e-submit-read-once.probe.test.ts —— 提交成功路径「只读一次」探针
 
 这是**我自己的**反例断言（不依赖 A 写的用例）：用调用计数证明成功提交之后的读取与批次记录只发生一次。
