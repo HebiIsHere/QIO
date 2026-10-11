@@ -1,0 +1,66 @@
+﻿
+> qio-frontend@0.1.14 test
+> vitest run src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts
+
+
+ RUN  v4.1.10 D:/qio-dev/qio-irm-int-e/frontend
+
+ ❯ src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts (2 tests | 2 failed) 26ms
+     × POST 明确成功后：板面、可见范围、任务清单各只读一次，批次只记一次 21ms
+     × POST 明确成功、读取失败：提交事实不变，只标「页面刷新失败」 3ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts > E 探针：提交成功路径不得重复读取 / 重复记批次 > POST 明确成功后：板面、可见范围、任务清单各只
+读一次，批次只记一次
+AssertionError: 提交成功后的板面读取 / 清单读取 / 批次记录（期望各一次）: expected { board: 2, intents: 2, batches: 2 } to deeply equal { board:
+ 1, intents: 1, batches: 1 }
+
+- Expected
++ Received
+
+  {
+-   "batches": 1,
+-   "board": 1,
+-   "intents": 1,
++   "batches": 2,
++   "board": 2,
++   "intents": 2,
+  }
+
+ ❯ src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts:129:7
+    127|       { board: delta.board, intents: delta.intents, batches: delta.bat…
+    128|       "提交成功后的板面读取 / 清单读取 / 批次记录（期望各一次）",
+    129|     ).toEqual({ board: 1, intents: 1, batches: 1 });
+       |       ^
+    130|     // 可见范围多一次是**合理**的：saveNow 成功路径里有一句 fire-and-forget 的
+    131|     // refreshVisibleRange()（stores/interactive.ts 保存成功分支），与「提交后刷新」无关。
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts > E 探针：提交成功路径不得重复读取 / 重复记批次 > POST 明确成功、读取失败：提交事实不变，只标「
+页面刷新失败」
+AssertionError: 读取失败不得把提交结果改判成未知；实际 submitStatus=unknown: expected null not to be null
+ ❯ src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts:144:82
+    142|     await flushPromises();
+    143|
+    144|     expect(result, "读取失败不得把提交结果改判成未知；实际 submitStatus=" + store.submitS…
+       |                                                                                  ^
+    145|     expect(store.submitStatus).toBe("succeeded");
+    146|     expect(store.submitError).toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+   Start at  21:48:29
+   Duration  7.32s (transform 514ms, setup 62ms, import 986ms, tests 26ms, environment 5.63s)
+
+

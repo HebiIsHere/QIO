@@ -35,6 +35,29 @@
 **边界（诚实声明）**：这是名字级核对，只证明「这条线引入的符号没有整条消失」，
 不证明语义没有变化；语义结论必须另有阅读或实测证据（见 docs/integration-review-20261011.md）。
 
+## probes/e-submit-read-once.probe.test.ts —— 提交成功路径「只读一次」探针
+
+这是**我自己的**反例断言（不依赖 A 写的用例）：用调用计数证明成功提交之后的读取与批次记录只发生一次。
+
+    # 1) 复制进前端源码树（运行完必须删掉，不提交）
+    cd frontend
+    New-Item -ItemType Directory -Force -Path src\__irm_int_e_probe__ | Out-Null
+    Copy-Item ..\scripts\irm-int-verify\probes\e-submit-read-once.probe.test.ts src\__irm_int_e_probe__\ -Force
+    # 2) 定向运行
+    npm test -- src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts
+    # 3) 清理
+    Remove-Item -Recurse -Force src\__irm_int_e_probe__
+
+断言口径：
+
+* 提交成功后 `fetchBoardState` / `fetchIntents` / `recordIntentBatch` 各只 +1；
+* `fetchVisibleRange` 期望 +2：其中一次来自保存成功路径里那句 fire-and-forget 的
+  `refreshVisibleRange()`（与提交后刷新无关），另一次才是提交后刷新；
+* 第二条用例复刻 F10：读取失败时提交事实不变，只标「页面刷新失败」。
+
+基线对照（c6a03b1）：**2 failed**，实测计数 `{ board: 2, intents: 2, batches: 2 }`（期望各 1），
+第二条 `submitStatus=unknown`。原始输出见 `out/probe-read-once-baseline-c6a03b1.txt`。
+
 ## verify_submission_identity.py —— 稳定提交身份链路（契约 §1，第二段新增验收）
 
 自己建库、自己起应用、自己注入 fake provider、自己数数据库行与模型调用次数，覆盖：
