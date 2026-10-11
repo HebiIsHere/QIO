@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import asyncio
+import contextlib
 import types
 
 import pytest
@@ -59,6 +61,7 @@ async def _save_and_submit(
     groups: list[dict] | None = None,
     links: list[dict] | None = None,
     selection: list[str] | None = None,
+    note: str = "",
 ) -> dict:
     board_store.ensure_board(conn, board_id=BOARD)
     state = {
@@ -71,7 +74,24 @@ async def _save_and_submit(
         "selection": list(selection or []),
     }
     board_store.save_board(conn, BOARD, state, reason="test")
-    return await submission_module.submit_board(conn, BOARD)
+    result = await submission_module.submit_board(conn, BOARD, note=note)
+    # A 的提交路径在受理成功后会排一个后台理解任务。这里我们**自己**用 fake adapter 驱动
+    # run_understanding，所以先把那个默认（没有 adapter）的后台任务取消掉，避免两边抢同一行；
+    # 受理本身照旧（记录已建立、delivery.understandingId 已给出）。
+    understanding_id = (result.get("delivery") or {}).get("understandingId")
+    if understanding_id:
+        await _stop_background_understanding(str(understanding_id))
+    return result
+
+
+async def _stop_background_understanding(understanding_id: str) -> None:
+    target = "interactive-understanding:" + str(understanding_id)
+    for task in asyncio.all_tasks():
+        if task.get_name() != target:
+            continue
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
 
 
 def _provider(adapter):
@@ -182,6 +202,15 @@ def intents_stub(monkeypatch):
 
 
 def _accept(conn, result) -> dict:
+    """复用提交路径**已经受理**的那条理解请求（A 的 submit_board 里建立的）。
+
+    「同一 request_id 重复受理是幂等的」由专门的用例断言，这里不重复受理。
+    """
+    understanding_id = (result.get("delivery") or {}).get("understandingId")
+    if understanding_id:
+        record = u.get_understanding(conn, str(understanding_id))
+        if record is not None:
+            return record
     return u.request_understanding(
         conn,
         board_id=BOARD,
@@ -222,11 +251,17 @@ async def test_intent_understanding_creates_intents(db_conn, fake_materials, int
     groups = [_group("g1", "两份材料", ["c_file", "c_code"])]
     links = [_link("l1", "c_file", "c_unchecked", meaning="越界关系")]
     result = await _save_and_submit(
-        db_conn, cards, groups=groups, links=links, selection=["c_file", "c_code"]
+        db_conn,
+        cards,
+        groups=groups,
+        links=links,
+        selection=["c_file", "c_code"],
+        note="请特别关注成本一项",
     )
     accepted = _accept(db_conn, result)
     assert accepted["status"] == "accepted"
-    assert accepted["reused"] is False
+    # 提交路径已受理：复用的就是同一条理解请求（幂等由专门的用例断言）
+    assert accepted["id"] == result["delivery"]["understandingId"]
 
     payload = _intent_payload([
         {"op": "add_reply_card", "content": "两份材料的差异如下……", "title": "差异"},
@@ -250,6 +285,9 @@ async def test_intent_understanding_creates_intents(db_conn, fake_materials, int
     ctx = _request_context(adapter.requests[0])
     assert len(adapter.requests) == 1
     assert "请比较这两份材料并给出差异" in ctx["requirement"]["text"]
+    assert ctx["requirement"]["expressionSource"] == "submission"
+    assert ctx["requirement"]["note"] == "请特别关注成本一项"
+    assert ctx["honesty"]["expressionsSource"] == "submission"
     assert set(ctx["visibleCardIds"]) == {"c_file", "c_code", "c_note"}
     assert {m["cardId"] for m in ctx["materials"]} == {"c_file", "c_code"}
     assert any("甲材料正文" in str(m.get("text")) for m in ctx["materials"])
@@ -517,12 +555,17 @@ async def test_request_idempotent_and_retry_uses_frozen_snapshot(
         ],
     )
     submission_id = result["submission"]["id"]
+    # 提交路径已经受理过这一次提交：同 request_id 再受理两次都必须复用同一条
+    established = result["delivery"]["understandingId"]
     first = u.request_understanding(
         db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
     )
     second = u.request_understanding(
         db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
     )
+    assert established
+    assert first["id"] == established
+    assert first["reused"] is True
     assert second["reused"] is True
     assert second["id"] == first["id"]
     rows = db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()

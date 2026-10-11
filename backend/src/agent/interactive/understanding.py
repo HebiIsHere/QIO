@@ -187,9 +187,34 @@ def request_id_for(board_id: str, submission_id: str) -> str:
 
 def _submission_row(conn: sqlite3.Connection, submission_id: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT id, board_id, after_state, expressions FROM board_submissions WHERE id = ?",
+        "SELECT id, board_id, before_state, after_state, expressions, delivery"
+        " FROM board_submissions WHERE id = ?",
         (submission_id,),
     ).fetchone()
+
+
+def _note_from_submission(row: sqlite3.Row) -> str:
+    """从提交行里取用户备注。
+
+    A 在受理时只传内存里的 after 投影（之后紧接着要清勾选，重读会污染快照），
+    备注不在快照里；这里按 submission_id 从 board_submissions.delivery 补读
+    （先认显式 note 字段，再认 detail 里的「用户备注：」）。
+    """
+    try:
+        delivery = models.loads(row["delivery"], {})
+    except (KeyError, IndexError):
+        return ""
+    if not isinstance(delivery, dict):
+        return ""
+    note = delivery.get("note")
+    if isinstance(note, str) and note.strip():
+        return _clip(note, MAX_SHORT_CHARS)
+    detail = delivery.get("detail")
+    if isinstance(detail, str) and "用户备注：" in detail:
+        tail = detail.rsplit("用户备注：", 1)[1]
+        tail = tail.split("；", 1)[0].strip()
+        return _clip(tail, MAX_SHORT_CHARS)
+    return ""
 
 
 def _freeze_snapshot(
@@ -415,17 +440,38 @@ def build_context(
             " ORDER BY created_at DESC LIMIT 1",
             (board_id, submission_id),
         ).fetchone()
+    effective_submission_id = str(
+        (row["submission_id"] if row is not None else "") or submission_id or ""
+    ).strip()
     frozen = models.loads(row["snapshot"], {}) if row is not None else {}
     if not isinstance(frozen, dict) or not frozen:
         frozen = {}
-        if submission_id:
-            sub = _submission_row(conn, submission_id)
+        if effective_submission_id:
+            sub = _submission_row(conn, effective_submission_id)
             if sub is not None:
                 frozen = _freeze_snapshot(
                     models.loads(sub["after_state"], {}),
                     expressions=models.loads(sub["expressions"], []),
+                    note=_note_from_submission(sub),
                     source="submission",
                 )
+    # 「有效变化 / 用户备注」按集成口径补齐：A 受理时只传内存里的 after 投影，
+    # 快照里没有 expressions / note（提交行是受理之后才落库的），这里按 submission_id
+    # 从 board_submissions 读该次提交的冻结记录补齐 —— 仍然不读当前板面。
+    expressions = [e for e in (frozen.get("expressions") or []) if isinstance(e, dict)]
+    note_text_raw = str(frozen.get("note") or "")
+    expression_source = "snapshot" if expressions else "none"
+    if effective_submission_id and (not expressions or not note_text_raw):
+        sub_row = _submission_row(conn, effective_submission_id)
+        if sub_row is not None:
+            if not expressions:
+                loaded = models.loads(sub_row["expressions"], [])
+                if isinstance(loaded, list):
+                    expressions = [e for e in loaded if isinstance(e, dict)]
+                    if expressions:
+                        expression_source = "submission"
+            if not note_text_raw:
+                note_text_raw = _note_from_submission(sub_row)
     state_like = {
         "cards": [c for c in frozen.get("cards", []) if isinstance(c, dict)],
         "groups": [g for g in frozen.get("groups", []) if isinstance(g, dict)],
@@ -496,7 +542,6 @@ def build_context(
             "updatedAt": card.get("updatedAt"),
         })
 
-    expressions = [e for e in (frozen.get("expressions") or []) if isinstance(e, dict)]
     changes: list[dict] = []
     for expr in expressions:
         changes.append({
@@ -525,8 +570,13 @@ def build_context(
     requirement = {
         "text": _clip(NL.join(note_texts), MAX_MATERIAL_CHARS),
         "cardIds": note_ids,
-        "source": "submission_notes" if note_texts else "none",
-        "note": str(frozen.get("note") or ""),
+        "source": (
+            "submission_notes"
+            if note_texts
+            else ("submission_changes" if expressions else "none")
+        ),
+        "note": _clip(note_text_raw, MAX_SHORT_CHARS),
+        "expressionSource": expression_source,
         "intentBearing": any(bool(e.get("intentBearing")) for e in expressions),
     }
 
@@ -541,7 +591,7 @@ def build_context(
     context = {
         "contextVersion": 1,
         "boardId": board_id,
-        "submissionId": row["submission_id"] if row is not None else submission_id,
+        "submissionId": effective_submission_id or None,
         "understandingId": row["id"] if row is not None else understanding_id,
         "requirement": requirement,
         "relationships": relationships,
@@ -559,6 +609,7 @@ def build_context(
         "honesty": {
             "materialsResolved": bool(material_status.get("ok")),
             "materialsError": material_status.get("reason") or "",
+            "expressionsSource": expression_source,
             "snapshotSource": str(
                 frozen.get("snapshotSource") or ("understanding" if row is not None else "missing")
             ),
