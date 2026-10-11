@@ -53,7 +53,8 @@ async def test_activated_then_cancelled_is_distinguished_from_never_activated():
     assert facts["state"] == "cancelled_after_accept"
     assert facts["accepted"] is True, "它曾经被受理过，这一点不能被抹掉"
     assert facts["cancelled"] is True
-    assert facts["reason"] == "cancelled_after_accept"
+    # 具体原因必须保留下来（用户按的停止 = user_stopped），不能退化成分类名。
+    assert facts["reason"] == "user_stopped", "取消路径也要留下可区分的具体原因"
     release.set()
     await tm.shutdown()
 

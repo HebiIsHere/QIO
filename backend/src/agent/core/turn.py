@@ -595,6 +595,8 @@ class TurnManager:
         self._ready.discard(ctx.turn_id)
         self._ready_since.pop(ctx.turn_id, None)
         ctx.cancelled = True
+        if ctx.abandon_reason is None:
+            ctx.abandon_reason = reason
         if not _terminal(ctx):
             ctx.status = "cancelled"
             self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
@@ -841,7 +843,8 @@ class TurnManager:
                 "accepted": True,
                 "cancelled": True,
                 "pending": False,
-                "reason": "cancelled_after_accept",
+                # 具体原因（user_stopped / user / interrupted …）优先；没有时给分类名。
+                "reason": ctx.abandon_reason or "cancelled_after_accept",
                 "deduped": deduped,
                 "turn_id": ctx.turn_id,
                 "status": ctx.status,
@@ -1216,6 +1219,10 @@ class TurnManager:
         if ctx is None:
             return False
         ctx.cancelled = True
+        # F04：把「为什么结束」记下来 —— 用户在运行中按的停止是可区分的事实，
+        # 不该在受理回执里退化成一句笼统的 cancelled_after_accept。
+        if ctx.abandon_reason is None:
+            ctx.abandon_reason = "user_stopped"
         if ctx.loop is not None:
             ctx.loop.cancel()
         self._record_cancelled(ctx)
@@ -1240,6 +1247,8 @@ class TurnManager:
                     return False
                 c.cancelled = True
                 c.status = "cancelled"
+                if c.abandon_reason is None:
+                    c.abandon_reason = "user"
                 # 排队取消的可用操作是 retry（前端重发这条用户消息）。journal 记成
                 # cancelled（不是 interrupted），/api/turns/{id}/resend 必然拒绝 ——
                 # 列 resend 就是死按钮。active 取消路径不受影响，仍是 resend。
