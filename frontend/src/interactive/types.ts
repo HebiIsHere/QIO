@@ -279,6 +279,8 @@ export interface DecideResult {
   reason?: string;
   detail?: string;
   waitingFor?: string[];
+  /** 批准后真实启动的那次执行（契约 §14.4：approve 必须同步返回它） */
+  execution?: Execution | null;
 }
 
 export function emptyBoardState(boardId: string): BoardState {
