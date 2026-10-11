@@ -199,8 +199,18 @@ gh workflow run targeted-verify.yml -f ref=<ref> -f sha=<sha> -f targets=docs
 | 项 | 内容 |
 | --- | --- |
 | 分支 | `wt/irm-int-d-ci`（起点 `c6a03b1`） |
-| 最终 SHA | 待填（提交后回填） |
+| 首个提交 SHA | `750be8105996eb1111a7494c43fc9d444a99a32b` |
+| 最终 SHA | 见 §7.1（本台账回填 SHA 后的提交；以那条为准） |
 | 改动文件 | `.github/workflows/ci.yml`、`.github/workflows/targeted-verify.yml`、`.github/actions/verify-checkout/action.yml`、`scripts/targeted-verify/verify_sha.py`、`scripts/targeted-verify/test_verify_sha.py`、`scripts/targeted-verify/verify_workflow_contract.py`、`docs/verify-ledger-integration-20261011.md` |
+
+### 7.1 提交记录
+
+| 提交 | 说明 |
+| --- | --- |
+| `750be81` | ci 触发去重 + 定向验证入口 + 证据脚本 + 本台账 |
+| 待填 | 台账回填与后续修正（以分支末端 SHA 为准） |
+
+> 本分支**不推送**：推送与全量 CI 由 Lead 执行。台账记录 SHA 时用分支内实际提交。
 
 ## 8. 未覆盖项与不确定项（诚实清单）
 
@@ -213,8 +223,9 @@ gh workflow run targeted-verify.yml -f ref=<ref> -f sha=<sha> -f targets=docs
    如果全量 CI 在这一项失败，只能整体重跑该项对应的全量任务 —— 这是**已知的能力缺口**，不含糊其辞。
 4. **`frontend` 单项里的 `npm ci`**：类型检查与 vitest 都要求依赖树干净，所以这一步保留了 `npm ci`。
    本机一律用 junction 接好的 `node_modules`，不重装。
-5. **`vitest -t` 的值经环境变量传递**：含空格/正则字符时语义由 vitest 解释；本机 PowerShell 下
-   `-t a:b` 里的冒号会被解析成参数名，需要 `--%` 或改用 `--testNamePattern`（本文件 §6 的实测命令不含 `-t`）。
+5. **vitest 的用例名筛选用长参数 `--testNamePattern`**（不用 `-t`）：PowerShell 下 `-t a:b` 里的冒号
+   会被当成参数名解析，长参数没有这个问题。值经环境变量传入，语义仍由 vitest 按正则解释
+   （传正则元字符时要知道自己在做什么）。
 6. **`ref` 输入默认 `main`**：默认值只是省事；真正把关的是 SHA 核验，ref 与 SHA 不一致时直接失败。
 7. **原 CI 的 `install-e2e` / `frozen-worker` 里那几条「只有 runner 上才成立」的断言**
    （注册表、onefile 解包、无系统 Python）在本机无法复现，本台账不声称它们被验证过。

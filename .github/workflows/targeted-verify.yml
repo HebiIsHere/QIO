@@ -346,7 +346,8 @@ jobs:
             args+=(${VITEST_FILES})
           fi
           if [ -n "${VITEST_NAME}" ]; then
-            args+=(-t "${VITEST_NAME}")
+            # 用长参数而不是 -t：PowerShell 下 "-t a:b" 里的冒号会被当成参数名解析。
+            args+=(--testNamePattern "${VITEST_NAME}")
           fi
           echo "vitest ${args[*]}"
           "${args[@]}"

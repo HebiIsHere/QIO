@@ -190,18 +190,35 @@ def test_cli_assert_github_sha_passes_when_equal(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_cli_fails_when_git_head_differs_from_actual(tmp_path):
+def test_cli_ignores_actual_unless_actual_from_arg(tmp_path):
+    """--actual 只在显式 --actual-from arg 时生效，默认一律以 git HEAD 为准。
+
+    这条是防「传错 actual 造成假绿」：不显式声明来源时，脚本不会用调用方给的值。
+    """
     repo = tmp_path / "repo"
     repo.mkdir()
     head = _init_repo(repo)
     assert head != GOOD
 
-    result = _run(
-        ["--requested", GOOD, "--actual", GOOD, "--repo", str(repo), "--label", "ut-cli"],
+    ignored = _run(
+        ["--requested", head, "--actual", GOOD, "--repo", str(repo), "--label", "ut-cli"],
         cwd=repo,
     )
-    assert result.returncode == 1
-    assert "与仓库 HEAD" in result.stdout
+    assert ignored.returncode == 0, ignored.stdout + ignored.stderr
+    assert "git rev-parse HEAD" in ignored.stdout
+
+    used = _run(
+        [
+            "--requested", GOOD,
+            "--actual", GOOD,
+            "--actual-from", "arg",
+            "--repo", str(repo),
+            "--label", "ut-cli",
+        ],
+        cwd=repo,
+    )
+    assert used.returncode == 1
+    assert "与仓库 HEAD" in used.stdout
 
 
 def test_cli_expected_ref_mismatch_fails(tmp_path):

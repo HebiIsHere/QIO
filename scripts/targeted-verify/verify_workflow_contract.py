@@ -55,7 +55,14 @@ FILTER_MARKERS = (
     ("vitest_files", "VITEST_FILES", "VITEST_NAME", "-t"),
 )
 FILTER_INPUT_NAMES = ("pytest_node_ids", "vitest_files", "vitest_name")
-FILTER_MARKER_NEEDLES = FILTER_INPUT_NAMES + ("PYTEST_NODE_IDS", "PYTEST_K", "-k", "VITEST_FILES", "VITEST_NAME", "-t")
+FILTER_MARKER_NEEDLES = FILTER_INPUT_NAMES + (
+    "PYTEST_NODE_IDS",
+    "PYTEST_K",
+    "-k",
+    "VITEST_FILES",
+    "VITEST_NAME",
+    "--testNamePattern",
+)
 
 # selftest 合成用例的文本：既给 check_targeted 用，也给筛选标记的「同源」元断言用。
 # 它必须包含真实 workflow 里的筛选标记，否则合成用例只是自说自话。
@@ -63,7 +70,7 @@ _SELFTEST_TARGETED_TEXT = "\n".join(
     [
         "--requested --actual --actual-from --expected-ref --durations node_id vitest ref ::",
         "pytest_node_ids vitest_files vitest_name",
-        "PYTEST_NODE_IDS PYTEST_K -k VITEST_FILES VITEST_NAME -t",
+        "PYTEST_NODE_IDS PYTEST_K -k VITEST_FILES VITEST_NAME --testNamePattern",
         "SKIPPED no runnable checks",
         "npx vue-tsc --noEmit",
         "npm run build",
@@ -298,7 +305,7 @@ def check_targeted(workflow, text, rep, action_text=None):
     )
     frontend_job = jobs.get("frontend") or {}
     frontend_text = workflow_text(frontend_job)
-    for needle in ("VITEST_FILES", "-t", "VITEST_NAME"):
+    for needle in ("VITEST_FILES", "--testNamePattern", "VITEST_NAME"):
         rep.check_in("targeted-verify.yml/frontend: vitest 按 " + needle + " 筛选", needle, frontend_text)
 
     # 元断言：上面的筛选标记必须与 selftest 合成用例里的 job 定义同源，否则「绿色」只证明
@@ -382,7 +389,7 @@ def selftest(verbose=False):
                 "steps": [
                     {"uses": "actions/checkout@v5"},
                     {"run": "python scripts/targeted-verify/verify_sha.py --requested x --actual y --actual-from arg"},
-                    {"run": "npx vitest run $env:VITEST_FILES -t $env:VITEST_NAME"},
+                    {"run": "npx vitest run $env:VITEST_FILES --testNamePattern $env:VITEST_NAME"},
                 ]
             },
             "summary": {"steps": [{"run": "echo SKIPPED; echo no runnable checks"}]},
