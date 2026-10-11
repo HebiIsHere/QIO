@@ -17,11 +17,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 import threading
 from typing import Any, Iterable
 
 from agent.interactive import models
+
+logger = logging.getLogger(__name__)
 
 # --- 常量 ---------------------------------------------------------------
 
@@ -63,6 +66,9 @@ _JSON_COLUMNS = (
     "progress",
     "applied",
     "revert",
+    # 第九轮新增列：具体板面操作与审批依据（契约 §14.2 / §14.5）
+    "operations",
+    "basis",
 )
 
 _KIND_LABELS = {
@@ -88,6 +94,110 @@ def _fail(reason: str, detail: str) -> dict:
 
 def _get_row(conn: sqlite3.Connection, intent_id: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM board_intents WHERE id = ?", (intent_id,)).fetchone()
+
+
+def _row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """读一列，列不存在时给默认值（旧库 / 只读替身也能安全读）。"""
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return default
+    return default if value is None else value
+
+
+# --- 真实执行记录的对外读取（契约 §14.3 / §14.4） ---------------------------
+
+
+def _execution_module():
+    """延迟 import：执行模块反向引用意图模块，import 期不能成环。"""
+    from agent.interactive import execution
+
+    return execution
+
+
+def _execution_payload(conn: sqlite3.Connection, intent_id: str) -> dict | None:
+    """这条意图当前要显示的执行记录：活跃的优先，否则最近一次。"""
+    execution = _execution_module()
+    row = execution.active_execution(conn, intent_id) or execution.latest_execution(
+        conn, intent_id
+    )
+    return execution.execution_payload(row) if row is not None else None
+
+
+def _execution_map(conn: sqlite3.Connection, board_id: str) -> dict[str, dict]:
+    """板面内每条意图最近一次执行（列表接口一次取，避免 N+1）。"""
+    execution = _execution_module()
+    preferred: dict[str, dict] = {}
+    for row in execution._board_execution_rows(conn, board_id, limit=200):
+        payload = execution.execution_payload(row)
+        preferred.setdefault(payload["intentId"], payload)
+    return preferred
+
+
+def _has_operations(row: sqlite3.Row) -> bool:
+    """这条意图是不是「真实路径」（有已校验的操作集合）。"""
+    ops = models.loads(_row_value(row, "operations", []), [])
+    return isinstance(ops, list) and bool([op for op in ops if isinstance(op, dict)])
+
+
+def _validate_operations(row: sqlite3.Row) -> dict | None:
+    """批准前的操作集合校验：不合法就退回待更新，绝不落成可执行任务。"""
+    if not _has_operations(row):
+        return None
+    plan = _execution_module().build_plan(row)
+    return None if plan.get("ok") else plan
+
+
+def _start_real_execution(
+    conn: sqlite3.Connection,
+    intent_id: str,
+    *,
+    rows_by_id: dict[str, sqlite3.Row],
+    instance_id: str | None,
+    detail: str,
+) -> dict:
+    """批准后**实际建立真实执行**，返回带 execution 的批准结果。
+
+    - 同一条意图已有活跃执行 → 复用，不新建（重复批准、重连、重启都不会重复启动）；
+    - 历史 / 演示意图没有操作集合 → execution 为 None，保持既有状态机
+      （演示推进不驱动真实任务）；
+    - 操作集合在批准这一刻变得不合法 → 退回 needs_update，不硬做。
+    """
+    row = _get_row(conn, intent_id)
+    assert row is not None
+    outcome = _execution_module().ensure_execution(conn, row, instance_id=instance_id)
+    real: dict | None = None
+    if not outcome.get("ok"):
+        if outcome.get("reason") != "no_operations":
+            reason_detail = str(
+                outcome.get("detail") or "批准的操作集合不合法：需要重新提出方案与审批。"
+            )
+            _update(
+                conn,
+                row["id"],
+                status="needs_update",
+                reason=reason_detail,
+                progress=_stored_progress(row, text="需要重新提出方案与审批"),
+            )
+            fresh = _get_row(conn, intent_id)
+            assert fresh is not None
+            return {
+                **_fail("needs_new_plan", reason_detail),
+                "intent": _intent_payload(fresh, rows_by_id),
+                "requiresUpdate": True,
+                "execution": None,
+            }
+    else:
+        real = outcome.get("execution")
+    fresh = _get_row(conn, intent_id)
+    assert fresh is not None
+    return {
+        "ok": True,
+        "intent": _intent_payload(fresh, rows_by_id, execution=real),
+        "reason": "approved",
+        "detail": detail,
+        "execution": real,
+    }
 
 
 def _board_rows(conn: sqlite3.Connection, board_id: str) -> list[sqlite3.Row]:
@@ -128,6 +238,12 @@ def _insert_intent(
     demo: bool = False,
     submission_id: str | None = None,
     intent_id: str | None = None,
+    goal: str = "",
+    expected: str = "",
+    operations: Iterable[dict] = (),
+    basis: Iterable[dict] = (),
+    intent_key: str = "",
+    understanding_id: str = "",
 ) -> dict:
     intent_id = intent_id or models.new_id("i")
     stamp = _now()
@@ -138,8 +254,9 @@ def _insert_intent(
         "INSERT INTO board_intents ("
         " id, board_id, submission_id, title, summary, status, preview, impact,"
         " depends_on, conflicts_with, conflict_key, material_refs, progress, applied,"
-        " revert, reason, demo, created_at, updated_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " revert, reason, demo, created_at, updated_at,"
+        " goal, expected, operations, basis, intent_key, understanding_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             intent_id,
             board_id,
@@ -160,6 +277,12 @@ def _insert_intent(
             1 if demo else 0,
             stamp,
             stamp,
+            str(goal or ""),
+            str(expected or ""),
+            models.dumps([dict(op) for op in operations if isinstance(op, dict)]),
+            models.dumps([dict(item) for item in basis if isinstance(item, dict)]),
+            str(intent_key or ""),
+            str(understanding_id or ""),
         ),
     )
     row = _get_row(conn, intent_id)
@@ -394,9 +517,15 @@ def _unfinished_deps(rows_by_id: dict[str, sqlite3.Row], row: sqlite3.Row) -> li
     return [d for d in deps if d not in rows_by_id or rows_by_id[d]["status"] != "done"]
 
 
-def _intent_payload(row: sqlite3.Row, rows_by_id: dict[str, sqlite3.Row] | None = None) -> dict:
+def _intent_payload(
+    row: sqlite3.Row,
+    rows_by_id: dict[str, sqlite3.Row] | None = None,
+    *,
+    execution: dict | None = None,
+) -> dict:
     rows_by_id = rows_by_id or {}
     status = row["status"]
+    understanding_id = str(_row_value(row, "understanding_id", "") or "")
     payload: dict[str, Any] = {
         "id": row["id"],
         "boardId": row["board_id"],
@@ -413,9 +542,26 @@ def _intent_payload(row: sqlite3.Row, rows_by_id: dict[str, sqlite3.Row] | None 
         "progress": _progress_shape(models.loads(row["progress"], {}), {}),
         "reason": row["reason"] or "",
         "demo": bool(row["demo"]),
+        # 第九轮：目标 / 预期结果 / 具体操作 / 依据版本 / 稳定身份 / 理解来源
+        "goal": str(_row_value(row, "goal", "") or ""),
+        "expected": str(_row_value(row, "expected", "") or ""),
+        "operations": [
+            dict(op)
+            for op in models.loads(_row_value(row, "operations", []), [])
+            if isinstance(op, dict)
+        ],
+        "basis": [
+            dict(item)
+            for item in models.loads(_row_value(row, "basis", []), [])
+            if isinstance(item, dict)
+        ],
+        "intentKey": str(_row_value(row, "intent_key", "") or ""),
+        "understandingId": understanding_id or None,
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+    if execution is not None:
+        payload["execution"] = execution
     if status in ("waiting_dependency", "waiting_confirm"):
         payload["waitingFor"] = _unfinished_deps(rows_by_id, row)
     applied = models.loads(row["applied"], {})
@@ -573,18 +719,245 @@ def _conflict_blockers(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]
 
 
 def list_intents(conn: sqlite3.Connection, board_id: str) -> dict:
-    """意图列表 + 冲突分组 + 批量可用性（恢复信息由路由层补充）。"""
+    """意图列表 + 冲突分组 + 批量可用性 + 执行记录（恢复信息由路由层补充）。"""
     _refresh_dependency_states(conn, board_id)
     rows = _board_rows(conn, board_id)
     rows_by_id = {row["id"]: row for row in rows}
-    intents = [_intent_payload(row, rows_by_id) for row in rows]
+    executions = _execution_map(conn, board_id)
+    intents = [
+        _intent_payload(row, rows_by_id, execution=executions.get(row["id"])) for row in rows
+    ]
     open_count = sum(1 for item in intents if item["status"] in DECIDABLE_STATUSES)
     return {
         "intents": intents,
         "conflicts": _conflict_groups(intents),
         "batchAvailable": open_count >= BATCH_MIN,
+        "executions": _execution_module().list_executions(conn, board_id)["executions"],
         "recovery": {"paused": []},
     }
+
+
+# --- 真实理解的产出：把已校验的 payload 落成意图（契约 §14.3） --------------
+
+
+def _understanding_submission(conn: sqlite3.Connection, understanding_id: str) -> str | None:
+    """从理解记录取这次理解对应的提交 id（表由本轮迁移 37 建立）。"""
+    try:
+        row = conn.execute(
+            "SELECT submission_id FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return str(_row_value(row, "submission_id", "") or "") or None
+
+
+def _normalize_understanding_payload(raw: Any, index: int) -> tuple[dict | None, str]:
+    """把 B 已校验的 payload 归一成意图字段；返回（payload, 可读原因）。
+
+    越权操作（不在 models.ALLOWED_INTENT_OPS 里）与形状无效的 payload
+    一律不落成可执行任务，也不硬做。
+    """
+    if not isinstance(raw, dict):
+        return None, "不是对象。"
+    raw_operations = raw.get("operations") or []
+    if raw_operations and not isinstance(raw_operations, list):
+        return None, "operations 不是列表。"
+    operations = [dict(op) for op in (raw_operations or []) if isinstance(op, dict)]
+    if raw_operations and len(operations) != len(raw_operations):
+        return None, "operations 里有不是对象的项。"
+    if not operations:
+        return None, "没有可执行的板面操作：不落成任务。"
+    for position, op in enumerate(operations):
+        kind = str(op.get("op") or "")
+        if kind not in models.ALLOWED_INTENT_OPS:
+            return None, (
+                f"第 {position + 1} 项操作「{kind or '（空）'}」不在允许的板面操作集合里"
+                "（删除 / 隐藏 / 勾选 / 改用户卡片正文都不允许）。"
+            )
+    basis = [dict(item) for item in (raw.get("basis") or []) if isinstance(item, dict)]
+    title = str(raw.get("title") or "").strip()
+    key = str(raw.get("intentKey") or raw.get("intent_key") or "").strip()
+    if not key:
+        # 没有稳定身份时按标题派生：同一件工作重复提交仍然沿用同一个身份
+        key = "k_" + hashlib.sha1((title or f"payload{index}").encode("utf-8")).hexdigest()[:12]
+    material_refs = [
+        str(x) for x in (raw.get("materialRefs") or raw.get("material_refs") or []) if str(x).strip()
+    ]
+    for item in basis:
+        card_id = str(item.get("cardId") or "").strip()
+        if card_id and card_id not in material_refs:
+            material_refs.append(card_id)
+    preview = raw.get("preview") if isinstance(raw.get("preview"), dict) else None
+    if preview is None and operations:
+        preview = _execution_module().preview_from_operations(operations)
+    depends_on = [str(x) for x in (raw.get("dependsOn") or raw.get("depends_on") or []) if str(x).strip()]
+    conflicts_with = [
+        str(x) for x in (raw.get("conflictsWith") or raw.get("conflicts_with") or []) if str(x).strip()
+    ]
+    return (
+        {
+            "intentKey": key,
+            "title": title or f"QIO 任务 {index + 1}",
+            "summary": str(raw.get("summary") or ""),
+            "goal": str(raw.get("goal") or ""),
+            "expected": str(raw.get("expected") or ""),
+            "operations": operations,
+            "basis": basis,
+            "materialRefs": material_refs,
+            "preview": preview,
+            "impact": raw.get("impact") if isinstance(raw.get("impact"), dict) else {},
+            "dependsOn": depends_on,
+            "conflictsWith": conflicts_with,
+            "conflictKey": str(raw.get("conflictKey") or raw.get("conflict_key") or ""),
+            "reason": str(raw.get("reason") or ""),
+        },
+        "",
+    )
+
+
+def create_intents_from_understanding(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    understanding_id: str,
+    payloads: list[dict],
+) -> list[dict]:
+    """把**已校验**的模型输出落成意图：沿用 intent_key 身份，不复制新任务。
+
+    - 幂等：同一 understanding_id + intent_key 重复调用不产生重复意图；
+    - 旧意图仍在等待审批 → 按 intent_key **更新**它（保留 id 与历史，不新建任务）；
+      已经执行中 / 已结束的旧意图不会被覆盖，这一轮用同名前缀的新身份建行；
+    - 依赖与冲突按 payload 落库（可以写同批内其他意图的 intentKey，落库时映射成 id）；
+    - 越权 / 形状无效的 payload 不落成可执行任务，只记日志并给出可读原因；
+    - 函数本身不调用模型、不建立理解请求：理解记录由调用方（B）负责。
+    """
+    resolved_board = str(board_id or "").strip() or models.DEFAULT_BOARD_ID
+    understanding = str(understanding_id or "").strip()
+    if not understanding or not payloads:
+        return []
+    board_store = _board_store()
+    board_store.ensure_board(conn, board_id=resolved_board)
+    submission_id = _understanding_submission(conn, understanding)
+    rows = _board_rows(conn, resolved_board)
+    by_key: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        key = str(_row_value(row, "intent_key", "") or "")
+        if key and key not in by_key:
+            by_key[key] = row
+
+    items: list[dict] = []
+    for index, raw in enumerate(payloads or []):
+        item, reason = _normalize_understanding_payload(raw, index)
+        if item is None:
+            logger.warning("互动意图创建跳过第 %s 项：%s", index + 1, reason)
+            continue
+        items.append(item)
+    if not items:
+        return []
+
+    ids: dict[str, str] = {}
+    written: list[tuple[dict, str]] = []
+    # 幂等复用的行：只回到结果里，不再重跑第二遍（否则会刷新审批依据基线）
+    reused: list[str] = []
+    used_keys = set(by_key)
+    for item in items:
+        key = item["intentKey"]
+        existing = by_key.get(key)
+        same_understanding = (
+            existing is not None
+            and str(_row_value(existing, "understanding_id", "") or "") == understanding
+        )
+        if same_understanding:
+            # 幂等：同一次理解的重复调用不新建、不覆盖、也不刷新审批依据
+            ids[key] = existing["id"]
+            reused.append(existing["id"])
+            continue
+        if existing is not None and existing["status"] in DECIDABLE_STATUSES:
+            # 沿用身份与历史：更新这一条，不复制新任务
+            _update(
+                conn,
+                existing["id"],
+                title=item["title"],
+                summary=item["summary"],
+                status="pending",
+                preview=item["preview"] or {"cards": [], "groups": [], "links": [], "note": ""},
+                impact=item["impact"],
+                material_refs=item["materialRefs"],
+                goal=item["goal"],
+                expected=item["expected"],
+                operations=item["operations"],
+                basis=item["basis"],
+                intent_key=key,
+                understanding_id=understanding,
+                submission_id=submission_id or existing["submission_id"],
+                reason=item["reason"],
+                progress=_progress_shape({"done": 0, "text": "等待审批"}, item["preview"] or {}),
+            )
+            ids[key] = existing["id"]
+            written.append((item, existing["id"]))
+            continue
+        unique = key
+        suffix = 2
+        while unique in used_keys:
+            unique = f"{key}#{suffix}"
+            suffix += 1
+        used_keys.add(unique)
+        payload = _insert_intent(
+            conn,
+            board_id=resolved_board,
+            title=item["title"],
+            summary=item["summary"],
+            status="pending",
+            preview=item["preview"],
+            impact=item["impact"],
+            conflict_key=item["conflictKey"],
+            material_refs=item["materialRefs"],
+            progress=_progress_shape({"done": 0, "text": "等待审批"}, item["preview"] or {}),
+            reason=item["reason"],
+            submission_id=submission_id,
+            goal=item["goal"],
+            expected=item["expected"],
+            operations=item["operations"],
+            basis=item["basis"],
+            intent_key=unique,
+            understanding_id=understanding,
+        )
+        ids[key] = payload["id"]
+        ids[unique] = payload["id"]
+        fresh_row = _get_row(conn, payload["id"])
+        if fresh_row is not None:
+            by_key[unique] = fresh_row
+        written.append((item, payload["id"]))
+
+    # 第二遍：依赖与冲突（payload 里可以写同批其他意图的 intentKey）
+    for item, row_id in written:
+        _update(
+            conn,
+            row_id,
+            depends_on=[ids.get(x, x) for x in item["dependsOn"]],
+            conflicts_with=[ids.get(x, x) for x in item["conflictsWith"]],
+        )
+        fresh = _get_row(conn, row_id)
+        if fresh is not None:
+            # 审批依据：材料语义指纹按**当前**板面记基线（之后的任何语义变化都会被抓到）
+            _record_basis(conn, fresh)
+
+    rows_by_id = {r["id"]: r for r in _board_rows(conn, resolved_board)}
+    seen: set[str] = set()
+    result: list[dict] = []
+    for row_id in [row_id for _item, row_id in written] + reused:
+        if row_id in seen:
+            continue
+        seen.add(row_id)
+        row = _get_row(conn, row_id)
+        if row is None:
+            continue
+        result.append(
+            _intent_payload(row, rows_by_id, execution=_execution_payload(conn, row_id))
+        )
+    return result
 
 
 # --- 审批 ---------------------------------------------------------------
@@ -613,6 +986,8 @@ def approve_intent(
     rows_by_id = {r["id"]: r for r in _board_rows(conn, row["board_id"])}
     payload = _intent_payload(row, rows_by_id)
     status = row["status"]
+    # 幂等与「同步可见」：重复批准不新建执行，响应里始终带上这条意图的活跃执行。
+    current_execution = _execution_payload(conn, intent_id)
 
     if status == "needs_update":
         return {
@@ -622,13 +997,26 @@ def approve_intent(
             ),
             "intent": payload,
             "requiresUpdate": True,
+            "execution": current_execution,
         }
     if status in ("rejected", "failed", "cancelled"):
-        return {**_fail("closed", "这项意图已经结束，不能再批准。"), "intent": payload}
+        return {
+            **_fail("closed", "这项意图已经结束，不能再批准。"),
+            "intent": payload,
+            "execution": current_execution,
+        }
     if status == "running":
-        return {**_fail("running", "这项任务已经在执行中。"), "intent": payload}
+        return {
+            **_fail("running", "这项任务已经在执行中。"),
+            "intent": payload,
+            "execution": current_execution,
+        }
     if status == "done":
-        return {**_fail("done", "这项任务已经完成。"), "intent": payload}
+        return {
+            **_fail("done", "这项任务已经完成。"),
+            "intent": payload,
+            "execution": current_execution,
+        }
     if status == "paused":
         if not confirm_dependency:
             return {
@@ -638,8 +1026,10 @@ def approve_intent(
                     "（不会自动重试，也不会重新执行已完成的部分）。",
                 ),
                 "intent": payload,
+                "execution": current_execution,
             }
-        return _resume_paused_intent(conn, row, instance_id=instance_id, rows_by_id=rows_by_id)
+        # 继续：按当前材料刷新依据，并同步真实执行（attempt 前进一步，旧的迟到结果作废）
+        return _execution_module().resume_intent(conn, intent_id, instance_id=instance_id)
 
     # 16：审批时服务端重新校验材料与预览依据；单项、批量、依赖等待后的确认共用这条路径。
     if status in ("pending", "waiting_dependency", "waiting_confirm"):
@@ -665,7 +1055,28 @@ def approve_intent(
                 **_fail("needs_update", text),
                 "intent": _intent_payload(fresh, rows_by_id),
                 "requiresUpdate": True,
+                "execution": _execution_payload(conn, intent_id),
             }
+
+    # 真实路径：批准之前先校验操作集合。越权 / 形状不对 → 退回待更新，绝不硬做。
+    invalid_operations = _validate_operations(row)
+    if invalid_operations is not None:
+        detail = str(invalid_operations.get("detail") or "")
+        _update(
+            conn,
+            row["id"],
+            status="needs_update",
+            reason=detail,
+            progress=_stored_progress(row, text="需要重新提出方案与审批"),
+        )
+        fresh = _get_row(conn, intent_id)
+        assert fresh is not None
+        return {
+            **_fail("needs_new_plan", detail),
+            "intent": _intent_payload(fresh, rows_by_id),
+            "requiresUpdate": True,
+            "execution": None,
+        }
 
     blockers = _conflict_blockers(conn, row)
     if blockers:
@@ -674,6 +1085,7 @@ def approve_intent(
             **_fail("conflict", f"与已批准且尚未撤回的 {names} 互不相容：不能同时批准。"),
             "intent": payload,
             "conflictsWith": [b["id"] for b in blockers],
+            "execution": current_execution,
         }
 
     preview = _preview_shape(models.loads(row["preview"], {}))
@@ -693,6 +1105,7 @@ def approve_intent(
                 **_fail("dependency_waiting", "前项还没有成功完成：会一直等待，不会自动开始。"),
                 "intent": _intent_payload(fresh, rows_by_id),
                 "waitingFor": pending_deps,
+                "execution": None,
             }
         if not confirm_dependency:
             return {
@@ -702,6 +1115,7 @@ def approve_intent(
                 ),
                 "intent": payload,
                 "waitingFor": [],
+                "execution": None,
             }
         # 开始执行时记下材料指纹与执行者身份（§1.6）：材料保护靠指纹，
         # 「重启才降级为暂停」靠身份，否则刷一次列表就会把自己正在执行的任务暂停掉。
@@ -718,14 +1132,14 @@ def approve_intent(
                 owner=instance_id,
             ),
         )
-        fresh = _get_row(conn, intent_id)
-        assert fresh is not None
-        return {
-            "ok": True,
-            "intent": _intent_payload(fresh, rows_by_id),
-            "reason": "approved",
-            "detail": "已确认开始。",
-        }
+        # 批准后**实际建立真实执行**（返回 execution，前端立刻显示真实状态）
+        return _start_real_execution(
+            conn,
+            intent_id,
+            rows_by_id=rows_by_id,
+            instance_id=instance_id,
+            detail="已确认开始。",
+        )
 
     # pending：首次批准
     if pending_deps:
@@ -744,6 +1158,7 @@ def approve_intent(
             "reason": "waiting_dependency",
             "detail": "已批准；前项成功完成后还需要你再次确认才会开始。",
             "waitingFor": pending_deps,
+            "execution": None,
         }
     _update(
         conn,
@@ -754,14 +1169,14 @@ def approve_intent(
             row, text="执行中", done=0, watch=_watch_for(conn, row) or None, owner=instance_id
         ),
     )
-    fresh = _get_row(conn, intent_id)
-    assert fresh is not None
-    return {
-        "ok": True,
-        "intent": _intent_payload(fresh, rows_by_id),
-        "reason": "approved",
-        "detail": "已批准，任务开始执行。",
-    }
+    # 批准后**实际建立真实执行**（返回 execution，前端立刻显示真实状态）
+    return _start_real_execution(
+        conn,
+        intent_id,
+        rows_by_id=rows_by_id,
+        instance_id=instance_id,
+        detail="已批准，任务开始执行。",
+    )
 
 
 def _resume_paused_intent(
@@ -1717,6 +2132,22 @@ def advance_intent(
     if outcome not in ADVANCE_OUTCOMES:
         return _fail("bad_outcome", f"不认识的结果：{outcome}。")
 
+    # 演示路径不得驱动真实任务（契约 §14.0）：有活跃的真实执行时，推进必须走
+    # 暂停 / 继续 / 取消，而不是由演示入口给定结果。
+    active_execution = _execution_module().active_execution(conn, intent_id)
+    if active_execution is not None:
+        active_payload = _execution_module().execution_payload(active_execution)
+        return {
+            **_fail(
+                "real_execution",
+                "这项任务正在真实执行：演示推进不能驱动真实任务。"
+                "请用暂停 / 继续 / 取消来操作它的真实执行。",
+            ),
+            "intent": _intent_payload(row, {}, execution=active_payload),
+            "execution": active_payload,
+            "demo": bool(row["demo"]),
+        }
+
     status = row["status"]
     rows_by_id = {r["id"]: r for r in _board_rows(conn, row["board_id"])}
     preview = _preview_shape(models.loads(row["preview"], {}))
@@ -1847,6 +2278,17 @@ def recover_running_intents(
             reason="上次没有正常结束（进程重启）：任务已暂停，重新打开不会自动继续，需要你确认。",
             progress=_stored_progress(row, text="已暂停：等待你确认继续", drop_owner=True),
         )
+        # 真实执行记录同步降级：暂停 / 继续 / 取消作用于真实执行，不能只改意图行
+        execution = _execution_module()
+        for execution_row in execution._intent_execution_rows(conn, row["id"]):
+            if execution_row["status"] in ("queued", "running"):
+                execution._set_execution(
+                    conn,
+                    execution_row["id"],
+                    status="paused",
+                    error="上次没有正常结束（进程重启）：执行已暂停，需要你确认后才会继续。",
+                    owner_instance_id=None,
+                )
         paused.append(row["id"])
     return {"paused": paused}
 
@@ -2353,6 +2795,17 @@ def on_board_saved(
             # 重复保存会继续报告它受影响，但不会重复暂停
             progress=_stored_progress(row, text=text, drop_owner=True),
         )
+        # 真实执行记录同步暂停：暂停必须作用于真实执行，正在等待的模型结果不得再写回
+        execution = _execution_module()
+        for execution_row in execution._intent_execution_rows(conn, row["id"]):
+            if execution_row["status"] in ("queued", "running"):
+                execution._set_execution(
+                    conn,
+                    execution_row["id"],
+                    status="paused",
+                    error=text,
+                    owner_instance_id=None,
+                )
         affected.append(row["id"])
         paused.append(
             {
@@ -2576,6 +3029,35 @@ def create_demo_intents(conn: sqlite3.Connection, *, board_id: str) -> list[dict
     return created
 
 
+# --- 仓库层：真实执行记录的读取与暂停 / 继续 / 取消（契约 §14.3 / §14.4） ----
+
+
+def list_executions(conn: sqlite3.Connection, board_id: str, *, limit: int = 50) -> dict:
+    """本板面的真实执行记录（新的在前）。"""
+    return _execution_module().list_executions(conn, board_id, limit=limit)
+
+
+def pause_intent(
+    conn: sqlite3.Connection, intent_id: str, *, instance_id: str | None = None
+) -> dict:
+    """暂停一项任务（作用于真实执行；保留进度与已完成步骤）。"""
+    return _execution_module().pause_intent(conn, intent_id, instance_id=instance_id)
+
+
+def resume_intent(
+    conn: sqlite3.Connection, intent_id: str, *, instance_id: str | None = None
+) -> dict:
+    """继续一项暂停的任务：校验材料与已完成步骤，不重复已完成操作、不自动重试。"""
+    return _execution_module().resume_intent(conn, intent_id, instance_id=instance_id)
+
+
+def cancel_intent(
+    conn: sqlite3.Connection, intent_id: str, *, instance_id: str | None = None
+) -> dict:
+    """取消一项任务并撤回它造成且仍可安全撤回的改动。"""
+    return _execution_module().cancel_intent(conn, intent_id, instance_id=instance_id)
+
+
 __all__ = [
     "ADVANCE_OUTCOMES",
     "BATCH_MIN",
@@ -2587,13 +3069,18 @@ __all__ = [
     "validate_save_confirmation",
     "approve_intent",
     "batch_decide",
+    "cancel_intent",
     "create_demo_intents",
+    "create_intents_from_understanding",
+    "list_executions",
     "list_intents",
     "on_board_saved",
     "on_new_submission",
+    "pause_intent",
     "preview_material_impact",
     "recover_running_intents",
     "reject_intent",
+    "resume_intent",
     "update_preview",
     "advance_intent",
 ]

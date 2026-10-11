@@ -1,9 +1,10 @@
 """互动模式：QIO 回复、虚线预览与审批 相关路由（子智能体 C 负责实现）。
 
-契约：docs/interactive-mode-contract.md §2（C 的表）。
+契约：docs/interactive-mode-contract.md §2 / §14.4（C 的表）。
 
 审批边界由服务端判定：冲突、依赖等待、材料变化、恢复，都不交给前端自己算。
-路由只做参数校验与转发，业务语义全在 agent.interactive.intents。
+路由只做参数校验、转发与**启动真实执行**；业务语义全在
+agent.interactive.intents（仓库层）与 agent.interactive.execution（真实执行）。
 """
 
 from __future__ import annotations
@@ -12,12 +13,22 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 
+from agent.interactive import execution as execution_module
 from agent.interactive import intents
 
 router = APIRouter()
 
 #: 演示执行推进允许的结果；revert_rest 用于执行「等待用户决定」的其余撤回项
 ADVANCE_OUTCOMES = tuple(intents.ADVANCE_OUTCOMES) + ("revert_rest",)
+
+#: 理解还没落定时的可读说明（前端据此显示「正在理解 / 需要补充 / 失败」）。
+_UNDERSTANDING_DETAIL = {
+    "accepted": "这次提交已经可靠受理，QIO 还没有开始理解：意图要等理解完成后才会出现。",
+    "understanding": "QIO 正在理解这次提交：意图要等理解完成后才会出现。",
+    "needs_clarification": "这次理解需要你补充说明：还没有可执行的意图。",
+    "no_action": "这次提交当前无需开展任务：没有生成可执行的意图。",
+    "failed": "这次理解失败了：可以从保存的快照重试，不会重建同一批任务。",
+}
 
 
 def _conn(request: Request) -> sqlite3.Connection:
@@ -43,9 +54,52 @@ def _id_list(payload: dict, key: str) -> list[str]:
     return [str(x) for x in value]
 
 
+def _adapter_provider(request: Request):
+    """真实执行需要的模型链路（与理解走同一条凭据 / 用量 / 预算链路）。
+
+    - 测试 / 联调可以放 app.state.interactive_adapter_provider 顶替；
+    - 正常路径用 ctx.build_adapter（没有可用凭据时返回 None，执行会给出可读失败原因）。
+    """
+    override = getattr(request.app.state, "interactive_adapter_provider", None)
+    if override is not None:
+        return override
+    ctx = getattr(request.app.state, "ctx", None)
+    return getattr(ctx, "build_adapter", None)
+
+
+async def _start_execution(request: Request, payload: dict) -> dict:
+    """批准 / 继续之后**实际启动真实执行**；返回补齐了 execution 的结果。
+
+    后台登记失败（没有事件循环 / 服务正在关闭）时如实说明，并把执行留在 queued。
+    """
+    execution = payload.get("execution") if isinstance(payload, dict) else None
+    if not payload.get("ok") or not isinstance(execution, dict):
+        return payload
+    if execution.get("status") not in ("running", "queued"):
+        return payload
+    started = await execution_module.start_execution(
+        _conn(request),
+        str(execution["id"]),
+        adapter_provider=_adapter_provider(request),
+        instance_id=_instance_id(request),
+        owner=request.app,
+    )
+    if isinstance(started.get("execution"), dict):
+        payload["execution"] = started["execution"]
+        if isinstance(payload.get("intent"), dict):
+            payload["intent"]["execution"] = started["execution"]
+    if not started.get("scheduled"):
+        payload["executionStart"] = {
+            "scheduled": False,
+            "reason": started.get("reason"),
+            "detail": started.get("detail"),
+        }
+    return payload
+
+
 @router.get("/api/interactive/boards/{board_id}/intents")
 async def list_intents(request: Request, board_id: str) -> dict:
-    """意图列表 + 冲突分组 + 批量可用性 + 恢复信息。
+    """意图列表 + 冲突分组 + 批量可用性 + 执行记录 + 恢复信息。
 
     恢复信息在这里给出：只有**别的进程实例**遗留的 running 才降级为 paused，
     本进程自己正在执行的任务不受影响（否则刷一次列表就会把任务暂停掉）。
@@ -62,7 +116,12 @@ async def list_intents(request: Request, board_id: str) -> dict:
 
 @router.post("/api/interactive/boards/{board_id}/intents")
 async def create_intents(request: Request, board_id: str, body: dict | None = None) -> dict:
-    """创建意图。演示入口走 demo=true；演示意图必须带 demo 标记，界面上要写明。"""
+    """创建意图。
+
+    - {submissionId}（真实入口）：取**该次理解**已经产出的意图。
+      不重新调用模型、不新建重复任务；理解还没落定时如实说明进度；
+    - {demo: true}：演示入口（界面上必须写明是演示）。
+    """
     conn = _conn(request)
     payload = _body_dict(body)
     if payload.get("demo"):
@@ -70,12 +129,79 @@ async def create_intents(request: Request, board_id: str, body: dict | None = No
         return {
             "created": created,
             "demo": True,
-            "notice": (
-                "演示意图：第一阶段没有接入真实的 QIO 理解与执行，"
-                "这些内容是可控演示，不代表 QIO 的真实判断。"
-            ),
+            "notice": "演示意图：演示推进只走可控状态机，不代表 QIO 的真实理解与执行。",
         }
-    raise HTTPException(status_code=400, detail="本阶段只开放演示意图入口（demo=true）")
+
+    submission_id = str(payload.get("submissionId") or "").strip()
+    if not submission_id:
+        raise HTTPException(
+            status_code=400,
+            detail="真实入口需要 submissionId（这次提交的 id）；演示入口请传 demo=true。",
+        )
+
+    understanding = _understanding_for_submission(conn, board_id, submission_id)
+    if understanding is None:
+        return {
+            "created": [],
+            "demo": False,
+            "ok": False,
+            "reason": "not_ready",
+            "detail": "这次提交还没有对应的理解请求：受理成功之后再取意图。",
+        }
+    status = str(understanding["status"] or "")
+    if status in ("accepted", "understanding"):
+        return {
+            "created": [],
+            "demo": False,
+            "ok": False,
+            "reason": "understanding",
+            "understandingId": understanding["id"],
+            "detail": _UNDERSTANDING_DETAIL.get(status, "QIO 正在理解这次提交。"),
+        }
+    if status != "understood":
+        return {
+            "created": [],
+            "demo": False,
+            "ok": False,
+            "reason": "no_action" if status == "no_action" else "failed",
+            "understandingId": understanding["id"],
+            "detail": _UNDERSTANDING_DETAIL.get(status, "这次理解没有产出可执行的意图。"),
+        }
+
+    created = [
+        item
+        for item in intents._payloads(conn, board_id)
+        if str(item.get("understandingId") or "") == str(understanding["id"])
+    ]
+    return {
+        "created": created,
+        "demo": False,
+        "ok": True,
+        "understandingId": understanding["id"],
+        "reason": "" if created else "empty",
+        "detail": "" if created else "这次理解没有产出可执行的意图。",
+    }
+
+
+def _understanding_for_submission(
+    conn: sqlite3.Connection, board_id: str, submission_id: str
+) -> sqlite3.Row | None:
+    """这条提交最近一次理解请求（表由本轮迁移 37 建立；缺表时按「还没有」处理）。"""
+    try:
+        return conn.execute(
+            "SELECT id, status, submission_id, error FROM board_understanding"
+            " WHERE board_id = ? AND submission_id = ?"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (board_id, submission_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+@router.get("/api/interactive/boards/{board_id}/executions")
+async def list_executions(request: Request, board_id: str, limit: int = 50) -> dict:
+    """本板面的真实执行记录（新的在前）：状态、步骤与结果都由服务端给出。"""
+    return intents.list_executions(_conn(request), board_id, limit=limit)
 
 
 @router.post("/api/interactive/boards/{board_id}/material-impact")
@@ -111,15 +237,18 @@ async def board_impact_check(request: Request, board_id: str, body: dict) -> dic
 
 @router.post("/api/interactive/intents/{intent_id}/approve")
 async def approve(intent_id: str, request: Request, body: dict | None = None) -> dict:
-    """批准。confirmDependency=true 表示「前项已完成，我确认开始」。
+    """批准。confirmDependency=true 表示「前项已完成，我确认开始」/「按当前材料继续」。
 
-    开始执行时记录执行者身份：只有重启后（换了 instance_id）才会被降级为暂停。
+    批准后**必须实际启动真实执行**：服务端在批准时建立执行记录（幂等：已有活跃执行
+    就复用），并把它交给后台执行；响应里立刻带上 execution（id / status / steps），
+    前端据此显示真实状态，而不是等下一次轮询。
     """
     conn = _conn(request)
     confirm = bool(_body_dict(body).get("confirmDependency"))
-    return intents.approve_intent(
+    result = intents.approve_intent(
         conn, intent_id, confirm_dependency=confirm, instance_id=_instance_id(request)
     )
+    return await _start_execution(request, result)
 
 
 @router.post("/api/interactive/intents/{intent_id}/reject")
@@ -140,11 +269,33 @@ async def update_preview(intent_id: str, request: Request, body: dict) -> dict:
     return intents.update_preview(conn, intent_id, preview or {})
 
 
+@router.post("/api/interactive/intents/{intent_id}/pause")
+async def pause_intent(intent_id: str, request: Request) -> dict:
+    """暂停**真实执行**：保留进度与已完成步骤，不自动继续、不自动重试。"""
+    return intents.pause_intent(_conn(request), intent_id, instance_id=_instance_id(request))
+
+
+@router.post("/api/interactive/intents/{intent_id}/resume")
+async def resume_intent(intent_id: str, request: Request) -> dict:
+    """继续：校验当前材料与已完成步骤，不重复已完成操作，然后重新启动真实执行。"""
+    result = intents.resume_intent(
+        _conn(request), intent_id, instance_id=_instance_id(request)
+    )
+    return await _start_execution(request, result)
+
+
+@router.post("/api/interactive/intents/{intent_id}/cancel")
+async def cancel_intent(intent_id: str, request: Request) -> dict:
+    """取消真实执行，并撤回该任务造成且仍可安全撤回的改动（保留用户后续编辑）。"""
+    return intents.cancel_intent(_conn(request), intent_id, instance_id=_instance_id(request))
+
+
 @router.post("/api/interactive/intents/{intent_id}/demo/advance")
 async def advance(intent_id: str, request: Request, body: dict | None = None) -> dict:
     """演示执行推进（明确标注为演示）：成功 / 失败 / 暂停 / 取消。
 
-    第一阶段没有真实的模型执行；这里用可控的演示结果走通状态机与撤回保护。
+    演示推进**不得驱动真实任务**：这项任务有活跃的真实执行时，服务端拒绝推进，
+    要求改用暂停 / 继续 / 取消。
 
     N4（本轮契约 §2）：可选字段 decisionIds: string[] —— 只处理这次**明确展示给用户**、
     且属于该意图 pendingDecision 的项。未展示项不会被顺带处理；不传时保持既有语义，
@@ -171,11 +322,21 @@ async def advance(intent_id: str, request: Request, body: dict | None = None) ->
 
 @router.post("/api/interactive/intents/batch")
 async def batch(request: Request, body: dict) -> dict:
-    """批量审批：选择部分或全部；互不相容的两项不能同时批准。"""
+    """批量审批：选择部分或全部；互不相容的两项不能同时批准。
+
+    批量批准同样**实际启动真实执行**（逐项建立执行记录），并把每一项的 execution
+    放进结果里：前端据此立刻显示真实状态。
+    """
     conn = _conn(request)
     payload = _body_dict(body)
     approve_ids = _id_list(payload, "approve")
     reject_ids = _id_list(payload, "reject")
-    return intents.batch_decide(
+    result = intents.batch_decide(
         conn, approve=approve_ids, reject=reject_ids, instance_id=_instance_id(request)
     )
+    for item in result.get("results") or []:
+        if not isinstance(item, dict) or not item.get("ok"):
+            continue
+        await _start_execution(request, item)
+    return result
+

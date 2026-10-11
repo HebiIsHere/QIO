@@ -7,15 +7,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agent.adapters.base import ChatMessage, Completion
 from agent.api import interactive_intents as api_module
-from agent.interactive import board_store, intents, models
+from agent.interactive import board_store, execution, intents, models
 
 BOARD = "board_intents_test"
 
@@ -755,6 +759,331 @@ def test_preview_payload_shape_is_json_serialisable(db_conn):
     assert set(failed["revert"]) == {"reverted", "kept", "pendingDecision", "reasonText"}
 
 # --- 执行中任务的材料保护（保存后判定 + 保存前预判） -----------------------
+
+
+# --- 第九轮：批准后**真实执行**（真实入口 / 执行记录 / 暂停继续取消） --------
+#
+# 契约 §14.4：approve 必须实际启动真实执行并返回 execution；
+# 执行不得阻塞界面（后台登记），暂停 / 取消作用于真实执行，演示推进不驱动真实任务。
+
+
+class _BlockingProvider:
+    """可在「模型调用中」被测试线程卡住并放行的 stub provider（不联网）。"""
+
+    def __init__(self, text: str = "后台生成的正文") -> None:
+        self.text = text
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    async def complete(self, messages, tools, **kwargs) -> Completion:
+        self.calls += 1
+        self.started.set()
+        while not self.release.is_set():
+            await asyncio.sleep(0.01)
+        return Completion(message=ChatMessage(role="assistant", content=self.text))
+
+    def __call__(self):
+        return self
+
+
+def _exec_client(conn, *, instance_id: str | None = "instance-A", provider=None) -> TestClient:
+    """带真实后台登记表的 app：start_execution 走 services/background。"""
+    app = FastAPI()
+    app.state.ctx = SimpleNamespace(conn=conn)
+    if instance_id is not None:
+        app.state.instance_id = instance_id
+    if provider is not None:
+        app.state.interactive_adapter_provider = provider
+    app.include_router(api_module.router)
+    return TestClient(app)
+
+
+def _real_intent(conn, operations: list[dict], **over) -> dict:
+    payload = {
+        "intentKey": over.pop("intentKey", "k_route"),
+        "title": over.pop("title", "整理两份材料"),
+        "goal": over.pop("goal", "把两份材料整理成一张对比摘要"),
+        "expected": over.pop("expected", "板面上出现一张对比摘要结果卡片"),
+        "operations": operations,
+    }
+    payload.update(over)
+    understanding = str(payload.pop("understanding", "u_route"))
+    created = intents.create_intents_from_understanding(
+        conn, board_id=BOARD, understanding_id=understanding, payloads=[payload]
+    )
+    assert created, "真实意图应当被创建"
+    return created[0]
+
+
+def _board_executions(client: TestClient) -> list[dict]:
+    return client.get(f"/api/interactive/boards/{BOARD}/executions").json()["executions"]
+
+
+def _wait_execution(client: TestClient, execution_id: str, *, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    last: dict | None = None
+    while time.time() < deadline:
+        last = next(
+            (item for item in _board_executions(client) if item["id"] == execution_id), None
+        )
+        if last is not None and last["status"] in ("done", "failed", "cancelled"):
+            return last
+        time.sleep(0.02)
+    raise AssertionError(f"执行没有在时限内结束：{last}")
+
+
+def _reply_cards(conn) -> list[dict]:
+    return [
+        card
+        for card in _state(conn)["cards"]
+        if not card["deleted"] and isinstance(card.get("meta"), dict) and card["meta"].get("reply")
+    ]
+
+
+def test_approve_route_really_starts_execution(db_conn):
+    """批准后必须真的启动执行：响应同步可见 execution，后台把板面真正写完。"""
+    _seed(db_conn)
+    intent = _real_intent(db_conn, [{"op": "add_reply_card"}])
+    provider = _BlockingProvider("后台生成的正文")
+
+    with _exec_client(db_conn, instance_id="instance-A", provider=provider) as client:
+        approved = client.post(
+            f"/api/interactive/intents/{intent['id']}/approve", json={}
+        ).json()
+        assert approved["ok"] is True
+        payload = approved["execution"]
+        assert payload["id"] and payload["status"] == "running"
+        assert [step["op"] for step in payload["steps"]] == ["add_reply_card"]
+        assert payload["steps"][0]["status"] == "pending"
+        assert approved["intent"]["execution"]["id"] == payload["id"]
+        assert provider.started.wait(10), "批准之后必须真的启动了执行"
+        provider.release.set()
+        done = _wait_execution(client, payload["id"])
+
+    assert done["status"] == "done"
+    cards = _reply_cards(db_conn)
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["id"] == done["steps"][0]["cardId"]
+    assert card["content"] == "后台生成的正文"
+    assert card["meta"]["reply"]["intentId"] == intent["id"]
+    assert {item["id"] for item in _board_executions(_exec_client(db_conn))} == {payload["id"]}
+
+
+def test_repeated_approve_does_not_start_a_second_execution(db_conn):
+    """幂等：重复批准不新建执行、不重复启动（响应仍是同一条活跃执行）。"""
+    _seed(db_conn)
+    intent = _real_intent(db_conn, [{"op": "add_reply_card"}])
+    provider = _BlockingProvider()
+    with _exec_client(db_conn, instance_id="instance-A", provider=provider) as client:
+        first = client.post(f"/api/interactive/intents/{intent['id']}/approve", json={}).json()
+        assert provider.started.wait(10)
+        second = client.post(f"/api/interactive/intents/{intent['id']}/approve", json={}).json()
+        assert second["ok"] is False and second["reason"] == "running"
+        assert second["execution"]["id"] == first["execution"]["id"]
+        assert len(_board_executions(client)) == 1
+        provider.release.set()
+        done = _wait_execution(client, first["execution"]["id"])
+    assert done["status"] == "done"
+    assert provider.calls == 1, "同一条执行不得被启动两次"
+    assert len(_reply_cards(db_conn)) == 1
+
+
+def test_pause_and_resume_routes_drive_real_execution(db_conn):
+    """暂停 / 继续作用于真实执行：迟到的模型结果不写回，继续不重复已完成步骤。"""
+    _seed(db_conn)
+    intent = _real_intent(db_conn, [{"op": "add_reply_card"}])
+    provider = _BlockingProvider("第一次的正文")
+    with _exec_client(db_conn, instance_id="instance-A", provider=provider) as client:
+        approved = client.post(f"/api/interactive/intents/{intent['id']}/approve", json={}).json()
+        execution_id = approved["execution"]["id"]
+        assert provider.started.wait(10)
+
+        paused = client.post(f"/api/interactive/intents/{intent['id']}/pause", json={}).json()
+        assert paused["ok"] is True
+        assert paused["execution"]["status"] == "paused"
+        assert paused["intent"]["status"] == "paused"
+
+        provider.release.set()
+        time.sleep(0.2)
+        assert _board_executions(client)[0]["status"] == "paused", "迟到的结果不得继续写回"
+        assert _reply_cards(db_conn) == []
+
+        resumed = client.post(f"/api/interactive/intents/{intent['id']}/resume", json={}).json()
+        assert resumed["ok"] is True
+        assert resumed["execution"]["status"] == "running"
+        assert resumed["execution"]["attempt"] == 2
+        done = _wait_execution(client, execution_id)
+
+    assert done["status"] == "done"
+    cards = _reply_cards(db_conn)
+    assert len(cards) == 1, "恢复不重复已完成步骤，也不产生第二张结果卡片"
+    assert cards[0]["content"] == "第一次的正文"
+
+
+def test_cancel_route_stops_real_execution_and_reverts_its_own_changes(db_conn):
+    """取消作用于真实执行：撤回本任务已经落地的改动，迟到的结果不再写回。"""
+    _seed(db_conn)
+    intent = _real_intent(
+        db_conn,
+        [{"op": "add_reply_card", "content": "要撤回的结果"}, {"op": "add_reply_card"}],
+    )
+    provider = _BlockingProvider("第二步的正文")
+    with _exec_client(db_conn, instance_id="instance-A", provider=provider) as client:
+        approved = client.post(f"/api/interactive/intents/{intent['id']}/approve", json={}).json()
+        assert provider.started.wait(10)
+        assert len(_reply_cards(db_conn)) == 1, "第一步已经真的落地"
+
+        cancelled = client.post(
+            f"/api/interactive/intents/{intent['id']}/cancel", json={}
+        ).json()
+        assert cancelled["ok"] is True
+        assert cancelled["execution"]["status"] == "cancelled"
+        assert cancelled["intent"]["status"] == "cancelled"
+        assert "撤回" in cancelled["intent"]["reason"]
+
+        provider.release.set()
+        time.sleep(0.2)
+        assert _reply_cards(db_conn) == [], "本任务造成的改动应当被撤回"
+        assert _board_executions(client)[0]["status"] == "cancelled"
+
+
+def test_create_intents_real_entry_returns_understanding_results(db_conn):
+    """真实入口按 submissionId 取该次理解产出的意图：不新建重复任务。"""
+    _seed(db_conn)
+    intent = _real_intent(
+        db_conn, [{"op": "add_reply_card", "content": "结果"}], understanding="u_entry"
+    )
+    db_conn.execute(
+        "INSERT INTO board_understanding (id, board_id, submission_id, request_id, status,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "u_entry",
+            BOARD,
+            "s_entry",
+            "req_entry",
+            "understood",
+            "2026-10-11T00:00:00Z",
+            "2026-10-11T00:00:00Z",
+        ),
+    )
+    client = _exec_client(db_conn)
+    created = client.post(
+        f"/api/interactive/boards/{BOARD}/intents", json={"submissionId": "s_entry"}
+    ).json()
+    assert created["demo"] is False and created["ok"] is True
+    assert [item["id"] for item in created["created"]] == [intent["id"]]
+    # 重复调用不新建
+    again = client.post(
+        f"/api/interactive/boards/{BOARD}/intents", json={"submissionId": "s_entry"}
+    ).json()
+    assert [item["id"] for item in again["created"]] == [intent["id"]]
+    rows = db_conn.execute(
+        "SELECT COUNT(*) AS c FROM board_intents WHERE board_id = ?", (BOARD,)
+    ).fetchone()
+    assert rows["c"] == 1
+    # 演示入口仍然可用；两者都不给 → 400（不再有「只开放演示入口」的旧限制）
+    demo = client.post(f"/api/interactive/boards/{BOARD}/intents", json={"demo": True}).json()
+    assert demo["demo"] is True and len(demo["created"]) == 4
+    assert client.post(f"/api/interactive/boards/{BOARD}/intents", json={}).status_code == 400
+
+
+def test_create_intents_real_entry_waits_for_understanding(db_conn):
+    """理解还没落定：如实说明进度，不新建任何任务。"""
+    _seed(db_conn)
+    db_conn.execute(
+        "INSERT INTO board_understanding (id, board_id, submission_id, request_id, status,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "u_pending",
+            BOARD,
+            "s_pending",
+            "req_pending",
+            "understanding",
+            "2026-10-11T00:00:00Z",
+            "2026-10-11T00:00:00Z",
+        ),
+    )
+    client = _exec_client(db_conn)
+    result = client.post(
+        f"/api/interactive/boards/{BOARD}/intents", json={"submissionId": "s_pending"}
+    ).json()
+    assert result["ok"] is False and result["reason"] == "understanding"
+    assert result["created"] == []
+    rows = db_conn.execute(
+        "SELECT COUNT(*) AS c FROM board_intents WHERE board_id = ?", (BOARD,)
+    ).fetchone()
+    assert rows["c"] == 0
+
+
+def test_approve_route_on_real_app_runs_execution(db_conn, settings):
+    """真实 app（create_app + ctx.build_adapter + app.background）批准后同样真的执行。"""
+    from agent.api.server import create_app
+    from agent.credentials.store import MemoryKeyring
+
+    _seed(db_conn)
+    intent = _real_intent(
+        db_conn, [{"op": "add_reply_card", "content": "真实 app 的结果"}], understanding="u_app"
+    )
+    application = create_app(settings, db_conn)
+    application.state.ctx.credentials._kr = MemoryKeyring()
+    with TestClient(application) as client:
+        approved = client.post(
+            f"/api/interactive/intents/{intent['id']}/approve", json={}
+        ).json()
+        assert approved["ok"] is True
+        execution_id = approved["execution"]["id"]
+        assert approved["execution"]["status"] == "running"
+        current: dict | None = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            rows = client.get(f"/api/interactive/boards/{BOARD}/executions").json()["executions"]
+            current = next((item for item in rows if item["id"] == execution_id), None)
+            if current is not None and current["status"] in ("done", "failed", "cancelled"):
+                break
+            time.sleep(0.02)
+    assert current is not None and current["status"] == "done", current
+    cards = _reply_cards(db_conn)
+    assert len(cards) == 1 and cards[0]["content"] == "真实 app 的结果"
+
+
+def test_list_route_pauses_real_execution_after_restart(db_conn):
+    """重启恢复：别的实例遗留的 running 与它的真实执行一起降级为 paused。"""
+    _seed(db_conn)
+    intent = _real_intent(db_conn, [{"op": "add_reply_card", "content": "结果"}])
+    approved = intents.approve_intent(db_conn, intent["id"], instance_id="instance-A")
+    execution_id = approved["execution"]["id"]
+
+    same_instance = _exec_client(db_conn, instance_id="instance-A")
+    listed = same_instance.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    assert listed["recovery"] == {"paused": []}
+    assert listed["intents"][0]["status"] == "running"
+    assert listed["intents"][0]["execution"]["status"] == "running"
+
+    restarted = _exec_client(db_conn, instance_id="instance-B")
+    listed = restarted.get(f"/api/interactive/boards/{BOARD}/intents").json()
+    assert listed["recovery"]["paused"] == [intent["id"]]
+    assert listed["intents"][0]["status"] == "paused"
+    assert listed["intents"][0]["execution"]["status"] == "paused"
+    assert [item["status"] for item in _board_executions(restarted) if item["id"] == execution_id] == [
+        "paused"
+    ]
+
+
+def test_demo_advance_route_refuses_real_execution(db_conn):
+    """演示推进不得驱动真实任务：路由层同样拒绝，板面不变。"""
+    _seed(db_conn)
+    intent = _real_intent(db_conn, [{"op": "add_reply_card", "content": "结果"}])
+    intents.approve_intent(db_conn, intent["id"], instance_id="instance-A")
+    client = _exec_client(db_conn, instance_id="instance-A")
+    before = _state(db_conn)
+    result = client.post(
+        f"/api/interactive/intents/{intent['id']}/demo/advance", json={"outcome": "done"}
+    ).json()
+    assert result["ok"] is False and result["reason"] == "real_execution"
+    assert _state(db_conn) == before
+    assert _board_executions(client)[0]["status"] == "running"
 
 
 def test_preview_material_impact_is_read_only(db_conn):
