@@ -35,6 +35,31 @@
 **边界（诚实声明）**：这是名字级核对，只证明「这条线引入的符号没有整条消失」，
 不证明语义没有变化；语义结论必须另有阅读或实测证据（见 docs/integration-review-20261011.md）。
 
+## verify_submission_identity.py —— 稳定提交身份链路（契约 §1，第二段新增验收）
+
+自己建库、自己起应用、自己注入 fake provider、自己数数据库行与模型调用次数，覆盖：
+
+| 场景 | 断言 |
+| --- | --- |
+| S0 迁移 39 对象 | `board_submissions.client_request_id` 与唯一索引 `idx_board_submissions_client_request` 存在 |
+| S1 同身份重试 | 200、返回原 submissionId / understandingId、`replayed=true`、库里仍只有一行、理解请求只有一个、**模型调用计数不变** |
+| S2 同身份不同 note | 409 `request_identity_conflict`、不落新提交、不再调用模型 |
+| S3 同身份不同 baseStateVersion | 同上 |
+| S4 精确查证 | 两个身份各自查到自己的事实 |
+| S5「最近一条」诱饵 | 从未用过的身份必须 404 且 `acceptance=null` |
+| S6「时间接近」诱饵 | 紧接着提交之后查未用身份仍 404；旧身份仍返回旧事实 |
+| S7 数据库事实 | 三个身份三条提交、无同 (board, 身份) 重复行 |
+
+    backend/.venv/Scripts/python.exe scripts/irm-int-verify/verify_submission_identity.py \
+        --json scripts/irm-int-verify/out/verify-identity-<sha>.json
+
+**注意基准版本的口径**：新身份的提交用**当前** seq；同身份重试必须用**记录里的原 seq**
+（重试时板面已经前进）。按契约 §1.2，身份命中要排在 stale_state 判定**之前**——
+否则原 seq 会被判成「版本过期」。S1.5 就是这条红线的断言。
+
+基线对照（c6a03b1，B 的迁移 39 还没到位时）：**15/33 通过**，失败项全部指向缺口
+（列与索引不存在、重试被判 stale_state、查证端点不存在）。
+
 ## 取文件时的编码坑（Lead 复跑时踩到，记下来省下一次）
 
 本机 harness 走的是 Windows PowerShell 5.1：裸重定向 `git show <rev>:<path> > file.py`
