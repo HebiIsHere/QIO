@@ -977,4 +977,33 @@ ExecutionStep / Execution / ExecutionControlResult`。
 图片视觉理解（当前模型链路没有视觉能力，如实显示不支持）；真实模型自动化测试
 （自动化测试一律用 fake/mock provider）。
 
+### 14.9 落地说明与对 §14 的补充（2026-10-11，按实际实现）
+
+本节只记录**实现后的真实口径**，不改变 §14 的冻结签名。
+
+1. **`request_understanding` 的 `snapshot` 形状**：只传该次提交结果里的 `after` 投影
+   （`submission.project_snapshot` 的输出）。提交成功后紧接着会「自动取消勾选」并保存板面，
+   重读板面会把刚提交的注释排除掉，所以必须传内存里那一份。
+   理解侧需要「有效变化 / 用户备注」时按 `submission_id` 从 `board_submissions` 补读，
+   **仍然不读当前板面**，并在上下文里如实标注来源（`requirement.expressionSource`、`honesty.expressionsSource`）。
+2. **`empty` / `duplicate` 判定顺序**（补强 §1.5）：先判「与上次成功提交内容一致」→ `duplicate`，
+   再判「去掉显示类表达后没有内容」→ `empty`。纯位置变化后内容与上次成功提交一致，必须判 `duplicate`。
+   两种状态都不更新基准、都不调用模型。
+3. **模型适配器注入点**：`app.state.interactive_adapter_provider` 优先（`async () -> BaseAdapter | None`），
+   回落 `app.state.ctx.build_adapter`。提交路径的理解、重试、批准后的执行共用同一个注入点；
+   拿不到适配器时给出可读失败原因，不抛异常、不假装成功。
+4. **意图 → 同一件工作的更新**：`create_intents_from_understanding` 按 `intent_key` 沿用身份；
+   同一理解请求 + 同一 `intent_key` 重复调用幂等（不新建、不刷新依据）；
+   旧意图仍在等待审批时原地更新（保留 id），已执行中 / 已结束时用 `key#2` 建新身份，不覆盖在跑的任务。
+5. **结果卡正文来源**：正文是模型在**理解阶段**产出、并在预览中被用户批准的那段内容；
+   执行阶段只在方案里没有正文时才调用模型生成。执行阶段绝不把模型输出解析成新的操作。
+6. **取消尚未落地的理解**：`board_understanding.status` 的冻结取值里没有 `cancelled`，
+   用户取消映射为 `failed` + 明确原因（可从保存的快照重试），并返回 `cancelled: true`；**不假装成功**。
+7. **长期记忆**：复用既有的知识 / 长期记忆机制，落实为「待审批」，只记录适合后续合作的目标、结论、
+   依据与成果，并区分用户表达、模型推测、待审批建议与已完成事实；
+   不把整块板面或未获准内容写入长期记忆，也不把互动提交写进用户会话 transcript。
+8. **演示路径**：`demo=true` 与 `/demo/advance` 保留；存在活跃真实执行时演示推进被拒绝
+   （`reason=real_execution`），演示意图批准不建立真实执行。
+
+
 
