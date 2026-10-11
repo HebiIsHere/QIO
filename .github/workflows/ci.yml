@@ -76,8 +76,15 @@ jobs:
       # concurrency 键、targeted-verify.yml 的 workflow_dispatch、SHA 核验步骤与筛选参数
       # 全部由这个脚本解析 yaml 后核对，并有 --selftest 证明断言真能红。
       # 执行同一份脚本的定向入口在 targeted-verify.yml 的 docs 单项里（两个都要通）。
+      #
+      # 它**必须**用真正的 YAML 解析器：文本匹配分不清「job 级 if」与其它合法写法，
+      # 也不该在缺依赖时静默降级只跑一半断言 —— 那样的绿灯没有意义。docs 任务因此
+      # 显式装一次 PyYAML（本仓库 CI 里唯一的第三方依赖，版本钉死）。
+      - name: Install PyYAML (workflow contract checker)
+        run: python -m pip install --disable-pip-version-check "pyyaml==6.0.2"
       - name: Check workflow trigger / SHA / filter contract
         run: |
+          python -c "import yaml; print('PyYAML', yaml.__version__)"
           python scripts/targeted-verify/verify_workflow_contract.py
           python scripts/targeted-verify/verify_workflow_contract.py --selftest
 

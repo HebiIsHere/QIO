@@ -99,10 +99,22 @@ concurrency:
 | 项 | 内容 |
 | --- | --- |
 | workflow | `.github/workflows/ci.yml`（全量矩阵） |
-| 对象 SHA | 待填（与 §3.1 同一候选） |
-| CI run ID / attempt | 待填（`gh run list --commit <sha> --workflow ci.yml`） |
-| 各 job 结论 | 待填（docs / backend py3.11 / backend py3.12 / backend-windows / frontend / rust / rust-windows / frozen-worker / install-e2e） |
-| 额度 | 用掉 1/1 —— 之后任何失败**不得**再触发全量，只能走 §4 的定向入口 |
+| 对象 SHA | `28e5752507c934fdabade754ffe2f3cb97547af3` |
+| CI run ID / attempt | **38149965943 / attempt 1**（push 触发，run 内 `ci dedup preflight` 确认去重键 `ci-CI-28e5752…`，同一提交只有这一个 run） |
+| 各 job 结论 | `ci dedup preflight` ✅ / `frontend` ✅ / `rust (ubuntu-24.04)` ✅ / `rust (windows-latest)` ✅ / `frozen worker (windows)` ✅ / **`docs consistency` ❌** / `backend (py3.11)`、`backend (py3.12)`、`backend (windows-latest)`、`install e2e` 在该 run 内**未跑完**（本次任务的时间窗口内没有等到结束） |
+| 额度 | 用掉 1/1 |
+
+**docs consistency 唯一失败原因（已修，见 `28e5752` 之后的提交）**：docs 任务里新增的
+「workflow 触发 / SHA / 筛选契约检查」需要 PyYAML，而该任务此前是 stdlib-only（没有装 PyYAML），
+脚本按设计 `raise SystemExit(2)` 并以 `::error title=workflow contract::PyYAML missing` 报错。
+修法：docs 任务显式 `python -m pip install "pyyaml==6.0.2"` 后再跑该检查（**不降级断言**：
+结构性检查必须用真正的 YAML 解析器，缺依赖时静默只跑一半断言等于假绿）。本地在修复后的树上复跑：
+`60 assertions passed`、`selftest: 7 checks, 0 failed`、`check_docs.py` 通过、`release_gate.py --selftest` 通过。
+
+**额度约束下的后续处理**：按本轮硬性约束，全量 CI 只有一次，失败后**不得**再触发第二次全量。
+因此修复后的 sha 走 §5 的定向入口（`workflow_dispatch`，显式 checkout 并核验 SHA）只跑
+**失败的那一项**（docs）；原 CI 里未跑完的 `install e2e`（NSIS 安装包，目录内没有定向入口，
+见 §8.3）在本轮**没有执行证据**，按「未验证」记录，不当作通过。
 
 ## 4. 定向验证记录
 
