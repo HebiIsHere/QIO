@@ -1,0 +1,30 @@
+﻿
+
+[F05] 旧代认领： {'id': 'task_583ef12d72a8', 'state': 'running', 'claim_generation': 1}
+[F05] 接替后的代次 = 3
+[F05] 旧代返回值 = 0  新代完成 = True
+[F05] 任务最终 state = completed  claim_generation = 3
+[F05] fragments.summary = 新代摘要
+[F05] memory_index.title = ['新代标题']
+[F05] 知识任务数 = 1  mention 边数 = 0
+.
+[F06-E1] run_manual 回执 = {'ok': True, 'started': True, 'accepted': True, 'running': True, 'reason': None}
+[F06-E1] stop 报告 = {'clean': False, 'unfinished': True, 'pending': ['maintenance:run'], 'reason': '关闭时仍有维护执行单元未确认结束：mai
+ntenance:run', 'phases': ['maintenance_unfinished']}
+[F06-E1] adapter.closed = False  is_busy = True
+[F06-E1] pending = ['maintenance:run']
+[F06-E1] 放行后 aclose 报告 = CloseReport(clean=True, unfinished=(), phases=('reject_new', 'verify', 'maintenance_unfinished
+', 'clean_exit_recorded', 'adapters_released'), detail='background: 后台执行单元已全部确认结束（有界等待内结束 0 个，取消 0 个）')  adapter.closed
+ = True
+.
+[F06-E2] stop 报告 = {'clean': True, 'unfinished': False, 'pending': [], 'reason': None, 'phases': ['maintenance_stopped'
+]}  adapter.closed = False
+[F06-E2] aclose 报告 = CloseReport(clean=True, unfinished=(), phases=('reject_new', 'verify', 'maintenance_stopped', 'cle
+an_exit_recorded', 'adapters_released'), detail='background: 后台执行单元已全部确认结束（有界等待内结束 0 个，取消 0 个）')  adapter.closed = True
+.
+[F06-E3] 关闭后 run_manual = {'ok': False, 'started': False, 'accepted': False, 'running': False, 'reason': 'shutting_down
+'}
+.
+4 passed in 26.39s
+
+

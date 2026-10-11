@@ -9,7 +9,9 @@ Rules (agreed in design review):
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +22,8 @@ from keyring.backends.fail import Keyring as FailKeyring
 
 from agent.credentials.providers import KINDS
 from agent.storage.db import transaction
+
+logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "qio"
 _UNSET = object()
@@ -36,6 +40,54 @@ VERIFY_STATE_UNVERIFIED = "unverified"
 VERIFY_STATE_VERIFIED = "verified"
 VERIFY_STATE_FAILED = "failed"
 VERIFY_STATE_LEGACY = "legacy"
+
+# 验证输入指纹（F09）：
+# 一次验证是一次带 await 的真实网络调用，期间用户可能改了密钥 / 地址 / 模型 /
+# 协议。只有把「这次验证到底是在哪一份配置上做的」一起带回来，才谈得上
+# 「结果该不该写进当前状态」。指纹覆盖四个会改变「这把钥匙发给谁、发什么」的
+# 输入 —— 密钥版本（version）+ endpoint + default_model + 协议（kind，按运行期
+# 解析；老数据 kind 为空时与真正发请求时的判断完全一致）。
+#
+# 计算的是摘要，不带任何密钥材料：算出来的字符串只用于**比较**，不落密钥。
+FINGERPRINT_VERSION = "fp1"
+_FINGERPRINT_ALGO = "sha256"
+
+
+def _fingerprint_field(value: Any) -> str:
+    """指纹字段的规范化：两侧统一 strip，None 与空串等价（「没有这个值」）。"""
+    return str(value if value is not None else "").strip()
+
+
+def compute_input_fingerprint(
+    *,
+    version: int | str | None,
+    endpoint: str | None,
+    default_model: str | None,
+    kind: str | None,
+) -> str:
+    """把一次验证的完整输入（密钥版本 + 地址 + 模型 + 协议）压成一个可比较的指纹。
+
+    这是纯函数、只做规范化 + 摘要，可以被 API 层 / 测试独立复算：
+    指纹一样 = 这四样输入一个字都没变；不一样 = 结论属于另一份配置。
+    """
+    try:
+        normalized_version = int(version or 0)
+    except (TypeError, ValueError):
+        normalized_version = 0
+    canonical = json.dumps(
+        {
+            "v": FINGERPRINT_VERSION,
+            "version": normalized_version,
+            "endpoint": _fingerprint_field(endpoint),
+            "default_model": _fingerprint_field(default_model),
+            "kind": _fingerprint_field(kind),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.new(_FINGERPRINT_ALGO, canonical.encode("utf-8")).hexdigest()
+    return f"{FINGERPRINT_VERSION}:{digest[:32]}"
 
 
 def validate_endpoint(endpoint: str | None) -> None:
@@ -191,8 +243,74 @@ class CredentialStore:
 
     # -- 验证状态与默认项 ------------------------------------------------
 
-    def set_verified(self, key_id: str, ok: bool, reason: str | None = None) -> dict[str, Any]:
+    def fingerprint_of_row(self, row: sqlite3.Row) -> str:
+        """这一行**当前**的验证输入指纹（见 :func:`compute_input_fingerprint`）。
+
+        `kind` 走 `_resolved_kind`：老数据 kind 为空时按地址解析，
+        与真正发请求时用的是同一套判断，因此「什么都没改」不会算出不同指纹。
+        """
+        return compute_input_fingerprint(
+            version=row["version"],
+            endpoint=row["endpoint"],
+            default_model=row["default_model"],
+            kind=self._resolved_kind(row),
+        )
+
+    def input_fingerprint(self, key_id: str) -> str:
+        """当前配置的验证输入指纹；凭据不存在抛 KeyError。"""
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        return self.fingerprint_of_row(row)
+
+    def verification_snapshot(self, key_id: str) -> dict[str, Any]:
+        """**开始**一次验证前冻结的输入事实（F09 第 1 条）。
+
+        返回的 `input_fingerprint` 必须原样交给 :meth:`set_verified`：
+        验证结果落库时就是靠它判断「这份结论说的还是不是现在这份配置」。
+        快照里只有元数据（密钥版本 / 地址 / 模型 / 协议），没有密钥本身。
+        """
+        row = self._row(key_id)
+        if row is None:
+            raise KeyError(f"credential not found: {key_id}")
+        return {
+            "key_id": key_id,
+            "input_fingerprint": self.fingerprint_of_row(row),
+            "version": int(row["version"]),
+            "endpoint": row["endpoint"],
+            "default_model": row["default_model"],
+            "kind": self._resolved_kind(row),
+            "verify_state": str(row["verify_state"] or VERIFY_STATE_UNVERIFIED),
+        }
+
+    def set_verified(
+        self,
+        key_id: str,
+        ok: bool,
+        reason: str | None = None,
+        *,
+        input_fingerprint: str | None = None,
+        transient: bool = False,
+        triggered_by: str = "user",
+    ) -> dict[str, Any]:
         """记录一次验证结果（不改密钥、不动版本）。
+
+        三条规则：
+
+        1. **条件写入**：带了 `input_fingerprint` 时，只有它等于「现在这一行的
+           指纹」才允许改状态。验证是带 await 的真实调用，期间用户可能已经改了
+           密钥 / 地址 / 模型 / 协议 —— 旧配置的迟到结果不能改变当前可用性、
+           默认项或自动候选；
+        2. **临时故障不降级**：`transient=True` 且当前状态本来可用 → 保持原状态
+           （一次断网 / 超时不能把一把本来好用的钥匙判死），如实把这次失败
+           告诉调用方；
+        3. **历史结果照留痕**：被条件挡下的结果仍写一条审计（action='test'，
+           版本取**快照那一刻**的版本），但它只说明「在那个版本上测过一次」，
+           不动任何当前事实。
+
+        返回值是当前元数据，并额外带一个 `verify_result` 子字典，描述这次结果
+        的去向（`applied` / `state_kept` / `result_state` / `state`），供 API 层
+        与事件区分「历史结果」和「当前状态」。
 
         审计动作沿用既有的 'test'，与「改配置」区分开：验证不是配置变更，
         它只回答「现在这把钥匙能不能用」。
@@ -200,14 +318,47 @@ class CredentialStore:
         row = self._row(key_id)
         if row is None:
             raise KeyError(f"credential not found: {key_id}")
-        state = VERIFY_STATE_VERIFIED if ok else VERIFY_STATE_FAILED
-        self.conn.execute(
-            "UPDATE credentials SET verify_state = ?, verified_at = ?, verify_error = ?, "
-            "updated_at = ? WHERE id = ?",
-            (state, _now() if ok else None, None if ok else (reason or ""), _now(), key_id),
-        )
-        self._audit(key_id, "test", row["version"], row["version"], "user")
-        return self.get_metadata(key_id) or {}
+        current_fingerprint = self.fingerprint_of_row(row)
+        previous_state = str(row["verify_state"] or VERIFY_STATE_UNVERIFIED)
+        stale = input_fingerprint is not None and str(input_fingerprint) != current_fingerprint
+
+        applied = False
+        state_kept = False
+        if stale:
+            # 旧配置的迟到结果：只留痕，不碰当前状态 / 默认项 / 自动候选。
+            logger.warning(
+                "凭据 %s 的一次验证结果属于改动前的配置（快照指纹 %s，当前指纹 %s）："
+                "只记为历史结果，不改变当前状态",
+                key_id,
+                input_fingerprint,
+                current_fingerprint,
+            )
+            self._audit(key_id, "test", row["version"], row["version"], triggered_by)
+        elif (not ok) and transient and previous_state in USABLE_VERIFY_STATES:
+            # 临时故障（断网 / 超时 / 限流）：保持原状态，不写库也不降级。
+            state_kept = True
+        else:
+            applied = True
+            state = VERIFY_STATE_VERIFIED if ok else VERIFY_STATE_FAILED
+            with transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE credentials SET verify_state = ?, verified_at = ?, verify_error = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (state, _now() if ok else None, None if ok else (reason or ""), _now(), key_id),
+                )
+                self._audit(key_id, "test", row["version"], row["version"], triggered_by)
+
+        meta = self.get_metadata(key_id) or {}
+        meta["verify_result"] = {
+            "applied": applied,
+            "state_kept": state_kept,
+            "result_state": "historical" if stale else "current",
+            "state": str(meta.get("verify_state") or VERIFY_STATE_UNVERIFIED),
+            "previous_state": previous_state,
+            "input_fingerprint": input_fingerprint,
+            "current_fingerprint": current_fingerprint,
+        }
+        return meta
 
     def _is_candidate_row(self, row: sqlite3.Row) -> bool:
         """能不能被自动选中：状态、启用、验证、预算四项全过。"""
@@ -372,6 +523,9 @@ class CredentialStore:
         sets: list[str] = []
         params: list[Any] = []
         version_bump = False
+        # 这次重配置有没有动到「验证结论所依赖的输入」（密钥 / 地址 / 模型 / 协议）。
+        # 动了就让旧的验证结论失效 —— 不能出现「配置已经换了，库里还写着已验证」。
+        verification_invalidated = False
 
         if endpoint is not _UNSET:
             new_endpoint = str(endpoint or "").strip()
@@ -383,6 +537,7 @@ class CredentialStore:
                     )
                 validate_endpoint(new_endpoint)
                 version_bump = True
+                verification_invalidated = True
             sets.append("endpoint = ?")
             params.append(new_endpoint or None)
 
@@ -399,6 +554,7 @@ class CredentialStore:
                         "re-enter the secret and pass confirm_reconfigure=true"
                     )
                 version_bump = True
+                verification_invalidated = True
             sets.append("kind = ?")
             params.append(new_kind)
 
@@ -406,16 +562,17 @@ class CredentialStore:
             if not str(secret).strip():
                 raise ValueError("secret must not be empty")
             version_bump = True
-            # 换了钥匙，上一次的验证结论就不再适用。
-            sets.append("verify_state = ?")
-            params.append(VERIFY_STATE_UNVERIFIED)
-            sets.append("verified_at = NULL")
-            sets.append("verify_error = NULL")
+            # 换了钥匙，上一次的验证结论就不再适用（见下面的统一失效）。
+            verification_invalidated = True
 
         if tags is not _UNSET:
             sets.append("tags = ?")
             params.append(json.dumps(tags or [], ensure_ascii=False))
         if default_model is not _UNSET:
+            if _fingerprint_field(default_model) != _fingerprint_field(row["default_model"]):
+                # 模型也属于「这把钥匙发什么」：换了模型，上一次针对旧模型的
+                # 验证结论就不再说明现在这份配置可用。
+                verification_invalidated = True
             sets.append("default_model = ?")
             params.append(default_model)
         if budget is not _UNSET:
@@ -429,6 +586,13 @@ class CredentialStore:
         if note is not _UNSET:
             sets.append("note = ?")
             params.append(note)
+
+        if verification_invalidated:
+            # 密钥 / 地址 / 模型 / 协议任一变化：旧验证结论作废，回到「未验证」。
+            sets.append("verify_state = ?")
+            params.append(VERIFY_STATE_UNVERIFIED)
+            sets.append("verified_at = NULL")
+            sets.append("verify_error = NULL")
 
         new_version = old_version + 1 if version_bump else old_version
 
@@ -527,6 +691,9 @@ class CredentialStore:
             raise KeyError(f"credential not found: {key_id}")
         sets: list[str] = []
         params: list[Any] = []
+        # 与 reconfigure 同一条规则：动了验证结论所依赖的输入（密钥版本 / 地址 /
+        # 模型 / 协议）就让旧结论失效，绝不让「已验证」留在一份没人验过的配置上。
+        verification_invalidated = False
         if tags is not _UNSET:
             sets.append("tags = ?")
             params.append(json.dumps(tags or [], ensure_ascii=False))
@@ -540,6 +707,7 @@ class CredentialStore:
                         "re-enter the secret and pass confirm_reconfigure=true"
                     )
                 validate_endpoint(new_endpoint)
+                verification_invalidated = True
             sets.append("endpoint = ?")
             params.append(new_endpoint or None)
         if kind is not _UNSET:
@@ -547,14 +715,20 @@ class CredentialStore:
             new_kind = str(kind or "").strip() or current_kind
             if new_kind not in KINDS:
                 raise ValueError(f"unsupported protocol: {new_kind}")
-            if new_kind != current_kind and not (secret and confirm_reconfigure):
-                raise ValueError(
-                    "changing protocol is a credential reconfiguration: "
-                    "re-enter the secret and pass confirm_reconfigure=true"
-                )
+            if new_kind != current_kind:
+                if not (secret and confirm_reconfigure):
+                    raise ValueError(
+                        "changing protocol is a credential reconfiguration: "
+                        "re-enter the secret and pass confirm_reconfigure=true"
+                    )
+                # 老数据 kind 为空但地址解析结果不变时**不算**协议变更：
+                # 「什么都没改」不该让用户重新验证一次。
+                verification_invalidated = True
             sets.append("kind = ?")
             params.append(new_kind)
         if default_model is not _UNSET:
+            if _fingerprint_field(default_model) != _fingerprint_field(row["default_model"]):
+                verification_invalidated = True
             sets.append("default_model = ?")
             params.append(default_model)
         if budget is not _UNSET:
@@ -566,6 +740,11 @@ class CredentialStore:
         if note is not _UNSET:
             sets.append("note = ?")
             params.append(note)
+        if verification_invalidated:
+            sets.append("verify_state = ?")
+            params.append(VERIFY_STATE_UNVERIFIED)
+            sets.append("verified_at = NULL")
+            sets.append("verify_error = NULL")
         if not sets:
             return self.get_metadata(key_id) or {}
         sets.append("updated_at = ?")

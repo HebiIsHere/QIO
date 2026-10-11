@@ -6,14 +6,18 @@
  */
 import { authHeaders, resolveBackend } from "./backend";
 import type {
+  AcceptanceLookup,
   BoardState,
   BoardStateResponse,
   DecideResult,
+  Execution,
+  ExecutionControlResult,
   Intent,
   IntentListResponse,
   IntentPreview,
   SubmissionRecord,
   SubmissionResult,
+  UnderstandingResponse,
   VisibleRange,
 } from "../interactive/types";
 
@@ -129,13 +133,21 @@ export function fetchVisibleRange(boardId: string): Promise<{ visibleRange: Visi
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/visible-range`);
 }
 
-/** 提交：QIO 取得未提交表达的唯一入口。baseStateVersion = 本次候选所基于的服务器版本。 */
+/**
+ * 提交：QIO 取得未提交表达的唯一入口。baseStateVersion = 本次候选所基于的服务器版本。
+ *
+ * 契约 §1.3：`clientRequestId` = 这次提交请求的**稳定身份**，由前端在发出请求之前生成
+ * （见 `interactive/submission.ts`）。服务端按 (boardId, clientRequestId) 做幂等：
+ * 同身份重试返回原事实，同身份但内容不同按冲突拒绝（409 request_identity_conflict）。
+ * 传空 = 旧客户端行为（不参与幂等）。
+ */
 export function submitBoard(
   boardId: string,
   requestedVisible?: string[],
   note = "",
   baseStateVersion?: number,
   confirmedCheckId?: string,
+  clientRequestId?: string,
 ): Promise<SubmissionResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`, {
     method: "POST",
@@ -144,23 +156,91 @@ export function submitBoard(
       note,
       ...(baseStateVersion !== undefined ? { baseStateVersion } : {}),
       ...(confirmedCheckId ? { confirmedCheckId } : {}),
+      ...(clientRequestId ? { clientRequestId } : {}),
     }),
   });
 }
 
-export function fetchDrafts(
+/**
+ * 契约 §1.3：按**精确请求身份**查证受理情况（受理情况不明时的唯一查证入口）。
+ *
+ * - 200 → `{ acceptance }`（事实字典，与 {@link AcceptanceLookup} 一一对应）；
+ * - 404 → **不抛**，返回 `{ acceptance: null, reason }`：服务端没有这条身份的记录。
+ *   调用方据此继续「结果未知」——不是错误推导的成功，也不是改判失败（§1.1.4 / §1.1.5）；
+ * - 其它错误（断网 / 5xx）原样抛出：查询失败同样只说明「还没确认」，不能当成失败结论。
+ */
+export function fetchAcceptance(
   boardId: string,
-): Promise<{ drafts: Record<string, string>; updatedAt: string | null }> {
+  clientRequestId: string,
+): Promise<{ acceptance: AcceptanceLookup | null; reason?: string }> {
+  return request<{ acceptance: AcceptanceLookup | null; reason?: string }>(
+    `${BASE}/boards/${encodeURIComponent(boardId)}/submissions/acceptance?clientRequestId=${encodeURIComponent(clientRequestId)}`,
+  ).catch((err: unknown) => {
+    if (err instanceof InteractiveApiError && err.status === 404) {
+      return { acceptance: null, reason: err.payload?.reason ?? "服务端没有这个请求身份的记录" };
+    }
+    throw err;
+  });
+}
+
+export interface DraftState {
+  drafts: Record<string, string>;
+  updatedAt: string | null;
+  /** 服务端存簿版本（C1）：单调递增，用来证明「这次更新 / 删除基于哪一版」 */
+  rev?: number;
+  /** 逐键版本（C1）：与服务端一致的版本号才允许覆盖同一个键 */
+  keyVersions?: Record<string, number>;
+}
+
+/** 逐键三态保存请求（契约 C1）：更新 / 明确删除 / 未修改。 */
+export interface DraftSavePatch {
+  /** 本次**确实上传**的逐键更新 */
+  drafts: Record<string, string>;
+  /** 本次**明确删除**的键（带删除身份） */
+  removed?: string[];
+  /** 客户端读到的服务端 rev：与服务端当前 rev 一致即「无并发改写」的安全基线 */
+  baseRev?: number | null;
+  /** 逐键版本：没有安全基线时，用它证明这次覆盖/删除基于当前那一版 */
+  keyVersions?: Record<string, number>;
+}
+
+export interface DraftSaveResult extends DraftState {
+  /** 这次保存**真的**清掉的键（服务端确认） */
+  cleared?: string[];
+  /** 同键冲突：服务端保留自己那份文字，同时把双方文字交回客户端 */
+  conflicts?: { key: string; local: string; server: string }[];
+  /** 无法安全删除的键：服务端保留原文字，等客户端处理 */
+  blockedRemovals?: string[];
+  /** true = 服务端按旧「整集合替换」语义处理了这次请求（旧客户端） */
+  legacyReplace?: boolean;
+  mode?: "patch" | "replace";
+}
+
+export function fetchDrafts(boardId: string): Promise<DraftState> {
   return request(`${BASE}/drafts/${encodeURIComponent(boardId)}`);
 }
 
+/**
+ * 保存草稿（契约 C1）。
+ *
+ * 默认就是**逐键三态**：`drafts` 只放本次确实上传的键，`removed` 放明确删除的键，
+ * 其余键是「未修改」，服务端绝不因此删除它们（F01 的根治点）。
+ * 老调用方只传两个参数时同样走这条路径（removed 为空 = 纯更新）。
+ */
 export function saveDrafts(
   boardId: string,
   drafts: Record<string, string>,
-): Promise<{ drafts: Record<string, string>; updatedAt: string }> {
+  patch: Omit<DraftSavePatch, "drafts"> = {},
+): Promise<DraftSaveResult> {
   return request(`${BASE}/drafts/${encodeURIComponent(boardId)}`, {
     method: "PUT",
-    body: JSON.stringify({ drafts }),
+    body: JSON.stringify({
+      mode: "patch",
+      drafts,
+      ...(patch.removed ? { removed: patch.removed } : {}),
+      ...(patch.baseRev !== undefined && patch.baseRev !== null ? { baseRev: patch.baseRev } : {}),
+      ...(patch.keyVersions ? { keyVersions: patch.keyVersions } : {}),
+    }),
   });
 }
 
@@ -279,3 +359,62 @@ export function batchDecide(
     body: JSON.stringify({ approve, reject }),
   });
 }
+
+
+// --- 真实模型理解与真实执行（第 9 轮，2026-10-11）-------------------------
+// 契约：docs/interactive-mode-contract.md §14
+
+/**
+ * 创建意图（真实入口）：服务端只接受「已可靠受理的理解请求」产出的意图。
+ *
+ * 演示入口仍然走 createDemoIntents；正式路径不显示演示内容。
+ */
+export function createIntents(
+  boardId: string,
+  submissionId?: string,
+): Promise<{ created: Intent[]; demo: boolean; reason?: string; detail?: string }> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intents`, {
+    method: "POST",
+    body: JSON.stringify(submissionId ? { submissionId } : {}),
+  });
+}
+
+/** 读取本板面的理解过程（受理 / 理解中 / 已完成 / 需要补充 / 无需行动 / 失败）。 */
+export function fetchUnderstanding(
+  boardId: string,
+  submissionId?: string,
+): Promise<UnderstandingResponse> {
+  const query = submissionId ? `?submissionId=${encodeURIComponent(submissionId)}` : "";
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/understanding${query}`);
+}
+
+/**
+ * 重试失败的理解：服务端从**已保存的提交快照**恢复，不重读当前板面、
+ * 不重新创建同一批任务。受理情况不明时先 fetchUnderstanding 确认，不盲目重发。
+ */
+export function retryUnderstanding(
+  understandingId: string,
+): Promise<{ ok: boolean; understanding?: unknown; reason?: string; detail?: string }> {
+  return request(`${BASE}/understanding/${encodeURIComponent(understandingId)}/retry`, {
+    method: "POST",
+  });
+}
+
+export function fetchExecutions(boardId: string): Promise<{ executions: Execution[] }> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/executions`);
+}
+
+/** 暂停正在执行的任务：作用于真实执行记录；迟到结果不再写回。 */
+export function pauseIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/pause`, { method: "POST" });
+}
+
+/** 继续：由用户决定，不自动重试；继续时校验材料与已完成步骤。 */
+export function resumeIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/resume`, { method: "POST" });
+}
+
+export function cancelIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/cancel`, { method: "POST" });
+}
+

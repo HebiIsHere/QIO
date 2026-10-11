@@ -1,4 +1,4 @@
-﻿# QIO 项目状态
+# QIO 项目状态
 
 **本文只回答一个问题：现在真的做到哪了。**
 
@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-11（`main` 分支，含互动线并入）。核对方法见文末。
+最后核对：2026-10-11（审计分支 `fix/main-audit-reliability-8fa8452`：F01—F12 修复，见 P34）。核对方法见文末。
 
 ---
 
@@ -1616,13 +1616,108 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
 
 ---
 
+### P34 — 主线可靠性审计修复（F01—F12，2026-10-11）
+
+- **Status：** completed
+- **Implementation：** 按审查基线的十二类可靠性缺陷逐条修复，分布在四条线上：
+  * 板面与草稿（F01/F07/F08/F10/F11）：`backend/src/agent/interactive/board_store.py`、
+    `backend/src/agent/api/interactive_store.py`、`frontend/src/stores/interactive.ts`、
+    `frontend/src/interactive/serverFacts.ts`、`frontend/src/interactive/submission.ts`。
+    草稿保存改为逐键三态协议（`mode=patch` + `baseRev` + `removed` + `keyVersions`，未出现的键 = 未修改）；
+    本地删除的组/关联按 base 三路判定，服务器无关改动不再复活它们；已确认的最高服务器版本独立于候选正文单调推进；
+    提交结果与后续读取结果分开记录；任务清单读取失败与「成功空集合」区分。
+  * 发送与恢复（F02/F03/F04/F12）：`frontend/src/stores/session.ts`、
+    `frontend/src/components/Composer.vue`、`frontend/src/components/interactive/ChatDock.vue`、
+    `frontend/src/components/interactive/FailedSendNotice.vue`、`backend/src/agent/core/turn.py`、
+    `backend/src/agent/api/server.py`。每次发送冻结不可变提交快照（原文 / 话题 / 显式附件列表 / 请求身份 /
+    重试来源 / 起点信息）；未决发送有独立持久台账，不做数量裁剪；受理事实由
+    `acceptance_facts()` 如实给出四种状态（`preparing` / `not_accepted` /
+    `cancelled_after_accept` / `accepted`），同身份重试从原请求的真实记录返回受理事实与原附件绑定。
+  * 记忆与关闭（F05/F06）：`backend/src/agent/services/memory_lifecycle.py`、`derived_tasks.py`、
+    `maintenance.py`、`app.py`、`entities/cards.py`。派生任务的领域写入与任务完成进同一事务并原子核验
+    owner + claim_generation + 状态 + 内容版本；手动维护与周期维护纳入同一生命周期管理，
+    关闭时拒绝新维护、有界等待并确认执行单元终止。
+  * 凭据验证（F09）：`backend/src/agent/credentials/store.py`、`backend/src/agent/api/server.py`。
+    验证开始前冻结输入指纹（密钥版本 + endpoint + default_model + kind），结果条件写入；
+    旧配置的迟到结果只记「历史结果」，不改当前可用性、默认项与自动候选。
+- **Tests：** `backend/tests/test_audit_f01_draft_patch.py`、`test_audit_f04_acceptance_receipt.py`、
+  `test_f05_superseded_writes.py`、`test_f06_maintenance_close.py`、
+  `test_credential_verify_fingerprint.py`，以及前端 `src/acceptance-state-recovery/f01/f07/f08/f10/f11-*`、
+  `src/stores/__tests__/b-sendSnapshotRecovery.test.ts`、`b-sendRequestShape.test.ts`、
+  `src/components/__tests__/b-chatDockPendingSend.test.ts`。
+- **Known limitations：** 本轮只修可靠性缺陷，**没有**接入互动模式的真实模型、没有新增产品功能、没有重做视觉。
+  互动板的对象级删除/修改冲突入口目前只在提交区给出；草稿协议的旧客户端（不带 `baseRev`）删除会被
+  `blockedRemovals` 拦住，属有意的安全取舍（建议先发后端再发前端）。
+  `tests/test_derived_tasks.py::test_recover_stale_running_tasks_after_restart` 是**基线既有**的顺序依赖用例：
+  单独跑该文件会红，与 `test_derivation_recovery.py` 同批（即全套字母序）通过；与本轮改动无关。
+- **后续依赖：** 无强制依赖；草稿三态协议要求前后端同版本或后端先行。
+  本轮的「没有接入互动模式的真实模型」已由下面 **P35** 补齐（来源分支 `feat/interactive-real-model`）；
+  P35 的真实模型人工验收仍未完成，两条限制按各自小节读。
+
+---
+
+### P35 — 互动模式真实模型理解与真实执行（2026-10-11 第九轮，整合编号）
+
+- **Status：** partial
+- **真实 main 基线：** `8fa845255c118a7104b1de8e37298ca745924482`（fetch 后 `origin/main` 的实际顶端，
+  与上一轮记录一致）；交付分支 `feat/interactive-real-model`。
+  五路并行（A 提交受理与材料读取 / B 真实理解与结构化校验 / C 批准后真实执行与调度 / D 前端状态与恢复 / E 独立审查），
+  各自独立 worktree 与分支，主智能体负责契约冻结、公共文件、顺序集成与最终验收。
+  没有合并 `main`、没有发布版本、没有改历史迁移（只追加迁移 37 与补偿 38）。
+- **契约：** `docs/interactive-mode-contract.md` **§14**（本轮冻结接口：理解状态、材料来源、允许操作集合、
+  HTTP 接口、跨模块签名、前端接口、文件所有权）。交付报告 `docs/interactive-real-model-report.md`，
+  独立审查 `docs/interactive-real-model-review.md`。
+- **受理与理解分开（§14.1）：** 提交成功建立一条 `accepted` 的理解请求并把它交给后台真实理解，
+  返回 `delivery.delivered=true` / `delivery.status='accepted'` / `delivery.understandingId`；
+  理解完成分三态 `understood` / `needs_clarification` / `no_action`，失败为 `failed` 且可从保存的快照重试。
+  受理失败（理解模块不可用 / 建立请求抛错）按失败处理：不更新基准、不清勾选、保留改动；
+  **受理之后**的模型失败只写理解记录，不回改提交记录。
+- **材料真实读取（§14.1 材料来源）：** 文件卡按 `meta.file.attachmentId` 读已保存附件的正文，
+  复用既有附件服务与既有解析能力；没有 attachmentId 的卡片如实标成「只有文件名，文件名不是正文，未读取正文」；
+  图片在当前模型链路没有视觉能力，一律 `image_unsupported`；网址区分「已读到正文」与「只有地址」；
+  截断与未读取范围写进上下文 `limits` / `honesty`，不声称已完整阅读。
+- **真实模型理解（§14.3 / §14.5）：** 上下文**只从冻结的提交快照构建**（不读当前板面），
+  以结构化上下文交给既有模型链路（复用凭据、用量、预算与脱敏机制）；
+  程序校验结构、对象引用、材料范围、操作类型、依赖与冲突、修改范围；无效输出不落成可执行任务并给出可读原因，
+  自动修复至多一次。模型输出三种判定，**不强制每次提交都生成任务**，也不用固定模板或关键词映射。
+- **真实执行（§14.4 / §14.5）：** 批准后建立执行记录并**实际启动执行**；只允许
+  `ALLOWED_INTENT_OPS`（生成结果卡 / 文字卡、移动卡片、成组、排序、连线）——用户在互动模式中能做的子集。
+  逐步落 checkpoint、写前写后重核材料与对象版本、暂停 / 继续 / 取消作用于真实执行、
+  迟到结果按 (执行记录, attempt, 所有者实例) 丢弃、重启后保持暂停、恢复不重复已完成步骤、
+  失败撤回只处理该任务造成且仍可安全撤回的改动、重复批准不重复执行。
+- **数据库：** 只追加迁移 37（`board_understanding` / `board_executions`，以及意图的目标 / 预期 / 操作 /
+  依据 / 稳定身份 / 理解来源列）与补偿 38；历史迁移与用户数据不动。
+- **前端：** 提交受理 / 模型理解 / 理解完成 / 任务执行四种状态分开显示；理解阶段可展开历史；
+  执行显示排队 / 等待依赖 / 正在执行 / 暂停 / 结束，成功、失败、取消都结束读条；
+  待补充、待审批、失败、暂停、取消各有明确状态与可用操作。
+- **验证（模拟模型）：** 各模块定向用例 + 主智能体端到端验收 `backend/tests/test_interactive_real_model.py`
+  （提交 → 受理 → 材料 → 理解 → 意图 → 审批 → 执行 → 结果卡与来源引用；未勾选 / 隐藏 / 间接链接不进上下文；
+  换材料与要求结果相应变化；重复提交不额外调用模型；三种理解判定；重复批准不重复执行）。
+  全部使用 fake/mock provider，不联网、不依赖真实 API Key、不产生真实模型费用。
+- **已知限制：**
+  - **没有真实模型人工验收**：本环境没有可用的、已明确授权的模型凭据，真实模型判断质量与真实执行链
+    没有在本轮跑过；不把模拟验证说成真实模型验收。
+  - 图片视觉理解未接入（当前模型链路没有视觉能力），界面与上下文都如实标注不支持。
+  - 长期记忆复用既有的知识 / 长期记忆机制（落待审批），没有改写用户会话 transcript。
+  - 引用型附件（没有副本、直接引用原文件）的读取路径没有专门用例覆盖。
+  - 结果卡正文来自模型在**理解阶段**产出、并经用户在预览中批准的那段内容；执行阶段只在方案没有正文时
+    才调用模型生成。
+  - 前端窄窗口与主题只做了 DOM 与样式令牌级验证，未做真实浏览器截图核对。
+- **后续：** 真实凭据下的端到端人工验收；图片视觉能力接入后打开 `image_unsupported`；
+  引用型附件读取的专项用例；前端实机视觉核对。
+
+---
+
 ## 尚未完成
 
 这些是最容易让后续 Agent 误判的地方，明确列出来：
 
-- **互动模式只有骨架流程，没有 QIO 的真实理解与执行**（见 P16）：板面、分组与顺序、可见范围、
-  保存与提交、虚线预览与审批边界都是真的；但提交只是把允许查看的表达落库并标出「没有接入模型调用」，
-  演示意图走的是可控演示状态机。**不要把演示结果说成 QIO 的判断。**
+- **互动模式已接通真实理解与真实执行，但还没有真实模型人工验收**（见 P35）：板面、分组与顺序、
+  可见范围、保存与提交、虚线预览与审批边界都是真的；提交现在会建立理解请求并真的调用模型理解
+  （三种判定：提出意图 / 需要补充 / 无需开展任务），批准后会真的执行允许的板面操作并落结果卡。
+  **仍未验证的是「真实模型判断质量」与真实凭据下的端到端链路**：自动化证据全部来自 fake/mock provider，
+  本环境没有可用的已授权模型凭据；**不要把模拟验证说成真实模型验收**。
+  演示入口（`demo=true` 与 `/demo/advance`）仍然存在，但演示推进不得驱动真实任务，正式路径不显示演示内容。
 - **斜杠命令体系**：未实现。工具创建没有独立的「入口页面」——按第三阶段的入口原则，
   它在对话里发生（说明需求 → Agent 调 `create_tool` → 同一张工具创建卡推进到「已创建」），
   设置页只放长期配置（电脑操控权限、联网通道），不承担这个动作。

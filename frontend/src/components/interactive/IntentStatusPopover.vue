@@ -8,12 +8,20 @@
   - 单项批准 / 拒绝入口靠近对应预览：板面本身由 BoardPreviewLayer 画虚线预览，
     这里在预览附近放一条审批浮条（IntentPreviewCard docked），同样要避开聊天与批量面板；
   - 键盘与指针边界：浮层内空格不触发板面框选、滚轮优先滚自己、Escape 先收浮层；
-  - 不把演示状态说成真实执行成功：第一阶段没有接入真实执行。
+  - 不把演示状态说成真实执行成功：正式路径的批准会真实启动执行（契约 §14.4），
+    演示推进（/demo/advance）只走可控状态机、不得驱动真实任务，两类状态在界面上必须分清。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { locatePreview, previewBounds, statusText } from "../../interactive/approval";
+import {
+  executionActions,
+  executionProgress,
+  executionText,
+  locatePreview,
+  previewBounds,
+  statusText,
+} from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
 import IntentPreviewCard from "./IntentPreviewCard.vue";
 
@@ -22,6 +30,17 @@ const store = useInteractiveStore();
 const busy = ref(false);
 const notice = ref<string | null>(null);
 const error = ref<string | null>(null);
+/** 只重试读取任务清单（F11）：不提交、不审批、不改任何板面事实 */
+const refreshing = ref(false);
+async function retryIntents(): Promise<void> {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await store.loadIntents();
+  } finally {
+    refreshing.value = false;
+  }
+}
 /** 当前聚焦查看的任务（点「在板面上定位」时设置；用来在预览附近放审批浮条） */
 const focusedId = ref<string | null>(null);
 /** 每行任务默认只显示「状态 + 操作」，点「详情」才展开进度与预览位置（浮层保持小巧，少挡板面） */
@@ -36,12 +55,130 @@ const GAP = 12;
 /** 浮层宽度上限（与样式里的 380px 一致，用于候选位置的相交估算） */
 const POP_WIDTH = 380;
 
-/** 执行中 / 已暂停：需要用户决定的任务 */
-const tasks = computed(() => store.activeIntents);
+/**
+ * 需要在这里管的任务：已批准（含等待前项）、排队 / 执行中、已暂停，以及任何已经有真实执行记录的。
+ * 执行中与已暂停的排序沿用 store.activeIntents，其余按原顺序附在后面。
+ */
+const tasks = computed(() => {
+  const seen = new Set<string>();
+  const list: Intent[] = [];
+  for (const intent of store.intents) {
+    const managed =
+      ["running", "paused", "waiting_dependency"].includes(intent.status) ||
+      Boolean(intent.execution) ||
+      Boolean(store.latestExecution(intent.id));
+    if (!managed || seen.has(intent.id)) continue;
+    seen.add(intent.id);
+    list.push(intent);
+  }
+  return list;
+});
+
+/** 这个任务最近一次真实执行（没有记录就是 null：界面不假装它在运行） */
+function executionOf(intent: Intent) {
+  return store.latestExecution(intent.id);
+}
+function executionStatusOf(intent: Intent): string {
+  return executionOf(intent)?.status ?? store.executionStatus[intent.id] ?? "none";
+}
+function execText(intent: Intent) {
+  return executionText(executionOf(intent), intent);
+}
+function execActions(intent: Intent) {
+  return executionActions(executionOf(intent), intent);
+}
+function progressText(intent: Intent): string {
+  const execution = executionOf(intent);
+  if (execution) return executionProgress(execution).text;
+  return intent.progress?.text ?? "还没有执行记录";
+}
+
+const controlBusy = ref<string | null>(null);
+const controlNote = ref<string | null>(null);
+
+/** 暂停 / 继续 / 取消：同一时间只处理一项，结果以服务端返回为准。 */
+async function control(intent: Intent, action: "pause" | "resume" | "cancel"): Promise<void> {
+  if (controlBusy.value) return;
+  controlBusy.value = intent.id;
+  controlNote.value = null;
+  try {
+    const result =
+      action === "pause"
+        ? await store.pauseExecution(intent.id)
+        : action === "resume"
+          ? await store.resumeExecution(intent.id)
+          : await store.cancelExecution(intent.id);
+    const verb = action === "pause" ? "暂停" : action === "resume" ? "继续" : "取消";
+    controlNote.value = result.ok
+      ? "已" + verb + "：" + (result.detail ?? "以服务端返回的执行记录为准。")
+      : "没有" + verb + "：" + (result.reason ?? result.detail ?? "服务端未说明原因");
+  } finally {
+    controlBusy.value = null;
+  }
+}
+
+/** 浮动审批条上的执行控制：按 id 找到任务再走同一条入口 */
+function controlById(intentId: string, action: "pause" | "resume" | "cancel"): void {
+  const intent = store.intentById(intentId);
+  if (intent) void control(intent, action);
+}
+
+/** 浮动审批条上的批准 / 拒绝：与列表里走同一个 store 入口（重复点击不会重复提交） */
+async function approveById(intentId: string, confirmDependency: boolean): Promise<void> {
+  busy.value = true;
+  error.value = null;
+  try {
+    const result = await store.approve(intentId, confirmDependency);
+    notice.value = result.ok
+      ? result.detail ?? "已批准：任务已经交给真实执行，进度以执行记录为准。"
+      : "没有批准：" + (result.detail ?? result.reason ?? "服务端未说明原因");
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function rejectById(intentId: string): Promise<void> {
+  busy.value = true;
+  error.value = null;
+  try {
+    const result = await store.reject(intentId);
+    notice.value = result.ok
+      ? "已拒绝：预览消失，板面原内容保留。"
+      : "没有拒绝：" + (result.detail ?? result.reason ?? "服务端未说明原因");
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** 重新查一次真实执行记录（不猜、不补进度） */
+async function refreshExecutions(): Promise<void> {
+  await store.loadExecutions();
+  await store.loadIntents();
+}
+
+// 打开浮层时查一次（开合仍由用户决定；这里只读事实，不自动打开面板）
+watch(
+  () => store.tasksOpen,
+  (open) => {
+    if (open) void refreshExecutions();
+  },
+);
 /**
  * 浮条展示的意图：优先用用户刚聚焦的那一项，否则用「执行中」的任务
  * （执行中的任务在板面上有虚线预览，浮条能贴着它；暂停的任务按契约不画预览）。
  */
+/** 浮条 / 浮窗用的意图：把服务端最近一次执行记录带进 props（intent.execution 可能为空） */
+const focusedWithExecution = computed<Intent | null>(() => {
+  const intent = focused.value;
+  if (!intent) return null;
+  const latest = store.latestExecution(intent.id);
+  return latest ? { ...intent, execution: latest } : intent;
+});
+
 const focused = computed<Intent | null>(() => {
   const byFocus = focusedId.value ? store.intentById(focusedId.value) : undefined;
   if (byFocus && ["running", "paused"].includes(byFocus.status)) return byFocus;
@@ -307,6 +444,14 @@ async function resume(intent: Intent): Promise<void> {
   busy.value = true;
   error.value = null;
   try {
+    // 已有真实执行记录：走「继续执行」（服务端会校验材料与已完成步骤，不重复已完成操作）
+    if (intent.status === "paused" && executionOf(intent)) {
+      const result = await store.resumeExecution(intent.id);
+      notice.value = result.ok
+        ? result.detail ?? "已继续：会校验材料与已完成步骤，不重复已经完成的操作。"
+        : "没有继续：" + (result.reason ?? result.detail ?? "服务端未说明原因");
+      return;
+    }
     const result = await store.approve(intent.id, true);
     notice.value = result.ok
       ? result.detail ?? "已确认按当前材料继续。"
@@ -343,19 +488,47 @@ function boundsText(intent: Intent): string {
       <p class="counts mono">
         执行中 {{ tasks.length }} 项 · 已结束 {{ store.finishedIntents.length }} 项
       </p>
+      <button class="close" type="button" data-im="tasks-refresh" @click="refreshExecutions">
+        刷新
+      </button>
       <button class="close" type="button" data-im="tasks-close" @click="store.tasksOpen = false">
         收起
       </button>
     </header>
 
     <p class="hint" role="note">
-      待审批的条目走批量审批入口；这里只列已经批准、正在执行或已暂停的任务。
-      第一阶段没有接入真实执行，进度来自演示入口，不能说成真实执行成功。
+      待审批的条目走批量审批入口；这里列出已批准（含等待前项）、排队、执行中、已暂停与已结束的任务。
+      状态和进度都取服务端的真实执行记录：排队、执行、暂停与结束各自显示，不会把「已批准」一直显示成运行中。
+    </p>
+    <p v-if="tasks.some((item) => item.demo)" class="hint" data-im="tasks-demo-note">
+      演示任务不是真实执行：推进演示不会写回任何真实任务。
     </p>
     <p v-if="notice" class="notice" role="status" data-im="tasks-notice">{{ notice }}</p>
+    <p v-if="controlNote" class="notice" role="status" data-im="tasks-control-note">{{ controlNote }}</p>
     <p v-if="error" class="error" role="alert">操作失败：{{ error }}</p>
+    <p v-if="store.executionError" class="error" role="status" data-im="tasks-execution-error">
+      执行记录读取失败：{{ store.executionError }}
+    </p>
 
-    <p v-if="!tasks.length" class="hint">现在没有执行中或已暂停的任务。</p>
+    <!--
+      F11：读取失败**不是**「任务消失」。下面列出的仍然是最后一次成功读到的任务
+      （不是当前权威事实），并给一个只触发读取的重试入口。
+    -->
+    <p v-if="store.intentsLoadState === 'error'" class="notice warn" role="status" data-im="tasks-refresh-failed">
+      任务清单刷新失败：{{ store.intentsLoadError || "原因未知" }}。下面是最后一次成功读到的任务，
+      不代表当前状态；依赖最新事实的审批会先重新核验，核验不成会暂停。
+      <button
+        class="btn ghost"
+        type="button"
+        data-im="tasks-refresh-retry"
+        :disabled="refreshing"
+        @click="retryIntents"
+      >
+        {{ refreshing ? "重新读取中…" : "重试刷新" }}
+      </button>
+    </p>
+
+    <p v-if="!tasks.length" class="hint">{{ store.intentsLoadState === "error" ? "清单读取失败：这里的空白不是「没有任务」，请先重试刷新。" : "现在没有需要管理的任务。" }}</p>
     <ul class="rows">
       <li
         v-for="intent in tasks"
@@ -370,6 +543,16 @@ function boundsText(intent: Intent): string {
           {{ intent.title }}
         </span>
         <span class="task-status">{{ label(intent) }}</span>
+        <span
+          class="task-exec"
+          data-im="task-execution"
+          :data-intent-id="intent.id"
+          :data-execution-status="executionStatusOf(intent)"
+          :class="'tone-' + execText(intent).tone"
+        >
+          <span class="task-exec-label">{{ execText(intent).label }}</span>
+          <span class="task-exec-detail">{{ execText(intent).detail }}</span>
+        </span>
         <span class="task-actions">
           <button
             class="btn ghost"
@@ -391,20 +574,54 @@ function boundsText(intent: Intent): string {
             {{ expanded[intent.id] ? "收起详情" : "详情" }}
           </button>
           <button
+            v-if="execActions(intent).canPause"
+            class="btn"
+            type="button"
+            data-im="task-pause"
+            :data-intent-id="intent.id"
+            :disabled="controlBusy === intent.id"
+            @click="control(intent, 'pause')"
+          >
+            {{ controlBusy === intent.id ? "处理中…" : "暂停" }}
+          </button>
+          <button
             v-if="intent.status === 'paused'"
             class="btn"
             type="button"
             data-im="task-resume"
             :data-intent-id="intent.id"
-            :disabled="busy"
+            :disabled="busy || controlBusy === intent.id"
             @click="resume(intent)"
           >
             继续（按当前材料）
           </button>
+          <button
+            v-else-if="execActions(intent).canResume"
+            class="btn"
+            type="button"
+            data-im="task-resume-execution"
+            :data-intent-id="intent.id"
+            :disabled="controlBusy === intent.id"
+            @click="control(intent, 'resume')"
+          >
+            继续执行
+          </button>
+          <button
+            v-if="execActions(intent).canCancel"
+            class="btn ghost"
+            type="button"
+            data-im="task-cancel"
+            :data-intent-id="intent.id"
+            :disabled="controlBusy === intent.id"
+            @click="control(intent, 'cancel')"
+          >
+            取消任务
+          </button>
         </span>
         <span v-if="expanded[intent.id]" class="task-detail">
-          <span class="task-progress mono">{{ intent.progress.text || "进度未记录" }}</span>
+          <span class="task-progress mono" data-im="task-progress">{{ progressText(intent) }}</span>
           <span class="task-bounds">{{ boundsText(intent) }}</span>
+          <span class="task-control-hint" data-im="task-control-hint">{{ execActions(intent).reason }}</span>
         </span>
       </li>
     </ul>
@@ -412,12 +629,17 @@ function boundsText(intent: Intent): string {
 
   <!-- 单项审批浮条：贴着板面上那处虚线预览（拿不到坐标就退回板面下沿居中） -->
   <IntentPreviewCard
-    v-if="store.tasksOpen && focused"
-    :intent="focused"
+    v-if="store.tasksOpen && focusedWithExecution"
+    :intent="focusedWithExecution"
     :all-intents="store.intents"
     :style="dockStyle"
     docked
     active
+    @approve="approveById"
+    @reject="rejectById"
+    @pause="(id: string) => controlById(id, 'pause')"
+    @resume="(id: string) => controlById(id, 'resume')"
+    @cancel="(id: string) => controlById(id, 'cancel')"
   />
 </template>
 
@@ -478,6 +700,18 @@ function boundsText(intent: Intent): string {
 }
 .hint { color: var(--text-faint); }
 .notice { color: var(--text-secondary); }
+/* F11：读取失败是「事实可能过期」的提示 —— 用警告色令牌，并让重试按钮在同一行可达 */
+.notice.warn {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  color: var(--text-primary);
+  border-left: 2px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: var(--r-xs);
+  padding: var(--sp-1) var(--sp-2);
+}
 .error { color: var(--danger); }
 .rows {
   list-style: none;
@@ -510,6 +744,32 @@ function boundsText(intent: Intent): string {
   background: var(--warning-soft);
 }
 .task-status { font-size: var(--fs-xs); color: var(--text-secondary); }
+/*
+  真实执行状态：文字说清「排队 / 执行 / 暂停 / 结束」，颜色只做辅助；
+  长说明换行显示，窄窗口也不会把操作按钮挤出去。
+*/
+.task-exec {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+}
+.task-exec-label {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
+.task-exec.tone-open .task-exec-label { color: var(--link); border-color: var(--link); }
+.task-exec.tone-waiting .task-exec-label { color: var(--warning); border-color: var(--warning); }
+.task-exec.tone-active .task-exec-label { color: var(--accent); border-color: var(--accent); }
+.task-exec.tone-problem .task-exec-label { color: var(--danger); border-color: var(--danger); }
+.task-exec-detail { min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.task-control-hint { color: var(--text-faint); }
 .task-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; padding-top: 2px; }
 .task-detail { display: flex; flex-direction: column; gap: 2px; }
 .task-progress,

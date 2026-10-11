@@ -1,0 +1,181 @@
+{
+ "script": "scripts/irm-int-verify/verify_submission_identity.py",
+ "generated_at": "2026-10-11T13:44:19.342471+00:00",
+ "worktree": "D:\\qio-dev\\qio-irm-int-e",
+ "head": "8a131a503e695b37ee278ad43328e12810bca11e",
+ "db_errors": [
+  "no such column: client_request_id :: SELECT COUNT(*) FROM (SELECT client_request_id, COUNT(*) c FROM board_submission",
+  "no such column: client_request_id :: SELECT COUNT(*) FROM board_submissions WHERE client_request_id = ?",
+  "no such column: client_request_id :: SELECT COUNT(DISTINCT client_request_id) FROM board_submissions WHERE client_req"
+ ],
+ "checks_total": 33,
+ "checks_failed": 18,
+ "passed": false,
+ "checks": [
+  {
+   "check": "S0.1 board_submissions.client_request_id 存在",
+   "ok": false,
+   "detail": ""
+  },
+  {
+   "check": "S0.2 唯一索引 idx_board_submissions_client_request 存在",
+   "ok": false,
+   "detail": ""
+  },
+  {
+   "check": "S1.1 首次提交 200",
+   "ok": true,
+   "detail": "status=200 body={\"status\": \"succeeded\", \"submission\": {\"id\": \"sub_9fcd4e4c445c\", \"seq\": 1, \"status\": \"succeeded\", \"visible\": {\"cards\": [{\"id\": \"m1\", \"kind\": \"file\", \"content\": \"甲材料：单价 100 元\", \"meta\": {\"name\": \"甲.txt\""
+  },
+  {
+   "check": "S1.2 首次提交有受理回执与理解身份",
+   "ok": true,
+   "detail": "submissionId=sub_9fcd4e4c445c understandingId=u_47f21e07d02a delivery={'delivered': True, 'status': 'accepted', 'understandingId': 'u_47f21e07d02a', 'reason': '提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交', 'detail': '本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：比较两份材料', 'background': {'started': True, 'reason': None}, 'marking': {'updated': []}}"
+  },
+  {
+   "check": "S1.3 库里只有一条该身份的提交",
+   "ok": false,
+   "detail": "rows=-1"
+  },
+  {
+   "check": "S1.4 受理后确实调用了模型",
+   "ok": true,
+   "detail": "calls=1"
+  },
+  {
+   "check": "S1.5 同身份重试 200",
+   "ok": false,
+   "detail": "status=409"
+  },
+  {
+   "check": "S1.6 返回原提交身份",
+   "ok": false,
+   "detail": "None vs sub_9fcd4e4c445c"
+  },
+  {
+   "check": "S1.7 返回原理解身份",
+   "ok": false,
+   "detail": "None vs u_47f21e07d02a"
+  },
+  {
+   "check": "S1.8 replayed 标记为真",
+   "ok": false,
+   "detail": "replayed=None"
+  },
+  {
+   "check": "S1.9 重试不新增提交行",
+   "ok": false,
+   "detail": ""
+  },
+  {
+   "check": "S1.10 重试不新增理解请求",
+   "ok": true,
+   "detail": "rows=1"
+  },
+  {
+   "check": "S1.11 重试不重复调用模型",
+   "ok": true,
+   "detail": "1 -> 1"
+  },
+  {
+   "check": "S2.1 返回 409",
+   "ok": true,
+   "detail": "status=409 body={\"detail\": {\"error\": \"stale_state\", \"reason\": \"板面已经在服务端更新到版本 2，这次提交基于的版本 1 已过期：请重新读取板面后再提交；本次没有记录任何提交。\"}}"
+  },
+  {
+   "check": "S2.2 错误码是 request_identity_conflict",
+   "ok": false,
+   "detail": "{\"detail\": {\"error\": \"stale_state\", \"reason\": \"板面已经在服务端更新到版本 2，这次提交基于的版本 1 已过期：请重新读取板面后再提交；本次没有记录任何提交。\"}}"
+  },
+  {
+   "check": "S2.3 不落新提交",
+   "ok": false,
+   "detail": ""
+  },
+  {
+   "check": "S2.4 不重复调用模型",
+   "ok": true,
+   "detail": "1 -> 1"
+  },
+  {
+   "check": "S3.1 返回 409",
+   "ok": true,
+   "detail": "status=409"
+  },
+  {
+   "check": "S3.2 不落新提交",
+   "ok": false,
+   "detail": ""
+  },
+  {
+   "check": "S4.1 新身份提交成功",
+   "ok": true,
+   "detail": "status=200 submissionId=sub_436cba6742b9"
+  },
+  {
+   "check": "S4.2 E-1 查到自己（不是最近一条）",
+   "ok": false,
+   "detail": "status=404 got=None want=sub_9fcd4e4c445c"
+  },
+  {
+   "check": "S4.3 E-2 查到自己",
+   "ok": false,
+   "detail": "status=404 got=None want=sub_436cba6742b9"
+  },
+  {
+   "check": "S4.4 查证不回带别人的理解身份",
+   "ok": false,
+   "detail": "E-1 understandingId=None"
+  },
+  {
+   "check": "S5.1 未用过的身份 404",
+   "ok": true,
+   "detail": "status=404"
+  },
+  {
+   "check": "S5.2 404 时不返回任何受理事实",
+   "ok": false,
+   "detail": "{\"detail\": \"Not Found\"}"
+  },
+  {
+   "check": "S6.1 第三条提交成功",
+   "ok": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "S6.2 刚刚有提交，未用身份仍然 404",
+   "ok": true,
+   "detail": "status=404"
+  },
+  {
+   "check": "S6.3 没有把时间接近当成证据",
+   "ok": true,
+   "detail": "{\"detail\": \"Not Found\"}"
+  },
+  {
+   "check": "S6.4 旧身份仍返回旧事实（未被新提交顶掉）",
+   "ok": false,
+   "detail": "status=404 got=None want=sub_436cba6742b9"
+  },
+  {
+   "check": "S7.1 三个身份三条提交",
+   "ok": true,
+   "detail": "submissions=3"
+  },
+  {
+   "check": "S7.2 三个身份互不相同",
+   "ok": false,
+   "detail": "distinct=-1"
+  },
+  {
+   "check": "S7.3 理解请求数不超过提交数（可复用的不留多余请求）",
+   "ok": true,
+   "detail": "understandings=1"
+  },
+  {
+   "check": "S7.4 不存在同 (board, 身份) 的重复行",
+   "ok": false,
+   "detail": "dup=-1"
+  }
+ ]
+}

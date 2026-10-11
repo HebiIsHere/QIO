@@ -10,13 +10,27 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
 from agent.selector.tokenize import tokenize
 from agent.prompts import DREAMING_PROMPT, TOOL_AUTOMATION_PROMPT
+from agent.services.background import (
+    BackgroundClosed,
+    BackgroundHandle,
+    BackgroundTasks,
+)
 
 logger = logging.getLogger(__name__)
+
+# 维护「跑一轮」在注册表里的唯一名字：手动与周期共用它 ⇒ 已有一轮在跑时合并，
+# 不会并发执行两份同样的工作（F06 的并发规则）。
+RUN_NAME = "maintenance:run"
+
+# 关闭报告里的阶段名（与 services/lifecycle.py 同名常量一致；定义在这里避免
+# maintenance 反向依赖 lifecycle）。
+PHASE_MAINTENANCE_STOPPED = "maintenance_stopped"
+PHASE_MAINTENANCE_UNFINISHED = "maintenance_unfinished"
 
 NEGATION_WORDS = ["不是", "不对", "其实", "并没有", "从来", "根本", "反而", "错了"]
 CONFIDENCE_STEP = 0.2
@@ -184,7 +198,13 @@ async def scan_contradictions(ctx) -> dict:
 # ---------------------------------------------------------------------------
 
 def _request_approval(ctx, kind: str, payload: dict) -> None:
-    """Fire-and-forget approval; applied asynchronously when approved."""
+    """发起一个审批等待（异步应用）。
+
+    F06：过去这里是裸的 `asyncio.create_task(...)` —— 句柄没人持有，关闭时既等不到
+    也取消不到。现在优先登记进维护调度器的审批注册表（与周期/手动维护同一生命周期）；
+    没有调度器（替身 ctx / 离线调用）时退回 create_task，真正进入关闭流程时**拒绝**
+    新建并如实留痕，绝不偷偷跑在数据库已经关掉之后。
+    """
 
     async def _wait_and_apply():
         try:
@@ -194,6 +214,14 @@ def _request_approval(ctx, kind: str, payload: dict) -> None:
         except Exception:  # noqa: BLE001
             logger.warning("approval handling failed for %s", kind, exc_info=True)
 
+    scheduler = getattr(ctx, "maintenance", None)
+    if scheduler is not None and hasattr(scheduler, "register_approval_wait"):
+        try:
+            scheduler.register_approval_wait(kind, _wait_and_apply)
+            return
+        except BackgroundClosed:
+            logger.warning("关闭中：不再新建维护审批等待（%s）", kind)
+            return
     asyncio.create_task(_wait_and_apply())
 
 
@@ -452,10 +480,80 @@ async def _generate_draft(ctx, cluster: list[str]) -> dict:
 # ---------------------------------------------------------------------------
 
 class MaintenanceScheduler:
+    """维护的唯一生命周期管理（周期巡检 + 手动触发 + 关闭收尾）。
+
+    F06 的根因是「手动维护没人管」：POST /api/maintenance/run 直接
+    asyncio.create_task(run_once())，句柄随手丢掉。于是：
+
+    * 关闭时 stop() 只取消周期循环，**手动那一轮照样在跑**；
+    * 那一轮还在写库时，aclose() 已经把 adapter / 数据库按「干净关闭」处理了；
+    * 关闭报告里当然也不会有它的名字 —— 「未结束」被吞成了「已完成」。
+
+    修法：把「跑一轮维护」收进**一个入口 + 一份注册表**：
+
+    * `_execute()` 是唯一的执行体，所有失败都在这里被如实记成返回值（不吞异常）；
+    * 周期循环与 run_manual() 都经 `_start_run()` 登记，同一个名字（RUN_NAME）
+      ⇒ 已有一轮在跑时**合并**到它，绝不并发跑第二份同样的工作；
+    * `stop()` 先置「关闭中」（新维护一律拒绝），再取消周期循环、对剩下的执行单元
+      有界等待 + 取消，最后用注册表的报告**如实**说「确认结束了没有」；
+    * 所有等待都有硬上限（沿用 background.py 的三档预算），不无限等，
+      也不靠「提前标 clean」掩盖。
+    """
+
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
         self._running = False
         self._task: asyncio.Task | None = None
+        self._closing = False
+        # 手动维护 + 周期维护共用的一份后台注册表（关闭时由它给出「确认结束没有」）。
+        self._runs = BackgroundTasks(name="maintenance")
+        # 维护发起的等待（审批等）：同一生命周期，不能是无人管理的 create_task。
+        self._approvals = BackgroundTasks(name="maintenance-approval")
+        self._run_handle: BackgroundHandle | None = None
+        self._last_result: dict | None = None
+        # 一旦某次 stop() 如实报告过「有执行单元未确认结束」，这件事就**不能**被
+        # 后来的重复调用抹掉（否则调用方会把整个关闭说成干净）。
+        self._reported_unfinished = False
+
+    # -- 状态 -------------------------------------------------------------
+
+    @property
+    def closing(self) -> bool:
+        """是否已进入关闭流程（此后不再接受新的维护请求）。"""
+        return self._closing
+
+    def is_running(self) -> bool:
+        """周期调度循环是否在跑（关闭之后必须为 False）。"""
+        return self._task is not None and not self._task.done()
+
+    def _inactive_handles(self) -> list[BackgroundHandle]:
+        """账上**还没结束**的维护执行单元（手动 + 周期，按对象身份去重）。"""
+        seen: dict[int, BackgroundHandle] = {}
+        for handle in list(self._runs._tracked()) + (
+            [self._run_handle] if self._run_handle is not None else []
+        ):
+            if handle.done:
+                continue
+            seen.setdefault(id(handle), handle)
+        return list(seen.values())
+
+    def is_busy(self) -> bool:
+        """是否有一轮维护正在执行（手动或周期，含「已取消但未结束」的）。"""
+        return self._running or bool(self._inactive_handles())
+
+    def last_result(self) -> dict | None:
+        """最近一轮维护的结果（手动 / 周期共用；没跑过就是 None）。"""
+        return self._last_result
+
+    def register_approval_wait(self, kind: str, factory) -> BackgroundHandle:
+        """登记一个「等审批 + 应用结果」的后台等待（同一生命周期）。
+
+        关闭流程已经开始时抛 :class:`BackgroundClosed` —— 调用方（`_request_approval`）
+        据此如实放弃这次审批，而不是在数据库/适配器即将释放时偷偷起一个协程。
+        `replace=True`：同类审批等待只有最近一次需要被追踪（关闭时不会被漏掉，
+        也不会让注册表随维护轮次无限增长）。
+        """
+        return self._approvals.register(f"{kind}", factory, replace=True)
 
     def start(self) -> None:
         """启动调度器。
@@ -465,29 +563,187 @@ class MaintenanceScheduler:
         旧代码只能靠 `except RuntimeError: pass` 吞掉异常，
         结果是「后台维护从来没有真正启动」而且没人知道。
         """
+        if self._closing:
+            # 关闭之后不允许再启动：否则会留下一个「没人会再停它」的循环。
+            return
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
-
-    def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
 
     def next_delay_seconds(self) -> float:
         """下一次巡检的间隔（测试会把它调小以驱动真实循环）。"""
         interval = self.ctx.settings_store.get_int("maintenance.interval_hours", 24)
         return float(max(1, interval) * 3600)
 
-    async def stop(self) -> None:
-        """停止调度器：取消等待、等任务真正结束、清掉引用。"""
-        task, self._task = self._task, None
-        if task is None:
-            return
-        task.cancel()
+    # -- 发起一轮（唯一的登记入口）----------------------------------------
+
+    def _start_run(
+        self, factory: Callable[[], Awaitable[Any]]
+    ) -> tuple[BackgroundHandle | None, bool]:
+        """登记一轮维护。返回 (句柄, 是否由本次调用启动)。
+
+        * 已进入关闭流程 → (None, False)（调用方如实拒绝，不偷偷同步执行）；
+        * 已有一轮在跑 → (已有句柄, False)（**合并**，不并发执行第二份工作）；
+        * 正常情况下 → (新句柄, True)。
+        """
+        if self._closing:
+            return None, False
+        handle = self._runs.register(RUN_NAME, factory)
+        if handle is self._run_handle:
+            return handle, False
+        self._run_handle = handle
+        return handle, True
+
+    async def run_manual(self) -> dict:
+        """手动维护入口（POST /api/maintenance/run）：**立即返回**、不阻塞 HTTP。
+
+        返回契约（与 API 层冻结）：
+
+        * 关闭中 ⇒ {ok: False, started: False, accepted: False, running: False,
+          reason: "shutting_down"}（API 映射 409）；
+        * 已有维护在跑 ⇒ {ok: True, started: False, accepted: True, running: True,
+          reason: "already_running"}（合并到既有运行，不重复执行）；
+        * 正常启动 ⇒ {ok: True, started: True, accepted: True, running: True,
+          reason: None}。
+
+        句柄由 BackgroundTasks 持有，所以关闭时能等到 / 取消到它，
+        并**确认执行单元真的终止**之后才报告干净。
+        """
+        # 先记下「发起前已经在跑的维护执行单元」；`_start_run` 返回的句柄如果就在
+        # 这份名单里，说明注册表把这次请求**合并**到了既有运行上（不是新起的）。
+        before = {id(handle) for handle in self._inactive_handles()}
+        handle, started = self._start_run(self._run_registered)
+        if handle is not None and id(handle) in before:
+            started = False
+        if handle is None:
+            return {
+                "ok": False,
+                "started": False,
+                "accepted": False,
+                "running": self.is_busy(),
+                "reason": "shutting_down",
+            }
+        if not started:
+            return {
+                "ok": True,
+                "started": False,
+                "accepted": True,
+                "running": True,
+                "reason": "already_running",
+            }
+        return {
+            "ok": True,
+            "started": True,
+            "accepted": True,
+            "running": True,
+            "reason": None,
+        }
+
+    async def _run_registered(self) -> dict:
+        """登记后的执行体：走 `run_once()`，结果留在 last_result 里。
+
+        刻意经 `self.run_once(...)`：这样既有调用点（测试 monkeypatch、既有内部调用）
+        替换 `run_once` 时，周期巡检与手动触发两条路都跟着替换。
+        """
+        result = await self.run_once()
+        self._last_result = result
+        return result
+
+    async def run_once(self) -> dict:
+        """跑一轮维护（周期巡检与手动触发共用的**唯一执行体**）。
+
+        每个重活都在自己的模块里拆成「输入读取 / 纯计算 / 结果提交」（见文件上方
+        的拆分约定）：纯计算走 `ctx.heavy` 的工作线程，循环侧只剩只读读取、毫秒级
+        DB 写与 `await` 模型调用。`prune_*` 本身就是毫秒级 DB 写（实测 0.1ms），
+        留在循环侧当作提交动作。
+
+        重入保护：已经在跑就返回 already_running —— 手动请求在 run_manual() 里
+        就已经合并掉了，这道闸是给「直接 await run_once()」的调用点用的（既有测试
+        与既有内部调用），保证同一时刻只有一份工作在跑。
+
+        取消**不吞**：`asyncio.CancelledError` 原样抛出，由关闭路径判定
+        「执行单元是否确认结束」（见 :meth:`stop`）。
+        """
+        if self._closing:
+            return {"ok": False, "reason": "shutting_down"}
+        if self._running:
+            return {"ok": False, "reason": "already_running"}
+        self._running = True
         try:
-            await task
+            results: dict[str, Any] = {"ok": True}
+            # 顺带清理过期的工具输出（记录保留，只清正文）：维护是天然的执行时机
+            results["tool_outputs_purged"] = self.ctx.prune_tool_outputs()
+            # 整条记录的保留天数默认 0（永久保留）；用户设置过才在这里隐式清理
+            results["tool_records_purged"] = self.ctx.prune_tool_records()
+            results.update(await scan_contradictions(self.ctx))
+            results.update(await run_dreaming(self.ctx))
+            results.update(await mine_tool_candidates(self.ctx))
+            return results
         except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
-            logger.warning("maintenance task ended with an error", exc_info=True)
+            # 取消**不是失败**：如实向上抛（调用方据此判定「未确认结束」），
+            # 绝不在这里把取消吞成 {"ok": True}。
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("maintenance run failed: %s", exc)
+            return {"ok": False, "reason": str(exc)[:200]}
+        finally:
+            self._running = False
+
+    async def stop(self) -> dict:
+        """停止维护并**如实报告**：关闭中 → 停周期循环 → 有界等待/取消 → 确认终止。
+
+        返回契约（与 aclose() 冻结）：
+
+        * clean：所有维护执行单元（周期循环、在跑的那一轮、维护发起的等待）是否
+          都已**确认结束**；
+        * unfinished：clean 的反面（显式布尔，便于合并进 CloseReport）；
+        * pending：取消后仍未确认结束的名字；
+        * reason：一句话原因（尽到告知义务，不吞问题）。
+
+        等待沿用 services/background.py 的有界预算（默认 10 + 2 + 2 秒），
+        所以关闭耗时始终有上限：不会因为一个卡住的任务无限等待。
+        """
+        self._closing = True
+        # 1) 先停周期循环：它可能正好在 await 一轮维护，取消之后不会再发起新的。
+        loop_task, self._task = self._task, None
+        if loop_task is not None and not loop_task.done():
+            loop_task.cancel()
+            try:
+                await loop_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+                logger.warning("maintenance loop ended with an error", exc_info=True)
+        # 2) 在跑的那一轮 + 维护发起的等待：有界等待 → 取消 → 确认结束。
+        run_report = await self._runs.shutdown()
+        approval_report = await self._approvals.shutdown()
+        pending = sorted(
+            set(run_report.unfinished)
+            | set(run_report.still_running)
+            | set(approval_report.unfinished)
+            | set(approval_report.still_running)
+        )
+        clean = not pending
+        phases: list[str] = []
+        reason: str | None = None
+        if not clean:
+            self._reported_unfinished = True
+            phases.append(PHASE_MAINTENANCE_UNFINISHED)
+            reason = "关闭时仍有维护执行单元未确认结束：" + "、".join(pending)
+            logger.error("%s（不写干净退出，不释放 database / adapter）", reason)
+        elif self._reported_unfinished:
+            # 之前如实报过未结束：不把历史抹掉 —— 只报「这一次的等待结果」。
+            phases.append(PHASE_MAINTENANCE_UNFINISHED)
+            logger.info("维护本轮等待结束；但更早的一次关闭报告里仍有未确认结束的执行单元")
+        else:
+            phases.append(PHASE_MAINTENANCE_STOPPED)
+            logger.info("维护已确认全部结束（周期循环 + 在跑的一轮 + 维护发起的等待）")
+        return {
+            "clean": clean,
+            "unfinished": (not clean),
+            "pending": pending,
+            "reason": reason,
+            "phases": phases,
+        }
 
     async def _loop(self) -> None:
         """主循环：**整个循环体**都在异常隔离内。
@@ -506,6 +762,8 @@ class MaintenanceScheduler:
                 logger.warning("maintenance tick failed", exc_info=True)
 
     async def _tick(self) -> None:
+        if self._closing:
+            return
         if self.ctx.settings_store.get("maintenance.enabled", "true") == "false":
             return
         # 只在「完全没有主 Turn」时跑。
@@ -515,31 +773,23 @@ class MaintenanceScheduler:
         # 会让维护任务和主任务同时跑。
         if self.ctx.turns.active is not None:
             return
-        await self.run_once()
-
-    async def run_once(self) -> dict:
-        """跑一轮维护。
-
-        每个重活都在自己的模块里拆成「输入读取 / 纯计算 / 结果提交」（见文件上方
-        的拆分约定）：纯计算走 `ctx.heavy` 的工作线程，循环侧只剩只读读取、毫秒级
-        DB 写与 `await` 模型调用。`prune_*` 本身就是毫秒级 DB 写（实测 0.1ms），
-        留在循环侧当作提交动作。
-        """
-        if self._running:
-            return {"ok": False, "reason": "already_running"}
-        self._running = True
+        # 周期巡检也走**同一个登记入口**：与手动维护共用一份注册表与去重名字，
+        # 所以关闭时能等到它，手动与周期也不会并发跑两份同样的工作。
+        before = {id(item) for item in self._inactive_handles()}
+        handle, started = self._start_run(self._run_registered)
+        if handle is not None and id(handle) in before:
+            started = False
+        if handle is None or not started:
+            # 关闭中，或已有一轮（手动 / 周期）在跑：不重复执行、也不替别人等它。
+            return
         try:
-            results: dict[str, Any] = {"ok": True}
-            # 顺带清理过期的工具输出（记录保留，只清正文）：维护是天然的执行时机
-            results["tool_outputs_purged"] = self.ctx.prune_tool_outputs()
-            # 整条记录的保留天数默认 0（永久保留）；用户设置过才在这里隐式清理
-            results["tool_records_purged"] = self.ctx.prune_tool_records()
-            results.update(await scan_contradictions(self.ctx))
-            results.update(await run_dreaming(self.ctx))
-            results.update(await mine_tool_candidates(self.ctx))
-            return results
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("maintenance run failed: %s", exc)
-            return {"ok": False, "reason": str(exc)[:200]}
-        finally:
-            self._running = False
+            # 等这一轮结束：循环的节奏就是「跑完再睡」。异常已在 run_once 里被记为
+            # 返回值；取消（关闭）**必须原样抛出**，由 stop() 判定「确认结束没有」
+            # —— 在这里吞掉取消会让循环永远停不下来。
+            await handle.task
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 一次失败不能杀死调度器
+            logger.warning("maintenance tick failed", exc_info=True)
+
+

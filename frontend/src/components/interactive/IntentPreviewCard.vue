@@ -13,7 +13,11 @@ import { computed, type CSSProperties } from "vue";
 import {
   approveAvailability,
   cardLabel,
+  executionActions,
+  executionProgress,
+  executionText,
   locatePreview,
+  operationsText,
   previewBounds,
   rejectAvailability,
   statusText,
@@ -30,6 +34,9 @@ const emit = defineEmits<{
   (event: "approve", intentId: string, confirmDependency: boolean): void;
   (event: "reject", intentId: string): void;
   (event: "locate", intentId: string): void;
+  (event: "pause", intentId: string): void;
+  (event: "resume", intentId: string): void;
+  (event: "cancel", intentId: string): void;
 }>();
 
 const VIEW_W = 260;
@@ -56,6 +63,23 @@ const status = computed(() => statusText(props.intent));
 const approve = computed(() => approveAvailability(props.intent));
 const reject = computed(() => rejectAvailability(props.intent));
 const waiting = computed(() => waitingForLabels(props.intent, props.allIntents));
+
+/* 真实执行：状态与操作都取服务端的执行记录，不在这里猜进度 */
+const execution = computed(() => props.intent.execution ?? null);
+const exec = computed(() => executionText(execution.value, props.intent));
+const execActions = computed(() => executionActions(execution.value, props.intent));
+const execProgress = computed(() => executionProgress(execution.value));
+/* 模型提议的具体操作：只是预览，不能直接改正式内容 */
+const operations = computed(() => operationsText(props.intent));
+/**
+ * 真实执行已经接管暂停 / 继续 / 取消时，不再显示「批准」这一类入口：
+ * 同一个动作只留一个入口，避免两条路径给出不同结果。
+ */
+const executionControlsOnly = computed(
+  () =>
+    Boolean(execution.value) &&
+    ["queued", "running", "paused"].includes(String(execution.value?.status ?? "")),
+);
 
 const preview = computed(() => props.intent.preview ?? { cards: [], groups: [], links: [] });
 const hasPreview = computed(
@@ -185,7 +209,9 @@ const dockedStyle = computed<CSSProperties>(() => {
 const dockedNote = computed(() => {
   if (props.intent.status === "needs_update") return status.value.detail;
   if (!approve.value.allowed && reject.value.allowed) return approve.value.text;
-  return "批准只表示它成为任务；第一阶段没有接入真实执行，进度来自演示入口。";
+  if (exec.value.running) return exec.value.detail;
+  if (props.intent.demo) return "演示任务不是真实执行；批准只表示它成为任务。";
+  return "批准后才会成为任务：批准前这里是虚线预览，不会改动板面的正式内容。";
 });
 
 /** 定位到板面上的虚线预览（沿用 window 事件，A 的 BoardCanvas 监听它） */
@@ -215,6 +241,75 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 
     <p class="status-detail">{{ status.detail }}</p>
     <p v-if="intent.summary" class="summary">{{ intent.summary }}</p>
+
+    <!--
+      模型提议（目标 / 预期 / 具体操作）：只是预览的一部分，
+      提交与理解都不构成执行批准，这些提议不会直接改正式板面内容。
+    -->
+    <div v-if="intent.goal || intent.expected || operations.length" class="proposal" data-im="intent-proposal">
+      <p v-if="intent.goal" class="proposal-line" data-im="intent-goal">
+        <span class="proposal-key">目标</span>{{ intent.goal }}
+      </p>
+      <p v-if="intent.expected" class="proposal-line" data-im="intent-expected">
+        <span class="proposal-key">预期</span>{{ intent.expected }}
+      </p>
+      <p v-for="(item, index) in operations" :key="'op-' + index" class="proposal-line" data-im="intent-operation">
+        <span class="proposal-key">操作 {{ index + 1 }}</span>{{ item }}
+      </p>
+      <p class="proposal-hint">这些是 QIO 的提议，只在这里预览；批准之前不会改动正式板面内容。</p>
+    </div>
+
+    <!-- 真实执行状态：排队 / 执行 / 暂停 / 结束各有明确文字与可用操作 -->
+    <div
+      v-if="execution || intent.status === 'running' || intent.status === 'paused'"
+      class="execution"
+      data-im="intent-execution"
+      :data-intent-id="intent.id"
+      :data-execution-status="execution?.status ?? 'none'"
+    >
+      <p class="exec-line">
+        <strong class="exec-label" :class="'tone-' + exec.tone" data-im="intent-execution-label">{{ exec.label }}</strong>
+        <span class="exec-detail" data-im="intent-execution-detail">{{ exec.detail }}</span>
+      </p>
+      <p v-if="execution?.steps?.length" class="exec-progress mono" data-im="intent-execution-progress">
+        {{ execProgress.text }}
+      </p>
+      <span v-if="execActions.canPause || execActions.canResume || execActions.canCancel" class="actions">
+        <button
+          v-if="execActions.canPause"
+          class="btn"
+          type="button"
+          data-im="execution-pause"
+          :data-intent-id="intent.id"
+          @click="emit('pause', intent.id)"
+        >
+          暂停
+        </button>
+        <button
+          v-if="execActions.canResume"
+          class="btn"
+          type="button"
+          data-im="execution-resume"
+          :data-intent-id="intent.id"
+          @click="emit('resume', intent.id)"
+        >
+          继续执行
+        </button>
+        <button
+          v-if="execActions.canCancel"
+          class="btn ghost"
+          type="button"
+          data-im="execution-cancel"
+          :data-intent-id="intent.id"
+          @click="emit('cancel', intent.id)"
+        >
+          取消任务
+        </button>
+      </span>
+      <p v-if="execActions.reason && executionControlsOnly" class="exec-hint" data-im="intent-execution-hint">
+        {{ execActions.reason }}
+      </p>
+    </div>
 
     <!-- 虚线预览：位置 / 结构 / 关系。虚线 = 还没成为正式内容 -->
     <div class="preview-wrap">
@@ -285,6 +380,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 
     <div class="actions">
       <button
+        v-if="!executionControlsOnly"
         class="btn primary"
         type="button"
         :data-im="intent.status === 'paused' ? 'resume' : 'approve'"
@@ -354,6 +450,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
   box-shadow: var(--shadow-2);
 }
 .intent-card.docked .preview-wrap,
+.intent-card.docked .proposal,
 .intent-card.docked .summary,
 .intent-card.docked .progress,
 .intent-card.docked .revert-text,
@@ -408,6 +505,54 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
   line-height: var(--lh-base);
 }
 .summary { color: var(--text-secondary); }
+/* 模型提议：与正式内容在层级上分开；长文换行，窄窗口不溢出 */
+.proposal { display: flex; flex-direction: column; gap: 2px; }
+.proposal-line {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+.proposal-key {
+  display: inline-block;
+  margin-right: var(--sp-1);
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+.proposal-hint { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); line-height: var(--lh-base); }
+/* 真实执行：只在确实有执行记录（或已批准）时出现；状态文字 + 可用的暂停 / 继续 / 取消 */
+.execution {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  border-left: 2px solid var(--border-strong);
+  padding-left: var(--sp-2);
+}
+.exec-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+}
+.exec-label {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
+.exec-label.tone-open { color: var(--link); border-color: var(--link); }
+.exec-label.tone-waiting { color: var(--warning); border-color: var(--warning); }
+.exec-label.tone-active { color: var(--accent); border-color: var(--accent); }
+.exec-label.tone-problem { color: var(--danger); border-color: var(--danger); }
+.exec-detail { min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.exec-progress { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.exec-hint { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); }
 .revert-text { color: var(--text-secondary); }
 .preview-wrap {
   display: flex;

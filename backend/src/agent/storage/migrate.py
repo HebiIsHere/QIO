@@ -61,23 +61,26 @@ _ADD_COLUMN_RE = re.compile(
 # 合法标识符（对象名只会来自本仓库的常量清单；仍然校验一次，杜绝拼接注入）。
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# **必需**的 schema 对象。校验按对象做，不看版本号：版本号已到 36 但对象缺失
-# 正是这条检查要治的场景。清单覆盖三批对象：
+# **必需**的 schema 对象。校验按对象做，不看版本号：版本号已到 39 但对象缺失
+# 正是这条检查要治的场景。清单覆盖四批对象：
 #
 # * A05/B01 补充修复轮（实例归属 / 知识版本链 / 人工纠正保护）；
 # * 流式回复线并入 main 时新增的附件对象与轮次结束事实（来源线迁移 31/32/33）；
-# * 互动模式并入 main 时新增的板面对象（来源线原编号 26，集成时改号 **35**）。
+# * 互动模式并入 main 时新增的板面对象（来源线原编号 26，集成时改号 **35**）；
+# * 稳定提交请求身份（迁移 39）：board_submissions.client_request_id 与其部分唯一索引。
 #
 # 诚实边界（两条）：
 #
 # * 这是**按名字**的校验 —— 同名的对象存在但形状不同（例如某个兄弟分支用同一个
 #   列名存了别的东西）它判不出来；
-# * 清单里的每一项都必须在补偿迁移 `COMPENSATION_VERSION`（36）里有一条对应的
+# * 清单里的每一项都必须在补偿迁移 `COMPENSATION_VERSION`（40）里有一条对应的
 #   建对象语句（`test_fu_w3_b01_schema.py::test_compensation_migration_is_additive_and_ordered`
 #   逐项核对）。所以这里**不列**建表基础列（`attachments` / 互动各表）：它们只出现在
 #   `CREATE TABLE IF NOT EXISTS` 里，表整体缺失时建表语句会把整张现代形状（含那些列）
 #   建出来；而「表在、某根基础列丢了」补偿语句补不了它，列进来只会得到一份
 #   永远补不齐的清单（真正的形状损坏该靠人判断，不该伪装成可补偿项）。
+#   （`board_submissions.client_request_id` 是**追加列**，列丢了补偿语句补得回来，
+#   所以它照旧列进来 —— 与上面说的是同一条判据，不矛盾。）
 REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
     "tables": (
         "instances",
@@ -91,6 +94,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_submissions",
         "board_pending",
         "board_intents",
+        # 真实模型理解与真实执行（迁移 37）：理解请求 / 执行记录。
+        "board_understanding",
+        "board_executions",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -107,6 +113,17 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "turn_journal.reason_code",
         "turn_journal.stopped_by",
         "turn_journal.actions",
+        # 真实模型理解与真实执行（迁移 37）：意图的目标 / 预期 / 操作 / 依据 /
+        # 稳定身份 / 理解来源。缺了它们，批准后的执行拿不到要执行什么。
+        "board_intents.goal",
+        "board_intents.expected",
+        "board_intents.operations",
+        "board_intents.basis",
+        "board_intents.intent_key",
+        "board_intents.understanding_id",
+        # 稳定提交请求身份（迁移 39）：缺了它，同一次提交请求的重试就没有可持久的身份，
+        # 服务端只能重复落行 / 重复调用模型，前端也无法按精确身份查证受理事实。
+        "board_submissions.client_request_id",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -120,6 +137,15 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_board_snapshots_board",
         "idx_board_submissions_board",
         "idx_board_intents_board",
+        # 真实模型理解与真实执行（迁移 37）。
+        "idx_board_understanding_board",
+        "idx_board_understanding_request",
+        "idx_board_understanding_submission",
+        "idx_board_executions_intent",
+        "idx_board_executions_board",
+        # 稳定提交请求身份（迁移 39）：
+        # (board_id, client_request_id) 的部分唯一索引（空串不参与）。
+        "idx_board_submissions_client_request",
     ),
 }
 

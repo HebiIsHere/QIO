@@ -4,8 +4,13 @@
 
 硬约束（不许绕过）：
 
-1. 保存不调用 QIO；**只有 submit_board 会让 QIO 拿到表达**，而第一阶段没有接入模型调用，
-   所以 delivery.delivered 恒为 false，reason 必须说清「没有接入」，不能假装 QIO 懂了。
+1. 保存不调用 QIO；**只有 submit_board 会让 QIO 拿到表达**。提交成功（succeeded）时
+   **受理与理解分开**（契约 §14.1）：本函数只负责建立一条 accepted 的理解请求并把它交给
+   后台真实理解（understanding.py，延迟 import）。受理成功 → delivery.delivered=true、
+   delivery.understandingId、delivery.status='accepted'；受理**失败**（理解模块不可用 /
+   建立请求抛错）→ 这次提交按 failed 处理：不更新基准、不清勾选、如实返回原因，绝不假装
+   QIO 受理了。受理成功之后的模型失败**不得**回头改提交状态（那是理解记录自己的 failed，
+   可从保存的快照重试）。
 2. 未勾选的注释、明确隐藏的卡片：文字与链接都不得进入 before / after；
    链接必须两端都在范围内才出现；一名可见成员都没有的组整体不出现。
 3. 提交成功才更新「上次成功提交」基准；失败保留改动与本次注释选择。
@@ -21,18 +26,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import sqlite3
 from typing import Any
 
 from agent.interactive import board_store, models
+
+logger = logging.getLogger(__name__)
 
 class StaleState(Exception):
     """提交被拒（M4 路径 3）：候选版本 / 确认范围与当前服务端不一致。
 
     触发它的提交**不落库**：不产生提交记录、不更新基准、不调用 QIO。
     """
+
+class RequestIdentityConflict(Exception):
+    """提交被拒（契约 §1.1 第 3 条）：同一个提交请求身份，内容却不一致。
+
+    一次提交请求有稳定身份（client_request_id）。同身份同内容 = 重试（返回原事实）；
+    同身份**不同内容**（base_state_version 或 note 不一致）= 冲突 —— 不得把另一个窗口 /
+    另一次内容当成同一次提交的受理结果。
+
+    触发它的提交**不落库**：不产生提交记录、不新建理解请求、不改基准、不调用模型。
+    """
+
+
+#: 提交请求身份的上限（与 understanding.request_id_for 拼接后仍在合理长度内）。
+MAX_CLIENT_REQUEST_ID = 200
 
 
 #: 只影响显示、不构成提交内容的表达式：普通移动 / 缩放。
@@ -608,21 +631,362 @@ def refresh_pending(conn: sqlite3.Connection, board_id: str) -> dict:
 
 
 def _decide_status(baseline: dict | None, expressions: list[dict], after: dict) -> tuple[str, str | None]:
-    """empty / duplicate / succeeded 的一致判定（前两种都不更新基准、不调用 QIO）。"""
+    """empty / duplicate / succeeded 的一致判定（前两种都不更新基准、不调用 QIO）。
+
+    判定顺序按契约 §1.5：**先看内容是否与上次成功提交一致（duplicate），再看有没有
+    可提交内容（empty）**。纯位置变化（layout_only）后内容与上次成功提交一致，必须
+    判 duplicate 而不是 empty —— 两种状态的安全语义相同（不更新基准、不调用模型），
+    但前端文案与状态机含义必须准确。
+    """
+    fingerprint = content_fingerprint(after)
+    if baseline:
+        # 与「上次成功提交内容」比较时对两边都重算身份指纹：
+        # 基准行里的 content_hash 可能是旧方案（内容指纹），旧基准无缝兼容
+        snapshot = baseline.get("snapshot")
+        if isinstance(snapshot, dict) and snapshot:
+            if fingerprint == content_fingerprint(snapshot):
+                return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
+        elif baseline.get("contentHash") and baseline["contentHash"] == fingerprint:
+            return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
+    # 首次提交（baseline=None）不得判成 duplicate；没有内容变化才是 empty
     content = [e for e in expressions if e.get("kind") not in DISPLAY_ONLY_EXPRESSIONS]
     if not content:
         return (
             "empty",
             "没有可提交内容：本次没有允许查看的内容，或只有普通移动 / 缩放这类不构成表达的变化",
         )
-    if baseline and isinstance(baseline.get("snapshot"), dict) and baseline.get("snapshot"):
-        # 与「上次成功提交内容」比较时对两边都重算身份指纹：
-        # 基准行里的 content_hash 可能是旧方案（内容指纹），旧基准无缝兼容
-        if content_fingerprint(after) == content_fingerprint(baseline["snapshot"]):
-            return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
-    elif baseline and baseline.get("contentHash") and baseline["contentHash"] == content_fingerprint(after):
-        return "duplicate", "与上次成功提交内容一致，未重复提交、未更新基准"
     return "succeeded", None
+
+
+# --- 提交请求身份（契约 §1.1 / §1.2） ------------------------------------
+
+
+def normalize_client_request_id(value: Any) -> str:
+    """把客户端传来的提交请求身份规范成可落库的字符串；非法直接拒绝。
+
+    - None / 缺失 / 空白 → ""（旧客户端：不参与幂等，行为与今天一致）；
+    - 必须是字符串（数字 / 布尔一律 400 级错误，不悄悄转成字符串）；
+    - 去掉首尾空白，长度 1..MAX_CLIENT_REQUEST_ID。
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("clientRequestId 必须是字符串")
+    if not value.strip():
+        # 空 / 全空白 = 旧客户端：不参与幂等（也不落身份）
+        return ""
+    if len(value) > MAX_CLIENT_REQUEST_ID:
+        # 只拒绝，不截断：身份必须**原样**保存与回显（前端逐字比较）
+        raise ValueError(f"clientRequestId 过长（最多 {MAX_CLIENT_REQUEST_ID} 字符）")
+    return value
+
+
+def _raw_note(note: Any) -> str:
+    """提交请求里的 note，**原样**（不改写、不截断、不规范化）。"""
+    return note if isinstance(note, str) else ""
+
+
+def _display_note(note: Any) -> str:
+    """给用户看的备注摘要（只进 delivery.detail 的展示文本，不作为身份依据）。"""
+    return " ".join(str(note or "").split())[:200]
+
+
+def _note_from_delivery(delivery: Any) -> str:
+    """从提交记录的 delivery 里取回本次提交的备注（**原样**）。
+
+    新记录显式带 delivery["note"]（提交时原样落库）：直接原样返回 —— 前端逐字比较，
+    不许规范化 / 截断 / 改写。旧记录没有它时才从 detail 的「用户备注：」段取回，
+    取不到返回 ""（不猜、不编）。
+    """
+    data = delivery if isinstance(delivery, dict) else {}
+    note = data.get("note")
+    if isinstance(note, str):
+        return note
+    detail = data.get("detail")
+    if isinstance(detail, str) and "用户备注：" in detail:
+        tail = detail.rsplit("用户备注：", 1)[1]
+        return tail.split("；", 1)[0].strip()[:200]
+    return ""
+
+
+def _delivery_facts(delivery: Any, status: str) -> dict:
+    """把记录里的 delivery 规范成契约 §1.2 的冻结形状（缺的字段如实补 None，不编造）。
+
+    既有的 delivered / status / understandingId / reason / detail 原样透出；背景调度
+    这类额外事实（background / marking）也一并保留（前端按需读取，只增不改）。
+    duplicate / empty 这类没有投递状态的历史记录如实表成 not_sent，不伪装成 accepted。
+    """
+    data = dict(delivery) if isinstance(delivery, dict) else {}
+    fallback_status = "accepted" if status == "succeeded" else "not_sent"
+    normalized = {
+        "delivered": bool(data.get("delivered", status == "succeeded")),
+        "status": str(data.get("status") or fallback_status),
+        "understandingId": data.get("understandingId"),
+        "reason": data.get("reason"),
+        "detail": data.get("detail"),
+    }
+    for key, value in data.items():
+        normalized.setdefault(key, value)
+    return normalized
+
+
+def _understanding_facts(
+    conn: sqlite3.Connection, *, submission_id: str
+) -> tuple[str | None, str | None]:
+    """这次提交的理解请求事实 (understandingId, understandingStatus)。
+
+    身份口径与 understanding.request_id_for 一致（"sub:<boardId>:<submissionId>" 的
+    submission_id 部分）：按 submission_id 取一条，读不到就如实返回 (None, None) ——
+    不推断、不拿「最近一条理解记录」冒充受理证据（契约 §1.1 第 4 条）。
+    """
+    try:
+        row = conn.execute(
+            "SELECT id, status FROM board_understanding WHERE submission_id = ?"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (str(submission_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if row is None:
+        return None, None
+    return str(row["id"]), str(row["status"])
+
+
+def _base_state_version(row) -> int | None:
+    """这条提交记录**基于的板面版本**（契约 §1.2 acceptance.baseStateVersion）。
+
+    真相在提交记录里，不需要新列：
+
+    - `baseline.seq` 是这次提交写下的板面版本（成功提交 = 本次基于的版本；
+      empty / duplicate / failed 也带上它，便于事后查证）；
+    - 缺它时（本列之前写下的旧记录）退回读 after_state 里的 seq；再没有就如实 None ——
+      不拿「最近一次成功提交的版本」冒充（那会把另一次提交的版本安到这一条上）。
+    """
+    baseline = models.loads(row["baseline"], {})
+    if isinstance(baseline, dict):
+        raw = baseline.get("baseStateVersion")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+        # 旧记录：只有成功提交的 baseline.seq 与「本次基于的版本」同义
+        if str(row["status"]) == "succeeded":
+            legacy = baseline.get("seq")
+            if isinstance(legacy, int) and not isinstance(legacy, bool):
+                return legacy
+    return board_store.parse_state_seq(models.loads(row["after_state"], {}))
+
+
+def _client_request_id_row(conn: sqlite3.Connection, board_id: str, client_request_id: str):
+    """按**精确身份**取原始提交记录；查不到返回 None。
+
+    只按 (board_id, client_request_id) 精确匹配：时间接近、最近一条、板面出现新任务
+    一律不作为证据。空身份直接 None（旧客户端不参与幂等）。
+    """
+    if not client_request_id:
+        return None
+    try:
+        return conn.execute(
+            "SELECT * FROM board_submissions WHERE board_id = ? AND client_request_id = ?"
+            " ORDER BY seq LIMIT 1",
+            (board_id, client_request_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+def acceptance_lookup(
+    conn: sqlite3.Connection, board_id: str, client_request_id: str
+) -> dict | None:
+    """按**精确身份**查这次提交请求的事实（契约 §1.2）；查不到返回 None。
+
+    冻结形状（D/A 都按它写断言）：
+
+        {clientRequestId, submissionId, status, delivery{delivered, status,
+         understandingId, reason, detail}, understandingId, understandingStatus,
+         baseStateVersion, note, createdAt, replayed}
+
+    **只认精确匹配**：时间接近、最近一条理解记录、板面出现新任务都不能单独作为受理
+    证据；查不到就返回 None，由调用方如实回「结果未知」，绝不推导成功。
+    本函数只读：不写库、不落新行、不调用模型。
+    """
+    try:
+        bid = board_store.ensure_board(conn, board_id=board_id)["id"]
+    except Exception:  # noqa: BLE001 - 板面 id 非法 / 库不可用都按「查不到」处理
+        return None
+    wanted = normalize_client_request_id(client_request_id)
+    if not wanted:
+        return None
+    row = _client_request_id_row(conn, bid, wanted)
+    if row is None:
+        return None
+    delivery = _delivery_facts(models.loads(row["delivery"], {}), str(row["status"]))
+    understanding_id, understanding_status = _understanding_facts(conn, submission_id=row["id"])
+    return {
+        # 原样回显落库的身份（提交时就是原样保存的；前端逐字比较，绝不规范化 / 截断）
+        "clientRequestId": str(row["client_request_id"]),
+        "submissionId": row["id"],
+        "status": str(row["status"]),
+        "delivery": delivery,
+        "understandingId": understanding_id,
+        "understandingStatus": understanding_status,
+        "baseStateVersion": _base_state_version(row),
+        "note": _note_from_delivery(delivery),
+        "createdAt": row["created_at"],
+        # 查证动作本身不重放提交：这里永远是 False（重放事实由提交响应里的 replayed 表达）
+        "replayed": False,
+    }
+
+
+def _submission_facts(conn: sqlite3.Connection, row) -> dict:
+    """把一条提交记录转成「原记录事实」（重放响应的唯一读侧实现）。"""
+
+    def _json(value: Any, fallback: Any) -> Any:
+        loaded = models.loads(value, fallback)
+        return loaded if loaded is not None else fallback
+
+    status = str(row["status"])
+    delivery = _json(row["delivery"], {})
+    understanding_id, understanding_status = _understanding_facts(conn, submission_id=row["id"])
+    return {
+        "submissionId": row["id"],
+        "seq": int(row["seq"]),
+        "status": status,
+        "before": _json(row["before_state"], {}),
+        "after": _json(row["after_state"], {}),
+        "visible": _json(row["visible"], {}),
+        "expressions": _json(row["expressions"], []),
+        "baseline": _json(row["baseline"], {}),
+        "delivery": _delivery_facts(delivery, status),
+        "error": row["error"],
+        "createdAt": row["created_at"],
+        "baseStateVersion": _base_state_version(row),
+        "note": _note_from_delivery(delivery),
+        "understandingId": understanding_id,
+        "understandingStatus": understanding_status,
+    }
+
+
+def _checked_cleared_at(conn: sqlite3.Connection, board_id: str, seq: int) -> list[str]:
+    """提交那一刻被自动取消勾选的卡片（从当时的板面快照读，不重算、不猜）。"""
+    try:
+        row = conn.execute(
+            "SELECT state FROM board_state_snapshots WHERE board_id = ? AND seq = ? LIMIT 1",
+            (board_id, int(seq)),
+        ).fetchone()
+    except sqlite3.Error:
+        return []
+    if row is None:
+        return []
+    state = models.loads(row["state"], {})
+    if not isinstance(state, dict):
+        return []
+    visible_ids = {card["id"] for card in project_snapshot(state)["cards"] if card.get("id")}
+    return [
+        str(card["id"])
+        for card in state.get("cards", [])
+        if card.get("id") in visible_ids and card.get("checked")
+    ]
+
+
+def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
+    """同身份重试的响应：只返回**原记录事实**，不落新行、不新建理解请求、不调模型。
+
+    与原提交响应同形状（status / submission / before / after / expressions / baseline /
+    delivery / visibleRange / checkedCleared），但 status、delivery、submission 全部来自
+    落库的原记录，并带 `replayed: true` 让调用方（与前端）区分「重放」与「新受理」。
+    重放**不重放副作用**：勾选当时已取消，这里如实回报当时被清理的勾选，不再清一次。
+    """
+    facts = _submission_facts(conn, row)
+    status = str(facts["status"])
+    submission_seq = int(facts["seq"])
+    baseline_info = facts["baseline"] if isinstance(facts["baseline"], dict) else {}
+    previous_seq = baseline_info.get("previousSeq")
+    if previous_seq is None:
+        prior = conn.execute(
+            "SELECT seq FROM board_submissions WHERE board_id = ? AND status = 'succeeded'"
+            " AND seq < ? ORDER BY seq DESC LIMIT 1",
+            (board_id, submission_seq),
+        ).fetchone()
+        previous_seq = int(prior["seq"]) if prior is not None else None
+    before = facts["before"]
+    if status == "succeeded":
+        baseline_info = {
+            "updated": True,
+            "firstSubmission": previous_seq is None,
+            "previousSeq": previous_seq,
+            "seq": submission_seq,
+        }
+        # 前后状态复用同一份求差实现（与 understanding 侧「按 submission_id 补读」同口径）：
+        # 重放时板面可能已经前进，所以 before 按**当时那次提交**的基准还原。
+        try:
+            snapshot = conn.execute(
+                "SELECT state FROM board_state_snapshots WHERE board_id = ? AND seq = ? LIMIT 1",
+                (board_id, submission_seq - 1),
+            ).fetchone()
+            if snapshot is not None:
+                state = models.loads(snapshot["state"], {})
+                if isinstance(state, dict):
+                    before = project_baseline(last_success_baseline(conn, board_id), state)
+        except Exception:  # noqa: BLE001 - 还原不出来时仍旧返回原记录里的 before
+            before = facts["before"]
+    baseline_seq = facts["baseStateVersion"]
+    return {
+        "status": status,
+        "submission": {
+            "id": str(facts["submissionId"]),
+            "seq": submission_seq,
+            "status": status,
+            "visible": facts["visible"],
+            "expressions": facts["expressions"],
+            "delivery": facts["delivery"],
+            "error": facts["error"],
+            "createdAt": facts["createdAt"],
+            "clientRequestId": str(row["client_request_id"]),
+        },
+        "before": before,
+        "after": facts["after"],
+        "expressions": facts["expressions"],
+        "baseline": baseline_info,
+        "delivery": facts["delivery"],
+        "visibleRange": facts["visible"],
+        # 提交那一刻被自动取消的勾选：按记录里的板面版本还原当时的快照（快照已被轮转清理
+        # 时如实返回空列表，不拿当前板面重算）
+        "checkedCleared": (
+            _checked_cleared_at(conn, board_id, baseline_seq)
+            if isinstance(baseline_seq, int)
+            else []
+        ),
+        "replayed": True,
+    }
+
+
+def _conflict_reason(conn: sqlite3.Connection, row, *, note: str, base_state_version: Any) -> str | None:
+    """同身份但内容不一致的可读原因；一致返回 None（= 重试，可以重放原事实）。
+
+    只比契约写明的两件事：base_state_version 与 note。身份内出现这两种偏差都**不能**
+    当成同一次提交的受理结果（不得把另一个窗口的内容混进来）。
+    """
+    stored_base = _base_state_version(row)
+    wanted_base = None
+    if base_state_version is not None:
+        try:
+            wanted_base = int(base_state_version)
+        except (TypeError, ValueError):
+            wanted_base = None
+    stored_note = _note_from_delivery(models.loads(row["delivery"], {}))
+    identity = str(row["client_request_id"])
+    if wanted_base != stored_base:
+        return (
+            f"这个提交请求身份（{identity}）已经对应一次基于板面版本 {stored_base} 的提交，"
+            f"这次却声明基于版本 {wanted_base}：内容不一致，已拒绝"
+            "（没有落新提交、没有改基准、没有调用模型）。"
+        )
+    if _note_from_delivery({"note": note}) != stored_note:
+        return (
+            f"这个提交请求身份（{identity}）已经对应一次备注为「{stored_note}」的提交，"
+            f"这次却是「{note}」：内容不一致，已拒绝"
+            "（没有落新提交、没有改基准、没有调用模型）。"
+        )
+    return None
 
 
 def _next_submission_seq(conn: sqlite3.Connection, board_id: str) -> int:
@@ -648,12 +1012,14 @@ def _record_submission(
     delivery: dict,
     content_hash: str,
     error: str | None,
+    client_request_id: str = "",
 ) -> dict:
     stamp = models.now_iso()
     conn.execute(
         "INSERT INTO board_submissions (id, board_id, seq, status, before_state, after_state,"
-        " visible, expressions, baseline, delivery, content_hash, error, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " visible, expressions, baseline, delivery, content_hash, error, created_at,"
+        " client_request_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             submission_id,
             board_id,
@@ -668,6 +1034,7 @@ def _record_submission(
             content_hash,
             error,
             stamp,
+            client_request_id,
         ),
     )
     return {
@@ -682,6 +1049,405 @@ def _record_submission(
     }
 
 
+# --- 受理与后台理解（契约 §14.1 / §14.3 / §14.4） -------------------------
+#
+# 统一生命周期（整合轮契约 §2）：理解的后台调度必须经 AppContext.background
+# （services/background.BackgroundTasks）登记，名字固定
+# interactive-understanding:<understandingId>，并声明底层执行单元探针
+# ——「理解记录是否已到终结状态」。关闭开始后 register 抛 BackgroundClosed，
+# 调用方据此拒绝新调度并如实说明（绝不静默改成同步跑模型）。
+
+#: 后台理解任务的强引用：任务在跑的时候必须有人持有它（否则可能被 GC 吞掉）。
+#: 仅用于没有绑定应用上下文的测试兜底（裸 create_task）路径；生产路径的句柄
+#: 由 AppContext.background 持有，关闭时由它统一收尾。
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+#: 后台任务名前缀（与 execution.py 的 interactive-execution: 同一命名空间约定）。
+UNDERSTANDING_TASK_PREFIX = "interactive-understanding:"
+
+#: 关闭 / 重启中断一次理解时写进 error 的可读原因（记录仍可从原快照重试）。
+INTERRUPTED_UNDERSTANDING_ERROR = (
+    "理解被执行环境的关闭 / 重启中断（没有产出任何意图）：记录仍可从保存的快照重试，"
+    "不需要重读当前板面。"
+)
+
+#: 连接 → 宿主应用（AppContext / 任何持有 background 注册表的对象）。
+#: 值里同时持有 conn 与 owner 的强引用：id() 复用会导致把任务登记到错误的注册表上。
+_CONNECTION_OWNERS: dict[int, tuple[sqlite3.Connection, Any]] = {}
+
+
+def bind_background_owner(conn: sqlite3.Connection, owner: Any) -> None:
+    """把连接绑到宿主应用：之后这条连接上的理解调度都登记进 owner.background。
+
+    由 AppContext.__init__ 调用（同一份 conn 也就是关闭时 shutdown 的那份注册表）。
+    不绑（老对象 / 单元测试裸连接）时走测试兜底路径；生产路径必须绑。
+    """
+    _CONNECTION_OWNERS[id(conn)] = (conn, owner)
+
+
+def background_owner_for(conn: sqlite3.Connection) -> Any | None:
+    """取这条连接绑定的宿主应用；没绑（或连接已变）时返回 None。"""
+    entry = _CONNECTION_OWNERS.get(id(conn))
+    if entry is None or entry[0] is not conn:
+        return None
+    return entry[1]
+
+
+def unbind_background_owner(conn: sqlite3.Connection) -> None:
+    """解绑（关闭收尾 / 测试收尾用；正常路径不需要）。"""
+    entry = _CONNECTION_OWNERS.get(id(conn))
+    if entry is not None and entry[0] is conn:
+        _CONNECTION_OWNERS.pop(id(conn), None)
+
+
+def _understanding_is_settled(conn: sqlite3.Connection, understanding_id: str) -> bool:
+    """底层执行单元探针：这条理解记录是否已经到达终结状态。
+
+    读到终结状态（understood / needs_clarification / no_action / failed）才算这一份
+    后台工作真的收尾；仍停在 accepted / understanding 时如实返回 False ——
+    「asyncio 句柄被取消了」不是「底层执行单元结束了」（A05 口径）。
+    读不到记录（数据库不可用 / 记录不存在）时同样返回 False：不能靠读失败假装收尾。
+    """
+    try:
+        row = conn.execute(
+            "SELECT status FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None:
+        return False
+    return str(row["status"]) in models.UNDERSTANDING_SETTLED_STATUSES
+
+
+async def _no_adapter():
+    """没有传入 adapter_provider 时的兜底：如实返回「当前没有可用模型」。
+
+    understanding.run_understanding 拿到 None 必须给出可读失败原因（不抛异常）；
+    这里只保证形状正确 —— A 侧绝不自己拿凭据、绝不绕过 QIO 既有的用量 / 预算链路。
+    """
+    return None
+
+
+def _load_understanding():
+    """延迟 import B 的理解模块：不存在时返回 (None, 可读原因)，绝不抛给调用方。
+
+    只管「模块在不在」；具体有没有 request_understanding / run_understanding 由各自的
+    调用点判定（受理与后台执行是两条不同的路径）。
+    """
+    try:
+        from agent.interactive import understanding  # 延迟 import：B 的模块
+    except Exception as exc:  # noqa: BLE001 - 模块缺失 / 加载失败都是「受理不可用」
+        return None, f"理解模块不可用（agent.interactive.understanding）：{type(exc).__name__}: {exc}"
+    return understanding, None
+
+
+def _understanding_id_of(conn: sqlite3.Connection, record: Any, submission_id: str) -> str:
+    """从受理返回值里取理解请求 id；取不到就按 submission_id 回查（只取一条）。"""
+    if isinstance(record, dict):
+        for key in ("id", "understandingId"):
+            value = record.get(key)
+            if value:
+                return str(value)
+        nested = record.get("understanding")
+        if isinstance(nested, dict) and nested.get("id"):
+            return str(nested["id"])
+    try:
+        row = conn.execute(
+            "SELECT id FROM board_understanding WHERE submission_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (submission_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    return str(row["id"]) if row is not None else ""
+
+
+def _accept_submission(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    snapshot: dict,
+) -> dict:
+    """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
+
+    snapshot 就是这次提交结果里的 after 投影（内存里那份，不重新读板面）：
+    提交成功后紧接着会「自动取消勾选」并保存板面，重读会把刚提交的注释从可见范围里
+    过滤掉。B 需要 before / expressions 时自己按 submission_id 从 board_submissions 读。
+
+    返回 {"ok": bool, "understandingId": str | None, "reason": str | None}。
+    任何失败都如实返回原因，不抛异常（调用方据此把这次提交按 failed 处理）。
+    """
+    understanding, reason = _load_understanding()
+    if understanding is None:
+        return {"ok": False, "understandingId": None, "reason": reason}
+    requester = getattr(understanding, "request_understanding", None)
+    if not callable(requester):
+        return {
+            "ok": False,
+            "understandingId": None,
+            "reason": "理解模块没有 request_understanding：无法建立理解请求",
+        }
+    # 深拷贝一份冻结快照：内容就是内存里那份 after，之后谁也改不到它
+    frozen = models.loads(models.dumps(snapshot), {})
+    try:
+        record = requester(
+            conn, board_id=board_id, submission_id=submission_id, snapshot=frozen
+        )
+    except Exception as exc:  # noqa: BLE001 - 受理失败必须如实返回，不能抛给路由
+        logger.warning("互动提交受理失败（不更新基准、不清勾选）", exc_info=True)
+        return {
+            "ok": False,
+            "understandingId": None,
+            "reason": f"建立理解请求失败：{type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": True,
+        "understandingId": _understanding_id_of(conn, record, submission_id) or None,
+        "reason": None,
+    }
+
+
+def _current_attempt(conn: sqlite3.Connection, understanding_id: str) -> int | None:
+    """读这条理解当前的 attempt（迟到结果护栏的基线）；读不到返回 None。"""
+    try:
+        row = conn.execute(
+            "SELECT attempt FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return int(row["attempt"] or 1)
+
+
+def _is_current_attempt(
+    conn: sqlite3.Connection, understanding_id: str, baseline: int | None
+) -> bool:
+    """这条理解记录是否仍是「这一次运行」的那一份（attempt 没被别人接手）。
+
+    baseline 读不到（记录不可用）时返回 False：宁可什么都不写，也不能把迟到的
+    结果写进一条来路不明的记录。旧实例 / 旧 attempt 的迟到结果因此不得改写当前
+    记录；意图生成发生在理解模块内部，那一边由同一份归属核对保证。
+    """
+    if baseline is None:
+        return False
+    return _current_attempt(conn, understanding_id) == baseline
+
+
+def _log_discarded(understanding_id: str, why: str) -> None:
+    logger.warning("互动理解的结果被丢弃（%s）：%s", why, understanding_id)
+
+
+def _schedule_understanding(
+    conn: sqlite3.Connection,
+    *,
+    understanding_id: str,
+    adapter_provider: Any,
+    owner: Any = None,
+) -> dict:
+    """把真实理解放到后台跑：不阻塞请求，也不持有任何事务（模型调用在任务里）。
+
+    生产路径（契约 §2）：
+
+    * 经 owner 的 background 注册表（AppContext.background / BackgroundTasks）登记，
+      名字固定 interactive-understanding:<understandingId>；
+    * 声明底层执行单元探针（理解记录是否已到终结状态）：关闭时只在探针确认之后才把
+      这一份算作收尾，「句柄被取消了」不算「结束了」；
+    * 关闭已开始 → register 抛 BackgroundClosed → 这里拒绝新调度并如实说明，
+      绝不静默改成同步跑模型（记录停在未终结状态，可从保存的快照重试）。
+
+    没有绑定宿主应用（裸连接的单元测试）时退回裸 create_task 兜底：句柄由
+    _BACKGROUND_TASKS 持有，行为与今天一致。
+
+    返回 {"started": bool, "reason": str | None, "rejected": str | None}；
+    受理之后的失败只记在理解记录上，不回改提交状态。
+    """
+    understanding, reason = _load_understanding()
+    if understanding is None:
+        return {"started": False, "reason": reason, "rejected": "unavailable"}
+    runner = getattr(understanding, "run_understanding", None)
+    if runner is None:
+        return {
+            "started": False,
+            "reason": "理解模块没有 run_understanding：无法启动真实理解",
+            "rejected": "unavailable",
+        }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return {
+            "started": False,
+            "reason": "当前没有运行中的事件循环：本次没有启动后台理解（可以从保存的快照重试）",
+            "rejected": "no_loop",
+        }
+    provider = adapter_provider if callable(adapter_provider) else _no_adapter
+    if owner is None:
+        # submit_board 内部直接调这个函数（那条路径没有 request 可用）：归属统一按
+        # 「这条连接绑定的宿主应用」解析，生产路径（AppContext）因此一定走注册表。
+        owner = background_owner_for(conn)
+
+    # 迟到结果护栏的基线：这次运行开始时的 attempt。运行结束前被新的一次重试 /
+    # 重启接手（attempt 变了）时，这一次的结果不得再写回当前记录。
+    baseline_attempt = _current_attempt(conn, understanding_id)
+
+    async def _run() -> None:
+        try:
+            await runner(conn, understanding_id, adapter_provider=provider)
+        except asyncio.CancelledError:
+            # 关闭 / 取消把协程停在这里：明确记下中断状态（可读原因 + 可重试），
+            # 让底层执行单元探针随后确认为已终结；探针读不到终结状态时关闭照样报
+            # 「未确认结束」，不假装收尾。写完再原样抛出，保持取消语义。
+            if _is_current_attempt(conn, understanding_id, baseline_attempt):
+                _mark_understanding_interrupted(conn, understanding_id)
+            else:
+                _log_discarded(understanding_id, "被新的一次尝试取代")
+            raise
+        except Exception as exc:  # noqa: BLE001 - 提交已受理：后台失败绝不改提交状态
+            logger.warning("互动理解后台任务失败（提交已受理，状态不改）", exc_info=True)
+            if _is_current_attempt(conn, understanding_id, baseline_attempt):
+                _mark_understanding_failed(conn, understanding_id, exc)
+            else:
+                _log_discarded(understanding_id, "被新的一次尝试取代")
+
+    name = UNDERSTANDING_TASK_PREFIX + str(understanding_id)
+    if owner is not None:
+        from agent.services.background import BackgroundClosed, registry_for
+
+        try:
+            registry = registry_for(owner, loop=loop)
+            registry.register(
+                name,
+                _run,
+                # 底层执行单元探针：理解记录是否已到终结状态（同步、零参）。
+                unit_finished=lambda: _understanding_is_settled(conn, understanding_id),
+            )
+        except BackgroundClosed as exc:
+            detail = (
+                "服务正在关闭：本次没有启动后台理解，也没有在关闭流程里偷偷同步跑模型"
+                f"（{exc}）"
+            )
+            logger.warning("互动理解调度被拒（关闭流程已开始）：%s", understanding_id)
+            return {"started": False, "reason": detail, "rejected": "closed"}
+        except RuntimeError as exc:
+            detail = f"后台登记不可用：{exc}；本次没有启动后台理解（可以从保存的快照重试）"
+            logger.warning("互动理解调度失败（后台登记不可用）：%s", understanding_id)
+            return {"started": False, "reason": detail, "rejected": "no_background"}
+        logger.info("互动理解已登记为后台任务：%s", name)
+        return {"started": True, "reason": None, "rejected": None}
+
+    # 测试兜底：没有绑定宿主应用时用裸 create_task（生产路径不走这条）。
+    task = loop.create_task(_run(), name=name)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return {"started": True, "reason": None, "rejected": None}
+
+
+def schedule_understanding(
+    conn: sqlite3.Connection,
+    *,
+    understanding_id: str,
+    adapter_provider: Any = None,
+    owner: Any = None,
+) -> dict:
+    """把一条已受理 / 待重试的理解放到后台跑（提交路径与重试路由共用同一条路径）。
+
+    owner 省略时用这条连接绑定的宿主应用（bind_background_owner，由
+    AppContext.__init__ 建立）；都没有时走测试兜底路径。
+    """
+    if owner is None:
+        owner = background_owner_for(conn)
+    return _schedule_understanding(
+        conn,
+        understanding_id=understanding_id,
+        adapter_provider=adapter_provider,
+        owner=owner,
+    )
+
+
+def _registered_owners() -> list[Any]:
+    """所有绑定过的宿主应用（按对象身份去重，保序）。"""
+    owners: list[Any] = []
+    seen: set[int] = set()
+    for _conn, candidate in list(_CONNECTION_OWNERS.values()):
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        owners.append(candidate)
+    return owners
+
+
+def cancel_background_understanding(understanding_id: str, owner: Any = None) -> bool:
+    """取消正在跑的后台理解任务（已读的材料不再产出；记录状态由调用方如实落库）。
+
+    生产路径按注册表里的句柄取消（同名任务只可能有一份：register 会去重）；
+    owner 省略时在所有绑定过的宿主应用里找。测试兜底的裸任务一并处理。
+    找不到正在跑的任务时如实返回 False（不假装取消成功）。
+    """
+    target = UNDERSTANDING_TASK_PREFIX + str(understanding_id)
+    stopped = False
+    candidates = [owner] if owner is not None else _registered_owners()
+    for candidate in candidates:
+        registry = getattr(candidate, "background", None)
+        handle = registry.handle(target) if registry is not None else None
+        if handle is not None and handle.cancel():
+            stopped = True
+    for task in list(_BACKGROUND_TASKS):
+        if task.done() or task.get_name() != target:
+            continue
+        task.cancel()
+        stopped = True
+    return stopped
+
+
+def _mark_understanding_interrupted(conn: sqlite3.Connection, understanding_id: str) -> bool:
+    """关闭 / 重启中断了一次理解：把仍在跑的理解记录落成明确状态。
+
+    冻结的状态集合里没有 interrupted：中断落成 failed + 可读原因（关闭 / 重启中断），
+    而且绝不删快照 —— 记录于是可以从原快照重试，不需要重读当前板面。
+    重复调用幂等（只动 accepted / understanding 的行）。
+    """
+    stamp = models.now_iso()
+    try:
+        cursor = conn.execute(
+            "UPDATE board_understanding SET status = 'failed', error = ?, updated_at = ?,"
+            " finished_at = ? WHERE id = ? AND status IN ('accepted', 'understanding')",
+            (INTERRUPTED_UNDERSTANDING_ERROR, stamp, stamp, understanding_id),
+        )
+    except sqlite3.Error:
+        logger.warning("标记理解中断时写库失败（理解记录不可用）", exc_info=True)
+        return False
+    if cursor.rowcount:
+        logger.warning(
+            "互动理解因关闭 / 重启中断，已落成 failed（可从快照重试）：%s", understanding_id
+        )
+        return True
+    return False
+
+
+def _mark_understanding_failed(
+    conn: sqlite3.Connection, understanding_id: str, exc: BaseException
+) -> bool:
+    """兜底：理解模块抛异常时，把仍在 accepted / understanding 的理解记录标成 failed。
+
+    只写理解记录自己的状态（失败可从保存的快照重试），绝不回改提交记录；
+    理解模块自己已经落了终结状态时这里什么都不做（不抢 B 的写入）。
+    """
+    reason = (f"理解失败（可重试，从保存的快照恢复）：{type(exc).__name__}: {exc}")[:500]
+    try:
+        cursor = conn.execute(
+            "UPDATE board_understanding SET status = 'failed', error = ?, updated_at = ?"
+            " WHERE id = ? AND status IN ('accepted', 'understanding')",
+            (reason, models.now_iso(), understanding_id),
+        )
+    except sqlite3.Error:
+        logger.warning("标记理解失败时写库失败（理解记录不可用）", exc_info=True)
+        return False
+    if cursor.rowcount:
+        logger.warning("互动理解已标记为 failed（%s）：%s", understanding_id, reason)
+        return True
+    return False
+
 async def submit_board(
     conn: sqlite3.Connection,
     board_id: str,
@@ -690,6 +1456,8 @@ async def submit_board(
     note: str = "",
     base_state_version: Any = None,
     confirmed_check_id: str | None = None,
+    adapter_provider: Any = None,
+    client_request_id: str = "",
 ) -> dict:
     """提交：QIO 取得表达的唯一入口。
 
@@ -701,11 +1469,37 @@ async def submit_board(
     - M4 路径 3：请求可携带 baseStateVersion（本次候选所基于的服务器 seq）与
       confirmedCheckId（影响确认记录）；与服务端不一致 → StaleState，
       **不落库**（不产生提交记录、不更新基准、不调用 QIO）；
-    - 第一阶段没有接入模型调用：delivery.delivered 恒为 false。
+    - **受理与理解分开**（§14.1）：成功时建立理解请求，并把真实理解交给后台
+      （adapter_provider 透传给 B 的 run_understanding；没有可用凭据 / adapter 时后台
+      如实降级为可读失败，不阻塞本请求）；
+    - 受理失败（理解模块不可用 / 建立请求抛错）：按 failed 处理 —— 不更新基准、
+      不清勾选、如实返回原因；受理成功之后的模型失败不回改提交状态；
+    - **稳定提交请求身份**（契约 §1.1）：client_request_id 非空时按
+      (board_id, client_request_id) 精确认这一次提交请求 ——
+      同身份同内容 = 重试，直接返回原记录事实（replayed=True，不落新行、不新建理解请求、
+      不启动后台理解、不调用模型）；同身份但 base_state_version 或 note 不一致 →
+      RequestIdentityConflict（HTTP 409，不落新提交、不改基准、不调模型）；
+      空串 = 旧客户端，行为与今天完全一致（不参与幂等）。
     """
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
     state = loaded["state"]
+    requested_note = _raw_note(note)
+    display_note = _display_note(note)
+
+    # --- 稳定提交请求身份（契约 §1.1 / §1.2）：先按精确身份认领，再做任何写入与模型调用 ---
+    identity = normalize_client_request_id(client_request_id)
+    if identity:
+        existing = _client_request_id_row(conn, bid, identity)
+        if existing is not None:
+            conflict = _conflict_reason(
+                conn, existing, note=requested_note, base_state_version=base_state_version
+            )
+            if conflict is not None:
+                # 同身份不同内容：绝不落新提交、不改基准、不调模型（契约 §1.1 第 3 条）
+                raise RequestIdentityConflict(conflict)
+            # 同身份同内容：返回**原记录事实**，不重复落行、不新建理解请求、不启动后台理解
+            return replay_response(conn, existing, board_id=bid)
 
     if base_state_version is not None:
         try:
@@ -729,7 +1523,7 @@ async def submit_board(
     first_submission = baseline is None
     submission_seq = _next_submission_seq(conn, bid)
     submission_id = models.new_id("sub")
-    note_text = " ".join(str(note or "").split())[:200]
+    note_text = display_note
 
     # 任何一步出问题都走 failed：不更新基准、不清勾选，但要如实返回一份可读的载荷。
     visible = _empty_projection()
@@ -754,19 +1548,53 @@ async def submit_board(
     requested = {str(cid) for cid in (requested_visible or [])}
     ignored_requested = sorted(requested - {card["id"] for card in visible["cards"]})
 
-    # QIO 投递位置：第一阶段没有接入模型调用，delivered 必须是 false 且说清原因。
+    # 受理与理解分开（§14.1）：只有 succeeded 才建立理解请求；建立不起来按受理失败处理。
+    acceptance: dict[str, Any] = {"ok": False, "understandingId": None, "reason": ""}
+    if status == "succeeded":
+        acceptance = _accept_submission(
+            conn,
+            board_id=bid,
+            submission_id=submission_id,
+            # 只传内存里这份 after 投影（不重读板面：随后就会清勾选并保存）
+            snapshot=after,
+        )
+        if not acceptance["ok"]:
+            # 受理失败：没有可靠受理 → 不更新基准、不清勾选，改动与本次注释选择保留
+            status = "failed"
+            error = f"受理失败：没有建立理解请求。原因：{acceptance['reason']}"
+
+    # QIO 投递位置：受理成功才 delivered；受理成功之后的模型失败不回改这次提交。
     if status == "succeeded":
         delivery: dict[str, Any] = {
-            "delivered": False,
+            "delivered": True,
+            "status": "accepted",
+            "understandingId": acceptance.get("understandingId"),
             "reason": (
-                "第一阶段没有接入 QIO 模型调用：本次表达已记录在本地数据库并标记受影响意图，"
-                "但 QIO 尚未真正读取或理解这些内容"
+                "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；"
+                "模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交"
             ),
             "detail": (
                 f"本次交给 QIO 的范围：卡片 {len(after['cards'])} 项、组 {len(after['groups'])} 项、"
                 f"关系 {len(after['links'])} 项；有效改动 {len(expressions)} 项"
             ),
         }
+        if acceptance.get("understandingId"):
+            dispatch = _schedule_understanding(
+                conn,
+                understanding_id=str(acceptance["understandingId"]),
+                adapter_provider=adapter_provider,
+            )
+        else:
+            dispatch = {
+                "started": False,
+                "reason": (
+                    "理解请求已建立但没有拿到理解 id：本次没有启动后台理解"
+                    "（可以从保存的快照重试）"
+                ),
+            }
+        delivery["background"] = dispatch
+        if not dispatch.get("started") and dispatch.get("reason"):
+            delivery["detail"] = f"{delivery['detail']}；{dispatch['reason']}"
         marking_updated: list[str] = []
         try:
             from agent.interactive import intents  # 延迟 import：避免与 C 的模块互相牵制
@@ -787,9 +1615,16 @@ async def submit_board(
                 "error": f"受影响意图标记失败（提交本身已成功）：{exc}",
             }
     elif status == "failed":
+        acceptance_failed = bool(acceptance["reason"] and not acceptance["ok"])
         delivery = {
             "delivered": False,
-            "reason": "提交未成功：没有调用 QIO，基准未更新，改动与本次注释选择已保留，可以再试一次",
+            "status": "failed",
+            "reason": (
+                f"受理失败：{acceptance['reason']}。本次没有更新基准、没有清除勾选，"
+                "改动与本次注释选择已保留，可以再试一次"
+                if acceptance_failed
+                else "提交未成功：没有调用 QIO，基准未更新，改动与本次注释选择已保留，可以再试一次"
+            ),
             "detail": error or "",
             "marking": {"updated": [], "error": "提交未成功，未标记任何意图"},
         }
@@ -800,6 +1635,9 @@ async def submit_board(
             "detail": "未更新基准；已保存的板面与勾选保持不变",
             "marking": {"updated": []},
         }
+    # 备注**原样**落进 delivery：查证（acceptance.note）与身份冲突比对都按它逐字比较，
+    # 前端提交时恒为空串，这里就回显空串（绝不把别的说明塞进这个字段）。
+    delivery["note"] = requested_note
     if ignored_requested:
         delivery["detail"] = (
             f"{delivery.get('detail', '')}；客户端请求的 {len(ignored_requested)} 项不在本次允许查看范围内，"
@@ -809,10 +1647,14 @@ async def submit_board(
         delivery["detail"] = f"{delivery.get('detail', '')}；用户备注：{note_text}".strip("；")
 
     baseline_info = {
+        # baseline.seq 保持既有语义（成功 = 提交后新的基准版本；其余 = 当前成功基准的版本）。
         "updated": status == "succeeded",
         "firstSubmission": first_submission,
         "previousSeq": int(baseline["seq"]) if baseline else None,
         "seq": submission_seq if status == "succeeded" else (int(baseline["seq"]) if baseline else None),
+        # 新增（只增字段）：这次提交**基于**的板面版本 = 请求里的 baseStateVersion。
+        # 契约 §1.2 的 acceptance.baseStateVersion 就取它（四种状态都写上，便于事后查证）。
+        "baseStateVersion": loaded["seq"],
     }
     record = _record_submission(
         conn,
@@ -828,6 +1670,7 @@ async def submit_board(
         delivery=delivery,
         content_hash=content_hash if status == "succeeded" else "",
         error=error,
+        client_request_id=identity,
     )
 
     # 提交成功后自动取消勾选：不是删除或撤回，用户仍可再次勾选提交。
@@ -854,6 +1697,7 @@ async def submit_board(
                 )
                 record["delivery"] = delivery
 
+    record["clientRequestId"] = identity
     return {
         "status": status,
         "submission": record,

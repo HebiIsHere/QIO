@@ -1,0 +1,89 @@
+{
+  "results": [
+    {
+      "id": "P1",
+      "group": "real-path",
+      "title": "提交被可靠受理：delivered=true / status=accepted / understandingId",
+      "status": "PASS",
+      "detail": "delivered=true, status=accepted, understandingId=u_87d2403405e8, baseline.updated=true",
+      "seconds": 25.334
+    },
+    {
+      "id": "P2",
+      "group": "real-path",
+      "title": "后台理解真实调用模型并落定（understood/clarification/no_action）",
+      "status": "FAIL",
+      "detail": "理解记录没有落定（轮询超时）",
+      "seconds": 25.271
+    },
+    {
+      "id": "P3",
+      "group": "real-path",
+      "title": "材料诚实：文件未关联附件=未读取；图片=不支持；网址=只有地址",
+      "status": "PASS",
+      "detail": "file=unreadable(仅文件名)/image=image_unsupported/url=url_address_only/code=inline；未勾选注释未进入解析",
+      "seconds": 0.002
+    },
+    {
+      "id": "P4",
+      "group": "real-path",
+      "title": "模型上下文只含可见内容：未勾选注释 / hidden 卡片不出现",
+      "status": "FAIL",
+      "detail": "理解没有落定",
+      "seconds": 25.332
+    },
+    {
+      "id": "P5",
+      "group": "real-path",
+      "title": "真实意图入口：{submissionId} 取回该次理解产出的意图",
+      "status": "FAIL",
+      "detail": "理解未落定为 understood：None / None",
+      "seconds": 25.287
+    },
+    {
+      "id": "P6",
+      "group": "real-path",
+      "title": "批准后必须实际启动真实执行并写回结果卡",
+      "status": "FAIL",
+      "detail": "理解未成功：None / None",
+      "seconds": 25.345
+    },
+    {
+      "id": "P7",
+      "group": "real-path",
+      "title": "执行只做允许操作集合，不改动用户已有内容",
+      "status": "FAIL",
+      "detail": "理解未成功：None",
+      "seconds": 25.267
+    },
+    {
+      "id": "P8",
+      "group": "real-path",
+      "title": "结果卡带来源引用：meta.reply 的 intentId / understandingId / executionId",
+      "status": "FAIL",
+      "detail": "理解未成功：None",
+      "seconds": 25.351
+    },
+    {
+      "id": "P9",
+      "group": "real-path",
+      "title": "模型输出含禁止操作 → 校验拒绝，不落成可执行任务",
+      "status": "FAIL",
+      "detail": "理解没有落定",
+      "seconds": 25.268
+    },
+    {
+      "id": "P10",
+      "group": "real-path",
+      "title": "输出无法解析 → 自动修复至多一次，仍无任务",
+      "status": "FAIL",
+      "detail": "理解没有落定",
+      "seconds": 25.265
+    }
+  ],
+  "counts": {
+    "PASS": 2,
+    "FAIL": 8,
+    "NOT_VERIFIABLE": 0
+  }
+}

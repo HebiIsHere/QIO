@@ -1,0 +1,201 @@
+﻿
+
+[F01-a] B 页 PUT 后服务端草稿实际内容 = {"drafts": {"card:b": "B 页写的文字"}, "updatedAt": "2026-10-11T10:58:34.486475+00:00", "rev": 
+2}
+[F01-a] 本次 PUT 回执 = {"drafts": {"card:b": "B 页写的文字"}, "updatedAt": "2026-10-11T10:58:34.486475+00:00", "rev": 2, "clear
+ed": ["card:a"]}
+F
+[F01-b] patch 后草稿 = {"drafts": {"card:a": "A2"}, "updatedAt": "2026-10-11T10:58:34.737222+00:00", "rev": 2}
+F
+[F01-c] 删除回执 = {"drafts": {}, "updatedAt": "2026-10-11T10:58:34.875924+00:00", "rev": 2, "cleared": ["card:a", "card:b"
+]}
+[F01-c] 删除后草稿 = {"drafts": {}, "updatedAt": "2026-10-11T10:58:34.875924+00:00", "rev": 2}
+F
+[F01-d] 冲突回执 = {"drafts": {"card:a": "我改的文字"}, "updatedAt": "2026-10-11T10:58:35.015396+00:00", "rev": 3, "cleared": []
+}
+[F01-d] 服务端草稿 = {"drafts": {"card:a": "我改的文字"}, "updatedAt": "2026-10-11T10:58:35.015396+00:00", "rev": 3}
+F
+[F01-e] 旧 baseRev PUT 回执 = {"drafts": {"card:a": "来自旧版本的写入"}, "updatedAt": "2026-10-11T10:58:35.161226+00:00", "rev": 3
+, "cleared": []}
+[F01-e] 服务端草稿 = {"drafts": {"card:a": "来自旧版本的写入"}, "updatedAt": "2026-10-11T10:58:35.161226+00:00", "rev": 3}
+F
+[F01-f] 旧体 PUT 回执 = {"drafts": {"card:a": "A 页 v2"}, "updatedAt": "2026-10-11T10:58:35.329282+00:00", "rev": 2, "cleare
+d": ["card:b"]}
+[F01-f] 服务端草稿 = {"drafts": {"card:a": "A 页 v2"}, "updatedAt": "2026-10-11T10:58:35.329282+00:00", "rev": 2}
+F
+[F01-meta] save_draft 参数 = ['conn', 'board_id', 'drafts']
+[F01-meta] patch 协议可用 = False
+[F01-meta] removed/keyVersions 可用 = False
+[F01-meta] 存储格式 = 见 get_draft 返回： {"drafts": {}, "updatedAt": null, "rev": 0}
+.
+================================== FAILURES ===================================
+____________ test_f01_other_page_patch_must_not_delete_saved_draft ____________
+
+    def test_f01_other_page_patch_must_not_delete_saved_draft() -> None:
+        conn = _fresh_conn()
+        first = _save(conn, {"card:a": "A 页写的文字"})
+        assert first["drafts"] == {"card:a": "A 页写的文字"}
+    
+        # B 页只保存自己的 card:b（它没有 card:a 的任何信息）
+        second = _save(conn, {"card:b": "B 页写的文字"})
+    
+        actual = board_store.get_draft(conn, BOARD)
+        print("\n[F01-a] B 页 PUT 后服务端草稿实际内容 =", json.dumps(actual, ensure_ascii=False))
+        print("[F01-a] 本次 PUT 回执 =", json.dumps(second, ensure_ascii=False))
+>       assert actual["drafts"] == {
+            "card:a": "A 页写的文字",
+            "card:b": "B 页写的文字",
+        }, (
+            "F01 缺陷复现：另一窗口只保存自己的键，却把对方已保存的草稿删掉了"
+            "（整集合替换语义把『未传这个键』当成无条件删除）。actual="
+            + json.dumps(actual["drafts"], ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：另一窗口只保存自己的键，却把对方已保存的草稿删掉了（整集合替换语义把『未传这个键』当成无条件删除）。actual={"card:b": "B 页写的文字"}
+E       assert {'card:b': 'B 页写的文字'} == {'card:a': 'A...b': 'B 页写的文字'}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Right contains 1 more item:
+E         {'card:a': 'A 页写的文字'}
+E         Use -v to get more diff
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:98: AssertionError
+------------------------------ Captured log call ------------------------------
+______________ test_f01_untouched_keys_are_not_deleted_by_patch _______________
+
+    def test_f01_untouched_keys_are_not_deleted_by_patch() -> None:
+        conn = _fresh_conn()
+        _save(conn, {"card:a": "A", "card:b": "B"})
+        rev = board_store.get_draft(conn, BOARD)["rev"]
+    
+        _save(conn, {"card:a": "A2"}, mode="patch", baseRev=rev, removed=[])
+    
+        actual = board_store.get_draft(conn, BOARD)
+        print("\n[F01-b] patch 后草稿 =", json.dumps(actual, ensure_ascii=False))
+>       assert actual["drafts"] == {"card:a": "A2", "card:b": "B"}, (
+            "F01 缺陷复现：patch 里未出现的 card:b 被服务端删除。actual="
+            + json.dumps(actual["drafts"], ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：patch 里未出现的 card:b 被服务端删除。actual={"card:a": "A2"}
+E       assert {'card:a': 'A2'} == {'card:a': 'A...'card:b': 'B'}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Right contains 1 more item:
+E         {'card:b': 'B'}
+E         Use -v to get more diff
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:120: AssertionError
+------------------------------ Captured log call ------------------------------
+_____________ test_f01_explicit_removed_is_honoured_and_reported ______________
+
+    def test_f01_explicit_removed_is_honoured_and_reported() -> None:
+        conn = _fresh_conn()
+        _save(conn, {"card:a": "A", "card:b": "B"})
+        rev = board_store.get_draft(conn, BOARD)["rev"]
+    
+        resp = _save(conn, {}, mode="patch", baseRev=rev, removed=["card:b"])
+    
+        actual = board_store.get_draft(conn, BOARD)
+        print("\n[F01-c] 删除回执 =", json.dumps(resp, ensure_ascii=False))
+        print("[F01-c] 删除后草稿 =", json.dumps(actual, ensure_ascii=False))
+>       assert actual["drafts"] == {"card:a": "A"}, (
+            "F01 缺陷复现：明确删除的 card:b 没被删掉。actual="
+            + json.dumps(actual["drafts"], ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：明确删除的 card:b 没被删掉。actual={}
+E       assert {} == {'card:a': 'A'}
+E         
+E         Right contains 1 more item:
+E         {'card:a': 'A'}
+E         Use -v to get more diff
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:139: AssertionError
+------------------------------ Captured log call ------------------------------
+_________ test_f01_same_key_collision_reports_conflict_and_keeps_both _________
+
+    def test_f01_same_key_collision_reports_conflict_and_keeps_both() -> None:
+        conn = _fresh_conn()
+        base = _save(conn, {"card:a": "共同基线"})
+        base_rev = base["rev"]
+        # 别人（另一页）先把同一个键改成别的文字
+        _save(conn, {"card:a": "别人改的文字"}, baseRev=base_rev, mode="patch")
+    
+        # 我基于旧 baseRev 提交我的版本
+        resp = _save(
+            conn,
+            {"card:a": "我改的文字"},
+            mode="patch",
+            baseRev=base_rev,
+        )
+    
+        print("\n[F01-d] 冲突回执 =", json.dumps(resp, ensure_ascii=False))
+        print("[F01-d] 服务端草稿 =", json.dumps(board_store.get_draft(conn, BOARD), ensure_ascii=False))
+        conflicts = resp.get("conflicts") or []
+>       assert conflicts, (
+            "F01 缺陷复现：同键被并发改成不同文本，服务端静默按最后到达覆盖，没有返回 conflict。resp="
+            + json.dumps(resp, ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：同键被并发改成不同文本，服务端静默按最后到达覆盖，没有返回 conflict。resp={"drafts": {"card:a": "我改的文字"}, "updatedAt
+": "2026-10-11T10:58:35.015396+00:00", "rev": 3, "cleared": []}
+E       assert []
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:170: AssertionError
+------------------------------ Captured log call ------------------------------
+_______________ test_f01_stale_baserev_is_not_silently_applied ________________
+
+    def test_f01_stale_baserev_is_not_silently_applied() -> None:
+        conn = _fresh_conn()
+        r1 = _save(conn, {"card:a": "v1"})
+        _save(conn, {"card:a": "v2"}, mode="patch", baseRev=r1["rev"])
+    
+        # 一个还拿着 v1 版本号的旧请求姗姗来迟
+        resp = _save(conn, {"card:a": "来自旧版本的写入"}, mode="patch", baseRev=r1["rev"])
+    
+        actual = board_store.get_draft(conn, BOARD)
+        print("\n[F01-e] 旧 baseRev PUT 回执 =", json.dumps(resp, ensure_ascii=False))
+        print("[F01-e] 服务端草稿 =", json.dumps(actual, ensure_ascii=False))
+>       assert actual["drafts"].get("card:a") == "v2", (
+            "F01 缺陷复现：基于旧版本（baseRev 落后）的写入被静默接受并覆盖了更新的文字。actual="
+            + json.dumps(actual["drafts"], ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：基于旧版本（baseRev 落后）的写入被静默接受并覆盖了更新的文字。actual={"card:a": "来自旧版本的写入"}
+E       assert '来自旧版本的写入' == 'v2'
+E         
+E         - v2
+E         + 来自旧版本的写入
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:201: AssertionError
+------------------------------ Captured log call ------------------------------
+_________________ test_f01_legacy_body_never_silently_deletes _________________
+
+    def test_f01_legacy_body_never_silently_deletes() -> None:
+        conn = _fresh_conn()
+        _save(conn, {"card:a": "A 页", "card:b": "B 页"})
+        resp = _save(conn, {"card:a": "A 页 v2"})  # 旧客户端整集合请求体
+    
+        actual = board_store.get_draft(conn, BOARD)
+        print("\n[F01-f] 旧体 PUT 回执 =", json.dumps(resp, ensure_ascii=False))
+        print("[F01-f] 服务端草稿 =", json.dumps(actual, ensure_ascii=False))
+>       assert actual["drafts"].get("card:b") == "B 页", (
+            "F01 缺陷复现：旧请求体（无 mode/baseRev）触发了无条件整集合替换，删掉了未传的 card:b。"
+            "诚实的兼容行为应当保留 card:b 并在回执里说明 legacyReplace/冲突。actual="
+            + json.dumps(actual["drafts"], ensure_ascii=False)
+        )
+E       AssertionError: F01 缺陷复现：旧请求体（无 mode/baseRev）触发了无条件整集合替换，删掉了未传的 card:b。诚实的兼容行为应当保留 card:b 并在回执里说明 legacyReplace
+/冲突。actual={"card:a": "A 页 v2"}
+E       assert None == 'B 页'
+E        +  where None = <built-in method get of dict object at 0x000001DBA45C6040>('card:b')
+E        +    where <built-in method get of dict object at 0x000001DBA45C6040> = {'card:a': 'A 页 v2'}.get
+
+..\scripts\audit-verify-8fa8452\test_f01_draft_version.py:218: AssertionError
+------------------------------ Captured log call ------------------------------
+=========================== short test summary info ===========================
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_other_page_patch_must_not_delete_saved_draft
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_untouched_keys_are_not_deleted_by_patch
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_explicit_removed_is_honoured_and_reported
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_same_key_collision_reports_conflict_and_keep
+s_both
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_stale_baserev_is_not_silently_applied
+FAILED ..\scripts\audit-verify-8fa8452\test_f01_draft_version.py::test_f01_legacy_body_never_silently_deletes
+6 failed, 1 passed in 1.16s
+
+

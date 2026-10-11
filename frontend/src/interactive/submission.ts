@@ -10,6 +10,7 @@
  * 文字注释要勾选；材料（file/image/code/url）默认在范围内；reply / hidden / deleted 不在。
  */
 import type {
+  AcceptanceLookup,
   BoardCard,
   BoardState,
   Expression,
@@ -24,7 +25,9 @@ export type SubmitStatusLike =
   | "succeeded"
   | "failed"
   | "empty"
-  | "duplicate";
+  | "duplicate"
+  /** F10：没有拿到提交回执 —— 提交结果**未知**，不能假定成功或失败 */
+  | "unknown";
 
 export type SaveStatusLike = "idle" | "saving" | "saved" | "error";
 
@@ -188,6 +191,7 @@ export function submitStateLabel(
   const pending = options.pendingCount ?? 0;
   const hasSubmission = Boolean(options.hasSubmission);
   if (status === "submitting") return "正在提交";
+  if (status === "unknown") return "提交结果未知";
   if (status === "failed") return "提交失败（未提交）";
   if (status === "empty") return "无内容可提交";
   if (status === "duplicate") return "未重复提交";
@@ -219,9 +223,18 @@ export function submitStatusText(
     case "succeeded": {
       const count = context.result?.expressions?.length ?? 0;
       const cleared = context.result?.checkedCleared?.length ?? 0;
+      const delivery = context.result?.delivery;
+      // 受理与理解分开（契约 §14.1）：delivered=true 只表示「已可靠受理」，
+      // 不等于模型已经理解完成；这里必须如实说明下一步，不能假装已经懂。
+      const understanding =
+        delivery?.delivered === true
+          ? `已受理（${delivery.status ?? "accepted"}）：QIO 正在读取本次材料并真实理解；` +
+            "模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交"
+          : delivery?.reason ||
+            "本次表达已记录，但没有可靠受理：改动与勾选已保留，可以直接再试一次";
       return [
         `已提交：本次 ${count} 项改动已记录`,
-        "第一阶段没有接入 QIO 模型调用，QIO 还没有真正读取或理解这些内容",
+        understanding,
         cleared > 0 ? `提交成功后已自动取消 ${cleared} 条注释的勾选（不是删除或撤回）` : "",
       ]
         .filter(Boolean)
@@ -231,6 +244,11 @@ export function submitStatusText(
       return `提交失败：${context.error || "原因未知"}；${
         context.retention || "本次改动与注释勾选已保留，基准没有更新，可以直接再试一次。"
       }`;
+    case "unknown":
+      /**
+       * F10：没有回执 ≠ 失败。服务端可能已经受理，所以既不宣称成功、也不诱导重复提交。
+       */
+      return `提交结果未知：${context.error || "没有拿到服务端回执"}；这次提交可能已经受理，改动与勾选都保留，请先确认结果再决定是否重试。`;
     case "empty":
       return "没有可提交内容：只有普通移动 / 缩放，或本次没有允许查看的内容；未更新基准、未调用 QIO。";
     case "duplicate":
@@ -363,4 +381,218 @@ export function formatTime(iso: string): string {
   if (Number.isNaN(date.getTime())) return iso;
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/* ------------------------------------------------------------------------
+ * 契约 §1.3：稳定提交请求身份（纯函数，不做 IO、不碰 store）
+ *
+ * 一次提交请求在**发出之前**就有身份，服务端按 (boardId, clientRequestId) 做幂等：
+ * 同身份重试返回原事实，同身份但内容不同按冲突拒绝。前端在这里只负责
+ * 「生成 / 校验 / 归属判定 / 本机台账的序列化」，持久化由 store 调用 localStorage 完成。
+ *
+ * 身份**不是**受理证据：拿它去查证（`fetchAcceptance`）命中的记录才是证据（§1.1.4）。
+ * ---------------------------------------------------------------------- */
+
+/** 请求身份前缀：可读、可核对，并与服务端其它 id 明确区分。 */
+export const SUBMISSION_REQUEST_ID_PREFIX = "creq_";
+
+/** 本机台账的 localStorage 键前缀（每个板面一条未决身份）。 */
+export const SUBMISSION_IDENTITY_STORAGE_PREFIX = "qio.interactive.pending-submission.";
+
+/**
+ * 这一次**未决**提交的稳定身份。
+ *
+ * `baseStateVersion` / `note` 是这次提交的内容依据：同身份但这两项不同，
+ * 服务端会按冲突拒绝 —— 所以前端只在两项都没变时才复用同一个身份。
+ */
+export interface SubmissionIdentity {
+  clientRequestId: string;
+  boardId: string;
+  /** 这次提交基于的服务器版本（拿不到时为 null） */
+  baseStateVersion: number | null;
+  /** 这次提交的说明（提交载荷里的 note） */
+  note: string;
+  /** 本机**生成身份**的时间：只用于展示与本地排序，**不得**作为受理证据 */
+  createdAt: number;
+}
+
+const REQUEST_ID_RE = /^creq_[A-Za-z0-9_-]{8,}$/;
+
+function randomSuffix(): string {
+  const cryptoLike = (globalThis as { crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array } })
+    .crypto;
+  const bytes = new Uint8Array(12);
+  if (typeof cryptoLike?.getRandomValues === "function") {
+    cryptoLike.getRandomValues(bytes);
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  return (Math.random().toString(16).slice(2) + Date.now().toString(16)).padEnd(24, "0").slice(0, 24);
+}
+
+/** 生成一个新的请求身份（发出提交**之前**调用）。 */
+export function newSubmissionRequestId(): string {
+  return `${SUBMISSION_REQUEST_ID_PREFIX}${Date.now().toString(36)}_${randomSuffix()}`;
+}
+
+/** 这个值能不能作为请求身份送去服务端（空字符串 = 旧客户端，不参与幂等）。 */
+export function isUsableSubmissionRequestId(value: unknown): value is string {
+  return typeof value === "string" && REQUEST_ID_RE.test(value.trim());
+}
+
+/**
+ * 这一次提交该用哪个身份：**内容没变就沿用**，变了（或没有）就新建。
+ *
+ * 「内容」= 板面 id + 基准版本 + 说明。沿用同一个身份是安全重试的前提：
+ * 服务端会返回原事实，不会重复创建提交与理解请求（§1.1.2）。
+ */
+export function submissionIdentityFor(options: {
+  boardId: string;
+  baseStateVersion?: number | null;
+  note?: string;
+  existing?: SubmissionIdentity | null;
+  now?: number;
+  makeId?: () => string;
+}): SubmissionIdentity {
+  const existing = options.existing ?? null;
+  const wanted = {
+    boardId: options.boardId,
+    baseStateVersion: options.baseStateVersion ?? null,
+    note: options.note ?? "",
+  };
+  if (existing && isUsableSubmissionRequestId(existing.clientRequestId) && submissionIdentityMatches(existing, wanted)) {
+    return existing;
+  }
+  return {
+    clientRequestId: (options.makeId ?? newSubmissionRequestId)(),
+    boardId: wanted.boardId,
+    baseStateVersion: wanted.baseStateVersion,
+    note: wanted.note,
+    createdAt: options.now ?? Date.now(),
+  };
+}
+
+/** 身份是不是属于这一份内容（板面 / 基准版本 / 说明都一致）。 */
+export function submissionIdentityMatches(
+  identity: SubmissionIdentity | null | undefined,
+  other: { boardId?: string; baseStateVersion?: number | null; note?: string },
+): boolean {
+  if (!identity) return false;
+  if (typeof other.boardId === "string" && identity.boardId !== other.boardId) return false;
+  if (other.baseStateVersion !== undefined) {
+    const wanted = other.baseStateVersion ?? null;
+    if ((identity.baseStateVersion ?? null) !== wanted) return false;
+  }
+  if (typeof other.note === "string" && identity.note !== other.note) return false;
+  return true;
+}
+
+/** 这个身份能不能拿去查证（必须有可用的请求身份；没有身份就不许推断受理）。 */
+export function canLookupAcceptance(identity: SubmissionIdentity | null | undefined): boolean {
+  return Boolean(identity && identity.boardId && isUsableSubmissionRequestId(identity.clientRequestId));
+}
+
+/**
+ * 查证结果是不是**这一次**提交的（契约 §1.1.3 / §1.1.4）：
+ * 只认精确身份；服务端同时给出内容依据（版本 / 说明）时必须与这次请求一致。
+ * 任何一项不符 = 不是这次提交的事实，界面不得据此认领受理。
+ */
+export function acceptanceMatchesIdentity(
+  identity: SubmissionIdentity | null | undefined,
+  acceptance: AcceptanceLookup | null | undefined,
+): acceptance is AcceptanceLookup {
+  if (!canLookupAcceptance(identity) || !acceptance) return false;
+  if (!isUsableSubmissionRequestId(acceptance.clientRequestId)) return false;
+  if (acceptance.clientRequestId !== identity!.clientRequestId) return false;
+  if (typeof acceptance.submissionId !== "string" || acceptance.submissionId.length === 0) return false;
+  if (
+    typeof acceptance.baseStateVersion === "number" &&
+    identity!.baseStateVersion !== null &&
+    acceptance.baseStateVersion !== identity!.baseStateVersion
+  ) {
+    return false;
+  }
+  if (typeof acceptance.note === "string" && acceptance.note !== identity!.note) return false;
+  return true;
+}
+
+export function serializeSubmissionIdentity(identity: SubmissionIdentity): string {
+  return JSON.stringify({ v: 1, ...identity });
+}
+
+/** 读回本机台账：形状不合法一律当没有（不许拿半条记录去当身份）。 */
+export function parseStoredSubmissionIdentity(raw: string | null | undefined): SubmissionIdentity | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  let box: Partial<SubmissionIdentity> | null = null;
+  try {
+    box = JSON.parse(raw) as Partial<SubmissionIdentity>;
+  } catch {
+    return null;
+  }
+  if (!box || typeof box !== "object") return null;
+  if (!isUsableSubmissionRequestId(box.clientRequestId)) return null;
+  if (typeof box.boardId !== "string" || box.boardId.length === 0) return null;
+  const version = typeof box.baseStateVersion === "number" && Number.isFinite(box.baseStateVersion)
+    ? box.baseStateVersion
+    : null;
+  return {
+    clientRequestId: box.clientRequestId,
+    boardId: box.boardId,
+    baseStateVersion: version,
+    note: typeof box.note === "string" ? box.note : "",
+    createdAt: typeof box.createdAt === "number" && Number.isFinite(box.createdAt) ? box.createdAt : 0,
+  };
+}
+
+export function submissionIdentityStorageKey(boardId: string): string {
+  return SUBMISSION_IDENTITY_STORAGE_PREFIX + String(boardId || "default");
+}
+
+/** 服务端的「同身份但内容不同」冲突（409 request_identity_conflict）。 */
+export const REQUEST_IDENTITY_CONFLICT = "request_identity_conflict";
+
+/** 这次失败是不是「同身份但内容不同」的服务端冲突（必须按冲突说明，不许认领受理）。 */
+export function isRequestIdentityConflict(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  const payload = (error as { payload?: { error?: unknown } | null } | null)?.payload;
+  return status === 409 && payload?.error === REQUEST_IDENTITY_CONFLICT;
+}
+
+/**
+ * 身份冲突的如实说明：服务端确实拒绝过，就要说清「没有创建提交、没有更新基准、
+ * 没有调用模型」，并且下一次提交会换新身份（不能拿被拒的身份继续认领什么）。
+ */
+export function identityConflictText(): string {
+  return (
+    "服务端按同一个请求身份找到了内容不同的记录，已按冲突拒绝这次提交：" +
+    "本次没有创建提交、没有更新基准、也没有调用模型。改动与勾选都保留；" +
+    "下一次提交会使用新的请求身份。"
+  );
+}
+
+/**
+ * 受理情况不明时，界面要如实说明「查证到了什么」：
+ * `confirmed` 为 false 时**必须**继续「结果未知」，不许改判失败，也不许诱导重复提交。
+ */
+export function acceptanceLookupText(options: {
+  confirmed: boolean;
+  reason?: string | null;
+  replayed?: boolean;
+}): string {
+  if (options.confirmed) {
+    const replayed = options.replayed
+      ? "，且服务端返回的是原记录（没有重复创建提交与理解请求）"
+      : "";
+    return (
+      "这次提交的回执在传输中丢了：已按**同一个请求身份**查证，服务端确认它已被可靠受理" +
+      replayed +
+      "，正在理解。不会重复提交。"
+    );
+  }
+  const why = String(options.reason ?? "").trim() || "没有查到这条请求身份的记录";
+  return (
+    "已按同一个请求身份向服务端查证：" +
+    why +
+    "。结果仍然未知：这次提交可能已经受理，也不排除没有到达服务端；" +
+    "改动与勾选都保留，不会自动重复提交。"
+  );
 }

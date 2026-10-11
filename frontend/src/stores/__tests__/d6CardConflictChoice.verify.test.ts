@@ -57,7 +57,7 @@ function boardState(): BoardState {
   } as unknown as BoardState;
 }
 
-/** 受控的「服务端」：草稿整份替换保存（未列出的键会被删掉），和真实接口语义一致。 */
+/** 受控的「服务端」：契约 C1 的**逐键**保存语义（只有 removed 才删除，未出现的键不动）。 */
 function fakeServer(initial: Record<string, string> = {}) {
   const drafts: Record<string, string> = { ...initial };
   let updatedAt = "2026-10-08T00:00:00.000Z";
@@ -70,12 +70,16 @@ function fakeServer(initial: Record<string, string> = {}) {
     submissions: [],
     drafts: { drafts: { ...drafts }, updatedAt },
   }));
-  vi.mocked(imApi.saveDrafts).mockImplementation(async (_boardId: string, next: Record<string, string>) => {
-    for (const key of Object.keys(drafts)) delete drafts[key];
-    Object.assign(drafts, next);
-    updatedAt = new Date().toISOString();
-    return { drafts: { ...drafts }, updatedAt };
-  });
+  vi.mocked(imApi.saveDrafts).mockImplementation(
+    async (_boardId: string, next: Record<string, string>, patch?: { removed?: string[] }) => {
+      // C1：逐键更新 + 明确删除；未出现的键是「未修改」，保持原样（F01）
+      Object.assign(drafts, next);
+      const cleared = [...(patch?.removed ?? [])];
+      for (const key of cleared) delete drafts[key];
+      updatedAt = new Date().toISOString();
+      return { drafts: { ...drafts }, updatedAt, cleared, rev: cleared.length + 1 };
+    },
+  );
   vi.mocked(imApi.fetchVisibleRange).mockResolvedValue({ visibleRange: null } as never);
   vi.mocked(imApi.fetchIntents).mockResolvedValue({ intents: [], conflicts: [], batchAvailable: false } as never);
   return view;
@@ -139,7 +143,8 @@ describe("反例①：A 卡冲突未决，用户只编辑 B 并保存（§12.1�
       server.drafts["card:c1"],
       "未选之前，服务器的 A 被本机候选覆盖了（服务端保存是整份替换，未决键把本机候选写了上去）",
     ).toBe("服务器版本A");
-    expect(lastPayload()["card:c1"], "未决冲突键不允许把本机候选放进请求").toBe("服务器版本A");
+    // C1：未决冲突键**根本不进逐键请求**（旧协议要把它按服务器事实回写）；服务器那份因此原样保留
+    expect(lastPayload()["card:c1"], "未决冲突键不允许出现在逐键请求里").toBeUndefined();
     expect(
       readCardLocalDraft("c1"),
       "保存成功后把 A 的本机候选副本也删了（两份文字必须都保留到用户选择为止）",

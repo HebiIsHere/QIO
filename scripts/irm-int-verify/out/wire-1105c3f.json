@@ -1,0 +1,881 @@
+{
+ "script": "scripts/irm-int-verify/probe_wire.py",
+ "generated_at": "2026-10-11T14:06:11.944207+00:00",
+ "base": "http://127.0.0.1:8848",
+ "head": "1105c3fb8fd5636259522c63ccc20e50cd11db55",
+ "board_id": "board_e_wire",
+ "steps": [
+  {
+   "name": "create-board",
+   "status": 200,
+   "body": {
+    "board": {
+     "id": "board_e_wire",
+     "title": "E 字段名接缝",
+     "createdAt": "2026-10-11T14:06:12.165589+00:00",
+     "updatedAt": "2026-10-11T14:06:12.165589+00:00"
+    },
+    "created": true
+   },
+   "raw": "{\"board\":{\"id\":\"board_e_wire\",\"title\":\"E 字段名接缝\",\"createdAt\":\"2026-10-11T14:06:12.165589+00:00\",\"updatedAt\":\"2026-10-11T14:06:12.165589+00:00\"},\"created\":true}"
+  },
+  {
+   "name": "put-state",
+   "status": 200,
+   "body": {
+    "ok": true,
+    "seq": 1,
+    "savedAt": "2026-10-11T14:06:12.240152+00:00",
+    "state": {
+     "boardId": "board_e_wire",
+     "seq": 1,
+     "updatedAt": "2026-10-11T14:06:12.240152+00:00",
+     "cards": [
+      {
+       "id": "m1",
+       "kind": "file",
+       "content": "甲材料：单价 100 元",
+       "meta": {
+        "name": "甲.txt"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "m2",
+       "kind": "code",
+       "content": "乙材料：交付 3 天",
+       "meta": {
+        "language": "text"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "req",
+       "kind": "text",
+       "content": "请比较这两份材料的成本与交付",
+       "meta": {},
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": true,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      }
+     ],
+     "groups": [],
+     "links": [],
+     "selection": []
+    },
+    "pending": {
+     "baselineSeq": null,
+     "expressions": [
+      {
+       "id": "x_18ab7ef745e9",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（file）：甲.txt",
+       "cardIds": [
+        "m1"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_eea2b6652f8b",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（code）：text 代码",
+       "cardIds": [
+        "m2"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_daecaf8583c0",
+       "kind": "note_added",
+       "intentBearing": true,
+       "summary": "新增注释：请比较这两份材料的成本与交付",
+       "cardIds": [
+        "req"
+       ],
+       "groupId": null,
+       "linkId": null
+      }
+     ],
+     "updatedAt": "2026-10-11T14:06:12.244669+00:00"
+    },
+    "materialImpact": {
+     "paused": [],
+     "affected": []
+    },
+    "confirmedCheckId": null
+   },
+   "raw": "{\"ok\":true,\"seq\":1,\"savedAt\":\"2026-10-11T14:06:12.240152+00:00\",\"state\":{\"boardId\":\"board_e_wire\",\"seq\":1,\"updatedAt\":\"2026-10-11T14:06:12.240152+00:00\",\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[]},\"pending\":{\"baselineSeq\":null,\"expressions\":[{\"id\":\"x_18ab7ef745e9\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（file）：甲.txt\",\"cardIds\":[\"m1\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_eea2b6652f8b\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（code）：text 代码\",\"cardIds\":[\"m2\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_daecaf8583c0\",\"kind\":\"note_added\",\"intentBearing\":true,\"summary\":\"新增注释：请比较这两份材料的成本与交付\",\"cardIds\":[\"req\"],\"groupId\":null,\"linkId\":null}],\"updatedAt\":\"2026-10-11T14:06:12.244669+00:00\"},\"materialImpact\":{\"paused\":[],\"affected\":[]},\"confirmedCheckId\":null}"
+  },
+  {
+   "name": "submit",
+   "status": 200,
+   "request": {
+    "requestedVisible": [
+     "m1",
+     "m2",
+     "req"
+    ],
+    "note": "E 字段名接缝",
+    "baseStateVersion": 1,
+    "clientRequestId": "creq_e_wire_0001"
+   },
+   "body": {
+    "status": "succeeded",
+    "submission": {
+     "id": "sub_61c5be39bf19",
+     "seq": 1,
+     "status": "succeeded",
+     "visible": {
+      "cards": [
+       {
+        "id": "m1",
+        "kind": "file",
+        "content": "甲材料：单价 100 元",
+        "meta": {
+         "name": "甲.txt"
+        },
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": false,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       },
+       {
+        "id": "m2",
+        "kind": "code",
+        "content": "乙材料：交付 3 天",
+        "meta": {
+         "language": "text"
+        },
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": false,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       },
+       {
+        "id": "req",
+        "kind": "text",
+        "content": "请比较这两份材料的成本与交付",
+        "meta": {},
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": true,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       }
+      ],
+      "groups": [],
+      "links": [],
+      "selection": [],
+      "empty": false,
+      "notVisibleCount": 0
+     },
+     "expressions": [
+      {
+       "id": "x_3079f314652f",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（file）：甲.txt",
+       "cardIds": [
+        "m1"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_820aefea5f14",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（code）：text 代码",
+       "cardIds": [
+        "m2"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_120ea3df89b6",
+       "kind": "note_added",
+       "intentBearing": true,
+       "summary": "新增注释：请比较这两份材料的成本与交付",
+       "cardIds": [
+        "req"
+       ],
+       "groupId": null,
+       "linkId": null
+      }
+     ],
+     "delivery": {
+      "delivered": true,
+      "status": "accepted",
+      "understandingId": "u_b83d93100930",
+      "reason": "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交",
+      "detail": "本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝",
+      "background": {
+       "started": true,
+       "reason": null,
+       "rejected": null
+      },
+      "marking": {
+       "updated": []
+      },
+      "note": "E 字段名接缝"
+     },
+     "error": null,
+     "createdAt": "2026-10-11T14:06:12.409280+00:00",
+     "clientRequestId": "creq_e_wire_0001"
+    },
+    "before": {
+     "cards": [],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": true,
+     "firstSubmission": true
+    },
+    "after": {
+     "cards": [
+      {
+       "id": "m1",
+       "kind": "file",
+       "content": "甲材料：单价 100 元",
+       "meta": {
+        "name": "甲.txt"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "m2",
+       "kind": "code",
+       "content": "乙材料：交付 3 天",
+       "meta": {
+        "language": "text"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "req",
+       "kind": "text",
+       "content": "请比较这两份材料的成本与交付",
+       "meta": {},
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": true,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      }
+     ],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": false
+    },
+    "expressions": [
+     {
+      "id": "x_3079f314652f",
+      "kind": "material_added",
+      "intentBearing": false,
+      "summary": "新增材料（file）：甲.txt",
+      "cardIds": [
+       "m1"
+      ],
+      "groupId": null,
+      "linkId": null
+     },
+     {
+      "id": "x_820aefea5f14",
+      "kind": "material_added",
+      "intentBearing": false,
+      "summary": "新增材料（code）：text 代码",
+      "cardIds": [
+       "m2"
+      ],
+      "groupId": null,
+      "linkId": null
+     },
+     {
+      "id": "x_120ea3df89b6",
+      "kind": "note_added",
+      "intentBearing": true,
+      "summary": "新增注释：请比较这两份材料的成本与交付",
+      "cardIds": [
+       "req"
+      ],
+      "groupId": null,
+      "linkId": null
+     }
+    ],
+    "baseline": {
+     "updated": true,
+     "firstSubmission": true,
+     "previousSeq": null,
+     "seq": 1,
+     "baseStateVersion": 1
+    },
+    "delivery": {
+     "delivered": true,
+     "status": "accepted",
+     "understandingId": "u_b83d93100930",
+     "reason": "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交",
+     "detail": "本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝",
+     "background": {
+      "started": true,
+      "reason": null,
+      "rejected": null
+     },
+     "marking": {
+      "updated": []
+     },
+     "note": "E 字段名接缝"
+    },
+    "visibleRange": {
+     "cards": [
+      {
+       "id": "m1",
+       "kind": "file",
+       "content": "甲材料：单价 100 元",
+       "meta": {
+        "name": "甲.txt"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "m2",
+       "kind": "code",
+       "content": "乙材料：交付 3 天",
+       "meta": {
+        "language": "text"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "req",
+       "kind": "text",
+       "content": "请比较这两份材料的成本与交付",
+       "meta": {},
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": true,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      }
+     ],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": false,
+     "notVisibleCount": 0
+    },
+    "checkedCleared": [
+     "req"
+    ]
+   },
+   "raw": "{\"status\":\"succeeded\",\"submission\":{\"id\":\"sub_61c5be39bf19\",\"seq\":1,\"status\":\"succeeded\",\"visible\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false,\"notVisibleCount\":0},\"expressions\":[{\"id\":\"x_3079f314652f\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（file）：甲.txt\",\"cardIds\":[\"m1\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_820aefea5f14\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（code）：text 代码\",\"cardIds\":[\"m2\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_120ea3df89b6\",\"kind\":\"note_added\",\"intentBearing\":true,\"summary\":\"新增注释：请比较这两份材料的成本与交付\",\"cardIds\":[\"req\"],\"groupId\":null,\"linkId\":null}],\"delivery\":{\"delivered\":true,\"status\":\"accepted\",\"understandingId\":\"u_b83d93100930\",\"reason\":\"提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交\",\"detail\":\"本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝\",\"background\":{\"started\":true,\"reason\":null,\"rejected\":null},\"marking\":{\"updated\":[]},\"note\":\"E 字段名接缝\"},\"error\":null,\"createdAt\":\"2026-10-11T14:06:12.409280+00:00\",\"clientRequestId\":\"creq_e_wire_0001\"},\"before\":{\"cards\":[],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":true,\"firstSubmission\":true},\"after\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false},\"expressions\":[{\"id\":\"x_3079f314652f\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（file）：甲.txt\",\"cardIds\":[\"m1\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_820aefea5f14\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（code）：text 代码\",\"cardIds\":[\"m2\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_120ea3df89b6\",\"kind\":\"note_added\",\"intentBearing\":true,\"summary\":\"新增注释：请比较这两份材料的成本与交付\",\"cardIds\":[\"req\"],\"groupId\":null,\"linkId\":null}],\"baseline\":{\"updated\":true,\"firstSubmission\":true,\"previousSeq\":null,\"seq\":1,\"baseStateVersion\":1},\"delivery\":{\"delivered\":true,\"status\":\"accepted\",\"understandingId\":\"u_b83d93100930\",\"reason\":\"提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交\",\"detail\":\"本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝\",\"background\":{\"started\":true,\"reason\":null,\"rejected\":null},\"marking\":{\"updated\":[]},\"note\":\"E 字段名接缝\"},\"visibleRange\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false,\"notVisibleCount\":0},\"checkedCleared\":[\"req\"]}"
+  },
+  {
+   "name": "submit-replay",
+   "status": 200,
+   "request": {
+    "requestedVisible": [
+     "m1",
+     "m2",
+     "req"
+    ],
+    "note": "E 字段名接缝",
+    "baseStateVersion": 1,
+    "clientRequestId": "creq_e_wire_0001"
+   },
+   "body": {
+    "status": "succeeded",
+    "submission": {
+     "id": "sub_61c5be39bf19",
+     "seq": 1,
+     "status": "succeeded",
+     "visible": {
+      "cards": [
+       {
+        "id": "m1",
+        "kind": "file",
+        "content": "甲材料：单价 100 元",
+        "meta": {
+         "name": "甲.txt"
+        },
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": false,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       },
+       {
+        "id": "m2",
+        "kind": "code",
+        "content": "乙材料：交付 3 天",
+        "meta": {
+         "language": "text"
+        },
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": false,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       },
+       {
+        "id": "req",
+        "kind": "text",
+        "content": "请比较这两份材料的成本与交付",
+        "meta": {},
+        "x": 0.0,
+        "y": 0.0,
+        "w": 240.0,
+        "h": 120.0,
+        "checked": true,
+        "hidden": false,
+        "folded": false,
+        "bookmarked": false,
+        "deleted": false,
+        "createdAt": "2026-10-11T00:00:00+00:00",
+        "updatedAt": "2026-10-11T00:00:00+00:00"
+       }
+      ],
+      "groups": [],
+      "links": [],
+      "selection": [],
+      "empty": false,
+      "notVisibleCount": 0
+     },
+     "expressions": [
+      {
+       "id": "x_3079f314652f",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（file）：甲.txt",
+       "cardIds": [
+        "m1"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_820aefea5f14",
+       "kind": "material_added",
+       "intentBearing": false,
+       "summary": "新增材料（code）：text 代码",
+       "cardIds": [
+        "m2"
+       ],
+       "groupId": null,
+       "linkId": null
+      },
+      {
+       "id": "x_120ea3df89b6",
+       "kind": "note_added",
+       "intentBearing": true,
+       "summary": "新增注释：请比较这两份材料的成本与交付",
+       "cardIds": [
+        "req"
+       ],
+       "groupId": null,
+       "linkId": null
+      }
+     ],
+     "delivery": {
+      "delivered": true,
+      "status": "accepted",
+      "understandingId": "u_b83d93100930",
+      "reason": "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交",
+      "detail": "本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝",
+      "background": {
+       "started": true,
+       "reason": null,
+       "rejected": null
+      },
+      "marking": {
+       "updated": []
+      },
+      "note": "E 字段名接缝"
+     },
+     "error": null,
+     "createdAt": "2026-10-11T14:06:12.409280+00:00",
+     "clientRequestId": "creq_e_wire_0001"
+    },
+    "before": {
+     "cards": [],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": true,
+     "firstSubmission": true
+    },
+    "after": {
+     "cards": [
+      {
+       "id": "m1",
+       "kind": "file",
+       "content": "甲材料：单价 100 元",
+       "meta": {
+        "name": "甲.txt"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "m2",
+       "kind": "code",
+       "content": "乙材料：交付 3 天",
+       "meta": {
+        "language": "text"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "req",
+       "kind": "text",
+       "content": "请比较这两份材料的成本与交付",
+       "meta": {},
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": true,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      }
+     ],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": false
+    },
+    "expressions": [
+     {
+      "id": "x_3079f314652f",
+      "kind": "material_added",
+      "intentBearing": false,
+      "summary": "新增材料（file）：甲.txt",
+      "cardIds": [
+       "m1"
+      ],
+      "groupId": null,
+      "linkId": null
+     },
+     {
+      "id": "x_820aefea5f14",
+      "kind": "material_added",
+      "intentBearing": false,
+      "summary": "新增材料（code）：text 代码",
+      "cardIds": [
+       "m2"
+      ],
+      "groupId": null,
+      "linkId": null
+     },
+     {
+      "id": "x_120ea3df89b6",
+      "kind": "note_added",
+      "intentBearing": true,
+      "summary": "新增注释：请比较这两份材料的成本与交付",
+      "cardIds": [
+       "req"
+      ],
+      "groupId": null,
+      "linkId": null
+     }
+    ],
+    "baseline": {
+     "updated": true,
+     "firstSubmission": true,
+     "previousSeq": null,
+     "seq": 1
+    },
+    "delivery": {
+     "delivered": true,
+     "status": "accepted",
+     "understandingId": "u_b83d93100930",
+     "reason": "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交",
+     "detail": "本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝",
+     "background": {
+      "started": true,
+      "reason": null,
+      "rejected": null
+     },
+     "marking": {
+      "updated": []
+     },
+     "note": "E 字段名接缝"
+    },
+    "visibleRange": {
+     "cards": [
+      {
+       "id": "m1",
+       "kind": "file",
+       "content": "甲材料：单价 100 元",
+       "meta": {
+        "name": "甲.txt"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "m2",
+       "kind": "code",
+       "content": "乙材料：交付 3 天",
+       "meta": {
+        "language": "text"
+       },
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": false,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      },
+      {
+       "id": "req",
+       "kind": "text",
+       "content": "请比较这两份材料的成本与交付",
+       "meta": {},
+       "x": 0.0,
+       "y": 0.0,
+       "w": 240.0,
+       "h": 120.0,
+       "checked": true,
+       "hidden": false,
+       "folded": false,
+       "bookmarked": false,
+       "deleted": false,
+       "createdAt": "2026-10-11T00:00:00+00:00",
+       "updatedAt": "2026-10-11T00:00:00+00:00"
+      }
+     ],
+     "groups": [],
+     "links": [],
+     "selection": [],
+     "empty": false,
+     "notVisibleCount": 0
+    },
+    "checkedCleared": [
+     "req"
+    ],
+    "replayed": true
+   },
+   "raw": "{\"status\":\"succeeded\",\"submission\":{\"id\":\"sub_61c5be39bf19\",\"seq\":1,\"status\":\"succeeded\",\"visible\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false,\"notVisibleCount\":0},\"expressions\":[{\"id\":\"x_3079f314652f\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（file）：甲.txt\",\"cardIds\":[\"m1\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_820aefea5f14\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（code）：text 代码\",\"cardIds\":[\"m2\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_120ea3df89b6\",\"kind\":\"note_added\",\"intentBearing\":true,\"summary\":\"新增注释：请比较这两份材料的成本与交付\",\"cardIds\":[\"req\"],\"groupId\":null,\"linkId\":null}],\"delivery\":{\"delivered\":true,\"status\":\"accepted\",\"understandingId\":\"u_b83d93100930\",\"reason\":\"提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交\",\"detail\":\"本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝\",\"background\":{\"started\":true,\"reason\":null,\"rejected\":null},\"marking\":{\"updated\":[]},\"note\":\"E 字段名接缝\"},\"error\":null,\"createdAt\":\"2026-10-11T14:06:12.409280+00:00\",\"clientRequestId\":\"creq_e_wire_0001\"},\"before\":{\"cards\":[],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":true,\"firstSubmission\":true},\"after\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false},\"expressions\":[{\"id\":\"x_3079f314652f\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（file）：甲.txt\",\"cardIds\":[\"m1\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_820aefea5f14\",\"kind\":\"material_added\",\"intentBearing\":false,\"summary\":\"新增材料（code）：text 代码\",\"cardIds\":[\"m2\"],\"groupId\":null,\"linkId\":null},{\"id\":\"x_120ea3df89b6\",\"kind\":\"note_added\",\"intentBearing\":true,\"summary\":\"新增注释：请比较这两份材料的成本与交付\",\"cardIds\":[\"req\"],\"groupId\":null,\"linkId\":null}],\"baseline\":{\"updated\":true,\"firstSubmission\":true,\"previousSeq\":null,\"seq\":1},\"delivery\":{\"delivered\":true,\"status\":\"accepted\",\"understandingId\":\"u_b83d93100930\",\"reason\":\"提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交\",\"detail\":\"本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝\",\"background\":{\"started\":true,\"reason\":null,\"rejected\":null},\"marking\":{\"updated\":[]},\"note\":\"E 字段名接缝\"},\"visibleRange\":{\"cards\":[{\"id\":\"m1\",\"kind\":\"file\",\"content\":\"甲材料：单价 100 元\",\"meta\":{\"name\":\"甲.txt\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"m2\",\"kind\":\"code\",\"content\":\"乙材料：交付 3 天\",\"meta\":{\"language\":\"text\"},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":false,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"},{\"id\":\"req\",\"kind\":\"text\",\"content\":\"请比较这两份材料的成本与交付\",\"meta\":{},\"x\":0.0,\"y\":0.0,\"w\":240.0,\"h\":120.0,\"checked\":true,\"hidden\":false,\"folded\":false,\"bookmarked\":false,\"deleted\":false,\"createdAt\":\"2026-10-11T00:00:00+00:00\",\"updatedAt\":\"2026-10-11T00:00:00+00:00\"}],\"groups\":[],\"links\":[],\"selection\":[],\"empty\":false,\"notVisibleCount\":0},\"checkedCleared\":[\"req\"],\"replayed\":true}"
+  },
+  {
+   "name": "acceptance-hit",
+   "status": 200,
+   "body": {
+    "acceptance": {
+     "clientRequestId": "creq_e_wire_0001",
+     "submissionId": "sub_61c5be39bf19",
+     "status": "succeeded",
+     "delivery": {
+      "delivered": true,
+      "status": "accepted",
+      "understandingId": "u_b83d93100930",
+      "reason": "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交",
+      "detail": "本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝",
+      "background": {
+       "started": true,
+       "reason": null,
+       "rejected": null
+      },
+      "marking": {
+       "updated": []
+      },
+      "note": "E 字段名接缝"
+     },
+     "understandingId": "u_b83d93100930",
+     "understandingStatus": "failed",
+     "baseStateVersion": 1,
+     "note": "E 字段名接缝",
+     "createdAt": "2026-10-11T14:06:12.409280+00:00",
+     "replayed": false
+    }
+   },
+   "raw": "{\"acceptance\":{\"clientRequestId\":\"creq_e_wire_0001\",\"submissionId\":\"sub_61c5be39bf19\",\"status\":\"succeeded\",\"delivery\":{\"delivered\":true,\"status\":\"accepted\",\"understandingId\":\"u_b83d93100930\",\"reason\":\"提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交\",\"detail\":\"本次交给 QIO 的范围：卡片 3 项、组 0 项、关系 0 项；有效改动 3 项；用户备注：E 字段名接缝\",\"background\":{\"started\":true,\"reason\":null,\"rejected\":null},\"marking\":{\"updated\":[]},\"note\":\"E 字段名接缝\"},\"understandingId\":\"u_b83d93100930\",\"understandingStatus\":\"failed\",\"baseStateVersion\":1,\"note\":\"E 字段名接缝\",\"createdAt\":\"2026-10-11T14:06:12.409280+00:00\",\"replayed\":false}}"
+  },
+  {
+   "name": "acceptance-miss",
+   "status": 404,
+   "body": {
+    "acceptance": null,
+    "reason": "没有这个提交请求身份的受理记录（creq_e_never_used_9999）：结果未知，不推断成功；请保留原内容与勾选，不要盲目重发。"
+   },
+   "raw": "{\"acceptance\":null,\"reason\":\"没有这个提交请求身份的受理记录（creq_e_never_used_9999）：结果未知，不推断成功；请保留原内容与勾选，不要盲目重发。\"}"
+  },
+  {
+   "name": "submit-conflict",
+   "status": 409,
+   "request": {
+    "requestedVisible": [
+     "m1",
+     "m2",
+     "req"
+    ],
+    "note": "换一个要求",
+    "baseStateVersion": 1,
+    "clientRequestId": "creq_e_wire_0001"
+   },
+   "body": {
+    "detail": {
+     "error": "request_identity_conflict",
+     "reason": "这个提交请求身份（creq_e_wire_0001）已经对应一次备注为「E 字段名接缝」的提交，这次却是「换一个要求」：内容不一致，已拒绝（没有落新提交、没有改基准、没有调用模型）。"
+    }
+   },
+   "raw": "{\"detail\":{\"error\":\"request_identity_conflict\",\"reason\":\"这个提交请求身份（creq_e_wire_0001）已经对应一次备注为「E 字段名接缝」的提交，这次却是「换一个要求」：内容不一致，已拒绝（没有落新提交、没有改基准、没有调用模型）。\"}}"
+  }
+ ],
+ "base_state_version": 1
+}

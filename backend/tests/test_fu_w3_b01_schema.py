@@ -199,7 +199,8 @@ def test_state_baseline_25_gets_this_rounds_objects(tmp_path: Path):
     _apply_prefix(conn, BASELINE_VERSION)
     assert current_version(conn) == BASELINE_VERSION
     missing = missing_objects(conn)
-    assert missing["tables"] == ["instances", "record_owners", "attachments", "boards", "board_states", "board_state_snapshots", "board_drafts", "board_submissions", "board_pending", "board_intents"], missing
+    # 清单随轮次增长（本轮追加 board_understanding / board_executions）：按清单本身核对。
+    assert set(missing["tables"]) == set(REQUIRED_OBJECTS["tables"]), missing
     assert "turn_journal.owner_instance_id" in missing["columns"], missing
     # 集成收尾新增的那批（附件 / 结束事实）同样必须在清单里，且此刻确实缺失
     assert "attachments.source_attachment_id" in missing["columns"], missing
@@ -269,33 +270,11 @@ def test_state_version_29_without_objects_is_repaired_by_compensation(tmp_path: 
     assert current_version(conn) == 29
     assert "instances" not in _tables(conn)
     missing = missing_objects(conn)
-    assert missing["tables"] == ["instances", "record_owners", "attachments", "boards", "board_states", "board_state_snapshots", "board_drafts", "board_submissions", "board_pending", "board_intents"], missing
-    assert set(missing["columns"]) == {
-        "turn_journal.owner_instance_id",
-        "derived_tasks.owner_instance_id",
-        "derived_tasks.claim_generation",
-        "pending_approvals.owner_instance_id",
-        "knowledge.chain_id",
-        "knowledge.version",
-        "entity_cards.revision",
-        "entity_cards.field_meta",
-        "attachments.source_attachment_id",
-        "turn_journal.reason_code",
-        "turn_journal.stopped_by",
-        "turn_journal.actions",
-    }, missing
-    assert set(missing["indexes"]) == {
-        "idx_instances_heartbeat",
-        "idx_record_owners_instance",
-        "idx_turn_journal_owner",
-        "idx_knowledge_chain",
-        "idx_attachments_turn",
-        "idx_attachments_message",
-        "idx_attachments_topic",
-        "idx_board_snapshots_board",
-        "idx_board_submissions_board",
-        "idx_board_intents_board",
-    }, missing
+    # 清单随轮次增长（本轮追加 board_understanding / board_executions 与 6 个意图列）：
+    # 按清单本身核对，不再抄一份会过期的字面量。
+    assert set(missing["tables"]) == set(REQUIRED_OBJECTS["tables"]), missing
+    assert set(missing["columns"]) == set(REQUIRED_OBJECTS["columns"]), missing
+    assert set(missing["indexes"]) == set(REQUIRED_OBJECTS["indexes"]), missing
 
     assert apply_migrations(conn) == SCHEMA_VERSION
     _assert_required_objects_present(conn)
@@ -316,7 +295,7 @@ def test_version_30_recorded_but_objects_lost_is_compensated(tmp_path: Path):
     _mark_versions(conn, *range(SIBLING_MIN, COMPENSATION_VERSION + 1))
     _seed_history(conn)
     assert current_version(conn) == COMPENSATION_VERSION
-    assert missing_objects(conn)["tables"] == ["instances", "record_owners", "attachments", "boards", "board_states", "board_state_snapshots", "board_drafts", "board_submissions", "board_pending", "board_intents"]
+    assert set(missing_objects(conn)["tables"]) == set(REQUIRED_OBJECTS["tables"])
 
     rows = _version_rows(conn)
     assert apply_migrations(conn) == COMPENSATION_VERSION

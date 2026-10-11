@@ -239,6 +239,16 @@ class TurnContext:
     bound_fragment_id: str | None = None
     bound_intent_version: int | None = None
     explicit_target: str | None = None
+    # 放行执行的事实（审计 F04）：reserve 只是「预留」，只有真正入队（submit /
+    # _enqueue_reserved）才是「被放行执行」。**是否放行过**是区分
+    # 「准备期放弃、从未执行」与「曾受理后又取消」的唯一可靠依据 ——
+    # 只看 status=cancelled 会把两者混为一谈。
+    activated: bool = False
+    # 从未放行就被放弃时的原因（F04）：去重回执必须能给出「为什么没受理」。
+    abandon_reason: str | None = None
+    # 本轮**真正绑定**的附件 id（F04）：去重命中时重试方必须拿到原请求的真实绑定结果，
+    # 而不是重新绑定或凭空推断。
+    bound_attachment_ids: list[str] | None = None
 
 
 class TurnManager:
@@ -585,6 +595,8 @@ class TurnManager:
         self._ready.discard(ctx.turn_id)
         self._ready_since.pop(ctx.turn_id, None)
         ctx.cancelled = True
+        if ctx.abandon_reason is None:
+            ctx.abandon_reason = reason
         if not _terminal(ctx):
             ctx.status = "cancelled"
             self._journal_call("terminal", ctx.turn_id, "cancelled", reason=reason)
@@ -620,6 +632,10 @@ class TurnManager:
         self._ready.discard(ctx.turn_id)
         self._ready_since.pop(ctx.turn_id, None)
         self._forget_prepare(ctx.turn_id)  # 放弃之后它不再是「准备中」
+        # 第一次放弃的原因才是「这一轮为什么没被受理」的权威说法（F04）；
+        # 迟到的第二次 abandon（清理路径可能再调一次）不得改写它。
+        if ctx.abandon_reason is None:
+            ctx.abandon_reason = reason
         # 已终态的轮次（刚跑完 / 已被取消）：迟到的 abandon 不改写它，也不重复落终态。
         if not _terminal(ctx):
             ctx.status = "cancelled"
@@ -648,6 +664,8 @@ class TurnManager:
             self._resolve(ctx, {"ok": False, "reason": "cancelled"})
             return
         self._mark_started_prepare(ctx.turn_id)  # 之后取消要如实回 already_started
+        # 这一刻起它真的会被执行 —— 受理事实从此与「准备期放弃」分道扬镳（F04）。
+        ctx.activated = True
         ctx.status = "queued" if (self._active is not None or bool(self._pending)) else "accepted"
         self._pending.append(ctx)
         self._queue.put_nowait(ctx)
@@ -729,6 +747,9 @@ class TurnManager:
             notify=notify,
             intent_id=intent_id,
             status="queued" if waits else "accepted",
+            # submit 的语义就是「受理并立刻入队」：它一定会被执行，因此从一开始
+            # 就是「已放行」（F04 的受理事实据此区分准备期放弃）。
+            activated=True,
         )
         # 1) persist：台账写失败 → 这条消息没有被接受，绝不入队（契约 C2）。
         self._persist_accept(ctx, status=ctx.status)
@@ -773,6 +794,73 @@ class TurnManager:
             return await asyncio.wait_for(asyncio.shield(fut), timeout)
         except asyncio.TimeoutError:
             return None
+
+    def acceptance_facts(self, ctx: TurnContext, *, deduped: bool = False) -> dict:
+        """如实表达「这一轮到底有没有被受理执行」（审计 F04）。
+
+        为什么必须是独立的事实而不是看 `status`：`abandon()` 与「已受理后被取消」
+        都会把 status 落成 `cancelled`，只看状态会把两者混为一谈 —— 前端于是把
+        一次**从未执行**的发送显示成「已发送」，用户以为模型看过这条消息。
+
+        四种事实互斥且可区分：
+
+        * `preparing`            —— 预留中、还没放行：既不能当成功，也不能当失败；
+        * `not_accepted`         —— 从未放行就被放弃/取消：accepted=False；
+        * `cancelled_after_accept` —— 曾经放行执行、之后被取消：accepted=True；
+        * `accepted`             —— 放行且未被取消。
+
+        `attachment_ids` 是**原请求真实绑定**的结果（去重时不许重新绑定）。
+        """
+        cancelled_status = bool(ctx.cancelled) or ctx.status == "cancelled"
+        bound = list(ctx.bound_attachment_ids or [])
+        if not ctx.activated:
+            if cancelled_status:
+                return {
+                    "state": "not_accepted",
+                    "accepted": False,
+                    "cancelled": True,
+                    "pending": False,
+                    "reason": ctx.abandon_reason or "preparation_abandoned",
+                    "deduped": deduped,
+                    "turn_id": ctx.turn_id,
+                    "status": ctx.status,
+                    "attachment_ids": [],
+                }
+            return {
+                "state": "preparing",
+                "accepted": False,
+                "cancelled": False,
+                "pending": True,
+                "reason": "preparing",
+                "deduped": deduped,
+                "turn_id": ctx.turn_id,
+                "status": ctx.status,
+                "attachment_ids": [],
+            }
+        if cancelled_status:
+            return {
+                "state": "cancelled_after_accept",
+                "accepted": True,
+                "cancelled": True,
+                "pending": False,
+                # 具体原因（user_stopped / user / interrupted …）优先；没有时给分类名。
+                "reason": ctx.abandon_reason or "cancelled_after_accept",
+                "deduped": deduped,
+                "turn_id": ctx.turn_id,
+                "status": ctx.status,
+                "attachment_ids": bound,
+            }
+        return {
+            "state": "accepted",
+            "accepted": True,
+            "cancelled": False,
+            "pending": False,
+            "reason": None,
+            "deduped": deduped,
+            "turn_id": ctx.turn_id,
+            "status": ctx.status,
+            "attachment_ids": bound,
+        }
 
     def lookup_request(self, request_id: str) -> TurnContext | None:
         """按发送请求身份查证：这个意图在本进程里对应哪一轮（可能已结束）。返回 None
@@ -1131,6 +1219,10 @@ class TurnManager:
         if ctx is None:
             return False
         ctx.cancelled = True
+        # F04：把「为什么结束」记下来 —— 用户在运行中按的停止是可区分的事实，
+        # 不该在受理回执里退化成一句笼统的 cancelled_after_accept。
+        if ctx.abandon_reason is None:
+            ctx.abandon_reason = "user_stopped"
         if ctx.loop is not None:
             ctx.loop.cancel()
         self._record_cancelled(ctx)
@@ -1155,6 +1247,8 @@ class TurnManager:
                     return False
                 c.cancelled = True
                 c.status = "cancelled"
+                if c.abandon_reason is None:
+                    c.abandon_reason = "user"
                 # 排队取消的可用操作是 retry（前端重发这条用户消息）。journal 记成
                 # cancelled（不是 interrupted），/api/turns/{id}/resend 必然拒绝 ——
                 # 列 resend 就是死按钮。active 取消路径不受影响，仍是 resend。

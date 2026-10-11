@@ -76,6 +76,27 @@ export function sendFailureText(message: string | null): string {
 }
 
 /**
+ * 未决发送（受理情况未知）的提示文案（F03 / F12）。
+ *
+ * 与 `sendFailureText` 分开，因为两件事不一样：
+ * * 明确失败（4xx / accepted=false）→ 原文回到输入框，「输入已保留，可以重试」成立；
+ * * 受理未知（超时 / 断线 / 没有回执）→ 原文保存在**独立记录**里，**不**自动放回输入框
+ *   （否则用户顺手按 Enter 就用新的请求身份再发一次，绕开幂等保护）。
+ *   这时必须说清原文保存在哪里、有哪些明确入口；输入框为空时**绝不能**说「输入已保留」。
+ */
+export function pendingSendText(
+  message: string | null | undefined,
+  options: { keptInRecord?: boolean } = {},
+): string {
+  const detail = (message ?? "").trim();
+  const reason = detail || "原因未知";
+  const kept = options.keptInRecord ?? true;
+  return kept
+    ? `发送未确认：${reason}（原文保存在下面的「还没有确认是否发出的文字」里，可以从那里查看原文、同身份重试或明确放弃）`
+    : `发送未确认：${reason}（这次发送的原文没有保存在本机，请留意输入框）`;
+}
+
+/**
  * 悬浮聊天的能力边界，如实说明：哪些已经接入、哪些还没有。
  *
  * 第一阶段**没有接入** QIO 对板面的理解与工具执行；文字发送只走当前会话，

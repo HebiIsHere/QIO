@@ -181,10 +181,10 @@ describe.each<LegacyFormat>(["no-version", "version-0", "current"])(
       expect(readCardLocalDraft("c1")?.text).toBe("另一页面的新稿");
       // 2) version-guard 是有意保留：不显示成删除失败、不重试
       expect(store.draftLocalRemovalErrorFor("c1")).toBeNull();
-      // 3) 服务器请求集合仍然保留服务器那份正确正文（没被删掉，也没把新稿当服务器内容发上去）
+      // 3) C1 逐键更新：未决冲突键（card:c1）根本不在请求里 —— 服务端那份正确正文原样保留，
+      //    既没被删掉，也没有把新稿当服务器内容发上去；本页真正改动的 card:c2 照常上传。
       const payload = serverDraftsPayload();
-      expect(payload["card:c1"]).toBe("服务器正文");
-      expect(payload["card:c1"]).not.toBe("另一页面的新稿");
+      expect(payload["card:c1"], "未决冲突键不允许出现在逐键请求里").toBeUndefined();
       expect(payload["card:c2"]).toBe("另一张卡的新输入");
 
       // 4) 重开恢复：新稿仍是恢复来源（冲突仍在，等用户选择）

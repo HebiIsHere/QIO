@@ -244,6 +244,7 @@ describe("提交状态文案", () => {
     status: "succeeded",
     expressions: [expression("note_added", true)],
     checkedCleared: ["n1"],
+    delivery: { delivered: true, status: "accepted", reason: "已受理", detail: "" },
   } as unknown as SubmissionResult;
 
   it("未提交 / 已提交状态标签", () => {
@@ -257,11 +258,20 @@ describe("提交状态文案", () => {
     expect(submitStateLabel("duplicate")).toBe("未重复提交");
   });
 
-  it("成功提交必须写明第一阶段没有接入模型调用，以及勾选已被取消", () => {
+  it("成功提交写明「已受理」（不是「已经理解完成」），以及勾选已被取消", () => {
     const text = submitStatusText("succeeded", { result: succeeded });
     expect(text).toContain("已提交");
-    expect(text).toContain("没有接入 QIO 模型调用");
+    expect(text).toContain("已受理");
+    expect(text).toContain("正在读取本次材料并真实理解");
     expect(text).toContain("取消 1 条注释的勾选");
+    // 没有被可靠受理的提交（受理失败）不能显示成「已受理」
+    const notAccepted = {
+      ...succeeded,
+      delivery: { delivered: false, status: "failed", reason: "受理失败：没有建立理解请求", detail: "" },
+    } as unknown as SubmissionResult;
+    const failedText = submitStatusText("succeeded", { result: notAccepted });
+    expect(failedText).not.toContain("已受理");
+    expect(failedText).toContain("受理失败");
   });
 
   it("失败要写明保留了什么、基准没有更新", () => {

@@ -813,3 +813,197 @@ export function sendFailureText(message: string | null): string;
 ~~优先级：① 本次会话里由同一次创建动作产生的意图记在 `localStorage["qio.interactive.intentBatches"]`；
 ② 服务端 `submissionId` 相同；③ `createdAt` 截断到秒相同。三条都拿不到时，该意图自成一批。~~
 
+
+---
+
+## 14. 真实模型理解与真实执行（2026-10-11 第九轮，**本轮冻结接口**）
+
+本轮把互动模式从「可控演示」接到**真实模型理解 + 真实执行**。此前 §1.6 的状态机、可见范围、
+审批边界与撤回保护**全部继续有效**；本轮只补上「理解从哪来」与「批准后真的做什么」。
+
+### 14.0 本轮边界
+
+- 聊天发送与板面提交仍然分离：聊天只发用户输入，不自动读取板面、未提交改动、
+  未获准注释或关注范围（§8.3 不变）。
+- 保存只落库、不调用模型（§1.5 不变）。**只有提交**才建立理解请求。
+- 添加材料不等于要求总结 / 比较 / 修改 / 执行；空提交、重复提交、纯显示变化
+  **不产生理解请求、不调用模型**（沿用 §1.5 的 empty / duplicate 判定）。
+- 模型不能直接写数据库、不能绕过审批。QIO 在互动模式中能执行的板面操作是
+  **用户在互动模式中能做的子集**（见 14.3 的允许操作集合）。
+- 演示入口（`demo=true` 与 `/demo/advance`）保留，但**演示推进不得驱动真实任务**，
+  正式路径不显示演示内容。
+
+### 14.1 状态与判定
+
+**受理与理解分开**（取代「`succeeded` 同时代表本地记录成功与模型完成」）：
+
+    accepted ──▶ understanding ──▶ understood              （产出意图，等待审批）
+                              ├─▶ needs_clarification     （需要用户补充说明）
+                              ├─▶ no_action               （当前无需开展任务）
+                              └─▶ failed                  （可重试，从保存的快照恢复）
+
+- `accepted`：提交已可靠受理，理解请求已落库（模型还没开始）。受理成功后更新提交基准、
+  清除本次勾选；受理前失败保留改动与勾选。
+- `understanding`：正在读取材料 / 调用模型。
+- 三种理解结果**必须区分**：`intent`（提出可执行意图）、`clarification`（需要用户补充）、
+  `no_action`（当前无需开展任务）。**不强制每次提交都生成任务**。
+- `failed` 重试只从该请求保存的 `snapshot` 恢复：不重读当前板面、不重建同一批任务。
+
+**材料来源（诚实口径，`MATERIAL_SOURCES`）**：`inline | attachment_text | url_fetched |
+url_address_only | image_unsupported | unreadable | unsupported`。
+拿到文件名 / 地址**不等于**读到正文；未读取、截断与不支持都要如实记录，禁止声称已完整阅读。
+
+**执行状态（一次执行尝试）**：`queued | running | paused | done | failed | cancelled`。
+意图行的 `status` 仍是任务状态（§1.6）；排队、等待依赖、实际执行、暂停与结束分别显示真实状态，
+**不允许「已批准就一直运行中」**。
+
+### 14.2 数据库（迁移 37 / 补偿 38，只追加）
+
+- `board_understanding`：`id, board_id, submission_id, request_id, status, stage, progress,
+  snapshot, context, materials, output, validation, memory, error, attempt, adapter,
+  created_at, updated_at, started_at, finished_at`。
+  `request_id` 唯一 —— 同一请求身份重复受理不会新建第二条。
+- `board_executions`：`id, intent_id, board_id, attempt, status, plan, steps, checkpoints,
+  result, error, owner_instance_id, created_at, updated_at, started_at, finished_at`。
+- `board_intents` 追加列：`goal, expected, operations, basis, intent_key, understanding_id`。
+- `COMPENSATION_VERSION` 由 36 抬到 **38**（= 迁移 36 的全部语句 + 本轮对象）；
+  `REQUIRED_OBJECTS` 同步补进新表 / 新列 / 新索引。历史迁移一行不动。
+
+### 14.3 跨模块函数（冻结签名）
+
+`agent/interactive/materials.py`（A，新）：
+
+    def resolve_materials(conn, *, state: dict, cards: Iterable[dict], attachments=None,
+                          *, max_chars: int = 40000) -> list[dict]
+        """把本次可见范围里的材料解析成可交给模型的条目（见 14.1 的 MATERIAL_SOURCES）。
+        只读已保存的附件与已保存的板面状态，不抓取未获准内容。"""
+
+`agent/interactive/understanding.py`（B，新）：
+
+    def build_context(conn, *, board_id: str, submission_id: str | None = None,
+                      understanding_id: str | None = None) -> dict
+        """从**冻结的提交快照**构建互动上下文；不读当前板面。"""
+    async def run_understanding(conn, understanding_id: str, *, adapter_provider) -> dict
+        """执行一次真实理解：材料 → 模型 → 结构化校验 → 落库。
+        adapter_provider: async () -> BaseAdapter | None（复用 QIO 既有凭据 / 用量 / 预算链路）"""
+    def request_understanding(conn, *, board_id: str, submission_id: str,
+                              snapshot: dict | None = None) -> dict
+        """受理：建立一条 accepted 的理解请求（幂等，按 request_id）。"""
+
+`agent/interactive/execution.py`（C，新）：
+
+    async def run_execution(conn, execution_id: str, *, adapter_provider=None,
+                            instance_id: str | None = None) -> dict
+        """真实执行一条已批准的任务；逐步落 checkpoint，支持暂停 / 取消 / 恢复。"""
+
+`agent/interactive/intents.py`（C，扩展）：
+
+    def create_intents_from_understanding(conn, *, board_id: str, understanding_id: str,
+                                          payloads: list[dict]) -> list[dict]
+        """把已校验的模型输出落成意图：沿用 intent_key 身份，不复制新任务。"""
+
+**B → C**：理解校验通过后由 B 调用 `intents.create_intents_from_understanding`
+（延迟 import；失败不得让理解结果丢失，只记进理解记录）。
+**C → B**：批准后的真实执行不重新调用模型理解；执行需要的文本来自已审批的操作与
+结果生成（同一条模型链路，但输出受 `ALLOWED_INTENT_OPS` 约束）。
+
+### 14.4 HTTP 接口（冻结）
+
+A（`agent/api/interactive_store.py`）新增：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/interactive/boards/{board_id}/understanding` | 本板面理解过程列表；`?submissionId=` 过滤 |
+| POST | `/api/interactive/understanding/{understanding_id}/retry` | 从保存的快照重试失败的理解 |
+| POST | `/api/interactive/boards/{board_id}/understanding/{understanding_id}/cancel` | 取消尚未落地的理解 |
+
+提交返回新增：`delivery.delivered`（受理成功为 true）、`delivery.understandingId`、
+`delivery.status`（= `accepted`）。
+
+C（`agent/api/interactive_intents.py`）新增 / 变更：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/interactive/boards/{board_id}/intents` | **真实入口**：`{submissionId}` → 取该次理解产出的意图；`{demo:true}` 仍走演示 |
+| GET | `/api/interactive/boards/{board_id}/executions` | 本板面执行记录 |
+| POST | `/api/interactive/intents/{intent_id}/pause` | 暂停真实执行 |
+| POST | `/api/interactive/intents/{intent_id}/resume` | 继续（校验材料与已完成步骤，不重复已完成操作） |
+| POST | `/api/interactive/intents/{intent_id}/cancel` | 取消并撤回该任务仍可安全撤回的改动 |
+| POST | `/api/interactive/intents/{intent_id}/approve` | **批准后必须实际启动真实执行**，返回 `execution` |
+
+### 14.5 允许的板面操作集合（冻结）
+
+    add_reply_card   {content, title?, x?, y?, w?, h?}
+    add_text_card    {content, x?, y?, w?, h?}
+    move_card        {cardId, x, y}
+    group_cards      {cardIds[], ordered?, name?}
+    order_group      {groupId, memberOrder[]}
+    add_link         {src, dst, direction?, meaning?}
+
+不允许：删除、隐藏、勾选用户内容、改用户已有卡片的正文、任意改数据库。
+程序校验模型输出：结构、对象引用、材料范围、操作类型、依赖、冲突与修改范围；
+**无效输出不得落成可执行任务**，给出可理解原因，自动修复至多一次。
+
+### 14.6 前端接口（冻结）
+
+`frontend/src/interactive/types.ts` 新增：`UnderstandingStatus / UnderstandingKind /
+MaterialSource / UnderstandingMaterial / UnderstandingStep / UnderstandingClarification /
+Understanding / UnderstandingResponse / IntentOperation / IntentBasis / ExecutionStatus /
+ExecutionStep / Execution / ExecutionControlResult`。
+`Intent` 追加 `goal / expected / operations / basis / intentKey / understandingId / execution`。
+
+`frontend/src/services/interactive.ts` 新增：`createIntents(boardId, submissionId?)`、
+`fetchUnderstanding(boardId, submissionId?)`、`retryUnderstanding(id)`、
+`fetchExecutions(boardId)`、`pauseIntent(id)`、`resumeIntent(id)`、`cancelIntent(id)`。
+
+前端复用统一过程规则：无说明时立即显示统一状态、说明后补；阶段切换收起上一阶段、
+同阶段更新当前说明、历史可展开；工具记录默认一行、审批入口自动展开；正式文字边生成边显示；
+成功 / 失败 / 取消都结束读条。
+
+### 14.7 本轮文件所有权（一个文件同一时间只有一个写者）
+
+| 角色 | 写作用域 |
+| --- | --- |
+| Lead | `docs/interactive-mode-contract.md`、`docs/status.md`、`docs/interactive-real-model-report.md`、`backend/src/agent/interactive/models.py`、`backend/src/agent/storage/schema.py`、`backend/src/agent/storage/migrate.py`、`backend/src/agent/api/interactive.py`、`frontend/src/interactive/types.ts`、`frontend/src/services/interactive.ts`、`backend/tests/test_interactive_real_model.py`、`backend/tests/test_interactive_migration_integration.py` |
+| A | `backend/src/agent/interactive/submission.py`、`backend/src/agent/interactive/materials.py`（新）、`backend/src/agent/api/interactive_store.py`、`backend/tests/test_interactive_submission.py`、`backend/tests/test_interactive_materials.py`（新）、`backend/tests/test_interactive_store_understanding.py`（新）、`frontend/src/interactive/materials.ts`（新）、`frontend/src/components/interactive/AddMenu.vue`、`frontend/src/components/interactive/BoardCard.vue` |
+| B | `backend/src/agent/interactive/understanding.py`（新）、`backend/src/agent/interactive/prompts.py`（新）、`backend/tests/test_interactive_understanding.py`（新） |
+| C | `backend/src/agent/interactive/execution.py`（新）、`backend/src/agent/interactive/intents.py`、`backend/src/agent/api/interactive_intents.py`、`backend/tests/test_interactive_intents.py`、`backend/tests/test_interactive_execution.py`（新） |
+| D | `frontend/src/stores/interactive.ts`、`frontend/src/interactive/approval.ts`、`frontend/src/components/interactive/{ChatDock,IntentPreviewCard,IntentBatchTray,IntentStatusPopover,SubmitCluster}.vue`、`frontend/src/views/InteractiveView.vue`、`frontend/src/interactive/__tests__/*` |
+| E | `docs/interactive-real-model-review.md`、`scripts/interactive-real-model-verify/**`（只写自己的复核产物） |
+
+### 14.8 本轮不做
+
+通用聊天循环的全部工具对互动规划开放；模型直接写库；绕过审批；多板面协同编辑；
+图片视觉理解（当前模型链路没有视觉能力，如实显示不支持）；真实模型自动化测试
+（自动化测试一律用 fake/mock provider）。
+
+### 14.9 落地说明与对 §14 的补充（2026-10-11，按实际实现）
+
+本节只记录**实现后的真实口径**，不改变 §14 的冻结签名。
+
+1. **`request_understanding` 的 `snapshot` 形状**：只传该次提交结果里的 `after` 投影
+   （`submission.project_snapshot` 的输出）。提交成功后紧接着会「自动取消勾选」并保存板面，
+   重读板面会把刚提交的注释排除掉，所以必须传内存里那一份。
+   理解侧需要「有效变化 / 用户备注」时按 `submission_id` 从 `board_submissions` 补读，
+   **仍然不读当前板面**，并在上下文里如实标注来源（`requirement.expressionSource`、`honesty.expressionsSource`）。
+2. **`empty` / `duplicate` 判定顺序**（补强 §1.5）：先判「与上次成功提交内容一致」→ `duplicate`，
+   再判「去掉显示类表达后没有内容」→ `empty`。纯位置变化后内容与上次成功提交一致，必须判 `duplicate`。
+   两种状态都不更新基准、都不调用模型。
+3. **模型适配器注入点**：`app.state.interactive_adapter_provider` 优先（`async () -> BaseAdapter | None`），
+   回落 `app.state.ctx.build_adapter`。提交路径的理解、重试、批准后的执行共用同一个注入点；
+   拿不到适配器时给出可读失败原因，不抛异常、不假装成功。
+4. **意图 → 同一件工作的更新**：`create_intents_from_understanding` 按 `intent_key` 沿用身份；
+   同一理解请求 + 同一 `intent_key` 重复调用幂等（不新建、不刷新依据）；
+   旧意图仍在等待审批时原地更新（保留 id），已执行中 / 已结束时用 `key#2` 建新身份，不覆盖在跑的任务。
+5. **结果卡正文来源**：正文是模型在**理解阶段**产出、并在预览中被用户批准的那段内容；
+   执行阶段只在方案里没有正文时才调用模型生成。执行阶段绝不把模型输出解析成新的操作。
+6. **取消尚未落地的理解**：`board_understanding.status` 的冻结取值里没有 `cancelled`，
+   用户取消映射为 `failed` + 明确原因（可从保存的快照重试），并返回 `cancelled: true`；**不假装成功**。
+7. **长期记忆**：复用既有的知识 / 长期记忆机制，落实为「待审批」，只记录适合后续合作的目标、结论、
+   依据与成果，并区分用户表达、模型推测、待审批建议与已完成事实；
+   不把整块板面或未获准内容写入长期记忆，也不把互动提交写进用户会话 transcript。
+8. **演示路径**：`demo=true` 与 `/demo/advance` 保留；存在活跃真实执行时演示推进被拒绝
+   （`reason=real_execution`），演示意图批准不建立真实执行。
+
+
+

@@ -240,6 +240,15 @@ class BackgroundTasks:
         """还没结束的后台任务名（按 asyncio 句柄判定）。"""
         return sorted(name for name, handle in self._handles.items() if not handle.done)
 
+    def registered(self) -> list[str]:
+        """当前记在账上的任务名（含「句柄已结束、底层执行单元未确认结束」的幽灵）。
+
+        关闭报告只列**未确认结束**的名字，所以「这一次关闭里有没有这一类工作」
+        不能靠报告的名单推断（干净收尾的名字已经撤下账了）。需要在关闭**之前**
+        取快照的调用方用这个方法。
+        """
+        return sorted({handle.name for handle in self._tracked()})
+
     def unsettled(self) -> list[str]:
         """**未确认收尾**的后台任务名（句柄未结束，或底层执行单元未确认结束）。"""
         return sorted(

@@ -1,0 +1,17 @@
+{
+  "results": [
+    {
+      "id": "X5",
+      "group": "contract",
+      "title": "执行控制：pause / resume / cancel 三个接口存在并作用于真实执行",
+      "status": "PASS",
+      "detail": "未批准任务上三个接口都可达并给出明确结果：{'pause': {'http': 200, 'ok': False}, 'resume': {'http': 200, 'ok': False}, 'cancel': {'http': 200, 'ok': True}}",
+      "seconds": 0.399
+    }
+  ],
+  "counts": {
+    "PASS": 1,
+    "FAIL": 0,
+    "NOT_VERIFIABLE": 0
+  }
+}

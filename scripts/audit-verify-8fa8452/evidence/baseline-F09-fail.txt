@@ -1,0 +1,122 @@
+﻿
+
+[F09-a] 验证起点捕获到的指纹 = None
+[F09-a] 新配置验证失败后 state = failed  promote_default = None
+[F09-a] 旧成功晚到后 state = verified  promote_default = key_e_f09
+[F09-a] metadata.verify_state/verify_error = verified / None
+F
+[F09-b] 验证起点捕获到的指纹 = None
+[F09-b] 新配置验证成功后 state = verified  promote_default = key_e_f09
+[F09-b] 旧失败晚到后 state = failed  promote_default = None
+F
+[F09-meta] set_verified 参数 = ['key_id', 'ok', 'reason']
+[F09-meta] 有指纹参数 = False
+[F09-meta] 指纹读取方法 = None
+.
+================================== FAILURES ===================================
+_____ test_f09_a_late_success_from_old_config_must_not_verify_new_config ______
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-2332/test_f09_a_late_success_from_o0')
+
+    def test_f09_a_late_success_from_old_config_must_not_verify_new_config(tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.create(
+            KEY,
+            "sk-old-0000000000000000",
+            ["main-loop"],
+            endpoint="https://old.example.com/v1",
+            default_model="old-model",
+        )
+        # 用户在这个配置上开始验证：捕获指纹（修复版）
+        snapshot = _fingerprint_of(store, KEY)
+        print("\n[F09-a] 验证起点捕获到的指纹 =", snapshot)
+    
+        # 验证在飞行中，用户改了配置（新 secret 会推进 version 并复位验证状态），
+        # 随后新配置的验证**失败**了。
+        store.reconfigure(
+            KEY,
+            secret="sk-new-1111111111111111",
+            endpoint="https://new.example.com/v1",
+            default_model="new-model",
+            confirm_reconfigure=True,
+        )
+        store.set_verified(KEY, False, "新配置连通性测试失败：401")
+        before = _state(store, KEY)
+        before_default = store.promote_default()
+        print("[F09-a] 新配置验证失败后 state =", before, " promote_default =", before_default)
+        assert before == VERIFY_STATE_FAILED, "前置条件：新配置的验证结论是失败"
+    
+        # 旧配置的成功结果姗姗来迟
+        _set_verified(store, KEY, True, None, snapshot)
+        after = _state(store, KEY)
+        after_default = store.promote_default()
+        meta = store.get_metadata(KEY) or {}
+        print("[F09-a] 旧成功晚到后 state =", after, " promote_default =", after_default)
+        print("[F09-a] metadata.verify_state/verify_error =", meta.get("verify_state"), "/", meta.get("verify_error"))
+    
+>       assert after == VERIFY_STATE_FAILED, (
+            "F09 缺陷复现：旧配置的成功验证结果晚到，把**已经失败的新配置**覆盖成了 verified"
+            "（set_verified 无条件按 key_id 写，没有任何输入指纹校验）。实际 state=" + after
+        )
+E       AssertionError: F09 缺陷复现：旧配置的成功验证结果晚到，把**已经失败的新配置**覆盖成了 verified（set_verified 无条件按 key_id 写，没有任何输入指纹校验）。实际 stat
+e=verified
+E       assert 'verified' == 'failed'
+E         
+E         - failed
+E         + verified
+
+..\scripts\audit-verify-8fa8452\test_f09_credential_fingerprint.py:127: AssertionError
+------------------------------ Captured log call ------------------------------
+______ test_f09_b_late_failure_from_old_config_must_not_break_new_config ______
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-2332/test_f09_b_late_failure_from_o0')
+
+    def test_f09_b_late_failure_from_old_config_must_not_break_new_config(tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.create(
+            KEY,
+            "sk-old-2222222222222222",
+            ["main-loop"],
+            endpoint="https://old.example.com/v1",
+            default_model="old-model",
+        )
+        snapshot = _fingerprint_of(store, KEY)
+        print("\n[F09-b] 验证起点捕获到的指纹 =", snapshot)
+    
+        store.reconfigure(
+            KEY,
+            secret="sk-new-3333333333333333",
+            endpoint="https://new.example.com/v1",
+            default_model="new-model",
+            confirm_reconfigure=True,
+        )
+        store.set_verified(KEY, True, None)
+        before = _state(store, KEY)
+        before_default = store.promote_default()
+        print("[F09-b] 新配置验证成功后 state =", before, " promote_default =", before_default)
+    
+        # 旧配置的失败结果姗姗来迟（例如当时的临时网络错误）
+        _set_verified(store, KEY, False, "旧配置的临时网络错误：connection reset", snapshot)
+        after = _state(store, KEY)
+        print("[F09-b] 旧失败晚到后 state =", after, " promote_default =", store.promote_default())
+    
+>       assert after == VERIFY_STATE_VERIFIED, (
+            "F09 缺陷复现：旧配置的失败验证结果晚到，把**已经通过验证的新配置**打成了 failed"
+            "（旧配置的临时网络错误永久禁用了新配置）。实际 state=" + after
+        )
+E       AssertionError: F09 缺陷复现：旧配置的失败验证结果晚到，把**已经通过验证的新配置**打成了 failed（旧配置的临时网络错误永久禁用了新配置）。实际 state=failed
+E       assert 'failed' == 'verified'
+E         
+E         - verified
+E         + failed
+
+..\scripts\audit-verify-8fa8452\test_f09_credential_fingerprint.py:166: AssertionError
+------------------------------ Captured log call ------------------------------
+=========================== short test summary info ===========================
+FAILED ..\scripts\audit-verify-8fa8452\test_f09_credential_fingerprint.py::test_f09_a_late_success_from_old_config_must
+_not_verify_new_config
+FAILED ..\scripts\audit-verify-8fa8452\test_f09_credential_fingerprint.py::test_f09_b_late_failure_from_old_config_must
+_not_break_new_config
+2 failed, 1 passed in 0.79s
+
+

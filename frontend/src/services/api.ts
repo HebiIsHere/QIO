@@ -530,6 +530,23 @@ export const api = {
       attachments?: { id?: string }[];
       /** 没绑上的附件与原因（严格语义下非空即整轮被拒） */
       rejected?: { id: string; reason: string }[];
+      /**
+       * 统一的**受理事实**（契约 C3）。
+       *
+       * 去重命中时这里返回的是**原请求**的真实记录与原附件绑定 —— 不是重新绑定，
+       * 也不是无条件 accepted=true。前端据此判定成功，绝不只看 turn_id。
+       */
+      receipt?: {
+        state: "accepted" | "preparing" | "not_accepted" | "cancelled_after_accept";
+        accepted: boolean;
+        cancelled: boolean;
+        pending: boolean;
+        reason: string | null;
+        deduped: boolean;
+        turn_id: string;
+        status: string;
+        attachment_ids: string[];
+      };
     }>("/api/turns", {
       method: "POST",
       signal,
@@ -559,7 +576,23 @@ export const api = {
    */
   lookupTurnByRequest: (clientRequestId: string) =>
     request<
-      { turn_id: string; status: string; deduplicated?: boolean } | { ok: false; unknown: true }
+      | {
+          turn_id: string;
+          status: string;
+          deduplicated?: boolean;
+          /** 与 POST 同形的受理事实（契约 C3）：命中 ≠ 受理 */
+          accepted?: boolean;
+          cancelled?: boolean;
+          receipt?: {
+            state: "accepted" | "preparing" | "not_accepted" | "cancelled_after_accept";
+            accepted: boolean;
+            cancelled: boolean;
+            pending: boolean;
+            reason: string | null;
+            attachment_ids: string[];
+          };
+        }
+      | { ok: false; unknown: true }
     >(`/api/turns/by-request/${encodeURIComponent(clientRequestId)}`, {
       timeoutMs: API_TIMEOUT_MS.read,
     }),

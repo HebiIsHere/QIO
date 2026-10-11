@@ -1,0 +1,151 @@
+﻿
+
+ RUN  v4.1.10 D:/qio-dev/qa-e
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删
+除
+[F07-a] 合并后 links = [{"id":"link:1","src":"card:a","dst":"card:b","direction":true,"meaning":"关联","deleted":false,"crea
+tedAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"}] conflicts = []
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散
+[F07-b] 合并后 groups = [{"id":"group:1","name":"g-group:1","defaultName":false,"ordered":false,"x":0,"y":0,"w":1,"h":1,"m
+embers":["card:a"],"deleted":false,"createdAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"}]
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-c 服务器新增的对象必须保留（不能为了修删除而把新增也吞
+掉）
+[F07-c] 合并后 cards = ["card:local","card:server"]
+
+stdout | scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-d 删除与服务器对同对象的修改相撞：不能静默复活却什么都
+不说
+[F07-d] 合并后 link:1 = {"id":"link:1","src":"card:a","dst":"card:b","direction":true,"meaning":"服务器改过的含义","deleted":false
+,"createdAt":"2026-10-11T00:00:00Z","updatedAt":"2026-10-11T00:00:00Z"} conflicts = []
+
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts (4 tests | 2 failed) 6ms
+     × F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删除 4ms
+     × F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散 1ms
+     ✓ F07-c 服务器新增的对象必须保留（不能为了修删除而把新增也吞掉） 0ms
+     ✓ F07-d 删除与服务器对同对象的修改相撞：不能静默复活却什么都不说 0ms
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-a 带附件的未决发送，重试必须带原来的附件（不读
+当前输入框/当前话题）
+[F02-a] sendTurn 调用 = [["原始文字","A",["att_1","att_2"]],["原始文字","A"]]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-b 显式无附件的未决发送，重试必须仍是显式空数组
+（不得变成字段缺失）
+[F02-b] 重试调用 = ["纯文字","A"]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-c 首次发送：显式无附件必须传空数组而不是缺字段
+（回归保护）
+[F02-c] 首次调用 = ["纯文字","A",[]]
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-d 未决重试必须复用同一 clientReque
+stId（不得换身份重发）
+[F02-d] clientRequestId 前/后 = 57ffc75d-2794-4a7f-ad69-a13afa7a6d92 / 57ffc75d-2794-4a7f-ad69-a13afa7a6d92
+
+stdout | scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F03 未确认发送的保留 > F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静
+默淘汰
+[F03-a] 未决记录数 = 50 被淘汰 = ["local_1791716528158_1"]
+
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts (5 tests | 3 failed) 27ms
+     × F02-a 带附件的未决发送，重试必须带原来的附件（不读当前输入框/当前话题） 12ms
+     × F02-b 显式无附件的未决发送，重试必须仍是显式空数组（不得变成字段缺失） 2ms
+     ✓ F02-c 首次发送：显式无附件必须传空数组而不是缺字段（回归保护） 2ms
+     ✓ F02-d 未决重试必须复用同一 clientRequestId（不得换身份重发） 1ms
+     × F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静默淘汰 9ms
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+System.Management.Automation.RemoteException
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-a 带附件的未决发送，重试必须带原来的附件（不读当前
+输入框/当前话题）
+AssertionError: F02 缺陷复现：重试没有携带快照里的 attachmentIds（基线 retrySendAttempt 只传 message+topicId），原请求的附件选择在重试时丢失。实际第三参=undefine
+d: expected undefined to deeply equal [ 'att_1', 'att_2' ]
+System.Management.Automation.RemoteException
+- Expected:
+[
+  "att_1",
+  "att_2",
+]
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:127:7
+    125|       "F02 缺陷复现：重试没有携带快照里的 attachmentIds（基线 retrySendAttempt 只传 messag…
+    126|         "原请求的附件选择在重试时丢失。实际第三参=" + JSON.stringify(retryCall[2]),
+    127|     ).toEqual(["att_1", "att_2"]);
+       |       ^
+    128|   });
+    129|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+System.Management.Automation.RemoteException
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F02 未知回执重试必须按快照重放 > F02-b 显式无附件的未决发送，重试必须仍是显式空数组（不
+得变成字段缺失）
+AssertionError: F02 缺陷复现：显式无附件的发送在重试时把 attachment_ids 丢了（undefined = 字段缺失），后端会走遗留兜底把话题下未绑定附件绑到这条纯文字消息上。实际第三参=undefined:
+ expected undefined to deeply equal []
+System.Management.Automation.RemoteException
+- Expected:
+[]
+System.Management.Automation.RemoteException
+undefined
+System.Management.Automation.RemoteException
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:155:7
+    153|         "后端会走遗留兜底把话题下未绑定附件绑到这条纯文字消息上。实际第三参=" +
+    154|         JSON.stringify(retryCall[2]),
+    155|     ).toEqual([]);
+       |       ^
+    156|   });
+    157|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+System.Management.Automation.RemoteException
+ FAIL  scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts > F03 未确认发送的保留 > F03-a 同一话题 51 条未决发送：第 1 条不得被数量上限静默淘
+汰
+AssertionError: F03 缺陷复现：第 1 条未决发送被 sendAttempts.slice(-49) 静默淘汰（数据悄悄消失）。lost=["local_1791716528158_1"]: expected [ 'lo
+cal_1791716528158_1' ] to deeply equal []
+System.Management.Automation.RemoteException
+- Expected
+System.Management.Automation.RemoteException
+- []
+System.Management.Automation.RemoteException
+ ❯ scripts/audit-verify-8fa8452/f02-f03-send-snapshot.probe.ts:209:7
+    207|         " 条未决发送被 sendAttempts.slice(-49) 静默淘汰（数据悄悄消失）。lost=" +
+    208|         JSON.stringify(lost),
+    209|     ).toEqual([]);
+       |       ^
+    210|   });
+    211| });
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+System.Management.Automation.RemoteException
+ FAIL  scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-a 服务器只改无关卡片内容时，本地已删除的关联必须保持删除
+AssertionError: F07 缺陷复现：本地删除的关联被服务器事实复活了（mergeLink 只看到 server 有、local 没有，无条件返回 server，没有用 base 区分『本地删除』与『服务器新增』）。 实际 l
+inks=["link:1"]: expected [ 'link:1' ] to not include 'link:1'
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts:98:11
+     96|         "无条件返回 server，没有用 base 区分『本地删除』与『服务器新增』）。" +
+     97|         " 实际 links=" + JSON.stringify(ids),
+     98|     ).not.toContain("link:1");
+       |           ^
+     99|   });
+    100|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+System.Management.Automation.RemoteException
+ FAIL  scripts/audit-verify-8fa8452/f07-server-facts.probe.ts > F07 本地删除的组与关联不能被恢复 > F07-b 服务器只改无关卡片时，本地已解散的组必须保持解散
+AssertionError: F07 缺陷复现：本地解散的组被服务器事实复活了。实际 groups=["group:1"]: expected [ 'group:1' ] to not include 'group:1'
+ ❯ scripts/audit-verify-8fa8452/f07-server-facts.probe.ts:113:11
+    111|       ids,
+    112|       "F07 缺陷复现：本地解散的组被服务器事实复活了。实际 groups=" + JSON.stringify(ids),
+    113|     ).not.toContain("group:1");
+       |           ^
+    114|   });
+    115|
+System.Management.Automation.RemoteException
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+System.Management.Automation.RemoteException
+
+ Test Files  2 failed (2)
+      Tests  5 failed | 4 passed (9)
+   Start at  19:02:06
+   Duration  2.14s (transform 256ms, setup 0ms, import 492ms, tests 33ms, environment 2.97s)
+
+
+

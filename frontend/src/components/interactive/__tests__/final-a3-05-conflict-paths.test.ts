@@ -156,12 +156,19 @@ describe("05 未决冲突的组件行为", () => {
     expect(wrapper.find('[data-im="card-draft-keep-server"]').exists(), "服务器来源的入口不见了").toBe(true);
     expect(editorValue(wrapper)).toBe(LOCAL_EDITED);
 
-    // 未决期间写回服务器的必须仍是服务器那份，不能按本机版本覆盖
+    /*
+     * C1（F01）：草稿保存是**逐键更新**，未决冲突键根本不进请求 —— 服务端那份因此不会被
+     * 本机候选覆盖（旧协议要求把它按服务器事实回写；现在「不出现」就是「不动」）。
+     */
     vi.mocked(imApi.saveDrafts).mockClear();
     await store.flushDrafts();
     const calls = vi.mocked(imApi.saveDrafts).mock.calls;
-    expect(calls.length, "未决冲突期间根本没有写回服务器，无法判断有没有覆盖").toBeGreaterThan(0);
-    expect(calls[calls.length - 1][1][key], "未决冲突期间把本机候选写上了服务器").toBe(SERVER);
+    for (const call of calls) {
+      expect(
+        (call[1] as Record<string, string>)[key],
+        "未决冲突期间把本机候选写上了服务器",
+      ).toBeUndefined();
+    }
   });
 
   it("【组件/DOM】选本机：本机候选成为草稿、冲突消失、编辑框用本机那份", async () => {
