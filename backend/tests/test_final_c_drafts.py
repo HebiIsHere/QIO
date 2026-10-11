@@ -115,11 +115,19 @@ def test_multi_key_rejection_is_atomic(client: TestClient):
 
 
 def test_clear_reports_what_it_really_cleared(client: TestClient):
+    """契约 C1 变更后的口径：**只有显式 removed 才是删除**，「没出现」= 未修改。
+
+    旧断言把「b 不再出现」当删除，那是整集合替换语义 —— 正是 F01 的缺陷（另一窗口
+    只保存自己的键就会删掉这里的草稿）。现在删除必须显式声明，且带版本门。
+    """
     first = _put(client, {"a": "第一份", "b": "第二份"})
     assert first.status_code == 200
     rev1 = first.json()["rev"]
 
-    second = _put(client, {"a": "第一份"})  # b 不再出现 = 清除
+    second = client.put(
+        f"/api/interactive/drafts/{BOARD}",
+        json={"mode": "patch", "baseRev": rev1, "drafts": {"a": "第一份"}, "removed": ["b"]},
+    )
     body = second.json()
     assert body["cleared"] == ["b"], "响应必须如实说明这次真的清掉了哪些键"
     assert body["drafts"] == {"a": "第一份"}
@@ -131,9 +139,13 @@ def test_clear_reports_what_it_really_cleared(client: TestClient):
 
 
 def test_clear_response_is_real_stored_data(client: TestClient):
-    _put(client, {"a": "一"})
-    cleared_body = _put(client, {}).json()
-    assert cleared_body["drafts"] == {}, "发送空 drafts 后，服务端存下的就是空"
+    """契约 C1：空 drafts 本身**不是**删除；显式 removed + 正确 baseRev 才真的清掉。"""
+    base = _put(client, {"a": "一"}).json()["rev"]
+    cleared_body = client.put(
+        f"/api/interactive/drafts/{BOARD}",
+        json={"mode": "patch", "baseRev": base, "drafts": {}, "removed": ["a"]},
+    ).json()
+    assert cleared_body["drafts"] == {}, "显式删除并被确认后，服务端存下的就是空"
     assert cleared_body["cleared"] == ["a"]
 
 
@@ -165,8 +177,13 @@ def test_write_upgrades_legacy_format(client: TestClient, db_conn: sqlite3.Conne
 
     cleared = _put(client, {"k": "新值"}).json()
     assert cleared["rev"] == 1  # 旧格式基线 0 -> 第一次新写法保存 rev = 1
+    assert cleared["legacyReplace"] is True, "旧请求体必须被显式标记为整集合替换语义"
     raw = db_conn.execute("SELECT drafts FROM board_drafts WHERE board_id = ?", (BOARD,)).fetchone()
-    assert json.loads(raw["drafts"]) == {"rev": 1, "drafts": {"k": "新值"}}
+    stored = json.loads(raw["drafts"])
+    # C1 起存储形状追加逐键版本索引（keys）；旧读法仍只依赖 rev/drafts
+    assert stored["rev"] == 1
+    assert stored["drafts"] == {"k": "新值"}
+    assert stored["keys"]["k"]["version"] >= 1 and stored["keys"]["k"]["deleted"] is False
 
 
 # --- 09 / 12：底层函数同样不得截短、必须报告真实结果 ------------------------

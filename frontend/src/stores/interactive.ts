@@ -46,7 +46,11 @@ import {
   type SubmissionResult,
   type VisibleRange,
 } from "../interactive/types";
-import { mergeServerInto, type BoardContentConflict } from "../interactive/serverFacts";
+import {
+  mergeServerInto,
+  type BoardContentConflict,
+  type RemovalConflict,
+} from "../interactive/serverFacts";
 
 const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
@@ -72,7 +76,15 @@ const DRAFT_FLUSH_MAX_PASSES = 4;
  * 这里不再出现手写的字符串前缀，也不再需要「清除哨兵序号」——
  * 「已被用户清除、还没同步」现在是一条真正的本机记录（kind: "cleared"，§11.2）。
  */
-export type SubmitStatus = "idle" | "submitting" | "succeeded" | "failed" | "empty" | "duplicate";
+export type SubmitStatus =
+  | "idle"
+  | "submitting"
+  | "succeeded"
+  | "failed"
+  | "empty"
+  | "duplicate"
+  /** F10：POST 没有拿到回执（超时/断线）—— 提交结果**未知**，不能假定成功或失败 */
+  | "unknown";
 
 export const useInteractiveStore = defineStore("interactive", () => {
   const boardId = ref(DEFAULT_BOARD_ID);
@@ -128,6 +140,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const submitStatus = ref<SubmitStatus>("idle");
   const submitError = ref<string | null>(null);
+  /**
+   * F10：提交请求的结果与**提交之后的读取**结果必须分开记录。
+   *
+   * - `submitResultUnknown`：POST 没有拿到回执（超时 / 断线 / 无响应）——
+   *   这是「提交结果未知」，既不能说成功也不能说失败；
+   * - `submitRefreshState/Error`：POST 已经明确成功、随后刷新板面 / 可见范围 / 任务清单失败。
+   *   提交成功是既成事实，界面必须说「提交成功，页面刷新失败」，并只提供**重试刷新**
+   *   （重试只触发读取，绝不自动重复提交）。
+   */
+  const submitResultUnknown = ref(false);
+  const submitRefreshState = ref<"idle" | "pending" | "error">("idle");
+  const submitRefreshError = ref<string | null>(null);
 
   const visibleRange = ref<VisibleRange | null>(null);
 
@@ -135,6 +159,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const conflicts = ref<string[][]>([]);
   const batchAvailable = ref(false);
   const recoverNotice = ref<string[]>([]);
+  /**
+   * F11：任务清单的读取状态。读取失败**不是**「任务消失」：
+   * 最后一次成功读到的任务、冲突与批次依据原样保留，界面明确说「刷新失败」并给重试入口。
+   * `intentsLoadedOnce` 用来区分「成功返回空集合」与「从未成功读到过」。
+   */
+  const intentsLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
+  const intentsLoadError = ref<string | null>(null);
+  const intentsLoadedOnce = ref(false);
 
   /**
    * 浮层开合状态（本轮前端改版）。
@@ -230,6 +262,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
   let knownServerSeq = 0;
 
   /**
+   * F01/C1：草稿通道的服务端存簿版本（rev）与逐键版本。
+   *
+   * 客户端据此在保存时证明「这次更新 / 删除基于哪一版」；
+   * 服务端回执里的 rev 是**只增不减**的存簿事实，迟到的回执不许把它退回去。
+   */
+  let serverDraftRev: number | null = null;
+  const serverDraftKeyVersions = new Map<string, number>();
+
+  /**
    * N1/F3：同一次候选的「旧版本写入被拒 → 读最新事实 → 重试」次数上限。
    * 服务端版本一直在被别人推进时，绝不做无界重试：停在明确失败上，让用户看见原因。
    */
@@ -260,6 +301,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 必须由用户明确选择保留哪一份，绝不静默覆盖（界面入口见 resolveBoardContentConflict）。
    */
   const boardContentConflicts = ref<Record<string, { local: string; server: string }>>({});
+
+  /**
+   * F07：本地删除（解散组 / 删除关联）与服务器对**同一对象**的实质修改相撞。
+   *
+   * 键是对象 id；值里保留服务器上那一份的完整依据。未解决之前不许保存
+   * （保存会把删除写上去 = 丢掉对方的修改；直接复活 = 静默撤销用户的删除），
+   * 由用户明确选择「保持删除」或「恢复服务器版」。
+   */
+  const boardRemovalConflicts = ref<
+    Record<string, { kind: "group" | "link"; id: string; server: Record<string, unknown> }>
+  >({});
 
   /**
    * 取消撤回的恢复状态（F1）：active=true 表示「服务器事实还没落地确认这次撤回」。
@@ -595,6 +647,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveError.value = `本页候选与服务器上同一张卡片的正文都有改动（${ids}），请选择保留哪一份后再保存`;
       return "blocked";
     }
+    // F07：本地删除与服务器修改相撞时先等用户明确选择（与 saveNow 的门同一口径）
+    if (Object.keys(boardRemovalConflicts.value).length > 0) {
+      const ids = Object.keys(boardRemovalConflicts.value).join("、");
+      impactCheckError.value = null;
+      saveStatus.value = "error";
+      saveError.value = `本地删除了这些对象，但服务器上它们被改过（${ids}）：请选择保持删除还是恢复服务器版后再保存`;
+      return "blocked";
+    }
     const current = cloneState(board.value);
     const rev = boardLocalRev;
     try {
@@ -652,6 +712,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
       const ids = Object.keys(boardContentConflicts.value).join("、");
       saveStatus.value = "error";
       saveError.value = `本页候选与服务器上同一张卡片的正文都有改动（${ids}），请选择保留哪一份后再保存`;
+      dirty.value = true;
+      return;
+    }
+    /**
+     * F07：本地删除的对象在服务器上被改过 —— 必须先由用户明确选择
+     * （保持删除 / 恢复服务器版），否则保存会把对方的修改丢掉、或者本地删除被静默复活。
+     */
+    if (Object.keys(boardRemovalConflicts.value).length > 0) {
+      const ids = Object.keys(boardRemovalConflicts.value).join("、");
+      saveStatus.value = "error";
+      saveError.value = `本地删除了这些对象，但服务器上它们被改过（${ids}）：请选择保持删除还是恢复服务器版后再保存`;
       dirty.value = true;
       return;
     }
@@ -731,8 +802,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
         );
         const newerCandidate = boardLocalRev !== putRev;
         const boardReadAdvanced = boardCleanRev !== putCleanRev;
-        if (!newerCandidate && Number.isFinite(Number(result.seq))) {
-          knownServerSeq = Math.max(knownServerSeq, Number(result.seq));
+        /**
+         * F08：服务器**已经确认**的这一版是独立的版本事实，与「用户正在编辑哪个候选」无关，
+         * 必须一直单调推进。基线只在「没有更新候选」时才记它：被更新候选接手的那次保存
+         * 服务端其实已经接受了（seq 前进），已知服务器版本却停在旧值上，于是更旧的 GET
+         * 会被当成「更新的读取」，把板面退回旧版本并造出针对旧正文的假冲突。
+         */
+        const acceptedServerSeq = Number(result.seq);
+        if (Number.isFinite(acceptedServerSeq)) {
+          knownServerSeq = Math.max(knownServerSeq, acceptedServerSeq);
         }
         if (newerCandidate || boardReadAdvanced) {
           // 回执在飞期间出现了更新的候选（用户继续编辑）/ 或一次更新的读取已经落地：
@@ -748,11 +826,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
           const cleanUnchanged = boardCleanRev === putCleanRev;
           if (newerCandidate && cleanUnchanged && board.value) {
             boardCleanRev = putRev;
-            const acceptedSeq = Number(result.seq);
-            if (Number.isFinite(acceptedSeq)) {
+            if (Number.isFinite(acceptedServerSeq)) {
               board.value = {
                 ...board.value,
-                seq: acceptedSeq,
+                seq: acceptedServerSeq,
                 updatedAt: result.savedAt ?? board.value.updatedAt,
               };
             }
@@ -1086,7 +1163,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
    *
    * 返回合并结果（含冲突清单），调用方据此提示用户或继续保存。
    */
-  function adoptServerFacts(server: BoardState): { conflicts: BoardContentConflict[] } {
+  function adoptServerFacts(
+    server: BoardState,
+  ): { conflicts: BoardContentConflict[]; removalConflicts: RemovalConflict[] } {
     const candidate = board.value;
     const base = cleanState;
     const serverSeq = Number(server?.seq ?? 0);
@@ -1098,7 +1177,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       boardCleanRev = boardLocalRev;
       dirty.value = false;
       saveStatus.value = serverSeq > 0 ? "saved" : "idle";
-      return { conflicts: [] };
+      return { conflicts: [], removalConflicts: [] };
     }
     const hadCandidate = boardLocalRev > boardCleanRev;
     const outcome = mergeServerInto(candidate, server, base);
@@ -1143,6 +1222,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
         next[item.cardId] = { local: item.local, server: item.server };
       }
       boardContentConflicts.value = next;
+    }
+    /**
+     * F07：本地删除与服务器对同一对象的修改相撞 —— 把服务器那一份作为**依据**留下，
+     * 在用户明确选择之前保存会被挡住（见 saveNow 的门），既不静默复活也不丢对方修改。
+     */
+    if (outcome.removalConflicts.length) {
+      const next = { ...boardRemovalConflicts.value };
+      for (const item of outcome.removalConflicts) {
+        next[item.id] = { kind: item.kind, id: item.id, server: item.server };
+      }
+      boardRemovalConflicts.value = next;
     }
     return outcome;
   }
@@ -1213,6 +1303,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
       settleCancelRecovery(true, null);
       return true;
     }
+    /**
+     * F08：即使当前没有未保存候选，也**不能**用一个比已确认事实更旧的读取回退板面版本
+     * 与清洁基线（那会直接把保存已确认的新版本退回去，还会让后续合并把旧正文当成
+     * 「服务器改动」而造出假冲突）。旧读取只允许合并草稿，不动任何板面事实。
+     */
+    if (!payloadIsNewer) {
+      mergeDraftsFromPayload(payload, before, readSaved);
+      if (pendingRemovals.size > 0) scheduleDraftSave();
+      settleCancelRecovery(true, null);
+      return true;
+    }
     board.value = payload.state;
     cleanState = cloneState(payload.state);
     reconcileCheckedChoices(payload.state);
@@ -1251,6 +1352,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
     // 请求期间用户新输入的文字同样优先（§11.1），
     // GET 在飞期间已保存成功的新版本同样不被迟到的旧正文回退（M1/01）。
     const serverDrafts = payload.drafts?.drafts ?? {};
+    /**
+     * C1：服务端存簿版本（rev / 逐键版本）只增不减的事实入口。
+     * 迟到的读取不许把已经确认的更高版本退回去，否则客户端会拿旧版本去覆盖别人的新内容。
+     */
+    const payloadRev = Number(payload.drafts?.rev);
+    if (Number.isFinite(payloadRev) && (serverDraftRev === null || payloadRev > serverDraftRev)) {
+      serverDraftRev = payloadRev;
+    }
+    for (const [key, version] of Object.entries(payload.drafts?.keyVersions ?? {})) {
+      if (typeof version !== "number" || !Number.isFinite(version)) continue;
+      serverDraftKeyVersions.set(key, Math.max(serverDraftKeyVersions.get(key) ?? 0, version));
+    }
     const mergedDrafts: Record<string, string> = { ...serverDrafts };
     for (const key of Object.keys(drafts.value)) {
       const savedNow = draftSavedKeySeq.get(key) ?? 0;
@@ -1301,17 +1414,45 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const intentIdSet = () => new Set(intents.value.map((item) => item.id));
 
-  async function loadIntents() {
+  /**
+   * F11：读取任务清单。
+   *
+   * - 成功：整体替换清单 / 冲突 / 批次依据，并清掉上一次的读取错误（不累积无意义提示）；
+   * - 失败：**保留**最后一次成功读到的任务、冲突与批次依据，只标明「刷新失败」与真实原因。
+   *   读取失败绝不是「任务消失」；只有成功返回的空集合才是真的空。
+   */
+  async function loadIntents(): Promise<boolean> {
+    intentsLoadState.value = "loading";
     try {
       const payload = await api.fetchIntents(boardId.value);
       intents.value = payload.intents ?? [];
       conflicts.value = payload.conflicts ?? [];
       batchAvailable.value = Boolean(payload.batchAvailable);
       recoverNotice.value = payload.recovery?.paused ?? [];
+      intentsLoadedOnce.value = true;
+      intentsLoadState.value = "ok";
+      intentsLoadError.value = null;
+      return true;
     } catch (err) {
-      intents.value = [];
-      recoverNotice.value.push((err as Error).message);
+      // 只记这次读取失败：旧清单、旧冲突、旧批次依据原样保留（不清空、不假装任务消失）
+      intentsLoadState.value = "error";
+      intentsLoadError.value = (err as Error).message || "原因未知";
+      return false;
     }
+  }
+
+  /**
+   * F11：依赖最新事实的动作（审批 / 拒绝 / 批量决定）在事实可疑时先做一次服务端核验。
+   *
+   * 上一次读取失败意味着本页看到的是旧快照 —— 不能拿它当「当前权威」直接放行。
+   * 先按服务端事实重新读一次；仍然读不到就**暂停**这个动作并给出可重试原因
+   * （绝不用旧快照批准，也不假装它仍然有效）。
+   */
+  async function ensureFreshIntents(): Promise<string | null> {
+    if (intentsLoadState.value !== "error") return null;
+    const ok = await loadIntents();
+    if (ok) return null;
+    return `任务清单读取失败，无法确认这条任务的最新状态，已暂停这次操作（${intentsLoadError.value ?? "原因未知"}）。请先重试刷新任务清单`;
   }
 
   async function load() {
@@ -1800,7 +1941,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 还有「没做完的草稿工作」：未保存的内容，或还没被服务器确认的清除（§11.2） */
   function hasDraftWork(): boolean {
-    return hasUnsavedDrafts() || pendingRemovals.size > 0;
+    /**
+     * C1：未决冲突键在等用户明确选择，不算「还有没做完的保存工作」——
+     * 否则每 600ms 都会重发一次同样的冲突，界面永远停在「保存中」。
+     */
+    const unsavedWaitingForChoice = unsavedDraftKeys().every((key) => Boolean(draftConflicts.value[key]));
+    return (hasUnsavedDrafts() && !unsavedWaitingForChoice) || pendingRemovals.size > 0;
   }
 
   /**
@@ -1830,27 +1976,47 @@ export const useInteractiveStore = defineStore("interactive", () => {
     while (draftInFlight) await draftInFlight;
     if (!hasDraftWork()) return;
     let lastError: string | null = null;
+    /**
+     * C1：这一轮有没有停在「必须由用户决定」的状态上（同键冲突 / 删除没被确认）。
+     * 有就不再做无意义的重发 —— 那只会反复产生同样的冲突，不会让事情往前一步。
+     */
+    let conflictStopped = false;
     draftInFlight = (async () => {
       try {
         for (let round = 0; round < DRAFT_FLUSH_MAX_ROUNDS; round += 1) {
           if (!hasDraftWork()) return;
-          const payload = { ...drafts.value };
           /**
-           * 未决冲突键（§12.1）：本机候选**不上去**，也**不许从请求里删掉** ——
-           * 服务端保存是整份替换，删键就是删掉服务器那份。未决时按**服务器事实**回写该键，
-           * 本机候选留在本机记录与冲突记录里等用户选择。
+           * C1（F01 的根治点）：只上传**本次确实有未保存改动**的键 —— 逐键更新。
+           *
+           * 基线把内存里的整份草稿集合发上去当整集合替换：另一个页面的旧快照会把本页
+           * 刚保存的新草稿删掉，也会把对方更新过的同一个键按「最后到达」静默覆盖。
+           * 现在未出现在请求里的键 = **未修改**，服务端绝不因此删除它们。
            */
           const conflictKeys = new Set<string>();
           for (const [conflictKey, value] of Object.entries(draftConflicts.value)) {
             if (!value) continue;
+            // 未决冲突键等用户选择：不上传（本机候选不上去），也不删除（服务器那份原样保留）
             conflictKeys.add(conflictKey);
-            payload[conflictKey] = value.server;
           }
+          const keys = unsavedDraftKeys().filter((key) => !conflictKeys.has(key));
+          const patchDrafts: Record<string, string> = {};
+          for (const key of keys) patchDrafts[key] = drafts.value[key] ?? "";
           const atSeq = draftSeq;
-          // 这次请求会一并清掉的删除依据（payload 就是剩余集合：不带某个键 = 删掉它）
+          // 这次请求**明确删除**的键（每条带自己登记的身份版本）
           const removalsAtRequest = new Map(pendingRemovals);
-          // 未决冲突键不属于「这次要保存成功的工作」：它们等用户选择，不发状态、不做成功清理
-          const keys = Object.keys(payload).filter((key) => !conflictKeys.has(key));
+          const removedKeys = [...removalsAtRequest.keys()];
+          if (keys.length === 0 && removedKeys.length === 0) break;
+          /**
+           * 逐键版本（C1）：没有安全基线（baseRev 与服务端当前 rev 一致）时，
+           * 服务端只凭它判断「这次覆盖 / 删除是不是基于当前那一版」。
+           */
+          const keyVersionsAtRequest: Record<string, number> = {};
+          for (const key of [...keys, ...removedKeys]) {
+            const version = serverDraftKeyVersions.get(key);
+            if (typeof version === "number" && version > 0) keyVersionsAtRequest[key] = version;
+          }
+          /** 这次请求的服务端回执（只有它才能证明「哪些键真的保存 / 删除成功」） */
+          let receiptsAtRequest: Awaited<ReturnType<typeof api.saveDrafts>> | null = null;
           // 各键此刻本机记录的版本：在飞回执清理本地副本必须按记录版本校验（§12.2）。
           // 记账口径与 removeCardLocalDraftIfUnchanged 一致：有记录取 version（旧格式记 0），没有记录为 null。
           const localVersionsAtRequest = new Map<string, number | null>();
@@ -1889,7 +2055,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           for (const key of removalsAtRequest.keys()) setDraftRemovalState(key, "pending");
           try {
-            await api.saveDrafts(boardId.value, payload);
+            receiptsAtRequest = await api.saveDrafts(boardId.value, patchDrafts, {
+              removed: removedKeys,
+              baseRev: serverDraftRev,
+              keyVersions: keyVersionsAtRequest,
+            });
             lastError = null;
           } catch (err) {
             lastError = (err as Error).message || "原因未知";
@@ -1912,10 +2082,48 @@ export const useInteractiveStore = defineStore("interactive", () => {
             if (!hasNewerUnsaved(atSeq)) break;
             continue;
           }
+          /**
+           * C1：回执是**版本与确认**的唯一来源。
+           * - rev / keyVersions 只增不减地吸收，供下一轮证明「这次写入基于哪一版」；
+           * - conflicts 里的键服务器**没有**接受这次更新（它保留了自己那份）：两份文字都留下；
+           * - cleared 只列出服务器**真的**清掉的键（本机副本能不能清理只依据它）。
+           */
+          const receiptRev = Number(receiptsAtRequest?.rev);
+          if (Number.isFinite(receiptRev) && (serverDraftRev === null || receiptRev > serverDraftRev)) {
+            serverDraftRev = receiptRev;
+          }
+          for (const [key, version] of Object.entries(receiptsAtRequest?.keyVersions ?? {})) {
+            if (typeof version !== "number" || !Number.isFinite(version)) continue;
+            serverDraftKeyVersions.set(key, Math.max(serverDraftKeyVersions.get(key) ?? 0, version));
+          }
+          const conflictByKey = new Map<string, { key: string; local: string; server: string }>();
+          for (const item of receiptsAtRequest?.conflicts ?? []) {
+            if (item && typeof item.key === "string") {
+              conflictByKey.set(item.key, { key: item.key, local: item.local ?? "", server: item.server ?? "" });
+            }
+          }
+          const blockedRemovals = new Set(receiptsAtRequest?.blockedRemovals ?? []);
+          const clearedSet = Array.isArray(receiptsAtRequest?.cleared)
+            ? new Set(receiptsAtRequest?.cleared ?? [])
+            : null;
           for (const key of keys) {
             const keySeq = draftKeySeq.get(key) ?? 0;
             // 请求在飞时用户又改了：这次返回不算数，留给下一轮
             if (isStaleReceipt(atSeq, keySeq)) continue;
+            const conflict = conflictByKey.get(key);
+            if (conflict) {
+              /**
+               * C1 同键冲突：服务端**没有**覆盖它那份，本机这份也原样保留 ——
+               * 两份都留下等用户明确选择（绝不静默挑一个，也绝不假装这次保存成功）。
+               */
+              setDraftConflict(key, {
+                local: conflict.local || (drafts.value[key] ?? ""),
+                server: conflict.server,
+              });
+              setDraftState(key, "error", "服务器上这个键已经有另一份文字：两份都已保留，请选择保留哪一份");
+              conflictStopped = true;
+              continue;
+            }
             draftSavedKeySeq.set(key, keySeq);
             setDraftState(key, "saved");
             // 服务端已经拿到这一版：本机恢复副本按「当时那一版」清理（契约 §10.5 / §12.2）。
@@ -1924,7 +2132,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
             if (cardId) {
               const expectVersion = localVersionsAtRequest.get(key) ?? null;
               const snapshot = localSnapshotsAtRequest.get(key) ?? null;
-              const uploaded = payload[key] ?? "";
+              const uploaded = patchDrafts[key] ?? "";
               if (!snapshot || snapshot.hasMeta || snapshot.text !== uploaded) {
                 /**
                  * F2：本机记录的内容**不是**这次上传的内容 —— 服务器并没有收到这条记录，
@@ -1949,17 +2157,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
             }
           }
           /**
-           * 未决冲突键：服务器事实已成功回写。这里只把「保存工作」的记账清零
-           * （避免每 600ms 反复重发同一回写），**冲突本身不动**，仍等用户明确选择（§12.1）。
-           */
-          for (const key of conflictKeys) {
-            const keySeq = draftKeySeq.get(key) ?? 0;
-            // 请求在飞时用户又输入了新候选：属于下一轮回写，不算这次
-            if (isStaleReceipt(atSeq, keySeq)) continue;
-            draftSavedKeySeq.set(key, keySeq);
-            setDraftState(key, "idle");
-          }
-          /**
            * 服务器确认了这次一并清掉的删除依据：
            * 只有**同一版本**才算确认 —— 用户在清除之后又编辑的新版本不能被旧清除删掉（§11.2）。
            */
@@ -1968,6 +2165,26 @@ export const useInteractiveStore = defineStore("interactive", () => {
             // 这时按「这次请求实际要清的版本」核对，避免把后来重建的记录误删。
             const registered = pendingRemovals.get(key);
             if (registered && registered.version !== entry.version) continue;
+            /**
+             * C1：只有服务端**确认**清掉的键才允许往下走（清理本机副本、解除登记）。
+             * 明确回执以 cleared 为准；没有 cleared 字段时退回「回执里的剩余集合已不含这个键」
+             * 这一可核对证据 —— 绝不靠「请求发出去了」推断删除成功。
+             */
+            const blocked = blockedRemovals.has(key);
+            const stillStored = Object.prototype.hasOwnProperty.call(receiptsAtRequest?.drafts ?? {}, key);
+            const confirmed = clearedSet ? clearedSet.has(key) : !stillStored;
+            if (blocked || !confirmed) {
+              const serverText = (receiptsAtRequest?.drafts ?? {})[key] ?? "";
+              if (blocked || serverText) setDraftConflict(key, { local: "", server: serverText });
+              setDraftRemovalState(
+                key,
+                "error",
+                "服务器没有确认这次删除（它上面这份草稿可能已被另一处改过，或无法证明版本）：已保留服务器上的文字，请处理后再试",
+              );
+              setDraftState(key, "error", "这份草稿的删除还没有被服务器确认");
+              conflictStopped = true;
+              continue;
+            }
             pendingRemovals.delete(key);
             const pendingLocal = pendingLocalRemovals.get(key);
             if (pendingLocal && pendingLocal.purpose === "remove-local-copy") {
@@ -2013,6 +2230,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
             setDraftRemovalState(key, "idle");
             setDraftState(key, "idle");
           }
+          // C1：同键冲突 / 删除没被确认时停在明确状态上等用户决定，不再重发同样的请求
+          if (conflictStopped) break;
         }
       } finally {
         draftInFlight = null;
@@ -2024,7 +2243,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 要么继续安排下一次保存（真的会发出请求），要么明确显示未保存原因与重试入口。
      * 绝不留下「没有请求、没有计时、没有后续工作，却一直显示保存中」。
      */
-    if (hasDraftWork()) {
+    if (hasDraftWork() && !conflictStopped) {
       if (lastError) {
         for (const key of unsavedDraftKeys()) setDraftState(key, "error", lastError);
         for (const [key] of pendingRemovals) {
@@ -2211,12 +2430,33 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
+   * F10：这次提交失败是不是「没有拿到回执」？
+   *
+   * 与发送通道同一口径（Lead 裁决）：带 status 的 4xx 是服务端**明确**的结论（明确失败）；
+   * 没有响应、超时、5xx 等一律属于「提交结果未知」—— 服务端可能已经产生副作用，
+   * 既不能假定成功，也不能假定失败。
+   */
+  function submitReceiptUnknown(err: unknown): boolean {
+    const status = (err as { status?: unknown } | null)?.status;
+    if (typeof status !== "number") return true;
+    return !(status >= 400 && status < 500);
+  }
+
+  /**
    * 提交：QIO 取得未提交有效表达的唯一入口。
    * 先保存（保证服务端看到的是最新板面），再提交；失败时保留改动与勾选。
+   *
+   * F10：**提交请求**与**提交之后的读取**必须分开记录：
+   * - POST 明确成功后刷新失败 → 提交成功是既成事实，只说「提交成功，页面刷新失败」，
+   *   保留成功事实与基线依据，并给只触发读取的重试入口（绝不自动重复提交）；
+   * - POST 没有拿到回执 → 「提交结果未知」，不假定成功也不假定失败。
    */
   async function submit(): Promise<SubmissionResult | null> {
     if (!board.value || submitStatus.value === "submitting") return null;
     submitError.value = null;
+    submitResultUnknown.value = false;
+    submitRefreshState.value = "idle";
+    submitRefreshError.value = null;
     submitStatus.value = "submitting";
     await saveNow();
     const blocked =
@@ -2237,37 +2477,36 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const intentsBefore = intentIdSet();
     /** N5：提交这一刻的「勾选修改代次」——等待期间用户自己重新勾选的，不许被这次清理取消。 */
     const checkedAtSubmit = new Map(cardCheckedSeq);
+    /**
+     * 第一段：提交请求本身。**只有这一段能决定「已提交 / 未提交 / 未知」的事实**。
+     */
+    let result: SubmissionResult;
     try {
       const confirmedCheckId =
         confirmedCheck && confirmedCheck.savedSeq === board.value.seq
           ? confirmedCheck.checkId
           : undefined;
-      const result = await api.submitBoard(
+      result = await api.submitBoard(
         boardId.value,
         undefined,
         "",
         board.value.seq,
         confirmedCheckId,
       );
-      lastSubmission.value = result;
-      submitStatus.value = result.status;
-      /**
-       * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
-       * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
-       * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
-       * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
-       */
-      applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
-      // 只有成功提交才会让服务端清掉勾选并推进基准，所以成功后重新拉一遍状态。
-      await refreshBoardFromServer();
-      await refreshVisibleRange();
-      await loadIntents();
-      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
-      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
-      return result;
     } catch (err) {
       const status = (err as { status?: number }).status;
       const failure = (err as { payload?: { error?: string; reason?: string } }).payload;
+      if (submitReceiptUnknown(err)) {
+        /**
+         * F10：没有拿到回执 —— 提交结果**未知**。
+         * 不假定成功（不推进基准、不假装已提交），也不假定失败（不诱导重新提交）：
+         * 保留改动与勾选，明确说「结果未知」，等用户先查证。
+         */
+        submitStatus.value = "unknown";
+        submitResultUnknown.value = true;
+        submitError.value = `提交结果未知：没有拿到服务端回执（${(err as Error).message || "原因未知"}）。这次提交可能已经受理，请先确认结果，不要直接重复提交`;
+        return null;
+      }
       submitStatus.value = "failed";
       submitError.value =
         status === 409 && failure?.error === "stale_state"
@@ -2275,6 +2514,67 @@ export const useInteractiveStore = defineStore("interactive", () => {
           : (err as Error).message;
       // 提交失败保留改动与本次注释选择：这里不刷新、不清勾选、不动基准
       return null;
+    }
+    // POST 已经明确返回：提交请求的事实到此确定，后面无论读取成败都不再改变它
+    lastSubmission.value = result;
+    submitStatus.value = result.status;
+    /**
+     * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
+     * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
+     * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
+     * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
+     */
+    applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
+    /**
+     * 第二段：提交之后的读取。它只影响「页面上的事实新不新」，
+     * **不影响**「这次提交成功了吗」—— 失败时单独表达，并留可重试的读取入口。
+     */
+    await refreshAfterSubmit(intentsBefore, result);
+    return result;
+  }
+
+  /**
+   * F10：提交成功之后的读取（板面 / 可见范围 / 任务清单）。
+   *
+   * 失败**不改变**提交结果：`submitStatus` 保持成功、`lastSubmission` 与基准依据都不动，
+   * 只记录 `submitRefreshError`，让界面说「提交成功，页面刷新失败」。
+   */
+  async function refreshAfterSubmit(intentsBefore: Set<string>, result: SubmissionResult): Promise<boolean> {
+    submitRefreshState.value = "pending";
+    submitRefreshError.value = null;
+    try {
+      await refreshBoardFromServer();
+      await refreshVisibleRange();
+      await loadIntents();
+      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
+      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
+      submitRefreshState.value = "idle";
+      return true;
+    } catch (err) {
+      submitRefreshState.value = "error";
+      submitRefreshError.value = (err as Error).message || "原因未知";
+      return false;
+    }
+  }
+
+  /**
+   * F10：只重试**读取**（板面 / 可见范围 / 任务清单），绝不重新提交，
+   * 也绝不动「已提交」这个已经成立的事实与基线依据。
+   */
+  async function retrySubmitRefresh(): Promise<{ ok: boolean; error?: string }> {
+    submitRefreshState.value = "pending";
+    submitRefreshError.value = null;
+    try {
+      await refreshBoardFromServer();
+      await refreshVisibleRange();
+      await loadIntents();
+      submitRefreshState.value = "idle";
+      return { ok: true };
+    } catch (err) {
+      const message = (err as Error).message || "读取服务器状态失败";
+      submitRefreshState.value = "error";
+      submitRefreshError.value = message;
+      return { ok: false, error: message };
     }
   }
 
@@ -2320,18 +2620,27 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   async function approve(intentId: string, confirmDependency = false): Promise<DecideResult> {
+    const stale = await ensureFreshIntents();
+    if (stale) return { ok: false, reason: stale, detail: stale };
     const result = await api.approveIntent(intentId, confirmDependency);
     await settleAfterIntentChange();
     return result;
   }
 
   async function reject(intentId: string): Promise<DecideResult> {
+    const stale = await ensureFreshIntents();
+    if (stale) return { ok: false, reason: stale, detail: stale };
     const result = await api.rejectIntent(intentId);
     await settleAfterIntentChange();
     return result;
   }
 
   async function decideBatch(approveIds: string[], rejectIds: string[]) {
+    const stale = await ensureFreshIntents();
+    if (stale) {
+      // 旧快照不许放行批量决定：服务端核验没做成 → 暂停，并把真实原因交回界面
+      return { results: [], conflicts: [], approved: [], rejected: [], error: stale };
+    }
     const result = await api.batchDecide(approveIds, rejectIds);
     await settleAfterIntentChange();
     return result;
@@ -2463,6 +2772,51 @@ export const useInteractiveStore = defineStore("interactive", () => {
     saveError.value = null;
     scheduleSave();
   }
+
+  /* ------------------------------------------------------------------
+   * F07：本地删除（解散组 / 删除关联）与服务器修改相撞
+   * ------------------------------------------------------------------ */
+
+  /** 这个对象（组 / 关联）当前的删除冲突依据；没有则为 null。 */
+  function boardRemovalConflictFor(id: string): { kind: "group" | "link"; server: Record<string, unknown> } | null {
+    const item = boardRemovalConflicts.value[id];
+    return item ? { kind: item.kind, server: item.server } : null;
+  }
+
+  /**
+   * 用户对「删除 vs 对方修改」做出明确选择：
+   * - `keep-deleted`：保持删除（用户明确放弃对方这次修改）；
+   * - `restore-server`：恢复服务器版（把那一条按服务器事实放回候选）。
+   * 两种都只改本页候选并排一次保存，不调用 QIO；未选之前保存一直被挡住。
+   */
+  function resolveBoardRemovalConflict(id: string, choice: "keep-deleted" | "restore-server"): void {
+    const conflict = boardRemovalConflicts.value[id];
+    if (!conflict || !board.value) return;
+    const remaining = { ...boardRemovalConflicts.value };
+    delete remaining[id];
+    boardRemovalConflicts.value = remaining;
+    if (choice === "restore-server") {
+      const restored = cloneState(conflict.server) as unknown as { id: string };
+      if (conflict.kind === "group") {
+        const groups = board.value.groups ?? [];
+        if (!groups.some((item) => item.id === id)) {
+          board.value = { ...board.value, groups: [...groups, restored as never] };
+        }
+      } else {
+        const links = board.value.links ?? [];
+        if (!links.some((item) => item.id === id)) {
+          board.value = { ...board.value, links: [...links, restored as never] };
+        }
+      }
+    }
+    boardLocalRev += 1;
+    dirty.value = true;
+    confirmedCheck = null;
+    pendingConfirm = null;
+    saveStatus.value = "saving";
+    saveError.value = null;
+    if (!pendingImpact.value) scheduleSave();
+  }
   async function createDemoIntents() {
     const before = intentIdSet();
     const result = await api.createDemoIntents(boardId.value);
@@ -2559,6 +2913,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     // 07：取消 = 这次板面变更不生效，那么它带来的草稿清除也不该落地
     pendingDraftClears.clear();
     syncPendingDraftClearKeys();
+    // F07：候选整块退回已保存事实，本地删除也随之作废 —— 删除冲突不再成立
+    boardRemovalConflicts.value = {};
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
@@ -2662,6 +3018,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     conflicts,
     batchAvailable,
     recoverNotice,
+    intentsLoadState,
+    intentsLoadError,
+    intentsLoadedOnce,
+    ensureFreshIntents,
     auxOpen,
     demoMode,
     chatOpen,
@@ -2715,6 +3075,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     flushDrafts,
     retryDraftSave,
     submit,
+    submitResultUnknown,
+    submitRefreshState,
+    submitRefreshError,
+    retrySubmitRefresh,
     approve,
     reject,
     decideBatch,
@@ -2727,6 +3091,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     retryCancelRecovery,
     boardContentConflictFor,
     resolveBoardContentConflict,
+    boardRemovalConflictFor,
+    resolveBoardRemovalConflict,
+    boardRemovalConflicts,
     continueRevertDecision,
     dismissRevertDecision,
     reopenRevertDecision,

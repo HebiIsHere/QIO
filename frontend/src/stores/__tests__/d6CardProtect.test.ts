@@ -253,8 +253,8 @@ afterEach(() => {
 /* ==========================================================================
  * §12.1 冲突的选择不许被绕过
  * ======================================================================== */
-describe("§12.1 未决冲突键按服务器事实回写", () => {
-  it("【状态】未选择冲突时编辑并保存 B：A 的键按服务器事实回写，本机候选留在本机记录，冲突仍在", async () => {
+describe("§12.1 未决冲突键不进逐键请求（C1：服务器那份原样保留）", () => {
+  it("【状态】未选择冲突时编辑并保存 B：A 的键不进请求，本机候选留在本机记录，冲突仍在", async () => {
     vi.useFakeTimers();
     // 本机候选 X（带版本与归属），服务器上是不同的 Y
     seedLocalRecord("A", { text: "本机候选 X", kind: "draft", version: 3, boardId: "board_default" });
@@ -273,7 +273,8 @@ describe("§12.1 未决冲突键按服务器事实回写", () => {
     await flushPromises();
 
     const payload = lastDraftsPayload();
-    expect(payload[cardDraftKey("A")], "未决冲突键不许把本机候选写上服务器").toBe("服务器上的 Y");
+    // C1：未决冲突键不进请求 = 服务器那份原样保留（旧协议要求把服务器事实回写；现在「不出现」即「不动」）
+    expect(payload[cardDraftKey("A")], "未决冲突键不允许出现在逐键请求里").toBeUndefined();
     expect(payload[cardDraftKey("B")]).toBe("B 的编辑内容");
     expect(readCardLocalDraft("A")?.text, "本机候选必须还留在本机记录里").toBe("本机候选 X");
     expect(store.draftConflictFor("A"), "未选择前冲突不许消失").not.toBeNull();
@@ -458,7 +459,10 @@ describe("§12.1 冲突入口在真实操作路径可见可点", () => {
 
     vi.advanceTimersByTime(700);
     await flushPromises();
-    expect(lastDraftsPayload()[cardDraftKey("A")], "未选择期间服务器那份不被本机候选覆盖").toBe("服务器上的 Y");
+    expect(
+      lastDraftsPayload()[cardDraftKey("A")],
+      "未选择期间未决冲突键不许进请求（服务器那份因此不被覆盖）",
+    ).toBeUndefined();
     expect(store.draftConflictFor("A")).not.toBeNull();
 
     // 用户明确选择「用本机的」：这时才按选择把这份新候选落地

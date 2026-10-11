@@ -156,6 +156,39 @@ async function recheckImpact(): Promise<void> {
     rechecking.value = false;
   }
 }
+/**
+ * F10：提交**已经明确成功**、但随后读取最新页面事实失败。
+ *
+ * 提交成功是既成事实（lastSubmission 与基准依据都保留），这里只说明「页面刷新失败」，
+ * 并提供**只触发读取**的重试 —— 绝不诱导重新提交，也绝不自动重复提交。
+ */
+const refreshFailed = computed(
+  () => store.submitRefreshState === "error" || Boolean(store.submitRefreshError),
+);
+const refreshErrorText = computed(() =>
+  store.submitRefreshError ? humanizeFailure(store.submitRefreshError).short : "原因未知",
+);
+const refreshRetrying = ref(false);
+async function retryRefresh(): Promise<void> {
+  if (refreshRetrying.value) return;
+  refreshRetrying.value = true;
+  try {
+    await store.retrySubmitRefresh();
+  } finally {
+    refreshRetrying.value = false;
+  }
+}
+/**
+ * F07：本地删除（解散的组 / 删除的关联）与服务器对**同一对象**的修改相撞。
+ *
+ * 未解决之前保存会被挡住（store.saveNow 的同一口径门）；这里给出**明确、可达**的选择：
+ * 「保持删除」（放弃对方这次修改）或「恢复服务器版」（放弃本地删除）。
+ * 两种选择都只改本页候选并排一次保存，不调用 QIO。
+ */
+const removalConflicts = computed(() => Object.values(store.boardRemovalConflicts));
+function resolveRemovalConflict(id: string, choice: "keep-deleted" | "restore-server"): void {
+  store.resolveBoardRemovalConflict(id, choice);
+}
 const draftText = draftHintText();
 /** 提交按钮文案：失败后明确写成「重新提交」，让重试一眼可见 */
 const submitLabel = computed(() => {
@@ -192,6 +225,89 @@ function onSubmit() {
     <p v-if="failure" class="failure" role="alert" data-im="submit-failure">
       <span class="failure-reason" data-im="submit-failure-reason"><span class="failure-label">失败原因：</span>{{ failureShort }}</span>
       <span class="failure-retention" data-im="submit-failure-retention">{{ failure.retention }}</span>
+    </p>
+
+    <!--
+      F10：没有拿到回执 = 提交结果**未知**（既不是成功也不是失败）。
+      保留改动与勾选，明确要求先确认结果，不诱导直接重复提交。
+    -->
+    <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
+      <span class="blocked-text" data-im="submit-unknown-reason">
+        提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留，请先确认结果，不要直接重复提交。
+      </span>
+      <!--
+        F10：未知时给的是**只触发读取**的查证入口（板面 / 可见范围 / 任务清单），
+        不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
+      -->
+      <button
+        class="details"
+        type="button"
+        data-im="submit-unknown-refresh"
+        :disabled="refreshRetrying"
+        @click="retryRefresh"
+      >
+        {{ refreshRetrying ? "重新读取中…" : "查证（只重新读取）" }}
+      </button>
+    </p>
+
+    <!--
+      F10：提交已经成功、只是**页面刷新失败**。成功事实与基准依据不变，这里只提供重试刷新。
+    -->
+    <p v-else-if="refreshFailed" class="blocked" role="status" data-im="submit-refresh-failed">
+      <span class="blocked-text" data-im="submit-refresh-reason">
+        提交成功，页面刷新失败（{{ refreshErrorText }}）：这次提交已经成立、基准已经更新，
+        页面上的板面与可见范围可能不是最新事实。
+      </span>
+      <button
+        class="details"
+        type="button"
+        data-im="submit-refresh-retry"
+        :disabled="refreshRetrying"
+        @click="retryRefresh"
+      >
+        {{ refreshRetrying ? "重新读取中…" : "重试刷新" }}
+      </button>
+    </p>
+
+    <!--
+      F07：本地删除与服务器修改相撞 —— 保存被挡住，这里给每个对象两个明确选择。
+      没有它，用户只能看到「保存失败」，拿不到「保持删除 / 恢复服务器版」的入口。
+    -->
+    <p
+      v-else-if="removalConflicts.length"
+      class="blocked"
+      role="status"
+      data-im="board-removal-conflict"
+    >
+      <span class="blocked-text" data-im="board-removal-conflict-reason">
+        本地删除的对象在服务器上被改过：请选择保持删除，还是恢复服务器版（两种选择都会保存一次）。
+      </span>
+      <span
+        v-for="item in removalConflicts"
+        :key="item.id"
+        class="removal-row"
+        data-im="board-removal-conflict-row"
+      >
+        <span class="mono">{{ item.id }}</span>
+        <button
+          class="details"
+          type="button"
+          data-im="board-removal-keep-deleted"
+          :data-object-id="item.id"
+          @click="resolveRemovalConflict(item.id, 'keep-deleted')"
+        >
+          保持删除
+        </button>
+        <button
+          class="details"
+          type="button"
+          data-im="board-removal-restore-server"
+          :data-object-id="item.id"
+          @click="resolveRemovalConflict(item.id, 'restore-server')"
+        >
+          恢复服务器版
+        </button>
+      </span>
     </p>
 
     <!--
@@ -352,6 +468,14 @@ function onSubmit() {
   line-height: 1.45;
 }
 .blocked-text { color: var(--text-secondary); overflow-wrap: anywhere; }
+/* F07：同一行里放对象 id 与两个明确选择，窄窗口自动换行 */
+.removal-row {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.removal-row .mono { font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-muted); }
 /* 失败原因这一行是**要读的内容**：颜色用正文色保证对比度（实测 --danger 铺在 --danger-soft 上
    只有 4.07:1，小字不达标），错误信号由左侧红边与「失败原因：」这个标签承担 */
 .failure-reason { color: var(--text-primary); }

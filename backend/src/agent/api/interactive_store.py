@@ -364,13 +364,40 @@ async def get_drafts(request: Request, board_id: str) -> dict:
 
 @router.put("/api/interactive/drafts/{board_id}")
 async def put_drafts(request: Request, board_id: str, body: dict) -> dict:
-    """保存草稿（未提交的文字输入）。草稿不是提交内容，**不调用 QIO**。"""
+    """保存草稿（未提交的文字输入）。草稿不是提交内容，**不调用 QIO**。
+
+    契约 C1：带 mode="patch" / removed / keyVersions 的请求体走**逐键三态**
+    （更新 / 明确删除 / 未修改）；不带这些字段的旧请求体走旧「整集合替换」语义，
+    响应里显式标记 legacyReplace=True，且没有安全基线时绝不删除未列出的键
+    （F01：旧快照不许隐式删掉另一页面的新草稿）。
+    """
     bid = _board_id(board_id)
-    drafts = _body(body).get("drafts")
+    payload = _body(body)
+    drafts = payload.get("drafts")
     if drafts is not None and not isinstance(drafts, dict):
         raise HTTPException(status_code=400, detail="drafts 必须是 JSON 对象")
+    removed = payload.get("removed")
+    if removed is not None and not isinstance(removed, list):
+        raise HTTPException(status_code=400, detail="removed 必须是草稿键数组")
+    key_versions = payload.get("keyVersions")
+    if key_versions is not None and not isinstance(key_versions, dict):
+        raise HTTPException(status_code=400, detail="keyVersions 必须是 {键: 版本号} 对象")
+    base_rev = payload.get("baseRev")
+    if base_rev is not None and (isinstance(base_rev, bool) or not isinstance(base_rev, int)):
+        raise HTTPException(status_code=400, detail="baseRev 必须是整数版本号")
+    mode = payload.get("mode")
+    if mode is not None and mode not in ("patch", "replace"):
+        raise HTTPException(status_code=400, detail="mode 只能是 patch 或 replace")
     try:
-        return board_store.save_draft(_conn(request), bid, drafts)
+        return board_store.save_draft(
+            _conn(request),
+            bid,
+            drafts,
+            removed=removed,
+            base_rev=base_rev,
+            key_versions=key_versions,
+            mode=mode,
+        )
     except board_store.DraftTooLong as exc:
         # 09：超限明确拒绝（不截短、不返回成功），错误形状按契约定稿
         raise HTTPException(
