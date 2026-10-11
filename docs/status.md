@@ -1,4 +1,4 @@
-﻿# QIO 项目状态
+# QIO 项目状态
 
 **本文只回答一个问题：现在真的做到哪了。**
 
@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-11（`main` 分支，含互动线并入）。核对方法见文末。
+最后核对：2026-10-11（审计分支 `fix/main-audit-reliability-8fa8452`：F01—F12 修复，见 P34）。核对方法见文末。
 
 ---
 
@@ -1615,6 +1615,42 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
     界面与文档都如实写明）。
 
 ---
+
+### P34 — 主线可靠性审计修复（F01—F12，2026-10-11）
+
+- **Status：** completed
+- **Implementation：** 按审查基线的十二类可靠性缺陷逐条修复，分布在四条线上：
+  * 板面与草稿（F01/F07/F08/F10/F11）：`backend/src/agent/interactive/board_store.py`、
+    `backend/src/agent/api/interactive_store.py`、`frontend/src/stores/interactive.ts`、
+    `frontend/src/interactive/serverFacts.ts`、`frontend/src/interactive/submission.ts`。
+    草稿保存改为逐键三态协议（`mode=patch` + `baseRev` + `removed` + `keyVersions`，未出现的键 = 未修改）；
+    本地删除的组/关联按 base 三路判定，服务器无关改动不再复活它们；已确认的最高服务器版本独立于候选正文单调推进；
+    提交结果与后续读取结果分开记录；任务清单读取失败与「成功空集合」区分。
+  * 发送与恢复（F02/F03/F04/F12）：`frontend/src/stores/session.ts`、
+    `frontend/src/components/Composer.vue`、`frontend/src/components/interactive/ChatDock.vue`、
+    `frontend/src/components/interactive/FailedSendNotice.vue`、`backend/src/agent/core/turn.py`、
+    `backend/src/agent/api/server.py`。每次发送冻结不可变提交快照（原文 / 话题 / 显式附件列表 / 请求身份 /
+    重试来源 / 起点信息）；未决发送有独立持久台账，不做数量裁剪；受理事实由
+    `acceptance_facts()` 如实给出四种状态（`preparing` / `not_accepted` /
+    `cancelled_after_accept` / `accepted`），同身份重试从原请求的真实记录返回受理事实与原附件绑定。
+  * 记忆与关闭（F05/F06）：`backend/src/agent/services/memory_lifecycle.py`、`derived_tasks.py`、
+    `maintenance.py`、`app.py`、`entities/cards.py`。派生任务的领域写入与任务完成进同一事务并原子核验
+    owner + claim_generation + 状态 + 内容版本；手动维护与周期维护纳入同一生命周期管理，
+    关闭时拒绝新维护、有界等待并确认执行单元终止。
+  * 凭据验证（F09）：`backend/src/agent/credentials/store.py`、`backend/src/agent/api/server.py`。
+    验证开始前冻结输入指纹（密钥版本 + endpoint + default_model + kind），结果条件写入；
+    旧配置的迟到结果只记「历史结果」，不改当前可用性、默认项与自动候选。
+- **Tests：** `backend/tests/test_audit_f01_draft_patch.py`、`test_audit_f04_acceptance_receipt.py`、
+  `test_f05_superseded_writes.py`、`test_f06_maintenance_close.py`、
+  `test_credential_verify_fingerprint.py`，以及前端 `src/acceptance-state-recovery/f01/f07/f08/f10/f11-*`、
+  `src/stores/__tests__/b-sendSnapshotRecovery.test.ts`、`b-sendRequestShape.test.ts`、
+  `src/components/__tests__/b-chatDockPendingSend.test.ts`。
+- **Known limitations：** 本轮只修可靠性缺陷，**没有**接入互动模式的真实模型、没有新增产品功能、没有重做视觉。
+  互动板的对象级删除/修改冲突入口目前只在提交区给出；草稿协议的旧客户端（不带 `baseRev`）删除会被
+  `blockedRemovals` 拦住，属有意的安全取舍（建议先发后端再发前端）。
+  `tests/test_derived_tasks.py::test_recover_stale_running_tasks_after_restart` 是**基线既有**的顺序依赖用例：
+  单独跑该文件会红，与 `test_derivation_recovery.py` 同批（即全套字母序）通过；与本轮改动无关。
+- **后续依赖：** 无强制依赖；草稿三态协议要求前后端同版本或后端先行。
 
 ## 尚未完成
 
