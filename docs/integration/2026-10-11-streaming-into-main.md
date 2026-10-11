@@ -368,10 +368,15 @@ run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)�
 3. **原合并 CI 的两个 Linux backend 任务**最终失败；真因已定位并修掉（缺口三：探针收尾误杀
    runner agent，不是基础设施抖动）。修复后本轮分支的 Linux backend 任务是绿的
    （run `38117123246`）。
-4. **负载敏感的既有用例**：本机一次（与编辑并发、机器同时在跑别的负载）观察到
-   `tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`
-   偶发红（诊断显示闸门释放后累计调用=1，预期 0）；同一代码在干净重跑与 CI 上都是绿的。
-   与本次三处修复无交集，按**负载敏感**记录，未做与收尾无关的改动。
+4. **负载敏感的既有用例（两处，均已处理或记录）**：
+   - `tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`
+     本机一次（与编辑并发、机器同时在跑别的负载）偶发红（诊断显示闸门释放后累计调用=1，
+     预期 0）；同一代码干净重跑与 CI 均绿。与本次三处修复无交集，按**负载敏感**记录。
+   - `tests/test_sr_verify_responsiveness.py::test_sr_verify_baseline_route_blocks_loop_documented`
+     曾在同一个 SHA 的 PR run 上假红一次（push run 绿）：证据装置用 `round(ts, 4)` 的时间戳
+     窗格判「同步 route 期间零心跳」，紧挨窗格起点之前的那一拍会被舍入进窗格。
+     已改为用**心跳计数的精确增量**判定（纯同步调用期间事件循环不可能推进计数，增量必然为 0），
+     时间戳窗格降为附加证据 —— 这是把装置做成确定性，**没有放宽带断言**。
 5. 两处产品口径待确认（排队切话题时附件话题归属；「已受理但用户点过中止」的附件 chip 语义）。
 
 **最终状态**

@@ -686,12 +686,14 @@ async def _probe_responsiveness_gate(label: str = "responsiveness_event_loop_gat
             raise RuntimeError("心跳未启动（环境问题）")
         gate_open.clear()
         await asyncio.sleep(0.03)
+        beats_before = progress["beats"]
         t0 = time.perf_counter()
         try:
             await awaitable
         finally:
             gate_open.set()
         t1 = time.perf_counter()
+        beats_after = progress["beats"]
         beats_in_window = [ts for ts in progress["timestamps"] if t0 <= ts <= t1]
         hb.cancel()
         try:
@@ -699,7 +701,11 @@ async def _probe_responsiveness_gate(label: str = "responsiveness_event_loop_gat
         except asyncio.CancelledError:
             pass
         return {
-            "beats_in_window": len(beats_in_window),
+            # 判定用**精确计数增量**（心跳计数器只由事件循环推进），不用时间戳窗口：
+            # 时间戳是 round(..., 4) 的，上一拍恰好落在窗口起点前几十微秒时会被舍入
+            # 进窗口，让判定随调度顺序抖动（2026-10-11 Windows CI 实测过一次假红）。
+            "beats_in_window": beats_after - beats_before,
+            "beats_in_window_by_time": len(beats_in_window),
             "window_secs": round(t1 - t0, 3),
             "beats_total": progress["beats"],
         }
@@ -723,18 +729,25 @@ async def _probe_responsiveness_gate(label: str = "responsiveness_event_loop_gat
     if progress0["beats"] <= 0:
         raise RuntimeError("心跳未启动（环境问题）")
     gate_open.clear()
+    beats_before0 = progress0["beats"]
     t0 = time.perf_counter()
     router.route("查询", specs)
     t1 = time.perf_counter()
     gate_open.set()
+    beats_after0 = progress0["beats"]
     beats_in_window0 = [ts for ts in progress0["timestamps"] if t0 <= ts <= t1]
     hb0.cancel()
     try:
         await hb0
     except asyncio.CancelledError:
         pass
-    ev["sync_route_blocks_loop"] = len(beats_in_window0) == 0
-    ev["sync_route_beats_in_window"] = len(beats_in_window0)
+    # 这里用**精确计数增量**判定：纯同步调用期间事件循环不可能推进心跳，增量必然是 0。
+    # 原来用时间戳窗口（round(...,4)）：紧挨窗口起点之前的那一拍会被舍入进来，
+    # 于是判定随调度顺序偶发抖动（2026-10-11 Windows PR run 实测假红一次）。
+    # 时间戳窗口只作为附加证据保留。
+    ev["sync_route_blocks_loop"] = beats_after0 == beats_before0
+    ev["sync_route_beats_in_window"] = beats_after0 - beats_before0
+    ev["sync_route_beats_by_time"] = len(beats_in_window0)
     ev["sync_route_window_secs"] = round(t1 - t0, 3)
     n0 = len(records)  # 此后的记录才属于 route_async 段（同步基线在主线程产生过 embed 记录）
 
