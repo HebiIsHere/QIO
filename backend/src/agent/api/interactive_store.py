@@ -400,22 +400,32 @@ async def put_drafts(request: Request, board_id: str, body: dict) -> dict:
 _UNDERSTANDING_LIMIT = 50
 
 
-def _understanding_module():
-    """延迟 import B 的理解模块；没有它时给出明确错误（A 分支可独立跑）。"""
+def _load_understanding_module():
+    """延迟 import B 的理解模块：返回 (module, None) 或 (None, 可读原因)。
+
+    单独留一个**加载点**：B 不在（或加载失败）时路由要给出明确 503；
+    测试模拟「模块不可用」时替换这个函数即可，不必去动 sys.modules
+    （B 的模块真的在磁盘上之后，删 sys.modules 拦不住 import）。
+    """
     try:
         from agent.interactive import understanding  # 延迟 import：B 的模块
     except Exception as exc:  # noqa: BLE001 - 模块缺失 / 加载失败都是「未接入」
+        return None, (
+            "理解模块尚未接入（agent.interactive.understanding）："
+            f"{type(exc).__name__}: {exc}"
+        )
+    return understanding, None
+
+
+def _understanding_module():
+    """拿到 B 的理解模块；不可用时给出明确 503（A 的分支可独立跑）。"""
+    module, reason = _load_understanding_module()
+    if module is None:
         raise HTTPException(
             status_code=503,
-            detail={
-                "error": "understanding_unavailable",
-                "reason": (
-                    "理解模块尚未接入（agent.interactive.understanding）："
-                    f"{type(exc).__name__}: {exc}"
-                ),
-            },
-        ) from exc
-    return understanding
+            detail={"error": "understanding_unavailable", "reason": reason},
+        )
+    return module
 
 
 def _adapter_provider(request: Request):
