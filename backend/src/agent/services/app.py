@@ -47,6 +47,9 @@ from agent.services.lifecycle import (
     PHASE_ADAPTERS_RELEASED,
     PHASE_CLEAN_EXIT_RECORDED,
     PHASE_CLEAN_EXIT_SKIPPED,
+    PHASE_UNDERSTANDING_STOPPED,
+    PHASE_UNDERSTANDING_UNFINISHED,
+    UNDERSTANDING_TASK_PREFIX,
     CloseReport,
     close_background,
     close_decision,
@@ -102,6 +105,30 @@ def _is_main_turn_id(turn_id: object) -> bool:
     return not turn_id.startswith(INTERNAL_TURN_PREFIXES)
 
 
+def _record_understanding_phase(
+    report: CloseReport,
+    *,
+    registered: tuple[str, ...],
+    unfinished: tuple[str, ...],
+) -> CloseReport:
+    """把互动理解的收尾结果记进关闭报告（整合轮契约 §2，与 maintenance_* 同构）。
+
+    * 有理解后台任务未确认结束 → understanding_unfinished（名字已经在
+      report.unfinished 里，clean=False 由 CloseReport 自己保证）；
+    * 有理解后台任务且都确认结束 → understanding_stopped；
+    * 本次关闭根本没有理解后台任务 → 阶段名一个都不记（没发生的事不写进报告）。
+
+    「有没有」按 registered（关闭**之前**的注册表快照）判定，不是按关闭报告的名单：
+    干净收尾的名字会被撤下账，只看报告会把「关停了一个正在跑的理解」说成
+    「这次关闭跟理解无关」。
+    """
+    if not registered:
+        return report
+    if unfinished:
+        return report.with_phase(PHASE_UNDERSTANDING_UNFINISHED)
+    return report.with_phase(PHASE_UNDERSTANDING_STOPPED)
+
+
 class AppContext:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, bus: EventBus) -> None:
         self.settings = settings
@@ -126,6 +153,13 @@ class AppContext:
         from agent.services.background import BackgroundTasks as _BackgroundTasks
 
         self.background = _BackgroundTasks()
+        # 整合轮 §2：互动理解的后台调度要登记进**同一份**注册表。连接是它唯一的
+        # 输入，调度点上再没有别的应用入口，所以在建立注册表的这一刻把归属记下来
+        # （submission.bind_background_owner）；aclose 收的是同一份注册表，于是
+        # 「理解期间关闭」不再依赖调用方记得传 owner。
+        from agent.interactive.submission import bind_background_owner as _bind_understanding
+
+        _bind_understanding(conn, self)
         self.credentials = CredentialStore(conn)
         self.settings_store = SettingsStore(conn)
         from agent.trace.store import TraceStore
@@ -817,7 +851,16 @@ class AppContext:
         # A05：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
         # 仍可能有提炼协程在写库。`close_background` 会等/取消并如实回报
         # 「句柄取消了」与「底层执行单元确认结束」的区别。
-        report = await close_background(getattr(self, "background", None))
+        background_registry = getattr(self, "background", None)
+        # 整合轮 §2：**关闭之前**取理解任务的快照。关闭报告的名单只列未确认结束的任务，
+        # 干净收尾的名字会被撤下账 —— 只看报告会把「关停了一个正在跑的理解」说成
+        # 「这次关闭跟理解无关」。快照里同时含「句柄已结束、底层执行单元未确认结束」的幽灵。
+        understanding_registered = tuple(
+            name
+            for name in (background_registry.registered() if background_registry is not None else ())
+            if str(name).startswith(UNDERSTANDING_TASK_PREFIX)
+        )
+        report = await close_background(background_registry)
         # F06：维护有自己的执行单元（周期循环 + 手动触发的那一轮 + 维护发起的审批等待）。
         # stop() 先拒绝新维护，再有界等待/取消并**确认**执行单元终止，返回如实报告；
         # 未确认结束时合并进下面同一份 CloseReport ⇒ clean=False / unfinished 有名字，
@@ -850,6 +893,14 @@ class AppContext:
                         detail=str(maintenance_report.get("reason") or "维护未确认结束"),
                     ),
                 )
+        # 整合轮 §2：阶段名与 maintenance_* 同构，判定只看真实名单 ——
+        # registered 是关闭前账上的理解任务，unfinished 是关闭报告里仍未确认结束的。
+        # 不为理解单独做任何等待或固定 sleep：等待 / 取消 / 确认都由
+        # background.shutdown 的有界三档完成，时钟不会被某个理解任务无限拖住。
+        understanding_unfinished = tuple(
+            name for name in report.unfinished if str(name).startswith(UNDERSTANDING_TASK_PREFIX)
+        )
+
         await self.turns.shutdown()
         await self.task_manager.shutdown()
         # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。
@@ -886,6 +937,19 @@ class AppContext:
         else:
             # 残留协程还会用到 adapter：先不释放，也不清缓存（否则它们会打到已关的 client）。
             report = report.with_phase(PHASE_ADAPTERS_KEPT)
+        report = _record_understanding_phase(
+            report,
+            registered=understanding_registered,
+            unfinished=understanding_unfinished,
+        )
+        # 关闭完成：连接不再承载任何后台调度，解绑免得把宿主应用一直留在模块表里。
+        try:
+            from agent.interactive.submission import unbind_background_owner
+
+            unbind_background_owner(self.conn)
+        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+            logger.warning("failed to unbind interactive background owner", exc_info=True)
+
         log_close_report(report)
         return report
 
