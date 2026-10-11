@@ -2845,7 +2845,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 不抛错、不假装有数据，也不影响保存与提交这些既有路径。
    */
   function apiSupports(name: string): boolean {
-    return typeof (api as unknown as Record<string, unknown>)[name] === "function";
+    // 服务替身（测试里只实现一部分接口的 mock）对**未声明的导出**会直接抛错，
+    // 而不是返回 undefined —— 所以能力探测必须包一层：缺少新接口时如实降级为
+    // 「没有这份数据」，绝不能让保存 / 提交这些既有路径炸掉（契约 §14.6）。
+    try {
+      return typeof (api as unknown as Record<string, unknown>)[name] === "function";
+    } catch {
+      return false;
+    }
   }
 
   function sortUnderstandings(list: Understanding[]): Understanding[] {
