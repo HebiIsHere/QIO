@@ -17,6 +17,7 @@ agent.interactive.submission 里。三条规则在这里也成立：
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from typing import Any
@@ -24,6 +25,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from agent.interactive import board_store, models, submission
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -346,6 +349,8 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
             note=note,
             base_state_version=base_version,
             confirmed_check_id=payload.get("confirmedCheckId"),
+            # 与理解路由共用同一个 adapter 注入点：提交 → 受理 → 后台理解也走同一条链路
+            adapter_provider=_adapter_provider(request),
         )
     except submission.StaleState as exc:
         # M4 路径 3：候选版本 / 确认范围与服务端不一致 → 不落库
@@ -406,3 +411,302 @@ async def put_drafts(request: Request, board_id: str, body: dict) -> dict:
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# --- 理解过程：列表 / 重试 / 取消（契约 §14.4，A 的新增路由） ----------------
+#
+# 受理（建立理解请求）在提交路径里完成；这里只做三件事：
+#   1. GET  本板面的理解过程列表（?submissionId= 过滤）；
+#   2. POST 从**保存的快照**重试失败的理解（不重读当前板面）；
+#   3. POST 取消尚未落地的理解（还在 accepted / understanding 的）。
+#
+# 理解模块（B 的 agent.interactive.understanding）用**延迟 import**：B 还没合并时
+# 返回明确的 503，而不是让路由崩掉 —— A 的分支必须能独立跑。
+# 模型适配器从 request.app.state.ctx 取（与 services/app.py 的 build_adapter 同一条链路）。
+
+_UNDERSTANDING_LIMIT = 50
+
+
+def _load_understanding_module():
+    """延迟 import B 的理解模块：返回 (module, None) 或 (None, 可读原因)。
+
+    单独留一个**加载点**：B 不在（或加载失败）时路由要给出明确 503；
+    测试模拟「模块不可用」时替换这个函数即可，不必去动 sys.modules
+    （B 的模块真的在磁盘上之后，删 sys.modules 拦不住 import）。
+    """
+    try:
+        from agent.interactive import understanding  # 延迟 import：B 的模块
+    except Exception as exc:  # noqa: BLE001 - 模块缺失 / 加载失败都是「未接入」
+        return None, (
+            "理解模块尚未接入（agent.interactive.understanding）："
+            f"{type(exc).__name__}: {exc}"
+        )
+    return understanding, None
+
+
+def _understanding_module():
+    """拿到 B 的理解模块；不可用时给出明确 503（A 的分支可独立跑）。"""
+    module, reason = _load_understanding_module()
+    if module is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "understanding_unavailable", "reason": reason},
+        )
+    return module
+
+
+def _adapter_provider(request: Request):
+    """async () -> BaseAdapter | None：复用 QIO 既有凭据 / 用量 / 预算链路。
+
+    优先级（与 C 的 interactive_intents.py 保持一致，端到端验收只认这一条注入点）：
+    1. `app.state.interactive_adapter_provider` —— 测试 / 联调显式注入的 provider；
+    2. `app.state.ctx.build_adapter` —— 生产路径（services/app.py 的同一条链路）。
+    两者都没有（或构建失败）时如实返回 None —— 由理解模块给出可读的失败原因，
+    路由层绝不抛异常、也绝不自己拿密钥。
+    """
+    override = getattr(request.app.state, "interactive_adapter_provider", None)
+    if callable(override):
+        return override
+    ctx = getattr(request.app.state, "ctx", None)
+    builder = getattr(ctx, "build_adapter", None)
+
+    if builder is None or not callable(builder):
+        async def _no_adapter():
+            return None
+
+        return _no_adapter
+
+    async def provider():
+        try:
+            return await builder()
+        except Exception:  # noqa: BLE001 - 没有可用凭据 / adapter 时如实降级
+            logger.warning("构建互动理解的 adapter 失败（按没有可用模型处理）", exc_info=True)
+            return None
+
+    return provider
+
+
+def _understanding_id(raw: str) -> str:
+    value = (raw or "").strip()
+    if not _BOARD_ID_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="understandingId 只能包含字母、数字与 _.-: 且长度 1..64",
+        )
+    return value
+
+
+def _understanding_row(
+    conn: sqlite3.Connection, understanding_id: str, *, board_id: str | None = None
+):
+    if board_id is None:
+        row = conn.execute(
+            "SELECT * FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM board_understanding WHERE id = ? AND board_id = ?",
+            (understanding_id, board_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "understanding_not_found",
+                "reason": f"没有这条理解记录：{understanding_id}",
+            },
+        )
+    return row
+
+
+def _as_dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _understanding_payload(row) -> dict:
+    """把 board_understanding 的一行转成前端 Understanding 形状（只增字段，不改含义）。"""
+    data = dict(row)
+    progress = models.loads(data.get("progress"), {})
+    progress = progress if isinstance(progress, (dict, list)) else {}
+    output = _as_dict(models.loads(data.get("output"), {}))
+    validation = _as_dict(models.loads(data.get("validation"), {}))
+    materials = _as_list(models.loads(data.get("materials"), []))
+    memory = _as_list(models.loads(data.get("memory"), []))
+    if isinstance(progress, list):
+        steps = progress
+    else:
+        steps = _as_list(progress.get("steps"))
+    intent_ids = output.get("intentIds") or output.get("intent_ids") or []
+    return {
+        "id": data.get("id"),
+        "boardId": data.get("board_id"),
+        "submissionId": data.get("submission_id"),
+        "requestId": data.get("request_id"),
+        "status": data.get("status"),
+        "stage": data.get("stage") or "",
+        "kind": output.get("kind"),
+        "steps": steps,
+        "materials": materials,
+        "summary": output.get("summary") or "",
+        "clarification": output.get("clarification"),
+        "validation": {
+            "ok": bool(validation.get("ok", False)),
+            "reasons": [str(item) for item in _as_list(validation.get("reasons"))],
+        },
+        "error": data.get("error"),
+        "attempt": int(data.get("attempt") or 1),
+        "adapter": data.get("adapter") or "",
+        "intentIds": [str(item) for item in _as_list(intent_ids)],
+        "memory": memory,
+        "createdAt": data.get("created_at"),
+        "updatedAt": data.get("updated_at"),
+        "startedAt": data.get("started_at"),
+        "finishedAt": data.get("finished_at"),
+        # 只增字段：前端据此显示「能不能从保存的快照重试」，不泄露快照内容
+        "hasSnapshot": bool(models.loads(data.get("snapshot"), {})),
+        "progress": progress,
+    }
+
+
+def _understanding_rows(
+    conn: sqlite3.Connection, board_id: str, submission_id: str | None
+) -> list:
+    if submission_id:
+        return conn.execute(
+            "SELECT * FROM board_understanding WHERE board_id = ? AND submission_id = ?"
+            " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (board_id, submission_id, _UNDERSTANDING_LIMIT),
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM board_understanding WHERE board_id = ?"
+        " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (board_id, _UNDERSTANDING_LIMIT),
+    ).fetchall()
+
+
+@router.get("/api/interactive/boards/{board_id}/understanding")
+async def get_board_understanding(
+    request: Request, board_id: str, submissionId: str | None = None
+) -> dict:
+    """本板面的理解过程列表；?submissionId= 只看某一次提交的理解。"""
+    module = _understanding_module()
+    conn = _conn(request)
+    bid = _board_id(board_id)
+    wanted = (submissionId or "").strip() or None
+
+    lister = getattr(module, "list_understandings", None)
+    if callable(lister):
+        payload = lister(conn, board_id=bid, submission_id=wanted)
+        if isinstance(payload, dict) and "understandings" in payload:
+            return payload
+
+    items = [_understanding_payload(row) for row in _understanding_rows(conn, bid, wanted)]
+    return {"understanding": items[0] if items else None, "understandings": items}
+
+
+@router.post("/api/interactive/understanding/{understanding_id}/retry")
+async def retry_understanding(request: Request, understanding_id: str) -> dict:
+    """从**保存的快照**重试失败的理解（不重读当前板面、不重建同一批任务）。"""
+    module = _understanding_module()
+    conn = _conn(request)
+    uid = _understanding_id(understanding_id)
+    runner = getattr(module, "run_understanding", None)
+    if not callable(runner):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "understanding_unavailable",
+                "reason": "理解模块没有 run_understanding：无法重试",
+            },
+        )
+
+    row = _understanding_row(conn, uid)
+    status = str(row["status"])
+    if status in models.UNDERSTANDING_ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "understanding_active",
+                "reason": f"这条理解还在进行中（{status}），不能重试",
+            },
+        )
+    if status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "not_retryable",
+                "reason": (
+                    f"只有失败的理解可以重试（当前 {status}）：重试只从保存的快照恢复，"
+                    "不重读当前板面"
+                ),
+            },
+        )
+    snapshot = models.loads(row["snapshot"], {})
+    if not isinstance(snapshot, dict) or not snapshot:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "no_snapshot",
+                "reason": "这条理解没有保存的快照，不能重试（重试不重读当前板面）",
+            },
+        )
+
+    conn.execute(
+        "UPDATE board_understanding SET status = 'accepted', error = NULL,"
+        " attempt = attempt + 1, stage = ?, updated_at = ?, started_at = NULL,"
+        " finished_at = NULL WHERE id = ?",
+        ("已受理：从保存的快照重试", models.now_iso(), uid),
+    )
+    dispatch = submission.schedule_understanding(
+        conn, understanding_id=uid, adapter_provider=_adapter_provider(request)
+    )
+    return {
+        "ok": True,
+        "understanding": _understanding_payload(_understanding_row(conn, uid)),
+        "background": dispatch,
+    }
+
+
+@router.post("/api/interactive/boards/{board_id}/understanding/{understanding_id}/cancel")
+async def cancel_understanding(request: Request, board_id: str, understanding_id: str) -> dict:
+    """取消尚未落地的理解（还在 accepted / understanding 的）。
+
+    冻结的状态集合里没有 cancelled：取消把记录落成 failed，并把「用户取消」写进
+    error（可读、可从保存的快照重试），绝不假装理解成功或产出意图。
+    """
+    _understanding_module()
+    conn = _conn(request)
+    bid = _board_id(board_id)
+    uid = _understanding_id(understanding_id)
+    row = _understanding_row(conn, uid, board_id=bid)
+    status = str(row["status"])
+    if status not in models.UNDERSTANDING_ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "not_cancellable",
+                "reason": f"这条理解已经结束（{status}），不能取消",
+            },
+        )
+
+    stopped = submission.cancel_background_understanding(uid)
+    reason = (
+        "这次理解已被取消（用户取消）：没有产出意图，可以从保存的快照重试"
+        + ("；已停止在跑的后台任务" if stopped else "；后台任务当时不在运行")
+    )
+    stamp = models.now_iso()
+    conn.execute(
+        "UPDATE board_understanding SET status = 'failed', error = ?, updated_at = ?,"
+        " finished_at = ? WHERE id = ? AND status IN ('accepted', 'understanding')",
+        (reason, stamp, stamp, uid),
+    )
+    return {
+        "ok": True,
+        "cancelled": True,
+        "stoppedBackground": stopped,
+        "understanding": _understanding_payload(_understanding_row(conn, uid, board_id=bid)),
+    }

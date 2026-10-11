@@ -217,8 +217,13 @@ def test_scenario3_undone_edits_do_not_become_expressions(client: TestClient) ->
     assert layout and all(item["intentBearing"] is False for item in layout)
 
 
-def test_scenario3_layout_only_submission_is_empty(client: TestClient) -> None:
-    """只动了位置/大小时没有「可提交的有效表达」：不调用 QIO、不推进基准。"""
+def test_scenario3_layout_only_submission_is_duplicate(client: TestClient) -> None:
+    """只动了位置/大小：内容与上次成功提交一致 → duplicate，不调用 QIO、不推进基准。
+
+    契约 §1.5 的顺序是「先看内容是否与上次成功提交一致（duplicate），再看有没有可提交内容（empty）」：
+    纯位置变化后 before/after 的内容指纹相同，必须是 duplicate 而不是 empty。
+    两种状态的安全语义相同（都不更新基准、都不调用模型），但状态与前端文案必须准确。
+    """
     save(client, [_card("n1", "text", "原话", checked=True)])
     first = submit(client)
     assert first["status"] == "succeeded"
@@ -226,7 +231,7 @@ def test_scenario3_layout_only_submission_is_empty(client: TestClient) -> None:
 
     save(client, [_card("n1", "text", "原话", checked=True, x=88.0, y=66.0)])
     result = submit(client)
-    assert result["status"] == "empty"
+    assert result["status"] == "duplicate"
     assert result["baseline"]["updated"] is False
     assert state_meta(client)["baseline"] == baseline
 

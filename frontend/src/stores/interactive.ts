@@ -11,7 +11,14 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
-import { batchesWithList, groupIntentsByBatch, recordIntentBatch } from "../interactive/approval";
+import {
+  batchesWithList,
+  executionIsLive,
+  groupIntentsByBatch,
+  recordIntentBatch,
+  understandingSettled,
+  understandingStatusLabel,
+} from "../interactive/approval";
 import {
   cardDraftKey,
   cardIdFromDraftKey,
@@ -37,6 +44,9 @@ import {
   type BoardState,
   type BoardStateResponse,
   type DecideResult,
+  type Execution,
+  type ExecutionControlResult,
+  type ExecutionStatus,
   type ImpactConfirmOutcome,
   type ImpactConfirmResult,
   type Intent,
@@ -44,6 +54,9 @@ import {
   type IntentStatus,
   type SubmissionRecord,
   type SubmissionResult,
+  type Understanding,
+  type UnderstandingResponse,
+  type UnderstandingStatus,
   type VisibleRange,
 } from "../interactive/types";
 import {
@@ -85,6 +98,26 @@ export type SubmitStatus =
   | "duplicate"
   /** F10：POST 没有拿到回执（超时/断线）—— 提交结果**未知**，不能假定成功或失败 */
   | "unknown";
+
+/**
+ * 界面上必须分开的四种状态（契约 §14.1）：
+ * 提交已可靠受理 → 模型开始理解 → 理解完成（三态）→ 任务执行结束。
+ *
+ * `submitStatus` 只说这次**提交记录本身**的结果，它不再兼代表「模型理解完成」；
+ * 理解过程看 understanding / understandingStatus，任务是否完成看 executions。
+ */
+export type SubmissionStage =
+  | "idle"
+  | "submitting"
+  | "accepted"
+  | "understanding"
+  | "understood"
+  | "needs_clarification"
+  | "no_action"
+  | "understanding_failed"
+  | "submit_failed"
+  | "empty"
+  | "duplicate";
 
 export const useInteractiveStore = defineStore("interactive", () => {
   const boardId = ref(DEFAULT_BOARD_ID);
@@ -167,6 +200,98 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const intentsLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
   const intentsLoadError = ref<string | null>(null);
   const intentsLoadedOnce = ref(false);
+
+  /* ------------------------------------------------------------------
+   * 真实理解与真实执行（契约 §14.1 / §14.6）
+   *
+   * 受理与理解分开：`submitStatus` 只说这次提交记录本身的结果；
+   * 理解过程由 understanding / understandingStatus 表达，任务是否完成看 executions。
+   * ------------------------------------------------------------------ */
+
+  /** 最近一次理解过程（服务端事实；只有受理回执时可能还是 null） */
+  const understanding = ref<Understanding | null>(null);
+  /** 本板面的理解过程历史（含最近一次，最近排在最前） */
+  const understandings = ref<Understanding[]>([]);
+  /** 最近一次理解的状态：accepted / understanding / 三态结果 / failed */
+  const understandingStatus = ref<UnderstandingStatus | null>(null);
+  const understandingError = ref<string | null>(null);
+  /** 正在查询理解状态（间隔 1s；页面不可见时停止） */
+  const understandingPolling = ref(false);
+  /** 自动查询停下但结果还没回来时的如实说明（不是错误） */
+  const understandingNote = ref<string | null>(null);
+  /** 受理回执给出的理解请求身份：还没拿到理解记录时也能据此查询 / 重试 */
+  const acceptedUnderstandingId = ref<string | null>(null);
+  /** 提交回执丢失但已查询确认受理时的如实说明 */
+  const submitNote = ref<string | null>(null);
+
+  /** 本板面的真实执行记录（服务端事实，前端不自己拼进度） */
+  const executions = ref<Execution[]>([]);
+  const executionError = ref<string | null>(null);
+  const executionPolling = ref(false);
+
+  /** 除了最近一次之外的历史理解过程（可展开查看） */
+  const understandingHistory = computed(() =>
+    understandings.value.filter((item) => item.id !== understanding.value?.id),
+  );
+
+  /** 这次理解产出的意图（服务端事实；前端不自己建任务） */
+  const understandingIntents = computed(() => {
+    const id = understanding.value?.id ?? acceptedUnderstandingId.value;
+    if (!id) return [];
+    return intents.value.filter((item) => item.understandingId === id);
+  });
+
+  /** 每个意图的执行记录（按 attempt 排序，最后一次在末尾） */
+  const executionsByIntent = computed<Record<string, Execution[]>>(() => {
+    const map: Record<string, Execution[]> = {};
+    for (const item of executions.value) {
+      if (!item?.intentId) continue;
+      if (!map[item.intentId]) map[item.intentId] = [];
+      map[item.intentId].push(item);
+    }
+    for (const list of Object.values(map)) {
+      list.sort(
+        (a, b) =>
+          (a.attempt ?? 0) - (b.attempt ?? 0) ||
+          String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")),
+      );
+    }
+    return map;
+  });
+
+  /** 每个意图的最近一次执行状态（queued|running|paused|done|failed|cancelled） */
+  const executionStatus = computed<Record<string, ExecutionStatus>>(() => {
+    const map: Record<string, ExecutionStatus> = {};
+    for (const [intentId, list] of Object.entries(executionsByIntent.value)) {
+      const latest = list[list.length - 1];
+      if (latest) map[intentId] = latest.status;
+    }
+    // 意图列表里带的最近执行记录也是服务端事实（列表刷新后仍然有效）
+    for (const intent of intents.value) {
+      if (!map[intent.id] && intent.execution) map[intent.id] = intent.execution.status;
+    }
+    return map;
+  });
+
+  /** 还在推进的执行（排队 / 运行）：决定要不要继续查询执行记录 */
+  const liveExecutions = computed(() => executions.value.filter((item) => executionIsLive(item)));
+
+  /** 四种状态分开的合成视图：受理 / 理解中 / 理解完成三态 / 提交本身失败 */
+  const submissionStage = computed<SubmissionStage>(() => {
+    if (submitStatus.value === "submitting") return "submitting";
+    const state = understandingStatus.value;
+    if (state === "accepted") return "accepted";
+    if (state === "understanding") return "understanding";
+    if (state === "understood") return "understood";
+    if (state === "needs_clarification") return "needs_clarification";
+    if (state === "no_action") return "no_action";
+    if (state === "failed") return "understanding_failed";
+    if (submitStatus.value === "succeeded") return "accepted";
+    if (submitStatus.value === "failed") return "submit_failed";
+    if (submitStatus.value === "empty") return "empty";
+    if (submitStatus.value === "duplicate") return "duplicate";
+    return "idle";
+  });
 
   /**
    * 浮层开合状态（本轮前端改版）。
@@ -1432,6 +1557,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       intentsLoadedOnce.value = true;
       intentsLoadState.value = "ok";
       intentsLoadError.value = null;
+      // 意图列表里带的执行记录也是服务端事实（与 executions 接口去重合并）
+      if (payload.executions?.length) mergeExecutions(payload.executions);
       return true;
     } catch (err) {
       // 只记这次读取失败：旧清单、旧冲突、旧批次依据原样保留（不清空、不假装任务消失）
@@ -1462,6 +1589,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       await refreshBoardFromServer();
       await refreshVisibleRange();
       await loadIntents();
+      // 刷新后如实恢复真实的理解与执行状态（页面刷新不重复创建、不重复执行）
+      await refreshUnderstanding();
+      await loadExecutions();
+      if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
+        void startUnderstandingPolling();
+      }
     } catch (err) {
       board.value = board.value ?? emptyBoardState(boardId.value);
       loadError.value = (err as Error).message;
@@ -2457,6 +2590,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitResultUnknown.value = false;
     submitRefreshState.value = "idle";
     submitRefreshError.value = null;
+    submitNote.value = null;
     submitStatus.value = "submitting";
     await saveNow();
     const blocked =
@@ -2481,6 +2615,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 第一段：提交请求本身。**只有这一段能决定「已提交 / 未提交 / 未知」的事实**。
      */
     let result: SubmissionResult;
+    /**
+     * 受理情况不明时用它做兜底日志（不再作为「是不是这次提交」的判据）：
+     * 查证只认本次请求身份在服务端的精确记录，见 B 的 clientRequestId 与
+     * `confirmAcceptanceAfterUnclear`。
+     */
+    const sentAt = Date.now();
     try {
       const confirmedCheckId =
         confirmedCheck && confirmedCheck.savedSeq === board.value.seq
@@ -2493,6 +2633,60 @@ export const useInteractiveStore = defineStore("interactive", () => {
         board.value.seq,
         confirmedCheckId,
       );
+      // 提交请求的事实到这里确定；下面的读取无论如何成败都不再改变它
+      lastSubmission.value = result;
+      const delivery = result.delivery;
+      /**
+       * 受理是服务端回执说的真实事实（§14.1 / §14.4）：只有它说 `status: "accepted"` 时，
+       * 界面才立刻显示「已受理，正在理解」。旧的 `succeeded` 语义（没有 status 字段）继续兼容，
+       * 但它不再兼代表「模型已经理解完成」。
+       */
+      const acceptedByReceipt = result.status === "succeeded" && delivery?.status === "accepted";
+      if (acceptedByReceipt && delivery?.delivered === false) {
+        // 服务端明确说这次没有被可靠受理：保留改动与勾选，不推进基准，也不冒充成功
+        submitStatus.value = "failed";
+        submitError.value =
+          delivery.detail || delivery.reason || "这次提交没有被可靠受理；改动与勾选都保留，可以重试。";
+        return null;
+      }
+      submitStatus.value = result.status;
+      /**
+       * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
+       * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
+       * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
+       * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
+       */
+      applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
+      // 只有成功提交才会让服务端清掉勾选并推进基准，所以成功后重新拉一遍状态。
+      await refreshBoardFromServer();
+      await refreshVisibleRange();
+      await loadIntents();
+      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
+      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
+      if (result.status === "succeeded") {
+        // 受理回执给出的理解请求身份：还没拿到理解记录时也能据此查询 / 重试
+        acceptedUnderstandingId.value = delivery?.understandingId ?? null;
+        if (acceptedByReceipt) {
+          understandingStatus.value = "accepted";
+          // 旧的理解记录（上一次提交留下的）绝不允许冒充本次理解：
+          // 本次理解状态从「已受理、还没查到记录」开始，由本次的查询结果补上。
+          understanding.value = null;
+          submitNote.value =
+            "已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。";
+        }
+        understandingNote.value = null;
+        understandingError.value = null;
+        // 受理成功后立刻查询理解状态：先出现统一状态，说明随查询结果补上
+        void startUnderstandingPolling();
+      } else {
+        submitNote.value = null;
+      }
+      /**
+       * 第二段：提交之后的读取。它只影响「页面上的事实新不新」，
+       * **不影响**「这次提交成功了吗」—— 失败时单独表达，并留可重试的读取入口。
+       */
+      await refreshAfterSubmit(intentsBefore, result);
+      return result;
     } catch (err) {
       const status = (err as { status?: number }).status;
       const failure = (err as { payload?: { error?: string; reason?: string } }).payload;
@@ -2507,6 +2701,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         submitError.value = `提交结果未知：没有拿到服务端回执（${(err as Error).message || "原因未知"}）。这次提交可能已经受理，请先确认结果，不要直接重复提交`;
         return null;
       }
+      // 非「没有回执」的错误（含 409 stale_state）是明确失败：不查证、不认领任何记录
       submitStatus.value = "failed";
       submitError.value =
         status === 409 && failure?.error === "stale_state"
@@ -2515,22 +2710,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 提交失败保留改动与本次注释选择：这里不刷新、不清勾选、不动基准
       return null;
     }
-    // POST 已经明确返回：提交请求的事实到此确定，后面无论读取成败都不再改变它
-    lastSubmission.value = result;
-    submitStatus.value = result.status;
-    /**
-     * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
-     * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
-     * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
-     * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
-     */
-    applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
-    /**
-     * 第二段：提交之后的读取。它只影响「页面上的事实新不新」，
-     * **不影响**「这次提交成功了吗」—— 失败时单独表达，并留可重试的读取入口。
-     */
-    await refreshAfterSubmit(intentsBefore, result);
-    return result;
   }
 
   /**
@@ -2617,33 +2796,72 @@ export const useInteractiveStore = defineStore("interactive", () => {
     await refreshBoardFromServer();
     await refreshVisibleRange();
     await loadIntents();
+    await loadExecutions();
   }
 
+  /** 同一意图同一时间只允许一次批准 / 拒绝：重复点击不重复创建、不重复执行。 */
+  const decideInFlight = new Set<string>();
+  let batchDecideInFlight = false;
+
   async function approve(intentId: string, confirmDependency = false): Promise<DecideResult> {
-    const stale = await ensureFreshIntents();
-    if (stale) return { ok: false, reason: stale, detail: stale };
-    const result = await api.approveIntent(intentId, confirmDependency);
-    await settleAfterIntentChange();
-    return result;
+    if (decideInFlight.has(intentId)) {
+      return { ok: false, reason: "这项批准正在处理中，请等它返回。" };
+    }
+    /**
+     * 防重复操作在**核验之前**取得：失败的核验也要在 finally 里把锁放掉，
+     * 否则一次失败会把这一项永久钉死。核验没做成就不放行（不用旧快照批准）。
+     */
+    decideInFlight.add(intentId);
+    try {
+      const stale = await ensureFreshIntents();
+      if (stale) return { ok: false, reason: stale, detail: stale };
+      const result = await api.approveIntent(intentId, confirmDependency);
+      // 批准后服务端同步返回真实执行：立刻显示 running，而不是等下一次查询
+      adoptExecution(result?.execution ?? null);
+      await settleAfterIntentChange();
+      return result;
+    } finally {
+      decideInFlight.delete(intentId);
+    }
   }
 
   async function reject(intentId: string): Promise<DecideResult> {
-    const stale = await ensureFreshIntents();
-    if (stale) return { ok: false, reason: stale, detail: stale };
-    const result = await api.rejectIntent(intentId);
-    await settleAfterIntentChange();
-    return result;
+    if (decideInFlight.has(intentId)) {
+      return { ok: false, reason: "这项决定正在处理中，请等它返回。" };
+    }
+    /** 与 approve 同一口径：锁先取、核验不过就不放行、finally 里释放。 */
+    decideInFlight.add(intentId);
+    try {
+      const stale = await ensureFreshIntents();
+      if (stale) return { ok: false, reason: stale, detail: stale };
+      const result = await api.rejectIntent(intentId);
+      adoptExecution(result?.execution ?? null);
+      await settleAfterIntentChange();
+      return result;
+    } finally {
+      decideInFlight.delete(intentId);
+    }
   }
 
   async function decideBatch(approveIds: string[], rejectIds: string[]) {
-    const stale = await ensureFreshIntents();
-    if (stale) {
-      // 旧快照不许放行批量决定：服务端核验没做成 → 暂停，并把真实原因交回界面
-      return { results: [], conflicts: [], approved: [], rejected: [], error: stale };
+    if (batchDecideInFlight) {
+      throw new Error("批量审批正在处理中，请等它返回再提交下一次。");
     }
-    const result = await api.batchDecide(approveIds, rejectIds);
-    await settleAfterIntentChange();
-    return result;
+    /** 批量同样：锁在核验之前取得，核验失败也不放行，finally 里释放。 */
+    batchDecideInFlight = true;
+    try {
+      const stale = await ensureFreshIntents();
+      if (stale) {
+        // 旧快照不许放行批量决定：服务端核验没做成 → 暂停，并把真实原因交回界面
+        return { results: [], conflicts: [], approved: [], rejected: [], error: stale };
+      }
+      const result = await api.batchDecide(approveIds, rejectIds);
+      for (const item of result?.results ?? []) adoptExecution(item?.execution ?? null);
+      await settleAfterIntentChange();
+      return result;
+    } finally {
+      batchDecideInFlight = false;
+    }
   }
 
   async function updatePreview(intentId: string, preview: IntentPreview) {
@@ -2978,6 +3196,418 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return runImpactCheck(state.seq, state);
   }
 
+  /* ------------------------------------------------------------------
+   * 真实理解（契约 §14.1 / §14.6）
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 能力探测：服务替身可能只实现了一部分接口。缺少新接口时如实降级为「没有这份数据」，
+   * 不抛错、不假装有数据，也不影响保存与提交这些既有路径。
+   */
+  function apiSupports(name: string): boolean {
+    // 服务替身（测试里只实现一部分接口的 mock）对**未声明的导出**会直接抛错，
+    // 而不是返回 undefined —— 所以能力探测必须包一层：缺少新接口时如实降级为
+    // 「没有这份数据」，绝不能让保存 / 提交这些既有路径炸掉（契约 §14.6）。
+    try {
+      return typeof (api as unknown as Record<string, unknown>)[name] === "function";
+    } catch {
+      return false;
+    }
+  }
+
+  function sortUnderstandings(list: Understanding[]): Understanding[] {
+    return [...list].sort((a, b) => {
+      const at = Date.parse(String(a?.createdAt ?? "")) || 0;
+      const bt = Date.parse(String(b?.createdAt ?? "")) || 0;
+      if (at !== bt) return bt - at;
+      return String(b?.id ?? "").localeCompare(String(a?.id ?? ""));
+    });
+  }
+
+  /** 把一次查询结果落成界面事实：最近一次 + 历史，不做任何推断。 */
+  function adoptUnderstandings(
+    payload: UnderstandingResponse | null | undefined,
+    submissionId?: string,
+  ): Understanding | null {
+    const list = sortUnderstandings(payload?.understandings ?? []);
+    const recent =
+      payload?.understanding ??
+      list.find((item) => (submissionId ? item.submissionId === submissionId : true)) ??
+      list[0] ??
+      null;
+    understandings.value = list.length ? list : recent ? [recent] : [];
+    understanding.value = recent;
+    understandingStatus.value = recent?.status ?? null;
+    if (recent) acceptedUnderstandingId.value = recent.id;
+    return recent;
+  }
+
+  /** 读取本板面的理解过程（可按提交过滤）；失败时如实记录原因。 */
+  async function loadUnderstanding(submissionId?: string): Promise<Understanding | null> {
+    if (!apiSupports("fetchUnderstanding")) return null;
+    const payload = await api.fetchUnderstanding(boardId.value, submissionId);
+    const found = adoptUnderstandings(payload, submissionId);
+    understandingError.value = null;
+    return found;
+  }
+
+  /**
+   * 用最近一次提交的身份查询理解状态。受理情况不明时**先查询确认**，
+   * 不新建请求身份、不盲目重发提交。
+   */
+  async function refreshUnderstanding(): Promise<Understanding | null> {
+    const submissionId = lastSubmission.value?.submission?.id;
+    try {
+      return await loadUnderstanding(submissionId);
+    } catch (err) {
+      understandingError.value = (err as Error).message;
+      return null;
+    }
+  }
+
+  /**
+   * 提交回执丢失时确认受理情况：只在服务端**真的已有**这次提交的理解请求时才认。
+   * 拿不到证据就返回 null，由调用方按真实失败处理。
+   */
+  async function confirmAcceptanceAfterUnclear(sentAt: number): Promise<Understanding | null> {
+    if (!apiSupports("fetchUnderstanding")) return null;
+    try {
+      const payload = await api.fetchUnderstanding(boardId.value);
+      const list = sortUnderstandings(payload?.understandings ?? []);
+      const previousSubmissionId = lastSubmission.value?.submission?.id ?? null;
+      const recent = list.find((item) => {
+        const at = Date.parse(String(item?.createdAt ?? "")) || 0;
+        if (at < sentAt - 10_000) return false;
+        // 上一次提交留下的理解记录不算这次受理的证据
+        if (previousSubmissionId && item.submissionId === previousSubmissionId) return false;
+        return true;
+      });
+      if (!recent) return null;
+      adoptUnderstandings({ understanding: recent, understandings: list });
+      return recent;
+    } catch {
+      return null;
+    }
+  }
+
+  const UNDERSTANDING_POLL_MS = 1000; // 800~1500ms：够及时，也不在窄窗口里空转
+  const UNDERSTANDING_POLL_MAX = 90;
+  let understandingTimer: ReturnType<typeof setTimeout> | null = null;
+  let understandingPollToken = 0;
+  let understandingPollAttempts = 0;
+  let understandingVisibilityHooked = false;
+
+  function pageVisible(): boolean {
+    if (typeof document === "undefined") return true;
+    return document.visibilityState !== "hidden";
+  }
+
+  /** 停止自动查询；`note` 是给用户看的如实说明（不是错误）。 */
+  function stopUnderstandingPolling(note: string | null = null): void {
+    understandingPollToken += 1;
+    if (understandingTimer !== null) {
+      clearTimeout(understandingTimer);
+      understandingTimer = null;
+    }
+    understandingPolling.value = false;
+    if (note) understandingNote.value = note;
+  }
+
+  function scheduleUnderstandingPoll(): void {
+    if (typeof window === "undefined") return;
+    // 与既有保存计时器同一套类型（ReturnType<typeof setTimeout>）：环境里可能是 number
+    understandingTimer = setTimeout(() => {
+      understandingTimer = null;
+      void pollUnderstandingOnce();
+    }, UNDERSTANDING_POLL_MS);
+  }
+
+  /** 页面不可见时停轮询；重新可见后从当前事实继续（不补跑、不造假进度）。 */
+  function resumeUnderstandingWhenVisible(token: number): void {
+    if (typeof document === "undefined" || understandingVisibilityHooked) return;
+    understandingVisibilityHooked = true;
+    const onVisible = () => {
+      if (!pageVisible()) return;
+      document.removeEventListener("visibilitychange", onVisible);
+      understandingVisibilityHooked = false;
+      if (token !== understandingPollToken) return;
+      if (understandingSettled(understandingStatus.value)) return;
+      understandingNote.value = null;
+      understandingPolling.value = true;
+      scheduleUnderstandingPoll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  }
+
+  async function pollUnderstandingOnce(): Promise<void> {
+    const token = understandingPollToken;
+    if (token !== understandingPollToken) return;
+    if (!pageVisible()) {
+      understandingPolling.value = false;
+      understandingNote.value = "页面不在前台：已暂停自动查询，回到页面会继续。";
+      resumeUnderstandingWhenVisible(token);
+      return;
+    }
+    if (understandingPollAttempts >= UNDERSTANDING_POLL_MAX) {
+      stopUnderstandingPolling("自动查询已停止：结果还没有回来，可以点「刷新理解状态」继续查询。");
+      return;
+    }
+    understandingPollAttempts += 1;
+    try {
+      await loadUnderstanding(lastSubmission.value?.submission?.id);
+    } catch (err) {
+      understandingError.value = (err as Error).message;
+    }
+    if (token !== understandingPollToken) return;
+    if (understandingSettled(understandingStatus.value)) {
+      stopUnderstandingPolling();
+      if (understandingStatus.value === "understood") await syncIntentsFromUnderstanding();
+      return;
+    }
+    scheduleUnderstandingPoll();
+  }
+
+  /** 开始查询理解状态（受理成功后立刻调用；已在查询或已结束时什么都不做）。 */
+  async function startUnderstandingPolling(): Promise<void> {
+    if (understandingSettled(understandingStatus.value)) return;
+    if (understandingPolling.value) return;
+    if (!apiSupports("fetchUnderstanding")) return;
+    understandingNote.value = null;
+    understandingError.value = null;
+    understandingPolling.value = true;
+    understandingPollAttempts = 0;
+    understandingPollToken += 1;
+    scheduleUnderstandingPoll();
+  }
+
+  /** 同一理解请求只拉一次意图；服务端按 intent_key 也不会复制任务。 */
+  const syncedUnderstandings = new Set<string>();
+  let intentsSyncInFlight = false;
+
+  async function syncIntentsFromUnderstanding(): Promise<number> {
+    const id = understanding.value?.id;
+    if (!id || understandingStatus.value !== "understood") return 0;
+    if (syncedUnderstandings.has(id) || intentsSyncInFlight) return 0;
+    if (!apiSupports("createIntents")) return 0;
+    const submissionId = understanding.value?.submissionId ?? lastSubmission.value?.submission?.id;
+    intentsSyncInFlight = true;
+    const before = intentIdSet();
+    try {
+      await api.createIntents(boardId.value, submissionId ?? undefined);
+      syncedUnderstandings.add(id);
+      await loadIntents();
+      recordNewIntents(before, "session:submission:" + (submissionId ?? id));
+      return understandingIntents.value.length;
+    } catch (err) {
+      understandingError.value = (err as Error).message;
+      return 0;
+    } finally {
+      intentsSyncInFlight = false;
+    }
+  }
+
+  /**
+   * 重试失败的理解：只从该请求保存的快照恢复（服务端负责），
+   * 前端先查询确认，不新建请求身份、不盲目重发提交。
+   */
+  async function retryUnderstanding(
+    understandingId?: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    // 一律先查询确认（服务端事实优先）：本地记的是失败，也可能已经被别处重试过
+    const found = await refreshUnderstanding();
+    let id = found?.id ?? understandingId ?? understanding.value?.id ?? acceptedUnderstandingId.value ?? null;
+    if (!found && !id) {
+      return { ok: false, reason: "还没有查到这次提交的理解请求：先确认受理情况，再决定是否重试。" };
+    }
+    if (found && found.status !== "failed") {
+      return {
+        ok: false,
+        reason: "这次理解不在失败状态，不需要重试（当前：" + understandingStatusLabel(found.status) + "）。",
+      };
+    }
+    if (!id) return { ok: false, reason: "还没有可重试的理解请求。" };
+    if (!apiSupports("retryUnderstanding")) {
+      return { ok: false, reason: "当前没有可用的重试入口，请稍后再试。" };
+    }
+    const result = await api.retryUnderstanding(id);
+    await refreshUnderstanding();
+    if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
+      void startUnderstandingPolling();
+    }
+    return { ok: result?.ok !== false, reason: result?.reason ?? result?.detail };
+  }
+
+  /* ------------------------------------------------------------------
+   * 真实执行（契约 §14.1 / §14.6）：状态与操作都取服务端执行记录
+   * ------------------------------------------------------------------ */
+
+  const EXECUTION_POLL_MS = 1200;
+  const EXECUTION_POLL_MAX = 150;
+  let executionTimer: ReturnType<typeof setTimeout> | null = null;
+  let executionPollToken = 0;
+  let executionPollAttempts = 0;
+  let executionVisibilityHooked = false;
+
+  function stopExecutionPolling(): void {
+    executionPollToken += 1;
+    if (executionTimer !== null) {
+      clearTimeout(executionTimer);
+      executionTimer = null;
+    }
+    executionPolling.value = false;
+  }
+
+  function scheduleExecutionPoll(): void {
+    if (typeof window === "undefined") return;
+    executionTimer = setTimeout(() => {
+      executionTimer = null;
+      void pollExecutionsOnce();
+    }, EXECUTION_POLL_MS);
+  }
+
+  function resumeExecutionsWhenVisible(token: number): void {
+    if (typeof document === "undefined" || executionVisibilityHooked) return;
+    executionVisibilityHooked = true;
+    const onVisible = () => {
+      if (!pageVisible()) return;
+      document.removeEventListener("visibilitychange", onVisible);
+      executionVisibilityHooked = false;
+      if (token !== executionPollToken) return;
+      if (!liveExecutions.value.length) return;
+      executionPolling.value = true;
+      scheduleExecutionPoll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  }
+
+  async function pollExecutionsOnce(): Promise<void> {
+    const token = executionPollToken;
+    if (token !== executionPollToken) return;
+    if (!apiSupports("fetchExecutions")) return;
+    if (!pageVisible()) {
+      executionPolling.value = false;
+      resumeExecutionsWhenVisible(token);
+      return;
+    }
+    if (executionPollAttempts >= EXECUTION_POLL_MAX) {
+      stopExecutionPolling();
+      executionError.value = "自动查询执行记录已停止：可以重新打开任务浮层查看最新状态。";
+      return;
+    }
+    executionPollAttempts += 1;
+    try {
+      const payload = await api.fetchExecutions(boardId.value);
+      mergeExecutions(payload?.executions ?? []);
+      executionError.value = null;
+    } catch (err) {
+      executionError.value = (err as Error).message;
+    }
+    if (token !== executionPollToken) return;
+    // 成功 / 失败 / 取消都算结束：没有还在推进的记录就停下，不出现「已批准一直运行中」
+    if (!liveExecutions.value.length) {
+      stopExecutionPolling();
+      await loadIntents();
+      return;
+    }
+    scheduleExecutionPoll();
+  }
+
+  function startExecutionPolling(): void {
+    if (executionPolling.value) return;
+    if (!liveExecutions.value.length) return;
+    if (!apiSupports("fetchExecutions")) return;
+    executionPolling.value = true;
+    executionPollAttempts = 0;
+    executionPollToken += 1;
+    scheduleExecutionPoll();
+  }
+
+  /** 合并意图列表自带的执行记录（按 id 取更新的那份，不覆盖更新的本地事实）。 */
+  function mergeExecutions(incoming: Execution[]): void {
+    const byId = new Map(executions.value.map((item) => [item.id, item]));
+    for (const item of incoming) {
+      if (!item?.id) continue;
+      const current = byId.get(item.id);
+      if (!current) {
+        byId.set(item.id, item);
+        continue;
+      }
+      const currentAt = Date.parse(String(current.updatedAt ?? "")) || 0;
+      const incomingAt = Date.parse(String(item.updatedAt ?? "")) || 0;
+      if (incomingAt >= currentAt) byId.set(item.id, item);
+    }
+    executions.value = [...byId.values()];
+  }
+
+  /** 读取本板面的执行记录；读完之后只在确有排队 / 运行的任务时才继续查询。 */
+  async function loadExecutions(): Promise<void> {
+    if (!apiSupports("fetchExecutions")) return;
+    try {
+      const payload = await api.fetchExecutions(boardId.value);
+      // 合并而不是整体替换：刚同步拿到的执行记录不该被一次旧/空的列表抹掉（记录只追加）
+      mergeExecutions(payload?.executions ?? []);
+      executionError.value = null;
+      startExecutionPolling();
+    } catch (err) {
+      executionError.value = (err as Error).message;
+    }
+  }
+
+  /**
+   * 采纳服务端**同步返回**的一次执行记录（批准 / 暂停 / 继续 / 取消都会给）。
+   * 这样界面立刻显示真实状态（例如批准后就是 running），不必等下一次轮询；
+   * execution 为 null / 缺失时什么都不做 —— 绝不自己造一条执行记录。
+   */
+  function adoptExecution(execution?: Execution | null): void {
+    if (!execution?.id) return;
+    mergeExecutions([execution]);
+    startExecutionPolling();
+  }
+
+  /** 这个意图最近一次真实执行（先看执行记录，再看意图列表里带的那份）。 */
+  function latestExecution(intentId: string): Execution | null {
+    const list = executionsByIntent.value[intentId] ?? [];
+    if (list.length) return list[list.length - 1] ?? null;
+    return intents.value.find((item) => item.id === intentId)?.execution ?? null;
+  }
+
+  const executionControlInFlight = new Set<string>();
+
+  /**
+   * 暂停 / 继续 / 取消的真实入口：同一意图同一时间只发一次（重复点击不重复执行），
+   * 结果以服务端返回的执行记录为准。
+   */
+  async function controlExecution(
+    intentId: string,
+    action: "pause" | "resume" | "cancel",
+  ): Promise<ExecutionControlResult> {
+    if (executionControlInFlight.has(intentId)) {
+      return { ok: false, reason: "这项任务的控制操作正在处理中，请等它返回。" };
+    }
+    const call =
+      action === "pause" ? api.pauseIntent : action === "resume" ? api.resumeIntent : api.cancelIntent;
+    if (typeof call !== "function") {
+      return { ok: false, reason: "当前没有可用的执行控制入口，请稍后再试。" };
+    }
+    executionControlInFlight.add(intentId);
+    try {
+      const result = await call(intentId);
+      // 暂停 / 继续 / 取消都会同步返回执行记录：立即采纳，界面不等下一次轮询
+      adoptExecution(result?.execution ?? null);
+      await settleAfterIntentChange();
+      return result;
+    } catch (err) {
+      executionError.value = (err as Error).message;
+      return { ok: false, reason: (err as Error).message };
+    } finally {
+      executionControlInFlight.delete(intentId);
+    }
+  }
+
+  const pauseExecution = (intentId: string) => controlExecution(intentId, "pause");
+  const resumeExecution = (intentId: string) => controlExecution(intentId, "resume");
+  const cancelExecution = (intentId: string) => controlExecution(intentId, "cancel");
+
   function intentById(intentId: string): Intent | undefined {
     return intents.value.find((item) => item.id === intentId);
   }
@@ -3013,6 +3643,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     lastSubmission,
     submitStatus,
     submitError,
+    /** 四种状态分开的合成视图（受理 / 理解中 / 理解完成三态 / 提交失败） */
+    submissionStage,
+    /** 回执丢失但查询确认受理时的如实说明 */
+    submitNote,
     visibleRange,
     intents,
     conflicts,
@@ -3022,6 +3656,37 @@ export const useInteractiveStore = defineStore("interactive", () => {
     intentsLoadError,
     intentsLoadedOnce,
     ensureFreshIntents,
+
+    // 真实理解（契约 §14.1 / §14.6）
+    understanding,
+    understandings,
+    understandingStatus,
+    understandingError,
+    understandingPolling,
+    understandingNote,
+    understandingHistory,
+    understandingIntents,
+    acceptedUnderstandingId,
+    loadUnderstanding,
+    refreshUnderstanding,
+    retryUnderstanding,
+    syncIntentsFromUnderstanding,
+    startUnderstandingPolling,
+    stopUnderstandingPolling,
+
+    // 真实执行（契约 §14.1 / §14.6）
+    executions,
+    executionsByIntent,
+    executionStatus,
+    executionError,
+    executionPolling,
+    liveExecutions,
+    loadExecutions,
+    latestExecution,
+    pauseExecution,
+    resumeExecution,
+    cancelExecution,
+
     auxOpen,
     demoMode,
     chatOpen,

@@ -24,6 +24,17 @@ import {
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
+import {
+  cardAttachmentId,
+  cardAttachmentLinked,
+  cardAttachmentText,
+} from "../../interactive/materials";
+import {
+  pickBrowserFile,
+  stateText,
+  uploadAttachment,
+  waitUntilSettled,
+} from "../../services/attachments";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
@@ -134,6 +145,74 @@ const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
 const linkTitle = computed(() => String(props.card.meta?.title ?? "") || href.value);
+
+/**
+ * 附件关联（契约 §14.1 的诚实口径）：文件 / 图片卡片只有把**真实已保存的附件 id**
+ * 写进 meta，QIO 才读得到正文。没有 attachmentId 时必须如实显示「QIO 读不到它的正文」，
+ * 绝不拿文件名当正文。
+ */
+const attachKind = computed<"file" | "image" | null>(() =>
+  props.card.kind === "file" || props.card.kind === "image" ? props.card.kind : null,
+);
+const attachmentId = computed(() => cardAttachmentId(props.card.meta, props.card.kind));
+const attachmentLinked = computed(() => cardAttachmentLinked(props.card.meta, props.card.kind));
+const attachmentText = computed(() => cardAttachmentText(props.card.meta, props.card.kind));
+const attachStatus = ref<{ tone: "busy" | "ok" | "error"; text: string } | null>(null);
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 选一份真实文件 → 走既有上传接口（不新造上传链路）→ 等附件进入最终态 →
+ * 把 `{ name, attachmentId, size }` 写进卡片 meta（由父级 commit，组件不直接改板面状态）。
+ * 取消与失败都如实说出来，并且显示在卡片上，不静默。
+ */
+async function pickAttachment(): Promise<void> {
+  const kind = attachKind.value;
+  if (!kind) return;
+  const cardId = props.card.id;
+  attachStatus.value = { tone: "busy", text: "正在等待选择文件…" };
+  let file: File | null;
+  try {
+    file = await pickBrowserFile();
+  } catch (error) {
+    attachStatus.value = { tone: "error", text: "选择文件失败：" + messageOf(error) };
+    return;
+  }
+  if (!file) {
+    attachStatus.value = {
+      tone: "error",
+      text: "没有选择文件：这张卡片还没有关联已保存的附件，QIO 读不到它的正文",
+    };
+    return;
+  }
+  attachStatus.value = { tone: "busy", text: "正在保存附件「" + (file.name || "未命名") + "」…" };
+  try {
+    const uploaded = await uploadAttachment(file);
+    const settled = await waitUntilSettled(uploaded);
+    if (settled.state !== "ready") {
+      throw new Error(
+        "附件「" +
+          settled.name +
+          "」当前不可用：" +
+          stateText(settled) +
+          (settled.error ? "（" + settled.error + "）" : ""),
+      );
+    }
+    const meta: Record<string, unknown> = { ...(props.card.meta ?? {}) };
+    meta.name = settled.name;
+    meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
+    metaName.value = settled.name;
+    emit("patch", cardId, { meta } as Partial<BoardCard>, "关联附件：" + settled.name);
+    attachStatus.value = { tone: "ok", text: "已关联已保存的附件「" + settled.name + "」" };
+  } catch (error) {
+    attachStatus.value = {
+      tone: "error",
+      text: "附件保存失败：" + messageOf(error) + "；没有关联上，可以重试",
+    };
+  }
+}
 
 /** 正文首行：折叠时当标题用，避免折叠后只剩一个类型标签 */
 const firstLine = computed(() => (props.card.content || "").trim().split("\n")[0].trim());
@@ -406,6 +485,19 @@ function cancelEdit() {
           <span>名称</span>
           <input v-model="metaName" type="text" data-im="card-meta-name" :data-card-id="card.id" @input="onDraftInput" />
         </label>
+        <div v-if="attachKind" class="attach">
+          <button class="btn" type="button" data-im="card-attach-file" :data-card-id="card.id" @click="pickAttachment">
+            {{ attachmentLinked ? "重新关联已保存的附件" : "关联已保存的附件" }}
+          </button>
+          <span class="attach-state" data-im="card-attachment-state" :data-card-id="card.id">{{ attachmentText }}</span>
+          <span
+            v-if="attachStatus"
+            class="attach-status"
+            :class="'is-' + attachStatus.tone"
+            data-im="card-attach-status"
+            role="status"
+          >{{ attachStatus.text }}</span>
+        </div>
         <label v-if="card.kind === 'code'" class="field">
           <span>语言</span>
           <input v-model="metaLanguage" type="text" data-im="card-meta-language" :data-card-id="card.id" @input="onDraftInput" />
@@ -448,6 +540,14 @@ function cancelEdit() {
             <span v-if="card.content" class="desc">{{ card.content }}</span>
             <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
           </p>
+          <!-- 附件状态在关闭态也要看得见：没有关联附件 = QIO 读不到正文（不许用文件名冒充） -->
+          <p
+            v-if="attachKind"
+            class="attach-line"
+            :class="attachmentLinked ? 'is-linked' : 'is-missing'"
+            data-im="card-attachment"
+            :data-card-id="card.id"
+          >{{ attachmentText }}</p>
         </template>
       </template>
     </div>
@@ -651,6 +751,28 @@ function cancelEdit() {
 .btn:hover { border-color: var(--border-strong); }
 .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+
+/* 附件关联：编辑态的按钮 + 状态，以及关闭态那一行「有没有关联」的事实 */
+.attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+.attach-state { color: var(--text-muted); line-height: var(--lh-tight); }
+.attach-status { flex: 1 1 100%; line-height: var(--lh-tight); }
+.attach-status.is-busy { color: var(--text-muted); }
+.attach-status.is-ok { color: var(--text-secondary); }
+.attach-status.is-error { color: var(--danger, var(--text-strong)); }
+.attach-line {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+.attach-line.is-linked { color: var(--text-secondary); }
+.attach-line.is-missing { color: var(--text-muted); }
 
 /* 第四层：元信息（状态文字 + 时间）。比正文小一档，但仍是可读文本，不用装饰级颜色。 */
 .card-meta {

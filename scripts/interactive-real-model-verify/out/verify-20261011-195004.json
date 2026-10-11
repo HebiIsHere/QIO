@@ -1,0 +1,89 @@
+{
+  "results": [
+    {
+      "id": "P1",
+      "group": "real-path",
+      "title": "提交被可靠受理：delivered=true / status=accepted / understandingId",
+      "status": "PASS",
+      "detail": "delivered=true, status=accepted, understandingId=u_8b93cc553aed, baseline.updated=true",
+      "seconds": 0.304
+    },
+    {
+      "id": "P2",
+      "group": "real-path",
+      "title": "后台理解真实调用模型并落定（understood/clarification/no_action）",
+      "status": "PASS",
+      "detail": "状态=no_action，模型调用 1 次，stage=persist",
+      "seconds": 0.238
+    },
+    {
+      "id": "P3",
+      "group": "real-path",
+      "title": "材料诚实：文件未关联附件=未读取；图片=不支持；网址=只有地址",
+      "status": "PASS",
+      "detail": "file=unreadable(仅文件名)/image=image_unsupported/url=url_address_only/code=inline；未勾选注释未进入解析",
+      "seconds": 0.003
+    },
+    {
+      "id": "P4",
+      "group": "real-path",
+      "title": "模型上下文只含可见内容：未勾选注释 / hidden 卡片不出现",
+      "status": "PASS",
+      "detail": "上下文含勾选注释与材料，未含未勾选 / 隐藏注释（按模型实际收到的文本核对）",
+      "seconds": 0.237
+    },
+    {
+      "id": "P5",
+      "group": "real-path",
+      "title": "真实意图入口：{submissionId} 取回该次理解产出的意图",
+      "status": "PASS",
+      "detail": "意图 e-merge-1，operations=['add_reply_card']，understandingId=u_5af07fdbf621",
+      "seconds": 0.351
+    },
+    {
+      "id": "P6",
+      "group": "real-path",
+      "title": "批准后必须实际启动真实执行并写回结果卡",
+      "status": "PASS",
+      "detail": "execution=x_036c3a71f953 status=done，结果卡已写回，执行阶段未额外调用模型（理解阶段共 1 次）",
+      "seconds": 0.457
+    },
+    {
+      "id": "P7",
+      "group": "real-path",
+      "title": "执行只做允许操作集合，不改动用户已有内容",
+      "status": "PASS",
+      "detail": "执行 status=done；用户卡片 2 张全部原样；新增 1 张结果卡",
+      "seconds": 0.445
+    },
+    {
+      "id": "P8",
+      "group": "real-path",
+      "title": "结果卡带来源引用：meta.reply 的 intentId / understandingId / executionId",
+      "status": "PASS",
+      "detail": "meta.reply 指向 intentId=i_220c881c9d61、understandingId=u_cbcd6b31d41e、executionId=x_b0e14cf65bfd",
+      "seconds": 0.434
+    },
+    {
+      "id": "P9",
+      "group": "real-path",
+      "title": "模型输出含禁止操作 → 校验拒绝，不落成可执行任务",
+      "status": "PASS",
+      "detail": "status=failed，原因含越权说明，未落成任务，板面未被改动（模型调用 2 次）",
+      "seconds": 0.278
+    },
+    {
+      "id": "P10",
+      "group": "real-path",
+      "title": "输出无法解析 → 自动修复至多一次，仍无任务",
+      "status": "PASS",
+      "detail": "status=failed，模型调用恰好 2 次（首答 + 一次修复），无任务落库",
+      "seconds": 0.237
+    }
+  ],
+  "counts": {
+    "PASS": 10,
+    "FAIL": 0,
+    "NOT_VERIFIABLE": 0
+  }
+}

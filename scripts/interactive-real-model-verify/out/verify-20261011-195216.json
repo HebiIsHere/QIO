@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "id": "E4",
+      "group": "recovery",
+      "title": "取消撤回本任务改动，保留用户后续修改",
+      "status": "PASS",
+      "detail": "暂停后 status=paused；取消后 status=cancelled，用户后加内容保留，未留下结果卡；撤回说明={\"reverted\": [], \"kept\": [], \"pendingDecision\": [], \"reasonText\": \"任务取消，已撤回本任务造成的改动 0 项。\"}",
+      "seconds": 0.406
+    },
+    {
+      "id": "E7",
+      "group": "recovery",
+      "title": "继续执行不重复已完成步骤",
+      "status": "PASS",
+      "detail": "执行已 done（checkpoints=2）；再次继续后 status=done，checkpoints=2，结果卡 1 张，未重复（resume={\"ok\": false, \"reason\": \"not_paused\", \"detail\": \"只有暂停中的任务可以继续；这项任务当前是「done」。\", \"intent\": {\"id\": \"i_e6354091524d\", \"board）",
+      "seconds": 0.31
+    },
+    {
+      "id": "X4",
+      "group": "contract",
+      "title": "执行记录：GET /boards/{id}/executions",
+      "status": "PASS",
+      "detail": "批准前为空、批准后出现 1 条：status=done，steps=1，payload 字段与前端冻结类型一致；checkpoints 在数据库列上存在（接口按类型不暴露）",
+      "seconds": 0.363
+    },
+    {
+      "id": "R2",
+      "group": "regression",
+      "title": "流式回答链路未被破坏（SSE 票据可用）",
+      "status": "NOT_VERIFIABLE",
+      "detail": "SSE 票据接口可用（流式回答的传输前置条件在）；「边生成边显示」的真实流式行为需要前端/SSE 抓包证据，本脚本未声称已验证",
+      "seconds": 0.019
+    },
+    {
+      "id": "X8",
+      "group": "contract",
+      "title": "迁移 37/38 与 REQUIRED_OBJECTS 覆盖本轮新对象",
+      "status": "PASS",
+      "detail": "迁移 37/38、COMPENSATION_VERSION=38、REQUIRED_OBJECTS 与 board_intents 新列齐备",
+      "seconds": 0.0
+    }
+  ],
+  "counts": {
+    "PASS": 4,
+    "FAIL": 0,
+    "NOT_VERIFIABLE": 1
+  }
+}

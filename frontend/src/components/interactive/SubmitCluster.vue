@@ -15,6 +15,15 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
+import {
+  currentUnderstandingStep,
+  materialReadText,
+  understandingHistory,
+  understandingOutcome,
+  understandingSettled,
+  understandingStepText,
+  understandingText,
+} from "../../interactive/approval";
 import type { BoardStateResponse, Expression } from "../../interactive/types";
 import {
   draftHintText,
@@ -33,6 +42,84 @@ import { humanizeFailure, scrubInternalTerms } from "./displayText";
 const store = useInteractiveStore();
 const detailsOpen = ref(false);
 const busy = computed(() => store.submitStatus === "submitting");
+
+/* ------------------------------------------------------------------------
+ * 受理与理解分开（契约 §14.1 / §14.6）
+ *
+ * 「已提交」只是这次提交记录本身的结果；模型理解到了哪一步由理解状态单独表达。
+ * 这里不伪造进度：没有说明时先显示统一状态，说明由服务端查询结果补上。
+ * ---------------------------------------------------------------------- */
+const uStatus = computed(() => store.understandingStatus);
+const submitting = computed(() => store.submitStatus === "submitting");
+const uText = computed(() => {
+  // 正在提交时先显示这一次的事实：上一次的理解结果不许冒充这一次（受理与理解分开）
+  if (submitting.value) {
+    return {
+      label: "正在提交",
+      detail: "正在保存板面并把这次表达交给 QIO；受理成功后会立刻显示「已受理」。",
+      tone: "waiting" as const,
+      settled: false,
+      needsUser: false,
+      known: false,
+    };
+  }
+  return understandingText(store.understanding, store.understandingStatus);
+});
+const uSettled = computed(() => understandingSettled(uStatus.value));
+const uOutcome = computed(() => understandingOutcome(uStatus.value));
+const uCurrent = computed(() => currentUnderstandingStep(store.understanding));
+const uHistory = computed(() => understandingHistory(store.understanding));
+const materialsText = computed(() =>
+  store.understanding?.materials?.length ? materialReadText(store.understanding.materials) : "",
+);
+const missingText = computed(() => {
+  const missing = store.understanding?.clarification?.missing ?? [];
+  return missing.length ? missing.join("、") : "请补充这次要做什么";
+});
+const understoodIntents = computed(() => store.understandingIntents.length);
+const showUnderstanding = computed(
+  () =>
+    Boolean(uStatus.value) ||
+    Boolean(store.submitNote) ||
+    store.submitStatus === "submitting" ||
+    Boolean(store.understandingNote),
+);
+
+const retrying = ref(false);
+const understandingActionNote = ref("");
+async function retryUnderstandingNow(): Promise<void> {
+  if (retrying.value) return;
+  retrying.value = true;
+  understandingActionNote.value = "";
+  try {
+    const result = await store.retryUnderstanding();
+    if (!result.ok) understandingActionNote.value = result.reason ?? "没有开始重试";
+  } finally {
+    retrying.value = false;
+  }
+}
+
+const refreshing = ref(false);
+async function refreshUnderstandingNow(): Promise<void> {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  understandingActionNote.value = "";
+  try {
+    await store.refreshUnderstanding();
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+// 需要用户做事的结果（要补充 / 理解失败）自动展开详情：入口不必再找一次
+// immediate：挂载时就已经是这个结果也要展开，不能等下一次变化
+watch(
+  () => uOutcome.value,
+  (outcome) => {
+    if (outcome === "clarification" || outcome === "failed") detailsOpen.value = true;
+  },
+  { immediate: true },
+);
 
 /**
  * 未提交的有效改动由**服务端**在每次保存后算好（board_pending），这里只读取展示；
@@ -102,14 +189,24 @@ const failure = computed(() =>
     lastResult: store.lastSubmission,
   }),
 );
-const statusText = computed(() =>
-  submitStatusText(store.submitStatus, {
+const statusText = computed(() => {
+  // 受理与理解分开：成功只说「这次提交记录下来了」，理解到了哪一步由理解状态单独说
+  if (store.submitStatus === "succeeded") {
+    const count = store.lastSubmission?.expressions?.length ?? 0;
+    const cleared = store.lastSubmission?.checkedCleared?.length ?? 0;
+    return [
+      `已提交：本次 ${count} 项改动已记录` +
+        (cleared > 0 ? `；提交成功后已自动取消 ${cleared} 条注释的勾选（不是删除或撤回）` : ""),
+      "受理只表示 QIO 可靠收下了这次提交；理解结果与任务执行状态分别由理解状态与任务列表表达，提交不构成执行批准。",
+    ].join("；");
+  }
+  return submitStatusText(store.submitStatus, {
     result: store.lastSubmission,
     pendingCount: pendingExpressions.value.length,
     error: failure.value?.reason ?? store.submitError,
     retention: failure.value?.retention,
-  }),
-);
+  });
+});
 const range = computed(() => localVisibleRange(store.board));
 const rangeText = computed(() => visibleRangeText(range.value));
 /**
@@ -217,6 +314,71 @@ function onSubmit() {
       <!-- 常态只说「几项改动」；完整摘要与边界说明在「详情」里（§10.8） -->
       <span class="detail">{{ summary.hasContent ? summary.total + " 项改动" : "没有可提交的改动" }}</span>
     </p>
+
+    <!--
+      理解过程（契约 §14.1 / §14.6）：受理成功就先出现统一状态「已受理」，
+      说明随查询结果补上；需要补充 / 理解失败 / 无需行动都是明确状态，不靠颜色表达。
+    -->
+    <div
+      v-if="showUnderstanding"
+      class="understanding"
+      data-im="understanding"
+      :data-understanding-status="uStatus ?? 'none'"
+      :data-understanding-outcome="uOutcome"
+    >
+      <p class="u-line">
+        <strong class="u-label" :class="'tone-' + uText.tone" data-im="understanding-status">
+          {{ uText.label }}
+        </strong>
+        <span class="u-detail" data-im="understanding-detail" :title="uText.detail">{{ uText.detail }}</span>
+      </p>
+      <span class="u-actions">
+        <button
+          v-if="!submitting && uStatus === 'failed'"
+          class="details"
+          type="button"
+          data-im="understanding-retry"
+          :disabled="retrying"
+          @click="retryUnderstandingNow"
+        >
+          {{ retrying ? "重试中…" : "重试理解（从这次提交的快照恢复）" }}
+        </button>
+        <button
+          v-else-if="!submitting && !uSettled && uStatus"
+          class="details"
+          type="button"
+          data-im="understanding-refresh"
+          :disabled="refreshing"
+          @click="refreshUnderstandingNow"
+        >
+          {{ refreshing ? "查询中…" : "刷新理解状态" }}
+        </button>
+        <button
+          v-if="uHistory.length || store.understandingNote"
+          class="details"
+          type="button"
+          data-im="understanding-history-toggle"
+          :aria-expanded="detailsOpen"
+          @click="detailsOpen = !detailsOpen"
+        >
+          {{ detailsOpen ? "收起过程" : "查看过程" }}
+        </button>
+      </span>
+      <p v-if="uOutcome === 'clarification'" class="u-note" data-im="understanding-missing">
+        需要你补充：{{ missingText }}；这次没有生成任何任务。
+      </p>
+      <p v-else-if="uOutcome === 'no_action'" class="u-note" data-im="understanding-no-action">
+        这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
+      </p>
+      <p v-else-if="uOutcome === 'failed'" class="u-note err" data-im="understanding-failed">
+        重试只会从这次提交保存的快照恢复：不重读当前板面，也不重建同一批任务。
+      </p>
+      <p v-if="store.understandingNote" class="u-note" data-im="understanding-note">{{ store.understandingNote }}</p>
+      <p v-if="store.submitNote" class="u-note" data-im="submit-acceptance-note">{{ store.submitNote }}</p>
+      <p v-if="understandingActionNote" class="u-note err" data-im="understanding-action-note">
+        {{ understandingActionNote }}
+      </p>
+    </div>
 
     <!--
       失败必须立刻可见（真实错误不许藏进详情）：默认就说清「本次原因 → 保留情况 → 重试」。
@@ -353,6 +515,20 @@ function onSubmit() {
       <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
       <p class="line range" data-im="visible-range-full">{{ rangeText }}</p>
       <p class="line strong">{{ statusText }}</p>
+      <p v-if="materialsText" class="line" data-im="understanding-materials">{{ materialsText }}</p>
+      <p v-if="store.understandingError" class="line err" data-im="understanding-error">
+        理解状态读取失败：{{ store.understandingError }}
+      </p>
+      <div v-if="uCurrent || uHistory.length" class="u-steps" data-im="understanding-history">
+        <p class="line strong">理解过程</p>
+        <p v-if="uCurrent" class="line" data-im="understanding-current-step">{{ understandingStepText(uCurrent) }}</p>
+        <p v-for="step in uHistory" :key="step.key + '-' + step.label" class="line faint">
+          {{ understandingStepText(step) }}
+        </p>
+      </div>
+      <p v-if="understoodIntents > 0" class="line strong" data-im="understanding-intents">
+        理解完成：{{ understoodIntents }} 项等待你审批（批准前不会有任何改动）。
+      </p>
       <p v-if="failure" class="line err" data-im="submit-failure-detail">{{ failureDetailText }}</p>
       <BoardChangeList
         :expressions="pendingExpressions"
@@ -420,6 +596,59 @@ function onSubmit() {
   min-width: 0;
   color: var(--text-secondary);
 }
+/*
+  理解过程（契约 §14.1 / §14.6）：常态一行统一状态 + 需要用户做事时的明确说明。
+  颜色只做辅助：每个状态都有文字；说明不裁切（换行显示），完整文本同时给 title。
+*/
+.understanding {
+  flex: 1 1 24ch;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+}
+.u-line {
+  flex: 1 1 18ch;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.u-label {
+  flex: none;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
+.u-label.tone-open { color: var(--link); border-color: var(--link); }
+.u-label.tone-waiting { color: var(--warning); border-color: var(--warning); }
+.u-label.tone-active { color: var(--accent); border-color: var(--accent); }
+.u-label.tone-settled { color: var(--text-secondary); }
+.u-label.tone-problem { color: var(--danger); border-color: var(--danger); }
+.u-detail {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.u-actions { flex: none; display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.u-note {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.u-note.err { color: var(--danger); }
+/* 过程历史：默认收起，展开后按「当前阶段 + 已过去的阶段」稳定排列 */
+.u-steps { display: flex; flex-direction: column; gap: 2px; }
 /* 允许查看范围始终可见（不折叠才存在）；视觉上最多两行，全文仍在 DOM 里 */
 .line.range {
   display: -webkit-box;

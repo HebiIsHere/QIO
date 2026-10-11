@@ -21,6 +21,7 @@ import IntentStatusPopover from "../components/interactive/IntentStatusPopover.v
 import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
 import DemoIntentEntry from "../components/interactive/DemoIntentEntry.vue";
 import { humanizeFailure } from "../components/interactive/displayText";
+import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
 const demoOpen = ref(false);
@@ -54,6 +55,36 @@ const saveTone = computed(() => {
   if (store.saveStatus === "saving" || store.dirty) return "busy";
   return "ok";
 });
+
+/*
+ * 顶部只留一句真实的理解状态（契约 §14.1 / §14.6）：
+ * 受理 / 正在理解 / 理解完成 / 需要补充 / 本次无需任务 / 理解失败各自有明确文字。
+ * 失败可以在原地重试（从这次提交保存的快照恢复），未结束时可以查询最新状态。
+ */
+const uText = computed(() => understandingText(store.understanding, store.understandingStatus));
+const uLive = computed(
+  () => Boolean(store.understandingStatus) && !understandingSettled(store.understandingStatus),
+);
+const retrying = ref(false);
+async function retryUnderstanding(): Promise<void> {
+  if (retrying.value) return;
+  retrying.value = true;
+  try {
+    await store.retryUnderstanding();
+  } finally {
+    retrying.value = false;
+  }
+}
+const refreshing = ref(false);
+async function refreshUnderstanding(): Promise<void> {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await store.refreshUnderstanding();
+  } finally {
+    refreshing.value = false;
+  }
+}
 
 /** 次要信息：数量退到次级层（空板面时不显示，避免一排同样显眼的标签） */
 const boardSize = computed(() => {
@@ -89,10 +120,46 @@ const boardSize = computed(() => {
         >
           <span class="im-dot" aria-hidden="true"></span>{{ saveText }}
         </p>
-        <!-- 未接入状态如实可见，且不用开发用语 -->
-        <span class="im-note" data-im="not-connected" title="提交只会记录在本地，QIO 还没有真正读取或理解板面内容">
-          QIO 还没有读取板面
+        <!-- 未接入状态如实可见，且不用开发用语；提交之后显示真实的理解状态 -->
+        <span
+          v-if="store.submissionStage === 'idle'"
+          class="im-note"
+          data-im="not-connected"
+          title="保存只落库、不调用模型；提交之后 QIO 才会读取本次允许查看的内容并开始理解"
+        >
+          还没有提交给 QIO
         </span>
+        <template v-else>
+          <span
+            class="im-note"
+            :class="'tone-' + uText.tone"
+            data-im="understanding-status"
+            :data-understanding-status="store.understandingStatus ?? 'none'"
+            :title="uText.detail"
+          >
+            {{ uText.label }}
+          </span>
+          <button
+            v-if="store.understandingStatus === 'failed'"
+            class="im-chip"
+            type="button"
+            data-im="understanding-retry"
+            :disabled="retrying"
+            @click="retryUnderstanding"
+          >
+            {{ retrying ? "重试中…" : "重试理解" }}
+          </button>
+          <button
+            v-else-if="uLive"
+            class="im-chip"
+            type="button"
+            data-im="understanding-refresh"
+            :disabled="refreshing"
+            @click="refreshUnderstanding"
+          >
+            {{ refreshing ? "查询中…" : "刷新理解状态" }}
+          </button>
+        </template>
         <button
           class="im-chip"
           type="button"
@@ -216,6 +283,12 @@ const boardSize = computed(() => {
   cursor: help;
   white-space: nowrap;
 }
+/* 理解状态的辅助色（文字已经说清状态，颜色不承担含义） */
+.im-note.tone-open { color: var(--link); }
+.im-note.tone-waiting { color: var(--warning); }
+.im-note.tone-active { color: var(--accent); }
+.im-note.tone-settled { color: var(--text-secondary); }
+.im-note.tone-problem { color: var(--danger); }
 .im-chip {
   font: inherit;
   font-size: var(--fs-sm);

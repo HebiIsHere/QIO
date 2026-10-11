@@ -14,7 +14,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { addCard, CARD_KIND_LABELS, defaultCardSeed } from "../../interactive/board";
+import { addCard, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
+import {
+  pickBrowserFile,
+  stateText,
+  uploadAttachment,
+  waitUntilSettled,
+} from "../../services/attachments";
 import type { CardKind } from "../../interactive/types";
 
 /** 可添加的五类；reply 是 QIO 结果产生的卡片，不由用户「添加」。 */
@@ -55,13 +61,83 @@ function close(returnFocus = false): void {
   if (returnFocus) void nextTick(() => trigger.value?.focus());
 }
 
+/**
+ * 文件 / 图片卡片必须关联**真实已保存的附件**（meta.file.attachmentId / meta.image.attachmentId），
+ * 否则 QIO 只能看到文件名、读不到正文（后端会如实标 unreadable）。
+ * 状态文字一律渲染在菜单外面：菜单收起后上传失败仍然看得见，不静默。
+ */
+const status = ref<{ tone: "busy" | "ok" | "error"; text: string } | null>(null);
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function attachRealFile(kind: "file" | "image", cardId: string): Promise<void> {
+  status.value = { tone: "busy", text: "正在等待选择文件…" };
+  let file: File | null;
+  try {
+    file = await pickBrowserFile();
+  } catch (error) {
+    status.value = { tone: "error", text: "选择文件失败：" + messageOf(error) };
+    return;
+  }
+  if (!file) {
+    // 用户取消：卡片保留，但如实说明「还没有关联附件」——不假装已经读到内容
+    status.value = {
+      tone: "error",
+      text:
+        "没有选择文件：这张" +
+        CARD_KIND_LABELS[kind] +
+        "卡片还没有关联已保存的附件，QIO 读不到它的正文",
+    };
+    return;
+  }
+  status.value = { tone: "busy", text: "正在保存附件「" + (file.name || "未命名") + "」…" };
+  try {
+    const uploaded = await uploadAttachment(file);
+    const settled = await waitUntilSettled(uploaded);
+    if (settled.state !== "ready") {
+      throw new Error(
+        "附件「" +
+          settled.name +
+          "」当前不可用：" +
+          stateText(settled) +
+          (settled.error ? "（" + settled.error + "）" : ""),
+      );
+    }
+    const current = store.board;
+    const card = current?.cards.find((item) => item.id === cardId);
+    if (!current || !card) {
+      status.value = { tone: "error", text: "卡片已经不在了，附件没有关联上（附件本身已经保存）" };
+      return;
+    }
+    const meta: Record<string, unknown> = { ...(card.meta ?? {}) };
+    meta.name = settled.name;
+    meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
+    store.commit(updateCard(current, cardId, { meta }), "关联附件：" + settled.name);
+    status.value = {
+      tone: "ok",
+      text: "已关联已保存的附件「" + settled.name + "」：" + stateText(settled),
+    };
+  } catch (error) {
+    status.value = {
+      tone: "error",
+      text: "附件保存失败：" + messageOf(error) + "；卡片已保留，可在卡片编辑里重新关联",
+    };
+  }
+}
+
 function add(kind: AddableKind): void {
   const current = store.board;
   if (!current) return;
   // 默认内容统一由 board.ts 提供：同一个「添加文件」不能有两种默认值（集成时去掉这里的复制）
   const seed = defaultCardSeed(kind);
+  const before = new Set(current.cards.map((card) => card.id));
   store.commit(addCard(current, { kind, content: seed.content, meta: seed.meta }), "添加" + CARD_KIND_LABELS[kind]);
   close(true);
+  const added = store.board?.cards.find((card) => !before.has(card.id));
+  // 文件 / 图片：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
+  if ((kind === "file" || kind === "image") && added) void attachRealFile(kind, added.id);
 }
 
 /** 点菜单外面收起。 */
@@ -128,6 +204,17 @@ onBeforeUnmount(() => {
       </button>
       <p class="pop-note">只加到本地板面：保存不调用 QIO，提交才会。</p>
     </div>
+
+    <!-- 附件上传/失败状态：渲染在菜单外面，菜单收起后仍然可见（不静默） -->
+    <p
+      v-if="status"
+      class="add-status"
+      :class="'is-' + status.tone"
+      data-im="add-material-status"
+      role="status"
+    >
+      {{ status.text }}
+    </p>
   </div>
 </template>
 
@@ -208,4 +295,26 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+/* 状态条浮在工具栏上方（与菜单同一个位置）：菜单收起后仍看得到上传结果 */
+.add-status {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 3;
+  margin: 0;
+  width: max-content;
+  max-width: min(360px, calc(100vw - var(--sp-6)));
+  padding: var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r-sm, var(--r-md));
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal, 1.5);
+  color: var(--text-secondary);
+}
+.add-status.is-busy { border-left-color: var(--link); }
+.add-status.is-ok { border-left-color: var(--success, var(--link)); }
+.add-status.is-error { border-left-color: var(--danger); color: var(--text-strong); }
 </style>
