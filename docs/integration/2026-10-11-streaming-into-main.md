@@ -321,8 +321,16 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）
 
 **本轮分支 CI（最终，全绿）**
 
-run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)（push，SHA
-`451414aca4018070e198e1fdcd1e314f269ecff1`，即本分支修复后的代码）：
+分支最终 SHA `aa0dde7f290ce2475becb324e6a07f9a1e1242b5`：
+
+| run | SHA | 结论 |
+| --- | --- | --- |
+| [`38119254588`](https://github.com/HebiIsHere/QIO/actions/runs/38119254588)（push） | `aa0dde7f` | **success，9/9 任务全绿**（21 分钟） |
+| [`38119257286`](https://github.com/HebiIsHere/QIO/actions/runs/38119257286)（pull_request） | `aa0dde7f` | **success，9/9 任务全绿**（19 分钟） |
+
+前一个可验证点 run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)（push，SHA
+`451414aca4018070e198e1fdcd1e314f269ecff1`）也是 9/9 全绿；从它到最终 SHA 只多了
+`scripts/sr-verify/probes.py` 响应性取证的确定性修正与文档改动。逐任务（按最终 SHA）：
 
 | 任务 | 结果 |
 | --- | --- |
