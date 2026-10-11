@@ -51,6 +51,7 @@ from agent.services.lifecycle import (
     close_background,
     close_decision,
     log_close_report,
+    merge_close_reports,
 )
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
@@ -817,7 +818,38 @@ class AppContext:
         # 仍可能有提炼协程在写库。`close_background` 会等/取消并如实回报
         # 「句柄取消了」与「底层执行单元确认结束」的区别。
         report = await close_background(getattr(self, "background", None))
-        await self.maintenance.stop()
+        # F06：维护有自己的执行单元（周期循环 + 手动触发的那一轮 + 维护发起的审批等待）。
+        # stop() 先拒绝新维护，再有界等待/取消并**确认**执行单元终止，返回如实报告；
+        # 未确认结束时合并进下面同一份 CloseReport ⇒ clean=False / unfinished 有名字，
+        # 于是 adapter 不释放、数据库不关闭（它仍然依赖这些资源）。
+        from agent.services.lifecycle import (
+            PHASE_MAINTENANCE_STOPPED,
+            PHASE_MAINTENANCE_UNFINISHED,
+        )
+        maintenance_report = await self.maintenance.stop()
+        if isinstance(maintenance_report, dict):
+            reported_phases = tuple(
+                str(phase) for phase in maintenance_report.get("phases") or ()
+            )
+            if reported_phases:
+                report = report.with_phase(*reported_phases)
+            elif maintenance_report.get("clean"):
+                report = report.with_phase(PHASE_MAINTENANCE_STOPPED)
+            else:
+                report = report.with_phase(PHASE_MAINTENANCE_UNFINISHED)
+            if not maintenance_report.get("clean"):
+                pending = tuple(str(name) for name in maintenance_report.get("pending") or ())
+                if not pending:
+                    # 报告说没结束却没给名字：不能当成「没有未结束的东西」。
+                    pending = ("maintenance",)
+                report = merge_close_reports(
+                    report,
+                    CloseReport(
+                        clean=False,
+                        unfinished=pending,
+                        detail=str(maintenance_report.get("reason") or "维护未确认结束"),
+                    ),
+                )
         await self.turns.shutdown()
         await self.task_manager.shutdown()
         # 重活执行器最后收：在跑的 turn 已经收尾，不会再有人往池里丢任务。

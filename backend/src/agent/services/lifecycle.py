@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 # `phases` 里既能看出后台停在哪一档，也能看出上层据此做了什么决定。
 PHASE_BACKGROUND_STOPPED = "background_stopped"
 PHASE_BACKGROUND_UNFINISHED = "background_unfinished"
+# F06：维护（周期巡检 + 手动触发的那一轮 + 维护发起的审批等待）是否确认结束。
+PHASE_MAINTENANCE_STOPPED = "maintenance_stopped"
+PHASE_MAINTENANCE_UNFINISHED = "maintenance_unfinished"
 PHASE_CLEAN_EXIT_RECORDED = "clean_exit_recorded"
 PHASE_CLEAN_EXIT_SKIPPED = "clean_exit_skipped"
 PHASE_ADAPTERS_RELEASED = "adapters_released"
@@ -171,6 +174,27 @@ async def close_background(
         final_timeout=DEFAULT_FINAL_TIMEOUT if final_timeout is None else final_timeout,
     )
     return close_report_from_shutdown(report)
+
+
+def merge_close_reports(base: CloseReport, extra: CloseReport | None) -> CloseReport:
+    """把「另一份关闭报告」（例如维护调度器的报告）合并进主报告（F06）。
+
+    `extra` 为 None 视为「没有额外的执行单元」：不是「判不出来」，而是可以确认的
+    「这里没有东西」—— 但 `unfinished` 里的名字一律并入，且 `clean` 只在**两份都干净**
+    时为真。这样「手动维护没结束却报干净关闭」在类型层面就不可能发生：
+    任何一份报告说没结束，合并结果就是不干净，调用方据此不写干净退出、
+    不释放 adapter、不关数据库。
+    """
+    if extra is None:
+        return base
+    unfinished = tuple(sorted(set(base.unfinished) | set(extra.unfinished)))
+    clean = bool(base.clean) and bool(extra.clean) and not unfinished
+    detail = base.detail
+    if not extra.clean:
+        extra_detail = extra.detail or ("仍有执行单元未确认结束：" + "、".join(extra.unfinished))
+        detail = f"{detail}；{extra_detail}" if detail else extra_detail
+    phases = tuple(base.phases) + tuple(extra.phases)
+    return CloseReport(clean=clean, unfinished=unfinished, phases=phases, detail=_redact(detail))
 
 
 @dataclass(frozen=True)
