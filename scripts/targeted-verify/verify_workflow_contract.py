@@ -298,10 +298,11 @@ def check_targeted(workflow, text, rep, action_text=None):
     backend_text = workflow_text(backend_job)
     for needle in ("PYTEST_NODE_IDS", "-k", "PYTEST_K"):
         rep.check_in("targeted-verify.yml/backend: pytest 按 " + needle + " 筛选", needle, backend_text)
+    has_reject_guard = "拒绝跑整套" in backend_text
     rep.check(
         "targeted-verify.yml/backend: 没给筛选参数时拒绝跑整套（额度红线）",
-        "拒绝跑整套" in backend_text,
-        "backend job 缺少「拒绝无筛选整套重跑」的保护",
+        has_reject_guard,
+        "" if has_reject_guard else "backend job 缺少「拒绝无筛选整套重跑」的保护",
     )
     frontend_job = jobs.get("frontend") or {}
     frontend_text = workflow_text(frontend_job)
