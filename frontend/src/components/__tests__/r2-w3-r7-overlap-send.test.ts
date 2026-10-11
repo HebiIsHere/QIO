@@ -310,23 +310,29 @@ describe("R7 (c) 组件卸载", () => {
       await flushUntil(() => mocks.sendTurn.mock.calls.length === 1, "第一次发送派发");
       expect(signal?.aborted, "发送中：控制器还活着").toBe(false);
       /**
-       * 派发后比基线多 2 个定时器（绝对值不为 0 是因为挂载 Vue/pinia/vitest 环境本身也有定时器）：
+       * 派发后比基线多 3 个定时器（绝对值不为 0 是因为挂载 Vue/pinia/vitest 环境本身也有定时器）：
        *   +1 本次发送**自己的** 200ms 准备防抖定时器（Composer.beginPrepare）；
        *   +1 session store 给「刚入流的新消息」的 600ms freshIds 清理定时器
-       *      （session.ts:1810，属于 store 不属于本组件，会在下面被推进掉）。
+       *      （属于 store 不属于本组件，会在下面被推进掉）；
+       *   +1 本次发送的**未决台账立刻落本机**（F03：网络超时/断线也必须先有可查证的本地记录）
+       *      引起的 0ms 定时器 —— 它是 jsdom 自己的行为，不是应用回调：
+       *      `StorageImpl.setItem` 会 `setTimeout(dispatchStorageEvent, 0)`，
+       *      所以**每一次** localStorage 写入都会在假定时器下多出一个 0ms 定时器。
+       *      这个 0ms 定时器在推进定时器时立刻消失，不含任何准备/发送回调。
        */
       expect(
         vi.getTimerCount(),
-        "派发后应只多出「本次准备防抖 + store 新消息清理」两个定时器",
-      ).toBe(baseline + 2);
+        "派发后应只多出「本次准备防抖 + store 新消息清理 + 未决台账落盘」三个定时器",
+      ).toBe(baseline + 3);
 
       w.unmount();
 
-      // I5：卸载清掉**本组件**在途的准备定时器（store 那个 600ms 定时器不属于组件，仍挂着）
+      // I5：卸载清掉**本组件**在途的准备定时器（store 的 600ms 定时器与上面那条
+      // storage 事件的 0ms 定时器都不属于组件，仍挂着）
       expect(
         vi.getTimerCount(),
         "卸载必须清掉本组件在途的准备定时器（I5）",
-      ).toBe(baseline + 1);
+      ).toBe(baseline + 2);
       // 裁决：卸载**不得** abort 在途发送（abort 只由用户显式动作触发）
       expect(signal?.aborted, "卸载不得 abort 在途发送：离开页面不丢已发送的消息").toBe(false);
 
