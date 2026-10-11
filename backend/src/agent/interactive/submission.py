@@ -1050,10 +1050,73 @@ def _record_submission(
 
 
 # --- 受理与后台理解（契约 §14.1 / §14.3 / §14.4） -------------------------
-
+#
+# 统一生命周期（整合轮契约 §2）：理解的后台调度必须经 AppContext.background
+# （services/background.BackgroundTasks）登记，名字固定
+# interactive-understanding:<understandingId>，并声明底层执行单元探针
+# ——「理解记录是否已到终结状态」。关闭开始后 register 抛 BackgroundClosed，
+# 调用方据此拒绝新调度并如实说明（绝不静默改成同步跑模型）。
 
 #: 后台理解任务的强引用：任务在跑的时候必须有人持有它（否则可能被 GC 吞掉）。
+#: 仅用于没有绑定应用上下文的测试兜底（裸 create_task）路径；生产路径的句柄
+#: 由 AppContext.background 持有，关闭时由它统一收尾。
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+#: 后台任务名前缀（与 execution.py 的 interactive-execution: 同一命名空间约定）。
+UNDERSTANDING_TASK_PREFIX = "interactive-understanding:"
+
+#: 关闭 / 重启中断一次理解时写进 error 的可读原因（记录仍可从原快照重试）。
+INTERRUPTED_UNDERSTANDING_ERROR = (
+    "理解被执行环境的关闭 / 重启中断（没有产出任何意图）：记录仍可从保存的快照重试，"
+    "不需要重读当前板面。"
+)
+
+#: 连接 → 宿主应用（AppContext / 任何持有 background 注册表的对象）。
+#: 值里同时持有 conn 与 owner 的强引用：id() 复用会导致把任务登记到错误的注册表上。
+_CONNECTION_OWNERS: dict[int, tuple[sqlite3.Connection, Any]] = {}
+
+
+def bind_background_owner(conn: sqlite3.Connection, owner: Any) -> None:
+    """把连接绑到宿主应用：之后这条连接上的理解调度都登记进 owner.background。
+
+    由 AppContext.__init__ 调用（同一份 conn 也就是关闭时 shutdown 的那份注册表）。
+    不绑（老对象 / 单元测试裸连接）时走测试兜底路径；生产路径必须绑。
+    """
+    _CONNECTION_OWNERS[id(conn)] = (conn, owner)
+
+
+def background_owner_for(conn: sqlite3.Connection) -> Any | None:
+    """取这条连接绑定的宿主应用；没绑（或连接已变）时返回 None。"""
+    entry = _CONNECTION_OWNERS.get(id(conn))
+    if entry is None or entry[0] is not conn:
+        return None
+    return entry[1]
+
+
+def unbind_background_owner(conn: sqlite3.Connection) -> None:
+    """解绑（关闭收尾 / 测试收尾用；正常路径不需要）。"""
+    entry = _CONNECTION_OWNERS.get(id(conn))
+    if entry is not None and entry[0] is conn:
+        _CONNECTION_OWNERS.pop(id(conn), None)
+
+
+def _understanding_is_settled(conn: sqlite3.Connection, understanding_id: str) -> bool:
+    """底层执行单元探针：这条理解记录是否已经到达终结状态。
+
+    读到终结状态（understood / needs_clarification / no_action / failed）才算这一份
+    后台工作真的收尾；仍停在 accepted / understanding 时如实返回 False ——
+    「asyncio 句柄被取消了」不是「底层执行单元结束了」（A05 口径）。
+    读不到记录（数据库不可用 / 记录不存在）时同样返回 False：不能靠读失败假装收尾。
+    """
+    try:
+        row = conn.execute(
+            "SELECT status FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None:
+        return False
+    return str(row["status"]) in models.UNDERSTANDING_SETTLED_STATUSES
 
 
 async def _no_adapter():
@@ -1108,12 +1171,12 @@ def _accept_submission(
 ) -> dict:
     """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
 
-    snapshot 就是这次提交结果里的 **after 投影**（内存里那份，不重新读板面）：
+    snapshot 就是这次提交结果里的 after 投影（内存里那份，不重新读板面）：
     提交成功后紧接着会「自动取消勾选」并保存板面，重读会把刚提交的注释从可见范围里
     过滤掉。B 需要 before / expressions 时自己按 submission_id 从 board_submissions 读。
 
     返回 {"ok": bool, "understandingId": str | None, "reason": str | None}。
-    任何失败都如实返回原因，**不抛异常**（调用方据此把这次提交按 failed 处理）。
+    任何失败都如实返回原因，不抛异常（调用方据此把这次提交按 failed 处理）。
     """
     understanding, reason = _load_understanding()
     if understanding is None:
@@ -1145,57 +1208,190 @@ def _accept_submission(
     }
 
 
-def _schedule_understanding(
-    conn: sqlite3.Connection, *, understanding_id: str, adapter_provider: Any
-) -> dict:
-    """把真实理解放到后台跑：**不阻塞请求**，也不持有任何事务（模型调用在任务里）。
+def _current_attempt(conn: sqlite3.Connection, understanding_id: str) -> int | None:
+    """读这条理解当前的 attempt（迟到结果护栏的基线）；读不到返回 None。"""
+    try:
+        row = conn.execute(
+            "SELECT attempt FROM board_understanding WHERE id = ?", (understanding_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return int(row["attempt"] or 1)
 
-    返回 {"started": bool, "reason": str | None}。没有事件循环（同步调用）时如实说明；
-    绝不在这里同步跑模型。受理之后的失败只记在理解记录上，不回改提交状态。
+
+def _is_current_attempt(
+    conn: sqlite3.Connection, understanding_id: str, baseline: int | None
+) -> bool:
+    """这条理解记录是否仍是「这一次运行」的那一份（attempt 没被别人接手）。
+
+    baseline 读不到（记录不可用）时返回 False：宁可什么都不写，也不能把迟到的
+    结果写进一条来路不明的记录。旧实例 / 旧 attempt 的迟到结果因此不得改写当前
+    记录；意图生成发生在理解模块内部，那一边由同一份归属核对保证。
+    """
+    if baseline is None:
+        return False
+    return _current_attempt(conn, understanding_id) == baseline
+
+
+def _log_discarded(understanding_id: str, why: str) -> None:
+    logger.warning("互动理解的结果被丢弃（%s）：%s", why, understanding_id)
+
+
+def _schedule_understanding(
+    conn: sqlite3.Connection,
+    *,
+    understanding_id: str,
+    adapter_provider: Any,
+    owner: Any = None,
+) -> dict:
+    """把真实理解放到后台跑：不阻塞请求，也不持有任何事务（模型调用在任务里）。
+
+    生产路径（契约 §2）：
+
+    * 经 owner 的 background 注册表（AppContext.background / BackgroundTasks）登记，
+      名字固定 interactive-understanding:<understandingId>；
+    * 声明底层执行单元探针（理解记录是否已到终结状态）：关闭时只在探针确认之后才把
+      这一份算作收尾，「句柄被取消了」不算「结束了」；
+    * 关闭已开始 → register 抛 BackgroundClosed → 这里拒绝新调度并如实说明，
+      绝不静默改成同步跑模型（记录停在未终结状态，可从保存的快照重试）。
+
+    没有绑定宿主应用（裸连接的单元测试）时退回裸 create_task 兜底：句柄由
+    _BACKGROUND_TASKS 持有，行为与今天一致。
+
+    返回 {"started": bool, "reason": str | None, "rejected": str | None}；
+    受理之后的失败只记在理解记录上，不回改提交状态。
     """
     understanding, reason = _load_understanding()
     if understanding is None:
-        return {"started": False, "reason": reason}
+        return {"started": False, "reason": reason, "rejected": "unavailable"}
     runner = getattr(understanding, "run_understanding", None)
     if runner is None:
-        return {"started": False, "reason": "理解模块没有 run_understanding：无法启动真实理解"}
+        return {
+            "started": False,
+            "reason": "理解模块没有 run_understanding：无法启动真实理解",
+            "rejected": "unavailable",
+        }
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return {
             "started": False,
             "reason": "当前没有运行中的事件循环：本次没有启动后台理解（可以从保存的快照重试）",
+            "rejected": "no_loop",
         }
     provider = adapter_provider if callable(adapter_provider) else _no_adapter
+    if owner is None:
+        # submit_board 内部直接调这个函数（那条路径没有 request 可用）：归属统一按
+        # 「这条连接绑定的宿主应用」解析，生产路径（AppContext）因此一定走注册表。
+        owner = background_owner_for(conn)
+
+    # 迟到结果护栏的基线：这次运行开始时的 attempt。运行结束前被新的一次重试 /
+    # 重启接手（attempt 变了）时，这一次的结果不得再写回当前记录。
+    baseline_attempt = _current_attempt(conn, understanding_id)
 
     async def _run() -> None:
         try:
             await runner(conn, understanding_id, adapter_provider=provider)
         except asyncio.CancelledError:
+            # 关闭 / 取消把协程停在这里：明确记下中断状态（可读原因 + 可重试），
+            # 让底层执行单元探针随后确认为已终结；探针读不到终结状态时关闭照样报
+            # 「未确认结束」，不假装收尾。写完再原样抛出，保持取消语义。
+            if _is_current_attempt(conn, understanding_id, baseline_attempt):
+                _mark_understanding_interrupted(conn, understanding_id)
+            else:
+                _log_discarded(understanding_id, "被新的一次尝试取代")
             raise
         except Exception as exc:  # noqa: BLE001 - 提交已受理：后台失败绝不改提交状态
             logger.warning("互动理解后台任务失败（提交已受理，状态不改）", exc_info=True)
-            _mark_understanding_failed(conn, understanding_id, exc)
+            if _is_current_attempt(conn, understanding_id, baseline_attempt):
+                _mark_understanding_failed(conn, understanding_id, exc)
+            else:
+                _log_discarded(understanding_id, "被新的一次尝试取代")
 
-    task = loop.create_task(_run(), name=f"interactive-understanding:{understanding_id}")
+    name = UNDERSTANDING_TASK_PREFIX + str(understanding_id)
+    if owner is not None:
+        from agent.services.background import BackgroundClosed, registry_for
+
+        try:
+            registry = registry_for(owner, loop=loop)
+            registry.register(
+                name,
+                _run,
+                # 底层执行单元探针：理解记录是否已到终结状态（同步、零参）。
+                unit_finished=lambda: _understanding_is_settled(conn, understanding_id),
+            )
+        except BackgroundClosed as exc:
+            detail = (
+                "服务正在关闭：本次没有启动后台理解，也没有在关闭流程里偷偷同步跑模型"
+                f"（{exc}）"
+            )
+            logger.warning("互动理解调度被拒（关闭流程已开始）：%s", understanding_id)
+            return {"started": False, "reason": detail, "rejected": "closed"}
+        except RuntimeError as exc:
+            detail = f"后台登记不可用：{exc}；本次没有启动后台理解（可以从保存的快照重试）"
+            logger.warning("互动理解调度失败（后台登记不可用）：%s", understanding_id)
+            return {"started": False, "reason": detail, "rejected": "no_background"}
+        logger.info("互动理解已登记为后台任务：%s", name)
+        return {"started": True, "reason": None, "rejected": None}
+
+    # 测试兜底：没有绑定宿主应用时用裸 create_task（生产路径不走这条）。
+    task = loop.create_task(_run(), name=name)
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
-    return {"started": True, "reason": None}
+    return {"started": True, "reason": None, "rejected": None}
 
 
 def schedule_understanding(
-    conn: sqlite3.Connection, *, understanding_id: str, adapter_provider: Any = None
+    conn: sqlite3.Connection,
+    *,
+    understanding_id: str,
+    adapter_provider: Any = None,
+    owner: Any = None,
 ) -> dict:
-    """把一条已受理 / 待重试的理解放到后台跑（提交路径与重试路由共用同一条路径）。"""
+    """把一条已受理 / 待重试的理解放到后台跑（提交路径与重试路由共用同一条路径）。
+
+    owner 省略时用这条连接绑定的宿主应用（bind_background_owner，由
+    AppContext.__init__ 建立）；都没有时走测试兜底路径。
+    """
+    if owner is None:
+        owner = background_owner_for(conn)
     return _schedule_understanding(
-        conn, understanding_id=understanding_id, adapter_provider=adapter_provider
+        conn,
+        understanding_id=understanding_id,
+        adapter_provider=adapter_provider,
+        owner=owner,
     )
 
 
-def cancel_background_understanding(understanding_id: str) -> bool:
-    """取消正在跑的后台理解任务（已读的材料不再产出；记录状态由调用方如实落库）。"""
-    target = f"interactive-understanding:{understanding_id}"
+def _registered_owners() -> list[Any]:
+    """所有绑定过的宿主应用（按对象身份去重，保序）。"""
+    owners: list[Any] = []
+    seen: set[int] = set()
+    for _conn, candidate in list(_CONNECTION_OWNERS.values()):
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        owners.append(candidate)
+    return owners
+
+
+def cancel_background_understanding(understanding_id: str, owner: Any = None) -> bool:
+    """取消正在跑的后台理解任务（已读的材料不再产出；记录状态由调用方如实落库）。
+
+    生产路径按注册表里的句柄取消（同名任务只可能有一份：register 会去重）；
+    owner 省略时在所有绑定过的宿主应用里找。测试兜底的裸任务一并处理。
+    找不到正在跑的任务时如实返回 False（不假装取消成功）。
+    """
+    target = UNDERSTANDING_TASK_PREFIX + str(understanding_id)
     stopped = False
+    candidates = [owner] if owner is not None else _registered_owners()
+    for candidate in candidates:
+        registry = getattr(candidate, "background", None)
+        handle = registry.handle(target) if registry is not None else None
+        if handle is not None and handle.cancel():
+            stopped = True
     for task in list(_BACKGROUND_TASKS):
         if task.done() or task.get_name() != target:
             continue
@@ -1204,12 +1400,37 @@ def cancel_background_understanding(understanding_id: str) -> bool:
     return stopped
 
 
+def _mark_understanding_interrupted(conn: sqlite3.Connection, understanding_id: str) -> bool:
+    """关闭 / 重启中断了一次理解：把仍在跑的理解记录落成明确状态。
+
+    冻结的状态集合里没有 interrupted：中断落成 failed + 可读原因（关闭 / 重启中断），
+    而且绝不删快照 —— 记录于是可以从原快照重试，不需要重读当前板面。
+    重复调用幂等（只动 accepted / understanding 的行）。
+    """
+    stamp = models.now_iso()
+    try:
+        cursor = conn.execute(
+            "UPDATE board_understanding SET status = 'failed', error = ?, updated_at = ?,"
+            " finished_at = ? WHERE id = ? AND status IN ('accepted', 'understanding')",
+            (INTERRUPTED_UNDERSTANDING_ERROR, stamp, stamp, understanding_id),
+        )
+    except sqlite3.Error:
+        logger.warning("标记理解中断时写库失败（理解记录不可用）", exc_info=True)
+        return False
+    if cursor.rowcount:
+        logger.warning(
+            "互动理解因关闭 / 重启中断，已落成 failed（可从快照重试）：%s", understanding_id
+        )
+        return True
+    return False
+
+
 def _mark_understanding_failed(
     conn: sqlite3.Connection, understanding_id: str, exc: BaseException
 ) -> bool:
     """兜底：理解模块抛异常时，把仍在 accepted / understanding 的理解记录标成 failed。
 
-    只写理解记录自己的状态（失败可从保存的快照重试），**绝不回改提交记录**；
+    只写理解记录自己的状态（失败可从保存的快照重试），绝不回改提交记录；
     理解模块自己已经落了终结状态时这里什么都不做（不抢 B 的写入）。
     """
     reason = (f"理解失败（可重试，从保存的快照恢复）：{type(exc).__name__}: {exc}")[:500]
@@ -1226,7 +1447,6 @@ def _mark_understanding_failed(
         logger.warning("互动理解已标记为 failed（%s）：%s", understanding_id, reason)
         return True
     return False
-
 
 async def submit_board(
     conn: sqlite3.Connection,

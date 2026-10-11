@@ -6,6 +6,7 @@
  */
 import { authHeaders, resolveBackend } from "./backend";
 import type {
+  AcceptanceLookup,
   BoardState,
   BoardStateResponse,
   DecideResult,
@@ -132,13 +133,21 @@ export function fetchVisibleRange(boardId: string): Promise<{ visibleRange: Visi
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/visible-range`);
 }
 
-/** 提交：QIO 取得未提交表达的唯一入口。baseStateVersion = 本次候选所基于的服务器版本。 */
+/**
+ * 提交：QIO 取得未提交表达的唯一入口。baseStateVersion = 本次候选所基于的服务器版本。
+ *
+ * 契约 §1.3：`clientRequestId` = 这次提交请求的**稳定身份**，由前端在发出请求之前生成
+ * （见 `interactive/submission.ts`）。服务端按 (boardId, clientRequestId) 做幂等：
+ * 同身份重试返回原事实，同身份但内容不同按冲突拒绝（409 request_identity_conflict）。
+ * 传空 = 旧客户端行为（不参与幂等）。
+ */
 export function submitBoard(
   boardId: string,
   requestedVisible?: string[],
   note = "",
   baseStateVersion?: number,
   confirmedCheckId?: string,
+  clientRequestId?: string,
 ): Promise<SubmissionResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`, {
     method: "POST",
@@ -147,7 +156,30 @@ export function submitBoard(
       note,
       ...(baseStateVersion !== undefined ? { baseStateVersion } : {}),
       ...(confirmedCheckId ? { confirmedCheckId } : {}),
+      ...(clientRequestId ? { clientRequestId } : {}),
     }),
+  });
+}
+
+/**
+ * 契约 §1.3：按**精确请求身份**查证受理情况（受理情况不明时的唯一查证入口）。
+ *
+ * - 200 → `{ acceptance }`（事实字典，与 {@link AcceptanceLookup} 一一对应）；
+ * - 404 → **不抛**，返回 `{ acceptance: null, reason }`：服务端没有这条身份的记录。
+ *   调用方据此继续「结果未知」——不是错误推导的成功，也不是改判失败（§1.1.4 / §1.1.5）；
+ * - 其它错误（断网 / 5xx）原样抛出：查询失败同样只说明「还没确认」，不能当成失败结论。
+ */
+export function fetchAcceptance(
+  boardId: string,
+  clientRequestId: string,
+): Promise<{ acceptance: AcceptanceLookup | null; reason?: string }> {
+  return request<{ acceptance: AcceptanceLookup | null; reason?: string }>(
+    `${BASE}/boards/${encodeURIComponent(boardId)}/submissions/acceptance?clientRequestId=${encodeURIComponent(clientRequestId)}`,
+  ).catch((err: unknown) => {
+    if (err instanceof InteractiveApiError && err.status === 404) {
+      return { acceptance: null, reason: err.payload?.reason ?? "服务端没有这个请求身份的记录" };
+    }
+    throw err;
   });
 }
 

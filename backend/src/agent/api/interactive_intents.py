@@ -82,7 +82,9 @@ async def _start_execution(request: Request, payload: dict) -> dict:
         str(execution["id"]),
         adapter_provider=_adapter_provider(request),
         instance_id=_instance_id(request),
-        owner=request.app,
+        # 契约 §2：后台归属统一走 AppContext（aclose 真正 shutdown 的那份注册表），
+        # 不是 FastAPI 应用对象 —— 后者会另建一份注册表，任务就不在关闭账上了。
+        owner=execution_module.app_owner_for(request.app),
     )
     if isinstance(started.get("execution"), dict):
         payload["execution"] = started["execution"]

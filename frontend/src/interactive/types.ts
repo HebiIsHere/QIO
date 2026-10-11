@@ -116,6 +116,11 @@ export interface SubmissionRecord {
   seq: number;
   status: "succeeded" | "failed" | "empty" | "duplicate";
   createdAt: string;
+  /**
+   * 契约 §1.3：这一次提交请求的稳定身份（前端在发出请求**之前**生成）。
+   * 服务端按 (boardId, clientRequestId) 做幂等：同身份重放时返回**原记录**。
+   */
+  clientRequestId?: string;
   visible?: VisibleRange;
   expressions?: Expression[];
   delivery?: DeliveryInfo;
@@ -152,6 +157,33 @@ export interface SubmissionResult {
   visibleRange: VisibleRange;
   checkedCleared: string[];
   error?: string;
+  /**
+   * 契约 §1.3：true = 服务端按同一个 `clientRequestId` 返回了**原记录**的事实
+   * （没有新建提交、没有新建理解请求、没有重复调用模型）。
+   */
+  replayed?: boolean;
+}
+
+/**
+ * 提交受理情况的**精确查证**结果（契约 §1.3，与
+ * `GET /api/interactive/boards/{boardId}/submissions/acceptance?clientRequestId=…`
+ * 的 200 响应体一一对应）。
+ *
+ * 它只回答一个问题：「这个请求身份在服务端有没有记录，事实是什么」。
+ * 时间接近、最近一条理解记录、板面出现新任务都**不是**受理证据（§1.1.4）。
+ */
+export interface AcceptanceLookup {
+  clientRequestId: string;
+  submissionId: string;
+  status: SubmissionRecord["status"] | string;
+  delivery: DeliveryInfo;
+  understandingId?: string | null;
+  understandingStatus?: UnderstandingStatus | null;
+  baseStateVersion?: number | null;
+  note?: string;
+  createdAt?: string;
+  /** true = 服务端返回的是原记录（同身份重放），不是这次新建的 */
+  replayed?: boolean;
 }
 
 export interface BoardStateResponse {

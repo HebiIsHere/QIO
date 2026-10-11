@@ -41,6 +41,7 @@ import {
 import {
   cloneState,
   emptyBoardState,
+  type AcceptanceLookup,
   type BoardState,
   type BoardStateResponse,
   type DecideResult,
@@ -64,6 +65,18 @@ import {
   type BoardContentConflict,
   type RemovalConflict,
 } from "../interactive/serverFacts";
+import {
+  acceptanceLookupText,
+  acceptanceMatchesIdentity,
+  canLookupAcceptance,
+  identityConflictText,
+  isRequestIdentityConflict,
+  parseStoredSubmissionIdentity,
+  serializeSubmissionIdentity,
+  submissionIdentityFor,
+  submissionIdentityStorageKey,
+  type SubmissionIdentity,
+} from "../interactive/submission";
 
 const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
@@ -109,6 +122,8 @@ export type SubmitStatus =
 export type SubmissionStage =
   | "idle"
   | "submitting"
+  /** F10 + 契约 §1.3：没有拿到回执、且按请求身份也还没查证到受理事实 */
+  | "unknown"
   | "accepted"
   | "understanding"
   | "understood"
@@ -185,6 +200,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const submitResultUnknown = ref(false);
   const submitRefreshState = ref<"idle" | "pending" | "error">("idle");
   const submitRefreshError = ref<string | null>(null);
+  /**
+   * 契约 §1.3：这一次**未决**提交的稳定请求身份。
+   *
+   * 它在发出提交**之前**生成，并先落到本机台账（localStorage，按板面一条）：
+   * 同一次未决提交重启后仍是**同一个身份**，服务端据此返回原事实（不重复创建
+   * 提交与理解请求），同身份但内容不同则按冲突拒绝。
+   */
+  const pendingSubmission = ref<SubmissionIdentity | null>(null);
+  /** 这次「已受理」是**按请求身份精确查证**确认的：本机没有完整回执，界面不得编造改动条数 */
+  const submitAcceptedByLookup = ref(false);
+  /** 查证结论的如实说明（没查到 / 查询失败时也写清「结果仍然未知」） */
+  const acceptanceLookupNote = ref<string | null>(null);
+  /** 正在按请求身份查证（按钮据此禁用，避免连点） */
+  const acceptanceLookupPending = ref(false);
+  /** 最近一次**精确查证**命中的受理事实（服务端事实；查不到时为 null） */
+  const lastAcceptance = ref<AcceptanceLookup | null>(null);
 
   const visibleRange = ref<VisibleRange | null>(null);
 
@@ -287,6 +318,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (state === "no_action") return "no_action";
     if (state === "failed") return "understanding_failed";
     if (submitStatus.value === "succeeded") return "accepted";
+    // F10：没有回执 = 结果未知，必须与 submitStatus 的取值一一对应（不许落回 idle）
+    if (submitStatus.value === "unknown") return "unknown";
     if (submitStatus.value === "failed") return "submit_failed";
     if (submitStatus.value === "empty") return "empty";
     if (submitStatus.value === "duplicate") return "duplicate";
@@ -1592,6 +1625,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 刷新后如实恢复真实的理解与执行状态（页面刷新不重复创建、不重复执行）
       await refreshUnderstanding();
       await loadExecutions();
+      /**
+       * 契约 §1.3：重启 / 刷新后仍未确认的同一次提交沿用**同一个**请求身份，
+       * 并立刻按这个身份做一次精确查证：查到就恢复受理事实，查不到就继续「结果未知」。
+       */
+      await restorePendingSubmission();
       if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
         void startUnderstandingPolling();
       }
@@ -2591,6 +2629,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitRefreshState.value = "idle";
     submitRefreshError.value = null;
     submitNote.value = null;
+    acceptanceLookupNote.value = null;
+    submitAcceptedByLookup.value = false;
     submitStatus.value = "submitting";
     await saveNow();
     const blocked =
@@ -2612,15 +2652,31 @@ export const useInteractiveStore = defineStore("interactive", () => {
     /** N5：提交这一刻的「勾选修改代次」——等待期间用户自己重新勾选的，不许被这次清理取消。 */
     const checkedAtSubmit = new Map(cardCheckedSeq);
     /**
+     * 契约 §1.3：请求身份在**发出提交之前**生成，并先落到本机台账。
+     *
+     * 内容没变（同板面 / 同基准版本 / 同说明）就沿用同一个未决身份：服务端据此返回
+     * **原事实**（不重复创建提交与理解请求）；同一次未决提交重启后也接着用这个身份。
+     * 内容变了就是另一次提交，用新身份（拿旧身份去发新内容会被服务端按冲突拒绝）。
+     */
+    const identity = submissionIdentityFor({
+      boardId: boardId.value,
+      baseStateVersion: board.value.seq,
+      note: "",
+      existing: pendingSubmission.value,
+    });
+    writePendingIdentity(identity);
+    /**
+     * 理解状态归属于**本次**提交：换一次提交就换一代查询请求，
+     * 上一次提交的迟到查询不再落地（也就不会覆盖本次的失败 / 未知）。
+     */
+    beginUnderstandingForNewSubmission();
+    /**
      * 第一段：提交请求本身。**只有这一段能决定「已提交 / 未提交 / 未知」的事实**。
+     *
+     * 提交之后的读取（板面 / 可见范围 / 任务清单）全部交给 refreshAfterSubmit：
+     * 它失败只说明「页面上的事实不新」，绝不改变这一段已经定下的事实（F10）。
      */
     let result: SubmissionResult;
-    /**
-     * 受理情况不明时用它做兜底日志（不再作为「是不是这次提交」的判据）：
-     * 查证只认本次请求身份在服务端的精确记录，见 B 的 clientRequestId 与
-     * `confirmAcceptanceAfterUnclear`。
-     */
-    const sentAt = Date.now();
     try {
       const confirmedCheckId =
         confirmedCheck && confirmedCheck.savedSeq === board.value.seq
@@ -2632,76 +2688,47 @@ export const useInteractiveStore = defineStore("interactive", () => {
         "",
         board.value.seq,
         confirmedCheckId,
+        identity.clientRequestId,
       );
-      // 提交请求的事实到这里确定；下面的读取无论如何成败都不再改变它
-      lastSubmission.value = result;
-      const delivery = result.delivery;
-      /**
-       * 受理是服务端回执说的真实事实（§14.1 / §14.4）：只有它说 `status: "accepted"` 时，
-       * 界面才立刻显示「已受理，正在理解」。旧的 `succeeded` 语义（没有 status 字段）继续兼容，
-       * 但它不再兼代表「模型已经理解完成」。
-       */
-      const acceptedByReceipt = result.status === "succeeded" && delivery?.status === "accepted";
-      if (acceptedByReceipt && delivery?.delivered === false) {
-        // 服务端明确说这次没有被可靠受理：保留改动与勾选，不推进基准，也不冒充成功
-        submitStatus.value = "failed";
-        submitError.value =
-          delivery.detail || delivery.reason || "这次提交没有被可靠受理；改动与勾选都保留，可以重试。";
-        return null;
-      }
-      submitStatus.value = result.status;
-      /**
-       * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
-       * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
-       * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
-       * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
-       */
-      applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
-      // 只有成功提交才会让服务端清掉勾选并推进基准，所以成功后重新拉一遍状态。
-      await refreshBoardFromServer();
-      await refreshVisibleRange();
-      await loadIntents();
-      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
-      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
-      if (result.status === "succeeded") {
-        // 受理回执给出的理解请求身份：还没拿到理解记录时也能据此查询 / 重试
-        acceptedUnderstandingId.value = delivery?.understandingId ?? null;
-        if (acceptedByReceipt) {
-          understandingStatus.value = "accepted";
-          // 旧的理解记录（上一次提交留下的）绝不允许冒充本次理解：
-          // 本次理解状态从「已受理、还没查到记录」开始，由本次的查询结果补上。
-          understanding.value = null;
-          submitNote.value =
-            "已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。";
-        }
-        understandingNote.value = null;
-        understandingError.value = null;
-        // 受理成功后立刻查询理解状态：先出现统一状态，说明随查询结果补上
-        void startUnderstandingPolling();
-      } else {
-        submitNote.value = null;
-      }
-      /**
-       * 第二段：提交之后的读取。它只影响「页面上的事实新不新」，
-       * **不影响**「这次提交成功了吗」—— 失败时单独表达，并留可重试的读取入口。
-       */
-      await refreshAfterSubmit(intentsBefore, result);
-      return result;
     } catch (err) {
       const status = (err as { status?: number }).status;
       const failure = (err as { payload?: { error?: string; reason?: string } }).payload;
+      if (isRequestIdentityConflict(err)) {
+        /**
+         * 契约 §1.1.3：同身份但内容不同 —— 服务端按冲突拒绝（409 request_identity_conflict）。
+         *
+         * 这是**明确失败**（不是未知），而且不许拿这个身份去认领任何受理事实。
+         * 旧身份已经被服务端拒绝，不能再继续用：下一次提交换一个新身份。
+         */
+        writePendingIdentity(null);
+        submitStatus.value = "failed";
+        submitError.value = identityConflictText();
+        return null;
+      }
       if (submitReceiptUnknown(err)) {
         /**
-         * F10：没有拿到回执 —— 提交结果**未知**。
-         * 不假定成功（不推进基准、不假装已提交），也不假定失败（不诱导重新提交）：
-         * 保留改动与勾选，明确说「结果未知」，等用户先查证。
+         * F10 + 契约 §1.3：没有拿到回执 —— 提交结果**未知**。
+         *
+         * 先用本次请求身份做**精确查证**（唯一查证路径）：
+         * - 查到这条身份的可靠受理事实 → 恢复 submissionId / understandingId 并开始理解查询；
+         * - 查不到 / 内容不符 / 查询失败 → 继续「结果未知」：保留原内容与勾选，
+         *   不盲目重发、不改判失败（§1.1.5）。
          */
         submitStatus.value = "unknown";
         submitResultUnknown.value = true;
         submitError.value = `提交结果未知：没有拿到服务端回执（${(err as Error).message || "原因未知"}）。这次提交可能已经受理，请先确认结果，不要直接重复提交`;
+        /**
+         * 查证命中时受理事实已经恢复（lastAcceptance / submitNote / 理解状态与查询）；
+         * 两种情况都返回 null：本次没有拿到回执对象，状态由 submitStatus 表达。
+         */
+        await confirmAcceptanceAfterUnclear();
         return null;
       }
-      // 非「没有回执」的错误（含 409 stale_state）是明确失败：不查证、不认领任何记录
+      /**
+       * 非「没有回执」的错误（含 409 stale_state）是**明确失败**：服务端已经给出结论，
+       * 这次提交没有受理 —— 收掉未决身份，下次提交是一次新提交（新身份）。
+       */
+      writePendingIdentity(null);
       submitStatus.value = "failed";
       submitError.value =
         status === 409 && failure?.error === "stale_state"
@@ -2710,6 +2737,105 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 提交失败保留改动与本次注释选择：这里不刷新、不清勾选、不动基准
       return null;
     }
+    // POST 已经明确返回：提交请求的事实到此确定，后面无论读取成败都不再改变它
+    lastSubmission.value = result;
+    const delivery = result.delivery;
+    /**
+     * 受理是服务端回执说的真实事实（§14.1 / §14.4）：只有它说 `status: "accepted"` 时，
+     * 界面才立刻显示「已受理，正在理解」。旧的 `succeeded` 语义（没有 status 字段）继续兼容，
+     * 但它不再兼代表「模型已经理解完成」。
+     */
+    const acceptedByReceipt = result.status === "succeeded" && delivery?.status === "accepted";
+    if (acceptedByReceipt && delivery?.delivered === false) {
+      // 服务端明确说这次没有被可靠受理：保留改动与勾选，不推进基准，也不冒充成功
+      writePendingIdentity(null);
+      submitStatus.value = "failed";
+      submitError.value =
+        delivery.detail || delivery.reason || "这次提交没有被可靠受理；改动与勾选都保留，可以重试。";
+      return null;
+    }
+    submitStatus.value = result.status;
+    // 服务端已经给出明确结论（成功 / 空 / 重复）：这次未决身份到此结束
+    writePendingIdentity(null);
+    /**
+     * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
+     * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
+     * 于是本页仍带着旧的 checked=true，后续保存又把用户没有重新选择过的注释勾回去。
+     * 按对象与选择版本应用：用户等待期间自己重新勾选过的那一条以用户为准。
+     */
+    applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
+    if (result.status === "succeeded") {
+      // 受理回执给出的理解请求身份：还没拿到理解记录时也能据此查询 / 重试
+      acceptedUnderstandingId.value = delivery?.understandingId ?? null;
+      // 本次理解状态绑定到**本次**提交（旧查询的归属判定靠它）
+      understandingBoundSubmissionId = result.submission?.id ?? null;
+      if (acceptedByReceipt) {
+        understandingStatus.value = "accepted";
+        // 旧的理解记录（上一次提交留下的）绝不允许冒充本次理解：
+        // 本次理解状态从「已受理、还没查到记录」开始，由本次的查询结果补上。
+        understanding.value = null;
+        submitNote.value =
+          "已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。";
+      }
+      understandingNote.value = null;
+      understandingError.value = null;
+      // 受理成功后立刻查询理解状态：先出现统一状态，说明随查询结果补上
+      void startUnderstandingPolling();
+    } else {
+      submitNote.value = null;
+    }
+    /**
+     * 第二段：提交之后的读取（板面 / 可见范围 / 任务清单）—— **唯一**的提交后读取路径。
+     * 它在 refreshAfterSubmit 内部失败时只记「页面刷新失败」，绝不影响上面已定下的提交事实。
+     */
+    await refreshAfterSubmit(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
+    return result;
+  }
+
+  /**
+   * 契约 §1.3：未决提交身份的本机台账（按板面一条）。
+   *
+   * 写台账**先于**发出请求：进程被杀 / 页面重启之后仍然知道「上一次提交用的是哪个身份」，
+   * 于是同一次未决提交能沿用同一身份重试（服务端返回原事实，不重复创建）。
+   * 本机存储写不进去也不能阻止提交 —— 身份仍在内存里，只是重启后无法复用。
+   */
+  function writePendingIdentity(identity: SubmissionIdentity | null): void {
+    pendingSubmission.value = identity;
+    try {
+      const key = submissionIdentityStorageKey(boardId.value);
+      if (identity) globalThis.localStorage?.setItem(key, serializeSubmissionIdentity(identity));
+      else globalThis.localStorage?.removeItem(key);
+    } catch {
+      // 存储不可用：只影响「重启后复用同一身份」，不影响这次提交的事实表达
+    }
+  }
+
+  function readPendingIdentity(forBoardId: string): SubmissionIdentity | null {
+    try {
+      const remembered = parseStoredSubmissionIdentity(
+        globalThis.localStorage?.getItem(submissionIdentityStorageKey(forBoardId)),
+      );
+      return remembered && remembered.boardId === forBoardId ? remembered : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 重启 / 刷新后恢复未决提交：沿用同一个身份，并立刻按它做一次**精确查证**。
+   * 查不到就继续「结果未知」（保留台账，等用户查证或同身份重试），绝不改判失败。
+   */
+  async function restorePendingSubmission(): Promise<void> {
+    const remembered = readPendingIdentity(boardId.value);
+    pendingSubmission.value = remembered;
+    if (!remembered) return;
+    submitStatus.value = "unknown";
+    submitResultUnknown.value = true;
+    submitNote.value = null;
+    acceptanceLookupNote.value = null;
+    submitError.value =
+      "上一次提交没有拿到回执：本机保留了同一个请求身份，结果仍然未知。请先查证结果，不要直接重复提交。";
+    await confirmAcceptanceAfterUnclear();
   }
 
   /**
@@ -2718,7 +2844,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 失败**不改变**提交结果：`submitStatus` 保持成功、`lastSubmission` 与基准依据都不动，
    * 只记录 `submitRefreshError`，让界面说「提交成功，页面刷新失败」。
    */
-  async function refreshAfterSubmit(intentsBefore: Set<string>, result: SubmissionResult): Promise<boolean> {
+  async function refreshAfterSubmit(intentsBefore: Set<string>, batchKey: string): Promise<boolean> {
     submitRefreshState.value = "pending";
     submitRefreshError.value = null;
     try {
@@ -2726,7 +2852,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       await refreshVisibleRange();
       await loadIntents();
       // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
-      recordNewIntents(intentsBefore, "session:submission:" + (result.submission?.id ?? Date.now()));
+      recordNewIntents(intentsBefore, batchKey);
       submitRefreshState.value = "idle";
       return true;
     } catch (err) {
@@ -3224,17 +3350,70 @@ export const useInteractiveStore = defineStore("interactive", () => {
     });
   }
 
+  /**
+   * 理解状态必须**归属本次提交**（契约 §3 / 任务书 3）：
+   *
+   * - `understandingEpoch`：每开始一次新提交就 +1。上一代（上一次提交）的查询返回时
+   *   代次已经不同 → **不落地**，所以「上一次理解完成」绝不会覆盖本次的失败 / 未知；
+   * - `understandingBoundSubmissionId`：本次理解状态绑定的是哪一次提交。查询结果属于
+   *   别的提交时不许冒充本次（受理与理解都必须对得上身份）。
+   */
+  let understandingEpoch = 0;
+  let understandingBoundSubmissionId: string | null = null;
+
+  /** 本次理解状态归属的提交 id：本次受理回执 / 精确查证恢复的身份优先，其次最近一次回执。 */
+  function understandingSubmissionId(): string | undefined {
+    return understandingBoundSubmissionId ?? lastSubmission.value?.submission?.id ?? undefined;
+  }
+
+  /**
+   * 开始一次新的提交：换一代查询请求，并把上一次提交的理解状态从「本次」上摘下来
+   * （understandingStatus / understandingError / acceptedUnderstandingId 归位到本次请求）。
+   *
+   * 注意：只在**确认要发出这次提交**之后调用 —— 被保存 / 影响确认挡住的提交什么都没发生，
+   * 不能把上一次提交的理解状态清掉。
+   */
+  function beginUnderstandingForNewSubmission(): void {
+    understandingEpoch += 1;
+    understandingBoundSubmissionId = null;
+    stopUnderstandingPolling();
+    understanding.value = null;
+    understandingStatus.value = null;
+    understandingError.value = null;
+    understandingNote.value = null;
+    acceptedUnderstandingId.value = null;
+  }
+
   /** 把一次查询结果落成界面事实：最近一次 + 历史，不做任何推断。 */
   function adoptUnderstandings(
     payload: UnderstandingResponse | null | undefined,
     submissionId?: string,
   ): Understanding | null {
     const list = sortUnderstandings(payload?.understandings ?? []);
-    const recent =
-      payload?.understanding ??
-      list.find((item) => (submissionId ? item.submissionId === submissionId : true)) ??
-      list[0] ??
-      null;
+    if (submissionId) {
+      /**
+       * 归属校验：调用方给了 submissionId，就**只**采纳 submissionId 精确匹配的那条。
+       *
+       * 旧实现在匹配不到时会退回 `list[0]`（按 createdAt 最新的那条）——那正好让
+       * **上一次提交**的理解记录冒充本次理解（Lead 核对点 1）。现在匹配不到就是
+       * `understanding = null`（历史仍列出），本次状态保持「已受理、还没查到本次记录」，
+       * 绝不改成上一次的终态。
+       */
+      const direct =
+        payload?.understanding && payload.understanding.submissionId === submissionId
+          ? payload.understanding
+          : null;
+      const owned = list.find((item) => item.submissionId === submissionId) ?? null;
+      const recent = direct ?? owned;
+      understandings.value = list.length ? list : recent ? [recent] : [];
+      understanding.value = recent;
+      if (recent) {
+        understandingStatus.value = recent.status ?? null;
+        acceptedUnderstandingId.value = recent.id;
+      }
+      return recent;
+    }
+    const recent = payload?.understanding ?? list[0] ?? null;
     understandings.value = list.length ? list : recent ? [recent] : [];
     understanding.value = recent;
     understandingStatus.value = recent?.status ?? null;
@@ -3242,10 +3421,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return recent;
   }
 
-  /** 读取本板面的理解过程（可按提交过滤）；失败时如实记录原因。 */
-  async function loadUnderstanding(submissionId?: string): Promise<Understanding | null> {
+  /**
+   * 读取本板面的理解过程（可按提交过滤）；失败时如实记录原因。
+   *
+   * `epoch` 是发起这次查询时的请求代次：返回时代次已经前进（说明期间开始了新的提交），
+   * 这次结果就是**迟到**的旧查询 —— 不落地，绝不覆盖新请求的理解状态（任务书 3）。
+   */
+  async function loadUnderstanding(
+    submissionId?: string,
+    epoch: number = understandingEpoch,
+  ): Promise<Understanding | null> {
     if (!apiSupports("fetchUnderstanding")) return null;
     const payload = await api.fetchUnderstanding(boardId.value, submissionId);
+    if (epoch !== understandingEpoch) return null;
     const found = adoptUnderstandings(payload, submissionId);
     understandingError.value = null;
     return found;
@@ -3256,7 +3444,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 不新建请求身份、不盲目重发提交。
    */
   async function refreshUnderstanding(): Promise<Understanding | null> {
-    const submissionId = lastSubmission.value?.submission?.id;
+    const submissionId = understandingSubmissionId();
     try {
       return await loadUnderstanding(submissionId);
     } catch (err) {
@@ -3266,28 +3454,91 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
-   * 提交回执丢失时确认受理情况：只在服务端**真的已有**这次提交的理解请求时才认。
-   * 拿不到证据就返回 null，由调用方按真实失败处理。
+   * 契约 §1.3：受理情况不明时，**只认这一次提交身份在服务端的精确记录**。
+   *
+   * 唯一查证路径：有本次 `clientRequestId` → `fetchAcceptance`（精确身份）→ 命中才认受理。
+   * 这条路径**没有**任何时间推断：按 `createdAt` 接近 + 排除上一次 submissionId 的
+   * 「认领」逻辑已经删除（§1.1.4：时间接近 / 最近一条理解记录都不能单独作为受理证据）。
+   *
+   * - 命中（身份相同、内容依据一致）：恢复 submissionId / delivery / understandingId，
+   *   按**这一次**的理解请求开始查询；
+   * - 404 / 内容不一致 / 没有可用身份 / 查询失败：返回 null，由调用方继续「结果未知」——
+   *   保留原内容与勾选，不盲目重发，也不改判失败（§1.1.5）。
    */
-  async function confirmAcceptanceAfterUnclear(sentAt: number): Promise<Understanding | null> {
-    if (!apiSupports("fetchUnderstanding")) return null;
-    try {
-      const payload = await api.fetchUnderstanding(boardId.value);
-      const list = sortUnderstandings(payload?.understandings ?? []);
-      const previousSubmissionId = lastSubmission.value?.submission?.id ?? null;
-      const recent = list.find((item) => {
-        const at = Date.parse(String(item?.createdAt ?? "")) || 0;
-        if (at < sentAt - 10_000) return false;
-        // 上一次提交留下的理解记录不算这次受理的证据
-        if (previousSubmissionId && item.submissionId === previousSubmissionId) return false;
-        return true;
-      });
-      if (!recent) return null;
-      adoptUnderstandings({ understanding: recent, understandings: list });
-      return recent;
-    } catch {
+  async function confirmAcceptanceAfterUnclear(): Promise<AcceptanceLookup | null> {
+    const identity = pendingSubmission.value;
+    acceptanceLookupNote.value = null;
+    if (!canLookupAcceptance(identity)) {
+      // 没有可用的请求身份就没有精确证据：不许拿时间接近 / 最近一条记录去推断受理
       return null;
     }
+    if (!apiSupports("fetchAcceptance")) {
+      acceptanceLookupNote.value = acceptanceLookupText({
+        confirmed: false,
+        reason: "当前服务端没有可用的精确查证接口",
+      });
+      return null;
+    }
+    acceptanceLookupPending.value = true;
+    let payload: { acceptance: AcceptanceLookup | null; reason?: string };
+    try {
+      payload = await api.fetchAcceptance(boardId.value, identity!.clientRequestId);
+    } catch (err) {
+      acceptanceLookupPending.value = false;
+      // 查询失败不是失败结论：继续「结果未知」，保留原内容与勾选
+      acceptanceLookupNote.value = acceptanceLookupText({
+        confirmed: false,
+        reason: `查证没有完成（${(err as Error).message || "原因未知"}）`,
+      });
+      return null;
+    }
+    acceptanceLookupPending.value = false;
+    const acceptance = payload?.acceptance ?? null;
+    if (!acceptanceMatchesIdentity(identity, acceptance)) {
+      // 查不到，或者查到的记录与这次请求的内容不一致 —— 都不是这次受理的证据
+      acceptanceLookupNote.value = acceptanceLookupText({
+        confirmed: false,
+        reason: acceptance ? "服务端有这条请求身份的记录，但内容与这次请求不一致" : payload?.reason,
+      });
+      return null;
+    }
+    lastAcceptance.value = acceptance;
+    /**
+     * 记录确实存在，但服务端明确说这次**没有被可靠受理**（`delivered: false`）：
+     * 与回执路径同一口径 —— 如实算失败、不冒充成功、不推进基准；身份已经有结论，
+     * 收掉本机台账（下一次提交是一次新提交）。理由原样带到界面。
+     */
+    if (acceptance.delivery?.delivered === false) {
+      writePendingIdentity(null);
+      submitStatus.value = "failed";
+      submitResultUnknown.value = false;
+      submitError.value =
+        acceptance.delivery.detail ||
+        acceptance.delivery.reason ||
+        "服务端按这次请求身份给出的结论是：没有被可靠受理；改动与勾选都保留，可以重试。";
+      return null;
+    }
+    /**
+     * 精确命中：恢复这次提交的事实（submissionId / delivery / understandingId），
+     * 并把理解状态绑定到**这一次**提交，然后按它开始查询。
+     */
+    submitAcceptedByLookup.value = true;
+    submitStatus.value = "succeeded";
+    submitResultUnknown.value = false;
+    submitError.value = null;
+    acceptedUnderstandingId.value = acceptance.understandingId ?? acceptance.delivery?.understandingId ?? null;
+    understandingBoundSubmissionId = acceptance.submissionId;
+    understanding.value = null;
+    understandingStatus.value = acceptance.understandingStatus ?? acceptance.delivery?.status ?? "accepted";
+    understandingError.value = null;
+    understandingNote.value = null;
+    submitNote.value = acceptanceLookupText({ confirmed: true, replayed: acceptance.replayed });
+    // 这次未决身份已经有明确结论：收掉本机台账（重放由服务端的原记录负责）
+    writePendingIdentity(null);
+    // 恢复板面 / 可见范围 / 清单事实：这是只读路径，失败只记「刷新失败」，不影响已受理事实
+    await refreshAfterSubmit(intentIdSet(), "session:submission:" + acceptance.submissionId);
+    void startUnderstandingPolling();
+    return acceptance;
   }
 
   const UNDERSTANDING_POLL_MS = 1000; // 800~1500ms：够及时，也不在窄窗口里空转
@@ -3341,6 +3592,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   async function pollUnderstandingOnce(): Promise<void> {
     const token = understandingPollToken;
+    const epoch = understandingEpoch;
     if (token !== understandingPollToken) return;
     if (!pageVisible()) {
       understandingPolling.value = false;
@@ -3354,7 +3606,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     understandingPollAttempts += 1;
     try {
-      await loadUnderstanding(lastSubmission.value?.submission?.id);
+      // 本次提交的理解查询按**本次**受理回执的身份查（不是「最近一次 lastSubmission」）
+      await loadUnderstanding(understandingSubmissionId(), epoch);
     } catch (err) {
       understandingError.value = (err as Error).message;
     }
@@ -3744,6 +3997,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitRefreshState,
     submitRefreshError,
     retrySubmitRefresh,
+    // 契约 §1.3：稳定提交身份与按身份的精确查证
+    pendingSubmission,
+    submitAcceptedByLookup,
+    acceptanceLookupNote,
+    acceptanceLookupPending,
+    lastAcceptance,
+    confirmAcceptanceAfterUnclear,
     approve,
     reject,
     decideBatch,

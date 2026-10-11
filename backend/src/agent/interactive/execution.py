@@ -646,6 +646,23 @@ def _advance_step(
 # --- 启动（耗时工作不阻塞界面 / 服务请求） ---------------------------------
 
 
+def app_owner_for(app: Any) -> Any:
+    """路由层把「后台调度登记到谁的账上」解析成**唯一**口径：AppContext（ctx）。
+
+    为什么不能直接传 FastAPI 应用对象：`AppContext.background` 才是
+    `aclose()` 真正 shutdown 的那份注册表。把注册表挂在 FastAPI 应用上会另建一份，
+    于是真实执行 / 互动理解的后台任务**不在关闭账上**：aclose 等不到它们、
+    关闭报告里也不会有名字（契约 §2「与执行使用一致的应用归属」）。
+
+    拿不到 ctx（老对象 / 测试替身）时退回传入对象本身：调用方仍然能自己提供一个
+    持有 `background` 的宿主，行为不变。
+    """
+    if app is None:
+        return None
+    ctx = getattr(getattr(app, "state", None), "ctx", None)
+    return ctx if ctx is not None else app
+
+
 async def start_execution(
     conn: sqlite3.Connection,
     execution_id: str,
