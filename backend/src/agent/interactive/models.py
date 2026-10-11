@@ -270,3 +270,61 @@ def summarize_ids(ids: Iterable[str], *, limit: int = 6) -> str:
         return "（无）"
     head = "、".join(items[:limit])
     return head if len(items) <= limit else f"{head} 等 {len(items)} 项"
+
+
+# --- 真实模型理解与真实执行（第 9 轮，2026-10-11）------------------------
+# 契约：docs/interactive-mode-contract.md §14（本轮冻结接口）
+
+#: 一次提交的理解过程状态（受理与理解分开，取代「succeeded 同时代表本地成功与模型完成」）
+UNDERSTANDING_STATUSES = (
+    "accepted",           # 提交已可靠受理，理解请求已落库（模型还没开始）
+    "understanding",      # 正在读取材料 / 调用模型
+    "understood",         # 理解完成，产出了意图（等待审批）
+    "needs_clarification",# 理解完成，但需要用户补充说明
+    "no_action",          # 理解完成，当前无需开展任务
+    "failed",             # 理解失败（可重试；重试从保存的快照恢复）
+)
+UNDERSTANDING_ACTIVE_STATUSES = ("accepted", "understanding")
+UNDERSTANDING_SETTLED_STATUSES = ("understood", "needs_clarification", "no_action", "failed")
+
+#: 模型输出的三种判定（不允许「每次提交都强制生成任务」）
+UNDERSTANDING_KINDS = ("intent", "clarification", "no_action")
+
+#: 材料在本次理解中的来源（诚实口径：拿到地址 / 拿到文件名 都不等于读到正文）
+MATERIAL_SOURCES = (
+    "inline",            # 板面卡片自带正文（注释 / 代码 / 用户直接输入的文字）
+    "attachment_text",   # 真实读取了已保存附件的正文
+    "url_fetched",       # 实际抓取并读到网页正文
+    "url_address_only",  # 只有地址，没有读到正文
+    "image_unsupported", # 图片：当前模型链路没有视觉能力，如实标注
+    "unreadable",        # 附件当前不可读（格式未实现 / 读取失败），带原因
+    "unsupported",       # 其他明确不支持的材料
+)
+
+#: 互动执行允许的板面操作：**用户在互动模式中能做的子集**。
+#: 不允许删除、隐藏、勾选用户内容；不允许绕过审批直接写库。
+ALLOWED_INTENT_OPS = (
+    "add_reply_card",   # 生成 QIO 结果卡片
+    "add_text_card",    # 生成文字卡片（说明 / 清单）
+    "move_card",        # 只移动位置（语义不变）
+    "group_cards",      # 成组 / 加入组
+    "order_group",      # 有序组内排序
+    "add_link",         # 建立关系链接（含用户写明的含义）
+)
+
+#: 一次真实执行记录的状态（意图行的 status 是任务状态，这里是一次执行尝试的状态）
+EXECUTION_STATUSES = ("queued", "running", "paused", "done", "failed", "cancelled")
+EXECUTION_TERMINAL_STATUSES = ("done", "failed", "cancelled")
+
+#: 理解请求 / 执行记录的 id 前缀
+UNDERSTANDING_ID_PREFIX = "u"
+EXECUTION_ID_PREFIX = "x"
+
+
+def new_understanding_id() -> str:
+    return new_id(UNDERSTANDING_ID_PREFIX)
+
+
+def new_execution_id() -> str:
+    return new_id(EXECUTION_ID_PREFIX)
+

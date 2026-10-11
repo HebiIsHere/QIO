@@ -91,6 +91,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_submissions",
         "board_pending",
         "board_intents",
+        # 真实模型理解与真实执行（迁移 37）：理解请求 / 执行记录。
+        "board_understanding",
+        "board_executions",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -107,6 +110,14 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "turn_journal.reason_code",
         "turn_journal.stopped_by",
         "turn_journal.actions",
+        # 真实模型理解与真实执行（迁移 37）：意图的目标 / 预期 / 操作 / 依据 /
+        # 稳定身份 / 理解来源。缺了它们，批准后的执行拿不到要执行什么。
+        "board_intents.goal",
+        "board_intents.expected",
+        "board_intents.operations",
+        "board_intents.basis",
+        "board_intents.intent_key",
+        "board_intents.understanding_id",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -120,6 +131,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_board_snapshots_board",
         "idx_board_submissions_board",
         "idx_board_intents_board",
+        # 真实模型理解与真实执行（迁移 37）。
+        "idx_board_understanding_board",
+        "idx_board_understanding_request",
+        "idx_board_understanding_submission",
+        "idx_board_executions_intent",
+        "idx_board_executions_board",
     ),
 }
 

@@ -1252,9 +1252,94 @@ MIGRATIONS.append(
     )
 )
 
+
+
+# ── 互动模式：真实模型理解与真实执行（迁移 37，2026-10-11 第九轮）──────────
+# 只追加，不改历史迁移。语义见 docs/interactive-mode-contract.md §14。
+_INTERACTIVE_REAL_MODEL_DDL: list[str] = [
+    # 一次提交对应一条理解请求：受理身份、冻结快照、材料版本、模型输出与校验结果。
+    # 受理（accepted）与理解（understanding → understood / needs_clarification /
+    # no_action / failed）分开记录，重试从这里的 snapshot 恢复，不重读板面。
+    """
+    CREATE TABLE IF NOT EXISTS board_understanding (
+        id            TEXT PRIMARY KEY,
+        board_id      TEXT NOT NULL REFERENCES boards(id),
+        submission_id TEXT,
+        request_id    TEXT NOT NULL,
+        status        TEXT NOT NULL,
+        stage         TEXT NOT NULL DEFAULT '',
+        progress      TEXT NOT NULL DEFAULT '{}',
+        snapshot      TEXT NOT NULL DEFAULT '{}',
+        context       TEXT NOT NULL DEFAULT '{}',
+        materials     TEXT NOT NULL DEFAULT '[]',
+        output        TEXT NOT NULL DEFAULT '{}',
+        validation    TEXT NOT NULL DEFAULT '{}',
+        memory        TEXT NOT NULL DEFAULT '[]',
+        error         TEXT,
+        attempt       INTEGER NOT NULL DEFAULT 1,
+        adapter       TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        started_at    TEXT,
+        finished_at   TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_board_understanding_board"
+    " ON board_understanding(board_id, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_board_understanding_request"
+    " ON board_understanding(request_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_understanding_submission"
+    " ON board_understanding(submission_id)",
+    # 一次真实执行尝试：批准时建立，实际执行板面操作并逐步落 checkpoint。
+    # 迟到结果靠 (id, attempt, owner_instance_id) 核对后丢弃。
+    """
+    CREATE TABLE IF NOT EXISTS board_executions (
+        id                TEXT PRIMARY KEY,
+        intent_id         TEXT NOT NULL,
+        board_id          TEXT NOT NULL REFERENCES boards(id),
+        attempt           INTEGER NOT NULL DEFAULT 1,
+        status            TEXT NOT NULL,
+        plan              TEXT NOT NULL DEFAULT '{}',
+        steps             TEXT NOT NULL DEFAULT '[]',
+        checkpoints       TEXT NOT NULL DEFAULT '[]',
+        result            TEXT NOT NULL DEFAULT '{}',
+        error             TEXT,
+        owner_instance_id TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL,
+        started_at        TEXT,
+        finished_at       TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_board_executions_intent"
+    " ON board_executions(intent_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_board_executions_board"
+    " ON board_executions(board_id, created_at)",
+    # 意图补上「目标 / 预期结果 / 具体板面操作 / 依据版本 / 稳定身份 / 理解来源」。
+    # 列有默认值，历史行不受影响。
+    "ALTER TABLE board_intents ADD COLUMN goal TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE board_intents ADD COLUMN expected TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE board_intents ADD COLUMN operations TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE board_intents ADD COLUMN basis TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE board_intents ADD COLUMN intent_key TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE board_intents ADD COLUMN understanding_id TEXT NOT NULL DEFAULT ''",
+]
+
+MIGRATIONS.append((37, list(_INTERACTIVE_REAL_MODEL_DDL)))
+
+# 补偿入口（新，38）：迁移 36 的全部语句 + 本轮新增对象。
+# 36 已并入 main、原样保留；这里只把「缺对象时重放哪一条」指向覆盖更全的新迁移。
+MIGRATIONS.append(
+    (
+        38,
+        [stmt for target, stmts in MIGRATIONS if target == 36 for stmt in stmts]
+        + list(_INTERACTIVE_REAL_MODEL_DDL),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 
 # `storage/migrate.py` 的补偿入口：`REQUIRED_OBJECTS` 缺失时**重放这一条**。
 # 用编号固定引用（不是「最后一条」）：以后追加迁移不会把它挤掉。
 # 集成后编号为 36：= 迁移 34 的全部语句 + 本次集成的互动对象（35）。
-COMPENSATION_VERSION = 36
+COMPENSATION_VERSION = 38

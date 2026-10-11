@@ -9,11 +9,14 @@ import type {
   BoardState,
   BoardStateResponse,
   DecideResult,
+  Execution,
+  ExecutionControlResult,
   Intent,
   IntentListResponse,
   IntentPreview,
   SubmissionRecord,
   SubmissionResult,
+  UnderstandingResponse,
   VisibleRange,
 } from "../interactive/types";
 
@@ -279,3 +282,62 @@ export function batchDecide(
     body: JSON.stringify({ approve, reject }),
   });
 }
+
+
+// --- 真实模型理解与真实执行（第 9 轮，2026-10-11）-------------------------
+// 契约：docs/interactive-mode-contract.md §14
+
+/**
+ * 创建意图（真实入口）：服务端只接受「已可靠受理的理解请求」产出的意图。
+ *
+ * 演示入口仍然走 createDemoIntents；正式路径不显示演示内容。
+ */
+export function createIntents(
+  boardId: string,
+  submissionId?: string,
+): Promise<{ created: Intent[]; demo: boolean; reason?: string; detail?: string }> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intents`, {
+    method: "POST",
+    body: JSON.stringify(submissionId ? { submissionId } : {}),
+  });
+}
+
+/** 读取本板面的理解过程（受理 / 理解中 / 已完成 / 需要补充 / 无需行动 / 失败）。 */
+export function fetchUnderstanding(
+  boardId: string,
+  submissionId?: string,
+): Promise<UnderstandingResponse> {
+  const query = submissionId ? `?submissionId=${encodeURIComponent(submissionId)}` : "";
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/understanding${query}`);
+}
+
+/**
+ * 重试失败的理解：服务端从**已保存的提交快照**恢复，不重读当前板面、
+ * 不重新创建同一批任务。受理情况不明时先 fetchUnderstanding 确认，不盲目重发。
+ */
+export function retryUnderstanding(
+  understandingId: string,
+): Promise<{ ok: boolean; understanding?: unknown; reason?: string; detail?: string }> {
+  return request(`${BASE}/understanding/${encodeURIComponent(understandingId)}/retry`, {
+    method: "POST",
+  });
+}
+
+export function fetchExecutions(boardId: string): Promise<{ executions: Execution[] }> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/executions`);
+}
+
+/** 暂停正在执行的任务：作用于真实执行记录；迟到结果不再写回。 */
+export function pauseIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/pause`, { method: "POST" });
+}
+
+/** 继续：由用户决定，不自动重试；继续时校验材料与已完成步骤。 */
+export function resumeIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/resume`, { method: "POST" });
+}
+
+export function cancelIntent(intentId: string): Promise<ExecutionControlResult> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/cancel`, { method: "POST" });
+}
+

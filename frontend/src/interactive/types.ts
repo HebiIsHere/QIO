@@ -123,11 +123,15 @@ export interface SubmissionRecord {
 }
 
 export interface DeliveryInfo {
-  /** 是否真的把表达交给 QIO。第一阶段没有接入模型调用，这里必须是 false */
+  /** 是否真的把表达交给 QIO：受理成功 = 理解请求已可靠落库（模型随后在后台开始） */
   delivered: boolean;
   reason: string;
   detail: string;
   marking?: { updated: string[]; error?: string };
+  /** 本次受理对应的理解请求（delivered=true 时给出；受理失败时为 null） */
+  understandingId?: string | null;
+  /** 受理状态：accepted = 已可靠受理、模型还没开始 */
+  status?: UnderstandingStatus | null;
 }
 
 export interface BaselineInfo {
@@ -231,6 +235,20 @@ export interface Intent {
   reason: string;
   /** true = 演示意图（界面上必须写明） */
   demo: boolean;
+  /** 真实理解产出的目标（演示意图也给出，便于一致显示） */
+  goal?: string;
+  /** 预期结果 */
+  expected?: string;
+  /** 具体板面操作（只可能是用户在互动模式里能做的子集） */
+  operations?: IntentOperation[];
+  /** 依据的材料与版本 */
+  basis?: IntentBasis[];
+  /** 稳定身份：同一件工作更新时沿用，不复制新任务 */
+  intentKey?: string;
+  /** 来自哪一次理解请求（结果卡、引用与任务记录靠它互相定位） */
+  understandingId?: string | null;
+  /** 最近一次真实执行记录（未执行过时为 null） */
+  execution?: Execution | null;
   createdAt: string;
   updatedAt: string;
   /** 等待依赖时列出还没完成的前项 */
@@ -251,6 +269,8 @@ export interface IntentListResponse {
   conflicts: string[][];
   batchAvailable: boolean;
   recovery: { paused: string[] };
+  /** 本板面最近的真实执行记录（服务端给出；前端不自己拼） */
+  executions?: Execution[];
 }
 
 export interface DecideResult {
@@ -276,3 +296,160 @@ export function emptyBoardState(boardId: string): BoardState {
 export function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
+
+
+// --- 真实模型理解与真实执行（第 9 轮，2026-10-11）-------------------------
+// 契约：docs/interactive-mode-contract.md §14（本轮冻结接口）
+
+/** 一次提交的理解过程状态：受理与理解分开，不再用 succeeded 兼代表两者 */
+export type UnderstandingStatus =
+  | "accepted"
+  | "understanding"
+  | "understood"
+  | "needs_clarification"
+  | "no_action"
+  | "failed";
+
+export type UnderstandingKind = "intent" | "clarification" | "no_action";
+
+/** 材料在本次理解中的真实来源：拿到地址 / 文件名都不等于读到正文 */
+export type MaterialSource =
+  | "inline"
+  | "attachment_text"
+  | "url_fetched"
+  | "url_address_only"
+  | "image_unsupported"
+  | "unreadable"
+  | "unsupported";
+
+export interface UnderstandingMaterial {
+  cardId: string;
+  kind: CardKind;
+  label: string;
+  source: MaterialSource;
+  /** 材料版本（内容指纹 / 附件版本）；审批与执行按它对账 */
+  version: string;
+  /** 是否真的读到了正文 */
+  read: boolean;
+  truncated: boolean;
+  bytes: number;
+  characters: number;
+  /** read=false 时给出可读原因；read=true 时为空 */
+  reason: string;
+  attachmentId?: string | null;
+}
+
+export interface UnderstandingStep {
+  key: "accepted" | "materials" | "model" | "validation" | "persist" | string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  detail?: string;
+}
+
+export interface UnderstandingClarification {
+  question: string;
+  missing: string[];
+}
+
+export interface Understanding {
+  id: string;
+  boardId: string;
+  submissionId: string | null;
+  requestId: string;
+  status: UnderstandingStatus;
+  /** 当前阶段的说明（同阶段更新它，阶段切换才收起上一阶段） */
+  stage: string;
+  kind: UnderstandingKind | null;
+  steps: UnderstandingStep[];
+  materials: UnderstandingMaterial[];
+  summary: string;
+  clarification: UnderstandingClarification | null;
+  validation: { ok: boolean; reasons: string[] };
+  error: string | null;
+  attempt: number;
+  adapter: string;
+  intentIds: string[];
+  memory: { text: string; kind: string }[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface UnderstandingResponse {
+  understanding: Understanding | null;
+  understandings: Understanding[];
+}
+
+/** 允许的板面操作：用户在互动模式中能做的子集 */
+export type IntentOperationKind =
+  | "add_reply_card"
+  | "add_text_card"
+  | "move_card"
+  | "group_cards"
+  | "order_group"
+  | "add_link";
+
+export interface IntentOperation {
+  op: IntentOperationKind;
+  content?: string;
+  title?: string;
+  cardId?: string;
+  cardIds?: string[];
+  groupId?: string;
+  memberOrder?: string[];
+  ordered?: boolean;
+  name?: string;
+  src?: string;
+  dst?: string;
+  direction?: boolean;
+  meaning?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+}
+
+export interface IntentBasis {
+  cardId: string;
+  role: "material" | "requirement" | "context";
+  version: string;
+  label?: string;
+}
+
+export type ExecutionStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
+
+export interface ExecutionStep {
+  index: number;
+  op: IntentOperationKind | string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  cardId?: string | null;
+  groupId?: string | null;
+  linkId?: string | null;
+  detail?: string;
+}
+
+export interface Execution {
+  id: string;
+  intentId: string;
+  boardId: string;
+  attempt: number;
+  status: ExecutionStatus;
+  steps: ExecutionStep[];
+  result: { cardIds: string[]; groupIds: string[]; linkIds: string[] };
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  ownerInstanceId?: string | null;
+}
+
+export interface ExecutionControlResult {
+  ok: boolean;
+  intent?: Intent;
+  execution?: Execution;
+  reason?: string;
+  detail?: string;
+}
+

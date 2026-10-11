@@ -232,8 +232,10 @@ def conn(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_database_reaches_36_with_interactive_objects(conn):
-    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION == 36
+def test_fresh_database_reaches_latest_with_interactive_objects(conn):
+    # 版本号随迁移追加而前进（本轮追加 37/38）；这里不再钉死一个数字，
+    # 只要求「跑到最新」且互动对象齐全。
+    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION >= 36
     _assert_interactive_objects_present(conn)
     # 建出来的互动表能真的承载写入
     _seed_interactive(conn)
@@ -252,7 +254,7 @@ def test_main_database_upgrades_and_keeps_chat_attachment_memory(conn):
     _seed_chat_and_memory(conn)
     _seed_attachments(conn)
 
-    assert apply_migrations(conn) == 36
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     _assert_interactive_objects_present(conn)
     _assert_chat_and_memory_intact(conn)
     assert _count(conn, "attachments") == 1
@@ -263,7 +265,7 @@ def test_main_database_upgrades_and_keeps_chat_attachment_memory(conn):
     # 升级后再写互动数据：幂等重跑不动它
     _seed_interactive(conn)
     rows = _version_rows(conn)
-    assert apply_migrations(conn) == 36
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     assert _version_rows(conn) == rows
     _assert_interactive_intact(conn)
     _assert_chat_and_memory_intact(conn)
@@ -282,7 +284,7 @@ def test_source_line_database_keeps_interactive_rows(conn):
     assert current_version(conn) == SOURCE_VERSION
     assert "boards" in _tables(conn)
 
-    assert apply_migrations(conn) == 36
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     _assert_interactive_objects_present(conn)
     # 互动线自己的数据一行不丢；聊天 / 记忆同样不动
     _assert_interactive_intact(conn)
@@ -291,7 +293,7 @@ def test_source_line_database_keeps_interactive_rows(conn):
     assert "attachments" in _tables(conn)
 
     rows = _version_rows(conn)
-    assert apply_migrations(conn) == 36
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     assert _version_rows(conn) == rows, "重复启动不得重复写版本行"
     _assert_interactive_intact(conn)
 
@@ -301,8 +303,8 @@ def test_source_line_database_keeps_interactive_rows(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_version_36_recorded_but_interactive_objects_lost_is_compensated(conn):
-    assert apply_migrations(conn) == 36
+def test_version_recorded_but_interactive_objects_lost_is_compensated(conn):
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     _seed_interactive(conn)
     conn.execute("DROP TABLE board_intents")
     conn.execute("DROP INDEX idx_board_snapshots_board")
@@ -311,7 +313,7 @@ def test_version_36_recorded_but_interactive_objects_lost_is_compensated(conn):
     assert "idx_board_snapshots_board" in missing["indexes"], missing
 
     rows = _version_rows(conn)
-    assert apply_migrations(conn) == COMPENSATION_VERSION == 36
+    assert apply_migrations(conn) == COMPENSATION_VERSION
     _assert_interactive_objects_present(conn)
     assert _version_rows(conn) == rows, "补偿只补对象，不改版本行"
     # 其它互动数据不受影响（只补被删掉的那张表与索引）
