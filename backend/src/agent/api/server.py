@@ -1726,7 +1726,13 @@ def create_app(
                     task.cancel()
 
     def _cancelled_receipt(*, turn, message: str, topic_id, prepare_id) -> dict:
-        """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。"""
+        """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。
+
+        F04：除了 accepted=False / cancelled=True，还要给出**为什么**没被受理
+        （`abandon()` 记下的 reason），以及结构化的受理事实 —— 前端据此区分
+        「从未放行执行」与「曾受理后又取消」，而不是只看 status=cancelled。
+        """
+        facts = ctx.turns.acceptance_facts(turn)
         return {
             "ok": True,
             "accepted": False,
@@ -1740,6 +1746,8 @@ def create_app(
             "bound_attachment_ids": [],
             "rejected": [],
             "attachments": [],
+            "reason": facts.get("reason"),
+            "receipt": facts,
         }
 
     # -- turns -------------------------------------------------------------
@@ -1774,14 +1782,25 @@ def create_app(
         if request_id:
             existing = ctx.turns.lookup_request(request_id)
             if existing is not None:
+                # F04：幂等命中必须**从原请求的真实记录**回答「这一轮有没有被受理执行」。
+                # 以前这里无条件 accepted=True —— 一次准备期就被放弃、从未执行的发送，
+                # 在同身份重试时会得到「已受理」，用户以为模型看过这条消息。
+                # 同一次发送的所有重试复用同一身份，所以这里也返回**原请求**的话题与原文
+                # （不随后来的输入框/话题重新计算），并带上原请求真实绑定的附件。
+                facts = ctx.turns.acceptance_facts(existing, deduped=True)
                 return {
                     "ok": True,
-                    "accepted": True,
+                    "accepted": facts["accepted"],
+                    "cancelled": facts["cancelled"],
                     "turn_id": existing.turn_id,
                     "status": existing.status,
                     "deduplicated": True,
-                    "message": message,
-                    "topic_id": topic_id,
+                    "message": existing.message,
+                    "topic_id": existing.current_topic
+                    if existing.current_topic is not None
+                    else existing.initial_topic,
+                    "bound_attachment_ids": list(facts["attachment_ids"]),
+                    "receipt": facts,
                 }
         pending = ctx.bindings.peek_intent()
         # 附件（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
@@ -1869,14 +1888,19 @@ def create_app(
                 receipt=_receipt_of(outcome),
             )
         # 附件真的就绪了才放行（按预留顺序入队；TURN_START 由 worker 真正开跑时发）
+        # F04：把**真实绑定**的附件记在轮次上 —— 同身份重试（去重命中）时必须拿得到
+        # 原请求的绑定结果，不能重新绑定、也不能凭空推断。
+        turn.bound_attachment_ids = list(outcome.bound)
         ctx.turns.activate(turn)
         return {
             "ok": True,
             "accepted": True,
+            "cancelled": False,
             "turn_id": turn.turn_id,
             "status": turn.status,
             "message": message,
             "topic_id": topic_id,
+            "receipt": ctx.turns.acceptance_facts(turn),
             # 实际绑定回执（§1.2）：前端以它为准更新界面，未绑定不得显示为「已带上」
             **outcome.as_receipt(),
             "attachments": [attachments.payload(a, check=False) for a in outcome],
@@ -1893,11 +1917,21 @@ def create_app(
         ctx_found = ctx.turns.lookup_request(client_request_id)
         if ctx_found is None:
             return JSONResponse(status_code=404, content={"ok": False, "unknown": True})
+        # F04：查证端点给出与 start_turn 去重分支**同一份**受理事实（前后端口径一致）。
+        facts = ctx.turns.acceptance_facts(ctx_found, deduped=True)
         return {
             "ok": True,
+            "accepted": facts["accepted"],
+            "cancelled": facts["cancelled"],
             "turn_id": ctx_found.turn_id,
             "status": ctx_found.status,
             "request_id": ctx_found.request_id,
+            "message": ctx_found.message,
+            "topic_id": ctx_found.current_topic
+            if ctx_found.current_topic is not None
+            else ctx_found.initial_topic,
+            "bound_attachment_ids": list(facts["attachment_ids"]),
+            "receipt": facts,
         }
 
     @app.post("/api/turns/cancel")
@@ -2169,6 +2203,8 @@ def create_app(
                 "bound_attachment_ids": [],
                 "rejected": [],
                 "attachments": [],
+                "reason": "cancelled_during_prepare",
+                "receipt": ctx.turns.acceptance_facts(turn),
             }
         if outcome.rejected:
             # 预检之后的竞态：丢弃预留（从未入队）+ 结构化失败 —— claim 没被消费，用户还能再试。
@@ -3021,8 +3057,21 @@ def create_app(
 
     @app.post("/api/maintenance/run")
     async def run_maintenance() -> dict:
-        task = asyncio.create_task(ctx.maintenance.run_once())
-        return {"ok": True, "started": True, "task": task.get_name()}
+        """手动维护入口（审计 F06）。
+
+        以前这里是 `asyncio.create_task(ctx.maintenance.run_once())` 然后把句柄丢掉 ——
+        一个**无人管理的后台任务**：关闭时既不取消也不等待，于是「手动维护还在跑」
+        也会被报告成干净退出，而它依赖的数据库/适配器可能已经被释放。
+
+        现在统一交给 MaintenanceScheduler 登记（run_manual），由它负责：
+        * 关闭中拒绝新维护（409 + reason=shutting_down），不再起新的执行单元；
+        * 并发请求合并到既有运行（reason=already_running），不重复执行同一份工作；
+        * 关闭时按既有有界等待/取消机制收尾，并如实回报是否确认终止。
+        """
+        result = await ctx.maintenance.run_manual()
+        if not result.get("started") and result.get("reason") == "shutting_down":
+            return JSONResponse(status_code=409, content=result)
+        return result
 
     @app.get("/api/settings/maintenance")
     async def get_maintenance_settings() -> dict:
