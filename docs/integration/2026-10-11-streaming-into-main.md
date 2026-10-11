@@ -321,16 +321,16 @@ run `38078800507`（push，SHA `6078b613b9171cd8e2409ac8b97e1cfa582fc319`）
 
 **本轮分支 CI（最终，全绿）**
 
-分支最终 SHA `aa0dde7f290ce2475becb324e6a07f9a1e1242b5`：
+分支最终 SHA `2a27e481443e6c4c7d934a4f5d3a96de11dc9d4b`：
 
 | run | SHA | 结论 |
 | --- | --- | --- |
-| [`38119254588`](https://github.com/HebiIsHere/QIO/actions/runs/38119254588)（push） | `aa0dde7f` | **success，9/9 任务全绿**（21 分钟） |
-| [`38119257286`](https://github.com/HebiIsHere/QIO/actions/runs/38119257286)（pull_request） | `aa0dde7f` | **success，9/9 任务全绿**（19 分钟） |
+| [`38121670380`](https://github.com/HebiIsHere/QIO/actions/runs/38121670380)（push） | `2a27e481443e` | **success，9/9 任务全绿** |
+| [`38121674258`](https://github.com/HebiIsHere/QIO/actions/runs/38121674258)（pull_request） | `2a27e481443e` | **success，9/9 任务全绿** |
 
 前一个可验证点 run [`38117123246`](https://github.com/HebiIsHere/QIO/actions/runs/38117123246)（push，SHA
-`451414aca4018070e198e1fdcd1e314f269ecff1`）也是 9/9 全绿；从它到最终 SHA 只多了
-`scripts/sr-verify/probes.py` 响应性取证的确定性修正与文档改动。逐任务（按最终 SHA）：
+`451414aca4018070e198e1fdcd1e314f269ecff1`）也是 9/9 全绿；从它到最终 SHA 多的是三处取证用例的
+确定性修正（探针响应性、附件 I/O 鉴别力）与文档改动，没有产物行为变化。逐任务（按最终 SHA）：
 
 | 任务 | 结果 |
 | --- | --- |

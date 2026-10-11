@@ -3355,7 +3355,8 @@ HTTP 回执晚到把结束的轮拉回 running；超时撤掉已开始的任务 
 评测基线对比：结果与本轮分支 CI 的 run ID 逐条记在
 `docs/integration/2026-10-11-streaming-into-main.md`。
 
-本轮分支 CI：**run `38117123246`（SHA `451414a`）9/9 全绿** —— backend (py3.11) 8 分钟 /
+本轮分支 CI：**分支最终 SHA `2a27e48` 的 run `38121670380`（push）与 `38121674258`（PR）9/9 全绿**
+——backend (py3.11) 8 分钟 /
 (py3.12) 9 分钟 / (windows-latest) 17 分钟，外加 docs consistency / frontend / rust（两个平台）/
 frozen worker / install e2e（12 分钟）。修复前的 run `38078800507` 曾红在「慢推理期间事件循环
 停顿」的 100 ms 阈值上（实测 104 ms，本机复跑该文件 13 passed / 4 skipped），那是负载敏感的
