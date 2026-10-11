@@ -1337,9 +1337,40 @@ MIGRATIONS.append(
     )
 )
 
+# ── 稳定提交请求身份（迁移 39，2026-10-11 整合轮）────────────────────────────
+# 契约：docs/integration-contract-20261011.md §1.2。只追加，不改历史迁移。
+#
+# 为什么需要：前端在发出提交**之前**生成 clientRequestId，随请求送到服务端。
+# 服务端按 (board_id, client_request_id) 认这一次提交请求：
+#   * 同身份重试 → 直接返回原记录事实（不落新行、不新建理解请求、不调模型）；
+#   * 同身份但内容不同 → 按冲突拒绝（HTTP 409，不改基准、不调模型）；
+#   * 空串 = 旧客户端，不参与幂等（历史行与旧请求默认 ''）。
+#
+# 唯一索引必须是**部分索引**（`client_request_id <> ''`）：SQLite 里 NULL 互不相等，
+# 但空串彼此相等 —— 不加谓词的话同一块板面的第二行「旧客户端提交」就会被唯一约束
+# 挡住，这是对既有行为的回退。
+_SUBMISSION_IDENTITY_DDL: list[str] = [
+    "ALTER TABLE board_submissions ADD COLUMN client_request_id TEXT NOT NULL DEFAULT ''",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_board_submissions_client_request"
+    " ON board_submissions(board_id, client_request_id) WHERE client_request_id <> ''",
+]
+
+MIGRATIONS.append((39, list(_SUBMISSION_IDENTITY_DDL)))
+
+# 补偿入口（新，40）：迁移 38 的全部语句 + 39 的新对象。
+# 38 已交付、原样保留；这里只把「缺对象时重放哪一条」指向覆盖更全的新迁移，
+# 与 36 / 38 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        40,
+        [stmt for target, stmts in MIGRATIONS if target == 38 for stmt in stmts]
+        + list(_SUBMISSION_IDENTITY_DDL),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 
 # `storage/migrate.py` 的补偿入口：`REQUIRED_OBJECTS` 缺失时**重放这一条**。
 # 用编号固定引用（不是「最后一条」）：以后追加迁移不会把它挤掉。
-# 集成后编号为 36：= 迁移 34 的全部语句 + 本次集成的互动对象（35）。
-COMPENSATION_VERSION = 38
+# 整合轮（2026-10-11）编号为 40：= 迁移 38 的全部语句 + 本轮新增的提交身份对象（39）。
+COMPENSATION_VERSION = 40
