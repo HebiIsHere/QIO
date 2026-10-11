@@ -1,87 +1,536 @@
-name: Targeted verify (interactive into main)
+name: Targeted verify (dispatch only)
 
-# 本次整合的**唯一**验证入口（workflow_dispatch）：只跑与本次改动直接相关的检查，
-# 不跑全量。为什么单独一个工作流而不是改 ci.yml：ci.yml 是其它分支的正常门禁，
-# 保持原样；本文件只按需手动触发（推送/PR 事件都不会启动它）。
+# 本轮整合的**唯一**按需验证入口。它不参与 push / pull_request 触发：只有手动
+# workflow_dispatch 才会跑，所以永远不会和 ci.yml 的门禁重复。
 #
-# 覆盖面（与本地跑过的完全一致）：
-#   * 文档一致性；
-#   * 迁移：必需对象/补偿（含互动对象）+ 互动库/main 库/空库三种起点与幂等；
-#   * 互动 store/API 的后端用例；
-#   * 前端类型检查 + 受影响 store/组件用例（会话发送、失败恢复、草稿、附件准备）。
+# 为什么需要它：
+#   * 旧 CI 失败后点 "Re-run failed jobs" 重跑的是**旧提交**（run 绑定在原来的 SHA 上），
+#     修完的提交再点重跑，跑的仍是老代码 —— 这里的每个 job 都显式 checkout 输入的 ref/sha，
+#     并在 checkout 之后断言「实际工作区提交 == 输入 SHA」，不一致就 fail（不是警告）。
+#   * 一次失败不该重跑整套。pytest 用文件 / node id / -k 精确筛选，vitest 用文件 / -t 精确筛选。
+#   * 原 CI 因失败而**没执行**的必要构建与检查（typecheck / build / cargo check / cargo test /
+#     sidecar 冻结冒烟）在这里可以单独补齐。skipped 一律在 summary 里如实打印，不许当 passed。
+#
+# 用法（额度红线：一次只派发需要的单项；all 与 ci.yml 等价，只在必要时用）：
+#
+#   gh workflow run targeted-verify.yml \
+#     -f ref=<branch 或 tag> \
+#     -f sha=<完整 40 位提交 SHA> \
+#     -f targets=<docs|backend-py311|backend-py312|windows|frontend|rust|rust-windows|frozen-worker|all> \
+#     [-f pytest_node_ids="tests/test_x.py::test_y tests/test_z.py"] \
+#     [-f pytest_k="关键片段"] \
+#     [-f vitest_files="src/a.spec.ts"] \
+#     [-f vitest_name="用例名片段"]
+#
+# 入口自己也要有证据：verify_sha_self_test=true（默认）会跑 verify_sha.py 的单测，
+# 并用 --selftest 证明 workflow 契约断言真的能红。
+
+permissions:
+  contents: read
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "要验证的 ref（分支或 tag）。与 sha 必须指向同一个提交。"
+        required: false
+        default: "main"
+        type: string
+      sha:
+        description: "要验证的完整 40 位提交 SHA（缩写会被拒绝：缩写证明不了跑的是哪个提交）。"
+        required: true
+        type: string
+      targets:
+        description: "要跑的 CI 单项（all = 与 ci.yml 等价，谨慎使用）。"
+        required: false
+        default: docs
+        type: choice
+        options:
+          - docs
+          - backend-py311
+          - backend-py312
+          - windows
+          - frontend
+          - rust
+          - rust-windows
+          - frozen-worker
+          - all
+      pytest_node_ids:
+        description: "空格分隔的 pytest 文件或 node id。留空=不跑后端测试（本入口拒绝无筛选整套重跑）。"
+        required: false
+        default: ""
+        type: string
+      pytest_k:
+        description: "pytest -k 表达式，用来只重跑失败用例。留空=不加 -k。"
+        required: false
+        default: ""
+        type: string
+      vitest_files:
+        description: "空格分隔的 vitest spec 文件路径（相对 frontend/）。留空=不跑前端用例。"
+        required: false
+        default: ""
+        type: string
+      vitest_name:
+        description: "vitest -t 用例名片段，用来只重跑失败用例。留空=不加 -t。"
+        required: false
+        default: ""
+        type: string
+      verify_sha_self_test:
+        description: "同时跑 verify_sha.py 单测与 workflow 契约断言（--selftest）。"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+# 同一个 ref 的重复派发互斥：手动连点两次不会同时跑两套。用 ref 作键（而不是 SHA），
+# 因为手跑的目的就是「在新提交上重跑同一批检查」。
+concurrency:
+  group: targeted-verify-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   PYTHONHASHSEED: "0"
+  PYTEST_BASE_ARGS: "-q --durations=15"
+  VERIFY_SHA_SELF_TEST: ${{ inputs.verify_sha_self_test }}
 
 jobs:
+  # 先把「要跑哪个提交」变成可引用的输出，并在任何检查开始之前核验一次。
+  verify-sha:
+    name: resolve + assert SHA
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      event_sha: ${{ steps.resolve.outputs.event_sha }}
+    steps:
+      - name: Resolve requested ref/SHA
+        id: resolve
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          # SHAs must be complete: a short prefix cannot prove which commit ran.
+          if ! printf '%s' "${REQUESTED_SHA}" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error title=targeted verify input::sha 必须是完整的 40 位十六进制提交 SHA（收到 '${REQUESTED_SHA}'）"
+            exit 1
+          fi
+          echo "sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REQUESTED_REF}" >> "$GITHUB_OUTPUT"
+          echo "event_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "requested ref : ${REQUESTED_REF}"
+          echo "requested sha : ${REQUESTED_SHA}"
+          echo "event sha     : ${GITHUB_SHA}"
+          echo "dispatch ref  : ${GITHUB_REF}"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert checked-out commit equals requested SHA
+        env:
+          REQUESTED_SHA: ${{ steps.resolve.outputs.sha }}
+          EXPECTED_REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # ref 是 40 位十六进制时它与 sha 同义，不用再解析；否则把 ref 解析成提交一起核对。
+          args=(--requested "${REQUESTED_SHA}" --label preflight)
+          if printf '%s' "${EXPECTED_REF}" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "ref 本身就是完整 SHA，跳过 ref 解析"
+          else
+            args+=(--expected-ref "${EXPECTED_REF}")
+          fi
+          python scripts/targeted-verify/verify_sha.py "${args[@]}" --json-out verify-sha-preflight.json
+
+      - name: Print SHA evidence
+        # SHA 证据留在日志里（公开可读），同时作为 artifact 上传，台账直接抄这两处。
+        run: cat verify-sha-preflight.json
+
+      - name: Upload SHA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-sha-preflight
+          path: verify-sha-preflight.json
+          if-no-files-found: error
+          retention-days: 14
+
   docs:
-    name: docs consistency
+    name: docs / workflow contract
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'docs' }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: docs
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: |
+      - name: Check docs against code
+        run: |
           python scripts/check_docs.py
+          python scripts/check_docs.py --selftest
+      - name: Release gate selftest
+        run: python scripts/release_gate.py --selftest
+      - name: Workflow trigger / SHA / filter contract
+        run: python scripts/targeted-verify/verify_workflow_contract.py
+      - name: verify_sha unit tests
+        if: ${{ inputs.verify_sha_self_test == 'true' }}
+        run: python -m pytest -q scripts/targeted-verify/test_verify_sha.py
+      - name: Prove the workflow assertions can go red
+        if: ${{ inputs.verify_sha_self_test == 'true' }}
+        run: python scripts/targeted-verify/verify_workflow_contract.py --selftest
 
-  backend-targeted:
-    name: backend (targeted)
+  backend:
+    name: backend (py${{ matrix.python-version }})
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'backend-py311' || inputs.targets == 'backend-py312' }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(inputs.targets == 'all' && '["3.11","3.12"]' || (inputs.targets == 'backend-py311' && '["3.11"]' || '["3.12"]')) }}
     defaults:
       run:
         working-directory: backend
+    env:
+      PYTEST_NODE_IDS: ${{ inputs.pytest_node_ids }}
+      PYTEST_K: ${{ inputs.pytest_k }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: backend-py${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Sync dependencies from lock
+        run: uv sync --frozen --extra dev
+      - name: Real worker smoke (source)
+        run: |
+          uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+      - name: Fake worker protocol tests (Linux)
+        run: |
+          uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
+      - name: Targeted tests
+        env:
+          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
+        run: |
+          set -euo pipefail
+          args=(${PYTEST_BASE_ARGS})
+          if [ -n "${PYTEST_NODE_IDS}" ]; then
+            # shellcheck disable=SC2206
+            args+=(${PYTEST_NODE_IDS})
+          fi
+          if [ -n "${PYTEST_K}" ]; then
+            args+=(-k "${PYTEST_K}")
+          fi
+          if [ -z "${PYTEST_NODE_IDS}" ] && [ -z "${PYTEST_K}" ]; then
+            echo "::error title=targeted verify backend::没有给 pytest_node_ids 或 pytest_k，拒绝跑整套后端测试（额度红线：只跑失败项）。"
+            exit 1
+          fi
+          echo "pytest ${args[*]}"
+          uv run --frozen pytest "${args[@]}"
+      - name: Summarize failures
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          paths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)
+          if not paths:
+              print("::error title=pytest::no junit report written (collection/import error before tests ran)")
+              raise SystemExit(0)
+          bad = []
+          for case in ET.parse(paths[0]).getroot().iter("testcase"):
+              problems = list(case.findall("failure")) + list(case.findall("error"))
+              if not problems:
+                  continue
+              name = "::".join(filter(None, [case.get("classname"), case.get("name")]))
+              bad.append((name, (problems[0].get("message") or "").strip()))
+          print("::error title=pytest failures (" + str(len(bad)) + ")::" + " | ".join(n for n, _ in bad[:12]))
+          PY
+
+  windows:
+    name: backend (windows-latest)
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'windows' }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PYTEST_NODE_IDS: ${{ inputs.pytest_node_ids }}
+      PYTEST_K: ${{ inputs.pytest_k }}
+    steps:
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: windows
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
-      - run: uv sync --frozen --extra dev
-      - name: Targeted tests
+      - name: Sync dependencies from lock
+        run: uv sync --frozen --extra dev
+      - name: Real worker smoke (source)
         run: |
-          uv run --frozen pytest -q \
-            tests/test_interactive_migration_integration.py \
-            tests/test_fu_w3_b01_schema.py \
-            tests/test_main_closeout_migration_objects.py \
-            tests/test_interactive_board.py \
-            tests/test_interactive_submission.py \
-            tests/test_interactive_intents.py \
-            tests/test_interactive_integration.py \
-            tests/test_interactive_verify.py \
-            tests/test_interactive_during_heavy_work.py
+          uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+      - name: Targeted tests (not requires_docker)
+        env:
+          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
+          PYTHONIOENCODING: utf-8
+        run: |
+          $parts = $env:PYTEST_BASE_ARGS
+          if ($env:PYTEST_NODE_IDS) { $parts = "$parts $env:PYTEST_NODE_IDS" }
+          if ($env:PYTEST_K) { $parts = "$parts -k '$env:PYTEST_K'" }
+          if (-not $env:PYTEST_NODE_IDS -and -not $env:PYTEST_K) {
+            Write-Output "::error title=targeted verify windows::没有给 pytest_node_ids 或 pytest_k，拒绝跑整套后端测试（额度红线：只跑失败项）。"
+            exit 1
+          }
+          Write-Output "pytest $parts"
+          Invoke-Expression "uv run --frozen pytest $parts -m 'not requires_docker'"
 
-  frontend-targeted:
-    name: frontend (targeted)
+  frontend:
+    name: frontend
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'frontend' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
+    env:
+      VITEST_FILES: ${{ inputs.vitest_files }}
+      VITEST_NAME: ${{ inputs.vitest_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: frontend
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
-      - run: npm ci
-      - name: Type check
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Clean install
+        run: npm ci
+      - name: Typecheck
         run: npx vue-tsc --noEmit
       - name: Targeted specs
         run: |
-          npx vitest run \
-            src/__tests__/sr-e-sendConfirm.spec.ts \
-            src/__tests__/sr-e-sendReceiptOrdering.spec.ts \
-            src/__tests__/sr-f-turn-lifecycle.test.ts \
-            src/components/__tests__/sr-e-composerConfirm.spec.ts \
-            src/components/__tests__/PreparingAttachments.test.ts \
-            src/components/__tests__/SendWhileAttachmentPreparing.test.ts \
-            src/components/__tests__/ComposerAttachmentRejection.test.ts \
-            src/components/__tests__/d5ComposerRecovery.verify.test.ts \
-            src/components/__tests__/d6FailedSendNoticeDisplay.test.ts \
-            src/components/__tests__/FailedSendNotice.test.ts \
-            src/components/__tests__/final-lead-11a-displaced.test.ts \
-            src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts \
-            src/interactive/__tests__/chat.test.ts
+          set -euo pipefail
+          if [ -z "${VITEST_FILES}" ] && [ -z "${VITEST_NAME}" ]; then
+            echo "::error title=targeted verify frontend::没有给 vitest_files 或 vitest_name，拒绝跑整套前端用例（额度红线：只跑失败项）。"
+            exit 1
+          fi
+          args=(npx vitest run)
+          if [ -n "${VITEST_FILES}" ]; then
+            # shellcheck disable=SC2206
+            args+=(${VITEST_FILES})
+          fi
+          if [ -n "${VITEST_NAME}" ]; then
+            args+=(-t "${VITEST_NAME}")
+          fi
+          echo "vitest ${args[*]}"
+          "${args[@]}"
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: rust (cargo check)
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'rust' }}
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend/src-tauri
+    steps:
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: rust
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+      - name: Install Linux system dependencies (Tauri)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+      - name: Provide sidecar placeholder for cargo check
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p binaries
+          touch binaries/qio-backend-x86_64-unknown-linux-gnu
+          chmod +x binaries/qio-backend-x86_64-unknown-linux-gnu
+      - name: Provide bundled-model placeholder for cargo check
+        run: |
+          mkdir -p resources/models/bge-small-zh-v1.5
+      - name: cargo check
+        run: cargo check
+      - name: Summarize cargo errors
+        if: failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --message-format=short 2>&1 | tee cargo.log || true
+          python - <<'PY'
+          import re
+
+          lines = [line.rstrip() for line in open("cargo.log", encoding="utf-8", errors="replace")]
+          errors = [ln for ln in lines if re.search(r"error", ln, re.I)]
+          print("::error title=cargo check failed (" + str(len(errors)) + " error lines)::" + " | ".join(e[:180] for e in errors[:6]))
+          PY
+
+  rust-windows:
+    name: rust (windows-latest, cargo test)
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'rust-windows' }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend/src-tauri
+    steps:
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: rust-windows
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+      - name: Provide sidecar placeholder (Windows)
+        run: |
+          New-Item -ItemType Directory -Force -Path binaries | Out-Null
+          New-Item -ItemType File -Force -Path binaries/qio-backend-x86_64-pc-windows-msvc.exe | Out-Null
+      - name: Provide bundled-model placeholder
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/models/bge-small-zh-v1.5 | Out-Null
+      - name: Unit tests
+        run: cargo test
+
+  frozen-worker:
+    name: frozen worker (windows)
+    needs: verify-sha
+    if: ${{ inputs.targets == 'all' || inputs.targets == 'frozen-worker' }}
+    runs-on: windows-latest
+    steps:
+      - uses: ./.github/actions/verify-checkout
+        with:
+          ref: ${{ needs.verify-sha.outputs.ref }}
+          sha: ${{ needs.verify-sha.outputs.sha }}
+          label: frozen-worker
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Sync backend dependencies from lock
+        working-directory: backend
+        run: uv sync --frozen --extra dev
+      - name: Build the frozen sidecar
+        run: pwsh -File scripts/build_sidecar.ps1
+      - name: Verify the bundled worker source
+        working-directory: backend
+        run: |
+          uv run --frozen --with pyinstaller pyi-archive_viewer -l ../frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe | Out-File -Encoding utf8 archive.txt
+          if (-not (Select-String -Path archive.txt -Pattern 'tool_worker.py' -Quiet)) {
+            Write-Error '冻结产物里没有 agent/tool_worker.py：容器执行路径会拿不到 worker 源码'
+            exit 1
+          }
+      - name: Smoke-test the frozen worker protocol
+        run: python scripts/frozen_worker_smoke.py frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe
+
+  summary:
+    name: summary (ran vs skipped)
+    needs:
+      - verify-sha
+      - docs
+      - backend
+      - windows
+      - frontend
+      - rust
+      - rust-windows
+      - frozen-worker
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      # 只汇总，不做检查：跑没跑、跳过没跳过都在这里一次性说清楚。
+      - name: Report what ran and what was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          TARGETS: ${{ inputs.targets }}
+          PYTEST_NODE_IDS: ${{ inputs.pytest_node_ids }}
+          PYTEST_K: ${{ inputs.pytest_k }}
+          VITEST_FILES: ${{ inputs.vitest_files }}
+          VITEST_NAME: ${{ inputs.vitest_name }}
+          REQUESTED_SHA: ${{ inputs.sha }}
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS"])
+          checks = {k: v for k, v in needs.items() if k != "verify-sha"}
+
+          def state(entry):
+              result = entry.get("result")
+              # 条件不成立而没跑的 job，result 就是 skipped —— 必须如实打印成 SKIPPED。
+              return "SKIPPED" if result == "skipped" else str(result or "unknown").upper()
+
+          lines = [state(checks[name]) + "  " + name for name in sorted(checks)]
+          ran = [n for n, e in checks.items() if e.get("result") not in ("skipped", None)]
+          failed = [n for n, e in checks.items() if e.get("result") == "failure"]
+          cancelled = [n for n, e in checks.items() if e.get("result") == "cancelled"]
+
+          print("targeted verify summary: ref=" + str(os.environ.get("REQUESTED_REF")) + " sha=" + str(os.environ.get("REQUESTED_SHA")))
+          print("targets=" + str(os.environ.get("TARGETS")))
+          print("filters: pytest_node_ids=" + repr(os.environ.get("PYTEST_NODE_IDS")) +
+                " pytest_k=" + repr(os.environ.get("PYTEST_K")) +
+                " vitest_files=" + repr(os.environ.get("VITEST_FILES")) +
+                " vitest_name=" + repr(os.environ.get("VITEST_NAME")))
+          print("=== ran vs skipped ===")
+          for line in lines:
+              print("  " + line)
+          print("ran=" + str(len(ran)) + " failed=" + str(len(failed)) + " cancelled=" + str(len(cancelled)))
+          print("NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.")
+
+          if not ran:
+              raise SystemExit("::error title=targeted verify::no runnable checks: 这次派发没有跑任何检查项，不得当作通过")
+          if failed:
+              raise SystemExit("::error title=targeted verify::failed checks: " + ", ".join(sorted(failed)))
+          if cancelled:
+              raise SystemExit("::error title=targeted verify::cancelled checks: " + ", ".join(sorted(cancelled)))
+          PY

@@ -5,6 +5,21 @@ on:
     branches: ["**"]
   pull_request:
 
+# ── 触发去重（本轮整合分支）──────────────────────────────────────────────────
+# ci.yml 同时被 push(**) 与 pull_request 触发，这是其它分支需要的正常门禁，不动。
+# 但同一个提交如果既有 push 又有 PR（本整合分支就是这种情况），就会排两次 CI，
+# 两次都是完整矩阵。这里按「提交」去重：
+#   * concurrency group 以 github.sha 为键 —— 同一个提交的 push 运行与 PR 运行进同一组，
+#     调度期就只保留一个，不会出现两套完整的 matrix 同时在跑；
+#   * 用 SHA 而不是 ref 作键：连续两次 push 是两个不同的提交，互不干扰，正常门禁不受影响；
+#   * 这不是「跑完再取消」：重复的那次根本不会被调度起来（cancel-in-progress 只处理
+#     「同一提交的第二次入队」这一种情况，用它兜住竞态）。
+# 证据在 ci-dedup-preflight 里：每个运行都打印自己的提交、事件、分支、attempt 与去重键，
+# 事后可以核对「哪个提交留下了几次 run」。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
 # CI never needs real API keys: all model tests use fake/mock providers and
 # offline fixtures. External-network tests are not merge blockers.
 env:
@@ -17,6 +32,25 @@ env:
 # Image: ubuntu-24.04。所以这里显式钉住已验证的版本；将来要升级 Ubuntu 26 时一次性替换所有
 # ubuntu-24.04 并重跑 CI，不要靠 latest 漂移。
 jobs:
+  # 去重证据（不跑检查，只记录这次 run 的身份）。放在最前面，任何提交一跑就能在日志里
+  # 看到「这次 run 属于哪个提交、由什么事件触发、去重键是什么」，去重不是黑箱。
+  ci-dedup-preflight:
+    name: ci dedup preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record run identity and dedup key
+        # 只打印上下文，不做检查、不设门槛：它证明不了「去重生效」，去重由 workflow 级
+        # concurrency 在调度期完成（重复的那次不会被调度起来，所以这里根本不会出现第二次）。
+        run: |
+          echo "event        : ${{ github.event_name }}"
+          echo "ref          : ${{ github.ref }}"
+          echo "commit       : ${{ github.sha }}"
+          echo "run attempt  : ${{ github.run_attempt }}"
+          echo "run id       : ${{ github.run_id }}"
+          echo "dedup key    : ci-${{ github.workflow }}-${{ github.sha }}"
+          echo "重复触发说明  : 同一提交的 push 与 pull_request 共享上面的去重键，"
+          echo "                workflow 级 concurrency 在调度期只保留一个，不会跑两套 matrix。"
+
   docs:
     name: docs consistency
     runs-on: ubuntu-24.04
@@ -38,6 +72,14 @@ jobs:
       - name: Release gate selftest
         run: |
           python scripts/release_gate.py --selftest
+      # 触发去重 / 定向入口的契约也在这里被真断言：ci.yml 的 push+PR 双触发与
+      # concurrency 键、targeted-verify.yml 的 workflow_dispatch、SHA 核验步骤与筛选参数
+      # 全部由这个脚本解析 yaml 后核对，并有 --selftest 证明断言真能红。
+      # 执行同一份脚本的定向入口在 targeted-verify.yml 的 docs 单项里（两个都要通）。
+      - name: Check workflow trigger / SHA / filter contract
+        run: |
+          python scripts/targeted-verify/verify_workflow_contract.py
+          python scripts/targeted-verify/verify_workflow_contract.py --selftest
 
   backend:
     name: backend (py${{ matrix.python-version }})

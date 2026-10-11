@@ -1,0 +1,68 @@
+name: Verify checkout (SHA evidence)
+description: >-
+  Check out an explicit ref/SHA and assert that the commit actually placed in the
+  workspace equals the requested SHA. Prints requested SHA, resolved git HEAD and
+  the GitHub event SHA, and fails loudly on any disagreement.
+
+inputs:
+  ref:
+    description: Git ref (branch or tag) to check out.
+    required: true
+  sha:
+    description: Full 40-char commit SHA that must end up in the workspace.
+    required: false
+    default: ""
+  expected-ref:
+    description: >-
+      Optional ref to resolve with git and compare against the checked-out commit.
+      Only pass this when the ref is expected to resolve to the requested SHA
+      (e.g. the same branch that is being verified).
+    required: false
+    default: ""
+  allow-short:
+    description: Allow a short SHA prefix instead of the full 40-char SHA.
+    required: false
+    default: "false"
+  label:
+    description: Label used for this job's evidence lines.
+    required: false
+    default: targeted-verify
+
+runs:
+  using: composite
+  steps:
+    - name: Show requested ref/SHA
+      shell: bash
+      run: |
+        echo "requested ref : ${{ inputs.ref }}"
+        echo "requested sha : ${{ inputs.sha }}"
+
+    - name: Checkout the requested ref/SHA explicitly
+      uses: actions/checkout@v5
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Assert the checked-out commit equals the requested SHA
+      shell: bash
+      env:
+        REQUESTED_SHA: ${{ inputs.sha }}
+        EXPECTED_REF: ${{ inputs.expected-ref }}
+        ALLOW_SHORT: ${{ inputs.allow-short }}
+        SHA_LABEL: ${{ inputs.label }}
+      run: |
+        set -euo pipefail
+        # --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交
+        # （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。
+        # 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，
+        # 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。
+        actual="$(git rev-parse HEAD)"
+        args=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")
+        if [ -n "${EXPECTED_REF}" ]; then
+          args+=(--expected-ref "${EXPECTED_REF}")
+        fi
+        if [ "${ALLOW_SHORT}" = "true" ]; then
+          args+=(--allow-short)
+        fi
+        python scripts/targeted-verify/verify_sha.py "${args[@]}"
