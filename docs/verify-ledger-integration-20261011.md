@@ -60,14 +60,39 @@ concurrency:
 
 | 项 | 内容 |
 | --- | --- |
-| 对象 SHA | 待填（§1 冻结候选） |
-| 后端 | `cd backend; uv run --frozen pytest -q`（口径与 CI 一致，含 `-m "not requires_docker"` 的差异需注明） |
+| 对象 SHA | 本地全量执行于 `a42bafd`（产品代码与最终 `f0d05d3` **逐字相同**：`git diff a42bafd f0d05d3 -- frontend backend` 为空，差异只有 `docs/` 与 `scripts/irm-int-verify/`）；全量 CI 在 `f0d05d3` 上执行 |
+| 后端 py3.12 | `cd backend; uv run --frozen pytest -q`（Windows 本机，等价 CI 的 backend-windows 口径） |
+| 后端 py3.11 | `UV_PROJECT_ENVIRONMENT=D:/qio-dev/.lead-py311; uv run --frozen --python 3.11 pytest -q`（等价 CI 的 backend py3.11 口径） |
 | 前端 | `cd frontend; npx vue-tsc --noEmit` + `npm test` + `npm run build` |
 | 文档 | `python scripts/check_docs.py` |
-| Rust | `cd frontend/src-tauri; cargo check` + `cargo test`（需 sidecar / 模型目录占位） |
-| 评测 | 按 `AGENTS.md` 要求的评测集合 |
+| Rust | `cd frontend/src-tauri; cargo check` + `cargo test`（已放 sidecar / 模型目录占位） |
+| 评测 | `pytest -q tests/test_topic_decision_eval.py tests/test_boundary_semantic_eval.py`（本轮不触发 `agent.eval.run`：没有改 runtime / 预算 / 工具策略） |
 | 发布闸门 | `python scripts/release_gate.py --selftest` |
-| 结果 | 待填 |
+| 结果 | 见下表（含失败项与定向重跑） |
+
+| 项 | 结果 |
+| --- | --- |
+| 前端 `npx vue-tsc --noEmit` | 通过（`TSC_EXIT=0`） |
+| 前端 `npm test` | **315 文件 / 2482 用例全过**（`TEST_EXIT=0`） |
+| 前端 `npm run build` | 通过（`BUILD_EXIT=0`） |
+| 文档 `check_docs.py` | 通过（47 个里程碑条目，`DOCS_EXIT=0`） |
+| 发布闸门 `release_gate.py --selftest` | 通过（`GATE_EXIT=0`） |
+| 评测两项 | 13 passed（`EVAL_EXIT=0`） |
+| Rust `cargo check` | 通过（`CHECK_EXIT=0`） |
+| Rust `cargo test` | **失败 2 项**（29 passed / 2 failed）：`ownership::tests::close_installation_closes_the_recorded_installation_gracefully` 与 `ownership::tests::close_installation_closes_every_live_instance_in_the_directory`；原因是 `taskkill` 超时（`backend_still_alive`），当时三个全量作业在同机并发。本轮整合**没有改动任何 Rust 文件**（`git diff --name-only origin/main...HEAD -- frontend/src-tauri` 为空）。定向重跑见 §4.1 |
+| 后端 py3.12 全量 | **3691 passed / 2 failed**（Windows 本机；失败项见下，均已定性） |
+| 后端 py3.11 全量 | **3692 passed / 1 failed**（同一 R7 用例） |
+
+**后端两个失败项（不是本轮改动引入）**
+
+1. `tests/test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop`
+   —— 断言 `gap_ms < 100`，实测 **101.6 ms**（差 1.6 ms）。定向重跑（空载、只跑这一条）**通过**。
+   仓库既有记录已把这一类计时断言记为「并发负载下偶发超时、单独复跑通过」（`docs/status.md` 1393 行）。
+2. `tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`
+   —— 真 TCP 断连 + 磁盘闸门；实测闸门释放后仍发生 1 次模型调用。定向重跑（空载）**仍然失败**；
+   在**基线 `8fa8452` 的独立 worktree** 上定向重跑同一条**同样失败**。前一轮真实模型分支（`7158152`）
+   的台账 `docs/interactive-real-model-report.md` §9.2 已记录它「定向重跑第 1 次通过、第 2 次失败，
+   基线 3 次全失败」。结论：**基线既有的 Windows 平台断连/取消时序问题，与本轮改动无关**，本轮没有为它改代码。
 
 ### 3.2 唯一一次全量 CI
 
@@ -91,7 +116,9 @@ concurrency:
 | — | 开发期定向（D） | `cd backend; uv run --frozen pytest -q --durations=10 tests/test_sandbox_worker.py` | 见 §7 | 25 passed | 本机 | 定向（单文件） |
 | — | 开发期定向（D） | `cd frontend; npx vitest run src/__tests__/sr-e-sendConfirm.spec.ts` | 见 §7 | 8 passed（1 文件） | 本机 | 定向（单文件） |
 | — | 开发期定向（D） | `python scripts/check_docs.py` | 见 §7 | 通过（47 个里程碑条目） | 本机 | 定向 |
-| 待填 | 失败项修复后定向重跑 | 使用 §5 的派发命令 | 待填 | 待填 | 待填 | 定向 |
+| 1 | 本地全量失败项 `test_maintenance_does_not_block_the_loop` | 空载定向重跑 | `pytest -q -p no:cacheprovider "tests/test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop"` | `a42bafd` | **通过**（全量时 101.6 ms 贴线失败） | 本机 | 定向 |
+| 2 | 本地全量失败项 `test_disconnect_does_not_start_the_turn_after_gate_release` | 空载定向重跑 | `pytest -q -p no:cacheprovider "tests/test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release"` | `a42bafd` 与基线 `8fa8452` | **两处都失败** → 基线既有问题，非本轮引入 | 本机 | 定向 |
+| 3 | 本地全量失败项 Rust `ownership::tests::close_installation_*`（2 条） | 空载定向重跑整个壳测试套件（失败发生在 `taskkill` 超时时，无法只按名字稳定复现，故按同一工具链重跑一次） | `cd frontend/src-tauri; cargo test` | `a42bafd` | **全绿**：31 passed / 27 passed / 2 passed / 5 passed / 0 failed（`CARGO_EXIT=0`） | 本机 | 定向 |
 
 ### 4.1 失败项定向重跑记录（模板）
 
