@@ -35,6 +35,16 @@
 **边界（诚实声明）**：这是名字级核对，只证明「这条线引入的符号没有整条消失」，
 不证明语义没有变化；语义结论必须另有阅读或实测证据（见 docs/integration-review-20261011.md）。
 
+## 取文件时的编码坑（Lead 复跑时踩到，记下来省下一次）
+
+本机 harness 走的是 Windows PowerShell 5.1：裸重定向 `git show <rev>:<path> > file.py`
+会写成 **UTF-16LE**，Python 直接跑会报语法/解码错误（不是脚本的问题）。取文件请用：
+
+    git checkout <sha> -- <path>          # 推荐：git 自己按原样落盘
+    git show <rev>:<path> | Out-File -Encoding utf8 <file>   # 备选（UTF-8）
+
+本目录下的脚本与 JSON 证据都是用 Python 自己写的文件（UTF-8 无 BOM），可直接执行。
+
 ## out/ —— 证据
 
 每次运行写一份 JSON（含 worktree、branch、HEAD、逐项 check 与结果）。
