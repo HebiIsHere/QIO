@@ -1,0 +1,90 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const texts=bar?bar.querySelector('.texts'):null;const sub=bar?bar.querySelector(\"[data-im=\\\"submit\\\"]\"):null;const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {w:Math.round(r.width),h:Math.round(r.height),top:Math.round(r.top),bottom:Math.round(r.bottom)}};const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"1440x900\",viewport:[window.innerWidth,window.innerHeight],bar:g(bar),texts:g(texts),submitBtn:g(sub),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-44-1440-regression"
+  },
+  {
+    "op": "viewport",
+    "width": 1024,
+    "height": 768
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const texts=bar?bar.querySelector('.texts'):null;const sub=bar?bar.querySelector(\"[data-im=\\\"submit\\\"]\"):null;const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {w:Math.round(r.width),h:Math.round(r.height),top:Math.round(r.top),bottom:Math.round(r.bottom)}};const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"1024x768\",viewport:[window.innerWidth,window.innerHeight],bar:g(bar),texts:g(texts),submitBtn:g(sub),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-45-1024-toolbar"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(t)t.click();return 'chat-opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const sub=document.querySelector(\"[data-im=\\\"submit\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right)}};const pr=g(panel),dr=g(dock),br=g(bar),sr=g(sub);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"800x600\",viewport:[window.innerWidth,window.innerHeight],dock:dr,panel:pr,toolbar:br,submitBtn:sr,panelTopOk:pr?pr.top>=0:null,panelVisible:vis(panel),panelScrollable:panel?panel.scrollHeight>panel.clientHeight:null,chatOverToolbar:ov(pr,br),panelOverToolbar:ov(pr,br),entryVisible:vis(document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\")),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-46-800-chat-after-fix"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const texts=bar?bar.querySelector('.texts'):null;const sub=bar?bar.querySelector(\"[data-im=\\\"submit\\\"]\"):null;const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {w:Math.round(r.width),h:Math.round(r.height),top:Math.round(r.top),bottom:Math.round(r.bottom)}};const vis=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({label:\"800x600\",viewport:[window.innerWidth,window.innerHeight],bar:g(bar),texts:g(texts),submitBtn:g(sub),submitVisible:vis(sub),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector(\"[data-im=\\\"batch-entry\\\"]\");if(e)e.click();return 'batch-opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const p=document.querySelector(\"[data-im=\\\"batch-list\\\"]\");const c=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();return {top:Math.round(r.top),bottom:Math.round(r.bottom),left:Math.round(r.left),right:Math.round(r.right)}};const pr=g(p),cr=g(c),br=g(bar);const ov=(a,b)=>a&&b?!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom):null;return JSON.stringify({label:'800x600-both',panel:pr,chat:cr,toolbar:br,panelOverToolbar:ov(pr,br),chatOverToolbar:ov(cr,br),panelOverChat:ov(pr,cr),overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-47-800-both-after-fix"
+  }
+]

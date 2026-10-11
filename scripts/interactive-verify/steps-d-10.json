@@ -1,0 +1,28 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();await new Promise(r=>setTimeout(r,600));const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');const id=card?card.getAttribute('data-intent-id'):null;const nodes=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>{const r=e.getBoundingClientRect();return {cls:e.className,w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)}}):[];const strip=card?card.getBoundingClientRect():null;return JSON.stringify({id,dockedNodes:nodes,strip:strip?{x:Math.round(strip.x),y:Math.round(strip.y)}:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-44-docked-check"
+  }
+]

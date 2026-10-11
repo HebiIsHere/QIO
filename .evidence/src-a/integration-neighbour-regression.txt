@@ -1,0 +1,37 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+ ✓ src/stores/__tests__/d6CardConflictChoice.verify.test.ts (7 tests) 115ms
+ ✓ src/stores/__tests__/d6CardProtect.test.ts (14 tests) 147ms
+ ✓ src/components/interactive/__tests__/final-a3-01-late-read-draft.test.ts (3 tests) 132ms
+ ✓ src/components/interactive/__tests__/final-a3-05-conflict-paths.test.ts (4 tests) 198ms
+ ✓ src/components/interactive/__tests__/final-a3-07-draft-clear-binding.test.ts (5 tests) 266ms
+ ✓ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts (16 tests) 371ms
+ ✓ src/interactive/__tests__/final-a2-card-draft-hint.test.ts (8 tests) 80ms
+ ✓ src/interactive/__tests__/final-lead-m07-clear-binding.test.ts (3 tests) 80ms
+ ✓ src/stores/__tests__/recovery-lead-state-facts.test.ts (12 tests) 625ms
+     ✓ 【状态/单元】服务端拒绝旧版本写入（409 stale_state）后：接收最新事实并用最新版本重试  514ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.test.ts (19 tests) 156ms
+ ✓ src/stores/__tests__/d6CardDraftConflict.verify.test.ts (6 tests) 136ms
+ ✓ src/components/interactive/__tests__/closure-c-closed-card-hint.test.ts (2 tests) 79ms
+ ✓ src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts (6 tests) 228ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts (7 tests) 240ms
+ ✓ src/stores/__tests__/draftPersistence.test.ts (15 tests) 160ms
+ ✓ src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts (6 tests) 35ms
+ ✓ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (13 tests) 33ms
+ ✓ src/interactive/__tests__/final-a2-reopen-cleared.test.ts (4 tests) 38ms
+ ✓ src/interactive/__tests__/recovery-a-n6-draft-input.test.ts (18 tests) 13ms
+ ✓ src/interactive/__tests__/final-a2-drafts-removal-result.test.ts (12 tests) 13ms
+ ✓ src/interactive/__tests__/final-a2-long-draft-local-copy.test.ts (8 tests) 14ms
+ ✓ src/stores/__tests__/final-b2-removeDraftResult.test.ts (4 tests) 36ms
+ ✓ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts (4 tests) 76ms
+ ✓ src/stores/__tests__/closure-d-r1-r4.test.ts (6 tests) 42ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts (14 tests) 14ms
+ ✓ src/interactive/__tests__/final-a2-clear-protection.test.ts (9 tests) 9ms
+ ✓ src/interactive/__tests__/drafts.test.ts (8 tests) 7ms
+
+ Test Files  27 passed (27)
+      Tests  233 passed (233)
+   Start at  16:09:07
+   Duration  13.90s (transform 8.48s, setup 858ms, import 22.19s, tests 3.34s, environment 143.80s)
+

@@ -1,0 +1,1194 @@
+{
+  "app": "http://127.0.0.1:5414",
+  "cells": [
+    {
+      "size": "1440×900",
+      "theme": "dark",
+      "file": "docs\\interactive-ui-screenshots\\d-1440x900-dark.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 1004,
+        "top": 121,
+        "right": 1424,
+        "bottom": 641,
+        "width": 420,
+        "height": 520
+      },
+      "batchPanel": {
+        "left": 592,
+        "top": 105,
+        "right": 992,
+        "bottom": 502,
+        "width": 400,
+        "height": 396
+      },
+      "batchTray": {
+        "left": 592,
+        "top": 66,
+        "right": 992,
+        "bottom": 502,
+        "width": 400,
+        "height": 436
+      },
+      "batchEntry": {
+        "left": 633,
+        "top": 66,
+        "right": 992,
+        "bottom": 97,
+        "width": 359,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 261,
+        "top": 712,
+        "right": 1047,
+        "bottom": 884,
+        "width": 786,
+        "height": 172
+      },
+      "submit": {
+        "left": 918,
+        "top": 805,
+        "right": 1034,
+        "bottom": 846,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 172,
+      "chatReadableHeight": 312,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1182,
+            "y": 575
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1383,
+            "y": 585
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 976,
+            "y": 826
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1214,
+            "y": 381
+          },
+          "hitSelf": true,
+          "hitTag": "div",
+          "hitIm": "chat-stream"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 792,
+            "y": 303
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-remaining"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    },
+    {
+      "size": "1440×900",
+      "theme": "light",
+      "file": "docs\\interactive-ui-screenshots\\d-1440x900-light.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 1004,
+        "top": 121,
+        "right": 1424,
+        "bottom": 641,
+        "width": 420,
+        "height": 520
+      },
+      "batchPanel": {
+        "left": 592,
+        "top": 105,
+        "right": 992,
+        "bottom": 502,
+        "width": 400,
+        "height": 396
+      },
+      "batchTray": {
+        "left": 592,
+        "top": 66,
+        "right": 992,
+        "bottom": 502,
+        "width": 400,
+        "height": 436
+      },
+      "batchEntry": {
+        "left": 633,
+        "top": 66,
+        "right": 992,
+        "bottom": 97,
+        "width": 359,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 261,
+        "top": 712,
+        "right": 1047,
+        "bottom": 884,
+        "width": 786,
+        "height": 172
+      },
+      "submit": {
+        "left": 918,
+        "top": 805,
+        "right": 1034,
+        "bottom": 846,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 172,
+      "chatReadableHeight": 312,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1182,
+            "y": 575
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1383,
+            "y": 585
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 976,
+            "y": 826
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 1214,
+            "y": 381
+          },
+          "hitSelf": true,
+          "hitTag": "div",
+          "hitIm": "chat-stream"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 792,
+            "y": 303
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-remaining"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    },
+    {
+      "size": "1024×768",
+      "theme": "dark",
+      "file": "docs\\interactive-ui-screenshots\\d-1024x768-dark.png",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 588,
+        "top": 70,
+        "right": 1008,
+        "bottom": 449,
+        "width": 420,
+        "height": 379
+      },
+      "batchPanel": {
+        "left": 176,
+        "top": 105,
+        "right": 576,
+        "bottom": 499,
+        "width": 400,
+        "height": 394
+      },
+      "batchTray": {
+        "left": 176,
+        "top": 66,
+        "right": 576,
+        "bottom": 499,
+        "width": 400,
+        "height": 434
+      },
+      "batchEntry": {
+        "left": 217,
+        "top": 66,
+        "right": 576,
+        "bottom": 97,
+        "width": 359,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 178,
+        "top": 520,
+        "right": 742,
+        "bottom": 756,
+        "width": 564,
+        "height": 236
+      },
+      "submit": {
+        "left": 657,
+        "top": 661,
+        "right": 773,
+        "bottom": 702,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 236,
+      "chatReadableHeight": 171,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 766,
+            "y": 383
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 967,
+            "y": 393
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 715,
+            "y": 682
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 798,
+            "y": 259
+          },
+          "hitSelf": true,
+          "hitTag": "div",
+          "hitIm": "chat-stream"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 376,
+            "y": 302
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-remaining"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    },
+    {
+      "size": "1024×768",
+      "theme": "light",
+      "file": "docs\\interactive-ui-screenshots\\d-1024x768-light.png",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 588,
+        "top": 70,
+        "right": 1008,
+        "bottom": 449,
+        "width": 420,
+        "height": 379
+      },
+      "batchPanel": {
+        "left": 176,
+        "top": 105,
+        "right": 576,
+        "bottom": 499,
+        "width": 400,
+        "height": 394
+      },
+      "batchTray": {
+        "left": 176,
+        "top": 66,
+        "right": 576,
+        "bottom": 499,
+        "width": 400,
+        "height": 434
+      },
+      "batchEntry": {
+        "left": 217,
+        "top": 66,
+        "right": 576,
+        "bottom": 97,
+        "width": 359,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 178,
+        "top": 520,
+        "right": 742,
+        "bottom": 756,
+        "width": 564,
+        "height": 236
+      },
+      "submit": {
+        "left": 657,
+        "top": 661,
+        "right": 773,
+        "bottom": 702,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 236,
+      "chatReadableHeight": 171,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 766,
+            "y": 383
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 967,
+            "y": 393
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 715,
+            "y": 682
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 798,
+            "y": 259
+          },
+          "hitSelf": true,
+          "hitTag": "div",
+          "hitIm": "chat-stream"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 376,
+            "y": 302
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-remaining"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    },
+    {
+      "size": "800×600",
+      "theme": "dark",
+      "file": "docs\\interactive-ui-screenshots\\d-800x600-dark.png",
+      "viewport": {
+        "width": 800,
+        "height": 600
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 364,
+        "top": 70,
+        "right": 784,
+        "bottom": 236,
+        "width": 420,
+        "height": 166
+      },
+      "batchPanel": {
+        "left": 16,
+        "top": 97,
+        "right": 352,
+        "bottom": 278,
+        "width": 336,
+        "height": 181
+      },
+      "batchTray": {
+        "left": 16,
+        "top": 58,
+        "right": 352,
+        "bottom": 278,
+        "width": 336,
+        "height": 221
+      },
+      "batchEntry": {
+        "left": 16,
+        "top": 58,
+        "right": 352,
+        "bottom": 89,
+        "width": 336,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 134,
+        "top": 307,
+        "right": 578,
+        "bottom": 592,
+        "width": 444,
+        "height": 285
+      },
+      "submit": {
+        "left": 453,
+        "top": 542,
+        "right": 569,
+        "bottom": 583,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 285,
+      "chatReadableHeight": 0,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 542,
+            "y": 212
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 743,
+            "y": 222
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 511,
+            "y": 563
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 574,
+            "y": 153
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "chat-scope"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 184,
+            "y": 188
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-list"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    },
+    {
+      "size": "800×600",
+      "theme": "light",
+      "file": "docs\\interactive-ui-screenshots\\d-800x600-light.png",
+      "viewport": {
+        "width": 800,
+        "height": 600
+      },
+      "mode": "side-by-side",
+      "chat": {
+        "left": 364,
+        "top": 70,
+        "right": 784,
+        "bottom": 236,
+        "width": 420,
+        "height": 166
+      },
+      "batchPanel": {
+        "left": 16,
+        "top": 97,
+        "right": 352,
+        "bottom": 278,
+        "width": 336,
+        "height": 181
+      },
+      "batchTray": {
+        "left": 16,
+        "top": 58,
+        "right": 352,
+        "bottom": 278,
+        "width": 336,
+        "height": 221
+      },
+      "batchEntry": {
+        "left": 16,
+        "top": 58,
+        "right": 352,
+        "bottom": 89,
+        "width": 336,
+        "height": 32
+      },
+      "toolbar": {
+        "left": 134,
+        "top": 307,
+        "right": 578,
+        "bottom": 592,
+        "width": 444,
+        "height": 285
+      },
+      "submit": {
+        "left": 453,
+        "top": 542,
+        "right": 569,
+        "bottom": 583,
+        "width": 116,
+        "height": 41
+      },
+      "intersectionChatBatch": 0,
+      "intersectionChatEntry": 0,
+      "intersectionChatToolbar": 0,
+      "intersectionBatchToolbar": 0,
+      "panelGap": 12,
+      "toolbarHeight": 285,
+      "chatReadableHeight": 0,
+      "chatHasMessages": true,
+      "hit": {
+        "chatInput": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 542,
+            "y": 212
+          },
+          "hitSelf": true,
+          "hitTag": "textarea",
+          "hitIm": "chat-input"
+        },
+        "chatSend": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 743,
+            "y": 222
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "chat-send"
+        },
+        "submit": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 511,
+            "y": 563
+          },
+          "hitSelf": true,
+          "hitTag": "button",
+          "hitIm": "submit"
+        },
+        "chatPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 574,
+            "y": 153
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "chat-scope"
+        },
+        "batchPanel": {
+          "found": true,
+          "visible": true,
+          "point": {
+            "x": 184,
+            "y": 188
+          },
+          "hitSelf": true,
+          "hitTag": "p",
+          "hitIm": "batch-list"
+        }
+      },
+      "batchItemCount": 4,
+      "batchEntryVisible": true
+    }
+  ],
+  "notes": [
+    "§9.3：处理掉一项后批量入口与列表仍然保留，并区分待处理 / 已处理。"
+  ],
+  "connectPoints": [
+    {
+      "size": "1440×900",
+      "rounds": [
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        },
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        },
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        }
+      ],
+      "file": "D:\\qio-dev\\qio-ui-d\\docs\\interactive-ui-screenshots\\d-1440x900-connect-point.png"
+    },
+    {
+      "size": "800×600",
+      "rounds": [
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": false,
+              "hitIm": "add-menu"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        },
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": false,
+              "hitIm": "add-menu"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        },
+        {
+          "cardFound": true,
+          "cardId": "c_muxus0a31yg0j",
+          "cardRect": {
+            "left": 344,
+            "top": 553,
+            "right": 604,
+            "bottom": 723
+          },
+          "points": [
+            {
+              "point": {
+                "x": 190,
+                "y": 172
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 313,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            },
+            {
+              "point": {
+                "x": 190,
+                "y": 328
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": false,
+              "hitIm": "add-menu"
+            },
+            {
+              "point": {
+                "x": 67,
+                "y": 250
+              },
+              "size": {
+                "width": 12,
+                "height": 12
+              },
+              "hitSelf": true,
+              "hitIm": "connect-point"
+            }
+          ]
+        }
+      ],
+      "file": "D:\\qio-dev\\qio-ui-d\\docs\\interactive-ui-screenshots\\d-800x600-connect-point.png"
+    }
+  ],
+  "boot": {
+    "board": true,
+    "demoEntry": true,
+    "loadError": null
+  },
+  "batchRetention": {
+    "before": {
+      "entry": true,
+      "entryText": "批量审批这一批待审批 3 项；另有 1 项在其他批次等待收起",
+      "list": true,
+      "remaining": "剩余待处理 3 项 · 已处理 1 项",
+      "rows": 4,
+      "pendingRows": 3,
+      "processedRows": 1,
+      "approveDisabled": true,
+      "label": "处理前"
+    },
+    "after": {
+      "entry": true,
+      "entryText": "批量审批这一批待审批 3 项；另有 1 项在其他批次等待收起",
+      "list": true,
+      "remaining": "剩余待处理 3 项 · 已处理 1 项",
+      "rows": 4,
+      "pendingRows": 3,
+      "processedRows": 1,
+      "approveDisabled": true,
+      "label": "处理掉一项之后"
+    },
+    "click": {
+      "boxPoint": "{\"x\":612,\"y\":307,\"approvableRows\":3}",
+      "topAtPoint": "batch-item/input",
+      "checkedAfterMouse": "[true,false,false]",
+      "approveBefore": false,
+      "notice": "批量批准：批准 0 项，拒绝 0 项；未选中的继续等待。未成功 1 项（与已批准且尚未撤回的 「［演示］把材料归为一组并给出对比摘要」 互不相容：不能同时批准。）。"
+    },
+    "kept": true,
+    "file": "D:\\qio-dev\\qio-ui-d\\docs\\interactive-ui-screenshots\\d-batch-after-partial.png"
+  },
+  "chatIndependence": {
+    "typed": "独立验收：这条只发文字",
+    "requests": [
+      "OPTIONS http://127.0.0.1:8914/api/turns",
+      "POST http://127.0.0.1:8914/api/turns",
+      "GET http://127.0.0.1:8914/api/dev/tasks",
+      "GET http://127.0.0.1:8914/api/dev/authorizations"
+    ],
+    "submissionCalls": [],
+    "turnCalls": 2,
+    "failure": "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话",
+    "file": "D:\\qio-dev\\qio-ui-d\\docs\\interactive-ui-screenshots\\d-chat-send-independent.png"
+  },
+  "problems": [
+    "800×600 工具栏高 285px > 96px",
+    "800×600 dark：聊天消息区高度 0 （底部工具栏高 285px，超过 800×600 的约 96px 上限，先由工具栏收窄解决）",
+    "800×600 工具栏高 285px > 96px",
+    "800×600 light：聊天消息区高度 0 （底部工具栏高 285px，超过 800×600 的约 96px 上限，先由工具栏收窄解决）"
+  ],
+  "errors": [],
+  "noise": [
+    "[exception] Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist."
+  ],
+  "httpFails": []
+}

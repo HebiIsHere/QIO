@@ -1,0 +1,65 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const s={boardId:'board_default',seq:0,updatedAt:new Date().toISOString(),cards:[],groups:[],links:[],selection:[]};await fetch('http://127.0.0.1:8791/api/interactive/boards/board_default/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:s,reason:'probe-reset'})});return 'reset';})()",
+    "await": true
+  },
+  {
+    "op": "eval",
+    "js": "location.reload(); 'reloading'"
+  },
+  {
+    "op": "wait",
+    "ms": 5200
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-menu\"]').click(); 'open-menu'"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-text\"]').click(); 'add-1'"
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-menu\"]').click(); 'open-menu'"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-text\"]').click(); 'add-2'"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify((function(){\n    const cards=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>{const r=c.getBoundingClientRect();return {attr:[...c.attributes].map(a=>a.name+'='+a.value).filter(x=>x.startsWith('data-')).join(','), cls:c.className, left:Math.round(r.left),top:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)};});\n    const surface=[...document.querySelectorAll('*')].filter(e=>/surface|board/i.test(e.className||'')&&e.children.length>3).slice(0,4).map(e=>({cls:e.className, left:Math.round(e.getBoundingClientRect().left), top:Math.round(e.getBoundingClientRect().top), w:Math.round(e.getBoundingClientRect().width), h:Math.round(e.getBoundingClientRect().height)}));\n    const hooks=[...document.querySelectorAll('[data-im]')].map(e=>e.getAttribute('data-im'));\n    return {cards, surface, hooks:[...new Set(hooks)].sort()};\n  })())"
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-discovery"
+  }
+]

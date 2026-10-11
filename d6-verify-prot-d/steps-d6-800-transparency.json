@@ -1,0 +1,59 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5441/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[aria-label=\"关闭引导\"]');if(b){b.click();return 'onboarding closed';}return 'no onboarding';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "viewport",
+    "width": 480,
+    "height": 600,
+    "ms": 1600
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var b=document.querySelector('[data-im=\"chat-toggle\"]');if(b){b.click();return 'chat opened';}return 'no toggle';})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1400
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var q=function(s){return document.querySelector(s);};var area=q('[data-im=\"batch-area\"]');var stage=area&&area.parentElement;var bar=q('[data-im=\"overlay-switch\"]');var panel=q('[data-im=\"chat-panel\"]');var cs=function(el){return el?getComputedStyle(el):null;};var rect=function(el){if(!el)return null;var r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),rt:Math.round(r.right),h:Math.round(r.height),w:Math.round(r.width)};};var s=stage?getComputedStyle(stage):null;var head=panel?panel.querySelector('.panel-head'):null;var scope=panel?panel.querySelector('.panel-scope'):null;var line=panel?panel.querySelector('.scope-line'):null;function underOf(el){if(!el)return null;var r=el.getBoundingClientRect();var pts=[[r.left+r.width*0.6,r.top+r.height*0.5],[r.left+40,r.top+r.height*0.5]];var out=[];for(var i=0;i<pts.length;i++){var els=document.elementsFromPoint(pts[i][0],pts[i][1]);out.push(els.slice(0,7).map(function(e){var t=(e.textContent||'').trim().slice(0,16);return (String(e.className||e.tagName).slice(0,34))+'|'+t;}));}return out;}return JSON.stringify({switchBar:bar?{rect:rect(bar),text:bar.textContent.slice(0,80)}:null,vars:s?{lift:s.getPropertyValue('--im-geo-chat-lift'),mode:s.getPropertyValue('--im-geo-mode'),chatMaxH:s.getPropertyValue('--im-geo-chat-max-h'),batchMaxH:s.getPropertyValue('--im-geo-batch-max-h')}:null,chatPanel:rect(panel),headRect:rect(head),headBg:cs(head)?cs(head).backgroundColor:null,scopeBg:cs(scope)?cs(scope).backgroundColor:null,scopeLineBg:cs(line)?cs(line).backgroundColor:null,headUnderneath:underOf(head),scopeUnderneath:underOf(scope&&line?line:null),batchEntryCount:document.querySelectorAll('[data-im=\"batch-entry\"]').length,view:{w:window.innerWidth,h:window.innerHeight}});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d6-shot-480-transparent-chat"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600,
+    "ms": 1600
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(function(){var q=function(s){return document.querySelector(s);};var area=q('[data-im=\"batch-area\"]');var stage=area&&area.parentElement;var bar=q('[data-im=\"overlay-switch\"]');var panel=q('[data-im=\"chat-panel\"]');var cs=function(el){return el?getComputedStyle(el):null;};var rect=function(el){if(!el)return null;var r=el.getBoundingClientRect();return {t:Math.round(r.top),b:Math.round(r.bottom),l:Math.round(r.left),rt:Math.round(r.right),h:Math.round(r.height),w:Math.round(r.width)};};var s=stage?getComputedStyle(stage):null;var head=panel?panel.querySelector('.panel-head'):null;var scope=panel?panel.querySelector('.panel-scope'):null;var line=panel?panel.querySelector('.scope-line'):null;function underOf(el){if(!el)return null;var r=el.getBoundingClientRect();var pts=[[r.left+r.width*0.6,r.top+r.height*0.5],[r.left+40,r.top+r.height*0.5]];var out=[];for(var i=0;i<pts.length;i++){var els=document.elementsFromPoint(pts[i][0],pts[i][1]);out.push(els.slice(0,7).map(function(e){var t=(e.textContent||'').trim().slice(0,16);return (String(e.className||e.tagName).slice(0,34))+'|'+t;}));}return out;}return JSON.stringify({switchBar:bar?{rect:rect(bar),text:bar.textContent.slice(0,80)}:null,vars:s?{lift:s.getPropertyValue('--im-geo-chat-lift'),mode:s.getPropertyValue('--im-geo-mode'),chatMaxH:s.getPropertyValue('--im-geo-chat-max-h'),batchMaxH:s.getPropertyValue('--im-geo-batch-max-h')}:null,chatPanel:rect(panel),headRect:rect(head),headBg:cs(head)?cs(head).backgroundColor:null,scopeBg:cs(scope)?cs(scope).backgroundColor:null,scopeLineBg:cs(line)?cs(line).backgroundColor:null,headUnderneath:underOf(head),scopeUnderneath:underOf(scope&&line?line:null),batchEntryCount:document.querySelectorAll('[data-im=\"batch-entry\"]').length,view:{w:window.innerWidth,h:window.innerHeight}});})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d6-shot-800-transparent-chat"
+  },
+  {
+    "op": "console",
+    "tail": 15
+  }
+]

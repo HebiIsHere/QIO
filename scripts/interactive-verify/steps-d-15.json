@@ -1,0 +1,24 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();await new Promise(r=>setTimeout(r,900));const pop=document.querySelector('[data-im=\"tasks-popover\"]');const pr=pop?pop.getBoundingClientRect():null;const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');const strip=card?card.getBoundingClientRect():null;const id=card?card.getAttribute('data-intent-id'):null;const prev=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>0&&r.height>0).sort((a,b)=>a.width*a.height-b.width*b.height)[0]:null;return JSON.stringify({popover:pr?{x:Math.round(pr.x),y:Math.round(pr.y),w:Math.round(pr.width),h:Math.round(pr.height)}:null,strip:strip?{x:Math.round(strip.x),y:Math.round(strip.y),w:Math.round(strip.width),h:Math.round(strip.height)}:null,preview:prev?{x:Math.round(prev.x),y:Math.round(prev.y),w:Math.round(prev.width),h:Math.round(prev.height)}:null,overlapPopoverStrip:pr&&strip?!(strip.right<pr.left||strip.left>pr.right||strip.bottom<pr.top||strip.top>pr.bottom):null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-48-compact-popover"
+  }
+]

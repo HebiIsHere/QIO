@@ -1,0 +1,74 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-cl-a/frontend
+
+ × src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DOM】重试只删本机冗余副本：磁盘上不许出现 cleared 依据 85ms
+   → 本机冗余副本应当被删掉（基线：留下了一条 kind=cleared）: expected { text: '', …(5) } to be null
+ × src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DOM + 关闭重开】重开后服务器稿、输入框、请求集合都保留正确正文 24ms
+   → ★重开后用户选择保留的服务器稿必须还在: expected '' to be '服务器那份草稿，用户选择了保留' // Object.is equality
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DOM】版本守卫：故障窗口里另一页面写入更新草稿时，旧重试不覆盖也不删除它 17ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4 对照] 另外三条路径各自的断言 > 对照 a：选本机 → 本机候选成为草稿并写回服务器，冲突结束且没有清除依据 23ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4 对照] 另外三条路径各自的断言 > 对照 b：普通保存成功后的本机清理 → 服务器已拿到正文，本机副本按版本清掉（不是清除） 12ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4 对照] 另外三条路径各自的断言 > 对照 c：整份清除失败后重试 → 先补写 cleared 依据（既有保护不许被撤掉） 13ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4 对照] 另外三条路径各自的断言 > 对照 d（第 7 条）：旧记录（没有 kind）绝不被当成整份清除，两份候选都保留 8ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DO
+M】重试只删本机冗余副本：磁盘上不许出现 cleared 依据
+AssertionError: 本机冗余副本应当被删掉（基线：留下了一条 kind=cleared）: expected { text: '', …(5) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "boardId": "board_default",
+  "kind": "cleared",
+  "seq": 1,
+  "text": "",
+  "updatedAt": 1791600628373,
+  "version": 2,
+}
+
+ ❯ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts:252:79
+    250|     expect(wrapper.find('[data-im="card-draft-local-removal-error"]').…
+    251|     // ★反例 R4 的核心断言：这是一次「删本机冗余副本」，不是「整份草稿清除」
+    252|     expect(readCardLocalDraft(CARD_ID), "本机冗余副本应当被删掉（基线：留下了一条 kind=cle…
+       |                                                                               ^
+    253|     expect(localStorage.getItem(cardLocalDraftStorageKey(CARD_ID)), "存…
+    254|     expect(hasCardLocalClear(CARD_ID), "★重试不许把它写成整份草稿清除的依据（R4）").toBe(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DO
+M + 关闭重开】重开后服务器稿、输入框、请求集合都保留正确正文
+AssertionError: ★重开后用户选择保留的服务器稿必须还在: expected '' to be '服务器那份草稿，用户选择了保留' // Object.is equality
+
+- Expected
++ Received
+
+- 服务器那份草稿，用户选择了保留
+
+ ❯ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts:263:68
+    261|     // 关闭重开（组件级等价物）：同一份本机存储 + 新建 pinia/store 实例
+    262|     const reopened = await reopen();
+    263|     expect(reopened.cardDraftText(CARD_ID), "★重开后用户选择保留的服务器稿必须还在").toB…
+       |                                                                    ^
+    264|     expect(reopened.draftConflictFor(CARD_ID), "重开后不该又冒出冲突").toBeNull(…
+    265|     expect(reopened.draftRemovalStateFor(CARD_KEY).status, "重开后不该产生整份清…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+   Start at  10:50:25
+   Duration  3.42s (transform 657ms, setup 31ms, import 799ms, tests 184ms, environment 2.11s)
+
+

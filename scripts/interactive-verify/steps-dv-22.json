@@ -1,0 +1,44 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();let run=j.intents.find(i=>i.status==='running');if(run)return 'already:'+run.id;for(const c of j.intents.filter(i=>i.status==='pending')){const r=await fetch(base+'/intents/'+c.id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmDependency:true})});const jj=await r.json();if(jj.ok)return JSON.stringify({id:c.id,refs:c.materialRefs})}return 'none'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const t=document.querySelector(\"[data-im=\\\"tasks-entry\\\"]\");if(!t)return 'no-entry';t.click();await new Promise(r=>setTimeout(r,900));const card=document.querySelector(\"[data-im=\\\"intent\\\"][data-docked=\\\"1\\\"]\");const pop=document.querySelector(\"[data-im=\\\"tasks-popover\\\"]\");const cr=card?card.getBoundingClientRect():null;const pr=pop?pop.getBoundingClientRect():null;const id=card?card.getAttribute('data-intent-id'):null;const prev=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>0&&r.height>0).sort((a,b)=>a.width*a.height-b.width*b.height)[0]:null;return JSON.stringify({popover:pr?{x:Math.round(pr.x),y:Math.round(pr.y),w:Math.round(pr.width),h:Math.round(pr.height)}:null,strip:cr?{x:Math.round(cr.x),y:Math.round(cr.y),w:Math.round(cr.width),h:Math.round(cr.height)}:null,preview:prev?{x:Math.round(prev.x),y:Math.round(prev.y),w:Math.round(prev.width),h:Math.round(prev.height)}:null,within:cr?cr.x>=0&&cr.y>=0&&cr.right<=window.innerWidth&&cr.bottom<=window.innerHeight:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-31-docked-strip"
+  }
+]

@@ -1,0 +1,73 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8896/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});try{localStorage.removeItem('qio.interactive.intentBatches')}catch(e){}const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const c=(await r.json()).created;return JSON.stringify({created:c.length})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector('[data-im=\"batch-entry\"]');if(e)e.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "wait",
+    "ms": 900
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector('[data-im=\"batch-list\"]');const bar=document.querySelector('[data-im=\"board-toolbar\"]');const submit=document.querySelector('[data-im=\"submit\"]');const pr=panel?panel.getBoundingClientRect():null;const br=bar?bar.getBoundingClientRect():null;const sr=submit?submit.getBoundingClientRect():null;const vis=el=>{if(!el)return null;const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&r.top>=-1&&r.bottom<=window.innerHeight+1};return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],panel:pr?{top:Math.round(pr.top),bottom:Math.round(pr.bottom)}:null,toolbar:br?{top:Math.round(br.top),bottom:Math.round(br.bottom)}:null,panelOverToolbar:pr&&br?pr.bottom>br.top:null,entryVisible:vis(document.querySelector('[data-im=\"batch-entry\"]')),submitVisible:vis(submit),submitRect:sr?{top:Math.round(sr.top),bottom:Math.round(sr.bottom)}:null,overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-14-narrow-800-dark"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{document.documentElement.setAttribute('data-theme','light');const bg=getComputedStyle(document.body).backgroundColor;const panel=document.querySelector('[data-im=\"batch-list\"]');return JSON.stringify({theme:document.documentElement.getAttribute('data-theme'),bodyBg:bg,panelBg:panel?getComputedStyle(panel).backgroundColor:null})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-15-narrow-800-light"
+  }
+]

@@ -162,6 +162,24 @@ def topic(ctx: AppContext) -> str:
     return ctx.topics.nodes.create_topic("测试话题").id
 
 
+#: 「事件循环被单次同步重活占住」的预算下限（毫秒）——安静机器上的硬线。
+LOOP_STALL_BUDGET_MS = 100.0
+#: 预算与本次**刺激时长**的比例：重活真被搬走时，停顿只应是它的一小部分。
+LOOP_STALL_BUDGET_FRACTION = 0.5
+#: 「慢替身」的时长：必须显著高于机器噪声地板（共享 runner 光 fsync / 线程调度
+#: 就能到 104–118 ms，2026-10-11 main run 实测），否则 400ms 级阻塞会被地板淹没。
+SLOW_STIMULUS_SECONDS = 0.6
+
+
+def loop_stall_budget_ms(stimulus_ms: float) -> float:
+    """本次允许的最大单次停顿：安静机器上仍是 100 ms 硬线，噪声大的机器上按刺激比例。
+
+    反例（修复前）会让停顿≈整段刺激时长（数百毫秒），所以「按刺激比例」既保留了
+    鉴别力，又不会被环境地板（共享 runner 实测 118 ms）判成假红。
+    """
+    return max(LOOP_STALL_BUDGET_MS, stimulus_ms * LOOP_STALL_BUDGET_FRACTION)
+
+
 async def _measure_loop_lag(work, *, tick: float = 0.005):
     """跑 `work()`，期间测事件循环的**最大停顿**（毫秒）。
 
@@ -222,7 +240,7 @@ async def test_health_probe_stays_responsive_while_slow_prediction_runs(
     修复前：预判直接跑在事件循环上（还带一次冷启动向量补算）→ 停顿 = 整个推理
     时长；修复后：推理进有上限的工作线程 → 停顿只剩心跳本身。
     """
-    slow = _SlowEmbedding(delay=0.2)
+    slow = _SlowEmbedding(delay=SLOW_STIMULUS_SECONDS)
     monkeypatch.setattr(ctx.predictor, "embedding", slow)
 
     result, gap_ms = await _measure_loop_lag(
@@ -231,7 +249,12 @@ async def test_health_probe_stays_responsive_while_slow_prediction_runs(
 
     assert result["ok"] is True
     assert slow.calls >= 1, "这一轮应该真的走到了嵌入（否则测的不是慢推理）"
-    assert gap_ms < 100, f"慢推理期间事件循环被占住 {gap_ms:.0f} ms（健康探测要等这么久）"
+    budget = loop_stall_budget_ms(SLOW_STIMULUS_SECONDS * 1000)
+    assert gap_ms < budget, (
+        f"慢推理期间事件循环被占住 {gap_ms:.0f} ms（预算 {budget:.0f} ms = "
+        f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
+        f"{SLOW_STIMULUS_SECONDS * 1000:.0f}ms)）——健康探测要等这么久"
+    )
 
 
 async def test_slow_retrieval_does_not_block_the_loop(
@@ -243,7 +266,7 @@ async def test_slow_retrieval_does_not_block_the_loop(
     `app.build_injection` 交给执行器跑的（这条路径只读、无事务）。整轮一起量会
     掺进轮末与后台派生工作的耗时，看不出检索本身有没有被搬走。
     """
-    slow = _SlowRecall(delay=0.2)
+    slow = _SlowRecall(delay=SLOW_STIMULUS_SECONDS)
     monkeypatch.setattr(ctx.selector, "recall", slow)
 
     _, gap_ms = await _measure_loop_lag(
@@ -253,7 +276,12 @@ async def test_slow_retrieval_does_not_block_the_loop(
     )
 
     assert slow.searches >= 1, "这一轮应该真的走到了向量召回"
-    assert gap_ms < 100, f"慢检索期间事件循环被占住 {gap_ms:.0f} ms"
+    budget = loop_stall_budget_ms(SLOW_STIMULUS_SECONDS * 1000)
+    assert gap_ms < budget, (
+        f"慢检索期间事件循环被占住 {gap_ms:.0f} ms（预算 {budget:.0f} ms = "
+        f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
+        f"{SLOW_STIMULUS_SECONDS * 1000:.0f}ms)）"
+    )
 
 
 async def test_a_slow_retrieval_does_not_stall_the_turn_loop(

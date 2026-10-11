@@ -1,0 +1,164 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/qio-cl-a/frontend
+
+ ✓ src/stores/__tests__/d6CardProtect.test.ts (14 tests) 85ms
+ ❯ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts (7 tests | 2 failed) 187ms
+     × 【组件/DOM】重试只删本机冗余副本：磁盘上不许出现 cleared 依据 62ms
+     × 【组件/DOM + 关闭重开】重开后服务器稿、输入框、请求集合都保留正确正文 27ms
+     ✓ 【组件/DOM】版本守卫：故障窗口里另一页面写入更新草稿时，旧重试不覆盖也不删除它 30ms
+     ✓ 对照 a：选本机 → 本机候选成为草稿并写回服务器，冲突结束且没有清除依据 32ms
+     ✓ 对照 b：普通保存成功后的本机清理 → 服务器已拿到正文，本机副本按版本清掉（不是清除） 15ms
+     ✓ 对照 c：整份清除失败后重试 → 先补写 cleared 依据（既有保护不许被撤掉） 18ms
+     ✓ 对照 d（第 7 条）：旧记录（没有 kind）绝不被当成整份清除，两份候选都保留 2ms
+ ✓ src/stores/__tests__/eventBufferOverflow.test.ts (5 tests) 327ms
+ ✓ src/components/interactive/__tests__/BoardToolbar.test.ts (11 tests) 348ms
+ ✓ src/stores/__tests__/final-b2-chatTopicDrafts.test.ts (7 tests) 58ms
+ ✓ src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts (1 test) 194ms
+ ✓ src/interactive/__tests__/boardCanvas.test.ts (24 tests) 1172ms
+ ✓ src/stores/__tests__/approvalInvalidation.test.ts (5 tests) 368ms
+     ✓ 默认动画下也只需一个 150ms 淡出：动画结束就从 DOM 移除，无需刷新  311ms
+ ✓ src/components/interactive/__tests__/final-a3-05-conflict-paths.test.ts (4 tests) 177ms
+ ✓ src/interactive/__tests__/batchTray.test.ts (16 tests) 368ms
+ ✓ src/components/interactive/__tests__/IntentBatchTraySwitchBar.test.ts (11 tests) 784ms
+ ✓ src/stores/__tests__/draftPersistence.test.ts (15 tests) 266ms
+ ✓ src/interactive/__tests__/chat.test.ts (24 tests) 348ms
+ ✓ src/stores/__tests__/d4ChatDraftRace.verify.test.ts (18 tests) 516ms
+ ✓ src/components/interactive/__tests__/final-a3-01-late-read-draft.test.ts (3 tests) 148ms
+ ✓ src/components/interactive/__tests__/SubmitClusterFailure.test.ts (8 tests) 187ms
+ ✓ src/components/interactive/__tests__/final-a3-07-draft-clear-binding.test.ts (5 tests) 226ms
+ ✓ src/interactive/__tests__/final-d-space-reset.test.ts (5 tests) 136ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.test.ts (19 tests) 201ms
+ ✓ src/stores/__tests__/d6CardConflictChoice.verify.test.ts (7 tests) 232ms
+ ✓ src/components/interactive/__tests__/d5bSwitchBarGeometry.verify.test.ts (3 tests) 131ms
+ ✓ src/stores/__tests__/d4CardDraftRace.verify.test.ts (10 tests) 357ms
+ ✓ src/components/interactive/__tests__/d6SwitchBarOnlyWhenSecondPane.verify.test.ts (2 tests) 50ms
+ ✓ src/interactive/__tests__/final-d-canvas-locate.test.ts (6 tests) 299ms
+ ✓ src/interactive/__tests__/final-d-tasks-locate.test.ts (2 tests) 51ms
+ ✓ src/interactive/__tests__/impactDialog.test.ts (8 tests) 289ms
+ ✓ src/components/interactive/__tests__/d5bSubmitReason.verify.test.ts (3 tests) 60ms
+ ✓ src/stores/__tests__/d5SendRecovery.test.ts (13 tests) 89ms
+ ✓ src/stores/__tests__/d6CardDraftConflict.verify.test.ts (6 tests) 161ms
+ ✓ src/stores/__tests__/session.test.ts (13 tests) 33ms
+ ✓ src/interactive/__tests__/final-a2-card-draft-hint.test.ts (8 tests) 54ms
+ ✓ src/interactive/__tests__/final-lead-m07-clear-binding.test.ts (3 tests) 47ms
+ ✓ src/stores/__tests__/d6SendProtection.test.ts (9 tests) 122ms
+ ✓ src/stores/__tests__/turnSequences.test.ts (20 tests) 69ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts (14 tests) 23ms
+ ✓ src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts (1 test) 118ms
+ ✓ src/stores/__tests__/final-b2-sendIdentity.test.ts (3 tests) 86ms
+ ✓ src/stores/__tests__/events.test.ts (20 tests) 100ms
+ ✓ src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts (2 tests) 181ms
+ ✓ src/stores/__tests__/final-b2-reopenResend.test.ts (5 tests) 110ms
+ ✓ src/stores/__tests__/d6FailedSendProtection.verify.test.ts (4 tests) 176ms
+ ✓ src/stores/__tests__/eventBufferOverflow.verify.test.ts (4 tests) 26645ms
+     ✓ 同步期间灌入 2 万条事件：缓存必须有界，不能无限增长  18611ms
+     ✓ 溢出时必须标记「需要重新同步」，不能静默丢事件  3442ms
+     ✓ 溢出之后不得宣称已同步（resyncState 不能停在 normal）  4582ms
+ ✓ src/interactive/__tests__/approval.test.ts (54 tests) 126ms
+ ✓ src/stores/__tests__/finalAnswer.test.ts (11 tests) 94ms
+ ✓ src/interactive/__tests__/board.test.ts (66 tests) 69ms
+ ✓ src/stores/__tests__/toolRecovery.test.ts (13 tests) 97ms
+ ✓ src/stores/__tests__/phase3Cards.test.ts (19 tests) 117ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts (4 tests) 65ms
+ ✓ src/stores/__tests__/eventOwnership.test.ts (8 tests) 113ms
+ ✓ src/stores/__tests__/historyRace.verify.test.ts (7 tests) 31ms
+ ✓ src/stores/__tests__/resyncProtocol.test.ts (9 tests) 42ms
+ ✓ src/stores/__tests__/d5bFailedSendPersist.verify.test.ts (3 tests) 39ms
+ ✓ src/interactive/__tests__/final-a2-reopen-cleared.test.ts (4 tests) 55ms
+ ✓ src/stores/__tests__/d5RecoveryOrdering.verify.test.ts (4 tests) 31ms
+ ✓ src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts (1 test) 30ms
+ ✓ src/stores/__tests__/historyPagination.test.ts (7 tests) 47ms
+ ✓ src/stores/__tests__/toolRecordHistory.test.ts (6 tests) 33ms
+ ✓ src/stores/__tests__/d5bCardsIsolation.verify.test.ts (2 tests) 29ms
+ ✓ src/stores/__tests__/devTasks.test.ts (4 tests) 52ms
+ ✓ src/stores/__tests__/final-lead-m1.test.ts (10 tests) 50ms
+ ✓ src/stores/__tests__/interruptedTurns.test.ts (10 tests) 55ms
+ ✓ src/stores/__tests__/topicSwitch.test.ts (5 tests) 38ms
+ ✓ src/stores/__tests__/final-lead-m13.test.ts (1 test) 24ms
+ ✓ src/stores/__tests__/d5FailedSendRecovery.verify.test.ts (2 tests) 37ms
+ ✓ src/stores/__tests__/final-b2-readError.test.ts (5 tests) 38ms
+ ✓ src/interactive/__tests__/overlayLayout.test.ts (14 tests) 114ms
+ ✓ src/stores/__tests__/executionNarrative.test.ts (6 tests) 20ms
+ ✓ src/stores/__tests__/updaterTimers.test.ts (9 tests) 31ms
+ ✓ src/stores/__tests__/historyRace.test.ts (8 tests) 34ms
+ ✓ src/stores/__tests__/final-b2-removeDraftResult.test.ts (4 tests) 38ms
+ ✓ src/stores/__tests__/sessionFastTurn.test.ts (2 tests) 26ms
+ ✓ src/stores/__tests__/d6ClearRestoreOrdering.verify.test.ts (2 tests) 20ms
+ ✓ src/stores/__tests__/approvals.test.ts (9 tests) 19ms
+ ✓ src/stores/__tests__/approvalInvalidation.verify.test.ts (5 tests) 52ms
+ ✓ src/stores/__tests__/approvalRouting.test.ts (3 tests) 24ms
+ ✓ src/interactive/__tests__/overlaySwitchBar.test.ts (13 tests) 51ms
+ ✓ src/interactive/__tests__/viewport.test.ts (25 tests) 30ms
+ ✓ src/interactive/__tests__/submitFailureBrief.test.ts (12 tests) 8ms
+ ✓ src/stores/__tests__/updater.test.ts (11 tests) 20ms
+ ✓ src/interactive/__tests__/final-d-overlay-geometry.test.ts (17 tests) 15ms
+ ✓ src/stores/__tests__/onboarding.test.ts (5 tests) 35ms
+ ✓ src/interactive/__tests__/drafts.test.ts (8 tests) 9ms
+ ✓ src/stores/__tests__/turnEnd.test.ts (2 tests) 14ms
+ ✓ src/interactive/__tests__/final-a2-clear-protection.test.ts (9 tests) 15ms
+ ✓ src/interactive/__tests__/final-a2-long-draft-local-copy.test.ts (8 tests) 13ms
+ ✓ src/interactive/__tests__/submission.test.ts (16 tests) 12ms
+ ✓ src/stores/__tests__/ui.test.ts (3 tests) 9ms
+ ✓ src/interactive/__tests__/final-a2-drafts-removal-result.test.ts (12 tests) 13ms
+ ✓ src/interactive/__tests__/overlaySwitchAvailability.test.ts (9 tests) 8ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DO
+M】重试只删本机冗余副本：磁盘上不许出现 cleared 依据
+AssertionError: 本机冗余副本应当被删掉（基线：留下了一条 kind=cleared）: expected { text: '', …(5) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "boardId": "board_default",
+  "kind": "cleared",
+  "seq": 1,
+  "text": "",
+  "updatedAt": 1791600550671,
+  "version": 2,
+}
+
+ ❯ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts:252:79
+    250|     expect(wrapper.find('[data-im="card-draft-local-removal-error"]').…
+    251|     // ★反例 R4 的核心断言：这是一次「删本机冗余副本」，不是「整份草稿清除」
+    252|     expect(readCardLocalDraft(CARD_ID), "本机冗余副本应当被删掉（基线：留下了一条 kind=cle…
+       |                                                                               ^
+    253|     expect(localStorage.getItem(cardLocalDraftStorageKey(CARD_ID)), "存…
+    254|     expect(hasCardLocalClear(CARD_ID), "★重试不许把它写成整份草稿清除的依据（R4）").toBe(…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/components/interactive/__tests__/closure-a-r4-reopen.test.ts > [R4] 选服务器稿 → 本机副本删除失败 → 恢复后重试 → 关闭重开 > 【组件/DO
+M + 关闭重开】重开后服务器稿、输入框、请求集合都保留正确正文
+AssertionError: ★重开后用户选择保留的服务器稿必须还在: expected '' to be '服务器那份草稿，用户选择了保留' // Object.is equality
+
+- Expected
++ Received
+
+- 服务器那份草稿，用户选择了保留
+
+ ❯ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts:263:68
+    261|     // 关闭重开（组件级等价物）：同一份本机存储 + 新建 pinia/store 实例
+    262|     const reopened = await reopen();
+    263|     expect(reopened.cardDraftText(CARD_ID), "★重开后用户选择保留的服务器稿必须还在").toB…
+       |                                                                    ^
+    264|     expect(reopened.draftConflictFor(CARD_ID), "重开后不该又冒出冲突").toBeNull(…
+    265|     expect(reopened.draftRemovalStateFor(CARD_KEY).status, "重开后不该产生整份清…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 88 passed (89)
+      Tests  2 failed | 833 passed (835)
+   Start at  10:48:59
+   Duration  56.70s (transform 22.67s, setup 2.15s, import 69.39s, tests 37.52s, environment 637.06s)
+

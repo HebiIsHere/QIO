@@ -1,0 +1,6 @@
+﻿并发敏感用例交错抽样（同机、交替运行）：每个后端都 cd 到自己的目录后再跑；5 轮
+round1: 基线 exit=0 (通过) | 候选 exit=0 (通过)
+round2: 基线 exit=0 (通过) | 候选 exit=0 (通过)
+round3: 基线 exit=0 (通过) | 候选 exit=0 (通过)
+round4: 基线 exit=0 (通过) | 候选 exit=0 (通过)
+round5: 基线 exit=0 (通过) | 候选 exit=0 (通过)

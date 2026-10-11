@@ -1,0 +1,108 @@
+﻿uv : Uninstalled 1 package in 3ms
+At line:1 char:278
++ ... ull; $out = uv run --frozen --extra dev pytest tests/test_state_recov ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Uninstalled 1 package in 3ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Installed 1 package in 14ms
+F.FF                                                                     [100%]
+================================== FAILURES ===================================
+_______________ test_sr_n1_stale_whole_board_write_is_rejected ________________
+
+client = <starlette.testclient.TestClient object at 0x0000025A6C3A5E10>
+
+    def test_sr_n1_stale_whole_board_write_is_rejected(client: TestClient):
+        """N1：用旧版本事实的普通整板写入必须 409 stale_state，且不落库、不推进快照。"""
+        _seed(client)
+        # 用户正常保存一次：版本前进，记录下新的已保存内容与 seq
+        saved = _put_current(
+            client, lambda state: state["cards"][0].__setitem__("content", "材料一（已保存）")
+        )
+        assert saved["seq"] == _state(client)["seq"]
+    
+        # 另一个页面/一次迟到的写入仍然带着**旧版本**（seq=0）和不同内容
+        current = _state(client)["state"]
+        stale = {**current, "seq": 0}
+        stale["cards"] = [
+            {**c, "content": "迟到的旧候选（会覆盖已保存版本）"} if c["id"] == "m1" else c
+            for c in stale["cards"]
+        ]
+        stale_resp = _put(client, stale)
+>       assert stale_resp.status_code == 409, (
+            "用旧版本事实的整板写入被接受了（N1）：" + stale_resp.text
+        )
+E       AssertionError: 用旧版本事实的整板写入被接受了（N1）：{"ok":true,"seq":3,"savedAt":"2026-10-10T07:41:17.833603+00:00","state":{"boardId":"board_state_recovery_d","seq":3,"updatedAt":"2026-10-10T07:41:17.833603+00:00","cards":[{"id":"m1","kind":"file","content":"迟到的旧候选（会覆盖已保存版本）","meta":{"name":"a.pdf"},"x":0.0,"y":0.0,"w":240.0,"h":120.0,"checked":false,"hidden":false,"folded":false,"bookmarked":false,"deleted":false,"createdAt":"2026-10-10T07:41:17.748774+00:00","updatedAt":"2026-10-10T07:41:17.748774+00:00"},{"id":"m2","kind":"file","content":"材料二","meta":{"name":"b.pdf"},"x":0.0,"y":0.0,"w":240.0,"h":120.0,"checked":false,"hidden":false,"folded":false,"bookmarked":false,"deleted":false,"createdAt":"2026-10-10T07:41:17.748774+00:00","updatedAt":"2026-10-10T07:41:17.748774+00:00"},{"id":"n1","kind":"text","content":"我的注释","meta":{},"x":0.0,"y":0.0,"w":240.0,"h":120.0,"checked":true,"hidden":false,"folded":false,"bookmarked":false,"deleted":false,"createdAt":"2026-10-10T07:41:17.748774+00:00","updatedAt":"2026-10-10T07:41:17.748774+00:00"}],"groups":[],"links":[],"selection":[]},"pending":{"baselineSeq":null,"expressions":[{"id":"x_42193e1a9acb","kind":"material_added","intentBearing":false,"summary":"新增材料（file）：a.pdf","cardIds":["m1"],"groupId":null,"linkId":null},{"id":"x_df98192baa4b","kind":"material_added","intentBearing":false,"summary":"新增材料（file）：b.pdf","cardIds":["m2"],"groupId":null,"linkId":null},{"id":"x_869132d78bd0","kind":"note_added","intentBearing":true,"summary":"新增注释：我的注释","cardIds":["n1"],"groupId":null,"linkId":null}],"updatedAt":"2026-10-10T07:41:17.837818+00:00"},"materialImpact":{"paused":[],"affected":[]},"confirmedCheckId":null}
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+
+tests\test_state_recovery_d_acceptance.py:155: AssertionError
+______ test_sr_n4_revert_rest_only_processes_explicitly_chosen_decisions ______
+
+client = <starlette.testclient.TestClient object at 0x0000025A6C720650>
+
+    def test_sr_n4_revert_rest_only_processes_explicitly_chosen_decisions(client: TestClient):
+        """N4：revert_rest 只处理这次明确展示给用户的 decisionIds，未展示项不得被顺带处理。"""
+        seeded = _seed_pending_revert(client, link_both=True)
+        pending = seeded["pending_ids"]
+        assert len(pending) >= 2, pending
+        chosen, other = pending[0], pending[1]
+    
+        resp = client.post(
+            f"/api/interactive/intents/{seeded['intent_id']}/demo/advance",
+            json={"outcome": "revert_rest", "decisionIds": [chosen]},
+        )
+        assert resp.status_code == 200, resp.text
+    
+        cards = _cards(client)
+        assert cards[chosen]["deleted"] is True, "明确选择的决定项没有被执行"
+>       assert cards[other]["deleted"] is False, "未被这次展示/选择的决定项被顺带处理了（N4）"
+E       AssertionError: 未被这次展示/选择的决定项被顺带处理了（N4）
+E       assert True is False
+
+tests\test_state_recovery_d_acceptance.py:194: AssertionError
+__________ test_sr_n4_revert_rest_rechecks_content_before_executing ___________
+
+client = <starlette.testclient.TestClient object at 0x0000025A6C86E410>
+
+    def test_sr_n4_revert_rest_rechecks_content_before_executing(client: TestClient):
+        """N4：执行前重核对象当前内容 —— 说明之后新增的编辑不许被旧决定顺带删除。"""
+        seeded = _seed_pending_revert(client, link_both=False)
+        target = seeded["pending_ids"][0]
+    
+        # 用户在「等待决定」之后又改了这张卡片（新增内容），并新建了一条关系
+        def mutate(state: dict) -> None:
+            for card in state["cards"]:
+                if card["id"] == target:
+                    card["content"] = "用户后来补写的新内容"
+            state["links"].append(
+                models.new_link(
+                    target, seeded["applied_ids"][1], direction=False, meaning="后来建立的关系"
+                )
+            )
+    
+        _put_current(client, mutate)
+        assert _cards(client)[target]["content"] == "用户后来补写的新内容"
+    
+        resp = client.post(
+            f"/api/interactive/intents/{seeded['intent_id']}/demo/advance",
+            json={"outcome": "revert_rest", "decisionIds": [target]},
+        )
+        assert resp.status_code == 200, resp.text
+    
+        card = _cards(client)[target]
+>       assert card["deleted"] is False, "旧决定把等待期间新增了内容的卡片顺带删掉了（N4）"
+E       AssertionError: 旧决定把等待期间新增了内容的卡片顺带删掉了（N4）
+E       assert True is False
+
+tests\test_state_recovery_d_acceptance.py:226: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-src-d\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_state_recovery_d_acceptance.py::test_sr_n1_stale_whole_board_write_is_rejected
+FAILED tests/test_state_recovery_d_acceptance.py::test_sr_n4_revert_rest_only_processes_explicitly_chosen_decisions
+FAILED tests/test_state_recovery_d_acceptance.py::test_sr_n4_revert_rest_rechecks_content_before_executing

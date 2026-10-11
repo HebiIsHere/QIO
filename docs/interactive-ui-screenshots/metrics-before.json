@@ -1,0 +1,164 @@
+{
+  "label": "before",
+  "app": "http://127.0.0.1:5421",
+  "backend": "http://127.0.0.1:8921",
+  "measuredAt": "2026-10-07T08:23:14.375Z",
+  "results": {
+    "1440x900": {
+      "toolbar": {
+        "l": 261,
+        "t": 712,
+        "r": 1047,
+        "b": 884,
+        "w": 786,
+        "h": 172
+      },
+      "toolbarRows": 4,
+      "submit": {
+        "l": 918,
+        "t": 805,
+        "r": 1034,
+        "b": 846,
+        "w": 116,
+        "h": 41
+      },
+      "submitHit": true,
+      "chat": {
+        "l": 1004,
+        "t": 121,
+        "r": 1424,
+        "b": 641,
+        "w": 420,
+        "h": 520
+      },
+      "batch": {
+        "l": 1024,
+        "t": 105,
+        "r": 1424,
+        "b": 439,
+        "w": 400,
+        "h": 334
+      },
+      "overlapChatBatch": 127200,
+      "cardToolbar": {
+        "l": 60,
+        "t": 121,
+        "r": 480,
+        "b": 180,
+        "w": 420,
+        "h": 59
+      },
+      "connectPoint": {
+        "x": 200,
+        "y": 172,
+        "hitIm": "tb-note",
+        "isPoint": false
+      },
+      "overflowX": false
+    },
+    "1024x768": {
+      "toolbar": {
+        "l": 178,
+        "t": 520,
+        "r": 742,
+        "b": 756,
+        "w": 564,
+        "h": 236
+      },
+      "toolbarRows": 5,
+      "submit": {
+        "l": 756,
+        "t": 661,
+        "r": 872,
+        "b": 702,
+        "w": 116,
+        "h": 41
+      },
+      "submitHit": true,
+      "chat": {
+        "l": 588,
+        "t": 49,
+        "r": 1008,
+        "b": 449,
+        "w": 420,
+        "h": 400
+      },
+      "batch": {
+        "l": 608,
+        "t": 105,
+        "r": 1008,
+        "b": 439,
+        "w": 400,
+        "h": 334
+      },
+      "overlapChatBatch": 133600,
+      "cardToolbar": {
+        "l": 60,
+        "t": 355,
+        "r": 480,
+        "b": 414,
+        "w": 420,
+        "h": 59
+      },
+      "connectPoint": {
+        "x": 200,
+        "y": 172,
+        "hitIm": "connect-point",
+        "isPoint": true
+      },
+      "overflowX": false
+    },
+    "800x600": {
+      "toolbar": {
+        "l": 134,
+        "t": 283,
+        "r": 578,
+        "b": 592,
+        "w": 444,
+        "h": 309
+      },
+      "toolbarRows": 6,
+      "submit": {
+        "l": 463,
+        "t": 518,
+        "r": 569,
+        "b": 583,
+        "w": 106,
+        "h": 65
+      },
+      "submitHit": true,
+      "chat": {
+        "l": 364,
+        "t": -19,
+        "r": 784,
+        "b": 341,
+        "w": 420,
+        "h": 360
+      },
+      "batch": {
+        "l": 392,
+        "t": 97,
+        "r": 792,
+        "b": 339,
+        "w": 400,
+        "h": 242
+      },
+      "overlapChatBatch": 94864,
+      "cardToolbar": {
+        "l": 60,
+        "t": 355,
+        "r": 480,
+        "b": 414,
+        "w": 420,
+        "h": 59
+      },
+      "connectPoint": {
+        "x": 200,
+        "y": 172,
+        "hitIm": "connect-point",
+        "isPoint": true
+      },
+      "overflowX": false
+    }
+  }
+}

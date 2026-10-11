@@ -1,0 +1,32 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const card=document.querySelector('[data-card-id=\"c_mux78x2q1k49x\"]');card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await new Promise(r=>setTimeout(r,350));const bar=document.querySelector('[data-im=\"card-toolbar\"]');const box=bar?bar.querySelector('[data-im=\"check\"]'):document.querySelector('[data-im=\"check\"][data-card-id=\"c_mux78x2q1k49x\"]');if(!box)return 'no-check:'+JSON.stringify(bar?bar.innerText.slice(0,120):null);box.checked=true;box.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,2000));const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/visible-range')).json();return JSON.stringify({checked:true,visible:j.visibleRange.cards.map(c=>({kind:c.kind,content:(c.content||'').slice(0,24)})),notVisibleCount:j.visibleRange.notVisibleCount})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-11-checked-comment-visible"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const card=document.querySelector('[data-card-id=\"c_mux78x2q1k49x\"]');card.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await new Promise(r=>setTimeout(r,350));const bar=document.querySelector('[data-im=\"card-toolbar\"]');const box=bar?bar.querySelector('[data-im=\"check\"]'):null;if(!box)return 'no-check';box.checked=false;box.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,2000));const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/visible-range')).json();return JSON.stringify({visible:j.visibleRange.cards.map(c=>c.kind),notVisibleCount:j.visibleRange.notVisibleCount,leak:JSON.stringify(j.visibleRange).includes('未勾选的注释文字')})})()"
+  }
+]

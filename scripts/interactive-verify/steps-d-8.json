@@ -1,0 +1,85 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const open=j.intents.filter(i=>['pending','needs_update','waiting_dependency','waiting_confirm'].includes(i.status)).map(i=>i.id);if(open.length)await fetch(base+'/intents/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:[],reject:open})});localStorage.removeItem('qio.interactive.intentBatches');const r=await fetch(base+'/boards/board_default/intents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({demo:true})});const created=(await r.json()).created;return JSON.stringify({rejected:open.length,created:created.length})})()"
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const e=document.querySelector('[data-im=\"batch-entry\"]');e.click();return 'expanded'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const boxes=[...document.querySelectorAll('[data-im=\"batch-item\"] input[type=checkbox]')];boxes[0].checked=true;boxes[0].dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,250));return JSON.stringify({approve:document.querySelector('[data-im=\"batch-approve\"]').textContent.trim(),reject:document.querySelector('[data-im=\"batch-reject\"]').textContent.trim()})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"batch-reject\"]').click();await new Promise(r=>setTimeout(r,1800));const j=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();return JSON.stringify({notice:(document.querySelector('[data-im=\"batch-notice\"]')||{}).textContent,statuses:j.intents.slice(-4).map(i=>i.status)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-40-batch-partial-reject"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();return 'tasks-open'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');if(!card)return 'no-docked';const r=card.getBoundingClientRect();const board=document.querySelector('[data-im=\"board\"]').getBoundingClientRect();return JSON.stringify({docked:true,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)},board:{x:Math.round(board.x),y:Math.round(board.y),w:Math.round(board.width),h:Math.round(board.height)},text:card.innerText.replace(/\\n/g,' | ').slice(0,220)})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-41-docked-approval-strip"
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 720
+  },
+  {
+    "op": "wait",
+    "ms": 600
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({overflowX:document.documentElement.scrollWidth>window.innerWidth,docked:!!document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]'),batchEntry:!!document.querySelector('[data-im=\"batch-entry\"]'),toolbarCount:document.querySelectorAll('[data-im=\"board-toolbar\"]').length,bars:[...document.querySelectorAll('[role=\"toolbar\"]')].map(e=>e.getBoundingClientRect().top)})"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-42-narrow-800"
+  }
+]

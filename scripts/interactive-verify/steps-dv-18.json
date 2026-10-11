@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();return JSON.stringify({groups:st.state.groups.map(g=>({id:g.id,name:g.name,defaultName:g.defaultName,members:g.members.length}))})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const frame=document.querySelector('.group-frame')||document.querySelector('[data-group-id]');if(!frame)return 'no-frame';const nameEl=frame.querySelector('.group-name, .name');if(!nameEl)return 'no-name';nameEl.click();return 'clicked-name'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 400
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({inputs:[...document.querySelectorAll('input[type=text]')].map(i=>({cls:i.className,value:i.value,ph:i.placeholder})).slice(0,8)})"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-25-group-rename"
+  }
+]

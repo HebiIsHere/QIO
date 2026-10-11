@@ -20,19 +20,52 @@
  * 截图输出目录：%TEMP%\qio-visual\shots；Chrome 用户目录：%TEMP%\qio-chrome-profile。
  * 需要 Chrome（脚本顶部 CHROME 常量，可按机器修改）。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const PORT = 9333;
-const PROFILE = `${process.env.TEMP}\\qio-chrome-profile`;
-const OUT = `${process.env.TEMP}\\qio-visual\\shots`;
+/**
+ * 端口与用户目录可用环境变量覆盖。
+ *
+ * 为什么需要：这个脚本原来固定用 9333 端口 + 同一个用户目录，多个智能体/多个验收脚本
+ * **同时**跑时会互相抢同一个调试端口与同一个 Chrome 实例，表现是「探针卡住不返回」
+ * 或者别人的运行被打断。各自给一份就能并行：
+ *   $env:QIO_PROBE_PORT = "9341"; $env:QIO_PROBE_PROFILE = "$env:TEMP\qio-chrome-a"
+ */
+const PORT = Number(process.env.QIO_PROBE_PORT || 9333);
+const PROFILE = process.env.QIO_PROBE_PROFILE || `${process.env.TEMP}\\qio-chrome-profile`;
+const OUT = process.env.QIO_PROBE_OUT || `${process.env.TEMP}\\qio-visual\\shots`;
 mkdirSync(OUT, { recursive: true });
 
 import { readFileSync } from "node:fs";
 const rawArg = process.argv[2] ?? "[]";
 const steps = JSON.parse(rawArg.startsWith("@") ? readFileSync(rawArg.slice(1), "utf8") : rawArg);
+
+/**
+ * 调试端口已被占用 = 上一次探针留下的 Chrome 还活着（它可能已经卡住，
+ * 这时新实例连不上端口，表现为「探针卡住不返回」）。先清掉同 profile 的僵尸再启动。
+ *
+ * 只在端口被占用时才做这件事：正常情况下不引入额外开销。
+ */
+function killStaleChrome() {
+  if (process.platform !== "win32") return;
+  const probe = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      `$p = Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue; if (-not $p) { 'free' } else { Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*${PROFILE}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; 'killed' }`,
+    ],
+    { encoding: "utf8" },
+  );
+  if ((probe.stdout || "").includes("killed")) {
+    // 给系统一点时间释放端口与 profile 锁
+    const until = Date.now() + 1500;
+    while (Date.now() < until) { /* 串行等待 */ }
+  }
+}
+killStaleChrome();
 
 const chrome = spawn(
   CHROME,
@@ -166,6 +199,64 @@ for (const step of steps) {
         results.push({ op: "eval", value: r.result?.value, error: r.exceptionDetails?.text });
         break;
       }
+      /**
+       * 真实鼠标拖拽，**锚点在页面里现量**。
+       *
+       * 为什么需要：验收脚本过去在「上一个会话」里量卡片坐标、在「这个会话」里按下去，
+       * 两次会话之间顶部栏高度可能变（实测差 28px），落点就跑到卡片上方，链接/成组都做不出来，
+       * 表现为「时好时坏」。这个操作在**同一个会话里**先解析锚点再派发真实鼠标事件。
+       *
+       * 用法：{ op:"drag", from:{selector,fx,fy} | {x,y}, to:{selector,fx,fy} | {x,y}, steps?:6, hold?:ms, shot?:name }
+       * fx/fy 是相对锚点矩形的位置比例（默认 0.5 居中）。
+       */
+      case "drag": {
+        const resolve = async (spec) => {
+          if (spec && typeof spec.x === "number" && typeof spec.y === "number") return { x: spec.x, y: spec.y };
+          if (!spec || !spec.selector) return null;
+          const expr =
+            "(function(){const e=document.querySelector(" + JSON.stringify(spec.selector) + ");" +
+            "if(!e)return null;const r=e.getBoundingClientRect();" +
+            "return JSON.stringify({x:Math.round(r.left+r.width*" + (spec.fx ?? 0.5) + "),y:Math.round(r.top+r.height*" + (spec.fy ?? 0.5) + ")});})()";
+          const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true });
+          const value = r.result?.value;
+          return value ? JSON.parse(value) : null;
+        };
+        const from = await resolve(step.from);
+        const to = await resolve(step.to);
+        if (!from || !to) {
+          results.push({ op: "drag", error: "锚点没找到", from: !!from, to: !!to });
+          break;
+        }
+        await send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", clickCount: 1, buttons: 1 });
+        await sleep(step.hold ?? 110);
+        const n = step.steps ?? 6;
+        for (let i = 1; i <= n; i += 1) {
+          await send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: Math.round(from.x + ((to.x - from.x) * i) / n),
+            y: Math.round(from.y + ((to.y - from.y) * i) / n),
+            button: "left",
+            buttons: 1,
+          });
+          await sleep(step.moveMs ?? 70);
+        }
+        if (step.during) {
+          // 拖动**尚未松手**时求值（例如读「松开后合并成组」提示）
+          const during = await send("Runtime.evaluate", { expression: step.during, awaitPromise: true, returnByValue: true });
+          results.push({ op: "drag-during", value: during.result?.value, error: during.exceptionDetails?.text });
+        }
+        if (step.shot) {
+          await send("Page.captureScreenshot", { format: "png" });
+          await sleep(200);
+          const shot = await send("Page.captureScreenshot", { format: "png" });
+          writeFileSync(`${OUT}\\${step.shot}.png`, Buffer.from(shot.data, "base64"));
+          results.push({ op: "screenshot", name: step.shot });
+        }
+        await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", clickCount: 0, buttons: 0 });
+        await sleep(step.after ?? 320);
+        results.push({ op: "drag", from, to });
+        break;
+      }
       case "screenshot": {
         // 视口尺寸变化后首帧可能仍是旧缓冲：多截一次，取后一张
         await send("Page.captureScreenshot", { format: "png" });
@@ -237,6 +328,29 @@ process.stdout.write(
     2,
   ),
 );
+/*
+ * 收尾：先让浏览器**自己关掉**，再杀进程。
+ *
+ * 为什么必须这样：localStorage（草稿、批次记录）是异步落盘的，直接 kill 会丢掉刚写入的内容 ——
+ * 实测「本次会话里写进去、下一个探针会话读不到」，把「刷新后草稿还在吗」「批次记录跨会话还在吗」
+ * 这类验收全部带偏（同一个会话内 reload 是好的，跨会话就丢）。
+ * 这里先发 Browser.close 并留出落盘时间，再兜底 kill。
+ */
+try {
+  // Browser.close 属于**浏览器级**域：页面会话发它会报 "wasn't found"，所以另开一条浏览器级连接
+  const versionRes = await fetch(`http://127.0.0.1:${PORT}/json/version`);
+  const version = await versionRes.json();
+  const browserWs = new WebSocket(version.webSocketDebuggerUrl);
+  await new Promise((res) => {
+    browserWs.addEventListener("open", res);
+    browserWs.addEventListener("error", res);
+  });
+  browserWs.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+  await sleep(2000);
+  browserWs.close();
+} catch {
+  // 浏览器已经退出或不允许关闭：继续兜底
+}
 ws.close();
 chrome.kill();
 process.exit(0);

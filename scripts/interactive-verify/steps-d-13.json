@@ -1,0 +1,40 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const base='http://127.0.0.1:8894/api/interactive';const j=await (await fetch(base+'/boards/board_default/intents')).json();const run=j.intents.filter(i=>i.status==='running');if(run.length)return 'already:'+run[0].id;const cand=j.intents.filter(i=>i.status==='pending');let last=null;for(const c of cand){const r=await fetch(base+'/intents/'+c.id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmDependency:true})});const jj=await r.json();last={id:c.id,ok:jj.ok,status:jj.intent&&jj.intent.status,reason:jj.reason};if(jj.ok)return JSON.stringify(last)}return JSON.stringify(last)})()"
+  },
+  {
+    "op": "wait",
+    "ms": 700
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"tasks-entry\"]').click();await new Promise(r=>setTimeout(r,700));const card=document.querySelector('[data-im=\"intent\"][data-docked=\"1\"]');const id=card?card.getAttribute('data-intent-id'):null;const nodes=id?[...document.querySelectorAll('[data-im=\"preview\"][data-intent-id=\"'+id+'\"]')].map(e=>{const r=e.getBoundingClientRect();return {cls:e.className,w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)}}):[];const vis=nodes.filter(n=>n.w>0&&n.h>0);const strip=card?card.getBoundingClientRect():null;return JSON.stringify({id,nodes:vis,strip:strip?{x:Math.round(strip.x),y:Math.round(strip.y),w:Math.round(strip.width),h:Math.round(strip.height)}:null,within:strip?strip.x>=0&&strip.y>=0&&strip.right<=window.innerWidth&&strip.bottom<=window.innerHeight:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-46-docked-anchored"
+  }
+]

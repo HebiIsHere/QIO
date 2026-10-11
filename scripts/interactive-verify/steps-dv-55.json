@@ -1,0 +1,81 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:701,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:701}));await new Promise(r=>setTimeout(r,800));const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar.getBoundingClientRect();const inVp=(x)=>x.left>=-1&&x.right<=window.innerWidth+1&&x.top>=-1&&x.bottom<=window.innerHeight+1;const btns=[...bar.querySelectorAll('button')].map(b=>({im:b.getAttribute('data-im'),txt:b.textContent.trim(),rect:(()=>{const r=b.getBoundingClientRect();return {left:Math.round(r.left),right:Math.round(r.right),top:Math.round(r.top),bottom:Math.round(r.bottom)}})(),inside:inVp(b.getBoundingClientRect())}));const del=bar.querySelector(\"[data-im=\\\"delete-card\\\"]\");const dr=del?del.getBoundingClientRect():null;const delCenter=dr?document.elementFromPoint(dr.left+dr.width/2,dr.top+dr.height/2):null;return JSON.stringify({viewport:[window.innerWidth,window.innerHeight],bar:{left:Math.round(bb.left),right:Math.round(bb.right),top:Math.round(bb.top),bottom:Math.round(bb.bottom),w:Math.round(bb.width),h:Math.round(bb.height)},barInViewport:inVp(bb),buttons:btns,buttonsInside:btns.filter(b=>b.inside).length,deleteHit:delCenter?delCenter.getAttribute('data-im'):null,deleteClickable:delCenter===del})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-85-800-toolbar-fixed"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801}));await new Promise(r=>setTimeout(r,800));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');if(!top)return JSON.stringify({tag:\"800-第一次\",error:'no-point'});const tb=top.getBoundingClientRect();const hit=document.elementFromPoint(tb.left+tb.width/2,tb.top+tb.height/2);const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar?bar.getBoundingClientRect():null;return JSON.stringify({tag:\"800-第一次\",viewport:[window.innerWidth,window.innerHeight],card:pick.id,cardTop:Math.round(el.getBoundingClientRect().top),bar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),left:Math.round(bb.left),right:Math.round(bb.right)}:null,hit:hit?hit.getAttribute('data-im'):null,isPoint:hit===top})})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801}));await new Promise(r=>setTimeout(r,800));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');if(!top)return JSON.stringify({tag:\"800-第二次\",error:'no-point'});const tb=top.getBoundingClientRect();const hit=document.elementFromPoint(tb.left+tb.width/2,tb.top+tb.height/2);const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar?bar.getBoundingClientRect():null;return JSON.stringify({tag:\"800-第二次\",viewport:[window.innerWidth,window.innerHeight],card:pick.id,cardTop:Math.round(el.getBoundingClientRect().top),bar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),left:Math.round(bb.left),right:Math.round(bb.right)}:null,hit:hit?hit.getAttribute('data-im'):null,isPoint:hit===top})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-86-800-hit"
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[0];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801}));await new Promise(r=>setTimeout(r,800));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');if(!top)return JSON.stringify({tag:\"1440-第一次\",error:'no-point'});const tb=top.getBoundingClientRect();const hit=document.elementFromPoint(tb.left+tb.width/2,tb.top+tb.height/2);const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar?bar.getBoundingClientRect():null;return JSON.stringify({tag:\"1440-第一次\",viewport:[window.innerWidth,window.innerHeight],card:pick.id,cardTop:Math.round(el.getBoundingClientRect().top),bar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),left:Math.round(bb.left),right:Math.round(bb.right)}:null,hit:hit?hit.getAttribute('data-im'):null,isPoint:hit===top})})()"
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const st=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/state')).json();const live=st.state.cards.filter(c=>!c.deleted&&c.kind!=='reply');const pick=live[3];const el=document.querySelector('[data-card-id=\"'+pick.id+'\"]');const r=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801,buttons:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.x+r.width/2,clientY:r.y+12,pointerId:801}));await new Promise(r=>setTimeout(r,800));const top=[...document.querySelectorAll(\"[data-im=\\\"connect-point\\\"]\")].find(p=>p.getAttribute('data-side')==='top');if(!top)return JSON.stringify({tag:\"1440-第二次\",error:'no-point'});const tb=top.getBoundingClientRect();const hit=document.elementFromPoint(tb.left+tb.width/2,tb.top+tb.height/2);const bar=document.querySelector(\"[data-im=\\\"card-toolbar\\\"]\");const bb=bar?bar.getBoundingClientRect():null;return JSON.stringify({tag:\"1440-第二次\",viewport:[window.innerWidth,window.innerHeight],card:pick.id,cardTop:Math.round(el.getBoundingClientRect().top),bar:bb?{top:Math.round(bb.top),bottom:Math.round(bb.bottom),left:Math.round(bb.left),right:Math.round(bb.right)}:null,hit:hit?hit.getAttribute('data-im'):null,isPoint:hit===top})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-87-1440-hit"
+  }
+]

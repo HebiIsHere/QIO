@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 800,
+    "height": 600
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(t)t.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const dock=document.querySelector('.chat-dock');const kids=[...dock.children].map(e=>{const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {cls:e.className,tag:e.tagName,w:Math.round(r.width),h:Math.round(r.height),y:Math.round(r.y),display:cs.display,pos:cs.position,flex:cs.flex,margin:cs.margin,overflow:cs.overflow}});const cs=getComputedStyle(dock);return JSON.stringify({dockChildren:kids,dockStyle:{h:cs.height,display:cs.display,flexDir:cs.flexDirection,gap:cs.gap,overflow:cs.overflow,align:cs.alignItems},parent:dock.parentElement?dock.parentElement.className:null})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-49-chat-children"
+  }
+]

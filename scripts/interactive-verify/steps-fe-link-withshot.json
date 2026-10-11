@@ -1,0 +1,189 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 5200
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "wait",
+    "ms": 1500
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 222,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 190,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 500
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mousePressed",
+      "x": 190,
+      "y": 166,
+      "button": "left",
+      "clickCount": 1,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 90
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 237,
+      "y": 175,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 284,
+      "y": 184,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 331,
+      "y": 193,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 379,
+      "y": 203,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 426,
+      "y": 212,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseMoved",
+      "x": 474,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 1
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 60
+  },
+  {
+    "op": "screenshot",
+    "name": "fe-debug-link-mid"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({draft: !!document.querySelector('[data-im=\"link-draft\"]')})"
+  },
+  {
+    "op": "cdp",
+    "method": "Input.dispatchMouseEvent",
+    "params": {
+      "type": "mouseReleased",
+      "x": 474,
+      "y": 222,
+      "button": "left",
+      "clickCount": 0,
+      "buttons": 0
+    }
+  },
+  {
+    "op": "wait",
+    "ms": 1600
+  },
+  {
+    "op": "eval",
+    "await": true,
+    "js": "(async()=>{const raw=await (await fetch('http://127.0.0.1:8791/api/interactive/boards/board_default/state')).json();const j=raw.state||raw;return JSON.stringify({links:(j.links||[]).length});})()"
+  }
+]

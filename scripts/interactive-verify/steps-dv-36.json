@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const t=document.querySelector(\"[data-im=\\\"chat-toggle\\\"]\");if(t)t.click();return 'opened'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const panel=document.querySelector(\"[data-im=\\\"chat-panel\\\"]\");const bar=document.querySelector(\"[data-im=\\\"board-toolbar\\\"]\");const g=(e)=>{if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {top:Math.round(r.top),bottom:Math.round(r.bottom),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right),margin:cs.margin}};const pr=g(panel),br=g(bar);return JSON.stringify({panel:pr,toolbar:br,panelTopOk:pr?pr.top>=0:null,visible:pr?pr.top>=0&&pr.bottom<=window.innerHeight+1:null,overlap:pr&&br?!(pr.right<br.left||pr.left>br.right||pr.bottom<br.top||pr.top>br.bottom):null,overflowX:document.documentElement.scrollWidth>window.innerWidth})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "dv-50-1440-chat"
+  }
+]

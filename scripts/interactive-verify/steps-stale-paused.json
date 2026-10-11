@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 4500
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({cardsBefore: document.querySelectorAll('[data-im=\"card\"]').length, status: (document.querySelector('[data-im=\"save-status\"]')||{}).innerText, gate: !!document.querySelector('[data-im=\"save-impact-notice\"]')})"
+  },
+  {
+    "op": "eval",
+    "js": "document.querySelector('[data-im=\"add-text\"]').click(); 'added'"
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "screenshot",
+    "name": "im-50-save-with-stale-paused-task"
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({cardsAfter: document.querySelectorAll('[data-im=\"card\"]').length, status: (document.querySelector('[data-im=\"save-status\"]')||{}).innerText, gate: !!document.querySelector('[data-im=\"save-impact-notice\"]')})"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const r=await fetch('http://127.0.0.1:8791/api/interactive/boards/board_default/state');const j=await r.json();return JSON.stringify({savedCards: j.state.cards.filter(c=>!c.deleted).length, seq: j.seq});})()"
+  }
+]

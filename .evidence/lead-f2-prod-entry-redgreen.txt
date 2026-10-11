@@ -1,0 +1,18 @@
+F2 生产入口（store 保存成功回执的本机副本清理）红→绿证据
+
+反例：本页冲突选「用服务器上的」→ 本机旧副本已清理 → 同一浏览器另一个页面为同一张卡片写下新稿
+      → 本页另一张卡片有未保存输入触发一次草稿保存 → 成功回执按「请求时的记录版本」把新稿删掉。
+
+【红】把守卫条件临时改为 `if (false && ...)`（等价于旧实现：无条件按请求时版本清理）后：
+  cd frontend && npx vitest run src/stores/__tests__/recovery-lead-state-facts.test.ts -t "另一页面"
+  × 本页保存的成功回执不许删掉另一页面写下的新稿（正版本记录）
+    AssertionError: 另一页面写下的新稿被本页的成功回执删掉了: expected undefined to be '另一页面的新稿'
+  Tests 1 failed | 1 passed | 10 skipped (12)
+
+【绿】恢复守卫后：
+  cd frontend && npx vitest run src/stores/__tests__/recovery-lead-state-facts.test.ts
+  Tests 12 passed (12)
+
+守卫口径（Lead 的 stores/interactive.ts / flushDrafts）：请求发出时同时记录本机记录的
+{version, 内容指纹, 正文}；只有「这次真正上传给服务器的正文 === 记录的正文」才按版本/指纹清理，
+否则保留记录（并解除不再适用的删除登记）。

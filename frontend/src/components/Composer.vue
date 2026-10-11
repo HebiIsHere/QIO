@@ -43,6 +43,8 @@ import {
   type AttachmentOpCapture,
   type PendingRestorePatch,
 } from "../composables/attachmentOps";
+import FailedSendNotice from "./interactive/FailedSendNotice.vue";
+import { sendFailureText } from "../interactive/chat";
 
 const session = useSessionStore();
 /**
@@ -107,7 +109,55 @@ const continuationText = computed(() => {
     : "下一条消息将从所选历史继续";
 });
 
+/**
+ * 共享聊天草稿（store.draft）保存失败的真实原因与重试入口（收尾轮 15）。
+ *
+ * 只读会话层的状态：聊天草稿保存在本机，失败时文字仍在输入框里，
+ * 提示说的是「还没保存在本机」，不假装已保存，也不谎称发送失败。
+ */
+const chatDraftError = computed(() =>
+  session.draftSaveStatus === "error"
+    ? `这段文字还没保存在本机：${session.draftSaveError ?? "原因未知"}（文字还在输入框里，可以重试）`
+    : "",
+);
+
+/**
+ * 被让位的旧草稿（11a）：第一次把未绑定输入迁移到某个话题时，话题原本已有一份草稿，
+ * 两份都保留 —— 当前编辑的是新输入，旧那份在这里可查、可取回（互换）、可放弃。
+ */
+const displacedDraft = computed(() => session.displacedDraftsForTopic(session.currentTopicId)[0] ?? null);
+const displacedCount = computed(() => session.displacedDraftsForTopic(session.currentTopicId).length);
+const displacedSnippet = computed(() => {
+  const text = displacedDraft.value?.text ?? "";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 40 ? oneLine.slice(0, 40) + "…" : oneLine || "（空草稿）";
+});
+const displacedNotice = ref("");
+
+function restoreDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  const result = session.restoreDisplacedDraft(target.id);
+  displacedNotice.value = result.ok
+    ? "已取回那份草稿：输入框是它，刚才的文字留在入口里（两份都还在）"
+    : result.reason ?? "现在不能取回这份草稿";
+}
+
+function discardDisplaced(): void {
+  const target = displacedDraft.value;
+  if (!target) return;
+  session.discardDisplacedDraft(target.id);
+  displacedNotice.value = "已放弃这份被让位的草稿（当前输入不受影响）";
+}
+
 const cancelling = ref(false);
+/**
+ * 本次发送失败的真实原因（只显示这一次尝试，不读上一次的结果）。
+ * 没有它的话，对话页失败后用户只看得到「文字又回到了输入框」，不知道为什么。
+ */
+const failureNotice = ref("");
+/** 本组件这个实例刚发生的失败原因：用来避免与恢复入口里同一条原因重复显示 */
+const failureReason = computed(() => (failureNotice.value ? session.lastError ?? "" : ""));
 
 /**
  * 发送回执丢失后的「正在确认」状态（契约 5）。
@@ -234,9 +284,14 @@ async function submit() {
   }
   // 归属：这次发送携带的附件属于**发起时刻**的话题（之后切话题也不改这一事实）
   const sendTopicId = currentTopicId();
+  /**
+   * 归属在**点击这一刻**定下（契约 §10.1）：清空输入框、等待回执期间切换话题，
+   * 都不许改变这条消息的去向，也不许把失败原文放进别的话题的输入框。
+   */
+  const attribution = session.sendAttribution();
   // 立即反馈：先清空（这一帧就能看到「已经交出去了」），再等请求结果
   text.value = "";
-  // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再测量，
+  // v-model 的清空是异步写回 DOM 的：必须等这一帧之后再渲染，
   // 否则量到的还是旧内容的高度，输入框发送后不会收回原尺寸。
   await nextTick();
   autosize();
@@ -265,6 +320,10 @@ async function submit() {
       await nextTick();
       autosize();
     }
+    // 互动线：显示**本次请求**的真实原因，并按点击那一刻的归属找回失败原文。
+    // 会话层只在「还在原话题 + 输入框为空」时才动手 —— 不覆盖新草稿、不污染别的话题。
+    failureNotice.value = sendFailureText(session.lastError);
+    session.retryFailedSend(attribution.draftId);
     // 用户自己中止的：如实说「这一轮没有发送」，不要伪装成失败原因
     if (prep?.cancelled) {
       preparingNotice.value = "已中止：这一轮没有发送（文字与附件都留在输入区）";
@@ -280,6 +339,8 @@ async function submit() {
   bumpTopicEpoch(sendTopicId);
   commitToTopic(sendTopicId, (list) => list.filter((item) => !sentIds.has(item.id)));
   attachError.value = "";
+  // 受理成功：失败提示收掉
+  failureNotice.value = "";
   if (prep?.cancelled) {
     /**
      * 竞态：用户按了中止，但请求在那一刻**已经受理**（轮次已入队）。
@@ -288,6 +349,8 @@ async function submit() {
     preparingNotice.value = "已取消：这一轮已经受理，已按「停止」取消";
     void stopTurn();
   }
+  await nextTick();
+  autosize();
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,6 +1445,70 @@ async function stopTurn() {
       <p v-if="attachNote" class="attach-note" role="status">{{ attachNote }}</p>
     </div>
 
+    <!-- 失败原因 + 待恢复原文：辅助层，放在输入行上方，长文限高滚动，不挤走输入框 -->
+    <FailedSendNotice
+      scope="conversation"
+      :notice="failureNotice"
+      :reason="failureReason"
+    />
+
+    <!--
+      第一次话题迁移时被让位的旧草稿（收尾轮 11a）：两份都保留，这里给出明确入口。
+      取回是「与当前文字互换」——两份都还在，不拼接、不覆盖、不自动发送。
+    -->
+    <p
+      v-if="displacedDraft"
+      class="displaced-draft"
+      role="status"
+      data-im="composer-displaced-draft"
+    >
+      <span>
+        这个话题原来还有一份草稿：{{ displacedSnippet }}
+        <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
+      </span>
+      <button
+        class="draft-retry"
+        type="button"
+        data-im="composer-displaced-restore"
+        @click="restoreDisplaced"
+      >
+        取回（与当前文字互换）
+      </button>
+      <button
+        class="draft-retry ghost"
+        type="button"
+        data-im="composer-displaced-discard"
+        @click="discardDisplaced"
+      >
+        放弃这份
+      </button>
+    </p>
+    <p v-if="displacedNotice" class="displaced-notice" role="status" data-im="composer-displaced-status">
+      {{ displacedNotice }}
+    </p>
+
+    <!--
+      共享聊天草稿的保存失败（收尾轮 15）：普通对话页也必须看得见、能重试。
+      与互动 ChatDock 读同一份会话状态（session.draftSaveStatus/draftSaveError），
+      不新建状态源、不重复发送；重试只重写本机草稿，不发送、不动板面。
+    -->
+    <p
+      v-if="chatDraftError"
+      class="draft-error"
+      role="alert"
+      data-im="composer-draft-status"
+    >
+      <span>{{ chatDraftError }}</span>
+      <button
+        class="draft-retry"
+        type="button"
+        data-im="composer-draft-retry"
+        @click="session.retryDraftSave()"
+      >
+        重试保存
+      </button>
+    </p>
+
     <div class="input-row">
       <button
         class="attach-btn"
@@ -1688,6 +1815,45 @@ async function stopTurn() {
   border-color: var(--danger);
   color: var(--danger);
 }
+/* 聊天草稿保存失败：辅助层里的一条，可读、可点，不抢输入行 */
+.draft-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.draft-retry {
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
+}
+.draft-retry:hover { border-color: var(--link); color: var(--link); }
+.draft-retry.ghost { border-color: var(--border-subtle); color: var(--text-muted); }
+.displaced-draft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.displaced-notice {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .send-btn {
   width: 38px;
   height: 38px;

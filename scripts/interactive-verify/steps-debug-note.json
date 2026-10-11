@@ -1,0 +1,36 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5299/#/interactive",
+    "ms": 4000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "eval",
+    "js": "try { const cards=[...document.querySelectorAll('[data-im=\"card\"]')]; const notes=cards.filter(c=>c.querySelector('.kind').textContent.indexOf('文字')>=0); const ta=notes[1].querySelector('[data-im=\"card-editor\"]'); JSON.stringify({cards:cards.length, notes:notes.length, hasEditor: !!ta, editors:[...document.querySelectorAll('[data-im=\"card-editor\"]')].map(e=>e.getAttribute('data-card-id')), noteIds: notes.map(n=>n.getAttribute('data-card-id'))}); } catch(e) { 'ERR: '+e.message }"
+  },
+  {
+    "op": "eval",
+    "js": "try { const cards=[...document.querySelectorAll('[data-im=\"card\"]')]; const notes=cards.filter(c=>c.querySelector('.kind').textContent.indexOf('文字')>=0); const ta=notes[1].querySelector('[data-im=\"card-editor\"]'); const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; set.call(ta, '第二条注释文字'); ta.dispatchEvent(new Event('input',{bubbles:true})); 'set-ok:'+ta.value; } catch(e) { 'ERR2: '+e.message }"
+  },
+  {
+    "op": "eval",
+    "js": "try { const btns=[...document.querySelectorAll('button')].map(b=>b.textContent.trim()); const target=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='完成编辑'); JSON.stringify({hasConfirm: !!target, tail: btns.slice(-8)}); } catch(e) { 'ERR3: '+e.message }"
+  },
+  {
+    "op": "eval",
+    "js": "try { const target=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='完成编辑'); target.click(); 'confirmed'; } catch(e) { 'ERR4: '+e.message }"
+  },
+  {
+    "op": "wait",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify([...document.querySelectorAll('[data-im=\"card\"] .content')].map(e=>e.textContent.slice(0,20)))"
+  }
+]

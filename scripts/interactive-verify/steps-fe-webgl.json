@@ -1,0 +1,11 @@
+[
+  {
+    "op": "navigate",
+    "url": "data:text/html,<canvas id=c></canvas>",
+    "ms": 1200
+  },
+  {
+    "op": "eval",
+    "js": "(function(){const c=document.getElementById('c');const gl=c.getContext('webgl2')||c.getContext('webgl');return gl?'webgl-ok':'no-webgl';})()"
+  }
+]

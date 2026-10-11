@@ -1,0 +1,64 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5394/#/interactive",
+    "ms": 6000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 800
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();const run=j.intents.find(i=>i.status==='running');return JSON.stringify({running:run.id,title:run.title,refs:run.materialRefs})})()"
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-card-id=\"c_mux5dh2x262pg\"]');if(!card)return 'no-card';const btn=[...card.querySelectorAll('button')].find(b=>b.textContent.trim()==='编辑');btn.click();return 'editing'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 300
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const ta=document.querySelector('[data-im=\"card-editor\"][data-card-id=\"c_mux5dh2x262pg\"]');if(!ta)return 'no-textarea';const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;setter.call(ta,'（D 实测）改过的代码内容 A');ta.dispatchEvent(new Event('input',{bubbles:true}));return 'typed:'+ta.value})()"
+  },
+  {
+    "op": "wait",
+    "ms": 200
+  },
+  {
+    "op": "eval",
+    "js": "(()=>{const card=document.querySelector('[data-card-id=\"c_mux5dh2x262pg\"]');const btn=[...card.querySelectorAll('button')].find(b=>b.textContent.trim()==='完成编辑');btn.click();return 'saved'})()"
+  },
+  {
+    "op": "wait",
+    "ms": 2500
+  },
+  {
+    "op": "eval",
+    "js": "JSON.stringify({dialog:!!document.querySelector('[data-im=\"impact-dialog\"]'),mode:(document.querySelector('[data-im=\"impact-dialog\"]')||{}).getAttribute?document.querySelector('[data-im=\"impact-dialog\"]').getAttribute('data-impact-mode'):null,title:(document.querySelector('#im-impact-title')||{}).textContent,affected:[...document.querySelectorAll('[data-im=\"impact-item\"]')].map(e=>e.innerText.replace(/\\n/g,' | ')),active:(document.activeElement||{}).getAttribute?document.activeElement.getAttribute('data-im'):null,bodyFocused:(document.querySelector('[data-im=\"impact-dialog\"]')||{contains:()=>false}).contains(document.activeElement)})"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-30-impact-cancel-shown"
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{document.querySelector('[data-im=\"impact-cancel\"]').click();await new Promise(r=>setTimeout(r,1200));const st=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/state')).json();const cc=st.state.cards.find(c=>c.id==='c_mux5dh2x262pg');const it=await (await fetch('http://127.0.0.1:8894/api/interactive/boards/board_default/intents')).json();return JSON.stringify({dialog:!!document.querySelector('[data-im=\"impact-dialog\"]'),notice:(document.querySelector('[data-im=\"impact-notice\"]')||{}).textContent,savedContent:cc.content,runningStill:it.intents.filter(i=>i.status==='running').length})})()"
+  },
+  {
+    "op": "screenshot",
+    "name": "d-31-impact-cancelled"
+  }
+]

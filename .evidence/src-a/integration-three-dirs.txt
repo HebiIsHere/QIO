@@ -1,0 +1,117 @@
+
+ RUN  v4.1.10 D:/qio-dev/qio-src-a2/frontend
+
+ ✓ src/stores/__tests__/eventBufferOverflow.test.ts (5 tests) 385ms
+ ✓ src/stores/__tests__/recovery-lead-state-facts.test.ts (12 tests) 573ms
+     ✓ 【状态/单元】服务端拒绝旧版本写入（409 stale_state）后：接收最新事实并用最新版本重试  500ms
+ ✓ src/interactive/__tests__/batchTray.test.ts (16 tests) 314ms
+ ✓ src/components/interactive/__tests__/final-a3-07-draft-clear-binding.test.ts (5 tests) 235ms
+ ✓ src/components/interactive/__tests__/closure-a-r4-reopen.test.ts (7 tests) 248ms
+ ✓ src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts (6 tests) 254ms
+ ✓ src/components/interactive/__tests__/final-a3-05-conflict-paths.test.ts (4 tests) 259ms
+ ✓ src/components/interactive/__tests__/IntentBatchTraySwitchBar.test.ts (11 tests) 616ms
+ ✓ src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts (16 tests) 361ms
+ ✓ src/stores/__tests__/approvalInvalidation.test.ts (5 tests) 314ms
+ ✓ src/components/interactive/__tests__/BoardToolbar.test.ts (11 tests) 402ms
+ ✓ src/interactive/__tests__/boardCanvas.test.ts (24 tests) 789ms
+ ✓ src/interactive/__tests__/chat.test.ts (24 tests) 192ms
+ ✓ src/stores/__tests__/d4ChatDraftRace.verify.test.ts (18 tests) 307ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.test.ts (19 tests) 179ms
+ ✓ src/stores/__tests__/d6CardProtect.test.ts (14 tests) 149ms
+ ✓ src/stores/__tests__/d6CardDraftConflict.verify.test.ts (6 tests) 122ms
+ ✓ src/interactive/__tests__/impactDialog.test.ts (8 tests) 117ms
+ ✓ src/interactive/__tests__/final-d-canvas-locate.test.ts (6 tests) 168ms
+ ✓ src/stores/__tests__/d6CardConflictChoice.verify.test.ts (7 tests) 119ms
+ ✓ src/components/interactive/__tests__/final-a3-01-late-read-draft.test.ts (3 tests) 156ms
+ ✓ src/stores/__tests__/draftPersistence.test.ts (15 tests) 182ms
+ ✓ src/stores/__tests__/d4CardDraftRace.verify.test.ts (10 tests) 239ms
+ ✓ src/interactive/__tests__/final-d-space-reset.test.ts (5 tests) 229ms
+ ✓ src/components/interactive/__tests__/d5SwitchBarGeometry.verify.test.ts (1 test) 90ms
+ ✓ src/components/interactive/__tests__/closure-c-failureHierarchy.test.ts (5 tests) 88ms
+ ✓ src/components/interactive/__tests__/d6SwitchBarOnlyWhenSecondPane.verify.test.ts (2 tests) 74ms
+ ✓ src/components/interactive/__tests__/SubmitClusterFailure.test.ts (8 tests) 109ms
+ ✓ src/interactive/__tests__/final-a2-card-draft-hint.test.ts (8 tests) 145ms
+ ✓ src/interactive/__tests__/final-d-tasks-locate.test.ts (2 tests) 120ms
+ ✓ src/components/interactive/__tests__/closure-c-closed-card-hint.test.ts (2 tests) 106ms
+ ✓ src/components/interactive/__tests__/closure-d-impact-dialog.test.ts (4 tests) 106ms
+ ✓ src/components/interactive/__tests__/recovery-a-f3-content-conflict-hint.test.ts (4 tests) 82ms
+ ✓ src/stores/__tests__/final-b2-chatTopicDrafts.test.ts (7 tests) 275ms
+ ✓ src/interactive/__tests__/final-lead-m07-clear-binding.test.ts (3 tests) 108ms
+ ✓ src/stores/__tests__/final-lead-m1.test.ts (10 tests) 34ms
+ ✓ src/stores/__tests__/d5bFailedSendPersist.verify.test.ts (3 tests) 104ms
+ ✓ src/components/interactive/__tests__/d5LocalWriteFailure.verify.test.ts (1 test) 155ms
+ ✓ src/components/interactive/__tests__/d5bSwitchBarGeometry.verify.test.ts (3 tests) 107ms
+ ✓ src/stores/__tests__/onboarding.test.ts (5 tests) 32ms
+ ✓ src/stores/__tests__/d5SendRecovery.test.ts (13 tests) 104ms
+ ✓ src/components/interactive/__tests__/d5bSubmitReason.verify.test.ts (3 tests) 59ms
+ ✓ src/stores/__tests__/turnSequences.test.ts (20 tests) 96ms
+ ✓ src/stores/__tests__/toolRecovery.test.ts (13 tests) 75ms
+ ✓ src/interactive/__tests__/submitFailureBrief.test.ts (12 tests) 14ms
+ ✓ src/stores/__tests__/session.test.ts (13 tests) 86ms
+ ✓ src/stores/__tests__/closure-lead-r1r2r3r5.test.ts (8 tests) 54ms
+ ✓ src/stores/__tests__/events.test.ts (20 tests) 100ms
+ ✓ src/stores/__tests__/closure-d-r1-r4.test.ts (6 tests) 41ms
+ ✓ src/stores/__tests__/eventBufferOverflow.verify.test.ts (4 tests) 20572ms
+     ✓ 同步期间灌入 2 万条事件：缓存必须有界，不能无限增长  13978ms
+     ✓ 溢出时必须标记「需要重新同步」，不能静默丢事件  3222ms
+     ✓ 溢出之后不得宣称已同步（resyncState 不能停在 normal）  3366ms
+ ✓ src/stores/__tests__/d6SendProtection.test.ts (9 tests) 93ms
+ ✓ src/stores/__tests__/finalAnswer.test.ts (11 tests) 52ms
+ ✓ src/stores/__tests__/historyRace.test.ts (8 tests) 32ms
+ ✓ src/interactive/__tests__/final-a2-reopen-cleared.test.ts (4 tests) 29ms
+ ✓ src/stores/__tests__/final-b2-reopenResend.test.ts (5 tests) 76ms
+ ✓ src/components/interactive/__tests__/d5SubmitFailure.verify.test.ts (2 tests) 57ms
+ ✓ src/stores/__tests__/phase3Cards.test.ts (19 tests) 78ms
+ ✓ src/interactive/__tests__/approval.test.ts (54 tests) 52ms
+ ✓ src/stores/__tests__/final-b2-removeDraftResult.test.ts (4 tests) 45ms
+ ✓ src/interactive/__tests__/recovery-a-f2-legacy-fingerprint.test.ts (13 tests) 12ms
+ ✓ src/stores/__tests__/historyRace.verify.test.ts (7 tests) 33ms
+ ✓ src/stores/__tests__/recovery-a-integration-f2-retry-entry.test.ts (6 tests) 51ms
+ ✓ src/stores/__tests__/d6ClearRestoreOrdering.verify.test.ts (2 tests) 24ms
+ ✓ src/stores/__tests__/d5CardDraftRecovery.verify.test.ts (4 tests) 23ms
+ ✓ src/stores/__tests__/resyncProtocol.test.ts (9 tests) 31ms
+ ✓ src/stores/__tests__/d5FailedSendRecovery.verify.test.ts (2 tests) 20ms
+ ✓ src/interactive/__tests__/submission.test.ts (16 tests) 8ms
+ ✓ src/stores/__tests__/d6FailedSendProtection.verify.test.ts (4 tests) 31ms
+ ✓ src/interactive/__tests__/board.test.ts (66 tests) 31ms
+ ✓ src/stores/__tests__/turnEnd.test.ts (2 tests) 15ms
+ ✓ src/stores/__tests__/approvalRouting.test.ts (3 tests) 15ms
+ ✓ src/stores/__tests__/d5bCardsIsolation.verify.test.ts (2 tests) 18ms
+ ✓ src/stores/__tests__/toolRecordHistory.test.ts (6 tests) 22ms
+ ✓ src/stores/__tests__/final-b2-readError.test.ts (5 tests) 32ms
+ ✓ src/stores/__tests__/d5RecoveryOrdering.verify.test.ts (4 tests) 27ms
+ ✓ src/components/interactive/__tests__/closure-c-failureCopy.test.ts (10 tests) 8ms
+ ✓ src/stores/__tests__/final-b2-sendIdentity.test.ts (3 tests) 27ms
+ ✓ src/stores/__tests__/eventOwnership.test.ts (8 tests) 32ms
+ ✓ src/interactive/__tests__/overlayLayout.test.ts (14 tests) 46ms
+ ✓ src/stores/__tests__/interruptedTurns.test.ts (10 tests) 28ms
+ ✓ src/stores/__tests__/historyPagination.test.ts (7 tests) 18ms
+ ✓ src/stores/__tests__/updaterTimers.test.ts (9 tests) 21ms
+ ✓ src/stores/__tests__/approvalInvalidation.verify.test.ts (5 tests) 16ms
+ ✓ src/stores/__tests__/d6LeadNoSilentTrim.verify.test.ts (1 test) 29ms
+ ✓ src/stores/__tests__/executionNarrative.test.ts (6 tests) 18ms
+ ✓ src/stores/__tests__/approvals.test.ts (9 tests) 15ms
+ ✓ src/stores/__tests__/topicSwitch.test.ts (5 tests) 19ms
+ ✓ src/stores/__tests__/devTasks.test.ts (4 tests) 19ms
+ ✓ src/stores/__tests__/sessionFastTurn.test.ts (2 tests) 19ms
+ ✓ src/stores/__tests__/final-lead-m13.test.ts (1 test) 24ms
+ ✓ src/stores/__tests__/updater.test.ts (11 tests) 12ms
+ ✓ src/interactive/__tests__/overlaySwitchBar.test.ts (13 tests) 9ms
+ ✓ src/interactive/__tests__/closure-a-local-removal-purpose.test.ts (14 tests) 12ms
+ ✓ src/interactive/__tests__/recovery-a-n6-draft-input.test.ts (18 tests) 8ms
+ ✓ src/interactive/__tests__/final-a2-long-draft-local-copy.test.ts (8 tests) 9ms
+ ✓ src/stores/__tests__/closure-d-r5-r6.test.ts (2 tests) 20ms
+ ✓ src/interactive/__tests__/viewport.test.ts (25 tests) 15ms
+ ✓ src/interactive/__tests__/overlaySwitchAvailability.test.ts (9 tests) 5ms
+ ✓ src/interactive/__tests__/final-a2-drafts-removal-result.test.ts (12 tests) 10ms
+ ✓ src/components/interactive/__tests__/closure-c-visual-guards.test.ts (11 tests) 5ms
+ ✓ src/interactive/__tests__/drafts.test.ts (8 tests) 6ms
+ ✓ src/interactive/__tests__/final-a2-clear-protection.test.ts (9 tests) 7ms
+ ✓ src/interactive/__tests__/final-d-overlay-geometry.test.ts (17 tests) 5ms
+ ✓ src/stores/__tests__/ui.test.ts (3 tests) 5ms
+
+ Test Files  104 passed (104)
+      Tests  958 passed (958)
+   Start at  16:09:42
+   Duration  49.69s (transform 16.06s, setup 2.10s, import 62.31s, tests 31.22s, environment 560.61s)
+

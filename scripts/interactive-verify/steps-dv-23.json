@@ -1,0 +1,24 @@
+[
+  {
+    "op": "navigate",
+    "url": "http://127.0.0.1:5396/#/interactive",
+    "ms": 7000
+  },
+  {
+    "op": "viewport",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "op": "reload",
+    "ms": 6000
+  },
+  {
+    "op": "wait",
+    "ms": 2000
+  },
+  {
+    "op": "eval",
+    "js": "(async()=>{const j=await (await fetch('http://127.0.0.1:8896/api/interactive/boards/board_default/intents')).json();const run=j.intents.filter(i=>i.status==='running').map(i=>i.id);const all=[...document.querySelectorAll(\"[data-im=\\\"preview\\\"][data-intent-id]\")];const byId={};for(const e of all){const id=e.getAttribute('data-intent-id');const r=e.getBoundingClientRect();if(r.width>0&&r.height>0){(byId[id]=byId[id]||[]).push({cls:e.className,w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)})}}return JSON.stringify({running:run,visiblePreviewIds:Object.keys(byId),detail:byId})})()"
+  }
+]
