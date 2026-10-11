@@ -287,3 +287,173 @@ F10 定向用例失败、迁移 43/43、后端迁移定向 13 passed、`check_do
    重复单项/批量审批不重复执行、核验失败不放行。
 4. 迁移：在新 SHA 上复跑 `verify_migrations.py`（应看到 39/40 与 `client_request_id` 唯一索引）。
 5. 逐项给出「我跑的命令 / 真实输出 / 结论」，区分亲自证据与引用证据。
+---
+
+# 第二段：集成候选 `1105c3f` 上的定向验收（E 亲自跑）
+
+## 9.1 候选、方式与边界
+
+- **候选 SHA：** `1105c3f`（Lead 整合 worktree `D:\qio-dev\qio-irm-int` 的 HEAD）。
+  我把这个提交 checkout 到**我自己的**临时分支 `wt/irm-int-e-cand` 上跑，跑完删除该临时分支；
+  Lead 的 worktree 全程只读，没有改。
+- 我的验证脚本以**未跟踪文件**叠加在候选之上（只加 `scripts/irm-int-verify/**`，**没有改任何产品代码**），
+  所以结果对候选本身成立。
+- **活体后端**（优先项 1 用）：在候选代码上启动真进程 ——
+  `QIO_DATA_DIR=<临时目录> QIO_DEV_INSECURE=1 QIO_DISABLE_DB_CHECK=1 backend/.venv/Scripts/python.exe -m uvicorn agent.main:create_app --factory --port 8848`，
+  用真 HTTP 驱动，跑完 kill（临时库，不碰用户数据）。
+- 本段所有证据文件：`scripts/irm-int-verify/out/*-1105c3f.*`（见 9.6）。
+
+## 9.2 优先项 1：真实后端 × 真实前端**字段名**端到端（活体，不是夹具）
+
+工具：`scripts/irm-int-verify/probe_wire.py`（抓服务端**原样 JSON**）+
+`scripts/irm-int-verify/probes/e-wire-identity.probe.test.ts`（把真实 `services/interactive.ts` 与
+`stores/interactive.ts` 指向活体后端跑断言）。
+
+命令与结果：
+
+    # 1) 真后端 + 真 HTTP：建板面 → 保存状态 → 带 clientRequestId 提交 → 同身份重试 → 精确查证 → 未用身份 → 同身份不同内容
+    ./backend/.venv/Scripts/python.exe scripts/irm-int-verify/probe_wire.py --base http://127.0.0.1:8848 \
+        --json scripts/irm-int-verify/out/wire-1105c3f.json
+    [1] POST /boards -> 200   [2] PUT /state -> 200   [3] POST /submissions -> 200
+    [4] 同身份重试 -> 200 replayed=True   [5] GET /acceptance（命中）-> 200
+    [6] GET /acceptance（没这个身份）-> 404   [7] 同身份不同内容 -> 409
+
+    # 2) 前端：VITE_QIO_BACKEND_URL 指向活体后端，真实 services + store 打真后端
+    cd frontend; $env:VITE_QIO_BACKEND_URL="http://127.0.0.1:8848"
+    npm test -- src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+    [e-wire] mode=live  base=http://127.0.0.1:8848
+    ✓ 活体：真实 services + 真后端（提交 → 查证 → 换身份 404 → 同身份不同内容 409） 340ms
+    ✓ 活体：store 级查证 —— 命中恢复受理事实，换身份保持 unknown              381ms
+    ✓ 夹具：抓下来的服务端原样 JSON 同样能通过同一组判定
+    Test Files 1 passed (1)   Tests 3 passed (3)
+
+**服务端原样 JSON（命中查证）** —— 字段名与冻结契约 §1.2 逐项对上：
+
+    {"acceptance": {
+       "clientRequestId": "creq_e_wire_0001",
+       "submissionId": "sub_61c5be39bf19",
+       "status": "succeeded",
+       "delivery": {"delivered": true, "status": "accepted",
+                    "understandingId": "u_b83d93100930", "reason": "…", "detail": "…",
+                    "background": {...}, "marking": {...}, "note": "E 字段名接缝"},
+       "understandingId": "u_b83d93100930",
+       "understandingStatus": "failed",
+       "baseStateVersion": 1,
+       "note": "E 字段名接缝",
+       "createdAt": "2026-10-11T14:06:12.409280+00:00",
+       "replayed": false}}
+
+未命中：`404 ` + `{"acceptance": null, "reason": "没有这个提交请求身份的受理记录（creq_e_never_used_9999）：结果未知，不推断成功；请保留原内容与勾选，不要盲目重发。"}`
+
+活体断言（前端侧，全部通过）：
+
+| 断言 | 结果 |
+| --- | --- |
+| 提交响应里 `submission.clientRequestId` 与发出的身份**逐字相同** | ✅ |
+| `delivery.status === "accepted"` 且 `delivery.understandingId` 非空 | ✅ |
+| `acceptance.baseStateVersion` 是 **number** 且等于本次 seq | ✅ |
+| `acceptance.note` 是字符串（本次为空串） | ✅ |
+| `acceptance.submissionId` 非空且等于提交响应里的 id | ✅ |
+| `acceptanceMatchesIdentity(identity, acceptance)` 判为「本次提交」 | ✅ |
+| 换一个 clientRequestId 查同一板面 → 404 → `acceptance:null` → 判定为「不是本次」 | ✅ |
+| 同身份不同内容 → 409 `request_identity_conflict`，`isRequestIdentityConflict(err)` 为真 | ✅ |
+| **store 级**：命中后 `submitStatus="succeeded"`、`lastAcceptance.submissionId` 正确、`submitNote` 非空 | ✅ |
+| **store 级**：查不到时 `submitStatus` **保持 `unknown`**、`submitResultUnknown` 仍为 true、`acceptanceLookupNote` 如实说明「还没确认」 | ✅ |
+
+**诚实说明：** 这次活体后端里理解最终是 `understandingStatus: "failed"` —— 本环境没有可用的授权模型凭据，
+理解请求确实建立了、也确实尝试执行并如实记成失败。**这不等于真实模型验收完成**（见 9.7）。
+夹具模式（`mode=fixture`）用抓下来的原样响应体跑同一组判定，1 passed / 2 skipped，结果是夹具级证据。
+
+## 9.3 优先项 2：迁移与提交身份（候选上的独立复跑）
+
+    ./backend/.venv/Scripts/python.exe scripts/irm-int-verify/verify_migrations.py --json out/verify-migrations-1105c3f.json
+    → 43/43 通过（SCHEMA_VERSION=40 / COMPENSATION_VERSION=40 / 迁移 37 条）
+
+| 关键点 | 实测 |
+| --- | --- |
+| 空库 | 版本 40、REQUIRED_OBJECTS 全齐、版本行 37 条无重复 |
+| 真实应用库（v22、22 张表、4 行数据） | 22 → 40，既有表行数一行不变，新增表都能在未应用迁移里找到出处 |
+| 缺对象补偿（删表 / 索引 / 列） | 逐项检出 → 补偿补齐 → 复核为空 → 可重复触发 |
+| 重复启动 3 次 | 版本稳定 [40,40,40]，版本行不重复 |
+| 合成存量库（停在 36、带数据） | 升级后草稿 / 板面 / 提交 / 意图逐字不变，新列取默认值 |
+| **I3 补偿不变式** | `MIGRATIONS[40] == MIGRATIONS[38] + MIGRATIONS[39]` ✅ |
+| **I4/I5 历史迁移** | 真实模型对象仍首现于迁移 37；<37 的迁移不含它们 ✅ |
+| **I6 清单覆盖** | REQUIRED_OBJECTS 每一项（含 `board_submissions.client_request_id` 与 `idx_board_submissions_client_request`）都能在补偿迁移里找到建对象语句 ✅ |
+
+    ./backend/.venv/Scripts/python.exe scripts/irm-int-verify/verify_submission_identity.py --json out/verify-identity-1105c3f.json
+    → 33/33 通过
+
+要点：S1.5 同身份重试用**原 baseStateVersion** 拿到 200 与 `replayed=true`（身份判定排在 stale_state 之前，
+我在第一段提的口径成立）；S2 同身份不同 note → 409 `request_identity_conflict`；S3 同身份不同版本 → 409；
+S5「最近一条」诱饵与 S6「时间接近」诱饵都返回 404 + `acceptance:null`；S7 三个身份三条提交、无重复行。
+
+## 9.4 优先项 3：F10 spy 复验（我自己的断言，不看 A 的结论）
+
+    cd frontend
+    npm test -- src/__irm_int_e_probe__/e-submit-read-once.probe.test.ts src/acceptance-state-recovery/f10-submit-refresh.test.ts
+    ✓ f10-submit-refresh.test.ts (3 tests)
+    ✓ e-submit-read-once.probe.test.ts (2 tests)
+    Test Files 2 passed (2)   Tests 5 passed (5)
+
+我的探针实测计数（同一份探针在基线 c6a03b1 上是 `{board:2, intents:2, batches:2}` / 2 failed，见 §4）：
+
+| 计数（提交成功后增量） | 候选实测 | 期望 |
+| --- | --- | --- |
+| `fetchBoardState` | 1 | 1 |
+| `fetchIntents` | 1 | 1 |
+| `recordIntentBatch` | 1 | 1 |
+| `fetchVisibleRange` | 2 | 2（其中 1 次是保存成功路径里 fire-and-forget 的那句，与提交后刷新无关） |
+| 读取失败时的提交事实 | `submitStatus="succeeded"`、`submitRefreshState="error"`、`submitError=null` | 同左 |
+
+## 9.5 闭环与其他定向
+
+    cd backend
+    uv run --frozen pytest -q --junitxml=../scripts/irm-int-verify/out/junit-backend-1105c3f.xml \
+      tests/test_interactive_real_model.py tests/test_interactive_execution.py tests/test_interactive_understanding.py \
+      tests/test_interactive_store_understanding.py tests/test_interactive_materials.py tests/test_interactive_submission.py \
+      tests/test_interactive_migration_integration.py tests/test_fu_w3_b01_schema.py tests/test_audit_f04_acceptance_receipt.py
+    → pytest exit=0；JUnit：tests=135 failures=0 errors=0 skipped=0（36.7s）
+
+其中闭环主用例 `test_interactive_real_model.py::test_real_path_submission_understanding_approval_execution`
+（提交 → 受理 → 材料读取 → 理解 → 意图 → 审批 → 真实执行 → 结果卡与来源引用）通过；
+另有 `test_invisible_never_reaches_model_context`（未获准材料不进上下文）、
+`test_duplicate_submission_does_not_call_model_or_create_tasks`、
+`test_repeated_approval_does_not_duplicate_execution_or_result`（重复审批不重复执行）通过。
+
+    cd frontend
+    npm test -- src/acceptance-state-recovery/f11-intents-load-failure.test.ts \
+                src/interactive/__tests__/irm-d-understanding-store.test.ts \
+                src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+    → Test Files 3 passed (3)；Tests 13 passed | 2 skipped（跳过的是夹具模式下不该跑的活体用例）
+
+## 9.6 证据文件（`scripts/irm-int-verify/` 下，均为最终版）
+
+| 文件 | 内容 |
+| --- | --- |
+| `out/wire-1105c3f.json` | 活体后端七个步骤的**原样响应体**（含验收形状） |
+| `out/wire-probe-live-1105c3f.txt` | 活体接缝探针的完整输出（mode=live，3 passed） |
+| `out/verify-migrations-1105c3f.json` | 迁移验证 43/43（逐项 check） |
+| `out/verify-identity-1105c3f.json` | 提交身份链路 33/33（逐项 check） |
+| `out/probe-read-once-1105c3f.txt` | F10 + 只读一次探针输出（5 passed） |
+| `out/probe-read-once-baseline-c6a03b1.txt` | 同一探针在**基线**上的失败输出（board/intents/batches 各 2 次） |
+| `out/backend-targeted-1105c3f.txt`、`out/junit-backend-1105c3f.xml` | 后端定向 135 passed 的原始输出与机器可读结果 |
+| `out/frontend-targeted-1105c3f.txt` | 前端定向 13 passed | 2 skipped |
+| `out/symbol-check-c6a03b1.json`、`out/verify-migrations-c6a03b1.json`、`out/verify-identity-baseline-c6a03b1.json` | 第一段（基线）证据，保留作对照 |
+
+脚本：`verify_migrations.py`、`verify_submission_identity.py`、`check_conflict_symbols.py`、
+`probe_wire.py`、`run_stage2.py`、`probes/e-submit-read-once.probe.test.ts`、
+`probes/e-wire-identity.probe.test.ts`、`acceptance-map.md`、`README.md`。
+
+## 9.7 未覆盖 / 诚实清单（不得被读成「全部完成」）
+
+1. **真实模型人工验收仍未完成**：活体后端这次理解结果是 `failed`（本环境没有可用的已授权模型凭据）。
+   接口接通、服务端幂等、字段名接缝都验证了，**但真实模型的判断质量没有验证**，不得说成真实模型验收完成。
+2. **安装包端到端（install-e2e）未跑**；**跨进程 / 跨窗口**（两个浏览器窗口、桌面壳多窗口）未跑，
+   两窗口相关结论目前只来自单进程内的定向用例。
+3. **全量没跑**：本段只跑定向（后端 9 个文件 135 用例、前端 4 个文件 + 2 个探针），
+   唯一一轮本地全量与 CI 留给 Lead 在冻结 SHA 上执行。
+4. 活体测试用 `QIO_DEV_INSECURE=1`（无会话令牌）跑：**认证 / 令牌失效路径不在本段覆盖范围**。
+5. 我的探针是**临时复制进** `frontend/src/__irm_int_e_probe__/` 跑的，跑完立即删除；
+   前端源码树没有留下任何探针文件（`git status` 干净）。
+6. 迁移验证里的「真实应用库」是本机 `%APPDATA%\qio\app.db`（v22、22 张表、4 行），不是生产库；
+   数据保全的强度由 9.3 的合成存量库补足。形状级损坏（同名不同形）仍不在校验范围。

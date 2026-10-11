@@ -1,0 +1,20 @@
+﻿
+> qio-frontend@0.1.14 test
+> vitest run src/acceptance-state-recovery/f11-intents-load-failure.test.ts src/interactive/__tests__/irm-d-understanding-store.test.ts src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+
+
+ RUN  v4.1.10 D:/qio-dev/qio-irm-int-e/frontend
+
+stdout | src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+[e-wire] mode=fixture  夹具=D:\qio-dev\qio-irm-int-e\scripts\irm-int-verify\out\wire-1105c3f.json
+
+ ✓ src/__irm_int_e_probe__/e-wire-identity.probe.test.ts (3 tests | 2 skipped) 5ms
+ ✓ src/acceptance-state-recovery/f11-intents-load-failure.test.ts (4 tests) 12ms
+ ✓ src/interactive/__tests__/irm-d-understanding-store.test.ts (8 tests) 22ms
+
+ Test Files  3 passed (3)
+      Tests  13 passed | 2 skipped (15)
+   Start at  22:13:23
+   Duration  2.46s (transform 487ms, setup 89ms, import 865ms, tests 38ms, environment 5.56s)
+
+

@@ -35,6 +35,32 @@
 **边界（诚实声明）**：这是名字级核对，只证明「这条线引入的符号没有整条消失」，
 不证明语义没有变化；语义结论必须另有阅读或实测证据（见 docs/integration-review-20261011.md）。
 
+## probe_wire.py + probes/e-wire-identity.probe.test.ts —— 真实后端 × 真实前端字段名接缝
+
+第一档：真后端抓原样 JSON（先起后端，端口自定）：
+
+    cd backend
+    $env:QIO_DEV_INSECURE="1"; $env:QIO_DISABLE_DB_CHECK="1"
+    $env:QIO_DATA_DIR="<临时目录>"; ./backend/.venv/Scripts/python.exe -m uvicorn agent.main:create_app --factory --port 8848
+    # 另一个终端（worktree 根）
+    ./backend/.venv/Scripts/python.exe scripts/irm-int-verify/probe_wire.py --base http://127.0.0.1:8848 \
+        --json scripts/irm-int-verify/out/wire-<sha>.json
+
+第二档：前端真代码打真后端（活体）或读抓下来的 JSON（夹具），同一组断言两种模式：
+
+    cd frontend
+    $env:VITE_QIO_BACKEND_URL="http://127.0.0.1:8848"     # 不设 = 夹具模式（活体用例 skip）
+    New-Item -ItemType Directory -Force -Path src/__irm_int_e_probe__ | Out-Null
+    Copy-Item ../scripts/irm-int-verify/probes/e-wire-identity.probe.test.ts src/__irm_int_e_probe__/ -Force
+    npm test -- src/__irm_int_e_probe__/e-wire-identity.probe.test.ts
+    Remove-Item -Recurse -Force src/__irm_int_e_probe__
+
+断言覆盖：`clientRequestId` 原样往返、`baseStateVersion` 是 number、`note` 是字符串、
+`submissionId` 非空、`acceptanceMatchesIdentity` 判为「本次提交」、换身份 → 404 → 判为「不是本次」、
+同身份不同内容 → 409 `request_identity_conflict`；store 级：命中恢复受理事实、查不到保持 `unknown`。
+
+候选 1105c3f 实测：活体 3 passed（services + store + 夹具），夹具模式 1 passed | 2 skipped。
+
 ## run_stage2.py —— 第二段验收编排（集成候选 SHA 上一条命令跑完定向项）
 
     backend/.venv/Scripts/python.exe scripts/irm-int-verify/run_stage2.py --sha <候选SHA>
