@@ -166,9 +166,17 @@
 3. Rust 两项 `ownership::tests::close_installation_*`：并发负载下 `taskkill` 超时；
    空载重跑整个壳套件 **31/27/2/5 全过、0 failed**。本轮**没有改动任何 Rust 文件**。
 
-### 6.2 唯一一次全量 CI（已触发，对象为最终提交）
+### 6.2 全量 CI 记录
 
-（run id / attempt / 各 job 结论见 `docs/verify-ledger-integration-20261011.md` §3.2。）
+| run | 对象 SHA | 结论 |
+| --- | --- | --- |
+| `38149965943`（attempt 1） | `28e5752`（整合分支） | docs 任务因新增契约检查缺 PyYAML 失败；其余 job（frontend / rust×2 / frozen-worker / backend py3.11 / py3.12 / **install e2e**）全通过 |
+| `38150308869` | `a3c18b5`（docs 修复提交） | **docs 任务转绿**；唯一失败是 `test_timing_contract_verify.py::test_queued_turn_reports_queue_ms_but_not_inside_duration`（`663 < 525`），仓库既有记录已定性为负载型 flake（`docs/verification-acc-phase2.md` 第 67 行） |
+| `38151173178` | `287dadf`（台账回填） | 唯一失败是 Windows 后端 `test_audit_attachment_io_verify.py::test_upload_does_not_block_the_event_loop`（实测单次停顿 1214 ms > 1000 ms），仓库既有记录同样定性为负载型 flake（`docs/verification-r4-phase2.md` 第 183 行） |
+| `38153383869`（**main 分支**，push 触发） | `25d0fd4`（合入 main 的合并提交） | **全绿**：`ci dedup preflight` / `docs consistency` / `frontend` / `rust (ubuntu-24.04)` / `rust (windows-latest)` / `frozen worker` / `install e2e` / `backend (py3.11)` / `backend (py3.12)` / `backend (windows-latest)` 共 10 个 job 全部通过（docs 12s、install e2e 12m45s、backend windows 28m8s） |
+
+说明：修复 docs 后分支又被推送了两次（修复提交、台账提交），`ci.yml` 按**提交 SHA** 去重，
+**不同提交各跑一次**是去重规则的正常结果（同一提交的 push 与 PR 才共用一套）；同一提交内没有出现重复运行。
 
 ## 7. 未验证项与限制
 
@@ -190,9 +198,21 @@
 * 前端实机视觉核对的范围与结论见 `docs/integration-review-20261011.md`。
 * 其余见 `docs/verify-ledger-integration-20261011.md` §8 与 E 的审查报告。
 
-## 8. main 合并方案与回退
+## 8. 实际合并进 main 与回退
 
-### 8.1 合并步骤
+### 8.0 已执行（2026-10-12 00:00 前后）
+
+* 合并前核对：`origin/main` = `8fa845255c118a7104b1de8e37298ca745924482`，**未推进**；整合分支是 `origin/main` 的后代。
+* 用保留历史的合并提交把整合分支合入 main：
+  `git merge --no-ff integrate/reliability-interactive-real-model-20261011` → **`25d0fd48ce8dd0fd7692db9112bb2eaa5d4b05a5`**
+  （父提交：`8fa8452` 与 `287dadf`）。两条来源分支**没有**分别合入。
+* 内容核对：`git diff 287dadf 25d0fd4` **为空** ⇒ 合并所得内容与已验证候选**逐字一致**（含 docs 任务的 PyYAML 修复）。
+* 本地 `main` 已快进到 `25d0fd4`（原先停在 `7ff5e2e`，是已合入的旧分支尖端，不影响内容）。
+* main 上 push 触发的全量 CI：run `38153383869`，**10 个 job 全绿**（见 §6.2）。
+* 后续若再改 main，请承接同一验证台账：不要用旧 run 的 "Re-run failed jobs"（它绑旧提交），
+  改用 `targeted-verify.yml` 显式指定 SHA 与失败项。
+
+### 8.1 合并步骤（如需重做或后续同类合并）
 
 1. `git fetch --all --prune`，核对 `origin/main` 是否仍为已验证的基线 SHA。
 2. **main 未推进**：只合入整合分支一次，使用保留历史的合并提交
