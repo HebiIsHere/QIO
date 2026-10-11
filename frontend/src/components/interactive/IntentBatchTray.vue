@@ -31,6 +31,7 @@ import {
   groupIntentsByBatch,
   batchSummaryIn,
   clearBatchSelectionIn,
+  executionText,
   locatePreview,
   previewBounds,
   pruneBatchSelection,
@@ -413,6 +414,20 @@ function statusLabel(intent: Intent): string {
   return statusText(intent).label;
 }
 
+/*
+ * 已处理条目的真实执行状态（契约 §14.1）：排队 / 执行中 / 暂停 / 结束各自显示；
+ * 没有执行记录时不假装在运行 —— 批准只表示它成为任务。
+ */
+function itemExecution(intentId: string) {
+  return executionText(store.latestExecution(intentId), store.intentById(intentId) ?? null);
+}
+function itemExecutionLabel(intentId: string): string {
+  return itemExecution(intentId).label;
+}
+function itemExecutionStatus(intentId: string): string {
+  return store.latestExecution(intentId)?.status ?? "none";
+}
+
 function approveSplit(batch: IntentBatch) {
   return splitBatchIn(store.intents, batch, selectedFor(batch), "approve");
 }
@@ -595,7 +610,8 @@ watch(
 
       <p class="hint" role="note">
         只列同一批产生的条目（不同批次不合并）。勾选部分或全部后批量批准 / 拒绝；未选中的继续等待审批。
-        已经处理过的条目会保留在下面并变灰，不能再被选中或提交。
+        已经处理过的条目会保留在下面并变灰，不能再被选中或提交；
+        它们的执行状态（排队 / 执行中 / 暂停 / 已完成 / 失败 / 已取消）取服务端的真实执行记录。
       </p>
 
 
@@ -635,6 +651,16 @@ watch(
             </span>
             <span class="status">
               {{ store.intentById(intentId) ? statusLabel(store.intentById(intentId) as Intent) : "状态未知" }}
+            </span>
+            <span
+              v-if="!isPending(batch, intentId)"
+              class="exec mono"
+              data-im="batch-item-execution"
+              :data-intent-id="intentId"
+              :data-execution-status="itemExecutionStatus(intentId)"
+              :title="itemExecution(intentId).detail"
+            >
+              {{ itemExecutionLabel(intentId) }}
             </span>
             <button
               v-if="isPending(batch, intentId)"
@@ -887,6 +913,12 @@ watch(
   white-space: nowrap;
 }
 .status { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+/* 已处理条目的真实执行状态：文字说明，颜色只做辅助；长状态允许换行 */
+.exec {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
 .locate {
   font: inherit;
   font-size: var(--fs-xs);
