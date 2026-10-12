@@ -6,8 +6,9 @@
  * 这里**只做展示用的推导**，不做权限判断：
  * 真正决定「哪些内容交给 QIO」的是服务端（从已保存状态推导，见
  * agent/interactive/submission.py）。`localVisibleRange` 只是让界面在服务端响应之前
- * 也能说清「未勾选 / 明确隐藏的不在其中」，规则与 models.selectable_cards 一致：
- * 文字注释要勾选；材料（file/image/code/url）默认在范围内；reply / hidden / deleted 不在。
+ * 也能说清「未勾选 / 明确隐藏的不在其中」，规则与 models.visible_except_deleted 一致：
+ * 文字卡要勾选（整卡一个许可，覆盖卡内文字 / 链接 / 代码）；材料（file / image）默认在范围内；
+ * 遗留 code / url 卡**整体不可见**（迁移完成前也不回退成可见）；reply / hidden / deleted 不在。
  */
 import type {
   AcceptanceLookup,
@@ -56,12 +57,21 @@ export interface VisibleRangeCounts {
   notVisible: number;
 }
 
-const MATERIAL_KINDS = ["file", "image", "code", "url"];
+/** 材料类卡片（契约 §2.2：code / url 不再是材料默认可见通道）。 */
+const MATERIAL_KINDS = ["file", "image"];
 
-/** 单张卡片是否在本次允许查看的范围内（与服务端 models.selectable_cards 一致）。 */
+/** 遗留的字符类卡片：迁移完成前**整体不可交付**（与服务端 LEGACY_TEXT_CARD_KINDS 一致）。 */
+const LEGACY_TEXT_CARD_KINDS = ["code", "url"];
+
+/**
+ * 单张卡片是否在本次允许查看的范围内（与服务端 models.visible_except_deleted 一致）。
+ *
+ * 未许可的文字卡**整体**不可见：卡内文字、链接、代码与派生正文都进不去提交载荷。
+ */
 export function isVisibleCard(card: BoardCard): boolean {
   if (card.deleted || card.hidden) return false;
   if (card.kind === "reply") return false;
+  if (LEGACY_TEXT_CARD_KINDS.includes(card.kind)) return false;
   if (card.kind === "text") return card.checked;
   return true;
 }

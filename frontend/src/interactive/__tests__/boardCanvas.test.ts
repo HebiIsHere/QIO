@@ -257,7 +257,8 @@ describe("BoardCanvas 接线", () => {
     for (const hook of ["card-edit", "card-duplicate", "delete-card", "card-fold"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists()).toBe(true);
     }
-    expect(textCard.text()).toContain("未勾选");
+    // 契约 §2.3：文案改成「许可」口径（提交后仍然有效，只有手动取消才失效）
+    expect(textCard.text()).toContain("未许可");
 
     // 选中材料卡片：工具栏里没有勾选框
     wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === fileId)!.element.dispatchEvent(pointer("pointerdown", 60, 30));
@@ -289,13 +290,13 @@ describe("BoardCanvas 接线", () => {
     wrapper.unmount();
   });
 
-  it("勾选文字注释走 commit，并且勾选后不再是「未勾选」", async () => {
+  it("勾选文字注释走 commit，并且许可后不再是「未许可」", async () => {
     setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0, { content: "一条注释" })], selection: ["a"] });
     const wrapper = mountCanvas();
     await wrapper.get('[data-im="check"]').trigger("change");
     expect(labels[0]).toContain("勾选");
     expect(store.board?.cards[0].checked).toBe(true);
-    expect(wrapper.get('[data-im="card"]').text()).toContain("已勾选");
+    expect(wrapper.get('[data-im="card"]').text()).toContain("已许可");
     wrapper.unmount();
   });
 

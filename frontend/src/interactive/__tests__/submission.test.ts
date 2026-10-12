@@ -181,7 +181,8 @@ describe("允许查看范围文案", () => {
     );
     const text = visibleRangeText(range);
     expect(text).toContain("注释 1 条");
-    expect(text).toContain("材料 2 项");
+    // 契约 §2.2：遗留 url 卡不再是材料（整体不进入范围），材料只剩 file / image
+    expect(text).toContain("材料 1 项");
     expect(text).toContain("组 1 个");
     expect(text).toContain("关系 1 条");
     expect(text).toContain("未勾选的注释");

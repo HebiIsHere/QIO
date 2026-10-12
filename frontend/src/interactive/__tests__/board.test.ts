@@ -512,13 +512,14 @@ describe("关系链接", () => {
 });
 
 describe("卡片：添加 / 编辑 / 删除 / 复制", () => {
-  it("addCard 默认值完整，五类材料都能加", () => {
+  it("addCard 默认值完整，历史与新增的种类都能加", () => {
     let state = board.emptyState("board_t");
     state = board.addCard(state, { kind: "text", content: "一条注释" });
     expect(state.cards[0].kind).toBe("text");
     expect(state.cards[0].content).toBe("一条注释");
     expect(state.cards[0].checked).toBe(false);
     expect(state.cards[0].deleted).toBe(false);
+    // CARD_KINDS 保留全部旧取值：历史数据与导入文件仍然能读（新建入口另见 ADDABLE_CARD_KINDS）
     for (const kind of ["file", "image", "code", "url", "reply"] as CardKind[]) {
       state = board.addCard(state, { kind, content: "x" });
     }

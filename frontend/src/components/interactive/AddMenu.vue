@@ -1,9 +1,11 @@
 <!--
-  添加菜单（子智能体 A 负责）：文字 / 文件 / 图片 / 代码 / 网址五类材料的统一入口。
+  添加菜单（子智能体 A 负责）：**文字卡 / 文件 / 图片**三类材料的统一入口。
 
-  契约：docs/interactive-mode-contract.md
-  - §8.1：添加菜单是五类的统一入口，文字卡片不再单独常驻在工具栏上；
-  - §8.4.1：会改板面状态的操作由触发方自己调 board.ts 纯函数 + store.commit（不做命令总线）。
+  契约：docs/interactive-mode-contract.md §8.1 / §8.4.1；
+       docs/superpowers/plans/2026-10-12-unified-cards-media-preview-contract.md §1.7：
+  - 「代码」「网址」不再是入口：文字、链接、代码写在**同一张文字卡**里；
+  - 添加菜单是这几类的统一入口，文字卡片不再单独常驻在工具栏上；
+  - 会改板面状态的操作由触发方自己调 board.ts 纯函数 + store.commit（不做命令总线）。
 
   归属决定（题面二选一，已定）：**本组件直接调 store.commit(addCard(...), "添加…")**，
   不把选择再 emit 给工具栏转一次手 —— 添加只依赖 board.ts 与 store，工具栏只负责把它放进底部栏。
@@ -14,7 +16,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { addCard, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
+import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
 import {
   pickBrowserFile,
   stateText,
@@ -23,8 +25,11 @@ import {
 } from "../../services/attachments";
 import type { CardKind } from "../../interactive/types";
 
-/** 可添加的五类；reply 是 QIO 结果产生的卡片，不由用户「添加」。 */
-type AddableKind = Exclude<CardKind, "reply">;
+/**
+ * 可添加的卡片种类：**只由 board.ts 的 ADDABLE_CARD_KINDS 决定**（契约 §1.7）。
+ * 菜单里不再单列 code / url —— 历史卡片仍然能显示（BoardCard 的兜底分支），只是不能新建。
+ */
+type AddableKind = CardKind;
 
 interface AddItem {
   kind: AddableKind;
@@ -39,16 +44,21 @@ const trigger = ref<HTMLButtonElement | null>(null);
 const popup = ref<HTMLElement | null>(null);
 
 /**
- * 五类入口与说明。说明里必须写清权限边界（不能只靠颜色或图标表达）：
- * 文字注释默认未勾选（勾选后才允许 QIO 查看，而且仍要提交）；材料默认在本次允许查看范围内。
+ * 入口与说明。说明里必须写清权限边界（不能只靠颜色或图标表达）：
+ * 文字卡默认**未许可**（许可后 QIO 才能看到卡内的文字、链接与代码，而且仍要提交）；
+ * 材料（文件 / 图片）默认在本次允许查看范围内。
  */
-const ITEMS: AddItem[] = [
-  { kind: "text", label: "文字注释", hint: "默认未勾选：勾选后才允许 QIO 查看，而且仍要提交" },
-  { kind: "file", label: "文件", hint: "材料默认在本次允许查看范围内，不需要勾选" },
-  { kind: "image", label: "图片", hint: "材料默认在本次允许查看范围内，不需要勾选" },
-  { kind: "code", label: "代码", hint: "材料默认在本次允许查看范围内，不需要勾选" },
-  { kind: "url", label: "网址", hint: "材料默认在本次允许查看范围内，不需要勾选" },
-];
+const HINTS: Record<string, string> = {
+  text: "文字、链接、代码写在同一张卡片里；默认未许可",
+  file: "材料默认在本次允许查看范围内，不需要许可",
+  image: "材料默认在本次允许查看范围内，不需要许可",
+};
+
+const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
+  kind,
+  label: CARD_KIND_LABELS[kind],
+  hint: HINTS[kind] ?? "材料默认在本次允许查看范围内，不需要许可",
+}));
 
 function toggle(): void {
   open.value = !open.value;
@@ -130,10 +140,17 @@ async function attachRealFile(kind: "file" | "image", cardId: string): Promise<v
 function add(kind: AddableKind): void {
   const current = store.board;
   if (!current) return;
-  // 默认内容统一由 board.ts 提供：同一个「添加文件」不能有两种默认值（集成时去掉这里的复制）
+  // 默认内容统一由 board.ts 提供：同一个「添加文件」不能有两种默认值
   const seed = defaultCardSeed(kind);
   const before = new Set(current.cards.map((card) => card.id));
-  store.commit(addCard(current, { kind, content: seed.content, meta: seed.meta }), "添加" + CARD_KIND_LABELS[kind]);
+  /**
+   * 新建文字卡默认 **checked = false**（契约 §1.4）：整卡一个许可，
+   * 没有许可之前卡内的文字 / 链接 / 代码整体不可交付。
+   */
+  store.commit(
+    addCard(current, { kind, content: seed.content, meta: seed.meta, checked: false }),
+    "添加" + CARD_KIND_LABELS[kind],
+  );
   close(true);
   const added = store.board?.cards.find((card) => !before.has(card.id));
   // 文件 / 图片：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
@@ -180,7 +197,7 @@ onBeforeUnmount(() => {
       data-im="add-menu"
       aria-haspopup="menu"
       :aria-expanded="open"
-      title="添加文字注释或材料：文件 / 图片 / 代码 / 网址"
+      title="添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件 / 图片"
       @click="toggle"
     >
       <span class="plus" aria-hidden="true">＋</span>添加
