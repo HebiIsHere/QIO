@@ -132,9 +132,11 @@ def test_unlinked_or_missing_attachment_is_still_unsupported(db_conn, svc, tmp_p
         db_conn, state=state, cards=[linked_only_name, ghost], attachments=svc, vision=True
     )
     by_id = {e["cardId"]: e for e in entries}
-    assert "attachmentId 缺失" in by_id[linked_only_name["id"]]["reason"]
     assert by_id[linked_only_name["id"]]["source"] == "image_unsupported"
-    assert "取不到" in by_id[ghost["id"]]["reason"]
+    assert "没有视觉能力" in by_id[linked_only_name["id"]]["reason"]
+    assert any("attachmentId 缺失" in str(n) for n in by_id[linked_only_name["id"]]["notes"])
+    assert "没有视觉能力" in by_id[ghost["id"]]["reason"]
+    assert any("取不到" in str(n) for n in by_id[ghost["id"]]["notes"])
     assert materials.resolve_images(
         db_conn, state=state, cards=[linked_only_name, ghost], attachments=svc
     ) == []

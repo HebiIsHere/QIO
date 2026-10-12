@@ -138,7 +138,10 @@ def test_resolve_materials_marks_image_unsupported(db_conn):
     assert image_entry["source"] == "image_unsupported"
     assert image_entry["read"] is False
     assert image_entry["text"] == ""
-    assert "视觉能力" in image_entry["reason"]
+    # 原因必须**可读且说清是哪一种没交付**：视觉能力不可用、或这张卡还没有关联附件。
+    # （2026-10-12 视觉能力接入后，「没有附件」不再笼统说成「没有视觉能力」）
+    reason = image_entry["reason"]
+    assert "视觉能力" in reason or "没有关联已保存的附件" in reason, reason
     # 对照：同一批里的 code 卡片是真的读到正文的 inline 材料
     assert by_card[code["id"]]["source"] == "inline"
     assert by_card[code["id"]]["text"] == "print('x')"
