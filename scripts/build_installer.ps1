@@ -7,8 +7,12 @@
 #   2) build_runtime         —— 生成安装包自带的 Python 运行时（resources/python-runtime）；
 #                               冻结后端不能拿 sys.executable 当解释器，依赖型工具靠它建环境。
 #                               缺失即构建失败：否则会出一个「依赖工具用不了」的包
-#   3) build_uninstall_helper —— 编译卸载帮助程序（所有权判定，只按 pid 收 sidecar）放进资源目录
-#   4) build_sidecar         —— 重建后端 sidecar；**必须**在打包前跑，否则打进包的是旧后端
+#   3) build_sidecar         —— 重建后端 sidecar；**必须**在打包前跑，否则打进包的是旧后端；
+#                               也必须排在卸载助手之前：助手的 cargo 构建会在同一个 Tauri
+#                               工作区里解析 bundle.resources，里面列了 sidecar 这个文件，
+#                               干净检出上不存在就会 `resource path ... doesn't exist`（CI 靠
+#                               「Provide sidecar placeholder」绕过，本机没有那一步）
+#   4) build_uninstall_helper —— 编译卸载帮助程序（所有权判定，只按 pid 收 sidecar）放进资源目录
 #                               （实测踩过：旧后端不认内置的 fp32 模型，静默退回 BM25）
 #   5) 打包前校验            —— 运行时与帮助程序必须是**真产物**（build.rs 会在干净检出上补占位，
 #                               占位绝不能被打进安装包）
@@ -98,13 +102,16 @@ Write-Host "== 2/6 生成安装包自带的 Python 运行时 =="
 & (Join-Path $PSScriptRoot "build_runtime.ps1")
 if ($LASTEXITCODE -ne 0) { throw "自带 Python 运行时构建失败" }
 
-Write-Host "== 3/6 编译卸载帮助程序 =="
-& (Join-Path $PSScriptRoot "build_uninstall_helper.ps1")
-if ($LASTEXITCODE -ne 0) { throw "卸载帮助程序构建失败" }
-
-Write-Host "== 4/6 重建后端 sidecar =="
+# sidecar 必须排在卸载助手**之前**：助手要在同一个 Tauri 工作区里解析 bundle.resources，
+# 里面列了 binaries\qio-backend-x86_64-pc-windows-msvc.exe。干净检出上它不存在，
+# cargo 会直接报 `resource path ... doesn't exist` 而失败（2026-10-13 发布构建实测）。
+Write-Host "== 3/6 重建后端 sidecar =="
 & (Join-Path $PSScriptRoot "build_sidecar.ps1")
 if ($LASTEXITCODE -ne 0) { throw "sidecar 构建失败" }
+
+Write-Host "== 4/6 编译卸载帮助程序 =="
+& (Join-Path $PSScriptRoot "build_uninstall_helper.ps1")
+if ($LASTEXITCODE -ne 0) { throw "卸载帮助程序构建失败" }
 
 # 打包前的硬校验：确认这两项是**真产物**、不是 build.rs 补的占位。
 # 背景：bundle.resources 里列了构建产物，干净检出上不存在会让 tauri-build 编译期直接失败，
