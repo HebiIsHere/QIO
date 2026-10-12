@@ -26,7 +26,7 @@ from agent.services.attachments import AttachmentService
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
-from tests.test_media_service import FFMPEG, real_video  # noqa: F401 - 复用真实素材夹具
+from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具
 
 needs_ffmpeg = pytest.mark.skipif(
     not FFMPEG,
@@ -122,6 +122,48 @@ async def test_conversation_turn_with_audio_attaches_no_audio_block_without_capa
 
 async def _return(value):
     return value
+
+
+@needs_ffmpeg
+async def test_transcript_text_reaches_the_model_prompt_every_call(
+    ctx: AppContext, tmp_path: Path, real_audio: Path, monkeypatch,
+):
+    """转写文字必须**真的进提示词**（而且每一次模型调用都在）。
+
+    内容块能交付的只有字节；转写与抽样这两种**派生事实**只能走文字。这条用例
+    **走真实链路**：适配器按运行声明转写通道 → materials 真的调用适配器的转写入口
+    → 材料条目是 audio_transcribed → 提示词里带着那段文字与它的时段。
+    转写入口本身是受控替身（不联网、不用真实 Key），但它走的是与生产同一条调用路径。
+    """
+    service = AttachmentService(ctx.conn, Path(ctx.settings.data_dir))
+    ctx.services.register("attachments", service)
+
+    topic = ctx.topics.nodes.create_topic("媒体3").id
+    tctx = ctx.turns.submit("听听这段录音", topic)
+    att = service.prepare(str(real_audio), topic_id=topic, turn_id=tctx.turn_id)
+    service.run_prepare(att.id)
+
+    transcript_text = "我们先定预算，再看排期"
+
+    class _TranscribingAdapter(_CapturingAdapter):
+        supports_images = True
+        audio_transcription = "openai.audio.transcriptions"
+
+        async def transcribe_audio(self, data: bytes, *, filename: str = "audio.wav"):
+            assert data, "转写必须拿到真实字节"
+            return {"text": transcript_text, "engine": {"provider": "fake-asr", "model": "fake-asr-1"}}
+
+    adapter = _TranscribingAdapter()
+    ctx.build_adapter = lambda: _return(adapter)  # type: ignore[assignment]
+    await ctx.turns.wait(tctx.turn_id, timeout=60)
+
+    assert adapter.calls, "模型没有被调用"
+    for messages in adapter.calls:
+        first = messages[0]
+        assert first.role == "user"
+        assert transcript_text in first.content, "转写文字必须真的进提示词"
+        assert "0.0s" in first.content, "转写必须带时间位置（时段）"
+        assert "不代表听懂了语气" in first.content, "不得由转写推断语气 / 音乐"
 
 
 def test_resolve_media_never_claims_transcription_without_a_real_transcript(db_conn, tmp_path):

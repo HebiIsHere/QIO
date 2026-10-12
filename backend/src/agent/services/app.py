@@ -1239,6 +1239,9 @@ class AppContext:
         supports_audio = bool(getattr(adapter, "supports_audio", False))
         supports_video = bool(getattr(adapter, "supports_video", False))
         transcription = getattr(adapter, "audio_transcription", None)
+        # 转写调用器**按本次运行解析**：有通道且适配器真的实现了入口才拿得到，
+        # 否则返回 None（调用方据此如实降级成「没有转写通道」，不静默换别家服务）。
+        transcriber = materials_module.transcriber_for_adapter(adapter) if transcription else None
         work_dir = None
         if turn_id:
             try:
@@ -1252,6 +1255,7 @@ class AppContext:
                 supports_audio=supports_audio,
                 supports_video=supports_video,
                 audio_transcription=transcription,
+                transcriber=transcriber,
                 work_dir=work_dir,
             )
         except Exception as exc:  # noqa: BLE001 - 媒体是旁路：失败就是没有材料
