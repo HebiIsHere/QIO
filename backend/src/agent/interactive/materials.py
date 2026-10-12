@@ -68,18 +68,6 @@ MEDIA_SAMPLE_MAX_EDGE = media.DEFAULT_MAX_EDGE
 #: 单帧交付给模型的字节上限：一张 768px JPEG 通常远小于它，超过就如实说明
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
-#: 材料条目里音频/视频来源的**新增取值**（契约 §4.4 冻结的八种之一）。
-#: 唯一口径仍是 `models.MATERIAL_SOURCES`：P1 追加这六个值后本常量即可删除，
-#: 这里只是「单一白名单尚未合并」期间的过渡并集（见交付说明）。
-MEDIA_MATERIAL_SOURCES = (
-    "audio_delivered",
-    "audio_transcribed",
-    "audio_unsupported",
-    "video_delivered",
-    "video_sampled",
-    "video_unsupported",
-)
-
 #: 允许作为多模态图片下发的媒体类型（其它类型如 svg/tiff 交给既有文本读取结论，不猜）。
 DELIVERABLE_IMAGE_TYPES = {
     ".png": "image/png",
@@ -1480,10 +1468,8 @@ def _entry(
     **extra: Any,
 ) -> dict:
     """材料条目（前端 UnderstandingMaterial 的字段 + 交付用的 text / 说明）。"""
-    # 唯一口径是 models.MATERIAL_SOURCES；音频/视频那六个取值由 P1 追加进那里，
-    # 追加到位之前用过渡并集，避免在本地再立第二份白名单（见交付说明的接缝一条）。
-    allowed = tuple(models.MATERIAL_SOURCES) + MEDIA_MATERIAL_SOURCES
-    if source not in allowed:
+    # 唯一口径就是 models.MATERIAL_SOURCES（音频/视频的六个取值已在那里）。
+    if source not in models.MATERIAL_SOURCES:
         raise ValueError(f"未知的材料来源：{source}（只能取 models.MATERIAL_SOURCES）")
     entry = {
         "cardId": str(card.get("id") or ""),
