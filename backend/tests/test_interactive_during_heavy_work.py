@@ -169,6 +169,8 @@ LOOP_STALL_BUDGET_FRACTION = 0.5
 #: 「慢替身」的时长：必须显著高于机器噪声地板（共享 runner 光 fsync / 线程调度
 #: 就能到 104–118 ms，2026-10-11 main run 实测），否则 400ms 级阻塞会被地板淹没。
 SLOW_STIMULUS_SECONDS = 0.6
+#: 慢**检索**替身的单次时长（召回用例与整轮用例共用同一个刺激口径）。
+RECALL_STIMULUS_SECONDS = 0.2
 #: 维护用例的刺激规模：12 条消息 × 每条 50ms 慢嵌入（与用例文档里的数字一致）。
 MAINTENANCE_MESSAGES = 12
 _MAINTENANCE_EMBED_SECONDS = 0.05
@@ -292,11 +294,13 @@ async def test_a_slow_retrieval_does_not_stall_the_turn_loop(
 ):
     """整轮一起看：慢检索期间事件循环的停顿也必须明显下降。
 
-    阈值放到 250ms 是有意的：这一轮里还夹着轮末与后台派生工作（与本条修复无关，
-    见 `_lead-logs/bench-heavy-work.md` 的「残余停顿」）。修复前这里测到 446ms
-    （两次 0.2s 召回串行跑在事件循环上），修复后 ~150ms。
+    预算随**这次刺激**缩放（与本文件其它用例同一条规则，见 loop_stall_budget_ms）：
+    这一轮里还夹着轮末与后台派生工作（与本条修复无关，见 `_lead-logs/bench-heavy-work.md`
+    的「残余停顿」），所以取 1.5 倍搜索时长当余量。修复前这里测到 446ms（两次 0.2s 召回
+    串行跑在事件循环上），修复后 ~150ms；余量足够抓住回归，又不会被 runner 的环境地板
+    （2026-10-12 windows-latest 实测 266ms）判成假红。
     """
-    slow = _SlowRecall(delay=0.2)
+    slow = _SlowRecall(delay=RECALL_STIMULUS_SECONDS)
     monkeypatch.setattr(ctx.selector, "recall", slow)
 
     result, gap_ms = await _measure_loop_lag(
@@ -305,7 +309,12 @@ async def test_a_slow_retrieval_does_not_stall_the_turn_loop(
 
     assert result["ok"] is True
     assert slow.searches >= 1
-    assert gap_ms < 250, f"慢检索期间事件循环被占住 {gap_ms:.0f} ms"
+    budget = loop_stall_budget_ms(RECALL_STIMULUS_SECONDS * 1000 * 1.5)
+    assert gap_ms < budget, (
+        f"慢检索期间事件循环被占住 {gap_ms:.0f} ms（预算 {budget:.0f} ms = "
+        f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
+        f"{RECALL_STIMULUS_SECONDS * 1000 * 1.5:.0f}ms)）"
+    )
 
 
 async def test_a_cancel_request_is_served_while_slow_prediction_runs(
