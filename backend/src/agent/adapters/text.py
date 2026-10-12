@@ -54,6 +54,12 @@ class TextAdapter(BaseAdapter):
     # AgentLoop 会一次性给出 {streaming: false}，前端如实提示
     # 「该模型路径不支持实时生成」，而不是假装一片一片地出字。
     supports_stream = False
+    # 能力协商（契约 §4.2）：text 兼容档只会把文本拼进 prompt，图片/音频/视频
+    # 字节一律不下发，也没有转写通道 —— 如实全部为 False / None。
+    supports_images = False
+    supports_audio = False
+    supports_video = False
+    audio_transcription = None
 
     def __init__(
         self,

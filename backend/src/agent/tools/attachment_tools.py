@@ -39,6 +39,7 @@ from typing import Any, Callable, Iterable, Iterator
 from xml.etree import ElementTree
 
 from agent.trace.redact import redact_text
+from agent.services import media
 from agent.services.attachments import (
     COPY_LABEL,
     REFERENCE_CAVEAT,
@@ -46,6 +47,7 @@ from agent.services.attachments import (
     Attachment,
     AttachmentService,
     human_size,
+    classify_media_kind,
     classify_readability,
 )
 from agent.tools.base import Tool, ToolResult
@@ -81,6 +83,29 @@ ZIP_TOTAL_MAX_BYTES = 24_000_000
 WORKER_STOP_WAIT_SECONDS = 10.0
 
 TEXT_ENCODINGS = ("utf-8", "gbk", "utf-16", "cp1252")
+
+#: read_attachment 对视频一次抽几帧（上限仍由 media.MAX_SAMPLE_FRAMES 兜底）
+VIDEO_SAMPLE_FRAMES = 6
+
+
+def _media_work_dir() -> Path:
+    """音视频派生处理的**本轮临时工作目录**（样本帧 / 音频片段只在这里存在）。
+
+    优先落在 QIO 数据目录的 tmp 下（与长正文暂存同一口径）；取不到就落系统临时目录。
+    调用方负责用 `media.cleanup_media` 清理 —— 读工具的每条路径都在 finally 里清。
+    """
+    import os
+    import tempfile
+
+    base = os.environ.get("QIO_DATA_DIR")
+    if base:
+        try:
+            root = Path(base) / "tmp"
+            root.mkdir(parents=True, exist_ok=True)
+            return Path(tempfile.mkdtemp(prefix="media-", dir=str(root)))
+        except OSError:
+            pass
+    return Path(tempfile.mkdtemp(prefix="qio-media-"))
 
 #: Python str.splitlines 的行分隔符集合
 _SEPARATORS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
@@ -595,6 +620,10 @@ class ReadAttachmentTool(Tool):
                 )
             elif mode == "image":
                 return self._read_image(att, path, notes)
+            elif mode == "audio":
+                return await self._read_audio(att, path, notes)
+            elif mode == "video":
+                return await self._read_video(att, path, notes)
             elif mode == "unsupported":
                 return ToolResult(
                     ok=True,
@@ -711,6 +740,188 @@ class ReadAttachmentTool(Tool):
             "notes": notes + ["要看图片内容需要视觉模型；本工具不会编造画面描述"],
         }
         return ToolResult(ok=True, content=_json(payload))
+
+    # -- 音频 / 视频 -------------------------------------------------------
+
+    async def _read_audio(self, att: Attachment, path: Path, notes: list[str]) -> ToolResult:
+        """音频：**只有真的拿到音频事实**才 readable=true。
+
+        有转换程序 → 元数据 + （抽取成功时的）单声道 16k wav 事实，并**明确说明
+        当前链路没有转写通道**：绝不因为「抽出了 wav」就声称读到了语音内容。
+        没有转换程序 → readable=false，原因具体到「这台机器上没有可用的转换程序，
+        也没有随包提供」。
+        """
+        probe: dict = await self._run_worker(lambda cancel: media.probe_media(path))
+        if not probe.get("hasAudio") and not probe.get("reason"):
+            return ToolResult(
+                ok=True,
+                content=_json(
+                    {
+                        "ok": True,
+                        "attachment": self._describe(att),
+                        "readable": False,
+                        "media_kind": "audio",
+                        "reason": "这份文件里没有音频轨道：没有可读的音频事实",
+                        "content": "",
+                        "notes": notes,
+                    }
+                ),
+            )
+        ffmpeg, origin = media.ffmpeg_path()
+        if not ffmpeg:
+            return ToolResult(
+                ok=True,
+                content=_json(
+                    {
+                        "ok": True,
+                        "attachment": self._describe(att),
+                        "readable": False,
+                        "media_kind": "audio",
+                        "media": probe,
+                        "reason": f"音频派生处理不可用：{origin}",
+                        "content": "",
+                        "notes": notes
+                        + [
+                            "音频本身没有被读取：本工具不会凭文件名或元数据编造语音内容",
+                        ],
+                    }
+                ),
+            )
+
+        work = _media_work_dir()
+        out = work / "audio.wav"
+        try:
+            extracted = await self._run_worker(
+                lambda cancel: media.extract_audio(path, out)
+            )
+        finally:
+            media.cleanup_media(work)
+        facts: dict[str, Any] = {
+            "ok": True,
+            "attachment": self._describe(att),
+            "readable": True,
+            "media_kind": "audio",
+            "media": probe,
+            "transcript": None,
+            "content": "",
+            "notes": notes
+            + [
+                "这份音频的**文字内容没有被读取**：当前链路没有声明转写通道，"
+                "QIO 不会凭音频元数据编造语音内容，也不据此声称理解语气或音乐",
+            ],
+        }
+        if extracted.get("path"):
+            facts["extracted"] = {
+                "seconds": extracted["seconds"],
+                "bytes": extracted["bytes"],
+                "reason": extracted["reason"],
+            }
+            if extracted["reason"]:
+                facts["notes"].append(extracted["reason"])
+            facts["notes"].append(
+                f"派生处理用了本机的转换程序（{Path(ffmpeg).name}，{origin}）；"
+                "片段只在本轮临时目录里存在，读完即清理"
+            )
+        else:
+            facts["readable"] = False
+            facts["reason"] = extracted.get("reason") or "音频抽取没有成功"
+        return ToolResult(ok=True, content=_json(facts))
+
+    async def _read_video(self, att: Attachment, path: Path, notes: list[str]) -> ToolResult:
+        """视频：元数据 + 按时间点抽样（有转换程序才做，没有就如实说不能）。
+
+        抽样帧**不进入工具正文**（正文是给模型的文本），只如实报出「取了哪几个时间点、
+        每帧多大、用了谁」；帧文件在本轮临时目录里存在过、读完即清理 ——
+        绝不声称逐帧读完了这段视频。
+        """
+        probe: dict = await self._run_worker(lambda cancel: media.probe_media(path))
+        if not probe.get("hasVideo") and not probe.get("reason"):
+            return ToolResult(
+                ok=True,
+                content=_json(
+                    {
+                        "ok": True,
+                        "attachment": self._describe(att),
+                        "readable": False,
+                        "media_kind": "video",
+                        "media": probe,
+                        "reason": "这份文件里没有画面轨道：没有可抽的画面事实",
+                        "content": "",
+                        "notes": notes,
+                    }
+                ),
+            )
+        ffmpeg, origin = media.ffmpeg_path()
+        if not ffmpeg:
+            return ToolResult(
+                ok=True,
+                content=_json(
+                    {
+                        "ok": True,
+                        "attachment": self._describe(att),
+                        "readable": False,
+                        "media_kind": "video",
+                        "media": probe,
+                        "reason": f"视频抽样不可用：{origin}",
+                        "content": "",
+                        "notes": notes
+                        + [
+                            "这段视频的画面没有被读取：没有转换程序就抽不出帧，"
+                            "也不凭文件名或时长编造画面内容",
+                        ],
+                    }
+                ),
+            )
+
+        work = _media_work_dir()
+        frames: list[dict] = []
+        sample_reason = ""
+        try:
+            sample = await self._run_worker(
+                lambda cancel: media.sample_video_frames(path, work, count=VIDEO_SAMPLE_FRAMES)
+            )
+            frames = [
+                {
+                    "at": float(frame["at"]),
+                    "bytes": int(frame["bytes"]),
+                }
+                for frame in sample.frames
+            ]
+            sample_reason = sample.reason
+            engine = dict(sample.engine)
+            requested = sample.requested
+            cap_note = (
+                f"请求 {requested} 帧，上限 {media.MAX_SAMPLE_FRAMES}：本次按上限取"
+                if requested > media.MAX_SAMPLE_FRAMES
+                else ""
+            )
+        finally:
+            media.cleanup_media(work)
+
+        facts = {
+            "ok": True,
+            "attachment": self._describe(att),
+            "readable": bool(frames),
+            "media_kind": "video",
+            "media": probe,
+            "content": "",
+            "sampled": {
+                "count": len(frames),
+                "frames": frames,
+                "engine": engine,
+                "cleaned_up": True,
+            },
+            "notes": notes
+            + [
+                "抽样帧只代表这些时间点上的画面，**不是逐帧读完整段视频**；"
+                "帧文件只在本轮临时目录里存在，读完已清理",
+            ]
+            + ([cap_note] if cap_note else [])
+            + ([sample_reason] if sample_reason else []),
+        }
+        if not frames:
+            facts["reason"] = sample_reason or "没有抽到任何一帧"
+        return ToolResult(ok=True, content=_json(facts))
 
     # -- 公共返回 ----------------------------------------------------------
 

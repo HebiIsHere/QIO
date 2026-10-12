@@ -32,11 +32,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from agent.interactive import models
+from agent.services import media
 from agent.services.attachments import (
     Attachment,
     AttachmentContentError,
     AttachmentService,
+    classify_media_kind,
     classify_readability,
+    human_size,
 )
 from agent.tools import attachment_tools
 from agent.trace.redact import redact_text
@@ -57,6 +60,27 @@ _ATTACHMENT_ID_KEYS = ("attachmentId", "attachment_id")
 #: 单张图片**交给模型**的字节上限。超过就不交付字节（如实说明原因、并给出尺寸与上限），
 #: 绝不悄悄截断成半张图 —— 图片是有损内容，截一半等于给了错的画面。
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+#: 视频抽样帧数的上限（契约 §4.3 的 MAX_SAMPLE_FRAMES；材料层再兜一道）
+MAX_MEDIA_SAMPLE_FRAMES = media.MAX_SAMPLE_FRAMES
+#: 一次抽样默认取几帧
+DEFAULT_MEDIA_SAMPLE_FRAMES = 6
+#: 抽样帧的长边像素上限（与 media.DEFAULT_MAX_EDGE 同一口径）
+MEDIA_SAMPLE_MAX_EDGE = media.DEFAULT_MAX_EDGE
+#: 单帧交付给模型的字节上限：一张 768px JPEG 通常远小于它，超过就如实说明
+MAX_FRAME_BYTES = 2 * 1024 * 1024
+
+#: 材料条目里音频/视频来源的**新增取值**（契约 §4.4 冻结的八种之一）。
+#: 唯一口径仍是 `models.MATERIAL_SOURCES`：P1 追加这六个值后本常量即可删除，
+#: 这里只是「单一白名单尚未合并」期间的过渡并集（见交付说明）。
+MEDIA_MATERIAL_SOURCES = (
+    "audio_delivered",
+    "audio_transcribed",
+    "audio_unsupported",
+    "video_delivered",
+    "video_sampled",
+    "video_unsupported",
+)
+
 #: 允许作为多模态图片下发的媒体类型（其它类型如 svg/tiff 交给既有文本读取结论，不猜）。
 DELIVERABLE_IMAGE_TYPES = {
     ".png": "image/png",
@@ -138,6 +162,593 @@ def resolve_images(
         if item is not None:
             out.append(item)
     return out
+
+
+def resolve_media(
+    conn: sqlite3.Connection,
+    *,
+    state: dict,
+    cards: Iterable[dict] | None,
+    attachments: Any = None,
+    supports_images: bool = False,
+    supports_audio: bool = False,
+    supports_video: bool = False,
+    audio_transcription: str | None = None,
+    work_dir: Path | str | None = None,
+    max_frames: int = DEFAULT_MEDIA_SAMPLE_FRAMES,
+    max_bytes: int = media.MAX_MEDIA_BYTES,
+) -> dict:
+    """本次可见范围里的**音频 / 视频**材料：诚实事实 + 真正能交付的内容块。
+
+    能力协商（契约 §4.2）：这里的四个能力位**必须**来自本次真实使用的适配器声明
+    （含凭据回落之后的那一个），调用方不许按「协议能接受什么」推测。
+
+    返回 `{"entries": [...], "parts": [...], "work_dir": Path|None}`：
+
+    * `entries`：每条音视频材料一条（`source` 取 §4.4 的八种之一），字段含
+      `read` / `reason` / `range` / `frames` / `engine`；图片卡的条目仍由
+      `resolve_materials` 负责，这里不重复报；
+    * `parts`：**真的交付**的内容块（图片帧 → `ImagePart`，音频字节 → `AudioPart`）；
+      没有能力 / 读不到字节时是空列表 —— 调用方据此区分「交付了」与「没交付」；
+    * `work_dir`：本轮抽样帧所在的目录（调用方用 `cleanup_media` 收尾）；
+      一件都没派生时是 `None`（没有目录要清）。
+    """
+    service = attachments if attachments is not None else _derive_service(conn)
+    max_frames_limit = int(max_frames) if int(max_frames) > 0 else 0
+    frames_wanted = min(max_frames_limit, MAX_MEDIA_SAMPLE_FRAMES)
+    notes_about_cap: list[str] = []
+    if max_frames_limit > MAX_MEDIA_SAMPLE_FRAMES:
+        notes_about_cap.append(
+            f"请求抽样 {max_frames_limit} 帧，超上限 MAX_MEDIA_SAMPLE_FRAMES="
+            f"{MAX_MEDIA_SAMPLE_FRAMES}：本次按上限取 {frames_wanted} 帧"
+            "（抽样只代表这些时间点，不代表逐帧读完）"
+        )
+    limit_bytes = int(max_bytes) if int(max_bytes) > 0 else media.MAX_MEDIA_BYTES
+
+    entries: list[dict] = []
+    parts: list[Any] = []
+    work_root = Path(work_dir) if work_dir is not None else None
+    used_work: Path | None = None
+
+    for card in _iter_cards(state, cards):
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        name = _media_name(card, meta)
+        kind = classify_media_kind(name)
+        if not kind:
+            continue
+        att = _media_attachment(card, meta, service)
+        version = _attachment_version(att) if att is not None else _content_version(card)
+
+        if kind == "audio":
+            entry, blocks = _audio_entry(
+                card,
+                att,
+                service=service,
+                shown=_media_label(card, att, kind),
+                supports_audio=bool(supports_audio),
+                audio_transcription=audio_transcription,
+                version=version,
+                limit_bytes=limit_bytes,
+            )
+        else:
+            entry, blocks, sampled_dir = _video_entry(
+                card,
+                att,
+                service=service,
+                shown=_media_label(card, att, kind),
+                supports_images=bool(supports_images),
+                supports_video=bool(supports_video),
+                version=version,
+                frames_wanted=frames_wanted,
+                cap_notes=notes_about_cap,
+                max_edge=MEDIA_SAMPLE_MAX_EDGE,
+                limit_bytes=limit_bytes,
+                work_dir=(work_root / _safe_dir_name(card)) if work_root is not None else None,
+            )
+            if sampled_dir is not None:
+                used_work = sampled_dir
+        entries.append(entry)
+        parts.extend(blocks)
+
+    return {"entries": entries, "parts": parts, "work_dir": used_work}
+
+
+def _media_name(card: dict, meta: dict) -> str:
+    block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+    return str(
+        block.get("name") or meta.get("name") or block.get("title") or meta.get("title") or ""
+    ).strip()
+
+
+def _media_label(card: dict, att: Any, kind: str) -> str:
+    name = str(getattr(att, "original_name", "") or "") if att is not None else ""
+    return _label(card) or name or ("（音频）" if kind == "audio" else "（视频）")
+
+
+def _media_attachment(card: dict, meta: dict, service: Any) -> Any:
+    raw_id = _attachment_id(meta, "file") or _attachment_id(meta, "image")
+    if not raw_id or service is None:
+        return None
+    return service.get(raw_id, check=False)
+
+
+def _safe_dir_name(card: dict) -> str:
+    raw = str(card.get("id") or "card")
+    return "".join(ch for ch in raw if ch.isalnum() or ch in "-_") or "card"
+
+
+def _media_ready(att: Any, service: Any) -> tuple[bool, str]:
+    """附件现在能不能读：不能就返回（False, 可读原因）。"""
+    if att is None:
+        return False, "这张材料还没有关联已保存的附件（meta 里没有 attachmentId）：读不到字节"
+    state = str(getattr(att, "state", "") or "")
+    if state == "ready":
+        return True, ""
+    if state == "prepared":
+        return False, f"附件「{att.original_name}」还在准备中（{state}），现在没有可读的内容"
+    if state == "cancelled":
+        return False, f"附件「{att.original_name}」的准备已被取消，没有可读的内容"
+    return False, (
+        f"读不到附件「{att.original_name}」的字节："
+        f"{getattr(att, 'error', None) or '文件不在原来登记的位置'}（状态 {state or '未知'}）"
+    )
+
+
+def _probe_media(att: Any, service: Any, *, limit_bytes: int) -> dict:
+    path, _origin = service_for_content(service, att)
+    if path is None:
+        return media.probe_media(Path("__missing__"), max_bytes=limit_bytes)
+    return media.probe_media(path, max_bytes=limit_bytes)
+
+
+def _audio_entry(
+    card: dict,
+    att: Any,
+    *,
+    service: Any,
+    shown: str,
+    supports_audio: bool,
+    audio_transcription: str | None,
+    version: str,
+    limit_bytes: int,
+) -> tuple[dict, list[Any]]:
+    """音频：交付字节 / 派生转写 / 如实说不可用（三选一，不许含糊）。"""
+    bytes_ = _int_bytes(att)
+    duration: float | None = None
+
+    ready, why = _media_ready(att, service)
+    probe: dict = {}
+    if ready:
+        path, _origin = service_for_content(service, att)
+        probe = media.probe_media(path, max_bytes=limit_bytes) if path is not None else {}
+        if probe:
+            duration = probe.get("duration")
+            if not probe.get("hasAudio") and not probe.get("reason"):
+                return (
+                    _media_entry(
+                        card,
+                        source="audio_unsupported",
+                        label=shown,
+                        version=version,
+                        read=False,
+                        bytes_=bytes_,
+                        reason="这份文件里没有音频轨道：没有可以转写的语音内容"
+                        "（画面不会被当成声音，也不推断画面里的对话）",
+                        notes=["只按真实轨道判断：文件里没有声音，就没有可读的音频事实"],
+                        attachment_id=getattr(att, "id", None),
+                    ),
+                    [],
+                )
+
+    if supports_audio:
+        if not ready:
+            return (
+                _media_entry(
+                    card, source="audio_unsupported", label=shown, version=version, read=False,
+                    bytes_=bytes_, reason=why,
+                    notes=["链路有音频能力，但这份附件读不出字节：本次没有把音频交给模型"],
+                    attachment_id=getattr(att, "id", None),
+                ),
+                [],
+            )
+        if bytes_ <= 0 or bytes_ > limit_bytes:
+            return (
+                _media_entry(
+                    card, source="audio_unsupported", label=shown, version=version, read=False,
+                    bytes_=bytes_,
+                    reason=f"音频 {human_size(bytes_)} 超过交付上限 {human_size(limit_bytes)}："
+                    "本次没有把音频字节交给模型（不截取半段声音，因为半段会给出错的结论）",
+                    notes=["要么压缩后再发，要么把结论写在注释里让 QIO 读文字"],
+                    attachment_id=getattr(att, "id", None),
+                ),
+                [],
+            )
+        path, _origin = service_for_content(service, att)
+        data_url = _file_data_url(path, _audio_media_type(getattr(att, "original_name", "")))
+        if data_url is None:
+            return (
+                _media_entry(
+                    card, source="audio_unsupported", label=shown, version=version, read=False,
+                    bytes_=bytes_, reason="读不到这份音频的字节：本次没有把它交给模型",
+                    notes=["清单失败也会走到这里：不伪造一个空音频块"],
+                    attachment_id=getattr(att, "id", None),
+                ),
+                [],
+            )
+        from agent.adapters.base import AudioPart
+
+        return (
+            _media_entry(
+                card, source="audio_delivered", label=shown, version=version, read=True,
+                bytes_=bytes_,
+                reason="",
+                notes=[
+                    f"本次把这份音频的真实字节（{getattr(att, 'original_name', '音频')}，"
+                    f"{human_size(bytes_)}）作为音频内容块交给了模型，由模型自己听；"
+                    "QIO 不另外编造音频描述"
+                ],
+                attachment_id=getattr(att, "id", None),
+                frame_range={"start": None, "end": duration},
+            ),
+            [
+                AudioPart(
+                    data_url=data_url,
+                    label=str(card.get("id") or ""),
+                    media_type=_audio_media_type(getattr(att, "original_name", "")),
+                    bytes=bytes_,
+                )
+            ],
+        )
+
+    if audio_transcription:
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=_transcription_blocked_reason(
+                    ready=ready, why=why, probe=probe, duration=duration, channel=audio_transcription
+                ),
+                notes=["转写通道没跑成就不编造文字：本次没有得到任何转写文本"],
+                attachment_id=getattr(att, "id", None),
+                engine={"provider": audio_transcription, "model": ""},
+            ),
+            [],
+        )
+
+    return (
+        _media_entry(
+            card, source="audio_unsupported", label=shown, version=version, read=False,
+            bytes_=bytes_,
+            reason="当前模型链路既没有音频能力、也没有派生转写通道："
+            "本次没有把音频交给模型，也没有得到任何转写文字"
+            + (f"（另外：{why}）" if not ready else ""),
+            notes=[
+                "要读音频内容：换一条声明了音频能力或转写通道的链路，"
+                "或者把结论写在注释里让 QIO 读文字",
+            ]
+            + (["本机若没有 ffmpeg，转写所需的音频片段同样抽不出来"] if not ready else []),
+            attachment_id=getattr(att, "id", None),
+        ),
+        [],
+    )
+
+
+def _transcription_blocked_reason(
+    *,
+    ready: bool,
+    why: str,
+    probe: dict,
+    duration: float | None,
+    channel: str,
+) -> str:
+    """有转写通道但这次没转成：原因必须具体（缺哪一环就说哪一环）。"""
+    if not ready:
+        return f"有转写通道（{channel}），但读不到这份媒体的字节：{why}"
+    if probe.get("reason"):
+        return f"有转写通道（{channel}），但读不出媒体元数据：{probe['reason']}"
+    ffmpeg, origin = media.ffmpeg_path()
+    if not ffmpeg:
+        return (
+            f"有转写通道（{channel}），但音频抽取需要本机的转换程序：{origin}"
+            "—— 没有它就拿不到转写所需的音频片段"
+        )
+    if duration is not None and duration > media.MAX_TRANSCRIBE_SECONDS:
+        return (
+            f"有转写通道（{channel}），但这份音频 {duration:g}s 超过转写时长上限 "
+            f"MAX_TRANSCRIBE_SECONDS={media.MAX_TRANSCRIBE_SECONDS:g}s："
+            "本次没有转写（不截一半就当成完整内容）"
+        )
+    return f"有转写通道（{channel}），但这次没有得到转写文本：不编造文字"
+
+
+def _video_entry(
+    card: dict,
+    att: Any,
+    *,
+    service: Any,
+    shown: str,
+    supports_images: bool,
+    supports_video: bool,
+    version: str,
+    frames_wanted: int,
+    cap_notes: list[str],
+    max_edge: int,
+    limit_bytes: int,
+    work_dir: Path | None,
+) -> tuple[dict, list[Any], Path | None]:
+    """视频：交付字节 / 抽样帧交付 / 如实说不可用（三选一，不许含糊）。"""
+    bytes_ = _int_bytes(att)
+    ready, why = _media_ready(att, service)
+    path, _origin = service_for_content(service, att) if ready else (None, "none")
+    probe = media.probe_media(path, max_bytes=limit_bytes) if path is not None else {}
+
+    if supports_video:
+        if path is None or bytes_ <= 0 or bytes_ > limit_bytes:
+            return (
+                _media_entry(
+                    card, source="video_unsupported", label=shown, version=version, read=False,
+                    bytes_=bytes_,
+                    reason=why or f"视频 {human_size(bytes_)} 超过交付上限 "
+                    f"{human_size(limit_bytes)}：本次没有把视频字节交给模型",
+                    notes=["链路有视频能力，但这份附件读不出可用字节"],
+                    attachment_id=getattr(att, "id", None),
+                ),
+                [],
+                None,
+            )
+        from agent.adapters.base import VideoPart
+
+        media_type = _video_media_type(getattr(att, "original_name", ""))
+        data_url = _file_data_url(path, media_type)
+        if data_url is None:
+            return (
+                _media_entry(
+                    card, source="video_unsupported", label=shown, version=version, read=False,
+                    bytes_=bytes_, reason="读不到这份视频的字节：本次没有把它交给模型",
+                    notes=["不伪造一个空视频块"],
+                    attachment_id=getattr(att, "id", None),
+                ),
+                [],
+                None,
+            )
+        return (
+            _media_entry(
+                card, source="video_delivered", label=shown, version=version, read=True,
+                bytes_=bytes_, reason="",
+                notes=[
+                    f"本次把这份视频的真实字节（{human_size(bytes_)}）作为视频内容块交给了模型"
+                ],
+                attachment_id=getattr(att, "id", None),
+                frame_range={"start": 0.0, "end": probe.get("duration")},
+            ),
+            [
+                VideoPart(
+                    data_url=data_url,
+                    label=str(card.get("id") or ""),
+                    media_type=media_type,
+                    bytes=bytes_,
+                )
+            ],
+            None,
+        )
+
+    # 没有视频字节能力 → 走抽样帧（抽帧是派生处理，必须说清用了谁）。
+    if path is None:
+        return (
+            _media_entry(
+                card, source="video_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_, reason=why,
+                notes=["没有可读的字节就没有抽样通道：本次没有抽到任何一帧"],
+                attachment_id=getattr(att, "id", None),
+            ),
+            [],
+            None,
+        )
+    if frames_wanted <= 0:
+        return (
+            _media_entry(
+                card, source="video_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_, reason="本次允许抽取的帧数是 0：没有可交付的画面依据",
+                notes=list(cap_notes),
+                attachment_id=getattr(att, "id", None),
+            ),
+            [],
+            None,
+        )
+
+    out_dir = (work_dir if work_dir is not None else _fallback_work_dir(card)) / "frames"
+    sample = media.sample_video_frames(
+        path, out_dir, count=frames_wanted, max_edge=max_edge, max_bytes=limit_bytes
+    )
+    notes = [*cap_notes, *(sample.reason.split("；") if sample.reason else [])]
+    notes = [n for n in notes if n]
+    frame_facts = [{"at": float(frame["at"])} for frame in sample.frames]
+    frame_range = {
+        "start": float(min((f["at"] for f in frame_facts), default=0.0)),
+        "end": float(max((f["at"] for f in frame_facts), default=0.0)) or None,
+    }
+    engine = dict(sample.engine) if sample.engine else {}
+
+    if not sample.frames:
+        return (
+            _media_entry(
+                card, source="video_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_, reason=notes[0] if notes else "没有抽到任何一帧",
+                notes=notes[1:],
+                attachment_id=getattr(att, "id", None),
+                engine=engine,
+                frame_range={"start": None, "end": probe.get("duration")},
+            ),
+            [],
+            None,
+        )
+
+    if not supports_images:
+        return (
+            _media_entry(
+                card, source="video_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason="这份视频需要抽样帧交付，但当前模型链路没有图片能力："
+                "本次没有把任何画面交给模型（不假装看过这段视频）",
+                notes=[
+                    f"本机转换程序抽到了 {len(sample.frames)} 帧（时间点："
+                    + "、".join(f"{f['at']:g}s" for f in sample.frames)
+                    + "），但链路交不出去，所以本次结论里没有画面依据",
+                    *notes,
+                ],
+                attachment_id=getattr(att, "id", None),
+                engine=engine,
+                frame_range=frame_range,
+                frames=frame_facts,
+            ),
+            [],
+            None,
+        )
+
+    from agent.adapters.base import ImagePart
+
+    parts: list[Any] = []
+    delivered_frames: list[dict] = []
+    skipped: list[str] = []
+    for frame in sample.frames:
+        data_url = _file_data_url(Path(frame["path"]), "image/jpeg")
+        if data_url is None or int(frame["bytes"]) > MAX_FRAME_BYTES:
+            skipped.append(f"{float(frame['at']):g}s")
+            continue
+        parts.append(
+            ImagePart(
+                data_url=data_url,
+                label=str(card.get("id") or ""),
+                media_type="image/jpeg",
+                bytes=int(frame["bytes"]),
+            )
+        )
+        delivered_frames.append({"at": float(frame["at"])})
+    if skipped:
+        notes.append(
+            f"有 {len(skipped)} 帧读不出字节或超过单帧上限，未交付：" + "、".join(skipped)
+        )
+    if not parts:
+        return (
+            _media_entry(
+                card, source="video_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_, reason="抽到了帧，但一帧都读不出字节：本次没有把画面交给模型",
+                notes=notes,
+                attachment_id=getattr(att, "id", None),
+                engine=engine,
+            ),
+            [],
+            None,
+        )
+
+    times = "、".join(f"{frame['at']:g}s" for frame in delivered_frames)
+    return (
+        _media_entry(
+            card, source="video_sampled", label=shown, version=version, read=True,
+            bytes_=bytes_, reason="",
+            notes=[
+                f"本次按时间点抽取了 {len(parts)} 帧交付给模型（时间点：{times}）："
+                "这不是逐帧读完整段视频，只代表这些时间点上的画面"
+            ]
+            + notes,
+            attachment_id=getattr(att, "id", None),
+            engine=engine,
+            frame_range=frame_range,
+            frames=delivered_frames,
+        ),
+        parts,
+        out_dir,
+    )
+
+
+def _media_entry(
+    card: dict,
+    *,
+    source: str,
+    label: str,
+    version: str,
+    read: bool,
+    bytes_: int,
+    reason: str,
+    notes: list[str] | None = None,
+    attachment_id: str | None = None,
+    engine: dict | None = None,
+    frame_range: dict | None = None,
+    frames: list[dict] | None = None,
+) -> dict:
+    """音视频材料的统一回执：`read` / `reason` / `range` / `frames` / `engine` 都在。"""
+    return _entry(
+        card,
+        source=source,
+        label=label,
+        version=version,
+        read=read,
+        bytes=bytes_,
+        characters=0,
+        reason=reason,
+        attachment_id=attachment_id,
+        notes=notes or [],
+        engine=dict(engine or {}),
+        range=dict(frame_range or {"start": None, "end": None}),
+        frames=list(frames or []),
+    )
+
+
+def _audio_media_type(name: str) -> str:
+    return {
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
+        ".opus": "audio/opus",
+        ".wma": "audio/x-ms-wma",
+        ".amr": "audio/amr",
+        ".aiff": "audio/aiff",
+    }.get(Path(str(name or "")).suffix.lower(), "audio/*")
+
+
+def _video_media_type(name: str) -> str:
+    return {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+        ".wmv": "video/x-ms-wmv",
+        ".flv": "video/x-flv",
+        ".mpeg": "video/mpeg",
+        ".mpg": "video/mpeg",
+        ".ts": "video/mp2t",
+        ".3gp": "video/3gpp",
+    }.get(Path(str(name or "")).suffix.lower(), "video/*")
+
+
+def _file_data_url(path: Path | None, media_type: str) -> str | None:
+    """真实字节 → data URL；读不到就返回 None（绝不返回一个空壳）。"""
+    if path is None:
+        return None
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    return "data:" + media_type + ";base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _fallback_work_dir(card: dict) -> Path:
+    """调用方没给本轮工作目录时的兜底：系统临时目录里的卡片专属目录。
+
+    只用于「调用方确实没给目录」的情况；正常链路由调用方给本轮工作目录，
+    并由它负责 `cleanup_media` 收尾。
+    """
+    import tempfile
+
+    return Path(tempfile.mkdtemp(prefix=f"qio-media-{_safe_dir_name(card)}-"))
 
 
 def _deliverable_image(card: dict, *, service: Any, max_bytes: int) -> dict | None:
@@ -814,7 +1425,10 @@ def _entry(
     **extra: Any,
 ) -> dict:
     """材料条目（前端 UnderstandingMaterial 的字段 + 交付用的 text / 说明）。"""
-    if source not in models.MATERIAL_SOURCES:
+    # 唯一口径是 models.MATERIAL_SOURCES；音频/视频那六个取值由 P1 追加进那里，
+    # 追加到位之前用过渡并集，避免在本地再立第二份白名单（见交付说明的接缝一条）。
+    allowed = tuple(models.MATERIAL_SOURCES) + MEDIA_MATERIAL_SOURCES
+    if source not in allowed:
         raise ValueError(f"未知的材料来源：{source}（只能取 models.MATERIAL_SOURCES）")
     entry = {
         "cardId": str(card.get("id") or ""),

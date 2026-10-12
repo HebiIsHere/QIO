@@ -48,15 +48,46 @@ class ImagePart:
     bytes: int = 0
 
 
+@dataclass(frozen=True)
+class AudioPart:
+    """一条**音频**内容块（多模态消息用；契约 §4.2）。
+
+    只在适配器**真的声明了** `supports_audio` 时才会被下发：把「接口能接受某种
+    消息」当成「所选模型一定能理解」是不允许的。字段与 ImagePart 同一口径：
+    真实字节的 data URL + 给人看的标签 + 如实的媒体类型与大小。
+    """
+
+    data_url: str
+    label: str = ""
+    media_type: str = ""
+    bytes: int = 0
+
+
+@dataclass(frozen=True)
+class VideoPart:
+    """一条**视频**内容块。绝大多数链路的 `supports_video` 都是 False（契约 §4.2），
+    视频走抽样帧（图片内容块）交付时才轮到 `supports_images`。"""
+
+    data_url: str
+    label: str = ""
+    media_type: str = ""
+    bytes: int = 0
+
+
 @dataclass
 class ChatMessage:
     role: str  # user / assistant / tool / system
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
-    #: 多模态内容块（图片）。空列表 = 纯文本消息 —— 既有调用方一字不用改。
+    #: 多模态内容块。空列表 = 纯文本消息 —— 既有调用方一字不用改。
     #: `content` 仍然是文本部分：追踪 / 脱敏 / 用量都读它，不读这里。
     images: list[ImagePart] | None = None
+    #: 音频 / 视频内容块（契约 §4.2）。只有适配器声明了对应的能力位才会下发；
+    #: 没有能力的链路由上层如实降级（audio_unsupported / video_unsupported），
+    #: 绝不把这些字节偷偷塞进文本，也绝不静默换一个用户没配置的服务。
+    audios: list[AudioPart] | None = None
+    videos: list[VideoPart] | None = None
 
 
 _INPUT_KEYS = ("prompt_tokens", "input_tokens", "prompt_token_count", "input_tokens_total")
@@ -213,6 +244,20 @@ class BaseAdapter(ABC):
     # 这条 adapter 是否**真的**能边生成边返回（plan §2.1）。
     # 默认 False：不支持就由 AgentLoop 走整段降级，**不假装流式**。
     supports_stream: bool = False
+
+    # -- 多媒体能力协商（契约 §4.2）：适配器声明是**唯一事实来源** ------------
+    # 交付判定只看本次真实使用的链路（含凭据回落之后的适配器），不看协议/接口
+    # 「能接受什么」。没有能力就如实降级，绝不静默换成用户没配置的外部服务。
+    #
+    #: 能否把**图片字节**作为内容块交付（多模态视觉）
+    supports_images: bool = False
+    #: 能否把**音频字节**作为内容块交付（绝大多数协议为 False）
+    supports_audio: bool = False
+    #: 能否把**视频字节**作为内容块交付（绝大多数为 False）
+    supports_video: bool = False
+    #: 派生转写通道标识（如 "openai.audio.transcriptions"）；None = 没有这条通道。
+    #: 有它才允许把音频转成文字交付，且必须如实记下是谁转的（engine）。
+    audio_transcription: str | None = None
 
     @abstractmethod
     async def complete(

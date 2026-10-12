@@ -317,6 +317,15 @@ HTML_EXTS = {".html", ".htm", ".xhtml"}
 DOCX_EXTS = {".docx"}
 XLSX_EXTS = {".xlsx", ".xlsm"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico"}
+#: 音频 / 视频扩展名（契约 §4）：它们**不再是「当前不可读取」**，而是交给
+#: media 服务按本机真实能力做派生处理（元数据 / 抽样帧 / 抽取音频）。
+#: 只认扩展名 —— 真正的判定在 media.probe_media，这里不猜内容。
+AUDIO_EXTS = {
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wma", ".amr", ".aiff",
+}
+VIDEO_EXTS = {
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".mpeg", ".mpg", ".ts", ".3gp",
+}
 #: 明确「当前不可读取」的扩展名：拿到文件名不等于读到了内容
 UNSUPPORTED_EXTS = {
     ".pdf": "PDF 文本解析未实现",
@@ -339,20 +348,30 @@ UNSUPPORTED_EXTS = {
     ".sqlite": "数据库文件不读取",
     ".sqlite3": "数据库文件不读取",
     ".bin": "二进制不读取",
-    ".mp3": "音频不支持文本读取",
-    ".wav": "音频不支持文本读取",
-    ".mp4": "视频不支持文本读取",
-    ".mov": "视频不支持文本读取",
-    ".avi": "视频不支持文本读取",
-    ".mkv": "视频不支持文本读取",
 }
+
+
+def classify_media_kind(name: str) -> str:
+    """音频 / 视频的**扩展名归类**：`"audio"` / `"video"` / `""`（都不是）。
+
+    它只说「按扩展名看这是不是音视频」，**不判断能不能读** —— 真实能力由
+    `agent.services.media` 按本机（有没有 ffmpeg）如实给出。
+    """
+    suffix = Path(name or "").suffix.lower()
+    if suffix in AUDIO_EXTS:
+        return "audio"
+    if suffix in VIDEO_EXTS:
+        return "video"
+    return ""
 
 
 def classify_readability(name: str) -> tuple[str, str, str]:
     """按文件名给出（mode, 界面短标签, 限制说明）。
 
-    mode: text | csv | html | docx | xlsx | image | unsupported | sniff
+    mode: text | csv | html | docx | xlsx | image | audio | video | unsupported | sniff
     「sniff」= 扩展名不认识，读取时按内容嗅探：是文本就读，否则明确说不可读。
+    「audio」「video」= 交给 media 服务按本机真实能力做派生处理（有 ffmpeg 才做，
+    没有就如实说「这台机器上没有可用的转换程序」）。
     """
     suffix = Path(name or "").suffix.lower()
     if not suffix:
@@ -369,6 +388,20 @@ def classify_readability(name: str) -> tuple[str, str, str]:
         return ("xlsx", "Excel 表格", "读取单元格文本（按行分段）；不计算公式、不读图表")
     if suffix in IMAGE_EXTS:
         return ("image", "图片", "只给元数据（大小/像素）；没有视觉能力时不声称看懂内容")
+    if suffix in AUDIO_EXTS:
+        return (
+            "audio",
+            "音频",
+            "按本机真实能力处理：有转换程序才能抽音频/转写，没有就如实说不能；"
+            "只读音频本身，不声称理解语气或音乐",
+        )
+    if suffix in VIDEO_EXTS:
+        return (
+            "video",
+            "视频",
+            "按本机真实能力处理：有转换程序才能按时间点抽样帧，没有就如实说不能；"
+            "抽样帧只代表取到的那几张，不是逐帧读完",
+        )
     if suffix in UNSUPPORTED_EXTS:
         return ("unsupported", "当前不可读取", UNSUPPORTED_EXTS[suffix])
     return ("sniff", "未知类型", "读取时按内容嗅探，不是文本就明确说不可读")
