@@ -1246,3 +1246,54 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   POSIX 上 1/2/3/4 都是合法 PID，那条断言只是环境假设（核查环境 PID=2 时会失败）。
   平台分支仍用受控替身覆盖，不探测真实进程。
 
+
+---
+
+## 15. 统一文字卡 · 持续许可 · 卡片内预览 · 多媒体对话（2026-10-12）
+
+本轮全部行为口径见 `docs/superpowers/plans/2026-10-12-unified-cards-media-preview-contract.md`
+（冻结契约）；互动模式的操作语义见 `docs/interactive-mode-contract.md` §1.4 / §1.4.1，
+多模态事实见 `docs/interactive-vision-contract.md`（含 §8 音频与视频）。
+
+### 15.1 新增模块
+
+| 模块 | 位置 | 职责 |
+| --- | --- | --- |
+| 文字卡内容模型（后端） | `backend/src/agent/interactive/text_card.py` | 块序列 ↔ 编辑区文本：解析、序列化、纯文本派生、损坏内容的保真归一化 |
+| 文字卡内容模型（前端） | `frontend/src/interactive/textCard.ts` | 与后端同一套规则的前端实现（纯函数），编辑区与卡片渲染共用 |
+| 历史卡片迁移 | `backend/src/agent/interactive/text_migration.py` | 逐卡把旧 `code` / `url` 卡迁成文字卡，幂等；保持身份、位置、关系与可见范围 |
+| 卡片内预览转换 | `backend/src/agent/services/preview.py` | 把附件转成结构化预览数据（docx / xlsx / pptx / code / pdf 事实），带预算、取消与缓存 |
+| 预览 HTTP 接口 | `backend/src/agent/api/preview_routes.py` | `GET /api/attachments/{id}/preview` 与板面阅读位置的读写删 |
+| 媒体处理 | `backend/src/agent/services/media.py` | ffmpeg 探测、媒体元数据、视频抽样帧（带时间位置）、音频抽取（转写用）与清理 |
+| 预览渲染器（前端） | `frontend/src/interactive/renderers/` | 各格式独立模块、动态 import：图片 / PDF / docx / xlsx / pptx / 代码 |
+| 预览计划（前端） | `frontend/src/interactive/previewPlan.ts` | 纯函数：把卡片与渲染状态翻成「用什么渲染、为什么不能渲染、有哪些入口」 |
+| 卡片内预览组件 | `frontend/src/components/interactive/CardInlinePreview.vue` | 在原卡片内渲染预览；中止在途工作、释放资源、迟到结果丢弃 |
+| 临时布局（前端） | `frontend/src/interactive/cardLayout.ts` | 纯函数：展开矩形与让位槽位；不改板面状态、不产生表达 |
+
+### 15.2 数据模型（只追加迁移）
+
+| 迁移 | 内容 |
+| --- | --- |
+| 41 | `attachment_previews`：预览缓存，主键 `(attachment_id, version, recipe)` |
+| 42 | `board_preview_state`：板面卡片的预览阅读位置，主键 `(board_id, card_id)` |
+| 43 | 补偿入口：40 的全部语句 + 41 + 42 |
+
+文字卡的内容不新增列：块序列存在板面状态里的卡片 `meta.doc`，
+所以历史数据与快照表都能按原样读取，迁移只发生在板面状态的加载 / 保存层。
+
+### 15.3 关键边界（本轮定稿）
+
+1. **未许可 = 整体不可见**：未许可的文字卡（含其中的链接地址与代码正文）不进入提交载荷、
+   不进入材料解析、不进入模型请求；遗留 `code` / `url` 卡在迁移完成前一律不可见。
+2. **许可持续有效**：提交不取消许可；`checkedCleared` 恒为空数组（字段保留以兼容旧前端）。
+3. **预览 ≠ 模型已读**：展开、翻页、缩放、让位都不触发模型、不产生分组、不暂停任务，
+   也不改变「模型是否已读到正文」这一事实。
+4. **临时布局只影响显示**：卡片坐标与板面版本号在展开前后完全不变。
+5. **五件事分开报告**：附件已保存 / 预览可用 / 内容已处理 / 已交付模型 / 回答已完成。
+6. **能力以本次真实链路为准**：适配器声明 `supports_images` / `supports_audio` /
+   `supports_video` / `audio_transcription`；没有能力时如实降级，绝不静默改用用户未配置的外部服务。
+7. **运行依赖**：PDF 事实用 `pypdf`（随 sidecar），PDF 页面渲染在前端（`pdfjs-dist`），
+   docx / xlsx / pptx 转换只用标准库；音频与视频的派生处理需要本机可用的 ffmpeg
+   （查找顺序与降级口径见 `docs/SETUP.md` §2.1）。
+
+
