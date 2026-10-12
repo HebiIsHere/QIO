@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-12（分支 `fix/interactive-materials-drafts-preview`：材料解析漏包、草稿提升、附件预览与窗口闪现修复，见 P36）。核对方法见文末。
+最后核对：2026-10-12（分支 `feat/unified-cards-media-preview-021`：统一文字卡、持续许可、卡片内真实预览、多媒体对话，见 P37）。核对方法见文末。
 
 ---
 
