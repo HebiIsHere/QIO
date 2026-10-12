@@ -39,12 +39,96 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_PARSE_RETRIES = 2
 
 
+def _image_block(part: Any) -> dict[str, Any] | None:
+    """一条多模态图片块 → Anthropic 的 `image` 内容块（base64 source）。
+
+    只为**真实字节**（`data:…;base64,…`）造块：拿不到真实字节就不造，
+    让上层如实标成「未交付」，而不是发一个空图片块给模型。
+    """
+    data_url = str(getattr(part, "data_url", "") or "")
+    if not data_url.startswith("data:"):
+        return None
+    head, _, payload = data_url.partition(",")
+    if not payload:
+        return None
+    media_type = str(getattr(part, "media_type", "") or "")
+    if not media_type:
+        media_type = head[len("data:") :].split(";", 1)[0]
+    if not media_type.startswith("image/"):
+        return None
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": payload},
+    }
+
+
+def _has_media(msg: ChatMessage) -> bool:
+    return bool([part for part in (msg.images or []) if getattr(part, "data_url", "")])
+
+
+def _user_blocks(msg: ChatMessage) -> list[dict[str, Any]]:
+    """一条 user 消息的内容块（含真实的图片块）；纯文本消息就是单个文本块。"""
+    blocks: list[dict[str, Any]] = []
+    text = str(msg.content or "")
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for part in msg.images or []:
+        block = _image_block(part)
+        if block is None:
+            continue
+        label = str(getattr(part, "label", "") or "")
+        if label:
+            blocks.append({"type": "text", "text": "[图片] " + label})
+        blocks.append(block)
+    return blocks
+
+
+def _user_content(msg: ChatMessage) -> Any:
+    """一条 user 消息的 content。
+
+    没有图片时**逐字保持**字符串形状（既有行为一字不改）；有图片时是内容块数组：
+    文本块在前、每个图片块前面带一条说明「这张图是谁」的文本块（模型引用卡片 id
+    时不必猜），顺序与 native 档一致。
+    """
+    text = str(msg.content or "")
+    image_blocks = [
+        block for block in (_image_block(part) for part in (msg.images or [])) if block
+    ]
+    if not image_blocks:
+        return text
+    blocks: list[dict[str, Any]] = []
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for part, block in zip([p for p in (msg.images or []) if getattr(p, "data_url", "")], image_blocks):
+        label = str(getattr(part, "label", "") or "")
+        if label:
+            blocks.append({"type": "text", "text": "[图片] " + label})
+        blocks.append(block)
+    return blocks
+
+
+def _as_text_blocks(prev: Any) -> list[dict[str, Any]]:
+    """把已有的 user content 归一成内容块数组（合并连续 user 消息用）。"""
+    if isinstance(prev, str):
+        return [{"type": "text", "text": prev}] if prev else []
+    if isinstance(prev, list):
+        return list(prev)
+    return []
+
+
 class AnthropicAdapter(BaseAdapter):
     mode = "native"  # tool calling is native to the Anthropic protocol
     # 每次实际请求自己记账（含内部解析重试的每次响应）—— 只记一处，见 credentials/usage.py。
     accounts_requests = True
     # Anthropic 的 SSE：content_block_delta / input_json_delta（见 stream()）。
     supports_stream = True
+    # 能力协商（契约 §4.2）：Messages API 的 image 内容块（base64 source）能真的
+    # 把图片字节交出去，这里如实声明 —— 并且 to_anthropic_messages 真的会转换它。
+    # 音频 / 视频字节在这个协议里没有对应块：不夸大，也绝不静默换成别的服务。
+    supports_images = True
+    supports_audio = False
+    supports_video = False
+    audio_transcription = None
 
     def __init__(
         self,
@@ -124,17 +208,25 @@ class AnthropicAdapter(BaseAdapter):
                 continue
             # user
             flush_tool_results()
-            content: Any = msg.content or ""
+            content: Any = _user_content(msg)
             if out and out[-1]["role"] == "user":
                 # merge consecutive user messages
                 prev = out[-1]["content"]
                 if isinstance(prev, str) and isinstance(content, str):
                     out[-1]["content"] = prev + "\n\n" + content
+                elif content == "":
+                    pass  # 没有正文也没有内容块的 user 消息：不制造空气泡
+                elif _has_media(msg):
+                    # 带图片的消息没法（完整地）并进一个字符串：转成同一串内容块接在后面
+                    # （Anthropic 的 user content 允许 text / image 块混排）。
+                    # 文本块不丢、图片块不丢：prev 只有文本时不会再复制一份。
+                    merged = _as_text_blocks(prev) + list(content)
+                    out[-1]["content"] = merged
                 else:
                     # tool_result messages keep their block shape; a fresh
                     # user message after them stays separate
                     out.append({"role": "user", "content": content})
-            else:
+            elif content != "":
                 out.append({"role": "user", "content": content})
         flush_tool_results()
         return out

@@ -523,8 +523,10 @@ def test_reconcile_recovers_prepared_missing_and_temp_files(svc: AttachmentServi
 
 
 def test_readability_matrix_is_honest():
-    assert classify_readability("a.pdf")[0] == "unsupported"
-    assert classify_readability("a.pdf")[1] == "当前不可读取"
+    # 卡片内预览轮（2026-10-12）：pdf / pptx 从「当前不可读取」变成**能读**的模式
+    # （pdf 只读文字层、pptx 读每页文字，都不还原版面）。
+    assert classify_readability("a.pdf")[0] == "pdf"
+    assert classify_readability("a.pptx")[0] == "pptx"
     assert classify_readability("a.png")[0] == "image"
     assert classify_readability("a.docx")[0] == "docx"
     assert classify_readability("a.xlsx")[0] == "xlsx"

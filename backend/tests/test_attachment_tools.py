@@ -182,7 +182,9 @@ async def test_pdf_is_explicitly_unreadable(svc: AttachmentService, tmp_path: Pa
     assert result.ok is True
     assert '"readable": false' in result.content
     assert "当前不可读取" in result.content
-    assert "PDF 文本解析未实现" in result.content
+    # 卡片内预览轮（2026-10-12）：PDF 现在**能读文字层**，所以这里断言的不再是
+    # 「PDF 解析未实现」，而是「这份坏文件打不开」这条真实原因。
+    assert "打不开" in result.content
 
 
 async def test_binary_without_extension_is_unreadable(svc: AttachmentService, tmp_path: Path):

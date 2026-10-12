@@ -97,6 +97,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 真实模型理解与真实执行（迁移 37）：理解请求 / 执行记录。
         "board_understanding",
         "board_executions",
+        # 卡片内预览（迁移 41/42）：预览缓存 / 板面阅读位置。
+        # 缺了它们，预览每次都要重算（缓存失效），阅读位置也无处可存 ——
+        # 两者都在补偿迁移 43 里有对应的建表语句。
+        "attachment_previews",
+        "board_preview_state",
     ),
     "columns": (
         "turn_journal.owner_instance_id",

@@ -66,6 +66,11 @@ class _Plan:
     msg_id: str | None = None
     payload: Any = None
     prompt: str = ""
+    #: 本轮真正能交付的媒体内容块（契约 §4）。挂在首条 user 消息上，因此
+    #: 「需要再次调用模型的后续步骤」里仍然带着同一份材料依据。
+    media_parts: list[Any] = field(default_factory=list)
+    #: 本轮媒体材料的事实台账（每条带 read / reason / range / frames / engine）
+    media_entries: list[dict] = field(default_factory=list)
 
 
 class TurnOrchestrator:
@@ -503,6 +508,31 @@ class TurnOrchestrator:
         # 内容不进上下文（模型必须按需 read_attachment），也不影响审批权限与工具参数。
         # 走既有的「系统通知」措辞路径；没有附件/没有服务时什么都不加。
         attachment_note = app.attachment_turn_note(ctx.turn_id)
+        # 本轮媒体材料（契约 §4）：候选清单在事件循环线程上收集（附件服务与数据库
+        # 连接按线程纪律只在这里用），ffmpeg 派生处理进工作线程，随后**无论成功失败**
+        # 都清掉本轮工作目录里的样本帧 / 音频片段。没有候选时这一步什么都不做。
+        media_parts: list[Any] = []
+        media_entries: list[dict] = []
+        collector = getattr(app, "media_materials_for_turn", None)
+        resolver = getattr(app, "resolve_media_materials", None)
+        if callable(collector) and callable(resolver):
+            try:
+                collected = collector(ctx.turn_id, adapter)
+                candidates = list(collected.get("candidates") or [])
+                if candidates:
+                    resolved = await asyncio.to_thread(
+                        resolver, candidates, turn_id=ctx.turn_id, adapter=adapter
+                    )
+                    media_parts = list(resolved.get("parts") or [])
+                    media_entries = list(resolved.get("entries") or [])
+            except Exception:  # noqa: BLE001 - 媒体是旁路：失败就是这一轮没有媒体材料
+                logging.getLogger(__name__).warning("media materials failed", exc_info=True)
+                media_parts, media_entries = [], []
+            finally:
+                from agent.services.media import cleanup_media
+
+                work_root = Path(app.settings.data_dir) / "tmp" / f"media-{ctx.turn_id}"
+                cleanup_media(work_root)
         prompt = message
         if payload.text:
             prompt = f"{payload.text}\n\n【用户消息】\n{message}"
@@ -519,6 +549,8 @@ class TurnOrchestrator:
             msg_id=msg_id,
             payload=payload,
             prompt=prompt,
+            media_parts=media_parts,
+            media_entries=media_entries,
         )
 
     async def _predict_topics(self, ctx, message: str, topic: str | None):
@@ -587,6 +619,9 @@ class TurnOrchestrator:
             # 长正文暂存目录（R6 §1.3）：显式给 AppContext 的 data_dir 口径，
             # 不让 AnswerBuffer 去惰性解析 Settings()（那条路在测试里会落到真实数据目录）。
             spill_dir=Path(app.settings.data_dir) / "tmp",
+            # 本轮交付的媒体内容块（图片 / 音频 / 视频抽样帧）：挂在首条 user 消息上，
+            # 后续每一次模型调用都带着它 —— 依据不会在第二步丢掉。
+            media_parts=list(plan.media_parts or []),
         )
         ctx.loop = loop
         try:
