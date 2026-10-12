@@ -228,7 +228,36 @@ cd backend
 定向验证：`targeted-verify.yml`（dispatch-only，按 SHA 只跑指定单项）派发 `windows` 单项 +
 `pytest_node_ids=tests/test_interactive_during_heavy_work.py`，结果回填在下方。
 
-TARGETED_CI_RESULT
+**结果：success。** 派发 run **38287353953**（`--ref feat/unified-cards-media-preview-021`，只跑 `windows` 单项 +
+`pytest_node_ids=tests/test_interactive_during_heavy_work.py`）：
+
+* `resolve + assert SHA`：success（工作区实际 HEAD == 派发 SHA `a3dc8ad`，由本地 action 自己断言）；
+* `backend (windows-latest)`：**success**（就是全量里判红的那条与那个文件）；
+* `summary`：`ran=1 failed=0 cancelled=0`，其余检查项一律 **SKIPPED**，并明确打印
+  「SKIPPED 不等于通过，它们根本没被执行」——不是拿跳过凑绿。
+
+这个入口本身在过程中暴露了两个缺陷（都是**入口的**，不是测试的），一并修好：
+
+1. `5c065e1`：每个 job 的第一步就是 `uses: ./.github/actions/verify-checkout`，
+   而本地 action 必须先签出仓库才能被加载（鸡生蛋）→ 报 `Can't find 'action.yml'`。
+   加一步 `actions/checkout@v5` 引导签出；**SHA 断言逻辑一行未改**。
+   （该缺陷不是本分支特有：`targeted-verify.yml` 与 `action.yml` 在 tag 与 main 上逐字相同，
+   2026-10-11 的那次派发同样是 failure。建议把这条修复同步回 main。）
+2. `a3dc8ad`：`scripts/targeted-verify/verify_sha.py` 在 windows-latest 上打印中文证据行时
+   `UnicodeEncodeError`（cp1252）崩溃 —— `ci.yml` 各 job 早就设了 `PYTHONIOENCODING: utf-8`，这个本地 action 没设。已补。
+
+还有一个使用陷阱值得写下来：`gh workflow run … -f ref=<branch>` 里的 `-f ref` 只是**输入**，
+工作流文件本身取自 `--ref`（默认 default branch）。少了 `--ref`，跑的仍是 main 上的旧工作流。
+
+#### 后端全量项的重跑（它是上面失败的那一项）
+
+* 命令：`python scripts/uc_full_verify.py --run --only backend-full`（执行器捕获**真实退出码**，不是管道的）
+* 结果：**exit 0；3987 passed / 16 skipped（22:00）**
+* 产物：`docs/superpowers/plans/uc-full-verify-20261013-014023/01-backend-full.txt`（含真实退出码与耗时）
+* 这证实了：全量那一轮后端那 10 条失败**已经全部修好**，且没有把别的用例带红。
+* 之后又改动的文件都属于「已单独复验」的三类（见下节表格）：一个测试文件（单独复跑 13 passed / 6 skipped）、
+  `.github/` 入口（后端测试不读 `.github`，`grep` 0 命中）、文档与验证产物（`check_docs.py` 复跑通过）。
+
 ## 6. 故障与取消的处置（验收情境之一）
 
 * 预览：收起 / 换附件 / 卸载时中止在途 fetch 与渲染（AbortController + 代次），释放 blob URL、canvas、pdf 文档；

@@ -1,0 +1,13 @@
+{
+  "generatedAt": "20261013-014023",
+  "checks": [
+    {
+      "name": "backend-full",
+      "command": "D:\\qio-dev\\q021\\backend\\.venv\\Scripts\\python.exe -m pytest",
+      "cwd": "backend",
+      "exit": 0,
+      "seconds": 1332.0,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261013-014023\\01-backend-full.txt"
+    }
+  ]
+}

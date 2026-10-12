@@ -1,0 +1,626 @@
+﻿2026-10-12T17:54:56.0817007Z Current runner version: '2.337.0'
+2026-10-12T17:54:56.0839462Z ##[group]Runner Image Provisioner
+2026-10-12T17:54:56.0840158Z Hosted Compute Agent
+2026-10-12T17:54:56.0840781Z Version: 20260901.588
+2026-10-12T17:54:56.0841243Z Commit: f88ec8081b781fac6c440065ac7ff9e710ce3d0b
+2026-10-12T17:54:56.0841832Z Build Date: 2026-09-01T19:56:44Z
+2026-10-12T17:54:56.0842586Z Worker ID: {c5f56a47-58a4-4eca-a487-640f2b1cfd4b}
+2026-10-12T17:54:56.0843394Z Azure Region: westus3
+2026-10-12T17:54:56.0844046Z ##[endgroup]
+2026-10-12T17:54:56.0846128Z ##[group]Operating System
+2026-10-12T17:54:56.0846896Z Microsoft Windows Server 2025
+2026-10-12T17:54:56.0847621Z 10.0.26100
+2026-10-12T17:54:56.0848220Z Datacenter
+2026-10-12T17:54:56.0848824Z ##[endgroup]
+2026-10-12T17:54:56.0849413Z ##[group]Runner Image
+2026-10-12T17:54:56.0850117Z Image: windows-2025-vs2026
+2026-10-12T17:54:56.0850788Z Version: 20260925.250.1
+2026-10-12T17:54:56.0852635Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20260925.250/images/windows/Windows2025-VS2026-Readme.md
+2026-10-12T17:54:56.0854651Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260925.250
+2026-10-12T17:54:56.0855848Z ##[endgroup]
+2026-10-12T17:54:56.0857134Z ##[group]GITHUB_TOKEN Permissions
+2026-10-12T17:54:56.0859252Z Contents: read
+2026-10-12T17:54:56.0859884Z Metadata: read
+2026-10-12T17:54:56.0860467Z ##[endgroup]
+2026-10-12T17:54:56.0862906Z Secret source: Actions
+2026-10-12T17:54:56.0864060Z Cache mode: write
+2026-10-12T17:54:56.0865190Z Prepare workflow directory
+2026-10-12T17:54:56.1326905Z Prepare all required actions
+2026-10-12T17:54:56.1365351Z Getting action download info
+2026-10-12T17:54:56.4056462Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+2026-10-12T17:54:56.5125702Z Download action repository 'astral-sh/setup-uv@v7' (SHA:37802adc94f370d6bfd71619e3f0bf239e1f3b78)
+2026-10-12T17:54:57.2998347Z Complete job name: backend (windows-latest)
+2026-10-12T17:54:57.4107411Z ##[group]Run actions/checkout@v5
+2026-10-12T17:54:57.4108330Z with:
+2026-10-12T17:54:57.4108734Z   ref: a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:54:57.4109220Z   fetch-depth: 0
+2026-10-12T17:54:57.4109584Z   persist-credentials: false
+2026-10-12T17:54:57.4109992Z   repository: HebiIsHere/QIO
+2026-10-12T17:54:57.4113299Z   token: ***
+2026-10-12T17:54:57.4113651Z   ssh-strict: true
+2026-10-12T17:54:57.4114006Z   ssh-user: git
+2026-10-12T17:54:57.4114346Z   clean: true
+2026-10-12T17:54:57.4114700Z   sparse-checkout-cone-mode: true
+2026-10-12T17:54:57.4115119Z   fetch-tags: false
+2026-10-12T17:54:57.4115466Z   show-progress: true
+2026-10-12T17:54:57.4115830Z   lfs: false
+2026-10-12T17:54:57.4116161Z   submodules: false
+2026-10-12T17:54:57.4116521Z   set-safe-directory: true
+2026-10-12T17:54:57.4116924Z   allow-unsafe-pr-checkout: false
+2026-10-12T17:54:57.4117509Z env:
+2026-10-12T17:54:57.4117820Z   PYTHONHASHSEED: 0
+2026-10-12T17:54:57.4118282Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:54:57.4118734Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:54:57.4119248Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:54:57.4119776Z   PYTEST_K: 
+2026-10-12T17:54:57.4120096Z ##[endgroup]
+2026-10-12T17:54:57.5263788Z Syncing repository: HebiIsHere/QIO
+2026-10-12T17:54:57.5265265Z ##[group]Getting Git version info
+2026-10-12T17:54:57.5265742Z Working directory is 'D:\a\QIO\QIO'
+2026-10-12T17:54:57.5845848Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:54:57.9174206Z git version 2.55.0.windows.5
+2026-10-12T17:54:57.9211689Z ##[endgroup]
+2026-10-12T17:54:57.9226955Z Temporarily overriding HOME='D:\a\_temp\9c007f9d-c187-40df-a26e-53db47c58c5e' before making global git config changes
+2026-10-12T17:54:57.9227994Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:54:57.9235784Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:54:57.9759804Z Deleting the contents of 'D:\a\QIO\QIO'
+2026-10-12T17:54:57.9765638Z ##[group]Initializing the repository
+2026-10-12T17:54:57.9772771Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\QIO\QIO
+2026-10-12T17:54:58.0457974Z Initialized empty Git repository in D:/a/QIO/QIO/.git/
+2026-10-12T17:54:58.0497695Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/HebiIsHere/QIO
+2026-10-12T17:54:58.1033604Z ##[endgroup]
+2026-10-12T17:54:58.1034246Z ##[group]Disabling automatic garbage collection
+2026-10-12T17:54:58.1041159Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-12T17:54:58.1282812Z ##[endgroup]
+2026-10-12T17:54:58.1283411Z ##[group]Setting up auth
+2026-10-12T17:54:58.1294927Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:54:58.1549047Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:54:59.3637100Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:54:59.3881744Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:54:59.8064925Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:54:59.8331263Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:00.2512076Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-12T17:55:00.2770052Z ##[endgroup]
+2026-10-12T17:55:00.2770553Z ##[group]Fetching the repository
+2026-10-12T17:55:00.2778999Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-12T17:55:03.8380735Z From https://github.com/HebiIsHere/QIO
+2026-10-12T17:55:03.8381395Z  * [new branch]      ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+2026-10-12T17:55:03.8382308Z  * [new branch]      feat/interactive-foundation -> origin/feat/interactive-foundation
+2026-10-12T17:55:03.8383105Z  * [new branch]      feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+2026-10-12T17:55:03.8383873Z  * [new branch]      feat/interactive-real-model -> origin/feat/interactive-real-model
+2026-10-12T17:55:03.8384696Z  * [new branch]      feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+2026-10-12T17:55:03.8385725Z  * [new branch]      feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+2026-10-12T17:55:03.8386767Z  * [new branch]      fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+2026-10-12T17:55:03.8387629Z  * [new branch]      fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+2026-10-12T17:55:03.8388179Z  * [new branch]      fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+2026-10-12T17:55:03.8388951Z  * [new branch]      fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+2026-10-12T17:55:03.8389994Z  * [new branch]      fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+2026-10-12T17:55:03.8391146Z  * [new branch]      fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+2026-10-12T17:55:03.8391744Z  * [new branch]      fix/interactive-final-closure -> origin/fix/interactive-final-closure
+2026-10-12T17:55:03.8393001Z  * [new branch]      fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+2026-10-12T17:55:03.8393582Z  * [new branch]      fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+2026-10-12T17:55:03.8394184Z  * [new branch]      fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+2026-10-12T17:55:03.8394649Z  * [new branch]      fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+2026-10-12T17:55:03.8395176Z  * [new branch]      fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+2026-10-12T17:55:03.8395806Z  * [new branch]      fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+2026-10-12T17:55:03.8396420Z  * [new branch]      fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+2026-10-12T17:55:03.8397054Z  * [new branch]      fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+2026-10-12T17:55:03.8397707Z  * [new branch]      fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+2026-10-12T17:55:03.8398262Z  * [new branch]      fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+2026-10-12T17:55:03.8398742Z  * [new branch]      fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+2026-10-12T17:55:03.8399226Z  * [new branch]      fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+2026-10-12T17:55:03.8399825Z  * [new branch]      fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+2026-10-12T17:55:03.8400460Z  * [new branch]      fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+2026-10-12T17:55:03.8401705Z  * [new branch]      fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+2026-10-12T17:55:03.8402497Z  * [new branch]      fix/unified-process-audit -> origin/fix/unified-process-audit
+2026-10-12T17:55:03.8403569Z  * [new branch]      integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+2026-10-12T17:55:03.8404194Z  * [new branch]      integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+2026-10-12T17:55:03.8404787Z  * [new branch]      integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+2026-10-12T17:55:03.8405164Z  * [new branch]      main               -> origin/main
+2026-10-12T17:55:03.8405553Z  * [new branch]      research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+2026-10-12T17:55:03.8405979Z  * [new branch]      wt/acc-b           -> origin/wt/acc-b
+2026-10-12T17:55:03.8406270Z  * [new branch]      wt/acc-b2          -> origin/wt/acc-b2
+2026-10-12T17:55:03.8406576Z  * [new branch]      wt/acc-c           -> origin/wt/acc-c
+2026-10-12T17:55:03.8406822Z  * [new branch]      wt/acc-c2          -> origin/wt/acc-c2
+2026-10-12T17:55:03.8407063Z  * [new branch]      wt/acc-d           -> origin/wt/acc-d
+2026-10-12T17:55:03.8407309Z  * [new branch]      wt/acc-doc         -> origin/wt/acc-doc
+2026-10-12T17:55:03.8407596Z  * [new branch]      wt/acc-e           -> origin/wt/acc-e
+2026-10-12T17:55:03.8407925Z  * [new branch]      wt/acc-e2          -> origin/wt/acc-e2
+2026-10-12T17:55:03.8408177Z  * [new branch]      wt/acc-f           -> origin/wt/acc-f
+2026-10-12T17:55:03.8408421Z  * [new branch]      wt/acc-f2          -> origin/wt/acc-f2
+2026-10-12T17:55:03.8408701Z  * [new branch]      wt/agent-a-runtime -> origin/wt/agent-a-runtime
+2026-10-12T17:55:03.8409005Z  * [new branch]      wt/agent-e-toolenv -> origin/wt/agent-e-toolenv
+2026-10-12T17:55:03.8409275Z  * [new branch]      wt/fb-a            -> origin/wt/fb-a
+2026-10-12T17:55:03.8409664Z  * [new branch]      wt/fb-b            -> origin/wt/fb-b
+2026-10-12T17:55:03.8410044Z  * [new branch]      wt/fb-c            -> origin/wt/fb-c
+2026-10-12T17:55:03.8410346Z  * [new branch]      wt/fb-d            -> origin/wt/fb-d
+2026-10-12T17:55:03.8410586Z  * [new branch]      wt/fb-e            -> origin/wt/fb-e
+2026-10-12T17:55:03.8410848Z  * [new branch]      wt/int-a-board     -> origin/wt/int-a-board
+2026-10-12T17:55:03.8411148Z  * [new branch]      wt/int-b-persist   -> origin/wt/int-b-persist
+2026-10-12T17:55:03.8411617Z  * [new branch]      wt/int-c-approval  -> origin/wt/int-c-approval
+2026-10-12T17:55:03.8412128Z  * [new branch]      wt/int-verify      -> origin/wt/int-verify
+2026-10-12T17:55:03.8412531Z  * [new branch]      wt/p2-debt         -> origin/wt/p2-debt
+2026-10-12T17:55:03.8412819Z  * [new branch]      wt/p2-isolation    -> origin/wt/p2-isolation
+2026-10-12T17:55:03.8413128Z  * [new branch]      wt/p2-trace-ui     -> origin/wt/p2-trace-ui
+2026-10-12T17:55:03.8413414Z  * [new branch]      wt/p3-a            -> origin/wt/p3-a
+2026-10-12T17:55:03.8413657Z  * [new branch]      wt/p3-b            -> origin/wt/p3-b
+2026-10-12T17:55:03.8413893Z  * [new branch]      wt/p3-c            -> origin/wt/p3-c
+2026-10-12T17:55:03.8414133Z  * [new branch]      wt/p3-d            -> origin/wt/p3-d
+2026-10-12T17:55:03.8414360Z  * [new branch]      wt/p3-e            -> origin/wt/p3-e
+2026-10-12T17:55:03.8414589Z  * [new branch]      wt/p3-f            -> origin/wt/p3-f
+2026-10-12T17:55:03.8414841Z  * [new branch]      wt/ui-a-visual     -> origin/wt/ui-a-visual
+2026-10-12T17:55:03.8415123Z  * [new branch]      wt/ui-b-rules      -> origin/wt/ui-b-rules
+2026-10-12T17:55:03.8415391Z  * [new branch]      wt/ui-c-drafts     -> origin/wt/ui-c-drafts
+2026-10-12T17:55:03.8415674Z  * [new branch]      wt/ui-d-overlay    -> origin/wt/ui-d-overlay
+2026-10-12T17:55:03.8415936Z  * [new tag]         v0.1.0             -> v0.1.0
+2026-10-12T17:55:03.8416278Z  * [new tag]         v0.1.1             -> v0.1.1
+2026-10-12T17:55:03.8416617Z  * [new tag]         v0.1.10            -> v0.1.10
+2026-10-12T17:55:03.8416836Z  * [new tag]         v0.1.11            -> v0.1.11
+2026-10-12T17:55:03.8417046Z  * [new tag]         v0.1.12            -> v0.1.12
+2026-10-12T17:55:03.8417250Z  * [new tag]         v0.1.13            -> v0.1.13
+2026-10-12T17:55:03.8417452Z  * [new tag]         v0.1.14            -> v0.1.14
+2026-10-12T17:55:03.8417660Z  * [new tag]         v0.1.3             -> v0.1.3
+2026-10-12T17:55:03.8417867Z  * [new tag]         v0.1.4             -> v0.1.4
+2026-10-12T17:55:03.8418123Z  * [new tag]         v0.1.5             -> v0.1.5
+2026-10-12T17:55:03.8418444Z  * [new tag]         v0.1.6             -> v0.1.6
+2026-10-12T17:55:03.8418912Z  * [new tag]         v0.1.7             -> v0.1.7
+2026-10-12T17:55:03.8419128Z  * [new tag]         v0.1.8             -> v0.1.8
+2026-10-12T17:55:03.8419332Z  * [new tag]         v0.1.9             -> v0.1.9
+2026-10-12T17:55:03.8419559Z  * [new tag]         v0.2.0             -> v0.2.0
+2026-10-12T17:55:03.8419778Z  * [new tag]         v0.2.1             -> v0.2.1
+2026-10-12T17:55:03.8428603Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --verify --quiet a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa^{object}
+2026-10-12T17:55:03.8637953Z a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:03.8665535Z ##[endgroup]
+2026-10-12T17:55:03.8666011Z ##[group]Determining the checkout info
+2026-10-12T17:55:03.8666923Z ##[endgroup]
+2026-10-12T17:55:03.8673489Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-12T17:55:03.8999886Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-12T17:55:03.9216926Z ##[group]Checking out the ref
+2026-10-12T17:55:03.9223778Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:04.9748883Z Updating files:  79% (2067/2591)
+2026-10-12T17:55:04.9915952Z Updating files:  80% (2073/2591)
+2026-10-12T17:55:05.0003735Z Updating files:  81% (2099/2591)
+2026-10-12T17:55:05.0053305Z Updating files:  82% (2125/2591)
+2026-10-12T17:55:05.0106111Z Updating files:  83% (2151/2591)
+2026-10-12T17:55:05.0163834Z Updating files:  84% (2177/2591)
+2026-10-12T17:55:05.0229782Z Updating files:  85% (2203/2591)
+2026-10-12T17:55:05.0297100Z Updating files:  86% (2229/2591)
+2026-10-12T17:55:05.0340438Z Updating files:  87% (2255/2591)
+2026-10-12T17:55:05.0381847Z Updating files:  88% (2281/2591)
+2026-10-12T17:55:05.0423256Z Updating files:  89% (2306/2591)
+2026-10-12T17:55:05.0473274Z Updating files:  90% (2332/2591)
+2026-10-12T17:55:05.0542801Z Updating files:  91% (2358/2591)
+2026-10-12T17:55:05.0593392Z Updating files:  92% (2384/2591)
+2026-10-12T17:55:05.0647522Z Updating files:  93% (2410/2591)
+2026-10-12T17:55:05.0849259Z Updating files:  94% (2436/2591)
+2026-10-12T17:55:05.0998894Z Updating files:  95% (2462/2591)
+2026-10-12T17:55:05.1205957Z Updating files:  96% (2488/2591)
+2026-10-12T17:55:05.1291916Z Updating files:  97% (2514/2591)
+2026-10-12T17:55:05.1347633Z Updating files:  98% (2540/2591)
+2026-10-12T17:55:05.1408790Z Updating files:  99% (2566/2591)
+2026-10-12T17:55:05.1409132Z Updating files: 100% (2591/2591)
+2026-10-12T17:55:05.1409448Z Updating files: 100% (2591/2591), done.
+2026-10-12T17:55:05.1511755Z Note: switching to 'a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa'.
+2026-10-12T17:55:05.1512113Z 
+2026-10-12T17:55:05.1512358Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-12T17:55:05.1513390Z changes and commit them, and you can discard any commits you make in this
+2026-10-12T17:55:05.1513969Z state without impacting any branches by switching back to a branch.
+2026-10-12T17:55:05.1514305Z 
+2026-10-12T17:55:05.1514581Z If you want to create a new branch to retain commits you create, you may
+2026-10-12T17:55:05.1515093Z do so (now or later) by using -c with the switch command. Example:
+2026-10-12T17:55:05.1515655Z 
+2026-10-12T17:55:05.1515769Z   git switch -c <new-branch-name>
+2026-10-12T17:55:05.1515905Z 
+2026-10-12T17:55:05.1515984Z Or undo this operation with:
+2026-10-12T17:55:05.1516101Z 
+2026-10-12T17:55:05.1516170Z   git switch -
+2026-10-12T17:55:05.1516265Z 
+2026-10-12T17:55:05.1516424Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-12T17:55:05.1516657Z 
+2026-10-12T17:55:05.1517206Z HEAD is now at a3dc8ad ci(verify-checkout): 断言步骤补 PYTHONIOENCODING=utf-8（windows 上证据行含中文会 cp1252 崩）
+2026-10-12T17:55:05.1687164Z ##[endgroup]
+2026-10-12T17:55:05.2025115Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-12T17:55:05.2238520Z a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:05.2269228Z ##[group]Removing auth
+2026-10-12T17:55:05.2276062Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:55:05.2501632Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:55:05.6635143Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:55:05.6832364Z http.https://github.com/.extraheader
+2026-10-12T17:55:05.6861696Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-10-12T17:55:05.7090125Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:55:06.1834486Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:55:06.2070063Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:06.6218596Z ##[endgroup]
+2026-10-12T17:55:06.6639780Z Prepare all required actions
+2026-10-12T17:55:06.6640680Z Getting action download info
+2026-10-12T17:55:06.7832044Z ##[group]Run ./.github/actions/verify-checkout
+2026-10-12T17:55:06.7832268Z with:
+2026-10-12T17:55:06.7832440Z   ref: feat/unified-cards-media-preview-021
+2026-10-12T17:55:06.7832672Z   sha: a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:06.7832878Z   label: windows
+2026-10-12T17:55:06.7833023Z   allow-short: false
+2026-10-12T17:55:06.7833166Z env:
+2026-10-12T17:55:06.7833300Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:06.7833469Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:06.7833667Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:06.7833902Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:06.7834143Z   PYTEST_K: 
+2026-10-12T17:55:06.7834278Z ##[endgroup]
+2026-10-12T17:55:06.7880670Z ##[start-action display=Show requested ref/SHA;id=__self.__run]
+2026-10-12T17:55:06.8017331Z ##[group]Run echo "requested ref : feat/unified-cards-media-preview-021"
+2026-10-12T17:55:06.8017762Z [36;1mecho "requested ref : feat/unified-cards-media-preview-021"[0m
+2026-10-12T17:55:06.8018123Z [36;1mecho "requested sha : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa"[0m
+2026-10-12T17:55:06.8034794Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-12T17:55:06.8035094Z env:
+2026-10-12T17:55:06.8035236Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:06.8035412Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:06.8035612Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:06.8035854Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:06.8036100Z   PYTEST_K: 
+2026-10-12T17:55:06.8036244Z ##[endgroup]
+2026-10-12T17:55:06.9426992Z requested ref : feat/unified-cards-media-preview-021
+2026-10-12T17:55:06.9427736Z requested sha : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:06.9467942Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=158]
+2026-10-12T17:55:06.9470489Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__self.__actions_checkout]
+2026-10-12T17:55:06.9614486Z ##[group]Run actions/checkout@v5
+2026-10-12T17:55:06.9614672Z with:
+2026-10-12T17:55:06.9614841Z   ref: feat/unified-cards-media-preview-021
+2026-10-12T17:55:06.9615058Z   fetch-depth: 0
+2026-10-12T17:55:06.9615218Z   persist-credentials: false
+2026-10-12T17:55:06.9615396Z   repository: HebiIsHere/QIO
+2026-10-12T17:55:06.9617181Z   token: ***
+2026-10-12T17:55:06.9617334Z   ssh-strict: true
+2026-10-12T17:55:06.9617485Z   ssh-user: git
+2026-10-12T17:55:06.9617630Z   clean: true
+2026-10-12T17:55:06.9617785Z   sparse-checkout-cone-mode: true
+2026-10-12T17:55:06.9617973Z   fetch-tags: false
+2026-10-12T17:55:06.9618122Z   show-progress: true
+2026-10-12T17:55:06.9618272Z   lfs: false
+2026-10-12T17:55:06.9618423Z   submodules: false
+2026-10-12T17:55:06.9618574Z   set-safe-directory: true
+2026-10-12T17:55:06.9618757Z   allow-unsafe-pr-checkout: false
+2026-10-12T17:55:06.9618932Z env:
+2026-10-12T17:55:06.9619063Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:06.9619226Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:06.9619424Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:06.9619662Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:06.9619902Z   PYTEST_K: 
+2026-10-12T17:55:06.9620035Z ##[endgroup]
+2026-10-12T17:55:07.0481611Z Syncing repository: HebiIsHere/QIO
+2026-10-12T17:55:07.0482974Z ##[group]Getting Git version info
+2026-10-12T17:55:07.0483367Z Working directory is 'D:\a\QIO\QIO'
+2026-10-12T17:55:07.0941148Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:55:07.1150128Z git version 2.55.0.windows.5
+2026-10-12T17:55:07.1180808Z ##[endgroup]
+2026-10-12T17:55:07.1194901Z Temporarily overriding HOME='D:\a\_temp\79bbca81-c2b2-4db2-8852-d0ee532767e1' before making global git config changes
+2026-10-12T17:55:07.1197187Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:55:07.1203223Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:55:07.1436988Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get remote.origin.url
+2026-10-12T17:55:07.1631005Z https://github.com/HebiIsHere/QIO
+2026-10-12T17:55:07.1665865Z ##[group]Removing previously created refs, to avoid conflicts
+2026-10-12T17:55:07.1672702Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-10-12T17:55:07.1880131Z HEAD
+2026-10-12T17:55:07.2513469Z ##[endgroup]
+2026-10-12T17:55:07.2521914Z [command]"C:\Program Files\Git\bin\git.exe" submodule status
+2026-10-12T17:55:07.6720626Z ##[group]Cleaning the repository
+2026-10-12T17:55:07.6728744Z [command]"C:\Program Files\Git\bin\git.exe" clean -ffdx
+2026-10-12T17:55:07.7044083Z [command]"C:\Program Files\Git\bin\git.exe" reset --hard HEAD
+2026-10-12T17:55:07.8768400Z HEAD is now at a3dc8ad ci(verify-checkout): 断言步骤补 PYTHONIOENCODING=utf-8（windows 上证据行含中文会 cp1252 崩）
+2026-10-12T17:55:07.8812614Z ##[endgroup]
+2026-10-12T17:55:07.8817614Z ##[group]Disabling automatic garbage collection
+2026-10-12T17:55:07.8825768Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-12T17:55:07.9056074Z ##[endgroup]
+2026-10-12T17:55:07.9056362Z ##[group]Setting up auth
+2026-10-12T17:55:07.9065664Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:55:07.9288711Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:55:08.3695447Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:55:08.3919227Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:55:08.7969928Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:55:08.8195645Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:09.2417383Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-12T17:55:09.2649397Z ##[endgroup]
+2026-10-12T17:55:09.2649926Z ##[group]Fetching the repository
+2026-10-12T17:55:09.2659292Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-12T17:55:09.6697850Z ##[endgroup]
+2026-10-12T17:55:09.6698703Z ##[group]Determining the checkout info
+2026-10-12T17:55:09.6706831Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/feat/unified-cards-media-preview-021
+2026-10-12T17:55:09.6979242Z   origin/feat/unified-cards-media-preview-021
+2026-10-12T17:55:09.7002194Z ##[endgroup]
+2026-10-12T17:55:09.7009263Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-12T17:55:09.7294202Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-12T17:55:09.7559249Z ##[group]Checking out the ref
+2026-10-12T17:55:09.7566604Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B feat/unified-cards-media-preview-021 refs/remotes/origin/feat/unified-cards-media-preview-021
+2026-10-12T17:55:09.7926392Z Switched to a new branch 'feat/unified-cards-media-preview-021'
+2026-10-12T17:55:09.7937783Z branch 'feat/unified-cards-media-preview-021' set up to track 'origin/feat/unified-cards-media-preview-021'.
+2026-10-12T17:55:09.7972162Z ##[endgroup]
+2026-10-12T17:55:09.8220261Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-12T17:55:09.8424505Z a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:09.8454039Z ##[group]Removing auth
+2026-10-12T17:55:09.8460790Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:55:09.8686592Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:55:10.2876557Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:55:10.3097180Z http.https://github.com/.extraheader
+2026-10-12T17:55:10.3130537Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-10-12T17:55:10.3382454Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:55:10.7458936Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:55:10.7692216Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:11.1864822Z ##[endgroup]
+2026-10-12T17:55:11.1980644Z ##[end-action id=__self.__actions_checkout;outcome=success;conclusion=success;duration_ms=4250]
+2026-10-12T17:55:11.1984828Z ##[start-action display=Assert the checked-out commit equals the requested SHA;id=__self.__run_2]
+2026-10-12T17:55:11.2084493Z ##[group]Run set -euo pipefail
+2026-10-12T17:55:11.2084759Z [36;1mset -euo pipefail[0m
+2026-10-12T17:55:11.2085050Z [36;1m# --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交[0m
+2026-10-12T17:55:11.2085398Z [36;1m# （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。[0m
+2026-10-12T17:55:11.2085737Z [36;1m# 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，[0m
+2026-10-12T17:55:11.2086021Z [36;1m# 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。[0m
+2026-10-12T17:55:11.2086250Z [36;1mactual="$(git rev-parse HEAD)"[0m
+2026-10-12T17:55:11.2086611Z [36;1margs=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")[0m
+2026-10-12T17:55:11.2086986Z [36;1mif [ -n "${EXPECTED_REF}" ]; then[0m
+2026-10-12T17:55:11.2087217Z [36;1m  args+=(--expected-ref "${EXPECTED_REF}")[0m
+2026-10-12T17:55:11.2087424Z [36;1mfi[0m
+2026-10-12T17:55:11.2087579Z [36;1mif [ "${ALLOW_SHORT}" = "true" ]; then[0m
+2026-10-12T17:55:11.2087793Z [36;1m  args+=(--allow-short)[0m
+2026-10-12T17:55:11.2087980Z [36;1mfi[0m
+2026-10-12T17:55:11.2088197Z [36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}"[0m
+2026-10-12T17:55:11.2097776Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-12T17:55:11.2098082Z env:
+2026-10-12T17:55:11.2098225Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:11.2098399Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:11.2098613Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:11.2098845Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:11.2099093Z   PYTEST_K: 
+2026-10-12T17:55:11.2099287Z   REQUESTED_SHA: a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:11.2099513Z   EXPECTED_REF: 
+2026-10-12T17:55:11.2099709Z   ALLOW_SHORT: false
+2026-10-12T17:55:11.2099861Z   SHA_LABEL: windows
+2026-10-12T17:55:11.2100009Z   PYTHONIOENCODING: utf-8
+2026-10-12T17:55:11.2100170Z ##[endgroup]
+2026-10-12T17:55:12.0959076Z [windows] requested sha : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:12.0959673Z [windows] actual  from : --actual (arg)
+2026-10-12T17:55:12.0960074Z [windows] actual    sha : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:12.0960696Z [windows] PASS SHA 核验通过：a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:12.0961025Z [windows] git HEAD      : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:12.0961410Z [windows] github event  : workflow_dispatch refs/heads/feat/unified-cards-media-preview-021
+2026-10-12T17:55:12.0961981Z [windows] GITHUB_SHA    : a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa（事件提交，PR 上是 merge commit）
+2026-10-12T17:55:12.1096533Z ##[end-action id=__self.__run_2;outcome=success;conclusion=success;duration_ms=911]
+2026-10-12T17:55:12.1270226Z ##[group]Run astral-sh/setup-uv@v7
+2026-10-12T17:55:12.1270493Z with:
+2026-10-12T17:55:12.1270651Z   python-version: 3.12
+2026-10-12T17:55:12.1270817Z   enable-cache: true
+2026-10-12T17:55:12.1270988Z   cache-dependency-glob: backend/uv.lock
+2026-10-12T17:55:12.1271226Z   activate-environment: false
+2026-10-12T17:55:12.1271407Z   working-directory: D:\a\QIO\QIO
+2026-10-12T17:55:12.1273281Z   github-token: ***
+2026-10-12T17:55:12.1273447Z   restore-cache: true
+2026-10-12T17:55:12.1273908Z   save-cache: true
+2026-10-12T17:55:12.1274051Z   prune-cache: true
+2026-10-12T17:55:12.1274201Z   cache-python: false
+2026-10-12T17:55:12.1274368Z   ignore-nothing-to-cache: false
+2026-10-12T17:55:12.1274560Z   ignore-empty-workdir: false
+2026-10-12T17:55:12.1274743Z   add-problem-matchers: true
+2026-10-12T17:55:12.1274920Z   resolution-strategy: highest
+2026-10-12T17:55:12.1275086Z env:
+2026-10-12T17:55:12.1275219Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:12.1275442Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:12.1275640Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:12.1275862Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:12.1276099Z   PYTEST_K: 
+2026-10-12T17:55:12.1276233Z ##[endgroup]
+2026-10-12T17:55:12.2762365Z Trying to find version for uv in: D:\a\QIO\QIO\uv.toml
+2026-10-12T17:55:12.2762815Z Could not find file: D:\a\QIO\QIO\uv.toml
+2026-10-12T17:55:12.2763225Z Trying to find version for uv in: D:\a\QIO\QIO\pyproject.toml
+2026-10-12T17:55:12.2763680Z Could not find file: D:\a\QIO\QIO\pyproject.toml
+2026-10-12T17:55:12.2764228Z Could not determine uv version from uv.toml or pyproject.toml. Falling back to latest.
+2026-10-12T17:55:12.2766468Z Fetching version data from https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson ...
+2026-10-12T17:55:12.3330618Z Downloading uv from "https://releases.astral.sh/github/uv/releases/download/0.13.0/uv-x86_64-pc-windows-msvc.zip" ...
+2026-10-12T17:55:12.8984781Z [command]C:\Windows\system32\tar.exe x -C D:\a\_temp\5f934992-0a58-45ab-b459-c82002817dc9 -f D:\a\_temp\8cef0f5e-35dc-409e-af14-602b99494f4c
+2026-10-12T17:55:13.0214511Z Set UV_TOOL_BIN_DIR to D:\a\_temp\uv-tool-bin-dir
+2026-10-12T17:55:13.0217719Z Added D:\a\_temp\uv-tool-bin-dir to the path
+2026-10-12T17:55:13.0225367Z Added C:\hostedtoolcache\windows\uv\0.13.0\x86_64 to the path
+2026-10-12T17:55:13.0227457Z Set UV_TOOL_DIR to D:\a\_temp\uv-tool-dir
+2026-10-12T17:55:13.0229749Z Set UV_PYTHON_INSTALL_DIR to D:\a\_temp\uv-python-dir
+2026-10-12T17:55:13.0231824Z Added D:\a\_temp\uv-python-dir to the path
+2026-10-12T17:55:13.0234378Z Set UV_PYTHON to 3.12
+2026-10-12T17:55:13.0251005Z Set UV_CACHE_DIR to D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:13.0251272Z Successfully installed uv version 0.13.0
+2026-10-12T17:55:13.0251573Z Searching files using cache dependency glob: D:\a\QIO\QIO\backend\uv.lock
+2026-10-12T17:55:13.0281475Z D:\a\QIO\QIO\backend\uv.lock
+2026-10-12T17:55:13.0303362Z Found 1 files to hash.
+2026-10-12T17:55:13.0309701Z Trying to restore cache from GitHub Actions cache with key: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-84717fdc086492c67a21394d67c5c0186232ce6b1880f7bc57963f87120cee80
+2026-10-12T17:55:13.3179260Z No GitHub Actions cache found for key: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-84717fdc086492c67a21394d67c5c0186232ce6b1880f7bc57963f87120cee80
+2026-10-12T17:55:13.3916379Z ##[group]Run uv sync --frozen --extra dev
+2026-10-12T17:55:13.3916681Z [36;1muv sync --frozen --extra dev[0m
+2026-10-12T17:55:13.5070492Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-12T17:55:13.5070778Z env:
+2026-10-12T17:55:13.5070933Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:13.5071106Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:13.5071307Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:13.5071538Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:13.5071786Z   PYTEST_K: 
+2026-10-12T17:55:13.5071952Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+2026-10-12T17:55:13.5072175Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+2026-10-12T17:55:13.5072397Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+2026-10-12T17:55:13.5072610Z   UV_PYTHON: 3.12
+2026-10-12T17:55:13.5072765Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:13.5072972Z ##[endgroup]
+2026-10-12T17:55:13.9645906Z Using CPython 3.12.10 interpreter at: C:\hostedtoolcache\windows\Python\3.12.10\x64\python3.exe
+2026-10-12T17:55:13.9646439Z Creating virtual environment at: .venv
+2026-10-12T17:55:14.0002029Z    Building qio @ file:///D:/a/QIO/QIO/backend
+2026-10-12T17:55:14.0781163Z Downloading pygments (1.2MiB)
+2026-10-12T17:55:14.0898916Z Downloading pydantic-core (1.9MiB)
+2026-10-12T17:55:14.0903040Z Downloading tokenizers (2.7MiB)
+2026-10-12T17:55:14.0916795Z Downloading openai (1.9MiB)
+2026-10-12T17:55:14.0930093Z Downloading hf-xet (3.8MiB)
+2026-10-12T17:55:14.0936577Z Downloading onnxruntime (13.6MiB)
+2026-10-12T17:55:14.0939607Z Downloading numpy (12.0MiB)
+2026-10-12T17:55:14.6287341Z  Downloaded pydantic-core
+2026-10-12T17:55:14.6314151Z  Downloaded hf-xet
+2026-10-12T17:55:14.6340459Z  Downloaded tokenizers
+2026-10-12T17:55:14.6467884Z  Downloaded pygments
+2026-10-12T17:55:14.8213093Z  Downloaded onnxruntime
+2026-10-12T17:55:14.8883441Z  Downloaded numpy
+2026-10-12T17:55:14.9598231Z  Downloaded openai
+2026-10-12T17:55:16.7395154Z       Built qio @ file:///D:/a/QIO/QIO/backend
+2026-10-12T17:55:16.7419213Z Prepared 59 packages in 2.75s
+2026-10-12T17:55:17.1114471Z Installed 59 packages in 369ms
+2026-10-12T17:55:17.1116929Z  + annotated-doc==0.0.5
+2026-10-12T17:55:17.1118429Z  + annotated-types==0.8.0
+2026-10-12T17:55:17.1120497Z  + anyio==4.15.1
+2026-10-12T17:55:17.1121355Z  + beautifulsoup4==4.15.0
+2026-10-12T17:55:17.1122770Z  + certifi==2026.7.22
+2026-10-12T17:55:17.1123921Z  + charset-normalizer==3.5.1
+2026-10-12T17:55:17.1124715Z  + click==8.5.0
+2026-10-12T17:55:17.1126212Z  + colorama==0.4.6
+2026-10-12T17:55:17.1127994Z  + fastapi==0.141.1
+2026-10-12T17:55:17.1128986Z  + filelock==3.32.6
+2026-10-12T17:55:17.1130117Z  + flatbuffers==25.12.19
+2026-10-12T17:55:17.1130813Z  + fsspec==2026.7.0
+2026-10-12T17:55:17.1131782Z  + h11==0.16.0
+2026-10-12T17:55:17.1132790Z  + hf-xet==1.6.0
+2026-10-12T17:55:17.1133794Z  + httpcore==1.0.9
+2026-10-12T17:55:17.1135091Z  + httpcore2==2.12.0
+2026-10-12T17:55:17.1136061Z  + httptools==0.8.0
+2026-10-12T17:55:17.1137013Z  + httpx==0.28.1
+2026-10-12T17:55:17.1138009Z  + httpx2==2.12.0
+2026-10-12T17:55:17.1139031Z  + huggingface-hub==1.31.0
+2026-10-12T17:55:17.1139869Z  + idna==3.19
+2026-10-12T17:55:17.1140859Z  + iniconfig==2.3.0
+2026-10-12T17:55:17.1141858Z  + jaraco-classes==3.4.0
+2026-10-12T17:55:17.1142912Z  + jaraco-context==6.1.2
+2026-10-12T17:55:17.1143902Z  + jaraco-functools==4.6.0
+2026-10-12T17:55:17.1144875Z  + jiter==0.16.0
+2026-10-12T17:55:17.1145879Z  + keyring==25.7.0
+2026-10-12T17:55:17.1146896Z  + more-itertools==11.1.0
+2026-10-12T17:55:17.1147985Z  + numpy==2.5.3
+2026-10-12T17:55:17.1148918Z  + onnxruntime==1.30.0
+2026-10-12T17:55:17.1150100Z  + openai==3.13.0
+2026-10-12T17:55:17.1150945Z  + packaging==26.3
+2026-10-12T17:55:17.1151940Z  + pluggy==1.6.0
+2026-10-12T17:55:17.1152949Z  + protobuf==7.36.1
+2026-10-12T17:55:17.1153925Z  + pydantic==2.13.5
+2026-10-12T17:55:17.1155067Z  + pydantic-core==2.46.5
+2026-10-12T17:55:17.1157977Z  + pygments==2.21.0
+2026-10-12T17:55:17.1158300Z  + pypdf==6.20.0
+2026-10-12T17:55:17.1158608Z  + pytest==9.1.1
+2026-10-12T17:55:17.1159573Z  + pytest-asyncio==1.4.0
+2026-10-12T17:55:17.1160584Z  + python-dotenv==1.2.3
+2026-10-12T17:55:17.1161556Z  + pywin32-ctypes==0.2.3
+2026-10-12T17:55:17.1162527Z  + pyyaml==6.0.3
+2026-10-12T17:55:17.1163971Z  + qio==0.2.2 (from file:///D:/a/QIO/QIO/backend)
+2026-10-12T17:55:17.1164989Z  + regex==2026.9.10
+2026-10-12T17:55:17.1165961Z  + requests==2.34.2
+2026-10-12T17:55:17.1166972Z  + sniffio==1.3.1
+2026-10-12T17:55:17.1167817Z  + soupsieve==2.9.2
+2026-10-12T17:55:17.1168762Z  + starlette==1.6.0
+2026-10-12T17:55:17.1169760Z  + tiktoken==0.14.0
+2026-10-12T17:55:17.1171076Z  + tokenizers==0.23.2
+2026-10-12T17:55:17.1172075Z  + tqdm==4.70.1
+2026-10-12T17:55:17.1173071Z  + truststore==0.10.4
+2026-10-12T17:55:17.1174060Z  + typing-extensions==4.16.0
+2026-10-12T17:55:17.1175064Z  + typing-inspection==0.4.4
+2026-10-12T17:55:17.1176031Z  + urllib3==2.7.0
+2026-10-12T17:55:17.1177022Z  + uvicorn==0.52.4
+2026-10-12T17:55:17.1177998Z  + watchfiles==1.2.0
+2026-10-12T17:55:17.1178848Z  + websockets==17.1
+2026-10-12T17:55:17.2729480Z ##[group]Run uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+2026-10-12T17:55:17.2730098Z [36;1muv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py[0m
+2026-10-12T17:55:17.2785951Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-12T17:55:17.2786242Z env:
+2026-10-12T17:55:17.2786390Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:17.2786644Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:17.2786846Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:17.2787080Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:17.2787330Z   PYTEST_K: 
+2026-10-12T17:55:17.2787629Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+2026-10-12T17:55:17.2787872Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+2026-10-12T17:55:17.2788088Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+2026-10-12T17:55:17.2788311Z   UV_PYTHON: 3.12
+2026-10-12T17:55:17.2788503Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:17.2788697Z ##[endgroup]
+2026-10-12T17:55:17.7194465Z [RUN ] 源码 worker：D:\a\QIO\QIO\backend\.venv\Scripts\python.exe D:\a\QIO\QIO\backend\src\agent\tool_worker.py
+2026-10-12T17:55:17.7195281Z [PASS] 单文件代码 — 单文件代码：一行 JSON，值正确
+2026-10-12T17:55:17.7195688Z [PASS] 多文件项目 — 多文件项目 + 包内相对 import：值正确
+2026-10-12T17:55:17.7196112Z [PASS] 坏 worker 被拒 — 异常退出（exit 17）没有结果输出
+2026-10-12T17:55:17.7196493Z [DONE] 源码 worker：3/3 通过
+2026-10-12T17:55:17.8260950Z ##[group]Run $parts = $env:PYTEST_BASE_ARGS
+2026-10-12T17:55:17.8261331Z [36;1m$parts = $env:PYTEST_BASE_ARGS[0m
+2026-10-12T17:55:17.8261633Z [36;1mif ($env:PYTEST_NODE_IDS) { $parts = "$parts $env:PYTEST_NODE_IDS" }[0m
+2026-10-12T17:55:17.8262001Z [36;1mif ($env:PYTEST_K) { $parts = "$parts -k '$env:PYTEST_K'" }[0m
+2026-10-12T17:55:17.8262355Z [36;1mif (-not $env:PYTEST_NODE_IDS -and -not $env:PYTEST_K) {[0m
+2026-10-12T17:55:17.8263070Z [36;1m  Write-Output "::error title=targeted verify windows::没有给 pytest_node_ids 或 pytest_k，拒绝跑整套后端测试（额度红线：只跑失败项）。"[0m
+2026-10-12T17:55:17.8263500Z [36;1m  exit 1[0m
+2026-10-12T17:55:17.8263646Z [36;1m}[0m
+2026-10-12T17:55:17.8263800Z [36;1mWrite-Output "pytest $parts"[0m
+2026-10-12T17:55:17.8272241Z [36;1mInvoke-Expression "uv run --frozen pytest $parts -m 'not requires_docker'"[0m
+2026-10-12T17:55:17.8344248Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-12T17:55:17.8344532Z env:
+2026-10-12T17:55:17.8344717Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:17.8344901Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:17.8345106Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:17.8345342Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:17.8345595Z   PYTEST_K: 
+2026-10-12T17:55:17.8345947Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+2026-10-12T17:55:17.8346165Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+2026-10-12T17:55:17.8346378Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+2026-10-12T17:55:17.8346589Z   UV_PYTHON: 3.12
+2026-10-12T17:55:17.8346746Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:17.8346984Z   PYTEST_ADDOPTS: --junitxml=pytest-results.xml
+2026-10-12T17:55:17.8347218Z   PYTHONIOENCODING: utf-8
+2026-10-12T17:55:17.8347387Z ##[endgroup]
+2026-10-12T17:55:18.1174922Z pytest -q --durations=15 tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:37.7990741Z .............ssssss                                                      [100%]
+2026-10-12T17:55:37.7991120Z ============================ slowest 15 durations =============================
+2026-10-12T17:55:37.7991787Z 2.53s call     tests/test_interactive_during_heavy_work.py::test_a_cancel_request_is_served_while_maintenance_runs
+2026-10-12T17:55:37.7994922Z 2.52s call     tests/test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop
+2026-10-12T17:55:37.7996673Z 1.20s call     tests/test_interactive_during_heavy_work.py::test_slow_retrieval_does_not_block_the_loop
+2026-10-12T17:55:37.7997242Z 1.10s call     tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs
+2026-10-12T17:55:37.7997819Z 0.81s setup    tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs
+2026-10-12T17:55:37.7998370Z 0.67s call     tests/test_interactive_during_heavy_work.py::test_a_cancel_request_is_served_while_slow_prediction_runs
+2026-10-12T17:55:37.7998896Z 0.67s setup    tests/test_interactive_during_heavy_work.py::test_slow_retrieval_does_not_block_the_loop
+2026-10-12T17:55:37.7999386Z 0.50s call     tests/test_interactive_during_heavy_work.py::test_a_slow_retrieval_does_not_stall_the_turn_loop
+2026-10-12T17:55:37.7999875Z 0.48s setup    tests/test_interactive_during_heavy_work.py::test_maintenance_still_commits_its_results
+2026-10-12T17:55:37.8000461Z 0.42s setup    tests/test_interactive_during_heavy_work.py::test_a_slow_retrieval_does_not_stall_the_turn_loop
+2026-10-12T17:55:37.8001321Z 0.38s call     tests/test_interactive_during_heavy_work.py::test_a_cancelled_turn_does_not_suggest_a_topic_switch
+2026-10-12T17:55:37.8001843Z 0.38s call     tests/test_interactive_during_heavy_work.py::test_cancel_leaves_the_cache_and_database_consistent
+2026-10-12T17:55:37.8002357Z 0.37s call     tests/test_interactive_during_heavy_work.py::test_a_cancelled_turn_does_not_commit_the_stale_prediction
+2026-10-12T17:55:37.8004783Z 0.34s call     tests/test_interactive_during_heavy_work.py::test_maintenance_discards_results_when_a_new_turn_starts
+2026-10-12T17:55:37.8005440Z 0.29s setup    tests/test_interactive_during_heavy_work.py::test_maintenance_discards_results_when_a_new_turn_starts
+2026-10-12T17:55:38.6200447Z Post job cleanup.
+2026-10-12T17:55:38.7335855Z UV_CACHE_DIR is already set to D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:38.7338331Z UV_PYTHON_INSTALL_DIR is already set to D:\a\_temp\uv-python-dir
+2026-10-12T17:55:38.7347409Z Pruning cache...
+2026-10-12T17:55:38.7374839Z [command]C:\hostedtoolcache\windows\uv\0.13.0\x86_64\uv.exe cache prune --ci --force
+2026-10-12T17:55:38.7537554Z Pruning cache at: D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:39.1092555Z Removed 5653 files (141.1MiB)
+2026-10-12T17:55:39.1135455Z Including uv cache path: D:\a\_temp\setup-uv-cache
+2026-10-12T17:55:39.1745424Z [command]"C:\Program Files\Git\usr\bin\tar.exe" --posix -cf cache.tzst --exclude cache.tzst -P -C D:/a/QIO/QIO --files-from manifest.txt --force-local --use-compress-program "zstd -T0"
+2026-10-12T17:55:40.3024433Z Sent 170094 of 170094 (100.0%), 0.5 MBs/sec
+2026-10-12T17:55:40.5640755Z uv cache saved with key: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-84717fdc086492c67a21394d67c5c0186232ce6b1880f7bc57963f87120cee80
+2026-10-12T17:55:40.6392654Z Post job cleanup.
+2026-10-12T17:55:40.6395867Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__02ea3e81-52e8-45db-8378-5a06dfefe77e.__actions_checkout]
+2026-10-12T17:55:40.6525365Z Post job cleanup.
+2026-10-12T17:55:40.7966350Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:55:40.8217272Z git version 2.55.0.windows.5
+2026-10-12T17:55:40.8271254Z Temporarily overriding HOME='D:\a\_temp\e75d0544-672a-423c-ba3f-d1d41c7910e0' before making global git config changes
+2026-10-12T17:55:40.8272062Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:55:40.8281262Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:55:40.8548836Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:55:40.8825572Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:55:41.3563694Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:55:41.3799680Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:55:41.8496992Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:55:41.8728298Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:42.3854642Z ##[end-action id=__02ea3e81-52e8-45db-8378-5a06dfefe77e.__actions_checkout;outcome=success;conclusion=success;duration_ms=1745]
+2026-10-12T17:55:42.4063044Z Post job cleanup.
+2026-10-12T17:55:42.5513340Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:55:42.5740861Z git version 2.55.0.windows.5
+2026-10-12T17:55:42.5791854Z Temporarily overriding HOME='D:\a\_temp\7c3dfaba-249e-4878-888e-1684edefa437' before making global git config changes
+2026-10-12T17:55:42.5793211Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:55:42.5801210Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:55:42.6058174Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:55:42.6317530Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:55:43.1151999Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:55:43.1422958Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:55:43.6142626Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:55:43.6379512Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:55:44.0372523Z Cleaning up orphan processes

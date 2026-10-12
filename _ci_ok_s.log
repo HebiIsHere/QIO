@@ -1,0 +1,132 @@
+﻿2026-10-12T17:55:50.2787176Z Current runner version: '2.337.0'
+2026-10-12T17:55:50.2809713Z ##[group]Runner Image Provisioner
+2026-10-12T17:55:50.2810494Z Hosted Compute Agent
+2026-10-12T17:55:50.2811062Z Version: 20261002.596
+2026-10-12T17:55:50.2811584Z Commit: c3d12f3313a95f25162a1503be624f3b0617f8c0
+2026-10-12T17:55:50.2812257Z Build Date: 2026-10-02T22:28:27Z
+2026-10-12T17:55:50.2812861Z Worker ID: {b42dc55b-f5f3-4324-9a70-f4a7c82a9d21}
+2026-10-12T17:55:50.2813423Z Region: westus3
+2026-10-12T17:55:50.2813976Z Cloud: Azure
+2026-10-12T17:55:50.2814433Z ##[endgroup]
+2026-10-12T17:55:50.2815844Z ##[group]Operating System
+2026-10-12T17:55:50.2816403Z Ubuntu
+2026-10-12T17:55:50.2816835Z 24.04.5
+2026-10-12T17:55:50.2817300Z LTS
+2026-10-12T17:55:50.2817736Z ##[endgroup]
+2026-10-12T17:55:50.2818247Z ##[group]Runner Image
+2026-10-12T17:55:50.2818790Z Image: ubuntu-24.04
+2026-10-12T17:55:50.2819257Z Version: 20261004.327.1
+2026-10-12T17:55:50.2820329Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261004.327/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-12T17:55:50.2821596Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261004.327
+2026-10-12T17:55:50.2822382Z ##[endgroup]
+2026-10-12T17:55:50.2823236Z ##[group]GITHUB_TOKEN Permissions
+2026-10-12T17:55:50.2825327Z Contents: read
+2026-10-12T17:55:50.2825835Z Metadata: read
+2026-10-12T17:55:50.2826396Z ##[endgroup]
+2026-10-12T17:55:50.2828095Z Secret source: Actions
+2026-10-12T17:55:50.2829318Z Cache mode: write
+2026-10-12T17:55:50.2829983Z Prepare workflow directory
+2026-10-12T17:55:50.3272971Z Prepare all required actions
+2026-10-12T17:55:50.3323117Z Complete job name: summary (ran vs skipped)
+2026-10-12T17:55:50.3919250Z ##[group]Run python - <<'PY'
+2026-10-12T17:55:50.3920297Z [36;1mpython - <<'PY'[0m
+2026-10-12T17:55:50.3921019Z [36;1mimport json[0m
+2026-10-12T17:55:50.3922046Z [36;1mimport os[0m
+2026-10-12T17:55:50.3922707Z [36;1m[0m
+2026-10-12T17:55:50.3923394Z [36;1mneeds = json.loads(os.environ["NEEDS"])[0m
+2026-10-12T17:55:50.3924728Z [36;1mchecks = {k: v for k, v in needs.items() if k != "verify-sha"}[0m
+2026-10-12T17:55:50.3925709Z [36;1m[0m
+2026-10-12T17:55:50.3926433Z [36;1mdef state(entry):[0m
+2026-10-12T17:55:50.3927228Z [36;1m    result = entry.get("result")[0m
+2026-10-12T17:55:50.3928304Z [36;1m    # 条件不成立而没跑的 job，result 就是 skipped —— 必须如实打印成 SKIPPED。[0m
+2026-10-12T17:55:50.3929596Z [36;1m    return "SKIPPED" if result == "skipped" else str(result or "unknown").upper()[0m
+2026-10-12T17:55:50.3930694Z [36;1m[0m
+2026-10-12T17:55:50.3931762Z [36;1mlines = [state(checks[name]) + "  " + name for name in sorted(checks)][0m
+2026-10-12T17:55:50.3933222Z [36;1mran = [n for n, e in checks.items() if e.get("result") not in ("skipped", None)][0m
+2026-10-12T17:55:50.3934788Z [36;1mfailed = [n for n, e in checks.items() if e.get("result") == "failure"][0m
+2026-10-12T17:55:50.3936120Z [36;1mcancelled = [n for n, e in checks.items() if e.get("result") == "cancelled"][0m
+2026-10-12T17:55:50.3937276Z [36;1m[0m
+2026-10-12T17:55:50.3938664Z [36;1mprint("targeted verify summary: ref=" + str(os.environ.get("REQUESTED_REF")) + " sha=" + str(os.environ.get("REQUESTED_SHA")))[0m
+2026-10-12T17:55:50.3940261Z [36;1mprint("targets=" + str(os.environ.get("TARGETS")))[0m
+2026-10-12T17:55:50.3941680Z [36;1mprint("filters: pytest_node_ids=" + repr(os.environ.get("PYTEST_NODE_IDS")) +[0m
+2026-10-12T17:55:50.3942944Z [36;1m      " pytest_k=" + repr(os.environ.get("PYTEST_K")) +[0m
+2026-10-12T17:55:50.3944142Z [36;1m      " vitest_files=" + repr(os.environ.get("VITEST_FILES")) +[0m
+2026-10-12T17:55:50.3945527Z [36;1m      " vitest_name=" + repr(os.environ.get("VITEST_NAME")))[0m
+2026-10-12T17:55:50.3946613Z [36;1mprint("=== ran vs skipped ===")[0m
+2026-10-12T17:55:50.3947500Z [36;1mfor line in lines:[0m
+2026-10-12T17:55:50.3948226Z [36;1m    print("  " + line)[0m
+2026-10-12T17:55:50.3949464Z [36;1mprint("ran=" + str(len(ran)) + " failed=" + str(len(failed)) + " cancelled=" + str(len(cancelled)))[0m
+2026-10-12T17:55:50.3951270Z [36;1mprint("NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.")[0m
+2026-10-12T17:55:50.3952510Z [36;1m[0m
+2026-10-12T17:55:50.3953130Z [36;1mif not ran:[0m
+2026-10-12T17:55:50.3954196Z [36;1m    raise SystemExit("::error title=targeted verify::no runnable checks: 这次派发没有跑任何检查项，不得当作通过")[0m
+2026-10-12T17:55:50.3955944Z [36;1mif failed:[0m
+2026-10-12T17:55:50.3957026Z [36;1m    raise SystemExit("::error title=targeted verify::failed checks: " + ", ".join(sorted(failed)))[0m
+2026-10-12T17:55:50.3958364Z [36;1mif cancelled:[0m
+2026-10-12T17:55:50.3959569Z [36;1m    raise SystemExit("::error title=targeted verify::cancelled checks: " + ", ".join(sorted(cancelled)))[0m
+2026-10-12T17:55:50.3960917Z [36;1mPY[0m
+2026-10-12T17:55:50.5913383Z shell: /usr/bin/bash -e {0}
+2026-10-12T17:55:50.5914266Z env:
+2026-10-12T17:55:50.5915126Z   PYTHONHASHSEED: 0
+2026-10-12T17:55:50.5915698Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:55:50.5916266Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:55:50.5919228Z   NEEDS: {
+  "verify-sha": {
+    "result": "success",
+    "outputs": {
+      "sha": "a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa",
+      "ref": "feat/unified-cards-media-preview-021",
+      "event_sha": "a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa"
+    }
+  },
+  "docs": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "backend": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "windows": {
+    "result": "success",
+    "outputs": {}
+  },
+  "frontend": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "rust": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "rust-windows": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "frozen-worker": {
+    "result": "skipped",
+    "outputs": {}
+  }
+}
+2026-10-12T17:55:50.5922012Z   TARGETS: windows
+2026-10-12T17:55:50.5922593Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:55:50.5923253Z   PYTEST_K: 
+2026-10-12T17:55:50.5923681Z   VITEST_FILES: 
+2026-10-12T17:55:50.5924133Z   VITEST_NAME: 
+2026-10-12T17:55:50.5924807Z   REQUESTED_SHA: a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:50.5925543Z   REQUESTED_REF: feat/unified-cards-media-preview-021
+2026-10-12T17:55:50.5926168Z ##[endgroup]
+2026-10-12T17:55:50.6272743Z targeted verify summary: ref=feat/unified-cards-media-preview-021 sha=a3dc8ade84dd33197fae7cc9ff9be7f246f4fefa
+2026-10-12T17:55:50.6348145Z targets=windows
+2026-10-12T17:55:50.6349396Z filters: pytest_node_ids='tests/test_interactive_during_heavy_work.py' pytest_k='' vitest_files='' vitest_name=''
+2026-10-12T17:55:50.6350377Z === ran vs skipped ===
+2026-10-12T17:55:50.6350781Z   SKIPPED  backend
+2026-10-12T17:55:50.6351166Z   SKIPPED  docs
+2026-10-12T17:55:50.6351559Z   SKIPPED  frontend
+2026-10-12T17:55:50.6351939Z   SKIPPED  frozen-worker
+2026-10-12T17:55:50.6352340Z   SKIPPED  rust
+2026-10-12T17:55:50.6352710Z   SKIPPED  rust-windows
+2026-10-12T17:55:50.6353091Z   SUCCESS  windows
+2026-10-12T17:55:50.6353469Z ran=1 failed=0 cancelled=0
+2026-10-12T17:55:50.6354021Z NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.
+2026-10-12T17:55:50.6484865Z Cleaning up orphan processes
