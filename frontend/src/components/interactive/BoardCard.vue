@@ -296,6 +296,19 @@ const conflictExpanded = computed(
   () => !props.card.folded && Boolean(store.draftConflictFor(props.card.id) || boardContentConflict(props.card.id)),
 );
 
+/**
+ * 卡片内预览是否展开（契约 2026-10-12 §3.5 / §3.6）。
+ *
+ * 状态只有一个来源：store 的 `expandedCards`（**只在前端内存**）。
+ * 这里不加新 props、不算几何：展开后的位置与尺寸由 BoardCanvas 用
+ * `interactive/cardLayout.ts` 的纯函数算好，再通过 x/y 与 card 传进来。
+ * 点击「展开预览」不写板面状态、不产生表达、不触发意图 / 任务。
+ */
+const previewExpanded = computed(() => store.isCardPreviewExpanded(props.card.id));
+function togglePreview(): void {
+  store.toggleCardPreview(props.card.id);
+}
+
 const style = computed(() => ({
   left: props.x + "px",
   top: props.y + "px",
@@ -464,6 +477,21 @@ function cancelEdit() {
       >
         展开
       </button>
+      <!--
+        卡片内预览的入口（契约 §3.5）：展开的是**这张卡本身**，不是弹窗、不盖别的卡片。
+        入口与卡片折叠互斥显示：折叠时连正文都没有，先展开卡片再说。
+      -->
+      <button
+        v-if="!card.folded"
+        class="chip-btn"
+        type="button"
+        data-im="card-preview-toggle"
+        :data-card-id="card.id"
+        :aria-expanded="previewExpanded"
+        @click="togglePreview"
+      >
+        {{ previewExpanded ? "收起预览" : "展开预览" }}
+      </button>
     </header>
 
     <div v-if="!card.folded" class="card-body">
@@ -557,6 +585,24 @@ function cancelEdit() {
           />
         </template>
       </template>
+
+      <!--
+        卡片内展开的阅读区（契约 §3.5）：展开时这张卡本身变大，预览主体挂在**卡片内部**，
+        因此不会盖住编辑区、勾选框与卡片操作。收起（含「收起全部预览」）时整块消失。
+        这里是唯一的挂载点：P2 的 CardInlinePreview.vue 到位后，把占位元素整块替换成
+        <CardInlinePreview :card="card" :active="true" :on-close="togglePreview" @position="onPreviewPosition" />
+        （props / emits 契约见 §3.5；onPreviewPosition 若需要回写阅读位置，走 P2 的入口，不写板面状态）。
+      -->
+      <div
+        v-if="previewExpanded"
+        class="card-preview-host"
+        data-im="card-preview-host"
+        :data-card-id="card.id"
+      >
+        <p class="preview-placeholder" data-im="card-preview-placeholder">
+          预览区已展开（真实文件预览由 CardInlinePreview 渲染；当前是最小占位，接线已可用）。
+        </p>
+      </div>
     </div>
 
     <!-- 元信息：状态文字 + 更新时间 + 组 + 书签。数量与时间退到次级视觉层。 -->
@@ -648,7 +694,19 @@ function cancelEdit() {
   color: var(--text-primary);
   font-size: var(--fs-base);
   cursor: grab;
-  /* 拖动要跟手：卡片上不加过渡动画 */
+  /*
+    拖动要跟手：拖动中的卡片**不参与过渡**（否则卡片会跟不上指针）。
+    展开 / 收起 / 让位是低频转场，走设计令牌的非线性曲线（--ease-2 + --mo-2-move）；
+    `prefers-reduced-motion` / 手动「减少动画」由 styles/base.css 的
+    :root[data-motion="reduced"] 统一关掉（同一份偏好来自 utils/motion.ts）。
+  */
+}
+.card:not(.dragging) {
+  transition:
+    left var(--mo-2-move) var(--ease-2),
+    top var(--mo-2-move) var(--ease-2),
+    width var(--mo-2-move) var(--ease-2),
+    height var(--mo-2-move) var(--ease-2);
 }
 /* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
 .card:hover { border-color: var(--border-strong); }
@@ -785,6 +843,27 @@ function cancelEdit() {
 }
 .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .time { flex: none; color: var(--text-faint); }
+
+/*
+  卡片内展开的阅读区：占卡片里正文之后的剩余空间，自己滚动。
+  它是卡片内部的一块排版区域，不是浮层：不盖编辑区、不盖连接点、不盖局部工具栏。
+*/
+.card-preview-host {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px dashed var(--border-subtle);
+  min-height: 140px;
+  overflow: auto;
+}
+.preview-placeholder {
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+}
 
 /* 连接点：四边中点，拖出去建关系 */
 .connect-point {
