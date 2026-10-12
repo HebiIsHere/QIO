@@ -381,7 +381,7 @@ def create_app(
             if report is not None:
                 log_close_report(report)
 
-    app = FastAPI(title="QIO", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.2.1", lifespan=lifespan)
     from agent.knowledge.lifecycle import VersionConflict
 
     @app.exception_handler(VersionConflict)
