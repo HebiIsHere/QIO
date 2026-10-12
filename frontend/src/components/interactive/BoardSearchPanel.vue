@@ -52,9 +52,25 @@ const hits = computed<Hit[]>(() => {
     });
 });
 
-/** 未勾选、也没有明确隐藏的注释数量：搜索能看到它们，但它们不会因此进入提交。 */
+/**
+ * 未许可、也没有明确隐藏的**文字卡**数量：搜索能看到它们，但它们不会因此进入提交。
+ *
+ * 契约 §2.3：只统计已经过迁移的文字卡 —— 遗留 code / url 卡不算「未许可」，
+ * 它们是「旧卡片」（整体不交付），单独报数，不混进许可统计里。
+ */
 const uncheckedNotes = computed(
-  () => (store.board?.cards ?? []).filter((card) => !card.deleted && card.kind === "text" && !card.checked && !card.hidden).length,
+  () =>
+    (store.board?.cards ?? []).filter(
+      (card) => !card.deleted && card.kind === "text" && !card.checked && !card.hidden,
+    ).length,
+);
+
+/** 迁移完成前仍是旧种类的卡片（code / url）：整体不进提交载荷，界面如实标注。 */
+const legacyCards = computed(
+  () =>
+    (store.board?.cards ?? []).filter(
+      (card) => !card.deleted && (card.kind === "code" || card.kind === "url"),
+    ).length,
 );
 
 function locate(hit: Hit): void {
@@ -90,14 +106,17 @@ onMounted(async () => {
         v-model="query"
         type="search"
         data-im="search"
-        placeholder="搜注释、材料名称或网址"
+        placeholder="搜文字卡、材料名称或链接地址"
         aria-label="板内搜索"
       />
     </label>
 
     <p class="note">
-      只查你自己的板面：能搜到未勾选的注释，<strong>这不等于交给 QIO</strong>。
-      现在有 {{ uncheckedNotes }} 条未勾选注释，它们不会进入提交。
+      只查你自己的板面：能搜到未许可的文字卡，<strong>这不等于交给 QIO</strong>。
+      现在有 {{ uncheckedNotes }} 张未许可的文字卡，它们不会进入提交。
+    </p>
+    <p v-if="legacyCards" class="note" data-im="search-legacy-note">
+      另有 {{ legacyCards }} 张旧卡片（代码 / 网址）尚未迁移：它们整体不进入提交载荷，也不算「未许可」。
     </p>
 
     <ul v-if="hits.length" class="results">

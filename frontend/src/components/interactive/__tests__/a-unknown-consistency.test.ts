@@ -8,7 +8,8 @@
  * ⑤ 材料 / 附件入口（**口径以 Lead 2026-10-11 裁决为准，勿误读**）：
  *    任务书那句「材料/附件入口 + 未决发送处理都在」的验收口径是**两者都不能丢**，
  *    不是「ChatDock 必须有附件按钮」：
- *    - 材料 / 附件入口在 **BoardToolbar → AddMenu**（五类：文字 / 文件 / 图片 / 代码 / 网址），
+ *    - 材料 / 附件入口在 **BoardToolbar → AddMenu**（三类：文字卡 / 文件 / 图片；
+ *      契约 2026-10-12 §1.7：代码与网址写进同一张文字卡，不再是独立入口），
  *      由本文件挂真实组件断言入口在、文件与图片仍关联真实附件；
  *    - 未决发送处理在 **ChatDock**：它按冻结契约 §8.3 **只发文字**，
  *      「受理未知时不把原文放回输入框」由 components/__tests__/b-chatDockPendingSend.test.ts
@@ -123,7 +124,7 @@ describe("unknown 在类型 / 合成状态 / 按钮 / 文案四处一致", () =>
 });
 
 describe("材料 / 附件入口仍在", () => {
-  it("添加菜单提供五类入口，文件与图片是关联真实附件的那两类", async () => {
+  it("添加菜单提供三类入口（文字卡 / 文件 / 图片），文件与图片是关联真实附件的那两类", async () => {
     const store = useInteractiveStore();
     store.board = board.emptyState("board_t");
     const wrapper = track(mount(AddMenu));
@@ -132,12 +133,15 @@ describe("材料 / 附件入口仍在", () => {
     await wrapper.get('[data-im="add-menu"]').trigger("click");
 
     const list = wrapper.get('[data-im="add-menu-list"]');
-    for (const kind of ["text", "file", "image", "code", "url"]) {
+    for (const kind of ["text", "file", "image"]) {
       expect(
         wrapper.find('[data-im="add-' + kind + '"]').exists(),
         "缺少材料入口：" + kind,
       ).toBe(true);
     }
+    // 文字卡提示必须写明「文字、链接、代码在同一张卡片里；默认未许可」（契约 §1.7）
+    expect(list.text()).toContain("文字、链接、代码写在同一张卡片里");
+    expect(list.text()).toContain("默认未许可");
     // 文件 / 图片必须走真实附件关联（否则 QIO 只能看到文件名，读不到正文）
     expect(list.text()).toContain("文件");
     expect(list.text()).toContain("图片");

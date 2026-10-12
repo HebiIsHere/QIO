@@ -76,18 +76,22 @@ describe("BoardToolbar 接线", () => {
     wrapper.unmount();
   });
 
-  it("添加菜单：收起时五类入口都不在 DOM，点开后五类都在，点击真的添加卡片", async () => {
+  it("添加菜单：收起时三类入口都不在 DOM，点开后三类都在，代码 / 网址不再是入口", async () => {
     const wrapper = mount(BoardToolbar);
     const trigger = wrapper.get('[data-im="add-menu"]');
     expect(trigger.attributes("aria-expanded")).toBe("false");
-    for (const kind of ["text", "file", "image", "code", "url"]) {
+    for (const kind of ["text", "file", "image"]) {
       expect(wrapper.find('[data-im="add-' + kind + '"]').exists(), kind).toBe(false);
     }
 
     await trigger.trigger("click");
     expect(wrapper.get('[data-im="add-menu"]').attributes("aria-expanded")).toBe("true");
-    for (const kind of ["text", "file", "image", "code", "url"]) {
+    for (const kind of ["text", "file", "image"]) {
       expect(wrapper.find('[data-im="add-' + kind + '"]').exists(), kind).toBe(true);
+    }
+    // 契约 §1.7：文字、链接、代码写在同一张文字卡里 —— 菜单不再有独立的「代码」「网址」
+    for (const gone of ["code", "url"]) {
+      expect(wrapper.find('[data-im="add-' + gone + '"]').exists(), gone).toBe(false);
     }
 
     await wrapper.get('[data-im="add-file"]').trigger("click");

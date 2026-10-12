@@ -29,12 +29,20 @@ import type { BoardCard } from "./types";
 const props = withDefaults(
   defineProps<{
     card: BoardCard;
+    /**
+     * 编辑区显示的那一份文本（可选）。
+     *
+     * 为什么要有它：用户正在编辑的可能是**未完成输入**（草稿恢复、冲突候选），
+     * 它与卡片正式字段不是同一份；父组件说了算，组件不自己猜。
+     * 没给时才从 card 推导（meta.docText → meta.doc → content）。
+     */
+    value?: string;
     /** 只读（例如预览里的副本）：编辑面只读、工具栏禁用 */
     readonly?: boolean;
     /** 编辑区最小高度（显示参数，不改变任何格式语义） */
     minHeight?: number;
   }>(),
-  { readonly: false, minHeight: 160 },
+  { value: undefined, readonly: false, minHeight: 160 },
 );
 
 const emit = defineEmits<{
@@ -43,8 +51,11 @@ const emit = defineEmits<{
 
 const area = ref<HTMLTextAreaElement | null>(null);
 
-/** 编辑区的唯一文本状态：props.card → 编辑区文本（meta.docText > meta.doc > content）。 */
-const text = ref(serializeDocText(docFromCard(props.card)));
+/** 编辑区的唯一文本状态：父组件给的 value 优先，否则从 card 推导。 */
+function initialText(): string {
+  return typeof props.value === "string" ? props.value : serializeDocText(docFromCard(props.card));
+}
+const text = ref(initialText());
 
 /** 用户可读的当前状态（诚实反馈：插入链接取消了输入、格式动作的结果等）。 */
 const note = ref("");
@@ -177,21 +188,16 @@ function selectedLabel(lines: string[]): string {
   return "";
 }
 
-watch(
-  () => props.card.meta?.docText,
-  (value) => {
-    if (typeof value === "string" && value !== text.value) text.value = value;
-  },
-);
-
 /**
- * 外部（父组件按 doc 重建卡片、草稿恢复、切换到服务器那一版）改了卡片时就跟随。
- * 只比较**序列化后的文本**，不比较对象身份：同一份内容反复设置不会打断用户输入。
+ * 外部改了编辑区文本就跟随：草稿恢复、冲突里选「用服务器上的」、切换到另一张卡、
+ * 父组件按块序列重建卡片 —— 编辑面都必须立刻显示那一份，不能停在旧文字上。
+ *
+ * 只比较**文本**，不比较对象身份：同一份内容反复设置不会打断用户输入。
  */
 watch(
-  () => [props.card.meta?.doc, props.card.meta?.docText, props.card.content],
+  () => [props.value, props.card.meta?.doc, props.card.meta?.docText, props.card.content],
   () => {
-    const next = serializeDocText(docFromCard(props.card));
+    const next = initialText();
     if (next !== text.value) text.value = next;
   },
   { deep: true },

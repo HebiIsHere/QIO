@@ -16,6 +16,7 @@
  * （两个已有组合并时是被并入的那一组 id，与未分组卡片重叠成组时是那张卡片 id）。
  */
 import type { BoardCard, BoardGroup, BoardLink, BoardState, CardKind } from "./types";
+import { cardDocFields, emptyDoc, parseDocText, type TextDoc } from "./textCard";
 
 /** 位置与大小的矩形（板面坐标）。 */
 export interface BoardRect {
@@ -50,18 +51,33 @@ export const CARD_KIND_LABELS: Record<CardKind, string> = {
   reply: "QIO 结果",
 };
 
-/** 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。 */
-export const MATERIAL_KINDS: CardKind[] = ["file", "image", "code", "url"];
-
-/** 用户能从工具栏添加的五类卡片（reply 由 QIO 结果产生，不由用户直接添加）。 */
-export const ADDABLE_CARD_KINDS: CardKind[] = ["text", "file", "image", "code", "url"];
+/**
+ * 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。
+ *
+ * 契约 2026-10-12 §2.2：**材料只剩 file / image**。历史上 code / url 的
+ * 「材料默认可见」通道取消 —— 卡内文字、链接与代码一律走统一文字卡的**整卡许可**。
+ */
+export const MATERIAL_KINDS: CardKind[] = ["file", "image"];
 
 /**
- * 新卡片的默认内容与元信息（五类一致，避免工具栏与画布各写一份而漂移）。
+ * 用户能从工具栏添加的卡片：**文字卡 / 文件 / 图片**（契约 2026-10-12 §1.7）。
+ *
+ * 代码与网址不再是入口：它们与正文写在**同一张文字卡**里（卡内代码块可编辑）。
+ * CARD_KINDS 仍保留全部旧取值用于读历史数据与导入文件。
+ */
+export const ADDABLE_CARD_KINDS: CardKind[] = ["text", "file", "image"];
+
+/**
+ * 新卡片的默认内容与元信息（同一份默认值，避免工具栏与画布各写一份而漂移）。
  * 默认内容只是占位文字，不代表任何意图；卡片添加后由用户填写。
+ *
+ * 文字卡（契约 §1.4）：默认**空块序列 + 空编辑区文本**；
+ * 而 `addCard` 的默认 `checked = false` —— 新建的文字卡默认未许可。
  */
 export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: string; meta: Record<string, unknown> } {
   switch (kind) {
+    case "text":
+      return { kind, content: "", meta: { doc: emptyDoc(), docText: "" } };
     case "file":
       return { kind, content: "待补充文件说明", meta: { name: "未命名文件" } };
     case "image":
@@ -419,6 +435,56 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
   });
   work.updatedAt = stamp;
   return normalizeState(work);
+}
+
+/**
+ * 新建一张统一文字卡（契约 §1.4 / §1.6）。
+ *
+ * - 默认**未许可**（`checked = false`）：整卡一个许可，覆盖卡内文字、链接与代码；
+ * - `content` 是块序列的纯文本派生，`meta.doc` 是权威，`meta.docText` 是编辑区文本；
+ * - 位置只影响显示（给了 x / y 就用，没给按网格错开）。
+ */
+export function addTextCard(
+  state: BoardState,
+  opts: { x?: number; y?: number; doc?: TextDoc } = {},
+): { state: BoardState; cardId: string } {
+  const doc = opts.doc ?? emptyDoc();
+  const fields = cardDocFields(doc);
+  const cardId = newId("c");
+  const next = addCard(state, {
+    id: cardId,
+    kind: "text",
+    content: fields.content,
+    meta: { doc: fields.meta.doc, docText: fields.meta.docText },
+    checked: false,
+    ...(typeof opts.x === "number" ? { x: opts.x } : {}),
+    ...(typeof opts.y === "number" ? { y: opts.y } : {}),
+  });
+  return { state: next, cardId };
+}
+
+/**
+ * 把块序列（或编辑区文本）写回卡片（契约 §1.4：块序列是唯一权威表示）。
+ *
+ * `content` 与 `meta.docText` 都是**派生**字段，两者由同一次调用一起更新 ——
+ * 不允许出现「doc 变了但 content 还是旧的」这种半份状态。
+ * 卡片不存在时原样返回（不新建、不抛错）。
+ */
+export function setCardDoc(state: BoardState, cardId: string, doc: TextDoc | { docText: string }): BoardState {
+  const work = normalizeState(state);
+  const card = cardById(work, cardId);
+  if (!card) return work;
+  const resolved: TextDoc = isTextDoc(doc) ? doc : parseDocText((doc as { docText: string }).docText ?? "");
+  const fields = cardDocFields(resolved);
+  return updateCard(work, cardId, {
+    content: fields.content,
+    meta: { ...(card.meta ?? {}), doc: fields.meta.doc, docText: fields.meta.docText },
+  });
+}
+
+/** 形状判定：有 blocks 数组就是块序列，否则按「带 docText 的编辑区文本」处理。 */
+function isTextDoc(value: TextDoc | { docText: string }): value is TextDoc {
+  return Boolean(value) && Array.isArray((value as TextDoc).blocks);
 }
 
 export function updateCard(state: BoardState, cardId: string, patch: Partial<BoardCard>): BoardState {

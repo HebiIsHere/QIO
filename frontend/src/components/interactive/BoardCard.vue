@@ -14,7 +14,7 @@
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
   cardDraftKey,
@@ -24,6 +24,15 @@ import {
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
+import {
+  cardDocFields,
+  docFromCard,
+  parseDocText,
+  serializeDocText,
+  type TextBlock,
+  type TextDoc,
+} from "../../interactive/textCard";
+import { isSafeExternalUrl, openExternal } from "../../utils/externalLink";
 import {
   cardAttachmentId,
   cardAttachmentLinked,
@@ -39,6 +48,7 @@ import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
+import TextCardEditor from "../../interactive/TextCardEditor.vue";
 
 const props = defineProps<{
   card: BoardCard;
@@ -78,6 +88,10 @@ const emit = defineEmits<{
 const store = useInteractiveStore();
 const editing = ref(false);
 const draft = ref("");
+/** 这一版编辑态是否已经按恢复规则重建过（空草稿与「没有草稿」必须能区分） */
+const draftLoaded = ref(false);
+/** 文字卡编辑区实例：关闭态点「编辑」要把焦点与光标落到对应行（契约 §1.7） */
+const textEditor = ref<{ focusLine: (line: number) => void } | null>(null);
 const metaName = ref("");
 const metaLanguage = ref("");
 const metaHref = ref("");
@@ -146,6 +160,182 @@ const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
 const linkTitle = computed(() => String(props.card.meta?.title ?? "") || href.value);
+
+/* ------------------------------------------------------------------------
+ * 统一文字卡：编辑与显示（契约 2026-10-12 §1.3 / §1.7）
+ *
+ * 文字卡按**块序列**（meta.doc，权威）渲染；编辑走 TextCardEditor（一个连续编辑面）。
+ * 历史 code / url 卡仍能显示（兜底分支 + 「旧卡片，尚未迁移」标注），但整体不交付。
+ * ---------------------------------------------------------------------- */
+
+/** 这张卡片用不用统一文字卡渲染：kind="text"（含迁移后的旧 code / url）。 */
+const isTextCard = computed(() => props.card.kind === "text");
+
+/** 遗留的 code / url 卡：迁移完成前兜底显示，界面必须写明它还没迁移。 */
+const LEGACY_KINDS = ["code", "url"] as const;
+const isLegacyCard = computed(() => (LEGACY_KINDS as readonly string[]).includes(props.card.kind));
+
+/** 卡片的内容模型（meta.doc 权威 → meta.docText → content 兜底）。 */
+const cardDoc = computed<TextDoc>(() => docFromCard(props.card));
+
+/** 卡片自己那一份编辑区文本（meta.docText 权威 → meta.doc → content 兜底）。 */
+function cardDocText(): string {
+  return serializeDocText(cardDoc.value);
+}
+
+/**
+ * 编辑区要显示的那一份文本：**未完成输入优先**（草稿恢复、冲突里选中的那一份）。
+ *
+ * `draftLoaded` 是「已经按恢复规则重建过编辑态」的标记：没有它就无法区分
+ * 「还没有草稿」与「草稿就是空串」—— 后者是有效编辑状态（契约 §10.4），
+ * 不能用正式正文把它顶掉。
+ */
+const editorText = computed(() => (editing.value && draftLoaded.value ? draft.value : cardDocText()));
+
+/** 关闭态与「完成编辑」用的同一份文本。 */
+const docText = computed(() => (editing.value && draft.value ? draft.value : cardDocText()));
+const liveDoc = computed(() => parseDocText(docText.value));
+
+/** 块的起始行号：显示里点「编辑」必须把光标落到**那一行**（契约 §1.7）。 */
+function blockLineStarts(doc: TextDoc): number[] {
+  const out: number[] = [];
+  let line = 0;
+  for (const block of doc.blocks) {
+    out.push(line);
+    const lines = Math.max(
+      1,
+      String(block.text ?? "").split("\n").filter((item) => item !== "").length,
+    );
+    line += block.kind === "code" ? 1 + lines + 1 : lines;
+  }
+  return out;
+}
+
+interface ShownBlock {
+  block: TextBlock;
+  index: number;
+  line: number;
+}
+
+const shownBlocks = computed<ShownBlock[]>(() => {
+  const base = liveDoc.value.blocks;
+  const starts = blockLineStarts(parseDocText(docText.value));
+  const blocks = editing.value ? parseDocText(draft.value).blocks : base;
+  return blocks.map((block, index) => ({
+    block,
+    index,
+    line: starts[index] ?? 0,
+  }));
+});
+
+/** 演示 / 编辑态共用的块文本（拿不到块时退回整段文本，绝不显示空）。 */
+function blockText(block: TextBlock): string {
+  if (block.kind === "link") return block.text || block.attrs?.href || "";
+  return block.text;
+}
+
+/** 行内格式（加粗 / 斜体 / 删除线 / 行内代码）：先转义，再套标签 —— 不解析任何 HTML。 */
+function escapeHtml(raw: string): string {
+  return String(raw ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineHtml(raw: string): string {
+  let out = escapeHtml(raw);
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/~~(.+?)~~/g, "<del>$1</del>");
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return out;
+}
+
+/** 链接块的可读标题与地址（标题为空时界面显示地址）。 */
+function linkHref(block: TextBlock): string {
+  return String(block.attrs?.href ?? "");
+}
+function linkBlockTitle(block: TextBlock): string {
+  return String(block.text ?? "").trim() || linkHref(block);
+}
+function linkOpenable(block: TextBlock): boolean {
+  return isSafeExternalUrl(linkHref(block));
+}
+
+/** 打开链接：走统一的外链白名单入口；不安全 scheme 与打开失败都如实说出来。 */
+const linkStatus = ref<{ tone: "ok" | "error"; text: string } | null>(null);
+async function openLink(block: TextBlock): Promise<void> {
+  const href = linkHref(block);
+  if (!href) {
+    linkStatus.value = { tone: "error", text: "这条链接还没有地址：可以点「编辑」把地址补上。" };
+    return;
+  }
+  if (!isSafeExternalUrl(href)) {
+    linkStatus.value = {
+      tone: "error",
+      text: "这条链接的地址不是 http / https / mailto，出于安全考虑不可打开：" + href,
+    };
+    return;
+  }
+  const ok = await openExternal(href);
+  linkStatus.value = ok
+    ? { tone: "ok", text: "已交给系统打开：" + href }
+    : { tone: "error", text: "打开失败：可以复制地址后手动打开。" };
+}
+
+/* 代码块的复制：复用 MarkdownContent 的做法 —— 受限 WebView 下 navigator.clipboard
+   可能不存在、写入也可能被拒绝，两种情况都必须如实反馈，不能假装成功。 */
+const copyState = ref<{ id: string; ok: boolean } | null>(null);
+let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") return false;
+    await clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyTitle(block: TextBlock): string {
+  const state = copyState.value;
+  if (state && state.id === block.id) {
+    return state.ok
+      ? "已复制到剪贴板"
+      : "复制失败：可以选中代码后按 Ctrl+C 手动复制，或再点一次重试";
+  }
+  return "复制这段代码";
+}
+
+async function copyCode(block: TextBlock): Promise<void> {
+  const ok = await writeClipboard(block.text);
+  copyState.value = { id: block.id, ok };
+  if (copyTimer) clearTimeout(copyTimer);
+  copyTimer = setTimeout(
+    () => {
+      copyState.value = null;
+    },
+    ok ? 1600 : 2400,
+  );
+}
+
+onBeforeUnmount(() => {
+  if (copyTimer) clearTimeout(copyTimer);
+});
+
+/**
+ * 「编辑」：进入编辑态并把焦点与光标落到那一行（链接 / 代码都必须能就地改）。
+ *
+ * 先把编辑区**渲染出来**（等一拍），再让它自己定位 —— 顺序反了就会把光标落在旧位置。
+ */
+async function editBlockAt(line: number): Promise<void> {
+  if (!editing.value) startEdit();
+  await nextTick();
+  await textEditor.value?.focusLine(line);
+}
 
 /**
  * 附件关联（契约 §14.1 的诚实口径）：文件 / 图片卡片只有把**真实已保存的附件 id**
@@ -258,7 +448,11 @@ const statusText = computed(() => {
   const parts: string[] = [];
   if (props.card.hidden) parts.push("已隐藏：退出讨论范围");
   else if (checkable.value) {
-    parts.push(props.card.checked ? "已勾选：本次允许 QIO 查看（仍需提交）" : "未勾选：QIO 看不到它的文字");
+    parts.push(
+      props.card.checked
+        ? "已许可：QIO 可以查看这张卡（提交后仍然有效）"
+        : "未许可：QIO 看不到这张卡里的任何内容",
+    );
   } else if (props.card.kind === "reply") parts.push("QIO 结果：不进提交载荷");
   else parts.push("材料：默认在本次允许查看范围内（不需要勾选）");
   if (props.card.folded) parts.push("已折叠：只改变显示");
@@ -384,6 +578,7 @@ function applyRestore() {
     draftMeta: localInput?.meta ?? null,
   });
   draft.value = conflict ? conflict.local : restored.text;
+  draftLoaded.value = true;
   metaName.value = restored.meta.name ?? "";
   metaLanguage.value = restored.meta.language ?? "";
   metaHref.value = restored.meta.href ?? "";
@@ -395,6 +590,17 @@ function applyRestore() {
  * 一起进本机记录。分别保存会让两者不同步（刷新后正文恢复了、网址还是旧的）。
  */
 function onDraftInput() {
+  saveDraftInput();
+}
+
+/**
+ * 统一文字卡的输入（契约 §1.3）：编辑区给的就是 `meta.docText`（提交载荷也用这一份）。
+ *
+ * 这里只做两件事：更新关闭态与「完成编辑」要用的草稿文本，并把它登记进**既有**草稿通道
+ * （不新增第二个写者）。块序列由 textCard.ts 的 parseDocText 在提交时重新推导 —— 权威只有一份。
+ */
+function onTextCardChange(payload: { docText: string; doc: TextDoc }) {
+  draft.value = payload.docText;
   saveDraftInput();
 }
 
@@ -424,9 +630,41 @@ watch(
   },
 );
 
-/** 确认编辑才形成有效文字状态；输入过程只存草稿，不调用 QIO。 */
+/**
+ * 卡片自己的正文被外部换掉时（版本更新、板面刷新、换到另一张卡），关闭态与「完成编辑」
+ * 用的都是这一份 —— 不跟随就会拿旧正文去确认。
+ */
+watch(
+  () => [props.card.id, props.card.meta, props.card.content],
+  () => {
+    if (editing.value) return;
+    const next = cardDocText();
+    if (next !== draft.value) draft.value = next;
+  },
+  { deep: true },
+);
+
+/**
+ * 确认编辑才形成有效文字状态；输入过程只存草稿，不调用 QIO。
+ *
+ * 文字卡（契约 §1.4）：`meta.doc` 是权威块序列，`content` 与 `meta.docText` 都是派生 ——
+ * 三者由同一次 patch 一起更新，绝不留下「doc 换了、content 还是旧 markdown」的半份状态。
+ */
 function confirmEdit() {
-  const patch: Partial<BoardCard> = { content: draft.value };
+  let patch: Partial<BoardCard>;
+  if (isTextCard.value) {
+    const doc = parseDocText(draft.value);
+    const fields = cardDocFields(doc);
+    patch = {
+      content: fields.content,
+      meta: { ...(props.card.meta ?? {}), doc: fields.meta.doc, docText: fields.meta.docText },
+    };
+    emit("patch", props.card.id, patch, "编辑" + kindLabel.value);
+    store.requestDraftClear(cardDraftKey(props.card.id));
+    editing.value = false;
+    return;
+  }
+  patch = { content: draft.value };
   if (props.card.kind === "file" || props.card.kind === "image") {
     patch.meta = { ...(props.card.meta ?? {}), name: metaName.value };
   } else if (props.card.kind === "code") {
@@ -451,6 +689,7 @@ function confirmEdit() {
 
 function cancelEdit() {
   editing.value = false;
+  draftLoaded.value = false;
   // 防抖可能还没触发：离开编辑器前把待保存的草稿落盘（失败会有状态与重试入口）
   store.flushDrafts();
 }
@@ -501,7 +740,20 @@ function cancelEdit() {
           卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
           -->
         <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
+        <!--
+          文字卡（含迁移后的旧 code / url）：**一个连续编辑区**（契约 §1.3）。
+          输入即把草稿登记进既有通道；草稿文本就是 meta.docText（提交载荷也用这一份）。
+        -->
+        <TextCardEditor
+          v-if="isTextCard"
+          ref="textEditor"
+          :card="card"
+          :value="editorText"
+          :data-card-id="card.id"
+          @change="onTextCardChange"
+        />
         <textarea
+          v-else
           v-model="draft"
           class="editor"
           data-im="card-editor"
@@ -567,8 +819,110 @@ function cancelEdit() {
         <template v-else>
           <!-- 关闭态也能看到、能处理的状态（本机副本没删掉 / 清除未同步 / 草稿保存失败）：就地提示 + 重试 -->
           <CardDraftHint v-if="cardDraftNeedsAttention" :card-id="card.id" />
-          <p v-if="card.kind === 'text'" class="content">{{ card.content || "（还没有内容，选中后用工具栏的「编辑」写下来）" }}</p>
-          <p v-else-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
+          <!--
+            文字卡按块渲染（契约 §1.7）：标题 / 列表 / 引用 / 段落 / 代码 / 链接各自外观。
+            内容模型是 meta.doc（权威）；旧数据没有 doc 时由 content 兜底成一段。
+          -->
+          <template v-if="isTextCard">
+            <div v-if="shownBlocks.length" class="blocks" data-im="card-text-blocks">
+              <template v-for="item in shownBlocks" :key="item.block.id + '-' + item.index">
+                <h4
+                  v-if="item.block.kind === 'heading'"
+                  class="blk blk-heading"
+                  data-im="card-block-heading"
+                  :data-level="item.block.level ?? 1"
+                  v-html="inlineHtml(blockText(item.block))"
+                ></h4>
+                <ul v-else-if="item.block.kind === 'list'" class="blk blk-list" data-im="card-block-list">
+                  <li v-for="(line, lineIndex) in blockText(item.block).split('\n')" :key="lineIndex">
+                    <span class="marker mono" aria-hidden="true">{{ item.block.ordered ? (lineIndex + 1) + '.' : '•' }}</span>
+                    <span v-html="inlineHtml(line)"></span>
+                  </li>
+                </ul>
+                <blockquote
+                  v-else-if="item.block.kind === 'quote'"
+                  class="blk blk-quote"
+                  data-im="card-block-quote"
+                  v-html="inlineHtml(blockText(item.block))"
+                ></blockquote>
+                <template v-else-if="item.block.kind === 'code'">
+                  <figure class="blk blk-code" data-im="card-block-code">
+                    <figcaption class="code-head">
+                      <span class="mono" data-im="card-code-language">{{ item.block.attrs?.language || '代码' }}</span>
+                      <button
+                        class="code-copy"
+                        type="button"
+                        data-im="card-code-copy"
+                        :data-copy-ok="copyState && copyState.id === item.block.id ? String(copyState.ok) : ''"
+                        :title="copyTitle(item.block)"
+                        @click.stop="copyCode(item.block)"
+                      >
+                        {{ copyState && copyState.id === item.block.id ? (copyState.ok ? '已复制' : '复制失败') : '复制' }}
+                      </button>
+                    </figcaption>
+                    <pre class="mono code-body">{{ item.block.text }}</pre>
+                    <p
+                      v-if="copyState && copyState.id === item.block.id && !copyState.ok"
+                      class="code-hint"
+                      data-im="card-code-copy-hint"
+                      role="status"
+                    >
+                      当前环境没有可用的剪贴板：请选中代码后按 Ctrl+C 手动复制，或再点一次重试。
+                    </p>
+                  </figure>
+                </template>
+                <div v-else-if="item.block.kind === 'link'" class="blk blk-link" data-im="card-block-link">
+                  <button
+                    class="link-open"
+                    type="button"
+                    data-im="card-link-open"
+                    :data-href="linkHref(item.block)"
+                    :data-openable="linkOpenable(item.block) ? '1' : '0'"
+                    :title="linkOpenable(item.block) ? '在系统里打开这个地址' : '这个地址不可打开'"
+                    @click.stop="openLink(item.block)"
+                  >
+                    {{ linkBlockTitle(item.block) }}
+                  </button>
+                  <span class="link-href mono">{{ linkHref(item.block) || '（还没有地址）' }}</span>
+                  <span v-if="!linkOpenable(item.block)" class="link-warn" data-im="card-link-warning">
+                    不可打开：地址不是 http / https / mailto
+                  </span>
+                  <button
+                    class="link-edit"
+                    type="button"
+                    data-im="card-link-edit"
+                    title="在编辑区里改这一行（光标会落到链接所在行）"
+                    @click.stop="editBlockAt(item.line)"
+                  >
+                    编辑
+                  </button>
+                </div>
+                <p
+                  v-else
+                  class="blk blk-paragraph"
+                  data-im="card-block-paragraph"
+                  v-html="inlineHtml(blockText(item.block))"
+                ></p>
+              </template>
+            </div>
+            <div v-else class="blocks-empty">
+              <p class="content empty-text">（还没有内容，选中后用工具栏的「编辑」写下来）</p>
+              <p v-if="(liveDoc.issues ?? []).length" class="doc-issue" data-im="card-doc-issue" role="status">
+                {{ (liveDoc.issues ?? []).join('；') }}
+              </p>
+            </div>
+            <p v-if="linkStatus" class="link-status" :class="'is-' + linkStatus.tone" data-im="card-link-status" role="status">
+              {{ linkStatus.text }}
+            </p>
+          </template>
+          <!--
+            遗留分支（契约 §1.7）：历史 code / url 卡在迁移完成前**仍能显示**，但整体不交付
+            （不进提交载荷、不计入未许可统计），界面必须写明它还没迁移。
+          -->
+          <p v-if="isLegacyCard" class="legacy-note" data-im="card-legacy-note" role="status">
+            旧卡片，尚未迁移：{{ kindLabel }}卡将在下次加载板面时并入统一文字卡；现在不进入提交载荷。
+          </p>
+          <p v-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
           <p v-else-if="card.kind === 'url'" class="content url">
             <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
           </p>
@@ -643,7 +997,15 @@ function cancelEdit() {
     :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
     @pointerdown.stop
   >
-    <label v-if="checkable" class="check" title="本次允许 QIO 查看（默认未勾选）">
+    <!--
+      整卡许可（契约 §2.3）：一张文字卡只有一个许可，覆盖卡内文字、链接、代码。
+      文案必须写明「提交后仍然有效、只有你手动取消才失效」—— 提交不再清勾选。
+    -->
+    <label
+      v-if="checkable"
+      class="check"
+      title="许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）"
+    >
       <input
         type="checkbox"
         :checked="card.checked"
@@ -651,7 +1013,7 @@ function cancelEdit() {
         :data-card-id="card.id"
         @change="emit('toggle', card.id, 'checked')"
       />
-      <span>本次允许 QIO 查看</span>
+      <span>许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）</span>
     </label>
 
     <template v-if="!multi">
@@ -773,6 +1135,113 @@ function cancelEdit() {
   white-space: pre;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+/* ---- 统一文字卡的块渲染（契约 §1.7）：每类块有自己的外观，但仍是一张卡的正文 ---- */
+.blocks { display: flex; flex-direction: column; gap: var(--sp-2); }
+.blk { margin: 0; font-size: var(--fs-base); line-height: var(--lh-base); overflow-wrap: anywhere; }
+.blk-heading { font-family: var(--serif); font-weight: 600; color: var(--text-strong); line-height: var(--lh-tight); }
+.blk-heading[data-level="1"] { font-size: var(--fs-lg); }
+.blk-heading[data-level="2"] { font-size: var(--fs-md); }
+.blk-heading[data-level="3"] { font-size: var(--fs-base); }
+.blk-list { padding-left: var(--sp-4); }
+.blk-list li { display: flex; gap: var(--sp-2); align-items: baseline; }
+.blk-list .marker { flex: none; color: var(--text-muted); }
+.blk-quote {
+  padding-left: var(--sp-3);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+.blk-paragraph { color: var(--text-primary); }
+.blk :deep(code) {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  background: var(--bg-inset);
+  border-radius: var(--r-xs);
+  padding: 0 2px;
+}
+/* 代码块：语言 + 复制按钮在最上面一行；正文自己滚动，绝不横向撑破卡片 */
+.blk-code {
+  margin: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.code-copy {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.code-copy:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.code-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.code-body {
+  margin: 0;
+  padding: var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  white-space: pre;
+  overflow: auto;
+}
+.code-hint { margin: 0; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); }
+/* 链接块：标题（可点开）与地址（等宽，永远看得见） */
+.blk-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); }
+.link-open {
+  font: inherit;
+  font-size: var(--fs-base);
+  color: var(--link);
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.link-open:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.link-open[data-openable="0"] { color: var(--text-secondary); text-decoration: line-through; cursor: default; }
+.link-href { font-size: var(--fs-xs); color: var(--text-faint); overflow-wrap: anywhere; }
+.link-warn { flex: 1 1 100%; font-size: var(--fs-xs); color: var(--danger, var(--text-strong)); }
+.link-edit {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.link-edit:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.link-status { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); line-height: var(--lh-tight); }
+.link-status.is-ok { color: var(--text-secondary); }
+.link-status.is-error { color: var(--danger, var(--text-strong)); }
+.blocks-empty { display: flex; flex-direction: column; gap: var(--sp-1); }
+.empty-text { color: var(--text-muted); }
+.doc-issue { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: var(--lh-tight); }
+/* 遗留 code / url 卡：仍能显示，但必须写明还没迁移、不进提交载荷 */
+.legacy-note {
+  margin: 0 0 var(--sp-2);
+  padding: 2px var(--sp-2);
+  border: 1px dashed var(--warning);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  line-height: var(--lh-tight);
 }
 .content.url a { color: var(--link); overflow-wrap: anywhere; }
 .desc { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
