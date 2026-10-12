@@ -2,8 +2,9 @@
 
 锁定这些边界：
 
-- 只有真的读到正文才是 attachment_text / url_fetched / inline，且 read=true；
+- 只有真的读到正文才是 attachment_text / inline，且 read=true；
 - 文件名、文件说明、网址本身**都不是正文**；
+- 契约 §2.2 新规则：code / url **不再是材料通道**（遗留卡片迁移完成前整体不可见）；
 - 图片 → image_unsupported（当前模型链路没有视觉能力）；
 - 不可读格式 / 读取失败 → unreadable + 可读原因（不假装读过）；
 - max_chars 截断如实置 truncated=true，characters 记截断前的原始字数；
@@ -71,15 +72,13 @@ def _assert_contract_fields(entry: dict) -> None:
 # -- inline：正文就在卡片里 -------------------------------------------------
 
 
-def test_inline_text_and_code_are_the_body(db_conn, svc, tmp_path):
+def test_inline_text_card_is_the_body(db_conn, svc, tmp_path):
+    """契约 §2.2 新规则：文字卡的正文 = 块序列纯文本（代码正文与链接地址都在里面）。"""
     note = models.new_card("text", "把这三个文件按时间排序", checked=True)
-    code = models.new_card("code", "print('hi')", meta={"language": "python"})
-    state = _state(note, code)
-
     entries = materials.resolve_materials(
-        db_conn, state=state, cards=[note, code], attachments=svc
+        db_conn, state=_state(note), cards=[note], attachments=svc
     )
-    assert [entry["cardId"] for entry in entries] == [note["id"], code["id"]]
+    assert [entry["cardId"] for entry in entries] == [note["id"]]
 
     text_entry = _by_card(entries, note["id"])
     _assert_contract_fields(text_entry)
@@ -88,10 +87,6 @@ def test_inline_text_and_code_are_the_body(db_conn, svc, tmp_path):
     assert text_entry["text"] == "把这三个文件按时间排序"
     assert text_entry["characters"] == len("把这三个文件按时间排序")
     assert text_entry["bytes"] == len("把这三个文件按时间排序".encode("utf-8"))
-
-    code_entry = _by_card(entries, code["id"])
-    assert code_entry["source"] == "inline" and code_entry["text"] == "print('hi')"
-    assert any("python" in note for note in code_entry["notes"])
 
 
 def test_cards_can_be_given_as_ids_and_unchecked_note_is_skipped(db_conn, svc):
@@ -272,33 +267,21 @@ def test_file_card_with_image_extension_is_image_unsupported(db_conn, svc, tmp_p
     assert entry["source"] == "image_unsupported" and entry["read"] is False
 
 
-# -- URL：地址不等于正文 ---------------------------------------------------
+# -- 遗留 code / url：不再是材料通道（契约 §2.2 新规则） ---------------------
 
 
-def test_url_card_without_body_is_address_only(db_conn, svc):
-    card = models.new_card("url", "https://example.com/a", meta={"url": {"href": "https://example.com/a"}})
-    entry = materials.resolve_materials(
-        db_conn, state=_state(card), cards=[card], attachments=svc
-    )[0]
-    assert entry["source"] == "url_address_only"
-    assert entry["read"] is False and entry["text"] == ""
-    assert entry["characters"] == 0
-    assert "没有抓到网页正文" in entry["reason"]
-
-
-def test_url_card_with_registered_body_is_fetched(db_conn, svc):
-    card = models.new_card(
+def test_legacy_code_and_url_cards_are_not_materials(db_conn, svc):
+    """旧规则「code / url 材料默认可见」已取消：迁移完成前它们整体不可见、不进材料。"""
+    code = models.new_card("code", "print('hi')", meta={"language": "python"})
+    url = models.new_card(
         "url",
         "https://example.com/a",
         meta={"url": {"href": "https://example.com/a", "content": "页面正文第一段"}},
     )
-    entry = materials.resolve_materials(
-        db_conn, state=_state(card), cards=[card], attachments=svc
-    )[0]
-    assert entry["source"] == "url_fetched"
-    assert entry["read"] is True
-    assert entry["text"] == "页面正文第一段"
-    assert entry["characters"] == len("页面正文第一段")
+    entries = materials.resolve_materials(
+        db_conn, state=_state(code, url), cards=[code, url], attachments=svc
+    )
+    assert entries == []
 
 
 # -- 截断要如实 -------------------------------------------------------------

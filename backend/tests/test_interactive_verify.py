@@ -420,7 +420,9 @@ def test_failed_submit_keeps_changes_and_checks_and_does_not_advance_baseline(
 
     retry = harness.submit().json()
     assert retry["status"] == "succeeded"
-    assert retry["checkedCleared"] == [note["id"]]
+    # 契约 §2.2 新规则：提交不再取消勾选；checkedCleared 恒为空数组，整体许可持续有效
+    assert retry["checkedCleared"] == []
+    assert harness.state()["state"]["cards"][0]["checked"] is True
     assert harness.state()["baseline"] is not None
 
 
