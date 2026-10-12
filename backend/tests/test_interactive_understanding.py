@@ -27,6 +27,7 @@ import pytest
 
 from agent.adapters.fake import FakeStreamAdapter, StreamScript
 from agent.interactive import board_store, models, submission as submission_module
+from agent.interactive import text_card
 from agent.interactive import understanding as u
 
 BOARD = models.DEFAULT_BOARD_ID
@@ -137,21 +138,17 @@ def fake_materials(monkeypatch):
         items = []
         for card in state.get("cards", []):
             kind = card.get("kind")
-            if kind not in _material_kinds():
-                continue
             meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
-            name = meta.get("name") or meta.get("title") or card.get("content") or card.get("id")
-            if kind == "url":
-                items.append({
-                    "id": card["id"],
-                    "cardId": card["id"],
-                    "kind": kind,
-                    "name": name,
-                    "source": "url_address_only",
-                    "text": "",
-                    "chars": 0,
-                })
+            # 测试用模拟：这张可见卡**没有**材料条目（材料解析模块降级 / 解析失败）。
+            # 契约 §2.2 之后「可见卡」与「材料」在正常路径上重合，所以这个分支只能这样构造，
+            # 用来验证理解链路仍然拒绝「把非材料卡当材料依据」。
+            if meta.get("materialUnavailable"):
                 continue
+            # 2026-10-12 起（契约 §2.2）：材料通道 = **文字卡（整卡许可）** + 文件 / 图片；
+            # 链接与代码没有默认可见通道，旧 code / url 卡不再出现在材料里。
+            if kind not in ("text",) + _material_kinds():
+                continue
+            name = meta.get("name") or meta.get("title") or card.get("content") or card.get("id")
             if kind == "image":
                 items.append({
                     "id": card["id"],
@@ -163,7 +160,11 @@ def fake_materials(monkeypatch):
                     "chars": 0,
                 })
                 continue
-            text = str(card.get("content") or "")
+            if kind == "text":
+                # 文字卡：整卡许可为真时，正文 = 块序列纯文本（含链接地址与代码正文）
+                text = text_card.blocks_to_text(text_card.doc_from_card(card))
+            else:
+                text = str(card.get("content") or "")
             items.append({
                 "id": card["id"],
                 "cardId": card["id"],
@@ -243,7 +244,8 @@ def _intent_payload(operations, *, ref: str = "c_file", **overrides) -> dict:
 async def test_intent_understanding_creates_intents(db_conn, fake_materials, intents_stub):
     cards = [
         _card("c_file", "file", "甲材料正文：方案 A 的成本更高", meta={"name": "甲.txt"}),
-        _card("c_code", "code", "print(1)", meta={"language": "python"}),
+        # 2026-10-12 起：第二份材料是**文字卡**（整卡许可），链接与代码没有默认可见通道
+        _card("c_code", "text", "乙材料正文：方案 B 的工期更长", checked=True),
         _card("c_note", "text", "请比较这两份材料并给出差异", checked=True),
         _card("c_unchecked", "text", NOWHERE, checked=False),
         _card("c_hidden", "file", NOWHERE, hidden=True, meta={"name": "隐藏.txt"}),
@@ -289,8 +291,10 @@ async def test_intent_understanding_creates_intents(db_conn, fake_materials, int
     assert ctx["requirement"]["note"] == "请特别关注成本一项"
     assert ctx["honesty"]["expressionsSource"] == "submission"
     assert set(ctx["visibleCardIds"]) == {"c_file", "c_code", "c_note"}
-    assert {m["cardId"] for m in ctx["materials"]} == {"c_file", "c_code"}
+    # 已许可的文字卡（含那条获准要求本身）都是材料：文字卡是唯一的字符内容材料通道
+    assert {m["cardId"] for m in ctx["materials"]} == {"c_file", "c_code", "c_note"}
     assert any("甲材料正文" in str(m.get("text")) for m in ctx["materials"])
+    assert any("乙材料正文" in str(m.get("text")) for m in ctx["materials"])
 
 
 # --- 2) 不是固定模板：换材料 / 换要求 → 上下文与产出都变 --------------------
@@ -320,8 +324,9 @@ async def test_context_and_output_change_with_submission(db_conn, fake_materials
     second = await _save_and_submit(
         db_conn,
         [
-            _card("c_b1", "code", "def check(): return True"),
-            _card("c_b2", "url", "https://example.invalid/spec", meta={"title": "规格说明"}),
+            # 2026-10-12 起：链接与代码没有默认可见通道，两份材料改用文字卡（整卡许可）
+            _card("c_b1", "text", "def check(): return True", checked=True),
+            _card("c_b2", "text", "规格说明：https://example.invalid/spec", checked=True),
             _card("c_b3", "text", "这两份内容不需要现在处理，先放着", checked=True),
         ],
     )
@@ -339,10 +344,11 @@ async def test_context_and_output_change_with_submission(db_conn, fake_materials
     assert set(second_ctx["visibleCardIds"]) == {"c_b1", "c_b2", "c_b3"}
     assert "请比较这两份材料的风险" in first_ctx["requirement"]["text"]
     assert "先放着" in second_ctx["requirement"]["text"]
-    assert {m["cardId"] for m in first_ctx["materials"]} == {"c_a1", "c_a2"}
-    assert {m["cardId"] for m in second_ctx["materials"]} == {"c_b1", "c_b2"}
+    assert {m["cardId"] for m in first_ctx["materials"]} == {"c_a1", "c_a2", "c_a3"}
+    assert {m["cardId"] for m in second_ctx["materials"]} == {"c_b1", "c_b2", "c_b3"}
     assert first_ctx["materials"] != second_ctx["materials"]
-    assert second_ctx["materials"][1]["source"] == "url_address_only"
+    # 2026-10-12 起：链接与代码没有默认可见通道，材料只有 inline（文字卡）这一种字符来源
+    assert {m["source"] for m in second_ctx["materials"]} == {"inline"}
     # 上下文不同，产出也必须不同：不是套模板
     assert first_done["output"]["kind"] == "intent"
     assert second_done["output"]["kind"] == "no_action"
@@ -443,7 +449,14 @@ async def test_clarification_and_no_action_create_no_intents(
 async def _board_with_scope(conn) -> dict:
     cards = [
         _card("c_file", "file", "甲材料正文", meta={"name": "甲.txt"}),
-        _card("c_code", "code", "print(1)"),
+        # 可见但**没有**材料条目的卡（模拟材料解析未覆盖它）：验证「材料 id 不在解析结果里」
+        _card(
+            "c_nomat",
+            "text",
+            "这张卡没有对应的材料条目",
+            checked=True,
+            meta={"materialUnavailable": True},
+        ),
         _card("c_note", "text", "请处理这两份材料", checked=True),
         _card("c_hidden", "file", NOWHERE, hidden=True, meta={"name": "隐藏.txt"}),
     ]
@@ -465,7 +478,7 @@ INVALID_CASES = [
         "材料 id 不在解析结果里",
         _intent_payload(
             [{"op": "add_reply_card", "content": "结论"}],
-            basis=[{"cardId": "c_note", "role": "material", "version": "v1"}],
+            basis=[{"cardId": "c_nomat", "role": "material", "version": "v1"}],
         ),
         "不在本次解析出的材料里",
     ),
@@ -627,7 +640,10 @@ async def test_material_honesty_records_truncation_and_unread(db_conn, fake_mate
     result = await _save_and_submit(
         db_conn,
         [
-            _card("c_long", "code", long_text, meta={"language": "text"}),
+            # 2026-10-12 起：长正文用**文字卡**（整卡许可）；图片是「可见但没有读到内容」的诚实来源；
+            # 旧 url 卡留在板面上，但没有默认可见通道，不会进材料。
+            _card("c_long", "text", long_text, checked=True, meta={"name": "长文本"}),
+            _card("c_img", "image", "", meta={"name": "示意图.png"}),
             _card("c_url", "url", "https://example.invalid/page", meta={"title": "网页地址"}),
             _card("c_note", "text", "请整理这些材料", checked=True),
         ],
@@ -637,14 +653,18 @@ async def test_material_honesty_records_truncation_and_unread(db_conn, fake_mate
 
     assert context["limits"]["truncated"] is True
     assert context["limits"]["unreadRanges"]
+    material_ids = {m["cardId"] for m in context["materials"]}
+    assert "c_url" in material_ids, "旧 url 卡迁移成文字卡后随整卡许可一起交付（契约 §2.1）"
+    migrated_url = [m for m in context["materials"] if m["cardId"] == "c_url"][0]
+    assert "https://example.invalid/page" in migrated_url["text"], "链接地址在整卡材料里"
     truncated = [m for m in context["materials"] if m["cardId"] == "c_long"][0]
     assert truncated["truncated"] is True
     assert len(truncated["text"]) <= u.MAX_MATERIAL_CHARS
     assert context["honesty"]["complete"] is False
-    assert context["honesty"]["unreadSources"]["url_address_only"] == 1
+    assert context["honesty"]["unreadSources"]["image_unsupported"] == 1
     assert "未" in context["honesty"]["claim"]
     notes = "；".join(context["honesty"]["notes"])
-    assert "只拿到地址" in notes
+    assert "没有视觉能力" in notes
     assert "其余未读取" in notes
     assert context["limits"]["usedChars"] <= u.MAX_CONTEXT_CHARS
 
