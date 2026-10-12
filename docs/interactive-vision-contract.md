@@ -55,3 +55,46 @@
 `backend/tests/test_interactive_vision.py` 锁死：真实字节与 data URL 一致、无视觉时如实降级、
 没有附件 / 取不到附件 / 超过上限各自的原因、不可见卡片不交付、纯文本形状不变、多模态形状正确、
 上下文闸门（`vision=False` 时既无 `imageParts` 也无 `image_delivered`）、落库上下文可重建内容块。
+
+---
+
+## 8. 音频与视频（2026-10-12 扩展）
+
+§1–§7 只讲图片。音频与视频沿用**同一套原则**：能力以本次真实链路为准、拿不到就如实降级、
+不编造、不把「接口能接受」当成「模型能理解」。
+
+### 8.1 适配器能力位（唯一事实来源）
+
+`agent/adapters/base.py`：
+
+| 能力位 | 含义 |
+| --- | --- |
+| `supports_images` | 图片字节可作为内容块交付（已有） |
+| `supports_audio` | 音频字节可作为内容块交付（新增） |
+| `supports_video` | 视频字节可作为内容块交付（新增；绝大多数链路为 False） |
+| `audio_transcription` | 派生转写通道标识（如 `openai.audio.transcriptions`）；None = 没有（新增） |
+
+### 8.2 材料条目的诚实事实（`source` 取值）
+
+| source | `read` | 含义与必须附带的信息 |
+| --- | --- | --- |
+| `image_delivered` | true | 图片真实字节已交付（§3 已有） |
+| `image_unsupported` | false | 链路没有视觉能力 / 取不到字节（`reason` 分四种，§2） |
+| `audio_delivered` | true | 音频真实字节已交付 |
+| `audio_transcribed` | true | 音频经派生转写得到文字：必须带 `transcript`、`range`（起止秒）与 `engine`（提供方 + 模型） |
+| `audio_unsupported` | false | 既没有音频能力也没有转写通道：`reason` 说明是哪一种（含「本机没有可用转换程序」） |
+| `video_delivered` | true | 视频真实字节已交付 |
+| `video_sampled` | true | 视频按时间点抽样帧交付：`frames` 每项带 `at`（秒），`reason` 必须写明「抽样，不是逐帧」 |
+| `video_unsupported` | false | 既没有视频能力也没有可用的抽样通道：`reason` 说明是哪一种 |
+
+每条都带：`read`、`reason`、`range`（音视频的起止秒，可为空）、`frames`（视频抽样才有）、
+`engine`（派生处理实际用了哪个提供方与模型）、`attachmentId` 与 `version`。
+
+### 8.3 不可越过的诚实边界
+
+* 转写文本**只代表实际得到的文字**：不得据此声称理解了语气、音乐、说话人情绪或全部环境声音。
+* 抽样帧**不代表**逐帧读取完整视频；材料与界面都要写明抽样点。
+* 没有可用转换程序时，说明「这台机器上没有可用的转换程序，也没有随包提供」，
+  **不要**退化成笼统的「不支持」。
+* 未许可的文字卡、隐藏与删除的卡片**不通过任何派生结果绕过**范围判断。
+* 「已交付模型」是**请求侧的事实**；「模型理解正确」是**另一个结论**，两者不混。
