@@ -6,7 +6,6 @@
 | --- | --- |
 | 基线标签 | `v0.2.1` |
 | 基线 SHA | `65cdd7e3759fe44e12c6802a0cf41777bfc2e086`（`git ls-remote --tags origin v0.2.1` 与本地一致，**未**改用 main）|
-| 契约基提交 | `dacc7cb`（分支 `feat/unified-cards-media-preview-021-base`）|
 | 集成分支 | `feat/unified-cards-media-preview-021` |
 | 四路子分支 | `feat/uc-01-card-core`（`56a4e7c`）· `feat/uc-02-preview-core`（`9239f6b`）· `feat/uc-03-media-chat`（`f585c27`）· `feat/uc-04-layout-preview-ui`（`4f0a5ed`）|
 | 契约冻结提交 | `dacc7cb`（「冻结统一文字卡/持续许可/卡片内预览/多媒体契约 + 内容模型骨架」，在 base 分支上）|
