@@ -30,7 +30,7 @@ import json
 import sqlite3
 import zipfile
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from agent.interactive import models, text_card
 from agent.services import media
@@ -221,6 +221,7 @@ def resolve_media(
     supports_audio: bool = False,
     supports_video: bool = False,
     audio_transcription: str | None = None,
+    transcriber: Callable[..., dict] | None = None,
     work_dir: Path | str | None = None,
     max_frames: int = DEFAULT_MEDIA_SAMPLE_FRAMES,
     max_bytes: int = media.MAX_MEDIA_BYTES,
@@ -280,6 +281,7 @@ def resolve_media(
             supports_audio=bool(supports_audio),
             supports_video=bool(supports_video),
             audio_transcription=audio_transcription,
+            transcriber=transcriber,
             version=str(candidate.get("version") or ""),
             frames_wanted=frames_wanted,
             cap_notes=notes_about_cap,
@@ -335,6 +337,7 @@ def _media_candidate_entry(
     supports_audio: bool,
     supports_video: bool,
     audio_transcription: str | None,
+    transcriber: Callable[..., dict] | None,
     version: str,
     frames_wanted: int,
     cap_notes: list[str],
@@ -368,7 +371,8 @@ def _media_candidate_entry(
         entry, blocks = _audio_entry(
             card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
             supports_audio=bool(supports_audio), audio_transcription=audio_transcription,
-            version=version, limit_bytes=limit_bytes,
+            transcriber=transcriber, version=version, limit_bytes=limit_bytes,
+            work_dir=work_dir,
         )
         return entry, blocks, None
     return _video_entry(
@@ -419,8 +423,10 @@ def _audio_entry(
     shown: str,
     supports_audio: bool,
     audio_transcription: str | None,
+    transcriber: Callable[..., dict] | None,
     version: str,
     limit_bytes: int,
+    work_dir: Path | None = None,
 ) -> tuple[dict, list[Any]]:
     """音频：交付字节 / 派生转写 / 如实说不可用（三选一，不许含糊）。"""
     duration: float | None = None
@@ -492,6 +498,13 @@ def _audio_entry(
             ],
         )
 
+    if transcriber is not None:
+        return _audio_transcribed_entry(
+            card, path, probe=probe, duration=duration, transcriber=transcriber,
+            bytes_=bytes_, attachment_id=attachment_id, shown=shown, version=version,
+            channel=audio_transcription or "", limit_bytes=limit_bytes, work_dir=work_dir,
+        )
+
     if audio_transcription:
         return (
             _media_entry(
@@ -511,11 +524,9 @@ def _audio_entry(
         _media_entry(
             card, source="audio_unsupported", label=shown, version=version, read=False,
             bytes_=bytes_,
-            reason="当前模型链路既没有音频能力、也没有派生转写通道："
-            "本次没有把音频交给模型，也没有得到任何转写文字"
-            + (f"（另外：{probe['reason']}）" if probe.get("reason") else ""),
+            reason=_no_audio_channel_reason(probe),
             notes=[
-                "要读音频内容：换一条声明了音频能力或转写通道的链路，"
+                "要读音频内容：给凭据打 transcription 用途标签（或让当前链路凭据本身可转写），"
                 "或者把结论写在注释里让 QIO 读文字",
                 "本机若没有可用的转换程序，转写所需的音频片段同样抽不出来",
             ],
@@ -547,6 +558,233 @@ def _transcription_blocked_reason(
             "本次没有转写（不截一半就当成完整内容）"
         )
     return f"有转写通道（{channel}），但这次没有得到转写文本：不编造文字"
+
+
+def _no_audio_channel_reason(probe: dict) -> str:
+    """没有音频能力、也没有**解析到凭据的**转写通道：原因必须点名「转写凭据」。"""
+    return (
+        "当前模型链路既没有音频能力、也没有可用的转写通道"
+        "（没有转写凭据：给凭据打 transcription 用途标签，或让当前链路凭据本身可转写）："
+        "本次没有把音频交给模型，也没有得到任何转写文字"
+        + (f"（另外：{probe['reason']}）" if probe.get("reason") else "")
+    )
+
+
+def _audio_transcribed_entry(
+    card: dict,
+    path: Path,
+    *,
+    probe: dict,
+    duration: float | None,
+    transcriber: Callable[..., dict],
+    bytes_: int,
+    attachment_id: str | None,
+    shown: str,
+    version: str,
+    channel: str,
+    limit_bytes: int,
+    work_dir: Path | None,
+) -> tuple[dict, list[Any]]:
+    """真的走转写通道：抽出音频片段 → 交给端点 → **只回传真的拿到的文字**。
+
+    失败路径分得很清楚：
+
+    * 抽不出音频片段 / 读不出片段 → 说明缺的是哪一环（没有转换程序、读不到文件）；
+    * 有凭据但调用失败 → 带上端点的真实原因；
+    * 端点回了空文字 → 如实说「没有得到文字」。
+
+    任何一条失败路径都**不写** ``transcript``（不编造文字）。
+    """
+    if bytes_ <= 0 or bytes_ > limit_bytes:
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=f"音频 {human_size(bytes_)} 超过交付上限 {human_size(limit_bytes)}："
+                "本次没有抽取音频片段，也没有转写（不截取半段声音，因为半段会给出错的结论）",
+                notes=["要么压缩后再发，要么把结论写在注释里让 QIO 读文字"],
+                attachment_id=attachment_id,
+                engine={"provider": channel, "model": ""},
+            ),
+            [],
+        )
+    work = Path(work_dir) if work_dir is not None else _fallback_work_dir(card)
+    fragment = work / "transcribe.wav"
+    extracted = media.extract_audio(path, fragment, max_bytes=limit_bytes)
+    if not extracted.get("path"):
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason="有转写凭据，但这台机器上没有可用的转换程序，抽不出转写所需的音频片段："
+                + str(extracted.get("reason") or "没有说明"),
+                notes=["转写失败就不编造文字：本次没有得到任何转写文本"],
+                attachment_id=attachment_id,
+                engine={"provider": channel, "model": ""},
+            ),
+            [],
+        )
+    try:
+        raw = Path(extracted["path"]).read_bytes()
+    except OSError as exc:
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=f"读不出抽好的音频片段（{type(exc).__name__}）：本次没有调用转写端点，"
+                "也没有得到任何转写文字",
+                notes=["转写失败就不编造文字：本次没有得到任何转写文本"],
+                attachment_id=attachment_id,
+                engine={"provider": channel, "model": ""},
+            ),
+            [],
+        )
+    try:
+        result = transcriber(
+            raw, filename=fragment.name, duration=float(extracted.get("seconds") or 0.0)
+        )
+    except Exception as exc:  # noqa: BLE001 - 调用失败必须如实带原因，绝不编造文字
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=f"有转写凭据，但这次调用没有成功：{redact_text(str(exc))}",
+                notes=["转写失败就不编造文字：本次没有得到任何转写文本"],
+                attachment_id=attachment_id,
+                engine={"provider": channel, "model": ""},
+            ),
+            [],
+        )
+
+    transcript = str((result or {}).get("text") or "")
+    engine = dict((result or {}).get("engine") or {})
+    if not transcript.strip():
+        return (
+            _media_entry(
+                card, source="audio_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason="转写通道这次没有给出任何文字：本次没有得到转写文本（不编造内容）",
+                notes=["转写失败就不编造文字：本次没有得到任何转写文本"],
+                attachment_id=attachment_id,
+                engine=engine or {"provider": channel, "model": ""},
+            ),
+            [],
+        )
+
+    start, end, notes = _transcription_range(probe=probe, duration=duration, extracted=extracted)
+    notes.append(
+        f"转写文字只代表这次真的从音频里得到的文字（{shown}）："
+        "不代表语气 / 音乐 / 全部环境声音都被读到了"
+    )
+    if extracted.get("reason"):
+        notes.append(str(extracted["reason"]))
+    return (
+        _media_entry(
+            card, source="audio_transcribed", label=shown, version=version, read=True,
+            bytes_=bytes_, reason="",
+            notes=notes,
+            attachment_id=attachment_id,
+            engine=engine,
+            frame_range={"start": start, "end": end},
+            transcript=transcript,
+        ),
+        [],
+    )
+
+
+def _transcription_range(
+    *, probe: dict, duration: float | None, extracted: dict
+) -> tuple[float | None, float | None, list[str]]:
+    """转写覆盖的时段**如实**给出：超过上限时**不静默截断**，必须写明只转了前 N 秒。"""
+    notes: list[str] = []
+    seconds = float(extracted.get("seconds") or 0.0)
+    start = 0.0 if seconds > 0 else None
+    end = seconds if seconds > 0 else None
+    cap = float(media.MAX_TRANSCRIBE_SECONDS)
+    if duration is not None and duration > cap:
+        notes.append(
+            f"这份音频 {duration:g}s 超过转写时长上限 MAX_TRANSCRIBE_SECONDS={cap:g}s："
+            f"本次只转写了前 {cap:g}s（后面的内容没有转写，不做静默截断）"
+        )
+        end = min(cap, seconds) if seconds > 0 else cap
+    elif probe.get("reason"):
+        notes.append(f"元数据读不全（{probe['reason']}）：时段按实际抽到的片段记，不猜")
+    return start, end, notes
+
+
+def transcriber_for_adapter(adapter: Any, *, model: str | None = None) -> Callable[..., dict] | None:
+    """按**本次运行**解析出来的适配器能力，给出一个同步的转写调用器（没有就返回 None）。
+
+    * ``adapter.audio_transcription`` 为空 → None：调用方据此如实降级成
+      「没有转写凭据」，绝不静默换成用户没配置的外部服务；
+    * 有通道 → 返回 ``transcriber(bytes, filename=..., duration=...) -> dict``，
+      内部把适配器的 async 入口在**工作线程**里跑完（材料解析本来就在工作线程，
+      那里没有事件循环在跑，asyncio.run 是安全的）。
+
+    ``model`` 只是调用方拿到的凭据模型名（**不硬编码**）：适配器自己按路由里的模型发请求。
+    """
+    if not getattr(adapter, "audio_transcription", None):
+        return None
+    transcribe = getattr(adapter, "transcribe_audio", None)
+    if not callable(transcribe):
+        return None
+
+    def _call(data: bytes, *, filename: str = "audio.wav", duration: float = 0.0) -> dict:
+        import asyncio
+
+        result = asyncio.run(transcribe(bytes(data), filename=str(filename or "audio.wav")))
+        payload = dict(result or {})
+        engine = dict(payload.get("engine") or {})
+        if not engine.get("model") and model:
+            # 适配器没报模型名时才用调用方拿到的凭据模型名补上（仍然不是硬编码）。
+            engine["model"] = str(model)
+        payload["engine"] = engine
+        payload["duration"] = float(duration or 0.0)
+        return payload
+
+    return _call
+
+
+def attach_transcripts(messages: list[Any], entries: Iterable[dict]) -> list[Any]:
+    """把**真的拿到**的转写文字挂到本轮的模型请求上（契约 §4.4）。
+
+    只处理 source == audio_transcribed 且 transcript 非空的条目：失败路径
+    （audio_unsupported）一个字都不加 —— 不编造语音内容。文字放在首条 user 消息里，
+    与「音频没有字节能力时走派生转写」这条口径一致。
+    """
+    texts: list[str] = []
+    for entry in entries or []:
+        if str(entry.get("source") or "") != "audio_transcribed":
+            continue
+        transcript = str(entry.get("transcript") or "").strip()
+        if not transcript:
+            continue
+        label = str(entry.get("label") or "音频")
+        engine = entry.get("engine") if isinstance(entry.get("engine"), dict) else {}
+        provider = str((engine or {}).get("provider") or "")
+        model = str((engine or {}).get("model") or "")
+        who = "/".join([part for part in (provider, model) if part])
+        range_ = entry.get("range") if isinstance(entry.get("range"), dict) else {}
+        start = range_.get("start") if isinstance(range_, dict) else None
+        end = range_.get("end") if isinstance(range_, dict) else None
+        where = ""
+        if start is not None or end is not None:
+            head_start = start if start is not None else "开头"
+            head_end = end if end is not None else "结尾"
+            where = "（时段 " + str(head_start) + "–" + str(head_end) + " 秒）"
+        head = "【音频转写】" + label + where
+        if who:
+            head += " · 转写引擎：" + who
+        texts.append(head + chr(10) + transcript)
+    if not texts:
+        return messages
+    block = (chr(10) + chr(10)).join(texts) + chr(10) + "（以上是转写通道真的返回的文字，只代表实际得到的语音内容）"
+    for message in messages:
+        if getattr(message, "role", "") == "user":
+            content = getattr(message, "content", "") or ""
+            message.content = (content + chr(10) + chr(10) + block) if content else block
+            return messages
+    return messages
 
 
 def _video_entry(
@@ -750,8 +988,12 @@ def _media_entry(
     engine: dict | None = None,
     frame_range: dict | None = None,
     frames: list[dict] | None = None,
+    transcript: str | None = None,
 ) -> dict:
-    """音视频材料的统一回执：`read` / `reason` / `range` / `frames` / `engine` 都在。"""
+    """音视频材料的统一回执：`read` / `reason` / `range` / `frames` / `engine` 都在。
+
+    `transcript` **只有真的拿到转写文字时**才带值（`audio_transcribed`）；其余情况是 None。
+    """
     return _entry(
         card,
         source=source,
@@ -766,6 +1008,7 @@ def _media_entry(
         engine=dict(engine or {}),
         range=dict(frame_range or {"start": None, "end": None}),
         frames=list(frames or []),
+        transcript=transcript,
     )
 
 
@@ -1492,4 +1735,87 @@ def _entry(
     if delivered is not None:
         entry["deliveredCharacters"] = int(delivered)
     entry.update(extra)
+    # 转写文字只代表**实际得到的文字**（契约 §4.4）：没有就是 None，不写空壳。
+    entry.setdefault("transcript", None)
     return entry
+
+
+
+# ---------------------------------------------------------------------------
+# 转写通道的接线辅助（契约 §4.2 / §4.4）
+# ---------------------------------------------------------------------------
+
+
+def transcriber_for_adapter(adapter: Any, *, model: str | None = None) -> Callable[..., dict] | None:
+    """按**本次运行**解析出来的适配器能力，给出一个同步的转写调用器（没有就返回 None）。
+
+    * ``adapter.audio_transcription`` 为空 → None：调用方据此如实降级成
+      「没有转写凭据」，绝不静默换成用户没配置的外部服务；
+    * 有通道 → 返回 ``transcriber(bytes, filename=..., duration=...) -> dict``，
+      内部把适配器的 async 入口在**工作线程**里跑完（材料解析本来就在工作线程，
+      那里没有事件循环在跑，asyncio.run 是安全的）。
+
+    ``model`` 只是调用方拿到的凭据模型名（**不硬编码**）：适配器自己按路由里的模型发请求。
+    """
+    if not getattr(adapter, "audio_transcription", None):
+        return None
+    transcribe = getattr(adapter, "transcribe_audio", None)
+    if not callable(transcribe):
+        return None
+
+    def _call(data: bytes, *, filename: str = "audio.wav", duration: float = 0.0) -> dict:
+        import asyncio
+
+        result = asyncio.run(transcribe(bytes(data), filename=str(filename or "audio.wav")))
+        payload = dict(result or {})
+        engine = dict(payload.get("engine") or {})
+        if not engine.get("model") and model:
+            # 适配器没报模型名时才用调用方拿到的凭据模型名补上（仍然不是硬编码）。
+            engine["model"] = str(model)
+        payload["engine"] = engine
+        payload["duration"] = float(duration or 0.0)
+        return payload
+
+    return _call
+
+
+def attach_transcripts(messages: list[Any], entries: Iterable[dict]) -> list[Any]:
+    """把**真的拿到**的转写文字挂到本轮的模型请求上（契约 §4.4）。
+
+    只处理 source == audio_transcribed 且 transcript 非空的条目：失败路径
+    （audio_unsupported）一个字都不加 —— 不编造语音内容。文字放在首条 user 消息里，
+    与「音频没有字节能力时走派生转写」这条口径一致。
+    """
+    texts: list[str] = []
+    for entry in entries or []:
+        if str(entry.get("source") or "") != "audio_transcribed":
+            continue
+        transcript = str(entry.get("transcript") or "").strip()
+        if not transcript:
+            continue
+        label = str(entry.get("label") or "音频")
+        engine = entry.get("engine") if isinstance(entry.get("engine"), dict) else {}
+        provider = str((engine or {}).get("provider") or "")
+        model = str((engine or {}).get("model") or "")
+        who = "/".join([part for part in (provider, model) if part])
+        range_ = entry.get("range") if isinstance(entry.get("range"), dict) else {}
+        start = range_.get("start") if isinstance(range_, dict) else None
+        end = range_.get("end") if isinstance(range_, dict) else None
+        where = ""
+        if start is not None or end is not None:
+            head_start = start if start is not None else "开头"
+            head_end = end if end is not None else "结尾"
+            where = "（时段 " + str(head_start) + "–" + str(head_end) + " 秒）"
+        head = "【音频转写】" + label + where
+        if who:
+            head += " · 转写引擎：" + who
+        texts.append(head + chr(10) + transcript)
+    if not texts:
+        return messages
+    block = (chr(10) + chr(10)).join(texts) + chr(10) + "（以上是转写通道真的返回的文字，只代表实际得到的语音内容）"
+    for message in messages:
+        if getattr(message, "role", "") == "user":
+            content = getattr(message, "content", "") or ""
+            message.content = (content + chr(10) + chr(10) + block) if content else block
+            return messages
+    return messages
