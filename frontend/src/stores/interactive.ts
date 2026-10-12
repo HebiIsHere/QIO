@@ -342,6 +342,43 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 顶部「任务」浮层是否展开 */
   const tasksOpen = ref(false);
   /**
+   * 展开预览的卡片 id（契约 2026-10-12 §3.5 / §3.6）：**只在前端内存**的查看状态。
+   *
+   * 展开、让位、收起都只是「这张卡这一帧画多大」：
+   * 不写板面状态（board.cards 的 x/y/w/h 不动）、不产生表达（连 layout_only 都没有）、
+   * 不触发模型理解 / 任务暂停、不排保存、不发请求。让位几何由
+   * `interactive/cardLayout.ts` 的纯函数算，这里只保存「哪几张卡在展开」。
+   */
+  const expandedCards = ref<Set<string>>(new Set());
+
+  /** 展开 / 收起这张卡的预览主体；返回切换后的状态（true = 现在展开着）。 */
+  function toggleCardPreview(cardId: string): boolean {
+    if (!cardId) return false;
+    const next = new Set(expandedCards.value);
+    const opened = !next.has(cardId);
+    if (opened) next.add(cardId);
+    else next.delete(cardId);
+    expandedCards.value = next;
+    return opened;
+  }
+
+  /** 收起所有展开的预览；返回这一次真的收起了几张。 */
+  function collapseAllPreviews(): number {
+    const count = expandedCards.value.size;
+    if (count) expandedCards.value = new Set();
+    return count;
+  }
+
+  /** 这张卡现在是否展开着预览（模板里读它才会跟着 Set 变化重渲染）。 */
+  function isCardPreviewExpanded(cardId: string): boolean {
+    return expandedCards.value.has(cardId);
+  }
+
+  /** 展开顺序 = 让位处理顺序：直接喂给 planExpandedLayout 的 expanded。 */
+  const expandedCardIds = computed<string[]>(() => [...expandedCards.value]);
+  /** 展开中的预览数量（界面据此显示「收起全部预览」）。 */
+  const previewExpandedCount = computed<number>(() => expandedCards.value.size);
+  /**
    * 板面当前的指针模式：工具栏是控制面、画布是执行面，两边共用同一份状态。
    * 这是**查看状态**：切换模式不形成表达、不调用 QIO、不触发保存。
    */
@@ -4152,6 +4189,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     chatOpen,
     batchOpen,
     tasksOpen,
+    // 卡片内预览的展开状态（只在前端内存；契约 2026-10-12 §3.5 / §3.6）
+    expandedCards,
+    expandedCardIds,
+    previewExpandedCount,
+    toggleCardPreview,
+    collapseAllPreviews,
+    isCardPreviewExpanded,
 
     batches,
     listBatches,
