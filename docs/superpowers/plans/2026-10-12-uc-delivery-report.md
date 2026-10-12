@@ -8,7 +8,9 @@
 | 基线 SHA | `65cdd7e3759fe44e12c6802a0cf41777bfc2e086`（`git ls-remote --tags origin v0.2.1` 与本地一致，**未**改用 main）|
 | 契约基提交 | `dacc7cb`（分支 `feat/unified-cards-media-preview-021-base`）|
 | 集成分支 | `feat/unified-cards-media-preview-021` |
-| 四路子分支 | `feat/uc-01-card-core` · `feat/uc-02-preview-core` · `feat/uc-03-media-chat` · `feat/uc-04-layout-preview-ui` |
+| 四路子分支 | `feat/uc-01-card-core`（`56a4e7c`）· `feat/uc-02-preview-core`（`9239f6b`）· `feat/uc-03-media-chat`（`f585c27`）· `feat/uc-04-layout-preview-ui`（`4f0a5ed`）|
+| 契约冻结提交 | `dacc7cb`（「冻结统一文字卡/持续许可/卡片内预览/多媒体契约 + 内容模型骨架」，在 base 分支上）|
+| 集成方式 | 四路子分支各自完成 → 合并回 `feat/unified-cards-media-preview-021-base`（顶端 `1d02747`）→ 再并入集成分支；四路子分支**从未 push**（远端无 `feat/uc-*`）|
 | worktree | 集成 `D:/qio-dev/q021`；子路 `D:/qio-dev/qL1` · `qL2` · `qL3` · `qL4` |
 
 远端基线与本地一致；本轮**没有**合并 main、**没有**发布版本、**只追加迁移 41 / 42 / 43**（历史迁移一字未改，
