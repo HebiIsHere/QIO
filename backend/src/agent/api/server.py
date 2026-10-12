@@ -1690,6 +1690,11 @@ def create_app(
 
     # -- 准备阶段的取消证据（plan §1.1）------------------------------------
 
+    #: bind 完成后留给「取消证据」的调度窗口（任务切换次数，不是时间）。
+    #: 取值的依据：断连消息已经排进请求接收队列时，1 次切换就够；
+    #: 留 4 次是为了覆盖 `asyncio.wait` 与监听任务同一次迭代就绪的次序差异。
+    _CANCEL_EVIDENCE_TICKS = 4
+
     def _prepare_id(request: Request) -> str | None:
         """准备标识（X-QIO-Prepare-Id）：旧客户端不带也能用（缺省 = 只靠断连取消）。"""
         raw = str(request.headers.get("x-qio-prepare-id") or "").strip()
@@ -1705,7 +1710,7 @@ def create_app(
             if message.get("type") == "http.disconnect":
                 return
 
-    async def _prepare_with_cancel(bind_coro, *, turn, prepare_id, request):
+    async def _prepare_with_cancel(bind_coro, *, turn, prepare_id, request, evidence=None, created=None):
         """准备附件，同时把**显式取消**与**真实断连**都当成取消证据（plan §1.1）。
 
         返回 (outcome, cancelled)：
@@ -1721,12 +1726,57 @@ def create_app(
         signal = ctx.turns.prepare_signal(prepare_id)
         if signal is not None:
             watchers.append(asyncio.ensure_future(signal))
+
+        # 取消证据的同步判据（两个可见面）：断连/取消信号的任务已就绪，或这一轮已被取消。
+        # 交给绑定方的 `should_abort` 用：绑定内部 await 文件 I/O 的那段时间里，
+        # 只有同步判据拿得到结论（异步等待要等 bind 返回才有机会跑）。
+        def _cancel_evidence_sync() -> bool:
+            return any(w.done() for w in watchers) or bool(getattr(turn, "cancelled", False))
+
+        if evidence is not None:
+            evidence.clear()
+            evidence.append(_cancel_evidence_sync)
+
+        async def _settle_cancel_evidence() -> bool:
+            """bind 完成之后，再给取消证据一个有界的**调度**窗口。
+
+            为什么必须有这一段（2026-10-12 复现并修）：真 TCP 断连时客户端发的是 FIN，
+            服务端由 socket 事件把 http.disconnect 投进请求的接收队列；而
+            `asyncio.wait(FIRST_COMPLETED)` 在 bind（磁盘拷贝在线程池里完成）先就绪时
+            **立刻返回**，监听任务虽然已经被唤醒、却还没被事件循环跑到 —— 于是
+            `any(w.done())` 看到的是 False，本轮被当成「没被取消」放行并调用了模型
+            （实测：改动前 6/6 都调用模型；改动后 6/6 都判为取消、0 次调用）。
+
+            这里只让出**任务切换**（`sleep(0)`，不引入时间延迟、不轮询网络），
+            检查的是「已经排到队列里的取消证据」：断连消息已到就必然置位、
+            真的没断连则必然超窗返回 False，不会把正常请求误判成取消。
+            """
+            for _ in range(_CANCEL_EVIDENCE_TICKS):
+                if _cancel_evidence_sync():
+                    return True
+                await asyncio.sleep(0)
+            return _cancel_evidence_sync()
+
         try:
             await asyncio.wait({bind_task, *watchers}, return_when=asyncio.FIRST_COMPLETED)
-            if not bind_task.done() and any(w.done() for w in watchers):
-                bind_task.cancel()
+            evidence_now = any(w.done() for w in watchers)
+            if bind_task.done():
+                # bind 先就绪时再让出几次任务切换：取消证据可能已经排在队列里，
+                # 但还没被事件循环跑到（见 _settle_cancel_evidence 的说明）。
+                evidence_now = evidence_now or await _settle_cancel_evidence()
+            cancelled_now = evidence_now
+            if cancelled_now:
+                # 两条取消路径**合并处理**，因为收尾语义只有一种：
+                # bind 必须真的被取消并等到它结束 —— attachments 的整轮补偿
+                # （删克隆行 + 删刚写的副本）挂在 CancelledError 上（见
+                # services/attachments.py::bind_for_turn 的 except BaseException）。
+                # 只取消不等待就会留下无人认领的克隆副本（实测：test_r7 的
+                # `无人认领的克隆副本` 断言当场红）。
+                if not bind_task.done():
+                    bind_task.cancel()
                 with contextlib.suppress(BaseException):
                     await bind_task
+                _reclaim_created_clones(created)
                 return None, True
             return bind_task.result(), False
         finally:
@@ -1751,6 +1801,24 @@ def create_app(
             for task in watchers:
                 if not task.done():
                     task.cancel()
+
+    def _reclaim_created_clones(created: list[str] | None) -> None:
+        """取消落在「克隆已提交、这一轮还没放行」的窗口里时，回收这次新建的副本。
+
+        只删**这次绑定确实新建**的行（重试克隆），不碰既有附件、不碰别的轮次的绑定：
+        - 删除同时清掉 QIO 自己保存的那份副本（purge_copy=True），所以不会留下
+          「无人认领的副本」；
+        - 服务端已经放行过的轮次不会走到这里（那条路上 `cancelled` 为假）。
+        """
+        if not created:
+            return
+        for attachment_id in list(created):
+            try:
+                attachments.delete(attachment_id, purge_copy=True)
+            except Exception:  # noqa: BLE001 - 收尾不得影响取消回执
+                logging.getLogger(__name__).warning(
+                    "取消收尾：回收新建克隆失败 %s", attachment_id, exc_info=True
+                )
 
     def _cancelled_receipt(*, turn, message: str, topic_id, prepare_id) -> dict:
         """取消回执：**如实**说明这一轮没有被受理执行（前端据此不显示「已发送」）。
@@ -1882,6 +1950,12 @@ def create_app(
                     "error": "消息未被接受：持久化失败",
                 },
             )
+        #: 取消证据的**同步**探针：绑定自己的第 1 段与第 3 段之间可能 await 文件 I/O，
+        #: 取消完全可能落在那里 —— 那个窗口里只有同步判据看得见（见 _prepare_with_cancel）。
+        cancel_evidence: list = []
+        #: 这次绑定**新建**的克隆 id：万一取消落在「已经提交、还没放行」的窗口里，
+        #: 由 _prepare_with_cancel 回收（只删这些新建行，不碰既有行与别人的绑定）。
+        created_ids: list[str] = []
         try:
             outcome, cancelled = await _prepare_with_cancel(
                 attachments.bind_for_turn(
@@ -1890,10 +1964,14 @@ def create_app(
                     attachment_ids=explicit_ids,
                     topic_id=topic_id,
                     retry_of_turn_id=retry_of,
+                    should_abort=lambda: bool(cancel_evidence) and cancel_evidence[0](),
+                    created_ids=created_ids,
                 ),
                 turn=turn,
                 prepare_id=prepare_id,
                 request=request,
+                evidence=cancel_evidence,
+                created=created_ids,
             )
         except BaseException:
             # 准备期间出错 / 被取消（客户端断开、服务关闭）：丢弃预留，不留可执行队列项
@@ -2199,6 +2277,9 @@ def create_app(
             intent_id=pending.intent_id if pending else None,
             prepare_id=prepare_id,
         )
+        #: 同 /api/turns：绑定内部 await 文件 I/O 期间的取消，只有同步判据看得见。
+        cancel_evidence: list = []
+        created_ids: list[str] = []
         try:
             outcome, cancelled = await _prepare_with_cancel(
                 attachments.bind_for_turn(
@@ -2207,10 +2288,14 @@ def create_app(
                     attachment_ids=retry_ids,
                     topic_id=record["topic_id"],
                     retry_of_turn_id=turn_id,
+                    should_abort=lambda: bool(cancel_evidence) and cancel_evidence[0](),
+                    created_ids=created_ids,
                 ),
                 turn=turn,
                 prepare_id=prepare_id,
                 request=request,
+                evidence=cancel_evidence,
+                created=created_ids,
             )
         except BaseException:
             ctx.turns.abandon(turn, reason="attachment_prepare_error")

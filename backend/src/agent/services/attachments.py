@@ -1533,6 +1533,8 @@ class AttachmentService:
         message_id: str | None = None,
         topic_id: str | None = None,
         retry_of_turn_id: str | None = None,
+        should_abort: Callable[[], bool] | None = None,
+        created_ids: list[str] | None = None,
     ) -> BindOutcome:
         """把附件绑到这一轮（契约 §1.2 / §1.3 冻结接口，**async**）。
 
@@ -1560,6 +1562,17 @@ class AttachmentService:
           （新 id + 复用已保存副本；原行归属与历史不变）。
 
         message_id 给了就一并写上（受理时即绑定消息，历史页不必再收敛一次）。
+
+        `created_ids`（可选）：本次调用**新建**的附件 id（重试克隆），按发生顺序追加 ——
+        调用方在「接受之后才发现这一轮已被取消」时据此把多出来的副本回收掉（只删自己新建的，
+        绝不碰既有行，也不碰别的轮次的绑定）。
+
+        `should_abort`（可选，同步判据）：**最终接受边界**再问一次「这一轮还要不要」——
+        调用方（`/api/turns` 的准备路径）在客户端断连 / 显式取消时返回 True，本函数就
+        整轮补偿（删克隆行 + 删副本 + 恢复原归属）并如实返回空绑定，绝不让一次已经
+        取消的准备留下「已绑定却无人认领」的副本。第 1 段与第 3 段之间可能 await 文件
+        I/O，取消完全可能落在这段等待里（2026-10-12 实测：`test_r7_disconnect_cancel_verify`
+        的「无人认领的克隆副本」断言就是这么红的）。
         """
         turn = str(turn_id or "").strip()
         if not turn:
@@ -1621,6 +1634,8 @@ class AttachmentService:
                 entry_reference_facts=self._entry_reference_facts(
                     planned, retry_of=retry_of
                 ),
+                should_abort=should_abort,
+                created_ids=created_ids,
             )
 
         wanted = _dedup_ids(attachment_ids)
@@ -1662,6 +1677,8 @@ class AttachmentService:
             retry_of=retry_of,
             outcome=outcome,
             entry_reference_facts=entry_reference_facts,
+            should_abort=should_abort,
+            created_ids=created_ids,
         )
 
     def _entry_carriable(self, att: Attachment) -> bool:
@@ -1794,6 +1811,8 @@ class AttachmentService:
         retry_of: str | None,
         outcome: BindOutcome,
         entry_reference_facts: dict[str, str] | None = None,
+        should_abort: Callable[[], bool] | None = None,
+        created_ids: list[str] | None = None,
     ) -> BindOutcome:
         """集合级提交边界（F15/F16 + R2）：逐条「复核当下事实 → 条件写入 / 克隆」，
         全部等待结束、放行之前再**整组**复核一次，任一条失效整轮回滚。
@@ -1811,7 +1830,10 @@ class AttachmentService:
         * R2（引用型）：落盘克隆可能排在某一条的 await 之后；与**初步复核那一刻**
           记下的引用事实（entry_reference_facts）比对，消失 / 读不了 / 被同名文件顶替
           → 结构化拒绝，绝不建出一行"看起来可用"的新附件；
-        * 取消（CancelledError）与任何异常都走同一条回滚路径后原样上抛，绝不留半绑。
+        * 取消（CancelledError）与任何异常都走同一条回滚路径后原样上抛，绝不留半绑；
+        * `should_abort`（可选）：等待期间的取消（客户端断连 / 显式取消）落在这里 ——
+          放行前问一次，True 就整轮补偿并返回**空绑定**（调用方据此走「这一轮没被受理」），
+          绝不把已取消的这一轮放行出去、也不留无人认领的克隆。
         """
         commits: list[_CommitRecord] = []
         #: 逐条成功的结果先攒着：**整轮全部成功 + 放行前整组复核通过**才写进 outcome
@@ -1880,6 +1902,8 @@ class AttachmentService:
                             stored_path=clone.stored_path,
                         )
                     )
+                    if created_ids is not None:
+                        created_ids.append(str(clone.id))
                     committed.append((clone, clone))
                     accepted.append(clone)
                     continue
@@ -1919,6 +1943,14 @@ class AttachmentService:
             # R2：所有等待都结束了 —— 放行前按**当下事实**整组复核。
             # 复核 + 放行之间没有任何 await（上面最后一次 await 是克隆的 to_thread）。
             self._reverify_committed(committed, outcome=outcome)
+        if not outcome.rejected and should_abort is not None and should_abort():
+            # 等待期间这一轮被取消（客户端断连 / 显式取消）：不放行、不留半绑。
+            # 与「整轮拒绝」走同一条补偿路径，但**不写 rejected**（这不是附件的问题，
+            # 回执里也不该出现「附件不合格」的假原因）；bound 为空由调用方按取消处理。
+            self._rollback_commits(commits, turn=turn)
+            outcome.bound.clear()
+            outcome.clear()
+            return outcome
         if outcome.rejected:
             # 集合级提交：任一条失败，本轮已写下的绑定/克隆**全部补偿**，回执里不留 bound
             # （放行集合 == 实际绑定集合：被拒的那一轮在回执里一个 id 都不留）

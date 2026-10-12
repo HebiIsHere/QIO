@@ -169,6 +169,9 @@ LOOP_STALL_BUDGET_FRACTION = 0.5
 #: 「慢替身」的时长：必须显著高于机器噪声地板（共享 runner 光 fsync / 线程调度
 #: 就能到 104–118 ms，2026-10-11 main run 实测），否则 400ms 级阻塞会被地板淹没。
 SLOW_STIMULUS_SECONDS = 0.6
+#: 维护用例的刺激规模：12 条消息 × 每条 50ms 慢嵌入（与用例文档里的数字一致）。
+MAINTENANCE_MESSAGES = 12
+_MAINTENANCE_EMBED_SECONDS = 0.05
 
 
 def loop_stall_budget_ms(stimulus_ms: float) -> float:
@@ -494,22 +497,30 @@ async def test_maintenance_does_not_block_the_loop(ctx: AppContext, monkeypatch)
     """
     slow = _SlowEmbedding(delay=0.05)
     monkeypatch.setattr(ctx, "embedding", slow)
-    _seed_maintenance_messages(ctx, 12)
+    _seed_maintenance_messages(ctx, MAINTENANCE_MESSAGES)
 
     result, gap_ms = await _measure_loop_lag(ctx.maintenance.run_once)
 
     assert result["ok"] is True
     assert slow.calls >= 1, "这一轮应该真的走到了嵌入（否则测的不是重活）"
-    assert gap_ms < 100, f"维护期间事件循环被占住 {gap_ms:.0f} ms"
+    # 预算与本次刺激时长成比例（与本文件其它用例同一口径）：修复前一次 600ms 级
+    # 同步重活会把停顿顶到整段刺激时长，按比例仍然抓得住；而写死 100ms 会把
+    # 「执行器线程被 CPU 抢占」造成的调度延迟误判成回归（2026-10-11 实测 116ms）。
+    budget = loop_stall_budget_ms(MAINTENANCE_MESSAGES * _MAINTENANCE_EMBED_SECONDS * 1000)
+    assert gap_ms < budget, (
+        f"维护期间事件循环被占住 {gap_ms:.0f} ms（预算 {budget:.0f} ms = "
+        f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
+        f"{MAINTENANCE_MESSAGES * _MAINTENANCE_EMBED_SECONDS * 1000:.0f}ms)）"
+    )
 
 
 async def test_a_cancel_request_is_served_while_maintenance_runs(
     ctx: AppContext, monkeypatch
 ):
     """维护期间用户点「停止」：取消请求本身也要能被及时处理。"""
-    slow = _SlowEmbedding(delay=0.05)
+    slow = _SlowEmbedding(delay=_MAINTENANCE_EMBED_SECONDS)
     monkeypatch.setattr(ctx, "embedding", slow)
-    _seed_maintenance_messages(ctx, 12)
+    _seed_maintenance_messages(ctx, MAINTENANCE_MESSAGES)
 
     loop = asyncio.get_running_loop()
     task = asyncio.create_task(ctx.maintenance.run_once())
@@ -527,7 +538,10 @@ async def test_a_cancel_request_is_served_while_maintenance_runs(
     assert fired, "取消回调没有执行"
     lag_ms = (fired["at"] - scheduled_at) * 1000
     assert result["ok"] is True
-    assert lag_ms < 100, f"取消请求被维护挡住了 {lag_ms:.0f} ms"
+    budget = loop_stall_budget_ms(MAINTENANCE_MESSAGES * _MAINTENANCE_EMBED_SECONDS * 1000)
+    assert lag_ms < budget, (
+        f"取消请求被维护挡住了 {lag_ms:.0f} ms（预算 {budget:.0f} ms，口径同上）"
+    )
 
 
 async def test_maintenance_still_commits_its_results(ctx: AppContext):

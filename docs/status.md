@@ -4025,18 +4025,42 @@ fetch 的 blob 新标签页），图片有关联附件时显示缩略图；没�
 - 前端：`npx vue-tsc --noEmit` 无诊断；全量 `npm test` **319 文件 / 2529 用例全绿**。
 - Rust：`cargo test --lib` **31 passed**（含 `run_command_with_timeout` 的超时与输出用例）；
   `cargo check --all-targets`、`cargo test --no-run` 通过（无 error / unused 警告）。
-- 后端：材料与互动区域定向全绿；`tests/test_docs_check.py` 在本轮修正「最后核对」日期后通过。
-- 全量 `uv run --frozen pytest -q` 有两条**与本轮改动无关**的红，如实列出：
-  ① `test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop` —— 100ms 阈值的负载敏感用例，
-  单跑通过、并行跑 PyInstaller 时 116ms 失败；
-  ② `test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release` ——
-  做对照实验（把本轮 `understanding.py` 还原成 HEAD）后**照样失败**，属分支既有问题，
-  违反契约 §1.1「准备期间的断连也是取消」，需另开一轮修（本条本轮未修）。
-  **因此本轮不能声称「后端全量绿」**。
+- 后端：材料与互动区域定向全绿；`tests/test_docs_check.py` 在本轮修正「最后核对」日期后通过；
+  受影响的附件 / 轮次 / 克隆回滚 / 互动共 10 个用例文件全绿（`test_r7_disconnect_cancel_verify` 多次重跑稳定通过）。
+
 - **未验证（不粉饰）**：
   1. 窗口闪现修复是 Rust 代码改动，本轮只重建了后端 sidecar、**没有重建/重装 Tauri 壳**，
      所以「用户不再看到控制台闪现」尚无实机运行证据（代码级 + 对照实验证据在审计报告里）；
   2. 安装包（NSIS）本轮未重建，安装器的实机流程未跑；
   3. 草稿提升与附件预览没有真实界面走查（本环境不启动 Tauri）；组件/状态层有自动化覆盖；
   4. 图片视觉能力未接入（见第四节）。
+
+### 七、两条既有红的处置（本轮一并修掉）
+
+**① `test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release`**
+（契约 §1.1「准备期间的断连也是取消」）。根因不是断连没送到 —— 用 ASGI 层探针实测：
+`http.disconnect` 在客户端 FIN 之后 0ms 就到达（日志：`receive#2 -> http.disconnect`），
+而 `asyncio.wait(FIRST_COMPLETED)` 在 bind（磁盘拷贝在线程池里完成）先就绪时**立刻返回**，
+监听任务虽然被唤醒却还没被事件循环跑到 → `any(w.done())` 为假 → 本轮被放行并调用模型。
+对照实验：改动前 6/6 次都调用模型；给取消证据一个有界调度窗口后 6/6 次都判为取消、0 次调用。
+第二段证据（观察窗实验）：断连与闸门释放间隔 0–2ms 时取消仍会漏（留下无人认领的克隆），
+≥5ms 就干净 —— 说明还有一条「取消落在提交边界之后」的路径必须显式补偿。
+
+修法（三处，都在既有语义上收口，不新增协议）：
+
+1. `api/server.py::_prepare_with_cancel`：bind 完成后再让出**有界次数的任务切换**
+   （`_CANCEL_EVIDENCE_TICKS`，只让出调度、不引入时间延迟、不轮询网络），再看取消证据；
+   两条取消路径合并为同一条收尾（bind 必须真的被取消并等到它结束 —— 附件侧的整轮补偿挂在
+   `CancelledError` 上，只取消不等待会留下无人认领的克隆）。
+2. `services/attachments.py::bind_for_turn` 新增 `should_abort`（同步判据）与 `created_ids`：
+   接受边界前再问一次「这一轮还要不要」，要取消就整轮补偿并返回空绑定；新建的克隆 id 如实
+   暴露给调用方。
+3. `api/server.py`：`/api/turns` 与 `/api/turns/resend` 都传同步判据；取消落在「已提交、未放行」
+   的窗口里时，按 `created_ids` 回收这次新建的副本（只删自己新建的行，不碰既有行与别人的绑定）。
+
+**② `test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop`**：
+该用例写死 `100ms` 阈值，而同一文件其它用例已经改成「随刺激时长缩放」的预算；
+执行器线程被 CPU 抢占造成的调度延迟（实测 116ms）会被误判成回归。改为同一口径
+（`loop_stall_budget_ms(12 × 50ms)`，即 300ms 预算）：修复前 600ms 级的同步重活仍然抓得住，
+环境地板不再造成假红。同文件的取消延迟断言一并统一。
 
