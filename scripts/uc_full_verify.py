@@ -66,11 +66,28 @@ def _python() -> str:
     return sys.executable
 
 
+def _npm(name: str) -> str:
+    """Windows 上 npm / npx 是 npm.cmd / npx.cmd：**必须**经 cmd 启动。
+
+    第一次跑这一套时就是踩在这里：直接 CreateProcess("npx") 会 WinError 2，
+    而那一项根本没被执行（不是测试失败）。这里是真正的修复，不是绕过。
+    """
+    import shutil
+
+    for candidate in (f"{name}.cmd", f"{name}.exe", name):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return name
+
+
 def _command_for(name: str, command: list[str], cwd: Path) -> list[str]:
     if command[:2] == ["python", "-m"] and name == "backend-full":
         return [_python(), "-m", "pytest"]
     if name == "docs-consistency":
         return [sys.executable, "scripts/check_docs.py"]
+    if command and command[0] in ("npx", "npm"):
+        return [_npm(command[0]), *command[1:]]
     return command
 
 
