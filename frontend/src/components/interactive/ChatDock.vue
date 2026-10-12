@@ -25,7 +25,34 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useInteractiveStore } from "../../stores/interactive";
 import { useSessionStore } from "../../stores/session";
 import MessageItem from "../MessageItem.vue";
+import AttachmentChip from "../AttachmentChip.vue";
 import FailedSendNotice from "./FailedSendNotice.vue";
+import {
+  isAttachmentDead,
+  invalidateAttachmentIdentity,
+  beginAttachmentOp,
+  decideAttachmentWrite,
+  registerAttachmentIdentity,
+} from "../../composables/attachmentOps";
+import type { AttachmentOpCapture } from "../../composables/attachmentOps";
+import {
+  COPY_MAX_BYTES,
+  humanSize,
+  isSendable,
+  markAttachmentRemoved,
+  openAttachment,
+  pickBrowserFile,
+  pickLocalPath,
+  prepareAttachment,
+  relocateAttachment,
+  removeAttachment,
+  retryAttachment,
+  stateText,
+  uploadAttachment,
+  waitUntilSettled,
+} from "../../services/attachments";
+import type { AttachmentRef } from "../../services/attachments";
+import { MEDIA_CAPABILITY_HINT } from "../mediaFacts";
 import {
   canSend,
   chatDraftHintText,
@@ -82,7 +109,9 @@ const draft = computed({
   },
 });
 const verdict = computed(() => canSend(draft.value));
-const canSubmitNow = computed(() => verdict.value.ok && !sending.value);
+const canSubmitNow = computed(
+  () => verdict.value.ok && !sending.value && !attachBusy.value && unready.value.length === 0,
+);
 const statusText = computed(() =>
   chatStatusText({
     turnRunning: session.turnRunning,
@@ -398,6 +427,235 @@ function autosize() {
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_PX) + "px";
 }
 
+
+// ---------------------------------------------------------------------------
+// 附件入口（契约 §4.1）：只发送**当前消息 + 明确选定的附件**
+// ---------------------------------------------------------------------------
+//
+// 这里复用与对话页同一个归属 / tombstone 规则（composables/attachmentOps）：
+//   * 归属：点击那一刻用 beginAttachmentOp 冻结（切话题也不改这条附件的去向）；
+//   * tombstone：用户明确移除的附件先 markAttachmentRemoved，晚到的准备结果一律丢弃（不复活）。
+// 但**不**自动带上板面、未提交改动、未许可文字卡与预览内容：发送载荷就三样
+// （当前文字、本次选定的附件 id、它们的引用），其余什么都不带。
+
+/** 悬浮聊天里已选定、准备随下一条消息发出的附件（组件本地，不进会话草稿）。 */
+const pendingAttachments = ref<AttachmentRef[]>([]);
+const attachBusy = ref(false);
+const attachError = ref("");
+const attachNotice = ref("");
+const attachPath = ref("");
+const attachPathOpen = ref(false);
+const attachInput = ref<HTMLInputElement | null>(null);
+/** 上一次失败的操作（重试入口按同一个来源重放，绝不换一个来源偷偷成功）。 */
+const attachRetry = ref<{ kind: "file"; file: File } | { kind: "path"; path: string } | null>(null);
+
+const readyAttachments = computed(() => pendingAttachments.value.filter((item) => isSendable(item)));
+const unready = computed(() => pendingAttachments.value.filter((item) => !isSendable(item)));
+/** 待发附件的总大小（只算本次真的会发出去的那些）。 */
+const attachTotalBytes = computed(() =>
+  (readyAttachments.value.length ? readyAttachments.value : pendingAttachments.value).reduce(
+    (sum, item) => sum + (item.sizeBytes || 0),
+    0,
+  ),
+);
+/**
+ * 附件区的可见状态：
+ *
+ * * 有真实错误/提示 → 显示它（不与下面的「闸门原因」重复）；
+ * * 有**没准备好**的附件 → 直接显示卡在哪一个（不要求用户先点一次发送才知道：
+ *   发送按钮这时本来就是禁用的，点了也不会发生任何事）。
+ */
+const attachHintText = computed(() => {
+  if (attachError.value) return attachError.value;
+  if (attachBusy.value) return "正在登记附件…";
+  return attachmentBlockReason();
+});
+
+/** 把结果写到待发列表：已移除（tombstone）的一律不写回（K1.3）。 */
+function commitAttachment(item: AttachmentRef): void {
+  pendingAttachments.value = upsertAttachment(pendingAttachments.value, item);
+}
+
+function upsertAttachment(list: AttachmentRef[], item: AttachmentRef): AttachmentRef[] {
+  if (isAttachmentDead(null, item.id)) return list.filter((entry) => entry.id !== item.id);
+  const next = list.slice();
+  const index = next.findIndex((entry) => entry.id === item.id);
+  if (index >= 0) next[index] = item;
+  else next.push(item);
+  return next;
+}
+
+/**
+ * 跟进一个附件的准备状态（prepared → ready / failed / changed / missing）。
+ * 返回最终引用；状态没跟到时返回 null（旧条目保留，不谎报就绪）。
+ */
+async function trackAttachment(item: AttachmentRef, capture: AttachmentOpCapture): Promise<AttachmentRef | null> {
+  commitAttachment(item);
+  try {
+    const settled = await waitUntilSettled(item, { onUpdate: (next) => commitAttachment(next) });
+    // 归属裁决：结果不该写进当前界面时也不丢（它属于发起那一刻的那个话题）
+    const verdict = decideAttachmentWrite(capture, { id: settled.id, isCurrentTopic: true });
+    if (verdict.target === "drop") {
+      pendingAttachments.value = pendingAttachments.value.filter((entry) => entry.id !== settled.id);
+    } else {
+      commitAttachment(settled);
+    }
+    return settled;
+  } catch (err) {
+    attachError.value = "附件「" + item.name + "」的准备状态没有跟到：" + messageOfError(err);
+    return null;
+  }
+}
+
+function messageOfError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** 选择本地文件（浏览器只有字节时走上传；绝不用 input[type=file] 的 fakepath）。 */
+async function addFiles(files: File[]): Promise<void> {
+  if (!files.length) return;
+  const capture = beginAttachmentOp({ kind: "upload", topicId: session.currentTopicId });
+  attachError.value = "";
+  attachNotice.value = "";
+  attachRetry.value = { kind: "file", file: files[0] };
+  attachBusy.value = true;
+  try {
+    for (const file of files) {
+      try {
+        const created = await uploadAttachment(file, { topicId: capture.topicId });
+        registerAttachmentIdentity(capture.topicId, created.id, capture.opToken);
+        attachRetry.value = null;
+        void trackAttachment(created, capture);
+      } catch (err) {
+        attachError.value =
+          "「" + file.name + "」没有上传成功：" + messageOfError(err) + "（输入框里的文字还在，可以重试）";
+        attachRetry.value = { kind: "file", file };
+      }
+    }
+  } finally {
+    attachBusy.value = false;
+  }
+}
+
+/** 粘贴/输入一个真实路径（走 prepareAttachment，不做浏览器上传）。 */
+async function addPath(path: string): Promise<void> {
+  const value = path.trim();
+  if (!value) return;
+  const capture = beginAttachmentOp({ kind: "prepare", topicId: session.currentTopicId });
+  attachError.value = "";
+  attachNotice.value = "";
+  attachBusy.value = true;
+  try {
+    const created = await prepareAttachment(value, { topicId: capture.topicId });
+    registerAttachmentIdentity(capture.topicId, created.id, capture.opToken);
+    attachRetry.value = null;
+    attachPath.value = "";
+    attachPathOpen.value = false;
+    void trackAttachment(created, capture);
+  } catch (err) {
+    attachError.value =
+      "「" + value + "」没有登记成功：" + messageOfError(err) + "（输入框里的文字还在，可以重试）";
+    attachRetry.value = { kind: "path", path: value };
+  } finally {
+    attachBusy.value = false;
+  }
+}
+
+/** 重试上一次失败的操作：按同一个来源重放（不换来源，也不谎报成功）。 */
+async function retryAttach(): Promise<void> {
+  const target = attachRetry.value;
+  if (!target) return;
+  if (target.kind === "file") await addFiles([target.file]);
+  else await addPath(target.path);
+}
+
+/** 打开文件选择器（对话框取消时什么都不发生，也不报假失败）。 */
+async function pickFile(): Promise<void> {
+  attachError.value = "";
+  const file = await pickBrowserFile();
+  if (!file) return;
+  await addFiles([file]);
+}
+
+/** 粘贴路径入口：桌面端弹系统路径选择器，浏览器里退回手输（都如实）。 */
+async function pickPath(): Promise<void> {
+  attachError.value = "";
+  const picked = await pickLocalPath();
+  if (picked) {
+    await addPath(picked);
+    return;
+  }
+  attachPathOpen.value = true;
+  await nextTick();
+}
+
+async function onFileInput(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  if (!files.length) return;
+  await addFiles(files);
+}
+
+/** 明确移除：先写 tombstone，再删服务端记录；晚到的结果不得把它放回来。 */
+async function removeAttachmentAt(id: string): Promise<void> {
+  const target = pendingAttachments.value.find((item) => item.id === id);
+  // 身份的失效（attachmentOps）与 tombstone（attachments）都要写：一个管归属，一个管持久化的「已移除」
+  invalidateAttachmentIdentity(id);
+  markAttachmentRemoved(session.currentTopicId, id);
+  pendingAttachments.value = pendingAttachments.value.filter((item) => item.id !== id);
+  if (attachRetry.value?.kind === "file" && attachRetry.value.file.name === target?.name) {
+    attachRetry.value = null;
+  }
+  try {
+    await removeAttachment(id);
+  } catch (err) {
+    // 服务端记录没删掉：本地仍然按「用户已经移除」处理（界面不复活它），如实说明
+    attachNotice.value = "「" + (target?.name ?? id) + "」已从这条消息里移除，但服务端记录没有删掉：" + messageOfError(err);
+  }
+}
+
+async function openAttachmentAt(item: AttachmentRef): Promise<void> {
+  attachNotice.value = "";
+  try {
+    const result = await openAttachment(item, { desktop: false });
+    attachNotice.value = result?.note ?? "";
+  } catch (err) {
+    attachNotice.value = "打不开「" + item.name + "」：" + messageOfError(err);
+  }
+}
+
+async function retryAttachmentAt(item: AttachmentRef): Promise<void> {
+  attachError.value = "";
+  try {
+    commitAttachment(await retryAttachment(item.id));
+  } catch (err) {
+    attachError.value = "「" + item.name + "」重试失败：" + messageOfError(err);
+  }
+}
+
+async function relocateAttachmentAt(item: AttachmentRef): Promise<void> {
+  const path = await pickLocalPath();
+  if (!path) return;
+  attachError.value = "";
+  try {
+    commitAttachment(await relocateAttachment(item.id, path));
+  } catch (err) {
+    attachError.value = "「" + item.name + "」重新定位失败：" + messageOfError(err);
+  }
+}
+
+/** 附件闸门：没准备好就不许当作「这条消息发出去了」。 */
+function attachmentBlockReason(): string {
+  if (attachBusy.value) return "附件还在登记中：等它登记完再发送，或先移除它";
+  if (!unready.value.length) return "";
+  return (
+    "这些附件还没有准备好，不能当作发送成功：" +
+    unready.value.map((item) => "「" + item.name + "」" + stateText(item)).join("；") +
+    "（文字与附件都留在输入区）"
+  );
+}
+
 async function submit() {
   if (sending.value) return;
   const check = canSend(draft.value);
@@ -406,11 +664,25 @@ async function submit() {
     blankNotice.value = check.reason ?? "还没有输入内容";
     return;
   }
+  /**
+   * 附件闸门：没准备好就不许当作「这条消息发出去了」。
+   * 文字与附件都留在输入区，并说清卡在哪一个。
+   */
+  const blocked = attachmentBlockReason();
+  if (blocked) {
+    // 闸门直接可见（按钮此时也是禁用的）：这里再如实说一次，绝不静默发出去
+    attachError.value = "";
+    attachNotice.value = blocked;
+    return;
+  }
   const snapshot = draft.value;
   // 只发输入的文字：不追加板面、未提交改动、注释或选择范围
   const payload = normalizeSendText(snapshot);
+  // 本次**明确选定**的附件：用户在悬浮聊天里亲手选的那些，一个不多一个不少
+  const sentAttachments = pendingAttachments.value.filter((item) => isSendable(item));
   blankNotice.value = "";
   failure.value = "";
+  attachError.value = "";
   /**
    * 归属在**点击这一刻**定下（契约 §10.1）：清空输入框、等待回执期间切换话题，
    * 都不许改变这条消息的去向，也不许把失败原文放进别的话题的输入框。
@@ -422,7 +694,16 @@ async function submit() {
   await nextTick();
   autosize();
   try {
-    const ok = await session.send(payload);
+    const ok = await session.send(
+      payload,
+      sentAttachments.map((item) => item.id),
+      sentAttachments,
+    );
+    if (ok) {
+      // 发送成功：这些附件已经跟着这条消息走了，不许跟着下一条再发一次
+      const sentIds = new Set(sentAttachments.map((item) => item.id));
+      pendingAttachments.value = pendingAttachments.value.filter((item) => !sentIds.has(item.id));
+    }
     if (!ok) {
       /**
        * 与 Composer 同一套规则（F12）：未决发送（受理情况未知）时**不**自动把原文
@@ -654,6 +935,113 @@ function onKeydown(event: KeyboardEvent) {
         {{ displacedNotice }}
       </p>
 
+      <!--
+        附件入口（契约 §4.1）：只发送**当前消息 + 明确选定的附件**。
+        这里明确不提供「把板面 / 未提交改动 / 未许可文字卡 / 预览内容一起发出去」的入口。
+      -->
+      <div class="attach-box" data-im="chat-attach">
+        <div class="attach-row">
+          <button
+            class="attach-btn"
+            type="button"
+            data-im="chat-attach-file-btn"
+            :disabled="attachBusy"
+            @click="pickFile"
+          >
+            添加附件
+          </button>
+          <button
+            class="attach-btn"
+            type="button"
+            data-im="chat-attach-path-btn"
+            :disabled="attachBusy"
+            @click="pickPath"
+          >
+            粘贴路径
+          </button>
+          <input
+            ref="attachInput"
+            class="attach-file-input"
+            data-im="chat-attach-file"
+            type="file"
+            multiple
+            aria-label="选择要随这条消息发送的附件"
+            @change="onFileInput"
+          />
+        </div>
+
+        <div v-if="attachPathOpen" class="attach-path-row">
+          <input
+            v-model="attachPath"
+            class="path-input"
+            data-im="chat-attach-path"
+            type="text"
+            placeholder="粘贴文件的完整路径（例如 D:\\资料\\报告.pdf）"
+            aria-label="附件路径"
+            @keydown.enter.prevent="addPath(attachPath)"
+          />
+          <button
+            class="attach-btn"
+            type="button"
+            data-im="chat-attach-path-add"
+            :disabled="attachBusy || !attachPath.trim()"
+            @click="addPath(attachPath)"
+          >
+            登记这个路径
+          </button>
+        </div>
+
+        <!-- 每个附件一条：外层 div 是稳定的测试钩子（组件内部另有自己的钩子，不混用） -->
+        <div
+          v-for="item in pendingAttachments"
+          :key="item.id"
+          class="attach-item"
+          data-im="chat-attachment"
+          :data-attachment-id="item.id"
+        >
+          <AttachmentChip
+            :attachment="item"
+            :busy="attachBusy"
+            @remove="removeAttachmentAt(item.id)"
+            @retry="retryAttachmentAt(item)"
+            @open="openAttachmentAt(item)"
+            @relocate="relocateAttachmentAt(item)"
+          />
+          <button
+            class="attach-mini"
+            type="button"
+            data-im="chat-attachment-remove"
+            :aria-label="'从这条消息里移除「' + item.name + '」'"
+            @click="removeAttachmentAt(item.id)"
+          >
+            移除
+          </button>
+        </div>
+
+        <p v-if="attachHintText" class="attach-note err" role="status" data-im="chat-attach-error">
+          <span>{{ attachHintText }}</span>
+          <button
+            v-if="attachRetry && !attachBusy"
+            class="attach-mini"
+            type="button"
+            data-im="chat-attach-retry"
+            @click="retryAttach"
+          >
+            重试这个附件
+          </button>
+        </p>
+        <p v-if="attachNotice" class="attach-note mono" role="status" data-im="chat-attach-note">{{ attachNotice }}</p>
+        <p class="attach-hint mono" data-im="chat-attach-hint">
+          <template v-if="attachTotalBytes > 0">{{ humanSize(attachTotalBytes) }} · </template>单个附件上限 {{ humanSize(COPY_MAX_BYTES) }} · 只发送当前消息与这里明确选定的附件
+        </p>
+        <details class="attach-details">
+          <summary data-im="chat-attach-details">QIO 会怎么读这些附件</summary>
+          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.image }}</p>
+          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
+          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.video }}</p>
+        </details>
+      </div>
+
       <div class="input-row">
         <textarea
           ref="inputRef"
@@ -697,6 +1085,84 @@ function onKeydown(event: KeyboardEvent) {
 </template>
 
 <style scoped>
+/* 附件区：与输入区同一套视觉语言，不加额外装饰 */
+.attach-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: none;
+}
+.attach-row,
+.attach-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.attach-btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-family: var(--sans);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+}
+.attach-btn:hover { background: var(--accent-soft); }
+.attach-btn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.attach-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
+.attach-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.attach-path-row .path-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-family: var(--mono);
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+}
+.attach-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.attach-note.err { color: var(--danger); }
+.attach-mini {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.attach-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.attach-details summary {
+  font-size: var(--fs-xs);
+  color: var(--link);
+  cursor: pointer;
+}
+
 /* 外层容器透明：面板外面什么都不铺，能看见后方板面 */
 .chat-dock {
   position: absolute;
