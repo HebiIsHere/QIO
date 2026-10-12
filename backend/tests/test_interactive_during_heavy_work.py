@@ -162,8 +162,23 @@ def topic(ctx: AppContext) -> str:
     return ctx.topics.nodes.create_topic("测试话题").id
 
 
-#: 「事件循环被单次同步重活占住」的预算下限（毫秒）——安静机器上的硬线。
-LOOP_STALL_BUDGET_MS = 100.0
+#: 「事件循环被单次同步重活占住」的预算**下限**（毫秒）—— 它是**环境地板**，不是
+#: 「允许的停顿」。取值必须有证据，且必须**低于回归签名**，否则这一族计时断言要么
+#: 假红、要么失去鉴别力。
+#:
+#: 证据（两次 windows-latest 实测 + 一次修复前后对照）：
+#:
+#: * 环境地板：266ms（2026-10-12，基线提交 1022418 的记录，见
+#:   `test_a_slow_retrieval_does_not_stall_the_turn_loop` 的文档）；
+#:   250ms（2026-10-13，本分支 CI 重跑同一用例实测 249.7ms）。
+#: * 回归签名：整轮慢检索 446ms（修复前，两次 0.2s 召回串行跑在事件循环上）；
+#:   慢推理阻塞 ≈ 刺激时长（SLOW_STIMULUS_SECONDS=600ms）。
+#:
+#: 300ms 同时满足「高于环境地板」与「低于回归签名」（446ms 的 0.67 倍）——
+#: 上一版取 100ms 时，预算（150ms）**低于**已知地板（266ms），必然假红。
+#: 若将来地板再升高到超过 300ms，要修的是**测量方式**（把测量窗口限定在刺激段），
+#: 不是继续抬高这个数。
+LOOP_STALL_BUDGET_MS = 300.0
 #: 预算与本次**刺激时长**的比例：重活真被搬走时，停顿只应是它的一小部分。
 LOOP_STALL_BUDGET_FRACTION = 0.5
 #: 「慢替身」的时长：必须显著高于机器噪声地板（共享 runner 光 fsync / 线程调度
@@ -320,8 +335,13 @@ async def test_a_slow_retrieval_does_not_stall_the_turn_loop(
 async def test_a_cancel_request_is_served_while_slow_prediction_runs(
     ctx: AppContext, topic: str, monkeypatch
 ):
-    """慢推理期间用户点「停止」：取消请求本身也要能被及时处理。"""
-    slow = _SlowEmbedding(delay=0.3)
+    """慢推理期间用户点「停止」：取消请求本身也要能被及时处理。
+
+    刺激用与本文件其它慢推理用例同一个口径（`SLOW_STIMULUS_SECONDS`）：既有的
+    0.3s 刺激在 windows runner 上几乎等于环境地板，回归签名（取消被整段慢推理挡住
+    ≈ 刺激时长）与噪声分不开。**把刺激加长是提高信噪比，不是放宽阈值**。
+    """
+    slow = _SlowEmbedding(delay=SLOW_STIMULUS_SECONDS)
     monkeypatch.setattr(ctx.predictor, "embedding", slow)
 
     loop = asyncio.get_running_loop()
@@ -340,7 +360,14 @@ async def test_a_cancel_request_is_served_while_slow_prediction_runs(
     assert fired, "取消回调没有执行"
     lag_ms = (fired["at"] - scheduled_at) * 1000
     assert result["ok"] is False and result["reason"] == "cancelled"
-    assert lag_ms < 100, f"取消请求被慢推理挡住了 {lag_ms:.0f} ms"
+    # 与本文件其它计时断言同一条规则（见 loop_stall_budget_ms 与上面的地板证据）：
+    # 不再用写死的 100ms —— 那个数低于 runner 的环境地板，会把环境判成回归。
+    budget = loop_stall_budget_ms(SLOW_STIMULUS_SECONDS * 1000)
+    assert lag_ms < budget, (
+        f"取消请求被慢推理挡住了 {lag_ms:.0f} ms（预算 {budget:.0f} ms = "
+        f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
+        f"{SLOW_STIMULUS_SECONDS * 1000:.0f}ms)）"
+    )
 
 
 # ---------------------------------------------------------------------------
