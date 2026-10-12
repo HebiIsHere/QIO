@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from agent.interactive import board, models
+from agent.interactive import board, models, text_migration
 
 #: 单块板面保留的快照条数上限（防止长期使用后表无限增长；历史接口最多取 200 条）
 SNAPSHOT_KEEP = 200
@@ -83,7 +83,12 @@ def ensure_board(
 
 
 def load_board(conn: sqlite3.Connection, board_id: str) -> dict:
-    """读取最新板面状态。未知 id 会建一块空板面（保证界面不白屏；新建请用 POST /boards）。"""
+    """读取最新板面状态。未知 id 会建一块空板面（保证界面不白屏；新建请用 POST /boards）。
+
+    载入后做一次**逐卡历史迁移**（契约 §2.2）：旧 code / url 卡 → 文字卡，缺 meta.doc 的
+    文字卡补齐内容模型。迁移只发生在这里（板面状态加载层），**不改历史快照表、不改草稿**；
+    确实发生了迁移才用 reason="text_card_migration" 保存一次（seq+1），第二次加载不再写。
+    """
     info = ensure_board(conn, board_id=board_id)
     row = conn.execute(
         "SELECT seq, state, reason, updated_at FROM board_states WHERE board_id = ?",
@@ -97,12 +102,35 @@ def load_board(conn: sqlite3.Connection, board_id: str) -> dict:
             state[key] = []
     if not isinstance(state.get("seq"), int):
         state["seq"] = int(row["seq"]) if row else 0
+
+    before_seq = int(row["seq"]) if row else 0
+    migrated_state, migrated = _migrate_legacy_cards(state)
+    if not migrated:
+        return {
+            "board": info,
+            "state": state,
+            "seq": before_seq,
+            "savedAt": row["updated_at"] if row else None,
+            "migratedFromSeq": None,
+        }
+    # 幂等：迁移保存一次；下次加载已经全是文字卡，不会再写。
+    saved = save_board(
+        conn, info["id"], migrated_state, reason=text_migration.MIGRATION_REASON
+    )
     return {
         "board": info,
-        "state": state,
-        "seq": int(row["seq"]) if row else 0,
-        "savedAt": row["updated_at"] if row else None,
+        "state": saved["state"],
+        "seq": int(saved["seq"]),
+        "savedAt": saved["savedAt"],
+        # 迁移只改内容的**表示**、不改用户语义：调用方据此知道「本次操作实际基于的版本」
+        # 是迁移前那一个，避免把刚保存完就发起的提交判成过期。
+        "migratedFromSeq": before_seq,
     }
+
+
+def _migrate_legacy_cards(state: dict) -> tuple[dict, bool]:
+    """逐卡迁移（契约 §2.2）。纯函数，只改内存里的这一份状态。"""
+    return text_migration.migrate_state(state)
 
 
 def saved_seq(conn: sqlite3.Connection, board_id: str) -> int | None:
@@ -199,7 +227,11 @@ def save_board(
     if not isinstance(state, dict):
         raise ValueError("state 必须是 JSON 对象")
     info = ensure_board(conn, board_id=board_id)
-    payload = board.normalize_state({**state, "boardId": info["id"]})
+    # 写入即规范化（契约 §2.2：「迁移只发生在板面状态加载 / 保存这一层」）：历史 code / url
+    # 卡与缺 meta.doc 的文字卡在这里补齐，于是**保存返回的 seq 就是数据库里的 seq** ——
+    # 不然保存内部的重算会顺手触发一次加载迁移，让调用方手里的版本号悄悄变旧。
+    migrated_state, _migrated = text_migration.migrate_state({**state, "boardId": info["id"]})
+    payload = board.normalize_state(migrated_state)
     row = conn.execute("SELECT seq FROM board_states WHERE board_id = ?", (info["id"],)).fetchone()
     seq = (int(row["seq"]) if row else 0) + 1
     stamp = _now()
