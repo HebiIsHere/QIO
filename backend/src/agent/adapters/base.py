@@ -32,12 +32,31 @@ class ToolCall:
     narrative: dict[str, Any] | None = field(default=None, compare=False)
 
 
+@dataclass(frozen=True)
+class ImagePart:
+    """一条**图片**内容块（多模态消息用）。
+
+    只放真实字节的 data URL 与给人看的说明，不放路径、不放本地文件名：
+    - `data_url`：`data:image/png;base64,…`（适配器按各家的形状再包装）；
+    - `label`：这条图片是谁（例如卡片 id 或附件名），模型引用它时要用得上；
+    - `media_type` / `bytes`：如实记录，便于用量与失败排查（不参与请求）。
+    """
+
+    data_url: str
+    label: str = ""
+    media_type: str = ""
+    bytes: int = 0
+
+
 @dataclass
 class ChatMessage:
     role: str  # user / assistant / tool / system
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    #: 多模态内容块（图片）。空列表 = 纯文本消息 —— 既有调用方一字不用改。
+    #: `content` 仍然是文本部分：追踪 / 脱敏 / 用量都读它，不读这里。
+    images: list[ImagePart] | None = None
 
 
 _INPUT_KEYS = ("prompt_tokens", "input_tokens", "prompt_token_count", "input_tokens_total")

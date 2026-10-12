@@ -3982,14 +3982,11 @@ main 存量库整段跳过、互动接口缺表。main 的历史迁移 1–34 �
 **实现**：卡片增加"查看/打开"入口（桌面走系统默认程序、可执行类只"在文件夹中显示"、浏览器走带认证
 fetch 的 blob 新标签页），图片有关联附件时显示缩略图；没有 `attachmentId` 时保持既有诚实文案。
 
-### 四、图片视觉能力（问题二的另一半，**尚未接入**）
+### 四、图片视觉能力（已接入，见第八节）
 
-`ChatMessage.content` 是 `str`（`backend/src/agent/adapters/base.py`），
-`native.to_openai_messages` 只发字符串；凭据体系里虽然已有 `vision` 用途标签
-（`credentials/policy.py` 的 `PRESET_TAGS`），但没有多模态消息通道。因此图片目前只能是
-`image_unsupported`（"只登记元数据，不声称看懂内容"）。**这一项本轮不谎称已修**：
-要真的看懂图片需要新增多模态消息通道（消息形状 + 适配器 + 凭据路由 + 材料交付），
-是独立一轮的工作量。
+v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称看懂内容"）：`ChatMessage.content`
+是 `str`、`native.to_openai_messages` 只发字符串，凭据体系虽有 `vision` 用途标签却没有多模态通道。
+本轮把这条通道补齐了 —— 契约见 `docs/interactive-vision-contract.md`，落地见第八节。
 
 ### 五、窗口审计与闪现修复（用户单独要求）
 
@@ -4033,7 +4030,7 @@ fetch 的 blob 新标签页），图片有关联附件时显示缩略图；没�
      所以「用户不再看到控制台闪现」尚无实机运行证据（代码级 + 对照实验证据在审计报告里）；
   2. 安装包（NSIS）本轮未重建，安装器的实机流程未跑；
   3. 草稿提升与附件预览没有真实界面走查（本环境不启动 Tauri）；组件/状态层有自动化覆盖；
-  4. 图片视觉能力未接入（见第四节）。
+  4. 视觉能力本轮**未做真实凭据的实机验收**（见第八节「未验证」）。
 
 ### 七、两条既有红的处置（本轮一并修掉）
 
@@ -4063,4 +4060,28 @@ fetch 的 blob 新标签页），图片有关联附件时显示缩略图；没�
 执行器线程被 CPU 抢占造成的调度延迟（实测 116ms）会被误判成回归。改为同一口径
 （`loop_stall_budget_ms(12 × 50ms)`，即 300ms 预算）：修复前 600ms 级的同步重活仍然抓得住，
 环境地板不再造成假红。同文件的取消延迟断言一并统一。
+### 八、视觉能力：图片真的交给模型看（2026-10-12 追加）
+
+契约：`docs/interactive-vision-contract.md`（材料来源四种事实、唯一交付闸门、凭据选择、交付边界、
+消息形状、测试清单）。落地：
+
+* 消息形状：`agent/adapters/base.py` 新增 `ImagePart` 与 `ChatMessage.images`；
+  `native.to_openai_messages` 把带图消息发成多模态数组（文本在前、`[图片] <标签>` 与 `image_url` 紧随），
+  **没有图片时逐字保持字符串形状**（兼容只认字符串的端点）。native 适配器声明 `supports_images=True`。
+* 材料层：`materials.resolve_images()` 是**能力无关**的读取层（只回答「字节读得出来吗」）；
+  `resolve_materials(..., vision=...)` 在视觉可用时把图片记成 `image_delivered`（read=true），
+  不可用时维持 `image_unsupported` 并写清原因（没有附件 / 取不到 / 状态不是 ready / 格式不在交付集合 /
+  超过 8 MiB 上限 —— 超限**不截断**，因为半张图会给出错的画面）。
+* 交付闸门只有一处：`understanding.build_context(..., vision=...)`；`vision=False` 时 `context["imageParts"]`
+  必为空、材料必为 `image_unsupported`。`image_parts_from_context()` 只做形状转换，
+  于是「这次交付了哪些图片」可从落库上下文重建。
+* 凭据选择：带图时优先 `vision` 用途凭据（`AppContext.build_vision_adapter`），没有就如实回落主循环；
+  回落之后能否交付图片仍由适配器声明决定，**回落不等于假装看得见**。
+* 自动修复那一轮同样带图（否则等于让模型在看不见图的状态下重出 JSON）。
+
+**测试**：`backend/tests/test_interactive_vision.py`（真实 PNG 字节、data URL 与原字节一致、无视觉时如实降级、
+没有/取不到附件与超限各自的原因、不可见卡片不交付、纯文本形状不变、上下文闸门、上下文可重建内容块）。
+
+**未验证（不粉饰）**：本轮没有真实视觉凭据，所以「某个具体模型看图的效果」没有实机验收 ——
+协议形状、降级路径、交付边界与闸门都有自动化覆盖，但「模型判断质量」不在本轮证据范围内。
 

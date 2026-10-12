@@ -296,6 +296,7 @@ MATERIAL_SOURCES = (
     "attachment_text",   # 真实读取了已保存附件的正文
     "url_fetched",       # 实际抓取并读到网页正文
     "url_address_only",  # 只有地址，没有读到正文
+    "image_delivered",   # 图片：本次**真的把字节交给了模型**（多模态），由模型自己看
     "image_unsupported", # 图片：当前模型链路没有视觉能力，如实标注
     "unreadable",        # 附件当前不可读（格式未实现 / 读取失败），带原因
     "unsupported",       # 其他明确不支持的材料

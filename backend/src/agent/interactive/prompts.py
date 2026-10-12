@@ -219,10 +219,12 @@ def render_context(context: dict) -> str:
     return text
 
 
-def build_understanding_messages(context: dict) -> list[ChatMessage]:
+def build_understanding_messages(context: dict, *, images: list | None = None) -> list[ChatMessage]:
     """构建一次理解调用的消息：一条 system + 一条承载结构化上下文的 user。
 
     上下文只作为**结构化数据**给出，不拆成多轮聊天，也不进入通用聊天循环。
+    `images` 是本次真正交付的图片内容块（`ImagePart`）：它们挂在**同一条 user 消息**上，
+    文本在前、图片在后；上下文 JSON 里已经写明每张图对应哪张卡片，模型据此引用。
     """
     return [
         ChatMessage(role="system", content=system_prompt()),
@@ -235,12 +237,13 @@ def build_understanding_messages(context: dict) -> list[ChatMessage]:
                 + render_context(context)
                 + "\n=== 上下文结束 ==="
             ),
+            images=list(images) if images else None,
         ),
     ]
 
 
 def build_repair_messages(
-    context: dict, raw_output: str, reasons: list[str]
+    context: dict, raw_output: str, reasons: list[str], *, images: list | None = None
 ) -> list[ChatMessage]:
     """构建**唯一一次**自动修复调用：把无效原因如实告诉模型，要求重出 JSON。
 
@@ -257,6 +260,9 @@ def build_repair_messages(
                 + render_context(context)
                 + "\n=== 上下文结束 ==="
             ),
+            # 修复这一轮**同样**要带图：否则模型在「看不见图」的状态下重出 JSON，
+            # 等于让它凭空修正一条依赖图片的判断。
+            images=list(images) if images else None,
         ),
         ChatMessage(role="assistant", content=raw_output or ""),
         ChatMessage(

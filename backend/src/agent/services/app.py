@@ -719,6 +719,24 @@ class AppContext:
         refs = self.policy.resolve("main-loop", MAIN_LOOP_USAGE_TAGS)
         return refs[0] if refs else None
 
+    def resolve_vision_ref(self) -> CredentialRef | None:
+        """专门打 `vision` 用途标签的凭据（看图用）。
+
+        为什么要单独一条：主循环优先 `main-loop` 标签，用户很可能另配一把只能看图的
+        Key；这时把图片发给主循环那把，等于让一个看不见的模型去读图。有 vision 凭据
+        就优先它，没有就如实回落主循环（回落由调用方决定并记录）。
+        与 `resolve_main_ref` 同一套 policy：停用 / 撤销 / 预算 / 验证状态照样拦。
+        """
+        refs = self.policy.resolve("vision", ["vision"])
+        return refs[0] if refs else None
+
+    async def build_vision_adapter(self) -> BaseAdapter | None:
+        """看图用的适配器：有 vision 用途凭据就用它，没有就返回 None（由调用方回落）。"""
+        ref = self.resolve_vision_ref()
+        if ref is None:
+            return None
+        return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
+
     def _loop_max_iterations(self) -> int:
         """用户配置的迭代上限；0 表示未配置（用模式默认值）。"""
         return self.settings_store.get_int("loop.max_iterations", 0)

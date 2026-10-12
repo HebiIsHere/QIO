@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -53,6 +54,18 @@ _URL_BODY_KEYS = ("content", "text", "excerpt", "fetchedText", "fetched_text")
 #: 文件 / 图片卡片里登记附件 id 的字段名
 _ATTACHMENT_ID_KEYS = ("attachmentId", "attachment_id")
 
+#: 单张图片**交给模型**的字节上限。超过就不交付字节（如实说明原因、并给出尺寸与上限），
+#: 绝不悄悄截断成半张图 —— 图片是有损内容，截一半等于给了错的画面。
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+#: 允许作为多模态图片下发的媒体类型（其它类型如 svg/tiff 交给既有文本读取结论，不猜）。
+DELIVERABLE_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 # ---------------------------------------------------------------------------
 # 入口
@@ -66,6 +79,7 @@ def resolve_materials(
     cards: Iterable[dict] | None,
     attachments: Any = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    vision: bool = False,
 ) -> list[dict]:
     """把本次可见范围里的材料解析成条目（字段见 §14.3 与 §14.1 的来源口径）。
 
@@ -82,10 +96,109 @@ def resolve_materials(
 
     entries: list[dict] = []
     for card in _iter_cards(state, cards):
-        entry = _resolve_card(card, service=service, tool=tool, max_chars=limit_chars)
+        entry = _resolve_card(
+            card, service=service, tool=tool, max_chars=limit_chars, vision=bool(vision)
+        )
         if entry is not None:
             entries.append(entry)
     return entries
+
+
+def resolve_images(
+    conn: sqlite3.Connection,
+    *,
+    state: dict,
+    cards: Iterable[dict] | None,
+    attachments: Any = None,
+    max_bytes: int = MAX_IMAGE_BYTES,
+) -> list[dict]:
+    """本次可见范围里**可以真正交给模型看**的图片（多模态交付）。
+
+    与 `resolve_materials` 同一套可见性纪律（未勾选的注释 / 隐藏 / 已删除一律不读），
+    只处理 `kind="image"` 且 meta 里登记了**真实已保存附件**的卡片：返回的每一条都是
+    「读了字节、能交给视觉模型」的条目 —— 读不到 / 类型不支持 / 超过上限的**不在这里**，
+    而是在 `resolve_materials` 的条目里如实说明原因（调用方据此区分「没交付」与「交付了」）。
+
+    返回条目字段：
+    - `cardId`：哪张卡片（模型引用它时用得上）；
+    - `attachmentId` / `name` / `bytes`：来自哪份已保存附件、多大；
+    - `mediaType`：`image/png` 这类真实媒体类型（按扩展名，与 data URL 一致）；
+    - `dataUrl`：`data:<mediaType>;base64,<…>` —— 交付给适配器的就是它。
+    """
+    limit_bytes = int(max_bytes) if int(max_bytes) > 0 else MAX_IMAGE_BYTES
+    state = state if isinstance(state, dict) else {}
+    service = attachments if attachments is not None else _derive_service(conn)
+    if service is None:
+        return []
+    out: list[dict] = []
+    for card in _iter_cards(state, cards):
+        if str(card.get("kind") or "") != "image":
+            continue
+        item = _deliverable_image(card, service=service, max_bytes=limit_bytes)
+        if item is not None:
+            out.append(item)
+    return out
+
+
+def _deliverable_image(card: dict, *, service: Any, max_bytes: int) -> dict | None:
+    """这张图片卡能不能真的交付字节；不能就返回 None（原因由材料条目如实说明）。"""
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    raw_id = _attachment_id(meta, "image") or _attachment_id(meta, "file")
+    if not raw_id:
+        return None
+    att = service.get(raw_id, check=False)
+    if att is None or str(getattr(att, "state", "")) != "ready":
+        return None
+    name = str(getattr(att, "original_name", "") or "")
+    media_type = _image_media_type(name)
+    if not media_type:
+        return None
+    path, _origin = service_for_content(service, att)
+    if path is None:
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size <= 0 or size > max_bytes:
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    label = _label(card) or name or "（图片）"
+    return {
+        "cardId": card.get("id"),
+        "attachmentId": att.id,
+        "name": name,
+        "bytes": len(raw),
+        "mediaType": media_type,
+        "label": label,
+        "dataUrl": "data:" + media_type + ";base64," + base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _image_media_type(name: str) -> str:
+    suffix = Path(str(name or "")).suffix.lower()
+    return DELIVERABLE_IMAGE_TYPES.get(suffix, "")
+
+
+def service_for_content(service: Any, att: Any) -> tuple[Path | None, str]:
+    """这条附件真正可读的路径（有副本读副本，没有副本读原文件）。
+
+    与 `_content_path` 同一口径（`services/attachments.py` 的 content_target 是唯一实现），
+    这里只做「拿不到就返回 (None, reason)」的收口，不复制判断。
+    """
+    try:
+        target = service.content_target(att.id)
+    except Exception:  # noqa: BLE001 - 读不到就是读不到，调用方会如实标注
+        return None, ""
+    if not target:
+        return None, ""
+    path, origin = target
+    return Path(path), str(origin)
 
 
 def _char_limit(value: Any) -> int:
@@ -148,6 +261,7 @@ def _resolve_card(
     service: AttachmentService | None,
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
+    vision: bool = False,
 ) -> dict | None:
     kind = str(card.get("kind") or "")
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
@@ -161,7 +275,7 @@ def _resolve_card(
     if kind == "file":
         return _file_entry(card, label, meta, service=service, tool=tool, max_chars=max_chars)
     if kind == "image":
-        return _image_entry(card, label, meta, service=service)
+        return _image_entry(card, label, meta, service=service, vision=vision)
     if kind == "url":
         return _url_entry(card, label, meta, max_chars=max_chars)
     return _entry(
@@ -402,25 +516,112 @@ def _image_entry(
     meta: dict,
     *,
     service: AttachmentService | None,
+    vision: bool = False,
+    max_image_bytes: int = MAX_IMAGE_BYTES,
 ) -> dict:
-    """图片卡片：当前模型链路没有视觉能力 → 如实标注 image_unsupported。"""
+    """图片卡片：能交付就如实说「字节已交给模型」，不能就如实说为什么不能。
+
+    `vision=True` 表示**本次模型链路支持多模态**（适配器声明）；此时真正读了字节的图片
+    记成 `image_delivered`（read=True，说明模型自己看），其余情况一律 `image_unsupported`
+    并带上可读原因（没有登记附件 / 附件不在 / 类型不支持 / 超过字节上限）。
+    """
     raw_id = _attachment_id(meta, "image") or _attachment_id(meta, "file")
     att = service.get(raw_id, check=False) if (service is not None and raw_id) else None
     bytes_ = _int_bytes(att) if att is not None else 0
     version = _attachment_version(att) if att is not None else _content_version(card)
-    notes = ["当前模型链路没有视觉能力：不读取图片像素、不编造画面描述"]
-    if att is None and raw_id:
-        notes.append(f"登记的附件 id 当前取不到：{raw_id}")
+    name = str(getattr(att, "original_name", "") or "") if att is not None else ""
+    shown = label or "（图片）"
+
+    if vision and att is not None:
+        if str(getattr(att, "state", "")) != "ready":
+            return _image_unsupported(
+                card,
+                shown,
+                version,
+                bytes_,
+                att.id,
+                f"图片附件当前状态是 {getattr(att, 'state', '未知')}：没有可交付的字节，"
+                "本次不声称看过这张图",
+                ["视觉理解需要附件处于 ready 状态"],
+            )
+        media_type = _image_media_type(name)
+        if not media_type:
+            return _image_unsupported(
+                card,
+                shown,
+                version,
+                bytes_,
+                att.id,
+                f"这种图片格式（{Path(name).suffix or '无扩展名'}）不作为多模态图片交付："
+                "当前只交付 png / jpg / gif / webp；其余按既有读取结论处理",
+                ["不把无法确认媒体类型的字节当图片发给模型"],
+            )
+        limit = int(max_image_bytes) if int(max_image_bytes) > 0 else MAX_IMAGE_BYTES
+        if bytes_ > limit:
+            return _image_unsupported(
+                card,
+                shown,
+                version,
+                bytes_,
+                att.id,
+                f"图片 {bytes_} 字节超过交付上限 {limit} 字节：本次没有把像素交给模型"
+                "（不截断成半张图，因为半张图会给出错的画面）",
+                ["要么压缩后再发，要么把结论写在注释里让 QIO 读文字"],
+            )
+        return _entry(
+            card,
+            source="image_delivered",
+            label=shown,
+            version=version,
+            read=True,
+            bytes=bytes_,
+            characters=0,
+            attachment_id=att.id,
+            reason="",
+            notes=[
+                f"本次把这张图片的真实字节（{name or '图片'}，{bytes_} 字节）作为多模态内容交给了模型，"
+                "由模型自己看；QIO 不另外编造画面描述",
+            ],
+        )
+
+    if not raw_id:
+        reason = (
+            "这张图片卡片还没有关联已保存的附件（meta.image.attachmentId 缺失）："
+            "本次没有可读的字节，也未读取图片内容"
+        )
+        notes = ["没有附件就没有像素可读；文件名不是内容"]
+    elif att is None:
+        reason = f"登记的附件 id 当前取不到：{raw_id}（可能已被删除或不属于这台设备）"
+        notes = ["取不到附件时不猜图片内容"]
+    elif vision:
+        reason = "这张图片没有可交付的字节（读取失败或为空）：本次未把它交给模型"
+        notes = ["视觉链路可用，但这份附件读不出字节"]
+    else:
+        reason = "当前模型链路没有视觉能力：只登记图片元数据，不声称看懂图片内容"
+        notes = ["当前模型链路没有视觉能力：不读取图片像素、不编造画面描述"]
+    return _image_unsupported(card, shown, version, bytes_, att.id if att is not None else (raw_id or None), reason, notes)
+
+
+def _image_unsupported(
+    card: dict,
+    label: str,
+    version: str,
+    bytes_: int,
+    attachment_id: str | None,
+    reason: str,
+    notes: list[str],
+) -> dict:
+    """图片**没有**交付给模型时的统一回执（原因必须可读，不许含糊）。"""
     return _entry(
         card,
         source="image_unsupported",
-        label=label or "（图片）",
+        label=label,
         version=version,
         read=False,
         bytes=bytes_,
         characters=0,
-        attachment_id=att.id if att is not None else (raw_id or None),
-        reason="当前模型链路没有视觉能力：只登记图片元数据，不声称看懂图片内容",
+        attachment_id=attachment_id,
+        reason=reason,
         notes=notes,
     )
 

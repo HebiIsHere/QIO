@@ -173,6 +173,26 @@ class _StreamAttempt:
         self.settled = False
 
 
+def _openai_content(msg: ChatMessage) -> Any:
+    """一条消息的 OpenAI content：没有图片就是字符串（与既有行为逐字一致），
+    有图片就是多模态数组（文本在前，图片在后）。
+    """
+    text = msg.content or ""
+    images = [part for part in (msg.images or []) if part and part.data_url]
+    if not images:
+        return text
+    parts: list[dict[str, Any]] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    for part in images:
+        # label 进不了 OpenAI 的图片块（它只有 image_url），所以把「这张图是谁」
+        # 写进紧随其后的文本块：模型引用卡片 id 时不必猜。
+        if part.label:
+            parts.append({"type": "text", "text": "[图片] " + part.label})
+        parts.append({"type": "image_url", "image_url": {"url": part.data_url}})
+    return parts
+
+
 class NativeAdapter(BaseAdapter):
     mode = "native"
     # 这条 adapter 在**每次实际请求**上自己记账（见 credentials/usage.py）：
@@ -180,6 +200,10 @@ class NativeAdapter(BaseAdapter):
     accounts_requests = True
     # OpenAI 兼容协议的真流式（见 stream()）。
     supports_stream = True
+    # 这条链路能把图片作为多模态内容下发（chat.completions 的 image_url 块）。
+    # 注意：它说的是「协议支持」，不是「用户选的模型一定看得懂」——模型不支持时
+    # 由厂商报错，QIO 按既有失败路径如实上报，不假装看懂。
+    supports_images = True
 
     def __init__(
         self,
@@ -196,9 +220,15 @@ class NativeAdapter(BaseAdapter):
     # -- serialization ----------------------------------------------------
 
     def to_openai_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """ChatMessage → OpenAI 兼容 messages。
+
+        带图片的消息按多模态 content 数组下发（`{type: "text"}` + `{type: "image_url"}`）；
+        没有图片时**逐字保持**原来的字符串形状 —— 既有端点（含只认字符串的兼容实现）
+        不受影响。图片与文本都在同一条 user 消息里，顺序是「先文本后图片」。
+        """
         out: list[dict[str, Any]] = []
         for msg in messages:
-            item: dict[str, Any] = {"role": msg.role, "content": msg.content or ""}
+            item: dict[str, Any] = {"role": msg.role, "content": _openai_content(msg)}
             if msg.tool_calls:
                 item["tool_calls"] = [
                     {

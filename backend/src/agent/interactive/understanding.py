@@ -56,7 +56,9 @@ MAX_MEMORY_CHARS = 400
 MAX_RAW_CHARS = 4000
 
 #: 真正读到了正文的材料来源；其余来源都要在 honesty 里如实标注未读。
-READABLE_SOURCES = ("inline", "attachment_text", "url_fetched")
+#: 「真的读到了内容」的来源。image_delivered：图片的字节作为多模态内容交付给了模型 ——
+#: 内容不在上下文 JSON 里（它在图片块里），但**确实交付了**，所以不算「未读取」。
+READABLE_SOURCES = ("inline", "attachment_text", "url_fetched", "image_delivered")
 
 #: 理解阶段（前端统一过程区按这个顺序显示）。
 STAGE_ORDER = ("materials", "model", "validation", "persist")
@@ -395,7 +397,9 @@ def _normalize_material(item: Any, index: int) -> dict:
     }
 
 
-def _resolve_materials(conn: sqlite3.Connection, state: dict) -> tuple[list[dict], dict]:
+def _resolve_materials(
+    conn: sqlite3.Connection, state: dict, *, vision: bool = False
+) -> tuple[list[dict], dict]:
     """调用 A 的 materials.resolve_materials（冻结签名）。
 
     材料解析不可用（模块缺失 / 调用失败）时不丢上下文：返回空材料并如实记录原因。
@@ -412,13 +416,53 @@ def _resolve_materials(conn: sqlite3.Connection, state: dict) -> tuple[list[dict
                 state=state,
                 cards=list(state.get("cards") or []),
                 max_chars=MAX_MATERIAL_CHARS,
+                vision=bool(vision),
             )
         except TypeError:
+            # 老版材料模块没有 vision 形参：退回既有签名（图片仍然是 image_unsupported）
             raw = resolve(conn, state=state, cards=list(state.get("cards") or []))
     except Exception as exc:  # noqa: BLE001
         return [], {"ok": False, "reason": "材料解析失败：" + _safe_error(exc)}
     materials = [_normalize_material(item, index) for index, item in enumerate(list(raw or []))]
     return materials, {"ok": True, "reason": ""}
+
+
+def _resolve_deliverable_images(conn: sqlite3.Connection, state: dict) -> list[dict]:
+    """本次能真的交给视觉模型的图片（材料模块的唯一实现；不可用就如实返回空）。
+
+    与材料解析共用同一份可见范围过滤：未勾选的注释、隐藏、已删除的卡片都不会被读。
+    """
+    try:
+        module = _materials_module()
+    except Exception:  # noqa: BLE001 - 模块不可用时不猜，返回空并保持材料的诚实结论
+        return []
+    resolve = getattr(module, "resolve_images", None)
+    if not callable(resolve):
+        return []
+    try:
+        raw = resolve(
+            conn,
+            state=state,
+            cards=list(state.get("cards") or []),
+        )
+    except Exception:  # noqa: BLE001 - 单次读图失败不该让整次理解失败
+        return []
+    out: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("dataUrl"):
+            continue
+        out.append(
+            {
+                "cardId": item.get("cardId"),
+                "attachmentId": item.get("attachmentId"),
+                "name": item.get("name"),
+                "bytes": item.get("bytes"),
+                "mediaType": item.get("mediaType"),
+                "label": item.get("label"),
+                "dataUrl": item.get("dataUrl"),
+            }
+        )
+    return out
 
 
 def _card_label(card: dict) -> str:
@@ -444,6 +488,7 @@ def build_context(
     board_id: str,
     submission_id: str | None = None,
     understanding_id: str | None = None,
+    vision: bool = False,
 ) -> dict:
     """从**冻结的提交快照**构建互动上下文；不读当前板面。
 
@@ -601,7 +646,12 @@ def build_context(
         "intentBearing": any(bool(e.get("intentBearing")) for e in expressions),
     }
 
-    materials, material_status = _resolve_materials(conn, state_like)
+    materials, material_status = _resolve_materials(conn, state_like, vision=bool(vision))
+    # 视觉链路可用时，把**这次真的能交付**的图片字节读出来（同一份可见范围、同一份材料模块）。
+    # 读进上下文一起落库：事后能从保存的上下文重建「这次到底交付了哪些图片」。
+    image_parts: list[dict] = []
+    if vision:
+        image_parts = _resolve_deliverable_images(conn, state_like)
     material_ids: list[str] = []
     for material in materials:
         for key in ("cardId", "id"):
@@ -624,6 +674,7 @@ def build_context(
         "cards": cards,
         "groups": groups,
         "materials": materials,
+        "imageParts": image_parts,
         "visibleCardIds": visible_ids,
         "visibleGroupIds": [g["id"] for g in groups if g["id"]],
         "materialIds": material_ids,
@@ -639,6 +690,37 @@ def build_context(
     }
     _apply_limits(context)
     return context
+
+
+def image_parts_from_context(context: dict) -> list[Any]:
+    """这次真正交付给模型看的图片内容块（`ImagePart`）。
+
+    事实来源只有一个：`build_context` 在**有数据库连接**的时候、按同一份可见范围
+    把「已交付」的图片字节读出来，写进 `context["imageParts"]`（随上下文一起落库，
+    所以事后可从保存的上下文重建这次的交付事实）。这里只做读取与形状转换，不重新判断；
+    上下文里没有（老记录 / 材料模块不可用）就如实返回空。
+    """
+    raw = context.get("imageParts")
+    if not isinstance(raw, list) or not raw:
+        return []
+    from agent.adapters.base import ImagePart
+
+    parts: list[Any] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        data_url = str(item.get("dataUrl") or "")
+        if not data_url:
+            continue
+        parts.append(
+            ImagePart(
+                data_url=data_url,
+                label=str(item.get("label") or ""),
+                media_type=str(item.get("mediaType") or ""),
+                bytes=int(item.get("bytes") or 0),
+            )
+        )
+    return parts
 
 
 def _apply_limits(context: dict) -> None:
@@ -1149,6 +1231,42 @@ def _completion_text(completion: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
+async def _adapter_for_stage(
+    adapter_provider: Any, *, images_hint: bool = False, errors: list | None = None
+) -> Any:
+    """取这次理解要用的适配器。
+
+    `images_hint=True` 表示「本次可能带图」：调用方（路由）据此**优先**选一条视觉用途的
+    凭据；老调用方（只接受无参可调用对象）自动退回既有取法，行为逐字不变。
+    取不到时把原因追加进 `errors`（调用方用它写出可读的失败原因，不吞掉细节）。
+    """
+
+    def _note(exc: BaseException) -> None:
+        if errors is not None:
+            errors.append(_safe_error(exc))
+
+    if images_hint:
+        try:
+            return await adapter_provider(images=True)
+        except TypeError:
+            pass  # 老形状：无参 provider
+        except Exception as exc:  # noqa: BLE001 - 取 adapter 失败按「没有适配器」处理
+            _note(exc)
+            return None
+    try:
+        return await adapter_provider()
+    except Exception as exc:  # noqa: BLE001 - 取 adapter 失败也算理解失败，不是提交失败
+        _note(exc)
+        return None
+
+
+def _adapter_supports_images(adapter: Any) -> bool:
+    """这条链路能不能真的把图片交给模型（适配器自己声明；缺声明一律按不支持）。"""
+    if adapter is None:
+        return False
+    return bool(getattr(adapter, "supports_images", False))
+
+
 async def _call_model(adapter: Any, messages: list) -> Any:
     """一次模型请求：先过预算闸，再按既有记账链路归因本次用量。
 
@@ -1511,23 +1629,27 @@ async def run_understanding(
     try:
         current_stage = "materials"
         _set_stage(conn, understanding_id, "materials", "正在读取本次允许查看的材料")
-        context = build_context(conn, board_id=board_id, understanding_id=understanding_id)
+        # 视觉能力要在**读材料之前**就问出来：它决定图片是「交付字节」还是「如实说不支持」。
+        provider_errors: list[str] = []
+        adapter = await _adapter_for_stage(
+            adapter_provider, images_hint=True, errors=provider_errors
+        )
+        vision = _adapter_supports_images(adapter)
+        context = build_context(
+            conn,
+            board_id=board_id,
+            understanding_id=understanding_id,
+            vision=vision,
+        )
         materials = [m for m in (context.get("materials") or []) if isinstance(m, dict)]
         _update(conn, understanding_id, context=context, materials=materials)
 
         current_stage = "model"
         _set_stage(conn, understanding_id, "model", "正在调用模型理解这次提交")
-        provider_error = ""
-        adapter: Any = None
-        try:
-            adapter = await adapter_provider()
-        except Exception as exc:  # noqa: BLE001 - 取 adapter 失败也算理解失败，不是提交失败
-            adapter = None
-            provider_error = _safe_error(exc)
         if adapter is None:
             reason = "当前没有可用的模型适配器，无法进行真实理解"
-            if provider_error:
-                reason += "（" + provider_error + "）"
+            if provider_errors:
+                reason += "（" + provider_errors[0] + "）"
             reason += "：受理记录已保留，补充凭据后可以重试。"
             discarded = _discard_if_superseded()
             if discarded is not None:
@@ -1537,7 +1659,9 @@ async def run_understanding(
             )
 
         raw = ""
-        messages = prompts.build_understanding_messages(context)
+        # 真正交付的图片内容块（上下文里记着这次交付了哪些；不是「有图片卡」就算）
+        image_parts = image_parts_from_context(context)
+        messages = prompts.build_understanding_messages(context, images=image_parts)
         completion = await _call_model(adapter, messages)
         raw = _completion_text(completion)
 
@@ -1554,7 +1678,7 @@ async def run_understanding(
             attempts = 2
             _set_stage(conn, understanding_id, "validation", "输出无效，正在请求模型修复一次")
             repair_messages = prompts.build_repair_messages(
-                context, raw, list(validation.get("reasons") or [])
+                context, raw, list(validation.get("reasons") or []), images=image_parts
             )
             repair_completion = await _call_model(adapter, repair_messages)
             raw = _completion_text(repair_completion)

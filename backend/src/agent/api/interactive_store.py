@@ -536,7 +536,23 @@ def _adapter_provider(request: Request):
 
         return _no_adapter
 
-    async def provider():
+    vision_builder = getattr(ctx, "build_vision_adapter", None)
+
+    async def provider(*, images: bool = False):
+        """`images=True` 表示本次可能带图：优先一条 `vision` 用途凭据。
+
+        - 有 vision 凭据且能用 → 用它（图片交给看得见的模型）；
+        - 没有 / 构建失败 → **如实回落**主循环适配器（老行为）；图片到底能不能交付，
+          由适配器自己的 `supports_images` 决定，材料层据此如实标注；
+        - 两者都拿不到 → None（理解模块给出可读失败原因）。
+        """
+        if images and callable(vision_builder):
+            try:
+                vision_adapter = await vision_builder()
+                if vision_adapter is not None:
+                    return vision_adapter
+            except Exception:  # noqa: BLE001 - 看图凭据坏了不该让整次理解失败
+                logger.warning("构建看图 adapter 失败，回落到主循环凭据", exc_info=True)
         try:
             return await builder()
         except Exception:  # noqa: BLE001 - 没有可用凭据 / adapter 时如实降级
