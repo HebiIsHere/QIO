@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
+import { MEDIA_CAPABILITY_HINT } from "./mediaFacts";
 import { api } from "../services/api";
 import AttachmentChip from "./AttachmentChip.vue";
 import {
@@ -1429,6 +1430,16 @@ async function stopTurn() {
           取消
         </button>
       </div>
+      <!--
+        附件能力提示（契约 §4.1/§4.2 只加不减）：图片 / 音频 / 视频各自的真实状态，
+        不承诺「一定能看见 / 一定听得见」——交付与否由**本次真实链路**的能力决定。
+      -->
+      <details class="attach-capability" data-test="attach-capability">
+        <summary data-test="attach-capability-summary">QIO 会怎么读图片 / 音频 / 视频</summary>
+        <p class="attach-capability-note" data-test="attach-capability-image">{{ MEDIA_CAPABILITY_HINT.image }}</p>
+        <p class="attach-capability-note" data-test="attach-capability-audio">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
+        <p class="attach-capability-note" data-test="attach-capability-video">{{ MEDIA_CAPABILITY_HINT.video }}</p>
+      </details>
       <!-- 附件没附上（结构化失败）：说清是哪几个、为什么，并给一个出口 -->
       <div v-if="sendRejection" class="attach-reject" data-test="attach-reject" role="alert">
         <p class="attach-reject-msg">{{ sendRejection.message }}</p>
@@ -1639,6 +1650,17 @@ async function stopTurn() {
 </template>
 
 <style scoped>
+/* 附件能力提示：折叠在「怎么读」里，不占常驻空间 */
+.attach-capability summary {
+  font-size: var(--fs-xs);
+  color: var(--link);
+  cursor: pointer;
+}
+.attach-capability-note {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
 /* 右下角大气泡：融入对话页 flex 布局（消息流下方、靠右），
    浅色表面 + 玫红描边 + 右下小圆角，不可拖动；
    增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */

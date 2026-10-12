@@ -223,9 +223,13 @@ def test_audio_with_a_working_channel_becomes_audio_transcribed(tmp_path, fake_f
     assert endpoint.calls, "材料层没有真的调用转写端点"
     assert endpoint.calls[0]["octets"] > 0
 
-    # 「模型请求里真的带着这段文字」：走真实的 NativeAdapter 序列化路径。
-    messages = [ChatMessage(role="user", content="听听这段录音说了什么")]
-    materials.attach_transcripts(messages, result["entries"])
+    # 「模型请求里真的带着这段文字」：走**真实的生产链路**——
+    # 材料条目 → turn_orchestrator.media_facts_note() → prompt → 适配器序列化成模型消息。
+    from agent.services.turn_orchestrator import media_facts_note
+
+    note = media_facts_note(result["entries"])
+    assert REAL_TRANSCRIPT in note, note
+    messages = [ChatMessage(role="user", content="听听这段录音说了什么" + chr(10) + note)]
     sent = adapter.to_openai_messages(messages)
     payload = json.dumps(sent, ensure_ascii=False)
     assert REAL_TRANSCRIPT in payload, payload

@@ -109,6 +109,29 @@ export interface NarrativeCallRecord {
  */
 export type MessageAttachment = AttachmentRef;
 
+/**
+ * 一条多媒体材料的**读取事实**（契约 §4.4）：形状与后端 `materials._media_entry` 一致，
+ * 逐字段读、缺字段就当没有这条事实。界面只用它显示**已经发生的事**，
+ * 绝不据此推断「模型理解正确」。
+ */
+export interface MessageMediaFact {
+  /** 对应哪条附件（可能是卡片 id）；对不上附件时单独列出 */
+  id?: string;
+  label?: string;
+  /** 八个 source 之一（image/audio/video 的 delivered / unsupported、audio_transcribed、video_sampled） */
+  source?: string;
+  read?: boolean;
+  reason?: string;
+  transcript?: string | null;
+  range?: { start?: number | null; end?: number | null } | null;
+  frames?: { at?: number }[] | null;
+  engine?: { provider?: string; model?: string } | null;
+  bytes?: number;
+  /** 这条事实发生的时间位置（后端给就给，没有就不显示时间） */
+  at?: string;
+  notes?: string[];
+}
+
 /** 阶段自身状态（契约 §1.3）：只表达这个阶段，不代表整轮。 */
 export type StageStatus = "running" | "done";
 
@@ -1025,6 +1048,11 @@ export interface StreamMessage {
   attachmentIds?: string[];
   /** 附件展示元数据（与 C 的 AttachmentRef 同形；拿不到就不编造名称与状态） */
   attachments?: MessageAttachment[];
+  /**
+   * 这条消息携带的多媒体读取事实（契约 §4.4）：已交付 / 抽样 / 转写 / 未支持各带原因与时间位置。
+   * 缺省 = 这次没有任何媒体事实（界面什么都不显示，不编造）。
+   */
+  mediaFacts?: MessageMediaFact[];
   /**
    * 受理回执与界面不一致时的**事实**说明（例如「有 1 个附件没有附上：…」）。
    * 只在后端明确说「没绑上」时写：绝不出现「界面有附件、模型实际没有」。

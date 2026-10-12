@@ -180,7 +180,8 @@ export function mediaFactsOf(raw: RawFact | undefined | null): MediaFact {
   if (!known) {
     return {
       kind: "image",
-      label: "本次没有交付事实",
+      // 没有交付事实 = 没有交付给模型（未交付），而不是「不支持这种媒体」
+      label: "未交付模型：本次没有交付事实",
       read: false,
       detail: source ? `尚未识别的来源取值：${source}` : "这条材料没有来源事实（可能只加载了元数据）",
       transcript: "",
@@ -198,7 +199,9 @@ export function mediaFactsOf(raw: RawFact | undefined | null): MediaFact {
       const range = describeRange(data.range);
       if (range) parts.push(range);
     } else if (source === "audio_transcribed") {
-      parts.push("经派生转写得到文字（只代表实际得到的文字，不代表语气 / 音乐 / 全部环境声音）");
+      // 诚实边界：转写文字**只**说明拿到了哪些字；对声音本身（怎么说、有什么别的声响）
+      // 一个字都不许推断。这里刻意不列举「语气 / 音乐」这类词——列举本身就成了暗示。
+      parts.push("经派生转写得到文字（只代表实际得到的文字，与声音本身无关）");
       const range = describeRange(data.range);
       if (range) parts.push(range);
     } else {

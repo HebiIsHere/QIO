@@ -117,7 +117,10 @@ async function mountDock() {
   const session = useSessionStore();
   session.currentTopicId = "A";
   useInteractiveStore().chatOpen = true;
-  const sendMock = vi.fn(async () => true);
+  // 载荷形状要能逐字段断言（与 Composer 同一条入口：文字 + 附件 id + 附件引用）
+  const sendMock = vi.fn(
+    async (_text: string, _ids?: string[], _attachments?: AttachmentRef[]) => true,
+  );
   session.send = sendMock as unknown as typeof session.send;
   const w = mount(ChatDock, { global: { plugins: [pinia] }, attachTo: document.body });
   wrappers.push(w);
@@ -228,10 +231,10 @@ describe("ChatDock 发送载荷：只有当前消息与明确选定的附件", (
     await flushPromises();
 
     expect(sendMock).toHaveBeenCalledTimes(1);
-    const args = sendMock.mock.calls[0];
-    expect(args[0]).toBe("只发这句话");
-    expect(args[1] ?? []).toEqual([]);
-    expect(args[2] ?? []).toEqual([]);
+    const [text, ids, attachments] = sendMock.mock.calls[0];
+    expect(text).toBe("只发这句话");
+    expect(ids ?? []).toEqual([]);
+    expect(attachments ?? []).toEqual([]);
   });
 
   it("带附件：载荷里恰好是当前消息 + 明确选定的那一个附件，板面/未提交改动/未许可文字卡/预览内容一个字都不带", async () => {
@@ -254,7 +257,7 @@ describe("ChatDock 发送载荷：只有当前消息与明确选定的附件", (
     await flushPromises();
 
     expect(sendMock).toHaveBeenCalledTimes(1);
-    const [text, ids, refs] = sendMock.mock.calls[0] as [string, string[], AttachmentRef[]];
+    const [text, ids, refs] = sendMock.mock.calls[0];
     expect(text).toBe("当前这条消息");
     expect(ids).toEqual(["att_chosen"]);
     expect((refs ?? []).map((item) => item.id)).toEqual(["att_chosen"]);
@@ -289,7 +292,7 @@ describe("ChatDock 发送载荷：只有当前消息与明确选定的附件", (
     await nextTick();
     await w.find('[data-im="chat-send"]').trigger("click");
     await flushPromises();
-    const [, ids] = sendMock.mock.calls[0] as [string, string[]];
+    const [, ids] = sendMock.mock.calls[0];
     expect(ids ?? []).toEqual([]);
   });
 });
@@ -364,7 +367,7 @@ describe("ChatDock 附件失败：保留输入、可重试、不重复上传", (
     await nextTick();
     await w.find('[data-im="chat-send"]').trigger("click");
     await flushPromises();
-    const second = sendMock.mock.calls[1] as [string, string[]];
+    const second = sendMock.mock.calls[1];
     expect(second[0]).toBe("第二条");
     expect(second[1] ?? [], "上一条的附件被重复发送了").toEqual([]);
   });

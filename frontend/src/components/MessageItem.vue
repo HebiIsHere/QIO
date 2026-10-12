@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
 import AttachmentChip from "./AttachmentChip.vue";
+import { mediaFactsOf } from "./mediaFacts";
 import { splitSystemAnnotation, useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
@@ -232,6 +233,38 @@ const systemNote = computed(() => answerParts.value.annotation);
  */
 const attachmentChips = computed(() => props.message.attachments ?? []);
 
+
+// -- 多媒体附件的读取事实（契约 §4.4）：只显示已经发生的事 ------------------
+
+/**
+ * 多媒体事实行（与附件行分开）：每一条都带**真实原因**与**时间位置**。
+ *
+ * 五态词是分开报告的（附件已保存 → 预览可用 → 内容已处理 → 已交付模型 → 回答已完成）：
+ * 这里只说「本次读到/没读到什么」，绝不把「已交付」说成「模型已理解」。
+ */
+const mediaFactRows = computed(() => {
+  const list = props.message.mediaFacts ?? [];
+  return list.map((raw, index) => {
+    const fact = mediaFactsOf({
+      source: raw.source,
+      reason: raw.reason,
+      transcript: raw.transcript,
+      range: raw.range ?? null,
+      frames: raw.frames ?? null,
+      engine: raw.engine ?? null,
+      bytes: raw.bytes,
+    });
+    const id = String(raw.id ?? "");
+    const attached = id ? attachmentChips.value.find((item) => item.id === id) : undefined;
+    return {
+      key: (id || "media") + "-" + index,
+      name: attached?.name || String(raw.label ?? "") || "未命名媒体",
+      fact,
+      at: formatTime(raw.at),
+    };
+  });
+});
+
 // -- 附件行（契约 §1.6）：显示交给 AttachmentChip，动作接在这里 ----------
 
 /** 正在处理的附件 id（打开 / 重新定位 / 重试共用）：防重复点击 */
@@ -393,6 +426,32 @@ function removeOne(id: string) {
             @remove="removeOne"
           />
         </span>
+      </div>
+      <!--
+        多媒体附件的读取事实（契约 §4.4）：已交付 / 抽样 / 转写 / 未支持，
+        各带**真实原因**与时间位置。这里只报告已经发生的事，不推断模型理解了什么。
+      -->
+      <div v-if="mediaFactRows.length" class="media-facts" data-test="message-media-facts">
+        <p
+          v-for="row in mediaFactRows"
+          :key="row.key"
+          class="media-fact"
+          :data-test="'media-fact'"
+          :data-source="row.fact.source"
+          :data-read="row.fact.read ? 'true' : 'false'"
+        >
+          <span class="media-fact-head">
+            <span class="media-fact-name" data-test="media-fact-name">{{ row.name }}</span>
+            <span class="media-fact-state" data-test="media-fact-label">{{ row.fact.label }}</span>
+            <span v-if="row.at" class="media-fact-at mono" data-test="media-fact-at">{{ row.at }}</span>
+          </span>
+          <span class="media-fact-detail" data-test="media-fact-detail">{{ row.fact.detail }}</span>
+          <span
+            v-if="row.fact.transcript"
+            class="media-fact-transcript"
+            data-test="media-fact-transcript"
+          >{{ row.fact.transcript }}</span>
+        </p>
       </div>
       <!-- 受理回执与界面不一致：这条消息实际没带上附件（绝不假装带上了） -->
       <p
@@ -571,6 +630,46 @@ function removeOne(id: string) {
 </template>
 
 <style scoped>
+.media-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: var(--sp-1) 0 0;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--border-subtle);
+}
+.media-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.media-fact-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.media-fact-name {
+  color: var(--text-primary);
+}
+.media-fact-state {
+  color: var(--text-muted);
+}
+.media-fact-at,
+.media-fact-transcript {
+  font-family: var(--mono);
+  font-size: var(--fs-tech);
+  color: var(--text-muted);
+}
+.media-fact-transcript {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
 .message {
   display: flex;
   flex-direction: column;
