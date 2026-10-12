@@ -217,11 +217,14 @@ interface ShownBlock {
   line: number;
 }
 
+/**
+ * 关闭态要显示的块：**只解析这一份文本**（docText 已经按「候选优先」给出该显示的那一份），
+ * 显示与行号来自同一次解析 —— 两者用两份文本算就会错位。
+ */
 const shownBlocks = computed<ShownBlock[]>(() => {
-  const base = liveDoc.value.blocks;
-  const starts = blockLineStarts(parseDocText(docText.value));
-  const blocks = editing.value ? parseDocText(draft.value).blocks : base;
-  return blocks.map((block, index) => ({
+  const doc = parseDocText(docText.value);
+  const starts = blockLineStarts(doc);
+  return doc.blocks.map((block, index) => ({
     block,
     index,
     line: starts[index] ?? 0,
