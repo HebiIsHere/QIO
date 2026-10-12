@@ -160,6 +160,20 @@ const boardSize = computed(() => {
             {{ refreshing ? "查询中…" : "刷新理解状态" }}
           </button>
         </template>
+        <!--
+          展开预览是**查看状态**（契约 §3.5 / §3.6）：一次展开多张时给一个收口入口。
+          它只改前端内存里的展开集合，不写板面状态、不产生表达、不触发理解 / 任务。
+          没有展开的预览时不占位（不是常驻按钮）。
+        -->
+        <button
+          v-if="store.previewExpandedCount"
+          class="im-chip"
+          type="button"
+          data-im="collapse-previews"
+          @click="store.collapseAllPreviews()"
+        >
+          收起预览（{{ store.previewExpandedCount }}）
+        </button>
         <button
           class="im-chip"
           type="button"

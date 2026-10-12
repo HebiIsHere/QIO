@@ -59,6 +59,11 @@ import {
   type DOMRectLike,
   type Viewport,
 } from "../../interactive/viewport";
+import {
+  EXPANDED_PREVIEW_SIZE,
+  planExpandedLayout,
+  type LayoutRect,
+} from "../../interactive/cardLayout";
 import type { BoardCard as BoardCardModel, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
@@ -160,6 +165,65 @@ const groups = computed(() => boardState.value?.groups ?? []);
 const links = computed(() => boardState.value?.links ?? []);
 const selection = computed(() => boardState.value?.selection ?? []);
 
+// --- 临时布局：展开预览的槽位（契约 2026-10-12 §3.6） -----------------------
+
+/** 窗口尺寸变化后重新读一次容器尺寸（clientWidth 不是响应式的） */
+const stageTick = ref(0);
+function onWindowResize(): void {
+  stageTick.value += 1;
+}
+
+/**
+ * 板面可视范围（**板面坐标**）：容器像素尺寸 ÷ 缩放。
+ * 展开卡不许越出它，所以窄窗口 / 放大查看时展开尺寸与位置一起向内收敛。
+ * 容器量不到尺寸（jsdom 没有真实布局）时 containerSize() 已经兜底成板面大小。
+ */
+const stageSize = computed(() => {
+  void stageTick.value;
+  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
+  const size = containerSize();
+  return { w: size.w / scale, h: size.h / scale };
+});
+
+/**
+ * 这一帧的临时布局：只用于渲染。
+ * 入参是**正式位置**（board.cards 的 x/y/w/h），输出槽位绝不写回板面状态；
+ * 展开 / 让位 / 收起都不产生表达、不触发意图 / 任务、不排保存。
+ */
+const layoutPlan = computed(() =>
+  planExpandedLayout({
+    cards: liveCards.value,
+    expanded: store.expandedCardIds,
+    expandedSize: EXPANDED_PREVIEW_SIZE,
+    stage: stageSize.value,
+  }),
+);
+
+/** 只把**真正展开**的槽位交给预览层（普通卡片不需要额外容器） */
+const expandedSlots = computed<Record<string, LayoutRect>>(() => {
+  const plan = layoutPlan.value;
+  const out: Record<string, LayoutRect> = {};
+  for (const id of plan.expanded) {
+    const slot = plan.slots[id];
+    if (slot) out[id] = slot;
+  }
+  return out;
+});
+
+/** 某张卡这一帧画在哪：没有展开时就是正式位置（与改动前逐字段相同） */
+function slotOf(card: BoardCardModel): LayoutRect {
+  return layoutPlan.value.slots[card.id] ?? cardRect(card);
+}
+
+/** 交给 BoardCard 的卡片对象：只把渲染坐标换成临时槽位，其余字段与正式状态一致 */
+function renderCard(card: BoardCardModel): BoardCardModel {
+  const slot = slotOf(card);
+  const x = displayX(card);
+  const y = displayY(card);
+  if (x === card.x && y === card.y && slot.w === card.w && slot.h === card.h) return card;
+  return { ...card, x, y, w: slot.w, h: slot.h };
+}
+
 const selectedGroupIds = computed(() => {
   const current = boardState.value;
   if (!current) return [] as string[];
@@ -194,12 +258,12 @@ function groupNameOf(cardId: string): string | null {
 
 function displayX(card: BoardCardModel): number {
   const drag = dragging.value;
-  return drag && drag.cardId === card.id ? drag.x : card.x;
+  return drag && drag.cardId === card.id ? drag.x : slotOf(card).x;
 }
 
 function displayY(card: BoardCardModel): number {
   const drag = dragging.value;
-  return drag && drag.cardId === card.id ? drag.y : card.y;
+  return drag && drag.cardId === card.id ? drag.y : slotOf(card).y;
 }
 
 /**
@@ -212,10 +276,16 @@ function displayY(card: BoardCardModel): number {
  */
 const displayCards = computed<BoardCardModel[]>(() => {
   const drag = dragging.value;
-  if (!drag || !drag.moved) return liveCards.value;
-  return liveCards.value.map((card) =>
-    card.id === drag.cardId ? { ...card, x: drag.x, y: drag.y } : card,
-  );
+  const moved = drag && drag.moved ? drag : null;
+  // 没有展开、也没有真的拖动时原样返回（与改动前完全一致，避免无谓的对象重建）
+  if (!moved && !layoutPlan.value.expanded.length) return liveCards.value;
+  return liveCards.value.map((card) => {
+    const slot = slotOf(card);
+    const x = moved && moved.cardId === card.id ? moved.x : slot.x;
+    const y = moved && moved.cardId === card.id ? moved.y : slot.y;
+    if (x === card.x && y === card.y && slot.w === card.w && slot.h === card.h) return card;
+    return { ...card, x, y, w: slot.w, h: slot.h };
+  });
 });
 
 function commit(next: BoardState, label: string) {
@@ -1270,6 +1340,8 @@ onMounted(() => {
   viewportEl.value?.addEventListener("scroll", onViewportScroll, { passive: true });
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
+  // 窗口尺寸变化会改变「板面可视范围」：展开卡的内收要跟着重算
+  window.addEventListener("resize", onWindowResize);
   // 20：失焦与页面隐藏时复位临时按键与进行中的手势
   window.addEventListener("blur", onWindowBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1283,6 +1355,7 @@ onBeforeUnmount(() => {
   viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
+  window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("blur", onWindowBlur);
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
@@ -1334,7 +1407,7 @@ onBeforeUnmount(() => {
           <BoardCard
             v-for="card in liveCards"
             :key="card.id"
-            :card="card"
+            :card="renderCard(card)"
             :selected="selection.includes(card.id)"
             :highlight="highlightId === card.id"
             :dragging="dragging !== null && dragging.cardId === card.id"
@@ -1374,6 +1447,7 @@ onBeforeUnmount(() => {
             :located-intent-id="locatedIntentId"
             :width="SURFACE_W"
             :height="SURFACE_H"
+            :expanded-slots="expandedSlots"
           />
 
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
