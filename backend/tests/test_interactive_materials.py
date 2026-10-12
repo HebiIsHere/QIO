@@ -171,7 +171,13 @@ def test_unknown_attachment_id_is_unreadable(db_conn, svc):
     assert "att_missing" in entry["reason"]
 
 
-def test_unsupported_format_is_unreadable_with_reason(db_conn, svc, tmp_path):
+def test_damaged_pdf_is_unreadable_with_reason(db_conn, svc, tmp_path):
+    """到 2026-10-12 为止 PDF 已经**能读**（文字层）——这条用例改成「坏文件如实不可读」。
+
+    为什么改：原来它拿一个假 PDF 当「不支持的格式」，而契约 §3 之后 PDF 走真实解析，
+    假字节的结论必然是**解析失败**（不是「格式没实现」）。结论仍然是「不可读 + 可读原因」，
+    只是原因换了，所以断言跟着换口径 —— 不是为了让测试变绿而放宽。
+    """
     att = _ready(svc, tmp_path, "扫描件.pdf", b"%PDF-1.4 not really")
     card = models.new_card("file", "", meta={"file": {"name": "扫描件.pdf", "attachmentId": att.id}})
     entry = materials.resolve_materials(
@@ -179,7 +185,45 @@ def test_unsupported_format_is_unreadable_with_reason(db_conn, svc, tmp_path):
     )[0]
     assert entry["source"] == "unreadable" and entry["read"] is False
     assert entry["text"] == ""
-    assert "PDF 文本解析未实现" in entry["reason"]
+    assert "没有可提取的文字层" in entry["reason"] or "打不开" in entry["reason"]
+    assert entry["attachmentId"] == att.id
+
+
+def test_encrypted_pdf_is_unreadable_with_reason(db_conn, svc, tmp_path):
+    """加密 PDF 明确拒绝（需要密码），绝不假装读到了空文档。"""
+    from pypdf import PdfReader, PdfWriter
+
+    from fixtures.preview import pdf_bytes
+
+    plain = tmp_path / "plain.pdf"
+    plain.write_bytes(pdf_bytes())
+    encrypted = tmp_path / "加密.pdf"
+    writer = PdfWriter()
+    for page_obj in PdfReader(str(plain)).pages:
+        writer.add_page(page_obj)
+    writer.encrypt("secret")
+    with open(encrypted, "wb") as handle:
+        writer.write(handle)
+
+    att = _ready(svc, tmp_path, "加密.pdf", encrypted.read_bytes())
+    card = models.new_card("file", "", meta={"file": {"name": "加密.pdf", "attachmentId": att.id}})
+    entry = materials.resolve_materials(
+        db_conn, state=_state(card), cards=[card], attachments=svc
+    )[0]
+    assert entry["source"] == "unreadable" and entry["read"] is False
+    assert "加密" in entry["reason"]
+
+
+def test_unsupported_format_is_unreadable_with_reason(db_conn, svc, tmp_path):
+    """真正不在支持范围内的格式（可执行文件）仍然如实标不可读，并带上原因。"""
+    att = _ready(svc, tmp_path, "安装包.exe", b"MZ\x90\x00 not a document")
+    card = models.new_card("file", "", meta={"file": {"name": "安装包.exe", "attachmentId": att.id}})
+    entry = materials.resolve_materials(
+        db_conn, state=_state(card), cards=[card], attachments=svc
+    )[0]
+    assert entry["source"] == "unreadable" and entry["read"] is False
+    assert entry["text"] == ""
+    assert entry["reason"], "不支持也必须说清为什么"
     assert entry["attachmentId"] == att.id
 
 

@@ -239,3 +239,41 @@ def test_preview_ready_but_model_reading_is_a_separate_fact(
         conn, state={"cards": [licensed]}, cards=None, attachments=service
     )
     assert len(visible) == 1 and visible[0]["source"] == "inline"
+
+def test_real_pdf_and_pptx_reach_the_model_as_readable_text(
+    client: TestClient, samples: dict[str, Path]
+) -> None:
+    """真实 PDF / PPTX 的**正文**要真的被材料解析读到（不是只有预览能看）。
+
+    为什么单独一条：预览走 preview.py，模型读正文走 attachment_tools 的解析分派。
+    两条路各自实现过 PDF/PPTX —— 只测其中一条，另一条会悄悄退化成「二进制不可读」。
+    """
+    conn = client.app.state.ctx.conn
+    service = client.app.state.ctx.attachments
+    for key, needle in (("pdf", PDF_TEXT), ("pptx", PPTX_SLIDE1_TITLE)):
+        source = samples[key]
+        att = _upload(client, source)
+        card = {
+            "id": "c_" + key,
+            "kind": "file",
+            "content": "",
+            "meta": {
+                "file": {
+                    "name": source.name,
+                    "attachmentId": att["id"],
+                    "size": source.stat().st_size,
+                }
+            },
+            "checked": False,
+            "hidden": False,
+            "folded": False,
+            "bookmarked": False,
+            "deleted": False,
+        }
+        entries = materials_service.resolve_materials(
+            conn, state={"cards": [card]}, cards=None, attachments=service
+        )
+        assert len(entries) == 1, (key, entries)
+        assert entries[0]["source"] == "attachment_text", (key, entries[0].get("reason"))
+        assert entries[0]["read"] is True
+        assert needle in entries[0]["text"], (key, entries[0]["text"][:120])

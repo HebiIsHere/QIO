@@ -1392,6 +1392,11 @@ def _attachment_entry(
             content = attachment_tools._extract_docx(att, path, 0, _MAX_UNITS, 0, None)
         elif mode == "xlsx":
             content = attachment_tools._extract_xlsx(att, path, 0, _MAX_UNITS, 0, None)
+        elif mode == "pptx":
+            content = attachment_tools._extract_pptx(att, path, 0, _MAX_UNITS, 0, None)
+        elif mode == "pdf":
+            # PDF 走**文字层**解析（不渲染版面）：加密 / 没有文字层 / 损坏各自给不同原因。
+            content = attachment_tools._extract_pdf(att, path, 0, _MAX_UNITS, 0, None)
         else:  # sniff：扩展名不认识，按内容嗅探
             content = attachment_tools._extract_unknown(att, path, 0, _MAX_UNITS, 0, None)
     except attachment_tools.AttachmentLimitExceeded as exc:

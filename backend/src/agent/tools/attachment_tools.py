@@ -1820,7 +1820,30 @@ def _extract_pdf(
             limit=limit,
             reason=f"当前不可读取：这个 PDF 打不开（{type(exc).__name__}；可能已损坏）",
         )
-    units, total = _collect_window(_pdf_units(pages, cancel), offset, limit, cancel)
+    def _with_flag() -> Iterator[tuple[str, bool]]:
+        """在「页标记 / 文字行」流上标出这一条到底是不是**真的文字**。
+
+        为什么要标：pypdf 对**截断或损坏**的 PDF 可能返回 0 页，于是产出里只剩页标记。
+        那种情况下「读到了文件」是真的，但「读到了内容」是假的 —— 必须当成不可读，
+        否则上游会把一个空字符串当成「已读到正文」。
+        """
+        for unit in _pdf_units(pages, cancel):
+            yield unit, not unit.startswith("—— 第 ")
+
+    window, total = _collect_window(_with_flag(), offset, limit, cancel)
+    units = [unit for unit, _flag in window]
+    has_text = any(flag for _unit, flag in window)
+    if total > 0 and not has_text:
+        return _Content(
+            readable=False,
+            offset=offset,
+            limit=limit,
+            reason=(
+                "当前不可读取：这个 PDF 没有可提取的文字层"
+                f"（解析出 {len(pages)} 页，但没有一行文字；可能是截断/损坏的文件，"
+                "也可能是纯扫描件）"
+            ),
+        )
     page = _paginate_units(
         units, offset=offset, total=total, start_fragment=fragment_offset, char_budget=MAX_CHARS
     )
