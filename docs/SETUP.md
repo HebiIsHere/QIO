@@ -38,8 +38,48 @@ uv sync --frozen --extra dev      # 按 uv.lock 精确安装（CI 同款命令�
 | tiktoken | token 估算 |
 | httpx | 凭据识别 / 端点探测 / 远端 embedding |
 | numpy / onnxruntime / tokenizers | 本地向量召回（bge-small-zh-v1.5） |
+| pypdf | 卡片内 PDF 预览的只读事实（页数 / 标题 / 是否加密 / 可提取文本量）。纯 Python，随 sidecar 打包 |
 
 dev 额外：`pytest`、`pytest-asyncio`。
+
+## 2.1 卡片内预览与多媒体处理（安装版不需要用户另装东西）
+
+卡片内预览分两条路，**都不要求用户安装 Office、Python 或任何转换程序**：
+
+| 格式 | 在哪做 | 运行依赖 |
+| --- | --- | --- |
+| 图片 | 前端原卡片内位图 | 浏览器原生 |
+| PDF（逐页、保留原页面外观） | **前端** pdf.js 渲染 | `frontend/package.json` 的 `pdfjs-dist`（进前端构建产物） |
+| Word `.docx` / Excel `.xlsx` / PowerPoint `.pptx` | **后端**结构化转换 + 前端原卡片渲染 | 无新依赖：`zipfile` + `xml.etree`（stdlib），随 sidecar 打包 |
+| 代码 / 文本文件 | 前端只读渲染（行号 + 语言） | highlight.js（已有） |
+| 旧版 `.doc` / `.xls` / `.ppt` | **不内嵌预览** | 界面如实说明并保留打开 / 下载入口 |
+
+说明（不要含糊）：
+
+* Word / Excel / PowerPoint 的卡片内预览是**结构化正文预览**（段落 / 标题 / 列表 / 表格、工作表与单元格地址、
+  幻灯片文本），**不是逐页原版面渲染**；PDF 与图片保留原外观。
+* 转换在工作线程里做，按「附件 + 文件版本 + 配方版本」缓存；文件版本变了重新转换，
+  **旧版本结果绝不复用**。单文件参与转换的字节上限与一次转换的单元上限写在
+  `backend/src/agent/services/preview.py` 的常量里，超限会**标注截断**而不是假装完整。
+
+音频与视频（对话模式与互动悬浮聊天里的附件）分两种处置：
+
+* 所选链路**原生支持**音频 / 视频 → 把真实字节作为内容块交付（能力位由适配器声明）。
+* 否则**派生处理**：音频抽取音轨后转写（带时段与提供方）；视频按时间点抽样画面（带时间位置，
+  明确「不是逐帧」）。
+
+派生处理需要本机有一个可用的 ffmpeg。**查找顺序**：
+
+1. 环境变量 `QIO_FFMPEG`（指向 ffmpeg 可执行文件的绝对路径）；
+2. 应用资源目录 `resources/ffmpeg/`（若打包时放了进去，见下）；
+3. `PATH` 上的 `ffmpeg`；
+4. 常见安装位置。
+
+**找不到时如实降级**：界面与材料条目会说明「这台机器上没有可用的转换程序，也没有随包提供」，
+不会假装完成了整段视频处理。要随包提供，把 ffmpeg 可执行文件放进
+`frontend/src-tauri/resources/ffmpeg/` 再构建（安装包体积会增加约 80–120 MB，
+当前默认**不**内置 —— 这是有意的取舍，不是遗漏）。开发机上也可以用
+`$env:QIO_FFMPEG = 'C:\path\to\ffmpeg.exe'` 指定。
 
 ## 3. 前端（Node.js ≥ 20，实测 24）
 
@@ -192,6 +232,7 @@ powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 | `QIO_TOOL_PYTHON` | — | 开发/诊断用的逃生口：指定跑工具 worker 的解释器（绝对路径）。正式版不需要设 |
 | `QIO_DB_BASELINE` | — | 把数据库身份基线放到指定 JSON 文件（默认 Windows 落注册表 `HKCU\Software\qio\QIO`；测试/隔离实例用） |
 | `QIO_DISABLE_DB_CHECK` | `0` | `1` = 关闭数据库身份自检（隔离实例、跑测试时用；避免污染正式库的基线） |
+| `QIO_FFMPEG` | — | 指定 ffmpeg 可执行文件（音频抽取 / 视频抽样用）。不设就按资源目录 → PATH → 常见位置查找，找不到时如实降级 |
 
 > 不设任何令牌变量时后端会**自己生成**一个进程内令牌并拒绝所有未带令牌的请求
 > （fail-closed，日志只提示、不打印令牌）。要连上它，要么设 `QIO_SESSION_TOKEN`，

@@ -1,7 +1,7 @@
 {
   "name": "qio-frontend",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,6 +20,7 @@
     "highlight.js": "^11.11.1",
     "mdast-util-to-string": "^4.0.0",
     "micromark-extension-directive": "^4.0.0",
+    "pdfjs-dist": "^6.4.299",
     "pinia": "^2.2.0",
     "rehype-raw": "^7.0.0",
     "remark-directive": "^4.0.0",
