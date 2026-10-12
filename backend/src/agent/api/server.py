@@ -119,6 +119,41 @@ INLINE_SAFE_SUFFIXES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".ogg": "audio/ogg; codecs=opus",
+    # 代码 / 文本文件（卡片内预览按行号只读渲染）。
+    # 一律走 text/plain：即使内容是 HTML / XML，浏览器也不会按标记解析（叠加 nosniff），
+    # 前端拿到的是字节 → 自己渲染成带行号的文本，不执行、不解析。
+    ".py": "text/plain; charset=utf-8",
+    ".pyi": "text/plain; charset=utf-8",
+    ".ts": "text/plain; charset=utf-8",
+    ".tsx": "text/plain; charset=utf-8",
+    ".js": "text/plain; charset=utf-8",
+    ".jsx": "text/plain; charset=utf-8",
+    ".mjs": "text/plain; charset=utf-8",
+    ".cjs": "text/plain; charset=utf-8",
+    ".vue": "text/plain; charset=utf-8",
+    ".java": "text/plain; charset=utf-8",
+    ".kt": "text/plain; charset=utf-8",
+    ".c": "text/plain; charset=utf-8",
+    ".h": "text/plain; charset=utf-8",
+    ".cpp": "text/plain; charset=utf-8",
+    ".hpp": "text/plain; charset=utf-8",
+    ".cs": "text/plain; charset=utf-8",
+    ".go": "text/plain; charset=utf-8",
+    ".rs": "text/plain; charset=utf-8",
+    ".rb": "text/plain; charset=utf-8",
+    ".php": "text/plain; charset=utf-8",
+    ".sh": "text/plain; charset=utf-8",
+    ".ps1": "text/plain; charset=utf-8",
+    ".bat": "text/plain; charset=utf-8",
+    ".sql": "text/plain; charset=utf-8",
+    ".toml": "text/plain; charset=utf-8",
+    ".ini": "text/plain; charset=utf-8",
+    ".cfg": "text/plain; charset=utf-8",
+    ".yaml": "text/plain; charset=utf-8",
+    ".yml": "text/plain; charset=utf-8",
+    ".css": "text/plain; charset=utf-8",
+    ".scss": "text/plain; charset=utf-8",
+    ".less": "text/plain; charset=utf-8",
 }
 
 
@@ -3250,4 +3285,10 @@ def create_app(
     from agent.api.recovery_routes import build_router as build_recovery_router
 
     app.include_router(build_recovery_router(ctx))
+
+    # 卡片内预览（契约 §3.3）：附件转换数据与板面阅读位置。路由工厂在本文件之外，
+    # 避免把预览规则塞进这个长文件；这里只挂一行。
+    from agent.api.preview_routes import register_preview_routes
+
+    register_preview_routes(app)
     return app
