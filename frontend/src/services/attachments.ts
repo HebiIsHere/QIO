@@ -1236,3 +1236,218 @@ export async function restorePendingAttachments(
   };
 }
 
+// ---------------------------------------------------------------------------
+// 卡片内预览（契约 §3.3 / §3.5，本轮新增；只增不改既有请求路径）
+// ---------------------------------------------------------------------------
+
+/**
+ * 【预览相关】可以内联查看的类型：docx/xlsx/xlsm/pptx 由**后端结构化转换 + 卡片内渲染**，
+ * PDF 由前端 pdf.js 逐页渲染。
+ *
+ * 注意 html/xml/svg **永远不在这里**：它们会执行脚本或带外链，预览走
+ * 「转换层返回纯文本」的路径（后端 classify_preview 把它们归为 code）。
+ * 与后端 server.py 的 INLINE_SAFE_SUFFIXES 必须同步（那份清单要由 lead 一起加）。
+ */
+const PREVIEW_VIEWABLE_EXTS = [".docx", ".xlsx", ".xlsm", ".pptx"];
+
+for (const suffix of PREVIEW_VIEWABLE_EXTS) VIEWABLE_EXTS.add(suffix);
+
+/** 预览状态（契约 §3.2 的 status：ready / failed / unsupported）。 */
+export type PreviewStatus = "ready" | "failed" | "unsupported";
+
+export type PreviewKind =
+  | "image" | "pdf" | "docx" | "xlsx" | "pptx" | "code" | "legacy_office" | "unsupported";
+
+/** 后端 render_for 的响应（契约 §3.2 冻结字段，逐字段读，不猜）。 */
+export interface PreviewEnvelope {
+  status: PreviewStatus;
+  kind: string;
+  version: string;
+  attachmentId: string;
+  recipe: number;
+  data: Record<string, unknown> | null;
+  reason: string;
+  truncated: boolean;
+  stats: Record<string, unknown>;
+}
+
+/** 阅读位置（契约 §3.3：**只允许这些键**，未知键后端会丢弃）。 */
+export interface PreviewPosition {
+  mode?: PreviewKind;
+  page?: number;
+  slide?: number;
+  sheet?: string;
+  row?: number;
+  line?: number;
+  zoom?: number;
+  scrollTop?: number;
+}
+
+export interface BoardPreviewItem {
+  attachmentId: string;
+  version: string;
+  position: PreviewPosition;
+  updatedAt: string;
+}
+
+export interface BoardPreviewResponse {
+  state: { positions: Record<string, BoardPreviewItem> };
+}
+
+/** 请求辅助：**可被外部 AbortSignal 中止**（收起卡片/换附件/卸载时立刻停掉在途请求）。 */
+async function previewRequest<T>(
+  path: string,
+  init: RequestInit,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<T> {
+  const { base, token } = await resolveBackend();
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS.long;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const outer = options.signal;
+  const onAbort = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", onAbort);
+  }
+  try {
+    const resp = await fetch(base + path, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...authHeaders(token),
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      if (resp.status === 401 || resp.status === 403) resetBackend();
+      throw new AttachmentRequestError(resp.status, path, detailOf(text, resp.statusText));
+    }
+    if (resp.status === 204) return undefined as T;
+    return (await resp.json()) as T;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      // 外部中止 = 调用方主动放弃（收起/换附件），不是超时：用可区分的原因抛出，
+      // 组件据此静默丢弃，不显示"失败"。
+      if (outer?.aborted) throw new PreviewAbortedError(path);
+      throw new AttachmentTimeoutError(path, timeoutMs);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (outer) outer.removeEventListener("abort", onAbort);
+  }
+}
+
+/** 预览请求被调用方主动中止（收起卡片 / 换附件 / 卸载）：不是失败，不该显示错误。 */
+export class PreviewAbortedError extends Error {
+  constructor(readonly path: string) {
+    super(path + " 的预览请求已被中止（收起卡片或换了附件）");
+    this.name = "PreviewAbortedError";
+  }
+}
+
+/** 取一个附件的预览数据（可用 ?refresh=1 绕过服务端缓存重算）。 */
+export async function fetchAttachmentPreview(
+  id: string,
+  options: { refresh?: boolean; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<PreviewEnvelope> {
+  const query = options.refresh ? "?refresh=1" : "";
+  const path = "/api/attachments/" + encodeURIComponent(id) + "/preview" + query;
+  const body = await previewRequest<PreviewEnvelope>(path, { method: "GET" }, options);
+  return body;
+}
+
+/**
+ * 取副本**原始字节**（PDF 交给 pdf.js、图片交给 blob URL）。
+ *
+ * 必须走带认证的 fetch：/content 的认证只在请求头里，pdf.js 自己去 GET 这个 URL 会 401。
+ */
+export async function fetchAttachmentBytes(
+  id: string,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ArrayBuffer> {
+  const { base, token } = await resolveBackend();
+  const path = "/api/attachments/" + encodeURIComponent(id) + "/content";
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS.long;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const outer = options.signal;
+  const onAbort = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", onAbort);
+  }
+  try {
+    const resp = await fetch(base + path, {
+      method: "GET",
+      signal: controller.signal,
+      headers: authHeaders(token),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      if (resp.status === 401 || resp.status === 403) resetBackend();
+      throw new AttachmentRequestError(resp.status, path, detailOf(text, resp.statusText));
+    }
+    return await resp.arrayBuffer();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      if (outer?.aborted) throw new PreviewAbortedError(path);
+      throw new AttachmentTimeoutError(path, timeoutMs);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (outer) outer.removeEventListener("abort", onAbort);
+  }
+}
+
+/** 一块板面上全部卡片的阅读位置（服务端已按 attachmentId+version 校验过）。 */
+export async function getBoardPreviewState(
+  boardId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, BoardPreviewItem>> {
+  const path = "/api/interactive/boards/" + encodeURIComponent(boardId) + "/preview";
+  const body = await previewRequest<BoardPreviewResponse>(path, { method: "GET" }, options);
+  return body?.state?.positions ?? {};
+}
+
+/** 写入一张卡片的阅读位置（服务端在 attachmentId 与卡片不一致时回 409）。 */
+export async function putBoardPreviewPosition(
+  boardId: string,
+  cardId: string,
+  item: { attachmentId: string; version: string; position: PreviewPosition },
+  options: { signal?: AbortSignal } = {},
+): Promise<BoardPreviewItem> {
+  const path =
+    "/api/interactive/boards/" +
+    encodeURIComponent(boardId) +
+    "/preview/" +
+    encodeURIComponent(cardId);
+  return previewRequest<BoardPreviewItem>(
+    path,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(item),
+    },
+    options,
+  );
+}
+
+/** 删除一张卡片的阅读位置（收起卡片 / 换附件时用）。 */
+export async function deleteBoardPreviewPosition(
+  boardId: string,
+  cardId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<{ ok: boolean; deleted: boolean }> {
+  const path =
+    "/api/interactive/boards/" +
+    encodeURIComponent(boardId) +
+    "/preview/" +
+    encodeURIComponent(cardId);
+  return previewRequest<{ ok: boolean; deleted: boolean }>(path, { method: "DELETE" }, options);
+}
+
+

@@ -1009,13 +1009,18 @@ def _pptx_data(path, cancel, budget, reader_cls) -> dict:
             for shape in root.iter():
                 if _local(shape.tag) != "sp" and _local(shape.tag) != "graphicFrame":
                     continue
+                shape_tables = _pptx_tables(shape)
+                has_table = any(_local(node.tag) == "tbl" for node in shape.iter())
+                if has_table:
+                    # 表格文字归 tables：同一段文字不在 texts 里重复出现一遍
+                    tables.extend(shape_tables)
+                    continue
                 lines = _pptx_shape_texts(shape)
                 placeholder = _pptx_placeholder_type(shape)
-                if not title and placeholder in ("title", "ctrtitle") and lines:
+                if not title and placeholder in ("title", "ctrTitle".lower()) and lines:
                     title = lines[0]
                     lines = lines[1:]
                 texts.extend(lines)
-                tables.extend(_pptx_tables(shape))
             images: list[dict] = []
             notes_path = ""
             for target in rels.values():

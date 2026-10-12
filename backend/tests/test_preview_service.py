@@ -253,6 +253,8 @@ def test_pptx_real_content(svc: AttachmentService, samples):
         assert text in first["texts"]
     assert f"{preview._NOTES_PREFIX}{PPTX_SLIDE1_NOTES}" in first["texts"]
     assert first["tables"] == [PPTX_SLIDE1_TABLE]
+    # 表格文字只出现一次：进了 tables 就不在 texts 里重复一遍
+    assert "阶段" not in first["texts"]
     assert [image["name"] for image in first["images"]] == [PPTX_IMAGE_NAME]
     assert first["images"][0]["bytes"] == len(png_bytes())
 
