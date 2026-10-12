@@ -342,6 +342,27 @@ SOURCE_NOTES = {
 }
 
 
+#: 材料模块的**静态可见**导入（打包契约，别改回纯动态导入）。
+#:
+#: `_materials_module()` 走 importlib：PyInstaller 的静态分析看不见这种动态导入。
+#: 2026-10-12 的安装包实测：qio-backend.exe 里 agent.interactive.board_store /
+#: submission / understanding / execution 都在，唯独没有 agent.interactive.materials
+#: ——于是每次理解都返回 materials=[] 与
+#: honesty.materialsError="材料解析模块不可用：No module named 'agent.interactive.materials'"
+#: （用户库 D:\QIO-data\app.db 的 board_understanding.context.honesty 里有原话）。
+#: 修复分两处：这里保留一条**字面 import 语句**（静态分析能看见，冻结产物就会带上
+#: 这个模块 + 它的依赖），以及构建侧的 --hidden-import（scripts/build_sidecar.ps1、
+#: backend/qio-backend.spec）。
+#:
+#: 这一行只为打包器而存在：运行期仍然走 _materials_module()（按 sys.modules 取，
+#: 单元测试可以替换成假模块），所以对外行为与材料错误的诚实语义完全不变。
+#: 导入失败也只是「材料不可用」，绝不让理解模块自己起不来。
+try:  # pragma: no cover - 只有材料模块缺失 / 导入失败时才会走到 except
+    import agent.interactive.materials as _materials_static  # noqa: F401
+except ImportError:  # pragma: no cover - 漏包时如实降级到「材料解析模块不可用」
+    _materials_static = None
+
+
 def _materials_module():
     import importlib
 

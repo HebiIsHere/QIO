@@ -48,6 +48,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 
 /// lease 的 schema 版本。帮助程序只认这一个值；不认识的版本一律拒绝（宁可不杀）。
@@ -97,11 +100,27 @@ const SHELL_GONE_GRACE: Duration = Duration::from_secs(3);
 // 跑系统命令：硬超时（从 main.rs 挪进来共享 —— 帮助程序也要用同一套语义）
 // ---------------------------------------------------------------------------
 
+/// 创建子进程时**不分配控制台窗口**（Windows）。
+///
+/// 为什么必须有：release 版 qio.exe 是 GUI 子系统（WINDOWS_GUI，PE subsystem=2，自己
+/// 没有控制台）。从这种进程拉起 console 程序时，Windows 会**新分配一个控制台窗口** ——
+/// 于是 reg query（代理探测）与 taskkill（收进程树）每跑一次，用户屏幕上就闪一个黑框
+/// / Windows 终端窗口。2026-10-12 实测（第二个隔离实例，WinEvent 顶层窗口事件流）：
+/// 启动头 13 秒录到 4 次可见窗口（本机默认终端，各 194-394ms）；同一宿主只加
+/// CREATE_NO_WINDOW 的对照组 0 次。用户自己那次启动的日志旁证：三分钟内 9 个 reg.exe
+/// 加 1 次 taskkill。
+///
+/// 对 console 子进程它是「隐藏的控制台」（标准句柄照常可用，所以下面的管道不受影响）；
+/// 对 GUI 子进程无副作用。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// 跑一条命令并等它结束，超时就结束子进程并按「拿不到输出」处理。
 ///
 /// 为什么必须有硬超时：Command::output() 会一直等子进程退出。2026-09-24 实测 ——
 /// reg.exe 报 0xC0000142（DLL 初始化失败）并弹出"必须先点掉"的模态框，子进程因此
 /// 不退出，外壳启动流程被钉住 1 分 42 秒。taskkill 在这台机器上也报过同样的错。
+/// 子进程一律按 CREATE_NO_WINDOW 创建（见上），不新增控制台窗口。
 pub fn run_command_with_timeout(
     cmd: &mut std::process::Command,
     timeout: Duration,
@@ -111,6 +130,8 @@ pub fn run_command_with_timeout(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn().ok()?;
     let deadline = Instant::now() + timeout;
     loop {

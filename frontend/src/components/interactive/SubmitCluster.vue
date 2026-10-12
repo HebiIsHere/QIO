@@ -311,6 +311,18 @@ function resolveRemovalConflict(id: string, choice: "keep-deleted" | "restore-se
   store.resolveBoardRemovalConflict(id, choice);
 }
 const draftText = draftHintText();
+/**
+ * P1：这一次提交**真的**把几条「未点完成编辑」的文字提升成了正文。
+ *
+ * 只有 store 拿到回执、并核对本次快照里确实有这份正文时才计数（不强报「已生效」）。
+ * 没有可提升的草稿时这里是 0：界面多一个字都不显示（与今天逐字一致）。
+ */
+const promotedCount = computed(() => store.promotedDraftsCount);
+/*
+ * P1：这次**没有**提升的草稿（未决冲突）不在这里再写一遍 —— 原因与涉事卡片已经在
+ * 失败区（data-im="submit-failure"）里逐条说清了（store.submitError）。
+ * 同一条原因在一屏里说两遍只会稀释它，所以只保留 store 的 draftsNotPromoted 供核对。
+ */
 /** 提交按钮文案：失败后明确写成「重新提交」，让重试一眼可见 */
 const submitLabel = computed(() => {
   if (busy.value) return "正在提交…";
@@ -345,6 +357,19 @@ function onSubmit() {
       <span class="detail">{{ summary.hasContent ? summary.total + " 项改动" : "没有可提交的改动" }}</span>
     </p>
 
+    <!--
+      P1：提交时把「未点完成编辑」的草稿提升成了正文。这件事必须说出来（契约 4）：
+      用户的字确实进了这次提交快照（QIO 读得到），不是「没点完成编辑就没了」。
+      没有可提升的草稿时这一段完全不渲染。
+    -->
+    <p
+      v-if="promotedCount > 0"
+      class="promoted line faint"
+      data-im="submit-draft-promoted"
+      role="status"
+    >
+      这次有 {{ promotedCount }} 条未点完成编辑的文字已随本次提交生效（已作为正式正文提交给 QIO，不是丢弃）。
+    </p>
     <!--
       理解过程（契约 §14.1 / §14.6）：受理成功就先出现统一状态「已受理」，
       说明随查询结果补上；需要补充 / 理解失败 / 无需行动都是明确状态，不靠颜色表达。
@@ -757,6 +782,11 @@ function onSubmit() {
 .line.err { color: var(--danger); }
 /* 详情里的草稿提示是「输入什么时候会被保存」的操作说明：用可读色，不做装饰 */
 .line.faint { color: var(--text-muted); }
+/*
+  P1：提升说明是**要读的内容**（用户的字到底去哪了），不做装饰、不用警告色抢注意力：
+  它只报告一件已经发生的事实，需要用户行动的情况由失败区承担。
+*/
+.promoted { flex-basis: 100%; overflow-wrap: anywhere; }
 .actions {
   flex: none;
   display: flex;

@@ -38,6 +38,7 @@ import {
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
+import CardAttachmentPreview from "./CardAttachmentPreview.vue";
 
 const props = defineProps<{
   card: BoardCard;
@@ -498,6 +499,13 @@ function cancelEdit() {
             role="status"
           >{{ attachStatus.text }}</span>
         </div>
+        <!-- 编辑态也能预览已关联的附件（接线 P2 的组件；无关联时它只给诚实文案） -->
+        <CardAttachmentPreview
+          v-if="attachKind"
+          :kind="card.kind"
+          :meta="card.meta"
+          :card-id="card.id"
+        />
         <label v-if="card.kind === 'code'" class="field">
           <span>语言</span>
           <input v-model="metaLanguage" type="text" data-im="card-meta-language" :data-card-id="card.id" @input="onDraftInput" />
@@ -540,14 +548,13 @@ function cancelEdit() {
             <span v-if="card.content" class="desc">{{ card.content }}</span>
             <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
           </p>
-          <!-- 附件状态在关闭态也要看得见：没有关联附件 = QIO 读不到正文（不许用文件名冒充） -->
-          <p
+          <!-- 附件状态在关闭态也要看得见：有关联则给真实预览入口，没关联只给诚实文案（不许用文件名冒充） -->
+          <CardAttachmentPreview
             v-if="attachKind"
-            class="attach-line"
-            :class="attachmentLinked ? 'is-linked' : 'is-missing'"
-            data-im="card-attachment"
-            :data-card-id="card.id"
-          >{{ attachmentText }}</p>
+            :kind="card.kind"
+            :meta="card.meta"
+            :card-id="card.id"
+          />
         </template>
       </template>
     </div>
@@ -752,7 +759,7 @@ function cancelEdit() {
 .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 
-/* 附件关联：编辑态的按钮 + 状态，以及关闭态那一行「有没有关联」的事实 */
+/* 附件关联：编辑态的按钮 + 状态；关闭态的「有没有关联 / 能不能预览」由 CardAttachmentPreview 自带样式 */
 .attach {
   display: flex;
   flex-wrap: wrap;
@@ -766,13 +773,6 @@ function cancelEdit() {
 .attach-status.is-busy { color: var(--text-muted); }
 .attach-status.is-ok { color: var(--text-secondary); }
 .attach-status.is-error { color: var(--danger, var(--text-strong)); }
-.attach-line {
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-xs);
-  line-height: var(--lh-tight);
-}
-.attach-line.is-linked { color: var(--text-secondary); }
-.attach-line.is-missing { color: var(--text-muted); }
 
 /* 第四层：元信息（状态文字 + 时间）。比正文小一档，但仍是可读文本，不用装饰级颜色。 */
 .card-meta {

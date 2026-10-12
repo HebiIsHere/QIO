@@ -144,3 +144,101 @@ export function cardAttachmentLinked(
 ): boolean {
   return Boolean(cardAttachmentId(meta, kind));
 }
+
+// ---------------------------------------------------------------------------
+// 卡片附件「看得见 + 能预览」的判定纯函数（P2 板面接线）
+//
+// 与上面同一套诚实口径，只多回答一个问题：
+// **这张卡片上的附件，现在能看见什么、点一下会发生什么**，理由是什么。
+//   有/无 attachmentId  -> 有就是有关联；没有就必须如实说「没有关联」，不给假预览；
+//   可执行 / 脚本类      -> 不自动运行（桌面端只「在文件夹中显示」，理由与 Rust 侧一致）；
+//   viewable            -> 浏览器里能不能安全内联查看（html / svg / xml 带脚本，绝不内联）；
+//   previewable         -> 能不能安全渲染成缩略图（只有位图，且不执行脚本）。
+// 这里不 import 附件服务：可执行名单与「能不能内联查看」都从 services/attachments 传入，
+// 保证与打开计划（openPlanFor）用的是**同一份**名单，不会各写一套。
+// ---------------------------------------------------------------------------
+
+export type CardAttachmentState = "linked" | "unlinked";
+
+export interface CardAttachmentAvailability {
+  state: CardAttachmentState;
+  /** 卡片 meta 里登记的真实附件 id；没有关联时是空串 */
+  attachmentId: string;
+  /** 显示名（meta 里的名字，可能为空） */
+  name: string;
+  /** 已知字节数（meta.size）；未知就是 null —— 不拿 0 冒充未知 */
+  size: number | null;
+  /** 是否可执行 / 脚本类（由调用方传入附件服务的同一份名单） */
+  executable: boolean;
+  /** 浏览器里能不能安全内联查看 */
+  viewable: boolean;
+  /** 能不能安全渲染成缩略图 */
+  imagePreviewable: boolean;
+}
+
+/** 是否位图扩展名：只有这些能当缩略图（svg / html / xml 会带脚本或外链，绝不当图片渲染）。 */
+export function isPreviewableImageName(name: string): boolean {
+  return /.(png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(String(name ?? "").trim());
+}
+
+export function attachmentCardState(
+  meta: Record<string, unknown> | null | undefined,
+  kind: CardKind | string,
+  lookups: { executable?(name: string): boolean; viewable?(name: string): boolean } = {},
+): CardAttachmentAvailability {
+  const block = isAttachableKind(kind) ? cardAttachmentBlock(meta, kind) : null;
+  const attachmentId = block?.attachmentId ?? "";
+  const name = block?.name ?? "";
+  const linked = Boolean(attachmentId);
+  const isImage = kind === "image";
+  return {
+    state: linked ? "linked" : "unlinked",
+    attachmentId,
+    name,
+    size: block?.size ?? null,
+    executable: linked ? Boolean(lookups.executable?.(name)) : false,
+    viewable: linked ? Boolean(lookups.viewable?.(name)) : false,
+    imagePreviewable: linked && isImage && isPreviewableImageName(name),
+  };
+}
+
+/**
+ * 「打开 / 预览」入口的可见标签（可读、带对象名）：
+ * 可执行类只给「在文件夹中显示」，其余可执行类在浏览器里会走下载。
+ */
+export function attachmentPreviewActionLabel(
+  availability: Pick<CardAttachmentAvailability, "state" | "name" | "executable" | "attachmentId">,
+  desktop: boolean,
+): string {
+  if (availability.state !== "linked" || !availability.attachmentId) {
+    return "没有关联已保存的附件，打不开";
+  }
+  const name = availability.name || "未命名附件";
+  if (availability.executable) return desktop ? "在文件夹中显示「" + name + "」" : "下载「" + name + "」（不自动运行）";
+  return desktop ? "查看「" + name + "」（QIO 保存的副本）" : "查看「" + name + "」";
+}
+
+/** 缩略图不可用的原因（给用户看的一句话）；可预览时是空串。 */
+export function attachmentPreviewUnavailableReason(
+  availability: Pick<CardAttachmentAvailability, "state" | "executable" | "imagePreviewable" | "viewable" | "name">,
+): string {
+  if (availability.state !== "linked") {
+    return "没有关联已保存的附件：看不到它的内容，也没有可预览的字节";
+  }
+  if (availability.executable) {
+    return "可执行 / 脚本类附件不渲染预览（渲染前要先执行，风险不可控）；确认来源后再自行打开";
+  }
+  if (availability.imagePreviewable) return "";
+  if (availability.viewable) {
+    return "缩略图只用于图片；这个文件没有可安全渲染的图片内容，请看「" + (availability.name || "未命名附件") + "」的详情或直接查看";
+  }
+  return "这种类型不能安全渲染缩略图（可能带脚本）：不预览，改为查看 / 下载";
+}
+
+/** 没有关联时的完整诚实说明：文件名不是正文，也不假装能打开。 */
+export function attachmentUnlinkedText(availability: Pick<CardAttachmentAvailability, "name">): string {
+  const name = availability.name;
+  return name
+    ? "卡片上记着文件名「" + name + "」，但没有关联已保存的附件：QIO 读不到它的正文，也打不开它"
+    : "还没有关联已保存的附件：QIO 读不到它的正文，也打不开它";
+}

@@ -19,6 +19,7 @@ import {
   understandingSettled,
   understandingStatusLabel,
 } from "../interactive/approval";
+import { CHECKABLE_KINDS } from "../interactive/board";
 import {
   cardDraftKey,
   cardIdFromDraftKey,
@@ -1784,6 +1785,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return localDraftFor(cardId) !== null;
   }
 
+  /**
+   * P1：本次提交**真的把哪些未确认草稿提升成了正文**（键：卡片 id；值：提升后的正文字样）。
+   *
+   * 为什么需要它：提升是「用户没点完成编辑，但字确实随提交生效了」这件事的唯一可核对依据。
+   * 提交成功之后界面要能如实说明「N 条未点完成编辑的文字已随提交生效」，
+   * 否则用户会以为自己的输入凭空消失了（契约 4）。
+   *
+   * 只有**回执证明这份正文真的进了本次快照**（服务端回读的板面 / 提交载荷里的 before）
+   * 才写进来：绝不在还没提交成功时就宣布「已生效」。
+   */
+  const promotedDrafts = ref<{ cardId: string; text: string }[]>([]);
+  const promotedDraftsCount = computed(() => promotedDrafts.value.length);
+  /**
+   * P1：这次提交**没有**提升的卡片草稿及原因（未决冲突）。
+   * 界面据此给出可读说明；草稿与正文都原样留着，等用户明确选择（契约 2）。
+   */
+  const draftsNotPromoted = ref<{ cardId: string; reason: string }[]>([]);
+
   /** 卡片草稿正文：存在则为草稿内容（可以是空串）；不存在时返回空串。 */
   function cardDraftText(cardId: string): string {
     const key = cardDraftKey(cardId);
@@ -2631,7 +2650,40 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitNote.value = null;
     acceptanceLookupNote.value = null;
     submitAcceptedByLookup.value = false;
+    /**
+     * P1：本次提交的「未点完成编辑」草稿统计属于**这一次**提交 —— 先清掉上一次的说明，
+     * 免得把上次的提升说成本次的事实。
+     */
+    promotedDrafts.value = [];
+    draftsNotPromoted.value = [];
     submitStatus.value = "submitting";
+    /**
+     * P1：把未确认草稿提升为正文，**必须在 saveNow() 之前**。
+     *
+     * 提升只改本页候选（board.value 的 cards[].content）并登记一次既有语义的草稿清除，
+     * 之后照旧走 saveNow（版本门 / 正文冲突门 / 影响确认 / 保存回执），
+     * 所以后端协议、提交载荷形状、可见范围判定都没有第二套实现。
+     */
+    const promotion = promoteDraftsBeforeSubmit();
+    /**
+     * 契约 2：有卡片的草稿处于未决冲突（草稿冲突 / 正文内容冲突）时**不提也不提交** ——
+     * 那两种情况的正确做法是让用户明确选择保留哪一份，而不是替他猜。
+     */
+    if (promotion.blocked.length) {
+      draftsNotPromoted.value = promotion.blocked;
+      promotedDrafts.value = [];
+      submitStatus.value = "failed";
+      submitError.value =
+        "这次没有提交：以下卡片还有未决定的冲突（草稿或正文哪一份更新无法判定，两份都保留着、不会静默丢掉任何一份）——" +
+        promotion.blocked.map((item) => `${item.cardId}：${item.reason}`).join("；") +
+        "。请先在卡片上选择保留哪一份，然后重新提交";
+      return null;
+    }
+    /**
+     * P1：这次**真的被写进候选**的卡片（提交成功后还要用回执核对它们确实进了快照）。
+     * 只取提升函数自己的回执：不再另算一遍，免得两边口径漂移。
+     */
+    const promotedCandidates = promotion.promoted;
     await saveNow();
     const blocked =
       pendingImpact.value
@@ -2718,10 +2770,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
         submitResultUnknown.value = true;
         submitError.value = `提交结果未知：没有拿到服务端回执（${(err as Error).message || "原因未知"}）。这次提交可能已经受理，请先确认结果，不要直接重复提交`;
         /**
-         * 查证命中时受理事实已经恢复（lastAcceptance / submitNote / 理解状态与查询）；
-         * 两种情况都返回 null：本次没有拿到回执对象，状态由 submitStatus 表达。
+         * P1：结果未知时不把提升掉的那几条说成「随提交生效」——
+         * 该卡对应的草稿已经随刚才的保存被登记清除，这里把草稿候选放回去，与既有的
+         * 「保留原内容与勾选」同一口径；下次提交换新身份重来（草稿与正文一致，不再重复提升）。
          */
         await confirmAcceptanceAfterUnclear();
+        /**
+         * 查证命中时受理事实已经恢复（lastAcceptance / submitNote / 理解状态与查询）；
+         * 两种情况都返回 null：本次没有拿到回执对象，状态由 submitStatus 表达。
+         * 无论命中与否都把原内容放回草稿候选：查证只回答「受理没受理」，
+         * 不影响「用户没点完成编辑的文字必须还能被找到」。
+         */
+        restorePromotedDraftsAfterUnknown(promotedCandidates);
         return null;
       }
       /**
@@ -2757,6 +2817,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitStatus.value = result.status;
     // 服务端已经给出明确结论（成功 / 空 / 重复）：这次未决身份到此结束
     writePendingIdentity(null);
+    /**
+     * P1（契约 4）：这一次有哪几条未点完成编辑的文字真的随提交生效了。
+     *
+     * 判据是**回执里的本次快照**（before：服务端按已保存板面算出的可见范围）与提升后的
+     * 正文逐字一致 —— 只要板面在提交期间被别的版本取代过，这里就不会记它，绝不谎报。
+     */
+    recordPromotedDrafts(promotedCandidates, result.before as { cards?: { id: string; content: string }[] } | null);
     /**
      * N5：提交成功会让服务端清掉本次提交范围内的勾选。这件事**必须作用于本页候选**，
      * 不能只依赖回读 —— 等待返回期间用户只移动了卡片（未保存候选）时，回读会被候选保护挡住，
@@ -3081,6 +3148,146 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /* ------------------------------------------------------------------
    * F3：正式正文的内容冲突（本页候选与服务器同一张卡片都被改过）
    * ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------
+   * P1：提交时把「未点完成编辑」的草稿提升为正式正文
+   *
+   * 根因：草稿只存在草稿通道（board_drafts / 内存 drafts），后端只读 card.content
+   * （selectable_cards 与 materials._inline_entry），所以「勾了注释、写了字、没点完成编辑」
+   * 的用户在提交快照里是一条**空正文**的卡片，模型什么都看不到。
+   *
+   * 这里只做一件事：在 **saveNow() 之前**把该卡的 content 改成它当前未确认的草稿正文，
+   * 然后照旧走「既有保存 → 版本门 → 影响确认 → 提交」链路；不新增协议、不改载荷形状。
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 一张卡片当前未确认的草稿正文是不是**新的、值得提升的**内容。
+   *
+   * 两个条件都要看（与既有草稿口径一致 §10.4 / §11.1）：
+   * - 这个键上确实存在一条草稿（内存里有记录，或本机有恢复副本）：空串也是有效草稿；
+   * - 它的正文与当前正式正文不同 —— 相同时提升是空操作，不该被算成「随提交生效」。
+   */
+  function draftDiffersFromContent(cardId: string, content: string): boolean {
+    if (!hasCardDraft(cardId)) return false;
+    const key = cardDraftKey(cardId);
+    const memory = Object.prototype.hasOwnProperty.call(drafts.value, key);
+    // 内存里已有这一版（含本机写失败的情况）时以内存为准；否则退回本机恢复副本
+    return (memory ? drafts.value[key] : cardDraftText(cardId)) !== content;
+  }
+
+  /**
+   * 这张卡片这次**会不会**连同它的正文进提交快照。
+   *
+   * 与后端的可见范围同一口径（agent/interactive/models.visible_except_deleted）：
+   * 已删除 / 明确隐藏 / reply 都进不去；可勾选的注释（ANNOTATION_KINDS）**未勾选 = QIO 看不到**；
+   * 材料（file / image / code / url）默认在范围内。
+   *
+   * 为什么不给未勾选的注释提升：那会越过「勾选才允许 QIO 查看」的边界，
+   * 而且用户根本没打算把这段草稿交出去 —— 草稿原样留着，等他勾选或自己点完成编辑。
+   */
+  function cardSubmittedFor(card: { kind: string; checked: boolean; hidden: boolean; deleted: boolean }): boolean {
+    if (card.deleted || card.hidden) return false;
+    if (card.kind === "reply") return false;
+    if (CHECKABLE_KINDS.includes(card.kind as (typeof CHECKABLE_KINDS)[number])) return card.checked;
+    return true;
+  }
+
+  /**
+   * 提交前的提升：把每张将进快照的卡片上「未点完成编辑」的草稿正文写进该卡 content，
+   * 形成**候选板面**，并登记一次既有语义的草稿清除。
+   *
+   * 逐条契约：
+   * 1) 返回 false 表示「这次不许提交」（有卡片的草稿处于未决冲突），调用方据此停在可读原因上；
+   * 2) 未决冲突（draftConflicts：两份来源无法判定新旧 / boardContentConflictFor：正文两边都改过）
+   *    的卡片**不提**，草稿与正文都原样保留，留给用户明确选择；
+   * 3) 提升成功才 requestDraftClear（与「完成编辑」同一个入口）：真正的清除仍由 saveNow
+   *    在「回执对应当前候选且没有更新候选」时按登记版本执行，不新造第二套清理；
+   * 4) 有提升才产生新候选（boardLocalRev 前进、dirty、状态：saving、清掉旧的影响确认授权），
+   *    于是保存、版本门与影响确认全部沿用既有逻辑。
+   */
+  function promoteDraftsBeforeSubmit(): {
+    blocked: { cardId: string; reason: string }[];
+    promoted: { cardId: string; text: string }[];
+  } {
+    const blocked: { cardId: string; reason: string }[] = [];
+    const promoted: { cardId: string; text: string }[] = [];
+    if (!board.value) return { blocked, promoted };
+    const currentBoard = board.value;
+    const nextCards = currentBoard.cards.map((card) => {
+      if (!cardSubmittedFor(card)) return card;
+      if (!hasCardDraft(card.id)) return card;
+      const conflict = draftConflicts.value[cardDraftKey(card.id)];
+      if (conflict) {
+        blocked.push({
+          cardId: card.id,
+          reason: "这份草稿与服务器上的草稿哪个更新无法判定（冲突未决），还没有选择保留哪一份",
+        });
+        return card;
+      }
+      if (boardContentConflictFor(card.id)) {
+        blocked.push({
+          cardId: card.id,
+          reason: "这张卡的正文在本页与服务器上都被改过（正文冲突未决），还没有选择保留哪一份",
+        });
+        return card;
+      }
+      if (!draftDiffersFromContent(card.id, card.content)) return card;
+      promoted.push({ cardId: card.id, text: cardDraftText(card.id) });
+      return { ...card, content: cardDraftText(card.id) };
+    });
+    if (blocked.length) return { blocked, promoted: [] };
+    if (!promoted.length) return { blocked, promoted: [] };
+    board.value = { ...currentBoard, cards: nextCards };
+    // 与 commit 同一口径：这是**新的候选**（版本代次前进、待保存、旧的影响确认授权作废）
+    boardLocalRev += 1;
+    dirty.value = true;
+    confirmedCheck = null;
+    pendingConfirm = null;
+    saveStatus.value = "saving";
+    /**
+     * 登记清除（既有入口）：saveNow 保存成功后按登记的版本执行 —— 提升后的旧草稿不再复活。
+     * 登记版本由 requestDraftClear 自己取当前 draftKeySeq；保存期间用户又输入了更新版本时，
+     * saveNow 的版本守卫会作废这次登记（绝不为了清旧稿误删后来的输入）。
+     */
+    for (const item of promoted) requestDraftClear(cardDraftKey(item.cardId));
+    return { blocked, promoted };
+  }
+
+  /**
+   * P1：提交结果**未知**（没有拿到回执）时，把提升后的草稿放回草稿候选。
+   *
+   * 为什么：这次提升已经把正文写进候选并保存（保存成功才有清除登记），所以内容没有丢；
+   * 但「提交到底受没受理」还不知道，这时如果草稿也没了，用户会看到一次说不清的消失。
+   * 恢复走既有 setDraft（版本推进、清除登记回收、本机记录重写都由它按规则处理），
+   * 不新造第二套恢复逻辑。下一次提交时这份草稿与正文一致 → 不再重复提升，语义稳定。
+   */
+  function restorePromotedDraftsAfterUnknown(candidates: { cardId: string; text: string }[]): void {
+    promotedDrafts.value = [];
+    for (const item of candidates) {
+      if (draftFor(cardDraftKey(item.cardId)) === item.text) continue;
+      setDraft(cardDraftKey(item.cardId), item.text);
+    }
+  }
+
+  /**
+   * P1：把「回执证明真的进了本次快照」的卡片记成 promotedDrafts。
+   *
+   * 只有提升过的卡片才可能有条目；正文（含空串）必须与提升时写进候选的那一份**逐字一致**，
+   * 所以提交期间板面被别的写入取代时这里会如实不记（不谎报「已生效」）。
+   */
+  function recordPromotedDrafts(
+    candidates: { cardId: string; text: string }[],
+    snapshot: { cards?: { id: string; content: string }[] } | null | undefined,
+  ): void {
+    const cards = snapshot?.cards;
+    if (!candidates.length || !Array.isArray(cards)) {
+      promotedDrafts.value = [];
+      return;
+    }
+    promotedDrafts.value = candidates
+      .filter((item) => cards.some((card) => card.id === item.cardId && card.content === item.text))
+      .map((item) => ({ cardId: item.cardId, text: item.text }));
+  }
 
   /** 这张卡片当前的正文冲突（没有则为 null）。界面据此给出「用本页 / 用服务器版」的选择。 */
   function boardContentConflictFor(cardId: string): { local: string; server: string } | null {
@@ -3993,6 +4200,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     flushDrafts,
     retryDraftSave,
     submit,
+    /** P1：本次提交真的把哪些未确认草稿提升成了正文（含条数与未提升原因） */
+    promotedDrafts,
+    promotedDraftsCount,
+    draftsNotPromoted,
     submitResultUnknown,
     submitRefreshState,
     submitRefreshError,

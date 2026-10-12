@@ -47,6 +47,15 @@ $pyiArgs = @(
   # 工具 worker：main.py 在函数里 import 它（为了在加载服务前分流），
   # 这里显式声明，避免将来改成动态导入时被 PyInstaller 漏掉。
   "--hidden-import", "agent.tool_worker",
+  # 材料解析：understanding.py 用 importlib.import_module("agent.interactive.materials")
+  # 取它，而 PyInstaller 的静态分析**看不见**动态导入。0.2.0 安装包实测：
+  # qio-backend.exe 里 board_store / submission / understanding / execution 都在，
+  # 唯独没有 materials —— 于是每次理解都返回 materials=[] 与
+  # honesty.materialsError="材料解析模块不可用：No module named 'agent.interactive.materials'"
+  # （用户库 D:\QIO-data\app.db 里就是这么记的）。
+  # understanding.py 现在保留了一条字面 import 作为静态可见保证，这里再显式声明一次：
+  # 两道保险都别删；scripts/check_frozen_materials.py 会对着打包产物直接验。
+  "--hidden-import", "agent.interactive.materials",
   # 容器隔离执行要把 worker 源码文本带进容器（tools/executor_env.py::worker_source）。
   # 冻结产物里没有 .py 文件，所以随包放一份数据文件到 _MEIPASS/agent/tool_worker.py。
   "--add-data", "src/agent/tool_worker.py;agent",

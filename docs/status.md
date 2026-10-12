@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-11（审计分支 `fix/main-audit-reliability-8fa8452`：F01—F12 修复，见 P34）。核对方法见文末。
+最后核对：2026-10-12（分支 `fix/interactive-materials-drafts-preview`：材料解析漏包、草稿提升、附件预览与窗口闪现修复，见 P36）。核对方法见文末。
 
 ---
 
@@ -3902,3 +3902,132 @@ main 存量库整段跳过、互动接口缺表。main 的历史迁移 1–34 �
 前端类型检查与受影响的 13 个 store/组件用例文件；文档一致性。
 **未跑全量测试**：其它未触及路径（含安装包 E2E、rust 侧）与全仓用例不在本轮验证范围内，
 不得据此声称「全量回归通过」或「可以发布」。
+
+---
+
+## P36 — 互动模式可用性修复：材料解析、草稿提升与附件预览（2026-10-12）
+
+来源：用户在本机安装版 **v0.2.0**（`D:\QIO`，数据 `D:\QIO-data`）上报告的三个问题，分支
+`fix/interactive-materials-drafts-preview`。三条问题各自有独立根因，**不是同一个 bug 的三种表现**。
+
+### 一、冻结产物缺材料解析模块（问题：图片/文件"加不上、读不到"）
+
+**现象（用户库中的原话，不是推断）**：`D:\QIO-data\app.db` 的 `board_understanding.context`
+里，`honesty.materialsError = "材料解析模块不可用：No module named 'agent.interactive.materials'"`，
+`materialsResolved = false`、`materials = []`；模型据此输出 `no_action`，并如实说"我无法读到图片内容"。
+
+**根因**：`backend/src/agent/interactive/understanding.py` 用
+`importlib.import_module("agent.interactive.materials")` 动态导入；PyInstaller 静态分析看不到动态
+导入，`scripts/build_sidecar.ps1` 与 `backend/qio-backend.spec` 也没有该 `hidden-import`。
+对已安装在 `D:\QIO\qio-backend.exe` 的产物逐字符串核对：
+`agent.interactive.board_store / submission / understanding / execution` 都在，
+**`agent.interactive.materials` 完全不存在**（`resolve_materials`、`image_unsupported`
+等标识符也一并缺失）。结果：每次理解都静默降级成"没有材料"——文件卡片的正文读取
+（`materials.py::_attachment_entry`）整条链路在安装版里从未生效。
+
+**实现（两道保险）**：① `understanding.py` 增加一条**字面** `import agent.interactive.materials`
+（`try/except ImportError` 兜底，只为让静态分析看见；`_materials_module()` 的 importlib 兜底与
+材料错误的诚实语义不变）；② `scripts/build_sidecar.ps1` 与 `backend/qio-backend.spec` 显式声明
+`--hidden-import agent.interactive.materials`。另有 `scripts/check_frozen_materials.py`（冻结产物自证：
+解析 PYZ 模块清单 + 临时数据目录起真链路提交）与 `backend/tests/test_frozen_materials_packaging.py`（回归）。
+
+**验证（对着三类真产物跑，不是只跑单测）**：
+
+| 产物 | 模块清单 | 静态 | 真链路 |
+| --- | --- | --- | --- |
+| 现状安装包 `D:\QIO\qio-backend.exe`（0.2.0） | 3616 条，**无** materials | FAIL | FAIL：`materialsResolved=false`、`materialsError=材料解析模块不可用…`（与用户库原话逐字一致） |
+| 修复后正式构建 `frontend/src-tauri/binaries/qio-backend-x86_64-pc-windows-msvc.exe` | 3617 条，含 materials | PASS | PASS：`materialsResolved=true`、材料 1 项 `source=inline` 正文读到 |
+
+**真机端到端（修复构建 + 用户真实库副本 `D:\QIO-data\app.db`，真实模型 deepseek-v4.1-flash）**：
+
+- 图片卡（已关联附件）→ `source=image_unsupported`，原因句「当前模型链路没有视觉能力……」；
+  0.2.0 坏包在这里是 `materials=[]` 且整条解析模块缺失。
+- 文件卡（挂用户真实 `简报_2026-06-30.docx`）→ `source=attachment_text`、`chars=4000`、`truncated=true`，
+  正文首段真的被读出来（此前安装版这条链路从未生效）。
+- 勾选的注释（正文已确认）→ `requirement.text` 就是那张卡的文字；0.2.0 里是 `""` 与「（无文字）」。
+
+### 二、勾选的注释 QIO 看不到（问题三）
+
+**现象**：用户写下的文字停在编辑草稿里（`board_drafts` 有 `card:c_mv4io4hf1uuka = "为什么链路不可用？"`），
+而卡片正文 `content` 是空串；快照时间线为 `选择卡片 → 勾选注释 → 清空选择 → submitted`。
+提交后的理解上下文 `requirement.text = ""`、卡片 label 是「（无文字）」，模型输出 `no_action`。
+
+**根因**：卡片编辑框的输入只进草稿（`BoardCard.saveDraftInput`），只有点「完成编辑」才把正文写进卡片；
+而 `store.submit()` 只调 `saveNow()`（保存板面），**不提升草稿**。后端只读 `card.content`
+（`models.selectable_cards` / `materials.py`），因此"已勾选"的卡片在提交载荷里是空正文。
+对照实验（用真实模型）：把同样文字确认进正文后再勾选提交，上下文里 `requirement.text` 与
+`materials[].source="inline"` 都正常——**勾选语义没问题，断点在未确认草稿**。
+
+**实现（策略由用户拍板：提交时把草稿提升为正文）**：`store.submit()` 在 `saveNow()` 之前把未确认草稿
+写进该卡 `content` 形成候选板面，再走既有「保存 → 版本门 → 影响确认 → 提交」链路（`promoteDraftsBeforeSubmit`）。
+边界与口径：
+
+- 只提升**这次会进提交快照**的卡片；**未勾选的注释草稿一律不提升**（越过「勾选才允许 QIO 查看」= 越权）；
+- 存在未决草稿冲突 / 正文内容冲突的卡片**不提也不提交**，给出可读原因，两份内容都留着；
+- 旧草稿只通过既有 `requestDraftClear` 登记，真正的清除仍由 `saveNow` 按登记版本执行（没有第二套清理，
+  用户随后又输入的新版本不会被误删）；
+- 提交**结果未知**（没有拿到回执）时不声称「已生效」，并用既有 `setDraft` 把草稿候选放回；
+- 计数只认「回执里的本次快照与提升后的正文逐字一致」的卡片，不谎报；
+- 副作用（如实记）：影响确认未完成时，提升已经写进候选并保存成功，但本次提交被拦下 —— 用户会看到
+  正文已是那段文字、提交未发生，可重新提交。
+
+### 三、图片/文件卡片无法预览（问题二）
+
+**事实**：互动板面**完全没有**附件打开/预览接线——全仓库 `openAttachment()` 只在
+`Composer.vue` 与 `MessageItem.vue` 调用；`BoardCard.vue` 在关闭态只渲染一行
+「还没有关联已保存的附件」文字，从不渲染图片内容，也没有可点的打开入口。能力本身是现成的
+（`fetchAttachmentContent` / `openPlanFor` / `openBlobInNewTab` / 桌面壳的
+`open_attachment_path` 与 `reveal_attachment_path`），缺的只是接线。
+
+**实现**：卡片增加"查看/打开"入口（桌面走系统默认程序、可执行类只"在文件夹中显示"、浏览器走带认证
+fetch 的 blob 新标签页），图片有关联附件时显示缩略图；没有 `attachmentId` 时保持既有诚实文案。
+
+### 四、图片视觉能力（问题二的另一半，**尚未接入**）
+
+`ChatMessage.content` 是 `str`（`backend/src/agent/adapters/base.py`），
+`native.to_openai_messages` 只发字符串；凭据体系里虽然已有 `vision` 用途标签
+（`credentials/policy.py` 的 `PRESET_TAGS`），但没有多模态消息通道。因此图片目前只能是
+`image_unsupported`（"只登记元数据，不声称看懂内容"）。**这一项本轮不谎称已修**：
+要真的看懂图片需要新增多模态消息通道（消息形状 + 适配器 + 凭据路由 + 材料交付），
+是独立一轮的工作量。
+
+### 五、窗口审计与闪现修复（用户单独要求）
+
+完整清单（37 条，含触发操作、代码位置、会开出什么、是否本意、无窗口标志、最小复现）见
+`docs/window-audit-report.md`。结论摘要：
+
+- **C 档（用户没做任何事也会闪）**：`reg query` 系统代理探测（`updater_net.rs:321`，每次启动 + 启动后 10 秒 +
+  每 24 小时 + 点「检查更新」）与 `taskkill`（`ownership.rs`）都经 `run_command_with_timeout` 用
+  `std::process::Command` 拉起且无创建标志；release 壳是 GUI 子系统（PE subsystem=2），于是每次都新分配
+  并显示一个控制台窗口。实测：启动头 13 秒 4 次可见窗口（各 194–394ms），taskkill 约 1.17 秒；
+  对照组只加 `CREATE_NO_WINDOW` → 0 次。
+- **A 档（本意）**：原生文件选择器（两条入口：`attachment_picker.rs` 的 `GetOpenFileNameW` 与 WebView2 的
+  `input[type=file]`）、系统默认程序打开附件、`explorer /select`、外链交给浏览器、安装器、第二个实例。
+- **B 档（需确认/需批准）**：启动失败对话框（`QIO_STARTUP_ERROR_DIALOG=0` 可关）、agent 执行任意程序、
+  以及后端子进程「靠继承隐藏控制台」这一结构脆弱点（后端自身 0 处 creationflags）。
+
+**修复**：`ownership.rs` 的 `run_command_with_timeout()` 统一按 `CREATE_NO_WINDOW` 创建子进程
+（`reg` 与 `taskkill` 两条路径共用这一个函数，一处改动全覆盖；`explorer.exe` 是 GUI 程序，不走这里、
+无需改动）。**未修（如实记）**：后端子进程的创建标志仍靠继承；`BoardCard` 的 url 卡片 `target="_blank"`
+被 wry 默认吞掉（点了没反应）——属 UX 缺陷，非窗口问题，本轮未改。
+
+### 六、验证与未验证项（P36）
+
+- 前端：`npx vue-tsc --noEmit` 无诊断；全量 `npm test` **319 文件 / 2529 用例全绿**。
+- Rust：`cargo test --lib` **31 passed**（含 `run_command_with_timeout` 的超时与输出用例）；
+  `cargo check --all-targets`、`cargo test --no-run` 通过（无 error / unused 警告）。
+- 后端：材料与互动区域定向全绿；`tests/test_docs_check.py` 在本轮修正「最后核对」日期后通过。
+- 全量 `uv run --frozen pytest -q` 有两条**与本轮改动无关**的红，如实列出：
+  ① `test_interactive_during_heavy_work.py::test_maintenance_does_not_block_the_loop` —— 100ms 阈值的负载敏感用例，
+  单跑通过、并行跑 PyInstaller 时 116ms 失败；
+  ② `test_r7_disconnect_cancel_verify.py::test_disconnect_does_not_start_the_turn_after_gate_release` ——
+  做对照实验（把本轮 `understanding.py` 还原成 HEAD）后**照样失败**，属分支既有问题，
+  违反契约 §1.1「准备期间的断连也是取消」，需另开一轮修（本条本轮未修）。
+  **因此本轮不能声称「后端全量绿」**。
+- **未验证（不粉饰）**：
+  1. 窗口闪现修复是 Rust 代码改动，本轮只重建了后端 sidecar、**没有重建/重装 Tauri 壳**，
+     所以「用户不再看到控制台闪现」尚无实机运行证据（代码级 + 对照实验证据在审计报告里）；
+  2. 安装包（NSIS）本轮未重建，安装器的实机流程未跑；
+  3. 草稿提升与附件预览没有真实界面走查（本环境不启动 Tauri）；组件/状态层有自动化覆盖；
+  4. 图片视觉能力未接入（见第四节）。
+
