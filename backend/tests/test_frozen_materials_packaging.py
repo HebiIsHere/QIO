@@ -116,23 +116,31 @@ def test_frozen_self_check_script_exists():
 
 
 def _materials_state():
-    from agent.interactive import models
+    """一张图片卡 + 一张**许可过的文字卡**（内含一个代码块）。
+
+    2026-10-12 起链接与代码没有默认可见通道：代码只能作为文字卡里的内容块，
+    并且整卡许可打开之后才交付给模型。
+    """
+    from agent.interactive import models, text_card
 
     state = models.empty_state(BOARD)
     image = models.new_card("image", "", meta={"name": "照片.png"})
-    code = models.new_card("code", "print('x')", meta={"language": "python"})
-    state["cards"] = [image, code]
-    return state, image, code
+    note = text_card.new_text_card("", checked=True)
+    doc = text_card.parse_doc_text("print('x')")
+    note["meta"].update(text_card.card_text_fields(doc))
+    note["content"] = text_card.card_text_fields(doc)["content"]
+    state["cards"] = [image, note]
+    return state, image, note
 
 
 def test_resolve_materials_marks_image_unsupported(db_conn):
     """图片卡 → image_unsupported（不联网、临时 db、不声称看懂图片）。"""
     from agent.interactive import materials
 
-    state, image, code = _materials_state()
+    state, image, note = _materials_state()
     entries = materials.resolve_materials(db_conn, state=state, cards=list(state["cards"]))
     by_card = {entry["cardId"]: entry for entry in entries}
-    assert set(by_card) == {image["id"], code["id"]}
+    assert set(by_card) == {image["id"], note["id"]}
 
     image_entry = by_card[image["id"]]
     assert image_entry["source"] == "image_unsupported"
@@ -142,16 +150,16 @@ def test_resolve_materials_marks_image_unsupported(db_conn):
     # （2026-10-12 视觉能力接入后，「没有附件」不再笼统说成「没有视觉能力」）
     reason = image_entry["reason"]
     assert "视觉能力" in reason or "没有关联已保存的附件" in reason, reason
-    # 对照：同一批里的 code 卡片是真的读到正文的 inline 材料
-    assert by_card[code["id"]]["source"] == "inline"
-    assert by_card[code["id"]]["text"] == "print('x')"
+    # 对照：同一批里**许可过的**文字卡是真的读到正文的 inline 材料（含卡内代码块）
+    assert by_card[note["id"]]["source"] == "inline"
+    assert "print('x')" in by_card[note["id"]]["text"]
 
 
 def test_understanding_context_resolves_materials(db_conn):
     """理解上下文必须通过真实取用路径拿到材料：honesty.materialsResolved=true。"""
     from agent.interactive import understanding
 
-    state, image, code = _materials_state()
+    state, image, note = _materials_state()
     record = understanding.request_understanding(
         db_conn, board_id=BOARD, submission_id="sub_frozen_packaging", snapshot=state
     )
@@ -163,9 +171,9 @@ def test_understanding_context_resolves_materials(db_conn):
     assert honesty["materialsError"] == "", honesty
 
     materials_out = context["materials"]
-    assert {entry["cardId"] for entry in materials_out} == {image["id"], code["id"]}
+    assert {entry["cardId"] for entry in materials_out} == {image["id"], note["id"]}
     image_entry = next(e for e in materials_out if e["cardId"] == image["id"])
     assert image_entry["source"] == "image_unsupported"
-    code_entry = next(e for e in materials_out if e["cardId"] == code["id"])
-    assert code_entry["source"] == "inline" and code_entry["text"] == "print('x')"
+    note_entry = next(e for e in materials_out if e["cardId"] == note["id"])
+    assert note_entry["source"] == "inline" and "print('x')" in note_entry["text"]
     assert context["materialIds"]

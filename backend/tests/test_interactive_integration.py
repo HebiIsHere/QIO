@@ -117,7 +117,7 @@ def _ids(snapshot: dict) -> set[str]:
 # --- 场景 1：材料 + 注释 + 分组，只勾选一条 --------------------------------
 
 
-def test_scenario1_visibility_boundary_and_checkbox_cleared(client: TestClient) -> None:
+def test_scenario1_visibility_boundary_and_license_kept(client: TestClient) -> None:
     materials = [
         _card("m_file", "file", "访谈记录", meta={"name": "访谈记录.pdf"}),
         _card("m_url", "url", "参考链接", meta={"href": "https://example.com/a"}),
@@ -156,10 +156,12 @@ def test_scenario1_visibility_boundary_and_checkbox_cleared(client: TestClient) 
         assert "我不太确定要不要继续" not in raw
         assert "n_hidden_note" not in raw
 
-    # 提交成功后自动取消勾选（不是删除）
+    # 2026-10-12 起许可**持续有效**：提交成功后勾选仍然在（不是删除，也不自动取消）。
+    # 只有用户手动取消或隐藏才失效 —— 这条用例同时守住「许可没有被提交清掉」。
     after = state(client)
     checked = {card["id"]: card["checked"] for card in after["cards"]}
-    assert checked["n_visible"] is False
+    assert checked["n_visible"] is True, "许可不得因提交而失效"
+    assert result.get("checkedCleared") == [], "checkedCleared 是新规则下的历史字段，恒为空"
     assert any(card["id"] == "n_hidden_note" for card in after["cards"])
 
 

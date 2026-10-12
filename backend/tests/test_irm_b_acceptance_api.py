@@ -88,10 +88,10 @@ def client(db_conn, settings):
         yield test_client
 
 
-def _state(cards) -> dict:
+def _state(cards, *, seq: int = 0) -> dict:
     return {
         "boardId": BOARD,
-        "seq": 0,
+        "seq": int(seq),
         "updatedAt": models.now_iso(),
         "cards": list(cards),
         "groups": [],
@@ -105,7 +105,11 @@ def _note(content: str, **fields) -> dict:
 
 
 def _prepare(client: TestClient, cards) -> int:
-    saved = client.put(f"/api/interactive/boards/{BOARD}/state", json={"state": _state(cards)})
+    """按**当前版本**保存一次板面（并发安全：基于过期版本的保存会被服务端拒绝）。"""
+    current = int(client.get(f"/api/interactive/boards/{BOARD}/state").json()["seq"])
+    saved = client.put(
+        f"/api/interactive/boards/{BOARD}/state", json={"state": _state(cards, seq=current)}
+    )
     assert saved.status_code == 200, saved.text
     return int(saved.json()["seq"])
 
@@ -392,8 +396,13 @@ def test_acceptance_understanding_fields_null_when_missing(client, db_conn):
 def test_replay_with_original_base_state_version_is_200_not_stale(client):
     """Lead 明确要求：用**原 baseStateVersion** 同身份重试 → 200 + replayed=true。
 
-    提交成功后服务端会把板面推进到新 seq；身份命中判定必须排在 stale_state 之前，
-    否则同身份重试会先吃到 409 stale_state，永远进不到幂等分支。
+    身份命中判定必须排在 stale_state 之前：同身份重试带的是**原请求那个版本**，
+    只要板面在那之后前进过（用户又改了一点东西），裸判就会先吃到 409 stale_state，
+    永远进不到幂等分支。
+
+    2026-10-12 起「许可持续有效」，提交本身**不再**改板面（不再清勾选），
+    所以「提交后版本自然前进」这个旧前提不成立；场景改成**用户在提交后又改了一次板面**
+    —— 这是更常见也更严格的前提（版本确实比原请求新）。
     """
     identity = "creq_stale-order-0001"
     note = _note("顺序要求")
@@ -402,8 +411,11 @@ def test_replay_with_original_base_state_version_is_200_not_stale(client):
         client, note="", baseStateVersion=seq, clientRequestId=identity
     )
     assert first.status_code == 200, first.text
+
+    later = _prepare(client, [note, _note("提交之后用户又写的一条")])
     current = client.get(f"/api/interactive/boards/{BOARD}/state").json()["seq"]
-    assert current > seq, "场景前提：提交成功后板面版本已经前进"
+    assert current > seq, "场景前提：板面版本已经比原请求新"
+    assert later >= current
 
     retry = _post(client, note="", baseStateVersion=seq, clientRequestId=identity)
     assert retry.status_code == 200, retry.text

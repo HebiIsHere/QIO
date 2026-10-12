@@ -1,0 +1,45 @@
+{
+  "generatedAt": "20261012-235634",
+  "checks": [
+    {
+      "name": "backend-full",
+      "command": "D:\\qio-dev\\q021\\backend\\.venv\\Scripts\\python.exe -m pytest",
+      "cwd": "backend",
+      "exit": 1,
+      "seconds": 1277.6,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261012-235634\\01-backend-full.txt"
+    },
+    {
+      "name": "frontend-typecheck",
+      "command": "C:\\Program Files\\nodejs\\npx.cmd vue-tsc --noEmit",
+      "cwd": "frontend",
+      "exit": 0,
+      "seconds": 16.5,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261012-235634\\02-frontend-typecheck.txt"
+    },
+    {
+      "name": "frontend-tests",
+      "command": "C:\\Program Files\\nodejs\\npx.cmd vitest run",
+      "cwd": "frontend",
+      "exit": 0,
+      "seconds": 137.0,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261012-235634\\03-frontend-tests.txt"
+    },
+    {
+      "name": "frontend-build",
+      "command": "C:\\Program Files\\nodejs\\npm.cmd run build",
+      "cwd": "frontend",
+      "exit": 0,
+      "seconds": 24.8,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261012-235634\\04-frontend-build.txt"
+    },
+    {
+      "name": "docs-consistency",
+      "command": "C:\\Users\\zxy\\AppData\\Local\\Programs\\Python\\Python310\\python.exe scripts/check_docs.py",
+      "cwd": ".",
+      "exit": 0,
+      "seconds": 0.3,
+      "log": "docs\\superpowers\\plans\\uc-full-verify-20261012-235634\\05-docs-consistency.txt"
+    }
+  ]
+}

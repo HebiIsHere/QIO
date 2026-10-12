@@ -1,0 +1,11 @@
+# docs-consistency
+# command: C:\Users\zxy\AppData\Local\Programs\Python\Python310\python.exe scripts/check_docs.py
+# cwd: D:\qio-dev\q021
+# exit: 0
+# seconds: 0.3
+
+--- stdout ---
+文档一致性检查通过（47 个里程碑条目）
+
+--- stderr ---
+

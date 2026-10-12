@@ -220,24 +220,33 @@ def conn(tmp_path: Path):
 # --- 1. 迁移定义本身 -------------------------------------------------------
 
 
-def test_identity_migration_is_numbered_39_and_compensation_is_40():
+def test_identity_migration_is_numbered_39_and_compensation_is_current():
+    """迁移 39（提交身份）必须还在，补偿入口必须与 schema 版本一致。
+
+    2026-10-12 又追加了 41/42/43（卡片内预览），所以「补偿固定 40」这条**历史钉死**
+    已经过期；这里改成守住真正不变的性质：编号有序不重复、39 仍在、补偿 = 最新版本。
+    历史迁移本身仍由 test_historical_migrations_37_38_are_untouched 守住。
+    """
     numbers = [version for version, _ in MIGRATIONS]
     assert numbers == sorted(numbers), "迁移必须按编号有序追加"
     assert len(numbers) == len(set(numbers)), "迁移号不得重复"
-    assert NEW_VERSION == 39, "契约 §4：本轮新增迁移号固定 39"
-    assert COMPENSATION_VERSION == 40, "契约 §4：补偿入口固定 40"
-    assert SCHEMA_VERSION == COMPENSATION_VERSION
+    assert NEW_VERSION == 39, "契约 §4：提交身份那一轮新增的迁移号就是 39（历史不可改）"
+    assert 39 in numbers, "迁移 39 必须还在（只追加，不删）"
+    assert COMPENSATION_VERSION == SCHEMA_VERSION, "补偿入口必须等于最新迁移号"
+    assert COMPENSATION_VERSION >= 40
     identity_sql = " ".join(_SUBMISSION_IDENTITY_DDL)
     assert "client_request_id" in identity_sql
     assert IDENTITY_INDEX in identity_sql
     assert "client_submissions" not in identity_sql
 
 
-def test_compensation_40_is_38_plus_39_objects():
+def test_current_compensation_contains_39_objects():
+    """补偿入口必须覆盖 39 的新对象（此后每轮追加都会往后挪，所以按内容断言）。"""
     by_number = dict(MIGRATIONS)
-    assert 38 in by_number and 40 in by_number
-    expected = list(by_number[38]) + list(_SUBMISSION_IDENTITY_DDL)
-    assert by_number[40] == expected, "补偿 40 = 38 全部语句 + 39 新对象"
+    assert 38 in by_number and COMPENSATION_VERSION in by_number
+    current = list(by_number[COMPENSATION_VERSION])
+    for statement in _SUBMISSION_IDENTITY_DDL:
+        assert statement in current, "补偿入口必须包含迁移 39 的语句（缺对象时才能补齐）"
 
 
 def test_historical_migrations_37_38_are_untouched():
@@ -251,8 +260,8 @@ def test_historical_migrations_37_38_are_untouched():
 # --- 2. 空库 ---------------------------------------------------------------
 
 
-def test_fresh_database_reaches_39_with_identity_objects(conn):
-    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION == 40
+def test_fresh_database_reaches_current_with_identity_objects(conn):
+    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION
     assert IDENTITY_COLUMN in _columns(conn, "board_submissions")
     assert IDENTITY_INDEX in _indexes(conn)
     assert not any(missing_objects(conn).values())
@@ -300,15 +309,15 @@ def test_unique_index_blocks_duplicate_identity_but_allows_empty(conn):
 # --- 3. main 历史库升级 ----------------------------------------------------
 
 
-def test_main_database_upgrades_to_39_and_keeps_user_content(conn):
+def test_main_database_upgrades_to_current_and_keeps_user_content(conn):
     _build_through(conn, MAIN_VERSION)
     assert current_version(conn) == MAIN_VERSION
     tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "board_submissions" not in tables, "场景前提：main 的 34 版还没有互动表"
     _seed_user_content(conn)
 
-    assert apply_migrations(conn) == 40
-    assert current_version(conn) == 40
+    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION
+    assert current_version(conn) == SCHEMA_VERSION
     assert IDENTITY_COLUMN in _columns(conn, "board_submissions")
     assert IDENTITY_INDEX in _indexes(conn)
     # 互动表是升级路径上才建出来的：先种互动数据，再一起核对内容
@@ -324,7 +333,7 @@ def test_upgrade_from_38_adds_column_with_empty_default(conn):
     _seed_interactive(conn, client_request_id=None)  # 38 版：还没有这一列
     assert IDENTITY_COLUMN not in _columns(conn, "board_submissions")
 
-    assert apply_migrations(conn) == 40
+    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION
     assert IDENTITY_COLUMN in _columns(conn, "board_submissions")
     row = conn.execute(
         "SELECT client_request_id FROM board_submissions WHERE id='sub_m39_1'"
@@ -345,7 +354,7 @@ def test_missing_index_is_detected_and_compensated(conn):
     assert IDENTITY_INDEX in missing["indexes"], missing
 
     rows = _version_rows(conn)
-    assert apply_migrations(conn) == 40
+    assert apply_migrations(conn) == SCHEMA_VERSION == COMPENSATION_VERSION
     assert IDENTITY_INDEX in _indexes(conn)
     assert _version_rows(conn) == rows, "补偿只补对象，不改版本行"
     _assert_interactive_intact(conn)

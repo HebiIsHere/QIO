@@ -39,7 +39,7 @@ import pytest
 from agent.adapters.fake import FakeStreamAdapter, StreamScript
 from agent.api.bus import EventBus
 from agent.credentials.store import MemoryKeyring
-from agent.interactive import board_store, execution, models, submission
+from agent.interactive import board_store, execution, models, submission, text_card
 from agent.services.app import AppContext
 from agent.services.lifecycle import (
     PHASE_UNDERSTANDING_STOPPED,
@@ -585,9 +585,11 @@ def _real_model_snapshot() -> dict:
 
     理解上下文按契约从**冻结快照**构建（不读当前板面），所以这里直接给快照。
     """
+    # 2026-10-12 起：链接与代码没有默认可见通道，字符材料只能走**文字卡 + 整卡许可**。
+    # 这里把原来的 code 卡换成许可过的文字卡 —— 快照形状变了，但用例要证明的事没变。
     cards = [
         models.new_card("file", "甲材料：单价 100 元", id="m_a", meta={"name": "甲.txt"}),
-        models.new_card("code", "乙材料：交付 3 天", id="m_b", meta={"language": "text"}),
+        text_card.new_text_card("乙材料：交付 3 天", id="m_b", checked=True),
         models.new_card("text", "请比较这两份材料的成本与交付", id="req", checked=True),
     ]
     return {"cards": cards, "groups": [], "links": [], "selection": [], "note": ""}
